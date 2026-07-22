@@ -11,4 +11,5 @@ type AgentCommand struct {
 	Principals AgentPrincipalsCommand `command:"principals" description:"Mint, list, and revoke agent principals (admin)"`
 	Tickets    AgentTicketsCommand    `command:"tickets" description:"File and track agent tickets"`
 	Dispatcher AgentDispatcherCommand `command:"dispatcher" description:"Show or set the autonomous dispatcher mode (off|paused|active)"`
+	Snapshots  AgentSnapshotsCommand  `command:"snapshots" description:"Create, inspect, retain, and download typed snapshots"`
 }

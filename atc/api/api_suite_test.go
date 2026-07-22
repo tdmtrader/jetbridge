@@ -18,6 +18,7 @@ import (
 	"github.com/concourse/concourse/agent/api/outcomes"
 	"github.com/concourse/concourse/agent/api/principals"
 	"github.com/concourse/concourse/agent/api/reviews"
+	snapshotsapi "github.com/concourse/concourse/agent/api/snapshots"
 	"github.com/concourse/concourse/agent/api/tickets"
 	"github.com/concourse/concourse/agent/budget"
 	"github.com/concourse/concourse/agent/credentials"
@@ -193,6 +194,8 @@ var _ = BeforeEach(func() {
 		),
 	}
 
+	snapshotHandlers, err := snapshotsapi.NewHandlerFactory(snapshotsapi.Config{Enabled: false})
+	Expect(err).NotTo(HaveOccurred())
 	handler, err := api.NewHandler(
 		logger,
 
@@ -258,6 +261,7 @@ var _ = BeforeEach(func() {
 		}),
 		dispatcherapi.NewMemoryStore(),
 		false, // agent dispatcher boot default (flag off)
+		snapshotHandlers,
 	)
 
 	Expect(err).NotTo(HaveOccurred())

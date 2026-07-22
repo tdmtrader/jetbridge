@@ -76,6 +76,9 @@ func TestValidateArchiveLimitsEnforcesLogicalContentAndImplicitEntries(t *testin
 		if err == nil || !strings.Contains(err.Error(), "content limit") {
 			t.Fatalf("ValidateArchiveLimits() error = %v, want content limit", err)
 		}
+		if !errors.Is(err, ErrLimitExceeded) {
+			t.Fatalf("ValidateArchiveLimits() error = %v, want ErrLimitExceeded", err)
+		}
 	})
 
 	t.Run("implicit parents count as entries", func(t *testing.T) {
@@ -86,6 +89,9 @@ func TestValidateArchiveLimitsEnforcesLogicalContentAndImplicitEntries(t *testin
 		})
 		if err == nil || !strings.Contains(err.Error(), "entry limit") {
 			t.Fatalf("ValidateArchiveLimits() error = %v, want entry limit", err)
+		}
+		if !errors.Is(err, ErrLimitExceeded) {
+			t.Fatalf("ValidateArchiveLimits() error = %v, want ErrLimitExceeded", err)
 		}
 	})
 

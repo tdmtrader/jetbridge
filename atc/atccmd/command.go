@@ -14,6 +14,7 @@ import (
 	_ "net/http/pprof"
 	"net/url"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -24,6 +25,7 @@ import (
 	"github.com/concourse/concourse"
 	"github.com/concourse/concourse/agent/api/outcomes"
 	"github.com/concourse/concourse/agent/api/principals"
+	snapshotsapi "github.com/concourse/concourse/agent/api/snapshots"
 	"github.com/concourse/concourse/agent/artifactcap"
 	"github.com/concourse/concourse/agent/budget"
 	"github.com/concourse/concourse/agent/credentials"
@@ -138,7 +140,33 @@ type snapshotSealerComposer func(
 	snapshot.ContentStore,
 	snapshot.DigestLockManager,
 	time.Duration,
-) (snapshot.OutputSealer, error)
+	time.Duration,
+) (snapshot.SnapshotCreator, error)
+
+type snapshotLifecycle interface {
+	Collect(context.Context) (snapshot.LifecycleReport, error)
+	Repair(context.Context) (snapshot.LifecycleReport, error)
+}
+
+type snapshotLifecycleComposer func(
+	snapshot.MetadataStore,
+	snapshot.ContentStore,
+	snapshot.ReplicaRepairer,
+	snapshot.DigestLockManager,
+) (snapshotLifecycle, error)
+
+func isNilDependency(value any) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
+}
 
 type RunCommand struct {
 	Logger flag.Lager
@@ -160,9 +188,13 @@ type RunCommand struct {
 	agentSnapshotDigestLocker      snapshot.DigestLockManager
 	agentSnapshotValidatorRegistry snapshot.ValidatorRegistry
 	agentSnapshotOutputSealer      snapshot.OutputSealer
+	agentSnapshotCreator           snapshot.SnapshotCreator
+	agentSnapshotLifecycle         snapshotLifecycle
+	agentSnapshotHandlerFactory    *snapshotsapi.HandlerFactory
 	agentSnapshotArchiveLimits     snapshot.ArchiveLimits
 	agentSnapshotComposer          snapshotStorageComposer
 	agentSnapshotSealerComposer    snapshotSealerComposer
+	agentSnapshotLifecycleComposer snapshotLifecycleComposer
 
 	artifactResolveCapabilityMu  sync.Mutex
 	artifactResolveCapabilityKey []byte
@@ -255,10 +287,14 @@ type RunCommand struct {
 	} `group:"Kubernetes Runtime"`
 
 	AgentSnapshots struct {
-		Enabled           bool  `long:"agent-snapshot-enabled" description:"Enable durable typed snapshot content storage through the Kubernetes artifact daemon."`
-		ReplicationFactor int   `long:"agent-snapshot-replication-factor" default:"2" description:"Number of stable artifact-daemon nodes selected for each snapshot upload."`
-		MaxBytes          int64 `long:"agent-snapshot-max-bytes" default:"10737418240" description:"Maximum regular-file content bytes admitted by snapshot canonicalization; may only lower the built-in limit."`
-		MaxFiles          int64 `long:"agent-snapshot-max-files" default:"100000" description:"Maximum entries admitted by snapshot canonicalization; may only lower the built-in limit."`
+		Enabled           bool          `long:"agent-snapshot-enabled" description:"Enable durable typed snapshot content storage through the Kubernetes artifact daemon."`
+		ReplicationFactor int           `long:"agent-snapshot-replication-factor" default:"2" description:"Number of stable artifact-daemon nodes selected for each snapshot upload."`
+		MaxBytes          int64         `long:"agent-snapshot-max-bytes" default:"10737418240" description:"Maximum regular-file content bytes admitted by snapshot canonicalization; may only lower the built-in limit."`
+		MaxFiles          int64         `long:"agent-snapshot-max-files" default:"100000" description:"Maximum entries admitted by snapshot canonicalization; may only lower the built-in limit."`
+		BindingRetention  time.Duration `long:"agent-snapshot-binding-retention" default:"168h" description:"Retention period for ordinary workflow input and output bindings."`
+		OrphanGracePeriod time.Duration `long:"agent-snapshot-orphan-grace-period" default:"1h" description:"Lease period protecting an in-progress snapshot upload from orphan collection."`
+		GCInterval        time.Duration `long:"agent-snapshot-gc-interval" default:"5m" description:"Interval between bounded snapshot garbage-collection passes."`
+		RepairInterval    time.Duration `long:"agent-snapshot-repair-interval" default:"10m" description:"Interval between bounded snapshot replica-repair passes."`
 	} `group:"Agent Snapshots"`
 
 	CLIArtifactsDir flag.Dir `long:"cli-artifacts-dir" description:"Directory containing downloadable CLI binaries."`
@@ -867,7 +903,7 @@ func (cmd *RunCommand) constructMembers(
 	// worker pool happens to be constructed first. Select backendConn
 	// deliberately, compose once, and inject the exact daemon client into both
 	// API/backend pools below.
-	if err := cmd.composeAgentSnapshots(backendConn); err != nil {
+	if err := cmd.composeAgentSnapshots(backendConn, logger); err != nil {
 		return nil, err
 	}
 	checkBuildsChan := make(chan db.Build, 2000)
@@ -1587,6 +1623,12 @@ func (cmd *RunCommand) backendComponents(
 		})
 	}
 
+	snapshotLifecycleComponents, err := cmd.agentSnapshotLifecycleComponents()
+	if err != nil {
+		return nil, err
+	}
+	components = append(components, snapshotLifecycleComponents...)
+
 	return components, err
 }
 
@@ -1607,7 +1649,7 @@ func (cmd *RunCommand) streamer() worker.Streamer {
 	return worker.NewStreamer(cmd.compression())
 }
 
-func (cmd *RunCommand) composeAgentSnapshots(connection db.DbConn) error {
+func (cmd *RunCommand) composeAgentSnapshots(connection db.DbConn, logger lager.Logger) error {
 	cmd.agentSnapshotMu.Lock()
 	defer cmd.agentSnapshotMu.Unlock()
 	if !cmd.AgentSnapshots.Enabled {
@@ -1620,6 +1662,9 @@ func (cmd *RunCommand) composeAgentSnapshots(connection db.DbConn) error {
 		cmd.agentSnapshotDigestLocker != nil ||
 		cmd.agentSnapshotValidatorRegistry != nil ||
 		cmd.agentSnapshotOutputSealer != nil ||
+		cmd.agentSnapshotCreator != nil ||
+		cmd.agentSnapshotLifecycle != nil ||
+		cmd.agentSnapshotHandlerFactory != nil ||
 		cmd.agentSnapshotArchiveLimits != (snapshot.ArchiveLimits{})
 	if initialized {
 		if cmd.agentSnapshotDaemonClient == nil ||
@@ -1629,6 +1674,9 @@ func (cmd *RunCommand) composeAgentSnapshots(connection db.DbConn) error {
 			cmd.agentSnapshotDigestLocker == nil ||
 			cmd.agentSnapshotValidatorRegistry == nil ||
 			cmd.agentSnapshotOutputSealer == nil ||
+			cmd.agentSnapshotCreator == nil ||
+			cmd.agentSnapshotLifecycle == nil ||
+			cmd.agentSnapshotHandlerFactory == nil ||
 			cmd.agentSnapshotArchiveLimits == (snapshot.ArchiveLimits{}) {
 			return fmt.Errorf("snapshot command composition is partially initialized")
 		}
@@ -1636,6 +1684,9 @@ func (cmd *RunCommand) composeAgentSnapshots(connection db.DbConn) error {
 	}
 	if connection == nil {
 		return fmt.Errorf("snapshot metadata database connection is required")
+	}
+	if logger == nil {
+		return fmt.Errorf("snapshot production logger is required")
 	}
 
 	archiveLimits := cmd.configuredAgentSnapshotArchiveLimits()
@@ -1654,14 +1705,14 @@ func (cmd *RunCommand) composeAgentSnapshots(connection db.DbConn) error {
 	if err != nil {
 		return fmt.Errorf("compose agent snapshot storage: %w", err)
 	}
-	if daemonClient == nil || contentStore == nil {
+	if daemonClient == nil || isNilDependency(contentStore) {
 		return fmt.Errorf("compose agent snapshot storage returned incomplete components")
 	}
 	sealerComposer := cmd.agentSnapshotSealerComposer
 	if sealerComposer == nil {
 		sealerComposer = buildAgentSnapshotSealer
 	}
-	outputSealer, err := sealerComposer(
+	creator, err := sealerComposer(
 		snapshot.Canonicalizer{
 			MaxContentBytes: archiveLimits.MaxContentBytes,
 			MaxEntries:      archiveLimits.MaxEntries,
@@ -1670,13 +1721,47 @@ func (cmd *RunCommand) composeAgentSnapshots(connection db.DbConn) error {
 		metadataStore,
 		contentStore,
 		digestLocker,
-		agentSnapshotStageTTL,
+		cmd.AgentSnapshots.OrphanGracePeriod,
+		cmd.AgentSnapshots.BindingRetention,
 	)
 	if err != nil {
 		return fmt.Errorf("compose agent snapshot output sealer: %w", err)
 	}
-	if outputSealer == nil {
+	if isNilDependency(creator) {
 		return fmt.Errorf("compose agent snapshot output sealer returned no sealer")
+	}
+	replicaRepairer, ok := contentStore.(snapshot.ReplicaRepairer)
+	if !ok || isNilDependency(replicaRepairer) {
+		return fmt.Errorf("compose agent snapshot storage returned no replica repairer")
+	}
+	lifecycleComposer := cmd.agentSnapshotLifecycleComposer
+	if lifecycleComposer == nil {
+		lifecycleComposer = buildAgentSnapshotLifecycle
+	}
+	lifecycle, err := lifecycleComposer(metadataStore, contentStore, replicaRepairer, digestLocker)
+	if err != nil {
+		return fmt.Errorf("compose agent snapshot lifecycle: %w", err)
+	}
+	if isNilDependency(lifecycle) {
+		return fmt.Errorf("compose agent snapshot lifecycle returned no lifecycle")
+	}
+	handlerFactory, err := snapshotsapi.NewHandlerFactory(snapshotsapi.Config{
+		Enabled:       true,
+		Creator:       creator,
+		Metadata:      metadataStore,
+		Content:       contentStore,
+		Locks:         digestLocker,
+		ArchiveLimits: archiveLimits,
+		Identity: func(request *http.Request) (snapshotsapi.RequestIdentity, error) {
+			return agentSnapshotIdentity(accessor.GetAccessor(request).Claims())
+		},
+		ReportError: agentSnapshotStreamErrorReporter(logger),
+	})
+	if err != nil {
+		return fmt.Errorf("compose agent snapshot API: %w", err)
+	}
+	if handlerFactory == nil {
+		return fmt.Errorf("compose agent snapshot API returned no handler factory")
 	}
 
 	cmd.agentSnapshotDaemonClient = daemonClient
@@ -1685,9 +1770,26 @@ func (cmd *RunCommand) composeAgentSnapshots(connection db.DbConn) error {
 	cmd.agentSnapshotWorkflowRuns = workflowRuns
 	cmd.agentSnapshotDigestLocker = digestLocker
 	cmd.agentSnapshotValidatorRegistry = registry
-	cmd.agentSnapshotOutputSealer = outputSealer
+	cmd.agentSnapshotOutputSealer = creator
+	cmd.agentSnapshotCreator = creator
+	cmd.agentSnapshotLifecycle = lifecycle
+	cmd.agentSnapshotHandlerFactory = handlerFactory
 	cmd.agentSnapshotArchiveLimits = archiveLimits
 	return nil
+}
+
+func agentSnapshotStreamErrorReporter(logger lager.Logger) snapshotsapi.ErrorReporter {
+	apiLogger := logger.Session("agent-snapshot-api")
+	return func(_ context.Context, category string) {
+		if category != "snapshot_content_stream_failed" {
+			category = "unknown"
+		}
+		apiLogger.Error(
+			"content-stream-failed",
+			errors.New("snapshot content stream verification failed"),
+			lager.Data{"category": category},
+		)
+	}
 }
 
 func (cmd *RunCommand) configuredAgentSnapshotArchiveLimits() snapshot.ArchiveLimits {
@@ -1759,7 +1861,8 @@ func buildAgentSnapshotSealer(
 	contentStore snapshot.ContentStore,
 	digestLocker snapshot.DigestLockManager,
 	stageTTL time.Duration,
-) (snapshot.OutputSealer, error) {
+	bindingRetention time.Duration,
+) (snapshot.SnapshotCreator, error) {
 	return snapshot.NewBatchSealer(
 		canonicalizer,
 		registry,
@@ -1767,7 +1870,88 @@ func buildAgentSnapshotSealer(
 		contentStore,
 		digestLocker,
 		snapshot.WithBatchSealerStageTTL(stageTTL),
+		snapshot.WithBatchSealerBindingRetention(bindingRetention),
 	)
+}
+
+func buildAgentSnapshotLifecycle(
+	metadata snapshot.MetadataStore,
+	content snapshot.ContentStore,
+	replicas snapshot.ReplicaRepairer,
+	locks snapshot.DigestLockManager,
+) (snapshotLifecycle, error) {
+	return snapshot.NewLifecycle(metadata, content, replicas, locks)
+}
+
+func (cmd *RunCommand) agentSnapshotLifecycleComponents() ([]RunnableComponent, error) {
+	if !cmd.AgentSnapshots.Enabled {
+		return nil, nil
+	}
+	cmd.agentSnapshotMu.Lock()
+	lifecycle := cmd.agentSnapshotLifecycle
+	cmd.agentSnapshotMu.Unlock()
+	if lifecycle == nil {
+		return nil, fmt.Errorf("snapshot lifecycle is not composed")
+	}
+	return []RunnableComponent{
+		{
+			Component: atc.Component{Name: atc.ComponentAgentSnapshotGC},
+			Runnable: component.RunFunc(func(ctx context.Context) error {
+				return runAgentSnapshotLifecyclePass(ctx, "collect", lifecycle.Collect)
+			}),
+			Interval: cmd.AgentSnapshots.GCInterval,
+		},
+		{
+			Component: atc.Component{Name: atc.ComponentAgentSnapshotRepair},
+			Runnable: component.RunFunc(func(ctx context.Context) error {
+				return runAgentSnapshotLifecyclePass(ctx, "repair", lifecycle.Repair)
+			}),
+			Interval: cmd.AgentSnapshots.RepairInterval,
+		},
+	}, nil
+}
+
+var errAgentSnapshotLifecyclePass = errors.New("agent snapshot lifecycle pass failed")
+
+func runAgentSnapshotLifecyclePass(
+	ctx context.Context,
+	operation string,
+	run func(context.Context) (snapshot.LifecycleReport, error),
+) error {
+	report, err := run(ctx)
+	data := lager.Data{
+		"operation":         operation,
+		"scanned":           report.Scanned,
+		"deferred":          report.Deferred,
+		"failed":            report.Failed,
+		"stages_removed":    report.StagesRemoved,
+		"digests_expired":   report.DigestsExpired,
+		"locations_deleted": report.LocationsDeleted,
+		"locations_added":   report.LocationsAdded,
+		"stale_pruned":      report.StalePruned,
+	}
+	logger := lagerctx.FromContext(ctx).Session("agent-snapshot-lifecycle")
+	if err != nil {
+		// Candidate errors contain digests, storage nodes, and transport/SQL
+		// details. Keep those out of component logs while preserving bounded
+		// aggregate progress and a stable health category for Coordinator.
+		logger.Info("pass-failed", data)
+		return errAgentSnapshotLifecyclePass
+	}
+	logger.Info("pass-complete", data)
+	return nil
+}
+
+func (cmd *RunCommand) agentSnapshotAPIHandlers() (*snapshotsapi.HandlerFactory, error) {
+	cmd.agentSnapshotMu.Lock()
+	defer cmd.agentSnapshotMu.Unlock()
+	if !cmd.AgentSnapshots.Enabled {
+		return snapshotsapi.NewHandlerFactory(snapshotsapi.Config{Enabled: false})
+	}
+	if cmd.agentSnapshotHandlerFactory == nil {
+		return nil, fmt.Errorf("snapshot API is not composed")
+	}
+	return cmd.agentSnapshotHandlerFactory, nil
 }
 
 func (cmd *RunCommand) agentSnapshotCoreStepFactoryOptions() ([]engine.CoreStepFactoryOption, bool) {
@@ -2318,6 +2502,18 @@ func (cmd *RunCommand) validateAgentSnapshots() error {
 	if cmd.AgentSnapshots.MaxFiles <= 0 {
 		errs = multierror.Append(errs, errors.New("--agent-snapshot-max-files must be positive"))
 	}
+	if cmd.AgentSnapshots.BindingRetention <= 0 {
+		errs = multierror.Append(errs, errors.New("--agent-snapshot-binding-retention must be positive"))
+	}
+	if cmd.AgentSnapshots.OrphanGracePeriod <= 0 {
+		errs = multierror.Append(errs, errors.New("--agent-snapshot-orphan-grace-period must be positive"))
+	}
+	if cmd.AgentSnapshots.GCInterval <= 0 {
+		errs = multierror.Append(errs, errors.New("--agent-snapshot-gc-interval must be positive"))
+	}
+	if cmd.AgentSnapshots.RepairInterval <= 0 {
+		errs = multierror.Append(errs, errors.New("--agent-snapshot-repair-interval must be positive"))
+	}
 	if cmd.AgentSnapshots.MaxBytes > snapshot.DefaultMaxSnapshotContentBytes {
 		errs = multierror.Append(errs, fmt.Errorf("--agent-snapshot-max-bytes must not exceed %d", snapshot.DefaultMaxSnapshotContentBytes))
 	}
@@ -2757,6 +2953,10 @@ func (cmd *RunCommand) constructAPIHandler(
 	dbSigningKeyFactory db.SigningKeyFactory,
 	dbConn db.DbConn,
 ) (http.Handler, error) {
+	snapshotHandlers, err := cmd.agentSnapshotAPIHandlers()
+	if err != nil {
+		return nil, err
+	}
 
 	checkPipelineAccessHandlerFactory := auth.NewCheckPipelineAccessHandlerFactory(teamFactory)
 	checkBuildReadAccessHandlerFactory := auth.NewCheckBuildReadAccessHandlerFactory(dbBuildFactory)
@@ -2888,6 +3088,7 @@ func (cmd *RunCommand) constructAPIHandler(
 		}),
 		db.NewAgentSettingsFactory(dbConn),
 		cmd.AgentDispatcherEnabled,
+		snapshotHandlers,
 	)
 }
 

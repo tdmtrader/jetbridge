@@ -35,6 +35,7 @@ type SnapshotContentStore struct {
 }
 
 var _ snapshot.ContentStore = (*SnapshotContentStore)(nil)
+var _ snapshot.ReplicaRepairer = (*SnapshotContentStore)(nil)
 
 func NewSnapshotContentStore(
 	daemon *DaemonClient,
@@ -204,36 +205,79 @@ func (store *SnapshotContentStore) putEndpoint(
 	spoolName string,
 	size int64,
 ) (snapshot.Location, error) {
-	file, err := os.Open(spoolName)
+	key := snapshotKeyForDigest(digest)
+	location := snapshot.Location{Digest: digest, Driver: SnapshotDaemonDriver, Key: key, Node: endpoint.NodeName}
+	status, err := store.putEndpointRequest(ctx, endpoint, key, spoolName, size)
 	if err != nil {
 		return snapshot.Location{}, fmt.Errorf("upload snapshot to %s: %w", endpoint.NodeName, err)
 	}
-	defer file.Close()
-	key := snapshotKeyForDigest(digest)
+	if status == http.StatusCreated || status == http.StatusOK {
+		return location, nil
+	}
+	if status != http.StatusConflict {
+		return snapshot.Location{}, fmt.Errorf("upload snapshot to %s: daemon status %d", endpoint.NodeName, status)
+	}
+
+	// The namespace is immutable, so a conflict is normally an already-present
+	// object. Reuse it only after a complete digest verification. If the key is
+	// present but corrupt, the caller-provided spool is itself digest-verified,
+	// which makes delete-and-rewrite safe even when this is the only replica.
+	verified, err := store.Exists(ctx, location)
+	if err != nil {
+		return snapshot.Location{}, fmt.Errorf("verify conflicting snapshot on %s: %w", endpoint.NodeName, err)
+	}
+	if verified {
+		return location, nil
+	}
+	if err := store.DeleteLocation(ctx, location); err != nil {
+		return snapshot.Location{}, fmt.Errorf("replace corrupt snapshot on %s: %w", endpoint.NodeName, err)
+	}
+	status, err = store.putEndpointRequest(ctx, endpoint, key, spoolName, size)
+	if err != nil {
+		return snapshot.Location{}, fmt.Errorf("rewrite snapshot on %s: %w", endpoint.NodeName, err)
+	}
+	if status != http.StatusCreated && status != http.StatusOK {
+		return snapshot.Location{}, fmt.Errorf("rewrite snapshot on %s: daemon status %d", endpoint.NodeName, status)
+	}
+	return location, nil
+}
+
+func (store *SnapshotContentStore) putEndpointRequest(
+	ctx context.Context,
+	endpoint DaemonEndpoint,
+	key string,
+	spoolName string,
+	size int64,
+) (status int, err error) {
+	file, err := os.Open(spoolName)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { err = errors.Join(err, file.Close()) }()
 	target, err := store.daemon.snapshotURL(endpoint, key)
 	if err != nil {
-		return snapshot.Location{}, fmt.Errorf("upload snapshot to %s: %w", endpoint.NodeName, err)
+		return 0, err
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPut, target.String(), file)
 	if err != nil {
-		return snapshot.Location{}, fmt.Errorf("upload snapshot to %s: %w", endpoint.NodeName, err)
+		return 0, err
 	}
 	request.ContentLength = size
 	request.Header.Set("Content-Type", "application/x-tar")
 	client, err := store.daemon.snapshotHTTPClient()
 	if err != nil {
-		return snapshot.Location{}, err
+		return 0, err
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return snapshot.Location{}, fmt.Errorf("upload snapshot to %s: %w", endpoint.NodeName, err)
+		return 0, err
 	}
-	defer response.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
-	if response.StatusCode != http.StatusCreated && response.StatusCode != http.StatusOK {
-		return snapshot.Location{}, fmt.Errorf("upload snapshot to %s: daemon status %d", endpoint.NodeName, response.StatusCode)
+	_, drainErr := io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+	closeErr := response.Body.Close()
+	if drainErr != nil || closeErr != nil {
+		return 0, errors.Join(drainErr, closeErr)
 	}
-	return snapshot.Location{Digest: digest, Driver: SnapshotDaemonDriver, Key: key, Node: endpoint.NodeName}, nil
+	return response.StatusCode, nil
 }
 
 func (store *SnapshotContentStore) Open(ctx context.Context, value snapshot.Snapshot) (io.ReadCloser, error) {
@@ -268,6 +312,288 @@ func (store *SnapshotContentStore) Open(ctx context.Context, value snapshot.Snap
 		}
 	}
 	return nil, fmt.Errorf("open snapshot from all live replicas: %w", errors.Join(errorsByNode...))
+}
+
+func (store *SnapshotContentStore) RepairReplicas(
+	ctx context.Context,
+	value snapshot.Snapshot,
+	recorded []snapshot.Location,
+) (snapshot.ReplicaRepairResult, error) {
+	result := snapshot.ReplicaRepairResult{}
+	if err := value.Validate(); err != nil {
+		return result, err
+	}
+	if value.ContentState != snapshot.ContentStateAvailable {
+		return result, snapshot.ErrExpired
+	}
+
+	recordedByNode := make(map[string]snapshot.Location, len(recorded))
+	for _, location := range recorded {
+		if err := validateSnapshotLocation(location, value.Digest); err != nil {
+			return result, err
+		}
+		if prior, found := recordedByNode[location.Node]; found && prior != location {
+			return result, fmt.Errorf("conflicting snapshot locations for node %q", location.Node)
+		}
+		recordedByNode[location.Node] = location
+	}
+
+	endpoints, err := store.daemon.DaemonEndpoints(ctx)
+	if err != nil {
+		return result, err
+	}
+	sort.Slice(endpoints, func(i, j int) bool { return endpoints[i].NodeName < endpoints[j].NodeName })
+	result.LiveCapacity = len(endpoints)
+	result.Desired = store.replicationFactor
+	if result.Desired > result.LiveCapacity {
+		result.Desired = result.LiveCapacity
+	}
+	if result.LiveCapacity == 0 {
+		return result, fmt.Errorf("%w: no live artifact daemon endpoints", snapshot.ErrNoReadableReplica)
+	}
+	liveByNode := make(map[string]DaemonEndpoint, len(endpoints))
+	for _, endpoint := range endpoints {
+		liveByNode[endpoint.NodeName] = endpoint
+	}
+
+	verified := make(map[string]bool, len(endpoints))
+	suspect := make(map[string]error, len(recorded))
+	unknown := make(map[string]error, len(recorded))
+	var sourcePath string
+	defer func() {
+		if sourcePath != "" {
+			_ = os.Remove(sourcePath)
+		}
+	}()
+
+	recordedNodes := make([]string, 0, len(recordedByNode))
+	for node := range recordedByNode {
+		recordedNodes = append(recordedNodes, node)
+	}
+	sort.Strings(recordedNodes)
+	for _, node := range recordedNodes {
+		if result.Verified >= result.Desired {
+			break
+		}
+		endpoint, live := liveByNode[node]
+		if !live {
+			// Absence from discovery is not proof that the recorded bytes are
+			// gone. Keep the row until the stable node is addressable and an
+			// exact-node request proves it missing (or corrupt bytes are deleted).
+			unknown[node] = fmt.Errorf("recorded node is not currently discoverable")
+			continue
+		}
+		path, verifyErr := store.verifyRepairEndpoint(ctx, endpoint, value, sourcePath == "")
+		if verifyErr != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return sortedReplicaRepairResult(result), ctxErr
+			}
+			if errors.Is(verifyErr, snapshot.ErrReplicaMissing) || errors.Is(verifyErr, snapshot.ErrReplicaCorrupt) {
+				suspect[node] = verifyErr
+			} else {
+				unknown[node] = verifyErr
+			}
+			continue
+		}
+		verified[node] = true
+		result.Verified++
+		if sourcePath == "" {
+			sourcePath = path
+		}
+	}
+
+	// Probe unrecorded live nodes only when no recorded location supplied a
+	// verified source. Stop at the first recovered acknowledgement: subsequent
+	// replicas are restored with deterministic PUTs from this verified spool,
+	// which avoids adopting arbitrary over-factor copies.
+	if sourcePath == "" {
+		for _, endpoint := range endpoints {
+			if _, recorded := recordedByNode[endpoint.NodeName]; recorded {
+				continue
+			}
+			path, verifyErr := store.verifyRepairEndpoint(ctx, endpoint, value, true)
+			if verifyErr != nil {
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return sortedReplicaRepairResult(result), ctxErr
+				}
+				if errors.Is(verifyErr, snapshot.ErrReplicaMissing) || errors.Is(verifyErr, snapshot.ErrReplicaCorrupt) {
+					suspect[endpoint.NodeName] = verifyErr
+				} else {
+					unknown[endpoint.NodeName] = verifyErr
+				}
+				continue
+			}
+			verified[endpoint.NodeName] = true
+			result.Verified++
+			result.Added = appendUniqueSnapshotLocation(result.Added, snapshot.Location{
+				Digest: value.Digest, Driver: SnapshotDaemonDriver,
+				Key: snapshotKeyForDigest(value.Digest), Node: endpoint.NodeName,
+			})
+			sourcePath = path
+			break
+		}
+	}
+
+	if sourcePath == "" {
+		return sortedReplicaRepairResult(result), errors.Join(snapshot.ErrNoReadableReplica, joinedNodeErrors(unknown))
+	}
+
+	cleaned := make(map[string]bool)
+	var copyErrors []error
+	var cleanupErrors []error
+	for _, endpoint := range endpoints {
+		if result.Verified >= result.Desired {
+			break
+		}
+		if verified[endpoint.NodeName] || unknown[endpoint.NodeName] != nil {
+			continue
+		}
+		location := snapshot.Location{
+			Digest: value.Digest, Driver: SnapshotDaemonDriver,
+			Key: snapshotKeyForDigest(value.Digest), Node: endpoint.NodeName,
+		}
+		if errors.Is(suspect[endpoint.NodeName], snapshot.ErrReplicaCorrupt) {
+			if err := store.DeleteLocation(ctx, location); err != nil {
+				copyErrors = append(copyErrors, err)
+				continue
+			}
+			cleaned[endpoint.NodeName] = true
+		}
+		added, putErr := store.putEndpoint(ctx, endpoint, value.Digest, sourcePath, value.ByteSize)
+		if putErr != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return sortedReplicaRepairResult(result), ctxErr
+			}
+			copyErrors = append(copyErrors, putErr)
+			continue
+		}
+		verified[endpoint.NodeName] = true
+		result.Verified++
+		result.Added = appendUniqueSnapshotLocation(result.Added, added)
+	}
+
+	// Prune only definitive stale rows, and only after a source was verified.
+	// Unknown transport/TLS/5xx outcomes retain their rows for a later pass.
+	for _, node := range recordedNodes {
+		if verified[node] || unknown[node] != nil {
+			continue
+		}
+		if !errors.Is(suspect[node], snapshot.ErrReplicaMissing) &&
+			!errors.Is(suspect[node], snapshot.ErrReplicaCorrupt) {
+			// The factor may have been satisfied before this recorded row was
+			// examined. Unobserved is not stale.
+			continue
+		}
+		location := recordedByNode[node]
+		if errors.Is(suspect[node], snapshot.ErrReplicaCorrupt) && !cleaned[node] {
+			endpoint := liveByNode[node]
+			status, deleteErr := store.locationRequest(ctx, http.MethodDelete, endpoint, location)
+			if deleteErr != nil || (status != http.StatusNoContent && status != http.StatusNotFound) {
+				if deleteErr == nil {
+					deleteErr = fmt.Errorf("DELETE snapshot on %s returned status %d", node, status)
+				}
+				cleanupErrors = append(cleanupErrors, deleteErr)
+				continue
+			}
+		}
+		result.Removed = appendUniqueSnapshotLocation(result.Removed, location)
+	}
+
+	if result.Verified < result.Desired {
+		copyErrors = append(copyErrors, fmt.Errorf(
+			"snapshot replica repair verified %d replicas, want %d", result.Verified, result.Desired,
+		))
+		if err := joinedNodeErrors(unknown); err != nil {
+			copyErrors = append(copyErrors, err)
+		}
+	} else {
+		// Once the configured factor is verified, failures from optional target
+		// attempts or unrelated recorded nodes must not turn a healthy digest
+		// into a perpetual repair error.
+		copyErrors = nil
+	}
+	return sortedReplicaRepairResult(result), errors.Join(errors.Join(copyErrors...), errors.Join(cleanupErrors...))
+}
+
+// verifyRepairEndpoint reaches verified EOF. When spool is true it returns a
+// private, synced source path owned by the caller; otherwise it returns no
+// path and never retains the complete archive.
+func (store *SnapshotContentStore) verifyRepairEndpoint(
+	ctx context.Context,
+	endpoint DaemonEndpoint,
+	value snapshot.Snapshot,
+	spool bool,
+) (string, error) {
+	reader, err := store.openEndpoint(ctx, endpoint, value)
+	if err != nil {
+		return "", err
+	}
+	if !spool {
+		_, readErr := io.Copy(io.Discard, reader)
+		closeErr := reader.Close()
+		return "", errors.Join(readErr, closeErr)
+	}
+	file, size, digest, spoolErr := spoolSnapshot(ctx, reader, store.maxBytes)
+	closeReaderErr := reader.Close()
+	if spoolErr != nil {
+		return "", errors.Join(spoolErr, closeReaderErr)
+	}
+	if file == nil {
+		return "", errors.Join(fmt.Errorf("snapshot replica spool returned no file"), closeReaderErr)
+	}
+	name := file.Name()
+	if closeReaderErr != nil {
+		closeFileErr := file.Close()
+		removeErr := os.Remove(name)
+		return "", errors.Join(closeReaderErr, closeFileErr, removeErr)
+	}
+	if size != value.ByteSize || digest != value.Digest {
+		_ = file.Close()
+		_ = os.Remove(name)
+		return "", fmt.Errorf("%w: replica identity does not match manifest", snapshot.ErrReplicaCorrupt)
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(name)
+		return "", err
+	}
+	return name, nil
+}
+
+func appendUniqueSnapshotLocation(locations []snapshot.Location, location snapshot.Location) []snapshot.Location {
+	for _, existing := range locations {
+		if existing == location {
+			return locations
+		}
+	}
+	return append(locations, location)
+}
+
+func sortedReplicaRepairResult(result snapshot.ReplicaRepairResult) snapshot.ReplicaRepairResult {
+	less := func(locations []snapshot.Location, left, right int) bool {
+		if locations[left].Driver != locations[right].Driver {
+			return locations[left].Driver < locations[right].Driver
+		}
+		if locations[left].Key != locations[right].Key {
+			return locations[left].Key < locations[right].Key
+		}
+		return locations[left].Node < locations[right].Node
+	}
+	sort.Slice(result.Added, func(left, right int) bool { return less(result.Added, left, right) })
+	sort.Slice(result.Removed, func(left, right int) bool { return less(result.Removed, left, right) })
+	return result
+}
+
+func joinedNodeErrors(errorsByNode map[string]error) error {
+	nodes := make([]string, 0, len(errorsByNode))
+	for node := range errorsByNode {
+		nodes = append(nodes, node)
+	}
+	sort.Strings(nodes)
+	joined := make([]error, 0, len(nodes))
+	for _, node := range nodes {
+		joined = append(joined, fmt.Errorf("snapshot replica %s: %w", node, errorsByNode[node]))
+	}
+	return errors.Join(joined...)
 }
 
 func orderedSnapshotEndpoints(recorded []snapshot.Location, live []DaemonEndpoint, digest snapshot.Digest) []DaemonEndpoint {
@@ -326,16 +652,19 @@ func (store *SnapshotContentStore) openEndpoint(ctx context.Context, endpoint Da
 	}
 	if response.StatusCode != http.StatusOK {
 		response.Body.Close()
+		if response.StatusCode == http.StatusNotFound {
+			return nil, fmt.Errorf("%w: snapshot on %s", snapshot.ErrReplicaMissing, endpoint.NodeName)
+		}
 		return nil, fmt.Errorf("open snapshot from %s: daemon status %d", endpoint.NodeName, response.StatusCode)
 	}
 	if response.ContentLength >= 0 && response.ContentLength != value.ByteSize {
 		response.Body.Close()
-		return nil, fmt.Errorf("open snapshot from %s: declared length %d does not match manifest length %d", endpoint.NodeName, response.ContentLength, value.ByteSize)
+		return nil, fmt.Errorf("%w: snapshot on %s declared length %d does not match manifest length %d", snapshot.ErrReplicaCorrupt, endpoint.NodeName, response.ContentLength, value.ByteSize)
 	}
 	mediaType := strings.TrimSpace(strings.Split(response.Header.Get("Content-Type"), ";")[0])
 	if mediaType != "application/x-tar" {
 		response.Body.Close()
-		return nil, fmt.Errorf("open snapshot from %s: unexpected content type %q", endpoint.NodeName, mediaType)
+		return nil, fmt.Errorf("%w: snapshot on %s has unexpected content type %q", snapshot.ErrReplicaCorrupt, endpoint.NodeName, mediaType)
 	}
 	return &verifyingSnapshotReadCloser{
 		body:           response.Body,
@@ -366,11 +695,11 @@ func (reader *verifyingSnapshotReadCloser) Read(buffer []byte) (int, error) {
 	if errors.Is(err, io.EOF) && !reader.verified {
 		reader.verified = true
 		if reader.read != reader.expectedLength {
-			return n, fmt.Errorf("snapshot byte count mismatch at EOF: got %d, want %d", reader.read, reader.expectedLength)
+			return n, fmt.Errorf("%w: snapshot byte count mismatch at EOF: got %d, want %d", snapshot.ErrReplicaCorrupt, reader.read, reader.expectedLength)
 		}
 		actual := snapshot.Digest("sha256:" + hex.EncodeToString(reader.hash.Sum(nil)))
 		if actual != reader.expectedDigest {
-			return n, fmt.Errorf("snapshot digest mismatch at EOF: got %s, want %s", actual, reader.expectedDigest)
+			return n, fmt.Errorf("%w: snapshot digest mismatch at EOF: got %s, want %s", snapshot.ErrReplicaCorrupt, actual, reader.expectedDigest)
 		}
 	}
 	return n, err
@@ -378,22 +707,51 @@ func (reader *verifyingSnapshotReadCloser) Read(buffer []byte) (int, error) {
 
 func (reader *verifyingSnapshotReadCloser) Close() error { return reader.body.Close() }
 
-func (store *SnapshotContentStore) Exists(ctx context.Context, location snapshot.Location) (bool, error) {
+func (store *SnapshotContentStore) Exists(ctx context.Context, location snapshot.Location) (exists bool, err error) {
 	endpoint, err := store.endpointForLocation(ctx, location)
 	if err != nil {
 		return false, err
 	}
-	status, err := store.locationRequest(ctx, http.MethodHead, endpoint, location)
+	target, err := store.daemon.snapshotURL(endpoint, location.Key)
 	if err != nil {
 		return false, err
 	}
-	switch status {
-	case http.StatusOK:
-		return true, nil
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
+	if err != nil {
+		return false, err
+	}
+	client, err := store.daemon.snapshotHTTPClient()
+	if err != nil {
+		return false, err
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return false, err
+	}
+	defer func() { err = errors.Join(err, response.Body.Close()) }()
+	switch response.StatusCode {
 	case http.StatusNotFound:
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
 		return false, nil
+	case http.StatusOK:
+		mediaType := strings.TrimSpace(strings.Split(response.Header.Get("Content-Type"), ";")[0])
+		if mediaType != "application/x-tar" {
+			_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+			return false, nil
+		}
+		hasher := sha256.New()
+		read, copyErr := io.Copy(hasher, io.LimitReader(response.Body, store.maxBytes+1))
+		if copyErr != nil {
+			return false, copyErr
+		}
+		if read > store.maxBytes {
+			return false, nil
+		}
+		actual := snapshot.Digest("sha256:" + hex.EncodeToString(hasher.Sum(nil)))
+		return actual == location.Digest, nil
 	default:
-		return false, fmt.Errorf("HEAD snapshot on %s returned status %d", location.Node, status)
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+		return false, fmt.Errorf("GET snapshot on %s returned status %d", location.Node, response.StatusCode)
 	}
 }
 

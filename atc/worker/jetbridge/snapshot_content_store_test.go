@@ -5,9 +5,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -27,6 +29,13 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return function(request)
 }
+
+type closeErrorBody struct {
+	io.Reader
+	err error
+}
+
+func (body *closeErrorBody) Close() error { return body.err }
 
 type locationResolverStub struct {
 	locations []snapshot.Location
@@ -304,6 +313,86 @@ func TestSnapshotContentStorePutReturnsAggregateFailureWhenNoReplicaAcknowledges
 	}
 }
 
+func TestSnapshotContentStorePutReplacesCorruptDigestKeyUsingVerifiedLocalSource(t *testing.T) {
+	content := testSnapshotArchive(t, "known good")
+	var mutex sync.Mutex
+	var methods []string
+	putCalls := 0
+	client := snapshotDaemonClient(t, []string{"node-a"}, roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		mutex.Lock()
+		methods = append(methods, request.Method)
+		mutex.Unlock()
+		switch request.Method {
+		case http.MethodPut:
+			putCalls++
+			body, err := io.ReadAll(request.Body)
+			if err != nil {
+				return nil, err
+			}
+			if !bytes.Equal(body, content) {
+				return nil, fmt.Errorf("PUT body differs from verified local source")
+			}
+			if putCalls == 1 {
+				return response(http.StatusConflict, nil), nil
+			}
+			return response(http.StatusCreated, nil), nil
+		case http.MethodGet:
+			return response(http.StatusOK, []byte("corrupt")), nil
+		case http.MethodDelete:
+			return response(http.StatusNoContent, nil), nil
+		default:
+			return nil, fmt.Errorf("unexpected method %s", request.Method)
+		}
+	}))
+	store, _ := NewSnapshotContentStore(client, &locationResolverStub{}, 1, testSnapshotArchiveLimits)
+
+	locations, err := store.Put(context.Background(), digestFor(content), bytes.NewReader(content))
+	if err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if len(locations) != 1 || locations[0].Node != "node-a" {
+		t.Fatalf("locations = %#v", locations)
+	}
+	mutex.Lock()
+	defer mutex.Unlock()
+	if strings.Join(methods, ",") != "PUT,GET,DELETE,PUT" {
+		t.Fatalf("methods = %v", methods)
+	}
+}
+
+func TestSnapshotContentStorePutReusesVerifiedConflictWithoutDeleting(t *testing.T) {
+	content := testSnapshotArchive(t, "already present")
+	var mutex sync.Mutex
+	var methods []string
+	client := snapshotDaemonClient(t, []string{"node-a"}, roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		mutex.Lock()
+		methods = append(methods, request.Method)
+		mutex.Unlock()
+		switch request.Method {
+		case http.MethodPut:
+			return response(http.StatusConflict, nil), nil
+		case http.MethodGet:
+			return response(http.StatusOK, content), nil
+		case http.MethodDelete:
+			t.Fatal("verified immutable content must not be deleted")
+			return nil, nil
+		default:
+			return nil, fmt.Errorf("unexpected method %s", request.Method)
+		}
+	}))
+	store, _ := NewSnapshotContentStore(client, &locationResolverStub{}, 1, testSnapshotArchiveLimits)
+
+	locations, err := store.Put(context.Background(), digestFor(content), bytes.NewReader(content))
+	if err != nil || len(locations) != 1 {
+		t.Fatalf("Put = %#v, %v", locations, err)
+	}
+	mutex.Lock()
+	defer mutex.Unlock()
+	if strings.Join(methods, ",") != "PUT,GET" {
+		t.Fatalf("methods = %v", methods)
+	}
+}
+
 func TestSnapshotContentStoreOpenTriesRecordedReplicaBeforeLiveFallback(t *testing.T) {
 	content := []byte("read fallback archive")
 	digest := digestFor(content)
@@ -371,7 +460,7 @@ func TestSnapshotContentStoreOpenRejectsDeclaredLengthBeforeExposingBytes(t *tes
 	}
 }
 
-func TestSnapshotContentStoreExistsAndDeletesUseStrictStableLocation(t *testing.T) {
+func TestSnapshotContentStoreExistsCryptographicallyVerifiesAndDeletesUseStrictStableLocation(t *testing.T) {
 	content := []byte("archive")
 	digest := digestFor(content)
 	valid := snapshot.Location{Digest: digest, Driver: SnapshotDaemonDriver, Key: snapshotKeyForDigest(digest), Node: "node-a"}
@@ -381,8 +470,8 @@ func TestSnapshotContentStoreExistsAndDeletesUseStrictStableLocation(t *testing.
 		methodsMutex.Lock()
 		methods = append(methods, request.Method)
 		methodsMutex.Unlock()
-		if request.Method == http.MethodHead {
-			return response(http.StatusOK, nil), nil
+		if request.Method == http.MethodGet {
+			return response(http.StatusOK, content), nil
 		}
 		return response(http.StatusNoContent, nil), nil
 	}))
@@ -404,8 +493,31 @@ func TestSnapshotContentStoreExistsAndDeletesUseStrictStableLocation(t *testing.
 	}
 	methodsMutex.Lock()
 	defer methodsMutex.Unlock()
-	if strings.Join(methods, ",") != "HEAD,DELETE" {
+	if strings.Join(methods, ",") != "GET,DELETE" {
 		t.Fatalf("methods = %v", methods)
+	}
+}
+
+func TestSnapshotContentStoreExistsRejectsPresentButCorruptReplica(t *testing.T) {
+	content := []byte("known-good archive")
+	location := snapshot.Location{
+		Digest: digestFor(content), Driver: SnapshotDaemonDriver,
+		Key: snapshotKeyForDigest(digestFor(content)), Node: "node-a",
+	}
+	client := snapshotDaemonClient(t, []string{"node-a"}, roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.Method != http.MethodGet {
+			t.Fatalf("verification method = %s, want GET", request.Method)
+		}
+		return response(http.StatusOK, []byte("corrupt")), nil
+	}))
+	store, _ := NewSnapshotContentStore(client, &locationResolverStub{}, 1, testSnapshotArchiveLimits)
+
+	exists, err := store.Exists(context.Background(), location)
+	if err != nil {
+		t.Fatalf("Exists: %v", err)
+	}
+	if exists {
+		t.Fatal("Exists accepted bytes whose digest does not match the recorded location")
 	}
 }
 
@@ -454,4 +566,314 @@ func TestSnapshotContentStoreHonorsCancellation(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("Put did not honor cancellation")
 	}
+}
+
+func TestSnapshotContentStoreRepairRejectsUntrustedLocationsBeforeNetwork(t *testing.T) {
+	content := []byte("archive")
+	value := snapshotFor(content)
+	var requests atomic.Int64
+	client := snapshotDaemonClient(t, []string{"node-a"}, roundTripFunc(func(*http.Request) (*http.Response, error) {
+		requests.Add(1)
+		return response(http.StatusOK, content), nil
+	}))
+	store, _ := NewSnapshotContentStore(client, &locationResolverStub{}, 1, testSnapshotArchiveLimits)
+	location := snapshot.Location{Digest: value.Digest, Driver: SnapshotDaemonDriver, Key: "../../secret", Node: "node-a"}
+	if _, err := store.RepairReplicas(context.Background(), value, []snapshot.Location{location}); err == nil {
+		t.Fatal("RepairReplicas accepted an arbitrary storage key")
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("HTTP requests = %d, want zero", requests.Load())
+	}
+}
+
+func TestSnapshotContentStoreRepairFallsThroughCorruptionAndRewritesAfterVerifiedSource(t *testing.T) {
+	content := []byte("canonical archive")
+	corrupt := []byte("corrupt archive!!")
+	value := snapshotFor(content)
+	key := snapshotKeyForDigest(value.Digest)
+	recorded := []snapshot.Location{
+		{Digest: value.Digest, Driver: SnapshotDaemonDriver, Key: key, Node: "node-a"},
+		{Digest: value.Digest, Driver: SnapshotDaemonDriver, Key: key, Node: "node-b"},
+	}
+	var mutex sync.Mutex
+	var methods []string
+	client := snapshotDaemonClient(t, []string{"node-a", "node-b"}, roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		mutex.Lock()
+		methods = append(methods, request.Method+":"+request.URL.Hostname())
+		mutex.Unlock()
+		switch request.Method {
+		case http.MethodGet:
+			if request.URL.Hostname() == "node-a.test" {
+				return response(http.StatusOK, corrupt), nil
+			}
+			return response(http.StatusOK, content), nil
+		case http.MethodDelete:
+			return response(http.StatusNoContent, nil), nil
+		case http.MethodPut:
+			body, err := io.ReadAll(request.Body)
+			if err != nil {
+				return nil, err
+			}
+			if !bytes.Equal(body, content) {
+				return nil, fmt.Errorf("repair body = %q", body)
+			}
+			return response(http.StatusCreated, nil), nil
+		default:
+			return nil, fmt.Errorf("unexpected method %s", request.Method)
+		}
+	}))
+	store, _ := NewSnapshotContentStore(client, &locationResolverStub{}, 2, testSnapshotArchiveLimits)
+	result, err := store.RepairReplicas(context.Background(), value, recorded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Verified != 2 || result.Desired != 2 || len(result.Added) != 1 || result.Added[0].Node != "node-a" {
+		t.Fatalf("repair result = %#v", result)
+	}
+	mutex.Lock()
+	defer mutex.Unlock()
+	joined := strings.Join(methods, ",")
+	if !strings.Contains(joined, "GET:node-a.test") || !strings.Contains(joined, "GET:node-b.test") ||
+		!strings.Contains(joined, "DELETE:node-a.test") || !strings.Contains(joined, "PUT:node-a.test") {
+		t.Fatalf("repair methods = %v", methods)
+	}
+}
+
+func TestSnapshotContentStoreRepairRemovesSpoolWhenSourceCloseFails(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Setenv("TMPDIR", tempDir)
+	content := []byte("canonical archive")
+	value := snapshotFor(content)
+	closeFailure := errors.New("source close failed")
+	client := snapshotDaemonClient(t, []string{"node-a"}, roundTripFunc(func(*http.Request) (*http.Response, error) {
+		result := response(http.StatusOK, content)
+		result.Body = &closeErrorBody{Reader: bytes.NewReader(content), err: closeFailure}
+		return result, nil
+	}))
+	store, _ := NewSnapshotContentStore(client, &locationResolverStub{}, 1, testSnapshotArchiveLimits)
+
+	path, err := store.verifyRepairEndpoint(context.Background(), DaemonEndpoint{NodeName: "node-a", Address: "node-a.test"}, value, true)
+	if !errors.Is(err, closeFailure) || path != "" {
+		t.Fatalf("verifyRepairEndpoint = %q, %v; want source close failure", path, err)
+	}
+	entries, readErr := os.ReadDir(tempDir)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("spool directory contains leaked files: %v", entries)
+	}
+}
+
+func TestSnapshotContentStoreRepairWithoutReadableSourceIsNonDestructive(t *testing.T) {
+	content := []byte("canonical archive")
+	value := snapshotFor(content)
+	key := snapshotKeyForDigest(value.Digest)
+	location := snapshot.Location{Digest: value.Digest, Driver: SnapshotDaemonDriver, Key: key, Node: "node-a"}
+	var deletes atomic.Int64
+	client := snapshotDaemonClient(t, []string{"node-a"}, roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.Method == http.MethodDelete || request.Method == http.MethodPut {
+			deletes.Add(1)
+		}
+		return response(http.StatusNotFound, nil), nil
+	}))
+	store, _ := NewSnapshotContentStore(client, &locationResolverStub{}, 1, testSnapshotArchiveLimits)
+	result, err := store.RepairReplicas(context.Background(), value, []snapshot.Location{location})
+	if !errors.Is(err, snapshot.ErrNoReadableReplica) {
+		t.Fatalf("RepairReplicas error = %v", err)
+	}
+	if len(result.Added) != 0 || len(result.Removed) != 0 || deletes.Load() != 0 {
+		t.Fatalf("destructive source-less repair: result=%#v writes=%d", result, deletes.Load())
+	}
+}
+
+func TestSnapshotContentStoreRepairRecoversUnrecordedAcknowledgedReplica(t *testing.T) {
+	content := []byte("canonical archive")
+	value := snapshotFor(content)
+	client := snapshotDaemonClient(t, []string{"node-a"}, roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.Method != http.MethodGet {
+			return nil, fmt.Errorf("unexpected method %s", request.Method)
+		}
+		return response(http.StatusOK, content), nil
+	}))
+	store, _ := NewSnapshotContentStore(client, &locationResolverStub{}, 2, testSnapshotArchiveLimits)
+	result, err := store.RepairReplicas(context.Background(), value, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Desired != 1 || result.LiveCapacity != 1 || result.Verified != 1 ||
+		len(result.Added) != 1 || result.Added[0].Node != "node-a" {
+		t.Fatalf("repair result = %#v", result)
+	}
+}
+
+func TestSnapshotContentStoreRepairReturnsSortedPartialAdditionsWhenLaterTargetFails(t *testing.T) {
+	content := []byte("canonical archive")
+	value := snapshotFor(content)
+	key := snapshotKeyForDigest(value.Digest)
+	recorded := []snapshot.Location{{
+		Digest: value.Digest, Driver: SnapshotDaemonDriver, Key: key, Node: "node-a",
+	}}
+	var mutex sync.Mutex
+	var requests []string
+	client := snapshotDaemonClient(t, []string{"node-c", "node-a", "node-b"}, roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requestName := request.Method + ":" + request.URL.Hostname()
+		mutex.Lock()
+		requests = append(requests, requestName)
+		mutex.Unlock()
+		switch requestName {
+		case "GET:node-a.test":
+			return response(http.StatusOK, content), nil
+		case "PUT:node-b.test":
+			body, err := io.ReadAll(request.Body)
+			if err != nil {
+				return nil, err
+			}
+			if !bytes.Equal(body, content) {
+				return nil, fmt.Errorf("node-b repair body = %q", body)
+			}
+			return response(http.StatusCreated, nil), nil
+		case "PUT:node-c.test":
+			return response(http.StatusServiceUnavailable, nil), nil
+		default:
+			return nil, fmt.Errorf("unexpected repair request %s", requestName)
+		}
+	}))
+	store, _ := NewSnapshotContentStore(client, &locationResolverStub{}, 3, testSnapshotArchiveLimits)
+
+	result, err := store.RepairReplicas(context.Background(), value, recorded)
+	if err == nil {
+		t.Fatal("RepairReplicas succeeded despite the final target failure")
+	}
+	wantAdded := []snapshot.Location{{
+		Digest: value.Digest, Driver: SnapshotDaemonDriver, Key: key, Node: "node-b",
+	}}
+	if !equalSnapshotLocations(result.Added, wantAdded) || len(result.Removed) != 0 ||
+		result.Verified != 2 || result.Desired != 3 || result.LiveCapacity != 3 {
+		t.Fatalf("partial repair result = %#v, want node-b preserved", result)
+	}
+	mutex.Lock()
+	defer mutex.Unlock()
+	if strings.Join(requests, ",") != "GET:node-a.test,PUT:node-b.test,PUT:node-c.test" {
+		t.Fatalf("repair requests = %v", requests)
+	}
+}
+
+func TestSnapshotContentStoreRepairPreservesRecordedOfflineLocation(t *testing.T) {
+	content := []byte("canonical archive")
+	value := snapshotFor(content)
+	key := snapshotKeyForDigest(value.Digest)
+	recorded := []snapshot.Location{
+		{Digest: value.Digest, Driver: SnapshotDaemonDriver, Key: key, Node: "node-a"},
+		{Digest: value.Digest, Driver: SnapshotDaemonDriver, Key: key, Node: "node-0-offline"},
+	}
+	var requests atomic.Int64
+	client := snapshotDaemonClient(t, []string{"node-a"}, roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requests.Add(1)
+		if request.Method != http.MethodGet || request.URL.Hostname() != "node-a.test" {
+			return nil, fmt.Errorf("unexpected repair request %s:%s", request.Method, request.URL.Hostname())
+		}
+		return response(http.StatusOK, content), nil
+	}))
+	store, _ := NewSnapshotContentStore(client, &locationResolverStub{}, 2, testSnapshotArchiveLimits)
+
+	result, err := store.RepairReplicas(context.Background(), value, recorded)
+	if err != nil {
+		t.Fatalf("RepairReplicas: %v", err)
+	}
+	if result.Verified != 1 || result.Desired != 1 || len(result.Added) != 0 || len(result.Removed) != 0 {
+		t.Fatalf("offline recorded location was mutated: %#v", result)
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("HTTP requests = %d, want only the live recorded source", requests.Load())
+	}
+}
+
+func TestSnapshotContentStoreRepairFactorSatisfiedDoesNotProbeUnrecordedNodes(t *testing.T) {
+	content := []byte("canonical archive")
+	value := snapshotFor(content)
+	key := snapshotKeyForDigest(value.Digest)
+	recorded := []snapshot.Location{{
+		Digest: value.Digest, Driver: SnapshotDaemonDriver, Key: key, Node: "node-a",
+	}}
+	var mutex sync.Mutex
+	var requests []string
+	client := snapshotDaemonClient(t, []string{"node-c", "node-b", "node-a"}, roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requestName := request.Method + ":" + request.URL.Hostname()
+		mutex.Lock()
+		requests = append(requests, requestName)
+		mutex.Unlock()
+		if requestName != "GET:node-a.test" {
+			return nil, fmt.Errorf("unrelated node must not affect factor-satisfied repair: %s", requestName)
+		}
+		return response(http.StatusOK, content), nil
+	}))
+	store, _ := NewSnapshotContentStore(client, &locationResolverStub{}, 1, testSnapshotArchiveLimits)
+
+	result, err := store.RepairReplicas(context.Background(), value, recorded)
+	if err != nil {
+		t.Fatalf("RepairReplicas: %v", err)
+	}
+	if result.Verified != 1 || result.Desired != 1 || len(result.Added) != 0 || len(result.Removed) != 0 {
+		t.Fatalf("factor-satisfied result = %#v", result)
+	}
+	mutex.Lock()
+	defer mutex.Unlock()
+	if strings.Join(requests, ",") != "GET:node-a.test" {
+		t.Fatalf("repair requests = %v", requests)
+	}
+}
+
+func TestSnapshotContentStoreRepairProbesOnlyUntilUnrecordedSourceThenCopiesDeterministically(t *testing.T) {
+	content := []byte("canonical archive")
+	value := snapshotFor(content)
+	key := snapshotKeyForDigest(value.Digest)
+	var mutex sync.Mutex
+	var requests []string
+	client := snapshotDaemonClient(t, []string{"node-c", "node-b", "node-a"}, roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requestName := request.Method + ":" + request.URL.Hostname()
+		mutex.Lock()
+		requests = append(requests, requestName)
+		mutex.Unlock()
+		switch requestName {
+		case "GET:node-a.test":
+			return response(http.StatusNotFound, nil), nil
+		case "GET:node-b.test":
+			return response(http.StatusOK, content), nil
+		case "PUT:node-a.test":
+			return response(http.StatusCreated, nil), nil
+		default:
+			return nil, fmt.Errorf("unexpected repair request %s", requestName)
+		}
+	}))
+	store, _ := NewSnapshotContentStore(client, &locationResolverStub{}, 2, testSnapshotArchiveLimits)
+
+	result, err := store.RepairReplicas(context.Background(), value, nil)
+	if err != nil {
+		t.Fatalf("RepairReplicas: %v", err)
+	}
+	wantAdded := []snapshot.Location{
+		{Digest: value.Digest, Driver: SnapshotDaemonDriver, Key: key, Node: "node-a"},
+		{Digest: value.Digest, Driver: SnapshotDaemonDriver, Key: key, Node: "node-b"},
+	}
+	if !equalSnapshotLocations(result.Added, wantAdded) || result.Verified != 2 || result.Desired != 2 {
+		t.Fatalf("repair result = %#v, want sorted recovered and copied locations", result)
+	}
+	mutex.Lock()
+	defer mutex.Unlock()
+	if strings.Join(requests, ",") != "GET:node-a.test,GET:node-b.test,PUT:node-a.test" {
+		t.Fatalf("repair requests = %v", requests)
+	}
+}
+
+func equalSnapshotLocations(left, right []snapshot.Location) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }

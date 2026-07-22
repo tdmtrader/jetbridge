@@ -27,6 +27,8 @@ const (
 	ComponentAgentDispatcher               = "agent_dispatcher"
 	ComponentAgentPipelineArchiver         = "agent_pipeline_archiver"
 	ComponentAgentOutcomeWatcher           = "agent_outcome_watcher"
+	ComponentAgentSnapshotGC               = "agent_snapshot_gc"
+	ComponentAgentSnapshotRepair           = "agent_snapshot_repair"
 	ComponentPipelinePauser                = "pipeline_pauser"
 	ComponentSigningKeyLifecycler          = "signing_key_lifecycler"
 	ComponentPipelineRunLifecycler         = "pipeline_run_lifecycler"

@@ -1,0 +1,798 @@
+package snapshots
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"mime"
+	"net/http"
+	"net/url"
+	"reflect"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+	"unicode"
+	"unicode/utf8"
+
+	"github.com/concourse/concourse/agent/snapshot"
+)
+
+const maxPinRequestBytes int64 = 4096
+
+type HandlerFactory struct {
+	enabled        bool
+	creator        SnapshotCreator
+	metadata       MetadataStore
+	content        ContentStore
+	locks          snapshot.DigestLockManager
+	identity       RequestIdentityFunc
+	reportError    ErrorReporter
+	transportLimit int64
+}
+
+func NewHandlerFactory(config Config) (*HandlerFactory, error) {
+	if !config.Enabled {
+		return &HandlerFactory{enabled: false}, nil
+	}
+	for name, dependency := range map[string]any{
+		"creator": config.Creator, "metadata store": config.Metadata,
+		"content store": config.Content, "digest locks": config.Locks,
+	} {
+		if interfaceIsNil(dependency) {
+			return nil, fmt.Errorf("snapshots API: %s is required when enabled", name)
+		}
+	}
+	if config.Identity == nil {
+		return nil, fmt.Errorf("snapshots API: request identity is required when enabled")
+	}
+	transportLimit, err := config.ArchiveLimits.CanonicalArchiveByteLimit()
+	if err != nil {
+		return nil, fmt.Errorf("snapshots API: archive limits: %w", err)
+	}
+	reporter := config.ReportError
+	if reporter == nil {
+		reporter = func(context.Context, string) {}
+	}
+	return &HandlerFactory{
+		enabled: true, creator: config.Creator, metadata: config.Metadata,
+		content: config.Content, locks: config.Locks, identity: config.Identity,
+		reportError: reporter, transportLimit: transportLimit,
+	}, nil
+}
+
+func (factory *HandlerFactory) Create(team TrustedTeam) http.Handler {
+	return factory.endpoint(team, http.MethodPost, factory.create)
+}
+func (factory *HandlerFactory) List(team TrustedTeam) http.Handler {
+	return factory.endpoint(team, http.MethodGet, factory.list)
+}
+func (factory *HandlerFactory) Show(team TrustedTeam) http.Handler {
+	return factory.endpoint(team, http.MethodGet, factory.show)
+}
+func (factory *HandlerFactory) Content(team TrustedTeam) http.Handler {
+	return factory.endpoint(team, http.MethodGet, factory.contentHandler)
+}
+func (factory *HandlerFactory) Pin(team TrustedTeam) http.Handler {
+	return factory.endpoint(team, http.MethodPut, factory.pin)
+}
+func (factory *HandlerFactory) Unpin(team TrustedTeam) http.Handler {
+	return factory.endpoint(team, http.MethodDelete, factory.unpin)
+}
+
+type teamEndpoint func(http.ResponseWriter, *http.Request, TrustedTeam)
+
+func (factory *HandlerFactory) endpoint(team TrustedTeam, method string, endpoint teamEndpoint) http.Handler {
+	if factory == nil || !factory.enabled {
+		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			writeError(w, http.StatusNotFound, "not_found", "snapshot service is not enabled")
+		})
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != method {
+			w.Header().Set("Allow", method)
+			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "the request method is not allowed")
+			return
+		}
+		if err := validateAuthority(team.ID, team.Name); err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", "snapshot service failed")
+			return
+		}
+		endpoint(w, r, team)
+	})
+}
+
+func (factory *HandlerFactory) create(w http.ResponseWriter, r *http.Request, team TrustedTeam) {
+	typeRef, ok := parseCreateQuery(w, r)
+	if !ok {
+		return
+	}
+	if !requireMediaType(w, r, "application/x-tar") {
+		return
+	}
+	if len(r.Header.Values("Content-Encoding")) != 0 {
+		writeError(w, http.StatusUnsupportedMediaType, "unsupported_encoding", "request content encoding is not supported")
+		return
+	}
+	key, err := idempotencyKey(r.Header.Values("Idempotency-Key"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_idempotency_key", "Idempotency-Key is invalid")
+		return
+	}
+	identity, err := factory.identity(r)
+	if err != nil || validateAuthorityString(identity.Actor, 500) != nil || validateAuthorityString(identity.DisplayName, 500) != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "snapshot service failed")
+		return
+	}
+	if r.Body == nil {
+		r.Body = http.NoBody
+	}
+	body := &onceReadCloser{ReadCloser: r.Body}
+	defer body.Close()
+	if r.ContentLength > factory.transportLimit {
+		writeError(w, http.StatusRequestEntityTooLarge, "limit_exceeded", "snapshot archive exceeds the configured limit")
+		return
+	}
+	limited := &onceReadCloser{ReadCloser: http.MaxBytesReader(w, body, factory.transportLimit)}
+	defer limited.Close()
+	var openMu sync.Mutex
+	opened := false
+	openTar := func(ctx context.Context) (io.ReadCloser, error) {
+		openMu.Lock()
+		defer openMu.Unlock()
+		if opened {
+			return nil, fmt.Errorf("%w: upload request body was already opened", snapshot.ErrInvalidArchive)
+		}
+		opened = true
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return limited, nil
+	}
+	sourceMetadata, err := json.Marshal(struct {
+		Adapter  string `json:"adapter"`
+		Uploader string `json:"uploader"`
+	}{Adapter: "upload", Uploader: identity.DisplayName})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "snapshot service failed")
+		return
+	}
+	manifest, err := factory.creator.Upload(r.Context(), snapshot.UploadRequest{
+		TeamID: team.ID, TeamName: team.Name, UploadedBy: identity.DisplayName,
+		Actor: identity.Actor, IdempotencyKey: key, Type: typeRef,
+		OpenTar: openTar, SourceMetadata: sourceMetadata,
+	})
+	if err != nil {
+		writeSnapshotError(w, err)
+		return
+	}
+	if err := manifest.Validate(); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "snapshot service failed")
+		return
+	}
+	writeJSON(w, http.StatusCreated, manifest)
+}
+
+func (factory *HandlerFactory) list(w http.ResponseWriter, r *http.Request, team TrustedTeam) {
+	if !requireNoBody(w, r) {
+		return
+	}
+	filter, ok := parseListQuery(w, r)
+	if !ok {
+		return
+	}
+	values, err := factory.metadata.ListAuthorized(r.Context(), team.ID, filter)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "snapshot service failed")
+		return
+	}
+	if values == nil {
+		values = []snapshot.Snapshot{}
+	}
+	for _, value := range values {
+		if err := value.Validate(); err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", "snapshot service failed")
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, values)
+}
+
+func (factory *HandlerFactory) show(w http.ResponseWriter, r *http.Request, team TrustedTeam) {
+	if !requireNoBody(w, r) {
+		return
+	}
+	id, ok := parseSnapshotIDQuery(w, r)
+	if !ok {
+		return
+	}
+	detail, found, err := factory.metadata.GetAuthorizedDetail(r.Context(), team.ID, id)
+	if errors.Is(err, snapshot.ErrNotFound) || !found && err == nil {
+		writeError(w, http.StatusNotFound, "not_found", "snapshot was not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "snapshot service failed")
+		return
+	}
+	if err := detail.Validate(); err != nil || detail.Manifest.ID != id {
+		writeError(w, http.StatusInternalServerError, "internal_error", "snapshot service failed")
+		return
+	}
+	detail = detail.Clone()
+	if detail.RetentionClaims == nil {
+		detail.RetentionClaims = []snapshot.RetentionClaim{}
+	}
+	if detail.Productions == nil {
+		detail.Productions = []snapshot.ProductionDetail{}
+	}
+	if detail.Downstream == nil {
+		detail.Downstream = []snapshot.ProductionSummary{}
+	}
+	for i := range detail.Productions {
+		if detail.Productions[i].Inputs == nil {
+			detail.Productions[i].Inputs = []snapshot.ProductionInput{}
+		}
+	}
+	writeJSON(w, http.StatusOK, detail)
+}
+
+func (factory *HandlerFactory) contentHandler(w http.ResponseWriter, r *http.Request, team TrustedTeam) {
+	if !requireNoBody(w, r) {
+		return
+	}
+	id, ok := parseSnapshotIDQuery(w, r)
+	if !ok {
+		return
+	}
+	manifest, found, err := factory.metadata.GetAuthorized(r.Context(), team.ID, id)
+	if errors.Is(err, snapshot.ErrNotFound) || !found && err == nil {
+		writeError(w, http.StatusNotFound, "not_found", "snapshot was not found")
+		return
+	}
+	if errors.Is(err, snapshot.ErrExpired) {
+		writeError(w, http.StatusGone, "expired", "snapshot content has expired")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "snapshot service failed")
+		return
+	}
+	if err := manifest.Validate(); err != nil || manifest.ID != id {
+		writeError(w, http.StatusInternalServerError, "internal_error", "snapshot service failed")
+		return
+	}
+	if manifest.ContentState == snapshot.ContentStateExpired {
+		writeError(w, http.StatusGone, "expired", "snapshot content has expired")
+		return
+	}
+	if manifest.ContentState != snapshot.ContentStateAvailable {
+		writeError(w, http.StatusInternalServerError, "internal_error", "snapshot service failed")
+		return
+	}
+	if len(r.Header.Values("Range")) != 0 {
+		writeError(w, http.StatusRequestedRangeNotSatisfiable, "range_not_supported", "snapshot content ranges are not supported")
+		return
+	}
+	reader, err := factory.content.Open(r.Context(), manifest)
+	if err != nil {
+		if !interfaceIsNil(reader) {
+			_ = reader.Close()
+		}
+		writeError(w, http.StatusServiceUnavailable, "content_unavailable", "snapshot content is unavailable")
+		return
+	}
+	if interfaceIsNil(reader) {
+		writeError(w, http.StatusServiceUnavailable, "content_unavailable", "snapshot content is unavailable")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/x-tar")
+	w.Header().Set("Content-Length", strconv.FormatInt(manifest.ByteSize, 10))
+	w.Header().Set("ETag", `"`+manifest.Digest.String()+`"`)
+	w.Header().Set("Content-Disposition", `attachment; filename="snapshot-`+manifest.ID.String()+`.tar"`)
+	w.Header().Set("Cache-Control", "private, immutable")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+	written, copyErr := io.Copy(w, requestContextReader{ctx: r.Context(), reader: reader})
+	closeErr := reader.Close()
+	if copyErr != nil || closeErr != nil || written != manifest.ByteSize {
+		factory.reportError(r.Context(), "snapshot_content_stream_failed")
+		panic(http.ErrAbortHandler)
+	}
+}
+
+func (factory *HandlerFactory) pin(w http.ResponseWriter, r *http.Request, team TrustedTeam) {
+	id, ok := parseSnapshotIDQuery(w, r)
+	if !ok {
+		return
+	}
+	reason, ok := decodePinRequest(w, r)
+	if !ok {
+		return
+	}
+	identity, ok := factory.requestIdentity(w, r)
+	if !ok {
+		return
+	}
+	manifest, found, err := factory.metadata.GetAuthorized(r.Context(), team.ID, id)
+	if errors.Is(err, snapshot.ErrNotFound) || !found && err == nil {
+		writeError(w, http.StatusNotFound, "not_found", "snapshot was not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "snapshot service failed")
+		return
+	}
+	if err := manifest.Validate(); err != nil || manifest.ID != id {
+		writeError(w, http.StatusInternalServerError, "internal_error", "snapshot service failed")
+		return
+	}
+	if manifest.ContentState == snapshot.ContentStateExpired {
+		writeError(w, http.StatusConflict, "conflict", "snapshot content must be recaptured before it can be pinned")
+		return
+	}
+	if manifest.ContentState != snapshot.ContentStateAvailable {
+		writeError(w, http.StatusInternalServerError, "internal_error", "snapshot service failed")
+		return
+	}
+	ref := snapshot.SnapshotRef{ID: manifest.ID, Type: manifest.Type, Digest: manifest.Digest}
+	var claim snapshot.RetentionClaim
+	err = snapshot.WithDigestLease(r.Context(), factory.locks, []snapshot.Digest{manifest.Digest}, func(lease snapshot.DigestLease) error {
+		if err := snapshot.RequireDigestLease(lease, manifest.Digest); err != nil {
+			return err
+		}
+		var pinErr error
+		claim, pinErr = factory.metadata.Pin(r.Context(), lease, team.ID, identity.Actor, ref, reason)
+		return pinErr
+	})
+	if err != nil {
+		writeSnapshotError(w, err)
+		return
+	}
+	if err := claim.Validate(); err != nil || claim.SnapshotID != manifest.ID || claim.Class != snapshot.RetentionClassPin || claim.Actor != identity.Actor {
+		writeError(w, http.StatusInternalServerError, "internal_error", "snapshot service failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, claim)
+}
+
+func (factory *HandlerFactory) unpin(w http.ResponseWriter, r *http.Request, team TrustedTeam) {
+	if !requireNoBody(w, r) {
+		return
+	}
+	id, ok := parseSnapshotIDQuery(w, r)
+	if !ok {
+		return
+	}
+	identity, ok := factory.requestIdentity(w, r)
+	if !ok {
+		return
+	}
+	manifest, found, err := factory.metadata.GetAuthorized(r.Context(), team.ID, id)
+	if errors.Is(err, snapshot.ErrNotFound) || !found && err == nil {
+		writeError(w, http.StatusNotFound, "not_found", "snapshot was not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "snapshot service failed")
+		return
+	}
+	if err := manifest.Validate(); err != nil || manifest.ID != id {
+		writeError(w, http.StatusInternalServerError, "internal_error", "snapshot service failed")
+		return
+	}
+	ref := snapshot.SnapshotRef{ID: manifest.ID, Type: manifest.Type, Digest: manifest.Digest}
+	err = snapshot.WithDigestLease(r.Context(), factory.locks, []snapshot.Digest{manifest.Digest}, func(lease snapshot.DigestLease) error {
+		if err := snapshot.RequireDigestLease(lease, manifest.Digest); err != nil {
+			return err
+		}
+		return factory.metadata.Unpin(r.Context(), lease, team.ID, identity.Actor, ref)
+	})
+	if err != nil {
+		writeSnapshotError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (factory *HandlerFactory) requestIdentity(w http.ResponseWriter, r *http.Request) (RequestIdentity, bool) {
+	identity, err := factory.identity(r)
+	if err != nil || validateAuthorityString(identity.Actor, 500) != nil || validateAuthorityString(identity.DisplayName, 500) != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "snapshot service failed")
+		return RequestIdentity{}, false
+	}
+	return identity, true
+}
+
+func decodePinRequest(w http.ResponseWriter, r *http.Request) (string, bool) {
+	if !requireMediaType(w, r, "application/json") {
+		return "", false
+	}
+	if len(r.Header.Values("Content-Encoding")) != 0 {
+		writeError(w, http.StatusUnsupportedMediaType, "unsupported_encoding", "request content encoding is not supported")
+		return "", false
+	}
+	if r.Body == nil {
+		r.Body = http.NoBody
+	}
+	body := &onceReadCloser{ReadCloser: r.Body}
+	defer body.Close()
+	if r.ContentLength > maxPinRequestBytes {
+		writeError(w, http.StatusRequestEntityTooLarge, "limit_exceeded", "pin request exceeds the configured limit")
+		return "", false
+	}
+	limited := http.MaxBytesReader(w, body, maxPinRequestBytes)
+	raw, err := io.ReadAll(limited)
+	closeErr := limited.Close()
+	if err != nil || closeErr != nil {
+		var maxBytesError *http.MaxBytesError
+		if errors.As(err, &maxBytesError) {
+			writeError(w, http.StatusRequestEntityTooLarge, "limit_exceeded", "pin request exceeds the configured limit")
+		} else {
+			writeError(w, http.StatusBadRequest, "invalid_request", "pin request body is invalid")
+		}
+		return "", false
+	}
+	if !utf8.Valid(raw) {
+		writeError(w, http.StatusBadRequest, "invalid_request", "pin request body is invalid")
+		return "", false
+	}
+	value, err := decodePinWire(raw)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "pin request body is invalid")
+		return "", false
+	}
+	reason := "manual pin"
+	if value != nil {
+		if bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			writeError(w, http.StatusBadRequest, "invalid_reason", "pin reason is invalid")
+			return "", false
+		}
+		if err := json.Unmarshal(value, &reason); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_reason", "pin reason is invalid")
+			return "", false
+		}
+	}
+	if validateAuthorityString(reason, 500) != nil {
+		writeError(w, http.StatusBadRequest, "invalid_reason", "pin reason is invalid")
+		return "", false
+	}
+	return reason, true
+}
+
+func decodePinWire(raw []byte) (json.RawMessage, error) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	token, err := decoder.Token()
+	if err != nil || token != json.Delim('{') {
+		return nil, fmt.Errorf("pin body must be an object")
+	}
+	var reason json.RawMessage
+	seenReason := false
+	for decoder.More() {
+		keyToken, err := decoder.Token()
+		if err != nil {
+			return nil, err
+		}
+		key, ok := keyToken.(string)
+		if !ok || key != "reason" || seenReason {
+			return nil, fmt.Errorf("pin body contains an unsupported or duplicate field")
+		}
+		seenReason = true
+		if err := decoder.Decode(&reason); err != nil {
+			return nil, err
+		}
+	}
+	if token, err := decoder.Token(); err != nil || token != json.Delim('}') {
+		return nil, fmt.Errorf("pin body is not terminated")
+	}
+	if err := requireJSONEOF(decoder); err != nil {
+		return nil, err
+	}
+	return reason, nil
+}
+
+func requireJSONEOF(decoder *json.Decoder) error {
+	var extra any
+	err := decoder.Decode(&extra)
+	if errors.Is(err, io.EOF) {
+		return nil
+	}
+	if err == nil {
+		return fmt.Errorf("multiple JSON values")
+	}
+	return err
+}
+
+func parseSnapshotIDQuery(w http.ResponseWriter, r *http.Request) (snapshot.SnapshotID, bool) {
+	query, ok := strictQuery(w, r)
+	if !ok {
+		return 0, false
+	}
+	for key, values := range query {
+		switch key {
+		case ":snapshot_id":
+			if len(values) != 1 || values[0] == "" {
+				writeError(w, http.StatusBadRequest, "invalid_snapshot_id", "snapshot ID is invalid")
+				return 0, false
+			}
+		case ":team_name":
+			if len(values) != 1 {
+				writeError(w, http.StatusBadRequest, "invalid_query", "request query is invalid")
+				return 0, false
+			}
+		default:
+			writeError(w, http.StatusBadRequest, "invalid_query", "request query contains unsupported fields")
+			return 0, false
+		}
+	}
+	values, present := query[":snapshot_id"]
+	if !present || len(values) != 1 {
+		writeError(w, http.StatusBadRequest, "invalid_snapshot_id", "snapshot ID is invalid")
+		return 0, false
+	}
+	id, err := snapshot.ParseSnapshotID(values[0])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_snapshot_id", "snapshot ID is invalid")
+		return 0, false
+	}
+	return id, true
+}
+
+func parseListQuery(w http.ResponseWriter, r *http.Request) (snapshot.SnapshotListFilter, bool) {
+	filter := snapshot.SnapshotListFilter{Limit: 100}
+	query, ok := strictQuery(w, r)
+	if !ok {
+		return snapshot.SnapshotListFilter{}, false
+	}
+	for key, values := range query {
+		switch key {
+		case "type", "content_state", "created_after", "limit":
+			if len(values) != 1 || values[0] == "" {
+				writeError(w, http.StatusBadRequest, "invalid_query", "snapshot list query is invalid")
+				return snapshot.SnapshotListFilter{}, false
+			}
+		case ":team_name":
+			if len(values) != 1 {
+				writeError(w, http.StatusBadRequest, "invalid_query", "snapshot list query is invalid")
+				return snapshot.SnapshotListFilter{}, false
+			}
+		default:
+			writeError(w, http.StatusBadRequest, "invalid_query", "snapshot list query contains unsupported fields")
+			return snapshot.SnapshotListFilter{}, false
+		}
+	}
+	if raw, present := query["type"]; present {
+		value, err := snapshot.ParseTypeRef(raw[0])
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_type", "snapshot type filter is invalid")
+			return snapshot.SnapshotListFilter{}, false
+		}
+		filter.Type = value
+	}
+	if raw, present := query["content_state"]; present {
+		value := snapshot.ContentState(raw[0])
+		if err := value.Validate(); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_content_state", "snapshot content state filter is invalid")
+			return snapshot.SnapshotListFilter{}, false
+		}
+		filter.ContentState = value
+	}
+	if raw, present := query["created_after"]; present {
+		value, err := time.Parse(time.RFC3339, raw[0])
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_created_after", "created_after must be an RFC3339 timestamp")
+			return snapshot.SnapshotListFilter{}, false
+		}
+		filter.CreatedAfter = &value
+	}
+	if raw, present := query["limit"]; present {
+		value, err := parseCanonicalPositiveInt(raw[0], 1000)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_limit", "limit must be a decimal integer from 1 to 1000")
+			return snapshot.SnapshotListFilter{}, false
+		}
+		filter.Limit = value
+	}
+	return filter, true
+}
+
+func parseCanonicalPositiveInt(raw string, maximum int) (int, error) {
+	if raw == "" || raw[0] == '0' {
+		return 0, fmt.Errorf("not a canonical positive integer")
+	}
+	for _, character := range raw {
+		if character < '0' || character > '9' {
+			return 0, fmt.Errorf("not a canonical positive integer")
+		}
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value <= 0 || value > maximum {
+		return 0, fmt.Errorf("outside allowed range")
+	}
+	return value, nil
+}
+
+func requireNoBody(w http.ResponseWriter, r *http.Request) bool {
+	if r.ContentLength > 0 || len(r.TransferEncoding) != 0 ||
+		r.ContentLength < 0 && r.Body != nil && r.Body != http.NoBody {
+		writeError(w, http.StatusBadRequest, "unexpected_body", "request body is not allowed")
+		return false
+	}
+	return true
+}
+
+func parseCreateQuery(w http.ResponseWriter, r *http.Request) (snapshot.TypeRef, bool) {
+	query, ok := strictQuery(w, r)
+	if !ok {
+		return "", false
+	}
+	for key, values := range query {
+		switch key {
+		case "type":
+			if len(values) != 1 || values[0] == "" {
+				writeError(w, http.StatusBadRequest, "invalid_query", "type must be provided exactly once")
+				return "", false
+			}
+		case ":team_name":
+			if len(values) != 1 {
+				writeError(w, http.StatusBadRequest, "invalid_query", "request query is invalid")
+				return "", false
+			}
+		default:
+			writeError(w, http.StatusBadRequest, "invalid_query", "request query contains unsupported fields")
+			return "", false
+		}
+	}
+	values, present := query["type"]
+	if !present || len(values) != 1 || values[0] == "" {
+		writeError(w, http.StatusBadRequest, "invalid_query", "type must be provided exactly once")
+		return "", false
+	}
+	typeRef, err := snapshot.ParseTypeRef(values[0])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_type", "snapshot type is invalid")
+		return "", false
+	}
+	return typeRef, true
+}
+
+func strictQuery(w http.ResponseWriter, r *http.Request) (url.Values, bool) {
+	query, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_query", "request query is invalid")
+		return nil, false
+	}
+	return query, true
+}
+
+func requireMediaType(w http.ResponseWriter, r *http.Request, required string) bool {
+	values := r.Header.Values("Content-Type")
+	if len(values) != 1 {
+		writeError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "request media type is not supported")
+		return false
+	}
+	mediaType, parameters, err := mime.ParseMediaType(values[0])
+	if err != nil || !strings.EqualFold(mediaType, required) || len(parameters) != 0 {
+		writeError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "request media type is not supported")
+		return false
+	}
+	return true
+}
+
+func idempotencyKey(values []string) (string, error) {
+	if len(values) == 0 {
+		var entropy [16]byte
+		if _, err := rand.Read(entropy[:]); err != nil {
+			return "", err
+		}
+		return "http-" + hex.EncodeToString(entropy[:]), nil
+	}
+	if len(values) != 1 || validateAuthorityString(values[0], 200) != nil {
+		return "", fmt.Errorf("invalid idempotency key")
+	}
+	return values[0], nil
+}
+
+func validateAuthority(teamID int, teamName string) error {
+	if teamID <= 0 {
+		return fmt.Errorf("team ID must be positive")
+	}
+	return validateAuthorityString(teamName, 500)
+}
+
+func validateAuthorityString(value string, maxBytes int) error {
+	if value == "" || len(value) > maxBytes || !utf8.ValidString(value) || strings.TrimSpace(value) != value {
+		return fmt.Errorf("invalid authority string")
+	}
+	for _, character := range value {
+		if unicode.IsControl(character) {
+			return fmt.Errorf("invalid authority string")
+		}
+	}
+	return nil
+}
+
+func writeSnapshotError(w http.ResponseWriter, err error) {
+	var maxBytesError *http.MaxBytesError
+	switch {
+	case errors.As(err, &maxBytesError), errors.Is(err, snapshot.ErrLimitExceeded):
+		writeError(w, http.StatusRequestEntityTooLarge, "limit_exceeded", "snapshot archive exceeds the configured limit")
+	case errors.Is(err, snapshot.ErrInvalidArchive):
+		writeError(w, http.StatusBadRequest, "invalid_archive", "snapshot archive is invalid")
+	case errors.Is(err, snapshot.ErrUnsupportedType):
+		writeError(w, http.StatusBadRequest, "invalid_type", "snapshot type is unsupported")
+	case errors.Is(err, snapshot.ErrValidation):
+		writeError(w, http.StatusUnprocessableEntity, "validation_failed", "snapshot does not satisfy its declared type")
+	case errors.Is(err, snapshot.ErrConflict):
+		writeError(w, http.StatusConflict, "conflict", "snapshot request conflicts with immutable state")
+	case errors.Is(err, snapshot.ErrNotFound):
+		writeError(w, http.StatusNotFound, "not_found", "snapshot was not found")
+	case errors.Is(err, snapshot.ErrExpired):
+		writeError(w, http.StatusConflict, "conflict", "snapshot content has expired")
+	case errors.Is(err, snapshot.ErrContentUnavailable):
+		writeError(w, http.StatusServiceUnavailable, "content_unavailable", "snapshot content is unavailable")
+	default:
+		writeError(w, http.StatusInternalServerError, "internal_error", "snapshot service failed")
+	}
+}
+
+func writeError(w http.ResponseWriter, status int, code, message string) {
+	writeJSON(w, status, ErrorResponse{Error: code, Message: message})
+}
+
+func writeJSON(w http.ResponseWriter, status int, value any) {
+	payload, err := json.Marshal(value)
+	if err != nil {
+		if status != http.StatusInternalServerError {
+			writeError(w, http.StatusInternalServerError, "internal_error", "snapshot service failed")
+		}
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if _, err := w.Write(payload); err != nil {
+		panic(http.ErrAbortHandler)
+	}
+}
+
+func interfaceIsNil(value any) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
+}
+
+type onceReadCloser struct {
+	io.ReadCloser
+	once sync.Once
+	err  error
+}
+
+func (reader *onceReadCloser) Close() error {
+	reader.once.Do(func() { reader.err = reader.ReadCloser.Close() })
+	return reader.err
+}
+
+type requestContextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (reader requestContextReader) Read(destination []byte) (int, error) {
+	if err := reader.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return reader.reader.Read(destination)
+}

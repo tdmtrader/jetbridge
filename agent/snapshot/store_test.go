@@ -46,6 +46,61 @@ func TestDigestAcceptsOnlyCanonicalSHA256(t *testing.T) {
 	}
 }
 
+func TestSealCommitContextRequiresExactlyOneOccurrenceKind(t *testing.T) {
+	validBuild := &BuildOccurrence{
+		BuildID: 7, PlanID: "plan", Attempt: "1", StepKind: "task", StepName: "review",
+	}
+	validUpload := &UploadOccurrence{IdempotencyKey: "upload-1"}
+	base := SealCommitContext{
+		TeamID: 1, TeamName: "main", CreatedBy: "alice",
+		Inputs: map[string]SnapshotRef{}, InputOrder: []string{},
+		ExpectedOutputs: []Port{{Name: "snapshot", Type: TypeRef("opaque/v1")}},
+	}
+
+	tests := map[string]SealCommitContext{
+		"neither": base,
+		"both": func() SealCommitContext {
+			value := base
+			value.Build, value.Upload = validBuild, validUpload
+			return value
+		}(),
+		"invalid build": func() SealCommitContext {
+			value := base
+			value.Build = &BuildOccurrence{}
+			return value
+		}(),
+		"invalid upload": func() SealCommitContext {
+			value := base
+			value.Upload = &UploadOccurrence{}
+			return value
+		}(),
+	}
+	for name, value := range tests {
+		t.Run(name, func(t *testing.T) {
+			if err := value.Validate(); err == nil {
+				t.Fatalf("SealCommitContext.Validate() accepted %#v", value)
+			}
+		})
+	}
+
+	build := base
+	build.Build = validBuild
+	if err := build.Validate(); err != nil {
+		t.Fatalf("build occurrence rejected: %v", err)
+	}
+	upload := base
+	upload.Upload = validUpload
+	if err := upload.Validate(); err != nil {
+		t.Fatalf("upload occurrence rejected: %v", err)
+	}
+	if got := upload.StageAttempt(); got != "upload:upload-1" {
+		t.Fatalf("upload StageAttempt() = %q", got)
+	}
+	if got := build.StageAttempt(); got != "1" {
+		t.Fatalf("build StageAttempt() = %q", got)
+	}
+}
+
 func TestAggregateJSONBoundariesRejectInvalidNestedValuesAndUnknownFields(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -56,7 +111,7 @@ func TestAggregateJSONBoundariesRejectInvalidNestedValuesAndUnknownFields(t *tes
 		{name: "port unknown field", raw: `{"name":"out","type":"review/v1","extra":true}`, target: new(Port)},
 		{name: "snapshot ref digest", raw: `{"id":"1","type":"review/v1","digest":"sha256:nope"}`, target: new(SnapshotRef)},
 		{name: "retention class", raw: `{"class":"grant","reason":"authorization is not retention"}`, target: new(RetentionSpec)},
-		{name: "seal commit missing outputs", raw: `{"context":{"build_id":1,"team_id":1,"team_name":"main","created_by":"alice","plan_id":"p","attempt":"1","step_kind":"task","step_name":"s","input_order":[],"inputs":{},"expected_outputs":[{"name":"out","type":"opaque/v1"}]},"outputs":[]}`, target: new(SealCommit)},
+		{name: "seal commit missing outputs", raw: `{"context":{"team_id":1,"team_name":"main","created_by":"alice","build":{"build_id":1,"plan_id":"p","attempt":"1","step_kind":"task","step_name":"s"},"input_order":[],"inputs":{},"expected_outputs":[{"name":"out","type":"opaque/v1"}]},"outputs":[]}`, target: new(SealCommit)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -125,14 +180,14 @@ func TestSealCommitUsesOnlyPrePersistenceCorrelatedDTOs(t *testing.T) {
 	clone.Context.InputOrder[0] = "changed"
 	clone.Context.Inputs["before"] = SnapshotRef{ID: 2, Type: TypeRef("repository/v1"), Digest: digest}
 	clone.Context.ExpectedOutputs[0].Name = "changed"
-	*clone.Context.WorkflowDefinitionID = 99
-	*clone.Context.WorkflowRunID = 99
+	*clone.Context.Build.WorkflowDefinitionID = 99
+	*clone.Context.Build.WorkflowRunID = 99
 	clone.Outputs[0].IntrinsicMetadata[2] = 'X'
 	clone.Outputs[0].Locations[0].Node = "changed"
 	clone.Outputs[0].Retention[0].Actor = "changed"
 	*clone.Outputs[0].Retention[0].ExpiresAt = now.Add(2 * time.Hour)
 	clone.Outputs[0].SourceMetadata[2] = 'X'
-	if commit.Context.InputOrder[0] != "before" || commit.Context.Inputs["before"].ID != 1 || commit.Context.ExpectedOutputs[0].Name != "review" || *commit.Context.WorkflowDefinitionID != 12 || *commit.Context.WorkflowRunID != 13 || string(commit.Outputs[0].IntrinsicMetadata) != `{"schema":1}` || commit.Outputs[0].Locations[0].Node != "worker-1" || commit.Outputs[0].Retention[0].Actor != "build/7" || !commit.Outputs[0].Retention[0].ExpiresAt.Equal(now.Add(time.Hour)) || string(commit.Outputs[0].SourceMetadata) != `{"adapter":"task"}` {
+	if commit.Context.InputOrder[0] != "before" || commit.Context.Inputs["before"].ID != 1 || commit.Context.ExpectedOutputs[0].Name != "review" || *commit.Context.Build.WorkflowDefinitionID != 12 || *commit.Context.Build.WorkflowRunID != 13 || string(commit.Outputs[0].IntrinsicMetadata) != `{"schema":1}` || commit.Outputs[0].Locations[0].Node != "worker-1" || commit.Outputs[0].Retention[0].Actor != "build/7" || !commit.Outputs[0].Retention[0].ExpiresAt.Equal(now.Add(time.Hour)) || string(commit.Outputs[0].SourceMetadata) != `{"adapter":"task"}` {
 		t.Fatalf("caller mutation changed original commit: %#v", commit)
 	}
 
@@ -730,12 +785,54 @@ func TestCloneHelpersCopyManifestAndFilterPointers(t *testing.T) {
 	}
 }
 
+func TestAuthorizedDetailModelsCloneWithoutLeakingPrivateOccurrenceIdentity(t *testing.T) {
+	now := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.UTC)
+	digest := mustTestDigest(t)
+	detail := Detail{
+		Manifest:        Snapshot{ID: 1, Type: "opaque/v1", Digest: digest, Representation: "application/x-tar", ContentState: ContentStateAvailable, CreatedAt: now},
+		ReplicaCount:    2,
+		RetentionClaims: []RetentionClaim{{ID: 2, SnapshotID: 1, Class: RetentionClassPin, Actor: "subject", Reason: "manual", CreatedAt: now}},
+		Productions: []ProductionDetail{{
+			ID: 3, Kind: ProductionKindBuild, CreatedBy: "alice",
+			Build:      &BuildOccurrence{BuildID: 4, PlanID: "plan", Attempt: "1", StepKind: "task", StepName: "review"},
+			OutputPort: "result", SourceMetadata: json.RawMessage(`{"adapter":"task"}`), CreatedAt: now,
+			Inputs: []ProductionInput{{Position: 0, Port: "source", Snapshot: SnapshotRef{ID: 5, Type: "repository/v1", Digest: digest}}},
+		}},
+		Downstream: []ProductionSummary{{
+			ID: 6, Kind: ProductionKindUpload, CreatedBy: "bob", OutputPort: "", Snapshot: SnapshotRef{ID: 7, Type: "opaque/v1", Digest: digest}, CreatedAt: now,
+		}},
+	}
+	if err := detail.Validate(); err != nil {
+		t.Fatalf("Detail.Validate() error = %v", err)
+	}
+	clone := detail.Clone()
+	clone.Manifest.IntrinsicMetadata = json.RawMessage(`{"changed":true}`)
+	clone.RetentionClaims[0].Actor = "changed"
+	clone.Productions[0].Build.PlanID = "changed"
+	clone.Productions[0].SourceMetadata[2] = 'X'
+	clone.Productions[0].Inputs[0].Port = "changed"
+	clone.Downstream[0].CreatedBy = "changed"
+	if detail.RetentionClaims[0].Actor != "subject" || detail.Productions[0].Build.PlanID != "plan" ||
+		string(detail.Productions[0].SourceMetadata) != `{"adapter":"task"}` || detail.Productions[0].Inputs[0].Port != "source" ||
+		detail.Downstream[0].CreatedBy != "bob" {
+		t.Fatalf("Detail.Clone() aliased original: %#v", detail)
+	}
+	encoded, err := json.Marshal(detail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "idempotency") || strings.Contains(string(encoded), "team_id") || strings.Contains(string(encoded), "location") {
+		t.Fatalf("detail exposed private persistence fields: %s", encoded)
+	}
+}
+
 func validSealCommit(t *testing.T, digest Digest) SealCommit {
 	t.Helper()
 	return SealCommit{
 		Context: SealCommitContext{
-			BuildID: 1, TeamID: 1, TeamName: "main", CreatedBy: "alice", PlanID: "p",
-			Attempt: "1", StepKind: "task", StepName: "s", InputOrder: []string{}, Inputs: map[string]SnapshotRef{},
+			TeamID: 1, TeamName: "main", CreatedBy: "alice",
+			Build:      &BuildOccurrence{BuildID: 1, PlanID: "p", Attempt: "1", StepKind: "task", StepName: "s"},
+			InputOrder: []string{}, Inputs: map[string]SnapshotRef{},
 			ExpectedOutputs: []Port{{Name: "first", Type: TypeRef("opaque/v1")}},
 		},
 		Outputs: []SealCommitOutput{{

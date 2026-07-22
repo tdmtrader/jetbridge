@@ -14,6 +14,7 @@ import (
 	outcomesapi "github.com/concourse/concourse/agent/api/outcomes"
 	principalsapi "github.com/concourse/concourse/agent/api/principals"
 	reviewsapi "github.com/concourse/concourse/agent/api/reviews"
+	snapshotsapi "github.com/concourse/concourse/agent/api/snapshots"
 	ticketsapi "github.com/concourse/concourse/agent/api/tickets"
 	workflowsapi "github.com/concourse/concourse/agent/api/workflows"
 	"github.com/concourse/concourse/agent/budget"
@@ -128,6 +129,7 @@ func NewHandler(
 	// agent_settings row exists.
 	agentSettingsStore dispatcherapi.Store,
 	agentDispatcherBootDefault bool,
+	snapshotHandlers *snapshotsapi.HandlerFactory,
 ) (http.Handler, error) {
 
 	absCLIDownloadsDir, err := filepath.Abs(cliDownloadsDir)
@@ -198,6 +200,11 @@ func NewHandler(
 			return accessor.GetAccessor(r).Claims().UserName
 		},
 	)
+	snapshotTeamHandler := func(handler func(snapshotsapi.TrustedTeam) http.Handler) func(db.Team) http.Handler {
+		return func(team db.Team) http.Handler {
+			return handler(snapshotsapi.TrustedTeam{ID: team.ID(), Name: team.Name()})
+		}
+	}
 	credentialsServer := credentials.NewHandler(credentialsBackend, func(r *http.Request) (string, string, bool, bool) {
 		acc := accessor.GetAccessor(r)
 		claims := acc.Claims()
@@ -395,6 +402,13 @@ func NewHandler(
 
 		atc.GetAgentDispatcher: http.HandlerFunc(dispatcherServer.Get),
 		atc.SetAgentDispatcher: http.HandlerFunc(dispatcherServer.Set),
+
+		atc.CreateAgentSnapshot:   teamHandlerFactory.HandlerFor(snapshotTeamHandler(snapshotHandlers.Create)),
+		atc.ListAgentSnapshots:    teamHandlerFactory.HandlerFor(snapshotTeamHandler(snapshotHandlers.List)),
+		atc.GetAgentSnapshot:      teamHandlerFactory.HandlerFor(snapshotTeamHandler(snapshotHandlers.Show)),
+		atc.DownloadAgentSnapshot: teamHandlerFactory.HandlerFor(snapshotTeamHandler(snapshotHandlers.Content)),
+		atc.PinAgentSnapshot:      teamHandlerFactory.HandlerFor(snapshotTeamHandler(snapshotHandlers.Pin)),
+		atc.UnpinAgentSnapshot:    teamHandlerFactory.HandlerFor(snapshotTeamHandler(snapshotHandlers.Unpin)),
 	}
 
 	return rata.NewRouter(atc.Routes, wrapper.Wrap(handlers))

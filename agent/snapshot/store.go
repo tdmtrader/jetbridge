@@ -405,6 +405,177 @@ type SnapshotListFilter struct {
 	Limit        int
 }
 
+type ProductionKind string
+
+const (
+	ProductionKindBuild  ProductionKind = "build"
+	ProductionKindUpload ProductionKind = "upload"
+)
+
+func (k ProductionKind) Validate() error {
+	switch k {
+	case ProductionKindBuild, ProductionKindUpload:
+		return nil
+	default:
+		return fmt.Errorf("snapshot: invalid production kind %q", k)
+	}
+}
+
+// ProductionInput is an authorization-filtered lineage edge. The referenced
+// snapshot is present only because the same team has a grant to it.
+type ProductionInput struct {
+	Position int         `json:"position"`
+	Port     string      `json:"port"`
+	Snapshot SnapshotRef `json:"snapshot"`
+}
+
+func (i ProductionInput) Validate() error {
+	if i.Position < 0 || strings.TrimSpace(i.Port) == "" {
+		return fmt.Errorf("snapshot: production input position and port are required")
+	}
+	return i.Snapshot.Validate()
+}
+
+// ProductionDetail deliberately omits team IDs, upload idempotency keys, and
+// physical storage details. Upload identity remains private persistence state.
+type ProductionDetail struct {
+	ID             int64             `json:"id"`
+	Kind           ProductionKind    `json:"kind"`
+	CreatedBy      string            `json:"created_by"`
+	Build          *BuildOccurrence  `json:"build,omitempty"`
+	OutputPort     string            `json:"output_port,omitempty"`
+	SourceMetadata json.RawMessage   `json:"source_metadata,omitempty"`
+	CreatedAt      time.Time         `json:"created_at"`
+	Inputs         []ProductionInput `json:"inputs"`
+}
+
+func (p ProductionDetail) Validate() error {
+	if p.ID <= 0 || strings.TrimSpace(p.CreatedBy) == "" || p.CreatedAt.IsZero() {
+		return fmt.Errorf("snapshot: production detail identity, creator, and creation time are required")
+	}
+	if err := p.Kind.Validate(); err != nil {
+		return err
+	}
+	if p.Kind == ProductionKindBuild {
+		if p.Build == nil || strings.TrimSpace(p.OutputPort) == "" {
+			return fmt.Errorf("snapshot: build production detail requires build provenance and output port")
+		}
+		if err := p.Build.Validate(); err != nil {
+			return err
+		}
+	} else if p.Build != nil || p.OutputPort != "" || len(p.Inputs) != 0 {
+		return fmt.Errorf("snapshot: upload production detail cannot expose build provenance")
+	}
+	if err := validateRawMessage(p.SourceMetadata); err != nil {
+		return fmt.Errorf("snapshot: production detail source metadata: %w", err)
+	}
+	for _, input := range p.Inputs {
+		if err := input.Validate(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (p ProductionDetail) Clone() ProductionDetail {
+	if p.Build != nil {
+		build := p.Build.Clone()
+		p.Build = &build
+	}
+	p.SourceMetadata = cloneRaw(p.SourceMetadata)
+	p.Inputs = append([]ProductionInput(nil), p.Inputs...)
+	return p
+}
+
+type ProductionSummary struct {
+	ID         int64            `json:"id"`
+	Kind       ProductionKind   `json:"kind"`
+	CreatedBy  string           `json:"created_by"`
+	Build      *BuildOccurrence `json:"build,omitempty"`
+	OutputPort string           `json:"output_port,omitempty"`
+	Snapshot   SnapshotRef      `json:"snapshot"`
+	CreatedAt  time.Time        `json:"created_at"`
+}
+
+func (p ProductionSummary) Validate() error {
+	detail := ProductionDetail{
+		ID: p.ID, Kind: p.Kind, CreatedBy: p.CreatedBy, Build: p.Build,
+		OutputPort: p.OutputPort, CreatedAt: p.CreatedAt, Inputs: []ProductionInput{},
+	}
+	if err := detail.Validate(); err != nil {
+		return err
+	}
+	return p.Snapshot.Validate()
+}
+
+func (p ProductionSummary) Clone() ProductionSummary {
+	if p.Build != nil {
+		build := p.Build.Clone()
+		p.Build = &build
+	}
+	return p
+}
+
+// Detail is the safe, team-scoped read model for one authorized snapshot.
+type Detail struct {
+	Manifest        Snapshot            `json:"manifest"`
+	ReplicaCount    int                 `json:"replica_count"`
+	RetentionClaims []RetentionClaim    `json:"retention_claims"`
+	Productions     []ProductionDetail  `json:"productions"`
+	Downstream      []ProductionSummary `json:"downstream"`
+}
+
+func (d Detail) Validate() error {
+	if err := d.Manifest.Validate(); err != nil {
+		return err
+	}
+	if d.ReplicaCount < 0 {
+		return fmt.Errorf("snapshot: replica count must not be negative")
+	}
+	for _, claim := range d.RetentionClaims {
+		if err := claim.Validate(); err != nil || claim.SnapshotID != d.Manifest.ID {
+			return fmt.Errorf("snapshot: invalid detail retention claim")
+		}
+	}
+	for _, production := range d.Productions {
+		if err := production.Validate(); err != nil {
+			return err
+		}
+	}
+	for _, production := range d.Downstream {
+		if err := production.Validate(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (d Detail) Clone() Detail {
+	d.Manifest = d.Manifest.Clone()
+	if d.RetentionClaims != nil {
+		claims := make([]RetentionClaim, len(d.RetentionClaims))
+		for i, claim := range d.RetentionClaims {
+			claims[i] = claim.Clone()
+		}
+		d.RetentionClaims = claims
+	}
+	if d.Productions != nil {
+		productions := make([]ProductionDetail, len(d.Productions))
+		for i, production := range d.Productions {
+			productions[i] = production.Clone()
+		}
+		d.Productions = productions
+	}
+	if d.Downstream != nil {
+		downstream := make([]ProductionSummary, len(d.Downstream))
+		for i, production := range d.Downstream {
+			downstream[i] = production.Clone()
+		}
+		d.Downstream = downstream
+	}
+	return d
+}
+
 func (f SnapshotListFilter) Validate() error {
 	if f.Type != "" {
 		if err := f.Type.Validate(); err != nil {
@@ -683,6 +854,7 @@ type MetadataStore interface {
 	RemoveStagedUploads(context.Context, DigestLease, Digest, []int64) error
 
 	GetAuthorized(context.Context, int, SnapshotID) (Snapshot, bool, error)
+	GetAuthorizedDetail(context.Context, int, SnapshotID) (Detail, bool, error)
 	ListAuthorized(context.Context, int, SnapshotListFilter) ([]Snapshot, error)
 	// Pin and Unpin perform the final authorization, identity, and availability
 	// recheck while holding a lease that covers ref.Digest.
@@ -706,6 +878,9 @@ type ContentStore interface {
 	// Open resolves storage locations through dependencies injected into the
 	// concrete content store. The core contract remains independent of metadata.
 	Open(context.Context, Snapshot) (io.ReadCloser, error)
+	// Exists returns true only after reading the complete object and verifying
+	// its bytes against Location.Digest. Presence-only probes are insufficient:
+	// callers use this result to decide whether immutable content may be reused.
 	Exists(context.Context, Location) (bool, error)
 	DeleteLocation(context.Context, Location) error
 	DeleteAll(context.Context, Digest) error

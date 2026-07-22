@@ -14,18 +14,20 @@ import (
 )
 
 const (
-	defaultStageTTL = time.Hour
-	maxStageTTL     = 24 * time.Hour
+	defaultStageTTL         = time.Hour
+	maxStageTTL             = 24 * time.Hour
+	defaultBindingRetention = 168 * time.Hour
 )
 
 type BatchSealer struct {
-	canonicalizer Canonicalizer
-	validators    ValidatorRegistry
-	metadata      MetadataStore
-	content       ContentStore
-	locks         DigestLockManager
-	now           func() time.Time
-	stageTTL      time.Duration
+	canonicalizer    Canonicalizer
+	validators       ValidatorRegistry
+	metadata         MetadataStore
+	content          ContentStore
+	locks            DigestLockManager
+	now              func() time.Time
+	stageTTL         time.Duration
+	bindingRetention time.Duration
 }
 
 type BatchSealerOption func(*BatchSealer)
@@ -36,6 +38,10 @@ func WithBatchSealerClock(now func() time.Time) BatchSealerOption {
 
 func WithBatchSealerStageTTL(ttl time.Duration) BatchSealerOption {
 	return func(sealer *BatchSealer) { sealer.stageTTL = ttl }
+}
+
+func WithBatchSealerBindingRetention(retention time.Duration) BatchSealerOption {
+	return func(sealer *BatchSealer) { sealer.bindingRetention = retention }
 }
 
 func NewBatchSealer(
@@ -59,13 +65,14 @@ func NewBatchSealer(
 		return nil, fmt.Errorf("snapshot: digest lock manager is required")
 	}
 	sealer := &BatchSealer{
-		canonicalizer: canonicalizer,
-		validators:    validators,
-		metadata:      metadata,
-		content:       content,
-		locks:         locks,
-		now:           time.Now,
-		stageTTL:      defaultStageTTL,
+		canonicalizer:    canonicalizer,
+		validators:       validators,
+		metadata:         metadata,
+		content:          content,
+		locks:            locks,
+		now:              time.Now,
+		stageTTL:         defaultStageTTL,
+		bindingRetention: defaultBindingRetention,
 	}
 	for _, option := range opts {
 		if option == nil {
@@ -78,6 +85,9 @@ func NewBatchSealer(
 	}
 	if sealer.stageTTL <= 0 || sealer.stageTTL > maxStageTTL {
 		return nil, fmt.Errorf("snapshot: stage TTL must be greater than zero and at most %s", maxStageTTL)
+	}
+	if sealer.bindingRetention <= 0 {
+		return nil, fmt.Errorf("snapshot: binding retention must be greater than zero")
 	}
 	return sealer, nil
 }
@@ -99,6 +109,7 @@ type capturedSealOutput struct {
 	source    OutputSource
 	candidate CandidateOutput
 	tree      *CapturedTree
+	retention []RetentionSpec
 }
 
 func (sealer *BatchSealer) Seal(ctx context.Context, request SealRequest) (result map[string]SealedOutput, err error) {
@@ -191,22 +202,144 @@ func (sealer *BatchSealer) Seal(ctx context.Context, request SealRequest) (resul
 			return nil, fmt.Errorf("snapshot: captured output %q: %w", source.ClientKey, err)
 		}
 		captured[len(captured)-1].candidate = candidate
+		captured[len(captured)-1].retention = retentionForOutput(request, source)
 	}
 	if err := validateCapturedBatch(captured); err != nil {
 		return nil, err
 	}
+	commitContext, err := request.CommitContext()
+	if err != nil {
+		return nil, err
+	}
+	return sealer.commitCaptured(ctx, commitContext, captured)
+}
 
+// Upload captures and validates one raw tar before sharing the same durable
+// stage, digest lease, content reuse/upload, and atomic metadata commit used by
+// build outputs.
+func (sealer *BatchSealer) Upload(ctx context.Context, request UploadRequest) (result Snapshot, err error) {
+	if sealer == nil {
+		return Snapshot{}, fmt.Errorf("snapshot: batch sealer is required")
+	}
+	if err := request.Validate(); err != nil {
+		return Snapshot{}, err
+	}
+	validator, lookupErr := sealer.validators.Lookup(request.Type)
+	if lookupErr != nil || interfaceIsNil(validator) {
+		if lookupErr == nil {
+			lookupErr = fmt.Errorf("validator returned nil")
+		}
+		return Snapshot{}, fmt.Errorf("%w: %v", ErrUnsupportedType, lookupErr)
+	}
+	if err := ctx.Err(); err != nil {
+		return Snapshot{}, err
+	}
+	stream, err := request.OpenTar(ctx)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return Snapshot{}, err
+		}
+		return Snapshot{}, errors.Join(ErrInvalidArchive, fmt.Errorf("snapshot: open upload tar stream: %w", err))
+	}
+	if stream == nil {
+		return Snapshot{}, fmt.Errorf("%w: upload tar opener returned no reader", ErrInvalidArchive)
+	}
+	tree, captureErr := sealer.canonicalizer.Capture(ctx, stream)
+	closeErr := stream.Close()
+	if captureErr != nil || closeErr != nil {
+		if tree != nil {
+			err = errors.Join(err, tree.Close())
+		}
+		return Snapshot{}, errors.Join(classifyArchiveFailure(captureErr), wrapIfNonNil("snapshot: close upload tar stream", closeErr), err)
+	}
+	if tree == nil {
+		return Snapshot{}, fmt.Errorf("%w: canonicalizer returned no captured tree", ErrInvalidArchive)
+	}
+	defer func() { err = errors.Join(err, tree.Close()) }()
+
+	root, err := os.OpenRoot(tree.Root)
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("snapshot: open captured upload root: %w", err)
+	}
+	validationContext, contextErr := NewValidationContext(nil, nil)
+	if contextErr != nil {
+		closeErr = root.Close()
+		return Snapshot{}, errors.Join(contextErr, closeErr)
+	}
+	validation, validationErr := validator.Validate(ctx, root, validationContext)
+	closeErr = root.Close()
+	if validationErr != nil || closeErr != nil {
+		return Snapshot{}, errors.Join(
+			wrapCategory(ErrValidation, "snapshot: validate upload", validationErr),
+			wrapIfNonNil("snapshot: close upload root", closeErr),
+		)
+	}
+	if err := validation.Validate(); err != nil {
+		return Snapshot{}, fmt.Errorf("%w: invalid validator result: %v", ErrValidation, err)
+	}
+	port := Port{Name: "snapshot", Type: request.Type}
+	candidate := CandidateOutput{
+		Port: port, ArchivePath: tree.ArchivePath, Digest: tree.Digest,
+		ByteSize: tree.ByteSize, FileCount: tree.FileCount, Representation: "application/x-tar",
+		IntrinsicMetadata: validation.IntrinsicMetadata,
+	}.Clone()
+	if err := candidate.Validate(); err != nil {
+		return Snapshot{}, fmt.Errorf("snapshot: captured upload: %w", err)
+	}
+	context := SealCommitContext{
+		TeamID: request.TeamID, TeamName: request.TeamName, CreatedBy: request.UploadedBy,
+		Upload: &UploadOccurrence{IdempotencyKey: request.IdempotencyKey},
+		Inputs: map[string]SnapshotRef{}, InputOrder: []string{}, ExpectedOutputs: []Port{port},
+	}
+	captured := []capturedSealOutput{{
+		source:    OutputSource{ClientKey: "upload", Port: port, SourceMetadata: cloneRaw(request.SourceMetadata)},
+		candidate: candidate, tree: tree,
+		retention: []RetentionSpec{{Class: RetentionClassPin, Actor: request.Actor, Reason: "manual upload"}},
+	}}
+	sealed, err := sealer.commitCaptured(ctx, context, captured)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	output, found := sealed["upload"]
+	if !found {
+		return Snapshot{}, fmt.Errorf("snapshot: committed upload result is missing")
+	}
+	manifest, found, err := sealer.metadata.GetAuthorized(ctx, request.TeamID, output.Snapshot.ID)
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("snapshot: read committed upload: %w", err)
+	}
+	if !found || manifest.ID != output.Snapshot.ID || manifest.Type != output.Snapshot.Type || manifest.Digest != output.Snapshot.Digest {
+		return Snapshot{}, fmt.Errorf("snapshot: committed upload manifest is absent or inconsistent")
+	}
+	return manifest.Clone(), nil
+}
+
+func (sealer *BatchSealer) commitCaptured(
+	ctx context.Context,
+	commitContext SealCommitContext,
+	captured []capturedSealOutput,
+) (map[string]SealedOutput, error) {
+	if err := commitContext.Validate(); err != nil {
+		return nil, err
+	}
+	if err := validateCapturedBatch(captured); err != nil {
+		return nil, err
+	}
 	digests := uniqueCapturedDigests(captured)
-	now := sealer.now()
+	// PostgreSQL timestamptz and pgx preserve microseconds. Canonicalize the
+	// single seal timestamp before deriving any persisted expiry so the value
+	// returned by StageUpload is exactly comparable to the request and every
+	// expiry in the batch shares the same durable clock instant.
+	now := sealer.now().Truncate(time.Microsecond)
 	var sealed map[string]SealedOutput
-	err = WithDigestLease(ctx, sealer.locks, digests, func(lease DigestLease) error {
+	err := WithDigestLease(ctx, sealer.locks, digests, func(lease DigestLease) error {
 		stages := make(map[Digest]StagedUpload, len(digests))
 		for _, digest := range digests {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
 			request := StageUploadRequest{
-				Digest: digest, TeamID: request.TeamID, Attempt: request.Attempt,
+				Digest: digest, TeamID: commitContext.TeamID, Attempt: commitContext.StageAttempt(),
 				LeaseExpiresAt: now.Add(sealer.stageTTL),
 			}
 			stage, err := sealer.metadata.StageUpload(ctx, lease, request)
@@ -239,10 +372,7 @@ func (sealer *BatchSealer) Seal(ctx context.Context, request SealRequest) (resul
 				}
 			}
 
-			verified, err := sealer.verifiedLocations(ctx, state)
-			if err != nil {
-				return err
-			}
+			verified, verificationErr := sealer.verifiedLocations(ctx, state)
 			if state.Available() && len(verified) > 0 {
 				locations[digest] = verified
 				continue
@@ -250,13 +380,17 @@ func (sealer *BatchSealer) Seal(ctx context.Context, request SealRequest) (resul
 			representative := capturedForDigest(captured, digest)
 			archive, err := os.Open(representative.candidate.ArchivePath)
 			if err != nil {
-				return fmt.Errorf("snapshot: open canonical archive for %s: %w", digest, err)
+				return errors.Join(
+					verificationErr,
+					fmt.Errorf("snapshot: open canonical archive for %s: %w", digest, err),
+				)
 			}
 			uploaded, putErr := sealer.content.Put(ctx, digest, archive)
 			closeErr := archive.Close()
 			if putErr != nil || closeErr != nil {
 				return errors.Join(
-					wrapIfNonNil(fmt.Sprintf("snapshot: upload digest %s", digest), putErr),
+					verificationErr,
+					wrapCategory(ErrContentUnavailable, fmt.Sprintf("snapshot: upload digest %s", digest), putErr),
 					wrapIfNonNil(fmt.Sprintf("snapshot: close canonical archive for %s", digest), closeErr),
 				)
 			}
@@ -267,13 +401,9 @@ func (sealer *BatchSealer) Seal(ctx context.Context, request SealRequest) (resul
 			locations[digest] = uploaded
 		}
 
-		context, err := request.CommitContext()
-		if err != nil {
-			return err
-		}
-		commit := SealCommit{Context: context, Outputs: make([]SealCommitOutput, 0, len(captured))}
+		commit := SealCommit{Context: commitContext, Outputs: make([]SealCommitOutput, 0, len(captured))}
 		for _, output := range captured {
-			retention := retentionForOutput(request, output.source)
+			retention := stampBindingRetention(output.retention, now, sealer.bindingRetention)
 			committed, err := output.candidate.CommitOutput(
 				output.source.ClientKey, output.source.WorkflowPort, stages[output.candidate.Digest],
 				locations[output.candidate.Digest], retention, output.source.SourceMetadata,
@@ -283,9 +413,10 @@ func (sealer *BatchSealer) Seal(ctx context.Context, request SealRequest) (resul
 			}
 			commit.Outputs = append(commit.Outputs, committed)
 		}
-		sealed, err = sealer.metadata.CommitSealBatch(ctx, lease, commit)
-		if err != nil {
-			return fmt.Errorf("snapshot: commit seal batch: %w", err)
+		var commitErr error
+		sealed, commitErr = sealer.metadata.CommitSealBatch(ctx, lease, commit)
+		if commitErr != nil {
+			return fmt.Errorf("snapshot: commit seal batch: %w", commitErr)
 		}
 		return validateSealedResult(sealed, captured)
 	})
@@ -293,6 +424,38 @@ func (sealer *BatchSealer) Seal(ctx context.Context, request SealRequest) (resul
 		return nil, err
 	}
 	return cloneSealedOutputs(sealed), nil
+}
+
+func stampBindingRetention(specs []RetentionSpec, sealNow time.Time, duration time.Duration) []RetentionSpec {
+	stamped := make([]RetentionSpec, len(specs))
+	for i, spec := range specs {
+		stamped[i] = spec.Clone()
+		if spec.Class == RetentionClassBinding {
+			expiresAt := sealNow.Add(duration)
+			stamped[i].ExpiresAt = &expiresAt
+		}
+	}
+	return stamped
+}
+
+func classifyArchiveFailure(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	if errors.Is(err, ErrLimitExceeded) {
+		return errors.Join(ErrInvalidArchive, err)
+	}
+	return errors.Join(ErrInvalidArchive, err)
+}
+
+func wrapCategory(category error, message string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return errors.Join(category, fmt.Errorf("%s: %w", message, err))
 }
 
 func (sealer *BatchSealer) inputOpener(teamID int) InputOpener {
@@ -318,16 +481,27 @@ func (sealer *BatchSealer) verifiedLocations(ctx context.Context, state DigestSt
 	locations := append([]Location(nil), state.Locations...)
 	sortLocations(locations)
 	verified := make([]Location, 0, len(locations))
+	var failures []error
 	for _, location := range locations {
 		exists, err := sealer.content.Exists(ctx, location)
 		if err != nil {
-			return nil, fmt.Errorf("snapshot: verify location %s/%s: %w", location.Driver, location.Key, err)
+			failures = append(failures, errors.Join(
+				ErrContentUnavailable,
+				fmt.Errorf("snapshot: verify location %s/%s: %w", location.Driver, location.Key, err),
+			))
+			continue
 		}
 		if exists {
 			verified = append(verified, location)
 		}
 	}
-	return verified, nil
+	if len(verified) > 0 {
+		// Reuse is existential. An unreachable replica does not invalidate a
+		// cryptographically verified sibling; lifecycle repair handles the
+		// degraded location set independently.
+		return verified, nil
+	}
+	return nil, errors.Join(failures...)
 }
 
 func validateCapturedBatch(outputs []capturedSealOutput) error {
@@ -404,7 +578,7 @@ func capturedForDigest(outputs []capturedSealOutput, digest Digest) capturedSeal
 
 func normalizeLocations(digest Digest, locations []Location) ([]Location, error) {
 	if len(locations) == 0 {
-		return nil, fmt.Errorf("snapshot: content store returned no locations for %s", digest)
+		return nil, fmt.Errorf("%w: content store returned no locations for %s", ErrContentUnavailable, digest)
 	}
 	unique := make(map[string]Location, len(locations))
 	for _, location := range locations {

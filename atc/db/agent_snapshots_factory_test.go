@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -13,6 +14,7 @@ import (
 	"github.com/concourse/concourse/agent/snapshot/snapshotfakes"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/db/dbfakes"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -22,7 +24,7 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 	var (
 		ctx     context.Context
 		factory db.AgentSnapshotsFactory
-		lease   *snapshotfakes.FakeDigestLease
+		lease   snapshot.DigestLease
 	)
 
 	digest := func(hexDigit string) snapshot.Digest {
@@ -62,9 +64,9 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 		}
 		sealed, err := factory.CommitSealBatch(ctx, lease, snapshot.SealCommit{
 			Context: snapshot.SealCommitContext{
-				BuildID: buildID, TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(),
-				CreatedBy: "alice", PlanID: "plan-1", Attempt: attempt,
-				StepKind: "task", StepName: "produce", Inputs: inputs,
+				TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(), CreatedBy: "alice",
+				Build:      &snapshot.BuildOccurrence{BuildID: buildID, PlanID: "plan-1", Attempt: attempt, StepKind: "task", StepName: "produce"},
+				Inputs:     inputs,
 				InputOrder: inputOrder, ExpectedOutputs: ports,
 			},
 			Outputs: outputs,
@@ -99,9 +101,19 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 
 	BeforeEach(func() {
 		ctx = context.Background()
+		// The lease itself occupies one pool slot. Keep one independent slot for
+		// assertions that inspect intermediate state while the lease remains held.
+		dbConn.SetMaxOpenConns(2)
 		factory = db.NewAgentSnapshotsFactory(dbConn)
-		lease = new(snapshotfakes.FakeDigestLease)
-		lease.CoversReturns(true)
+		allDigests := make([]snapshot.Digest, 0, 16)
+		for _, hexDigit := range "0123456789abcdef" {
+			allDigests = append(allDigests, digest(string(hexDigit)))
+		}
+		var err error
+		lease, err = db.NewAgentSnapshotDigestLocker(dbConn).AcquireMany(ctx, allDigests)
+		Expect(err).NotTo(HaveOccurred())
+		baseLease := lease
+		DeferCleanup(func() { Expect(baseLease.Close()).To(Succeed()) })
 	})
 
 	It("installs the complete durable snapshot schema", func() {
@@ -128,14 +140,18 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 
 	It("requires lease coverage before staging and records explicit expiry", func() {
 		value := digest("1")
-		lease.CoversReturns(false)
-		_, err := factory.StageUpload(ctx, lease, snapshot.StageUploadRequest{
+		Expect(lease.Close()).To(Succeed())
+		uncovered, err := db.NewAgentSnapshotDigestLocker(dbConn).AcquireMany(ctx, []snapshot.Digest{digest("2")})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = factory.StageUpload(ctx, uncovered, snapshot.StageUploadRequest{
 			Digest: value, TeamID: defaultTeam.ID(), Attempt: "attempt-1",
 			LeaseExpiresAt: time.Now().Add(time.Hour),
 		})
 		Expect(err).To(MatchError(ContainSubstring("does not cover")))
+		Expect(uncovered.Close()).To(Succeed())
 
-		lease.CoversReturns(true)
+		lease, err = db.NewAgentSnapshotDigestLocker(dbConn).AcquireMany(ctx, []snapshot.Digest{value})
+		Expect(err).NotTo(HaveOccurred())
 		expiry := time.Now().Add(time.Hour).Round(time.Microsecond)
 		staged, err := factory.StageUpload(ctx, lease, snapshot.StageUploadRequest{
 			Digest: value, TeamID: defaultTeam.ID(), Attempt: "attempt-1",
@@ -145,6 +161,60 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 		Expect(staged.ID).To(BeNumerically(">", 0))
 		Expect(staged.LeaseExpiresAt).To(BeTemporally("==", expiry))
 		Expect(staged.CreatedAt).ToNot(BeZero())
+		Expect(lease.Close()).To(Succeed())
+	})
+
+	It("rejects a forged digest lease even when it claims coverage", func() {
+		forged := new(snapshotfakes.FakeDigestLease)
+		forged.CoversReturns(true)
+		_, err := factory.StageUpload(ctx, forged, snapshot.StageUploadRequest{
+			Digest: digest("1"), TeamID: defaultTeam.ID(), Attempt: "forged",
+			LeaseExpiresAt: time.Now().Add(time.Hour),
+		})
+		Expect(err).To(MatchError(ContainSubstring("was not issued by the database lock manager")))
+	})
+
+	It("rejects a real digest lease owned by another database connection", func() {
+		otherFactory := db.NewAgentSnapshotsFactory(new(dbfakes.FakeDbConn))
+		_, err := otherFactory.DigestState(ctx, lease, digest("1"), time.Now())
+		Expect(err).To(MatchError(ContainSubstring("belongs to another database connection")))
+	})
+
+	It("executes leased stage, commit, and state reads with one database connection", func() {
+		Expect(lease.Close()).To(Succeed())
+		dbConn.SetMaxOpenConns(1)
+		value := digest("f")
+		buildID := newBuild(defaultTeam.ID())
+		manager := db.NewAgentSnapshotDigestLocker(dbConn)
+		held, err := manager.AcquireMany(ctx, []snapshot.Digest{value})
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { Expect(held.Close()).To(Succeed()) }()
+
+		operationCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		staged, err := factory.StageUpload(operationCtx, held, snapshot.StageUploadRequest{
+			Digest: value, TeamID: defaultTeam.ID(), Attempt: "single-connection",
+			LeaseExpiresAt: time.Now().Add(time.Hour),
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		candidate := output("single-connection", "result", "opaque/v1", value, staged)
+		_, err = factory.CommitSealBatch(operationCtx, held, snapshot.SealCommit{
+			Context: snapshot.SealCommitContext{
+				TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(), CreatedBy: "alice",
+				Build: &snapshot.BuildOccurrence{
+					BuildID: buildID, PlanID: "plan-1", Attempt: "single-connection", StepKind: "task", StepName: "produce",
+				},
+				ExpectedOutputs: []snapshot.Port{candidate.Port},
+			},
+			Outputs: []snapshot.SealCommitOutput{candidate},
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		state, err := factory.DigestState(operationCtx, held, value, time.Now())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(state.Snapshots).To(HaveLen(1))
+		Expect(state.Stages).To(BeEmpty())
 	})
 
 	It("rejects expired stages without consuming them and supports leased cleanup", func() {
@@ -161,8 +231,8 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 		candidate := output("expired", "result", "opaque/v1", value, staged)
 		_, err = factory.CommitSealBatch(ctx, lease, snapshot.SealCommit{
 			Context: snapshot.SealCommitContext{
-				BuildID: newBuild(defaultTeam.ID()), TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(),
-				CreatedBy: "alice", PlanID: "plan-1", Attempt: "expired", StepKind: "task", StepName: "produce",
+				TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(), CreatedBy: "alice",
+				Build:           &snapshot.BuildOccurrence{BuildID: newBuild(defaultTeam.ID()), PlanID: "plan-1", Attempt: "expired", StepKind: "task", StepName: "produce"},
 				ExpectedOutputs: []snapshot.Port{candidate.Port},
 			},
 			Outputs: []snapshot.SealCommitOutput{candidate},
@@ -239,12 +309,128 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 		Expect(stages).To(Equal(0))
 	})
 
+	It("records honest idempotent upload occurrences without synthetic builds", func() {
+		value := digest("0")
+		staged := stage(value, defaultTeam.ID(), "upload:manual-1")
+		candidate := output("upload", "snapshot", "opaque/v1", value, staged)
+		candidate.Retention = []snapshot.RetentionSpec{{
+			Class: snapshot.RetentionClassPin, Actor: "github:subject-1", Reason: "manual upload",
+		}}
+		candidate.SourceMetadata = json.RawMessage(`{"adapter":"upload","uploader":"Alice"}`)
+		commit := func(candidate snapshot.SealCommitOutput, createdBy string) (map[string]snapshot.SealedOutput, error) {
+			return factory.CommitSealBatch(ctx, lease, snapshot.SealCommit{
+				Context: snapshot.SealCommitContext{
+					TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(), CreatedBy: createdBy,
+					Upload: &snapshot.UploadOccurrence{IdempotencyKey: "manual-1"},
+					Inputs: map[string]snapshot.SnapshotRef{}, InputOrder: []string{},
+					ExpectedOutputs: []snapshot.Port{candidate.Port},
+				},
+				Outputs: []snapshot.SealCommitOutput{candidate},
+			})
+		}
+
+		sealed, err := commit(candidate, "Alice")
+		Expect(err).NotTo(HaveOccurred())
+		manifest := sealed["upload"].Snapshot
+		var kind string
+		var buildID sql.NullInt64
+		var key string
+		Expect(dbConn.QueryRow(`
+			SELECT occurrence_kind, build_id, upload_idempotency_key
+			FROM agent_snapshot_productions
+			WHERE snapshot_id = $1
+		`, int64(manifest.ID)).Scan(&kind, &buildID, &key)).To(Succeed())
+		Expect(kind).To(Equal("upload"))
+		Expect(buildID.Valid).To(BeFalse())
+		Expect(key).To(Equal("manual-1"))
+
+		var grants, pins int
+		Expect(dbConn.QueryRow(`SELECT count(*) FROM agent_snapshot_grants WHERE snapshot_id = $1 AND team_id = $2`, int64(manifest.ID), defaultTeam.ID()).Scan(&grants)).To(Succeed())
+		Expect(dbConn.QueryRow(`SELECT count(*) FROM agent_snapshot_retention_claims WHERE snapshot_id = $1 AND team_id = $2 AND class = 'pin' AND actor = 'github:subject-1'`, int64(manifest.ID), defaultTeam.ID()).Scan(&pins)).To(Succeed())
+		Expect(grants).To(Equal(1))
+		Expect(pins).To(Equal(1))
+
+		retryStage := stage(value, defaultTeam.ID(), "upload:manual-1")
+		retry := candidate.Clone()
+		retry.StagedUploadID = retryStage.ID
+		retried, err := commit(retry, "Alice")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(retried["upload"].Snapshot).To(Equal(manifest))
+		var productions int
+		Expect(dbConn.QueryRow(`SELECT count(*) FROM agent_snapshot_productions WHERE team_id = $1 AND upload_idempotency_key = 'manual-1'`, defaultTeam.ID()).Scan(&productions)).To(Succeed())
+		Expect(productions).To(Equal(1))
+
+		renameStage := stage(value, defaultTeam.ID(), "upload:manual-1")
+		renameRetry := candidate.Clone()
+		renameRetry.StagedUploadID = renameStage.ID
+		renameRetry.Retention[0].Actor = "github:another-subject"
+		renameRetry.SourceMetadata = json.RawMessage(`{"adapter":"upload","uploader":"Alice Renamed"}`)
+		renamed, err := commit(renameRetry, "Alice Renamed")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(renamed["upload"].Snapshot).To(Equal(manifest))
+		var renamedPins int
+		Expect(dbConn.QueryRow(`
+			SELECT count(*) FROM agent_snapshot_retention_claims
+			WHERE snapshot_id = $1 AND team_id = $2 AND class = 'pin' AND actor = 'github:another-subject'
+		`, int64(manifest.ID), defaultTeam.ID()).Scan(&renamedPins)).To(Succeed())
+		Expect(renamedPins).To(Equal(0))
+
+		conflictDigest := digest("1")
+		conflictStage := stage(conflictDigest, defaultTeam.ID(), "upload:manual-1")
+		conflict := output("upload", "snapshot", "opaque/v1", conflictDigest, conflictStage)
+		conflict.Retention = candidate.Retention
+		conflict.SourceMetadata = candidate.SourceMetadata
+		_, err = commit(conflict, "Alice")
+		Expect(errors.Is(err, snapshot.ErrConflict)).To(BeTrue(), "error: %v", err)
+		var conflictManifests, retainedStages int
+		Expect(dbConn.QueryRow(`SELECT count(*) FROM agent_snapshots WHERE digest = $1`, conflictDigest).Scan(&conflictManifests)).To(Succeed())
+		Expect(dbConn.QueryRow(`SELECT count(*) FROM agent_snapshot_staged_uploads WHERE id = $1`, conflictStage.ID).Scan(&retainedStages)).To(Succeed())
+		Expect(conflictManifests).To(Equal(0))
+		Expect(retainedStages).To(Equal(1))
+	})
+
+	It("treats recomputed binding expiry as idempotent production policy", func() {
+		value := digest("8")
+		buildID := newBuild(defaultTeam.ID())
+		firstExpiry := time.Now().Add(7 * 24 * time.Hour).Round(time.Microsecond)
+		commit := func(staged snapshot.StagedUpload, expiresAt time.Time) (map[string]snapshot.SealedOutput, error) {
+			candidate := output("result", "result", "opaque/v1", value, staged)
+			candidate.Retention = []snapshot.RetentionSpec{{
+				Class: snapshot.RetentionClassBinding, Actor: "build:retry", Reason: "build output", ExpiresAt: &expiresAt,
+			}}
+			return factory.CommitSealBatch(ctx, lease, snapshot.SealCommit{
+				Context: snapshot.SealCommitContext{
+					TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(), CreatedBy: "alice",
+					Build:  &snapshot.BuildOccurrence{BuildID: buildID, PlanID: "plan-1", Attempt: "retry", StepKind: "task", StepName: "produce"},
+					Inputs: map[string]snapshot.SnapshotRef{}, InputOrder: []string{}, ExpectedOutputs: []snapshot.Port{candidate.Port},
+				},
+				Outputs: []snapshot.SealCommitOutput{candidate},
+			})
+		}
+
+		first, err := commit(stage(value, defaultTeam.ID(), "retry"), firstExpiry)
+		Expect(err).NotTo(HaveOccurred())
+		second, err := commit(stage(value, defaultTeam.ID(), "retry"), firstExpiry.Add(time.Minute))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(second["result"].Snapshot).To(Equal(first["result"].Snapshot))
+
+		var stored time.Time
+		Expect(dbConn.QueryRow(`
+			SELECT expires_at FROM agent_snapshot_retention_claims
+			WHERE snapshot_id = $1 AND team_id = $2 AND class = 'binding' AND actor = 'build:retry'
+		`, int64(first["result"].Snapshot.ID), defaultTeam.ID()).Scan(&stored)).To(Succeed())
+		Expect(stored).To(BeTemporally("==", firstExpiry))
+	})
+
 	It("atomically binds workflow outputs and preserves production history after build deletion", func() {
 		inputDigest := digest("1")
 		inputStage := stage(inputDigest, defaultTeam.ID(), "input")
 		input := seal(newBuild(defaultTeam.ID()), "input", nil, nil, []snapshot.SealCommitOutput{
 			output("input", "source", "repository/v1", inputDigest, inputStage),
 		})["input"].Snapshot
+		// Workflow admission takes the same digest advisory lock while it creates
+		// the durable input claim. Release the producer lease before admission.
+		Expect(lease.Close()).To(Succeed())
 
 		definitionName := fmt.Sprintf("snapshot-output-binding-%d", time.Now().UnixNano())
 		definitionHash := strings.Repeat("a", 64)
@@ -267,6 +453,11 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(created).To(BeTrue())
+		lease, err = db.NewAgentSnapshotDigestLocker(dbConn).AcquireMany(ctx, []snapshot.Digest{
+			digest("2"), digest("3"),
+		})
+		Expect(err).NotTo(HaveOccurred())
+		defer func() { Expect(lease.Close()).To(Succeed()) }()
 
 		var templateID, instanceID, pipelineRunID int
 		pipelineSuffix := time.Now().UnixNano()
@@ -296,9 +487,9 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 		wrongBuildID := newBuild(defaultTeam.ID())
 		_, err = factory.CommitSealBatch(ctx, lease, snapshot.SealCommit{
 			Context: snapshot.SealCommitContext{
-				BuildID: wrongBuildID, TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(),
-				CreatedBy: "alice", PlanID: "plan-output", Attempt: "workflow-output",
-				StepKind: "agent", StepName: "review", WorkflowDefinitionID: &definitionID, WorkflowRunID: &runID,
+				TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(), CreatedBy: "alice",
+				Build: &snapshot.BuildOccurrence{BuildID: wrongBuildID, PlanID: "plan-output", Attempt: "workflow-output",
+					StepKind: "agent", StepName: "review", WorkflowDefinitionID: &definitionID, WorkflowRunID: &runID},
 				InputOrder: []string{"source"}, Inputs: map[string]snapshot.SnapshotRef{"source": input},
 				ExpectedOutputs: []snapshot.Port{result.Port},
 			},
@@ -314,9 +505,9 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 		duplicate.Port.Name = "duplicate"
 		_, err = factory.CommitSealBatch(ctx, lease, snapshot.SealCommit{
 			Context: snapshot.SealCommitContext{
-				BuildID: producerBuildID, TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(),
-				CreatedBy: "alice", PlanID: "plan-output", Attempt: "workflow-output",
-				StepKind: "agent", StepName: "review", WorkflowDefinitionID: &definitionID, WorkflowRunID: &runID,
+				TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(), CreatedBy: "alice",
+				Build: &snapshot.BuildOccurrence{BuildID: producerBuildID, PlanID: "plan-output", Attempt: "workflow-output",
+					StepKind: "agent", StepName: "review", WorkflowDefinitionID: &definitionID, WorkflowRunID: &runID},
 				InputOrder: []string{"source"}, Inputs: map[string]snapshot.SnapshotRef{"source": input},
 				ExpectedOutputs: []snapshot.Port{result.Port, duplicate.Port},
 			},
@@ -335,9 +526,9 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 
 		sealed, err := factory.CommitSealBatch(ctx, lease, snapshot.SealCommit{
 			Context: snapshot.SealCommitContext{
-				BuildID: producerBuildID, TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(),
-				CreatedBy: "alice", PlanID: "plan-output", Attempt: "workflow-output",
-				StepKind: "agent", StepName: "review", WorkflowDefinitionID: &definitionID, WorkflowRunID: &runID,
+				TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(), CreatedBy: "alice",
+				Build: &snapshot.BuildOccurrence{BuildID: producerBuildID, PlanID: "plan-output", Attempt: "workflow-output",
+					StepKind: "agent", StepName: "review", WorkflowDefinitionID: &definitionID, WorkflowRunID: &runID},
 				InputOrder: []string{"source"}, Inputs: map[string]snapshot.SnapshotRef{"source": input},
 				ExpectedOutputs: []snapshot.Port{result.Port, binding.Port},
 			},
@@ -409,8 +600,8 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 		conflict.ByteSize++
 		_, err := factory.CommitSealBatch(ctx, lease, snapshot.SealCommit{
 			Context: snapshot.SealCommitContext{
-				BuildID: newBuild(defaultTeam.ID()), TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(),
-				CreatedBy: "alice", PlanID: "plan-1", Attempt: "two", StepKind: "task", StepName: "produce",
+				TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(), CreatedBy: "alice",
+				Build:           &snapshot.BuildOccurrence{BuildID: newBuild(defaultTeam.ID()), PlanID: "plan-1", Attempt: "two", StepKind: "task", StepName: "produce"},
 				ExpectedOutputs: []snapshot.Port{conflict.Port},
 			},
 			Outputs: []snapshot.SealCommitOutput{conflict},
@@ -433,8 +624,8 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 
 		_, err := factory.CommitSealBatch(ctx, lease, snapshot.SealCommit{
 			Context: snapshot.SealCommitContext{
-				BuildID: newBuild(defaultTeam.ID()), TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(),
-				CreatedBy: "alice", PlanID: "plan-1", Attempt: "batch", StepKind: "task", StepName: "produce",
+				TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(), CreatedBy: "alice",
+				Build: &snapshot.BuildOccurrence{BuildID: newBuild(defaultTeam.ID()), PlanID: "plan-1", Attempt: "batch", StepKind: "task", StepName: "produce"},
 				Inputs: map[string]snapshot.SnapshotRef{"missing": {
 					ID: 999999, Type: "opaque/v1", Digest: digest("9"),
 				}}, InputOrder: []string{"missing"},
@@ -468,8 +659,8 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 		}
 		_, err := factory.CommitSealBatch(ctx, lease, snapshot.SealCommit{
 			Context: snapshot.SealCommitContext{
-				BuildID: buildID, TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(),
-				CreatedBy: "alice", PlanID: "plan-1", Attempt: "batch", StepKind: "task", StepName: "produce",
+				TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(), CreatedBy: "alice",
+				Build:           &snapshot.BuildOccurrence{BuildID: buildID, PlanID: "plan-1", Attempt: "batch", StepKind: "task", StepName: "produce"},
 				ExpectedOutputs: []snapshot.Port{outputs[0].Port, outputs[1].Port},
 			},
 			Outputs: outputs,
@@ -501,9 +692,9 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 				candidate := output(fmt.Sprintf("result-%d", index), "result", "opaque/v1", value, stages[index])
 				sealed, err := factory.CommitSealBatch(ctx, lease, snapshot.SealCommit{
 					Context: snapshot.SealCommitContext{
-						BuildID: builds[index], TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(),
-						CreatedBy: "alice", PlanID: "plan-1", Attempt: fmt.Sprintf("concurrent-%d", index+1),
-						StepKind: "task", StepName: "produce", ExpectedOutputs: []snapshot.Port{candidate.Port},
+						TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(), CreatedBy: "alice",
+						Build:           &snapshot.BuildOccurrence{BuildID: builds[index], PlanID: "plan-1", Attempt: fmt.Sprintf("concurrent-%d", index+1), StepKind: "task", StepName: "produce"},
+						ExpectedOutputs: []snapshot.Port{candidate.Port},
 					},
 					Outputs: []snapshot.SealCommitOutput{candidate},
 				})
@@ -551,8 +742,8 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 		conflict := output("conflict", "result", "opaque/v1", otherDigest, conflictStage)
 		_, err := factory.CommitSealBatch(ctx, lease, snapshot.SealCommit{
 			Context: snapshot.SealCommitContext{
-				BuildID: buildID, TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(),
-				CreatedBy: "alice", PlanID: "plan-1", Attempt: "retry", StepKind: "task", StepName: "produce",
+				TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(), CreatedBy: "alice",
+				Build:           &snapshot.BuildOccurrence{BuildID: buildID, PlanID: "plan-1", Attempt: "retry", StepKind: "task", StepName: "produce"},
 				ExpectedOutputs: []snapshot.Port{conflict.Port},
 			},
 			Outputs: []snapshot.SealCommitOutput{conflict},
@@ -586,8 +777,8 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 		retry := output("retry", "result", "opaque/v1", value, retryStage)
 		_, err := factory.CommitSealBatch(ctx, lease, snapshot.SealCommit{
 			Context: snapshot.SealCommitContext{
-				BuildID: buildID, TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(),
-				CreatedBy: "alice", PlanID: "plan-1", Attempt: "lineage", StepKind: "task", StepName: "produce",
+				TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(), CreatedBy: "alice",
+				Build:           &snapshot.BuildOccurrence{BuildID: buildID, PlanID: "plan-1", Attempt: "lineage", StepKind: "task", StepName: "produce"},
 				ExpectedOutputs: []snapshot.Port{retry.Port},
 			},
 			Outputs: []snapshot.SealCommitOutput{retry},
@@ -700,9 +891,94 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 		Expect(claims).To(Equal(1), "unpinning the other team must preserve the default team's same-actor claim")
 	})
 
+	It("allows an actor to release its pin after expiry while rejecting a new expired pin", func() {
+		value := digest("c")
+		staged := stage(value, defaultTeam.ID(), "expired-pin")
+		ref := seal(newBuild(defaultTeam.ID()), "expired-pin", nil, nil, []snapshot.SealCommitOutput{
+			output("value", "value", "opaque/v1", value, staged),
+		})["value"].Snapshot
+		_, err := factory.Pin(ctx, lease, defaultTeam.ID(), "alice", ref, "release after inspection")
+		Expect(err).NotTo(HaveOccurred())
+		_, err = dbConn.Exec(`UPDATE agent_snapshots SET content_state = 'expired' WHERE id = $1`, int64(ref.ID))
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = factory.Pin(ctx, lease, defaultTeam.ID(), "bob", ref, "too late")
+		Expect(errors.Is(err, snapshot.ErrExpired)).To(BeTrue(), "error: %v", err)
+		Expect(factory.Unpin(ctx, lease, defaultTeam.ID(), "alice", ref)).To(Succeed())
+		var pins int
+		Expect(dbConn.QueryRow(`
+			SELECT count(*) FROM agent_snapshot_retention_claims
+			WHERE snapshot_id = $1 AND team_id = $2 AND class = 'pin' AND actor = 'alice'
+		`, int64(ref.ID), defaultTeam.ID()).Scan(&pins)).To(Succeed())
+		Expect(pins).To(Equal(0))
+	})
+
+	It("returns authorization-filtered detail without leaking another team's provenance or claims", func() {
+		value := digest("b")
+		staged := stage(value, defaultTeam.ID(), "detail")
+		ref := seal(newBuild(defaultTeam.ID()), "detail", nil, nil, []snapshot.SealCommitOutput{
+			output("value", "value", "opaque/v1", value, staged),
+		})["value"].Snapshot
+
+		other, err := teamFactory.CreateTeam(structTeam(fmt.Sprintf("other-snapshot-detail-%d", time.Now().UnixNano())))
+		Expect(err).NotTo(HaveOccurred())
+		_, err = dbConn.Exec(`
+			INSERT INTO agent_snapshot_grants (snapshot_id, team_id, granted_by, reason)
+			VALUES ($1, $2, 'bob', 'shared for detail test')
+		`, int64(ref.ID), other.ID())
+		Expect(err).NotTo(HaveOccurred())
+		_, err = dbConn.Exec(`
+			INSERT INTO agent_snapshot_retention_claims
+				(snapshot_id, team_id, class, actor, reason)
+			VALUES ($1, $2, 'pin', 'other-secret-actor', 'other secret reason')
+		`, int64(ref.ID), other.ID())
+		Expect(err).NotTo(HaveOccurred())
+		_, err = dbConn.Exec(`
+			INSERT INTO agent_snapshot_productions
+				(snapshot_id, occurrence_kind, team_id, team_name, created_by,
+				 upload_idempotency_key, source_metadata)
+			VALUES ($1, 'upload', $2, $3, 'bob', 'other-secret-key', '{"adapter":"other-secret"}')
+		`, int64(ref.ID), other.ID(), other.Name())
+		Expect(err).NotTo(HaveOccurred())
+
+		detail, found, err := factory.GetAuthorizedDetail(ctx, defaultTeam.ID(), ref.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(detail.Manifest.ID).To(Equal(ref.ID))
+		Expect(detail.ReplicaCount).To(Equal(1))
+		Expect(detail.RetentionClaims).To(HaveLen(1))
+		Expect(detail.RetentionClaims[0].Actor).NotTo(Equal("other-secret-actor"))
+		Expect(detail.Productions).To(HaveLen(1))
+		Expect(detail.Productions[0].Kind).To(Equal(snapshot.ProductionKindBuild))
+		Expect(detail.Productions[0].CreatedBy).To(Equal("alice"))
+		Expect(detail.Downstream).To(BeEmpty())
+
+		otherDetail, found, err := factory.GetAuthorizedDetail(ctx, other.ID(), ref.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(otherDetail.RetentionClaims).To(HaveLen(1))
+		Expect(otherDetail.RetentionClaims[0].Actor).To(Equal("other-secret-actor"))
+		Expect(otherDetail.Productions).To(HaveLen(1))
+		Expect(otherDetail.Productions[0].Kind).To(Equal(snapshot.ProductionKindUpload))
+		Expect(otherDetail.Productions[0].Build).To(BeNil())
+		Expect(otherDetail.Productions[0].OutputPort).To(BeEmpty())
+		Expect(string(otherDetail.Productions[0].SourceMetadata)).To(MatchJSON(`{"adapter":"other-secret"}`))
+
+		_, found, err = factory.GetAuthorizedDetail(ctx, other.ID()+99999, ref.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeFalse())
+	})
+
 	It("discovers lifecycle candidates with a stable cursor and mutates locations idempotently", func() {
 		orphanDigest := digest("3")
-		stage(orphanDigest, defaultTeam.ID(), "orphan")
+		orphanStage := stage(orphanDigest, defaultTeam.ID(), "orphan")
+		_, err := dbConn.Exec(`
+			UPDATE agent_snapshot_staged_uploads
+			SET created_at = now() - interval '2 hours',
+			    lease_expires_at = now() - interval '1 hour'
+			WHERE id = $1
+		`, orphanStage.ID)
+		Expect(err).NotTo(HaveOccurred())
 
 		committedWithStaleStageDigest := digest("5")
 		committedStage := stage(committedWithStaleStageDigest, defaultTeam.ID(), "committed")
@@ -710,7 +986,7 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 			output("committed", "result", "opaque/v1", committedWithStaleStageDigest, committedStage),
 		})
 		staleCommittedRow := stage(committedWithStaleStageDigest, defaultTeam.ID(), "post-commit-stale-row")
-		_, err := dbConn.Exec(`
+		_, err = dbConn.Exec(`
 			UPDATE agent_snapshot_staged_uploads
 			SET created_at = now() - interval '2 hours',
 			    lease_expires_at = now() - interval '1 hour'
@@ -742,6 +1018,18 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 		location := output("unused", "result", "opaque/v1", repairDigest, repairStage).Locations[0]
 		Expect(factory.RemoveLocation(ctx, lease, location)).To(Succeed())
 
+		expiryDigest := digest("7")
+		expiryStage := stage(expiryDigest, defaultTeam.ID(), "expiry")
+		expiry := seal(newBuild(defaultTeam.ID()), "expiry", nil, nil, []snapshot.SealCommitOutput{
+			output("expiry", "result", "opaque/v1", expiryDigest, expiryStage),
+		})["expiry"].Snapshot
+		_, err = dbConn.Exec(`
+			UPDATE agent_snapshot_retention_claims
+			SET expires_at = now() - interval '1 hour'
+			WHERE snapshot_id = $1
+		`, int64(expiry.ID))
+		Expect(err).NotTo(HaveOccurred())
+
 		request := snapshot.LifecyclePageRequest{Limit: 1}
 		var candidates []snapshot.LifecycleCandidate
 		for {
@@ -756,8 +1044,10 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 		Expect(candidates).To(ConsistOf(
 			snapshot.LifecycleCandidate{Digest: orphanDigest, Kind: snapshot.LifecycleCandidateOrphan},
 			snapshot.LifecycleCandidate{Digest: committedWithStaleStageDigest, Kind: snapshot.LifecycleCandidateOrphan},
+			snapshot.LifecycleCandidate{Digest: committedWithStaleStageDigest, Kind: snapshot.LifecycleCandidateRepair},
 			snapshot.LifecycleCandidate{Digest: failedRecaptureDigest, Kind: snapshot.LifecycleCandidateOrphan},
 			snapshot.LifecycleCandidate{Digest: repairDigest, Kind: snapshot.LifecycleCandidateRepair},
+			snapshot.LifecycleCandidate{Digest: expiryDigest, Kind: snapshot.LifecycleCandidateExpiry},
 		))
 
 		Expect(factory.AddLocation(ctx, lease, location)).To(Succeed())
@@ -766,6 +1056,360 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(locations).To(ConsistOf(location))
 	})
+
+	Describe("real PostgreSQL digest-lock barriers", func() {
+		BeforeEach(func() {
+			Expect(lease.Close()).To(Succeed())
+			lease = nil
+			dbConn.SetMaxOpenConns(8)
+		})
+
+		makeUnretained := func(value snapshot.Digest, attempt string) (snapshot.SnapshotRef, snapshot.Location) {
+			setupLease, err := db.NewAgentSnapshotDigestLocker(dbConn).AcquireMany(ctx, []snapshot.Digest{value})
+			Expect(err).NotTo(HaveOccurred())
+			lease = setupLease
+			defer func() {
+				Expect(setupLease.Close()).To(Succeed())
+				lease = nil
+			}()
+			staged := stage(value, defaultTeam.ID(), attempt)
+			ref := seal(newBuild(defaultTeam.ID()), attempt, nil, nil, []snapshot.SealCommitOutput{
+				output(attempt, "result", "opaque/v1", value, staged),
+			})[attempt].Snapshot
+			_, err = dbConn.Exec(`
+				UPDATE agent_snapshot_retention_claims
+				SET expires_at = now() - interval '1 hour'
+				WHERE snapshot_id = $1
+			`, int64(ref.ID))
+			Expect(err).NotTo(HaveOccurred())
+			locations, err := factory.LocationsForDigest(ctx, value)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(locations).To(HaveLen(1))
+			Expect(factory.RemoveLocation(ctx, lease, locations[0])).To(Succeed())
+			return ref, locations[0]
+		}
+
+		It("orders orphan GC before a new seal for the same digest", func() {
+			value := digest("1")
+			setupLease, err := db.NewAgentSnapshotDigestLocker(dbConn).AcquireMany(ctx, []snapshot.Digest{value})
+			Expect(err).NotTo(HaveOccurred())
+			lease = setupLease
+			stale := stage(value, defaultTeam.ID(), "abandoned")
+			Expect(setupLease.Close()).To(Succeed())
+			lease = nil
+			_, err = dbConn.Exec(`
+				UPDATE agent_snapshot_staged_uploads
+				SET created_at = now() - interval '2 hours',
+				    lease_expires_at = now() - interval '1 hour'
+				WHERE id = $1
+			`, stale.ID)
+			Expect(err).NotTo(HaveOccurred())
+
+			manager := db.NewAgentSnapshotDigestLocker(dbConn)
+			gcLease, err := manager.AcquireMany(ctx, []snapshot.Digest{value})
+			Expect(err).NotTo(HaveOccurred())
+			defer gcLease.Close()
+
+			sealerPID, sealerResult := acquireObservedDigestLease(ctx, dbConn, value)
+			waitForAdvisoryLockWaiter(dbConn, receiveBackendPID(sealerPID))
+
+			var stageCount int
+			Expect(dbConn.QueryRow(`SELECT count(*) FROM agent_snapshot_staged_uploads WHERE digest = $1`, value).Scan(&stageCount)).To(Succeed())
+			Expect(stageCount).To(Equal(1), "the waiting sealer must not stage before GC releases the digest")
+			Expect(factory.RemoveStagedUploads(ctx, gcLease, value, []int64{stale.ID})).To(Succeed())
+			Expect(gcLease.Close()).To(Succeed())
+
+			sealerLease := receiveDigestLease(sealerResult)
+			defer sealerLease.Close()
+			fresh, err := factory.StageUpload(ctx, sealerLease, snapshot.StageUploadRequest{
+				Digest: value, TeamID: defaultTeam.ID(), Attempt: "after-gc",
+				LeaseExpiresAt: time.Now().Add(time.Hour),
+			})
+			Expect(err).NotTo(HaveOccurred())
+			candidate := output("after-gc", "result", "opaque/v1", value, fresh)
+			_, err = factory.CommitSealBatch(ctx, sealerLease, snapshot.SealCommit{
+				Context: snapshot.SealCommitContext{
+					TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(), CreatedBy: "alice",
+					Build: &snapshot.BuildOccurrence{
+						BuildID: newBuild(defaultTeam.ID()), PlanID: "plan-1", Attempt: "after-gc", StepKind: "task", StepName: "produce",
+					},
+					ExpectedOutputs: []snapshot.Port{candidate.Port},
+				},
+				Outputs: []snapshot.SealCommitOutput{candidate},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(dbConn.QueryRow(`SELECT count(*) FROM agent_snapshot_staged_uploads WHERE digest = $1`, value).Scan(&stageCount)).To(Succeed())
+			Expect(stageCount).To(Equal(0))
+		})
+
+		It("holds the seal lock from staging through commit before lifecycle recheck", func() {
+			value := digest("2")
+			manager := db.NewAgentSnapshotDigestLocker(dbConn)
+			sealerLease, err := manager.AcquireMany(ctx, []snapshot.Digest{value})
+			Expect(err).NotTo(HaveOccurred())
+			defer sealerLease.Close()
+
+			staged, err := factory.StageUpload(ctx, sealerLease, snapshot.StageUploadRequest{
+				Digest: value, TeamID: defaultTeam.ID(), Attempt: "seal-before-gc",
+				LeaseExpiresAt: time.Now().Add(time.Hour),
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			gcPID, gcResult := acquireObservedDigestLease(ctx, dbConn, value)
+			waitForAdvisoryLockWaiter(dbConn, receiveBackendPID(gcPID))
+
+			candidate := output("seal-before-gc", "result", "opaque/v1", value, staged)
+			_, err = factory.CommitSealBatch(ctx, sealerLease, snapshot.SealCommit{
+				Context: snapshot.SealCommitContext{
+					TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(), CreatedBy: "alice",
+					Build: &snapshot.BuildOccurrence{
+						BuildID: newBuild(defaultTeam.ID()), PlanID: "plan-1", Attempt: "seal-before-gc", StepKind: "task", StepName: "produce",
+					},
+					ExpectedOutputs: []snapshot.Port{candidate.Port},
+				},
+				Outputs: []snapshot.SealCommitOutput{candidate},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(sealerLease.Close()).To(Succeed())
+
+			gcLease := receiveDigestLease(gcResult)
+			defer gcLease.Close()
+			state, err := factory.DigestState(ctx, gcLease, value, time.Now())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(state.Snapshots).To(HaveLen(1))
+			Expect(state.Stages).To(BeEmpty())
+			Expect(state.HasActiveRetention).To(BeTrue())
+			expired, err := factory.MarkDigestExpired(ctx, gcLease, value, time.Now())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(expired).To(BeFalse(), "GC must preserve the claim committed before the sealer released the digest")
+		})
+
+		It("serializes two sealers and lets the second reuse committed digest state", func() {
+			value := digest("3")
+			manager := db.NewAgentSnapshotDigestLocker(dbConn)
+			firstLease, err := manager.AcquireMany(ctx, []snapshot.Digest{value})
+			Expect(err).NotTo(HaveOccurred())
+			defer firstLease.Close()
+
+			firstStage, err := factory.StageUpload(ctx, firstLease, snapshot.StageUploadRequest{
+				Digest: value, TeamID: defaultTeam.ID(), Attempt: "first-sealer",
+				LeaseExpiresAt: time.Now().Add(time.Hour),
+			})
+			Expect(err).NotTo(HaveOccurred())
+			secondPID, secondResult := acquireObservedDigestLease(ctx, dbConn, value)
+			waitForAdvisoryLockWaiter(dbConn, receiveBackendPID(secondPID))
+
+			firstOutput := output("first-sealer", "result", "opaque/v1", value, firstStage)
+			_, err = factory.CommitSealBatch(ctx, firstLease, snapshot.SealCommit{
+				Context: snapshot.SealCommitContext{
+					TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(), CreatedBy: "alice",
+					Build: &snapshot.BuildOccurrence{
+						BuildID: newBuild(defaultTeam.ID()), PlanID: "plan-1", Attempt: "first-sealer", StepKind: "task", StepName: "produce",
+					},
+					ExpectedOutputs: []snapshot.Port{firstOutput.Port},
+				},
+				Outputs: []snapshot.SealCommitOutput{firstOutput},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(firstLease.Close()).To(Succeed())
+
+			secondLease := receiveDigestLease(secondResult)
+			defer secondLease.Close()
+			committed, err := factory.DigestState(ctx, secondLease, value, time.Now())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(committed.Snapshots).To(HaveLen(1))
+			Expect(committed.Locations).To(HaveLen(1))
+
+			secondStage, err := factory.StageUpload(ctx, secondLease, snapshot.StageUploadRequest{
+				Digest: value, TeamID: defaultTeam.ID(), Attempt: "second-sealer",
+				LeaseExpiresAt: time.Now().Add(time.Hour),
+			})
+			Expect(err).NotTo(HaveOccurred())
+			secondOutput := output("second-sealer", "result", "opaque/v1", value, secondStage)
+			_, err = factory.CommitSealBatch(ctx, secondLease, snapshot.SealCommit{
+				Context: snapshot.SealCommitContext{
+					TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(), CreatedBy: "bob",
+					Build: &snapshot.BuildOccurrence{
+						BuildID: newBuild(defaultTeam.ID()), PlanID: "plan-1", Attempt: "second-sealer", StepKind: "task", StepName: "produce",
+					},
+					ExpectedOutputs: []snapshot.Port{secondOutput.Port},
+				},
+				Outputs: []snapshot.SealCommitOutput{secondOutput},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var manifests, productions, locations int
+			Expect(dbConn.QueryRow(`SELECT count(*) FROM agent_snapshots WHERE digest = $1`, value).Scan(&manifests)).To(Succeed())
+			Expect(dbConn.QueryRow(`SELECT count(*) FROM agent_snapshot_productions p JOIN agent_snapshots s ON s.id = p.snapshot_id WHERE s.digest = $1`, value).Scan(&productions)).To(Succeed())
+			Expect(dbConn.QueryRow(`SELECT count(*) FROM agent_snapshot_locations WHERE digest = $1`, value).Scan(&locations)).To(Succeed())
+			Expect(manifests).To(Equal(1))
+			Expect(productions).To(Equal(2))
+			Expect(locations).To(Equal(1))
+		})
+
+		It("orders a pin before GC and preserves the newly retained digest", func() {
+			value := digest("4")
+			ref, _ := makeUnretained(value, "pin-before-gc")
+			manager := db.NewAgentSnapshotDigestLocker(dbConn)
+			pinLease, err := manager.AcquireMany(ctx, []snapshot.Digest{value})
+			Expect(err).NotTo(HaveOccurred())
+			defer pinLease.Close()
+			_, err = factory.Pin(ctx, pinLease, defaultTeam.ID(), "release-manager", ref, "hold for release")
+			Expect(err).NotTo(HaveOccurred())
+
+			gcPID, gcResult := acquireObservedDigestLease(ctx, dbConn, value)
+			waitForAdvisoryLockWaiter(dbConn, receiveBackendPID(gcPID))
+			Expect(pinLease.Close()).To(Succeed())
+
+			gcLease := receiveDigestLease(gcResult)
+			defer gcLease.Close()
+			state, err := factory.DigestState(ctx, gcLease, value, time.Now())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(state.HasActiveRetention).To(BeTrue())
+			expired, err := factory.MarkDigestExpired(ctx, gcLease, value, time.Now())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(expired).To(BeFalse())
+		})
+
+		It("orders GC before a pin and rejects the pin after expiry", func() {
+			value := digest("5")
+			ref, _ := makeUnretained(value, "gc-before-pin")
+			manager := db.NewAgentSnapshotDigestLocker(dbConn)
+			gcLease, err := manager.AcquireMany(ctx, []snapshot.Digest{value})
+			Expect(err).NotTo(HaveOccurred())
+			defer gcLease.Close()
+
+			pinPID, pinResult := acquireObservedDigestLease(ctx, dbConn, value)
+			waitForAdvisoryLockWaiter(dbConn, receiveBackendPID(pinPID))
+			expired, err := factory.MarkDigestExpired(ctx, gcLease, value, time.Now())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(expired).To(BeTrue())
+			Expect(gcLease.Close()).To(Succeed())
+
+			pinLease := receiveDigestLease(pinResult)
+			defer pinLease.Close()
+			_, err = factory.Pin(ctx, pinLease, defaultTeam.ID(), "release-manager", ref, "too late")
+			Expect(errors.Is(err, snapshot.ErrExpired)).To(BeTrue(), "error: %v", err)
+		})
+
+		It("prevents repair from adding a location during the final expiry transition", func() {
+			value := digest("6")
+			_, location := makeUnretained(value, "expiry-before-repair")
+			manager := db.NewAgentSnapshotDigestLocker(dbConn)
+			expiryLease, err := manager.AcquireMany(ctx, []snapshot.Digest{value})
+			Expect(err).NotTo(HaveOccurred())
+			defer expiryLease.Close()
+
+			repairPID, repairResult := acquireObservedDigestLease(ctx, dbConn, value)
+			waitForAdvisoryLockWaiter(dbConn, receiveBackendPID(repairPID))
+			expired, err := factory.MarkDigestExpired(ctx, expiryLease, value, time.Now())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(expired).To(BeTrue())
+			Expect(expiryLease.Close()).To(Succeed())
+
+			repairLease := receiveDigestLease(repairResult)
+			defer repairLease.Close()
+			err = factory.AddLocation(ctx, repairLease, location)
+			Expect(err).To(MatchError(ContainSubstring("without an available snapshot manifest")))
+			locations, err := factory.LocationsForDigest(ctx, value)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(locations).To(BeEmpty())
+		})
+
+		It("releases an earlier digest lock when a later acquisition is cancelled", func() {
+			freeDigest, blockedDigest := digest("7"), digest("8")
+			manager := db.NewAgentSnapshotDigestLocker(dbConn)
+			blocker, err := manager.AcquireMany(ctx, []snapshot.Digest{blockedDigest})
+			Expect(err).NotTo(HaveOccurred())
+			defer blocker.Close()
+
+			blockedCtx, cancel := context.WithCancel(ctx)
+			waiterPID, waiterResult := acquireObservedDigestLease(blockedCtx, dbConn, blockedDigest, freeDigest)
+			waitForAdvisoryLockWaiter(dbConn, receiveBackendPID(waiterPID))
+			cancel()
+
+			var partial observedDigestLeaseResult
+			Eventually(waiterResult).WithTimeout(5 * time.Second).Should(Receive(&partial))
+			Expect(partial.err).To(HaveOccurred())
+			Expect(partial.lease).NotTo(BeNil())
+			Expect(partial.lease.Covers(freeDigest)).To(BeTrue())
+			Expect(partial.lease.Covers(blockedDigest)).To(BeFalse())
+			Expect(partial.lease.Close()).To(Succeed())
+			Expect(blocker.Close()).To(Succeed())
+
+			probe, err := manager.AcquireMany(ctx, []snapshot.Digest{blockedDigest, freeDigest})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(probe.Close()).To(Succeed())
+		})
+	})
 })
 
 func structTeam(name string) atc.Team { return atc.Team{Name: name} }
+
+type observedDigestConn struct {
+	db.DbConn
+	backendPID chan<- int
+}
+
+func (conn observedDigestConn) Conn(ctx context.Context) (*sql.Conn, error) {
+	dedicated, err := conn.DbConn.Conn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var pid int
+	if err := dedicated.QueryRowContext(ctx, `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+		dedicated.Close()
+		return nil, err
+	}
+	conn.backendPID <- pid
+	return dedicated, nil
+}
+
+type observedDigestLeaseResult struct {
+	lease snapshot.DigestLease
+	err   error
+}
+
+func acquireObservedDigestLease(
+	ctx context.Context,
+	conn db.DbConn,
+	digests ...snapshot.Digest,
+) (<-chan int, <-chan observedDigestLeaseResult) {
+	backendPID := make(chan int, 1)
+	result := make(chan observedDigestLeaseResult, 1)
+	manager := db.NewAgentSnapshotDigestLocker(observedDigestConn{
+		DbConn: conn, backendPID: backendPID,
+	})
+	go func() {
+		lease, err := manager.AcquireMany(ctx, digests)
+		result <- observedDigestLeaseResult{lease: lease, err: err}
+	}()
+	return backendPID, result
+}
+
+func receiveBackendPID(pids <-chan int) int {
+	var pid int
+	Eventually(pids).WithTimeout(5 * time.Second).Should(Receive(&pid))
+	return pid
+}
+
+func waitForAdvisoryLockWaiter(conn db.DbConn, pid int) {
+	Eventually(func() (bool, error) {
+		var waiting bool
+		err := conn.QueryRow(`
+			SELECT EXISTS (
+				SELECT 1 FROM pg_locks
+				WHERE pid = $1 AND locktype = 'advisory' AND NOT granted
+			)
+		`, pid).Scan(&waiting)
+		return waiting, err
+	}).WithTimeout(5 * time.Second).Should(BeTrue())
+}
+
+func receiveDigestLease(results <-chan observedDigestLeaseResult) snapshot.DigestLease {
+	var result observedDigestLeaseResult
+	Eventually(results).WithTimeout(5 * time.Second).Should(Receive(&result))
+	Expect(result.err).NotTo(HaveOccurred())
+	Expect(result.lease).NotTo(BeNil())
+	return result.lease
+}

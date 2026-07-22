@@ -23,6 +23,19 @@ var typeRefPattern = regexp.MustCompile(`^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)*/
 // representation because they contain private filesystem paths.
 var ErrInternalOnly = errors.New("snapshot: internal-only value has no JSON representation")
 
+// Stable domain categories let transports map failures without matching error
+// strings or disclosing storage/database details.
+var (
+	ErrInvalidArchive     = errors.New("snapshot: invalid archive")
+	ErrLimitExceeded      = errors.New("snapshot: limit exceeded")
+	ErrUnsupportedType    = errors.New("snapshot: unsupported type")
+	ErrValidation         = errors.New("snapshot: validation failed")
+	ErrConflict           = errors.New("snapshot: conflict")
+	ErrNotFound           = errors.New("snapshot: not found")
+	ErrExpired            = errors.New("snapshot: expired")
+	ErrContentUnavailable = errors.New("snapshot: content unavailable")
+)
+
 // TypeRef is a versioned, server-validated snapshot contract name.
 type TypeRef string
 
@@ -953,46 +966,109 @@ func (o *SealedOutput) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// SealCommitContext is the pre-persistence invocation and ordered lineage
-// context. It deliberately contains no pre-upload CandidateOutput values.
-type SealCommitContext struct {
-	BuildID              int                    `json:"build_id"`
-	TeamID               int                    `json:"team_id"`
-	TeamName             string                 `json:"team_name"`
-	CreatedBy            string                 `json:"created_by"`
-	PlanID               string                 `json:"plan_id"`
-	Attempt              string                 `json:"attempt"`
-	StepKind             string                 `json:"step_kind"`
-	StepName             string                 `json:"step_name"`
-	WorkflowDefinitionID *int                   `json:"workflow_definition_id,omitempty"`
-	WorkflowRunID        *WorkflowRunID         `json:"workflow_run_id,omitempty"`
-	InputOrder           []string               `json:"input_order"`
-	Inputs               map[string]SnapshotRef `json:"inputs"`
-	ExpectedOutputs      []Port                 `json:"expected_outputs"`
+// BuildOccurrence is the immutable identity and provenance of one build step
+// which produced a snapshot.
+type BuildOccurrence struct {
+	BuildID              int            `json:"build_id"`
+	PlanID               string         `json:"plan_id"`
+	Attempt              string         `json:"attempt"`
+	StepKind             string         `json:"step_kind"`
+	StepName             string         `json:"step_name"`
+	WorkflowDefinitionID *int           `json:"workflow_definition_id,omitempty"`
+	WorkflowRunID        *WorkflowRunID `json:"workflow_run_id,omitempty"`
 }
 
-func (c SealCommitContext) Validate() error {
-	if c.BuildID <= 0 || c.TeamID <= 0 {
-		return fmt.Errorf("snapshot: build and team IDs must be positive")
+func (o BuildOccurrence) Validate() error {
+	if o.BuildID <= 0 {
+		return fmt.Errorf("snapshot: build ID must be positive")
 	}
 	for label, value := range map[string]string{
-		"team name": c.TeamName, "creator": c.CreatedBy, "plan ID": c.PlanID,
-		"attempt": c.Attempt, "step kind": c.StepKind, "step name": c.StepName,
+		"plan ID": o.PlanID, "attempt": o.Attempt, "step kind": o.StepKind, "step name": o.StepName,
 	} {
 		if strings.TrimSpace(value) == "" {
 			return fmt.Errorf("snapshot: %s is required", label)
 		}
 	}
-	if c.WorkflowDefinitionID != nil && *c.WorkflowDefinitionID <= 0 {
+	if o.WorkflowDefinitionID != nil && *o.WorkflowDefinitionID <= 0 {
 		return fmt.Errorf("snapshot: workflow definition ID must be positive")
 	}
-	if c.WorkflowRunID != nil {
-		if err := c.WorkflowRunID.Validate(); err != nil {
+	if o.WorkflowRunID != nil {
+		if err := o.WorkflowRunID.Validate(); err != nil {
 			return err
 		}
 	}
-	if (c.WorkflowDefinitionID == nil) != (c.WorkflowRunID == nil) {
+	if (o.WorkflowDefinitionID == nil) != (o.WorkflowRunID == nil) {
 		return fmt.Errorf("snapshot: workflow definition and run IDs must be provided together")
+	}
+	return nil
+}
+
+func (o BuildOccurrence) Clone() BuildOccurrence {
+	o.WorkflowDefinitionID = cloneInt(o.WorkflowDefinitionID)
+	o.WorkflowRunID = cloneWorkflowRunID(o.WorkflowRunID)
+	return o
+}
+
+// UploadOccurrence identifies an authenticated manual upload independently
+// of build/plan provenance. The key is private persistence state and must not
+// be exposed from authorization-filtered detail DTOs.
+type UploadOccurrence struct {
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+func (o UploadOccurrence) Validate() error {
+	if strings.TrimSpace(o.IdempotencyKey) == "" {
+		return fmt.Errorf("snapshot: upload idempotency key is required")
+	}
+	if len(o.IdempotencyKey) > 200 {
+		return fmt.Errorf("snapshot: upload idempotency key must be at most 200 bytes")
+	}
+	return nil
+}
+
+// SealCommitContext is the pre-persistence occurrence and ordered lineage
+// context. Exactly one occurrence kind is required, and it deliberately
+// contains no pre-upload CandidateOutput values.
+type SealCommitContext struct {
+	TeamID          int                    `json:"team_id"`
+	TeamName        string                 `json:"team_name"`
+	CreatedBy       string                 `json:"created_by"`
+	Build           *BuildOccurrence       `json:"build,omitempty"`
+	Upload          *UploadOccurrence      `json:"upload,omitempty"`
+	InputOrder      []string               `json:"input_order"`
+	Inputs          map[string]SnapshotRef `json:"inputs"`
+	ExpectedOutputs []Port                 `json:"expected_outputs"`
+}
+
+func (c SealCommitContext) Validate() error {
+	if c.TeamID <= 0 {
+		return fmt.Errorf("snapshot: team ID must be positive")
+	}
+	for label, value := range map[string]string{
+		"team name": c.TeamName, "creator": c.CreatedBy,
+	} {
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("snapshot: %s is required", label)
+		}
+	}
+	if (c.Build == nil) == (c.Upload == nil) {
+		return fmt.Errorf("snapshot: exactly one build or upload occurrence is required")
+	}
+	if c.Build != nil {
+		if err := c.Build.Validate(); err != nil {
+			return err
+		}
+	}
+	if c.Upload != nil {
+		if err := c.Upload.Validate(); err != nil {
+			return err
+		}
+		if len(c.InputOrder) != 0 || len(c.Inputs) != 0 {
+			return fmt.Errorf("snapshot: upload occurrence cannot declare lineage inputs")
+		}
+		if len(c.ExpectedOutputs) != 1 {
+			return fmt.Errorf("snapshot: upload occurrence must commit exactly one output")
+		}
 	}
 	if len(c.InputOrder) != len(c.Inputs) {
 		return fmt.Errorf("snapshot: input order must contain every input exactly once")
@@ -1022,12 +1098,30 @@ func (c SealCommitContext) Validate() error {
 }
 
 func (c SealCommitContext) Clone() SealCommitContext {
-	c.WorkflowDefinitionID = cloneInt(c.WorkflowDefinitionID)
-	c.WorkflowRunID = cloneWorkflowRunID(c.WorkflowRunID)
+	if c.Build != nil {
+		cloned := c.Build.Clone()
+		c.Build = &cloned
+	}
+	if c.Upload != nil {
+		cloned := *c.Upload
+		c.Upload = &cloned
+	}
 	c.InputOrder = append([]string(nil), c.InputOrder...)
 	c.Inputs = cloneSnapshotRefs(c.Inputs)
 	c.ExpectedOutputs = append([]Port(nil), c.ExpectedOutputs...)
 	return c
+}
+
+// StageAttempt is the immutable occurrence key used to bind a durable stage
+// to its eventual metadata commit.
+func (c SealCommitContext) StageAttempt() string {
+	if c.Build != nil {
+		return c.Build.Attempt
+	}
+	if c.Upload != nil {
+		return "upload:" + c.Upload.IdempotencyKey
+	}
+	return ""
 }
 
 func (c SealCommitContext) MarshalJSON() ([]byte, error) {
@@ -1069,6 +1163,62 @@ type SealRequest struct {
 	Inputs               map[string]SnapshotRef `json:"inputs"`
 	OutputDeclarations   []Port                 `json:"output_declarations"`
 	Outputs              []OutputSource         `json:"-"`
+}
+
+// UploadRequest is the process-local description of one authenticated manual
+// upload. Authority fields are supplied by the server, never decoded from the
+// archive or client JSON.
+type UploadRequest struct {
+	TeamID         int
+	TeamName       string
+	UploadedBy     string
+	Actor          string
+	IdempotencyKey string
+	Type           TypeRef
+	OpenTar        func(context.Context) (io.ReadCloser, error)
+	SourceMetadata json.RawMessage
+}
+
+func (r UploadRequest) Validate() error {
+	if r.TeamID <= 0 {
+		return fmt.Errorf("snapshot: upload team ID must be positive")
+	}
+	for label, value := range map[string]string{
+		"team name": r.TeamName, "uploader": r.UploadedBy, "actor": r.Actor,
+	} {
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("snapshot: upload %s is required", label)
+		}
+		if len(value) > 500 {
+			return fmt.Errorf("snapshot: upload %s must be at most 500 bytes", label)
+		}
+	}
+	if err := (UploadOccurrence{IdempotencyKey: r.IdempotencyKey}).Validate(); err != nil {
+		return err
+	}
+	if err := r.Type.Validate(); err != nil {
+		return fmt.Errorf("%w: %v", ErrUnsupportedType, err)
+	}
+	if r.OpenTar == nil {
+		return fmt.Errorf("snapshot: upload tar opener is required")
+	}
+	if err := validateRawMessage(r.SourceMetadata); err != nil {
+		return fmt.Errorf("snapshot: upload source metadata: %w", err)
+	}
+	return nil
+}
+
+func (r UploadRequest) Clone() UploadRequest {
+	r.SourceMetadata = cloneRaw(r.SourceMetadata)
+	return r
+}
+
+func (r UploadRequest) MarshalJSON() ([]byte, error) {
+	return nil, fmt.Errorf("%w: UploadRequest", ErrInternalOnly)
+}
+
+func (r *UploadRequest) UnmarshalJSON([]byte) error {
+	return fmt.Errorf("%w: UploadRequest", ErrInternalOnly)
 }
 
 func (r SealRequest) Validate() error {
@@ -1127,9 +1277,12 @@ func (r SealRequest) Validate() error {
 
 func (r SealRequest) commitContext() SealCommitContext {
 	return SealCommitContext{
-		BuildID: r.BuildID, TeamID: r.TeamID, TeamName: r.TeamName, CreatedBy: r.CreatedBy,
-		PlanID: r.PlanID, Attempt: r.Attempt, StepKind: r.StepKind, StepName: r.StepName,
-		WorkflowDefinitionID: r.WorkflowDefinitionID, WorkflowRunID: r.WorkflowRunID,
+		TeamID: r.TeamID, TeamName: r.TeamName, CreatedBy: r.CreatedBy,
+		Build: &BuildOccurrence{
+			BuildID: r.BuildID, PlanID: r.PlanID, Attempt: r.Attempt,
+			StepKind: r.StepKind, StepName: r.StepName,
+			WorkflowDefinitionID: r.WorkflowDefinitionID, WorkflowRunID: r.WorkflowRunID,
+		},
 		InputOrder: r.InputOrder, Inputs: r.Inputs,
 	}
 }
@@ -1172,6 +1325,13 @@ func (r *SealRequest) UnmarshalJSON(data []byte) error {
 
 type OutputSealer interface {
 	Seal(context.Context, SealRequest) (map[string]SealedOutput, error)
+}
+
+// SnapshotCreator is the shared canonicalize/validate/stage/upload/commit
+// boundary used by build outputs and authenticated manual uploads.
+type SnapshotCreator interface {
+	OutputSealer
+	Upload(context.Context, UploadRequest) (Snapshot, error)
 }
 
 func strictUnmarshal(data []byte, target any) error {

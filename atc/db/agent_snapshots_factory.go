@@ -12,6 +12,7 @@ import (
 
 	"github.com/Masterminds/squirrel"
 	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/atc/db/encryption"
 )
 
 //counterfeiter:generate . AgentSnapshotsFactory
@@ -35,6 +36,87 @@ type snapshotQueryer interface {
 	QueryRowContext(context.Context, string, ...any) squirrel.RowScanner
 }
 
+type agentSnapshotLeaseConnection struct {
+	conn               *sql.Conn
+	encryptionStrategy encryption.Strategy
+}
+
+func (connection *agentSnapshotLeaseConnection) BeginTx(ctx context.Context, options *sql.TxOptions) (Tx, error) {
+	tx, err := connection.conn.BeginTx(ctx, options)
+	if err != nil {
+		return nil, err
+	}
+	return &agentSnapshotLeaseTx{Tx: tx, encryptionStrategy: connection.encryptionStrategy}, nil
+}
+
+func (connection *agentSnapshotLeaseConnection) ExecContext(
+	ctx context.Context,
+	query string,
+	args ...any,
+) (sql.Result, error) {
+	return connection.conn.ExecContext(ctx, query, args...)
+}
+
+func (connection *agentSnapshotLeaseConnection) QueryContext(
+	ctx context.Context,
+	query string,
+	args ...any,
+) (*sql.Rows, error) {
+	return connection.conn.QueryContext(ctx, query, args...)
+}
+
+func (connection *agentSnapshotLeaseConnection) QueryRowContext(
+	ctx context.Context,
+	query string,
+	args ...any,
+) squirrel.RowScanner {
+	return connection.conn.QueryRowContext(ctx, query, args...)
+}
+
+type agentSnapshotLeaseTx struct {
+	*sql.Tx
+	encryptionStrategy encryption.Strategy
+}
+
+func (tx *agentSnapshotLeaseTx) QueryRow(query string, args ...any) squirrel.RowScanner {
+	return tx.Tx.QueryRow(query, args...)
+}
+
+func (tx *agentSnapshotLeaseTx) QueryRowContext(
+	ctx context.Context,
+	query string,
+	args ...any,
+) squirrel.RowScanner {
+	return tx.Tx.QueryRowContext(ctx, query, args...)
+}
+
+func (tx *agentSnapshotLeaseTx) EncryptionStrategy() encryption.Strategy {
+	return tx.encryptionStrategy
+}
+
+func (factory *agentSnapshotsFactory) leasedConnection(
+	lease snapshot.DigestLease,
+	digests ...snapshot.Digest,
+) (*agentSnapshotLeaseConnection, func(), error) {
+	for _, digest := range digests {
+		if err := digest.Validate(); err != nil {
+			return nil, nil, err
+		}
+	}
+	held, ok := lease.(*agentSnapshotDigestLease)
+	if !ok || held == nil {
+		return nil, nil, fmt.Errorf("db: snapshot digest lease was not issued by the database lock manager")
+	}
+	connection, release, err := held.acquireConnection(factory.conn, digests)
+	if err != nil {
+		return nil, nil, err
+	}
+	return &agentSnapshotLeaseConnection{
+		conn:               connection,
+		encryptionStrategy: factory.conn.EncryptionStrategy(),
+	}, release, nil
+}
+
 func (factory *agentSnapshotsFactory) StageUpload(
 	ctx context.Context,
 	lease snapshot.DigestLease,
@@ -43,11 +125,13 @@ func (factory *agentSnapshotsFactory) StageUpload(
 	if err := request.Validate(); err != nil {
 		return snapshot.StagedUpload{}, err
 	}
-	if err := snapshot.RequireDigestLease(lease, request.Digest); err != nil {
+	connection, release, err := factory.leasedConnection(lease, request.Digest)
+	if err != nil {
 		return snapshot.StagedUpload{}, err
 	}
+	defer release()
 
-	row := factory.conn.QueryRowContext(ctx, `
+	row := connection.QueryRowContext(ctx, `
 		INSERT INTO agent_snapshot_staged_uploads
 			(digest, team_id, attempt, lease_expires_at)
 		SELECT $1, t.id, $3, $4
@@ -72,13 +156,21 @@ func (factory *agentSnapshotsFactory) CommitSealBatch(
 	}
 	digests := make(map[snapshot.Digest]struct{}, len(commit.Outputs))
 	for _, output := range commit.Outputs {
-		if err := snapshot.RequireDigestLease(lease, output.Digest); err != nil {
-			return nil, err
-		}
 		digests[output.Digest] = struct{}{}
 	}
 
-	tx, err := factory.conn.BeginTx(ctx, nil)
+	orderedDigests := make([]snapshot.Digest, 0, len(digests))
+	for digest := range digests {
+		orderedDigests = append(orderedDigests, digest)
+	}
+	sort.Slice(orderedDigests, func(i, j int) bool { return orderedDigests[i] < orderedDigests[j] })
+	connection, release, err := factory.leasedConnection(lease, orderedDigests...)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	tx, err := connection.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -97,12 +189,6 @@ func (factory *agentSnapshotsFactory) CommitSealBatch(
 	if err := validateSealStages(ctx, tx, commit, now); err != nil {
 		return nil, err
 	}
-
-	orderedDigests := make([]snapshot.Digest, 0, len(digests))
-	for digest := range digests {
-		orderedDigests = append(orderedDigests, digest)
-	}
-	sort.Slice(orderedDigests, func(i, j int) bool { return orderedDigests[i] < orderedDigests[j] })
 
 	for _, digest := range orderedDigests {
 		state, err := loadDigestState(ctx, tx, digest, now, true)
@@ -154,20 +240,22 @@ func (factory *agentSnapshotsFactory) CommitSealBatch(
 		if err != nil {
 			return nil, err
 		}
-		if err := insertGrant(ctx, tx, commit.Context, manifest.ID); err != nil {
-			return nil, err
-		}
-		for _, retention := range output.Retention {
-			if err := insertOrVerifyRetention(ctx, tx, commit.Context.TeamID, manifest.ID, retention); err != nil {
+		if productionCreated {
+			if err := insertGrant(ctx, tx, commit.Context, manifest.ID); err != nil {
 				return nil, err
+			}
+			for _, retention := range output.Retention {
+				if err := insertOrVerifyRetention(ctx, tx, commit.Context.TeamID, manifest.ID, retention); err != nil {
+					return nil, err
+				}
 			}
 		}
 		if err := insertOrVerifyLineage(ctx, tx, productionID, productionCreated, commit.Context); err != nil {
 			return nil, err
 		}
-		if commit.Context.WorkflowRunID != nil && output.WorkflowPort != "" {
+		if commit.Context.Build != nil && commit.Context.Build.WorkflowRunID != nil && output.WorkflowPort != "" {
 			if err := bindWorkflowRunSnapshot(
-				ctx, tx, *commit.Context.WorkflowRunID, "output", output.WorkflowPort, manifest.ID,
+				ctx, tx, *commit.Context.Build.WorkflowRunID, "output", output.WorkflowPort, manifest.ID,
 			); err != nil {
 				return nil, err
 			}
@@ -206,6 +294,24 @@ func databaseNow(ctx context.Context, queryer snapshotQueryer) (time.Time, error
 }
 
 func validateSealInvocation(ctx context.Context, tx Tx, commit snapshot.SealCommitContext) error {
+	if commit.Upload != nil {
+		var teamName string
+		err := tx.QueryRowContext(ctx, `SELECT name FROM teams WHERE id = $1`, commit.TeamID).Scan(&teamName)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("db: snapshot upload team %d does not exist", commit.TeamID)
+		}
+		if err != nil {
+			return err
+		}
+		if teamName != commit.TeamName {
+			return fmt.Errorf("%w: snapshot upload team name does not match current team", snapshot.ErrConflict)
+		}
+		return nil
+	}
+	build := commit.Build
+	if build == nil {
+		return fmt.Errorf("db: snapshot build occurrence is required")
+	}
 	var teamName string
 	var buildPipelineID sql.NullInt64
 	err := tx.QueryRowContext(ctx, `
@@ -214,9 +320,9 @@ func validateSealInvocation(ctx context.Context, tx Tx, commit snapshot.SealComm
 		JOIN teams t ON t.id = b.team_id
 		WHERE b.id = $1 AND b.team_id = $2
 		FOR UPDATE OF b
-	`, commit.BuildID, commit.TeamID).Scan(&teamName, &buildPipelineID)
+	`, build.BuildID, commit.TeamID).Scan(&teamName, &buildPipelineID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("db: snapshot producer build %d is not owned by team %d", commit.BuildID, commit.TeamID)
+		return fmt.Errorf("db: snapshot producer build %d is not owned by team %d", build.BuildID, commit.TeamID)
 	}
 	if err != nil {
 		return err
@@ -225,19 +331,19 @@ func validateSealInvocation(ctx context.Context, tx Tx, commit snapshot.SealComm
 		return fmt.Errorf("db: snapshot producer team name does not match current team")
 	}
 
-	if commit.WorkflowDefinitionID != nil {
+	if build.WorkflowDefinitionID != nil {
 		var id int
 		if err := tx.QueryRowContext(ctx, `
 			SELECT id FROM agent_workflow_definitions WHERE id = $1
-		`, *commit.WorkflowDefinitionID).Scan(&id); err != nil {
+		`, *build.WorkflowDefinitionID).Scan(&id); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
-				return fmt.Errorf("db: snapshot workflow definition %d does not exist", *commit.WorkflowDefinitionID)
+				return fmt.Errorf("db: snapshot workflow definition %d does not exist", *build.WorkflowDefinitionID)
 			}
 			return err
 		}
 	}
 
-	if commit.WorkflowRunID != nil {
+	if build.WorkflowRunID != nil {
 		var definitionID int
 		var plannedBuildID, instancePipelineID sql.NullInt64
 		err := tx.QueryRowContext(ctx, `
@@ -245,7 +351,7 @@ func validateSealInvocation(ctx context.Context, tx Tx, commit snapshot.SealComm
 			FROM agent_workflow_runs
 			WHERE id = $1 AND team_id = $2
 			FOR UPDATE
-		`, int64(*commit.WorkflowRunID), commit.TeamID).Scan(
+		`, int64(*build.WorkflowRunID), commit.TeamID).Scan(
 			&definitionID, &plannedBuildID, &instancePipelineID,
 		)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -254,10 +360,10 @@ func validateSealInvocation(ctx context.Context, tx Tx, commit snapshot.SealComm
 		if err != nil {
 			return err
 		}
-		if commit.WorkflowDefinitionID == nil || definitionID != *commit.WorkflowDefinitionID {
+		if build.WorkflowDefinitionID == nil || definitionID != *build.WorkflowDefinitionID {
 			return fmt.Errorf("db: snapshot workflow run and definition do not match")
 		}
-		if !plannedBuildID.Valid || plannedBuildID.Int64 != int64(commit.BuildID) {
+		if !plannedBuildID.Valid || plannedBuildID.Int64 != int64(build.BuildID) {
 			return fmt.Errorf("db: snapshot workflow output build does not match the workflow run planned build")
 		}
 		if !instancePipelineID.Valid || !buildPipelineID.Valid || instancePipelineID.Int64 != buildPipelineID.Int64 {
@@ -280,13 +386,13 @@ func validateSealInputs(ctx context.Context, tx Tx, commit snapshot.SealCommitCo
 		if persisted.ID != ref.ID || persisted.Type != ref.Type || persisted.Digest != ref.Digest {
 			return fmt.Errorf("db: snapshot input %q does not match its persisted identity", port)
 		}
-		if commit.WorkflowRunID != nil {
+		if commit.Build != nil && commit.Build.WorkflowRunID != nil {
 			var boundID int64
 			err := tx.QueryRowContext(ctx, `
 				SELECT snapshot_id
 				FROM agent_workflow_run_snapshots
 				WHERE workflow_run_id = $1 AND direction = 'input' AND port_name = $2
-			`, int64(*commit.WorkflowRunID), port).Scan(&boundID)
+			`, int64(*commit.Build.WorkflowRunID), port).Scan(&boundID)
 			if errors.Is(err, sql.ErrNoRows) {
 				return fmt.Errorf("db: snapshot input %q does not match the workflow-run binding", port)
 			}
@@ -323,7 +429,7 @@ func validateSealStages(ctx context.Context, tx Tx, commit snapshot.SealCommit, 
 		if err != nil {
 			return err
 		}
-		if staged.Digest != output.Digest || staged.TeamID != commit.Context.TeamID || staged.Attempt != commit.Context.Attempt {
+		if staged.Digest != output.Digest || staged.TeamID != commit.Context.TeamID || staged.Attempt != commit.Context.StageAttempt() {
 			return fmt.Errorf("db: snapshot staged upload %d does not match digest, team, and attempt", staged.ID)
 		}
 		if !staged.LeaseExpiresAt.After(now) {
@@ -376,16 +482,23 @@ func insertOrVerifyProduction(
 	output snapshot.SealCommitOutput,
 	snapshotID snapshot.SnapshotID,
 ) (int64, bool, error) {
+	if commit.Upload != nil {
+		return insertOrVerifyUploadProduction(ctx, tx, commit, output, snapshotID)
+	}
+	build := commit.Build
+	if build == nil {
+		return 0, false, fmt.Errorf("db: snapshot build occurrence is required")
+	}
 	result, err := tx.ExecContext(ctx, `
 		INSERT INTO agent_snapshot_productions
-			(snapshot_id, build_id, team_id, team_name, created_by, plan_id,
+			(snapshot_id, occurrence_kind, build_id, team_id, team_name, created_by, plan_id,
 			 attempt, step_kind, step_name, output_port, workflow_definition_id,
 			 workflow_run_id, source_metadata)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-		ON CONFLICT (build_id, plan_id, attempt, output_port) DO NOTHING
-	`, int64(snapshotID), commit.BuildID, commit.TeamID, commit.TeamName, commit.CreatedBy,
-		commit.PlanID, commit.Attempt, commit.StepKind, commit.StepName, output.Port.Name,
-		optionalInt(commit.WorkflowDefinitionID), optionalInt64(commit.WorkflowRunID),
+		VALUES ($1, 'build', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		ON CONFLICT (build_id, plan_id, attempt, output_port) WHERE occurrence_kind = 'build' DO NOTHING
+	`, int64(snapshotID), build.BuildID, commit.TeamID, commit.TeamName, commit.CreatedBy,
+		build.PlanID, build.Attempt, build.StepKind, build.StepName, output.Port.Name,
+		optionalInt(build.WorkflowDefinitionID), optionalInt64(build.WorkflowRunID),
 		nullableJSON(output.SourceMetadata))
 	if err != nil {
 		return 0, false, err
@@ -406,22 +519,63 @@ func insertOrVerifyProduction(
 		  AND workflow_run_id IS NOT DISTINCT FROM $12
 		  AND source_metadata IS NOT DISTINCT FROM $13::jsonb
 		FOR UPDATE
-	`, commit.BuildID, commit.PlanID, commit.Attempt, output.Port.Name,
+	`, build.BuildID, build.PlanID, build.Attempt, output.Port.Name,
 		int64(snapshotID), commit.TeamID, commit.TeamName, commit.CreatedBy,
-		commit.StepKind, commit.StepName, optionalInt(commit.WorkflowDefinitionID),
-		optionalInt64(commit.WorkflowRunID), nullableJSON(output.SourceMetadata)).Scan(&id)
+		build.StepKind, build.StepName, optionalInt(build.WorkflowDefinitionID),
+		optionalInt64(build.WorkflowRunID), nullableJSON(output.SourceMetadata)).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
-		return 0, false, fmt.Errorf("db: snapshot production invocation conflicts with immutable provenance")
+		return 0, false, fmt.Errorf("%w: snapshot production invocation conflicts with immutable provenance", snapshot.ErrConflict)
+	}
+	return id, rowsAffected == 1, err
+}
+
+func insertOrVerifyUploadProduction(
+	ctx context.Context,
+	tx Tx,
+	commit snapshot.SealCommitContext,
+	output snapshot.SealCommitOutput,
+	snapshotID snapshot.SnapshotID,
+) (int64, bool, error) {
+	result, err := tx.ExecContext(ctx, `
+		INSERT INTO agent_snapshot_productions
+			(snapshot_id, occurrence_kind, team_id, team_name, created_by,
+			 upload_idempotency_key, source_metadata)
+		VALUES ($1, 'upload', $2, $3, $4, $5, $6)
+		ON CONFLICT (team_id, upload_idempotency_key) WHERE occurrence_kind = 'upload' DO NOTHING
+	`, int64(snapshotID), commit.TeamID, commit.TeamName, commit.CreatedBy,
+		commit.Upload.IdempotencyKey, nullableJSON(output.SourceMetadata))
+	if err != nil {
+		return 0, false, err
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return 0, false, err
+	}
+	var id int64
+	err = tx.QueryRowContext(ctx, `
+		SELECT id
+		FROM agent_snapshot_productions
+		WHERE occurrence_kind = 'upload'
+		  AND team_id = $1 AND upload_idempotency_key = $2
+		  AND snapshot_id = $3
+		FOR UPDATE
+	`, commit.TeamID, commit.Upload.IdempotencyKey, int64(snapshotID)).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, fmt.Errorf("%w: snapshot upload idempotency key conflicts with immutable provenance", snapshot.ErrConflict)
 	}
 	return id, rowsAffected == 1, err
 }
 
 func insertGrant(ctx context.Context, tx Tx, commit snapshot.SealCommitContext, snapshotID snapshot.SnapshotID) error {
+	reason := "produced by workflow step"
+	if commit.Upload != nil {
+		reason = "manual upload"
+	}
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO agent_snapshot_grants (snapshot_id, team_id, granted_by, reason)
-		VALUES ($1, $2, $3, 'produced by workflow step')
+		VALUES ($1, $2, $3, $4)
 		ON CONFLICT (snapshot_id, team_id) DO NOTHING
-	`, int64(snapshotID), commit.TeamID, commit.CreatedBy)
+	`, int64(snapshotID), commit.TeamID, commit.CreatedBy, reason)
 	return err
 }
 
@@ -613,6 +767,156 @@ func (factory *agentSnapshotsFactory) GetAuthorized(
 	return value, err == nil, err
 }
 
+func (factory *agentSnapshotsFactory) GetAuthorizedDetail(
+	ctx context.Context,
+	teamID int,
+	id snapshot.SnapshotID,
+) (snapshot.Detail, bool, error) {
+	manifest, found, err := factory.GetAuthorized(ctx, teamID, id)
+	if err != nil || !found {
+		return snapshot.Detail{}, found, err
+	}
+	detail := snapshot.Detail{
+		Manifest: manifest, RetentionClaims: make([]snapshot.RetentionClaim, 0),
+		Productions: make([]snapshot.ProductionDetail, 0), Downstream: make([]snapshot.ProductionSummary, 0),
+	}
+	if err := factory.conn.QueryRowContext(ctx, `
+		SELECT count(*) FROM agent_snapshot_locations WHERE digest = $1
+	`, manifest.Digest.String()).Scan(&detail.ReplicaCount); err != nil {
+		return snapshot.Detail{}, false, err
+	}
+
+	rows, err := factory.conn.QueryContext(ctx, `
+		SELECT id, snapshot_id, class, expires_at, actor, reason, created_at
+		FROM agent_snapshot_retention_claims
+		WHERE snapshot_id = $1 AND team_id = $2
+		ORDER BY created_at, id
+	`, int64(id), teamID)
+	if err != nil {
+		return snapshot.Detail{}, false, err
+	}
+	for rows.Next() {
+		claim, scanErr := scanRetentionClaim(rows)
+		if scanErr != nil {
+			Close(rows)
+			return snapshot.Detail{}, false, scanErr
+		}
+		detail.RetentionClaims = append(detail.RetentionClaims, claim)
+	}
+	err = rows.Err()
+	Close(rows)
+	if err != nil {
+		return snapshot.Detail{}, false, err
+	}
+	snapshot.SortRetentionClaims(detail.RetentionClaims)
+
+	rows, err = factory.conn.QueryContext(ctx, `
+		SELECT p.id, p.occurrence_kind, p.created_by,
+		       p.build_id, p.plan_id, p.attempt, p.step_kind, p.step_name,
+		       p.output_port, p.workflow_definition_id, p.workflow_run_id,
+		       p.source_metadata, p.created_at
+		FROM agent_snapshot_productions p
+		WHERE p.snapshot_id = $1 AND p.team_id = $2
+		ORDER BY p.created_at, p.id
+	`, int64(id), teamID)
+	if err != nil {
+		return snapshot.Detail{}, false, err
+	}
+	for rows.Next() {
+		production, scanErr := scanProductionDetail(rows)
+		if scanErr != nil {
+			Close(rows)
+			return snapshot.Detail{}, false, scanErr
+		}
+		detail.Productions = append(detail.Productions, production)
+	}
+	err = rows.Err()
+	Close(rows)
+	if err != nil {
+		return snapshot.Detail{}, false, err
+	}
+	for index := range detail.Productions {
+		production := &detail.Productions[index]
+		inputRows, inputErr := factory.conn.QueryContext(ctx, `
+			SELECT l.position, l.input_port,
+			       s.id, s.type_name, s.type_version, s.digest
+			FROM agent_snapshot_lineage l
+			JOIN agent_snapshots s ON s.id = l.input_snapshot_id
+			JOIN agent_snapshot_grants g
+			  ON g.snapshot_id = s.id AND g.team_id = $2
+			WHERE l.production_id = $1
+			ORDER BY l.position
+		`, production.ID, teamID)
+		if inputErr != nil {
+			return snapshot.Detail{}, false, inputErr
+		}
+		for inputRows.Next() {
+			var input snapshot.ProductionInput
+			var snapshotID int64
+			var typeName, digest string
+			var typeVersion int
+			if scanErr := inputRows.Scan(&input.Position, &input.Port, &snapshotID, &typeName, &typeVersion, &digest); scanErr != nil {
+				Close(inputRows)
+				return snapshot.Detail{}, false, scanErr
+			}
+			typeRef, typeErr := joinSnapshotType(typeName, typeVersion)
+			if typeErr != nil {
+				Close(inputRows)
+				return snapshot.Detail{}, false, typeErr
+			}
+			input.Snapshot = snapshot.SnapshotRef{ID: snapshot.SnapshotID(snapshotID), Type: typeRef, Digest: snapshot.Digest(digest)}
+			if inputErr := input.Validate(); inputErr != nil {
+				Close(inputRows)
+				return snapshot.Detail{}, false, inputErr
+			}
+			production.Inputs = append(production.Inputs, input)
+		}
+		inputErr = inputRows.Err()
+		Close(inputRows)
+		if inputErr != nil {
+			return snapshot.Detail{}, false, inputErr
+		}
+	}
+
+	rows, err = factory.conn.QueryContext(ctx, `
+		SELECT p.id, p.occurrence_kind, p.created_by,
+		       p.build_id, p.plan_id, p.attempt, p.step_kind, p.step_name,
+		       p.output_port, p.workflow_definition_id, p.workflow_run_id,
+		       p.created_at,
+		       output.id, output.type_name, output.type_version, output.digest
+		FROM agent_snapshot_productions p
+		JOIN agent_snapshots output ON output.id = p.snapshot_id
+		JOIN agent_snapshot_grants output_grant
+		  ON output_grant.snapshot_id = output.id AND output_grant.team_id = $2
+		WHERE p.team_id = $2
+		  AND EXISTS (
+		      SELECT 1 FROM agent_snapshot_lineage l
+		      WHERE l.production_id = p.id AND l.input_snapshot_id = $1
+		  )
+		ORDER BY p.created_at, p.id
+	`, int64(id), teamID)
+	if err != nil {
+		return snapshot.Detail{}, false, err
+	}
+	for rows.Next() {
+		production, scanErr := scanProductionSummary(rows)
+		if scanErr != nil {
+			Close(rows)
+			return snapshot.Detail{}, false, scanErr
+		}
+		detail.Downstream = append(detail.Downstream, production)
+	}
+	err = rows.Err()
+	Close(rows)
+	if err != nil {
+		return snapshot.Detail{}, false, err
+	}
+	if err := detail.Validate(); err != nil {
+		return snapshot.Detail{}, false, fmt.Errorf("db: invalid authorized snapshot detail: %w", err)
+	}
+	return detail.Clone(), true, nil
+}
+
 func (factory *agentSnapshotsFactory) ListAuthorized(
 	ctx context.Context,
 	teamID int,
@@ -681,7 +985,15 @@ func (factory *agentSnapshotsFactory) LocationsForDigest(
 	if err := digest.Validate(); err != nil {
 		return nil, err
 	}
-	rows, err := factory.conn.QueryContext(ctx, `
+	return locationsForDigest(ctx, factory.conn, digest)
+}
+
+func locationsForDigest(
+	ctx context.Context,
+	queryer snapshotQueryer,
+	digest snapshot.Digest,
+) ([]snapshot.Location, error) {
+	rows, err := queryer.QueryContext(ctx, `
 		SELECT digest, driver, key, node
 		FROM agent_snapshot_locations
 		WHERE digest = $1
@@ -708,13 +1020,15 @@ func (factory *agentSnapshotsFactory) DigestState(
 	digest snapshot.Digest,
 	now time.Time,
 ) (snapshot.DigestState, error) {
-	if err := snapshot.RequireDigestLease(lease, digest); err != nil {
-		return snapshot.DigestState{}, err
-	}
 	if now.IsZero() {
 		return snapshot.DigestState{}, fmt.Errorf("db: snapshot digest state time is required")
 	}
-	return loadDigestState(ctx, factory.conn, digest, now, false)
+	connection, release, err := factory.leasedConnection(lease, digest)
+	if err != nil {
+		return snapshot.DigestState{}, err
+	}
+	defer release()
+	return loadDigestState(ctx, connection, digest, now, false)
 }
 
 func loadDigestState(
@@ -817,10 +1131,12 @@ func (factory *agentSnapshotsFactory) RemoveStagedUploads(
 	digest snapshot.Digest,
 	ids []int64,
 ) error {
-	if err := snapshot.RequireDigestLease(lease, digest); err != nil {
-		return err
-	}
 	if len(ids) == 0 {
+		_, release, err := factory.leasedConnection(lease, digest)
+		if err != nil {
+			return err
+		}
+		release()
 		return nil
 	}
 	query := `DELETE FROM agent_snapshot_staged_uploads WHERE digest = $1 AND id IN (`
@@ -836,7 +1152,12 @@ func (factory *agentSnapshotsFactory) RemoveStagedUploads(
 		query += "$" + strconv.Itoa(len(args))
 	}
 	query += `)`
-	_, err := factory.conn.ExecContext(ctx, query, args...)
+	connection, release, err := factory.leasedConnection(lease, digest)
+	if err != nil {
+		return err
+	}
+	defer release()
+	_, err = connection.ExecContext(ctx, query, args...)
 	return err
 }
 
@@ -851,23 +1172,28 @@ func (factory *agentSnapshotsFactory) Pin(
 	if err := ref.Validate(); err != nil {
 		return snapshot.RetentionClaim{}, err
 	}
-	if err := snapshot.RequireDigestLease(lease, ref.Digest); err != nil {
-		return snapshot.RetentionClaim{}, err
-	}
 	if teamID <= 0 || strings.TrimSpace(actor) == "" || strings.TrimSpace(reason) == "" {
 		return snapshot.RetentionClaim{}, fmt.Errorf("db: snapshot pin team, actor, and reason are required")
 	}
-	tx, err := factory.conn.BeginTx(ctx, nil)
+	connection, release, err := factory.leasedConnection(lease, ref.Digest)
+	if err != nil {
+		return snapshot.RetentionClaim{}, err
+	}
+	defer release()
+	tx, err := connection.BeginTx(ctx, nil)
 	if err != nil {
 		return snapshot.RetentionClaim{}, err
 	}
 	defer Rollback(tx)
-	value, err := authorizedSnapshotByRef(ctx, tx, teamID, ref, true)
+	value, err := authorizedSnapshotByRef(ctx, tx, teamID, ref, false)
 	if errors.Is(err, sql.ErrNoRows) || err == nil && (value.Type != ref.Type || value.Digest != ref.Digest) {
-		return snapshot.RetentionClaim{}, fmt.Errorf("db: snapshot pin identity is unavailable or unauthorized")
+		return snapshot.RetentionClaim{}, fmt.Errorf("%w: snapshot pin identity is unavailable or unauthorized", snapshot.ErrNotFound)
 	}
 	if err != nil {
 		return snapshot.RetentionClaim{}, err
+	}
+	if value.ContentState != snapshot.ContentStateAvailable {
+		return snapshot.RetentionClaim{}, fmt.Errorf("%w: snapshot content must be recaptured before pinning", snapshot.ErrExpired)
 	}
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO agent_snapshot_retention_claims
@@ -888,7 +1214,7 @@ func (factory *agentSnapshotsFactory) Pin(
 		return snapshot.RetentionClaim{}, err
 	}
 	if claim.Reason != reason {
-		return snapshot.RetentionClaim{}, fmt.Errorf("db: snapshot pin conflicts with immutable reason")
+		return snapshot.RetentionClaim{}, fmt.Errorf("%w: snapshot pin conflicts with immutable reason", snapshot.ErrConflict)
 	}
 	if err := tx.Commit(); err != nil {
 		return snapshot.RetentionClaim{}, err
@@ -906,20 +1232,22 @@ func (factory *agentSnapshotsFactory) Unpin(
 	if err := ref.Validate(); err != nil {
 		return err
 	}
-	if err := snapshot.RequireDigestLease(lease, ref.Digest); err != nil {
-		return err
-	}
 	if teamID <= 0 || strings.TrimSpace(actor) == "" {
 		return fmt.Errorf("db: snapshot unpin team and actor are required")
 	}
-	tx, err := factory.conn.BeginTx(ctx, nil)
+	connection, release, err := factory.leasedConnection(lease, ref.Digest)
+	if err != nil {
+		return err
+	}
+	defer release()
+	tx, err := connection.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer Rollback(tx)
-	value, err := authorizedSnapshotByRef(ctx, tx, teamID, ref, true)
+	value, err := authorizedSnapshotByRef(ctx, tx, teamID, ref, false)
 	if errors.Is(err, sql.ErrNoRows) || err == nil && (value.Type != ref.Type || value.Digest != ref.Digest) {
-		return fmt.Errorf("db: snapshot unpin identity is unavailable or unauthorized")
+		return fmt.Errorf("%w: snapshot unpin identity is unavailable or unauthorized", snapshot.ErrNotFound)
 	}
 	if err != nil {
 		return err
@@ -940,13 +1268,15 @@ func (factory *agentSnapshotsFactory) MarkDigestExpired(
 	digest snapshot.Digest,
 	now time.Time,
 ) (bool, error) {
-	if err := snapshot.RequireDigestLease(lease, digest); err != nil {
-		return false, err
-	}
 	if now.IsZero() {
 		return false, fmt.Errorf("db: snapshot expiry time is required")
 	}
-	tx, err := factory.conn.BeginTx(ctx, nil)
+	connection, release, err := factory.leasedConnection(lease, digest)
+	if err != nil {
+		return false, err
+	}
+	defer release()
+	tx, err := connection.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
 	}
@@ -987,10 +1317,12 @@ func (factory *agentSnapshotsFactory) AddLocation(
 	if err := location.Validate(); err != nil {
 		return err
 	}
-	if err := snapshot.RequireDigestLease(lease, location.Digest); err != nil {
+	connection, release, err := factory.leasedConnection(lease, location.Digest)
+	if err != nil {
 		return err
 	}
-	result, err := factory.conn.ExecContext(ctx, `
+	defer release()
+	result, err := connection.ExecContext(ctx, `
 		INSERT INTO agent_snapshot_locations (digest, driver, key, node)
 		SELECT $1, $2, $3, $4
 		WHERE EXISTS (
@@ -1007,7 +1339,7 @@ func (factory *agentSnapshotsFactory) AddLocation(
 		return err
 	}
 	if count == 0 {
-		locations, err := factory.LocationsForDigest(ctx, location.Digest)
+		locations, err := locationsForDigest(ctx, connection, location.Digest)
 		if err != nil {
 			return err
 		}
@@ -1029,10 +1361,12 @@ func (factory *agentSnapshotsFactory) RemoveLocation(
 	if err := location.Validate(); err != nil {
 		return err
 	}
-	if err := snapshot.RequireDigestLease(lease, location.Digest); err != nil {
+	connection, release, err := factory.leasedConnection(lease, location.Digest)
+	if err != nil {
 		return err
 	}
-	_, err := factory.conn.ExecContext(ctx, `
+	defer release()
+	_, err = connection.ExecContext(ctx, `
 		DELETE FROM agent_snapshot_locations
 		WHERE digest = $1 AND driver = $2 AND key = $3 AND node = $4
 	`, location.Digest.String(), location.Driver, location.Key, location.Node)
@@ -1050,6 +1384,7 @@ func (factory *agentSnapshotsFactory) DiscoverLifecycleCandidates(
 		WITH candidates AS (
 			SELECT DISTINCT u.digest, 'orphan'::text AS kind
 			FROM agent_snapshot_staged_uploads u
+			WHERE u.lease_expires_at <= now()
 			UNION
 			SELECT DISTINCT s.digest, 'expiry'::text AS kind
 			FROM agent_snapshots s
@@ -1064,7 +1399,12 @@ func (factory *agentSnapshotsFactory) DiscoverLifecycleCandidates(
 			SELECT DISTINCT s.digest, 'repair'::text AS kind
 			FROM agent_snapshots s
 			WHERE s.content_state = 'available'
-			  AND NOT EXISTS (SELECT 1 FROM agent_snapshot_locations l WHERE l.digest = s.digest)
+			  AND EXISTS (
+				SELECT 1 FROM agent_snapshot_retention_claims c
+				JOIN agent_snapshots sibling ON sibling.id = c.snapshot_id
+				WHERE sibling.digest = s.digest
+				  AND (c.expires_at IS NULL OR c.expires_at > now())
+			  )
 		)
 		SELECT digest, kind
 		FROM candidates

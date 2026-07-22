@@ -156,6 +156,98 @@ func scanRetentionClaim(row scannable) (snapshot.RetentionClaim, error) {
 	return claim, nil
 }
 
+func scanProductionDetail(row scannable) (snapshot.ProductionDetail, error) {
+	var (
+		production                          snapshot.ProductionDetail
+		kind                                string
+		buildID                             sql.NullInt64
+		planID, attempt, stepKind, stepName sql.NullString
+		outputPort                          sql.NullString
+		workflowDefinitionID, workflowRunID sql.NullInt64
+		sourceMetadata                      []byte
+	)
+	err := row.Scan(
+		&production.ID, &kind, &production.CreatedBy,
+		&buildID, &planID, &attempt, &stepKind, &stepName, &outputPort,
+		&workflowDefinitionID, &workflowRunID, &sourceMetadata, &production.CreatedAt,
+	)
+	if err != nil {
+		return snapshot.ProductionDetail{}, err
+	}
+	production.Kind = snapshot.ProductionKind(kind)
+	production.OutputPort = outputPort.String
+	production.SourceMetadata = cloneJSON(sourceMetadata)
+	production.Inputs = make([]snapshot.ProductionInput, 0)
+	if production.Kind == snapshot.ProductionKindBuild {
+		build := snapshot.BuildOccurrence{
+			BuildID: int(buildID.Int64), PlanID: planID.String, Attempt: attempt.String,
+			StepKind: stepKind.String, StepName: stepName.String,
+		}
+		if workflowDefinitionID.Valid {
+			value := int(workflowDefinitionID.Int64)
+			build.WorkflowDefinitionID = &value
+		}
+		if workflowRunID.Valid {
+			value := snapshot.WorkflowRunID(workflowRunID.Int64)
+			build.WorkflowRunID = &value
+		}
+		production.Build = &build
+	}
+	if err := production.Validate(); err != nil {
+		return snapshot.ProductionDetail{}, fmt.Errorf("db: invalid persisted production detail: %w", err)
+	}
+	return production, nil
+}
+
+func scanProductionSummary(row scannable) (snapshot.ProductionSummary, error) {
+	var (
+		production                          snapshot.ProductionSummary
+		kind                                string
+		buildID                             sql.NullInt64
+		planID, attempt, stepKind, stepName sql.NullString
+		outputPort                          sql.NullString
+		workflowDefinitionID, workflowRunID sql.NullInt64
+		snapshotID                          int64
+		typeName, digest                    string
+		typeVersion                         int
+	)
+	err := row.Scan(
+		&production.ID, &kind, &production.CreatedBy,
+		&buildID, &planID, &attempt, &stepKind, &stepName, &outputPort,
+		&workflowDefinitionID, &workflowRunID, &production.CreatedAt,
+		&snapshotID, &typeName, &typeVersion, &digest,
+	)
+	if err != nil {
+		return snapshot.ProductionSummary{}, err
+	}
+	production.Kind = snapshot.ProductionKind(kind)
+	production.OutputPort = outputPort.String
+	typeRef, err := joinSnapshotType(typeName, typeVersion)
+	if err != nil {
+		return snapshot.ProductionSummary{}, err
+	}
+	production.Snapshot = snapshot.SnapshotRef{ID: snapshot.SnapshotID(snapshotID), Type: typeRef, Digest: snapshot.Digest(digest)}
+	if production.Kind == snapshot.ProductionKindBuild {
+		build := snapshot.BuildOccurrence{
+			BuildID: int(buildID.Int64), PlanID: planID.String, Attempt: attempt.String,
+			StepKind: stepKind.String, StepName: stepName.String,
+		}
+		if workflowDefinitionID.Valid {
+			value := int(workflowDefinitionID.Int64)
+			build.WorkflowDefinitionID = &value
+		}
+		if workflowRunID.Valid {
+			value := snapshot.WorkflowRunID(workflowRunID.Int64)
+			build.WorkflowRunID = &value
+		}
+		production.Build = &build
+	}
+	if err := production.Validate(); err != nil {
+		return snapshot.ProductionSummary{}, fmt.Errorf("db: invalid persisted production summary: %w", err)
+	}
+	return production, nil
+}
+
 func optionalInt64(value *snapshot.WorkflowRunID) any {
 	if value == nil {
 		return nil

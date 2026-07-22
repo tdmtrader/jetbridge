@@ -87,19 +87,39 @@ func (s *CommandSuite) TestAgentSnapshotFlagDefaults() {
 	maxFiles := runCmd.FindOptionByLongName("agent-snapshot-max-files")
 	s.NotNil(maxFiles)
 	s.Equal([]string{"100000"}, maxFiles.Default)
+	bindingRetention := runCmd.FindOptionByLongName("agent-snapshot-binding-retention")
+	s.NotNil(bindingRetention)
+	s.Equal([]string{"168h"}, bindingRetention.Default)
+	orphanGrace := runCmd.FindOptionByLongName("agent-snapshot-orphan-grace-period")
+	s.NotNil(orphanGrace)
+	s.Equal([]string{"1h"}, orphanGrace.Default)
+	gcInterval := runCmd.FindOptionByLongName("agent-snapshot-gc-interval")
+	s.NotNil(gcInterval)
+	s.Equal([]string{"5m"}, gcInterval.Default)
+	repairInterval := runCmd.FindOptionByLongName("agent-snapshot-repair-interval")
+	s.NotNil(repairInterval)
+	s.Equal([]string{"10m"}, repairInterval.Default)
 }
 
 func (s *CommandSuite) TestAgentSnapshotNumericBoundsAreAlwaysPositive() {
 	for name, mutate := range map[string]func(*atccmd.RunCommand){
-		"replication": func(command *atccmd.RunCommand) { command.AgentSnapshots.ReplicationFactor = 0 },
-		"max bytes":   func(command *atccmd.RunCommand) { command.AgentSnapshots.MaxBytes = -1 },
-		"max files":   func(command *atccmd.RunCommand) { command.AgentSnapshots.MaxFiles = 0 },
+		"replication":       func(command *atccmd.RunCommand) { command.AgentSnapshots.ReplicationFactor = 0 },
+		"max bytes":         func(command *atccmd.RunCommand) { command.AgentSnapshots.MaxBytes = -1 },
+		"max files":         func(command *atccmd.RunCommand) { command.AgentSnapshots.MaxFiles = 0 },
+		"binding retention": func(command *atccmd.RunCommand) { command.AgentSnapshots.BindingRetention = 0 },
+		"orphan grace":      func(command *atccmd.RunCommand) { command.AgentSnapshots.OrphanGracePeriod = -time.Second },
+		"gc interval":       func(command *atccmd.RunCommand) { command.AgentSnapshots.GCInterval = 0 },
+		"repair interval":   func(command *atccmd.RunCommand) { command.AgentSnapshots.RepairInterval = -time.Second },
 	} {
 		s.Run(name, func() {
 			command := &atccmd.RunCommand{}
 			command.AgentSnapshots.ReplicationFactor = 2
 			command.AgentSnapshots.MaxBytes = 10 << 30
 			command.AgentSnapshots.MaxFiles = 100000
+			command.AgentSnapshots.BindingRetention = 7 * 24 * time.Hour
+			command.AgentSnapshots.OrphanGracePeriod = time.Hour
+			command.AgentSnapshots.GCInterval = 5 * time.Minute
+			command.AgentSnapshots.RepairInterval = 10 * time.Minute
 			mutate(command)
 			err := atccmd.ValidateAgentSnapshotsForTest(command)
 			s.Error(err)
@@ -136,6 +156,10 @@ func (s *CommandSuite) TestEnabledAgentSnapshotsRequireK8sDaemonAndCompleteMTLS(
 	command.AgentSnapshots.ReplicationFactor = 2
 	command.AgentSnapshots.MaxBytes = 10 << 30
 	command.AgentSnapshots.MaxFiles = 100000
+	command.AgentSnapshots.BindingRetention = 7 * 24 * time.Hour
+	command.AgentSnapshots.OrphanGracePeriod = time.Hour
+	command.AgentSnapshots.GCInterval = 5 * time.Minute
+	command.AgentSnapshots.RepairInterval = 10 * time.Minute
 
 	err := atccmd.ValidateAgentSnapshotsForTest(command)
 	s.Error(err)

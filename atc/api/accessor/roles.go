@@ -126,6 +126,13 @@ var DefaultRoles = map[string]string{
 	atc.CreateAgentWorkflowVersion:  MemberRole,
 	atc.PromoteAgentWorkflowVersion: MemberRole,
 
+	atc.CreateAgentSnapshot:   MemberRole,
+	atc.ListAgentSnapshots:    ViewerRole,
+	atc.GetAgentSnapshot:      ViewerRole,
+	atc.DownloadAgentSnapshot: ViewerRole,
+	atc.PinAgentSnapshot:      MemberRole,
+	atc.UnpinAgentSnapshot:    MemberRole,
+
 	// Ticket-core routes (00-shared-contracts.md §4.2). UpdateAgentTicketTask
 	// is principal-only in the wrappa and deliberately absent here.
 	atc.ListAgentTickets:      ViewerRole,

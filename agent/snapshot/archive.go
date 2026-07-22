@@ -101,7 +101,7 @@ func ValidateArchiveLimits(ctx context.Context, source io.Reader, limits Archive
 			return err
 		}
 		if int64(len(materialized)) > limits.MaxEntries-int64(len(planned)) {
-			return fmt.Errorf("snapshot: archive exceeds entry limit of %d", limits.MaxEntries)
+			return fmt.Errorf("%w: archive exceeds entry limit of %d", ErrLimitExceeded, limits.MaxEntries)
 		}
 		for _, entry := range planned {
 			materialized[entry.name] = capturedEntry{name: entry.name, kind: extractedDirectory}
@@ -117,7 +117,7 @@ func ValidateArchiveLimits(ctx context.Context, source io.Reader, limits Archive
 			continue
 		}
 		if contentBytes > limits.MaxContentBytes-header.Size {
-			return fmt.Errorf("snapshot: archive exceeds regular content limit of %d bytes", limits.MaxContentBytes)
+			return fmt.Errorf("%w: archive exceeds regular content limit of %d bytes", ErrLimitExceeded, limits.MaxContentBytes)
 		}
 		contentBytes += header.Size
 		copied, err := io.Copy(io.Discard, contextReader{ctx: ctx, reader: reader})
@@ -721,7 +721,7 @@ func extractTar(
 			return nil, err
 		}
 		if int64(len(index.entries))+int64(len(planned)) > maxEntries {
-			return nil, fmt.Errorf("snapshot: archive exceeds entry limit of %d", maxEntries)
+			return nil, fmt.Errorf("%w: archive exceeds entry limit of %d", ErrLimitExceeded, maxEntries)
 		}
 		for _, plannedEntry := range planned {
 			if plannedEntry.name == name {
@@ -1022,10 +1022,10 @@ func extractRegular(
 ) (capturedEntry, error) {
 	remaining := maxContent - spoolOffset
 	if remaining < 0 {
-		return capturedEntry{}, fmt.Errorf("snapshot: archive exceeds regular content limit of %d bytes", maxContent)
+		return capturedEntry{}, fmt.Errorf("%w: archive exceeds regular content limit of %d bytes", ErrLimitExceeded, maxContent)
 	}
 	if hdr.Size > remaining {
-		return capturedEntry{}, fmt.Errorf("snapshot: archive exceeds regular content limit of %d bytes", maxContent)
+		return capturedEntry{}, fmt.Errorf("%w: archive exceeds regular content limit of %d bytes", ErrLimitExceeded, maxContent)
 	}
 	if beforeMaterialize != nil {
 		if err := beforeMaterialize(root, hdr.Name); err != nil {
@@ -1083,7 +1083,7 @@ func extractRegular(
 		return capturedEntry{}, fmt.Errorf("snapshot: close regular file %q: %w", hdr.Name, err)
 	}
 	if written > remaining {
-		return capturedEntry{}, fmt.Errorf("snapshot: archive exceeds regular content limit of %d bytes", maxContent)
+		return capturedEntry{}, fmt.Errorf("%w: archive exceeds regular content limit of %d bytes", ErrLimitExceeded, maxContent)
 	}
 	if written != hdr.Size {
 		return capturedEntry{}, fmt.Errorf("snapshot: regular file %q is truncated: copied %d of %d bytes", hdr.Name, written, hdr.Size)
@@ -1401,7 +1401,7 @@ func verifyCaptureIndex(ctx context.Context, root *os.Root, index *captureIndex,
 			return nil
 		}
 		if int64(len(seen)) >= maxEntries {
-			return fmt.Errorf("canonical tree exceeds entry limit of %d", maxEntries)
+			return fmt.Errorf("%w: canonical tree exceeds entry limit of %d", ErrLimitExceeded, maxEntries)
 		}
 		expected, found := index.entries[name]
 		if !found {

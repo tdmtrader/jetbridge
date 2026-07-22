@@ -86,6 +86,23 @@ type FakeAgentSnapshotsFactory struct {
 		result2 bool
 		result3 error
 	}
+	GetAuthorizedDetailStub        func(context.Context, int, snapshot.SnapshotID) (snapshot.Detail, bool, error)
+	getAuthorizedDetailMutex       sync.RWMutex
+	getAuthorizedDetailArgsForCall []struct {
+		arg1 context.Context
+		arg2 int
+		arg3 snapshot.SnapshotID
+	}
+	getAuthorizedDetailReturns struct {
+		result1 snapshot.Detail
+		result2 bool
+		result3 error
+	}
+	getAuthorizedDetailReturnsOnCall map[int]struct {
+		result1 snapshot.Detail
+		result2 bool
+		result3 error
+	}
 	ListAuthorizedStub        func(context.Context, int, snapshot.SnapshotListFilter) ([]snapshot.Snapshot, error)
 	listAuthorizedMutex       sync.RWMutex
 	listAuthorizedArgsForCall []struct {
@@ -535,6 +552,75 @@ func (fake *FakeAgentSnapshotsFactory) GetAuthorizedReturnsOnCall(i int, result1
 	}
 	fake.getAuthorizedReturnsOnCall[i] = struct {
 		result1 snapshot.Snapshot
+		result2 bool
+		result3 error
+	}{result1, result2, result3}
+}
+
+func (fake *FakeAgentSnapshotsFactory) GetAuthorizedDetail(arg1 context.Context, arg2 int, arg3 snapshot.SnapshotID) (snapshot.Detail, bool, error) {
+	fake.getAuthorizedDetailMutex.Lock()
+	ret, specificReturn := fake.getAuthorizedDetailReturnsOnCall[len(fake.getAuthorizedDetailArgsForCall)]
+	fake.getAuthorizedDetailArgsForCall = append(fake.getAuthorizedDetailArgsForCall, struct {
+		arg1 context.Context
+		arg2 int
+		arg3 snapshot.SnapshotID
+	}{arg1, arg2, arg3})
+	stub := fake.GetAuthorizedDetailStub
+	fakeReturns := fake.getAuthorizedDetailReturns
+	fake.recordInvocation("GetAuthorizedDetail", []interface{}{arg1, arg2, arg3})
+	fake.getAuthorizedDetailMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2, arg3)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2, ret.result3
+	}
+	return fakeReturns.result1, fakeReturns.result2, fakeReturns.result3
+}
+
+func (fake *FakeAgentSnapshotsFactory) GetAuthorizedDetailCallCount() int {
+	fake.getAuthorizedDetailMutex.RLock()
+	defer fake.getAuthorizedDetailMutex.RUnlock()
+	return len(fake.getAuthorizedDetailArgsForCall)
+}
+
+func (fake *FakeAgentSnapshotsFactory) GetAuthorizedDetailCalls(stub func(context.Context, int, snapshot.SnapshotID) (snapshot.Detail, bool, error)) {
+	fake.getAuthorizedDetailMutex.Lock()
+	defer fake.getAuthorizedDetailMutex.Unlock()
+	fake.GetAuthorizedDetailStub = stub
+}
+
+func (fake *FakeAgentSnapshotsFactory) GetAuthorizedDetailArgsForCall(i int) (context.Context, int, snapshot.SnapshotID) {
+	fake.getAuthorizedDetailMutex.RLock()
+	defer fake.getAuthorizedDetailMutex.RUnlock()
+	argsForCall := fake.getAuthorizedDetailArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3
+}
+
+func (fake *FakeAgentSnapshotsFactory) GetAuthorizedDetailReturns(result1 snapshot.Detail, result2 bool, result3 error) {
+	fake.getAuthorizedDetailMutex.Lock()
+	defer fake.getAuthorizedDetailMutex.Unlock()
+	fake.GetAuthorizedDetailStub = nil
+	fake.getAuthorizedDetailReturns = struct {
+		result1 snapshot.Detail
+		result2 bool
+		result3 error
+	}{result1, result2, result3}
+}
+
+func (fake *FakeAgentSnapshotsFactory) GetAuthorizedDetailReturnsOnCall(i int, result1 snapshot.Detail, result2 bool, result3 error) {
+	fake.getAuthorizedDetailMutex.Lock()
+	defer fake.getAuthorizedDetailMutex.Unlock()
+	fake.GetAuthorizedDetailStub = nil
+	if fake.getAuthorizedDetailReturnsOnCall == nil {
+		fake.getAuthorizedDetailReturnsOnCall = make(map[int]struct {
+			result1 snapshot.Detail
+			result2 bool
+			result3 error
+		})
+	}
+	fake.getAuthorizedDetailReturnsOnCall[i] = struct {
+		result1 snapshot.Detail
 		result2 bool
 		result3 error
 	}{result1, result2, result3}

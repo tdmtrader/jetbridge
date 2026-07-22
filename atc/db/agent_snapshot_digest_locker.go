@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"sync"
 	"time"
@@ -51,6 +52,7 @@ func (manager *agentSnapshotDigestLocker) AcquireMany(
 	}
 	lease := &agentSnapshotDigestLease{
 		conn:    connection,
+		owner:   manager.conn,
 		covered: make(map[snapshot.Digest]struct{}, len(ordered)),
 	}
 	for _, digest := range ordered {
@@ -76,10 +78,69 @@ func snapshotAdvisoryLockKey(domain, identity string) int64 {
 type agentSnapshotDigestLease struct {
 	mutex    sync.Mutex
 	conn     *sql.Conn
+	owner    DbConn
 	keys     []int64
 	covered  map[snapshot.Digest]struct{}
 	closed   bool
 	closeErr error
+}
+
+func (lease *agentSnapshotDigestLease) acquireConnection(
+	owner DbConn,
+	digests []snapshot.Digest,
+) (*sql.Conn, func(), error) {
+	if !sameAgentSnapshotDBConnection(lease.owner, owner) {
+		return nil, nil, fmt.Errorf("db: snapshot digest lease belongs to another database connection")
+	}
+	lease.mutex.Lock()
+	if lease.closed {
+		lease.mutex.Unlock()
+		return nil, nil, fmt.Errorf("db: snapshot digest lease is closed")
+	}
+	for _, digest := range digests {
+		if _, found := lease.covered[digest]; !found {
+			lease.mutex.Unlock()
+			return nil, nil, fmt.Errorf("snapshot: digest lease does not cover %s", digest)
+		}
+	}
+	return lease.conn, lease.mutex.Unlock, nil
+}
+
+func sameAgentSnapshotDBConnection(left, right DbConn) bool {
+	left = unwrapAgentSnapshotDBConnection(left)
+	right = unwrapAgentSnapshotDBConnection(right)
+	if left == nil || right == nil || reflect.TypeOf(left) != reflect.TypeOf(right) {
+		return false
+	}
+	if !reflect.TypeOf(left).Comparable() {
+		return false
+	}
+	return left == right
+}
+
+func unwrapAgentSnapshotDBConnection(connection DbConn) DbConn {
+	for range 16 {
+		value := reflect.ValueOf(connection)
+		if value.Kind() == reflect.Pointer {
+			if value.IsNil() {
+				return connection
+			}
+			value = value.Elem()
+		}
+		if value.Kind() != reflect.Struct {
+			return connection
+		}
+		field := value.FieldByName("DbConn")
+		if !field.IsValid() || !field.CanInterface() {
+			return connection
+		}
+		unwrapped, ok := field.Interface().(DbConn)
+		if !ok || unwrapped == nil {
+			return connection
+		}
+		connection = unwrapped
+	}
+	return connection
 }
 
 func (lease *agentSnapshotDigestLease) Covers(digest snapshot.Digest) bool {

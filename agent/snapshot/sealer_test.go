@@ -40,6 +40,7 @@ type sealerMetadataStore struct {
 	stageErr     error
 	stageErrAt   int
 	stageHook    func()
+	stageResult  func(StagedUpload) StagedUpload
 	states       map[Digest]DigestState
 	stateErr     error
 	commit       *SealCommit
@@ -57,10 +58,14 @@ func (s *sealerMetadataStore) StageUpload(_ context.Context, _ DigestLease, requ
 	if s.stageErr != nil && (s.stageErrAt == 0 || s.stageErrAt == len(s.stages)) {
 		return StagedUpload{}, s.stageErr
 	}
-	return StagedUpload{
+	stage := StagedUpload{
 		ID: int64(len(s.stages)), Digest: request.Digest, TeamID: request.TeamID,
 		Attempt: request.Attempt, LeaseExpiresAt: request.LeaseExpiresAt, CreatedAt: request.LeaseExpiresAt.Add(-time.Hour),
-	}, nil
+	}
+	if s.stageResult != nil {
+		stage = s.stageResult(stage)
+	}
+	return stage, nil
 }
 
 func (s *sealerMetadataStore) DigestState(_ context.Context, _ DigestLease, digest Digest, _ time.Time) (DigestState, error) {
@@ -107,6 +112,7 @@ type sealerContentStore struct {
 	putErr      error
 	exists      map[Location]bool
 	existsErr   error
+	existsErrs  map[Location]error
 	openContent map[SnapshotID][]byte
 }
 
@@ -126,6 +132,9 @@ func (s *sealerContentStore) Put(_ context.Context, digest Digest, reader io.Rea
 
 func (s *sealerContentStore) Exists(_ context.Context, location Location) (bool, error) {
 	*s.events = append(*s.events, "exists:"+location.Key)
+	if err := s.existsErrs[location]; err != nil {
+		return false, err
+	}
 	if s.existsErr != nil {
 		return false, s.existsErr
 	}
@@ -204,6 +213,14 @@ func TestNewBatchSealerRejectsMissingDependenciesAndInvalidOptions(t *testing.T)
 			_, err := NewBatchSealer(canonicalizer, registry, metadata, content, locks, WithBatchSealerStageTTL(24*time.Hour+time.Nanosecond))
 			return err
 		},
+		"zero binding retention": func() error {
+			_, err := NewBatchSealer(canonicalizer, registry, metadata, content, locks, WithBatchSealerBindingRetention(0))
+			return err
+		},
+		"negative binding retention": func() error {
+			_, err := NewBatchSealer(canonicalizer, registry, metadata, content, locks, WithBatchSealerBindingRetention(-time.Second))
+			return err
+		},
 		"nil clock": func() error {
 			_, err := NewBatchSealer(canonicalizer, registry, metadata, content, locks, WithBatchSealerClock(nil))
 			return err
@@ -215,6 +232,289 @@ func TestNewBatchSealerRejectsMissingDependenciesAndInvalidOptions(t *testing.T)
 				t.Fatal("NewBatchSealer accepted invalid construction")
 			}
 		})
+	}
+}
+
+func TestBatchSealerUploadsOneValidatedSnapshotWithHonestOccurrenceAndUploaderPin(t *testing.T) {
+	now := time.Date(2026, time.July, 22, 14, 0, 0, 0, time.UTC)
+	body := tarBytes(t, "value.txt", "uploaded")
+	digest := canonicalDigest(t, body)
+	manifest := Snapshot{
+		ID: 9007199254740993, Type: TypeRef("opaque/v1"), Digest: digest,
+		ByteSize: int64(len(canonicalBody(t, body))), FileCount: 1,
+		Representation: "application/x-tar", IntrinsicMetadata: json.RawMessage(`{"kind":"opaque"}`),
+		ContentState: ContentStateAvailable, CreatedAt: now,
+	}
+	metadata := &sealerMetadataStore{
+		authorized: map[SnapshotID]Snapshot{manifest.ID: manifest},
+		commitResult: map[string]SealedOutput{
+			"upload": {Port: Port{Name: "snapshot", Type: manifest.Type}, Snapshot: SnapshotRef{ID: manifest.ID, Type: manifest.Type, Digest: manifest.Digest}},
+		},
+	}
+	events := &metadata.events
+	content := &sealerContentStore{events: events, exists: map[Location]bool{}}
+	lease := &sealerLease{digests: map[Digest]bool{}}
+	locks := &sealerLocks{lease: lease}
+	registry := sealerRegistry{TypeRef("opaque/v1"): sealerValidatorFunc(func(_ context.Context, root *os.Root, validation ValidationContext) (ValidationResult, error) {
+		if len(validation.Inputs()) != 0 {
+			return ValidationResult{}, fmt.Errorf("manual upload unexpectedly received inputs")
+		}
+		value, err := root.ReadFile("value.txt")
+		if err != nil || string(value) != "uploaded" {
+			return ValidationResult{}, fmt.Errorf("unexpected upload tree: %q: %v", value, err)
+		}
+		return ValidationResult{IntrinsicMetadata: json.RawMessage(`{"kind":"opaque"}`)}, nil
+	})}
+	sealer, err := NewBatchSealer(Canonicalizer{TempDir: t.TempDir()}, registry, metadata, content, locks,
+		WithBatchSealerClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := &sealerReadCloser{Reader: bytes.NewReader(body)}
+	got, err := sealer.Upload(context.Background(), UploadRequest{
+		TeamID: 1, TeamName: "main", UploadedBy: "Alice", Actor: "github:subject-1",
+		IdempotencyKey: "upload-key", Type: TypeRef("opaque/v1"),
+		OpenTar:        func(context.Context) (io.ReadCloser, error) { return reader, nil },
+		SourceMetadata: json.RawMessage(`{"adapter":"upload","uploader":"Alice"}`),
+	})
+	if err != nil {
+		t.Fatalf("Upload() error = %v", err)
+	}
+	if !reflect.DeepEqual(got, manifest) {
+		t.Fatalf("Upload() = %#v, want %#v", got, manifest)
+	}
+	if reader.closed != 1 || lease.closed != 1 {
+		t.Fatalf("resource closes: reader=%d lease=%d", reader.closed, lease.closed)
+	}
+	if len(metadata.stages) != 1 || metadata.stages[0].Attempt != "upload:upload-key" {
+		t.Fatalf("stages = %#v", metadata.stages)
+	}
+	if metadata.commit == nil || metadata.commit.Context.Upload == nil || metadata.commit.Context.Build != nil ||
+		metadata.commit.Context.Upload.IdempotencyKey != "upload-key" {
+		t.Fatalf("commit occurrence = %#v", metadata.commit)
+	}
+	if len(metadata.commit.Outputs) != 1 {
+		t.Fatalf("commit outputs = %#v", metadata.commit.Outputs)
+	}
+	output := metadata.commit.Outputs[0]
+	if output.Port.Name != "snapshot" || output.Port.Type != TypeRef("opaque/v1") ||
+		len(output.Retention) != 1 || output.Retention[0].Class != RetentionClassPin ||
+		output.Retention[0].Actor != "github:subject-1" || output.Retention[0].Reason != "manual upload" ||
+		string(output.SourceMetadata) != `{"adapter":"upload","uploader":"Alice"}` {
+		t.Fatalf("upload commit output = %#v", output)
+	}
+	if eventIndex(*events, "stage:") >= eventIndex(*events, "put:") || eventIndex(*events, "put:") >= eventIndex(*events, "commit") {
+		t.Fatalf("event order = %v", *events)
+	}
+}
+
+func TestBatchSealerUsesOneClockReadingForOrphanGraceAndBindingRetention(t *testing.T) {
+	sealNow := time.Date(2026, time.July, 22, 15, 0, 0, 0, time.UTC)
+	clockCalls := 0
+	metadata := &sealerMetadataStore{}
+	events := &metadata.events
+	content := &sealerContentStore{events: events, exists: map[Location]bool{}}
+	lease := &sealerLease{digests: map[Digest]bool{}}
+	locks := &sealerLocks{lease: lease}
+	registry := sealerRegistry{TypeRef("opaque/v1"): sealerValidatorFunc(func(context.Context, *os.Root, ValidationContext) (ValidationResult, error) {
+		return ValidationResult{}, nil
+	})}
+	sealer, err := NewBatchSealer(
+		Canonicalizer{TempDir: t.TempDir()}, registry, metadata, content, locks,
+		WithBatchSealerClock(func() time.Time {
+			clockCalls++
+			return sealNow.Add(time.Duration(clockCalls-1) * time.Hour)
+		}),
+		WithBatchSealerStageTTL(3*time.Hour),
+		WithBatchSealerBindingRetention(48*time.Hour),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := sealerRequest([]OutputSource{
+		sealerSource("first", "first", "opaque/v1", tarBytes(t, "first", "one")),
+		sealerSource("second", "second", "opaque/v1", tarBytes(t, "second", "two")),
+	})
+	if _, err := sealer.Seal(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if clockCalls != 1 {
+		t.Fatalf("clock calls = %d, want 1", clockCalls)
+	}
+	for _, stage := range metadata.stages {
+		if !stage.LeaseExpiresAt.Equal(sealNow.Add(3 * time.Hour)) {
+			t.Fatalf("stage expiry = %s", stage.LeaseExpiresAt)
+		}
+	}
+	if metadata.commit == nil || len(metadata.commit.Outputs) != 2 {
+		t.Fatalf("commit = %#v", metadata.commit)
+	}
+	for _, output := range metadata.commit.Outputs {
+		if len(output.Retention) != 1 || output.Retention[0].ExpiresAt == nil ||
+			!output.Retention[0].ExpiresAt.Equal(sealNow.Add(48*time.Hour)) {
+			t.Fatalf("binding retention = %#v", output.Retention)
+		}
+	}
+}
+
+func TestBatchSealerCanonicalizesSealTimeToPostgresPrecision(t *testing.T) {
+	sealNow := time.Date(2026, time.July, 22, 15, 0, 0, 123456789, time.UTC)
+	metadata := &sealerMetadataStore{
+		stageResult: func(stage StagedUpload) StagedUpload {
+			stage.LeaseExpiresAt = stage.LeaseExpiresAt.Truncate(time.Microsecond)
+			stage.CreatedAt = stage.CreatedAt.Truncate(time.Microsecond)
+			return stage
+		},
+	}
+	events := &metadata.events
+	content := &sealerContentStore{events: events, exists: map[Location]bool{}}
+	locks := &sealerLocks{lease: &sealerLease{digests: map[Digest]bool{}}}
+	registry := sealerRegistry{TypeRef("opaque/v1"): sealerValidatorFunc(func(context.Context, *os.Root, ValidationContext) (ValidationResult, error) {
+		return ValidationResult{}, nil
+	})}
+	sealer, err := NewBatchSealer(
+		Canonicalizer{TempDir: t.TempDir()}, registry, metadata, content, locks,
+		WithBatchSealerClock(func() time.Time { return sealNow }),
+		WithBatchSealerStageTTL(3*time.Hour),
+		WithBatchSealerBindingRetention(48*time.Hour),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := sealer.Seal(context.Background(), sealerRequest([]OutputSource{
+		sealerSource("result", "result", "opaque/v1", tarBytes(t, "result", "value")),
+	})); err != nil {
+		t.Fatalf("Seal() error after PostgreSQL precision round trip = %v", err)
+	}
+
+	wantNow := sealNow.Truncate(time.Microsecond)
+	if got := metadata.stages[0].LeaseExpiresAt; !got.Equal(wantNow.Add(3 * time.Hour)) {
+		t.Fatalf("stage expiry = %s, want %s", got, wantNow.Add(3*time.Hour))
+	}
+	if metadata.commit == nil || len(metadata.commit.Outputs) != 1 || len(metadata.commit.Outputs[0].Retention) != 1 {
+		t.Fatalf("commit retention = %#v", metadata.commit)
+	}
+	gotExpiry := metadata.commit.Outputs[0].Retention[0].ExpiresAt
+	if gotExpiry == nil || !gotExpiry.Equal(wantNow.Add(48*time.Hour)) {
+		t.Fatalf("binding expiry = %v, want %s", gotExpiry, wantNow.Add(48*time.Hour))
+	}
+}
+
+func TestBatchSealerWorkflowRetentionRemainsPermanent(t *testing.T) {
+	definitionID := 1
+	runID := WorkflowRunID(2)
+	metadata := &sealerMetadataStore{}
+	events := &metadata.events
+	content := &sealerContentStore{events: events, exists: map[Location]bool{}}
+	locks := &sealerLocks{lease: &sealerLease{digests: map[Digest]bool{}}}
+	registry := sealerRegistry{TypeRef("opaque/v1"): sealerValidatorFunc(func(context.Context, *os.Root, ValidationContext) (ValidationResult, error) {
+		return ValidationResult{}, nil
+	})}
+	sealer, err := NewBatchSealer(Canonicalizer{TempDir: t.TempDir()}, registry, metadata, content, locks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := sealerSource("result", "result", "opaque/v1", tarBytes(t, "result", "value"))
+	source.Retention, source.WorkflowPort = RetentionClassWorkflow, "result"
+	request := sealerRequest([]OutputSource{source})
+	request.WorkflowDefinitionID, request.WorkflowRunID = &definitionID, &runID
+	if _, err := sealer.Seal(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	retention := metadata.commit.Outputs[0].Retention
+	if len(retention) != 1 || retention[0].Class != RetentionClassWorkflow || retention[0].ExpiresAt != nil {
+		t.Fatalf("workflow retention = %#v", retention)
+	}
+}
+
+func TestBatchSealerUploadClassifiesContentFailureAndLeavesRecoverableStage(t *testing.T) {
+	tempDir := t.TempDir()
+	metadata := &sealerMetadataStore{}
+	events := &metadata.events
+	content := &sealerContentStore{events: events, exists: map[Location]bool{}, putErr: errors.New("daemon address must stay bounded by transport")}
+	lease := &sealerLease{digests: map[Digest]bool{}}
+	locks := &sealerLocks{lease: lease}
+	registry := sealerRegistry{TypeRef("opaque/v1"): sealerValidatorFunc(func(context.Context, *os.Root, ValidationContext) (ValidationResult, error) {
+		return ValidationResult{}, nil
+	})}
+	sealer, err := NewBatchSealer(Canonicalizer{TempDir: tempDir}, registry, metadata, content, locks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := &sealerReadCloser{Reader: bytes.NewReader(tarBytes(t, "value", "uploaded"))}
+	_, err = sealer.Upload(context.Background(), UploadRequest{
+		TeamID: 1, TeamName: "main", UploadedBy: "Alice", Actor: "github:subject-1",
+		IdempotencyKey: "upload-failure", Type: "opaque/v1",
+		OpenTar: func(context.Context) (io.ReadCloser, error) { return reader, nil },
+	})
+	if !errors.Is(err, ErrContentUnavailable) {
+		t.Fatalf("Upload() error = %v, want ErrContentUnavailable", err)
+	}
+	if len(metadata.stages) != 1 || metadata.commit != nil {
+		t.Fatalf("failure durability: stages=%#v commit=%#v", metadata.stages, metadata.commit)
+	}
+	if reader.closed != 1 || lease.closed != 1 {
+		t.Fatalf("resource closes: reader=%d lease=%d", reader.closed, lease.closed)
+	}
+	assertDirectoryEmpty(t, tempDir)
+}
+
+func TestBatchSealerUploadPreservesCancellationFromTarSource(t *testing.T) {
+	metadata := &sealerMetadataStore{}
+	events := &metadata.events
+	content := &sealerContentStore{events: events}
+	sealer, err := NewBatchSealer(
+		Canonicalizer{TempDir: t.TempDir()},
+		sealerRegistry{TypeRef("opaque/v1"): sealerValidatorFunc(func(context.Context, *os.Root, ValidationContext) (ValidationResult, error) {
+			return ValidationResult{}, nil
+		})},
+		metadata, content, &sealerLocks{lease: &sealerLease{}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = sealer.Upload(context.Background(), UploadRequest{
+		TeamID: 1, TeamName: "main", UploadedBy: "Alice", Actor: "github:subject-1",
+		IdempotencyKey: "cancelled-upload", Type: "opaque/v1",
+		OpenTar: func(context.Context) (io.ReadCloser, error) { return nil, context.Canceled },
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Upload() error = %v, want context.Canceled", err)
+	}
+	if len(metadata.stages) != 0 || content.putCalls != 0 {
+		t.Fatalf("cancelled upload mutated storage: stages=%v puts=%d", metadata.stages, content.putCalls)
+	}
+}
+
+func TestBatchSealerUploadRejectsUnsupportedTypeBeforeOpeningArchive(t *testing.T) {
+	metadata := &sealerMetadataStore{}
+	events := []string{}
+	content := &sealerContentStore{events: &events}
+	sealer, err := NewBatchSealer(
+		Canonicalizer{TempDir: t.TempDir()},
+		sealerRegistry{TypeRef("opaque/v1"): sealerValidatorFunc(func(context.Context, *os.Root, ValidationContext) (ValidationResult, error) {
+			return ValidationResult{}, nil
+		})},
+		metadata, content, &sealerLocks{lease: &sealerLease{}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened := 0
+	_, err = sealer.Upload(context.Background(), UploadRequest{
+		TeamID: 1, TeamName: "main", UploadedBy: "Alice", Actor: "github:subject-1",
+		IdempotencyKey: "unsupported-upload", Type: "unknown/v1",
+		OpenTar: func(context.Context) (io.ReadCloser, error) {
+			opened++
+			return io.NopCloser(bytes.NewReader(tarBytes(t, "value", "large"))), nil
+		},
+	})
+	if !errors.Is(err, ErrUnsupportedType) {
+		t.Fatalf("Upload() error = %v, want ErrUnsupportedType", err)
+	}
+	if opened != 0 || len(metadata.stages) != 0 || content.putCalls != 0 {
+		t.Fatalf("unsupported type performed work: opens=%d stages=%d puts=%d", opened, len(metadata.stages), content.putCalls)
 	}
 }
 
@@ -609,6 +909,52 @@ func TestBatchSealerReusesOnlyVerifiedAvailableLocations(t *testing.T) {
 	}
 }
 
+func TestBatchSealerReusesVerifiedReplicaAfterEarlierVerificationError(t *testing.T) {
+	now := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.UTC)
+	body := tarBytes(t, "value", "same")
+	digest := canonicalDigest(t, body)
+	canonical := canonicalBody(t, body)
+	unreachable := Location{Digest: digest, Driver: "test", Key: "a-unreachable"}
+	verified := Location{Digest: digest, Driver: "test", Key: "b-verified"}
+	metadata := &sealerMetadataStore{states: map[Digest]DigestState{digest: availableDigestState(
+		digest, int64(len(canonical)), now, unreachable, verified,
+	)}}
+	events := &metadata.events
+	content := &sealerContentStore{
+		events: events,
+		exists: map[Location]bool{verified: true},
+		existsErrs: map[Location]error{
+			unreachable: errors.New("node address and transport detail must remain non-authoritative"),
+		},
+	}
+	locks := &sealerLocks{lease: &sealerLease{digests: map[Digest]bool{}}}
+	sealer := mustNewSealer(t, t.TempDir(), metadata, content, locks, sealerValidatorFunc(func(context.Context, *os.Root, ValidationContext) (ValidationResult, error) {
+		return ValidationResult{}, nil
+	}), WithBatchSealerClock(func() time.Time { return now }))
+
+	if _, err := sealer.Seal(context.Background(), sealerRequest([]OutputSource{
+		sealerSource("result", "result", "opaque/v1", body),
+	})); err != nil {
+		t.Fatalf("Seal() error = %v", err)
+	}
+	if content.putCalls != 0 {
+		t.Fatalf("Put called %d times despite a verified recorded replica", content.putCalls)
+	}
+	if got := metadata.commit.Outputs[0].Locations; !reflect.DeepEqual(got, []Location{verified}) {
+		t.Fatalf("committed locations = %#v, want verified replica %#v", got, verified)
+	}
+	wantEvents := []string{"exists:a-unreachable", "exists:b-verified"}
+	var gotEvents []string
+	for _, event := range *events {
+		if strings.HasPrefix(event, "exists:") {
+			gotEvents = append(gotEvents, event)
+		}
+	}
+	if !reflect.DeepEqual(gotEvents, wantEvents) {
+		t.Fatalf("verification order = %v, want %v", gotEvents, wantEvents)
+	}
+}
+
 func TestBatchSealerReuploadsUnavailableOrUnverifiedDigests(t *testing.T) {
 	now := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.UTC)
 	body := tarBytes(t, "value", "same")
@@ -779,9 +1125,10 @@ func TestBatchSealerReleasesLeaseAndCapturedTreeOnStorageErrors(t *testing.T) {
 		"state": func(metadata *sealerMetadataStore, _ *sealerContentStore, failure error) {
 			metadata.stateErr = failure
 		},
-		"exists": func(metadata *sealerMetadataStore, content *sealerContentStore, failure error) {
+		"exists and replacement put": func(metadata *sealerMetadataStore, content *sealerContentStore, failure error) {
 			metadata.states = map[Digest]DigestState{digest: availableDigestState(digest, int64(len(canonical)), now, location)}
 			content.existsErr = failure
+			content.putErr = failure
 		},
 		"put": func(_ *sealerMetadataStore, content *sealerContentStore, failure error) {
 			content.putErr = failure

@@ -31,7 +31,7 @@ func (wrappa CompressionWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 
 			wrapped[name] = gzipEnforcedHandler(handler)
 		// skip gzip as this endpoint does it already
-		case atc.DownloadCLI:
+		case atc.DownloadCLI, atc.DownloadAgentSnapshot:
 			wrapped[name] = handler
 		default:
 			wrapped[name] = gzhttp.GzipHandler(handler)
