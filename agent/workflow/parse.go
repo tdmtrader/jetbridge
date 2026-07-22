@@ -1,12 +1,17 @@
 package workflow
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"text/template"
 	"time"
 
+	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/atc"
 	"github.com/goccy/go-yaml"
 )
 
@@ -38,6 +43,622 @@ func Parse(raw []byte) (*Config, error) {
 		return nil, err
 	}
 	return &cfg, nil
+}
+
+// ParseCompiled dispatches a workflow source document by schema_version and
+// returns an explicit tagged value. Parse remains the legacy schema-1/2 API so
+// existing ticket-oriented callers cannot accidentally consume a version-3
+// function as a zero-valued Config.
+func ParseCompiled(raw []byte) (*CompiledDefinition, error) {
+	version, err := parseSchemaVersion(raw)
+	if err != nil {
+		return nil, err
+	}
+
+	switch version {
+	case 1, 2:
+		legacy, err := Parse(raw)
+		if err != nil {
+			return nil, err
+		}
+		definition := &CompiledDefinition{
+			SchemaVersion: legacy.SchemaVersion,
+			Name:          legacy.Name,
+			Description:   legacy.Description,
+			Legacy:        legacy,
+		}
+		if err := definition.Validate(); err != nil {
+			return nil, err
+		}
+		return definition, nil
+	case 3:
+		return parseFunctionDefinition(raw)
+	default:
+		return nil, fmt.Errorf("workflow: schema_version must be 1, 2, or 3, got %d", version)
+	}
+}
+
+func parseSchemaVersion(raw []byte) (int, error) {
+	decoder := yaml.NewDecoder(bytes.NewReader(raw))
+	var document map[string]any
+	if err := decoder.Decode(&document); err != nil {
+		if err == io.EOF {
+			return 0, fmt.Errorf("parse workflow definition: empty document")
+		}
+		return 0, fmt.Errorf("parse workflow definition discriminator: %w", err)
+	}
+	value, found := document["schema_version"]
+	if !found {
+		return 0, fmt.Errorf("workflow: schema_version is required")
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return 0, fmt.Errorf("workflow: schema_version must be an integer")
+	}
+	var version int
+	if err := json.Unmarshal(encoded, &version); err != nil {
+		return 0, fmt.Errorf("workflow: schema_version must be an integer")
+	}
+	return version, nil
+}
+
+type functionSource struct {
+	SchemaVersion    int                   `json:"schema_version"`
+	Name             string                `json:"name"`
+	SignatureVersion int                   `json:"signature_version"`
+	Description      string                `json:"description,omitempty"`
+	Inputs           []snapshot.Port       `json:"inputs"`
+	Outputs          []FunctionOutput      `json:"outputs"`
+	Capabilities     map[string]Capability `json:"capabilities,omitempty"`
+	Resources        any                   `json:"resources,omitempty"`
+	ResourceTypes    any                   `json:"resource_types,omitempty"`
+	Prototypes       any                   `json:"prototypes,omitempty"`
+	VarSources       any                   `json:"var_sources,omitempty"`
+	Plan             any                   `json:"plan"`
+}
+
+type syntheticFunctionConfig struct {
+	VarSources    any                    `yaml:"var_sources,omitempty"`
+	Resources     any                    `yaml:"resources,omitempty"`
+	ResourceTypes any                    `yaml:"resource_types,omitempty"`
+	Prototypes    any                    `yaml:"prototypes,omitempty"`
+	Jobs          []syntheticFunctionJob `yaml:"jobs"`
+}
+
+type syntheticFunctionJob struct {
+	Name string `yaml:"name"`
+	Plan any    `yaml:"plan"`
+}
+
+func parseFunctionDefinition(raw []byte) (*CompiledDefinition, error) {
+	decoder := yaml.NewDecoder(bytes.NewReader(raw))
+	var document any
+	if err := decoder.Decode(&document); err != nil {
+		return nil, fmt.Errorf("parse workflow function: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("parse workflow function: exactly one YAML or JSON document is required")
+		}
+		return nil, fmt.Errorf("parse workflow function trailing document: %w", err)
+	}
+	if err := validateFunctionSourceKeys(document); err != nil {
+		return nil, err
+	}
+	documentJSON, err := json.Marshal(document)
+	if err != nil {
+		return nil, fmt.Errorf("parse workflow function document: %w", err)
+	}
+	jsonDecoder := json.NewDecoder(bytes.NewReader(documentJSON))
+	jsonDecoder.DisallowUnknownFields()
+	var source functionSource
+	if err := jsonDecoder.Decode(&source); err != nil {
+		return nil, fmt.Errorf("parse workflow function: %w", err)
+	}
+	if err := jsonDecoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("parse workflow function: unexpected trailing JSON value")
+		}
+		return nil, fmt.Errorf("parse workflow function trailing JSON: %w", err)
+	}
+	if source.SchemaVersion != 3 {
+		return nil, fmt.Errorf("workflow: function parser requires schema_version 3, got %d", source.SchemaVersion)
+	}
+
+	synthetic := syntheticFunctionConfig{
+		VarSources:    source.VarSources,
+		Resources:     source.Resources,
+		ResourceTypes: source.ResourceTypes,
+		Prototypes:    source.Prototypes,
+		Jobs: []syntheticFunctionJob{{
+			Name: "agent-function",
+			Plan: source.Plan,
+		}},
+	}
+	payload, err := yaml.Marshal(synthetic)
+	if err != nil {
+		return nil, fmt.Errorf("workflow: encode ordinary Concourse plan: %w", err)
+	}
+	var ordinary atc.Config
+	if err := atc.UnmarshalConfig(payload, &ordinary); err != nil {
+		return nil, fmt.Errorf("workflow: decode ordinary Concourse declarations and plan: %w", err)
+	}
+	if len(ordinary.Jobs) != 1 {
+		return nil, fmt.Errorf("workflow: internal function plan must decode as exactly one job")
+	}
+
+	definition := &CompiledDefinition{
+		SchemaVersion: source.SchemaVersion,
+		Name:          source.Name,
+		Description:   source.Description,
+		Function: &FunctionConfig{
+			SignatureVersion: source.SignatureVersion,
+			Inputs:           source.Inputs,
+			Outputs:          source.Outputs,
+			Capabilities:     source.Capabilities,
+			Resources:        ordinary.Resources,
+			ResourceTypes:    ordinary.ResourceTypes,
+			Prototypes:       ordinary.Prototypes,
+			VarSources:       ordinary.VarSources,
+			Plan:             ordinary.Jobs[0].PlanSequence,
+		},
+	}
+	if err := definition.Validate(); err != nil {
+		return nil, err
+	}
+	return definition, nil
+}
+
+func validateFunctionSourceKeys(document any) error {
+	root, ok := document.(map[string]any)
+	if !ok {
+		return nil // the typed JSON pass reports the shape error
+	}
+	if err := rejectObjectKeys(root, "workflow", []string{
+		"schema_version", "name", "signature_version", "description", "inputs", "outputs",
+		"capabilities", "resources", "resource_types", "prototypes", "var_sources", "plan",
+	}); err != nil {
+		return err
+	}
+	if inputs, ok := root["inputs"].([]any); ok {
+		for index, input := range inputs {
+			if object, ok := input.(map[string]any); ok {
+				if err := rejectObjectKeys(object, fmt.Sprintf("workflow.inputs[%d]", index), []string{"name", "type", "optional", "description"}); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	if outputs, ok := root["outputs"].([]any); ok {
+		for index, output := range outputs {
+			if object, ok := output.(map[string]any); ok {
+				if err := rejectObjectKeys(object, fmt.Sprintf("workflow.outputs[%d]", index), []string{"name", "type", "optional", "description", "from"}); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	if plan, found := root["plan"]; found {
+		if err := validateFunctionPlanSource(plan, "workflow.plan"); err != nil {
+			return err
+		}
+	}
+	capabilities, ok := root["capabilities"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	for name, value := range capabilities {
+		capability, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		path := fmt.Sprintf("workflow.capabilities[%q]", name)
+		if err := rejectObjectKeys(capability, path, []string{"contract", "sidecar"}); err != nil {
+			return err
+		}
+		if sidecar, ok := capability["sidecar"].(map[string]any); ok {
+			if err := validateSidecarSourceKeys(sidecar, path+".sidecar"); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validateSidecarSourceKeys(sidecar map[string]any, path string) error {
+	return validateInlineSidecarSource(sidecar, path)
+}
+
+func rejectObjectKeys(object map[string]any, path string, allowedFields []string) error {
+	allowed := make(map[string]struct{}, len(allowedFields))
+	for _, field := range allowedFields {
+		allowed[field] = struct{}{}
+	}
+	unknown := make([]string, 0)
+	for field := range object {
+		if _, found := allowed[field]; !found {
+			unknown = append(unknown, field)
+		}
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	sort.Strings(unknown)
+	return fmt.Errorf("workflow: %s: unknown field %q", path, unknown[0])
+}
+
+// validateFunctionPlanSource closes the ATC-owned object shapes before the
+// ordinary Concourse decoder runs. Step.UnmarshalJSON deliberately preserves
+// compatibility by recording unknown step-envelope fields, and several
+// nested configs use encoding/json, which otherwise drops unknown fields (and
+// matches field names case-insensitively). Version 3 is strict, so it audits
+// those raw objects while leaving provider-owned maps such as resource params,
+// image sources, vars, and across values opaque.
+func validateFunctionPlanSource(plan any, path string) error {
+	steps, ok := plan.([]any)
+	if !ok {
+		return nil // the ordinary ATC pass reports the shape error
+	}
+	for index, step := range steps {
+		if err := validateFunctionStepSource(step, fmt.Sprintf("%s[%d]", path, index)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateFunctionStepSource(value any, path string) error {
+	step, ok := value.(map[string]any)
+	if !ok {
+		return nil // the ordinary ATC pass reports the shape error
+	}
+
+	if nested, found := step["try"]; found {
+		if err := validateFunctionStepSource(nested, path+".try"); err != nil {
+			return err
+		}
+	}
+	if nested, found := step["do"]; found {
+		if err := validateFunctionStepListSource(nested, path+".do"); err != nil {
+			return err
+		}
+	}
+	if nested, found := step["in_parallel"]; found {
+		if err := validateInParallelSource(nested, path+".in_parallel"); err != nil {
+			return err
+		}
+	}
+	for _, hook := range []string{"on_success", "on_failure", "on_abort", "on_error", "ensure"} {
+		if nested, found := step[hook]; found {
+			if err := validateFunctionStepSource(nested, path+"."+hook); err != nil {
+				return err
+			}
+		}
+	}
+
+	if across, found := step["across"]; found {
+		if err := validateObjectListSource(across, path+".across", []string{"var", "values", "max_in_flight"}); err != nil {
+			return err
+		}
+	}
+
+	if _, isTask := step["task"]; isTask {
+		if config, found := step["config"]; found {
+			if err := validateTaskConfigSource(config, path+".config"); err != nil {
+				return err
+			}
+		}
+	}
+
+	for _, field := range []string{"container_limits", "container_requests"} {
+		if limits, found := step[field]; found {
+			if err := validateObjectSource(limits, path+"."+field, []string{"cpu", "memory", "ephemeral_storage"}); err != nil {
+				return err
+			}
+		}
+	}
+	for _, field := range []string{"input_types", "output_types"} {
+		if configs, found := step[field]; found {
+			if err := validateSnapshotTypeMapSource(configs, path+"."+field, field == "output_types"); err != nil {
+				return err
+			}
+		}
+	}
+	if sidecars, found := step["sidecars"]; found {
+		if err := validateSidecarListSource(sidecars, path+".sidecars"); err != nil {
+			return err
+		}
+	}
+	if devMCP, found := step["dev_mcp"]; found {
+		if err := validateInlineSidecarSource(devMCP, path+".dev_mcp"); err != nil {
+			return err
+		}
+	}
+	if policy, found := step["gate_policy"]; found {
+		if err := validateGatePolicySource(policy, path+".gate_policy"); err != nil {
+			return err
+		}
+	}
+	if judge, found := step["judge"]; found {
+		if err := validateJudgeSource(judge, path+".judge"); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func validateFunctionStepListSource(value any, path string) error {
+	steps, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	for index, step := range steps {
+		if err := validateFunctionStepSource(step, fmt.Sprintf("%s[%d]", path, index)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateInParallelSource(value any, path string) error {
+	switch config := value.(type) {
+	case []any:
+		return validateFunctionStepListSource(config, path)
+	case map[string]any:
+		if err := rejectObjectKeys(config, path, []string{"steps", "limit", "fail_fast"}); err != nil {
+			return err
+		}
+		if steps, found := config["steps"]; found {
+			return validateFunctionStepListSource(steps, path+".steps")
+		}
+	}
+	return nil
+}
+
+func validateTaskConfigSource(value any, path string) error {
+	config, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	if err := rejectObjectKeys(config, path, []string{
+		"platform", "rootfs_uri", "image_resource", "container_limits", "container_requests",
+		"params", "run", "inputs", "outputs", "caches", "scratch_paths",
+	}); err != nil {
+		return err
+	}
+	if image, found := config["image_resource"]; found {
+		if err := validateObjectSource(image, path+".image_resource", []string{"name", "type", "source", "version", "params", "tags"}); err != nil {
+			return err
+		}
+	}
+	for _, field := range []string{"container_limits", "container_requests"} {
+		if limits, found := config[field]; found {
+			if err := validateObjectSource(limits, path+"."+field, []string{"cpu", "memory", "ephemeral_storage"}); err != nil {
+				return err
+			}
+		}
+	}
+	if run, found := config["run"]; found {
+		if err := validateObjectSource(run, path+".run", []string{"path", "args", "dir", "user"}); err != nil {
+			return err
+		}
+	}
+	for _, list := range []struct {
+		field   string
+		allowed []string
+	}{
+		{field: "inputs", allowed: []string{"name", "path", "optional"}},
+		{field: "outputs", allowed: []string{"name", "path"}},
+		{field: "caches", allowed: []string{"path"}},
+		{field: "scratch_paths", allowed: []string{"path"}},
+	} {
+		if entries, found := config[list.field]; found {
+			if err := validateObjectListSource(entries, path+"."+list.field, list.allowed); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validateSnapshotTypeMapSource(value any, path string, output bool) error {
+	configs, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	if output {
+		for name, value := range configs {
+			if _, ok := value.(string); !ok {
+				return fmt.Errorf("workflow: %s[%q]: output type must be a type-reference string", path, name)
+			}
+		}
+		return nil
+	}
+
+	for name, value := range configs {
+		if err := validateObjectSource(value, fmt.Sprintf("%s[%q]", path, name), []string{"type", "optional"}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateSidecarListSource(value any, path string) error {
+	entries, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	for index, entry := range entries {
+		if err := validateInlineSidecarSource(entry, fmt.Sprintf("%s[%d]", path, index)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateInlineSidecarSource(value any, path string) error {
+	sidecar, ok := value.(map[string]any)
+	if !ok {
+		return nil // string file references and typed-shape errors go to ATC
+	}
+	if err := rejectObjectKeys(sidecar, path, []string{
+		"name", "image", "command", "args", "env", "ports", "resources", "workingDir", "image_artifact",
+	}); err != nil {
+		return err
+	}
+	if env, found := sidecar["env"]; found {
+		if err := validateObjectListSource(env, path+".env", []string{"name", "value"}); err != nil {
+			return err
+		}
+	}
+	if ports, found := sidecar["ports"]; found {
+		if err := validateObjectListSource(ports, path+".ports", []string{"containerPort", "protocol"}); err != nil {
+			return err
+		}
+	}
+	resources, ok := sidecar["resources"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	if err := rejectObjectKeys(resources, path+".resources", []string{"requests", "limits"}); err != nil {
+		return err
+	}
+	for _, field := range []string{"requests", "limits"} {
+		if quantities, found := resources[field]; found {
+			if err := validateObjectSource(quantities, path+".resources."+field, []string{"cpu", "memory"}); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validateGatePolicySource(value any, path string) error {
+	policy, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	if err := rejectObjectKeys(policy, path, []string{"gates", "on_gate_failure"}); err != nil {
+		return err
+	}
+	if gates, found := policy["gates"]; found {
+		return validateObjectListSource(gates, path+".gates", []string{"gate", "scope", "focus", "timeout", "retries"})
+	}
+	return nil
+}
+
+func validateJudgeSource(value any, path string) error {
+	judge, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	if err := rejectObjectKeys(judge, path, []string{"rubric", "pass_threshold", "model", "budget_usd"}); err != nil {
+		return err
+	}
+	if rubric, found := judge["rubric"]; found {
+		return validateObjectListSource(rubric, path+".rubric", []string{"name", "weight", "guidance"})
+	}
+	return nil
+}
+
+func validateObjectSource(value any, path string, allowed []string) error {
+	object, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	return rejectObjectKeys(object, path, allowed)
+}
+
+func validateObjectListSource(value any, path string, allowed []string) error {
+	entries, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	for index, entry := range entries {
+		object, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		entryPath := fmt.Sprintf("%s[%d]", path, index)
+		if err := rejectObjectKeys(object, entryPath, allowed); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func rejectUnknownPlanFields(steps []atc.Step) error {
+	for index := range steps {
+		if err := rejectUnknownStepFields(steps[index], fmt.Sprintf("plan[%d]", index)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func rejectUnknownStepFields(step atc.Step, path string) error {
+	if len(step.UnknownFields) > 0 {
+		fields := make([]string, 0, len(step.UnknownFields))
+		for field := range step.UnknownFields {
+			fields = append(fields, field)
+		}
+		sort.Strings(fields)
+		return fmt.Errorf("workflow: %s: unknown step field %q", path, fields[0])
+	}
+	return rejectUnknownStepConfigFields(step.Config, path)
+}
+
+func rejectUnknownStepConfigFields(config atc.StepConfig, path string) error {
+	switch step := config.(type) {
+	case *atc.TryStep:
+		return rejectUnknownStepFields(step.Step, path+".try")
+	case *atc.DoStep:
+		for index := range step.Steps {
+			if err := rejectUnknownStepFields(step.Steps[index], fmt.Sprintf("%s.do[%d]", path, index)); err != nil {
+				return err
+			}
+		}
+	case *atc.InParallelStep:
+		for index := range step.Config.Steps {
+			if err := rejectUnknownStepFields(step.Config.Steps[index], fmt.Sprintf("%s.in_parallel[%d]", path, index)); err != nil {
+				return err
+			}
+		}
+	case *atc.AcrossStep:
+		return rejectUnknownStepConfigFields(step.Step, path+".across")
+	case *atc.RetryStep:
+		return rejectUnknownStepConfigFields(step.Step, path+".attempts")
+	case *atc.TimeoutStep:
+		return rejectUnknownStepConfigFields(step.Step, path+".timeout")
+	case *atc.OnSuccessStep:
+		if err := rejectUnknownStepConfigFields(step.Step, path+".step"); err != nil {
+			return err
+		}
+		return rejectUnknownStepFields(step.Hook, path+".on_success")
+	case *atc.OnFailureStep:
+		if err := rejectUnknownStepConfigFields(step.Step, path+".step"); err != nil {
+			return err
+		}
+		return rejectUnknownStepFields(step.Hook, path+".on_failure")
+	case *atc.OnAbortStep:
+		if err := rejectUnknownStepConfigFields(step.Step, path+".step"); err != nil {
+			return err
+		}
+		return rejectUnknownStepFields(step.Hook, path+".on_abort")
+	case *atc.OnErrorStep:
+		if err := rejectUnknownStepConfigFields(step.Step, path+".step"); err != nil {
+			return err
+		}
+		return rejectUnknownStepFields(step.Hook, path+".on_error")
+	case *atc.EnsureStep:
+		if err := rejectUnknownStepConfigFields(step.Step, path+".step"); err != nil {
+			return err
+		}
+		return rejectUnknownStepFields(step.Hook, path+".ensure")
+	}
+	return nil
 }
 
 var validSidecarRoles = map[string]bool{"dev": true, "platform": true, "gateway": true, "custom": true}

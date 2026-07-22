@@ -353,6 +353,7 @@ func (step *PutStep) Visit(v StepVisitor) error {
 
 type TaskStep struct {
 	Name              string                          `json:"task"`
+	FunctionID        string                          `json:"function_id,omitempty"`
 	Privileged        bool                            `json:"privileged,omitempty"`
 	Hermetic          bool                            `json:"hermetic,omitempty"`
 	ConfigPath        string                          `json:"file,omitempty"`
@@ -404,6 +405,7 @@ func (step *RunStep) Visit(v StepVisitor) error {
 // never reads workflow tables.
 type AgentStep struct {
 	Name           string  `json:"agent"`
+	FunctionID     string  `json:"function_id,omitempty"`
 	Prompt         string  `json:"prompt,omitempty"`
 	PromptFile     string  `json:"prompt_file,omitempty"`
 	Model          string  `json:"model,omitempty"`

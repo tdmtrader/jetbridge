@@ -2,7 +2,9 @@ package workflow
 
 import "fmt"
 
-// Config is the parsed form of the workflow-definition YAML
+// Config is the legacy schema-version-1/2 parsed form of the
+// workflow-definition YAML. Version 3 uses FunctionConfig and is dispatched
+// through ParseCompiled; ticket-specific validation must not be applied to it.
 // (docs/superpowers/plans/agentic-platform/00-shared-contracts.md §6,
 // schema_version 1). Grammar decisions: §6.1 (linear agent/checkpoint
 // sequence), §6.2 (prompts inline, covered by the content hash),

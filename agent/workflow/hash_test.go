@@ -18,3 +18,20 @@ func TestHashMatchesPhaseconfigSemantics(t *testing.T) {
 		t.Error("Hash must be byte-sensitive")
 	}
 }
+
+func TestHashUnaffectedByCompiledModel(t *testing.T) {
+	manifest := workflow.Manifest{"workflow.yml": "hello"}
+	const wantManifestHash = "d751b547b9c1e2f93311395532e2ada8ff1d5e8b17cfaa2d9da6615b79f3c442"
+	if got := manifest.Hash(); got != wantManifestHash {
+		t.Fatalf("Manifest.Hash = %s, want %s", got, wantManifestHash)
+	}
+
+	raw := []byte(v3ProgramYAML)
+	wantRawHash := workflow.Hash(raw)
+	if _, err := workflow.ParseCompiled(raw); err != nil {
+		t.Fatalf("ParseCompiled: %v", err)
+	}
+	if got := workflow.Hash(raw); got != wantRawHash {
+		t.Fatalf("parsing changed raw-byte identity: got %s want %s", got, wantRawHash)
+	}
+}

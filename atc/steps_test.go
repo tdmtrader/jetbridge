@@ -806,6 +806,7 @@ jobs:
 - name: typed
   plan:
   - task: transform
+    function_id: transform-repository
     config:
       platform: linux
       run: {path: /bin/true}
@@ -823,6 +824,7 @@ jobs:
         workflow_definition_id: 17
         workflow_run_id: "9007199254740993"
   - agent: review
+    function_id: review-change
     prompt: review it
     capabilities: [dev, jira]
     inputs: [change]
@@ -838,6 +840,7 @@ jobs:
 		s.Len(config.Jobs[0].PlanSequence, 2)
 
 		task := config.Jobs[0].PlanSequence[0].Config.(*atc.TaskStep)
+		s.Equal("transform-repository", task.FunctionID)
 		s.Equal([]atc.TaskInputConfig{{Name: "source"}}, task.Config.Inputs)
 		s.Equal([]atc.TaskOutputConfig{{Name: "result"}}, task.Config.Outputs)
 		s.Equal(map[string]string{"source": "repository"}, task.InputMapping)
@@ -846,6 +849,7 @@ jobs:
 		s.Equal("9007199254740993", task.SnapshotOutputs["change"].WorkflowRunID)
 
 		agent := config.Jobs[0].PlanSequence[1].Config.(*atc.AgentStep)
+		s.Equal("review-change", agent.FunctionID)
 		s.Equal([]string{"dev", "jira"}, agent.Capabilities)
 		s.Equal([]string{"change"}, agent.Inputs)
 		s.Equal([]string{"review"}, agent.Outputs)
@@ -863,6 +867,7 @@ jobs:
 		jobs := raw["jobs"].([]any)
 		plan := jobs[0].(map[string]any)["plan"].([]any)
 		agentWire := plan[1].(map[string]any)
+		s.Equal("review-change", agentWire["function_id"])
 		s.Equal("repo/schemas/review.json", agentWire["output_schema"])
 		outputTypes := agentWire["output_types"].(map[string]any)
 		s.Equal(map[string]any{"type": "review/v1"}, outputTypes["review"])

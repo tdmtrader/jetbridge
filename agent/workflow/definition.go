@@ -1,6 +1,54 @@
 package workflow
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+	"strings"
+)
+
+// CompiledDefinition is the tagged parsed representation shared by legacy
+// workflow definitions and schema-version-3 workflow functions. Exactly one
+// arm is populated. Definition.Config remains the legacy store/API
+// compatibility field until the version-3 persistence work lands.
+type CompiledDefinition struct {
+	SchemaVersion int             `json:"schema_version" yaml:"schema_version"`
+	Name          string          `json:"name" yaml:"name"`
+	Description   string          `json:"description,omitempty" yaml:"description,omitempty"`
+	Legacy        *Config         `json:"legacy,omitempty" yaml:"legacy,omitempty"`
+	Function      *FunctionConfig `json:"function,omitempty" yaml:"function,omitempty"`
+}
+
+// Validate enforces the tagged-union invariant for values constructed in Go
+// or decoded from the compiled-model representation.
+func (definition CompiledDefinition) Validate() error {
+	if strings.TrimSpace(definition.Name) == "" {
+		return fmt.Errorf("workflow: name is required")
+	}
+
+	switch definition.SchemaVersion {
+	case 1, 2:
+		if definition.Legacy == nil || definition.Function != nil {
+			return fmt.Errorf("workflow: schema_version %d requires exactly the legacy definition arm", definition.SchemaVersion)
+		}
+		if definition.Legacy.SchemaVersion != definition.SchemaVersion {
+			return fmt.Errorf("workflow: schema_version %d does not match legacy schema_version %d", definition.SchemaVersion, definition.Legacy.SchemaVersion)
+		}
+		if definition.Legacy.Name != definition.Name {
+			return fmt.Errorf("workflow: name %q does not match legacy name %q", definition.Name, definition.Legacy.Name)
+		}
+		if definition.Legacy.Description != definition.Description {
+			return fmt.Errorf("workflow: description does not match the legacy definition arm")
+		}
+		return definition.Legacy.Validate()
+	case 3:
+		if definition.Legacy != nil || definition.Function == nil {
+			return fmt.Errorf("workflow: schema_version 3 requires exactly the function definition arm")
+		}
+		return definition.Function.Validate()
+	default:
+		return fmt.Errorf("workflow: schema_version must be 1, 2, or 3, got %d", definition.SchemaVersion)
+	}
+}
 
 // Definition is the parsed, validated form of the YAML in
 // agent_workflow_definitions.definition (contracts §6). ContentHash is

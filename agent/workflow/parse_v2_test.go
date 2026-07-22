@@ -66,10 +66,26 @@ func TestParseV2FieldsRequireSchemaVersion2(t *testing.T) {
 	}
 }
 
-func TestParseRejectsSchemaVersion3(t *testing.T) {
-	doc := strings.Replace(v2YAML, "schema_version: 2", "schema_version: 3", 1)
-	if _, err := workflow.Parse([]byte(doc)); err == nil {
-		t.Fatal("expected unknown schema_version error")
+func TestParseCompiledDispatchesSchemaVersion3WithoutChangingLegacyParse(t *testing.T) {
+	legacy, err := workflow.ParseCompiled([]byte(v2YAML))
+	if err != nil {
+		t.Fatalf("ParseCompiled v2: %v", err)
+	}
+	if legacy.Legacy == nil || legacy.Function != nil || legacy.Legacy.SchemaVersion != 2 {
+		t.Fatalf("v2 did not select only the legacy arm: %+v", legacy)
+	}
+
+	function, err := workflow.ParseCompiled([]byte(v3ProgramYAML))
+	if err != nil {
+		t.Fatalf("ParseCompiled v3: %v", err)
+	}
+	if function.Legacy != nil || function.Function == nil || function.SchemaVersion != 3 {
+		t.Fatalf("v3 did not select only the function arm: %+v", function)
+	}
+
+	// Parse remains the explicit compatibility API for schema 1/2 callers.
+	if _, err := workflow.Parse([]byte(v3ProgramYAML)); err == nil {
+		t.Fatal("legacy Parse must not return a zero-valued legacy config for v3")
 	}
 }
 
