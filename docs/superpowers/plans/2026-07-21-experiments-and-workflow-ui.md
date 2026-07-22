@@ -22,8 +22,8 @@
 ### Task 1: Persist experiments, variants, fixtures, and cells
 
 **Files:**
-- Create: `atc/db/migration/migrations/1773106110_create_agent_experiments.up.sql`
-- Create: `atc/db/migration/migrations/1773106110_create_agent_experiments.down.sql`
+- Create: `atc/db/migration/migrations/1773106111_create_agent_experiments.up.sql`
+- Create: `atc/db/migration/migrations/1773106111_create_agent_experiments.down.sql`
 - Create: `agent/experiment/types.go`
 - Create: `agent/experiment/types_test.go`
 - Create: `atc/db/agent_experiments_factory.go`
@@ -36,7 +36,7 @@
 - [ ] Create `agent_experiments`, `agent_experiment_variants`, `agent_experiment_fixtures`, `agent_experiment_fixture_bindings`, `agent_experiment_control_assertions`, `agent_experiment_cells`, and `agent_experiment_evaluations`. Each variant stores target kind (`workflow` or `function`), definition ID, optional stable `function_id`, and frozen target signature hash. Each fixture stores role `normal` or `negative_control`; assertions store metric name, comparator (`lt`, `lte`, `gt`, `gte`, or `between`), and the required one or two numeric thresholds.
 - [ ] Store fixture bindings as normalized rows `(fixture_id, port_name, snapshot_id)`, not opaque repo bundles. Creating a binding atomically creates a non-expiring `fixture` retention claim; deleting an unstarted fixture releases it, while start freezes both binding and claim for experiment history. Store evaluator mapping as normalized `(evaluator_port, source_direction, source_port)` rows.
 - [ ] Allocate all cells in the start transaction and use `FOR UPDATE SKIP LOCKED` claims.
-- [ ] Advance `jetbridgeHeadMigration` to `1773106110` and pass legacy-to-head plus down/up migration coverage.
+- [ ] Advance `jetbridgeHeadMigration` to `1773106111` and pass legacy-to-head plus down/up migration coverage.
 - [ ] Re-run tests and commit `feat(experiment): persist snapshot-based experiment matrices`.
 
 ### Task 2: Schedule candidate cells through the generic binder
@@ -215,7 +215,7 @@
 
 - [ ] Confirm Snapshot Task 0 banners remain present and name the approved 2026-07-21 design/program as authoritative.
 - [ ] Run `rg -n 'assumed LANDED|17731061|step_kind|primaryMetric' docs/superpowers` and inspect every remaining historical match for an explicit superseded label.
-- [ ] Confirm `jetbridgeHeadMigration` is `1773106110` and the complete migration walk includes every migration from `1773106100` through `1773106110`.
+- [ ] Confirm `jetbridgeHeadMigration` is `1773106111` and the complete migration walk includes every migration from `1773106100` through `1773106111`.
 - [ ] Commit any drift correction as `docs(agentic): preserve superseded roadmap boundary`.
 
 ### Task 12: Full verification and product acceptance

@@ -144,6 +144,8 @@
 ### Task 7: Reconcile workflow-run completion and outputs
 
 **Files:**
+- Create: `atc/db/migration/migrations/1773106103_reconcile_workflow_run_completion.up.sql`
+- Create: `atc/db/migration/migrations/1773106103_reconcile_workflow_run_completion.down.sql`
 - Create: `agent/workflowrun/reconciler.go`
 - Create: `agent/workflowrun/reconciler_test.go`
 - Modify: `atc/db/agent_workflow_runs_factory.go`
@@ -160,6 +162,7 @@
 - [ ] Run focused reconciler tests and confirm failure.
 - [ ] Add a planning hook keyed by server-verified workflow-run/build linkage. After Concourse assigns plan IDs and resolves plan-time dependency identities, persist `planned_build_id`, canonical actual-plan JSON/hash, and resolved dependency JSON on the durable run. A run cannot become terminal until this provenance is captured or a planner error is recorded.
 - [ ] Implement a component using the existing pipeline-run lifecycle polling pattern. `succeeded` requires successful execution plus every required public output binding; malformed/missing outputs become `failed`, platform/storage failures become `errored`. Terminal durable states and output bindings never reopen or change; later underlying builds are recorded as anomalies and ignored.
+- [ ] Advance `jetbridgeHeadMigration` to `1773106103` with down/up and legacy-to-head coverage. Persist only the selected entry build's copied terminal outcome/reconciliation schedule plus deduplicated later-build anomalies; deletion of ephemeral build/pipeline rows must not erase copied provenance.
 - [ ] Add `--agent-workflow-run-reconciler-interval` with a positive default and component health reporting.
 - [ ] Re-run tests and commit `feat(agent): reconcile durable workflow run outcomes`.
 

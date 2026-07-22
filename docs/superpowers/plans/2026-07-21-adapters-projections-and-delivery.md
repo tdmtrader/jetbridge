@@ -27,8 +27,8 @@
 - Create: `agent/workitem/capture_test.go`
 - Modify: `atc/db/agent_tickets_factory.go`
 - Modify: `atc/db/agent_tickets_factory_test.go`
-- Create: `atc/db/migration/migrations/1773106103_add_ticket_revisions.up.sql`
-- Create: `atc/db/migration/migrations/1773106103_add_ticket_revisions.down.sql`
+- Create: `atc/db/migration/migrations/1773106104_add_ticket_revisions.up.sql`
+- Create: `atc/db/migration/migrations/1773106104_add_ticket_revisions.down.sql`
 - Modify: `atc/db/migration/legacy_upgrade_test.go`
 
 - [ ] Write tests showing ticket body, latest spec, active plan/tasks, comments/answers, state, workflow selection, and revision counter are captured from one database snapshot.
@@ -37,7 +37,7 @@
 - [ ] Add a monotonically increasing `revision` to mutable tickets and increment it in every mutation transaction.
 - [ ] Implement `CaptureRevision(ticketID)` returning strict `work-item/v1` bytes plus revision metadata. PostgreSQL uses one repeatable-read transaction; memory store uses one mutex critical section.
 - [ ] Seal through the standard upload/capture production path and return the existing snapshot when the same ticket revision was already captured.
-- [ ] Advance `jetbridgeHeadMigration` to `1773106103` and pass legacy-to-head plus down/up migration coverage.
+- [ ] Advance `jetbridgeHeadMigration` to `1773106104` and pass legacy-to-head plus down/up migration coverage.
 - [ ] Re-run tests and commit `feat(ticket): capture immutable work-item revisions`.
 
 ### Task 2: Add resource-version snapshot capture
@@ -71,8 +71,8 @@
 - Modify: `agent/api/reviews/handler_test.go`
 - Modify: `atc/db/agent_reviews_factory.go`
 - Modify: `atc/db/agent_reviews_factory_test.go`
-- Create: `atc/db/migration/migrations/1773106104_link_review_feedback_snapshots.up.sql`
-- Create: `atc/db/migration/migrations/1773106104_link_review_feedback_snapshots.down.sql`
+- Create: `atc/db/migration/migrations/1773106105_link_review_feedback_snapshots.up.sql`
+- Create: `atc/db/migration/migrations/1773106105_link_review_feedback_snapshots.down.sql`
 - Modify: `agent/api/feedback/handler.go`
 - Modify: `atc/db/agent_feedback_factory.go`
 - Modify: `atc/db/migration/legacy_upgrade_test.go`
@@ -84,7 +84,7 @@
 - [ ] Add nullable unique `snapshot_id`, `workflow_run_id`, and `production_id` to reviews; backfill remains null. Add `review_snapshot_id` to feedback and preserve legacy repo/commit columns during compatibility.
 - [ ] Register the review projector by exact type. Trigger asynchronously after seal commit and provide a reconciliation query for sealed-but-unprojected snapshots.
 - [ ] Make snapshot/run review endpoints canonical while existing build/ticket endpoints query linked projections.
-- [ ] Advance `jetbridgeHeadMigration` to `1773106104` and pass legacy-to-head plus down/up migration coverage.
+- [ ] Advance `jetbridgeHeadMigration` to `1773106105` and pass legacy-to-head plus down/up migration coverage.
 - [ ] Re-run tests and commit `feat(review): project sealed review snapshots`.
 
 ### Task 4: Project repository changes and bounded diffs
@@ -92,8 +92,8 @@
 **Files:**
 - Create: `agent/projection/repository_change.go`
 - Create: `agent/projection/repository_change_test.go`
-- Create: `atc/db/migration/migrations/1773106105_create_repository_change_projections.up.sql`
-- Create: `atc/db/migration/migrations/1773106105_create_repository_change_projections.down.sql`
+- Create: `atc/db/migration/migrations/1773106106_create_repository_change_projections.up.sql`
+- Create: `atc/db/migration/migrations/1773106106_create_repository_change_projections.down.sql`
 - Create: `atc/db/agent_repository_changes_factory.go`
 - Create: `atc/db/agent_repository_changes_factory_test.go`
 - Modify: `agent/gitcheck/detect.go`
@@ -108,7 +108,7 @@
 - [ ] Run focused tests and confirm failure.
 - [ ] Persist `snapshot_id`, repository, base/result SHA, counts, bounded diff, truncation flag/reason, and projection status. The row is explicitly a projection, not canonical content.
 - [ ] Add `/api/v1/agent/snapshots/:snapshot_id/projections/repository-change` and adapt ticket diff to resolve the ticket's output snapshot first, falling back to legacy live mirror computation only for v1/v2 attempts.
-- [ ] Advance `jetbridgeHeadMigration` to `1773106105` and pass legacy-to-head plus down/up migration coverage.
+- [ ] Advance `jetbridgeHeadMigration` to `1773106106` and pass legacy-to-head plus down/up migration coverage.
 - [ ] Re-run tests and commit `feat(diff): project repository change snapshots`.
 
 ### Task 5: Add generic workflow outcomes and human-intervention linkage
@@ -118,8 +118,8 @@
 - Create: `agent/api/workflowoutcomes/types_test.go`
 - Create: `agent/api/workflowoutcomes/handler.go`
 - Create: `agent/api/workflowoutcomes/handler_test.go`
-- Create: `atc/db/migration/migrations/1773106106_create_workflow_outcomes.up.sql`
-- Create: `atc/db/migration/migrations/1773106106_create_workflow_outcomes.down.sql`
+- Create: `atc/db/migration/migrations/1773106107_create_workflow_outcomes.up.sql`
+- Create: `atc/db/migration/migrations/1773106107_create_workflow_outcomes.down.sql`
 - Create: `atc/db/agent_workflow_outcomes_factory.go`
 - Create: `atc/db/agent_workflow_outcomes_factory_test.go`
 - Modify: `agent/outcomewatcher/watcher.go`
@@ -133,7 +133,7 @@
 - [ ] Run focused outcome tests and confirm failure.
 - [ ] Create `agent_workflow_outcomes` independently from the legacy one-row-per-ticket table. Link `workflow_run_id`, `output_snapshot_id`, optional `modification_snapshot_id`, and publication IDs durably.
 - [ ] Adapt outcome watching to write the generic record when snapshot/run linkage exists and preserve legacy behavior otherwise. Expose run/output outcome APIs used by operational scorecards.
-- [ ] Advance `jetbridgeHeadMigration` to `1773106106`, pass migration coverage, and commit `feat(outcomes): link production results to workflow snapshots`.
+- [ ] Advance `jetbridgeHeadMigration` to `1773106107`, pass migration coverage, and commit `feat(outcomes): link production results to workflow snapshots`.
 
 ### Task 6: Route version-3 tickets through the generic binder
 
@@ -145,8 +145,8 @@
 - Modify: `atc/db/agent_dispatch_test.go`
 - Modify: `agent/api/tickets/types.go`
 - Modify: `atc/db/agent_tickets_factory.go`
-- Create: `atc/db/migration/migrations/1773106107_link_tickets_workflow_runs.up.sql`
-- Create: `atc/db/migration/migrations/1773106107_link_tickets_workflow_runs.down.sql`
+- Create: `atc/db/migration/migrations/1773106108_link_tickets_workflow_runs.up.sql`
+- Create: `atc/db/migration/migrations/1773106108_link_tickets_workflow_runs.down.sql`
 - Modify: `atc/db/migration/legacy_upgrade_test.go`
 
 - [ ] Write dispatch tests for v3 workflow selection, atomic claim/reservation, work-item snapshot capture, repository snapshot binding, explicit port mapping, idempotent concurrent dispatch, secret attachment, budget admission, and exact definition pinning.
@@ -156,7 +156,7 @@
 - [ ] Add `workflow_run_id`, `work_item_snapshot_id`, and dispatch reservation key to tickets. Claim/reserve in one DB transaction before any template/run side effect.
 - [ ] Configure per-workflow adapter port mappings in ticket dispatch settings: defaults are `work_item -> work-item/v1` and `repository -> repository/v1`, but import does not reserve these names.
 - [ ] Call `workflowrun.Binder` in-process, record both durable workflow-run and underlying pipeline-run IDs, then transition ticket state.
-- [ ] Advance `jetbridgeHeadMigration` to `1773106107` and pass legacy-to-head plus down/up migration coverage.
+- [ ] Advance `jetbridgeHeadMigration` to `1773106108` and pass legacy-to-head plus down/up migration coverage.
 - [ ] Re-run tests and commit `refactor(dispatch): make tickets a workflow binding adapter`.
 
 ### Task 7: Add explicit human question and answer snapshot waits
@@ -167,8 +167,8 @@
 - Create: `agent/workflowwait/memory_store.go`
 - Create: `agent/workflowwait/handler.go`
 - Create: `agent/workflowwait/handler_test.go`
-- Create: `atc/db/migration/migrations/1773106108_create_workflow_waits.up.sql`
-- Create: `atc/db/migration/migrations/1773106108_create_workflow_waits.down.sql`
+- Create: `atc/db/migration/migrations/1773106109_create_workflow_waits.up.sql`
+- Create: `atc/db/migration/migrations/1773106109_create_workflow_waits.down.sql`
 - Create: `atc/db/agent_workflow_waits_factory.go`
 - Create: `atc/db/agent_workflow_waits_factory_test.go`
 - Create: `atc/exec/await_snapshot_step.go`
@@ -188,7 +188,7 @@
 - [ ] Prove answering creates or binds an immutable `human-answer/v1` snapshot; a ticket adapter may atomically capture a new `work-item/v1` revision as additional context, but earlier snapshots remain unchanged.
 - [ ] Run focused tests and capture expected visitor failures.
 - [ ] Implement the step by persisting a wait, parking without holding a live-system connection, then materializing the resolved answer snapshot into the build repository with its existing snapshot reference. Extend the v3 type-checker so the declared answer output enters the environment exactly like another typed producer. `default` requires an authored default snapshot ID pinned in the plan.
-- [ ] Add resolve/list endpoints under the durable workflow run and update every exhaustive visitor. Advance `jetbridgeHeadMigration` to `1773106108` and pass migration coverage.
+- [ ] Add resolve/list endpoints under the durable workflow run and update every exhaustive visitor. Advance `jetbridgeHeadMigration` to `1773106109` and pass migration coverage.
 - [ ] Re-run tests and commit `feat(agent): continue workflows with immutable human answers`.
 
 ### Task 8: Extract deterministic validators and evaluators from harvest
@@ -224,8 +224,8 @@
 - Create: `agent/publisher/git_test.go`
 - Create: `agent/publisher/workitem.go`
 - Create: `agent/publisher/workitem_test.go`
-- Create: `atc/db/migration/migrations/1773106109_create_agent_publications.up.sql`
-- Create: `atc/db/migration/migrations/1773106109_create_agent_publications.down.sql`
+- Create: `atc/db/migration/migrations/1773106110_create_agent_publications.up.sql`
+- Create: `atc/db/migration/migrations/1773106110_create_agent_publications.down.sql`
 - Create: `atc/db/agent_publications_factory.go`
 - Create: `atc/db/agent_publications_factory_test.go`
 - Create: `atc/steps_agent_publish.go`
@@ -241,7 +241,7 @@
 - [ ] Run focused tests and capture expected visitor failures.
 - [ ] Add visible `publish_snapshot:` step with `publisher`, `input`, `input_type`, `destination`, `mode`, and approval policy. Extend the v3 type-checker to require the input artifact with that exact type through ordinary composition. The exec resolves a sealed snapshot ref from the artifact repository and never accepts untyped candidate bytes.
 - [ ] Implement Git publisher modes `branch`, `pull-request`, and `merge`; implement generic work-item comment/state publisher behind an adapter interface. Persist request/result audit rows.
-- [ ] Advance `jetbridgeHeadMigration` to `1773106109` and pass migration coverage.
+- [ ] Advance `jetbridgeHeadMigration` to `1773106110` and pass migration coverage.
 - [ ] Update all exhaustive visitors and public plans; redact credentials/destination secrets.
 - [ ] Re-run tests and commit `feat(agent): publish validated snapshots explicitly`.
 
