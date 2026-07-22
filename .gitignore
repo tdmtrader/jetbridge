@@ -57,3 +57,9 @@ package-lock.json
 
 # dev-mcp command logs (workspace-relative, contract §11 addendum)
 .dev-mcp/
+
+# stray step-runner binaries from `go build ./cmd/...` in the repo root
+/merge-runner
+/harvest-runner
+/agent-runner
+/platform-mcp
