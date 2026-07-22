@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"math"
 	"os"
 	"path/filepath"
@@ -356,19 +357,14 @@ func TestExtractCountsImplicitParentsBeforeMaterializingEntry(t *testing.T) {
 	canonicalizer := Canonicalizer{
 		TempDir:    parent,
 		MaxEntries: 1,
-		removeAll: func(privateRoot string) error {
-			err := filepath.WalkDir(privateRoot, func(name string, entry os.DirEntry, walkErr error) error {
+		beforeAnchoredCleanup: func(root *os.Root) error {
+			return fs.WalkDir(root.FS(), ".", func(name string, entry fs.DirEntry, walkErr error) error {
 				if walkErr != nil {
 					return walkErr
 				}
-				relative, err := filepath.Rel(privateRoot, name)
-				if err != nil {
-					return err
-				}
-				observed = append(observed, filepath.ToSlash(relative))
+				observed = append(observed, name)
 				return nil
 			})
-			return errors.Join(err, os.RemoveAll(privateRoot))
 		},
 	}
 	raw := makeTar(t, []tarEntry{{name: "a/b", typeflag: tar.TypeReg, content: "must-not-be-created"}})
@@ -376,7 +372,7 @@ func TestExtractCountsImplicitParentsBeforeMaterializingEntry(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "entry limit") {
 		t.Fatalf("Capture() error = %v, want entry limit", err)
 	}
-	if !reflect.DeepEqual(observed, []string{".", "root"}) {
+	if !reflect.DeepEqual(observed, []string{".", "content.spool", "root"}) {
 		t.Fatalf("paths present before failed-capture cleanup = %q, want only private extraction root", observed)
 	}
 
@@ -404,13 +400,14 @@ func TestExtractContentAccountingDoesNotOverflow(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer root.Close()
-	contentBytes := int64(math.MaxInt64)
-	err = extractRegular(context.Background(), tr, root, hdr, math.MaxInt64, &contentBytes, nil)
+	spool, err := os.CreateTemp(t.TempDir(), "snapshot-spool-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer spool.Close()
+	_, err = extractRegular(context.Background(), tr, root, spool, hdr, math.MaxInt64, math.MaxInt64, nil)
 	if err == nil || !strings.Contains(err.Error(), "content limit") {
 		t.Fatalf("extractRegular() error = %v, want content limit", err)
-	}
-	if contentBytes != math.MaxInt64 {
-		t.Fatalf("content byte count overflowed to %d", contentBytes)
 	}
 }
 
@@ -583,6 +580,267 @@ func TestCanonicalCaptureRevalidatesOpenedRegularFile(t *testing.T) {
 				t.Fatalf("Capture() error = %v, want descriptor revalidation failure", err)
 			}
 		})
+	}
+}
+
+func TestCanonicalCaptureRejectsDirectoryReplacement(t *testing.T) {
+	t.Parallel()
+
+	canonicalizer := Canonicalizer{
+		beforePreEmitVerify: func(root *os.Root) error {
+			if err := root.Remove("empty"); err != nil {
+				return err
+			}
+			return root.Mkdir("empty", 0755)
+		},
+	}
+	_, err := canonicalizer.Capture(context.Background(), bytes.NewReader(makeTar(t, []tarEntry{
+		{name: "empty", typeflag: tar.TypeDir},
+	})))
+	if err == nil || !strings.Contains(err.Error(), "verify captured tree before emission") {
+		t.Fatalf("Capture() error = %v, want pre-emission directory identity failure", err)
+	}
+}
+
+func TestCanonicalCaptureRejectsReplacedSymlinkTargets(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		target string
+	}{
+		{name: "absolute", target: "/escape"},
+		{name: "traversal", target: "../../escape"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			canonicalizer := Canonicalizer{
+				beforePreEmitVerify: func(root *os.Root) error {
+					if err := root.Remove("nested/link"); err != nil {
+						return err
+					}
+					return root.Symlink(tt.target, "nested/link")
+				},
+			}
+			_, err := canonicalizer.Capture(context.Background(), bytes.NewReader(makeTar(t, []tarEntry{
+				{name: "nested/link", typeflag: tar.TypeSymlink, linkname: "safe"},
+			})))
+			if err == nil || !strings.Contains(err.Error(), "verify captured tree before emission") {
+				t.Fatalf("Capture() error = %v, want pre-emission symlink target failure", err)
+			}
+		})
+	}
+}
+
+func TestCanonicalCaptureRejectsRegularRenameAndSymlinkReplacement(t *testing.T) {
+	t.Parallel()
+
+	canonicalizer := Canonicalizer{
+		beforePreEmitVerify: func(root *os.Root) error {
+			if err := root.Rename("file", "moved"); err != nil {
+				return err
+			}
+			return root.Symlink("moved", "file")
+		},
+	}
+	_, err := canonicalizer.Capture(context.Background(), bytes.NewReader(makeTar(t, []tarEntry{
+		{name: "file", typeflag: tar.TypeReg, content: "sealed"},
+	})))
+	if err == nil || !strings.Contains(err.Error(), "verify captured tree before emission") {
+		t.Fatalf("Capture() error = %v, want renamed regular and extra-path failure", err)
+	}
+}
+
+func TestCanonicalCaptureRejectsEntriesAddedBeforeOrAfterEmission(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		canonicalizer Canonicalizer
+		wantPhase     string
+	}{
+		{
+			name: "before",
+			canonicalizer: Canonicalizer{beforePreEmitVerify: func(root *os.Root) error {
+				return root.WriteFile("extra", []byte("extra"), 0644)
+			}},
+			wantPhase: "before emission",
+		},
+		{
+			name: "after",
+			canonicalizer: Canonicalizer{beforePostEmitVerify: func(root *os.Root) error {
+				return root.WriteFile("extra", []byte("extra"), 0644)
+			}},
+			wantPhase: "after emission",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := tt.canonicalizer.Capture(context.Background(), bytes.NewReader(makeTar(t, []tarEntry{
+				{name: "file", typeflag: tar.TypeReg, content: "sealed"},
+			})))
+			if err == nil || !strings.Contains(err.Error(), "verify captured tree "+tt.wantPhase) {
+				t.Fatalf("Capture() error = %v, want %s integrity failure", err, tt.wantPhase)
+			}
+		})
+	}
+}
+
+func TestCanonicalCaptureReadsRegularBytesFromSealedSpool(t *testing.T) {
+	t.Parallel()
+
+	canonicalizer := Canonicalizer{
+		beforeCanonicalOpen: func(root *os.Root, name string) error {
+			if name != "file" {
+				return nil
+			}
+			return root.WriteFile(name, []byte("MUTATED!"), 0644)
+		},
+	}
+	tree := capture(t, canonicalizer, bytes.NewReader(makeTar(t, []tarEntry{
+		{name: "file", typeflag: tar.TypeReg, content: "ORIGINAL"},
+	})))
+	defer tree.Close()
+	if got := tarContent(t, readFile(t, tree.ArchivePath), "file"); string(got) != "ORIGINAL" {
+		t.Fatalf("canonical file content = %q, want sealed input bytes", got)
+	}
+}
+
+func TestCanonicalCaptureRejectsPrivateRootPathReplacement(t *testing.T) {
+	t.Parallel()
+
+	parent := t.TempDir()
+	moved := filepath.Join(parent, "moved-capture")
+	var privateRoot string
+	canonicalizer := Canonicalizer{
+		TempDir: parent,
+		beforeCaptureBoundary: func(_ *os.Root, name string) error {
+			privateRoot = name
+			if err := os.Rename(name, moved); err != nil {
+				return err
+			}
+			return os.Mkdir(name, 0700)
+		},
+	}
+	_, err := canonicalizer.Capture(context.Background(), bytes.NewReader(makeTar(t, []tarEntry{
+		{name: "secret", typeflag: tar.TypeReg, content: "sensitive"},
+	})))
+	if err == nil || !strings.Contains(err.Error(), "capture path identity") {
+		t.Fatalf("Capture() error = %v, want private-root boundary failure", err)
+	}
+	if privateRoot == "" {
+		t.Fatal("private-root boundary hook did not run")
+	}
+	assertDirectoryEmpty(t, moved)
+	if _, err := os.Stat(privateRoot); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("replacement private root remains after cleanup: %v", err)
+	}
+}
+
+func TestCanonicalCaptureRejectsArchivePathReplacementAtBoundary(t *testing.T) {
+	t.Parallel()
+
+	canonicalizer := Canonicalizer{
+		beforeCaptureBoundary: func(root *os.Root, _ string) error {
+			if err := root.Rename("canonical.tar", "moved.tar"); err != nil {
+				return err
+			}
+			return root.WriteFile("canonical.tar", []byte("replacement"), 0600)
+		},
+	}
+	_, err := canonicalizer.Capture(context.Background(), bytes.NewReader(makeTar(t, nil)))
+	if err == nil || !strings.Contains(err.Error(), "archive path identity") {
+		t.Fatalf("Capture() error = %v, want archive boundary failure", err)
+	}
+}
+
+func TestCanonicalCapturePerformsFinalTreeVerificationAtSuccessBoundary(t *testing.T) {
+	t.Parallel()
+
+	canonicalizer := Canonicalizer{
+		beforeCaptureBoundary: func(root *os.Root, _ string) error {
+			return root.WriteFile("root/late-extra", []byte("late"), 0600)
+		},
+	}
+	_, err := canonicalizer.Capture(context.Background(), bytes.NewReader(makeTar(t, nil)))
+	if err == nil || !strings.Contains(err.Error(), "verify captured tree at success boundary") {
+		t.Fatalf("Capture() error = %v, want final exact-tree verification failure", err)
+	}
+}
+
+func TestCanonicalCaptureRejectsUntrustedConfiguredTempDir(t *testing.T) {
+	t.Parallel()
+
+	t.Run("writable without sticky bit", func(t *testing.T) {
+		parent := t.TempDir()
+		if err := os.Chmod(parent, 0777); err != nil {
+			t.Fatal(err)
+		}
+		defer os.Chmod(parent, 0700)
+		_, err := (Canonicalizer{TempDir: parent}).Capture(context.Background(), bytes.NewReader(makeTar(t, nil)))
+		if err == nil || !strings.Contains(err.Error(), "trusted temporary parent") {
+			t.Fatalf("Capture() error = %v, want untrusted temporary parent", err)
+		}
+	})
+
+	t.Run("not a directory", func(t *testing.T) {
+		parent := filepath.Join(t.TempDir(), "file")
+		if err := os.WriteFile(parent, nil, 0600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := (Canonicalizer{TempDir: parent}).Capture(context.Background(), bytes.NewReader(makeTar(t, nil)))
+		if err == nil || !strings.Contains(err.Error(), "trusted temporary parent") {
+			t.Fatalf("Capture() error = %v, want temporary parent directory error", err)
+		}
+	})
+
+	t.Run("sticky shared directory", func(t *testing.T) {
+		parent := t.TempDir()
+		if err := os.Chmod(parent, os.ModeSticky|0777); err != nil {
+			t.Fatal(err)
+		}
+		defer os.Chmod(parent, 0700)
+		tree := capture(t, Canonicalizer{TempDir: parent}, bytes.NewReader(makeTar(t, nil)))
+		defer tree.Close()
+	})
+}
+
+func TestCapturedTreeCloseWipesThroughAnchoredRootAfterRename(t *testing.T) {
+	t.Parallel()
+
+	parent := t.TempDir()
+	tree := capture(t, Canonicalizer{TempDir: parent}, bytes.NewReader(makeTar(t, []tarEntry{
+		{name: "secret", typeflag: tar.TypeReg, content: "sensitive"},
+	})))
+	privateRoot := filepath.Dir(tree.Root)
+	moved := filepath.Join(parent, "moved-capture")
+	if err := os.Rename(privateRoot, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(privateRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
+	removeErr := errors.New("pathname cleanup failed")
+	attempts := 0
+	tree.removeAll = func(name string) error {
+		attempts++
+		if attempts == 1 {
+			return removeErr
+		}
+		return os.RemoveAll(name)
+	}
+	if err := tree.Close(); !errors.Is(err, removeErr) {
+		t.Fatalf("first Close() = %v, want pathname cleanup failure", err)
+	}
+	assertDirectoryEmpty(t, moved)
+	if err := tree.Close(); err != nil {
+		t.Fatalf("retry Close() = %v", err)
+	}
+	if _, err := os.Stat(privateRoot); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("replacement private root remains after Close retry: %v", err)
+	}
+	if err := tree.Close(); err != nil {
+		t.Fatalf("idempotent Close() = %v", err)
 	}
 }
 
@@ -911,6 +1169,28 @@ func readTar(t *testing.T, data []byte) []*tar.Header {
 	}
 }
 
+func tarContent(t *testing.T, data []byte, name string) []byte {
+	t.Helper()
+	tr := tar.NewReader(bytes.NewReader(data))
+	for {
+		hdr, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			t.Fatalf("tar entry %q not found", name)
+		}
+		if err != nil {
+			t.Fatalf("read tar: %v", err)
+		}
+		if hdr.Name != name {
+			continue
+		}
+		content, err := io.ReadAll(tr)
+		if err != nil {
+			t.Fatalf("read tar content %q: %v", name, err)
+		}
+		return content
+	}
+}
+
 func headerNames(headers []*tar.Header) []string {
 	names := make([]string, len(headers))
 	for i, hdr := range headers {
@@ -943,6 +1223,17 @@ func directoryNames(t *testing.T, root string) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+func assertDirectoryEmpty(t *testing.T, root string) {
+	t.Helper()
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatalf("read directory %q: %v", root, err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("directory %q contains sensitive capture paths: %v", root, entries)
+	}
 }
 
 type errorReader struct {

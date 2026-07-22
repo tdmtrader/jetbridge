@@ -37,13 +37,20 @@ type Canonicalizer struct {
 	// operating system's default temporary directory.
 	TempDir string
 
-	removeAll           func(string) error
-	beforeMaterialize   func(*os.Root, string) error
-	beforeCanonicalOpen func(*os.Root, string) error
+	removeAll             func(string) error
+	beforeMaterialize     func(*os.Root, string) error
+	beforeCanonicalOpen   func(*os.Root, string) error
+	beforePreEmitVerify   func(*os.Root) error
+	beforePostEmitVerify  func(*os.Root) error
+	beforeCaptureBoundary func(*os.Root, string) error
+	beforeAnchoredCleanup func(*os.Root) error
 }
 
 // CapturedTree owns both its extracted root and canonical archive. Call Close
-// when neither is needed; Close is safe to call repeatedly.
+// when neither is needed; Close is safe to call repeatedly. Capture verifies
+// the returned object paths at its success boundary. Same-UID mutation of those
+// paths after Capture returns is outside the object-path API guarantee; Close
+// still wipes the originally captured directory through its anchored handle.
 type CapturedTree struct {
 	Root        string
 	ArchivePath string
@@ -54,6 +61,8 @@ type CapturedTree struct {
 	privateRoot string
 	closeMu     sync.Mutex
 	closed      bool
+	rootedWiped bool
+	captureRoot *os.Root
 	removeAll   func(string) error
 }
 
@@ -65,6 +74,18 @@ func (t *CapturedTree) Close() error {
 	defer t.closeMu.Unlock()
 	if t.closed || t.privateRoot == "" {
 		return nil
+	}
+	if !t.rootedWiped && t.captureRoot != nil {
+		if err := wipeCaptureRoot(t.captureRoot); err != nil {
+			return err
+		}
+		t.rootedWiped = true
+	}
+	if t.captureRoot != nil {
+		if err := t.captureRoot.Close(); err != nil {
+			return err
+		}
+		t.captureRoot = nil
 	}
 	removeAll := t.removeAll
 	if removeAll == nil {
@@ -94,6 +115,9 @@ func (c Canonicalizer) Capture(ctx context.Context, rawTar io.Reader) (tree *Cap
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	if err := validateConfiguredTempDir(c.TempDir); err != nil {
+		return nil, err
+	}
 
 	privateRoot, err := os.MkdirTemp(c.TempDir, "concourse-snapshot-")
 	if err != nil {
@@ -103,46 +127,137 @@ func (c Canonicalizer) Capture(ctx context.Context, rawTar io.Reader) (tree *Cap
 	if removeAll == nil {
 		removeAll = os.RemoveAll
 	}
+	var captureRoot *os.Root
 	var extractionRoot *os.Root
+	var spool *os.File
+	var archive *os.File
 	defer func() {
+		if tree != nil && err == nil {
+			return
+		}
+		tree = nil
+		if archive != nil {
+			err = errors.Join(err, archive.Close())
+		}
+		if spool != nil {
+			err = errors.Join(err, spool.Close())
+		}
 		if extractionRoot != nil {
 			err = errors.Join(err, extractionRoot.Close())
 		}
-		if err != nil || tree == nil {
-			tree = nil
-			err = errors.Join(err, removeAll(privateRoot))
+		if captureRoot != nil {
+			if c.beforeAnchoredCleanup != nil {
+				err = errors.Join(err, c.beforeAnchoredCleanup(captureRoot))
+			}
+			err = errors.Join(err, wipeCaptureRoot(captureRoot), captureRoot.Close())
 		}
+		err = errors.Join(err, removeAll(privateRoot))
 	}()
 	stopCancelClose := closeReadCloserOnCancel(ctx, rawTar)
 	defer stopCancelClose()
 
-	root := filepath.Join(privateRoot, "root")
-	if err := os.Mkdir(root, 0700); err != nil {
+	captureRoot, err = os.OpenRoot(privateRoot)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot: anchor private capture directory: %w", err)
+	}
+	captureInfo, err := captureRoot.Stat(".")
+	if err != nil {
+		return nil, fmt.Errorf("snapshot: stat private capture directory: %w", err)
+	}
+	if err := captureRoot.Mkdir("root", 0700); err != nil {
 		return nil, fmt.Errorf("snapshot: create extraction root: %w", err)
 	}
-	extractionRoot, err = os.OpenRoot(root)
+	extractionRoot, err = captureRoot.OpenRoot("root")
 	if err != nil {
 		return nil, fmt.Errorf("snapshot: open extraction root: %w", err)
 	}
-	if err := extractTar(ctx, rawTar, extractionRoot, maxEntries, maxContent, c.beforeMaterialize); err != nil {
-		return nil, err
+	extractionInfo, err := extractionRoot.Stat(".")
+	if err != nil {
+		return nil, fmt.Errorf("snapshot: stat extraction root: %w", err)
 	}
-
-	archivePath := filepath.Join(privateRoot, "canonical.tar")
-	digest, byteSize, fileCount, err := writeCanonicalTar(ctx, extractionRoot, archivePath, maxEntries, c.beforeCanonicalOpen)
+	spool, err = captureRoot.OpenFile("content.spool", os.O_RDWR|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot: create content spool: %w", err)
+	}
+	if err := spool.Chmod(0600); err != nil {
+		return nil, fmt.Errorf("snapshot: normalize content spool: %w", err)
+	}
+	index, err := extractTar(ctx, rawTar, extractionRoot, spool, maxEntries, maxContent, c.beforeMaterialize)
 	if err != nil {
 		return nil, err
 	}
+	if c.beforePreEmitVerify != nil {
+		if err := c.beforePreEmitVerify(extractionRoot); err != nil {
+			return nil, fmt.Errorf("snapshot: before pre-emission verification: %w", err)
+		}
+	}
+	if err := verifyCaptureIndex(ctx, extractionRoot, index, maxEntries); err != nil {
+		return nil, fmt.Errorf("snapshot: verify captured tree before emission: %w", err)
+	}
 
+	archive, err = captureRoot.OpenFile("canonical.tar", os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot: create canonical archive: %w", err)
+	}
+	if err := archive.Chmod(0600); err != nil {
+		return nil, fmt.Errorf("snapshot: normalize canonical archive: %w", err)
+	}
+	digest, byteSize, err := writeCanonicalTar(ctx, archive, spool, extractionRoot, index, c.beforeCanonicalOpen)
+	if err != nil {
+		return nil, err
+	}
+	archiveInfo, err := archive.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("snapshot: stat canonical archive: %w", err)
+	}
+	if err := archive.Close(); err != nil {
+		return nil, fmt.Errorf("snapshot: close canonical archive: %w", err)
+	}
+	archive = nil
+	if c.beforePostEmitVerify != nil {
+		if err := c.beforePostEmitVerify(extractionRoot); err != nil {
+			return nil, fmt.Errorf("snapshot: before post-emission verification: %w", err)
+		}
+	}
+	if err := verifyCaptureIndex(ctx, extractionRoot, index, maxEntries); err != nil {
+		return nil, fmt.Errorf("snapshot: verify captured tree after emission: %w", err)
+	}
+	if err := spool.Close(); err != nil {
+		return nil, fmt.Errorf("snapshot: close content spool: %w", err)
+	}
+	spool = nil
+	if err := captureRoot.Remove("content.spool"); err != nil {
+		return nil, fmt.Errorf("snapshot: remove content spool: %w", err)
+	}
+	if c.beforeCaptureBoundary != nil {
+		if err := c.beforeCaptureBoundary(captureRoot, privateRoot); err != nil {
+			return nil, fmt.Errorf("snapshot: before capture boundary verification: %w", err)
+		}
+	}
+	if err := verifyCaptureBoundary(captureRoot, captureInfo, extractionRoot, extractionInfo, archiveInfo, privateRoot); err != nil {
+		return nil, err
+	}
+	if err := verifyCaptureIndex(ctx, extractionRoot, index, maxEntries); err != nil {
+		return nil, fmt.Errorf("snapshot: verify captured tree at success boundary: %w", err)
+	}
+	if err := extractionRoot.Close(); err != nil {
+		return nil, fmt.Errorf("snapshot: close extraction root: %w", err)
+	}
+	extractionRoot = nil
+
+	rootPath := filepath.Join(privateRoot, "root")
+	archivePath := filepath.Join(privateRoot, "canonical.tar")
 	tree = &CapturedTree{
-		Root:        root,
+		Root:        rootPath,
 		ArchivePath: archivePath,
 		Digest:      digest,
 		ByteSize:    byteSize,
-		FileCount:   fileCount,
+		FileCount:   int64(len(index.entries)),
 		privateRoot: privateRoot,
+		captureRoot: captureRoot,
 		removeAll:   removeAll,
 	}
+	captureRoot = nil
 	return tree, nil
 }
 
@@ -181,6 +296,92 @@ func (c Canonicalizer) limits() (int64, int64, error) {
 	return maxEntries, maxContent, nil
 }
 
+func validateConfiguredTempDir(tempDir string) error {
+	if tempDir == "" {
+		return nil
+	}
+	info, err := os.Stat(tempDir)
+	if err != nil {
+		return fmt.Errorf("snapshot: inspect trusted temporary parent %q: %w", tempDir, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("snapshot: trusted temporary parent %q is not a directory", tempDir)
+	}
+	if info.Mode().Perm()&0022 != 0 && info.Mode()&os.ModeSticky == 0 {
+		return fmt.Errorf("snapshot: trusted temporary parent %q is group- or other-writable without the sticky bit", tempDir)
+	}
+	return nil
+}
+
+func wipeCaptureRoot(root *os.Root) error {
+	entries, err := fs.ReadDir(root.FS(), ".")
+	if err != nil {
+		return fmt.Errorf("snapshot: list anchored capture directory for cleanup: %w", err)
+	}
+	var cleanupErr error
+	for _, entry := range entries {
+		if err := root.RemoveAll(entry.Name()); err != nil {
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("snapshot: remove anchored capture path %q: %w", entry.Name(), err))
+		}
+	}
+	return cleanupErr
+}
+
+func verifyCaptureBoundary(
+	captureRoot *os.Root,
+	captureInfo fs.FileInfo,
+	extractionRoot *os.Root,
+	extractionInfo fs.FileInfo,
+	archiveInfo fs.FileInfo,
+	privateRoot string,
+) error {
+	anchoredCaptureInfo, err := captureRoot.Stat(".")
+	if err != nil {
+		return fmt.Errorf("snapshot: verify capture path identity through anchored handle: %w", err)
+	}
+	pathCaptureInfo, err := os.Lstat(privateRoot)
+	if err != nil {
+		return fmt.Errorf("snapshot: verify capture path identity at %q: %w", privateRoot, err)
+	}
+	if !os.SameFile(captureInfo, anchoredCaptureInfo) || !os.SameFile(captureInfo, pathCaptureInfo) {
+		return fmt.Errorf("snapshot: capture path identity changed before success")
+	}
+
+	anchoredExtractionInfo, err := extractionRoot.Stat(".")
+	if err != nil {
+		return fmt.Errorf("snapshot: verify extraction path identity through anchored handle: %w", err)
+	}
+	captureExtractionInfo, err := captureRoot.Lstat("root")
+	if err != nil {
+		return fmt.Errorf("snapshot: verify extraction path identity through capture root: %w", err)
+	}
+	pathExtractionInfo, err := os.Lstat(filepath.Join(privateRoot, "root"))
+	if err != nil {
+		return fmt.Errorf("snapshot: verify extraction path identity at object path: %w", err)
+	}
+	if !os.SameFile(extractionInfo, anchoredExtractionInfo) ||
+		!os.SameFile(extractionInfo, captureExtractionInfo) ||
+		!os.SameFile(extractionInfo, pathExtractionInfo) {
+		return fmt.Errorf("snapshot: extraction path identity changed before success")
+	}
+
+	anchoredArchiveInfo, err := captureRoot.Lstat("canonical.tar")
+	if err != nil {
+		return fmt.Errorf("snapshot: verify archive path identity through capture root: %w", err)
+	}
+	pathArchiveInfo, err := os.Lstat(filepath.Join(privateRoot, "canonical.tar"))
+	if err != nil {
+		return fmt.Errorf("snapshot: verify archive path identity at object path: %w", err)
+	}
+	if !os.SameFile(archiveInfo, anchoredArchiveInfo) ||
+		!os.SameFile(archiveInfo, pathArchiveInfo) ||
+		archiveInfo.Size() != anchoredArchiveInfo.Size() ||
+		archiveInfo.Size() != pathArchiveInfo.Size() {
+		return fmt.Errorf("snapshot: archive path identity changed before success")
+	}
+	return nil
+}
+
 type extractedKind uint8
 
 const (
@@ -189,97 +390,127 @@ const (
 	extractedSymlink
 )
 
+type capturedEntry struct {
+	name        string
+	kind        extractedKind
+	mode        int64
+	target      string
+	size        int64
+	spoolOffset int64
+	info        fs.FileInfo
+}
+
+type captureIndex struct {
+	entries   map[string]capturedEntry
+	spoolSize int64
+}
+
 func extractTar(
 	ctx context.Context,
 	rawTar io.Reader,
 	root *os.Root,
+	spool *os.File,
 	maxEntries int64,
 	maxContent int64,
 	beforeMaterialize func(*os.Root, string) error,
-) error {
+) (*captureIndex, error) {
 	tr := tar.NewReader(contextReader{ctx: ctx, reader: rawTar})
 	seenHeaders := make(map[string]struct{})
-	materialized := make(map[string]extractedKind)
-	var contentBytes int64
+	index := &captureIndex{entries: make(map[string]capturedEntry)}
 
 	for {
 		if err := ctx.Err(); err != nil {
-			return err
+			return nil, err
 		}
 		hdr, err := tr.Next()
 		if errors.Is(err, io.EOF) {
-			return nil
+			return index, nil
 		}
 		if err != nil {
-			return fmt.Errorf("snapshot: read tar header: %w", err)
+			return nil, fmt.Errorf("snapshot: read tar header: %w", err)
 		}
 		if err := validateHeader(hdr); err != nil {
-			return err
+			return nil, err
 		}
 		name := hdr.Name
 		if _, exists := seenHeaders[name]; exists {
-			return fmt.Errorf("snapshot: duplicate canonical path %q", name)
+			return nil, fmt.Errorf("snapshot: duplicate canonical path %q", name)
 		}
 		seenHeaders[name] = struct{}{}
 		kind := headerKind(hdr.Typeflag)
-		planned, err := planMaterialization(name, kind, materialized)
+		planned, err := planMaterialization(name, kind, index.entries)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		if int64(len(materialized))+int64(len(planned)) > maxEntries {
-			return fmt.Errorf("snapshot: archive exceeds entry limit of %d", maxEntries)
+		if int64(len(index.entries))+int64(len(planned)) > maxEntries {
+			return nil, fmt.Errorf("snapshot: archive exceeds entry limit of %d", maxEntries)
 		}
-		for _, entry := range planned {
-			if entry.name == name {
+		for _, plannedEntry := range planned {
+			if plannedEntry.name == name {
 				continue
 			}
-			if err := materializeDirectory(root, entry.name, beforeMaterialize); err != nil {
-				return fmt.Errorf("snapshot: extract implicit directory %q: %w", entry.name, err)
+			entry, err := materializeDirectory(root, plannedEntry.name, beforeMaterialize)
+			if err != nil {
+				return nil, fmt.Errorf("snapshot: extract implicit directory %q: %w", plannedEntry.name, err)
 			}
-			materialized[entry.name] = extractedDirectory
+			index.entries[entry.name] = entry
 		}
 
 		switch hdr.Typeflag {
 		case tar.TypeReg, tar.TypeRegA:
-			if err := extractRegular(ctx, tr, root, hdr, maxContent, &contentBytes, beforeMaterialize); err != nil {
-				return err
+			entry, err := extractRegular(ctx, tr, root, spool, hdr, maxContent, index.spoolSize, beforeMaterialize)
+			if err != nil {
+				return nil, err
 			}
-			materialized[name] = extractedRegular
+			index.entries[name] = entry
+			index.spoolSize += entry.size
 		case tar.TypeDir:
 			isNew := isPlanned(planned, name)
-			var err error
 			if isNew {
-				err = materializeDirectory(root, name, beforeMaterialize)
+				entry, err := materializeDirectory(root, name, beforeMaterialize)
+				if err != nil {
+					return nil, fmt.Errorf("snapshot: extract directory %q: %w", name, err)
+				}
+				index.entries[name] = entry
 			} else {
-				err = normalizeExistingDirectory(root, name)
+				info, err := normalizeExistingDirectory(root, name)
+				if err != nil {
+					return nil, fmt.Errorf("snapshot: extract directory %q: %w", name, err)
+				}
+				captured := index.entries[name]
+				if !os.SameFile(captured.info, info) {
+					return nil, fmt.Errorf("snapshot: implicit directory %q changed before explicit header", name)
+				}
 			}
-			if err != nil {
-				return fmt.Errorf("snapshot: extract directory %q: %w", name, err)
-			}
-			materialized[name] = extractedDirectory
 		case tar.TypeSymlink:
 			target, err := cleanSymlinkTarget(name, hdr.Linkname)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			if beforeMaterialize != nil {
 				if err := beforeMaterialize(root, name); err != nil {
-					return fmt.Errorf("snapshot: before materializing %q: %w", name, err)
+					return nil, fmt.Errorf("snapshot: before materializing %q: %w", name, err)
 				}
 			}
 			if err := validateHostParents(root, name); err != nil {
-				return err
+				return nil, err
 			}
 			if err := ensureUnmaterialized(root, name); err != nil {
-				return err
+				return nil, err
 			}
 			if err := root.Symlink(target, name); err != nil {
 				if errors.Is(err, fs.ErrExist) {
-					return hostEquivalentCollision(name, err)
+					return nil, hostEquivalentCollision(name, err)
 				}
-				return fmt.Errorf("snapshot: create symlink %q: %w", name, err)
+				return nil, fmt.Errorf("snapshot: create symlink %q: %w", name, err)
 			}
-			materialized[name] = extractedSymlink
+			info, err := root.Lstat(name)
+			if err != nil {
+				return nil, fmt.Errorf("snapshot: stat symlink %q: %w", name, err)
+			}
+			index.entries[name] = capturedEntry{
+				name: name, kind: extractedSymlink, mode: 0777, target: target, info: info,
+			}
 		}
 	}
 }
@@ -310,16 +541,16 @@ func headerKind(typeflag byte) extractedKind {
 	}
 }
 
-func planMaterialization(name string, kind extractedKind, materialized map[string]extractedKind) ([]materialization, error) {
+func planMaterialization(name string, kind extractedKind, materialized map[string]capturedEntry) ([]materialization, error) {
 	segments := strings.Split(name, "/")
 	planned := make([]materialization, 0, len(segments))
 	for i := 1; i < len(segments); i++ {
 		parent := strings.Join(segments[:i], "/")
 		if existing, found := materialized[parent]; found {
-			if existing == extractedSymlink {
+			if existing.kind == extractedSymlink {
 				return nil, fmt.Errorf("snapshot: path %q has symlink parent %q", name, parent)
 			}
-			if existing != extractedDirectory {
+			if existing.kind != extractedDirectory {
 				return nil, fmt.Errorf("snapshot: path %q has non-directory parent %q", name, parent)
 			}
 			continue
@@ -327,7 +558,7 @@ func planMaterialization(name string, kind extractedKind, materialized map[strin
 		planned = append(planned, materialization{name: parent})
 	}
 	if existing, found := materialized[name]; found {
-		if existing == extractedDirectory && kind == extractedDirectory {
+		if existing.kind == extractedDirectory && kind == extractedDirectory {
 			return planned, nil
 		}
 		return nil, fmt.Errorf("snapshot: path %q conflicts with an already materialized path", name)
@@ -429,25 +660,29 @@ func hostEquivalentCollision(name string, err error) error {
 	return fmt.Errorf("snapshot: host-equivalent collision at POSIX path %q: %w", name, err)
 }
 
-func materializeDirectory(root *os.Root, name string, beforeMaterialize func(*os.Root, string) error) error {
+func materializeDirectory(root *os.Root, name string, beforeMaterialize func(*os.Root, string) error) (capturedEntry, error) {
 	if beforeMaterialize != nil {
 		if err := beforeMaterialize(root, name); err != nil {
-			return fmt.Errorf("snapshot: before materializing %q: %w", name, err)
+			return capturedEntry{}, fmt.Errorf("snapshot: before materializing %q: %w", name, err)
 		}
 	}
 	if err := validateHostParents(root, name); err != nil {
-		return err
+		return capturedEntry{}, err
 	}
 	if err := ensureUnmaterialized(root, name); err != nil {
-		return err
+		return capturedEntry{}, err
 	}
 	if err := root.Mkdir(name, 0755); err != nil {
 		if errors.Is(err, fs.ErrExist) {
-			return hostEquivalentCollision(name, err)
+			return capturedEntry{}, hostEquivalentCollision(name, err)
 		}
-		return err
+		return capturedEntry{}, err
 	}
-	return normalizeExistingDirectory(root, name)
+	info, err := normalizeExistingDirectory(root, name)
+	if err != nil {
+		return capturedEntry{}, err
+	}
+	return capturedEntry{name: name, kind: extractedDirectory, mode: 0755, info: info}, nil
 }
 
 func validateHostParents(root *os.Root, name string) error {
@@ -468,17 +703,17 @@ func validateHostParents(root *os.Root, name string) error {
 	return nil
 }
 
-func normalizeExistingDirectory(root *os.Root, name string) error {
+func normalizeExistingDirectory(root *os.Root, name string) (fs.FileInfo, error) {
 	info, err := root.Lstat(name)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("path is not the materialized directory")
+		return nil, fmt.Errorf("path is not the materialized directory")
 	}
 	directory, err := root.Open(name)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	openedInfo, statErr := directory.Stat()
 	if statErr == nil && (!openedInfo.IsDir() || !os.SameFile(info, openedInfo)) {
@@ -488,39 +723,46 @@ func normalizeExistingDirectory(root *os.Root, name string) error {
 	if statErr == nil {
 		chmodErr = directory.Chmod(0755)
 	}
-	return errors.Join(statErr, chmodErr, directory.Close())
+	if err := errors.Join(statErr, chmodErr, directory.Close()); err != nil {
+		return nil, err
+	}
+	return openedInfo, nil
 }
 
 func extractRegular(
 	ctx context.Context,
 	tr *tar.Reader,
 	root *os.Root,
+	spool *os.File,
 	hdr *tar.Header,
 	maxContent int64,
-	contentBytes *int64,
+	spoolOffset int64,
 	beforeMaterialize func(*os.Root, string) error,
-) error {
-	remaining := maxContent - *contentBytes
+) (capturedEntry, error) {
+	remaining := maxContent - spoolOffset
 	if remaining < 0 {
-		return fmt.Errorf("snapshot: archive exceeds regular content limit of %d bytes", maxContent)
+		return capturedEntry{}, fmt.Errorf("snapshot: archive exceeds regular content limit of %d bytes", maxContent)
+	}
+	if hdr.Size > remaining {
+		return capturedEntry{}, fmt.Errorf("snapshot: archive exceeds regular content limit of %d bytes", maxContent)
 	}
 	if beforeMaterialize != nil {
 		if err := beforeMaterialize(root, hdr.Name); err != nil {
-			return fmt.Errorf("snapshot: before materializing %q: %w", hdr.Name, err)
+			return capturedEntry{}, fmt.Errorf("snapshot: before materializing %q: %w", hdr.Name, err)
 		}
 	}
 	if err := validateHostParents(root, hdr.Name); err != nil {
-		return err
+		return capturedEntry{}, err
 	}
 	if err := ensureUnmaterialized(root, hdr.Name); err != nil {
-		return err
+		return capturedEntry{}, err
 	}
 	file, err := root.OpenFile(hdr.Name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
 		if errors.Is(err, fs.ErrExist) {
-			return hostEquivalentCollision(hdr.Name, err)
+			return capturedEntry{}, hostEquivalentCollision(hdr.Name, err)
 		}
-		return fmt.Errorf("snapshot: create regular file %q: %w", hdr.Name, err)
+		return capturedEntry{}, fmt.Errorf("snapshot: create regular file %q: %w", hdr.Name, err)
 	}
 	info, statErr := file.Stat()
 	if statErr == nil && !info.Mode().IsRegular() {
@@ -535,29 +777,39 @@ func extractRegular(
 		chmodErr = file.Chmod(mode)
 	}
 	if err := errors.Join(statErr, chmodErr); err != nil {
-		return errors.Join(fmt.Errorf("snapshot: validate regular file %q: %w", hdr.Name, err), file.Close())
+		return capturedEntry{}, errors.Join(fmt.Errorf("snapshot: validate regular file %q: %w", hdr.Name, err), file.Close())
+	}
+	currentOffset, err := spool.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return capturedEntry{}, errors.Join(fmt.Errorf("snapshot: inspect content spool offset: %w", err), file.Close())
+	}
+	if currentOffset != spoolOffset {
+		return capturedEntry{}, errors.Join(fmt.Errorf("snapshot: content spool offset changed from %d to %d", spoolOffset, currentOffset), file.Close())
 	}
 
 	reader := io.Reader(contextReader{ctx: ctx, reader: tr})
 	if remaining != int64(^uint64(0)>>1) {
 		reader = io.LimitReader(reader, remaining+1)
 	}
-	written, copyErr := io.Copy(file, reader)
+	written, copyErr := io.Copy(io.MultiWriter(file, spool), reader)
+	finalInfo, statErr := file.Stat()
 	closeErr := file.Close()
 	if copyErr != nil {
-		return fmt.Errorf("snapshot: extract regular file %q: %w", hdr.Name, errors.Join(copyErr, closeErr))
+		return capturedEntry{}, fmt.Errorf("snapshot: extract regular file %q: %w", hdr.Name, errors.Join(copyErr, statErr, closeErr))
 	}
-	if closeErr != nil {
-		return fmt.Errorf("snapshot: close regular file %q: %w", hdr.Name, closeErr)
+	if err := errors.Join(statErr, closeErr); err != nil {
+		return capturedEntry{}, fmt.Errorf("snapshot: close regular file %q: %w", hdr.Name, err)
 	}
 	if written > remaining {
-		return fmt.Errorf("snapshot: archive exceeds regular content limit of %d bytes", maxContent)
+		return capturedEntry{}, fmt.Errorf("snapshot: archive exceeds regular content limit of %d bytes", maxContent)
 	}
-	*contentBytes += written
 	if written != hdr.Size {
-		return fmt.Errorf("snapshot: regular file %q is truncated: copied %d of %d bytes", hdr.Name, written, hdr.Size)
+		return capturedEntry{}, fmt.Errorf("snapshot: regular file %q is truncated: copied %d of %d bytes", hdr.Name, written, hdr.Size)
 	}
-	return nil
+	return capturedEntry{
+		name: hdr.Name, kind: extractedRegular, mode: int64(mode), size: written,
+		spoolOffset: spoolOffset, info: finalInfo,
+	}, nil
 }
 
 func cleanSymlinkTarget(name, target string) (string, error) {
@@ -581,71 +833,46 @@ func cleanSymlinkTarget(name, target string) (string, error) {
 	return cleaned, nil
 }
 
-type canonicalEntry struct {
-	name string
-	info fs.FileInfo
-}
-
 func writeCanonicalTar(
 	ctx context.Context,
+	archive *os.File,
+	spool *os.File,
 	root *os.Root,
-	archivePath string,
-	maxEntries int64,
+	index *captureIndex,
 	beforeCanonicalOpen func(*os.Root, string) error,
-) (Digest, int64, int64, error) {
-	entries := make([]canonicalEntry, 0)
-	err := fs.WalkDir(root.FS(), ".", func(name string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if name == "." {
-			return nil
-		}
-		if int64(len(entries)) >= maxEntries {
-			return fmt.Errorf("snapshot: canonical tree exceeds entry limit of %d", maxEntries)
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		entries = append(entries, canonicalEntry{name: name, info: info})
-		return nil
-	})
-	if err != nil {
-		return "", 0, 0, fmt.Errorf("snapshot: walk extracted tree: %w", err)
-	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].name < entries[j].name })
-
-	archive, err := os.OpenFile(archivePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-	if err != nil {
-		return "", 0, 0, fmt.Errorf("snapshot: create canonical archive: %w", err)
-	}
+) (Digest, int64, error) {
 	hash := sha256.New()
 	counted := &countingWriter{writer: io.MultiWriter(archive, hash)}
 	tw := tar.NewWriter(counted)
 
-	writeErr := writeCanonicalEntries(ctx, tw, root, entries, beforeCanonicalOpen)
+	writeErr := writeCanonicalEntries(ctx, tw, spool, root, sortedCaptureEntries(index), beforeCanonicalOpen)
 	tarCloseErr := tw.Close()
-	archiveCloseErr := archive.Close()
-	writeErr = errors.Join(writeErr, tarCloseErr, archiveCloseErr)
+	writeErr = errors.Join(writeErr, tarCloseErr)
 	if writeErr != nil {
-		return "", 0, 0, fmt.Errorf("snapshot: write canonical archive: %w", writeErr)
+		return "", 0, fmt.Errorf("snapshot: write canonical archive: %w", writeErr)
 	}
 	digest := Digest(fmt.Sprintf("sha256:%x", hash.Sum(nil)))
 	if err := digest.Validate(); err != nil {
-		return "", 0, 0, err
+		return "", 0, err
 	}
-	return digest, counted.count, int64(len(entries)), nil
+	return digest, counted.count, nil
+}
+
+func sortedCaptureEntries(index *captureIndex) []capturedEntry {
+	entries := make([]capturedEntry, 0, len(index.entries))
+	for _, entry := range index.entries {
+		entries = append(entries, entry)
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].name < entries[j].name })
+	return entries
 }
 
 func writeCanonicalEntries(
 	ctx context.Context,
 	tw *tar.Writer,
+	spool *os.File,
 	root *os.Root,
-	entries []canonicalEntry,
+	entries []capturedEntry,
 	beforeCanonicalOpen func(*os.Root, string) error,
 ) error {
 	epoch := time.Unix(0, 0).UTC()
@@ -666,79 +893,136 @@ func writeCanonicalEntries(
 			// serializer or its header format requires an identity migration.
 			Format: tar.FormatGNU,
 		}
-		var regular *os.File
-		switch {
-		case entry.info.Mode().IsRegular():
+		switch entry.kind {
+		case extractedRegular:
 			if beforeCanonicalOpen != nil {
 				if err := beforeCanonicalOpen(root, entry.name); err != nil {
-					return fmt.Errorf("before canonical open %q: %w", entry.name, err)
+					return fmt.Errorf("before canonical spool read %q: %w", entry.name, err)
 				}
 			}
-			file, err := root.Open(entry.name)
-			if err != nil {
-				return err
-			}
-			openedInfo, statErr := file.Stat()
-			if statErr == nil && regularFileChanged(entry.info, openedInfo) {
-				statErr = fmt.Errorf("file %q changed during capture", entry.name)
-			}
-			if statErr != nil {
-				return errors.Join(statErr, file.Close())
-			}
-			regular = file
 			hdr.Typeflag = tar.TypeReg
-			hdr.Mode = 0644
-			if openedInfo.Mode().Perm()&0111 != 0 {
-				hdr.Mode = 0755
-			}
-			hdr.Size = openedInfo.Size()
-		case entry.info.IsDir():
+			hdr.Mode = entry.mode
+			hdr.Size = entry.size
+		case extractedDirectory:
 			hdr.Typeflag = tar.TypeDir
-			hdr.Mode = 0755
-		case entry.info.Mode()&os.ModeSymlink != 0:
-			target, err := root.Readlink(entry.name)
-			if err != nil {
-				return err
-			}
+			hdr.Mode = entry.mode
+		case extractedSymlink:
 			hdr.Typeflag = tar.TypeSymlink
-			hdr.Mode = 0777
-			hdr.Linkname = target
+			hdr.Mode = entry.mode
+			hdr.Linkname = entry.target
 		default:
-			return fmt.Errorf("unsupported extracted file type for %q", entry.name)
+			return fmt.Errorf("unsupported captured file type for %q", entry.name)
 		}
 		if err := tw.WriteHeader(hdr); err != nil {
-			if regular != nil {
-				return errors.Join(err, regular.Close())
-			}
 			return err
 		}
-		if regular == nil {
+		if entry.kind != extractedRegular {
 			continue
 		}
-		written, copyErr := io.Copy(tw, contextReader{ctx: ctx, reader: regular})
-		finalInfo, statErr := regular.Stat()
-		closeErr := regular.Close()
-		if copyErr != nil {
-			return errors.Join(copyErr, statErr, closeErr)
-		}
-		if statErr == nil && regularFileChanged(entry.info, finalInfo) {
-			statErr = fmt.Errorf("file %q changed during capture", entry.name)
-		}
-		if written != hdr.Size && statErr == nil {
-			statErr = fmt.Errorf("file %q changed during capture", entry.name)
-		}
-		if err := errors.Join(statErr, closeErr); err != nil {
+		section := io.NewSectionReader(spool, entry.spoolOffset, entry.size)
+		written, err := io.Copy(tw, contextReader{ctx: ctx, reader: section})
+		if err != nil {
 			return err
+		}
+		if written != entry.size {
+			return fmt.Errorf("snapshot: content spool is truncated for %q", entry.name)
 		}
 	}
 	return nil
 }
 
-func regularFileChanged(walked, opened fs.FileInfo) bool {
-	return !opened.Mode().IsRegular() ||
-		opened.Size() != walked.Size() ||
-		opened.Mode().Perm() != walked.Mode().Perm() ||
-		!os.SameFile(walked, opened)
+func verifyCaptureIndex(ctx context.Context, root *os.Root, index *captureIndex, maxEntries int64) error {
+	seen := make(map[string]struct{}, len(index.entries))
+	err := fs.WalkDir(root.FS(), ".", func(name string, dirEntry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if name == "." {
+			return nil
+		}
+		if int64(len(seen)) >= maxEntries {
+			return fmt.Errorf("canonical tree exceeds entry limit of %d", maxEntries)
+		}
+		expected, found := index.entries[name]
+		if !found {
+			return fmt.Errorf("unexpected path %q", name)
+		}
+		info, err := dirEntry.Info()
+		if err != nil {
+			return err
+		}
+		if err := verifyCapturedEntry(root, expected, info); err != nil {
+			return err
+		}
+		seen[name] = struct{}{}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if len(seen) != len(index.entries) {
+		missing := make([]string, 0)
+		for name := range index.entries {
+			if _, found := seen[name]; !found {
+				missing = append(missing, name)
+			}
+		}
+		sort.Strings(missing)
+		return fmt.Errorf("captured paths disappeared: %q", missing)
+	}
+	return nil
+}
+
+func verifyCapturedEntry(root *os.Root, expected capturedEntry, info fs.FileInfo) error {
+	changed := func(detail string) error {
+		return fmt.Errorf("path %q changed during capture: %s", expected.name, detail)
+	}
+	if !os.SameFile(expected.info, info) {
+		return changed("filesystem identity differs")
+	}
+	switch expected.kind {
+	case extractedRegular:
+		if !info.Mode().IsRegular() {
+			return changed("kind is no longer regular")
+		}
+		if info.Size() != expected.size {
+			return changed("regular size differs")
+		}
+		if int64(info.Mode().Perm()) != expected.mode {
+			return changed("regular mode differs")
+		}
+	case extractedDirectory:
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return changed("kind is no longer directory")
+		}
+		if int64(info.Mode().Perm()) != expected.mode {
+			return changed("directory mode differs")
+		}
+	case extractedSymlink:
+		if info.Mode()&os.ModeSymlink == 0 {
+			return changed("kind is no longer symlink")
+		}
+		if info.Mode().Perm() != expected.info.Mode().Perm() {
+			return changed("symlink mode differs")
+		}
+		target, err := root.Readlink(expected.name)
+		if err != nil {
+			return changed(err.Error())
+		}
+		cleaned, err := cleanSymlinkTarget(expected.name, target)
+		if err != nil {
+			return changed(err.Error())
+		}
+		if cleaned != expected.target {
+			return changed("symlink target differs")
+		}
+	default:
+		return changed("unknown captured kind")
+	}
+	return nil
 }
 
 type contextReader struct {
