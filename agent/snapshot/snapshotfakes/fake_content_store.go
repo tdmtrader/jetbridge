@@ -10,11 +10,11 @@ import (
 )
 
 type FakeContentStore struct {
-	DeleteAllStub        func(context.Context, string) error
+	DeleteAllStub        func(context.Context, snapshot.Digest) error
 	deleteAllMutex       sync.RWMutex
 	deleteAllArgsForCall []struct {
 		arg1 context.Context
-		arg2 string
+		arg2 snapshot.Digest
 	}
 	deleteAllReturns struct {
 		result1 error
@@ -48,11 +48,12 @@ type FakeContentStore struct {
 		result1 bool
 		result2 error
 	}
-	OpenStub        func(context.Context, snapshot.Snapshot) (io.ReadCloser, error)
+	OpenStub        func(context.Context, snapshot.Snapshot, []snapshot.Location) (io.ReadCloser, error)
 	openMutex       sync.RWMutex
 	openArgsForCall []struct {
 		arg1 context.Context
 		arg2 snapshot.Snapshot
+		arg3 []snapshot.Location
 	}
 	openReturns struct {
 		result1 io.ReadCloser
@@ -62,11 +63,11 @@ type FakeContentStore struct {
 		result1 io.ReadCloser
 		result2 error
 	}
-	PutStub        func(context.Context, string, io.Reader) ([]snapshot.Location, error)
+	PutStub        func(context.Context, snapshot.Digest, io.Reader) ([]snapshot.Location, error)
 	putMutex       sync.RWMutex
 	putArgsForCall []struct {
 		arg1 context.Context
-		arg2 string
+		arg2 snapshot.Digest
 		arg3 io.Reader
 	}
 	putReturns struct {
@@ -81,12 +82,12 @@ type FakeContentStore struct {
 	invocationsMutex sync.RWMutex
 }
 
-func (fake *FakeContentStore) DeleteAll(arg1 context.Context, arg2 string) error {
+func (fake *FakeContentStore) DeleteAll(arg1 context.Context, arg2 snapshot.Digest) error {
 	fake.deleteAllMutex.Lock()
 	ret, specificReturn := fake.deleteAllReturnsOnCall[len(fake.deleteAllArgsForCall)]
 	fake.deleteAllArgsForCall = append(fake.deleteAllArgsForCall, struct {
 		arg1 context.Context
-		arg2 string
+		arg2 snapshot.Digest
 	}{arg1, arg2})
 	stub := fake.DeleteAllStub
 	fakeReturns := fake.deleteAllReturns
@@ -107,13 +108,13 @@ func (fake *FakeContentStore) DeleteAllCallCount() int {
 	return len(fake.deleteAllArgsForCall)
 }
 
-func (fake *FakeContentStore) DeleteAllCalls(stub func(context.Context, string) error) {
+func (fake *FakeContentStore) DeleteAllCalls(stub func(context.Context, snapshot.Digest) error) {
 	fake.deleteAllMutex.Lock()
 	defer fake.deleteAllMutex.Unlock()
 	fake.DeleteAllStub = stub
 }
 
-func (fake *FakeContentStore) DeleteAllArgsForCall(i int) (context.Context, string) {
+func (fake *FakeContentStore) DeleteAllArgsForCall(i int) (context.Context, snapshot.Digest) {
 	fake.deleteAllMutex.RLock()
 	defer fake.deleteAllMutex.RUnlock()
 	argsForCall := fake.deleteAllArgsForCall[i]
@@ -270,19 +271,25 @@ func (fake *FakeContentStore) ExistsReturnsOnCall(i int, result1 bool, result2 e
 	}{result1, result2}
 }
 
-func (fake *FakeContentStore) Open(arg1 context.Context, arg2 snapshot.Snapshot) (io.ReadCloser, error) {
+func (fake *FakeContentStore) Open(arg1 context.Context, arg2 snapshot.Snapshot, arg3 []snapshot.Location) (io.ReadCloser, error) {
+	var arg3Copy []snapshot.Location
+	if arg3 != nil {
+		arg3Copy = make([]snapshot.Location, len(arg3))
+		copy(arg3Copy, arg3)
+	}
 	fake.openMutex.Lock()
 	ret, specificReturn := fake.openReturnsOnCall[len(fake.openArgsForCall)]
 	fake.openArgsForCall = append(fake.openArgsForCall, struct {
 		arg1 context.Context
 		arg2 snapshot.Snapshot
-	}{arg1, arg2})
+		arg3 []snapshot.Location
+	}{arg1, arg2, arg3Copy})
 	stub := fake.OpenStub
 	fakeReturns := fake.openReturns
-	fake.recordInvocation("Open", []interface{}{arg1, arg2})
+	fake.recordInvocation("Open", []interface{}{arg1, arg2, arg3Copy})
 	fake.openMutex.Unlock()
 	if stub != nil {
-		return stub(arg1, arg2)
+		return stub(arg1, arg2, arg3)
 	}
 	if specificReturn {
 		return ret.result1, ret.result2
@@ -296,17 +303,17 @@ func (fake *FakeContentStore) OpenCallCount() int {
 	return len(fake.openArgsForCall)
 }
 
-func (fake *FakeContentStore) OpenCalls(stub func(context.Context, snapshot.Snapshot) (io.ReadCloser, error)) {
+func (fake *FakeContentStore) OpenCalls(stub func(context.Context, snapshot.Snapshot, []snapshot.Location) (io.ReadCloser, error)) {
 	fake.openMutex.Lock()
 	defer fake.openMutex.Unlock()
 	fake.OpenStub = stub
 }
 
-func (fake *FakeContentStore) OpenArgsForCall(i int) (context.Context, snapshot.Snapshot) {
+func (fake *FakeContentStore) OpenArgsForCall(i int) (context.Context, snapshot.Snapshot, []snapshot.Location) {
 	fake.openMutex.RLock()
 	defer fake.openMutex.RUnlock()
 	argsForCall := fake.openArgsForCall[i]
-	return argsForCall.arg1, argsForCall.arg2
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3
 }
 
 func (fake *FakeContentStore) OpenReturns(result1 io.ReadCloser, result2 error) {
@@ -335,12 +342,12 @@ func (fake *FakeContentStore) OpenReturnsOnCall(i int, result1 io.ReadCloser, re
 	}{result1, result2}
 }
 
-func (fake *FakeContentStore) Put(arg1 context.Context, arg2 string, arg3 io.Reader) ([]snapshot.Location, error) {
+func (fake *FakeContentStore) Put(arg1 context.Context, arg2 snapshot.Digest, arg3 io.Reader) ([]snapshot.Location, error) {
 	fake.putMutex.Lock()
 	ret, specificReturn := fake.putReturnsOnCall[len(fake.putArgsForCall)]
 	fake.putArgsForCall = append(fake.putArgsForCall, struct {
 		arg1 context.Context
-		arg2 string
+		arg2 snapshot.Digest
 		arg3 io.Reader
 	}{arg1, arg2, arg3})
 	stub := fake.PutStub
@@ -362,13 +369,13 @@ func (fake *FakeContentStore) PutCallCount() int {
 	return len(fake.putArgsForCall)
 }
 
-func (fake *FakeContentStore) PutCalls(stub func(context.Context, string, io.Reader) ([]snapshot.Location, error)) {
+func (fake *FakeContentStore) PutCalls(stub func(context.Context, snapshot.Digest, io.Reader) ([]snapshot.Location, error)) {
 	fake.putMutex.Lock()
 	defer fake.putMutex.Unlock()
 	fake.PutStub = stub
 }
 
-func (fake *FakeContentStore) PutArgsForCall(i int) (context.Context, string, io.Reader) {
+func (fake *FakeContentStore) PutArgsForCall(i int) (context.Context, snapshot.Digest, io.Reader) {
 	fake.putMutex.RLock()
 	defer fake.putMutex.RUnlock()
 	argsForCall := fake.putArgsForCall[i]

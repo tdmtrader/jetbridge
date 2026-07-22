@@ -2,6 +2,7 @@
 package snapshotfakes
 
 import (
+	"context"
 	"sync"
 	"time"
 
@@ -9,23 +10,12 @@ import (
 )
 
 type FakeMetadataStore struct {
-	ActiveRetentionClaimsStub        func(time.Time) ([]snapshot.RetentionClaim, error)
-	activeRetentionClaimsMutex       sync.RWMutex
-	activeRetentionClaimsArgsForCall []struct {
-		arg1 time.Time
-	}
-	activeRetentionClaimsReturns struct {
-		result1 []snapshot.RetentionClaim
-		result2 error
-	}
-	activeRetentionClaimsReturnsOnCall map[int]struct {
-		result1 []snapshot.RetentionClaim
-		result2 error
-	}
-	AddLocationStub        func(snapshot.Location) error
+	AddLocationStub        func(context.Context, snapshot.DigestLease, snapshot.Location) error
 	addLocationMutex       sync.RWMutex
 	addLocationArgsForCall []struct {
-		arg1 snapshot.Location
+		arg1 context.Context
+		arg2 snapshot.DigestLease
+		arg3 snapshot.Location
 	}
 	addLocationReturns struct {
 		result1 error
@@ -33,10 +23,12 @@ type FakeMetadataStore struct {
 	addLocationReturnsOnCall map[int]struct {
 		result1 error
 	}
-	CommitSealBatchStub        func(snapshot.SealCommit) (map[string]snapshot.SealedOutput, error)
+	CommitSealBatchStub        func(context.Context, snapshot.DigestLease, snapshot.SealCommit) (map[string]snapshot.SealedOutput, error)
 	commitSealBatchMutex       sync.RWMutex
 	commitSealBatchArgsForCall []struct {
-		arg1 snapshot.SealCommit
+		arg1 context.Context
+		arg2 snapshot.DigestLease
+		arg3 snapshot.SealCommit
 	}
 	commitSealBatchReturns struct {
 		result1 map[string]snapshot.SealedOutput
@@ -46,24 +38,43 @@ type FakeMetadataStore struct {
 		result1 map[string]snapshot.SealedOutput
 		result2 error
 	}
-	ExpiredRetentionClaimsStub        func(time.Time) ([]snapshot.RetentionClaim, error)
-	expiredRetentionClaimsMutex       sync.RWMutex
-	expiredRetentionClaimsArgsForCall []struct {
-		arg1 time.Time
+	DigestStateStub        func(context.Context, snapshot.DigestLease, snapshot.Digest, time.Time) (snapshot.DigestState, error)
+	digestStateMutex       sync.RWMutex
+	digestStateArgsForCall []struct {
+		arg1 context.Context
+		arg2 snapshot.DigestLease
+		arg3 snapshot.Digest
+		arg4 time.Time
 	}
-	expiredRetentionClaimsReturns struct {
-		result1 []snapshot.RetentionClaim
+	digestStateReturns struct {
+		result1 snapshot.DigestState
 		result2 error
 	}
-	expiredRetentionClaimsReturnsOnCall map[int]struct {
-		result1 []snapshot.RetentionClaim
+	digestStateReturnsOnCall map[int]struct {
+		result1 snapshot.DigestState
 		result2 error
 	}
-	GetAuthorizedStub        func(int, snapshot.SnapshotID) (snapshot.Snapshot, bool, error)
+	DiscoverLifecycleCandidatesStub        func(context.Context, snapshot.LifecycleCursor, int) (snapshot.LifecycleCandidatePage, error)
+	discoverLifecycleCandidatesMutex       sync.RWMutex
+	discoverLifecycleCandidatesArgsForCall []struct {
+		arg1 context.Context
+		arg2 snapshot.LifecycleCursor
+		arg3 int
+	}
+	discoverLifecycleCandidatesReturns struct {
+		result1 snapshot.LifecycleCandidatePage
+		result2 error
+	}
+	discoverLifecycleCandidatesReturnsOnCall map[int]struct {
+		result1 snapshot.LifecycleCandidatePage
+		result2 error
+	}
+	GetAuthorizedStub        func(context.Context, int, snapshot.SnapshotID) (snapshot.Snapshot, bool, error)
 	getAuthorizedMutex       sync.RWMutex
 	getAuthorizedArgsForCall []struct {
-		arg1 int
-		arg2 snapshot.SnapshotID
+		arg1 context.Context
+		arg2 int
+		arg3 snapshot.SnapshotID
 	}
 	getAuthorizedReturns struct {
 		result1 snapshot.Snapshot
@@ -75,11 +86,12 @@ type FakeMetadataStore struct {
 		result2 bool
 		result3 error
 	}
-	ListAuthorizedStub        func(int, snapshot.SnapshotListFilter) ([]snapshot.Snapshot, error)
+	ListAuthorizedStub        func(context.Context, int, snapshot.SnapshotListFilter) ([]snapshot.Snapshot, error)
 	listAuthorizedMutex       sync.RWMutex
 	listAuthorizedArgsForCall []struct {
-		arg1 int
-		arg2 snapshot.SnapshotListFilter
+		arg1 context.Context
+		arg2 int
+		arg3 snapshot.SnapshotListFilter
 	}
 	listAuthorizedReturns struct {
 		result1 []snapshot.Snapshot
@@ -89,24 +101,31 @@ type FakeMetadataStore struct {
 		result1 []snapshot.Snapshot
 		result2 error
 	}
-	MarkContentExpiredStub        func(snapshot.SnapshotID) error
-	markContentExpiredMutex       sync.RWMutex
-	markContentExpiredArgsForCall []struct {
-		arg1 snapshot.SnapshotID
+	MarkDigestExpiredStub        func(context.Context, snapshot.DigestLease, snapshot.Digest, time.Time) (bool, error)
+	markDigestExpiredMutex       sync.RWMutex
+	markDigestExpiredArgsForCall []struct {
+		arg1 context.Context
+		arg2 snapshot.DigestLease
+		arg3 snapshot.Digest
+		arg4 time.Time
 	}
-	markContentExpiredReturns struct {
-		result1 error
+	markDigestExpiredReturns struct {
+		result1 bool
+		result2 error
 	}
-	markContentExpiredReturnsOnCall map[int]struct {
-		result1 error
+	markDigestExpiredReturnsOnCall map[int]struct {
+		result1 bool
+		result2 error
 	}
-	PinStub        func(int, string, snapshot.SnapshotID, string) (snapshot.RetentionClaim, error)
+	PinStub        func(context.Context, snapshot.DigestLease, int, string, snapshot.SnapshotRef, string) (snapshot.RetentionClaim, error)
 	pinMutex       sync.RWMutex
 	pinArgsForCall []struct {
-		arg1 int
-		arg2 string
-		arg3 snapshot.SnapshotID
+		arg1 context.Context
+		arg2 snapshot.DigestLease
+		arg3 int
 		arg4 string
+		arg5 snapshot.SnapshotRef
+		arg6 string
 	}
 	pinReturns struct {
 		result1 snapshot.RetentionClaim
@@ -116,10 +135,12 @@ type FakeMetadataStore struct {
 		result1 snapshot.RetentionClaim
 		result2 error
 	}
-	RemoveLocationStub        func(snapshot.Location) error
+	RemoveLocationStub        func(context.Context, snapshot.DigestLease, snapshot.Location) error
 	removeLocationMutex       sync.RWMutex
 	removeLocationArgsForCall []struct {
-		arg1 snapshot.Location
+		arg1 context.Context
+		arg2 snapshot.DigestLease
+		arg3 snapshot.Location
 	}
 	removeLocationReturns struct {
 		result1 error
@@ -127,10 +148,13 @@ type FakeMetadataStore struct {
 	removeLocationReturnsOnCall map[int]struct {
 		result1 error
 	}
-	RemoveStagedUploadsStub        func([]int64) error
+	RemoveStagedUploadsStub        func(context.Context, snapshot.DigestLease, snapshot.Digest, []int64) error
 	removeStagedUploadsMutex       sync.RWMutex
 	removeStagedUploadsArgsForCall []struct {
-		arg1 []int64
+		arg1 context.Context
+		arg2 snapshot.DigestLease
+		arg3 snapshot.Digest
+		arg4 []int64
 	}
 	removeStagedUploadsReturns struct {
 		result1 error
@@ -138,36 +162,29 @@ type FakeMetadataStore struct {
 	removeStagedUploadsReturnsOnCall map[int]struct {
 		result1 error
 	}
-	StageUploadStub        func(snapshot.StagedUpload) error
+	StageUploadStub        func(context.Context, snapshot.DigestLease, snapshot.StageUploadRequest) (snapshot.StagedUpload, error)
 	stageUploadMutex       sync.RWMutex
 	stageUploadArgsForCall []struct {
-		arg1 snapshot.StagedUpload
+		arg1 context.Context
+		arg2 snapshot.DigestLease
+		arg3 snapshot.StageUploadRequest
 	}
 	stageUploadReturns struct {
-		result1 error
+		result1 snapshot.StagedUpload
+		result2 error
 	}
 	stageUploadReturnsOnCall map[int]struct {
-		result1 error
-	}
-	StagedUploadsStub        func(time.Time) ([]snapshot.StagedUpload, error)
-	stagedUploadsMutex       sync.RWMutex
-	stagedUploadsArgsForCall []struct {
-		arg1 time.Time
-	}
-	stagedUploadsReturns struct {
-		result1 []snapshot.StagedUpload
+		result1 snapshot.StagedUpload
 		result2 error
 	}
-	stagedUploadsReturnsOnCall map[int]struct {
-		result1 []snapshot.StagedUpload
-		result2 error
-	}
-	UnpinStub        func(int, string, snapshot.SnapshotID) error
+	UnpinStub        func(context.Context, snapshot.DigestLease, int, string, snapshot.SnapshotRef) error
 	unpinMutex       sync.RWMutex
 	unpinArgsForCall []struct {
-		arg1 int
-		arg2 string
-		arg3 snapshot.SnapshotID
+		arg1 context.Context
+		arg2 snapshot.DigestLease
+		arg3 int
+		arg4 string
+		arg5 snapshot.SnapshotRef
 	}
 	unpinReturns struct {
 		result1 error
@@ -179,82 +196,20 @@ type FakeMetadataStore struct {
 	invocationsMutex sync.RWMutex
 }
 
-func (fake *FakeMetadataStore) ActiveRetentionClaims(arg1 time.Time) ([]snapshot.RetentionClaim, error) {
-	fake.activeRetentionClaimsMutex.Lock()
-	ret, specificReturn := fake.activeRetentionClaimsReturnsOnCall[len(fake.activeRetentionClaimsArgsForCall)]
-	fake.activeRetentionClaimsArgsForCall = append(fake.activeRetentionClaimsArgsForCall, struct {
-		arg1 time.Time
-	}{arg1})
-	stub := fake.ActiveRetentionClaimsStub
-	fakeReturns := fake.activeRetentionClaimsReturns
-	fake.recordInvocation("ActiveRetentionClaims", []interface{}{arg1})
-	fake.activeRetentionClaimsMutex.Unlock()
-	if stub != nil {
-		return stub(arg1)
-	}
-	if specificReturn {
-		return ret.result1, ret.result2
-	}
-	return fakeReturns.result1, fakeReturns.result2
-}
-
-func (fake *FakeMetadataStore) ActiveRetentionClaimsCallCount() int {
-	fake.activeRetentionClaimsMutex.RLock()
-	defer fake.activeRetentionClaimsMutex.RUnlock()
-	return len(fake.activeRetentionClaimsArgsForCall)
-}
-
-func (fake *FakeMetadataStore) ActiveRetentionClaimsCalls(stub func(time.Time) ([]snapshot.RetentionClaim, error)) {
-	fake.activeRetentionClaimsMutex.Lock()
-	defer fake.activeRetentionClaimsMutex.Unlock()
-	fake.ActiveRetentionClaimsStub = stub
-}
-
-func (fake *FakeMetadataStore) ActiveRetentionClaimsArgsForCall(i int) time.Time {
-	fake.activeRetentionClaimsMutex.RLock()
-	defer fake.activeRetentionClaimsMutex.RUnlock()
-	argsForCall := fake.activeRetentionClaimsArgsForCall[i]
-	return argsForCall.arg1
-}
-
-func (fake *FakeMetadataStore) ActiveRetentionClaimsReturns(result1 []snapshot.RetentionClaim, result2 error) {
-	fake.activeRetentionClaimsMutex.Lock()
-	defer fake.activeRetentionClaimsMutex.Unlock()
-	fake.ActiveRetentionClaimsStub = nil
-	fake.activeRetentionClaimsReturns = struct {
-		result1 []snapshot.RetentionClaim
-		result2 error
-	}{result1, result2}
-}
-
-func (fake *FakeMetadataStore) ActiveRetentionClaimsReturnsOnCall(i int, result1 []snapshot.RetentionClaim, result2 error) {
-	fake.activeRetentionClaimsMutex.Lock()
-	defer fake.activeRetentionClaimsMutex.Unlock()
-	fake.ActiveRetentionClaimsStub = nil
-	if fake.activeRetentionClaimsReturnsOnCall == nil {
-		fake.activeRetentionClaimsReturnsOnCall = make(map[int]struct {
-			result1 []snapshot.RetentionClaim
-			result2 error
-		})
-	}
-	fake.activeRetentionClaimsReturnsOnCall[i] = struct {
-		result1 []snapshot.RetentionClaim
-		result2 error
-	}{result1, result2}
-}
-
-func (fake *FakeMetadataStore) AddLocation(arg1 snapshot.Location) error {
+func (fake *FakeMetadataStore) AddLocation(arg1 context.Context, arg2 snapshot.DigestLease, arg3 snapshot.Location) error {
 	fake.addLocationMutex.Lock()
 	ret, specificReturn := fake.addLocationReturnsOnCall[len(fake.addLocationArgsForCall)]
 	fake.addLocationArgsForCall = append(fake.addLocationArgsForCall, struct {
-		arg1 snapshot.Location
-	}{arg1})
+		arg1 context.Context
+		arg2 snapshot.DigestLease
+		arg3 snapshot.Location
+	}{arg1, arg2, arg3})
 	stub := fake.AddLocationStub
 	fakeReturns := fake.addLocationReturns
-	fake.recordInvocation("AddLocation", []interface{}{arg1})
+	fake.recordInvocation("AddLocation", []interface{}{arg1, arg2, arg3})
 	fake.addLocationMutex.Unlock()
 	if stub != nil {
-		return stub(arg1)
+		return stub(arg1, arg2, arg3)
 	}
 	if specificReturn {
 		return ret.result1
@@ -268,17 +223,17 @@ func (fake *FakeMetadataStore) AddLocationCallCount() int {
 	return len(fake.addLocationArgsForCall)
 }
 
-func (fake *FakeMetadataStore) AddLocationCalls(stub func(snapshot.Location) error) {
+func (fake *FakeMetadataStore) AddLocationCalls(stub func(context.Context, snapshot.DigestLease, snapshot.Location) error) {
 	fake.addLocationMutex.Lock()
 	defer fake.addLocationMutex.Unlock()
 	fake.AddLocationStub = stub
 }
 
-func (fake *FakeMetadataStore) AddLocationArgsForCall(i int) snapshot.Location {
+func (fake *FakeMetadataStore) AddLocationArgsForCall(i int) (context.Context, snapshot.DigestLease, snapshot.Location) {
 	fake.addLocationMutex.RLock()
 	defer fake.addLocationMutex.RUnlock()
 	argsForCall := fake.addLocationArgsForCall[i]
-	return argsForCall.arg1
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3
 }
 
 func (fake *FakeMetadataStore) AddLocationReturns(result1 error) {
@@ -304,18 +259,20 @@ func (fake *FakeMetadataStore) AddLocationReturnsOnCall(i int, result1 error) {
 	}{result1}
 }
 
-func (fake *FakeMetadataStore) CommitSealBatch(arg1 snapshot.SealCommit) (map[string]snapshot.SealedOutput, error) {
+func (fake *FakeMetadataStore) CommitSealBatch(arg1 context.Context, arg2 snapshot.DigestLease, arg3 snapshot.SealCommit) (map[string]snapshot.SealedOutput, error) {
 	fake.commitSealBatchMutex.Lock()
 	ret, specificReturn := fake.commitSealBatchReturnsOnCall[len(fake.commitSealBatchArgsForCall)]
 	fake.commitSealBatchArgsForCall = append(fake.commitSealBatchArgsForCall, struct {
-		arg1 snapshot.SealCommit
-	}{arg1})
+		arg1 context.Context
+		arg2 snapshot.DigestLease
+		arg3 snapshot.SealCommit
+	}{arg1, arg2, arg3})
 	stub := fake.CommitSealBatchStub
 	fakeReturns := fake.commitSealBatchReturns
-	fake.recordInvocation("CommitSealBatch", []interface{}{arg1})
+	fake.recordInvocation("CommitSealBatch", []interface{}{arg1, arg2, arg3})
 	fake.commitSealBatchMutex.Unlock()
 	if stub != nil {
-		return stub(arg1)
+		return stub(arg1, arg2, arg3)
 	}
 	if specificReturn {
 		return ret.result1, ret.result2
@@ -329,17 +286,17 @@ func (fake *FakeMetadataStore) CommitSealBatchCallCount() int {
 	return len(fake.commitSealBatchArgsForCall)
 }
 
-func (fake *FakeMetadataStore) CommitSealBatchCalls(stub func(snapshot.SealCommit) (map[string]snapshot.SealedOutput, error)) {
+func (fake *FakeMetadataStore) CommitSealBatchCalls(stub func(context.Context, snapshot.DigestLease, snapshot.SealCommit) (map[string]snapshot.SealedOutput, error)) {
 	fake.commitSealBatchMutex.Lock()
 	defer fake.commitSealBatchMutex.Unlock()
 	fake.CommitSealBatchStub = stub
 }
 
-func (fake *FakeMetadataStore) CommitSealBatchArgsForCall(i int) snapshot.SealCommit {
+func (fake *FakeMetadataStore) CommitSealBatchArgsForCall(i int) (context.Context, snapshot.DigestLease, snapshot.SealCommit) {
 	fake.commitSealBatchMutex.RLock()
 	defer fake.commitSealBatchMutex.RUnlock()
 	argsForCall := fake.commitSealBatchArgsForCall[i]
-	return argsForCall.arg1
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3
 }
 
 func (fake *FakeMetadataStore) CommitSealBatchReturns(result1 map[string]snapshot.SealedOutput, result2 error) {
@@ -368,18 +325,21 @@ func (fake *FakeMetadataStore) CommitSealBatchReturnsOnCall(i int, result1 map[s
 	}{result1, result2}
 }
 
-func (fake *FakeMetadataStore) ExpiredRetentionClaims(arg1 time.Time) ([]snapshot.RetentionClaim, error) {
-	fake.expiredRetentionClaimsMutex.Lock()
-	ret, specificReturn := fake.expiredRetentionClaimsReturnsOnCall[len(fake.expiredRetentionClaimsArgsForCall)]
-	fake.expiredRetentionClaimsArgsForCall = append(fake.expiredRetentionClaimsArgsForCall, struct {
-		arg1 time.Time
-	}{arg1})
-	stub := fake.ExpiredRetentionClaimsStub
-	fakeReturns := fake.expiredRetentionClaimsReturns
-	fake.recordInvocation("ExpiredRetentionClaims", []interface{}{arg1})
-	fake.expiredRetentionClaimsMutex.Unlock()
+func (fake *FakeMetadataStore) DigestState(arg1 context.Context, arg2 snapshot.DigestLease, arg3 snapshot.Digest, arg4 time.Time) (snapshot.DigestState, error) {
+	fake.digestStateMutex.Lock()
+	ret, specificReturn := fake.digestStateReturnsOnCall[len(fake.digestStateArgsForCall)]
+	fake.digestStateArgsForCall = append(fake.digestStateArgsForCall, struct {
+		arg1 context.Context
+		arg2 snapshot.DigestLease
+		arg3 snapshot.Digest
+		arg4 time.Time
+	}{arg1, arg2, arg3, arg4})
+	stub := fake.DigestStateStub
+	fakeReturns := fake.digestStateReturns
+	fake.recordInvocation("DigestState", []interface{}{arg1, arg2, arg3, arg4})
+	fake.digestStateMutex.Unlock()
 	if stub != nil {
-		return stub(arg1)
+		return stub(arg1, arg2, arg3, arg4)
 	}
 	if specificReturn {
 		return ret.result1, ret.result2
@@ -387,64 +347,131 @@ func (fake *FakeMetadataStore) ExpiredRetentionClaims(arg1 time.Time) ([]snapsho
 	return fakeReturns.result1, fakeReturns.result2
 }
 
-func (fake *FakeMetadataStore) ExpiredRetentionClaimsCallCount() int {
-	fake.expiredRetentionClaimsMutex.RLock()
-	defer fake.expiredRetentionClaimsMutex.RUnlock()
-	return len(fake.expiredRetentionClaimsArgsForCall)
+func (fake *FakeMetadataStore) DigestStateCallCount() int {
+	fake.digestStateMutex.RLock()
+	defer fake.digestStateMutex.RUnlock()
+	return len(fake.digestStateArgsForCall)
 }
 
-func (fake *FakeMetadataStore) ExpiredRetentionClaimsCalls(stub func(time.Time) ([]snapshot.RetentionClaim, error)) {
-	fake.expiredRetentionClaimsMutex.Lock()
-	defer fake.expiredRetentionClaimsMutex.Unlock()
-	fake.ExpiredRetentionClaimsStub = stub
+func (fake *FakeMetadataStore) DigestStateCalls(stub func(context.Context, snapshot.DigestLease, snapshot.Digest, time.Time) (snapshot.DigestState, error)) {
+	fake.digestStateMutex.Lock()
+	defer fake.digestStateMutex.Unlock()
+	fake.DigestStateStub = stub
 }
 
-func (fake *FakeMetadataStore) ExpiredRetentionClaimsArgsForCall(i int) time.Time {
-	fake.expiredRetentionClaimsMutex.RLock()
-	defer fake.expiredRetentionClaimsMutex.RUnlock()
-	argsForCall := fake.expiredRetentionClaimsArgsForCall[i]
-	return argsForCall.arg1
+func (fake *FakeMetadataStore) DigestStateArgsForCall(i int) (context.Context, snapshot.DigestLease, snapshot.Digest, time.Time) {
+	fake.digestStateMutex.RLock()
+	defer fake.digestStateMutex.RUnlock()
+	argsForCall := fake.digestStateArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3, argsForCall.arg4
 }
 
-func (fake *FakeMetadataStore) ExpiredRetentionClaimsReturns(result1 []snapshot.RetentionClaim, result2 error) {
-	fake.expiredRetentionClaimsMutex.Lock()
-	defer fake.expiredRetentionClaimsMutex.Unlock()
-	fake.ExpiredRetentionClaimsStub = nil
-	fake.expiredRetentionClaimsReturns = struct {
-		result1 []snapshot.RetentionClaim
+func (fake *FakeMetadataStore) DigestStateReturns(result1 snapshot.DigestState, result2 error) {
+	fake.digestStateMutex.Lock()
+	defer fake.digestStateMutex.Unlock()
+	fake.DigestStateStub = nil
+	fake.digestStateReturns = struct {
+		result1 snapshot.DigestState
 		result2 error
 	}{result1, result2}
 }
 
-func (fake *FakeMetadataStore) ExpiredRetentionClaimsReturnsOnCall(i int, result1 []snapshot.RetentionClaim, result2 error) {
-	fake.expiredRetentionClaimsMutex.Lock()
-	defer fake.expiredRetentionClaimsMutex.Unlock()
-	fake.ExpiredRetentionClaimsStub = nil
-	if fake.expiredRetentionClaimsReturnsOnCall == nil {
-		fake.expiredRetentionClaimsReturnsOnCall = make(map[int]struct {
-			result1 []snapshot.RetentionClaim
+func (fake *FakeMetadataStore) DigestStateReturnsOnCall(i int, result1 snapshot.DigestState, result2 error) {
+	fake.digestStateMutex.Lock()
+	defer fake.digestStateMutex.Unlock()
+	fake.DigestStateStub = nil
+	if fake.digestStateReturnsOnCall == nil {
+		fake.digestStateReturnsOnCall = make(map[int]struct {
+			result1 snapshot.DigestState
 			result2 error
 		})
 	}
-	fake.expiredRetentionClaimsReturnsOnCall[i] = struct {
-		result1 []snapshot.RetentionClaim
+	fake.digestStateReturnsOnCall[i] = struct {
+		result1 snapshot.DigestState
 		result2 error
 	}{result1, result2}
 }
 
-func (fake *FakeMetadataStore) GetAuthorized(arg1 int, arg2 snapshot.SnapshotID) (snapshot.Snapshot, bool, error) {
+func (fake *FakeMetadataStore) DiscoverLifecycleCandidates(arg1 context.Context, arg2 snapshot.LifecycleCursor, arg3 int) (snapshot.LifecycleCandidatePage, error) {
+	fake.discoverLifecycleCandidatesMutex.Lock()
+	ret, specificReturn := fake.discoverLifecycleCandidatesReturnsOnCall[len(fake.discoverLifecycleCandidatesArgsForCall)]
+	fake.discoverLifecycleCandidatesArgsForCall = append(fake.discoverLifecycleCandidatesArgsForCall, struct {
+		arg1 context.Context
+		arg2 snapshot.LifecycleCursor
+		arg3 int
+	}{arg1, arg2, arg3})
+	stub := fake.DiscoverLifecycleCandidatesStub
+	fakeReturns := fake.discoverLifecycleCandidatesReturns
+	fake.recordInvocation("DiscoverLifecycleCandidates", []interface{}{arg1, arg2, arg3})
+	fake.discoverLifecycleCandidatesMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2, arg3)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeMetadataStore) DiscoverLifecycleCandidatesCallCount() int {
+	fake.discoverLifecycleCandidatesMutex.RLock()
+	defer fake.discoverLifecycleCandidatesMutex.RUnlock()
+	return len(fake.discoverLifecycleCandidatesArgsForCall)
+}
+
+func (fake *FakeMetadataStore) DiscoverLifecycleCandidatesCalls(stub func(context.Context, snapshot.LifecycleCursor, int) (snapshot.LifecycleCandidatePage, error)) {
+	fake.discoverLifecycleCandidatesMutex.Lock()
+	defer fake.discoverLifecycleCandidatesMutex.Unlock()
+	fake.DiscoverLifecycleCandidatesStub = stub
+}
+
+func (fake *FakeMetadataStore) DiscoverLifecycleCandidatesArgsForCall(i int) (context.Context, snapshot.LifecycleCursor, int) {
+	fake.discoverLifecycleCandidatesMutex.RLock()
+	defer fake.discoverLifecycleCandidatesMutex.RUnlock()
+	argsForCall := fake.discoverLifecycleCandidatesArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3
+}
+
+func (fake *FakeMetadataStore) DiscoverLifecycleCandidatesReturns(result1 snapshot.LifecycleCandidatePage, result2 error) {
+	fake.discoverLifecycleCandidatesMutex.Lock()
+	defer fake.discoverLifecycleCandidatesMutex.Unlock()
+	fake.DiscoverLifecycleCandidatesStub = nil
+	fake.discoverLifecycleCandidatesReturns = struct {
+		result1 snapshot.LifecycleCandidatePage
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeMetadataStore) DiscoverLifecycleCandidatesReturnsOnCall(i int, result1 snapshot.LifecycleCandidatePage, result2 error) {
+	fake.discoverLifecycleCandidatesMutex.Lock()
+	defer fake.discoverLifecycleCandidatesMutex.Unlock()
+	fake.DiscoverLifecycleCandidatesStub = nil
+	if fake.discoverLifecycleCandidatesReturnsOnCall == nil {
+		fake.discoverLifecycleCandidatesReturnsOnCall = make(map[int]struct {
+			result1 snapshot.LifecycleCandidatePage
+			result2 error
+		})
+	}
+	fake.discoverLifecycleCandidatesReturnsOnCall[i] = struct {
+		result1 snapshot.LifecycleCandidatePage
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeMetadataStore) GetAuthorized(arg1 context.Context, arg2 int, arg3 snapshot.SnapshotID) (snapshot.Snapshot, bool, error) {
 	fake.getAuthorizedMutex.Lock()
 	ret, specificReturn := fake.getAuthorizedReturnsOnCall[len(fake.getAuthorizedArgsForCall)]
 	fake.getAuthorizedArgsForCall = append(fake.getAuthorizedArgsForCall, struct {
-		arg1 int
-		arg2 snapshot.SnapshotID
-	}{arg1, arg2})
+		arg1 context.Context
+		arg2 int
+		arg3 snapshot.SnapshotID
+	}{arg1, arg2, arg3})
 	stub := fake.GetAuthorizedStub
 	fakeReturns := fake.getAuthorizedReturns
-	fake.recordInvocation("GetAuthorized", []interface{}{arg1, arg2})
+	fake.recordInvocation("GetAuthorized", []interface{}{arg1, arg2, arg3})
 	fake.getAuthorizedMutex.Unlock()
 	if stub != nil {
-		return stub(arg1, arg2)
+		return stub(arg1, arg2, arg3)
 	}
 	if specificReturn {
 		return ret.result1, ret.result2, ret.result3
@@ -458,17 +485,17 @@ func (fake *FakeMetadataStore) GetAuthorizedCallCount() int {
 	return len(fake.getAuthorizedArgsForCall)
 }
 
-func (fake *FakeMetadataStore) GetAuthorizedCalls(stub func(int, snapshot.SnapshotID) (snapshot.Snapshot, bool, error)) {
+func (fake *FakeMetadataStore) GetAuthorizedCalls(stub func(context.Context, int, snapshot.SnapshotID) (snapshot.Snapshot, bool, error)) {
 	fake.getAuthorizedMutex.Lock()
 	defer fake.getAuthorizedMutex.Unlock()
 	fake.GetAuthorizedStub = stub
 }
 
-func (fake *FakeMetadataStore) GetAuthorizedArgsForCall(i int) (int, snapshot.SnapshotID) {
+func (fake *FakeMetadataStore) GetAuthorizedArgsForCall(i int) (context.Context, int, snapshot.SnapshotID) {
 	fake.getAuthorizedMutex.RLock()
 	defer fake.getAuthorizedMutex.RUnlock()
 	argsForCall := fake.getAuthorizedArgsForCall[i]
-	return argsForCall.arg1, argsForCall.arg2
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3
 }
 
 func (fake *FakeMetadataStore) GetAuthorizedReturns(result1 snapshot.Snapshot, result2 bool, result3 error) {
@@ -500,19 +527,20 @@ func (fake *FakeMetadataStore) GetAuthorizedReturnsOnCall(i int, result1 snapsho
 	}{result1, result2, result3}
 }
 
-func (fake *FakeMetadataStore) ListAuthorized(arg1 int, arg2 snapshot.SnapshotListFilter) ([]snapshot.Snapshot, error) {
+func (fake *FakeMetadataStore) ListAuthorized(arg1 context.Context, arg2 int, arg3 snapshot.SnapshotListFilter) ([]snapshot.Snapshot, error) {
 	fake.listAuthorizedMutex.Lock()
 	ret, specificReturn := fake.listAuthorizedReturnsOnCall[len(fake.listAuthorizedArgsForCall)]
 	fake.listAuthorizedArgsForCall = append(fake.listAuthorizedArgsForCall, struct {
-		arg1 int
-		arg2 snapshot.SnapshotListFilter
-	}{arg1, arg2})
+		arg1 context.Context
+		arg2 int
+		arg3 snapshot.SnapshotListFilter
+	}{arg1, arg2, arg3})
 	stub := fake.ListAuthorizedStub
 	fakeReturns := fake.listAuthorizedReturns
-	fake.recordInvocation("ListAuthorized", []interface{}{arg1, arg2})
+	fake.recordInvocation("ListAuthorized", []interface{}{arg1, arg2, arg3})
 	fake.listAuthorizedMutex.Unlock()
 	if stub != nil {
-		return stub(arg1, arg2)
+		return stub(arg1, arg2, arg3)
 	}
 	if specificReturn {
 		return ret.result1, ret.result2
@@ -526,17 +554,17 @@ func (fake *FakeMetadataStore) ListAuthorizedCallCount() int {
 	return len(fake.listAuthorizedArgsForCall)
 }
 
-func (fake *FakeMetadataStore) ListAuthorizedCalls(stub func(int, snapshot.SnapshotListFilter) ([]snapshot.Snapshot, error)) {
+func (fake *FakeMetadataStore) ListAuthorizedCalls(stub func(context.Context, int, snapshot.SnapshotListFilter) ([]snapshot.Snapshot, error)) {
 	fake.listAuthorizedMutex.Lock()
 	defer fake.listAuthorizedMutex.Unlock()
 	fake.ListAuthorizedStub = stub
 }
 
-func (fake *FakeMetadataStore) ListAuthorizedArgsForCall(i int) (int, snapshot.SnapshotListFilter) {
+func (fake *FakeMetadataStore) ListAuthorizedArgsForCall(i int) (context.Context, int, snapshot.SnapshotListFilter) {
 	fake.listAuthorizedMutex.RLock()
 	defer fake.listAuthorizedMutex.RUnlock()
 	argsForCall := fake.listAuthorizedArgsForCall[i]
-	return argsForCall.arg1, argsForCall.arg2
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3
 }
 
 func (fake *FakeMetadataStore) ListAuthorizedReturns(result1 []snapshot.Snapshot, result2 error) {
@@ -565,82 +593,90 @@ func (fake *FakeMetadataStore) ListAuthorizedReturnsOnCall(i int, result1 []snap
 	}{result1, result2}
 }
 
-func (fake *FakeMetadataStore) MarkContentExpired(arg1 snapshot.SnapshotID) error {
-	fake.markContentExpiredMutex.Lock()
-	ret, specificReturn := fake.markContentExpiredReturnsOnCall[len(fake.markContentExpiredArgsForCall)]
-	fake.markContentExpiredArgsForCall = append(fake.markContentExpiredArgsForCall, struct {
-		arg1 snapshot.SnapshotID
-	}{arg1})
-	stub := fake.MarkContentExpiredStub
-	fakeReturns := fake.markContentExpiredReturns
-	fake.recordInvocation("MarkContentExpired", []interface{}{arg1})
-	fake.markContentExpiredMutex.Unlock()
+func (fake *FakeMetadataStore) MarkDigestExpired(arg1 context.Context, arg2 snapshot.DigestLease, arg3 snapshot.Digest, arg4 time.Time) (bool, error) {
+	fake.markDigestExpiredMutex.Lock()
+	ret, specificReturn := fake.markDigestExpiredReturnsOnCall[len(fake.markDigestExpiredArgsForCall)]
+	fake.markDigestExpiredArgsForCall = append(fake.markDigestExpiredArgsForCall, struct {
+		arg1 context.Context
+		arg2 snapshot.DigestLease
+		arg3 snapshot.Digest
+		arg4 time.Time
+	}{arg1, arg2, arg3, arg4})
+	stub := fake.MarkDigestExpiredStub
+	fakeReturns := fake.markDigestExpiredReturns
+	fake.recordInvocation("MarkDigestExpired", []interface{}{arg1, arg2, arg3, arg4})
+	fake.markDigestExpiredMutex.Unlock()
 	if stub != nil {
-		return stub(arg1)
+		return stub(arg1, arg2, arg3, arg4)
 	}
 	if specificReturn {
-		return ret.result1
+		return ret.result1, ret.result2
 	}
-	return fakeReturns.result1
+	return fakeReturns.result1, fakeReturns.result2
 }
 
-func (fake *FakeMetadataStore) MarkContentExpiredCallCount() int {
-	fake.markContentExpiredMutex.RLock()
-	defer fake.markContentExpiredMutex.RUnlock()
-	return len(fake.markContentExpiredArgsForCall)
+func (fake *FakeMetadataStore) MarkDigestExpiredCallCount() int {
+	fake.markDigestExpiredMutex.RLock()
+	defer fake.markDigestExpiredMutex.RUnlock()
+	return len(fake.markDigestExpiredArgsForCall)
 }
 
-func (fake *FakeMetadataStore) MarkContentExpiredCalls(stub func(snapshot.SnapshotID) error) {
-	fake.markContentExpiredMutex.Lock()
-	defer fake.markContentExpiredMutex.Unlock()
-	fake.MarkContentExpiredStub = stub
+func (fake *FakeMetadataStore) MarkDigestExpiredCalls(stub func(context.Context, snapshot.DigestLease, snapshot.Digest, time.Time) (bool, error)) {
+	fake.markDigestExpiredMutex.Lock()
+	defer fake.markDigestExpiredMutex.Unlock()
+	fake.MarkDigestExpiredStub = stub
 }
 
-func (fake *FakeMetadataStore) MarkContentExpiredArgsForCall(i int) snapshot.SnapshotID {
-	fake.markContentExpiredMutex.RLock()
-	defer fake.markContentExpiredMutex.RUnlock()
-	argsForCall := fake.markContentExpiredArgsForCall[i]
-	return argsForCall.arg1
+func (fake *FakeMetadataStore) MarkDigestExpiredArgsForCall(i int) (context.Context, snapshot.DigestLease, snapshot.Digest, time.Time) {
+	fake.markDigestExpiredMutex.RLock()
+	defer fake.markDigestExpiredMutex.RUnlock()
+	argsForCall := fake.markDigestExpiredArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3, argsForCall.arg4
 }
 
-func (fake *FakeMetadataStore) MarkContentExpiredReturns(result1 error) {
-	fake.markContentExpiredMutex.Lock()
-	defer fake.markContentExpiredMutex.Unlock()
-	fake.MarkContentExpiredStub = nil
-	fake.markContentExpiredReturns = struct {
-		result1 error
-	}{result1}
+func (fake *FakeMetadataStore) MarkDigestExpiredReturns(result1 bool, result2 error) {
+	fake.markDigestExpiredMutex.Lock()
+	defer fake.markDigestExpiredMutex.Unlock()
+	fake.MarkDigestExpiredStub = nil
+	fake.markDigestExpiredReturns = struct {
+		result1 bool
+		result2 error
+	}{result1, result2}
 }
 
-func (fake *FakeMetadataStore) MarkContentExpiredReturnsOnCall(i int, result1 error) {
-	fake.markContentExpiredMutex.Lock()
-	defer fake.markContentExpiredMutex.Unlock()
-	fake.MarkContentExpiredStub = nil
-	if fake.markContentExpiredReturnsOnCall == nil {
-		fake.markContentExpiredReturnsOnCall = make(map[int]struct {
-			result1 error
+func (fake *FakeMetadataStore) MarkDigestExpiredReturnsOnCall(i int, result1 bool, result2 error) {
+	fake.markDigestExpiredMutex.Lock()
+	defer fake.markDigestExpiredMutex.Unlock()
+	fake.MarkDigestExpiredStub = nil
+	if fake.markDigestExpiredReturnsOnCall == nil {
+		fake.markDigestExpiredReturnsOnCall = make(map[int]struct {
+			result1 bool
+			result2 error
 		})
 	}
-	fake.markContentExpiredReturnsOnCall[i] = struct {
-		result1 error
-	}{result1}
+	fake.markDigestExpiredReturnsOnCall[i] = struct {
+		result1 bool
+		result2 error
+	}{result1, result2}
 }
 
-func (fake *FakeMetadataStore) Pin(arg1 int, arg2 string, arg3 snapshot.SnapshotID, arg4 string) (snapshot.RetentionClaim, error) {
+func (fake *FakeMetadataStore) Pin(arg1 context.Context, arg2 snapshot.DigestLease, arg3 int, arg4 string, arg5 snapshot.SnapshotRef, arg6 string) (snapshot.RetentionClaim, error) {
 	fake.pinMutex.Lock()
 	ret, specificReturn := fake.pinReturnsOnCall[len(fake.pinArgsForCall)]
 	fake.pinArgsForCall = append(fake.pinArgsForCall, struct {
-		arg1 int
-		arg2 string
-		arg3 snapshot.SnapshotID
+		arg1 context.Context
+		arg2 snapshot.DigestLease
+		arg3 int
 		arg4 string
-	}{arg1, arg2, arg3, arg4})
+		arg5 snapshot.SnapshotRef
+		arg6 string
+	}{arg1, arg2, arg3, arg4, arg5, arg6})
 	stub := fake.PinStub
 	fakeReturns := fake.pinReturns
-	fake.recordInvocation("Pin", []interface{}{arg1, arg2, arg3, arg4})
+	fake.recordInvocation("Pin", []interface{}{arg1, arg2, arg3, arg4, arg5, arg6})
 	fake.pinMutex.Unlock()
 	if stub != nil {
-		return stub(arg1, arg2, arg3, arg4)
+		return stub(arg1, arg2, arg3, arg4, arg5, arg6)
 	}
 	if specificReturn {
 		return ret.result1, ret.result2
@@ -654,17 +690,17 @@ func (fake *FakeMetadataStore) PinCallCount() int {
 	return len(fake.pinArgsForCall)
 }
 
-func (fake *FakeMetadataStore) PinCalls(stub func(int, string, snapshot.SnapshotID, string) (snapshot.RetentionClaim, error)) {
+func (fake *FakeMetadataStore) PinCalls(stub func(context.Context, snapshot.DigestLease, int, string, snapshot.SnapshotRef, string) (snapshot.RetentionClaim, error)) {
 	fake.pinMutex.Lock()
 	defer fake.pinMutex.Unlock()
 	fake.PinStub = stub
 }
 
-func (fake *FakeMetadataStore) PinArgsForCall(i int) (int, string, snapshot.SnapshotID, string) {
+func (fake *FakeMetadataStore) PinArgsForCall(i int) (context.Context, snapshot.DigestLease, int, string, snapshot.SnapshotRef, string) {
 	fake.pinMutex.RLock()
 	defer fake.pinMutex.RUnlock()
 	argsForCall := fake.pinArgsForCall[i]
-	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3, argsForCall.arg4
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3, argsForCall.arg4, argsForCall.arg5, argsForCall.arg6
 }
 
 func (fake *FakeMetadataStore) PinReturns(result1 snapshot.RetentionClaim, result2 error) {
@@ -693,18 +729,20 @@ func (fake *FakeMetadataStore) PinReturnsOnCall(i int, result1 snapshot.Retentio
 	}{result1, result2}
 }
 
-func (fake *FakeMetadataStore) RemoveLocation(arg1 snapshot.Location) error {
+func (fake *FakeMetadataStore) RemoveLocation(arg1 context.Context, arg2 snapshot.DigestLease, arg3 snapshot.Location) error {
 	fake.removeLocationMutex.Lock()
 	ret, specificReturn := fake.removeLocationReturnsOnCall[len(fake.removeLocationArgsForCall)]
 	fake.removeLocationArgsForCall = append(fake.removeLocationArgsForCall, struct {
-		arg1 snapshot.Location
-	}{arg1})
+		arg1 context.Context
+		arg2 snapshot.DigestLease
+		arg3 snapshot.Location
+	}{arg1, arg2, arg3})
 	stub := fake.RemoveLocationStub
 	fakeReturns := fake.removeLocationReturns
-	fake.recordInvocation("RemoveLocation", []interface{}{arg1})
+	fake.recordInvocation("RemoveLocation", []interface{}{arg1, arg2, arg3})
 	fake.removeLocationMutex.Unlock()
 	if stub != nil {
-		return stub(arg1)
+		return stub(arg1, arg2, arg3)
 	}
 	if specificReturn {
 		return ret.result1
@@ -718,17 +756,17 @@ func (fake *FakeMetadataStore) RemoveLocationCallCount() int {
 	return len(fake.removeLocationArgsForCall)
 }
 
-func (fake *FakeMetadataStore) RemoveLocationCalls(stub func(snapshot.Location) error) {
+func (fake *FakeMetadataStore) RemoveLocationCalls(stub func(context.Context, snapshot.DigestLease, snapshot.Location) error) {
 	fake.removeLocationMutex.Lock()
 	defer fake.removeLocationMutex.Unlock()
 	fake.RemoveLocationStub = stub
 }
 
-func (fake *FakeMetadataStore) RemoveLocationArgsForCall(i int) snapshot.Location {
+func (fake *FakeMetadataStore) RemoveLocationArgsForCall(i int) (context.Context, snapshot.DigestLease, snapshot.Location) {
 	fake.removeLocationMutex.RLock()
 	defer fake.removeLocationMutex.RUnlock()
 	argsForCall := fake.removeLocationArgsForCall[i]
-	return argsForCall.arg1
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3
 }
 
 func (fake *FakeMetadataStore) RemoveLocationReturns(result1 error) {
@@ -754,23 +792,26 @@ func (fake *FakeMetadataStore) RemoveLocationReturnsOnCall(i int, result1 error)
 	}{result1}
 }
 
-func (fake *FakeMetadataStore) RemoveStagedUploads(arg1 []int64) error {
-	var arg1Copy []int64
-	if arg1 != nil {
-		arg1Copy = make([]int64, len(arg1))
-		copy(arg1Copy, arg1)
+func (fake *FakeMetadataStore) RemoveStagedUploads(arg1 context.Context, arg2 snapshot.DigestLease, arg3 snapshot.Digest, arg4 []int64) error {
+	var arg4Copy []int64
+	if arg4 != nil {
+		arg4Copy = make([]int64, len(arg4))
+		copy(arg4Copy, arg4)
 	}
 	fake.removeStagedUploadsMutex.Lock()
 	ret, specificReturn := fake.removeStagedUploadsReturnsOnCall[len(fake.removeStagedUploadsArgsForCall)]
 	fake.removeStagedUploadsArgsForCall = append(fake.removeStagedUploadsArgsForCall, struct {
-		arg1 []int64
-	}{arg1Copy})
+		arg1 context.Context
+		arg2 snapshot.DigestLease
+		arg3 snapshot.Digest
+		arg4 []int64
+	}{arg1, arg2, arg3, arg4Copy})
 	stub := fake.RemoveStagedUploadsStub
 	fakeReturns := fake.removeStagedUploadsReturns
-	fake.recordInvocation("RemoveStagedUploads", []interface{}{arg1Copy})
+	fake.recordInvocation("RemoveStagedUploads", []interface{}{arg1, arg2, arg3, arg4Copy})
 	fake.removeStagedUploadsMutex.Unlock()
 	if stub != nil {
-		return stub(arg1)
+		return stub(arg1, arg2, arg3, arg4)
 	}
 	if specificReturn {
 		return ret.result1
@@ -784,17 +825,17 @@ func (fake *FakeMetadataStore) RemoveStagedUploadsCallCount() int {
 	return len(fake.removeStagedUploadsArgsForCall)
 }
 
-func (fake *FakeMetadataStore) RemoveStagedUploadsCalls(stub func([]int64) error) {
+func (fake *FakeMetadataStore) RemoveStagedUploadsCalls(stub func(context.Context, snapshot.DigestLease, snapshot.Digest, []int64) error) {
 	fake.removeStagedUploadsMutex.Lock()
 	defer fake.removeStagedUploadsMutex.Unlock()
 	fake.RemoveStagedUploadsStub = stub
 }
 
-func (fake *FakeMetadataStore) RemoveStagedUploadsArgsForCall(i int) []int64 {
+func (fake *FakeMetadataStore) RemoveStagedUploadsArgsForCall(i int) (context.Context, snapshot.DigestLease, snapshot.Digest, []int64) {
 	fake.removeStagedUploadsMutex.RLock()
 	defer fake.removeStagedUploadsMutex.RUnlock()
 	argsForCall := fake.removeStagedUploadsArgsForCall[i]
-	return argsForCall.arg1
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3, argsForCall.arg4
 }
 
 func (fake *FakeMetadataStore) RemoveStagedUploadsReturns(result1 error) {
@@ -820,23 +861,25 @@ func (fake *FakeMetadataStore) RemoveStagedUploadsReturnsOnCall(i int, result1 e
 	}{result1}
 }
 
-func (fake *FakeMetadataStore) StageUpload(arg1 snapshot.StagedUpload) error {
+func (fake *FakeMetadataStore) StageUpload(arg1 context.Context, arg2 snapshot.DigestLease, arg3 snapshot.StageUploadRequest) (snapshot.StagedUpload, error) {
 	fake.stageUploadMutex.Lock()
 	ret, specificReturn := fake.stageUploadReturnsOnCall[len(fake.stageUploadArgsForCall)]
 	fake.stageUploadArgsForCall = append(fake.stageUploadArgsForCall, struct {
-		arg1 snapshot.StagedUpload
-	}{arg1})
+		arg1 context.Context
+		arg2 snapshot.DigestLease
+		arg3 snapshot.StageUploadRequest
+	}{arg1, arg2, arg3})
 	stub := fake.StageUploadStub
 	fakeReturns := fake.stageUploadReturns
-	fake.recordInvocation("StageUpload", []interface{}{arg1})
+	fake.recordInvocation("StageUpload", []interface{}{arg1, arg2, arg3})
 	fake.stageUploadMutex.Unlock()
 	if stub != nil {
-		return stub(arg1)
+		return stub(arg1, arg2, arg3)
 	}
 	if specificReturn {
-		return ret.result1
+		return ret.result1, ret.result2
 	}
-	return fakeReturns.result1
+	return fakeReturns.result1, fakeReturns.result2
 }
 
 func (fake *FakeMetadataStore) StageUploadCallCount() int {
@@ -845,120 +888,61 @@ func (fake *FakeMetadataStore) StageUploadCallCount() int {
 	return len(fake.stageUploadArgsForCall)
 }
 
-func (fake *FakeMetadataStore) StageUploadCalls(stub func(snapshot.StagedUpload) error) {
+func (fake *FakeMetadataStore) StageUploadCalls(stub func(context.Context, snapshot.DigestLease, snapshot.StageUploadRequest) (snapshot.StagedUpload, error)) {
 	fake.stageUploadMutex.Lock()
 	defer fake.stageUploadMutex.Unlock()
 	fake.StageUploadStub = stub
 }
 
-func (fake *FakeMetadataStore) StageUploadArgsForCall(i int) snapshot.StagedUpload {
+func (fake *FakeMetadataStore) StageUploadArgsForCall(i int) (context.Context, snapshot.DigestLease, snapshot.StageUploadRequest) {
 	fake.stageUploadMutex.RLock()
 	defer fake.stageUploadMutex.RUnlock()
 	argsForCall := fake.stageUploadArgsForCall[i]
-	return argsForCall.arg1
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3
 }
 
-func (fake *FakeMetadataStore) StageUploadReturns(result1 error) {
+func (fake *FakeMetadataStore) StageUploadReturns(result1 snapshot.StagedUpload, result2 error) {
 	fake.stageUploadMutex.Lock()
 	defer fake.stageUploadMutex.Unlock()
 	fake.StageUploadStub = nil
 	fake.stageUploadReturns = struct {
-		result1 error
-	}{result1}
+		result1 snapshot.StagedUpload
+		result2 error
+	}{result1, result2}
 }
 
-func (fake *FakeMetadataStore) StageUploadReturnsOnCall(i int, result1 error) {
+func (fake *FakeMetadataStore) StageUploadReturnsOnCall(i int, result1 snapshot.StagedUpload, result2 error) {
 	fake.stageUploadMutex.Lock()
 	defer fake.stageUploadMutex.Unlock()
 	fake.StageUploadStub = nil
 	if fake.stageUploadReturnsOnCall == nil {
 		fake.stageUploadReturnsOnCall = make(map[int]struct {
-			result1 error
-		})
-	}
-	fake.stageUploadReturnsOnCall[i] = struct {
-		result1 error
-	}{result1}
-}
-
-func (fake *FakeMetadataStore) StagedUploads(arg1 time.Time) ([]snapshot.StagedUpload, error) {
-	fake.stagedUploadsMutex.Lock()
-	ret, specificReturn := fake.stagedUploadsReturnsOnCall[len(fake.stagedUploadsArgsForCall)]
-	fake.stagedUploadsArgsForCall = append(fake.stagedUploadsArgsForCall, struct {
-		arg1 time.Time
-	}{arg1})
-	stub := fake.StagedUploadsStub
-	fakeReturns := fake.stagedUploadsReturns
-	fake.recordInvocation("StagedUploads", []interface{}{arg1})
-	fake.stagedUploadsMutex.Unlock()
-	if stub != nil {
-		return stub(arg1)
-	}
-	if specificReturn {
-		return ret.result1, ret.result2
-	}
-	return fakeReturns.result1, fakeReturns.result2
-}
-
-func (fake *FakeMetadataStore) StagedUploadsCallCount() int {
-	fake.stagedUploadsMutex.RLock()
-	defer fake.stagedUploadsMutex.RUnlock()
-	return len(fake.stagedUploadsArgsForCall)
-}
-
-func (fake *FakeMetadataStore) StagedUploadsCalls(stub func(time.Time) ([]snapshot.StagedUpload, error)) {
-	fake.stagedUploadsMutex.Lock()
-	defer fake.stagedUploadsMutex.Unlock()
-	fake.StagedUploadsStub = stub
-}
-
-func (fake *FakeMetadataStore) StagedUploadsArgsForCall(i int) time.Time {
-	fake.stagedUploadsMutex.RLock()
-	defer fake.stagedUploadsMutex.RUnlock()
-	argsForCall := fake.stagedUploadsArgsForCall[i]
-	return argsForCall.arg1
-}
-
-func (fake *FakeMetadataStore) StagedUploadsReturns(result1 []snapshot.StagedUpload, result2 error) {
-	fake.stagedUploadsMutex.Lock()
-	defer fake.stagedUploadsMutex.Unlock()
-	fake.StagedUploadsStub = nil
-	fake.stagedUploadsReturns = struct {
-		result1 []snapshot.StagedUpload
-		result2 error
-	}{result1, result2}
-}
-
-func (fake *FakeMetadataStore) StagedUploadsReturnsOnCall(i int, result1 []snapshot.StagedUpload, result2 error) {
-	fake.stagedUploadsMutex.Lock()
-	defer fake.stagedUploadsMutex.Unlock()
-	fake.StagedUploadsStub = nil
-	if fake.stagedUploadsReturnsOnCall == nil {
-		fake.stagedUploadsReturnsOnCall = make(map[int]struct {
-			result1 []snapshot.StagedUpload
+			result1 snapshot.StagedUpload
 			result2 error
 		})
 	}
-	fake.stagedUploadsReturnsOnCall[i] = struct {
-		result1 []snapshot.StagedUpload
+	fake.stageUploadReturnsOnCall[i] = struct {
+		result1 snapshot.StagedUpload
 		result2 error
 	}{result1, result2}
 }
 
-func (fake *FakeMetadataStore) Unpin(arg1 int, arg2 string, arg3 snapshot.SnapshotID) error {
+func (fake *FakeMetadataStore) Unpin(arg1 context.Context, arg2 snapshot.DigestLease, arg3 int, arg4 string, arg5 snapshot.SnapshotRef) error {
 	fake.unpinMutex.Lock()
 	ret, specificReturn := fake.unpinReturnsOnCall[len(fake.unpinArgsForCall)]
 	fake.unpinArgsForCall = append(fake.unpinArgsForCall, struct {
-		arg1 int
-		arg2 string
-		arg3 snapshot.SnapshotID
-	}{arg1, arg2, arg3})
+		arg1 context.Context
+		arg2 snapshot.DigestLease
+		arg3 int
+		arg4 string
+		arg5 snapshot.SnapshotRef
+	}{arg1, arg2, arg3, arg4, arg5})
 	stub := fake.UnpinStub
 	fakeReturns := fake.unpinReturns
-	fake.recordInvocation("Unpin", []interface{}{arg1, arg2, arg3})
+	fake.recordInvocation("Unpin", []interface{}{arg1, arg2, arg3, arg4, arg5})
 	fake.unpinMutex.Unlock()
 	if stub != nil {
-		return stub(arg1, arg2, arg3)
+		return stub(arg1, arg2, arg3, arg4, arg5)
 	}
 	if specificReturn {
 		return ret.result1
@@ -972,17 +956,17 @@ func (fake *FakeMetadataStore) UnpinCallCount() int {
 	return len(fake.unpinArgsForCall)
 }
 
-func (fake *FakeMetadataStore) UnpinCalls(stub func(int, string, snapshot.SnapshotID) error) {
+func (fake *FakeMetadataStore) UnpinCalls(stub func(context.Context, snapshot.DigestLease, int, string, snapshot.SnapshotRef) error) {
 	fake.unpinMutex.Lock()
 	defer fake.unpinMutex.Unlock()
 	fake.UnpinStub = stub
 }
 
-func (fake *FakeMetadataStore) UnpinArgsForCall(i int) (int, string, snapshot.SnapshotID) {
+func (fake *FakeMetadataStore) UnpinArgsForCall(i int) (context.Context, snapshot.DigestLease, int, string, snapshot.SnapshotRef) {
 	fake.unpinMutex.RLock()
 	defer fake.unpinMutex.RUnlock()
 	argsForCall := fake.unpinArgsForCall[i]
-	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3, argsForCall.arg4, argsForCall.arg5
 }
 
 func (fake *FakeMetadataStore) UnpinReturns(result1 error) {
