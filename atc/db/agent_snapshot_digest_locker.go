@@ -65,7 +65,11 @@ func (manager *agentSnapshotDigestLocker) AcquireMany(
 }
 
 func snapshotDigestLockKey(digest snapshot.Digest) int64 {
-	sum := sha256.Sum256([]byte(snapshotDigestLockDomain + digest.String()))
+	return snapshotAdvisoryLockKey(snapshotDigestLockDomain, digest.String())
+}
+
+func snapshotAdvisoryLockKey(domain, identity string) int64 {
+	sum := sha256.Sum256([]byte(domain + identity))
 	return int64(binary.BigEndian.Uint64(sum[:8]))
 }
 

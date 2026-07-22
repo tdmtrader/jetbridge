@@ -268,14 +268,46 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(created).To(BeTrue())
 
+		var templateID, instanceID, pipelineRunID int
+		pipelineSuffix := time.Now().UnixNano()
+		Expect(dbConn.QueryRow(`INSERT INTO pipelines (name, team_id, secondary_ordering) VALUES ($1, $2, 1) RETURNING id`, fmt.Sprintf("snapshot-template-%d", pipelineSuffix), defaultTeam.ID()).Scan(&templateID)).To(Succeed())
+		Expect(dbConn.QueryRow(`INSERT INTO pipelines (name, team_id, secondary_ordering) VALUES ($1, $2, 1) RETURNING id`, fmt.Sprintf("snapshot-instance-%d", pipelineSuffix), defaultTeam.ID()).Scan(&instanceID)).To(Succeed())
+		Expect(dbConn.QueryRow(`INSERT INTO pipeline_runs (template_pipeline_id, instance_pipeline_id, number) VALUES ($1, $2, 1) RETURNING id`, templateID, instanceID).Scan(&pipelineRunID)).To(Succeed())
+		Expect(runFactory.LinkExecution(ctx, run.ID, db.AgentWorkflowRunExecutionLink{
+			PipelineRunID: pipelineRunID, TemplatePipelineID: templateID, InstancePipelineID: instanceID,
+			ConcreteConfig: json.RawMessage(`{"instance":true}`), ConcreteConfigHash: strings.Repeat("c", 64),
+		})).To(Succeed())
+
+		var producerBuildID int
+		Expect(dbConn.QueryRow(`INSERT INTO builds (name, status, team_id, pipeline_id) VALUES ($1, 'pending', $2, $3) RETURNING id`, fmt.Sprintf("snapshot-output-%d", pipelineSuffix), defaultTeam.ID(), instanceID).Scan(&producerBuildID)).To(Succeed())
+		Expect(runFactory.RecordPlan(ctx, run.ID, db.AgentWorkflowRunPlan{
+			BuildID: producerBuildID, ActualPlan: json.RawMessage(`{"task":"review"}`),
+			ActualPlanHash: strings.Repeat("d", 64), ResolvedDependencies: json.RawMessage(`{}`),
+		})).To(Succeed())
+
 		resultDigest := digest("2")
 		resultStage := stage(resultDigest, defaultTeam.ID(), "workflow-output")
 		result := output("result", "result", "review/v1", resultDigest, resultStage)
 		result.Retention = append(result.Retention, snapshot.RetentionSpec{
 			Class: snapshot.RetentionClassWorkflow, Actor: "workflow-output", Reason: "durable workflow output",
 		})
-		producerBuildID := newBuild(defaultTeam.ID())
 		runID := run.ID
+		wrongBuildID := newBuild(defaultTeam.ID())
+		_, err = factory.CommitSealBatch(ctx, lease, snapshot.SealCommit{
+			Context: snapshot.SealCommitContext{
+				BuildID: wrongBuildID, TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(),
+				CreatedBy: "alice", PlanID: "plan-output", Attempt: "workflow-output",
+				StepKind: "agent", StepName: "review", WorkflowDefinitionID: &definitionID, WorkflowRunID: &runID,
+				InputOrder: []string{"source"}, Inputs: map[string]snapshot.SnapshotRef{"source": input},
+				ExpectedOutputs: []snapshot.Port{result.Port},
+			},
+			Outputs: []snapshot.SealCommitOutput{result},
+		})
+		Expect(err).To(MatchError(ContainSubstring("planned build")))
+		var retainedStage int
+		Expect(dbConn.QueryRow(`SELECT count(*) FROM agent_snapshot_staged_uploads WHERE id = $1`, resultStage.ID).Scan(&retainedStage)).To(Succeed())
+		Expect(retainedStage).To(Equal(1), "wrong-build rejection must roll the seal transaction back")
+
 		sealed, err := factory.CommitSealBatch(ctx, lease, snapshot.SealCommit{
 			Context: snapshot.SealCommitContext{
 				BuildID: producerBuildID, TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(),
@@ -646,6 +678,36 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 		orphanDigest := digest("3")
 		stage(orphanDigest, defaultTeam.ID(), "orphan")
 
+		committedWithStaleStageDigest := digest("5")
+		committedStage := stage(committedWithStaleStageDigest, defaultTeam.ID(), "committed")
+		seal(newBuild(defaultTeam.ID()), "committed", nil, nil, []snapshot.SealCommitOutput{
+			output("committed", "result", "opaque/v1", committedWithStaleStageDigest, committedStage),
+		})
+		staleCommittedRow := stage(committedWithStaleStageDigest, defaultTeam.ID(), "post-commit-stale-row")
+		_, err := dbConn.Exec(`
+			UPDATE agent_snapshot_staged_uploads
+			SET created_at = now() - interval '2 hours',
+			    lease_expires_at = now() - interval '1 hour'
+			WHERE id = $1
+		`, staleCommittedRow.ID)
+		Expect(err).NotTo(HaveOccurred())
+
+		failedRecaptureDigest := digest("6")
+		originalStage := stage(failedRecaptureDigest, defaultTeam.ID(), "original")
+		original := seal(newBuild(defaultTeam.ID()), "original", nil, nil, []snapshot.SealCommitOutput{
+			output("original", "result", "opaque/v1", failedRecaptureDigest, originalStage),
+		})["original"].Snapshot
+		_, err = dbConn.Exec(`UPDATE agent_snapshots SET content_state = 'expired' WHERE id = $1`, int64(original.ID))
+		Expect(err).NotTo(HaveOccurred())
+		staleRecapture := stage(failedRecaptureDigest, defaultTeam.ID(), "failed-recapture")
+		_, err = dbConn.Exec(`
+			UPDATE agent_snapshot_staged_uploads
+			SET created_at = now() - interval '2 hours',
+			    lease_expires_at = now() - interval '1 hour'
+			WHERE id = $1
+		`, staleRecapture.ID)
+		Expect(err).NotTo(HaveOccurred())
+
 		repairDigest := digest("4")
 		repairStage := stage(repairDigest, defaultTeam.ID(), "repair")
 		seal(newBuild(defaultTeam.ID()), "repair", nil, nil, []snapshot.SealCommitOutput{
@@ -667,6 +729,8 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 		}
 		Expect(candidates).To(ConsistOf(
 			snapshot.LifecycleCandidate{Digest: orphanDigest, Kind: snapshot.LifecycleCandidateOrphan},
+			snapshot.LifecycleCandidate{Digest: committedWithStaleStageDigest, Kind: snapshot.LifecycleCandidateOrphan},
+			snapshot.LifecycleCandidate{Digest: failedRecaptureDigest, Kind: snapshot.LifecycleCandidateOrphan},
 			snapshot.LifecycleCandidate{Digest: repairDigest, Kind: snapshot.LifecycleCandidateRepair},
 		))
 

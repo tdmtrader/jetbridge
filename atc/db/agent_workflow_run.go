@@ -37,6 +37,28 @@ func (status AgentWorkflowRunStatus) Validate() error {
 	}
 }
 
+func validateAgentWorkflowRunTransition(from, to AgentWorkflowRunStatus) error {
+	legal := false
+	switch from {
+	case AgentWorkflowRunStatusAdmitting:
+		legal = to == AgentWorkflowRunStatusRunning ||
+			to == AgentWorkflowRunStatusErrored ||
+			to == AgentWorkflowRunStatusCanceling
+	case AgentWorkflowRunStatusRunning:
+		legal = to == AgentWorkflowRunStatusSucceeded ||
+			to == AgentWorkflowRunStatusFailed ||
+			to == AgentWorkflowRunStatusErrored ||
+			to == AgentWorkflowRunStatusCanceling
+	case AgentWorkflowRunStatusCanceling:
+		legal = to == AgentWorkflowRunStatusAborted ||
+			to == AgentWorkflowRunStatusErrored
+	}
+	if !legal {
+		return fmt.Errorf("db: invalid agent workflow-run transition %q -> %q", from, to)
+	}
+	return nil
+}
+
 type AgentWorkflowRunSnapshotDirection string
 
 const (

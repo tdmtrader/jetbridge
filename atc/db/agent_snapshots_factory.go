@@ -207,13 +207,14 @@ func databaseNow(ctx context.Context, queryer snapshotQueryer) (time.Time, error
 
 func validateSealInvocation(ctx context.Context, tx Tx, commit snapshot.SealCommitContext) error {
 	var teamName string
+	var buildPipelineID sql.NullInt64
 	err := tx.QueryRowContext(ctx, `
-		SELECT t.name
+		SELECT t.name, b.pipeline_id
 		FROM builds b
 		JOIN teams t ON t.id = b.team_id
 		WHERE b.id = $1 AND b.team_id = $2
 		FOR UPDATE OF b
-	`, commit.BuildID, commit.TeamID).Scan(&teamName)
+	`, commit.BuildID, commit.TeamID).Scan(&teamName, &buildPipelineID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("db: snapshot producer build %d is not owned by team %d", commit.BuildID, commit.TeamID)
 	}
@@ -238,20 +239,29 @@ func validateSealInvocation(ctx context.Context, tx Tx, commit snapshot.SealComm
 
 	if commit.WorkflowRunID != nil {
 		var definitionID int
+		var plannedBuildID, instancePipelineID sql.NullInt64
 		err := tx.QueryRowContext(ctx, `
-			SELECT workflow_definition_id
+			SELECT workflow_definition_id, planned_build_id, instance_pipeline_id
 			FROM agent_workflow_runs
 			WHERE id = $1 AND team_id = $2
 			FOR UPDATE
-		`, int64(*commit.WorkflowRunID), commit.TeamID).Scan(&definitionID)
+		`, int64(*commit.WorkflowRunID), commit.TeamID).Scan(
+			&definitionID, &plannedBuildID, &instancePipelineID,
+		)
 		if errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("db: snapshot workflow run is not owned by the producer team")
 		}
 		if err != nil {
 			return err
 		}
-		if commit.WorkflowDefinitionID != nil && definitionID != *commit.WorkflowDefinitionID {
+		if commit.WorkflowDefinitionID == nil || definitionID != *commit.WorkflowDefinitionID {
 			return fmt.Errorf("db: snapshot workflow run and definition do not match")
+		}
+		if !plannedBuildID.Valid || plannedBuildID.Int64 != int64(commit.BuildID) {
+			return fmt.Errorf("db: snapshot workflow output build does not match the workflow run planned build")
+		}
+		if !instancePipelineID.Valid || !buildPipelineID.Valid || instancePipelineID.Int64 != buildPipelineID.Int64 {
+			return fmt.Errorf("db: snapshot workflow output build does not belong to the linked workflow instance")
 		}
 	}
 	return nil
@@ -277,11 +287,14 @@ func validateSealInputs(ctx context.Context, tx Tx, commit snapshot.SealCommitCo
 				FROM agent_workflow_run_snapshots
 				WHERE workflow_run_id = $1 AND direction = 'input' AND port_name = $2
 			`, int64(*commit.WorkflowRunID), port).Scan(&boundID)
-			if errors.Is(err, sql.ErrNoRows) || boundID != int64(ref.ID) {
+			if errors.Is(err, sql.ErrNoRows) {
 				return fmt.Errorf("db: snapshot input %q does not match the workflow-run binding", port)
 			}
 			if err != nil {
 				return err
+			}
+			if boundID != int64(ref.ID) {
+				return fmt.Errorf("db: snapshot input %q does not match the workflow-run binding", port)
 			}
 		}
 	}
@@ -470,11 +483,14 @@ func insertOrVerifyLineage(
 			FROM agent_snapshot_lineage
 			WHERE production_id = $1 AND position = $2 AND input_port = $3
 		`, productionID, position, port).Scan(&foundID)
-		if errors.Is(err, sql.ErrNoRows) || foundID != int64(ref.ID) {
+		if errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("db: snapshot lineage conflicts with immutable production inputs")
 		}
 		if err != nil {
 			return err
+		}
+		if foundID != int64(ref.ID) {
+			return fmt.Errorf("db: snapshot lineage conflicts with immutable production inputs")
 		}
 	}
 	var count int
@@ -512,10 +528,16 @@ func bindWorkflowRunSnapshot(
 		FROM agent_workflow_run_snapshots
 		WHERE workflow_run_id = $1 AND direction = $2 AND port_name = $3
 	`, int64(runID), direction, port).Scan(&foundID)
-	if errors.Is(err, sql.ErrNoRows) || foundID != int64(snapshotID) {
+	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("db: workflow-run snapshot binding conflicts with immutable snapshot")
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	if foundID != int64(snapshotID) {
+		return fmt.Errorf("db: workflow-run snapshot binding conflicts with immutable snapshot")
+	}
+	return nil
 }
 
 func deleteStagesByID(ctx context.Context, tx Tx, ids []int64) error {
@@ -1028,7 +1050,6 @@ func (factory *agentSnapshotsFactory) DiscoverLifecycleCandidates(
 		WITH candidates AS (
 			SELECT DISTINCT u.digest, 'orphan'::text AS kind
 			FROM agent_snapshot_staged_uploads u
-			WHERE NOT EXISTS (SELECT 1 FROM agent_snapshots s WHERE s.digest = u.digest)
 			UNION
 			SELECT DISTINCT s.digest, 'expiry'::text AS kind
 			FROM agent_snapshots s

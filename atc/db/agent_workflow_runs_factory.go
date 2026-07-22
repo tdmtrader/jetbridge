@@ -46,6 +46,29 @@ func (factory *agentWorkflowRunsFactory) CreateWithInputs(
 	}
 	defer Rollback(tx)
 
+	if err := lockWorkflowRunIdempotency(ctx, tx, request.TeamID, request.IdempotencyKey); err != nil {
+		return AgentWorkflowRun{}, false, err
+	}
+	existing, found, err := findWorkflowRunByIdempotencyKey(ctx, tx, request.TeamID, request.IdempotencyKey, true)
+	if err != nil {
+		return AgentWorkflowRun{}, false, err
+	}
+	if found {
+		if err := validateIdempotentWorkflowRun(existing, request); err != nil {
+			return AgentWorkflowRun{}, false, err
+		}
+		if err := validateWorkflowRunBindings(ctx, tx, existing.ID, request.Inputs); err != nil {
+			return AgentWorkflowRun{}, false, err
+		}
+		if err := tx.Commit(); err != nil {
+			return AgentWorkflowRun{}, false, err
+		}
+		return existing, false, nil
+	}
+
+	if err := lockWorkflowRunInputDigests(ctx, tx, request.Inputs); err != nil {
+		return AgentWorkflowRun{}, false, err
+	}
 	if err := validateWorkflowRunTarget(ctx, tx, request); err != nil {
 		return AgentWorkflowRun{}, false, err
 	}
@@ -78,6 +101,9 @@ func (factory *agentWorkflowRunsFactory) CreateWithInputs(
 		return AgentWorkflowRun{}, false, err
 	}
 	created := affected == 1
+	if !created {
+		return AgentWorkflowRun{}, false, fmt.Errorf("db: workflow-run idempotency serialization did not reserve a unique key")
+	}
 
 	run, err := scanAgentWorkflowRun(tx.QueryRowContext(ctx, `
 		SELECT `+agentWorkflowRunColumns+`
@@ -92,31 +118,80 @@ func (factory *agentWorkflowRunsFactory) CreateWithInputs(
 		return AgentWorkflowRun{}, false, err
 	}
 
-	if created {
-		ports := sortedSnapshotPorts(request.Inputs)
-		for _, port := range ports {
-			ref := request.Inputs[port]
-			if err := bindWorkflowRunSnapshot(ctx, tx, run.ID, "input", port, ref.ID); err != nil {
-				return AgentWorkflowRun{}, false, err
-			}
-			actor := fmt.Sprintf("workflow-run:%d:input:%s", int64(run.ID), port)
-			_, err := tx.ExecContext(ctx, `
-				INSERT INTO agent_snapshot_retention_claims
-					(snapshot_id, team_id, class, actor, reason)
-				VALUES ($1, $2, 'workflow', $3, 'durable workflow-run input')
-			`, int64(ref.ID), request.TeamID, actor)
-			if err != nil {
-				return AgentWorkflowRun{}, false, err
-			}
+	ports := sortedSnapshotPorts(request.Inputs)
+	for _, port := range ports {
+		ref := request.Inputs[port]
+		if err := bindWorkflowRunSnapshot(ctx, tx, run.ID, "input", port, ref.ID); err != nil {
+			return AgentWorkflowRun{}, false, err
 		}
-	} else if err := validateWorkflowRunBindings(ctx, tx, run.ID, request.Inputs); err != nil {
-		return AgentWorkflowRun{}, false, err
+		actor := fmt.Sprintf("workflow-run:%d:input:%s", int64(run.ID), port)
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO agent_snapshot_retention_claims
+				(snapshot_id, team_id, class, actor, reason)
+			VALUES ($1, $2, 'workflow', $3, 'durable workflow-run input')
+		`, int64(ref.ID), request.TeamID, actor)
+		if err != nil {
+			return AgentWorkflowRun{}, false, err
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
 		return AgentWorkflowRun{}, false, err
 	}
 	return run, created, nil
+}
+
+const workflowRunIdempotencyLockDomain = "agent-workflow-run-idempotency/v1\x00"
+
+func lockWorkflowRunIdempotency(ctx context.Context, tx Tx, teamID int, key string) error {
+	lockKey := snapshotAdvisoryLockKey(workflowRunIdempotencyLockDomain, fmt.Sprintf("%d\x00%s", teamID, key))
+	_, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, lockKey)
+	return err
+}
+
+func lockWorkflowRunInputDigests(
+	ctx context.Context,
+	tx Tx,
+	inputs map[string]snapshot.SnapshotRef,
+) error {
+	unique := make(map[snapshot.Digest]struct{}, len(inputs))
+	for _, ref := range inputs {
+		unique[ref.Digest] = struct{}{}
+	}
+	ordered := make([]snapshot.Digest, 0, len(unique))
+	for digest := range unique {
+		ordered = append(ordered, digest)
+	}
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i] < ordered[j] })
+	for _, digest := range ordered {
+		if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, snapshotDigestLockKey(digest)); err != nil {
+			return fmt.Errorf("db: lock workflow-run input digest %s: %w", digest, err)
+		}
+	}
+	return nil
+}
+
+func findWorkflowRunByIdempotencyKey(
+	ctx context.Context,
+	queryer snapshotQueryer,
+	teamID int,
+	key string,
+	lock bool,
+) (AgentWorkflowRun, bool, error) {
+	query := `SELECT ` + agentWorkflowRunColumns + `
+		FROM agent_workflow_runs
+		WHERE team_id = $1 AND idempotency_key = $2`
+	if lock {
+		query += ` FOR UPDATE`
+	}
+	run, err := scanAgentWorkflowRun(queryer.QueryRowContext(ctx, query, teamID, key))
+	if errors.Is(err, sql.ErrNoRows) {
+		return AgentWorkflowRun{}, false, nil
+	}
+	if err != nil {
+		return AgentWorkflowRun{}, false, err
+	}
+	return run, true, nil
 }
 
 func validateWorkflowRunTarget(ctx context.Context, tx Tx, request AgentWorkflowRunCreateRequest) error {
@@ -151,11 +226,14 @@ func validateWorkflowRunTarget(ctx context.Context, tx Tx, request AgentWorkflow
 	if request.RetryOfWorkflowRunID != nil {
 		var teamID int
 		err := tx.QueryRowContext(ctx, `SELECT team_id FROM agent_workflow_runs WHERE id = $1`, int64(*request.RetryOfWorkflowRunID)).Scan(&teamID)
-		if errors.Is(err, sql.ErrNoRows) || teamID != request.TeamID {
+		if errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("db: workflow-run retry target is absent or belongs to another team")
 		}
 		if err != nil {
 			return err
+		}
+		if teamID != request.TeamID {
+			return fmt.Errorf("db: workflow-run retry target is absent or belongs to another team")
 		}
 	}
 	return nil
@@ -178,7 +256,7 @@ func validateWorkflowRunInputs(ctx context.Context, tx Tx, request AgentWorkflow
 }
 
 func validateIdempotentWorkflowRun(run AgentWorkflowRun, request AgentWorkflowRunCreateRequest) error {
-	if run.TeamID != request.TeamID || run.TeamName != request.TeamName ||
+	if run.TeamID != request.TeamID ||
 		run.WorkflowDefinitionID != request.WorkflowDefinitionID ||
 		run.WorkflowName != request.WorkflowName || run.WorkflowVersion != request.WorkflowVersion ||
 		run.SchemaVersion != request.SchemaVersion || run.SignatureVersion != request.SignatureVersion ||
@@ -188,6 +266,7 @@ func validateIdempotentWorkflowRun(run AgentWorkflowRun, request AgentWorkflowRu
 		!semanticJSONEqual(run.ParameterizedConfig, request.ParameterizedConfig) ||
 		run.ParameterizedConfigHash != request.ParameterizedConfigHash ||
 		run.OriginKind != request.OriginKind || run.OriginReference != request.OriginReference ||
+		run.CreatedBy != request.CreatedBy ||
 		!equalWorkflowRunID(run.RetryOfWorkflowRunID, request.RetryOfWorkflowRunID) {
 		return fmt.Errorf("db: workflow-run idempotency key conflicts with immutable target, origin, or inputs")
 	}
@@ -201,22 +280,30 @@ func validateWorkflowRunBindings(
 	expected map[string]snapshot.SnapshotRef,
 ) error {
 	rows, err := tx.QueryContext(ctx, `
-		SELECT port_name, snapshot_id
-		FROM agent_workflow_run_snapshots
-		WHERE workflow_run_id = $1 AND direction = 'input'
+		SELECT b.port_name, b.snapshot_id, s.type_name, s.type_version, s.digest
+		FROM agent_workflow_run_snapshots b
+		JOIN agent_snapshots s ON s.id = b.snapshot_id
+		WHERE b.workflow_run_id = $1 AND b.direction = 'input'
 	`, int64(runID))
 	if err != nil {
 		return err
 	}
 	defer Close(rows)
-	found := make(map[string]snapshot.SnapshotID)
+	found := make(map[string]snapshot.SnapshotRef)
 	for rows.Next() {
-		var port string
+		var port, typeName, digest string
 		var id int64
-		if err := rows.Scan(&port, &id); err != nil {
+		var typeVersion int
+		if err := rows.Scan(&port, &id, &typeName, &typeVersion, &digest); err != nil {
 			return err
 		}
-		found[port] = snapshot.SnapshotID(id)
+		typeRef, err := joinSnapshotType(typeName, typeVersion)
+		if err != nil {
+			return err
+		}
+		found[port] = snapshot.SnapshotRef{
+			ID: snapshot.SnapshotID(id), Type: typeRef, Digest: snapshot.Digest(digest),
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return err
@@ -225,7 +312,7 @@ func validateWorkflowRunBindings(
 		return fmt.Errorf("db: workflow-run idempotency key conflicts with immutable input bindings")
 	}
 	for port, ref := range expected {
-		if found[port] != ref.ID {
+		if found[port] != ref {
 			return fmt.Errorf("db: workflow-run idempotency key conflicts with immutable input bindings")
 		}
 	}
@@ -270,15 +357,7 @@ func (factory *agentWorkflowRunsFactory) FindByIdempotencyKey(
 	if teamID <= 0 || strings.TrimSpace(key) == "" {
 		return AgentWorkflowRun{}, false, fmt.Errorf("db: workflow-run team and idempotency key are required")
 	}
-	run, err := scanAgentWorkflowRun(factory.conn.QueryRowContext(ctx, `
-		SELECT `+agentWorkflowRunColumns+`
-		FROM agent_workflow_runs
-		WHERE team_id = $1 AND idempotency_key = $2
-	`, teamID, key))
-	if errors.Is(err, sql.ErrNoRows) {
-		return AgentWorkflowRun{}, false, nil
-	}
-	return run, err == nil, err
+	return findWorkflowRunByIdempotencyKey(ctx, factory.conn, teamID, key, false)
 }
 
 func (factory *agentWorkflowRunsFactory) Get(
@@ -347,7 +426,15 @@ func (factory *agentWorkflowRunsFactory) LinkExecution(
 	id snapshot.WorkflowRunID,
 	link AgentWorkflowRunExecutionLink,
 ) error {
-	return linkAgentWorkflowRunExecution(ctx, factory.conn, id, link)
+	tx, err := factory.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer Rollback(tx)
+	if err := linkAgentWorkflowRunExecution(ctx, tx, id, link); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // linkAgentWorkflowRunExecution accepts a transaction so pipeline-run
@@ -364,8 +451,33 @@ func linkAgentWorkflowRunExecution(
 	if err := link.Validate(); err != nil {
 		return err
 	}
-	var found int64
+	var runTeamID, actualTemplateID, actualInstanceID, templateTeamID, instanceTeamID int
 	err := queryer.QueryRowContext(ctx, `
+		SELECT r.team_id, pr.template_pipeline_id, pr.instance_pipeline_id,
+		       template.team_id, instance.team_id
+		FROM agent_workflow_runs r
+		JOIN pipeline_runs pr ON pr.id = $2
+		JOIN pipelines template ON template.id = pr.template_pipeline_id
+		JOIN pipelines instance ON instance.id = pr.instance_pipeline_id
+		WHERE r.id = $1
+		FOR UPDATE OF r, pr, template, instance
+	`, int64(id), link.PipelineRunID).Scan(
+		&runTeamID, &actualTemplateID, &actualInstanceID, &templateTeamID, &instanceTeamID,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("db: workflow-run or pipeline-run execution association is absent")
+	}
+	if err != nil {
+		return err
+	}
+	if actualTemplateID != link.TemplatePipelineID || actualInstanceID != link.InstancePipelineID {
+		return fmt.Errorf("db: workflow-run pipeline execution association does not match its pipeline run")
+	}
+	if templateTeamID != runTeamID || instanceTeamID != runTeamID {
+		return fmt.Errorf("db: workflow-run pipeline execution is not owned by its team")
+	}
+	var found int64
+	err = queryer.QueryRowContext(ctx, `
 		UPDATE agent_workflow_runs
 		SET pipeline_run_id = $2,
 		    template_pipeline_id = $3,
@@ -403,8 +515,37 @@ func (factory *agentWorkflowRunsFactory) RecordPlan(
 	if err := plan.Validate(); err != nil {
 		return err
 	}
+	tx, err := factory.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer Rollback(tx)
+
+	var runTeamID, buildTeamID int
+	var instancePipelineID, buildPipelineID sql.NullInt64
+	err = tx.QueryRowContext(ctx, `
+		SELECT r.team_id, r.instance_pipeline_id, b.team_id, b.pipeline_id
+		FROM agent_workflow_runs r
+		JOIN builds b ON b.id = $2
+		WHERE r.id = $1
+		FOR UPDATE OF r, b
+	`, int64(id), plan.BuildID).Scan(
+		&runTeamID, &instancePipelineID, &buildTeamID, &buildPipelineID,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("db: workflow-run or planned build is absent")
+	}
+	if err != nil {
+		return err
+	}
+	if runTeamID != buildTeamID {
+		return fmt.Errorf("db: planned build is not owned by the workflow-run team")
+	}
+	if !instancePipelineID.Valid || !buildPipelineID.Valid || instancePipelineID.Int64 != buildPipelineID.Int64 {
+		return fmt.Errorf("db: planned build does not belong to the linked workflow instance")
+	}
 	var found int64
-	err := factory.conn.QueryRowContext(ctx, `
+	err = tx.QueryRowContext(ctx, `
 		UPDATE agent_workflow_runs
 		SET planned_build_id = $2,
 		    actual_plan = $3,
@@ -425,7 +566,10 @@ func (factory *agentWorkflowRunsFactory) RecordPlan(
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("db: workflow-run actual plan is absent or conflicts with immutable provenance")
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (factory *agentWorkflowRunsFactory) Transition(
@@ -442,6 +586,9 @@ func (factory *agentWorkflowRunsFactory) Transition(
 		return false, err
 	}
 	if err := to.Validate(); err != nil {
+		return false, err
+	}
+	if err := validateAgentWorkflowRunTransition(from, to); err != nil {
 		return false, err
 	}
 	if len(errorMessage) > 64*1024 {

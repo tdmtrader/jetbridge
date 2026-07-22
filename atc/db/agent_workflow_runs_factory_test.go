@@ -2,14 +2,18 @@ package db_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/Masterminds/squirrel"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/concourse/concourse/atc/db/dbfakes"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -109,6 +113,27 @@ var _ = Describe("AgentWorkflowRunsFactory", func() {
 		Expect(second.ID).To(Equal(first.ID))
 	})
 
+	It("replays durable identity after a team rename and input expiry", func() {
+		first, created, err := factory.CreateWithInputs(ctx, request("historical-replay"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(created).To(BeTrue())
+
+		originalTeamName := defaultTeam.Name()
+		renamedTeam := fmt.Sprintf("renamed-%d", time.Now().UnixNano())
+		_, err = dbConn.Exec(`UPDATE teams SET name = $1 WHERE id = $2`, renamedTeam, defaultTeam.ID())
+		Expect(err).NotTo(HaveOccurred())
+		_, err = dbConn.Exec(`UPDATE agent_snapshots SET content_state = 'expired' WHERE id = $1`, int64(input.ID))
+		Expect(err).NotTo(HaveOccurred())
+
+		replay := request("historical-replay")
+		replay.TeamName = renamedTeam
+		second, created, err := factory.CreateWithInputs(ctx, replay)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(created).To(BeFalse())
+		Expect(second.ID).To(Equal(first.ID))
+		Expect(second.TeamName).To(Equal(originalTeamName), "the copied historical team name must not be rewritten")
+	})
+
 	It("supports team-scoped lookup, filtered listing, and bounded reconciliation", func() {
 		run, _, err := factory.CreateWithInputs(ctx, request("queryable"))
 		Expect(err).NotTo(HaveOccurred())
@@ -130,7 +155,12 @@ var _ = Describe("AgentWorkflowRunsFactory", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(reconcilable).To(ContainElement(HaveField("ID", run.ID)))
 		transitioned, err := factory.Transition(
-			ctx, run.ID, db.AgentWorkflowRunStatusAdmitting, db.AgentWorkflowRunStatusSucceeded, "",
+			ctx, run.ID, db.AgentWorkflowRunStatusAdmitting, db.AgentWorkflowRunStatusRunning, "",
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(transitioned).To(BeTrue())
+		transitioned, err = factory.Transition(
+			ctx, run.ID, db.AgentWorkflowRunStatusRunning, db.AgentWorkflowRunStatusSucceeded, "",
 		)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(transitioned).To(BeTrue())
@@ -155,6 +185,11 @@ var _ = Describe("AgentWorkflowRunsFactory", func() {
 
 		conflict = request("conflict-key")
 		conflict.SignatureVersion++
+		_, _, err = factory.CreateWithInputs(ctx, conflict)
+		Expect(err).To(MatchError(ContainSubstring("idempotency")))
+
+		conflict = request("conflict-key")
+		conflict.CreatedBy = "mallory"
 		_, _, err = factory.CreateWithInputs(ctx, conflict)
 		Expect(err).To(MatchError(ContainSubstring("idempotency")))
 
@@ -190,6 +225,224 @@ var _ = Describe("AgentWorkflowRunsFactory", func() {
 		}
 		Expect(ids).To(HaveLen(2))
 		Expect(ids[0]).To(Equal(ids[1]))
+	})
+
+	It("serializes input availability checks and workflow claims with digest GC", func() {
+		// The suite defaults to one connection to expose accidental pool use;
+		// this race intentionally needs independent locker, writer, and observer sessions.
+		dbConn.SetMaxOpenConns(8)
+		lockManager := db.NewAgentSnapshotDigestLocker(dbConn)
+		digestLease, err := lockManager.AcquireMany(ctx, []snapshot.Digest{input.Digest})
+		Expect(err).NotTo(HaveOccurred())
+		DeferCleanup(func() { Expect(digestLease.Close()).To(Succeed()) })
+
+		result := make(chan error, 1)
+		go func() {
+			_, _, createErr := factory.CreateWithInputs(ctx, request("input-gc-race"))
+			result <- createErr
+		}()
+
+		Eventually(func() (int, error) {
+			select {
+			case createErr := <-result:
+				return 0, fmt.Errorf("workflow-run creation completed before the digest barrier: %v", createErr)
+			default:
+			}
+			var waiters int
+			err := dbConn.QueryRow(`
+				SELECT count(*)
+				FROM pg_stat_activity
+				WHERE wait_event_type = 'Lock' AND wait_event = 'advisory'
+			`).Scan(&waiters)
+			return waiters, err
+		}).WithTimeout(5 * time.Second).Should(BeNumerically(">", 0))
+
+		snapshots := db.NewAgentSnapshotsFactory(dbConn)
+		expired, err := snapshots.MarkDigestExpired(ctx, digestLease, input.Digest, time.Now())
+		Expect(err).NotTo(HaveOccurred())
+		Expect(expired).To(BeTrue())
+		Expect(digestLease.Close()).To(Succeed())
+
+		var createErr error
+		Eventually(result).Should(Receive(&createErr))
+		Expect(createErr).To(MatchError(ContainSubstring("unavailable")))
+		var runs, claims int
+		Expect(dbConn.QueryRow(`SELECT count(*) FROM agent_workflow_runs WHERE idempotency_key = 'input-gc-race'`).Scan(&runs)).To(Succeed())
+		Expect(dbConn.QueryRow(`SELECT count(*) FROM agent_snapshot_retention_claims WHERE snapshot_id = $1`, int64(input.ID)).Scan(&claims)).To(Succeed())
+		Expect(runs).To(Equal(0))
+		Expect(claims).To(Equal(0))
+	})
+
+	It("enforces the workflow-run transition graph and keeps terminal timestamps immutable", func() {
+		run, _, err := factory.CreateWithInputs(ctx, request("transition-graph"))
+		Expect(err).NotTo(HaveOccurred())
+
+		transitioned, err := factory.Transition(
+			ctx, run.ID, db.AgentWorkflowRunStatusAdmitting, db.AgentWorkflowRunStatusSucceeded, "",
+		)
+		Expect(err).To(MatchError(ContainSubstring("transition")))
+		Expect(transitioned).To(BeFalse())
+
+		transitioned, err = factory.Transition(
+			ctx, run.ID, db.AgentWorkflowRunStatusAdmitting, db.AgentWorkflowRunStatusRunning, "",
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(transitioned).To(BeTrue())
+		transitioned, err = factory.Transition(
+			ctx, run.ID, db.AgentWorkflowRunStatusRunning, db.AgentWorkflowRunStatusSucceeded, "",
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(transitioned).To(BeTrue())
+
+		terminal, found, err := factory.Get(ctx, defaultTeam.ID(), run.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(terminal.StartedAt).NotTo(BeNil())
+		Expect(terminal.CompletedAt).NotTo(BeNil())
+		Expect(*terminal.CompletedAt).To(BeTemporally(">=", *terminal.StartedAt))
+
+		transitioned, err = factory.Transition(
+			ctx, run.ID, db.AgentWorkflowRunStatusSucceeded, db.AgentWorkflowRunStatusRunning, "reopen",
+		)
+		Expect(err).To(MatchError(ContainSubstring("transition")))
+		Expect(transitioned).To(BeFalse())
+		after, found, err := factory.Get(ctx, defaultTeam.ID(), run.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(after.Status).To(Equal(db.AgentWorkflowRunStatusSucceeded))
+		Expect(after.StartedAt).To(Equal(terminal.StartedAt))
+		Expect(after.CompletedAt).To(Equal(terminal.CompletedAt))
+	})
+
+	It("rejects execution links whose pipeline run, pipelines, or team do not agree", func() {
+		run, _, err := factory.CreateWithInputs(ctx, request("execution-associations"))
+		Expect(err).NotTo(HaveOccurred())
+
+		var templateID, otherTemplateID, instanceID, pipelineRunID int
+		suffix := time.Now().UnixNano()
+		Expect(dbConn.QueryRow(`INSERT INTO pipelines (name, team_id, secondary_ordering) VALUES ($1, $2, 1) RETURNING id`, fmt.Sprintf("assoc-template-%d", suffix), defaultTeam.ID()).Scan(&templateID)).To(Succeed())
+		Expect(dbConn.QueryRow(`INSERT INTO pipelines (name, team_id, secondary_ordering) VALUES ($1, $2, 1) RETURNING id`, fmt.Sprintf("assoc-other-template-%d", suffix), defaultTeam.ID()).Scan(&otherTemplateID)).To(Succeed())
+		Expect(dbConn.QueryRow(`INSERT INTO pipelines (name, team_id, secondary_ordering) VALUES ($1, $2, 1) RETURNING id`, fmt.Sprintf("assoc-instance-%d", suffix), defaultTeam.ID()).Scan(&instanceID)).To(Succeed())
+		Expect(dbConn.QueryRow(`INSERT INTO pipeline_runs (template_pipeline_id, instance_pipeline_id, number) VALUES ($1, $2, 1) RETURNING id`, templateID, instanceID).Scan(&pipelineRunID)).To(Succeed())
+
+		link := db.AgentWorkflowRunExecutionLink{
+			PipelineRunID: pipelineRunID, TemplatePipelineID: otherTemplateID, InstancePipelineID: instanceID,
+			ConcreteConfig: json.RawMessage(`{"instance":true}`), ConcreteConfigHash: strings.Repeat("d", 64),
+		}
+		Expect(factory.LinkExecution(ctx, run.ID, link)).To(MatchError(ContainSubstring("association")))
+
+		otherTeam, err := teamFactory.CreateTeam(structTeam(fmt.Sprintf("workflow-link-other-%d", suffix)))
+		Expect(err).NotTo(HaveOccurred())
+		var otherTemplate, otherInstance, otherPipelineRun int
+		Expect(dbConn.QueryRow(`INSERT INTO pipelines (name, team_id, secondary_ordering) VALUES ($1, $2, 1) RETURNING id`, fmt.Sprintf("other-team-template-%d", suffix), otherTeam.ID()).Scan(&otherTemplate)).To(Succeed())
+		Expect(dbConn.QueryRow(`INSERT INTO pipelines (name, team_id, secondary_ordering) VALUES ($1, $2, 1) RETURNING id`, fmt.Sprintf("other-team-instance-%d", suffix), otherTeam.ID()).Scan(&otherInstance)).To(Succeed())
+		Expect(dbConn.QueryRow(`INSERT INTO pipeline_runs (template_pipeline_id, instance_pipeline_id, number) VALUES ($1, $2, 1) RETURNING id`, otherTemplate, otherInstance).Scan(&otherPipelineRun)).To(Succeed())
+		link = db.AgentWorkflowRunExecutionLink{
+			PipelineRunID: otherPipelineRun, TemplatePipelineID: otherTemplate, InstancePipelineID: otherInstance,
+			ConcreteConfig: json.RawMessage(`{"instance":true}`), ConcreteConfigHash: strings.Repeat("d", 64),
+		}
+		Expect(factory.LinkExecution(ctx, run.ID, link)).To(MatchError(ContainSubstring("team")))
+	})
+
+	It("rejects plans for builds outside the linked workflow instance", func() {
+		run, _, err := factory.CreateWithInputs(ctx, request("planned-build-ownership"))
+		Expect(err).NotTo(HaveOccurred())
+
+		var templateID, instanceID, pipelineRunID, wrongBuildID int
+		suffix := time.Now().UnixNano()
+		Expect(dbConn.QueryRow(`INSERT INTO pipelines (name, team_id, secondary_ordering) VALUES ($1, $2, 1) RETURNING id`, fmt.Sprintf("plan-template-%d", suffix), defaultTeam.ID()).Scan(&templateID)).To(Succeed())
+		Expect(dbConn.QueryRow(`INSERT INTO pipelines (name, team_id, secondary_ordering) VALUES ($1, $2, 1) RETURNING id`, fmt.Sprintf("plan-instance-%d", suffix), defaultTeam.ID()).Scan(&instanceID)).To(Succeed())
+		Expect(dbConn.QueryRow(`INSERT INTO pipeline_runs (template_pipeline_id, instance_pipeline_id, number) VALUES ($1, $2, 1) RETURNING id`, templateID, instanceID).Scan(&pipelineRunID)).To(Succeed())
+		Expect(factory.LinkExecution(ctx, run.ID, db.AgentWorkflowRunExecutionLink{
+			PipelineRunID: pipelineRunID, TemplatePipelineID: templateID, InstancePipelineID: instanceID,
+			ConcreteConfig: json.RawMessage(`{"instance":true}`), ConcreteConfigHash: strings.Repeat("d", 64),
+		})).To(Succeed())
+		Expect(dbConn.QueryRow(`INSERT INTO builds (name, status, team_id) VALUES ($1, 'pending', $2) RETURNING id`, fmt.Sprintf("wrong-plan-%d", suffix), defaultTeam.ID()).Scan(&wrongBuildID)).To(Succeed())
+
+		Expect(factory.RecordPlan(ctx, run.ID, db.AgentWorkflowRunPlan{
+			BuildID: wrongBuildID, ActualPlan: json.RawMessage(`{"task":"review"}`),
+			ActualPlanHash: strings.Repeat("e", 64), ResolvedDependencies: json.RawMessage(`{}`),
+		})).To(MatchError(ContainSubstring("instance")))
+	})
+
+	It("persists planned build identifiers above the signed 32-bit range", func() {
+		run, _, err := factory.CreateWithInputs(ctx, request("bigint-planned-build"))
+		Expect(err).NotTo(HaveOccurred())
+
+		var templateID, instanceID, pipelineRunID int
+		suffix := time.Now().UnixNano()
+		Expect(dbConn.QueryRow(`INSERT INTO pipelines (name, team_id, secondary_ordering) VALUES ($1, $2, 1) RETURNING id`, fmt.Sprintf("bigint-template-%d", suffix), defaultTeam.ID()).Scan(&templateID)).To(Succeed())
+		Expect(dbConn.QueryRow(`INSERT INTO pipelines (name, team_id, secondary_ordering) VALUES ($1, $2, 1) RETURNING id`, fmt.Sprintf("bigint-instance-%d", suffix), defaultTeam.ID()).Scan(&instanceID)).To(Succeed())
+		Expect(dbConn.QueryRow(`INSERT INTO pipeline_runs (template_pipeline_id, instance_pipeline_id, number) VALUES ($1, $2, 1) RETURNING id`, templateID, instanceID).Scan(&pipelineRunID)).To(Succeed())
+		Expect(factory.LinkExecution(ctx, run.ID, db.AgentWorkflowRunExecutionLink{
+			PipelineRunID: pipelineRunID, TemplatePipelineID: templateID, InstancePipelineID: instanceID,
+			ConcreteConfig: json.RawMessage(`{"instance":true}`), ConcreteConfigHash: strings.Repeat("d", 64),
+		})).To(Succeed())
+
+		largeBuildID := int64(1 << 31)
+		_, err = dbConn.Exec(`
+			INSERT INTO builds (id, name, status, team_id, pipeline_id)
+			VALUES ($1, $2, 'pending', $3, $4)
+		`, largeBuildID, fmt.Sprintf("large-build-%d", suffix), defaultTeam.ID(), instanceID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(factory.RecordPlan(ctx, run.ID, db.AgentWorkflowRunPlan{
+			BuildID: int(largeBuildID), ActualPlan: json.RawMessage(`{"task":"review"}`),
+			ActualPlanHash: strings.Repeat("e", 64), ResolvedDependencies: json.RawMessage(`{}`),
+		})).To(Succeed())
+
+		stored, found, err := factory.Get(ctx, defaultTeam.ID(), run.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(stored.PlannedBuildID).To(Equal(func() *int { value := int(largeBuildID); return &value }()))
+	})
+
+	It("enforces the finite workflow-run status vocabulary in PostgreSQL", func() {
+		run, _, err := factory.CreateWithInputs(ctx, request("status-constraint"))
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = dbConn.Exec(`UPDATE agent_workflow_runs SET status = 'future-typo' WHERE id = $1`, int64(run.ID))
+		Expect(err).To(HaveOccurred())
+	})
+
+	It("preserves infrastructure errors instead of masking them as semantic conflicts", func() {
+		injected := errors.New("injected retry lookup failure")
+		fakeTx := new(dbfakes.FakeTx)
+		fakeTx.ExecContextStub = func(context.Context, string, ...any) (sql.Result, error) {
+			return nil, nil
+		}
+		fakeTx.QueryRowContextStub = func(_ context.Context, query string, _ ...any) squirrel.RowScanner {
+			switch {
+			case strings.Contains(query, "idempotency_key"):
+				return rowScannerFunc(func(...any) error { return sql.ErrNoRows })
+			case strings.Contains(query, "SELECT name FROM teams"):
+				return rowScannerFunc(func(destinations ...any) error {
+					*destinations[0].(*string) = defaultTeam.Name()
+					return nil
+				})
+			case strings.Contains(query, "FROM agent_workflow_definitions"):
+				return rowScannerFunc(func(destinations ...any) error {
+					*destinations[0].(*string) = definitionName
+					*destinations[1].(*int) = 1
+					*destinations[2].(*string) = strings.Repeat("a", 64)
+					return nil
+				})
+			case strings.Contains(query, "SELECT team_id FROM agent_workflow_runs"):
+				return rowScannerFunc(func(...any) error { return injected })
+			default:
+				return rowScannerFunc(func(...any) error {
+					return fmt.Errorf("unexpected test query: %s", query)
+				})
+			}
+		}
+		fakeConn := new(dbfakes.FakeDbConn)
+		fakeConn.BeginTxReturns(fakeTx, nil)
+		faultFactory := db.NewAgentWorkflowRunsFactory(fakeConn)
+
+		retryID := snapshot.WorkflowRunID(999)
+		faultRequest := request("preserve-db-error")
+		faultRequest.RetryOfWorkflowRunID = &retryID
+		_, _, err := faultFactory.CreateWithInputs(ctx, faultRequest)
+		Expect(err).To(MatchError(injected))
 	})
 
 	It("records immutable execution and plan provenance and performs guarded transitions", func() {
@@ -295,3 +548,7 @@ var _ = Describe("AgentWorkflowRunsFactory", func() {
 		Expect(source).To(MatchJSON(`{"adapter":"test"}`))
 	})
 })
+
+type rowScannerFunc func(...any) error
+
+func (scan rowScannerFunc) Scan(destinations ...any) error { return scan(destinations...) }

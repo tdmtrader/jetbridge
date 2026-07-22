@@ -323,6 +323,14 @@ var _ = Describe("Legacy Database Upgrade", func() {
 	})
 
 	Describe("Pre-flight validation script", func() {
+		It("targets the same migration as the JetBridge database head", func() {
+			_, thisFile, _, _ := runtime.Caller(0)
+			scriptPath := filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "docs", "migration", "migrate-preflight.sh")
+			contents, err := os.ReadFile(scriptPath)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(contents)).To(ContainSubstring(fmt.Sprintf("JETBRIDGE_VERSION=%d\n", jetbridgeHeadMigration)))
+		})
+
 		It("passes against a v7.13 database", func() {
 			err := migrator.Migrate(nil, nil, v713LastMigration)
 			Expect(err).NotTo(HaveOccurred())
