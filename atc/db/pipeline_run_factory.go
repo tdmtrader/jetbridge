@@ -2,16 +2,20 @@ package db
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	sq "github.com/Masterminds/squirrel"
 	"github.com/concourse/concourse/agent/api/tickets"
+	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db/lock"
 )
@@ -22,6 +26,24 @@ var ErrNotATemplate = errors.New("pipeline is not a template")
 
 // ErrTemplateNotFound is returned when the template pipeline id is unknown.
 var ErrTemplateNotFound = errors.New("template pipeline not found")
+
+type WorkflowRunTemplateRef struct {
+	PipelineID    int
+	TeamID        int
+	Name          string
+	ConfigVersion int
+	FullHash      string
+}
+
+type BeforeWorkflowRunCommit func(context.Context, int) error
+
+type WorkflowRunExecution struct {
+	PipelineRun           PipelineRun
+	InstanceConfig        atc.Config
+	InstanceCanonicalJSON []byte
+	InstanceConfigHash    string
+	EntryBuildIDs         []int
+}
 
 var pipelineRunsQuery = psql.Select(
 	"r.id", "r.template_pipeline_id", "r.instance_pipeline_id", "r.number",
@@ -35,6 +57,14 @@ type PipelineRunFactory interface {
 	// allocates the next run number, materializes the instanced pipeline
 	// (instance_vars: {"run": N}), triggers entry jobs, and returns the run.
 	CreateRun(templatePipelineID int, params map[string]any, createdBy string) (PipelineRun, error)
+	CreateRunForWorkflowRun(
+		context.Context,
+		snapshot.WorkflowRunID,
+		WorkflowRunTemplateRef,
+		map[string]any,
+		string,
+		BeforeWorkflowRunCommit,
+	) (WorkflowRunExecution, bool, error)
 	GetRun(templatePipelineID, number int) (PipelineRun, bool, error)
 	// GetRunByID fetches a run by its global pipeline_runs.id (additive,
 	// 2026-07-09 checkpoint seam delta §6 — consumed by dispatch's
@@ -288,6 +318,421 @@ func (f *pipelineRunFactory) CreateRun(templatePipelineID int, params map[string
 	}
 
 	return run, nil
+}
+
+func (f *pipelineRunFactory) CreateRunForWorkflowRun(
+	ctx context.Context,
+	workflowRunID snapshot.WorkflowRunID,
+	templateRef WorkflowRunTemplateRef,
+	params map[string]any,
+	createdBy string,
+	beforeCommit BeforeWorkflowRunCommit,
+) (WorkflowRunExecution, bool, error) {
+	if err := workflowRunID.Validate(); err != nil {
+		return WorkflowRunExecution{}, false, err
+	}
+	if templateRef.PipelineID <= 0 || templateRef.TeamID <= 0 || templateRef.Name == "" ||
+		templateRef.ConfigVersion <= 0 || templateRef.FullHash == "" {
+		return WorkflowRunExecution{}, false, fmt.Errorf("db: invalid workflow-run template reference")
+	}
+	if beforeCommit == nil {
+		return WorkflowRunExecution{}, false, fmt.Errorf("db: workflow-run before-commit callback is required")
+	}
+
+	tx, err := f.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return WorkflowRunExecution{}, false, err
+	}
+	defer Rollback(tx)
+
+	durable, err := scanAgentWorkflowRun(tx.QueryRowContext(ctx, `
+		SELECT `+agentWorkflowRunColumns+`
+		FROM agent_workflow_runs
+		WHERE id = $1
+		FOR UPDATE
+	`, int64(workflowRunID)))
+	if errors.Is(err, sql.ErrNoRows) {
+		return WorkflowRunExecution{}, false, fmt.Errorf("db: workflow run not found")
+	}
+	if err != nil {
+		return WorkflowRunExecution{}, false, err
+	}
+
+	complete := workflowRunExecutionComplete(durable)
+	empty := workflowRunExecutionEmpty(durable)
+	switch durable.Status {
+	case AgentWorkflowRunStatusRunning:
+		if !complete {
+			return WorkflowRunExecution{}, false, fmt.Errorf("db: corrupt partial workflow-run execution")
+		}
+	case AgentWorkflowRunStatusAdmitting:
+		if !empty && !complete {
+			return WorkflowRunExecution{}, false, fmt.Errorf("db: corrupt partial workflow-run admission")
+		}
+	default:
+		return WorkflowRunExecution{}, false, fmt.Errorf("db: workflow run is not admitting or running")
+	}
+
+	if err := validateLockedWorkflowTemplate(ctx, tx, durable.TeamID, templateRef); err != nil {
+		return WorkflowRunExecution{}, false, err
+	}
+	parameterizedConfig, _, err := canonicalWorkflowRunConfig(durable.ParameterizedConfig)
+	if err != nil {
+		return WorkflowRunExecution{}, false, err
+	}
+	targetHash, err := workflow.TargetConfigHash(parameterizedConfig)
+	if err != nil {
+		return WorkflowRunExecution{}, false, err
+	}
+	if targetHash != durable.ParameterizedConfigHash || targetHash != templateRef.FullHash {
+		return WorkflowRunExecution{}, false, fmt.Errorf("db: workflow-run durable template hash mismatch")
+	}
+	validatedParams, err := atc.ValidateRunParams(parameterizedConfig.Params, cloneRunParams(params))
+	if err != nil {
+		return WorkflowRunExecution{}, false, err
+	}
+	for name, value := range validatedParams {
+		if _, ok := value.(string); !ok {
+			return WorkflowRunExecution{}, false, fmt.Errorf("db: workflow-run param %q must be a string", name)
+		}
+	}
+	if err := validateWorkflowRunEntryJob(parameterizedConfig); err != nil {
+		return WorkflowRunExecution{}, false, err
+	}
+
+	if complete {
+		execution, err := loadCommittedWorkflowRunExecution(ctx, tx, f.conn, f.lockFactory, durable, templateRef, parameterizedConfig, validatedParams)
+		if err != nil {
+			return WorkflowRunExecution{}, false, err
+		}
+		if err := tx.Commit(); err != nil {
+			return WorkflowRunExecution{}, false, err
+		}
+		return execution, false, nil
+	}
+
+	var number int
+	for {
+		if err := tx.QueryRowContext(ctx, `
+			UPDATE pipelines
+			SET last_run_number = last_run_number + 1
+			WHERE id = $1
+			RETURNING last_run_number
+		`, templateRef.PipelineID).Scan(&number); err != nil {
+			return WorkflowRunExecution{}, false, err
+		}
+		instanceVars, err := json.Marshal(atc.InstanceVars{"run": number})
+		if err != nil {
+			return WorkflowRunExecution{}, false, err
+		}
+		var exists bool
+		if err := tx.QueryRowContext(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM pipelines
+				WHERE team_id = $1 AND name = $2 AND instance_vars = $3::jsonb
+			)
+		`, templateRef.TeamID, templateRef.Name, instanceVars).Scan(&exists); err != nil {
+			return WorkflowRunExecution{}, false, err
+		}
+		if !exists {
+			break
+		}
+	}
+
+	var pipelineRunID int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT nextval(pg_get_serial_sequence('pipeline_runs', 'id'))
+	`).Scan(&pipelineRunID); err != nil {
+		return WorkflowRunExecution{}, false, err
+	}
+	instanceConfig, err := atc.MaterializeRunConfig(parameterizedConfig, number, pipelineRunID, validatedParams)
+	if err != nil {
+		return WorkflowRunExecution{}, false, err
+	}
+	instanceCanonical, err := instanceConfig.CanonicalJSON()
+	if err != nil {
+		return WorkflowRunExecution{}, false, err
+	}
+	instanceSum := sha256.Sum256(append([]byte("workflow-instance-config/v1\x00"), instanceCanonical...))
+	instanceHash := fmt.Sprintf("%x", instanceSum[:])
+
+	nullID := sql.NullInt64{Valid: false}
+	instanceID, _, err := savePipeline(
+		tx,
+		atc.PipelineRef{Name: templateRef.Name, InstanceVars: atc.InstanceVars{"run": number}},
+		instanceConfig,
+		0,
+		false,
+		templateRef.TeamID,
+		nullID,
+		nullID,
+	)
+	if err != nil {
+		return WorkflowRunExecution{}, false, err
+	}
+
+	paramsPayload, err := json.Marshal(validatedParams)
+	if err != nil {
+		return WorkflowRunExecution{}, false, err
+	}
+	pipelineRun := newPipelineRun(f.conn, f.lockFactory)
+	pipelineRun.id = pipelineRunID
+	pipelineRun.templatePipelineID = templateRef.PipelineID
+	pipelineRun.instancePipelineID = sql.NullInt64{Int64: int64(instanceID), Valid: true}
+	pipelineRun.number = number
+	pipelineRun.params = validatedParams
+	pipelineRun.status = PipelineRunRunning
+	pipelineRun.createdBy = createdBy
+	if err := psql.Insert("pipeline_runs").
+		Columns("id", "template_pipeline_id", "instance_pipeline_id", "number", "params", "created_by").
+		Values(pipelineRunID, templateRef.PipelineID, instanceID, number, paramsPayload, createdBy).
+		Suffix("RETURNING created_at").
+		RunWith(tx).
+		QueryRow().
+		Scan(&pipelineRun.createdAt); err != nil {
+		return WorkflowRunExecution{}, false, err
+	}
+
+	if err := linkAgentWorkflowRunExecution(ctx, tx, workflowRunID, AgentWorkflowRunExecutionLink{
+		PipelineRunID: pipelineRunID, TemplatePipelineID: templateRef.PipelineID,
+		InstancePipelineID: instanceID, ConcreteConfig: json.RawMessage(instanceCanonical),
+		ConcreteConfigHash: instanceHash,
+	}); err != nil {
+		return WorkflowRunExecution{}, false, err
+	}
+
+	callbackCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	err = beforeCommit(callbackCtx, pipelineRunID)
+	cancel()
+	if err != nil {
+		return WorkflowRunExecution{}, false, err
+	}
+
+	plannedBuildID, err := f.createAndSelectWorkflowEntryBuild(
+		ctx, tx, workflowRunID, pipelineRunID, instanceID,
+		templateRef.TeamID, durable.TeamName, instanceConfig, createdBy,
+	)
+	if err != nil {
+		return WorkflowRunExecution{}, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return WorkflowRunExecution{}, false, err
+	}
+
+	instance, found, loadErr := f.pipelineByID(instanceID)
+	if loadErr != nil {
+		f.logger.Error("failed-to-load-workflow-run-instance-for-checks", loadErr, lager.Data{"pipeline-id": instanceID})
+	} else if found {
+		f.enqueueInitialChecks(instance)
+	}
+
+	return WorkflowRunExecution{
+		PipelineRun: pipelineRun, InstanceConfig: instanceConfig,
+		InstanceCanonicalJSON: append([]byte(nil), instanceCanonical...),
+		InstanceConfigHash:    instanceHash, EntryBuildIDs: []int{plannedBuildID},
+	}, true, nil
+}
+
+func workflowRunExecutionEmpty(run AgentWorkflowRun) bool {
+	return run.PipelineRunID == nil && run.TemplatePipelineID == nil && run.InstancePipelineID == nil &&
+		len(run.ConcreteConfig) == 0 && run.ConcreteConfigHash == nil && run.PlannedBuildID == nil
+}
+
+func workflowRunExecutionComplete(run AgentWorkflowRun) bool {
+	return run.PipelineRunID != nil && run.TemplatePipelineID != nil && run.InstancePipelineID != nil &&
+		len(run.ConcreteConfig) != 0 && run.ConcreteConfigHash != nil && run.PlannedBuildID != nil
+}
+
+func validateWorkflowRunEntryJob(config atc.Config) error {
+	entryJobs := config.EntryJobs()
+	if len(config.Jobs) != 1 || config.Jobs[0].Name != "run" ||
+		len(entryJobs) != 1 || entryJobs[0] != "run" {
+		return fmt.Errorf("db: workflow-run config must have exactly one entry job named run")
+	}
+	return nil
+}
+
+func validateLockedWorkflowTemplate(ctx context.Context, tx Tx, durableTeamID int, ref WorkflowRunTemplateRef) error {
+	var (
+		teamID, version int
+		name            string
+		template        bool
+		instanceVars    sql.NullString
+		archived        bool
+	)
+	err := tx.QueryRowContext(ctx, `
+		SELECT team_id, name, version, template, instance_vars, archived
+		FROM pipelines
+		WHERE id = $1
+		FOR UPDATE
+	`, ref.PipelineID).Scan(&teamID, &name, &version, &template, &instanceVars, &archived)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrTemplateNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if teamID != durableTeamID || teamID != ref.TeamID || name != ref.Name || version != ref.ConfigVersion ||
+		!template || instanceVars.Valid || archived {
+		return fmt.Errorf("db: workflow-run template reference drifted or collided")
+	}
+	return nil
+}
+
+func canonicalWorkflowRunConfig(raw json.RawMessage) (atc.Config, []byte, error) {
+	var config atc.Config
+	if len(raw) == 0 || !json.Valid(raw) {
+		return atc.Config{}, nil, fmt.Errorf("db: invalid durable workflow-run parameterized config")
+	}
+	if err := json.Unmarshal(raw, &config); err != nil {
+		return atc.Config{}, nil, fmt.Errorf("db: decode durable workflow-run parameterized config: %w", err)
+	}
+	canonical, err := config.CanonicalJSON()
+	if err != nil {
+		return atc.Config{}, nil, err
+	}
+	return config, canonical, nil
+}
+
+func cloneRunParams(params map[string]any) map[string]any {
+	cloned := make(map[string]any, len(params))
+	for name, value := range params {
+		cloned[name] = value
+	}
+	return cloned
+}
+
+func (f *pipelineRunFactory) createAndSelectWorkflowEntryBuild(
+	ctx context.Context,
+	tx Tx,
+	workflowRunID snapshot.WorkflowRunID,
+	pipelineRunID int,
+	instanceID int,
+	teamID int,
+	teamName string,
+	config atc.Config,
+	createdBy string,
+) (int, error) {
+	if err := validateWorkflowRunEntryJob(config); err != nil {
+		return 0, err
+	}
+	entryJob := newEmptyJob(f.conn, f.lockFactory)
+	entryJob.pipelineID = instanceID
+	entryJob.teamID = teamID
+	entryJob.teamName = teamName
+	if err := tx.QueryRowContext(ctx, `
+			SELECT id, name
+			FROM jobs
+			WHERE pipeline_id = $1 AND name = $2
+		`, instanceID, "run").Scan(&entryJob.id, &entryJob.name); err != nil {
+		return 0, fmt.Errorf("db: load workflow-run entry job %q: %w", "run", err)
+	}
+	build, err := entryJob.createBuild(tx, createdBy)
+	if err != nil {
+		return 0, fmt.Errorf("db: create workflow-run entry build %q: %w", "run", err)
+	}
+	var selectedBuildID int
+	if err := tx.QueryRowContext(ctx, `
+		UPDATE agent_workflow_runs
+		SET planned_build_id = $2, updated_at = now()
+		WHERE id = $1
+		  AND status = 'admitting'
+		  AND planned_build_id IS NULL
+		  AND pipeline_run_id = $3
+		  AND instance_pipeline_id = $4
+		  AND team_id = $5
+		RETURNING planned_build_id
+	`, int64(workflowRunID), build.ID(), pipelineRunID, instanceID, teamID).Scan(&selectedBuildID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, fmt.Errorf("db: workflow-run selected build ownership changed")
+		}
+		return 0, err
+	}
+	if selectedBuildID != build.ID() {
+		return 0, fmt.Errorf("db: workflow-run selected build mismatch")
+	}
+	return selectedBuildID, nil
+}
+
+func loadCommittedWorkflowRunExecution(
+	ctx context.Context,
+	tx Tx,
+	conn DbConn,
+	lockFactory lock.LockFactory,
+	durable AgentWorkflowRun,
+	ref WorkflowRunTemplateRef,
+	parameterizedConfig atc.Config,
+	validatedParams map[string]any,
+) (WorkflowRunExecution, error) {
+	if *durable.TemplatePipelineID != ref.PipelineID {
+		return WorkflowRunExecution{}, fmt.Errorf("db: committed workflow-run template association mismatch")
+	}
+	pipelineRun := newPipelineRun(conn, lockFactory)
+	err := scanPipelineRun(pipelineRun, tx.QueryRowContext(ctx, `
+		SELECT id, template_pipeline_id, instance_pipeline_id, number,
+		       params, status, created_by, created_at, completed_at, archived
+		FROM pipeline_runs
+		WHERE id = $1
+		FOR UPDATE
+	`, *durable.PipelineRunID))
+	if err != nil {
+		return WorkflowRunExecution{}, err
+	}
+	if pipelineRun.templatePipelineID != ref.PipelineID || !pipelineRun.instancePipelineID.Valid ||
+		int(pipelineRun.instancePipelineID.Int64) != *durable.InstancePipelineID {
+		return WorkflowRunExecution{}, fmt.Errorf("db: committed workflow-run execution association mismatch")
+	}
+	if !semanticJSONEqual(mustJSON(validatedParams), mustJSON(pipelineRun.params)) {
+		return WorkflowRunExecution{}, fmt.Errorf("db: committed workflow-run params mismatch")
+	}
+	instanceConfig, instanceCanonical, err := canonicalWorkflowRunConfig(durable.ConcreteConfig)
+	if err != nil {
+		return WorkflowRunExecution{}, err
+	}
+	expectedConfig, err := atc.MaterializeRunConfig(parameterizedConfig, pipelineRun.number, pipelineRun.id, validatedParams)
+	if err != nil {
+		return WorkflowRunExecution{}, err
+	}
+	expectedCanonical, err := expectedConfig.CanonicalJSON()
+	if err != nil {
+		return WorkflowRunExecution{}, err
+	}
+	if !semanticJSONEqual(instanceCanonical, expectedCanonical) {
+		return WorkflowRunExecution{}, fmt.Errorf("db: committed workflow-run instance config mismatch")
+	}
+	instanceSum := sha256.Sum256(append([]byte("workflow-instance-config/v1\x00"), instanceCanonical...))
+	instanceHash := fmt.Sprintf("%x", instanceSum[:])
+	if instanceHash != *durable.ConcreteConfigHash {
+		return WorkflowRunExecution{}, fmt.Errorf("db: committed workflow-run instance hash mismatch")
+	}
+	var selectedBuildID, buildPipelineID, buildTeamID, jobPipelineID int
+	var jobName string
+	if err := tx.QueryRowContext(ctx, `
+		SELECT b.id, b.pipeline_id, b.team_id, j.pipeline_id, j.name
+		FROM builds b
+		JOIN jobs j ON j.id = b.job_id
+		WHERE b.id = $1
+		FOR UPDATE OF b, j
+	`, *durable.PlannedBuildID).Scan(
+		&selectedBuildID, &buildPipelineID, &buildTeamID, &jobPipelineID, &jobName,
+	); err != nil {
+		return WorkflowRunExecution{}, err
+	}
+	if selectedBuildID != *durable.PlannedBuildID ||
+		buildPipelineID != *durable.InstancePipelineID || jobPipelineID != *durable.InstancePipelineID ||
+		buildTeamID != durable.TeamID || jobName != "run" {
+		return WorkflowRunExecution{}, fmt.Errorf("db: committed workflow-run selected build association mismatch")
+	}
+	return WorkflowRunExecution{
+		PipelineRun: pipelineRun, InstanceConfig: instanceConfig,
+		InstanceCanonicalJSON: append([]byte(nil), instanceCanonical...),
+		InstanceConfigHash:    instanceHash, EntryBuildIDs: []int{selectedBuildID},
+	}, nil
+}
+
+func mustJSON(value any) []byte {
+	payload, _ := json.Marshal(value)
+	return payload
 }
 
 // enqueueInitialChecks fires one manually-triggered check per resource of

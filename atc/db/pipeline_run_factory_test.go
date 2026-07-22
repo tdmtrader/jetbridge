@@ -1,8 +1,17 @@
 package db_test
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
+	"sync"
+	"time"
 
+	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 
@@ -12,8 +21,10 @@ import (
 
 var _ = Describe("PipelineRunFactory", func() {
 	var (
-		factory  db.PipelineRunFactory
-		template db.Pipeline
+		factory          db.PipelineRunFactory
+		template         db.Pipeline
+		workflowTemplate db.Pipeline
+		createDurable    func() (db.AgentWorkflowRun, db.WorkflowRunTemplateRef, db.AgentWorkflowRunsFactory)
 	)
 
 	templateConfig := atc.Config{
@@ -41,6 +52,21 @@ var _ = Describe("PipelineRunFactory", func() {
 			},
 		},
 	}
+	workflowTemplateConfig := atc.Config{
+		Template: true,
+		Params: []atc.ParamSchema{
+			{Name: "greeting", Type: "string", Default: "hello"},
+		},
+		Resources: atc.ResourceConfigs{
+			{Name: "some-resource", Type: "some-base-resource-type", Source: atc.Source{"some": "((greeting))"}},
+		},
+		Jobs: atc.JobConfigs{{
+			Name: "run",
+			PlanSequence: []atc.Step{
+				{Config: &atc.TaskStep{Name: "t", ConfigPath: "task.yml"}},
+			},
+		}},
+	}
 
 	BeforeEach(func() {
 		// logger and checkFactory are db-suite globals (db_suite_test.go:70/:47);
@@ -52,6 +78,41 @@ var _ = Describe("PipelineRunFactory", func() {
 		template, _, err = defaultTeam.SavePipeline(
 			atc.PipelineRef{Name: "run-template"}, templateConfig, db.ConfigVersion(0), false)
 		Expect(err).ToNot(HaveOccurred())
+		workflowTemplate, _, err = defaultTeam.SavePipeline(
+			atc.PipelineRef{Name: "workflow-run-template"}, workflowTemplateConfig, db.ConfigVersion(0), false)
+		Expect(err).ToNot(HaveOccurred())
+
+		createDurable = func() (db.AgentWorkflowRun, db.WorkflowRunTemplateRef, db.AgentWorkflowRunsFactory) {
+			canonical, err := workflowTemplateConfig.CanonicalJSON()
+			Expect(err).NotTo(HaveOccurred())
+			targetHash, err := workflow.TargetConfigHash(workflowTemplateConfig)
+			Expect(err).NotTo(HaveOccurred())
+			definitionName := fmt.Sprintf("pipeline-run-workflow-%d", time.Now().UnixNano())
+			var definitionID int
+			Expect(dbConn.QueryRow(`
+				INSERT INTO agent_workflow_definitions
+					(name, version, content_hash, definition, created_by, schema_version, signature_version)
+				VALUES ($1, 1, $2, 'schema_version: 3', 'alice', 3, 1)
+				RETURNING id
+			`, definitionName, strings.Repeat("a", 64)).Scan(&definitionID)).To(Succeed())
+
+			runStore := db.NewAgentWorkflowRunsFactory(dbConn)
+			durable, created, err := runStore.CreateWithInputs(context.Background(), db.AgentWorkflowRunCreateRequest{
+				TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(),
+				WorkflowDefinitionID: definitionID, WorkflowName: definitionName, WorkflowVersion: 1,
+				SchemaVersion: 3, SignatureVersion: 1, DefinitionContentHash: strings.Repeat("a", 64),
+				IdempotencyKey:      fmt.Sprintf("pipeline-run-workflow-%d", time.Now().UnixNano()),
+				ParameterizedConfig: json.RawMessage(canonical), ParameterizedConfigHash: targetHash,
+				OriginKind: "manual", CreatedBy: "alice", Status: db.AgentWorkflowRunStatusAdmitting,
+				Inputs: map[string]snapshot.SnapshotRef{},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(created).To(BeTrue())
+			return durable, db.WorkflowRunTemplateRef{
+				PipelineID: workflowTemplate.ID(), TeamID: defaultTeam.ID(), Name: workflowTemplate.Name(),
+				ConfigVersion: int(workflowTemplate.ConfigVersion()), FullHash: targetHash,
+			}, runStore
+		}
 	})
 
 	It("creates numbered runs with materialized instance pipelines and entry builds", func() {
@@ -96,6 +157,241 @@ var _ = Describe("PipelineRunFactory", func() {
 		second, err := factory.CreateRun(template.ID(), map[string]any{"greeting": "hi"}, "some-user")
 		Expect(err).ToNot(HaveOccurred())
 		Expect(second.Number()).To(Equal(2))
+	})
+
+	It("creates and links a workflow-owned run and its entry builds in one transaction", func() {
+		durable, templateRef, runStore := createDurable()
+
+		execution, created, err := factory.CreateRunForWorkflowRun(
+			context.Background(), durable.ID,
+			templateRef,
+			nil, "alice", func(context.Context, int) error { return nil },
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(created).To(BeTrue())
+		Expect(execution.PipelineRun).NotTo(BeNil())
+		Expect(execution.EntryBuildIDs).To(HaveLen(1))
+
+		stored, found, err := runStore.Get(context.Background(), defaultTeam.ID(), durable.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(stored.Status).To(Equal(db.AgentWorkflowRunStatusAdmitting))
+		Expect(stored.PipelineRunID).To(Equal(func() *int { value := execution.PipelineRun.ID(); return &value }()))
+		Expect(stored.PlannedBuildID).To(Equal(&execution.EntryBuildIDs[0]))
+		Expect(stored.StartedAt).To(BeNil())
+		Expect(stored.ConcreteConfig).To(MatchJSON(execution.InstanceCanonicalJSON))
+		Expect(stored.ConcreteConfigHash).To(Equal(&execution.InstanceConfigHash))
+		instanceSum := sha256.Sum256(append([]byte("workflow-instance-config/v1\x00"), execution.InstanceCanonicalJSON...))
+		Expect(execution.InstanceConfigHash).To(Equal(fmt.Sprintf("%x", instanceSum[:])))
+	})
+
+	It("rolls back the execution link, instance, builds, and selected build when the callback fails", func() {
+		durable, templateRef, runStore := createDurable()
+		callbackErr := errors.New("secret attachment failed")
+		_, created, err := factory.CreateRunForWorkflowRun(
+			context.Background(), durable.ID, templateRef, nil, "alice",
+			func(context.Context, int) error { return callbackErr },
+		)
+		Expect(err).To(MatchError(callbackErr))
+		Expect(created).To(BeFalse())
+
+		stored, found, err := runStore.Get(context.Background(), defaultTeam.ID(), durable.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(stored.Status).To(Equal(db.AgentWorkflowRunStatusAdmitting))
+		Expect(stored.PipelineRunID).To(BeNil())
+		Expect(stored.TemplatePipelineID).To(BeNil())
+		Expect(stored.InstancePipelineID).To(BeNil())
+		Expect(stored.ConcreteConfig).To(BeEmpty())
+		Expect(stored.ConcreteConfigHash).To(BeNil())
+		Expect(stored.PlannedBuildID).To(BeNil())
+
+		var pipelineRuns, instances, builds int
+		Expect(dbConn.QueryRow(`SELECT count(*) FROM pipeline_runs WHERE template_pipeline_id = $1`, workflowTemplate.ID()).Scan(&pipelineRuns)).To(Succeed())
+		Expect(dbConn.QueryRow(`SELECT count(*) FROM pipelines WHERE team_id = $1 AND name = $2 AND instance_vars IS NOT NULL`, defaultTeam.ID(), workflowTemplate.Name()).Scan(&instances)).To(Succeed())
+		Expect(dbConn.QueryRow(`
+			SELECT count(*) FROM builds b
+			JOIN pipelines p ON p.id = b.pipeline_id
+			WHERE p.team_id = $1 AND p.name = $2 AND p.instance_vars IS NOT NULL
+		`, defaultTeam.ID(), workflowTemplate.Name()).Scan(&builds)).To(Succeed())
+		Expect(pipelineRuns).To(BeZero())
+		Expect(instances).To(BeZero())
+		Expect(builds).To(BeZero())
+
+		execution, created, err := factory.CreateRunForWorkflowRun(
+			context.Background(), durable.ID, templateRef, nil, "alice",
+			func(context.Context, int) error { return nil },
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(created).To(BeTrue())
+		Expect(execution.PipelineRun.Number()).To(Equal(1), "rolled-back number allocation must not leave a gap")
+	})
+
+	It("returns an exact committed replay without invoking the callback twice", func() {
+		durable, templateRef, _ := createDurable()
+		callbackCalls := 0
+		callback := func(context.Context, int) error {
+			callbackCalls++
+			return nil
+		}
+		first, created, err := factory.CreateRunForWorkflowRun(context.Background(), durable.ID, templateRef, nil, "alice", callback)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(created).To(BeTrue())
+		second, created, err := factory.CreateRunForWorkflowRun(context.Background(), durable.ID, templateRef, nil, "alice", callback)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(created).To(BeFalse())
+		Expect(second.PipelineRun.ID()).To(Equal(first.PipelineRun.ID()))
+		Expect(second.EntryBuildIDs).To(Equal(first.EntryBuildIDs))
+		Expect(callbackCalls).To(Equal(1))
+	})
+
+	It("materializes from durable bytes even if the same-version template rows were mutated", func() {
+		durable, templateRef, _ := createDurable()
+		_, err := dbConn.Exec(`UPDATE jobs SET name = 'mutated-run' WHERE pipeline_id = $1 AND name = 'run'`, workflowTemplate.ID())
+		Expect(err).NotTo(HaveOccurred())
+
+		execution, created, err := factory.CreateRunForWorkflowRun(
+			context.Background(), durable.ID, templateRef, nil, "alice",
+			func(context.Context, int) error { return nil },
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(created).To(BeTrue())
+		Expect(execution.InstanceConfig.Jobs).To(ContainElement(HaveField("Name", "run")))
+		instance, found, err := execution.PipelineRun.InstancePipeline()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		_, found, err = instance.Job("run")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+	})
+
+	It("keeps execution and entry builds invisible until the ownership commit", func() {
+		durable, templateRef, runStore := createDurable()
+		visibilityConn := postgresRunner.OpenSingleton()
+		defer visibilityConn.Close()
+		entered := make(chan int, 1)
+		release := make(chan struct{})
+		type result struct {
+			execution db.WorkflowRunExecution
+			created   bool
+			err       error
+		}
+		done := make(chan result, 1)
+		go func() {
+			defer GinkgoRecover()
+			execution, created, err := factory.CreateRunForWorkflowRun(
+				context.Background(), durable.ID, templateRef, nil, "alice",
+				func(_ context.Context, pipelineRunID int) error {
+					entered <- pipelineRunID
+					<-release
+					return nil
+				},
+			)
+			done <- result{execution: execution, created: created, err: err}
+		}()
+
+		pipelineRunID := <-entered
+		var visibleRuns, visibleInstances, visibleBuilds int
+		Expect(visibilityConn.QueryRow(`SELECT count(*) FROM pipeline_runs WHERE id = $1`, pipelineRunID).Scan(&visibleRuns)).To(Succeed())
+		Expect(visibilityConn.QueryRow(`SELECT count(*) FROM pipelines WHERE team_id = $1 AND name = $2 AND instance_vars IS NOT NULL`, defaultTeam.ID(), workflowTemplate.Name()).Scan(&visibleInstances)).To(Succeed())
+		Expect(visibilityConn.QueryRow(`
+			SELECT count(*) FROM builds b
+			JOIN pipelines p ON p.id = b.pipeline_id
+			WHERE p.team_id = $1 AND p.name = $2 AND p.instance_vars IS NOT NULL
+		`, defaultTeam.ID(), workflowTemplate.Name()).Scan(&visibleBuilds)).To(Succeed())
+		Expect(visibleRuns).To(BeZero())
+		Expect(visibleInstances).To(BeZero())
+		Expect(visibleBuilds).To(BeZero())
+		var status string
+		var visiblePipelineRunID, visiblePlannedBuildID *int
+		Expect(visibilityConn.QueryRow(`
+			SELECT status, pipeline_run_id, planned_build_id
+			FROM agent_workflow_runs
+			WHERE id = $1
+		`, int64(durable.ID)).Scan(&status, &visiblePipelineRunID, &visiblePlannedBuildID)).To(Succeed())
+		Expect(status).To(Equal(string(db.AgentWorkflowRunStatusAdmitting)))
+		Expect(visiblePipelineRunID).To(BeNil())
+		Expect(visiblePlannedBuildID).To(BeNil())
+
+		close(release)
+		outcome := <-done
+		Expect(outcome.err).NotTo(HaveOccurred())
+		Expect(outcome.created).To(BeTrue())
+		Expect(outcome.execution.EntryBuildIDs).NotTo(BeEmpty())
+		stored, found, err := runStore.Get(context.Background(), defaultTeam.ID(), durable.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(stored.Status).To(Equal(db.AgentWorkflowRunStatusAdmitting))
+		Expect(stored.PlannedBuildID).To(Equal(&outcome.execution.EntryBuildIDs[0]))
+	})
+
+	It("fails closed unless the durable Task 5 config has exactly one run entry job", func() {
+		durable, templateRef, _ := createDurable()
+		invalid := workflowTemplateConfig
+		invalid.Jobs = append(atc.JobConfigs(nil), workflowTemplateConfig.Jobs...)
+		invalid.Jobs = append(invalid.Jobs, atc.JobConfig{Name: "extra"})
+		canonical, err := invalid.CanonicalJSON()
+		Expect(err).NotTo(HaveOccurred())
+		hash, err := workflow.TargetConfigHash(invalid)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = dbConn.Exec(`
+			UPDATE agent_workflow_runs
+			SET parameterized_config = $2, parameterized_config_hash = $3
+			WHERE id = $1
+		`, int64(durable.ID), canonical, hash)
+		Expect(err).NotTo(HaveOccurred())
+		templateRef.FullHash = hash
+
+		_, created, err := factory.CreateRunForWorkflowRun(
+			context.Background(), durable.ID, templateRef, nil, "alice",
+			func(context.Context, int) error { return nil },
+		)
+		Expect(err).To(MatchError(ContainSubstring("exactly one entry job named run")))
+		Expect(created).To(BeFalse())
+	})
+
+	It("converges concurrent resumes to one execution and one entry-build set", func() {
+		durable, templateRef, _ := createDurable()
+		type result struct {
+			execution db.WorkflowRunExecution
+			created   bool
+			err       error
+		}
+		results := make(chan result, 2)
+		var callbackMu sync.Mutex
+		callbackCalls := 0
+		var wg sync.WaitGroup
+		for range 2 {
+			wg.Add(1)
+			go func() {
+				defer GinkgoRecover()
+				defer wg.Done()
+				execution, created, err := factory.CreateRunForWorkflowRun(
+					context.Background(), durable.ID, templateRef, nil, "alice",
+					func(context.Context, int) error {
+						callbackMu.Lock()
+						callbackCalls++
+						callbackMu.Unlock()
+						return nil
+					},
+				)
+				results <- result{execution: execution, created: created, err: err}
+			}()
+		}
+		wg.Wait()
+		close(results)
+		var got []result
+		for result := range results {
+			Expect(result.err).NotTo(HaveOccurred())
+			got = append(got, result)
+		}
+		Expect(got).To(HaveLen(2))
+		Expect([]bool{got[0].created, got[1].created}).To(ConsistOf(true, false))
+		Expect(got[0].execution.PipelineRun.ID()).To(Equal(got[1].execution.PipelineRun.ID()))
+		Expect(got[0].execution.EntryBuildIDs).To(Equal(got[1].execution.EntryBuildIDs))
+		callbackMu.Lock()
+		defer callbackMu.Unlock()
+		Expect(callbackCalls).To(Equal(1))
 	})
 
 	// review finding (2026-07-11): AGENT_PIPELINE_RUN_ID reaches the

@@ -479,6 +479,20 @@ func linkAgentWorkflowRunExecution(
 	if templateTeamID != runTeamID || instanceTeamID != runTeamID {
 		return fmt.Errorf("db: workflow-run pipeline execution is not owned by its team")
 	}
+	var ownerID int64
+	err = queryer.QueryRowContext(ctx, `
+		SELECT id
+		FROM agent_workflow_runs
+		WHERE id <> $1
+		  AND (pipeline_run_id = $2 OR instance_pipeline_id = $3)
+		FOR UPDATE
+	`, int64(id), link.PipelineRunID, link.InstancePipelineID).Scan(&ownerID)
+	if err == nil {
+		return fmt.Errorf("db: workflow-run pipeline execution is already owned by another run")
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
 	var found int64
 	err = queryer.QueryRowContext(ctx, `
 		UPDATE agent_workflow_runs
@@ -557,7 +571,9 @@ func (factory *agentWorkflowRunsFactory) RecordPlan(
 		    updated_at = now()
 		WHERE id = $1
 		  AND (
-			(planned_build_id IS NULL AND actual_plan IS NULL AND actual_plan_hash IS NULL)
+			((planned_build_id IS NULL OR planned_build_id = $2)
+			 AND actual_plan IS NULL AND actual_plan_hash IS NULL
+			 AND resolved_dependencies IS NULL)
 			OR
 			(planned_build_id = $2 AND actual_plan = $3::jsonb
 			 AND actual_plan_hash = $4

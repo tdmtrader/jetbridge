@@ -2,8 +2,10 @@
 package dbfakes
 
 import (
+	"context"
 	"sync"
 
+	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc/db"
 )
 
@@ -34,6 +36,26 @@ type FakePipelineRunFactory struct {
 	createRunReturnsOnCall map[int]struct {
 		result1 db.PipelineRun
 		result2 error
+	}
+	CreateRunForWorkflowRunStub        func(context.Context, snapshot.WorkflowRunID, db.WorkflowRunTemplateRef, map[string]any, string, db.BeforeWorkflowRunCommit) (db.WorkflowRunExecution, bool, error)
+	createRunForWorkflowRunMutex       sync.RWMutex
+	createRunForWorkflowRunArgsForCall []struct {
+		arg1 context.Context
+		arg2 snapshot.WorkflowRunID
+		arg3 db.WorkflowRunTemplateRef
+		arg4 map[string]any
+		arg5 string
+		arg6 db.BeforeWorkflowRunCommit
+	}
+	createRunForWorkflowRunReturns struct {
+		result1 db.WorkflowRunExecution
+		result2 bool
+		result3 error
+	}
+	createRunForWorkflowRunReturnsOnCall map[int]struct {
+		result1 db.WorkflowRunExecution
+		result2 bool
+		result3 error
 	}
 	GetRunStub        func(int, int) (db.PipelineRun, bool, error)
 	getRunMutex       sync.RWMutex
@@ -294,6 +316,78 @@ func (fake *FakePipelineRunFactory) CreateRunReturnsOnCall(i int, result1 db.Pip
 		result1 db.PipelineRun
 		result2 error
 	}{result1, result2}
+}
+
+func (fake *FakePipelineRunFactory) CreateRunForWorkflowRun(arg1 context.Context, arg2 snapshot.WorkflowRunID, arg3 db.WorkflowRunTemplateRef, arg4 map[string]any, arg5 string, arg6 db.BeforeWorkflowRunCommit) (db.WorkflowRunExecution, bool, error) {
+	fake.createRunForWorkflowRunMutex.Lock()
+	ret, specificReturn := fake.createRunForWorkflowRunReturnsOnCall[len(fake.createRunForWorkflowRunArgsForCall)]
+	fake.createRunForWorkflowRunArgsForCall = append(fake.createRunForWorkflowRunArgsForCall, struct {
+		arg1 context.Context
+		arg2 snapshot.WorkflowRunID
+		arg3 db.WorkflowRunTemplateRef
+		arg4 map[string]any
+		arg5 string
+		arg6 db.BeforeWorkflowRunCommit
+	}{arg1, arg2, arg3, arg4, arg5, arg6})
+	stub := fake.CreateRunForWorkflowRunStub
+	fakeReturns := fake.createRunForWorkflowRunReturns
+	fake.recordInvocation("CreateRunForWorkflowRun", []interface{}{arg1, arg2, arg3, arg4, arg5, arg6})
+	fake.createRunForWorkflowRunMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2, arg3, arg4, arg5, arg6)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2, ret.result3
+	}
+	return fakeReturns.result1, fakeReturns.result2, fakeReturns.result3
+}
+
+func (fake *FakePipelineRunFactory) CreateRunForWorkflowRunCallCount() int {
+	fake.createRunForWorkflowRunMutex.RLock()
+	defer fake.createRunForWorkflowRunMutex.RUnlock()
+	return len(fake.createRunForWorkflowRunArgsForCall)
+}
+
+func (fake *FakePipelineRunFactory) CreateRunForWorkflowRunCalls(stub func(context.Context, snapshot.WorkflowRunID, db.WorkflowRunTemplateRef, map[string]any, string, db.BeforeWorkflowRunCommit) (db.WorkflowRunExecution, bool, error)) {
+	fake.createRunForWorkflowRunMutex.Lock()
+	defer fake.createRunForWorkflowRunMutex.Unlock()
+	fake.CreateRunForWorkflowRunStub = stub
+}
+
+func (fake *FakePipelineRunFactory) CreateRunForWorkflowRunArgsForCall(i int) (context.Context, snapshot.WorkflowRunID, db.WorkflowRunTemplateRef, map[string]any, string, db.BeforeWorkflowRunCommit) {
+	fake.createRunForWorkflowRunMutex.RLock()
+	defer fake.createRunForWorkflowRunMutex.RUnlock()
+	argsForCall := fake.createRunForWorkflowRunArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3, argsForCall.arg4, argsForCall.arg5, argsForCall.arg6
+}
+
+func (fake *FakePipelineRunFactory) CreateRunForWorkflowRunReturns(result1 db.WorkflowRunExecution, result2 bool, result3 error) {
+	fake.createRunForWorkflowRunMutex.Lock()
+	defer fake.createRunForWorkflowRunMutex.Unlock()
+	fake.CreateRunForWorkflowRunStub = nil
+	fake.createRunForWorkflowRunReturns = struct {
+		result1 db.WorkflowRunExecution
+		result2 bool
+		result3 error
+	}{result1, result2, result3}
+}
+
+func (fake *FakePipelineRunFactory) CreateRunForWorkflowRunReturnsOnCall(i int, result1 db.WorkflowRunExecution, result2 bool, result3 error) {
+	fake.createRunForWorkflowRunMutex.Lock()
+	defer fake.createRunForWorkflowRunMutex.Unlock()
+	fake.CreateRunForWorkflowRunStub = nil
+	if fake.createRunForWorkflowRunReturnsOnCall == nil {
+		fake.createRunForWorkflowRunReturnsOnCall = make(map[int]struct {
+			result1 db.WorkflowRunExecution
+			result2 bool
+			result3 error
+		})
+	}
+	fake.createRunForWorkflowRunReturnsOnCall[i] = struct {
+		result1 db.WorkflowRunExecution
+		result2 bool
+		result3 error
+	}{result1, result2, result3}
 }
 
 func (fake *FakePipelineRunFactory) GetRun(arg1 int, arg2 int) (db.PipelineRun, bool, error) {

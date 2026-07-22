@@ -151,8 +151,8 @@ func (request AgentWorkflowRunCreateRequest) Validate() error {
 	if len(request.ParameterizedConfig) == 0 || !json.Valid(request.ParameterizedConfig) {
 		return fmt.Errorf("db: workflow-run parameterized config must be valid JSON")
 	}
-	if err := request.Status.Validate(); err != nil {
-		return err
+	if request.Status != AgentWorkflowRunStatusAdmitting {
+		return fmt.Errorf("db: workflow-run initial status must be admitting")
 	}
 	if request.RetryOfWorkflowRunID != nil {
 		if err := request.RetryOfWorkflowRunID.Validate(); err != nil {

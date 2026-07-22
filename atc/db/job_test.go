@@ -113,6 +113,23 @@ var _ = Describe("Job", func() {
 		Expect(found).To(BeTrue())
 	})
 
+	Describe("CreateBuild transaction wrapper", func() {
+		It("preserves the public pending-build and next-build behavior", func() {
+			build, err := job.CreateBuild("workflow-refactor-check")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(build.Status()).To(Equal(db.BuildStatusPending))
+			Expect(build.CreatedBy()).To(Equal(func() *string { value := "workflow-refactor-check"; return &value }()))
+
+			pending, err := job.GetPendingBuilds()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(pending).To(HaveLen(1))
+			Expect(pending[0].ID()).To(Equal(build.ID()))
+			_, next, err := job.FinishedAndNextBuild()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(next.ID()).To(Equal(build.ID()))
+		})
+	})
+
 	Describe("Public", func() {
 		Context("when the config has public set to true", func() {
 			It("returns true", func() {

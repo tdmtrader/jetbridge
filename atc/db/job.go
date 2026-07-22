@@ -835,6 +835,23 @@ func (j *job) CreateBuild(createdBy string) (_ Build, err error) {
 
 	defer Rollback(tx)
 
+	build, err := j.createBuild(tx, createdBy)
+	if err != nil {
+		return nil, err
+	}
+
+	err = tx.Commit()
+	if err != nil {
+		return nil, err
+	}
+
+	return build, nil
+}
+
+// createBuild creates one ordinary manually-triggered job build using the
+// caller's transaction. Keeping this path private lets workflow admission
+// create its initial entry builds in the same commit as durable ownership.
+func (j *job) createBuild(tx Tx, createdBy string) (Build, error) {
 	buildName, err := j.getNewBuildName(tx)
 	if err != nil {
 		return nil, err
@@ -865,11 +882,6 @@ func (j *job) CreateBuild(createdBy string) (_ Build, err error) {
 	}
 
 	err = requestSchedule(tx, j.id)
-	if err != nil {
-		return nil, err
-	}
-
-	err = tx.Commit()
 	if err != nil {
 		return nil, err
 	}

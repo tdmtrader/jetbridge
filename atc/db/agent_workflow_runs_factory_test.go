@@ -102,6 +102,23 @@ var _ = Describe("AgentWorkflowRunsFactory", func() {
 		Expect(claims).To(Equal(1))
 	})
 
+	It("accepts only admitting as the initial durable status", func() {
+		for _, status := range []db.AgentWorkflowRunStatus{
+			db.AgentWorkflowRunStatusRunning,
+			db.AgentWorkflowRunStatusSucceeded,
+			db.AgentWorkflowRunStatusFailed,
+			db.AgentWorkflowRunStatusErrored,
+			db.AgentWorkflowRunStatusCanceling,
+			db.AgentWorkflowRunStatusAborted,
+		} {
+			candidate := request(fmt.Sprintf("invalid-initial-status-%s", status))
+			candidate.Status = status
+
+			_, _, err := factory.CreateWithInputs(ctx, candidate)
+			Expect(err).To(MatchError(ContainSubstring("initial status must be admitting")))
+		}
+	})
+
 	It("returns the exact existing run for an identical idempotency key", func() {
 		first, created, err := factory.CreateWithInputs(ctx, request("same-key"))
 		Expect(err).NotTo(HaveOccurred())
@@ -196,6 +213,28 @@ var _ = Describe("AgentWorkflowRunsFactory", func() {
 		var runs int
 		Expect(dbConn.QueryRow(`SELECT count(*) FROM agent_workflow_runs WHERE idempotency_key = 'conflict-key'`).Scan(&runs)).To(Succeed())
 		Expect(runs).To(Equal(1))
+	})
+
+	It("includes retry provenance in idempotency identity", func() {
+		source, _, err := factory.CreateWithInputs(ctx, request("retry-source"))
+		Expect(err).NotTo(HaveOccurred())
+		firstRequest := request("retry-key")
+		firstRequest.RetryOfWorkflowRunID = &source.ID
+		first, created, err := factory.CreateWithInputs(ctx, firstRequest)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(created).To(BeTrue())
+		Expect(first.RetryOfWorkflowRunID).To(Equal(&source.ID))
+
+		withoutRetry := request("retry-key")
+		_, _, err = factory.CreateWithInputs(ctx, withoutRetry)
+		Expect(err).To(MatchError(ContainSubstring("idempotency")))
+
+		otherSource, _, err := factory.CreateWithInputs(ctx, request("retry-other-source"))
+		Expect(err).NotTo(HaveOccurred())
+		differentRetry := request("retry-key")
+		differentRetry.RetryOfWorkflowRunID = &otherSource.ID
+		_, _, err = factory.CreateWithInputs(ctx, differentRetry)
+		Expect(err).To(MatchError(ContainSubstring("idempotency")))
 	})
 
 	It("rejects forged copied schema and signature metadata before creating any durable state", func() {
@@ -364,6 +403,26 @@ var _ = Describe("AgentWorkflowRunsFactory", func() {
 		Expect(factory.LinkExecution(ctx, run.ID, link)).To(MatchError(ContainSubstring("team")))
 	})
 
+	It("rejects pipeline-run and instance ownership shared by different workflow runs", func() {
+		first, _, err := factory.CreateWithInputs(ctx, request("execution-owner-first"))
+		Expect(err).NotTo(HaveOccurred())
+		second, _, err := factory.CreateWithInputs(ctx, request("execution-owner-second"))
+		Expect(err).NotTo(HaveOccurred())
+
+		var templateID, instanceID, pipelineRunID int
+		suffix := time.Now().UnixNano()
+		Expect(dbConn.QueryRow(`INSERT INTO pipelines (name, team_id, secondary_ordering) VALUES ($1, $2, 1) RETURNING id`, fmt.Sprintf("owner-template-%d", suffix), defaultTeam.ID()).Scan(&templateID)).To(Succeed())
+		Expect(dbConn.QueryRow(`INSERT INTO pipelines (name, team_id, secondary_ordering) VALUES ($1, $2, 1) RETURNING id`, fmt.Sprintf("owner-instance-%d", suffix), defaultTeam.ID()).Scan(&instanceID)).To(Succeed())
+		Expect(dbConn.QueryRow(`INSERT INTO pipeline_runs (template_pipeline_id, instance_pipeline_id, number) VALUES ($1, $2, 1) RETURNING id`, templateID, instanceID).Scan(&pipelineRunID)).To(Succeed())
+
+		link := db.AgentWorkflowRunExecutionLink{
+			PipelineRunID: pipelineRunID, TemplatePipelineID: templateID, InstancePipelineID: instanceID,
+			ConcreteConfig: json.RawMessage(`{"instance":true}`), ConcreteConfigHash: strings.Repeat("d", 64),
+		}
+		Expect(factory.LinkExecution(ctx, first.ID, link)).To(Succeed())
+		Expect(factory.LinkExecution(ctx, second.ID, link)).To(MatchError(ContainSubstring("already owned")))
+	})
+
 	It("rejects plans for builds outside the linked workflow instance", func() {
 		run, _, err := factory.CreateWithInputs(ctx, request("planned-build-ownership"))
 		Expect(err).NotTo(HaveOccurred())
@@ -485,6 +544,8 @@ var _ = Describe("AgentWorkflowRunsFactory", func() {
 		}
 		Expect(factory.LinkExecution(ctx, run.ID, link)).To(Succeed())
 		Expect(factory.LinkExecution(ctx, run.ID, link)).To(Succeed())
+		_, err = dbConn.Exec(`UPDATE agent_workflow_runs SET planned_build_id = $2 WHERE id = $1`, int64(run.ID), buildID)
+		Expect(err).NotTo(HaveOccurred())
 		Expect(factory.RecordPlan(ctx, run.ID, db.AgentWorkflowRunPlan{
 			BuildID:              buildID,
 			ActualPlan:           json.RawMessage(`{"task":"review"}`),
