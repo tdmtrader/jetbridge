@@ -15,7 +15,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/concourse/concourse/agent/resourcecapture"
 	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/atc/db"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/onsi/gomega/gbytes"
@@ -49,6 +51,93 @@ func runAgentSnapshotsCommand(args ...string) *gexec.Session {
 }
 
 var _ = Describe("fly agent snapshots", func() {
+	It("captures an exact resource version and waits on the idempotent durable operation", func() {
+		operationKey := strings.Repeat("b", 64)
+		pending := resourcecapture.CaptureResult{
+			OperationKey: operationKey, Created: true,
+			Execution: resourcecapture.Execution{PipelineRunID: 51, TemplatePipelineID: 41, InstancePipelineID: 61, Status: db.PipelineRunRunning},
+		}
+		manifest := agentSnapshotFixture("9007199254740993", 42)
+		manifest.Type = "repository/v1"
+		complete := pending
+		complete.Created = false
+		complete.Execution.Status = db.PipelineRunSucceeded
+		complete.Snapshot = &manifest
+		verifyCapture := func(result resourcecapture.CaptureResult, status int) http.HandlerFunc {
+			return func(w http.ResponseWriter, r *http.Request) {
+				Expect(r.Method).To(Equal(http.MethodPost))
+				Expect(r.URL.Path).To(Equal(agentSnapshotsIntegrationPath + "/capture-resource"))
+				Expect(r.Header.Get("Content-Type")).To(Equal("application/json"))
+				var body map[string]any
+				Expect(json.NewDecoder(r.Body).Decode(&body)).To(Succeed())
+				Expect(body["pipeline"]).To(Equal(map[string]any{"name": "delivery"}))
+				Expect(body["resource"]).To(Equal("repository"))
+				Expect(body["version"]).To(Equal(map[string]any{"ref": "abc123"}))
+				Expect(body["type"]).To(Equal("repository/v1"))
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(status)
+				Expect(json.NewEncoder(w).Encode(result)).To(Succeed())
+			}
+		}
+		atcServer.AppendHandlers(verifyCapture(pending, http.StatusAccepted), verifyCapture(complete, http.StatusOK))
+
+		session := runAgentSnapshotsCommand(
+			"capture-resource", "--pipeline", "delivery", "--resource", "repository",
+			"--version", "ref:abc123", "--type", "repository/v1", "--json",
+		)
+		Expect(session.ExitCode()).To(Equal(0))
+		Expect(session.Out).To(gbytes.Say(`"operation_key": "` + operationKey + `"`))
+		Expect(session.Out).To(gbytes.Say(`"status": "succeeded"`))
+		Expect(session.Out).To(gbytes.Say(`"id": "9007199254740993"`))
+	})
+
+	It("retries one exact failed capture generation before reporting the final result", func() {
+		operationKey := strings.Repeat("c", 64)
+		failed := resourcecapture.CaptureResult{
+			OperationKey: operationKey,
+			Execution:    resourcecapture.Execution{PipelineRunID: 51, TemplatePipelineID: 41, InstancePipelineID: 61, Status: db.PipelineRunFailed},
+		}
+		pending := resourcecapture.CaptureResult{
+			OperationKey: operationKey, Created: true,
+			Execution: resourcecapture.Execution{PipelineRunID: 52, TemplatePipelineID: 41, InstancePipelineID: 62, Status: db.PipelineRunRunning},
+		}
+		manifest := agentSnapshotFixture("9007199254740993", 42)
+		manifest.Type = "repository/v1"
+		complete := pending
+		complete.Created = false
+		complete.Execution.Status = db.PipelineRunSucceeded
+		complete.Snapshot = &manifest
+
+		verifyCapture := func(expectedRetry any, result resourcecapture.CaptureResult, status int) http.HandlerFunc {
+			return func(w http.ResponseWriter, r *http.Request) {
+				var body map[string]any
+				Expect(json.NewDecoder(r.Body).Decode(&body)).To(Succeed())
+				if expectedRetry == nil {
+					Expect(body["retry_pipeline_run_id"]).To(BeNil())
+				} else {
+					Expect(body["retry_pipeline_run_id"]).To(Equal(expectedRetry))
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(status)
+				Expect(json.NewEncoder(w).Encode(result)).To(Succeed())
+			}
+		}
+		atcServer.AppendHandlers(
+			verifyCapture(nil, failed, http.StatusOK),
+			verifyCapture("51", pending, http.StatusAccepted),
+			verifyCapture("51", complete, http.StatusOK),
+		)
+
+		session := runAgentSnapshotsCommand(
+			"capture-resource", "--pipeline", "delivery", "--resource", "repository",
+			"--version", "ref:abc123", "--type", "repository/v1", "--json",
+		)
+		Expect(session.ExitCode()).To(Equal(0))
+		Expect(session.Out).To(gbytes.Say(`"pipeline_run_id": 52`))
+		Expect(session.Out).To(gbytes.Say(`"status": "succeeded"`))
+		Expect(session.Out).To(gbytes.Say(`"id": "9007199254740993"`))
+	})
+
 	It("creates a deterministic raw tar in the selected team and prints human and JSON results", func() {
 		source := GinkgoT().TempDir()
 		Expect(os.Mkdir(filepath.Join(source, "empty"), 0o755)).To(Succeed())

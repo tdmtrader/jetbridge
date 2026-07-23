@@ -1,3 +1,34 @@
+# Hermetic task/agent pods are isolated by default, independently of the
+# broader networkPolicy.enabled switch. Jetbridge adds this selector from the
+# server-side runtime.ContainerSpec; pipeline-supplied labels cannot forge it.
+#
+# Kubernetes NetworkPolicy always permits traffic to the pod's own node. The
+# artifact bootstrap intentionally uses that exception to reach the node-local
+# artifact-daemon hostPort without opening DNS, metadata, or general cluster
+# egress. See the chart README for the residual same-node reachability.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "concourse.fullname" . }}-hermetic-egress
+  namespace: {{ include "concourse.kubernetesNamespace" . }}
+  labels:
+    {{- include "concourse.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      concourse.ci/hermetic: "true"
+  policyTypes:
+    - Ingress
+    - Egress
+  # NetworkPolicy does not govern loopback traffic between containers in this
+  # pod, so the task and its sidecars retain their same-pod communication.
+  ingress: []
+{{- if .Values.networkPolicy.hermeticEgressTo }}
+  egress:
+    {{- toYaml .Values.networkPolicy.hermeticEgressTo | nindent 4 }}
+{{- else }}
+  egress: []
+{{- end }}
 {{- if .Values.networkPolicy.enabled }}
 ---
 apiVersion: networking.k8s.io/v1
@@ -52,39 +83,6 @@ spec:
             matchLabels:
               {{- include "concourse.selectorLabels" . | nindent 14 }}
 {{- end }}
-{{- if .Values.artifactDaemon.enabled }}
----
-# Artifact daemon: only accept connections from Concourse web pods and
-# task/check init containers (which fetch artifacts via HTTP).
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: {{ include "concourse.fullname" . }}-artifact-daemon
-  namespace: {{ .Release.Namespace }}
-  labels:
-    {{- include "concourse.labels" . | nindent 4 }}
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/name: {{ include "concourse.name" . }}
-      app.kubernetes.io/component: artifact-daemon
-  policyTypes:
-    - Ingress
-  ingress:
-    - ports:
-        - port: {{ .Values.artifactDaemon.port | default 7780 }}
-          protocol: TCP
-      from:
-        # Web pods (ATC) that register caches and stream artifacts
-        - podSelector:
-            matchLabels:
-              {{- include "concourse.selectorLabels" . | nindent 14 }}
-        # Task/check pods that fetch artifacts via init containers
-        - podSelector:
-            matchExpressions:
-              - key: concourse.ci/pipeline
-                operator: Exists
-{{- end }}
 {{- if .Values.networkPolicy.taskEgressTo }}
 ---
 # Task pod egress: restrict outbound traffic from CI task pods.
@@ -94,14 +92,20 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: {{ include "concourse.fullname" . }}-task-egress
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ include "concourse.kubernetesNamespace" . }}
   labels:
     {{- include "concourse.labels" . | nindent 4 }}
 spec:
   podSelector:
     matchExpressions:
-      - key: concourse.ci/pipeline
+      - key: concourse.ci/worker
         operator: Exists
+      # NetworkPolicy allowlists are additive. Never let this broader policy's
+      # DNS, metadata, artifact, or operator rules widen a hermetic pod.
+      - key: concourse.ci/hermetic
+        operator: NotIn
+        values:
+          - "true"
   policyTypes:
     - Egress
   egress:
@@ -124,7 +128,10 @@ spec:
     {{- if .Values.artifactDaemon.enabled }}
     # Artifact daemon on each node
     - to:
-        - podSelector:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
             matchLabels:
               app.kubernetes.io/name: {{ include "concourse.name" . }}
               app.kubernetes.io/component: artifact-daemon

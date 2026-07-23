@@ -244,6 +244,31 @@ var _ = Describe("outcomewatcher", func() {
 		Expect(tk.State).To(Equal(tickets.StateMergedWithFixes))
 	})
 
+	It("projects a human send-back before a fast retry cycle re-arms and clears it", func() {
+		seedHarvest(pushed, base)
+		Expect(watcher.Run(nil)).To(Succeed())
+		Expect(outcomeStore.SetDisposition(ticketID, outcomes.DispositionInput{
+			Disposition: outcomes.DispositionSentBack, Reason: "incomplete", By: "alice",
+		})).To(Succeed())
+		Expect(ticketStore.Transition(ticketID, tickets.StateNeedsReview, tickets.StateSentBack, tickets.TransitionMeta{})).To(Succeed())
+		Expect(ticketStore.Transition(ticketID, tickets.StateSentBack, tickets.StateQueued, tickets.TransitionMeta{})).To(Succeed())
+		Expect(ticketStore.Transition(ticketID, tickets.StateQueued, tickets.StateRunning, tickets.TransitionMeta{})).To(Succeed())
+		Expect(ticketStore.Transition(ticketID, tickets.StateRunning, tickets.StateNeedsReview, tickets.TransitionMeta{Branch: branch})).To(Succeed())
+
+		collector := &collectingGenericProjector{}
+		watcher = outcomewatcher.New(ticketStore, outcomeStore, cache, outcomewatcher.WithGenericProjector(collector))
+		Expect(watcher.Run(nil)).To(Succeed())
+		Expect(collector.facts).To(ContainElement(outcomewatcher.TerminalFact{
+			TicketID: ticketID, Kind: outcomewatcher.TerminalSentBack,
+			Actor: "alice", HumanIntervention: true,
+		}))
+		row, found, err := outcomeStore.Get(ticketID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(row.MergeState).To(Equal(outcomes.MergeOpen))
+		Expect(row.Disposition).To(BeEmpty())
+	})
+
 	It("re-arms with fallback shas when harvest did not re-seed (F6 backstop)", func() {
 		seedHarvest(pushed, base)
 		Expect(watcher.Run(nil)).To(Succeed())

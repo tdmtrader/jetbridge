@@ -35,14 +35,15 @@ var _ = Describe("dispatching a ticket end-to-end", func() {
 		runFactory := db.NewPipelineRunFactory(logger, dbConn, lockFactory, checkFactory)
 
 		deps := dispatch.Deps{
-			Tickets:   ticketsFactory,
+			Tickets: ticketsFactory,
 			Workflows: liveOnlyWorkflows{def: &workflow.Definition{
-				Name: "smoke", Version: 2, ContentHash: "hash2", Live: true,
+				Name: "smoke", Version: 2, SchemaVersion: 2, ContentHash: "hash2", Live: true,
 				Config: workflow.Config{
-					Name:         "smoke",
-					SpecDelivery: "files",
-					Defaults:     workflow.Defaults{Model: "claude-sonnet-5", MaxTurns: 5},
-					Prompts:      map[string]string{"do": "Read ticket/spec.md and do it."},
+					SchemaVersion: 2,
+					Name:          "smoke",
+					SpecDelivery:  "files",
+					Defaults:      workflow.Defaults{Model: "claude-sonnet-5", MaxTurns: 5},
+					Prompts:       map[string]string{"do": "Read ticket/spec.md and do it."},
 					Steps: []workflow.Step{
 						{Agent: "implement", Prompt: "do", Inputs: []string{"ticket"}, Outputs: []string{"workspace"}},
 					},
@@ -112,12 +113,13 @@ var _ = Describe("the dispatcher loop over real stores", func() {
 	// over-budget spec caps via the ticket's own budget_usd + a ledger row.
 	smokeWorkflows := func() dispatch.WorkflowResolver {
 		return liveOnlyWorkflows{def: &workflow.Definition{
-			Name: "smoke", Version: 2, ContentHash: "hash2", Live: true,
+			Name: "smoke", Version: 2, SchemaVersion: 2, ContentHash: "hash2", Live: true,
 			Config: workflow.Config{
-				Name:         "smoke",
-				SpecDelivery: "files",
-				Defaults:     workflow.Defaults{Model: "claude-sonnet-5", MaxTurns: 5},
-				Prompts:      map[string]string{"do": "Read ticket/spec.md and do it."},
+				SchemaVersion: 2,
+				Name:          "smoke",
+				SpecDelivery:  "files",
+				Defaults:      workflow.Defaults{Model: "claude-sonnet-5", MaxTurns: 5},
+				Prompts:       map[string]string{"do": "Read ticket/spec.md and do it."},
 				Steps: []workflow.Step{
 					{Agent: "implement", Prompt: "do", Inputs: []string{"ticket"}, Outputs: []string{"workspace"}},
 				},

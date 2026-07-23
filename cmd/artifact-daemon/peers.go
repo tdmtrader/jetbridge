@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"time"
 
@@ -162,7 +163,63 @@ func (p *PeerResolver) Probe(ctx context.Context, key string) (string, bool) {
 	if err := validateCanonicalRelativeKey(key); err != nil || snapshotNamespaceKey(key) {
 		return "", false
 	}
-	logger := p.logger.Session("peer-probe", lager.Data{"key": key})
+	return p.probe(ctx, key, func(ip string) string { return p.artifactURL(ip, key) })
+}
+
+// ProbeSnapshot checks peers for one exact immutable digest. Snapshot keys use
+// their reserved namespace and are never accepted by the generic resolver.
+func (p *PeerResolver) ProbeSnapshot(ctx context.Context, digest string) (string, bool) {
+	if _, err := snapshotDigestFromKey(snapshotKey(digest)); err != nil {
+		return "", false
+	}
+	return p.probe(ctx, "snapshot:"+digest, func(ip string) string { return p.snapshotURL(ip, digest) })
+}
+
+// SnapshotPeers returns every reachable replica for a digest in stable order.
+// Callers can fall through a corrupt or disappearing replica without turning
+// a degraded copy into a workflow failure while another acknowledged copy is
+// still readable.
+func (p *PeerResolver) SnapshotPeers(ctx context.Context, digest string) []string {
+	if _, err := snapshotDigestFromKey(snapshotKey(digest)); err != nil {
+		return nil
+	}
+	ips, err := p.peerIPs(ctx)
+	if err != nil || len(ips) == 0 {
+		return nil
+	}
+	results := make(chan string, len(ips))
+	for _, ip := range ips {
+		go func(ip string) {
+			request, err := http.NewRequestWithContext(ctx, http.MethodHead, p.snapshotURL(ip, digest), nil)
+			if err != nil {
+				results <- ""
+				return
+			}
+			response, err := p.probeClient.Do(request)
+			if err != nil {
+				results <- ""
+				return
+			}
+			_ = response.Body.Close()
+			if response.StatusCode == http.StatusOK {
+				results <- ip
+			} else {
+				results <- ""
+			}
+		}(ip)
+	}
+	available := make([]string, 0, len(ips))
+	for range ips {
+		if ip := <-results; ip != "" {
+			available = append(available, ip)
+		}
+	}
+	sort.Strings(available)
+	return available
+}
+
+func (p *PeerResolver) probe(ctx context.Context, identity string, targetForIP func(string) string) (string, bool) {
+	logger := p.logger.Session("peer-probe", lager.Data{"key": identity})
 
 	ips, err := p.peerIPs(ctx)
 	if err != nil {
@@ -186,7 +243,7 @@ func (p *PeerResolver) Probe(ctx context.Context, key string) (string, bool) {
 
 	for _, ip := range ips {
 		go func(ip string) {
-			target := p.artifactURL(ip, key)
+			target := targetForIP(ip)
 			req, err := http.NewRequestWithContext(ctx, http.MethodHead, target, nil)
 			if err != nil {
 				results <- probeResult{ip: ip, found: false}
@@ -228,6 +285,24 @@ func (p *PeerResolver) Fetch(ctx context.Context, peerIP, key, destPath string) 
 	})
 }
 
+// FetchSnapshot streams an immutable canonical archive from a selected peer.
+// The caller owns digest verification and atomic extraction so a corrupt peer
+// can never publish partial input state.
+func (p *PeerResolver) FetchSnapshot(
+	ctx context.Context,
+	peerIP string,
+	digest string,
+	consume func(io.Reader) error,
+) error {
+	if consume == nil {
+		return fmt.Errorf("snapshot consumer is required")
+	}
+	if _, err := snapshotDigestFromKey(snapshotKey(digest)); err != nil {
+		return fmt.Errorf("invalid peer snapshot digest")
+	}
+	return p.fetchTarget(ctx, peerIP, "snapshot:"+digest, p.snapshotURL(peerIP, digest), consume)
+}
+
 // FetchIntoOpenedDirectory is the production peer-fetch path. The caller
 // supplies an already-open parent directory, so retries and final publication
 // cannot be redirected by swapping any pathname component.
@@ -250,8 +325,17 @@ func (p *PeerResolver) fetch(ctx context.Context, peerIP, key string, extract fu
 	if err := validateCanonicalRelativeKey(key); err != nil || snapshotNamespaceKey(key) {
 		return fmt.Errorf("invalid peer artifact key")
 	}
-	logger := p.logger.Session("peer-fetch", lager.Data{"key": key, "peer": peerIP})
-	target := p.artifactURL(peerIP, key)
+	return p.fetchTarget(ctx, peerIP, key, p.artifactURL(peerIP, key), extract)
+}
+
+func (p *PeerResolver) fetchTarget(
+	ctx context.Context,
+	peerIP string,
+	identity string,
+	target string,
+	extract func(io.Reader) error,
+) error {
+	logger := p.logger.Session("peer-fetch", lager.Data{"key": identity, "peer": peerIP})
 
 	var lastErr error
 	for attempt := 1; attempt <= 3; attempt++ {
@@ -297,6 +381,15 @@ func (p *PeerResolver) artifactURL(peerIP, key string) string {
 	return target.String()
 }
 
+func (p *PeerResolver) snapshotURL(peerIP, digest string) string {
+	target := url.URL{
+		Scheme: p.scheme,
+		Host:   net.JoinHostPort(peerIP, strconv.Itoa(p.port)),
+		Path:   "/artifacts/" + snapshotKey(digest),
+	}
+	return target.String()
+}
+
 // extractTarToDir reads a tar stream and extracts files to destDir.
 func extractTarToDir(ctx context.Context, r io.Reader, destDir string) error {
 	if destDir == "" || !filepath.IsAbs(destDir) || filepath.Clean(destDir) != destDir {
@@ -328,6 +421,18 @@ func extractTarIntoOpenedDirectory(ctx context.Context, r io.Reader, parent *os.
 }
 
 func extractTarIntoOpenedDirectoryWithReceipt(ctx context.Context, r io.Reader, parent *os.File, destName, receiptName string, receiptContents []byte) error {
+	return extractTarIntoOpenedDirectoryWithReceiptAndVerify(ctx, r, parent, destName, receiptName, receiptContents, nil)
+}
+
+func extractTarIntoOpenedDirectoryWithReceiptAndVerify(
+	ctx context.Context,
+	r io.Reader,
+	parent *os.File,
+	destName string,
+	receiptName string,
+	receiptContents []byte,
+	verify func() error,
+) error {
 	if destName == "" || destName == "." || destName == ".." || filepath.Base(destName) != destName {
 		return fmt.Errorf("peer destination name is not a single safe component")
 	}
@@ -346,8 +451,13 @@ func extractTarIntoOpenedDirectoryWithReceipt(ctx context.Context, r io.Reader, 
 	if extractErr != nil || closeErr != nil {
 		return fmt.Errorf("extract peer tar: %w", errors.Join(extractErr, closeErr))
 	}
+	if verify != nil {
+		if err := verify(); err != nil {
+			return fmt.Errorf("verify extracted archive: %w", err)
+		}
+	}
 	if receiptName != "" {
-		if err := writeExclusiveFileAt(tmpHandle, receiptName, receiptContents, 0600); err != nil {
+		if err := writeExclusiveFileAt(tmpHandle, receiptName, receiptContents, 0444); err != nil {
 			return fmt.Errorf("write peer resolve receipt: %w", err)
 		}
 	}

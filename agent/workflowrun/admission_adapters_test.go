@@ -8,81 +8,149 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/agent/api/principals"
-	"github.com/concourse/concourse/agent/budget"
 	"github.com/concourse/concourse/agent/credentials"
 	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 )
 
-type budgetCheckerStub struct {
-	global func() (budget.Remaining, error)
+type workflowBudgetReserverStub struct {
+	reserve func(context.Context, snapshot.WorkflowRunID, float64) (bool, error)
 }
 
-func (s *budgetCheckerStub) TicketRemaining(int) (budget.Remaining, error) {
-	panic("TicketRemaining must not be called by global workflow admission")
+func (s *workflowBudgetReserverStub) ReserveWorkflowBudget(
+	ctx context.Context,
+	runID snapshot.WorkflowRunID,
+	amount float64,
+) (bool, error) {
+	return s.reserve(ctx, runID, amount)
 }
 
-func (s *budgetCheckerStub) GlobalDailyRemaining() (budget.Remaining, error) {
-	return s.global()
-}
-
-func (s *budgetCheckerStub) StepSlice(int, float64) (budget.Remaining, error) {
-	panic("StepSlice must not be called by global workflow admission")
-}
-
-func (s *budgetCheckerStub) Record(budget.LedgerEntry) error {
-	panic("Record must not be called by global workflow admission")
-}
-
-func TestGlobalDailyBudgetAdmitterDeniesOnlyExhaustedCappedBudget(t *testing.T) {
+func TestGlobalDailyBudgetAdmitterAtomicallyReservesExactExecutableBound(t *testing.T) {
 	tests := []struct {
-		name      string
-		remaining budget.Remaining
-		denied    bool
+		name     string
+		reserved bool
+		denied   bool
 	}{
-		{name: "capped exhausted", remaining: budget.Remaining{LimitUSD: 100, SpentUSD: 100, Exhausted: true}, denied: true},
-		{name: "capped available", remaining: budget.Remaining{LimitUSD: 100, RemainingUSD: 1, Exhausted: false}},
-		{name: "uncapped even if inconsistent checker says exhausted", remaining: budget.Remaining{LimitUSD: 0, SpentUSD: 100, Exhausted: true}},
+		{name: "reservation accepted", reserved: true},
+		{name: "reservation exceeds shared cap", reserved: false, denied: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			calls := 0
-			admitter, err := NewGlobalDailyBudgetAdmitter(&budgetCheckerStub{global: func() (budget.Remaining, error) {
+			admitter, err := NewGlobalDailyBudgetAdmitter(&workflowBudgetReserverStub{reserve: func(_ context.Context, runID snapshot.WorkflowRunID, amount float64) (bool, error) {
 				calls++
-				return test.remaining, nil
-			}})
+				if runID != 17 || amount != 3.5 {
+					t.Fatalf("reservation = (%s, %.6f)", runID.String(), amount)
+				}
+				return test.reserved, nil
+			}}, 100)
 			if err != nil {
 				t.Fatal(err)
 			}
-			err = admitter.Admit(context.Background(), BudgetAdmission{})
+			err = admitter.Admit(context.Background(), BudgetAdmission{
+				WorkflowRunID: 17,
+				Config: workflowBudgetConfig(
+					atc.Step{Config: &atc.AgentStep{Name: "implement", BudgetSliceUSD: 2.25}},
+					atc.Step{Config: &atc.AgentStep{Name: "review", BudgetSliceUSD: 1.25}},
+				),
+			})
 			if test.denied != errors.Is(err, ErrBudgetDenied) {
 				t.Fatalf("Admit error = %v, denied = %t", err, test.denied)
 			}
 			if calls != 1 {
-				t.Fatalf("GlobalDailyRemaining calls = %d", calls)
+				t.Fatalf("reservation calls = %d", calls)
 			}
 		})
 	}
 }
 
-func TestGlobalDailyBudgetAdmitterPropagatesContextAndBoundsCheckerFailure(t *testing.T) {
-	secret := errors.New("ledger password swordfish")
-	checker := &budgetCheckerStub{global: func() (budget.Remaining, error) {
-		return budget.Remaining{}, secret
-	}}
-	admitter, err := NewGlobalDailyBudgetAdmitter(checker)
+func TestGlobalDailyBudgetAdmitterUsesTheEnclosingExperimentCellReservation(t *testing.T) {
+	admitter, err := NewGlobalDailyBudgetAdmitter(&workflowBudgetReserverStub{reserve: func(context.Context, snapshot.WorkflowRunID, float64) (bool, error) {
+		t.Fatal("experiment child must not reserve the same global liability twice")
+		return false, nil
+	}}, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := admitter.Admit(context.Background(), BudgetAdmission{}); !errors.Is(err, ErrBudgetCheckFailure) || errors.Is(err, secret) || err.Error() != ErrBudgetCheckFailure.Error() {
-		t.Fatalf("Admit checker error = %v", err)
+	admission := BudgetAdmission{
+		WorkflowRunID: 17,
+		Config: workflowBudgetConfig(
+			atc.Step{Config: &atc.AgentStep{Name: "candidate", BudgetSliceUSD: 0.75}},
+		),
+		ExperimentAdmission: &ExperimentAdmissionGate{ExperimentID: 11, CellID: 13, Phase: "candidate"},
+	}
+	if err := admitter.Admit(context.Background(), admission); err != nil {
+		t.Fatalf("experiment child admission = %v", err)
+	}
+	admission.Config = workflowBudgetConfig(atc.Step{Config: &atc.AgentStep{Name: "unbounded"}})
+	if err := admitter.Admit(context.Background(), admission); !errors.Is(err, ErrBudgetDenied) {
+		t.Fatalf("unbounded experiment child admission = %v, want denied", err)
+	}
+}
+
+func TestGlobalDailyBudgetAdmitterRequiresStaticallyBoundedAgents(t *testing.T) {
+	reserver := &workflowBudgetReserverStub{reserve: func(context.Context, snapshot.WorkflowRunID, float64) (bool, error) {
+		t.Fatal("invalid executable must not reach the reservation store")
+		return false, nil
+	}}
+	admitter, err := NewGlobalDailyBudgetAdmitter(reserver, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name string
+		step atc.Step
+	}{
+		{name: "zero slice", step: atc.Step{Config: &atc.AgentStep{Name: "uncapped"}}},
+		{name: "retry", step: atc.Step{Config: &atc.RetryStep{Step: &atc.AgentStep{Name: "retry", BudgetSliceUSD: 1}, Attempts: 2}}},
+		{name: "across", step: atc.Step{Config: &atc.AcrossStep{Vars: []atc.AcrossVarConfig{{Var: "x", Values: []any{"a"}}}, Step: &atc.AgentStep{Name: "across", BudgetSliceUSD: 1}}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := admitter.Admit(context.Background(), BudgetAdmission{WorkflowRunID: 17, Config: workflowBudgetConfig(test.step)})
+			if !errors.Is(err, ErrBudgetDenied) {
+				t.Fatalf("error = %v", err)
+			}
+		})
+	}
+}
+
+func TestGlobalDailyBudgetAdmitterSkipsReservationWhenUncapped(t *testing.T) {
+	admitter, err := NewGlobalDailyBudgetAdmitter(&workflowBudgetReserverStub{reserve: func(context.Context, snapshot.WorkflowRunID, float64) (bool, error) {
+		t.Fatal("uncapped admission must not reserve")
+		return false, nil
+	}}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := admitter.Admit(context.Background(), BudgetAdmission{}); err != nil {
+		t.Fatalf("uncapped admission = %v", err)
+	}
+}
+
+func TestGlobalDailyBudgetAdmitterPropagatesContextAndBoundsStoreFailure(t *testing.T) {
+	secret := errors.New("ledger password swordfish")
+	store := &workflowBudgetReserverStub{reserve: func(context.Context, snapshot.WorkflowRunID, float64) (bool, error) {
+		return false, secret
+	}}
+	admitter, err := NewGlobalDailyBudgetAdmitter(store, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admission := BudgetAdmission{WorkflowRunID: 17, Config: workflowBudgetConfig(atc.Step{Config: &atc.AgentStep{Name: "agent", BudgetSliceUSD: 1}})}
+	if err := admitter.Admit(context.Background(), admission); !errors.Is(err, ErrBudgetCheckFailure) || errors.Is(err, secret) || err.Error() != ErrBudgetCheckFailure.Error() {
+		t.Fatalf("Admit store error = %v", err)
 	}
 
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := admitter.Admit(canceled, BudgetAdmission{}); !errors.Is(err, context.Canceled) {
+	if err := admitter.Admit(canceled, admission); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Admit context error = %v", err)
 	}
+}
+
+func workflowBudgetConfig(steps ...atc.Step) atc.Config {
+	return atc.Config{Jobs: atc.JobConfigs{{Name: "run", PlanSequence: steps}}}
 }
 
 type creatorUserResolverStub struct {

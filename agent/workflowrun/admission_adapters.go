@@ -4,52 +4,135 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/concourse/concourse/agent/api/principals"
-	"github.com/concourse/concourse/agent/budget"
 	"github.com/concourse/concourse/agent/credentials"
 	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 )
 
 // ErrBudgetCheckFailure bounds ledger/backend failures at the admission seam.
 var ErrBudgetCheckFailure = errors.New("workflow run: budget check failed")
 
-// GlobalDailyBudgetAdmitter adapts the shared budget.Checker to workflow
-// admission. Workflows without a ticket have no ticket budget, so only the
-// global daily cap applies.
-type GlobalDailyBudgetAdmitter struct {
-	checker budget.Checker
+// WorkflowBudgetReserver atomically reserves worst-case LLM spend against the
+// shared global daily liability. The DB implementation serializes workflow
+// and experiment reservations with cost-ledger inserts.
+type WorkflowBudgetReserver interface {
+	ReserveWorkflowBudget(context.Context, snapshot.WorkflowRunID, float64) (bool, error)
 }
 
-func NewGlobalDailyBudgetAdmitter(checker budget.Checker) (*GlobalDailyBudgetAdmitter, error) {
-	if nilInterface(checker) {
+// GlobalDailyBudgetAdmitter derives a hard upper bound from the exact durable
+// executable, then reserves that amount before any template, secret, build, or
+// agent side effect. When the cap is enabled, every agent must have a finite,
+// positive six-decimal budget slice and dynamic repetition is rejected.
+type GlobalDailyBudgetAdmitter struct {
+	reserver WorkflowBudgetReserver
+	capUSD   float64
+}
+
+func NewGlobalDailyBudgetAdmitter(
+	reserver WorkflowBudgetReserver,
+	globalDailyCapUSD float64,
+) (*GlobalDailyBudgetAdmitter, error) {
+	if nilInterface(reserver) || math.IsNaN(globalDailyCapUSD) ||
+		math.IsInf(globalDailyCapUSD, 0) || globalDailyCapUSD < 0 {
 		return nil, ErrBudgetCheckFailure
 	}
-	return &GlobalDailyBudgetAdmitter{checker: checker}, nil
+	return &GlobalDailyBudgetAdmitter{reserver: reserver, capUSD: globalDailyCapUSD}, nil
 }
 
-func (a *GlobalDailyBudgetAdmitter) Admit(ctx context.Context, _ BudgetAdmission) error {
+func (a *GlobalDailyBudgetAdmitter) Admit(ctx context.Context, admission BudgetAdmission) error {
 	if ctx == nil {
 		return ErrBudgetCheckFailure
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	remaining, err := a.checker.GlobalDailyRemaining()
+	if a.capUSD == 0 {
+		return nil
+	}
+	if admission.WorkflowRunID.Validate() != nil {
+		return ErrBudgetCheckFailure
+	}
+	amount, agents, err := boundedWorkflowBudgetUSD(admission.Config)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrBudgetDenied, err)
+	}
+	if agents == 0 {
+		return nil
+	}
+	if admission.ExperimentAdmission != nil {
+		// Experiment start has already proved that every candidate/evaluator
+		// slice fits the cell envelope, and the runner reserves that envelope
+		// against the same global cap before allocating either child. Reserving
+		// each child again would double-count one immutable liability.
+		return nil
+	}
+	reserved, err := a.reserver.ReserveWorkflowBudget(ctx, admission.WorkflowRunID, amount)
 	if err != nil {
 		return ErrBudgetCheckFailure
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if remaining.LimitUSD > 0 && remaining.Exhausted {
+	if !reserved {
 		return ErrBudgetDenied
 	}
 	return nil
+}
+
+func boundedWorkflowBudgetUSD(config atc.Config) (float64, int, error) {
+	var totalMicroUSD int64
+	spenders := 0
+	addSlice := func(label string, slice float64) error {
+		if math.IsNaN(slice) || math.IsInf(slice, 0) || slice <= 0 {
+			return fmt.Errorf("%s requires a finite positive budget while the global cap is enabled", label)
+		}
+		scaled := slice * 1_000_000
+		if math.Abs(scaled-math.Round(scaled)) > 0.0000001 {
+			return fmt.Errorf("%s budget supports at most six decimal places", label)
+		}
+		microUSD := int64(math.Round(scaled))
+		if microUSD <= 0 || totalMicroUSD > math.MaxInt64-microUSD {
+			return fmt.Errorf("agent budget slices overflow")
+		}
+		totalMicroUSD += microUSD
+		spenders++
+		return nil
+	}
+	recursor := atc.StepRecursor{
+		OnAgent: func(step *atc.AgentStep) error {
+			return addSlice(fmt.Sprintf("agent %q budget_slice_usd", step.Name), step.BudgetSliceUSD)
+		},
+		OnHarvest: func(step *atc.HarvestStep) error {
+			if step.Judge == nil {
+				return nil
+			}
+			return addSlice(fmt.Sprintf("harvest %q judge", step.Name), step.Judge.BudgetUSD)
+		},
+		OnRetry: func(*atc.RetryStep) error {
+			return fmt.Errorf("attempts cannot be statically reserved under the global cap")
+		},
+		OnAcross: func(*atc.AcrossStep) error {
+			return fmt.Errorf("across cannot be statically reserved under the global cap")
+		},
+	}
+	for _, job := range config.Jobs {
+		for _, step := range job.PlanSequence {
+			if step.Config == nil {
+				return 0, 0, fmt.Errorf("workflow plan contains an empty step")
+			}
+			if err := step.Config.Visit(recursor); err != nil {
+				return 0, 0, err
+			}
+		}
+	}
+	return float64(totalMicroUSD) / 1_000_000, spenders, nil
 }
 
 var _ BudgetAdmitter = (*GlobalDailyBudgetAdmitter)(nil)

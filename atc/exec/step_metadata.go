@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+
+	"github.com/concourse/concourse/agent/snapshot"
 )
 
 type StepMetadata struct {
@@ -22,6 +24,10 @@ type StepMetadata struct {
 	// SnapshotCreatedBy is the authenticated producer principal used only by
 	// server-side snapshot provenance. It is never exported to step env.
 	SnapshotCreatedBy string
+	// WorkflowDefinitionID and WorkflowRunID are the server-authenticated
+	// selected-build association. They are never exported to step env.
+	WorkflowDefinitionID *int
+	WorkflowRunID        *snapshot.WorkflowRunID
 }
 
 func (metadata StepMetadata) Env() []string {

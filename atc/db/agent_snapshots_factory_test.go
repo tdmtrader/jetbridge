@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/concourse/concourse/agent/pagination"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/snapshot/snapshotfakes"
 	"github.com/concourse/concourse/atc"
@@ -96,6 +98,160 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 				Class: snapshot.RetentionClassBinding, Actor: "build", Reason: "build output",
 			}},
 			SourceMetadata: json.RawMessage(`{"adapter":"test"}`),
+		}
+	}
+
+	It("keyset-pages equal-timestamp authorized history and composes with created_after", func() {
+		typeName := fmt.Sprintf("pagination-%d", time.Now().UnixNano())
+		createdAt := time.Date(2026, time.July, 22, 12, 34, 56, 123456000, time.UTC)
+		createdAfter := createdAt.Add(-time.Minute)
+		var want []snapshot.SnapshotID
+		for index, character := range []string{"a", "c", "d", "e"} {
+			rowCreatedAt := createdAt
+			if index == 3 {
+				rowCreatedAt = createdAfter
+			}
+			var id int64
+			Expect(dbConn.QueryRow(`
+				INSERT INTO agent_snapshots
+					(type_name, type_version, digest, byte_size, file_count, representation, created_at)
+				VALUES ($1, 1, $2, 1, 1, 'application/x-tar', $3)
+				RETURNING id
+			`, typeName, "sha256:"+strings.Repeat(character, 64), rowCreatedAt).Scan(&id)).To(Succeed())
+			_, err := dbConn.Exec(`
+				INSERT INTO agent_snapshot_grants (snapshot_id, team_id, granted_by, reason)
+				VALUES ($1, $2, 'alice', 'pagination test')
+			`, id, defaultTeam.ID())
+			Expect(err).NotTo(HaveOccurred())
+			if index < 3 {
+				want = append(want, snapshot.SnapshotID(id))
+			}
+		}
+		sort.Slice(want, func(i, j int) bool { return want[i] > want[j] })
+
+		filter := snapshot.SnapshotListFilter{
+			Type: snapshot.TypeRef(typeName + "/v1"), CreatedAfter: &createdAfter, Limit: 2,
+		}
+		var got []snapshot.SnapshotID
+		for {
+			page, err := factory.ListAuthorized(ctx, defaultTeam.ID(), filter)
+			Expect(err).NotTo(HaveOccurred())
+			if len(page) == 0 {
+				break
+			}
+			for _, value := range page {
+				Expect(value.CreatedAt).To(BeTemporally("==", createdAt))
+				got = append(got, value.ID)
+			}
+			last := page[len(page)-1]
+			filter.Before = &pagination.Cursor{CreatedAt: last.CreatedAt, ID: int64(last.ID)}
+		}
+		Expect(got).To(Equal(want))
+	})
+
+	type workflowSnapshotFixture struct {
+		definitionID int
+		runID        snapshot.WorkflowRunID
+		otherRunID   snapshot.WorkflowRunID
+		buildID      int
+		input        snapshot.SnapshotRef
+	}
+
+	setupWorkflowSnapshotFixture := func(withOtherRun bool) workflowSnapshotFixture {
+		inputDigest := digest("1")
+		inputStage := stage(inputDigest, defaultTeam.ID(), "workflow-input")
+		input := seal(newBuild(defaultTeam.ID()), "workflow-input", nil, nil, []snapshot.SealCommitOutput{
+			output("input", "source", "repository/v1", inputDigest, inputStage),
+		})["input"].Snapshot
+
+		// Workflow admission takes the input digest advisory lock while it creates
+		// the durable binding, so release the producer lease first.
+		Expect(lease.Close()).To(Succeed())
+
+		suffix := time.Now().UnixNano()
+		definitionName := fmt.Sprintf("snapshot-input-provenance-%d", suffix)
+		definitionHash := strings.Repeat("a", 64)
+		var definitionID int
+		Expect(dbConn.QueryRow(`
+			INSERT INTO agent_workflow_definitions
+				(name, version, content_hash, definition, created_by, schema_version, signature_version)
+			VALUES ($1, 1, $2, 'schema_version: 3', 'alice', 3, 1)
+			RETURNING id
+		`, definitionName, definitionHash).Scan(&definitionID)).To(Succeed())
+
+		runFactory := db.NewAgentWorkflowRunsFactory(dbConn)
+		createRun := func(label string) db.AgentWorkflowRun {
+			run, created, err := runFactory.CreateWithInputs(ctx, db.AgentWorkflowRunCreateRequest{
+				TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(),
+				WorkflowDefinitionID: definitionID, WorkflowName: definitionName, WorkflowVersion: 1,
+				SchemaVersion: 3, SignatureVersion: 1, DefinitionContentHash: definitionHash,
+				IdempotencyKey:          fmt.Sprintf("snapshot-input-provenance-%s-%d", label, suffix),
+				ParameterizedConfig:     json.RawMessage(`{"jobs":[]}`),
+				ParameterizedConfigHash: strings.Repeat("b", 64), OriginKind: "test",
+				OriginReference: fmt.Sprintf("input-provenance-%s-%d", label, suffix),
+				CreatedBy:       "alice", Status: db.AgentWorkflowRunStatusAdmitting,
+				Inputs: map[string]snapshot.SnapshotRef{"source": input},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(created).To(BeTrue())
+			return run
+		}
+
+		run := createRun("primary")
+		var otherRunID snapshot.WorkflowRunID
+		if withOtherRun {
+			otherRunID = createRun("other").ID
+		}
+
+		var templateID, instanceID, pipelineRunID int
+		Expect(dbConn.QueryRow(`
+			INSERT INTO pipelines (name, team_id, secondary_ordering)
+			VALUES ($1, $2, 1)
+			RETURNING id
+		`, fmt.Sprintf("snapshot-input-template-%d", suffix), defaultTeam.ID()).Scan(&templateID)).To(Succeed())
+		Expect(dbConn.QueryRow(`
+			INSERT INTO pipelines (name, team_id, secondary_ordering)
+			VALUES ($1, $2, 1)
+			RETURNING id
+		`, fmt.Sprintf("snapshot-input-instance-%d", suffix), defaultTeam.ID()).Scan(&instanceID)).To(Succeed())
+		Expect(dbConn.QueryRow(`
+			INSERT INTO pipeline_runs (template_pipeline_id, instance_pipeline_id, number)
+			VALUES ($1, $2, 1)
+			RETURNING id
+		`, templateID, instanceID).Scan(&pipelineRunID)).To(Succeed())
+		Expect(runFactory.LinkExecution(ctx, run.ID, db.AgentWorkflowRunExecutionLink{
+			PipelineRunID: pipelineRunID, TemplatePipelineID: templateID, InstancePipelineID: instanceID,
+			ConcreteConfig: json.RawMessage(`{"instance":true}`), ConcreteConfigHash: strings.Repeat("c", 64),
+		})).To(Succeed())
+
+		var buildID int
+		Expect(dbConn.QueryRow(`
+			INSERT INTO builds (name, status, team_id, pipeline_id)
+			VALUES ($1, 'started', $2, $3)
+			RETURNING id
+		`, fmt.Sprintf("snapshot-input-build-%d", suffix), defaultTeam.ID(), instanceID).Scan(&buildID)).To(Succeed())
+		_, err := dbConn.Exec(`UPDATE agent_workflow_runs SET planned_build_id = $2 WHERE id = $1`, int64(run.ID), buildID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(runFactory.RecordPlan(ctx, run.ID, db.AgentWorkflowRunPlan{
+			BuildID: int64(buildID), ActualPlan: json.RawMessage(`{"task":"input-provenance"}`),
+			ActualPlanHash: strings.Repeat("d", 64), ResolvedDependencies: json.RawMessage(`{}`),
+		})).To(Succeed())
+
+		allDigests := make([]snapshot.Digest, 0, 16)
+		for _, hexDigit := range "0123456789abcdef" {
+			allDigests = append(allDigests, digest(string(hexDigit)))
+		}
+		lease, err = db.NewAgentSnapshotDigestLocker(dbConn).AcquireMany(ctx, allDigests)
+		Expect(err).NotTo(HaveOccurred())
+		workflowLease := lease
+		DeferCleanup(func() { Expect(workflowLease.Close()).To(Succeed()) })
+
+		return workflowSnapshotFixture{
+			definitionID: definitionID,
+			runID:        run.ID,
+			otherRunID:   otherRunID,
+			buildID:      buildID,
+			input:        input,
 		}
 	}
 
@@ -309,6 +465,73 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 		Expect(stages).To(Equal(0))
 	})
 
+	It("finds only the exact authorized resource-capture output for one succeeded pipeline run", func() {
+		operationKey := strings.Repeat("a", 64)
+		var templateID, instanceID, pipelineRunID, buildID int
+		Expect(dbConn.QueryRow(`
+			INSERT INTO pipelines (name, team_id, secondary_ordering, template)
+			VALUES ($1, $2, 1, true) RETURNING id
+		`, "agent-resource-capture-"+operationKey[:24], defaultTeam.ID()).Scan(&templateID)).To(Succeed())
+		_, err := dbConn.Exec(`INSERT INTO agent_workflow_run_templates (pipeline_id) VALUES ($1)`, templateID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(dbConn.QueryRow(`
+			INSERT INTO pipelines (name, team_id, secondary_ordering, template, instance_vars)
+			VALUES ($1, $2, 1, true, '{"run":1}') RETURNING id
+		`, "agent-resource-capture-"+operationKey[:24], defaultTeam.ID()).Scan(&instanceID)).To(Succeed())
+		Expect(dbConn.QueryRow(`
+			INSERT INTO pipeline_runs (template_pipeline_id, instance_pipeline_id, number, status)
+			VALUES ($1, $2, 1, 'succeeded') RETURNING id
+		`, templateID, instanceID).Scan(&pipelineRunID)).To(Succeed())
+		Expect(dbConn.QueryRow(`
+			INSERT INTO builds (name, status, team_id, pipeline_id)
+			VALUES ($1, 'succeeded', $2, $3) RETURNING id
+		`, fmt.Sprintf("resource-capture-%d", time.Now().UnixNano()), defaultTeam.ID(), instanceID).Scan(&buildID)).To(Succeed())
+
+		value := digest("e")
+		staged := stage(value, defaultTeam.ID(), "1")
+		candidate := output("snapshot", "snapshot", "repository/v1", value, staged)
+		candidate.SourceMetadata = json.RawMessage(fmt.Sprintf(`{"adapter":"resource-version","operation_key":%q,"snapshot_type":"repository/v1"}`, operationKey))
+		sealed, err := factory.CommitSealBatch(ctx, lease, snapshot.SealCommit{
+			Context: snapshot.SealCommitContext{
+				TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(), CreatedBy: "alice",
+				Build:  &snapshot.BuildOccurrence{BuildID: buildID, PlanID: "capture", Attempt: "1", StepKind: "task", StepName: "seal-snapshot"},
+				Inputs: map[string]snapshot.SnapshotRef{}, InputOrder: []string{}, ExpectedOutputs: []snapshot.Port{candidate.Port},
+			},
+			Outputs: []snapshot.SealCommitOutput{candidate},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		finder, ok := factory.(interface {
+			FindResourceCaptureOutput(context.Context, int, int64, string, string, snapshot.TypeRef) (snapshot.Snapshot, bool, error)
+		})
+		Expect(ok).To(BeTrue())
+		found, exists, err := finder.FindResourceCaptureOutput(ctx, defaultTeam.ID(), int64(pipelineRunID), operationKey, "snapshot", "repository/v1")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(exists).To(BeTrue())
+		Expect(snapshot.SnapshotRef{ID: found.ID, Type: found.Type, Digest: found.Digest}).To(Equal(sealed["snapshot"].Snapshot))
+		_, exists, err = finder.FindResourceCaptureOutput(ctx, defaultTeam.ID(), int64(pipelineRunID), strings.Repeat("b", 64), "snapshot", "repository/v1")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(exists).To(BeFalse())
+
+		pendingFinder, ok := factory.(interface {
+			ListPendingResourceCaptureOutputs(context.Context, string, int) ([]db.ResourceCaptureOutput, error)
+		})
+		Expect(ok).To(BeTrue())
+		pending, err := pendingFinder.ListPendingResourceCaptureOutputs(ctx, "system:resource-capture", 100)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(pending).To(ConsistOf(db.ResourceCaptureOutput{
+			TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(), PipelineRunID: int64(pipelineRunID),
+			OperationKey: operationKey, OutputPort: "snapshot", ExpectedType: "repository/v1",
+		}))
+		_, err = factory.Pin(
+			ctx, lease, defaultTeam.ID(), "system:resource-capture", sealed["snapshot"].Snapshot,
+			"resource capture "+operationKey,
+		)
+		Expect(err).NotTo(HaveOccurred())
+		pending, err = pendingFinder.ListPendingResourceCaptureOutputs(ctx, "system:resource-capture", 100)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(pending).To(BeEmpty())
+	})
+
 	It("records honest idempotent upload occurrences without synthetic builds", func() {
 		value := digest("0")
 		staged := stage(value, defaultTeam.ID(), "upload:manual-1")
@@ -422,7 +645,236 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 		Expect(stored).To(BeTemporally("==", firstExpiry))
 	})
 
-	It("atomically binds workflow outputs and preserves production history after build deletion", func() {
+	It("accepts workflow admission bindings and exact same-build typed productions", func() {
+		fixture := setupWorkflowSnapshotFixture(false)
+		definitionID, runID := fixture.definitionID, fixture.runID
+		cases := []struct {
+			stepKind      string
+			producedDigit string
+			consumedDigit string
+		}{
+			{stepKind: "task", producedDigit: "2", consumedDigit: "3"},
+			{stepKind: "agent", producedDigit: "4", consumedDigit: "5"},
+			{stepKind: "await_snapshot", producedDigit: "6", consumedDigit: "7"},
+		}
+
+		for _, test := range cases {
+			By("accepting an exact " + test.stepKind + " production")
+			producedAttempt := "produce-" + test.stepKind
+			producedPort := "artifact-" + test.stepKind
+			producedStage := stage(digest(test.producedDigit), defaultTeam.ID(), producedAttempt)
+			producedOutput := output(
+				"produced-"+test.stepKind,
+				producedPort,
+				"opaque/v1",
+				digest(test.producedDigit),
+				producedStage,
+			)
+			runIDCopy := runID
+			producedOutput.Retention = append(producedOutput.Retention, snapshot.RetentionSpec{
+				Class: snapshot.RetentionClassRun, WorkflowRunID: &runIDCopy,
+				Actor:  fmt.Sprintf("workflow-run:%d:test-output:%s", int64(runID), producedPort),
+				Reason: "active workflow-run internal output",
+			})
+			produced, err := factory.CommitSealBatch(ctx, lease, snapshot.SealCommit{
+				Context: snapshot.SealCommitContext{
+					TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(), CreatedBy: "alice",
+					Build: &snapshot.BuildOccurrence{
+						BuildID: fixture.buildID, PlanID: "plan-" + producedAttempt, Attempt: producedAttempt,
+						StepKind: test.stepKind, StepName: "produce-" + test.stepKind,
+						WorkflowDefinitionID: &definitionID, WorkflowRunID: &runID,
+					},
+					Inputs: map[string]snapshot.SnapshotRef{
+						"source": fixture.input,
+					},
+					InputOrder: []string{"source"}, ExpectedOutputs: []snapshot.Port{producedOutput.Port},
+				},
+				Outputs: []snapshot.SealCommitOutput{producedOutput},
+			})
+			Expect(err).NotTo(HaveOccurred(), "the original workflow input binding must remain valid")
+			var runClaims int
+			Expect(dbConn.QueryRow(`
+				SELECT count(*) FROM agent_snapshot_retention_claims
+				WHERE snapshot_id = $1 AND team_id = $2 AND class = 'run'
+				  AND workflow_run_id = $3 AND expires_at IS NULL
+			`, int64(produced["produced-"+test.stepKind].Snapshot.ID), defaultTeam.ID(),
+				int64(runID)).Scan(&runClaims)).To(Succeed())
+			Expect(runClaims).To(Equal(1))
+
+			consumedAttempt := "consume-" + test.stepKind
+			consumedStage := stage(digest(test.consumedDigit), defaultTeam.ID(), consumedAttempt)
+			consumedOutput := output(
+				"consumed-"+test.stepKind,
+				"consumed-"+test.stepKind,
+				"opaque/v1",
+				digest(test.consumedDigit),
+				consumedStage,
+			)
+			_, err = factory.CommitSealBatch(ctx, lease, snapshot.SealCommit{
+				Context: snapshot.SealCommitContext{
+					TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(), CreatedBy: "alice",
+					Build: &snapshot.BuildOccurrence{
+						BuildID: fixture.buildID, PlanID: "plan-" + consumedAttempt, Attempt: consumedAttempt,
+						StepKind: "agent", StepName: "consume-" + test.stepKind,
+						WorkflowDefinitionID: &definitionID, WorkflowRunID: &runID,
+					},
+					Inputs: map[string]snapshot.SnapshotRef{
+						producedPort: produced["produced-"+test.stepKind].Snapshot,
+					},
+					InputOrder: []string{producedPort}, ExpectedOutputs: []snapshot.Port{consumedOutput.Port},
+				},
+				Outputs: []snapshot.SealCommitOutput{consumedOutput},
+			})
+			Expect(err).NotTo(HaveOccurred())
+		}
+	})
+
+	It("rejects workflow inputs without exact run, build, team, port, and snapshot provenance", func() {
+		fixture := setupWorkflowSnapshotFixture(true)
+		definitionID, runID := fixture.definitionID, fixture.runID
+
+		exactStage := stage(digest("2"), defaultTeam.ID(), "produce-exact")
+		exactOutput := output("exact", "artifact", "opaque/v1", digest("2"), exactStage)
+		exact, err := factory.CommitSealBatch(ctx, lease, snapshot.SealCommit{
+			Context: snapshot.SealCommitContext{
+				TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(), CreatedBy: "alice",
+				Build: &snapshot.BuildOccurrence{
+					BuildID: fixture.buildID, PlanID: "plan-produce-exact", Attempt: "produce-exact",
+					StepKind: "agent", StepName: "produce-exact",
+					WorkflowDefinitionID: &definitionID, WorkflowRunID: &runID,
+				},
+				Inputs: map[string]snapshot.SnapshotRef{"source": fixture.input}, InputOrder: []string{"source"},
+				ExpectedOutputs: []snapshot.Port{exactOutput.Port},
+			},
+			Outputs: []snapshot.SealCommitOutput{exactOutput},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		exactRef := exact["exact"].Snapshot
+
+		seedBuildProduction := func(
+			hexDigit string,
+			buildID int,
+			port string,
+			attempt string,
+		) snapshot.SnapshotRef {
+			staged := stage(digest(hexDigit), defaultTeam.ID(), attempt)
+			candidate := output(attempt, port, "opaque/v1", digest(hexDigit), staged)
+			sealed, err := factory.CommitSealBatch(ctx, lease, snapshot.SealCommit{
+				Context: snapshot.SealCommitContext{
+					TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(), CreatedBy: "alice",
+					Build: &snapshot.BuildOccurrence{
+						BuildID: buildID, PlanID: "plan-" + attempt, Attempt: attempt,
+						StepKind: "task", StepName: attempt,
+					},
+					ExpectedOutputs: []snapshot.Port{candidate.Port},
+				},
+				Outputs: []snapshot.SealCommitOutput{candidate},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			return sealed[attempt].Snapshot
+		}
+
+		associateProduction := func(
+			ref snapshot.SnapshotRef,
+			buildID int,
+			port string,
+			associatedRunID snapshot.WorkflowRunID,
+			teamID int,
+			teamName string,
+		) {
+			result, err := dbConn.Exec(`
+				UPDATE agent_snapshot_productions
+				SET workflow_definition_id = $1, workflow_run_id = $2,
+				    team_id = $3, team_name = $4
+				WHERE snapshot_id = $5 AND build_id = $6 AND output_port = $7
+			`, definitionID, int64(associatedRunID), teamID, teamName, int64(ref.ID), buildID, port)
+			Expect(err).NotTo(HaveOccurred())
+			rows, err := result.RowsAffected()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(rows).To(Equal(int64(1)))
+		}
+
+		crossRun := seedBuildProduction("3", fixture.buildID, "cross-run", "seed-cross-run")
+		associateProduction(
+			crossRun,
+			fixture.buildID,
+			"cross-run",
+			fixture.otherRunID,
+			defaultTeam.ID(),
+			defaultTeam.Name(),
+		)
+
+		otherBuildID := newBuild(defaultTeam.ID())
+		crossBuild := seedBuildProduction("4", otherBuildID, "cross-build", "seed-cross-build")
+		associateProduction(
+			crossBuild,
+			otherBuildID,
+			"cross-build",
+			runID,
+			defaultTeam.ID(),
+			defaultTeam.Name(),
+		)
+
+		otherTeam, err := teamFactory.CreateTeam(structTeam(fmt.Sprintf("snapshot-input-other-%d", time.Now().UnixNano())))
+		Expect(err).NotTo(HaveOccurred())
+		crossTeam := seedBuildProduction("5", fixture.buildID, "cross-team", "seed-cross-team")
+		associateProduction(crossTeam, fixture.buildID, "cross-team", runID, otherTeam.ID(), otherTeam.Name())
+
+		unauthorizedStage := stage(digest("6"), otherTeam.ID(), "unauthorized")
+		unauthorizedOutput := output("unauthorized", "unauthorized", "opaque/v1", digest("6"), unauthorizedStage)
+		unauthorizedBuildID := newBuild(otherTeam.ID())
+		unauthorized, err := factory.CommitSealBatch(ctx, lease, snapshot.SealCommit{
+			Context: snapshot.SealCommitContext{
+				TeamID: otherTeam.ID(), TeamName: otherTeam.Name(), CreatedBy: "bob",
+				Build: &snapshot.BuildOccurrence{
+					BuildID: unauthorizedBuildID, PlanID: "plan-unauthorized", Attempt: "unauthorized",
+					StepKind: "task", StepName: "unauthorized",
+				},
+				ExpectedOutputs: []snapshot.Port{unauthorizedOutput.Port},
+			},
+			Outputs: []snapshot.SealCommitOutput{unauthorizedOutput},
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		rejectedStage := stage(digest("7"), defaultTeam.ID(), "reject-input")
+		rejectedOutput := output("rejected", "rejected", "opaque/v1", digest("7"), rejectedStage)
+		cases := []struct {
+			name        string
+			port        string
+			ref         snapshot.SnapshotRef
+			errContains string
+		}{
+			{name: "wrong port", port: "not-artifact", ref: exactRef, errContains: "workflow-run binding"},
+			{name: "wrong snapshot", port: "artifact", ref: fixture.input, errContains: "workflow-run binding"},
+			{name: "cross run", port: "cross-run", ref: crossRun, errContains: "workflow-run binding"},
+			{name: "cross build", port: "cross-build", ref: crossBuild, errContains: "workflow-run binding"},
+			{name: "cross team", port: "cross-team", ref: crossTeam, errContains: "workflow-run binding"},
+			{
+				name: "unauthorized", port: "unauthorized", ref: unauthorized["unauthorized"].Snapshot,
+				errContains: "absent, unavailable, or unauthorized",
+			},
+		}
+
+		for _, test := range cases {
+			By("rejecting a " + test.name + " workflow input")
+			_, err := factory.CommitSealBatch(ctx, lease, snapshot.SealCommit{
+				Context: snapshot.SealCommitContext{
+					TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(), CreatedBy: "alice",
+					Build: &snapshot.BuildOccurrence{
+						BuildID: fixture.buildID, PlanID: "plan-reject-" + strings.ReplaceAll(test.name, " ", "-"),
+						Attempt: "reject-input", StepKind: "agent", StepName: "reject-input",
+						WorkflowDefinitionID: &definitionID, WorkflowRunID: &runID,
+					},
+					Inputs: map[string]snapshot.SnapshotRef{test.port: test.ref}, InputOrder: []string{test.port},
+					ExpectedOutputs: []snapshot.Port{rejectedOutput.Port},
+				},
+				Outputs: []snapshot.SealCommitOutput{rejectedOutput},
+			})
+			Expect(err).To(MatchError(ContainSubstring(test.errContains)))
+		}
+	})
+
+	It("atomically stages workflow outputs and preserves production history after build deletion", func() {
 		inputDigest := digest("1")
 		inputStage := stage(inputDigest, defaultTeam.ID(), "input")
 		input := seal(newBuild(defaultTeam.ID()), "input", nil, nil, []snapshot.SealCommitOutput{
@@ -573,16 +1025,19 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 
 		bindings, err := runFactory.Snapshots(ctx, run.ID)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(bindings).To(ConsistOf(
-			db.AgentWorkflowRunSnapshotBinding{
-				WorkflowRunID: run.ID, Direction: db.AgentWorkflowRunSnapshotInput,
-				PortName: "source", Snapshot: input,
-			},
-			db.AgentWorkflowRunSnapshotBinding{
-				WorkflowRunID: run.ID, Direction: db.AgentWorkflowRunSnapshotOutput,
-				PortName: "public-review", Snapshot: sealed["result"].Snapshot,
-			},
-		))
+		Expect(bindings).To(ConsistOf(db.AgentWorkflowRunSnapshotBinding{
+			WorkflowRunID: run.ID, Direction: db.AgentWorkflowRunSnapshotInput,
+			PortName: "source", Snapshot: input,
+		}))
+		var stagedSnapshotID int64
+		var promotedAt sql.NullTime
+		Expect(dbConn.QueryRow(`
+			SELECT snapshot_id, promoted_at
+			FROM agent_workflow_run_snapshots
+			WHERE workflow_run_id = $1 AND direction = 'output' AND port_name = 'public-review'
+		`, int64(run.ID)).Scan(&stagedSnapshotID, &promotedAt)).To(Succeed())
+		Expect(stagedSnapshotID).To(Equal(int64(sealed["result"].Snapshot.ID)))
+		Expect(promotedAt.Valid).To(BeFalse(), "active-run output must remain an invisible candidate")
 
 		_, err = dbConn.Exec(`DELETE FROM builds WHERE id = $1`, producerBuildID)
 		Expect(err).NotTo(HaveOccurred())
@@ -592,6 +1047,15 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 			WHERE build_id = $1 AND workflow_run_id = $2
 		`, producerBuildID, int64(run.ID)).Scan(&productions)).To(Succeed())
 		Expect(productions).To(Equal(2))
+
+		detail, found, err := factory.GetAuthorizedDetail(ctx, defaultTeam.ID(), sealed["result"].Snapshot.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(detail.Productions).To(HaveLen(1))
+		Expect(detail.Productions[0].Build).NotTo(BeNil())
+		Expect(detail.Productions[0].Build.WorkflowName).To(Equal(definitionName))
+		Expect(detail.Productions[0].Build.WorkflowRunID).NotTo(BeNil())
+		Expect(*detail.Productions[0].Build.WorkflowRunID).To(Equal(run.ID))
 	})
 
 	It("deduplicates semantic manifests while preserving distinct productions and semantic siblings", func() {

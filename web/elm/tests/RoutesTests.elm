@@ -11,7 +11,54 @@ import Url
 all : Test
 all =
     describe "Routes"
-        [ test "parses dashboard search query respecting space" <|
+        [ describe "agent workflow routes"
+            [ test "round-trips a percent-safe workflow name" <|
+                \_ ->
+                    Routes.AgentWorkflow { name = "review api/v3" }
+                        |> Routes.toString
+                        |> (++) "http://example.com"
+                        |> Url.fromString
+                        |> Maybe.andThen Routes.parsePath
+                        |> Expect.equal (Just (Routes.AgentWorkflow { name = "review api/v3" }))
+            , test "round-trips an exact durable workflow run ID" <|
+                \_ ->
+                    Routes.AgentWorkflowRun
+                        { workflowName = "code-review", id = "9007199254740993" }
+                        |> Routes.toString
+                        |> (++) "http://example.com"
+                        |> Url.fromString
+                        |> Maybe.andThen Routes.parsePath
+                        |> Expect.equal
+                            (Just
+                                (Routes.AgentWorkflowRun
+                                    { workflowName = "code-review", id = "9007199254740993" }
+                                )
+                            )
+            , test "rejects noncanonical durable IDs" <|
+                \_ ->
+                    Routes.parsePath
+                        { protocol = Url.Http
+                        , host = ""
+                        , port_ = Nothing
+                        , path = "/agent/snapshots/01"
+                        , query = Nothing
+                        , fragment = Nothing
+                        }
+                        |> Expect.equal Nothing
+            , test "round-trips snapshot and experiment routes" <|
+                \_ ->
+                    [ Routes.AgentSnapshot { id = "9007199254740995" }
+                    , Routes.AgentExperiments
+                    , Routes.AgentExperiment { id = "9007199254740997" }
+                    ]
+                        |> List.map (Routes.toString >> (++) "http://example.com" >> Url.fromString >> Maybe.andThen Routes.parsePath)
+                        |> Expect.equal
+                            [ Just (Routes.AgentSnapshot { id = "9007199254740995" })
+                            , Just Routes.AgentExperiments
+                            , Just (Routes.AgentExperiment { id = "9007199254740997" })
+                            ]
+            ]
+        , test "parses dashboard search query respecting space" <|
             \_ ->
                 Routes.parsePath
                     { protocol = Url.Http

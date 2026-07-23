@@ -25,6 +25,7 @@ payload never fails the whole page.
 
 -}
 
+import Concourse.Snapshot as Snapshot
 import Json.Decode
 import Json.Decode.Extra exposing (andMap)
 
@@ -48,6 +49,9 @@ type alias Ticket =
     , attemptCount : Int
     , errorDetail : String
     , completedAt : Maybe Int
+    , workflowRunId : Maybe String
+    , workItemSnapshotId : Maybe String
+    , repositorySnapshotId : Maybe String
     }
 
 
@@ -114,6 +118,28 @@ decodeTicket =
         |> andMap (defaultTo 0 <| Json.Decode.field "attempt_count" Json.Decode.int)
         |> andMap (defaultTo "" <| Json.Decode.field "error_detail" Json.Decode.string)
         |> andMap (optionalInt "completed_at")
+        |> andMap (optionalDurableId "workflow_run_id")
+        |> andMap (optionalDurableId "work_item_snapshot_id")
+        |> andMap (optionalDurableId "repository_snapshot_id")
+
+
+optionalDurableId : String -> Json.Decode.Decoder (Maybe String)
+optionalDurableId fieldName =
+    Json.Decode.keyValuePairs Json.Decode.value
+        |> Json.Decode.andThen
+            (\fields ->
+                case List.filter (Tuple.first >> (==) fieldName) fields |> List.head of
+                    Nothing ->
+                        Json.Decode.succeed Nothing
+
+                    Just ( _, raw ) ->
+                        case Json.Decode.decodeValue Snapshot.decodeId raw of
+                            Ok durableId ->
+                                Json.Decode.succeed (Just durableId)
+
+                            Err error ->
+                                Json.Decode.fail (Json.Decode.errorToString error)
+            )
 
 
 decodeSpec : Json.Decode.Decoder Spec

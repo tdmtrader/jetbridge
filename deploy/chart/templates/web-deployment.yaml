@@ -1,3 +1,121 @@
+{{- $artifactHelperImage := .Values.kubernetes.artifactHelperImage | default "" }}
+{{- if empty $artifactHelperImage }}
+{{- fail "kubernetes.artifactHelperImage is required and must identify a tar-capable image by digest" }}
+{{- end }}
+{{- if not (regexMatch "^[^@[:space:]]+@sha256:[a-f0-9]{64}$" $artifactHelperImage) }}
+{{- fail "kubernetes.artifactHelperImage must be an exact @sha256 image reference" }}
+{{- end }}
+{{- if and .Values.agentSnapshots.enabled (not .Values.artifactDaemon.enabled) }}
+{{- fail "agentSnapshots.enabled requires artifactDaemon.enabled" }}
+{{- end }}
+{{- if and .Values.agentSnapshots.enabled (not .Values.artifactDaemon.tls.enabled) }}
+{{- fail "agentSnapshots.enabled requires artifactDaemon.tls.enabled" }}
+{{- end }}
+{{- if and .Values.agentExperiments.runnerEnabled (not .Values.agentSnapshots.enabled) }}
+{{- fail "agentExperiments.runnerEnabled requires agentSnapshots.enabled" }}
+{{- end }}
+{{- if and .Values.agentPublisherGateway.enabled (not .Values.agentSnapshots.enabled) }}
+{{- fail "agentPublisherGateway.enabled requires agentSnapshots.enabled" }}
+{{- end }}
+{{- if and .Values.agentPublisherGateway.enabled (not (hasPrefix "https://" .Values.agentPublisherGateway.endpoint)) }}
+{{- fail "agentPublisherGateway.endpoint must be an HTTPS origin" }}
+{{- end }}
+{{- if and .Values.agentPublisherGateway.enabled (or (empty .Values.agentPublisherGateway.policyFile) (empty .Values.agentPublisherGateway.tokenFile)) }}
+{{- fail "agentPublisherGateway.policyFile and tokenFile are required" }}
+{{- end }}
+{{- if and .Values.agentPublisherGateway.enabled (or (empty .Values.agentPublisherGateway.volumes) (empty .Values.agentPublisherGateway.volumeMounts)) }}
+{{- fail "agentPublisherGateway.enabled requires agentPublisherGateway.volumes and volumeMounts for mounted policy and token files" }}
+{{- end }}
+{{- if and .Values.agentSnapshots.enabled (empty .Values.agentSnapshots.scratch.existingClaim) (empty .Values.agentSnapshots.scratch.sizeLimit) }}
+{{- fail "agentSnapshots.scratch.sizeLimit is required when existingClaim is empty" }}
+{{- end }}
+{{- range $mount := .Values.web.extraVolumeMounts }}
+{{- if eq ($mount.name | default "") "web-kubernetes-api-access" }}
+{{- fail "web.extraVolumeMounts may not use reserved volume web-kubernetes-api-access" }}
+{{- end }}
+{{- if eq ($mount.name | default "") "snapshot-scratch" }}
+{{- fail "web.extraVolumeMounts may not use reserved volume snapshot-scratch" }}
+{{- end }}
+{{- end }}
+{{- range $argument := .Values.web.extraArgs }}
+{{- if hasPrefix "--kubernetes-artifact-helper-image" $argument }}
+{{- fail "web.extraArgs may not override kubernetes.artifactHelperImage" }}
+{{- end }}
+{{- if and $.Values.agentSnapshots.enabled (hasPrefix "--agent-snapshot-temp-dir" $argument) }}
+{{- fail "web.extraArgs may not override the chart-managed agent snapshot temp directory" }}
+{{- end }}
+{{- end }}
+{{- if .Values.agentSnapshots.enabled }}
+{{- range $environment := .Values.web.env }}
+{{- if eq ($environment.name | default "") "TMPDIR" }}
+{{- fail "web.env may not override TMPDIR while agentSnapshots.enabled is true" }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if .Values.agentPublisherGateway.enabled }}
+{{- $publisherVolumeNames := dict }}
+{{- range $volume := .Values.agentPublisherGateway.volumes }}
+{{- $volumeName := $volume.name | default "" }}
+{{- if empty $volumeName }}
+{{- fail "agentPublisherGateway.volumes entries require a name" }}
+{{- end }}
+{{- if hasKey $publisherVolumeNames $volumeName }}
+{{- fail (printf "agentPublisherGateway.volumes contains duplicate name %q" $volumeName) }}
+{{- end }}
+{{- $_ := set $publisherVolumeNames $volumeName true }}
+{{- end }}
+{{- $publisherMountNames := dict }}
+{{- $publisherMountPaths := dict }}
+{{- range $mount := .Values.agentPublisherGateway.volumeMounts }}
+{{- $mountName := $mount.name | default "" }}
+{{- $mountPath := $mount.mountPath | default "" }}
+{{- if empty $mountName }}
+{{- fail "agentPublisherGateway.volumeMounts entries require a name" }}
+{{- end }}
+{{- if hasKey $publisherMountNames $mountName }}
+{{- fail (printf "agentPublisherGateway.volumeMounts contains duplicate name %q" $mountName) }}
+{{- end }}
+{{- if not (kindIs "bool" $mount.readOnly) }}
+{{- fail "agentPublisherGateway.volumeMounts must all set readOnly=true" }}
+{{- end }}
+{{- if not $mount.readOnly }}
+{{- fail "agentPublisherGateway.volumeMounts must all set readOnly=true" }}
+{{- end }}
+{{- if not (hasKey $publisherVolumeNames $mountName) }}
+{{- fail (printf "agentPublisherGateway.volumeMount %q has no matching volume" $mountName) }}
+{{- end }}
+{{- if or (empty $mountPath) (not (hasPrefix "/" $mountPath)) (ne (clean $mountPath) $mountPath) (eq $mountPath "/") }}
+{{- fail (printf "agentPublisherGateway.volumeMount %q mountPath must be an absolute clean non-root path" $mountName) }}
+{{- end }}
+{{- $_ := set $publisherMountNames $mountName true }}
+{{- $_ := set $publisherMountPaths $mountName $mountPath }}
+{{- end }}
+{{- range $volumeName, $_ := $publisherVolumeNames }}
+{{- if not (hasKey $publisherMountNames $volumeName) }}
+{{- fail (printf "agentPublisherGateway.volume %q has no matching volumeMount" $volumeName) }}
+{{- end }}
+{{- end }}
+{{- $publisherFiles := dict
+      "agentPublisherGateway.policyFile" .Values.agentPublisherGateway.policyFile
+      "agentPublisherGateway.tokenFile" .Values.agentPublisherGateway.tokenFile
+      "agentPublisherGateway.caCertificateFile" .Values.agentPublisherGateway.caCertificateFile }}
+{{- range $fileName, $filePath := $publisherFiles }}
+{{- if not (empty $filePath) }}
+{{- if or (not (hasPrefix "/" $filePath)) (ne (clean $filePath) $filePath) }}
+{{- fail (printf "%s must be an absolute clean path" $fileName) }}
+{{- end }}
+{{- $covered := dict "value" false }}
+{{- range $_, $mountPath := $publisherMountPaths }}
+{{- if hasPrefix (printf "%s/" (trimSuffix "/" $mountPath)) $filePath }}
+{{- $_ := set $covered "value" true }}
+{{- end }}
+{{- end }}
+{{- if not $covered.value }}
+{{- fail (printf "%s must lie beneath an agentPublisherGateway.volumeMounts mountPath" $fileName) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -16,6 +134,7 @@ spec:
         {{- include "concourse.selectorLabels" . | nindent 8 }}
     spec:
       serviceAccountName: {{ include "concourse.serviceAccountName" . }}
+      automountServiceAccountToken: false
       {{- with .Values.image.pullSecrets }}
       imagePullSecrets:
         {{- range . }}
@@ -42,6 +161,18 @@ spec:
           volumeMounts:
             - name: keys
               mountPath: /keys
+        {{- end }}
+        {{- if .Values.agentSnapshots.enabled }}
+        - name: prepare-snapshot-scratch
+          image: {{ include "concourse.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - sh
+            - -ec
+            - mkdir -p /var/concourse/snapshot-scratch/web && chmod 0700 /var/concourse/snapshot-scratch/web
+          volumeMounts:
+            - name: snapshot-scratch
+              mountPath: /var/concourse/snapshot-scratch
         {{- end }}
         - name: migrate-db
           image: {{ include "concourse.image" . }}
@@ -148,9 +279,7 @@ spec:
             {{- if .Values.kubernetes.podStartupTimeout }}
             - --kubernetes-pod-startup-timeout={{ .Values.kubernetes.podStartupTimeout }}
             {{- end }}
-            {{- if .Values.kubernetes.artifactHelperImage }}
-            - --kubernetes-artifact-helper-image={{ .Values.kubernetes.artifactHelperImage }}
-            {{- end }}
+            - --kubernetes-artifact-helper-image={{ $artifactHelperImage }}
             {{- if .Values.kubernetes.imageRegistryPrefix }}
             - --kubernetes-image-registry-prefix={{ .Values.kubernetes.imageRegistryPrefix }}
             {{- end }}
@@ -187,6 +316,34 @@ spec:
             - --kubernetes-artifact-daemon-tls-key=/etc/concourse/daemon-tls/client.key
             - --kubernetes-artifact-daemon-tls-ca-cert=/etc/concourse/daemon-tls/ca.crt
             {{- end }}
+            {{- end }}
+            {{- if .Values.agentSnapshots.enabled }}
+            - --agent-snapshot-enabled
+            - --agent-snapshot-replication-factor={{ .Values.agentSnapshots.replicationFactor }}
+            - --agent-snapshot-max-bytes={{ int64 .Values.agentSnapshots.maxBytes }}
+            - --agent-snapshot-max-files={{ .Values.agentSnapshots.maxFiles }}
+            - --agent-snapshot-binding-retention={{ .Values.agentSnapshots.bindingRetention }}
+            - --agent-snapshot-orphan-grace-period={{ .Values.agentSnapshots.orphanGracePeriod }}
+            - --agent-snapshot-gc-interval={{ .Values.agentSnapshots.gcInterval }}
+            - --agent-snapshot-repair-interval={{ .Values.agentSnapshots.repairInterval }}
+            - --agent-snapshot-temp-dir=/var/concourse/snapshot-scratch/web
+            {{- end }}
+            {{- if .Values.agentExperiments.runnerEnabled }}
+            - --agent-experiment-runner-enabled
+            - --agent-experiment-runner-interval={{ .Values.agentExperiments.runnerInterval }}
+            - --agent-experiment-runner-max-concurrency={{ .Values.agentExperiments.runnerMaxConcurrency }}
+            {{- end }}
+            {{- if .Values.agentPublisherGateway.enabled }}
+            - --agent-publisher-gateway-enabled
+            - --agent-publisher-gateway-endpoint={{ .Values.agentPublisherGateway.endpoint }}
+            - --agent-publisher-gateway-policy-file={{ .Values.agentPublisherGateway.policyFile }}
+            - --agent-publisher-gateway-token-file={{ .Values.agentPublisherGateway.tokenFile }}
+            {{- if .Values.agentPublisherGateway.caCertificateFile }}
+            - --agent-publisher-gateway-ca-certificate-file={{ .Values.agentPublisherGateway.caCertificateFile }}
+            {{- end }}
+            - --agent-publisher-gateway-request-timeout={{ .Values.agentPublisherGateway.requestTimeout }}
+            - --agent-publisher-gateway-lease-duration={{ .Values.agentPublisherGateway.leaseDuration }}
+            - --agent-publisher-gateway-max-response-bytes={{ int64 .Values.agentPublisherGateway.maxResponseBytes }}
             {{- end }}
             # Kubernetes credential manager (resolve ((vars)) from k8s Secrets)
             {{- if .Values.kubernetes.credentialManager.enabled }}
@@ -232,6 +389,10 @@ spec:
           env:
             - name: CONCOURSE_SESSION_SIGNING_KEY
               value: /keys/session_signing_key
+            {{- if .Values.agentSnapshots.enabled }}
+            - name: TMPDIR
+              value: /var/concourse/snapshot-scratch/web
+            {{- end }}
             {{- if .Values.postgresql.existingSecret }}
             - name: CONCOURSE_POSTGRES_PASSWORD
               valueFrom:
@@ -275,6 +436,9 @@ spec:
             - name: keys
               mountPath: /keys
               readOnly: true
+            - name: web-kubernetes-api-access
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
             {{- if .Values.web.tls.enabled }}
             - name: web-tls
               mountPath: {{ .Values.web.tls.mountPath }}
@@ -292,8 +456,17 @@ spec:
             {{- end }}
             - name: tmp
               mountPath: /tmp
+            {{- if .Values.agentSnapshots.enabled }}
+            - name: snapshot-scratch
+              mountPath: /var/concourse/snapshot-scratch
+            {{- end }}
             {{- with .Values.web.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
+            {{- end }}
+            {{- if .Values.agentPublisherGateway.enabled }}
+            {{- with .Values.agentPublisherGateway.volumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
             {{- end }}
       terminationGracePeriodSeconds: {{ .Values.web.terminationGracePeriodSeconds | default 120 }}
       volumes:
@@ -301,6 +474,34 @@ spec:
           emptyDir:
             medium: Memory
             sizeLimit: 64Mi
+        - name: web-kubernetes-api-access
+          projected:
+            defaultMode: 420
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3600
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+              - downwardAPI:
+                  items:
+                    - path: namespace
+                      fieldRef:
+                        apiVersion: v1
+                        fieldPath: metadata.namespace
+        {{- if .Values.agentSnapshots.enabled }}
+        - name: snapshot-scratch
+          {{- if .Values.agentSnapshots.scratch.existingClaim }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.agentSnapshots.scratch.existingClaim }}
+          {{- else }}
+          emptyDir:
+            sizeLimit: {{ .Values.agentSnapshots.scratch.sizeLimit }}
+          {{- end }}
+        {{- end }}
         {{- if and (not .Values.secrets.create) .Values.secrets.signingKeySecret }}
         - name: keys
           secret:
@@ -326,6 +527,11 @@ spec:
         {{- end }}
         {{- with .Values.web.extraVolumes }}
         {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- if .Values.agentPublisherGateway.enabled }}
+        {{- with .Values.agentPublisherGateway.volumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
         {{- end }}
       {{- with .Values.web.nodeSelector }}
       nodeSelector:

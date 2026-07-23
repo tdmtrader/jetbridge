@@ -27,6 +27,7 @@ import Build.AgentReview
 import Concourse.Agent
 import Concourse.AgentReview
 import Concourse.AgentTicket as AgentTicket
+import Concourse.WorkflowRun as WorkflowRun
 import DateFormat
 import Dict exposing (Dict)
 import EffectTransformer exposing (ET)
@@ -64,6 +65,7 @@ type alias Model =
         , runMetrics : List Concourse.Agent.RunMetric
         , runMetricsByBuild : Dict Int (List Concourse.Agent.RunMetric)
         , reviewBuildId : Maybe Int
+        , durableRun : Maybe WorkflowRun.Detail
         , activeTab : Tab
         , loaded : Bool
         , loadError : Bool
@@ -95,6 +97,7 @@ init { id } =
       , runMetrics = []
       , runMetricsByBuild = Dict.empty
       , reviewBuildId = Nothing
+      , durableRun = Nothing
       , activeTab = SpecTab
       , loaded = False
       , loadError = False
@@ -198,10 +201,36 @@ handleCallback callback ( model, effects ) =
                         model.actionError
               }
             , effects
+                ++ (case ( detail.ticket.workflowRunId, detail.ticket.workflowName ) of
+                        ( Just workflowRunId, workflowName ) ->
+                            if workflowName == "" then
+                                []
+
+                            else
+                                [ FetchAgentWorkflowRun workflowName workflowRunId ]
+
+                        _ ->
+                            []
+                   )
             )
 
         AgentTicketFetched (Err _) ->
             ( { model | loaded = True, loadError = True }, effects )
+
+        AgentWorkflowRunFetched workflowRunId (Ok detail) ->
+            case model.detail |> Maybe.andThen (.ticket >> .workflowRunId) of
+                Just expected ->
+                    if expected == workflowRunId then
+                        ( { model | durableRun = Just detail }, effects )
+
+                    else
+                        ( model, effects )
+
+                Nothing ->
+                    ( model, effects )
+
+        AgentWorkflowRunFetched _ (Err _) ->
+            ( model, effects )
 
         AgentTicketMetricsFetched _ (Ok fresh) ->
             let
@@ -417,7 +446,8 @@ update msg ( model, effects ) =
                 ( model
                 , effects
                     ++ [ SubmitAgentReviewVerdict
-                            { repo = params.repo
+                            { reviewSnapshotId = params.reviewSnapshotId
+                            , repo = params.repo
                             , commitSha = params.commitSha
                             , findingId = params.findingId
                             , verdict = params.verdict
@@ -500,6 +530,7 @@ content session model =
                     top =
                         [ header model ticket
                         , provenanceLine ticket
+                        , durableEvidenceLine model ticket
                         , provenanceTimestamps session.timeZone ticket
                         , errorNotice ticket
                         , actionErrorBanner model
@@ -615,6 +646,80 @@ provenanceLine ticket =
             , style "margin" "2px 0 8px 0"
             ]
             (repoPart ++ branchPart)
+
+
+durableEvidenceLine : Model -> AgentTicket.Ticket -> Html Message
+durableEvidenceLine model ticket =
+    let
+        itemLink label maybeId =
+            maybeId
+                |> Maybe.map
+                    (\snapshotId ->
+                        Html.a
+                            [ href (Routes.toString (Routes.AgentSnapshot { id = snapshotId }))
+                            , style "color" "#7a9ac0"
+                            ]
+                            [ Html.text (label ++ " #" ++ snapshotId) ]
+                    )
+
+        runLink =
+            case ( ticket.workflowRunId, ticket.workflowName ) of
+                ( Just runId, workflowName ) ->
+                    if workflowName == "" then
+                        Nothing
+
+                    else
+                        Just
+                            (Html.a
+                                [ href
+                                    (Routes.toString
+                                        (Routes.AgentWorkflowRun
+                                            { workflowName = workflowName, id = runId }
+                                        )
+                                    )
+                                , style "color" "#7a9ac0"
+                                ]
+                                [ Html.text ("workflow run #" ++ runId) ]
+                            )
+
+                _ ->
+                    Nothing
+
+        outputs =
+            model.durableRun
+                |> Maybe.map .outputs
+                |> Maybe.withDefault []
+                |> List.map
+                    (\output ->
+                        Html.a
+                            [ href (Routes.toString (Routes.AgentSnapshot { id = output.snapshot.id }))
+                            , style "color" "#7a9ac0"
+                            ]
+                            [ Html.text (output.portName ++ " " ++ output.snapshot.typeRef ++ " #" ++ output.snapshot.id) ]
+                    )
+
+        links =
+            List.filterMap identity
+                [ itemLink "captured repository" ticket.repositorySnapshotId
+                , itemLink "captured ticket revision" ticket.workItemSnapshotId
+                , runLink
+                ]
+                ++ outputs
+    in
+    if List.isEmpty links then
+        Html.text ""
+
+    else
+        Html.div
+            [ id "ticket-durable-evidence"
+            , style "display" "flex"
+            , style "flex-wrap" "wrap"
+            , style "gap" "10px"
+            , style "font-family" "monospace"
+            , style "font-size" "12px"
+            , style "margin" "2px 0 8px"
+            ]
+            links
 
 
 {-| Created / updated / completed provenance. The epoch-seconds fields ride on
@@ -1320,7 +1425,7 @@ toggleSet x set =
 
 
 {-| Group the step-level metric rows by build id, preserving each build's
-created_at-ASC row order (the status/summary logic depends on it).
+created\_at-ASC row order (the status/summary logic depends on it).
 -}
 groupMetricsByBuild : List Concourse.Agent.RunMetric -> Dict Int (List Concourse.Agent.RunMetric)
 groupMetricsByBuild metrics =

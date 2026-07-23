@@ -10,12 +10,13 @@ import (
 
 func TestAgentWorkflowRunRoutesHaveExplicitMainTeamRoles(t *testing.T) {
 	want := map[string]string{
-		atc.CreateAgentWorkflowRun:     MemberRole,
-		atc.ListAgentWorkflowRuns:      ViewerRole,
-		atc.GetAgentWorkflowRun:        ViewerRole,
-		atc.CancelAgentWorkflowRun:     MemberRole,
-		atc.RetryAgentWorkflowRun:      MemberRole,
-		atc.GetAgentWorkflowRunOutputs: ViewerRole,
+		atc.CreateAgentWorkflowRun:                     MemberRole,
+		atc.ListAgentWorkflowRuns:                      ViewerRole,
+		atc.GetAgentWorkflowRunOperationalStatusCounts: ViewerRole,
+		atc.GetAgentWorkflowRun:                        ViewerRole,
+		atc.CancelAgentWorkflowRun:                     MemberRole,
+		atc.RetryAgentWorkflowRun:                      MemberRole,
+		atc.GetAgentWorkflowRunOutputs:                 ViewerRole,
 	}
 	for route, role := range want {
 		if got, found := DefaultRoles[route]; !found || got != role {
@@ -27,6 +28,7 @@ func TestAgentWorkflowRunRoutesHaveExplicitMainTeamRoles(t *testing.T) {
 func TestAgentWorkflowRunRolesEnforceViewerAndMemberTiers(t *testing.T) {
 	readRoutes := []string{
 		atc.ListAgentWorkflowRuns,
+		atc.GetAgentWorkflowRunOperationalStatusCounts,
 		atc.GetAgentWorkflowRun,
 		atc.GetAgentWorkflowRunOutputs,
 	}

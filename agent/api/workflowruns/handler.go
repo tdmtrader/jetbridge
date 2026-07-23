@@ -18,6 +18,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/concourse/concourse/agent/pagination"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/workflowrun"
 	"github.com/concourse/concourse/atc"
@@ -110,7 +111,7 @@ func (handler *Handler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	allowed := map[string]struct{}{
-		"status": {}, "origin_kind": {}, "origin_reference": {}, "limit": {},
+		"status": {}, "origin_kind": {}, "origin_reference": {}, "limit": {}, "cursor": {},
 	}
 	workflowName, _, query, ok := parseRoute(w, r, false, allowed)
 	if !ok {
@@ -122,10 +123,20 @@ func (handler *Handler) List(w http.ResponseWriter, r *http.Request) {
 	}
 	filter.TeamID = handler.team.ID
 	filter.WorkflowName = workflowName
+	pageLimit := filter.Limit
+	filter.Limit = pageLimit + 1
 	runs, err := handler.runs.List(r.Context(), filter)
 	if err != nil {
 		writeInternalError(w)
 		return
+	}
+	if len(runs) > filter.Limit {
+		writeInternalError(w)
+		return
+	}
+	hasNext := len(runs) > pageLimit
+	if hasNext {
+		runs = runs[:pageLimit]
 	}
 	summaries := make([]RunSummary, 0, len(runs))
 	for _, run := range runs {
@@ -136,7 +147,53 @@ func (handler *Handler) List(w http.ResponseWriter, r *http.Request) {
 		}
 		summaries = append(summaries, summary)
 	}
+	if hasNext {
+		last := runs[len(runs)-1]
+		cursor, err := pagination.Encode(pagination.Cursor{CreatedAt: last.CreatedAt, ID: int64(last.ID)})
+		if err != nil {
+			writeInternalError(w)
+			return
+		}
+		setNextPageHeaders(w, r, cursor, pageLimit)
+	}
 	writeJSON(w, http.StatusOK, summaries)
+}
+
+func (handler *Handler) OperationalStatusCounts(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodGet) || !requireNoBody(w, r) {
+		return
+	}
+	workflowName, _, _, ok := parseRoute(w, r, false, nil)
+	if !ok {
+		return
+	}
+	stored, err := handler.runs.CountByStatus(r.Context(), db.AgentWorkflowRunCountFilter{
+		TeamID: handler.team.ID, WorkflowName: workflowName, ExcludeOriginKind: "experiment",
+	})
+	if err != nil {
+		writeInternalError(w)
+		return
+	}
+	counts := make(map[string]int64, 7)
+	for _, status := range []db.AgentWorkflowRunStatus{
+		db.AgentWorkflowRunStatusAdmitting,
+		db.AgentWorkflowRunStatusRunning,
+		db.AgentWorkflowRunStatusSucceeded,
+		db.AgentWorkflowRunStatusFailed,
+		db.AgentWorkflowRunStatusErrored,
+		db.AgentWorkflowRunStatusCanceling,
+		db.AgentWorkflowRunStatusAborted,
+	} {
+		count := stored[status]
+		if count < 0 {
+			writeInternalError(w)
+			return
+		}
+		counts[string(status)] = count
+	}
+	writeJSON(w, http.StatusOK, OperationalStatusCountsResponse{
+		WorkflowName: workflowName, Counts: counts,
+	})
 }
 
 func (handler *Handler) Get(w http.ResponseWriter, r *http.Request) {
@@ -331,7 +388,7 @@ func (handler *Handler) presentDetail(r *http.Request, workflowName string, run 
 	if err != nil {
 		return RunDetail{}, err
 	}
-	outputs, err := handler.outputsFromBindings(r, run.ID, bindings)
+	outputs, err := handler.outputsFromBindings(r, run, bindings)
 	if err != nil {
 		return RunDetail{}, err
 	}
@@ -343,18 +400,21 @@ func (handler *Handler) presentOutputs(r *http.Request, run db.AgentWorkflowRun)
 	if err != nil {
 		return nil, err
 	}
-	return handler.outputsFromBindings(r, run.ID, bindings)
+	return handler.outputsFromBindings(r, run, bindings)
 }
 
 func (handler *Handler) outputsFromBindings(
 	r *http.Request,
-	runID snapshot.WorkflowRunID,
+	run db.AgentWorkflowRun,
 	bindings []db.AgentWorkflowRunSnapshotBinding,
 ) ([]OutputManifest, error) {
 	outputs := make([]OutputManifest, 0)
+	if run.Status != db.AgentWorkflowRunStatusSucceeded {
+		return outputs, nil
+	}
 	seen := make(map[string]struct{})
 	for _, binding := range bindings {
-		if err := validateBinding(runID, binding); err != nil {
+		if err := validateBinding(run.ID, binding); err != nil {
 			return nil, err
 		}
 		if binding.Direction != db.AgentWorkflowRunSnapshotOutput {
@@ -537,7 +597,28 @@ func parseListFilter(w http.ResponseWriter, query url.Values) (db.AgentWorkflowR
 		}
 		filter.Limit = limit
 	}
+	if raw, present := query["cursor"]; present {
+		cursor, err := pagination.Decode(raw[0])
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_cursor", "workflow run cursor is invalid")
+			return db.AgentWorkflowRunListFilter{}, false
+		}
+		filter.Before = &cursor
+	}
 	return filter, true
+}
+
+func setNextPageHeaders(w http.ResponseWriter, r *http.Request, cursor string, limit int) {
+	w.Header().Set("X-Next-Cursor", cursor)
+	query := r.URL.Query()
+	for key := range query {
+		if strings.HasPrefix(key, ":") {
+			query.Del(key)
+		}
+	}
+	query.Set("cursor", cursor)
+	query.Set("limit", strconv.Itoa(limit))
+	w.Header().Set("Link", "<"+r.URL.EscapedPath()+"?"+query.Encode()+`>; rel="next"`)
 }
 
 func decodeCreateRequest(w http.ResponseWriter, r *http.Request) (CreateRequest, bool) {

@@ -428,6 +428,47 @@ func TestBatchSealerWorkflowRetentionRemainsPermanent(t *testing.T) {
 	}
 }
 
+func TestBatchSealerRetainsInternalWorkflowOutputForActiveRunAndBindingGrace(t *testing.T) {
+	sealNow := time.Date(2026, time.July, 22, 15, 0, 0, 0, time.UTC)
+	definitionID := 1
+	runID := WorkflowRunID(2)
+	metadata := &sealerMetadataStore{}
+	events := &metadata.events
+	content := &sealerContentStore{events: events, exists: map[Location]bool{}}
+	locks := &sealerLocks{lease: &sealerLease{digests: map[Digest]bool{}}}
+	registry := sealerRegistry{TypeRef("opaque/v1"): sealerValidatorFunc(func(context.Context, *os.Root, ValidationContext) (ValidationResult, error) {
+		return ValidationResult{}, nil
+	})}
+	sealer, err := NewBatchSealer(
+		Canonicalizer{TempDir: t.TempDir()}, registry, metadata, content, locks,
+		WithBatchSealerClock(func() time.Time { return sealNow }),
+		WithBatchSealerBindingRetention(48*time.Hour),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := sealerRequest([]OutputSource{
+		sealerSource("intermediate", "intermediate", "opaque/v1", tarBytes(t, "value", "internal")),
+	})
+	request.WorkflowDefinitionID, request.WorkflowRunID = &definitionID, &runID
+
+	if _, err := sealer.Seal(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	retention := metadata.commit.Outputs[0].Retention
+	if len(retention) != 2 {
+		t.Fatalf("internal workflow retention = %#v, want binding and run claims", retention)
+	}
+	if retention[0].Class != RetentionClassBinding || retention[0].ExpiresAt == nil ||
+		!retention[0].ExpiresAt.Equal(sealNow.Add(48*time.Hour)) {
+		t.Fatalf("binding retention = %#v", retention[0])
+	}
+	if retention[1].Class != RetentionClassRun || retention[1].WorkflowRunID == nil ||
+		*retention[1].WorkflowRunID != runID || retention[1].ExpiresAt != nil {
+		t.Fatalf("active-run retention = %#v", retention[1])
+	}
+}
+
 func TestBatchSealerUploadClassifiesContentFailureAndLeavesRecoverableStage(t *testing.T) {
 	tempDir := t.TempDir()
 	metadata := &sealerMetadataStore{}

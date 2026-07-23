@@ -2,6 +2,7 @@ package dispatch_test
 
 import (
 	"strings"
+	"sync"
 	"time"
 
 	"context"
@@ -16,7 +17,10 @@ import (
 	"github.com/concourse/concourse/agent/credentials"
 	"github.com/concourse/concourse/agent/credentials/credentialsfakes"
 	"github.com/concourse/concourse/agent/dispatch"
+	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/workflow"
+	"github.com/concourse/concourse/agent/workflowrun"
+	"github.com/concourse/concourse/agent/workitem"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
@@ -90,23 +94,475 @@ func smokeDefinition() *workflow.Definition {
 	}
 }
 
-func TestDispatchOneRejectsSchemaThreeBeforeLegacySideEffects(t *testing.T) {
-	deps, store, saver, runs := dispatchDeps(t)
-	definition := deps.Workflows.(*fakeWorkflows).byName["smoke"]
-	definition.SchemaVersion = 3
-	definition.Config.SchemaVersion = 3
+type fakeWorkItemCapturer struct {
+	mu     sync.Mutex
+	calls  int
+	result workitem.CaptureResult
+	found  bool
+	err    error
+}
+
+func (fake *fakeWorkItemCapturer) CaptureRevision(context.Context, int) (workitem.CaptureResult, bool, error) {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	fake.calls++
+	return fake.result, fake.found, fake.err
+}
+
+func (fake *fakeWorkItemCapturer) CallCount() int {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	return fake.calls
+}
+
+type fakeWorkflowBinder struct {
+	mu       sync.Mutex
+	calls    []workflowrun.BindRequest
+	contexts []workflowrun.AdmissionContext
+	result   workflowrun.BindResult
+	err      error
+}
+
+type fakeWorkflowRunCanceler struct {
+	mu    sync.Mutex
+	calls []snapshot.WorkflowRunID
+	teams []int
+	found bool
+	err   error
+}
+
+func (fake *fakeWorkflowRunCanceler) Cancel(
+	_ context.Context,
+	teamID int,
+	runID snapshot.WorkflowRunID,
+) (db.AgentWorkflowRun, bool, error) {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	fake.teams = append(fake.teams, teamID)
+	fake.calls = append(fake.calls, runID)
+	return db.AgentWorkflowRun{ID: runID, TeamID: teamID, Status: db.AgentWorkflowRunStatusAborted}, fake.found, fake.err
+}
+
+func (fake *fakeWorkflowRunCanceler) Calls() ([]int, []snapshot.WorkflowRunID) {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	return append([]int(nil), fake.teams...), append([]snapshot.WorkflowRunID(nil), fake.calls...)
+}
+
+type ticketStoreRaceBeforeRunLink struct {
+	tickets.Store
+	once sync.Once
+}
+
+func (store *ticketStoreRaceBeforeRunLink) RecordDispatchRun(
+	ctx context.Context,
+	id int,
+	reservationKey string,
+	workflowRunID snapshot.WorkflowRunID,
+	pipelineRunID int,
+) error {
+	store.once.Do(func() {
+		_ = store.Store.Transition(id, tickets.StateQueued, tickets.StateDraft, tickets.TransitionMeta{})
+	})
+	return store.Store.RecordDispatchRun(ctx, id, reservationKey, workflowRunID, pipelineRunID)
+}
+
+type ticketStoreRaceBeforeRunning struct {
+	tickets.Store
+	once sync.Once
+}
+
+type ticketStoreRecordFailure struct {
+	tickets.Store
+	err error
+}
+
+func (store ticketStoreRecordFailure) RecordDispatchRun(
+	context.Context,
+	int,
+	string,
+	snapshot.WorkflowRunID,
+	int,
+) error {
+	return store.err
+}
+
+func (store *ticketStoreRaceBeforeRunning) Transition(
+	id int,
+	from tickets.State,
+	to tickets.State,
+	meta tickets.TransitionMeta,
+) error {
+	if from == tickets.StateQueued && to == tickets.StateRunning {
+		store.once.Do(func() {
+			_ = store.Store.Transition(id, tickets.StateQueued, tickets.StateDraft, tickets.TransitionMeta{})
+		})
+	}
+	return store.Store.Transition(id, from, to, meta)
+}
+
+func (fake *fakeWorkflowBinder) BindAndCreate(
+	_ context.Context,
+	admission workflowrun.AdmissionContext,
+	request workflowrun.BindRequest,
+) (workflowrun.BindResult, error) {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	request.Inputs = cloneSnapshotIDs(request.Inputs)
+	fake.calls = append(fake.calls, request)
+	fake.contexts = append(fake.contexts, admission)
+	return fake.result, fake.err
+}
+
+func (fake *fakeWorkflowBinder) Calls() ([]workflowrun.AdmissionContext, []workflowrun.BindRequest) {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	return append([]workflowrun.AdmissionContext(nil), fake.contexts...), append([]workflowrun.BindRequest(nil), fake.calls...)
+}
+
+func cloneSnapshotIDs(values map[string]snapshot.SnapshotID) map[string]snapshot.SnapshotID {
+	cloned := make(map[string]snapshot.SnapshotID, len(values))
+	for key, value := range values {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+type staticPortResolver struct {
+	mapping dispatch.TicketPortMapping
+	err     error
+}
+
+func (resolver staticPortResolver) ResolveTicketPorts(context.Context, workflow.Definition) (dispatch.TicketPortMapping, error) {
+	return resolver.mapping, resolver.err
+}
+
+func v3Definition(t *testing.T, workItemPort, repositoryPort string) *workflow.Definition {
+	t.Helper()
+	raw := fmt.Sprintf(`schema_version: 3
+name: smoke
+signature_version: 1
+inputs:
+  - name: %s
+    type: work-item/v1
+  - name: %s
+    type: repository/v1
+outputs:
+  - name: report
+    type: opaque/v1
+    from: report
+plan:
+  - agent: work
+    function_id: work
+    prompt: Do the captured work.
+    inputs: [%s, %s]
+    outputs: [report]
+    input_types:
+      %s: {type: work-item/v1}
+      %s: {type: repository/v1}
+    output_types:
+      report: opaque/v1
+`, workItemPort, repositoryPort, workItemPort, repositoryPort, workItemPort, repositoryPort)
+	compiled, err := workflow.ParseCompiled([]byte(raw))
+	if err != nil {
+		t.Fatalf("parse v3 definition: %v", err)
+	}
+	return &workflow.Definition{
+		ID: 41, Name: "smoke", Version: 7, SchemaVersion: 3, SignatureVersion: 1,
+		ContentHash: strings.Repeat("a", 64), Live: true, Compiled: *compiled,
+	}
+}
+
+func v3DispatchDeps(t *testing.T) (dispatch.Deps, *tickets.MemoryStore, *fakeSaver, *dbfakes.FakePipelineRunFactory, *fakeWorkItemCapturer, *fakeWorkflowBinder) {
+	t.Helper()
+	deps, store, saver, legacyRuns := dispatchDeps(t)
+	definition := v3Definition(t, "work-item", "repository")
+	deps.Workflows = &fakeWorkflows{byName: map[string]*workflow.Definition{"smoke": definition}}
+	workItems := &fakeWorkItemCapturer{found: true, result: workitem.CaptureResult{
+		TicketID: 1, Revision: 4, Snapshot: snapshot.Snapshot{ID: snapshot.SnapshotID(202), Type: snapshot.TypeRef("work-item/v1")},
+	}}
+	pipelineRunID := 909
+	binder := &fakeWorkflowBinder{result: workflowrun.BindResult{Created: true, Run: db.AgentWorkflowRun{
+		ID: snapshot.WorkflowRunID(303), TeamID: 1, TeamName: "main",
+		WorkflowDefinitionID: definition.ID, WorkflowName: definition.Name,
+		WorkflowVersion: definition.Version, SchemaVersion: 3, SignatureVersion: 1,
+		ParameterizedConfigHash: strings.Repeat("b", 64), PipelineRunID: &pipelineRunID,
+		Status: db.AgentWorkflowRunStatusRunning,
+	}}}
+	deps.TeamID, deps.TeamName = 1, "main"
+	deps.WorkItems, deps.WorkflowBinder = workItems, binder
+	deps.WorkflowCanceler = &fakeWorkflowRunCanceler{found: true}
+	return deps, store, saver, legacyRuns, workItems, binder
+}
+
+func setRepositorySnapshot(t *testing.T, store *tickets.MemoryStore, ticketID int, id snapshot.SnapshotID) {
+	t.Helper()
+	if err := store.Update(ticketID, tickets.Update{RepositorySnapshotID: &id}); err != nil {
+		t.Fatalf("select repository snapshot: %v", err)
+	}
+}
+
+func TestDispatchOneSchemaThreeBindsCapturedSnapshotsThroughGenericBinder(t *testing.T) {
+	deps, store, saver, legacyRuns, workItems, binder := v3DispatchDeps(t)
 	id := queuedTicket(t, store, "smoke")
+	workItems.result.TicketID = id
+	setRepositorySnapshot(t, store, id, snapshot.SnapshotID(101))
+
+	result, err := dispatch.DispatchOne(context.Background(), deps, id, "admin")
+	if err != nil {
+		t.Fatalf("DispatchOne: %v", err)
+	}
+	if result.RunID != 909 || result.WorkflowRunID == nil || *result.WorkflowRunID != snapshot.WorkflowRunID(303) {
+		t.Fatalf("result = %+v", result)
+	}
+	if saver.savedName != "" || legacyRuns.CreateRunCallCount() != 0 {
+		t.Fatalf("v3 reached legacy persistence: saver=%q create-runs=%d", saver.savedName, legacyRuns.CreateRunCallCount())
+	}
+	if deps.Secrets.(*credentialsfakes.FakeSecretAttacher).AttachCallCount() != 0 {
+		t.Fatal("v3 secret attachment belongs to workflowrun.Binder, not the legacy ticket path")
+	}
+	if workItems.CallCount() != 1 {
+		t.Fatalf("work-item captures = %d, want 1", workItems.CallCount())
+	}
+
+	admissions, calls := binder.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("binder calls = %d, want 1", len(calls))
+	}
+	call := calls[0]
+	if call.WorkflowName != "smoke" || call.Version == nil || *call.Version != 7 || call.FunctionID != "" {
+		t.Fatalf("binder target = %+v", call)
+	}
+	if call.Inputs["work-item"] != snapshot.SnapshotID(202) || call.Inputs["repository"] != snapshot.SnapshotID(101) {
+		t.Fatalf("binder inputs = %+v", call.Inputs)
+	}
+	if call.IdempotencyKey == "" || admissions[0].TeamID != 1 || admissions[0].TeamName != "main" ||
+		admissions[0].CreatedBy != "admin" || admissions[0].Origin.Kind != "ticket" || admissions[0].Origin.Reference != fmt.Sprint(id) {
+		t.Fatalf("admission=%+v request=%+v", admissions[0], call)
+	}
+
+	got, _, _ := store.Get(id)
+	if got.State != tickets.StateRunning || got.WorkflowVersion == nil || *got.WorkflowVersion != 7 ||
+		got.WorkflowDefinitionID == nil || *got.WorkflowDefinitionID != 41 ||
+		got.WorkflowRunID == nil || *got.WorkflowRunID != snapshot.WorkflowRunID(303) ||
+		got.WorkItemSnapshotID == nil || *got.WorkItemSnapshotID != snapshot.SnapshotID(202) ||
+		got.RepositorySnapshotID == nil || *got.RepositorySnapshotID != snapshot.SnapshotID(101) ||
+		got.PipelineRunID == nil || *got.PipelineRunID != 909 || got.DispatchReservationKey == "" {
+		t.Fatalf("durable ticket linkage = %+v", got)
+	}
+}
+
+func TestDispatchOneSchemaThreeUsesExplicitPortMappingWithoutReservedNames(t *testing.T) {
+	deps, store, _, _, workItems, binder := v3DispatchDeps(t)
+	definition := v3Definition(t, "request", "source")
+	deps.Workflows = &fakeWorkflows{byName: map[string]*workflow.Definition{"smoke": definition}}
+	deps.TicketPorts = staticPortResolver{mapping: dispatch.TicketPortMapping{WorkItem: "request", Repository: "source"}}
+	binder.result.Run.WorkflowDefinitionID = definition.ID
+	binder.result.Run.WorkflowVersion = definition.Version
+	id := queuedTicket(t, store, "smoke")
+	workItems.result.TicketID = id
+	setRepositorySnapshot(t, store, id, snapshot.SnapshotID(101))
+
+	if _, err := dispatch.DispatchOne(context.Background(), deps, id, "admin"); err != nil {
+		t.Fatalf("DispatchOne: %v", err)
+	}
+	_, calls := binder.Calls()
+	if calls[0].Inputs["request"] != snapshot.SnapshotID(202) || calls[0].Inputs["source"] != snapshot.SnapshotID(101) {
+		t.Fatalf("explicit mapped inputs = %+v", calls[0].Inputs)
+	}
+}
+
+func TestDispatchOneSchemaThreeReservesAndDefersUntilRepositorySnapshotSelected(t *testing.T) {
+	deps, store, _, _, workItems, binder := v3DispatchDeps(t)
+	id := queuedTicket(t, store, "smoke")
+	workItems.result.TicketID = id
 
 	_, err := dispatch.DispatchOne(context.Background(), deps, id, "admin")
-	if !errors.Is(err, dispatch.ErrRenderRefused) || !strings.Contains(err.Error(), "schema_version 3") {
-		t.Fatalf("error = %v, want explicit schema-version legacy-path refusal", err)
-	}
-	if saver.savedName != "" || runs.CreateRunCallCount() != 0 {
-		t.Fatalf("v3 reached legacy persistence: saver=%q create-runs=%d", saver.savedName, runs.CreateRunCallCount())
+	if !errors.Is(err, dispatch.ErrInputsPending) {
+		t.Fatalf("error = %v, want ErrInputsPending", err)
 	}
 	got, _, _ := store.Get(id)
-	if got.WorkflowVersion != nil || got.State != tickets.StateQueued {
-		t.Fatalf("v3 refusal must precede version freeze/state changes: %+v", got)
+	if got.State != tickets.StateQueued || got.DispatchReservationKey == "" || got.WorkflowDefinitionID == nil ||
+		got.WorkItemSnapshotID != nil || got.WorkflowRunID != nil {
+		t.Fatalf("pending reservation = %+v", got)
+	}
+	if workItems.CallCount() != 0 {
+		t.Fatal("work item must not be captured until all durable adapter inputs are selected")
+	}
+	_, calls := binder.Calls()
+	if len(calls) != 0 {
+		t.Fatal("binder must not run with a missing repository snapshot")
+	}
+
+	setRepositorySnapshot(t, store, id, snapshot.SnapshotID(101))
+	other := snapshot.SnapshotID(102)
+	if err := store.Update(id, tickets.Update{RepositorySnapshotID: &other}); !errors.Is(err, tickets.ErrDispatchConflict) {
+		t.Fatalf("changing a reserved repository snapshot = %v, want ErrDispatchConflict", err)
+	}
+	if _, err := dispatch.DispatchOne(context.Background(), deps, id, "admin"); err != nil {
+		t.Fatalf("resume dispatch: %v", err)
+	}
+}
+
+func TestDispatchOneSchemaThreeConcurrentCallsConvergeOnOneReservation(t *testing.T) {
+	deps, store, _, _, workItems, binder := v3DispatchDeps(t)
+	id := queuedTicket(t, store, "smoke")
+	workItems.result.TicketID = id
+	setRepositorySnapshot(t, store, id, snapshot.SnapshotID(101))
+
+	const callers = 12
+	errs := make(chan error, callers)
+	var wait sync.WaitGroup
+	for index := 0; index < callers; index++ {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			_, err := dispatch.DispatchOne(context.Background(), deps, id, "admin")
+			errs <- err
+		}()
+	}
+	wait.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent dispatch: %v", err)
+		}
+	}
+	_, calls := binder.Calls()
+	if len(calls) == 0 {
+		t.Fatal("binder was not called")
+	}
+	wantKey := calls[0].IdempotencyKey
+	for _, call := range calls[1:] {
+		if call.IdempotencyKey != wantKey || call.Inputs["repository"] != snapshot.SnapshotID(101) || call.Inputs["work-item"] != snapshot.SnapshotID(202) {
+			t.Fatalf("concurrent bind diverged: first=%+v current=%+v", calls[0], call)
+		}
+	}
+	got, _, _ := store.Get(id)
+	if got.State != tickets.StateRunning || got.DispatchReservationKey != wantKey ||
+		got.WorkflowRunID == nil || *got.WorkflowRunID != snapshot.WorkflowRunID(303) {
+		t.Fatalf("concurrent result = %+v", got)
+	}
+}
+
+func TestDispatchOneSchemaThreeCancelsRunWhenTicketLosesReservationBeforeLink(t *testing.T) {
+	deps, store, _, _, workItems, _ := v3DispatchDeps(t)
+	id := queuedTicket(t, store, "smoke")
+	workItems.result.TicketID = id
+	setRepositorySnapshot(t, store, id, snapshot.SnapshotID(101))
+	canceler := &fakeWorkflowRunCanceler{found: true}
+	deps.WorkflowCanceler = canceler
+	deps.Tickets = &ticketStoreRaceBeforeRunLink{Store: store}
+
+	_, err := dispatch.DispatchOne(context.Background(), deps, id, "admin")
+	if !errors.Is(err, tickets.ErrDispatchConflict) {
+		t.Fatalf("DispatchOne error = %v, want dispatch conflict", err)
+	}
+	teams, runs := canceler.Calls()
+	if len(runs) != 1 || runs[0] != snapshot.WorkflowRunID(303) || teams[0] != 1 {
+		t.Fatalf("cancellation calls teams=%v runs=%v, want exact team/run", teams, runs)
+	}
+}
+
+func TestDispatchOneSchemaThreeCancelsLinkedRunWhenTicketIsUnqueuedBeforeRunning(t *testing.T) {
+	deps, store, _, _, workItems, _ := v3DispatchDeps(t)
+	id := queuedTicket(t, store, "smoke")
+	workItems.result.TicketID = id
+	setRepositorySnapshot(t, store, id, snapshot.SnapshotID(101))
+	canceler := &fakeWorkflowRunCanceler{found: true}
+	deps.WorkflowCanceler = canceler
+	deps.Tickets = &ticketStoreRaceBeforeRunning{Store: store}
+
+	_, err := dispatch.DispatchOne(context.Background(), deps, id, "admin")
+	if !errors.Is(err, tickets.ErrStaleTransition) {
+		t.Fatalf("DispatchOne error = %v, want stale transition", err)
+	}
+	teams, runs := canceler.Calls()
+	if len(runs) != 1 || runs[0] != snapshot.WorkflowRunID(303) || teams[0] != 1 {
+		t.Fatalf("cancellation calls teams=%v runs=%v, want exact team/run", teams, runs)
+	}
+}
+
+func TestDispatchOneSchemaThreeKeepsOwnedRunRetryableWhenRunLinkWriteFails(t *testing.T) {
+	deps, store, _, _, workItems, _ := v3DispatchDeps(t)
+	id := queuedTicket(t, store, "smoke")
+	workItems.result.TicketID = id
+	setRepositorySnapshot(t, store, id, snapshot.SnapshotID(101))
+	canceler := &fakeWorkflowRunCanceler{found: true}
+	deps.WorkflowCanceler = canceler
+	wantErr := errors.New("temporary database failure")
+	deps.Tickets = ticketStoreRecordFailure{Store: store, err: wantErr}
+
+	_, err := dispatch.DispatchOne(context.Background(), deps, id, "admin")
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("DispatchOne error = %v, want record failure", err)
+	}
+	if _, runs := canceler.Calls(); len(runs) != 0 {
+		t.Fatalf("owned retryable run was cancelled: %v", runs)
+	}
+	got, _, _ := store.Get(id)
+	if got.State != tickets.StateQueued || got.DispatchReservationKey == "" || got.WorkflowRunID != nil || got.PipelineRunID != nil {
+		t.Fatalf("retryable reservation = %+v", got)
+	}
+}
+
+func TestDispatchOneSchemaThreeKeepsCapturedInputAcrossLaterTicketEdits(t *testing.T) {
+	deps, store, _, _, workItems, binder := v3DispatchDeps(t)
+	id := queuedTicket(t, store, "smoke")
+	workItems.result.TicketID = id
+	setRepositorySnapshot(t, store, id, snapshot.SnapshotID(101))
+	if _, err := dispatch.DispatchOne(context.Background(), deps, id, "admin"); err != nil {
+		t.Fatalf("first dispatch: %v", err)
+	}
+
+	updated := "edited after immutable capture"
+	if err := store.Update(id, tickets.Update{Body: &updated}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dispatch.DispatchOne(context.Background(), deps, id, "admin"); err != nil {
+		t.Fatalf("idempotent resume after edit: %v", err)
+	}
+	if workItems.CallCount() != 1 {
+		t.Fatalf("later ticket edit caused recapture: captures=%d", workItems.CallCount())
+	}
+	_, calls := binder.Calls()
+	if len(calls) != 2 || calls[0].Inputs["work-item"] != calls[1].Inputs["work-item"] ||
+		calls[0].IdempotencyKey != calls[1].IdempotencyKey {
+		t.Fatalf("active run inputs changed after edit: %+v", calls)
+	}
+}
+
+func TestDispatchOneSchemaThreeMapsGenericBudgetDenialToRetryableTicketDeferral(t *testing.T) {
+	deps, store, _, _, workItems, binder := v3DispatchDeps(t)
+	id := queuedTicket(t, store, "smoke")
+	workItems.result.TicketID = id
+	setRepositorySnapshot(t, store, id, snapshot.SnapshotID(101))
+	binder.err = workflowrun.ErrBudgetDenied
+
+	_, err := dispatch.DispatchOne(context.Background(), deps, id, "admin")
+	if !errors.Is(err, dispatch.ErrBudgetExhausted) {
+		t.Fatalf("error = %v, want ErrBudgetExhausted", err)
+	}
+	got, _, _ := store.Get(id)
+	if got.State != tickets.StateQueued || got.DispatchReservationKey == "" || got.WorkItemSnapshotID == nil || got.WorkflowRunID != nil {
+		t.Fatalf("generic budget denial must keep a resumable reservation: %+v", got)
+	}
+}
+
+func TestDispatchOneSchemaThreeClassifiesRejectedSnapshotBindingAsClientInput(t *testing.T) {
+	deps, store, _, _, workItems, binder := v3DispatchDeps(t)
+	id := queuedTicket(t, store, "smoke")
+	workItems.result.TicketID = id
+	setRepositorySnapshot(t, store, id, snapshot.SnapshotID(101))
+	binder.err = workflowrun.ErrSnapshotTypeMismatch
+
+	_, err := dispatch.DispatchOne(context.Background(), deps, id, "admin")
+	if !errors.Is(err, dispatch.ErrRenderRefused) {
+		t.Fatalf("error = %v, want ErrRenderRefused", err)
+	}
+	got, _, _ := store.Get(id)
+	if got.State != tickets.StateQueued || got.DispatchReservationKey == "" || got.WorkItemSnapshotID == nil || got.WorkflowRunID != nil {
+		t.Fatalf("rejected binding must remain inspectable and resettable: %+v", got)
 	}
 }
 

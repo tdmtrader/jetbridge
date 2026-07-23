@@ -30,6 +30,7 @@ type WorkflowsRunsCommand struct {
 	Status          string `long:"status" description:"Filter by admitting, running, canceling, succeeded, failed, errored, or aborted"`
 	OriginKind      string `long:"origin-kind" description:"Filter by exact origin kind"`
 	OriginReference string `long:"origin-reference" description:"Filter by exact origin reference"`
+	Cursor          string `long:"cursor" description:"Continue after an opaque cursor returned by an earlier page"`
 	Limit           int    `long:"limit" default:"100" description:"Maximum runs to return (1-1000)"`
 	Json            bool   `long:"json" description:"Print command result as JSON"`
 }
@@ -51,6 +52,9 @@ func (command *WorkflowsRunsCommand) Execute([]string) error {
 	if command.OriginReference != "" {
 		query.Set("origin_reference", command.OriginReference)
 	}
+	if err := addAgentHistoryCursor(query, command.Cursor); err != nil {
+		return fmt.Errorf("agent workflow runs: %w", err)
+	}
 	target, err := loadAgentTarget()
 	if err != nil {
 		return err
@@ -64,8 +68,12 @@ func (command *WorkflowsRunsCommand) Execute([]string) error {
 	if err != nil {
 		return err
 	}
+	nextCursor := response.Header.Get("X-Next-Cursor")
 	var runs []workflowrunsapi.RunSummary
 	if err := decodeOrError(response, &runs); err != nil {
+		return err
+	}
+	if err := reportNextAgentHistoryCursor(os.Stderr, "workflow-run", nextCursor); err != nil {
 		return err
 	}
 	if command.Json {

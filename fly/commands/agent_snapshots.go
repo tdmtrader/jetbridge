@@ -18,20 +18,139 @@ import (
 	"strings"
 	"time"
 
+	snapshotsapi "github.com/concourse/concourse/agent/api/snapshots"
+	"github.com/concourse/concourse/agent/resourcecapture"
 	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/fly/commands/internal/displayhelpers"
+	"github.com/concourse/concourse/fly/commands/internal/flaghelpers"
 	"github.com/concourse/concourse/fly/rc"
 	"github.com/concourse/concourse/fly/ui"
 	"github.com/fatih/color"
 )
 
 type AgentSnapshotsCommand struct {
-	Create   AgentSnapshotsCreateCommand   `command:"create" description:"Create a durable typed snapshot from a directory"`
-	List     AgentSnapshotsListCommand     `command:"list" description:"List snapshots visible to the selected team"`
-	Show     AgentSnapshotsShowCommand     `command:"show" description:"Show snapshot metadata and provenance"`
-	Download AgentSnapshotsDownloadCommand `command:"download" description:"Download and verify canonical snapshot content"`
-	Pin      AgentSnapshotsPinCommand      `command:"pin" description:"Retain a snapshot for the current user"`
-	Unpin    AgentSnapshotsUnpinCommand    `command:"unpin" description:"Release the current user's snapshot pin"`
+	Create          AgentSnapshotsCreateCommand          `command:"create" description:"Create a durable typed snapshot from a directory"`
+	CaptureResource AgentSnapshotsCaptureResourceCommand `command:"capture-resource" description:"Capture one exact pipeline resource version as a typed snapshot"`
+	List            AgentSnapshotsListCommand            `command:"list" description:"List snapshots visible to the selected team"`
+	Show            AgentSnapshotsShowCommand            `command:"show" description:"Show snapshot metadata and provenance"`
+	Download        AgentSnapshotsDownloadCommand        `command:"download" description:"Download and verify canonical snapshot content"`
+	Pin             AgentSnapshotsPinCommand             `command:"pin" description:"Retain a snapshot for the current user"`
+	Unpin           AgentSnapshotsUnpinCommand           `command:"unpin" description:"Release the current user's snapshot pin"`
+}
+
+const agentResourceCapturePollInterval = 250 * time.Millisecond
+
+type AgentSnapshotsCaptureResourceCommand struct {
+	Pipeline flaghelpers.PipelineFlag `short:"p" long:"pipeline" required:"true" description:"Pipeline containing the resource"`
+	Resource string                   `short:"r" long:"resource" required:"true" description:"Resource name"`
+	Version  *atc.Version             `short:"v" long:"version" required:"true" value-name:"KEY:VALUE" description:"Exact resource version (repeat for every field)"`
+	Type     string                   `long:"type" description:"Versioned snapshot type; defaults to repository/v1 for git resources"`
+	Wait     bool                     `long:"wait" description:"Wait for capture execution to complete (the default; retained for compatibility)"`
+	NoWait   bool                     `long:"no-wait" description:"Return after starting the durable capture execution"`
+	Json     bool                     `long:"json" description:"Print command result as JSON"`
+}
+
+func (command *AgentSnapshotsCaptureResourceCommand) Validate() error {
+	if _, err := command.Pipeline.Validate(); err != nil {
+		return err
+	}
+	if command.Version == nil || len(*command.Version) == 0 {
+		return fmt.Errorf("agent snapshot capture-resource: --version is required")
+	}
+	if strings.TrimSpace(command.Resource) == "" {
+		return fmt.Errorf("agent snapshot capture-resource: --resource is required")
+	}
+	if command.Type != "" {
+		if _, err := snapshot.ParseTypeRef(command.Type); err != nil {
+			return err
+		}
+	}
+	if command.Wait && command.NoWait {
+		return fmt.Errorf("agent snapshot capture-resource: --wait and --no-wait are mutually exclusive")
+	}
+	return nil
+}
+
+func (command *AgentSnapshotsCaptureResourceCommand) Execute([]string) error {
+	if err := command.Validate(); err != nil {
+		return err
+	}
+	target, err := loadAgentTarget()
+	if err != nil {
+		return err
+	}
+	wire := snapshotsapi.ResourceCaptureRequest{
+		Pipeline: command.Pipeline.Ref(), Resource: command.Resource,
+		Version: cloneAgentResourceVersion(*command.Version), Type: command.Type,
+	}
+	path := agentSnapshotsPath(target) + "/capture-resource"
+	retriedTerminalGeneration := false
+	for {
+		payload, err := json.Marshal(wire)
+		if err != nil {
+			return err
+		}
+		response, err := agentSnapshotRequest(context.Background(), target, http.MethodPost, path, bytes.NewReader(payload), map[string]string{
+			"Content-Type": "application/json",
+		})
+		if err != nil {
+			return err
+		}
+		var result resourcecapture.CaptureResult
+		if err := decodeAgentSnapshotResponse(response, &result); err != nil {
+			return err
+		}
+		terminalFailure := result.Execution.Status == db.PipelineRunFailed ||
+			result.Execution.Status == db.PipelineRunErrored ||
+			result.Execution.Status == db.PipelineRunAborted
+		if !command.NoWait && terminalFailure && !retriedTerminalGeneration {
+			wire.RetryPipelineRunID = strconv.FormatInt(result.Execution.PipelineRunID, 10)
+			retriedTerminalGeneration = true
+			continue
+		}
+		if command.NoWait || result.Snapshot != nil || result.Execution.Status != db.PipelineRunRunning {
+			if err := printAgentResourceCapture(result, command.Json); err != nil {
+				return err
+			}
+			return agentResourceCaptureOutcomeError(result)
+		}
+		time.Sleep(agentResourceCapturePollInterval)
+	}
+}
+
+func cloneAgentResourceVersion(version atc.Version) atc.Version {
+	cloned := make(atc.Version, len(version))
+	for key, value := range version {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+func printAgentResourceCapture(result resourcecapture.CaptureResult, jsonOutput bool) error {
+	if jsonOutput {
+		return displayhelpers.JsonPrint(result)
+	}
+	fmt.Printf("resource capture %s\npipeline run: %d\nstatus: %s\n", result.OperationKey, result.Execution.PipelineRunID, result.Execution.Status)
+	if result.Snapshot != nil {
+		fmt.Printf("snapshot: %s (%s)\n", result.Snapshot.ID.String(), result.Snapshot.Type)
+	}
+	return nil
+}
+
+func agentResourceCaptureOutcomeError(result resourcecapture.CaptureResult) error {
+	switch result.Execution.Status {
+	case db.PipelineRunFailed, db.PipelineRunErrored, db.PipelineRunAborted:
+		return fmt.Errorf("agent snapshot capture-resource: pipeline run %d ended %s", result.Execution.PipelineRunID, result.Execution.Status)
+	case db.PipelineRunSucceeded:
+		if result.Snapshot == nil {
+			return fmt.Errorf("agent snapshot capture-resource: pipeline run %d completed without a finalized snapshot", result.Execution.PipelineRunID)
+		}
+	default:
+		return nil
+	}
+	return nil
 }
 
 type AgentSnapshotsCreateCommand struct {
@@ -178,6 +297,7 @@ type AgentSnapshotsListCommand struct {
 	Type         string `long:"type" description:"Filter by exact snapshot type"`
 	ContentState string `long:"content-state" description:"Filter by available or expired content"`
 	CreatedAfter string `long:"created-after" description:"Filter by RFC3339 creation time"`
+	Cursor       string `long:"cursor" description:"Continue after an opaque cursor returned by an earlier page"`
 	Limit        int    `long:"limit" default:"100" description:"Maximum snapshots to return (1-1000)"`
 	Json         bool   `long:"json" description:"Print command result as JSON"`
 }
@@ -209,6 +329,9 @@ func (command *AgentSnapshotsListCommand) Execute([]string) error {
 		return fmt.Errorf("agent snapshot: --limit must be between 1 and 1000")
 	}
 	query.Set("limit", strconv.Itoa(command.Limit))
+	if err := addAgentHistoryCursor(query, command.Cursor); err != nil {
+		return fmt.Errorf("agent snapshot: %w", err)
+	}
 
 	target, err := loadAgentTarget()
 	if err != nil {
@@ -218,8 +341,12 @@ func (command *AgentSnapshotsListCommand) Execute([]string) error {
 	if err != nil {
 		return err
 	}
+	nextCursor := response.Header.Get("X-Next-Cursor")
 	manifests := []snapshot.Snapshot{}
 	if err := decodeAgentSnapshotResponse(response, &manifests); err != nil {
+		return err
+	}
+	if err := reportNextAgentHistoryCursor(os.Stderr, "snapshot", nextCursor); err != nil {
 		return err
 	}
 	if command.Json {

@@ -341,6 +341,43 @@ testEndpoints =
                         |> toPath
                         |> Expect.equal "/api/v1/agent/dispatcher"
             ]
+        , describe "Agent workflow functions"
+            [ test "workflow versions" <|
+                \_ ->
+                    AgentWorkflowVersions "review api/v3"
+                        |> toPath
+                        |> Expect.equal "/api/v1/agent/workflows/review%20api%2Fv3/versions"
+            , test "durable workflow run" <|
+                \_ ->
+                    AgentWorkflowRun "code-review" "9007199254740993"
+                        |> toPath
+                        |> Expect.equal "/api/v1/agent/workflows/code-review/runs/9007199254740993"
+            , test "operational workflow run status counts" <|
+                \_ ->
+                    AgentWorkflowRunOperationalStatusCounts "review api/v3"
+                        |> toPath
+                        |> Expect.equal "/api/v1/agent/workflows/review%20api%2Fv3/runs/operational-status-counts"
+            , test "workflow wait resolution" <|
+                \_ ->
+                    AgentWorkflowWaitResolve "code-review" "9007199254740993" "7"
+                        |> toPath
+                        |> Expect.equal "/api/v1/agent/workflows/code-review/runs/9007199254740993/waits/7/resolve"
+            , test "team snapshot projection" <|
+                \_ ->
+                    AgentSnapshotRepositoryChange "main" "9007199254740995"
+                        |> toPath
+                        |> Expect.equal "/api/v1/teams/main/agent/snapshots/9007199254740995/projections/repository-change"
+            , test "review snapshot projection" <|
+                \_ ->
+                    AgentSnapshotReview "9007199254740995"
+                        |> toPath
+                        |> Expect.equal "/api/v1/agent/snapshots/9007199254740995/projections/review"
+            , test "experiment scorecard" <|
+                \_ ->
+                    AgentExperimentScorecard "9007199254740997"
+                        |> toPath
+                        |> Expect.equal "/api/v1/agent/experiments/9007199254740997/scorecard"
+            ]
         ]
 
 

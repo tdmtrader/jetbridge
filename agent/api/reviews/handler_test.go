@@ -10,6 +10,7 @@ import (
 	"github.com/concourse/concourse/agent/api/feedback"
 	"github.com/concourse/concourse/agent/api/principals"
 	"github.com/concourse/concourse/agent/api/reviews"
+	"github.com/concourse/concourse/agent/snapshot"
 )
 
 func newHandler(t *testing.T) (*reviews.Handler, *reviews.MemoryStore, *feedback.MemoryStore) {
@@ -21,7 +22,94 @@ func newHandler(t *testing.T) (*reviews.Handler, *reviews.MemoryStore, *feedback
 		}
 		return reviews.BuildContext{}, false, nil
 	}
-	return reviews.NewHandler(store, fbStore, lookup, "secret-token"), store, fbStore
+	return reviews.NewHandler(store, fbStore, lookup, "secret-token", "main"), store, fbStore
+}
+
+func TestCanonicalSnapshotAndWorkflowRunReviewReadsUseSnapshotFeedbackIdentity(t *testing.T) {
+	h, store, fbStore := newHandler(t)
+	first, second := snapshot.SnapshotID(201), snapshot.SnapshotID(202)
+	runID := snapshot.WorkflowRunID(33)
+	productionID := snapshot.DatabaseID(9007199254740997)
+	for index, snapshotID := range []snapshot.SnapshotID{first, second} {
+		review := &reviews.StoredReview{
+			BuildID: 42, TeamName: "main", Repo: "org/repo", CommitSha: "same-commit",
+			SnapshotID: &snapshotID, WorkflowRunID: &runID, ProductionID: &productionID,
+			Review: json.RawMessage(validReview), CreatedAt: int64(index + 1),
+		}
+		if err := store.Upsert(review); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := fbStore.Save(&feedback.StoredFeedback{
+		ReviewSnapshotID: &first, ReviewTeamName: "main",
+		FindingID: "PI-1", Verdict: "accurate", Reviewer: "alice",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := fbStore.Save(&feedback.StoredFeedback{
+		ReviewSnapshotID: &second, ReviewTeamName: "main",
+		FindingID: "PI-1", Verdict: "false_positive", Reviewer: "alice",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshotReq := httptest.NewRequest(http.MethodGet, "/api/v1/agent/snapshots/201/projections/review", nil)
+	snapshotReq.URL.RawQuery = "%3Asnapshot_id=201"
+	snapshotResponse := httptest.NewRecorder()
+	h.GetBySnapshot(snapshotResponse, snapshotReq)
+	if snapshotResponse.Code != http.StatusOK {
+		t.Fatalf("snapshot code = %d: %s", snapshotResponse.Code, snapshotResponse.Body.String())
+	}
+	if !strings.Contains(snapshotResponse.Body.String(), `"production_id":"9007199254740997"`) {
+		t.Fatalf("production ID lost JSON precision: %s", snapshotResponse.Body.String())
+	}
+	var got reviews.BuildReviewResponse
+	if err := json.Unmarshal(snapshotResponse.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.SnapshotID == nil || *got.SnapshotID != first || got.Feedback["PI-1"].Verdict != "accurate" {
+		t.Fatalf("snapshot response = %#v", got)
+	}
+
+	runReq := httptest.NewRequest(http.MethodGet, "/api/v1/agent/workflows/code-review/runs/33/reviews", nil)
+	runReq.URL.RawQuery = "%3Aworkflow_name=code-review&%3Aworkflow_run_id=33"
+	runResponse := httptest.NewRecorder()
+	h.ListByWorkflowRun(runResponse, runReq)
+	if runResponse.Code != http.StatusOK {
+		t.Fatalf("run code = %d: %s", runResponse.Code, runResponse.Body.String())
+	}
+	var runReviews []reviews.BuildReviewResponse
+	if err := json.Unmarshal(runResponse.Body.Bytes(), &runReviews); err != nil {
+		t.Fatal(err)
+	}
+	if len(runReviews) != 2 || runReviews[0].SnapshotID == nil || runReviews[1].SnapshotID == nil {
+		t.Fatalf("run reviews = %#v", runReviews)
+	}
+	if runReviews[0].Feedback["PI-1"].Verdict == runReviews[1].Feedback["PI-1"].Verdict {
+		t.Fatalf("same-commit snapshot feedback collided: %#v", runReviews)
+	}
+}
+
+func TestCanonicalReviewReadsRejectShadowedRouteIdentity(t *testing.T) {
+	h, _, _ := newHandler(t)
+
+	snapshotReq := httptest.NewRequest(http.MethodGet, "/api/v1/agent/snapshots/201/projections/review", nil)
+	// The router contributes exactly one reserved path value. A caller-supplied
+	// duplicate must not be allowed to choose which snapshot reaches the store.
+	snapshotReq.URL.RawQuery = "%3Asnapshot_id=999&%3Asnapshot_id=201"
+	snapshotResponse := httptest.NewRecorder()
+	h.GetBySnapshot(snapshotResponse, snapshotReq)
+	if snapshotResponse.Code != http.StatusBadRequest {
+		t.Fatalf("snapshot code = %d, want 400", snapshotResponse.Code)
+	}
+
+	runReq := httptest.NewRequest(http.MethodGet, "/api/v1/agent/workflows/code-review/runs/33/reviews", nil)
+	runReq.URL.RawQuery = "%3Aworkflow_name=shadow&%3Aworkflow_name=code-review&%3Aworkflow_run_id=33"
+	runResponse := httptest.NewRecorder()
+	h.ListByWorkflowRun(runResponse, runReq)
+	if runResponse.Code != http.StatusBadRequest {
+		t.Fatalf("workflow run code = %d, want 400", runResponse.Code)
+	}
 }
 
 func postBody() string {
@@ -45,7 +133,7 @@ func TestSubmitRequiresToken(t *testing.T) {
 
 func TestSubmitRejectedWhenNoTokenConfigured(t *testing.T) {
 	h := reviews.NewHandler(reviews.NewMemoryStore(), feedback.NewMemoryStore(),
-		func(int) (reviews.BuildContext, bool, error) { return reviews.BuildContext{}, false, nil }, "")
+		func(int) (reviews.BuildContext, bool, error) { return reviews.BuildContext{}, false, nil }, "", "main")
 	req := httptest.NewRequest("POST", "/api/v1/agent/reviews", strings.NewReader(postBody()))
 	req.Header.Set("Authorization", "Bearer anything")
 	rec := httptest.NewRecorder()
@@ -222,7 +310,7 @@ func TestSubmitWithPrincipalContextSkipsStaticToken(t *testing.T) {
 	req := httptest.NewRequest("POST", "/api/v1/agent/reviews", strings.NewReader(postBody()))
 	// no Authorization header at all — the wrappa already verified the principal
 	req = req.WithContext(principals.NewContext(req.Context(), principals.Principal{
-		ID: 3, Name: "itest-reviewer",
+		ID: 3, Name: "itest-reviewer", TeamName: "main",
 	}))
 	rec := httptest.NewRecorder()
 	h.SubmitReview(rec, req)
@@ -233,6 +321,28 @@ func TestSubmitWithPrincipalContextSkipsStaticToken(t *testing.T) {
 	recs, _ := store.GetByBuild(42)
 	if len(recs) != 1 || recs[0].SubmittedBy != "itest-reviewer" {
 		t.Errorf("submitted_by = %+v, want itest-reviewer", recs)
+	}
+}
+
+func TestSubmitWithPrincipalRejectsBuildFromAnotherTeam(t *testing.T) {
+	h, store, _ := newHandler(t)
+
+	req := httptest.NewRequest("POST", "/api/v1/agent/reviews", strings.NewReader(postBody()))
+	req = req.WithContext(principals.NewContext(req.Context(), principals.Principal{
+		ID: 4, Name: "other-team-reviewer", TeamName: "other",
+	}))
+	rec := httptest.NewRecorder()
+	h.SubmitReview(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("code = %d body %s, want 403", rec.Code, rec.Body)
+	}
+	recs, err := store.GetByBuild(42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recs) != 0 {
+		t.Fatalf("stored cross-team review = %+v", recs)
 	}
 }
 

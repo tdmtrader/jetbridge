@@ -49,6 +49,10 @@ func (factory PlanFactory) NewPlan(step PlanConfig) Plan {
 		plan.LoadVar = &t
 	case LoadSnapshotPlan:
 		plan.LoadSnapshot = &t
+	case AwaitSnapshotPlan:
+		plan.AwaitSnapshot = &t
+	case PublishSnapshotPlan:
+		plan.PublishSnapshot = &t
 	case CheckPlan:
 		plan.Check = &t
 	case OnAbortPlan:

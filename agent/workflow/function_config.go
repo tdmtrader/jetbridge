@@ -15,15 +15,20 @@ import (
 // embeds the ordinary Concourse declaration and step types rather than
 // introducing a parallel workflow vocabulary.
 type FunctionConfig struct {
-	SignatureVersion int                   `json:"signature_version" yaml:"signature_version"`
-	Inputs           []snapshot.Port       `json:"inputs" yaml:"inputs"`
-	Outputs          []FunctionOutput      `json:"outputs" yaml:"outputs"`
-	Capabilities     map[string]Capability `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
-	Resources        atc.ResourceConfigs   `json:"resources,omitempty" yaml:"resources,omitempty"`
-	ResourceTypes    atc.ResourceTypes     `json:"resource_types,omitempty" yaml:"resource_types,omitempty"`
-	Prototypes       atc.Prototypes        `json:"prototypes,omitempty" yaml:"prototypes,omitempty"`
-	VarSources       atc.VarSourceConfigs  `json:"var_sources,omitempty" yaml:"var_sources,omitempty"`
-	Plan             []atc.Step            `json:"plan" yaml:"plan"`
+	SignatureVersion int `json:"signature_version" yaml:"signature_version"`
+	// DispositionOutput names the public output whose durable snapshot owns
+	// ticket/work-item terminal disposition. It is projection metadata rather
+	// than part of the public type signature; omitting it preserves the
+	// deterministic single-output compatibility path.
+	DispositionOutput string                `json:"disposition_output,omitempty" yaml:"disposition_output,omitempty"`
+	Inputs            []snapshot.Port       `json:"inputs" yaml:"inputs"`
+	Outputs           []FunctionOutput      `json:"outputs" yaml:"outputs"`
+	Capabilities      map[string]Capability `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
+	Resources         atc.ResourceConfigs   `json:"resources,omitempty" yaml:"resources,omitempty"`
+	ResourceTypes     atc.ResourceTypes     `json:"resource_types,omitempty" yaml:"resource_types,omitempty"`
+	Prototypes        atc.Prototypes        `json:"prototypes,omitempty" yaml:"prototypes,omitempty"`
+	VarSources        atc.VarSourceConfigs  `json:"var_sources,omitempty" yaml:"var_sources,omitempty"`
+	Plan              []atc.Step            `json:"plan" yaml:"plan"`
 	// SkillFiles is compiled-only content. Version-3 source selects skill
 	// names on agent nodes; compilation copies the selected trees here.
 	SkillFiles map[string]string `json:"skill_files,omitempty" yaml:"skill_files,omitempty"`
@@ -118,6 +123,7 @@ func (config FunctionConfig) Validate() error {
 	}
 
 	seenOutputs := make(map[string]struct{}, len(config.Outputs))
+	var dispositionOutput *FunctionOutput
 	for index, output := range config.Outputs {
 		if err := output.Port.Validate(); err != nil {
 			return fmt.Errorf("workflow: outputs[%d]: %w", index, err)
@@ -126,8 +132,23 @@ func (config FunctionConfig) Validate() error {
 			return fmt.Errorf("workflow: outputs: duplicate port %q", output.Name)
 		}
 		seenOutputs[output.Name] = struct{}{}
+		if output.Name == config.DispositionOutput {
+			matched := output
+			dispositionOutput = &matched
+		}
 		if strings.TrimSpace(output.From) == "" {
 			return fmt.Errorf("workflow: output %q: from is required", output.Name)
+		}
+	}
+	if config.DispositionOutput != "" {
+		if strings.TrimSpace(config.DispositionOutput) != config.DispositionOutput {
+			return fmt.Errorf("workflow: disposition_output must be a canonical public output name")
+		}
+		if dispositionOutput == nil {
+			return fmt.Errorf("workflow: disposition_output %q is not a declared public output", config.DispositionOutput)
+		}
+		if dispositionOutput.Optional {
+			return fmt.Errorf("workflow: disposition_output %q must be required", config.DispositionOutput)
 		}
 	}
 

@@ -1,0 +1,29 @@
+schema_version: 3
+name: log-diagnosis
+signature_version: 1
+description: Diagnose a captured log bundle without contacting its source system.
+inputs:
+  - name: logs
+    type: log-bundle/v1
+    description: Immutable logs and captured query metadata.
+  - name: deployment
+    type: deployment-snapshot/v1
+    optional: true
+    description: Optional immutable deployment configuration and topology context.
+outputs:
+  - name: diagnosis
+    type: diagnosis/v1
+    from: diagnosis
+    description: Structured hypotheses, evidence, confidence, and next actions.
+plan:
+  - agent: diagnose
+    budget_slice_usd: 5
+    function_id: diagnose-logs
+    prompt_file: prompts/diagnose.md
+    inputs: [logs, deployment]
+    outputs: [diagnosis]
+    input_types:
+      logs: {type: log-bundle/v1}
+      deployment: {type: deployment-snapshot/v1, optional: true}
+    output_types:
+      diagnosis: diagnosis/v1

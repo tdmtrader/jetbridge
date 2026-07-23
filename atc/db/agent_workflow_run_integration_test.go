@@ -104,7 +104,12 @@ var _ = Describe("agent workflow run vertical slice", func() {
 		Expect(completed.ResolvedDependencies).To(MatchJSON(`{
 			"version": 1,
 			"resources": [],
-			"images": [],
+			"images": [{
+				"plan_id": "2",
+				"kind": "agent_runtime",
+				"name": "review",
+				"image_ref": "registry.example/agent-runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+			}],
 			"platform_resource_types": []
 		}`))
 
@@ -219,7 +224,10 @@ type workflowRunVerticalSlice struct {
 }
 
 func newWorkflowRunVerticalSlice(suffix string) *workflowRunVerticalSlice {
-	workflows := db.NewAgentWorkflowsFactory(dbConn)
+	renderer := workflowrun.WorkflowTargetRenderer{
+		RuntimeImage: "registry.example/agent-runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	}
+	workflows := db.NewAgentWorkflowsFactory(dbConn, renderer)
 	snapshots := db.NewAgentSnapshotsFactory(dbConn)
 	runs := db.NewAgentWorkflowRunsFactory(dbConn)
 	registry, err := contracts.NewRegistry()
@@ -237,7 +245,7 @@ func newWorkflowRunVerticalSlice(suffix string) *workflowRunVerticalSlice {
 	Expect(err).NotTo(HaveOccurred())
 	binder, err := workflowrun.NewBinder(
 		workflowrun.WorkflowDefinitionStoreResolver{Store: workflows},
-		workflowrun.WorkflowTargetRenderer{}, snapshots, runs,
+		renderer, snapshots, runs,
 		workflowrun.AllowAllBudgetAdmitter{}, templates,
 		db.NewPipelineRunFactory(logger, dbConn, lockFactory, checkFactory),
 		workflowRunNoopSecretPreparer{},

@@ -1,0 +1,2 @@
+DROP TABLE agent_publications;
+DROP INDEX agent_workflow_runs_publication_build;

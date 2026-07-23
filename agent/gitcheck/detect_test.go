@@ -1,8 +1,10 @@
 package gitcheck_test
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -101,5 +103,67 @@ var _ = Describe("gitcheck.Detect + FileDiff", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(page2.Files).To(HaveLen(1))
 		Expect(page2.HasMore).To(BeFalse())
+	})
+
+	It("derives offline changed-file statistics for binary, rename, and delete changes", func() {
+		ws := filepath.Join(tmp, "projection")
+		git(tmp, botEnv, "clone", bare, ws)
+		Expect(os.WriteFile(filepath.Join(ws, "rename-me.txt"), []byte("rename me\n"), 0o644)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(ws, "delete-me.txt"), []byte("delete me\n"), 0o644)).To(Succeed())
+		git(ws, botEnv, "add", ".")
+		git(ws, botEnv, "commit", "-m", "projection base")
+		projectionBase := git(ws, botEnv, "rev-parse", "HEAD")
+
+		Expect(os.WriteFile(filepath.Join(ws, "base.txt"), []byte("base\nmodified\n"), 0o644)).To(Succeed())
+		git(ws, botEnv, "mv", "rename-me.txt", "renamed.txt")
+		Expect(os.Remove(filepath.Join(ws, "delete-me.txt"))).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(ws, "binary.dat"), []byte{0, 1, 2, 3}, 0o644)).To(Succeed())
+		git(ws, botEnv, "add", "-A")
+		git(ws, botEnv, "commit", "-m", "mixed change")
+		result := git(ws, botEnv, "rev-parse", "HEAD")
+
+		diff, err := gitcheck.DeriveRepositoryDiff(context.Background(), ws, projectionBase, result)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(diff.Files).To(HaveLen(4))
+		Expect(diff.FileCount).To(Equal(4))
+		Expect(diff.LinesAdded).To(Equal(1))
+		Expect(diff.LinesDeleted).To(Equal(1))
+		Expect(diff.Truncated).To(BeFalse())
+		Expect(diff.UnifiedDiff).To(ContainSubstring("diff --git"))
+
+		byPath := map[string]gitcheck.ChangedFile{}
+		for _, file := range diff.Files {
+			byPath[file.Path] = file
+		}
+		Expect(byPath["base.txt"].Status).To(Equal(gitcheck.ChangeModified))
+		Expect(byPath["binary.dat"].Binary).To(BeTrue())
+		Expect(byPath["delete-me.txt"].Status).To(Equal(gitcheck.ChangeDeleted))
+		Expect(byPath["renamed.txt"].Status).To(Equal(gitcheck.ChangeRenamed))
+		Expect(byPath["renamed.txt"].PreviousPath).To(Equal("rename-me.txt"))
+	})
+
+	It("bounds the complete persisted unified diff to 64 KiB", func() {
+		ws := filepath.Join(tmp, "bounded")
+		git(tmp, botEnv, "clone", bare, ws)
+		large := strings.Repeat("a very long changed line for bounded projection\n", 5000)
+		Expect(os.WriteFile(filepath.Join(ws, "large.txt"), []byte(large), 0o644)).To(Succeed())
+		git(ws, botEnv, "add", ".")
+		git(ws, botEnv, "commit", "-m", "large")
+		result := git(ws, botEnv, "rev-parse", "HEAD")
+
+		diff, err := gitcheck.DeriveRepositoryDiff(context.Background(), ws, base, result)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(len(diff.UnifiedDiff)).To(BeNumerically("<=", gitcheck.BoundedUnifiedDiffBytes))
+		Expect(diff.Truncated).To(BeTrue())
+		Expect(diff.TruncationReason).ToNot(BeEmpty())
+		Expect(diff.Files).To(HaveLen(1))
+		Expect(diff.Files[0].Truncated).To(BeTrue())
+	})
+
+	It("rejects a base object absent from the local immutable repository", func() {
+		ws := filepath.Join(tmp, "invalid-base")
+		git(tmp, botEnv, "clone", bare, ws)
+		_, err := gitcheck.DeriveRepositoryDiff(context.Background(), ws, strings.Repeat("0", 40), base)
+		Expect(err).To(HaveOccurred())
 	})
 })

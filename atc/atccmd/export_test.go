@@ -13,3 +13,7 @@ func ValidateAgentSnapshotsForTest(cmd *RunCommand) error {
 func ValidateAgentWorkflowRunsForTest(cmd *RunCommand) error {
 	return cmd.validateAgentWorkflowRuns()
 }
+
+func ValidateAgentPublisherGatewayForTest(cmd *RunCommand) error {
+	return cmd.validateAgentPublisherGateway()
+}

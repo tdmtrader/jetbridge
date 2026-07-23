@@ -62,7 +62,11 @@ Container image reference.
 Kubernetes namespace for task pods. Defaults to release namespace.
 */}}
 {{- define "concourse.kubernetesNamespace" -}}
-{{- default .Release.Namespace .Values.kubernetes.namespace }}
+{{- $namespace := default .Release.Namespace .Values.kubernetes.namespace -}}
+{{- if ne $namespace .Release.Namespace -}}
+{{- fail (printf "kubernetes.namespace must match the Helm release namespace (%q); cross-namespace runtime RBAC, artifact-daemon discovery, and TLS are not yet supported" .Release.Namespace) -}}
+{{- end -}}
+{{- $namespace }}
 {{- end }}
 
 {{/*

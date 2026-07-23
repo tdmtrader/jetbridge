@@ -297,7 +297,7 @@ Kubernetes flags are optional.
 | `--kubernetes-cache-pvc` | (none) | PVC name for shared cache volume at `/concourse/cache`. |
 | `--kubernetes-artifact-store-claim` | (none) | PVC name for artifact passing via tar files. |
 | `--kubernetes-artifact-store-gcs-fuse` | `false` | Adds `gke-gcsfuse/volumes: "true"` annotation to pods. GKE only. |
-| `--kubernetes-artifact-helper-image` | `alpine:latest` | Image for init containers and artifact-helper sidecar. Must have `tar`. |
+| `--kubernetes-artifact-helper-image` | set explicitly | Tar-capable image for runtime init containers and the artifact-helper sidecar. The Helm chart requires an exact `@sha256` reference and rejects tags. |
 | `--kubernetes-image-pull-secret` | (none) | K8s Secret for imagePullSecrets on task pods. Repeatable. |
 | `--kubernetes-service-account` | namespace default | ServiceAccount for task pods. |
 | `--kubernetes-image-registry-prefix` | (none) | Registry prefix for custom resource type images (e.g. `gcr.io/my-project/concourse`). |
@@ -388,6 +388,8 @@ Source: `tracing/meter.go`
 - `kubectl` configured with cluster access
 - Helm 3
 - A container image built from `Dockerfile.build`
+- A BusyBox-compatible artifact-helper image (`sh`, `wget`, `base64`, `cat`,
+  `rm`, `find`, `chgrp`, `chmod`) resolved to an exact OCI digest
 
 ### Build the image
 
@@ -404,12 +406,17 @@ version injection, `--push` flag to push to registry.
 ### Install with Helm
 
 ```bash
+export ARTIFACT_HELPER_IMAGE='registry.example/jetbridge/artifact-helper@sha256:<64-lowercase-hex>'
 helm install concourse ./deploy/chart \
   --namespace concourse --create-namespace \
   --set image.repository=ghcr.io/your-org/concourse \
   --set image.tag=latest \
+  --set-string kubernetes.artifactHelperImage="${ARTIFACT_HELPER_IMAGE}" \
   --set web.externalUrl=https://concourse.example.com
 ```
+
+The helper image has no chart default. Replace the placeholder with a real
+digest reference; a mutable tag causes Helm rendering to fail.
 
 See `deploy/chart/values.yaml` for all configurable parameters and
 `deploy/chart/README.md` for the complete Helm values reference.
@@ -427,6 +434,13 @@ See `deploy/chart/values.yaml` for all configurable parameters and
 - **Image registry**: Set `kubernetes.imageRegistryPrefix` and
   `kubernetes.imageRegistrySecret` if using custom resource types from a
   private registry.
+- **Artifact helper**: Pin `kubernetes.artifactHelperImage` by digest. Treat
+  changing it as a runtime rollout, because it executes in every task/check
+  pod that materializes or captures artifacts.
+- **Agent snapshot scratch**: When snapshots are enabled, size the disk-backed
+  emptyDir or PVC for the extracted tree, spool, canonical archive, and upload
+  copy across every concurrent output. A conservative floor is
+  `4 * max snapshot bytes * peak concurrent seals`, plus retry headroom.
 - **Connection pool sizing**: For N web replicas, ensure PostgreSQL
   `max_connections >= N * (apiMaxConns + backendMaxConns + 7)`.
   Default: `N * (10 + 50 + 7) = 67 per replica`.
@@ -442,6 +456,9 @@ verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 ```
 
 The Helm chart creates these automatically when `rbac.create=true`.
+It disables pod-level service-account token automount and projects a bounded
+one-hour API token, CA, and namespace only into `concourse-web`. Init
+containers do not receive the API credential.
 
 ## Troubleshooting
 

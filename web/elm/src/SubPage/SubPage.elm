@@ -12,9 +12,14 @@ module SubPage.SubPage exposing
     )
 
 import Agent.Agent as Agent
+import AgentExperiment.AgentExperiment as AgentExperiment
+import AgentExperiments.AgentExperiments as AgentExperiments
 import AgentReviews.AgentReviews as AgentReviews
+import AgentSnapshot.AgentSnapshot as AgentSnapshot
 import AgentTickets.AgentTicket as AgentTicket
 import AgentTickets.AgentTickets as AgentTickets
+import AgentWorkflow.AgentWorkflow as AgentWorkflow
+import AgentWorkflowRun.AgentWorkflowRun as AgentWorkflowRun
 import Application.Models exposing (Session)
 import Build.Build as Build
 import Build.Header.Models
@@ -59,6 +64,11 @@ type Model
     | AgentModel Agent.Model
     | AgentTicketsModel AgentTickets.Model
     | AgentTicketModel AgentTicket.Model
+    | AgentWorkflowModel AgentWorkflow.Model
+    | AgentWorkflowRunModel AgentWorkflowRun.Model
+    | AgentSnapshotModel AgentSnapshot.Model
+    | AgentExperimentsModel AgentExperiments.Model
+    | AgentExperimentModel AgentExperiment.Model
 
 
 init : Session -> Routes.Route -> ( Model, List Effect )
@@ -151,6 +161,26 @@ init session route =
             AgentTicket.init { id = id }
                 |> Tuple.mapFirst AgentTicketModel
 
+        Routes.AgentWorkflow { name } ->
+            AgentWorkflow.init { name = name }
+                |> Tuple.mapFirst AgentWorkflowModel
+
+        Routes.AgentWorkflowRun { workflowName, id } ->
+            AgentWorkflowRun.init { workflowName = workflowName, id = id }
+                |> Tuple.mapFirst AgentWorkflowRunModel
+
+        Routes.AgentSnapshot { id } ->
+            AgentSnapshot.init { id = id }
+                |> Tuple.mapFirst AgentSnapshotModel
+
+        Routes.AgentExperiments ->
+            AgentExperiments.init
+                |> Tuple.mapFirst AgentExperimentsModel
+
+        Routes.AgentExperiment { id } ->
+            AgentExperiment.init { id = id }
+                |> Tuple.mapFirst AgentExperimentModel
+
 
 handleNotFound : Session -> ET Model
 handleNotFound session ( model, effects ) =
@@ -202,8 +232,13 @@ genericUpdate :
     -> ET Agent.Model
     -> ET AgentTickets.Model
     -> ET AgentTicket.Model
+    -> ET AgentWorkflow.Model
+    -> ET AgentWorkflowRun.Model
+    -> ET AgentSnapshot.Model
+    -> ET AgentExperiments.Model
+    -> ET AgentExperiment.Model
     -> ET Model
-genericUpdate fBuild fJob fRes fPipe fDash fCaus fNF fFS dFly fAR fAgent fATs fAT ( model, effects ) =
+genericUpdate fBuild fJob fRes fPipe fDash fCaus fNF fFS dFly fAR fAgent fATs fAT fAW fAWR fAS fAEs fAE ( model, effects ) =
     case model of
         BuildModel buildModel ->
             fBuild ( buildModel, effects )
@@ -257,6 +292,26 @@ genericUpdate fBuild fJob fRes fPipe fDash fCaus fNF fFS dFly fAR fAgent fATs fA
             fAT ( agentTicketModel, effects )
                 |> Tuple.mapFirst AgentTicketModel
 
+        AgentWorkflowModel agentWorkflowModel ->
+            fAW ( agentWorkflowModel, effects )
+                |> Tuple.mapFirst AgentWorkflowModel
+
+        AgentWorkflowRunModel agentWorkflowRunModel ->
+            fAWR ( agentWorkflowRunModel, effects )
+                |> Tuple.mapFirst AgentWorkflowRunModel
+
+        AgentSnapshotModel agentSnapshotModel ->
+            fAS ( agentSnapshotModel, effects )
+                |> Tuple.mapFirst AgentSnapshotModel
+
+        AgentExperimentsModel agentExperimentsModel ->
+            fAEs ( agentExperimentsModel, effects )
+                |> Tuple.mapFirst AgentExperimentsModel
+
+        AgentExperimentModel agentExperimentModel ->
+            fAE ( agentExperimentModel, effects )
+                |> Tuple.mapFirst AgentExperimentModel
+
 
 handleCallback : Callback -> Session -> ET Model
 handleCallback callback session =
@@ -274,9 +329,19 @@ handleCallback callback session =
         (Agent.handleCallback callback)
         (AgentTickets.handleCallback callback)
         (AgentTicket.handleCallback callback)
+        (AgentWorkflow.handleCallback callback)
+        (AgentWorkflowRun.handleCallback callback)
+        (AgentSnapshot.handleCallback callback)
+        (AgentExperiments.handleCallback callback)
+        (AgentExperiment.handleCallback callback)
         >> (case callback of
                 LoggedOut (Ok ()) ->
                     genericUpdate
+                        handleLoggedOut
+                        handleLoggedOut
+                        handleLoggedOut
+                        handleLoggedOut
+                        handleLoggedOut
                         handleLoggedOut
                         handleLoggedOut
                         handleLoggedOut
@@ -326,6 +391,11 @@ handleDelivery session delivery =
         (Agent.handleDelivery delivery)
         (AgentTickets.handleDelivery delivery)
         (AgentTicket.handleDelivery delivery)
+        (AgentWorkflow.handleDelivery delivery)
+        (AgentWorkflowRun.handleDelivery delivery)
+        identity
+        (AgentExperiments.handleDelivery delivery)
+        (AgentExperiment.handleDelivery delivery)
 
 
 update : Session -> Message -> ET Model
@@ -344,6 +414,11 @@ update session msg =
         (Login.update msg >> Agent.update msg)
         (Login.update msg >> AgentTickets.update msg)
         (Login.update msg >> AgentTicket.update msg)
+        (Login.update msg >> AgentWorkflow.update msg)
+        (Login.update msg >> AgentWorkflowRun.update msg)
+        (Login.update msg >> AgentSnapshot.update msg)
+        (Login.update msg >> AgentExperiments.update msg)
+        (Login.update msg >> AgentExperiment.update msg)
         >> (case msg of
                 GoToRoute route ->
                     handleGoToRoute route
@@ -455,6 +530,11 @@ urlUpdateValid routes =
         identity
         identity
         identity
+        identity
+        identity
+        identity
+        identity
+        identity
 
 
 view : Session -> Model -> ( String, Html Message )
@@ -525,6 +605,31 @@ view ({ userState } as session) mdl =
             , Agent.view session model
             )
 
+        AgentWorkflowModel model ->
+            ( AgentWorkflow.documentTitle model
+            , AgentWorkflow.view session model
+            )
+
+        AgentWorkflowRunModel model ->
+            ( AgentWorkflowRun.documentTitle model
+            , AgentWorkflowRun.view session model
+            )
+
+        AgentSnapshotModel model ->
+            ( AgentSnapshot.documentTitle model
+            , AgentSnapshot.view session model
+            )
+
+        AgentExperimentsModel model ->
+            ( AgentExperiments.documentTitle
+            , AgentExperiments.view session model
+            )
+
+        AgentExperimentModel model ->
+            ( AgentExperiment.documentTitle model
+            , AgentExperiment.view session model
+            )
+
 
 tooltip : Model -> Session -> Maybe Tooltip.Tooltip
 tooltip mdl =
@@ -568,6 +673,21 @@ tooltip mdl =
         AgentTicketModel model ->
             AgentTicket.tooltip model
 
+        AgentWorkflowModel model ->
+            AgentWorkflow.tooltip model
+
+        AgentWorkflowRunModel model ->
+            AgentWorkflowRun.tooltip model
+
+        AgentSnapshotModel model ->
+            AgentSnapshot.tooltip model
+
+        AgentExperimentsModel model ->
+            AgentExperiments.tooltip model
+
+        AgentExperimentModel model ->
+            AgentExperiment.tooltip model
+
 
 subscriptions : Model -> List Subscription
 subscriptions mdl =
@@ -610,3 +730,18 @@ subscriptions mdl =
 
         AgentTicketModel _ ->
             AgentTicket.subscriptions
+
+        AgentWorkflowModel model ->
+            AgentWorkflow.subscriptions model
+
+        AgentWorkflowRunModel model ->
+            AgentWorkflowRun.subscriptions model
+
+        AgentSnapshotModel _ ->
+            AgentSnapshot.subscriptions
+
+        AgentExperimentsModel _ ->
+            AgentExperiments.subscriptions
+
+        AgentExperimentModel model ->
+            AgentExperiment.subscriptions model

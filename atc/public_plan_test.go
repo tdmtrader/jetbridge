@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/concourse/concourse/agent/publisher"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc"
 	. "github.com/onsi/ginkgo/v2"
@@ -108,6 +109,7 @@ var _ = Describe("Plan", func() {
 				ID: "7/agent",
 				Agent: &atc.AgentPlan{
 					Name:           "reviewer",
+					Hermetic:       true,
 					Model:          "claude-opus-4",
 					Prompt:         "secret prompt text",
 					PromptFile:     "prompts/review.md",
@@ -130,6 +132,7 @@ var _ = Describe("Plan", func() {
 				"id": "7/agent",
 				"agent": {
 					"name": "reviewer",
+					"hermetic": true,
 					"model": "claude-opus-4"
 				}
 			}`))
@@ -1185,6 +1188,7 @@ var _ = Describe("Plan", func() {
 							WorkflowPort:         "change",
 							WorkflowDefinitionID: 17,
 							WorkflowRunID:        "9007199254740993",
+							SourceMetadata:       json.RawMessage(`{"adapter":"resource-version","credential":"literal-secret"}`),
 						},
 					},
 				},
@@ -1255,5 +1259,117 @@ var _ = Describe("LoadSnapshot public plan", func() {
 			"id":"9",
 			"load_snapshot":{"name":"subject","type":"review/v1","optional":true}
 		}`))
+	})
+})
+
+var _ = Describe("AwaitSnapshot public plan", func() {
+	It("exposes the interaction contract while redacting durable identifiers", func() {
+		plan := atc.Plan{
+			ID: "10",
+			AwaitSnapshot: &atc.AwaitSnapshotPlan{
+				Name: "answer", Question: "question", Type: snapshot.TypeRef("human-answer/v1"),
+				OnTimeout: atc.AwaitSnapshotOnTimeoutDefault, DefaultSnapshotID: "9007199254740993",
+				WorkflowRunID: "9223372036854775807", WorkflowDefinitionID: 17, WorkflowPort: "approval",
+			},
+		}
+		Expect([]byte(*plan.Public())).To(MatchJSON(`{
+			"id":"10",
+			"await_snapshot":{
+				"name":"answer",
+				"question":"question",
+				"type":"human-answer/v1",
+				"on_timeout":"default",
+				"has_default":true,
+				"workflow_port":"approval"
+			}
+		}`))
+	})
+
+	It("shows a server-bound merge decision without exposing destination details", func() {
+		plan := atc.Plan{ID: "11", AwaitSnapshot: &atc.AwaitSnapshotPlan{
+			Name: "approval", Type: snapshot.TypeRef("human-answer/v1"), OnTimeout: atc.AwaitSnapshotOnTimeoutFail,
+			MergeApproval: &atc.MergeApprovalIntent{
+				Input: "change", Publisher: publisher.GitPublisher,
+				Destination:           "https://credential@git.example/private",
+				Parameters:            map[string]string{"target_branch": "main", "token": "secret"},
+				ApprovalPolicyVersion: "engineering/v1", Prompt: "private prompt",
+			},
+		}}
+		public := []byte(*plan.Public())
+		Expect(public).To(MatchJSON(`{
+			"id":"11",
+			"await_snapshot":{
+				"name":"approval",
+				"merge_approval_input":"change",
+				"merge_approval_publisher":"git-publisher/v1",
+				"merge_destination_configured":true,
+				"type":"human-answer/v1",
+				"on_timeout":"fail"
+			}
+		}`))
+		Expect(string(public)).NotTo(ContainSubstring("credential"))
+		Expect(string(public)).NotTo(ContainSubstring("secret"))
+		Expect(string(public)).NotTo(ContainSubstring("private prompt"))
+	})
+})
+
+var _ = Describe("PublishSnapshot public plan", func() {
+	It("exposes the typed operation while redacting destination details and parameters", func() {
+		plan := atc.Plan{
+			ID: "11",
+			PublishSnapshot: &atc.PublishSnapshotPlan{
+				Name: "publish-change", Publisher: publisher.GitPublisher, Input: "change",
+				InputType:             snapshot.TypeRef("repository-change/v1"),
+				Destination:           "https://person:credential@github.example/team/repo?token=secret",
+				Mode:                  publisher.ModePullRequest,
+				Parameters:            map[string]string{"body": "private", "credential": "literal-secret"},
+				ApprovalPolicyVersion: "engineering/v2",
+			},
+		}
+		public := []byte(*plan.Public())
+		Expect(public).To(MatchJSON(`{
+			"id":"11",
+			"publish_snapshot":{
+				"name":"publish-change",
+				"publisher":"git-publisher/v1",
+				"input":"change",
+				"input_type":"repository-change/v1",
+				"mode":"pull-request",
+				"approval_policy_version":"engineering/v2",
+				"destination_configured":true
+			}
+		}`))
+		Expect(string(public)).ToNot(ContainSubstring("credential"))
+		Expect(string(public)).ToNot(ContainSubstring("literal-secret"))
+	})
+
+	It("shows the approval artifact for a visible merge without exposing trusted run identity", func() {
+		plan := atc.Plan{
+			ID: "12",
+			PublishSnapshot: &atc.PublishSnapshotPlan{
+				Name: "merge-change", Publisher: publisher.GitPublisher, Input: "change",
+				InputType: snapshot.TypeRef("repository-change/v1"), Destination: "github.example/team/repo",
+				Mode: publisher.ModeMerge, Parameters: map[string]string{
+					"target_branch": "main", "expected_base_sha": strings.Repeat("a", 40),
+				},
+				ApprovalPolicyVersion: "engineering/v2", Approval: "merge-approval", WorkflowRunID: "91",
+			},
+		}
+		public := []byte(*plan.Public())
+		Expect(public).To(MatchJSON(`{
+			"id":"12",
+			"publish_snapshot":{
+				"name":"merge-change",
+				"publisher":"git-publisher/v1",
+				"input":"change",
+				"input_type":"repository-change/v1",
+				"mode":"merge",
+				"approval_policy_version":"engineering/v2",
+				"approval":"merge-approval",
+				"destination_configured":true
+			}
+		}`))
+		Expect(string(public)).ToNot(ContainSubstring("workflow_run_id"))
+		Expect(string(public)).ToNot(ContainSubstring("expected_base_sha"))
 	})
 })

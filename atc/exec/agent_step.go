@@ -38,8 +38,9 @@ const agentProcessID = "agent"
 // addendum).
 const agentFlightArtifact = "flight"
 
-// mcpSidecarPorts maps well-known sidecar names to their fixed localhost
-// ports (shared-contracts §8.1).
+// mcpSidecarPorts is the schema-v1/2 compatibility map. Schema-v3
+// capabilities compile their declared TCP endpoints into *_MCP_URL env rows
+// and do not depend on role names.
 var mcpSidecarPorts = map[string]int{"dev": 7780, "platform": 7781, "gateway": 7782}
 
 // errAgentCostUnderReport marks a suspicious ingestion: the pod-written
@@ -51,10 +52,11 @@ var errAgentCostUnderReport = errors.New("flight recorder reported less cost tha
 // by plan env actually belongs to this build. AGENT_PIPELINE_RUN_ID and
 // AGENT_TICKET_ID arrive via plan env (F30), which is public pipeline YAML:
 // without these checks any team's pipeline could claim another run's
-// `agent-run-<id>` secret (§8.2) and exfiltrate its principal and Anthropic
-// tokens through a sidecar named "platform"/"gateway", or claim another
-// ticket's id to admit against — and misattribute this step's spend into —
-// a budget it does not own.
+// `agent-run-<id>` model credential through the main container, or claim
+// another ticket's id to admit against — and misattribute this step's spend
+// into — a budget it does not own. Sidecars never receive run credentials;
+// live reads and writes are capture/publisher boundaries, not name-triggered
+// agent capabilities.
 //
 //counterfeiter:generate . AgentRunVerifier
 type AgentRunVerifier interface {
@@ -108,27 +110,39 @@ func WithAgentOutputSealer(sealer snapshot.OutputSealer) AgentStepOption {
 	return func(s *AgentStep) { s.outputSealer = sealer }
 }
 
+// WithAgentSnapshotStores supplies the durable stores used to rematerialize
+// successfully sealed outputs. Downstream consumers therefore read the
+// canonical snapshot content rather than the producer's mutable pod volume.
+func WithAgentSnapshotStores(metadata snapshot.MetadataStore, content snapshot.ContentStore) AgentStepOption {
+	return func(s *AgentStep) {
+		s.snapshotMetadataStore = metadata
+		s.snapshotContentStore = content
+	}
+}
+
 // AgentStep runs the claude CLI (via the agent-runner entrypoint) in a
 // jetbridge pod with declared MCP sidecars, then ingests the flight
 // recorder server-side (shared-contracts §2.8, §5, §8.1).
 type AgentStep struct {
-	planID              atc.PlanID
-	plan                atc.AgentPlan
-	defaultLimits       atc.ContainerLimits
-	defaultRequests     atc.ContainerLimits
-	metadata            StepMetadata
-	containerMetadata   db.ContainerMetadata
-	workerPool          Pool
-	streamer            Streamer
-	delegateFactory     TaskDelegateFactory
-	defaultTimeout      time.Duration
-	agentImage          string
-	imageResolver       imageresolver.Resolver
-	metricsStore        metrics.Store
-	budgetChecker       budget.Checker
-	runVerifier         AgentRunVerifier
-	platformTokenSecret string
-	outputSealer        snapshot.OutputSealer
+	planID                atc.PlanID
+	plan                  atc.AgentPlan
+	defaultLimits         atc.ContainerLimits
+	defaultRequests       atc.ContainerLimits
+	metadata              StepMetadata
+	containerMetadata     db.ContainerMetadata
+	workerPool            Pool
+	streamer              Streamer
+	delegateFactory       TaskDelegateFactory
+	defaultTimeout        time.Duration
+	agentImage            string
+	imageResolver         imageresolver.Resolver
+	metricsStore          metrics.Store
+	budgetChecker         budget.Checker
+	runVerifier           AgentRunVerifier
+	platformTokenSecret   string
+	outputSealer          snapshot.OutputSealer
+	snapshotMetadataStore snapshot.MetadataStore
+	snapshotContentStore  snapshot.ContentStore
 }
 
 func NewAgentStep(
@@ -189,7 +203,19 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 	oteltrace.SpanFromContext(ctx).AddEvent("step.initializing")
 	delegate.Initializing(logger)
 
-	if step.agentImage == "" {
+	runtimeImage := step.agentImage
+	if step.plan.RuntimeImage != "" {
+		if err := atc.ValidatePinnedOCIImage(step.plan.RuntimeImage); err != nil {
+			return false, fmt.Errorf("agent %q has invalid admitted runtime image: %w", step.plan.Name, err)
+		}
+		// Schema-v3 workflow admission injects this exact digest into the
+		// immutable target config. Executing the plan must therefore use the
+		// admitted dependency even when a rolling web deployment changes the
+		// global default before the selected build starts. Legacy agent plans
+		// leave RuntimeImage empty and continue to use the current default.
+		runtimeImage = step.plan.RuntimeImage
+	}
+	if runtimeImage == "" {
 		return false, errors.New("agent step requires the web node to be started with --agent-step-image")
 	}
 	if err := step.validateSnapshotDeclarations(); err != nil {
@@ -197,6 +223,9 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 	}
 	if (len(step.plan.SnapshotInputs) > 0 || len(step.plan.SnapshotOutputs) > 0) && step.outputSealer == nil {
 		return false, fmt.Errorf("agent %q has typed snapshot declarations but no output sealer is configured", step.plan.Name)
+	}
+	if len(step.plan.SnapshotOutputs) > 0 && (step.snapshotMetadataStore == nil || step.snapshotContentStore == nil) {
+		return false, fmt.Errorf("agent %q has typed snapshot outputs but durable snapshot stores are not configured", step.plan.Name)
 	}
 
 	// Agent env is STATIC-ONLY (contracts §2.8): the renderer resolves
@@ -406,7 +435,7 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 		env = append(env, "AGENT_SKILLS_DIR="+artifactPath(workdir, "skills", ""))
 	}
 	if slice > 0 {
-		env = append(env, "AGENT_BUDGET_SLICE_USD="+strconv.FormatFloat(slice, 'f', 2, 64))
+		env = append(env, "AGENT_BUDGET_SLICE_USD="+strconv.FormatFloat(slice, 'f', -1, 64))
 	}
 
 	containerSpec := runtime.ContainerSpec{
@@ -415,9 +444,10 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 		JobID:    step.metadata.JobID,
 		StepName: step.plan.Name,
 
-		ImageSpec: runtime.ImageSpec{ImageURL: step.agentImage},
+		ImageSpec: runtime.ImageSpec{ImageURL: runtimeImage},
 		Env:       env,
 		Type:      step.containerMetadata.Type,
+		Hermetic:  step.plan.Hermetic,
 
 		Dir: workdir,
 	}
@@ -455,15 +485,18 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 			snapshotInputs.refs[name] = ref
 			continue
 		}
-		artifact, fromCache, found := repository.ArtifactFor(build.ArtifactName(name))
+		entry, found := repository.ArtifactEntryFor(build.ArtifactName(name))
 		if !found {
 			missingInputs = append(missingInputs, name)
 			continue
 		}
+		if entry.Snapshot != nil {
+			return false, fmt.Errorf("agent input %q is a typed snapshot but has no input_types declaration", name)
+		}
 		containerSpec.Inputs = append(containerSpec.Inputs, runtime.Input{
-			Artifact:        artifact,
+			Artifact:        entry.Artifact,
 			DestinationPath: artifactPath(workdir, name, ""),
-			FromCache:       fromCache,
+			FromCache:       entry.FromCache,
 		})
 	}
 	if len(missingInputs) > 0 {
@@ -475,6 +508,15 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 	containerSpec.Outputs = make(runtime.OutputPaths, len(outputNames))
 	for _, name := range outputNames {
 		containerSpec.Outputs[name] = ensureTrailingSlash(artifactPath(workdir, name, ""))
+	}
+	optionalOutputNames := make([]string, 0, len(step.plan.SnapshotOutputs))
+	for _, name := range step.plan.Outputs {
+		if declaration, typed := step.plan.SnapshotOutputs[name]; typed && declaration.Optional {
+			optionalOutputNames = append(optionalOutputNames, name)
+		}
+	}
+	if err := configureOptionalOutputMarkers(&containerSpec, optionalOutputNames); err != nil {
+		return false, fmt.Errorf("agent %q: %w", step.plan.Name, err)
 	}
 
 	limits := mergeContainerLimits(step.plan.Limits, step.defaultLimits)
@@ -512,20 +554,22 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 		}
 	}
 
-	// §8.1 sidecar rows (F15): common + identity rows for every MCP sidecar.
-	// Identity rows are empty for pure-CI steps (no ticket/run env).
-	common := []string{
-		"ATC_EXTERNAL_URL=" + step.metadata.ExternalURL,
-		"BUILD_ID=" + strconv.Itoa(step.metadata.BuildID),
-	}
-	if v := planEnv["AGENT_TICKET_ID"]; v != "" {
-		common = append(common, "AGENT_TICKET_ID="+v)
-	}
-	if v := planEnv["AGENT_PIPELINE_RUN_ID"]; v != "" {
-		common = append(common, "AGENT_PIPELINE_RUN_ID="+v)
+	// Sidecars always receive build correlation. Legacy non-hermetic agent
+	// steps also retain their historical ATC/run metadata, but hermetic
+	// transformation capabilities receive only local execution state. In
+	// either case no sidecar receives a principal or model credential.
+	common := []string{"BUILD_ID=" + strconv.Itoa(step.metadata.BuildID)}
+	if !step.plan.Hermetic {
+		common = append(common, "ATC_EXTERNAL_URL="+step.metadata.ExternalURL)
+		if v := planEnv["AGENT_TICKET_ID"]; v != "" {
+			common = append(common, "AGENT_TICKET_ID="+v)
+		}
+		if v := planEnv["AGENT_PIPELINE_RUN_ID"]; v != "" {
+			common = append(common, "AGENT_PIPELINE_RUN_ID="+v)
+		}
 	}
 
-	// Main-container and sidecar secret refs derive from the deterministic
+	// Main-container secret refs derive from the deterministic
 	// §8.2 secret name. No pipeline-run id ⇒ no run-secret refs at all —
 	// the agent-run-<id> secret is the ONLY token path into an agent pod
 	// (§8.1 routes CLAUDE_CODE_OAUTH_TOKEN exclusively through it; env is
@@ -535,10 +579,9 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 	secretRunID := verifiedRunID
 	secretName := "agent-run-" + strconv.Itoa(secretRunID)
 
-	// §8.1 pins CLAUDE_CODE_OAUTH_TOKEN to BOTH the main container and the
-	// gateway sidecar from the per-run secret. F20 append semantics in
-	// applySecretRefs emit a secretKeyRef-only EnvVar, so no literal env
-	// value is required.
+	// The model credential is intentionally main-container-only. A sidecar name
+	// is workflow-authored data and must never act as a credential grant.
+	// Publisher and capture services cross live-system boundaries server-side.
 	if secretRunID > 0 {
 		containerSpec.SecretEnv = map[string]vars.SecretRef{
 			"CLAUDE_CODE_OAUTH_TOKEN": {Name: secretName, Key: "anthropic-token"},
@@ -565,9 +608,6 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 
 	for i := range sidecars {
 		name := sidecars[i].Name
-		if _, ok := mcpSidecarPorts[name]; !ok {
-			continue
-		}
 
 		rows := append([]string{}, common...)
 		switch name {
@@ -577,26 +617,9 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 					rows = append(rows, k+"="+v)
 				}
 			}
-			if secretRunID > 0 {
-				setSidecarSecretRef(&containerSpec, name, "AGENT_PRINCIPAL_TOKEN",
-					vars.SecretRef{Name: secretName, Key: "principal-token"})
-			}
 		case "gateway":
 			if slice > 0 {
-				rows = append(rows, "AGENT_BUDGET_SLICE_USD="+strconv.FormatFloat(slice, 'f', 2, 64))
-			}
-			if secretRunID > 0 {
-				setSidecarSecretRef(&containerSpec, name, "AGENT_PRINCIPAL_TOKEN",
-					vars.SecretRef{Name: secretName, Key: "principal-token"})
-				setSidecarSecretRef(&containerSpec, name, "CLAUDE_CODE_OAUTH_TOKEN",
-					vars.SecretRef{Name: secretName, Key: "anthropic-token"})
-			} else if step.platformTokenSecret != "" {
-				// Pure-CI fallback (§8.1): the gateway makes its own model
-				// calls, so it needs the same platform token as the main
-				// container. No principal token — that exists only in the
-				// per-run agent-run-<id> secret.
-				setSidecarSecretRef(&containerSpec, name, "CLAUDE_CODE_OAUTH_TOKEN",
-					vars.SecretRef{Name: step.platformTokenSecret, Key: "anthropic-token"})
+				rows = append(rows, "AGENT_BUDGET_SLICE_USD="+strconv.FormatFloat(slice, 'f', -1, 64))
 			}
 			// case "dev": common+identity only
 		}
@@ -1118,7 +1141,7 @@ func (step *AgentStep) sealTypedOutputs(
 	volumeMounts []runtime.VolumeMount,
 	inputs snapshotInputBindings,
 ) error {
-	outputs, declarations, workflowDefinitionID, workflowRunID, err := step.collectTypedOutputs(worker, volumeMounts)
+	outputs, declarations, workflowDefinitionID, workflowRunID, err := step.collectTypedOutputs(ctx, worker, volumeMounts)
 	if err != nil {
 		return err
 	}
@@ -1153,7 +1176,13 @@ func (step *AgentStep) sealTypedOutputs(
 			return fmt.Errorf("agent output sealer returned a mismatched declaration for %q", output.source.ClientKey)
 		}
 		ref := sealedOutput.Snapshot
-		entries[build.ArtifactName(output.source.ClientKey)] = build.ArtifactEntry{Artifact: output.artifact, Snapshot: &ref}
+		artifact, err := materializeSealedSnapshotArtifact(
+			ctx, step.metadata.TeamID, ref, step.snapshotMetadataStore, step.snapshotContentStore,
+		)
+		if err != nil {
+			return fmt.Errorf("agent sealed output %q: %w", output.source.ClientKey, err)
+		}
+		entries[build.ArtifactName(output.source.ClientKey)] = build.ArtifactEntry{Artifact: artifact, Snapshot: &ref}
 	}
 	if err := repository.RegisterArtifacts(entries); err != nil {
 		return fmt.Errorf("publish typed agent outputs: %w", err)
@@ -1162,15 +1191,25 @@ func (step *AgentStep) sealTypedOutputs(
 }
 
 func (step *AgentStep) collectTypedOutputs(
+	ctx context.Context,
 	worker runtime.Worker,
 	volumeMounts []runtime.VolumeMount,
 ) ([]collectedTypedOutput, []snapshot.Port, *int, *snapshot.WorkflowRunID, error) {
 	outputs := make([]collectedTypedOutput, 0, len(step.plan.SnapshotOutputs))
 	declarations := make([]snapshot.Port, 0, len(step.plan.SnapshotOutputs))
 	seen := make(map[string]struct{}, len(step.plan.SnapshotOutputs))
-	workflowDefinitionID, workflowRunID, err := snapshotWorkflowAssociation("agent", step.plan.SnapshotOutputs)
+	workflowDefinitionID, workflowRunID, err := snapshotWorkflowAssociation(
+		"agent",
+		step.plan.SnapshotOutputs,
+		step.metadata.WorkflowDefinitionID,
+		step.metadata.WorkflowRunID,
+	)
 	if err != nil {
 		return nil, nil, nil, nil, err
+	}
+	markerArtifact, err := optionalOutputMarkerArtifact(worker, volumeMounts, hasOptionalSnapshotOutputs(step.plan.SnapshotOutputs))
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("agent: %w", err)
 	}
 	for _, name := range step.plan.Outputs {
 		declaration, typed := step.plan.SnapshotOutputs[name]
@@ -1198,14 +1237,19 @@ func (step *AgentStep) collectTypedOutputs(
 			return nil, nil, nil, nil, fmt.Errorf("agent typed output %q has duplicate mounts", name)
 		}
 		if matches == 0 {
-			if declaration.Optional {
+			return nil, nil, nil, nil, fmt.Errorf("agent required typed output %q has no mount", name)
+		}
+		if declaration.Optional {
+			produced, err := optionalOutputWasProduced(ctx, markerArtifact, name)
+			if err != nil {
+				return nil, nil, nil, nil, fmt.Errorf("agent optional typed output %q: %w", name, err)
+			}
+			if !produced {
 				continue
 			}
-			return nil, nil, nil, nil, fmt.Errorf("agent required typed output %q has no mount", name)
 		}
 		capturedArtifact := artifact
 		outputs = append(outputs, collectedTypedOutput{
-			artifact: artifact,
 			source: snapshot.OutputSource{
 				ClientKey: name, Port: port, Retention: declaration.Retention, WorkflowPort: declaration.WorkflowPort,
 				OpenTar: func(ctx context.Context) (io.ReadCloser, error) {
@@ -1243,7 +1287,20 @@ func (step *AgentStep) validateSnapshotDeclarations() error {
 			return fmt.Errorf("agent typed output %q is absent from the declared outputs", name)
 		}
 	}
-	_, _, err := snapshotWorkflowAssociation("agent", step.plan.SnapshotOutputs)
+	if len(step.plan.SnapshotInputs) > 0 || len(step.plan.SnapshotOutputs) > 0 {
+		if err := validateExactArtifactCoverage("agent", "input", inputs, sortedSnapshotKeys(step.plan.SnapshotInputs)); err != nil {
+			return err
+		}
+		if err := validateExactArtifactCoverage("agent", "output", outputs, sortedSnapshotKeys(step.plan.SnapshotOutputs)); err != nil {
+			return err
+		}
+	}
+	_, _, err := snapshotWorkflowAssociation(
+		"agent",
+		step.plan.SnapshotOutputs,
+		step.metadata.WorkflowDefinitionID,
+		step.metadata.WorkflowRunID,
+	)
 	return err
 }
 
@@ -1263,14 +1320,4 @@ func mergeContainerLimits(override *atc.ContainerLimits, defaults atc.ContainerL
 		}
 	}
 	return merged
-}
-
-func setSidecarSecretRef(spec *runtime.ContainerSpec, sidecar, envName string, ref vars.SecretRef) {
-	if spec.SidecarSecretEnv == nil {
-		spec.SidecarSecretEnv = map[string]map[string]vars.SecretRef{}
-	}
-	if spec.SidecarSecretEnv[sidecar] == nil {
-		spec.SidecarSecretEnv[sidecar] = map[string]vars.SecretRef{}
-	}
-	spec.SidecarSecretEnv[sidecar][envName] = ref
 }

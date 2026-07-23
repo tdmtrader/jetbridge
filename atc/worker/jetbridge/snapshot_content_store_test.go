@@ -132,6 +132,38 @@ var testSnapshotArchiveLimits = snapshot.ArchiveLimits{
 	MaxEntries:      100,
 }
 
+func TestSnapshotContentStoreUsesConfiguredScratchDirectory(t *testing.T) {
+	client := snapshotDaemonClient(t, []string{"node-a"}, roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return response(http.StatusCreated, nil), nil
+	}))
+	tempDir := t.TempDir()
+	store, err := NewSnapshotContentStore(
+		client,
+		&locationResolverStub{},
+		1,
+		testSnapshotArchiveLimits,
+		WithSnapshotContentTempDir(tempDir),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.tempDir != tempDir {
+		t.Fatalf("snapshot content temp dir = %q, want %q", store.tempDir, tempDir)
+	}
+
+	content := testSnapshotArchive(t, "durable")
+	if _, err := store.Put(context.Background(), digestFor(content), bytes.NewReader(content)); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(tempDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("snapshot scratch leaked files: %v", entries)
+	}
+}
+
 func testSnapshotArchive(t *testing.T, contents ...string) []byte {
 	t.Helper()
 	var archive bytes.Buffer

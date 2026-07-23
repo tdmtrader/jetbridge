@@ -97,6 +97,26 @@ func (f *agentOutcomesFactory) ListOpen() ([]outcomes.Outcome, error) {
 	return results, rows.Err()
 }
 
+func (f *agentOutcomesFactory) ListTerminal() ([]outcomes.Outcome, error) {
+	rows, err := f.conn.Query(
+		`SELECT ` + outcomeColumns + ` FROM agent_outcomes
+		 WHERE merge_state <> 'open' ORDER BY ticket_id ASC`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	results := []outcomes.Outcome{}
+	for rows.Next() {
+		outcome, err := scanOutcome(rows)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, *outcome)
+	}
+	return results, rows.Err()
+}
+
 func (f *agentOutcomesFactory) RecordMerge(ticketID int, res outcomes.MergeResult) error {
 	if res.State != outcomes.Merged && res.State != outcomes.MergedWithFixes {
 		return outcomes.ErrNotOpen

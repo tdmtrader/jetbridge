@@ -25,25 +25,109 @@ type deployment struct {
 	Spec struct {
 		Template struct {
 			Spec struct {
-				SecurityContext struct {
+				AutomountServiceAccountToken *bool `json:"automountServiceAccountToken"`
+				SecurityContext              struct {
 					RunAsNonRoot *bool  `json:"runAsNonRoot"`
 					RunAsUser    *int64 `json:"runAsUser"`
 					FSGroup      *int64 `json:"fsGroup"`
 				} `json:"securityContext"`
+				InitContainers []struct {
+					Name         string        `json:"name"`
+					Command      []string      `json:"command"`
+					VolumeMounts []volumeMount `json:"volumeMounts"`
+				} `json:"initContainers"`
 				Containers []struct {
-					Name            string   `json:"name"`
-					Args            []string `json:"args"`
+					Name string   `json:"name"`
+					Args []string `json:"args"`
+					Env  []struct {
+						Name  string `json:"name"`
+						Value string `json:"value"`
+					} `json:"env"`
+					VolumeMounts    []volumeMount `json:"volumeMounts"`
 					SecurityContext struct {
-						AllowPrivilegeEscalation *bool `json:"allowPrivilegeEscalation"`
-						ReadOnlyRootFilesystem   *bool `json:"readOnlyRootFilesystem"`
+						AllowPrivilegeEscalation *bool  `json:"allowPrivilegeEscalation"`
+						ReadOnlyRootFilesystem   *bool  `json:"readOnlyRootFilesystem"`
+						RunAsNonRoot             *bool  `json:"runAsNonRoot"`
+						RunAsUser                *int64 `json:"runAsUser"`
 						Capabilities             struct {
 							Drop []string `json:"drop"`
+							Add  []string `json:"add"`
+						} `json:"capabilities"`
+					} `json:"securityContext"`
+				} `json:"containers"`
+				Volumes []podVolume `json:"volumes"`
+			} `json:"spec"`
+		} `json:"template"`
+	} `json:"spec"`
+}
+
+type daemonSet struct {
+	Kind     string `json:"kind"`
+	Metadata struct {
+		Name string `json:"name"`
+	} `json:"metadata"`
+	Spec struct {
+		Template struct {
+			Spec struct {
+				SecurityContext struct {
+					RunAsNonRoot *bool  `json:"runAsNonRoot"`
+					RunAsUser    *int64 `json:"runAsUser"`
+				} `json:"securityContext"`
+				Containers []struct {
+					Name            string `json:"name"`
+					SecurityContext struct {
+						RunAsNonRoot             *bool  `json:"runAsNonRoot"`
+						RunAsUser                *int64 `json:"runAsUser"`
+						AllowPrivilegeEscalation *bool  `json:"allowPrivilegeEscalation"`
+						Capabilities             struct {
+							Drop []string `json:"drop"`
+							Add  []string `json:"add"`
 						} `json:"capabilities"`
 					} `json:"securityContext"`
 				} `json:"containers"`
 			} `json:"spec"`
 		} `json:"template"`
 	} `json:"spec"`
+}
+
+type podVolume struct {
+	Name     string `json:"name"`
+	EmptyDir *struct {
+		Medium    string `json:"medium"`
+		SizeLimit string `json:"sizeLimit"`
+	} `json:"emptyDir"`
+	PersistentVolumeClaim *struct {
+		ClaimName string `json:"claimName"`
+	} `json:"persistentVolumeClaim"`
+	Projected *struct {
+		Sources []struct {
+			ServiceAccountToken *struct {
+				ExpirationSeconds int64  `json:"expirationSeconds"`
+				Path              string `json:"path"`
+			} `json:"serviceAccountToken"`
+			ConfigMap *struct {
+				Name  string `json:"name"`
+				Items []struct {
+					Key  string `json:"key"`
+					Path string `json:"path"`
+				} `json:"items"`
+			} `json:"configMap"`
+			DownwardAPI *struct {
+				Items []struct {
+					Path     string `json:"path"`
+					FieldRef struct {
+						FieldPath string `json:"fieldPath"`
+					} `json:"fieldRef"`
+				} `json:"items"`
+			} `json:"downwardAPI"`
+		} `json:"sources"`
+	} `json:"projected"`
+}
+
+type volumeMount struct {
+	Name      string `json:"name"`
+	MountPath string `json:"mountPath"`
+	ReadOnly  bool   `json:"readOnly"`
 }
 
 // renderChart runs `helm template` against the chart (the parent dir of this
@@ -57,7 +141,10 @@ func renderChart(t *testing.T, sets ...string) string {
 	if err != nil {
 		t.Fatalf("resolve chart dir: %v", err)
 	}
-	args := []string{"template", "test-release", chartDir}
+	args := []string{
+		"template", "test-release", chartDir,
+		"--set-string", "kubernetes.artifactHelperImage=" + testArtifactHelperImage,
+	}
 	for _, s := range sets {
 		args = append(args, "--set", s)
 	}
@@ -67,6 +154,8 @@ func renderChart(t *testing.T, sets ...string) string {
 	}
 	return string(out)
 }
+
+const testArtifactHelperImage = "registry.example/jetbridge/artifact-helper@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 // findDeployment parses the multi-document manifest stream and returns the
 // Deployment whose name ends with nameSuffix.
@@ -86,6 +175,24 @@ func findDeployment(t *testing.T, manifests, nameSuffix string) deployment {
 	}
 	t.Fatalf("no Deployment with name ending %q found in rendered chart", nameSuffix)
 	return deployment{}
+}
+
+func findDaemonSet(t *testing.T, manifests, nameSuffix string) daemonSet {
+	t.Helper()
+	for _, doc := range strings.Split(manifests, "\n---") {
+		if strings.TrimSpace(doc) == "" {
+			continue
+		}
+		var d daemonSet
+		if err := yaml.Unmarshal([]byte(doc), &d); err != nil {
+			continue
+		}
+		if d.Kind == "DaemonSet" && strings.HasSuffix(d.Metadata.Name, nameSuffix) {
+			return d
+		}
+	}
+	t.Fatalf("no DaemonSet with name ending %q found in rendered chart", nameSuffix)
+	return daemonSet{}
 }
 
 func boolVal(p *bool) bool { return p != nil && *p }
@@ -113,6 +220,83 @@ func TestWebContainerSecurityContext(t *testing.T) {
 	}
 	if !containsStr(c.SecurityContext.Capabilities.Drop, "ALL") {
 		t.Errorf("web container should drop ALL capabilities, got %v", c.SecurityContext.Capabilities.Drop)
+	}
+}
+
+func TestWebUsesOnlyExplicitBoundedKubernetesAPICredentials(t *testing.T) {
+	web := findDeployment(t, renderChart(t), "-web")
+	spec := web.Spec.Template.Spec
+	if spec.AutomountServiceAccountToken == nil || *spec.AutomountServiceAccountToken {
+		t.Fatal("web pod must disable ambient ServiceAccount token automounting")
+	}
+	var projected *podVolume
+	for index := range spec.Volumes {
+		if spec.Volumes[index].Name == "web-kubernetes-api-access" {
+			projected = &spec.Volumes[index]
+		}
+	}
+	if projected == nil || projected.Projected == nil {
+		t.Fatal("web pod is missing its explicit projected Kubernetes API credentials")
+	}
+	var token, ca, namespace bool
+	for _, source := range projected.Projected.Sources {
+		if source.ServiceAccountToken != nil {
+			token = source.ServiceAccountToken.Path == "token" &&
+				source.ServiceAccountToken.ExpirationSeconds > 0 &&
+				source.ServiceAccountToken.ExpirationSeconds <= 3600
+		}
+		if source.ConfigMap != nil && source.ConfigMap.Name == "kube-root-ca.crt" {
+			for _, item := range source.ConfigMap.Items {
+				ca = ca || item.Key == "ca.crt" && item.Path == "ca.crt"
+			}
+		}
+		if source.DownwardAPI != nil {
+			for _, item := range source.DownwardAPI.Items {
+				namespace = namespace || item.Path == "namespace" && item.FieldRef.FieldPath == "metadata.namespace"
+			}
+		}
+	}
+	if !token || !ca || !namespace {
+		t.Fatalf("projected credential sources incomplete: token=%t ca=%t namespace=%t", token, ca, namespace)
+	}
+	for _, init := range spec.InitContainers {
+		for _, mount := range init.VolumeMounts {
+			if mount.Name == "web-kubernetes-api-access" {
+				t.Fatalf("Kubernetes API credentials leaked into init container %q", init.Name)
+			}
+		}
+	}
+	foundWebMount := false
+	for _, mount := range spec.Containers[0].VolumeMounts {
+		if mount.Name == "web-kubernetes-api-access" &&
+			mount.MountPath == "/var/run/secrets/kubernetes.io/serviceaccount" &&
+			mount.ReadOnly {
+			foundWebMount = true
+		}
+	}
+	if !foundWebMount {
+		t.Fatal("explicit Kubernetes API credentials are not mounted read-only at the standard web path")
+	}
+}
+
+func TestArtifactDaemonRunsExplicitlyAsCapabilityBoundedRoot(t *testing.T) {
+	daemon := findDaemonSet(t, renderChart(t), "-artifact-daemon")
+	podSC := daemon.Spec.Template.Spec.SecurityContext
+	if podSC.RunAsUser == nil || *podSC.RunAsUser != 0 ||
+		podSC.RunAsNonRoot == nil || *podSC.RunAsNonRoot {
+		t.Fatalf("daemon pod root identity is not explicit: uid=%v nonRoot=%v", podSC.RunAsUser, podSC.RunAsNonRoot)
+	}
+	if len(daemon.Spec.Template.Spec.Containers) != 1 {
+		t.Fatalf("daemon containers = %d", len(daemon.Spec.Template.Spec.Containers))
+	}
+	sc := daemon.Spec.Template.Spec.Containers[0].SecurityContext
+	if sc.RunAsUser == nil || *sc.RunAsUser != 0 || sc.RunAsNonRoot == nil || *sc.RunAsNonRoot {
+		t.Fatalf("daemon container root identity is not explicit: uid=%v nonRoot=%v", sc.RunAsUser, sc.RunAsNonRoot)
+	}
+	if boolVal(sc.AllowPrivilegeEscalation) || !containsStr(sc.Capabilities.Drop, "ALL") ||
+		!containsStr(sc.Capabilities.Add, "DAC_OVERRIDE") {
+		t.Fatalf("daemon capabilities are not fail-closed: drop=%v add=%v escalation=%v",
+			sc.Capabilities.Drop, sc.Capabilities.Add, sc.AllowPrivilegeEscalation)
 	}
 }
 
@@ -150,7 +334,10 @@ func renderChartSetString(t *testing.T, sets ...string) string {
 	if err != nil {
 		t.Fatalf("resolve chart dir: %v", err)
 	}
-	args := []string{"template", "test-release", chartDir}
+	args := []string{
+		"template", "test-release", chartDir,
+		"--set-string", "kubernetes.artifactHelperImage=" + testArtifactHelperImage,
+	}
 	for _, s := range sets {
 		args = append(args, "--set-string", s)
 	}

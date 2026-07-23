@@ -171,6 +171,119 @@ breadcrumbs session route =
             Routes.Agent ->
                 ( [ agentBreadcrumb ], False, False )
 
+            Routes.AgentReviews { teamName } ->
+                ( [ agentBreadcrumb
+                  , breadcrumbSeparator
+                  , agentRouteBreadcrumb
+                        "breadcrumb-agent-reviews"
+                        (Routes.AgentReviews { teamName = teamName })
+                        "reviews"
+                  ]
+                , False
+                , False
+                )
+
+            Routes.AgentTickets ->
+                ( [ agentBreadcrumb
+                  , breadcrumbSeparator
+                  , agentRouteBreadcrumb
+                        "breadcrumb-agent-tickets"
+                        Routes.AgentTickets
+                        "tickets"
+                  ]
+                , False
+                , False
+                )
+
+            Routes.AgentTicket { id } ->
+                ( [ agentBreadcrumb
+                  , breadcrumbSeparator
+                  , agentRouteBreadcrumb
+                        "breadcrumb-agent-tickets"
+                        Routes.AgentTickets
+                        "tickets"
+                  , breadcrumbSeparator
+                  , agentRouteBreadcrumb
+                        "breadcrumb-agent-ticket"
+                        (Routes.AgentTicket { id = id })
+                        ("ticket " ++ String.fromInt id)
+                  ]
+                , False
+                , False
+                )
+
+            Routes.AgentWorkflow { name } ->
+                ( [ agentBreadcrumb
+                  , breadcrumbSeparator
+                  , agentRouteBreadcrumb
+                        "breadcrumb-agent-workflow"
+                        (Routes.AgentWorkflow { name = name })
+                        name
+                  ]
+                , False
+                , False
+                )
+
+            Routes.AgentWorkflowRun { workflowName, id } ->
+                ( [ agentBreadcrumb
+                  , breadcrumbSeparator
+                  , agentRouteBreadcrumb
+                        "breadcrumb-agent-workflow"
+                        (Routes.AgentWorkflow { name = workflowName })
+                        workflowName
+                  , breadcrumbSeparator
+                  , agentRouteBreadcrumb
+                        "breadcrumb-agent-workflow-run"
+                        (Routes.AgentWorkflowRun
+                            { workflowName = workflowName, id = id }
+                        )
+                        ("run " ++ id)
+                  ]
+                , False
+                , False
+                )
+
+            Routes.AgentSnapshot { id } ->
+                ( [ agentBreadcrumb
+                  , breadcrumbSeparator
+                  , agentRouteBreadcrumb
+                        "breadcrumb-agent-snapshot"
+                        (Routes.AgentSnapshot { id = id })
+                        ("snapshot " ++ id)
+                  ]
+                , False
+                , False
+                )
+
+            Routes.AgentExperiments ->
+                ( [ agentBreadcrumb
+                  , breadcrumbSeparator
+                  , agentRouteBreadcrumb
+                        "breadcrumb-agent-experiments"
+                        Routes.AgentExperiments
+                        "experiments"
+                  ]
+                , False
+                , False
+                )
+
+            Routes.AgentExperiment { id } ->
+                ( [ agentBreadcrumb
+                  , breadcrumbSeparator
+                  , agentRouteBreadcrumb
+                        "breadcrumb-agent-experiments"
+                        Routes.AgentExperiments
+                        "experiments"
+                  , breadcrumbSeparator
+                  , agentRouteBreadcrumb
+                        "breadcrumb-agent-experiment"
+                        (Routes.AgentExperiment { id = id })
+                        ("experiment " ++ id)
+                  ]
+                , False
+                , False
+                )
+
             _ ->
                 ( [], False, False )
 
@@ -215,10 +328,25 @@ clusterNameBreadcrumb session _ =
 
 
 agentBreadcrumb : Bool -> Html Message
-agentBreadcrumb _ =
-    Html.div
-        (id "breadcrumb-agent" :: Styles.clusterName)
-        [ Html.text "agent" ]
+agentBreadcrumb isLastBreadcrumb =
+    agentRouteBreadcrumb "breadcrumb-agent" Routes.Agent "agent" isLastBreadcrumb
+
+
+agentRouteBreadcrumb : String -> Routes.Route -> String -> Bool -> Html Message
+agentRouteBreadcrumb elementId route label isLastBreadcrumb =
+    Html.a
+        ([ id elementId, href (Routes.toString route) ]
+            ++ Styles.breadcrumbItem True isLastBreadcrumb
+        )
+        [ Html.span
+            (if isLastBreadcrumb then
+                Styles.ellipsedText
+
+             else
+                []
+            )
+            [ Html.text label ]
+        ]
 
 
 pipelineBreadcrumbs : Session -> Concourse.Pipeline -> List String -> List (Bool -> Html Message)

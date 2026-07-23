@@ -18,6 +18,7 @@ import (
 const v3ProgramYAML = `schema_version: 3
 name: code-review
 signature_version: 1
+disposition_output: review
 description: Review one repository state relative to another.
 inputs:
   - name: before
@@ -34,6 +35,7 @@ capabilities:
     sidecar:
       name: dev-mcp
       image: registry.example/dev-mcp@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      ports: [{containerPort: 7780, protocol: TCP}]
 plan:
   - agent: review
     function_id: review
@@ -67,6 +69,9 @@ func TestParseV3ProgramExample(t *testing.T) {
 	if function.SignatureVersion != 1 {
 		t.Fatalf("signature_version = %d, want 1", function.SignatureVersion)
 	}
+	if function.DispositionOutput != "review" {
+		t.Fatalf("disposition_output = %q, want review", function.DispositionOutput)
+	}
 	if got := []string{function.Inputs[0].Name, function.Inputs[1].Name}; !reflect.DeepEqual(got, []string{"before", "after"}) {
 		t.Fatalf("input order = %v", got)
 	}
@@ -75,7 +80,8 @@ func TestParseV3ProgramExample(t *testing.T) {
 		t.Fatalf("unexpected outputs: %+v", function.Outputs)
 	}
 	capability, found := function.Capabilities["dev"]
-	if !found || capability.Contract != "dev-mcp/v1" || capability.Sidecar.Name != "dev-mcp" {
+	if !found || capability.Contract != "dev-mcp/v1" || capability.Sidecar.Name != "dev-mcp" ||
+		len(capability.Sidecar.Ports) != 1 || capability.Sidecar.Ports[0].ContainerPort != 7780 {
 		t.Fatalf("unexpected capability: %+v", capability)
 	}
 	if len(function.Plan) != 1 {
@@ -94,6 +100,29 @@ func TestParseV3ProgramExample(t *testing.T) {
 	}
 	if agent.SnapshotOutputs["review"].Type != snapshot.TypeRef("review/v1") {
 		t.Fatalf("agent output types = %+v", agent.SnapshotOutputs)
+	}
+}
+
+func TestParseV3DispositionOutputMustNameARequiredPublicOutput(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		disposition string
+		optional    bool
+		want        string
+	}{
+		{name: "unknown", disposition: "missing", want: "not a declared public output"},
+		{name: "optional", disposition: "review", optional: true, want: "must be required"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			doc := strings.Replace(v3ProgramYAML, "disposition_output: review", "disposition_output: "+test.disposition, 1)
+			if test.optional {
+				doc = strings.Replace(doc, "    type: review/v1\n    from: review", "    type: review/v1\n    optional: true\n    from: review", 1)
+			}
+			_, err := workflow.ParseCompiled([]byte(doc))
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want substring %q", err, test.want)
+			}
+		})
 	}
 }
 
@@ -147,6 +176,7 @@ func TestParseV3PreservesPublicSignatureOrder(t *testing.T) {
 	doc = strings.Replace(doc,
 		"  - name: review\n    type: review/v1\n    from: review",
 		"  - name: zebra\n    type: review/v1\n    from: review-z\n  - name: alpha\n    type: review/v1\n    from: review-a", 1)
+	doc = strings.Replace(doc, "disposition_output: review", "disposition_output: zebra", 1)
 
 	definition, err := workflow.ParseCompiled([]byte(doc))
 	if err != nil {
@@ -365,7 +395,7 @@ func TestParseV3StrictnessDoesNotChangeOrdinaryATCDecoding(t *testing.T) {
 	}
 }
 
-func TestParseV3OutputTypesRequireTypeReferenceStrings(t *testing.T) {
+func TestParseV3OutputTypesAllowOnlyTypeAndOptional(t *testing.T) {
 	valid := v3WithPlan(`
   - agent: work
     prompt: work
@@ -374,9 +404,21 @@ func TestParseV3OutputTypesRequireTypeReferenceStrings(t *testing.T) {
 	if _, err := workflow.ParseCompiled([]byte(valid)); err != nil {
 		t.Fatalf("ParseCompiled scalar output type: %v", err)
 	}
+	longForm := v3WithPlan(`
+  - agent: work
+    prompt: work
+    output_types:
+      result: {type: review/v1, optional: true}`)
+	definition, err := workflow.ParseCompiled([]byte(longForm))
+	if err != nil {
+		t.Fatalf("ParseCompiled safe output long form: %v", err)
+	}
+	agent := definition.Function.Plan[0].Config.(*atc.AgentStep)
+	if !agent.SnapshotOutputs["result"].Optional {
+		t.Fatal("optional output annotation was not preserved")
+	}
 
 	cases := map[string]string{
-		"typed object":           `{type: review/v1}`,
 		"runtime linkage object": `{type: review/v1, retention: workflow, workflow_port: result, workflow_definition_id: 17, workflow_run_id: "9007199254740993"}`,
 		"arbitrary map":          `{provider_value: review/v1}`,
 		"numeric value":          `7`,
@@ -395,9 +437,6 @@ func TestParseV3OutputTypesRequireTypeReferenceStrings(t *testing.T) {
 			if err == nil {
 				t.Fatalf("accepted non-string output type %s", value)
 			}
-			if !strings.Contains(err.Error(), "type-reference string") {
-				t.Fatalf("error = %q, want type-reference string context", err)
-			}
 		})
 	}
 
@@ -408,8 +447,8 @@ func TestParseV3OutputTypesRequireTypeReferenceStrings(t *testing.T) {
       run: {path: /bin/true}
     output_types:
       result: {type: review/v1}`)
-	if _, err := workflow.ParseCompiled([]byte(taskDoc)); err == nil || !strings.Contains(err.Error(), "type-reference string") {
-		t.Fatalf("task output object error = %v, want type-reference string rejection", err)
+	if _, err := workflow.ParseCompiled([]byte(taskDoc)); err != nil {
+		t.Fatalf("task safe output long form: %v", err)
 	}
 }
 
@@ -442,7 +481,11 @@ func TestParseV3OutputTypeStrictnessDoesNotChangeOrdinaryATCLongForm(t *testing.
     prompt: work
     output_types:
       result:
-        type: review/v1`)
+        type: review/v1
+        retention: workflow
+        workflow_port: result
+        workflow_definition_id: 17
+        workflow_run_id: "9007199254740993"`)
 	if _, err := workflow.ParseCompiled([]byte(doc)); err == nil {
 		t.Fatal("v3 source accepted ATC's internal long-form output config")
 	}

@@ -13,10 +13,12 @@ func TestAgentWorkflowRunRoutesAreSystemAuditActions(t *testing.T) {
 	routes := []string{
 		atc.CreateAgentWorkflowRun,
 		atc.ListAgentWorkflowRuns,
+		atc.GetAgentWorkflowRunOperationalStatusCounts,
 		atc.GetAgentWorkflowRun,
 		atc.CancelAgentWorkflowRun,
 		atc.RetryAgentWorkflowRun,
 		atc.GetAgentWorkflowRunOutputs,
+		atc.ListAgentWorkflowRunReviews,
 	}
 	req, err := http.NewRequest(http.MethodGet, "http://example.test", nil)
 	if err != nil {

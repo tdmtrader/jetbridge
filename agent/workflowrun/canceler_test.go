@@ -4,12 +4,22 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
 )
+
+type waitCancelerStub struct {
+	cancel func(context.Context, int, snapshot.WorkflowRunID, string, time.Time) (int, error)
+}
+
+func (stub *waitCancelerStub) CancelRun(ctx context.Context, teamID int, runID snapshot.WorkflowRunID, actor string, now time.Time) (int, error) {
+	return stub.cancel(ctx, teamID, runID, actor, now)
+}
 
 type cancellationStoreStub struct {
 	get              func(context.Context, int, snapshot.WorkflowRunID) (db.AgentWorkflowRun, bool, error)
@@ -91,6 +101,48 @@ func TestCancelerImmediatelyFinalizesCancellationWonBeforeExecutionAllocation(t 
 	}
 	if want := []string{"get", "transition", "get", "finalize", "get"}; !reflect.DeepEqual(order, want) {
 		t.Fatalf("order = %#v, want %#v", order, want)
+	}
+}
+
+func TestCancelerDurablyCancelsOpenWaitsAfterRunCancellationWins(t *testing.T) {
+	runID := snapshot.WorkflowRunID(9007199254740993)
+	aborted := cancellationRun(runID, 7, db.AgentWorkflowRunStatusAborted)
+	store := &cancellationStoreStub{
+		get: func(context.Context, int, snapshot.WorkflowRunID) (db.AgentWorkflowRun, bool, error) {
+			return aborted, true, nil
+		},
+		transition: func(context.Context, snapshot.WorkflowRunID, db.AgentWorkflowRunStatus, db.AgentWorkflowRunStatus, string) (bool, error) {
+			t.Fatal("terminal replay must not transition")
+			return false, nil
+		},
+		finalize: func(context.Context, db.AgentWorkflowRunFinalization) (db.AgentWorkflowRunFinalizationResult, bool, error) {
+			t.Fatal("terminal replay must not finalize")
+			return db.AgentWorkflowRunFinalizationResult{}, false, nil
+		},
+	}
+	called := 0
+	waits := &waitCancelerStub{cancel: func(_ context.Context, teamID int, gotRunID snapshot.WorkflowRunID, actor string, now time.Time) (int, error) {
+		called++
+		if teamID != 7 || gotRunID != runID || actor != "system:workflow-run-cancel" || now.IsZero() {
+			t.Fatalf("CancelRun = (%d, %s, %q, %s)", teamID, gotRunID.String(), actor, now)
+		}
+		return 2, nil
+	}}
+	canceler, err := NewCancelerWithWaits(store, new(dbfakes.FakeBuildFactory), waits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, found, err := canceler.Cancel(context.Background(), 7, runID)
+	if err != nil || !found || got.Status != db.AgentWorkflowRunStatusAborted || called != 1 {
+		t.Fatalf("Cancel = (%+v, %t, %v), wait calls %d", got, found, err, called)
+	}
+
+	waits.cancel = func(context.Context, int, snapshot.WorkflowRunID, string, time.Time) (int, error) {
+		return 0, errors.New("postgres password")
+	}
+	_, found, err = canceler.Cancel(context.Background(), 7, runID)
+	if !found || !errors.Is(err, ErrCancelFailure) || strings.Contains(err.Error(), "password") {
+		t.Fatalf("bounded wait cancellation = (found %t, err %v)", found, err)
 	}
 }
 

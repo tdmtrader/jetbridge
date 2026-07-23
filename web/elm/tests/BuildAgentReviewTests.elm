@@ -43,6 +43,9 @@ sampleReview =
         , summary = "one bug"
         , createdAt = 0
         , evaluatedCount = 0
+        , snapshotId = Nothing
+        , workflowRunId = Nothing
+        , productionId = Nothing
         }
     , provenIssues =
         [ { id = "PI-1"
@@ -209,7 +212,8 @@ all =
                     |> Application.update
                         (Msgs.Update <|
                             Message.Message.AgentReviewVerdictClicked
-                                { repo = "concourse"
+                                { reviewSnapshotId = Nothing
+                                , repo = "concourse"
                                 , commitSha = "abc123def"
                                 , findingId = "PI-1"
                                 , verdict = "accurate"
@@ -219,7 +223,8 @@ all =
                     |> Tuple.second
                     |> Common.contains
                         (Effects.SubmitAgentReviewVerdict
-                            { repo = "concourse"
+                            { reviewSnapshotId = Nothing
+                            , repo = "concourse"
                             , commitSha = "abc123def"
                             , findingId = "PI-1"
                             , verdict = "accurate"
@@ -234,7 +239,8 @@ all =
                         Application.update
                             (Msgs.Update <|
                                 Message.Message.AgentReviewVerdictClicked
-                                    { repo = "concourse"
+                                    { reviewSnapshotId = Nothing
+                                    , repo = "concourse"
                                     , commitSha = "abc123def"
                                     , findingId = "PI-1"
                                     , verdict = "accurate"
@@ -244,7 +250,8 @@ all =
 
                     submit =
                         Effects.SubmitAgentReviewVerdict
-                            { repo = "concourse"
+                            { reviewSnapshotId = Nothing
+                            , repo = "concourse"
                             , commitSha = "abc123def"
                             , findingId = "PI-1"
                             , verdict = "accurate"
@@ -270,7 +277,8 @@ all =
                     |> Application.update
                         (Msgs.Update <|
                             Message.Message.AgentReviewVerdictClicked
-                                { repo = "concourse"
+                                { reviewSnapshotId = Nothing
+                                , repo = "concourse"
                                 , commitSha = "abc123def"
                                 , findingId = ""
                                 , verdict = "accurate"
@@ -280,7 +288,8 @@ all =
                     |> Tuple.second
                     |> Common.notContains
                         (Effects.SubmitAgentReviewVerdict
-                            { repo = "concourse"
+                            { reviewSnapshotId = Nothing
+                            , repo = "concourse"
                             , commitSha = "abc123def"
                             , findingId = ""
                             , verdict = "accurate"

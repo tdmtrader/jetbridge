@@ -22,6 +22,7 @@ module Routes exposing
     )
 
 import Api.Pagination
+import Char
 import Concourse exposing (InstanceVars, JsonValue(..))
 import Concourse.Pagination as Pagination exposing (Direction(..))
 import Dict exposing (Dict)
@@ -62,6 +63,11 @@ type Route
     | Agent
     | AgentTickets
     | AgentTicket { id : Int }
+    | AgentWorkflow { name : String }
+    | AgentWorkflowRun { workflowName : String, id : String }
+    | AgentSnapshot { id : String }
+    | AgentExperiments
+    | AgentExperiment { id : String }
 
 
 type SearchType
@@ -336,6 +342,57 @@ agentTickets =
     map (always <| AgentTickets) (s "agent-tickets")
 
 
+durableId : Parser (String -> a) a
+durableId =
+    Url.Parser.custom "DURABLE_ID"
+        (\value ->
+            case String.uncons value of
+                Just ( first, rest ) ->
+                    if first /= '0' && Char.isDigit first && String.all Char.isDigit rest then
+                        Just value
+
+                    else
+                        Nothing
+
+                Nothing ->
+                    Nothing
+        )
+
+
+agentWorkflow : Parser ((b -> Route) -> a) a
+agentWorkflow =
+    map (\name -> always <| AgentWorkflow { name = name })
+        (s "agent" </> s "workflows" </> workflowNameSegment)
+
+
+workflowNameSegment : Parser (String -> a) a
+workflowNameSegment =
+    Url.Parser.custom "WORKFLOW_NAME" Url.percentDecode
+
+
+agentWorkflowRun : Parser ((b -> Route) -> a) a
+agentWorkflowRun =
+    map (\name runId -> always <| AgentWorkflowRun { workflowName = name, id = runId })
+        (s "agent" </> s "workflows" </> workflowNameSegment </> s "runs" </> durableId)
+
+
+agentSnapshot : Parser ((b -> Route) -> a) a
+agentSnapshot =
+    map (\snapshotId -> always <| AgentSnapshot { id = snapshotId })
+        (s "agent" </> s "snapshots" </> durableId)
+
+
+agentExperiments : Parser ((b -> Route) -> a) a
+agentExperiments =
+    map (always <| AgentExperiments) (s "agent" </> s "experiments")
+
+
+agentExperiment : Parser ((b -> Route) -> a) a
+agentExperiment =
+    map (\experimentId -> always <| AgentExperiment { id = experimentId })
+        (s "agent" </> s "experiments" </> durableId)
+
+
 causality : Parser ((InstanceVars -> Route) -> a) a
 causality =
     let
@@ -503,6 +560,11 @@ sitemap =
         , dashboard
         , agentReviews
         , agent
+        , agentWorkflowRun
+        , agentWorkflow
+        , agentSnapshot
+        , agentExperiment
+        , agentExperiments
         , agentTicket
         , agentTickets
         , pipeline
@@ -631,6 +693,26 @@ toString route =
             ( [ "agent-tickets", String.fromInt id ], [] )
                 |> RouteBuilder.build
 
+        AgentWorkflow { name } ->
+            ( [ "agent", "workflows", Url.percentEncode name ], [] )
+                |> RouteBuilder.build
+
+        AgentWorkflowRun { workflowName, id } ->
+            ( [ "agent", "workflows", Url.percentEncode workflowName, "runs", id ], [] )
+                |> RouteBuilder.build
+
+        AgentSnapshot { id } ->
+            ( [ "agent", "snapshots", id ], [] )
+                |> RouteBuilder.build
+
+        AgentExperiments ->
+            ( [ "agent", "experiments" ], [] )
+                |> RouteBuilder.build
+
+        AgentExperiment { id } ->
+            ( [ "agent", "experiments", id ], [] )
+                |> RouteBuilder.build
+
 
 parsePath : Url.Url -> Maybe Route
 parsePath url =
@@ -750,6 +832,21 @@ getGroups route =
         AgentTicket _ ->
             []
 
+        AgentWorkflow _ ->
+            []
+
+        AgentWorkflowRun _ ->
+            []
+
+        AgentSnapshot _ ->
+            []
+
+        AgentExperiments ->
+            []
+
+        AgentExperiment _ ->
+            []
+
 
 withGroups : List String -> Route -> Route
 withGroups groups route =
@@ -791,4 +888,19 @@ withGroups groups route =
             route
 
         AgentTicket _ ->
+            route
+
+        AgentWorkflow _ ->
+            route
+
+        AgentWorkflowRun _ ->
+            route
+
+        AgentSnapshot _ ->
+            route
+
+        AgentExperiments ->
+            route
+
+        AgentExperiment _ ->
             route

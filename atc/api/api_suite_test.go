@@ -15,6 +15,7 @@ import (
 	"code.cloudfoundry.org/lager/v3/lagertest"
 
 	dispatcherapi "github.com/concourse/concourse/agent/api/dispatcher"
+	experimentsapi "github.com/concourse/concourse/agent/api/experiments"
 	"github.com/concourse/concourse/agent/api/feedback"
 	"github.com/concourse/concourse/agent/api/metrics"
 	"github.com/concourse/concourse/agent/api/outcomes"
@@ -22,12 +23,15 @@ import (
 	"github.com/concourse/concourse/agent/api/reviews"
 	snapshotsapi "github.com/concourse/concourse/agent/api/snapshots"
 	"github.com/concourse/concourse/agent/api/tickets"
+	workflowoutcomesapi "github.com/concourse/concourse/agent/api/workflowoutcomes"
 	workflowrunsapi "github.com/concourse/concourse/agent/api/workflowruns"
+	workflowwaitsapi "github.com/concourse/concourse/agent/api/workflowwaits"
 	"github.com/concourse/concourse/agent/budget"
 	"github.com/concourse/concourse/agent/credentials"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/agent/workflowrun"
+	"github.com/concourse/concourse/agent/workflowwait"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api"
 	"github.com/concourse/concourse/atc/api/accessor"
@@ -105,6 +109,26 @@ type fakeEventHandlerFactory struct {
 
 type unavailableWorkflowRunBackend struct{}
 
+type allowWorkflowOutcomeAuthorizer struct{}
+
+func (allowWorkflowOutcomeAuthorizer) AuthorizeRun(context.Context, int, string, snapshot.WorkflowRunID) (bool, error) {
+	return true, nil
+}
+
+func (allowWorkflowOutcomeAuthorizer) AuthorizeOutput(context.Context, int, snapshot.WorkflowRunID, snapshot.SnapshotID) (bool, error) {
+	return true, nil
+}
+
+func (allowWorkflowOutcomeAuthorizer) AuthorizeModification(
+	context.Context,
+	int,
+	snapshot.WorkflowRunID,
+	snapshot.SnapshotID,
+	snapshot.SnapshotID,
+) (bool, error) {
+	return true, nil
+}
+
 func (unavailableWorkflowRunBackend) BindAndCreate(context.Context, workflowrun.AdmissionContext, workflowrun.BindRequest) (workflowrun.BindResult, error) {
 	return workflowrun.BindResult{}, errors.New("workflow-run backend is unavailable in the API suite")
 }
@@ -115,6 +139,10 @@ func (unavailableWorkflowRunBackend) Get(context.Context, int, snapshot.Workflow
 
 func (unavailableWorkflowRunBackend) List(context.Context, db.AgentWorkflowRunListFilter) ([]db.AgentWorkflowRun, error) {
 	return nil, nil
+}
+
+func (unavailableWorkflowRunBackend) CountByStatus(context.Context, db.AgentWorkflowRunCountFilter) (map[db.AgentWorkflowRunStatus]int64, error) {
+	return map[db.AgentWorkflowRunStatus]int64{}, nil
 }
 
 func (unavailableWorkflowRunBackend) Snapshots(context.Context, snapshot.WorkflowRunID) ([]db.AgentWorkflowRunSnapshotBinding, error) {
@@ -236,6 +264,27 @@ var _ = BeforeEach(func() {
 		Canceler: workflowRunBackend, Manifests: workflowRunBackend,
 	})
 	Expect(err).NotTo(HaveOccurred())
+	workflowOutcomeHandlers, err := workflowoutcomesapi.NewHandler(workflowoutcomesapi.HandlerConfig{
+		TeamID: 1, TeamName: atc.DefaultTeamName,
+		Identity:   func(*http.Request) (string, error) { return "api-suite", nil },
+		Store:      workflowoutcomesapi.NewMemoryStore(time.Now),
+		Authorizer: allowWorkflowOutcomeAuthorizer{},
+	})
+	Expect(err).NotTo(HaveOccurred())
+	workflowWaitHandlers, err := workflowwaitsapi.NewHandler(workflowwaitsapi.Config{
+		Team: workflowwaitsapi.TrustedTeam{ID: 1, Name: atc.DefaultTeamName},
+		Identity: func(*http.Request) (workflowwaitsapi.RequestIdentity, error) {
+			return workflowwaitsapi.RequestIdentity{Actor: "subject:sha256:api-suite", DisplayName: "api-suite"}, nil
+		},
+		Runs: workflowRunBackend, Waits: workflowwait.NewMemoryStore(time.Now), Manifests: workflowRunBackend,
+	})
+	Expect(err).NotTo(HaveOccurred())
+	experimentHandlers, err := experimentsapi.NewHandler(experimentsapi.Config{
+		TeamID: 1, TeamName: atc.DefaultTeamName,
+		Identity: func(*http.Request) (string, error) { return "api-suite", nil },
+		Store:    new(dbfakes.FakeAgentExperimentsFactory), RunnerAvailable: true,
+	})
+	Expect(err).NotTo(HaveOccurred())
 	handler, err := api.NewHandler(
 		logger,
 
@@ -295,6 +344,7 @@ var _ = BeforeEach(func() {
 		budget.NoTicketBudgets{},
 		outcomes.NewMemoryStore(),
 		nil, // outcomeDiffProvider: diff API disabled (no mirror cache in the suite)
+		nil, // outcomeDiffResolver: legacy compatibility in the API suite
 		workflow.NewMemoryStore(),
 		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusNotImplemented) // dispatch handler stub
@@ -302,7 +352,11 @@ var _ = BeforeEach(func() {
 		dispatcherapi.NewMemoryStore(),
 		false, // agent dispatcher boot default (flag off)
 		snapshotHandlers,
+		nil, // resource capture disabled with the snapshot service in this suite
 		workflowRunHandlers,
+		workflowWaitHandlers,
+		workflowOutcomeHandlers,
+		experimentHandlers,
 	)
 
 	Expect(err).NotTo(HaveOccurred())

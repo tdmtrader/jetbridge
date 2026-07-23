@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,8 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -20,20 +23,25 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/concourse/concourse/agent/gitcheck"
+	"github.com/concourse/concourse/agent/pagination"
+	"github.com/concourse/concourse/agent/projection"
 	"github.com/concourse/concourse/agent/snapshot"
 )
 
 const maxPinRequestBytes int64 = 4096
 
 type HandlerFactory struct {
-	enabled        bool
-	creator        SnapshotCreator
-	metadata       MetadataStore
-	content        ContentStore
-	locks          snapshot.DigestLockManager
-	identity       RequestIdentityFunc
-	reportError    ErrorReporter
-	transportLimit int64
+	enabled           bool
+	creator           SnapshotCreator
+	metadata          MetadataStore
+	content           ContentStore
+	repositoryChanges RepositoryChangeProjectionReader
+	locks             snapshot.DigestLockManager
+	identity          RequestIdentityFunc
+	reportError       ErrorReporter
+	transportLimit    int64
+	tempDir           string
 }
 
 func NewHandlerFactory(config Config) (*HandlerFactory, error) {
@@ -55,6 +63,12 @@ func NewHandlerFactory(config Config) (*HandlerFactory, error) {
 	if err != nil {
 		return nil, fmt.Errorf("snapshots API: archive limits: %w", err)
 	}
+	if strings.TrimSpace(config.TempDir) == "" || !filepath.IsAbs(config.TempDir) {
+		return nil, fmt.Errorf("snapshots API: temp dir must be a dedicated absolute path")
+	}
+	if err := snapshot.ValidateTempDir(config.TempDir); err != nil {
+		return nil, fmt.Errorf("snapshots API: temp dir: %w", err)
+	}
 	reporter := config.ReportError
 	if reporter == nil {
 		reporter = func(context.Context, string) {}
@@ -62,7 +76,9 @@ func NewHandlerFactory(config Config) (*HandlerFactory, error) {
 	return &HandlerFactory{
 		enabled: true, creator: config.Creator, metadata: config.Metadata,
 		content: config.Content, locks: config.Locks, identity: config.Identity,
-		reportError: reporter, transportLimit: transportLimit,
+		repositoryChanges: config.RepositoryChanges,
+		reportError:       reporter, transportLimit: transportLimit,
+		tempDir: config.TempDir,
 	}, nil
 }
 
@@ -83,6 +99,9 @@ func (factory *HandlerFactory) Pin(team TrustedTeam) http.Handler {
 }
 func (factory *HandlerFactory) Unpin(team TrustedTeam) http.Handler {
 	return factory.endpoint(team, http.MethodDelete, factory.unpin)
+}
+func (factory *HandlerFactory) RepositoryChangeProjection(team TrustedTeam) http.Handler {
+	return factory.endpoint(team, http.MethodGet, factory.repositoryChangeProjection)
 }
 
 type teamEndpoint func(http.ResponseWriter, *http.Request, TrustedTeam)
@@ -186,6 +205,8 @@ func (factory *HandlerFactory) list(w http.ResponseWriter, r *http.Request, team
 	if !ok {
 		return
 	}
+	pageLimit := filter.Limit
+	filter.Limit = pageLimit + 1
 	values, err := factory.metadata.ListAuthorized(r.Context(), team.ID, filter)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", "snapshot service failed")
@@ -194,11 +215,28 @@ func (factory *HandlerFactory) list(w http.ResponseWriter, r *http.Request, team
 	if values == nil {
 		values = []snapshot.Snapshot{}
 	}
+	if len(values) > filter.Limit {
+		writeError(w, http.StatusInternalServerError, "internal_error", "snapshot service failed")
+		return
+	}
+	hasNext := len(values) > pageLimit
+	if hasNext {
+		values = values[:pageLimit]
+	}
 	for _, value := range values {
 		if err := value.Validate(); err != nil {
 			writeError(w, http.StatusInternalServerError, "internal_error", "snapshot service failed")
 			return
 		}
+	}
+	if hasNext {
+		last := values[len(values)-1]
+		cursor, err := pagination.Encode(pagination.Cursor{CreatedAt: last.CreatedAt, ID: int64(last.ID)})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", "snapshot service failed")
+			return
+		}
+		setNextPageHeaders(w, r, cursor, pageLimit)
 	}
 	writeJSON(w, http.StatusOK, values)
 }
@@ -242,6 +280,75 @@ func (factory *HandlerFactory) show(w http.ResponseWriter, r *http.Request, team
 	writeJSON(w, http.StatusOK, detail)
 }
 
+func (factory *HandlerFactory) repositoryChangeProjection(w http.ResponseWriter, r *http.Request, team TrustedTeam) {
+	if !requireNoBody(w, r) {
+		return
+	}
+	id, ok := parseSnapshotIDQuery(w, r)
+	if !ok {
+		return
+	}
+	manifest, found, err := factory.metadata.GetAuthorized(r.Context(), team.ID, id)
+	if errors.Is(err, snapshot.ErrNotFound) || !found && err == nil {
+		writeError(w, http.StatusNotFound, "not_found", "snapshot was not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "snapshot service failed")
+		return
+	}
+	if err := manifest.Validate(); err != nil || manifest.ID != id {
+		writeError(w, http.StatusInternalServerError, "internal_error", "snapshot service failed")
+		return
+	}
+	if manifest.Type != "repository-change/v1" {
+		writeError(w, http.StatusNotFound, "not_found", "repository-change projection was not found")
+		return
+	}
+	if interfaceIsNil(factory.repositoryChanges) {
+		writeError(w, http.StatusNotFound, "not_found", "repository-change projection service is not enabled")
+		return
+	}
+	value, found, err := factory.repositoryChanges.GetRepositoryChangeProjection(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "snapshot service failed")
+		return
+	}
+	if !found {
+		writeJSON(w, http.StatusAccepted, projection.RepositoryChange{
+			SnapshotID: id, Status: projection.RepositoryChangeProjectionPending,
+			Files: []gitcheck.ChangedFile{},
+		})
+		return
+	}
+	if value.SnapshotID != id {
+		writeError(w, http.StatusInternalServerError, "internal_error", "snapshot service failed")
+		return
+	}
+	switch value.Status {
+	case projection.RepositoryChangeProjectionPending,
+		projection.RepositoryChangeProjectionUnavailable,
+		projection.RepositoryChangeProjectionInvalid:
+		value.Files = []gitcheck.ChangedFile{}
+		value.UnifiedDiff = ""
+	case projection.RepositoryChangeProjectionReady:
+		if value.FileCount != len(value.Files) || len(value.UnifiedDiff) > gitcheck.BoundedUnifiedDiffBytes {
+			writeError(w, http.StatusInternalServerError, "internal_error", "snapshot service failed")
+			return
+		}
+		if value.Files == nil {
+			value.Files = []gitcheck.ChangedFile{}
+		}
+	default:
+		writeError(w, http.StatusInternalServerError, "internal_error", "snapshot service failed")
+		return
+	}
+	// Persisted errors may contain object-store or private scratch details.
+	// Status is public; raw operational diagnostics remain server-side.
+	value.ProjectionError = ""
+	writeJSON(w, http.StatusOK, value)
+}
+
 func (factory *HandlerFactory) contentHandler(w http.ResponseWriter, r *http.Request, team TrustedTeam) {
 	if !requireNoBody(w, r) {
 		return
@@ -275,6 +382,10 @@ func (factory *HandlerFactory) contentHandler(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusInternalServerError, "internal_error", "snapshot service failed")
 		return
 	}
+	if manifest.ByteSize > factory.transportLimit {
+		writeError(w, http.StatusInternalServerError, "internal_error", "snapshot service failed")
+		return
+	}
 	if len(r.Header.Values("Range")) != 0 {
 		writeError(w, http.StatusRequestedRangeNotSatisfiable, "range_not_supported", "snapshot content ranges are not supported")
 		return
@@ -291,6 +402,17 @@ func (factory *HandlerFactory) contentHandler(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusServiceUnavailable, "content_unavailable", "snapshot content is unavailable")
 		return
 	}
+	staged, err := factory.stageVerifiedContent(r.Context(), manifest, reader)
+	if err != nil {
+		factory.reportError(r.Context(), "snapshot_content_verification_failed")
+		writeError(w, http.StatusServiceUnavailable, "content_unavailable", "snapshot content is unavailable")
+		return
+	}
+	stagedName := staged.Name()
+	defer func() {
+		_ = staged.Close()
+		_ = os.Remove(stagedName)
+	}()
 
 	w.Header().Set("Content-Type", "application/x-tar")
 	w.Header().Set("Content-Length", strconv.FormatInt(manifest.ByteSize, 10))
@@ -299,12 +421,48 @@ func (factory *HandlerFactory) contentHandler(w http.ResponseWriter, r *http.Req
 	w.Header().Set("Cache-Control", "private, immutable")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(http.StatusOK)
-	written, copyErr := io.Copy(w, requestContextReader{ctx: r.Context(), reader: reader})
-	closeErr := reader.Close()
-	if copyErr != nil || closeErr != nil || written != manifest.ByteSize {
+	written, copyErr := io.Copy(w, requestContextReader{ctx: r.Context(), reader: staged})
+	if copyErr != nil || written != manifest.ByteSize {
 		factory.reportError(r.Context(), "snapshot_content_stream_failed")
 		panic(http.ErrAbortHandler)
 	}
+}
+
+func (factory *HandlerFactory) stageVerifiedContent(
+	ctx context.Context,
+	manifest snapshot.Snapshot,
+	reader io.ReadCloser,
+) (_ *os.File, err error) {
+	staged, err := os.CreateTemp(factory.tempDir, "snapshot-download-*")
+	if err != nil {
+		_ = reader.Close()
+		return nil, err
+	}
+	stagedName := staged.Name()
+	keep := false
+	defer func() {
+		if keep {
+			return
+		}
+		err = errors.Join(err, staged.Close(), os.Remove(stagedName))
+	}()
+
+	hasher := sha256.New()
+	limited := io.LimitReader(requestContextReader{ctx: ctx, reader: reader}, manifest.ByteSize+1)
+	written, copyErr := io.Copy(io.MultiWriter(staged, hasher), limited)
+	closeErr := reader.Close()
+	if copyErr != nil || closeErr != nil {
+		return nil, errors.Join(copyErr, closeErr)
+	}
+	actualDigest := snapshot.Digest("sha256:" + hex.EncodeToString(hasher.Sum(nil)))
+	if written != manifest.ByteSize || actualDigest != manifest.Digest {
+		return nil, fmt.Errorf("snapshot content does not match its immutable manifest")
+	}
+	if _, err := staged.Seek(0, io.SeekStart); err != nil {
+		return nil, err
+	}
+	keep = true
+	return staged, nil
 }
 
 func (factory *HandlerFactory) pin(w http.ResponseWriter, r *http.Request, team TrustedTeam) {
@@ -552,7 +710,7 @@ func parseListQuery(w http.ResponseWriter, r *http.Request) (snapshot.SnapshotLi
 	}
 	for key, values := range query {
 		switch key {
-		case "type", "content_state", "created_after", "limit":
+		case "type", "content_state", "created_after", "limit", "cursor":
 			if len(values) != 1 || values[0] == "" {
 				writeError(w, http.StatusBadRequest, "invalid_query", "snapshot list query is invalid")
 				return snapshot.SnapshotListFilter{}, false
@@ -599,7 +757,28 @@ func parseListQuery(w http.ResponseWriter, r *http.Request) (snapshot.SnapshotLi
 		}
 		filter.Limit = value
 	}
+	if raw, present := query["cursor"]; present {
+		value, err := pagination.Decode(raw[0])
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_cursor", "snapshot cursor is invalid")
+			return snapshot.SnapshotListFilter{}, false
+		}
+		filter.Before = &value
+	}
 	return filter, true
+}
+
+func setNextPageHeaders(w http.ResponseWriter, r *http.Request, cursor string, limit int) {
+	w.Header().Set("X-Next-Cursor", cursor)
+	query := r.URL.Query()
+	for key := range query {
+		if strings.HasPrefix(key, ":") {
+			query.Del(key)
+		}
+	}
+	query.Set("cursor", cursor)
+	query.Set("limit", strconv.Itoa(limit))
+	w.Header().Set("Link", "<"+r.URL.EscapedPath()+"?"+query.Encode()+`>; rel="next"`)
 }
 
 func parseCanonicalPositiveInt(raw string, maximum int) (int, error) {

@@ -105,7 +105,8 @@ func TestBindAndCreateAdmitsFromServerDerivedIdentity(t *testing.T) {
 	}
 	budget := &budgetStub{admit: func(_ context.Context, admission BudgetAdmission) error {
 		order = append(order, "budget")
-		if admission.Definition.ID != definition.ID || admission.Inputs["repo"].ID != largeSnapshotID {
+		if admission.WorkflowRunID != largeRunID || admission.Admission.TeamID != 7 ||
+			!reflect.DeepEqual(admission.Config, rendered.Config) {
 			t.Fatalf("budget admission = %+v", admission)
 		}
 		return nil
@@ -174,9 +175,88 @@ func TestBindAndCreateAdmitsFromServerDerivedIdentity(t *testing.T) {
 	if !result.Created || result.Run.Status != db.AgentWorkflowRunStatusRunning || result.Run.ID != largeRunID {
 		t.Fatalf("result = %+v", result)
 	}
-	wantOrder := []string{"find", "resolve", "target", "render", "authorize", "budget", "allocate", "prepare", "save", "execution", "attach", "transition"}
+	wantOrder := []string{"find", "resolve", "target", "render", "authorize", "allocate", "budget", "prepare", "save", "execution", "attach", "transition"}
 	if !reflect.DeepEqual(order, wantOrder) {
 		t.Fatalf("order = %#v, want %#v", order, wantOrder)
+	}
+}
+
+func TestBindAndCreateRequiresExperimentGateEvenForExistingIdempotencyKey(t *testing.T) {
+	definition := binderTestDefinition()
+	rendered := binderTestRendered(t, definition)
+	input := binderTestSnapshot(91, "repository/v1")
+	findCalls := 0
+	createCalls := 0
+	store := &storeStub{
+		find: func(context.Context, int, string) (db.AgentWorkflowRun, bool, error) {
+			findCalls++
+			return db.AgentWorkflowRun{ID: 99}, true, nil
+		},
+		create: func(_ context.Context, request db.AgentWorkflowRunCreateRequest) (db.AgentWorkflowRun, bool, error) {
+			createCalls++
+			if request.ExperimentAdmission == nil ||
+				request.ExperimentAdmission.ExperimentID != 11 ||
+				request.ExperimentAdmission.CellID != 13 ||
+				request.ExperimentAdmission.Phase != "candidate" {
+				t.Fatalf("experiment admission = %+v", request.ExperimentAdmission)
+			}
+			return db.AgentWorkflowRun{}, false, db.ErrAgentWorkflowRunExperimentAdmissionClosed
+		},
+	}
+	binder, err := NewBinder(
+		&resolverStub{live: func(context.Context, string) (workflow.Definition, bool, error) {
+			return definition, true, nil
+		}},
+		&rendererStub{
+			full: func(value workflow.Definition) (workflow.FunctionTarget, error) {
+				return workflow.FunctionTarget{
+					Kind: workflow.TargetWorkflow, WorkflowDefinitionID: value.ID,
+					WorkflowName: value.Name, WorkflowVersion: value.Version,
+					SignatureVersion: value.SignatureVersion,
+					Signature:        rendered.TargetSignature,
+				}, nil
+			},
+			render: func(workflow.FunctionTarget) (workflow.RenderedFunction, error) {
+				return rendered, nil
+			},
+		},
+		&authorizerStub{get: func(context.Context, int, snapshot.SnapshotID) (snapshot.Snapshot, bool, error) {
+			return input, true, nil
+		}},
+		store,
+		&budgetStub{},
+		&saverStub{save: func(context.Context, AdmissionContext, ImmutableTemplateSpec) (WorkflowRunTemplateRef, error) {
+			t.Fatal("closed admission must not save a template")
+			return WorkflowRunTemplateRef{}, nil
+		}},
+		&creatorStub{create: func(context.Context, snapshot.WorkflowRunID, WorkflowRunTemplateRef, map[string]any, string, BeforeWorkflowRunCommit) (WorkflowRunExecution, bool, error) {
+			t.Fatal("closed admission must not create an execution")
+			return WorkflowRunExecution{}, false, nil
+		}},
+		&secretStub{prepare: func(context.Context, AdmissionContext, db.AgentWorkflowRun) (PreparedRunSecret, error) {
+			t.Fatal("closed admission must not prepare secrets")
+			return nil, nil
+		}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = binder.BindAndCreate(context.Background(), AdmissionContext{
+		TeamID: 7, TeamName: "research", CreatedBy: "alice",
+		Origin: Origin{Kind: "experiment", Reference: "experiment:11:cell:13"},
+	}, BindRequest{
+		WorkflowName:   definition.Name,
+		Inputs:         map[string]snapshot.SnapshotID{"repo": input.ID},
+		IdempotencyKey: "experiment:11:cell:13:candidate",
+		ExperimentAdmission: &ExperimentAdmissionGate{
+			ExperimentID: 11, CellID: 13, Phase: "candidate",
+		},
+	})
+	if !errors.Is(err, ErrExperimentAdmissionClosed) {
+		t.Fatalf("error = %v, want closed experiment admission", err)
+	}
+	if findCalls != 0 || createCalls != 1 {
+		t.Fatalf("find calls = %d, create calls = %d", findCalls, createCalls)
 	}
 }
 
@@ -365,8 +445,10 @@ func TestBindAndCreateResumesCleanAdmittingRunWithoutResolvingOrRendering(t *tes
 			return snapshot.Snapshot{}, false, nil
 		}},
 		store,
-		&budgetStub{admit: func(context.Context, BudgetAdmission) error {
-			t.Fatal("must not re-admit budget")
+		&budgetStub{admit: func(_ context.Context, admission BudgetAdmission) error {
+			if admission.WorkflowRunID != run.ID || !reflect.DeepEqual(admission.Config, rendered.Config) {
+				t.Fatalf("replayed budget admission = %+v", admission)
+			}
 			return nil
 		}},
 		&saverStub{save: func(context.Context, AdmissionContext, ImmutableTemplateSpec) (WorkflowRunTemplateRef, error) {
@@ -471,7 +553,7 @@ func TestBindAndCreateRepairsCompleteAdmittingCrashWindowWithoutExternalSideEffe
 	}
 }
 
-func TestBindAndCreateSanitizesAndPersistsPostAllocationFailure(t *testing.T) {
+func TestBindAndCreateLeavesPostAllocationPlatformFailureRetryableAndRedacted(t *testing.T) {
 	definition := binderTestDefinition()
 	rendered := binderTestRendered(t, definition)
 	run := db.AgentWorkflowRun{
@@ -483,7 +565,6 @@ func TestBindAndCreateSanitizesAndPersistsPostAllocationFailure(t *testing.T) {
 		Status: db.AgentWorkflowRunStatusAdmitting,
 	}
 	input := binderTestSnapshot(91, "repository/v1")
-	var persisted string
 	store := &storeStub{
 		find: func(context.Context, int, string) (db.AgentWorkflowRun, bool, error) { return run, true, nil },
 		snapshots: func(context.Context, snapshot.WorkflowRunID) ([]db.AgentWorkflowRunSnapshotBinding, error) {
@@ -493,11 +574,8 @@ func TestBindAndCreateSanitizesAndPersistsPostAllocationFailure(t *testing.T) {
 			}}, nil
 		},
 		transition: func(_ context.Context, id snapshot.WorkflowRunID, from, to db.AgentWorkflowRunStatus, message string) (bool, error) {
-			if id != run.ID || from != db.AgentWorkflowRunStatusAdmitting || to != db.AgentWorkflowRunStatusErrored {
-				t.Fatalf("transition = (%s, %s, %s)", id.String(), from, to)
-			}
-			persisted = message
-			return true, nil
+			t.Fatalf("transient platform failure must remain admitting, got transition = (%s, %s, %s, %q)", id.String(), from, to, message)
+			return false, nil
 		},
 	}
 	binder, err := NewBinder(
@@ -519,8 +597,84 @@ func TestBindAndCreateSanitizesAndPersistsPostAllocationFailure(t *testing.T) {
 	if !errors.Is(err, ErrPlatformFailure) {
 		t.Fatalf("error = %v", err)
 	}
-	if persisted != ErrPlatformFailure.Error() || len(persisted) > 4096 || strings.Contains(persisted, "secret") {
-		t.Fatalf("persisted error = %q", persisted)
+	if strings.Contains(err.Error(), "super-secret") || strings.Contains(err.Error(), "credential=") {
+		t.Fatalf("platform error leaked secret detail: %q", err)
+	}
+}
+
+func TestBindAndCreateRetriesSameAdmittingIdentityAfterTransientPlatformFailure(t *testing.T) {
+	definition := binderTestDefinition()
+	rendered := binderTestRendered(t, definition)
+	input := binderTestSnapshot(91, "repository/v1")
+	run := db.AgentWorkflowRun{
+		ID: 41, TeamID: 7, TeamName: "research", WorkflowDefinitionID: definition.ID,
+		WorkflowName: definition.Name, WorkflowVersion: definition.Version,
+		SchemaVersion: 3, SignatureVersion: 1, DefinitionContentHash: definition.ContentHash,
+		IdempotencyKey: "retry-platform", ParameterizedConfig: mustCanonical(t, rendered.Config),
+		ParameterizedConfigHash: rendered.TargetConfigHash, OriginKind: "manual", CreatedBy: "alice",
+		Status: db.AgentWorkflowRunStatusAdmitting,
+	}
+	store := &storeStub{
+		find: func(context.Context, int, string) (db.AgentWorkflowRun, bool, error) { return run, true, nil },
+		snapshots: func(context.Context, snapshot.WorkflowRunID) ([]db.AgentWorkflowRunSnapshotBinding, error) {
+			return []db.AgentWorkflowRunSnapshotBinding{{
+				WorkflowRunID: run.ID, Direction: db.AgentWorkflowRunSnapshotInput, PortName: "repo",
+				Snapshot: snapshot.SnapshotRef{ID: input.ID, Type: input.Type, Digest: input.Digest},
+			}}, nil
+		},
+		transition: func(_ context.Context, id snapshot.WorkflowRunID, from, to db.AgentWorkflowRunStatus, message string) (bool, error) {
+			if id != run.ID || from != db.AgentWorkflowRunStatusAdmitting || to != db.AgentWorkflowRunStatusRunning || message != "" {
+				t.Fatalf("transition = (%s, %s, %s, %q)", id.String(), from, to, message)
+			}
+			run.Status = db.AgentWorkflowRunStatusRunning
+			return true, nil
+		},
+	}
+	prepareCalls := 0
+	binder, err := NewBinder(
+		&resolverStub{}, &rendererStub{}, &authorizerStub{}, store, &budgetStub{},
+		&saverStub{save: func(context.Context, AdmissionContext, ImmutableTemplateSpec) (WorkflowRunTemplateRef, error) {
+			return WorkflowRunTemplateRef{PipelineID: 2, TeamID: 7, Name: rendered.TemplateName, ConfigVersion: 1, FullHash: rendered.TargetConfigHash}, nil
+		}},
+		&creatorStub{create: func(ctx context.Context, _ snapshot.WorkflowRunID, _ WorkflowRunTemplateRef, _ map[string]any, _ string, before BeforeWorkflowRunCommit) (WorkflowRunExecution, bool, error) {
+			if err := before(ctx, 73); err != nil {
+				return WorkflowRunExecution{}, false, err
+			}
+			pipelineRunID, templateID, instanceID, plannedBuildID := 73, 2, 3, int64(5)
+			instanceHash := strings.Repeat("c", 64)
+			run.PipelineRunID, run.TemplatePipelineID, run.InstancePipelineID = &pipelineRunID, &templateID, &instanceID
+			run.PlannedBuildID, run.ConcreteConfigHash = &plannedBuildID, &instanceHash
+			run.ConcreteConfig = mustCanonical(t, rendered.Config)
+			return WorkflowRunExecution{}, true, nil
+		}},
+		&secretStub{prepare: func(context.Context, AdmissionContext, db.AgentWorkflowRun) (PreparedRunSecret, error) {
+			prepareCalls++
+			if prepareCalls == 1 {
+				return nil, errors.New("temporary vault outage")
+			}
+			return &preparedSecretStub{attach: func(context.Context, int) error { return nil }}, nil
+		}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := BindRequest{
+		WorkflowName: definition.Name, Inputs: map[string]snapshot.SnapshotID{"repo": input.ID},
+		IdempotencyKey: "retry-platform",
+	}
+	admission := AdmissionContext{TeamID: 7, TeamName: "research", CreatedBy: "alice", Origin: Origin{Kind: "manual"}}
+	if _, err := binder.BindAndCreate(context.Background(), admission, request); !errors.Is(err, ErrPlatformFailure) {
+		t.Fatalf("first BindAndCreate error = %v, want platform failure", err)
+	}
+	if run.Status != db.AgentWorkflowRunStatusAdmitting {
+		t.Fatalf("status after transient failure = %s, want admitting", run.Status)
+	}
+	result, err := binder.BindAndCreate(context.Background(), admission, request)
+	if err != nil {
+		t.Fatalf("retry BindAndCreate: %v", err)
+	}
+	if result.Created || result.Run.ID != run.ID || result.Run.Status != db.AgentWorkflowRunStatusRunning || prepareCalls != 2 {
+		t.Fatalf("retry result=%+v prepare calls=%d", result, prepareCalls)
 	}
 }
 
@@ -589,8 +743,12 @@ func TestBindAndCreateCategorizesTemplateAndExecutionFailures(t *testing.T) {
 			if !errors.Is(err, test.want) {
 				t.Fatalf("error = %v, want %v", err, test.want)
 			}
-			if persisted != test.want.Error() {
-				t.Fatalf("persisted = %q, want %q", persisted, test.want.Error())
+			wantPersisted := ""
+			if errors.Is(test.want, ErrImmutableTemplateCollision) {
+				wantPersisted = test.want.Error()
+			}
+			if persisted != wantPersisted {
+				t.Fatalf("persisted = %q, want %q", persisted, wantPersisted)
 			}
 		})
 	}
@@ -622,6 +780,193 @@ func TestBindAndCreateRejectsPartialAdmittingState(t *testing.T) {
 	}, BindRequest{WorkflowName: "review-flow", Inputs: map[string]snapshot.SnapshotID{}, IdempotencyKey: "partial"})
 	if !errors.Is(err, ErrCorruptPartialAdmission) {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestWorkflowTargetRendererPinsTrustedAgentRuntimeIntoImmutableConfig(t *testing.T) {
+	compiled, err := workflow.ParseCompiled([]byte(`schema_version: 3
+name: runtime-test
+signature_version: 1
+inputs:
+  - name: repo
+    type: repository/v1
+outputs:
+  - name: report
+    type: opaque/v1
+    from: report
+plan:
+  - agent: inspect
+    function_id: inspect
+    prompt: Inspect the repository.
+    inputs: [repo]
+    outputs: [report]
+    input_types:
+      repo: {type: repository/v1}
+    output_types:
+      report: opaque/v1
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	definition := workflow.Definition{
+		ID: 101, Name: "runtime-test", Version: 3, SchemaVersion: 3, SignatureVersion: 1,
+		ContentHash: strings.Repeat("d", 64), Compiled: *compiled,
+	}
+	target, err := workflow.FullFunctionTarget(definition)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstImage := "registry.example/agent-runner@sha256:" + strings.Repeat("a", 64)
+	first, err := (WorkflowTargetRenderer{RuntimeImage: firstImage}).RenderFunction(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, ok := first.Config.Jobs[0].PlanSequence[len(first.Config.Jobs[0].PlanSequence)-1].Config.(*atc.AgentStep)
+	if !ok || agent.RuntimeImage != firstImage {
+		t.Fatalf("rendered agent runtime = %#v", agent)
+	}
+	second, err := (WorkflowTargetRenderer{
+		RuntimeImage: "registry.example/agent-runner@sha256:" + strings.Repeat("b", 64),
+	}).RenderFunction(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.TargetConfigHash == second.TargetConfigHash || first.TemplateName == second.TemplateName {
+		t.Fatal("runtime image identity did not affect immutable target identity")
+	}
+	if _, err := (WorkflowTargetRenderer{RuntimeImage: "registry.example/agent-runner:v1"}).RenderFunction(target); err == nil {
+		t.Fatal("mutable runtime image was admitted")
+	}
+}
+
+func TestBindAndCreateRejectsFrozenTargetConfigDriftBeforeAllocating(t *testing.T) {
+	definition := binderTestDefinition()
+	rendered := binderTestRendered(t, definition)
+	target := workflow.FunctionTarget{
+		Kind: workflow.TargetWorkflow, WorkflowDefinitionID: definition.ID,
+		WorkflowName: definition.Name, WorkflowVersion: definition.Version,
+		SignatureVersion: definition.SignatureVersion, Signature: rendered.TargetSignature,
+	}
+	binder, err := NewBinder(
+		&resolverStub{live: func(context.Context, string) (workflow.Definition, bool, error) {
+			return definition, true, nil
+		}},
+		&rendererStub{
+			full:   func(workflow.Definition) (workflow.FunctionTarget, error) { return target, nil },
+			render: func(workflow.FunctionTarget) (workflow.RenderedFunction, error) { return rendered, nil },
+		},
+		&authorizerStub{get: func(context.Context, int, snapshot.SnapshotID) (snapshot.Snapshot, bool, error) {
+			t.Fatal("target drift must fail before snapshot authorization")
+			return snapshot.Snapshot{}, false, nil
+		}},
+		&storeStub{find: func(context.Context, int, string) (db.AgentWorkflowRun, bool, error) {
+			return db.AgentWorkflowRun{}, false, nil
+		}},
+		&budgetStub{}, &saverStub{}, &creatorStub{}, &secretStub{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = binder.BindAndCreate(context.Background(), AdmissionContext{
+		TeamID: 7, TeamName: "research", CreatedBy: "alice", Origin: Origin{Kind: "experiment", Reference: "experiment:1:cell:1"},
+	}, BindRequest{
+		WorkflowName: definition.Name, Inputs: map[string]snapshot.SnapshotID{"repo": 91},
+		IdempotencyKey: "frozen-target-drift", ExpectedTargetConfigHash: strings.Repeat("f", 64),
+	})
+	if !errors.Is(err, ErrInvalidRequest) || !strings.Contains(err.Error(), "frozen target config") {
+		t.Fatalf("error = %v, want frozen target drift", err)
+	}
+}
+
+func TestBindAndCreateRejectsFrozenDefinitionDriftBeforeRendering(t *testing.T) {
+	definition := binderTestDefinition()
+	rendered := false
+	binder, err := NewBinder(
+		&resolverStub{get: func(context.Context, string, int) (workflow.Definition, bool, error) {
+			return definition, true, nil
+		}},
+		&rendererStub{full: func(workflow.Definition) (workflow.FunctionTarget, error) {
+			rendered = true
+			return workflow.FunctionTarget{}, nil
+		}},
+		&authorizerStub{},
+		&storeStub{find: func(context.Context, int, string) (db.AgentWorkflowRun, bool, error) {
+			return db.AgentWorkflowRun{}, false, nil
+		}},
+		&budgetStub{}, &saverStub{}, &creatorStub{}, &secretStub{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	version := definition.Version
+	_, err = binder.BindAndCreate(context.Background(), AdmissionContext{
+		TeamID: 7, TeamName: "research", CreatedBy: "alice", Origin: Origin{Kind: "experiment", Reference: "experiment:1:cell:1"},
+	}, BindRequest{
+		WorkflowName: definition.Name, Version: &version, Inputs: map[string]snapshot.SnapshotID{"repo": 91},
+		IdempotencyKey: "frozen-definition-drift", ExpectedWorkflowDefinitionID: int64(definition.ID + 1),
+	})
+	if !errors.Is(err, ErrInvalidRequest) || !strings.Contains(err.Error(), "frozen workflow definition") {
+		t.Fatalf("error = %v, want frozen definition drift", err)
+	}
+	if rendered {
+		t.Fatal("renderer was called after frozen definition drift")
+	}
+}
+
+func TestBindAndCreateRejectsExistingRunOutsideFrozenTargetConfig(t *testing.T) {
+	rendered := binderTestRendered(t, binderTestDefinition())
+	run := db.AgentWorkflowRun{
+		ID: 41, TeamID: 7, WorkflowName: "review-flow", WorkflowVersion: 3,
+		IdempotencyKey: "existing-drift", ParameterizedConfigHash: rendered.TargetConfigHash,
+		OriginKind: "experiment", OriginReference: "experiment:1:cell:1", CreatedBy: "alice",
+		Status: db.AgentWorkflowRunStatusRunning,
+	}
+	binder, err := NewBinder(
+		&resolverStub{}, &rendererStub{}, &authorizerStub{},
+		&storeStub{find: func(context.Context, int, string) (db.AgentWorkflowRun, bool, error) {
+			return run, true, nil
+		}},
+		&budgetStub{}, &saverStub{}, &creatorStub{}, &secretStub{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = binder.BindAndCreate(context.Background(), AdmissionContext{
+		TeamID: 7, TeamName: "research", CreatedBy: "alice", Origin: Origin{Kind: "experiment", Reference: "experiment:1:cell:1"},
+	}, BindRequest{
+		WorkflowName: "review-flow", Inputs: map[string]snapshot.SnapshotID{}, IdempotencyKey: "existing-drift",
+		ExpectedTargetConfigHash: strings.Repeat("f", 64),
+	})
+	if !errors.Is(err, ErrInvalidRequest) || !strings.Contains(err.Error(), "frozen target config") {
+		t.Fatalf("error = %v, want frozen target drift", err)
+	}
+}
+
+func TestBindAndCreateRejectsExistingRunOutsideFrozenDefinition(t *testing.T) {
+	run := db.AgentWorkflowRun{
+		ID: 42, TeamID: 7, WorkflowDefinitionID: 41, WorkflowName: "review-flow", WorkflowVersion: 3,
+		IdempotencyKey: "existing-definition-drift", ParameterizedConfigHash: strings.Repeat("a", 64),
+		OriginKind: "experiment", OriginReference: "experiment:1:cell:1", CreatedBy: "alice",
+		Status: db.AgentWorkflowRunStatusRunning,
+	}
+	binder, err := NewBinder(
+		&resolverStub{}, &rendererStub{}, &authorizerStub{},
+		&storeStub{find: func(context.Context, int, string) (db.AgentWorkflowRun, bool, error) {
+			return run, true, nil
+		}},
+		&budgetStub{}, &saverStub{}, &creatorStub{}, &secretStub{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = binder.BindAndCreate(context.Background(), AdmissionContext{
+		TeamID: 7, TeamName: "research", CreatedBy: "alice", Origin: Origin{Kind: "experiment", Reference: "experiment:1:cell:1"},
+	}, BindRequest{
+		WorkflowName: "review-flow", Inputs: map[string]snapshot.SnapshotID{}, IdempotencyKey: "existing-definition-drift",
+		ExpectedWorkflowDefinitionID: 42,
+	})
+	if !errors.Is(err, ErrInvalidRequest) || !strings.Contains(err.Error(), "frozen workflow definition") {
+		t.Fatalf("error = %v, want frozen definition drift", err)
 	}
 }
 
@@ -723,6 +1068,8 @@ func TestRequestValidationGrammarAndBounds(t *testing.T) {
 		{name: "bad workflow identifier", mutate: func(_ *AdmissionContext, r *BindRequest) { r.WorkflowName = "Bad Name" }},
 		{name: "bad function identifier", mutate: func(_ *AdmissionContext, r *BindRequest) { r.FunctionID = "Bad Name" }},
 		{name: "zero version", mutate: func(_ *AdmissionContext, r *BindRequest) { value := 0; r.Version = &value }},
+		{name: "negative expected definition", mutate: func(_ *AdmissionContext, r *BindRequest) { r.ExpectedWorkflowDefinitionID = -1 }},
+		{name: "malformed target config hash", mutate: func(_ *AdmissionContext, r *BindRequest) { r.ExpectedTargetConfigHash = strings.Repeat("A", 64) }},
 		{name: "zero retry", mutate: func(_ *AdmissionContext, r *BindRequest) { value := snapshot.WorkflowRunID(0); r.RetryOf = &value }},
 		{name: "blank key", mutate: func(_ *AdmissionContext, r *BindRequest) { r.IdempotencyKey = "" }},
 		{name: "key outer whitespace", mutate: func(_ *AdmissionContext, r *BindRequest) { r.IdempotencyKey = " request" }},
@@ -806,6 +1153,50 @@ func TestInputCoverageAndAuthorization(t *testing.T) {
 			}
 			if strings.Contains(fmt.Sprint(err), "private detail") {
 				t.Fatalf("authorization detail leaked: %v", err)
+			}
+		})
+	}
+}
+
+func TestAwaitSnapshotDefaultsAreAuthorizedAtAdmission(t *testing.T) {
+	config := atc.Config{Jobs: atc.JobConfigs{{Name: "run", PlanSequence: []atc.Step{{Config: &atc.TimeoutStep{
+		Duration: "1h",
+		Step: &atc.AwaitSnapshotStep{
+			Name: "answer", Question: "question", Type: "human-answer/v1",
+			OnTimeout: atc.AwaitSnapshotOnTimeoutDefault, DefaultSnapshotID: "9007199254740993",
+		},
+	}}}}}}
+
+	for _, test := range []struct {
+		name  string
+		value snapshot.Snapshot
+		found bool
+		err   error
+		want  error
+	}{
+		{name: "authorized", value: binderTestSnapshot(9007199254740993, "human-answer/v1"), found: true},
+		{name: "missing", found: false, want: ErrSnapshotUnavailable},
+		{name: "wrong type", value: binderTestSnapshot(9007199254740993, "review/v1"), found: true, want: ErrSnapshotTypeMismatch},
+		{name: "dependency error", err: errors.New("private storage detail"), want: ErrPlatformFailure},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			calls := 0
+			binder := &Binder{snapshots: &authorizerStub{get: func(_ context.Context, teamID int, id snapshot.SnapshotID) (snapshot.Snapshot, bool, error) {
+				calls++
+				if teamID != 17 || id.String() != "9007199254740993" {
+					t.Fatalf("authorization identity = (%d, %s)", teamID, id.String())
+				}
+				return test.value, test.found, test.err
+			}}}
+			err := binder.authorizeAwaitDefaults(context.Background(), 17, config)
+			if test.want == nil && err != nil || test.want != nil && !errors.Is(err, test.want) {
+				t.Fatalf("error = %v, want %v", err, test.want)
+			}
+			if calls != 1 {
+				t.Fatalf("authorization calls = %d", calls)
+			}
+			if strings.Contains(fmt.Sprint(err), "private storage detail") {
+				t.Fatalf("dependency detail leaked: %v", err)
 			}
 		})
 	}
@@ -956,6 +1347,9 @@ type budgetStub struct {
 }
 
 func (s *budgetStub) Admit(ctx context.Context, admission BudgetAdmission) error {
+	if s.admit == nil {
+		return nil
+	}
 	return s.admit(ctx, admission)
 }
 

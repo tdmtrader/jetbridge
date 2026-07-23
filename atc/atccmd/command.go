@@ -14,6 +14,7 @@ import (
 	_ "net/http/pprof"
 	"net/url"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -23,19 +24,26 @@ import (
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"github.com/concourse/concourse"
+	experimentsapi "github.com/concourse/concourse/agent/api/experiments"
 	"github.com/concourse/concourse/agent/api/outcomes"
 	"github.com/concourse/concourse/agent/api/principals"
 	snapshotsapi "github.com/concourse/concourse/agent/api/snapshots"
 	workflowrunsapi "github.com/concourse/concourse/agent/api/workflowruns"
+	workflowwaitsapi "github.com/concourse/concourse/agent/api/workflowwaits"
 	"github.com/concourse/concourse/agent/artifactcap"
 	"github.com/concourse/concourse/agent/budget"
 	"github.com/concourse/concourse/agent/credentials"
 	"github.com/concourse/concourse/agent/dispatch"
 	"github.com/concourse/concourse/agent/outcomewatcher"
 	"github.com/concourse/concourse/agent/pipelinearchiver"
+	"github.com/concourse/concourse/agent/projection"
+	"github.com/concourse/concourse/agent/publisher"
+	"github.com/concourse/concourse/agent/resourcecapture"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/snapshot/contracts"
 	"github.com/concourse/concourse/agent/workflowrun"
+	"github.com/concourse/concourse/agent/workflowwait"
+	"github.com/concourse/concourse/agent/workitem"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api"
 	"github.com/concourse/concourse/atc/api/accessor"
@@ -157,6 +165,16 @@ type snapshotLifecycleComposer func(
 	snapshot.DigestLockManager,
 ) (snapshotLifecycle, error)
 
+// snapshotPublisherComposer is the explicit integration seam for outbound
+// provider adapters. Jetbridge supplies the durable audit store and the exact
+// snapshot stores; a deployment supplies concrete Git/work-item adapters.
+// With no composer, publication remains disabled and fail-closed.
+type snapshotPublisherComposer func(
+	publisher.Store,
+	snapshot.MetadataStore,
+	snapshot.ContentStore,
+) (publisher.Executor, error)
+
 func isNilDependency(value any) bool {
 	if value == nil {
 		return true
@@ -182,21 +200,25 @@ type RunCommand struct {
 	// Snapshot daemon transport and content storage are command-scoped so API
 	// and backend composition share one durable client/store rather than
 	// rebuilding restart-unsafe state inside each pool construction.
-	agentSnapshotMu                sync.Mutex
-	agentSnapshotDaemonClient      *jetbridge.DaemonClient
-	agentSnapshotContentStore      snapshot.ContentStore
-	agentSnapshotMetadataStore     db.AgentSnapshotsFactory
-	agentSnapshotWorkflowRuns      db.AgentWorkflowRunsFactory
-	agentSnapshotDigestLocker      snapshot.DigestLockManager
-	agentSnapshotValidatorRegistry snapshot.ValidatorRegistry
-	agentSnapshotOutputSealer      snapshot.OutputSealer
-	agentSnapshotCreator           snapshot.SnapshotCreator
-	agentSnapshotLifecycle         snapshotLifecycle
-	agentSnapshotHandlerFactory    *snapshotsapi.HandlerFactory
-	agentSnapshotArchiveLimits     snapshot.ArchiveLimits
-	agentSnapshotComposer          snapshotStorageComposer
-	agentSnapshotSealerComposer    snapshotSealerComposer
-	agentSnapshotLifecycleComposer snapshotLifecycleComposer
+	agentSnapshotMu                 sync.Mutex
+	agentSnapshotDaemonClient       *jetbridge.DaemonClient
+	agentSnapshotContentStore       snapshot.ContentStore
+	agentSnapshotMetadataStore      db.AgentSnapshotsFactory
+	agentSnapshotWorkflowRuns       db.AgentWorkflowRunsFactory
+	agentSnapshotDigestLocker       snapshot.DigestLockManager
+	agentSnapshotValidatorRegistry  snapshot.ValidatorRegistry
+	agentSnapshotOutputSealer       snapshot.OutputSealer
+	agentSnapshotCreator            snapshot.SnapshotCreator
+	agentSnapshotLifecycle          snapshotLifecycle
+	agentSnapshotProjectionRegistry *projection.Registry
+	agentResourceCaptureFinalizer   component.Runnable
+	agentSnapshotHandlerFactory     *snapshotsapi.HandlerFactory
+	agentSnapshotArchiveLimits      snapshot.ArchiveLimits
+	agentSnapshotComposer           snapshotStorageComposer
+	agentSnapshotSealerComposer     snapshotSealerComposer
+	agentSnapshotLifecycleComposer  snapshotLifecycleComposer
+	agentSnapshotPublisherComposer  snapshotPublisherComposer
+	agentSnapshotPublisher          publisher.Executor
 
 	artifactResolveCapabilityMu  sync.Mutex
 	artifactResolveCapabilityKey []byte
@@ -274,7 +296,7 @@ type RunCommand struct {
 		ServiceAccount                     string        `long:"kubernetes-service-account"        description:"Kubernetes ServiceAccount name to set on task Pods. Defaults to the namespace default SA."`
 		CacheStore                         string        `long:"kubernetes-cache-store"            description:"Task cache backend: hostpath (node-local dirs) or emptydir (ephemeral). Empty = auto-detect."`
 		CacheHostPath                      string        `long:"kubernetes-cache-host-path"        description:"Base directory on host node for persistent task caches. Caches are node-local and survive pod restarts."`
-		ArtifactHelperImage                string        `long:"kubernetes-artifact-helper-image"     description:"Container image for artifact init containers. Defaults to alpine:latest."`
+		ArtifactHelperImage                string        `long:"kubernetes-artifact-helper-image"     description:"Required artifact helper image pinned to an exact OCI sha256 digest."`
 		ArtifactDaemonPort                 int           `long:"kubernetes-artifact-daemon-port"      default:"7780" description:"HTTP port for the DaemonSet artifact server (hostPort)."`
 		ArtifactDaemonHostPath             string        `long:"kubernetes-artifact-daemon-host-path" description:"Host path for artifact storage on each node. When set, build pods require concourse.dev/artifact-cache=ready node label."`
 		ArtifactDaemonService              string        `long:"kubernetes-artifact-daemon-service"   default:"artifact-daemon" description:"Headless Service name for DaemonSet per-pod DNS."`
@@ -290,6 +312,7 @@ type RunCommand struct {
 
 	AgentSnapshots struct {
 		Enabled           bool          `long:"agent-snapshot-enabled" description:"Enable durable typed snapshot content storage through the Kubernetes artifact daemon."`
+		TempDir           string        `long:"agent-snapshot-temp-dir" description:"Dedicated disk-backed scratch directory for snapshot canonicalization, upload, repair, and validation."`
 		ReplicationFactor int           `long:"agent-snapshot-replication-factor" default:"2" description:"Number of stable artifact-daemon nodes selected for each snapshot upload."`
 		MaxBytes          int64         `long:"agent-snapshot-max-bytes" default:"10737418240" description:"Maximum regular-file content bytes admitted by snapshot canonicalization; may only lower the built-in limit."`
 		MaxFiles          int64         `long:"agent-snapshot-max-files" default:"100000" description:"Maximum entries admitted by snapshot canonicalization; may only lower the built-in limit."`
@@ -303,6 +326,23 @@ type RunCommand struct {
 		ReconcilerInterval time.Duration `long:"agent-workflow-run-reconciler-interval" default:"10s" description:"Interval between bounded durable workflow-run reconciliation passes."`
 		AdmissionTimeout   time.Duration `long:"agent-workflow-run-admission-timeout" default:"15m" description:"Maximum age of an incomplete durable workflow-run admission before it is terminalized as interrupted."`
 	} `group:"Agent Workflow Runs"`
+
+	AgentExperiments struct {
+		Enabled        bool          `long:"agent-experiment-runner-enabled" description:"Enable durable experiment candidate, evaluator, and cancellation reconciliation."`
+		Interval       time.Duration `long:"agent-experiment-runner-interval" default:"10s" description:"Interval between bounded durable experiment reconciliation passes."`
+		MaxConcurrency int           `long:"agent-experiment-runner-max-concurrency" default:"4" description:"Maximum number of experiment cells claimed or reconciled per pass."`
+	} `group:"Agent Experiments"`
+
+	AgentPublisherGateway struct {
+		Enabled           bool          `long:"agent-publisher-gateway-enabled" description:"Enable provider-neutral outbound publication through a policy-controlled HTTPS gateway."`
+		Endpoint          string        `long:"agent-publisher-gateway-endpoint" description:"HTTPS origin for the provider-neutral publisher gateway; paths, credentials, queries, and fragments are rejected."`
+		PolicyFile        string        `long:"agent-publisher-gateway-policy-file" description:"Absolute path to a mounted team and destination allow policy JSON file."`
+		TokenFile         string        `long:"agent-publisher-gateway-token-file" description:"Absolute path to a mounted bearer token file; token literals are never accepted."`
+		CACertificateFile string        `long:"agent-publisher-gateway-ca-certificate-file" description:"Optional absolute path to a mounted PEM CA bundle for the gateway."`
+		RequestTimeout    time.Duration `long:"agent-publisher-gateway-request-timeout" default:"30s" description:"End-to-end timeout for one publisher gateway reconciliation or write."`
+		LeaseDuration     time.Duration `long:"agent-publisher-gateway-lease-duration" default:"5m" description:"Durable publication lease before lookup-based retry reconciliation."`
+		MaxResponseBytes  int64         `long:"agent-publisher-gateway-max-response-bytes" default:"1048576" description:"Maximum accepted publisher gateway JSON response size."`
+	} `group:"Agent Publisher Gateway"`
 
 	CLIArtifactsDir flag.Dir `long:"cli-artifacts-dir" description:"Directory containing downloadable CLI binaries."`
 	WebPublicDir    flag.Dir `long:"web-public-dir" description:"Web public/ directory to serve live for local development."`
@@ -333,19 +373,19 @@ type RunCommand struct {
 
 	AgentReviewPublishToken string `long:"agent-review-publish-token" description:"DEPRECATED: static bearer token accepted for publishing agent review results during the agent-principal dual-accept window. Mint a reviews:write agent principal instead (POST /api/v1/agent/principals). This flag will be removed at the end of the window."`
 
-	AgentStepImage string `long:"agent-step-image" description:"Container image for the agent: step's main container (must contain the claude CLI and agent-runner). Agent steps error at runtime when unset."`
+	AgentStepImage string `long:"agent-step-image" description:"Container image for the agent: step's main container (must contain the claude CLI and agent-runner). Schema-v3 workflow runs and resource snapshot captures require an exact @sha256 digest; agent steps error at runtime when unset."`
 
 	AgentRepoBaseURL string `long:"agent-repo-base-url" default:"https://github.com" description:"Base URL prefixed to a ticket's repo slug when dispatch renders the run's git resource (manual-dispatch slice; anonymous clones only until harvest's git-cred machinery lands)."`
 
 	AgentPlatformTokenSecret string `long:"agent-platform-token-secret" description:"Name of a K8s secret (key 'anthropic-token') providing the Anthropic token for pure-CI agent steps that have no per-run agent-run-<id> secret. The per-run secret always takes precedence. Unset means pure-CI agent steps have no token path."`
 
-	AgentDailyBudgetUSD float64 `long:"agent-daily-budget-usd" default:"0" description:"Global daily agent LLM spend cap in USD across all agent work, enforced by dispatch admission and reported by the cost rollup API. 0 disables the cap."`
+	AgentDailyBudgetUSD float64 `long:"agent-daily-budget-usd" default:"0" description:"Global daily agent LLM spend cap in USD across all agent work, enforced by atomic workflow and experiment reservations and reported by the cost rollup API. 0 disables the cap."`
 
 	AgentDispatcherEnabled     bool          `long:"agent-dispatcher-enabled" description:"Run the autonomous agent-ticket dispatcher loop (Kubernetes runtime only). When off, tickets dispatch only via the manual route/fly."`
 	AgentDispatcherMaxAttempts int           `long:"agent-dispatcher-max-attempts" default:"3" description:"Max automatic re-dispatches per ticket (reconciler send_back requeues); past the cap the ticket errors. 0 = uncapped."`
 	AgentRunTimeout            time.Duration `long:"agent-run-timeout" default:"6h" description:"Per-run agent principal token expiry (contracts §2.8.2). The run secret itself is collected by the run-secret reaper on run completion."`
 
-	AgentOutcomeGitDir          string        `long:"agent-outcome-git-dir" description:"Directory for the outcome watcher's bare git mirrors. Empty disables both the watcher and the ticket diff API (the master switch)."`
+	AgentOutcomeGitDir          string        `long:"agent-outcome-git-dir" description:"Directory for the outcome watcher's bare git mirrors. Empty disables live Git merge detection and the ticket diff API; database-only terminal outcome projection remains enabled."`
 	AgentOutcomeGitURLTemplate  string        `long:"agent-outcome-git-url-template" default:"https://github.com/{repo}.git" description:"Template for mirror clone URLs; {repo} is the ticket's repo slug."`
 	AgentOutcomeGitUsername     string        `long:"agent-outcome-git-username" description:"Optional username for mirror fetches (https only)."`
 	AgentOutcomeGitToken        string        `long:"agent-outcome-git-token" description:"Optional token for mirror fetches (https only; delivered via a temp credential helper, never argv)."`
@@ -1254,11 +1294,34 @@ func (cmd *RunCommand) backendComponents(
 	dbPipelinePauser := db.NewPipelinePauser(dbConn, lockFactory)
 	dbSigningKeyFactory := db.NewSigningKeyFactory(dbConn)
 	dbAgentWorkflowRunsFactory := db.NewAgentWorkflowRunsFactory(dbConn)
+	dbAgentWorkflowWaitsFactory := db.NewAgentWorkflowWaitsFactory(
+		dbConn, cmd.AgentSnapshots.BindingRetention,
+	)
+	reconcilerOptions := []workflowrun.ReconcilerOption{
+		workflowrun.WithWaitCanceler(dbAgentWorkflowWaitsFactory),
+	}
+	cmd.agentSnapshotMu.Lock()
+	agentSnapshotCreator := cmd.agentSnapshotCreator
+	cmd.agentSnapshotMu.Unlock()
+	if !isNilDependency(agentSnapshotCreator) {
+		waitResolutionCompleter, err := workflowwait.NewResolutionCompleter(
+			dbAgentWorkflowWaitsFactory,
+			agentSnapshotCreator,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("construct workflow wait resolution completer: %w", err)
+		}
+		reconcilerOptions = append(
+			reconcilerOptions,
+			workflowrun.WithWaitResolutionCompleter(waitResolutionCompleter),
+		)
+	}
 	agentWorkflowRunReconciler, err := workflowrun.NewReconciler(
 		dbAgentWorkflowRunsFactory,
 		logger.Session(atc.ComponentAgentWorkflowRunReconciler),
 		cmd.AgentWorkflowRuns.AdmissionTimeout,
 		cmd.AgentWorkflowRuns.ReconcilerInterval,
+		reconcilerOptions...,
 	)
 	if err != nil {
 		return nil, err
@@ -1557,15 +1620,107 @@ func (cmd *RunCommand) backendComponents(
 				return dispatch.EffectiveModeFromRead(mode, found, err, dispatcherBootFlag)
 			}
 
+			var (
+				ticketDispatchTeamID   int
+				ticketDispatchTeamName string
+				ticketWorkItems        dispatch.WorkItemCapturer
+				ticketWorkflowBinder   dispatch.WorkflowBinder
+				ticketWorkflowCanceler dispatch.WorkflowRunCanceler
+			)
+			if cmd.AgentSnapshots.Enabled {
+				mainTeam, found, err := teamFactory.FindTeam(atc.DefaultTeamName)
+				if err != nil {
+					return nil, fmt.Errorf("resolve main team for ticket workflow dispatch: %w", err)
+				}
+				if !found || mainTeam == nil || mainTeam.ID() <= 0 || mainTeam.Name() != atc.DefaultTeamName {
+					return nil, errors.New("resolve main team for ticket workflow dispatch: main team is unavailable")
+				}
+				ticketDispatchTeamID, ticketDispatchTeamName = mainTeam.ID(), mainTeam.Name()
+
+				workflowStore := db.NewAgentWorkflowsFactory(dbConn)
+				snapshotStore := db.NewAgentSnapshotsFactory(dbConn)
+				templateSaver, err := workflowrun.NewTemplateSaver(
+					teamFactory,
+					db.NewWorkflowRunTemplateFactory(dbConn, lockFactory),
+				)
+				if err != nil {
+					return nil, fmt.Errorf("construct ticket workflow template saver: %w", err)
+				}
+				workflowBudget, err := workflowrun.NewGlobalDailyBudgetAdmitter(
+					db.NewAgentWorkflowBudgetReservationsFactory(dbConn, db.AgentWorkflowBudgetConfig{
+						GlobalDailyCapUSD: cmd.AgentDailyBudgetUSD,
+						Location:          time.Local,
+						Now:               time.Now,
+					}),
+					cmd.AgentDailyBudgetUSD,
+				)
+				if err != nil {
+					return nil, fmt.Errorf("construct ticket workflow budget admission: %w", err)
+				}
+				workflowSecrets, err := workflowrun.NewVaultedRunSecretPreparer(
+					db.NewAgentUserLookup(dbConn),
+					db.NewAgentUserCredentialsFactory(dbConn),
+					db.NewAgentPrincipalsFactory(dbConn),
+					cmd.agentRunSecrets(),
+					cmd.AgentRunTimeout,
+				)
+				if err != nil {
+					return nil, fmt.Errorf("construct ticket workflow secret preparation: %w", err)
+				}
+				ticketWorkflowBinder, err = workflowrun.NewBinder(
+					workflowrun.WorkflowDefinitionStoreResolver{Store: workflowStore},
+					workflowrun.WorkflowTargetRenderer{RuntimeImage: cmd.AgentStepImage},
+					snapshotStore,
+					dbAgentWorkflowRunsFactory,
+					workflowBudget,
+					templateSaver,
+					dbPipelineRunFactory,
+					workflowSecrets,
+				)
+				if err != nil {
+					return nil, fmt.Errorf("construct ticket workflow binder: %w", err)
+				}
+				ticketWorkflowCanceler, err = workflowrun.NewCancelerWithWaits(
+					dbAgentWorkflowRunsFactory,
+					dbBuildFactory,
+					db.NewAgentWorkflowWaitsFactory(dbConn),
+				)
+				if err != nil {
+					return nil, fmt.Errorf("construct ticket workflow canceler: %w", err)
+				}
+				cmd.agentSnapshotMu.Lock()
+				snapshotCreator := cmd.agentSnapshotCreator
+				cmd.agentSnapshotMu.Unlock()
+				if isNilDependency(snapshotCreator) {
+					return nil, errors.New("construct ticket work-item capturer: snapshot creator is unavailable")
+				}
+				ticketWorkItems, err = workitem.NewCapturer(
+					db.NewAgentTicketsFactory(dbConn),
+					snapshotCreator,
+					workitem.Authority{
+						TeamID: mainTeam.ID(), TeamName: mainTeam.Name(),
+						Actor: "ticket-dispatch-adapter", DisplayName: "ticket-dispatch-adapter",
+					},
+				)
+				if err != nil {
+					return nil, fmt.Errorf("construct ticket work-item capturer: %w", err)
+				}
+			}
+
 			dispatcherDeps := dispatch.Deps{
-				Tickets:     db.NewAgentTicketsFactory(dbConn),
-				Workflows:   db.NewAgentWorkflowsFactory(dbConn),
-				Templates:   dispatch.NewTeamTemplateSaver(teamFactory, atc.DefaultTeamName),
-				Runs:        dbPipelineRunFactory,
-				Principals:  db.NewAgentPrincipalsFactory(dbConn),
-				Credentials: db.NewAgentUserCredentialsFactory(dbConn),
-				Secrets:     cmd.agentRunSecrets(), // the ONE shared lazy attacher (bound just above)
-				Users:       db.NewAgentUserLookup(dbConn),
+				Tickets:          db.NewAgentTicketsFactory(dbConn),
+				Workflows:        db.NewAgentWorkflowsFactory(dbConn),
+				Templates:        dispatch.NewTeamTemplateSaver(teamFactory, atc.DefaultTeamName),
+				Runs:             dbPipelineRunFactory,
+				TeamID:           ticketDispatchTeamID,
+				TeamName:         ticketDispatchTeamName,
+				WorkItems:        ticketWorkItems,
+				WorkflowBinder:   ticketWorkflowBinder,
+				WorkflowCanceler: ticketWorkflowCanceler,
+				Principals:       db.NewAgentPrincipalsFactory(dbConn),
+				Credentials:      db.NewAgentUserCredentialsFactory(dbConn),
+				Secrets:          cmd.agentRunSecrets(), // the ONE shared lazy attacher (bound just above)
+				Users:            db.NewAgentUserLookup(dbConn),
 				Budget: budget.NewChecker(
 					db.NewAgentCostLedgerFactory(dbConn),
 					dispatch.NewTicketBudgets(db.NewAgentTicketsFactory(dbConn), db.NewAgentWorkflowsFactory(dbConn)),
@@ -1610,29 +1765,37 @@ func (cmd *RunCommand) backendComponents(
 		}
 	}
 
-	// Outcome watcher (delivery-outcomes §1.11.1): deliberately K8s-INDEPENDENT
-	// — it only reads git mirrors and the DB, so unlike the agent components
-	// above it gates ONLY on the --agent-outcome-git-dir master switch, never
-	// on the K8s runtime.
-	if cmd.AgentOutcomeGitDir != "" {
-		// The same cache is handed to GetAgentTicketDiff's handler
-		// threading (agentOutcomeDiffProvider in constructAPIHandler).
-		outcomeCache := cmd.agentOutcomeMirrors()
-		components = append(components, RunnableComponent{
-			Component: atc.Component{
-				Name: atc.ComponentAgentOutcomeWatcher,
-			},
-			// Three collaborators — metrics-independent by design
-			// (delivery-outcomes amendment C3-1). Polling-only: NO
-			// notification channel (the notifications bus silently drops).
-			Runnable: outcomewatcher.New(
-				db.NewAgentTicketsFactory(dbConn),
-				db.NewAgentOutcomesFactory(dbConn),
-				outcomeCache,
-			),
-			Interval: cmd.AgentOutcomeCheckInterval,
-		})
+	// Outcome reconciliation (delivery-outcomes §1.11.1) is deliberately
+	// K8s-independent and always installed. A configured mirror cache adds live
+	// Git merge detection; without one the same runnable stays database-only and
+	// projects terminal legacy facts into durable generic outcomes.
+	mainTeam, found, err := teamFactory.FindTeam(atc.DefaultTeamName)
+	if err != nil {
+		return nil, fmt.Errorf("resolve main team for generic outcome projection: %w", err)
 	}
+	if !found || mainTeam == nil || mainTeam.ID() <= 0 || mainTeam.Name() != atc.DefaultTeamName {
+		return nil, errors.New("resolve main team for generic outcome projection: main team is unavailable")
+	}
+	workflowOutcomeStore := db.NewAgentWorkflowOutcomesFactory(dbConn)
+	outcomeWatcher, err := buildAgentOutcomeWatcher(
+		mainTeam,
+		db.NewAgentTicketsFactory(dbConn),
+		db.NewAgentOutcomesFactory(dbConn),
+		workflowOutcomeStore,
+		workflowOutcomeStore,
+		cmd.agentOutcomeMirrors(),
+		outcomewatcher.WithDispositionOutputSelector(workflowOutcomeStore),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("construct generic outcome projector: %w", err)
+	}
+	components = append(components, RunnableComponent{
+		Component: atc.Component{Name: atc.ComponentAgentOutcomeWatcher},
+		// Metrics-independent and polling-only by design. The notifications
+		// bus silently drops, so it cannot be the reliability path.
+		Runnable: outcomeWatcher,
+		Interval: cmd.AgentOutcomeCheckInterval,
+	})
 
 	if syslogDrainConfigured {
 		components = append(components, RunnableComponent{
@@ -1654,6 +1817,18 @@ func (cmd *RunCommand) backendComponents(
 		return nil, err
 	}
 	components = append(components, snapshotLifecycleComponents...)
+
+	experimentComponents, err := cmd.agentExperimentComponents(
+		dbConn,
+		lockFactory,
+		teamFactory,
+		dbBuildFactory,
+		dbPipelineRunFactory,
+	)
+	if err != nil {
+		return nil, err
+	}
+	components = append(components, experimentComponents...)
 
 	return components, err
 }
@@ -1690,6 +1865,8 @@ func (cmd *RunCommand) composeAgentSnapshots(connection db.DbConn, logger lager.
 		cmd.agentSnapshotOutputSealer != nil ||
 		cmd.agentSnapshotCreator != nil ||
 		cmd.agentSnapshotLifecycle != nil ||
+		cmd.agentSnapshotPublisher != nil ||
+		cmd.agentResourceCaptureFinalizer != nil ||
 		cmd.agentSnapshotHandlerFactory != nil ||
 		cmd.agentSnapshotArchiveLimits != (snapshot.ArchiveLimits{})
 	if initialized {
@@ -1702,6 +1879,7 @@ func (cmd *RunCommand) composeAgentSnapshots(connection db.DbConn, logger lager.
 			cmd.agentSnapshotOutputSealer == nil ||
 			cmd.agentSnapshotCreator == nil ||
 			cmd.agentSnapshotLifecycle == nil ||
+			cmd.agentResourceCaptureFinalizer == nil ||
 			cmd.agentSnapshotHandlerFactory == nil ||
 			cmd.agentSnapshotArchiveLimits == (snapshot.ArchiveLimits{}) {
 			return fmt.Errorf("snapshot command composition is partially initialized")
@@ -1719,7 +1897,12 @@ func (cmd *RunCommand) composeAgentSnapshots(connection db.DbConn, logger lager.
 	metadataStore := db.NewAgentSnapshotsFactory(connection)
 	workflowRuns := db.NewAgentWorkflowRunsFactory(connection)
 	digestLocker := db.NewAgentSnapshotDigestLocker(connection)
-	registry, err := contracts.NewRegistry()
+	canonicalizer := snapshot.Canonicalizer{
+		MaxContentBytes: archiveLimits.MaxContentBytes,
+		MaxEntries:      archiveLimits.MaxEntries,
+		TempDir:         cmd.AgentSnapshots.TempDir,
+	}
+	validatorRegistry, err := contracts.NewRegistry(contracts.WithCanonicalizer(canonicalizer))
 	if err != nil {
 		return fmt.Errorf("compose agent snapshot validator registry: %w", err)
 	}
@@ -1734,16 +1917,31 @@ func (cmd *RunCommand) composeAgentSnapshots(connection db.DbConn, logger lager.
 	if daemonClient == nil || isNilDependency(contentStore) {
 		return fmt.Errorf("compose agent snapshot storage returned incomplete components")
 	}
+	var snapshotPublisher publisher.Executor
+	publisherComposer := cmd.agentSnapshotPublisherComposer
+	if publisherComposer == nil && cmd.AgentPublisherGateway.Enabled {
+		publisherComposer = cmd.buildAgentPublisherGateway
+	}
+	if publisherComposer != nil {
+		snapshotPublisher, err = publisherComposer(
+			db.NewAgentPublicationsFactory(connection),
+			metadataStore,
+			contentStore,
+		)
+		if err != nil {
+			return fmt.Errorf("compose agent snapshot publisher: %w", err)
+		}
+		if isNilDependency(snapshotPublisher) {
+			return fmt.Errorf("compose agent snapshot publisher returned no executor")
+		}
+	}
 	sealerComposer := cmd.agentSnapshotSealerComposer
 	if sealerComposer == nil {
 		sealerComposer = buildAgentSnapshotSealer
 	}
 	creator, err := sealerComposer(
-		snapshot.Canonicalizer{
-			MaxContentBytes: archiveLimits.MaxContentBytes,
-			MaxEntries:      archiveLimits.MaxEntries,
-		},
-		registry,
+		canonicalizer,
+		validatorRegistry,
 		metadataStore,
 		contentStore,
 		digestLocker,
@@ -1755,6 +1953,32 @@ func (cmd *RunCommand) composeAgentSnapshots(connection db.DbConn, logger lager.
 	}
 	if isNilDependency(creator) {
 		return fmt.Errorf("compose agent snapshot output sealer returned no sealer")
+	}
+	reviewProjector, err := projection.NewReviewProjector(db.NewAgentReviewsFactory(connection), contentStore)
+	if err != nil {
+		return fmt.Errorf("compose review snapshot projector: %w", err)
+	}
+	repositoryChanges := db.NewAgentRepositoryChangesFactory(connection)
+	repositoryChangeProjector, err := projection.NewRepositoryChangeProjector(
+		repositoryChanges,
+		contentStore,
+		projection.WithRepositoryChangeCanonicalizer(canonicalizer),
+	)
+	if err != nil {
+		return fmt.Errorf("compose repository-change snapshot projector: %w", err)
+	}
+	projectionRegistry, err := projection.NewRegistry(
+		[]projection.Handler{reviewProjector, repositoryChangeProjector},
+		projection.WithErrorReporter(func(_ context.Context, projectionErr error) {
+			logger.Error("agent-snapshot-projection-failed", projectionErr)
+		}),
+	)
+	if err != nil {
+		return fmt.Errorf("compose agent snapshot projectors: %w", err)
+	}
+	creator, err = projection.NewProjectingCreator(creator, projectionRegistry)
+	if err != nil {
+		return fmt.Errorf("compose post-seal projection trigger: %w", err)
 	}
 	replicaRepairer, ok := contentStore.(snapshot.ReplicaRepairer)
 	if !ok || isNilDependency(replicaRepairer) {
@@ -1771,13 +1995,31 @@ func (cmd *RunCommand) composeAgentSnapshots(connection db.DbConn, logger lager.
 	if isNilDependency(lifecycle) {
 		return fmt.Errorf("compose agent snapshot lifecycle returned no lifecycle")
 	}
+	captureFinder, ok := metadataStore.(resourcecapture.CaptureOutputFinder)
+	if !ok || isNilDependency(captureFinder) {
+		return fmt.Errorf("compose resource capture finalizer: snapshot metadata store lacks exact output lookup")
+	}
+	capturePending, ok := metadataStore.(resourcecapture.PendingOutputLister)
+	if !ok || isNilDependency(capturePending) {
+		return fmt.Errorf("compose resource capture finalizer: snapshot metadata store lacks pending output lookup")
+	}
+	captureOutputs, err := resourcecapture.NewOutputStore(captureFinder, metadataStore, digestLocker)
+	if err != nil {
+		return fmt.Errorf("compose resource capture finalizer output store: %w", err)
+	}
+	captureFinalizer, err := resourcecapture.NewFinalizer(capturePending, captureOutputs)
+	if err != nil {
+		return fmt.Errorf("compose resource capture finalizer: %w", err)
+	}
 	handlerFactory, err := snapshotsapi.NewHandlerFactory(snapshotsapi.Config{
-		Enabled:       true,
-		Creator:       creator,
-		Metadata:      metadataStore,
-		Content:       contentStore,
-		Locks:         digestLocker,
-		ArchiveLimits: archiveLimits,
+		Enabled:           true,
+		Creator:           creator,
+		Metadata:          metadataStore,
+		Content:           contentStore,
+		RepositoryChanges: repositoryChanges,
+		Locks:             digestLocker,
+		ArchiveLimits:     archiveLimits,
+		TempDir:           cmd.AgentSnapshots.TempDir,
 		Identity: func(request *http.Request) (snapshotsapi.RequestIdentity, error) {
 			return agentSnapshotIdentity(accessor.GetAccessor(request).Claims())
 		},
@@ -1795,10 +2037,13 @@ func (cmd *RunCommand) composeAgentSnapshots(connection db.DbConn, logger lager.
 	cmd.agentSnapshotMetadataStore = metadataStore
 	cmd.agentSnapshotWorkflowRuns = workflowRuns
 	cmd.agentSnapshotDigestLocker = digestLocker
-	cmd.agentSnapshotValidatorRegistry = registry
+	cmd.agentSnapshotValidatorRegistry = validatorRegistry
 	cmd.agentSnapshotOutputSealer = creator
 	cmd.agentSnapshotCreator = creator
 	cmd.agentSnapshotLifecycle = lifecycle
+	cmd.agentSnapshotPublisher = snapshotPublisher
+	cmd.agentSnapshotProjectionRegistry = projectionRegistry
+	cmd.agentResourceCaptureFinalizer = captureFinalizer
 	cmd.agentSnapshotHandlerFactory = handlerFactory
 	cmd.agentSnapshotArchiveLimits = archiveLimits
 	return nil
@@ -1873,6 +2118,7 @@ func (cmd *RunCommand) buildAgentSnapshotComponents(
 		metadataStore,
 		cmd.AgentSnapshots.ReplicationFactor,
 		archiveLimits,
+		jetbridge.WithSnapshotContentTempDir(cmd.AgentSnapshots.TempDir),
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("construct snapshot content store: %w", err)
@@ -1915,29 +2161,54 @@ func (cmd *RunCommand) agentSnapshotLifecycleComponents() ([]RunnableComponent, 
 	}
 	cmd.agentSnapshotMu.Lock()
 	lifecycle := cmd.agentSnapshotLifecycle
+	projectionRegistry := cmd.agentSnapshotProjectionRegistry
+	captureFinalizer := cmd.agentResourceCaptureFinalizer
 	cmd.agentSnapshotMu.Unlock()
 	if lifecycle == nil {
 		return nil, fmt.Errorf("snapshot lifecycle is not composed")
 	}
-	return []RunnableComponent{
-		{
+	components := make([]RunnableComponent, 0, 4)
+	if captureFinalizer != nil {
+		components = append(components, RunnableComponent{
+			Component: atc.Component{Name: atc.ComponentAgentResourceCaptureFinalizer},
+			Runnable:  captureFinalizer,
+		})
+	}
+	components = append(components,
+		RunnableComponent{
 			Component: atc.Component{Name: atc.ComponentAgentSnapshotGC},
 			Runnable: component.RunFunc(func(ctx context.Context) error {
 				return runAgentSnapshotLifecyclePass(ctx, "collect", lifecycle.Collect)
 			}),
 			Interval: cmd.AgentSnapshots.GCInterval,
 		},
-		{
+		RunnableComponent{
 			Component: atc.Component{Name: atc.ComponentAgentSnapshotRepair},
 			Runnable: component.RunFunc(func(ctx context.Context) error {
 				return runAgentSnapshotLifecyclePass(ctx, "repair", lifecycle.Repair)
 			}),
 			Interval: cmd.AgentSnapshots.RepairInterval,
 		},
-	}, nil
+	)
+	if projectionRegistry != nil {
+		projectionInterval := min(cmd.AgentSnapshots.RepairInterval, time.Minute)
+		components = append(components, RunnableComponent{
+			Component: atc.Component{Name: atc.ComponentAgentSnapshotProjection},
+			Runnable: component.RunFunc(func(ctx context.Context) error {
+				if err := projectionRegistry.Reconcile(ctx, 100); err != nil {
+					lagerctx.FromContext(ctx).Session("agent-snapshot-projection").Info("pass-failed")
+					return errAgentSnapshotProjectionPass
+				}
+				return nil
+			}),
+			Interval: projectionInterval,
+		})
+	}
+	return components, nil
 }
 
 var errAgentSnapshotLifecyclePass = errors.New("agent snapshot lifecycle pass failed")
+var errAgentSnapshotProjectionPass = errors.New("agent snapshot projection pass failed")
 
 func runAgentSnapshotLifecyclePass(
 	ctx context.Context,
@@ -1990,14 +2261,23 @@ func (cmd *RunCommand) agentSnapshotCoreStepFactoryOptions() ([]engine.CoreStepF
 		cmd.agentSnapshotContentStore == nil || cmd.agentSnapshotWorkflowRuns == nil {
 		return nil, false
 	}
-	return []engine.CoreStepFactoryOption{
+	options := []engine.CoreStepFactoryOption{
 		engine.WithOutputSealer(cmd.agentSnapshotOutputSealer),
+		engine.WithSnapshotCanonicalizer(snapshot.Canonicalizer{
+			MaxContentBytes: cmd.agentSnapshotArchiveLimits.MaxContentBytes,
+			MaxEntries:      cmd.agentSnapshotArchiveLimits.MaxEntries,
+			TempDir:         cmd.AgentSnapshots.TempDir,
+		}),
 		engine.WithSnapshotLoader(
 			cmd.agentSnapshotMetadataStore,
 			cmd.agentSnapshotContentStore,
 			cmd.agentSnapshotWorkflowRuns,
 		),
-	}, true
+	}
+	if !isNilDependency(cmd.agentSnapshotPublisher) {
+		options = append(options, engine.WithSnapshotPublisher(cmd.agentSnapshotPublisher))
+	}
+	return options, true
 }
 
 func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFactory, workerCache *db.WorkerCache) (worker.Pool, error) {
@@ -2518,6 +2798,14 @@ func (cmd *RunCommand) validate() error {
 		errs = multierror.Append(errs, err)
 	}
 
+	if err := cmd.validateAgentExperiments(); err != nil {
+		errs = multierror.Append(errs, err)
+	}
+
+	if err := cmd.validateAgentPublisherGateway(); err != nil {
+		errs = multierror.Append(errs, err)
+	}
+
 	return errs.ErrorOrNil()
 }
 
@@ -2533,6 +2821,20 @@ func (cmd *RunCommand) validateAgentWorkflowRuns() error {
 		cmd.AgentWorkflowRuns.AdmissionTimeout > 0 &&
 		cmd.AgentWorkflowRuns.ReconcilerInterval > cmd.AgentWorkflowRuns.AdmissionTimeout/2 {
 		errs = multierror.Append(errs, errors.New("--agent-workflow-run-admission-timeout must be at least twice --agent-workflow-run-reconciler-interval"))
+	}
+	return errs.ErrorOrNil()
+}
+
+func (cmd *RunCommand) validateAgentExperiments() error {
+	var errs *multierror.Error
+	if cmd.AgentExperiments.Interval <= 0 {
+		errs = multierror.Append(errs, errors.New("--agent-experiment-runner-interval must be positive"))
+	}
+	if cmd.AgentExperiments.MaxConcurrency <= 0 {
+		errs = multierror.Append(errs, errors.New("--agent-experiment-runner-max-concurrency must be positive"))
+	}
+	if cmd.AgentExperiments.Enabled && !cmd.AgentSnapshots.Enabled {
+		errs = multierror.Append(errs, errors.New("--agent-snapshot-enabled is required when --agent-experiment-runner-enabled is set"))
 	}
 	return errs.ErrorOrNil()
 }
@@ -2568,6 +2870,13 @@ func (cmd *RunCommand) validateAgentSnapshots() error {
 	}
 	if !cmd.AgentSnapshots.Enabled {
 		return errs.ErrorOrNil()
+	}
+	if cmd.AgentSnapshots.TempDir == "" {
+		errs = multierror.Append(errs, errors.New("--agent-snapshot-temp-dir is required when --agent-snapshot-enabled is set"))
+	} else if !filepath.IsAbs(cmd.AgentSnapshots.TempDir) {
+		errs = multierror.Append(errs, errors.New("--agent-snapshot-temp-dir must be an absolute path"))
+	} else if err := snapshot.ValidateTempDir(cmd.AgentSnapshots.TempDir); err != nil {
+		errs = multierror.Append(errs, fmt.Errorf("--agent-snapshot-temp-dir: %w", err))
 	}
 	if cmd.Kubernetes.Namespace == "" {
 		errs = multierror.Append(errs, errors.New("--kubernetes-namespace is required when --agent-snapshot-enabled is set"))
@@ -2612,6 +2921,9 @@ func (cmd *RunCommand) validateK8sRuntime() error {
 	}
 	if cmd.Kubernetes.ArtifactDaemonResolveCapabilityKey == "" {
 		return errors.New("--kubernetes-artifact-daemon-resolve-capability-key is required when --kubernetes-namespace is set")
+	}
+	if err := atc.ValidatePinnedOCIImage(cmd.Kubernetes.ArtifactHelperImage); err != nil {
+		return fmt.Errorf("--kubernetes-artifact-helper-image must be pinned to an exact sha256 digest: %w", err)
 	}
 	minimumCapabilityTTL, err := jetbridge.MinimumArtifactResolveCapabilityTTL(
 		cmd.Kubernetes.PodSchedulingTimeout,
@@ -2775,6 +3087,9 @@ func (cmd *RunCommand) constructEngine(
 		engine.WithAgentReviewsStore(db.NewAgentReviewsFactory(dbConn)),
 		engine.WithAgentOutcomesStore(db.NewAgentOutcomesFactory(dbConn)),
 		engine.WithAgentPlatformUserResolver(db.NewAgentUserCredentialsFactory(dbConn)),
+		engine.WithWorkflowWaitStore(db.NewAgentWorkflowWaitsFactory(
+			dbConn, cmd.AgentSnapshots.BindingRetention,
+		)),
 	}
 	if snapshotOptions, ok := cmd.agentSnapshotCoreStepFactoryOptions(); ok {
 		coreStepFactoryOptions = append(coreStepFactoryOptions, snapshotOptions...)
@@ -3064,7 +3379,8 @@ func (cmd *RunCommand) constructAPIHandler(
 	if !found || mainTeam == nil || mainTeam.ID() <= 0 || mainTeam.Name() != atc.DefaultTeamName {
 		return nil, errors.New("resolve main team for workflow-run API: main team is unavailable")
 	}
-	workflowStore := db.NewAgentWorkflowsFactory(dbConn)
+	targetRenderer := workflowrun.WorkflowTargetRenderer{RuntimeImage: cmd.AgentStepImage}
+	workflowStore := db.NewAgentWorkflowsFactory(dbConn, targetRenderer)
 	workflowRunStore := db.NewAgentWorkflowRunsFactory(dbConn)
 	snapshotStore := db.NewAgentSnapshotsFactory(dbConn)
 	templateSaver, err := workflowrun.NewTemplateSaver(
@@ -3074,11 +3390,53 @@ func (cmd *RunCommand) constructAPIHandler(
 	if err != nil {
 		return nil, fmt.Errorf("construct workflow-run template saver: %w", err)
 	}
-	workflowBudget, err := workflowrun.NewGlobalDailyBudgetAdmitter(budget.NewChecker(
-		db.NewAgentCostLedgerFactory(dbConn),
-		dispatch.NewTicketBudgets(db.NewAgentTicketsFactory(dbConn), workflowStore),
-		budget.Config{GlobalDailyCapUSD: cmd.AgentDailyBudgetUSD},
-	))
+	var resourceCapturer snapshotsapi.ResourceCapturer
+	if cmd.AgentSnapshots.Enabled {
+		resolver, err := resourcecapture.NewATCResolver(teamFactory)
+		if err != nil {
+			return nil, fmt.Errorf("construct resource-capture resolver: %w", err)
+		}
+		captureTemplates, err := resourcecapture.NewTemplateStore(templateSaver)
+		if err != nil {
+			return nil, fmt.Errorf("construct resource-capture template store: %w", err)
+		}
+		captureRuns, ok := dbPipelineRunFactory.(resourcecapture.PipelineRunStore)
+		if !ok {
+			return nil, errors.New("construct resource-capture execution store: pipeline run factory lacks server-template execution")
+		}
+		captureLocker, err := resourcecapture.NewDBOperationLocker(logger.Session("resource-capture"), lockFactory)
+		if err != nil {
+			return nil, fmt.Errorf("construct resource-capture operation locker: %w", err)
+		}
+		captureExecutions, err := resourcecapture.NewExecutionStore(captureRuns, captureLocker)
+		if err != nil {
+			return nil, fmt.Errorf("construct resource-capture execution store: %w", err)
+		}
+		captureFinder, ok := snapshotStore.(resourcecapture.CaptureOutputFinder)
+		if !ok {
+			return nil, errors.New("construct resource-capture output store: snapshot store lacks capture lookup")
+		}
+		captureOutputs, err := resourcecapture.NewOutputStore(
+			captureFinder, snapshotStore, db.NewAgentSnapshotDigestLocker(dbConn),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("construct resource-capture output store: %w", err)
+		}
+		resourceCapturer, err = resourcecapture.NewCapturer(
+			resolver, captureTemplates, captureExecutions, captureOutputs, cmd.AgentStepImage,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("construct resource capturer: %w", err)
+		}
+	}
+	workflowBudget, err := workflowrun.NewGlobalDailyBudgetAdmitter(
+		db.NewAgentWorkflowBudgetReservationsFactory(dbConn, db.AgentWorkflowBudgetConfig{
+			GlobalDailyCapUSD: cmd.AgentDailyBudgetUSD,
+			Location:          time.Local,
+			Now:               time.Now,
+		}),
+		cmd.AgentDailyBudgetUSD,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("construct workflow-run budget admission: %w", err)
 	}
@@ -3094,7 +3452,7 @@ func (cmd *RunCommand) constructAPIHandler(
 	}
 	workflowBinder, err := workflowrun.NewBinder(
 		workflowrun.WorkflowDefinitionStoreResolver{Store: workflowStore},
-		workflowrun.WorkflowTargetRenderer{},
+		targetRenderer,
 		snapshotStore,
 		workflowRunStore,
 		workflowBudget,
@@ -3105,7 +3463,30 @@ func (cmd *RunCommand) constructAPIHandler(
 	if err != nil {
 		return nil, fmt.Errorf("construct workflow-run binder: %w", err)
 	}
-	workflowCanceler, err := workflowrun.NewCanceler(workflowRunStore, dbBuildFactory)
+	var ticketWorkItems dispatch.WorkItemCapturer
+	if cmd.AgentSnapshots.Enabled {
+		cmd.agentSnapshotMu.Lock()
+		snapshotCreator := cmd.agentSnapshotCreator
+		cmd.agentSnapshotMu.Unlock()
+		if isNilDependency(snapshotCreator) {
+			return nil, errors.New("construct ticket work-item capturer: snapshot creator is unavailable")
+		}
+		ticketWorkItems, err = workitem.NewCapturer(
+			db.NewAgentTicketsFactory(dbConn),
+			snapshotCreator,
+			workitem.Authority{
+				TeamID: mainTeam.ID(), TeamName: mainTeam.Name(),
+				Actor: "ticket-dispatch-adapter", DisplayName: "ticket-dispatch-adapter",
+			},
+		)
+		if err != nil {
+			return nil, fmt.Errorf("construct ticket work-item capturer: %w", err)
+		}
+	}
+	workflowWaitStore := db.NewAgentWorkflowWaitsFactory(
+		dbConn, cmd.AgentSnapshots.BindingRetention,
+	)
+	workflowCanceler, err := workflowrun.NewCancelerWithWaits(workflowRunStore, dbBuildFactory, workflowWaitStore)
 	if err != nil {
 		return nil, fmt.Errorf("construct workflow-run canceler: %w", err)
 	}
@@ -3119,6 +3500,46 @@ func (cmd *RunCommand) constructAPIHandler(
 	})
 	if err != nil {
 		return nil, fmt.Errorf("construct workflow-run API: %w", err)
+	}
+	cmd.agentSnapshotMu.Lock()
+	workflowWaitContent := cmd.agentSnapshotContentStore
+	workflowWaitCreator := cmd.agentSnapshotCreator
+	workflowWaitArchiveLimits := cmd.agentSnapshotArchiveLimits
+	cmd.agentSnapshotMu.Unlock()
+	workflowWaitHandlers, err := workflowwaitsapi.NewHandler(workflowwaitsapi.Config{
+		Team: workflowwaitsapi.TrustedTeam{ID: mainTeam.ID(), Name: mainTeam.Name()},
+		Identity: func(r *http.Request) (workflowwaitsapi.RequestIdentity, error) {
+			identity, err := agentSnapshotIdentity(accessor.GetAccessor(r).Claims())
+			return workflowwaitsapi.RequestIdentity{
+				Actor:       identity.Actor,
+				DisplayName: identity.DisplayName,
+			}, err
+		},
+		Runs: workflowRunStore, Waits: workflowWaitStore, Manifests: snapshotStore,
+		Content: workflowWaitContent, Creator: workflowWaitCreator,
+		ArchiveLimits: workflowWaitArchiveLimits,
+		TempDir:       cmd.AgentSnapshots.TempDir,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("construct workflow-wait API: %w", err)
+	}
+	workflowOutcomeStore := db.NewAgentWorkflowOutcomesFactory(dbConn)
+	workflowOutcomeHandlers, err := buildWorkflowOutcomeAPI(mainTeam, workflowOutcomeStore, workflowOutcomeStore)
+	if err != nil {
+		return nil, fmt.Errorf("construct workflow-outcome API: %w", err)
+	}
+	experimentStore := cmd.newAgentExperimentsFactory(dbConn, targetRenderer)
+	experimentHandlers, err := experimentsapi.NewHandler(experimentsapi.Config{
+		TeamID:   mainTeam.ID(),
+		TeamName: mainTeam.Name(),
+		Identity: func(r *http.Request) (string, error) {
+			return workflowRunCreatorIdentity(accessor.GetAccessor(r).UserInfo())
+		},
+		Store:           experimentStore,
+		RunnerAvailable: cmd.AgentExperiments.Enabled,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("construct experiment API: %w", err)
 	}
 
 	return api.NewHandler(
@@ -3176,16 +3597,22 @@ func (cmd *RunCommand) constructAPIHandler(
 		dispatch.NewTicketBudgets(db.NewAgentTicketsFactory(dbConn), db.NewAgentWorkflowsFactory(dbConn)),
 		db.NewAgentOutcomesFactory(dbConn),
 		cmd.agentOutcomeDiffProvider(),
-		db.NewAgentWorkflowsFactory(dbConn),
+		db.NewAgentRepositoryChangesFactoryForTeam(dbConn, mainTeam.Name()),
+		workflowStore,
 		dispatch.NewHTTPHandler(dispatch.Deps{
-			Tickets:     db.NewAgentTicketsFactory(dbConn),
-			Workflows:   db.NewAgentWorkflowsFactory(dbConn),
-			Templates:   dispatch.NewTeamTemplateSaver(teamFactory, atc.DefaultTeamName),
-			Runs:        dbPipelineRunFactory,
-			Principals:  agentPrincipalsFactory,
-			Credentials: db.NewAgentUserCredentialsFactory(dbConn),
-			Secrets:     cmd.agentRunSecrets(),
-			Users:       db.NewAgentUserLookup(dbConn),
+			Tickets:          db.NewAgentTicketsFactory(dbConn),
+			Workflows:        db.NewAgentWorkflowsFactory(dbConn),
+			Templates:        dispatch.NewTeamTemplateSaver(teamFactory, atc.DefaultTeamName),
+			Runs:             dbPipelineRunFactory,
+			TeamID:           mainTeam.ID(),
+			TeamName:         mainTeam.Name(),
+			WorkItems:        ticketWorkItems,
+			WorkflowBinder:   workflowBinder,
+			WorkflowCanceler: workflowCanceler,
+			Principals:       agentPrincipalsFactory,
+			Credentials:      db.NewAgentUserCredentialsFactory(dbConn),
+			Secrets:          cmd.agentRunSecrets(),
+			Users:            db.NewAgentUserLookup(dbConn),
 			Budget: budget.NewChecker(
 				db.NewAgentCostLedgerFactory(dbConn),
 				dispatch.NewTicketBudgets(db.NewAgentTicketsFactory(dbConn), db.NewAgentWorkflowsFactory(dbConn)),
@@ -3200,7 +3627,11 @@ func (cmd *RunCommand) constructAPIHandler(
 		db.NewAgentSettingsFactory(dbConn),
 		cmd.AgentDispatcherEnabled,
 		snapshotHandlers,
+		resourceCapturer,
 		workflowRunHandlers,
+		workflowWaitHandlers,
+		workflowOutcomeHandlers,
+		experimentHandlers,
 	)
 }
 

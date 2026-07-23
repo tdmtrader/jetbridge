@@ -34,6 +34,18 @@ type StepRecursor struct {
 
 	// OnLoadSnapshot will be invoked for any *LoadSnapshotStep present in the StepConfig.
 	OnLoadSnapshot func(*LoadSnapshotStep) error
+
+	// OnAwaitSnapshot will be invoked for any *AwaitSnapshotStep present in the StepConfig.
+	OnAwaitSnapshot func(*AwaitSnapshotStep) error
+
+	// OnPublishSnapshot will be invoked for any *PublishSnapshotStep present in the StepConfig.
+	OnPublishSnapshot func(*PublishSnapshotStep) error
+
+	// OnAcross will be invoked before recursing through an *AcrossStep.
+	OnAcross func(*AcrossStep) error
+
+	// OnRetry will be invoked before recursing through a *RetryStep.
+	OnRetry func(*RetryStep) error
 }
 
 // VisitTask calls the OnTask hook if configured.
@@ -115,6 +127,20 @@ func (recursor StepRecursor) VisitLoadSnapshot(step *LoadSnapshotStep) error {
 	return nil
 }
 
+func (recursor StepRecursor) VisitAwaitSnapshot(step *AwaitSnapshotStep) error {
+	if recursor.OnAwaitSnapshot != nil {
+		return recursor.OnAwaitSnapshot(step)
+	}
+	return nil
+}
+
+func (recursor StepRecursor) VisitPublishSnapshot(step *PublishSnapshotStep) error {
+	if recursor.OnPublishSnapshot != nil {
+		return recursor.OnPublishSnapshot(step)
+	}
+	return nil
+}
+
 // VisitTry recurses through to the wrapped step.
 func (recursor StepRecursor) VisitTry(step *TryStep) error {
 	return step.Step.Config.Visit(recursor)
@@ -144,6 +170,11 @@ func (recursor StepRecursor) VisitInParallel(step *InParallelStep) error {
 
 // VisitAcross recurses through to the wrapped step.
 func (recursor StepRecursor) VisitAcross(step *AcrossStep) error {
+	if recursor.OnAcross != nil {
+		if err := recursor.OnAcross(step); err != nil {
+			return err
+		}
+	}
 	return step.Step.Visit(recursor)
 }
 
@@ -154,6 +185,11 @@ func (recursor StepRecursor) VisitTimeout(step *TimeoutStep) error {
 
 // VisitRetry recurses through to the wrapped step.
 func (recursor StepRecursor) VisitRetry(step *RetryStep) error {
+	if recursor.OnRetry != nil {
+		if err := recursor.OnRetry(step); err != nil {
+			return err
+		}
+	}
 	return step.Step.Visit(recursor)
 }
 

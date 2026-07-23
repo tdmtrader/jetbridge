@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"github.com/concourse/concourse/agent/api/feedback"
+	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc/db"
 )
 
@@ -32,6 +33,20 @@ type FakeAgentFeedbackFactory struct {
 		result2 error
 	}
 	getByReviewReturnsOnCall map[int]struct {
+		result1 []feedback.StoredFeedback
+		result2 error
+	}
+	GetByReviewSnapshotStub        func(snapshot.SnapshotID, string) ([]feedback.StoredFeedback, error)
+	getByReviewSnapshotMutex       sync.RWMutex
+	getByReviewSnapshotArgsForCall []struct {
+		arg1 snapshot.SnapshotID
+		arg2 string
+	}
+	getByReviewSnapshotReturns struct {
+		result1 []feedback.StoredFeedback
+		result2 error
+	}
+	getByReviewSnapshotReturnsOnCall map[int]struct {
 		result1 []feedback.StoredFeedback
 		result2 error
 	}
@@ -166,6 +181,71 @@ func (fake *FakeAgentFeedbackFactory) GetByReviewReturnsOnCall(i int, result1 []
 		})
 	}
 	fake.getByReviewReturnsOnCall[i] = struct {
+		result1 []feedback.StoredFeedback
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeAgentFeedbackFactory) GetByReviewSnapshot(arg1 snapshot.SnapshotID, arg2 string) ([]feedback.StoredFeedback, error) {
+	fake.getByReviewSnapshotMutex.Lock()
+	ret, specificReturn := fake.getByReviewSnapshotReturnsOnCall[len(fake.getByReviewSnapshotArgsForCall)]
+	fake.getByReviewSnapshotArgsForCall = append(fake.getByReviewSnapshotArgsForCall, struct {
+		arg1 snapshot.SnapshotID
+		arg2 string
+	}{arg1, arg2})
+	stub := fake.GetByReviewSnapshotStub
+	fakeReturns := fake.getByReviewSnapshotReturns
+	fake.recordInvocation("GetByReviewSnapshot", []interface{}{arg1, arg2})
+	fake.getByReviewSnapshotMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeAgentFeedbackFactory) GetByReviewSnapshotCallCount() int {
+	fake.getByReviewSnapshotMutex.RLock()
+	defer fake.getByReviewSnapshotMutex.RUnlock()
+	return len(fake.getByReviewSnapshotArgsForCall)
+}
+
+func (fake *FakeAgentFeedbackFactory) GetByReviewSnapshotCalls(stub func(snapshot.SnapshotID, string) ([]feedback.StoredFeedback, error)) {
+	fake.getByReviewSnapshotMutex.Lock()
+	defer fake.getByReviewSnapshotMutex.Unlock()
+	fake.GetByReviewSnapshotStub = stub
+}
+
+func (fake *FakeAgentFeedbackFactory) GetByReviewSnapshotArgsForCall(i int) (snapshot.SnapshotID, string) {
+	fake.getByReviewSnapshotMutex.RLock()
+	defer fake.getByReviewSnapshotMutex.RUnlock()
+	argsForCall := fake.getByReviewSnapshotArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2
+}
+
+func (fake *FakeAgentFeedbackFactory) GetByReviewSnapshotReturns(result1 []feedback.StoredFeedback, result2 error) {
+	fake.getByReviewSnapshotMutex.Lock()
+	defer fake.getByReviewSnapshotMutex.Unlock()
+	fake.GetByReviewSnapshotStub = nil
+	fake.getByReviewSnapshotReturns = struct {
+		result1 []feedback.StoredFeedback
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeAgentFeedbackFactory) GetByReviewSnapshotReturnsOnCall(i int, result1 []feedback.StoredFeedback, result2 error) {
+	fake.getByReviewSnapshotMutex.Lock()
+	defer fake.getByReviewSnapshotMutex.Unlock()
+	fake.GetByReviewSnapshotStub = nil
+	if fake.getByReviewSnapshotReturnsOnCall == nil {
+		fake.getByReviewSnapshotReturnsOnCall = make(map[int]struct {
+			result1 []feedback.StoredFeedback
+			result2 error
+		})
+	}
+	fake.getByReviewSnapshotReturnsOnCall[i] = struct {
 		result1 []feedback.StoredFeedback
 		result2 error
 	}{result1, result2}

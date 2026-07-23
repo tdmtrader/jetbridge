@@ -1,0 +1,2 @@
+DROP TABLE agent_experiment_audit_events;
+DROP FUNCTION reject_agent_experiment_audit_event_mutation();

@@ -2,6 +2,7 @@ package atccmd_test
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -99,6 +100,9 @@ func (s *CommandSuite) TestAgentSnapshotFlagDefaults() {
 	repairInterval := runCmd.FindOptionByLongName("agent-snapshot-repair-interval")
 	s.NotNil(repairInterval)
 	s.Equal([]string{"10m"}, repairInterval.Default)
+	tempDir := runCmd.FindOptionByLongName("agent-snapshot-temp-dir")
+	s.NotNil(tempDir)
+	s.Empty(tempDir.Default)
 }
 
 func (s *CommandSuite) TestAgentWorkflowRunReconcilerFlagDefaults() {
@@ -203,6 +207,7 @@ func (s *CommandSuite) TestEnabledAgentSnapshotsRequireK8sDaemonAndCompleteMTLS(
 	command.AgentSnapshots.OrphanGracePeriod = time.Hour
 	command.AgentSnapshots.GCInterval = 5 * time.Minute
 	command.AgentSnapshots.RepairInterval = 10 * time.Minute
+	command.AgentSnapshots.TempDir = s.T().TempDir()
 
 	err := atccmd.ValidateAgentSnapshotsForTest(command)
 	s.Error(err)
@@ -219,6 +224,37 @@ func (s *CommandSuite) TestEnabledAgentSnapshotsRequireK8sDaemonAndCompleteMTLS(
 	command.Kubernetes.ArtifactDaemonTLSKey = "/key"
 	command.Kubernetes.ArtifactDaemonTLSCACert = "/ca"
 	command.Kubernetes.ArtifactDaemonResolveCapabilityKey = "/resolve-capability/key"
+	s.NoError(atccmd.ValidateAgentSnapshotsForTest(command))
+}
+
+func (s *CommandSuite) TestEnabledAgentSnapshotsRequireDedicatedAbsoluteTempDir() {
+	command := &atccmd.RunCommand{}
+	command.AgentSnapshots.Enabled = true
+	command.AgentSnapshots.ReplicationFactor = 2
+	command.AgentSnapshots.MaxBytes = 10 << 30
+	command.AgentSnapshots.MaxFiles = 100000
+	command.AgentSnapshots.BindingRetention = 7 * 24 * time.Hour
+	command.AgentSnapshots.OrphanGracePeriod = time.Hour
+	command.AgentSnapshots.GCInterval = 5 * time.Minute
+	command.AgentSnapshots.RepairInterval = 10 * time.Minute
+	command.Kubernetes.Namespace = "cicd"
+	command.Kubernetes.ArtifactDaemonHostPath = "/var/concourse/artifacts"
+	command.Kubernetes.ArtifactDaemonService = "artifact-daemon"
+	command.Kubernetes.ArtifactDaemonPort = 7780
+	command.Kubernetes.ArtifactDaemonTLSCert = "/cert"
+	command.Kubernetes.ArtifactDaemonTLSKey = "/key"
+	command.Kubernetes.ArtifactDaemonTLSCACert = "/ca"
+
+	err := atccmd.ValidateAgentSnapshotsForTest(command)
+	s.Error(err)
+	s.Contains(err.Error(), "agent-snapshot-temp-dir")
+
+	command.AgentSnapshots.TempDir = "relative/scratch"
+	err = atccmd.ValidateAgentSnapshotsForTest(command)
+	s.Error(err)
+	s.Contains(err.Error(), "absolute")
+
+	command.AgentSnapshots.TempDir = s.T().TempDir()
 	s.NoError(atccmd.ValidateAgentSnapshotsForTest(command))
 }
 
@@ -267,6 +303,7 @@ func (s *CommandSuite) TestK8sRuntimeAcceptsConfiguredDaemonHostPath() {
 	cmd := &atccmd.RunCommand{}
 	cmd.Kubernetes.Namespace = "concourse"
 	cmd.Kubernetes.ArtifactDaemonHostPath = "/var/concourse/artifacts"
+	cmd.Kubernetes.ArtifactHelperImage = "registry.example/concourse/artifact-helper@sha256:" + strings.Repeat("a", 64)
 	cmd.Kubernetes.ArtifactDaemonResolveCapabilityKey = "/resolve-capability/key"
 	cmd.Kubernetes.ArtifactDaemonResolveCapabilityTTL = 2 * time.Hour
 
@@ -278,6 +315,7 @@ func (s *CommandSuite) TestK8sRuntimeRejectsCapabilityTTLShorterThanAdmissionAnd
 	cmd := &atccmd.RunCommand{}
 	cmd.Kubernetes.Namespace = "concourse"
 	cmd.Kubernetes.ArtifactDaemonHostPath = "/var/concourse/artifacts"
+	cmd.Kubernetes.ArtifactHelperImage = "registry.example/concourse/artifact-helper@sha256:" + strings.Repeat("a", 64)
 	cmd.Kubernetes.ArtifactDaemonResolveCapabilityKey = "/resolve-capability/key"
 	cmd.Kubernetes.PodSchedulingTimeout = 2 * time.Hour
 	cmd.Kubernetes.PodStartupTimeout = time.Hour
@@ -286,6 +324,25 @@ func (s *CommandSuite) TestK8sRuntimeRejectsCapabilityTTLShorterThanAdmissionAnd
 	err := atccmd.ValidateK8sRuntimeForTest(cmd)
 	s.Error(err)
 	s.Contains(err.Error(), "resolve-capability-ttl")
+}
+
+func (s *CommandSuite) TestK8sRuntimeRequiresImmutableArtifactHelperImage() {
+	cmd := &atccmd.RunCommand{}
+	cmd.Kubernetes.Namespace = "concourse"
+	cmd.Kubernetes.ArtifactDaemonHostPath = "/var/concourse/artifacts"
+	cmd.Kubernetes.ArtifactDaemonResolveCapabilityKey = "/resolve-capability/key"
+	cmd.Kubernetes.ArtifactDaemonResolveCapabilityTTL = 2 * time.Hour
+
+	for _, image := range []string{"", "alpine:latest", "registry.example/concourse/artifact-helper:1.0"} {
+		cmd.Kubernetes.ArtifactHelperImage = image
+		err := atccmd.ValidateK8sRuntimeForTest(cmd)
+		s.Error(err)
+		s.Contains(err.Error(), "kubernetes-artifact-helper-image")
+		s.Contains(err.Error(), "exact sha256 digest")
+	}
+
+	cmd.Kubernetes.ArtifactHelperImage = "registry.example/concourse/artifact-helper@sha256:" + strings.Repeat("b", 64)
+	s.NoError(atccmd.ValidateK8sRuntimeForTest(cmd))
 }
 
 func (s *CommandSuite) TestK8sRuntimeRequiresResolveCapabilityKey() {

@@ -88,7 +88,10 @@ at Colima's socket explicitly:
 export DOCKER_HOST=unix://$HOME/.colima/default/docker.sock
 export TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock
 
-# needs concourse-local:latest in the docker daemon (see Tier 5 image build)
+# needs concourse-local:latest in the docker daemon (see Tier 5 image build).
+# The suite resolves and pins busybox:1.37.0 for the artifact helper by
+# default. To test a project-owned helper, set ARTIFACT_HELPER_IMAGE to an
+# exact repository@sha256:<64 lowercase hex> reference.
 go test ./topgun/k8s/integration/ -count=1 -v -timeout 30m   # full suite ~30m — not run in full
 ```
 
@@ -140,6 +143,17 @@ docker build -f Dockerfile.local -t concourse-local:latest .
 ```bash
 docker save concourse-local:latest -o /tmp/concourse-local.tar
 kind load image-archive --name jetbridge-local /tmp/concourse-local.tar
+
+# Runtime helpers execute with elevated filesystem authority, so the chart
+# rejects mutable tags. Resolve the helper actually pulled by Docker and load
+# those exact bytes into KinD.
+docker pull docker.io/library/busybox:1.37.0
+export ARTIFACT_HELPER_IMAGE="$(
+  docker image inspect --format '{{index .RepoDigests 0}}' \
+    docker.io/library/busybox:1.37.0
+)"
+docker save docker.io/library/busybox:1.37.0 -o /tmp/artifact-helper.tar
+kind load image-archive --name jetbridge-local /tmp/artifact-helper.tar
 ```
 
 ### 3. Helm install — required local overrides
@@ -150,6 +164,7 @@ helm upgrade --install concourse ./deploy/chart \
   -n concourse --create-namespace \
   --set image.tag=latest \
   --set image.pullPolicy=Never \
+  --set-string kubernetes.artifactHelperImage="${ARTIFACT_HELPER_IMAGE}" \
   --set postgresql.persistence.enabled=false \
   --set cachePvc.enabled=false \
   --set artifactStorePvc.enabled=false \

@@ -22,6 +22,8 @@ sampleWorkflow :
     { name : String
     , description : String
     , latestVersion : Int
+    , schemaVersion : Int
+    , signatureVersion : Int
     , contentHash : String
     , liveVersion : Int
     , createdAt : Time.Posix
@@ -30,9 +32,37 @@ sampleWorkflow =
     { name = "standard-dev"
     , description = "the five-phase dev flow"
     , latestVersion = 2
+    , schemaVersion = 3
+    , signatureVersion = 1
     , contentHash = "abcdef0123456789cafe"
     , liveVersion = 1
     , createdAt = Time.millisToPosix 0
+    }
+
+
+sampleWorkflowRun =
+    { id = "9007199254740993"
+    , pipelineRunId = Just 37
+    , workflowName = "standard-dev"
+    , workflowVersion = 2
+    , schemaVersion = 3
+    , signatureVersion = 1
+    , definitionContentHash = "abcdef0123456789cafe"
+    , functionId = Nothing
+    , status = "failed"
+    , executionStatus = Just "failed"
+    , originKind = "manual"
+    , originReference = ""
+    , createdBy = "alice"
+    , retryOf = Nothing
+    , createdAt = "2026-07-22T12:00:00Z"
+    , updatedAt = "2026-07-22T12:01:00Z"
+    , startedAt = Just "2026-07-22T12:00:05Z"
+    , completedAt = Just "2026-07-22T12:01:00Z"
+    , parameterizedConfigHash = "parameterized"
+    , instanceConfigHash = Just "instance"
+    , actualPlanHash = Just "plan"
+    , plannedBuildId = Just 42
     }
 
 
@@ -201,7 +231,7 @@ all =
             \_ ->
                 Common.init "/agent"
                     |> Common.queryView
-                    |> Query.has [ text "Agent" ]
+                    |> Query.has [ text "Agent workflows" ]
         , test "renders a recent run row with its step name and status badge" <|
             \_ ->
                 Common.init "/agent"
@@ -290,6 +320,81 @@ all =
                         [ containing [ text "standard-dev" ]
                         , containing [ class "agent-workflow-live", text "live" ]
                         , containing [ text "candidate v2" ]
+                        ]
+        , test "fetches each workflow's durable runs and exact operational counts after loading definitions" <|
+            \_ ->
+                Common.init "/agent"
+                    |> Application.handleCallback
+                        (Callback.AgentWorkflowsFetched (Ok [ sampleWorkflow ]))
+                    |> Tuple.second
+                    |> Expect.all
+                        [ Common.contains (Effects.FetchAgentWorkflowRuns "standard-dev")
+                        , Common.contains (Effects.FetchAgentWorkflowRunOperationalStatusCounts "standard-dev")
+                        ]
+        , test "workflow cards link to detail and summarize operational attention" <|
+            \_ ->
+                Common.init "/agent"
+                    |> Application.handleCallback
+                        (Callback.AgentWorkflowsFetched (Ok [ sampleWorkflow ]))
+                    |> Tuple.first
+                    |> Application.handleCallback
+                        (Callback.AgentWorkflowRunsFetched "standard-dev" (Ok [ sampleWorkflowRun ]))
+                    |> Tuple.first
+                    |> Application.handleCallback
+                        (Callback.AgentWorkflowRunOperationalStatusCountsFetched
+                            "standard-dev"
+                            (Ok
+                                { workflowName = "standard-dev"
+                                , counts = Dict.fromList [ ( "failed", 1 ) ]
+                                }
+                            )
+                        )
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ class "agent-workflow-row" ]
+                    |> Query.has
+                        [ class "agent-workflow-link"
+                        , attribute (Attr.href "/agent/workflows/standard-dev")
+                        , containing [ class "agent-workflow-signature", text "schema v3 · signature v1" ]
+                        , containing [ class "agent-workflow-operational-state", text "latest operational: failed · 0 queued · 0 running · 1 attention" ]
+                        , containing [ class "agent-workflow-needs-attention", text "needs attention" ]
+                        ]
+        , test "workflow counts come from the exact operational aggregate, not capped history" <|
+            \_ ->
+                Common.init "/agent"
+                    |> Application.handleCallback
+                        (Callback.AgentWorkflowsFetched (Ok [ sampleWorkflow ]))
+                    |> Tuple.first
+                    |> Application.handleCallback
+                        (Callback.AgentWorkflowRunsFetched "standard-dev" (Ok [ sampleWorkflowRun ]))
+                    |> Tuple.first
+                    |> Application.handleCallback
+                        (Callback.AgentWorkflowRunOperationalStatusCountsFetched
+                            "standard-dev"
+                            (Ok
+                                { workflowName = "standard-dev"
+                                , counts =
+                                    Dict.fromList
+                                        [ ( "admitting", 2 )
+                                        , ( "running", 1 )
+                                        , ( "canceling", 1 )
+                                        , ( "failed", 0 )
+                                        , ( "errored", 0 )
+                                        ]
+                                }
+                            )
+                        )
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ class "agent-workflow-row" ]
+                    |> Expect.all
+                        [ Query.has
+                            [ containing
+                                [ class "agent-workflow-operational-state"
+                                , text "latest operational: failed · 2 queued · 2 running · 0 attention"
+                                ]
+                            ]
+                        , Query.hasNot [ class "agent-workflow-needs-attention" ]
                         ]
         , test "shows an empty state when there are no workflows" <|
             \_ ->

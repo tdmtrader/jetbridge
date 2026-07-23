@@ -583,7 +583,8 @@ update msg ( model, effects ) =
                 ( model
                 , effects
                     ++ [ SubmitAgentReviewVerdict
-                            { repo = params.repo
+                            { reviewSnapshotId = params.reviewSnapshotId
+                            , repo = params.repo
                             , commitSha = params.commitSha
                             , findingId = params.findingId
                             , verdict = params.verdict

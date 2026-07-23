@@ -436,6 +436,9 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 	volumes, volumeMounts := c.buildVolumeMounts()
 	resources := buildResourceRequirements(c.containerSpec.Limits)
 	privileged := c.containerSpec.ImageSpec.Privileged
+	if c.containerSpec.Hermetic && privileged {
+		return nil, fmt.Errorf("hermetic containers cannot be privileged")
+	}
 
 	// Add artifact store PVC volume if configured.
 	if artifactVol := c.buildArtifactStoreVolume(); artifactVol != nil {
@@ -455,6 +458,13 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 		return nil, fmt.Errorf("build artifact init containers: %w", err)
 	}
 	initContainers = append(initContainers, artifactInits...)
+	if c.containerSpec.Hermetic {
+		if preparer, ok := c.storageBackend.(HermeticWorkspacePreparer); ok {
+			if prepare := preparer.BuildHermeticWorkspaceInitContainer(volumeMounts); prepare != nil {
+				initContainers = append(initContainers, *prepare)
+			}
+		}
+	}
 
 	// SecretMounts land on the MAIN container only (§8.3) — sidecar
 	// containers below receive the original volumeMounts slice and can
@@ -463,6 +473,11 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 	if len(c.containerSpec.SecretMounts) > 0 {
 		mainMounts = append([]corev1.VolumeMount{}, volumeMounts...)
 		mode := int32(0400)
+		if c.containerSpec.Hermetic {
+			// Hermetic pods use a server-owned shared supplemental group so
+			// digest-pinned non-root images can read main-only secret files.
+			mode = 0440
+		}
 		for i, sm := range c.containerSpec.SecretMounts {
 			name := fmt.Sprintf("secret-mount-%d", i)
 			volumes = append(volumes, corev1.Volume{
@@ -492,20 +507,26 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 			Env:             env,
 			VolumeMounts:    mainMounts,
 			Resources:       resources,
-			SecurityContext: buildContainerSecurityContext(privileged),
+			SecurityContext: buildContainerSecurityContext(privileged, c.containerSpec.Hermetic),
 			ImagePullPolicy: corev1.PullIfNotPresent,
 		},
 	}
 
 	containers = append(containers, buildSidecarContainers(
 		c.containerSpec.Sidecars, volumeMounts, dir,
-		c.containerSpec.SidecarEnv, c.containerSpec.SidecarSecretEnv)...)
+		c.containerSpec.SidecarEnv, c.containerSpec.SidecarSecretEnv,
+		c.containerSpec.Hermetic)...)
 
 	// Pause pods trap SIGTERM and exit immediately; 10s is more than
 	// enough grace and avoids the default 30s delay during pod teardown.
 	var terminationGrace int64 = 10
 
 	affinity := c.buildAffinity()
+	var automountServiceAccountToken *bool
+	if c.containerSpec.Hermetic {
+		disabled := false
+		automountServiceAccountToken = &disabled
+	}
 
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -516,13 +537,17 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 		},
 		Spec: corev1.PodSpec{
 			RestartPolicy:      corev1.RestartPolicyNever,
-			SecurityContext:    buildPodSecurityContext(privileged),
+			SecurityContext:    buildPodSecurityContext(privileged, c.containerSpec.Hermetic),
 			ImagePullSecrets:   buildImagePullSecrets(c.config.ImagePullSecrets, c.config.ImageRegistry),
 			ServiceAccountName: c.config.ServiceAccount,
-			InitContainers:     initContainers,
-			Volumes:            volumes,
-			Containers:         containers,
-			Affinity:           affinity,
+			// Hermetic workloads do not need Kubernetes API credentials.
+			// Leaving this nil for ordinary pods preserves the namespace's
+			// configured service-account automount behavior.
+			AutomountServiceAccountToken: automountServiceAccountToken,
+			InitContainers:               initContainers,
+			Volumes:                      volumes,
+			Containers:                   containers,
+			Affinity:                     affinity,
 
 			TerminationGracePeriodSeconds: &terminationGrace,
 		},
@@ -583,12 +608,12 @@ func buildSidecarContainers(
 	defaultDir string,
 	sidecarEnv map[string][]string,
 	sidecarSecretEnv map[string]map[string]vars.SecretRef,
+	hermetic bool,
 ) []corev1.Container {
 	if len(sidecars) == 0 {
 		return nil
 	}
 
-	allowEscalation := false
 	var containers []corev1.Container
 
 	for _, sc := range sidecars {
@@ -610,9 +635,7 @@ func buildSidecarContainers(
 			WorkingDir:      workDir,
 			VolumeMounts:    mounts,
 			ImagePullPolicy: corev1.PullIfNotPresent,
-			SecurityContext: &corev1.SecurityContext{
-				AllowPrivilegeEscalation: &allowEscalation,
-			},
+			SecurityContext: buildContainerSecurityContext(false, hermetic),
 		}
 
 		var env []corev1.EnvVar
@@ -711,6 +734,9 @@ func (c *Container) buildPodLabels() map[string]string {
 	labels := map[string]string{
 		workerLabelKey: c.workerName,
 		typeLabelKey:   string(c.containerSpec.Type),
+	}
+	if c.containerSpec.Hermetic {
+		labels[hermeticLabelKey] = "true"
 	}
 
 	addLabel := func(key, value string) {
@@ -900,27 +926,38 @@ func buildResourceRequirements(limits runtime.ContainerLimits) corev1.ResourceRe
 // type images (time, git, registry-image, etc.) run as root, and we cannot
 // know at pod-creation time whether an arbitrary image supports non-root.
 // Container-level AllowPrivilegeEscalation=false still provides hardening.
-func buildPodSecurityContext(privileged bool) *corev1.PodSecurityContext {
-	return &corev1.PodSecurityContext{
+func buildPodSecurityContext(privileged, hermetic bool) *corev1.PodSecurityContext {
+	security := &corev1.PodSecurityContext{
 		SeccompProfile: &corev1.SeccompProfile{
 			Type: corev1.SeccompProfileTypeRuntimeDefault,
 		},
 	}
+	if hermetic {
+		sharedGroup := int64(65534)
+		changePolicy := corev1.FSGroupChangeOnRootMismatch
+		security.FSGroup = &sharedGroup
+		security.FSGroupChangePolicy = &changePolicy
+	}
+	return security
 }
 
 // buildContainerSecurityContext returns the container-level security context.
 // Non-privileged containers disallow privilege escalation.
 // Privileged containers get full privileges.
-func buildContainerSecurityContext(privileged bool) *corev1.SecurityContext {
+func buildContainerSecurityContext(privileged, hermetic bool) *corev1.SecurityContext {
 	if privileged {
 		return &corev1.SecurityContext{
 			Privileged: &privileged,
 		}
 	}
 	allowEscalation := false
-	return &corev1.SecurityContext{
+	security := &corev1.SecurityContext{
 		AllowPrivilegeEscalation: &allowEscalation,
 	}
+	if hermetic {
+		security.Capabilities = &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}}
+	}
+	return security
 }
 
 // buildImagePullSecrets converts a list of secret names into K8s

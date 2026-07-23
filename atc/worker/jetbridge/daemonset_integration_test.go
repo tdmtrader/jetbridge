@@ -869,11 +869,13 @@ func TestDaemonSetMode_CleanupInitContainerOnReuse(t *testing.T) {
 	if !strings.Contains(cmd, "rm -rf") {
 		t.Errorf("expected rm -rf in cleanup command, got: %s", cmd)
 	}
-	if !strings.Contains(cmd, "reused-handle") {
-		t.Errorf("expected container handle in cleanup path, got: %s", cmd)
+	// The command only sees the exact handle mount; it must not receive the
+	// artifact root and interpolate a broad deletion path.
+	if strings.Contains(cmd, "/artifacts/steps") {
+		t.Errorf("cleanup command retained broad artifact root: %s", cmd)
 	}
 
-	// Should mount the artifact hostPath volume (writable, not read-only).
+	// Should mount only the reused handle subPath (writable, not read-only).
 	if len(cleanup.VolumeMounts) == 0 {
 		t.Fatal("expected volume mounts on cleanup container")
 	}
@@ -883,6 +885,9 @@ func TestDaemonSetMode_CleanupInitContainerOnReuse(t *testing.T) {
 			found = true
 			if m.ReadOnly {
 				t.Error("cleanup init container should mount artifact hostPath writable")
+			}
+			if m.MountPath != "/artifacts/handle" || m.SubPath != "steps/reused-handle" {
+				t.Errorf("cleanup mount is not scoped to reused handle: %+v", m)
 			}
 		}
 	}
@@ -1814,7 +1819,7 @@ func TestDaemonSetMode_SidecarGetsHostPathMounts(t *testing.T) {
 	}
 
 	volumes, mounts := c.buildVolumeMounts()
-	sidecarContainers := buildSidecarContainers(c.containerSpec.Sidecars, mounts, c.containerSpec.Dir, c.containerSpec.SidecarEnv, c.containerSpec.SidecarSecretEnv)
+	sidecarContainers := buildSidecarContainers(c.containerSpec.Sidecars, mounts, c.containerSpec.Dir, c.containerSpec.SidecarEnv, c.containerSpec.SidecarSecretEnv, false)
 
 	if len(sidecarContainers) != 1 {
 		t.Fatalf("expected 1 sidecar container, got %d", len(sidecarContainers))
@@ -1895,7 +1900,7 @@ func TestDaemonSetMode_SidecarWithOverlappingInputOutput(t *testing.T) {
 	}
 
 	volumes, mounts := c.buildVolumeMounts()
-	sidecarContainers := buildSidecarContainers(c.containerSpec.Sidecars, mounts, c.containerSpec.Dir, c.containerSpec.SidecarEnv, c.containerSpec.SidecarSecretEnv)
+	sidecarContainers := buildSidecarContainers(c.containerSpec.Sidecars, mounts, c.containerSpec.Dir, c.containerSpec.SidecarEnv, c.containerSpec.SidecarSecretEnv, false)
 
 	if len(sidecarContainers) != 1 {
 		t.Fatalf("expected 1 sidecar, got %d", len(sidecarContainers))

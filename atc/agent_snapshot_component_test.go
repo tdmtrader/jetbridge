@@ -13,4 +13,7 @@ func TestAgentSnapshotLifecycleComponentNamesAreStable(t *testing.T) {
 	if atc.ComponentAgentSnapshotRepair != "agent_snapshot_repair" {
 		t.Fatalf("repair component name = %q", atc.ComponentAgentSnapshotRepair)
 	}
+	if atc.ComponentAgentSnapshotProjection != "agent_snapshot_projection" {
+		t.Fatalf("projection component name = %q", atc.ComponentAgentSnapshotProjection)
+	}
 }

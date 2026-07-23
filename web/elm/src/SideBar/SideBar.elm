@@ -343,8 +343,10 @@ tooltip model =
 
 agentPlatformLink : List (Html Message)
 agentPlatformLink =
-    [ agentNavLink "sidebar-agent-platform" Routes.Agent "Agent platform"
+    [ agentNavLink "sidebar-agent-platform" Routes.Agent "Agent workflows"
     , agentNavLink "sidebar-agent-tickets" Routes.AgentTickets "Ticket queue"
+    , agentNavLink "sidebar-agent-reviews" (Routes.AgentReviews { teamName = "main" }) "Review queue"
+    , agentNavLink "sidebar-agent-experiments" Routes.AgentExperiments "Experiment laboratory"
     ]
 
 

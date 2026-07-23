@@ -13,10 +13,13 @@ import (
 
 func TestVersionThreeEngineeringSeedsCompileAndRender(t *testing.T) {
 	tests := []struct {
-		directory string
-		name      string
-		inputs    []workflow.SignaturePort
-		outputs   []workflow.SignaturePort
+		directory         string
+		name              string
+		inputs            []workflow.SignaturePort
+		outputs           []workflow.SignaturePort
+		dispositionOutput string
+		humanWait         bool
+		publisher         bool
 	}{
 		{
 			directory: "seeds/code-review-v3",
@@ -25,7 +28,8 @@ func TestVersionThreeEngineeringSeedsCompileAndRender(t *testing.T) {
 				{Name: "before", Type: snapshot.TypeRef("repository/v1")},
 				{Name: "after", Type: snapshot.TypeRef("repository/v1")},
 			},
-			outputs: []workflow.SignaturePort{{Name: "review", Type: snapshot.TypeRef("review/v1")}},
+			outputs:           []workflow.SignaturePort{{Name: "review", Type: snapshot.TypeRef("review/v1")}},
+			dispositionOutput: "review",
 		},
 		{
 			directory: "seeds/small-fix-v3",
@@ -38,6 +42,8 @@ func TestVersionThreeEngineeringSeedsCompileAndRender(t *testing.T) {
 				{Name: "change", Type: snapshot.TypeRef("repository-change/v1")},
 				{Name: "report", Type: snapshot.TypeRef("opaque/v1")},
 			},
+			dispositionOutput: "change",
+			humanWait:         true,
 		},
 		{
 			directory: "seeds/version-upgrade-v3",
@@ -49,6 +55,31 @@ func TestVersionThreeEngineeringSeedsCompileAndRender(t *testing.T) {
 			outputs: []workflow.SignaturePort{
 				{Name: "change", Type: snapshot.TypeRef("repository-change/v1")},
 				{Name: "report", Type: snapshot.TypeRef("upgrade-report/v1")},
+			},
+			dispositionOutput: "change",
+			humanWait:         true,
+		},
+		{
+			directory: "seeds/anonymization-audit-v3",
+			name:      "anonymization-audit",
+			inputs: []workflow.SignaturePort{
+				{Name: "repository", Type: snapshot.TypeRef("repository/v1")},
+				{Name: "database", Type: snapshot.TypeRef("database-snapshot/v1")},
+			},
+			outputs: []workflow.SignaturePort{
+				{Name: "findings", Type: snapshot.TypeRef("audit-findings/v1")},
+				{Name: "change", Type: snapshot.TypeRef("repository-change/v1"), Optional: true},
+			},
+		},
+		{
+			directory: "seeds/log-diagnosis-v3",
+			name:      "log-diagnosis",
+			inputs: []workflow.SignaturePort{
+				{Name: "logs", Type: snapshot.TypeRef("log-bundle/v1")},
+				{Name: "deployment", Type: snapshot.TypeRef("deployment-snapshot/v1"), Optional: true},
+			},
+			outputs: []workflow.SignaturePort{
+				{Name: "diagnosis", Type: snapshot.TypeRef("diagnosis/v1")},
 			},
 		},
 	}
@@ -73,6 +104,9 @@ func TestVersionThreeEngineeringSeedsCompileAndRender(t *testing.T) {
 			if !reflect.DeepEqual(signature.Inputs, test.inputs) || !reflect.DeepEqual(signature.Outputs, test.outputs) {
 				t.Fatalf("signature = %+v, want inputs=%+v outputs=%+v", signature, test.inputs, test.outputs)
 			}
+			if definition.Compiled.Function.DispositionOutput != test.dispositionOutput {
+				t.Fatalf("disposition_output = %q, want %q", definition.Compiled.Function.DispositionOutput, test.dispositionOutput)
+			}
 
 			target, err := workflow.FullFunctionTarget(*definition)
 			if err != nil {
@@ -85,11 +119,22 @@ func TestVersionThreeEngineeringSeedsCompileAndRender(t *testing.T) {
 			if len(rendered.Config.Jobs) != 1 || len(rendered.Config.Jobs[0].PlanSequence) <= len(test.inputs) {
 				t.Fatalf("rendered plan omitted the authored DAG: %+v", rendered.Config.Jobs)
 			}
+			var waits, publishers, harvests int
+			recursor := atc.StepRecursor{
+				OnAwaitSnapshot:   func(*atc.AwaitSnapshotStep) error { waits++; return nil },
+				OnPublishSnapshot: func(*atc.PublishSnapshotStep) error { publishers++; return nil },
+				OnHarvest:         func(*atc.HarvestStep) error { harvests++; return nil },
+			}
 			for _, step := range rendered.Config.Jobs[0].PlanSequence {
-				switch step.Config.(type) {
-				case *atc.HarvestStep:
-					t.Fatal("version-3 seed gained an implicit harvest/publisher")
+				if err := step.Config.Visit(recursor); err != nil {
+					t.Fatalf("inspect rendered plan: %v", err)
 				}
+			}
+			if harvests != 0 {
+				t.Fatal("version-3 seed gained an implicit compatibility harvest")
+			}
+			if (waits > 0) != test.humanWait || (publishers > 0) != test.publisher {
+				t.Fatalf("visible boundaries: waits=%d publishers=%d, want wait=%t publisher=%t", waits, publishers, test.humanWait, test.publisher)
 			}
 			if strings.Contains(string(manifest["workflow.yml"]), "ticket_id") || strings.Contains(string(manifest["workflow.yml"]), "workspace") {
 				t.Fatal("version-3 seed is coupled to the legacy ticket/workspace model")

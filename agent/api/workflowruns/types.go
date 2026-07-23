@@ -45,6 +45,7 @@ type Binder interface {
 type RunStore interface {
 	Get(context.Context, int, snapshot.WorkflowRunID) (db.AgentWorkflowRun, bool, error)
 	List(context.Context, db.AgentWorkflowRunListFilter) ([]db.AgentWorkflowRun, error)
+	CountByStatus(context.Context, db.AgentWorkflowRunCountFilter) (map[db.AgentWorkflowRunStatus]int64, error)
 	Snapshots(context.Context, snapshot.WorkflowRunID) ([]db.AgentWorkflowRunSnapshotBinding, error)
 }
 
@@ -137,4 +138,9 @@ type RunDetail struct {
 type OutputsResponse struct {
 	WorkflowRunID snapshot.WorkflowRunID `json:"workflow_run_id"`
 	Outputs       []OutputManifest       `json:"outputs"`
+}
+
+type OperationalStatusCountsResponse struct {
+	WorkflowName string           `json:"workflow_name"`
+	Counts       map[string]int64 `json:"counts"`
 }

@@ -6,7 +6,10 @@ import Concourse.Agent
 import Concourse.AgentDispatcher
 import Concourse.AgentReview
 import Concourse.AgentTicket
+import Concourse.Experiment
 import Concourse.Pagination exposing (Page, Paginated)
+import Concourse.Snapshot
+import Concourse.WorkflowRun
 import Http
 import Message.Message
     exposing
@@ -90,3 +93,24 @@ type Callback
     | AgentTicketDispatched Int (Fetched Concourse.AgentTicket.DispatchResult)
     | AgentTicketTaskUpdated Int (Fetched ())
     | AgentTicketMetricsFetched Int (Fetched (List Concourse.Agent.RunMetric))
+    | AgentWorkflowVersionsFetched String (Fetched (List Concourse.Agent.WorkflowVersion))
+    | AgentWorkflowVersionPromoted String (Fetched ())
+    | AgentWorkflowRunsFetched String (Fetched (List Concourse.WorkflowRun.Summary))
+    | AgentWorkflowRunOperationalStatusCountsFetched String (Fetched Concourse.WorkflowRun.OperationalStatusCounts)
+    | AgentWorkflowRunFetched String (Fetched Concourse.WorkflowRun.Detail)
+    | AgentWorkflowRunCreated String (Fetched Concourse.WorkflowRun.Detail)
+    | AgentWorkflowRunCanceled String (Fetched Concourse.WorkflowRun.Detail)
+    | AgentWorkflowRunRetried String (Fetched Concourse.WorkflowRun.Detail)
+    | AgentWorkflowWaitsFetched String (Fetched (List Concourse.WorkflowRun.Wait))
+    | AgentWorkflowWaitResolved String (Fetched Concourse.WorkflowRun.Wait)
+    | AgentWorkflowOutcomesFetched String (Fetched (List Concourse.WorkflowRun.Outcome))
+    | AgentWorkflowReviewsFetched String (Fetched (List Concourse.AgentReview.BuildReview))
+    | AgentSnapshotFetched String (Fetched Concourse.Snapshot.Detail)
+    | AgentSnapshotRepositoryChangeFetched String (Fetched Concourse.WorkflowRun.RepositoryChange)
+    | AgentSnapshotReviewFetched String (Fetched Concourse.AgentReview.BuildReview)
+    | AgentSnapshotPinChanged String (Fetched ())
+    | AgentExperimentsFetched (Fetched (List Concourse.Experiment.Experiment))
+    | AgentExperimentFetched String (Fetched Concourse.Experiment.Experiment)
+    | AgentExperimentCellsFetched String (Fetched (List Concourse.Experiment.StoredCell))
+    | AgentExperimentScorecardFetched String (Fetched Concourse.Experiment.Scorecard)
+    | AgentExperimentCanceled String (Fetched Concourse.Experiment.Experiment)

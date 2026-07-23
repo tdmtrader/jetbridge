@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/workitem"
 )
 
@@ -126,33 +127,40 @@ var (
 	ErrTaskNotFound      = errors.New("plan task not found")
 	ErrCommentNotFound   = errors.New("ticket comment not found")
 	ErrCommentAnswered   = errors.New("ticket comment already answered")
+	// ErrDispatchConflict means a caller attempted to change or reuse an
+	// immutable dispatch reservation with different identity or inputs.
+	ErrDispatchConflict = errors.New("ticket dispatch reservation conflict")
 )
 
 // Ticket is the §2.1 API shape (epoch-seconds timestamps).
 type Ticket struct {
-	ID                   int      `json:"id"`
-	Revision             int64    `json:"revision"`
-	Title                string   `json:"title"`
-	Body                 string   `json:"body"`
-	State                State    `json:"state"`
-	Origin               string   `json:"origin"`
-	Repo                 string   `json:"repo"`
-	TargetBranch         string   `json:"target_branch"`
-	WorkflowName         string   `json:"workflow_name"`
-	WorkflowVersion      *int     `json:"workflow_version,omitempty"`
-	WorkflowDefinitionID *int     `json:"workflow_definition_id,omitempty"`
-	BudgetUSD            *float64 `json:"budget_usd,omitempty"`
-	UserID               *int     `json:"user_id,omitempty"`
-	UserName             string   `json:"user_name"`
-	PipelineRunID        *int     `json:"pipeline_run_id,omitempty"`
-	Branch               string   `json:"branch"`
-	AttemptCount         int      `json:"attempt_count"`
-	ErrorDetail          string   `json:"error_detail,omitempty"`
-	CreatedBy            string   `json:"created_by,omitempty"`   // audit attribution (addendum)
-	ExternalRef          string   `json:"external_ref,omitempty"` // Jira phase-2 seam (addendum)
-	CreatedAt            int64    `json:"created_at"`
-	UpdatedAt            int64    `json:"updated_at"`
-	CompletedAt          int64    `json:"completed_at,omitempty"`
+	ID                     int                     `json:"id"`
+	Revision               int64                   `json:"revision"`
+	Title                  string                  `json:"title"`
+	Body                   string                  `json:"body"`
+	State                  State                   `json:"state"`
+	Origin                 string                  `json:"origin"`
+	Repo                   string                  `json:"repo"`
+	TargetBranch           string                  `json:"target_branch"`
+	WorkflowName           string                  `json:"workflow_name"`
+	WorkflowVersion        *int                    `json:"workflow_version,omitempty"`
+	WorkflowDefinitionID   *int                    `json:"workflow_definition_id,omitempty"`
+	BudgetUSD              *float64                `json:"budget_usd,omitempty"`
+	UserID                 *int                    `json:"user_id,omitempty"`
+	UserName               string                  `json:"user_name"`
+	PipelineRunID          *int                    `json:"pipeline_run_id,omitempty"`
+	WorkflowRunID          *snapshot.WorkflowRunID `json:"workflow_run_id,omitempty"`
+	WorkItemSnapshotID     *snapshot.SnapshotID    `json:"work_item_snapshot_id,omitempty"`
+	RepositorySnapshotID   *snapshot.SnapshotID    `json:"repository_snapshot_id,omitempty"`
+	DispatchReservationKey string                  `json:"dispatch_reservation_key,omitempty"`
+	Branch                 string                  `json:"branch"`
+	AttemptCount           int                     `json:"attempt_count"`
+	ErrorDetail            string                  `json:"error_detail,omitempty"`
+	CreatedBy              string                  `json:"created_by,omitempty"`   // audit attribution (addendum)
+	ExternalRef            string                  `json:"external_ref,omitempty"` // Jira phase-2 seam (addendum)
+	CreatedAt              int64                   `json:"created_at"`
+	UpdatedAt              int64                   `json:"updated_at"`
+	CompletedAt            int64                   `json:"completed_at,omitempty"`
 }
 
 // Comment is one mutable work-item interaction. An answer is first-writer
@@ -224,11 +232,33 @@ type Update struct {
 	WorkflowName    *string
 	WorkflowVersion *int
 	TargetBranch    *string
+	// RepositorySnapshotID selects the exact immutable repository value the
+	// ticket adapter will bind. Once a dispatch reservation exists, a missing
+	// value may be filled exactly once and an existing value is immutable.
+	RepositorySnapshotID *snapshot.SnapshotID
 	// UserID resolves the triggering user (co-signed dispatch remainder,
 	// 2026-07-17): dispatch looks up users.id from UserName at dispatch
 	// time and records it here — the wave-4 leg the create handler's
 	// comment promised. Additive; nil = leave unchanged.
 	UserID *int
+}
+
+// DispatchReservationRequest is the compare-and-set input for claiming a
+// queued ticket for one exact workflow definition. The store derives the
+// idempotency key from the locked ticket row; callers cannot choose it.
+type DispatchReservationRequest struct {
+	ExpectedRevision     int64
+	WorkflowVersion      int
+	WorkflowDefinitionID int
+}
+
+// DispatchReservation is the durable claim plus the ticket state observed
+// under the reservation lock. Created distinguishes a new claim from an
+// idempotent resume of the same claim.
+type DispatchReservation struct {
+	Key     string
+	Ticket  Ticket
+	Created bool
 }
 
 // TransitionMeta carries the side-band values a transition records.
@@ -252,6 +282,9 @@ type Store interface {
 	List(filter ListFilter) ([]Ticket, error)
 	Update(id int, upd Update) error // title/body/budget/workflow ref; never state
 	Transition(id int, from, to State, meta TransitionMeta) error
+	ReserveDispatch(context.Context, int, DispatchReservationRequest) (DispatchReservation, error)
+	RecordDispatchWorkItem(context.Context, int, string, int64, snapshot.SnapshotID) error
+	RecordDispatchRun(context.Context, int, string, snapshot.WorkflowRunID, int) error
 
 	SubmitSpec(ticketID int, spec Spec) (version int, err error)
 	SubmitPlan(ticketID int, tasks []Task) (planVersion int, err error)
@@ -280,24 +313,26 @@ type Store interface {
 // --- HTTP request bodies (also used by the go-concourse client) ---
 
 type CreateRequest struct {
-	Title           string   `json:"title"`
-	Body            string   `json:"body"`
-	Origin          string   `json:"origin,omitempty"` // default "web"; fly sends "fly"
-	Repo            string   `json:"repo"`
-	TargetBranch    string   `json:"target_branch,omitempty"`
-	WorkflowName    string   `json:"workflow_name,omitempty"`
-	WorkflowVersion *int     `json:"workflow_version,omitempty"`
-	BudgetUSD       *float64 `json:"budget_usd,omitempty"`
-	ExternalRef     string   `json:"external_ref,omitempty"`
+	Title                string               `json:"title"`
+	Body                 string               `json:"body"`
+	Origin               string               `json:"origin,omitempty"` // default "web"; fly sends "fly"
+	Repo                 string               `json:"repo"`
+	TargetBranch         string               `json:"target_branch,omitempty"`
+	WorkflowName         string               `json:"workflow_name,omitempty"`
+	WorkflowVersion      *int                 `json:"workflow_version,omitempty"`
+	BudgetUSD            *float64             `json:"budget_usd,omitempty"`
+	ExternalRef          string               `json:"external_ref,omitempty"`
+	RepositorySnapshotID *snapshot.SnapshotID `json:"repository_snapshot_id,omitempty"`
 }
 
 type UpdateRequest struct {
-	Title           *string  `json:"title,omitempty"`
-	Body            *string  `json:"body,omitempty"`
-	BudgetUSD       *float64 `json:"budget_usd,omitempty"`
-	WorkflowName    *string  `json:"workflow_name,omitempty"`
-	WorkflowVersion *int     `json:"workflow_version,omitempty"`
-	TargetBranch    *string  `json:"target_branch,omitempty"`
+	Title                *string              `json:"title,omitempty"`
+	Body                 *string              `json:"body,omitempty"`
+	BudgetUSD            *float64             `json:"budget_usd,omitempty"`
+	WorkflowName         *string              `json:"workflow_name,omitempty"`
+	WorkflowVersion      *int                 `json:"workflow_version,omitempty"`
+	TargetBranch         *string              `json:"target_branch,omitempty"`
+	RepositorySnapshotID *snapshot.SnapshotID `json:"repository_snapshot_id,omitempty"`
 }
 
 type TransitionRequest struct {
@@ -336,8 +371,9 @@ type TaskStatusRequest struct {
 // slice, 2026-07-17): the created pipeline run and the per-ticket
 // template pipeline it materialized from.
 type DispatchResponse struct {
-	RunID        int    `json:"run_id"`
-	PipelineName string `json:"pipeline_name"`
+	RunID         int                     `json:"run_id"`
+	PipelineName  string                  `json:"pipeline_name"`
+	WorkflowRunID *snapshot.WorkflowRunID `json:"workflow_run_id,omitempty"`
 	// Warnings carries advisory spec-lint findings (ticket #46:
 	// vocabulary known to trigger CLI usage-policy false refusals).
 	// Additive and omitempty — never a dispatch blocker.

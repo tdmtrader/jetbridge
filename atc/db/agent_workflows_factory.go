@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -14,12 +15,20 @@ type AgentWorkflowsFactory interface {
 	workflow.Store
 }
 
-func NewAgentWorkflowsFactory(conn DbConn) AgentWorkflowsFactory {
-	return &agentWorkflowsFactory{conn: conn}
+func NewAgentWorkflowsFactory(conn DbConn, promotionValidators ...workflow.PromotionValidator) AgentWorkflowsFactory {
+	if len(promotionValidators) > 1 {
+		panic("db: NewAgentWorkflowsFactory accepts at most one promotion validator")
+	}
+	factory := &agentWorkflowsFactory{conn: conn}
+	if len(promotionValidators) == 1 {
+		factory.promotionValidator = promotionValidators[0]
+	}
+	return factory
 }
 
 type agentWorkflowsFactory struct {
-	conn DbConn
+	conn               DbConn
+	promotionValidator workflow.PromotionValidator
 }
 
 const workflowMetaColumns = `id, name, version, content_hash, live, description, created_by,
@@ -215,17 +224,54 @@ func (f *agentWorkflowsFactory) List() ([]workflow.Definition, error) {
 	return scanWorkflowMetaRows(rows)
 }
 
-func (f *agentWorkflowsFactory) Versions(name string) ([]workflow.Definition, error) {
-	rows, err := f.conn.Query(`
+func (f *agentWorkflowsFactory) Versions(
+	ctx context.Context,
+	name string,
+	request workflow.VersionPageRequest,
+) (workflow.VersionPage, error) {
+	if ctx == nil {
+		return workflow.VersionPage{}, fmt.Errorf("workflow: version page context is required")
+	}
+	if request.Limit <= 0 || request.Limit > workflow.MaxVersionPageSize ||
+		request.Cursor < 0 || request.Cursor > workflow.MaxWorkflowVersion {
+		return workflow.VersionPage{}, workflow.ErrInvalidVersionPage
+	}
+
+	var found bool
+	if err := f.conn.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM agent_workflow_definitions WHERE name = $1
+		)`, name).Scan(&found); err != nil {
+		return workflow.VersionPage{}, err
+	}
+	page := workflow.VersionPage{Found: found, Definitions: []workflow.Definition{}}
+	if !found {
+		return page, nil
+	}
+
+	rows, err := f.conn.QueryContext(ctx, `
 		SELECT `+workflowMetaColumns+`
 		FROM agent_workflow_definitions
-		WHERE name = $1
-		ORDER BY version ASC`, name)
+		WHERE name = $1 AND ($2 = 0 OR version < $2)
+		ORDER BY version DESC
+		LIMIT $3`, name, request.Cursor, request.Limit+1)
 	if err != nil {
-		return nil, err
+		return workflow.VersionPage{}, err
 	}
 	defer rows.Close()
-	return scanWorkflowMetaRows(rows)
+	definitions, err := scanWorkflowMetaRows(rows)
+	if err != nil {
+		return workflow.VersionPage{}, err
+	}
+	if len(definitions) > request.Limit {
+		definitions = definitions[:request.Limit]
+		page.NextCursor = definitions[len(definitions)-1].Version
+	}
+	for left, right := 0, len(definitions)-1; left < right; left, right = left+1, right-1 {
+		definitions[left], definitions[right] = definitions[right], definitions[left]
+	}
+	page.Definitions = definitions
+	return page, nil
 }
 
 func (f *agentWorkflowsFactory) Promote(name string, version int, promotedBy string) (workflow.PromotionResult, error) {
@@ -243,19 +289,67 @@ func (f *agentWorkflowsFactory) Promote(name string, version int, promotedBy str
 		return workflow.PromotionResult{}, err
 	}
 
-	var target workflow.VersionMetadata
+	var targetDefinition workflow.Definition
+	var targetManifest sql.NullString
 	err = tx.QueryRow(`
-		SELECT version, schema_version, signature_version
+		SELECT `+workflowMetaColumns+`, definition, source_manifest
 		FROM agent_workflow_definitions
 		WHERE name = $1 AND version = $2
 		FOR UPDATE`, name, version,
-	).Scan(&target.Version, &target.SchemaVersion, &target.SignatureVersion)
+	).Scan(
+		&targetDefinition.ID,
+		&targetDefinition.Name,
+		&targetDefinition.Version,
+		&targetDefinition.ContentHash,
+		&targetDefinition.Live,
+		&targetDefinition.Description,
+		&targetDefinition.CreatedBy,
+		&targetDefinition.CreatedAt,
+		&targetDefinition.SchemaVersion,
+		&targetDefinition.SignatureVersion,
+		&targetDefinition.RawYAML,
+		&targetManifest,
+	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return workflow.PromotionResult{}, workflow.ErrVersionNotFound
 	}
 	if err != nil {
 		return workflow.PromotionResult{}, err
 	}
+	compiled, source, err := compileStoredWorkflowSource(
+		targetDefinition.Name,
+		targetDefinition.Version,
+		targetDefinition.RawYAML,
+		targetManifest,
+	)
+	if err != nil {
+		return workflow.PromotionResult{}, workflow.InvalidPromotionError{Err: err}
+	}
+	metadata, err := compiled.VersionMetadata()
+	if err != nil ||
+		metadata.SchemaVersion != targetDefinition.SchemaVersion ||
+		metadata.SignatureVersion != targetDefinition.SignatureVersion {
+		if err == nil {
+			err = fmt.Errorf(
+				"stored metadata for %q version %d does not match compiled source",
+				targetDefinition.Name,
+				targetDefinition.Version,
+			)
+		}
+		return workflow.PromotionResult{}, workflow.InvalidPromotionError{Err: err}
+	}
+	populateCompiledWorkflowDefinition(&targetDefinition, compiled, source)
+	if targetDefinition.SchemaVersion == 3 {
+		if f.promotionValidator == nil {
+			return workflow.PromotionResult{}, workflow.InvalidPromotionError{
+				Err: workflow.ErrPromotionValidatorRequired,
+			}
+		}
+		if err := f.promotionValidator.ValidatePromotion(targetDefinition); err != nil {
+			return workflow.PromotionResult{}, workflow.InvalidPromotionError{Err: err}
+		}
+	}
+	target := targetDefinition.VersionMetadata()
 
 	result := workflow.PromotionResult{Target: target}
 	var previous workflow.VersionMetadata

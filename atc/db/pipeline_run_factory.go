@@ -160,6 +160,39 @@ type pipelineRunFactory struct {
 }
 
 func (f *pipelineRunFactory) CreateRun(templatePipelineID int, params map[string]any, createdBy string) (PipelineRun, error) {
+	return f.createRun(context.Background(), nil, templatePipelineID, params, createdBy)
+}
+
+// CreateRunForServerTemplate is the narrow execution seam for immutable,
+// registry-owned server adapters that are not durable workflow definitions.
+// It deliberately is not part of PipelineRunFactory: public callers retain
+// CreateRun's guard, while trusted composition must opt into this capability.
+func (f *pipelineRunFactory) CreateRunForServerTemplate(
+	ctx context.Context,
+	templateRef WorkflowRunTemplateRef,
+	params map[string]any,
+	createdBy string,
+) (PipelineRun, error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("db: server template context is required")
+	}
+	if templateRef.PipelineID <= 0 || templateRef.TeamID <= 0 || templateRef.Name == "" ||
+		templateRef.ConfigVersion <= 0 || templateRef.FullHash == "" {
+		return nil, fmt.Errorf("db: invalid server template reference")
+	}
+	return f.createRun(ctx, &templateRef, templateRef.PipelineID, params, createdBy)
+}
+
+func (f *pipelineRunFactory) createRun(
+	ctx context.Context,
+	serverTemplate *WorkflowRunTemplateRef,
+	templatePipelineID int,
+	params map[string]any,
+	createdBy string,
+) (PipelineRun, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	template, found, err := f.pipelineByID(templatePipelineID)
 	if err != nil {
 		return nil, err
@@ -187,13 +220,19 @@ func (f *pipelineRunFactory) CreateRun(templatePipelineID int, params map[string
 		return nil, err
 	}
 
-	tx, err := f.conn.Begin()
+	tx, err := f.conn.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer Rollback(tx)
-	if err := rejectWorkflowRunOwnedPipeline(context.Background(), tx, templatePipelineID); err != nil {
-		return nil, err
+	if serverTemplate == nil {
+		if err := rejectWorkflowRunOwnedPipeline(ctx, tx, templatePipelineID); err != nil {
+			return nil, err
+		}
+	} else {
+		if err := validateLockedServerTemplate(ctx, tx, *serverTemplate, config); err != nil {
+			return nil, err
+		}
 	}
 
 	// A pipeline instance {name, {"run": N}} may already exist (e.g. a user
@@ -289,6 +328,11 @@ func (f *pipelineRunFactory) CreateRun(templatePipelineID int, params map[string
 	if err != nil {
 		return nil, err
 	}
+	if serverTemplate != nil {
+		if err := f.createServerTemplateEntryBuild(tx, instanceID, template.TeamID(), template.TeamName(), instanceConfig, createdBy); err != nil {
+			return nil, err
+		}
+	}
 
 	err = tx.Commit()
 	if err != nil {
@@ -301,17 +345,19 @@ func (f *pipelineRunFactory) CreateRun(templatePipelineID int, params map[string
 		return nil, err
 	}
 	if found {
-		for _, jobName := range instanceConfig.EntryJobs() {
-			job, jobFound, err := instance.Job(jobName)
-			if err != nil {
-				return nil, err
-			}
-			if !jobFound {
-				continue
-			}
-			_, err = job.CreateBuild(createdBy)
-			if err != nil {
-				return nil, fmt.Errorf("triggering entry job %s: %w", jobName, err)
+		if serverTemplate == nil {
+			for _, jobName := range instanceConfig.EntryJobs() {
+				job, jobFound, err := instance.Job(jobName)
+				if err != nil {
+					return nil, err
+				}
+				if !jobFound {
+					continue
+				}
+				_, err = job.CreateBuild(createdBy)
+				if err != nil {
+					return nil, fmt.Errorf("triggering entry job %s: %w", jobName, err)
+				}
 			}
 		}
 
@@ -580,6 +626,85 @@ func validateLockedWorkflowTemplate(ctx context.Context, tx Tx, durableTeamID in
 	if teamID != durableTeamID || teamID != ref.TeamID || name != ref.Name || version != ref.ConfigVersion ||
 		!template || instanceVars.Valid || archived || !owned {
 		return fmt.Errorf("db: workflow-run template reference drifted or collided")
+	}
+	return nil
+}
+
+func validateLockedServerTemplate(ctx context.Context, tx Tx, ref WorkflowRunTemplateRef, config atc.Config) error {
+	if !strings.HasPrefix(ref.Name, "agent-resource-capture-") {
+		return fmt.Errorf("db: server template is not a resource-capture template")
+	}
+	var (
+		teamID, version int
+		name            string
+		template        bool
+		instanceVars    sql.NullString
+		archived        bool
+		owned           bool
+		workflowLinked  bool
+	)
+	err := tx.QueryRowContext(ctx, `
+		SELECT p.team_id, p.name, p.version, p.template, p.instance_vars, p.archived,
+		       EXISTS (SELECT 1 FROM agent_workflow_run_templates o WHERE o.pipeline_id = p.id),
+		       EXISTS (SELECT 1 FROM agent_workflow_runs r WHERE r.template_pipeline_id = p.id)
+		FROM pipelines p
+		WHERE p.id = $1
+		FOR UPDATE OF p
+	`, ref.PipelineID).Scan(
+		&teamID, &name, &version, &template, &instanceVars, &archived, &owned, &workflowLinked,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrTemplateNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if teamID != ref.TeamID || name != ref.Name || version != ref.ConfigVersion || !template ||
+		instanceVars.Valid || archived || !owned || workflowLinked {
+		return fmt.Errorf("db: server template reference drifted or collided")
+	}
+	if !config.Template || len(config.Params) != 0 || len(config.Jobs) != 1 || config.Jobs[0].Name != "capture" {
+		return fmt.Errorf("db: resource-capture template has an invalid shape")
+	}
+	entryJobs := config.EntryJobs()
+	if len(entryJobs) != 1 || entryJobs[0] != "capture" {
+		return fmt.Errorf("db: resource-capture template must have one entry job")
+	}
+	fullHash, err := workflow.TargetConfigHash(config)
+	if err != nil {
+		return err
+	}
+	if fullHash != ref.FullHash {
+		return fmt.Errorf("db: server template hash mismatch")
+	}
+	return nil
+}
+
+func (f *pipelineRunFactory) createServerTemplateEntryBuild(
+	tx Tx,
+	instanceID int,
+	teamID int,
+	teamName string,
+	config atc.Config,
+	createdBy string,
+) error {
+	entryJobs := config.EntryJobs()
+	if len(entryJobs) != 1 || entryJobs[0] != "capture" {
+		return fmt.Errorf("db: resource-capture template must have one entry job")
+	}
+	entryJob := newEmptyJob(f.conn, f.lockFactory)
+	entryJob.pipelineID = instanceID
+	entryJob.teamID = teamID
+	entryJob.teamName = teamName
+	if err := tx.QueryRow(`
+		SELECT id, name
+		FROM jobs
+		WHERE pipeline_id = $1 AND name = $2
+	`, instanceID, "capture").Scan(&entryJob.id, &entryJob.name); err != nil {
+		return fmt.Errorf("db: load resource-capture entry job: %w", err)
+	}
+	if _, err := entryJob.createBuild(tx, createdBy); err != nil {
+		return fmt.Errorf("db: create resource-capture entry build: %w", err)
 	}
 	return nil
 }

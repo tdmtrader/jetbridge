@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/concourse/concourse/agent/pagination"
 )
 
 //go:generate go run github.com/maxbrunsfeld/counterfeiter/v6 -generate
@@ -106,18 +108,31 @@ func (s *StagedUpload) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// RetentionSpec is a pre-persistence policy input. It contains no database ID,
+// RetentionSpec is a pre-persistence policy input. Run-scoped retention names
+// its already-durable workflow owner, but the spec contains no claim ID,
 // SnapshotID, or creation timestamp.
 type RetentionSpec struct {
-	Class     RetentionClass `json:"class"`
-	ExpiresAt *time.Time     `json:"expires_at,omitempty"`
-	Actor     string         `json:"actor,omitempty"`
-	Reason    string         `json:"reason"`
+	Class         RetentionClass `json:"class"`
+	WorkflowRunID *WorkflowRunID `json:"workflow_run_id,omitempty"`
+	ExpiresAt     *time.Time     `json:"expires_at,omitempty"`
+	Actor         string         `json:"actor,omitempty"`
+	Reason        string         `json:"reason"`
 }
 
 func (s RetentionSpec) Validate() error {
 	if err := s.Class.Validate(); err != nil {
 		return err
+	}
+	if (s.Class == RetentionClassRun) != (s.WorkflowRunID != nil) {
+		return fmt.Errorf("snapshot: run retention requires exactly one workflow run ID")
+	}
+	if s.WorkflowRunID != nil {
+		if err := s.WorkflowRunID.Validate(); err != nil {
+			return err
+		}
+		if s.ExpiresAt != nil {
+			return fmt.Errorf("snapshot: run retention cannot expire while its workflow run is active")
+		}
 	}
 	if strings.TrimSpace(s.Reason) == "" {
 		return fmt.Errorf("snapshot: retention reason is required")
@@ -126,6 +141,7 @@ func (s RetentionSpec) Validate() error {
 }
 
 func (s RetentionSpec) Clone() RetentionSpec {
+	s.WorkflowRunID = cloneWorkflowRunID(s.WorkflowRunID)
 	s.ExpiresAt = cloneTime(s.ExpiresAt)
 	return s
 }
@@ -328,6 +344,16 @@ func (c SealCommit) Validate() error {
 		if err := output.Validate(); err != nil {
 			return err
 		}
+		for _, retention := range output.Retention {
+			if retention.Class != RetentionClassRun {
+				continue
+			}
+			if c.Context.Build == nil || c.Context.Build.WorkflowRunID == nil ||
+				retention.WorkflowRunID == nil ||
+				*retention.WorkflowRunID != *c.Context.Build.WorkflowRunID {
+				return fmt.Errorf("snapshot: run retention must name the exact producing workflow run")
+			}
+		}
 		if _, duplicate := clientKeys[output.ClientKey]; duplicate {
 			return fmt.Errorf("snapshot: duplicate seal client key %q", output.ClientKey)
 		}
@@ -402,6 +428,7 @@ type SnapshotListFilter struct {
 	Type         TypeRef
 	ContentState ContentState
 	CreatedAfter *time.Time
+	Before       *pagination.Cursor
 	Limit        int
 }
 
@@ -439,7 +466,7 @@ func (i ProductionInput) Validate() error {
 // ProductionDetail deliberately omits team IDs, upload idempotency keys, and
 // physical storage details. Upload identity remains private persistence state.
 type ProductionDetail struct {
-	ID             int64             `json:"id"`
+	ID             DatabaseID        `json:"id"`
 	Kind           ProductionKind    `json:"kind"`
 	CreatedBy      string            `json:"created_by"`
 	Build          *BuildOccurrence  `json:"build,omitempty"`
@@ -488,7 +515,7 @@ func (p ProductionDetail) Clone() ProductionDetail {
 }
 
 type ProductionSummary struct {
-	ID         int64            `json:"id"`
+	ID         DatabaseID       `json:"id"`
 	Kind       ProductionKind   `json:"kind"`
 	CreatedBy  string           `json:"created_by"`
 	Build      *BuildOccurrence `json:"build,omitempty"`
@@ -587,14 +614,23 @@ func (f SnapshotListFilter) Validate() error {
 			return err
 		}
 	}
-	if f.Limit < 0 || f.Limit > 1000 {
-		return fmt.Errorf("snapshot: list limit must be between 0 and 1000")
+	if f.Before != nil {
+		if err := f.Before.Validate(); err != nil {
+			return err
+		}
+	}
+	if f.Limit < 0 || f.Limit > 1001 {
+		return fmt.Errorf("snapshot: list fetch limit must be between 0 and 1001")
 	}
 	return nil
 }
 
 func (f SnapshotListFilter) Clone() SnapshotListFilter {
 	f.CreatedAfter = cloneTime(f.CreatedAfter)
+	if f.Before != nil {
+		before := *f.Before
+		f.Before = &before
+	}
 	return f
 }
 

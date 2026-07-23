@@ -1,5 +1,7 @@
 # Process Intelligence & Experiments Implementation Plan
 
+> **SUPERSEDED — historical implementation record (not executable).** The approved [Agentic Workflows as Functions over Snapshots design](../../specs/2026-07-21-agentic-workflows-as-functions-design.md) and [Agentic Functions program plan](../2026-07-21-agentic-functions-program.md) are authoritative. Every section below—including the `1773106100–102` reservations, ticket-created cells, `step_kind`, restore runner, and primary-metric assumptions—is historical. **Keep:** fixtures, repetitions, evaluators, controls, and scorecards. **Supersede:** ticket/build/plan experiment identity and any parallel executor.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Close the platform's improvement loop — store benchmark cases, run opt-in experiments (batches of pipeline runs across workflow-definition variants under the daily cap) producing scorecard deltas, mine findings/calibration/friction from the tables prior waves fill, and ship a retrospective `agent:` workflow that files `origin:retrospective` improvement tickets into the same human-merged queue.

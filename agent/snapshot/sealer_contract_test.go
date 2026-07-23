@@ -119,3 +119,26 @@ func TestSealCommitOutputRequiresWorkflowRetentionExactlyWhenBound(t *testing.T)
 		t.Fatalf("SealCommitOutput.Validate() error = %v", err)
 	}
 }
+
+func TestSealCommitRequiresRunRetentionToMatchProducingRun(t *testing.T) {
+	digest := mustTestDigest(t)
+	commit := validSealCommit(t, digest)
+	definitionID := 7
+	producingRunID := WorkflowRunID(8)
+	otherRunID := WorkflowRunID(9)
+	commit.Context.Build.WorkflowDefinitionID = &definitionID
+	commit.Context.Build.WorkflowRunID = &producingRunID
+	commit.Outputs[0].Retention = append(commit.Outputs[0].Retention, RetentionSpec{
+		Class: RetentionClassRun, WorkflowRunID: &otherRunID,
+		Actor: "forged-run", Reason: "active workflow-run internal output",
+	})
+
+	if err := commit.Validate(); err == nil || !strings.Contains(err.Error(), "exact producing workflow run") {
+		t.Fatalf("SealCommit.Validate() error = %v, want mismatched run-retention rejection", err)
+	}
+
+	commit.Outputs[0].Retention[1].WorkflowRunID = &producingRunID
+	if err := commit.Validate(); err != nil {
+		t.Fatalf("SealCommit.Validate() rejected exact run retention: %v", err)
+	}
+}

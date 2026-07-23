@@ -112,6 +112,8 @@ func (visitor *planVisitor) VisitAgent(step *atc.AgentStep) error {
 	}
 	visitor.plan = visitor.planFactory.NewPlan(atc.AgentPlan{
 		Name:            step.Name,
+		Hermetic:        step.Hermetic,
+		RuntimeImage:    step.RuntimeImage,
 		Prompt:          step.Prompt,
 		PromptFile:      step.PromptFile,
 		Model:           step.Model,
@@ -352,6 +354,31 @@ func (visitor *planVisitor) VisitLoadSnapshot(step *atc.LoadSnapshotStep) error 
 		Type:          step.Type,
 		Optional:      step.Optional,
 		WorkflowRunID: step.WorkflowRunID,
+	})
+	return nil
+}
+
+func (visitor *planVisitor) VisitAwaitSnapshot(step *atc.AwaitSnapshotStep) error {
+	var mergeApproval *atc.MergeApprovalIntent
+	if step.MergeApproval != nil {
+		copy := *step.MergeApproval
+		copy.Parameters = maps.Clone(step.MergeApproval.Parameters)
+		mergeApproval = &copy
+	}
+	visitor.plan = visitor.planFactory.NewPlan(atc.AwaitSnapshotPlan{
+		Name: step.Name, Question: step.Question, MergeApproval: mergeApproval, Type: step.Type, OnTimeout: step.OnTimeout,
+		DefaultSnapshotID: step.DefaultSnapshotID, WorkflowPort: step.WorkflowPort,
+		WorkflowDefinitionID: step.WorkflowDefinitionID, WorkflowRunID: step.WorkflowRunID,
+	})
+	return nil
+}
+
+func (visitor *planVisitor) VisitPublishSnapshot(step *atc.PublishSnapshotStep) error {
+	visitor.plan = visitor.planFactory.NewPlan(atc.PublishSnapshotPlan{
+		Name: step.Name, Publisher: step.Publisher, Input: step.Input, InputType: step.InputType,
+		Destination: step.Destination, Mode: step.Mode, Parameters: maps.Clone(step.Parameters),
+		ApprovalPolicyVersion: step.ApprovalPolicyVersion,
+		Approval:              step.Approval, WorkflowRunID: step.WorkflowRunID,
 	})
 	return nil
 }

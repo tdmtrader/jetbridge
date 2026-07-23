@@ -103,18 +103,19 @@ func parseSchemaVersion(raw []byte) (int, error) {
 }
 
 type functionSource struct {
-	SchemaVersion    int                   `json:"schema_version"`
-	Name             string                `json:"name"`
-	SignatureVersion int                   `json:"signature_version"`
-	Description      string                `json:"description,omitempty"`
-	Inputs           []snapshot.Port       `json:"inputs"`
-	Outputs          []FunctionOutput      `json:"outputs"`
-	Capabilities     map[string]Capability `json:"capabilities,omitempty"`
-	Resources        any                   `json:"resources,omitempty"`
-	ResourceTypes    any                   `json:"resource_types,omitempty"`
-	Prototypes       any                   `json:"prototypes,omitempty"`
-	VarSources       any                   `json:"var_sources,omitempty"`
-	Plan             any                   `json:"plan"`
+	SchemaVersion     int                   `json:"schema_version"`
+	Name              string                `json:"name"`
+	SignatureVersion  int                   `json:"signature_version"`
+	DispositionOutput string                `json:"disposition_output,omitempty"`
+	Description       string                `json:"description,omitempty"`
+	Inputs            []snapshot.Port       `json:"inputs"`
+	Outputs           []FunctionOutput      `json:"outputs"`
+	Capabilities      map[string]Capability `json:"capabilities,omitempty"`
+	Resources         any                   `json:"resources,omitempty"`
+	ResourceTypes     any                   `json:"resource_types,omitempty"`
+	Prototypes        any                   `json:"prototypes,omitempty"`
+	VarSources        any                   `json:"var_sources,omitempty"`
+	Plan              any                   `json:"plan"`
 }
 
 type syntheticFunctionConfig struct {
@@ -193,15 +194,16 @@ func parseFunctionDefinition(raw []byte) (*CompiledDefinition, error) {
 		Name:          source.Name,
 		Description:   source.Description,
 		Function: &FunctionConfig{
-			SignatureVersion: source.SignatureVersion,
-			Inputs:           source.Inputs,
-			Outputs:          source.Outputs,
-			Capabilities:     source.Capabilities,
-			Resources:        ordinary.Resources,
-			ResourceTypes:    ordinary.ResourceTypes,
-			Prototypes:       ordinary.Prototypes,
-			VarSources:       ordinary.VarSources,
-			Plan:             ordinary.Jobs[0].PlanSequence,
+			SignatureVersion:  source.SignatureVersion,
+			DispositionOutput: source.DispositionOutput,
+			Inputs:            source.Inputs,
+			Outputs:           source.Outputs,
+			Capabilities:      source.Capabilities,
+			Resources:         ordinary.Resources,
+			ResourceTypes:     ordinary.ResourceTypes,
+			Prototypes:        ordinary.Prototypes,
+			VarSources:        ordinary.VarSources,
+			Plan:              ordinary.Jobs[0].PlanSequence,
 		},
 	}
 	if err := definition.Validate(); err != nil {
@@ -216,7 +218,7 @@ func validateFunctionSourceKeys(document any) error {
 		return nil // the typed JSON pass reports the shape error
 	}
 	if err := rejectObjectKeys(root, "workflow", []string{
-		"schema_version", "name", "signature_version", "description", "inputs", "outputs",
+		"schema_version", "name", "signature_version", "disposition_output", "description", "inputs", "outputs",
 		"capabilities", "resources", "resource_types", "prototypes", "var_sources", "plan",
 	}); err != nil {
 		return err
@@ -518,8 +520,14 @@ func validateSnapshotTypeMapSource(value any, path string, output bool) error {
 	}
 	if output {
 		for name, value := range configs {
-			if _, ok := value.(string); !ok {
-				return fmt.Errorf("workflow: %s[%q]: output type must be a type-reference string", path, name)
+			if _, ok := value.(string); ok {
+				continue
+			}
+			if _, ok := value.(map[string]any); !ok {
+				return fmt.Errorf("workflow: %s[%q]: output type must be a type-reference string or an object containing type and optional", path, name)
+			}
+			if err := validateObjectSource(value, fmt.Sprintf("%s[%q]", path, name), []string{"type", "optional"}); err != nil {
+				return err
 			}
 		}
 		return nil

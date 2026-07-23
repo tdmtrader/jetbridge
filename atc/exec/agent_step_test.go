@@ -139,6 +139,7 @@ var _ = Describe("AgentStep", func() {
 
 		agentPlan = atc.AgentPlan{
 			Name:           "write-spec",
+			Hermetic:       true,
 			Prompt:         "do it",
 			Model:          "m1",
 			MaxTurns:       3,
@@ -223,6 +224,48 @@ var _ = Describe("AgentStep", func() {
 		Expect(fakePool.FindOrSelectWorkerCallCount()).To(BeZero())
 	})
 
+	It("executes the admitted workflow runtime image across a web-node image rollout", func() {
+		admitted := "registry.home/agent-runner@sha256:" + strings.Repeat("a", 64)
+		mismatchStep := exec.NewAgentStep(
+			planID,
+			atc.AgentPlan{Name: "a", Prompt: "p", RuntimeImage: admitted},
+			atc.ContainerLimits{},
+			atc.ContainerLimits{},
+			stepMetadata,
+			containerMetadata,
+			fakePool,
+			fakeStreamer,
+			fakeDelegateFactory,
+			0,
+			"registry.home/agent-runner@sha256:"+strings.Repeat("b", 64),
+		)
+		ok, err := mismatchStep.Run(ctx, state)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(ok).To(BeTrue())
+		Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(1))
+		_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
+		Expect(spec.ImageSpec.ImageURL).To(Equal(admitted))
+	})
+
+	It("rejects a malformed admitted workflow runtime before selecting a worker", func() {
+		invalidStep := exec.NewAgentStep(
+			planID,
+			atc.AgentPlan{Name: "a", Prompt: "p", RuntimeImage: "registry.home/agent-runner:v1"},
+			atc.ContainerLimits{},
+			atc.ContainerLimits{},
+			stepMetadata,
+			containerMetadata,
+			fakePool,
+			fakeStreamer,
+			fakeDelegateFactory,
+			0,
+			agentImage,
+		)
+		_, err := invalidStep.Run(ctx, state)
+		Expect(err).To(MatchError(ContainSubstring("invalid admitted runtime image")))
+		Expect(fakePool.FindOrSelectWorkerCallCount()).To(BeZero())
+	})
+
 	It("builds the container spec per the s8.1 env contract", func() {
 		ok, err := step.Run(ctx, state)
 		Expect(err).ToNot(HaveOccurred())
@@ -237,6 +280,7 @@ var _ = Describe("AgentStep", func() {
 		Expect(spec.TeamID).To(Equal(stepMetadata.TeamID))
 		Expect(spec.StepName).To(Equal("write-spec"))
 		Expect(spec.Type).To(Equal(db.ContainerTypeAgent))
+		Expect(spec.Hermetic).To(BeTrue())
 		Expect(spec.Dir).To(Equal("some-artifact-root"))
 		Expect(spec.Env).To(ContainElements(
 			"AGENT_STEP_NAME=write-spec",
@@ -395,6 +439,10 @@ var _ = Describe("AgentStep", func() {
 			Expect(err).NotTo(HaveOccurred())
 			stepMetadata.TeamName = "main"
 			stepMetadata.SnapshotCreatedBy = "concourse"
+			workflowDefinitionID := 88
+			workflowRunID := snapshot.WorkflowRunID(9007199254740993)
+			stepMetadata.WorkflowDefinitionID = &workflowDefinitionID
+			stepMetadata.WorkflowRunID = &workflowRunID
 			containerMetadata.Attempt = "3"
 			inputDigest, err := snapshot.ParseDigest("sha256:" + strings.Repeat("d", 64))
 			Expect(err).NotTo(HaveOccurred())
@@ -419,7 +467,9 @@ var _ = Describe("AgentStep", func() {
 					Snapshot: snapshot.SnapshotRef{ID: 92, Type: snapshot.TypeRef("repository-change/v1"), Digest: outputDigest},
 				},
 			}}
+			snapshotMetadata, snapshotContent := snapshotStoresForSealedOutputs(outputSealer.result)
 			agentStepOptions = append(agentStepOptions, exec.WithAgentOutputSealer(outputSealer))
+			agentStepOptions = append(agentStepOptions, exec.WithAgentSnapshotStores(snapshotMetadata, snapshotContent))
 		})
 
 		It("seals and publishes the complete typed output while keeping flight legacy", func() {
@@ -452,11 +502,53 @@ var _ = Describe("AgentStep", func() {
 
 			entry, found := repo.ArtifactEntryFor("workspace")
 			Expect(found).To(BeTrue())
+			Expect(entry.Artifact).To(BeAssignableToTypeOf(&runtime.SnapshotArtifact{}))
 			Expect(entry.Snapshot).NotTo(BeNil())
 			Expect(*entry.Snapshot).To(Equal(outputSealer.result["workspace"].Snapshot))
 			flight, found := repo.ArtifactEntryFor("flight")
 			Expect(found).To(BeTrue())
 			Expect(flight.Snapshot).To(BeNil())
+		})
+
+		Context("when the authenticated workflow producer has only an internal output", func() {
+			BeforeEach(func() {
+				declaration := agentPlan.SnapshotOutputs["workspace"]
+				declaration.Retention = ""
+				declaration.WorkflowPort = ""
+				declaration.WorkflowDefinitionID = 0
+				declaration.WorkflowRunID = ""
+				agentPlan.SnapshotOutputs["workspace"] = declaration
+			})
+
+			It("passes the exact authenticated workflow association to the seal request", func() {
+				ok, err := step.Run(ctx, state)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ok).To(BeTrue())
+				Expect(outputSealer.calls).To(HaveLen(1))
+				request := outputSealer.calls[0]
+				Expect(request.WorkflowDefinitionID).NotTo(BeNil())
+				Expect(*request.WorkflowDefinitionID).To(Equal(88))
+				Expect(request.WorkflowRunID).NotTo(BeNil())
+				Expect(*request.WorkflowRunID).To(Equal(snapshot.WorkflowRunID(9007199254740993)))
+				Expect(request.Outputs).To(HaveLen(1))
+				Expect(request.Outputs[0].Retention).NotTo(Equal(snapshot.RetentionClassWorkflow))
+				Expect(request.Outputs[0].WorkflowPort).To(BeEmpty())
+			})
+		})
+
+		Context("when an ordinary build claims a workflow-retained output", func() {
+			BeforeEach(func() {
+				stepMetadata.WorkflowDefinitionID = nil
+				stepMetadata.WorkflowRunID = nil
+			})
+
+			It("rejects the unauthenticated association before worker selection", func() {
+				ok, err := step.Run(ctx, state)
+				Expect(ok).To(BeFalse())
+				Expect(err).To(MatchError(ContainSubstring("not associated with a workflow run")))
+				Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(0))
+				Expect(outputSealer.calls).To(BeEmpty())
+			})
 		})
 
 		Context("when sealing fails", func() {
@@ -554,19 +646,29 @@ var _ = Describe("AgentStep", func() {
 			})
 		})
 
-		Context("when an optional typed output mount is absent", func() {
+		Context("when an optional typed output mount exists but has no produced marker", func() {
 			BeforeEach(func() {
 				declaration := agentPlan.SnapshotOutputs["workspace"]
 				declaration.Optional = true
 				agentPlan.SnapshotOutputs["workspace"] = declaration
-				chosenContainer.Mounts = chosenContainer.Mounts[1:]
+				chosenContainer.Mounts = append(chosenContainer.Mounts, runtime.VolumeMount{
+					Volume:    runtimetest.NewVolume("typed-output-markers"),
+					MountPath: "/tmp/.jetbridge/typed-output-markers/v1",
+				})
 				outputSealer.result = map[string]snapshot.SealedOutput{}
 			})
 
-			It("seals the empty actual set while preserving flight behavior", func() {
+			It("treats the always-mounted empty output as absent while preserving flight behavior", func() {
 				ok, err := step.Run(ctx, state)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(ok).To(BeTrue())
+				Expect(chosenContainer.Spec.Outputs).To(HaveKeyWithValue(
+					"__jetbridge_typed_output_markers_v1",
+					"/tmp/.jetbridge/typed-output-markers/v1/",
+				))
+				Expect(chosenContainer.Spec.Env).To(ContainElement(
+					`JETBRIDGE_OPTIONAL_OUTPUT_MARKERS={"workspace":"/tmp/.jetbridge/typed-output-markers/v1/d29ya3NwYWNl"}`,
+				))
 				Expect(fakeMetricsStore.InsertIfAbsentCallCount()).To(Equal(1))
 				Expect(outputSealer.calls).To(HaveLen(1))
 				Expect(outputSealer.calls[0].OutputDeclarations).To(Equal([]snapshot.Port{{
@@ -610,6 +712,7 @@ var _ = Describe("AgentStep", func() {
 			inputDigest, err = snapshot.ParseDigest("sha256:" + strings.Repeat("e", 64))
 			Expect(err).NotTo(HaveOccurred())
 			agentPlan.Inputs = []string{"repository"}
+			agentPlan.Outputs = nil
 			agentPlan.SnapshotInputs = map[string]atc.SnapshotInputConfig{
 				"repository": {Type: snapshot.TypeRef("repository/v1")},
 			}
@@ -657,12 +760,48 @@ var _ = Describe("AgentStep", func() {
 		})
 	})
 
+	Context("when an ordinary agent input resolves to a typed snapshot", func() {
+		BeforeEach(func() {
+			digest, err := snapshot.ParseDigest("sha256:" + strings.Repeat("d", 64))
+			Expect(err).NotTo(HaveOccurred())
+			ref := snapshot.SnapshotRef{ID: 41, Type: snapshot.TypeRef("repository/v1"), Digest: digest}
+			agentPlan.Inputs = []string{"repository"}
+			Expect(repo.RegisterArtifacts(map[build.ArtifactName]build.ArtifactEntry{
+				"repository": {Artifact: runtimetest.NewVolume("repository"), Snapshot: &ref},
+			})).To(Succeed())
+		})
+
+		It("fails closed before worker selection", func() {
+			_, err := step.Run(ctx, state)
+			Expect(err).To(MatchError(ContainSubstring(`agent input "repository" is a typed snapshot but has no input_types declaration`)))
+			Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(0))
+		})
+	})
+
+	Context("when a typed agent declares an extra untyped output", func() {
+		BeforeEach(func() {
+			agentPlan.Outputs = []string{"workspace", "hidden"}
+			agentPlan.SnapshotOutputs = map[string]atc.SnapshotOutputConfig{
+				"workspace": {Type: snapshot.TypeRef("repository-change/v1")},
+			}
+			agentStepOptions = append(agentStepOptions, exec.WithAgentOutputSealer(&recordingOutputSealer{}))
+		})
+
+		It("fails exact output coverage before worker selection", func() {
+			_, err := step.Run(ctx, state)
+			Expect(err).To(MatchError(ContainSubstring("every declared agent output must be typed")))
+			Expect(err).To(MatchError(ContainSubstring("hidden")))
+			Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(0))
+		})
+	})
+
 	Context("with a typed input carrying no snapshot ref", func() {
 		BeforeEach(func() {
 			stepMetadata.TeamName = "main"
 			stepMetadata.SnapshotCreatedBy = "concourse"
 			containerMetadata.Attempt = "1"
 			agentPlan.Inputs = []string{"repository"}
+			agentPlan.Outputs = nil
 			agentPlan.SnapshotInputs = map[string]atc.SnapshotInputConfig{
 				"repository": {Type: snapshot.TypeRef("repository/v1")},
 			}
@@ -708,6 +847,18 @@ var _ = Describe("AgentStep", func() {
 
 		_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
 		Expect(spec.Env).To(ContainElement("AGENT_BUDGET_SLICE_USD=1.25"))
+	})
+
+	It("preserves sub-cent precision so a positive hard cap never becomes uncapped", func() {
+		fakeChecker.StepSliceReturns(budget.Remaining{
+			LimitUSD:     0.004321,
+			RemainingUSD: 0.004321,
+		}, nil)
+
+		_, err := step.Run(ctx, state)
+		Expect(err).ToNot(HaveOccurred())
+		_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
+		Expect(spec.Env).To(ContainElement("AGENT_BUDGET_SLICE_USD=0.004321"))
 	})
 
 	It("fails without starting when the slice is exhausted", func() {
@@ -819,7 +970,7 @@ var _ = Describe("AgentStep", func() {
 		Expect(ok).To(BeTrue())
 
 		_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
-		Expect(spec.Env).To(ContainElement("AGENT_BUDGET_SLICE_USD=2.50"))
+		Expect(spec.Env).To(ContainElement("AGENT_BUDGET_SLICE_USD=2.5"))
 	})
 
 	// --- review finding (2026-07-12): steps with no budget_slice_usd bypassed
@@ -893,7 +1044,7 @@ var _ = Describe("AgentStep", func() {
 			Expect(ok).To(BeTrue())
 
 			_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
-			Expect(spec.Env).To(ContainElement("AGENT_BUDGET_SLICE_USD=6.00"))
+			Expect(spec.Env).To(ContainElement("AGENT_BUDGET_SLICE_USD=6"))
 		})
 
 		It("emits no slice env when the ticket itself is uncapped", func() {
@@ -1063,7 +1214,7 @@ var _ = Describe("AgentStep", func() {
 				}, nil)
 			})
 
-			It("populates per-sidecar env and secret refs for MCP sidecars (F15)", func() {
+			It("keeps hermetic sidecars local and never grants credentials by role name", func() {
 				_, err := step.Run(ctx, state)
 				Expect(err).ToNot(HaveOccurred())
 
@@ -1075,19 +1226,12 @@ var _ = Describe("AgentStep", func() {
 				Expect(gotPipelineID).To(Equal(stepMetadata.PipelineID))
 
 				_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
-				Expect(spec.SidecarEnv["platform"]).To(ContainElements(
-					"ATC_EXTERNAL_URL="+stepMetadata.ExternalURL,
-					"BUILD_ID="+strconv.Itoa(stepMetadata.BuildID),
-					"AGENT_TICKET_ID=7",
-					"AGENT_PIPELINE_RUN_ID=42",
+				Expect(spec.SidecarEnv["platform"]).To(ConsistOf(
+					"BUILD_ID=" + strconv.Itoa(stepMetadata.BuildID),
 				))
-				Expect(spec.SidecarSecretEnv["platform"]).To(HaveKeyWithValue(
-					"AGENT_PRINCIPAL_TOKEN", vars.SecretRef{Name: "agent-run-42", Key: "principal-token"}))
+				Expect(spec.SidecarEnv["platform"]).ToNot(ContainElement(HavePrefix("ATC_EXTERNAL_URL=")))
 				Expect(spec.SidecarEnv["gateway"]).To(ContainElement(HavePrefix("AGENT_BUDGET_SLICE_USD=")))
-				Expect(spec.SidecarSecretEnv["gateway"]).To(HaveKeyWithValue(
-					"AGENT_PRINCIPAL_TOKEN", vars.SecretRef{Name: "agent-run-42", Key: "principal-token"}))
-				Expect(spec.SidecarSecretEnv["gateway"]).To(HaveKeyWithValue(
-					"CLAUDE_CODE_OAUTH_TOKEN", vars.SecretRef{Name: "agent-run-42", Key: "anthropic-token"}))
+				Expect(spec.SidecarSecretEnv).To(BeEmpty())
 			})
 
 			// --- review finding: main container never received the token ---
@@ -1227,7 +1371,8 @@ var _ = Describe("AgentStep", func() {
 				_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
 				Expect(spec.SidecarSecretEnv).To(BeEmpty())
 				Expect(spec.SecretEnv).ToNot(HaveKey("CLAUDE_CODE_OAUTH_TOKEN"))
-				Expect(spec.SidecarEnv["platform"]).To(ContainElement(HavePrefix("ATC_EXTERNAL_URL=")))
+				Expect(spec.SidecarEnv["platform"]).To(ContainElement(HavePrefix("BUILD_ID=")))
+				Expect(spec.SidecarEnv["platform"]).ToNot(ContainElement(HavePrefix("ATC_EXTERNAL_URL=")))
 			})
 
 			// --- pure-CI token path (§8.1) ---
@@ -1264,11 +1409,9 @@ var _ = Describe("AgentStep", func() {
 					Expect(spec.Env).ToNot(ContainElement(HavePrefix("CLAUDE_CODE_OAUTH_TOKEN=")))
 				})
 
-				// §8.1 routes the token to "main, gateway" on the pure-CI
-				// fallback too — the gateway makes its own model calls, so a
-				// token-less gateway sidecar fails auth on every subagent
-				// call. No principal token, though: that only exists in the
-				// per-run agent-run-<id> secret.
+				// Workflow-authored sidecar names are never credential grants.
+				// Even a sidecar called gateway remains untrusted; only the main
+				// agent process receives the configured model token.
 				Context("with a gateway sidecar declared", func() {
 					BeforeEach(func() {
 						agentPlan.Sidecars = []atc.SidecarSource{
@@ -1277,14 +1420,12 @@ var _ = Describe("AgentStep", func() {
 						}
 					})
 
-					It("wires the gateway sidecar's CLAUDE_CODE_OAUTH_TOKEN from the platform secret (§8.1)", func() {
+					It("does not wire any credential into the gateway-named sidecar", func() {
 						_, err := platformStep.Run(ctx, state)
 						Expect(err).ToNot(HaveOccurred())
 
 						_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
-						Expect(spec.SidecarSecretEnv["gateway"]).To(HaveKeyWithValue(
-							"CLAUDE_CODE_OAUTH_TOKEN", vars.SecretRef{Name: "platform-agent-token", Key: "anthropic-token"}))
-						Expect(spec.SidecarSecretEnv["gateway"]).ToNot(HaveKey("AGENT_PRINCIPAL_TOKEN"))
+						Expect(spec.SidecarSecretEnv).To(BeEmpty())
 					})
 				})
 			})
@@ -1352,6 +1493,27 @@ var _ = Describe("AgentStep", func() {
 
 				_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
 				Expect(spec.Sidecars[0].WorkingDir).To(Equal("/custom"))
+			})
+		})
+
+		Context("with a custom compiled capability sidecar", func() {
+			BeforeEach(func() {
+				agentPlan.Sidecars = []atc.SidecarSource{
+					{Config: &atc.SidecarConfig{Name: "repository-tools", Image: "img:v1"}},
+				}
+				agentPlan.Env["REPOSITORY_TOOLS_MCP_URL"] = "http://127.0.0.1:7790/mcp"
+			})
+
+			It("receives local build context and the workspace CWD without credentials", func() {
+				_, err := step.Run(ctx, state)
+				Expect(err).ToNot(HaveOccurred())
+
+				_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
+				Expect(spec.SidecarEnv["repository-tools"]).To(ConsistOf(
+					"BUILD_ID=" + strconv.Itoa(stepMetadata.BuildID),
+				))
+				Expect(spec.Sidecars[0].WorkingDir).To(HaveSuffix("/workspace"))
+				Expect(spec.SidecarSecretEnv).To(BeEmpty())
 			})
 		})
 	})

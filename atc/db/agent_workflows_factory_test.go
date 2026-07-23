@@ -1,11 +1,13 @@
 package db_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
 
 	"github.com/concourse/concourse/agent/workflow"
+	"github.com/concourse/concourse/agent/workflowrun"
 	"github.com/concourse/concourse/atc/db"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -48,7 +50,9 @@ var _ = Describe("AgentWorkflowsFactory", func() {
 	var factory db.AgentWorkflowsFactory
 
 	BeforeEach(func() {
-		factory = db.NewAgentWorkflowsFactory(dbConn)
+		factory = db.NewAgentWorkflowsFactory(dbConn, workflowrun.WorkflowTargetRenderer{
+			RuntimeImage: "registry.example/agent-runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		})
 	})
 
 	defYAML := func(name, promptBody string) []byte {
@@ -168,19 +172,38 @@ steps:
 		Expect(found).To(BeFalse())
 	})
 
-	It("returns all versions ascending", func() {
+	It("returns hard-bounded version pages ascending within a newest-first cursor", func() {
 		_, err := factory.Import("wf-vers", defYAML("wf-vers", "One."), "alice")
 		Expect(err).ToNot(HaveOccurred())
 		_, err = factory.Import("wf-vers", defYAML("wf-vers", "Two."), "alice")
 		Expect(err).ToNot(HaveOccurred())
 
-		versions, err := factory.Versions("wf-vers")
+		page, err := factory.Versions(context.Background(), "wf-vers", workflow.VersionPageRequest{Limit: 1})
 		Expect(err).ToNot(HaveOccurred())
-		Expect(versions).To(HaveLen(2))
-		Expect(versions[0].Version).To(Equal(1))
-		Expect(versions[1].Version).To(Equal(2))
+		Expect(page.Found).To(BeTrue())
+		Expect(page.Definitions).To(HaveLen(1))
+		Expect(page.Definitions[0].Version).To(Equal(2))
+		Expect(page.NextCursor).To(Equal(2))
 
-		Expect(factory.Versions("wf-nonexistent")).To(BeEmpty())
+		older, err := factory.Versions(context.Background(), "wf-vers", workflow.VersionPageRequest{
+			Cursor: page.NextCursor,
+			Limit:  1,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(older.Found).To(BeTrue())
+		Expect(older.Definitions).To(HaveLen(1))
+		Expect(older.Definitions[0].Version).To(Equal(1))
+		Expect(older.NextCursor).To(BeZero())
+
+		missing, err := factory.Versions(context.Background(), "wf-nonexistent", workflow.VersionPageRequest{Limit: 1})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(missing.Found).To(BeFalse())
+		Expect(missing.Definitions).To(BeEmpty())
+
+		canceled, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, err = factory.Versions(canceled, "wf-vers", workflow.VersionPageRequest{Limit: 1})
+		Expect(errors.Is(err, context.Canceled)).To(BeTrue())
 	})
 
 	It("promotes atomically, swapping the live flag", func() {
@@ -210,6 +233,67 @@ steps:
 		Expect(err).To(MatchError(workflow.ErrVersionNotFound))
 		_, err = factory.Promote("wf-nonexistent", 1, "alice")
 		Expect(err).To(MatchError(workflow.ErrVersionNotFound))
+	})
+
+	It("rejects an imported but unrunnable schema-v3 target without disturbing the live version", func() {
+		valid := workflow.Manifest{"workflow.yml": `schema_version: 3
+name: wf-promotion-preflight
+signature_version: 1
+inputs: []
+outputs: []
+plan:
+  - agent: work
+    function_id: work
+    prompt: do the work
+`}
+		unrunnable := workflow.Manifest{"workflow.yml": `schema_version: 3
+name: wf-promotion-preflight
+signature_version: 1
+inputs: []
+outputs: []
+plan:
+  - task: work
+    function_id: work
+    file: repository/ci/task.yml
+`}
+		first, err := factory.ImportManifest("wf-promotion-preflight", valid, "alice")
+		Expect(err).NotTo(HaveOccurred())
+		_, err = factory.Promote("wf-promotion-preflight", first.Version, "alice")
+		Expect(err).NotTo(HaveOccurred())
+		second, err := factory.ImportManifest("wf-promotion-preflight", unrunnable, "bob")
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = factory.Promote("wf-promotion-preflight", second.Version, "bob")
+		var invalid workflow.InvalidPromotionError
+		Expect(errors.As(err, &invalid)).To(BeTrue())
+		Expect(err).To(MatchError(ContainSubstring("file-backed")))
+
+		live, found, liveErr := factory.Live("wf-promotion-preflight")
+		Expect(liveErr).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(live.Version).To(Equal(first.Version))
+		rejected, found, getErr := factory.Get("wf-promotion-preflight", second.Version)
+		Expect(getErr).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(rejected.Live).To(BeFalse())
+	})
+
+	It("fails closed for schema-v3 promotion without an authoritative validator", func() {
+		unvalidated := db.NewAgentWorkflowsFactory(dbConn)
+		definition, err := unvalidated.ImportManifest(
+			"wf-promotion-validator",
+			dbFunctionManifest("wf-promotion-validator", 1, []string{"before"}, "review/v1", "one"),
+			"alice",
+		)
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = unvalidated.Promote("wf-promotion-validator", definition.Version, "alice")
+		var invalid workflow.InvalidPromotionError
+		Expect(errors.As(err, &invalid)).To(BeTrue())
+		Expect(errors.Is(err, workflow.ErrPromotionValidatorRequired)).To(BeTrue())
+		_, found, liveErr := unvalidated.Live("wf-promotion-validator")
+		Expect(liveErr).NotTo(HaveOccurred())
+		Expect(found).To(BeFalse())
 	})
 
 	It("consistently promotes under concurrent promotion of the same name", func() {
@@ -369,7 +453,9 @@ steps:
 			_, err = factory.ImportManifest("wf-contract", dbFunctionManifest("wf-contract", 1, []string{"after", "before"}, "review/v1", "bad"), "mallory")
 			var invalid workflow.InvalidDefinitionError
 			Expect(errors.As(err, &invalid)).To(BeTrue())
-			Expect(factory.Versions("wf-contract")).To(HaveLen(2))
+			page, pageErr := factory.Versions(context.Background(), "wf-contract", workflow.VersionPageRequest{Limit: workflow.MaxVersionPageSize})
+			Expect(pageErr).NotTo(HaveOccurred())
+			Expect(page.Definitions).To(HaveLen(2))
 
 			different, err := factory.ImportManifest("wf-contract", dbFunctionManifest("wf-contract", 2, []string{"after", "before"}, "review/v2", "new"), "carol")
 			Expect(err).NotTo(HaveOccurred())
@@ -444,9 +530,9 @@ steps:
 			}
 			Expect(succeeded).To(Equal(1))
 			Expect(rejected).To(Equal(1))
-			versions, err := factory.Versions("wf-contract-race")
+			page, err := factory.Versions(context.Background(), "wf-contract-race", workflow.VersionPageRequest{Limit: workflow.MaxVersionPageSize})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(versions).To(HaveLen(1))
+			Expect(page.Definitions).To(HaveLen(1))
 		})
 
 		It("keeps List and Versions metadata-only even when stored source is corrupt", func() {
@@ -465,9 +551,9 @@ steps:
 				HaveField("SchemaVersion", 3),
 				HaveField("SignatureVersion", 1),
 			)))
-			versions, err := factory.Versions("wf-metadata-only")
+			page, err := factory.Versions(context.Background(), "wf-metadata-only", workflow.VersionPageRequest{Limit: workflow.MaxVersionPageSize})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(versions).To(HaveLen(1))
+			Expect(page.Definitions).To(HaveLen(1))
 			_, found, err := factory.Get("wf-metadata-only", 1)
 			Expect(found).To(BeFalse())
 			Expect(err).To(HaveOccurred())

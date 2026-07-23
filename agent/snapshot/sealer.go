@@ -14,9 +14,13 @@ import (
 )
 
 const (
-	defaultStageTTL         = time.Hour
-	maxStageTTL             = 24 * time.Hour
-	defaultBindingRetention = 168 * time.Hour
+	defaultStageTTL = time.Hour
+	maxStageTTL     = 24 * time.Hour
+
+	// DefaultBindingRetention is the post-production grace used by every
+	// snapshot-producing boundary unless the operator configures another
+	// duration.
+	DefaultBindingRetention = 168 * time.Hour
 )
 
 type BatchSealer struct {
@@ -72,7 +76,7 @@ func NewBatchSealer(
 		locks:            locks,
 		now:              time.Now,
 		stageTTL:         defaultStageTTL,
-		bindingRetention: defaultBindingRetention,
+		bindingRetention: DefaultBindingRetention,
 	}
 	for _, option := range opts {
 		if option == nil {
@@ -615,11 +619,23 @@ func retentionForOutput(request SealRequest, source OutputSource) []RetentionSpe
 			Reason: "durable workflow-run output",
 		}}
 	}
-	return []RetentionSpec{{
+	retention := []RetentionSpec{{
 		Class:  RetentionClassBinding,
 		Actor:  fmt.Sprintf("build:%d:plan:%s:attempt:%s:output:%s", request.BuildID, request.PlanID, request.Attempt, source.Port.Name),
 		Reason: "build output",
 	}}
+	if request.WorkflowRunID != nil {
+		retention = append(retention, RetentionSpec{
+			Class:         RetentionClassRun,
+			WorkflowRunID: cloneWorkflowRunID(request.WorkflowRunID),
+			Actor: fmt.Sprintf(
+				"workflow-run:%s:build:%d:plan:%s:attempt:%s:output:%s",
+				request.WorkflowRunID.String(), request.BuildID, request.PlanID, request.Attempt, source.Port.Name,
+			),
+			Reason: "active workflow-run internal output",
+		})
+	}
+	return retention
 }
 
 func validateSealedResult(result map[string]SealedOutput, captured []capturedSealOutput) error {

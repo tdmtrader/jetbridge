@@ -302,7 +302,16 @@ func (runner *Runner) Truncate() {
 							WHERE schemaname = 'public' AND tablename != 'migrations_history';
 			BEGIN
 					FOR stmt IN statements LOOP
-							EXECUTE 'TRUNCATE TABLE ' || quote_ident(stmt.tablename) || ' RESTART IDENTITY CASCADE;';
+							IF stmt.tablename = 'agent_experiment_audit_events' THEN
+									-- Production deliberately rejects all destructive audit
+									-- mutations, including TRUNCATE. The isolated DB-suite
+									-- owner bypasses that one trigger only for fixture reset.
+									EXECUTE 'ALTER TABLE agent_experiment_audit_events DISABLE TRIGGER agent_experiment_audit_events_append_only;';
+									EXECUTE 'TRUNCATE TABLE agent_experiment_audit_events RESTART IDENTITY CASCADE;';
+									EXECUTE 'ALTER TABLE agent_experiment_audit_events ENABLE TRIGGER agent_experiment_audit_events_append_only;';
+							ELSE
+									EXECUTE 'TRUNCATE TABLE ' || quote_ident(stmt.tablename) || ' RESTART IDENTITY CASCADE;';
+							END IF;
 					END LOOP;
 			END;
 			$$ LANGUAGE plpgsql;

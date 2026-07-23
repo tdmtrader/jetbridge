@@ -2,10 +2,12 @@ package exec_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"strings"
+	"testing/fstest"
 	"time"
 
 	"github.com/concourse/concourse/agent/snapshot"
@@ -753,6 +755,10 @@ var _ = Describe("TaskStep", func() {
 				Expect(err).NotTo(HaveOccurred())
 				stepMetadata.TeamName = "main"
 				stepMetadata.SnapshotCreatedBy = "concourse"
+				workflowDefinitionID := 77
+				workflowRunID := snapshot.WorkflowRunID(9007199254740993)
+				stepMetadata.WorkflowDefinitionID = &workflowDefinitionID
+				stepMetadata.WorkflowRunID = &workflowRunID
 				containerMetadata.Attempt = "2"
 				inputDigest, err := snapshot.ParseDigest("sha256:" + strings.Repeat("b", 64))
 				Expect(err).NotTo(HaveOccurred())
@@ -772,6 +778,7 @@ var _ = Describe("TaskStep", func() {
 					"mapped-change": {
 						Type: snapshot.TypeRef("repository-change/v1"), Retention: snapshot.RetentionClassWorkflow,
 						WorkflowPort: "result", WorkflowDefinitionID: 77, WorkflowRunID: "9007199254740993",
+						SourceMetadata: json.RawMessage(`{"adapter":"resource-version","operation_key":"capture-key"}`),
 					},
 				}
 				outputVolume = runtimetest.NewVolume("typed-output")
@@ -784,7 +791,11 @@ var _ = Describe("TaskStep", func() {
 						Snapshot: snapshot.SnapshotRef{ID: 91, Type: snapshot.TypeRef("repository-change/v1"), Digest: outputDigest},
 					},
 				}}
-				taskStepOptions = []exec.TaskStepOption{exec.WithTaskOutputSealer(outputSealer)}
+				snapshotMetadata, snapshotContent := snapshotStoresForSealedOutputs(outputSealer.result)
+				taskStepOptions = []exec.TaskStepOption{
+					exec.WithTaskOutputSealer(outputSealer),
+					exec.WithTaskSnapshotStores(snapshotMetadata, snapshotContent),
+				}
 			})
 
 			It("seals the complete typed batch and atomically publishes worker artifacts with refs", func() {
@@ -810,6 +821,7 @@ var _ = Describe("TaskStep", func() {
 				Expect(request.Outputs[0].Port).To(Equal(request.OutputDeclarations[0]))
 				Expect(request.Outputs[0].Retention).To(Equal(snapshot.RetentionClassWorkflow))
 				Expect(request.Outputs[0].WorkflowPort).To(Equal("result"))
+				Expect(request.Outputs[0].SourceMetadata).To(MatchJSON(`{"adapter":"resource-version","operation_key":"capture-key"}`))
 				Expect(*request.WorkflowDefinitionID).To(Equal(77))
 				Expect(request.WorkflowRunID.String()).To(Equal("9007199254740993"))
 				Expect(chosenContainer.Spec.Inputs).To(ConsistOf(runtime.Input{
@@ -818,9 +830,48 @@ var _ = Describe("TaskStep", func() {
 
 				entry, found := repo.ArtifactEntryFor("mapped-change")
 				Expect(found).To(BeTrue())
-				Expect(entry.Artifact).To(Equal(outputVolume))
+				Expect(entry.Artifact).To(BeAssignableToTypeOf(&runtime.SnapshotArtifact{}))
+				Expect(entry.Artifact).NotTo(Equal(outputVolume))
 				Expect(entry.Snapshot).NotTo(BeNil())
 				Expect(*entry.Snapshot).To(Equal(outputSealer.result["mapped-change"].Snapshot))
+			})
+
+			Context("when the authenticated workflow producer has only an internal output", func() {
+				BeforeEach(func() {
+					declaration := taskPlan.SnapshotOutputs["mapped-change"]
+					declaration.Retention = ""
+					declaration.WorkflowPort = ""
+					declaration.WorkflowDefinitionID = 0
+					declaration.WorkflowRunID = ""
+					taskPlan.SnapshotOutputs["mapped-change"] = declaration
+				})
+
+				It("passes the exact authenticated workflow association to the seal request", func() {
+					Expect(stepErr).NotTo(HaveOccurred())
+					Expect(stepOk).To(BeTrue())
+					Expect(outputSealer.calls).To(HaveLen(1))
+					request := outputSealer.calls[0]
+					Expect(request.WorkflowDefinitionID).NotTo(BeNil())
+					Expect(*request.WorkflowDefinitionID).To(Equal(77))
+					Expect(request.WorkflowRunID).NotTo(BeNil())
+					Expect(*request.WorkflowRunID).To(Equal(snapshot.WorkflowRunID(9007199254740993)))
+					Expect(request.Outputs).To(HaveLen(1))
+					Expect(request.Outputs[0].Retention).NotTo(Equal(snapshot.RetentionClassWorkflow))
+					Expect(request.Outputs[0].WorkflowPort).To(BeEmpty())
+				})
+			})
+
+			Context("when an ordinary build claims a workflow-retained output", func() {
+				BeforeEach(func() {
+					stepMetadata.WorkflowDefinitionID = nil
+					stepMetadata.WorkflowRunID = nil
+				})
+
+				It("rejects the unauthenticated association before worker selection", func() {
+					Expect(stepErr).To(MatchError(ContainSubstring("not associated with a workflow run")))
+					Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(0))
+					Expect(outputSealer.calls).To(BeEmpty())
+				})
 			})
 
 			Context("when the process exits nonzero", func() {
@@ -898,18 +949,28 @@ var _ = Describe("TaskStep", func() {
 				})
 			})
 
-			Context("when an optional typed output mount is absent", func() {
+			Context("when an optional typed output mount exists but has no produced marker", func() {
 				BeforeEach(func() {
 					declaration := taskPlan.SnapshotOutputs["mapped-change"]
 					declaration.Optional = true
 					taskPlan.SnapshotOutputs["mapped-change"] = declaration
-					chosenContainer.Mounts = nil
+					chosenContainer.Mounts = append(chosenContainer.Mounts, runtime.VolumeMount{
+						Volume:    runtimetest.NewVolume("typed-output-markers"),
+						MountPath: "/tmp/.jetbridge/typed-output-markers/v1",
+					})
 					outputSealer.result = map[string]snapshot.SealedOutput{}
 				})
 
-				It("seals the empty actual set without publishing an entry", func() {
+				It("treats the always-mounted empty output as absent", func() {
 					Expect(stepErr).NotTo(HaveOccurred())
 					Expect(stepOk).To(BeTrue())
+					Expect(chosenContainer.Spec.Outputs).To(HaveKeyWithValue(
+						"__jetbridge_typed_output_markers_v1",
+						"/tmp/.jetbridge/typed-output-markers/v1/",
+					))
+					Expect(chosenContainer.Spec.Env).To(ContainElement(
+						`JETBRIDGE_OPTIONAL_OUTPUT_MARKERS={"change":"/tmp/.jetbridge/typed-output-markers/v1/Y2hhbmdl"}`,
+					))
 					Expect(outputSealer.calls).To(HaveLen(1))
 					Expect(outputSealer.calls[0].OutputDeclarations).To(Equal([]snapshot.Port{{
 						Name: "mapped-change", Type: snapshot.TypeRef("repository-change/v1"), Optional: true,
@@ -917,6 +978,37 @@ var _ = Describe("TaskStep", func() {
 					Expect(outputSealer.calls[0].Outputs).To(BeEmpty())
 					_, found := repo.ArtifactEntryFor("mapped-change")
 					Expect(found).To(BeFalse())
+				})
+			})
+
+			Context("when an optional typed output has its explicit produced marker", func() {
+				BeforeEach(func() {
+					declaration := taskPlan.SnapshotOutputs["mapped-change"]
+					declaration.Optional = true
+					taskPlan.SnapshotOutputs["mapped-change"] = declaration
+
+					sealed := outputSealer.result["mapped-change"]
+					sealed.Port.Optional = true
+					outputSealer.result["mapped-change"] = sealed
+
+					markers := runtimetest.NewVolume("typed-output-markers").WithContent(
+						runtimetest.VolumeContent{
+							"Y2hhbmdl": &fstest.MapFile{},
+						},
+					)
+					chosenContainer.Mounts = append(chosenContainer.Mounts, runtime.VolumeMount{
+						Volume: markers, MountPath: "/tmp/.jetbridge/typed-output-markers/v1",
+					})
+				})
+
+				It("seals and publishes the marked output", func() {
+					Expect(stepErr).NotTo(HaveOccurred())
+					Expect(stepOk).To(BeTrue())
+					Expect(outputSealer.calls).To(HaveLen(1))
+					Expect(outputSealer.calls[0].Outputs).To(HaveLen(1))
+					entry, found := repo.ArtifactEntryFor("mapped-change")
+					Expect(found).To(BeTrue())
+					Expect(entry.Artifact).To(BeAssignableToTypeOf(&runtime.SnapshotArtifact{}))
 				})
 			})
 
@@ -1014,6 +1106,111 @@ outputs:
 
 			It("fails membership validation before worker selection", func() {
 				Expect(stepErr).To(MatchError(ContainSubstring("absent from the fetched task config")))
+				Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(0))
+			})
+		})
+
+		Context("when a file-fetched typed task declares an extra untyped artifact", func() {
+			BeforeEach(func() {
+				taskPlan.Config = nil
+				taskPlan.ConfigPath = "config/task.yml"
+				taskPlan.SnapshotOutputs = map[string]atc.SnapshotOutputConfig{
+					"review": {Type: snapshot.TypeRef("review/v1")},
+				}
+				repo.RegisterArtifact("config", runtimetest.NewVolume("config"), false)
+				fakeStreamer.StreamFileReturns(io.NopCloser(strings.NewReader(`
+platform: linux
+run:
+  path: "true"
+outputs:
+- name: review
+- name: hidden
+`)), nil)
+				taskStepOptions = []exec.TaskStepOption{exec.WithTaskOutputSealer(&recordingOutputSealer{})}
+			})
+
+			It("fails exact output coverage before worker selection", func() {
+				Expect(stepErr).To(MatchError(ContainSubstring("every declared task output must be typed")))
+				Expect(stepErr).To(MatchError(ContainSubstring("hidden")))
+				Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(0))
+			})
+		})
+
+		Context("when a file-fetched typed task consumes an extra untyped artifact", func() {
+			BeforeEach(func() {
+				taskPlan.Config = nil
+				taskPlan.ConfigPath = "config/task.yml"
+				taskPlan.SnapshotInputs = map[string]atc.SnapshotInputConfig{
+					"repository": {Type: snapshot.TypeRef("repository/v1")},
+				}
+				repo.RegisterArtifact("config", runtimetest.NewVolume("config"), false)
+				fakeStreamer.StreamFileReturns(io.NopCloser(strings.NewReader(`
+platform: linux
+run:
+  path: "true"
+inputs:
+- name: repository
+- name: hidden
+`)), nil)
+				taskStepOptions = []exec.TaskStepOption{exec.WithTaskOutputSealer(&recordingOutputSealer{})}
+			})
+
+			It("fails exact input coverage before worker selection", func() {
+				Expect(stepErr).To(MatchError(ContainSubstring("every declared task input must be typed")))
+				Expect(stepErr).To(MatchError(ContainSubstring("hidden")))
+				Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(0))
+			})
+		})
+
+		Context("when an ordinary task input resolves to a typed snapshot", func() {
+			BeforeEach(func() {
+				digest, err := snapshot.ParseDigest("sha256:" + strings.Repeat("d", 64))
+				Expect(err).NotTo(HaveOccurred())
+				ref := snapshot.SnapshotRef{ID: 42, Type: snapshot.TypeRef("repository/v1"), Digest: digest}
+				taskPlan.Config.Inputs = []atc.TaskInputConfig{{Name: "repository"}}
+				Expect(repo.RegisterArtifacts(map[build.ArtifactName]build.ArtifactEntry{
+					"repository": {Artifact: runtimetest.NewVolume("repository"), Snapshot: &ref},
+				})).To(Succeed())
+			})
+
+			It("fails closed before worker selection", func() {
+				Expect(stepErr).To(MatchError(ContainSubstring(`task input "repository" is a typed snapshot but has no input_types declaration`)))
+				Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(0))
+			})
+		})
+
+		Context("when the task image source resolves to a typed snapshot", func() {
+			BeforeEach(func() {
+				digest, err := snapshot.ParseDigest("sha256:" + strings.Repeat("e", 64))
+				Expect(err).NotTo(HaveOccurred())
+				ref := snapshot.SnapshotRef{ID: 43, Type: snapshot.TypeRef("repository/v1"), Digest: digest}
+				taskPlan.ImageArtifactName = "image"
+				Expect(repo.RegisterArtifacts(map[build.ArtifactName]build.ArtifactEntry{
+					"image": {Artifact: runtimetest.NewVolume("image"), Snapshot: &ref},
+				})).To(Succeed())
+			})
+
+			It("fails closed before worker selection", func() {
+				Expect(stepErr).To(MatchError(ContainSubstring(`task image source "image" is a typed snapshot`)))
+				Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(0))
+			})
+		})
+
+		Context("when the task config source resolves to a typed snapshot", func() {
+			BeforeEach(func() {
+				digest, err := snapshot.ParseDigest("sha256:" + strings.Repeat("f", 64))
+				Expect(err).NotTo(HaveOccurred())
+				ref := snapshot.SnapshotRef{ID: 44, Type: snapshot.TypeRef("repository/v1"), Digest: digest}
+				taskPlan.Config = nil
+				taskPlan.ConfigPath = "config/task.yml"
+				Expect(repo.RegisterArtifacts(map[build.ArtifactName]build.ArtifactEntry{
+					"config": {Artifact: runtimetest.NewVolume("config"), Snapshot: &ref},
+				})).To(Succeed())
+			})
+
+			It("fails closed before reading the config", func() {
+				Expect(stepErr).To(MatchError(ContainSubstring(`task config source "config" is a typed snapshot`)))
+				Expect(fakeStreamer.StreamFileCallCount()).To(Equal(0))
 				Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(0))
 			})
 		})

@@ -3,6 +3,8 @@ package snapshots_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -14,6 +16,9 @@ import (
 	"time"
 
 	snapshotsapi "github.com/concourse/concourse/agent/api/snapshots"
+	"github.com/concourse/concourse/agent/gitcheck"
+	"github.com/concourse/concourse/agent/pagination"
+	"github.com/concourse/concourse/agent/projection"
 	"github.com/concourse/concourse/agent/snapshot"
 )
 
@@ -113,6 +118,19 @@ type fakeContent struct {
 	openCalls []snapshot.Snapshot
 }
 
+type fakeRepositoryChanges struct {
+	get   func(context.Context, snapshot.SnapshotID) (projection.RepositoryChange, bool, error)
+	calls []snapshot.SnapshotID
+}
+
+func (fake *fakeRepositoryChanges) GetRepositoryChangeProjection(ctx context.Context, id snapshot.SnapshotID) (projection.RepositoryChange, bool, error) {
+	fake.calls = append(fake.calls, id)
+	if fake.get == nil {
+		return projection.RepositoryChange{}, false, errors.New("unexpected repository-change projection read")
+	}
+	return fake.get(ctx, id)
+}
+
 type trackedReadCloser struct {
 	io.Reader
 	closed   int
@@ -180,6 +198,7 @@ type handlerHarness struct {
 	creator  *fakeCreator
 	metadata *fakeMetadata
 	content  *fakeContent
+	changes  *fakeRepositoryChanges
 	locks    *fakeLocks
 	team     snapshotsapi.TrustedTeam
 	manifest snapshot.Snapshot
@@ -189,9 +208,10 @@ type handlerHarness struct {
 func newHandlerHarness(t *testing.T) *handlerHarness {
 	t.Helper()
 	now := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.UTC)
+	payloadDigest := sha256.Sum256([]byte("tar"))
 	manifest := snapshot.Snapshot{
 		ID: 9007199254740993, Type: snapshot.TypeRef("opaque/v1"),
-		Digest:   snapshot.Digest("sha256:" + strings.Repeat("a", 64)),
+		Digest:   snapshot.Digest("sha256:" + hex.EncodeToString(payloadDigest[:])),
 		ByteSize: 3, FileCount: 1, Representation: "application/x-tar",
 		IntrinsicMetadata: json.RawMessage(`{"kind":"opaque"}`),
 		ContentState:      snapshot.ContentStateAvailable, CreatedAt: now,
@@ -199,14 +219,17 @@ func newHandlerHarness(t *testing.T) *handlerHarness {
 	creator := &fakeCreator{}
 	metadata := &fakeMetadata{}
 	content := &fakeContent{}
+	changes := &fakeRepositoryChanges{}
 	locks := &fakeLocks{}
 	harness := &handlerHarness{
-		creator: creator, metadata: metadata, content: content, locks: locks,
+		creator: creator, metadata: metadata, content: content, changes: changes, locks: locks,
 		team: snapshotsapi.TrustedTeam{ID: 7, Name: "main"}, manifest: manifest,
 	}
 	factory, err := snapshotsapi.NewHandlerFactory(snapshotsapi.Config{
 		Enabled: true, Creator: creator, Metadata: metadata, Content: content, Locks: locks,
-		ArchiveLimits: snapshot.ArchiveLimits{MaxContentBytes: 64, MaxEntries: 4},
+		RepositoryChanges: changes,
+		ArchiveLimits:     snapshot.ArchiveLimits{MaxContentBytes: 64, MaxEntries: 4},
+		TempDir:           t.TempDir(),
 		Identity: func(*http.Request) (snapshotsapi.RequestIdentity, error) {
 			return snapshotsapi.RequestIdentity{Actor: "github:subject-1", DisplayName: "Alice"}, nil
 		},
@@ -217,6 +240,75 @@ func newHandlerHarness(t *testing.T) *handlerHarness {
 	}
 	harness.factory = factory
 	return harness
+}
+
+func TestRepositoryChangeProjectionIsTeamScopedAndReturnsDurableDiff(t *testing.T) {
+	harness := newHandlerHarness(t)
+	harness.manifest.Type = "repository-change/v1"
+	harness.metadata.get = func(_ context.Context, teamID int, id snapshot.SnapshotID) (snapshot.Snapshot, bool, error) {
+		if teamID != harness.team.ID || id != harness.manifest.ID {
+			t.Fatalf("authorization lookup = team %d snapshot %s", teamID, id)
+		}
+		return harness.manifest, true, nil
+	}
+	harness.changes.get = func(_ context.Context, id snapshot.SnapshotID) (projection.RepositoryChange, bool, error) {
+		return projection.RepositoryChange{
+			SnapshotID: id, Status: projection.RepositoryChangeProjectionReady,
+			RepositoryID: "sha256:" + strings.Repeat("b", 64), BaseSHA: strings.Repeat("c", 40),
+			ResultTreeSHA: strings.Repeat("d", 40), Representation: "patch",
+			Files:     []gitcheck.ChangedFile{{Path: "README.md", Status: gitcheck.ChangeModified, LinesAdded: 1}},
+			FileCount: 1, LinesAdded: 1, UnifiedDiff: "diff --git a/README.md b/README.md\n",
+		}, true, nil
+	}
+	recorder := httptest.NewRecorder()
+	harness.factory.RepositoryChangeProjection(harness.team).ServeHTTP(recorder,
+		snapshotRequest(http.MethodGet, "/projection", harness.manifest.ID.String(), nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response projection.RepositoryChange
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Status != projection.RepositoryChangeProjectionReady || response.FileCount != 1 || response.Files[0].Path != "README.md" {
+		t.Fatalf("response = %#v", response)
+	}
+	if len(harness.changes.calls) != 1 || harness.changes.calls[0] != harness.manifest.ID {
+		t.Fatalf("projection calls = %#v", harness.changes.calls)
+	}
+}
+
+func TestRepositoryChangeProjectionDoesNotCrossTeamAuthorizationBoundary(t *testing.T) {
+	harness := newHandlerHarness(t)
+	harness.metadata.get = func(context.Context, int, snapshot.SnapshotID) (snapshot.Snapshot, bool, error) {
+		return snapshot.Snapshot{}, false, nil
+	}
+	recorder := httptest.NewRecorder()
+	harness.factory.RepositoryChangeProjection(harness.team).ServeHTTP(recorder,
+		snapshotRequest(http.MethodGet, "/projection", harness.manifest.ID.String(), nil))
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if len(harness.changes.calls) != 0 {
+		t.Fatalf("unauthorized request queried global projection: %#v", harness.changes.calls)
+	}
+}
+
+func TestRepositoryChangeProjectionReportsPendingWhileReconciliationHasNoRow(t *testing.T) {
+	harness := newHandlerHarness(t)
+	harness.manifest.Type = "repository-change/v1"
+	harness.metadata.get = func(context.Context, int, snapshot.SnapshotID) (snapshot.Snapshot, bool, error) {
+		return harness.manifest, true, nil
+	}
+	harness.changes.get = func(context.Context, snapshot.SnapshotID) (projection.RepositoryChange, bool, error) {
+		return projection.RepositoryChange{}, false, nil
+	}
+	recorder := httptest.NewRecorder()
+	harness.factory.RepositoryChangeProjection(harness.team).ServeHTTP(recorder,
+		snapshotRequest(http.MethodGet, "/projection", harness.manifest.ID.String(), nil))
+	if recorder.Code != http.StatusAccepted || !strings.Contains(recorder.Body.String(), `"status":"pending"`) {
+		t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
 }
 
 func snapshotRequest(method, path, id string, body io.Reader) *http.Request {
@@ -464,7 +556,7 @@ func TestListMapsStrictFiltersAndPreservesExactIDs(t *testing.T) {
 	}
 	gotCall := harness.metadata.listCalls[0]
 	if gotCall.teamID != 7 || gotCall.filter.Type != snapshot.TypeRef("opaque/v1") ||
-		gotCall.filter.ContentState != snapshot.ContentStateAvailable || gotCall.filter.Limit != 17 ||
+		gotCall.filter.ContentState != snapshot.ContentStateAvailable || gotCall.filter.Limit != 18 ||
 		gotCall.filter.CreatedAfter == nil || !gotCall.filter.CreatedAfter.Equal(createdAfter) {
 		t.Fatalf("list call = %#v", gotCall)
 	}
@@ -484,8 +576,97 @@ func TestListUsesDefaultLimitAndEncodesEmptyResultsAsArray(t *testing.T) {
 	if recorder.Code != http.StatusOK || recorder.Body.String() != "[]" {
 		t.Fatalf("status/body = %d/%q", recorder.Code, recorder.Body.String())
 	}
-	if len(harness.metadata.listCalls) != 1 || harness.metadata.listCalls[0].filter.Limit != 100 {
+	if len(harness.metadata.listCalls) != 1 || harness.metadata.listCalls[0].filter.Limit != 101 {
 		t.Fatalf("list calls = %#v", harness.metadata.listCalls)
+	}
+}
+
+func TestListUsesAnOpaqueExclusiveCursorAndPreservesFiltersInTheNextLink(t *testing.T) {
+	harness := newHandlerHarness(t)
+	createdAt := time.Date(2026, time.July, 22, 12, 0, 0, 123456000, time.UTC)
+	values := make([]snapshot.Snapshot, 3)
+	for index, id := range []snapshot.SnapshotID{30, 29, 28} {
+		values[index] = harness.manifest.Clone()
+		values[index].ID = id
+		values[index].CreatedAt = createdAt
+	}
+	harness.metadata.list = func(_ context.Context, _ int, filter snapshot.SnapshotListFilter) ([]snapshot.Snapshot, error) {
+		if filter.Before == nil {
+			return values, nil
+		}
+		return values[2:], nil
+	}
+	createdAfter := createdAt.Add(-time.Hour)
+	query := url.Values{
+		"type": {"opaque/v1"}, "content_state": {"available"},
+		"created_after": {createdAfter.Format(time.RFC3339)}, "limit": {"2"},
+	}
+	request := httptest.NewRequest(http.MethodGet, "/snapshots?"+query.Encode(), nil)
+	recorder := httptest.NewRecorder()
+	harness.factory.List(harness.team).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("first page status/body = %d/%s", recorder.Code, recorder.Body.String())
+	}
+	var first []snapshot.Snapshot
+	if err := json.Unmarshal(recorder.Body.Bytes(), &first); err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 2 || first[0].ID != 30 || first[1].ID != 29 {
+		t.Fatalf("first page IDs = %+v, want [30 29]", first)
+	}
+	next := recorder.Header().Get("X-Next-Cursor")
+	decoded, err := pagination.Decode(next)
+	if err != nil {
+		t.Fatalf("decode next cursor %q: %v", next, err)
+	}
+	if !decoded.CreatedAt.Equal(createdAt) || decoded.ID != 29 {
+		t.Fatalf("next cursor = %#v, want (%s,29)", decoded, createdAt)
+	}
+	link := recorder.Header().Get("Link")
+	start := strings.IndexByte(link, '<')
+	end := strings.IndexByte(link, '>')
+	if start != 0 || end < 0 || !strings.Contains(link, `rel="next"`) {
+		t.Fatalf("malformed next Link = %q", link)
+	}
+	nextURL, err := url.Parse(link[start+1 : end])
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantQuery := query
+	wantQuery.Set("cursor", next)
+	if nextURL.EscapedPath() != "/snapshots" || nextURL.Query().Encode() != wantQuery.Encode() {
+		t.Fatalf("next URL = %q, want path and filters %q", nextURL.String(), wantQuery.Encode())
+	}
+
+	recorder = httptest.NewRecorder()
+	harness.factory.List(harness.team).ServeHTTP(
+		recorder,
+		httptest.NewRequest(http.MethodGet, nextURL.String(), nil),
+	)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("second page status/body = %d/%s", recorder.Code, recorder.Body.String())
+	}
+	var second []snapshot.Snapshot
+	if err := json.Unmarshal(recorder.Body.Bytes(), &second); err != nil {
+		t.Fatal(err)
+	}
+	if len(second) != 1 || second[0].ID != 28 {
+		t.Fatalf("second page IDs = %+v, want [28]", second)
+	}
+	if recorder.Header().Get("X-Next-Cursor") != "" || recorder.Header().Get("Link") != "" {
+		t.Fatalf("terminal page exposed next headers: %#v", recorder.Header())
+	}
+	if len(harness.metadata.listCalls) != 2 {
+		t.Fatalf("list calls = %#v", harness.metadata.listCalls)
+	}
+	for index, call := range harness.metadata.listCalls {
+		if call.filter.Limit != 3 {
+			t.Fatalf("call %d fetch limit = %d, want 3", index, call.filter.Limit)
+		}
+	}
+	before := harness.metadata.listCalls[1].filter.Before
+	if before == nil || !before.CreatedAt.Equal(createdAt) || before.ID != 29 {
+		t.Fatalf("second cursor = %#v", before)
 	}
 }
 
@@ -499,6 +680,7 @@ func TestListRejectsInvalidQueriesAndBodiesBeforeMetadata(t *testing.T) {
 		"?limit=1001",
 		"?limit=01",
 		"?limit=%2B1",
+		"?cursor=secret",
 		"?unknown=value",
 	}
 	for _, suffix := range tests {
@@ -542,7 +724,22 @@ func TestShowReturnsAuthorizedAvailableOrExpiredDetail(t *testing.T) {
 			harness := newHandlerHarness(t)
 			manifest := harness.manifest.Clone()
 			manifest.ContentState = state
-			detail := snapshot.Detail{Manifest: manifest, ReplicaCount: 2}
+			detail := snapshot.Detail{
+				Manifest:     manifest,
+				ReplicaCount: 2,
+				RetentionClaims: []snapshot.RetentionClaim{{
+					ID: 9007199254740995, SnapshotID: manifest.ID, Class: snapshot.RetentionClassWorkflow,
+					Reason: "run output", CreatedAt: manifest.CreatedAt,
+				}},
+				Productions: []snapshot.ProductionDetail{{
+					ID: 9007199254740997, Kind: snapshot.ProductionKindBuild, CreatedBy: "alice",
+					Build: &snapshot.BuildOccurrence{
+						BuildID: 42, PlanID: "plan", Attempt: "1", StepKind: "task", StepName: "produce",
+					},
+					OutputPort: "result", CreatedAt: manifest.CreatedAt, Inputs: []snapshot.ProductionInput{},
+				}},
+				Downstream: []snapshot.ProductionSummary{},
+			}
 			harness.metadata.detail = func(context.Context, int, snapshot.SnapshotID) (snapshot.Detail, bool, error) {
 				return detail, true, nil
 			}
@@ -562,9 +759,17 @@ func TestShowReturnsAuthorizedAvailableOrExpiredDetail(t *testing.T) {
 			if got.Manifest.ID != manifest.ID || got.Manifest.ContentState != state || got.ReplicaCount != 2 {
 				t.Fatalf("detail = %#v", got)
 			}
+			for _, exactID := range []string{
+				`"id":"9007199254740995"`,
+				`"id":"9007199254740997"`,
+			} {
+				if !bytes.Contains(recorder.Body.Bytes(), []byte(exactID)) {
+					t.Fatalf("detail durable ID wire format is not quoted: %s", recorder.Body.String())
+				}
+			}
 			for field, present := range map[string]bool{
-				"retention_claims": bytes.Contains(recorder.Body.Bytes(), []byte(`"retention_claims":[]`)),
-				"productions":      bytes.Contains(recorder.Body.Bytes(), []byte(`"productions":[]`)),
+				"retention_claims": bytes.Contains(recorder.Body.Bytes(), []byte(`"retention_claims":[`)),
+				"productions":      bytes.Contains(recorder.Body.Bytes(), []byte(`"productions":[`)),
 				"downstream":       bytes.Contains(recorder.Body.Bytes(), []byte(`"downstream":[]`)),
 			} {
 				if !present {
@@ -656,7 +861,7 @@ func TestContentAuthorizesThenStreamsWithExactCanonicalHeaders(t *testing.T) {
 	wantHeaders := map[string]string{
 		"Content-Type":           "application/x-tar",
 		"Content-Length":         "3",
-		"ETag":                   `"sha256:` + strings.Repeat("a", 64) + `"`,
+		"ETag":                   `"` + harness.manifest.Digest.String() + `"`,
 		"Content-Disposition":    `attachment; filename="snapshot-9007199254740993.tar"`,
 		"Cache-Control":          "private, immutable",
 		"X-Content-Type-Options": "nosniff",
@@ -746,7 +951,7 @@ func TestContentRejectsRangeAfterAuthorizationBeforeOpeningStorage(t *testing.T)
 	}
 }
 
-func TestContentAbortsOnLateReadShortBodyCloseAndCancellation(t *testing.T) {
+func TestContentRejectsUnverifiedBytesBeforeCommittingResponse(t *testing.T) {
 	tests := []struct {
 		name         string
 		manifestSize int64
@@ -755,6 +960,7 @@ func TestContentAbortsOnLateReadShortBodyCloseAndCancellation(t *testing.T) {
 	}{
 		{name: "read error", manifestSize: 3, reader: &trackedReadCloser{Reader: &lateErrorReader{payload: []byte("ta"), err: errors.New("digest mismatch")}}},
 		{name: "short body", manifestSize: 4, reader: &trackedReadCloser{Reader: strings.NewReader("tar")}},
+		{name: "same length digest mismatch", manifestSize: 3, reader: &trackedReadCloser{Reader: strings.NewReader("bad")}},
 		{name: "close error", manifestSize: 3, reader: &trackedReadCloser{Reader: strings.NewReader("tar"), closeErr: errors.New("verification close")}},
 		{name: "cancellation", manifestSize: 3, reader: &trackedReadCloser{Reader: strings.NewReader("tar")}, cancel: true},
 	}
@@ -776,15 +982,9 @@ func TestContentAbortsOnLateReadShortBodyCloseAndCancellation(t *testing.T) {
 				request = request.WithContext(ctx)
 			}
 			recorder := httptest.NewRecorder()
-			var recovered any
-			func() {
-				defer func() { recovered = recover() }()
-				harness.factory.Content(harness.team).ServeHTTP(recorder, request)
-			}()
-			if recovered != http.ErrAbortHandler {
-				t.Fatalf("panic = %#v, want http.ErrAbortHandler", recovered)
-			}
-			if recorder.Code != http.StatusOK || test.reader.closed != 1 || len(harness.reports) != 1 {
+			harness.factory.Content(harness.team).ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusServiceUnavailable || decodeError(t, recorder).Error != "content_unavailable" ||
+				test.reader.closed != 1 || len(harness.reports) != 1 || recorder.Header().Get("ETag") != "" {
 				t.Fatalf("status/closes/reports = %d/%d/%v", recorder.Code, test.reader.closed, harness.reports)
 			}
 		})
@@ -804,7 +1004,7 @@ func TestPinUsesAuthenticatedActorAndExactDigestLease(t *testing.T) {
 		return lease, nil
 	}
 	claim := snapshot.RetentionClaim{
-		ID: 11, SnapshotID: harness.manifest.ID, Class: snapshot.RetentionClassPin,
+		ID: 9007199254740999, SnapshotID: harness.manifest.ID, Class: snapshot.RetentionClassPin,
 		Actor: "github:subject-1", Reason: "keep for review", CreatedAt: harness.manifest.CreatedAt,
 	}
 	harness.metadata.pin = func(_ context.Context, gotLease snapshot.DigestLease, teamID int, actor string, ref snapshot.SnapshotRef, reason string) (snapshot.RetentionClaim, error) {
@@ -820,6 +1020,9 @@ func TestPinUsesAuthenticatedActorAndExactDigestLease(t *testing.T) {
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), `"id":"9007199254740999"`) {
+		t.Fatalf("retention claim ID lost JSON precision: %s", recorder.Body.String())
 	}
 	if len(harness.metadata.pinCalls) != 1 {
 		t.Fatalf("pin calls = %#v", harness.metadata.pinCalls)

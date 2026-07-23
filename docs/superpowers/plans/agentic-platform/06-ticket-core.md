@@ -1,5 +1,7 @@
 # Ticket Core Implementation Plan
 
+> **SUPERSEDED — historical implementation record (not executable).** The approved [Agentic Workflows as Functions over Snapshots design](../../specs/2026-07-21-agentic-workflows-as-functions-design.md) and [Agentic Functions program plan](../2026-07-21-agentic-functions-program.md) are authoritative. The landed ticket model is retained as an optional work-item adapter and compatibility UI; it is no longer the universal workflow identity, input model, or orchestration center.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Land the `agent_tickets` / `agent_ticket_specs` / `agent_ticket_tasks` data model with a single-writer state-transition function, principal-aware `/api/v1/agent/tickets` CRUD routes, `fly agent tickets` commands, a minimal Elm ticket page, the spec.md/plan.md render helper, and the Jira phase-2 design note.

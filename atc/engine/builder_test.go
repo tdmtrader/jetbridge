@@ -1,6 +1,10 @@
 package engine_test
 
 import (
+	"errors"
+
+	"github.com/concourse/concourse/agent/publisher"
+	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
@@ -121,6 +125,24 @@ var _ = Describe("Builder", func() {
 				})
 			})
 
+			Context("when the workflow-run association lookup fails", func() {
+				BeforeEach(func() {
+					fakeBuild.SchemaReturns("exec.v2")
+					fakeBuild.AgentWorkflowRunAssociationReturns(
+						db.AgentWorkflowRunBuildAssociation{},
+						false,
+						errors.New("association unavailable"),
+					)
+				})
+
+				It("fails closed before constructing a stepper", func() {
+					_, err := stepperFactory.StepperForBuild(fakeBuild)
+					Expect(err).To(MatchError(ContainSubstring("association unavailable")))
+					Expect(fakeCoreStepFactory.TaskStepCallCount()).To(Equal(0))
+					Expect(fakeCoreStepFactory.AgentStepCallCount()).To(Equal(0))
+				})
+			})
+
 			Context("when the build has the right schema", func() {
 				BeforeEach(func() {
 					fakeBuild.SchemaReturns("exec.v2")
@@ -170,6 +192,38 @@ var _ = Describe("Builder", func() {
 						})
 
 						It("uses the automated principal without exposing it", assertFallback)
+					})
+				})
+
+				Context("with an authenticated workflow-run build association", func() {
+					BeforeEach(func() {
+						association := db.AgentWorkflowRunBuildAssociation{
+							WorkflowDefinitionID: 77,
+							WorkflowRunID:        snapshot.WorkflowRunID(9007199254740993),
+						}
+						fakeBuild.AgentWorkflowRunAssociationReturns(association, true, nil)
+						expectedPlan = planFactory.NewPlan(atc.InParallelPlan{Steps: []atc.Plan{
+							planFactory.NewPlan(atc.TaskPlan{Name: "typed-task"}),
+							planFactory.NewPlan(atc.AgentPlan{Name: "typed-agent", Prompt: "p"}),
+						}})
+					})
+
+					It("copies the exact pair to every task and agent without re-querying", func() {
+						Expect(fakeBuild.AgentWorkflowRunAssociationCallCount()).To(Equal(1))
+
+						Expect(fakeCoreStepFactory.TaskStepCallCount()).To(Equal(1))
+						_, taskMetadata, _, _ := fakeCoreStepFactory.TaskStepArgsForCall(0)
+						Expect(taskMetadata.WorkflowDefinitionID).NotTo(BeNil())
+						Expect(*taskMetadata.WorkflowDefinitionID).To(Equal(77))
+						Expect(taskMetadata.WorkflowRunID).NotTo(BeNil())
+						Expect(*taskMetadata.WorkflowRunID).To(Equal(snapshot.WorkflowRunID(9007199254740993)))
+
+						Expect(fakeCoreStepFactory.AgentStepCallCount()).To(Equal(1))
+						_, agentMetadata, _, _ := fakeCoreStepFactory.AgentStepArgsForCall(0)
+						Expect(agentMetadata.WorkflowDefinitionID).NotTo(BeNil())
+						Expect(*agentMetadata.WorkflowDefinitionID).To(Equal(77))
+						Expect(agentMetadata.WorkflowRunID).NotTo(BeNil())
+						Expect(*agentMetadata.WorkflowRunID).To(Equal(snapshot.WorkflowRunID(9007199254740993)))
 					})
 				})
 
@@ -589,7 +643,9 @@ var _ = Describe("Builder", func() {
 								JobName:              "some-job",
 								BuildID:              4444,
 								BuildName:            "42",
+								Attempt:              "0",
 							}))
+							Expect(containerMetadata.Attempt).To(Equal("0"))
 						})
 					})
 
@@ -632,7 +688,9 @@ var _ = Describe("Builder", func() {
 								JobName:              "some-job",
 								BuildID:              4444,
 								BuildName:            "42",
+								Attempt:              "0",
 							}))
+							Expect(containerMetadata.Attempt).To(Equal("0"))
 						})
 					})
 
@@ -680,6 +738,39 @@ var _ = Describe("Builder", func() {
 							plan, stepMetadata, _ := fakeCoreStepFactory.LoadSnapshotStepArgsForCall(0)
 							Expect(plan).To(Equal(expectedPlan))
 							Expect(stepMetadata).To(Equal(expectedMetadataWithoutCreatedBy))
+						})
+					})
+
+					Context("that contains an await_snapshot step", func() {
+						BeforeEach(func() {
+							expectedPlan = planFactory.NewPlan(atc.AwaitSnapshotPlan{
+								Name: "answer", Question: "question", Type: "human-answer/v1",
+								OnTimeout: atc.AwaitSnapshotOnTimeoutFail, WorkflowRunID: "9223372036854775807",
+							})
+						})
+
+						It("constructs await_snapshot with server-derived metadata", func() {
+							plan, stepMetadata, _ := fakeCoreStepFactory.AwaitSnapshotStepArgsForCall(0)
+							Expect(plan).To(Equal(expectedPlan))
+							Expect(stepMetadata).To(Equal(expectedMetadataWithoutCreatedBy))
+						})
+					})
+
+					Context("that contains a publish_snapshot step", func() {
+						BeforeEach(func() {
+							expectedPlan = planFactory.NewPlan(atc.PublishSnapshotPlan{
+								Name: "publish-change", Publisher: publisher.GitPublisher,
+								Input: "change", InputType: "repository-change/v1",
+								Destination: "github.example/team/repo", Mode: publisher.ModePullRequest,
+								Parameters:            map[string]string{"source_branch": "agent/change", "target_branch": "main"},
+								ApprovalPolicyVersion: "engineering/v2",
+							})
+						})
+
+						It("constructs publish_snapshot with authenticated server metadata", func() {
+							plan, stepMetadata, _ := fakeCoreStepFactory.PublishSnapshotStepArgsForCall(0)
+							Expect(plan).To(Equal(expectedPlan))
+							Expect(stepMetadata).To(Equal(expectedMetadataWithCreatedBy))
 						})
 					})
 
@@ -856,6 +947,7 @@ var _ = Describe("Builder", func() {
 								BuildName:            "42",
 								StepName:             "some-completion-task",
 								Type:                 db.ContainerTypeTask,
+								Attempt:              "0",
 							}))
 						})
 
@@ -874,6 +966,7 @@ var _ = Describe("Builder", func() {
 								BuildName:            "42",
 								StepName:             "some-failure-task",
 								Type:                 db.ContainerTypeTask,
+								Attempt:              "0",
 							}))
 						})
 
@@ -892,6 +985,7 @@ var _ = Describe("Builder", func() {
 								BuildName:            "42",
 								StepName:             "some-success-task",
 								Type:                 db.ContainerTypeTask,
+								Attempt:              "0",
 							}))
 						})
 
@@ -910,6 +1004,7 @@ var _ = Describe("Builder", func() {
 								BuildName:            "42",
 								StepName:             "some-next-task",
 								Type:                 db.ContainerTypeTask,
+								Attempt:              "0",
 							}))
 						})
 					})

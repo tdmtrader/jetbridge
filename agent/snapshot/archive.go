@@ -462,7 +462,10 @@ func (c Canonicalizer) limits() (int64, int64, error) {
 	return maxEntries, maxContent, nil
 }
 
-func validateConfiguredTempDir(tempDir string) error {
+// ValidateTempDir verifies that a configured snapshot scratch parent exists
+// and cannot be replaced or populated by an unrelated local user. An empty
+// value preserves the Canonicalizer's legacy os.TempDir behavior.
+func ValidateTempDir(tempDir string) error {
 	if tempDir == "" {
 		return nil
 	}
@@ -477,6 +480,10 @@ func validateConfiguredTempDir(tempDir string) error {
 		return fmt.Errorf("snapshot: trusted temporary parent %q is group- or other-writable without the sticky bit", tempDir)
 	}
 	return nil
+}
+
+func validateConfiguredTempDir(tempDir string) error {
+	return ValidateTempDir(tempDir)
 }
 
 func wipeCaptureRoot(root *os.Root) error {

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/concourse/concourse/agent/pagination"
 )
 
 const testDigestText = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -777,11 +779,16 @@ func TestCloneHelpersCopyManifestAndFilterPointers(t *testing.T) {
 	}
 
 	after := time.Now()
-	filter := SnapshotListFilter{CreatedAfter: &after}
+	before := pagination.Cursor{CreatedAt: after.Add(time.Hour), ID: 42}
+	filter := SnapshotListFilter{CreatedAfter: &after, Before: &before}
 	clonedFilter := filter.Clone()
 	*clonedFilter.CreatedAfter = after.Add(time.Hour)
+	clonedFilter.Before.ID = 43
 	if !filter.CreatedAfter.Equal(after) {
 		t.Fatalf("filter clone aliased CreatedAfter: %s", filter.CreatedAfter)
+	}
+	if filter.Before.ID != 42 {
+		t.Fatalf("filter clone aliased Before: %#v", filter.Before)
 	}
 }
 

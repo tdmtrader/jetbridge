@@ -35,7 +35,7 @@ v8.0.1:1765921815
 # the pointer passes it, a lower-numbered migration would be skipped, so
 # PARK-V2 must renumber above the deployed head at landing time (the
 # standing ticket-core precedent).
-JETBRIDGE_VERSION=1773106104
+JETBRIDGE_VERSION=1773106121
 
 # Minimum supported source version (v6.x)
 MIN_SUPPORTED_VERSION=1601993582
@@ -137,8 +137,24 @@ SCHEMA_FORMAT="unknown"
 
 if [[ "$HAS_MIGRATIONS_HISTORY" == "t" ]]; then
   SCHEMA_FORMAT="migrations_history"
-  CURRENT_VERSION=$(run_sql "SELECT version FROM migrations_history WHERE status != 'failed' ORDER BY tstamp DESC LIMIT 1;")
-  CURRENT_VERSION=${CURRENT_VERSION:-0}
+  MIGRATION_HEAD=$(run_sql "SELECT version, direction FROM migrations_history WHERE status != 'failed' ORDER BY tstamp DESC LIMIT 1;")
+  IFS='|' read -r RECORDED_VERSION RECORDED_DIRECTION <<<"${MIGRATION_HEAD}"
+
+  if [[ ! "${RECORDED_VERSION:-}" =~ ^[0-9]+$ ]]; then
+    fail "migrations_history has no valid successful migration head"
+    CURRENT_VERSION=0
+  elif [[ "${RECORDED_DIRECTION}" == "up" ]]; then
+    CURRENT_VERSION="${RECORDED_VERSION}"
+  elif [[ "${RECORDED_DIRECTION}" == "down" ]]; then
+    CURRENT_VERSION=$(run_sql "SELECT max(version) FROM migrations_history WHERE status != 'failed' AND direction = 'up' AND version < ${RECORDED_VERSION};")
+    if [[ ! "${CURRENT_VERSION:-}" =~ ^[0-9]+$ ]]; then
+      fail "Cannot resolve the migration preceding rolled-back version ${RECORDED_VERSION}"
+      CURRENT_VERSION=0
+    fi
+  else
+    fail "migrations_history has unknown direction '${RECORDED_DIRECTION:-}'"
+    CURRENT_VERSION=0
+  fi
   pass "Schema tracking: migrations_history (modern format)"
 
   # Check for dirty state

@@ -32,16 +32,35 @@ type SnapshotContentStore struct {
 	replicationFactor int
 	maxBytes          int64
 	archiveLimits     snapshot.ArchiveLimits
+	tempDir           string
 }
 
 var _ snapshot.ContentStore = (*SnapshotContentStore)(nil)
 var _ snapshot.ReplicaRepairer = (*SnapshotContentStore)(nil)
+
+type SnapshotContentStoreOption func(*SnapshotContentStore) error
+
+// WithSnapshotContentTempDir routes complete upload and repair spools through
+// the same dedicated disk-backed scratch directory as canonicalization.
+func WithSnapshotContentTempDir(tempDir string) SnapshotContentStoreOption {
+	return func(store *SnapshotContentStore) error {
+		if tempDir == "" {
+			return fmt.Errorf("snapshot content temp directory is required")
+		}
+		if err := snapshot.ValidateTempDir(tempDir); err != nil {
+			return err
+		}
+		store.tempDir = tempDir
+		return nil
+	}
+}
 
 func NewSnapshotContentStore(
 	daemon *DaemonClient,
 	locations SnapshotLocationResolver,
 	replicationFactor int,
 	archiveLimits snapshot.ArchiveLimits,
+	options ...SnapshotContentStoreOption,
 ) (*SnapshotContentStore, error) {
 	if daemon == nil || locations == nil {
 		return nil, fmt.Errorf("snapshot content store requires daemon client and location resolver")
@@ -56,13 +75,22 @@ func NewSnapshotContentStore(
 	if err != nil {
 		return nil, fmt.Errorf("snapshot archive limits: %w", err)
 	}
-	return &SnapshotContentStore{
+	store := &SnapshotContentStore{
 		daemon:            daemon,
 		locations:         locations,
 		replicationFactor: replicationFactor,
 		maxBytes:          maxBytes,
 		archiveLimits:     archiveLimits,
-	}, nil
+	}
+	for _, option := range options {
+		if option == nil {
+			return nil, fmt.Errorf("snapshot content store option is required")
+		}
+		if err := option(store); err != nil {
+			return nil, fmt.Errorf("snapshot content store option: %w", err)
+		}
+	}
+	return store, nil
 }
 
 func snapshotKeyForDigest(digest snapshot.Digest) string {
@@ -76,7 +104,7 @@ func (store *SnapshotContentStore) Put(ctx context.Context, digest snapshot.Dige
 	if source == nil {
 		return nil, fmt.Errorf("snapshot content source is required")
 	}
-	spool, size, actualDigest, err := spoolSnapshot(ctx, source, store.maxBytes)
+	spool, size, actualDigest, err := spoolSnapshot(ctx, source, store.maxBytes, store.tempDir)
 	if err != nil {
 		return nil, err
 	}
@@ -150,8 +178,8 @@ func (store *SnapshotContentStore) Put(ctx context.Context, digest snapshot.Dige
 	return locations, nil
 }
 
-func spoolSnapshot(ctx context.Context, source io.Reader, maxBytes int64) (*os.File, int64, snapshot.Digest, error) {
-	spool, err := os.CreateTemp("", ".jetbridge-snapshot-*")
+func spoolSnapshot(ctx context.Context, source io.Reader, maxBytes int64, tempDir string) (*os.File, int64, snapshot.Digest, error) {
+	spool, err := os.CreateTemp(tempDir, ".jetbridge-snapshot-*")
 	if err != nil {
 		return nil, 0, "", err
 	}
@@ -533,7 +561,7 @@ func (store *SnapshotContentStore) verifyRepairEndpoint(
 		closeErr := reader.Close()
 		return "", errors.Join(readErr, closeErr)
 	}
-	file, size, digest, spoolErr := spoolSnapshot(ctx, reader, store.maxBytes)
+	file, size, digest, spoolErr := spoolSnapshot(ctx, reader, store.maxBytes, store.tempDir)
 	closeReaderErr := reader.Close()
 	if spoolErr != nil {
 		return "", errors.Join(spoolErr, closeReaderErr)

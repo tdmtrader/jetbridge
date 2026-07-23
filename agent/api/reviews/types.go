@@ -3,6 +3,8 @@ package reviews
 import (
 	"encoding/json"
 	"fmt"
+
+	"github.com/concourse/concourse/agent/snapshot"
 )
 
 // ReviewPayload is the subset of ci-agent's ReviewOutput that ATC
@@ -67,7 +69,7 @@ type BuildContext struct {
 
 // StoredReview is the persisted form of a review.
 type StoredReview struct {
-	BuildID          int             `json:"build_id"`
+	BuildID          int             `json:"build_id,omitempty"`
 	BuildName        string          `json:"build_name"`
 	TeamName         string          `json:"team_name"`
 	PipelineName     string          `json:"pipeline_name"`
@@ -86,9 +88,15 @@ type StoredReview struct {
 	Review           json.RawMessage `json:"review,omitempty"`
 	// TicketID / PipelineRunID link harvest-published evidence to a ticket
 	// and a pipeline run (shared-contracts §1.10). nil = plain CI review.
-	TicketID      *int  `json:"ticket_id,omitempty"`
-	PipelineRunID *int  `json:"pipeline_run_id,omitempty"`
-	CreatedAt     int64 `json:"created_at"`
+	TicketID      *int `json:"ticket_id,omitempty"`
+	PipelineRunID *int `json:"pipeline_run_id,omitempty"`
+	// SnapshotID is the canonical review identity for projected review/v1
+	// values. WorkflowRunID and ProductionID are denormalized provenance links;
+	// nil on legacy build submissions.
+	SnapshotID    *snapshot.SnapshotID    `json:"snapshot_id,omitempty"`
+	WorkflowRunID *snapshot.WorkflowRunID `json:"workflow_run_id,omitempty"`
+	ProductionID  *snapshot.DatabaseID    `json:"production_id,omitempty"`
+	CreatedAt     int64                   `json:"created_at"`
 	// EvaluatedCount is filled by the DB store's feedback join, not by
 	// ToStoredReview or MemoryStore.Upsert.
 	EvaluatedCount int `json:"evaluated_count"`
@@ -143,4 +151,11 @@ type Store interface {
 	// ListByTicket returns records linked to the ticket ordered oldest-first
 	// (created ascending).
 	ListByTicket(ticketID int) ([]StoredReview, error)
+}
+
+// ProjectionReader exposes canonical snapshot/run identities without changing
+// the compatibility Store required by legacy harvest/build callers.
+type ProjectionReader interface {
+	GetBySnapshot(teamName string, snapshotID snapshot.SnapshotID) (StoredReview, bool, error)
+	ListByWorkflowRun(teamName, workflowName string, workflowRunID snapshot.WorkflowRunID) ([]StoredReview, error)
 }

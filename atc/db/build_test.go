@@ -125,6 +125,13 @@ var _ = Describe("Build", func() {
 		Expect(build.ContainerOwner("some-plan")).To(Equal(db.NewBuildStepContainerOwner(build.ID(), "some-plan", build.TeamID())))
 	})
 
+	It("does not grant an ordinary build a workflow-run association", func() {
+		association, found, err := build.AgentWorkflowRunAssociation()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeFalse())
+		Expect(association).To(Equal(db.AgentWorkflowRunBuildAssociation{}))
+	})
+
 	Describe("LagerData", func() {
 		var build db.Build
 
@@ -456,6 +463,57 @@ var _ = Describe("Build", func() {
 			var executionStatus string
 			Expect(dbConn.QueryRow(`SELECT execution_status FROM agent_workflow_runs WHERE id = $1`, int64(runID)).Scan(&executionStatus)).To(Succeed())
 			Expect(executionStatus).To(Equal("succeeded"))
+		})
+
+		It("exposes the exact selected-build association only after plan provenance is captured", func() {
+			_, found, err := build.AgentWorkflowRunAssociation()
+			Expect(found).To(BeFalse())
+			Expect(err).To(MatchError(ContainSubstring("captured plan provenance")))
+
+			started, err := build.Start(plan)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(started).To(BeTrue())
+
+			association, found, err := build.AgentWorkflowRunAssociation()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(association.WorkflowDefinitionID).To(BeNumerically(">", 0))
+			Expect(association.WorkflowRunID).To(Equal(runID))
+		})
+
+		It("fails closed when the selected run drifts from the build team", func() {
+			started, err := build.Start(plan)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(started).To(BeTrue())
+
+			otherTeam, err := teamFactory.CreateTeam(atc.Team{Name: fmt.Sprintf("other-%d", time.Now().UnixNano())})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = dbConn.Exec(
+				`UPDATE agent_workflow_runs SET team_id = $2, team_name = $3 WHERE id = $1`,
+				int64(runID),
+				otherTeam.ID(),
+				otherTeam.Name(),
+			)
+			Expect(err).NotTo(HaveOccurred())
+
+			_, found, err := build.AgentWorkflowRunAssociation()
+			Expect(found).To(BeFalse())
+			Expect(err).To(MatchError(ContainSubstring("incomplete durable execution chain")))
+		})
+
+		It("fails closed when the selected workflow run is no longer active", func() {
+			started, err := build.Start(plan)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(started).To(BeTrue())
+			_, err = dbConn.Exec(
+				`UPDATE agent_workflow_runs SET status = 'succeeded', completed_at = now() WHERE id = $1`,
+				int64(runID),
+			)
+			Expect(err).NotTo(HaveOccurred())
+
+			_, found, err := build.AgentWorkflowRunAssociation()
+			Expect(found).To(BeFalse())
+			Expect(err).To(MatchError(ContainSubstring("not active")))
 		})
 
 		It("rolls the build start and event back on semantic provenance failure", func() {

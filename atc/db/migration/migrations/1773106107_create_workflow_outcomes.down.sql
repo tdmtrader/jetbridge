@@ -1,0 +1,2 @@
+DROP TABLE agent_workflow_outcomes;
+DROP INDEX agent_workflow_runs_id_team_id;

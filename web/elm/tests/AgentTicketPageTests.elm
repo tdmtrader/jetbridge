@@ -1,5 +1,6 @@
 module AgentTicketPageTests exposing (all)
 
+import AgenticData
 import Application.Application as Application
 import Common
 import Concourse.AgentTicket as AgentTicket
@@ -28,6 +29,9 @@ sampleDetailJson =
         , "workflow_name": "develop", "body": "do the thing", "budget_usd": 5.0
         , "created_at": 200
         , "repo": "tdmtrader/jetbridge", "target_branch": "main", "branch": "agent/ticket-12"
+        , "workflow_run_id": "9007199254740993"
+        , "work_item_snapshot_id": "9007199254741003"
+        , "repository_snapshot_id": "9007199254740995"
         }
     , "spec": { "title": "spec title", "body": "spec body", "acceptance_criteria": ["crit a"] }
     , "tasks": [ { "ordering": 1, "title": "first task", "status": "done" } ]
@@ -115,6 +119,25 @@ all =
                         [ Common.contains (Effects.FetchAgentTicket 12)
                         , Common.contains (Effects.FetchAgentTicketMetrics 12)
                         ]
+        , test "links the captured revision, repository, durable run, and typed outputs" <|
+            \_ ->
+                withDetail sampleDetailJson <|
+                    \detail ->
+                        Common.init "/agent-tickets/12"
+                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok detail))
+                            |> Tuple.first
+                            |> Application.handleCallback
+                                (Callback.AgentWorkflowRunFetched AgenticData.runSummary.id (Ok AgenticData.runDetail))
+                            |> Tuple.first
+                            |> Common.queryView
+                            |> Query.find [ id "ticket-durable-evidence" ]
+                            |> Query.has
+                                [ attribute (Html.Attributes.href "/agent/snapshots/9007199254740995")
+                                , attribute (Html.Attributes.href "/agent/snapshots/9007199254741003")
+                                , attribute (Html.Attributes.href "/agent/workflows/develop/runs/9007199254740993")
+                                , attribute (Html.Attributes.href "/agent/snapshots/9007199254740997")
+                                , containing [ text "change repository-change/v1 #9007199254740997" ]
+                                ]
         , test "renders the ticket header, tabs and spec body" <|
             \_ ->
                 withDetail sampleDetailJson

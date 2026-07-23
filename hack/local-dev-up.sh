@@ -30,6 +30,7 @@ CLUSTER_NAME="jetbridge-local"
 LOCAL_DIR="${REPO_ROOT}/.local-cluster"
 KUBECONFIG_PATH="${LOCAL_DIR}/kubeconfig"
 IMAGE="concourse-local:latest"
+ARTIFACT_HELPER_SOURCE="${ARTIFACT_HELPER_IMAGE:-docker.io/library/busybox:1.37.0}"
 NAMESPACE="concourse"
 
 if [[ "${1:-}" == "--destroy" ]]; then
@@ -89,6 +90,22 @@ echo "==> 5/6 Loading image (docker save + image-archive)"
 docker save "${IMAGE}" -o "${LOCAL_DIR}/concourse-local.tar"
 kind load image-archive --name "${CLUSTER_NAME}" "${LOCAL_DIR}/concourse-local.tar"
 
+echo "==> Resolving and loading immutable artifact helper"
+docker pull --quiet "${ARTIFACT_HELPER_SOURCE}"
+if [[ "${ARTIFACT_HELPER_SOURCE}" == *@sha256:* ]]; then
+  ARTIFACT_HELPER_IMAGE="${ARTIFACT_HELPER_SOURCE}"
+else
+  ARTIFACT_HELPER_IMAGE="$(docker image inspect \
+    --format '{{index .RepoDigests 0}}' "${ARTIFACT_HELPER_SOURCE}")"
+fi
+ARTIFACT_HELPER_PATTERN='^[^@[:space:]]+@sha256:[a-f0-9]{64}$'
+if [[ ! "${ARTIFACT_HELPER_IMAGE}" =~ ${ARTIFACT_HELPER_PATTERN} ]]; then
+  echo "ERROR: artifact helper did not resolve to an exact OCI sha256 digest: ${ARTIFACT_HELPER_IMAGE}" >&2
+  exit 1
+fi
+docker save "${ARTIFACT_HELPER_SOURCE}" -o "${LOCAL_DIR}/artifact-helper.tar"
+kind load image-archive --name "${CLUSTER_NAME}" "${LOCAL_DIR}/artifact-helper.tar"
+
 echo "==> 6/6 Helm install"
 helm upgrade --install concourse "${REPO_ROOT}/deploy/chart" \
   --kubeconfig "${KUBECONFIG_PATH}" \
@@ -96,6 +113,7 @@ helm upgrade --install concourse "${REPO_ROOT}/deploy/chart" \
   --set image.repository=concourse-local \
   --set image.tag=latest \
   --set image.pullPolicy=Never \
+  --set-string kubernetes.artifactHelperImage="${ARTIFACT_HELPER_IMAGE}" \
   --set postgresql.persistence.enabled=false \
   --set cachePvc.enabled=false \
   --set artifactStorePvc.enabled=false \

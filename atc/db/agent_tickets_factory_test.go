@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/concourse/concourse/agent/api/tickets"
+	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/snapshot/contracts"
 	"github.com/concourse/concourse/agent/workitem"
 	"github.com/concourse/concourse/atc/db"
@@ -133,6 +135,120 @@ var _ = Describe("AgentTicketsFactory", func() {
 		title := "x"
 		Expect(factory.Update(424242, tickets.Update{Title: &title})).
 			To(MatchError(tickets.ErrTicketNotFound))
+	})
+
+	It("atomically reserves schema-v3 dispatch and records immutable snapshot/run links", func() {
+		var definitionID int
+		definitionName := fmt.Sprintf("ticket-dispatch-%d", time.Now().UnixNano())
+		Expect(dbConn.QueryRow(`
+			INSERT INTO agent_workflow_definitions
+				(name, version, content_hash, definition, created_by, schema_version, signature_version)
+			VALUES ($1, 7, $2, 'schema_version: 3', 'alice', 3, 1)
+			RETURNING id
+		`, definitionName, strings.Repeat("a", 64)).Scan(&definitionID)).To(Succeed())
+		insertSnapshot := func(typeName, digestDigit string) snapshot.SnapshotID {
+			var id snapshot.SnapshotID
+			Expect(dbConn.QueryRow(`
+				INSERT INTO agent_snapshots
+					(type_name, type_version, digest, byte_size, file_count, representation)
+				VALUES ($1, 1, $2, 1, 1, 'filesystem-tree-v1')
+				RETURNING id
+			`, typeName, "sha256:"+strings.Repeat(digestDigit, 64)).Scan(&id)).To(Succeed())
+			return id
+		}
+		repositoryID := insertSnapshot("repository", "b")
+		workItemID := insertSnapshot("work-item", "c")
+		ticketID, err := factory.Create(&tickets.Ticket{
+			Title: "dispatch", Body: "captured", Repo: "example/repo", WorkflowName: definitionName,
+			RepositorySnapshotID: &repositoryID,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(factory.Transition(ticketID, tickets.StateDraft, tickets.StateQueued, tickets.TransitionMeta{})).To(Succeed())
+		before, found, err := factory.Get(ticketID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+
+		const callers = 12
+		results := make(chan tickets.DispatchReservation, callers)
+		errors := make(chan error, callers)
+		var wait sync.WaitGroup
+		for index := 0; index < callers; index++ {
+			wait.Add(1)
+			go func() {
+				defer GinkgoRecover()
+				defer wait.Done()
+				result, reserveErr := factory.ReserveDispatch(context.Background(), ticketID, tickets.DispatchReservationRequest{
+					ExpectedRevision: before.Revision, WorkflowVersion: 7, WorkflowDefinitionID: definitionID,
+				})
+				results <- result
+				errors <- reserveErr
+			}()
+		}
+		wait.Wait()
+		close(results)
+		close(errors)
+		for reserveErr := range errors {
+			Expect(reserveErr).NotTo(HaveOccurred())
+		}
+		reservationKey := ""
+		for result := range results {
+			Expect(result.Key).NotTo(BeEmpty())
+			if reservationKey == "" {
+				reservationKey = result.Key
+			} else {
+				Expect(result.Key).To(Equal(reservationKey))
+			}
+		}
+
+		reserved, _, err := factory.Get(ticketID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(factory.RecordDispatchWorkItem(context.Background(), ticketID, reservationKey, reserved.Revision, workItemID)).To(Succeed())
+		Expect(factory.RecordDispatchWorkItem(context.Background(), ticketID, reservationKey, reserved.Revision, workItemID)).To(Succeed())
+		otherRepository := insertSnapshot("repository", "d")
+		Expect(factory.Update(ticketID, tickets.Update{RepositorySnapshotID: &otherRepository})).To(MatchError(tickets.ErrDispatchConflict))
+
+		var workflowRunID snapshot.WorkflowRunID
+		Expect(dbConn.QueryRow(`
+			INSERT INTO agent_workflow_runs
+				(team_id, team_name, workflow_definition_id, workflow_name, workflow_version,
+				 schema_version, signature_version, definition_content_hash, idempotency_key,
+				 parameterized_config, parameterized_config_hash, origin_kind, origin_reference,
+				 created_by, status)
+			VALUES ($1, $2, $3, $4, 7, 3, 1, $5, $6, '{}', $7, 'ticket', $8, 'alice', 'admitting')
+			RETURNING id
+		`, defaultTeam.ID(), defaultTeam.Name(), definitionID, definitionName,
+			strings.Repeat("a", 64), reservationKey, strings.Repeat("e", 64), strconv.Itoa(ticketID)).Scan(&workflowRunID)).To(Succeed())
+		var pipelineID, pipelineRunID int
+		Expect(dbConn.QueryRow(`
+			INSERT INTO pipelines (name, team_id, secondary_ordering)
+			VALUES ($1, $2, 1) RETURNING id
+		`, fmt.Sprintf("ticket-dispatch-pipeline-%d", time.Now().UnixNano()), defaultTeam.ID()).Scan(&pipelineID)).To(Succeed())
+		Expect(dbConn.QueryRow(`
+			INSERT INTO pipeline_runs (template_pipeline_id, instance_pipeline_id, number)
+			VALUES ($1, $1, 1) RETURNING id
+		`, pipelineID).Scan(&pipelineRunID)).To(Succeed())
+		Expect(factory.RecordDispatchRun(context.Background(), ticketID, reservationKey, workflowRunID, pipelineRunID)).To(Succeed())
+		Expect(factory.RecordDispatchRun(context.Background(), ticketID, reservationKey, workflowRunID, pipelineRunID)).To(Succeed())
+		Expect(factory.Transition(ticketID, tickets.StateQueued, tickets.StateRunning,
+			tickets.TransitionMeta{PipelineRunID: &pipelineRunID})).To(Succeed())
+
+		got, found, err := factory.Get(ticketID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(got.State).To(Equal(tickets.StateRunning))
+		Expect(got.WorkflowDefinitionID).NotTo(BeNil())
+		Expect(*got.WorkflowDefinitionID).To(Equal(definitionID))
+		Expect(got.WorkflowVersion).NotTo(BeNil())
+		Expect(*got.WorkflowVersion).To(Equal(7))
+		Expect(got.RepositorySnapshotID).NotTo(BeNil())
+		Expect(*got.RepositorySnapshotID).To(Equal(repositoryID))
+		Expect(got.WorkItemSnapshotID).NotTo(BeNil())
+		Expect(*got.WorkItemSnapshotID).To(Equal(workItemID))
+		Expect(got.WorkflowRunID).NotTo(BeNil())
+		Expect(*got.WorkflowRunID).To(Equal(workflowRunID))
+		Expect(got.PipelineRunID).NotTo(BeNil())
+		Expect(*got.PipelineRunID).To(Equal(pipelineRunID))
+		Expect(got.DispatchReservationKey).To(Equal(reservationKey))
 	})
 
 	Describe("Transition (the single writer)", func() {

@@ -144,6 +144,8 @@ web:
 kubernetes:
   # -- Namespace where task/check pods are created.
   # Defaults to the release namespace.
+  # Cross-namespace execution is rejected until the chart can provision the
+  # required runtime RBAC, artifact-daemon discovery, and TLS there.
   namespace: ""
 
   # -- ServiceAccount for task pods (uses web SA if empty)
@@ -162,8 +164,12 @@ kubernetes:
   #     - name: ecr-cred-secret    # ECR: managed by ecr-credential-helper or external-secrets
   imagePullSecrets: []
 
-  # -- Artifact helper image (needs tar; used by init containers and sidecar)
-  artifactHelperImage: "alpine:latest"
+  # -- Artifact helper image (needs BusyBox-compatible sh, wget, base64, cat,
+  # rm, find, chgrp, and chmod; used by runtime init containers and sidecars).
+  # Required: set an exact OCI digest reference ending in
+  # @sha256:<64 lowercase hex characters>. The chart deliberately has no
+  # mutable or guessed default.
+  artifactHelperImage: ""
 
   # -- Image registry prefix for custom resource type images.
   # Applied as a prefix to resource type image references, e.g. "myregistry.io/"
@@ -422,7 +428,8 @@ secrets:
 
 # -- Network policy configuration
 networkPolicy:
-  # -- Enable NetworkPolicy resources
+  # -- Enable general web/database/artifact/non-hermetic task NetworkPolicies.
+  # The hermetic pod egress policy below is always emitted.
   enabled: false
 
   # -- Allow ingress from these pod selectors to the web pod.
@@ -445,6 +452,24 @@ networkPolicy:
   #       cidr: 10.0.0.0/8
   #   - ipBlock:
   #       cidr: 104.16.0.0/12  # Docker Hub / Cloudflare
+
+  # -- Complete Kubernetes NetworkPolicy egress rules for hermetic pods.
+  # Empty by default: hermetic task and agent transforms fail closed with no
+  # DNS, metadata, arbitrary HTTPS, or RFC1918 egress. The node-local artifact
+  # daemon remains reachable through Kubernetes' mandatory own-node exception.
+  #
+  # Rules are deliberately full NetworkPolicyEgressRule objects so both the
+  # destination and ports can be constrained. Every allowed rule applies to
+  # all containers in the pod, including the main process and sidecars.
+  hermeticEgressTo: []
+  # Example: allow only an in-cluster model egress proxy on TCP 8443:
+  #   - to:
+  #       - podSelector:
+  #           matchLabels:
+  #             app.kubernetes.io/name: model-egress-proxy
+  #     ports:
+  #       - protocol: TCP
+  #         port: 8443
 
 # -- Pod Disruption Budget configuration
 pdb:
@@ -571,5 +596,78 @@ artifactDaemon:
     existingSecret: ""
   # -- NetworkPolicy configuration for the artifact daemon
   networkPolicy:
-    # -- Enable NetworkPolicy restricting daemon ingress to Concourse pods only
+    # -- Add daemon peer and explicitly configured DNS/Kubernetes API egress
+    # restrictions to its single consolidated policy. Daemon ingress isolation
+    # is also emitted when the global networkPolicy.enabled switch is true.
     enabled: false
+    # -- DNS destination peers. Empty is fail closed: no DNS egress is allowed.
+    # Each entry must contain a non-empty ipBlock, podSelector, or
+    # namespaceSelector. All-destination CIDRs and empty selectors are rejected.
+    dnsEgressTo: []
+    # Example CoreDNS destination:
+    #   - namespaceSelector:
+    #       matchLabels:
+    #         kubernetes.io/metadata.name: kube-system
+    #     podSelector:
+    #       matchLabels:
+    #         k8s-app: kube-dns
+    # -- Kubernetes API destination peers. Empty is fail closed: no API egress
+    # is allowed. Configure the API service or endpoint CIDR(s) for your CNI;
+    # service traffic may be matched before or after DNAT depending on the CNI.
+    kubernetesAPIEgressTo: []
+    # Example API service ClusterIP:
+    #   - ipBlock:
+    #       cidr: 10.96.0.1/32
+
+# -- Durable typed snapshots used by Jetbridge Agentic workflow functions.
+# Snapshot storage is opt-in because it adds durable content lifecycle and
+# replication responsibilities. Enabling it requires artifactDaemon.enabled
+# and artifactDaemon.tls.enabled so snapshot bytes never cross the cluster
+# over an unauthenticated channel.
+agentSnapshots:
+  enabled: false
+  replicationFactor: 2
+  maxBytes: "10737418240"
+  maxFiles: 100000
+  bindingRetention: 168h
+  orphanGracePeriod: 1h
+  gcInterval: 5m
+  repairInterval: 10m
+  # -- Disk-backed scratch used while sealing, canonicalizing, and uploading
+  # snapshots. The default emptyDir is explicitly bounded and never tmpfs.
+  # At peak, one seal can hold an extracted tree, spool, canonical archive,
+  # and upload copy. Size for at least:
+  #   4 * maxBytes * peak concurrent seals
+  # plus filesystem and retry headroom. With the default 10Gi maxBytes, 80Gi
+  # covers approximately two concurrent maximum-sized seals before headroom.
+  scratch:
+    # -- Existing PVC mounted by concourse-web instead of an emptyDir. Its
+    # provisioned capacity, not sizeLimit, is authoritative when set.
+    existingClaim: ""
+    # -- Capacity bound for the disk-backed emptyDir.
+    sizeLimit: 80Gi
+
+# -- Controlled workflow/function experiments over pinned snapshot fixtures.
+# The runner is independently opt-in and requires agentSnapshots.enabled.
+agentExperiments:
+  runnerEnabled: false
+  runnerInterval: 10s
+  runnerMaxConcurrency: 4
+
+# -- Provider-neutral outbound publication through a deployment-owned HTTPS
+# gateway. Dedicated mounts keep the policy, bearer token, and optional private
+# CA out of the database-migration init container; secret values are never
+# chart args.
+agentPublisherGateway:
+  enabled: false
+  endpoint: ""
+  policyFile: ""
+  tokenFile: ""
+  caCertificateFile: ""
+  requestTimeout: 30s
+  leaseDuration: 5m
+  maxResponseBytes: 1048576
+  # -- Volumes mounted only into concourse-web, never migrate-db.
+  volumes: []
+  # -- Read-only publisher mounts for concourse-web only.
+  volumeMounts: []

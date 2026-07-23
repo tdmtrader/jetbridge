@@ -9,8 +9,10 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/concourse/concourse/agent/harvest"
+	"github.com/concourse/concourse/agent/publisher"
 	"github.com/concourse/concourse/agent/snapshot"
 )
 
@@ -210,6 +212,8 @@ type StepVisitor interface {
 	VisitSetPipeline(*SetPipelineStep) error
 	VisitLoadVar(*LoadVarStep) error
 	VisitLoadSnapshot(*LoadSnapshotStep) error
+	VisitAwaitSnapshot(*AwaitSnapshotStep) error
+	VisitPublishSnapshot(*PublishSnapshotStep) error
 	VisitTry(*TryStep) error
 	VisitDo(*DoStep) error
 	VisitInParallel(*InParallelStep) error
@@ -297,6 +301,14 @@ var StepPrecedence = []StepDetector{
 	{
 		Key: "load_snapshot",
 		New: func() StepConfig { return &LoadSnapshotStep{} },
+	},
+	{
+		Key: "await_snapshot",
+		New: func() StepConfig { return &AwaitSnapshotStep{} },
+	},
+	{
+		Key: "publish_snapshot",
+		New: func() StepConfig { return &PublishSnapshotStep{} },
 	},
 	{
 		Key: "set_pipeline",
@@ -420,8 +432,17 @@ func (step *RunStep) Visit(v StepVisitor) error {
 // the workflow definition into literal values here; the step implementation
 // never reads workflow tables.
 type AgentStep struct {
-	Name             string   `json:"agent"`
-	FunctionID       string   `json:"function_id,omitempty"`
+	Name       string `json:"agent"`
+	FunctionID string `json:"function_id,omitempty"`
+	// Hermetic requests runtime-enforced network isolation. Schema-v3
+	// workflow admission always sets this for transformation agents; direct
+	// pipeline authors may opt in for ordinary agent steps as well.
+	Hermetic bool `json:"hermetic,omitempty"`
+	// RuntimeImage is injected by the trusted workflow admission renderer.
+	// Versioned source definitions must leave it empty; schema-v3 admission
+	// fills an exact OCI digest so it participates in the immutable config
+	// hash and can be checked again by the executor.
+	RuntimeImage     string   `json:"runtime_image,omitempty"`
 	Prompt           string   `json:"prompt,omitempty"`
 	PromptFile       string   `json:"prompt_file,omitempty"`
 	SystemPromptFile string   `json:"system_prompt_file,omitempty"`
@@ -585,6 +606,274 @@ func (step *LoadSnapshotStep) UnmarshalJSON(data []byte) error {
 
 func (step *LoadSnapshotStep) Visit(v StepVisitor) error {
 	return v.VisitLoadSnapshot(step)
+}
+
+type AwaitSnapshotOnTimeout string
+
+const (
+	AwaitSnapshotOnTimeoutFail    AwaitSnapshotOnTimeout = "fail"
+	AwaitSnapshotOnTimeoutDefault AwaitSnapshotOnTimeout = "default"
+)
+
+func (policy AwaitSnapshotOnTimeout) Validate() error {
+	switch policy {
+	case AwaitSnapshotOnTimeoutFail, AwaitSnapshotOnTimeoutDefault:
+		return nil
+	default:
+		return fmt.Errorf("await_snapshot: on_timeout must be fail or default")
+	}
+}
+
+// AwaitSnapshotStep is a visible interaction boundary. It consumes one
+// trusted question/v1 artifact, or synthesizes a server-bound merge question
+// from one exact repository-change/v1 input, and publishes one immutable
+// human-answer/v1 artifact after the durable wait is resolved.
+type MergeApprovalIntent struct {
+	Input                 string            `json:"input"`
+	Publisher             snapshot.TypeRef  `json:"publisher"`
+	Destination           string            `json:"destination"`
+	Parameters            map[string]string `json:"parameters"`
+	ApprovalPolicyVersion string            `json:"approval_policy_version"`
+	Prompt                string            `json:"prompt"`
+}
+
+func (intent MergeApprovalIntent) validateWire() error {
+	if strings.TrimSpace(intent.Input) == "" {
+		return fmt.Errorf("await_snapshot: merge_approval input is required")
+	}
+	if strings.TrimSpace(intent.Prompt) != intent.Prompt || intent.Prompt == "" || len(intent.Prompt) > 4096 || strings.IndexByte(intent.Prompt, 0) >= 0 {
+		return fmt.Errorf("await_snapshot: merge_approval prompt is invalid")
+	}
+	_, err := publisher.BuildMergeApprovalContext(publisher.MergeApprovalRequest{
+		TeamID: 1, WorkflowRunID: 1, BuildID: 1,
+		Input: snapshot.SnapshotRef{
+			ID: 1, Type: snapshot.TypeRef("repository-change/v1"),
+			Digest: snapshot.Digest("sha256:" + strings.Repeat("0", 64)),
+		},
+		Publisher: intent.Publisher, Mode: publisher.ModeMerge,
+		Destination: intent.Destination, Parameters: intent.Parameters,
+		ExpectedBaseSHA:       intent.Parameters["expected_base_sha"],
+		ApprovalPolicyVersion: intent.ApprovalPolicyVersion,
+	})
+	if err != nil {
+		return fmt.Errorf("await_snapshot: merge_approval intent is invalid: %w", err)
+	}
+	return nil
+}
+
+type AwaitSnapshotStep struct {
+	Name                 string                 `json:"await_snapshot"`
+	Question             string                 `json:"question,omitempty"`
+	MergeApproval        *MergeApprovalIntent   `json:"merge_approval,omitempty"`
+	Type                 snapshot.TypeRef       `json:"type"`
+	OnTimeout            AwaitSnapshotOnTimeout `json:"on_timeout"`
+	DefaultSnapshotID    string                 `json:"default_snapshot_id,omitempty"`
+	WorkflowPort         string                 `json:"workflow_port,omitempty"`
+	WorkflowDefinitionID int                    `json:"workflow_definition_id,omitempty"`
+	WorkflowRunID        string                 `json:"workflow_run_id,omitempty"`
+}
+
+func (step AwaitSnapshotStep) validateWire() error {
+	if strings.TrimSpace(step.Name) == "" {
+		return fmt.Errorf("await_snapshot: output name is required")
+	}
+	hasQuestion := strings.TrimSpace(step.Question) != ""
+	hasMergeApproval := step.MergeApproval != nil
+	if hasQuestion == hasMergeApproval {
+		return fmt.Errorf("await_snapshot: exactly one of question or merge_approval is required")
+	}
+	if hasMergeApproval {
+		if err := step.MergeApproval.validateWire(); err != nil {
+			return err
+		}
+		if step.OnTimeout != AwaitSnapshotOnTimeoutFail || step.DefaultSnapshotID != "" {
+			return fmt.Errorf("await_snapshot: merge approval must fail on timeout without a default")
+		}
+	}
+	if err := step.Type.Validate(); err != nil || step.Type != snapshot.TypeRef("human-answer/v1") {
+		return fmt.Errorf("await_snapshot: type must be human-answer/v1")
+	}
+	if err := step.OnTimeout.Validate(); err != nil {
+		return err
+	}
+	switch step.OnTimeout {
+	case AwaitSnapshotOnTimeoutFail:
+		if step.DefaultSnapshotID != "" {
+			return fmt.Errorf("await_snapshot: default_snapshot_id is only valid when on_timeout is default")
+		}
+	case AwaitSnapshotOnTimeoutDefault:
+		if _, err := snapshot.ParseSnapshotID(step.DefaultSnapshotID); err != nil {
+			return fmt.Errorf("await_snapshot: default_snapshot_id: %w", err)
+		}
+	}
+	if step.WorkflowRunID != "" {
+		if parameter, templated := loadSnapshotParameterName(step.WorkflowRunID); templated {
+			if parameter != "workflow_run_id" {
+				return fmt.Errorf("await_snapshot: workflow_run_id must use ((workflow_run_id))")
+			}
+		} else if _, err := snapshot.ParseWorkflowRunID(step.WorkflowRunID); err != nil {
+			return fmt.Errorf("await_snapshot: workflow_run_id: %w", err)
+		}
+	}
+	if step.WorkflowDefinitionID < 0 {
+		return fmt.Errorf("await_snapshot: workflow definition ID must not be negative")
+	}
+	if step.WorkflowPort != "" && (step.WorkflowDefinitionID <= 0 || step.WorkflowRunID == "") {
+		return fmt.Errorf("await_snapshot: workflow output linkage is incomplete")
+	}
+	if step.WorkflowDefinitionID > 0 && step.WorkflowRunID == "" {
+		return fmt.Errorf("await_snapshot: workflow execution linkage is incomplete")
+	}
+	return nil
+}
+
+func (step AwaitSnapshotStep) MarshalJSON() ([]byte, error) {
+	if err := step.validateWire(); err != nil {
+		return nil, err
+	}
+	type wire AwaitSnapshotStep
+	return json.Marshal(wire(step))
+}
+
+func (step *AwaitSnapshotStep) UnmarshalJSON(data []byte) error {
+	type wire AwaitSnapshotStep
+	var decoded wire
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("await_snapshot: trailing JSON value")
+		}
+		return err
+	}
+	parsed := AwaitSnapshotStep(decoded)
+	if err := parsed.validateWire(); err != nil {
+		return err
+	}
+	*step = parsed
+	return nil
+}
+
+func (step *AwaitSnapshotStep) Visit(v StepVisitor) error {
+	return v.VisitAwaitSnapshot(step)
+}
+
+// PublishSnapshotStep is an explicit external side-effect boundary over one
+// exact typed snapshot. Credentials and verified approval actors are never
+// authored in this wire shape; the web node supplies them at execution.
+type PublishSnapshotStep struct {
+	Name                  string            `json:"publish_snapshot"`
+	Publisher             snapshot.TypeRef  `json:"publisher"`
+	Input                 string            `json:"input"`
+	InputType             snapshot.TypeRef  `json:"input_type"`
+	Destination           string            `json:"destination"`
+	Mode                  publisher.Mode    `json:"mode"`
+	Parameters            map[string]string `json:"parameters,omitempty"`
+	ApprovalPolicyVersion string            `json:"approval_policy_version"`
+	Approval              string            `json:"approval,omitempty"`
+	WorkflowRunID         string            `json:"workflow_run_id,omitempty"`
+}
+
+func (step PublishSnapshotStep) validateWire() error {
+	if strings.TrimSpace(step.Name) == "" {
+		return fmt.Errorf("publish_snapshot: name is required")
+	}
+	if strings.TrimSpace(step.Input) == "" {
+		return fmt.Errorf("publish_snapshot: input is required")
+	}
+	if err := step.InputType.Validate(); err != nil {
+		return fmt.Errorf("publish_snapshot: input_type: %w", err)
+	}
+	request := publisher.Request{
+		Publisher: step.Publisher,
+		Input: snapshot.SnapshotRef{
+			ID: 1, Type: step.InputType,
+			Digest: snapshot.Digest("sha256:" + strings.Repeat("0", 64)),
+		},
+		Destination: step.Destination, Mode: step.Mode,
+		Parameters: step.Parameters, ApprovalPolicyVersion: step.ApprovalPolicyVersion,
+		// Wire validation checks only the authored publication shape. Runtime
+		// replaces this sentinel with authenticated build identity.
+		Authority: publisher.Authority{TeamID: 1, TeamName: "server-verified", BuildID: 1, Actor: "server-verified"},
+	}
+	if step.Mode == publisher.ModeMerge {
+		if warning, err := ValidateIdentifier(step.Approval); strings.TrimSpace(step.Approval) == "" || err != nil || warning != nil {
+			return fmt.Errorf("publish_snapshot: merge approval artifact is invalid")
+		}
+		if step.WorkflowRunID != "" {
+			if parameter, templated := loadSnapshotParameterName(step.WorkflowRunID); templated {
+				if parameter != "workflow_run_id" {
+					return fmt.Errorf("publish_snapshot: workflow_run_id uses an invalid template parameter")
+				}
+			} else if _, err := snapshot.ParseWorkflowRunID(step.WorkflowRunID); err != nil {
+				return fmt.Errorf("publish_snapshot: workflow_run_id is invalid")
+			}
+		}
+		request.ApprovedBy = "server-verified"
+		request.Approval = &publisher.ApprovalEvidence{
+			WaitID:     1,
+			Question:   snapshot.SnapshotRef{ID: 2, Type: "question/v1", Digest: snapshot.Digest("sha256:" + strings.Repeat("1", 64))},
+			Answer:     snapshot.SnapshotRef{ID: 3, Type: "human-answer/v1", Digest: snapshot.Digest("sha256:" + strings.Repeat("2", 64))},
+			ResolvedBy: "server-verified", ResolvedAt: time.Unix(1, 0).UTC(),
+		}
+	} else if step.Approval != "" || step.WorkflowRunID != "" {
+		return fmt.Errorf("publish_snapshot: approval linkage is only valid for merge")
+	}
+	if err := request.Validate(); err != nil {
+		return fmt.Errorf("publish_snapshot: %w", err)
+	}
+	return nil
+}
+
+func (step PublishSnapshotStep) MarshalJSON() ([]byte, error) {
+	if err := step.validateWire(); err != nil {
+		return nil, err
+	}
+	type wire PublishSnapshotStep
+	return json.Marshal(wire(step))
+}
+
+func (step *PublishSnapshotStep) UnmarshalJSON(data []byte) error {
+	type wire PublishSnapshotStep
+	var decoded wire
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("publish_snapshot: trailing JSON value")
+		}
+		return err
+	}
+	parsed := PublishSnapshotStep(decoded)
+	if err := parsed.validateWire(); err != nil {
+		return err
+	}
+	parsed.Parameters = clonePublishSnapshotParameters(parsed.Parameters)
+	*step = parsed
+	return nil
+}
+
+func clonePublishSnapshotParameters(source map[string]string) map[string]string {
+	if source == nil {
+		return nil
+	}
+	cloned := make(map[string]string, len(source))
+	for name, value := range source {
+		cloned[name] = value
+	}
+	return cloned
+}
+
+func (step *PublishSnapshotStep) Visit(visitor StepVisitor) error {
+	return visitor.VisitPublishSnapshot(step)
 }
 
 func (step *LoadVarStep) Visit(v StepVisitor) error {

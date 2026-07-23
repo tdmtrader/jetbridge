@@ -2,6 +2,7 @@
 package dbfakes
 
 import (
+	"context"
 	"sync"
 
 	"github.com/concourse/concourse/agent/workflow"
@@ -124,17 +125,19 @@ type FakeAgentWorkflowsFactory struct {
 		result1 workflow.PromotionResult
 		result2 error
 	}
-	VersionsStub        func(string) ([]workflow.Definition, error)
+	VersionsStub        func(context.Context, string, workflow.VersionPageRequest) (workflow.VersionPage, error)
 	versionsMutex       sync.RWMutex
 	versionsArgsForCall []struct {
-		arg1 string
+		arg1 context.Context
+		arg2 string
+		arg3 workflow.VersionPageRequest
 	}
 	versionsReturns struct {
-		result1 []workflow.Definition
+		result1 workflow.VersionPage
 		result2 error
 	}
 	versionsReturnsOnCall map[int]struct {
-		result1 []workflow.Definition
+		result1 workflow.VersionPage
 		result2 error
 	}
 	invocations      map[string][][]interface{}
@@ -658,18 +661,20 @@ func (fake *FakeAgentWorkflowsFactory) PromoteReturnsOnCall(i int, result1 workf
 	}{result1, result2}
 }
 
-func (fake *FakeAgentWorkflowsFactory) Versions(arg1 string) ([]workflow.Definition, error) {
+func (fake *FakeAgentWorkflowsFactory) Versions(arg1 context.Context, arg2 string, arg3 workflow.VersionPageRequest) (workflow.VersionPage, error) {
 	fake.versionsMutex.Lock()
 	ret, specificReturn := fake.versionsReturnsOnCall[len(fake.versionsArgsForCall)]
 	fake.versionsArgsForCall = append(fake.versionsArgsForCall, struct {
-		arg1 string
-	}{arg1})
+		arg1 context.Context
+		arg2 string
+		arg3 workflow.VersionPageRequest
+	}{arg1, arg2, arg3})
 	stub := fake.VersionsStub
 	fakeReturns := fake.versionsReturns
-	fake.recordInvocation("Versions", []interface{}{arg1})
+	fake.recordInvocation("Versions", []interface{}{arg1, arg2, arg3})
 	fake.versionsMutex.Unlock()
 	if stub != nil {
-		return stub(arg1)
+		return stub(arg1, arg2, arg3)
 	}
 	if specificReturn {
 		return ret.result1, ret.result2
@@ -683,41 +688,41 @@ func (fake *FakeAgentWorkflowsFactory) VersionsCallCount() int {
 	return len(fake.versionsArgsForCall)
 }
 
-func (fake *FakeAgentWorkflowsFactory) VersionsCalls(stub func(string) ([]workflow.Definition, error)) {
+func (fake *FakeAgentWorkflowsFactory) VersionsCalls(stub func(context.Context, string, workflow.VersionPageRequest) (workflow.VersionPage, error)) {
 	fake.versionsMutex.Lock()
 	defer fake.versionsMutex.Unlock()
 	fake.VersionsStub = stub
 }
 
-func (fake *FakeAgentWorkflowsFactory) VersionsArgsForCall(i int) string {
+func (fake *FakeAgentWorkflowsFactory) VersionsArgsForCall(i int) (context.Context, string, workflow.VersionPageRequest) {
 	fake.versionsMutex.RLock()
 	defer fake.versionsMutex.RUnlock()
 	argsForCall := fake.versionsArgsForCall[i]
-	return argsForCall.arg1
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3
 }
 
-func (fake *FakeAgentWorkflowsFactory) VersionsReturns(result1 []workflow.Definition, result2 error) {
+func (fake *FakeAgentWorkflowsFactory) VersionsReturns(result1 workflow.VersionPage, result2 error) {
 	fake.versionsMutex.Lock()
 	defer fake.versionsMutex.Unlock()
 	fake.VersionsStub = nil
 	fake.versionsReturns = struct {
-		result1 []workflow.Definition
+		result1 workflow.VersionPage
 		result2 error
 	}{result1, result2}
 }
 
-func (fake *FakeAgentWorkflowsFactory) VersionsReturnsOnCall(i int, result1 []workflow.Definition, result2 error) {
+func (fake *FakeAgentWorkflowsFactory) VersionsReturnsOnCall(i int, result1 workflow.VersionPage, result2 error) {
 	fake.versionsMutex.Lock()
 	defer fake.versionsMutex.Unlock()
 	fake.VersionsStub = nil
 	if fake.versionsReturnsOnCall == nil {
 		fake.versionsReturnsOnCall = make(map[int]struct {
-			result1 []workflow.Definition
+			result1 workflow.VersionPage
 			result2 error
 		})
 	}
 	fake.versionsReturnsOnCall[i] = struct {
-		result1 []workflow.Definition
+		result1 workflow.VersionPage
 		result2 error
 	}{result1, result2}
 }

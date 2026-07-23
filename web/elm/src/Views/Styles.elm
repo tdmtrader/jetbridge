@@ -155,6 +155,36 @@ pageBelowTopBar route =
                     , style "display" "flex"
                     , style "height" "100%"
                     ]
+
+                Routes.AgentWorkflow _ ->
+                    [ style "box-sizing" "border-box"
+                    , style "display" "flex"
+                    , style "height" "100%"
+                    ]
+
+                Routes.AgentWorkflowRun _ ->
+                    [ style "box-sizing" "border-box"
+                    , style "display" "flex"
+                    , style "height" "100%"
+                    ]
+
+                Routes.AgentSnapshot _ ->
+                    [ style "box-sizing" "border-box"
+                    , style "display" "flex"
+                    , style "height" "100%"
+                    ]
+
+                Routes.AgentExperiments ->
+                    [ style "box-sizing" "border-box"
+                    , style "display" "flex"
+                    , style "height" "100%"
+                    ]
+
+                Routes.AgentExperiment _ ->
+                    [ style "box-sizing" "border-box"
+                    , style "display" "flex"
+                    , style "height" "100%"
+                    ]
            )
 
 

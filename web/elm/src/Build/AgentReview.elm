@@ -514,7 +514,8 @@ verdictRow reviewer review finding recorded model =
                                         )
                                    , onClick
                                         (AgentReviewVerdictClicked
-                                            { repo = review.info.repo
+                                            { reviewSnapshotId = review.info.snapshotId
+                                            , repo = review.info.repo
                                             , commitSha = review.info.commitSha
                                             , findingId = finding.id
                                             , verdict = verdict

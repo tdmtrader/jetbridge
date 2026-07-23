@@ -31,6 +31,9 @@ sampleSummary =
     , summary = "stuff"
     , createdAt = 0
     , evaluatedCount = 1
+    , snapshotId = Nothing
+    , workflowRunId = Nothing
+    , productionId = Nothing
     }
 
 

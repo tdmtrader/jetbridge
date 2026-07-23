@@ -3,9 +3,11 @@ package engine
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 
+	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/lock"
@@ -28,6 +30,8 @@ type CoreStepFactory interface {
 	SetPipelineStep(atc.Plan, exec.StepMetadata, DelegateFactory) exec.Step
 	LoadVarStep(atc.Plan, exec.StepMetadata, DelegateFactory) exec.Step
 	LoadSnapshotStep(atc.Plan, exec.StepMetadata, DelegateFactory) exec.Step
+	AwaitSnapshotStep(atc.Plan, exec.StepMetadata, DelegateFactory) exec.Step
+	PublishSnapshotStep(atc.Plan, exec.StepMetadata, DelegateFactory) exec.Step
 	ArtifactInputStep(atc.Plan, db.Build) exec.Step
 	ArtifactOutputStep(atc.Plan, db.Build) exec.Step
 }
@@ -71,6 +75,8 @@ type stepperFactory struct {
 	resourceConfigFactory db.ResourceConfigFactory
 	resourceCacheFactory  db.ResourceCacheFactory
 	imageResolver         imageresolver.Resolver
+	workflowDefinitionID  *int
+	workflowRunID         *snapshot.WorkflowRunID
 }
 
 func (factory *stepperFactory) StepperForBuild(build db.Build) (exec.Stepper, error) {
@@ -78,8 +84,22 @@ func (factory *stepperFactory) StepperForBuild(build db.Build) (exec.Stepper, er
 		return nil, errors.New("schema not supported")
 	}
 
+	association, found, err := build.AgentWorkflowRunAssociation()
+	if err != nil {
+		return nil, fmt.Errorf("load build workflow-run association: %w", err)
+	}
+	scopedFactory := *factory
+	if found {
+		if err := association.Validate(); err != nil {
+			return nil, fmt.Errorf("load build workflow-run association: %w", err)
+		}
+		definitionID := association.WorkflowDefinitionID
+		runID := association.WorkflowRunID
+		scopedFactory.workflowDefinitionID = &definitionID
+		scopedFactory.workflowRunID = &runID
+	}
 	return func(plan atc.Plan) exec.Step {
-		return factory.buildStep(build, plan)
+		return scopedFactory.buildStep(build, plan)
 	}, nil
 }
 
@@ -164,6 +184,14 @@ func (factory *stepperFactory) buildStep(build db.Build, plan atc.Plan) exec.Ste
 
 	if plan.LoadSnapshot != nil {
 		return factory.buildLoadSnapshotStep(build, plan)
+	}
+
+	if plan.AwaitSnapshot != nil {
+		return factory.buildAwaitSnapshotStep(build, plan)
+	}
+
+	if plan.PublishSnapshot != nil {
+		return factory.buildPublishSnapshotStep(build, plan)
 	}
 
 	if plan.Check != nil {
@@ -399,6 +427,9 @@ func (factory *stepperFactory) buildAgentStep(build db.Build, plan atc.Plan) exe
 		plan.Agent.Name,
 		plan.Attempts,
 	)
+	if containerMetadata.Attempt == "" {
+		containerMetadata.Attempt = "0"
+	}
 
 	stepMetadata := factory.stepMetadata(
 		build,
@@ -444,6 +475,9 @@ func (factory *stepperFactory) buildTaskStep(build db.Build, plan atc.Plan) exec
 		plan.Task.Name,
 		plan.Attempts,
 	)
+	if containerMetadata.Attempt == "" {
+		containerMetadata.Attempt = "0"
+	}
 
 	stepMetadata := factory.stepMetadata(
 		build,
@@ -492,6 +526,27 @@ func (factory *stepperFactory) buildLoadVarStep(build db.Build, plan atc.Plan) e
 func (factory *stepperFactory) buildLoadSnapshotStep(build db.Build, plan atc.Plan) exec.Step {
 	stepMetadata := factory.stepMetadata(build, factory.externalURL, false)
 	return factory.coreFactory.LoadSnapshotStep(
+		plan,
+		stepMetadata,
+		factory.buildDelegateFactory(build, plan),
+	)
+}
+
+func (factory *stepperFactory) buildAwaitSnapshotStep(build db.Build, plan atc.Plan) exec.Step {
+	stepMetadata := factory.stepMetadata(build, factory.externalURL, false)
+	return factory.coreFactory.AwaitSnapshotStep(
+		plan,
+		stepMetadata,
+		factory.buildDelegateFactory(build, plan),
+	)
+}
+
+func (factory *stepperFactory) buildPublishSnapshotStep(build db.Build, plan atc.Plan) exec.Step {
+	// CreatedBy is exposed only to this in-process server step and is never
+	// passed to an authored container. Merge publication uses it as the
+	// authenticated approval actor; non-merge modes ignore it.
+	stepMetadata := factory.stepMetadata(build, factory.externalURL, true)
+	return factory.coreFactory.PublishSnapshotStep(
 		plan,
 		stepMetadata,
 		factory.buildDelegateFactory(build, plan),
@@ -569,6 +624,14 @@ func (factory *stepperFactory) stepMetadata(
 		InstanceVarsQuery:    build.PipelineRef().QueryParams(),
 		ExternalURL:          externalURL,
 		SnapshotCreatedBy:    snapshotCreatedBy,
+	}
+	if factory.workflowDefinitionID != nil {
+		value := *factory.workflowDefinitionID
+		meta.WorkflowDefinitionID = &value
+	}
+	if factory.workflowRunID != nil {
+		value := *factory.workflowRunID
+		meta.WorkflowRunID = &value
 	}
 	if exposeBuildCreatedBy && createdBy != nil {
 		meta.CreatedBy = *createdBy

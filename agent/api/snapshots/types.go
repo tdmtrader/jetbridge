@@ -5,6 +5,8 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/concourse/concourse/agent/projection"
+	"github.com/concourse/concourse/agent/resourcecapture"
 	"github.com/concourse/concourse/agent/snapshot"
 )
 
@@ -44,6 +46,10 @@ type SnapshotCreator interface {
 	Upload(context.Context, snapshot.UploadRequest) (snapshot.Snapshot, error)
 }
 
+type ResourceCapturer interface {
+	Capture(context.Context, resourcecapture.Request) (resourcecapture.CaptureResult, error)
+}
+
 // MetadataStore is the authorization-filtered read and actor-pin surface used
 // by the HTTP API. The root snapshot.MetadataStore satisfies this interface.
 type MetadataStore interface {
@@ -60,16 +66,25 @@ type ContentStore interface {
 	Open(context.Context, snapshot.Snapshot) (io.ReadCloser, error)
 }
 
+type RepositoryChangeProjectionReader interface {
+	GetRepositoryChangeProjection(context.Context, snapshot.SnapshotID) (projection.RepositoryChange, bool, error)
+}
+
 type ErrorReporter func(context.Context, string)
 
 // Config controls construction of the team-bound snapshot handlers.
 type Config struct {
-	Enabled       bool
-	Creator       SnapshotCreator
-	Metadata      MetadataStore
-	Content       ContentStore
-	Locks         snapshot.DigestLockManager
-	ArchiveLimits snapshot.ArchiveLimits
-	Identity      RequestIdentityFunc
-	ReportError   ErrorReporter
+	Enabled           bool
+	Creator           SnapshotCreator
+	Metadata          MetadataStore
+	Content           ContentStore
+	RepositoryChanges RepositoryChangeProjectionReader
+	Locks             snapshot.DigestLockManager
+	ArchiveLimits     snapshot.ArchiveLimits
+	// TempDir is the dedicated disk-backed snapshot scratch directory. Content
+	// downloads are fully staged and digest-verified here before any success
+	// headers are committed to a client.
+	TempDir     string
+	Identity    RequestIdentityFunc
+	ReportError ErrorReporter
 }

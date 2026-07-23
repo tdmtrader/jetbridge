@@ -32,14 +32,12 @@ func TestExtractFunctionTargetSelectsDirectLeafWithLexicalSignature(t *testing.T
 	}
 	definition := extractTestDefinition([]atc.Step{
 		{Config: &atc.AgentStep{Name: "chosen", FunctionID: "other", Prompt: "ignore me"}},
-		{Config: &atc.GetStep{Name: "unrelated"}},
+		{Config: &atc.AgentStep{Name: "unrelated", FunctionID: "unrelated", Prompt: "ignore me too"}},
 		{Config: selected},
 	}, []snapshot.Port{
 		{Name: "zeta", Type: reviewV1, Optional: true},
 		{Name: "alpha", Type: repositoryV1},
 	})
-	definition.Compiled.Function.Resources = atc.ResourceConfigs{{Name: "unrelated", Type: "unrelated-type"}}
-	definition.Compiled.Function.ResourceTypes = atc.ResourceTypes{{Name: "unrelated-type", Image: exactDigestImage("2")}}
 
 	target, err := ExtractFunctionTarget(definition, "chosen")
 	if err != nil {

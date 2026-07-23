@@ -12,13 +12,13 @@
 
 - Preserve schema versions 1 and 2 and their current ticket renderer until a version-3 dogfood workflow has equivalent behavior. Compatibility code must be labeled and isolated; it must not leak ticket or `workspace` assumptions into version 3.
 - The filesystem tree is the execution ABI. Snapshot semantics live above `runtime.Artifact`; do not introduce a second pod-to-pod file-transfer system.
-- A snapshot is visible only after its bytes are durably stored and one database transaction commits every required output, its production record, input lineage, and workflow-run output binding.
-- Candidate outputs from a failed process, a malformed required output, or an incomplete multi-output set are never registered as typed artifacts and never bound to a workflow run.
+- A snapshot is visible only after its bytes are durably stored and one database transaction commits every required node output, its production record, and input lineage. Public workflow-port rows remain hidden candidates until terminal reconciliation atomically promotes the complete result set together with successful run status.
+- Candidate outputs from a failed process or a malformed/incomplete node output set are never registered as typed artifacts. Values sealed by an earlier successful node remain durable intermediates if the overall function later fails, but are never exposed as public workflow outputs.
 - Invocation telemetry (`agent_run_metrics`, flight events, logs, cost, retries) remains separate from semantic snapshots.
 - Snapshot and workflow-run history must survive build, pipeline instance, and template deletion. Foreign keys to ephemeral Concourse rows therefore use `ON DELETE SET NULL`, or the durable row copies the required identity. Every snapshot production carries immutable team and principal attribution, and every readable snapshot has an explicit durable team grant.
 - `review/v1`, `repository-change/v1`, `work-item/v1`, `log-bundle/v1`, and `measurements/v1` are authoritative server-validated contracts. Agent submission tools may help produce them but cannot certify them.
 - Workflow version, signature version, source content hash, concrete post-interpolation config and plan hash, input snapshot IDs, digest-resolved image/capability declarations, and origin are immutable after admission.
-- Resource gets and external publishers remain explicit DAG nodes. No version-3 compiler path appends `harvest:` or an implicit push.
+- External captures and publishers remain explicit DAG nodes. Transformations consume only bound snapshots; no version-3 compiler path performs a resource `get`, appends `harvest:`, or performs an implicit push.
 - Type validation answers structural validity only. Evaluators answer quality.
 - All new APIs enforce team visibility and use the existing route/wrappa authorization conventions. A template pipeline must not be able to load a snapshot solely by guessing its ID.
 - Every migration has a tested down migration. New tables use migration numbers beginning at `1773106100`; the abandoned benchmark reservations in historical plans are superseded by this program.
@@ -64,11 +64,11 @@ Migration `1773106100` creates:
 - `agent_snapshot_grants`: durable team access grants with grantor/reason audit; value deduplication never implies cross-team visibility.
 - `agent_snapshot_retention_claims`: independent binding/grant/pin claims with class, optional expiry, actor, and audit reason. Effective retention is the strongest active claim; removing one actor's pin never weakens another reference.
 - `agent_workflow_runs`: durable operational or experimental invocation identity, team, definition ID, optional function node ID, copied workflow/signature/hash fields, parameterized template config/hash, concrete post-interpolation config/plan/hash, origin kind/reference, creator, status, pipeline-run linkage, and timestamps.
-- `agent_workflow_run_snapshots`: named input/output bindings with unique `(workflow_run_id, direction, port_name)`.
+- `agent_workflow_run_snapshots`: named input bindings and staged output candidates with unique `(workflow_run_id, direction, port_name)`; `promoted_at` is set for inputs immediately and for the complete public output set only in the successful-finalization transaction.
 
 Migration `1773106101` adds indexed `schema_version` and `signature_version` columns to `agent_workflow_definitions`. Existing rows backfill from stored definitions in the Go migration; versions 1 and 2 receive signature version `0`.
 
-Migration `1773106102` adds first-class snapshot upload occurrences and idempotency after the initial snapshot schema shipped. Migration `1773106103` makes workflow completion reconciliation restart-safe while preserving copied execution provenance. Migrations `1773106104` through `1773106110` add ticket revisions, review/diff projections, generic outcomes, ticket workflow-run links, durable human waits, and explicit publication audit. Migration `1773106111` creates experiments, variants, fixtures, cells, and evaluator-run links as specified in the experiments plan. Every migration task advances and executes `jetbridgeHeadMigration` coverage.
+Migration `1773106102` adds first-class snapshot upload occurrences and idempotency after the initial snapshot schema shipped. Migration `1773106103` makes workflow completion reconciliation restart-safe while preserving copied execution provenance. Migrations `1773106104` through `1773106110` add ticket revisions, review/diff projections, generic outcomes, ticket workflow-run links, durable human waits, and explicit publication audit. Migration `1773106111` creates experiments, variants, fixtures, cells, and evaluator-run links as specified in the experiments plan. Migration `1773106112` adds concurrency-safe experiment budget reservations; migration `1773106113` separates stable wait-resolution actor identities from mutable display names and records the first accepted answer intent; migration `1773106114` adds atomic worst-case spend reservations for ordinary workflow runs. Migrations `1773106115` and `1773106116` strengthen publication-backed outcomes and append-only experiment actor audit, `1773106117` stages public outputs until atomic successful promotion, `1773106118` separates the provider-idempotent publication operation from each authorized workflow occurrence, `1773106119` freezes terminal scorecards, `1773106120` enforces same-experiment fixture, variant, cell, and budget ownership, and `1773106121` adds exact active-run retention for workflow inputs and internal typed values with atomic terminal release. Every migration task advances and executes `jetbridgeHeadMigration` coverage.
 
 ### Seal transaction
 
@@ -125,10 +125,12 @@ capabilities:
     sidecar:
       name: dev-mcp
       image: registry.example/dev-mcp@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      ports: [{containerPort: 7780, protocol: TCP}]
 plan:
   - agent: review
     function_id: review
     prompt: Compare the declared repository snapshots and submit review.json.
+    budget_slice_usd: 5
     capabilities: [dev]
     inputs: [before, after]
     outputs: [review]
@@ -141,9 +143,19 @@ plan:
       review: review/v1
 ```
 
-Top-level resources, resource types, prototypes, and variable sources are allowed only when referenced by the embedded plan and remain ordinary Concourse declarations. Version 3 has exactly one job because build artifacts are build-scoped; external resource versions remain the explicit mechanism for cross-job composition. Every typed task or agent node authors a stable, definition-unique `function_id` plus declared `{type, optional}` input configs and typed outputs; IDs are never inferred from display names. Top-level workflow ports retain source order. Internal-node signature ports are ordered lexicographically by artifact name before hashing, giving map-backed declarations one canonical order.
+Version 3 has exactly one job because build artifacts are build-scoped. Its transformation plan has no ambient live-read surface: top-level resources and variable sources, `get`, and `load_var` are rejected. External resource versions enter through the resource-capture adapter as exact snapshots; task image resource types remain available only to resolve and freeze the task image dependency. Every typed task or agent node authors a stable, definition-unique `function_id` plus declared `{type, optional}` input configs and typed outputs; exact declarations must cover every runtime input and output. IDs are never inferred from display names. Top-level workflow ports retain source order. Internal-node signature ports are ordered lexicographically by artifact name before hashing, giving map-backed declarations one canonical order.
 
-The compiler prepends authorized `load_snapshot:` steps for bound function inputs, expands named capabilities into literal digest-pinned sidecar configurations, marks workflow outputs for durable retention/binding, validates type flow through `do`, `in_parallel`, `try`, retry, timeout, and hook wrappers, and emits `atc.Config{Template: true}`. It rejects duplicate producers in parallel branches. It currently rejects `across` entirely at the immutable workflow boundary: Concourse expands its uninterpolated template into new runtime plans and plan IDs after the workflow evidence has been frozen, so admitting even an input-only `across` would make “exact execution provenance” untrue. Ordinary pipelines retain `across`; workflow functions may enable it only after every expanded subplan is durably captured and verified. A node-extraction compiler can render one `function_id` as a one-node harness with the same declared signature for step-level experiments.
+The compiler prepends authorized `load_snapshot:` steps for bound function inputs, expands named capabilities into literal digest-pinned sidecar configurations, and compiles each capability's single declared TCP port into a localhost MCP endpoint. The runner supplies only that complete endpoint set to Claude with strict MCP configuration; authored `*_MCP_URL` overrides and duplicate selected ports are rejected. It stages workflow outputs for durable retention and later atomic promotion, validates type flow through `do`, `in_parallel`, `try`, retry, timeout, and hook wrappers, and emits `atc.Config{Template: true}`. It rejects duplicate producers and cross-branch typed/legacy races in parallel branches. Public producers inside retry are rejected until candidates can be tied to the winning attempt. It currently rejects `across` entirely at the immutable workflow boundary: Concourse expands its uninterpolated template into new runtime plans and plan IDs after the workflow evidence has been frozen, so admitting even an input-only `across` would make “exact execution provenance” untrue. Ordinary pipelines retain `across`; workflow functions may enable it only after every expanded subplan is durably captured and verified. A node-extraction compiler can render one `function_id` as a one-node harness with the same declared signature for step-level experiments.
+
+Admission forces every schema-v3 task and agent transformation into hermetic
+execution and refuses privileged tasks. On Jetbridge workers the pod receives
+the server-owned `concourse.ci/hermetic=true` label, no service-account token,
+and a default-on deny-egress NetworkPolicy. Operators explicitly configure the
+minimal model endpoint or egress-proxy rules through
+`networkPolicy.hermeticEgressTo`; the chart adds no implicit DNS, metadata, or
+HTTPS escape. Capability sidecars receive neither the run principal nor the
+model credential. Capture/resource and publisher nodes remain the only
+live-system boundaries.
 
 ### Workflow run admission
 
@@ -161,7 +173,44 @@ type BindRequest struct {
 }
 ```
 
-It resolves and pins the immutable definition or named internal function, validates exact port coverage/type/team access, compiles the rendered template, inserts the durable workflow run, input bindings, and workflow-class retention claims atomically, creates a target-specific immutable template, creates the ordinary pipeline run, and links the IDs. Full workflow templates are named `agent-workflow-<safe-name>-v<version>-<target-config-hash-prefix>`; extracted nodes are `agent-function-<safe-name>-v<version>-<function-id>-<target-config-hash-prefix>`. Snapshot template parameters are decimal strings. The durable row retains the parameterized template, exact post-interpolation instance config, and—after Concourse planning—the actual build plan plus resolved dependency identities. Repeating the same team/idempotency key returns the existing workflow run.
+It resolves and pins the immutable definition or named internal function, validates exact port coverage/type/team access, compiles the rendered template, inserts the durable workflow run, input bindings, and exact active-run retention claims atomically, creates a target-specific immutable template, creates the ordinary pipeline run, and links the IDs. Full workflow templates are named `agent-workflow-<safe-name>-v<version>-<target-config-hash-prefix>`; extracted nodes are `agent-function-<safe-name>-v<version>-<function-id>-<target-config-hash-prefix>`. Snapshot template parameters are decimal strings. The durable row retains the parameterized template, exact post-interpolation instance config, and—after Concourse planning—the actual build plan plus resolved dependency identities. Repeating the same team/idempotency key returns the existing workflow run.
+
+### Durable experiment safety
+
+Experiment definitions admit no more than 16 variants, 256 fixtures, 1,000
+repetitions, 2,000 materialized cells, and 32 distinct measurements. Checked,
+overflow-safe cross-product arithmetic runs before PostgreSQL
+`generate_series`; cell-list and scorecard queries carry the same hard bound,
+and the team experiment index uses stable `(created_at, id)` keyset pages of at
+most 100 records. The scorecard validates per-cell and global metric
+cardinality before aggregation, uses a fixed bounded deterministic bootstrap,
+and freezes terminal cell/telemetry evidence so late metrics cannot rewrite a
+benchmark. Budget-skipped cells remain distinct from platform errors and
+suppress winner recommendations.
+
+The validation endpoint calls the same non-mutating preflight helper used by
+start: immutable target authority, trusted rendering and target-config hashes,
+static candidate/evaluator budget slices, and retained fixture availability.
+The API knows whether the reconciler set is enabled and rejects validation and
+start with service unavailable when it is not. Preflight also rejects
+`publish_snapshot` in either target so experiments remain effect-free.
+
+Runner and evaluator requests carry an experiment/cell/phase gate into the
+ordinary workflow-run allocator. Its short transaction locks and verifies the
+running parent and cell before returning an idempotent child or inserting the
+durable child row. `Cancel` takes the conflicting parent lock. Rendering,
+secret preparation, and build creation happen outside that transaction, and
+exact cell association is a separate short write allowed during cancellation.
+Thus cancel-before-allocation fails closed, while allocation-before-cancel is
+already discoverable by deterministic experiment origin. Cancellation can
+finalize as soon as all discovered runs are terminal, without a 60-second
+orphan-race delay or a multi-connection admission dependency. Post-allocation
+platform faults keep the cell retryable on its deterministic idempotency key;
+budget denial terminalizes as `skipped_budget`, while invalid admission is a
+contract failure. The runner makes reservation decisions serially in the
+repetition-first rotated cell order before executing admitted children
+concurrently. One cell reservation covers both child runs under the global
+cap; exact child slices are still validated but are not double-reserved.
 
 ### Built-in snapshot contracts
 
@@ -193,7 +242,7 @@ Each workstream ends in a usable vertical checkpoint. The compatibility dispatch
 
 - [ ] Upload or capture two snapshots, invoke a version-3 review workflow, observe ordinary Concourse DAG execution, receive one sealed `review/v1`, and render it through the existing review UI projection.
 - [ ] Run a repository-change workflow, delete its producer pod, build, pipeline instance, and template, restart ATC, then materialize the sealed change in another workflow and render its bounded diff.
-- [ ] Prove a malformed one-of-two required output leaves zero typed outputs visible, zero workflow output bindings, and no partial lineage row while telemetry remains available.
+- [ ] Prove a malformed one-of-two required output from one producer leaves zero typed outputs visible and no partial lineage row for that producer; separately prove a later workflow failure leaves earlier snapshots as durable intermediates but promotes zero public workflow outputs.
 - [ ] Promote a new compatible workflow version, retain and compare all prior runs beneath the stable workflow identity, and demonstrate that old runs still expose their exact rendered config and snapshots.
 - [ ] Dispatch a ticket through a version-3 workflow and prove the run consumes the captured ticket revision even after the mutable ticket changes.
 - [ ] Execute two prompt/capability variants across the same pinned fixture set and repetitions, run the same pinned evaluator, and display quality distribution, variance, cost, latency, platform failures, and human-intervention count.
@@ -205,5 +254,5 @@ Each workstream ends in a usable vertical checkpoint. The compatibility dispatch
 - The managed sandbox blocks loopback listeners used by `httptest`; networked test suites must run with approved unsandboxed test execution.
 - Node-local hostPath with replication protects against one node loss but is not equivalent to object-store durability across total cluster loss. The storage interface and manifest deliberately permit a future S3/GCS driver without changing snapshot identity.
 - Adding a core `load_snapshot:` step extends the `StepVisitor` exhaustiveness surface and generated fakes. Compile failures are expected until every visitor and planner is updated in the same task.
-- Existing retry steps share an artifact repository. Atomic batch publication and attempt-scoped production keys are mandatory to prevent failed-attempt contamination.
+- Retry execution uses attempt-scoped artifact repositories, but public candidates are not yet attempt-scoped. Schema version 3 therefore rejects public-output producers beneath `attempts:` while retaining retries for internal typed values.
 - Historical benchmark plans reserve the same migration range and claim implementations that do not exist. This program is authoritative; the documentation task marks those plans superseded.

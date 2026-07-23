@@ -49,6 +49,19 @@ type FakeCoreStepFactory struct {
 	artifactOutputStepReturnsOnCall map[int]struct {
 		result1 exec.Step
 	}
+	AwaitSnapshotStepStub        func(atc.Plan, exec.StepMetadata, engine.DelegateFactory) exec.Step
+	awaitSnapshotStepMutex       sync.RWMutex
+	awaitSnapshotStepArgsForCall []struct {
+		arg1 atc.Plan
+		arg2 exec.StepMetadata
+		arg3 engine.DelegateFactory
+	}
+	awaitSnapshotStepReturns struct {
+		result1 exec.Step
+	}
+	awaitSnapshotStepReturnsOnCall map[int]struct {
+		result1 exec.Step
+	}
 	CheckStepStub        func(atc.Plan, exec.StepMetadata, db.ContainerMetadata, engine.DelegateFactory) exec.Step
 	checkStepMutex       sync.RWMutex
 	checkStepArgsForCall []struct {
@@ -115,6 +128,19 @@ type FakeCoreStepFactory struct {
 		result1 exec.Step
 	}
 	loadVarStepReturnsOnCall map[int]struct {
+		result1 exec.Step
+	}
+	PublishSnapshotStepStub        func(atc.Plan, exec.StepMetadata, engine.DelegateFactory) exec.Step
+	publishSnapshotStepMutex       sync.RWMutex
+	publishSnapshotStepArgsForCall []struct {
+		arg1 atc.Plan
+		arg2 exec.StepMetadata
+		arg3 engine.DelegateFactory
+	}
+	publishSnapshotStepReturns struct {
+		result1 exec.Step
+	}
+	publishSnapshotStepReturnsOnCall map[int]struct {
 		result1 exec.Step
 	}
 	PutStepStub        func(atc.Plan, exec.StepMetadata, db.ContainerMetadata, engine.DelegateFactory) exec.Step
@@ -360,6 +386,69 @@ func (fake *FakeCoreStepFactory) ArtifactOutputStepReturnsOnCall(i int, result1 
 		})
 	}
 	fake.artifactOutputStepReturnsOnCall[i] = struct {
+		result1 exec.Step
+	}{result1}
+}
+
+func (fake *FakeCoreStepFactory) AwaitSnapshotStep(arg1 atc.Plan, arg2 exec.StepMetadata, arg3 engine.DelegateFactory) exec.Step {
+	fake.awaitSnapshotStepMutex.Lock()
+	ret, specificReturn := fake.awaitSnapshotStepReturnsOnCall[len(fake.awaitSnapshotStepArgsForCall)]
+	fake.awaitSnapshotStepArgsForCall = append(fake.awaitSnapshotStepArgsForCall, struct {
+		arg1 atc.Plan
+		arg2 exec.StepMetadata
+		arg3 engine.DelegateFactory
+	}{arg1, arg2, arg3})
+	stub := fake.AwaitSnapshotStepStub
+	fakeReturns := fake.awaitSnapshotStepReturns
+	fake.recordInvocation("AwaitSnapshotStep", []interface{}{arg1, arg2, arg3})
+	fake.awaitSnapshotStepMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2, arg3)
+	}
+	if specificReturn {
+		return ret.result1
+	}
+	return fakeReturns.result1
+}
+
+func (fake *FakeCoreStepFactory) AwaitSnapshotStepCallCount() int {
+	fake.awaitSnapshotStepMutex.RLock()
+	defer fake.awaitSnapshotStepMutex.RUnlock()
+	return len(fake.awaitSnapshotStepArgsForCall)
+}
+
+func (fake *FakeCoreStepFactory) AwaitSnapshotStepCalls(stub func(atc.Plan, exec.StepMetadata, engine.DelegateFactory) exec.Step) {
+	fake.awaitSnapshotStepMutex.Lock()
+	defer fake.awaitSnapshotStepMutex.Unlock()
+	fake.AwaitSnapshotStepStub = stub
+}
+
+func (fake *FakeCoreStepFactory) AwaitSnapshotStepArgsForCall(i int) (atc.Plan, exec.StepMetadata, engine.DelegateFactory) {
+	fake.awaitSnapshotStepMutex.RLock()
+	defer fake.awaitSnapshotStepMutex.RUnlock()
+	argsForCall := fake.awaitSnapshotStepArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3
+}
+
+func (fake *FakeCoreStepFactory) AwaitSnapshotStepReturns(result1 exec.Step) {
+	fake.awaitSnapshotStepMutex.Lock()
+	defer fake.awaitSnapshotStepMutex.Unlock()
+	fake.AwaitSnapshotStepStub = nil
+	fake.awaitSnapshotStepReturns = struct {
+		result1 exec.Step
+	}{result1}
+}
+
+func (fake *FakeCoreStepFactory) AwaitSnapshotStepReturnsOnCall(i int, result1 exec.Step) {
+	fake.awaitSnapshotStepMutex.Lock()
+	defer fake.awaitSnapshotStepMutex.Unlock()
+	fake.AwaitSnapshotStepStub = nil
+	if fake.awaitSnapshotStepReturnsOnCall == nil {
+		fake.awaitSnapshotStepReturnsOnCall = make(map[int]struct {
+			result1 exec.Step
+		})
+	}
+	fake.awaitSnapshotStepReturnsOnCall[i] = struct {
 		result1 exec.Step
 	}{result1}
 }
@@ -678,6 +767,69 @@ func (fake *FakeCoreStepFactory) LoadVarStepReturnsOnCall(i int, result1 exec.St
 		})
 	}
 	fake.loadVarStepReturnsOnCall[i] = struct {
+		result1 exec.Step
+	}{result1}
+}
+
+func (fake *FakeCoreStepFactory) PublishSnapshotStep(arg1 atc.Plan, arg2 exec.StepMetadata, arg3 engine.DelegateFactory) exec.Step {
+	fake.publishSnapshotStepMutex.Lock()
+	ret, specificReturn := fake.publishSnapshotStepReturnsOnCall[len(fake.publishSnapshotStepArgsForCall)]
+	fake.publishSnapshotStepArgsForCall = append(fake.publishSnapshotStepArgsForCall, struct {
+		arg1 atc.Plan
+		arg2 exec.StepMetadata
+		arg3 engine.DelegateFactory
+	}{arg1, arg2, arg3})
+	stub := fake.PublishSnapshotStepStub
+	fakeReturns := fake.publishSnapshotStepReturns
+	fake.recordInvocation("PublishSnapshotStep", []interface{}{arg1, arg2, arg3})
+	fake.publishSnapshotStepMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2, arg3)
+	}
+	if specificReturn {
+		return ret.result1
+	}
+	return fakeReturns.result1
+}
+
+func (fake *FakeCoreStepFactory) PublishSnapshotStepCallCount() int {
+	fake.publishSnapshotStepMutex.RLock()
+	defer fake.publishSnapshotStepMutex.RUnlock()
+	return len(fake.publishSnapshotStepArgsForCall)
+}
+
+func (fake *FakeCoreStepFactory) PublishSnapshotStepCalls(stub func(atc.Plan, exec.StepMetadata, engine.DelegateFactory) exec.Step) {
+	fake.publishSnapshotStepMutex.Lock()
+	defer fake.publishSnapshotStepMutex.Unlock()
+	fake.PublishSnapshotStepStub = stub
+}
+
+func (fake *FakeCoreStepFactory) PublishSnapshotStepArgsForCall(i int) (atc.Plan, exec.StepMetadata, engine.DelegateFactory) {
+	fake.publishSnapshotStepMutex.RLock()
+	defer fake.publishSnapshotStepMutex.RUnlock()
+	argsForCall := fake.publishSnapshotStepArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3
+}
+
+func (fake *FakeCoreStepFactory) PublishSnapshotStepReturns(result1 exec.Step) {
+	fake.publishSnapshotStepMutex.Lock()
+	defer fake.publishSnapshotStepMutex.Unlock()
+	fake.PublishSnapshotStepStub = nil
+	fake.publishSnapshotStepReturns = struct {
+		result1 exec.Step
+	}{result1}
+}
+
+func (fake *FakeCoreStepFactory) PublishSnapshotStepReturnsOnCall(i int, result1 exec.Step) {
+	fake.publishSnapshotStepMutex.Lock()
+	defer fake.publishSnapshotStepMutex.Unlock()
+	fake.PublishSnapshotStepStub = nil
+	if fake.publishSnapshotStepReturnsOnCall == nil {
+		fake.publishSnapshotStepReturnsOnCall = make(map[int]struct {
+			result1 exec.Step
+		})
+	}
+	fake.publishSnapshotStepReturnsOnCall[i] = struct {
 		result1 exec.Step
 	}{result1}
 }

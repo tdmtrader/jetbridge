@@ -28,8 +28,11 @@ func NewHTTPHandler(deps Deps, userName func(*http.Request) string) http.Handler
 		case errors.Is(err, tickets.ErrTicketNotFound):
 			http.Error(w, "ticket not found", http.StatusNotFound)
 			return
-		case errors.Is(err, ErrNotQueued), errors.Is(err, tickets.ErrStaleTransition):
+		case errors.Is(err, ErrNotQueued), errors.Is(err, tickets.ErrStaleTransition), errors.Is(err, tickets.ErrDispatchConflict):
 			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		case errors.Is(err, ErrInputsPending):
+			http.Error(w, "workflow inputs pending", http.StatusConflict)
 			return
 		case errors.Is(err, ErrNoWorkflow), errors.Is(err, ErrWorkflowNotFound), errors.Is(err, ErrRenderRefused):
 			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
@@ -45,9 +48,10 @@ func NewHTTPHandler(deps Deps, userName func(*http.Request) string) http.Handler
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(tickets.DispatchResponse{
-			RunID:        res.RunID,
-			PipelineName: res.PipelineName,
-			Warnings:     res.Warnings,
+			RunID:         res.RunID,
+			PipelineName:  res.PipelineName,
+			WorkflowRunID: res.WorkflowRunID,
+			Warnings:      res.Warnings,
 		})
 	})
 }

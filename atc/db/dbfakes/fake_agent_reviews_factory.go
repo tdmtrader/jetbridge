@@ -2,13 +2,32 @@
 package dbfakes
 
 import (
+	"context"
 	"sync"
 
 	"github.com/concourse/concourse/agent/api/reviews"
+	"github.com/concourse/concourse/agent/projection"
+	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc/db"
 )
 
 type FakeAgentReviewsFactory struct {
+	FindReviewInputStub        func(context.Context, snapshot.SnapshotID) (projection.ReviewInput, bool, error)
+	findReviewInputMutex       sync.RWMutex
+	findReviewInputArgsForCall []struct {
+		arg1 context.Context
+		arg2 snapshot.SnapshotID
+	}
+	findReviewInputReturns struct {
+		result1 projection.ReviewInput
+		result2 bool
+		result3 error
+	}
+	findReviewInputReturnsOnCall map[int]struct {
+		result1 projection.ReviewInput
+		result2 bool
+		result3 error
+	}
 	GetByBuildStub        func(int) ([]reviews.StoredReview, error)
 	getByBuildMutex       sync.RWMutex
 	getByBuildArgsForCall []struct {
@@ -21,6 +40,22 @@ type FakeAgentReviewsFactory struct {
 	getByBuildReturnsOnCall map[int]struct {
 		result1 []reviews.StoredReview
 		result2 error
+	}
+	GetBySnapshotStub        func(string, snapshot.SnapshotID) (reviews.StoredReview, bool, error)
+	getBySnapshotMutex       sync.RWMutex
+	getBySnapshotArgsForCall []struct {
+		arg1 string
+		arg2 snapshot.SnapshotID
+	}
+	getBySnapshotReturns struct {
+		result1 reviews.StoredReview
+		result2 bool
+		result3 error
+	}
+	getBySnapshotReturnsOnCall map[int]struct {
+		result1 reviews.StoredReview
+		result2 bool
+		result3 error
 	}
 	ListByTeamStub        func(string, reviews.ListFilter) ([]reviews.StoredReview, error)
 	listByTeamMutex       sync.RWMutex
@@ -49,6 +84,35 @@ type FakeAgentReviewsFactory struct {
 		result1 []reviews.StoredReview
 		result2 error
 	}
+	ListByWorkflowRunStub        func(string, string, snapshot.WorkflowRunID) ([]reviews.StoredReview, error)
+	listByWorkflowRunMutex       sync.RWMutex
+	listByWorkflowRunArgsForCall []struct {
+		arg1 string
+		arg2 string
+		arg3 snapshot.WorkflowRunID
+	}
+	listByWorkflowRunReturns struct {
+		result1 []reviews.StoredReview
+		result2 error
+	}
+	listByWorkflowRunReturnsOnCall map[int]struct {
+		result1 []reviews.StoredReview
+		result2 error
+	}
+	ListUnprojectedReviewsStub        func(context.Context, int) ([]snapshot.SnapshotRef, error)
+	listUnprojectedReviewsMutex       sync.RWMutex
+	listUnprojectedReviewsArgsForCall []struct {
+		arg1 context.Context
+		arg2 int
+	}
+	listUnprojectedReviewsReturns struct {
+		result1 []snapshot.SnapshotRef
+		result2 error
+	}
+	listUnprojectedReviewsReturnsOnCall map[int]struct {
+		result1 []snapshot.SnapshotRef
+		result2 error
+	}
 	UpsertStub        func(*reviews.StoredReview) error
 	upsertMutex       sync.RWMutex
 	upsertArgsForCall []struct {
@@ -60,8 +124,88 @@ type FakeAgentReviewsFactory struct {
 	upsertReturnsOnCall map[int]struct {
 		result1 error
 	}
+	UpsertReviewProjectionStub        func(context.Context, *reviews.StoredReview) error
+	upsertReviewProjectionMutex       sync.RWMutex
+	upsertReviewProjectionArgsForCall []struct {
+		arg1 context.Context
+		arg2 *reviews.StoredReview
+	}
+	upsertReviewProjectionReturns struct {
+		result1 error
+	}
+	upsertReviewProjectionReturnsOnCall map[int]struct {
+		result1 error
+	}
 	invocations      map[string][][]interface{}
 	invocationsMutex sync.RWMutex
+}
+
+func (fake *FakeAgentReviewsFactory) FindReviewInput(arg1 context.Context, arg2 snapshot.SnapshotID) (projection.ReviewInput, bool, error) {
+	fake.findReviewInputMutex.Lock()
+	ret, specificReturn := fake.findReviewInputReturnsOnCall[len(fake.findReviewInputArgsForCall)]
+	fake.findReviewInputArgsForCall = append(fake.findReviewInputArgsForCall, struct {
+		arg1 context.Context
+		arg2 snapshot.SnapshotID
+	}{arg1, arg2})
+	stub := fake.FindReviewInputStub
+	fakeReturns := fake.findReviewInputReturns
+	fake.recordInvocation("FindReviewInput", []interface{}{arg1, arg2})
+	fake.findReviewInputMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2, ret.result3
+	}
+	return fakeReturns.result1, fakeReturns.result2, fakeReturns.result3
+}
+
+func (fake *FakeAgentReviewsFactory) FindReviewInputCallCount() int {
+	fake.findReviewInputMutex.RLock()
+	defer fake.findReviewInputMutex.RUnlock()
+	return len(fake.findReviewInputArgsForCall)
+}
+
+func (fake *FakeAgentReviewsFactory) FindReviewInputCalls(stub func(context.Context, snapshot.SnapshotID) (projection.ReviewInput, bool, error)) {
+	fake.findReviewInputMutex.Lock()
+	defer fake.findReviewInputMutex.Unlock()
+	fake.FindReviewInputStub = stub
+}
+
+func (fake *FakeAgentReviewsFactory) FindReviewInputArgsForCall(i int) (context.Context, snapshot.SnapshotID) {
+	fake.findReviewInputMutex.RLock()
+	defer fake.findReviewInputMutex.RUnlock()
+	argsForCall := fake.findReviewInputArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2
+}
+
+func (fake *FakeAgentReviewsFactory) FindReviewInputReturns(result1 projection.ReviewInput, result2 bool, result3 error) {
+	fake.findReviewInputMutex.Lock()
+	defer fake.findReviewInputMutex.Unlock()
+	fake.FindReviewInputStub = nil
+	fake.findReviewInputReturns = struct {
+		result1 projection.ReviewInput
+		result2 bool
+		result3 error
+	}{result1, result2, result3}
+}
+
+func (fake *FakeAgentReviewsFactory) FindReviewInputReturnsOnCall(i int, result1 projection.ReviewInput, result2 bool, result3 error) {
+	fake.findReviewInputMutex.Lock()
+	defer fake.findReviewInputMutex.Unlock()
+	fake.FindReviewInputStub = nil
+	if fake.findReviewInputReturnsOnCall == nil {
+		fake.findReviewInputReturnsOnCall = make(map[int]struct {
+			result1 projection.ReviewInput
+			result2 bool
+			result3 error
+		})
+	}
+	fake.findReviewInputReturnsOnCall[i] = struct {
+		result1 projection.ReviewInput
+		result2 bool
+		result3 error
+	}{result1, result2, result3}
 }
 
 func (fake *FakeAgentReviewsFactory) GetByBuild(arg1 int) ([]reviews.StoredReview, error) {
@@ -126,6 +270,74 @@ func (fake *FakeAgentReviewsFactory) GetByBuildReturnsOnCall(i int, result1 []re
 		result1 []reviews.StoredReview
 		result2 error
 	}{result1, result2}
+}
+
+func (fake *FakeAgentReviewsFactory) GetBySnapshot(arg1 string, arg2 snapshot.SnapshotID) (reviews.StoredReview, bool, error) {
+	fake.getBySnapshotMutex.Lock()
+	ret, specificReturn := fake.getBySnapshotReturnsOnCall[len(fake.getBySnapshotArgsForCall)]
+	fake.getBySnapshotArgsForCall = append(fake.getBySnapshotArgsForCall, struct {
+		arg1 string
+		arg2 snapshot.SnapshotID
+	}{arg1, arg2})
+	stub := fake.GetBySnapshotStub
+	fakeReturns := fake.getBySnapshotReturns
+	fake.recordInvocation("GetBySnapshot", []interface{}{arg1, arg2})
+	fake.getBySnapshotMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2, ret.result3
+	}
+	return fakeReturns.result1, fakeReturns.result2, fakeReturns.result3
+}
+
+func (fake *FakeAgentReviewsFactory) GetBySnapshotCallCount() int {
+	fake.getBySnapshotMutex.RLock()
+	defer fake.getBySnapshotMutex.RUnlock()
+	return len(fake.getBySnapshotArgsForCall)
+}
+
+func (fake *FakeAgentReviewsFactory) GetBySnapshotCalls(stub func(string, snapshot.SnapshotID) (reviews.StoredReview, bool, error)) {
+	fake.getBySnapshotMutex.Lock()
+	defer fake.getBySnapshotMutex.Unlock()
+	fake.GetBySnapshotStub = stub
+}
+
+func (fake *FakeAgentReviewsFactory) GetBySnapshotArgsForCall(i int) (string, snapshot.SnapshotID) {
+	fake.getBySnapshotMutex.RLock()
+	defer fake.getBySnapshotMutex.RUnlock()
+	argsForCall := fake.getBySnapshotArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2
+}
+
+func (fake *FakeAgentReviewsFactory) GetBySnapshotReturns(result1 reviews.StoredReview, result2 bool, result3 error) {
+	fake.getBySnapshotMutex.Lock()
+	defer fake.getBySnapshotMutex.Unlock()
+	fake.GetBySnapshotStub = nil
+	fake.getBySnapshotReturns = struct {
+		result1 reviews.StoredReview
+		result2 bool
+		result3 error
+	}{result1, result2, result3}
+}
+
+func (fake *FakeAgentReviewsFactory) GetBySnapshotReturnsOnCall(i int, result1 reviews.StoredReview, result2 bool, result3 error) {
+	fake.getBySnapshotMutex.Lock()
+	defer fake.getBySnapshotMutex.Unlock()
+	fake.GetBySnapshotStub = nil
+	if fake.getBySnapshotReturnsOnCall == nil {
+		fake.getBySnapshotReturnsOnCall = make(map[int]struct {
+			result1 reviews.StoredReview
+			result2 bool
+			result3 error
+		})
+	}
+	fake.getBySnapshotReturnsOnCall[i] = struct {
+		result1 reviews.StoredReview
+		result2 bool
+		result3 error
+	}{result1, result2, result3}
 }
 
 func (fake *FakeAgentReviewsFactory) ListByTeam(arg1 string, arg2 reviews.ListFilter) ([]reviews.StoredReview, error) {
@@ -257,6 +469,137 @@ func (fake *FakeAgentReviewsFactory) ListByTicketReturnsOnCall(i int, result1 []
 	}{result1, result2}
 }
 
+func (fake *FakeAgentReviewsFactory) ListByWorkflowRun(arg1, arg2 string, arg3 snapshot.WorkflowRunID) ([]reviews.StoredReview, error) {
+	fake.listByWorkflowRunMutex.Lock()
+	ret, specificReturn := fake.listByWorkflowRunReturnsOnCall[len(fake.listByWorkflowRunArgsForCall)]
+	fake.listByWorkflowRunArgsForCall = append(fake.listByWorkflowRunArgsForCall, struct {
+		arg1 string
+		arg2 string
+		arg3 snapshot.WorkflowRunID
+	}{arg1, arg2, arg3})
+	stub := fake.ListByWorkflowRunStub
+	fakeReturns := fake.listByWorkflowRunReturns
+	fake.recordInvocation("ListByWorkflowRun", []interface{}{arg1, arg2, arg3})
+	fake.listByWorkflowRunMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2, arg3)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeAgentReviewsFactory) ListByWorkflowRunCallCount() int {
+	fake.listByWorkflowRunMutex.RLock()
+	defer fake.listByWorkflowRunMutex.RUnlock()
+	return len(fake.listByWorkflowRunArgsForCall)
+}
+
+func (fake *FakeAgentReviewsFactory) ListByWorkflowRunCalls(stub func(string, string, snapshot.WorkflowRunID) ([]reviews.StoredReview, error)) {
+	fake.listByWorkflowRunMutex.Lock()
+	defer fake.listByWorkflowRunMutex.Unlock()
+	fake.ListByWorkflowRunStub = stub
+}
+
+func (fake *FakeAgentReviewsFactory) ListByWorkflowRunArgsForCall(i int) (string, string, snapshot.WorkflowRunID) {
+	fake.listByWorkflowRunMutex.RLock()
+	defer fake.listByWorkflowRunMutex.RUnlock()
+	argsForCall := fake.listByWorkflowRunArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3
+}
+
+func (fake *FakeAgentReviewsFactory) ListByWorkflowRunReturns(result1 []reviews.StoredReview, result2 error) {
+	fake.listByWorkflowRunMutex.Lock()
+	defer fake.listByWorkflowRunMutex.Unlock()
+	fake.ListByWorkflowRunStub = nil
+	fake.listByWorkflowRunReturns = struct {
+		result1 []reviews.StoredReview
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeAgentReviewsFactory) ListByWorkflowRunReturnsOnCall(i int, result1 []reviews.StoredReview, result2 error) {
+	fake.listByWorkflowRunMutex.Lock()
+	defer fake.listByWorkflowRunMutex.Unlock()
+	fake.ListByWorkflowRunStub = nil
+	if fake.listByWorkflowRunReturnsOnCall == nil {
+		fake.listByWorkflowRunReturnsOnCall = make(map[int]struct {
+			result1 []reviews.StoredReview
+			result2 error
+		})
+	}
+	fake.listByWorkflowRunReturnsOnCall[i] = struct {
+		result1 []reviews.StoredReview
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeAgentReviewsFactory) ListUnprojectedReviews(arg1 context.Context, arg2 int) ([]snapshot.SnapshotRef, error) {
+	fake.listUnprojectedReviewsMutex.Lock()
+	ret, specificReturn := fake.listUnprojectedReviewsReturnsOnCall[len(fake.listUnprojectedReviewsArgsForCall)]
+	fake.listUnprojectedReviewsArgsForCall = append(fake.listUnprojectedReviewsArgsForCall, struct {
+		arg1 context.Context
+		arg2 int
+	}{arg1, arg2})
+	stub := fake.ListUnprojectedReviewsStub
+	fakeReturns := fake.listUnprojectedReviewsReturns
+	fake.recordInvocation("ListUnprojectedReviews", []interface{}{arg1, arg2})
+	fake.listUnprojectedReviewsMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeAgentReviewsFactory) ListUnprojectedReviewsCallCount() int {
+	fake.listUnprojectedReviewsMutex.RLock()
+	defer fake.listUnprojectedReviewsMutex.RUnlock()
+	return len(fake.listUnprojectedReviewsArgsForCall)
+}
+
+func (fake *FakeAgentReviewsFactory) ListUnprojectedReviewsCalls(stub func(context.Context, int) ([]snapshot.SnapshotRef, error)) {
+	fake.listUnprojectedReviewsMutex.Lock()
+	defer fake.listUnprojectedReviewsMutex.Unlock()
+	fake.ListUnprojectedReviewsStub = stub
+}
+
+func (fake *FakeAgentReviewsFactory) ListUnprojectedReviewsArgsForCall(i int) (context.Context, int) {
+	fake.listUnprojectedReviewsMutex.RLock()
+	defer fake.listUnprojectedReviewsMutex.RUnlock()
+	argsForCall := fake.listUnprojectedReviewsArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2
+}
+
+func (fake *FakeAgentReviewsFactory) ListUnprojectedReviewsReturns(result1 []snapshot.SnapshotRef, result2 error) {
+	fake.listUnprojectedReviewsMutex.Lock()
+	defer fake.listUnprojectedReviewsMutex.Unlock()
+	fake.ListUnprojectedReviewsStub = nil
+	fake.listUnprojectedReviewsReturns = struct {
+		result1 []snapshot.SnapshotRef
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeAgentReviewsFactory) ListUnprojectedReviewsReturnsOnCall(i int, result1 []snapshot.SnapshotRef, result2 error) {
+	fake.listUnprojectedReviewsMutex.Lock()
+	defer fake.listUnprojectedReviewsMutex.Unlock()
+	fake.ListUnprojectedReviewsStub = nil
+	if fake.listUnprojectedReviewsReturnsOnCall == nil {
+		fake.listUnprojectedReviewsReturnsOnCall = make(map[int]struct {
+			result1 []snapshot.SnapshotRef
+			result2 error
+		})
+	}
+	fake.listUnprojectedReviewsReturnsOnCall[i] = struct {
+		result1 []snapshot.SnapshotRef
+		result2 error
+	}{result1, result2}
+}
+
 func (fake *FakeAgentReviewsFactory) Upsert(arg1 *reviews.StoredReview) error {
 	fake.upsertMutex.Lock()
 	ret, specificReturn := fake.upsertReturnsOnCall[len(fake.upsertArgsForCall)]
@@ -314,6 +657,68 @@ func (fake *FakeAgentReviewsFactory) UpsertReturnsOnCall(i int, result1 error) {
 		})
 	}
 	fake.upsertReturnsOnCall[i] = struct {
+		result1 error
+	}{result1}
+}
+
+func (fake *FakeAgentReviewsFactory) UpsertReviewProjection(arg1 context.Context, arg2 *reviews.StoredReview) error {
+	fake.upsertReviewProjectionMutex.Lock()
+	ret, specificReturn := fake.upsertReviewProjectionReturnsOnCall[len(fake.upsertReviewProjectionArgsForCall)]
+	fake.upsertReviewProjectionArgsForCall = append(fake.upsertReviewProjectionArgsForCall, struct {
+		arg1 context.Context
+		arg2 *reviews.StoredReview
+	}{arg1, arg2})
+	stub := fake.UpsertReviewProjectionStub
+	fakeReturns := fake.upsertReviewProjectionReturns
+	fake.recordInvocation("UpsertReviewProjection", []interface{}{arg1, arg2})
+	fake.upsertReviewProjectionMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2)
+	}
+	if specificReturn {
+		return ret.result1
+	}
+	return fakeReturns.result1
+}
+
+func (fake *FakeAgentReviewsFactory) UpsertReviewProjectionCallCount() int {
+	fake.upsertReviewProjectionMutex.RLock()
+	defer fake.upsertReviewProjectionMutex.RUnlock()
+	return len(fake.upsertReviewProjectionArgsForCall)
+}
+
+func (fake *FakeAgentReviewsFactory) UpsertReviewProjectionCalls(stub func(context.Context, *reviews.StoredReview) error) {
+	fake.upsertReviewProjectionMutex.Lock()
+	defer fake.upsertReviewProjectionMutex.Unlock()
+	fake.UpsertReviewProjectionStub = stub
+}
+
+func (fake *FakeAgentReviewsFactory) UpsertReviewProjectionArgsForCall(i int) (context.Context, *reviews.StoredReview) {
+	fake.upsertReviewProjectionMutex.RLock()
+	defer fake.upsertReviewProjectionMutex.RUnlock()
+	argsForCall := fake.upsertReviewProjectionArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2
+}
+
+func (fake *FakeAgentReviewsFactory) UpsertReviewProjectionReturns(result1 error) {
+	fake.upsertReviewProjectionMutex.Lock()
+	defer fake.upsertReviewProjectionMutex.Unlock()
+	fake.UpsertReviewProjectionStub = nil
+	fake.upsertReviewProjectionReturns = struct {
+		result1 error
+	}{result1}
+}
+
+func (fake *FakeAgentReviewsFactory) UpsertReviewProjectionReturnsOnCall(i int, result1 error) {
+	fake.upsertReviewProjectionMutex.Lock()
+	defer fake.upsertReviewProjectionMutex.Unlock()
+	fake.UpsertReviewProjectionStub = nil
+	if fake.upsertReviewProjectionReturnsOnCall == nil {
+		fake.upsertReviewProjectionReturnsOnCall = make(map[int]struct {
+			result1 error
+		})
+	}
+	fake.upsertReviewProjectionReturnsOnCall[i] = struct {
 		result1 error
 	}{result1}
 }

@@ -2,7 +2,9 @@ package db
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
@@ -399,19 +401,33 @@ func validateSealInputs(ctx context.Context, tx Tx, commit snapshot.SealCommitCo
 			return fmt.Errorf("db: snapshot input %q does not match its persisted identity", port)
 		}
 		if commit.Build != nil && commit.Build.WorkflowRunID != nil {
-			var boundID int64
+			var authorizedByWorkflowProvenance bool
 			err := tx.QueryRowContext(ctx, `
-				SELECT snapshot_id
-				FROM agent_workflow_run_snapshots
-				WHERE workflow_run_id = $1 AND direction = 'input' AND port_name = $2
-			`, int64(*commit.Build.WorkflowRunID), port).Scan(&boundID)
-			if errors.Is(err, sql.ErrNoRows) {
-				return fmt.Errorf("db: snapshot input %q does not match the workflow-run binding", port)
-			}
+				SELECT
+					EXISTS (
+						SELECT 1
+						FROM agent_workflow_run_snapshots
+						WHERE workflow_run_id = $1
+						  AND direction = 'input'
+						  AND port_name = $2
+						  AND snapshot_id = $3
+					)
+					OR EXISTS (
+						SELECT 1
+						FROM agent_snapshot_productions
+						WHERE occurrence_kind = 'build'
+						  AND workflow_run_id = $1
+						  AND build_id = $4
+						  AND team_id = $5
+						  AND output_port = $2
+						  AND snapshot_id = $3
+					)
+			`, int64(*commit.Build.WorkflowRunID), port, int64(ref.ID),
+				commit.Build.BuildID, commit.TeamID).Scan(&authorizedByWorkflowProvenance)
 			if err != nil {
 				return err
 			}
-			if boundID != int64(ref.ID) {
+			if !authorizedByWorkflowProvenance {
 				return fmt.Errorf("db: snapshot input %q does not match the workflow-run binding", port)
 			}
 		}
@@ -600,11 +616,11 @@ func insertOrVerifyRetention(
 ) error {
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO agent_snapshot_retention_claims
-			(snapshot_id, team_id, class, expires_at, actor, reason)
-		VALUES ($1, $2, $3, $4, $5, $6)
+			(snapshot_id, team_id, class, workflow_run_id, expires_at, actor, reason)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		ON CONFLICT (snapshot_id, team_id, class, actor) DO NOTHING
-	`, int64(snapshotID), teamID, string(retention.Class), retention.ExpiresAt,
-		retention.Actor, retention.Reason)
+	`, int64(snapshotID), teamID, string(retention.Class), optionalWorkflowRunID(retention.WorkflowRunID),
+		retention.ExpiresAt, retention.Actor, retention.Reason)
 	if err != nil {
 		return err
 	}
@@ -615,9 +631,10 @@ func insertOrVerifyRetention(
 		WHERE snapshot_id = $1 AND team_id = $2 AND class = $3 AND actor = $4
 		  AND expires_at IS NOT DISTINCT FROM $5
 		  AND reason = $6
+		  AND workflow_run_id IS NOT DISTINCT FROM $7
 		FOR UPDATE
 	`, int64(snapshotID), teamID, string(retention.Class), retention.Actor,
-		retention.ExpiresAt, retention.Reason).Scan(&id)
+		retention.ExpiresAt, retention.Reason, optionalWorkflowRunID(retention.WorkflowRunID)).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("db: snapshot retention claim conflicts with immutable policy")
 	}
@@ -681,8 +698,8 @@ func bindWorkflowRunSnapshot(
 ) error {
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO agent_workflow_run_snapshots
-			(workflow_run_id, direction, port_name, snapshot_id)
-		VALUES ($1, $2, $3, $4)
+			(workflow_run_id, direction, port_name, snapshot_id, promoted_at)
+		VALUES ($1, $2, $3, $4, CASE WHEN $2 = 'input' THEN now() ELSE NULL END)
 		ON CONFLICT (workflow_run_id, direction, port_name) DO NOTHING
 	`, int64(runID), direction, port, int64(snapshotID))
 	if err != nil {
@@ -779,6 +796,97 @@ func (factory *agentSnapshotsFactory) GetAuthorized(
 	return value, err == nil, err
 }
 
+// FindResourceCaptureOutput is a deliberately narrow authorization query for
+// the server-owned resource capture adapter. It does not accept a caller-
+// supplied build or snapshot ID: both are derived through the exact succeeded
+// pipeline run, its instance pipeline, immutable-template ownership marker,
+// expected output declaration, and server-authored production metadata.
+func (factory *agentSnapshotsFactory) FindResourceCaptureOutput(
+	ctx context.Context,
+	teamID int,
+	pipelineRunID int64,
+	operationKey string,
+	outputPort string,
+	expectedType snapshot.TypeRef,
+) (snapshot.Snapshot, bool, error) {
+	if teamID <= 0 || pipelineRunID <= 0 {
+		return snapshot.Snapshot{}, false, fmt.Errorf("db: resource capture team and pipeline run IDs must be positive")
+	}
+	decodedKey, err := hex.DecodeString(operationKey)
+	if err != nil || len(decodedKey) != sha256.Size || operationKey != strings.ToLower(operationKey) {
+		return snapshot.Snapshot{}, false, fmt.Errorf("db: resource capture operation key must be a lowercase SHA-256 digest")
+	}
+	port := snapshot.Port{Name: outputPort, Type: expectedType}
+	if err := port.Validate(); err != nil {
+		return snapshot.Snapshot{}, false, err
+	}
+	typeName, typeVersion, err := splitSnapshotType(expectedType)
+	if err != nil {
+		return snapshot.Snapshot{}, false, err
+	}
+	rows, err := factory.conn.QueryContext(ctx, `
+		SELECT s.id, s.type_name, s.type_version, s.digest, s.byte_size,
+		       s.file_count, s.representation, s.intrinsic_metadata,
+		       s.content_state, s.created_at
+		FROM pipeline_runs run
+		JOIN pipelines template ON template.id = run.template_pipeline_id
+		JOIN agent_workflow_run_templates owned ON owned.pipeline_id = template.id
+		JOIN pipelines instance ON instance.id = run.instance_pipeline_id
+		JOIN builds build ON build.pipeline_id = instance.id AND build.team_id = $1
+		JOIN agent_snapshot_productions production
+		  ON production.build_id = build.id
+		 AND production.occurrence_kind = 'build'
+		 AND production.team_id = $1
+		JOIN agent_snapshots s ON s.id = production.snapshot_id
+		JOIN agent_snapshot_grants grant_row ON grant_row.snapshot_id = s.id AND grant_row.team_id = $1
+		WHERE run.id = $2
+		  AND run.status = 'succeeded'
+		  AND template.team_id = $1
+		  AND instance.team_id = $1
+		  AND template.name = 'agent-resource-capture-' || left($3, 24)
+		  AND template.template = true
+		  AND template.instance_vars IS NULL
+		  AND template.archived = false
+		  AND instance.name = template.name
+		  AND instance.instance_vars IS NOT NULL
+		  AND production.output_port = $4
+		  AND production.step_kind = 'task'
+		  AND production.step_name = 'seal-snapshot'
+		  AND production.source_metadata ->> 'adapter' = 'resource-version'
+		  AND production.source_metadata ->> 'operation_key' = $3
+		  AND s.type_name = $5
+		  AND s.type_version = $6
+		  AND s.content_state = 'available'
+		  AND NOT EXISTS (
+		    SELECT 1 FROM agent_workflow_runs workflow_run
+		    WHERE workflow_run.template_pipeline_id = template.id
+		  )
+		ORDER BY s.id
+		LIMIT 2
+	`, teamID, pipelineRunID, operationKey, outputPort, typeName, typeVersion)
+	if err != nil {
+		return snapshot.Snapshot{}, false, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return snapshot.Snapshot{}, false, err
+		}
+		return snapshot.Snapshot{}, false, nil
+	}
+	value, err := scanAgentSnapshot(rows)
+	if err != nil {
+		return snapshot.Snapshot{}, false, err
+	}
+	if rows.Next() {
+		return snapshot.Snapshot{}, false, fmt.Errorf("db: resource capture produced multiple matching outputs")
+	}
+	if err := rows.Err(); err != nil {
+		return snapshot.Snapshot{}, false, err
+	}
+	return value, true, nil
+}
+
 func (factory *agentSnapshotsFactory) GetAuthorizedDetail(
 	ctx context.Context,
 	teamID int,
@@ -799,7 +907,7 @@ func (factory *agentSnapshotsFactory) GetAuthorizedDetail(
 	}
 
 	rows, err := factory.conn.QueryContext(ctx, `
-		SELECT id, snapshot_id, class, expires_at, actor, reason, created_at
+		SELECT id, snapshot_id, class, workflow_run_id, expires_at, actor, reason, created_at
 		FROM agent_snapshot_retention_claims
 		WHERE snapshot_id = $1 AND team_id = $2
 		ORDER BY created_at, id
@@ -825,9 +933,10 @@ func (factory *agentSnapshotsFactory) GetAuthorizedDetail(
 	rows, err = factory.conn.QueryContext(ctx, `
 		SELECT p.id, p.occurrence_kind, p.created_by,
 		       p.build_id, p.plan_id, p.attempt, p.step_kind, p.step_name,
-		       p.output_port, p.workflow_definition_id, p.workflow_run_id,
+		       p.output_port, p.workflow_definition_id, p.workflow_run_id, r.workflow_name,
 		       p.source_metadata, p.created_at
 		FROM agent_snapshot_productions p
+		LEFT JOIN agent_workflow_runs r ON r.id = p.workflow_run_id AND r.team_id = p.team_id
 		WHERE p.snapshot_id = $1 AND p.team_id = $2
 		ORDER BY p.created_at, p.id
 	`, int64(id), teamID)
@@ -893,10 +1002,11 @@ func (factory *agentSnapshotsFactory) GetAuthorizedDetail(
 	rows, err = factory.conn.QueryContext(ctx, `
 		SELECT p.id, p.occurrence_kind, p.created_by,
 		       p.build_id, p.plan_id, p.attempt, p.step_kind, p.step_name,
-		       p.output_port, p.workflow_definition_id, p.workflow_run_id,
+		       p.output_port, p.workflow_definition_id, p.workflow_run_id, r.workflow_name,
 		       p.created_at,
 		       output.id, output.type_name, output.type_version, output.digest
 		FROM agent_snapshot_productions p
+		LEFT JOIN agent_workflow_runs r ON r.id = p.workflow_run_id AND r.team_id = p.team_id
 		JOIN agent_snapshots output ON output.id = p.snapshot_id
 		JOIN agent_snapshot_grants output_grant
 		  ON output_grant.snapshot_id = output.id AND output_grant.team_id = $2
@@ -965,6 +1075,10 @@ func (factory *agentSnapshotsFactory) ListAuthorized(
 	if filter.CreatedAfter != nil {
 		args = append(args, *filter.CreatedAfter)
 		query += ` AND s.created_at > $` + strconv.Itoa(len(args))
+	}
+	if filter.Before != nil {
+		args = append(args, filter.Before.CreatedAt.UTC(), filter.Before.ID)
+		query += ` AND (s.created_at, s.id) < ($` + strconv.Itoa(len(args)-1) + `, $` + strconv.Itoa(len(args)) + `)`
 	}
 	query += ` ORDER BY s.created_at DESC, s.id DESC`
 	limit := filter.Limit
@@ -1217,7 +1331,7 @@ func (factory *agentSnapshotsFactory) Pin(
 		return snapshot.RetentionClaim{}, err
 	}
 	claim, err := scanRetentionClaim(tx.QueryRowContext(ctx, `
-		SELECT id, snapshot_id, class, expires_at, actor, reason, created_at
+		SELECT id, snapshot_id, class, workflow_run_id, expires_at, actor, reason, created_at
 		FROM agent_snapshot_retention_claims
 		WHERE snapshot_id = $1 AND team_id = $2 AND class = 'pin' AND actor = $3
 		FOR UPDATE

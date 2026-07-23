@@ -130,12 +130,15 @@ func (step *LoadVarStep) fetchVars(
 	}
 	logger.Debug("figure-out-format", lager.Data{"format": format})
 
-	art, _, found := state.ArtifactRepository().ArtifactFor(build.ArtifactName(artifactName))
+	entry, found := state.ArtifactRepository().ArtifactEntryFor(build.ArtifactName(artifactName))
 	if !found {
 		return nil, UnknownArtifactSourceError{build.ArtifactName(artifactName), filePath}
 	}
+	if entry.Snapshot != nil {
+		return nil, fmt.Errorf("load_var source %q is a typed snapshot and cannot be consumed through an untyped variable read", artifactName)
+	}
 
-	stream, err := step.streamer.StreamFile(lagerctx.NewContext(ctx, logger), art, filePath)
+	stream, err := step.streamer.StreamFile(lagerctx.NewContext(ctx, logger), entry.Artifact, filePath)
 	if err != nil {
 		if err == runtime.ErrFileNotFound {
 			return nil, FileNotFoundError{

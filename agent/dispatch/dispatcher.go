@@ -66,8 +66,9 @@ type CheckpointRow struct {
 // Polling-only (agent_tickets has no NOTIFY trigger; never notify-only per
 // the fork's dropped-notification lesson) at the component framework's
 // default 10s interval. The Coordinator lock serializes Run across web
-// nodes; DispatchOne's guarded queued→running Transition is the intra-pass
-// claim, so even a lost lock degrades to redundant-but-safe work.
+// nodes; schema-v3 dispatch also reserves durably before admission, while
+// the legacy path retains its guarded queued→running transition. A lost
+// coordinator lock therefore degrades to redundant, idempotent work.
 type Dispatcher struct {
 	deps Deps
 	cfg  LoopConfig
@@ -138,10 +139,16 @@ func (d *Dispatcher) dispatchQueued(ctx context.Context, logger lager.Logger) er
 			// §2.7: over-cap stays QUEUED, never failed. Re-admitted next
 			// pass — headroom returns at local midnight or on a raised cap.
 			logger.Info("dispatch-deferred-over-budget", lager.Data{"ticket": t.ID, "reason": err.Error()})
+		case errors.Is(err, ErrInputsPending):
+			// The reservation is intentional and durable. An upstream
+			// upload/resource-capture/UI selection can fill the missing exact
+			// input; the same reservation is retried on the next polling pass.
+			logger.Info("dispatch-deferred-inputs-pending", lager.Data{"ticket": t.ID})
 		case errors.Is(err, ErrNotQueued), errors.Is(err, tickets.ErrStaleTransition):
 			// Raced: the manual route or another pass claimed it. Benign.
 			logger.Debug("ticket-claimed-elsewhere", lager.Data{"ticket": t.ID})
-		case errors.Is(err, ErrRenderRefused), errors.Is(err, ErrNoWorkflow), errors.Is(err, ErrWorkflowNotFound):
+		case errors.Is(err, ErrRenderRefused), errors.Is(err, ErrNoWorkflow), errors.Is(err, ErrWorkflowNotFound),
+			errors.Is(err, tickets.ErrDispatchConflict):
 			// Malformed for v0: loud, non-fatal, stays queued for a human
 			// to fix the workflow or transition the ticket away (see plan
 			// Risks R2 for the log-cadence tradeoff).

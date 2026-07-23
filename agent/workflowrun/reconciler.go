@@ -16,6 +16,12 @@ import (
 
 const reconciliationBatchLimit = 100
 
+// OutputContractMismatchReason is the bounded terminal reason persisted when
+// a selected build succeeds but its sealed outputs do not satisfy the frozen
+// workflow signature. Consumers may classify this exact server-authored value
+// without treating arbitrary error text as a contract failure.
+const OutputContractMismatchReason = "workflow output contract mismatch"
+
 var errReconciliationRowFailed = errors.New("workflow-run reconciliation row failed")
 
 type ReconciliationStore interface {
@@ -39,6 +45,10 @@ type provenanceVerifier interface {
 	Verify(db.AgentWorkflowRun) (provenanceVerification, error)
 }
 
+type WaitResolutionCompleter interface {
+	ReconcilePending(context.Context, int, string, snapshot.WorkflowRunID) error
+}
+
 type Reconciler struct {
 	store            ReconciliationStore
 	logger           lager.Logger
@@ -47,6 +57,8 @@ type Reconciler struct {
 	now              func() time.Time
 	reporter         reconciliationReporter
 	provenance       provenanceVerifier
+	waitResolutions  WaitResolutionCompleter
+	waits            WaitCanceler
 }
 
 type ReconcilerOption func(*Reconciler) error
@@ -67,6 +79,26 @@ func withReconciliationReporter(reporter reconciliationReporter) ReconcilerOptio
 			return fmt.Errorf("workflow run reconciler: reporter is required")
 		}
 		reconciler.reporter = reporter
+		return nil
+	}
+}
+
+func WithWaitResolutionCompleter(completer WaitResolutionCompleter) ReconcilerOption {
+	return func(reconciler *Reconciler) error {
+		if nilInterface(completer) {
+			return fmt.Errorf("workflow run reconciler: wait resolution completer is required")
+		}
+		reconciler.waitResolutions = completer
+		return nil
+	}
+}
+
+func WithWaitCanceler(waits WaitCanceler) ReconcilerOption {
+	return func(reconciler *Reconciler) error {
+		if nilInterface(waits) {
+			return fmt.Errorf("workflow run reconciler: wait canceler is required")
+		}
+		reconciler.waits = waits
 		return nil
 	}
 }
@@ -174,17 +206,54 @@ func (reconciler *Reconciler) reconcileRow(
 	case db.AgentWorkflowRunStatusAdmitting:
 		return reconciler.reconcileAdmitting(ctx, view.Run, now)
 	case db.AgentWorkflowRunStatusRunning:
+		if reconciler.waitResolutions != nil {
+			if err := reconciler.waitResolutions.ReconcilePending(
+				ctx,
+				view.Run.TeamID,
+				view.Run.TeamName,
+				view.Run.ID,
+			); err != nil {
+				return "", newRowFailure("complete_wait_resolutions", err)
+			}
+		}
 		return reconciler.reconcileRunning(ctx, view)
 	case db.AgentWorkflowRunStatusCanceling:
+		if err := reconciler.cancelOpenWaits(ctx, view.Run, now); err != nil {
+			return "", err
+		}
 		return reconciler.reconcileCanceling(ctx, view, now)
 	case db.AgentWorkflowRunStatusSucceeded,
 		db.AgentWorkflowRunStatusFailed,
-		db.AgentWorkflowRunStatusErrored,
-		db.AgentWorkflowRunStatusAborted:
+		db.AgentWorkflowRunStatusErrored:
+		return metric.WorkflowRunReconcilerRowAdvanced, nil
+	case db.AgentWorkflowRunStatusAborted:
+		if err := reconciler.cancelOpenWaits(ctx, view.Run, now); err != nil {
+			return "", err
+		}
 		return metric.WorkflowRunReconcilerRowAdvanced, nil
 	default:
 		return "", newRowFailure("invalid_status", fmt.Errorf("invalid active workflow-run status"))
 	}
+}
+
+func (reconciler *Reconciler) cancelOpenWaits(
+	ctx context.Context,
+	run db.AgentWorkflowRun,
+	now time.Time,
+) error {
+	if reconciler.waits == nil {
+		return nil
+	}
+	if _, err := reconciler.waits.CancelRun(
+		ctx,
+		run.TeamID,
+		run.ID,
+		"system:workflow-run-cancel",
+		now,
+	); err != nil {
+		return newRowFailure("cancel_open_waits", err)
+	}
+	return nil
 }
 
 func (reconciler *Reconciler) reconcileAdmitting(
@@ -322,7 +391,7 @@ func (reconciler *Reconciler) finalizeCopiedOutcome(
 			return reconciler.finalize(ctx, run, db.AgentWorkflowRunStatusErrored, "workflow provenance is corrupt", nil)
 		}
 		if verification.ContractMismatch {
-			return reconciler.finalize(ctx, run, db.AgentWorkflowRunStatusFailed, "workflow output contract mismatch", nil)
+			return reconciler.finalize(ctx, run, db.AgentWorkflowRunStatusFailed, OutputContractMismatchReason, nil)
 		}
 		return reconciler.finalize(ctx, run, db.AgentWorkflowRunStatusSucceeded, "", verification.ExpectedOutputs)
 	default:

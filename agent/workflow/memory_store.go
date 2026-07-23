@@ -1,6 +1,8 @@
 package workflow
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -10,13 +12,21 @@ import (
 // MemoryStore is an in-memory Store for testing (mirrors
 // agent/api/reviews.MemoryStore).
 type MemoryStore struct {
-	mu     sync.Mutex
-	nextID int
-	defs   []*Definition
+	mu                 sync.Mutex
+	nextID             int
+	defs               []*Definition
+	promotionValidator PromotionValidator
 }
 
-func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{}
+func NewMemoryStore(promotionValidators ...PromotionValidator) *MemoryStore {
+	if len(promotionValidators) > 1 {
+		panic("workflow: NewMemoryStore accepts at most one promotion validator")
+	}
+	store := &MemoryStore{}
+	if len(promotionValidators) == 1 {
+		store.promotionValidator = promotionValidators[0]
+	}
+	return store
 }
 
 func (m *MemoryStore) Import(name string, rawYAML []byte, createdBy string) (*Definition, error) {
@@ -174,21 +184,45 @@ func (m *MemoryStore) List() ([]Definition, error) {
 	return out, nil
 }
 
-func (m *MemoryStore) Versions(name string) ([]Definition, error) {
+func (m *MemoryStore) Versions(ctx context.Context, name string, request VersionPageRequest) (VersionPage, error) {
+	if ctx == nil {
+		return VersionPage{}, errors.New("workflow: version page context is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return VersionPage{}, err
+	}
+	if request.Limit <= 0 || request.Limit > MaxVersionPageSize ||
+		request.Cursor < 0 || request.Cursor > MaxWorkflowVersion {
+		return VersionPage{}, ErrInvalidVersionPage
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	out := []Definition{}
+	page := VersionPage{Definitions: []Definition{}}
+	candidates := []*Definition{}
 	for _, d := range m.defs {
 		if d.Name == name {
-			cp, err := cloneMemoryDefinition(d, false)
-			if err != nil {
-				return nil, err
+			page.Found = true
+			if request.Cursor == 0 || d.Version < request.Cursor {
+				candidates = append(candidates, d)
 			}
-			out = append(out, *cp)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Version < out[j].Version })
-	return out, nil
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].Version > candidates[j].Version })
+	if len(candidates) > request.Limit {
+		candidates = candidates[:request.Limit]
+		page.NextCursor = candidates[len(candidates)-1].Version
+	}
+	for index := len(candidates) - 1; index >= 0; index-- {
+		if err := ctx.Err(); err != nil {
+			return VersionPage{}, err
+		}
+		cp, err := cloneMemoryDefinition(candidates[index], false)
+		if err != nil {
+			return VersionPage{}, err
+		}
+		page.Definitions = append(page.Definitions, *cp)
+	}
+	return page, nil
 }
 
 func (m *MemoryStore) Promote(name string, version int, promotedBy string) (PromotionResult, error) {
@@ -206,6 +240,18 @@ func (m *MemoryStore) Promote(name string, version int, promotedBy string) (Prom
 	}
 	if target == nil {
 		return PromotionResult{}, ErrVersionNotFound
+	}
+	if target.SchemaVersion == 3 {
+		if m.promotionValidator == nil {
+			return PromotionResult{}, InvalidPromotionError{Err: ErrPromotionValidatorRequired}
+		}
+		candidate, err := cloneMemoryDefinition(target, true)
+		if err != nil {
+			return PromotionResult{}, InvalidPromotionError{Err: err}
+		}
+		if err := m.promotionValidator.ValidatePromotion(*candidate); err != nil {
+			return PromotionResult{}, InvalidPromotionError{Err: err}
+		}
 	}
 	for _, d := range m.defs {
 		if d.Name == name {

@@ -20,7 +20,10 @@ import Concourse.AgentDispatcher
 import Concourse.AgentReview
 import Concourse.AgentTicket
 import Concourse.BuildStatus exposing (BuildStatus)
+import Concourse.Experiment
 import Concourse.Pagination exposing (Page)
+import Concourse.Snapshot
+import Concourse.WorkflowRun
 import Json.Decode
 import Json.Encode
 import Maybe exposing (Maybe)
@@ -223,6 +226,7 @@ type Effect
     | FetchAgentRunMetrics
     | FetchAgentWorkflows
     | FetchAgentCostRollup
+    | FetchAgentWorkflowCosts
     | FetchAgentDispatcher
     | SetAgentDispatcher Concourse.AgentDispatcher.Mode
     | FetchAgentCredentials
@@ -236,7 +240,8 @@ type Effect
         }
     | RevokeAgentPrincipal Int
     | SubmitAgentReviewVerdict
-        { repo : String
+        { reviewSnapshotId : Maybe String
+        , repo : String
         , commitSha : String
         , findingId : String
         , verdict : String
@@ -251,6 +256,32 @@ type Effect
     | UpdateAgentTicketTask { id : Int, ordering : Int, status : String, note : String }
     | FetchAgentTicketMetrics Int
     | FetchAgentTicketCosts
+    | FetchAgentWorkflowVersions String
+    | PromoteAgentWorkflowVersion String Int
+    | FetchAgentWorkflowRuns String
+    | FetchAgentWorkflowRunOperationalStatusCounts String
+    | CreateAgentWorkflowRun
+        { workflowName : String
+        , version : Maybe Int
+        , inputs : List ( String, String )
+        }
+    | FetchAgentWorkflowRun String String
+    | CancelAgentWorkflowRun String String
+    | RetryAgentWorkflowRun String String
+    | FetchAgentWorkflowWaits String String
+    | ResolveAgentWorkflowWait String String String String
+    | FetchAgentWorkflowOutcomes String String
+    | FetchAgentWorkflowReviews String String
+    | FetchAgentSnapshot String String
+    | FetchAgentSnapshotRepositoryChange String String
+    | FetchAgentSnapshotReview String
+    | PinAgentSnapshot String String
+    | UnpinAgentSnapshot String String
+    | FetchAgentExperiments
+    | FetchAgentExperiment String
+    | FetchAgentExperimentCells String
+    | FetchAgentExperimentScorecard String
+    | CancelAgentExperiment String Int
 
 
 type alias VersionId =
@@ -832,6 +863,16 @@ runEffect effect key csrfToken =
                 |> Api.request
                 |> Task.attempt AgentCostRollupFetched
 
+        FetchAgentWorkflowCosts ->
+            let
+                base =
+                    Api.get Endpoints.AgentCostRollup
+            in
+            { base | query = [ Url.Builder.string "group_by" "workflow" ] }
+                |> Api.expectJson Concourse.Agent.decodeCostRollup
+                |> Api.request
+                |> Task.attempt AgentCostRollupFetched
+
         FetchAgentDispatcher ->
             Api.get Endpoints.AgentDispatcher
                 |> Api.expectJson Concourse.AgentDispatcher.decodeStatus
@@ -890,18 +931,25 @@ runEffect effect key csrfToken =
             Api.post Endpoints.AgentFeedback csrfToken
                 |> Api.withJsonBody
                     (Json.Encode.object
-                        [ ( "review_ref"
-                          , Json.Encode.object
-                                [ ( "repo", Json.Encode.string params.repo )
-                                , ( "commit", Json.Encode.string params.commitSha )
-                                ]
-                          )
-                        , ( "finding_id", Json.Encode.string params.findingId )
-                        , ( "verdict", Json.Encode.string params.verdict )
-                        , ( "notes", Json.Encode.string params.notes )
-                        , ( "reviewer", Json.Encode.string params.reviewer )
-                        , ( "source", Json.Encode.string "interactive" )
-                        ]
+                        (( "review_ref"
+                         , Json.Encode.object
+                            [ ( "repo", Json.Encode.string params.repo )
+                            , ( "commit", Json.Encode.string params.commitSha )
+                            ]
+                         )
+                            :: ( "finding_id", Json.Encode.string params.findingId )
+                            :: ( "verdict", Json.Encode.string params.verdict )
+                            :: ( "notes", Json.Encode.string params.notes )
+                            :: ( "reviewer", Json.Encode.string params.reviewer )
+                            :: ( "source", Json.Encode.string "interactive" )
+                            :: (case params.reviewSnapshotId of
+                                    Just snapshotId ->
+                                        [ ( "review_snapshot_id", Json.Encode.string snapshotId ) ]
+
+                                    Nothing ->
+                                        []
+                               )
+                        )
                     )
                 |> Api.request
                 |> Task.attempt (AgentReviewVerdictSubmitted params.findingId)
@@ -962,6 +1010,185 @@ runEffect effect key csrfToken =
                 |> Api.expectJson Concourse.Agent.decodeCostRollup
                 |> Api.request
                 |> Task.attempt AgentCostRollupFetched
+
+        FetchAgentWorkflowVersions workflowName ->
+            Api.get (Endpoints.AgentWorkflowVersions workflowName)
+                |> Api.expectJson (Json.Decode.list Concourse.Agent.decodeWorkflowVersion)
+                |> Api.request
+                |> Task.attempt (AgentWorkflowVersionsFetched workflowName)
+
+        PromoteAgentWorkflowVersion workflowName version ->
+            Api.put (Endpoints.AgentWorkflowVersionLive workflowName version) csrfToken
+                |> Api.request
+                |> Task.attempt (AgentWorkflowVersionPromoted workflowName)
+
+        FetchAgentWorkflowRuns workflowName ->
+            Api.get (Endpoints.AgentWorkflowRuns workflowName)
+                |> Api.expectJson (Json.Decode.list Concourse.WorkflowRun.decodeSummary)
+                |> Api.request
+                |> Task.attempt (AgentWorkflowRunsFetched workflowName)
+
+        FetchAgentWorkflowRunOperationalStatusCounts workflowName ->
+            Api.get (Endpoints.AgentWorkflowRunOperationalStatusCounts workflowName)
+                |> Api.expectJson Concourse.WorkflowRun.decodeOperationalStatusCounts
+                |> Api.request
+                |> Task.attempt (AgentWorkflowRunOperationalStatusCountsFetched workflowName)
+
+        CreateAgentWorkflowRun params ->
+            Time.now
+                |> Task.andThen
+                    (\now ->
+                        Api.post (Endpoints.AgentWorkflowRuns params.workflowName) csrfToken
+                            |> Api.withJsonBody
+                                (Json.Encode.object
+                                    (( "inputs"
+                                     , params.inputs
+                                        |> List.map (Tuple.mapSecond Json.Encode.string)
+                                        |> Json.Encode.object
+                                     )
+                                        :: ( "idempotency_key"
+                                           , Json.Encode.string
+                                                ("web-"
+                                                    ++ String.fromInt (Time.posixToMillis now)
+                                                )
+                                           )
+                                        :: (case params.version of
+                                                Just version ->
+                                                    [ ( "version", Json.Encode.int version ) ]
+
+                                                Nothing ->
+                                                    []
+                                           )
+                                    )
+                                )
+                            |> Api.expectJson Concourse.WorkflowRun.decodeDetail
+                            |> Api.request
+                    )
+                |> Task.attempt (AgentWorkflowRunCreated params.workflowName)
+
+        FetchAgentWorkflowRun workflowName workflowRunId ->
+            Api.get (Endpoints.AgentWorkflowRun workflowName workflowRunId)
+                |> Api.expectJson Concourse.WorkflowRun.decodeDetail
+                |> Api.request
+                |> Task.attempt (AgentWorkflowRunFetched workflowRunId)
+
+        CancelAgentWorkflowRun workflowName workflowRunId ->
+            Api.post (Endpoints.AgentWorkflowRunCancel workflowName workflowRunId) csrfToken
+                |> Api.expectJson Concourse.WorkflowRun.decodeDetail
+                |> Api.request
+                |> Task.attempt (AgentWorkflowRunCanceled workflowRunId)
+
+        RetryAgentWorkflowRun workflowName workflowRunId ->
+            Time.now
+                |> Task.andThen
+                    (\now ->
+                        Api.post (Endpoints.AgentWorkflowRunRetry workflowName workflowRunId) csrfToken
+                            |> Api.withJsonBody
+                                (Json.Encode.object
+                                    [ ( "idempotency_key"
+                                      , Json.Encode.string
+                                            ("web-retry-"
+                                                ++ workflowRunId
+                                                ++ "-"
+                                                ++ String.fromInt (Time.posixToMillis now)
+                                            )
+                                      )
+                                    ]
+                                )
+                            |> Api.expectJson Concourse.WorkflowRun.decodeDetail
+                            |> Api.request
+                    )
+                |> Task.attempt (AgentWorkflowRunRetried workflowRunId)
+
+        FetchAgentWorkflowWaits workflowName workflowRunId ->
+            Api.get (Endpoints.AgentWorkflowRunWaits workflowName workflowRunId)
+                |> Api.expectJson Concourse.WorkflowRun.decodeWaitList
+                |> Api.request
+                |> Task.attempt (AgentWorkflowWaitsFetched workflowRunId)
+
+        ResolveAgentWorkflowWait workflowName workflowRunId waitId answer ->
+            Api.put (Endpoints.AgentWorkflowWaitResolve workflowName workflowRunId waitId) csrfToken
+                |> Api.withJsonBody
+                    (Json.Encode.object [ ( "answer", Json.Encode.string answer ) ])
+                |> Api.expectJson Concourse.WorkflowRun.decodeWait
+                |> Api.request
+                |> Task.attempt (AgentWorkflowWaitResolved waitId)
+
+        FetchAgentWorkflowOutcomes workflowName workflowRunId ->
+            Api.get (Endpoints.AgentWorkflowRunOutcomes workflowName workflowRunId)
+                |> Api.expectJson (Json.Decode.list Concourse.WorkflowRun.decodeOutcome)
+                |> Api.request
+                |> Task.attempt (AgentWorkflowOutcomesFetched workflowRunId)
+
+        FetchAgentWorkflowReviews workflowName workflowRunId ->
+            Api.get (Endpoints.AgentWorkflowRunReviews workflowName workflowRunId)
+                |> Api.expectJson (Json.Decode.list Concourse.AgentReview.decodeBuildReview)
+                |> Api.request
+                |> Task.attempt (AgentWorkflowReviewsFetched workflowRunId)
+
+        FetchAgentSnapshot teamName snapshotId ->
+            Api.get (Endpoints.AgentSnapshot teamName snapshotId)
+                |> Api.expectJson Concourse.Snapshot.decodeDetail
+                |> Api.request
+                |> Task.attempt (AgentSnapshotFetched snapshotId)
+
+        FetchAgentSnapshotRepositoryChange teamName snapshotId ->
+            Api.get (Endpoints.AgentSnapshotRepositoryChange teamName snapshotId)
+                |> Api.expectJson Concourse.WorkflowRun.decodeRepositoryChange
+                |> Api.request
+                |> Task.attempt (AgentSnapshotRepositoryChangeFetched snapshotId)
+
+        FetchAgentSnapshotReview snapshotId ->
+            Api.get (Endpoints.AgentSnapshotReview snapshotId)
+                |> Api.expectJson Concourse.AgentReview.decodeBuildReview
+                |> Api.request
+                |> Task.attempt (AgentSnapshotReviewFetched snapshotId)
+
+        PinAgentSnapshot teamName snapshotId ->
+            Api.put (Endpoints.AgentSnapshotPin teamName snapshotId) csrfToken
+                |> Api.withJsonBody
+                    (Json.Encode.object
+                        [ ( "reason", Json.Encode.string "interactive UI pin" ) ]
+                    )
+                |> Api.request
+                |> Task.attempt (AgentSnapshotPinChanged snapshotId)
+
+        UnpinAgentSnapshot teamName snapshotId ->
+            Api.delete (Endpoints.AgentSnapshotPin teamName snapshotId) csrfToken
+                |> Api.request
+                |> Task.attempt (AgentSnapshotPinChanged snapshotId)
+
+        FetchAgentExperiments ->
+            Api.get Endpoints.AgentExperimentsList
+                |> Api.expectJson (Json.Decode.list Concourse.Experiment.decodeExperiment)
+                |> Api.request
+                |> Task.attempt AgentExperimentsFetched
+
+        FetchAgentExperiment experimentId ->
+            Api.get (Endpoints.AgentExperiment experimentId)
+                |> Api.expectJson Concourse.Experiment.decodeExperiment
+                |> Api.request
+                |> Task.attempt (AgentExperimentFetched experimentId)
+
+        FetchAgentExperimentCells experimentId ->
+            Api.get (Endpoints.AgentExperimentCells experimentId)
+                |> Api.expectJson (Json.Decode.list Concourse.Experiment.decodeStoredCell)
+                |> Api.request
+                |> Task.attempt (AgentExperimentCellsFetched experimentId)
+
+        FetchAgentExperimentScorecard experimentId ->
+            Api.get (Endpoints.AgentExperimentScorecard experimentId)
+                |> Api.expectJson Concourse.Experiment.decodeScorecard
+                |> Api.request
+                |> Task.attempt (AgentExperimentScorecardFetched experimentId)
+
+        CancelAgentExperiment experimentId revision ->
+            Api.post (Endpoints.AgentExperimentCancel experimentId) csrfToken
+                |> Api.withJsonBody
+                    (Json.Encode.object [ ( "revision", Json.Encode.int revision ) ])
+                |> Api.expectJson Concourse.Experiment.decodeExperiment
+                |> Api.request
+                |> Task.attempt (AgentExperimentCanceled experimentId)
 
 
 encodeTicketUpdate : { id : Int, title : String, body : String, budgetUsd : Maybe Float } -> Json.Encode.Value

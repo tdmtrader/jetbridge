@@ -2,9 +2,11 @@ package workflow
 
 import (
 	"fmt"
+	"maps"
 	"sort"
 	"strings"
 
+	"github.com/concourse/concourse/agent/publisher"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/configvalidate"
@@ -18,12 +20,14 @@ const (
 )
 
 type snapshotProducer struct {
-	functionID string
-	kind       string
-	path       string
-	outputName string
-	task       *atc.TaskStep
-	agent      *atc.AgentStep
+	functionID  string
+	kind        string
+	path        string
+	outputName  string
+	insideRetry bool
+	task        *atc.TaskStep
+	agent       *atc.AgentStep
+	await       *atc.AwaitSnapshotStep
 }
 
 func (producer *snapshotProducer) key() string {
@@ -57,8 +61,10 @@ type publicOutputTarget struct {
 }
 
 type snapshotFlowChecker struct {
-	functionIDs map[string]string
-	prototypes  map[string]struct{}
+	functionIDs  map[string]string
+	prototypes   map[string]struct{}
+	timeoutDepth int
+	retryDepth   int
 }
 
 // TypeCheckFunction proves the typed snapshot flow of a compiled version-3
@@ -118,6 +124,15 @@ func (producer *snapshotProducer) outputConfig() (atc.SnapshotOutputConfig, bool
 	case producer.agent != nil:
 		config, found := producer.agent.SnapshotOutputs[producer.outputName]
 		return config, found
+	case producer.await != nil && producer.outputName == producer.await.Name:
+		config := atc.SnapshotOutputConfig{Type: producer.await.Type}
+		if producer.await.WorkflowPort != "" {
+			config.Retention = snapshot.RetentionClassWorkflow
+			config.WorkflowPort = producer.await.WorkflowPort
+			config.WorkflowDefinitionID = producer.await.WorkflowDefinitionID
+			config.WorkflowRunID = producer.await.WorkflowRunID
+		}
+		return config, true
 	default:
 		return atc.SnapshotOutputConfig{}, false
 	}
@@ -128,7 +143,13 @@ func (producer *snapshotProducer) setOutputConfig(config atc.SnapshotOutputConfi
 		producer.task.SnapshotOutputs[producer.outputName] = config
 		return
 	}
-	producer.agent.SnapshotOutputs[producer.outputName] = config
+	if producer.agent != nil {
+		producer.agent.SnapshotOutputs[producer.outputName] = config
+		return
+	}
+	producer.await.WorkflowPort = config.WorkflowPort
+	producer.await.WorkflowDefinitionID = config.WorkflowDefinitionID
+	producer.await.WorkflowRunID = config.WorkflowRunID
 }
 
 // FunctionATCConfig assembles the exact ordinary one-job template config used
@@ -171,6 +192,12 @@ func analyzeFunctionFlow(function *FunctionConfig) ([]publicOutputTarget, error)
 	}
 	if err := function.Validate(); err != nil {
 		return nil, err
+	}
+	if len(function.Resources) > 0 {
+		return nil, fmt.Errorf("workflow: resources are live-read boundaries and are not permitted in schema-version-3 workflow functions; capture resource versions into snapshots before invocation")
+	}
+	if len(function.VarSources) > 0 {
+		return nil, fmt.Errorf("workflow: var_sources are live-read boundaries and are not permitted in schema-version-3 workflow functions; capture their values into snapshots before invocation")
 	}
 
 	env := make(snapshotEnvironment, len(function.Inputs))
@@ -219,6 +246,9 @@ func analyzeFunctionFlow(function *FunctionConfig) ([]publicOutputTarget, error)
 		if binding.producer == nil {
 			return nil, fmt.Errorf("workflow: outputs[%d] %q: source %q has no concrete typed producer; public input pass-through is unsupported", index, output.Name, output.From)
 		}
+		if binding.producer.insideRetry {
+			return nil, fmt.Errorf("workflow: outputs[%d] %q: public output cannot be produced inside retry until attempt-aware snapshot promotion is implemented", index, output.Name)
+		}
 		producerKey := binding.producer.key()
 		if previous, found := selected[producerKey]; found {
 			return nil, fmt.Errorf("workflow: outputs[%d] %q and public output %q select the same internal output %q from %s", index, output.Name, previous, output.From, binding.producer.path)
@@ -259,9 +289,13 @@ func (checker *snapshotFlowChecker) checkStep(step atc.Step, entry snapshotEnvir
 	case *atc.AgentStep:
 		return checker.checkAgent(config, entry, path)
 	case *atc.GetStep:
-		return writeUntyped(entry, config.Name, path+".get("+config.Name+")"), nil
+		return snapshotFlow{}, fmt.Errorf("workflow: %s.get(%q): get is a live-read boundary and is not permitted in schema-version-3 workflow functions; capture the resource version into a snapshot before invocation", path, config.Name)
 	case *atc.LoadSnapshotStep:
 		return checker.checkLoadSnapshot(config, entry, path)
+	case *atc.AwaitSnapshotStep:
+		return checker.checkAwaitSnapshot(config, entry, path)
+	case *atc.PublishSnapshotStep:
+		return checker.checkPublishSnapshot(config, entry, path)
 	case *atc.RunStep:
 		if _, found := checker.prototypes[config.Type]; !found {
 			// Preserve the ordinary Concourse validator's authoritative unknown
@@ -273,8 +307,14 @@ func (checker *snapshotFlowChecker) checkStep(step atc.Step, entry snapshotEnvir
 		// a placeholder. Reject the advertised syntax at the immutable function
 		// boundary instead of allocating a durable run that must planning-error.
 		return snapshotFlow{}, fmt.Errorf("workflow: %s: prototype run steps are not executable in workflow functions", path)
-	case *atc.PutStep, *atc.HarvestStep, *atc.SetPipelineStep, *atc.LoadVarStep:
-		return emptySnapshotFlow(entry), nil
+	case *atc.PutStep:
+		return snapshotFlow{}, fmt.Errorf("workflow: %s.put(%q): put is not permitted in schema-version-3 workflow functions; use publish_snapshot for governed outbound effects", path, config.Name)
+	case *atc.HarvestStep:
+		return snapshotFlow{}, fmt.Errorf("workflow: %s.harvest(%q): harvest is not permitted in schema-version-3 workflow functions; use publish_snapshot for governed outbound effects", path, config.Name)
+	case *atc.SetPipelineStep:
+		return snapshotFlow{}, fmt.Errorf("workflow: %s.set_pipeline(%q): set_pipeline is not permitted in schema-version-3 workflow functions; use publish_snapshot for governed outbound effects", path, config.Name)
+	case *atc.LoadVarStep:
+		return snapshotFlow{}, fmt.Errorf("workflow: %s.load_var(%q): load_var is an untyped snapshot read and is not permitted in schema-version-3 workflow functions; model the value as a typed snapshot input", path, config.Name)
 	case *atc.DoStep:
 		return checker.checkSequence(config.Steps, entry, path+".do.steps")
 	case *atc.InParallelStep:
@@ -286,7 +326,9 @@ func (checker *snapshotFlowChecker) checkStep(step atc.Step, entry snapshotEnvir
 		}
 		return conditionalTryFlow(entry, child), nil
 	case *atc.RetryStep:
+		checker.retryDepth++
 		child, err := checker.checkWrapped(config.Step, entry, path+".attempts")
+		checker.retryDepth--
 		if err != nil {
 			return snapshotFlow{}, err
 		}
@@ -295,7 +337,10 @@ func (checker *snapshotFlowChecker) checkStep(step atc.Step, entry snapshotEnvir
 		child.allProduced = cloneProduced(child.mayProduced)
 		return child, nil
 	case *atc.TimeoutStep:
-		return checker.checkWrapped(config.Step, entry, path+".timeout")
+		checker.timeoutDepth++
+		flow, err := checker.checkWrapped(config.Step, entry, path+".timeout")
+		checker.timeoutDepth--
+		return flow, err
 	case *atc.OnSuccessStep:
 		main, err := checker.checkWrapped(config.Step, entry, path)
 		if err != nil {
@@ -330,6 +375,51 @@ func (checker *snapshotFlowChecker) checkStep(step atc.Step, entry snapshotEnvir
 	}
 }
 
+func (checker *snapshotFlowChecker) checkPublishSnapshot(step *atc.PublishSnapshotStep, entry snapshotEnvironment, path string) (snapshotFlow, error) {
+	identity := fmt.Sprintf("%s.publish_snapshot(%q)", path, step.Name)
+	if err := step.InputType.Validate(); err != nil {
+		return snapshotFlow{}, fmt.Errorf("workflow: %s: input_type: %w", identity, err)
+	}
+	binding, found := entry[step.Input]
+	if !found {
+		return snapshotFlow{}, fmt.Errorf("workflow: %s: input %q is unavailable (use before produce)", identity, step.Input)
+	}
+	if !binding.typed {
+		if binding.ambiguous {
+			return snapshotFlow{}, fmt.Errorf("workflow: %s: input %q has ambiguous possible writes at %s", identity, step.Input, binding.writePath)
+		}
+		return snapshotFlow{}, fmt.Errorf("workflow: %s: input %q is occupied by an untyped producer at %s", identity, step.Input, binding.writePath)
+	}
+	if binding.typ != step.InputType {
+		return snapshotFlow{}, fmt.Errorf("workflow: %s: input %q type mismatch: have %s, require %s", identity, step.Input, binding.typ, step.InputType)
+	}
+	if binding.presence == snapshotConditional {
+		return snapshotFlow{}, fmt.Errorf("workflow: %s: input %q cannot use a conditional binding", identity, step.Input)
+	}
+	if step.Mode == publisher.ModeMerge {
+		approval, found := entry[step.Approval]
+		if !found {
+			return snapshotFlow{}, fmt.Errorf("workflow: %s: approval %q is unavailable (use before produce)", identity, step.Approval)
+		}
+		if !approval.typed || approval.typ != snapshot.TypeRef("human-answer/v1") {
+			return snapshotFlow{}, fmt.Errorf("workflow: %s: approval %q must have exact type human-answer/v1", identity, step.Approval)
+		}
+		if approval.presence == snapshotConditional {
+			return snapshotFlow{}, fmt.Errorf("workflow: %s: approval %q cannot use a conditional binding", identity, step.Approval)
+		}
+		if approval.producer == nil || approval.producer.await == nil || approval.producer.await.MergeApproval == nil {
+			return snapshotFlow{}, fmt.Errorf("workflow: %s: approval %q must be produced by a server-bound merge_approval await_snapshot in this workflow", identity, step.Approval)
+		}
+		intent := approval.producer.await.MergeApproval
+		if intent.Input != step.Input || intent.Publisher != step.Publisher ||
+			intent.Destination != step.Destination || !maps.Equal(intent.Parameters, step.Parameters) ||
+			intent.ApprovalPolicyVersion != step.ApprovalPolicyVersion {
+			return snapshotFlow{}, fmt.Errorf("workflow: %s: approval %q does not bind this exact merge publication", identity, step.Approval)
+		}
+	}
+	return emptySnapshotFlow(entry), nil
+}
+
 func (checker *snapshotFlowChecker) checkLoadSnapshot(step *atc.LoadSnapshotStep, entry snapshotEnvironment, path string) (snapshotFlow, error) {
 	identity := fmt.Sprintf("%s.load_snapshot(%q)", path, step.Name)
 	if step.Optional {
@@ -356,6 +446,51 @@ func (checker *snapshotFlowChecker) checkLoadSnapshot(step *atc.LoadSnapshotStep
 		produced:    writes,
 		mayProduced: cloneProduced(writes),
 		allProduced: cloneProduced(writes),
+	}, nil
+}
+
+func (checker *snapshotFlowChecker) checkAwaitSnapshot(step *atc.AwaitSnapshotStep, entry snapshotEnvironment, path string) (snapshotFlow, error) {
+	identity := fmt.Sprintf("%s.await_snapshot(%q)", path, step.Name)
+	if checker.timeoutDepth == 0 {
+		return snapshotFlow{}, fmt.Errorf("workflow: %s: an ordinary timeout wrapper is required", identity)
+	}
+	if step.MergeApproval != nil {
+		subject, found := entry[step.MergeApproval.Input]
+		if !found {
+			return snapshotFlow{}, fmt.Errorf("workflow: %s: merge approval input %q is unavailable (use before produce)", identity, step.MergeApproval.Input)
+		}
+		if !subject.typed || subject.typ != snapshot.TypeRef("repository-change/v1") {
+			return snapshotFlow{}, fmt.Errorf("workflow: %s: merge approval input %q must have exact type repository-change/v1", identity, step.MergeApproval.Input)
+		}
+		if subject.presence == snapshotConditional {
+			return snapshotFlow{}, fmt.Errorf("workflow: %s: merge approval input %q cannot use a conditional binding", identity, step.MergeApproval.Input)
+		}
+	} else {
+		question, found := entry[step.Question]
+		if !found {
+			return snapshotFlow{}, fmt.Errorf("workflow: %s: question %q is unavailable (use before produce)", identity, step.Question)
+		}
+		if !question.typed || question.typ != snapshot.TypeRef("question/v1") {
+			return snapshotFlow{}, fmt.Errorf("workflow: %s: question %q must have exact type question/v1", identity, step.Question)
+		}
+		if question.presence == snapshotConditional {
+			return snapshotFlow{}, fmt.Errorf("workflow: %s: question %q cannot use a conditional binding", identity, step.Question)
+		}
+	}
+	if step.Type != snapshot.TypeRef("human-answer/v1") {
+		return snapshotFlow{}, fmt.Errorf("workflow: %s: output must have exact type human-answer/v1", identity)
+	}
+	producer := &snapshotProducer{
+		kind: "await_snapshot", path: identity, outputName: step.Name, insideRetry: checker.retryDepth > 0, await: step,
+	}
+	binding := snapshotBinding{
+		typ: step.Type, presence: snapshotGuaranteed, typed: true, producer: producer, writePath: identity,
+	}
+	env := cloneSnapshotEnvironment(entry)
+	env[step.Name] = binding
+	writes := map[string]snapshotBinding{step.Name: binding}
+	return snapshotFlow{
+		env: env, produced: writes, mayProduced: cloneProduced(writes), allProduced: cloneProduced(writes),
 	}, nil
 }
 
@@ -431,9 +566,11 @@ func conservativeEnsureEnvironment(entry snapshotEnvironment, main snapshotFlow)
 
 func (checker *snapshotFlowChecker) checkParallel(config *atc.InParallelStep, entry snapshotEnvironment, path string) (snapshotFlow, error) {
 	branches := make([]snapshotFlow, len(config.Config.Steps))
+	untypedReads := make([]map[string]string, len(config.Config.Steps))
 	producerBranch := make(map[string]int)
 	for index := range config.Config.Steps {
 		branchPath := fmt.Sprintf("%s.in_parallel.steps[%d]", path, index)
+		untypedReads[index] = collectUntypedArtifactReads(config.Config.Steps[index], branchPath)
 		branch, err := checker.checkStep(config.Config.Steps[index], cloneSnapshotEnvironment(entry), branchPath)
 		if err != nil {
 			return snapshotFlow{}, err
@@ -444,6 +581,23 @@ func (checker *snapshotFlowChecker) checkParallel(config *atc.InParallelStep, en
 				return snapshotFlow{}, fmt.Errorf("workflow: %s: parallel branches both produce %q (branches %d and %d)", path, name, previous, index)
 			}
 			producerBranch[name] = index
+		}
+	}
+	for readerIndex := range branches {
+		for _, name := range sortedStringMapKeys(untypedReads[readerIndex]) {
+			for writerIndex := range branches {
+				if writerIndex == readerIndex {
+					continue
+				}
+				write, found := branches[writerIndex].allProduced[name]
+				if !found || !write.typed {
+					continue
+				}
+				return snapshotFlow{}, fmt.Errorf(
+					"workflow: %s: parallel branch %d has an untyped read of %q at %s while branch %d may produce that typed snapshot",
+					path, readerIndex, name, untypedReads[readerIndex][name], writerIndex,
+				)
+			}
 		}
 	}
 
@@ -465,6 +619,83 @@ func (checker *snapshotFlowChecker) checkParallel(config *atc.InParallelStep, en
 		mergeMayProduced(allProduced, branches[index].allProduced)
 	}
 	return snapshotFlow{env: env, produced: produced, mayProduced: mayProduced, allProduced: allProduced}, nil
+}
+
+func collectUntypedArtifactReads(step atc.Step, path string) map[string]string {
+	reads := make(map[string]string)
+	var collect func(atc.Step, string)
+	collect = func(current atc.Step, currentPath string) {
+		if current.Config == nil {
+			return
+		}
+		record := func(name, readPath string) {
+			if strings.TrimSpace(name) == "" {
+				return
+			}
+			if _, found := reads[name]; !found {
+				reads[name] = readPath
+			}
+		}
+		recordPathSource := func(value, readPath string) {
+			parts := strings.SplitN(value, "/", 2)
+			if len(parts) == 2 {
+				record(parts[0], readPath)
+			}
+		}
+
+		switch config := current.Config.(type) {
+		case *atc.TaskStep:
+			inputs, _ := effectiveTaskArtifactNames(config)
+			for _, name := range inputs {
+				if _, typed := config.SnapshotInputs[name]; !typed {
+					record(name, currentPath+".task("+config.Name+").inputs")
+				}
+			}
+			record(config.ImageArtifactName, currentPath+".task("+config.Name+").image")
+			recordPathSource(config.ConfigPath, currentPath+".task("+config.Name+").file")
+		case *atc.AgentStep:
+			for _, name := range config.Inputs {
+				if _, typed := config.SnapshotInputs[name]; !typed {
+					record(name, currentPath+".agent("+config.Name+").inputs")
+				}
+			}
+		case *atc.LoadVarStep:
+			recordPathSource(config.File, currentPath+".load_var("+config.Name+")")
+		case *atc.DoStep:
+			for index := range config.Steps {
+				collect(config.Steps[index], fmt.Sprintf("%s.do.steps[%d]", currentPath, index))
+			}
+		case *atc.InParallelStep:
+			for index := range config.Config.Steps {
+				collect(config.Config.Steps[index], fmt.Sprintf("%s.in_parallel.steps[%d]", currentPath, index))
+			}
+		case *atc.TryStep:
+			collect(config.Step, currentPath+".try")
+		case *atc.RetryStep:
+			collect(atc.Step{Config: config.Step}, currentPath+".attempts")
+		case *atc.TimeoutStep:
+			collect(atc.Step{Config: config.Step}, currentPath+".timeout")
+		case *atc.OnSuccessStep:
+			collect(atc.Step{Config: config.Step}, currentPath)
+			collect(config.Hook, currentPath+".on_success")
+		case *atc.OnFailureStep:
+			collect(atc.Step{Config: config.Step}, currentPath)
+			collect(config.Hook, currentPath+".on_failure")
+		case *atc.OnErrorStep:
+			collect(atc.Step{Config: config.Step}, currentPath)
+			collect(config.Hook, currentPath+".on_error")
+		case *atc.OnAbortStep:
+			collect(atc.Step{Config: config.Step}, currentPath)
+			collect(config.Hook, currentPath+".on_abort")
+		case *atc.EnsureStep:
+			collect(atc.Step{Config: config.Step}, currentPath)
+			collect(config.Hook, currentPath+".ensure")
+		case *atc.AcrossStep:
+			collect(atc.Step{Config: config.Step}, currentPath+".across")
+		}
+	}
+	collect(step, path)
+	return reads
 }
 
 func (checker *snapshotFlowChecker) checkTask(step *atc.TaskStep, entry snapshotEnvironment, path string) (snapshotFlow, error) {
@@ -520,15 +751,24 @@ func (checker *snapshotFlowChecker) checkLeaf(
 	path string,
 ) (snapshotFlow, error) {
 	identity := fmt.Sprintf("%s.%s(%q)", path, kind, displayName)
-	typedNode := functionID != "" || len(typedInputs) > 0 || len(typedOutputs) > 0
-	if typedNode {
-		if strings.TrimSpace(functionID) == "" {
-			return snapshotFlow{}, fmt.Errorf("workflow: %s: typed node requires a nonblank authored function_id", identity)
+	if strings.TrimSpace(functionID) == "" {
+		return snapshotFlow{}, fmt.Errorf("workflow: %s: typed node requires a nonblank authored function_id", identity)
+	}
+	if previous, found := checker.functionIDs[functionID]; found {
+		return snapshotFlow{}, fmt.Errorf("workflow: %s: duplicate function_id %q; first declared at %s", identity, functionID, previous)
+	}
+	checker.functionIDs[functionID] = identity
+
+	// File-backed task membership is known only after its config snapshot is
+	// fetched. The executor repeats this exact-coverage check against that
+	// resolved config before selecting a worker.
+	if task == nil || task.Config != nil {
+		if err := validateExactTypedCoverage(kind+" input", ordinaryInputs, snapshotInputNames(typedInputs)); err != nil {
+			return snapshotFlow{}, fmt.Errorf("workflow: %s: %w", identity, err)
 		}
-		if previous, found := checker.functionIDs[functionID]; found {
-			return snapshotFlow{}, fmt.Errorf("workflow: %s: duplicate function_id %q; first declared at %s", identity, functionID, previous)
+		if err := validateExactTypedCoverage(kind+" output", ordinaryOutputs, snapshotOutputNames(typedOutputs)); err != nil {
+			return snapshotFlow{}, fmt.Errorf("workflow: %s: %w", identity, err)
 		}
-		checker.functionIDs[functionID] = identity
 	}
 
 	for _, name := range sortedUniqueStrings(ordinaryInputs) {
@@ -588,12 +828,13 @@ func (checker *snapshotFlowChecker) checkLeaf(
 			presence = snapshotConditional
 		}
 		producer := &snapshotProducer{
-			functionID: functionID,
-			kind:       kind,
-			path:       identity,
-			outputName: name,
-			task:       task,
-			agent:      agent,
+			functionID:  functionID,
+			kind:        kind,
+			path:        identity,
+			outputName:  name,
+			insideRetry: checker.retryDepth > 0,
+			task:        task,
+			agent:       agent,
 		}
 		binding := snapshotBinding{
 			typ:       declaration.Type,
@@ -672,9 +913,9 @@ func conditionalTryFlow(entry snapshotEnvironment, child snapshotFlow) snapshotF
 	for _, name := range sortedSnapshotBindingKeys(child.allProduced) {
 		previous, existed := entry[name]
 		if !existed {
-			// The function contract deliberately does not expose a try-only write,
-			// even as an optional producer. It is nevertheless retained below as a
-			// may-write so enclosing parallel scopes can reject write races.
+			write := child.allProduced[name]
+			write.presence = snapshotConditional
+			env[name] = write
 			continue
 		}
 		env[name] = mergeBindingAlternatives(previous, child.allProduced[name])

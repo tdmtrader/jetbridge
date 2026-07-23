@@ -1,7 +1,8 @@
 schema_version: 3
 name: small-fix
 signature_version: 1
-description: Implement, test, and review a bounded work item without publishing it.
+disposition_output: change
+description: Implement, test, review, and prepare an approved bounded change.
 inputs:
   - name: repository
     type: repository/v1
@@ -12,7 +13,7 @@ inputs:
 outputs:
   - name: change
     type: repository-change/v1
-    from: final-change
+    from: approved-change
     description: Validated change relative to the repository input.
   - name: report
     type: opaque/v1
@@ -20,6 +21,7 @@ outputs:
     description: Human-readable implementation, test, and review notes.
 plan:
   - agent: implement-and-test
+    budget_slice_usd: 10
     function_id: implement-and-test
     prompt_file: prompts/implement.md
     inputs: [repository, work-item]
@@ -31,15 +33,18 @@ plan:
       candidate-change: repository-change/v1
       validation: validation-report/v1
   - agent: review
+    budget_slice_usd: 3
     function_id: review
     prompt: >-
       Review candidate-change against repository and validation. Re-run or inspect
       the relevant tests, fix only defects required by the captured work item, and
       write the accepted repository-change/v1 to $AGENT_OUTPUT_FINAL_CHANGE. Write
       a concise report.md with implementation, tests, risks, and review disposition
-      to $AGENT_OUTPUT_REPORT. Do not push, merge, comment, or contact live systems.
+      to $AGENT_OUTPUT_REPORT. Write a strict question/v1 value beneath
+      $AGENT_OUTPUT_APPROVAL_QUESTION asking whether this exact sealed change may
+      be opened as a pull request. Do not push, merge, comment, or contact live systems.
     inputs: [repository, work-item, candidate-change, validation]
-    outputs: [final-change, report]
+    outputs: [final-change, report, approval-question]
     input_types:
       repository: {type: repository/v1}
       work-item: {type: work-item/v1}
@@ -48,3 +53,25 @@ plan:
     output_types:
       final-change: repository-change/v1
       report: opaque/v1
+      approval-question: question/v1
+  - await_snapshot: approval
+    question: approval-question
+    type: human-answer/v1
+    on_timeout: fail
+    timeout: 72h
+  - agent: enforce-approval
+    budget_slice_usd: 1
+    function_id: enforce-approval
+    prompt: >-
+      Read the sealed human-answer/v1 input. Only when it explicitly approves
+      release of this exact change for external delivery, copy final-change into a fresh
+      repository-change/v1 value at $AGENT_OUTPUT_APPROVED_CHANGE. Preserve its
+      base and content exactly. If it rejects or changes the request, submit no
+      output so Jetbridge fails closed. Do not contact a live system.
+    inputs: [final-change, approval]
+    outputs: [approved-change]
+    input_types:
+      final-change: {type: repository-change/v1}
+      approval: {type: human-answer/v1}
+    output_types:
+      approved-change: repository-change/v1

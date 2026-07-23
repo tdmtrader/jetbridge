@@ -11,7 +11,9 @@ import (
 	"github.com/concourse/concourse/agent/api/reviews"
 	"github.com/concourse/concourse/agent/api/tickets"
 	"github.com/concourse/concourse/agent/budget"
+	"github.com/concourse/concourse/agent/publisher"
 	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/agent/workflowwait"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/lock"
@@ -49,6 +51,9 @@ type coreStepFactory struct {
 	snapshotMetadataStore snapshot.MetadataStore
 	snapshotContentStore  snapshot.ContentStore
 	snapshotInputBindings exec.WorkflowInputBindingVerifier
+	snapshotCanonicalizer snapshot.Canonicalizer
+	workflowWaits         workflowwait.Store
+	snapshotPublisher     publisher.Executor
 }
 
 // CoreStepFactoryOption configures optional fields on coreStepFactory.
@@ -79,6 +84,25 @@ func WithSnapshotLoader(
 		f.snapshotContentStore = content
 		f.snapshotInputBindings = bindings
 	}
+}
+
+// WithSnapshotCanonicalizer keeps downstream snapshot readers on the same
+// bounded, deployment-owned scratch storage as sealing and durable uploads.
+func WithSnapshotCanonicalizer(canonicalizer snapshot.Canonicalizer) CoreStepFactoryOption {
+	return func(f *coreStepFactory) {
+		f.snapshotCanonicalizer = canonicalizer
+	}
+}
+
+func WithWorkflowWaitStore(store workflowwait.Store) CoreStepFactoryOption {
+	return func(f *coreStepFactory) { f.workflowWaits = store }
+}
+
+// WithSnapshotPublisher enables explicit publish_snapshot execution. Leaving
+// it unset keeps every publisher node fail-closed; no external write can be
+// inferred from an ordinary output or successful build.
+func WithSnapshotPublisher(executor publisher.Executor) CoreStepFactoryOption {
+	return func(f *coreStepFactory) { f.snapshotPublisher = executor }
 }
 
 // WithAgentStepImage sets the main-container image for agent: steps
@@ -308,6 +332,9 @@ func (factory *coreStepFactory) AgentStep(
 	if factory.outputSealer != nil {
 		agentOpts = append(agentOpts, exec.WithAgentOutputSealer(factory.outputSealer))
 	}
+	if factory.snapshotMetadataStore != nil && factory.snapshotContentStore != nil {
+		agentOpts = append(agentOpts, exec.WithAgentSnapshotStores(factory.snapshotMetadataStore, factory.snapshotContentStore))
+	}
 
 	agentStep := exec.NewAgentStep(
 		plan.ID,
@@ -403,6 +430,9 @@ func (factory *coreStepFactory) TaskStep(
 	if factory.outputSealer != nil {
 		taskOpts = append(taskOpts, exec.WithTaskOutputSealer(factory.outputSealer))
 	}
+	if factory.snapshotMetadataStore != nil && factory.snapshotContentStore != nil {
+		taskOpts = append(taskOpts, exec.WithTaskSnapshotStores(factory.snapshotMetadataStore, factory.snapshotContentStore))
+	}
 
 	taskStep := exec.NewTaskStep(
 		plan.ID,
@@ -487,6 +517,53 @@ func (factory *coreStepFactory) LoadSnapshotStep(
 		loadSnapshotStep = exec.RetryError(loadSnapshotStep, delegateFactory)
 	}
 	return loadSnapshotStep
+}
+
+func (factory *coreStepFactory) AwaitSnapshotStep(
+	plan atc.Plan,
+	stepMetadata exec.StepMetadata,
+	delegateFactory DelegateFactory,
+) exec.Step {
+	waitStep := exec.NewAwaitSnapshotStep(
+		plan.ID,
+		plan.Attempts,
+		*plan.AwaitSnapshot,
+		stepMetadata,
+		delegateFactory,
+		factory.workflowWaits,
+		factory.outputSealer,
+		factory.snapshotMetadataStore,
+		factory.snapshotContentStore,
+		500*time.Millisecond,
+	)
+	waitStep = exec.LogError(waitStep, delegateFactory)
+	return waitStep
+}
+
+func (factory *coreStepFactory) PublishSnapshotStep(
+	plan atc.Plan,
+	stepMetadata exec.StepMetadata,
+	delegateFactory DelegateFactory,
+) exec.Step {
+	var approvalVerifier publisher.MergeApprovalVerifier
+	if factory.workflowWaits != nil && factory.snapshotMetadataStore != nil && factory.snapshotContentStore != nil {
+		approvalVerifier, _ = publisher.NewDurableApprovalVerifier(
+			factory.workflowWaits,
+			factory.snapshotMetadataStore,
+			factory.snapshotContentStore,
+			publisher.WithApprovalCanonicalizer(factory.snapshotCanonicalizer),
+		)
+	}
+	publishStep := exec.NewPublishSnapshotStep(
+		plan.ID,
+		*plan.PublishSnapshot,
+		stepMetadata,
+		delegateFactory,
+		factory.snapshotMetadataStore,
+		factory.snapshotPublisher,
+		approvalVerifier,
+	)
+	return exec.LogError(publishStep, delegateFactory)
 }
 
 func (factory *coreStepFactory) ArtifactInputStep(

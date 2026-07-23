@@ -139,3 +139,11 @@ type Store interface {
 	// Touch stamps last_checked_at = now.
 	Touch(ticketID int) error
 }
+
+// TerminalLister is the optional reconciliation extension consumed only when
+// the legacy watcher is configured to project terminal facts into generic
+// workflow outcomes. It intentionally does not expand Store, preserving old
+// watcher/store implementations when the adapter is absent.
+type TerminalLister interface {
+	ListTerminal() ([]Outcome, error)
+}

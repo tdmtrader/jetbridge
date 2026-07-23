@@ -1,5 +1,7 @@
 # Delivery Outcomes — Remainder Plan (re-scope of plan 12)
 
+> **SUPERSEDED — historical implementation record (not executable).** The approved [Agentic Workflows as Functions over Snapshots design](../../../specs/2026-07-21-agentic-workflows-as-functions-design.md) and [Agentic Functions program plan](../../2026-07-21-agentic-functions-program.md) are authoritative. Existing delivery-outcome code remains a compatibility surface and a source for generic projections; ticket identity, implicit harvest/publication, and mutable repository state are not version-3 workflow contracts.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. This plan is a DELTA over `docs/superpowers/plans/agentic-platform/12-delivery-outcomes.md` — where a task says "execute plan 12 Task N as written", open that file, execute its full text, and apply ONLY the delta notes listed here. Where a task here carries full text, that text supersedes the plan-12 original.
 
 **Date:** 2026-07-17

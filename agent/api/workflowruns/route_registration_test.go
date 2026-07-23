@@ -11,12 +11,13 @@ func TestWorkflowRunRoutesRegisteredExactlyOnce(t *testing.T) {
 		method string
 		path   string
 	}{
-		atc.CreateAgentWorkflowRun:     {method: "POST", path: "/api/v1/agent/workflows/:workflow_name/runs"},
-		atc.ListAgentWorkflowRuns:      {method: "GET", path: "/api/v1/agent/workflows/:workflow_name/runs"},
-		atc.GetAgentWorkflowRun:        {method: "GET", path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id"},
-		atc.CancelAgentWorkflowRun:     {method: "POST", path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/cancel"},
-		atc.RetryAgentWorkflowRun:      {method: "POST", path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/retry"},
-		atc.GetAgentWorkflowRunOutputs: {method: "GET", path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/outputs"},
+		atc.CreateAgentWorkflowRun:                     {method: "POST", path: "/api/v1/agent/workflows/:workflow_name/runs"},
+		atc.ListAgentWorkflowRuns:                      {method: "GET", path: "/api/v1/agent/workflows/:workflow_name/runs"},
+		atc.GetAgentWorkflowRunOperationalStatusCounts: {method: "GET", path: "/api/v1/agent/workflows/:workflow_name/runs/operational-status-counts"},
+		atc.GetAgentWorkflowRun:                        {method: "GET", path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id"},
+		atc.CancelAgentWorkflowRun:                     {method: "POST", path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/cancel"},
+		atc.RetryAgentWorkflowRun:                      {method: "POST", path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/retry"},
+		atc.GetAgentWorkflowRunOutputs:                 {method: "GET", path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/outputs"},
 	}
 
 	counts := make(map[string]int, len(required))

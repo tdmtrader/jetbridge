@@ -180,6 +180,9 @@ func validateImmutableAgentDependencies(agent *atc.AgentStep) error {
 	if agent.PromptFile != "" || agent.SystemPromptFile != "" || len(agent.ContextFiles) > 0 {
 		return fmt.Errorf("agent file assets are unresolved runtime dependencies")
 	}
+	if agent.RuntimeImage != "" {
+		return fmt.Errorf("agent runtime_image is server-selected admission data")
+	}
 	if len(agent.Capabilities) > 0 {
 		return fmt.Errorf("unexpanded agent capabilities are unresolved runtime dependencies")
 	}

@@ -176,6 +176,7 @@ inputs: []
 outputs: []
 plan:
   - agent: implement
+    function_id: implement
     prompt: implement
     skills: [review, testing]
 `,
@@ -239,11 +240,14 @@ capabilities:
     sidecar:
       name: dev-mcp
       image: registry.example/acme/dev@sha256:` + digest + `
+      ports: [{containerPort: 7780, protocol: TCP}]
 plan:
   - agent: first
+    function_id: first
     prompt: first
     capabilities: [files, dev]
   - agent: second
+    function_id: second
     prompt: second
     capabilities: [files]
 `}
@@ -254,11 +258,18 @@ plan:
 	}
 	first := definition.Function.Plan[0].Config.(*atc.AgentStep)
 	second := definition.Function.Plan[1].Config.(*atc.AgentStep)
+	if !first.Hermetic || !second.Hermetic {
+		t.Fatalf("compiled transformation agents must be hermetic: first=%t second=%t", first.Hermetic, second.Hermetic)
+	}
 	if len(first.Capabilities) != 0 || len(second.Capabilities) != 0 {
 		t.Fatalf("capability references were not erased: first=%v second=%v", first.Capabilities, second.Capabilities)
 	}
 	if len(first.Sidecars) != 2 || first.Sidecars[0].Config.Name != "file-tools" || first.Sidecars[1].Config.Name != "dev-mcp" {
 		t.Fatalf("authored capability order was not preserved: %#v", first.Sidecars)
+	}
+	if first.Env["FILES_MCP_URL"] != "http://127.0.0.1:8080/mcp" || first.Env["DEV_MCP_URL"] != "http://127.0.0.1:7780/mcp" ||
+		second.Env["FILES_MCP_URL"] != "http://127.0.0.1:8080/mcp" {
+		t.Fatalf("compiled capability endpoints = first:%v second:%v", first.Env, second.Env)
 	}
 	if len(second.Sidecars) != 1 || second.Sidecars[0].Config.Name != "file-tools" {
 		t.Fatalf("second expansion = %#v", second.Sidecars)
@@ -388,13 +399,13 @@ func TestCompileV3CompiledAssetBudgetCountsSystemPromptPerNode(t *testing.T) {
 func TestCompileV3CompiledAssetBudgetCountsCanonicalSidecarPerReference(t *testing.T) {
 	const manifestFileLimit = 1 << 20
 	const digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	sidecar := atc.SidecarConfig{Name: "tools", Image: "registry.example/acme/tools@sha256:" + digest}
+	sidecar := atc.SidecarConfig{Name: "tools", Image: "registry.example/acme/tools@sha256:" + digest, Ports: []atc.SidecarPort{{ContainerPort: 7780, Protocol: "TCP"}}}
 	canonical, err := json.Marshal(sidecar)
 	if err != nil {
 		t.Fatalf("marshal sidecar: %v", err)
 	}
 	planPrefix := v3RepeatedPromptSteps(9)
-	capabilities := "  tools:\n    contract: acme.tools/v1\n    sidecar:\n      name: tools\n      image: registry.example/acme/tools@sha256:" + digest + "\n"
+	capabilities := "  tools:\n    contract: acme.tools/v1\n    sidecar:\n      name: tools\n      image: registry.example/acme/tools@sha256:" + digest + "\n      ports: [{containerPort: 7780, protocol: TCP}]\n"
 	manifest := workflow.Manifest{
 		"workflow.yml": v3CompileSource(planPrefix+`
   - agent: final
@@ -514,7 +525,7 @@ func TestCompileV3WalksAllCompositionForms(t *testing.T) {
 	}
 }
 
-func TestCompileV3LeavesTaskSourcesUntouched(t *testing.T) {
+func TestCompileV3PreservesTaskSourcesAndForcesHermeticExecution(t *testing.T) {
 	manifest := workflow.Manifest{"workflow.yml": v3CompileSource(`
   - task: ordinary
     file: repository/ci/task.yml
@@ -530,6 +541,28 @@ func TestCompileV3LeavesTaskSourcesUntouched(t *testing.T) {
 	if task.ConfigPath != "repository/ci/task.yml" || len(task.Sidecars) != 2 ||
 		task.Sidecars[0].File != "repository/ci/sidecars.yml" || task.Sidecars[1].Config.Image != "registry.example/mutable:latest" {
 		t.Fatalf("ordinary task sources changed: %+v", task)
+	}
+	if !task.Hermetic {
+		t.Fatal("compiled transformation task is not hermetic")
+	}
+}
+
+func TestCompileV3RejectsPrivilegedTransformationTask(t *testing.T) {
+	manifest := workflow.Manifest{"workflow.yml": v3CompileSource(`
+  - task: unsafe
+    privileged: true
+    config:
+      platform: linux
+      image_resource:
+        type: registry-image
+        source: {repository: example/task, digest: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}
+      run: {path: /bin/true}`, "")}
+	definition, err := workflow.CompileDefinition(manifest)
+	if err == nil || definition != nil {
+		t.Fatalf("CompileDefinition = (%+v, %v), want rejection", definition, err)
+	}
+	if !strings.Contains(err.Error(), `task "unsafe"`) || !strings.Contains(err.Error(), "privileged execution is not allowed") {
+		t.Fatalf("error = %q", err)
 	}
 }
 
@@ -562,6 +595,7 @@ func TestCompileV3RejectsInvalidAgentAssets(t *testing.T) {
 		{name: "invalid skill name", plan: "  - agent: work\n    prompt: work\n    skills: [nested/testing]", want: "bare directory"},
 		{name: "hidden skill name", plan: "  - agent: work\n    prompt: work\n    skills: [.hidden]", want: "dot-prefixed"},
 		{name: "duplicate skill", plan: "  - agent: work\n    prompt: work\n    skills: [testing, testing]", files: workflow.Manifest{"skills/testing/SKILL.md": "test"}, want: "duplicate skill"},
+		{name: "authored runtime image", plan: "  - agent: work\n    prompt: work\n    runtime_image: registry.example/agent@sha256:" + strings.Repeat("a", 64), want: "server-selected"},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
@@ -588,7 +622,7 @@ func TestCompileV3RejectsInvalidAgentAssets(t *testing.T) {
 
 func TestCompileV3RejectsInvalidCapabilitiesDeterministically(t *testing.T) {
 	const digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	validSidecar := "    sidecar:\n      name: tools\n      image: registry.example/acme/tools@sha256:" + digest + "\n"
+	validSidecar := "    sidecar:\n      name: tools\n      image: registry.example/acme/tools@sha256:" + digest + "\n      ports: [{containerPort: 7780, protocol: TCP}]\n"
 	cases := []struct {
 		name         string
 		capabilities string
@@ -604,6 +638,7 @@ func TestCompileV3RejectsInvalidCapabilitiesDeterministically(t *testing.T) {
 		{name: "unused invalid catalog entry", capabilities: "  unused:\n    contract: INVALID/v0\n" + validSidecar, plan: "  - agent: work\n    prompt: work", want: `capability "unused"`},
 		{name: "sorted catalog errors", capabilities: "  zed:\n    contract: INVALID/v0\n" + validSidecar + "  alpha:\n    contract: ALSO-INVALID/v0\n" + strings.Replace(validSidecar, "name: tools", "name: alpha-tools", 1), plan: "  - agent: work\n    prompt: work", want: `capability "alpha"`},
 		{name: "duplicate catalog sidecar name", capabilities: "  alpha:\n    contract: acme.alpha/v1\n" + validSidecar + "  beta:\n    contract: acme.beta/v1\n" + validSidecar, plan: "  - agent: work\n    prompt: work", want: "also declared"},
+		{name: "invalid capability name", capabilities: "  Bad_Name:\n    contract: acme.tools/v1\n" + validSidecar, plan: "  - agent: work\n    prompt: work", want: "[a-z][a-z0-9-]*"},
 		{name: "unknown node reference", capabilities: "  tools:\n    contract: acme.tools/v1\n" + validSidecar, plan: "  - agent: work\n    prompt: work\n    capabilities: [missing]", want: "unknown capability"},
 		{name: "duplicate node reference", capabilities: "  tools:\n    contract: acme.tools/v1\n" + validSidecar, plan: "  - agent: work\n    prompt: work\n    capabilities: [tools, tools]", want: "duplicate capability reference"},
 		{name: "direct sidecar bypass", capabilities: "", plan: "  - agent: work\n    prompt: work\n    sidecars: [{name: bypass, image: registry.example/bypass@sha256:" + digest + "}]", want: "direct sidecars are not allowed"},
@@ -613,6 +648,12 @@ func TestCompileV3RejectsInvalidCapabilitiesDeterministically(t *testing.T) {
 		{name: "missing sidecar image", capabilities: "  tools:\n    contract: acme.tools/v1\n    sidecar:\n      name: tools\n", plan: "  - agent: work\n    prompt: work", want: "missing 'image'"},
 		{name: "invalid sidecar protocol", capabilities: "  tools:\n    contract: acme.tools/v1\n    sidecar:\n      name: tools\n      image: registry.example/acme/tools@sha256:" + digest + "\n      ports: [{containerPort: 8080, protocol: HTTP}]\n", plan: "  - agent: work\n    prompt: work", want: "invalid port protocol"},
 		{name: "reserved sidecar name", capabilities: "  tools:\n    contract: acme.tools/v1\n    sidecar:\n      name: artifact-helper\n      image: registry.example/acme/tools@sha256:" + digest + "\n", plan: "  - agent: work\n    prompt: work", want: "reserved container name"},
+		{name: "retired privileged platform name", capabilities: "  tools:\n    contract: acme.tools/v1\n    sidecar:\n      name: platform\n      image: registry.example/acme/tools@sha256:" + digest + "\n      ports: [{containerPort: 7781, protocol: TCP}]\n", plan: "  - agent: work\n    prompt: work", want: "retired privileged runtime roles"},
+		{name: "missing MCP endpoint", capabilities: "  tools:\n    contract: acme.tools/v1\n    sidecar:\n      name: tools\n      image: registry.example/acme/tools@sha256:" + digest + "\n", plan: "  - agent: work\n    prompt: work", want: "exactly one TCP port"},
+		{name: "ambiguous MCP endpoint", capabilities: "  tools:\n    contract: acme.tools/v1\n    sidecar:\n      name: tools\n      image: registry.example/acme/tools@sha256:" + digest + "\n      ports: [{containerPort: 7780}, {containerPort: 7781}]\n", plan: "  - agent: work\n    prompt: work", want: "exactly one TCP port"},
+		{name: "selected port collision", capabilities: "  first:\n    contract: acme.first/v1\n" + validSidecar + "  second:\n    contract: acme.second/v1\n" + strings.Replace(validSidecar, "name: tools", "name: other-tools", 1), plan: "  - agent: work\n    prompt: work\n    capabilities: [first, second]", want: "both bind localhost MCP port"},
+		{name: "authored endpoint override", capabilities: "  tools:\n    contract: acme.tools/v1\n" + validSidecar, plan: "  - agent: work\n    prompt: work\n    env: {TOOLS_MCP_URL: http://attacker.invalid}\n    capabilities: [tools]", want: "reserved for the compiled capability"},
+		{name: "undeclared endpoint", capabilities: "", plan: "  - agent: work\n    prompt: work\n    env: {SHADOW_MCP_URL: http://attacker.invalid}", want: "without a named capability"},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
@@ -654,6 +695,7 @@ func v3CompileSource(plan, capabilities string) string {
 	if capabilities != "" {
 		capabilityBlock = "capabilities:\n" + capabilities
 	}
+	plan = v3PlanWithFunctionIDs(plan)
 	return fmt.Sprintf(`schema_version: 3
 name: compiler-test
 signature_version: 1
@@ -661,6 +703,35 @@ inputs: []
 outputs: []
 %splan:%s
 `, capabilityBlock, plan)
+}
+
+func v3PlanWithFunctionIDs(plan string) string {
+	lines := strings.Split(plan, "\n")
+	withIDs := make([]string, 0, len(lines)*2)
+	for _, line := range lines {
+		withIDs = append(withIDs, line)
+
+		trimmed := strings.TrimSpace(line)
+		listItem := strings.HasPrefix(trimmed, "- ")
+		if listItem {
+			trimmed = strings.TrimPrefix(trimmed, "- ")
+		}
+		kindAndName := strings.SplitN(trimmed, ":", 2)
+		if len(kindAndName) != 2 || (kindAndName[0] != "agent" && kindAndName[0] != "task") {
+			continue
+		}
+		name := strings.TrimSpace(kindAndName[1])
+		if name == "" || strings.ContainsAny(name, " \t{}[],") {
+			continue
+		}
+
+		indent := line[:len(line)-len(strings.TrimLeft(line, " "))]
+		if listItem {
+			indent += "  "
+		}
+		withIDs = append(withIDs, indent+"function_id: "+name)
+	}
+	return strings.Join(withIDs, "\n")
 }
 
 func v3RepeatedPromptPlan(count int) string {

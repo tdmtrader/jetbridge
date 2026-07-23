@@ -7,12 +7,15 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"code.cloudfoundry.org/lager/v3/lagertest"
+	"github.com/concourse/concourse/agent/publisher"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/snapshot/snapshotfakes"
+	"github.com/concourse/concourse/agent/workflowwait"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
@@ -94,9 +97,66 @@ func TestWithSnapshotLoaderKeepsExactCommandScopedDependencies(t *testing.T) {
 	}
 }
 
+func TestWithSnapshotCanonicalizerKeepsDedicatedScratchConfiguration(t *testing.T) {
+	canonicalizer := snapshot.Canonicalizer{
+		MaxContentBytes: 1024,
+		MaxEntries:      10,
+		TempDir:         t.TempDir(),
+	}
+	factory := &coreStepFactory{}
+	WithSnapshotCanonicalizer(canonicalizer)(factory)
+	if factory.snapshotCanonicalizer.MaxContentBytes != canonicalizer.MaxContentBytes ||
+		factory.snapshotCanonicalizer.MaxEntries != canonicalizer.MaxEntries ||
+		factory.snapshotCanonicalizer.TempDir != canonicalizer.TempDir {
+		t.Fatalf("snapshot canonicalizer = %#v, want %#v", factory.snapshotCanonicalizer, canonicalizer)
+	}
+}
+
+func TestWithWorkflowWaitStoreKeepsExactCommandScopedDependency(t *testing.T) {
+	store := workflowwait.NewMemoryStore(time.Now)
+	factory := &coreStepFactory{}
+	WithWorkflowWaitStore(store)(factory)
+	if factory.workflowWaits != store {
+		t.Fatal("workflow wait store did not retain the exact command-scoped dependency")
+	}
+}
+
+func TestWithSnapshotPublisherKeepsExactCommandScopedDependency(t *testing.T) {
+	executor := publisherExecutorStub{}
+	factory := &coreStepFactory{}
+	WithSnapshotPublisher(executor)(factory)
+	if factory.snapshotPublisher != executor {
+		t.Fatal("snapshot publisher did not retain the exact command-scoped dependency")
+	}
+	if (&coreStepFactory{}).snapshotPublisher != nil {
+		t.Fatal("snapshot publisher should be nil by default")
+	}
+}
+
+type publisherExecutorStub struct{}
+
+func (publisherExecutorStub) Execute(context.Context, publisher.Request) (publisher.Publication, error) {
+	return publisher.Publication{}, nil
+}
+
 func TestCoreStepFactoryRunsTaskAndAgentWithTheSameOutputSealer(t *testing.T) {
 	sealer := &factoryRecordingSealer{}
-	harness := newFactoryWiringHarness(t, WithOutputSealer(sealer))
+	metadata := new(snapshotfakes.FakeMetadataStore)
+	metadata.GetAuthorizedStub = func(_ context.Context, _ int, id snapshot.SnapshotID) (snapshot.Snapshot, bool, error) {
+		return snapshot.Snapshot{
+			ID: id, Type: snapshot.TypeRef("opaque/v1"),
+			Digest:         snapshot.Digest("sha256:" + strings.Repeat("a", 64)),
+			Representation: "application/x-tar",
+			ContentState:   snapshot.ContentStateAvailable,
+			CreatedAt:      time.Now().UTC(),
+		}, true, nil
+	}
+	content := new(snapshotfakes.FakeContentStore)
+	harness := newFactoryWiringHarness(
+		t,
+		WithOutputSealer(sealer),
+		WithSnapshotLoader(metadata, content, nil),
+	)
 
 	task := harness.factory.TaskStep(
 		harness.taskPlan, harness.metadata, harness.taskMetadata,
@@ -121,6 +181,9 @@ func TestCoreStepFactoryRunsTaskAndAgentWithTheSameOutputSealer(t *testing.T) {
 	}
 	if sealer.calls[0].StepKind != "task" || sealer.calls[1].StepKind != "agent" {
 		t.Fatalf("shared sealer request kinds = %q, %q", sealer.calls[0].StepKind, sealer.calls[1].StepKind)
+	}
+	if metadata.GetAuthorizedCallCount() != 2 {
+		t.Fatalf("durable snapshot metadata loads = %d, want task and agent", metadata.GetAuthorizedCallCount())
 	}
 }
 

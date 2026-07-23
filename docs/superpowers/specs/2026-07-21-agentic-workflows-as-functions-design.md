@@ -1,9 +1,9 @@
 # Agentic Workflows as Functions over Snapshots
 
 - **Date:** 2026-07-21
-- **Status:** Approved product direction; implementation planning has not begun
+- **Status:** Approved product direction; implementation active on `codex/agentic-functions`
 - **Audience:** The Jetbridge team and future contributors to the Concourse-native agentic workflow work
-- **Assessment baseline:** `integration/audit-all` at `357152e6d1`, together with the 2026-07-21 Jetbridge capability and lifecycle audit branches
+- **Assessment baseline:** `integration/audit-all` at `357152e6d1`, the 2026-07-21 Jetbridge capability and lifecycle audits, and the implementation checkpoints linked from the program plan
 
 ## Executive thesis
 
@@ -164,7 +164,13 @@ version-upgrade:
 
 One version might use a single agent. Another may use an implementation agent, deterministic tests, several reviewers in parallel, a reducer, a human checkpoint, and a PR publisher. They remain variants of the same workflow while their public signatures remain compatible.
 
-Traditional Concourse composition wrappers remain valid. `in_parallel`, `do`, `try`, `across`, `on_failure`, and similar forms can group or control visible nodes. Combining nodes does not make value-changing or side-effecting behavior implicit; the component nodes remain inspectable in the plan and run history.
+Traditional Concourse composition semantics remain the model. The current
+schema-version-3 boundary admits `in_parallel`, `do`, `try`, retry, timeout,
+and hook forms while preserving their visible component nodes. It temporarily
+rejects `across`: Concourse expands that template into runtime plans and plan
+IDs after admission, so exact frozen provenance requires durable capture of
+every expansion before the wrapper can be enabled safely. Combining nodes
+never makes value-changing or side-effecting behavior implicit.
 
 ### Workflow identity and versions
 
@@ -173,7 +179,8 @@ A workflow name has stable identity. Every imported definition creates an immuta
 - the workflow version and content hash;
 - its bound input snapshot identities;
 - the exact plan produced from the definition;
-- execution dependencies needed for provenance.
+- execution dependencies needed for provenance, including the server-selected
+  agent runtime image and every capability image as exact OCI digests.
 
 Promoting a version changes the default used by future runs. It never rewrites prior definitions, runs, inputs, or outputs. History is grouped beneath stable workflow identity across versions so operators can compare behavior without losing the past when definitions change.
 
@@ -234,7 +241,7 @@ Submission tools may help an agent produce the correct format, but Jetbridge is 
 
 ### Atomic completion and lineage
 
-A function invocation succeeds only after all required outputs validate and are sealed. A partial set of valid outputs must not accidentally mark the function successful.
+A function invocation succeeds only after all required outputs validate and are sealed. Sealed values remain durable intermediate evidence as soon as their producer commits, but public workflow-port bindings are staged candidates. Jetbridge promotes the complete public result set in the same transaction that marks the run successful. Failed, errored, aborted, and still-running invocations therefore expose no public outputs, even when one producer emitted a valid intermediate value.
 
 Every sealed snapshot records lineage to:
 
@@ -244,6 +251,19 @@ Every sealed snapshot records lineage to:
 - its content digest.
 
 Every declared step output is sealed at its DAG boundary. Workflow outputs and pinned benchmark fixtures receive durable content retention. Intermediate output manifests and lineage are durable; physical intermediate content may expire under an explicit retention policy unless pinned. Scratch files outside declared output ports are not snapshots.
+
+While a workflow run is nonterminal, each internal snapshot has a non-expiring run-scoped retention claim. Terminalization releases those claims atomically; the configured binding-retention window then controls physical content expiry without weakening immutable manifests or lineage. Long human waits and recovery can therefore never outlive their intermediate values.
+
+An authored transformation never performs a live read. Resource checks, Jira/API reads, log collection, and database sampling happen in explicit capture adapters before invocation and bind exact snapshots. Schema-version-3 functions consequently reject top-level resources and variable sources, `get`, and `load_var`; custom resource types remain available only to resolve a task image into the frozen execution dependency set. Every task and agent node in a v3 function has a stable `function_id` and exact type coverage for every declared input and output; untyped transformation islands are invalid. The executor independently repeats coverage checks after resolving file-backed task configuration.
+
+Ordinary retry scopes retain their Concourse behavior for internal typed values. Public outputs directly produced inside `attempts:` are currently rejected at admission: durable public candidates need attempt-aware promotion before Jetbridge can safely distinguish a failed attempt from the winning attempt. Authors may retry an internal producer and consume its successful value in a later, non-retried public-output node.
+
+Because Concourse creates output mounts before a task or agent starts, mount
+existence cannot signal whether an optional output was produced. Jetbridge
+therefore supplies an explicit, collision-free name-to-marker-path mapping on a
+separate control mount. A producer creates the empty marker only after its
+optional value is complete. An unmarked output is absent; a malformed marker
+is a contract failure; control markers are never part of snapshot content.
 
 ### Outputs and run metadata remain separate
 
@@ -288,11 +308,28 @@ Publishers cross an external side-effect boundary and are explicit DAG nodes, an
 
 Publishers consume validated snapshots. A workflow may place publishers inside composition wrappers, but their presence and results remain visible.
 
+A direct merge is a stronger boundary than opening a branch or pull request.
+It must consume durable approval evidence tied to the exact workflow run,
+`await_snapshot` resolution, authenticated resolver, answer snapshot, change
+snapshot, publisher, mode, destination, complete parameter map, base revision,
+and approval-policy version. Jetbridge, not an agent, synthesizes that question
+after the change has been sealed and the run identity is known. Merely
+attributing the build creator or accepting an agent-authored question is not
+approval. Implementations without that complete linkage must fail closed for
+merge while still permitting reviewable branch and pull-request publication.
+
 ## Capabilities and agents
 
 An `agent:` node is one implementation kind for a function. Deterministic tasks, human checkpoints, evaluators, adapters, and publishers are peers in the DAG.
 
 Agents receive only declared inputs and capabilities. A capability is a named, versioned interface exposed to a function. MCP is a useful protocol and sidecar packaging mechanism, but it is not the semantic product primitive.
+
+Transformation nodes never receive ambient access to live systems. A resource
+or capture adapter may read a live system and seal the result as an input
+snapshot; a publisher may perform an explicit outbound side effect. Between
+those boundaries, capabilities operate only on mounted snapshots and local
+execution state. Human interaction is likewise a visible durable wait, not an
+agent tool that silently contacts a person.
 
 Examples include:
 
@@ -300,12 +337,28 @@ Examples include:
 repository.build
 repository.test
 repository.affected-components
-platform.read-work-item
-platform.ask-human
-agent.request-review
+snapshot.inspect-work-item
+snapshot.query-logs
+snapshot.submit-review
 ```
 
 The existing `dev-mcp` idea remains valuable as a standard repository capability pack. The workflow model must also permit custom capability contracts rather than freezing all tools into `dev`, `platform`, and `gateway` roles.
+
+For the Kubernetes runtime, this boundary is fail-closed. Workflow admission
+forces transformation tasks and agents into hermetic pods, refuses privileged
+tasks, disables service-account token mounting, and selects a default-deny
+egress policy. Operators may allow only explicit model infrastructure through
+that policy. Standard Kubernetes NetworkPolicy still permits traffic to the
+pod's own node; Jetbridge currently relies on that exception for node-local
+artifact bootstrap, so installations needing a stronger boundary must add
+CNI host policy/firewall enforcement or replace that bootstrap transport. A
+capability image is digest-pinned, declares one localhost TCP
+MCP endpoint, receives no run principal or model secret, and is passed to the
+agent only through strict generated MCP configuration. Workflow-authored
+endpoint overrides and the retired privileged role names are invalid. The
+contract name is durable declared identity tied to the frozen image; custom
+contract conformance remains the responsibility of the corresponding
+contract-test kit until a general runtime attestation protocol exists.
 
 ## Experiments and benchmarks
 
@@ -325,6 +378,45 @@ An experiment fixes:
 4. the comparison budget and repetition policy.
 
 It then runs candidate implementations as ordinary pinned workflow runs. A candidate can change prompts, models, capability sets, context strategy, internal DAG topology, parallelism, or deterministic support steps while preserving the tested signature.
+
+Experiment admission is deliberately finite: at most 16 variants, 256
+fixtures, 1,000 repetitions, 2,000 materialized cells, and 32 distinct
+measurements. These limits bound database expansion, API/UI cell lists, stored
+scorecard evidence, and deterministic bootstrap work. The team index uses
+exclusive opaque keyset cursors over `(created_at, id)` and pages at most 100
+experiments at a time. Validation executes the
+same authoritative target resolution, rendering, static budget proof, and
+fixture-availability preflight as start without mutating the draft. Validation
+and start fail closed when no experiment runner is enabled. Candidate and
+evaluator executables containing `publish_snapshot` are rejected so laboratory
+runs cannot perform outbound effects.
+
+Candidate and evaluator bind requests carry an experiment/cell/phase gate
+into ordinary workflow-run persistence. A short allocation transaction locks
+and verifies the running parent and cell before returning an idempotent child
+or inserting a new durable child. Cancellation takes the conflicting parent
+lock, so it commits either before allocation (which then fails closed) or
+after a durable origin-addressable child exists. Rendering, secret
+preparation, and build creation remain outside the lock; exact cell
+association is a separate short write that may finish while cancellation is
+in progress. Origin discovery closes that association window, so
+cancellation and finalization need no guessed lease or grace interval and do
+not require extra database-pool headroom. A platform fault after allocation
+leaves the cell retryable against the same idempotency key rather than
+terminalizing while an origin-addressable child is still admitting.
+
+Budget denial becomes the distinct terminal `skipped_budget` result, while
+invalid admission remains a contract failure. Candidate reservations are made
+serially in the repetition-first rotated materialization order before admitted
+cells execute concurrently, preventing scheduler timing from biasing a scarce
+budget toward one authored variant. The cell reservation is the single
+candidate-plus-evaluator liability under the deployment cap; child workflow
+runs validate their exact slices but do not reserve that liability again.
+Static proof allows a deterministic evaluator to run at exact candidate usage,
+while a final actual overage becomes `skipped_budget` before measurements are
+admitted. Scorecards are terminal-only and durably freeze the cell matrix plus
+then-known selected/anomalous build telemetry. Budget-skipped matrices report
+no winner, and late metrics cannot rewrite a completed benchmark.
 
 The system reports distributions rather than only winners: quality metrics, variance, cost, latency, platform-error rate, and human intervention. Negative controls and pinned evaluators detect evaluator blindness and moving goalposts.
 
@@ -362,6 +454,15 @@ These properties make stochastic functions operable. They should remain outside 
 
 ## Alignment with the existing implementation
 
+This section records the implementation baseline that was audited before the
+workflow-functions program began. It is intentionally historical: the
+approved implementation now carries out the migration described below through
+schema-version-3 workflow functions, durable snapshots and runs, explicit
+capture/wait/publisher nodes, experiments, and workflow-first operator
+surfaces. The reuse matrix explains why each older subsystem was retained,
+adapted, isolated for compatibility, or removed from the new primary path; it
+is not a list of current missing features.
+
 ### Overall verdict
 
 There is substantial alignment below the workflow grammar and substantial misalignment in the current product-shaped control plane.
@@ -396,7 +497,7 @@ That shape is useful as one workflow, but it cannot remain the platform contract
 | Artifact repository and artifact-daemon | **Retain and augment** | They provide the physical file-tree data plane. Add a snapshot registry, content identity, seal-time validation, durable manifests/lineage, and retention-aware durable storage. Current build-scoped artifact registration alone is insufficient. |
 | Task sidecars and MCP transport | **Retain** | The runtime mechanism is well aligned. Capability declarations should become general named contracts rather than a closed role taxonomy. |
 | `dev-mcp` | **Retain as a standard capability pack** | Its typed build/test/lint/component contract and contract-test kit are useful. It becomes one conventional dependency that a function may request, not a mandatory workflow layer. |
-| `platform-mcp` | **Split and adapt** | Ticket/task reads, structured submissions, and `ask_human` are useful optional capabilities. Remove the assumption that every workflow has a ticket/spec/plan. Interactions should produce new immutable inputs at explicit boundaries. |
+| `platform-mcp` | **Split and adapt** | Snapshot-local inspection and structured submission helpers are reusable. Live ticket reads move to capture/resource adapters, and `ask_human` becomes the visible durable `await_snapshot` boundary. Remove the assumption that every workflow has a ticket/spec/plan. |
 | Agent gateway plans | **Defer and redesign at the capability boundary** | Provider-independent review/agent calls remain useful, but the unimplemented gateway should target general capability interfaces and typed outputs rather than the old fixed workflow roles. |
 | `harvest:` step | **Remove as a privileged terminal primitive** | It hard-codes committed workspace verification, fixed gates, judging, branch naming, pushing, and ticket transitions. Decompose reusable logic into visible validator, evaluator, repository transformation, and publisher nodes. |
 | Harvest gate and judge implementations | **Salvage as functions** | Real-Git helpers, gate result structures, retry taxonomy, and rubric judging are reusable. Fixed Go command maps and implicit pre-push execution are not. |

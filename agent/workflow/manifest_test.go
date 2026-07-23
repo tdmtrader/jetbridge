@@ -106,7 +106,7 @@ func TestManifestV3EveryAssetIsHashed(t *testing.T) {
 
 func TestManifestV3UnreferencedFilesRemainHashed(t *testing.T) {
 	base := workflow.Manifest{
-		"workflow.yml":    "schema_version: 3\nname: hash-test\nsignature_version: 1\ninputs: []\noutputs: []\nplan: [{agent: work, prompt: work}]\n",
+		"workflow.yml":    "schema_version: 3\nname: hash-test\nsignature_version: 1\ninputs: []\noutputs: []\nplan: [{agent: work, function_id: work, prompt: work}]\n",
 		"README.md":       "one",
 		"notes/design.md": "unchanged",
 	}

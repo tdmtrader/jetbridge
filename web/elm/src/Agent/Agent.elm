@@ -14,7 +14,10 @@ import AgentBadge
 import Application.Models exposing (Session)
 import Colors
 import Concourse.Agent as Agent
+import Concourse.Experiment as Experiment
+import Concourse.WorkflowRun as WorkflowRun
 import DateFormat
+import Dict exposing (Dict)
 import EffectTransformer exposing (ET)
 import Html exposing (Html)
 import Html.Attributes exposing (checked, class, disabled, href, id, placeholder, style, title, type_, value)
@@ -62,6 +65,12 @@ type alias Model =
         { runs : Maybe (List Agent.RunMetric)
         , runsError : Maybe String
         , workflows : Maybe (List Agent.WorkflowSummary)
+        , workflowRuns : Dict String (List WorkflowRun.Summary)
+        , workflowRunStatusCounts : Dict String (Dict String Int)
+        , workflowRunsError : Maybe String
+        , experiments : Maybe (List Experiment.Experiment)
+        , experimentsError : Maybe String
+        , costByWorkflow : Dict String Float
         , costRollup : Maybe Agent.CostRollup
         , workflowsError : Maybe String
         , costError : Maybe String
@@ -89,6 +98,12 @@ init =
     ( { runs = Nothing
       , runsError = Nothing
       , workflows = Nothing
+      , workflowRuns = Dict.empty
+      , workflowRunStatusCounts = Dict.empty
+      , workflowRunsError = Nothing
+      , experiments = Nothing
+      , experimentsError = Nothing
+      , costByWorkflow = Dict.empty
       , costRollup = Nothing
       , workflowsError = Nothing
       , costError = Nothing
@@ -113,6 +128,8 @@ init =
     , [ FetchAgentRunMetrics
       , FetchAgentWorkflows
       , FetchAgentCostRollup
+      , FetchAgentWorkflowCosts
+      , FetchAgentExperiments
       , FetchAgentTicketCosts
       , FetchAgentCredentials
       , FetchAgentPlatformCredentials
@@ -148,16 +165,68 @@ handleCallback callback ( model, effects ) =
             ( { model | runsError = Just (errorMessage "runs" err) }, effects )
 
         AgentWorkflowsFetched (Ok workflows) ->
-            ( { model | workflows = Just workflows, workflowsError = Nothing }, effects )
+            ( { model | workflows = Just workflows, workflowsError = Nothing }
+            , effects
+                ++ List.concatMap
+                    (\workflow ->
+                        [ FetchAgentWorkflowRuns workflow.name
+                        , FetchAgentWorkflowRunOperationalStatusCounts workflow.name
+                        ]
+                    )
+                    workflows
+            )
 
         AgentWorkflowsFetched (Err err) ->
             ( { model | workflowsError = Just (errorMessage "workflows" err) }, effects )
+
+        AgentWorkflowRunsFetched workflowName (Ok runs) ->
+            ( { model
+                | workflowRuns = Dict.insert workflowName runs model.workflowRuns
+                , workflowRunsError = Nothing
+              }
+            , effects
+            )
+
+        AgentWorkflowRunsFetched _ (Err err) ->
+            ( { model | workflowRunsError = Just (errorMessage "workflow runs" err) }, effects )
+
+        AgentWorkflowRunOperationalStatusCountsFetched workflowName (Ok aggregate) ->
+            if aggregate.workflowName /= workflowName then
+                ( model, effects )
+
+            else
+                ( { model
+                    | workflowRunStatusCounts =
+                        Dict.insert workflowName aggregate.counts model.workflowRunStatusCounts
+                    , workflowRunsError = Nothing
+                  }
+                , effects
+                )
+
+        AgentWorkflowRunOperationalStatusCountsFetched _ (Err err) ->
+            ( { model | workflowRunsError = Just (errorMessage "workflow run status" err) }, effects )
+
+        AgentExperimentsFetched (Ok experiments) ->
+            ( { model | experiments = Just experiments, experimentsError = Nothing }, effects )
+
+        AgentExperimentsFetched (Err err) ->
+            ( { model | experimentsError = Just (errorMessage "experiments" err) }, effects )
 
         AgentCostRollupFetched (Ok costRollup) ->
             -- The console fires both the by-day rollup (the Costs table) and
             -- the by-ticket rollup (for the unattributed bucket); they share
             -- one callback and are told apart by the response's group_by.
-            if costRollup.groupBy == "ticket" then
+            if costRollup.groupBy == "workflow" then
+                ( { model
+                    | costByWorkflow =
+                        costRollup.rows
+                            |> List.map (\row -> ( row.key, row.costUsd ))
+                            |> Dict.fromList
+                  }
+                , effects
+                )
+
+            else if costRollup.groupBy == "ticket" then
                 ( { model
                     | unattributedUsd =
                         costRollup.rows
@@ -395,6 +464,8 @@ polls =
                 [ FetchAgentRunMetrics
                 , FetchAgentWorkflows
                 , FetchAgentCostRollup
+                , FetchAgentWorkflowCosts
+                , FetchAgentExperiments
                 , FetchAgentTicketCosts
                 , FetchAgentCredentials
                 , FetchAgentPlatformCredentials
@@ -580,20 +651,18 @@ view session model =
                     , style "margin" "0"
                     , style "color" Colors.text
                     ]
-                    [ Html.text "Agent" ]
+                    [ Html.text "Agent workflows" ]
                 , Html.p
                     [ style "color" mutedColor
                     , style "font-family" "monospace"
                     , style "font-size" "12px"
                     , style "margin" "4px 0 0 0"
                     ]
-                    [ Html.text "workflows and spend" ]
+                    [ Html.text "durable functions from typed snapshots to typed snapshots" ]
                 , sectionNav
-                , runsSection session.timeZone model
                 , workflowsSection model
-                , costsSection model
-                , credentialsSection session.timeZone model
-                , principalsSection session.timeZone model
+                , runsSection session.timeZone model
+                , operationsAdminSection session.timeZone model
                 ]
             ]
         ]
@@ -626,8 +695,9 @@ sectionNav =
         , style "font-size" "12px"
         ]
         (List.map navLink
-            [ ( "agent-runs", "runs" )
-            , ( "agent-workflows", "workflows" )
+            [ ( "agent-workflows", "workflows" )
+            , ( "agent-runs", "execution ledger" )
+            , ( "agent-operations", "operations / admin" )
             , ( "agent-costs", "costs" )
             , ( "agent-credentials", "credentials" )
             , ( "agent-principals", "principals" )
@@ -870,6 +940,14 @@ secondsToPosix seconds =
 -- WORKFLOWS SECTION
 
 
+workflowStatusCount : String -> String -> Model -> Int
+workflowStatusCount workflowName status model =
+    model.workflowRunStatusCounts
+        |> Dict.get workflowName
+        |> Maybe.andThen (Dict.get status)
+        |> Maybe.withDefault 0
+
+
 workflowsSection : Model -> Html Message
 workflowsSection model =
     sectionBlock "agent-workflows" "Workflows" <|
@@ -888,11 +966,63 @@ workflowsSection model =
 
             Just workflows ->
                 staleDataWarning model.workflowsError
-                    ++ [ Html.div [ class "agent-workflows" ] (List.map workflowRow workflows) ]
+                    ++ staleDataWarning model.workflowRunsError
+                    ++ staleDataWarning model.experimentsError
+                    ++ [ Html.div [ class "agent-workflows" ] (List.map (workflowRow model) workflows) ]
 
 
-workflowRow : Agent.WorkflowSummary -> Html Message
-workflowRow w =
+workflowRow : Model -> Agent.WorkflowSummary -> Html Message
+workflowRow model w =
+    let
+        runs =
+            Dict.get w.name model.workflowRuns
+                |> Maybe.withDefault []
+
+        queued =
+            workflowStatusCount w.name "admitting" model
+
+        running =
+            workflowStatusCount w.name "running" model
+                + workflowStatusCount w.name "canceling" model
+
+        operational =
+            List.filter (\run -> run.originKind /= "experiment") runs
+
+        latestStatus =
+            operational
+                |> List.head
+                |> Maybe.map .status
+                |> Maybe.withDefault "no operational runs"
+
+        attention =
+            workflowStatusCount w.name "failed" model
+                + workflowStatusCount w.name "errored" model
+
+        needsAttention =
+            attention > 0
+
+        experimentStates =
+            model.experiments
+                |> Maybe.withDefault []
+                |> List.filter
+                    (\experiment ->
+                        List.any
+                            (\variant -> variant.target.workflowName == w.name)
+                            experiment.definition.variants
+                    )
+                |> List.map (.definition >> .state)
+
+        experimentLabel =
+            case experimentStates of
+                [] ->
+                    "no experiments"
+
+                states ->
+                    String.join ", " states
+
+        cost =
+            Dict.get w.name model.costByWorkflow |> Maybe.withDefault 0
+    in
     Html.div
         [ class "agent-workflow-row"
         , style "display" "flex"
@@ -903,14 +1033,74 @@ workflowRow w =
         ]
         [ Html.div [ style "flex" "1", style "min-width" "0" ]
             [ Html.div []
-                (Html.span
-                    [ style "font-weight" "700", style "color" Colors.text ]
+                (Html.a
+                    [ href (Routes.toString (Routes.AgentWorkflow { name = w.name }))
+                    , class "agent-workflow-link"
+                    , style "font-weight" "700"
+                    , style "color" "#7a9ac0"
+                    , style "text-decoration" "none"
+                    ]
                     [ Html.text w.name ]
                     :: workflowPills w
                 )
             , Html.div
                 [ style "font-size" "12px", style "color" mutedColor ]
                 [ Html.text w.description ]
+            , Html.div
+                [ class "agent-workflow-signature"
+                , style "font-size" "11px"
+                , style "font-family" "monospace"
+                , style "color" subtleColor
+                , style "margin-top" "4px"
+                ]
+                [ Html.text
+                    ("schema v"
+                        ++ String.fromInt w.schemaVersion
+                        ++ " · signature v"
+                        ++ String.fromInt w.signatureVersion
+                    )
+                ]
+            , Html.div
+                [ class "agent-workflow-operational-state"
+                , style "font-size" "12px"
+                , style "color" mutedColor
+                , style "margin-top" "4px"
+                ]
+                ([ Html.text
+                    ("latest operational: "
+                        ++ latestStatus
+                        ++ " · "
+                        ++ String.fromInt queued
+                        ++ " queued · "
+                        ++ String.fromInt running
+                        ++ " running · "
+                        ++ String.fromInt attention
+                        ++ " attention"
+                    )
+                 ]
+                    ++ (if needsAttention then
+                            [ pill "agent-workflow-needs-attention"
+                                { bg = "#5a3d24", fg = "#f0c078" }
+                                "needs attention"
+                            ]
+
+                        else
+                            []
+                       )
+                )
+            , Html.div
+                [ class "agent-workflow-experiment-state"
+                , style "font-size" "11px"
+                , style "color" subtleColor
+                , style "margin-top" "3px"
+                ]
+                [ Html.text
+                    ("experiments: "
+                        ++ experimentLabel
+                        ++ " · cost $"
+                        ++ formatUsd cost
+                    )
+                ]
             ]
         , Html.div
             [ style "font-family" "monospace"
@@ -959,6 +1149,27 @@ liveVersionLine w =
 
     else
         Html.div [] [ Html.text ("v" ++ String.fromInt w.liveVersion ++ " live") ]
+
+
+operationsAdminSection : Time.Zone -> Model -> Html Message
+operationsAdminSection zone model =
+    Html.div
+        [ id "agent-operations"
+        , class "agent-operations-admin"
+        , style "margin-top" "32px"
+        , style "padding-top" "16px"
+        , style "border-top" ("1px solid " ++ Colors.border)
+        ]
+        [ Html.h2
+            [ style "font-size" "16px", style "margin" "0" ]
+            [ Html.text "Operations / admin" ]
+        , Html.p
+            [ style "color" subtleColor, style "font-size" "12px" ]
+            [ Html.text "Platform spend, credentials, and machine principals." ]
+        , costsSection model
+        , credentialsSection zone model
+        , principalsSection zone model
+        ]
 
 
 

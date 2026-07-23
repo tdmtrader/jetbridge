@@ -37,6 +37,8 @@ func TestNewReconcilerValidatesConfiguration(t *testing.T) {
 		{name: "timeout below two delays", store: store, logger: logger, timeout: 90 * time.Second, delay: time.Minute, wantError: "twice"},
 		{name: "two delays overflow duration", store: store, logger: logger, timeout: time.Duration(1<<63 - 1), delay: time.Duration(1 << 62), wantError: "twice"},
 		{name: "nil clock", store: store, logger: logger, timeout: 10 * time.Minute, delay: time.Minute, options: []ReconcilerOption{WithReconcilerClock(nil)}, wantError: "clock"},
+		{name: "nil wait completer", store: store, logger: logger, timeout: 10 * time.Minute, delay: time.Minute, options: []ReconcilerOption{WithWaitResolutionCompleter(nil)}, wantError: "wait resolution"},
+		{name: "nil wait canceler", store: store, logger: logger, timeout: 10 * time.Minute, delay: time.Minute, options: []ReconcilerOption{WithWaitCanceler(nil)}, wantError: "wait canceler"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -295,6 +297,151 @@ func TestReconcilerRunningOutcomeStateMachine(t *testing.T) {
 	}
 }
 
+func TestReconcilerCompletesDurableWaitIntentsBeforeInspectingRunningOutcome(t *testing.T) {
+	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
+	run := runningRun(1, now, nil, true)
+	run.TeamID = 7
+	run.TeamName = "main"
+	store := storeForSingleRun(run)
+	store.inspectFn = func(context.Context, snapshot.WorkflowRunID) (db.AgentWorkflowRunReconciliationView, bool, error) {
+		return db.AgentWorkflowRunReconciliationView{
+			Run: run, SelectedBuildExists: true, SelectedBuildStatus: db.BuildStatusStarted,
+		}, true, nil
+	}
+	completer := &waitResolutionCompleterFake{}
+	reporter := &reconciliationReporterFake{}
+	reconciler := mustReconciler(
+		t,
+		store,
+		now,
+		15*time.Minute,
+		time.Minute,
+		reporter,
+		nil,
+		WithWaitResolutionCompleter(completer),
+	)
+	if err := reconciler.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(completer.calls, []waitResolutionCall{{
+		teamID: 7, teamName: "main", runID: run.ID,
+	}}) {
+		t.Fatalf("completion calls = %+v", completer.calls)
+	}
+	if reporter.rowCount(metric.WorkflowRunReconcilerRowDeferred) != 1 {
+		t.Fatalf("rows = %+v", reporter.rows)
+	}
+
+	completer.err = errors.New("snapshot storage unavailable")
+	if err := reconciler.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if reporter.rowCount(metric.WorkflowRunReconcilerRowFailed) != 1 {
+		t.Fatalf("completion failure was not isolated for retry: %+v", reporter.rows)
+	}
+}
+
+func TestReconcilerRepairsOpenWaitsForCancelingAndAbortedRuns(t *testing.T) {
+	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
+	for _, status := range []db.AgentWorkflowRunStatus{
+		db.AgentWorkflowRunStatusCanceling,
+		db.AgentWorkflowRunStatusAborted,
+	} {
+		t.Run(string(status), func(t *testing.T) {
+			run := reconciliationRun(42, status, now)
+			run.TeamID = 7
+			run.TeamName = "main"
+			store := storeForSingleRun(run)
+			if status == db.AgentWorkflowRunStatusCanceling {
+				store.inspectFn = func(context.Context, snapshot.WorkflowRunID) (db.AgentWorkflowRunReconciliationView, bool, error) {
+					return db.AgentWorkflowRunReconciliationView{
+						Run: run, SelectedBuildExists: true, SelectedBuildStatus: db.BuildStatusStarted,
+					}, true, nil
+				}
+			}
+			waits := &reconciliationWaitCancelerFake{cancel: func(
+				_ context.Context,
+				teamID int,
+				runID snapshot.WorkflowRunID,
+				actor string,
+				at time.Time,
+			) (int, error) {
+				if teamID != 7 || runID != run.ID || actor != "system:workflow-run-cancel" || !at.Equal(now) {
+					t.Fatalf("CancelRun = (%d, %s, %q, %s)", teamID, runID, actor, at)
+				}
+				return 1, nil
+			}}
+			reporter := &reconciliationReporterFake{}
+			reconciler := mustReconciler(
+				t,
+				store,
+				now,
+				15*time.Minute,
+				time.Minute,
+				reporter,
+				nil,
+				WithWaitCanceler(waits),
+			)
+			if err := reconciler.Run(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			want := metric.WorkflowRunReconcilerRowAdvanced
+			if status == db.AgentWorkflowRunStatusCanceling {
+				want = metric.WorkflowRunReconcilerRowDeferred
+			}
+			if reporter.rowCount(want) != 1 {
+				t.Fatalf("rows = %+v", reporter.rows)
+			}
+		})
+	}
+}
+
+func TestReconcilerRetriesAbortedRunWaitCleanupAfterDependencyFailure(t *testing.T) {
+	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
+	run := reconciliationRun(42, db.AgentWorkflowRunStatusAborted, now)
+	run.TeamID = 7
+	run.TeamName = "main"
+	store := storeForSingleRun(run)
+	calls := 0
+	waits := &reconciliationWaitCancelerFake{cancel: func(
+		context.Context,
+		int,
+		snapshot.WorkflowRunID,
+		string,
+		time.Time,
+	) (int, error) {
+		calls++
+		if calls == 1 {
+			return 0, errors.New("temporary database failure")
+		}
+		return 1, nil
+	}}
+	reporter := &reconciliationReporterFake{}
+	reconciler := mustReconciler(
+		t,
+		store,
+		now,
+		15*time.Minute,
+		time.Minute,
+		reporter,
+		nil,
+		WithWaitCanceler(waits),
+	)
+
+	if err := reconciler.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if reporter.rowCount(metric.WorkflowRunReconcilerRowFailed) != 1 {
+		t.Fatalf("first cleanup failure was not retained for retry: %+v", reporter.rows)
+	}
+	if err := reconciler.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || reporter.rowCount(metric.WorkflowRunReconcilerRowAdvanced) != 1 {
+		t.Fatalf("cleanup calls/rows = %d/%+v", calls, reporter.rows)
+	}
+}
+
 func TestReconcilerCancelingStateMachine(t *testing.T) {
 	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
 	for _, execution := range []db.AgentWorkflowRunExecutionStatus{
@@ -547,18 +694,63 @@ type provenanceVerifierFake struct {
 	calls        []snapshot.WorkflowRunID
 }
 
+type waitResolutionCall struct {
+	teamID   int
+	teamName string
+	runID    snapshot.WorkflowRunID
+}
+
+type waitResolutionCompleterFake struct {
+	calls []waitResolutionCall
+	err   error
+}
+
+type reconciliationWaitCancelerFake struct {
+	cancel func(context.Context, int, snapshot.WorkflowRunID, string, time.Time) (int, error)
+}
+
+func (fake *reconciliationWaitCancelerFake) CancelRun(
+	ctx context.Context,
+	teamID int,
+	runID snapshot.WorkflowRunID,
+	actor string,
+	now time.Time,
+) (int, error) {
+	return fake.cancel(ctx, teamID, runID, actor, now)
+}
+
+func (fake *waitResolutionCompleterFake) ReconcilePending(
+	_ context.Context,
+	teamID int,
+	teamName string,
+	runID snapshot.WorkflowRunID,
+) error {
+	fake.calls = append(fake.calls, waitResolutionCall{teamID: teamID, teamName: teamName, runID: runID})
+	return fake.err
+}
+
 func (fake *provenanceVerifierFake) Verify(run db.AgentWorkflowRun) (provenanceVerification, error) {
 	fake.calls = append(fake.calls, run.ID)
 	return fake.verification, fake.err
 }
 
-func mustReconciler(t *testing.T, store ReconciliationStore, now time.Time, timeout, delay time.Duration, reporter reconciliationReporter, clock func() time.Time) *Reconciler {
+func mustReconciler(
+	t *testing.T,
+	store ReconciliationStore,
+	now time.Time,
+	timeout,
+	delay time.Duration,
+	reporter reconciliationReporter,
+	clock func() time.Time,
+	extra ...ReconcilerOption,
+) *Reconciler {
 	t.Helper()
 	options := []ReconcilerOption{withReconciliationReporter(reporter)}
 	if clock == nil {
 		clock = func() time.Time { return now }
 	}
 	options = append(options, WithReconcilerClock(clock))
+	options = append(options, extra...)
 	reconciler, err := NewReconciler(store, lager.NewLogger("test"), timeout, delay, options...)
 	if err != nil {
 		t.Fatalf("NewReconciler: %v", err)

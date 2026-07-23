@@ -2,6 +2,7 @@ package atc
 
 import (
 	"github.com/concourse/concourse/agent/harvest"
+	"github.com/concourse/concourse/agent/publisher"
 	"github.com/concourse/concourse/agent/snapshot"
 )
 
@@ -9,16 +10,18 @@ type Plan struct {
 	ID       PlanID `json:"id"`
 	Attempts []int  `json:"attempts,omitempty"`
 
-	Get          *GetPlan          `json:"get,omitempty"`
-	Put          *PutPlan          `json:"put,omitempty"`
-	Check        *CheckPlan        `json:"check,omitempty"`
-	Task         *TaskPlan         `json:"task,omitempty"`
-	Run          *RunPlan          `json:"run,omitempty"`
-	Agent        *AgentPlan        `json:"agent,omitempty"`
-	Harvest      *HarvestPlan      `json:"harvest,omitempty"`
-	SetPipeline  *SetPipelinePlan  `json:"set_pipeline,omitempty"`
-	LoadVar      *LoadVarPlan      `json:"load_var,omitempty"`
-	LoadSnapshot *LoadSnapshotPlan `json:"load_snapshot,omitempty"`
+	Get             *GetPlan             `json:"get,omitempty"`
+	Put             *PutPlan             `json:"put,omitempty"`
+	Check           *CheckPlan           `json:"check,omitempty"`
+	Task            *TaskPlan            `json:"task,omitempty"`
+	Run             *RunPlan             `json:"run,omitempty"`
+	Agent           *AgentPlan           `json:"agent,omitempty"`
+	Harvest         *HarvestPlan         `json:"harvest,omitempty"`
+	SetPipeline     *SetPipelinePlan     `json:"set_pipeline,omitempty"`
+	LoadVar         *LoadVarPlan         `json:"load_var,omitempty"`
+	LoadSnapshot    *LoadSnapshotPlan    `json:"load_snapshot,omitempty"`
+	AwaitSnapshot   *AwaitSnapshotPlan   `json:"await_snapshot,omitempty"`
+	PublishSnapshot *PublishSnapshotPlan `json:"publish_snapshot,omitempty"`
 
 	Do         *DoPlan         `json:"do,omitempty"`
 	InParallel *InParallelPlan `json:"in_parallel,omitempty"`
@@ -422,6 +425,8 @@ type RunPlan struct {
 // workflow definition tables.
 type AgentPlan struct {
 	Name            string                          `json:"name"`
+	Hermetic        bool                            `json:"hermetic,omitempty"`
+	RuntimeImage    string                          `json:"runtime_image,omitempty"`
 	Prompt          string                          `json:"prompt,omitempty"`
 	PromptFile      string                          `json:"prompt_file,omitempty"`
 	Model           string                          `json:"model,omitempty"`
@@ -482,6 +487,34 @@ type LoadSnapshotPlan struct {
 	Type          snapshot.TypeRef `json:"type"`
 	Optional      bool             `json:"optional,omitempty"`
 	WorkflowRunID string           `json:"workflow_run_id,omitempty"`
+}
+
+type AwaitSnapshotPlan struct {
+	Name                 string                 `json:"name"`
+	Question             string                 `json:"question,omitempty"`
+	MergeApproval        *MergeApprovalIntent   `json:"merge_approval,omitempty"`
+	Type                 snapshot.TypeRef       `json:"type"`
+	OnTimeout            AwaitSnapshotOnTimeout `json:"on_timeout"`
+	DefaultSnapshotID    string                 `json:"default_snapshot_id,omitempty"`
+	WorkflowPort         string                 `json:"workflow_port,omitempty"`
+	WorkflowDefinitionID int                    `json:"workflow_definition_id,omitempty"`
+	WorkflowRunID        string                 `json:"workflow_run_id,omitempty"`
+}
+
+// PublishSnapshotPlan is the complete, literal publication request planned by
+// a visible publish_snapshot node. Destination and parameters are execution
+// data and are deliberately redacted by Public.
+type PublishSnapshotPlan struct {
+	Name                  string            `json:"name"`
+	Publisher             snapshot.TypeRef  `json:"publisher"`
+	Input                 string            `json:"input"`
+	InputType             snapshot.TypeRef  `json:"input_type"`
+	Destination           string            `json:"destination"`
+	Mode                  publisher.Mode    `json:"mode"`
+	Parameters            map[string]string `json:"parameters,omitempty"`
+	ApprovalPolicyVersion string            `json:"approval_policy_version"`
+	Approval              string            `json:"approval,omitempty"`
+	WorkflowRunID         string            `json:"workflow_run_id,omitempty"`
 }
 
 type RetryPlan []Plan

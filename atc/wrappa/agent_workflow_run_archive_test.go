@@ -14,6 +14,7 @@ func TestAgentWorkflowRunRoutesAreNotRejectedForArchivedPipelines(t *testing.T) 
 	routes := []string{
 		atc.CreateAgentWorkflowRun,
 		atc.ListAgentWorkflowRuns,
+		atc.GetAgentWorkflowRunOperationalStatusCounts,
 		atc.GetAgentWorkflowRun,
 		atc.CancelAgentWorkflowRun,
 		atc.RetryAgentWorkflowRun,

@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -200,6 +201,53 @@ type PromotionResult struct {
 // not exist.
 var ErrVersionNotFound = errors.New("workflow version not found")
 
+// ErrPromotionValidatorRequired prevents schema-v3 definitions from becoming
+// live unless the caller supplied the trusted renderer used by workflow-run
+// binding. Import intentionally remains more permissive so authors can inspect
+// and iterate on definitions which are not executable yet.
+var ErrPromotionValidatorRequired = errors.New("workflow: schema-v3 promotion requires an authoritative target validator")
+
+// InvalidPromotionError identifies a stored version which exists but cannot
+// become a runnable live target. Stores must return this before changing the
+// current live version.
+type InvalidPromotionError struct{ Err error }
+
+func (e InvalidPromotionError) Error() string {
+	return fmt.Sprintf("workflow: version is not runnable: %v", e.Err)
+}
+
+func (e InvalidPromotionError) Unwrap() error { return e.Err }
+
+// PromotionValidator is implemented by the trusted workflow-run renderer.
+// Validation is invoked by Store.Promote while the store's per-workflow
+// serialization lock is held, immediately before the atomic live swap.
+type PromotionValidator interface {
+	ValidatePromotion(Definition) error
+}
+
+const (
+	DefaultVersionPageSize = 50
+	MaxVersionPageSize     = 100
+	MaxWorkflowVersion     = 2_147_483_647
+)
+
+var ErrInvalidVersionPage = errors.New("workflow: invalid version page")
+
+// VersionPageRequest is a stable keyset cursor over immutable workflow
+// version numbers. Cursor is exclusive: a non-zero value requests versions
+// older than that version. Limit is always explicit so no Store
+// implementation can accidentally perform an unbounded history read.
+type VersionPageRequest struct {
+	Cursor int
+	Limit  int
+}
+
+type VersionPage struct {
+	Definitions []Definition
+	NextCursor  int
+	Found       bool
+}
+
 // InvalidDefinitionError wraps parse/validation/name-mismatch failures
 // so API handlers can map them to 400 responses.
 type InvalidDefinitionError struct{ Err error }
@@ -221,6 +269,9 @@ type Store interface {
 	Latest(name string) (*Definition, bool, error) // highest version, live or not
 	List() ([]Definition, error)                   // latest version per name + live marker
 	LiveVersions() (map[string]int, error)         // name -> live version, one query for all names
-	Versions(name string) ([]Definition, error)
-	Promote(name string, version int, promotedBy string) (PromotionResult, error) // atomically swaps the live flag
+	Versions(context.Context, string, VersionPageRequest) (VersionPage, error)
+	// Promote validates schema-v3 definitions with the store's authoritative
+	// PromotionValidator and atomically swaps the live flag. Validation and
+	// the swap are serialized with imports and other promotions for name.
+	Promote(name string, version int, promotedBy string) (PromotionResult, error)
 }

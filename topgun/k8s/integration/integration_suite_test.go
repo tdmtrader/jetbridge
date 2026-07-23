@@ -18,6 +18,7 @@
 // Environment variables:
 //   FLY_PATH           — path to fly binary (builds from source if unset)
 //   CONCOURSE_IMAGE    — Docker image to load into K3s (default: concourse-local:latest)
+//   ARTIFACT_HELPER_IMAGE — optional project-owned helper pinned to an exact @sha256 digest
 //   SKIP_TEARDOWN      — Set to "1" to keep K3s cluster after tests
 //   EVENTUALLY_TIMEOUT — Go duration for Eventually timeout (default: 5m)
 
@@ -104,7 +105,7 @@ func TestIntegration(t *testing.T) {
 type suiteConfig struct {
 	FlyBin      string `json:"fly_bin"`
 	ATCURL      string `json:"atc_url"`
-	ATCUsername  string `json:"atc_username"`
+	ATCUsername string `json:"atc_username"`
 	ATCPassword string `json:"atc_password"`
 	Namespace   string `json:"namespace"`
 	Kubeconfig  string `json:"kubeconfig"`

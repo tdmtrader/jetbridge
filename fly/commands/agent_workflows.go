@@ -148,23 +148,9 @@ func (command *WorkflowsShowCommand) Execute([]string) error {
 	name := url.PathEscape(command.Args.Name)
 	version := command.Args.Version
 	if version == 0 {
-		resp, err := agentAPIRequest(target, "GET", "/api/v1/agent/workflows/"+name+"/versions", nil)
+		version, err = resolveDefaultWorkflowVersion(target, name)
 		if err != nil {
 			return err
-		}
-		var versions []workflow.Definition
-		if err := decodeOrError(resp, &versions); err != nil {
-			return err
-		}
-		for _, v := range versions {
-			if v.Version > version { // latest…
-				version = v.Version
-			}
-		}
-		for _, v := range versions {
-			if v.Live { // …unless one is live
-				version = v.Version
-			}
 		}
 	}
 
@@ -193,6 +179,57 @@ func (command *WorkflowsShowCommand) Execute([]string) error {
 		}
 	}
 	return nil
+}
+
+func resolveDefaultWorkflowVersion(target rc.Target, escapedName string) (int, error) {
+	latest := 0
+	cursor := ""
+	seen := map[string]struct{}{}
+	for {
+		query := url.Values{
+			"limit": {strconv.Itoa(workflow.MaxVersionPageSize)},
+		}
+		if cursor != "" {
+			query.Set("cursor", cursor)
+		}
+		resp, err := agentAPIRequest(
+			target,
+			http.MethodGet,
+			"/api/v1/agent/workflows/"+escapedName+"/versions?"+query.Encode(),
+			nil,
+		)
+		if err != nil {
+			return 0, err
+		}
+		nextCursor := resp.Header.Get("X-Next-Cursor")
+		var versions []workflow.Definition
+		if err := decodeOrError(resp, &versions); err != nil {
+			return 0, err
+		}
+		for _, candidate := range versions {
+			if candidate.Version > latest {
+				latest = candidate.Version
+			}
+			if candidate.Live {
+				return candidate.Version, nil
+			}
+		}
+		if nextCursor == "" {
+			if latest == 0 {
+				return 0, fmt.Errorf("workflow has no versions")
+			}
+			return latest, nil
+		}
+		parsed, err := strconv.Atoi(nextCursor)
+		if err != nil || parsed <= 0 {
+			return 0, fmt.Errorf("server returned invalid workflow version cursor %q", nextCursor)
+		}
+		if _, duplicate := seen[nextCursor]; duplicate {
+			return 0, fmt.Errorf("server returned repeated workflow version cursor %q", nextCursor)
+		}
+		seen[nextCursor] = struct{}{}
+		cursor = nextCursor
+	}
 }
 
 type WorkflowsImportCommand struct {

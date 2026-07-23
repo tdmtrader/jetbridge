@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -22,6 +23,14 @@ type agentCostLedgerFactory struct {
 }
 
 func (f *agentCostLedgerFactory) Insert(entry budget.LedgerEntry) error {
+	tx, err := f.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer Rollback(tx)
+	if err := lockAgentBudgetAccounting(context.Background(), tx); err != nil {
+		return err
+	}
 	var occurred any = sq.Expr("now()")
 	if !entry.OccurredAt.IsZero() {
 		occurred = entry.OccurredAt
@@ -34,7 +43,7 @@ func (f *agentCostLedgerFactory) Insert(entry budget.LedgerEntry) error {
 	if len(entry.Metadata) > 0 {
 		metadata = []byte(entry.Metadata)
 	}
-	_, err := psql.Insert("agent_cost_ledger").
+	_, err = psql.Insert("agent_cost_ledger").
 		Columns(
 			"occurred_at", "user_id", "user_name", "ticket_id", "pipeline_run_id",
 			"build_id", "step_name", "source", "provider", "model",
@@ -47,9 +56,12 @@ func (f *agentCostLedgerFactory) Insert(entry budget.LedgerEntry) error {
 			entry.InputTokens, entry.OutputTokens, entry.CacheReadTokens, entry.CacheCreationTokens,
 			entry.Turns, entry.CostUSD, metadata,
 		).
-		RunWith(f.conn).
+		RunWith(tx).
 		Exec()
-	return err
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (f *agentCostLedgerFactory) SpentForTicket(ticketID int) (float64, error) {

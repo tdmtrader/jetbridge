@@ -104,21 +104,33 @@ func WithTaskOutputSealer(sealer snapshot.OutputSealer) TaskStepOption {
 	return func(s *TaskStep) { s.outputSealer = sealer }
 }
 
+// WithTaskSnapshotStores supplies the durable stores used to rematerialize
+// successfully sealed outputs. The registered downstream artifact is always
+// backed by these stores, never by the producer's still-mutable output mount.
+func WithTaskSnapshotStores(metadata snapshot.MetadataStore, content snapshot.ContentStore) TaskStepOption {
+	return func(s *TaskStep) {
+		s.snapshotMetadataStore = metadata
+		s.snapshotContentStore = content
+	}
+}
+
 // TaskStep executes a TaskConfig, whose inputs will be fetched from the
 // artifact.Repository and outputs will be added to the artifact.Repository.
 type TaskStep struct {
-	planID             atc.PlanID
-	plan               atc.TaskPlan
-	defaultLimits      atc.ContainerLimits
-	defaultRequests    atc.ContainerLimits
-	metadata           StepMetadata
-	containerMetadata  db.ContainerMetadata
-	workerPool         Pool
-	streamer           Streamer
-	delegateFactory    TaskDelegateFactory
-	defaultTaskTimeout time.Duration
-	imageResolver      imageresolver.Resolver
-	outputSealer       snapshot.OutputSealer
+	planID                atc.PlanID
+	plan                  atc.TaskPlan
+	defaultLimits         atc.ContainerLimits
+	defaultRequests       atc.ContainerLimits
+	metadata              StepMetadata
+	containerMetadata     db.ContainerMetadata
+	workerPool            Pool
+	streamer              Streamer
+	delegateFactory       TaskDelegateFactory
+	defaultTaskTimeout    time.Duration
+	imageResolver         imageresolver.Resolver
+	outputSealer          snapshot.OutputSealer
+	snapshotMetadataStore snapshot.MetadataStore
+	snapshotContentStore  snapshot.ContentStore
 }
 
 func NewTaskStep(
@@ -237,6 +249,14 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 	taskConfigSource = ValidatingConfigSource{ConfigSource: taskConfigSource}
 
 	repository := state.ArtifactRepository()
+	if step.plan.ConfigPath != "" {
+		parts := strings.SplitN(step.plan.ConfigPath, "/", 2)
+		if len(parts) == 2 {
+			if entry, found := repository.ArtifactEntryFor(build.ArtifactName(parts[0])); found && entry.Snapshot != nil {
+				return false, fmt.Errorf("task config source %q is a typed snapshot and cannot be consumed without a typed task input", parts[0])
+			}
+		}
+	}
 
 	config, err := taskConfigSource.FetchConfig(ctx, logger, repository)
 
@@ -252,6 +272,9 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 	}
 	if (len(step.plan.SnapshotInputs) > 0 || len(step.plan.SnapshotOutputs) > 0) && step.outputSealer == nil {
 		return false, fmt.Errorf("task %q has typed snapshot declarations but no output sealer is configured", step.plan.Name)
+	}
+	if len(step.plan.SnapshotOutputs) > 0 && (step.snapshotMetadataStore == nil || step.snapshotContentStore == nil) {
+		return false, fmt.Errorf("task %q has typed snapshot outputs but durable snapshot stores are not configured", step.plan.Name)
 	}
 
 	if config.Limits == nil {
@@ -429,10 +452,14 @@ func (step *TaskStep) imageSpec(ctx context.Context, logger lager.Logger, state 
 	// Determine the source of the container image
 	// a reference to an artifact (get step, task output) ?
 	if step.plan.ImageArtifactName != "" {
-		artifact, _, found := state.ArtifactRepository().ArtifactFor(build.ArtifactName(step.plan.ImageArtifactName))
+		entry, found := state.ArtifactRepository().ArtifactEntryFor(build.ArtifactName(step.plan.ImageArtifactName))
 		if !found {
 			return runtime.ImageSpec{}, MissingTaskImageSourceError{step.plan.ImageArtifactName}
 		}
+		if entry.Snapshot != nil {
+			return runtime.ImageSpec{}, fmt.Errorf("task image source %q is a typed snapshot and cannot be consumed as an untyped image artifact", step.plan.ImageArtifactName)
+		}
+		artifact := entry.Artifact
 		if imageRef, ok := state.ArtifactRepository().ImageRefFor(build.ArtifactName(step.plan.ImageArtifactName)); ok {
 			// Prefer the image ref URL when available — JetBridge's
 			// container runtime pulls images natively via the URL.
@@ -510,17 +537,20 @@ func (step *TaskStep) containerInputs(logger lager.Logger, repository *build.Rep
 			continue
 		}
 
-		artifact, fromCache, found := repository.ArtifactFor(build.ArtifactName(inputName))
+		entry, found := repository.ArtifactEntryFor(build.ArtifactName(inputName))
 		if !found {
 			if !input.Optional {
 				missingRequiredInputs = append(missingRequiredInputs, inputName)
 			}
 			continue
 		}
+		if entry.Snapshot != nil {
+			return nil, snapshotInputBindings{}, fmt.Errorf("task input %q is a typed snapshot but has no input_types declaration", inputName)
+		}
 		inputs = append(inputs, runtime.Input{
-			Artifact:        artifact,
+			Artifact:        entry.Artifact,
 			DestinationPath: artifactPath(metadata.WorkingDirectory, input.Name, input.Path),
-			FromCache:       fromCache,
+			FromCache:       entry.FromCache,
 		})
 	}
 
@@ -569,6 +599,19 @@ func (step *TaskStep) containerSpec(logger lager.Logger, state RunState, imageSp
 	containerSpec.Outputs = make(runtime.OutputPaths, len(config.Outputs))
 	for _, output := range config.Outputs {
 		containerSpec.Outputs[output.Name] = ensureTrailingSlash(artifactPath(metadata.WorkingDirectory, output.Name, output.Path))
+	}
+	optionalOutputNames := make([]string, 0, len(step.plan.SnapshotOutputs))
+	for _, output := range config.Outputs {
+		effectiveName := output.Name
+		if mapped, found := step.plan.OutputMapping[output.Name]; found {
+			effectiveName = mapped
+		}
+		if declaration, typed := step.plan.SnapshotOutputs[effectiveName]; typed && declaration.Optional {
+			optionalOutputNames = append(optionalOutputNames, output.Name)
+		}
+	}
+	if err := configureOptionalOutputMarkers(&containerSpec, optionalOutputNames); err != nil {
+		return runtime.ContainerSpec{}, snapshotInputBindings{}, fmt.Errorf("task %q: %w", step.plan.Name, err)
 	}
 
 	if config.Limits != nil {
@@ -674,8 +717,7 @@ func (step *TaskStep) registerLegacyOutputs(logger lager.Logger, repository *bui
 }
 
 type collectedTypedOutput struct {
-	source   snapshot.OutputSource
-	artifact runtime.Artifact
+	source snapshot.OutputSource
 }
 
 func (step *TaskStep) sealTypedOutputs(
@@ -686,7 +728,7 @@ func (step *TaskStep) sealTypedOutputs(
 	volumeMounts []runtime.VolumeMount,
 	inputs snapshotInputBindings,
 ) error {
-	outputs, declarations, workflowDefinitionID, workflowRunID, err := step.collectTypedOutputs(worker, config, volumeMounts)
+	outputs, declarations, workflowDefinitionID, workflowRunID, err := step.collectTypedOutputs(ctx, worker, config, volumeMounts)
 	if err != nil {
 		return err
 	}
@@ -721,7 +763,13 @@ func (step *TaskStep) sealTypedOutputs(
 			return fmt.Errorf("task output sealer returned a mismatched declaration for %q", output.source.ClientKey)
 		}
 		ref := sealedOutput.Snapshot
-		entries[build.ArtifactName(output.source.ClientKey)] = build.ArtifactEntry{Artifact: output.artifact, Snapshot: &ref}
+		artifact, err := materializeSealedSnapshotArtifact(
+			ctx, step.metadata.TeamID, ref, step.snapshotMetadataStore, step.snapshotContentStore,
+		)
+		if err != nil {
+			return fmt.Errorf("task sealed output %q: %w", output.source.ClientKey, err)
+		}
+		entries[build.ArtifactName(output.source.ClientKey)] = build.ArtifactEntry{Artifact: artifact, Snapshot: &ref}
 	}
 	if err := repository.RegisterArtifacts(entries); err != nil {
 		return fmt.Errorf("publish typed task outputs: %w", err)
@@ -730,6 +778,7 @@ func (step *TaskStep) sealTypedOutputs(
 }
 
 func (step *TaskStep) collectTypedOutputs(
+	ctx context.Context,
 	worker runtime.Worker,
 	config atc.TaskConfig,
 	volumeMounts []runtime.VolumeMount,
@@ -737,9 +786,18 @@ func (step *TaskStep) collectTypedOutputs(
 	outputs := make([]collectedTypedOutput, 0, len(step.plan.SnapshotOutputs))
 	declarations := make([]snapshot.Port, 0, len(step.plan.SnapshotOutputs))
 	seen := make(map[string]struct{}, len(step.plan.SnapshotOutputs))
-	workflowDefinitionID, workflowRunID, err := snapshotWorkflowAssociation("task", step.plan.SnapshotOutputs)
+	workflowDefinitionID, workflowRunID, err := snapshotWorkflowAssociation(
+		"task",
+		step.plan.SnapshotOutputs,
+		step.metadata.WorkflowDefinitionID,
+		step.metadata.WorkflowRunID,
+	)
 	if err != nil {
 		return nil, nil, nil, nil, err
+	}
+	markerArtifact, err := optionalOutputMarkerArtifact(worker, volumeMounts, hasOptionalSnapshotOutputs(step.plan.SnapshotOutputs))
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("task: %w", err)
 	}
 	for _, output := range config.Outputs {
 		effectiveName := output.Name
@@ -771,17 +829,23 @@ func (step *TaskStep) collectTypedOutputs(
 			return nil, nil, nil, nil, fmt.Errorf("task typed output %q has duplicate mounts", effectiveName)
 		}
 		if matches == 0 {
-			if declaration.Optional {
+			return nil, nil, nil, nil, fmt.Errorf("task required typed output %q has no mount", effectiveName)
+		}
+		if declaration.Optional {
+			produced, err := optionalOutputWasProduced(ctx, markerArtifact, output.Name)
+			if err != nil {
+				return nil, nil, nil, nil, fmt.Errorf("task optional typed output %q: %w", effectiveName, err)
+			}
+			if !produced {
 				continue
 			}
-			return nil, nil, nil, nil, fmt.Errorf("task required typed output %q has no mount", effectiveName)
 		}
 		capturedArtifact := artifact
 		outputs = append(outputs, collectedTypedOutput{
-			artifact: artifact,
 			source: snapshot.OutputSource{
 				ClientKey: effectiveName, Port: port, Retention: declaration.Retention,
-				WorkflowPort: declaration.WorkflowPort,
+				WorkflowPort:   declaration.WorkflowPort,
+				SourceMetadata: append(json.RawMessage(nil), declaration.SourceMetadata...),
 				OpenTar: func(ctx context.Context) (io.ReadCloser, error) {
 					return capturedArtifact.StreamOut(ctx, ".", nil)
 				},
@@ -822,8 +886,43 @@ func (step *TaskStep) validateSnapshotDeclarations(config atc.TaskConfig) error 
 			return fmt.Errorf("task typed output %q is absent from the fetched task config after output mapping", name)
 		}
 	}
-	_, _, err := snapshotWorkflowAssociation("task", step.plan.SnapshotOutputs)
+	if len(step.plan.SnapshotInputs) > 0 || len(step.plan.SnapshotOutputs) > 0 {
+		if err := validateExactArtifactCoverage("task", "input", inputs, sortedSnapshotKeys(step.plan.SnapshotInputs)); err != nil {
+			return err
+		}
+		if err := validateExactArtifactCoverage("task", "output", outputs, sortedSnapshotKeys(step.plan.SnapshotOutputs)); err != nil {
+			return err
+		}
+	}
+	_, _, err := snapshotWorkflowAssociation(
+		"task",
+		step.plan.SnapshotOutputs,
+		step.metadata.WorkflowDefinitionID,
+		step.metadata.WorkflowRunID,
+	)
 	return err
+}
+
+func validateExactArtifactCoverage(kind, direction string, ordinary map[string]struct{}, typed []string) error {
+	declared := sortedArtifactSetKeys(ordinary)
+	if len(declared) != len(typed) {
+		return fmt.Errorf("every declared %s %s must be typed: declared=%v typed=%v", kind, direction, declared, typed)
+	}
+	for index := range declared {
+		if declared[index] != typed[index] {
+			return fmt.Errorf("every declared %s %s must be typed: declared=%v typed=%v", kind, direction, declared, typed)
+		}
+	}
+	return nil
+}
+
+func sortedArtifactSetKeys(values map[string]struct{}) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func cloneExecSnapshotRefs(refs map[string]snapshot.SnapshotRef) map[string]snapshot.SnapshotRef {
@@ -837,9 +936,11 @@ func cloneExecSnapshotRefs(refs map[string]snapshot.SnapshotRef) map[string]snap
 func snapshotWorkflowAssociation(
 	stepKind string,
 	outputs map[string]atc.SnapshotOutputConfig,
+	authenticatedWorkflowDefinitionID *int,
+	authenticatedWorkflowRunID *snapshot.WorkflowRunID,
 ) (*int, *snapshot.WorkflowRunID, error) {
-	var workflowDefinitionID *int
-	var workflowRunID *snapshot.WorkflowRunID
+	var claimedWorkflowDefinitionID *int
+	var claimedWorkflowRunID *snapshot.WorkflowRunID
 	for _, name := range sortedSnapshotKeys(outputs) {
 		declaration := outputs[name]
 		if err := declaration.Validate(); err != nil {
@@ -852,18 +953,46 @@ func snapshotWorkflowAssociation(
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s typed output %q workflow run ID: %w", stepKind, name, err)
 		}
-		if workflowDefinitionID == nil {
+		if claimedWorkflowDefinitionID == nil {
 			definitionID := declaration.WorkflowDefinitionID
 			runID := parsedRunID
-			workflowDefinitionID = &definitionID
-			workflowRunID = &runID
+			claimedWorkflowDefinitionID = &definitionID
+			claimedWorkflowRunID = &runID
 			continue
 		}
-		if *workflowDefinitionID != declaration.WorkflowDefinitionID || *workflowRunID != parsedRunID {
+		if *claimedWorkflowDefinitionID != declaration.WorkflowDefinitionID || *claimedWorkflowRunID != parsedRunID {
 			return nil, nil, fmt.Errorf("%s typed outputs claim multiple workflow definition/run associations", stepKind)
 		}
 	}
-	return workflowDefinitionID, workflowRunID, nil
+	if (authenticatedWorkflowDefinitionID == nil) != (authenticatedWorkflowRunID == nil) {
+		return nil, nil, fmt.Errorf("%s authenticated workflow association is incomplete", stepKind)
+	}
+	if authenticatedWorkflowDefinitionID == nil {
+		if claimedWorkflowDefinitionID != nil {
+			return nil, nil, fmt.Errorf(
+				"%s typed output claims workflow retention but its build is not associated with a workflow run",
+				stepKind,
+			)
+		}
+		return nil, nil, nil
+	}
+	if *authenticatedWorkflowDefinitionID <= 0 {
+		return nil, nil, fmt.Errorf("%s authenticated workflow definition ID must be positive", stepKind)
+	}
+	if err := authenticatedWorkflowRunID.Validate(); err != nil {
+		return nil, nil, fmt.Errorf("%s authenticated workflow run ID: %w", stepKind, err)
+	}
+	if claimedWorkflowDefinitionID != nil &&
+		(*claimedWorkflowDefinitionID != *authenticatedWorkflowDefinitionID ||
+			*claimedWorkflowRunID != *authenticatedWorkflowRunID) {
+		return nil, nil, fmt.Errorf(
+			"%s typed output workflow association does not match its authenticated build",
+			stepKind,
+		)
+	}
+	definitionID := *authenticatedWorkflowDefinitionID
+	runID := *authenticatedWorkflowRunID
+	return &definitionID, &runID, nil
 }
 
 func sortedSnapshotKeys[V any](values map[string]V) []string {

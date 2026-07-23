@@ -34,7 +34,7 @@ const v713LastMigration = 1666754000
 const v801LastMigration = 1765921815
 
 // JetBridge HEAD (last migration)
-const jetbridgeHeadMigration = 1773106104
+const jetbridgeHeadMigration = 1773106121
 
 var _ = Describe("Legacy Database Upgrade", func() {
 	var (
@@ -653,10 +653,37 @@ func verifyBuildStatuses(db *sql.DB, expected map[string]int) {
 }
 
 func verifyJetBridgeSchemaChanges(db *sql.DB) {
+	var repositoryProjectionStatusCheck string
+	err := db.QueryRow(`
+		SELECT string_agg(pg_get_constraintdef(oid), ' ')
+		FROM pg_constraint
+		WHERE conrelid = 'agent_repository_change_projections'::regclass
+		  AND contype = 'c'
+	`).Scan(&repositoryProjectionStatusCheck)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(repositoryProjectionStatusCheck).To(ContainSubstring("65536"))
+
+	// review/v1 values project through canonical snapshot and production links;
+	// legacy build reviews remain nullable/unlinked.
+	for table, columns := range map[string][]string{
+		"agent_reviews":  {"snapshot_id", "workflow_run_id", "production_id"},
+		"agent_feedback": {"review_snapshot_id", "review_team_id"},
+	} {
+		for _, column := range columns {
+			var nullable string
+			err := db.QueryRow(`
+				SELECT is_nullable FROM information_schema.columns
+				WHERE table_name = $1 AND column_name = $2
+			`, table, column).Scan(&nullable)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(nullable).To(Equal("YES"), "%s.%s must preserve legacy rows", table, column)
+		}
+	}
+
 	// Mutable ticket state is revisioned so adapters can capture one immutable
 	// work-item value, including durable comments and first-writer answers.
 	var ticketRevisionNullable string
-	err := db.QueryRow(`
+	err = db.QueryRow(`
 		SELECT is_nullable FROM information_schema.columns
 		WHERE table_name = 'agent_tickets' AND column_name = 'revision'
 	`).Scan(&ticketRevisionNullable)
@@ -666,6 +693,28 @@ func verifyJetBridgeSchemaChanges(db *sql.DB) {
 	err = db.QueryRow(`SELECT to_regclass('agent_ticket_comments') IS NOT NULL`).Scan(&ticketCommentsExists)
 	Expect(err).NotTo(HaveOccurred())
 	Expect(ticketCommentsExists).To(BeTrue())
+
+	// Ticket dispatch is an adapter over durable generic workflow runs. All
+	// links stay nullable so legacy v1/v2 attempts round-trip unchanged.
+	for _, column := range []string{
+		"workflow_run_id", "work_item_snapshot_id", "repository_snapshot_id", "dispatch_reservation_key",
+	} {
+		var exists bool
+		err = db.QueryRow(`
+			SELECT EXISTS (
+				SELECT 1 FROM information_schema.columns
+				WHERE table_name = 'agent_tickets' AND column_name = $1
+			)
+		`, column).Scan(&exists)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(exists).To(BeTrue(), "agent_tickets.%s must exist", column)
+	}
+	for _, index := range []string{"agent_tickets_workflow_run", "agent_tickets_dispatch_reservation"} {
+		var exists bool
+		err = db.QueryRow(`SELECT to_regclass($1) IS NOT NULL`, index).Scan(&exists)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(exists).To(BeTrue(), "index %s must exist", index)
+	}
 
 	// Workflow schema/signature identity is durable metadata at HEAD.
 	for _, column := range []string{"schema_version", "signature_version"} {

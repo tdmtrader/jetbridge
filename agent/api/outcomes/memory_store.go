@@ -73,6 +73,19 @@ func (s *MemoryStore) ListOpen() ([]Outcome, error) {
 	return out, nil
 }
 
+func (s *MemoryStore) ListTerminal() ([]Outcome, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var terminal []Outcome
+	for _, outcome := range s.rows {
+		if outcome.MergeState != MergeOpen {
+			terminal = append(terminal, *outcome)
+		}
+	}
+	sort.Slice(terminal, func(i, j int) bool { return terminal[i].TicketID < terminal[j].TicketID })
+	return terminal, nil
+}
+
 func (s *MemoryStore) RecordMerge(ticketID int, res MergeResult) error {
 	if res.State != Merged && res.State != MergedWithFixes {
 		return fmt.Errorf("invalid merge target state %q", res.State)

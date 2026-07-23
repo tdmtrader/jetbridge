@@ -178,6 +178,49 @@ var _ = Describe("PipelineRunFactory", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
+	It("executes an exact server-owned resource-capture template with one durable entry build", func() {
+		captureConfig := atc.Config{
+			Template: true,
+			Jobs: atc.JobConfigs{{
+				Name: "capture",
+				PlanSequence: []atc.Step{{Config: &atc.TaskStep{
+					Name:   "seal-snapshot",
+					Config: &atc.TaskConfig{Platform: "linux", Run: atc.TaskRunConfig{Path: "/bin/true"}},
+				}}},
+			}},
+		}
+		captureTemplate, created, err := db.NewWorkflowRunTemplateFactory(dbConn, lockFactory).SaveWorkflowRunTemplate(
+			context.Background(), defaultTeam.ID(),
+			atc.PipelineRef{Name: "agent-resource-capture-1234567890abcdef12345678"}, captureConfig,
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(created).To(BeTrue())
+		fullHash, err := workflow.TargetConfigHash(captureConfig)
+		Expect(err).NotTo(HaveOccurred())
+		serverFactory, ok := factory.(interface {
+			CreateRunForServerTemplate(context.Context, db.WorkflowRunTemplateRef, map[string]any, string) (db.PipelineRun, error)
+		})
+		Expect(ok).To(BeTrue())
+		run, err := serverFactory.CreateRunForServerTemplate(context.Background(), db.WorkflowRunTemplateRef{
+			PipelineID: captureTemplate.ID(), TeamID: defaultTeam.ID(), Name: captureTemplate.Name(),
+			ConfigVersion: int(captureTemplate.ConfigVersion()), FullHash: fullHash,
+		}, nil, "alice")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(run.TemplatePipelineID()).To(Equal(captureTemplate.ID()))
+		instance, found, err := run.InstancePipeline()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		job, found, err := instance.Job("capture")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		builds, err := job.GetPendingBuilds()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(builds).To(HaveLen(1))
+
+		_, err = factory.CreateRun(captureTemplate.ID(), nil, "mallory")
+		Expect(err).To(MatchError(db.ErrWorkflowRunOwnedPipeline))
+	})
+
 	It("rejects durable execution through an exact but unowned template", func() {
 		durable, _, _ := createDurable()
 		unowned, _, err := defaultTeam.SavePipeline(

@@ -55,6 +55,19 @@ all =
                     |> Json.Decode.decodeString AgentReview.decodeSummary
                     |> Result.map .pass
                     |> Expect.equal (Ok False)
+        , test "decodes projected review production identity exactly" <|
+            \_ ->
+                """
+                {"build_id":42,"build_name":"3","team_name":"main","pipeline_name":"cs","job_name":"ar",
+                 "repo":"concourse","commit_sha":"abc123","branch":"jetbridge",
+                 "score":4.0,"max_score":10,"pass":false,"proven_count":4,"observation_count":1,
+                 "summary":"several bugs","created_at":1700000000,"evaluated_count":5,
+                 "snapshot_id":"9007199254740993","workflow_run_id":"9007199254740995",
+                 "production_id":"9007199254740997"}
+                """
+                    |> Json.Decode.decodeString AgentReview.decodeSummary
+                    |> Result.map .productionId
+                    |> Expect.equal (Ok (Just "9007199254740997"))
         , test "repoBlobUrl builds a blob link from a full clone URL" <|
             \_ ->
                 AgentReview.repoBlobUrl "https://github.com/org/repo.git" "abc123" "a/b.go" 10

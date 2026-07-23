@@ -64,6 +64,18 @@ var _ = Describe("AgentOutcomesFactory", func() {
 		Expect(factory.RecordMerge(9999, outcomes.MergeResult{State: outcomes.Merged})).To(Equal(outcomes.ErrOutcomeNotFound))
 	})
 
+	It("exposes terminal rows to the optional generic-outcome reconciler", func() {
+		terminalLister, ok := factory.(outcomes.TerminalLister)
+		Expect(ok).To(BeTrue())
+		Expect(factory.Ensure(&outcomes.Outcome{TicketID: 511, Repo: "r", Branch: "open"})).To(Succeed())
+		Expect(factory.Ensure(&outcomes.Outcome{TicketID: 512, Repo: "r", Branch: "merged"})).To(Succeed())
+		Expect(factory.RecordMerge(512, outcomes.MergeResult{State: outcomes.Merged, MergedSha: "abc"})).To(Succeed())
+
+		terminal, err := terminalLister.ListTerminal()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(terminal).To(ConsistOf(HaveField("TicketID", 512)))
+	})
+
 	It("closes an open row on disposition but keeps a terminal merge_state", func() {
 		Expect(factory.Ensure(&outcomes.Outcome{TicketID: 503, Repo: "r", Branch: "b"})).To(Succeed())
 		Expect(factory.SetDisposition(503, outcomes.DispositionInput{

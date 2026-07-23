@@ -56,10 +56,17 @@ type SnapshotOutputConfig struct {
 	WorkflowPort         string                  `json:"workflow_port,omitempty"`
 	WorkflowDefinitionID int                     `json:"workflow_definition_id,omitempty"`
 	WorkflowRunID        string                  `json:"workflow_run_id,omitempty"`
+	// SourceMetadata describes this particular production occurrence. It is
+	// forwarded to the snapshot sealer, but is deliberately redacted from the
+	// public build plan and never contributes to snapshot value identity.
+	SourceMetadata json.RawMessage `json:"source_metadata,omitempty"`
 }
 
 func (config SnapshotOutputConfig) Validate() error {
 	if err := config.Type.Validate(); err != nil {
+		return err
+	}
+	if err := validateSnapshotSourceMetadata(config.SourceMetadata); err != nil {
 		return err
 	}
 
@@ -94,6 +101,22 @@ func (config SnapshotOutputConfig) Validate() error {
 	default:
 		return fmt.Errorf("snapshot: unsupported producer retention %q", config.Retention)
 	}
+}
+
+const maxSnapshotSourceMetadataBytes = 16 * 1024
+
+func validateSnapshotSourceMetadata(metadata json.RawMessage) error {
+	if len(metadata) == 0 {
+		return nil
+	}
+	if len(metadata) > maxSnapshotSourceMetadataBytes {
+		return fmt.Errorf("snapshot: source_metadata exceeds %d bytes", maxSnapshotSourceMetadataBytes)
+	}
+	trimmed := bytes.TrimSpace(metadata)
+	if len(trimmed) == 0 || trimmed[0] != '{' || !json.Valid(trimmed) {
+		return fmt.Errorf("snapshot: source_metadata must be a JSON object")
+	}
+	return nil
 }
 
 // MarshalJSON always emits the long object form, including when the value was

@@ -22,6 +22,7 @@
 // Environment variables:
 //   FLY_PATH           - path to fly binary (builds from source if unset)
 //   CONCOURSE_IMAGE    - Docker image to load into KinD (default: concourse-local:latest)
+//   ARTIFACT_HELPER_IMAGE - optional project-owned helper pinned to an exact @sha256 digest
 //   SKIP_TEARDOWN      - Set to "1" to keep KinD cluster after tests
 //   EVENTUALLY_TIMEOUT - Go duration for Eventually timeout (default: 5m)
 
@@ -571,4 +572,3 @@ func cleanupPod(name string) {
 		metav1.DeleteOptions{},
 	)
 }
-

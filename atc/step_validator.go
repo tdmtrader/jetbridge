@@ -609,6 +609,78 @@ func (validator *StepValidator) VisitLoadSnapshot(step *LoadSnapshotStep) error 
 	return nil
 }
 
+func (validator *StepValidator) VisitAwaitSnapshot(step *AwaitSnapshotStep) error {
+	validator.pushContextf(".await_snapshot(%s)", step.Name)
+	defer validator.popContext()
+
+	names := map[string]string{"output": step.Name}
+	if step.MergeApproval != nil {
+		names["merge approval input"] = step.MergeApproval.Input
+	} else {
+		names["question"] = step.Question
+	}
+	for label, name := range names {
+		warning, err := ValidateIdentifier(name, validator.context...)
+		if err != nil {
+			validator.recordErrorf("%s: %s", label, err.Error())
+		}
+		if warning != nil {
+			validator.Errors = append(validator.Errors, warning.Message)
+		}
+	}
+	if validator.seenGetName[step.Name] {
+		validator.recordError("repeated producer name")
+	}
+	validator.seenGetName[step.Name] = true
+	if err := step.validateWire(); err != nil {
+		validator.recordError(err.Error())
+	}
+	if step.WorkflowRunID != "" {
+		validator.validateAwaitSnapshotRunParameter(step.WorkflowRunID)
+	}
+	return nil
+}
+
+func (validator *StepValidator) VisitPublishSnapshot(step *PublishSnapshotStep) error {
+	validator.pushContextf(".publish_snapshot(%s)", step.Name)
+	defer validator.popContext()
+
+	for label, name := range map[string]string{"name": step.Name, "input": step.Input} {
+		warning, err := ValidateIdentifier(name, validator.context...)
+		if err != nil {
+			validator.recordErrorf("%s: %s", label, err.Error())
+		}
+		if warning != nil {
+			validator.Errors = append(validator.Errors, warning.Message)
+		}
+	}
+	if err := step.validateWire(); err != nil {
+		validator.recordError(err.Error())
+	}
+	return nil
+}
+
+func (validator *StepValidator) validateAwaitSnapshotRunParameter(value string) {
+	name, templated := loadSnapshotParameterName(value)
+	if !templated {
+		return
+	}
+	if !validator.config.Template {
+		validator.recordError("workflow_run_id parameter reference is only valid in a template pipeline")
+		return
+	}
+	for i := range validator.config.Params {
+		parameter := validator.config.Params[i]
+		if parameter.Name == name {
+			if parameter.Type != "string" || parameter.Format != ParamFormatPositiveDecimalInt64 || !parameter.Required {
+				validator.recordError("workflow_run_id parameter must be a required positive decimal int64 string")
+			}
+			return
+		}
+	}
+	validator.recordError("workflow_run_id parameter is undeclared")
+}
+
 func (validator *StepValidator) validateLoadSnapshotParameter(step *LoadSnapshotStep, value string, workflow bool) {
 	name, templated := loadSnapshotParameterName(value)
 	if !templated {

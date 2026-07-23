@@ -182,4 +182,45 @@ func TestDispatchHandlerBudgetExhaustedMapsTo409(t *testing.T) {
 	}
 }
 
+func TestDispatchHandlerV3InputsPendingMapsToSanitizedConflict(t *testing.T) {
+	deps, store, _, _, workItems, _ := v3DispatchDeps(t)
+	id := queuedTicket(t, store, "smoke")
+	workItems.result.TicketID = id
+	h := dispatch.NewHTTPHandler(deps, func(*http.Request) string { return "tdm" })
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, dispatchRequest(itoa(id)))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("inputs pending = %d, want 409 (body %s)", rec.Code, rec.Body)
+	}
+	if rec.Body.String() != "workflow inputs pending\n" {
+		t.Fatalf("pending response leaked internal detail: %q", rec.Body.String())
+	}
+	got, _, _ := store.Get(id)
+	if got.State != tickets.StateQueued || got.DispatchReservationKey == "" {
+		t.Fatalf("pending ticket must stay durably reserved: %+v", got)
+	}
+}
+
+func TestDispatchHandlerV3KeepsLegacyRunFieldsAndAddsWorkflowRunIdentity(t *testing.T) {
+	deps, store, _, _, workItems, _ := v3DispatchDeps(t)
+	id := queuedTicket(t, store, "smoke")
+	workItems.result.TicketID = id
+	setRepositorySnapshot(t, store, id, 101)
+	h := dispatch.NewHTTPHandler(deps, func(*http.Request) string { return "tdm" })
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, dispatchRequest(itoa(id)))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("v3 dispatch = %d body %s", rec.Code, rec.Body)
+	}
+	var response tickets.DispatchResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.RunID != 909 || response.PipelineName == "" || response.WorkflowRunID == nil || response.WorkflowRunID.String() != "303" {
+		t.Fatalf("v3 response = %+v", response)
+	}
+}
+
 func itoa(i int) string { return strconv.Itoa(i) }

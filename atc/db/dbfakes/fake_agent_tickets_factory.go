@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/concourse/concourse/agent/api/tickets"
+	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/workitem"
 	"github.com/concourse/concourse/atc/db"
 )
@@ -149,6 +150,51 @@ type FakeAgentTicketsFactory struct {
 	}
 	listReturnsOnCall map[int]struct {
 		result1 []tickets.Ticket
+		result2 error
+	}
+	RecordDispatchRunStub        func(context.Context, int, string, snapshot.WorkflowRunID, int) error
+	recordDispatchRunMutex       sync.RWMutex
+	recordDispatchRunArgsForCall []struct {
+		arg1 context.Context
+		arg2 int
+		arg3 string
+		arg4 snapshot.WorkflowRunID
+		arg5 int
+	}
+	recordDispatchRunReturns struct {
+		result1 error
+	}
+	recordDispatchRunReturnsOnCall map[int]struct {
+		result1 error
+	}
+	RecordDispatchWorkItemStub        func(context.Context, int, string, int64, snapshot.SnapshotID) error
+	recordDispatchWorkItemMutex       sync.RWMutex
+	recordDispatchWorkItemArgsForCall []struct {
+		arg1 context.Context
+		arg2 int
+		arg3 string
+		arg4 int64
+		arg5 snapshot.SnapshotID
+	}
+	recordDispatchWorkItemReturns struct {
+		result1 error
+	}
+	recordDispatchWorkItemReturnsOnCall map[int]struct {
+		result1 error
+	}
+	ReserveDispatchStub        func(context.Context, int, tickets.DispatchReservationRequest) (tickets.DispatchReservation, error)
+	reserveDispatchMutex       sync.RWMutex
+	reserveDispatchArgsForCall []struct {
+		arg1 context.Context
+		arg2 int
+		arg3 tickets.DispatchReservationRequest
+	}
+	reserveDispatchReturns struct {
+		result1 tickets.DispatchReservation
+		result2 error
+	}
+	reserveDispatchReturnsOnCall map[int]struct {
+		result1 tickets.DispatchReservation
 		result2 error
 	}
 	SubmitPlanStub        func(int, []tickets.Task) (int, error)
@@ -886,6 +932,202 @@ func (fake *FakeAgentTicketsFactory) ListReturnsOnCall(i int, result1 []tickets.
 	}
 	fake.listReturnsOnCall[i] = struct {
 		result1 []tickets.Ticket
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeAgentTicketsFactory) RecordDispatchRun(arg1 context.Context, arg2 int, arg3 string, arg4 snapshot.WorkflowRunID, arg5 int) error {
+	fake.recordDispatchRunMutex.Lock()
+	ret, specificReturn := fake.recordDispatchRunReturnsOnCall[len(fake.recordDispatchRunArgsForCall)]
+	fake.recordDispatchRunArgsForCall = append(fake.recordDispatchRunArgsForCall, struct {
+		arg1 context.Context
+		arg2 int
+		arg3 string
+		arg4 snapshot.WorkflowRunID
+		arg5 int
+	}{arg1, arg2, arg3, arg4, arg5})
+	stub := fake.RecordDispatchRunStub
+	fakeReturns := fake.recordDispatchRunReturns
+	fake.recordInvocation("RecordDispatchRun", []interface{}{arg1, arg2, arg3, arg4, arg5})
+	fake.recordDispatchRunMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2, arg3, arg4, arg5)
+	}
+	if specificReturn {
+		return ret.result1
+	}
+	return fakeReturns.result1
+}
+
+func (fake *FakeAgentTicketsFactory) RecordDispatchRunCallCount() int {
+	fake.recordDispatchRunMutex.RLock()
+	defer fake.recordDispatchRunMutex.RUnlock()
+	return len(fake.recordDispatchRunArgsForCall)
+}
+
+func (fake *FakeAgentTicketsFactory) RecordDispatchRunCalls(stub func(context.Context, int, string, snapshot.WorkflowRunID, int) error) {
+	fake.recordDispatchRunMutex.Lock()
+	defer fake.recordDispatchRunMutex.Unlock()
+	fake.RecordDispatchRunStub = stub
+}
+
+func (fake *FakeAgentTicketsFactory) RecordDispatchRunArgsForCall(i int) (context.Context, int, string, snapshot.WorkflowRunID, int) {
+	fake.recordDispatchRunMutex.RLock()
+	defer fake.recordDispatchRunMutex.RUnlock()
+	argsForCall := fake.recordDispatchRunArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3, argsForCall.arg4, argsForCall.arg5
+}
+
+func (fake *FakeAgentTicketsFactory) RecordDispatchRunReturns(result1 error) {
+	fake.recordDispatchRunMutex.Lock()
+	defer fake.recordDispatchRunMutex.Unlock()
+	fake.RecordDispatchRunStub = nil
+	fake.recordDispatchRunReturns = struct {
+		result1 error
+	}{result1}
+}
+
+func (fake *FakeAgentTicketsFactory) RecordDispatchRunReturnsOnCall(i int, result1 error) {
+	fake.recordDispatchRunMutex.Lock()
+	defer fake.recordDispatchRunMutex.Unlock()
+	fake.RecordDispatchRunStub = nil
+	if fake.recordDispatchRunReturnsOnCall == nil {
+		fake.recordDispatchRunReturnsOnCall = make(map[int]struct {
+			result1 error
+		})
+	}
+	fake.recordDispatchRunReturnsOnCall[i] = struct {
+		result1 error
+	}{result1}
+}
+
+func (fake *FakeAgentTicketsFactory) RecordDispatchWorkItem(arg1 context.Context, arg2 int, arg3 string, arg4 int64, arg5 snapshot.SnapshotID) error {
+	fake.recordDispatchWorkItemMutex.Lock()
+	ret, specificReturn := fake.recordDispatchWorkItemReturnsOnCall[len(fake.recordDispatchWorkItemArgsForCall)]
+	fake.recordDispatchWorkItemArgsForCall = append(fake.recordDispatchWorkItemArgsForCall, struct {
+		arg1 context.Context
+		arg2 int
+		arg3 string
+		arg4 int64
+		arg5 snapshot.SnapshotID
+	}{arg1, arg2, arg3, arg4, arg5})
+	stub := fake.RecordDispatchWorkItemStub
+	fakeReturns := fake.recordDispatchWorkItemReturns
+	fake.recordInvocation("RecordDispatchWorkItem", []interface{}{arg1, arg2, arg3, arg4, arg5})
+	fake.recordDispatchWorkItemMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2, arg3, arg4, arg5)
+	}
+	if specificReturn {
+		return ret.result1
+	}
+	return fakeReturns.result1
+}
+
+func (fake *FakeAgentTicketsFactory) RecordDispatchWorkItemCallCount() int {
+	fake.recordDispatchWorkItemMutex.RLock()
+	defer fake.recordDispatchWorkItemMutex.RUnlock()
+	return len(fake.recordDispatchWorkItemArgsForCall)
+}
+
+func (fake *FakeAgentTicketsFactory) RecordDispatchWorkItemCalls(stub func(context.Context, int, string, int64, snapshot.SnapshotID) error) {
+	fake.recordDispatchWorkItemMutex.Lock()
+	defer fake.recordDispatchWorkItemMutex.Unlock()
+	fake.RecordDispatchWorkItemStub = stub
+}
+
+func (fake *FakeAgentTicketsFactory) RecordDispatchWorkItemArgsForCall(i int) (context.Context, int, string, int64, snapshot.SnapshotID) {
+	fake.recordDispatchWorkItemMutex.RLock()
+	defer fake.recordDispatchWorkItemMutex.RUnlock()
+	argsForCall := fake.recordDispatchWorkItemArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3, argsForCall.arg4, argsForCall.arg5
+}
+
+func (fake *FakeAgentTicketsFactory) RecordDispatchWorkItemReturns(result1 error) {
+	fake.recordDispatchWorkItemMutex.Lock()
+	defer fake.recordDispatchWorkItemMutex.Unlock()
+	fake.RecordDispatchWorkItemStub = nil
+	fake.recordDispatchWorkItemReturns = struct {
+		result1 error
+	}{result1}
+}
+
+func (fake *FakeAgentTicketsFactory) RecordDispatchWorkItemReturnsOnCall(i int, result1 error) {
+	fake.recordDispatchWorkItemMutex.Lock()
+	defer fake.recordDispatchWorkItemMutex.Unlock()
+	fake.RecordDispatchWorkItemStub = nil
+	if fake.recordDispatchWorkItemReturnsOnCall == nil {
+		fake.recordDispatchWorkItemReturnsOnCall = make(map[int]struct {
+			result1 error
+		})
+	}
+	fake.recordDispatchWorkItemReturnsOnCall[i] = struct {
+		result1 error
+	}{result1}
+}
+
+func (fake *FakeAgentTicketsFactory) ReserveDispatch(arg1 context.Context, arg2 int, arg3 tickets.DispatchReservationRequest) (tickets.DispatchReservation, error) {
+	fake.reserveDispatchMutex.Lock()
+	ret, specificReturn := fake.reserveDispatchReturnsOnCall[len(fake.reserveDispatchArgsForCall)]
+	fake.reserveDispatchArgsForCall = append(fake.reserveDispatchArgsForCall, struct {
+		arg1 context.Context
+		arg2 int
+		arg3 tickets.DispatchReservationRequest
+	}{arg1, arg2, arg3})
+	stub := fake.ReserveDispatchStub
+	fakeReturns := fake.reserveDispatchReturns
+	fake.recordInvocation("ReserveDispatch", []interface{}{arg1, arg2, arg3})
+	fake.reserveDispatchMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2, arg3)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeAgentTicketsFactory) ReserveDispatchCallCount() int {
+	fake.reserveDispatchMutex.RLock()
+	defer fake.reserveDispatchMutex.RUnlock()
+	return len(fake.reserveDispatchArgsForCall)
+}
+
+func (fake *FakeAgentTicketsFactory) ReserveDispatchCalls(stub func(context.Context, int, tickets.DispatchReservationRequest) (tickets.DispatchReservation, error)) {
+	fake.reserveDispatchMutex.Lock()
+	defer fake.reserveDispatchMutex.Unlock()
+	fake.ReserveDispatchStub = stub
+}
+
+func (fake *FakeAgentTicketsFactory) ReserveDispatchArgsForCall(i int) (context.Context, int, tickets.DispatchReservationRequest) {
+	fake.reserveDispatchMutex.RLock()
+	defer fake.reserveDispatchMutex.RUnlock()
+	argsForCall := fake.reserveDispatchArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3
+}
+
+func (fake *FakeAgentTicketsFactory) ReserveDispatchReturns(result1 tickets.DispatchReservation, result2 error) {
+	fake.reserveDispatchMutex.Lock()
+	defer fake.reserveDispatchMutex.Unlock()
+	fake.ReserveDispatchStub = nil
+	fake.reserveDispatchReturns = struct {
+		result1 tickets.DispatchReservation
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeAgentTicketsFactory) ReserveDispatchReturnsOnCall(i int, result1 tickets.DispatchReservation, result2 error) {
+	fake.reserveDispatchMutex.Lock()
+	defer fake.reserveDispatchMutex.Unlock()
+	fake.ReserveDispatchStub = nil
+	if fake.reserveDispatchReturnsOnCall == nil {
+		fake.reserveDispatchReturnsOnCall = make(map[int]struct {
+			result1 tickets.DispatchReservation
+			result2 error
+		})
+	}
+	fake.reserveDispatchReturnsOnCall[i] = struct {
+		result1 tickets.DispatchReservation
 		result2 error
 	}{result1, result2}
 }

@@ -28,6 +28,26 @@ type StepTest struct {
 
 var factoryTests = []StepTest{
 	{
+		Title: "await_snapshot is a visible typed producer with quoted durable identifiers",
+		ConfigYAML: `
+			await_snapshot: answer
+			question: question
+			type: human-answer/v1
+			on_timeout: default
+			default_snapshot_id: "9007199254740993"
+			workflow_run_id: "9223372036854775807"
+			timeout: 1h
+		`,
+		StepConfig: &atc.TimeoutStep{
+			Duration: "1h",
+			Step: &atc.AwaitSnapshotStep{
+				Name: "answer", Question: "question", Type: snapshot.TypeRef("human-answer/v1"),
+				OnTimeout: atc.AwaitSnapshotOnTimeoutDefault, DefaultSnapshotID: "9007199254740993",
+				WorkflowRunID: "9223372036854775807",
+			},
+		},
+	},
+	{
 		Title: "load_snapshot step preserves quoted identifiers",
 		ConfigYAML: `
 			load_snapshot: subject
@@ -310,6 +330,7 @@ var factoryTests = []StepTest{
 
 		ConfigYAML: `
 			agent: write-spec
+			hermetic: true
 			prompt: |
 			  Read the ticket, explore the repo, submit a spec.
 			model: claude-sonnet-4-5
@@ -327,6 +348,7 @@ var factoryTests = []StepTest{
 
 		StepConfig: &atc.AgentStep{
 			Name:           "write-spec",
+			Hermetic:       true,
 			Prompt:         "Read the ticket, explore the repo, submit a spec.\n",
 			Model:          "claude-sonnet-4-5",
 			MaxTurns:       80,
@@ -798,10 +820,12 @@ func (s *StepsSuite) TestSnapshotPortConfigs() {
 			"retention":"workflow",
 			"workflow_port":"change",
 			"workflow_definition_id":17,
-			"workflow_run_id":"9007199254740993"
+			"workflow_run_id":"9007199254740993",
+			"source_metadata":{"adapter":"resource-version","operation_key":"capture-key"}
 		}`), &long)
 		s.NoError(err)
 		s.Equal("9007199254740993", long.WorkflowRunID)
+		s.JSONEq(`{"adapter":"resource-version","operation_key":"capture-key"}`, string(long.SourceMetadata))
 		encoded, err = json.Marshal(long)
 		s.NoError(err)
 		s.JSONEq(`{
@@ -810,7 +834,8 @@ func (s *StepsSuite) TestSnapshotPortConfigs() {
 			"retention":"workflow",
 			"workflow_port":"change",
 			"workflow_definition_id":17,
-			"workflow_run_id":"9007199254740993"
+			"workflow_run_id":"9007199254740993",
+			"source_metadata":{"adapter":"resource-version","operation_key":"capture-key"}
 		}`, string(encoded))
 	})
 
@@ -825,6 +850,9 @@ func (s *StepsSuite) TestSnapshotPortConfigs() {
 			{name: "input trailing value", payload: `{"type":"repository/v1"} {}`, target: &atc.SnapshotInputConfig{}},
 			{name: "output unknown field", payload: `{"type":"review/v1","typo":true}`, target: &atc.SnapshotOutputConfig{}},
 			{name: "output trailing value", payload: `{"type":"review/v1"} {}`, target: &atc.SnapshotOutputConfig{}},
+			{name: "output source metadata scalar", payload: `{"type":"review/v1","source_metadata":"spoofed"}`, target: &atc.SnapshotOutputConfig{}},
+			{name: "output source metadata array", payload: `{"type":"review/v1","source_metadata":[]}`, target: &atc.SnapshotOutputConfig{}},
+			{name: "output source metadata null", payload: `{"type":"review/v1","source_metadata":null}`, target: &atc.SnapshotOutputConfig{}},
 			{name: "numeric workflow run id", payload: `{"type":"review/v1","retention":"workflow","workflow_port":"review","workflow_definition_id":1,"workflow_run_id":9007199254740993}`, target: &atc.SnapshotOutputConfig{}},
 		} {
 			s.Run(test.name, func() {
@@ -835,6 +863,11 @@ func (s *StepsSuite) TestSnapshotPortConfigs() {
 		_, err := json.Marshal(atc.SnapshotInputConfig{Type: snapshot.TypeRef("not-a-versioned-type")})
 		s.Error(err)
 		_, err = json.Marshal(atc.SnapshotOutputConfig{Type: snapshot.TypeRef("not-a-versioned-type")})
+		s.Error(err)
+		_, err = json.Marshal(atc.SnapshotOutputConfig{
+			Type:           snapshot.TypeRef("review/v1"),
+			SourceMetadata: json.RawMessage(`{"value":"` + strings.Repeat("x", 16*1024) + `"}`),
+		})
 		s.Error(err)
 	})
 
@@ -942,6 +975,51 @@ func (s *StepsSuite) TestLoadSnapshotIdentifiersAreQuotedCanonicalStrings() {
 
 	var direct atc.LoadSnapshotStep
 	s.Error(direct.UnmarshalJSON([]byte(`{"load_snapshot":"subject","id":"1","type":"review/v1"} {}`)))
+}
+
+func (s *StepsSuite) TestAwaitSnapshotWireContractIsStrictAndPinned() {
+	invalid := []struct {
+		name    string
+		payload string
+	}{
+		{"missing question", `{"await_snapshot":"answer","type":"human-answer/v1","on_timeout":"fail"}`},
+		{"question and merge approval", `{"await_snapshot":"answer","question":"question","merge_approval":{"input":"change","publisher":"git-publisher/v1","destination":"git.example/repo","parameters":{"target_branch":"main","expected_base_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"approval_policy_version":"engineering/v1","prompt":"Merge?"},"type":"human-answer/v1","on_timeout":"fail"}`},
+		{"merge approval default", `{"await_snapshot":"answer","merge_approval":{"input":"change","publisher":"git-publisher/v1","destination":"git.example/repo","parameters":{"target_branch":"main","expected_base_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"approval_policy_version":"engineering/v1","prompt":"Merge?"},"type":"human-answer/v1","on_timeout":"default","default_snapshot_id":"1"}`},
+		{"wrong output type", `{"await_snapshot":"answer","question":"question","type":"review/v1","on_timeout":"fail"}`},
+		{"unknown timeout policy", `{"await_snapshot":"answer","question":"question","type":"human-answer/v1","on_timeout":"continue"}`},
+		{"default lacks snapshot", `{"await_snapshot":"answer","question":"question","type":"human-answer/v1","on_timeout":"default"}`},
+		{"fail carries default", `{"await_snapshot":"answer","question":"question","type":"human-answer/v1","on_timeout":"fail","default_snapshot_id":"1"}`},
+		{"numeric default", `{"await_snapshot":"answer","question":"question","type":"human-answer/v1","on_timeout":"default","default_snapshot_id":9007199254740993}`},
+		{"zero default", `{"await_snapshot":"answer","question":"question","type":"human-answer/v1","on_timeout":"default","default_snapshot_id":"0"}`},
+		{"numeric run", `{"await_snapshot":"answer","question":"question","type":"human-answer/v1","on_timeout":"fail","workflow_run_id":1}`},
+		{"wrong parameter", `{"await_snapshot":"answer","question":"question","type":"human-answer/v1","on_timeout":"fail","workflow_run_id":"((other))"}`},
+		{"unknown field", `{"await_snapshot":"answer","question":"question","type":"human-answer/v1","on_timeout":"fail","typo":true}`},
+	}
+	for _, test := range invalid {
+		s.Run(test.name, func() {
+			var step atc.Step
+			s.Error(json.Unmarshal([]byte(test.payload), &step))
+		})
+	}
+
+	var direct atc.AwaitSnapshotStep
+	s.Error(direct.UnmarshalJSON([]byte(`{"await_snapshot":"answer","question":"question","type":"human-answer/v1","on_timeout":"fail"} {}`)))
+
+	var merge atc.Step
+	s.NoError(json.Unmarshal([]byte(`{
+		"await_snapshot":"approval",
+		"merge_approval":{
+			"input":"change",
+			"publisher":"git-publisher/v1",
+			"destination":"git.example/repo",
+			"parameters":{"target_branch":"main","expected_base_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+			"approval_policy_version":"engineering/v1",
+			"prompt":"Merge this exact change?"
+		},
+		"type":"human-answer/v1",
+		"on_timeout":"fail"
+	}`), &merge))
+	s.Equal("change", merge.Config.(*atc.AwaitSnapshotStep).MergeApproval.Input)
 }
 
 func rawMessage(s string) *json.RawMessage {

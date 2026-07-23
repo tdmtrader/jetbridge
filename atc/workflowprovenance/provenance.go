@@ -13,7 +13,9 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"time"
 
+	"github.com/concourse/concourse/agent/publisher"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc"
 )
@@ -105,11 +107,12 @@ const (
 	ImageKindTask               ImageKind = "task"
 	ImageKindCustomResourceType ImageKind = "custom_resource_type"
 	ImageKindCapabilitySidecar  ImageKind = "capability_sidecar"
+	ImageKindAgentRuntime       ImageKind = "agent_runtime"
 )
 
 func (kind ImageKind) Validate() error {
 	switch kind {
-	case ImageKindTask, ImageKindCustomResourceType, ImageKindCapabilitySidecar:
+	case ImageKindTask, ImageKindCustomResourceType, ImageKindCapabilitySidecar, ImageKindAgentRuntime:
 		return nil
 	default:
 		return invalidError("unsupported image dependency kind %q", kind)
@@ -329,6 +332,10 @@ func (collector *declarationCollector) walkStep(step atc.Step, insideAcross bool
 		return collector.collectOutputs("task", config.Name, config.SnapshotOutputs, insideAcross)
 	case *atc.AgentStep:
 		return collector.collectOutputs("agent", config.Name, config.SnapshotOutputs, insideAcross)
+	case *atc.AwaitSnapshotStep:
+		return collector.collectOutputs("await_snapshot", config.Name, awaitSnapshotOutputs(
+			config.Name, config.Type, config.WorkflowPort, config.WorkflowDefinitionID, config.WorkflowRunID,
+		), insideAcross)
 	case *atc.DoStep:
 		if len(config.Steps) == 0 {
 			return invalidError("concrete do step is empty")
@@ -372,7 +379,7 @@ func (collector *declarationCollector) walkStep(step atc.Step, insideAcross bool
 	case *atc.EnsureStep:
 		return walkHook(config.Step, config.Hook)
 	case *atc.GetStep, *atc.PutStep, *atc.RunStep, *atc.HarvestStep,
-		*atc.SetPipelineStep, *atc.LoadVarStep, *atc.LoadSnapshotStep:
+		*atc.SetPipelineStep, *atc.LoadVarStep, *atc.LoadSnapshotStep, *atc.PublishSnapshotStep:
 		return nil
 	default:
 		return invalidError("concrete plan contains unsupported step type %T", step.Config)
@@ -627,6 +634,14 @@ func (builder *provenanceBuilder) walkPlan(plan *atc.Plan, context walkContext, 
 		if err := builder.capturePlanOutputs(plan.ID.String(), "agent", plan.Agent.Name, plan.Agent.SnapshotOutputs, context); err != nil {
 			return err
 		}
+		if plan.Agent.RuntimeImage != "" {
+			if err := builder.addDigestImage(ImageDependency{
+				PlanID: plan.ID.String(), Kind: ImageKindAgentRuntime,
+				Name: plan.Agent.Name, ImageRef: plan.Agent.RuntimeImage,
+			}); err != nil {
+				return err
+			}
+		}
 		if err := builder.captureSidecars(plan.ID.String(), plan.Agent.Sidecars); err != nil {
 			return err
 		}
@@ -656,6 +671,30 @@ func (builder *provenanceBuilder) walkPlan(plan *atc.Plan, context walkContext, 
 				return invalidError("load_snapshot plan %q has invalid workflow run identity", plan.ID)
 			}
 		}
+	case plan.AwaitSnapshot != nil:
+		if plan.AwaitSnapshot.Type != snapshot.TypeRef("human-answer/v1") {
+			return invalidError("await_snapshot plan %q has invalid output type", plan.ID)
+		}
+		runID, err := snapshot.ParseWorkflowRunID(plan.AwaitSnapshot.WorkflowRunID)
+		if err != nil || runID != builder.input.WorkflowRunID {
+			return invalidError("await_snapshot plan %q has invalid workflow run identity", plan.ID)
+		}
+		if err := builder.capturePlanOutputs(plan.ID.String(), "await_snapshot", plan.AwaitSnapshot.Name, awaitSnapshotOutputs(
+			plan.AwaitSnapshot.Name, plan.AwaitSnapshot.Type, plan.AwaitSnapshot.WorkflowPort,
+			plan.AwaitSnapshot.WorkflowDefinitionID, plan.AwaitSnapshot.WorkflowRunID,
+		), context); err != nil {
+			return err
+		}
+	case plan.PublishSnapshot != nil:
+		if err := validatePublishSnapshotPlan(plan.PublishSnapshot); err != nil {
+			return invalidError("publish_snapshot plan %q: %v", plan.ID, err)
+		}
+		if plan.PublishSnapshot.Mode == publisher.ModeMerge {
+			runID, err := snapshot.ParseWorkflowRunID(plan.PublishSnapshot.WorkflowRunID)
+			if err != nil || runID != builder.input.WorkflowRunID {
+				return invalidError("publish_snapshot plan %q has invalid workflow run identity", plan.ID)
+			}
+		}
 	case plan.Sidecar != nil:
 		if err := builder.addDigestImage(ImageDependency{
 			PlanID: plan.ID.String(), Kind: ImageKindCapabilitySidecar,
@@ -683,6 +722,8 @@ func planKind(plan *atc.Plan) (string, int) {
 		{"task", plan.Task != nil}, {"run", plan.Run != nil}, {"agent", plan.Agent != nil},
 		{"harvest", plan.Harvest != nil}, {"set_pipeline", plan.SetPipeline != nil},
 		{"load_var", plan.LoadVar != nil}, {"load_snapshot", plan.LoadSnapshot != nil},
+		{"await_snapshot", plan.AwaitSnapshot != nil},
+		{"publish_snapshot", plan.PublishSnapshot != nil},
 		{"do", plan.Do != nil}, {"in_parallel", plan.InParallel != nil}, {"across", plan.Across != nil},
 		{"on_success", plan.OnSuccess != nil}, {"on_failure", plan.OnFailure != nil},
 		{"on_abort", plan.OnAbort != nil}, {"on_error", plan.OnError != nil}, {"ensure", plan.Ensure != nil},
@@ -699,6 +740,44 @@ func planKind(plan *atc.Plan) (string, int) {
 		}
 	}
 	return kind, count
+}
+
+func validatePublishSnapshotPlan(plan *atc.PublishSnapshotPlan) error {
+	if plan == nil || strings.TrimSpace(plan.Name) == "" || strings.TrimSpace(plan.Input) == "" {
+		return fmt.Errorf("name and input are required")
+	}
+	if plan.Mode == publisher.ModeMerge {
+		if strings.TrimSpace(plan.Approval) == "" || strings.TrimSpace(plan.WorkflowRunID) == "" {
+			return fmt.Errorf("merge approval and workflow run identity are required")
+		}
+	} else if plan.Approval != "" || plan.WorkflowRunID != "" {
+		return fmt.Errorf("approval linkage is only valid for merge")
+	}
+	request := publisher.Request{
+		Publisher: plan.Publisher,
+		Input: snapshot.SnapshotRef{
+			ID: 1, Type: plan.InputType,
+			Digest: snapshot.Digest("sha256:" + strings.Repeat("0", sha256.Size*2)),
+		},
+		Destination: plan.Destination, Mode: plan.Mode, Parameters: plan.Parameters,
+		ApprovalPolicyVersion: plan.ApprovalPolicyVersion,
+		// Provenance validates immutable plan shape; execution replaces this
+		// sentinel with authenticated build identity before acquisition.
+		Authority: publisher.Authority{TeamID: 1, TeamName: "server-verified", BuildID: 1, Actor: "server-verified"},
+	}
+	if plan.Mode == publisher.ModeMerge {
+		// Runtime approval comes only from the server. This placeholder lets the
+		// provenance verifier validate the immutable publication shape without
+		// representing an authored approval actor.
+		request.ApprovedBy = "server-verified"
+		request.Approval = &publisher.ApprovalEvidence{
+			WaitID:     1,
+			Question:   snapshot.SnapshotRef{ID: 2, Type: "question/v1", Digest: snapshot.Digest("sha256:" + strings.Repeat("1", 64))},
+			Answer:     snapshot.SnapshotRef{ID: 3, Type: "human-answer/v1", Digest: snapshot.Digest("sha256:" + strings.Repeat("2", 64))},
+			ResolvedBy: "server-verified", ResolvedAt: time.Unix(1, 0).UTC(),
+		}
+	}
+	return request.Validate()
 }
 
 func (builder *provenanceBuilder) captureGet(plan *atc.Plan, context walkContext) error {
@@ -944,6 +1023,22 @@ func (builder *provenanceBuilder) capturePlanOutputs(
 		})
 	}
 	return nil
+}
+
+func awaitSnapshotOutputs(
+	name string,
+	typ snapshot.TypeRef,
+	workflowPort string,
+	workflowDefinitionID int,
+	workflowRunID string,
+) map[string]atc.SnapshotOutputConfig {
+	if workflowPort == "" {
+		return nil
+	}
+	return map[string]atc.SnapshotOutputConfig{name: {
+		Type: typ, Retention: snapshot.RetentionClassWorkflow, WorkflowPort: workflowPort,
+		WorkflowDefinitionID: workflowDefinitionID, WorkflowRunID: workflowRunID,
+	}}
 }
 
 func compareOutputContracts(

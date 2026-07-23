@@ -171,6 +171,7 @@ type preparedAgentAssets struct {
 	context         []manifestAsset
 	contextBytes    int
 	capabilityNames []string
+	capabilityURLs  map[string]string
 }
 
 type functionAssetCompiler struct {
@@ -212,6 +213,7 @@ func newFunctionAssetCompiler(m Manifest, function *FunctionConfig) (*functionAs
 func (compiler *functionAssetCompiler) preflight() error {
 	for index := range compiler.function.Plan {
 		err := compiler.function.Plan[index].Config.Visit(atc.StepRecursor{
+			OnTask:  compiler.preflightTask,
 			OnAgent: compiler.preflightAgent,
 		})
 		if err != nil {
@@ -221,13 +223,23 @@ func (compiler *functionAssetCompiler) preflight() error {
 	return nil
 }
 
+func (compiler *functionAssetCompiler) preflightTask(step *atc.TaskStep) error {
+	if step.Privileged {
+		return fmt.Errorf("workflow: task %q: privileged execution is not allowed for a transformation node", step.Name)
+	}
+	return nil
+}
+
 func (compiler *functionAssetCompiler) preflightAgent(step *atc.AgentStep) error {
 	identity := agentCompileIdentity(step)
+	if step.RuntimeImage != "" {
+		return fmt.Errorf("workflow: %s: runtime_image is server-selected and cannot be authored", identity)
+	}
 	if len(step.Sidecars) > 0 {
 		return fmt.Errorf("workflow: %s: direct sidecars are not allowed in version 3; declare a named capability", identity)
 	}
 
-	prepared := preparedAgentAssets{}
+	prepared := preparedAgentAssets{capabilityURLs: map[string]string{}}
 	if step.Prompt != "" && step.PromptFile != "" {
 		return fmt.Errorf("workflow: %s: prompt and prompt_file are mutually exclusive", identity)
 	}
@@ -313,6 +325,7 @@ func (compiler *functionAssetCompiler) preflightAgent(step *atc.AgentStep) error
 	}
 
 	seenCapabilities := make(map[string]struct{}, len(step.Capabilities))
+	selectedPorts := make(map[int]string, len(step.Capabilities))
 	for _, name := range step.Capabilities {
 		if _, duplicate := seenCapabilities[name]; duplicate {
 			return fmt.Errorf("workflow: %s: duplicate capability reference %q", identity, name)
@@ -321,10 +334,33 @@ func (compiler *functionAssetCompiler) preflightAgent(step *atc.AgentStep) error
 		if _, found := compiler.function.Capabilities[name]; !found {
 			return fmt.Errorf("workflow: %s: unknown capability %q", identity, name)
 		}
+		envName := capabilityMCPEnvName(name)
+		if _, authored := step.Env[envName]; authored {
+			return fmt.Errorf("workflow: %s: env %q is reserved for the compiled capability %q", identity, envName, name)
+		}
+		port, err := capabilityMCPPort(compiler.function.Capabilities[name].Sidecar)
+		if err != nil {
+			return fmt.Errorf("workflow: %s: capability %q: %w", identity, name, err)
+		}
+		if previous, duplicate := selectedPorts[port]; duplicate {
+			return fmt.Errorf("workflow: %s: capabilities %q and %q both bind localhost MCP port %d", identity, previous, name, port)
+		}
+		selectedPorts[port] = name
+		prepared.capabilityURLs[envName] = "http://127.0.0.1:" + fmt.Sprint(port) + "/mcp"
 		if err := compiler.addCompiledAssetBytes(compiler.capabilityBytes[name], identity, "capability "+name); err != nil {
 			return err
 		}
 		prepared.capabilityNames = append(prepared.capabilityNames, name)
+	}
+	for _, envName := range sortedTaskEnvKeys(step.Env) {
+		if strings.HasSuffix(strings.ToUpper(envName), "_MCP_URL") {
+			if _, generated := prepared.capabilityURLs[envName]; generated {
+				// The more specific collision diagnostic above is stable and
+				// explains which declaration owns the key.
+				continue
+			}
+			return fmt.Errorf("workflow: %s: env %q declares an MCP endpoint without a named capability", identity, envName)
+		}
 	}
 
 	compiler.preparedAgents[step] = prepared
@@ -375,6 +411,10 @@ func (compiler *functionAssetCompiler) compile() error {
 	}
 	for index := range compiler.function.Plan {
 		err := compiler.function.Plan[index].Config.Visit(atc.StepRecursor{
+			OnTask: func(step *atc.TaskStep) error {
+				step.Hermetic = true
+				return nil
+			},
 			OnAgent: compiler.compileAgent,
 		})
 		if err != nil {
@@ -402,6 +442,17 @@ func (compiler *functionAssetCompiler) compileAgent(step *atc.AgentStep) error {
 		step.Context = context.String()
 	}
 	step.ContextFiles = nil
+	// Transform agents operate only on their mounted snapshot values and local
+	// capabilities. Live reads and writes belong to capture and publisher
+	// boundaries, so admission makes network isolation non-optional.
+	step.Hermetic = true
+	if len(prepared.capabilityURLs) > 0 && step.Env == nil {
+		step.Env = atc.TaskEnv{}
+	}
+	for _, name := range sortedStringMapKeys(prepared.capabilityURLs) {
+		endpoint := prepared.capabilityURLs[name]
+		step.Env[name] = endpoint
+	}
 	for _, name := range prepared.capabilityNames {
 		copy := cloneSidecarConfig(compiler.function.Capabilities[name].Sidecar)
 		step.Sidecars = append(step.Sidecars, atc.SidecarSource{Config: &copy})
@@ -431,11 +482,20 @@ func validateCapabilityCatalog(catalog map[string]Capability) error {
 		if key == "" {
 			return fmt.Errorf("workflow: capability name is required")
 		}
+		if !validCapabilityName(key) {
+			return fmt.Errorf("workflow: capability name %q must match [a-z][a-z0-9-]*", key)
+		}
 		capability := catalog[key]
 		if _, err := snapshot.ParseTypeRef(capability.Contract); err != nil {
 			return fmt.Errorf("workflow: capability %q: invalid contract: %w", key, err)
 		}
 		if err := capability.Sidecar.ValidateCapability(); err != nil {
+			return fmt.Errorf("workflow: capability %q: %w", key, err)
+		}
+		if capability.Sidecar.Name == "dev" || capability.Sidecar.Name == "platform" || capability.Sidecar.Name == "gateway" {
+			return fmt.Errorf("workflow: capability %q: sidecar name %q is reserved for retired privileged runtime roles", key, capability.Sidecar.Name)
+		}
+		if _, err := capabilityMCPPort(capability.Sidecar); err != nil {
 			return fmt.Errorf("workflow: capability %q: %w", key, err)
 		}
 		if previous, duplicate := seenSidecars[capability.Sidecar.Name]; duplicate {
@@ -444,6 +504,60 @@ func validateCapabilityCatalog(catalog map[string]Capability) error {
 		seenSidecars[capability.Sidecar.Name] = key
 	}
 	return nil
+}
+
+func validCapabilityName(name string) bool {
+	if name == "" || name[0] < 'a' || name[0] > 'z' {
+		return false
+	}
+	for _, character := range name[1:] {
+		if (character < 'a' || character > 'z') && (character < '0' || character > '9') && character != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+func capabilityMCPEnvName(name string) string {
+	return strings.ToUpper(strings.ReplaceAll(name, "-", "_")) + "_MCP_URL"
+}
+
+func capabilityMCPPort(sidecar atc.SidecarConfig) (int, error) {
+	port := 0
+	for _, candidate := range sidecar.Ports {
+		if candidate.Protocol != "" && candidate.Protocol != "TCP" {
+			continue
+		}
+		if candidate.ContainerPort < 1 || candidate.ContainerPort > 65535 {
+			return 0, fmt.Errorf("MCP TCP port must be between 1 and 65535")
+		}
+		if port != 0 {
+			return 0, fmt.Errorf("capability sidecar must declare exactly one TCP port for its MCP endpoint")
+		}
+		port = candidate.ContainerPort
+	}
+	if port == 0 {
+		return 0, fmt.Errorf("capability sidecar must declare exactly one TCP port for its MCP endpoint")
+	}
+	return port, nil
+}
+
+func sortedTaskEnvKeys(env atc.TaskEnv) []string {
+	keys := make([]string, 0, len(env))
+	for key := range env {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func sortedStringMapKeys(values map[string]string) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func cloneSidecarConfig(source atc.SidecarConfig) atc.SidecarConfig {

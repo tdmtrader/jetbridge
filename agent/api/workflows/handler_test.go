@@ -1,15 +1,18 @@
 package workflows_test
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/concourse/concourse/agent/api/workflows"
 	"github.com/concourse/concourse/agent/workflow"
+	"github.com/concourse/concourse/agent/workflowrun"
 )
 
 const validYAML = `schema_version: 1
@@ -163,6 +166,93 @@ func TestVersionsAndGet(t *testing.T) {
 	}
 }
 
+func TestVersionsUsesAStableHardBoundedCursor(t *testing.T) {
+	h, store := newHandler(t)
+	for _, prompt := range []string{"One.", "Two.", "Three."} {
+		raw := strings.Replace(validYAML, "Do the work.", prompt, 1)
+		if _, err := store.Import("wf", []byte(raw), "alice"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	w := httptest.NewRecorder()
+	h.Versions(w, request("GET", "/api/v1/agent/workflows/wf/versions",
+		url.Values{":workflow_name": {"wf"}, "limit": {"2"}}, ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("first page status/body = %d/%s", w.Code, w.Body.String())
+	}
+	var first []workflow.Definition
+	if err := json.Unmarshal(w.Body.Bytes(), &first); err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 2 || first[0].Version != 2 || first[1].Version != 3 {
+		t.Fatalf("first page versions = %+v, want [2,3]", first)
+	}
+	if got := w.Header().Get("X-Next-Cursor"); got != "2" {
+		t.Fatalf("next cursor = %q, want 2", got)
+	}
+	if link := w.Header().Get("Link"); !strings.Contains(link, "cursor=2") ||
+		!strings.Contains(link, "limit=2") || !strings.Contains(link, `rel="next"`) {
+		t.Fatalf("next Link = %q", link)
+	}
+
+	w = httptest.NewRecorder()
+	h.Versions(w, request("GET", "/api/v1/agent/workflows/wf/versions",
+		url.Values{":workflow_name": {"wf"}, "limit": {"2"}, "cursor": {"2"}}, ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("second page status/body = %d/%s", w.Code, w.Body.String())
+	}
+	var second []workflow.Definition
+	if err := json.Unmarshal(w.Body.Bytes(), &second); err != nil {
+		t.Fatal(err)
+	}
+	if len(second) != 1 || second[0].Version != 1 {
+		t.Fatalf("second page versions = %+v, want [1]", second)
+	}
+	if got := w.Header().Get("X-Next-Cursor"); got != "" {
+		t.Fatalf("terminal next cursor = %q", got)
+	}
+}
+
+func TestVersionsRejectsInvalidPaginationBeforeReadingTheStore(t *testing.T) {
+	h, _ := newHandler(t)
+	for name, values := range map[string]url.Values{
+		"zero limit":   {":workflow_name": {"wf"}, "limit": {"0"}},
+		"large limit":  {":workflow_name": {"wf"}, "limit": {"101"}},
+		"bad limit":    {":workflow_name": {"wf"}, "limit": {"many"}},
+		"zero cursor":  {":workflow_name": {"wf"}, "cursor": {"0"}},
+		"bad cursor":   {":workflow_name": {"wf"}, "cursor": {"old"}},
+		"large cursor": {":workflow_name": {"wf"}, "cursor": {"2147483648"}},
+		"multi cursor": {":workflow_name": {"wf"}, "cursor": {"2", "3"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			h.Versions(w, request("GET", "/api/v1/agent/workflows/wf/versions", values, ""))
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status/body = %d/%s", w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestVersionsHonorsRequestCancellation(t *testing.T) {
+	h, store := newHandler(t)
+	if _, err := store.Import("wf", []byte(validYAML), "alice"); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := request("GET", "/api/v1/agent/workflows/wf/versions",
+		url.Values{":workflow_name": {"wf"}}, "").WithContext(ctx)
+	w := httptest.NewRecorder()
+
+	h.Versions(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status/body = %d/%s", w.Code, w.Body.String())
+	}
+}
+
 func TestPromote(t *testing.T) {
 	h, store := newHandler(t)
 	store.Import("wf", []byte(validYAML), "alice")
@@ -190,6 +280,39 @@ func TestPromote(t *testing.T) {
 		url.Values{":workflow_name": {"wf"}, ":version": {"9"}}, ""))
 	if w.Code != http.StatusNotFound {
 		t.Errorf("unknown version status = %d, want 404", w.Code)
+	}
+}
+
+func TestPromoteRejectsSchemaV3WithoutDigestPinnedTrustedRuntime(t *testing.T) {
+	store := workflow.NewMemoryStore(workflowrun.WorkflowTargetRenderer{
+		RuntimeImage: "registry.example/agent-runner:mutable",
+	})
+	h := workflows.NewHandler(store)
+	definition, err := store.ImportManifest("wf-v3", workflow.Manifest{"workflow.yml": `schema_version: 3
+name: wf-v3
+signature_version: 1
+inputs: []
+outputs: []
+plan:
+  - agent: work
+    function_id: work
+    prompt: do the work
+`}, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	w := httptest.NewRecorder()
+	h.Promote(w, request("PUT", "/api/v1/agent/workflows/wf-v3/versions/1/live",
+		url.Values{":workflow_name": {"wf-v3"}, ":version": {strconv.Itoa(definition.Version)}}, ""))
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "exact sha256 digest") {
+		t.Fatalf("body = %q, want trusted runtime digest error", w.Body.String())
+	}
+	if _, found, liveErr := store.Live("wf-v3"); liveErr != nil || found {
+		t.Fatalf("rejected version became live: found=%v err=%v", found, liveErr)
 	}
 }
 

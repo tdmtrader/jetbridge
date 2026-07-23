@@ -149,18 +149,28 @@ func (sc SidecarConfig) ValidateCapability() error {
 		return fmt.Errorf("invalid capability sidecar: image_artifact is not allowed")
 	}
 
-	const algorithm = "sha256:"
-	at := strings.LastIndexByte(sc.Image, '@')
-	if at <= 0 || len(sc.Image)-(at+1) != len(algorithm)+64 || !strings.HasPrefix(sc.Image[at+1:], algorithm) {
-		return fmt.Errorf("invalid capability sidecar: image must be an OCI reference pinned to an exact sha256 digest")
+	if err := ValidatePinnedOCIImage(sc.Image); err != nil {
+		return fmt.Errorf("invalid capability sidecar: %w", err)
 	}
-	for _, character := range sc.Image[at+1+len(algorithm):] {
+	return nil
+}
+
+// ValidatePinnedOCIImage applies the immutable image contract shared by
+// versioned workflow capabilities, server-selected agent runtimes, and
+// snapshot-capture tasks. Ordinary pipeline sidecars may still use tags.
+func ValidatePinnedOCIImage(image string) error {
+	const algorithm = "sha256:"
+	at := strings.LastIndexByte(image, '@')
+	if at <= 0 || len(image)-(at+1) != len(algorithm)+64 || !strings.HasPrefix(image[at+1:], algorithm) {
+		return fmt.Errorf("image must be an OCI reference pinned to an exact sha256 digest")
+	}
+	for _, character := range image[at+1+len(algorithm):] {
 		if !((character >= '0' && character <= '9') || (character >= 'a' && character <= 'f')) {
-			return fmt.Errorf("invalid capability sidecar: image digest must contain 64 lowercase hexadecimal characters")
+			return fmt.Errorf("image digest must contain 64 lowercase hexadecimal characters")
 		}
 	}
-	if _, err := containername.NewDigest(sc.Image, containername.StrictValidation); err != nil {
-		return fmt.Errorf("invalid capability sidecar: image is not a valid OCI digest reference: %w", err)
+	if _, err := containername.NewDigest(image, containername.StrictValidation); err != nil {
+		return fmt.Errorf("image is not a valid OCI digest reference: %w", err)
 	}
 	return nil
 }

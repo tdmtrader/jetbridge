@@ -12,6 +12,7 @@ module Api.Endpoints exposing
 
 import Concourse
 import RouteBuilder exposing (RouteBuilder, append, appendPath, appendQuery)
+import Url
 import Url.Builder
 
 
@@ -50,6 +51,27 @@ type Endpoint
     | AgentTicketDispatch Int
     | AgentTicketTask Int Int
     | AgentTicketMetrics Int
+    | AgentWorkflowVersions String
+    | AgentWorkflowVersionLive String Int
+    | AgentWorkflowRuns String
+    | AgentWorkflowRunOperationalStatusCounts String
+    | AgentWorkflowRun String String
+    | AgentWorkflowRunCancel String String
+    | AgentWorkflowRunRetry String String
+    | AgentWorkflowRunWaits String String
+    | AgentWorkflowWaitResolve String String String
+    | AgentWorkflowRunOutcomes String String
+    | AgentWorkflowRunReviews String String
+    | AgentSnapshot String String
+    | AgentSnapshotContent String String
+    | AgentSnapshotPin String String
+    | AgentSnapshotRepositoryChange String String
+    | AgentSnapshotReview String
+    | AgentExperimentsList
+    | AgentExperiment String
+    | AgentExperimentCells String
+    | AgentExperimentScorecard String
+    | AgentExperimentCancel String
 
 
 type PipelineEndpoint
@@ -263,6 +285,69 @@ builder endpoint =
 
         AgentTicketMetrics ticketId ->
             base |> appendPath [ "agent", "tickets", String.fromInt ticketId, "metrics" ]
+
+        AgentWorkflowVersions workflowName ->
+            base |> appendPath [ "agent", "workflows", Url.percentEncode workflowName, "versions" ]
+
+        AgentWorkflowVersionLive workflowName version ->
+            base |> appendPath [ "agent", "workflows", Url.percentEncode workflowName, "versions", String.fromInt version, "live" ]
+
+        AgentWorkflowRuns workflowName ->
+            base |> appendPath [ "agent", "workflows", Url.percentEncode workflowName, "runs" ]
+
+        AgentWorkflowRunOperationalStatusCounts workflowName ->
+            base |> appendPath [ "agent", "workflows", Url.percentEncode workflowName, "runs", "operational-status-counts" ]
+
+        AgentWorkflowRun workflowName workflowRunId ->
+            base |> appendPath [ "agent", "workflows", Url.percentEncode workflowName, "runs", workflowRunId ]
+
+        AgentWorkflowRunCancel workflowName workflowRunId ->
+            base |> appendPath [ "agent", "workflows", Url.percentEncode workflowName, "runs", workflowRunId, "cancel" ]
+
+        AgentWorkflowRunRetry workflowName workflowRunId ->
+            base |> appendPath [ "agent", "workflows", Url.percentEncode workflowName, "runs", workflowRunId, "retry" ]
+
+        AgentWorkflowRunWaits workflowName workflowRunId ->
+            base |> appendPath [ "agent", "workflows", Url.percentEncode workflowName, "runs", workflowRunId, "waits" ]
+
+        AgentWorkflowWaitResolve workflowName workflowRunId waitId ->
+            base |> appendPath [ "agent", "workflows", Url.percentEncode workflowName, "runs", workflowRunId, "waits", waitId, "resolve" ]
+
+        AgentWorkflowRunOutcomes workflowName workflowRunId ->
+            base |> appendPath [ "agent", "workflows", Url.percentEncode workflowName, "runs", workflowRunId, "outcomes" ]
+
+        AgentWorkflowRunReviews workflowName workflowRunId ->
+            base |> appendPath [ "agent", "workflows", Url.percentEncode workflowName, "runs", workflowRunId, "reviews" ]
+
+        AgentSnapshot teamName snapshotId ->
+            base |> appendPath [ "teams", teamName, "agent", "snapshots", snapshotId ]
+
+        AgentSnapshotContent teamName snapshotId ->
+            base |> appendPath [ "teams", teamName, "agent", "snapshots", snapshotId, "content" ]
+
+        AgentSnapshotPin teamName snapshotId ->
+            base |> appendPath [ "teams", teamName, "agent", "snapshots", snapshotId, "pin" ]
+
+        AgentSnapshotRepositoryChange teamName snapshotId ->
+            base |> appendPath [ "teams", teamName, "agent", "snapshots", snapshotId, "projections", "repository-change" ]
+
+        AgentSnapshotReview snapshotId ->
+            base |> appendPath [ "agent", "snapshots", snapshotId, "projections", "review" ]
+
+        AgentExperimentsList ->
+            base |> appendPath [ "agent", "experiments" ]
+
+        AgentExperiment experimentId ->
+            base |> appendPath [ "agent", "experiments", experimentId ]
+
+        AgentExperimentCells experimentId ->
+            base |> appendPath [ "agent", "experiments", experimentId, "cells" ]
+
+        AgentExperimentScorecard experimentId ->
+            base |> appendPath [ "agent", "experiments", experimentId, "scorecard" ]
+
+        AgentExperimentCancel experimentId ->
+            base |> appendPath [ "agent", "experiments", experimentId, "cancel" ]
 
 
 pipelineEndpoint : PipelineEndpoint -> RouteBuilder

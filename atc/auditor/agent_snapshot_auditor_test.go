@@ -12,8 +12,11 @@ import (
 func TestAgentSnapshotRoutesAreSystemAuditActions(t *testing.T) {
 	routes := []string{
 		atc.CreateAgentSnapshot,
+		atc.CaptureAgentResourceSnapshot,
 		atc.ListAgentSnapshots,
 		atc.GetAgentSnapshot,
+		atc.GetAgentSnapshotReview,
+		atc.GetAgentRepositoryChangeProjection,
 		atc.DownloadAgentSnapshot,
 		atc.PinAgentSnapshot,
 		atc.UnpinAgentSnapshot,

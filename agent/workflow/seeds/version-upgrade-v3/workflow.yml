@@ -1,7 +1,8 @@
 schema_version: 3
 name: version-upgrade
 signature_version: 1
-description: Upgrade a declared component and return a tested change plus a structured report.
+disposition_output: change
+description: Upgrade a declared component, validate it, and return an approved durable change.
 inputs:
   - name: repository
     type: repository/v1
@@ -12,7 +13,7 @@ inputs:
 outputs:
   - name: change
     type: repository-change/v1
-    from: change
+    from: approved-change
     description: Tested repository change relative to the repository input.
   - name: report
     type: upgrade-report/v1
@@ -20,13 +21,58 @@ outputs:
     description: Structured upgrade summary and version transition.
 plan:
   - agent: upgrade
+    budget_slice_usd: 10
     function_id: upgrade
     prompt_file: prompts/upgrade.md
     inputs: [repository, request]
-    outputs: [change, report]
+    outputs: [candidate-change, report]
     input_types:
       repository: {type: repository/v1}
       request: {type: upgrade-request/v1}
     output_types:
-      change: repository-change/v1
+      candidate-change: repository-change/v1
       report: upgrade-report/v1
+  - agent: validate-and-review
+    budget_slice_usd: 3
+    function_id: validate-and-review
+    prompt: >-
+      Validate candidate-change against the immutable repository and exact
+      upgrade request. Run the relevant focused and broader tests, inspect
+      breaking API and migration risks, and fix only defects required for this
+      upgrade. Write a strict repository-change/v1 value beneath
+      $AGENT_OUTPUT_REVIEWED_CHANGE, a validation-report/v1 document beneath
+      $AGENT_OUTPUT_VALIDATION, and a question/v1 value beneath
+      $AGENT_OUTPUT_APPROVAL_QUESTION asking whether this exact sealed change may
+      be opened as a pull request. Do not contact any live system.
+    inputs: [repository, request, candidate-change, report]
+    outputs: [reviewed-change, validation, approval-question]
+    input_types:
+      repository: {type: repository/v1}
+      request: {type: upgrade-request/v1}
+      candidate-change: {type: repository-change/v1}
+      report: {type: upgrade-report/v1}
+    output_types:
+      reviewed-change: repository-change/v1
+      validation: validation-report/v1
+      approval-question: question/v1
+  - await_snapshot: approval
+    question: approval-question
+    type: human-answer/v1
+    on_timeout: fail
+    timeout: 72h
+  - agent: enforce-approval
+    budget_slice_usd: 1
+    function_id: enforce-approval
+    prompt: >-
+      Read the sealed human-answer/v1 input. Only when it explicitly approves
+      release of this exact upgrade for external delivery, copy reviewed-change into a fresh
+      repository-change/v1 value at $AGENT_OUTPUT_APPROVED_CHANGE. Preserve its
+      base and content exactly. If it rejects or changes the request, submit no
+      output so Jetbridge fails closed. Do not contact a live system.
+    inputs: [reviewed-change, approval]
+    outputs: [approved-change]
+    input_types:
+      reviewed-change: {type: repository-change/v1}
+      approval: {type: human-answer/v1}
+    output_types:
+      approved-change: repository-change/v1

@@ -306,6 +306,10 @@ func (b *inMemoryCheckBuild) RunStateID() string {
 	return fmt.Sprintf("in-memory-check-build:%v", b.preId)
 }
 
+func (b *inMemoryCheckBuild) AgentWorkflowRunAssociation() (AgentWorkflowRunBuildAssociation, bool, error) {
+	return AgentWorkflowRunBuildAssociation{}, false, nil
+}
+
 func (b *inMemoryCheckBuild) IsRunning() bool           { return b.endTime.IsZero() }
 func (b *inMemoryCheckBuild) IsManuallyTriggered() bool { return false }
 func (b *inMemoryCheckBuild) CreateTime() time.Time     { return b.createTime }

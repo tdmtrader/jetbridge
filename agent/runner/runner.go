@@ -91,13 +91,14 @@ type Config struct {
 }
 
 var (
-	mcpURLPattern    = regexp.MustCompile(`^([A-Z]+)_MCP_URL$`)
+	mcpURLPattern    = regexp.MustCompile(`^([A-Z][A-Z0-9_]*)_MCP_URL$`)
 	outputEnvPattern = regexp.MustCompile(`^AGENT_OUTPUT_[A-Z0-9_]+$`)
 )
 
 // FromEnv builds a Config from the §8.1 environment contract set by the
 // agent-step exec. MCP servers are discovered by scanning the environment
-// for variables matching ^([A-Z]+)_MCP_URL$ (DEV_MCP_URL -> key "dev").
+// for variables matching ^([A-Z][A-Z0-9_]*)_MCP_URL$.
+// CODE_REVIEW_MCP_URL becomes the admitted server key "code-review".
 func FromEnv() Config {
 	wd, _ := os.Getwd()
 
@@ -149,7 +150,7 @@ func FromEnv() Config {
 			continue
 		}
 		if m := mcpURLPattern.FindStringSubmatch(name); m != nil {
-			cfg.MCPServers[strings.ToLower(m[1])] = value
+			cfg.MCPServers[strings.ReplaceAll(strings.ToLower(m[1]), "_", "-")] = value
 		}
 		if name != "AGENT_OUTPUT_SCHEMA" && outputEnvPattern.MatchString(name) {
 			cfg.OutputPaths[name] = value
@@ -328,19 +329,24 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	if cfg.MaxTurns > 0 {
 		args = append(args, "--max-turns", strconv.Itoa(cfg.MaxTurns))
 	}
+	if cfg.BudgetSliceUSD > 0 {
+		args = append(args, "--max-budget-usd", strconv.FormatFloat(cfg.BudgetSliceUSD, 'f', -1, 64))
+	}
 	if cfg.SystemPrompt != "" {
 		args = append(args, "--append-system-prompt", cfg.SystemPrompt)
 	}
 	args = append(args, "--dangerously-skip-permissions")
 
-	if len(cfg.MCPServers) > 0 {
-		mcpConfigPath, err := writeMCPConfig(cfg.MCPServers)
-		if err != nil {
-			return 2, fmt.Errorf("write mcp config: %w", err)
-		}
-		defer os.Remove(mcpConfigPath)
-		args = append(args, "--mcp-config", mcpConfigPath)
+	// Always provide the complete admitted MCP set, including an empty set,
+	// and make it strict. Without --strict-mcp-config Claude may discover a
+	// repository-provided project MCP file and silently regain an undeclared
+	// live-system tool despite the workflow capability boundary.
+	mcpConfigPath, err := writeMCPConfig(cfg.MCPServers)
+	if err != nil {
+		return 2, fmt.Errorf("write mcp config: %w", err)
 	}
+	defer os.Remove(mcpConfigPath)
+	args = append(args, "--mcp-config", mcpConfigPath, "--strict-mcp-config")
 
 	var buf bytes.Buffer
 	cmd := exec.CommandContext(ctx, claudePath, args...)

@@ -205,18 +205,6 @@ func TestFullFunctionTargetRejectsUnfrozenExecutionDependencies(t *testing.T) {
 			task.Sidecars = []atc.SidecarSource{{Config: &atc.SidecarConfig{Name: "database", Image: "example/database:latest"}}}
 			def.Compiled.Function.Plan = append([]atc.Step{{Config: task}}, def.Compiled.Function.Plan...)
 		}, want: "exact digest"},
-		{name: "harvest sidecar file", mutate: func(def *Definition) {
-			harvest := renderHarvestStep(atc.SidecarSource{File: "repo/dev-mcp.yml"})
-			def.Compiled.Function.Plan = append([]atc.Step{{Config: harvest}}, def.Compiled.Function.Plan...)
-		}, want: "sidecar"},
-		{name: "harvest sidecar image artifact", mutate: func(def *Definition) {
-			harvest := renderHarvestStep(atc.SidecarSource{Config: &atc.SidecarConfig{Name: "dev-mcp", ImageArtifact: "dev-mcp-image"}})
-			def.Compiled.Function.Plan = append([]atc.Step{{Config: harvest}}, def.Compiled.Function.Plan...)
-		}, want: "image_artifact"},
-		{name: "harvest sidecar mutable image", mutate: func(def *Definition) {
-			harvest := renderHarvestStep(atc.SidecarSource{Config: &atc.SidecarConfig{Name: "dev-mcp", Image: "example/dev-mcp:latest"}})
-			def.Compiled.Function.Plan = append([]atc.Step{{Config: harvest}}, def.Compiled.Function.Plan...)
-		}, want: "exact digest"},
 		{name: "runtime task vars", mutate: func(def *Definition) {
 			task := renderImmutableTask()
 			task.Vars = atc.Params{"branch": "main"}
@@ -231,10 +219,9 @@ func TestFullFunctionTargetRejectsUnfrozenExecutionDependencies(t *testing.T) {
 			def.Compiled.Function.Plan[0].Config.(*atc.AgentStep).Prompt = "review ((runtime_policy))"
 		}, want: "interpolation"},
 		{name: "dynamic across values", mutate: func(def *Definition) {
-			addRenderResource(def, "matrix-source")
 			across := &atc.AcrossStep{
 				Vars: []atc.AcrossVarConfig{{Var: "item", Values: "((runtime_matrix))"}},
-				Step: &atc.GetStep{Name: "matrix", Resource: "matrix-source"},
+				Step: &atc.AgentStep{Name: "matrix", Prompt: "work"},
 			}
 			def.Compiled.Function.Plan = append([]atc.Step{{Config: across}}, def.Compiled.Function.Plan...)
 		}, want: "across"},
@@ -253,16 +240,10 @@ func TestFullFunctionTargetRejectsUnfrozenExecutionDependencies(t *testing.T) {
 	}
 }
 
-func TestFullFunctionTargetPreservesProvableTasksResourcesAndPublishers(t *testing.T) {
+func TestFullFunctionTargetPreservesProvableTasksWithoutLiveResources(t *testing.T) {
 	definition := renderTestDefinition()
 	task := renderImmutableTask()
-	addRenderResource(&definition, "source")
-	addRenderResource(&definition, "destination")
-	definition.Compiled.Function.Plan = append([]atc.Step{
-		{Config: &atc.GetStep{Name: "fetched", Resource: "source"}},
-		{Config: task},
-		{Config: &atc.PutStep{Name: "published", Resource: "destination", Params: atc.Params{"artifact": "fetched"}}},
-	}, definition.Compiled.Function.Plan...)
+	definition.Compiled.Function.Plan = append([]atc.Step{{Config: task}}, definition.Compiled.Function.Plan...)
 
 	target, err := FullFunctionTarget(definition)
 	if err != nil {
@@ -272,11 +253,18 @@ func TestFullFunctionTargetPreservesProvableTasksResourcesAndPublishers(t *testi
 	if err != nil {
 		t.Fatalf("RenderFunction: %v", err)
 	}
-	if len(rendered.Config.Resources) != 2 {
-		t.Fatalf("resources = %#v, want source and destination", rendered.Config.Resources)
+	if len(rendered.Config.Resources) != 0 {
+		t.Fatalf("resources = %#v, want no live-read resources", rendered.Config.Resources)
 	}
-	if got := rendered.Config.Jobs[0].PlanSequence[4].Config; reflect.TypeOf(got) != reflect.TypeOf(&atc.PutStep{}) {
-		t.Fatalf("publisher was not preserved: %T", got)
+	taskFound := false
+	for _, step := range rendered.Config.Jobs[0].PlanSequence {
+		if reflect.TypeOf(step.Config) == reflect.TypeOf(&atc.TaskStep{}) {
+			taskFound = true
+			break
+		}
+	}
+	if !taskFound {
+		t.Fatal("task was not preserved")
 	}
 }
 
@@ -331,7 +319,8 @@ func TestFullFunctionTargetRejectsAuthoredLoadSnapshotSteps(t *testing.T) {
 func TestFullFunctionTargetRejectsReservedTokenInSpoofedOutputTypesMap(t *testing.T) {
 	definition := renderTestDefinition()
 	spoof := &atc.TaskStep{
-		Name: "spoof",
+		Name:       "spoof",
+		FunctionID: "spoof",
 		Config: &atc.TaskConfig{
 			Platform: "linux",
 			Run:      atc.TaskRunConfig{Path: "/bin/true"},
@@ -604,7 +593,8 @@ func renderTestDefinition() Definition {
 
 func renderImmutableTask() *atc.TaskStep {
 	return &atc.TaskStep{
-		Name: "compile",
+		Name:       "compile",
+		FunctionID: "compile",
 		Config: &atc.TaskConfig{
 			Platform: "linux",
 			ImageResource: &atc.ImageResource{
@@ -615,16 +605,6 @@ func renderImmutableTask() *atc.TaskStep {
 			Run: atc.TaskRunConfig{Path: "/bin/true"},
 		},
 	}
-}
-
-func addRenderResource(definition *Definition, name string) {
-	definition.Compiled.Function.Resources = append(definition.Compiled.Function.Resources, atc.ResourceConfig{
-		Name: name,
-		Type: "registry-image",
-		Source: atc.Source{
-			"repository": "example/" + name,
-		},
-	})
 }
 
 func renderHarvestStep(devMCP atc.SidecarSource) *atc.HarvestStep {

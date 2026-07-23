@@ -41,13 +41,14 @@ const (
 	// (UUID). With readable pod names, this label maps back to the DB row.
 	handleLabelKey = "concourse.ci/handle"
 
+	// hermeticLabelKey is the server-owned Pod label selected by the Helm
+	// chart's fail-closed egress policy. Keep this value in sync with
+	// deploy/chart/templates/networkpolicy.yaml.
+	hermeticLabelKey = "concourse.ci/hermetic"
+
 	// CacheBasePath is the mount path inside pods where the cache PVC is
 	// attached. Cache entries live in subdirectories keyed by volume handle.
 	CacheBasePath = "/concourse/cache"
-
-	// DefaultArtifactHelperImage is the container image used for init
-	// containers that fetch artifacts from the DaemonSet. Only needs tar.
-	DefaultArtifactHelperImage = "alpine:latest"
 
 	// ArtifactMountPath is the mount path inside init containers where
 	// the artifact hostPath volume is attached.
@@ -158,8 +159,9 @@ type Config struct {
 	// node. When empty, caches fall back to emptyDir (ephemeral).
 	CacheHostPath string
 
-	// ArtifactHelperImage overrides DefaultArtifactHelperImage for init
-	// containers that fetch artifacts from the DaemonSet.
+	// ArtifactHelperImage is the exact digest-pinned image used by privileged
+	// filesystem helper init containers. It has no runtime default: command and
+	// chart validation require the deployment to choose and pin these bytes.
 	ArtifactHelperImage string
 
 	// ImageRegistry configures a container image registry for custom resource

@@ -7,13 +7,17 @@ module Concourse.Agent exposing
     , PrincipalCreated
     , RunMetric
     , Usage
+    , WorkflowPort
+    , WorkflowSignature
     , WorkflowSummary
+    , WorkflowVersion
     , decodeCostRollup
     , decodeCredentialStatuses
     , decodePrincipalCreated
     , decodePrincipals
     , decodeRunMetric
     , decodeWorkflowSummary
+    , decodeWorkflowVersion
     )
 
 import Dict exposing (Dict)
@@ -26,9 +30,39 @@ type alias WorkflowSummary =
     { name : String
     , description : String
     , latestVersion : Int
+    , schemaVersion : Int
+    , signatureVersion : Int
     , contentHash : String
     , liveVersion : Int
     , createdAt : Time.Posix
+    }
+
+
+type alias WorkflowPort =
+    { name : String
+    , typeRef : String
+    , optional : Bool
+    }
+
+
+type alias WorkflowSignature =
+    { inputs : List WorkflowPort
+    , outputs : List WorkflowPort
+    }
+
+
+type alias WorkflowVersion =
+    { id : Int
+    , name : String
+    , version : Int
+    , schemaVersion : Int
+    , signatureVersion : Int
+    , contentHash : String
+    , live : Bool
+    , description : String
+    , createdBy : String
+    , createdAt : Time.Posix
+    , signature : WorkflowSignature
     }
 
 
@@ -201,9 +235,45 @@ decodeWorkflowSummary =
         |> andMap (defaultTo "" <| Json.Decode.field "name" Json.Decode.string)
         |> andMap (defaultTo "" <| Json.Decode.field "description" Json.Decode.string)
         |> andMap (defaultTo 0 <| Json.Decode.field "latest_version" Json.Decode.int)
+        |> andMap (defaultTo 0 <| Json.Decode.field "schema_version" Json.Decode.int)
+        |> andMap (defaultTo 0 <| Json.Decode.field "signature_version" Json.Decode.int)
         |> andMap (defaultTo "" <| Json.Decode.field "content_hash" Json.Decode.string)
         |> andMap (defaultTo 0 <| Json.Decode.field "live_version" Json.Decode.int)
         |> andMap (defaultTo (dateFromSeconds 0) <| Json.Decode.field "created_at" (Json.Decode.map dateFromSeconds Json.Decode.int))
+
+
+decodeWorkflowPort : Json.Decode.Decoder WorkflowPort
+decodeWorkflowPort =
+    Json.Decode.succeed WorkflowPort
+        |> andMap (Json.Decode.field "name" Json.Decode.string)
+        |> andMap (Json.Decode.field "type" Json.Decode.string)
+        |> andMap (defaultTo False <| Json.Decode.field "optional" Json.Decode.bool)
+
+
+decodeWorkflowSignature : Json.Decode.Decoder WorkflowSignature
+decodeWorkflowSignature =
+    Json.Decode.succeed WorkflowSignature
+        |> andMap (defaultTo [] <| Json.Decode.field "inputs" (Json.Decode.list decodeWorkflowPort))
+        |> andMap (defaultTo [] <| Json.Decode.field "outputs" (Json.Decode.list decodeWorkflowPort))
+
+
+decodeWorkflowVersion : Json.Decode.Decoder WorkflowVersion
+decodeWorkflowVersion =
+    Json.Decode.succeed WorkflowVersion
+        |> andMap (Json.Decode.field "id" Json.Decode.int)
+        |> andMap (Json.Decode.field "name" Json.Decode.string)
+        |> andMap (Json.Decode.field "version" Json.Decode.int)
+        |> andMap (Json.Decode.field "schema_version" Json.Decode.int)
+        |> andMap (defaultTo 0 <| Json.Decode.field "signature_version" Json.Decode.int)
+        |> andMap (Json.Decode.field "content_hash" Json.Decode.string)
+        |> andMap (defaultTo False <| Json.Decode.field "live" Json.Decode.bool)
+        |> andMap (defaultTo "" <| Json.Decode.field "description" Json.Decode.string)
+        |> andMap (defaultTo "" <| Json.Decode.field "created_by" Json.Decode.string)
+        |> andMap (defaultTo (dateFromSeconds 0) <| Json.Decode.field "created_at" (Json.Decode.map dateFromSeconds Json.Decode.int))
+        |> andMap
+            (defaultTo (WorkflowSignature [] []) <|
+                Json.Decode.at [ "compiled", "function" ] decodeWorkflowSignature
+            )
 
 
 decodeCostSummary : Json.Decode.Decoder CostSummary

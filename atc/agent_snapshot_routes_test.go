@@ -7,12 +7,14 @@ func TestAgentSnapshotRoutesAreRegisteredExactlyOnce(t *testing.T) {
 		method string
 		path   string
 	}{
-		CreateAgentSnapshot:   {"POST", "/api/v1/teams/:team_name/agent/snapshots"},
-		ListAgentSnapshots:    {"GET", "/api/v1/teams/:team_name/agent/snapshots"},
-		GetAgentSnapshot:      {"GET", "/api/v1/teams/:team_name/agent/snapshots/:snapshot_id"},
-		DownloadAgentSnapshot: {"GET", "/api/v1/teams/:team_name/agent/snapshots/:snapshot_id/content"},
-		PinAgentSnapshot:      {"PUT", "/api/v1/teams/:team_name/agent/snapshots/:snapshot_id/pin"},
-		UnpinAgentSnapshot:    {"DELETE", "/api/v1/teams/:team_name/agent/snapshots/:snapshot_id/pin"},
+		CreateAgentSnapshot:                {"POST", "/api/v1/teams/:team_name/agent/snapshots"},
+		CaptureAgentResourceSnapshot:       {"POST", "/api/v1/teams/:team_name/agent/snapshots/capture-resource"},
+		ListAgentSnapshots:                 {"GET", "/api/v1/teams/:team_name/agent/snapshots"},
+		GetAgentSnapshot:                   {"GET", "/api/v1/teams/:team_name/agent/snapshots/:snapshot_id"},
+		GetAgentRepositoryChangeProjection: {"GET", "/api/v1/teams/:team_name/agent/snapshots/:snapshot_id/projections/repository-change"},
+		DownloadAgentSnapshot:              {"GET", "/api/v1/teams/:team_name/agent/snapshots/:snapshot_id/content"},
+		PinAgentSnapshot:                   {"PUT", "/api/v1/teams/:team_name/agent/snapshots/:snapshot_id/pin"},
+		UnpinAgentSnapshot:                 {"DELETE", "/api/v1/teams/:team_name/agent/snapshots/:snapshot_id/pin"},
 	}
 	seen := make(map[string]int, len(want))
 	for _, route := range Routes {

@@ -10,6 +10,7 @@ import (
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/agent/api/costs"
 	dispatcherapi "github.com/concourse/concourse/agent/api/dispatcher"
+	experimentsapi "github.com/concourse/concourse/agent/api/experiments"
 	"github.com/concourse/concourse/agent/api/feedback"
 	metricsapi "github.com/concourse/concourse/agent/api/metrics"
 	outcomesapi "github.com/concourse/concourse/agent/api/outcomes"
@@ -17,8 +18,10 @@ import (
 	reviewsapi "github.com/concourse/concourse/agent/api/reviews"
 	snapshotsapi "github.com/concourse/concourse/agent/api/snapshots"
 	ticketsapi "github.com/concourse/concourse/agent/api/tickets"
+	workflowoutcomesapi "github.com/concourse/concourse/agent/api/workflowoutcomes"
 	workflowrunsapi "github.com/concourse/concourse/agent/api/workflowruns"
 	workflowsapi "github.com/concourse/concourse/agent/api/workflows"
+	workflowwaitsapi "github.com/concourse/concourse/agent/api/workflowwaits"
 	"github.com/concourse/concourse/agent/budget"
 	"github.com/concourse/concourse/agent/credentials"
 	"github.com/concourse/concourse/agent/workflow"
@@ -121,6 +124,7 @@ func NewHandler(
 	// shared MirrorCache when --agent-outcome-git-dir is set, a true nil
 	// interface otherwise (master switch off → the diff API 404s).
 	outcomeDiffProvider outcomesapi.MirrorProvider,
+	outcomeDiffResolver outcomesapi.TicketRepositoryChangeResolver,
 	workflowStore workflow.Store,
 	// agentDispatchHandler serves DispatchAgentTicket (built in
 	// atccmd/command.go from dispatch.Deps; a stub in the test suite).
@@ -132,10 +136,23 @@ func NewHandler(
 	agentSettingsStore dispatcherapi.Store,
 	agentDispatcherBootDefault bool,
 	snapshotHandlers *snapshotsapi.HandlerFactory,
+	resourceCapturer snapshotsapi.ResourceCapturer,
 	workflowRunHandlers *workflowrunsapi.Handler,
+	workflowWaitHandlers *workflowwaitsapi.Handler,
+	workflowOutcomeHandlers *workflowoutcomesapi.Handler,
+	experimentHandlers *experimentsapi.Handler,
 ) (http.Handler, error) {
 	if workflowRunHandlers == nil {
 		return nil, fmt.Errorf("workflow-run API handlers are required")
+	}
+	if workflowOutcomeHandlers == nil {
+		return nil, fmt.Errorf("workflow-outcome API handlers are required")
+	}
+	if workflowWaitHandlers == nil {
+		return nil, fmt.Errorf("workflow-wait API handlers are required")
+	}
+	if experimentHandlers == nil {
+		return nil, fmt.Errorf("experiment API handlers are required")
 	}
 
 	absCLIDownloadsDir, err := filepath.Abs(cliDownloadsDir)
@@ -166,7 +183,17 @@ func NewHandler(
 	artifactServer := artifactserver.NewServer(logger, workerPool)
 	usersServer := usersserver.NewServer(logger, dbUserFactory)
 	wallServer := wallserver.NewServer(dbWall, logger)
-	feedbackServer := feedback.NewHandler(feedbackStore)
+	feedbackServer := feedback.NewHandler(
+		feedbackStore,
+		feedback.WithSnapshotTeam(atc.DefaultTeamName),
+		feedback.WithIdentity(func(r *http.Request) string {
+			claims := accessor.GetAccessor(r).Claims()
+			if claims.PreferredUsername != "" {
+				return claims.PreferredUsername
+			}
+			return claims.UserName
+		}),
+	)
 	reviewsServer := reviewsapi.NewHandler(
 		reviewsStore,
 		feedbackStore,
@@ -183,6 +210,7 @@ func NewHandler(
 			}, true, nil
 		},
 		agentReviewPublishToken,
+		atc.DefaultTeamName,
 	)
 	metricsServer := metricsapi.NewHandler(metricsStore)
 	ticketsServer := ticketsapi.NewHandler(ticketsStore, func(r *http.Request) string {
@@ -191,7 +219,7 @@ func NewHandler(
 	outcomesServer := outcomesapi.NewHandler(outcomesStore, ticketsStore, func(r *http.Request) string {
 		return accessor.GetAccessor(r).Claims().UserName
 	})
-	outcomeDiffServer := outcomesapi.NewDiffHandler(outcomesStore, outcomeDiffProvider)
+	outcomeDiffServer := outcomesapi.NewDiffHandlerWithProjection(outcomesStore, outcomeDiffProvider, outcomeDiffResolver)
 	workflowsServer := workflowsapi.NewHandler(workflowStore)
 	principalsServer := principalsapi.NewHandler(
 		principalsStore,
@@ -367,9 +395,11 @@ func NewHandler(
 		atc.ClassifyAgentVerdict:    http.HandlerFunc(feedbackServer.ClassifyVerdict),
 		atc.GetAgentReviewFindings:  http.HandlerFunc(feedbackServer.GetFindings),
 
-		atc.SubmitAgentReview:    http.HandlerFunc(reviewsServer.SubmitReview),
-		atc.GetBuildAgentReviews: http.HandlerFunc(reviewsServer.GetByBuild),
-		atc.ListTeamAgentReviews: http.HandlerFunc(reviewsServer.ListByTeam),
+		atc.SubmitAgentReview:           http.HandlerFunc(reviewsServer.SubmitReview),
+		atc.GetBuildAgentReviews:        http.HandlerFunc(reviewsServer.GetByBuild),
+		atc.ListTeamAgentReviews:        http.HandlerFunc(reviewsServer.ListByTeam),
+		atc.GetAgentSnapshotReview:      http.HandlerFunc(reviewsServer.GetBySnapshot),
+		atc.ListAgentWorkflowRunReviews: http.HandlerFunc(reviewsServer.ListByWorkflowRun),
 
 		atc.SubmitAgentRunMetrics:     http.HandlerFunc(metricsServer.SubmitMetrics),
 		atc.ListAgentRunMetrics:       http.HandlerFunc(metricsServer.ListByTicket),
@@ -390,23 +420,38 @@ func NewHandler(
 		atc.GetAgentTicketOutcome:     http.HandlerFunc(outcomesServer.GetOutcome),
 		atc.GetAgentTicketDiff:        http.HandlerFunc(outcomeDiffServer.GetDiff),
 
-		atc.SetAgentUserCredential:       http.HandlerFunc(credentialsServer.Set),
-		atc.GetAgentUserCredentialStatus: http.HandlerFunc(credentialsServer.Status),
-		atc.DeleteAgentUserCredential:    http.HandlerFunc(credentialsServer.Delete),
-		atc.GetAgentPlatformInfo:         platformInfoServer,
-		atc.GetAgentCostRollup:           http.HandlerFunc(costsServer.GetRollup),
-		atc.SubmitAgentCostRecord:        http.HandlerFunc(costsServer.SubmitRecord),
-		atc.ListAgentWorkflows:           http.HandlerFunc(workflowsServer.List),
-		atc.ListAgentWorkflowVersions:    http.HandlerFunc(workflowsServer.Versions),
-		atc.GetAgentWorkflowVersion:      http.HandlerFunc(workflowsServer.Get),
-		atc.CreateAgentWorkflowVersion:   http.HandlerFunc(workflowsServer.Import),
-		atc.PromoteAgentWorkflowVersion:  http.HandlerFunc(workflowsServer.Promote),
-		atc.CreateAgentWorkflowRun:       http.HandlerFunc(workflowRunHandlers.Create),
-		atc.ListAgentWorkflowRuns:        http.HandlerFunc(workflowRunHandlers.List),
-		atc.GetAgentWorkflowRun:          http.HandlerFunc(workflowRunHandlers.Get),
-		atc.CancelAgentWorkflowRun:       http.HandlerFunc(workflowRunHandlers.Cancel),
-		atc.RetryAgentWorkflowRun:        http.HandlerFunc(workflowRunHandlers.Retry),
-		atc.GetAgentWorkflowRunOutputs:   http.HandlerFunc(workflowRunHandlers.Outputs),
+		atc.SetAgentUserCredential:                     http.HandlerFunc(credentialsServer.Set),
+		atc.GetAgentUserCredentialStatus:               http.HandlerFunc(credentialsServer.Status),
+		atc.DeleteAgentUserCredential:                  http.HandlerFunc(credentialsServer.Delete),
+		atc.GetAgentPlatformInfo:                       platformInfoServer,
+		atc.GetAgentCostRollup:                         http.HandlerFunc(costsServer.GetRollup),
+		atc.SubmitAgentCostRecord:                      http.HandlerFunc(costsServer.SubmitRecord),
+		atc.ListAgentWorkflows:                         http.HandlerFunc(workflowsServer.List),
+		atc.ListAgentWorkflowVersions:                  http.HandlerFunc(workflowsServer.Versions),
+		atc.GetAgentWorkflowVersion:                    http.HandlerFunc(workflowsServer.Get),
+		atc.CreateAgentWorkflowVersion:                 http.HandlerFunc(workflowsServer.Import),
+		atc.PromoteAgentWorkflowVersion:                http.HandlerFunc(workflowsServer.Promote),
+		atc.CreateAgentWorkflowRun:                     http.HandlerFunc(workflowRunHandlers.Create),
+		atc.ListAgentWorkflowRuns:                      http.HandlerFunc(workflowRunHandlers.List),
+		atc.GetAgentWorkflowRunOperationalStatusCounts: http.HandlerFunc(workflowRunHandlers.OperationalStatusCounts),
+		atc.GetAgentWorkflowRun:                        http.HandlerFunc(workflowRunHandlers.Get),
+		atc.CancelAgentWorkflowRun:                     http.HandlerFunc(workflowRunHandlers.Cancel),
+		atc.RetryAgentWorkflowRun:                      http.HandlerFunc(workflowRunHandlers.Retry),
+		atc.GetAgentWorkflowRunOutputs:                 http.HandlerFunc(workflowRunHandlers.Outputs),
+		atc.ListAgentWorkflowRunWaits:                  http.HandlerFunc(workflowWaitHandlers.List),
+		atc.ResolveAgentWorkflowRunWait:                http.HandlerFunc(workflowWaitHandlers.Resolve),
+		atc.ListAgentWorkflowRunOutcomes:               http.HandlerFunc(workflowOutcomeHandlers.List),
+		atc.SetAgentWorkflowRunOutputOutcome:           http.HandlerFunc(workflowOutcomeHandlers.Record),
+		atc.CreateAgentExperiment:                      http.HandlerFunc(experimentHandlers.Create),
+		atc.ListAgentExperiments:                       http.HandlerFunc(experimentHandlers.List),
+		atc.GetAgentExperiment:                         http.HandlerFunc(experimentHandlers.Get),
+		atc.UpdateAgentExperiment:                      http.HandlerFunc(experimentHandlers.Update),
+		atc.ValidateAgentExperiment:                    http.HandlerFunc(experimentHandlers.Validate),
+		atc.StartAgentExperiment:                       http.HandlerFunc(experimentHandlers.Start),
+		atc.CancelAgentExperiment:                      http.HandlerFunc(experimentHandlers.Cancel),
+		atc.ListAgentExperimentCells:                   http.HandlerFunc(experimentHandlers.ListCells),
+		atc.GetAgentExperimentCell:                     http.HandlerFunc(experimentHandlers.GetCell),
+		atc.GetAgentExperimentScorecard:                http.HandlerFunc(experimentHandlers.Scorecard),
 
 		atc.CreateAgentPrincipal: http.HandlerFunc(principalsServer.CreatePrincipal),
 		atc.ListAgentPrincipals:  http.HandlerFunc(principalsServer.ListPrincipals),
@@ -415,12 +460,16 @@ func NewHandler(
 		atc.GetAgentDispatcher: http.HandlerFunc(dispatcherServer.Get),
 		atc.SetAgentDispatcher: http.HandlerFunc(dispatcherServer.Set),
 
-		atc.CreateAgentSnapshot:   teamHandlerFactory.HandlerFor(snapshotTeamHandler(snapshotHandlers.Create)),
-		atc.ListAgentSnapshots:    teamHandlerFactory.HandlerFor(snapshotTeamHandler(snapshotHandlers.List)),
-		atc.GetAgentSnapshot:      teamHandlerFactory.HandlerFor(snapshotTeamHandler(snapshotHandlers.Show)),
-		atc.DownloadAgentSnapshot: teamHandlerFactory.HandlerFor(snapshotTeamHandler(snapshotHandlers.Content)),
-		atc.PinAgentSnapshot:      teamHandlerFactory.HandlerFor(snapshotTeamHandler(snapshotHandlers.Pin)),
-		atc.UnpinAgentSnapshot:    teamHandlerFactory.HandlerFor(snapshotTeamHandler(snapshotHandlers.Unpin)),
+		atc.CreateAgentSnapshot: teamHandlerFactory.HandlerFor(snapshotTeamHandler(snapshotHandlers.Create)),
+		atc.CaptureAgentResourceSnapshot: teamHandlerFactory.HandlerFor(snapshotTeamHandler(func(team snapshotsapi.TrustedTeam) http.Handler {
+			return snapshotHandlers.CaptureResource(team, resourceCapturer)
+		})),
+		atc.ListAgentSnapshots:                 teamHandlerFactory.HandlerFor(snapshotTeamHandler(snapshotHandlers.List)),
+		atc.GetAgentSnapshot:                   teamHandlerFactory.HandlerFor(snapshotTeamHandler(snapshotHandlers.Show)),
+		atc.GetAgentRepositoryChangeProjection: teamHandlerFactory.HandlerFor(snapshotTeamHandler(snapshotHandlers.RepositoryChangeProjection)),
+		atc.DownloadAgentSnapshot:              teamHandlerFactory.HandlerFor(snapshotTeamHandler(snapshotHandlers.Content)),
+		atc.PinAgentSnapshot:                   teamHandlerFactory.HandlerFor(snapshotTeamHandler(snapshotHandlers.Pin)),
+		atc.UnpinAgentSnapshot:                 teamHandlerFactory.HandlerFor(snapshotTeamHandler(snapshotHandlers.Unpin)),
 	}
 
 	return rata.NewRouter(atc.Routes, wrapper.Wrap(handlers))

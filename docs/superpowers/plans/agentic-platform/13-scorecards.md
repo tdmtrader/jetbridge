@@ -1,5 +1,7 @@
 # Workflow Scorecards and Run Metrics Surfaces Implementation Plan
 
+> **SUPERSEDED — historical implementation record (not executable).** The approved [Agentic Workflows as Functions over Snapshots design](../../specs/2026-07-21-agentic-workflows-as-functions-design.md) and [Agentic Functions program plan](../2026-07-21-agentic-functions-program.md) are authoritative. Existing operational metrics remain reusable, but experiments now compare immutable workflow/function targets over pinned snapshot fixtures and report complete metric distributions rather than ticket-keyed primary metrics.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Compare workflow-definition versions side-by-side on objective and subjective metrics (gate pass rate, cost/ticket, turns, findings/ticket, judge scores, human verdict distributions, merge outcomes), and answer "where did the turns go" for any run — as read-only rollups over existing tables, with counts shown alongside every rate.

@@ -50,11 +50,16 @@ fly CLI → ATC (web) → Kubernetes API → Pods (one per step)
 # Build the Concourse image
 ./build.sh ghcr.io/your-org/concourse:latest
 
+# Resolve a project-owned helper image containing sh/wget/base64/coreutils to
+# an immutable digest. The chart rejects mutable helper tags.
+export ARTIFACT_HELPER_IMAGE='ghcr.io/your-org/jetbridge-artifact-helper@sha256:<64-lowercase-hex>'
+
 # Install with Helm
 helm install concourse ./deploy/chart \
   --namespace concourse --create-namespace \
   --set image.repository=ghcr.io/your-org/concourse \
   --set image.tag=latest \
+  --set-string kubernetes.artifactHelperImage="${ARTIFACT_HELPER_IMAGE}" \
   --set web.externalUrl=https://concourse.example.com
 
 # Log in with fly

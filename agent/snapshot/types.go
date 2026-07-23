@@ -177,6 +177,49 @@ func ValidatePorts(ports []Port) error {
 	return nil
 }
 
+// DatabaseID is a positive signed 64-bit identity for durable records that do
+// not have a more specific domain ID type. Its JSON representation is always
+// a quoted canonical decimal so browser clients never lose precision.
+type DatabaseID int64
+
+func NewDatabaseID(value int64) (DatabaseID, error) {
+	id := DatabaseID(value)
+	if err := id.Validate(); err != nil {
+		return 0, err
+	}
+	return id, nil
+}
+
+func ParseDatabaseID(raw string) (DatabaseID, error) {
+	value, err := parsePositiveID(raw, "database ID")
+	return DatabaseID(value), err
+}
+
+func (id DatabaseID) Validate() error { return validatePositiveID(int64(id), "database ID") }
+
+func (id DatabaseID) String() string {
+	if id.Validate() != nil {
+		return ""
+	}
+	return strconv.FormatInt(int64(id), 10)
+}
+
+func (id DatabaseID) MarshalJSON() ([]byte, error) {
+	if err := id.Validate(); err != nil {
+		return nil, err
+	}
+	return []byte(`"` + strconv.FormatInt(int64(id), 10) + `"`), nil
+}
+
+func (id *DatabaseID) UnmarshalJSON(data []byte) error {
+	value, err := parseRawQuotedPositiveID(data, "database ID")
+	if err != nil {
+		return err
+	}
+	*id = DatabaseID(value)
+	return nil
+}
+
 // SnapshotID is a positive signed 64-bit agent_snapshots primary key.
 // Its JSON representation is always an unescaped quoted canonical decimal.
 type SnapshotID int64
@@ -492,7 +535,7 @@ func (l *Location) UnmarshalJSON(data []byte) error {
 
 // Production is one persisted invocation's provenance for a snapshot value.
 type Production struct {
-	ID                   int64           `json:"id"`
+	ID                   DatabaseID      `json:"id"`
 	SnapshotID           SnapshotID      `json:"snapshot_id"`
 	BuildID              int             `json:"build_id"`
 	TeamID               int             `json:"team_id"`
@@ -620,6 +663,7 @@ type RetentionClass string
 
 const (
 	RetentionClassBinding  RetentionClass = "binding"
+	RetentionClassRun      RetentionClass = "run"
 	RetentionClassWorkflow RetentionClass = "workflow"
 	RetentionClassFixture  RetentionClass = "fixture"
 	RetentionClassPin      RetentionClass = "pin"
@@ -627,7 +671,7 @@ const (
 
 func (c RetentionClass) Validate() error {
 	switch c {
-	case RetentionClassBinding, RetentionClassWorkflow, RetentionClassFixture, RetentionClassPin:
+	case RetentionClassBinding, RetentionClassRun, RetentionClassWorkflow, RetentionClassFixture, RetentionClassPin:
 		return nil
 	default:
 		return fmt.Errorf("snapshot: invalid retention class %q", c)
@@ -656,13 +700,14 @@ func (c *RetentionClass) UnmarshalJSON(data []byte) error {
 
 // RetentionClaim is a persisted independent content-retention record.
 type RetentionClaim struct {
-	ID         int64          `json:"id"`
-	SnapshotID SnapshotID     `json:"snapshot_id"`
-	Class      RetentionClass `json:"class"`
-	ExpiresAt  *time.Time     `json:"expires_at,omitempty"`
-	Actor      string         `json:"actor,omitempty"`
-	Reason     string         `json:"reason"`
-	CreatedAt  time.Time      `json:"created_at"`
+	ID            DatabaseID     `json:"id"`
+	SnapshotID    SnapshotID     `json:"snapshot_id"`
+	Class         RetentionClass `json:"class"`
+	WorkflowRunID *WorkflowRunID `json:"workflow_run_id,omitempty"`
+	ExpiresAt     *time.Time     `json:"expires_at,omitempty"`
+	Actor         string         `json:"actor,omitempty"`
+	Reason        string         `json:"reason"`
+	CreatedAt     time.Time      `json:"created_at"`
 }
 
 func (c RetentionClaim) Validate() error {
@@ -675,6 +720,17 @@ func (c RetentionClaim) Validate() error {
 	if err := c.Class.Validate(); err != nil {
 		return err
 	}
+	if (c.Class == RetentionClassRun) != (c.WorkflowRunID != nil) {
+		return fmt.Errorf("snapshot: run retention requires exactly one workflow run ID")
+	}
+	if c.WorkflowRunID != nil {
+		if err := c.WorkflowRunID.Validate(); err != nil {
+			return err
+		}
+		if c.ExpiresAt != nil {
+			return fmt.Errorf("snapshot: run retention cannot expire while its workflow run is active")
+		}
+	}
 	if strings.TrimSpace(c.Reason) == "" || c.CreatedAt.IsZero() {
 		return fmt.Errorf("snapshot: retention reason and creation time are required")
 	}
@@ -682,6 +738,7 @@ func (c RetentionClaim) Validate() error {
 }
 
 func (c RetentionClaim) Clone() RetentionClaim {
+	c.WorkflowRunID = cloneWorkflowRunID(c.WorkflowRunID)
 	c.ExpiresAt = cloneTime(c.ExpiresAt)
 	return c
 }
@@ -747,20 +804,22 @@ func retentionClassRank(class RetentionClass) int {
 	switch class {
 	case RetentionClassBinding:
 		return 0
-	case RetentionClassWorkflow:
+	case RetentionClassRun:
 		return 1
-	case RetentionClassFixture:
+	case RetentionClassWorkflow:
 		return 2
-	case RetentionClassPin:
+	case RetentionClassFixture:
 		return 3
-	default:
+	case RetentionClassPin:
 		return 4
+	default:
+		return 5
 	}
 }
 
 // LineageEdge is a persisted ordered production/input relationship.
 type LineageEdge struct {
-	ProductionID    int64      `json:"production_id"`
+	ProductionID    DatabaseID `json:"production_id"`
 	Position        int        `json:"position"`
 	InputPort       string     `json:"input_port"`
 	InputSnapshotID SnapshotID `json:"input_snapshot_id"`
@@ -976,6 +1035,7 @@ type BuildOccurrence struct {
 	StepName             string         `json:"step_name"`
 	WorkflowDefinitionID *int           `json:"workflow_definition_id,omitempty"`
 	WorkflowRunID        *WorkflowRunID `json:"workflow_run_id,omitempty"`
+	WorkflowName         string         `json:"workflow_name,omitempty"`
 }
 
 func (o BuildOccurrence) Validate() error {
@@ -999,6 +1059,11 @@ func (o BuildOccurrence) Validate() error {
 	}
 	if (o.WorkflowDefinitionID == nil) != (o.WorkflowRunID == nil) {
 		return fmt.Errorf("snapshot: workflow definition and run IDs must be provided together")
+	}
+	if o.WorkflowName != "" {
+		if strings.TrimSpace(o.WorkflowName) != o.WorkflowName || o.WorkflowDefinitionID == nil || o.WorkflowRunID == nil {
+			return fmt.Errorf("snapshot: workflow name requires workflow definition and run IDs")
+		}
 	}
 	return nil
 }

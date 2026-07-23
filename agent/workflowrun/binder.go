@@ -21,7 +21,10 @@ import (
 	"github.com/concourse/concourse/atc/db"
 )
 
-var originKindPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
+var (
+	originKindPattern       = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
+	targetConfigHashPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+)
 
 type Binder struct {
 	definitions DefinitionResolver
@@ -74,10 +77,15 @@ func (b *Binder) BindAndCreate(
 		return BindResult{}, err
 	}
 
-	if existing, found, err := b.existing(ctx, admission, request); err != nil {
-		return BindResult{}, err
-	} else if found {
-		return b.handleExisting(ctx, admission, request, existing)
+	// Experiment children must pass through CreateWithInputs even when their
+	// idempotency key already exists. That store call is the short
+	// transaction which serializes child allocation with parent cancellation.
+	if request.ExperimentAdmission == nil {
+		if existing, found, err := b.existing(ctx, admission, request); err != nil {
+			return BindResult{}, err
+		} else if found {
+			return b.handleExisting(ctx, admission, request, existing)
+		}
 	}
 
 	definition, found, err := b.resolve(ctx, request)
@@ -124,6 +132,12 @@ func (b *Binder) BindAndCreate(
 	if err != nil {
 		return BindResult{}, err
 	}
+	if request.ExpectedTargetConfigHash != "" && rendered.TargetConfigHash != request.ExpectedTargetConfigHash {
+		return BindResult{}, fmt.Errorf("%w: frozen target config no longer matches the rendered workflow dependencies", ErrInvalidRequest)
+	}
+	if err := b.authorizeAwaitDefaults(ctx, admission.TeamID, rendered.Config); err != nil {
+		return BindResult{}, err
+	}
 
 	if err := validateInputCoverage(target.Signature, request.Inputs); err != nil {
 		return BindResult{}, err
@@ -132,19 +146,6 @@ func (b *Binder) BindAndCreate(
 	if err != nil {
 		return BindResult{}, err
 	}
-	budgetAdmission := BudgetAdmission{
-		Admission: cloneAdmission(admission), Definition: definition, Target: target, Inputs: cloneRefs(refs),
-	}
-	if err := b.budget.Admit(ctx, budgetAdmission); err != nil {
-		if winner, found, readErr := b.existing(ctx, admission, request); readErr == nil && found {
-			return b.handleExisting(ctx, admission, request, winner)
-		}
-		if errors.Is(err, ErrBudgetDenied) {
-			return BindResult{}, fmt.Errorf("%w", ErrBudgetDenied)
-		}
-		return BindResult{}, fmt.Errorf("%w: budget admission failed", ErrPlatformFailure)
-	}
-
 	functionID := optionalFunctionID(request.FunctionID)
 	createRequest := db.AgentWorkflowRunCreateRequest{
 		TeamID: admission.TeamID, TeamName: admission.TeamName,
@@ -156,9 +157,16 @@ func (b *Binder) BindAndCreate(
 		OriginKind:              admission.Origin.Kind, OriginReference: admission.Origin.Reference,
 		CreatedBy: admission.CreatedBy, Status: db.AgentWorkflowRunStatusAdmitting,
 		RetryOfWorkflowRunID: cloneWorkflowRunID(request.RetryOf), Inputs: cloneRefs(refs),
+		ExperimentAdmission: cloneDBExperimentAdmission(request.ExperimentAdmission),
 	}
 	run, created, err := b.runs.CreateWithInputs(ctx, createRequest)
 	if err != nil {
+		if errors.Is(err, db.ErrAgentWorkflowRunExperimentAdmissionClosed) {
+			return BindResult{}, ErrExperimentAdmissionClosed
+		}
+		if request.ExperimentAdmission != nil {
+			return BindResult{}, fmt.Errorf("%w: allocate durable experiment workflow run", ErrPlatformFailure)
+		}
 		if winner, found, readErr := b.resolvedWinner(ctx, createRequest, request.Inputs); readErr == nil && found {
 			return b.handleExisting(ctx, admission, request, winner)
 		} else if readErr != nil && errors.Is(readErr, ErrIdempotencyConflict) {
@@ -303,6 +311,20 @@ func (b *Binder) resume(
 	if err != nil || hash != run.ParameterizedConfigHash {
 		return b.failAllocated(ctx, admission, request, run, created, fmt.Errorf("%w: durable parameterized config hash mismatch", ErrCorruptPartialAdmission))
 	}
+	if err := b.budget.Admit(ctx, BudgetAdmission{
+		WorkflowRunID:       run.ID,
+		Config:              cloneConfig(config),
+		ExperimentAdmission: cloneExperimentAdmission(request.ExperimentAdmission),
+		Admission:           cloneAdmission(admission),
+	}); err != nil {
+		if errors.Is(err, ErrBudgetDenied) {
+			return b.failAllocated(ctx, admission, request, run, created, fmt.Errorf("%w", ErrBudgetDenied))
+		}
+		// Reservation persistence is replayable against the same durable
+		// admitting identity. Do not poison the idempotency key on a backend
+		// fault; no external side effect has occurred yet.
+		return BindResult{}, fmt.Errorf("%w: budget admission failed", ErrPlatformFailure)
+	}
 	kind := workflow.TargetWorkflow
 	functionID := ""
 	if run.FunctionID != nil {
@@ -320,19 +342,22 @@ func (b *Binder) resume(
 
 	prepared, err := b.secrets.Prepare(ctx, cloneAdmission(admission), cloneRun(run))
 	if err != nil || nilInterface(prepared) {
-		if err == nil {
-			err = errors.New("empty prepared secret")
-		}
-		return b.failAllocated(ctx, admission, request, run, created, fmt.Errorf("%w: prepare run secret: %v", ErrPlatformFailure, err))
+		// Secret resolution is an external/platform dependency and is safe to
+		// replay against the same admitting run. Keeping the durable identity
+		// admitting avoids poisoning the caller's idempotency key. Never include
+		// backend detail here: it may contain credential material.
+		return BindResult{}, fmt.Errorf("%w: prepare run secret", ErrPlatformFailure)
 	}
 	templateRef, err := b.templates.SaveOrReuse(ctx, cloneAdmission(admission), ImmutableTemplateSpec{
 		Name: templateName, FullHash: hash, CanonicalJSON: append([]byte(nil), canonical...), Config: cloneConfig(config),
 	})
 	if err != nil {
-		if !errors.Is(err, ErrImmutableTemplateCollision) && !errors.Is(err, ErrPlatformFailure) {
-			err = fmt.Errorf("%w: save immutable template", ErrPlatformFailure)
+		if errors.Is(err, ErrImmutableTemplateCollision) {
+			return b.failAllocated(ctx, admission, request, run, created, ErrImmutableTemplateCollision)
 		}
-		return b.failAllocated(ctx, admission, request, run, created, err)
+		// Template persistence faults are retryable and SaveOrReuse is
+		// idempotent by the immutable full hash.
+		return BindResult{}, fmt.Errorf("%w: save immutable template", ErrPlatformFailure)
 	}
 	_, _, err = b.executions.CreateRunForWorkflowRun(
 		ctx, run.ID, templateRef, cloneParams(params), run.CreatedBy,
@@ -353,7 +378,9 @@ func (b *Binder) resume(
 			case winner.Status == db.AgentWorkflowRunStatusRunning && executionComplete(winner):
 				return BindResult{Run: winner, Created: created}, nil
 			case winner.Status == db.AgentWorkflowRunStatusAdmitting && executionEmpty(winner):
-				return b.failAllocated(ctx, admission, request, winner, created, cause)
+				// CreateRunForWorkflowRun proved that no execution was committed;
+				// retry the same durable admitting identity on the next call.
+				return BindResult{}, cause
 			case winner.Status == db.AgentWorkflowRunStatusSucceeded ||
 				winner.Status == db.AgentWorkflowRunStatusFailed ||
 				winner.Status == db.AgentWorkflowRunStatusErrored ||
@@ -479,6 +506,53 @@ func (b *Binder) authorizeInputs(
 	return refs, nil
 }
 
+func (b *Binder) authorizeAwaitDefaults(ctx context.Context, teamID int, config atc.Config) error {
+	ids := make(map[snapshot.SnapshotID]struct{})
+	recursor := atc.StepRecursor{OnAwaitSnapshot: func(step *atc.AwaitSnapshotStep) error {
+		if step.OnTimeout != atc.AwaitSnapshotOnTimeoutDefault {
+			return nil
+		}
+		id, err := snapshot.ParseSnapshotID(step.DefaultSnapshotID)
+		if err != nil {
+			return fmt.Errorf("%w: invalid await_snapshot default", ErrPlatformFailure)
+		}
+		ids[id] = struct{}{}
+		return nil
+	}}
+	for _, job := range config.Jobs {
+		for _, step := range job.PlanSequence {
+			if step.Config == nil {
+				return fmt.Errorf("%w: invalid rendered await_snapshot plan", ErrPlatformFailure)
+			}
+			if err := step.Config.Visit(recursor); err != nil {
+				return fmt.Errorf("%w: inspect await_snapshot defaults", ErrPlatformFailure)
+			}
+		}
+	}
+	ordered := make([]snapshot.SnapshotID, 0, len(ids))
+	for id := range ids {
+		ordered = append(ordered, id)
+	}
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i] < ordered[j] })
+	for _, id := range ordered {
+		value, found, err := b.snapshots.GetAuthorized(ctx, teamID, id)
+		if err != nil {
+			return fmt.Errorf("%w: authorize await_snapshot default", ErrPlatformFailure)
+		}
+		if !found || value.ID != id || value.ContentState != snapshot.ContentStateAvailable {
+			return ErrSnapshotUnavailable
+		}
+		value = value.Clone()
+		if err := value.Validate(); err != nil {
+			return ErrSnapshotUnavailable
+		}
+		if value.Type != snapshot.TypeRef("human-answer/v1") {
+			return ErrSnapshotTypeMismatch
+		}
+	}
+	return nil
+}
+
 func (b *Binder) matchBindings(
 	ctx context.Context,
 	runID snapshot.WorkflowRunID,
@@ -544,9 +618,30 @@ func validateAndClone(admission AdmissionContext, request BindRequest) (Admissio
 	if request.Version != nil && *request.Version <= 0 {
 		return AdmissionContext{}, BindRequest{}, fmt.Errorf("%w: version must be positive", ErrInvalidRequest)
 	}
+	if request.ExpectedWorkflowDefinitionID < 0 {
+		return AdmissionContext{}, BindRequest{}, fmt.Errorf("%w: expected workflow definition ID must be positive", ErrInvalidRequest)
+	}
 	if request.RetryOf != nil {
 		if err := request.RetryOf.Validate(); err != nil {
 			return AdmissionContext{}, BindRequest{}, fmt.Errorf("%w: retry identity must be positive", ErrInvalidRequest)
+		}
+	}
+	if request.ExpectedTargetConfigHash != "" && !targetConfigHashPattern.MatchString(request.ExpectedTargetConfigHash) {
+		return AdmissionContext{}, BindRequest{}, fmt.Errorf("%w: expected target config hash must be lower-case 64-hex", ErrInvalidRequest)
+	}
+	if request.ExperimentAdmission != nil {
+		gate := request.ExperimentAdmission
+		if gate.ExperimentID <= 0 || gate.CellID <= 0 ||
+			gate.Phase != "candidate" && gate.Phase != "evaluator" ||
+			admission.Origin.Kind != "experiment" {
+			return AdmissionContext{}, BindRequest{}, fmt.Errorf("%w: invalid experiment admission gate", ErrInvalidRequest)
+		}
+		expectedOrigin := fmt.Sprintf("experiment:%d:cell:%d", gate.ExperimentID, gate.CellID)
+		if gate.Phase == "evaluator" {
+			expectedOrigin += ":evaluator"
+		}
+		if admission.Origin.Reference != expectedOrigin {
+			return AdmissionContext{}, BindRequest{}, fmt.Errorf("%w: experiment admission gate does not match its origin", ErrInvalidRequest)
 		}
 	}
 	if !originKindPattern.MatchString(admission.Origin.Kind) {
@@ -571,10 +666,33 @@ func validateAndClone(admission AdmissionContext, request BindRequest) (Admissio
 	request.Inputs = inputs
 	request.Version = cloneInt(request.Version)
 	request.RetryOf = cloneWorkflowRunID(request.RetryOf)
+	request.ExperimentAdmission = cloneExperimentAdmission(request.ExperimentAdmission)
 	return cloneAdmission(admission), request, nil
 }
 
+func cloneExperimentAdmission(value *ExperimentAdmissionGate) *ExperimentAdmissionGate {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
+func cloneDBExperimentAdmission(value *ExperimentAdmissionGate) *db.AgentWorkflowRunExperimentAdmission {
+	if value == nil {
+		return nil
+	}
+	return &db.AgentWorkflowRunExperimentAdmission{
+		ExperimentID: value.ExperimentID,
+		CellID:       value.CellID,
+		Phase:        value.Phase,
+	}
+}
+
 func validateDefinition(definition workflow.Definition, request BindRequest) error {
+	if request.ExpectedWorkflowDefinitionID != 0 && int64(definition.ID) != request.ExpectedWorkflowDefinitionID {
+		return fmt.Errorf("%w: frozen workflow definition no longer matches the resolved workflow", ErrInvalidRequest)
+	}
 	if definition.ID <= 0 || definition.Version <= 0 || definition.SignatureVersion <= 0 ||
 		definition.Name != request.WorkflowName || strings.TrimSpace(definition.ContentHash) == "" {
 		return fmt.Errorf("%w: inconsistent durable definition identity", ErrPlatformFailure)
@@ -733,6 +851,12 @@ func durableParams(
 }
 
 func compareCallerIntent(run db.AgentWorkflowRun, admission AdmissionContext, request BindRequest) error {
+	if request.ExpectedWorkflowDefinitionID != 0 && int64(run.WorkflowDefinitionID) != request.ExpectedWorkflowDefinitionID {
+		return fmt.Errorf("%w: frozen workflow definition does not match the durable workflow run", ErrInvalidRequest)
+	}
+	if request.ExpectedTargetConfigHash != "" && run.ParameterizedConfigHash != request.ExpectedTargetConfigHash {
+		return fmt.Errorf("%w: frozen target config does not match the durable workflow run", ErrInvalidRequest)
+	}
 	wantFunction := optionalFunctionID(request.FunctionID)
 	if run.TeamID != admission.TeamID || run.IdempotencyKey != request.IdempotencyKey ||
 		run.WorkflowName != request.WorkflowName || !equalStringPointer(run.FunctionID, wantFunction) ||
@@ -992,7 +1116,32 @@ func (r WorkflowDefinitionStoreResolver) Get(ctx context.Context, name string, v
 	return cloned, err == nil, err
 }
 
-type WorkflowTargetRenderer struct{}
+type WorkflowTargetRenderer struct {
+	// RuntimeImage is trusted web-node configuration, never authored workflow
+	// source. Agent-bearing schema-v3 targets require an exact OCI digest.
+	RuntimeImage string
+}
+
+var _ workflow.PromotionValidator = WorkflowTargetRenderer{}
+
+// ValidatePromotion performs the same full-target selection, trusted runtime
+// injection, and rendered-target validation used by BindAndCreate. Stores call
+// it against the exact persisted definition while holding their promotion
+// serialization lock, before changing the live pointer.
+func (renderer WorkflowTargetRenderer) ValidatePromotion(definition workflow.Definition) error {
+	target, err := renderer.FullFunctionTarget(definition)
+	if err != nil {
+		return fmt.Errorf("select workflow target: %w", err)
+	}
+	rendered, err := renderer.RenderFunction(target)
+	if err != nil {
+		return fmt.Errorf("render workflow target: %w", err)
+	}
+	if _, err := validateRendered(target, rendered); err != nil {
+		return fmt.Errorf("validate rendered workflow target: %w", err)
+	}
+	return nil
+}
 
 func (WorkflowTargetRenderer) FullFunctionTarget(definition workflow.Definition) (workflow.FunctionTarget, error) {
 	return workflow.FullFunctionTarget(definition)
@@ -1002,6 +1151,44 @@ func (WorkflowTargetRenderer) ExtractFunctionTarget(definition workflow.Definiti
 	return workflow.ExtractFunctionTarget(definition, functionID)
 }
 
-func (WorkflowTargetRenderer) RenderFunction(target workflow.FunctionTarget) (workflow.RenderedFunction, error) {
-	return workflow.RenderFunction(target)
+func (renderer WorkflowTargetRenderer) RenderFunction(target workflow.FunctionTarget) (workflow.RenderedFunction, error) {
+	rendered, err := workflow.RenderFunction(target)
+	if err != nil {
+		return workflow.RenderedFunction{}, err
+	}
+	agentCount := 0
+	for jobIndex := range rendered.Config.Jobs {
+		for stepIndex := range rendered.Config.Jobs[jobIndex].PlanSequence {
+			err := rendered.Config.Jobs[jobIndex].PlanSequence[stepIndex].Config.Visit(atc.StepRecursor{
+				OnAgent: func(step *atc.AgentStep) error {
+					agentCount++
+					if step.RuntimeImage != "" {
+						return fmt.Errorf("workflow runtime image was already populated")
+					}
+					if err := atc.ValidatePinnedOCIImage(renderer.RuntimeImage); err != nil {
+						return fmt.Errorf("workflow agent runtime image: %w", err)
+					}
+					step.RuntimeImage = renderer.RuntimeImage
+					return nil
+				},
+			})
+			if err != nil {
+				return workflow.RenderedFunction{}, err
+			}
+		}
+	}
+	if agentCount == 0 {
+		return rendered, nil
+	}
+	hash, err := workflow.TargetConfigHash(rendered.Config)
+	if err != nil {
+		return workflow.RenderedFunction{}, err
+	}
+	name, err := workflow.TemplateName(target.Kind, target.WorkflowName, target.WorkflowVersion, target.FunctionID, hash)
+	if err != nil {
+		return workflow.RenderedFunction{}, err
+	}
+	rendered.TargetConfigHash = hash
+	rendered.TemplateName = name
+	return rendered, nil
 }

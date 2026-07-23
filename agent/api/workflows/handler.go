@@ -3,8 +3,10 @@ package workflows
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -102,16 +104,57 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 // Versions handles GET /api/v1/agent/workflows/:workflow_name/versions.
 func (h *Handler) Versions(w http.ResponseWriter, r *http.Request) {
 	name := r.FormValue(":workflow_name")
-	defs, err := h.store.Versions(name)
+	pageRequest, err := parseVersionPageRequest(r.URL.Query())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	page, err := h.store.Versions(r.Context(), name, pageRequest)
 	if err != nil {
 		http.Error(w, "failed to list versions", http.StatusInternalServerError)
 		return
 	}
-	if len(defs) == 0 {
+	if !page.Found {
 		http.Error(w, "unknown workflow", http.StatusNotFound)
 		return
 	}
-	writeJSON(w, http.StatusOK, defs)
+	if page.NextCursor > 0 {
+		cursor := strconv.Itoa(page.NextCursor)
+		w.Header().Set("X-Next-Cursor", cursor)
+		query := url.Values{}
+		query.Set("cursor", cursor)
+		query.Set("limit", strconv.Itoa(pageRequest.Limit))
+		w.Header().Set("Link", "<"+r.URL.EscapedPath()+"?"+query.Encode()+`>; rel="next"`)
+	}
+	writeJSON(w, http.StatusOK, page.Definitions)
+}
+
+func parseVersionPageRequest(values url.Values) (workflow.VersionPageRequest, error) {
+	request := workflow.VersionPageRequest{Limit: workflow.DefaultVersionPageSize}
+	if raw, present := values["limit"]; present {
+		if len(raw) != 1 {
+			return workflow.VersionPageRequest{}, fmt.Errorf("limit must be specified once")
+		}
+		limit, err := strconv.Atoi(raw[0])
+		if err != nil || limit <= 0 || limit > workflow.MaxVersionPageSize {
+			return workflow.VersionPageRequest{}, fmt.Errorf("limit must be an integer between 1 and %d", workflow.MaxVersionPageSize)
+		}
+		request.Limit = limit
+	}
+	if raw, present := values["cursor"]; present {
+		if len(raw) != 1 {
+			return workflow.VersionPageRequest{}, fmt.Errorf("cursor must be specified once")
+		}
+		cursor, err := strconv.Atoi(raw[0])
+		if err != nil || cursor <= 0 || cursor > workflow.MaxWorkflowVersion {
+			return workflow.VersionPageRequest{}, fmt.Errorf(
+				"cursor must be a workflow version between 1 and %d",
+				workflow.MaxWorkflowVersion,
+			)
+		}
+		request.Cursor = cursor
+	}
+	return request, nil
 }
 
 // Get handles GET /api/v1/agent/workflows/:workflow_name/versions/:version.
@@ -216,6 +259,11 @@ func (h *Handler) Promote(w http.ResponseWriter, r *http.Request) {
 	result, err := h.store.Promote(name, version, requestUser(r))
 	if errors.Is(err, workflow.ErrVersionNotFound) {
 		http.Error(w, "unknown workflow version", http.StatusNotFound)
+		return
+	}
+	var invalid workflow.InvalidPromotionError
+	if errors.As(err, &invalid) {
+		http.Error(w, invalid.Error(), http.StatusUnprocessableEntity)
 		return
 	}
 	if err != nil {

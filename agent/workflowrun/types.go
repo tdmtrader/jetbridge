@@ -18,6 +18,7 @@ var (
 	ErrSnapshotUnavailable        = errors.New("workflow run: snapshot unavailable or unauthorized")
 	ErrSnapshotTypeMismatch       = errors.New("workflow run: snapshot type mismatch")
 	ErrBudgetDenied               = errors.New("workflow run: budget denied")
+	ErrExperimentAdmissionClosed  = errors.New("workflow run: experiment admission closed")
 	ErrIdempotencyConflict        = errors.New("workflow run: idempotency conflict")
 	ErrImmutableTemplateCollision = errors.New("workflow run: immutable template collision or drift")
 	ErrCorruptPartialAdmission    = errors.New("workflow run: corrupt partial admission")
@@ -37,12 +38,21 @@ type AdmissionContext struct {
 }
 
 type BindRequest struct {
-	WorkflowName   string
-	Version        *int
-	FunctionID     string
-	Inputs         map[string]snapshot.SnapshotID
-	IdempotencyKey string
-	RetryOf        *snapshot.WorkflowRunID
+	WorkflowName                 string
+	Version                      *int
+	FunctionID                   string
+	Inputs                       map[string]snapshot.SnapshotID
+	IdempotencyKey               string
+	ExpectedWorkflowDefinitionID int64
+	ExpectedTargetConfigHash     string
+	ExperimentAdmission          *ExperimentAdmissionGate
+	RetryOf                      *snapshot.WorkflowRunID
+}
+
+type ExperimentAdmissionGate struct {
+	ExperimentID int64
+	CellID       int64
+	Phase        string
 }
 
 type BindResult struct {
@@ -51,6 +61,15 @@ type BindResult struct {
 }
 
 type BudgetAdmission struct {
+	WorkflowRunID snapshot.WorkflowRunID
+	Config        atc.Config
+	// ExperimentAdmission identifies a child whose combined candidate and
+	// evaluator liability is already held by the durable cell reservation.
+	ExperimentAdmission *ExperimentAdmissionGate
+
+	// The source identity remains available to custom policy admitters. The
+	// built-in daily-cap admitter deliberately computes its reservation from
+	// Config, the exact durable executable that is about to run.
 	Admission  AdmissionContext
 	Definition workflow.Definition
 	Target     workflow.FunctionTarget

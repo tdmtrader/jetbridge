@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -25,6 +26,10 @@ import (
 
 // k3sImage is the K3s image used for the test cluster.
 var k3sImage = "rancher/k3s:v1.31.6-k3s1"
+
+const artifactHelperSourceImage = "docker.io/library/busybox:1.37.0"
+
+var exactArtifactHelperImage = regexp.MustCompile(`^[^@\s]+@sha256:[a-f0-9]{64}$`)
 
 // k3sContainer holds the testcontainers K3s instance for this Ginkgo process.
 // In parallel mode (--procs=N), each process gets its own K3s container.
@@ -132,11 +137,18 @@ func loadImagesIntoCluster(concourseImage string) {
 	images := []string{
 		"docker.io/library/postgres:16",
 		"docker.io/concourse/mock-resource:latest",
-		"docker.io/library/busybox:latest",
 		"docker.io/library/alpine:3.19",
 		"docker.io/library/alpine:latest",
 		"docker.io/library/nginx:alpine",
 	}
+	helperSource := artifactHelperSourceImage
+	if configured := strings.TrimSpace(os.Getenv("ARTIFACT_HELPER_IMAGE")); configured != "" {
+		if !exactArtifactHelperImage.MatchString(configured) {
+			log.Fatalf("ARTIFACT_HELPER_IMAGE must be an exact @sha256 reference, got %q", configured)
+		}
+		helperSource = configured
+	}
+	images = append(images, helperSource)
 
 	for _, img := range images {
 		log.Printf("Pre-pulling %s on host...", img)
@@ -160,6 +172,29 @@ func loadImagesIntoCluster(concourseImage string) {
 	// by allocating large heap slices — shell-based approaches (awk, dd)
 	// don't reliably count against the container memory cgroup in K3s.
 	buildAndLoadOOMTriggerImage(ctx)
+}
+
+// resolvedArtifactHelperImage returns the immutable helper reference that was
+// loaded into this process's K3s cluster. An explicit private helper may be
+// supplied, but never as a mutable tag.
+func resolvedArtifactHelperImage() string {
+	if configured := strings.TrimSpace(os.Getenv("ARTIFACT_HELPER_IMAGE")); configured != "" {
+		if !exactArtifactHelperImage.MatchString(configured) {
+			log.Fatalf("ARTIFACT_HELPER_IMAGE must be an exact @sha256 reference, got %q", configured)
+		}
+		return configured
+	}
+	output, err := exec.Command(
+		"docker", "image", "inspect", "--format", "{{index .RepoDigests 0}}", artifactHelperSourceImage,
+	).Output()
+	if err != nil {
+		log.Fatalf("resolve artifact helper digest for %s: %v", artifactHelperSourceImage, err)
+	}
+	resolved := strings.TrimSpace(string(output))
+	if !exactArtifactHelperImage.MatchString(resolved) {
+		log.Fatalf("docker returned invalid artifact helper digest %q for %s", resolved, artifactHelperSourceImage)
+	}
+	return resolved
 }
 
 // buildAndLoadOOMTriggerImage compiles cmd/oom-trigger as a static binary,
@@ -252,6 +287,7 @@ func waitForCoreDNS(kubeconfig string) {
 // helmDeployConcourse deploys Concourse via the local Helm chart.
 func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 	repo, tag := splitImageRef(image)
+	artifactHelperImage := resolvedArtifactHelperImage()
 
 	waitForCoreDNS(kubeconfig)
 	labelNodesForArtifactCache(kubeconfig)
@@ -275,10 +311,15 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 		"--set", fmt.Sprintf("image.repository=%s", repo),
 		"--set", fmt.Sprintf("image.tag=%s", tag),
 		"--set", "image.pullPolicy=IfNotPresent",
+		"--set-string", "kubernetes.artifactHelperImage=" + artifactHelperImage,
 		"--set", "postgresql.persistence.enabled=false",
 		"--set", "cachePvc.enabled=false",
 		"--set", "artifactStorePvc.enabled=false",
 		"--set", "artifactDaemon.enabled=true",
+		"--set", "artifactDaemon.tls.enabled=true",
+		"--set", "agentSnapshots.enabled=true",
+		"--set", "agentSnapshots.replicationFactor=1",
+		"--set", "agentExperiments.runnerEnabled=true",
 		"--timeout", "5m",
 	}
 

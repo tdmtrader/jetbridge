@@ -23,12 +23,19 @@ default containerd runtime. For kind, load it with `kind load docker-image`.
 
 ### 2. Install
 
+Choose a small image with BusyBox-compatible `sh`, `wget`, `base64`, `cat`,
+`rm`, `find`, `chgrp`, and `chmod`, resolve it to an OCI digest, and set the
+full reference before installing. The chart intentionally has no mutable
+helper-image default.
+
 ```bash
+export ARTIFACT_HELPER_IMAGE='registry.example/jetbridge/artifact-helper@sha256:<64-lowercase-hex>'
 helm install concourse ./deploy/chart \
   --namespace concourse --create-namespace \
   --set image.repository=concourse-local \
   --set image.tag=latest \
   --set image.pullPolicy=Never \
+  --set-string kubernetes.artifactHelperImage="${ARTIFACT_HELPER_IMAGE}" \
   --set service.type=ClusterIP
 ```
 
@@ -74,6 +81,10 @@ spec:
           value: latest
         - name: web.externalUrl
           value: https://concourse.example.com
+        # Replace this placeholder with a compatible helper resolved to its
+        # exact OCI digest before syncing.
+        - name: kubernetes.artifactHelperImage
+          value: registry.example/jetbridge/artifact-helper@sha256:<64-lowercase-hex>
         - name: ingress.enabled
           value: "true"
         - name: ingress.host
@@ -168,13 +179,68 @@ All parameters are documented in [`values.yaml`](values.yaml). Complete referenc
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `kubernetes.namespace` | release namespace | Namespace where task/check pods are created. |
+| `kubernetes.namespace` | release namespace | Namespace where task/check pods are created. Must equal the Helm release namespace. |
 | `kubernetes.serviceAccount` | `""` (web SA) | ServiceAccount for task pods. |
 | `kubernetes.podStartupTimeout` | `5m` | Max time to wait for pod Running. |
 | `kubernetes.imagePullSecrets` | `[]` | Pull secrets for task pod images. |
-| `kubernetes.artifactHelperImage` | `alpine:latest` | Image for init containers and sidecar. Must have `tar`. |
+| `kubernetes.artifactHelperImage` | required | BusyBox-compatible runtime helper image with the commands listed in Quickstart. Must be an exact reference ending in `@sha256:<64 lowercase hex>`. |
 | `kubernetes.imageRegistryPrefix` | `""` | Registry prefix for custom resource type images. |
 | `kubernetes.imageRegistrySecret` | `""` | Pull secret name for resource type images. |
+
+The helper runs in task/check pods to materialize and capture artifacts. Helm
+fails before rendering unless it is configured by digest; tags such as
+`latest` are rejected. Jetbridge passes the accepted reference to the web
+process exactly as configured, and `web.extraArgs` cannot replace it.
+
+The Kubernetes runtime is currently single-namespace. Helm rejects a
+`kubernetes.namespace` value that differs from `.Release.Namespace`; the
+cross-namespace RBAC, artifact-daemon discovery, and TLS identities required
+to support that topology are not yet provisioned by this chart.
+
+The web pod sets `automountServiceAccountToken: false`. Only
+`concourse-web` receives an explicit projected Kubernetes API credential at
+the standard service-account path: a token with a one-hour maximum lifetime,
+the namespace CA, and the current namespace file. The key-generation,
+snapshot-scratch preparation, and database-migration init containers do not
+receive that credential. The `web-kubernetes-api-access` and
+`snapshot-scratch` volume names are reserved; Helm rejects attempts to
+re-mount either through `web.extraVolumeMounts`.
+
+### Agentic Snapshots and Publication
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `agentSnapshots.enabled` | `false` | Enable durable typed snapshots. Requires the artifact daemon and its mTLS mode. |
+| `agentSnapshots.replicationFactor` | `2` | Desired durable snapshot replicas. |
+| `agentSnapshots.maxBytes` | `10737418240` | Maximum uncompressed bytes per snapshot. |
+| `agentSnapshots.maxFiles` | `100000` | Maximum files per snapshot. |
+| `agentSnapshots.scratch.existingClaim` | `""` | Existing PVC for web snapshot scratch. |
+| `agentSnapshots.scratch.sizeLimit` | `80Gi` | Disk-backed `emptyDir` capacity when no PVC is supplied. |
+| `agentExperiments.runnerEnabled` | `false` | Enable the experiment runner; requires snapshots. |
+| `agentPublisherGateway.enabled` | `false` | Enable the deployment-owned HTTPS publication gateway. |
+
+Snapshot scratch is never memory-backed. A non-root init container creates a
+private `0700` child below the disk/PVC mount, and both
+`--agent-snapshot-temp-dir` and `TMPDIR` point to that child. One concurrent
+seal can temporarily retain an extracted tree, a spool, a canonical archive,
+and an upload copy. Size the volume for at least
+`4 * agentSnapshots.maxBytes * peak concurrent seals`, plus filesystem, retry,
+and multiple-output headroom. The default `80Gi` supports approximately two
+simultaneous maximum-size seals before headroom. When `existingClaim` is set,
+the PVC's provisioned capacity is authoritative. Helm rejects `web.extraArgs`
+or `web.env` entries that would override the managed snapshot path or
+`TMPDIR`.
+
+Publisher `volumes` and `volumeMounts` render only when the gateway is enabled.
+Helm requires a one-to-one name match, rejects duplicate/unmounted entries,
+requires every mount to be read-only, and requires the policy, token, and
+optional CA file to be an absolute clean path strictly beneath one of those
+mounts. Dedicated publisher mounts remain exclusive to `concourse-web`.
+
+The artifact daemon is the deliberate host-filesystem trust edge. Its pod and
+container explicitly run as UID 0 because task outputs on the hostPath can
+have arbitrary ownership; the container still drops every capability and adds
+back only `DAC_OVERRIDE`, with privilege escalation disabled.
 
 ### Storage — Cache PVC
 
@@ -297,6 +363,10 @@ web:
 | `serviceAccount.create` | `true` | Create ServiceAccount for the web pod. |
 | `serviceAccount.annotations` | `{}` | ServiceAccount annotations (e.g. GKE Workload Identity). |
 
+The pod-level service account is not ambient: the chart projects a bounded
+credential only into `concourse-web`, which is the sole container that talks
+to the Kubernetes API.
+
 ### Tracing (OpenTelemetry)
 
 | Parameter | Default | Description |
@@ -328,9 +398,55 @@ requests hit a replica with different keys.
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `networkPolicy.enabled` | `false` | Enable NetworkPolicy resources. |
+| `networkPolicy.enabled` | `false` | Enable general web/database/artifact/non-hermetic task policies. |
 | `networkPolicy.ingressFrom` | `[]` | Allow ingress from these pod selectors. Empty = allow all. |
 | `networkPolicy.taskEgressTo` | `[]` | Egress rules for task pods. Empty = allow all outbound. |
+| `networkPolicy.hermeticEgressTo` | `[]` | Complete NetworkPolicy egress rules for `hermetic: true` pods. Empty = fail closed. |
+| `artifactDaemon.networkPolicy.enabled` | `false` | Restrict daemon egress to peers and explicitly configured destinations. |
+| `artifactDaemon.networkPolicy.dnsEgressTo` | `[]` | DNS destination peers. Empty = no DNS egress. |
+| `artifactDaemon.networkPolicy.kubernetesAPIEgressTo` | `[]` | Kubernetes API destination peers. Empty = no API egress. |
+
+The hermetic ingress-and-egress policy is emitted even when
+`networkPolicy.enabled` is `false`; that switch controls the chart's general
+web, database, artifact, and non-hermetic task policies. Jetbridge labels
+hermetic pods from the server-side runtime specification and disables
+service-account token automount. Ingress is denied, while containers in the
+same pod can still communicate over localhost because NetworkPolicy does not
+govern intra-pod loopback traffic. No DNS, cloud metadata, arbitrary HTTPS, or
+private-network rule is added implicitly. Use
+`networkPolicy.hermeticEgressTo` only for explicit destinations such as a
+model egress proxy, and constrain both its peer selector/CIDR and ports.
+The cluster CNI must implement Kubernetes NetworkPolicy; otherwise creating
+the policy object does not enforce the boundary.
+
+Kubernetes NetworkPolicy has an unavoidable own-node exception: a pod can
+reach services on the node where it is running. Jetbridge uses
+`status.hostIP:<artifactDaemon.port>` for node-local artifact bootstrap, so
+inputs still materialize under the default-empty policy. The same exception
+means the main container and sidecars can reach other listening node services;
+that can include node-local DNS caches, metadata proxies, or kubelet endpoints.
+Standard NetworkPolicy cannot narrow that residual to only the artifact daemon.
+Clusters requiring a stronger boundary must add CNI-specific host/firewall
+enforcement. NetworkPolicy rules from any other policy selecting the same pod
+are also additive and can widen the effective allowlist.
+
+The artifact-daemon policy has exactly one
+`NetworkPolicy/<release namespace>/<chart fullname>-artifact-daemon`
+identity.
+It is emitted when the daemon is enabled and either
+`networkPolicy.enabled` or `artifactDaemon.networkPolicy.enabled` is true.
+Either switch supplies ingress isolation; the daemon-specific switch also adds
+peer-daemon egress. DNS and Kubernetes API access are fail closed unless
+operators configure destination-specific NetworkPolicy peers in
+`artifactDaemon.networkPolicy.dnsEgressTo` and
+`artifactDaemon.networkPolicy.kubernetesAPIEgressTo`; port-only rules,
+all-destination CIDRs (`0.0.0.0/0` and `::/0`), and empty selectors are
+rejected. For the API, configure the destination seen by your CNI—service
+traffic can be matched before or after DNAT. When the GCP preemption watcher is
+enabled, the policy additionally allows only
+`169.254.169.254/32` on TCP port 80 for the metadata probe. Runtime ingress
+selects the actual `concourse.ci/worker` label, covering pipeline, one-off, and
+hermetic pods in the release namespace.
 
 ### Pod Disruption Budget
 

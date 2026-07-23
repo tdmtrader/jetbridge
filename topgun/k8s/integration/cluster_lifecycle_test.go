@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -27,6 +28,10 @@ import (
 // K3s v1.31 provides CNCF-certified Kubernetes without the kubeadm
 // complexity that plagues KinD in DinD environments.
 var k3sImage = "rancher/k3s:v1.31.6-k3s1"
+
+const artifactHelperSourceImage = "docker.io/library/busybox:1.37.0"
+
+var exactArtifactHelperImage = regexp.MustCompile(`^[^@\s]+@sha256:[a-f0-9]{64}$`)
 
 // k3sContainer holds the testcontainers K3s instance for the test suite.
 // It's set in createK3sCluster and cleaned up in deleteK3sCluster.
@@ -116,9 +121,31 @@ func ensureConcourseImage(image string) {
 // Docker daemon and loaded via testcontainers' LoadImages API.
 var testDependencyImages = []string{
 	"docker.io/library/postgres:16",
-	"docker.io/library/busybox:latest",
 	"docker.io/library/alpine:latest",
 	"docker.io/concourse/mock-resource:latest",
+}
+
+// resolvedArtifactHelperImage returns the exact digest loaded for the helper
+// source image. Tests may provide ARTIFACT_HELPER_IMAGE to exercise a private
+// project-owned helper, but mutable tags are rejected before Helm rendering.
+func resolvedArtifactHelperImage() string {
+	if configured := strings.TrimSpace(os.Getenv("ARTIFACT_HELPER_IMAGE")); configured != "" {
+		if !exactArtifactHelperImage.MatchString(configured) {
+			log.Fatalf("ARTIFACT_HELPER_IMAGE must be an exact @sha256 reference, got %q", configured)
+		}
+		return configured
+	}
+	output, err := exec.Command(
+		"docker", "image", "inspect", "--format", "{{index .RepoDigests 0}}", artifactHelperSourceImage,
+	).Output()
+	if err != nil {
+		log.Fatalf("resolve artifact helper digest for %s: %v", artifactHelperSourceImage, err)
+	}
+	resolved := strings.TrimSpace(string(output))
+	if !exactArtifactHelperImage.MatchString(resolved) {
+		log.Fatalf("docker returned invalid artifact helper digest %q for %s", resolved, artifactHelperSourceImage)
+	}
+	return resolved
 }
 
 // loadImagesIntoCluster loads the locally-built Concourse image and test
@@ -136,7 +163,16 @@ func loadImagesIntoCluster(concourseImage string) {
 	log.Println("Concourse image loaded.")
 
 	// Pull and load test dependency images (includes pause image for K3s pods).
-	for _, img := range testDependencyImages {
+	dependencyImages := append([]string(nil), testDependencyImages...)
+	helperSource := artifactHelperSourceImage
+	if configured := strings.TrimSpace(os.Getenv("ARTIFACT_HELPER_IMAGE")); configured != "" {
+		if !exactArtifactHelperImage.MatchString(configured) {
+			log.Fatalf("ARTIFACT_HELPER_IMAGE must be an exact @sha256 reference, got %q", configured)
+		}
+		helperSource = configured
+	}
+	dependencyImages = append(dependencyImages, helperSource)
+	for _, img := range dependencyImages {
 		log.Printf("Pre-pulling %s on host...", img)
 		pullCmd := exec.Command("docker", "pull", "--quiet", img)
 		pullCmd.Stdout = os.Stderr
@@ -201,6 +237,7 @@ func artifactDaemonTLSEnabled() bool {
 
 func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 	repo, tag := splitImageRef(image)
+	artifactHelperImage := resolvedArtifactHelperImage()
 
 	// Wait for CoreDNS before deploying — the migrate-db init container
 	// needs DNS to resolve the PostgreSQL service hostname.
@@ -239,6 +276,7 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 		"--set", fmt.Sprintf("image.repository=%s", repo),
 		"--set", fmt.Sprintf("image.tag=%s", tag),
 		"--set", "image.pullPolicy=IfNotPresent",
+		"--set-string", "kubernetes.artifactHelperImage=" + artifactHelperImage,
 		// Use emptyDir for PostgreSQL — ephemeral test clusters don't need
 		// persistent storage, and PVC provisioning can stall in DinD.
 		"--set", "postgresql.persistence.enabled=false",

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/concourse/concourse/agent/api/reviews"
+	"github.com/concourse/concourse/agent/snapshot"
 )
 
 const validReview = `{
@@ -31,6 +32,34 @@ func TestParseSubmission(t *testing.T) {
 	}
 	if len(sub.Payload.ProvenIssues) != 1 || len(sub.Payload.Observations) != 1 {
 		t.Errorf("issue counts wrong: %d/%d", len(sub.Payload.ProvenIssues), len(sub.Payload.Observations))
+	}
+}
+
+func TestMemoryStoreUpsertsProjectedReviewsBySnapshotID(t *testing.T) {
+	store := reviews.NewMemoryStore()
+	first, second := snapshot.SnapshotID(301), snapshot.SnapshotID(302)
+	for _, snapshotID := range []snapshot.SnapshotID{first, second} {
+		if err := store.Upsert(&reviews.StoredReview{
+			SnapshotID: &snapshotID, TeamName: "main", Repo: "same", CommitSha: "same", Score: 1,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.Upsert(&reviews.StoredReview{
+		SnapshotID: &first, TeamName: "main", Repo: "same", CommitSha: "same", Score: 9,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	firstReview, found, err := store.GetBySnapshot("main", first)
+	if err != nil || !found {
+		t.Fatalf("get first: found=%v err=%v", found, err)
+	}
+	if firstReview.Score != 9 {
+		t.Fatalf("first score = %v, want upserted 9", firstReview.Score)
+	}
+	secondReview, found, err := store.GetBySnapshot("main", second)
+	if err != nil || !found || secondReview.Score != 1 {
+		t.Fatalf("second = %#v found=%v err=%v", secondReview, found, err)
 	}
 }
 

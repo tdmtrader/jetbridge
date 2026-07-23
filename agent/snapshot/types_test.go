@@ -268,7 +268,7 @@ func TestRetentionClaimsSortDeterministicallyWithoutTreatingGrantsAsRetention(t 
 		{ID: 1, SnapshotID: 1, Class: RetentionClassPin, Actor: "amy", CreatedAt: now},
 	}
 	SortRetentionClaims(claims)
-	if got, want := []int64{claims[0].ID, claims[1].ID, claims[2].ID}, []int64{3, 1, 2}; !reflect.DeepEqual(got, want) {
+	if got, want := []DatabaseID{claims[0].ID, claims[1].ID, claims[2].ID}, []DatabaseID{3, 1, 2}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("claim order = %v, want %v", got, want)
 	}
 	if got, ok := EffectiveRetentionClaim(claims, now); !ok || got.ID != 3 {

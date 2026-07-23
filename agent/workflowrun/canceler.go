@@ -3,6 +3,7 @@ package workflowrun
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc/db"
@@ -32,11 +33,19 @@ type BuildLookup interface {
 	BuildForAPI(int) (db.BuildForAPI, bool, error)
 }
 
+// WaitCanceler durably terminates every still-open human wait once the run's
+// own cancellation transition has won. It is deliberately separate from the
+// build abort so a restart can replay either side independently.
+type WaitCanceler interface {
+	CancelRun(context.Context, int, snapshot.WorkflowRunID, string, time.Time) (int, error)
+}
+
 // Canceler coordinates the durable canceling CAS with the exact selected
 // Concourse build. It is safe to replay after process restarts.
 type Canceler struct {
 	store  CancellationStore
 	builds BuildLookup
+	waits  WaitCanceler
 }
 
 func NewCanceler(store CancellationStore, builds BuildLookup) (*Canceler, error) {
@@ -46,7 +55,34 @@ func NewCanceler(store CancellationStore, builds BuildLookup) (*Canceler, error)
 	return &Canceler{store: store, builds: builds}, nil
 }
 
+func NewCancelerWithWaits(store CancellationStore, builds BuildLookup, waits WaitCanceler) (*Canceler, error) {
+	canceler, err := NewCanceler(store, builds)
+	if err != nil || nilInterface(waits) {
+		return nil, ErrCancelFailure
+	}
+	canceler.waits = waits
+	return canceler, nil
+}
+
 func (c *Canceler) Cancel(
+	ctx context.Context,
+	teamID int,
+	id snapshot.WorkflowRunID,
+) (db.AgentWorkflowRun, bool, error) {
+	run, found, err := c.cancelExecution(ctx, teamID, id)
+	if err != nil || !found || c.waits == nil {
+		return run, found, err
+	}
+	if run.Status != db.AgentWorkflowRunStatusCanceling && run.Status != db.AgentWorkflowRunStatusAborted {
+		return db.AgentWorkflowRun{}, true, ErrCancelFailure
+	}
+	if _, err := c.waits.CancelRun(ctx, teamID, id, "system:workflow-run-cancel", time.Now().UTC()); err != nil {
+		return db.AgentWorkflowRun{}, true, ErrCancelFailure
+	}
+	return run, true, nil
+}
+
+func (c *Canceler) cancelExecution(
 	ctx context.Context,
 	teamID int,
 	id snapshot.WorkflowRunID,

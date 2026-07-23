@@ -3,6 +3,7 @@ package integration_test
 import (
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -439,7 +440,7 @@ var _ = Describe("fly agent workflows", func() {
 	})
 
 	Describe("show", func() {
-		BeforeEach(func() {
+		It("prints the raw YAML for an explicit version", func() {
 			atcServer.AppendHandlers(
 				ghttp.CombineHandlers(
 					ghttp.VerifyRequest("GET", "/api/v1/agent/workflows/standard-dev/versions/2"),
@@ -449,15 +450,55 @@ var _ = Describe("fly agent workflows", func() {
 					}),
 				),
 			)
-		})
-
-		It("prints the raw YAML for an explicit version", func() {
 			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "workflows", "show", "standard-dev", "2")
 			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
 			Expect(err).NotTo(HaveOccurred())
 			<-sess.Exited
 			Expect(sess.ExitCode()).To(Equal(0))
 			Expect(sess.Out).To(gbytes.Say(`schema_version: 1`))
+			Expect(sess.Out).To(gbytes.Say(`name: standard-dev`))
+		})
+
+		It("follows bounded version cursors to find an older live version", func() {
+			atcServer.AppendHandlers(
+				func(response http.ResponseWriter, request *http.Request) {
+					Expect(request.Method).To(Equal(http.MethodGet))
+					Expect(request.URL.Path).To(Equal("/api/v1/agent/workflows/standard-dev/versions"))
+					Expect(request.URL.Query()).To(Equal(url.Values{"limit": {"100"}}))
+					response.Header().Set("Content-Type", "application/json")
+					response.Header().Set("X-Next-Cursor", "101")
+					Expect(json.NewEncoder(response).Encode([]workflow.Definition{
+						{Name: "standard-dev", Version: 101},
+						{Name: "standard-dev", Version: 102},
+					})).To(Succeed())
+				},
+				func(response http.ResponseWriter, request *http.Request) {
+					Expect(request.Method).To(Equal(http.MethodGet))
+					Expect(request.URL.Path).To(Equal("/api/v1/agent/workflows/standard-dev/versions"))
+					Expect(request.URL.Query()).To(Equal(url.Values{
+						"cursor": {"101"},
+						"limit":  {"100"},
+					}))
+					response.Header().Set("Content-Type", "application/json")
+					Expect(json.NewEncoder(response).Encode([]workflow.Definition{
+						{Name: "standard-dev", Version: 1, Live: true},
+						{Name: "standard-dev", Version: 100},
+					})).To(Succeed())
+				},
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("GET", "/api/v1/agent/workflows/standard-dev/versions/1"),
+					ghttp.RespondWithJSONEncoded(http.StatusOK, workflow.Definition{
+						Name: "standard-dev", Version: 1, ContentHash: "abc123",
+						Live: true, RawYAML: workflowDefYAML,
+					}),
+				),
+			)
+
+			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "workflows", "show", "standard-dev")
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(0))
 			Expect(sess.Out).To(gbytes.Say(`name: standard-dev`))
 		})
 	})

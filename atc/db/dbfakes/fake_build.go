@@ -76,6 +76,20 @@ type FakeBuild struct {
 		result2 bool
 		result3 error
 	}
+	AgentWorkflowRunAssociationStub        func() (db.AgentWorkflowRunBuildAssociation, bool, error)
+	agentWorkflowRunAssociationMutex       sync.RWMutex
+	agentWorkflowRunAssociationArgsForCall []struct {
+	}
+	agentWorkflowRunAssociationReturns struct {
+		result1 db.AgentWorkflowRunBuildAssociation
+		result2 bool
+		result3 error
+	}
+	agentWorkflowRunAssociationReturnsOnCall map[int]struct {
+		result1 db.AgentWorkflowRunBuildAssociation
+		result2 bool
+		result3 error
+	}
 	AllAssociatedTeamNamesStub        func() []string
 	allAssociatedTeamNamesMutex       sync.RWMutex
 	allAssociatedTeamNamesArgsForCall []struct {
@@ -1045,6 +1059,65 @@ func (fake *FakeBuild) AdoptRerunInputsAndPipesReturnsOnCall(i int, result1 []db
 	}
 	fake.adoptRerunInputsAndPipesReturnsOnCall[i] = struct {
 		result1 []db.BuildInput
+		result2 bool
+		result3 error
+	}{result1, result2, result3}
+}
+
+func (fake *FakeBuild) AgentWorkflowRunAssociation() (db.AgentWorkflowRunBuildAssociation, bool, error) {
+	fake.agentWorkflowRunAssociationMutex.Lock()
+	ret, specificReturn := fake.agentWorkflowRunAssociationReturnsOnCall[len(fake.agentWorkflowRunAssociationArgsForCall)]
+	fake.agentWorkflowRunAssociationArgsForCall = append(fake.agentWorkflowRunAssociationArgsForCall, struct {
+	}{})
+	stub := fake.AgentWorkflowRunAssociationStub
+	fakeReturns := fake.agentWorkflowRunAssociationReturns
+	fake.recordInvocation("AgentWorkflowRunAssociation", []interface{}{})
+	fake.agentWorkflowRunAssociationMutex.Unlock()
+	if stub != nil {
+		return stub()
+	}
+	if specificReturn {
+		return ret.result1, ret.result2, ret.result3
+	}
+	return fakeReturns.result1, fakeReturns.result2, fakeReturns.result3
+}
+
+func (fake *FakeBuild) AgentWorkflowRunAssociationCallCount() int {
+	fake.agentWorkflowRunAssociationMutex.RLock()
+	defer fake.agentWorkflowRunAssociationMutex.RUnlock()
+	return len(fake.agentWorkflowRunAssociationArgsForCall)
+}
+
+func (fake *FakeBuild) AgentWorkflowRunAssociationCalls(stub func() (db.AgentWorkflowRunBuildAssociation, bool, error)) {
+	fake.agentWorkflowRunAssociationMutex.Lock()
+	defer fake.agentWorkflowRunAssociationMutex.Unlock()
+	fake.AgentWorkflowRunAssociationStub = stub
+}
+
+func (fake *FakeBuild) AgentWorkflowRunAssociationReturns(result1 db.AgentWorkflowRunBuildAssociation, result2 bool, result3 error) {
+	fake.agentWorkflowRunAssociationMutex.Lock()
+	defer fake.agentWorkflowRunAssociationMutex.Unlock()
+	fake.AgentWorkflowRunAssociationStub = nil
+	fake.agentWorkflowRunAssociationReturns = struct {
+		result1 db.AgentWorkflowRunBuildAssociation
+		result2 bool
+		result3 error
+	}{result1, result2, result3}
+}
+
+func (fake *FakeBuild) AgentWorkflowRunAssociationReturnsOnCall(i int, result1 db.AgentWorkflowRunBuildAssociation, result2 bool, result3 error) {
+	fake.agentWorkflowRunAssociationMutex.Lock()
+	defer fake.agentWorkflowRunAssociationMutex.Unlock()
+	fake.AgentWorkflowRunAssociationStub = nil
+	if fake.agentWorkflowRunAssociationReturnsOnCall == nil {
+		fake.agentWorkflowRunAssociationReturnsOnCall = make(map[int]struct {
+			result1 db.AgentWorkflowRunBuildAssociation
+			result2 bool
+			result3 error
+		})
+	}
+	fake.agentWorkflowRunAssociationReturnsOnCall[i] = struct {
+		result1 db.AgentWorkflowRunBuildAssociation
 		result2 bool
 		result3 error
 	}{result1, result2, result3}

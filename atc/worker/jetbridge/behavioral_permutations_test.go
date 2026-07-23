@@ -37,7 +37,7 @@ func permDaemonSetConfig() Config {
 		ArtifactDaemonHostPath:             "/artifact-store",
 		ArtifactDaemonPort:                 7780,
 		ArtifactDaemonService:              "artifact-daemon",
-		ArtifactHelperImage:                "alpine:latest",
+		ArtifactHelperImage:                "registry.example.test/concourse/artifact-helper@sha256:" + strings.Repeat("a", 64),
 		ArtifactDaemonResolveCapabilityKey: []byte("0123456789abcdef0123456789abcdef"),
 	}
 }
@@ -565,7 +565,7 @@ func TestBuildVolumeMounts_SidecarWithCaches(t *testing.T) {
 	c := makeContainer("sidecar-handle", meta, spec, cfg, nil, false)
 	_, mounts := c.buildVolumeMounts()
 
-	sidecars := buildSidecarContainers(spec.Sidecars, mounts, spec.Dir, spec.SidecarEnv, spec.SidecarSecretEnv)
+	sidecars := buildSidecarContainers(spec.Sidecars, mounts, spec.Dir, spec.SidecarEnv, spec.SidecarSecretEnv, false)
 	if len(sidecars) != 1 {
 		t.Fatalf("expected 1 sidecar, got %d", len(sidecars))
 	}
@@ -611,7 +611,7 @@ func TestBuildVolumeMounts_SidecarWithScratch(t *testing.T) {
 	c := makeContainer("scratch-sc-handle", taskMetadata(), spec, cfg, nil, false)
 	_, mounts := c.buildVolumeMounts()
 
-	sidecars := buildSidecarContainers(spec.Sidecars, mounts, spec.Dir, spec.SidecarEnv, spec.SidecarSecretEnv)
+	sidecars := buildSidecarContainers(spec.Sidecars, mounts, spec.Dir, spec.SidecarEnv, spec.SidecarSecretEnv, false)
 	if len(sidecars) != 1 {
 		t.Fatalf("expected 1 sidecar, got %d", len(sidecars))
 	}
@@ -662,12 +662,13 @@ func TestBuildArtifactInitContainers_MultipleInputs(t *testing.T) {
 	if init.Name != "fetch-inputs" {
 		t.Errorf("expected name fetch-inputs, got %q", init.Name)
 	}
-	if init.Image != "alpine:latest" {
-		t.Errorf("expected image alpine:latest, got %q", init.Image)
+	if init.Image != cfg.ArtifactHelperImage {
+		t.Errorf("expected configured digest-pinned helper image %q, got %q", cfg.ArtifactHelperImage, init.Image)
 	}
-	// Batch container should have: 1 hostpath + 3 input volume mounts.
-	if len(init.VolumeMounts) != 4 {
-		t.Errorf("expected 4 volume mounts (1 hostpath + 3 inputs), got %d", len(init.VolumeMounts))
+	// The helper receives only the three exact destination volumes. The
+	// artifact hostPath is deliberately absent from this trust boundary.
+	if len(init.VolumeMounts) != 3 {
+		t.Errorf("expected 3 exact input volume mounts, got %d", len(init.VolumeMounts))
 	}
 	// Command should use /resolve-batch.
 	cmdStr := strings.Join(init.Command, " ")
@@ -779,7 +780,7 @@ func TestBuildSidecarContainers_GetsAllMountsInDaemonSetMode(t *testing.T) {
 	c := makeContainer("all-mounts-handle", meta, spec, cfg, nil, false)
 	_, mounts := c.buildVolumeMounts()
 
-	sidecars := buildSidecarContainers(spec.Sidecars, mounts, spec.Dir, spec.SidecarEnv, spec.SidecarSecretEnv)
+	sidecars := buildSidecarContainers(spec.Sidecars, mounts, spec.Dir, spec.SidecarEnv, spec.SidecarSecretEnv, false)
 	if len(sidecars) != 1 {
 		t.Fatalf("expected 1 sidecar, got %d", len(sidecars))
 	}
@@ -866,6 +867,150 @@ func TestBuildPod_InitContainerOrdering(t *testing.T) {
 	}
 	if pod.Spec.SecurityContext.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
 		t.Errorf("expected seccomp RuntimeDefault, got %s", pod.Spec.SecurityContext.SeccompProfile.Type)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Hermetic pod isolation contract
+// ---------------------------------------------------------------------------
+
+func TestBuildPod_HermeticIsolationMetadata(t *testing.T) {
+	spec := runtime.ContainerSpec{
+		Dir:       "/tmp/build",
+		Type:      db.ContainerTypeTask,
+		ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+		Hermetic:  true,
+		Inputs: []runtime.Input{
+			{
+				Artifact:        &permStubArtifact{handle: "input-volume"},
+				DestinationPath: "/tmp/build/input",
+			},
+		},
+		SecretMounts: []runtime.SecretMount{{SecretName: "model-token", MountPath: "/run/secrets/model"}},
+		Sidecars: []atc.SidecarConfig{{
+			Name: "capability", Image: "registry.example.test/capability@sha256:" + strings.Repeat("b", 64),
+		}},
+	}
+	c := makeContainer("hermetic-handle", taskMetadata(), spec, permDaemonSetConfig(), nil, false)
+
+	pod, err := c.buildPod(
+		runtime.ProcessSpec{Path: "/bin/sh"},
+		[]string{"/bin/sh"},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("buildPod: %v", err)
+	}
+
+	if got := pod.Labels["concourse.ci/hermetic"]; got != "true" {
+		t.Fatalf("expected server-owned hermetic selector label, got %q", got)
+	}
+	if pod.Spec.AutomountServiceAccountToken == nil || *pod.Spec.AutomountServiceAccountToken {
+		t.Fatal("hermetic pods must explicitly disable service-account token automount")
+	}
+	if len(pod.Spec.InitContainers) != 2 || pod.Spec.InitContainers[0].Name != "fetch-inputs" ||
+		pod.Spec.InitContainers[1].Name != "prepare-hermetic-workspace" {
+		t.Fatalf("expected node-local artifact bootstrap init container, got %+v", pod.Spec.InitContainers)
+	}
+	var hostIPField string
+	for _, env := range pod.Spec.InitContainers[0].Env {
+		if env.Name == "HOST_IP" && env.ValueFrom != nil && env.ValueFrom.FieldRef != nil {
+			hostIPField = env.ValueFrom.FieldRef.FieldPath
+		}
+	}
+	if hostIPField != "status.hostIP" {
+		t.Fatalf("artifact bootstrap must use the NetworkPolicy own-node path, got HOST_IP field %q", hostIPField)
+	}
+	if pod.Spec.SecurityContext == nil || pod.Spec.SecurityContext.FSGroup == nil || *pod.Spec.SecurityContext.FSGroup != 65534 {
+		t.Fatalf("hermetic pod shared workspace group = %+v, want 65534", pod.Spec.SecurityContext)
+	}
+	for _, container := range pod.Spec.Containers {
+		if container.SecurityContext == nil || container.SecurityContext.Capabilities == nil {
+			t.Fatalf("hermetic container %q has no capability policy", container.Name)
+		}
+		foundDropAll := false
+		for _, capability := range container.SecurityContext.Capabilities.Drop {
+			foundDropAll = foundDropAll || capability == corev1.Capability("ALL")
+		}
+		if !foundDropAll || len(container.SecurityContext.Capabilities.Add) != 0 {
+			t.Fatalf("hermetic container %q capabilities = %+v, want drop ALL and no adds", container.Name, container.SecurityContext.Capabilities)
+		}
+		if container.SecurityContext.RunAsUser != nil {
+			t.Fatalf("hermetic container %q forced an image user; root and non-root digest-pinned images must both work", container.Name)
+		}
+	}
+	prepare := pod.Spec.InitContainers[1]
+	for _, mount := range prepare.VolumeMounts {
+		if mount.Name == artifactDaemonHostPathVolumeName || !strings.HasPrefix(mount.MountPath, "/workspace-volumes/") {
+			t.Fatalf("workspace preparer received a broad or non-scoped mount: %+v", mount)
+		}
+	}
+	if prepare.SecurityContext == nil || prepare.SecurityContext.Capabilities == nil {
+		t.Fatal("workspace preparer has no explicit capability policy")
+	}
+	wantPreparationCaps := map[corev1.Capability]bool{"CHOWN": false, "DAC_OVERRIDE": false, "FOWNER": false}
+	for _, capability := range prepare.SecurityContext.Capabilities.Add {
+		if _, expected := wantPreparationCaps[capability]; expected {
+			wantPreparationCaps[capability] = true
+		} else {
+			t.Fatalf("workspace preparer received unexpected capability %q", capability)
+		}
+	}
+	for capability, found := range wantPreparationCaps {
+		if !found {
+			t.Fatalf("workspace preparer is missing %q: %+v", capability, prepare.SecurityContext.Capabilities)
+		}
+	}
+	secretModeFound := false
+	for _, volume := range pod.Spec.Volumes {
+		if volume.Secret != nil && volume.Secret.SecretName == "model-token" {
+			secretModeFound = volume.Secret.DefaultMode != nil && *volume.Secret.DefaultMode == 0440
+		}
+	}
+	if !secretModeFound {
+		t.Fatal("hermetic main-only secret is not shared-group readable")
+	}
+	for _, mount := range pod.Spec.Containers[1].VolumeMounts {
+		if mount.MountPath == "/run/secrets/model" {
+			t.Fatal("main-only secret leaked into capability sidecar")
+		}
+	}
+}
+
+func TestBuildPod_HermeticRejectsPrivilegedRuntimeBypass(t *testing.T) {
+	spec := runtime.ContainerSpec{
+		Dir: "/tmp/build", Type: db.ContainerTypeTask, Hermetic: true,
+		ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox", Privileged: true},
+	}
+	container := makeContainer("hermetic-privileged", taskMetadata(), spec, permDaemonSetConfig(), nil, false)
+	if _, err := container.buildPod(runtime.ProcessSpec{Path: "/bin/sh"}, []string{"/bin/sh"}, nil); err == nil ||
+		!strings.Contains(err.Error(), "hermetic containers cannot be privileged") {
+		t.Fatalf("privileged hermetic runtime bypass was accepted: %v", err)
+	}
+}
+
+func TestBuildPod_NonHermeticPreservesDefaultServiceAccountBehavior(t *testing.T) {
+	spec := runtime.ContainerSpec{
+		Dir:       "/tmp/build",
+		Type:      db.ContainerTypeTask,
+		ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
+	}
+	c := makeContainer("ordinary-handle", taskMetadata(), spec, permEmptyDirConfig(), nil, false)
+
+	pod, err := c.buildPod(
+		runtime.ProcessSpec{Path: "/bin/sh"},
+		[]string{"/bin/sh"},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("buildPod: %v", err)
+	}
+
+	if _, exists := pod.Labels["concourse.ci/hermetic"]; exists {
+		t.Fatal("non-hermetic pods must not match the hermetic NetworkPolicy selector")
+	}
+	if pod.Spec.AutomountServiceAccountToken != nil {
+		t.Fatal("non-hermetic pods should preserve Kubernetes service-account automount defaults")
 	}
 }
 

@@ -16,12 +16,15 @@ import (
 	"github.com/concourse/concourse/atc/db/encryption"
 )
 
+var ErrAgentWorkflowRunExperimentAdmissionClosed = errors.New("db: experiment workflow-run admission is closed")
+
 //counterfeiter:generate . AgentWorkflowRunsFactory
 type AgentWorkflowRunsFactory interface {
 	CreateWithInputs(context.Context, AgentWorkflowRunCreateRequest) (AgentWorkflowRun, bool, error)
 	FindByIdempotencyKey(context.Context, int, string) (AgentWorkflowRun, bool, error)
 	Get(context.Context, int, snapshot.WorkflowRunID) (AgentWorkflowRun, bool, error)
 	List(context.Context, AgentWorkflowRunListFilter) ([]AgentWorkflowRun, error)
+	CountByStatus(context.Context, AgentWorkflowRunCountFilter) (map[AgentWorkflowRunStatus]int64, error)
 	LinkExecution(context.Context, snapshot.WorkflowRunID, AgentWorkflowRunExecutionLink) error
 	RecordPlan(context.Context, snapshot.WorkflowRunID, AgentWorkflowRunPlan) error
 	CaptureExecutionStatus(context.Context, int64, BuildStatus) (AgentWorkflowRunBuildCaptureResult, error)
@@ -57,6 +60,9 @@ func (factory *agentWorkflowRunsFactory) CreateWithInputs(
 	defer Rollback(tx)
 
 	if err := lockWorkflowRunIdempotency(ctx, tx, request.TeamID, request.IdempotencyKey); err != nil {
+		return AgentWorkflowRun{}, false, err
+	}
+	if err := lockOpenExperimentWorkflowRunAdmission(ctx, tx, request); err != nil {
 		return AgentWorkflowRun{}, false, err
 	}
 	existing, found, err := findWorkflowRunByIdempotencyKey(
@@ -137,12 +143,10 @@ func (factory *agentWorkflowRunsFactory) CreateWithInputs(
 			return AgentWorkflowRun{}, false, err
 		}
 		actor := fmt.Sprintf("workflow-run:%d:input:%s", int64(run.ID), port)
-		_, err := tx.ExecContext(ctx, `
-			INSERT INTO agent_snapshot_retention_claims
-				(snapshot_id, team_id, class, actor, reason)
-			VALUES ($1, $2, 'workflow', $3, 'durable workflow-run input')
-		`, int64(ref.ID), request.TeamID, actor)
-		if err != nil {
+		if err := insertOrVerifyRetention(ctx, tx, request.TeamID, ref.ID, snapshot.RetentionSpec{
+			Class: snapshot.RetentionClassRun, WorkflowRunID: &run.ID,
+			Actor: actor, Reason: "active workflow-run input",
+		}); err != nil {
 			return AgentWorkflowRun{}, false, err
 		}
 	}
@@ -151,6 +155,117 @@ func (factory *agentWorkflowRunsFactory) CreateWithInputs(
 		return AgentWorkflowRun{}, false, err
 	}
 	return run, created, nil
+}
+
+func lockOpenExperimentWorkflowRunAdmission(
+	ctx context.Context,
+	tx Tx,
+	request AgentWorkflowRunCreateRequest,
+) error {
+	if request.ExperimentAdmission == nil {
+		return nil
+	}
+	gate := request.ExperimentAdmission
+	var (
+		state               string
+		cellStatus          string
+		candidateRun        sql.NullInt64
+		evaluatorRun        sql.NullInt64
+		variantDefinition   int
+		variantName         string
+		variantVersion      int
+		variantFunction     sql.NullString
+		variantConfigHash   sql.NullString
+		evalDefinition      int
+		evalName            string
+		evalVersion         int
+		evalFunction        sql.NullString
+		evalConfigHash      sql.NullString
+		requiresReservation bool
+		hasReservation      bool
+	)
+	err := tx.QueryRowContext(ctx, `
+		SELECT experiment.state, cell.status, cell.candidate_workflow_run_id,
+		       evaluation.evaluator_workflow_run_id,
+		       variant.definition_id, variant.workflow_name, variant.workflow_version,
+		       variant.function_id, variant.target_config_hash,
+		       experiment.evaluator_definition_id, experiment.evaluator_workflow_name,
+		       experiment.evaluator_workflow_version, experiment.evaluator_function_id,
+		       experiment.evaluator_target_config_hash,
+		       (experiment.per_cell_budget_usd > 0 OR experiment.total_budget_usd > 0
+		        OR experiment.max_tokens_per_cell > 0),
+		       EXISTS (
+		           SELECT 1 FROM agent_experiment_budget_reservations reservation
+		           WHERE reservation.cell_id = cell.id AND reservation.state = 'active'
+		       )
+		FROM agent_experiment_cells cell
+		JOIN agent_experiments experiment ON experiment.id = cell.experiment_id
+		JOIN agent_experiment_variants variant ON variant.id = cell.variant_id
+		LEFT JOIN agent_experiment_evaluations evaluation ON evaluation.cell_id = cell.id
+		WHERE experiment.id = $1 AND cell.id = $2 AND experiment.team_id = $3
+		FOR UPDATE OF experiment, cell
+	`, gate.ExperimentID, gate.CellID, request.TeamID).Scan(
+		&state, &cellStatus, &candidateRun, &evaluatorRun,
+		&variantDefinition, &variantName, &variantVersion, &variantFunction, &variantConfigHash,
+		&evalDefinition, &evalName, &evalVersion, &evalFunction, &evalConfigHash,
+		&requiresReservation, &hasReservation,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrAgentWorkflowRunExperimentAdmissionClosed
+	}
+	if err != nil {
+		return err
+	}
+	if state != "running" {
+		return ErrAgentWorkflowRunExperimentAdmissionClosed
+	}
+	if requiresReservation && !hasReservation {
+		return ErrAgentWorkflowRunExperimentAdmissionClosed
+	}
+	switch gate.Phase {
+	case "candidate":
+		if cellStatus != "pending" && cellStatus != "running" || candidateRun.Valid ||
+			!experimentAdmissionTargetMatches(
+				request, variantDefinition, variantName, variantVersion,
+				variantFunction, variantConfigHash,
+			) {
+			return ErrAgentWorkflowRunExperimentAdmissionClosed
+		}
+	case "evaluator":
+		if cellStatus != "running" || !candidateRun.Valid || evaluatorRun.Valid ||
+			!experimentAdmissionTargetMatches(
+				request, evalDefinition, evalName, evalVersion,
+				evalFunction, evalConfigHash,
+			) {
+			return ErrAgentWorkflowRunExperimentAdmissionClosed
+		}
+	default:
+		// Request validation rejects this before opening the transaction, but
+		// keep the persistence seam independently fail closed.
+		return ErrAgentWorkflowRunExperimentAdmissionClosed
+	}
+	return nil
+}
+
+func experimentAdmissionTargetMatches(
+	request AgentWorkflowRunCreateRequest,
+	definitionID int,
+	workflowName string,
+	workflowVersion int,
+	functionID sql.NullString,
+	targetConfigHash sql.NullString,
+) bool {
+	if request.WorkflowDefinitionID != definitionID ||
+		request.WorkflowName != workflowName ||
+		request.WorkflowVersion != workflowVersion ||
+		!targetConfigHash.Valid ||
+		request.ParameterizedConfigHash != targetConfigHash.String {
+		return false
+	}
+	if request.FunctionID == nil {
+		return !functionID.Valid
+	}
+	return functionID.Valid && *request.FunctionID == functionID.String
 }
 
 const workflowRunIdempotencyLockDomain = "agent-workflow-run-idempotency/v1\x00"
@@ -506,8 +621,13 @@ func (factory *agentWorkflowRunsFactory) List(
 	ctx context.Context,
 	filter AgentWorkflowRunListFilter,
 ) ([]AgentWorkflowRun, error) {
-	if filter.TeamID <= 0 || filter.Limit < 0 || filter.Limit > 1000 {
-		return nil, fmt.Errorf("db: workflow-run list requires a team and a limit from 0 to 1000")
+	if filter.TeamID <= 0 || filter.Limit < 0 || filter.Limit > 1001 {
+		return nil, fmt.Errorf("db: workflow-run list requires a team and a fetch limit from 0 to 1001")
+	}
+	if filter.Before != nil {
+		if err := filter.Before.Validate(); err != nil {
+			return nil, err
+		}
 	}
 	if filter.Status != "" {
 		if err := filter.Status.Validate(); err != nil {
@@ -532,6 +652,10 @@ func (factory *agentWorkflowRunsFactory) List(
 	if filter.OriginReference != "" {
 		appendFilter("origin_reference", filter.OriginReference)
 	}
+	if filter.Before != nil {
+		args = append(args, filter.Before.CreatedAt.UTC(), filter.Before.ID)
+		query += ` AND (created_at, id) < ($` + strconv.Itoa(len(args)-1) + `, $` + strconv.Itoa(len(args)) + `)`
+	}
 	limit := filter.Limit
 	if limit == 0 {
 		limit = 100
@@ -539,6 +663,49 @@ func (factory *agentWorkflowRunsFactory) List(
 	args = append(args, limit)
 	query += ` ORDER BY created_at DESC, id DESC LIMIT $` + strconv.Itoa(len(args))
 	return queryWorkflowRuns(ctx, factory.conn, factory.conn.EncryptionStrategy(), query, args...)
+}
+
+func (factory *agentWorkflowRunsFactory) CountByStatus(
+	ctx context.Context,
+	filter AgentWorkflowRunCountFilter,
+) (map[AgentWorkflowRunStatus]int64, error) {
+	if filter.TeamID <= 0 || strings.TrimSpace(filter.WorkflowName) == "" ||
+		filter.ExcludeOriginKind != "" && strings.TrimSpace(filter.ExcludeOriginKind) == "" {
+		return nil, fmt.Errorf("db: workflow-run status counts require a team, workflow, and valid excluded origin")
+	}
+	query := `
+		SELECT status, count(*)
+		FROM agent_workflow_runs
+		WHERE team_id = $1 AND workflow_name = $2
+	`
+	args := []any{filter.TeamID, filter.WorkflowName}
+	if filter.ExcludeOriginKind != "" {
+		args = append(args, filter.ExcludeOriginKind)
+		query += ` AND origin_kind <> $3`
+	}
+	query += ` GROUP BY status ORDER BY status`
+	rows, err := factory.conn.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer Close(rows)
+	counts := make(map[AgentWorkflowRunStatus]int64)
+	for rows.Next() {
+		var rawStatus string
+		var count int64
+		if err := rows.Scan(&rawStatus, &count); err != nil {
+			return nil, err
+		}
+		status := AgentWorkflowRunStatus(rawStatus)
+		if err := status.Validate(); err != nil || count < 0 {
+			return nil, fmt.Errorf("db: invalid workflow-run status count")
+		}
+		counts[status] = count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return counts, nil
 }
 
 func (factory *agentWorkflowRunsFactory) LinkExecution(
@@ -668,6 +835,7 @@ type agentWorkflowRunBuildAssociation struct {
 	executionStatus      *AgentWorkflowRunExecutionStatus
 	plannedBuildID       *int64
 	buildStatus          BuildStatus
+	planCaptured         bool
 }
 
 func lockAgentWorkflowRunForBuild(
@@ -697,7 +865,10 @@ func lockAgentWorkflowRunForBuild(
 		SELECT r.id, r.workflow_definition_id, r.concrete_config, r.status,
 		       r.execution_status, r.planned_build_id, r.team_id,
 		       r.pipeline_run_id, r.template_pipeline_id, r.instance_pipeline_id,
-		       b.status, b.team_id, b.pipeline_id
+		       b.status, b.team_id, b.pipeline_id,
+		       r.actual_plan IS NOT NULL
+		         AND r.actual_plan_hash IS NOT NULL
+		         AND r.resolved_dependencies IS NOT NULL
 		FROM builds b
 		JOIN agent_workflow_runs r ON r.instance_pipeline_id = b.pipeline_id
 		WHERE b.id = $1
@@ -706,7 +877,7 @@ func lockAgentWorkflowRunForBuild(
 		&runID, &association.workflowDefinitionID, &concreteConfig, &status,
 		&executionStatus, &plannedBuildID, &runTeamID,
 		&pipelineRunID, &templatePipeline, &instancePipeline,
-		&buildStatus, &buildTeamID, &buildPipelineID,
+		&buildStatus, &buildTeamID, &buildPipelineID, &association.planCaptured,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return agentWorkflowRunBuildAssociation{}, false, nil
@@ -1129,6 +1300,9 @@ func terminalizeAgentWorkflowRunPlanningError(
 		`, int64(result.WorkflowRunID)).Scan(&status, &execution, &storedMessage)
 		if err == nil && status == AgentWorkflowRunStatusErrored &&
 			execution == AgentWorkflowRunExecutionStatusErrored && storedMessage == message {
+			if err := releaseAgentWorkflowRunRetention(ctx, tx, result.WorkflowRunID); err != nil {
+				return AgentWorkflowRunBuildCaptureResult{}, err
+			}
 			return result, nil
 		}
 		if err != nil {
@@ -1136,7 +1310,13 @@ func terminalizeAgentWorkflowRunPlanningError(
 		}
 		return AgentWorkflowRunBuildCaptureResult{}, fmt.Errorf("db: workflow-run planning error conflicts with immutable terminal history")
 	}
-	return result, err
+	if err != nil {
+		return AgentWorkflowRunBuildCaptureResult{}, err
+	}
+	if err := releaseAgentWorkflowRunRetention(ctx, tx, result.WorkflowRunID); err != nil {
+		return AgentWorkflowRunBuildCaptureResult{}, err
+	}
+	return result, nil
 }
 
 func truncateAgentWorkflowRunMessage(message string, limit int) string {
@@ -1179,7 +1359,12 @@ func (factory *agentWorkflowRunsFactory) Transition(
 	}
 	terminal := to == AgentWorkflowRunStatusSucceeded || to == AgentWorkflowRunStatusFailed ||
 		to == AgentWorkflowRunStatusErrored || to == AgentWorkflowRunStatusAborted
-	result, err := factory.conn.ExecContext(ctx, `
+	tx, err := factory.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer Rollback(tx)
+	result, err := tx.ExecContext(ctx, `
 		UPDATE agent_workflow_runs
 		SET status = $3,
 		    error_message = $4,
@@ -1207,7 +1392,18 @@ func (factory *agentWorkflowRunsFactory) Transition(
 		return false, err
 	}
 	count, err := result.RowsAffected()
-	return count == 1, err
+	if err != nil {
+		return false, err
+	}
+	if count == 1 && terminal {
+		if err := releaseAgentWorkflowRunRetention(ctx, tx, id); err != nil {
+			return false, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return count == 1, nil
 }
 
 func (factory *agentWorkflowRunsFactory) ClaimForReconciliation(
@@ -1226,12 +1422,24 @@ func (factory *agentWorkflowRunsFactory) ClaimForReconciliation(
 	defer Rollback(tx)
 	rows, err := tx.QueryContext(ctx, `
 		WITH due AS (
-			SELECT id
-			FROM agent_workflow_runs
-			WHERE status IN ('admitting', 'running', 'canceling')
-			  AND reconcile_after <= $1
+			SELECT run.id
+			FROM agent_workflow_runs run
+			WHERE (
+				run.status IN ('admitting', 'running', 'canceling')
+				OR (
+					run.status = 'aborted'
+					AND EXISTS (
+						SELECT 1
+						FROM agent_workflow_waits wait
+						WHERE wait.workflow_run_id = run.id
+						  AND wait.team_id = run.team_id
+						  AND wait.status = 'waiting'
+					)
+				)
+			  )
+			  AND run.reconcile_after <= $1
 			ORDER BY reconcile_after, id
-			FOR UPDATE SKIP LOCKED
+			FOR UPDATE OF run SKIP LOCKED
 			LIMIT $3
 		)
 		UPDATE agent_workflow_runs AS run
@@ -1368,6 +1576,12 @@ func (factory *agentWorkflowRunsFactory) Finalize(
 		return AgentWorkflowRunFinalizationResult{}, false, err
 	}
 	if workflowRunTerminal(run.Status) {
+		if err := releaseAgentWorkflowRunRetention(ctx, tx, finalization.WorkflowRunID); err != nil {
+			return AgentWorkflowRunFinalizationResult{}, false, err
+		}
+		if err := tx.Commit(); err != nil {
+			return AgentWorkflowRunFinalizationResult{}, false, err
+		}
 		return workflowRunFinalizationResult(run), false, nil
 	}
 	if run.Status != finalization.ExpectedStatus ||
@@ -1390,6 +1604,15 @@ func (factory *agentWorkflowRunsFactory) Finalize(
 		return AgentWorkflowRunFinalizationResult{}, false, err
 	}
 	errorMessage = truncateAgentWorkflowRunMessage(errorMessage, 4*1024)
+	if terminalStatus == AgentWorkflowRunStatusSucceeded {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE agent_workflow_run_snapshots
+			SET promoted_at = COALESCE(promoted_at, now())
+			WHERE workflow_run_id = $1 AND direction = 'output'
+		`, int64(finalization.WorkflowRunID)); err != nil {
+			return AgentWorkflowRunFinalizationResult{}, false, err
+		}
+	}
 
 	var completedAt time.Time
 	err = tx.QueryRowContext(ctx, `
@@ -1412,12 +1635,27 @@ func (factory *agentWorkflowRunsFactory) Finalize(
 	if err != nil {
 		return AgentWorkflowRunFinalizationResult{}, false, err
 	}
+	if err := releaseAgentWorkflowRunRetention(ctx, tx, finalization.WorkflowRunID); err != nil {
+		return AgentWorkflowRunFinalizationResult{}, false, err
+	}
 	if err := tx.Commit(); err != nil {
 		return AgentWorkflowRunFinalizationResult{}, false, err
 	}
 	return AgentWorkflowRunFinalizationResult{
 		Status: terminalStatus, ErrorMessage: errorMessage, CompletedAt: completedAt,
 	}, true, nil
+}
+
+func releaseAgentWorkflowRunRetention(
+	ctx context.Context,
+	tx Tx,
+	workflowRunID snapshot.WorkflowRunID,
+) error {
+	_, err := tx.ExecContext(ctx, `
+		DELETE FROM agent_snapshot_retention_claims
+		WHERE class = 'run' AND workflow_run_id = $1
+	`, int64(workflowRunID))
+	return err
 }
 
 func workflowRunTerminal(status AgentWorkflowRunStatus) bool {
@@ -1665,6 +1903,7 @@ func (factory *agentWorkflowRunsFactory) Snapshots(
 		FROM agent_workflow_run_snapshots b
 		JOIN agent_snapshots s ON s.id = b.snapshot_id
 		WHERE b.workflow_run_id = $1
+		  AND (b.direction = 'input' OR b.promoted_at IS NOT NULL)
 		ORDER BY b.direction, b.port_name
 	`, int64(runID))
 	if err != nil {

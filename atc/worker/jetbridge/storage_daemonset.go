@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/agent/artifactcap"
+	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
 	corev1 "k8s.io/api/core/v1"
@@ -130,6 +131,10 @@ type batchPayload struct {
 	Items []batchItem `json:"items"`
 }
 
+type snapshotInputArtifact interface {
+	SnapshotRef() snapshot.SnapshotRef
+}
+
 const (
 	resolveBatchMaxItems = 64
 	resolveBatchMaxBytes = 64 << 10
@@ -169,8 +174,6 @@ func chunkResolveBatchItems(items []batchItem) ([][]batchItem, error) {
 
 func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runtime.Input, podVolumes []corev1.Volume, mainMounts []corev1.VolumeMount) []corev1.Container {
 	helperImage := b.helperImage()
-	allowEscalation := false
-
 	var items []batchItem
 	var mounts []corev1.VolumeMount
 	seenVolumes := map[string]bool{}
@@ -187,7 +190,13 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 
 		key := ArtifactKey(input.Artifact.Handle())
 		daemonKey := key
-		if loc, hasLoc := b.artifactLocate(key); hasLoc {
+		if durable, ok := input.Artifact.(snapshotInputArtifact); ok {
+			ref := durable.SnapshotRef()
+			if err := ref.Validate(); err != nil {
+				return []corev1.Container{b.inputFailureInitContainer("invalid snapshot input identity")}
+			}
+			daemonKey = snapshotKeyForDigest(ref.Digest)
+		} else if loc, hasLoc := b.artifactLocate(key); hasLoc {
 			daemonKey = loc.HostDir
 		}
 
@@ -219,11 +228,6 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 		return nil
 	}
 
-	// Prepend the hostpath volume mount.
-	allMounts := append([]corev1.VolumeMount{
-		{Name: artifactDaemonHostPathVolumeName, MountPath: ArtifactMountPath, ReadOnly: true},
-	}, mounts...)
-
 	envVars := []corev1.EnvVar{
 		{
 			Name: "HOST_IP",
@@ -251,24 +255,53 @@ func (b *DaemonSetBackend) BuildFetchInitContainers(handle string, inputs []runt
 			Image:           helperImage,
 			Command:         b.daemonResolveBatchCommand(items),
 			Env:             envVars,
-			VolumeMounts:    allMounts,
+			VolumeMounts:    mounts,
 			ImagePullPolicy: corev1.PullIfNotPresent,
-			SecurityContext: &corev1.SecurityContext{
-				AllowPrivilegeEscalation: &allowEscalation,
-			},
+			SecurityContext: artifactHelperSecurityContext(false),
 		},
 	}
 }
 
 func (b *DaemonSetBackend) capabilityFailureInitContainer() corev1.Container {
-	allowEscalation := false
+	return b.inputFailureInitContainer("resolve capability key or lifetime configuration is invalid")
+}
+
+func (b *DaemonSetBackend) inputFailureInitContainer(message string) corev1.Container {
 	return corev1.Container{
 		Name:            "fetch-inputs",
 		Image:           b.helperImage(),
-		Command:         []string{"sh", "-c", `echo "[artifact-fetch] resolve capability key or lifetime configuration is invalid" >&2; exit 1`},
+		Command:         []string{"sh", "-c", `echo "[artifact-fetch] ` + message + `" >&2; exit 1`},
 		ImagePullPolicy: corev1.PullIfNotPresent,
-		SecurityContext: &corev1.SecurityContext{AllowPrivilegeEscalation: &allowEscalation},
+		SecurityContext: artifactHelperSecurityContext(false),
 	}
+}
+
+func artifactHelperSecurityContext(cleanup bool) *corev1.SecurityContext {
+	allowEscalation := false
+	runAsRoot := int64(0)
+	runAsNonRoot := false
+	readOnlyRoot := true
+	capabilities := &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}}
+	if cleanup {
+		// Cleanup may encounter restrictive modes written by arbitrary task
+		// images. DAC_OVERRIDE is sufficient for traversal/removal and avoids
+		// granting broad filesystem or namespace capabilities.
+		capabilities.Add = []corev1.Capability{"DAC_OVERRIDE"}
+	}
+	return &corev1.SecurityContext{
+		AllowPrivilegeEscalation: &allowEscalation,
+		RunAsUser:                &runAsRoot,
+		RunAsNonRoot:             &runAsNonRoot,
+		ReadOnlyRootFilesystem:   &readOnlyRoot,
+		Capabilities:             capabilities,
+		SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+	}
+}
+
+func artifactWorkspacePreparationSecurityContext() *corev1.SecurityContext {
+	security := artifactHelperSecurityContext(false)
+	security.Capabilities.Add = []corev1.Capability{"CHOWN", "DAC_OVERRIDE", "FOWNER"}
+	return security
 }
 
 func (b *DaemonSetBackend) daemonScheme() string {
@@ -465,10 +498,41 @@ func (b *DaemonSetBackend) artifactLocate(key string) (ArtifactLocation, bool) {
 }
 
 func (b *DaemonSetBackend) helperImage() string {
-	if b.config.ArtifactHelperImage != "" {
-		return b.config.ArtifactHelperImage
+	return b.config.ArtifactHelperImage
+}
+
+func (b *DaemonSetBackend) BuildHermeticWorkspaceInitContainer(mainMounts []corev1.VolumeMount) *corev1.Container {
+	seen := make(map[string]struct{}, len(mainMounts))
+	mounts := make([]corev1.VolumeMount, 0, len(mainMounts))
+	paths := make([]string, 0, len(mainMounts))
+	for _, mount := range mainMounts {
+		if mount.Name == "" || mount.Name == artifactDaemonHostPathVolumeName {
+			continue
+		}
+		if _, exists := seen[mount.Name]; exists {
+			continue
+		}
+		seen[mount.Name] = struct{}{}
+		path := filepath.Join("/workspace-volumes", fmt.Sprintf("%d", len(mounts)))
+		mounts = append(mounts, corev1.VolumeMount{Name: mount.Name, MountPath: path})
+		paths = append(paths, path)
 	}
-	return DefaultArtifactHelperImage
+	if len(mounts) == 0 {
+		return nil
+	}
+	var script strings.Builder
+	script.WriteString("set -e\n")
+	for _, target := range paths {
+		fmt.Fprintf(&script, "chgrp -R 65534 %s\nchmod -R g+rwX %s\n", target, target)
+	}
+	return &corev1.Container{
+		Name:            "prepare-hermetic-workspace",
+		Image:           b.helperImage(),
+		Command:         []string{"sh", "-c", script.String()},
+		VolumeMounts:    mounts,
+		ImagePullPolicy: corev1.PullIfNotPresent,
+		SecurityContext: artifactWorkspacePreparationSecurityContext(),
+	}
 }
 
 func (b *DaemonSetBackend) BuildCleanupInitContainer(handle string, containerType db.ContainerType, reused bool) *corev1.Container {
@@ -478,23 +542,27 @@ func (b *DaemonSetBackend) BuildCleanupInitContainer(handle string, containerTyp
 	if containerType == db.ContainerTypeCheck {
 		return nil
 	}
+	if handle == "" || filepath.Clean(handle) != handle || filepath.Base(handle) != handle || strings.ContainsAny(handle, `/\`+"\x00") {
+		failure := b.inputFailureInitContainer("invalid cleanup handle")
+		failure.Name = "cleanup-stale"
+		return &failure
+	}
 
 	helperImage := b.helperImage()
-	cleanupPath := filepath.Join(ArtifactMountPath, "steps", handle)
-	script := fmt.Sprintf(`echo "[cleanup-stale] removing stale hostPath data: %s" >&2; rm -rf %s; mkdir -p %s`, cleanupPath, cleanupPath, cleanupPath)
+	cleanupPath := filepath.Join(ArtifactMountPath, "handle")
+	script := `set -e
+echo "[cleanup-stale] removing stale data from scoped handle mount" >&2
+find /artifacts/handle -mindepth 1 -maxdepth 1 -exec rm -rf -- {} \;`
 
-	allowEscalation := false
 	return &corev1.Container{
 		Name:    "cleanup-stale",
 		Image:   helperImage,
 		Command: []string{"sh", "-c", script},
 		VolumeMounts: []corev1.VolumeMount{
-			{Name: artifactDaemonHostPathVolumeName, MountPath: ArtifactMountPath},
+			{Name: artifactDaemonHostPathVolumeName, MountPath: cleanupPath, SubPath: filepath.ToSlash(filepath.Join("steps", handle))},
 		},
 		ImagePullPolicy: corev1.PullIfNotPresent,
-		SecurityContext: &corev1.SecurityContext{
-			AllowPrivilegeEscalation: &allowEscalation,
-		},
+		SecurityContext: artifactHelperSecurityContext(true),
 	}
 }
 

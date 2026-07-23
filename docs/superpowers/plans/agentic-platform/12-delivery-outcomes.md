@@ -1,5 +1,7 @@
 # Delivery Outcomes Implementation Plan
 
+> **SUPERSEDED — historical implementation record (not executable).** The approved [Agentic Workflows as Functions over Snapshots design](../../specs/2026-07-21-agentic-workflows-as-functions-design.md) and [Agentic Functions program plan](../2026-07-21-agentic-functions-program.md) are authoritative. Existing outcome and diff code remains a compatibility/projection source; generic workflow outcomes are keyed by durable workflow-run and snapshot identity, and publication is an explicit DAG node.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Turn the ticket page into a lightweight PR view (paginated diff, review evidence, judge score, plan progress, cost, six-verdict feedback), add ticket-level dispositions (sent-back/abandoned/concluded with a reason taxonomy), and ship the native outcome watcher that records merged / merged-with-fixes / human-touch delta by polling git repos directly — no webhooks.

@@ -4,6 +4,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/concourse/concourse/agent/snapshot"
 )
 
 // MemoryStore is an in-memory Store for testing.
@@ -25,13 +27,43 @@ func (m *MemoryStore) Upsert(rec *StoredReview) error {
 		cp.CreatedAt = time.Now().Unix()
 	}
 	for i, existing := range m.records {
-		if existing.BuildID == cp.BuildID && existing.Repo == cp.Repo && existing.CommitSha == cp.CommitSha {
+		sameIdentity := false
+		if cp.SnapshotID != nil && existing.SnapshotID != nil {
+			sameIdentity = *existing.SnapshotID == *cp.SnapshotID
+		} else if cp.SnapshotID == nil && existing.SnapshotID == nil {
+			sameIdentity = existing.BuildID == cp.BuildID && existing.Repo == cp.Repo && existing.CommitSha == cp.CommitSha
+		}
+		if sameIdentity {
 			m.records[i] = &cp
 			return nil
 		}
 	}
 	m.records = append(m.records, &cp)
 	return nil
+}
+
+func (m *MemoryStore) GetBySnapshot(teamName string, id snapshot.SnapshotID) (StoredReview, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, rec := range m.records {
+		if rec.SnapshotID != nil && *rec.SnapshotID == id && rec.TeamName == teamName {
+			return *rec, true, nil
+		}
+	}
+	return StoredReview{}, false, nil
+}
+
+func (m *MemoryStore) ListByWorkflowRun(teamName, _ string, id snapshot.WorkflowRunID) ([]StoredReview, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	results := []StoredReview{}
+	for _, rec := range m.records {
+		if rec.WorkflowRunID != nil && *rec.WorkflowRunID == id && rec.TeamName == teamName {
+			results = append(results, *rec)
+		}
+	}
+	sort.SliceStable(results, func(i, j int) bool { return results[i].CreatedAt < results[j].CreatedAt })
+	return results, nil
 }
 
 func (m *MemoryStore) GetByBuild(buildID int) ([]StoredReview, error) {

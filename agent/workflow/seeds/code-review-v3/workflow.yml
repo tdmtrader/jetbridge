@@ -1,6 +1,7 @@
 schema_version: 3
 name: code-review
 signature_version: 1
+disposition_output: review
 description: Review one immutable repository state relative to another.
 inputs:
   - name: before
@@ -16,6 +17,7 @@ outputs:
     description: Structured findings and an overall disposition.
 plan:
   - agent: review
+    budget_slice_usd: 5
     function_id: review
     prompt_file: prompts/review.md
     inputs: [before, after]

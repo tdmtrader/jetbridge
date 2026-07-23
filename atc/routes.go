@@ -135,9 +135,11 @@ const (
 	GetAgentCostRollup           = "GetAgentCostRollup"
 	SubmitAgentCostRecord        = "SubmitAgentCostRecord"
 
-	SubmitAgentReview    = "SubmitAgentReview"
-	GetBuildAgentReviews = "GetBuildAgentReviews"
-	ListTeamAgentReviews = "ListTeamAgentReviews"
+	SubmitAgentReview           = "SubmitAgentReview"
+	GetBuildAgentReviews        = "GetBuildAgentReviews"
+	ListTeamAgentReviews        = "ListTeamAgentReviews"
+	GetAgentSnapshotReview      = "GetAgentSnapshotReview"
+	ListAgentWorkflowRunReviews = "ListAgentWorkflowRunReviews"
 
 	SubmitAgentRunMetrics     = "SubmitAgentRunMetrics"
 	ListAgentRunMetrics       = "ListAgentRunMetrics"
@@ -158,24 +160,42 @@ const (
 	GetAgentTicketOutcome     = "GetAgentTicketOutcome"
 	GetAgentTicketDiff        = "GetAgentTicketDiff"
 
-	ListAgentWorkflows          = "ListAgentWorkflows"
-	ListAgentWorkflowVersions   = "ListAgentWorkflowVersions"
-	GetAgentWorkflowVersion     = "GetAgentWorkflowVersion"
-	CreateAgentWorkflowVersion  = "CreateAgentWorkflowVersion"
-	PromoteAgentWorkflowVersion = "PromoteAgentWorkflowVersion"
-	CreateAgentWorkflowRun      = "CreateAgentWorkflowRun"
-	ListAgentWorkflowRuns       = "ListAgentWorkflowRuns"
-	GetAgentWorkflowRun         = "GetAgentWorkflowRun"
-	CancelAgentWorkflowRun      = "CancelAgentWorkflowRun"
-	RetryAgentWorkflowRun       = "RetryAgentWorkflowRun"
-	GetAgentWorkflowRunOutputs  = "GetAgentWorkflowRunOutputs"
+	ListAgentWorkflows                         = "ListAgentWorkflows"
+	ListAgentWorkflowVersions                  = "ListAgentWorkflowVersions"
+	GetAgentWorkflowVersion                    = "GetAgentWorkflowVersion"
+	CreateAgentWorkflowVersion                 = "CreateAgentWorkflowVersion"
+	PromoteAgentWorkflowVersion                = "PromoteAgentWorkflowVersion"
+	CreateAgentWorkflowRun                     = "CreateAgentWorkflowRun"
+	ListAgentWorkflowRuns                      = "ListAgentWorkflowRuns"
+	GetAgentWorkflowRunOperationalStatusCounts = "GetAgentWorkflowRunOperationalStatusCounts"
+	GetAgentWorkflowRun                        = "GetAgentWorkflowRun"
+	CancelAgentWorkflowRun                     = "CancelAgentWorkflowRun"
+	RetryAgentWorkflowRun                      = "RetryAgentWorkflowRun"
+	GetAgentWorkflowRunOutputs                 = "GetAgentWorkflowRunOutputs"
+	ListAgentWorkflowRunWaits                  = "ListAgentWorkflowRunWaits"
+	ResolveAgentWorkflowRunWait                = "ResolveAgentWorkflowRunWait"
+	ListAgentWorkflowRunOutcomes               = "ListAgentWorkflowRunOutcomes"
+	SetAgentWorkflowRunOutputOutcome           = "SetAgentWorkflowRunOutputOutcome"
 
-	CreateAgentSnapshot   = "CreateAgentSnapshot"
-	ListAgentSnapshots    = "ListAgentSnapshots"
-	GetAgentSnapshot      = "GetAgentSnapshot"
-	DownloadAgentSnapshot = "DownloadAgentSnapshot"
-	PinAgentSnapshot      = "PinAgentSnapshot"
-	UnpinAgentSnapshot    = "UnpinAgentSnapshot"
+	CreateAgentExperiment       = "CreateAgentExperiment"
+	ListAgentExperiments        = "ListAgentExperiments"
+	GetAgentExperiment          = "GetAgentExperiment"
+	UpdateAgentExperiment       = "UpdateAgentExperiment"
+	ValidateAgentExperiment     = "ValidateAgentExperiment"
+	StartAgentExperiment        = "StartAgentExperiment"
+	CancelAgentExperiment       = "CancelAgentExperiment"
+	ListAgentExperimentCells    = "ListAgentExperimentCells"
+	GetAgentExperimentCell      = "GetAgentExperimentCell"
+	GetAgentExperimentScorecard = "GetAgentExperimentScorecard"
+
+	CreateAgentSnapshot                = "CreateAgentSnapshot"
+	CaptureAgentResourceSnapshot       = "CaptureAgentResourceSnapshot"
+	ListAgentSnapshots                 = "ListAgentSnapshots"
+	GetAgentSnapshot                   = "GetAgentSnapshot"
+	GetAgentRepositoryChangeProjection = "GetAgentRepositoryChangeProjection"
+	DownloadAgentSnapshot              = "DownloadAgentSnapshot"
+	PinAgentSnapshot                   = "PinAgentSnapshot"
+	UnpinAgentSnapshot                 = "UnpinAgentSnapshot"
 
 	CreateAgentPrincipal = "CreateAgentPrincipal"
 	ListAgentPrincipals  = "ListAgentPrincipals"
@@ -327,6 +347,7 @@ var Routes = rata.Routes([]rata.Route{
 	{Path: "/api/v1/agent/reviews", Method: "POST", Name: SubmitAgentReview},
 	{Path: "/api/v1/builds/:build_id/agent-reviews", Method: "GET", Name: GetBuildAgentReviews},
 	{Path: "/api/v1/teams/:team_name/agent-reviews", Method: "GET", Name: ListTeamAgentReviews},
+	{Path: "/api/v1/agent/snapshots/:snapshot_id/projections/review", Method: "GET", Name: GetAgentSnapshotReview},
 
 	{Path: "/api/v1/agent/metrics", Method: "POST", Name: SubmitAgentRunMetrics},
 	{Path: "/api/v1/agent/metrics", Method: "GET", Name: ListRecentAgentRunMetrics},
@@ -354,14 +375,33 @@ var Routes = rata.Routes([]rata.Route{
 	{Path: "/api/v1/agent/workflows/:workflow_name/versions/:version/live", Method: "PUT", Name: PromoteAgentWorkflowVersion},
 	{Path: "/api/v1/agent/workflows/:workflow_name/runs", Method: "POST", Name: CreateAgentWorkflowRun},
 	{Path: "/api/v1/agent/workflows/:workflow_name/runs", Method: "GET", Name: ListAgentWorkflowRuns},
+	{Path: "/api/v1/agent/workflows/:workflow_name/runs/operational-status-counts", Method: "GET", Name: GetAgentWorkflowRunOperationalStatusCounts},
 	{Path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id", Method: "GET", Name: GetAgentWorkflowRun},
 	{Path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/cancel", Method: "POST", Name: CancelAgentWorkflowRun},
 	{Path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/retry", Method: "POST", Name: RetryAgentWorkflowRun},
 	{Path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/outputs", Method: "GET", Name: GetAgentWorkflowRunOutputs},
+	{Path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/waits", Method: "GET", Name: ListAgentWorkflowRunWaits},
+	{Path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/waits/:workflow_wait_id/resolve", Method: "PUT", Name: ResolveAgentWorkflowRunWait},
+	{Path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/outcomes", Method: "GET", Name: ListAgentWorkflowRunOutcomes},
+	{Path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/outputs/:snapshot_id/outcome", Method: "PUT", Name: SetAgentWorkflowRunOutputOutcome},
+	{Path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/reviews", Method: "GET", Name: ListAgentWorkflowRunReviews},
+
+	{Path: "/api/v1/agent/experiments", Method: "POST", Name: CreateAgentExperiment},
+	{Path: "/api/v1/agent/experiments", Method: "GET", Name: ListAgentExperiments},
+	{Path: "/api/v1/agent/experiments/:experiment_id", Method: "GET", Name: GetAgentExperiment},
+	{Path: "/api/v1/agent/experiments/:experiment_id", Method: "PUT", Name: UpdateAgentExperiment},
+	{Path: "/api/v1/agent/experiments/:experiment_id/validate", Method: "POST", Name: ValidateAgentExperiment},
+	{Path: "/api/v1/agent/experiments/:experiment_id/start", Method: "POST", Name: StartAgentExperiment},
+	{Path: "/api/v1/agent/experiments/:experiment_id/cancel", Method: "POST", Name: CancelAgentExperiment},
+	{Path: "/api/v1/agent/experiments/:experiment_id/cells", Method: "GET", Name: ListAgentExperimentCells},
+	{Path: "/api/v1/agent/experiments/:experiment_id/cells/:cell_id", Method: "GET", Name: GetAgentExperimentCell},
+	{Path: "/api/v1/agent/experiments/:experiment_id/scorecard", Method: "GET", Name: GetAgentExperimentScorecard},
 
 	{Path: "/api/v1/teams/:team_name/agent/snapshots", Method: "POST", Name: CreateAgentSnapshot},
+	{Path: "/api/v1/teams/:team_name/agent/snapshots/capture-resource", Method: "POST", Name: CaptureAgentResourceSnapshot},
 	{Path: "/api/v1/teams/:team_name/agent/snapshots", Method: "GET", Name: ListAgentSnapshots},
 	{Path: "/api/v1/teams/:team_name/agent/snapshots/:snapshot_id", Method: "GET", Name: GetAgentSnapshot},
+	{Path: "/api/v1/teams/:team_name/agent/snapshots/:snapshot_id/projections/repository-change", Method: "GET", Name: GetAgentRepositoryChangeProjection},
 	{Path: "/api/v1/teams/:team_name/agent/snapshots/:snapshot_id/content", Method: "GET", Name: DownloadAgentSnapshot},
 	{Path: "/api/v1/teams/:team_name/agent/snapshots/:snapshot_id/pin", Method: "PUT", Name: PinAgentSnapshot},
 	{Path: "/api/v1/teams/:team_name/agent/snapshots/:snapshot_id/pin", Method: "DELETE", Name: UnpinAgentSnapshot},

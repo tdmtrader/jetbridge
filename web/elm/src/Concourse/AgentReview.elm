@@ -10,6 +10,7 @@ module Concourse.AgentReview exposing
     , verdictLabel
     )
 
+import Concourse.Snapshot as Snapshot
 import Dict exposing (Dict)
 import Json.Decode
 import Json.Decode.Extra exposing (andMap)
@@ -32,6 +33,9 @@ type alias Summary =
     , summary : String
     , createdAt : Int
     , evaluatedCount : Int
+    , snapshotId : Maybe String
+    , workflowRunId : Maybe String
+    , productionId : Maybe String
     }
 
 
@@ -118,13 +122,13 @@ defaultTo default =
 decodeSummary : Json.Decode.Decoder Summary
 decodeSummary =
     Json.Decode.succeed Summary
-        |> andMap (Json.Decode.field "build_id" Json.Decode.int)
-        |> andMap (Json.Decode.field "build_name" Json.Decode.string)
-        |> andMap (Json.Decode.field "team_name" Json.Decode.string)
-        |> andMap (Json.Decode.field "pipeline_name" Json.Decode.string)
-        |> andMap (Json.Decode.field "job_name" Json.Decode.string)
-        |> andMap (Json.Decode.field "repo" Json.Decode.string)
-        |> andMap (Json.Decode.field "commit_sha" Json.Decode.string)
+        |> andMap (defaultTo 0 <| Json.Decode.field "build_id" Json.Decode.int)
+        |> andMap (defaultTo "" <| Json.Decode.field "build_name" Json.Decode.string)
+        |> andMap (defaultTo "main" <| Json.Decode.field "team_name" Json.Decode.string)
+        |> andMap (defaultTo "" <| Json.Decode.field "pipeline_name" Json.Decode.string)
+        |> andMap (defaultTo "" <| Json.Decode.field "job_name" Json.Decode.string)
+        |> andMap (defaultTo "" <| Json.Decode.field "repo" Json.Decode.string)
+        |> andMap (defaultTo "" <| Json.Decode.field "commit_sha" Json.Decode.string)
         |> andMap (defaultTo "" <| Json.Decode.field "branch" Json.Decode.string)
         |> andMap (Json.Decode.field "score" Json.Decode.float)
         |> andMap (Json.Decode.field "max_score" Json.Decode.float)
@@ -134,6 +138,9 @@ decodeSummary =
         |> andMap (defaultTo "" <| Json.Decode.field "summary" Json.Decode.string)
         |> andMap (defaultTo 0 <| Json.Decode.field "created_at" Json.Decode.int)
         |> andMap (defaultTo 0 <| Json.Decode.field "evaluated_count" Json.Decode.int)
+        |> andMap (Snapshot.decodeOptionalIdField "snapshot_id")
+        |> andMap (Snapshot.decodeOptionalIdField "workflow_run_id")
+        |> andMap (Snapshot.decodeOptionalIdField "production_id")
 
 
 {-| All fields tolerant: the ATC keeps partially-decoded findings rather than

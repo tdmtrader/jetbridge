@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,6 +22,7 @@ import (
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/agent/artifactcap"
+	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
@@ -29,6 +31,13 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 )
+
+func TestDaemonSetBackendDoesNotInventMutableArtifactHelperImage(t *testing.T) {
+	backend := NewDaemonSetBackend(Config{}, nil, nil)
+	if got := backend.helperImage(); got != "" {
+		t.Fatalf("default artifact helper image = %q, want fail-closed empty value", got)
+	}
+}
 
 func decodeEmbeddedPayload(t *testing.T, script string) []byte {
 	t.Helper()
@@ -208,6 +217,37 @@ func (a *testArtifact) StreamOut(ctx context.Context, path string, enc compressi
 	return nil, nil
 }
 
+type snapshotRefArtifact struct {
+	testArtifact
+	ref snapshot.SnapshotRef
+}
+
+type unreachableSnapshotContentStore struct{}
+
+func (unreachableSnapshotContentStore) Put(context.Context, snapshot.Digest, io.Reader) ([]snapshot.Location, error) {
+	return nil, fmt.Errorf("unexpected snapshot content write")
+}
+
+func (unreachableSnapshotContentStore) Open(context.Context, snapshot.Snapshot) (io.ReadCloser, error) {
+	return nil, fmt.Errorf("unexpected ATC snapshot stream")
+}
+
+func (unreachableSnapshotContentStore) Exists(context.Context, snapshot.Location) (bool, error) {
+	return false, fmt.Errorf("unexpected snapshot probe")
+}
+
+func (unreachableSnapshotContentStore) DeleteLocation(context.Context, snapshot.Location) error {
+	return fmt.Errorf("unexpected snapshot delete")
+}
+
+func (unreachableSnapshotContentStore) DeleteAll(context.Context, snapshot.Digest) error {
+	return fmt.Errorf("unexpected snapshot delete all")
+}
+
+func (artifact *snapshotRefArtifact) SnapshotRef() snapshot.SnapshotRef {
+	return artifact.ref
+}
+
 // ---------------------------------------------------------------------------
 // StepVolume
 // ---------------------------------------------------------------------------
@@ -357,9 +397,76 @@ func TestDaemonSetBackend_BuildFetchInitContainers_MultipleInputs(t *testing.T) 
 		t.Errorf("unexpected batch items: %+v", items)
 	}
 
-	// Should mount all input volumes plus the hostpath volume.
-	if len(inits[0].VolumeMounts) < 4 { // 3 inputs + 1 hostpath
-		t.Errorf("expected at least 4 volume mounts, got %d", len(inits[0].VolumeMounts))
+	// Fetch only needs the exact destination volumes. Mounting the artifact
+	// root would let a compromised helper read every durable snapshot and
+	// mutate unrelated step trees.
+	if len(inits[0].VolumeMounts) != 3 {
+		t.Errorf("expected exactly 3 destination mounts, got %d", len(inits[0].VolumeMounts))
+	}
+	for _, mount := range inits[0].VolumeMounts {
+		if mount.Name == artifactDaemonHostPathVolumeName {
+			t.Fatal("fetch helper received the broad artifact-store hostPath mount")
+		}
+	}
+}
+
+func TestDaemonSetBackend_BuildFetchInitContainersMaterializesSnapshotDigestNamespace(t *testing.T) {
+	digest := snapshot.Digest("sha256:" + strings.Repeat("a", 64))
+	artifact, err := runtime.NewSnapshotArtifact(snapshot.Snapshot{
+		ID:             snapshot.SnapshotID(42),
+		Type:           snapshot.TypeRef("repository-state/v1"),
+		Digest:         digest,
+		ByteSize:       1024,
+		FileCount:      1,
+		Representation: "application/x-tar",
+		ContentState:   snapshot.ContentStateAvailable,
+		CreatedAt:      time.Now().UTC(),
+	}, unreachableSnapshotContentStore{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := testBackend(nil)
+	inputs := []runtime.Input{{Artifact: artifact, DestinationPath: "/tmp/repository"}}
+	mounts := []corev1.VolumeMount{{Name: "input-0", MountPath: "/tmp/repository"}}
+	volumes := []corev1.Volume{b.StepVolume("input-0", "consumer", "input-0")}
+
+	inits := b.BuildFetchInitContainers("consumer", inputs, volumes, mounts)
+	if len(inits) != 1 {
+		t.Fatalf("init containers = %d, want one", len(inits))
+	}
+	items := decodeEmbeddedBatchItems(t, strings.Join(inits[0].Command, " "))
+	wantKey := "snapshots/sha256/" + strings.Repeat("a", 64) + ".tar"
+	if len(items) != 1 || items[0].Key != wantKey {
+		t.Fatalf("snapshot resolve items = %+v, want key %q", items, wantKey)
+	}
+	verifier, err := artifactcap.NewVerifier(testDaemonConfig().ArtifactDaemonResolveCapabilityKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantDest := "/artifact-store/steps/consumer/input-0"
+	if err := verifier.VerifyResolve(items[0].Capability, wantKey, wantDest, time.Now()); err != nil {
+		t.Fatalf("snapshot capability is not bound to exact digest/destination: %v", err)
+	}
+}
+
+func TestDaemonSetBackend_BuildFetchInitContainersRejectsInvalidSnapshotIdentity(t *testing.T) {
+	b := testBackend(nil)
+	artifact := &snapshotRefArtifact{
+		testArtifact: testArtifact{handle: "snapshot:42"},
+		ref: snapshot.SnapshotRef{
+			ID:     snapshot.SnapshotID(42),
+			Type:   snapshot.TypeRef("repository-state/v1"),
+			Digest: snapshot.Digest("sha256:not-a-digest"),
+		},
+	}
+	inits := b.BuildFetchInitContainers(
+		"consumer",
+		[]runtime.Input{{Artifact: artifact, DestinationPath: "/tmp/repository"}},
+		[]corev1.Volume{b.StepVolume("input-0", "consumer", "input-0")},
+		[]corev1.VolumeMount{{Name: "input-0", MountPath: "/tmp/repository"}},
+	)
+	if len(inits) != 1 || !strings.Contains(strings.Join(inits[0].Command, " "), "invalid snapshot input identity") {
+		t.Fatalf("invalid snapshot identity did not fail closed: %+v", inits)
 	}
 }
 
@@ -753,9 +860,28 @@ func TestDaemonSetBackend_BuildCleanupInitContainer_Reused(t *testing.T) {
 	if ic.Name != "cleanup-stale" {
 		t.Errorf("expected name cleanup-stale, got %s", ic.Name)
 	}
-	cmdStr := strings.Join(ic.Command, " ")
-	if !strings.Contains(cmdStr, "handle-1") {
-		t.Errorf("expected command to reference handle, got: %s", cmdStr)
+	if len(ic.VolumeMounts) != 1 {
+		t.Fatalf("cleanup mounts = %+v, want one scoped handle mount", ic.VolumeMounts)
+	}
+	mount := ic.VolumeMounts[0]
+	if mount.Name != artifactDaemonHostPathVolumeName || mount.MountPath != "/artifacts/handle" || mount.SubPath != "steps/handle-1" {
+		t.Fatalf("cleanup mount = %+v, want exact handle subPath", mount)
+	}
+	if strings.Contains(strings.Join(ic.Command, " "), "/artifacts/steps") {
+		t.Fatalf("cleanup command retained broad artifact-root path: %v", ic.Command)
+	}
+	if ic.SecurityContext == nil || ic.SecurityContext.RunAsUser == nil || *ic.SecurityContext.RunAsUser != 0 ||
+		ic.SecurityContext.Capabilities == nil || !slices.Contains(ic.SecurityContext.Capabilities.Drop, corev1.Capability("ALL")) ||
+		!slices.Contains(ic.SecurityContext.Capabilities.Add, corev1.Capability("DAC_OVERRIDE")) {
+		t.Fatalf("cleanup helper security context = %+v, want explicit root with only DAC_OVERRIDE", ic.SecurityContext)
+	}
+}
+
+func TestDaemonSetBackend_BuildCleanupInitContainerRejectsUnsafeHandle(t *testing.T) {
+	b := testBackend(nil)
+	container := b.BuildCleanupInitContainer("../other-handle", db.ContainerTypeTask, true)
+	if container == nil || len(container.VolumeMounts) != 0 || !strings.Contains(strings.Join(container.Command, " "), "invalid cleanup handle") {
+		t.Fatalf("unsafe cleanup handle did not fail closed: %+v", container)
 	}
 }
 

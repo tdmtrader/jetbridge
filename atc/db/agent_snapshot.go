@@ -135,18 +135,23 @@ func scanLocation(row scannable) (snapshot.Location, error) {
 
 func scanRetentionClaim(row scannable) (snapshot.RetentionClaim, error) {
 	var (
-		claim     snapshot.RetentionClaim
-		class     string
-		expiresAt sql.NullTime
+		claim         snapshot.RetentionClaim
+		class         string
+		workflowRunID sql.NullInt64
+		expiresAt     sql.NullTime
 	)
 	err := row.Scan(
-		&claim.ID, (*int64)(&claim.SnapshotID), &class, &expiresAt,
+		&claim.ID, (*int64)(&claim.SnapshotID), &class, &workflowRunID, &expiresAt,
 		&claim.Actor, &claim.Reason, &claim.CreatedAt,
 	)
 	if err != nil {
 		return snapshot.RetentionClaim{}, err
 	}
 	claim.Class = snapshot.RetentionClass(class)
+	if workflowRunID.Valid {
+		value := snapshot.WorkflowRunID(workflowRunID.Int64)
+		claim.WorkflowRunID = &value
+	}
 	if expiresAt.Valid {
 		claim.ExpiresAt = &expiresAt.Time
 	}
@@ -164,12 +169,13 @@ func scanProductionDetail(row scannable) (snapshot.ProductionDetail, error) {
 		planID, attempt, stepKind, stepName sql.NullString
 		outputPort                          sql.NullString
 		workflowDefinitionID, workflowRunID sql.NullInt64
+		workflowName                        sql.NullString
 		sourceMetadata                      []byte
 	)
 	err := row.Scan(
 		&production.ID, &kind, &production.CreatedBy,
 		&buildID, &planID, &attempt, &stepKind, &stepName, &outputPort,
-		&workflowDefinitionID, &workflowRunID, &sourceMetadata, &production.CreatedAt,
+		&workflowDefinitionID, &workflowRunID, &workflowName, &sourceMetadata, &production.CreatedAt,
 	)
 	if err != nil {
 		return snapshot.ProductionDetail{}, err
@@ -191,6 +197,7 @@ func scanProductionDetail(row scannable) (snapshot.ProductionDetail, error) {
 			value := snapshot.WorkflowRunID(workflowRunID.Int64)
 			build.WorkflowRunID = &value
 		}
+		build.WorkflowName = workflowName.String
 		production.Build = &build
 	}
 	if err := production.Validate(); err != nil {
@@ -207,6 +214,7 @@ func scanProductionSummary(row scannable) (snapshot.ProductionSummary, error) {
 		planID, attempt, stepKind, stepName sql.NullString
 		outputPort                          sql.NullString
 		workflowDefinitionID, workflowRunID sql.NullInt64
+		workflowName                        sql.NullString
 		snapshotID                          int64
 		typeName, digest                    string
 		typeVersion                         int
@@ -214,7 +222,7 @@ func scanProductionSummary(row scannable) (snapshot.ProductionSummary, error) {
 	err := row.Scan(
 		&production.ID, &kind, &production.CreatedBy,
 		&buildID, &planID, &attempt, &stepKind, &stepName, &outputPort,
-		&workflowDefinitionID, &workflowRunID, &production.CreatedAt,
+		&workflowDefinitionID, &workflowRunID, &workflowName, &production.CreatedAt,
 		&snapshotID, &typeName, &typeVersion, &digest,
 	)
 	if err != nil {
@@ -240,6 +248,7 @@ func scanProductionSummary(row scannable) (snapshot.ProductionSummary, error) {
 			value := snapshot.WorkflowRunID(workflowRunID.Int64)
 			build.WorkflowRunID = &value
 		}
+		build.WorkflowName = workflowName.String
 		production.Build = &build
 	}
 	if err := production.Validate(); err != nil {

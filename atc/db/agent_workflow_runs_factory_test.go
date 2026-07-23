@@ -8,12 +8,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/Masterminds/squirrel"
+	"github.com/concourse/concourse/agent/pagination"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/workflowrun"
 	"github.com/concourse/concourse/atc/db"
@@ -150,7 +152,7 @@ var _ = Describe("AgentWorkflowRunsFactory", func() {
 		return link, buildID
 	}
 
-	It("creates a durable run, input binding, and nonexpiring workflow claim atomically", func() {
+	It("creates a durable run, input binding, and exact active-run claim atomically", func() {
 		run, created, err := factory.CreateWithInputs(ctx, request("create-one"))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(created).To(BeTrue())
@@ -169,9 +171,9 @@ var _ = Describe("AgentWorkflowRunsFactory", func() {
 		err = dbConn.QueryRow(`
 			SELECT count(*)
 			FROM agent_snapshot_retention_claims
-			WHERE snapshot_id = $1 AND team_id = $2 AND class = 'workflow'
-			  AND expires_at IS NULL
-		`, int64(input.ID), defaultTeam.ID()).Scan(&claims)
+			WHERE snapshot_id = $1 AND team_id = $2 AND class = 'run'
+			  AND workflow_run_id = $3 AND expires_at IS NULL
+		`, int64(input.ID), defaultTeam.ID(), int64(run.ID)).Scan(&claims)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(claims).To(Equal(1))
 	})
@@ -292,6 +294,111 @@ var _ = Describe("AgentWorkflowRunsFactory", func() {
 		reconcilable, err = factory.ClaimForReconciliation(ctx, now.Add(time.Hour), 30*time.Second, 10)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(reconcilable).NotTo(ContainElement(run.ID))
+	})
+
+	It("keyset-pages equal-timestamp history without gaps or duplicates", func() {
+		createdAt := time.Date(2026, time.July, 22, 12, 34, 56, 123456000, time.UTC)
+		var want []snapshot.WorkflowRunID
+		for index := 0; index < 5; index++ {
+			run, created, err := factory.CreateWithInputs(ctx, request(fmt.Sprintf("page-%d", index)))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(created).To(BeTrue())
+			want = append(want, run.ID)
+			_, err = dbConn.Exec(`UPDATE agent_workflow_runs SET created_at = $2 WHERE id = $1`, int64(run.ID), createdAt)
+			Expect(err).NotTo(HaveOccurred())
+		}
+		sort.Slice(want, func(i, j int) bool { return want[i] > want[j] })
+
+		filter := db.AgentWorkflowRunListFilter{
+			TeamID: defaultTeam.ID(), WorkflowName: definitionName,
+			Status:     db.AgentWorkflowRunStatusAdmitting,
+			OriginKind: "ticket", OriginReference: "JIRA-123", Limit: 2,
+		}
+		var got []snapshot.WorkflowRunID
+		for {
+			page, err := factory.List(ctx, filter)
+			Expect(err).NotTo(HaveOccurred())
+			if len(page) == 0 {
+				break
+			}
+			for _, run := range page {
+				Expect(run.CreatedAt).To(BeTemporally("==", createdAt))
+				got = append(got, run.ID)
+			}
+			last := page[len(page)-1]
+			filter.Before = &pagination.Cursor{CreatedAt: last.CreatedAt, ID: int64(last.ID)}
+		}
+		Expect(got).To(Equal(want))
+	})
+
+	It("counts every operational run by status without a list limit or cross-team leakage", func() {
+		run, _, err := factory.CreateWithInputs(ctx, request("exact-status-count-base"))
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = dbConn.Exec(`
+			INSERT INTO agent_workflow_runs
+				(team_id, team_name, workflow_definition_id, workflow_name,
+				 workflow_version, schema_version, signature_version,
+				 definition_content_hash, function_id, idempotency_key,
+				 parameterized_config, parameterized_config_hash,
+				 origin_kind, origin_reference, created_by, status)
+			SELECT team_id, team_name, workflow_definition_id, workflow_name,
+			       workflow_version, schema_version, signature_version,
+			       definition_content_hash, function_id,
+			       idempotency_key || '-bulk-' || series::text,
+			       parameterized_config, parameterized_config_hash,
+			       origin_kind, origin_reference, created_by, 'running'
+			FROM agent_workflow_runs
+			CROSS JOIN generate_series(1, 1005) AS series
+			WHERE id = $1
+		`, int64(run.ID))
+		Expect(err).NotTo(HaveOccurred())
+
+		otherTeam, err := teamFactory.CreateTeam(structTeam(fmt.Sprintf("workflow-count-other-%d", time.Now().UnixNano())))
+		Expect(err).NotTo(HaveOccurred())
+		_, err = dbConn.Exec(`
+			INSERT INTO agent_workflow_runs
+				(team_id, team_name, workflow_definition_id, workflow_name,
+				 workflow_version, schema_version, signature_version,
+				 definition_content_hash, function_id, idempotency_key,
+				 parameterized_config, parameterized_config_hash,
+				 origin_kind, origin_reference, created_by, status)
+			SELECT team_id, team_name, workflow_definition_id, workflow_name,
+			       workflow_version, schema_version, signature_version,
+			       definition_content_hash, function_id,
+			       idempotency_key || '-experiment', parameterized_config,
+			       parameterized_config_hash, 'experiment', origin_reference,
+			       created_by, 'failed'
+			FROM agent_workflow_runs WHERE id = $1
+		`, int64(run.ID))
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = dbConn.Exec(`
+			INSERT INTO agent_workflow_runs
+				(team_id, team_name, workflow_definition_id, workflow_name,
+				 workflow_version, schema_version, signature_version,
+				 definition_content_hash, function_id, idempotency_key,
+				 parameterized_config, parameterized_config_hash,
+				 origin_kind, origin_reference, created_by, status)
+			SELECT $2, $3, workflow_definition_id, workflow_name,
+			       workflow_version, schema_version, signature_version,
+			       definition_content_hash, function_id,
+			       idempotency_key || '-other-team', parameterized_config,
+			       parameterized_config_hash, origin_kind, origin_reference,
+			       created_by, 'errored'
+			FROM agent_workflow_runs WHERE id = $1
+		`, int64(run.ID), otherTeam.ID(), otherTeam.Name())
+		Expect(err).NotTo(HaveOccurred())
+
+		counts, err := factory.CountByStatus(ctx, db.AgentWorkflowRunCountFilter{
+			TeamID: defaultTeam.ID(), WorkflowName: definitionName,
+			ExcludeOriginKind: "experiment",
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(counts).To(Equal(map[db.AgentWorkflowRunStatus]int64{
+			db.AgentWorkflowRunStatusAdmitting: 1,
+			db.AgentWorkflowRunStatusRunning:   1005,
+		}))
 	})
 
 	It("skips a locked due row instead of letting one run block the reconciliation batch", func() {
@@ -574,7 +681,7 @@ var _ = Describe("AgentWorkflowRunsFactory", func() {
 		Expect(ids[0]).To(Equal(ids[1]))
 	})
 
-	It("serializes input availability checks and workflow claims with digest GC", func() {
+	It("serializes input availability checks and active-run claims with digest GC", func() {
 		// The suite defaults to one connection to expose accidental pool use;
 		// this race intentionally needs independent locker, writer, and observer sessions.
 		dbConn.SetMaxOpenConns(8)
@@ -623,6 +730,13 @@ var _ = Describe("AgentWorkflowRunsFactory", func() {
 	It("enforces the workflow-run transition graph and keeps terminal timestamps immutable", func() {
 		run, _, err := factory.CreateWithInputs(ctx, request("transition-graph"))
 		Expect(err).NotTo(HaveOccurred())
+		expiresAt := time.Now().Add(7 * 24 * time.Hour)
+		_, err = dbConn.Exec(`
+			INSERT INTO agent_snapshot_retention_claims
+				(snapshot_id, team_id, class, expires_at, actor, reason)
+			VALUES ($1, $2, 'binding', $3, 'transition-graph-binding', 'post-production grace')
+		`, int64(input.ID), defaultTeam.ID(), expiresAt)
+		Expect(err).NotTo(HaveOccurred())
 
 		transitioned, err := factory.Transition(
 			ctx, run.ID, db.AgentWorkflowRunStatusAdmitting, db.AgentWorkflowRunStatusSucceeded, "",
@@ -653,6 +767,34 @@ var _ = Describe("AgentWorkflowRunsFactory", func() {
 		Expect(terminal.StartedAt).NotTo(BeNil())
 		Expect(terminal.CompletedAt).NotTo(BeNil())
 		Expect(*terminal.CompletedAt).To(BeTemporally(">=", *terminal.StartedAt))
+		var runClaims, bindingClaims int
+		Expect(dbConn.QueryRow(`
+			SELECT count(*) FROM agent_snapshot_retention_claims
+			WHERE class = 'run' AND workflow_run_id = $1
+		`, int64(run.ID)).Scan(&runClaims)).To(Succeed())
+		Expect(dbConn.QueryRow(`
+			SELECT count(*) FROM agent_snapshot_retention_claims
+			WHERE snapshot_id = $1 AND class = 'binding' AND actor = 'transition-graph-binding'
+		`, int64(input.ID)).Scan(&bindingClaims)).To(Succeed())
+		Expect(runClaims).To(Equal(0), "terminalization must atomically release active-run retention")
+		Expect(bindingClaims).To(Equal(1), "ordinary post-production retention remains independent")
+		_, err = dbConn.Exec(`
+			INSERT INTO agent_snapshot_retention_claims
+				(snapshot_id, team_id, class, workflow_run_id, actor, reason)
+			VALUES ($1, $2, 'run', $3, 'stale-terminal-claim', 'repair test')
+		`, int64(input.ID), defaultTeam.ID(), int64(run.ID))
+		Expect(err).NotTo(HaveOccurred())
+		_, finalized, err = factory.Finalize(ctx, db.AgentWorkflowRunFinalization{
+			WorkflowRunID: run.ID, ExpectedStatus: db.AgentWorkflowRunStatusRunning,
+			TerminalStatus: db.AgentWorkflowRunStatusErrored, ErrorMessage: "test terminalization",
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(finalized).To(BeFalse())
+		Expect(dbConn.QueryRow(`
+			SELECT count(*) FROM agent_snapshot_retention_claims
+			WHERE class = 'run' AND workflow_run_id = $1
+		`, int64(run.ID)).Scan(&runClaims)).To(Succeed())
+		Expect(runClaims).To(Equal(0), "idempotent finalization repairs stale active-run retention")
 
 		transitioned, err = factory.Transition(
 			ctx, run.ID, db.AgentWorkflowRunStatusErrored, db.AgentWorkflowRunStatusRunning, "reopen",
@@ -675,6 +817,12 @@ var _ = Describe("AgentWorkflowRunsFactory", func() {
 		)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(transitioned).To(BeTrue())
+		var runClaims int
+		Expect(dbConn.QueryRow(`
+			SELECT count(*) FROM agent_snapshot_retention_claims
+			WHERE class = 'run' AND workflow_run_id = $1
+		`, int64(empty.ID)).Scan(&runClaims)).To(Succeed())
+		Expect(runClaims).To(Equal(0))
 
 		allocated, _, err := factory.CreateWithInputs(ctx, request("allocated-admission-failure"))
 		Expect(err).NotTo(HaveOccurred())
@@ -939,6 +1087,18 @@ var _ = Describe("AgentWorkflowRunsFactory", func() {
 		success, successBuild := prepare("output-success")
 		bindEvidence(success, successBuild, true)
 		Expect(finalize(success, expected(success)).Status).To(Equal(db.AgentWorkflowRunStatusSucceeded))
+		var promotedAt sql.NullTime
+		Expect(dbConn.QueryRow(`
+			SELECT promoted_at FROM agent_workflow_run_snapshots
+			WHERE workflow_run_id = $1 AND direction = 'output' AND port_name = 'result'
+		`, int64(success.ID)).Scan(&promotedAt)).To(Succeed())
+		Expect(promotedAt.Valid).To(BeTrue())
+		visible, err := factory.Snapshots(ctx, success.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(visible).To(ContainElement(db.AgentWorkflowRunSnapshotBinding{
+			WorkflowRunID: success.ID, Direction: db.AgentWorkflowRunSnapshotOutput,
+			PortName: "result", Snapshot: snapshot.SnapshotRef{ID: input.ID, Type: input.Type, Digest: input.Digest},
+		}))
 
 		optionalMissing, _ := prepare("output-optional-missing")
 		optionalContract := expected(optionalMissing)
@@ -949,6 +1109,23 @@ var _ = Describe("AgentWorkflowRunsFactory", func() {
 		missingResult := finalize(missingRequired, expected(missingRequired))
 		Expect(missingResult.Status).To(Equal(db.AgentWorkflowRunStatusFailed))
 		Expect(missingResult.ErrorMessage).To(ContainSubstring("required output"))
+
+		partial, partialBuild := prepare("output-partial-required-set")
+		bindEvidence(partial, partialBuild, true)
+		partialContract := expected(partial)
+		partialContract = append(partialContract, db.AgentWorkflowRunExpectedOutput{
+			Port: "second", Type: input.Type, WorkflowDefinitionID: definitionID, WorkflowRunID: partial.ID,
+			Producers: []db.AgentWorkflowRunExpectedProducer{{
+				PlanID: "plan-second", StepKind: "task", StepName: "second", LocalOutputPort: "second",
+			}},
+		})
+		partialResult := finalize(partial, partialContract)
+		Expect(partialResult.Status).To(Equal(db.AgentWorkflowRunStatusFailed))
+		partialVisible, err := factory.Snapshots(ctx, partial.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(partialVisible).NotTo(ContainElement(And(
+			HaveField("Direction", db.AgentWorkflowRunSnapshotOutput),
+		)))
 
 		wrongIdentity, wrongIdentityBuild := prepare("output-wrong-identity")
 		bindEvidence(wrongIdentity, wrongIdentityBuild, true)
@@ -970,7 +1147,7 @@ var _ = Describe("AgentWorkflowRunsFactory", func() {
 
 		extra, extraBuild := prepare("output-extra")
 		bindEvidence(extra, extraBuild, true)
-		_, err := dbConn.Exec(`
+		_, err = dbConn.Exec(`
 			INSERT INTO agent_workflow_run_snapshots
 				(workflow_run_id, direction, port_name, snapshot_id)
 			VALUES ($1, 'output', 'undeclared', $2)
@@ -1416,16 +1593,10 @@ var _ = Describe("AgentWorkflowRunsFactory", func() {
 		Expect(stored.ActualPlan).To(MatchJSON(`{"task":"review"}`))
 		bindings, err := factory.Snapshots(ctx, run.ID)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(bindings).To(ConsistOf(
-			db.AgentWorkflowRunSnapshotBinding{
-				WorkflowRunID: run.ID, Direction: db.AgentWorkflowRunSnapshotInput,
-				PortName: "source", Snapshot: input,
-			},
-			db.AgentWorkflowRunSnapshotBinding{
-				WorkflowRunID: run.ID, Direction: db.AgentWorkflowRunSnapshotOutput,
-				PortName: "result", Snapshot: input,
-			},
-		))
+		Expect(bindings).To(ConsistOf(db.AgentWorkflowRunSnapshotBinding{
+			WorkflowRunID: run.ID, Direction: db.AgentWorkflowRunSnapshotInput,
+			PortName: "source", Snapshot: input,
+		}))
 	})
 
 	It("preserves snapshot production history when its workflow-run link is deleted", func() {

@@ -39,6 +39,14 @@ type StorageBackend interface {
 	FindResourceCache(ctx context.Context, cacheID int) (nodeName string, found bool, err error)
 }
 
+// HermeticWorkspacePreparer is an optional storage extension. Backends whose
+// exact task volumes are created outside kubelet fsGroup handling (notably
+// hostPath) use it to make only those mounts writable by the pod's shared
+// supplemental group after artifact fetch and before untrusted code starts.
+type HermeticWorkspacePreparer interface {
+	BuildHermeticWorkspaceInitContainer([]corev1.VolumeMount) *corev1.Container
+}
+
 func emptyDirVolume(name string) corev1.Volume {
 	return corev1.Volume{
 		Name: name,

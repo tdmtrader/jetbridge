@@ -13,14 +13,12 @@ import (
 	"github.com/concourse/concourse/atc/db"
 )
 
-// reconcileCompletedRuns is the F17 pass (checkpoint seam delta §6): walk
-// RUNNING tickets whose pipeline run is complete and apply the frozen
-// decision tree through the single-writer Transition. Harvest is the
-// PRIMARY writer of running→needs_review — this pass is the backup for
-// runs that died before harvest executed (an agent-step failure halts the
-// plan; harvest is a plan step, not an ensure), web-restart deaths, and
-// the succeeded-but-still-running safety net. Stale/not-found transitions
-// are benign (two-writers recorded). PARK-V2's awaiting_human runs (not
+// reconcileCompletedRuns walks RUNNING tickets whose pipeline run is complete
+// and applies the board's human-attention transition through the single
+// writer. For v1/v2 it remains the backup when compatibility harvest never
+// executes. For v3 it projects generic execution completion onto the ticket
+// adapter; the linked workflow run and snapshots remain canonical. Stale or
+// missing transitions are benign races. PARK-V2's awaiting_human runs (not
 // landed) keep completed_at NULL, so they can never be candidates here.
 func (d *Dispatcher) reconcileCompletedRuns(ctx context.Context, logger lager.Logger) error {
 	if d.cfg.RunReader == nil {

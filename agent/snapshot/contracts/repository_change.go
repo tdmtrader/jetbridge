@@ -73,9 +73,11 @@ func (d RepositoryChangeDocument) Validate() error {
 	return nil
 }
 
-type repositoryChangeValidator struct{}
+type repositoryChangeValidator struct {
+	canonicalizer snapshot.Canonicalizer
+}
 
-func (repositoryChangeValidator) Validate(ctx context.Context, root *os.Root, validationContext snapshot.ValidationContext) (snapshot.ValidationResult, error) {
+func (validator repositoryChangeValidator) Validate(ctx context.Context, root *os.Root, validationContext snapshot.ValidationContext) (snapshot.ValidationResult, error) {
 	var document RepositoryChangeDocument
 	if err := decodeStrictDocument(ctx, root, "change.json", &document); err != nil {
 		return snapshot.ValidationResult{}, err
@@ -95,7 +97,7 @@ func (repositoryChangeValidator) Validate(ctx context.Context, root *os.Root, va
 	if err != nil {
 		return snapshot.ValidationResult{}, err
 	}
-	baseTree, captureErr := (snapshot.Canonicalizer{}).Capture(ctx, baseReader)
+	baseTree, captureErr := validator.canonicalizer.Capture(ctx, baseReader)
 	closeErr := baseReader.Close()
 	if err := errors.Join(captureErr, closeErr); err != nil {
 		if baseTree != nil {
@@ -126,7 +128,7 @@ func (repositoryChangeValidator) Validate(ctx context.Context, root *os.Root, va
 		return snapshot.ValidationResult{}, fmt.Errorf("snapshot contracts: declared object IDs do not match base repository object format")
 	}
 
-	payload, err := spoolRepositoryPayload(ctx, root, document.PayloadPath)
+	payload, err := spoolRepositoryPayload(ctx, root, document.PayloadPath, validator.canonicalizer.TempDir)
 	if err != nil {
 		return snapshot.ValidationResult{}, fmt.Errorf("snapshot contracts: payload_path: %w", err)
 	}
@@ -137,7 +139,7 @@ func (repositoryChangeValidator) Validate(ctx context.Context, root *os.Root, va
 
 	switch document.Representation {
 	case "git-tree":
-		err = validateGitTreeChange(ctx, payload.path, document, baseMetadata)
+		err = validateGitTreeChange(ctx, payload.path, document, baseMetadata, validator.canonicalizer)
 	case "patch":
 		err = validatePatchChange(ctx, baseTree.Root, payload.path, document, baseMetadata)
 	case "bundle":
@@ -158,12 +160,18 @@ func (repositoryChangeValidator) Validate(ctx context.Context, root *os.Root, va
 	return snapshot.ValidationResult{IntrinsicMetadata: encoded}, nil
 }
 
-func validateGitTreeChange(ctx context.Context, payloadPath string, document RepositoryChangeDocument, base RepositoryMetadata) error {
+func validateGitTreeChange(
+	ctx context.Context,
+	payloadPath string,
+	document RepositoryChangeDocument,
+	base RepositoryMetadata,
+	canonicalizer snapshot.Canonicalizer,
+) error {
 	payload, err := os.Open(payloadPath)
 	if err != nil {
 		return fmt.Errorf("snapshot contracts: open git-tree payload: %w", err)
 	}
-	resultTree, captureErr := (snapshot.Canonicalizer{}).Capture(ctx, payload)
+	resultTree, captureErr := canonicalizer.Capture(ctx, payload)
 	closeErr := payload.Close()
 	if err := errors.Join(captureErr, closeErr); err != nil {
 		if resultTree != nil {
@@ -308,7 +316,7 @@ func (p repositoryPayload) Close() error {
 	return os.RemoveAll(p.directory)
 }
 
-func spoolRepositoryPayload(ctx context.Context, root *os.Root, name string) (repositoryPayload, error) {
+func spoolRepositoryPayload(ctx context.Context, root *os.Root, name, tempDir string) (repositoryPayload, error) {
 	if err := validatePOSIXPath("payload_path", name); err != nil {
 		return repositoryPayload{}, err
 	}
@@ -331,7 +339,7 @@ func spoolRepositoryPayload(ctx context.Context, root *os.Root, name string) (re
 		_ = source.Close()
 		return repositoryPayload{}, fmt.Errorf("payload changed while opening or is not a regular file")
 	}
-	directory, err := os.MkdirTemp("", "concourse-repository-payload-")
+	directory, err := os.MkdirTemp(tempDir, "concourse-repository-payload-")
 	if err != nil {
 		_ = source.Close()
 		return repositoryPayload{}, err

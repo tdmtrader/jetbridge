@@ -11,7 +11,10 @@ import (
 
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"code.cloudfoundry.org/lager/v3/lagertest"
+	"github.com/concourse/concourse/agent/projection"
+	"github.com/concourse/concourse/agent/publisher"
 	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/atc/component"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
@@ -66,6 +69,12 @@ func (*compositionOutputSealer) Upload(context.Context, snapshot.UploadRequest) 
 	return snapshot.Snapshot{}, nil
 }
 
+type compositionPublisher struct{}
+
+func (*compositionPublisher) Execute(context.Context, publisher.Request) (publisher.Publication, error) {
+	return publisher.Publication{}, nil
+}
+
 type compositionLifecycle struct {
 	collectCalls  int
 	repairCalls   int
@@ -92,9 +101,11 @@ func TestAgentSnapshotComponentsAreComposedOnceWithExplicitConnection(t *testing
 	command.AgentSnapshots.MaxFiles = 3
 	command.AgentSnapshots.OrphanGracePeriod = 2 * time.Hour
 	command.AgentSnapshots.BindingRetention = 14 * 24 * time.Hour
+	command.AgentSnapshots.TempDir = t.TempDir()
 	wantDaemon := &jetbridge.DaemonClient{}
 	wantStore := &compositionContentStore{}
 	wantSealer := &compositionOutputSealer{}
+	wantPublisher := &compositionPublisher{}
 	var storageCalls, sealerCalls int
 	var gotConnection db.DbConn
 	var storageMetadata db.AgentSnapshotsFactory
@@ -131,6 +142,19 @@ func TestAgentSnapshotComponentsAreComposedOnceWithExplicitConnection(t *testing
 		gotBindingRetention = bindingRetention
 		return wantSealer, nil
 	}
+	var gotPublicationStore publisher.Store
+	var publisherMetadata snapshot.MetadataStore
+	var publisherContent snapshot.ContentStore
+	command.agentSnapshotPublisherComposer = func(
+		store publisher.Store,
+		metadata snapshot.MetadataStore,
+		content snapshot.ContentStore,
+	) (publisher.Executor, error) {
+		gotPublicationStore = store
+		publisherMetadata = metadata
+		publisherContent = content
+		return wantPublisher, nil
+	}
 	wantLifecycle := &compositionLifecycle{}
 	var lifecycleMetadata snapshot.MetadataStore
 	var lifecycleContent snapshot.ContentStore
@@ -164,8 +188,14 @@ func TestAgentSnapshotComponentsAreComposedOnceWithExplicitConnection(t *testing
 	if command.agentSnapshotDaemonClient != wantDaemon || command.agentSnapshotContentStore != wantStore {
 		t.Fatal("composition did not retain exact daemon/store identity")
 	}
-	if command.agentSnapshotMetadataStore == nil || command.agentSnapshotDigestLocker == nil || command.agentSnapshotValidatorRegistry == nil || command.agentSnapshotOutputSealer != wantSealer || command.agentSnapshotCreator != wantSealer || command.agentSnapshotLifecycle != wantLifecycle || command.agentSnapshotHandlerFactory == nil {
+	if command.agentSnapshotMetadataStore == nil || command.agentSnapshotDigestLocker == nil || command.agentSnapshotValidatorRegistry == nil || command.agentSnapshotOutputSealer == nil || command.agentSnapshotCreator == nil || command.agentSnapshotOutputSealer != command.agentSnapshotCreator || command.agentSnapshotLifecycle != wantLifecycle || command.agentSnapshotPublisher != wantPublisher || command.agentSnapshotProjectionRegistry == nil || command.agentResourceCaptureFinalizer == nil || command.agentSnapshotHandlerFactory == nil {
 		t.Fatal("composition did not retain the complete command-scoped sealing graph")
+	}
+	if gotPublicationStore == nil || publisherMetadata != command.agentSnapshotMetadataStore || publisherContent != wantStore {
+		t.Fatal("publisher did not receive the durable audit and exact command-scoped snapshot stores")
+	}
+	if _, ok := command.agentSnapshotCreator.(*projection.ProjectingCreator); !ok {
+		t.Fatalf("snapshot creator = %T, want post-seal projection decorator", command.agentSnapshotCreator)
 	}
 	if command.agentSnapshotWorkflowRuns == nil {
 		t.Fatal("composition did not retain one command-scoped workflow input verifier")
@@ -188,7 +218,8 @@ func TestAgentSnapshotComponentsAreComposedOnceWithExplicitConnection(t *testing
 	if command.agentSnapshotArchiveLimits != (snapshot.ArchiveLimits{MaxContentBytes: 17, MaxEntries: 3}) {
 		t.Fatalf("retained archive limits = %#v", command.agentSnapshotArchiveLimits)
 	}
-	if storageLimits != command.agentSnapshotArchiveLimits || gotCanonicalizer.MaxContentBytes != 17 || gotCanonicalizer.MaxEntries != 3 {
+	if storageLimits != command.agentSnapshotArchiveLimits || gotCanonicalizer.MaxContentBytes != 17 ||
+		gotCanonicalizer.MaxEntries != 3 || gotCanonicalizer.TempDir != command.AgentSnapshots.TempDir {
 		t.Fatalf("logical archive limits were not reused exactly: storage=%#v canonicalizer=%#v", storageLimits, gotCanonicalizer)
 	}
 	if gotStageTTL != 2*time.Hour {
@@ -197,8 +228,8 @@ func TestAgentSnapshotComponentsAreComposedOnceWithExplicitConnection(t *testing
 	if gotBindingRetention != 14*24*time.Hour {
 		t.Fatalf("binding retention = %s, want 14d", gotBindingRetention)
 	}
-	if options, ok := command.agentSnapshotCoreStepFactoryOptions(); !ok || len(options) != 2 {
-		t.Fatalf("enabled composition exposed %d engine options, want sealer and loader", len(options))
+	if options, ok := command.agentSnapshotCoreStepFactoryOptions(); !ok || len(options) != 4 {
+		t.Fatalf("enabled composition exposed %d engine options, want sealer, canonicalizer, loader, and publisher", len(options))
 	}
 }
 
@@ -215,11 +246,31 @@ func TestAgentSnapshotCompositionDisabledRemainsNil(t *testing.T) {
 	if err := command.composeAgentSnapshots(nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	if command.agentSnapshotDaemonClient != nil || command.agentSnapshotContentStore != nil || command.agentSnapshotMetadataStore != nil || command.agentSnapshotWorkflowRuns != nil || command.agentSnapshotDigestLocker != nil || command.agentSnapshotValidatorRegistry != nil || command.agentSnapshotOutputSealer != nil || command.agentSnapshotCreator != nil || command.agentSnapshotLifecycle != nil || command.agentSnapshotHandlerFactory != nil {
+	if command.agentSnapshotDaemonClient != nil || command.agentSnapshotContentStore != nil || command.agentSnapshotMetadataStore != nil || command.agentSnapshotWorkflowRuns != nil || command.agentSnapshotDigestLocker != nil || command.agentSnapshotValidatorRegistry != nil || command.agentSnapshotOutputSealer != nil || command.agentSnapshotCreator != nil || command.agentSnapshotLifecycle != nil || command.agentSnapshotPublisher != nil || command.agentSnapshotHandlerFactory != nil {
 		t.Fatal("disabled snapshot composition must remain nil")
 	}
 	if options, ok := command.agentSnapshotCoreStepFactoryOptions(); ok || options != nil {
 		t.Fatal("disabled composition exposed snapshot engine options")
+	}
+}
+
+func TestAgentSnapshotPublisherIsAbsentWithoutExplicitDeploymentComposer(t *testing.T) {
+	command := &RunCommand{}
+	command.AgentSnapshots.Enabled = true
+	command.agentSnapshotOutputSealer = &compositionOutputSealer{}
+	command.agentSnapshotMetadataStore = &dbfakes.FakeAgentSnapshotsFactory{}
+	command.agentSnapshotContentStore = &compositionContentStore{}
+	command.agentSnapshotWorkflowRuns = &dbfakes.FakeAgentWorkflowRunsFactory{}
+
+	options, ok := command.agentSnapshotCoreStepFactoryOptions()
+	if !ok {
+		t.Fatal("complete snapshot composition was not exposed to the engine")
+	}
+	if command.agentSnapshotPublisherComposer != nil || command.agentSnapshotPublisher != nil {
+		t.Fatal("zero-value command unexpectedly configured an external publisher")
+	}
+	if len(options) != 3 {
+		t.Fatalf("engine options = %d, want sealer, canonicalizer, and loader without a deployment publisher", len(options))
 	}
 }
 
@@ -299,8 +350,17 @@ func TestAgentSnapshotLifecycleComponentsAreEnabledTogether(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	command.agentSnapshotProjectionRegistry, _ = projection.NewRegistry(nil)
 	if len(components) != 2 {
-		t.Fatalf("component count = %d, want 2", len(components))
+		t.Fatalf("component count before projection composition = %d, want 2", len(components))
+	}
+
+	components, err = command.agentSnapshotLifecycleComponents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(components) != 3 {
+		t.Fatalf("component count = %d, want 3", len(components))
 	}
 	if components[0].Name != "agent_snapshot_gc" || components[0].Interval != 5*time.Minute {
 		t.Fatalf("GC component = %#v", components[0])
@@ -308,10 +368,16 @@ func TestAgentSnapshotLifecycleComponentsAreEnabledTogether(t *testing.T) {
 	if components[1].Name != "agent_snapshot_repair" || components[1].Interval != 10*time.Minute {
 		t.Fatalf("repair component = %#v", components[1])
 	}
+	if components[2].Name != "agent_snapshot_projection" || components[2].Interval != time.Minute {
+		t.Fatalf("projection component = %#v", components[2])
+	}
 	if err := components[0].Runnable.Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if err := components[1].Runnable.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := components[2].Runnable.Run(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if lifecycle.collectCalls != 1 || lifecycle.repairCalls != 1 {
@@ -322,6 +388,31 @@ func TestAgentSnapshotLifecycleComponentsAreEnabledTogether(t *testing.T) {
 	components, err = command.agentSnapshotLifecycleComponents()
 	if err != nil || components != nil {
 		t.Fatalf("disabled components = %#v, %v", components, err)
+	}
+}
+
+func TestAgentSnapshotLifecycleRegistersResourceCaptureFinalizerAheadOfGC(t *testing.T) {
+	finalizeCalls := 0
+	command := &RunCommand{}
+	command.AgentSnapshots.Enabled = true
+	command.agentSnapshotLifecycle = &compositionLifecycle{}
+	command.agentResourceCaptureFinalizer = component.RunFunc(func(context.Context) error {
+		finalizeCalls++
+		return nil
+	})
+
+	components, err := command.agentSnapshotLifecycleComponents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(components) != 3 || components[0].Name != "agent_resource_capture_finalizer" || components[0].Interval != 0 {
+		t.Fatalf("resource capture finalizer component = %#v", components)
+	}
+	if err := components[0].Runnable.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if finalizeCalls != 1 {
+		t.Fatalf("finalizer calls = %d", finalizeCalls)
 	}
 }
 

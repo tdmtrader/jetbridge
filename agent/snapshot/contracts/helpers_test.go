@@ -32,7 +32,9 @@ func validateDirectory(t *testing.T, rawType, dir string, validationContext snap
 		t.Fatalf("OpenRoot(%q): %v", dir, err)
 	}
 	defer root.Close()
-	registry, err := contracts.NewRegistry()
+	registry, err := contracts.NewRegistry(
+		contracts.WithCanonicalizer(snapshot.Canonicalizer{TempDir: t.TempDir()}),
+	)
 	if err != nil {
 		t.Fatalf("NewRegistry(): %v", err)
 	}

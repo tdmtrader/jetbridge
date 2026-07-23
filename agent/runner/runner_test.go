@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -131,6 +132,43 @@ func TestRunWritesFlightRecorder(t *testing.T) {
 	}
 	if start.BudgetSliceUSD != 2.5 {
 		t.Errorf("step.start budget_slice_usd = %v, want 2.5", start.BudgetSliceUSD)
+	}
+}
+
+func TestRunHardCapsClaudeAtTheAuthoredBudgetSlice(t *testing.T) {
+	dir := t.TempDir()
+	flight := filepath.Join(dir, "flight")
+	argsFile := filepath.Join(dir, "claude-args")
+	claude := filepath.Join(dir, "claude")
+	envelope := `{"type":"result","subtype":"success","result":"\"done\"","model":"m1","cost_usd":0.25,"num_turns":1,"is_error":false,"usage":{"input_tokens":1,"output_tokens":1}}`
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > '" + argsFile + "'\necho '" + envelope + "'\n"
+	if err := os.WriteFile(claude, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	exit, err := runner.Run(context.Background(), runner.Config{
+		Prompt: "do it", FlightDir: flight, WorkDir: dir, StepName: "budgeted",
+		ClaudePath: claude, BudgetSliceUSD: 1.234567,
+	})
+	if err != nil || exit != 0 {
+		t.Fatalf("Run() exit = %d, err = %v", exit, err)
+	}
+	raw, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	found := false
+	for index := 0; index+1 < len(args); index++ {
+		if args[index] == "--max-budget-usd" && args[index+1] == "1.234567" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("claude args = %q, want --max-budget-usd 1.234567", args)
+	}
+	if !slices.Contains(args, "--strict-mcp-config") {
+		t.Fatalf("claude args = %q, want --strict-mcp-config", args)
 	}
 }
 
@@ -458,7 +496,7 @@ func TestRunSidecarFailureIsPlatformError(t *testing.T) {
 
 func TestFromEnvDiscoversMCPServersAndPromptConfig(t *testing.T) {
 	// The §8.1 rows the agent-step exec feeds straight into Run: the
-	// ^([A-Z]+)_MCP_URL$ discovery scan, AGENT_MAX_TURNS parsing, and the
+	// *_MCP_URL discovery scan, AGENT_MAX_TURNS parsing, and the
 	// prompt/model/schema/flight-dir keys. None of these were covered.
 	t.Setenv("AGENT_PROMPT", "do the thing")
 	t.Setenv("AGENT_PROMPT_FILE", "repo/prompt.txt")
@@ -468,6 +506,7 @@ func TestFromEnvDiscoversMCPServersAndPromptConfig(t *testing.T) {
 	t.Setenv("AGENT_FLIGHT_DIR", "/work/flight")
 	t.Setenv("DEV_MCP_URL", "http://127.0.0.1:7780/mcp")
 	t.Setenv("PLATFORM_MCP_URL", "http://127.0.0.1:7781/mcp")
+	t.Setenv("CODE_REVIEW_MCP_URL", "http://127.0.0.1:7790/mcp")
 
 	cfg := runner.FromEnv()
 
@@ -495,6 +534,9 @@ func TestFromEnvDiscoversMCPServersAndPromptConfig(t *testing.T) {
 	}
 	if got := cfg.MCPServers["platform"]; got != "http://127.0.0.1:7781/mcp" {
 		t.Errorf("MCPServers[platform] = %q, want the PLATFORM_MCP_URL value", got)
+	}
+	if got := cfg.MCPServers["code-review"]; got != "http://127.0.0.1:7790/mcp" {
+		t.Errorf("MCPServers[code-review] = %q, want the CODE_REVIEW_MCP_URL value", got)
 	}
 }
 

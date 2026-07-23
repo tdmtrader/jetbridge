@@ -10,12 +10,14 @@ import (
 
 func TestAgentSnapshotRoutesHaveExplicitTeamRoles(t *testing.T) {
 	want := map[string]string{
-		atc.CreateAgentSnapshot:   MemberRole,
-		atc.ListAgentSnapshots:    ViewerRole,
-		atc.GetAgentSnapshot:      ViewerRole,
-		atc.DownloadAgentSnapshot: ViewerRole,
-		atc.PinAgentSnapshot:      MemberRole,
-		atc.UnpinAgentSnapshot:    MemberRole,
+		atc.CreateAgentSnapshot:                MemberRole,
+		atc.CaptureAgentResourceSnapshot:       MemberRole,
+		atc.ListAgentSnapshots:                 ViewerRole,
+		atc.GetAgentSnapshot:                   ViewerRole,
+		atc.GetAgentRepositoryChangeProjection: ViewerRole,
+		atc.DownloadAgentSnapshot:              ViewerRole,
+		atc.PinAgentSnapshot:                   MemberRole,
+		atc.UnpinAgentSnapshot:                 MemberRole,
 	}
 	for route, role := range want {
 		if got, found := DefaultRoles[route]; !found || got != role {
@@ -25,8 +27,8 @@ func TestAgentSnapshotRoutesHaveExplicitTeamRoles(t *testing.T) {
 }
 
 func TestAgentSnapshotRolesEnforceViewerAndMemberTiers(t *testing.T) {
-	readRoutes := []string{atc.ListAgentSnapshots, atc.GetAgentSnapshot, atc.DownloadAgentSnapshot}
-	writeRoutes := []string{atc.CreateAgentSnapshot, atc.PinAgentSnapshot, atc.UnpinAgentSnapshot}
+	readRoutes := []string{atc.ListAgentSnapshots, atc.GetAgentSnapshot, atc.GetAgentRepositoryChangeProjection, atc.DownloadAgentSnapshot}
+	writeRoutes := []string{atc.CreateAgentSnapshot, atc.CaptureAgentResourceSnapshot, atc.PinAgentSnapshot, atc.UnpinAgentSnapshot}
 	verification := Verification{
 		HasToken: true, IsTokenValid: true,
 		RawClaims: map[string]any{"federated_claims": map[string]any{

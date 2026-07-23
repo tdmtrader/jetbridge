@@ -7,6 +7,8 @@ package outcomewatcher
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 
 	"github.com/concourse/concourse/agent/api/outcomes"
 	"github.com/concourse/concourse/agent/api/tickets"
@@ -16,31 +18,169 @@ import (
 // Watcher is METRICS-INDEPENDENT by design (delivery-outcomes remainder,
 // amendment C3-1): the authoritative pushed_sha/base_sha source is harvest's
 // push-time outcome seeding (exec.HarvestStep.seedOutcome), NOT
-// agent_run_metrics — whether or not harvest writes metrics rows. It takes
-// exactly three collaborators.
+// agent_run_metrics — whether or not harvest writes metrics rows. Generic
+// durable outcome projection is an optional, database-only adapter.
 type Watcher struct {
-	tickets  tickets.Store
-	outcomes outcomes.Store
-	cache    *MirrorCache
+	tickets          tickets.Store
+	outcomes         outcomes.Store
+	cache            *MirrorCache
+	genericProjector GenericProjector
 }
 
-func New(t tickets.Store, o outcomes.Store, cache *MirrorCache) *Watcher {
-	return &Watcher{tickets: t, outcomes: o, cache: cache}
+type Option func(*Watcher)
+
+func WithGenericProjector(projector GenericProjector) Option {
+	return func(watcher *Watcher) {
+		watcher.genericProjector = projector
+	}
+}
+
+func New(t tickets.Store, o outcomes.Store, cache *MirrorCache, options ...Option) *Watcher {
+	watcher := &Watcher{tickets: t, outcomes: o, cache: cache}
+	for _, option := range options {
+		if option != nil {
+			option(watcher)
+		}
+	}
+	return watcher
 }
 
 // Run performs one tick: backstop-seed rows, detect merges on open rows,
 // then sweep open rows whose tickets a bypassing writer already drove
 // terminal. The sweep runs AFTER detection so an actual merge wins the race.
-func (w *Watcher) Run(_ context.Context) error {
-	// one `git fetch --prune` per repo per tick, regardless of ticket count
-	synced := map[string]bool{}
-	if err := w.seedRows(synced); err != nil {
+func (w *Watcher) Run(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// A sent-back row can be re-armed below as soon as its ticket completes a
+	// fast sent_back -> queued -> running -> needs_review cycle. Project that
+	// human rejection before seedRows clears the legacy disposition.
+	if err := w.projectRearmableSentBack(ctx); err != nil {
 		return err
 	}
-	if err := w.detectMerges(synced); err != nil {
+	// A nil mirror cache is the production projection-only mode. Terminal
+	// legacy facts still reconcile into durable generic outcomes, while every
+	// operation that can touch a live Git remote stays behind explicit mirror
+	// configuration.
+	if w.cache != nil {
+		// one `git fetch --prune` per repo per tick, regardless of ticket count
+		synced := map[string]bool{}
+		if err := w.seedRows(synced); err != nil {
+			return err
+		}
+		if err := w.detectMerges(synced); err != nil {
+			return err
+		}
+	}
+	if err := w.sweepTerminal(); err != nil {
 		return err
 	}
-	return w.sweepTerminal()
+	return w.projectTerminalFacts(ctx)
+}
+
+func (w *Watcher) projectRearmableSentBack(ctx context.Context) error {
+	if w.genericProjector == nil {
+		return nil
+	}
+	ticketsNeedingReview, err := w.tickets.List(tickets.ListFilter{State: tickets.StateNeedsReview})
+	if err != nil {
+		return err
+	}
+	for _, ticket := range ticketsNeedingReview {
+		outcome, found, err := w.outcomes.Get(ticket.ID)
+		if err != nil {
+			return err
+		}
+		if !found || outcome.MergeState != outcomes.ClosedUnmerged || outcome.Disposition != outcomes.DispositionSentBack {
+			continue
+		}
+		fact, projectable := terminalFactFor(ticket, *outcome)
+		if !projectable {
+			continue
+		}
+		if err := w.genericProjector.Project(ctx, fact); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (w *Watcher) projectTerminalFacts(ctx context.Context) error {
+	if w.genericProjector == nil {
+		return nil
+	}
+	store, ok := w.outcomes.(outcomes.TerminalLister)
+	if !ok {
+		return fmt.Errorf("outcome watcher: generic projection requires terminal outcome listing")
+	}
+	rows, err := store.ListTerminal()
+	if err != nil {
+		return err
+	}
+	var projectionErrors []error
+	for _, row := range rows {
+		ticket, found, err := w.tickets.Get(row.TicketID)
+		if err != nil {
+			projectionErrors = append(projectionErrors, fmt.Errorf("outcome watcher: load terminal ticket %d: %w", row.TicketID, err))
+			continue
+		}
+		if !found {
+			continue
+		}
+		fact, projectable := terminalFactFor(*ticket, row)
+		if !projectable {
+			continue
+		}
+		if err := w.genericProjector.Project(ctx, fact); err != nil {
+			projectionErrors = append(projectionErrors, fmt.Errorf("outcome watcher: project terminal ticket %d: %w", row.TicketID, err))
+		}
+	}
+	return errors.Join(projectionErrors...)
+}
+
+func terminalFactFor(ticket tickets.Ticket, outcome outcomes.Outcome) (TerminalFact, bool) {
+	fact := TerminalFact{TicketID: ticket.ID, Actor: "agent-outcome-watcher"}
+	actor := strings.TrimSpace(outcome.DisposedBy)
+	if actor != "" {
+		fact.Actor = actor
+		fact.HumanIntervention = true
+	}
+	switch outcome.MergeState {
+	case outcomes.Merged:
+		fact.Kind = TerminalMerged
+		return fact, true
+	case outcomes.MergedWithFixes:
+		fact.Kind = TerminalMergedWithFixes
+		fact.HumanIntervention = true
+		return fact, true
+	case outcomes.MergeConcluded:
+		fact.Kind = TerminalConcluded
+		return fact, true
+	case outcomes.ClosedUnmerged:
+		switch outcome.Disposition {
+		case outcomes.DispositionSentBack:
+			if actor == "" {
+				return TerminalFact{}, false
+			}
+			fact.Kind = TerminalSentBack
+			return fact, true
+		case outcomes.DispositionAbandoned:
+			fact.Kind = TerminalAbandoned
+			return fact, true
+		case outcomes.DispositionConcluded:
+			fact.Kind = TerminalConcluded
+			return fact, true
+		}
+		switch ticket.State {
+		case tickets.StateAbandoned:
+			fact.Kind = TerminalAbandoned
+			return fact, true
+		case tickets.StateConcluded:
+			fact.Kind = TerminalConcluded
+			return fact, true
+		}
+	}
+	return TerminalFact{}, false
 }
 
 // sync fetches repo's mirror at most once per tick.
@@ -58,7 +198,7 @@ func (w *Watcher) sync(synced map[string]bool, repo string) error {
 // seedRows is the §1.11.1 BACKSTOP: harvest seeds rows with authoritative
 // shas at push time (exec.HarvestStep.seedOutcome). Here we only (a)
 // create a fallback row when none exists — pushed_sha = remote branch
-// head at first sync (weaker baseline), base_sha = '' (diff 404s until a
+// head at first sync (weaker baseline), base_sha = ” (diff 404s until a
 // re-push seeds it) — and (b) re-arm a sent_back row (F6) when harvest's
 // own Ensure did not. An existing OPEN row is left alone: the backstop
 // must never overwrite harvest-seeded shas with fallback values.

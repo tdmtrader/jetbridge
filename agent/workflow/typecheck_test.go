@@ -12,9 +12,11 @@ import (
 )
 
 const (
-	repositoryV1 snapshot.TypeRef = "repository/v1"
-	repositoryV2 snapshot.TypeRef = "repository/v2"
-	reviewV1     snapshot.TypeRef = "review/v1"
+	repositoryV1  snapshot.TypeRef = "repository/v1"
+	repositoryV2  snapshot.TypeRef = "repository/v2"
+	reviewV1      snapshot.TypeRef = "review/v1"
+	questionV1    snapshot.TypeRef = "question/v1"
+	humanAnswerV1 snapshot.TypeRef = "human-answer/v1"
 )
 
 func TestTypeCheckSequenceAndAnnotation(t *testing.T) {
@@ -58,7 +60,7 @@ func TestTypeCheckSequenceAndAnnotation(t *testing.T) {
 		WorkflowDefinitionID: 17,
 		WorkflowRunID:        "((workflow_run_id))",
 	}
-	if got := task.SnapshotOutputs["finding"]; got != want {
+	if got := task.SnapshotOutputs["finding"]; !reflect.DeepEqual(got, want) {
 		t.Fatalf("producer annotation = %+v, want %+v", got, want)
 	}
 	if got := agent.SnapshotOutputs["after"].Retention; got != "" {
@@ -131,6 +133,74 @@ func TestTypeCheckFunctionIDsAreGlobalAndPathRich(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestTypeCheckEveryTaskAndAgentRequiresAFunctionID(t *testing.T) {
+	tests := []struct {
+		name string
+		leaf atc.StepConfig
+		kind string
+	}{
+		{
+			name: "agent",
+			leaf: &atc.AgentStep{Name: "plain-agent", Prompt: "work"},
+			kind: "agent",
+		},
+		{
+			name: "task",
+			leaf: &atc.TaskStep{
+				Name: "plain-task",
+				Config: &atc.TaskConfig{
+					Platform: "linux",
+					Run:      atc.TaskRunConfig{Path: "/bin/true"},
+				},
+			},
+			kind: "task",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := TypeCheckFunction(&FunctionConfig{
+				SignatureVersion: 1,
+				Plan:             []atc.Step{{Config: test.leaf}},
+			})
+			if err == nil {
+				t.Fatal("TypeCheckFunction succeeded")
+			}
+			for _, part := range []string{"plan[0]", test.kind, "function_id", "nonblank"} {
+				if !strings.Contains(err.Error(), part) {
+					t.Fatalf("error %q does not contain %q", err, part)
+				}
+			}
+		})
+	}
+}
+
+func TestTypeCheckDefersFileBackedTaskArtifactCoverage(t *testing.T) {
+	function := &FunctionConfig{
+		SignatureVersion: 1,
+		Inputs:           []snapshot.Port{{Name: "repo", Type: repositoryV1}},
+		Outputs: []FunctionOutput{{
+			Port: snapshot.Port{Name: "review", Type: reviewV1},
+			From: "review",
+		}},
+		Plan: []atc.Step{{Config: &atc.TaskStep{
+			Name:       "review",
+			FunctionID: "review",
+			ConfigPath: "repo/task.yml",
+			SnapshotInputs: map[string]atc.SnapshotInputConfig{
+				"repo": {Type: repositoryV1},
+			},
+			SnapshotOutputs: map[string]atc.SnapshotOutputConfig{
+				"review": {Type: reviewV1},
+			},
+		}}},
+	}
+
+	if err := TypeCheckFunction(function); err != nil {
+		t.Fatalf("TypeCheckFunction: %v", err)
 	}
 }
 
@@ -243,6 +313,75 @@ func TestTypeCheckLoadSnapshotIsATypedProducer(t *testing.T) {
 	})
 }
 
+func TestTypeCheckAwaitSnapshotConsumesQuestionAndProducesAnswer(t *testing.T) {
+	wait := func(question, answer string) *atc.AwaitSnapshotStep {
+		return &atc.AwaitSnapshotStep{
+			Name: answer, Question: question, Type: humanAnswerV1,
+			OnTimeout: atc.AwaitSnapshotOnTimeoutFail,
+		}
+	}
+
+	t.Run("exact question and answer types flow through do", func(t *testing.T) {
+		await := wait("question", "answer")
+		function := &FunctionConfig{
+			SignatureVersion: 1,
+			Inputs:           []snapshot.Port{{Name: "question", Type: questionV1}},
+			Outputs: []FunctionOutput{{
+				Port: snapshot.Port{Name: "approval", Type: humanAnswerV1}, From: "answer",
+			}},
+			Plan: []atc.Step{{Config: &atc.DoStep{Steps: []atc.Step{{Config: &atc.TimeoutStep{Duration: "1h", Step: await}}}}}},
+		}
+		if err := TypeCheckFunction(function); err != nil {
+			t.Fatalf("TypeCheckFunction: %v", err)
+		}
+		if err := AnnotatePublicOutputs(function, 23); err != nil {
+			t.Fatalf("AnnotatePublicOutputs: %v", err)
+		}
+		if await.WorkflowPort != "approval" || await.WorkflowDefinitionID != 23 || await.WorkflowRunID != "((workflow_run_id))" {
+			t.Fatalf("await annotation = %+v", await)
+		}
+	})
+
+	for _, test := range []struct {
+		name     string
+		question snapshot.Port
+		step     *atc.AwaitSnapshotStep
+		want     string
+	}{
+		{name: "missing question", question: snapshot.Port{Name: "other", Type: questionV1}, step: wait("question", "answer"), want: "use before produce"},
+		{name: "wrong question type", question: snapshot.Port{Name: "question", Type: repositoryV1}, step: wait("question", "answer"), want: "question/v1"},
+		{name: "conditional question", question: snapshot.Port{Name: "question", Type: questionV1, Optional: true}, step: wait("question", "answer"), want: "conditional"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			function := &FunctionConfig{SignatureVersion: 1, Inputs: []snapshot.Port{test.question}, Plan: []atc.Step{{Config: &atc.TimeoutStep{Duration: "1h", Step: test.step}}}}
+			err := TypeCheckFunction(function)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want %q", err, test.want)
+			}
+		})
+	}
+
+	t.Run("parallel waits use ordinary producer collision rules", func(t *testing.T) {
+		parallel := &atc.InParallelStep{Config: atc.InParallelConfig{Steps: []atc.Step{
+			{Config: &atc.TimeoutStep{Duration: "1h", Step: wait("question", "answer")}},
+			{Config: &atc.TimeoutStep{Duration: "1h", Step: wait("question", "answer")}},
+		}}}
+		function := &FunctionConfig{SignatureVersion: 1, Inputs: []snapshot.Port{{Name: "question", Type: questionV1}}, Plan: []atc.Step{{Config: parallel}}}
+		err := TypeCheckFunction(function)
+		if err == nil || !strings.Contains(err.Error(), `parallel branches both produce "answer"`) {
+			t.Fatalf("error = %v", err)
+		}
+	})
+
+	t.Run("a durable deadline is required", func(t *testing.T) {
+		function := &FunctionConfig{SignatureVersion: 1, Inputs: []snapshot.Port{{Name: "question", Type: questionV1}}, Plan: []atc.Step{{Config: wait("question", "answer")}}}
+		err := TypeCheckFunction(function)
+		if err == nil || !strings.Contains(err.Error(), "timeout wrapper is required") {
+			t.Fatalf("error = %v", err)
+		}
+	})
+}
+
 func TestTypeCheckRejectsUntypedAndAmbiguousFlow(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -250,11 +389,11 @@ func TestTypeCheckRejectsUntypedAndAmbiguousFlow(t *testing.T) {
 		want     string
 	}{
 		{
-			name: "typed input is consumed without a declaration",
+			name: "ordinary input is missing its type declaration",
 			function: &FunctionConfig{SignatureVersion: 1, Inputs: []snapshot.Port{{Name: "repo", Type: repositoryV1}}, Plan: []atc.Step{{Config: &atc.AgentStep{
-				Name: "plain", Prompt: "work", Inputs: []string{"repo"},
+				Name: "plain", FunctionID: "plain", Prompt: "work", Inputs: []string{"repo"},
 			}}}},
-			want: "without input_types",
+			want: "every declared agent input must be typed",
 		},
 		{
 			name: "get shadows typed input",
@@ -262,16 +401,16 @@ func TestTypeCheckRejectsUntypedAndAmbiguousFlow(t *testing.T) {
 				{Config: &atc.GetStep{Name: "repo"}},
 				{Config: typedAgent("consumer", "consumer", []string{"repo"}, map[string]atc.SnapshotInputConfig{"repo": {Type: repositoryV1}}, nil, nil)},
 			}},
-			want: "untyped producer",
+			want: "live-read boundary",
 		},
 		{
 			name:     "public output is untyped",
 			function: &FunctionConfig{SignatureVersion: 1, Outputs: []FunctionOutput{{Port: snapshot.Port{Name: "repo", Type: repositoryV1}, From: "repo"}}, Plan: []atc.Step{{Config: &atc.GetStep{Name: "repo"}}}},
-			want:     "untyped producer",
+			want:     "live-read boundary",
 		},
 		{
 			name:     "public input pass through",
-			function: &FunctionConfig{SignatureVersion: 1, Inputs: []snapshot.Port{{Name: "repo", Type: repositoryV1}}, Outputs: []FunctionOutput{{Port: snapshot.Port{Name: "repo", Type: repositoryV1}, From: "repo"}}, Plan: []atc.Step{{Config: &atc.LoadVarStep{Name: "ignored", File: "elsewhere"}}}},
+			function: &FunctionConfig{SignatureVersion: 1, Inputs: []snapshot.Port{{Name: "repo", Type: repositoryV1}}, Outputs: []FunctionOutput{{Port: snapshot.Port{Name: "repo", Type: repositoryV1}, From: "repo"}}, Plan: []atc.Step{{Config: &atc.AgentStep{Name: "noop", FunctionID: "noop", Prompt: "work"}}}},
 			want:     "concrete typed producer",
 		},
 	}
@@ -281,6 +420,157 @@ func TestTypeCheckRejectsUntypedAndAmbiguousFlow(t *testing.T) {
 			err := TypeCheckFunction(test.function)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("error = %v, want substring %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestTypeCheckTypedLeavesRequireExactInputTypeCoverage(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		leaf atc.StepConfig
+	}{
+		{
+			name: "agent",
+			leaf: typedAgent(
+				"consumer",
+				"consumer",
+				[]string{"repo", "hidden"},
+				map[string]atc.SnapshotInputConfig{"repo": {Type: repositoryV1}},
+				nil,
+				nil,
+			),
+		},
+		{
+			name: "task",
+			leaf: typedTask(
+				"consumer",
+				"consumer",
+				[]string{"repo", "hidden"},
+				map[string]atc.SnapshotInputConfig{"repo": {Type: repositoryV1}},
+				nil,
+				nil,
+			),
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			function := &FunctionConfig{
+				SignatureVersion: 1,
+				Inputs:           []snapshot.Port{{Name: "repo", Type: repositoryV1}},
+				Plan:             []atc.Step{{Config: test.leaf}},
+			}
+
+			err := TypeCheckFunction(function)
+			if err == nil || !strings.Contains(err.Error(), "every declared "+test.name+" input must be typed") ||
+				!strings.Contains(err.Error(), "hidden") {
+				t.Fatalf("error = %v, want exact typed input coverage rejection", err)
+			}
+		})
+	}
+}
+
+func TestTypeCheckTypedLeavesRequireExactOutputTypeCoverage(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		leaf atc.StepConfig
+	}{
+		{
+			name: "agent",
+			leaf: typedAgent(
+				"producer",
+				"producer",
+				nil,
+				nil,
+				[]string{"review", "hidden"},
+				map[string]atc.SnapshotOutputConfig{"review": {Type: reviewV1}},
+			),
+		},
+		{
+			name: "task",
+			leaf: typedTask(
+				"producer",
+				"producer",
+				nil,
+				nil,
+				[]string{"review", "hidden"},
+				map[string]atc.SnapshotOutputConfig{"review": {Type: reviewV1}},
+			),
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := TypeCheckFunction(&FunctionConfig{
+				SignatureVersion: 1,
+				Plan:             []atc.Step{{Config: test.leaf}},
+			})
+			if err == nil || !strings.Contains(err.Error(), "every declared "+test.name+" output must be typed") ||
+				!strings.Contains(err.Error(), "hidden") {
+				t.Fatalf("error = %v, want exact typed output coverage rejection", err)
+			}
+		})
+	}
+}
+
+func TestTypeCheckRejectsLiveReadBoundaries(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		function *FunctionConfig
+		want     string
+	}{
+		{
+			name: "resource declaration",
+			function: &FunctionConfig{
+				SignatureVersion: 1,
+				Resources:        atc.ResourceConfigs{{Name: "repo", Type: "git"}},
+				Plan:             []atc.Step{{Config: &atc.AgentStep{Name: "work", Prompt: "work"}}},
+			},
+			want: "resources",
+		},
+		{
+			name: "variable source declaration",
+			function: &FunctionConfig{
+				SignatureVersion: 1,
+				VarSources:       atc.VarSourceConfigs{{Name: "vault", Type: "vault"}},
+				Plan:             []atc.Step{{Config: &atc.AgentStep{Name: "work", Prompt: "work"}}},
+			},
+			want: "var_sources",
+		},
+		{
+			name:     "get step",
+			function: &FunctionConfig{SignatureVersion: 1, Plan: []atc.Step{{Config: &atc.GetStep{Name: "repo"}}}},
+			want:     "get",
+		},
+		{
+			name:     "load var step",
+			function: &FunctionConfig{SignatureVersion: 1, Plan: []atc.Step{{Config: &atc.LoadVarStep{Name: "value", File: "repo/value.json"}}}},
+			want:     "load_var",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := TypeCheckFunction(test.function)
+			if err == nil || !strings.Contains(err.Error(), test.want) || !strings.Contains(err.Error(), "snapshot") {
+				t.Fatalf("error = %v, want snapshot-boundary rejection containing %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestTypeCheckRejectsUngovernedOutboundEffects(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		step atc.StepConfig
+	}{
+		{name: "put", step: &atc.PutStep{Name: "destination"}},
+		{name: "harvest", step: &atc.HarvestStep{Name: "deliver"}},
+		{name: "set_pipeline", step: &atc.SetPipelineStep{Name: "self"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := TypeCheckFunction(&FunctionConfig{
+				SignatureVersion: 1,
+				Plan:             []atc.Step{{Config: test.step}},
+			})
+			if err == nil || !strings.Contains(err.Error(), test.name) ||
+				!strings.Contains(err.Error(), "publish_snapshot") {
+				t.Fatalf("error = %v, want governed publisher rejection", err)
 			}
 		})
 	}
@@ -305,6 +595,18 @@ func TestTypeCheckCompositionSemantics(t *testing.T) {
 		err := TypeCheckFunction(&FunctionConfig{SignatureVersion: 1, Plan: []atc.Step{{Config: parallel}}})
 		if err == nil || !strings.Contains(err.Error(), "use before produce") {
 			t.Fatalf("error = %v", err)
+		}
+	})
+
+	t.Run("parallel plain consumers cannot race typed sibling outputs", func(t *testing.T) {
+		parallel := &atc.InParallelStep{Config: atc.InParallelConfig{Steps: []atc.Step{
+			{Config: typedAgent("produce", "produce", nil, nil, []string{"repo"}, map[string]atc.SnapshotOutputConfig{"repo": {Type: repositoryV1}})},
+			{Config: &atc.TaskStep{Name: "plain-consumer", FunctionID: "plain-consumer", ConfigPath: "repo/task.yml"}},
+		}}}
+		err := TypeCheckFunction(&FunctionConfig{SignatureVersion: 1, Plan: []atc.Step{{Config: parallel}}})
+		if err == nil || !strings.Contains(err.Error(), "parallel") || !strings.Contains(err.Error(), "untyped") ||
+			!strings.Contains(err.Error(), `"repo"`) {
+			t.Fatalf("error = %v, want parallel untyped-read/typed-write rejection", err)
 		}
 	})
 
@@ -333,14 +635,15 @@ func TestTypeCheckCompositionSemantics(t *testing.T) {
 		}
 	})
 
-	t.Run("try discards required and optional writes", func(t *testing.T) {
-		for _, optional := range []bool{false, true} {
-			producer := typedAgent("produce", "produce", nil, nil, []string{"review"}, map[string]atc.SnapshotOutputConfig{"review": {Type: reviewV1, Optional: optional}})
-			function := functionExporting("review", &atc.TryStep{Step: atc.Step{Config: producer}})
-			err := TypeCheckFunction(function)
-			if err == nil || !strings.Contains(err.Error(), "use before produce") {
-				t.Fatalf("optional=%v error=%v", optional, err)
-			}
+	t.Run("try exposes writes conditionally", func(t *testing.T) {
+		producer := typedAgent("produce", "produce", nil, nil, []string{"review"}, map[string]atc.SnapshotOutputConfig{"review": {Type: reviewV1}})
+		function := functionExporting("review", &atc.TryStep{Step: atc.Step{Config: producer}})
+		if err := TypeCheckFunction(function); err == nil || !strings.Contains(err.Error(), "required public output cannot use conditional") {
+			t.Fatalf("required output error = %v", err)
+		}
+		function.Outputs[0].Optional = true
+		if err := TypeCheckFunction(function); err != nil {
+			t.Fatalf("optional public output: %v", err)
 		}
 	})
 
@@ -375,7 +678,7 @@ func TestTypeCheckCompositionSemantics(t *testing.T) {
 	t.Run("try includes non-success hook may-writes", func(t *testing.T) {
 		failureHook := typedAgent("repair", "repair", nil, nil, []string{"repo"}, map[string]atc.SnapshotOutputConfig{"repo": {Type: repositoryV2}})
 		wrapped := &atc.OnFailureStep{
-			Step: &atc.AgentStep{Name: "main", Prompt: "work"},
+			Step: &atc.AgentStep{Name: "main", FunctionID: "main", Prompt: "work"},
 			Hook: atc.Step{Config: failureHook},
 		}
 		consumer := typedAgent("consume", "consume", []string{"repo"}, map[string]atc.SnapshotInputConfig{"repo": {Type: repositoryV1}}, nil, nil)
@@ -393,11 +696,21 @@ func TestTypeCheckCompositionSemantics(t *testing.T) {
 		}
 	})
 
-	t.Run("retry and timeout propagate one producer", func(t *testing.T) {
+	t.Run("retry output remains available internally", func(t *testing.T) {
 		producer := typedAgent("produce", "produce", nil, nil, []string{"review"}, map[string]atc.SnapshotOutputConfig{"review": {Type: reviewV1}})
 		wrapped := &atc.TimeoutStep{Duration: "1m", Step: &atc.RetryStep{Attempts: 3, Step: producer}}
-		if err := TypeCheckFunction(functionExporting("review", wrapped)); err != nil {
+		consumer := typedAgent("consume", "consume", []string{"review"}, map[string]atc.SnapshotInputConfig{"review": {Type: reviewV1}}, nil, nil)
+		if err := TypeCheckFunction(&FunctionConfig{SignatureVersion: 1, Plan: []atc.Step{{Config: wrapped}, {Config: consumer}}}); err != nil {
 			t.Fatalf("TypeCheckFunction: %v", err)
+		}
+	})
+
+	t.Run("retry cannot directly produce a public output until attempt-aware promotion exists", func(t *testing.T) {
+		producer := typedAgent("produce", "produce", nil, nil, []string{"review"}, map[string]atc.SnapshotOutputConfig{"review": {Type: reviewV1}})
+		wrapped := &atc.TimeoutStep{Duration: "1m", Step: &atc.RetryStep{Attempts: 3, Step: producer}}
+		err := TypeCheckFunction(functionExporting("review", wrapped))
+		if err == nil || !strings.Contains(err.Error(), "retry") || !strings.Contains(err.Error(), "public output") {
+			t.Fatalf("error = %v, want fail-closed retry/public-output rejection", err)
 		}
 	})
 
@@ -503,7 +816,7 @@ func TestTypeCheckRejectsOptionalShadowAndDoesNotPartiallyAnnotate(t *testing.T)
 		Outputs:          []FunctionOutput{{Port: snapshot.Port{Name: "review", Type: reviewV1}, From: "review"}},
 		Plan:             []atc.Step{{Config: invalidProducer}},
 	}
-	if err := AnnotatePublicOutputs(invalidMembership, 17); err == nil || !strings.Contains(err.Error(), "does not name a declared agent output") {
+	if err := AnnotatePublicOutputs(invalidMembership, 17); err == nil || !strings.Contains(err.Error(), "every declared agent output must be typed") {
 		t.Fatalf("ordinary membership error = %v", err)
 	}
 	if got := invalidProducer.SnapshotOutputs["review"]; got.Retention != "" {
@@ -586,8 +899,9 @@ func TestTypeCheckFunctionPreservesOrdinaryWarnings(t *testing.T) {
 	function := &FunctionConfig{
 		SignatureVersion: 1,
 		Plan: []atc.Step{{Config: &atc.AgentStep{
-			Name:   "_warning-name",
-			Prompt: "work",
+			Name:       "_warning-name",
+			FunctionID: "warning-name",
+			Prompt:     "work",
 		}}},
 	}
 	warnings, err := ValidateFunction(function)
@@ -613,37 +927,37 @@ func TestTypeCheckFunctionDelegatesOrdinaryStepAndDeclarationErrors(t *testing.T
 		{
 			name: "missing task config",
 			function: &FunctionConfig{SignatureVersion: 1, Plan: []atc.Step{{Config: &atc.TaskStep{
-				Name: "missing",
+				Name: "missing", FunctionID: "missing",
 			}}}},
 			want: "must specify either `file:` or `config:`",
 		},
 		{
 			name: "agent prompt exclusivity",
 			function: &FunctionConfig{SignatureVersion: 1, Plan: []atc.Step{{Config: &atc.AgentStep{
-				Name: "prompt", Prompt: "literal", PromptFile: "source.md",
+				Name: "prompt", FunctionID: "prompt", Prompt: "literal", PromptFile: "source.md",
 			}}}},
 			want: "must specify one of `prompt:` or `prompt_file:`",
 		},
 		{
 			name: "reserved sidecar",
 			function: &FunctionConfig{SignatureVersion: 1, Plan: []atc.Step{{Config: &atc.AgentStep{
-				Name: "sidecar", Prompt: "work", Sidecars: []atc.SidecarSource{{Config: &atc.SidecarConfig{Name: "main", Image: "example/image@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}}},
+				Name: "sidecar", FunctionID: "sidecar", Prompt: "work", Sidecars: []atc.SidecarSource{{Config: &atc.SidecarConfig{Name: "main", Image: "example/image@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}}},
 			}}}},
 			want: "reserved container name",
 		},
 		{
 			name:     "unknown resource",
 			function: &FunctionConfig{SignatureVersion: 1, Plan: []atc.Step{{Config: &atc.GetStep{Name: "missing"}}}},
-			want:     "unknown resource",
+			want:     "live-read boundary",
 		},
 		{
 			name:     "bad attempts",
-			function: &FunctionConfig{SignatureVersion: 1, Plan: []atc.Step{{Config: &atc.RetryStep{Attempts: 0, Step: &atc.LoadVarStep{Name: "value", File: "value.json"}}}}},
+			function: &FunctionConfig{SignatureVersion: 1, Plan: []atc.Step{{Config: &atc.RetryStep{Attempts: 0, Step: &atc.AgentStep{Name: "work", FunctionID: "work", Prompt: "work"}}}}},
 			want:     "must be greater than 0",
 		},
 		{
 			name:     "bad timeout",
-			function: &FunctionConfig{SignatureVersion: 1, Plan: []atc.Step{{Config: &atc.TimeoutStep{Duration: "not-a-duration", Step: &atc.LoadVarStep{Name: "value", File: "value.json"}}}}},
+			function: &FunctionConfig{SignatureVersion: 1, Plan: []atc.Step{{Config: &atc.TimeoutStep{Duration: "not-a-duration", Step: &atc.AgentStep{Name: "work", FunctionID: "work", Prompt: "work"}}}}},
 			want:     "invalid duration",
 		},
 		{
@@ -665,9 +979,9 @@ func TestTypeCheckFunctionDelegatesOrdinaryStepAndDeclarationErrors(t *testing.T
 			function: &FunctionConfig{
 				SignatureVersion: 1,
 				Resources:        atc.ResourceConfigs{{Name: "unused", Type: "mock"}},
-				Plan:             []atc.Step{{Config: &atc.LoadVarStep{Name: "value", File: "value.json"}}},
+				Plan:             []atc.Step{{Config: &atc.AgentStep{Name: "work", Prompt: "work"}}},
 			},
-			want: "unused",
+			want: "resources",
 		},
 		{
 			name: "unknown embedded field",

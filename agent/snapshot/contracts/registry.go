@@ -19,14 +19,35 @@ type Registry struct {
 	types      []snapshot.TypeRef
 }
 
-func NewRegistry() (*Registry, error) {
+type registryConfig struct {
+	canonicalizer snapshot.Canonicalizer
+}
+
+type RegistryOption func(*registryConfig)
+
+// WithCanonicalizer supplies the bounded, deployment-owned scratch policy
+// used by validators that must materialize nested snapshot archives.
+func WithCanonicalizer(canonicalizer snapshot.Canonicalizer) RegistryOption {
+	return func(config *registryConfig) {
+		config.canonicalizer = canonicalizer
+	}
+}
+
+func NewRegistry(options ...RegistryOption) (*Registry, error) {
+	config := registryConfig{}
+	for _, option := range options {
+		if option == nil {
+			return nil, fmt.Errorf("snapshot contracts: registry option is required")
+		}
+		option(&config)
+	}
 	registrations := make([]Registration, 0, len(builtinTypeNames()))
 	for _, raw := range builtinTypeNames() {
 		ref, err := snapshot.ParseTypeRef(raw)
 		if err != nil {
 			return nil, err
 		}
-		validator, err := builtinValidator(ref)
+		validator, err := builtinValidator(ref, config)
 		if err != nil {
 			return nil, err
 		}
@@ -38,14 +59,14 @@ func NewRegistry() (*Registry, error) {
 	return NewRegistryWith(registrations...)
 }
 
-func builtinValidator(ref snapshot.TypeRef) (snapshot.Validator, error) {
+func builtinValidator(ref snapshot.TypeRef, config registryConfig) (snapshot.Validator, error) {
 	switch ref.String() {
 	case "opaque/v1":
 		return opaqueValidator{}, nil
 	case "repository/v1":
 		return repositoryValidator{}, nil
 	case "repository-change/v1":
-		return repositoryChangeValidator{}, nil
+		return repositoryChangeValidator{canonicalizer: config.canonicalizer}, nil
 	case "review/v1":
 		return reviewValidator{}, nil
 	case "work-item/v1":

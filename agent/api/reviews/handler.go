@@ -11,6 +11,7 @@ import (
 
 	"github.com/concourse/concourse/agent/api/feedback"
 	"github.com/concourse/concourse/agent/api/principals"
+	"github.com/concourse/concourse/agent/snapshot"
 )
 
 // BuildLookupFunc resolves a build ID to its context. found=false when
@@ -19,18 +20,20 @@ type BuildLookupFunc func(buildID int) (BuildContext, bool, error)
 
 // Handler serves the agent reviews API.
 type Handler struct {
-	store         Store
-	feedbackStore feedback.Store
-	lookupBuild   BuildLookupFunc
-	publishToken  string
+	store          Store
+	feedbackStore  feedback.Store
+	lookupBuild    BuildLookupFunc
+	publishToken   string
+	projectionTeam string
 }
 
-func NewHandler(store Store, feedbackStore feedback.Store, lookup BuildLookupFunc, publishToken string) *Handler {
+func NewHandler(store Store, feedbackStore feedback.Store, lookup BuildLookupFunc, publishToken, projectionTeam string) *Handler {
 	return &Handler{
-		store:         store,
-		feedbackStore: feedbackStore,
-		lookupBuild:   lookup,
-		publishToken:  publishToken,
+		store:          store,
+		feedbackStore:  feedbackStore,
+		lookupBuild:    lookup,
+		publishToken:   publishToken,
+		projectionTeam: projectionTeam,
 	}
 }
 
@@ -75,8 +78,10 @@ type BuildReviewResponse struct {
 // window; removed with --agent-review-publish-token).
 func (h *Handler) SubmitReview(w http.ResponseWriter, r *http.Request) {
 	submittedBy := ""
+	principalTeam := ""
 	if p, ok := principals.FromContext(r.Context()); ok {
 		submittedBy = p.Name
+		principalTeam = p.TeamName
 	} else {
 		if h.publishToken == "" {
 			http.Error(w, "agent review publishing is not enabled", http.StatusForbidden)
@@ -116,6 +121,14 @@ func (h *Handler) SubmitReview(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "build not found", http.StatusNotFound)
 		return
 	}
+	if principalTeam != "" && principalTeam != buildCtx.TeamName {
+		http.Error(w, "principal is not authorized for the build team", http.StatusForbidden)
+		return
+	}
+	if submittedBy != principals.LegacyPublishPrincipalName && principalTeam == "" {
+		http.Error(w, "principal team is required", http.StatusForbidden)
+		return
+	}
 
 	rec := sub.ToStoredReview(buildCtx)
 	rec.SubmittedBy = submittedBy
@@ -143,19 +156,98 @@ func (h *Handler) GetByBuild(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	responses := []BuildReviewResponse{}
+	responses := h.detailResponses(recs)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(responses)
+}
+
+// GetBySnapshot returns the projection of one canonical review/v1 snapshot.
+// The snapshot ID, not repository/commit, is the identity boundary.
+func (h *Handler) GetBySnapshot(w http.ResponseWriter, r *http.Request) {
+	rawID, ok := exactRouteValue(r, "snapshot_id")
+	if !ok {
+		http.Error(w, "invalid snapshot_id", http.StatusBadRequest)
+		return
+	}
+	id, err := snapshot.ParseSnapshotID(rawID)
+	if err != nil {
+		http.Error(w, "invalid snapshot_id", http.StatusBadRequest)
+		return
+	}
+	store, ok := h.store.(ProjectionReader)
+	if !ok {
+		http.Error(w, "snapshot review projection is unavailable", http.StatusInternalServerError)
+		return
+	}
+	rec, found, err := store.GetBySnapshot(h.projectionTeam, id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !found {
+		http.Error(w, "review projection not found", http.StatusNotFound)
+		return
+	}
+	responses := h.detailResponses([]StoredReview{rec})
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(responses[0])
+}
+
+// ListByWorkflowRun returns every review snapshot linked to a durable generic
+// run. Repository and commit are presentation fields and do not collapse rows.
+func (h *Handler) ListByWorkflowRun(w http.ResponseWriter, r *http.Request) {
+	workflowName, ok := exactRouteValue(r, "workflow_name")
+	if !ok {
+		http.Error(w, "invalid workflow_name", http.StatusBadRequest)
+		return
+	}
+	rawID, ok := exactRouteValue(r, "workflow_run_id")
+	if !ok {
+		http.Error(w, "invalid workflow_run_id", http.StatusBadRequest)
+		return
+	}
+	id, err := snapshot.ParseWorkflowRunID(rawID)
+	if err != nil {
+		http.Error(w, "invalid workflow_run_id", http.StatusBadRequest)
+		return
+	}
+	store, ok := h.store.(ProjectionReader)
+	if !ok {
+		http.Error(w, "workflow review projection is unavailable", http.StatusInternalServerError)
+		return
+	}
+	recs, err := store.ListByWorkflowRun(h.projectionTeam, workflowName, id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	responses := h.detailResponses(recs)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(responses)
+}
+
+// rata/pat encodes path parameters as reserved query keys. Require exactly
+// one router-authored value so a caller cannot shadow durable snapshot/run
+// identity with its own query parameter.
+func exactRouteValue(r *http.Request, name string) (string, bool) {
+	values := r.URL.Query()[":"+name]
+	if len(values) != 1 || values[0] == "" {
+		return "", false
+	}
+	return values[0], true
+}
+
+func (h *Handler) detailResponses(recs []StoredReview) []BuildReviewResponse {
+	responses := make([]BuildReviewResponse, 0, len(recs))
 	for _, rec := range recs {
 		resp := BuildReviewResponse{StoredReview: rec, Feedback: map[string]FindingFeedback{}}
-
 		var payload ReviewPayload
 		if err := json.Unmarshal(rec.Review, &payload); err == nil {
 			resp.ProvenIssues = decodeFindings(payload.ProvenIssues)
 			resp.Observations = decodeFindings(payload.Observations)
 			resp.FindingCount = len(resp.ProvenIssues) + len(resp.Observations)
 		} else {
-			// The raw payload is unreadable, so fall back to the counts
-			// denormalized at ingest — finding_count must never disagree
-			// with proven_count + observation_count in the same response.
 			resp.FindingCount = rec.ProvenCount + rec.ObservationCount
 		}
 		if resp.ProvenIssues == nil {
@@ -165,12 +257,18 @@ func (h *Handler) GetByBuild(w http.ResponseWriter, r *http.Request) {
 			resp.Observations = []Finding{}
 		}
 
-		// Degrade: panel must render without feedback.
-		fbs, err := h.feedbackStore.GetByReview(rec.Repo, rec.CommitSha)
+		var fbs []feedback.StoredFeedback
+		var err error
+		if rec.SnapshotID != nil {
+			if store, ok := h.feedbackStore.(feedback.SnapshotStore); ok {
+				fbs, err = store.GetByReviewSnapshot(*rec.SnapshotID, rec.TeamName)
+			} else {
+				fbs, err = h.feedbackStore.GetByReview(rec.Repo, rec.CommitSha)
+			}
+		} else {
+			fbs, err = h.feedbackStore.GetByReview(rec.Repo, rec.CommitSha)
+		}
 		if err == nil {
-			// Multiple reviewers on the same finding collapse last-write-wins
-			// by store order — deliberate for v1; evaluated_count means
-			// distinct findings triaged, not total feedback records.
 			for _, fb := range fbs {
 				resp.Feedback[fb.FindingID] = FindingFeedback{
 					Verdict: fb.Verdict, Notes: fb.Notes, Reviewer: fb.Reviewer,
@@ -178,14 +276,10 @@ func (h *Handler) GetByBuild(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		resp.EvaluatedCount = len(resp.Feedback)
-		// The detail response carries findings explicitly; drop the raw payload.
 		resp.Review = nil
-
 		responses = append(responses, resp)
 	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(responses)
+	return responses
 }
 
 func decodeFindings(raws []json.RawMessage) []Finding {

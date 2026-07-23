@@ -11,6 +11,7 @@ import (
 	. "github.com/onsi/gomega"
 	"github.com/onsi/gomega/gbytes"
 
+	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/exec/build"
@@ -375,6 +376,27 @@ var _ = Describe("LoadVarStep", func() {
 			It("step should fail", func() {
 				Expect(stepErr).To(MatchError("unknown artifact source: 'some-resource-not-in-the-registry' in file path 'a.json'"))
 			})
+		})
+	})
+
+	Context("when the file source is a typed snapshot", func() {
+		BeforeEach(func() {
+			digest, err := snapshot.ParseDigest("sha256:" + strings.Repeat("a", 64))
+			Expect(err).NotTo(HaveOccurred())
+			ref := snapshot.SnapshotRef{ID: 71, Type: snapshot.TypeRef("repository/v1"), Digest: digest}
+			Expect(artifactRepository.RegisterArtifacts(map[build.ArtifactName]build.ArtifactEntry{
+				"typed-resource": {Artifact: runtimetest.NewVolume("typed-resource"), Snapshot: &ref},
+			})).To(Succeed())
+			loadVarPlan = &atc.LoadVarPlan{
+				Name:   "some-var",
+				File:   "typed-resource/value.json",
+				Format: "json",
+			}
+		})
+
+		It("fails closed before streaming the file", func() {
+			Expect(stepErr).To(MatchError(ContainSubstring(`load_var source "typed-resource" is a typed snapshot`)))
+			Expect(fakeStreamer.StreamFileCallCount()).To(Equal(0))
 		})
 	})
 

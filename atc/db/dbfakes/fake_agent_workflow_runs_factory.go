@@ -56,6 +56,20 @@ type FakeAgentWorkflowRunsFactory struct {
 		result1 []snapshot.WorkflowRunID
 		result2 error
 	}
+	CountByStatusStub        func(context.Context, db.AgentWorkflowRunCountFilter) (map[db.AgentWorkflowRunStatus]int64, error)
+	countByStatusMutex       sync.RWMutex
+	countByStatusArgsForCall []struct {
+		arg1 context.Context
+		arg2 db.AgentWorkflowRunCountFilter
+	}
+	countByStatusReturns struct {
+		result1 map[db.AgentWorkflowRunStatus]int64
+		result2 error
+	}
+	countByStatusReturnsOnCall map[int]struct {
+		result1 map[db.AgentWorkflowRunStatus]int64
+		result2 error
+	}
 	CreateWithInputsStub        func(context.Context, db.AgentWorkflowRunCreateRequest) (db.AgentWorkflowRun, bool, error)
 	createWithInputsMutex       sync.RWMutex
 	createWithInputsArgsForCall []struct {
@@ -441,6 +455,71 @@ func (fake *FakeAgentWorkflowRunsFactory) ClaimForReconciliationReturnsOnCall(i 
 	}
 	fake.claimForReconciliationReturnsOnCall[i] = struct {
 		result1 []snapshot.WorkflowRunID
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) CountByStatus(arg1 context.Context, arg2 db.AgentWorkflowRunCountFilter) (map[db.AgentWorkflowRunStatus]int64, error) {
+	fake.countByStatusMutex.Lock()
+	ret, specificReturn := fake.countByStatusReturnsOnCall[len(fake.countByStatusArgsForCall)]
+	fake.countByStatusArgsForCall = append(fake.countByStatusArgsForCall, struct {
+		arg1 context.Context
+		arg2 db.AgentWorkflowRunCountFilter
+	}{arg1, arg2})
+	stub := fake.CountByStatusStub
+	fakeReturns := fake.countByStatusReturns
+	fake.recordInvocation("CountByStatus", []interface{}{arg1, arg2})
+	fake.countByStatusMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) CountByStatusCallCount() int {
+	fake.countByStatusMutex.RLock()
+	defer fake.countByStatusMutex.RUnlock()
+	return len(fake.countByStatusArgsForCall)
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) CountByStatusCalls(stub func(context.Context, db.AgentWorkflowRunCountFilter) (map[db.AgentWorkflowRunStatus]int64, error)) {
+	fake.countByStatusMutex.Lock()
+	defer fake.countByStatusMutex.Unlock()
+	fake.CountByStatusStub = stub
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) CountByStatusArgsForCall(i int) (context.Context, db.AgentWorkflowRunCountFilter) {
+	fake.countByStatusMutex.RLock()
+	defer fake.countByStatusMutex.RUnlock()
+	argsForCall := fake.countByStatusArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) CountByStatusReturns(result1 map[db.AgentWorkflowRunStatus]int64, result2 error) {
+	fake.countByStatusMutex.Lock()
+	defer fake.countByStatusMutex.Unlock()
+	fake.CountByStatusStub = nil
+	fake.countByStatusReturns = struct {
+		result1 map[db.AgentWorkflowRunStatus]int64
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) CountByStatusReturnsOnCall(i int, result1 map[db.AgentWorkflowRunStatus]int64, result2 error) {
+	fake.countByStatusMutex.Lock()
+	defer fake.countByStatusMutex.Unlock()
+	fake.CountByStatusStub = nil
+	if fake.countByStatusReturnsOnCall == nil {
+		fake.countByStatusReturnsOnCall = make(map[int]struct {
+			result1 map[db.AgentWorkflowRunStatus]int64
+			result2 error
+		})
+	}
+	fake.countByStatusReturnsOnCall[i] = struct {
+		result1 map[db.AgentWorkflowRunStatus]int64
 		result2 error
 	}{result1, result2}
 }

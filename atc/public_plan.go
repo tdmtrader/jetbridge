@@ -3,6 +3,7 @@ package atc
 import (
 	"encoding/json"
 
+	"github.com/concourse/concourse/agent/publisher"
 	"github.com/concourse/concourse/agent/snapshot"
 )
 
@@ -14,31 +15,33 @@ func (plan *Plan) Public() *json.RawMessage {
 	var public struct {
 		ID PlanID `json:"id,omitempty"`
 
-		InParallel     *json.RawMessage `json:"in_parallel,omitempty"`
-		Across         *json.RawMessage `json:"across,omitempty"`
-		Do             *json.RawMessage `json:"do,omitempty"`
-		Get            *json.RawMessage `json:"get,omitempty"`
-		Put            *json.RawMessage `json:"put,omitempty"`
-		Check          *json.RawMessage `json:"check,omitempty"`
-		Task           *json.RawMessage `json:"task,omitempty"`
-		Run            *json.RawMessage `json:"run,omitempty"`
-		Agent          *json.RawMessage `json:"agent,omitempty"`
-		Harvest        *json.RawMessage `json:"harvest,omitempty"`
-		SetPipeline    *json.RawMessage `json:"set_pipeline,omitempty"`
-		LoadVar        *json.RawMessage `json:"load_var,omitempty"`
-		LoadSnapshot   *json.RawMessage `json:"load_snapshot,omitempty"`
-		OnAbort        *json.RawMessage `json:"on_abort,omitempty"`
-		OnError        *json.RawMessage `json:"on_error,omitempty"`
-		Ensure         *json.RawMessage `json:"ensure,omitempty"`
-		OnSuccess      *json.RawMessage `json:"on_success,omitempty"`
-		OnFailure      *json.RawMessage `json:"on_failure,omitempty"`
-		Try            *json.RawMessage `json:"try,omitempty"`
-		DependentGet   *json.RawMessage `json:"dependent_get,omitempty"`
-		Timeout        *json.RawMessage `json:"timeout,omitempty"`
-		Retry          *json.RawMessage `json:"retry,omitempty"`
-		ArtifactInput  *json.RawMessage `json:"artifact_input,omitempty"`
-		ArtifactOutput *json.RawMessage `json:"artifact_output,omitempty"`
-		Sidecar        *json.RawMessage `json:"sidecar,omitempty"`
+		InParallel      *json.RawMessage `json:"in_parallel,omitempty"`
+		Across          *json.RawMessage `json:"across,omitempty"`
+		Do              *json.RawMessage `json:"do,omitempty"`
+		Get             *json.RawMessage `json:"get,omitempty"`
+		Put             *json.RawMessage `json:"put,omitempty"`
+		Check           *json.RawMessage `json:"check,omitempty"`
+		Task            *json.RawMessage `json:"task,omitempty"`
+		Run             *json.RawMessage `json:"run,omitempty"`
+		Agent           *json.RawMessage `json:"agent,omitempty"`
+		Harvest         *json.RawMessage `json:"harvest,omitempty"`
+		SetPipeline     *json.RawMessage `json:"set_pipeline,omitempty"`
+		LoadVar         *json.RawMessage `json:"load_var,omitempty"`
+		LoadSnapshot    *json.RawMessage `json:"load_snapshot,omitempty"`
+		AwaitSnapshot   *json.RawMessage `json:"await_snapshot,omitempty"`
+		PublishSnapshot *json.RawMessage `json:"publish_snapshot,omitempty"`
+		OnAbort         *json.RawMessage `json:"on_abort,omitempty"`
+		OnError         *json.RawMessage `json:"on_error,omitempty"`
+		Ensure          *json.RawMessage `json:"ensure,omitempty"`
+		OnSuccess       *json.RawMessage `json:"on_success,omitempty"`
+		OnFailure       *json.RawMessage `json:"on_failure,omitempty"`
+		Try             *json.RawMessage `json:"try,omitempty"`
+		DependentGet    *json.RawMessage `json:"dependent_get,omitempty"`
+		Timeout         *json.RawMessage `json:"timeout,omitempty"`
+		Retry           *json.RawMessage `json:"retry,omitempty"`
+		ArtifactInput   *json.RawMessage `json:"artifact_input,omitempty"`
+		ArtifactOutput  *json.RawMessage `json:"artifact_output,omitempty"`
+		Sidecar         *json.RawMessage `json:"sidecar,omitempty"`
 	}
 
 	public.ID = plan.ID
@@ -93,6 +96,14 @@ func (plan *Plan) Public() *json.RawMessage {
 
 	if plan.LoadSnapshot != nil {
 		public.LoadSnapshot = plan.LoadSnapshot.Public()
+	}
+
+	if plan.AwaitSnapshot != nil {
+		public.AwaitSnapshot = plan.AwaitSnapshot.Public()
+	}
+
+	if plan.PublishSnapshot != nil {
+		public.PublishSnapshot = plan.PublishSnapshot.Public()
 	}
 
 	if plan.OnAbort != nil {
@@ -317,7 +328,7 @@ func (plan TaskPlan) Public() *json.RawMessage {
 		Privileged:      plan.Privileged,
 		Hermetic:        plan.Hermetic,
 		SnapshotInputs:  plan.SnapshotInputs,
-		SnapshotOutputs: plan.SnapshotOutputs,
+		SnapshotOutputs: publicSnapshotOutputs(plan.SnapshotOutputs),
 	})
 }
 
@@ -336,15 +347,31 @@ func (plan RunPlan) Public() *json.RawMessage {
 func (plan AgentPlan) Public() *json.RawMessage {
 	return enc(struct {
 		Name            string                          `json:"name"`
+		Hermetic        bool                            `json:"hermetic,omitempty"`
+		RuntimeImage    string                          `json:"runtime_image,omitempty"`
 		Model           string                          `json:"model,omitempty"`
 		SnapshotInputs  map[string]SnapshotInputConfig  `json:"input_types,omitempty"`
 		SnapshotOutputs map[string]SnapshotOutputConfig `json:"output_types,omitempty"`
 	}{
 		Name:            plan.Name,
+		Hermetic:        plan.Hermetic,
+		RuntimeImage:    plan.RuntimeImage,
 		Model:           plan.Model,
 		SnapshotInputs:  plan.SnapshotInputs,
-		SnapshotOutputs: plan.SnapshotOutputs,
+		SnapshotOutputs: publicSnapshotOutputs(plan.SnapshotOutputs),
 	})
+}
+
+func publicSnapshotOutputs(outputs map[string]SnapshotOutputConfig) map[string]SnapshotOutputConfig {
+	if outputs == nil {
+		return nil
+	}
+	public := make(map[string]SnapshotOutputConfig, len(outputs))
+	for name, output := range outputs {
+		output.SourceMetadata = nil
+		public[name] = output
+	}
+	return public
 }
 
 func (plan HarvestPlan) Public() *json.RawMessage {
@@ -385,6 +412,50 @@ func (plan LoadSnapshotPlan) Public() *json.RawMessage {
 		Type     snapshot.TypeRef `json:"type"`
 		Optional bool             `json:"optional,omitempty"`
 	}{Name: plan.Name, Type: plan.Type, Optional: plan.Optional})
+}
+
+func (plan AwaitSnapshotPlan) Public() *json.RawMessage {
+	var mergeInput string
+	var mergePublisher snapshot.TypeRef
+	if plan.MergeApproval != nil {
+		mergeInput = plan.MergeApproval.Input
+		mergePublisher = plan.MergeApproval.Publisher
+	}
+	return enc(struct {
+		Name                    string                 `json:"name"`
+		Question                string                 `json:"question,omitempty"`
+		MergeApprovalInput      string                 `json:"merge_approval_input,omitempty"`
+		MergeApprovalPublisher  snapshot.TypeRef       `json:"merge_approval_publisher,omitempty"`
+		MergeDestinationPresent bool                   `json:"merge_destination_configured,omitempty"`
+		Type                    snapshot.TypeRef       `json:"type"`
+		OnTimeout               AwaitSnapshotOnTimeout `json:"on_timeout"`
+		HasDefault              bool                   `json:"has_default,omitempty"`
+		WorkflowPort            string                 `json:"workflow_port,omitempty"`
+	}{
+		Name: plan.Name, Question: plan.Question,
+		MergeApprovalInput: mergeInput, MergeApprovalPublisher: mergePublisher,
+		MergeDestinationPresent: plan.MergeApproval != nil && plan.MergeApproval.Destination != "",
+		Type:                    plan.Type, OnTimeout: plan.OnTimeout,
+		HasDefault: plan.DefaultSnapshotID != "", WorkflowPort: plan.WorkflowPort,
+	})
+}
+
+func (plan PublishSnapshotPlan) Public() *json.RawMessage {
+	return enc(struct {
+		Name                  string           `json:"name"`
+		Publisher             snapshot.TypeRef `json:"publisher"`
+		Input                 string           `json:"input"`
+		InputType             snapshot.TypeRef `json:"input_type"`
+		Mode                  publisher.Mode   `json:"mode"`
+		ApprovalPolicyVersion string           `json:"approval_policy_version"`
+		Approval              string           `json:"approval,omitempty"`
+		DestinationConfigured bool             `json:"destination_configured"`
+	}{
+		Name: plan.Name, Publisher: plan.Publisher, Input: plan.Input, InputType: plan.InputType,
+		Mode: plan.Mode, ApprovalPolicyVersion: plan.ApprovalPolicyVersion,
+		Approval:              plan.Approval,
+		DestinationConfigured: plan.Destination != "",
+	})
 }
 
 func (plan TimeoutPlan) Public() *json.RawMessage {

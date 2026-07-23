@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/agent/api/workflowruns"
+	"github.com/concourse/concourse/agent/pagination"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/workflowrun"
 	"github.com/concourse/concourse/atc"
@@ -35,9 +36,10 @@ func (fake *fakeBinder) BindAndCreate(
 }
 
 type fakeRunStore struct {
-	get       func(context.Context, int, snapshot.WorkflowRunID) (db.AgentWorkflowRun, bool, error)
-	list      func(context.Context, db.AgentWorkflowRunListFilter) ([]db.AgentWorkflowRun, error)
-	snapshots func(context.Context, snapshot.WorkflowRunID) ([]db.AgentWorkflowRunSnapshotBinding, error)
+	get          func(context.Context, int, snapshot.WorkflowRunID) (db.AgentWorkflowRun, bool, error)
+	list         func(context.Context, db.AgentWorkflowRunListFilter) ([]db.AgentWorkflowRun, error)
+	statusCounts func(context.Context, db.AgentWorkflowRunCountFilter) (map[db.AgentWorkflowRunStatus]int64, error)
+	snapshots    func(context.Context, snapshot.WorkflowRunID) ([]db.AgentWorkflowRunSnapshotBinding, error)
 }
 
 func (fake *fakeRunStore) Get(ctx context.Context, teamID int, id snapshot.WorkflowRunID) (db.AgentWorkflowRun, bool, error) {
@@ -46,6 +48,10 @@ func (fake *fakeRunStore) Get(ctx context.Context, teamID int, id snapshot.Workf
 
 func (fake *fakeRunStore) List(ctx context.Context, filter db.AgentWorkflowRunListFilter) ([]db.AgentWorkflowRun, error) {
 	return fake.list(ctx, filter)
+}
+
+func (fake *fakeRunStore) CountByStatus(ctx context.Context, filter db.AgentWorkflowRunCountFilter) (map[db.AgentWorkflowRunStatus]int64, error) {
+	return fake.statusCounts(ctx, filter)
 }
 
 func (fake *fakeRunStore) Snapshots(ctx context.Context, id snapshot.WorkflowRunID) ([]db.AgentWorkflowRunSnapshotBinding, error) {
@@ -98,6 +104,9 @@ func defaultDeps() handlerDeps {
 		list: func(_ context.Context, filter db.AgentWorkflowRunListFilter) ([]db.AgentWorkflowRun, error) {
 			return []db.AgentWorkflowRun{runFixture(exactLargeRunID, filter.WorkflowName, db.AgentWorkflowRunStatusFailed)}, nil
 		},
+		statusCounts: func(context.Context, db.AgentWorkflowRunCountFilter) (map[db.AgentWorkflowRunStatus]int64, error) {
+			return map[db.AgentWorkflowRunStatus]int64{}, nil
+		},
 		snapshots: func(_ context.Context, id snapshot.WorkflowRunID) ([]db.AgentWorkflowRunSnapshotBinding, error) {
 			return bindingsFor(id), nil
 		},
@@ -110,6 +119,64 @@ func defaultDeps() handlerDeps {
 	}}
 	deps.identity = func(*http.Request) (string, error) { return "alice", nil }
 	return deps
+}
+
+func TestOperationalStatusCountsAreExactTeamScopedAndExcludeExperiments(t *testing.T) {
+	deps := defaultDeps()
+	var got db.AgentWorkflowRunCountFilter
+	deps.runs.statusCounts = func(_ context.Context, filter db.AgentWorkflowRunCountFilter) (map[db.AgentWorkflowRunStatus]int64, error) {
+		got = filter
+		return map[db.AgentWorkflowRunStatus]int64{
+			db.AgentWorkflowRunStatusAdmitting: 1007,
+			db.AgentWorkflowRunStatusRunning:   4,
+			db.AgentWorkflowRunStatusFailed:    2,
+		}, nil
+	}
+	handler := mustHandler(t, deps)
+	recorder := httptest.NewRecorder()
+	handler.OperationalStatusCounts(recorder, request(
+		http.MethodGet,
+		"/api/v1/agent/workflows/deploy/runs/operational-status-counts",
+		"deploy",
+		"",
+		nil,
+		"",
+	))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	wantFilter := db.AgentWorkflowRunCountFilter{
+		TeamID: 1, WorkflowName: "deploy", ExcludeOriginKind: "experiment",
+	}
+	if got != wantFilter {
+		t.Fatalf("filter = %+v, want %+v", got, wantFilter)
+	}
+	want := `{"workflow_name":"deploy","counts":{"aborted":0,"admitting":1007,"canceling":0,"errored":0,"failed":2,"running":4,"succeeded":0}}`
+	if strings.TrimSpace(recorder.Body.String()) != want {
+		t.Fatalf("response = %s, want %s", recorder.Body.String(), want)
+	}
+}
+
+func TestOperationalStatusCountsFailClosedOnStoreError(t *testing.T) {
+	deps := defaultDeps()
+	deps.runs.statusCounts = func(context.Context, db.AgentWorkflowRunCountFilter) (map[db.AgentWorkflowRunStatus]int64, error) {
+		return nil, errors.New("postgres secret-password")
+	}
+	recorder := httptest.NewRecorder()
+	mustHandler(t, deps).OperationalStatusCounts(recorder, request(
+		http.MethodGet,
+		"/api/v1/agent/workflows/deploy/runs/operational-status-counts",
+		"deploy",
+		"",
+		nil,
+		"",
+	))
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", recorder.Code)
+	}
+	if strings.Contains(recorder.Body.String(), "postgres") || strings.Contains(recorder.Body.String(), "secret-password") {
+		t.Fatalf("dependency error leaked: %s", recorder.Body.String())
+	}
 }
 
 func mustHandler(t *testing.T, deps handlerDeps) *workflowruns.Handler {
@@ -449,13 +516,100 @@ func TestListUsesStrictCombinedFiltersAndReturnsAnEmptyArray(t *testing.T) {
 	}
 	want := db.AgentWorkflowRunListFilter{
 		TeamID: 1, WorkflowName: "deploy", Status: db.AgentWorkflowRunStatusFailed,
-		OriginKind: "ticket", OriginReference: "T-7", Limit: 25,
+		OriginKind: "ticket", OriginReference: "T-7", Limit: 26,
 	}
 	if gotFilter != want {
 		t.Fatalf("filter = %+v, want %+v", gotFilter, want)
 	}
 	if strings.TrimSpace(recorder.Body.String()) != "[]" {
 		t.Fatalf("empty list = %q, want []", recorder.Body.String())
+	}
+}
+
+func TestListUsesAnOpaqueExclusiveCursorAndPreservesFiltersInTheNextLink(t *testing.T) {
+	deps := defaultDeps()
+	createdAt := time.Date(2026, time.July, 22, 12, 0, 0, 123456000, time.UTC)
+	runs := []db.AgentWorkflowRun{
+		runFixture(30, "deploy", db.AgentWorkflowRunStatusFailed),
+		runFixture(29, "deploy", db.AgentWorkflowRunStatusFailed),
+		runFixture(28, "deploy", db.AgentWorkflowRunStatusFailed),
+	}
+	for index := range runs {
+		runs[index].CreatedAt = createdAt
+	}
+	var calls []db.AgentWorkflowRunListFilter
+	deps.runs.list = func(_ context.Context, filter db.AgentWorkflowRunListFilter) ([]db.AgentWorkflowRun, error) {
+		calls = append(calls, filter)
+		if filter.Before == nil {
+			return runs, nil
+		}
+		return runs[2:], nil
+	}
+	handler := mustHandler(t, deps)
+	query := url.Values{
+		"status": {"failed"}, "origin_kind": {"ticket"},
+		"origin_reference": {"T-7 & more"}, "limit": {"2"},
+	}
+	recorder := httptest.NewRecorder()
+	handler.List(recorder, request(http.MethodGet, "/api/v1/agent/workflows/deploy/runs", "deploy", "", query, ""))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("first page status/body = %d/%s", recorder.Code, recorder.Body.String())
+	}
+	var first []workflowruns.RunSummary
+	if err := json.Unmarshal(recorder.Body.Bytes(), &first); err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 2 || first[0].WorkflowRunID != 30 || first[1].WorkflowRunID != 29 {
+		t.Fatalf("first page IDs = %+v, want [30 29]", first)
+	}
+	next := recorder.Header().Get("X-Next-Cursor")
+	decoded, err := pagination.Decode(next)
+	if err != nil {
+		t.Fatalf("decode next cursor %q: %v", next, err)
+	}
+	if !decoded.CreatedAt.Equal(createdAt) || decoded.ID != 29 {
+		t.Fatalf("next cursor = %#v, want (%s,29)", decoded, createdAt)
+	}
+	link := recorder.Header().Get("Link")
+	if !strings.Contains(link, `rel="next"`) {
+		t.Fatalf("next Link = %q", link)
+	}
+	start := strings.IndexByte(link, '<')
+	end := strings.IndexByte(link, '>')
+	if start != 0 || end < 0 {
+		t.Fatalf("malformed next Link = %q", link)
+	}
+	nextURL, err := url.Parse(link[start+1 : end])
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantQuery := query
+	wantQuery.Set("cursor", next)
+	if nextURL.EscapedPath() != "/api/v1/agent/workflows/deploy/runs" ||
+		nextURL.Query().Encode() != wantQuery.Encode() {
+		t.Fatalf("next URL = %q, want path and filters %q", nextURL.String(), wantQuery.Encode())
+	}
+
+	secondQuery := nextURL.Query()
+	recorder = httptest.NewRecorder()
+	handler.List(recorder, request(http.MethodGet, "/api/v1/agent/workflows/deploy/runs", "deploy", "", secondQuery, ""))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("second page status/body = %d/%s", recorder.Code, recorder.Body.String())
+	}
+	var second []workflowruns.RunSummary
+	if err := json.Unmarshal(recorder.Body.Bytes(), &second); err != nil {
+		t.Fatal(err)
+	}
+	if len(second) != 1 || second[0].WorkflowRunID != 28 {
+		t.Fatalf("second page IDs = %+v, want [28]", second)
+	}
+	if recorder.Header().Get("X-Next-Cursor") != "" || recorder.Header().Get("Link") != "" {
+		t.Fatalf("terminal page exposed next headers: %#v", recorder.Header())
+	}
+	if len(calls) != 2 || calls[0].Limit != 3 || calls[0].Before != nil ||
+		calls[1].Limit != 3 || calls[1].Before == nil ||
+		!calls[1].Before.CreatedAt.Equal(createdAt) || calls[1].Before.ID != 29 {
+		t.Fatalf("list calls = %#v", calls)
 	}
 }
 
@@ -491,6 +645,9 @@ func TestListRejectsUnsupportedOrMalformedFilters(t *testing.T) {
 
 func TestGetPresentsSafeDistinctIDsSortedBindingsAndNoPrivateState(t *testing.T) {
 	deps := defaultDeps()
+	deps.runs.get = func(_ context.Context, _ int, id snapshot.WorkflowRunID) (db.AgentWorkflowRun, bool, error) {
+		return runFixture(id, "deploy", db.AgentWorkflowRunStatusSucceeded), true, nil
+	}
 	manifestTeamIDs := []int{}
 	deps.manifests.get = func(_ context.Context, teamID int, id snapshot.SnapshotID) (snapshot.Snapshot, bool, error) {
 		manifestTeamIDs = append(manifestTeamIDs, teamID)
@@ -590,7 +747,7 @@ func TestGetReturnsEmptyArraysAndHidesMissingOrCrossScopedRuns(t *testing.T) {
 	}
 }
 
-func TestOutputsRetainsSortedPartialManifestsForFailedRuns(t *testing.T) {
+func TestOutputsHidesUnpromotedPartialManifestsForFailedRuns(t *testing.T) {
 	deps := defaultDeps()
 	handler := mustHandler(t, deps)
 	recorder := httptest.NewRecorder()
@@ -602,9 +759,7 @@ func TestOutputsRetainsSortedPartialManifestsForFailedRuns(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if response.WorkflowRunID != exactLargeRunID || len(response.Outputs) != 2 ||
-		response.Outputs[0].Port != "artifact" || response.Outputs[1].Port != "report" ||
-		response.Outputs[1].Snapshot.ContentState != snapshot.ContentStateExpired {
+	if response.WorkflowRunID != exactLargeRunID || len(response.Outputs) != 0 {
 		t.Fatalf("output manifests = %+v", response)
 	}
 }

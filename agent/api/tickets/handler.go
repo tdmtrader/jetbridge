@@ -123,16 +123,17 @@ func (h *Handler) CreateTicket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	t := &Ticket{
-		Title:           req.Title,
-		Body:            req.Body,
-		Origin:          origin,
-		Repo:            req.Repo,
-		TargetBranch:    req.TargetBranch,
-		WorkflowName:    req.WorkflowName,
-		WorkflowVersion: req.WorkflowVersion,
-		BudgetUSD:       req.BudgetUSD,
-		CreatedBy:       name,
-		ExternalRef:     req.ExternalRef,
+		Title:                req.Title,
+		Body:                 req.Body,
+		Origin:               origin,
+		Repo:                 req.Repo,
+		TargetBranch:         req.TargetBranch,
+		WorkflowName:         req.WorkflowName,
+		WorkflowVersion:      req.WorkflowVersion,
+		BudgetUSD:            req.BudgetUSD,
+		RepositorySnapshotID: req.RepositorySnapshotID,
+		CreatedBy:            name,
+		ExternalRef:          req.ExternalRef,
 	}
 	if !isPrincipal {
 		// triggering user: credential attachment + cost attribution
@@ -225,7 +226,8 @@ func (h *Handler) UpdateTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Title == nil && req.Body == nil && req.BudgetUSD == nil &&
-		req.WorkflowName == nil && req.WorkflowVersion == nil && req.TargetBranch == nil {
+		req.WorkflowName == nil && req.WorkflowVersion == nil && req.TargetBranch == nil &&
+		req.RepositorySnapshotID == nil {
 		http.Error(w, "no fields to update", http.StatusBadRequest)
 		return
 	}
@@ -236,10 +238,14 @@ func (h *Handler) UpdateTicket(w http.ResponseWriter, r *http.Request) {
 	err := h.store.Update(id, Update{
 		Title: req.Title, Body: req.Body, BudgetUSD: req.BudgetUSD,
 		WorkflowName: req.WorkflowName, WorkflowVersion: req.WorkflowVersion,
-		TargetBranch: req.TargetBranch,
+		TargetBranch: req.TargetBranch, RepositorySnapshotID: req.RepositorySnapshotID,
 	})
 	if errors.Is(err, ErrTicketNotFound) {
 		http.Error(w, "ticket not found", http.StatusNotFound)
+		return
+	}
+	if errors.Is(err, ErrDispatchConflict) {
+		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
 	if err != nil {

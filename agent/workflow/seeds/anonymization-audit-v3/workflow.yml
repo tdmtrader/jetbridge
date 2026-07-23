@@ -1,0 +1,34 @@
+schema_version: 3
+name: anonymization-audit
+signature_version: 1
+description: Audit one immutable database sample against one immutable repository state.
+inputs:
+  - name: repository
+    type: repository/v1
+    description: Repository state containing the current anonymization policy and implementation.
+  - name: database
+    type: database-snapshot/v1
+    description: Captured, access-controlled database schema and sample evidence.
+outputs:
+  - name: findings
+    type: audit-findings/v1
+    from: findings
+    description: Structured fields that are missing or weakly covered by anonymization.
+  - name: change
+    type: repository-change/v1
+    from: change
+    optional: true
+    description: Optional policy or implementation change relative to repository.
+plan:
+  - agent: audit
+    budget_slice_usd: 5
+    function_id: audit-anonymization
+    prompt_file: prompts/audit.md
+    inputs: [repository, database]
+    outputs: [findings, change]
+    input_types:
+      repository: {type: repository/v1}
+      database: {type: database-snapshot/v1}
+    output_types:
+      findings: audit-findings/v1
+      change: {type: repository-change/v1, optional: true}

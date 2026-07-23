@@ -1,8 +1,53 @@
-{{- if and .Values.artifactDaemon.enabled (.Values.artifactDaemon.networkPolicy.enabled | default false) }}
+{{- if and .Values.artifactDaemon.enabled (or .Values.networkPolicy.enabled (.Values.artifactDaemon.networkPolicy.enabled | default false)) }}
+{{- if .Values.artifactDaemon.networkPolicy.enabled }}
+{{- range $destinationName := list "dnsEgressTo" "kubernetesAPIEgressTo" }}
+{{- $destinations := index $.Values.artifactDaemon.networkPolicy $destinationName | default (list) }}
+{{- range $index, $destination := $destinations }}
+{{- $valid := false }}
+{{- $invalid := false }}
+{{- if kindIs "map" $destination }}
+  {{- if hasKey $destination "ipBlock" }}
+    {{- $ipBlock := index $destination "ipBlock" }}
+    {{- if and (kindIs "map" $ipBlock) (hasKey $ipBlock "cidr") }}
+      {{- $cidr := index $ipBlock "cidr" | toString }}
+      {{- if and $cidr (not (regexMatch "/0+$" $cidr)) }}
+        {{- $valid = true }}
+      {{- else }}
+        {{- $invalid = true }}
+      {{- end }}
+    {{- else }}
+      {{- $invalid = true }}
+    {{- end }}
+  {{- end }}
+  {{- range $selectorName := list "podSelector" "namespaceSelector" }}
+    {{- if hasKey $destination $selectorName }}
+      {{- $selector := index $destination $selectorName }}
+      {{- $selectorValid := false }}
+      {{- if kindIs "map" $selector }}
+        {{- $matchLabels := index $selector "matchLabels" | default (dict) }}
+        {{- $matchExpressions := index $selector "matchExpressions" | default (list) }}
+        {{- if or (and (kindIs "map" $matchLabels) (gt (len $matchLabels) 0)) (and (kindIs "slice" $matchExpressions) (gt (len $matchExpressions) 0)) }}
+          {{- $selectorValid = true }}
+          {{- $valid = true }}
+        {{- end }}
+      {{- end }}
+      {{- if not $selectorValid }}
+        {{- $invalid = true }}
+      {{- end }}
+    {{- end }}
+  {{- end }}
+{{- end }}
+{{- if or $invalid (not $valid) }}
+  {{- fail (printf "artifactDaemon.networkPolicy.%s[%d] must contain a destination-specific ipBlock, podSelector, or namespaceSelector (0.0.0.0/0, ::/0, and empty selectors are rejected)" $destinationName $index) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: {{ include "concourse.fullname" . }}-artifact-daemon
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "concourse.labels" . | nindent 4 }}
     app.kubernetes.io/component: artifact-daemon
@@ -13,26 +58,32 @@ spec:
       app.kubernetes.io/component: artifact-daemon
   policyTypes:
     - Ingress
+    {{- if .Values.artifactDaemon.networkPolicy.enabled }}
     - Egress
+    {{- end }}
   ingress:
-    # Allow traffic from Concourse web pods
+    # Web pods register caches, stream artifacts, and manage snapshots.
     - from:
         - podSelector:
             matchLabels:
-              app.kubernetes.io/name: {{ include "concourse.name" . }}
-              app.kubernetes.io/component: web
+              {{- include "concourse.selectorLabels" . | nindent 14 }}
       ports:
         - protocol: TCP
           port: {{ .Values.artifactDaemon.port | default 7780 }}
-    # Allow traffic from Concourse task/check pods (labeled by the K8s runtime)
+    # Every runtime pod has concourse.ci/worker. This includes one-off and
+    # hermetic executions that do not carry pipeline metadata.
     - from:
-        - podSelector:
+        - namespaceSelector:
             matchLabels:
-              app.kubernetes.io/name: {{ include "concourse.name" . }}
+              kubernetes.io/metadata.name: {{ include "concourse.kubernetesNamespace" . }}
+          podSelector:
+            matchExpressions:
+              - key: concourse.ci/worker
+                operator: Exists
       ports:
         - protocol: TCP
           port: {{ .Values.artifactDaemon.port | default 7780 }}
-    # Allow traffic from peer daemon pods (cross-node resolution)
+    # Peer daemons resolve replicas across nodes.
     - from:
         - podSelector:
             matchLabels:
@@ -41,14 +92,19 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .Values.artifactDaemon.port | default 7780 }}
+  {{- if .Values.artifactDaemon.networkPolicy.enabled }}
   egress:
-    # DNS resolution
-    - ports:
+    {{- with .Values.artifactDaemon.networkPolicy.dnsEgressTo }}
+    # DNS resolution through operator-selected resolvers only.
+    - to:
+        {{- toYaml . | nindent 8 }}
+      ports:
         - protocol: UDP
           port: 53
         - protocol: TCP
           port: 53
-    # Peer daemon communication (cross-node artifact fetching)
+    {{- end }}
+    # Peer daemon communication.
     - to:
         - podSelector:
             matchLabels:
@@ -57,8 +113,22 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .Values.artifactDaemon.port | default 7780 }}
-    # Kubernetes API server (for EndpointSlice discovery and node labeling)
-    - ports:
+    {{- with .Values.artifactDaemon.networkPolicy.kubernetesAPIEgressTo }}
+    # Kubernetes API server through operator-selected destinations only.
+    - to:
+        {{- toYaml . | nindent 8 }}
+      ports:
         - protocol: TCP
           port: 443
+    {{- end }}
+    {{- if .Values.artifactDaemon.preemption.enabled }}
+    # GCP metadata endpoint used only by the opt-in spot-preemption watcher.
+    - to:
+        - ipBlock:
+            cidr: 169.254.169.254/32
+      ports:
+        - protocol: TCP
+          port: 80
+    {{- end }}
+  {{- end }}
 {{- end }}

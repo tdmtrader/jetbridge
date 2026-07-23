@@ -1,6 +1,7 @@
 package outcomes_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -9,6 +10,8 @@ import (
 
 	"github.com/concourse/concourse/agent/api/outcomes"
 	"github.com/concourse/concourse/agent/gitcheck"
+	"github.com/concourse/concourse/agent/projection"
+	"github.com/concourse/concourse/agent/snapshot"
 )
 
 // stubProvider returns a canned DiffPage, recording the args it was asked for.
@@ -25,6 +28,79 @@ type stubProvider struct {
 func (s *stubProvider) Diff(repo, base, pushed string, offset, limit int) (gitcheck.DiffPage, error) {
 	s.gotRepo, s.gotBase, s.gotPushed, s.gotOffset, s.gotLimit = repo, base, pushed, offset, limit
 	return s.page, s.err
+}
+
+type stubTicketProjectionResolver struct {
+	resolution outcomes.TicketRepositoryChangeResolution
+	err        error
+	ticketID   int
+}
+
+func (resolver *stubTicketProjectionResolver) ResolveTicketRepositoryChange(_ context.Context, ticketID int) (outcomes.TicketRepositoryChangeResolution, error) {
+	resolver.ticketID = ticketID
+	return resolver.resolution, resolver.err
+}
+
+func TestDiffHandlerPrefersDurableRepositoryChangeWithoutLiveMirror(t *testing.T) {
+	resolver := &stubTicketProjectionResolver{resolution: outcomes.TicketRepositoryChangeResolution{
+		Found: true,
+		Change: projection.RepositoryChange{
+			SnapshotID: snapshot.SnapshotID(71), Status: projection.RepositoryChangeProjectionReady,
+			Files: []gitcheck.ChangedFile{
+				{Path: "a.go", Patch: "diff-a"}, {Path: "b.go", Patch: "diff-b", Truncated: true},
+			},
+			FileCount: 2,
+		},
+	}}
+	handler := outcomes.NewDiffHandlerWithProjection(outcomes.NewMemoryStore(), nil, resolver)
+	request := httptest.NewRequest(http.MethodGet, "/x?offset=1&limit=1", nil)
+	request.Form = map[string][]string{":ticket_id": {"17"}}
+	recorder := httptest.NewRecorder()
+	handler.GetDiff(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("code = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var page gitcheck.DiffPage
+	if err := json.Unmarshal(recorder.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	if resolver.ticketID != 17 || page.Offset != 1 || page.Limit != 1 || page.TotalFiles != 2 || page.HasMore ||
+		len(page.Files) != 1 || page.Files[0].Path != "b.go" || !page.Files[0].Truncated {
+		t.Fatalf("page = %#v resolver ticket=%d", page, resolver.ticketID)
+	}
+}
+
+func TestDiffHandlerNeverFallsBackForProjectionNativeAttempt(t *testing.T) {
+	store := outcomes.NewMemoryStore()
+	_ = store.Ensure(&outcomes.Outcome{TicketID: 18, Repo: "r", BaseSha: "base", PushedSha: "head"})
+	provider := &stubProvider{page: gitcheck.DiffPage{TotalFiles: 99}}
+	resolver := &stubTicketProjectionResolver{resolution: outcomes.TicketRepositoryChangeResolution{Legacy: false}}
+	handler := outcomes.NewDiffHandlerWithProjection(store, provider, resolver)
+	request := httptest.NewRequest(http.MethodGet, "/x", nil)
+	request.Form = map[string][]string{":ticket_id": {"18"}}
+	recorder := httptest.NewRecorder()
+	handler.GetDiff(recorder, request)
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("code = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if provider.gotRepo != "" {
+		t.Fatalf("projection-native attempt reached live mirror: %#v", provider)
+	}
+}
+
+func TestDiffHandlerFallsBackToLiveMirrorOnlyWhenResolverMarksLegacy(t *testing.T) {
+	store := outcomes.NewMemoryStore()
+	_ = store.Ensure(&outcomes.Outcome{TicketID: 19, Repo: "legacy", BaseSha: "base", PushedSha: "head"})
+	provider := &stubProvider{page: gitcheck.DiffPage{TotalFiles: 1}}
+	resolver := &stubTicketProjectionResolver{resolution: outcomes.TicketRepositoryChangeResolution{Legacy: true}}
+	handler := outcomes.NewDiffHandlerWithProjection(store, provider, resolver)
+	request := httptest.NewRequest(http.MethodGet, "/x", nil)
+	request.Form = map[string][]string{":ticket_id": {"19"}}
+	recorder := httptest.NewRecorder()
+	handler.GetDiff(recorder, request)
+	if recorder.Code != http.StatusOK || provider.gotRepo != "legacy" {
+		t.Fatalf("code=%d provider=%#v body=%s", recorder.Code, provider, recorder.Body.String())
+	}
 }
 
 func TestDiffHandlerServesWindow(t *testing.T) {

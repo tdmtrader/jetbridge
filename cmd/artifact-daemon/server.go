@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"net/http"
 	"os"
@@ -379,19 +380,24 @@ func snapshotDigestForRequest(r *http.Request) (string, bool, error) {
 	if !snapshotNamespaceKey(key) {
 		return "", false, nil
 	}
+	digest, err := snapshotDigestFromKey(key)
+	return digest, true, err
+}
+
+func snapshotDigestFromKey(key string) (string, error) {
 	if !strings.HasPrefix(key, snapshotKeyPrefix) {
-		return "", true, fmt.Errorf("invalid snapshot namespace path")
+		return "", fmt.Errorf("invalid snapshot namespace path")
 	}
 	name := strings.TrimPrefix(key, snapshotKeyPrefix)
 	if len(name) != 68 || !strings.HasSuffix(name, ".tar") {
-		return "", true, fmt.Errorf("invalid snapshot key")
+		return "", fmt.Errorf("invalid snapshot key")
 	}
 	digest := strings.TrimSuffix(name, ".tar")
 	decoded, err := hex.DecodeString(digest)
 	if err != nil || len(decoded) != sha256.Size || hex.EncodeToString(decoded) != digest {
-		return "", true, fmt.Errorf("invalid snapshot digest")
+		return "", fmt.Errorf("invalid snapshot digest")
 	}
-	return digest, true, nil
+	return digest, nil
 }
 
 func snapshotKey(digest string) string {
@@ -1491,6 +1497,212 @@ func resolveFailure(method string, err error) resolveResponse {
 	return resolveResponse{Status: status, Method: method, Error: err.Error()}
 }
 
+func (s *Server) validateSnapshotResolveBoundary(key, dest string) (string, error) {
+	digest, err := snapshotDigestFromKey(key)
+	if err != nil {
+		return "", fmt.Errorf("invalid snapshot source key: %w", err)
+	}
+	if _, err := s.validateStepPath(dest, false); err != nil {
+		return "", fmt.Errorf("invalid destination: %w", err)
+	}
+	return digest, nil
+}
+
+// resolveSnapshotOne materializes one immutable canonical snapshot archive
+// into an ordinary step input. The signed source is the digest namespace key,
+// never the mutable semantic snapshot ID. Bytes are hash-verified before the
+// prepared destination tree becomes visible to the kubelet bind mount.
+func (s *Server) resolveSnapshotOne(ctx context.Context, key, digest, dest, acknowledgement string) (resp resolveResponse) {
+	start := time.Now()
+	defer func() {
+		s.metrics.recordResolve(resp.Method, resp.Status, time.Since(start))
+	}()
+	logger := s.logger.Session("resolve-snapshot", lager.Data{"key": key, "dest": dest})
+	validatedDigest, err := s.validateSnapshotResolveBoundary(key, dest)
+	if err != nil || validatedDigest != digest {
+		if err == nil {
+			err = fmt.Errorf("snapshot digest classification changed")
+		}
+		return resolveFailure("snapshot-validation", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return resolveFailure("snapshot-admission", err)
+	}
+	select {
+	case s.resolveSlots <- struct{}{}:
+		defer func() { <-s.resolveSlots }()
+	default:
+		return resolveResponse{Status: "busy", Method: "snapshot-admission", Error: "artifact resolver is at its daemon-wide concurrency limit"}
+	}
+	resolveCtx, cancel := context.WithTimeout(ctx, s.resolveTimeout)
+	defer cancel()
+
+	foundLocal, localErr := s.materializeLocalSnapshot(resolveCtx, digest, dest, acknowledgement)
+	if foundLocal && localErr == nil {
+		duration := time.Since(start)
+		return resolveResponse{Status: "ok", Method: "snapshot-local", Duration: duration.String(), Acknowledgement: acknowledgement}
+	}
+	if localErr != nil {
+		logger.Error("local-snapshot-invalid", localErr)
+	}
+
+	if s.peers != nil {
+		var peerErrors []error
+		for _, peerIP := range s.peers.SnapshotPeers(resolveCtx, digest) {
+			err := s.peers.FetchSnapshot(resolveCtx, peerIP, digest, func(reader io.Reader) error {
+				return s.materializeSnapshotReader(resolveCtx, reader, digest, dest, acknowledgement)
+			})
+			if err == nil {
+				duration := time.Since(start)
+				return resolveResponse{Status: "ok", Method: "snapshot-peer", Duration: duration.String(), Acknowledgement: acknowledgement}
+			}
+			logger.Error("peer-snapshot-fetch-failed", err, lager.Data{"peer": peerIP})
+			peerErrors = append(peerErrors, fmt.Errorf("peer %s: %w", peerIP, err))
+		}
+		if len(peerErrors) > 0 {
+			err := errors.Join(peerErrors...)
+			if localErr != nil {
+				err = errors.Join(localErr, err)
+			}
+			return resolveFailure("snapshot-peer", err)
+		}
+		if err := resolveCtx.Err(); err != nil {
+			return resolveFailure("snapshot-peer", err)
+		}
+	}
+	if localErr != nil {
+		return resolveFailure("snapshot-local", localErr)
+	}
+	return resolveResponse{
+		Status: "not_found", Method: "snapshot-exhausted",
+		Duration: time.Since(start).String(), Error: fmt.Sprintf("snapshot %q not found on this node or any peer", digest),
+	}
+}
+
+func (s *Server) materializeLocalSnapshot(ctx context.Context, digest, dest, acknowledgement string) (bool, error) {
+	key := snapshotKey(digest)
+	release := s.guard.BeginRead(key)
+	defer release()
+	root, err := os.OpenRoot(s.storagePath)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	defer root.Close()
+	info, err := root.Lstat(key)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !info.Mode().IsRegular() {
+		return true, fmt.Errorf("snapshot content is not a regular file")
+	}
+	file, err := root.Open(key)
+	if err != nil {
+		return true, err
+	}
+	defer file.Close()
+	return true, s.materializeSnapshotReader(ctx, file, digest, dest, acknowledgement)
+}
+
+func (s *Server) materializeSnapshotReader(ctx context.Context, source io.Reader, digest, dest, acknowledgement string) error {
+	stepsRoot := filepath.Join(s.storagePath, "steps")
+	destRel, err := pathBelow(stepsRoot, dest)
+	if err != nil {
+		return fmt.Errorf("derive snapshot destination: %w", err)
+	}
+	storageHandle, err := openDirectoryNoFollow(s.storagePath)
+	if err != nil {
+		return fmt.Errorf("anchor snapshot storage root: %w", err)
+	}
+	defer storageHandle.Close()
+	if err := unix.Mkdirat(int(storageHandle.Fd()), "steps", 0755); err != nil && !errors.Is(err, unix.EEXIST) {
+		return fmt.Errorf("create snapshot steps root: %w", err)
+	}
+	stepsHandle, err := openDirAtNoFollow(storageHandle, "steps", false)
+	if err != nil {
+		return fmt.Errorf("anchor snapshot steps root: %w", err)
+	}
+	defer stepsHandle.Close()
+	destParentRel := filepath.Dir(destRel)
+	destParent, err := openDirAtNoFollow(stepsHandle, destParentRel, true)
+	if err != nil {
+		return fmt.Errorf("create snapshot destination parent: %w", err)
+	}
+	defer destParent.Close()
+	release, err := s.guard.BeginSweepContext(ctx, s.stepHandle(dest))
+	if err != nil {
+		return err
+	}
+	defer release()
+	unchanged, err := sameOpenDirectoryAt(stepsHandle, destParentRel, destParent)
+	if err != nil || !unchanged {
+		return fmt.Errorf("snapshot destination parent changed before extraction: %w", err)
+	}
+	receiptName, err := resolveReceiptMaterial(acknowledgement)
+	if err != nil {
+		return err
+	}
+	verifier := newSnapshotResolveVerifier(ctx, source, digest, s.snapshotMaxBytes)
+	if err := extractTarIntoOpenedDirectoryWithReceiptAndVerify(
+		ctx,
+		verifier,
+		destParent,
+		filepath.Base(destRel),
+		receiptName,
+		[]byte(acknowledgement),
+		verifier.Verify,
+	); err != nil {
+		return fmt.Errorf("extract verified snapshot: %w", err)
+	}
+	return nil
+}
+
+type snapshotResolveVerifier struct {
+	ctx      context.Context
+	reader   *io.LimitedReader
+	hash     hash.Hash
+	expected string
+	maxBytes int64
+	read     int64
+}
+
+func newSnapshotResolveVerifier(ctx context.Context, source io.Reader, expected string, maxBytes int64) *snapshotResolveVerifier {
+	return &snapshotResolveVerifier{
+		ctx: ctx, reader: &io.LimitedReader{R: source, N: maxBytes + 1}, hash: sha256.New(), expected: expected, maxBytes: maxBytes,
+	}
+}
+
+func (reader *snapshotResolveVerifier) Read(buffer []byte) (int, error) {
+	if err := reader.ctx.Err(); err != nil {
+		return 0, err
+	}
+	count, err := reader.reader.Read(buffer)
+	if count > 0 {
+		reader.read += int64(count)
+		_, _ = reader.hash.Write(buffer[:count])
+	}
+	return count, err
+}
+
+func (reader *snapshotResolveVerifier) Verify() error {
+	if _, err := io.Copy(io.Discard, reader); err != nil {
+		return err
+	}
+	if reader.read > reader.maxBytes {
+		return fmt.Errorf("snapshot exceeds maximum size")
+	}
+	actual := hex.EncodeToString(reader.hash.Sum(nil))
+	if actual != reader.expected {
+		return fmt.Errorf("snapshot digest mismatch: got %s, want %s", actual, reader.expected)
+	}
+	return nil
+}
+
 func (s *Server) fetchPeerArtifact(ctx context.Context, peerIP, key, dest, acknowledgement string) error {
 	stepsRoot := filepath.Join(s.storagePath, "steps")
 	destRel, err := pathBelow(stepsRoot, dest)
@@ -1619,14 +1831,24 @@ func (s *Server) handleResolveBatch(w http.ResponseWriter, r *http.Request, cfg 
 	}
 	destinations := make([]string, 0, len(req.Items))
 	operations := make(map[string]struct{}, len(req.Items))
-	for _, item := range req.Items {
+	snapshotDigests := make([]string, len(req.Items))
+	for index, item := range req.Items {
 		if item.Key == "" || item.Dest == "" {
 			http.Error(w, "every item requires key and dest", http.StatusBadRequest)
 			return
 		}
-		if err := s.validateResolveBoundary(item.Key, item.Dest); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
+		if snapshotNamespaceKey(item.Key) {
+			digest, err := s.validateSnapshotResolveBoundary(item.Key, item.Dest)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			snapshotDigests[index] = digest
+		} else {
+			if err := s.validateResolveBoundary(item.Key, item.Dest); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
 		}
 		operation := item.Key + "\x00" + item.Dest
 		if _, exists := operations[operation]; exists {
@@ -1662,7 +1884,13 @@ func (s *Server) handleResolveBatch(w http.ResponseWriter, r *http.Request, cfg 
 			defer wg.Done()
 			for idx := range jobs {
 				item := req.Items[idx]
-				results[idx] = s.resolveOne(r.Context(), item.Key, item.Dest, acknowledgements[idx])
+				if snapshotDigests[idx] != "" {
+					results[idx] = s.resolveSnapshotOne(
+						r.Context(), item.Key, snapshotDigests[idx], item.Dest, acknowledgements[idx],
+					)
+				} else {
+					results[idx] = s.resolveOne(r.Context(), item.Key, item.Dest, acknowledgements[idx])
+				}
 			}
 		}()
 	}
@@ -1776,7 +2004,11 @@ func (s *Server) copyArtifactContextWithReceipt(ctx context.Context, src, dest, 
 		return err
 	}
 	if receiptName != "" {
-		if err := writeExclusiveFileAt(tmpHandle, receiptName, []byte(acknowledgement), 0600); err != nil {
+		// The expected acknowledgement is already embedded in the init script;
+		// the receipt authenticates the node-local write but is not a secret.
+		// Read-only world access lets a non-root helper consume it without
+		// granting that helper ownership of the hostPath tree.
+		if err := writeExclusiveFileAt(tmpHandle, receiptName, []byte(acknowledgement), 0444); err != nil {
 			return fmt.Errorf("write resolve receipt: %w", err)
 		}
 	}

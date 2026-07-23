@@ -163,6 +163,7 @@ type Build interface {
 	RerunOfName() string
 	RerunNumber() int
 	CreatedBy() *string
+	AgentWorkflowRunAssociation() (AgentWorkflowRunBuildAssociation, bool, error)
 
 	LagerData() lager.Data
 	TracingAttrs() tracing.Attrs
@@ -391,6 +392,56 @@ func (b *build) RerunOf() int                     { return b.rerunOf }
 func (b *build) RerunOfName() string              { return b.rerunOfName }
 func (b *build) RerunNumber() int                 { return b.rerunNumber }
 func (b *build) CreatedBy() *string               { return b.createdBy }
+
+func (b *build) AgentWorkflowRunAssociation() (AgentWorkflowRunBuildAssociation, bool, error) {
+	tx, err := b.conn.BeginTx(context.Background(), nil)
+	if err != nil {
+		return AgentWorkflowRunBuildAssociation{}, false, err
+	}
+	defer Rollback(tx)
+
+	association, found, err := lockAgentWorkflowRunForBuild(context.Background(), tx, int64(b.id))
+	if err != nil {
+		return AgentWorkflowRunBuildAssociation{}, false, err
+	}
+	if !found {
+		return AgentWorkflowRunBuildAssociation{}, false, nil
+	}
+	if association.plannedBuildID == nil || *association.plannedBuildID != int64(b.id) {
+		// A manually started or rerun build in a workflow-owned pipeline is not
+		// the server-selected workflow execution and receives no association.
+		return AgentWorkflowRunBuildAssociation{}, false, nil
+	}
+	if !association.planCaptured {
+		return AgentWorkflowRunBuildAssociation{}, false, fmt.Errorf(
+			"db: selected workflow-run build has no captured plan provenance",
+		)
+	}
+	if association.buildStatus != BuildStatusStarted {
+		return AgentWorkflowRunBuildAssociation{}, false, fmt.Errorf(
+			"db: selected workflow-run build association requires a started build, got %q",
+			association.buildStatus,
+		)
+	}
+	if association.status != AgentWorkflowRunStatusAdmitting &&
+		association.status != AgentWorkflowRunStatusRunning &&
+		association.status != AgentWorkflowRunStatusCanceling {
+		return AgentWorkflowRunBuildAssociation{}, false, fmt.Errorf(
+			"db: selected workflow-run build association is not active",
+		)
+	}
+	result := AgentWorkflowRunBuildAssociation{
+		WorkflowRunID:        association.runID,
+		WorkflowDefinitionID: association.workflowDefinitionID,
+	}
+	if err := result.Validate(); err != nil {
+		return AgentWorkflowRunBuildAssociation{}, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return AgentWorkflowRunBuildAssociation{}, false, err
+	}
+	return result, true, nil
+}
 
 func (b *build) isNewerThanLastCheckOf(input Resource) bool {
 	return b.createTime.After(input.LastCheckEndTime())

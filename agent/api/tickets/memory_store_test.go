@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/concourse/concourse/agent/api/tickets"
+	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/snapshot/contracts"
 )
 
@@ -15,6 +17,132 @@ func newTicket() *tickets.Ticket {
 		Title: "fix flaky spec", Body: "it flakes", Origin: "web",
 		Repo: "tdmtrader/concourse", TargetBranch: "main",
 		UserName: "tdm", CreatedBy: "tdm",
+	}
+}
+
+func TestMemoryStoreDispatchReservationIsAtomicAndBindingsAreImmutable(t *testing.T) {
+	store := tickets.NewMemoryStore()
+	repositoryID := snapshot.SnapshotID(101)
+	id, err := store.Create(&tickets.Ticket{
+		Title: "fix", Body: "it", Repo: "example/repo", WorkflowName: "small-fix",
+		RepositorySnapshotID: &repositoryID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Transition(id, tickets.StateDraft, tickets.StateQueued, tickets.TransitionMeta{}); err != nil {
+		t.Fatal(err)
+	}
+	before, _, _ := store.Get(id)
+
+	const callers = 16
+	results := make(chan tickets.DispatchReservation, callers)
+	errs := make(chan error, callers)
+	var wait sync.WaitGroup
+	for index := 0; index < callers; index++ {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			reservation, err := store.ReserveDispatch(context.Background(), id, tickets.DispatchReservationRequest{
+				ExpectedRevision: before.Revision, WorkflowVersion: 7, WorkflowDefinitionID: 41,
+			})
+			results <- reservation
+			errs <- err
+		}()
+	}
+	wait.Wait()
+	close(results)
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("ReserveDispatch: %v", err)
+		}
+	}
+	key := ""
+	for result := range results {
+		if result.Key == "" {
+			t.Fatal("reservation key must be durable")
+		}
+		if key == "" {
+			key = result.Key
+		} else if result.Key != key {
+			t.Fatalf("reservation keys diverged: %q != %q", result.Key, key)
+		}
+	}
+
+	workItemID := snapshot.SnapshotID(202)
+	reserved, _, _ := store.Get(id)
+	if err := store.RecordDispatchWorkItem(context.Background(), id, key, reserved.Revision, workItemID); err != nil {
+		t.Fatalf("RecordDispatchWorkItem: %v", err)
+	}
+	if err := store.RecordDispatchWorkItem(context.Background(), id, key, reserved.Revision, workItemID); err != nil {
+		t.Fatalf("idempotent RecordDispatchWorkItem: %v", err)
+	}
+	otherWorkItem := snapshot.SnapshotID(203)
+	if err := store.RecordDispatchWorkItem(context.Background(), id, key, reserved.Revision, otherWorkItem); !errors.Is(err, tickets.ErrDispatchConflict) {
+		t.Fatalf("rebind work item = %v, want ErrDispatchConflict", err)
+	}
+
+	workflowRunID := snapshot.WorkflowRunID(303)
+	if err := store.RecordDispatchRun(context.Background(), id, key, workflowRunID, 909); err != nil {
+		t.Fatalf("RecordDispatchRun: %v", err)
+	}
+	if err := store.RecordDispatchRun(context.Background(), id, key, workflowRunID, 909); err != nil {
+		t.Fatalf("idempotent RecordDispatchRun: %v", err)
+	}
+	otherRunID := snapshot.WorkflowRunID(304)
+	if err := store.RecordDispatchRun(context.Background(), id, key, otherRunID, 910); !errors.Is(err, tickets.ErrDispatchConflict) {
+		t.Fatalf("rebind workflow run = %v, want ErrDispatchConflict", err)
+	}
+
+	got, _, _ := store.Get(id)
+	if got.DispatchReservationKey != key || got.WorkflowVersion == nil || *got.WorkflowVersion != 7 ||
+		got.WorkflowDefinitionID == nil || *got.WorkflowDefinitionID != 41 ||
+		got.RepositorySnapshotID == nil || *got.RepositorySnapshotID != repositoryID ||
+		got.WorkItemSnapshotID == nil || *got.WorkItemSnapshotID != workItemID ||
+		got.WorkflowRunID == nil || *got.WorkflowRunID != workflowRunID ||
+		got.PipelineRunID == nil || *got.PipelineRunID != 909 {
+		t.Fatalf("durable reservation = %+v", got)
+	}
+}
+
+func TestMemoryStoreUnqueueClearsAttemptReservationButRetainsRepositorySelection(t *testing.T) {
+	store := tickets.NewMemoryStore()
+	repositoryID := snapshot.SnapshotID(101)
+	id, err := store.Create(&tickets.Ticket{
+		Title: "fix", Body: "it", Repo: "example/repo", WorkflowName: "small-fix",
+		RepositorySnapshotID: &repositoryID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Transition(id, tickets.StateDraft, tickets.StateQueued, tickets.TransitionMeta{}); err != nil {
+		t.Fatal(err)
+	}
+	queued, _, _ := store.Get(id)
+	reservation, err := store.ReserveDispatch(context.Background(), id, tickets.DispatchReservationRequest{
+		ExpectedRevision: queued.Revision, WorkflowVersion: 7, WorkflowDefinitionID: 41,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	workItemID := snapshot.SnapshotID(202)
+	if err := store.RecordDispatchWorkItem(context.Background(), id, reservation.Key, reservation.Ticket.Revision, workItemID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordDispatchRun(context.Background(), id, reservation.Key, snapshot.WorkflowRunID(303), 909); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.Transition(id, tickets.StateQueued, tickets.StateDraft, tickets.TransitionMeta{}); err != nil {
+		t.Fatal(err)
+	}
+	got, _, _ := store.Get(id)
+	if got.DispatchReservationKey != "" || got.WorkflowRunID != nil || got.WorkItemSnapshotID != nil || got.PipelineRunID != nil {
+		t.Fatalf("unqueue retained attempt linkage: %+v", got)
+	}
+	if got.RepositorySnapshotID == nil || *got.RepositorySnapshotID != repositoryID {
+		t.Fatalf("unqueue lost reusable repository selection: %+v", got)
 	}
 }
 

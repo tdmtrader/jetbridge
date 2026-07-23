@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/concourse/concourse/agent/publisher"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/builds"
@@ -1595,6 +1596,53 @@ var factoryTests = []PlannerTest{
 		}`,
 	},
 	{
+		Title: "await_snapshot step",
+
+		Config: &atc.AwaitSnapshotStep{
+			Name: "answer", Question: "question", Type: snapshot.TypeRef("human-answer/v1"),
+			OnTimeout: atc.AwaitSnapshotOnTimeoutDefault, DefaultSnapshotID: "9007199254740993",
+			WorkflowRunID: "9223372036854775807",
+		},
+
+		PlanJSON: `{
+			"id": "(unique)",
+			"await_snapshot": {
+				"name": "answer",
+				"question": "question",
+				"type": "human-answer/v1",
+				"on_timeout": "default",
+				"default_snapshot_id": "9007199254740993",
+				"workflow_run_id": "9223372036854775807"
+			}
+		}`,
+	},
+	{
+		Title: "publish_snapshot step",
+
+		Config: &atc.PublishSnapshotStep{
+			Name: "publish-change", Publisher: publisher.GitPublisher, Input: "change",
+			InputType: snapshot.TypeRef("repository-change/v1"), Destination: "github.example/team/repo",
+			Mode: publisher.ModePullRequest, Parameters: map[string]string{
+				"source_branch": "agent/change", "target_branch": "main",
+			},
+			ApprovalPolicyVersion: "engineering/v2",
+		},
+
+		PlanJSON: `{
+			"id": "(unique)",
+			"publish_snapshot": {
+				"name": "publish-change",
+				"publisher": "git-publisher/v1",
+				"input": "change",
+				"input_type": "repository-change/v1",
+				"destination": "github.example/team/repo",
+				"mode": "pull-request",
+				"parameters": {"source_branch":"agent/change","target_branch":"main"},
+				"approval_policy_version": "engineering/v2"
+			}
+		}`,
+	},
+	{
 		Title: "load_snapshot step",
 
 		Config: &atc.LoadSnapshotStep{
@@ -2123,8 +2171,9 @@ func (s *PlannerSuite) TestTypedSnapshotDeclarations() {
 	s.Contains(plan.Task.SnapshotOutputs, "change")
 
 	agent := &atc.AgentStep{
-		Name:   "review",
-		Prompt: "review it",
+		Name:     "review",
+		Prompt:   "review it",
+		Hermetic: true,
 		SnapshotInputs: map[string]atc.SnapshotInputConfig{
 			"change": {Type: snapshot.TypeRef("repository-change/v1")},
 		},
@@ -2135,6 +2184,7 @@ func (s *PlannerSuite) TestTypedSnapshotDeclarations() {
 	plan, err = planner.Create(agent, resources, defaultResourceTypes, prototypes, nil, false)
 	s.NoError(err)
 	s.NotNil(plan.Agent)
+	s.True(plan.Agent.Hermetic)
 	s.Equal(agent.SnapshotInputs, plan.Agent.SnapshotInputs)
 	s.Equal(agent.SnapshotOutputs, plan.Agent.SnapshotOutputs)
 	agent.SnapshotOutputs["review"] = atc.SnapshotOutputConfig{Type: snapshot.TypeRef("opaque/v1")}

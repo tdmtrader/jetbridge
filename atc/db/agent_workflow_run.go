@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/concourse/concourse/agent/pagination"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc/db/encryption"
 )
@@ -154,6 +155,38 @@ type AgentWorkflowRunCreateRequest struct {
 	Status                  AgentWorkflowRunStatus
 	RetryOfWorkflowRunID    *snapshot.WorkflowRunID
 	Inputs                  map[string]snapshot.SnapshotRef
+	ExperimentAdmission     *AgentWorkflowRunExperimentAdmission
+}
+
+type AgentWorkflowRunExperimentAdmission struct {
+	ExperimentID int64
+	CellID       int64
+	Phase        string
+}
+
+func (admission AgentWorkflowRunExperimentAdmission) Validate(
+	teamID int,
+	originKind string,
+	originReference string,
+) error {
+	if admission.ExperimentID <= 0 || admission.CellID <= 0 || teamID <= 0 ||
+		originKind != "experiment" {
+		return fmt.Errorf("db: invalid experiment workflow-run admission gate")
+	}
+	expectedReference := fmt.Sprintf(
+		"experiment:%d:cell:%d", admission.ExperimentID, admission.CellID,
+	)
+	switch admission.Phase {
+	case "candidate":
+	case "evaluator":
+		expectedReference += ":evaluator"
+	default:
+		return fmt.Errorf("db: invalid experiment workflow-run admission phase")
+	}
+	if originReference != expectedReference {
+		return fmt.Errorf("db: experiment workflow-run admission origin does not match its gate")
+	}
+	return nil
 }
 
 func (request AgentWorkflowRunCreateRequest) Validate() error {
@@ -183,6 +216,13 @@ func (request AgentWorkflowRunCreateRequest) Validate() error {
 	}
 	if request.RetryOfWorkflowRunID != nil {
 		if err := request.RetryOfWorkflowRunID.Validate(); err != nil {
+			return err
+		}
+	}
+	if request.ExperimentAdmission != nil {
+		if err := request.ExperimentAdmission.Validate(
+			request.TeamID, request.OriginKind, request.OriginReference,
+		); err != nil {
 			return err
 		}
 	}
@@ -247,10 +287,10 @@ type AgentWorkflowRunExpectedProducer struct {
 
 func (producer AgentWorkflowRunExpectedProducer) Validate() error {
 	if strings.TrimSpace(producer.PlanID) == "" ||
-		(producer.StepKind != "task" && producer.StepKind != "agent") ||
+		(producer.StepKind != "task" && producer.StepKind != "agent" && producer.StepKind != "await_snapshot") ||
 		strings.TrimSpace(producer.StepName) == "" ||
 		strings.TrimSpace(producer.LocalOutputPort) == "" {
-		return fmt.Errorf("db: workflow-run expected producer requires a plan ID, task/agent identity, and local output")
+		return fmt.Errorf("db: workflow-run expected producer requires a plan ID, supported step identity, and local output")
 	}
 	return nil
 }
@@ -372,6 +412,25 @@ type AgentWorkflowRunBuildCaptureResult struct {
 	Disposition          AgentWorkflowRunBuildDisposition
 }
 
+// AgentWorkflowRunBuildAssociation is the minimal durable identity copied
+// into execution metadata for a selected workflow-run build. It is sourced
+// only from the server-owned selected-build link and captured plan
+// provenance; pipeline-authored step declarations cannot create it.
+type AgentWorkflowRunBuildAssociation struct {
+	WorkflowRunID        snapshot.WorkflowRunID
+	WorkflowDefinitionID int
+}
+
+func (association AgentWorkflowRunBuildAssociation) Validate() error {
+	if err := association.WorkflowRunID.Validate(); err != nil {
+		return err
+	}
+	if association.WorkflowDefinitionID <= 0 {
+		return fmt.Errorf("db: workflow-run build association requires a positive workflow definition ID")
+	}
+	return nil
+}
+
 type AgentWorkflowRunCancelingError struct {
 	WorkflowRunID snapshot.WorkflowRunID
 }
@@ -400,7 +459,17 @@ type AgentWorkflowRunListFilter struct {
 	Status          AgentWorkflowRunStatus
 	OriginKind      string
 	OriginReference string
+	Before          *pagination.Cursor
 	Limit           int
+}
+
+// AgentWorkflowRunCountFilter selects one team's immutable run population
+// for an exact status aggregation. ExcludeOriginKind is used by the
+// operational dashboard to keep experiment cells out of operational counts.
+type AgentWorkflowRunCountFilter struct {
+	TeamID            int
+	WorkflowName      string
+	ExcludeOriginKind string
 }
 
 const agentWorkflowRunColumns = `

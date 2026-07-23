@@ -1,12 +1,14 @@
 package workflow_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/concourse/concourse/agent/workflow"
+	"github.com/concourse/concourse/agent/workflowrun"
 )
 
 func functionManifest(name string, signatureVersion int, inputs []string, outputType, prompt string) workflow.Manifest {
@@ -89,9 +91,9 @@ func TestMemoryStoreImportIsIdempotentOnHash(t *testing.T) {
 	if again.Version != v1.Version || again.CreatedBy != "alice" {
 		t.Errorf("re-import must return the existing version untouched, got %+v", again)
 	}
-	versions, _ := s.Versions("wf")
-	if len(versions) != 1 {
-		t.Errorf("expected 1 stored version, got %d", len(versions))
+	page, _ := s.Versions(context.Background(), "wf", workflow.VersionPageRequest{Limit: workflow.MaxVersionPageSize})
+	if len(page.Definitions) != 1 {
+		t.Errorf("expected 1 stored version, got %d", len(page.Definitions))
 	}
 }
 
@@ -358,9 +360,9 @@ func TestMemoryStoreEnforcesOrderedPublicSignatureCompatibility(t *testing.T) {
 		}
 	}
 
-	versions, err := store.Versions("compatible")
-	if err != nil || len(versions) != 2 {
-		t.Fatalf("rejection allocated a version: %v %+v", err, versions)
+	page, err := store.Versions(context.Background(), "compatible", workflow.VersionPageRequest{Limit: workflow.MaxVersionPageSize})
+	if err != nil || len(page.Definitions) != 2 {
+		t.Fatalf("rejection allocated a version: %v %+v", err, page.Definitions)
 	}
 
 	newSignature := functionManifest("compatible", 2, []string{"after", "before"}, "review/v2", "new contract")
@@ -386,7 +388,9 @@ func TestMemoryStoreReturnedDefinitionsCannotMutateCompatibilityAuthority(t *tes
 }
 
 func TestMemoryStorePromotionReturnsAtomicSignatureComparison(t *testing.T) {
-	store := workflow.NewMemoryStore()
+	store := workflow.NewMemoryStore(workflowrun.WorkflowTargetRenderer{
+		RuntimeImage: "registry.example/agent-runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	})
 	if _, err := store.ImportManifest("promote-meta", functionManifest("promote-meta", 1, []string{"before"}, "review/v1", "one"), "alice"); err != nil {
 		t.Fatal(err)
 	}
@@ -408,6 +412,74 @@ func TestMemoryStorePromotionReturnsAtomicSignatureComparison(t *testing.T) {
 	changed, err := store.Promote("promote-meta", 3, "carol")
 	if err != nil || changed.PreviousLive == nil || !changed.SignatureChanged || changed.PreviousLive.SignatureVersion != 1 || changed.Target.SignatureVersion != 2 {
 		t.Fatalf("changed-signature promotion = %+v err=%v", changed, err)
+	}
+}
+
+func TestMemoryStorePromotionRejectsImportedButUnrunnableV3AndPreservesLive(t *testing.T) {
+	renderer := workflowrun.WorkflowTargetRenderer{
+		RuntimeImage: "registry.example/agent-runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	}
+	store := workflow.NewMemoryStore(renderer)
+	valid := workflow.Manifest{"workflow.yml": `schema_version: 3
+name: promotion-preflight
+signature_version: 1
+inputs: []
+outputs: []
+plan:
+  - agent: work
+    function_id: work
+    prompt: do the work
+`}
+	unrunnable := workflow.Manifest{"workflow.yml": `schema_version: 3
+name: promotion-preflight
+signature_version: 1
+inputs: []
+outputs: []
+plan:
+  - task: work
+    function_id: work
+    file: repository/ci/task.yml
+`}
+
+	first, err := store.ImportManifest("promotion-preflight", valid, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Promote("promotion-preflight", first.Version, "alice"); err != nil {
+		t.Fatalf("promote valid version: %v", err)
+	}
+	second, err := store.ImportManifest("promotion-preflight", unrunnable, "bob")
+	if err != nil {
+		t.Fatalf("the unrunnable definition must remain importable for iteration: %v", err)
+	}
+
+	_, err = store.Promote("promotion-preflight", second.Version, "bob")
+	var invalid workflow.InvalidPromotionError
+	if !errors.As(err, &invalid) || !strings.Contains(err.Error(), "file-backed") {
+		t.Fatalf("promotion error = %v, want InvalidPromotionError for file-backed task", err)
+	}
+	live, found, liveErr := store.Live("promotion-preflight")
+	if liveErr != nil || !found || live.Version != first.Version {
+		t.Fatalf("live after rejected promotion = %+v, found=%v err=%v", live, found, liveErr)
+	}
+}
+
+func TestMemoryStoreSchemaV3PromotionFailsClosedWithoutAuthoritativeValidator(t *testing.T) {
+	store := workflow.NewMemoryStore()
+	definition, err := store.ImportManifest("promotion-validator", functionManifest(
+		"promotion-validator", 1, []string{"before"}, "review/v1", "one",
+	), "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = store.Promote("promotion-validator", definition.Version, "alice")
+	var invalid workflow.InvalidPromotionError
+	if !errors.As(err, &invalid) || !errors.Is(err, workflow.ErrPromotionValidatorRequired) {
+		t.Fatalf("promotion error = %v, want required authoritative validator", err)
+	}
+	if _, found, liveErr := store.Live("promotion-validator"); liveErr != nil || found {
+		t.Fatalf("rejected version became live: found=%v err=%v", found, liveErr)
 	}
 }
 

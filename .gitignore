@@ -9,7 +9,8 @@ tags
 # Frontend build outputs - committed to git so the Go binary embeds them
 # via //go:embed without requiring Node.js at build time.
 # Rebuild with: yarn install && yarn run build
-# web/public/elm.js        # unminified, not committed (1.3MB)
+# Unminified Elm output is local-only; elm.min.js is the embedded artifact.
+web/public/elm.js
 web/public/main.out.css
 docker-compose.override.yml
 *.coverprofile

@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/concourse/concourse/agent/publisher"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/configvalidate"
@@ -149,6 +150,12 @@ func RenderFunction(target FunctionTarget) (RenderedFunction, error) {
 	}
 	if err := AnnotatePublicOutputs(function, target.WorkflowDefinitionID); err != nil {
 		return RenderedFunction{}, fmt.Errorf("workflow: prepare target outputs: %w", err)
+	}
+	if err := annotateAwaitExecution(function, target.WorkflowDefinitionID); err != nil {
+		return RenderedFunction{}, fmt.Errorf("workflow: prepare interaction waits: %w", err)
+	}
+	if err := annotatePublishExecution(function); err != nil {
+		return RenderedFunction{}, fmt.Errorf("workflow: prepare publication approvals: %w", err)
 	}
 
 	params := []atc.ParamSchema{{
@@ -373,6 +380,10 @@ func validateRenderableFunction(function *FunctionConfig, signature PublicSignat
 			if err := validateImmutableAgentDependencies(leaf); err != nil {
 				return fmt.Errorf("workflow: %s: %w", path, err)
 			}
+		case *atc.PublishSnapshotStep:
+			if leaf.WorkflowRunID != "" {
+				return fmt.Errorf("workflow: %s: publish_snapshot workflow_run_id is renderer-owned", path)
+			}
 		case *atc.HarvestStep:
 			if leaf.DevMCP != nil {
 				if err := validateImmutableSidecars([]atc.SidecarSource{*leaf.DevMCP}); err != nil {
@@ -413,6 +424,22 @@ func validateImmutableRuntimeStep(step atc.Step, path string, acrossVars map[str
 		copy.SnapshotOutputs = cloneSnapshotOutputs(config.SnapshotOutputs)
 		sanitizeTypedOutputRunTokens(copy.SnapshotOutputs)
 		if err := rejectRuntimeInterpolationExcept(copy, path+".agent", acrossVars); err != nil {
+			return fmt.Errorf("workflow: %w", err)
+		}
+	case *atc.AwaitSnapshotStep:
+		copy := *config
+		if copy.WorkflowRunID == "((workflow_run_id))" {
+			copy.WorkflowRunID = "1"
+		}
+		if err := rejectRuntimeInterpolationExcept(copy, path+".await_snapshot", acrossVars); err != nil {
+			return fmt.Errorf("workflow: %w", err)
+		}
+	case *atc.PublishSnapshotStep:
+		copy := *config
+		if copy.WorkflowRunID == "((workflow_run_id))" {
+			copy.WorkflowRunID = "1"
+		}
+		if err := rejectRuntimeInterpolationExcept(copy, path+".publish_snapshot", acrossVars); err != nil {
 			return fmt.Errorf("workflow: %w", err)
 		}
 	case *atc.HarvestStep:
@@ -520,6 +547,10 @@ func validateCanonicalWorkflowOutputLinkage(function *FunctionConfig, workflowDe
 			outputs = leaf.SnapshotOutputs
 		case *atc.AgentStep:
 			outputs = leaf.SnapshotOutputs
+		case *atc.AwaitSnapshotStep:
+			leaf.WorkflowPort = ""
+			leaf.WorkflowDefinitionID = 0
+			leaf.WorkflowRunID = ""
 		}
 		for name, output := range outputs {
 			if output.Retention == snapshot.RetentionClassWorkflow {
@@ -582,6 +613,15 @@ func collectWorkflowOutputs(function *FunctionConfig) ([]workflowOutputsAtPath, 
 			collected = append(collected, workflowOutputsAtPath{path: path, outputs: leaf.SnapshotOutputs})
 		case *atc.AgentStep:
 			collected = append(collected, workflowOutputsAtPath{path: path, outputs: leaf.SnapshotOutputs})
+		case *atc.AwaitSnapshotStep:
+			output := atc.SnapshotOutputConfig{Type: leaf.Type}
+			if leaf.WorkflowPort != "" {
+				output.Retention = snapshot.RetentionClassWorkflow
+			}
+			output.WorkflowPort = leaf.WorkflowPort
+			output.WorkflowDefinitionID = leaf.WorkflowDefinitionID
+			output.WorkflowRunID = leaf.WorkflowRunID
+			collected = append(collected, workflowOutputsAtPath{path: path, outputs: map[string]atc.SnapshotOutputConfig{leaf.Name: output}})
 		}
 		return nil
 	})
@@ -614,6 +654,14 @@ func rejectReservedTokenInjection(function *FunctionConfig, signature PublicSign
 			sanitizeTypedOutputRunTokens(leaf.SnapshotOutputs)
 		case *atc.AgentStep:
 			sanitizeTypedOutputRunTokens(leaf.SnapshotOutputs)
+		case *atc.AwaitSnapshotStep:
+			if leaf.WorkflowRunID == "((workflow_run_id))" {
+				leaf.WorkflowRunID = "1"
+			}
+		case *atc.PublishSnapshotStep:
+			if leaf.WorkflowRunID == "((workflow_run_id))" {
+				leaf.WorkflowRunID = "1"
+			}
 		}
 		return nil
 	}); err != nil {
@@ -682,6 +730,41 @@ func sanitizeTypedOutputRunTokens(outputs map[string]atc.SnapshotOutputConfig) {
 		output.WorkflowRunID = "1"
 		outputs[name] = output
 	}
+}
+
+func annotateAwaitExecution(function *FunctionConfig, workflowDefinitionID int) error {
+	if workflowDefinitionID <= 0 {
+		return fmt.Errorf("workflow definition ID must be positive")
+	}
+	return walkFunctionSteps(function.Plan, func(step atc.Step, path string, _ bool) error {
+		wait, ok := step.Config.(*atc.AwaitSnapshotStep)
+		if !ok {
+			return nil
+		}
+		if wait.WorkflowRunID != "" && wait.WorkflowRunID != "((workflow_run_id))" {
+			return fmt.Errorf("%s: await_snapshot workflow run linkage is noncanonical", path)
+		}
+		if wait.WorkflowDefinitionID != 0 && wait.WorkflowDefinitionID != workflowDefinitionID {
+			return fmt.Errorf("%s: await_snapshot workflow definition linkage is noncanonical", path)
+		}
+		wait.WorkflowDefinitionID = workflowDefinitionID
+		wait.WorkflowRunID = "((workflow_run_id))"
+		return nil
+	})
+}
+
+func annotatePublishExecution(function *FunctionConfig) error {
+	return walkFunctionSteps(function.Plan, func(step atc.Step, path string, _ bool) error {
+		publish, ok := step.Config.(*atc.PublishSnapshotStep)
+		if !ok || publish.Mode != publisher.ModeMerge {
+			return nil
+		}
+		if publish.WorkflowRunID != "" && publish.WorkflowRunID != "((workflow_run_id))" {
+			return fmt.Errorf("%s: publish_snapshot workflow run linkage is noncanonical", path)
+		}
+		publish.WorkflowRunID = "((workflow_run_id))"
+		return nil
+	})
 }
 
 func validatePublicSignature(signature PublicSignature) error {

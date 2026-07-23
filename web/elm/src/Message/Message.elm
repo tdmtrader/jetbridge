@@ -49,7 +49,8 @@ type Message
     | ToggleAgentReviewFindingBody String
     | ToggleAgentReviewObservations Bool
     | AgentReviewVerdictClicked
-        { repo : String
+        { reviewSnapshotId : Maybe String
+        , repo : String
         , commitSha : String
         , findingId : String
         , verdict : String
@@ -86,6 +87,19 @@ type Message
       -- Agent Ticket queue page (client-side filter + sort)
     | AgentTicketsFilterChanged String
     | AgentTicketsSortToggled
+      -- Agent workflow function pages
+    | AgentWorkflowInputChanged String String
+    | AgentWorkflowVersionSelected String
+    | AgentWorkflowRunFilterChanged String
+    | AgentWorkflowStartClicked
+    | AgentWorkflowPromoteClicked Int
+    | AgentWorkflowRunCancelClicked
+    | AgentWorkflowRunRetryClicked
+    | AgentWaitAnswerChanged String String
+    | AgentWaitResolveClicked String
+    | AgentSnapshotPinClicked
+    | AgentSnapshotUnpinClicked
+    | AgentExperimentCancelClicked
       -- Agent Ticket queue page (dispatcher runtime control)
     | AgentDispatcherModeClicked String
     | ConfirmAgentDispatcherMode String

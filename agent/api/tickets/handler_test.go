@@ -188,6 +188,18 @@ func TestUpdateTicket(t *testing.T) {
 	}
 
 	req = withParams(httptest.NewRequest("PUT", "/api/v1/agent/tickets/1",
+		strings.NewReader(`{"repository_snapshot_id":"123"}`)), url.Values{":ticket_id": {"1"}})
+	rec = httptest.NewRecorder()
+	h.UpdateTicket(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("repository snapshot update = %d body %s", rec.Code, rec.Body)
+	}
+	got, _, _ = store.Get(1)
+	if got.RepositorySnapshotID == nil || got.RepositorySnapshotID.String() != "123" {
+		t.Fatalf("repository snapshot not selected: %+v", got)
+	}
+
+	req = withParams(httptest.NewRequest("PUT", "/api/v1/agent/tickets/1",
 		strings.NewReader(`{}`)), url.Values{":ticket_id": {"1"}})
 	rec = httptest.NewRecorder()
 	h.UpdateTicket(rec, req)
