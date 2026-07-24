@@ -227,20 +227,57 @@ type WorkflowsShowRunCommand struct {
 	Json    bool `long:"json" description:"Print command result as JSON"`
 }
 
-func (command *WorkflowsShowRunCommand) Execute([]string) error {
+type preparedWorkflowsShowRun struct {
+	workflow string
+	runID    snapshot.WorkflowRunID
+	outputs  bool
+	wait     bool
+	follow   bool
+	json     bool
+}
+
+func (command *WorkflowsShowRunCommand) prepare() (preparedWorkflowsShowRun, error) {
 	if command.Outputs && (command.Wait || command.Follow) {
-		return fmt.Errorf("agent workflow run: --outputs cannot be combined with --wait or --follow")
+		return preparedWorkflowsShowRun{}, fmt.Errorf("agent workflow run: --outputs cannot be combined with --wait or --follow")
 	}
 	runID, err := snapshot.ParseWorkflowRunID(command.Args.RunID)
 	if err != nil {
-		return fmt.Errorf("agent workflow run: %w", err)
+		return preparedWorkflowsShowRun{}, fmt.Errorf("agent workflow run: %w", err)
 	}
-	target, err := loadAgentTarget()
+	return preparedWorkflowsShowRun{
+		workflow: command.Args.Workflow,
+		runID:    runID,
+		outputs:  command.Outputs,
+		wait:     command.Wait,
+		follow:   command.Follow,
+		json:     command.Json,
+	}, nil
+}
+
+func (command *WorkflowsShowRunCommand) Execute([]string) error {
+	return command.executeWithTargetLoader(loadAgentTarget)
+}
+
+func (command *WorkflowsShowRunCommand) executeWithTargetLoader(
+	loadTarget func() (rc.Target, error),
+) error {
+	prepared, err := command.prepare()
 	if err != nil {
 		return err
 	}
-	path := agentWorkflowRunPath(command.Args.Workflow, runID)
-	if command.Outputs {
+	target, err := loadTarget()
+	if err != nil {
+		return err
+	}
+	return command.executePreparedWithTarget(target, prepared)
+}
+
+func (command *WorkflowsShowRunCommand) executePreparedWithTarget(
+	target rc.Target,
+	prepared preparedWorkflowsShowRun,
+) error {
+	path := agentWorkflowRunPath(prepared.workflow, prepared.runID)
+	if prepared.outputs {
 		response, err := agentAPIRequest(target, http.MethodGet, path+"/outputs", nil)
 		if err != nil {
 			return err
@@ -249,7 +286,7 @@ func (command *WorkflowsShowRunCommand) Execute([]string) error {
 		if err := decodeOrError(response, &outputs); err != nil {
 			return err
 		}
-		if command.Json {
+		if prepared.json {
 			return displayhelpers.JsonPrint(outputs)
 		}
 		return printAgentWorkflowRunOutputs(outputs)
@@ -263,13 +300,13 @@ func (command *WorkflowsShowRunCommand) Execute([]string) error {
 	if err := decodeOrError(response, &detail); err != nil {
 		return err
 	}
-	if command.Wait || command.Follow {
-		detail, err = waitForAgentWorkflowRun(target, command.Args.Workflow, detail, command.Follow)
+	if prepared.wait || prepared.follow {
+		detail, err = waitForAgentWorkflowRun(target, prepared.workflow, detail, prepared.follow)
 		if err != nil {
 			return err
 		}
 	}
-	return printAgentWorkflowRunDetail(detail, command.Json)
+	return printAgentWorkflowRunDetail(detail, prepared.json)
 }
 
 func waitForAgentWorkflowRun(

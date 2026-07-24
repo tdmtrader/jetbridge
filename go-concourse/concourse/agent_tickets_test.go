@@ -5,6 +5,7 @@ import (
 
 	"github.com/concourse/concourse/agent/api/outcomes"
 	"github.com/concourse/concourse/agent/api/tickets"
+	"github.com/concourse/concourse/agent/snapshot"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -197,12 +198,14 @@ var _ = Describe("Agent Tickets", func() {
 	})
 
 	Describe("DispatchAgentTicket", func() {
+		runID := snapshot.WorkflowRunID(9007199254740993)
+
 		BeforeEach(func() {
 			atcServer.AppendHandlers(
 				ghttp.CombineHandlers(
 					ghttp.VerifyRequest("POST", "/api/v1/agent/tickets/7/dispatch"),
 					ghttp.RespondWithJSONEncoded(http.StatusCreated, tickets.DispatchResponse{
-						RunID: 321, PipelineName: "agent-ticket-7",
+						RunID: 321, PipelineName: "agent-ticket-7", WorkflowRunID: &runID,
 					}),
 				),
 			)
@@ -213,6 +216,8 @@ var _ = Describe("Agent Tickets", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(res.RunID).To(Equal(321))
 			Expect(res.PipelineName).To(Equal("agent-ticket-7"))
+			Expect(res.WorkflowRunID).NotTo(BeNil())
+			Expect(*res.WorkflowRunID).To(Equal(runID))
 		})
 	})
 })

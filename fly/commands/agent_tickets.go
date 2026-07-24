@@ -8,11 +8,8 @@ import (
 	"github.com/concourse/concourse/agent/api/outcomes"
 	"github.com/concourse/concourse/agent/api/tickets"
 	"github.com/concourse/concourse/agent/dispatch"
-	"github.com/concourse/concourse/atc"
-	"github.com/concourse/concourse/fly/eventstream"
 	"github.com/concourse/concourse/fly/rc"
 	"github.com/concourse/concourse/fly/ui"
-	"github.com/concourse/concourse/go-concourse/concourse"
 	"github.com/fatih/color"
 )
 
@@ -22,16 +19,11 @@ type AgentTicketsCommand struct {
 	Show       AgentTicketsShowCommand       `command:"show" description:"Show one ticket with its spec and plan"`
 	Queue      AgentTicketsQueueCommand      `command:"queue" description:"Queue a draft ticket for dispatch"`
 	Transition AgentTicketsTransitionCommand `command:"transition" description:"Move a ticket along the lifecycle (single-writer state machine)"`
-	Dispatch   AgentTicketsDispatchCommand   `command:"dispatch" description:"Dispatch a queued ticket as a pipeline run (manual trigger)"`
-	Watch      AgentTicketsWatchCommand      `command:"watch" description:"Follow the build events of a ticket's dispatched run"`
+	Dispatch   AgentTicketsDispatchCommand   `command:"dispatch" description:"Dispatch a queued ticket as a durable workflow run (manual trigger)"`
+	Watch      AgentTicketsWatchCommand      `command:"watch" description:"Follow a ticket's durable workflow run"`
 	Close      AgentTicketsCloseCommand      `command:"close" description:"Close a reviewed ticket to a terminal disposition (default: concluded)"`
 	Dispose    AgentTicketsDisposeCommand    `command:"dispose" description:"Record a terminal disposition (with reason taxonomy) on a reviewed ticket"`
 }
-
-// ticketPipelineName is the deterministic template-pipeline name dispatch
-// renders a ticket into (agent/dispatch/dispatch.go). The entry job is
-// always "run".
-func ticketPipelineName(id int) string { return fmt.Sprintf("agent-ticket-%d", id) }
 
 // printSpecLintWarnings surfaces advisory spec-lint findings (ticket #46:
 // vocabulary known to trigger claude CLI usage-policy false refusals) on
@@ -75,23 +67,26 @@ func (command *AgentTicketsListCommand) Execute([]string) error {
 		{Contents: "repo", Color: color.New(color.Bold)},
 		{Contents: "title", Color: color.New(color.Bold)},
 		{Contents: "user", Color: color.New(color.Bold)},
-		{Contents: "run", Color: color.New(color.Bold)},
+		{Contents: "workflow run", Color: color.New(color.Bold)},
 	}}
 	for _, t := range list {
-		run := ""
-		if t.PipelineRunID != nil {
-			run = ticketPipelineName(t.ID)
-		}
 		table.Data = append(table.Data, ui.TableRow{
 			{Contents: strconv.Itoa(t.ID)},
 			{Contents: string(t.State)},
 			{Contents: t.Repo},
 			{Contents: t.Title},
 			{Contents: t.UserName},
-			{Contents: run},
+			{Contents: agentTicketWorkflowRunCell(t)},
 		})
 	}
 	return table.Render(os.Stdout, Fly.PrintTableHeaders)
+}
+
+func agentTicketWorkflowRunCell(ticket tickets.Ticket) string {
+	if ticket.WorkflowRunID == nil {
+		return ""
+	}
+	return ticket.WorkflowRunID.String()
 }
 
 type AgentTicketsCreateCommand struct {
@@ -154,7 +149,12 @@ func (command *AgentTicketsCreateCommand) Execute([]string) error {
 		if err != nil {
 			return fmt.Errorf("created #%d (queued); dispatch failed: %w", created.ID, err)
 		}
-		fmt.Printf("dispatched ticket #%d as run %d (pipeline %s)\n", created.ID, res.RunID, res.PipelineName)
+		line, err := agentTicketDispatchLine(created.ID, res)
+		if err != nil {
+			return fmt.Errorf("created #%d (queued); dispatch failed: %w", created.ID, err)
+		}
+		fmt.Println(line)
+		printSpecLintWarnings(res.Warnings)
 	}
 	return nil
 }
@@ -250,11 +250,27 @@ func (command *AgentTicketsDispatchCommand) Execute([]string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("dispatched ticket #%d as run %d (pipeline %s)\n", command.ID, res.RunID, res.PipelineName)
+	line, err := agentTicketDispatchLine(command.ID, res)
+	if err != nil {
+		return err
+	}
+	fmt.Println(line)
 	// Server-computed advisory lint (ticket #46) rides the dispatch
 	// response; surface it without touching the exit code.
 	printSpecLintWarnings(res.Warnings)
 	return nil
+}
+
+func agentTicketDispatchLine(ticketID int, response tickets.DispatchResponse) (string, error) {
+	if response.WorkflowRunID == nil {
+		return "", fmt.Errorf("dispatch response for ticket %d omitted workflow_run_id", ticketID)
+	}
+	return fmt.Sprintf(
+		"dispatched ticket #%d as workflow run %s (pipeline run %d)",
+		ticketID,
+		response.WorkflowRunID.String(),
+		response.RunID,
+	), nil
 }
 
 type AgentTicketsShowCommand struct {
@@ -287,11 +303,8 @@ func (command *AgentTicketsShowCommand) Execute([]string) error {
 	if t.Branch != "" {
 		fmt.Printf("branch: %s\n", t.Branch)
 	}
-	if t.PipelineRunID != nil {
-		// The run is a deterministic function of the ticket id; surface it
-		// so the user can reach the build without cluster access.
-		fmt.Printf("run: %s (run %d) · follow with: fly -t %s agent tickets watch --id %d\n",
-			ticketPipelineName(t.ID), *t.PipelineRunID, Fly.Target, t.ID)
+	for _, line := range agentTicketRunLines(t, string(Fly.Target)) {
+		fmt.Println(line)
 	}
 	if t.Body != "" {
 		fmt.Printf("\n%s\n", t.Body)
@@ -308,18 +321,27 @@ func (command *AgentTicketsShowCommand) Execute([]string) error {
 	return nil
 }
 
-type AgentTicketsWatchCommand struct {
-	ID        int  `long:"id" required:"true" description:"Ticket id"`
-	Timestamp bool `long:"timestamps" description:"Print with local timestamps"`
+func agentTicketRunLines(ticket tickets.Ticket, target string) []string {
+	lines := make([]string, 0, 2)
+	if ticket.WorkflowRunID != nil {
+		lines = append(lines, fmt.Sprintf(
+			"workflow run: %s · inspect with: fly -t %s agent workflows show-run %s %s",
+			ticket.WorkflowRunID.String(),
+			target,
+			ticket.WorkflowName,
+			ticket.WorkflowRunID.String(),
+		))
+	}
+	if ticket.PipelineRunID != nil {
+		lines = append(lines, fmt.Sprintf("pipeline run: %d", *ticket.PipelineRunID))
+	}
+	return lines
 }
 
-// Execute follows the dispatched run's build events. Dispatch renders the
-// ticket into a TEMPLATE pipeline agent-ticket-<id> and CreateRun
-// materializes a per-run INSTANCE of it (instance var run:<n>); the entry
-// job "run" builds on that instance, never on the bare template. The
-// ticket row carries the global pipeline_runs.id, not the per-template
-// instance number, so we resolve the latest matching build by scanning
-// the team's builds (newest-first) for pipeline agent-ticket-<id>.
+type AgentTicketsWatchCommand struct {
+	ID int `long:"id" required:"true" description:"Ticket id"`
+}
+
 func (command *AgentTicketsWatchCommand) Execute([]string) error {
 	target, err := rc.LoadTarget(Fly.Target, Fly.Verbose)
 	if err != nil {
@@ -329,42 +351,40 @@ func (command *AgentTicketsWatchCommand) Execute([]string) error {
 		return err
 	}
 
-	client := target.Client()
-	team := client.Team(atc.DefaultTeamName)
-	pipelineName := ticketPipelineName(command.ID)
-
-	buildID := 0
-	page := concourse.Page{Limit: 100}
-	for buildID == 0 {
-		builds, pagination, err := team.Builds(page)
-		if err != nil {
-			return err
-		}
-		for _, b := range builds {
-			if b.PipelineName == pipelineName && b.JobName == "run" {
-				buildID = b.ID
-				break
-			}
-		}
-		if buildID != 0 || pagination.Next == nil {
-			break
-		}
-		page = *pagination.Next
-	}
-	if buildID == 0 {
-		return fmt.Errorf("no dispatched run found for ticket %d (pipeline %s) — has it been dispatched?", command.ID, pipelineName)
-	}
-
-	eventSource, err := client.BuildEvents(strconv.Itoa(buildID))
+	detail, found, err := target.Client().GetAgentTicket(command.ID)
 	if err != nil {
 		return err
 	}
-	exitCode := eventstream.Render(os.Stdout, eventSource, eventstream.RenderOptions{
-		ShowTimestamp: command.Timestamp,
-	})
-	eventSource.Close()
-	os.Exit(exitCode)
-	return nil
+	if !found {
+		return fmt.Errorf("ticket %d not found", command.ID)
+	}
+	showRun, err := agentTicketWatchShowRunCommand(detail.Ticket)
+	if err != nil {
+		return err
+	}
+	prepared, err := showRun.prepare()
+	if err != nil {
+		return err
+	}
+	return showRun.executePreparedWithTarget(target, prepared)
+}
+
+func agentTicketWatchShowRunCommand(ticket tickets.Ticket) (*WorkflowsShowRunCommand, error) {
+	if ticket.WorkflowRunID == nil {
+		return nil, fmt.Errorf("ticket %d has no workflow run", ticket.ID)
+	}
+	if ticket.WorkflowName == "" {
+		return nil, fmt.Errorf(
+			"ticket %d has workflow run %s but no workflow name",
+			ticket.ID,
+			ticket.WorkflowRunID.String(),
+		)
+	}
+	var command WorkflowsShowRunCommand
+	command.Args.Workflow = ticket.WorkflowName
+	command.Args.RunID = ticket.WorkflowRunID.String()
+	command.Follow = true
+	return &command, nil
 }
 
 type AgentTicketsCloseCommand struct {
