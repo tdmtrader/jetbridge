@@ -21,6 +21,7 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/atc/event"
+	"github.com/concourse/concourse/atc/legacyplan"
 	"github.com/concourse/concourse/tracing"
 	"github.com/concourse/concourse/vars"
 	. "github.com/onsi/ginkgo/v2"
@@ -76,6 +77,50 @@ var _ = Describe("Build", func() {
 		build, err := team.CreateOneOffBuild()
 		Expect(err).ToNot(HaveOccurred())
 		Expect(build.HasPlan()).To(BeFalse())
+	})
+
+	Describe("loading historical private plans", func() {
+		const historicalHarvestPlan = `{"id":"h","harvest":{"name":"push"}}`
+
+		It("keeps completed harvest history inert", func() {
+			_, err := dbConn.Exec(
+				`UPDATE builds SET private_plan = $1, completed = true WHERE id = $2`,
+				historicalHarvestPlan,
+				build.ID(),
+			)
+			Expect(err).NotTo(HaveOccurred())
+
+			found, err := build.Reload()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(build.PrivatePlan()).To(Equal(atc.Plan{}))
+		})
+
+		It("rejects an unfinished historical harvest plan", func() {
+			_, err := dbConn.Exec(
+				`UPDATE builds SET private_plan = $1, completed = false WHERE id = $2`,
+				historicalHarvestPlan,
+				build.ID(),
+			)
+			Expect(err).NotTo(HaveOccurred())
+
+			found, err := build.Reload()
+			Expect(found).To(BeFalse())
+			Expect(err).To(MatchError(legacyplan.ErrActiveHarvestPlan))
+		})
+
+		It("rejects malformed private-plan JSON", func() {
+			_, err := dbConn.Exec(
+				`UPDATE builds SET private_plan = $1, completed = true WHERE id = $2`,
+				`{"id":`,
+				build.ID(),
+			)
+			Expect(err).NotTo(HaveOccurred())
+
+			found, err := build.Reload()
+			Expect(found).To(BeFalse())
+			Expect(err).To(MatchError(ContainSubstring("decode legacy plan")))
+		})
 	})
 
 	It("create_time is current time", func() {

@@ -25,6 +25,7 @@ import (
 	"github.com/concourse/concourse/atc/db/encryption"
 	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/event"
+	"github.com/concourse/concourse/atc/legacyplan"
 	"github.com/concourse/concourse/atc/util"
 	"github.com/concourse/concourse/atc/workflowprovenance"
 	"github.com/concourse/concourse/tracing"
@@ -2067,8 +2068,16 @@ func scanBuild(b *build, row scannable, encryptionStrategy encryption.Strategy) 
 	}
 
 	if len(decryptedPlan) > 0 {
-		err = json.Unmarshal(decryptedPlan, &b.privatePlan)
+		containsHarvest, err := legacyplan.ContainsHarvest(decryptedPlan)
 		if err != nil {
+			return err
+		}
+		if containsHarvest {
+			if !b.completed {
+				return legacyplan.ErrActiveHarvestPlan
+			}
+			b.privatePlan = atc.Plan{}
+		} else if err := json.Unmarshal(decryptedPlan, &b.privatePlan); err != nil {
 			return err
 		}
 	}
