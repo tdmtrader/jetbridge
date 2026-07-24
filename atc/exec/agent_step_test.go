@@ -1530,6 +1530,11 @@ var _ = Describe("AgentStep", func() {
 			// The metric's execution identity: the durable workflow run (carried
 			// on step.metadata, server-authenticated) and the planned function.
 			flightRunID = snapshot.WorkflowRunID(4242)
+			// A durable workflow run always carries its definition too; set both
+			// so the authenticated workflow association is complete (task_step.go
+			// rejects a run ID without a matching definition ID).
+			flightDefinitionID := 4242
+			stepMetadata.WorkflowDefinitionID = &flightDefinitionID
 			stepMetadata.WorkflowRunID = &flightRunID
 			agentPlan.FunctionID = "review"
 
