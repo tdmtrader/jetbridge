@@ -1003,7 +1003,7 @@ func TestTypeCheckFunctionDelegatesOrdinaryStepAndDeclarationErrors(t *testing.T
 	}
 }
 
-func TestTypeCheckCompileDefinitionRunsOrdinaryValidationAndPreservesLegacy(t *testing.T) {
+func TestCompileDefinitionRunsOrdinaryValidation(t *testing.T) {
 	invalid := Manifest{"workflow.yml": `
 schema_version: 3
 name: invalid
@@ -1018,33 +1018,6 @@ plan:
 `}
 	if _, err := CompileDefinition(invalid); err == nil || !strings.Contains(err.Error(), "missing 'platform'") {
 		t.Fatalf("CompileDefinition error = %v", err)
-	}
-
-	legacyManifest := Manifest{"workflow.yml": `
-schema_version: 2
-name: legacy
-trigger:
-  type: manual
-workspace:
-  type: git
-  repo: example/repo
-prompts:
-  work: do it
-steps:
-- agent: work
-  prompt: work
-  outputs: [workspace]
-`}
-	want, err := Compile(legacyManifest)
-	if err != nil {
-		t.Fatalf("Compile legacy: %v", err)
-	}
-	got, err := CompileDefinition(legacyManifest)
-	if err != nil {
-		t.Fatalf("CompileDefinition legacy: %v", err)
-	}
-	if !reflect.DeepEqual(got.Legacy, want) {
-		t.Fatalf("legacy compile changed:\n got %+v\nwant %+v", got.Legacy, want)
 	}
 }
 

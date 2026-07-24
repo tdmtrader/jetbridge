@@ -2,6 +2,7 @@ package workflow_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -94,6 +95,40 @@ func TestMemoryStoreImportIsIdempotentOnHash(t *testing.T) {
 	page, _ := s.Versions(context.Background(), "wf", workflow.VersionPageRequest{Limit: workflow.MaxVersionPageSize})
 	if len(page.Definitions) != 1 {
 		t.Errorf("expected 1 stored version, got %d", len(page.Definitions))
+	}
+}
+
+func TestDefinitionJSONOmitsLegacyCompatibilityFields(t *testing.T) {
+	store := workflow.NewMemoryStore()
+	definition, err := store.ImportManifest(
+		"wire-shape",
+		functionManifest("wire-shape", 1, nil, "review/v1", "review"),
+		"alice",
+	)
+	if err != nil {
+		t.Fatalf("import v3: %v", err)
+	}
+
+	payload, err := json.Marshal(definition)
+	if err != nil {
+		t.Fatalf("marshal definition: %v", err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(payload, &wire); err != nil {
+		t.Fatalf("decode definition wire shape: %v", err)
+	}
+	if _, found := wire["config"]; found {
+		t.Fatalf("definition wire shape retains config: %s", payload)
+	}
+	compiled, ok := wire["compiled"].(map[string]any)
+	if !ok {
+		t.Fatalf("compiled = %T, want object", wire["compiled"])
+	}
+	if _, found := compiled["legacy"]; found {
+		t.Fatalf("compiled wire shape retains legacy: %s", payload)
+	}
+	if function, found := compiled["function"]; !found || function == nil {
+		t.Fatalf("compiled function missing: %s", payload)
 	}
 }
 
@@ -453,7 +488,7 @@ func TestMemoryStorePersistsDerivedSchemaAndSignatureMetadata(t *testing.T) {
 		if def.SchemaVersion == 0 {
 			t.Fatalf("List omitted schema metadata: %+v", def)
 		}
-		if def.RawYAML != "" || def.SourceManifest != nil || def.Compiled.Function != nil || def.Compiled.Legacy != nil {
+		if def.RawYAML != "" || def.SourceManifest != nil || def.Compiled.Function != nil {
 			t.Fatalf("List must remain metadata-only: %+v", def)
 		}
 	}

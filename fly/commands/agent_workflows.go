@@ -306,9 +306,9 @@ func importWorkflowFile(target rc.Target, path string, setLive bool) error {
 	if err != nil {
 		return err
 	}
-	// Parse client-side first: same validation the server runs, but the
-	// error message points at the local file.
-	compiled, err := workflow.ParseCompiled(raw)
+	// Compile the raw file as a one-file manifest so local validation matches
+	// the server, including resolution of referenced assets.
+	compiled, err := workflow.CompileDefinition(workflow.Manifest{"workflow.yml": string(raw)})
 	if err != nil {
 		return fmt.Errorf("%s: %w", path, err)
 	}

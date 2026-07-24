@@ -9,51 +9,28 @@ import (
 	"github.com/concourse/concourse/agent/snapshot"
 )
 
-// CompiledDefinition is the tagged parsed representation shared by legacy
-// workflow definitions and schema-version-3 workflow functions. Exactly one
-// arm is populated. Definition.Config remains the legacy store/API
-// compatibility field until the version-3 persistence work lands.
+// CompiledDefinition is the parsed representation of a schema-version-3
+// workflow function.
 type CompiledDefinition struct {
 	SchemaVersion int             `json:"schema_version" yaml:"schema_version"`
 	Name          string          `json:"name" yaml:"name"`
 	Description   string          `json:"description,omitempty" yaml:"description,omitempty"`
-	Legacy        *Config         `json:"legacy,omitempty" yaml:"legacy,omitempty"`
 	Function      *FunctionConfig `json:"function,omitempty" yaml:"function,omitempty"`
 }
 
 // VersionMetadata derives the durable schema/signature identity from the
-// validated tagged definition. Callers must never accept these values from an
+// validated compiled definition. Callers must never accept these values from an
 // import request independently of the compiled source.
 func (definition CompiledDefinition) VersionMetadata() (VersionMetadata, error) {
-	if strings.TrimSpace(definition.Name) == "" {
-		return VersionMetadata{}, fmt.Errorf("workflow: name is required")
+	if err := definition.Validate(); err != nil {
+		return VersionMetadata{}, err
 	}
-	metadata := VersionMetadata{SchemaVersion: definition.SchemaVersion}
-	switch definition.SchemaVersion {
-	case 1, 2:
-		// Legacy compilation deliberately retains source-reference fields while
-		// also materializing their values. Re-running source-form Validate here
-		// would reject that established compiled representation, so validate the
-		// tagged identity without changing legacy compile bytes.
-		if definition.Legacy == nil || definition.Function != nil ||
-			definition.Legacy.SchemaVersion != definition.SchemaVersion ||
-			definition.Legacy.Name != definition.Name {
-			return VersionMetadata{}, fmt.Errorf("workflow: invalid schema_version %d compiled definition", definition.SchemaVersion)
-		}
-		metadata.SignatureVersion = 0
-	case 3:
-		if definition.Legacy != nil || definition.Function == nil {
-			return VersionMetadata{}, fmt.Errorf("workflow: schema_version 3 requires exactly the function definition arm")
-		}
-		if err := definition.Function.Validate(); err != nil {
-			return VersionMetadata{}, err
-		}
-		metadata.SignatureVersion = definition.Function.SignatureVersion
-		if metadata.SignatureVersion <= 0 {
-			return VersionMetadata{}, fmt.Errorf("workflow: schema_version 3 requires a positive signature_version")
-		}
-	default:
-		return VersionMetadata{}, fmt.Errorf("workflow: unsupported schema_version %d", definition.SchemaVersion)
+	metadata := VersionMetadata{
+		SchemaVersion:    definition.SchemaVersion,
+		SignatureVersion: definition.Function.SignatureVersion,
+	}
+	if metadata.SignatureVersion <= 0 {
+		return VersionMetadata{}, fmt.Errorf("workflow: schema_version 3 requires a positive signature_version")
 	}
 	return metadata, nil
 }
@@ -73,12 +50,8 @@ type SignaturePort struct {
 }
 
 func (definition CompiledDefinition) PublicSignature() (PublicSignature, error) {
-	metadata, err := definition.VersionMetadata()
-	if err != nil {
+	if _, err := definition.VersionMetadata(); err != nil {
 		return PublicSignature{}, err
-	}
-	if metadata.SchemaVersion != 3 {
-		return PublicSignature{}, fmt.Errorf("workflow: schema_version %d has no typed public signature", metadata.SchemaVersion)
 	}
 	signature := PublicSignature{
 		Inputs:  make([]SignaturePort, len(definition.Function.Inputs)),
@@ -111,44 +84,25 @@ func (signature PublicSignature) Equal(other PublicSignature) bool {
 	return true
 }
 
-// Validate enforces the tagged-union invariant for values constructed in Go
-// or decoded from the compiled-model representation.
+// Validate enforces the v3 model invariant for values constructed in Go or
+// decoded from the compiled-model representation.
 func (definition CompiledDefinition) Validate() error {
+	if definition.SchemaVersion != 3 {
+		return fmt.Errorf("workflow: schema_version must be 3, got %d", definition.SchemaVersion)
+	}
 	if strings.TrimSpace(definition.Name) == "" {
 		return fmt.Errorf("workflow: name is required")
 	}
-
-	switch definition.SchemaVersion {
-	case 1, 2:
-		if definition.Legacy == nil || definition.Function != nil {
-			return fmt.Errorf("workflow: schema_version %d requires exactly the legacy definition arm", definition.SchemaVersion)
-		}
-		if definition.Legacy.SchemaVersion != definition.SchemaVersion {
-			return fmt.Errorf("workflow: schema_version %d does not match legacy schema_version %d", definition.SchemaVersion, definition.Legacy.SchemaVersion)
-		}
-		if definition.Legacy.Name != definition.Name {
-			return fmt.Errorf("workflow: name %q does not match legacy name %q", definition.Name, definition.Legacy.Name)
-		}
-		if definition.Legacy.Description != definition.Description {
-			return fmt.Errorf("workflow: description does not match the legacy definition arm")
-		}
-		return definition.Legacy.Validate()
-	case 3:
-		if definition.Legacy != nil || definition.Function == nil {
-			return fmt.Errorf("workflow: schema_version 3 requires exactly the function definition arm")
-		}
-		return definition.Function.Validate()
-	default:
-		return fmt.Errorf("workflow: schema_version must be 1, 2, or 3, got %d", definition.SchemaVersion)
+	if definition.Function == nil {
+		return fmt.Errorf("workflow: schema_version 3 requires a function definition")
 	}
+	return definition.Function.Validate()
 }
 
 // Definition is the parsed, validated form of the YAML in
 // agent_workflow_definitions.definition (contracts §6). ContentHash is
 // hex(sha256(Manifest.Canonical())) — raw-YAML imports hash their
-// single-file wrapping, so the scheme is uniform (design 2026-07-17 §3;
-// pre-slice rows carry the legacy raw-bytes hash and re-mint one
-// version on their next import).
+// single-file wrapping, so the scheme is uniform (design 2026-07-17 §3).
 type Definition struct {
 	ID               int    `json:"id"`
 	Name             string `json:"name"`
@@ -161,10 +115,8 @@ type Definition struct {
 	CreatedBy        string `json:"created_by"`
 	CreatedAt        int64  `json:"created_at"`
 
-	// Compiled is the authoritative tagged representation. Config remains the
-	// legacy compatibility accessor and is populated only for schema 1/2.
+	// Compiled is the authoritative schema-version-3 representation.
 	Compiled CompiledDefinition `json:"compiled"`
-	Config   Config             `json:"config"`
 
 	// RawYAML is the stored workflow.yml bytes. Populated by Get and
 	// Live; empty in List/Versions.

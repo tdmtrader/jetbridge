@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -106,8 +104,8 @@ func TestParseV3ProgramExample(t *testing.T) {
 		definition.Description != "Review one repository state relative to another." {
 		t.Fatalf("unexpected envelope: %+v", definition)
 	}
-	if definition.Legacy != nil || definition.Function == nil {
-		t.Fatalf("v3 must populate only the function arm: %+v", definition)
+	if definition.Function == nil {
+		t.Fatalf("v3 must populate the function definition: %+v", definition)
 	}
 
 	function := definition.Function
@@ -536,40 +534,49 @@ func TestParseV3OutputTypeStrictnessDoesNotChangeOrdinaryATCLongForm(t *testing.
 	}
 }
 
-func TestParseV3LegacyArmsAreExclusive(t *testing.T) {
-	legacyV1, err := workflow.ParseCompiled([]byte(validV1YAML()))
-	if err != nil {
-		t.Fatalf("v1: %v", err)
-	}
-	legacyV2, err := workflow.ParseCompiled([]byte(v2YAML))
-	if err != nil {
-		t.Fatalf("v2: %v", err)
-	}
+func TestCompiledDefinitionPublicMethodsRejectNonV3(t *testing.T) {
 	function, err := workflow.ParseCompiled([]byte(v3ProgramYAML))
 	if err != nil {
 		t.Fatalf("v3: %v", err)
 	}
-	if legacyV1.Legacy == nil || legacyV1.Function != nil || legacyV2.Legacy == nil || legacyV2.Function != nil {
-		t.Fatalf("legacy arm selection failed: v1=%+v v2=%+v", legacyV1, legacyV2)
+	if err := function.Validate(); err != nil {
+		t.Fatalf("valid v3 Validate: %v", err)
 	}
-	if function.Legacy != nil || function.Function == nil {
-		t.Fatalf("function arm selection failed: %+v", function)
+	if _, err := function.VersionMetadata(); err != nil {
+		t.Fatalf("valid v3 VersionMetadata: %v", err)
+	}
+	if _, err := function.PublicSignature(); err != nil {
+		t.Fatalf("valid v3 PublicSignature: %v", err)
 	}
 
-	validFunction := *function.Function
-	validLegacy := *legacyV1.Legacy
-	invalid := []workflow.CompiledDefinition{
-		{SchemaVersion: 3, Name: "bad"},
-		{SchemaVersion: 3, Name: "bad", Legacy: &validLegacy, Function: &validFunction},
-		{SchemaVersion: 2, Name: validLegacy.Name, Function: &validFunction},
-		{SchemaVersion: 1, Name: validLegacy.Name, Legacy: &validLegacy, Function: &validFunction},
-		{SchemaVersion: 4, Name: "bad", Function: &validFunction},
-	}
-	for i := range invalid {
-		if err := invalid[i].Validate(); err == nil {
-			t.Errorf("invalid union %d unexpectedly validated: %+v", i, invalid[i])
+	assertAllReject := func(t *testing.T, definition workflow.CompiledDefinition) {
+		t.Helper()
+		if err := definition.Validate(); err == nil {
+			t.Fatalf("Validate unexpectedly accepted %+v", definition)
+		}
+		if _, err := definition.VersionMetadata(); err == nil {
+			t.Fatalf("VersionMetadata unexpectedly accepted %+v", definition)
+		}
+		if _, err := definition.PublicSignature(); err == nil {
+			t.Fatalf("PublicSignature unexpectedly accepted %+v", definition)
 		}
 	}
+
+	for _, version := range []int{1, 2, 4} {
+		t.Run(fmt.Sprintf("schema version %d", version), func(t *testing.T) {
+			assertAllReject(t, workflow.CompiledDefinition{
+				SchemaVersion: version,
+				Name:          "non-v3",
+				Function:      function.Function,
+			})
+		})
+	}
+	t.Run("nil function", func(t *testing.T) {
+		assertAllReject(t, workflow.CompiledDefinition{SchemaVersion: 3, Name: "missing-function"})
+	})
+	t.Run("blank name", func(t *testing.T) {
+		assertAllReject(t, workflow.CompiledDefinition{SchemaVersion: 3, Name: " ", Function: function.Function})
+	})
 }
 
 func TestCompiledDefinitionValidateRejectsUnknownPlanFields(t *testing.T) {
@@ -592,38 +599,60 @@ func TestCompiledDefinitionValidateRejectsUnknownPlanFields(t *testing.T) {
 	}
 }
 
-func TestParseV1V2StoredFixturesUnchanged(t *testing.T) {
-	paths, err := filepath.Glob("seeds/*.yaml")
-	if err != nil {
-		t.Fatalf("glob seeds: %v", err)
+func TestParseCompiledRejectsLegacySchemas(t *testing.T) {
+	tests := []struct {
+		name    string
+		version int
+		source  string
+	}{
+		{
+			name:    "schema 1",
+			version: 1,
+			source: `schema_version: 1
+name: legacy-v1
+prompts:
+  work: Do the work.
+steps:
+  - agent: work
+    prompt: work
+    outputs: [workspace]
+`,
+		},
+		{
+			name:    "schema 2",
+			version: 2,
+			source: `schema_version: 2
+name: legacy-v2
+trigger: {type: manual}
+workspace: {type: git, repo: example/repo}
+prompts:
+  work: Do the work.
+steps:
+  - agent: work
+    prompt: work
+    outputs: [workspace]
+`,
+		},
 	}
-	paths = append(paths, "parse-v1-inline", "parse-v2-inline")
-	for _, path := range paths {
-		path := path
-		t.Run(filepath.Base(path), func(t *testing.T) {
-			var raw []byte
-			switch path {
-			case "parse-v1-inline":
-				raw = []byte(validV1YAML())
-			case "parse-v2-inline":
-				raw = []byte(v2YAML)
-			default:
-				var err error
-				raw, err = os.ReadFile(path)
-				if err != nil {
-					t.Fatalf("read fixture: %v", err)
-				}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			definition, err := workflow.ParseCompiled([]byte(test.source))
+			if definition != nil {
+				t.Fatalf("definition = %+v, want nil", definition)
 			}
-			legacy, err := workflow.Parse(raw)
-			if err != nil {
-				t.Fatalf("legacy Parse: %v", err)
+			var unsupported workflow.UnsupportedSchemaVersionError
+			if !errors.As(err, &unsupported) {
+				t.Fatalf("error = %T %v, want UnsupportedSchemaVersionError", err, err)
 			}
-			compiled, err := workflow.ParseCompiled(raw)
-			if err != nil {
-				t.Fatalf("ParseCompiled: %v", err)
+			if unsupported.Got != test.version {
+				t.Fatalf("Got = %d, want %d", unsupported.Got, test.version)
 			}
-			if compiled.Function != nil || compiled.Legacy == nil || !reflect.DeepEqual(legacy, compiled.Legacy) {
-				t.Fatalf("legacy semantics drifted:\nlegacy=%+v\ncompiled=%+v", legacy, compiled)
+			want := fmt.Sprintf(
+				"workflow: unsupported schema_version %d; only schema_version 3 is supported",
+				test.version,
+			)
+			if err.Error() != want {
+				t.Fatalf("error = %q, want %q", err, want)
 			}
 		})
 	}

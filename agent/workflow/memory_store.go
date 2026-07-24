@@ -114,9 +114,6 @@ func (m *MemoryStore) ImportManifest(name string, src Manifest, createdBy string
 		RawYAML:          src["workflow.yml"],
 		SourceManifest:   stored,
 	}
-	if compiled.Legacy != nil {
-		def.Config = *compiled.Legacy
-	}
 	m.defs = append(m.defs, def)
 	return cloneMemoryDefinition(def, true)
 }
@@ -290,11 +287,14 @@ func (m *MemoryStore) Promote(name string, version int, promotedBy string) (Prom
 // returned compiled definition from mutating the in-memory store's authority.
 func cloneMemoryDefinition(definition *Definition, includeContent bool) (*Definition, error) {
 	clone := *definition
-	clone.Config = Config{}
 	clone.Compiled = CompiledDefinition{}
 	clone.RawYAML = ""
 	clone.SourceManifest = nil
 	if !includeContent {
+		return &clone, nil
+	}
+	if definition.SchemaVersion != 3 {
+		clone.RawYAML = definition.RawYAML
 		return &clone, nil
 	}
 	source := make(Manifest, len(definition.SourceManifest))
@@ -306,9 +306,6 @@ func cloneMemoryDefinition(definition *Definition, includeContent bool) (*Defini
 		return nil, fmt.Errorf("workflow: stored definition %q version %d no longer compiles: %w", definition.Name, definition.Version, err)
 	}
 	clone.Compiled = *compiled
-	if compiled.Legacy != nil {
-		clone.Config = *compiled.Legacy
-	}
 	clone.RawYAML = source["workflow.yml"]
 	clone.SourceManifest = source
 	return &clone, nil

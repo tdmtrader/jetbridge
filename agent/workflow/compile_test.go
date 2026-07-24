@@ -2,6 +2,7 @@ package workflow_test
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -11,91 +12,100 @@ import (
 	"github.com/concourse/concourse/atc"
 )
 
-func v2Manifest() workflow.Manifest {
-	return workflow.Manifest{
-		"workflow.yml":                     v2YAML, // from parse_v2_test.go
-		"prompts/implement.md":             "Implement task by task. Ticket: {{.Ticket.Title}}",
-		"system/base.md":                   "workflow-level system prompt",
-		"system/implement.md":              "implement-step system prompt",
-		"context/conventions.md":           "conventions body",
-		"context/tdd.md":                   "tdd checklist body",
-		"skills/tdd/SKILL.md":              "# tdd skill",
-		"skills/tdd/refs/a.md":             "supporting file",
-		"skills/concourse-idioms/SKILL.md": "# idioms",
-		"skills/extra/SKILL.md":            "# extra",
-		"README.md":                        "unreferenced files are allowed and hashed",
-	}
-}
-
-func validV1YAML() string {
-	return `schema_version: 1
-name: v1
-description: passthrough
-prompts:
-  work: |
-    Do the work.
+func TestCompileDefinitionRejectsLegacyBeforeContentOrAssetValidation(t *testing.T) {
+	tests := []struct {
+		name     string
+		version  int
+		manifest workflow.Manifest
+	}{
+		{
+			name:    "schema 1 before invalid legacy content",
+			version: 1,
+			manifest: workflow.Manifest{"workflow.yml": `schema_version: 1
+name: legacy-invalid
+steps: []
+`},
+		},
+		{
+			name:    "schema 2 before missing prompt asset",
+			version: 2,
+			manifest: workflow.Manifest{"workflow.yml": `schema_version: 2
+name: legacy-assets
+prompt_files:
+  work: prompts/missing.md
 steps:
-- agent: work
-  prompt: work
-  outputs: [workspace]
-`
-}
-
-func TestCompileResolvesEverything(t *testing.T) {
-	cfg, err := workflow.Compile(v2Manifest())
-	if err != nil {
-		t.Fatalf("compile: %v", err)
+  - agent: work
+    prompt: work
+    outputs: [workspace]
+`},
+		},
 	}
-	if got := cfg.Prompts["implement"]; !strings.Contains(got, "Implement task by task") {
-		t.Fatalf("prompt_files not inlined: %q", got)
-	}
-	if cfg.SystemPrompt != "workflow-level system prompt" {
-		t.Fatalf("workflow system_prompt_file not resolved: %q", cfg.SystemPrompt)
-	}
-	if cfg.Steps[0].SystemPrompt != "implement-step system prompt" {
-		t.Fatalf("step system_prompt_file not resolved: %q", cfg.Steps[0].SystemPrompt)
-	}
-	if cfg.ContextFiles["context/conventions.md"] != "conventions body" ||
-		cfg.ContextFiles["context/tdd.md"] != "tdd checklist body" {
-		t.Fatalf("context not resolved: %v", cfg.ContextFiles)
-	}
-	if cfg.SkillFiles["skills/tdd/SKILL.md"] == "" || cfg.SkillFiles["skills/tdd/refs/a.md"] == "" ||
-		cfg.SkillFiles["skills/extra/SKILL.md"] == "" {
-		t.Fatalf("skill trees not collected: %v", cfg.SkillFiles)
-	}
-	if _, ok := cfg.SkillFiles["README.md"]; ok {
-		t.Fatal("unreferenced file must not land in SkillFiles")
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			definition, err := workflow.CompileDefinition(test.manifest)
+			if definition != nil {
+				t.Fatalf("definition = %+v, want nil", definition)
+			}
+			var unsupported workflow.UnsupportedSchemaVersionError
+			if !errors.As(err, &unsupported) {
+				t.Fatalf("error = %T %v, want UnsupportedSchemaVersionError", err, err)
+			}
+			if unsupported.Got != test.version {
+				t.Fatalf("Got = %d, want %d", unsupported.Got, test.version)
+			}
+			want := fmt.Sprintf(
+				"workflow: unsupported schema_version %d; only schema_version 3 is supported",
+				test.version,
+			)
+			if err.Error() != want {
+				t.Fatalf("error = %q, want %q", err, want)
+			}
+		})
 	}
 }
 
-func TestCompileSingleFileV1Passthrough(t *testing.T) {
-	cfg, err := workflow.Compile(workflow.Manifest{"workflow.yml": validV1YAML()})
-	if err != nil {
-		t.Fatalf("compile: %v", err)
+func TestCompileDefinitionManifestValidationPrecedesSchemaInspection(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		manifest workflow.Manifest
+		want     string
+	}{
+		{name: "empty", manifest: workflow.Manifest{}, want: "workflow: manifest has no files"},
+		{
+			name:     "missing workflow",
+			manifest: workflow.Manifest{"README.md": "source only"},
+			want:     "workflow: manifest has no workflow.yml",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			definition, err := workflow.CompileDefinition(test.manifest)
+			if definition != nil || err == nil {
+				t.Fatalf("CompileDefinition = (%+v, %v), want nil definition and error", definition, err)
+			}
+			if err.Error() != test.want {
+				t.Fatalf("error = %q, want %q", err, test.want)
+			}
+			var unsupported workflow.UnsupportedSchemaVersionError
+			if errors.As(err, &unsupported) {
+				t.Fatalf("error = %T %v, must not be UnsupportedSchemaVersionError", err, err)
+			}
+		})
 	}
-	if cfg.Name == "" || len(cfg.SkillFiles) != 0 || len(cfg.ContextFiles) != 0 {
-		t.Fatalf("v1 passthrough drifted: %+v", cfg)
-	}
-}
 
-func TestCompileErrors(t *testing.T) {
-	missing := func(mutate func(m workflow.Manifest)) workflow.Manifest {
-		m := v2Manifest()
-		mutate(m)
-		return m
+	malformedV3 := workflow.Manifest{"workflow.yml": `schema_version: 3
+name: malformed-v3
+signature_version: 1
+inputs: []
+outputs: []
+plan: []
+`}
+	definition, err := workflow.CompileDefinition(malformedV3)
+	if definition != nil || err == nil {
+		t.Fatalf("CompileDefinition malformed v3 = (%+v, %v), want nil definition and error", definition, err)
 	}
-	cases := map[string]workflow.Manifest{
-		"no workflow.yml":          {"prompts/x.md": "x"},
-		"missing prompt file":      missing(func(m workflow.Manifest) { delete(m, "prompts/implement.md") }),
-		"missing system file":      missing(func(m workflow.Manifest) { delete(m, "system/base.md") }),
-		"missing context file":     missing(func(m workflow.Manifest) { delete(m, "context/tdd.md") }),
-		"missing SKILL.md":         missing(func(m workflow.Manifest) { delete(m, "skills/tdd/SKILL.md") }),
-		"prompt file bad template": missing(func(m workflow.Manifest) { m["prompts/implement.md"] = "{{.Spec.Title}}" }),
-	}
-	for name, m := range cases {
-		if _, err := workflow.Compile(m); err == nil {
-			t.Errorf("%s: expected error, got nil", name)
-		}
+	var unsupported workflow.UnsupportedSchemaVersionError
+	if errors.As(err, &unsupported) {
+		t.Fatalf("malformed v3 error = %T %v, must not be UnsupportedSchemaVersionError", err, err)
 	}
 }
 
@@ -664,27 +674,6 @@ func TestCompileV3RejectsInvalidCapabilitiesDeterministically(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("error = %q, want %q", err, test.want)
-			}
-		})
-	}
-}
-
-func TestCompileDefinitionKeepsLegacyCompileBehavior(t *testing.T) {
-	for name, manifest := range map[string]workflow.Manifest{
-		"v1": {"workflow.yml": validV1YAML()},
-		"v2": v2Manifest(),
-	} {
-		t.Run(name, func(t *testing.T) {
-			legacy, err := workflow.Compile(manifest)
-			if err != nil {
-				t.Fatalf("Compile: %v", err)
-			}
-			definition, err := workflow.CompileDefinition(manifest)
-			if err != nil {
-				t.Fatalf("CompileDefinition: %v", err)
-			}
-			if definition.Function != nil || !reflect.DeepEqual(definition.Legacy, legacy) {
-				t.Fatalf("legacy compile drifted: legacy=%+v definition=%+v", legacy, definition)
 			}
 		})
 	}

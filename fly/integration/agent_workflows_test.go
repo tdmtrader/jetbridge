@@ -18,16 +18,27 @@ import (
 	"github.com/onsi/gomega/ghttp"
 )
 
-const workflowDefYAML = `schema_version: 1
+const workflowDefYAML = `schema_version: 3
 name: standard-dev
 description: integration test workflow
+signature_version: 1
+inputs: []
+outputs: []
+plan:
+  - agent: work
+    function_id: work
+    prompt: Do the work.
+`
+
+const historicalWorkflowDefYAML = `schema_version: 1
+name: standard-dev
+description: historical integration test workflow
 prompts:
-  work: |
-    Do the work.
+  work: Do the work.
 steps:
-- agent: work
-  prompt: work
-  outputs: [workspace]
+  - agent: work
+    prompt: work
+    outputs: [workspace]
 `
 
 var _ = Describe("fly agent workflows", func() {
@@ -446,7 +457,7 @@ var _ = Describe("fly agent workflows", func() {
 					ghttp.VerifyRequest("GET", "/api/v1/agent/workflows/standard-dev/versions/2"),
 					ghttp.RespondWithJSONEncoded(http.StatusOK, workflow.Definition{
 						Name: "standard-dev", Version: 2, ContentHash: "abc123",
-						Live: true, RawYAML: workflowDefYAML,
+						SchemaVersion: 1, Live: true, RawYAML: historicalWorkflowDefYAML,
 					}),
 				),
 			)
@@ -489,7 +500,7 @@ var _ = Describe("fly agent workflows", func() {
 					ghttp.VerifyRequest("GET", "/api/v1/agent/workflows/standard-dev/versions/1"),
 					ghttp.RespondWithJSONEncoded(http.StatusOK, workflow.Definition{
 						Name: "standard-dev", Version: 1, ContentHash: "abc123",
-						Live: true, RawYAML: workflowDefYAML,
+						SchemaVersion: 1, Live: true, RawYAML: historicalWorkflowDefYAML,
 					}),
 				),
 			)
@@ -531,16 +542,20 @@ var _ = Describe("fly agent workflows", func() {
 			Expect(sess.Out).To(gbytes.Say(`imported standard-dev version 1`))
 		})
 
-		It("rejects an invalid definition locally, before any API call", func() {
-			bad := filepath.Join(GinkgoT().TempDir(), "bad.yaml")
-			Expect(os.WriteFile(bad, []byte("schema_version: 1\nname: x\nsteps: []\n"), 0644)).To(Succeed())
+		It("rejects a valid schema-1 definition locally, before any import API call", func() {
+			legacy := filepath.Join(GinkgoT().TempDir(), "legacy-v1.yaml")
+			Expect(os.WriteFile(legacy, []byte(historicalWorkflowDefYAML), 0644)).To(Succeed())
+			requestsBefore := len(atcServer.ReceivedRequests())
 
-			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "workflows", "import", bad)
+			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "workflows", "import", legacy)
 			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
 			Expect(err).NotTo(HaveOccurred())
 			<-sess.Exited
 			Expect(sess.ExitCode()).NotTo(Equal(0))
-			Expect(sess.Err).To(gbytes.Say(`at least one step is required`))
+			Expect(sess.Err).To(gbytes.Say(`workflow: unsupported schema_version 1; only schema_version 3 is supported`))
+			for _, request := range atcServer.ReceivedRequests()[requestsBefore:] {
+				Expect(request.URL.Path).NotTo(Equal("/api/v1/agent/workflows/standard-dev/versions"))
+			}
 		})
 	})
 
@@ -591,7 +606,8 @@ var _ = Describe("fly agent workflows", func() {
 
 	Describe("import from a directory", func() {
 		var srcDir string
-		const dirWorkflowYAML = "schema_version: 2\nname: dev\ndescription: dir import\nskills: [tdd]\nprompt_files:\n  work: prompts/work.md\nsteps:\n- agent: work\n  prompt: work\n  outputs: [workspace]\n"
+		const dirWorkflowYAML = "schema_version: 3\nname: dev\ndescription: dir import\nsignature_version: 1\ninputs: []\noutputs: []\nplan:\n  - agent: work\n    function_id: work\n    prompt_file: prompts/work.md\n    skills: [tdd]\n"
+		const legacyDirWorkflowYAML = "schema_version: 2\nname: dev\ntrigger: {type: manual}\nworkspace: {type: git, repo: example/repo}\nprompts:\n  work: Do the work.\nsteps:\n  - agent: work\n    prompt: work\n    outputs: [workspace]\n"
 
 		BeforeEach(func() {
 			srcDir = GinkgoT().TempDir()
@@ -628,13 +644,28 @@ var _ = Describe("fly agent workflows", func() {
 			Expect(sess.Out).To(gbytes.Say(`imported dev version 4`))
 		})
 
+		It("rejects a valid schema-2 directory locally, before any import API call", func() {
+			Expect(os.WriteFile(filepath.Join(srcDir, "workflow.yml"), []byte(legacyDirWorkflowYAML), 0o644)).To(Succeed())
+			requestsBefore := len(atcServer.ReceivedRequests())
+
+			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "workflows", "import", srcDir)
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).NotTo(Equal(0))
+			Expect(sess.Err).To(gbytes.Say(`workflow: unsupported schema_version 2; only schema_version 3 is supported`))
+			for _, request := range atcServer.ReceivedRequests()[requestsBefore:] {
+				Expect(request.URL.Path).NotTo(Equal("/api/v1/agent/workflows/dev/versions"))
+			}
+		})
+
 		It("promotes with --set-live", func() {
 			atcServer.AppendHandlers(
 				ghttp.CombineHandlers(
 					ghttp.VerifyRequest("PUT", "/api/v1/agent/workflows/dev/versions/4/live"),
 					ghttp.RespondWithJSONEncoded(http.StatusOK, workflow.PromotionResult{
-						PreviousLive: &workflow.VersionMetadata{Version: 3, SchemaVersion: 2, SignatureVersion: 0},
-						Target:       workflow.VersionMetadata{Version: 4, SchemaVersion: 2, SignatureVersion: 0},
+						PreviousLive: &workflow.VersionMetadata{Version: 3, SchemaVersion: 3, SignatureVersion: 1},
+						Target:       workflow.VersionMetadata{Version: 4, SchemaVersion: 3, SignatureVersion: 1},
 					}),
 				),
 			)

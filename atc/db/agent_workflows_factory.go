@@ -39,7 +39,7 @@ func (f *agentWorkflowsFactory) Import(name string, rawYAML []byte, createdBy st
 }
 
 // ImportManifest compiles and stores a source tree (design 2026-07-17
-// §3): the compiled Config is rebuilt on read from the stored canonical
+// §3): the compiled definition is rebuilt on read from the stored canonical
 // manifest, so there is exactly one persisted source of truth per row.
 // Idempotent on the canonical-manifest hash.
 func (f *agentWorkflowsFactory) ImportManifest(name string, src workflow.Manifest, createdBy string) (*workflow.Definition, error) {
@@ -456,10 +456,6 @@ func populateCompiledWorkflowDefinition(
 	source workflow.Manifest,
 ) {
 	definition.Compiled = *compiled
-	definition.Config = workflow.Config{}
-	if compiled.Legacy != nil {
-		definition.Config = *compiled.Legacy
-	}
 	if source != nil {
 		definition.RawYAML = source["workflow.yml"]
 		definition.SourceManifest = source

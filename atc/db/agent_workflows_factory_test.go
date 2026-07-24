@@ -2,6 +2,7 @@ package db_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -562,7 +563,11 @@ plan:
 			Expect(older.RawYAML).To(Equal(rawV1))
 			Expect(older.SourceManifest).To(BeNil())
 			Expect(older.Compiled).To(Equal(workflow.CompiledDefinition{}))
-			Expect(older.Config).To(Equal(workflow.Config{}))
+			wirePayload, err := json.Marshal(older)
+			Expect(err).NotTo(HaveOccurred())
+			var wire map[string]any
+			Expect(json.Unmarshal(wirePayload, &wire)).To(Succeed())
+			Expect(wire).NotTo(HaveKey("config"))
 
 			assertOpaqueV2 := func(got *workflow.Definition, found bool, err error) {
 				Expect(err).NotTo(HaveOccurred())
@@ -580,7 +585,6 @@ plan:
 				Expect(got.RawYAML).To(Equal(rawV2))
 				Expect(got.SourceManifest).To(BeNil())
 				Expect(got.Compiled).To(Equal(workflow.CompiledDefinition{}))
-				Expect(got.Config).To(Equal(workflow.Config{}))
 			}
 
 			got, found, err := factory.Get(name, 2)

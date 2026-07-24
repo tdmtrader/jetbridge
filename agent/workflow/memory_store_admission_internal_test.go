@@ -14,7 +14,7 @@ func (validator *countingPromotionValidator) ValidatePromotion(Definition) error
 	return nil
 }
 
-func TestMemoryStorePromoteNonV3RejectsBeforeCompilationOrValidator(t *testing.T) {
+func TestMemoryStoreHistoricalNonV3ReadsRemainOpaque(t *testing.T) {
 	validator := &countingPromotionValidator{}
 	store := NewMemoryStore(validator)
 	source := Manifest{"workflow.yml": `schema_version: 3
@@ -39,19 +39,56 @@ plan:
 		t.Fatalf("validator calls after v3 promotion = %d, want positive", baselineCalls)
 	}
 
+	const (
+		legacyRaw         = "not: [valid YAML"
+		legacyHash        = "historical-v2"
+		legacyDescription = "opaque schema-2 history"
+		legacyCreatedBy   = "historical-import"
+		legacyCreatedAt   = int64(1_700_000_000)
+	)
 	store.mu.Lock()
 	store.nextID++
 	legacy := &Definition{
-		ID:             store.nextID,
-		Name:           "admission-order",
-		Version:        live.Version + 1,
-		SchemaVersion:  2,
-		ContentHash:    "historical-v2",
-		RawYAML:        "not: [valid YAML",
-		SourceManifest: Manifest{"workflow.yml": "not: [valid YAML"},
+		ID:               store.nextID,
+		Name:             "admission-order",
+		Version:          live.Version + 1,
+		SchemaVersion:    2,
+		SignatureVersion: 0,
+		ContentHash:      legacyHash,
+		Description:      legacyDescription,
+		CreatedBy:        legacyCreatedBy,
+		CreatedAt:        legacyCreatedAt,
+		RawYAML:          legacyRaw,
+		SourceManifest:   Manifest{"workflow.yml": legacyRaw},
 	}
 	store.defs = append(store.defs, legacy)
 	store.mu.Unlock()
+
+	assertOpaque := func(label string, got *Definition, found bool, err error) {
+		t.Helper()
+		if err != nil || !found {
+			t.Fatalf("%s: found=%v err=%v", label, found, err)
+		}
+		if got.ID != legacy.ID || got.Name != legacy.Name || got.Version != legacy.Version ||
+			got.SchemaVersion != legacy.SchemaVersion || got.SignatureVersion != legacy.SignatureVersion ||
+			got.ContentHash != legacyHash || got.Description != legacyDescription ||
+			got.CreatedBy != legacyCreatedBy || got.CreatedAt != legacyCreatedAt || got.Live {
+			t.Fatalf("%s metadata = %+v, want exact historical metadata %+v", label, got, legacy)
+		}
+		if got.RawYAML != legacyRaw {
+			t.Fatalf("%s RawYAML = %q, want %q", label, got.RawYAML, legacyRaw)
+		}
+		if got.SourceManifest != nil {
+			t.Fatalf("%s SourceManifest = %+v, want nil", label, got.SourceManifest)
+		}
+		if got.Compiled != (CompiledDefinition{}) {
+			t.Fatalf("%s Compiled = %+v, want zero", label, got.Compiled)
+		}
+	}
+	got, found, err := store.Get("admission-order", legacy.Version)
+	assertOpaque("Get", got, found, err)
+	latest, found, err := store.Latest("admission-order")
+	assertOpaque("Latest", latest, found, err)
 
 	_, err = store.Promote("admission-order", legacy.Version, "bob")
 	var invalid InvalidPromotionError
