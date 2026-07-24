@@ -37,9 +37,9 @@ type RunReader interface {
 // Polling-only (agent_tickets has no NOTIFY trigger; never notify-only per
 // the fork's dropped-notification lesson) at the component framework's
 // default 10s interval. The Coordinator lock serializes Run across web
-// nodes; schema-v3 dispatch also reserves durably before admission, while
-// the legacy path retains its guarded queued→running transition. A lost
-// coordinator lock therefore degrades to redundant, idempotent work.
+// nodes; schema-v3 dispatch reserves durably before admission and guards its
+// final queued→running transition. A lost coordinator lock therefore
+// degrades to redundant, idempotent work.
 type Dispatcher struct {
 	deps Deps
 	cfg  LoopConfig
