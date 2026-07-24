@@ -28,16 +28,13 @@ type RepositoryMetadata struct {
 	RootCommits  []string `json:"root_commits"`
 }
 
-type RepositoryChangeDocument struct {
-	SchemaVersion  string `json:"schema_version"`
-	RepositoryID   string `json:"repository_id"`
-	BaseInput      string `json:"base_input"`
-	BaseSHA        string `json:"base_sha"`
-	ResultSHA      string `json:"result_sha,omitempty"`
-	ResultTreeSHA  string `json:"result_tree_sha"`
-	Representation string `json:"representation"`
-	PayloadPath    string `json:"payload_path"`
-	PayloadDigest  string `json:"payload_digest"`
+type RepositoryChangeBody struct {
+	RepositoryID   string     `json:"repository_id"`
+	BaseSHA        string     `json:"base_sha"`
+	Representation string     `json:"representation"`
+	Payload        ContentRef `json:"payload"`
+	ResultTree     string     `json:"result_tree"`
+	ResultCommit   string     `json:"result_commit,omitempty"`
 }
 
 type repositoryValidator struct{}

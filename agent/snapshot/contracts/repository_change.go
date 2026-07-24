@@ -1,6 +1,7 @@
 package contracts
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -9,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/concourse/concourse/agent/snapshot"
@@ -17,58 +19,54 @@ import (
 const maxRepositoryPayloadBytes int64 = 10 << 30
 
 type RepositoryChangeMetadata struct {
-	RepositoryID   string `json:"repository_id"`
-	BaseSHA        string `json:"base_sha"`
-	ResultSHA      string `json:"result_sha,omitempty"`
-	ResultTreeSHA  string `json:"result_tree_sha"`
-	Representation string `json:"representation"`
+	RepositoryID   string   `json:"repository_id"`
+	BaseSHA        string   `json:"base_sha"`
+	ResultCommit   string   `json:"result_commit,omitempty"`
+	ResultTree     string   `json:"result_tree"`
+	Representation string   `json:"representation"`
+	ChangedFiles   []string `json:"changed_files"`
 }
 
-func (d RepositoryChangeDocument) Validate() error {
-	if err := validateDocumentVersion(d.SchemaVersion); err != nil {
-		return err
-	}
+func (d RepositoryChangeBody) Validate(subjects []Subject) error {
 	if err := requireStrings([]namedString{
-		{"repository_id", d.RepositoryID}, {"base_input", d.BaseInput},
-		{"base_sha", d.BaseSHA}, {"result_tree_sha", d.ResultTreeSHA},
-		{"representation", d.Representation}, {"payload_path", d.PayloadPath},
-		{"payload_digest", d.PayloadDigest},
+		{"repository_id", d.RepositoryID}, {"base_sha", d.BaseSHA},
+		{"result_tree", d.ResultTree}, {"representation", d.Representation},
 	}); err != nil {
 		return err
+	}
+	if len(subjects) != 1 || subjects[0].Role != SubjectRoleBase {
+		return fmt.Errorf("repository-change record requires exactly one base subject")
+	}
+	if subjects[0].Type.String() != "repository/v1" {
+		return fmt.Errorf("repository-change base subject must have type repository/v1")
 	}
 	if _, err := snapshot.ParseDigest(d.RepositoryID); err != nil {
 		return fmt.Errorf("repository_id: %w", err)
 	}
-	if _, err := snapshot.ParseDigest(d.PayloadDigest); err != nil {
-		return fmt.Errorf("payload_digest: %w", err)
+	if err := d.Payload.Validate(); err != nil {
+		return fmt.Errorf("payload: %w", err)
 	}
 	objectFormat, err := objectFormatForID(d.BaseSHA)
 	if err != nil {
 		return fmt.Errorf("base_sha: %w", err)
 	}
-	if err := validateObjectID(objectFormat, d.ResultTreeSHA); err != nil {
-		return fmt.Errorf("result_tree_sha: %w", err)
-	}
-	if err := validatePOSIXPath("payload_path", d.PayloadPath); err != nil {
-		return err
-	}
-	if d.PayloadPath == "change.json" {
-		return fmt.Errorf("payload_path must not name change.json")
+	if err := validateObjectID(objectFormat, d.ResultTree); err != nil {
+		return fmt.Errorf("result_tree: %w", err)
 	}
 	switch d.Representation {
 	case "patch":
-		if d.ResultSHA != "" {
-			return fmt.Errorf("result_sha must be omitted for patch representation because a patch proves only result_tree_sha")
+		if d.ResultCommit != "" {
+			return fmt.Errorf("result_commit must be omitted for patch representation because a patch proves only result_tree")
 		}
-	case "git-tree", "bundle":
-		if strings.TrimSpace(d.ResultSHA) == "" {
-			return fmt.Errorf("result_sha is required for %s representation", d.Representation)
+	case "git-tree", "git-bundle":
+		if strings.TrimSpace(d.ResultCommit) == "" {
+			return fmt.Errorf("result_commit is required for %s representation", d.Representation)
 		}
-		if err := validateObjectID(objectFormat, d.ResultSHA); err != nil {
-			return fmt.Errorf("result_sha: %w", err)
+		if err := validateObjectID(objectFormat, d.ResultCommit); err != nil {
+			return fmt.Errorf("result_commit: %w", err)
 		}
 	default:
-		return fmt.Errorf("representation must be one of git-tree, patch, bundle")
+		return fmt.Errorf("representation must be one of patch, git-bundle, git-tree")
 	}
 	return nil
 }
@@ -78,22 +76,24 @@ type repositoryChangeValidator struct {
 }
 
 func (validator repositoryChangeValidator) Validate(ctx context.Context, root *os.Root, validationContext snapshot.ValidationContext) (snapshot.ValidationResult, error) {
-	var document RepositoryChangeDocument
-	if err := decodeStrictDocument(ctx, root, "change.json", &document); err != nil {
+	record, err := ReadRepositoryChangeRecord(ctx, root)
+	if err != nil {
 		return snapshot.ValidationResult{}, err
 	}
-	if err := document.Validate(); err != nil {
-		return snapshot.ValidationResult{}, fmt.Errorf("snapshot contracts: change.json: %w", err)
+	if err := record.ValidateEnvelope(snapshot.TypeRef("repository-change/v1"), validationContext); err != nil {
+		return snapshot.ValidationResult{}, fmt.Errorf("snapshot contracts: record.json: %w", err)
 	}
+	document := record.Body
+	baseSubject := record.Subjects[0]
 
-	baseRef, found := validationContext.Input(document.BaseInput)
+	baseRef, found := validationContext.Input(baseSubject.Input)
 	if !found {
-		return snapshot.ValidationResult{}, fmt.Errorf("snapshot contracts: base_input %q is not an exact declared input", document.BaseInput)
+		return snapshot.ValidationResult{}, fmt.Errorf("snapshot contracts: base subject input %q is not an exact declared input", baseSubject.Input)
 	}
 	if baseRef.Type.String() != "repository/v1" {
-		return snapshot.ValidationResult{}, fmt.Errorf("snapshot contracts: base_input %q must have type repository/v1", document.BaseInput)
+		return snapshot.ValidationResult{}, fmt.Errorf("snapshot contracts: base subject input %q must have type repository/v1", baseSubject.Input)
 	}
-	baseReader, err := validationContext.OpenInput(ctx, document.BaseInput)
+	baseReader, err := validationContext.OpenInput(ctx, baseSubject.Input)
 	if err != nil {
 		return snapshot.ValidationResult{}, err
 	}
@@ -103,11 +103,11 @@ func (validator repositoryChangeValidator) Validate(ctx context.Context, root *o
 		if baseTree != nil {
 			_ = baseTree.Close()
 		}
-		return snapshot.ValidationResult{}, fmt.Errorf("snapshot contracts: capture base_input %q: %w", document.BaseInput, err)
+		return snapshot.ValidationResult{}, fmt.Errorf("snapshot contracts: capture base subject input %q: %w", baseSubject.Input, err)
 	}
 	defer baseTree.Close()
 	if baseTree.Digest != baseRef.Digest {
-		return snapshot.ValidationResult{}, fmt.Errorf("snapshot contracts: base_input %q content digest does not match its immutable reference", document.BaseInput)
+		return snapshot.ValidationResult{}, fmt.Errorf("snapshot contracts: base subject input %q content digest does not match its immutable reference", baseSubject.Input)
 	}
 	baseRoot, err := os.OpenRoot(baseTree.Root)
 	if err != nil {
@@ -116,7 +116,7 @@ func (validator repositoryChangeValidator) Validate(ctx context.Context, root *o
 	baseMetadata, baseErr := validateRepository(ctx, baseRoot, "HEAD")
 	baseCloseErr := baseRoot.Close()
 	if err := errors.Join(baseErr, baseCloseErr); err != nil {
-		return snapshot.ValidationResult{}, fmt.Errorf("snapshot contracts: base_input %q is not repository/v1: %w", document.BaseInput, err)
+		return snapshot.ValidationResult{}, fmt.Errorf("snapshot contracts: base subject input %q is not repository/v1: %w", baseSubject.Input, err)
 	}
 	if document.RepositoryID != baseMetadata.RepositoryID {
 		return snapshot.ValidationResult{}, fmt.Errorf("snapshot contracts: repository_id does not match base repository")
@@ -128,30 +128,31 @@ func (validator repositoryChangeValidator) Validate(ctx context.Context, root *o
 		return snapshot.ValidationResult{}, fmt.Errorf("snapshot contracts: declared object IDs do not match base repository object format")
 	}
 
-	payload, err := spoolRepositoryPayload(ctx, root, document.PayloadPath, validator.canonicalizer.TempDir)
+	payload, err := spoolRepositoryPayload(ctx, root, document.Payload.Path, validator.canonicalizer.TempDir)
 	if err != nil {
-		return snapshot.ValidationResult{}, fmt.Errorf("snapshot contracts: payload_path: %w", err)
+		return snapshot.ValidationResult{}, fmt.Errorf("snapshot contracts: payload.path: %w", err)
 	}
 	defer payload.Close()
-	if payload.digest != document.PayloadDigest {
-		return snapshot.ValidationResult{}, fmt.Errorf("snapshot contracts: payload_digest does not match exact payload bytes")
+	if payload.digest != document.Payload.Digest.String() {
+		return snapshot.ValidationResult{}, fmt.Errorf("snapshot contracts: payload.digest does not match exact payload bytes")
 	}
 
+	var changedFiles []string
 	switch document.Representation {
 	case "git-tree":
-		err = validateGitTreeChange(ctx, payload.path, document, baseMetadata, validator.canonicalizer)
+		changedFiles, err = validateGitTreeChange(ctx, payload.path, document, baseMetadata, validator.canonicalizer)
 	case "patch":
-		err = validatePatchChange(ctx, baseTree.Root, payload.path, document, baseMetadata)
-	case "bundle":
-		err = validateBundleChange(ctx, baseTree.Root, payload.path, document, baseMetadata)
+		changedFiles, err = validatePatchChange(ctx, baseTree.Root, payload.path, document, baseMetadata)
+	case "git-bundle":
+		changedFiles, err = validateBundleChange(ctx, baseTree.Root, payload.path, document, baseMetadata)
 	}
 	if err != nil {
 		return snapshot.ValidationResult{}, err
 	}
 	metadata := RepositoryChangeMetadata{
 		RepositoryID: document.RepositoryID, BaseSHA: document.BaseSHA,
-		ResultSHA: document.ResultSHA, ResultTreeSHA: document.ResultTreeSHA,
-		Representation: document.Representation,
+		ResultCommit: document.ResultCommit, ResultTree: document.ResultTree,
+		Representation: document.Representation, ChangedFiles: changedFiles,
 	}
 	encoded, err := json.Marshal(metadata)
 	if err != nil {
@@ -160,16 +161,30 @@ func (validator repositoryChangeValidator) Validate(ctx context.Context, root *o
 	return snapshot.ValidationResult{IntrinsicMetadata: encoded}, nil
 }
 
+func ReadRepositoryChangeRecord(ctx context.Context, root *os.Root) (Record[RepositoryChangeBody], error) {
+	var record Record[RepositoryChangeBody]
+	if err := decodeStrictDocument(ctx, root, "record.json", &record); err != nil {
+		return Record[RepositoryChangeBody]{}, err
+	}
+	if err := record.validateEnvelopeShape(snapshot.TypeRef("repository-change/v1")); err != nil {
+		return Record[RepositoryChangeBody]{}, fmt.Errorf("snapshot contracts: record.json: %w", err)
+	}
+	if err := record.Body.Validate(record.Subjects); err != nil {
+		return Record[RepositoryChangeBody]{}, fmt.Errorf("snapshot contracts: record.json body: %w", err)
+	}
+	return record, nil
+}
+
 func validateGitTreeChange(
 	ctx context.Context,
 	payloadPath string,
-	document RepositoryChangeDocument,
+	document RepositoryChangeBody,
 	base RepositoryMetadata,
 	canonicalizer snapshot.Canonicalizer,
-) error {
+) ([]string, error) {
 	payload, err := os.Open(payloadPath)
 	if err != nil {
-		return fmt.Errorf("snapshot contracts: open git-tree payload: %w", err)
+		return nil, fmt.Errorf("snapshot contracts: open git-tree payload: %w", err)
 	}
 	resultTree, captureErr := canonicalizer.Capture(ctx, payload)
 	closeErr := payload.Close()
@@ -177,71 +192,72 @@ func validateGitTreeChange(
 		if resultTree != nil {
 			_ = resultTree.Close()
 		}
-		return fmt.Errorf("snapshot contracts: git-tree payload is not a canonical repository tar: %w", err)
+		return nil, fmt.Errorf("snapshot contracts: git-tree payload is not a canonical repository tar: %w", err)
 	}
 	defer resultTree.Close()
-	if resultTree.Digest.String() != document.PayloadDigest {
-		return fmt.Errorf("snapshot contracts: git-tree payload must be a canonical tar of the complete result repository")
+	if resultTree.Digest != document.Payload.Digest {
+		return nil, fmt.Errorf("snapshot contracts: git-tree payload must be a canonical tar of the complete result repository")
 	}
 	root, err := os.OpenRoot(resultTree.Root)
 	if err != nil {
-		return fmt.Errorf("snapshot contracts: anchor git-tree result repository: %w", err)
+		return nil, fmt.Errorf("snapshot contracts: anchor git-tree result repository: %w", err)
 	}
 	metadata, validationErr := validateRepository(ctx, root, "HEAD")
 	closeRootErr := root.Close()
 	if err := errors.Join(validationErr, closeRootErr); err != nil {
-		return fmt.Errorf("snapshot contracts: git-tree result is not repository/v1: %w", err)
+		return nil, fmt.Errorf("snapshot contracts: git-tree result is not repository/v1: %w", err)
 	}
 	if err := validateResultMetadata(metadata, document, base); err != nil {
-		if metadata.HeadSHA != document.ResultSHA {
-			return fmt.Errorf("snapshot contracts: git-tree actual HEAD does not equal result_sha")
+		if metadata.HeadSHA != document.ResultCommit {
+			return nil, fmt.Errorf("snapshot contracts: git-tree actual HEAD does not equal result_commit")
 		}
-		return err
+		return nil, err
 	}
-	if _, err := (controlledGit{dir: resultTree.Root}).run(ctx, "merge-base", "--is-ancestor", document.BaseSHA, document.ResultSHA); err != nil {
-		return fmt.Errorf("snapshot contracts: git-tree result_sha does not descend from base_sha: %w", err)
+	runner := controlledGit{dir: resultTree.Root}
+	if _, err := runner.run(ctx, "merge-base", "--is-ancestor", document.BaseSHA, document.ResultCommit); err != nil {
+		return nil, fmt.Errorf("snapshot contracts: git-tree result_commit does not descend from base_sha: %w", err)
 	}
-	return nil
+	return deriveChangedFiles(ctx, runner, base.TreeSHA, document.ResultTree)
 }
 
-func validatePatchChange(ctx context.Context, baseDirectory, payloadPath string, document RepositoryChangeDocument, base RepositoryMetadata) error {
+func validatePatchChange(ctx context.Context, baseDirectory, payloadPath string, document RepositoryChangeBody, base RepositoryMetadata) ([]string, error) {
 	runner := controlledGit{dir: baseDirectory}
 	// Canonical extraction necessarily changes inode and timestamp metadata
 	// recorded in Git's index. Refresh that cache in the disposable scratch
 	// repository before asking --index to compare semantic file contents.
 	if _, err := runner.run(ctx, "update-index", "--refresh"); err != nil {
-		return fmt.Errorf("snapshot contracts: refresh scratch repository index: %w", err)
+		return nil, fmt.Errorf("snapshot contracts: refresh scratch repository index: %w", err)
 	}
 	if _, err := runner.run(ctx, "apply", "--check", "--index", "--whitespace=nowarn", payloadPath); err != nil {
-		return fmt.Errorf("snapshot contracts: patch failed git apply --check --index: %w", err)
+		return nil, fmt.Errorf("snapshot contracts: patch failed git apply --check --index: %w", err)
 	}
 	if _, err := runner.run(ctx, "apply", "--index", "--whitespace=nowarn", payloadPath); err != nil {
-		return fmt.Errorf("snapshot contracts: apply patch in controlled scratch repository: %w", err)
+		return nil, fmt.Errorf("snapshot contracts: apply patch in controlled scratch repository: %w", err)
 	}
 	resultTree, err := runner.run(ctx, "write-tree")
 	if err != nil {
-		return fmt.Errorf("snapshot contracts: calculate patched result_tree_sha: %w", err)
+		return nil, fmt.Errorf("snapshot contracts: calculate patched result_tree: %w", err)
 	}
 	if err := validateObjectID(base.ObjectFormat, resultTree); err != nil {
-		return fmt.Errorf("snapshot contracts: patched result tree: %w", err)
+		return nil, fmt.Errorf("snapshot contracts: patched result tree: %w", err)
 	}
-	if resultTree != document.ResultTreeSHA {
-		return fmt.Errorf("snapshot contracts: result_tree_sha does not match the applied patch")
+	if resultTree != document.ResultTree {
+		return nil, fmt.Errorf("snapshot contracts: result_tree does not match the applied patch")
 	}
 	if err := validateCommitTree(ctx, runner, resultTree, base.ObjectFormat); err != nil {
-		return fmt.Errorf("snapshot contracts: patched result tree is unsafe: %w", err)
+		return nil, fmt.Errorf("snapshot contracts: patched result tree is unsafe: %w", err)
 	}
-	return nil
+	return deriveChangedFiles(ctx, runner, base.TreeSHA, resultTree)
 }
 
-func validateBundleChange(ctx context.Context, baseDirectory, payloadPath string, document RepositoryChangeDocument, base RepositoryMetadata) error {
+func validateBundleChange(ctx context.Context, baseDirectory, payloadPath string, document RepositoryChangeBody, base RepositoryMetadata) ([]string, error) {
 	runner := controlledGit{dir: baseDirectory}
 	if _, err := runner.run(ctx, "bundle", "verify", payloadPath); err != nil {
-		return fmt.Errorf("snapshot contracts: bundle failed local git bundle verify: %w", err)
+		return nil, fmt.Errorf("snapshot contracts: bundle failed local git bundle verify: %w", err)
 	}
 	heads, err := runner.run(ctx, "bundle", "list-heads", payloadPath)
 	if err != nil {
-		return fmt.Errorf("snapshot contracts: list bundle heads: %w", err)
+		return nil, fmt.Errorf("snapshot contracts: list bundle heads: %w", err)
 	}
 	exposedHeads := make([][]string, 0, 1)
 	for _, line := range strings.Split(heads, "\n") {
@@ -249,44 +265,70 @@ func validateBundleChange(ctx context.Context, baseDirectory, payloadPath string
 			exposedHeads = append(exposedHeads, fields)
 		}
 	}
-	if len(exposedHeads) != 1 || exposedHeads[0][0] != document.ResultSHA {
-		return fmt.Errorf("snapshot contracts: bundle must expose exactly one intended result head equal to result_sha")
+	if len(exposedHeads) != 1 || exposedHeads[0][0] != document.ResultCommit {
+		return nil, fmt.Errorf("snapshot contracts: bundle must expose exactly one intended result head equal to result_commit")
 	}
 	if _, err := runner.run(ctx, "bundle", "unbundle", payloadPath); err != nil {
-		return fmt.Errorf("snapshot contracts: unbundle into controlled scratch repository: %w", err)
+		return nil, fmt.Errorf("snapshot contracts: unbundle into controlled scratch repository: %w", err)
 	}
 	root, err := os.OpenRoot(baseDirectory)
 	if err != nil {
-		return fmt.Errorf("snapshot contracts: anchor bundled scratch repository: %w", err)
+		return nil, fmt.Errorf("snapshot contracts: anchor bundled scratch repository: %w", err)
 	}
-	metadata, validationErr := validateRepository(ctx, root, document.ResultSHA)
+	metadata, validationErr := validateRepository(ctx, root, document.ResultCommit)
 	closeErr := root.Close()
 	if err := errors.Join(validationErr, closeErr); err != nil {
-		return fmt.Errorf("snapshot contracts: bundled result is invalid: %w", err)
+		return nil, fmt.Errorf("snapshot contracts: bundled result is invalid: %w", err)
 	}
 	if err := validateResultMetadata(metadata, document, base); err != nil {
-		return err
+		return nil, err
 	}
-	if _, err := runner.run(ctx, "merge-base", "--is-ancestor", document.BaseSHA, document.ResultSHA); err != nil {
-		return fmt.Errorf("snapshot contracts: bundle result_sha does not descend from base_sha: %w", err)
+	if _, err := runner.run(ctx, "merge-base", "--is-ancestor", document.BaseSHA, document.ResultCommit); err != nil {
+		return nil, fmt.Errorf("snapshot contracts: bundle result_commit does not descend from base_sha: %w", err)
 	}
-	return nil
+	return deriveChangedFiles(ctx, runner, base.TreeSHA, document.ResultTree)
 }
 
-func validateResultMetadata(metadata RepositoryMetadata, document RepositoryChangeDocument, base RepositoryMetadata) error {
+func validateResultMetadata(metadata RepositoryMetadata, document RepositoryChangeBody, base RepositoryMetadata) error {
 	if metadata.ObjectFormat != base.ObjectFormat {
 		return fmt.Errorf("snapshot contracts: result repository object format differs from base")
 	}
 	if metadata.RepositoryID != base.RepositoryID || metadata.RepositoryID != document.RepositoryID {
 		return fmt.Errorf("snapshot contracts: result repository_id differs from base")
 	}
-	if metadata.HeadSHA != document.ResultSHA {
-		return fmt.Errorf("snapshot contracts: result_sha does not match result repository commit")
+	if metadata.HeadSHA != document.ResultCommit {
+		return fmt.Errorf("snapshot contracts: result_commit does not match result repository commit")
 	}
-	if metadata.TreeSHA != document.ResultTreeSHA {
-		return fmt.Errorf("snapshot contracts: result_tree_sha does not match result repository tree")
+	if metadata.TreeSHA != document.ResultTree {
+		return fmt.Errorf("snapshot contracts: result_tree does not match result repository tree")
 	}
 	return nil
+}
+
+func deriveChangedFiles(ctx context.Context, runner controlledGit, baseTree, resultTree string) ([]string, error) {
+	output, err := runner.runRaw(ctx, "diff-tree", "--no-commit-id", "--name-only", "-r", "-z", baseTree, resultTree)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot contracts: derive changed files: %w", err)
+	}
+	parts := bytes.Split(output, []byte{0})
+	files := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for _, part := range parts {
+		if len(part) == 0 {
+			continue
+		}
+		name := string(part)
+		if err := validatePOSIXPath("changed file", name); err != nil {
+			return nil, fmt.Errorf("snapshot contracts: derived changed file: %w", err)
+		}
+		if _, found := seen[name]; found {
+			return nil, fmt.Errorf("snapshot contracts: derived changed file %q is duplicate", name)
+		}
+		seen[name] = struct{}{}
+		files = append(files, name)
+	}
+	sort.Strings(files)
+	return files, nil
 }
 
 func objectFormatForID(objectID string) (string, error) {

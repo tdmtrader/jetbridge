@@ -143,7 +143,7 @@ func TestRepositoryChangeProjectorKeepsUnavailableContentRetryable(t *testing.T)
 
 func TestDeriveRepositoryChangeSupportsEverySealedRepresentation(t *testing.T) {
 	base, metadata := projectionBaseRepository(t)
-	for _, representation := range []string{"git-tree", "patch", "bundle"} {
+	for _, representation := range []string{"git-tree", "patch", "git-bundle"} {
 		t.Run(representation, func(t *testing.T) {
 			changeRoot := buildChangeSnapshot(t, base, metadata, representation)
 			baseRoot := cloneProjectionRepository(t, base)
@@ -211,29 +211,30 @@ func buildChangeSnapshot(t *testing.T, base string, baseMetadata contracts.Repos
 		t.Fatal(err)
 	}
 
-	document := contracts.RepositoryChangeDocument{
-		SchemaVersion: "1.0.0", RepositoryID: baseMetadata.RepositoryID, BaseInput: "base",
-		BaseSHA: baseMetadata.HeadSHA, Representation: representation,
+	document := contracts.RepositoryChangeBody{
+		RepositoryID: baseMetadata.RepositoryID,
+		BaseSHA:      baseMetadata.HeadSHA, Representation: representation,
 	}
+	payloadPath := ""
 	var payload []byte
 	switch representation {
 	case "patch":
 		payload = []byte(projectionGit(t, result, "diff", "--binary", "--no-ext-diff", "HEAD") + "\n")
 		projectionGit(t, result, "add", "README.md")
-		document.ResultTreeSHA = projectionGit(t, result, "write-tree")
-		document.PayloadPath = "change.patch"
+		document.ResultTree = projectionGit(t, result, "write-tree")
+		payloadPath = "content/change.patch"
 	case "git-tree":
 		projectionGit(t, result, "add", "README.md")
 		projectionGit(t, result, "commit", "-q", "-m", "result")
-		document.ResultSHA = projectionGit(t, result, "rev-parse", "HEAD")
-		document.ResultTreeSHA = projectionGit(t, result, "rev-parse", "HEAD^{tree}")
+		document.ResultCommit = projectionGit(t, result, "rev-parse", "HEAD")
+		document.ResultTree = projectionGit(t, result, "rev-parse", "HEAD^{tree}")
 		payload = projectionTar(t, result)
-		document.PayloadPath = "result.tar"
-	case "bundle":
+		payloadPath = "content/result.tar"
+	case "git-bundle":
 		projectionGit(t, result, "add", "README.md")
 		projectionGit(t, result, "commit", "-q", "-m", "result")
-		document.ResultSHA = projectionGit(t, result, "rev-parse", "HEAD")
-		document.ResultTreeSHA = projectionGit(t, result, "rev-parse", "HEAD^{tree}")
+		document.ResultCommit = projectionGit(t, result, "rev-parse", "HEAD")
+		document.ResultTree = projectionGit(t, result, "rev-parse", "HEAD^{tree}")
 		bundlePath := filepath.Join(t.TempDir(), "result.bundle")
 		projectionGit(t, result, "bundle", "create", bundlePath, "HEAD", "^"+baseMetadata.HeadSHA)
 		var err error
@@ -241,20 +242,48 @@ func buildChangeSnapshot(t *testing.T, base string, baseMetadata contracts.Repos
 		if err != nil {
 			t.Fatal(err)
 		}
-		document.PayloadPath = "result.bundle"
+		payloadPath = "content/result.bundle"
 	default:
 		t.Fatalf("unknown representation %q", representation)
 	}
 	digest := sha256.Sum256(payload)
-	document.PayloadDigest = "sha256:" + hex.EncodeToString(digest[:])
-	encoded, err := json.Marshal(document)
+	payloadDigest, err := snapshot.ParseDigest("sha256:" + hex.EncodeToString(digest[:]))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(changeRoot, "change.json"), encoded, 0o600); err != nil {
+	document.Payload = contracts.ContentRef{
+		Path: payloadPath, Digest: payloadDigest, MediaType: "application/octet-stream",
+	}
+	baseTree, err := (snapshot.Canonicalizer{}).Capture(context.Background(), bytes.NewReader(projectionTar(t, base)))
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(changeRoot, document.PayloadPath), payload, 0o600); err != nil {
+	baseDigest := baseTree.Digest
+	if err := baseTree.Close(); err != nil {
+		t.Fatal(err)
+	}
+	record, err := contracts.NewRecord(
+		snapshot.TypeRef("repository-change/v1"),
+		[]contracts.Subject{{
+			ID: "base", Role: contracts.SubjectRoleBase, Input: "base",
+			Type: snapshot.TypeRef("repository/v1"), Digest: baseDigest,
+		}},
+		document,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(changeRoot, "record.json"), encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(changeRoot, "content"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(changeRoot, filepath.FromSlash(payloadPath)), payload, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return changeRoot
