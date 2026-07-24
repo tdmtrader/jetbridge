@@ -185,8 +185,7 @@ func (h *Handler) ListTickets(w http.ResponseWriter, r *http.Request) {
 }
 
 // GetTicket handles GET /api/v1/agent/tickets/:ticket_id. The response
-// is TicketDetail — the exact payload platform-mcp's read_ticket
-// returns in wave 3 (contract addendum).
+// uses the TicketDetail contract.
 func (h *Handler) GetTicket(w http.ResponseWriter, r *http.Request) {
 	id, ok := ticketIDParam(w, r)
 	if !ok {

@@ -205,8 +205,7 @@ type Task struct {
 	UpdatedAt   int64      `json:"updated_at"`
 }
 
-// TicketDetail is the GetAgentTicket response and (wave 3) the
-// platform-mcp read_ticket payload — contract addendum.
+// TicketDetail is the GetAgentTicket response payload.
 type TicketDetail struct {
 	Ticket Ticket `json:"ticket"`
 	Spec   *Spec  `json:"spec"`

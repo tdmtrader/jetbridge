@@ -288,7 +288,7 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 				auth.CheckAgentAuthorizationHandler(handler, rejector),
 			)
 
-		// principal-only: the platform-mcp sidecar's task ticker
+		// principal-only: task status updates require tickets:write
 		case atc.UpdateAgentTicketTask:
 			newHandler = wrappa.checkAgentPrincipalHandlerFactory.HandlerFor(handler, rejector, principals.ScopeTicketsWrite)
 
