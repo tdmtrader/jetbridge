@@ -4,10 +4,17 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"regexp"
 	"strconv"
 
 	schema "github.com/concourse/concourse/agent/schema"
+	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/tedsuo/rata"
 )
+
+// workflowNamePattern mirrors agent/api/workflowoutcomes: the workflow-name
+// path segment must be a valid workflow identifier before it reaches the store.
+var workflowNamePattern = regexp.MustCompile(`^[\p{Ll}\p{Lt}\p{Lm}\p{Lo}\d][\p{Ll}\p{Lt}\p{Lm}\p{Lo}\d\-_.]{0,127}$`)
 
 // Handler serves the agent run-metrics routes. Auth is enforced by the
 // wrappa layer (principal(metrics:write) for submit; authorized viewer for
@@ -77,14 +84,22 @@ func (h *Handler) ListByBuild(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(rows)
 }
 
-// ListByTicket handles GET /api/v1/agent/tickets/:ticket_id/metrics.
-func (h *Handler) ListByTicket(w http.ResponseWriter, r *http.Request) {
-	ticketID, err := strconv.Atoi(r.FormValue(":ticket_id"))
-	if err != nil || ticketID <= 0 {
-		http.Error(w, "invalid ticket_id", http.StatusBadRequest)
+// ListByWorkflowRun handles
+// GET /api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/metrics —
+// the metrics of one durable workflow run. Both the workflow name and the
+// run id are validated and both scope the store query (identity + authz).
+func (h *Handler) ListByWorkflowRun(w http.ResponseWriter, r *http.Request) {
+	workflowName := rata.Param(r, "workflow_name")
+	if !workflowNamePattern.MatchString(workflowName) {
+		http.Error(w, "invalid workflow name", http.StatusBadRequest)
 		return
 	}
-	rows, err := h.store.ListByTicket(ticketID)
+	runID, err := snapshot.ParseWorkflowRunID(rata.Param(r, "workflow_run_id"))
+	if err != nil {
+		http.Error(w, "invalid workflow run ID", http.StatusBadRequest)
+		return
+	}
+	rows, err := h.store.ListByWorkflowRun(workflowName, runID)
 	if err != nil {
 		http.Error(w, "failed to list metrics", http.StatusInternalServerError)
 		return

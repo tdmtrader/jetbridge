@@ -1,6 +1,52 @@
 package schema
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+	"strconv"
+	"strings"
+)
+
+// WorkflowRunID is a positive 64-bit agent_workflow_runs primary key. It
+// mirrors snapshot.WorkflowRunID's WIRE FORMAT byte-for-byte — a quoted decimal
+// string, so a 64-bit id survives a JS client — without coupling this
+// standalone contract module (imported by the lightweight ci-agent CLI) to the
+// whole concourse module. The main module converts to/from
+// snapshot.WorkflowRunID with a free int64 cast at its boundary.
+type WorkflowRunID int64
+
+// MarshalJSON emits the id as a quoted decimal string ("123"), identical to
+// snapshot.WorkflowRunID. A non-positive id is invalid and errors.
+func (id WorkflowRunID) MarshalJSON() ([]byte, error) {
+	if id <= 0 {
+		return nil, fmt.Errorf("workflow run ID must be positive")
+	}
+	return []byte(`"` + strconv.FormatInt(int64(id), 10) + `"`), nil
+}
+
+// UnmarshalJSON accepts both the marshaled quoted string ("123") and a bare
+// JSON number (123), tolerating either producer. The value must be a positive
+// decimal.
+func (id *WorkflowRunID) UnmarshalJSON(data []byte) error {
+	raw := strings.TrimSpace(string(data))
+	if len(raw) >= 2 && raw[0] == '"' && raw[len(raw)-1] == '"' {
+		raw = raw[1 : len(raw)-1]
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || value <= 0 {
+		return fmt.Errorf("workflow run ID must be a positive decimal")
+	}
+	*id = WorkflowRunID(value)
+	return nil
+}
+
+// String renders the canonical decimal, or "" for an invalid id.
+func (id WorkflowRunID) String() string {
+	if id <= 0 {
+		return ""
+	}
+	return strconv.FormatInt(int64(id), 10)
+}
 
 // Usage captures token consumption from an LLM call. JSON field names match
 // the claude CLI envelope (and ci-agent/llm.Usage).
@@ -15,8 +61,14 @@ type Usage struct {
 // payload for SubmitAgentRunMetrics and the row shape of agent_run_metrics
 // (shared-contracts §2.4 / §1.8).
 type RunMetrics struct {
-	TicketID        *int   `json:"ticket_id,omitempty"`
-	PipelineRunID   *int   `json:"pipeline_run_id,omitempty"`
+	// WorkflowRunID is the durable schema-v3 workflow run this step ran in —
+	// the metric's execution identity. Nil for an unbound CI invocation (a
+	// build with no planned workflow run). It marshals as a quoted string so a
+	// 64-bit id survives a JS client.
+	WorkflowRunID *WorkflowRunID `json:"workflow_run_id,omitempty"`
+	// FunctionID is the workflow function that produced the step. Empty for a
+	// direct pipeline agent step.
+	FunctionID      string `json:"function_id,omitempty"`
 	BuildID         int    `json:"build_id"`
 	PlanID          string `json:"plan_id"`
 	StepName        string `json:"step_name"`

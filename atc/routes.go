@@ -142,7 +142,6 @@ const (
 	ListAgentWorkflowRunReviews = "ListAgentWorkflowRunReviews"
 
 	SubmitAgentRunMetrics     = "SubmitAgentRunMetrics"
-	ListAgentRunMetrics       = "ListAgentRunMetrics"
 	ListRecentAgentRunMetrics = "ListRecentAgentRunMetrics"
 	ListBuildAgentRunMetrics  = "ListBuildAgentRunMetrics"
 
@@ -176,6 +175,7 @@ const (
 	ResolveAgentWorkflowRunWait                = "ResolveAgentWorkflowRunWait"
 	ListAgentWorkflowRunOutcomes               = "ListAgentWorkflowRunOutcomes"
 	SetAgentWorkflowRunOutputOutcome           = "SetAgentWorkflowRunOutputOutcome"
+	ListAgentWorkflowRunMetrics                = "ListAgentWorkflowRunMetrics"
 
 	CreateAgentExperiment       = "CreateAgentExperiment"
 	ListAgentExperiments        = "ListAgentExperiments"
@@ -351,7 +351,6 @@ var Routes = rata.Routes([]rata.Route{
 
 	{Path: "/api/v1/agent/metrics", Method: "POST", Name: SubmitAgentRunMetrics},
 	{Path: "/api/v1/agent/metrics", Method: "GET", Name: ListRecentAgentRunMetrics},
-	{Path: "/api/v1/agent/tickets/:ticket_id/metrics", Method: "GET", Name: ListAgentRunMetrics},
 	{Path: "/api/v1/builds/:build_id/agent-metrics", Method: "GET", Name: ListBuildAgentRunMetrics},
 
 	{Path: "/api/v1/agent/tickets", Method: "GET", Name: ListAgentTickets},
@@ -384,6 +383,7 @@ var Routes = rata.Routes([]rata.Route{
 	{Path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/waits/:workflow_wait_id/resolve", Method: "PUT", Name: ResolveAgentWorkflowRunWait},
 	{Path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/outcomes", Method: "GET", Name: ListAgentWorkflowRunOutcomes},
 	{Path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/outputs/:snapshot_id/outcome", Method: "PUT", Name: SetAgentWorkflowRunOutputOutcome},
+	{Path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/metrics", Method: "GET", Name: ListAgentWorkflowRunMetrics},
 	{Path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/reviews", Method: "GET", Name: ListAgentWorkflowRunReviews},
 
 	{Path: "/api/v1/agent/experiments", Method: "POST", Name: CreateAgentExperiment},

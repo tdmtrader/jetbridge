@@ -2,7 +2,6 @@ package db_test
 
 import (
 	"github.com/concourse/concourse/agent/api/tickets"
-	"github.com/concourse/concourse/agent/schema"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 
@@ -19,16 +18,17 @@ import (
 // TicketBelongsToRun failed closed unconditionally — no agent_tickets
 // table, no legitimate claim, every metrics row had ticket_id NULL ("CI").
 //
-// This spec is the definition-of-done for the "tickets exist" slice: a
+// This spec is the definition-of-done for the exec's admission gate: a
 // factory-created ticket, dispatched as a real pipeline run via the
 // single-writer Transition, satisfies the exact linkage query the exec
-// consults, and the metrics row written with that verified id lists under
-// the ticket (GET /api/v1/agent/tickets/:ticket_id/metrics, fly agent runs).
+// consults before it attributes spend. Durable workflow runs — not tickets —
+// are the identity of agent_run_metrics now, so the verified ticket/run ride
+// only the append-only cost ledger (proven in atc/exec/agent_step_test.go),
+// never the metric row.
 var _ = Describe("agent ticket attribution (AGENT_TICKET_ID end-to-end)", func() {
 	var (
 		runFactory     db.PipelineRunFactory
 		ticketsFactory db.AgentTicketsFactory
-		metricsFactory db.AgentRunMetricsFactory
 		template       db.Pipeline
 	)
 
@@ -47,7 +47,6 @@ var _ = Describe("agent ticket attribution (AGENT_TICKET_ID end-to-end)", func()
 	BeforeEach(func() {
 		runFactory = db.NewPipelineRunFactory(logger, dbConn, lockFactory, checkFactory)
 		ticketsFactory = db.NewAgentTicketsFactory(dbConn)
-		metricsFactory = db.NewAgentRunMetricsFactory(dbConn)
 
 		var err error
 		template, _, err = defaultTeam.SavePipeline(
@@ -96,29 +95,9 @@ var _ = Describe("agent ticket attribution (AGENT_TICKET_ID end-to-end)", func()
 		Expect(err).ToNot(HaveOccurred())
 		Expect(linked).To(BeFalse())
 
-		// The step's flight-recorder ingest writes the metrics row with the
-		// SERVER-VERIFIED ids (agent_step.go ingestFlightRecorder)...
-		Expect(metricsFactory.Upsert(&schema.RunMetrics{
-			TicketID: &ticketID, PipelineRunID: &runID,
-			BuildID: 424242, PlanID: "aa11", StepName: "implement",
-			Status: "ok", Summary: "did the thing", Model: "claude-fable-5",
-			Turns: 12, CostUSD: 1.25,
-		})).To(Succeed())
-
-		// ...and the row lists under the ticket — the payload of
-		// GET /api/v1/agent/tickets/:ticket_id/metrics, where a ticket
-		// number (not "CI") finally shows up.
-		rows, err := metricsFactory.ListByTicket(ticketID)
-		Expect(err).ToNot(HaveOccurred())
-		Expect(rows).To(HaveLen(1))
-		Expect(*rows[0].TicketID).To(Equal(ticketID))
-		Expect(*rows[0].PipelineRunID).To(Equal(runID))
-		Expect(rows[0].StepName).To(Equal("implement"))
-		Expect(rows[0].CostUSD).To(Equal(1.25))
-
-		// The bystander ticket accrues nothing.
-		rows, err = metricsFactory.ListByTicket(otherID)
-		Expect(err).ToNot(HaveOccurred())
-		Expect(rows).To(BeEmpty())
+		// From here the exec attributes this step's spend to the SERVER-VERIFIED
+		// ticketID/runID on the append-only cost ledger — not the metric row,
+		// whose identity is the durable workflow run (agent_step_test.go pins
+		// the ledger attribution against these same verified ids).
 	})
 })

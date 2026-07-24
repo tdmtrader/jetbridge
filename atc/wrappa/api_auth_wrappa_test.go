@@ -60,7 +60,7 @@ var _ = Describe("APIAuthWrappa", func() {
 
 		// 00-shared-contracts.md §4.1/§4.2: SubmitAgentRunMetrics is the
 		// strict principal(metrics:write) tier (no legacy bypass);
-		// ListAgentRunMetrics is authorized-viewer against the main team.
+		// ListAgentWorkflowRunMetrics is authorized-viewer against the main team.
 		// These specs pin the tier each route is wrapped with — the
 		// no-panic loop above only proves the switch is exhaustive.
 		Describe("agent run metrics route tiers", func() {
@@ -92,8 +92,8 @@ var _ = Describe("APIAuthWrappa", func() {
 					fakeCheckWorkerTeamAccessHandlerFactory,
 					auth.NewCheckAgentPrincipalHandlerFactory(principals.NewVerifier(store)),
 				).Wrap(rata.Handlers{
-					atc.SubmitAgentRunMetrics: delegate,
-					atc.ListAgentRunMetrics:   delegate,
+					atc.SubmitAgentRunMetrics:       delegate,
+					atc.ListAgentWorkflowRunMetrics: delegate,
 				})
 			})
 
@@ -392,11 +392,11 @@ var _ = Describe("APIAuthWrappa", func() {
 				})
 			})
 
-			Describe("ListAgentRunMetrics", func() {
+			Describe("ListAgentWorkflowRunMetrics", func() {
 				It("401s unauthenticated requests", func() {
 					fakeaccess.IsAuthenticatedReturns(false)
 
-					resp := serve(atc.ListAgentRunMetrics, "")
+					resp := serve(atc.ListAgentWorkflowRunMetrics, "")
 					Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
 					Expect(delegateHit).To(BeFalse())
 				})
@@ -405,7 +405,7 @@ var _ = Describe("APIAuthWrappa", func() {
 					fakeaccess.IsAuthenticatedReturns(true)
 					fakeaccess.IsAuthorizedReturns(false)
 
-					resp := serve(atc.ListAgentRunMetrics, "")
+					resp := serve(atc.ListAgentWorkflowRunMetrics, "")
 					Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
 					Expect(delegateHit).To(BeFalse())
 				})
@@ -414,7 +414,7 @@ var _ = Describe("APIAuthWrappa", func() {
 					fakeaccess.IsAuthenticatedReturns(true)
 					fakeaccess.IsAuthorizedReturns(true)
 
-					resp := serve(atc.ListAgentRunMetrics, "")
+					resp := serve(atc.ListAgentWorkflowRunMetrics, "")
 					Expect(resp.StatusCode).To(Equal(http.StatusOK))
 					Expect(delegateHit).To(BeTrue())
 					Expect(fakeaccess.IsAuthorizedCallCount()).To(Equal(1))

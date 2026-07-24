@@ -5,51 +5,63 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
 	"github.com/concourse/concourse/agent/api/metrics"
 	schema "github.com/concourse/concourse/agent/schema"
+	"github.com/concourse/concourse/agent/snapshot"
 )
 
-func TestSubmitAndListByTicket(t *testing.T) {
+// runMetricsRequest builds a GET carrying the rata route params the handler
+// reads (rata.Param → req.URL.Query().Get(":name")).
+func runMetricsRequest(workflowName, runID string) *http.Request {
+	req := httptest.NewRequest("GET", "/api/v1/agent/workflows/x/runs/y/metrics", nil)
+	req.URL.RawQuery = ":workflow_name=" + url.QueryEscape(workflowName) + "&:workflow_run_id=" + url.QueryEscape(runID)
+	return req
+}
+
+func TestListByWorkflowRun(t *testing.T) {
 	store := metrics.NewMemoryStore()
 	h := metrics.NewHandler(store)
 
-	body := `{"build_id":9,"plan_id":"abc","step_name":"implement","status":"ok","ticket_id":7,"cost_usd":0.5}`
-	req := httptest.NewRequest("POST", "/api/v1/agent/metrics", strings.NewReader(body))
+	// Seed the way the exec's direct Upsert materializes durable identity —
+	// the submit API path clears it (server-owned). The metric field is the
+	// schema-local WorkflowRunID; the Store method still takes snapshot's.
+	runID := schema.WorkflowRunID(71)
+	if err := store.Upsert(&schema.RunMetrics{
+		BuildID: 9001, PlanID: "p1", StepName: "review-diff", Status: "ok",
+		WorkflowName: "code-review", WorkflowRunID: &runID, FunctionID: "review",
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// a metric from a different run must not leak into this run's list
+	other := schema.WorkflowRunID(72)
+	if err := store.Upsert(&schema.RunMetrics{
+		BuildID: 9002, PlanID: "p1", StepName: "x", Status: "ok",
+		WorkflowName: "code-review", WorkflowRunID: &other,
+	}); err != nil {
+		t.Fatalf("seed other: %v", err)
+	}
+
 	rec := httptest.NewRecorder()
-	h.SubmitMetrics(rec, req)
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
-	}
-
-	// idempotent upsert on (build_id, plan_id)
-	rec = httptest.NewRecorder()
-	h.SubmitMetrics(rec, httptest.NewRequest("POST", "/api/v1/agent/metrics", strings.NewReader(body)))
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("expected 201 on re-submit, got %d", rec.Code)
-	}
-
-	listReq := httptest.NewRequest("GET", "/api/v1/agent/tickets/7/metrics", nil)
-	listReq.Form = map[string][]string{":ticket_id": {"7"}}
-	rec = httptest.NewRecorder()
-	h.ListByTicket(rec, listReq)
+	h.ListByWorkflowRun(rec, runMetricsRequest("code-review", "71"))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	// Decode the body and assert exactly ONE row — proving the re-submit
-	// deduped on (build_id, plan_id) at the handler layer (a Contains check
-	// alone passes even if two rows were returned).
 	var rows []schema.RunMetrics
 	if err := json.NewDecoder(rec.Body).Decode(&rows); err != nil {
 		t.Fatalf("decode list body: %v", err)
 	}
 	if len(rows) != 1 {
-		t.Fatalf("expected exactly 1 row after idempotent re-submit, got %d", len(rows))
+		t.Fatalf("expected exactly 1 row for run 71, got %d", len(rows))
 	}
-	if rows[0].PlanID != "abc" {
-		t.Fatalf("expected plan_id abc, got %q", rows[0].PlanID)
+	if rows[0].WorkflowRunID == nil || *rows[0].WorkflowRunID != runID {
+		t.Fatalf("expected row bound to run 71, got %+v", rows[0].WorkflowRunID)
+	}
+	if rows[0].FunctionID != "review" {
+		t.Fatalf("expected function_id review, got %q", rows[0].FunctionID)
 	}
 }
 
@@ -58,9 +70,9 @@ func TestListByBuild(t *testing.T) {
 	h := metrics.NewHandler(store)
 
 	for _, body := range []string{
-		`{"build_id":9,"plan_id":"abc","step_name":"implement","status":"ok","ticket_id":7,"cost_usd":0.5}`,
-		`{"build_id":9,"plan_id":"def","step_name":"review","status":"ok","ticket_id":7,"cost_usd":0.25}`,
-		`{"build_id":10,"plan_id":"abc","step_name":"implement","status":"ok","ticket_id":7,"cost_usd":1.0}`,
+		`{"build_id":9,"plan_id":"abc","step_name":"implement","status":"ok","cost_usd":0.5}`,
+		`{"build_id":9,"plan_id":"def","step_name":"review","status":"ok","cost_usd":0.25}`,
+		`{"build_id":10,"plan_id":"abc","step_name":"implement","status":"ok","cost_usd":1.0}`,
 	} {
 		rec := httptest.NewRecorder()
 		h.SubmitMetrics(rec, httptest.NewRequest("POST", "/api/v1/agent/metrics", strings.NewReader(body)))
@@ -132,20 +144,20 @@ func TestSubmitRejectsBadPayload(t *testing.T) {
 	}
 }
 
-func TestListRejectsInvalidTicketID(t *testing.T) {
+func TestListByWorkflowRunRejectsBadParams(t *testing.T) {
 	h := metrics.NewHandler(metrics.NewMemoryStore())
-	for _, tc := range []struct{ name, id string }{
-		{"missing", ""},
-		{"non-numeric", "abc"},
-		{"non-positive", "0"},
+	for _, tc := range []struct{ name, workflow, run string }{
+		{"missing workflow name", "", "71"},
+		{"invalid workflow name", "Bad Name!", "71"},
+		{"missing run id", "code-review", ""},
+		{"non-numeric run id", "code-review", "abc"},
+		{"non-positive run id", "code-review", "0"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest("GET", "/api/v1/agent/tickets/x/metrics", nil)
-			req.Form = map[string][]string{":ticket_id": {tc.id}}
 			rec := httptest.NewRecorder()
-			h.ListByTicket(rec, req)
+			h.ListByWorkflowRun(rec, runMetricsRequest(tc.workflow, tc.run))
 			if rec.Code != http.StatusBadRequest {
-				t.Fatalf("expected 400 for ticket_id %q, got %d", tc.id, rec.Code)
+				t.Fatalf("expected 400 for %q/%q, got %d", tc.workflow, tc.run, rec.Code)
 			}
 		})
 	}
@@ -162,15 +174,13 @@ func TestStoreErrorsSurfaceAs500(t *testing.T) {
 	}
 
 	rec = httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/api/v1/agent/tickets/7/metrics", nil)
-	req.Form = map[string][]string{":ticket_id": {"7"}}
-	h.ListByTicket(rec, req)
+	h.ListByWorkflowRun(rec, runMetricsRequest("code-review", "7"))
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("list: expected 500 on store error, got %d", rec.Code)
 	}
 
 	rec = httptest.NewRecorder()
-	req = httptest.NewRequest("GET", "/api/v1/builds/9/agent-metrics", nil)
+	req := httptest.NewRequest("GET", "/api/v1/builds/9/agent-metrics", nil)
 	req.Form = map[string][]string{":build_id": {"9"}}
 	h.ListByBuild(rec, req)
 	if rec.Code != http.StatusInternalServerError {
@@ -187,8 +197,10 @@ func (errStore) UpsertReturningInserted(*schema.RunMetrics) (bool, *schema.RunMe
 }
 func (errStore) InsertIfAbsent(*schema.RunMetrics) (bool, error) { return false, errors.New("boom") }
 func (errStore) GetByBuild(int) ([]schema.RunMetrics, error)     { return nil, errors.New("boom") }
-func (errStore) ListByTicket(int) ([]schema.RunMetrics, error)   { return nil, errors.New("boom") }
-func (errStore) ListRecent(int) ([]schema.RunMetrics, error)     { return nil, errors.New("boom") }
+func (errStore) ListByWorkflowRun(string, snapshot.WorkflowRunID) ([]schema.RunMetrics, error) {
+	return nil, errors.New("boom")
+}
+func (errStore) ListRecent(int) ([]schema.RunMetrics, error) { return nil, errors.New("boom") }
 
 func TestListCarriesDerivedOutcome(t *testing.T) {
 	store := metrics.NewMemoryStore()

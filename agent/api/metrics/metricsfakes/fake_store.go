@@ -6,6 +6,7 @@ import (
 
 	"github.com/concourse/concourse/agent/api/metrics"
 	"github.com/concourse/concourse/agent/schema"
+	"github.com/concourse/concourse/agent/snapshot"
 )
 
 type FakeStore struct {
@@ -35,16 +36,17 @@ type FakeStore struct {
 		result1 bool
 		result2 error
 	}
-	ListByTicketStub        func(int) ([]schema.RunMetrics, error)
-	listByTicketMutex       sync.RWMutex
-	listByTicketArgsForCall []struct {
-		arg1 int
+	ListByWorkflowRunStub        func(string, snapshot.WorkflowRunID) ([]schema.RunMetrics, error)
+	listByWorkflowRunMutex       sync.RWMutex
+	listByWorkflowRunArgsForCall []struct {
+		arg1 string
+		arg2 snapshot.WorkflowRunID
 	}
-	listByTicketReturns struct {
+	listByWorkflowRunReturns struct {
 		result1 []schema.RunMetrics
 		result2 error
 	}
-	listByTicketReturnsOnCall map[int]struct {
+	listByWorkflowRunReturnsOnCall map[int]struct {
 		result1 []schema.RunMetrics
 		result2 error
 	}
@@ -219,18 +221,19 @@ func (fake *FakeStore) InsertIfAbsentReturnsOnCall(i int, result1 bool, result2 
 	}{result1, result2}
 }
 
-func (fake *FakeStore) ListByTicket(arg1 int) ([]schema.RunMetrics, error) {
-	fake.listByTicketMutex.Lock()
-	ret, specificReturn := fake.listByTicketReturnsOnCall[len(fake.listByTicketArgsForCall)]
-	fake.listByTicketArgsForCall = append(fake.listByTicketArgsForCall, struct {
-		arg1 int
-	}{arg1})
-	stub := fake.ListByTicketStub
-	fakeReturns := fake.listByTicketReturns
-	fake.recordInvocation("ListByTicket", []interface{}{arg1})
-	fake.listByTicketMutex.Unlock()
+func (fake *FakeStore) ListByWorkflowRun(arg1 string, arg2 snapshot.WorkflowRunID) ([]schema.RunMetrics, error) {
+	fake.listByWorkflowRunMutex.Lock()
+	ret, specificReturn := fake.listByWorkflowRunReturnsOnCall[len(fake.listByWorkflowRunArgsForCall)]
+	fake.listByWorkflowRunArgsForCall = append(fake.listByWorkflowRunArgsForCall, struct {
+		arg1 string
+		arg2 snapshot.WorkflowRunID
+	}{arg1, arg2})
+	stub := fake.ListByWorkflowRunStub
+	fakeReturns := fake.listByWorkflowRunReturns
+	fake.recordInvocation("ListByWorkflowRun", []interface{}{arg1, arg2})
+	fake.listByWorkflowRunMutex.Unlock()
 	if stub != nil {
-		return stub(arg1)
+		return stub(arg1, arg2)
 	}
 	if specificReturn {
 		return ret.result1, ret.result2
@@ -238,46 +241,46 @@ func (fake *FakeStore) ListByTicket(arg1 int) ([]schema.RunMetrics, error) {
 	return fakeReturns.result1, fakeReturns.result2
 }
 
-func (fake *FakeStore) ListByTicketCallCount() int {
-	fake.listByTicketMutex.RLock()
-	defer fake.listByTicketMutex.RUnlock()
-	return len(fake.listByTicketArgsForCall)
+func (fake *FakeStore) ListByWorkflowRunCallCount() int {
+	fake.listByWorkflowRunMutex.RLock()
+	defer fake.listByWorkflowRunMutex.RUnlock()
+	return len(fake.listByWorkflowRunArgsForCall)
 }
 
-func (fake *FakeStore) ListByTicketCalls(stub func(int) ([]schema.RunMetrics, error)) {
-	fake.listByTicketMutex.Lock()
-	defer fake.listByTicketMutex.Unlock()
-	fake.ListByTicketStub = stub
+func (fake *FakeStore) ListByWorkflowRunCalls(stub func(string, snapshot.WorkflowRunID) ([]schema.RunMetrics, error)) {
+	fake.listByWorkflowRunMutex.Lock()
+	defer fake.listByWorkflowRunMutex.Unlock()
+	fake.ListByWorkflowRunStub = stub
 }
 
-func (fake *FakeStore) ListByTicketArgsForCall(i int) int {
-	fake.listByTicketMutex.RLock()
-	defer fake.listByTicketMutex.RUnlock()
-	argsForCall := fake.listByTicketArgsForCall[i]
-	return argsForCall.arg1
+func (fake *FakeStore) ListByWorkflowRunArgsForCall(i int) (string, snapshot.WorkflowRunID) {
+	fake.listByWorkflowRunMutex.RLock()
+	defer fake.listByWorkflowRunMutex.RUnlock()
+	argsForCall := fake.listByWorkflowRunArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2
 }
 
-func (fake *FakeStore) ListByTicketReturns(result1 []schema.RunMetrics, result2 error) {
-	fake.listByTicketMutex.Lock()
-	defer fake.listByTicketMutex.Unlock()
-	fake.ListByTicketStub = nil
-	fake.listByTicketReturns = struct {
+func (fake *FakeStore) ListByWorkflowRunReturns(result1 []schema.RunMetrics, result2 error) {
+	fake.listByWorkflowRunMutex.Lock()
+	defer fake.listByWorkflowRunMutex.Unlock()
+	fake.ListByWorkflowRunStub = nil
+	fake.listByWorkflowRunReturns = struct {
 		result1 []schema.RunMetrics
 		result2 error
 	}{result1, result2}
 }
 
-func (fake *FakeStore) ListByTicketReturnsOnCall(i int, result1 []schema.RunMetrics, result2 error) {
-	fake.listByTicketMutex.Lock()
-	defer fake.listByTicketMutex.Unlock()
-	fake.ListByTicketStub = nil
-	if fake.listByTicketReturnsOnCall == nil {
-		fake.listByTicketReturnsOnCall = make(map[int]struct {
+func (fake *FakeStore) ListByWorkflowRunReturnsOnCall(i int, result1 []schema.RunMetrics, result2 error) {
+	fake.listByWorkflowRunMutex.Lock()
+	defer fake.listByWorkflowRunMutex.Unlock()
+	fake.ListByWorkflowRunStub = nil
+	if fake.listByWorkflowRunReturnsOnCall == nil {
+		fake.listByWorkflowRunReturnsOnCall = make(map[int]struct {
 			result1 []schema.RunMetrics
 			result2 error
 		})
 	}
-	fake.listByTicketReturnsOnCall[i] = struct {
+	fake.listByWorkflowRunReturnsOnCall[i] = struct {
 		result1 []schema.RunMetrics
 		result2 error
 	}{result1, result2}

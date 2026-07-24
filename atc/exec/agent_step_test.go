@@ -1178,11 +1178,12 @@ var _ = Describe("AgentStep", func() {
 				Expect(fakeChecker.StepSliceCallCount()).To(BeZero())
 
 				// degraded ingestion path (no flight fixtures) still runs, but
-				// the unverified ids never reach attribution
+				// the unverified ticket claim never reaches attribution — the
+				// cost ledger (which now carries the ticket/run identity) stays
+				// empty (the durable workflow-run id on the row is server
+				// metadata, not the attacker's claim).
 				Expect(fakeMetricsStore.InsertIfAbsentCallCount()).To(Equal(1))
-				rm := fakeMetricsStore.InsertIfAbsentArgsForCall(0)
-				Expect(rm.TicketID).To(BeNil())
-				Expect(rm.PipelineRunID).To(BeNil())
+				Expect(fakeChecker.RecordCallCount()).To(BeZero())
 			})
 		})
 	})
@@ -1523,8 +1524,15 @@ var _ = Describe("AgentStep", func() {
 		var resultsJSON string
 		var eventLines []string
 		var streamFullFlight func(context.Context, runtime.Artifact, string) (io.ReadCloser, error)
+		var flightRunID snapshot.WorkflowRunID
 
 		BeforeEach(func() {
+			// The metric's execution identity: the durable workflow run (carried
+			// on step.metadata, server-authenticated) and the planned function.
+			flightRunID = snapshot.WorkflowRunID(4242)
+			stepMetadata.WorkflowRunID = &flightRunID
+			agentPlan.FunctionID = "review"
+
 			resultsJSON = `{"schema_version":"1.0","status":"pass","confidence":1,"summary":"done","artifacts":[]}`
 			eventLines = []string{
 				`{"ts":"2026-07-10T12:00:00Z","event":"step.start","data":{"step_name":"write-spec","build_id":1,"plan_id":"p"}}`,
@@ -1566,8 +1574,12 @@ var _ = Describe("AgentStep", func() {
 			Expect(rm.Status).To(Equal("ok"))
 			Expect(rm.BuildID).To(Equal(stepMetadata.BuildID))
 			Expect(rm.PlanID).To(Equal(string(planID)))
-			Expect(*rm.TicketID).To(Equal(7))
-			Expect(*rm.PipelineRunID).To(Equal(42))
+			// the durable workflow run and function are the metric's identity;
+			// the ticket/run stay on the cost ledger (asserted below). The
+			// metric field is the schema-local type converted from metadata.
+			Expect(rm.WorkflowRunID).ToNot(BeNil())
+			Expect(*rm.WorkflowRunID).To(Equal(schema.WorkflowRunID(int64(flightRunID))))
+			Expect(rm.FunctionID).To(Equal("review"))
 			Expect(rm.Usage.InputTokens).To(Equal(int64(100)))
 			Expect(rm.Usage.OutputTokens).To(Equal(int64(50)))
 			Expect(rm.Usage.CacheReadInputTokens).To(Equal(int64(1)))

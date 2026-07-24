@@ -173,8 +173,8 @@ ephemeralPrincipal =
 
 
 sampleRun :
-    { ticketId : Maybe Int
-    , pipelineRunId : Maybe Int
+    { workflowRunId : Maybe String
+    , functionId : String
     , buildId : Int
     , planId : String
     , stepName : String
@@ -198,8 +198,8 @@ sampleRun :
     , createdAt : Int
     }
 sampleRun =
-    { ticketId = Just 42
-    , pipelineRunId = Nothing
+    { workflowRunId = Just "42"
+    , functionId = "review"
     , buildId = 100
     , planId = "plan-abc"
     , stepName = "review-diff"
@@ -272,7 +272,7 @@ all =
                             ]
                         , Query.has [ class "agent-run-row", containing [ text "review-diff" ] ]
                         ]
-        , test "links a ticket-backed run back to its ticket" <|
+        , test "links a run back to its durable workflow run with the function label" <|
             \_ ->
                 Common.init "/agent"
                     |> Application.handleCallback
@@ -282,9 +282,20 @@ all =
                     |> Query.find [ class "agent-run-row" ]
                     |> Query.has
                         [ tag "a"
-                        , attribute (Attr.href "/agent-tickets/42")
-                        , containing [ text "#42" ]
+                        , attribute (Attr.href "/agent/workflows/standard-dev/runs/42")
+                        , containing [ text "#42 review" ]
                         ]
+        , test "renders an unbound CI invocation when there is no workflow run" <|
+            \_ ->
+                Common.init "/agent"
+                    |> Application.handleCallback
+                        (Callback.AgentRunMetricsFetched
+                            (Ok [ { sampleRun | workflowRunId = Nothing, functionId = "" } ])
+                        )
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ class "agent-run-row" ]
+                    |> Query.has [ text "CI" ]
         , test "a collapsed ledger row shows the truncated one-line summary" <|
             \_ ->
                 Common.init "/agent"

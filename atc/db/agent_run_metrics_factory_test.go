@@ -2,9 +2,11 @@ package db_test
 
 import (
 	"encoding/json"
+	"strings"
 
 	"github.com/concourse/concourse/agent/api/metrics"
 	schema "github.com/concourse/concourse/agent/schema"
+	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc/db"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -22,10 +24,9 @@ var _ = Describe("AgentRunMetricsFactory", func() {
 		factory = db.NewAgentRunMetricsFactory(dbConn)
 	})
 
-	It("upserts on (build_id, plan_id) and lists by ticket", func() {
-		ticket := 7
+	It("upserts on (build_id, plan_id), returning replaced ledger counters", func() {
 		rm := &schema.RunMetrics{
-			TicketID: &ticket, BuildID: 42, PlanID: "5f2a", StepName: "implement",
+			BuildID: 42, PlanID: "5f2a", StepName: "implement",
 			Status: "ok", Summary: "first", Model: "claude-sonnet-4-5",
 			Usage: schema.Usage{InputTokens: 100, OutputTokens: 50, CacheReadInputTokens: 3, CacheCreationInputTokens: 2},
 			Turns: 9, WallTimeSeconds: 61, CostUSD: 0.42,
@@ -53,7 +54,7 @@ var _ = Describe("AgentRunMetricsFactory", func() {
 		Expect(prev.Usage.CacheCreationInputTokens).To(Equal(int64(2)))
 		Expect(prev.Turns).To(Equal(9))
 
-		rows, err := factory.ListByTicket(7)
+		rows, err := factory.GetByBuild(42)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(rows).To(HaveLen(1))
 		Expect(rows[0].Summary).To(Equal("second"))
@@ -61,10 +62,61 @@ var _ = Describe("AgentRunMetricsFactory", func() {
 		Expect(rows[0].Usage.InputTokens).To(Equal(int64(100)))
 		Expect(rows[0].EventCounts).To(HaveKeyWithValue("tool.call", 4))
 		Expect(rows[0].CreatedAt).To(BeNumerically(">", 0))
+	})
 
-		byBuild, err := factory.GetByBuild(42)
+	It("lists metrics by durable workflow run, surviving its build's deletion", func() {
+		// A real build the workflow run planned, and a metric produced in it.
+		build, err := defaultTeam.CreateOneOffBuild()
 		Expect(err).ToNot(HaveOccurred())
-		Expect(byBuild).To(HaveLen(1))
+
+		var definitionID int
+		Expect(dbConn.QueryRow(`
+			INSERT INTO agent_workflow_definitions
+				(name, version, content_hash, definition, created_by, schema_version, signature_version)
+			VALUES ('code-review', 1, $1, 'schema_version: 3', 'alice', 3, 1)
+			RETURNING id
+		`, strings.Repeat("a", 64)).Scan(&definitionID)).To(Succeed())
+		var runID int64
+		Expect(dbConn.QueryRow(`
+			INSERT INTO agent_workflow_runs
+				(team_id, team_name, workflow_definition_id, workflow_name, workflow_version,
+				 schema_version, signature_version, definition_content_hash, idempotency_key,
+				 parameterized_config, parameterized_config_hash, origin_kind, origin_reference,
+				 created_by, status, planned_build_id)
+			VALUES ($1, $2, $3, 'code-review', 1, 3, 1, $4, $5, '{}', $6,
+			        'manual', '', 'alice', 'running', $7)
+			RETURNING id
+		`, defaultTeam.ID(), defaultTeam.Name(), definitionID, strings.Repeat("a", 64),
+			"metric-run-key", strings.Repeat("b", 64), build.ID()).Scan(&runID)).To(Succeed())
+
+		// The metric field is the schema-local type; the Store query takes
+		// snapshot's — both are the same int64 id.
+		wfRunID := schema.WorkflowRunID(runID)
+		snapRunID := snapshot.WorkflowRunID(runID)
+		Expect(factory.Upsert(&schema.RunMetrics{
+			WorkflowRunID: &wfRunID, FunctionID: "review",
+			BuildID: build.ID(), PlanID: "p1", StepName: "review-diff",
+			Status: "ok", Summary: "one finding", WorkflowName: "code-review",
+		})).To(Succeed())
+
+		rows, err := factory.ListByWorkflowRun("code-review", snapRunID)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(rows).To(HaveLen(1))
+		Expect(rows[0].WorkflowRunID).ToNot(BeNil())
+		Expect(*rows[0].WorkflowRunID).To(Equal(wfRunID))
+		Expect(rows[0].FunctionID).To(Equal("review"))
+
+		By("returning nothing for a run id under the wrong workflow name")
+		wrong, err := factory.ListByWorkflowRun("some-other-workflow", snapRunID)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(wrong).To(BeEmpty())
+
+		By("keeping the metric row after its builds row is deleted (BuildStatus empty)")
+		Expect(build.Delete()).To(BeTrue())
+		rows, err = factory.ListByWorkflowRun("code-review", snapRunID)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(rows).To(HaveLen(1))
+		Expect(rows[0].BuildStatus).To(BeEmpty())
 	})
 
 	It("joins the pipeline build status onto each run metric (U3 display truth)", func() {
@@ -136,13 +188,13 @@ var _ = Describe("AgentRunMetricsFactory", func() {
 		Expect(rows[0].Outcome).To(Equal(schema.RunOutcomeParked))
 	})
 
-	It("stores NULL ticket/workflow tags for pure-CI steps", func() {
+	It("stores NULL workflow identity for pure-CI steps", func() {
 		Expect(factory.Upsert(&schema.RunMetrics{
 			BuildID: 43, PlanID: "aa", StepName: "s", Status: "error", Summary: "crashed",
 		})).To(Succeed())
 		rows, err := factory.GetByBuild(43)
 		Expect(err).ToNot(HaveOccurred())
-		Expect(rows[0].TicketID).To(BeNil())
+		Expect(rows[0].WorkflowRunID).To(BeNil())
 		Expect(rows[0].WorkflowVersion).To(BeNil())
 	})
 

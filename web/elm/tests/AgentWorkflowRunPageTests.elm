@@ -3,6 +3,8 @@ module AgentWorkflowRunPageTests exposing (all)
 import AgenticData
 import Application.Application as Application
 import Common
+import Concourse.Agent
+import Dict
 import Expect
 import Html.Attributes as Attr
 import Message.Callback as Callback
@@ -110,6 +112,8 @@ all =
                             (Effects.FetchAgentWorkflowOutcomes "review-api" AgenticData.runSummary.id)
                         , Common.contains
                             (Effects.FetchAgentWorkflowReviews "review-api" AgenticData.runSummary.id)
+                        , Common.contains
+                            (Effects.FetchAgentWorkflowRunMetrics "review-api" AgenticData.runSummary.id)
                         ]
         , test "keeps refreshing a terminal run while an output projection is pending" <|
             \_ ->
@@ -145,6 +149,26 @@ all =
                     |> Tuple.second
                     |> Common.notContains
                         (Effects.FetchAgentWorkflowRun "review-api" AgenticData.runSummary.id)
+        , test "populates run telemetry from this run's metrics" <|
+            \_ ->
+                initialized
+                    |> Application.handleCallback
+                        (Callback.AgentWorkflowRunMetricsFetched AgenticData.runSummary.id (Ok [ sampleMetric ]))
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ class "agent-run-telemetry" ]
+                    |> Query.has [ text "1 steps" ]
+        , test "the run-qualified callback ignores another run's metrics" <|
+            \_ ->
+                initialized
+                    -- results tagged with a different run id must not land here,
+                    -- so two open run pages cannot accept each other's metrics
+                    |> Application.handleCallback
+                        (Callback.AgentWorkflowRunMetricsFetched "9007199254740000" (Ok [ sampleMetric ]))
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ class "agent-run-telemetry" ]
+                    |> Query.has [ text "0 steps" ]
         , test "bounds terminal projection refresh attempts" <|
             \_ ->
                 let
@@ -194,3 +218,34 @@ terminalRunDetail =
             AgenticData.runSummary
     in
     { detail | summary = { summary | status = "succeeded" } }
+
+
+{-| A metric bound to this run's workflow and planned build (buildId 42 matches
+AgenticData.runSummary.plannedBuildId) so the telemetry card counts it.
+-}
+sampleMetric : Concourse.Agent.RunMetric
+sampleMetric =
+    { workflowRunId = Just AgenticData.runSummary.id
+    , functionId = "review"
+    , buildId = 42
+    , planId = "p1"
+    , stepName = "review-diff"
+    , workflowName = "review-api"
+    , workflowVersion = Just 1
+    , status = "ok"
+    , buildStatus = "succeeded"
+    , outcome = "ok"
+    , summary = "did it"
+    , model = "claude"
+    , usage =
+        { inputTokens = 100
+        , outputTokens = 50
+        , cacheReadInputTokens = 0
+        , cacheCreationInputTokens = 0
+        }
+    , turns = 4
+    , wallTimeSeconds = 10
+    , costUsd = 2
+    , eventCounts = Dict.empty
+    , createdAt = 0
+    }

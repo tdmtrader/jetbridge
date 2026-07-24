@@ -772,7 +772,7 @@ runsHeaderRow =
         , tableHeaderCell "right" "cost"
         , tableHeaderCell "right" "tokens (in+out)"
         , tableHeaderCell "right" "turns"
-        , tableHeaderCell "left" "ticket"
+        , tableHeaderCell "left" "run"
         , tableHeaderCell "left" "when (local)"
         ]
 
@@ -795,7 +795,7 @@ runRow zone expandedRuns r =
         , tableCell "right" ("$" ++ formatUsd r.costUsd)
         , tableCell "right" (String.fromInt r.usage.inputTokens ++ "+" ++ String.fromInt r.usage.outputTokens)
         , tableCell "right" (String.fromInt r.turns)
-        , ticketRefCell r
+        , runRefCell r
         , tableCell "left" (formatPosix zone (Just (secondsToPosix r.createdAt)))
         ]
 
@@ -900,29 +900,42 @@ workflowRef name version =
             n
 
 
-{-| A linked "#N" back to the originating ticket for a ticket-backed run, or a
-plain "CI" when there is no ticket.
+{-| A linked "#N function" back to the durable workflow run that produced this
+step, or a plain "CI" when the build ran no workflow (an unbound CI invocation,
+never joined back to a ticket).
 -}
-ticketRefCell : Agent.RunMetric -> Html Message
-ticketRefCell r =
+runRefCell : Agent.RunMetric -> Html Message
+runRefCell r =
     Html.td
         [ style "text-align" "left"
         , style "padding" "4px 16px 4px 0"
         , style "border-bottom" rowBorder
         ]
-        [ case r.ticketId of
-            Just t ->
-                Html.a
-                    [ href (Routes.toString (Routes.AgentTicket { id = t }))
-                    , title ("Agent ticket #" ++ String.fromInt t)
-                    , style "color" "#7a9ac0"
-                    , style "text-decoration" "none"
-                    ]
-                    [ Html.text ("#" ++ String.fromInt t) ]
+        [ case r.workflowRunId of
+            Just runId ->
+                let
+                    label =
+                        if r.functionId /= "" then
+                            "#" ++ runId ++ " " ++ r.functionId
+
+                        else
+                            "#" ++ runId
+                in
+                if r.workflowName /= "" then
+                    Html.a
+                        [ href (Routes.toString (Routes.AgentWorkflowRun { workflowName = r.workflowName, id = runId }))
+                        , title ("Durable workflow run #" ++ runId)
+                        , style "color" "#7a9ac0"
+                        , style "text-decoration" "none"
+                        ]
+                        [ Html.text label ]
+
+                else
+                    Html.span [ style "color" subtleColor ] [ Html.text label ]
 
             Nothing ->
                 Html.span
-                    [ title "Continuous-integration review run — not tied to an agent ticket"
+                    [ title "Continuous-integration run — not tied to a durable workflow run"
                     , style "color" subtleColor
                     , style "cursor" "help"
                     ]

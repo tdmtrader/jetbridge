@@ -9,11 +9,12 @@ import (
 	"github.com/concourse/concourse/agent/api/metrics"
 	// aliased: atc/db already declares a package-level `schema` const (build.go).
 	agentschema "github.com/concourse/concourse/agent/schema"
+	"github.com/concourse/concourse/agent/snapshot"
 )
 
 // AgentRunMetricsFactory persists agent run metrics (shared-contracts
 // §1.8/§2.4). It is exactly agent/api/metrics.Store (Upsert,
-// UpsertReturningInserted, InsertIfAbsent, GetByBuild, ListByTicket) —
+// UpsertReturningInserted, InsertIfAbsent, GetByBuild, ListByWorkflowRun) —
 // embedded now that both packages live on the same branch.
 //
 //counterfeiter:generate . AgentRunMetricsFactory
@@ -62,6 +63,7 @@ func (f *agentRunMetricsFactory) UpsertReturningInserted(rm *agentschema.RunMetr
 	if len(rm.Results) > 0 {
 		results = []byte(rm.Results)
 	}
+	workflowRunID := workflowRunIDValue(rm)
 
 	tx, err := f.conn.Begin()
 	if err != nil {
@@ -90,7 +92,7 @@ func (f *agentRunMetricsFactory) UpsertReturningInserted(rm *agentschema.RunMetr
 	var inserted bool
 	err = psql.Insert("agent_run_metrics").
 		Columns(
-			"ticket_id", "pipeline_run_id", "build_id", "plan_id", "step_name",
+			"workflow_run_id", "function_id", "build_id", "plan_id", "step_name",
 			"workflow_name", "workflow_version", "workflow_hash",
 			"status", "summary", "model",
 			"input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens",
@@ -98,7 +100,7 @@ func (f *agentRunMetricsFactory) UpsertReturningInserted(rm *agentschema.RunMetr
 			"results", "events_artifact", "event_counts",
 		).
 		Values(
-			rm.TicketID, rm.PipelineRunID, rm.BuildID, rm.PlanID, rm.StepName,
+			workflowRunID, rm.FunctionID, rm.BuildID, rm.PlanID, rm.StepName,
 			rm.WorkflowName, rm.WorkflowVersion, rm.WorkflowHash,
 			rm.Status, rm.Summary, rm.Model,
 			rm.Usage.InputTokens, rm.Usage.OutputTokens, rm.Usage.CacheReadInputTokens, rm.Usage.CacheCreationInputTokens,
@@ -122,8 +124,8 @@ func (f *agentRunMetricsFactory) UpsertReturningInserted(rm *agentschema.RunMetr
 		// once held real data. Stable-by-construction columns (identity,
 		// workflow tags) are copied verbatim.
 		Suffix(`ON CONFLICT (build_id, plan_id) DO UPDATE SET
-			ticket_id = EXCLUDED.ticket_id,
-			pipeline_run_id = EXCLUDED.pipeline_run_id,
+			workflow_run_id = EXCLUDED.workflow_run_id,
+			function_id = EXCLUDED.function_id,
 			step_name = EXCLUDED.step_name,
 			workflow_name = EXCLUDED.workflow_name,
 			workflow_version = EXCLUDED.workflow_version,
@@ -175,11 +177,12 @@ func (f *agentRunMetricsFactory) InsertIfAbsent(rm *agentschema.RunMetrics) (boo
 	if len(rm.Results) > 0 {
 		results = []byte(rm.Results)
 	}
+	workflowRunID := workflowRunIDValue(rm)
 
 	var inserted bool
 	err := psql.Insert("agent_run_metrics").
 		Columns(
-			"ticket_id", "pipeline_run_id", "build_id", "plan_id", "step_name",
+			"workflow_run_id", "function_id", "build_id", "plan_id", "step_name",
 			"workflow_name", "workflow_version", "workflow_hash",
 			"status", "summary", "model",
 			"input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens",
@@ -187,7 +190,7 @@ func (f *agentRunMetricsFactory) InsertIfAbsent(rm *agentschema.RunMetrics) (boo
 			"results", "events_artifact", "event_counts",
 		).
 		Values(
-			rm.TicketID, rm.PipelineRunID, rm.BuildID, rm.PlanID, rm.StepName,
+			workflowRunID, rm.FunctionID, rm.BuildID, rm.PlanID, rm.StepName,
 			rm.WorkflowName, rm.WorkflowVersion, rm.WorkflowHash,
 			rm.Status, rm.Summary, rm.Model,
 			rm.Usage.InputTokens, rm.Usage.OutputTokens, rm.Usage.CacheReadInputTokens, rm.Usage.CacheCreationInputTokens,
@@ -204,7 +207,7 @@ func (f *agentRunMetricsFactory) InsertIfAbsent(rm *agentschema.RunMetrics) (boo
 	return inserted, err
 }
 
-const runMetricsColumns = `m.ticket_id, m.pipeline_run_id, m.build_id, m.plan_id, m.step_name,
+const runMetricsColumns = `m.workflow_run_id, m.function_id, m.build_id, m.plan_id, m.step_name,
 	m.workflow_name, m.workflow_version, m.workflow_hash,
 	m.status, m.summary, m.model,
 	m.input_tokens, m.output_tokens, m.cache_read_tokens, m.cache_creation_tokens,
@@ -230,10 +233,19 @@ func (f *agentRunMetricsFactory) GetByBuild(buildID int) ([]agentschema.RunMetri
 	return scanRunMetricsRows(rows)
 }
 
-func (f *agentRunMetricsFactory) ListByTicket(ticketID int) ([]agentschema.RunMetrics, error) {
+// ListByWorkflowRun returns the metrics of one durable workflow run,
+// oldest-first. The run is the metric's execution identity: an INNER JOIN on
+// agent_workflow_runs asserts the row's workflow_run_id points to an existing
+// run whose workflow_name matches (identity + authz — a run id under the wrong
+// workflow name returns nothing), while the builds join stays LEFT so a metric
+// whose build row was deleted still returns (BuildStatus empty).
+func (f *agentRunMetricsFactory) ListByWorkflowRun(workflowName string, runID snapshot.WorkflowRunID) ([]agentschema.RunMetrics, error) {
 	rows, err := f.conn.Query(
-		`SELECT `+runMetricsColumns+runMetricsFrom+`
-		 WHERE m.ticket_id = $1 ORDER BY m.created_at ASC, m.id ASC`, ticketID)
+		`SELECT `+runMetricsColumns+`
+		 FROM agent_run_metrics m
+		 JOIN agent_workflow_runs run ON run.id = m.workflow_run_id AND run.workflow_name = $1
+		 LEFT JOIN builds b ON b.id = m.build_id
+		 WHERE m.workflow_run_id = $2 ORDER BY m.created_at ASC, m.id ASC`, workflowName, int64(runID))
 	if err != nil {
 		return nil, err
 	}
@@ -262,14 +274,26 @@ func (f *agentRunMetricsFactory) ListRecent(limit int) ([]agentschema.RunMetrics
 	return scanRunMetricsRows(rows)
 }
 
+// workflowRunIDValue converts the durable identity to a driver parameter:
+// int64 when present, nil (SQL NULL) for an unbound CI invocation. Passing the
+// concrete int64/nil keeps the lib/pq parameter converter off the named-type
+// reflection path.
+func workflowRunIDValue(rm *agentschema.RunMetrics) any {
+	if rm.WorkflowRunID == nil {
+		return nil
+	}
+	return int64(*rm.WorkflowRunID)
+}
+
 func scanRunMetricsRows(rows *sql.Rows) ([]agentschema.RunMetrics, error) {
 	results := []agentschema.RunMetrics{}
 	for rows.Next() {
 		var rm agentschema.RunMetrics
 		var resultsPayload, eventCounts []byte
 		var buildStatus sql.NullString
+		var workflowRunID sql.NullInt64
 		err := rows.Scan(
-			&rm.TicketID, &rm.PipelineRunID, &rm.BuildID, &rm.PlanID, &rm.StepName,
+			&workflowRunID, &rm.FunctionID, &rm.BuildID, &rm.PlanID, &rm.StepName,
 			&rm.WorkflowName, &rm.WorkflowVersion, &rm.WorkflowHash,
 			&rm.Status, &rm.Summary, &rm.Model,
 			&rm.Usage.InputTokens, &rm.Usage.OutputTokens, &rm.Usage.CacheReadInputTokens, &rm.Usage.CacheCreationInputTokens,
@@ -280,6 +304,10 @@ func scanRunMetricsRows(rows *sql.Rows) ([]agentschema.RunMetrics, error) {
 		)
 		if err != nil {
 			return nil, err
+		}
+		if workflowRunID.Valid {
+			id := agentschema.WorkflowRunID(workflowRunID.Int64)
+			rm.WorkflowRunID = &id
 		}
 		rm.BuildStatus = buildStatus.String
 		if len(resultsPayload) > 0 {

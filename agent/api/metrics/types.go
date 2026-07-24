@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	schema "github.com/concourse/concourse/agent/schema"
+	"github.com/concourse/concourse/agent/snapshot"
 )
 
 //go:generate go run github.com/maxbrunsfeld/counterfeiter/v6 -generate
@@ -54,9 +55,13 @@ type Store interface {
 	//
 	// GetByBuild returns rows for a build, oldest-first.
 	GetByBuild(buildID int) ([]schema.RunMetrics, error)
-	// ListByTicket returns rows for a ticket, oldest-first.
-	ListByTicket(ticketID int) ([]schema.RunMetrics, error)
-	// ListRecent returns the most-recent rows across all tickets/builds,
+	// ListByWorkflowRun returns rows for a durable workflow run, oldest-first.
+	// The run is the metric's execution identity: the query joins
+	// agent_workflow_runs to check both the workflow name and the run id (a
+	// run id under the wrong workflow name returns nothing), but the metric
+	// row itself remains returnable after its builds row is deleted.
+	ListByWorkflowRun(workflowName string, runID snapshot.WorkflowRunID) ([]schema.RunMetrics, error)
+	// ListRecent returns the most-recent rows across all workflow runs/builds,
 	// newest-first, bounded by limit (a non-positive or oversized limit falls
 	// back to a sane default). Powers the operator dashboard's recent-runs view.
 	ListRecent(limit int) ([]schema.RunMetrics, error)
@@ -86,5 +91,11 @@ func ParseSubmission(body []byte) (*schema.RunMetrics, error) {
 	// applied on read); never trust a client-supplied value on the ingest path.
 	rm.BuildStatus = ""
 	rm.Outcome = ""
+	// WorkflowRunID and FunctionID are the metric's execution identity, derived
+	// server-side from the verified build->run association and the planned
+	// workflow function (atc/exec/agent_step.go). An external submitter must
+	// never forge them, so the submit path always clears them.
+	rm.WorkflowRunID = nil
+	rm.FunctionID = ""
 	return &rm, nil
 }

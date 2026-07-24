@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	schema "github.com/concourse/concourse/agent/schema"
+	"github.com/concourse/concourse/agent/snapshot"
 )
 
 // MemoryStore is an in-memory Store for tests.
@@ -57,9 +58,13 @@ func (s *MemoryStore) GetByBuild(buildID int) ([]schema.RunMetrics, error) {
 	return s.list(func(rm schema.RunMetrics) bool { return rm.BuildID == buildID })
 }
 
-func (s *MemoryStore) ListByTicket(ticketID int) ([]schema.RunMetrics, error) {
+func (s *MemoryStore) ListByWorkflowRun(workflowName string, runID snapshot.WorkflowRunID) ([]schema.RunMetrics, error) {
 	return s.list(func(rm schema.RunMetrics) bool {
-		return rm.TicketID != nil && *rm.TicketID == ticketID
+		// mirror the DB join: the run id is the identity, scoped by the
+		// workflow name (a run id under the wrong workflow name matches nothing).
+		// The metric field is the schema-local WorkflowRunID; compare by int64
+		// against the snapshot-typed request id (both are int64 underneath).
+		return rm.WorkflowName == workflowName && rm.WorkflowRunID != nil && int64(*rm.WorkflowRunID) == int64(runID)
 	})
 }
 

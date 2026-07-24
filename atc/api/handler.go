@@ -400,7 +400,6 @@ func NewHandler(
 		atc.ListAgentWorkflowRunReviews: http.HandlerFunc(reviewsServer.ListByWorkflowRun),
 
 		atc.SubmitAgentRunMetrics:     http.HandlerFunc(metricsServer.SubmitMetrics),
-		atc.ListAgentRunMetrics:       http.HandlerFunc(metricsServer.ListByTicket),
 		atc.ListRecentAgentRunMetrics: http.HandlerFunc(metricsServer.ListRecent),
 		atc.ListBuildAgentRunMetrics:  http.HandlerFunc(metricsServer.ListByBuild),
 
@@ -440,6 +439,7 @@ func NewHandler(
 		atc.ResolveAgentWorkflowRunWait:                http.HandlerFunc(workflowWaitHandlers.Resolve),
 		atc.ListAgentWorkflowRunOutcomes:               http.HandlerFunc(workflowOutcomeHandlers.List),
 		atc.SetAgentWorkflowRunOutputOutcome:           http.HandlerFunc(workflowOutcomeHandlers.Record),
+		atc.ListAgentWorkflowRunMetrics:                http.HandlerFunc(metricsServer.ListByWorkflowRun),
 		atc.CreateAgentExperiment:                      http.HandlerFunc(experimentHandlers.Create),
 		atc.ListAgentExperiments:                       http.HandlerFunc(experimentHandlers.List),
 		atc.GetAgentExperiment:                         http.HandlerFunc(experimentHandlers.Get),

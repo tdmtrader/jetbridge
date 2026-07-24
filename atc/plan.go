@@ -423,6 +423,7 @@ type RunPlan struct {
 // workflow definition tables.
 type AgentPlan struct {
 	Name            string                          `json:"name"`
+	FunctionID      string                          `json:"function_id,omitempty"`
 	Hermetic        bool                            `json:"hermetic,omitempty"`
 	RuntimeImage    string                          `json:"runtime_image,omitempty"`
 	Prompt          string                          `json:"prompt,omitempty"`

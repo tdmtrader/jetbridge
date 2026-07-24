@@ -92,7 +92,7 @@ fetchAll workflowName id =
     , FetchAgentWorkflowWaits workflowName id
     , FetchAgentWorkflowOutcomes workflowName id
     , FetchAgentWorkflowReviews workflowName id
-    , FetchAgentRunMetrics
+    , FetchAgentWorkflowRunMetrics workflowName id
     ]
 
 
@@ -226,8 +226,14 @@ handleCallback callback ( model, effects ) =
             else
                 ( model, effects )
 
-        AgentRunMetricsFetched (Ok metrics) ->
-            ( { model | metrics = metrics }, effects )
+        AgentWorkflowRunMetricsFetched runId (Ok metrics) ->
+            -- run-qualified: a second open run page must not accept this run's
+            -- metrics (the global recent-metrics feed is the operator dashboard's)
+            if runId == model.workflowRunId then
+                ( { model | metrics = metrics }, effects )
+
+            else
+                ( model, effects )
 
         AgentReviewVerdictSubmitted findingId (Ok ()) ->
             ( { model | verdictErrors = Set.remove findingId model.verdictErrors }

@@ -10,9 +10,10 @@ import (
 
 func TestRunMetricsRoundTrip(t *testing.T) {
 	// round-trips the ingest payload shape
-	ticket := 7
+	runID := schema.WorkflowRunID(71)
 	rm := schema.RunMetrics{
-		TicketID: &ticket, BuildID: 123, PlanID: "5f2a", StepName: "implement",
+		WorkflowRunID: &runID, FunctionID: "review",
+		BuildID: 123, PlanID: "5f2a", StepName: "implement",
 		Status: schema.RunStatusOK, Summary: "did the thing", Model: "claude-sonnet-4-5",
 		Usage: schema.Usage{InputTokens: 100, OutputTokens: 50, CacheReadInputTokens: 10, CacheCreationInputTokens: 5},
 		Turns: 9, WallTimeSeconds: 60, CostUSD: 0.42,
@@ -26,6 +27,9 @@ func TestRunMetricsRoundTrip(t *testing.T) {
 	requireNoErr(t, json.Unmarshal(data, &back))
 	requireEqual(t, back, rm)
 	requireContains(t, string(data), `"cache_read_input_tokens":10`)
+	// the 64-bit run id rides the wire as a quoted string (JS precision safety)
+	requireContains(t, string(data), `"workflow_run_id":"71"`)
+	requireContains(t, string(data), `"function_id":"review"`)
 }
 
 func TestDeriveOutcome(t *testing.T) {

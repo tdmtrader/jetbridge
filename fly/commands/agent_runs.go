@@ -53,17 +53,14 @@ func (command *AgentRunsCommand) Execute([]string) error {
 		{Contents: "cost", Color: color.New(color.Bold)},
 		{Contents: "tokens (in/out)", Color: color.New(color.Bold)},
 		{Contents: "turns", Color: color.New(color.Bold)},
-		{Contents: "ticket", Color: color.New(color.Bold)},
+		{Contents: "run", Color: color.New(color.Bold)},
 	}}
 	for _, r := range runs {
 		workflow := r.WorkflowName
 		if r.WorkflowVersion != nil {
 			workflow = fmt.Sprintf("%s@%d", r.WorkflowName, *r.WorkflowVersion)
 		}
-		ticket := "CI"
-		if r.TicketID != nil {
-			ticket = "#" + strconv.Itoa(*r.TicketID)
-		}
+		run := runLabel(r)
 		// U3 display truth: render the server-fused outcome, never the raw
 		// step status — a green step inside a failed build must not show
 		// "ok". Pre-outcome servers omit the field; derive the same fusion
@@ -84,10 +81,24 @@ func (command *AgentRunsCommand) Execute([]string) error {
 			{Contents: fmt.Sprintf("$%.2f", r.CostUSD)},
 			{Contents: fmt.Sprintf("%d/%d", r.Usage.InputTokens, r.Usage.OutputTokens)},
 			{Contents: strconv.Itoa(r.Turns)},
-			{Contents: ticket},
+			{Contents: run},
 		})
 	}
 	return table.Render(os.Stdout, Fly.PrintTableHeaders)
+}
+
+// runLabel renders a metric's durable identity: the workflow run and the
+// function that produced the step, or "CI" for an unbound CI invocation (a
+// build with no planned workflow run — never joined back to a ticket).
+func runLabel(r agentschema.RunMetrics) string {
+	if r.WorkflowRunID == nil {
+		return "CI"
+	}
+	label := "#" + r.WorkflowRunID.String()
+	if r.FunctionID != "" {
+		label += " " + r.FunctionID
+	}
+	return label
 }
 
 // imageTag extracts the tag for the one-line skew advisory ("v0.2.167"

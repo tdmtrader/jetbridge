@@ -10,7 +10,7 @@ import (
 )
 
 // AgentRunMetrics returns the most-recent agent run metrics across all
-// tickets/builds (newest first). A non-positive limit uses the server default.
+// workflow runs/builds (newest first). A non-positive limit uses the server default.
 func (client *client) AgentRunMetrics(limit int) ([]agentschema.RunMetrics, error) {
 	query := url.Values{}
 	if limit > 0 {

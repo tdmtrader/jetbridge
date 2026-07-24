@@ -98,6 +98,7 @@ type Callback
     | AgentWorkflowRunsFetched String (Fetched (List Concourse.WorkflowRun.Summary))
     | AgentWorkflowRunOperationalStatusCountsFetched String (Fetched Concourse.WorkflowRun.OperationalStatusCounts)
     | AgentWorkflowRunFetched String (Fetched Concourse.WorkflowRun.Detail)
+    | AgentWorkflowRunMetricsFetched String (Fetched (List Concourse.Agent.RunMetric))
     | AgentWorkflowRunCreated String (Fetched Concourse.WorkflowRun.Detail)
     | AgentWorkflowRunCanceled String (Fetched Concourse.WorkflowRun.Detail)
     | AgentWorkflowRunRetried String (Fetched Concourse.WorkflowRun.Detail)

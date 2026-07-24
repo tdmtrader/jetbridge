@@ -1544,6 +1544,7 @@ var factoryTests = []PlannerTest{
 
 		Config: &atc.AgentStep{
 			Name:           "write-spec",
+			FunctionID:     "review",
 			Prompt:         "do it",
 			Model:          "claude-sonnet-4-5",
 			MaxTurns:       80,
@@ -1560,6 +1561,7 @@ var factoryTests = []PlannerTest{
 			"id": "(unique)",
 			"agent": {
 				"name": "write-spec",
+				"function_id": "review",
 				"prompt": "do it",
 				"model": "claude-sonnet-4-5",
 				"max_turns": 80,

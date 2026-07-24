@@ -112,6 +112,7 @@ func (visitor *planVisitor) VisitAgent(step *atc.AgentStep) error {
 	}
 	visitor.plan = visitor.planFactory.NewPlan(atc.AgentPlan{
 		Name:            step.Name,
+		FunctionID:      step.FunctionID,
 		Hermetic:        step.Hermetic,
 		RuntimeImage:    step.RuntimeImage,
 		Prompt:          step.Prompt,

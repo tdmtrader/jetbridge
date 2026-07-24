@@ -61,6 +61,7 @@ type Endpoint
     | AgentWorkflowRunWaits String String
     | AgentWorkflowWaitResolve String String String
     | AgentWorkflowRunOutcomes String String
+    | AgentWorkflowRunMetrics String String
     | AgentWorkflowRunReviews String String
     | AgentSnapshot String String
     | AgentSnapshotContent String String
@@ -315,6 +316,9 @@ builder endpoint =
 
         AgentWorkflowRunOutcomes workflowName workflowRunId ->
             base |> appendPath [ "agent", "workflows", Url.percentEncode workflowName, "runs", workflowRunId, "outcomes" ]
+
+        AgentWorkflowRunMetrics workflowName workflowRunId ->
+            base |> appendPath [ "agent", "workflows", Url.percentEncode workflowName, "runs", workflowRunId, "metrics" ]
 
         AgentWorkflowRunReviews workflowName workflowRunId ->
             base |> appendPath [ "agent", "workflows", Url.percentEncode workflowName, "runs", workflowRunId, "reviews" ]

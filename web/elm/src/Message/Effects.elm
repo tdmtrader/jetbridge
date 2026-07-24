@@ -266,6 +266,7 @@ type Effect
         , inputs : List ( String, String )
         }
     | FetchAgentWorkflowRun String String
+    | FetchAgentWorkflowRunMetrics String String
     | CancelAgentWorkflowRun String String
     | RetryAgentWorkflowRun String String
     | FetchAgentWorkflowWaits String String
@@ -1071,6 +1072,12 @@ runEffect effect key csrfToken =
                 |> Api.expectJson Concourse.WorkflowRun.decodeDetail
                 |> Api.request
                 |> Task.attempt (AgentWorkflowRunFetched workflowRunId)
+
+        FetchAgentWorkflowRunMetrics workflowName workflowRunId ->
+            Api.get (Endpoints.AgentWorkflowRunMetrics workflowName workflowRunId)
+                |> Api.expectJson (Json.Decode.list Concourse.Agent.decodeRunMetric)
+                |> Api.request
+                |> Task.attempt (AgentWorkflowRunMetricsFetched workflowRunId)
 
         CancelAgentWorkflowRun workflowName workflowRunId ->
             Api.post (Endpoints.AgentWorkflowRunCancel workflowName workflowRunId) csrfToken

@@ -786,16 +786,18 @@ func (step *AgentStep) ingestFlightRecorder(
 		StepName:        step.plan.Name,
 		WallTimeSeconds: int(wallTime.Seconds()),
 	}
-	// ticketID/runID are the SERVER-VERIFIED identities from run() — never
-	// raw plan env. A raw claim reaching LedgerEntry.TicketID below would
-	// let any pipeline drain a victim ticket's budget with spend it never
-	// made (review finding, 2026-07-11).
-	if ticketID > 0 {
-		rm.TicketID = &ticketID
+	// The metric's execution identity is the durable workflow run and the
+	// planned workflow function — both server-owned: WorkflowRunID is the
+	// authenticated selected-build association carried on step.metadata (never
+	// exported to step env), and FunctionID rides the immutable plan. Neither
+	// is ever read from the attacker-writable flight recorder or renderer env.
+	// The metric field is the schema-local WorkflowRunID; convert from the
+	// snapshot type at this boundary (both are int64 underneath).
+	if step.metadata.WorkflowRunID != nil {
+		runID := schema.WorkflowRunID(int64(*step.metadata.WorkflowRunID))
+		rm.WorkflowRunID = &runID
 	}
-	if runID > 0 {
-		rm.PipelineRunID = &runID
-	}
+	rm.FunctionID = step.plan.FunctionID
 	rm.WorkflowName = planEnv["AGENT_WORKFLOW_NAME"]
 	if v, ok := envInt(planEnv, "AGENT_WORKFLOW_VERSION"); ok {
 		rm.WorkflowVersion = &v
@@ -1010,9 +1012,11 @@ func (step *AgentStep) ingestFlightRecorder(
 	}
 
 	if step.budgetChecker != nil && ledgerCost > 0 {
+		// The cost ledger keeps the SERVER-VERIFIED ticket/run attribution from
+		// run() (never raw plan env — a forged claim would let any pipeline
+		// drain a victim ticket's budget, review finding 2026-07-11). These are
+		// the ledger's own identity: the metric row no longer carries them.
 		entry := budget.LedgerEntry{
-			TicketID:            rm.TicketID,
-			PipelineRunID:       rm.PipelineRunID,
 			BuildID:             rm.BuildID,
 			StepName:            rm.StepName,
 			Source:              budget.SourceAgentStep,
@@ -1024,6 +1028,12 @@ func (step *AgentStep) ingestFlightRecorder(
 			CacheCreationTokens: max(rm.Usage.CacheCreationInputTokens-prevBase.Usage.CacheCreationInputTokens, 0),
 			Turns:               max(rm.Turns-prevBase.Turns, 0),
 			CostUSD:             ledgerCost,
+		}
+		if ticketID > 0 {
+			entry.TicketID = &ticketID
+		}
+		if runID > 0 {
+			entry.PipelineRunID = &runID
 		}
 		// Workflow attribution rides metadata->>'workflow' = "<name>@<version>"
 		// — agent_cost_ledger has no workflow column and group_by=workflow

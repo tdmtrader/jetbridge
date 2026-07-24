@@ -143,6 +143,11 @@ optionalInt name =
     Json.Decode.maybe (Json.Decode.field name Json.Decode.int)
 
 
+optionalString : String -> Json.Decode.Decoder (Maybe String)
+optionalString name =
+    Json.Decode.maybe (Json.Decode.field name Json.Decode.string)
+
+
 dateFromSeconds : Int -> Time.Posix
 dateFromSeconds =
     Time.millisToPosix << (*) 1000
@@ -170,8 +175,8 @@ type alias Usage =
 
 
 type alias RunMetric =
-    { ticketId : Maybe Int
-    , pipelineRunId : Maybe Int
+    { workflowRunId : Maybe String
+    , functionId : String
     , buildId : Int
     , planId : String
     , stepName : String
@@ -203,8 +208,10 @@ decodeUsage =
 decodeRunMetric : Json.Decode.Decoder RunMetric
 decodeRunMetric =
     Json.Decode.succeed RunMetric
-        |> andMap (optionalInt "ticket_id")
-        |> andMap (optionalInt "pipeline_run_id")
+        -- workflow_run_id is a 64-bit id marshaled as a quoted string (JS
+        -- precision safety); absent for an unbound CI invocation
+        |> andMap (optionalString "workflow_run_id")
+        |> andMap (defaultTo "" <| Json.Decode.field "function_id" Json.Decode.string)
         |> andMap (Json.Decode.field "build_id" Json.Decode.int)
         |> andMap (defaultTo "" <| Json.Decode.field "plan_id" Json.Decode.string)
         |> andMap (Json.Decode.field "step_name" Json.Decode.string)
