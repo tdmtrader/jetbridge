@@ -34,7 +34,7 @@ const v713LastMigration = 1666754000
 const v801LastMigration = 1765921815
 
 // JetBridge HEAD (last migration)
-const jetbridgeHeadMigration = 1773106122
+const jetbridgeHeadMigration = 1773106123
 
 var _ = Describe("Legacy Database Upgrade", func() {
 	var (
@@ -146,6 +146,36 @@ var _ = Describe("Legacy Database Upgrade", func() {
 
 			By("Verifying JetBridge schema changes applied")
 			verifyJetBridgeSchemaChanges(db)
+		})
+
+		It("demotes a live legacy workflow and enforces v3-only liveness at HEAD", func() {
+			By("Migrating to the release immediately before the v3 liveness constraint")
+			Expect(migrator.Migrate(nil, nil, 1773106122)).To(Succeed())
+
+			var legacyID int
+			Expect(db.QueryRow(`
+				INSERT INTO agent_workflow_definitions
+					(name, version, content_hash, definition, live, schema_version, signature_version)
+				VALUES
+					('legacy-upgrade-live-v2', 1, 'legacy-upgrade-v2', 'opaque history', true, 2, 0)
+				RETURNING id
+			`).Scan(&legacyID)).To(Succeed())
+
+			By("Migrating the same database to JetBridge HEAD")
+			Expect(migrator.Up(nil, nil)).To(Succeed())
+			ExpectDatabaseMigrationVersionToEqual(migrator, jetbridgeHeadMigration)
+
+			var live bool
+			Expect(db.QueryRow(`
+				SELECT live FROM agent_workflow_definitions WHERE id = $1
+			`, legacyID).Scan(&live)).To(Succeed())
+			Expect(live).To(BeFalse())
+
+			verifyJetBridgeSchemaChanges(db)
+			_, err := db.Exec(`
+				UPDATE agent_workflow_definitions SET live = true WHERE id = $1
+			`, legacyID)
+			Expect(err).To(HaveOccurred())
 		})
 	})
 
@@ -750,6 +780,15 @@ func verifyJetBridgeSchemaChanges(db *sql.DB) {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(exists).To(BeTrue(), "index %s must exist", index)
 	}
+	var liveSchemaConstraint string
+	err = db.QueryRow(`
+		SELECT pg_get_constraintdef(oid)
+		FROM pg_constraint
+		WHERE conrelid = 'agent_workflow_definitions'::regclass
+		  AND conname = 'agent_workflow_definitions_live_schema_v3_check'
+	`).Scan(&liveSchemaConstraint)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(liveSchemaConstraint).To(ContainSubstring("schema_version = 3"))
 
 	// Verify component columns were dropped
 	for _, col := range []string{"interval", "last_ran", "paused"} {

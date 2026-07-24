@@ -81,21 +81,21 @@ run_case() {
 
 run_case \
   "rolled back JetBridge head" \
-  "1773106122" "down" "1773106121" \
+  "1773106123" "down" "1773106122" \
   0 \
-  "Current migration version: 1773106121" \
+  "Current migration version: 1773106122" \
   "already at JetBridge version"
 
 run_case \
   "rolled back newer head to JetBridge" \
-  "1773106123" "down" "1773106122" \
+  "1773106124" "down" "1773106123" \
   0 \
   "already at JetBridge version" \
   "downgrade not supported"
 
 run_case \
   "applied newer head" \
-  "1773106123" "up" "1773106122" \
+  "1773106124" "up" "1773106123" \
   1 \
   "downgrade not supported" \
   ""

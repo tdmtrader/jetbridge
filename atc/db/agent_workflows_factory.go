@@ -210,6 +210,9 @@ func (f *agentWorkflowsFactory) getOne(where string, args ...any) (*workflow.Def
 	if err != nil {
 		return nil, false, err
 	}
+	if def.SchemaVersion == 1 || def.SchemaVersion == 2 {
+		return &def, true, nil
+	}
 	compiled, src, err := compileStoredWorkflowSource(def.Name, def.Version, def.RawYAML, manifestJSON)
 	if err != nil {
 		return nil, false, err

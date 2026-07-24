@@ -523,29 +523,70 @@ plan:
 			Expect(agent.Context).To(ContainSubstring("conventions"))
 		})
 
-		It("reads legacy rows (no source_manifest) via the Parse path", func() {
-			raw := []byte(`schema_version: 1
-name: wf-legacy
-prompts:
-  work: Legacy.
-steps:
-  - agent: work
-    prompt: work
-    outputs: [workspace]
-`)
-			// Simulate a pre-slice row: definition only, NULL manifest.
-			_, err := dbConn.Exec(`
-				INSERT INTO agent_workflow_definitions
-					(name, version, content_hash, definition, description, created_by,
-					 schema_version, signature_version)
-				VALUES ('wf-legacy', 1, 'legacyhash', $1, 'legacy', 'alice', 1, 0)`, string(raw))
-			Expect(err).ToNot(HaveOccurred())
+		It("returns schema-1 and schema-2 history as exact opaque persisted rows", func() {
+			const (
+				name        = "wf-legacy-opaque"
+				rawV1       = "schema_version: [malformed-v1"
+				rawV2       = "not: [valid YAML"
+				contentHash = "opaque-v2-content-hash"
+				description = "historical opaque definition"
+				createdBy   = "history-import"
+			)
 
-			got, found, err := factory.Get("wf-legacy", 1)
-			Expect(err).ToNot(HaveOccurred())
+			var v1ID int
+			Expect(dbConn.QueryRow(`
+					INSERT INTO agent_workflow_definitions
+						(name, version, content_hash, definition, source_manifest, description, created_by,
+						 schema_version, signature_version)
+					VALUES ($1, 1, 'opaque-v1-content-hash', $2, '[]'::jsonb, 'older history', 'legacy-import', 1, 0)
+					RETURNING id
+				`, name, rawV1).Scan(&v1ID)).To(Succeed())
+
+			var (
+				v2ID        int
+				v2CreatedAt int64
+			)
+			Expect(dbConn.QueryRow(`
+					INSERT INTO agent_workflow_definitions
+						(name, version, content_hash, definition, source_manifest, live, description, created_by,
+						 schema_version, signature_version)
+					VALUES ($1, 2, $2, $3, '[]'::jsonb, false, $4, $5, 2, 0)
+					RETURNING id, EXTRACT(EPOCH FROM created_at)::bigint
+				`, name, contentHash, rawV2, description, createdBy).Scan(&v2ID, &v2CreatedAt)).To(Succeed())
+
+			older, found, err := factory.Get(name, 1)
+			Expect(err).NotTo(HaveOccurred())
 			Expect(found).To(BeTrue())
-			Expect(got.Config.Name).To(Equal("wf-legacy"))
-			Expect(got.SourceManifest).To(BeEmpty())
+			Expect(older.ID).To(Equal(v1ID))
+			Expect(older.SchemaVersion).To(Equal(1))
+			Expect(older.RawYAML).To(Equal(rawV1))
+			Expect(older.SourceManifest).To(BeNil())
+			Expect(older.Compiled).To(Equal(workflow.CompiledDefinition{}))
+			Expect(older.Config).To(Equal(workflow.Config{}))
+
+			assertOpaqueV2 := func(got *workflow.Definition, found bool, err error) {
+				Expect(err).NotTo(HaveOccurred())
+				Expect(found).To(BeTrue())
+				Expect(got.ID).To(Equal(v2ID))
+				Expect(got.Name).To(Equal(name))
+				Expect(got.Version).To(Equal(2))
+				Expect(got.ContentHash).To(Equal(contentHash))
+				Expect(got.Live).To(BeFalse())
+				Expect(got.Description).To(Equal(description))
+				Expect(got.CreatedBy).To(Equal(createdBy))
+				Expect(got.CreatedAt).To(Equal(v2CreatedAt))
+				Expect(got.SchemaVersion).To(Equal(2))
+				Expect(got.SignatureVersion).To(BeZero())
+				Expect(got.RawYAML).To(Equal(rawV2))
+				Expect(got.SourceManifest).To(BeNil())
+				Expect(got.Compiled).To(Equal(workflow.CompiledDefinition{}))
+				Expect(got.Config).To(Equal(workflow.Config{}))
+			}
+
+			got, found, err := factory.Get(name, 2)
+			assertOpaqueV2(got, found, err)
+			latest, found, err := factory.Latest(name)
+			assertOpaqueV2(latest, found, err)
 		})
 	})
 
@@ -693,6 +734,9 @@ steps:
 			Expect(err).NotTo(HaveOccurred())
 			Expect(page.Definitions).To(HaveLen(1))
 			_, found, err := factory.Get("wf-metadata-only", 1)
+			Expect(found).To(BeFalse())
+			Expect(err).To(HaveOccurred())
+			_, found, err = factory.Latest("wf-metadata-only")
 			Expect(found).To(BeFalse())
 			Expect(err).To(HaveOccurred())
 		})
