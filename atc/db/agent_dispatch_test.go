@@ -121,7 +121,7 @@ plan:
 		WorkflowBinder: binder, WorkflowCanceler: canceler,
 		Budget: budget.NewChecker(
 			db.NewAgentCostLedgerFactory(dbConn),
-			dispatch.NewTicketBudgets(ticketsFactory, workflows),
+			dispatch.NewTicketBudgets(ticketsFactory),
 			budget.Config{},
 		),
 	}

@@ -92,10 +92,11 @@ type Remaining struct {
 // Checker is consulted by the dispatcher (admission), the agent step
 // (slice env computation) and the gateway (mid-flight cutoff). All
 // arithmetic — including "how much is left" — lives here and nowhere else.
+//
 //counterfeiter:generate . Checker
 type Checker interface {
 	// TicketRemaining = ticket budget − SUM(ledger cost for ticket_id),
-	// where ticket budget = tickets.budget_usd ?? workflow default.
+	// where only a positive tickets.budget_usd configures a cap.
 	TicketRemaining(ticketID int) (Remaining, error)
 	// GlobalDailyRemaining = daily cap − SUM(ledger cost since local midnight).
 	GlobalDailyRemaining() (Remaining, error)
@@ -109,6 +110,7 @@ type Checker interface {
 // Ledger is the persistence seam implemented by
 // atc/db.NewAgentCostLedgerFactory. Rollups are queries, never
 // materialized mutations; rows are append-only.
+//
 //counterfeiter:generate . Ledger
 type Ledger interface {
 	Insert(entry LedgerEntry) error
@@ -135,10 +137,9 @@ type RollupRow struct {
 	CostUSD      float64 `json:"cost_usd"`
 }
 
-// TicketBudgets resolves "ticket budget = tickets.budget_usd ?? workflow
-// default". Wave 1 has no tickets table, so NoTicketBudgets stands in;
-// ticket-core/dispatch supply the real implementation without this
-// package changing.
+// TicketBudgets resolves an explicit positive tickets.budget_usd. Absent or
+// non-positive values are uncapped.
+//
 //counterfeiter:generate . TicketBudgets
 type TicketBudgets interface {
 	BudgetUSD(ticketID int) (float64, bool, error)

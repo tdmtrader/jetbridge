@@ -101,7 +101,7 @@ type AgentTicketsCreateCommand struct {
 	TargetBranch string  `long:"target-branch" default:"main" description:"Branch the work targets"`
 	Workflow     string  `long:"workflow" description:"Workflow definition name (empty = decided at dispatch)"`
 	WorkflowVer  int     `long:"workflow-version" description:"Pin a workflow definition version (0 = live version)"`
-	Budget       float64 `long:"budget" description:"Per-ticket budget in USD (0 = workflow default)"`
+	Budget       float64 `long:"budget" description:"Per-ticket budget in USD (0 = uncapped)"`
 	Queue        bool    `long:"queue" description:"Queue the ticket immediately after creating it"`
 	Dispatch     bool    `long:"dispatch" description:"Queue and dispatch the ticket immediately (implies --queue)"`
 }

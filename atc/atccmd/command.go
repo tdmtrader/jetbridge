@@ -1709,7 +1709,7 @@ func (cmd *RunCommand) backendComponents(
 				WorkflowCanceler: ticketWorkflowCanceler,
 				Budget: budget.NewChecker(
 					db.NewAgentCostLedgerFactory(dbConn),
-					dispatch.NewTicketBudgets(db.NewAgentTicketsFactory(dbConn), db.NewAgentWorkflowsFactory(dbConn)),
+					dispatch.NewTicketBudgets(db.NewAgentTicketsFactory(dbConn)),
 					budget.Config{GlobalDailyCapUSD: cmd.AgentDailyBudgetUSD},
 				),
 			}
@@ -3046,13 +3046,11 @@ func (cmd *RunCommand) constructEngine(
 ) engine.Engine {
 	// Budget admission + ledger for agent: steps. Same construction as the
 	// costs API handler (atc/api/handler.go): the DB-backed cost ledger,
-	// REAL per-ticket budgets (tickets.budget_usd ?? frozen-workflow
-	// default — dispatch remainder 2026-07-17; NoTicketBudgets stays in
-	// the budget package for tests/rollback), and the global daily cap
-	// from --agent-daily-budget-usd.
+	// explicit positive per-ticket budgets (tickets.budget_usd; zero means
+	// uncapped), and the global daily cap from --agent-daily-budget-usd.
 	agentBudgetChecker := budget.NewChecker(
 		db.NewAgentCostLedgerFactory(dbConn),
-		dispatch.NewTicketBudgets(db.NewAgentTicketsFactory(dbConn), db.NewAgentWorkflowsFactory(dbConn)),
+		dispatch.NewTicketBudgets(db.NewAgentTicketsFactory(dbConn)),
 		budget.Config{
 			GlobalDailyCapUSD: cmd.AgentDailyBudgetUSD,
 		},
@@ -3572,7 +3570,7 @@ func (cmd *RunCommand) constructAPIHandler(
 		cmd.AgentStepImage,
 		db.NewAgentCostLedgerFactory(dbConn),
 		cmd.AgentDailyBudgetUSD,
-		dispatch.NewTicketBudgets(db.NewAgentTicketsFactory(dbConn), db.NewAgentWorkflowsFactory(dbConn)),
+		dispatch.NewTicketBudgets(db.NewAgentTicketsFactory(dbConn)),
 		db.NewAgentOutcomesFactory(dbConn),
 		cmd.agentOutcomeDiffProvider(),
 		db.NewAgentRepositoryChangesFactoryForTeam(dbConn, mainTeam.Name()),
@@ -3587,7 +3585,7 @@ func (cmd *RunCommand) constructAPIHandler(
 			WorkflowCanceler: workflowCanceler,
 			Budget: budget.NewChecker(
 				db.NewAgentCostLedgerFactory(dbConn),
-				dispatch.NewTicketBudgets(db.NewAgentTicketsFactory(dbConn), db.NewAgentWorkflowsFactory(dbConn)),
+				dispatch.NewTicketBudgets(db.NewAgentTicketsFactory(dbConn)),
 				budget.Config{GlobalDailyCapUSD: cmd.AgentDailyBudgetUSD},
 			),
 		}, func(r *http.Request) string {
