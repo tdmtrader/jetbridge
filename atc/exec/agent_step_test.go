@@ -1235,7 +1235,7 @@ var _ = Describe("AgentStep", func() {
 			})
 
 			// --- review finding: main container never received the token ---
-			// §8.1 pins CLAUDE_CODE_OAUTH_TOKEN to main AND gateway from the
+			// §8.1 pins CLAUDE_CODE_OAUTH_TOKEN to the main container from the
 			// per-run secret — the ONLY token path into an agent pod (env is
 			// static-only and never carries credentials). Without an explicit
 			// ref the main claude CLI has no token at all on

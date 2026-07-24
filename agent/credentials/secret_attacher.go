@@ -9,6 +9,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/util/retry"
 )
 
 // §8.2 secret naming and keys — the injection contract every consumer
@@ -56,10 +57,23 @@ func (a *K8sSecretAttacher) Attach(ctx context.Context, runID int, cred *Credent
 		},
 	}
 
-	_, err := a.client.CoreV1().Secrets(a.namespace).Create(ctx, secret, metav1.CreateOptions{})
+	secrets := a.client.CoreV1().Secrets(a.namespace)
+	_, err := secrets.Create(ctx, secret, metav1.CreateOptions{})
 	if apierrors.IsAlreadyExists(err) {
-		// Idempotent per runID: refresh contents on re-attach.
-		_, err = a.client.CoreV1().Secrets(a.namespace).Update(ctx, secret, metav1.UpdateOptions{})
+		// Reattachment replaces the full desired shape. Fetching before each
+		// update supplies the API-server resource version and lets concurrent
+		// reattachments retry safely.
+		err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			existing, err := secrets.Get(ctx, name, metav1.GetOptions{})
+			if err != nil {
+				return err
+			}
+
+			desired := secret.DeepCopy()
+			desired.ResourceVersion = existing.ResourceVersion
+			_, err = secrets.Update(ctx, desired, metav1.UpdateOptions{})
+			return err
+		})
 	}
 	if err != nil {
 		return "", fmt.Errorf("attach run %d: %w", runID, err)

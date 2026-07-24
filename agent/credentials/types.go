@@ -1,8 +1,8 @@
 // Package credentials owns the per-user Anthropic credential vault: the
 // domain types and Store contract (implemented by atc/db), the HTTP
 // handler seam, and the K8s secret helpers (ephemeral per-run secret and
-// long-lived platform-credential secret) that dispatch and the gateway
-// consume. Contract: docs/superpowers/plans/agentic-platform/
+// long-lived platform-credential secret) that dispatch and workflow-run
+// admission consume. Contract: docs/superpowers/plans/agentic-platform/
 // 00-shared-contracts.md §1.3, §2.6, §8.2, §1.13.
 package credentials
 
@@ -57,7 +57,7 @@ type Store interface {
 }
 
 // SecretAttacher is the ephemeral K8s secret helper (§8.2). Implemented once
-// here; dispatch and the gateway use it, nobody re-implements secret lifecycle.
+// here; dispatch and workflow-run admission use it, nobody re-implements secret lifecycle.
 //
 //counterfeiter:generate . SecretAttacher
 type SecretAttacher interface {

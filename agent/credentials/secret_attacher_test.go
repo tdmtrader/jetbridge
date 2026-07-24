@@ -2,11 +2,18 @@ package credentials_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/concourse/concourse/agent/credentials"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 )
 
 func TestAttachCreatesLabeledSecret(t *testing.T) {
@@ -56,6 +63,58 @@ func TestAttachIsIdempotentPerRun(t *testing.T) {
 	}
 	if len(secret.StringData) != 1 {
 		t.Fatalf("secret data: %v", secret.StringData)
+	}
+}
+
+func TestAttachReplacesExistingSecretUsingResourceVersionAndRetriesConflicts(t *testing.T) {
+	clientset := fake.NewSimpleClientset(&corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            credentials.RunSecretName(7),
+			Namespace:       "ns",
+			ResourceVersion: "1",
+			Labels:          map[string]string{credentials.RunLabel: "7"},
+		},
+		Type: corev1.SecretTypeOpaque,
+		StringData: map[string]string{
+			credentials.SecretKeyAnthropicToken: "stale-token",
+			"principal-token":                   "retired-principal-token",
+		},
+	})
+
+	updates := 0
+	clientset.PrependReactor("update", "secrets", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		secret := action.(k8stesting.UpdateAction).GetObject().(*corev1.Secret)
+		if secret.ResourceVersion == "" {
+			return true, nil, apierrors.NewInvalid(
+				schema.GroupKind{Kind: "Secret"}, secret.Name,
+				field.ErrorList{field.Required(field.NewPath("metadata", "resourceVersion"), "must be specified for an update")},
+			)
+		}
+		updates++
+		if updates == 1 {
+			return true, nil, apierrors.NewConflict(schema.GroupResource{Resource: "secrets"}, secret.Name, errors.New("concurrent reattachment"))
+		}
+		return false, nil, nil
+	})
+
+	attacher := credentials.NewK8sSecretAttacher(clientset, "ns")
+	name, err := attacher.Attach(context.Background(), 7, &credentials.Credential{Token: "fresh-token"})
+	if err != nil {
+		t.Fatalf("reattach existing secret: %v", err)
+	}
+	if name != credentials.RunSecretName(7) {
+		t.Fatalf("secret name = %q", name)
+	}
+	if updates != 2 {
+		t.Fatalf("update attempts = %d, want 2", updates)
+	}
+
+	secret, err := clientset.CoreV1().Secrets("ns").Get(context.Background(), credentials.RunSecretName(7), metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(secret.StringData) != 1 || secret.StringData[credentials.SecretKeyAnthropicToken] != "fresh-token" {
+		t.Fatalf("secret string data = %v", secret.StringData)
 	}
 }
 

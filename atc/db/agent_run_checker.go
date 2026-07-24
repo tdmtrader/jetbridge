@@ -22,7 +22,7 @@ func NewAgentRunChecker(conn DbConn) *AgentRunChecker {
 // RunActive reports whether the run row exists and is still active:
 // running, or parked in the non-terminal awaiting_human state — per
 // PARK-V2 (contracts §11) awaiting_human COUNTS AS ACTIVE, so the
-// agent-run-<run-id> secret and per-run principal row survive the wait
+// agent-run-<run-id> secret survives the wait
 // for the continuation to re-attach. Absent rows are inactive — the run
 // finished, was deleted, or was never created; either way its secret
 // must not outlive it. An absent pipeline_runs TABLE (credentials merges
