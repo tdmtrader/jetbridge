@@ -56,7 +56,6 @@ mintScopeVocabulary =
     , "tickets:write"
     , "metrics:write"
     , "costs:write"
-    , "questions:answer"
     ]
 
 

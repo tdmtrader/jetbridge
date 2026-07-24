@@ -60,7 +60,7 @@ var _ = Describe("AgentPrincipalsFactory", func() {
 		Expect(*got.ExpiresAt).To(Equal(expires))
 	})
 
-	It("lists principals including the backfilled legacy-publish row", func() {
+	It("lists a normally minted gateway principal without the retired sentinel", func() {
 		_, _, err := factory.Create(principals.CreateSpec{
 			Name: "gateway", Scopes: []string{principals.ScopeCostsWrite},
 		})
@@ -73,8 +73,8 @@ var _ = Describe("AgentPrincipalsFactory", func() {
 		for _, p := range list {
 			names = append(names, p.Name)
 		}
-		Expect(names).To(ContainElement(principals.LegacyPublishPrincipalName))
 		Expect(names).To(ContainElement("gateway"))
+		Expect(names).NotTo(ContainElement("legacy-publish"))
 	})
 
 	It("revokes idempotently and reports missing ids", func() {

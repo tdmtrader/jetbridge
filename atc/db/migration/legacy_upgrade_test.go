@@ -34,7 +34,7 @@ const v713LastMigration = 1666754000
 const v801LastMigration = 1765921815
 
 // JetBridge HEAD (last migration)
-const jetbridgeHeadMigration = 1773106121
+const jetbridgeHeadMigration = 1773106122
 
 var _ = Describe("Legacy Database Upgrade", func() {
 	var (
@@ -653,8 +653,24 @@ func verifyBuildStatuses(db *sql.DB, expected map[string]int) {
 }
 
 func verifyJetBridgeSchemaChanges(db *sql.DB) {
-	var repositoryProjectionStatusCheck string
+	var retiredScopeCount int
 	err := db.QueryRow(`
+		SELECT count(*) FROM agent_principals
+		WHERE 'questions:answer' = ANY(scopes)
+	`).Scan(&retiredScopeCount)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(retiredScopeCount).To(Equal(0), "HEAD must strip the retired question authority")
+
+	var sentinelCount int
+	err = db.QueryRow(`
+		SELECT count(*) FROM agent_principals
+		WHERE name = 'legacy-publish' AND token_hash = ''
+	`).Scan(&sentinelCount)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(sentinelCount).To(Equal(0), "HEAD must remove the inert legacy publishing sentinel")
+
+	var repositoryProjectionStatusCheck string
+	err = db.QueryRow(`
 		SELECT string_agg(pg_get_constraintdef(oid), ' ')
 		FROM pg_constraint
 		WHERE conrelid = 'agent_repository_change_projections'::regclass

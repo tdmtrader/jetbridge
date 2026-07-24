@@ -80,7 +80,7 @@ func (command *AgentPrincipalsListCommand) Execute([]string) error {
 type AgentPrincipalsMintCommand struct {
 	Name        string         `long:"name" required:"true" description:"Principal name (unique)"`
 	Description string         `long:"description" description:"What this principal is for"`
-	Scopes      []string       `long:"scope" required:"true" description:"Scope to grant; repeatable. One of: reviews:write, tickets:read, tickets:write, metrics:write, costs:write, questions:answer"`
+	Scopes      []string       `long:"scope" required:"true" description:"Scope to grant; repeatable. One of: reviews:write, tickets:read, tickets:write, metrics:write, costs:write"`
 	Team        string         `long:"team" default:"main" description:"Team the principal belongs to"`
 	ExpiresIn   *time.Duration `long:"expires-in" description:"Optional lifetime, e.g. 720h. Omit for a non-expiring principal."`
 	Json        bool           `long:"json" description:"Print the created principal, including the one-time token, as JSON"`

@@ -2,6 +2,7 @@ package principals_test
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -14,15 +15,50 @@ func TestCreateSpecValidate(t *testing.T) {
 		t.Errorf("valid spec rejected: %v", err)
 	}
 
-	cases := map[string]principals.CreateSpec{
-		"missing name":  {Scopes: []string{principals.ScopeReviewsWrite}},
-		"no scopes":     {Name: "x"},
-		"unknown scope": {Name: "x", Scopes: []string{"reviews:read"}},
+	cases := map[string]struct {
+		spec principals.CreateSpec
+		want string
+	}{
+		"missing name": {
+			spec: principals.CreateSpec{Scopes: []string{principals.ScopeReviewsWrite}},
+			want: "name is required",
+		},
+		"no scopes": {
+			spec: principals.CreateSpec{Name: "x"},
+			want: "at least one scope is required",
+		},
+		"unknown scope": {
+			spec: principals.CreateSpec{Name: "x", Scopes: []string{"reviews:read"}},
+			want: `unknown scope "reviews:read"`,
+		},
+		"retired question authority": {
+			spec: principals.CreateSpec{Name: "x", Scopes: []string{"questions:answer"}},
+			want: `unknown scope "questions:answer"`,
+		},
 	}
-	for name, spec := range cases {
-		if err := spec.Validate(); err == nil {
-			t.Errorf("%s: expected validation error", name)
-		}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			err := tc.spec.Validate()
+			if err == nil {
+				t.Fatal("expected validation error")
+			}
+			if err.Error() != tc.want {
+				t.Fatalf("validation error = %q, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestValidScopesContainsOnlyRetainedPublishingAndTicketScopes(t *testing.T) {
+	want := map[string]bool{
+		"reviews:write": true,
+		"tickets:read":  true,
+		"tickets:write": true,
+		"metrics:write": true,
+		"costs:write":   true,
+	}
+	if !reflect.DeepEqual(principals.ValidScopes, want) {
+		t.Fatalf("ValidScopes = %#v, want %#v", principals.ValidScopes, want)
 	}
 }
 

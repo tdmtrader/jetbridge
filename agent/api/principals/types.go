@@ -11,28 +11,21 @@ import (
 // docs/superpowers/plans/agentic-platform/agent-route-scopes.md in the
 // same change.
 const (
-	ScopeReviewsWrite    = "reviews:write"
-	ScopeTicketsRead     = "tickets:read"
-	ScopeTicketsWrite    = "tickets:write"
-	ScopeMetricsWrite    = "metrics:write"
-	ScopeCostsWrite      = "costs:write"
-	ScopeQuestionsAnswer = "questions:answer"
+	ScopeReviewsWrite = "reviews:write"
+	ScopeTicketsRead  = "tickets:read"
+	ScopeTicketsWrite = "tickets:write"
+	ScopeMetricsWrite = "metrics:write"
+	ScopeCostsWrite   = "costs:write"
 )
 
 // ValidScopes is the closed scope set.
 var ValidScopes = map[string]bool{
-	ScopeReviewsWrite:    true,
-	ScopeTicketsRead:     true,
-	ScopeTicketsWrite:    true,
-	ScopeMetricsWrite:    true,
-	ScopeCostsWrite:      true,
-	ScopeQuestionsAnswer: true,
+	ScopeReviewsWrite: true,
+	ScopeTicketsRead:  true,
+	ScopeTicketsWrite: true,
+	ScopeMetricsWrite: true,
+	ScopeCostsWrite:   true,
 }
-
-// LegacyPublishPrincipalName attributes rows written with the static
-// --agent-review-publish-token during the dual-accept window. The row is
-// backfilled by migration 1773106010 with no token.
-const LegacyPublishPrincipalName = "legacy-publish"
 
 // Principal is one agent_principals row. Timestamps are Unix epoch
 // seconds in JSON (repo convention, matching agent_reviews). TokenHash
