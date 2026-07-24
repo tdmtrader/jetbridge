@@ -1,7 +1,6 @@
 package atc
 
 import (
-	"github.com/concourse/concourse/agent/harvest"
 	"github.com/concourse/concourse/agent/publisher"
 	"github.com/concourse/concourse/agent/snapshot"
 )
@@ -16,7 +15,6 @@ type Plan struct {
 	Task            *TaskPlan            `json:"task,omitempty"`
 	Run             *RunPlan             `json:"run,omitempty"`
 	Agent           *AgentPlan           `json:"agent,omitempty"`
-	Harvest         *HarvestPlan         `json:"harvest,omitempty"`
 	SetPipeline     *SetPipelinePlan     `json:"set_pipeline,omitempty"`
 	LoadVar         *LoadVarPlan         `json:"load_var,omitempty"`
 	LoadSnapshot    *LoadSnapshotPlan    `json:"load_snapshot,omitempty"`
@@ -445,24 +443,6 @@ type AgentPlan struct {
 	Timeout         string                          `json:"timeout,omitempty"`
 	Limits          *ContainerLimits                `json:"container_limits,omitempty"`
 	Requests        *ContainerLimits                `json:"container_requests,omitempty"`
-}
-
-// HarvestPlan is the plan payload for the terminal harvest step
-// (shared-contracts §2.8.1). Mirrors atc.HarvestStep 1:1.
-type HarvestPlan struct {
-	Name          string               `json:"name"`
-	Workspace     string               `json:"workspace"`
-	Repo          string               `json:"repo"`
-	TargetBranch  string               `json:"target_branch,omitempty"`
-	TicketID      int                  `json:"ticket_id,omitempty"`
-	PipelineRunID int                  `json:"pipeline_run_id,omitempty"`
-	Branch        string               `json:"branch,omitempty"`
-	Push          bool                 `json:"push,omitempty"`
-	Env           map[string]string    `json:"env,omitempty"`
-	DevMCP        *SidecarSource       `json:"dev_mcp,omitempty"`
-	GatePolicy    harvest.GatePolicy   `json:"gate_policy"`
-	Judge         *harvest.JudgeConfig `json:"judge,omitempty"`
-	Timeout       string               `json:"timeout,omitempty"`
 }
 
 type SetPipelinePlan struct {

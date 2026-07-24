@@ -798,6 +798,16 @@ func (s *StepsSuite) TestFactory() {
 	}
 }
 
+func (s *StepsSuite) TestRejectsRetiredHarvestAsUnknownCoreStep() {
+	var step atc.Step
+	err := yaml.Unmarshal([]byte(`
+harvest: push-branch
+workspace: workspace
+repo: example/repo
+`), &step)
+	s.ErrorIs(err, atc.ErrNoStepConfigured)
+}
+
 func (s *StepsSuite) TestSnapshotPortConfigs() {
 	s.Run("strict configs and canonical output form", func() {
 		var input atc.SnapshotInputConfig

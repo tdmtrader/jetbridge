@@ -157,56 +157,6 @@ var _ = Describe("Plan", func() {
 		})
 	})
 
-	Describe("HarvestPlan Public", func() {
-		It("exposes name, repo, and branch under a \"harvest\" key, redacting env, judge, and ids", func() {
-			plan := atc.Plan{
-				ID: "8/harvest",
-				Harvest: &atc.HarvestPlan{
-					Name:          "harvest",
-					Workspace:     "workspace",
-					Repo:          "tdmtrader/jetbridge",
-					TargetBranch:  "main",
-					TicketID:      28,
-					PipelineRunID: 42,
-					Branch:        "agent/ticket-28",
-					Push:          true,
-					Env: map[string]string{
-						"SECRET_TOKEN": "literal-secret",
-					},
-				},
-			}
-			json := plan.Public()
-			Expect(json).ToNot(BeNil())
-			Expect([]byte(*json)).To(MatchJSON(`{
-				"id": "8/harvest",
-				"harvest": {
-					"name": "harvest",
-					"repo": "tdmtrader/jetbridge",
-					"branch": "agent/ticket-28"
-				}
-			}`))
-		})
-
-		It("omits branch when empty", func() {
-			plan := atc.Plan{
-				ID: "8/harvest",
-				Harvest: &atc.HarvestPlan{
-					Name: "harvest",
-					Repo: "tdmtrader/jetbridge",
-				},
-			}
-			json := plan.Public()
-			Expect(json).ToNot(BeNil())
-			Expect([]byte(*json)).To(MatchJSON(`{
-				"id": "8/harvest",
-				"harvest": {
-					"name": "harvest",
-					"repo": "tdmtrader/jetbridge"
-				}
-			}`))
-		})
-	})
-
 	Describe("Public", func() {
 		It("returns a sanitized form of the plan", func() {
 			plan := atc.Plan{

@@ -3062,10 +3062,6 @@ func (cmd *RunCommand) constructEngine(
 		engine.WithAgentMetricsStore(db.NewAgentRunMetricsFactory(dbConn)),
 		engine.WithAgentBudgetChecker(agentBudgetChecker),
 		engine.WithAgentRunVerifier(pipelineRunFactory),
-		engine.WithAgentTicketsStore(db.NewAgentTicketsFactory(dbConn)),
-		engine.WithAgentReviewsStore(db.NewAgentReviewsFactory(dbConn)),
-		engine.WithAgentOutcomesStore(db.NewAgentOutcomesFactory(dbConn)),
-		engine.WithAgentPlatformUserResolver(db.NewAgentUserCredentialsFactory(dbConn)),
 		engine.WithWorkflowWaitStore(db.NewAgentWorkflowWaitsFactory(
 			dbConn, cmd.AgentSnapshots.BindingRetention,
 		)),

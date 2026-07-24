@@ -90,20 +90,6 @@ type FakeCoreStepFactory struct {
 	getStepReturnsOnCall map[int]struct {
 		result1 exec.Step
 	}
-	HarvestStepStub        func(atc.Plan, exec.StepMetadata, db.ContainerMetadata, engine.DelegateFactory) exec.Step
-	harvestStepMutex       sync.RWMutex
-	harvestStepArgsForCall []struct {
-		arg1 atc.Plan
-		arg2 exec.StepMetadata
-		arg3 db.ContainerMetadata
-		arg4 engine.DelegateFactory
-	}
-	harvestStepReturns struct {
-		result1 exec.Step
-	}
-	harvestStepReturnsOnCall map[int]struct {
-		result1 exec.Step
-	}
 	LoadSnapshotStepStub        func(atc.Plan, exec.StepMetadata, engine.DelegateFactory) exec.Step
 	loadSnapshotStepMutex       sync.RWMutex
 	loadSnapshotStepArgsForCall []struct {
@@ -577,70 +563,6 @@ func (fake *FakeCoreStepFactory) GetStepReturnsOnCall(i int, result1 exec.Step) 
 		})
 	}
 	fake.getStepReturnsOnCall[i] = struct {
-		result1 exec.Step
-	}{result1}
-}
-
-func (fake *FakeCoreStepFactory) HarvestStep(arg1 atc.Plan, arg2 exec.StepMetadata, arg3 db.ContainerMetadata, arg4 engine.DelegateFactory) exec.Step {
-	fake.harvestStepMutex.Lock()
-	ret, specificReturn := fake.harvestStepReturnsOnCall[len(fake.harvestStepArgsForCall)]
-	fake.harvestStepArgsForCall = append(fake.harvestStepArgsForCall, struct {
-		arg1 atc.Plan
-		arg2 exec.StepMetadata
-		arg3 db.ContainerMetadata
-		arg4 engine.DelegateFactory
-	}{arg1, arg2, arg3, arg4})
-	stub := fake.HarvestStepStub
-	fakeReturns := fake.harvestStepReturns
-	fake.recordInvocation("HarvestStep", []interface{}{arg1, arg2, arg3, arg4})
-	fake.harvestStepMutex.Unlock()
-	if stub != nil {
-		return stub(arg1, arg2, arg3, arg4)
-	}
-	if specificReturn {
-		return ret.result1
-	}
-	return fakeReturns.result1
-}
-
-func (fake *FakeCoreStepFactory) HarvestStepCallCount() int {
-	fake.harvestStepMutex.RLock()
-	defer fake.harvestStepMutex.RUnlock()
-	return len(fake.harvestStepArgsForCall)
-}
-
-func (fake *FakeCoreStepFactory) HarvestStepCalls(stub func(atc.Plan, exec.StepMetadata, db.ContainerMetadata, engine.DelegateFactory) exec.Step) {
-	fake.harvestStepMutex.Lock()
-	defer fake.harvestStepMutex.Unlock()
-	fake.HarvestStepStub = stub
-}
-
-func (fake *FakeCoreStepFactory) HarvestStepArgsForCall(i int) (atc.Plan, exec.StepMetadata, db.ContainerMetadata, engine.DelegateFactory) {
-	fake.harvestStepMutex.RLock()
-	defer fake.harvestStepMutex.RUnlock()
-	argsForCall := fake.harvestStepArgsForCall[i]
-	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3, argsForCall.arg4
-}
-
-func (fake *FakeCoreStepFactory) HarvestStepReturns(result1 exec.Step) {
-	fake.harvestStepMutex.Lock()
-	defer fake.harvestStepMutex.Unlock()
-	fake.HarvestStepStub = nil
-	fake.harvestStepReturns = struct {
-		result1 exec.Step
-	}{result1}
-}
-
-func (fake *FakeCoreStepFactory) HarvestStepReturnsOnCall(i int, result1 exec.Step) {
-	fake.harvestStepMutex.Lock()
-	defer fake.harvestStepMutex.Unlock()
-	fake.HarvestStepStub = nil
-	if fake.harvestStepReturnsOnCall == nil {
-		fake.harvestStepReturnsOnCall = make(map[int]struct {
-			result1 exec.Step
-		})
-	}
-	fake.harvestStepReturnsOnCall[i] = struct {
 		result1 exec.Step
 	}{result1}
 }

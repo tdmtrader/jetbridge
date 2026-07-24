@@ -7,9 +7,6 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/agent/api/metrics"
-	"github.com/concourse/concourse/agent/api/outcomes"
-	"github.com/concourse/concourse/agent/api/reviews"
-	"github.com/concourse/concourse/agent/api/tickets"
 	"github.com/concourse/concourse/agent/budget"
 	"github.com/concourse/concourse/agent/publisher"
 	"github.com/concourse/concourse/agent/snapshot"
@@ -43,10 +40,6 @@ type coreStepFactory struct {
 	agentBudgetChecker    budget.Checker
 	agentRunVerifier      exec.AgentRunVerifier
 	agentPlatformToken    string
-	agentTicketsStore     tickets.Store
-	agentReviewsStore     reviews.Store
-	agentOutcomesStore    outcomes.Store
-	platformUserResolver  exec.PlatformUserResolver
 	outputSealer          snapshot.OutputSealer
 	snapshotMetadataStore snapshot.MetadataStore
 	snapshotContentStore  snapshot.ContentStore
@@ -111,36 +104,10 @@ func WithAgentStepImage(image string) CoreStepFactoryOption {
 	return func(f *coreStepFactory) { f.agentStepImage = image }
 }
 
-// WithAgentTicketsStore wires the single-writer ticket store so the
-// harvest step can transition tickets after the runner exits.
-func WithAgentTicketsStore(s tickets.Store) CoreStepFactoryOption {
-	return func(f *coreStepFactory) { f.agentTicketsStore = s }
-}
-
 // WithAgentMetricsStore sets the run-metrics store for server-side
 // flight-recorder ingestion.
 func WithAgentMetricsStore(s metrics.Store) CoreStepFactoryOption {
 	return func(f *coreStepFactory) { f.agentMetricsStore = s }
-}
-
-// WithAgentReviewsStore sets the store the harvest step upserts judged
-// review.json evidence into (agent_reviews) during server-side flight
-// ingestion.
-func WithAgentReviewsStore(s reviews.Store) CoreStepFactoryOption {
-	return func(f *coreStepFactory) { f.agentReviewsStore = s }
-}
-
-// WithAgentOutcomesStore sets the delivery-outcomes store the harvest
-// step seeds the agent_outcomes row into (authoritative pushed/base
-// shas) after a successful push.
-func WithAgentOutcomesStore(s outcomes.Store) CoreStepFactoryOption {
-	return func(f *coreStepFactory) { f.agentOutcomesStore = s }
-}
-
-// WithAgentPlatformUserResolver sets the §1.13 platform-user lookup
-// (UserBySub) so harvest_judge ledger rows carry platform attribution.
-func WithAgentPlatformUserResolver(r exec.PlatformUserResolver) CoreStepFactoryOption {
-	return func(f *coreStepFactory) { f.platformUserResolver = r }
 }
 
 // WithAgentBudgetChecker sets the budget library used for step-slice
@@ -356,62 +323,6 @@ func (factory *coreStepFactory) AgentStep(
 		agentStep = exec.RetryError(agentStep, delegateFactory)
 	}
 	return agentStep
-}
-
-func (factory *coreStepFactory) HarvestStep(
-	plan atc.Plan,
-	stepMetadata exec.StepMetadata,
-	containerMetadata db.ContainerMetadata,
-	delegateFactory DelegateFactory,
-) exec.Step {
-	sum := sha256.Sum256([]byte(plan.Harvest.Name))
-	containerMetadata.WorkingDirectory = filepath.Join("/tmp", "build", fmt.Sprintf("%x", sum[:4]))
-
-	// The streamer rides unconditionally: ingestion is nil-guarded on the
-	// metrics store, not the streamer.
-	harvestOpts := []exec.HarvestStepOption{exec.WithHarvestStreamer(factory.streamer)}
-	if factory.agentTicketsStore != nil {
-		harvestOpts = append(harvestOpts, exec.WithHarvestTicketsStore(factory.agentTicketsStore))
-	}
-	if factory.agentRunVerifier != nil {
-		harvestOpts = append(harvestOpts, exec.WithHarvestRunVerifier(factory.agentRunVerifier))
-	}
-	if factory.agentPlatformToken != "" {
-		harvestOpts = append(harvestOpts, exec.WithHarvestPlatformTokenSecret(factory.agentPlatformToken))
-	}
-	if factory.agentMetricsStore != nil {
-		harvestOpts = append(harvestOpts, exec.WithHarvestMetricsStore(factory.agentMetricsStore))
-	}
-	if factory.agentReviewsStore != nil {
-		harvestOpts = append(harvestOpts, exec.WithHarvestReviewsStore(factory.agentReviewsStore))
-	}
-	if factory.agentOutcomesStore != nil {
-		harvestOpts = append(harvestOpts, exec.WithHarvestOutcomesStore(factory.agentOutcomesStore))
-	}
-	if factory.agentBudgetChecker != nil {
-		harvestOpts = append(harvestOpts, exec.WithHarvestBudgetRecorder(factory.agentBudgetChecker))
-	}
-	if factory.platformUserResolver != nil {
-		harvestOpts = append(harvestOpts, exec.WithHarvestPlatformUserResolver(factory.platformUserResolver))
-	}
-
-	harvestStep := exec.NewHarvestStep(
-		plan.ID,
-		*plan.Harvest,
-		stepMetadata,
-		containerMetadata,
-		factory.pool,
-		delegateFactory,
-		factory.defaultTaskTimeout,
-		factory.agentStepImage,
-		harvestOpts...,
-	)
-
-	harvestStep = exec.LogError(harvestStep, delegateFactory)
-	if atc.EnableBuildRerunWhenWorkerDisappears {
-		harvestStep = exec.RetryError(harvestStep, delegateFactory)
-	}
-	return harvestStep
 }
 
 func (factory *coreStepFactory) TaskStep(

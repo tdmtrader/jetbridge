@@ -24,7 +24,6 @@ func (plan *Plan) Public() *json.RawMessage {
 		Task            *json.RawMessage `json:"task,omitempty"`
 		Run             *json.RawMessage `json:"run,omitempty"`
 		Agent           *json.RawMessage `json:"agent,omitempty"`
-		Harvest         *json.RawMessage `json:"harvest,omitempty"`
 		SetPipeline     *json.RawMessage `json:"set_pipeline,omitempty"`
 		LoadVar         *json.RawMessage `json:"load_var,omitempty"`
 		LoadSnapshot    *json.RawMessage `json:"load_snapshot,omitempty"`
@@ -80,10 +79,6 @@ func (plan *Plan) Public() *json.RawMessage {
 
 	if plan.Agent != nil {
 		public.Agent = plan.Agent.Public()
-	}
-
-	if plan.Harvest != nil {
-		public.Harvest = plan.Harvest.Public()
 	}
 
 	if plan.SetPipeline != nil {
@@ -372,18 +367,6 @@ func publicSnapshotOutputs(outputs map[string]SnapshotOutputConfig) map[string]S
 		public[name] = output
 	}
 	return public
-}
-
-func (plan HarvestPlan) Public() *json.RawMessage {
-	return enc(struct {
-		Name   string `json:"name"`
-		Repo   string `json:"repo"`
-		Branch string `json:"branch,omitempty"`
-	}{
-		Name:   plan.Name,
-		Repo:   plan.Repo,
-		Branch: plan.Branch,
-	})
 }
 
 func (plan SetPipelinePlan) Public() *json.RawMessage {

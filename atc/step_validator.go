@@ -512,34 +512,6 @@ func sortedMapKeys[V any](values map[string]V) []string {
 	return keys
 }
 
-func (validator *StepValidator) VisitHarvest(step *HarvestStep) error {
-	validator.pushContextf(".harvest(%s)", step.Name)
-	defer validator.popContext()
-
-	warning, err := ValidateIdentifier(step.Name, validator.context...)
-	if err != nil {
-		validator.recordError(err.Error())
-	}
-	if warning != nil {
-		validator.recordWarning(*warning)
-	}
-
-	if step.Workspace == "" {
-		validator.recordError("must specify `workspace:` (the input artifact containing committed work)")
-	}
-	if step.Repo == "" {
-		validator.recordError("must specify `repo:`")
-	}
-	if step.Push && step.Branch == "" {
-		validator.recordError("`push: true` requires `branch:`")
-	}
-	if len(step.GatePolicy.Gates) > 0 && step.DevMCP == nil {
-		validator.recordError("gates require `dev_mcp:` (the repo's dev-mcp sidecar)")
-	}
-
-	return nil
-}
-
 func (validator *StepValidator) VisitSetPipeline(step *SetPipelineStep) error {
 	validator.pushContextf(".set_pipeline(%s)", step.Name)
 	defer validator.popContext()

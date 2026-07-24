@@ -137,26 +137,6 @@ func (visitor *planVisitor) VisitAgent(step *atc.AgentStep) error {
 	return nil
 }
 
-func (visitor *planVisitor) VisitHarvest(step *atc.HarvestStep) error {
-	visitor.plan = visitor.planFactory.NewPlan(atc.HarvestPlan{
-		Name:          step.Name,
-		Workspace:     step.Workspace,
-		Repo:          step.Repo,
-		TargetBranch:  step.TargetBranch,
-		TicketID:      step.TicketID,
-		PipelineRunID: step.PipelineRunID,
-		Branch:        step.Branch,
-		Push:          step.Push,
-		Env:           step.Env,
-		DevMCP:        step.DevMCP,
-		GatePolicy:    step.GatePolicy,
-		Judge:         step.Judge,
-		Timeout:       step.Timeout,
-	})
-
-	return nil
-}
-
 func (visitor *planVisitor) VisitGet(step *atc.GetStep) error {
 	resourceName := step.Resource
 	if resourceName == "" {

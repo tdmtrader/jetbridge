@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/concourse/concourse/agent/harvest"
 	"github.com/concourse/concourse/agent/publisher"
 	"github.com/concourse/concourse/agent/snapshot"
 )
@@ -208,7 +207,6 @@ type StepVisitor interface {
 	VisitPut(*PutStep) error
 	VisitRun(*RunStep) error
 	VisitAgent(*AgentStep) error
-	VisitHarvest(*HarvestStep) error
 	VisitSetPipeline(*SetPipelineStep) error
 	VisitLoadVar(*LoadVarStep) error
 	VisitLoadSnapshot(*LoadSnapshotStep) error
@@ -273,10 +271,6 @@ var StepPrecedence = []StepDetector{
 	{
 		Key: "agent",
 		New: func() StepConfig { return &AgentStep{} },
-	},
-	{
-		Key: "harvest",
-		New: func() StepConfig { return &HarvestStep{} },
 	},
 	{
 		Key: "run",
@@ -480,31 +474,6 @@ type AgentStep struct {
 
 func (step *AgentStep) Visit(v StepVisitor) error {
 	return v.VisitAgent(step)
-}
-
-// HarvestStep is the terminal delivery step (shared-contracts §2.8.1):
-// it takes the run's committed workspace, pushes the ticket branch, and
-// (full harvest-step workstream, wave 3) runs gates and the judge.
-// Harvest v0 (2026-07-17) executes verify+push only; configs declaring
-// gates or a judge are refused by the exec, never silently skipped.
-type HarvestStep struct {
-	Name          string               `json:"harvest"`
-	Workspace     string               `json:"workspace"`                 // input artifact containing committed work
-	Repo          string               `json:"repo"`                      // canonical slug (joins agent_reviews.repo)
-	TargetBranch  string               `json:"target_branch,omitempty"`   // default "main"
-	TicketID      int                  `json:"ticket_id,omitempty"`       // 0 = no ticket (pure-CI use)
-	PipelineRunID int                  `json:"pipeline_run_id,omitempty"` // 0 = unknown (hand-dispatched)
-	Branch        string               `json:"branch,omitempty"`          // e.g. agent/ticket-42
-	Push          bool                 `json:"push,omitempty"`            // requires branch
-	Env           TaskEnv              `json:"env,omitempty"`             // renderer-emitted §8.1 identity rows (F30)
-	DevMCP        *SidecarSource       `json:"dev_mcp,omitempty"`         // repo's dev-mcp image; required when gates declared
-	GatePolicy    harvest.GatePolicy   `json:"gate_policy"`               // §6.3
-	Judge         *harvest.JudgeConfig `json:"judge,omitempty"`           // §6.4; nil = no judge
-	Timeout       string               `json:"timeout,omitempty"`
-}
-
-func (step *HarvestStep) Visit(v StepVisitor) error {
-	return v.VisitHarvest(step)
 }
 
 type SetPipelineStep struct {
