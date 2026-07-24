@@ -1,6 +1,7 @@
 package contracts_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -136,6 +137,41 @@ func TestRecordEnvelopeStrictJSONHasNoLocalSnapshotID(t *testing.T) {
 	var decoded contracts.Record[json.RawMessage]
 	if err := contracts.DecodeRecord(withLocalID, mustTypeRef(t, "review/v1"), &decoded); err == nil || !strings.Contains(err.Error(), "unknown field") {
 		t.Fatalf("DecodeRecord() error = %v, want strict unknown-field error", err)
+	}
+}
+
+func TestRecordValueIdentityUsesStableSubjectDigestNotLocalSnapshotID(t *testing.T) {
+	body := json.RawMessage(`{"conclusion":"accept","summary":"ok","findings":[]}`)
+	makeRecord := func(id snapshot.SnapshotID, digest snapshot.Digest) []byte {
+		t.Helper()
+		input := snapshot.SnapshotRef{
+			ID: id, Type: mustTypeRef(t, "repository-change/v1"), Digest: digest,
+		}
+		record, err := contracts.NewRecord(
+			mustTypeRef(t, "review/v1"),
+			[]contracts.Subject{contracts.SubjectFromInput(
+				"primary", contracts.SubjectRolePrimary, "change", input,
+			)},
+			body,
+		)
+		if err != nil {
+			t.Fatalf("NewRecord(): %v", err)
+		}
+		encoded, err := json.Marshal(record)
+		if err != nil {
+			t.Fatalf("Marshal(): %v", err)
+		}
+		return encoded
+	}
+
+	first := makeRecord(41, recordDigest('a'))
+	sameValueFromAnotherInstallation := makeRecord(999, recordDigest('a'))
+	if !bytes.Equal(first, sameValueFromAnotherInstallation) {
+		t.Fatalf("local snapshot ID changed record value:\n%s\n%s", first, sameValueFromAnotherInstallation)
+	}
+	differentSubject := makeRecord(41, recordDigest('b'))
+	if bytes.Equal(first, differentSubject) {
+		t.Fatal("different subject digest did not change record value")
 	}
 }
 
