@@ -239,7 +239,23 @@ plan:
 		}
 	})
 
-	t.Run("rejects post-release disposition_output", func(t *testing.T) {
+	t.Run("reads disposition_output naming a required public output", func(t *testing.T) {
+		source := strings.Replace(
+			releasedV3("\ninputs: []\noutputs:\n- {name: review, type: review/v1, from: result}\n"),
+			"signature_version: 7",
+			"signature_version: 7\ndisposition_output: review",
+			1,
+		)
+		metadata, _, err := DecodeManifest(map[string]string{"workflow.yml": source})
+		if err != nil {
+			t.Fatalf("DecodeManifest rejected disposition_output naming a required output: %v", err)
+		}
+		if metadata.DispositionOutput != "review" {
+			t.Fatalf("DispositionOutput = %q, want review", metadata.DispositionOutput)
+		}
+	})
+
+	t.Run("rejects disposition_output naming an undeclared output", func(t *testing.T) {
 		source := strings.Replace(
 			releasedV3("\ninputs: []\noutputs: []\n"),
 			"signature_version: 7",
@@ -247,7 +263,19 @@ plan:
 			1,
 		)
 		if _, _, err := DecodeManifest(map[string]string{"workflow.yml": source}); err == nil {
-			t.Fatal("DecodeManifest accepted post-release disposition_output")
+			t.Fatal("DecodeManifest accepted disposition_output naming an undeclared output")
+		}
+	})
+
+	t.Run("rejects disposition_output naming an optional output", func(t *testing.T) {
+		source := strings.Replace(
+			releasedV3("\ninputs: []\noutputs:\n- {name: review, type: review/v1, from: result, optional: true}\n"),
+			"signature_version: 7",
+			"signature_version: 7\ndisposition_output: review",
+			1,
+		)
+		if _, _, err := DecodeManifest(map[string]string{"workflow.yml": source}); err == nil {
+			t.Fatal("DecodeManifest accepted disposition_output naming an optional output")
 		}
 	})
 

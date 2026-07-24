@@ -40,6 +40,10 @@ type Metadata struct {
 	Name             string
 	SchemaVersion    int
 	SignatureVersion int
+	// DispositionOutput names the required public output whose durable snapshot
+	// owns terminal work-item disposition. It is populated only from a validated
+	// schema-version-3 function; schema 1 and 2 manifests always leave it empty.
+	DispositionOutput string
 }
 
 type PublicSignature struct {
@@ -625,18 +629,19 @@ func validateSkillList(where string, names []string) error {
 }
 
 type functionSource struct {
-	SchemaVersion    int                           `json:"schema_version"`
-	Name             string                        `json:"name"`
-	SignatureVersion int                           `json:"signature_version"`
-	Description      string                        `json:"description,omitempty"`
-	Inputs           []functionPort                `json:"inputs"`
-	Outputs          []functionOutput              `json:"outputs"`
-	Capabilities     map[string]functionCapability `json:"capabilities,omitempty"`
-	Resources        any                           `json:"resources,omitempty"`
-	ResourceTypes    any                           `json:"resource_types,omitempty"`
-	Prototypes       any                           `json:"prototypes,omitempty"`
-	VarSources       any                           `json:"var_sources,omitempty"`
-	Plan             any                           `json:"plan"`
+	SchemaVersion     int                           `json:"schema_version"`
+	Name              string                        `json:"name"`
+	SignatureVersion  int                           `json:"signature_version"`
+	DispositionOutput string                        `json:"disposition_output,omitempty"`
+	Description       string                        `json:"description,omitempty"`
+	Inputs            []functionPort                `json:"inputs"`
+	Outputs           []functionOutput              `json:"outputs"`
+	Capabilities      map[string]functionCapability `json:"capabilities,omitempty"`
+	Resources         any                           `json:"resources,omitempty"`
+	ResourceTypes     any                           `json:"resource_types,omitempty"`
+	Prototypes        any                           `json:"prototypes,omitempty"`
+	VarSources        any                           `json:"var_sources,omitempty"`
+	Plan              any                           `json:"plan"`
 }
 
 type functionPort struct {
@@ -738,6 +743,9 @@ func decodeFunction(files map[string]string, raw string) (Metadata, *PublicSigna
 	if err := validateFunctionOutputs(source.Outputs); err != nil {
 		return Metadata{}, nil, err
 	}
+	if err := validateFunctionDispositionOutput(source.DispositionOutput, source.Outputs); err != nil {
+		return Metadata{}, nil, err
+	}
 	plan, ok := source.Plan.([]any)
 	if !ok || len(plan) == 0 {
 		return Metadata{}, nil, fmt.Errorf("workflow: plan must contain at least one step")
@@ -756,9 +764,10 @@ func decodeFunction(files map[string]string, raw string) (Metadata, *PublicSigna
 	}
 
 	metadata := Metadata{
-		Name:             source.Name,
-		SchemaVersion:    source.SchemaVersion,
-		SignatureVersion: source.SignatureVersion,
+		Name:              source.Name,
+		SchemaVersion:     source.SchemaVersion,
+		SignatureVersion:  source.SignatureVersion,
+		DispositionOutput: source.DispositionOutput,
 	}
 	signature := &PublicSignature{
 		SignatureVersion: source.SignatureVersion,
@@ -805,6 +814,27 @@ func validateFunctionOutputs(outputs []functionOutput) error {
 		}
 	}
 	return validateFunctionPorts(ports, "outputs")
+}
+
+// validateFunctionDispositionOutput mirrors the released runtime rule that a
+// disposition_output must name a canonical, declared, required public output.
+// It is projection metadata, not part of the public type signature.
+func validateFunctionDispositionOutput(name string, outputs []functionOutput) error {
+	if name == "" {
+		return nil
+	}
+	if strings.TrimSpace(name) != name {
+		return fmt.Errorf("workflow: disposition_output must be a canonical public output name")
+	}
+	for _, output := range outputs {
+		if output.Name == name {
+			if output.Optional {
+				return fmt.Errorf("workflow: disposition_output %q must be required", name)
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("workflow: disposition_output %q is not a declared public output", name)
 }
 
 func validateCapabilityCatalog(catalog map[string]functionCapability) error {
@@ -882,8 +912,9 @@ func validateFunctionSourceKeys(document any) error {
 		return nil
 	}
 	if err := rejectObjectKeys(root, "workflow", []string{
-		"schema_version", "name", "signature_version", "description", "inputs", "outputs",
-		"capabilities", "resources", "resource_types", "prototypes", "var_sources", "plan",
+		"schema_version", "name", "signature_version", "disposition_output", "description",
+		"inputs", "outputs", "capabilities", "resources", "resource_types", "prototypes",
+		"var_sources", "plan",
 	}); err != nil {
 		return err
 	}
