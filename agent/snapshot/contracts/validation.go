@@ -58,6 +58,18 @@ func (body ValidationBody) Validate(subjects []Subject) error {
 	return nil
 }
 
+func (body ValidationBody) ValidateDetached() error {
+	detached := body
+	detached.Checks = append([]ValidationCheck(nil), body.Checks...)
+	for checkIndex := range detached.Checks {
+		detached.Checks[checkIndex].Attempts = append([]ValidationAttempt(nil), body.Checks[checkIndex].Attempts...)
+		for attemptIndex := range detached.Checks[checkIndex].Attempts {
+			detached.Checks[checkIndex].Attempts[attemptIndex].Evidence = nil
+		}
+	}
+	return detached.Validate([]Subject{{ID: "primary", Role: SubjectRolePrimary}})
+}
+
 func (check ValidationCheck) Validate(subjects map[string]struct{}) error {
 	if err := ValidateIdentifier("check id", check.ID); err != nil {
 		return err

@@ -25,13 +25,30 @@ plan:
     function_id: implement-and-test
     prompt_file: prompts/implement.md
     inputs: [repository, work-item]
-    outputs: [candidate-change, validation]
+    outputs: [candidate-change]
     input_types:
       repository: {type: repository/v1}
       work-item: {type: work-item/v1}
     output_types:
       candidate-change: repository-change/v1
-      validation: validation-report/v1
+  - agent: validate
+    budget_slice_usd: 2
+    function_id: validate
+    prompt: >-
+      Validate the exact sealed candidate-change against repository and the
+      captured work-item. Re-run the relevant checks without modifying any
+      input. Write validation/v1 to $AGENT_OUTPUT_VALIDATION/record.json,
+      declaring candidate-change as the primary subject and repository and
+      work-item as context subjects. Preserve every retry attempt and copy all
+      platform-provided type, digest, and schema values exactly.
+    inputs: [repository, work-item, candidate-change]
+    outputs: [validation]
+    input_types:
+      repository: {type: repository/v1}
+      work-item: {type: work-item/v1}
+      candidate-change: {type: repository-change/v1}
+    output_types:
+      validation: validation/v1
   - agent: review
     budget_slice_usd: 3
     function_id: review
@@ -49,7 +66,7 @@ plan:
       repository: {type: repository/v1}
       work-item: {type: work-item/v1}
       candidate-change: {type: repository-change/v1}
-      validation: {type: validation-report/v1}
+      validation: {type: validation/v1}
     output_types:
       final-change: repository-change/v1
       report: opaque/v1
@@ -68,9 +85,10 @@ plan:
       repository-change/v1 value at $AGENT_OUTPUT_APPROVED_CHANGE. Preserve its
       base and content exactly. If it rejects or changes the request, submit no
       output so Jetbridge fails closed. Do not contact a live system.
-    inputs: [final-change, approval]
+    inputs: [repository, final-change, approval]
     outputs: [approved-change]
     input_types:
+      repository: {type: repository/v1}
       final-change: {type: repository-change/v1}
       approval: {type: human-answer/v1}
     output_types:

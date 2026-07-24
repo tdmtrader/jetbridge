@@ -586,6 +586,22 @@ func (step *TaskStep) containerSpec(logger lager.Logger, state RunState, imageSp
 		return runtime.ContainerSpec{}, snapshotInputBindings{}, err
 	}
 
+	outputTypes := make(map[string]snapshot.TypeRef, len(step.plan.SnapshotOutputs))
+	for _, output := range config.Outputs {
+		effectiveName := output.Name
+		if mapped, found := step.plan.OutputMapping[output.Name]; found {
+			effectiveName = mapped
+		}
+		if declaration, typed := step.plan.SnapshotOutputs[effectiveName]; typed {
+			outputTypes[output.Name] = declaration.Type
+		}
+	}
+	authorityEnv, err := recordAuthorityEnv(bindings, outputTypes, containerSpec.Env)
+	if err != nil {
+		return runtime.ContainerSpec{}, snapshotInputBindings{}, fmt.Errorf("task %q: %w", step.plan.Name, err)
+	}
+	containerSpec.Env = append(containerSpec.Env, authorityEnv...)
+
 	containerSpec.Caches = make([]string, len(config.Caches))
 	for i, cache := range config.Caches {
 		containerSpec.Caches[i] = cache.Path

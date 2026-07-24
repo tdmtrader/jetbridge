@@ -10,7 +10,7 @@ import (
 )
 
 // GateOutcome remains the legacy harvest wire name while the canonical
-// deterministic function emits the gate-results/v1 contract directly.
+// deterministic function emits validation/v1.
 type GateOutcome = contracts.GateOutcome
 
 // RunGates is the v1/v2 compatibility adapter around the reusable gate
@@ -30,7 +30,27 @@ func RunGates(policy GatePolicy, workspaceDir string, events *schema.EventWriter
 	if err != nil {
 		return nil, err
 	}
-	return append([]GateOutcome(nil), document.Gates...), nil
+	scopes := make(map[string]string, len(gates))
+	for _, gate := range gates {
+		scopes[gate.Name] = gate.Scope
+	}
+	outcomes := make([]GateOutcome, 0, len(document.Checks))
+	for _, check := range document.Checks {
+		attempt := check.Attempts[len(check.Attempts)-1]
+		outcomes = append(outcomes, GateOutcome{
+			Gate: check.ID, Scope: scopes[check.ID], Status: legacyValidationStatus(check.Status),
+			Attempt: attempt.Number, Flaky: check.Flaky(),
+			DurationSeconds: check.Duration().Seconds(), Detail: attempt.Detail,
+		})
+	}
+	return outcomes, nil
+}
+
+func legacyValidationStatus(status string) string {
+	if status == "passed" {
+		return "ok"
+	}
+	return status
 }
 
 type gateEventObserver struct {

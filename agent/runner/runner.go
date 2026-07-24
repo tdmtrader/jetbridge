@@ -74,7 +74,9 @@ type Config struct {
 	// the env var per shell call — ticket #16's agent (build 567384) had
 	// "$AGENT_OUTPUT_WORKSPACE" expand empty mid-session and cp'd the
 	// repo checkout into "/".
-	OutputPaths map[string]string
+	OutputPaths    map[string]string
+	InputSnapshots map[string]SnapshotAuthority
+	RecordOutputs  map[string]RecordAuthority
 
 	// Step identity for the step.start payload (shared-contracts §5):
 	// build_id and plan_id are the correlation key consumers use to join
@@ -90,9 +92,21 @@ type Config struct {
 	BudgetSliceUSD  float64
 }
 
+type SnapshotAuthority struct {
+	Type   string
+	Digest string
+}
+
+type RecordAuthority struct {
+	Type   string
+	Schema string
+}
+
 var (
-	mcpURLPattern    = regexp.MustCompile(`^([A-Z][A-Z0-9_]*)_MCP_URL$`)
-	outputEnvPattern = regexp.MustCompile(`^AGENT_OUTPUT_[A-Z0-9_]+$`)
+	mcpURLPattern             = regexp.MustCompile(`^([A-Z][A-Z0-9_]*)_MCP_URL$`)
+	outputEnvPattern          = regexp.MustCompile(`^AGENT_OUTPUT_[A-Z0-9_]+$`)
+	inputAuthorityEnvPattern  = regexp.MustCompile(`^(AGENT_INPUT_[A-Z0-9_]+)_SNAPSHOT_(TYPE|DIGEST)$`)
+	outputAuthorityEnvPattern = regexp.MustCompile(`^(AGENT_OUTPUT_[A-Z0-9_]+)_RECORD_(TYPE|SCHEMA)$`)
 )
 
 // FromEnv builds a Config from the §8.1 environment contract set by the
@@ -103,18 +117,20 @@ func FromEnv() Config {
 	wd, _ := os.Getwd()
 
 	cfg := Config{
-		Prompt:       os.Getenv("AGENT_PROMPT"),
-		PromptFile:   os.Getenv("AGENT_PROMPT_FILE"),
-		Model:        os.Getenv("AGENT_MODEL"),
-		OutputSchema: os.Getenv("AGENT_OUTPUT_SCHEMA"),
-		SystemPrompt: os.Getenv("AGENT_SYSTEM_PROMPT"),
-		Context:      os.Getenv("AGENT_CONTEXT"),
-		SkillsDir:    os.Getenv("AGENT_SKILLS_DIR"),
-		FlightDir:    os.Getenv("AGENT_FLIGHT_DIR"),
-		StepName:     os.Getenv("AGENT_STEP_NAME"),
-		WorkDir:      wd,
-		MCPServers:   map[string]string{},
-		OutputPaths:  map[string]string{},
+		Prompt:         os.Getenv("AGENT_PROMPT"),
+		PromptFile:     os.Getenv("AGENT_PROMPT_FILE"),
+		Model:          os.Getenv("AGENT_MODEL"),
+		OutputSchema:   os.Getenv("AGENT_OUTPUT_SCHEMA"),
+		SystemPrompt:   os.Getenv("AGENT_SYSTEM_PROMPT"),
+		Context:        os.Getenv("AGENT_CONTEXT"),
+		SkillsDir:      os.Getenv("AGENT_SKILLS_DIR"),
+		FlightDir:      os.Getenv("AGENT_FLIGHT_DIR"),
+		StepName:       os.Getenv("AGENT_STEP_NAME"),
+		WorkDir:        wd,
+		MCPServers:     map[string]string{},
+		OutputPaths:    map[string]string{},
+		InputSnapshots: map[string]SnapshotAuthority{},
+		RecordOutputs:  map[string]RecordAuthority{},
 
 		// §5 step.start identity: BUILD_ID is jetbridge/exec-injected;
 		// AGENT_PLAN_ID is set by the agent-step exec (never public YAML);
@@ -151,6 +167,26 @@ func FromEnv() Config {
 		}
 		if m := mcpURLPattern.FindStringSubmatch(name); m != nil {
 			cfg.MCPServers[strings.ReplaceAll(strings.ToLower(m[1]), "_", "-")] = value
+		}
+		if match := inputAuthorityEnvPattern.FindStringSubmatch(name); match != nil {
+			authority := cfg.InputSnapshots[match[1]]
+			if match[2] == "TYPE" {
+				authority.Type = value
+			} else {
+				authority.Digest = value
+			}
+			cfg.InputSnapshots[match[1]] = authority
+			continue
+		}
+		if match := outputAuthorityEnvPattern.FindStringSubmatch(name); match != nil {
+			authority := cfg.RecordOutputs[match[1]]
+			if match[2] == "TYPE" {
+				authority.Type = value
+			} else {
+				authority.Schema = value
+			}
+			cfg.RecordOutputs[match[1]] = authority
+			continue
 		}
 		if name != "AGENT_OUTPUT_SCHEMA" && outputEnvPattern.MatchString(name) {
 			cfg.OutputPaths[name] = value
@@ -256,6 +292,25 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 			fmt.Fprintf(&b, "$%s = %s\n", name, cfg.OutputPaths[name])
 		}
 		b.WriteString("\nUse these literal paths in commands; do not depend on the env vars expanding in every shell call.\n")
+		prompt = b.String() + "\n---\n\n" + prompt
+	}
+
+	if len(cfg.InputSnapshots) > 0 || len(cfg.RecordOutputs) > 0 {
+		var b strings.Builder
+		b.WriteString("# Sealed record authority (platform-resolved)\n\n")
+		inputs := sortedAuthorityNames(cfg.InputSnapshots)
+		for _, name := range inputs {
+			authority := cfg.InputSnapshots[name]
+			fmt.Fprintf(&b, "$%s_SNAPSHOT_TYPE = %s\n", name, authority.Type)
+			fmt.Fprintf(&b, "$%s_SNAPSHOT_DIGEST = %s\n", name, authority.Digest)
+		}
+		outputs := sortedAuthorityNames(cfg.RecordOutputs)
+		for _, name := range outputs {
+			authority := cfg.RecordOutputs[name]
+			fmt.Fprintf(&b, "$%s_RECORD_TYPE = %s\n", name, authority.Type)
+			fmt.Fprintf(&b, "$%s_RECORD_SCHEMA = %s\n", name, authority.Schema)
+		}
+		b.WriteString("\nCopy these exact values into record.json; they are verified again when the output is sealed.\n")
 		prompt = b.String() + "\n---\n\n" + prompt
 	}
 
@@ -454,6 +509,15 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	})
 
 	return exitCode, nil
+}
+
+func sortedAuthorityNames[T any](values map[string]T) []string {
+	names := make([]string, 0, len(values))
+	for name := range values {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // waitForSidecars polls GET <url with /mcp replaced by /healthz> for every

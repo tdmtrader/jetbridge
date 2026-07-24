@@ -15,6 +15,7 @@ import (
 	"github.com/concourse/concourse/agent/api/reviews"
 	"github.com/concourse/concourse/agent/projection"
 	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/agent/snapshot/contracts"
 )
 
 type reviewProjectionStore struct {
@@ -82,7 +83,7 @@ func (reader *interruptedReviewReader) Read(buffer []byte) (int, error) {
 func (*interruptedReviewReader) Close() error { return nil }
 
 func TestReviewProjectorRevalidatesIdentityAndDerivesProjection(t *testing.T) {
-	reviewJSON := validProjectedReview()
+	reviewJSON := validProjectedReview(t)
 	archive := reviewArchive(t, reviewJSON)
 	manifest := projectedManifest(41, archive)
 	runID := snapshot.WorkflowRunID(9)
@@ -114,19 +115,20 @@ func TestReviewProjectorRevalidatesIdentityAndDerivesProjection(t *testing.T) {
 	if got.WorkflowRunID == nil || *got.WorkflowRunID != runID {
 		t.Fatalf("workflow_run_id = %#v", got.WorkflowRunID)
 	}
-	if got.BuildID != buildID || got.Repo != "org/repo" || got.CommitSha != "abc123" || got.Branch != "main" {
+	if got.BuildID != buildID || got.Repo != "repository-change/v1" ||
+		got.CommitSha != testDigest('a').String() || got.Branch != "primary" {
 		t.Fatalf("identity fields = %#v", got)
 	}
-	if got.Score != 9 || !got.Pass || got.ProvenCount != 1 || got.ObservationCount != 1 || got.Summary != "reviewed" {
+	if got.Score != 1 || got.MaxScore != 1 || !got.Pass || got.ProvenCount != 1 || got.ObservationCount != 1 || got.Summary != "reviewed" {
 		t.Fatalf("derived summary fields = %#v", got)
 	}
 	if !bytes.Equal(got.Review, reviewJSON) {
-		t.Fatalf("stored review differs from canonical review.json\ngot:  %s\nwant: %s", got.Review, reviewJSON)
+		t.Fatalf("stored review differs from canonical record.json\ngot:  %s\nwant: %s", got.Review, reviewJSON)
 	}
 }
 
 func TestReviewProjectorRejectsMismatchedTypeAndDigestBeforeUpsert(t *testing.T) {
-	archive := reviewArchive(t, validProjectedReview())
+	archive := reviewArchive(t, validProjectedReview(t))
 	manifest := projectedManifest(42, archive)
 	store := &reviewProjectionStore{found: true, input: projection.ReviewInput{Snapshot: manifest, ProductionID: 1, TeamName: "main"}}
 	projector, err := projection.NewReviewProjector(store, reviewContent{data: archive})
@@ -150,7 +152,7 @@ func TestReviewProjectorRejectsMismatchedTypeAndDigestBeforeUpsert(t *testing.T)
 }
 
 func TestReviewProjectorRejectsUnavailableAndCorruptCanonicalContent(t *testing.T) {
-	archive := reviewArchive(t, validProjectedReview())
+	archive := reviewArchive(t, validProjectedReview(t))
 	manifest := projectedManifest(43, archive)
 
 	t.Run("unavailable", func(t *testing.T) {
@@ -215,7 +217,7 @@ func reviewArchive(t *testing.T, document []byte) []byte {
 	t.Helper()
 	var out bytes.Buffer
 	w := tar.NewWriter(&out)
-	if err := w.WriteHeader(&tar.Header{Name: "review.json", Mode: 0600, Size: int64(len(document)), Typeflag: tar.TypeReg}); err != nil {
+	if err := w.WriteHeader(&tar.Header{Name: "record.json", Mode: 0600, Size: int64(len(document)), Typeflag: tar.TypeReg}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := w.Write(document); err != nil {
@@ -227,14 +229,41 @@ func reviewArchive(t *testing.T, document []byte) []byte {
 	return out.Bytes()
 }
 
-func validProjectedReview() []byte {
-	return []byte(`{
-  "schema_version":"1.0.0",
-  "metadata":{"repo":"org/repo","commit":"abc123","branch":"main","timestamp":"2026-07-22T12:00:00Z","duration_seconds":4,"agent_cli":"codex","agent_model":"gpt","files_reviewed":2,"tests_generated":1,"tests_failing":0},
-  "score":{"value":9,"max":10,"pass":true,"threshold":7,"deductions":[{"issue_id":"issue-1","severity":"low","points":1}]},
-  "proven_issues":[{"id":"issue-1","severity":"low","title":"issue","file":"main.go","line":1,"test_file":"main_test.go","test_name":"TestMain","category":"correctness"}],
-  "observations":[{"id":"observation-1","title":"observation","file":"README.md","line":1,"category":"maintainability"}],
-  "test_summary":{"total_generated":1,"passing":1,"failing":0,"error":0},
-  "summary":"reviewed"
-}`)
+func validProjectedReview(t *testing.T) []byte {
+	t.Helper()
+	line := 1
+	subject := snapshot.SnapshotRef{
+		ID: 1, Type: "repository-change/v1", Digest: testDigest('a'),
+	}
+	record, err := contracts.NewRecord(
+		snapshot.TypeRef("review/v1"),
+		[]contracts.Subject{contracts.SubjectFromInput(
+			"primary", contracts.SubjectRolePrimary, "change", subject,
+		)},
+		contracts.ReviewBody{
+			Conclusion: "accept", Summary: "reviewed",
+			Findings: []contracts.Finding{
+				{
+					ID: "issue-1", Severity: "low", Category: "correctness",
+					Title: "issue", Description: "issue detail",
+					Evidence: []contracts.Anchor{{
+						Subject: "primary",
+						Locator: contracts.Locator{Kind: "file-lines", Path: "main.go", Start: &line, End: &line},
+					}},
+				},
+				{
+					ID: "observation-1", Severity: "observation", Category: "maintainability",
+					Title: "observation", Description: "observation detail",
+				},
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encoded
 }
