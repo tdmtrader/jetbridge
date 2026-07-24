@@ -34,6 +34,16 @@ func (m *MemoryStore) Import(name string, rawYAML []byte, createdBy string) (*De
 }
 
 func (m *MemoryStore) ImportManifest(name string, src Manifest, createdBy string) (*Definition, error) {
+	if err := src.Validate(); err != nil {
+		return nil, InvalidDefinitionError{Err: err}
+	}
+	raw, ok := src["workflow.yml"]
+	if !ok {
+		return nil, InvalidDefinitionError{Err: fmt.Errorf("workflow: manifest has no workflow.yml")}
+	}
+	if err := RequireSchemaVersion3([]byte(raw)); err != nil {
+		return nil, InvalidDefinitionError{Err: err}
+	}
 	compiled, err := CompileDefinition(src)
 	if err != nil {
 		return nil, InvalidDefinitionError{Err: err}
@@ -229,28 +239,35 @@ func (m *MemoryStore) Promote(name string, version int, promotedBy string) (Prom
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var target *Definition
-	var previous *Definition
 	for _, d := range m.defs {
-		if d.Name == name && d.Live {
-			previous = d
-		}
 		if d.Name == name && d.Version == version {
 			target = d
+			break
 		}
 	}
 	if target == nil {
 		return PromotionResult{}, ErrVersionNotFound
 	}
-	if target.SchemaVersion == 3 {
-		if m.promotionValidator == nil {
-			return PromotionResult{}, InvalidPromotionError{Err: ErrPromotionValidatorRequired}
+	if target.SchemaVersion != 3 {
+		return PromotionResult{}, InvalidPromotionError{
+			Err: UnsupportedSchemaVersionError{Got: target.SchemaVersion},
 		}
-		candidate, err := cloneMemoryDefinition(target, true)
-		if err != nil {
-			return PromotionResult{}, InvalidPromotionError{Err: err}
-		}
-		if err := m.promotionValidator.ValidatePromotion(*candidate); err != nil {
-			return PromotionResult{}, InvalidPromotionError{Err: err}
+	}
+	if m.promotionValidator == nil {
+		return PromotionResult{}, InvalidPromotionError{Err: ErrPromotionValidatorRequired}
+	}
+	candidate, err := cloneMemoryDefinition(target, true)
+	if err != nil {
+		return PromotionResult{}, InvalidPromotionError{Err: err}
+	}
+	if err := m.promotionValidator.ValidatePromotion(*candidate); err != nil {
+		return PromotionResult{}, InvalidPromotionError{Err: err}
+	}
+	var previous *Definition
+	for _, d := range m.defs {
+		if d.Name == name && d.Live {
+			previous = d
+			break
 		}
 	}
 	for _, d := range m.defs {

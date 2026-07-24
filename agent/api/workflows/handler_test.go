@@ -15,22 +15,33 @@ import (
 	"github.com/concourse/concourse/agent/workflowrun"
 )
 
-const validYAML = `schema_version: 1
+const validYAML = `schema_version: 3
 name: wf
 description: handler test workflow
-prompts:
-  work: |
-    Do the work.
-steps:
-- agent: work
-  prompt: work
-  outputs: [workspace]
+signature_version: 1
+inputs: []
+outputs: []
+plan:
+  - agent: work
+    function_id: work
+    prompt: Do the work.
 `
 
 func newHandler(t *testing.T) (*workflows.Handler, *workflow.MemoryStore) {
 	t.Helper()
-	store := workflow.NewMemoryStore()
+	store := workflow.NewMemoryStore(workflowrun.WorkflowTargetRenderer{
+		RuntimeImage: "registry.example/agent-runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	})
 	return workflows.NewHandler(store), store
+}
+
+type promotionErrorStore struct {
+	workflow.Store
+	err error
+}
+
+func (store promotionErrorStore) Promote(string, int, string) (workflow.PromotionResult, error) {
+	return workflow.PromotionResult{}, store.err
 }
 
 func request(method, path string, params url.Values, body string) *http.Request {
@@ -57,7 +68,8 @@ func TestImportCreatesAndIsIdempotent(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &def); err != nil {
 		t.Fatal(err)
 	}
-	if def.Version != 1 || def.Name != "wf" || def.ContentHash == "" || def.SchemaVersion != 1 || def.SignatureVersion != 0 {
+	if def.Version != 1 || def.Name != "wf" || def.ContentHash == "" || def.SchemaVersion != 3 || def.SignatureVersion != 1 ||
+		def.Compiled.Function == nil {
 		t.Errorf("def = %+v", def)
 	}
 
@@ -78,7 +90,7 @@ func TestImportRejectsBadDefinitions(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	h.Import(w, request("POST", "/api/v1/agent/workflows/wf/versions",
-		url.Values{":workflow_name": {"wf"}}, "schema_version: 1\nname: wf\nsteps: []\n"))
+		url.Values{":workflow_name": {"wf"}}, "schema_version: 3\nname: wf\nsignature_version: 1\ninputs: []\noutputs: []\nplan: []\n"))
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("invalid definition status = %d, want 400", w.Code)
 	}
@@ -96,6 +108,49 @@ func TestImportRejectsBadDefinitions(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("empty body status = %d, want 400", w.Code)
 	}
+}
+
+func TestImportNonV3ReturnsUnsupportedSchemaVersion(t *testing.T) {
+	h, _ := newHandler(t)
+	const want = "workflow: unsupported schema_version 1; only schema_version 3 is supported"
+
+	t.Run("raw", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		h.Import(w, request("POST", "/api/v1/agent/workflows/route-name/versions",
+			url.Values{":workflow_name": {"route-name"}}, `schema_version: 1
+name: source-name
+steps: []
+`))
+		if w.Code != http.StatusUnprocessableEntity || strings.TrimSpace(w.Body.String()) != want {
+			t.Fatalf("status/body = %d/%q, want 422/%q", w.Code, strings.TrimSpace(w.Body.String()), want)
+		}
+	})
+
+	t.Run("manifest", func(t *testing.T) {
+		body, err := json.Marshal(map[string]any{
+			"files": workflow.Manifest{
+				"workflow.yml": `schema_version: 2
+name: manifest-v2
+prompt_files:
+  work: prompts/missing.md
+steps:
+  - agent: work
+    prompt: work
+    outputs: [workspace]
+`,
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		w := httptest.NewRecorder()
+		h.Import(w, jsonRequest("/api/v1/agent/workflows/manifest-v2/versions",
+			url.Values{":workflow_name": {"manifest-v2"}}, string(body)))
+		const manifestWant = "workflow: unsupported schema_version 2; only schema_version 3 is supported"
+		if w.Code != http.StatusUnprocessableEntity || strings.TrimSpace(w.Body.String()) != manifestWant {
+			t.Fatalf("status/body = %d/%q, want 422/%q", w.Code, strings.TrimSpace(w.Body.String()), manifestWant)
+		}
+	})
 }
 
 func TestListShowsLiveVersion(t *testing.T) {
@@ -116,7 +171,7 @@ func TestListShowsLiveVersion(t *testing.T) {
 	if len(got) != 1 || got[0].LatestVersion != 2 || got[0].LiveVersion != 1 {
 		t.Errorf("summaries = %+v", got)
 	}
-	if got[0].SchemaVersion != 1 || got[0].SignatureVersion != 0 {
+	if got[0].SchemaVersion != 3 || got[0].SignatureVersion != 1 {
 		t.Errorf("summary metadata = %+v", got[0])
 	}
 }
@@ -283,6 +338,21 @@ func TestPromote(t *testing.T) {
 	}
 }
 
+func TestPromoteUnsupportedSchemaVersionReturns422(t *testing.T) {
+	const want = "workflow: unsupported schema_version 2; only schema_version 3 is supported"
+	h := workflows.NewHandler(promotionErrorStore{
+		err: workflow.InvalidPromotionError{
+			Err: workflow.UnsupportedSchemaVersionError{Got: 2},
+		},
+	})
+	w := httptest.NewRecorder()
+	h.Promote(w, request("PUT", "/api/v1/agent/workflows/legacy/versions/2/live",
+		url.Values{":workflow_name": {"legacy"}, ":version": {"2"}}, ""))
+	if w.Code != http.StatusUnprocessableEntity || strings.TrimSpace(w.Body.String()) != want {
+		t.Fatalf("status/body = %d/%q, want 422/%q", w.Code, strings.TrimSpace(w.Body.String()), want)
+	}
+}
+
 func TestPromoteRejectsSchemaV3WithoutDigestPinnedTrustedRuntime(t *testing.T) {
 	store := workflow.NewMemoryStore(workflowrun.WorkflowTargetRenderer{
 		RuntimeImage: "registry.example/agent-runner:mutable",
@@ -323,7 +393,7 @@ func jsonRequest(path string, params url.Values, body string) *http.Request {
 }
 
 const manifestBody = `{"files": {
-  "workflow.yml": "schema_version: 2\nname: wf\ndescription: manifest import\nskills: [tdd]\nprompt_files:\n  work: prompts/work.md\nsteps:\n- agent: work\n  prompt: work\n  outputs: [workspace]\n",
+  "workflow.yml": "schema_version: 3\nname: wf\ndescription: manifest import\nsignature_version: 1\ninputs: []\noutputs: []\nplan:\n  - agent: work\n    function_id: work\n    prompt_file: prompts/work.md\n    skills: [tdd]\n",
   "prompts/work.md": "Do the work.",
   "skills/tdd/SKILL.md": "# tdd"
 }}`
@@ -341,7 +411,8 @@ func TestImportManifestBody(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &def); err != nil {
 		t.Fatal(err)
 	}
-	if def.Version != 1 || def.Config.SkillFiles["skills/tdd/SKILL.md"] == "" {
+	if def.Version != 1 || def.Compiled.Function == nil ||
+		def.Compiled.Function.SkillFiles["skills/tdd/SKILL.md"] == "" {
 		t.Fatalf("manifest not compiled: %+v", def)
 	}
 }
@@ -355,7 +426,7 @@ func TestImportManifestBodyRejections(t *testing.T) {
 	}{
 		"malformed json":     {"{not json", http.StatusBadRequest},
 		"empty files":        {`{"files": {}}`, http.StatusBadRequest},
-		"missing skill file": {`{"files": {"workflow.yml": "schema_version: 2\nname: wf\nskills: [ghost]\nprompts:\n  work: w\nsteps:\n- agent: work\n  prompt: work\n  outputs: [workspace]\n"}}`, http.StatusBadRequest},
+		"missing skill file": {`{"files": {"workflow.yml": "schema_version: 3\nname: wf\nsignature_version: 1\ninputs: []\noutputs: []\nplan:\n  - agent: work\n    function_id: work\n    prompt: w\n    skills: [ghost]\n"}}`, http.StatusBadRequest},
 	}
 	for name, tc := range cases {
 		w := httptest.NewRecorder()

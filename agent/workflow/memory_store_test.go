@@ -44,15 +44,15 @@ plan:
 }
 
 func defYAML(name, promptBody string) []byte {
-	return []byte(`schema_version: 1
+	return []byte(`schema_version: 3
 name: ` + name + `
-prompts:
-  work: |
-    ` + promptBody + `
-steps:
-- agent: work
-  prompt: work
-  outputs: [workspace]
+signature_version: 1
+inputs: []
+outputs: []
+plan:
+  - agent: work
+    function_id: work
+    prompt: ` + promptBody + `
 `)
 }
 
@@ -106,14 +106,125 @@ func TestMemoryStoreImportRejectsNameMismatchAndInvalid(t *testing.T) {
 		t.Errorf("name mismatch must be InvalidDefinitionError, got %v", err)
 	}
 
-	_, err = s.Import("wf", []byte("schema_version: 1\nname: wf\nsteps: []\n"), "alice")
+	_, err = s.Import("wf", []byte("schema_version: 3\nname: wf\nsignature_version: 1\ninputs: []\noutputs: []\nplan: []\n"), "alice")
 	if !errors.As(err, &inv) {
 		t.Errorf("validation failure must be InvalidDefinitionError, got %v", err)
 	}
 }
 
+func TestMemoryStoreNonV3ImportRejectsBeforeLegacyValidation(t *testing.T) {
+	store := workflow.NewMemoryStore()
+	tests := []struct {
+		name       string
+		importName string
+		runImport  func() (*workflow.Definition, error)
+		version    int
+	}{
+		{
+			name:       "raw v1 before route name mismatch",
+			importName: "different-route",
+			version:    1,
+			runImport: func() (*workflow.Definition, error) {
+				return store.Import("different-route", []byte(`schema_version: 1
+name: legacy-route
+steps: []
+`), "alice")
+			},
+		},
+		{
+			name:       "manifest v2 before missing asset",
+			importName: "legacy-assets",
+			version:    2,
+			runImport: func() (*workflow.Definition, error) {
+				return store.ImportManifest("legacy-assets", workflow.Manifest{
+					"workflow.yml": `schema_version: 2
+name: legacy-assets
+prompt_files:
+  work: prompts/missing.md
+steps:
+  - agent: work
+    prompt: work
+    outputs: [workspace]
+`,
+				}, "alice")
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			definition, err := test.runImport()
+			if definition != nil {
+				t.Fatalf("definition = %+v, want nil", definition)
+			}
+			var invalid workflow.InvalidDefinitionError
+			if !errors.As(err, &invalid) {
+				t.Fatalf("error = %T %v, want InvalidDefinitionError", err, err)
+			}
+			var unsupported workflow.UnsupportedSchemaVersionError
+			if !errors.As(err, &unsupported) || unsupported.Got != test.version {
+				t.Fatalf("error = %T %v, unsupported = %+v", err, err, unsupported)
+			}
+			want := fmt.Sprintf(
+				"workflow: unsupported schema_version %d; only schema_version 3 is supported",
+				test.version,
+			)
+			if err.Error() != want {
+				t.Fatalf("error = %q, want %q", err, want)
+			}
+			page, pageErr := store.Versions(context.Background(), test.importName, workflow.VersionPageRequest{
+				Limit: workflow.MaxVersionPageSize,
+			})
+			if pageErr != nil || page.Found || len(page.Definitions) != 0 {
+				t.Fatalf("rejected import stored a version: page=%+v err=%v", page, pageErr)
+			}
+		})
+	}
+
+	_, err := store.Import("malformed-v3", []byte(`schema_version: 3
+name: malformed-v3
+signature_version: 1
+inputs: []
+outputs: []
+plan: []
+`), "alice")
+	var invalid workflow.InvalidDefinitionError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("malformed v3 error = %T %v, want InvalidDefinitionError", err, err)
+	}
+	var unsupported workflow.UnsupportedSchemaVersionError
+	if errors.As(err, &unsupported) {
+		t.Fatalf("malformed v3 error = %v, must not be unsupported", err)
+	}
+}
+
+func TestMemoryStoreImportManifestValidationPrecedesSchemaInspection(t *testing.T) {
+	store := workflow.NewMemoryStore()
+	for name, manifest := range map[string]workflow.Manifest{
+		"empty":            {},
+		"missing-workflow": {"README.md": "source only"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := store.ImportManifest(name, manifest, "alice")
+			var invalid workflow.InvalidDefinitionError
+			if !errors.As(err, &invalid) {
+				t.Fatalf("error = %T %v, want InvalidDefinitionError", err, err)
+			}
+			want := "workflow: manifest has no workflow.yml"
+			if name == "empty" {
+				want = "workflow: manifest has no files"
+			}
+			if err.Error() != want {
+				t.Fatalf("error = %q, want %q", err, want)
+			}
+		})
+	}
+}
+
 func TestMemoryStoreGetLiveAndPromote(t *testing.T) {
-	s := workflow.NewMemoryStore()
+	s := workflow.NewMemoryStore(workflowrun.WorkflowTargetRenderer{
+		RuntimeImage: "registry.example/agent-runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	})
 	s.Import("wf", defYAML("wf", "One."), "alice")
 	s.Import("wf", defYAML("wf", "Two."), "alice")
 
@@ -176,7 +287,9 @@ func TestMemoryStoreListReturnsLatestPerName(t *testing.T) {
 }
 
 func TestMemoryStoreLiveVersions(t *testing.T) {
-	s := workflow.NewMemoryStore()
+	s := workflow.NewMemoryStore(workflowrun.WorkflowTargetRenderer{
+		RuntimeImage: "registry.example/agent-runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	})
 
 	// wf-a: v1 promoted, then v2 imported (live stays at 1).
 	if _, err := s.Import("wf-a", defYAML("wf-a", "One."), "alice"); err != nil {
@@ -235,7 +348,22 @@ func TestMemoryStoreLatest(t *testing.T) {
 func TestMemoryStoreImportManifest(t *testing.T) {
 	store := workflow.NewMemoryStore()
 
-	m := v2Manifest() // from compile_test.go
+	m := workflow.Manifest{
+		"workflow.yml": `schema_version: 3
+name: dev
+signature_version: 1
+inputs: []
+outputs: []
+plan:
+  - agent: work
+    function_id: work
+    prompt_file: prompts/implement.md
+    skills: [tdd]
+`,
+		"prompts/implement.md":   "Do the work.",
+		"skills/tdd/SKILL.md":    "# tdd",
+		"skills/tdd/refs/red.md": "red-green",
+	}
 	def, err := store.ImportManifest("dev", m, "alice")
 	if err != nil {
 		t.Fatalf("import manifest: %v", err)
@@ -246,8 +374,8 @@ func TestMemoryStoreImportManifest(t *testing.T) {
 	if def.RawYAML != m["workflow.yml"] {
 		t.Fatal("RawYAML must be the manifest's workflow.yml")
 	}
-	if def.Config.SkillFiles["skills/tdd/SKILL.md"] == "" {
-		t.Fatal("stored Config must be compiled (skill trees resolved)")
+	if def.Compiled.Function == nil || def.Compiled.Function.SkillFiles["skills/tdd/SKILL.md"] == "" {
+		t.Fatal("stored function must be compiled (skill trees resolved)")
 	}
 
 	again, err := store.ImportManifest("dev", m, "bob")
@@ -264,8 +392,8 @@ func TestMemoryStoreImportManifest(t *testing.T) {
 	}
 
 	// Import(raw) is the single-file degenerate case: same hash scheme.
-	raw := []byte(validV1YAML())
-	viaRaw, err := store.Import("v1", raw, "alice")
+	raw := defYAML("raw-v3", "single file")
+	viaRaw, err := store.Import("raw-v3", raw, "alice")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -286,30 +414,23 @@ func TestMemoryStoreImportManifest(t *testing.T) {
 func TestMemoryStorePersistsDerivedSchemaAndSignatureMetadata(t *testing.T) {
 	store := workflow.NewMemoryStore()
 
-	v1, err := store.Import("v1-meta", defYAML("v1-meta", "legacy"), "alice")
+	v1, err := store.Import("first-meta", defYAML("first-meta", "first"), "alice")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v1.SchemaVersion != 1 || v1.SignatureVersion != 0 || v1.Compiled.Legacy == nil {
-		t.Fatalf("v1 metadata = %+v", v1)
+	if v1.SchemaVersion != 3 || v1.SignatureVersion != 1 || v1.Compiled.Function == nil {
+		t.Fatalf("first metadata = %+v", v1)
 	}
-	v2, err := store.ImportManifest("v2-meta", workflow.Manifest{
-		"workflow.yml": `schema_version: 2
-name: v2-meta
-prompt_files:
-  work: prompts/work.md
-steps:
-- agent: work
-  prompt: work
-  outputs: [workspace]
-`,
-		"prompts/work.md": "legacy manifest prompt",
-	}, "alice")
+	v2, err := store.ImportManifest(
+		"second-meta",
+		functionManifest("second-meta", 2, []string{"source"}, "review/v1", "second"),
+		"alice",
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v2.SchemaVersion != 2 || v2.SignatureVersion != 0 || v2.Compiled.Legacy == nil {
-		t.Fatalf("v2 metadata = %+v", v2)
+	if v2.SchemaVersion != 3 || v2.SignatureVersion != 2 || v2.Compiled.Function == nil {
+		t.Fatalf("second metadata = %+v", v2)
 	}
 
 	v3, err := store.ImportManifest("function-meta", functionManifest("function-meta", 7, []string{"before"}, "review/v1", "review"), "bob")

@@ -248,12 +248,24 @@ type VersionPage struct {
 	Found       bool
 }
 
-// InvalidDefinitionError wraps parse/validation/name-mismatch failures
-// so API handlers can map them to 400 responses.
+// InvalidDefinitionError wraps admission, parse, validation, and name-mismatch
+// failures. API handlers map ordinary failures to 400 and unsupported schema
+// versions to their stable typed 422 response.
 type InvalidDefinitionError struct{ Err error }
 
 func (e InvalidDefinitionError) Error() string { return e.Err.Error() }
 func (e InvalidDefinitionError) Unwrap() error { return e.Err }
+
+type UnsupportedSchemaVersionError struct {
+	Got int
+}
+
+func (e UnsupportedSchemaVersionError) Error() string {
+	return fmt.Sprintf(
+		"workflow: unsupported schema_version %d; only schema_version 3 is supported",
+		e.Got,
+	)
+}
 
 //counterfeiter:generate . Store
 type Store interface {

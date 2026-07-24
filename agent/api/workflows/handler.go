@@ -60,6 +60,15 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
+func writeUnsupportedSchemaVersion(w http.ResponseWriter, err error) bool {
+	var unsupported workflow.UnsupportedSchemaVersionError
+	if !errors.As(err, &unsupported) {
+		return false
+	}
+	http.Error(w, unsupported.Error(), http.StatusUnprocessableEntity)
+	return true
+}
+
 // Summarize builds the workflow-list view: the latest version per name with
 // its resolved live version. It is the single implementation behind both the
 // HTTP List handler and the list_agent_workflows MCP tool, and costs exactly
@@ -209,6 +218,9 @@ func (h *Handler) Import(w http.ResponseWriter, r *http.Request) {
 		}
 		def, err := h.store.ImportManifest(name, body.Files, requestUser(r))
 		if err != nil {
+			if writeUnsupportedSchemaVersion(w, err) {
+				return
+			}
 			var inv workflow.InvalidDefinitionError
 			if errors.As(err, &inv) {
 				http.Error(w, inv.Error(), http.StatusBadRequest)
@@ -237,6 +249,9 @@ func (h *Handler) Import(w http.ResponseWriter, r *http.Request) {
 
 	def, err := h.store.Import(name, raw, requestUser(r))
 	if err != nil {
+		if writeUnsupportedSchemaVersion(w, err) {
+			return
+		}
 		var inv workflow.InvalidDefinitionError
 		if errors.As(err, &inv) {
 			http.Error(w, inv.Error(), http.StatusBadRequest)
@@ -259,6 +274,9 @@ func (h *Handler) Promote(w http.ResponseWriter, r *http.Request) {
 	result, err := h.store.Promote(name, version, requestUser(r))
 	if errors.Is(err, workflow.ErrVersionNotFound) {
 		http.Error(w, "unknown workflow version", http.StatusNotFound)
+		return
+	}
+	if writeUnsupportedSchemaVersion(w, err) {
 		return
 	}
 	var invalid workflow.InvalidPromotionError

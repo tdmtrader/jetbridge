@@ -43,6 +43,16 @@ func (f *agentWorkflowsFactory) Import(name string, rawYAML []byte, createdBy st
 // manifest, so there is exactly one persisted source of truth per row.
 // Idempotent on the canonical-manifest hash.
 func (f *agentWorkflowsFactory) ImportManifest(name string, src workflow.Manifest, createdBy string) (*workflow.Definition, error) {
+	if err := src.Validate(); err != nil {
+		return nil, workflow.InvalidDefinitionError{Err: err}
+	}
+	raw, ok := src["workflow.yml"]
+	if !ok {
+		return nil, workflow.InvalidDefinitionError{Err: fmt.Errorf("workflow: manifest has no workflow.yml")}
+	}
+	if err := workflow.RequireSchemaVersion3([]byte(raw)); err != nil {
+		return nil, workflow.InvalidDefinitionError{Err: err}
+	}
 	compiled, err := workflow.CompileDefinition(src)
 	if err != nil {
 		return nil, workflow.InvalidDefinitionError{Err: err}
@@ -315,6 +325,11 @@ func (f *agentWorkflowsFactory) Promote(name string, version int, promotedBy str
 	}
 	if err != nil {
 		return workflow.PromotionResult{}, err
+	}
+	if targetDefinition.SchemaVersion != 3 {
+		return workflow.PromotionResult{}, workflow.InvalidPromotionError{
+			Err: workflow.UnsupportedSchemaVersionError{Got: targetDefinition.SchemaVersion},
+		}
 	}
 	compiled, source, err := compileStoredWorkflowSource(
 		targetDefinition.Name,

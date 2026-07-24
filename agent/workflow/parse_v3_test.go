@@ -2,6 +2,8 @@ package workflow_test
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -51,6 +53,49 @@ plan:
     output_types:
       review: review/v1
 `
+
+func TestRequireSchemaVersion3RejectsUnsupportedVersions(t *testing.T) {
+	for _, version := range []int{1, 2, 4} {
+		t.Run(fmt.Sprintf("schema version %d", version), func(t *testing.T) {
+			err := workflow.RequireSchemaVersion3([]byte(fmt.Sprintf("schema_version: %d\n", version)))
+			var unsupported workflow.UnsupportedSchemaVersionError
+			if !errors.As(err, &unsupported) {
+				t.Fatalf("error = %T %v, want UnsupportedSchemaVersionError", err, err)
+			}
+			if unsupported.Got != version {
+				t.Fatalf("Got = %d, want %d", unsupported.Got, version)
+			}
+			want := fmt.Sprintf(
+				"workflow: unsupported schema_version %d; only schema_version 3 is supported",
+				version,
+			)
+			if err.Error() != want {
+				t.Fatalf("error = %q, want %q", err, want)
+			}
+		})
+	}
+
+	if err := workflow.RequireSchemaVersion3([]byte("schema_version: 3\n")); err != nil {
+		t.Fatalf("schema version 3: %v", err)
+	}
+
+	for name, source := range map[string]string{
+		"malformed":   "schema_version: [\n",
+		"non-integer": "schema_version: three\n",
+		"missing":     "name: no-version\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := workflow.RequireSchemaVersion3([]byte(source))
+			if err == nil {
+				t.Fatal("expected discriminator error")
+			}
+			var unsupported workflow.UnsupportedSchemaVersionError
+			if errors.As(err, &unsupported) {
+				t.Fatalf("error = %T %v, must not be UnsupportedSchemaVersionError", err, err)
+			}
+		})
+	}
+}
 
 func TestParseV3ProgramExample(t *testing.T) {
 	definition, err := workflow.ParseCompiled([]byte(v3ProgramYAML))

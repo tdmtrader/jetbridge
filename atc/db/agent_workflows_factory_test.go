@@ -8,11 +8,22 @@ import (
 
 	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/agent/workflowrun"
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
+
+type countingDBPromotionValidator struct {
+	calls    int
+	delegate workflow.PromotionValidator
+}
+
+func (validator *countingDBPromotionValidator) ValidatePromotion(definition workflow.Definition) error {
+	validator.calls++
+	return validator.delegate.ValidatePromotion(definition)
+}
 
 func dbFunctionManifest(name string, signatureVersion int, inputs []string, outputType, prompt string) workflow.Manifest {
 	inputYAML := ""
@@ -56,16 +67,16 @@ var _ = Describe("AgentWorkflowsFactory", func() {
 	})
 
 	defYAML := func(name, promptBody string) []byte {
-		return []byte(`schema_version: 1
+		return []byte(`schema_version: 3
 name: ` + name + `
 description: test definition
-prompts:
-  work: |
-    ` + promptBody + `
-steps:
-- agent: work
-  prompt: work
-  outputs: [workspace]
+signature_version: 1
+inputs: []
+outputs: []
+plan:
+  - agent: work
+    function_id: work
+    prompt: ` + promptBody + `
 `)
 	}
 
@@ -81,7 +92,8 @@ steps:
 		Expect(v1.CreatedAt).To(BeNumerically(">", 0))
 		Expect(v1.Live).To(BeFalse())
 		Expect(v1.RawYAML).To(Equal(string(defYAML("wf-import", "One."))))
-		Expect(v1.Config.Steps).To(HaveLen(1))
+		Expect(v1.Compiled.Function).NotTo(BeNil())
+		Expect(v1.Compiled.Function.Plan).To(HaveLen(1))
 
 		v2, err := factory.Import("wf-import", defYAML("wf-import", "Two."), "bob")
 		Expect(err).ToNot(HaveOccurred())
@@ -104,8 +116,75 @@ steps:
 		var inv workflow.InvalidDefinitionError
 		Expect(errors.As(err, &inv)).To(BeTrue())
 
-		_, err = factory.Import("wf-bad", []byte("schema_version: 1\nname: wf-bad\nsteps: []\n"), "alice")
+		_, err = factory.Import("wf-bad", []byte("schema_version: 3\nname: wf-bad\nsignature_version: 1\ninputs: []\noutputs: []\nplan: []\n"), "alice")
 		Expect(errors.As(err, &inv)).To(BeTrue())
+	})
+
+	It("rejects NonV3 Imports before legacy validation without storing rows", func() {
+		_, err := factory.Import("wf-non-v3-raw", []byte(`schema_version: 1
+name: different-name
+steps: []
+`), "alice")
+		var invalid workflow.InvalidDefinitionError
+		var unsupported workflow.UnsupportedSchemaVersionError
+		Expect(errors.As(err, &invalid)).To(BeTrue())
+		Expect(errors.As(err, &unsupported)).To(BeTrue())
+		Expect(unsupported.Got).To(Equal(1))
+		Expect(err).To(MatchError("workflow: unsupported schema_version 1; only schema_version 3 is supported"))
+
+		_, err = factory.ImportManifest("wf-non-v3-manifest", workflow.Manifest{
+			"workflow.yml": `schema_version: 2
+name: wf-non-v3-manifest
+prompt_files:
+  work: prompts/missing.md
+steps:
+  - agent: work
+    prompt: work
+    outputs: [workspace]
+`,
+		}, "alice")
+		unsupported = workflow.UnsupportedSchemaVersionError{}
+		Expect(errors.As(err, &invalid)).To(BeTrue())
+		Expect(errors.As(err, &unsupported)).To(BeTrue())
+		Expect(unsupported.Got).To(Equal(2))
+		Expect(err).To(MatchError("workflow: unsupported schema_version 2; only schema_version 3 is supported"))
+
+		for _, name := range []string{"wf-non-v3-raw", "wf-non-v3-manifest"} {
+			var count int
+			Expect(dbConn.QueryRow(`SELECT COUNT(*) FROM agent_workflow_definitions WHERE name = $1`, name).Scan(&count)).To(Succeed())
+			Expect(count).To(BeZero())
+		}
+	})
+
+	It("preserves manifest validation and malformed v3 Import errors as ordinary invalid definitions", func() {
+		for _, test := range []struct {
+			name     string
+			manifest workflow.Manifest
+			want     string
+		}{
+			{name: "empty-manifest", manifest: workflow.Manifest{}, want: "workflow: manifest has no files"},
+			{name: "missing-workflow", manifest: workflow.Manifest{"README.md": "source only"}, want: "workflow: manifest has no workflow.yml"},
+		} {
+			_, err := factory.ImportManifest(test.name, test.manifest, "alice")
+			var invalid workflow.InvalidDefinitionError
+			Expect(errors.As(err, &invalid)).To(BeTrue())
+			Expect(err).To(MatchError(test.want))
+		}
+
+		_, err := factory.Import("wf-malformed-v3", []byte(`schema_version: 3
+name: wf-malformed-v3
+signature_version: 1
+inputs: []
+outputs: []
+plan: []
+`), "alice")
+		var invalid workflow.InvalidDefinitionError
+		Expect(errors.As(err, &invalid)).To(BeTrue())
+		var unsupported workflow.UnsupportedSchemaVersionError
+		Expect(errors.As(err, &unsupported)).To(BeFalse())
+		var count int
+		Expect(dbConn.QueryRow(`SELECT COUNT(*) FROM agent_workflow_definitions WHERE name = 'wf-malformed-v3'`).Scan(&count)).To(Succeed())
+		Expect(count).To(BeZero())
 	})
 
 	It("gets by version and reports found=false for unknowns", func() {
@@ -116,7 +195,8 @@ steps:
 		Expect(err).ToNot(HaveOccurred())
 		Expect(found).To(BeTrue())
 		Expect(def.RawYAML).ToNot(BeEmpty())
-		Expect(def.Config.Name).To(Equal("wf-get"))
+		Expect(def.Compiled.Function).NotTo(BeNil())
+		Expect(def.Compiled.Name).To(Equal("wf-get"))
 
 		_, found, err = factory.Get("wf-get", 42)
 		Expect(err).ToNot(HaveOccurred())
@@ -235,6 +315,51 @@ steps:
 		Expect(err).To(MatchError(workflow.ErrVersionNotFound))
 	})
 
+	It("rejects Promote of an Unsupported historical schema before decoding or validator mutation", func() {
+		validator := &countingDBPromotionValidator{
+			delegate: workflowrun.WorkflowTargetRenderer{
+				RuntimeImage: "registry.example/agent-runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			},
+		}
+		admissionFactory := db.NewAgentWorkflowsFactory(dbConn, validator)
+		live, err := admissionFactory.Import("wf-non-v3-promote", defYAML("wf-non-v3-promote", "live"), "alice")
+		Expect(err).NotTo(HaveOccurred())
+		_, err = admissionFactory.Promote("wf-non-v3-promote", live.Version, "alice")
+		Expect(err).NotTo(HaveOccurred())
+		baselineCalls := validator.calls
+		Expect(baselineCalls).To(BeNumerically(">", 0))
+
+		_, err = dbConn.Exec(`
+			INSERT INTO agent_workflow_definitions
+				(name, version, content_hash, definition, source_manifest, description, created_by,
+				 schema_version, signature_version)
+			VALUES ($1, $2, 'historical-v2', 'not: [valid YAML', '[]'::jsonb, 'legacy', 'history', 2, 0)`,
+			"wf-non-v3-promote", live.Version+1,
+		)
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = admissionFactory.Promote("wf-non-v3-promote", live.Version+1, "bob")
+		var invalid workflow.InvalidPromotionError
+		var unsupported workflow.UnsupportedSchemaVersionError
+		Expect(errors.As(err, &invalid)).To(BeTrue())
+		Expect(errors.As(err, &unsupported)).To(BeTrue())
+		Expect(unsupported.Got).To(Equal(2))
+		Expect(err).To(MatchError("workflow: version is not runnable: workflow: unsupported schema_version 2; only schema_version 3 is supported"))
+		Expect(validator.calls).To(Equal(baselineCalls))
+
+		var liveV3, liveV2 bool
+		Expect(dbConn.QueryRow(`
+			SELECT live FROM agent_workflow_definitions WHERE name = $1 AND version = $2`,
+			"wf-non-v3-promote", live.Version,
+		).Scan(&liveV3)).To(Succeed())
+		Expect(dbConn.QueryRow(`
+			SELECT live FROM agent_workflow_definitions WHERE name = $1 AND version = $2`,
+			"wf-non-v3-promote", live.Version+1,
+		).Scan(&liveV2)).To(Succeed())
+		Expect(liveV3).To(BeTrue())
+		Expect(liveV2).To(BeFalse())
+	})
+
 	It("rejects an imported but unrunnable schema-v3 target without disturbing the live version", func() {
 		valid := workflow.Manifest{"workflow.yml": `schema_version: 3
 name: wf-promotion-preflight
@@ -349,18 +474,19 @@ plan:
 	Describe("manifest imports", func() {
 		manifest := func(name string) workflow.Manifest {
 			return workflow.Manifest{
-				"workflow.yml": `schema_version: 2
+				"workflow.yml": `schema_version: 3
 name: ` + name + `
 description: manifest test
-skills: [tdd]
-context: [context/conventions.md]
-system_prompt_file: system/base.md
-prompt_files:
-  work: prompts/work.md
-steps:
-- agent: work
-  prompt: work
-  outputs: [workspace]
+signature_version: 1
+inputs: []
+outputs: []
+plan:
+  - agent: work
+    function_id: work
+    prompt_file: prompts/work.md
+    system_prompt_file: system/base.md
+    context_files: [context/conventions.md]
+    skills: [tdd]
 `,
 				"prompts/work.md":        "Do the work.",
 				"system/base.md":         "base system prompt",
@@ -375,8 +501,8 @@ steps:
 			v1, err := factory.ImportManifest("wf-manifest", src, "alice")
 			Expect(err).ToNot(HaveOccurred())
 			Expect(v1.Version).To(Equal(1))
-			Expect(v1.SchemaVersion).To(Equal(2))
-			Expect(v1.SignatureVersion).To(Equal(0))
+			Expect(v1.SchemaVersion).To(Equal(3))
+			Expect(v1.SignatureVersion).To(Equal(1))
 			Expect(v1.ContentHash).To(Equal(src.Hash()))
 
 			again, err := factory.ImportManifest("wf-manifest", src, "bob")
@@ -388,13 +514,25 @@ steps:
 			Expect(found).To(BeTrue())
 			Expect(got.RawYAML).To(Equal(src["workflow.yml"]))
 			Expect(got.SourceManifest["skills/tdd/refs/red.md"]).To(Equal("red-green"))
-			Expect(got.Config.SystemPrompt).To(Equal("base system prompt"))
-			Expect(got.Config.SkillFiles).To(HaveKey("skills/tdd/SKILL.md"))
-			Expect(got.Config.ContextFiles["context/conventions.md"]).To(Equal("conventions"))
+			Expect(got.Compiled.Function).NotTo(BeNil())
+			Expect(got.Compiled.Function.SkillFiles).To(HaveKey("skills/tdd/SKILL.md"))
+			agent, ok := got.Compiled.Function.Plan[0].Config.(*atc.AgentStep)
+			Expect(ok).To(BeTrue())
+			Expect(agent.Prompt).To(Equal("Do the work."))
+			Expect(agent.SystemPrompt).To(Equal("base system prompt"))
+			Expect(agent.Context).To(ContainSubstring("conventions"))
 		})
 
 		It("reads legacy rows (no source_manifest) via the Parse path", func() {
-			raw := defYAML("wf-legacy", "Legacy.")
+			raw := []byte(`schema_version: 1
+name: wf-legacy
+prompts:
+  work: Legacy.
+steps:
+  - agent: work
+    prompt: work
+    outputs: [workspace]
+`)
 			// Simulate a pre-slice row: definition only, NULL manifest.
 			_, err := dbConn.Exec(`
 				INSERT INTO agent_workflow_definitions
@@ -413,11 +551,11 @@ steps:
 
 	Describe("schema and signature metadata", func() {
 		It("derives and scans metadata for legacy and function definitions", func() {
-			legacy, err := factory.Import("wf-meta-legacy", defYAML("wf-meta-legacy", "legacy"), "alice")
+			first, err := factory.Import("wf-meta-first", defYAML("wf-meta-first", "first"), "alice")
 			Expect(err).NotTo(HaveOccurred())
-			Expect(legacy.SchemaVersion).To(Equal(1))
-			Expect(legacy.SignatureVersion).To(Equal(0))
-			Expect(legacy.Compiled.Legacy).NotTo(BeNil())
+			Expect(first.SchemaVersion).To(Equal(3))
+			Expect(first.SignatureVersion).To(Equal(1))
+			Expect(first.Compiled.Function).NotTo(BeNil())
 
 			function, err := factory.ImportManifest("wf-meta-function", dbFunctionManifest("wf-meta-function", 7, []string{"before"}, "review/v1", "review"), "bob")
 			Expect(err).NotTo(HaveOccurred())

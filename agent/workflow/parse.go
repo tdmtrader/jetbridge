@@ -78,6 +78,17 @@ func ParseCompiled(raw []byte) (*CompiledDefinition, error) {
 	}
 }
 
+func RequireSchemaVersion3(source []byte) error {
+	version, err := parseSchemaVersion(source)
+	if err != nil {
+		return err
+	}
+	if version != 3 {
+		return UnsupportedSchemaVersionError{Got: version}
+	}
+	return nil
+}
+
 func parseSchemaVersion(raw []byte) (int, error) {
 	decoder := yaml.NewDecoder(bytes.NewReader(raw))
 	var document map[string]any
