@@ -75,15 +75,21 @@ func TestAttachReplacesExistingSecretUsingResourceVersionAndRetriesConflicts(t *
 			Labels:          map[string]string{credentials.RunLabel: "7"},
 		},
 		Type: corev1.SecretTypeOpaque,
-		StringData: map[string]string{
-			credentials.SecretKeyAnthropicToken: "stale-token",
-			"principal-token":                   "retired-principal-token",
+		Data: map[string][]byte{
+			credentials.SecretKeyAnthropicToken: []byte("stale-token"),
+			"principal-token":                   []byte("retired-principal-token"),
 		},
 	})
 
 	updates := 0
 	clientset.PrependReactor("update", "secrets", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		secret := action.(k8stesting.UpdateAction).GetObject().(*corev1.Secret)
+		if len(secret.Data) != 0 {
+			return true, nil, errors.New("update retained stored secret data")
+		}
+		if len(secret.StringData) != 1 || secret.StringData[credentials.SecretKeyAnthropicToken] != "fresh-token" {
+			return true, nil, errors.New("update did not replace string data with the fresh model token")
+		}
 		if secret.ResourceVersion == "" {
 			return true, nil, apierrors.NewInvalid(
 				schema.GroupKind{Kind: "Secret"}, secret.Name,
@@ -112,6 +118,9 @@ func TestAttachReplacesExistingSecretUsingResourceVersionAndRetriesConflicts(t *
 	secret, err := clientset.CoreV1().Secrets("ns").Get(context.Background(), credentials.RunSecretName(7), metav1.GetOptions{})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(secret.Data) != 0 {
+		t.Fatalf("secret data retained stale entries: %v", secret.Data)
 	}
 	if len(secret.StringData) != 1 || secret.StringData[credentials.SecretKeyAnthropicToken] != "fresh-token" {
 		t.Fatalf("secret string data = %v", secret.StringData)

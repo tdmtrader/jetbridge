@@ -12,8 +12,9 @@ import (
 	"k8s.io/client-go/util/retry"
 )
 
-// §8.2 secret naming and keys — the injection contract every consumer
-// (dispatch, gateway, agent-step exec) reads.
+// §8.2 secret naming and keys — the workflow-run model credential contract.
+// AgentStep injects it only into the main agent container; sidecars receive
+// no secret environment entries.
 const (
 	SecretKeyAnthropicToken = "anthropic-token"
 	RunLabel                = "concourse/agent-run"

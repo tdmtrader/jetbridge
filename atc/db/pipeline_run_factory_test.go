@@ -500,10 +500,10 @@ var _ = Describe("PipelineRunFactory", func() {
 	})
 
 	// review finding (2026-07-11): AGENT_PIPELINE_RUN_ID reaches the
-	// agent-step exec via attacker-writable plan env (F30). Before the exec
-	// mounts a run's `agent-run-<id>` secret into an MCP sidecar it gates on
-	// this ownership check — a run id may only name its secret from within its
-	// OWN instance pipeline, never another team's.
+	// agent-step exec via attacker-writable plan env (F30). The exec gates
+	// delivery of a run's `agent-run-<id>` model secret on this ownership
+	// check: a run id may only name its secret from its OWN instance pipeline.
+	// The model token then goes only to the main agent container.
 	Describe("RunBelongsToPipeline", func() {
 		It("is true only for the run's own materialized instance pipeline", func() {
 			run, err := factory.CreateRun(template.ID(), nil, "some-user")

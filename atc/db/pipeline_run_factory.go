@@ -78,11 +78,11 @@ type PipelineRunFactory interface {
 
 	// RunBelongsToPipeline reports whether pipeline_runs row `runID` was
 	// materialized as pipeline instance `pipelineID`. The agent-step exec
-	// gates §8.2 credential attachment on this: AGENT_PIPELINE_RUN_ID arrives
-	// via attacker-writable plan env (F30), so a run id may only name the
-	// `agent-run-<id>` secret when its instance pipeline is the very pipeline
-	// this build runs in — otherwise any team could mount another run's
-	// principal and Anthropic tokens into a sidecar it named "gateway".
+	// gates §8.2 model-credential delivery on this: AGENT_PIPELINE_RUN_ID
+	// arrives via attacker-writable plan env (F30), so a run id may only name
+	// the `agent-run-<id>` secret when its instance pipeline is the very
+	// pipeline this build runs in. The verified model credential is delivered
+	// only to that build's main agent container; sidecar secret env is empty.
 	RunBelongsToPipeline(runID, pipelineID int) (bool, error)
 
 	// TicketBelongsToRun reports whether agent_tickets row `ticketID` is

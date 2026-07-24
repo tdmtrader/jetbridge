@@ -98,8 +98,9 @@ func WithAgentPlatformTokenSecret(name string) AgentStepOption {
 	return func(s *AgentStep) { s.platformTokenSecret = name }
 }
 
-// WithAgentRunVerifier sets the verifier consulted before any sidecar secret
-// refs are injected. Without it the step fails closed: no refs are ever set.
+// WithAgentRunVerifier sets the verifier consulted before the workflow-run
+// model-secret ref is injected into the main agent container. Without it the
+// step fails closed: no model-secret ref is set, and sidecar secret env is empty.
 func WithAgentRunVerifier(v AgentRunVerifier) AgentStepOption {
 	return func(s *AgentStep) { s.runVerifier = v }
 }

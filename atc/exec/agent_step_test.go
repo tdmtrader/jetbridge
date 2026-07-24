@@ -1252,17 +1252,17 @@ var _ = Describe("AgentStep", func() {
 				Expect(spec.Env).ToNot(ContainElement(HavePrefix("CLAUDE_CODE_OAUTH_TOKEN=")))
 			})
 
-			// --- review finding: cross-run credential exfiltration ---
+			// --- review finding: cross-run model credential exfiltration ---
 			// AGENT_PIPELINE_RUN_ID is attacker-writable plan YAML (F30). A
-			// pipeline that claims a run id it does not own must NOT be able to
-			// mount that run's agent-run-<id> secret into a sidecar it named
-			// "gateway"/"platform". The step fails closed before any pod exists.
+			// pipeline that claims a run id it does not own must not receive that
+			// run's model credential in its main agent container. The step fails
+			// closed before any pod exists; sidecar secret env remains empty.
 			Context("when the claimed run id does not belong to this build's pipeline", func() {
 				BeforeEach(func() {
 					fakeRunVerifier.RunBelongsToPipelineReturns(false, nil)
 				})
 
-				It("refuses to run rather than attach another run's credentials", func() {
+				It("refuses to run rather than deliver another run's model credential", func() {
 					ok, err := step.Run(ctx, state)
 					Expect(ok).To(BeFalse())
 					Expect(err).To(MatchError(ContainSubstring("does not belong to this build's pipeline")))
@@ -1286,7 +1286,7 @@ var _ = Describe("AgentStep", func() {
 			})
 
 			Context("when no run verifier is wired", func() {
-				It("injects no sidecar secret refs (fails closed)", func() {
+				It("injects no model-secret ref (fails closed)", func() {
 					noVerifierStep := exec.NewAgentStep(
 						planID,
 						agentPlan,
@@ -1327,9 +1327,9 @@ var _ = Describe("AgentStep", func() {
 				agentPlan.Sidecars = nil
 			})
 
-			// The main container's need for the token must not be gated on a
-			// sidecar wanting the run secret — a rendered step with no MCP
-			// sidecars still runs claude, which auths via this env var.
+			// The main container's model credential must not depend on sidecar
+			// presence. A rendered step with no MCP sidecars still runs claude,
+			// which authenticates through this secret-backed env var.
 			It("still verifies run ownership and wires the main container token", func() {
 				_, err := step.Run(ctx, state)
 				Expect(err).ToNot(HaveOccurred())
@@ -1346,7 +1346,7 @@ var _ = Describe("AgentStep", func() {
 					fakeRunVerifier.RunBelongsToPipelineReturns(false, nil)
 				})
 
-				It("fails closed even though no sidecar wants the secret", func() {
+				It("fails closed even though the main container needs the model credential", func() {
 					ok, err := step.Run(ctx, state)
 					Expect(ok).To(BeFalse())
 					Expect(err).To(MatchError(ContainSubstring("does not belong to this build's pipeline")))
