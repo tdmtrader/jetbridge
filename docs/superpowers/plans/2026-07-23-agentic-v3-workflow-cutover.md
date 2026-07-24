@@ -819,6 +819,22 @@ installation are one migration transaction.
   and any insert/update with non-v3 `live=true` fails.
 - Downgrade to `1773106122`; prove constraint gone, rows stay demoted, and an
   explicit subsequent legacy live update is possible.
+- Add the exact dedicated spec
+  `It("demotes a reactivated legacy row again on same-database re-upgrade", ...)`.
+  It must use one database lifecycle and the same persisted legacy and v3
+  rows throughout:
+  1. apply migration `1773106123`;
+  2. verify the legacy rows are demoted, the schema-v3 row remains live, and
+     the installed constraint rejects a later legacy-live update;
+  3. run the `1773106123` down step;
+  4. explicitly reactivate the same persisted legacy row while keeping the
+     same schema-v3 row live;
+  5. apply migration `1773106123` again to that same database;
+  6. verify renewed demotion of that same legacy row, retained v3 liveness,
+     reinstallation of the exact named constraint, and a second rejected
+     legacy-live update.
+  A fresh-database second upgrade, a different legacy row, or SQL-text-only
+  inspection does not satisfy this behavior.
 - Advance `jetbridgeHeadMigration` and `JETBRIDGE_VERSION` to `1773106123`.
 - Legacy-to-head assertions prove demotion and the constraint.
 - Preflight direction fixtures use `1773106123 down / 1773106122` for rolled
@@ -869,6 +885,16 @@ remain green.
 ```bash
 pg_isready
 
+rg -n -F \
+  'It("demotes a reactivated legacy row again on same-database re-upgrade"' \
+  atc/db/migration/v3_only_workflows_test.go
+
+go run github.com/onsi/ginkgo/v2/ginkgo \
+  --dry-run \
+  --fail-on-empty \
+  --focus='v3-only workflow liveness migration' \
+  ./atc/db/migration
+
 go run github.com/onsi/ginkgo/v2/ginkgo \
   --fail-on-empty \
   --focus='v3-only workflow liveness migration' \
@@ -903,8 +929,10 @@ git diff --check
 ```
 
 Report every selected-spec count separately so focuses are demonstrably
-non-vacuous. The first migration command is the dedicated RED/GREEN proof;
-the separate legacy-upgrade command proves the head transition.
+non-vacuous. The exact focus's dry run must select the named
+same-database/same-row spec above; its unchanged real run is the dedicated
+RED/GREEN proof and must record selected, passed, failed, and skipped counts.
+The separate legacy-upgrade command proves the head transition.
 
 **Immutable-history, allocation, and scope audit:**
 
@@ -969,8 +997,11 @@ only the eight owned paths.
 - Write `.superpowers/sdd/v3-cutover-task-3-report.md` with red/green
   evidence, separate selected-spec counts, SQL/down semantics, exact
   `Get`/`Latest` opaque-read proof, binder/dispatch/experiment preservation,
-  immutable-history and exact-staging audits, preflight/head updates, SHA,
-  and concerns.
+  immutable-history and exact-staging audits, preflight/head updates, and the
+  exact same-database/same-row first-up/down/reactivate/re-up lifecycle with
+  renewed legacy demotion, retained v3 liveness, reinstalled constraint, and
+  second rejected legacy-live update. Record the implementation SHA and any
+  concerns.
 
 ---
 
@@ -3303,6 +3334,118 @@ reactivation, and re-upgrade; Task 8 must not edit it. Do not hide a defect by
 weakening a test, excluding a package, widening a scan exception, adding a
 compatibility alias, or folding production work into the audit commit.
 
+## Deterministic final tracked-plan reconciliation
+
+Before adding Task 8 tests, use `apply_patch` to make this tracked plan the
+complete final execution record. It must not require a reader to consult an
+ignored brief to learn an executable boundary. Preserve the normative order.
+
+For every predecessor section, record all of the following from its immutable
+approved evidence:
+
+- the literal final implementation SHA, approval-manifest path, bound report,
+  bound independent PASS review, reviewer identity, and artifact SHA-256
+  values;
+- every correction commit and immutable review-package filename/checksum;
+- the exact owned path inventory and exact-path staging rule;
+- the final positive semantics, ordering, error classification, preservation
+  requirements, and negative boundaries;
+- exact selected-test commands and non-empty selection/count evidence, full
+  regressions, structural scans, clean-scope checks, and final observed
+  results; and
+- a clear completed/approved marker only after the report, manifest, and PASS
+  review agree on that literal SHA.
+
+The final Task 8 edit must also record its exact four-path ownership,
+characterization tests, cross-boundary matrix, environment checks, audits,
+pre-stage/cached/final comparisons, initial and correction commits, immutable
+packages, report, and independent review. Record the complete ordered
+Task-1/2A/5/3/4/2B/6/7 ledger table in both this plan and the Task 8 report.
+Do not replace an executable task section with a pointer, silently copy
+unreviewed evidence, or mark a pending implementation complete.
+
+The reconciliation must retain these canonical desired-state lines exactly:
+
+```text
+Admission order: Manifest.Validate -> extract `workflow.yml` -> RequireSchemaVersion3.
+- Delete: `agent/workflow/validate_test.go`
+- Verification-only (read-only; do not modify): `web/elm/tests/WorkflowRunDecoderTests.elm`
+```
+
+It must also retain the Task 3 exact same-database/same-row spec, Task 4
+`os.ReadDir("seeds")` inventory, Task 6 `executePreparedWithTarget` helper,
+Task 7 `Maybe ( workflowName, workflowRunId )` identity and summary-name/ID
+gates, generated `web/public/elm.min.js`, and the distinct
+`TASK8_INITIAL_SHA`/`TASK8_FINAL_SHA` semantics. Run the plan's complete
+desired-state, stale-directive, task-order, owned/staged-count, Bash-fence,
+and whitespace checks after reconciliation and record the results.
+
+## Approved SHA ledger and immutable approval manifests
+
+Create
+`.superpowers/sdd/v3-cutover-task-8-approved-shas.sh` with `apply_patch`
+before running the prerequisite gate. This ignored evidence file is not a
+tracked Task 8 path. Fill every assignment with a literal value—never a shell
+substitution, abbreviated SHA, branch name, or commit subject:
+
+```text
+CUTOVER_BASE_SHA='d13849b8d10953e7d1ec76174780155cb125dc0f'
+TASK1_SHA='<literal 40-character independently approved SHA>'
+TASK2A_SHA='<literal 40-character independently approved SHA>'
+TASK5_SHA='<literal 40-character independently approved SHA>'
+TASK3_SHA='<literal 40-character independently approved SHA including same-row correction>'
+TASK4_SHA='<literal 40-character independently approved descendant SHA>'
+TASK2B_SHA='<literal 40-character independently approved descendant SHA>'
+TASK6_SHA='<literal 40-character independently approved descendant SHA>'
+TASK7_SHA='<literal 40-character independently approved descendant SHA>'
+TASK1_APPROVAL_MANIFEST='<literal relative independent approval-manifest path>'
+TASK2A_APPROVAL_MANIFEST='<literal relative independent approval-manifest path>'
+TASK5_APPROVAL_MANIFEST='<literal relative independent approval-manifest path>'
+TASK3_APPROVAL_MANIFEST='<literal relative independent approval-manifest path>'
+TASK4_APPROVAL_MANIFEST='<literal relative independent approval-manifest path>'
+TASK2B_APPROVAL_MANIFEST='<literal relative independent approval-manifest path>'
+TASK6_APPROVAL_MANIFEST='<literal relative independent approval-manifest path>'
+TASK7_APPROVAL_MANIFEST='<literal relative independent approval-manifest path>'
+```
+
+The angle-bracket forms above describe the tracked contract only; none may
+remain in the actual ledger. Source and validate the ledger afresh in every
+implementation, package, correction, and review gate so no command depends on
+shell state from an earlier invocation.
+
+Each approval manifest is a new immutable ignored artifact written by an
+independent prerequisite reviewer after reading the final implementation or
+correction report and the final PASS review. It contains exactly these
+canonical single-quoted fields:
+
+```text
+BOUNDARY='Task 1'
+REPORT_PATH='.superpowers/sdd/<exact final implementation or correction report>'
+REPORT_SHA256='<exact lowercase 64-character SHA-256>'
+FINAL_SHA='<exact 40-character implementation head>'
+REVIEW_PATH='.superpowers/sdd/<exact independent PASS review or rereview>'
+REVIEW_SHA256='<exact lowercase 64-character SHA-256>'
+REVIEWED_SHA='<exact 40-character reviewed head>'
+VERDICT='PASS'
+REVIEWER='<independent reviewer identity>'
+```
+
+Use the matching boundary label for each manifest.
+`FINAL_SHA == REVIEWED_SHA` and both must equal that boundary's ledger SHA.
+`REPORT_SHA256` and `REVIEW_SHA256` bind the canonical fields to the exact
+existing artifacts, so a base SHA mentioned inside a report or review cannot
+be mistaken for the approved head. `REVIEWER` must identify a reviewer
+independent of the implementation.
+
+Never rewrite an existing report, review, approval manifest, or immutable
+package to change its identity. If evidence is superseded, create a new
+round-specific artifact and a new manifest path. Task 1's existing report and
+approved review remain byte-for-byte unchanged: a different independent
+reviewer creates the Task 1 approval manifest by binding their exact paths,
+checksums, and approved head. No boundary is accepted solely because its
+branch contains a commit or a report says PASS; the checksum-bound independent
+review and manifest gate below must agree.
+
 ## Prerequisite review and ancestry gate
 
 Read every final brief, implementation report, PASS review/rereview, and
@@ -4822,10 +4965,12 @@ Task 8 is complete only when:
 - Migration consistency: Task 1 stays immutable; Task 3 exclusively allocates
   `1773106123`; its down migration is DDL-only; Task 8 proves same-row
   down/reactivate/re-up behavior.
-- Verification consistency: every new plain-Go test has a non-empty
-  declaration/list/RUN witness, every Ginkgo focus is module-pinned and
-  fail-on-empty, every absence scan distinguishes status 1 from audit failure,
-  and all PostgreSQL suites begin with readiness checks.
+- Verification consistency: each task uses its approved non-vacuity contract.
+  Tasks that require exact declarations, `go test -list`, and `=== RUN`
+  witnesses retain them; Tasks 2A and 4 retain their approved focused
+  regex/package and explicit failure evidence. Every prescribed Ginkgo focus
+  is module-pinned and fail-on-empty, every absence scan distinguishes status
+  1 from audit failure, and all PostgreSQL suites begin with readiness checks.
 - Task 8 SHA semantics: `TASK8_INITIAL_SHA` is the direct child of approved
   Task 7 and never changes. `TASK8_FINAL_SHA` initially equals it, then moves
   only to separately committed Task 8 correction descendants. Final
