@@ -287,7 +287,7 @@ func TestListByTeam(t *testing.T) {
 	}
 }
 
-func TestSubmitWithPrincipalContextSkipsStaticToken(t *testing.T) {
+func TestSubmitWithPrincipalContext(t *testing.T) {
 	h, store, _ := newHandler(t)
 
 	req := httptest.NewRequest("POST", "/api/v1/agent/reviews", strings.NewReader(postBody()))
