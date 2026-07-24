@@ -2,6 +2,7 @@ package contracts_test
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -52,4 +53,22 @@ func emptyValidationContext(t *testing.T) snapshot.ValidationContext {
 		t.Fatalf("NewValidationContext(): %v", err)
 	}
 	return validationContext
+}
+
+func marshalRecord[T any](t *testing.T, record contracts.Record[T]) []byte {
+	t.Helper()
+	encoded, err := json.Marshal(record)
+	if err != nil {
+		t.Fatalf("marshal record: %v", err)
+	}
+	return encoded
+}
+
+func validationContextFor(t *testing.T, inputs map[string]snapshot.SnapshotRef) snapshot.ValidationContext {
+	t.Helper()
+	context, err := snapshot.NewValidationContext(inputs, nil)
+	if err != nil {
+		t.Fatalf("NewValidationContext(): %v", err)
+	}
+	return context
 }

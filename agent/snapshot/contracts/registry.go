@@ -69,6 +69,8 @@ func builtinValidator(ref snapshot.TypeRef, config registryConfig) (snapshot.Val
 		return repositoryChangeValidator{canonicalizer: config.canonicalizer}, nil
 	case "review/v1":
 		return reviewValidator{}, nil
+	case "validation/v1":
+		return validationValidator{}, nil
 	case "work-item/v1":
 		return workItemValidator{}, nil
 	case "measurements/v1":
@@ -77,10 +79,6 @@ func builtinValidator(ref snapshot.TypeRef, config registryConfig) (snapshot.Val
 		return documentValidator[*UpgradeRequestDocument]{fileName: "upgrade-request.json"}, nil
 	case "upgrade-report/v1":
 		return documentValidator[*UpgradeReportDocument]{fileName: "upgrade-report.json"}, nil
-	case "validation-report/v1":
-		return documentValidator[*ValidationReportDocument]{fileName: "validation-report.json"}, nil
-	case "gate-results/v1":
-		return documentValidator[*GateResultsDocument]{fileName: "gate-results.json"}, nil
 	case "database-snapshot/v1":
 		return auditValidator{kind: "database"}, nil
 	case "deployment-snapshot/v1":
@@ -88,7 +86,7 @@ func builtinValidator(ref snapshot.TypeRef, config registryConfig) (snapshot.Val
 	case "audit-findings/v1":
 		return auditValidator{kind: "findings"}, nil
 	case "diagnosis/v1":
-		return auditValidator{kind: "diagnosis"}, nil
+		return diagnosisValidator{}, nil
 	case "question/v1":
 		return documentValidator[*QuestionDocument]{fileName: "question.json"}, nil
 	case "human-answer/v1":
@@ -151,10 +149,9 @@ func builtinTypeNames() []string {
 		"work-item/v1",
 		"log-bundle/v1",
 		"measurements/v1",
+		"validation/v1",
 		"upgrade-request/v1",
 		"upgrade-report/v1",
-		"validation-report/v1",
-		"gate-results/v1",
 		"database-snapshot/v1",
 		"deployment-snapshot/v1",
 		"audit-findings/v1",

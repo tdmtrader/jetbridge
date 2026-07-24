@@ -215,6 +215,35 @@ func ValidateEntityIDs(label string, ids []string) error {
 	return nil
 }
 
+type subjectShape int
+
+const onePrimaryWithSupportingSubjects subjectShape = 1
+
+func validateRecordSubjects(subjects []Subject, shape subjectShape) (map[string]struct{}, error) {
+	if len(subjects) == 0 {
+		return nil, fmt.Errorf("record requires at least one subject")
+	}
+	ids := make(map[string]struct{}, len(subjects))
+	primaryCount := 0
+	for _, subject := range subjects {
+		ids[subject.ID] = struct{}{}
+		switch shape {
+		case onePrimaryWithSupportingSubjects:
+			switch subject.Role {
+			case SubjectRolePrimary:
+				primaryCount++
+			case SubjectRoleEvidence, SubjectRoleContext, SubjectRoleReference:
+			default:
+				return nil, fmt.Errorf("subject %q role %q is not valid for this record", subject.ID, subject.Role)
+			}
+		}
+	}
+	if shape == onePrimaryWithSupportingSubjects && primaryCount != 1 {
+		return nil, fmt.Errorf("record requires exactly one primary subject")
+	}
+	return ids, nil
+}
+
 type Anchor struct {
 	Subject string  `json:"subject"`
 	Locator Locator `json:"locator"`

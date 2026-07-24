@@ -1,110 +1,135 @@
 package contracts_test
 
 import (
-	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/concourse/concourse/agent/schema"
+	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/agent/snapshot/contracts"
 )
 
-func TestReviewContractStrictlyValidatesReviewJSON(t *testing.T) {
-	valid := validReviewDocument()
-	encoded, err := json.Marshal(valid)
-	if err != nil {
-		t.Fatalf("marshal review: %v", err)
+func TestReviewRecordValidatesJudgmentAndBlockingSemantics(t *testing.T) {
+	subject := snapshot.SnapshotRef{ID: 31, Type: "repository-change/v1", Digest: recordDigest('a')}
+	context := validationContextFor(t, map[string]snapshot.SnapshotRef{"change": subject})
+	valid := contracts.ReviewBody{
+		Conclusion: "changes-required",
+		Summary:    "one blocking issue",
+		Findings: []contracts.Finding{{
+			ID: "F-1", Severity: "high", Blocking: true,
+			Category: "correctness", Title: "unsafe race", Description: "writes race",
+			Evidence: []contracts.Anchor{{
+				Subject: "primary",
+				Locator: contracts.Locator{Kind: "file-lines", Path: "main.go", Start: intPointer(12), End: intPointer(12)},
+			}},
+			Recommendation: "synchronize the writes",
+		}},
 	}
+	validateReviewBody(t, valid, subject, context, false, "")
 
-	result, err := validateFiles(t, "review/v1", map[string][]byte{"review.json": encoded}, emptyValidationContext(t))
-	if err != nil {
-		t.Fatalf("valid review validation error = %v", err)
+	tests := []struct {
+		name  string
+		setup func(*contracts.ReviewBody)
+		want  string
+	}{
+		{
+			name: "changes required without blocking finding",
+			setup: func(body *contracts.ReviewBody) {
+				body.Findings[0].Blocking = false
+				body.Findings[0].Severity = "low"
+			},
+			want: "blocking",
+		},
+		{
+			name: "accept with blocking finding",
+			setup: func(body *contracts.ReviewBody) {
+				body.Conclusion = "accept"
+			},
+			want: "accept",
+		},
+		{
+			name: "observation blocks",
+			setup: func(body *contracts.ReviewBody) {
+				body.Findings[0].Severity = "observation"
+			},
+			want: "observation",
+		},
+		{
+			name: "high is advisory",
+			setup: func(body *contracts.ReviewBody) {
+				body.Findings[0].Blocking = false
+			},
+			want: "high",
+		},
+		{
+			name: "issue has no evidence",
+			setup: func(body *contracts.ReviewBody) {
+				body.Findings[0].Evidence = nil
+			},
+			want: "evidence",
+		},
+		{
+			name: "evidence names unknown subject",
+			setup: func(body *contracts.ReviewBody) {
+				body.Findings[0].Evidence[0].Subject = "missing"
+			},
+			want: "not declared",
+		},
+		{
+			name: "findings are unsorted",
+			setup: func(body *contracts.ReviewBody) {
+				second := body.Findings[0]
+				second.ID = "A-1"
+				body.Findings = append(body.Findings, second)
+			},
+			want: "sorted",
+		},
 	}
-	if len(result.IntrinsicMetadata) != 0 {
-		t.Fatalf("review intrinsic metadata = %s, want empty", result.IntrinsicMetadata)
-	}
-
-	valid.Score.Pass = true
-	valid.Score.Value = 1
-	encoded, err = json.Marshal(valid)
-	if err != nil {
-		t.Fatalf("marshal invalid review: %v", err)
-	}
-	if _, err := validateFiles(t, "review/v1", map[string][]byte{"review.json": encoded}, emptyValidationContext(t)); err == nil || !strings.Contains(err.Error(), "pass") {
-		t.Fatalf("below-threshold passing review error = %v, want strict pass error", err)
-	}
-}
-
-func TestReviewContractRejectsUnknownAndTrailingJSON(t *testing.T) {
-	encoded, err := json.Marshal(validReviewDocument())
-	if err != nil {
-		t.Fatalf("marshal review: %v", err)
-	}
-	withUnknown := append(encoded[:len(encoded)-1], []byte(`,"unexpected":true}`)...)
-	for name, document := range map[string][]byte{
-		"unknown field": withUnknown,
-		"trailing JSON": append(encoded, []byte(` {}`)...),
-	} {
-		t.Run(name, func(t *testing.T) {
-			if _, err := validateFiles(t, "review/v1", map[string][]byte{"review.json": document}, emptyValidationContext(t)); err == nil {
-				t.Fatal("validation succeeded, want strict JSON error")
-			}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			body := valid
+			body.Findings = append([]contracts.Finding(nil), valid.Findings...)
+			body.Findings[0].Evidence = append([]contracts.Anchor(nil), valid.Findings[0].Evidence...)
+			tc.setup(&body)
+			validateReviewBody(t, body, subject, context, true, tc.want)
 		})
 	}
 }
 
-func TestReviewContractUsesBoundedAnchoredRegularFileRead(t *testing.T) {
-	valid, err := json.Marshal(validReviewDocument())
-	if err != nil {
-		t.Fatalf("marshal review: %v", err)
+func TestReviewRecordAllowsEmptyAcceptAndInconclusiveFindings(t *testing.T) {
+	subject := snapshot.SnapshotRef{ID: 31, Type: "repository-change/v1", Digest: recordDigest('a')}
+	context := validationContextFor(t, map[string]snapshot.SnapshotRef{"change": subject})
+	for _, conclusion := range []string{"accept", "inconclusive"} {
+		body := contracts.ReviewBody{Conclusion: conclusion, Summary: "no findings", Findings: []contracts.Finding{}}
+		validateReviewBody(t, body, subject, context, false, "")
 	}
-
-	t.Run("rejects symlink", func(t *testing.T) {
-		dir := t.TempDir()
-		outside := filepath.Join(t.TempDir(), "outside.json")
-		if err := os.WriteFile(outside, valid, 0644); err != nil {
-			t.Fatalf("write outside document: %v", err)
-		}
-		if err := os.Symlink(outside, filepath.Join(dir, "review.json")); err != nil {
-			t.Fatalf("symlink: %v", err)
-		}
-		if _, err := validateDirectory(t, "review/v1", dir, emptyValidationContext(t)); err == nil || !strings.Contains(err.Error(), "regular") {
-			t.Fatalf("symlink validation error = %v, want regular-file error", err)
-		}
-	})
-
-	t.Run("rejects oversized document", func(t *testing.T) {
-		oversized := []byte(`{"schema_version":"1.0.0","padding":"` + strings.Repeat("x", 1<<20) + `"}`)
-		if _, err := validateFiles(t, "review/v1", map[string][]byte{"review.json": oversized}, emptyValidationContext(t)); err == nil || !strings.Contains(err.Error(), "size") {
-			t.Fatalf("oversized validation error = %v, want size error", err)
-		}
-	})
 }
 
-func validReviewDocument() schema.ReviewOutput {
-	return schema.ReviewOutput{
-		SchemaVersion: "1.0.0",
-		Metadata: schema.Metadata{
-			Repo: "repo", Commit: "abc123", Branch: "main",
-			Timestamp: "2026-07-22T12:00:00Z", DurationSec: 1,
-			AgentCLI: "codex", AgentModel: "gpt", FilesReviewed: 1,
-			TestsGenerated: 1, TestsFailing: 0,
-		},
-		Score: schema.Score{
-			Value: 9, Max: 10, Pass: true, Threshold: 7,
-			Deductions: []schema.ScoreDeduction{{IssueID: "issue-1", Severity: schema.SeverityLow, Points: -1}},
-		},
-		ProvenIssues: []schema.ProvenIssue{{
-			ID: "issue-1", Severity: schema.SeverityLow, Title: "issue",
-			File: "src/main.go", Line: 1, TestFile: "src/main_test.go",
-			TestName: "TestMain", Category: schema.CategoryCorrectness,
-		}},
-		Observations: []schema.Observation{{
-			ID: "observation-1", Title: "observation", File: "README.md",
-			Line: 1, Category: schema.CategoryMaintainability,
-		}},
-		TestSummary: schema.TestSummary{TotalGenerated: 1, Passing: 1},
-		Summary:     "reviewed",
+func validateReviewBody(
+	t *testing.T,
+	body contracts.ReviewBody,
+	subject snapshot.SnapshotRef,
+	context snapshot.ValidationContext,
+	wantError bool,
+	want string,
+) {
+	t.Helper()
+	record, err := contracts.NewRecord(
+		mustTypeRef(t, "review/v1"),
+		[]contracts.Subject{contracts.SubjectFromInput(
+			"primary", contracts.SubjectRolePrimary, "change", subject,
+		)},
+		body,
+	)
+	if err != nil {
+		t.Fatalf("NewRecord(): %v", err)
+	}
+	_, err = validateFiles(t, "review/v1", map[string][]byte{
+		"record.json": marshalRecord(t, record),
+	}, context)
+	if !wantError && err != nil {
+		t.Fatalf("valid review error = %v", err)
+	}
+	if wantError && (err == nil || !strings.Contains(err.Error(), want)) {
+		t.Fatalf("review error = %v, want %q", err, want)
 	}
 }
