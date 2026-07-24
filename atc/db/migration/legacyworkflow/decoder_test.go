@@ -489,6 +489,104 @@ plan:
 	})
 }
 
+func TestDecodeManifestMatchesFinalReleaseProbeMatrix(t *testing.T) {
+	tests := []struct {
+		name     string
+		body     string
+		accepted bool
+	}{
+		{"baseline", "plan:\n- {agent: work, prompt: work}\n", true},
+		{"in_parallel object without steps", "plan:\n- in_parallel: {}\n", true},
+		{"in_parallel object with null steps", "plan:\n- in_parallel: {steps: null}\n", true},
+		{"do null", "plan:\n- do: null\n", true},
+		{"across entry without var", "plan:\n- across: [{values: [one]}]\n  agent: work\n  prompt: work\n", true},
+		{"across null entry", "plan:\n- across: [null]\n  agent: work\n  prompt: work\n", true},
+		{"across explicit null max in flight", "plan:\n- across: [{var: item, values: [one], max_in_flight: null}]\n  agent: work\n  prompt: work\n", true},
+		{"duplicate across vars", "plan:\n- across:\n  - {var: item, values: [one]}\n  - {var: item, values: [two]}\n  agent: work\n  prompt: work\n", false},
+		{"duplicate load vars", "plan:\n- do:\n  - {load_var: value, file: first.txt}\n  - {load_var: value, file: second.txt}\n", false},
+		{"self passed dependency", "resources:\n- {name: repo, type: mock}\nplan:\n- {get: repo, passed: [entry]}\n", false},
+		{"task null cache entry", "plan:\n- task: work\n  config:\n    platform: linux\n    caches: [null]\n", true},
+		{"task null scratch entry", "plan:\n- task: work\n  config:\n    platform: linux\n    scratch_paths: [null]\n", true},
+		{"task sidecar null env entry", "plan:\n- task: work\n  config: {platform: linux}\n  sidecars:\n  - name: tools\n    image: image\n    env: [null]\n", true},
+		{"task sidecar null port entry", "plan:\n- task: work\n  config: {platform: linux}\n  sidecars:\n  - name: tools\n    image: image\n    ports: [null]\n", true},
+		{"harvest null gate entry", "plan:\n- harvest: publish\n  workspace: workspace\n  repo: owner/repo\n  dev_mcp: {name: dev, image: image}\n  gate_policy: {gates: [null]}\n", true},
+		{"harvest null rubric entry", "plan:\n- harvest: publish\n  workspace: workspace\n  repo: owner/repo\n  judge: {rubric: [null], pass_threshold: 1}\n", true},
+		{"harvest empty dev mcp", "plan:\n- harvest: publish\n  workspace: workspace\n  repo: owner/repo\n  gate_policy: {gates: [{gate: test, scope: full}]}\n  dev_mcp: {}\n", true},
+		{"harvest null dev mcp", "plan:\n- harvest: publish\n  workspace: workspace\n  repo: owner/repo\n  gate_policy: {gates: [{gate: test, scope: full}]}\n  dev_mcp: null\n", false},
+		{"uppercase resource fields", "resources:\n- {Name: repo, Type: mock}\nplan:\n- {get: repo}\n", true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, _, err := DecodeManifest(map[string]string{"workflow.yml": ordinaryV3(test.body)})
+			if (err == nil) != test.accepted {
+				t.Fatalf("DecodeManifest accepted=%t, want %t (err: %v)", err == nil, test.accepted, err)
+			}
+		})
+	}
+}
+
+func TestDecodeManifestMatchesAdjacentReleaseDecodeMatrix(t *testing.T) {
+	tests := []struct {
+		name     string
+		body     string
+		accepted bool
+	}{
+		{"in parallel empty list", "plan:\n- in_parallel: []\n", true},
+		{"in parallel null", "plan:\n- in_parallel: null\n", false},
+		{"in parallel null element", "plan:\n- in_parallel: [null]\n", false},
+		{"do empty list", "plan:\n- do: []\n", true},
+		{"do null element", "plan:\n- do: [null]\n", false},
+		{"across null list", "plan:\n- across: null\n  agent: work\n  prompt: work\n", false},
+		{"across empty list", "plan:\n- across: []\n  agent: work\n  prompt: work\n", false},
+		{"across two null entries", "plan:\n- across: [null, null]\n  agent: work\n  prompt: work\n", false},
+		{"nested across shadow", "plan:\n- across: [{var: item, values: [one]}]\n  do:\n  - across: [{var: item, values: [two]}]\n    agent: work\n    prompt: work\n", true},
+		{"sibling across same var", "plan:\n- do:\n  - across: [{var: item, values: [one]}]\n    agent: first\n    prompt: first\n  - across: [{var: item, values: [two]}]\n    agent: second\n    prompt: second\n", true},
+		{"duplicate load vars parallel", "plan:\n- in_parallel:\n  - {load_var: value, file: first.txt}\n  - {load_var: value, file: second.txt}\n", false},
+		{"passed wildcard self cycle", "resources:\n- {name: repo, type: mock}\nplan:\n- {get: repo, passed: ['*']}\n", false},
+		{"passed null", "resources:\n- {name: repo, type: mock}\nplan:\n- {get: repo, passed: null}\n", true},
+		{"task config null", "plan:\n- {task: work, config: null}\n", false},
+		{"task pointer fields null", "plan:\n- task: work\n  config: {platform: linux, image_resource: null, container_limits: null, container_requests: null}\n  container_limits: null\n  container_requests: null\n", true},
+		{"task object lists null", "plan:\n- task: work\n  config: {platform: linux, inputs: null, outputs: null, caches: null, scratch_paths: null}\n", true},
+		{"task sidecars null", "plan:\n- task: work\n  config: {platform: linux}\n  sidecars: null\n", true},
+		{"task null sidecar entry", "plan:\n- task: work\n  config: {platform: linux}\n  sidecars: [null]\n", true},
+		{"task empty sidecar entry", "plan:\n- task: work\n  config: {platform: linux}\n  sidecars: [{}]\n", false},
+		{"agent sidecars null", "plan:\n- agent: work\n  prompt: work\n  sidecars: null\n", true},
+		{"task sidecar object lists null", "plan:\n- task: work\n  config: {platform: linux}\n  sidecars: [{name: tools, image: image, env: null, ports: null}]\n", true},
+		{"harvest gate list null", "plan:\n- harvest: publish\n  workspace: workspace\n  repo: owner/repo\n  gate_policy: {gates: null}\n", true},
+		{"harvest rubric list null", "plan:\n- harvest: publish\n  workspace: workspace\n  repo: owner/repo\n  judge: {rubric: null, pass_threshold: 1}\n", true},
+		{"declaration lists null", "resources: null\nresource_types: null\nprototypes: null\nvar_sources: null\nplan:\n- {agent: work, prompt: work}\n", true},
+		{"harvest dev mcp empty string", "plan:\n- harvest: publish\n  workspace: workspace\n  repo: owner/repo\n  gate_policy: {gates: [{gate: test, scope: full}]}\n  dev_mcp: ''\n", true},
+		{"harvest dev mcp bool", "plan:\n- harvest: publish\n  workspace: workspace\n  repo: owner/repo\n  gate_policy: {gates: [{gate: test, scope: full}]}\n  dev_mcp: true\n", false},
+		{"harvest dev mcp wrong command", "plan:\n- harvest: publish\n  workspace: workspace\n  repo: owner/repo\n  gate_policy: {gates: [{gate: test, scope: full}]}\n  dev_mcp: {command: run}\n", false},
+		{"mixed case resource fields", "resources:\n- {nAmE: repo, tYpE: mock}\nplan:\n- {get: repo}\n", true},
+		{"mixed case resource type fields", "resource_types:\n- {nAmE: custom, iMaGe: image}\nplan:\n- {agent: work, prompt: work}\n", true},
+		{"mixed case prototype fields", "prototypes:\n- {nAmE: runner, tYpE: mock}\nplan:\n- {run: invoke, type: runner}\n", true},
+		{"null resource declaration", "resources: [null]\nplan:\n- {agent: work, prompt: work}\n", false},
+		{"task null input entry", "plan:\n- task: work\n  config: {platform: linux, inputs: [null]}\n", false},
+		{"task null output entry", "plan:\n- task: work\n  config: {platform: linux, outputs: [null]}\n", false},
+		{"across wrapped duplicate load var", "plan:\n- across: [{var: item, values: [one]}]\n  load_var: item\n  file: value.txt\n", false},
+		{"across hook same load var", "plan:\n- across: [{var: item, values: [one]}]\n  agent: work\n  prompt: work\n  on_success: {load_var: item, file: value.txt}\n", true},
+		{"outer load var nested across shadow", "plan:\n- do:\n  - {load_var: item, file: value.txt}\n  - across: [{var: item, values: [one]}]\n    agent: work\n    prompt: work\n", true},
+		{"outer load var nested do duplicate", "plan:\n- do:\n  - {load_var: item, file: first.txt}\n  - do:\n    - {load_var: item, file: second.txt}\n", false},
+		{"self cycle in hook", "resources:\n- {name: repo, type: mock}\nplan:\n- agent: work\n  prompt: work\n  on_success: {get: repo, passed: [entry]}\n", false},
+		{"case collision exact name wins", "resources:\n- {Name: other, name: repo, Type: mock}\nplan:\n- {get: repo}\n", true},
+		{"uppercase step core", "plan:\n- {Agent: work, Prompt: work}\n", false},
+		{"uppercase task config field", "plan:\n- task: work\n  config: {Platform: linux}\n", false},
+		{"uppercase sidecar field", "plan:\n- task: work\n  config: {platform: linux}\n  sidecars: [{Name: tools, Image: image}]\n", false},
+		{"uppercase gate field", "plan:\n- harvest: publish\n  workspace: workspace\n  repo: owner/repo\n  gate_policy: {Gates: []}\n", false},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, _, err := DecodeManifest(map[string]string{"workflow.yml": ordinaryV3(test.body)})
+			if (err == nil) != test.accepted {
+				t.Fatalf("DecodeManifest accepted=%t, want %t (err: %v)", err == nil, test.accepted, err)
+			}
+		})
+	}
+}
+
 func TestFrozenOrdinaryTypeSchemaCoversEveryReleasedField(t *testing.T) {
 	assertFrozenShapeTable(t, "declarations", releasedOrdinaryDeclarationShapes, frozenOrdinaryDeclarationTypeFields)
 	assertFrozenShapeTable(t, "steps", releasedOrdinaryStepShapes, frozenOrdinaryStepTypeFields)
@@ -533,6 +631,7 @@ const (
 	releasedTaskConfig     releasedWireShape = "task-config"
 	releasedSidecar        releasedWireShape = "sidecar"
 	releasedSidecarList    releasedWireShape = "sidecar-list"
+	releasedHarvestDevMCP  releasedWireShape = "harvest-dev-mcp"
 	releasedGatePolicy     releasedWireShape = "gate-policy"
 	releasedJudge          releasedWireShape = "judge"
 	releasedStepObject     releasedWireShape = "step-object"
@@ -578,7 +677,7 @@ var releasedOrdinaryStepShapes = map[string]map[string]releasedWireShape{
 		"harvest": releasedString, "workspace": releasedString, "repo": releasedString,
 		"target_branch": releasedString, "ticket_id": releasedInt, "pipeline_run_id": releasedInt,
 		"branch": releasedString, "push": releasedBool, "env": releasedObject,
-		"dev_mcp": releasedSidecar, "gate_policy": releasedGatePolicy,
+		"dev_mcp": releasedHarvestDevMCP, "gate_policy": releasedGatePolicy,
 		"judge": releasedJudge, "timeout": releasedString,
 	},
 	"run": {
@@ -713,7 +812,7 @@ func releasedShapesOverlap(want, candidate releasedWireShape) bool {
 	case releasedString:
 		return want == releasedString || want == releasedCheckEvery ||
 			want == releasedVersion || want == releasedPutInputs ||
-			want == releasedSidecar
+			want == releasedSidecar || want == releasedHarvestDevMCP
 	case releasedInt:
 		return want == releasedInt || want == releasedNumber
 	case releasedNumber:
@@ -725,7 +824,7 @@ func releasedShapesOverlap(want, candidate releasedWireShape) bool {
 		case releasedObject, releasedStringMap, releasedVersion, releasedLimits,
 			releasedSnapshotInputs, releasedSnapshotOutput, releasedTaskConfig,
 			releasedSidecar, releasedGatePolicy, releasedJudge, releasedStepObject,
-			releasedInParallel:
+			releasedInParallel, releasedHarvestDevMCP:
 			return true
 		}
 	case releasedStepList:
@@ -773,23 +872,69 @@ func releasedValidShapeValues(shape releasedWireShape) map[string]any {
 	case releasedSnapshotOutput:
 		return map[string]any{"empty": map[string]any{}, "typed": map[string]any{"output": "review/v1"}, "null": nil}
 	case releasedTaskConfig:
-		return map[string]any{"empty": map[string]any{}, "typed": map[string]any{"platform": "linux", "run": map[string]any{"path": "/bin/true"}}, "null": nil}
+		return map[string]any{
+			"empty": map[string]any{},
+			"typed": map[string]any{
+				"platform": "linux", "run": map[string]any{"path": "/bin/true"},
+			},
+			"null-path-entries": map[string]any{
+				"platform": "linux", "caches": []any{nil}, "scratch_paths": []any{nil},
+			},
+			"null": nil,
+		}
 	case releasedSidecar:
-		return map[string]any{"file": "sidecar.yml", "inline": sidecar, "null": nil}
+		return map[string]any{
+			"file": "sidecar.yml", "inline": sidecar,
+			"inline-null-entries": map[string]any{
+				"name": "tools", "image": "registry.example/tools:latest",
+				"env": []any{nil}, "ports": []any{nil},
+			},
+			"null": nil,
+		}
 	case releasedSidecarList:
-		return map[string]any{"empty": []any{}, "files": []any{"sidecar.yml"}, "inline": []any{sidecar}, "null": nil}
+		return map[string]any{
+			"empty": []any{}, "files": []any{"sidecar.yml"}, "inline": []any{sidecar},
+			"null-entry": []any{nil}, "null": nil,
+		}
+	case releasedHarvestDevMCP:
+		return map[string]any{
+			"file": "sidecar.yml", "empty-file": "",
+			"empty-object": map[string]any{}, "inline-object": sidecar, "null": nil,
+		}
 	case releasedGatePolicy:
-		return map[string]any{"empty": map[string]any{}, "typed": map[string]any{"gates": []any{}}, "null": nil}
+		return map[string]any{
+			"empty": map[string]any{}, "typed": map[string]any{"gates": []any{}},
+			"null-gate-entry": map[string]any{"gates": []any{nil}}, "null": nil,
+		}
 	case releasedJudge:
-		return map[string]any{"empty": map[string]any{}, "typed": map[string]any{"rubric": []any{}, "pass_threshold": 1.5}, "null": nil}
+		return map[string]any{
+			"empty":             map[string]any{},
+			"typed":             map[string]any{"rubric": []any{}, "pass_threshold": 1.5},
+			"null-rubric-entry": map[string]any{"rubric": []any{nil}},
+			"null":              nil,
+		}
 	case releasedStepObject:
 		return map[string]any{"object": map[string]any{}, "null": nil}
 	case releasedStepList:
 		return map[string]any{"list": []any{}, "null": nil}
 	case releasedInParallel:
-		return map[string]any{"list": []any{}, "config": map[string]any{"steps": []any{}, "limit": 1, "fail_fast": true}, "null": nil}
+		return map[string]any{
+			"list": []any{}, "config": map[string]any{"steps": []any{}, "limit": 1, "fail_fast": true},
+			"config-without-steps": map[string]any{},
+			"config-null-steps":    map[string]any{"steps": nil},
+			"null":                 nil,
+		}
 	case releasedAcross:
-		return map[string]any{"empty": []any{}, "typed": []any{map[string]any{"var": "item", "values": []any{}, "max_in_flight": "all"}}, "null": nil}
+		return map[string]any{
+			"empty": []any{},
+			"typed": []any{
+				map[string]any{"var": "item", "values": []any{}, "max_in_flight": "all"},
+			},
+			"missing-var": []any{map[string]any{"values": []any{"one"}}},
+			"null-entry":  []any{nil},
+			"null-max":    []any{map[string]any{"var": "item", "max_in_flight": nil}},
+			"null-list":   nil,
+		}
 	default:
 		return nil
 	}
@@ -830,6 +975,13 @@ func releasedInvalidShapeValues(shape releasedWireShape) map[string]any {
 		return map[string]any{
 			"invalid-inline": map[string]any{},
 			"wrong-command":  map[string]any{"name": "tools", "image": "image", "command": "run"},
+		}
+	case releasedHarvestDevMCP:
+		return map[string]any{
+			"boolean":       true,
+			"number":        1,
+			"list":          []any{},
+			"wrong-command": map[string]any{"command": "run"},
 		}
 	case releasedSidecarList:
 		return map[string]any{"non-union-entry": []any{true}, "invalid-inline": []any{map[string]any{}}}
@@ -1058,10 +1210,6 @@ func TestFrozenOrdinarySemanticSchemaMatchesReleasedValidator(t *testing.T) {
 			body: "plan:\n- across: []\n  agent: work\n  prompt: work\n",
 			want: "no vars specified",
 		},
-		"across requires var name": {
-			body: "plan:\n- across: [{values: [one]}]\n  agent: work\n  prompt: work\n",
-			want: ".var is required",
-		},
 		"across limit must be positive": {
 			body: "plan:\n- across: [{var: item, values: [one], max_in_flight: 0}]\n  agent: work\n  prompt: work\n",
 			want: "must be greater than 0",
@@ -1100,7 +1248,6 @@ func validAgentPlan() string {
 func TestFrozenOrdinarySemanticSchemaRetainsReleasedAcceptedEdges(t *testing.T) {
 	tests := map[string]string{
 		"custom image resource permits skip download":   "resource_types:\n- {name: custom-image, image: image}\nresources:\n- {name: repo, type: custom-image}\nplan:\n- {get: repo, skip_download: true}\n",
-		"passed may match the synthetic entry job":      "resources:\n- {name: repo, type: mock}\nplan:\n- {get: repo, passed: [entry]}\n",
 		"bare agent env references remain static":       "plan:\n- agent: work\n  prompt: work\n  env: {RUN_ID: '((run_id))'}\n",
 		"forward variable source dependencies resolve":  "var_sources:\n- {name: first, type: dummy, config: {vars: {token: '((second:token))'}}}\n- {name: second, type: dummy, config: {vars: {token: value}}}\n" + validAgentPlan(),
 		"released memory unmarshal default is retained": "plan:\n- agent: work\n  prompt: work\n  container_limits: {memory: true, ephemeral_storage: {}}\n",

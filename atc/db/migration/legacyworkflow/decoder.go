@@ -931,7 +931,7 @@ func validateFunctionSourceKeys(document any) error {
 		{field: "var_sources", allowed: []string{"name", "type", "config"}},
 	} {
 		if value, found := root[declaration.field]; found {
-			if err := validateObjectListSource(value, "workflow."+declaration.field, declaration.allowed); err != nil {
+			if err := validateTypedDeclarationListSource(value, "workflow."+declaration.field, declaration.allowed); err != nil {
 				return err
 			}
 		}
@@ -958,6 +958,46 @@ func validateFunctionSourceKeys(document any) error {
 			if err := validateInlineSidecarSource(sidecar, path+".sidecar"); err != nil {
 				return err
 			}
+		}
+	}
+	return nil
+}
+
+func validateTypedDeclarationListSource(value any, path string, allowed []string) error {
+	entries, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	for index, raw := range entries {
+		object, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		keys := make([]string, 0, len(object))
+		for key := range object {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		normalized := make(map[string]any, len(object))
+		for _, key := range keys {
+			canonical := ""
+			for _, field := range allowed {
+				if strings.EqualFold(key, field) {
+					canonical = field
+					break
+				}
+			}
+			if canonical == "" {
+				return fmt.Errorf("workflow: %s[%d]: unknown field %q", path, index, key)
+			}
+			// encoding/json visits object keys in their encoded order and lets
+			// the last case-insensitive match win. The source object is encoded
+			// from a map below, so sorted order reproduces that behavior.
+			normalized[canonical] = object[key]
+		}
+		clear(object)
+		for key, field := range normalized {
+			object[key] = field
 		}
 	}
 	return nil
@@ -1499,8 +1539,10 @@ func (validator *functionAssetValidator) validateAgent(step map[string]any, path
 		return fmt.Errorf("workflow: %s: agent name is required", path)
 	}
 	if sidecars, found := step["sidecars"]; found {
-		if entries, ok := sidecars.([]any); !ok || len(entries) > 0 {
-			return fmt.Errorf("workflow: %s: direct sidecars are not allowed in version 3; declare a named capability", identity)
+		if sidecars != nil {
+			if entries, ok := sidecars.([]any); !ok || len(entries) > 0 {
+				return fmt.Errorf("workflow: %s: direct sidecars are not allowed in version 3; declare a named capability", identity)
+			}
 		}
 	}
 
@@ -1872,6 +1914,9 @@ func (checker *frozenFlowChecker) checkStepFrom(
 			}
 			return conditionalFrozenTryFlow(entry, child), nil
 		case "do":
+			if value == nil {
+				return checker.checkSequence(nil, entry, path+".do")
+			}
 			steps, ok := value.([]any)
 			if !ok {
 				return frozenSnapshotFlow{}, fmt.Errorf("workflow: %s.do: steps must be a list", path)
@@ -1901,7 +1946,11 @@ func frozenParallelSteps(value any) ([]any, error) {
 	case []any:
 		return config, nil
 	case map[string]any:
-		steps, ok := config["steps"].([]any)
+		raw, found := config["steps"]
+		if !found || raw == nil {
+			return nil, nil
+		}
+		steps, ok := raw.([]any)
 		if !ok {
 			return nil, fmt.Errorf("steps must be a list")
 		}
@@ -2399,7 +2448,7 @@ func init() {
 			"repo": frozenStringType, "target_branch": frozenStringType,
 			"ticket_id": frozenIntType, "pipeline_run_id": frozenIntType,
 			"branch": frozenStringType, "push": frozenBoolType,
-			"env": frozenObjectType, "dev_mcp": frozenSidecarType,
+			"env": frozenObjectType, "dev_mcp": frozenHarvestDevMCPType,
 			"gate_policy": frozenGatePolicyType, "judge": frozenJudgeType,
 			"timeout": frozenStringType,
 		},
@@ -2529,9 +2578,13 @@ func validateFrozenTypedObjectList(value any, listPath string, fields map[string
 		return fmt.Errorf("%s must be a list", listPath)
 	}
 	for index, raw := range entries {
-		entry, ok := raw.(map[string]any)
-		if !ok {
-			return fmt.Errorf("%s[%d] must be an object", listPath, index)
+		entry := map[string]any{}
+		if raw != nil {
+			var ok bool
+			entry, ok = raw.(map[string]any)
+			if !ok {
+				return fmt.Errorf("%s[%d] must be an object", listPath, index)
+			}
 		}
 		if err := validateFrozenTypedFields(entry, fmt.Sprintf("%s[%d]", listPath, index), fields); err != nil {
 			return err
@@ -2829,6 +2882,28 @@ func frozenSidecarType(value any, fieldPath string) error {
 	return nil
 }
 
+func frozenHarvestDevMCPType(value any, fieldPath string) error {
+	if value == nil {
+		return nil
+	}
+	if _, ok := value.(string); ok {
+		return nil
+	}
+	sidecar, ok := value.(map[string]any)
+	if !ok {
+		return fmt.Errorf("%s must be a string or object", fieldPath)
+	}
+	// Harvest only checks that the released SidecarSource pointer is non-nil;
+	// its inline config still passes through typed JSON decoding.
+	return validateFrozenTypedFields(sidecar, fieldPath, map[string]frozenTypeValidator{
+		"name": frozenStringType, "image": frozenStringType,
+		"command": frozenStringListType, "args": frozenStringListType,
+		"env": frozenSidecarEnvType, "ports": frozenSidecarPortsType,
+		"resources": frozenSidecarResourcesType, "workingDir": frozenStringType,
+		"image_artifact": frozenStringType,
+	})
+}
+
 func frozenSidecarEnvType(value any, fieldPath string) error {
 	return validateFrozenTypedObjectList(value, fieldPath, map[string]frozenTypeValidator{
 		"name": frozenStringType, "value": frozenStringType,
@@ -2988,6 +3063,9 @@ func validateFrozenTypedNestedStep(value any, stepPath string) error {
 }
 
 func validateFrozenTypedStepList(value any, listPath string) error {
+	if value == nil {
+		return nil
+	}
 	steps, ok := value.([]any)
 	if !ok {
 		return fmt.Errorf("%s must be a list", listPath)
@@ -3019,20 +3097,23 @@ type frozenOrdinaryDeclaration struct {
 }
 
 type frozenOrdinaryValidator struct {
-	resources     map[string]frozenOrdinaryDeclaration
-	resourceTypes map[string]frozenOrdinaryDeclaration
-	prototypes    map[string]frozenOrdinaryDeclaration
-	usedResources map[string]struct{}
-	seenGetNames  map[string]struct{}
+	resources          map[string]frozenOrdinaryDeclaration
+	resourceTypes      map[string]frozenOrdinaryDeclaration
+	prototypes         map[string]frozenOrdinaryDeclaration
+	usedResources      map[string]struct{}
+	seenGetNames       map[string]struct{}
+	localVarScopes     []map[string]struct{}
+	entryDependsOnSelf bool
 }
 
 func validateFrozenOrdinaryFunction(source *functionSource, plan []any) error {
 	validator := &frozenOrdinaryValidator{
-		resources:     make(map[string]frozenOrdinaryDeclaration),
-		resourceTypes: make(map[string]frozenOrdinaryDeclaration),
-		prototypes:    make(map[string]frozenOrdinaryDeclaration),
-		usedResources: make(map[string]struct{}),
-		seenGetNames:  make(map[string]struct{}),
+		resources:      make(map[string]frozenOrdinaryDeclaration),
+		resourceTypes:  make(map[string]frozenOrdinaryDeclaration),
+		prototypes:     make(map[string]frozenOrdinaryDeclaration),
+		usedResources:  make(map[string]struct{}),
+		seenGetNames:   make(map[string]struct{}),
+		localVarScopes: []map[string]struct{}{{}},
 	}
 	if err := validator.decodeDeclarations(source); err != nil {
 		return fmt.Errorf("workflow: invalid Concourse config: %w", err)
@@ -3050,6 +3131,9 @@ func validateFrozenOrdinaryFunction(source *functionSource, plan []any) error {
 		if _, used := validator.usedResources[name]; !used {
 			return fmt.Errorf("workflow: invalid Concourse config: resource %q is not used", name)
 		}
+	}
+	if validator.entryDependsOnSelf {
+		return fmt.Errorf("workflow: invalid Concourse config: pipeline contains a cycle that starts at Job 'entry'")
 	}
 	return nil
 }
@@ -3237,6 +3321,23 @@ func validateFrozenVarSources(value any) error {
 	return nil
 }
 
+func (validator *frozenOrdinaryValidator) pushLocalVarScope() {
+	validator.localVarScopes = append(validator.localVarScopes, map[string]struct{}{})
+}
+
+func (validator *frozenOrdinaryValidator) popLocalVarScope() {
+	validator.localVarScopes = validator.localVarScopes[:len(validator.localVarScopes)-1]
+}
+
+func (validator *frozenOrdinaryValidator) declareLocalVar(name string) error {
+	scope := validator.localVarScopes[len(validator.localVarScopes)-1]
+	if _, duplicate := scope[name]; duplicate {
+		return fmt.Errorf("repeated var name")
+	}
+	scope[name] = struct{}{}
+	return nil
+}
+
 func (validator *frozenOrdinaryValidator) validateStep(step map[string]any, path string) error {
 	core := ""
 	for _, name := range []string{
@@ -3263,21 +3364,33 @@ func (validator *frozenOrdinaryValidator) validateStep(step map[string]any, path
 			return fmt.Errorf("%s.timeout invalid duration %q", path, text)
 		}
 	}
+	acrossScope := false
 	if across, found := step["across"]; found {
 		entries, ok := across.([]any)
 		if !ok || len(entries) == 0 {
 			return fmt.Errorf("%s.across has no vars specified", path)
 		}
+		validator.pushLocalVarScope()
+		acrossScope = true
+		defer func() {
+			if acrossScope {
+				validator.popLocalVarScope()
+			}
+		}()
 		for index, raw := range entries {
-			entry, ok := raw.(map[string]any)
-			if !ok {
-				return fmt.Errorf("%s.across[%d] must be an object", path, index)
+			entry := map[string]any{}
+			if raw != nil {
+				var ok bool
+				entry, ok = raw.(map[string]any)
+				if !ok {
+					return fmt.Errorf("%s.across[%d] must be an object", path, index)
+				}
 			}
 			name, _ := entry["var"].(string)
-			if name == "" {
-				return fmt.Errorf("%s.across[%d].var is required", path, index)
+			if err := validator.declareLocalVar(name); err != nil {
+				return fmt.Errorf("%s.across[%d]: %w", path, index, err)
 			}
-			if rawLimit, found := entry["max_in_flight"]; found {
+			if rawLimit, found := entry["max_in_flight"]; found && rawLimit != nil {
 				switch limit := rawLimit.(type) {
 				case string:
 					if limit != "all" {
@@ -3335,6 +3448,7 @@ func (validator *frozenOrdinaryValidator) validateStep(step map[string]any, path
 				if !matched {
 					return fmt.Errorf("%s.get(%s).passed: no matching job(s) for %q", path, name, jobGlob)
 				}
+				validator.entryDependsOnSelf = true
 			}
 		}
 	case "run":
@@ -3361,7 +3475,11 @@ func (validator *frozenOrdinaryValidator) validateStep(step map[string]any, path
 			return fmt.Errorf("%s.set_pipeline: no file specified", path)
 		}
 	case "load_var":
-		if name, _ := step["load_var"].(string); name == "" {
+		name, _ := step["load_var"].(string)
+		if err := validator.declareLocalVar(name); err != nil {
+			return fmt.Errorf("%s.load_var(%s): %w", path, name, err)
+		}
+		if name == "" {
 			return fmt.Errorf("%s.load_var has an empty name", path)
 		}
 		if file, _ := step["file"].(string); file == "" {
@@ -3391,6 +3509,10 @@ func (validator *frozenOrdinaryValidator) validateStep(step map[string]any, path
 		}
 	}
 
+	if acrossScope {
+		validator.popLocalVarScope()
+		acrossScope = false
+	}
 	for _, hook := range []string{"on_success", "on_failure", "on_abort", "on_error", "ensure"} {
 		if nested, found := step[hook]; found {
 			if err := validator.validateNestedStep(nested, path+"."+hook); err != nil {
@@ -3410,6 +3532,9 @@ func (validator *frozenOrdinaryValidator) validateNestedStep(value any, path str
 }
 
 func (validator *frozenOrdinaryValidator) validateStepList(value any, path string) error {
+	if value == nil {
+		return nil
+	}
 	steps, ok := value.([]any)
 	if !ok {
 		return fmt.Errorf("%s must be a list", path)
@@ -3619,7 +3744,7 @@ func validateFrozenHarvest(step map[string]any, path string) error {
 	policy, _ := step["gate_policy"].(map[string]any)
 	gates, _ := policy["gates"].([]any)
 	if len(gates) > 0 {
-		if _, found := step["dev_mcp"]; !found {
+		if devMCP, found := step["dev_mcp"]; !found || devMCP == nil {
 			return fmt.Errorf("%s.harvest(%s): gates require `dev_mcp:`", path, name)
 		}
 	}
