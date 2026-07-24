@@ -191,6 +191,16 @@ durable `workflow_run_id`. That ID remains the invocation identity after
 associated build, pipeline-run, instance-pipeline, or template-pipeline rows
 are deleted; `pipeline_run_id` is only an execution diagnostic.
 
+The ticket is a `work-item/v1` projection shell, not an execution identity. Its
+web page renders only ticket content (title/body/spec/plan/tasks), the captured
+revision and repository selection, and the human queue/dispatch/disposition
+controls. Every piece of execution evidence — the agent review, the
+repository-change diff, run cost, and the run outcome — belongs to the durable
+workflow run and is reached only through canonical links to that run
+(`Routes.AgentWorkflowRun`) and its promoted output snapshots. The legacy
+per-ticket disposition, outcome, diff, and metrics endpoints, and the Elm state
+that called them, have been removed.
+
 Operators inspect durable runs with `fly agent workflows show-run`; a
 target-qualified example is:
 

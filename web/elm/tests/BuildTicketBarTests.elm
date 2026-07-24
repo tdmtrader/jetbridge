@@ -33,8 +33,8 @@ runMetric =
 
 runMetricFor : Int -> Float -> Concourse.Agent.RunMetric
 runMetricFor buildId cost =
-    { ticketId = Just 12
-    , pipelineRunId = Nothing
+    { workflowRunId = Nothing
+    , functionId = ""
     , buildId = buildId
     , planId = "plan"
     , stepName = "implement"

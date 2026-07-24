@@ -4,7 +4,6 @@ module Concourse.AgentTicket exposing
     , Spec
     , Task
     , Ticket
-    , compareUrl
     , decodeDetail
     , decodeDispatchResult
     , decodeSpec
@@ -200,20 +199,3 @@ repoWebUrl repo =
 
             _ ->
                 Nothing
-
-
-{-| GitHub-style compare URL between the ticket's target branch and its
-harvest branch — the diff a human reviews before merging. Nothing when either
-branch is unknown or the repo can't be resolved to a web URL.
--}
-compareUrl : Ticket -> Maybe String
-compareUrl ticket =
-    if ticket.branch == "" || ticket.targetBranch == "" then
-        Nothing
-
-    else
-        repoWebUrl ticket.repo
-            |> Maybe.map
-                (\base ->
-                    base ++ "/compare/" ++ ticket.targetBranch ++ "..." ++ ticket.branch
-                )

@@ -254,7 +254,6 @@ type Effect
     | TransitionAgentTicket { id : Int, from : String, to : String }
     | DispatchAgentTicket Int
     | UpdateAgentTicketTask { id : Int, ordering : Int, status : String, note : String }
-    | FetchAgentTicketMetrics Int
     | FetchAgentTicketCosts
     | FetchAgentWorkflowVersions String
     | PromoteAgentWorkflowVersion String Int
@@ -995,12 +994,6 @@ runEffect effect key csrfToken =
                 |> Api.withJsonBody (encodeTaskStatus params)
                 |> Api.request
                 |> Task.attempt (AgentTicketTaskUpdated params.id)
-
-        FetchAgentTicketMetrics ticketId ->
-            Api.get (Endpoints.AgentTicketMetrics ticketId)
-                |> Api.expectJson (Json.Decode.list Concourse.Agent.decodeRunMetric)
-                |> Api.request
-                |> Task.attempt (AgentTicketMetricsFetched ticketId)
 
         FetchAgentTicketCosts ->
             let

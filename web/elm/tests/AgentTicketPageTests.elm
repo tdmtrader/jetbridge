@@ -5,7 +5,6 @@ import Application.Application as Application
 import Common
 import Concourse.AgentTicket as AgentTicket
 import Data
-import Dict
 import Expect
 import Html.Attributes
 import Json.Decode
@@ -119,33 +118,6 @@ runDetailFor workflowName workflowRunId =
     }
 
 
-sampleMetric =
-    { ticketId = Just 12
-    , pipelineRunId = Just 2
-    , buildId = 561978
-    , planId = "plan-xyz"
-    , stepName = "implement"
-    , workflowName = "develop"
-    , workflowVersion = Just 1
-    , status = "ok"
-    , buildStatus = "succeeded"
-    , outcome = "no_output"
-    , summary = ""
-    , model = ""
-    , usage =
-        { inputTokens = 19
-        , outputTokens = 2480
-        , cacheReadInputTokens = 0
-        , cacheCreationInputTokens = 0
-        }
-    , turns = 25
-    , wallTimeSeconds = 77
-    , costUsd = 0.21
-    , eventCounts = Dict.empty
-    , createdAt = 100
-    }
-
-
 all : Test
 all =
     describe "ticket detail page"
@@ -155,14 +127,11 @@ all =
         , test "decodes a detail fixture with a null spec" <|
             \_ ->
                 withDetail queuedDetailJson (\d -> Expect.equal d.spec Nothing)
-        , test "fetches the ticket and its run metrics on load" <|
+        , test "fetches the ticket on load and requests no legacy ticket metrics" <|
             \_ ->
                 initDetail
                     |> Tuple.second
-                    |> Expect.all
-                        [ Common.contains (Effects.FetchAgentTicket 12)
-                        , Common.contains (Effects.FetchAgentTicketMetrics 12)
-                        ]
+                    |> Common.contains (Effects.FetchAgentTicket 12)
         , test "fetches the exact durable workflow run after the ticket loads" <|
             \_ ->
                 withDetail sampleDetailJson <|
@@ -257,27 +226,7 @@ all =
             \_ ->
                 renderWith "/agent-tickets/12" (Callback.AgentTicketFetched Data.httpUnauthorized)
                     |> Query.has [ text "Couldn't load ticket." ]
-        , test "links the harvest-branch diff for a needs_review ticket" <|
-            \_ ->
-                withDetail sampleDetailJson
-                    (\d ->
-                        renderWith "/agent-tickets/12" (Callback.AgentTicketFetched (Ok d))
-                            |> Query.find [ class "agent-ticket-compare-link" ]
-                            |> Query.has
-                                [ attribute
-                                    (Html.Attributes.href
-                                        "https://github.com/tdmtrader/jetbridge/compare/main...agent/ticket-12"
-                                    )
-                                ]
-                    )
-        , test "omits the compare link when there is no harvest branch" <|
-            \_ ->
-                withDetail queuedDetailJson
-                    (\d ->
-                        renderWith "/agent-tickets/12" (Callback.AgentTicketFetched (Ok d))
-                            |> Query.hasNot [ class "agent-ticket-compare-link" ]
-                    )
-        , test "step metrics still power budget text without creating build-linked run rows" <|
+        , test "linked ticket renders canonical workflow evidence without legacy actions" <|
             \_ ->
                 withDetail sampleDetailJson
                     (\d ->
@@ -285,34 +234,38 @@ all =
                             |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
                             |> Tuple.first
                             |> Application.handleCallback
-                                (Callback.AgentTicketMetricsFetched 12
-                                    (Ok [ sampleMetric ])
+                                (Callback.AgentWorkflowRunFetched
+                                    "9007199254740993"
+                                    (Ok (runDetailFor "develop" "9007199254740993"))
                                 )
                             |> Tuple.first
                             |> Common.queryView
                             |> Expect.all
-                                [ Query.hasNot [ class "agent-ticket-run-row" ]
-                                , Query.hasNot [ attribute (Html.Attributes.href "/builds/561978") ]
-                                , Query.has [ containing [ text "$0.21" ] ]
+                                [ Query.has [ text "workflow run #9007199254740993" ]
+                                , Query.has
+                                    [ attribute
+                                        (Html.Attributes.href
+                                            "/agent/snapshots/9007199254740997"
+                                        )
+                                    ]
+                                , Query.hasNot [ class "agent-ticket-compare-link" ]
+                                , Query.hasNot [ class "agent-ticket-digest-compare-link" ]
+                                , Query.hasNot [ id "ticket-review-digest" ]
                                 ]
                     )
-        , test "a ticket without a durable run has no metric-derived run fallback" <|
+        , test "shows no legacy compare link even when the ticket has a branch" <|
+            \_ ->
+                withDetail sampleDetailJson
+                    (\d ->
+                        renderWith "/agent-tickets/12" (Callback.AgentTicketFetched (Ok d))
+                            |> Query.hasNot [ class "agent-ticket-compare-link" ]
+                    )
+        , test "a ticket without a durable run shows no evidence line" <|
             \_ ->
                 withDetail queuedDetailJson
                     (\detail ->
-                        Common.init "/agent-tickets/12"
-                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok detail))
-                            |> Tuple.first
-                            |> Application.handleCallback
-                                (Callback.AgentTicketMetricsFetched 12 (Ok [ sampleMetric ]))
-                            |> Tuple.first
-                            |> Common.queryView
-                            |> Expect.all
-                                [ Query.hasNot [ id "ticket-durable-evidence" ]
-                                , Query.hasNot [ class "agent-ticket-run-row" ]
-                                , Query.hasNot [ attribute (Html.Attributes.href "/builds/561978") ]
-                                , Query.hasNot [ attribute (Html.Attributes.href "/agent/workflows/develop/runs/9007199254740993") ]
-                                ]
+                        renderWith "/agent-tickets/12" (Callback.AgentTicketFetched (Ok detail))
+                            |> Query.hasNot [ id "ticket-durable-evidence" ]
                     )
         , test "a same durable pair keeps matching output detail while refreshing it" <|
             \_ ->
@@ -722,7 +675,7 @@ all =
                             |> Common.queryView
                             |> Query.has [ text "Confirm abandon" ]
                     )
-        , test "the 5s tick refetches the ticket and metrics while it can still change" <|
+        , test "the 5s tick refetches the ticket while it can still change" <|
             \_ ->
                 withDetail sampleDetailJson
                     (\d ->
@@ -732,10 +685,7 @@ all =
                             |> Application.update
                                 (Msgs.DeliveryReceived (ClockTicked FiveSeconds <| Time.millisToPosix 0))
                             |> Tuple.second
-                            |> Expect.all
-                                [ Common.contains (Effects.FetchAgentTicket 12)
-                                , Common.contains (Effects.FetchAgentTicketMetrics 12)
-                                ]
+                            |> Common.contains (Effects.FetchAgentTicket 12)
                     )
         , test "the 5s tick keeps polling while the ticket hasn't loaded yet" <|
             \_ ->
@@ -754,9 +704,6 @@ all =
                             |> Application.update
                                 (Msgs.DeliveryReceived (ClockTicked FiveSeconds <| Time.millisToPosix 0))
                             |> Tuple.second
-                            |> Expect.all
-                                [ Common.notContains (Effects.FetchAgentTicket 12)
-                                , Common.notContains (Effects.FetchAgentTicketMetrics 12)
-                                ]
+                            |> Common.notContains (Effects.FetchAgentTicket 12)
                     )
         ]

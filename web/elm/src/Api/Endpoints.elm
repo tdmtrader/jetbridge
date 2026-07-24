@@ -50,7 +50,6 @@ type Endpoint
     | AgentTicketState Int
     | AgentTicketDispatch Int
     | AgentTicketTask Int Int
-    | AgentTicketMetrics Int
     | AgentWorkflowVersions String
     | AgentWorkflowVersionLive String Int
     | AgentWorkflowRuns String
@@ -283,9 +282,6 @@ builder endpoint =
 
         AgentTicketTask ticketId ordering ->
             base |> appendPath [ "agent", "tickets", String.fromInt ticketId, "tasks", String.fromInt ordering ]
-
-        AgentTicketMetrics ticketId ->
-            base |> appendPath [ "agent", "tickets", String.fromInt ticketId, "metrics" ]
 
         AgentWorkflowVersions workflowName ->
             base |> appendPath [ "agent", "workflows", Url.percentEncode workflowName, "versions" ]

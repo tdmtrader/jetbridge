@@ -12,24 +12,23 @@ module AgentTickets.AgentTicket exposing
 
 {-| The agent-ticket DETAIL page (a PR-style view for one ticket).
 
-Renders the ticket header, an editable title/body/budget form, the lifecycle
-action buttons (dispatch / transition), the spec & plan tabs, the task list,
-and — reusing `Build.AgentReview` verbatim — the agent review for the ticket's
-most recent run build. The server state machine stays
-authoritative: buttons only pick which transition to _offer_, and a rejected
-transition (409) surfaces inline and triggers a refetch.
+The ticket is a `work-item/v1` projection shell, never an execution identity:
+it renders the ticket header, an editable title/body/budget form, the lifecycle
+action buttons (dispatch / transition), the spec & plan tabs, and the task list.
+All execution evidence — the agent review, the repository-change diff, run cost
+and outcome — belongs to the ticket's durable workflow run, and is reached only
+by links out to that run and its promoted output snapshots (see
+`durableEvidenceLine`); it is never embedded or recomputed here. The server
+state machine stays authoritative: buttons only pick which transition to
+_offer_, and a rejected transition (409) surfaces inline and triggers a refetch.
 
 -}
 
 import AgentBadge
 import Application.Models exposing (Session)
-import Build.AgentReview
-import Concourse.Agent
-import Concourse.AgentReview
 import Concourse.AgentTicket as AgentTicket
 import Concourse.WorkflowRun as WorkflowRun
 import DateFormat
-import Dict exposing (Dict)
 import EffectTransformer exposing (ET)
 import Html exposing (Html)
 import Html.Attributes exposing (attribute, class, href, id, placeholder, style, value)
@@ -43,11 +42,9 @@ import Message.Message exposing (Message(..))
 import Message.Subscription exposing (Delivery, Interval(..), Subscription)
 import Polling
 import Routes
-import Set exposing (Set)
 import SideBar.SideBar as SideBar
 import Time
 import Tooltip
-import UserState
 import Views.Prose
 import Views.Styles
 import Views.TopBar as TopBar
@@ -62,8 +59,6 @@ type alias Model =
     Login.Model
         { ticketId : Int
         , detail : Maybe AgentTicket.Detail
-        , runMetrics : List Concourse.Agent.RunMetric
-        , reviewBuildId : Maybe Int
         , durableRun : Maybe WorkflowRun.Detail
         , activeTab : Tab
         , loaded : Bool
@@ -75,17 +70,6 @@ type alias Model =
         , editBudget : String
         , dispatchConfirm : Bool
         , pendingTransition : Maybe String
-
-        -- Review panel state — structurally satisfies Build.AgentReview.PanelState
-        -- so the panel view can be reused unchanged.
-        , agentReviews : List Concourse.AgentReview.BuildReview
-        , agentReviewLoadError : Bool
-        , agentReviewPanelExpanded : Bool
-        , expandedFindings : Set String
-        , showObservations : Maybe Bool
-        , agentReviewNotes : Dict String String
-        , verdictErrors : Set String
-        , expandedDescriptions : Set String
         }
 
 
@@ -93,8 +77,6 @@ init : { id : Int } -> ( Model, List Effect )
 init { id } =
     ( { ticketId = id
       , detail = Nothing
-      , runMetrics = []
-      , reviewBuildId = Nothing
       , durableRun = Nothing
       , activeTab = SpecTab
       , loaded = False
@@ -106,17 +88,9 @@ init { id } =
       , editBudget = ""
       , dispatchConfirm = False
       , pendingTransition = Nothing
-      , agentReviews = []
-      , agentReviewLoadError = False
-      , agentReviewPanelExpanded = False
-      , expandedFindings = Set.empty
-      , showObservations = Nothing
-      , agentReviewNotes = Dict.empty
-      , verdictErrors = Set.empty
-      , expandedDescriptions = Set.empty
       , isUserMenuExpanded = False
       }
-    , [ FetchAgentTicket id, FetchAgentTicketMetrics id ]
+    , [ FetchAgentTicket id ]
     )
 
 
@@ -262,31 +236,6 @@ handleCallback callback ( model, effects ) =
         AgentWorkflowRunFetched _ (Err _) ->
             ( model, effects )
 
-        AgentTicketMetricsFetched _ (Ok fresh) ->
-            let
-                -- Reference-preserved like the detail refetch above.
-                metrics =
-                    if fresh == model.runMetrics then
-                        model.runMetrics
-
-                    else
-                        fresh
-
-                latestBuild =
-                    metrics |> List.map .buildId |> List.maximum
-            in
-            ( { model | runMetrics = metrics, reviewBuildId = latestBuild }
-            , case latestBuild of
-                Just b ->
-                    effects ++ [ FetchBuildAgentReviews b ]
-
-                Nothing ->
-                    effects
-            )
-
-        AgentTicketMetricsFetched _ (Err _) ->
-            ( model, effects )
-
         AgentTicketSaved _ (Ok ()) ->
             ( { model | editing = False, actionError = Nothing }
             , effects ++ [ FetchAgentTicket model.ticketId ]
@@ -307,29 +256,11 @@ handleCallback callback ( model, effects ) =
 
         AgentTicketDispatched _ (Ok _) ->
             ( { model | actionError = Nothing }
-            , effects ++ [ FetchAgentTicket model.ticketId, FetchAgentTicketMetrics model.ticketId ]
+            , effects ++ [ FetchAgentTicket model.ticketId ]
             )
 
         AgentTicketDispatched _ (Err _) ->
             ( { model | actionError = Just "Dispatch failed." }, effects )
-
-        BuildAgentReviewsFetched (Ok reviews) ->
-            ( { model | agentReviews = reviews, agentReviewLoadError = False }, effects )
-
-        BuildAgentReviewsFetched (Err _) ->
-            ( { model | agentReviewLoadError = True }, effects )
-
-        AgentReviewVerdictSubmitted findingId (Ok ()) ->
-            ( { model | verdictErrors = Set.remove findingId model.verdictErrors }
-            , effects
-                ++ (model.reviewBuildId
-                        |> Maybe.map (\b -> [ FetchBuildAgentReviews b ])
-                        |> Maybe.withDefault []
-                   )
-            )
-
-        AgentReviewVerdictSubmitted findingId (Err _) ->
-            ( { model | verdictErrors = Set.insert findingId model.verdictErrors }, effects )
 
         _ ->
             ( model, effects )
@@ -356,7 +287,7 @@ polls =
                     []
 
                 else
-                    [ FetchAgentTicket model.ticketId, FetchAgentTicketMetrics model.ticketId ]
+                    [ FetchAgentTicket model.ticketId ]
       }
     ]
 
@@ -451,47 +382,6 @@ update msg ( model, effects ) =
         CancelAgentTicketDispatch ->
             ( { model | dispatchConfirm = False }, effects )
 
-        ToggleAgentReviewPanel ->
-            ( { model | agentReviewPanelExpanded = not model.agentReviewPanelExpanded }, effects )
-
-        ToggleAgentReviewFinding findingId ->
-            ( { model | expandedFindings = toggleSet findingId model.expandedFindings }, effects )
-
-        ToggleAgentReviewObservations open ->
-            ( { model | showObservations = Just open }, effects )
-
-        ToggleAgentReviewFindingBody findingId ->
-            ( { model | expandedDescriptions = toggleSet findingId model.expandedDescriptions }, effects )
-
-        AgentReviewVerdictClicked params ->
-            -- A blank findingId can't disambiguate one finding from another, so
-            -- a verdict keyed on it would misattribute human triage feedback.
-            -- The card renders blank-id findings read-only, but guard here too.
-            if params.findingId == "" then
-                ( model, effects )
-
-            else
-                ( model
-                , effects
-                    ++ [ SubmitAgentReviewVerdict
-                            { reviewSnapshotId = params.reviewSnapshotId
-                            , repo = params.repo
-                            , commitSha = params.commitSha
-                            , findingId = params.findingId
-                            , verdict = params.verdict
-                            , notes = Dict.get params.findingId model.agentReviewNotes |> Maybe.withDefault ""
-                            , reviewer = params.reviewer
-                            }
-                       ]
-                )
-
-        AgentReviewNoteChanged findingId note ->
-            if findingId == "" then
-                ( model, effects )
-
-            else
-                ( { model | agentReviewNotes = Dict.insert findingId note model.agentReviewNotes }, effects )
-
         _ ->
             ( model, effects )
 
@@ -552,9 +442,11 @@ content session model =
                     ticket =
                         detail.ticket
 
-                    reviewCard =
-                        Build.AgentReview.view (reviewerName session) model
-
+                    -- The ticket page is a projection shell: it renders ticket
+                    -- content and the human queue/dispatch/disposition controls,
+                    -- and links out to the durable workflow run for all execution
+                    -- evidence (review, repository-change, cost). It never embeds
+                    -- that evidence itself.
                     top =
                         [ header model ticket
                         , provenanceLine ticket
@@ -569,8 +461,7 @@ content session model =
                     -- handleCallback), so a tick that changed nothing skips
                     -- them entirely.
                     rest =
-                        [ Html.Lazy.lazy2 budgetBar ticket model.runMetrics
-                        , editForm model ticket
+                        [ editForm model ticket
                         , Html.div [ id "ticket-hitl-slot" ] []
                         , tabsBar model
                         , Html.Lazy.lazy2 tabContent model.activeTab detail
@@ -578,22 +469,7 @@ content session model =
                         ]
                 in
                 Html.div []
-                    (if ticket.state == "needs_review" then
-                        -- U6: keep the evidence (digest + review card) beside the
-                        -- decision (the disposition bar) so a reviewer sees both.
-                        top
-                            ++ [ Html.Lazy.lazy2 reviewDigest ticket model.runMetrics
-                               , lifecycleBar model ticket
-                               , reviewCard
-                               ]
-                            ++ rest
-
-                     else
-                        top
-                            ++ [ lifecycleBar model ticket ]
-                            ++ rest
-                            ++ [ reviewCard ]
-                    )
+                    (top ++ [ lifecycleBar model ticket ] ++ rest)
 
 
 header : Model -> AgentTicket.Ticket -> Html Message
@@ -622,10 +498,11 @@ header model ticket =
         ]
 
 
-{-| Where this ticket's work lives: the repo, and — once a harvest branch
-exists — a direct link to the diff a reviewer needs. The compare link is the
-primary affordance for `needs_review`; it degrades to plain text when the
-repo field can't be resolved to a web URL.
+{-| Where this ticket's work lives: the repository selection, and the branch
+name for orientation. The reviewable diff is not computed here — it lives on
+the durable workflow run's repository-change output, linked from
+`durableEvidenceLine`. The repo degrades to plain text when the field can't be
+resolved to a web URL.
 -}
 provenanceLine : AgentTicket.Ticket -> Html Message
 provenanceLine ticket =
@@ -654,16 +531,7 @@ provenanceLine ticket =
                     []
 
                 else
-                    case AgentTicket.compareUrl ticket of
-                        Just url ->
-                            [ Html.text (" · branch " ++ ticket.branch ++ " — ")
-                            , Html.a
-                                (class "agent-ticket-compare-link" :: href url :: linkStyle)
-                                [ Html.text ("review diff vs " ++ ticket.targetBranch) ]
-                            ]
-
-                        Nothing ->
-                            [ Html.text (" · branch " ++ ticket.branch) ]
+                    [ Html.text (" · branch " ++ ticket.branch) ]
         in
         Html.div
             [ id "ticket-provenance"
@@ -956,145 +824,6 @@ transitionTargets state =
             []
 
 
-budgetBar : AgentTicket.Ticket -> List Concourse.Agent.RunMetric -> Html Message
-budgetBar ticket metrics =
-    let
-        spent =
-            metrics |> List.map .costUsd |> List.sum
-    in
-    case ticket.budgetUsd of
-        Just budget ->
-            let
-                pct =
-                    if budget <= 0 then
-                        0
-
-                    else
-                        min 100 (spent / budget * 100)
-
-                overBudget =
-                    spent > budget
-            in
-            Html.div [ style "margin" "10px 0" ]
-                [ Html.div
-                    [ style "display" "flex", style "justify-content" "space-between", style "font-size" "12px", style "color" "#9aa39b", style "margin-bottom" "4px" ]
-                    [ Html.text "budget"
-                    , Html.text ("$" ++ formatUsd spent ++ " / $" ++ formatUsd budget)
-                    ]
-                , Html.div
-                    [ style "height" "6px", style "background" "#3d3c3c", style "width" "100%" ]
-                    [ Html.div
-                        [ style "height" "6px"
-                        , style "width" (String.fromFloat pct ++ "%")
-                        , style "background"
-                            (if overBudget then
-                                "#f0a0a0"
-
-                             else
-                                "#7aa37a"
-                            )
-                        ]
-                        []
-                    ]
-                ]
-
-        Nothing ->
-            if spent > 0 then
-                Html.div
-                    [ style "font-size" "12px", style "color" "#9aa39b", style "margin" "10px 0" ]
-                    [ Html.text ("spent $" ++ formatUsd spent ++ " · no budget set") ]
-
-            else
-                Html.text ""
-
-
-{-| U6: a compact evidence digest shown beside the disposition bar for a
-`needs_review` ticket — the latest run's one-line summary, a direct diff link,
-and spend-vs-budget — so the reviewer decides with the facts in view.
--}
-reviewDigest : AgentTicket.Ticket -> List Concourse.Agent.RunMetric -> Html Message
-reviewDigest ticket metrics =
-    let
-        latestBuild =
-            metrics |> List.map .buildId |> List.maximum
-
-        -- Rows are created_at ASC, so the LAST non-empty summary is the final
-        -- step's verdict (harvest/judge), not the agent's own first words.
-        latestSummary =
-            case latestBuild of
-                Just b ->
-                    metrics
-                        |> List.filter (\m -> m.buildId == b)
-                        |> lastNonEmptySummary
-
-                Nothing ->
-                    ""
-
-        summaryRow =
-            if latestSummary == "" then
-                Html.text ""
-
-            else
-                Html.div
-                    [ style "color" "#d0d0d0", style "line-height" "1.4", style "margin-bottom" "6px" ]
-                    [ Html.span [ style "color" "#9aa39b" ] [ Html.text "latest run — " ]
-                    , Html.text latestSummary
-                    ]
-
-        factsRow =
-            Html.div
-                [ style "display" "flex", style "flex-wrap" "wrap", style "gap" "12px", style "align-items" "center", style "font-size" "12px" ]
-                (digestCompareLink ticket
-                    ++ [ Html.span [ style "color" "#9aa39b" ] [ Html.text (costBudgetText ticket metrics) ] ]
-                )
-    in
-    Html.div
-        [ id "ticket-review-digest"
-        , style "border" "1px solid #3d3c3c"
-        , style "background" "#1b201b"
-        , style "padding" "10px 12px"
-        , style "margin" "10px 0"
-        ]
-        [ summaryRow, factsRow ]
-
-
-{-| The diff link for the digest. Kept on its own class so the primary compare
-affordance in the provenance line stays the single `agent-ticket-compare-link`.
--}
-digestCompareLink : AgentTicket.Ticket -> List (Html Message)
-digestCompareLink ticket =
-    case AgentTicket.compareUrl ticket of
-        Just url ->
-            [ Html.a
-                [ class "agent-ticket-digest-compare-link"
-                , href url
-                , style "color" "#7aa37a"
-                , style "text-decoration" "none"
-                ]
-                [ Html.text ("review diff vs " ++ ticket.targetBranch) ]
-            ]
-
-        Nothing ->
-            []
-
-
-{-| Spend against the ticket's budget, always well-spaced (U19b): "$X spent /
-$Y budget", or just "$X spent" when no budget is set.
--}
-costBudgetText : AgentTicket.Ticket -> List Concourse.Agent.RunMetric -> String
-costBudgetText ticket metrics =
-    let
-        spent =
-            metrics |> List.map .costUsd |> List.sum
-    in
-    case ticket.budgetUsd of
-        Just budget ->
-            "$" ++ formatUsd spent ++ " spent / $" ++ formatUsd budget ++ " budget"
-
-        Nothing ->
-            "$" ++ formatUsd spent ++ " spent"
-
-
 editForm : Model -> AgentTicket.Ticket -> Html Message
 editForm model ticket =
     if not model.editing || isTerminal ticket.state then
@@ -1376,44 +1105,6 @@ parseBudget raw =
             String.toFloat trimmed
 
 
-toggleSet : comparable -> Set comparable -> Set comparable
-toggleSet x set =
-    if Set.member x set then
-        Set.remove x set
-
-    else
-        Set.insert x set
-
-
-{-| The last non-empty summary of a build's metric rows (rows arrive
-created\_at ASC): the final step's verdict, not the first step's self-report.
--}
-lastNonEmptySummary : List Concourse.Agent.RunMetric -> String
-lastNonEmptySummary rows =
-    rows
-        |> List.filterMap
-            (\m ->
-                if m.summary == "" then
-                    Nothing
-
-                else
-                    Just m.summary
-            )
-        |> List.reverse
-        |> List.head
-        |> Maybe.withDefault ""
-
-
-reviewerName : Session -> String
-reviewerName session =
-    case session.userState of
-        UserState.UserStateLoggedIn user ->
-            user.userName
-
-        _ ->
-            "anonymous"
-
-
 {-| Format an epoch-seconds timestamp as a compact absolute time in the
 viewer's zone, e.g. "Jul 18, 2026 14:30". Absolute (not relative) because the
 page has a zone but no live "now" clock to diff against.
@@ -1433,28 +1124,3 @@ formatTimestamp zone epochSeconds =
         ]
         zone
         (Time.millisToPosix (epochSeconds * 1000))
-
-
-formatUsd : Float -> String
-formatUsd amount =
-    let
-        cents =
-            round (amount * 100)
-
-        absCents =
-            abs cents
-
-        dollars =
-            absCents // 100
-
-        remainder =
-            modBy 100 absCents
-
-        fraction =
-            if remainder < 10 then
-                "0" ++ String.fromInt remainder
-
-            else
-                String.fromInt remainder
-    in
-    String.fromInt dollars ++ "." ++ fraction

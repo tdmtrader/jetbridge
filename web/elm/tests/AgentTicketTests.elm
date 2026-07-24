@@ -141,18 +141,4 @@ all =
             \_ ->
                 AT.repoWebUrl "jetbridge"
                     |> Expect.equal Nothing
-        , test "compareUrl builds the target...branch diff link" <|
-            \_ ->
-                Json.Decode.decodeString AT.decodeDetail detailJson
-                    |> Result.toMaybe
-                    |> Maybe.andThen (\d -> AT.compareUrl d.ticket)
-                    |> Expect.equal
-                        (Just "https://github.com/concourse/concourse/compare/main...agent/ticket-12")
-        , test "compareUrl is Nothing without a harvest branch" <|
-            \_ ->
-                Json.Decode.decodeString AT.decodeTicket
-                    """{ "id": 2, "repo": "tdmtrader/jetbridge", "target_branch": "main", "state": "queued" }"""
-                    |> Result.toMaybe
-                    |> Maybe.andThen AT.compareUrl
-                    |> Expect.equal Nothing
         ]
