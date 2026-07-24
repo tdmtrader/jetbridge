@@ -73,8 +73,8 @@ var _ = Describe("AgentRunChecker", func() {
 			Skip("pipeline_runs status vocabulary predates PARK-V2 migration 1773106032")
 		}
 
-		// The agent-run-<run-id> secret and per-run principal row must
-		// survive the wait for the continuation to re-attach.
+		// The agent-run-<run-id> model secret must survive the wait for
+		// the continuation to re-attach.
 		var parkedID int
 		err = dbConn.QueryRow(`
 			INSERT INTO pipeline_runs (template_pipeline_id, number, status)
