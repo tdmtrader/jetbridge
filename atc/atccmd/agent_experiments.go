@@ -277,9 +277,7 @@ func (cmd *RunCommand) agentExperimentComponents(
 	workflowSecrets, err := workflowrun.NewVaultedRunSecretPreparer(
 		db.NewAgentUserLookup(dbConn),
 		db.NewAgentUserCredentialsFactory(dbConn),
-		db.NewAgentPrincipalsFactory(dbConn),
 		cmd.agentRunSecrets(),
-		cmd.AgentRunTimeout,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("construct experiment secret preparation: %w", err)

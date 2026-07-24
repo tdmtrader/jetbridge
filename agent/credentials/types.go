@@ -58,11 +58,12 @@ type Store interface {
 
 // SecretAttacher is the ephemeral K8s secret helper (§8.2). Implemented once
 // here; dispatch and the gateway use it, nobody re-implements secret lifecycle.
+//
 //counterfeiter:generate . SecretAttacher
 type SecretAttacher interface {
 	// Attach creates secret agent-run-<runID> in the worker namespace with
 	// the §8.2 keys and returns its name. Idempotent per runID.
-	Attach(ctx context.Context, runID int, cred *Credential, principalToken string) (secretName string, err error)
+	Attach(ctx context.Context, runID int, cred *Credential) (secretName string, err error)
 	// Cleanup deletes the secret. Called by the pipeline-run lifecycle
 	// component on run completion (and best-effort by dispatch on error).
 	Cleanup(ctx context.Context, runID int) error

@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/concourse/concourse/agent/api/principals"
 	"github.com/concourse/concourse/agent/credentials"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc"
@@ -199,43 +198,20 @@ func (s *credentialBackendStub) SetJiraAccountID(userID int, accountID string) e
 	return s.setJiraID(userID, accountID)
 }
 
-type principalStoreStub struct {
-	create    func(principals.CreateSpec) (principals.Principal, string, error)
-	revoke    func(int) (bool, error)
-	list      func() ([]principals.Principal, error)
-	get       func(int) (principals.Principal, bool, error)
-	recordUse func(int, time.Time) error
-}
-
-func (s *principalStoreStub) Create(spec principals.CreateSpec) (principals.Principal, string, error) {
-	return s.create(spec)
-}
-
-func (s *principalStoreStub) Revoke(id int) (bool, error) { return s.revoke(id) }
-func (s *principalStoreStub) List() ([]principals.Principal, error) {
-	return s.list()
-}
-func (s *principalStoreStub) Get(id int) (principals.Principal, bool, error) {
-	return s.get(id)
-}
-func (s *principalStoreStub) RecordUse(id int, usedAt time.Time) error {
-	return s.recordUse(id, usedAt)
-}
-
 type secretAttacherStub struct {
-	attach  func(context.Context, int, *credentials.Credential, string) (string, error)
+	attach  func(context.Context, int, *credentials.Credential) (string, error)
 	cleanup func(context.Context, int) error
 }
 
-func (s *secretAttacherStub) Attach(ctx context.Context, runID int, credential *credentials.Credential, token string) (string, error) {
-	return s.attach(ctx, runID, credential, token)
+func (s *secretAttacherStub) Attach(ctx context.Context, runID int, credential *credentials.Credential) (string, error) {
+	return s.attach(ctx, runID, credential)
 }
 
 func (s *secretAttacherStub) Cleanup(ctx context.Context, runID int) error {
 	return s.cleanup(ctx, runID)
 }
 
-func TestVaultedRunSecretPreparerResolvesCreatorAndDefersMintUntilAllocatedRun(t *testing.T) {
+func TestVaultedRunSecretPreparerAttachesOnlyResolvedCredentialAfterAllocation(t *testing.T) {
 	ctx := context.Background()
 	now := time.Unix(1_784_800_000, 0)
 	credential := &credentials.Credential{
@@ -262,36 +238,12 @@ func TestVaultedRunSecretPreparerResolvesCreatorAndDefersMintUntilAllocatedRun(t
 		t.Fatal("usable creator credential must not fall back to platform")
 		return 0, "", false, nil
 	}
-	principalCalls := 0
-	principalStore := newPrincipalStoreStub()
-	principalStore.create = func(spec principals.CreateSpec) (principals.Principal, string, error) {
-		principalCalls++
-		order = append(order, "mint-principal")
-		wantExpiry := now.Add(6 * time.Hour).Unix()
-		wantScopes := []string{
-			principals.ScopeTicketsRead,
-			principals.ScopeTicketsWrite,
-			principals.ScopeMetricsWrite,
-			principals.ScopeCostsWrite,
-			principals.ScopeQuestionsAnswer,
-		}
-		if spec.Name != credentials.RunSecretName(313) || spec.TeamName != "main" ||
-			spec.CreatedBy != "workflow-run" || spec.ExpiresAt == nil || *spec.ExpiresAt != wantExpiry ||
-			!reflect.DeepEqual(spec.Scopes, wantScopes) {
-			t.Fatalf("principal spec = %+v", spec)
-		}
-		return principals.Principal{ID: 29, Name: spec.Name}, "cap1.29.secret", nil
-	}
-	principalStore.revoke = func(int) (bool, error) {
-		t.Fatal("successful attach must not revoke")
-		return false, nil
-	}
 	attacher := &secretAttacherStub{
-		attach: func(got context.Context, pipelineRunID int, gotCredential *credentials.Credential, token string) (string, error) {
+		attach: func(got context.Context, pipelineRunID int, gotCredential *credentials.Credential) (string, error) {
 			order = append(order, "attach-secret")
 			if got != ctx || pipelineRunID != 313 || gotCredential == credential ||
-				gotCredential.Token != "user-oauth-token" || token != "cap1.29.secret" {
-				t.Fatalf("Attach = (%v, %d, %+v, %q)", got, pipelineRunID, gotCredential, token)
+				gotCredential.Token != "user-oauth-token" {
+				t.Fatalf("Attach = (%v, %d, %+v)", got, pipelineRunID, gotCredential)
 			}
 			return credentials.RunSecretName(pipelineRunID), nil
 		},
@@ -300,7 +252,7 @@ func TestVaultedRunSecretPreparerResolvesCreatorAndDefersMintUntilAllocatedRun(t
 			return nil
 		},
 	}
-	preparer, err := NewVaultedRunSecretPreparer(users, vault, principalStore, attacher, 6*time.Hour)
+	preparer, err := NewVaultedRunSecretPreparer(users, vault, attacher)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -311,21 +263,15 @@ func TestVaultedRunSecretPreparerResolvesCreatorAndDefersMintUntilAllocatedRun(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if principalCalls != 0 {
-		t.Fatal("Prepare minted a principal before pipeline-run allocation")
-	}
 	credential.Token = "mutated-after-prepare"
 	if err := prepared.Attach(ctx, 313); err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"find-user", "resolve-user", "mint-principal", "attach-secret"}; !reflect.DeepEqual(order, want) {
+	if want := []string{"find-user", "resolve-user", "attach-secret"}; !reflect.DeepEqual(order, want) {
 		t.Fatalf("order = %#v, want %#v", order, want)
 	}
 	if err := prepared.Attach(ctx, 313); err != nil {
 		t.Fatalf("same-run replay: %v", err)
-	}
-	if principalCalls != 1 {
-		t.Fatalf("principal creates after replay = %d", principalCalls)
 	}
 	if err := prepared.Attach(ctx, 314); !errors.Is(err, ErrRunSecretAttachFailure) {
 		t.Fatalf("different run replay error = %v", err)
@@ -359,20 +305,15 @@ func TestVaultedRunSecretPreparerFallsBackFromExpiredCreatorToPlatformAPIKey(t *
 		}
 		return 99, credentials.PlatformUserName, true, nil
 	}
-	principalsStore := newPrincipalStoreStub()
-	principalsStore.create = func(spec principals.CreateSpec) (principals.Principal, string, error) {
-		return principals.Principal{ID: 41, Name: spec.Name}, "cap1.41.token", nil
-	}
-	principalsStore.revoke = func(int) (bool, error) { return true, nil }
 	var attached *credentials.Credential
 	attacher := &secretAttacherStub{
-		attach: func(_ context.Context, runID int, credential *credentials.Credential, _ string) (string, error) {
+		attach: func(_ context.Context, runID int, credential *credentials.Credential) (string, error) {
 			attached = credential
 			return credentials.RunSecretName(runID), nil
 		},
 		cleanup: func(context.Context, int) error { return nil },
 	}
-	preparer, err := NewVaultedRunSecretPreparer(users, vault, principalsStore, attacher, 0)
+	preparer, err := NewVaultedRunSecretPreparer(users, vault, attacher)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -394,7 +335,7 @@ func TestVaultedRunSecretPreparerFallsBackFromExpiredCreatorToPlatformAPIKey(t *
 	}
 }
 
-func TestVaultedRunSecretPreparerRevokesMintedPrincipalWhenAttachmentFails(t *testing.T) {
+func TestVaultedRunSecretPreparerCleansUpWhenAttachmentFails(t *testing.T) {
 	secret := errors.New("kubernetes bearer token")
 	users := &creatorUserResolverStub{find: func(string) (int, bool, error) { return 17, true, nil }}
 	vault := newCredentialBackendStub()
@@ -402,18 +343,9 @@ func TestVaultedRunSecretPreparerRevokesMintedPrincipalWhenAttachmentFails(t *te
 		return &credentials.Credential{UserID: userID, Kind: kind, Token: "oauth"}, true, nil
 	}
 	vault.platform = func(string) (int, string, bool, error) { return 0, "", false, nil }
-	var revoked []int
-	principalStore := newPrincipalStoreStub()
-	principalStore.create = func(spec principals.CreateSpec) (principals.Principal, string, error) {
-		return principals.Principal{ID: 51, Name: spec.Name}, "cap1.51.token", nil
-	}
-	principalStore.revoke = func(id int) (bool, error) {
-		revoked = append(revoked, id)
-		return true, errors.New("revocation backend details")
-	}
 	cleanupCalls := 0
 	attacher := &secretAttacherStub{
-		attach: func(context.Context, int, *credentials.Credential, string) (string, error) { return "", secret },
+		attach: func(context.Context, int, *credentials.Credential) (string, error) { return "", secret },
 		cleanup: func(_ context.Context, runID int) error {
 			cleanupCalls++
 			if runID != 521 {
@@ -422,7 +354,7 @@ func TestVaultedRunSecretPreparerRevokesMintedPrincipalWhenAttachmentFails(t *te
 			return nil
 		},
 	}
-	preparer, err := NewVaultedRunSecretPreparer(users, vault, principalStore, attacher, time.Hour)
+	preparer, err := NewVaultedRunSecretPreparer(users, vault, attacher)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -436,8 +368,8 @@ func TestVaultedRunSecretPreparerRevokesMintedPrincipalWhenAttachmentFails(t *te
 	if !errors.Is(err, ErrRunSecretAttachFailure) || err.Error() != ErrRunSecretAttachFailure.Error() || errors.Is(err, secret) {
 		t.Fatalf("Attach error = %v", err)
 	}
-	if !reflect.DeepEqual(revoked, []int{51}) || cleanupCalls != 1 {
-		t.Fatalf("rollback = revoked %#v cleanup %d", revoked, cleanupCalls)
+	if cleanupCalls != 1 {
+		t.Fatalf("cleanup calls = %d", cleanupCalls)
 	}
 }
 
@@ -446,9 +378,8 @@ func TestVaultedRunSecretPreparerBoundsUnavailableAndStoreFailures(t *testing.T)
 	vault := newCredentialBackendStub()
 	vault.resolve = func(int, string) (*credentials.Credential, bool, error) { return nil, false, nil }
 	vault.platform = func(string) (int, string, bool, error) { return 0, "", false, nil }
-	principalStore := newPrincipalStoreStub()
 	attacher := &secretAttacherStub{}
-	preparer, err := NewVaultedRunSecretPreparer(users, vault, principalStore, attacher, time.Hour)
+	preparer, err := NewVaultedRunSecretPreparer(users, vault, attacher)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -478,15 +409,8 @@ func TestVaultedRunSecretPreparerIsContextAwareAndRejectsInvalidAllocatedRunID(t
 		return &credentials.Credential{UserID: userID, Kind: kind, Token: "oauth"}, true, nil
 	}
 	vault.platform = func(string) (int, string, bool, error) { return 0, "", false, nil }
-	principalCalls := 0
-	principalStore := newPrincipalStoreStub()
-	principalStore.create = func(principals.CreateSpec) (principals.Principal, string, error) {
-		principalCalls++
-		return principals.Principal{ID: 1}, "token", nil
-	}
-	principalStore.revoke = func(int) (bool, error) { return true, nil }
 	attacher := &secretAttacherStub{}
-	preparer, err := NewVaultedRunSecretPreparer(users, vault, principalStore, attacher, time.Hour)
+	preparer, err := NewVaultedRunSecretPreparer(users, vault, attacher)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -508,9 +432,6 @@ func TestVaultedRunSecretPreparerIsContextAwareAndRejectsInvalidAllocatedRunID(t
 	if err := prepared.Attach(context.Background(), 0); !errors.Is(err, ErrRunSecretAttachFailure) {
 		t.Fatalf("invalid run ID error = %v", err)
 	}
-	if principalCalls != 0 {
-		t.Fatal("invalid allocated run ID minted a principal")
-	}
 }
 
 func newCredentialBackendStub() *credentialBackendStub {
@@ -522,13 +443,5 @@ func newCredentialBackendStub() *credentialBackendStub {
 		},
 		delete:    func(int, string) error { panic("unexpected Delete") },
 		setJiraID: func(int, string) error { panic("unexpected SetJiraAccountID") },
-	}
-}
-
-func newPrincipalStoreStub() *principalStoreStub {
-	return &principalStoreStub{
-		list:      func() ([]principals.Principal, error) { panic("unexpected List") },
-		get:       func(int) (principals.Principal, bool, error) { panic("unexpected Get") },
-		recordUse: func(int, time.Time) error { panic("unexpected RecordUse") },
 	}
 }

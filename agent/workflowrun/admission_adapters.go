@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/concourse/concourse/agent/api/principals"
 	"github.com/concourse/concourse/agent/credentials"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc"
@@ -143,8 +142,6 @@ var (
 	ErrRunSecretAttachFailure      = errors.New("workflow run: secret attachment failed")
 )
 
-const defaultRunPrincipalTimeout = 24 * time.Hour
-
 // CreatorUserResolver maps the authenticated creator copied into the durable
 // workflow run to Concourse's current users row. atc/db.AgentUserLookup
 // satisfies this interface.
@@ -160,41 +157,26 @@ type RunCredentialVault interface {
 	UserBySub(string) (int, string, bool, error)
 }
 
-// RunPrincipalStore is the mint/rollback surface for a per-run principal.
-// principals.Store satisfies it directly.
-type RunPrincipalStore interface {
-	Create(principals.CreateSpec) (principals.Principal, string, error)
-	Revoke(int) (bool, error)
-}
-
 // VaultedRunSecretPreparer resolves and clones a usable credential before any
-// execution allocation. It deliberately defers principal creation and secret
-// attachment until the pipeline-run transaction supplies its allocated ID.
+// execution allocation. It deliberately defers secret attachment until the
+// pipeline-run transaction supplies its allocated ID.
 type VaultedRunSecretPreparer struct {
-	users          CreatorUserResolver
-	vault          RunCredentialVault
-	principalStore RunPrincipalStore
-	attacher       credentials.SecretAttacher
-	runTimeout     time.Duration
-	now            func() time.Time
+	users    CreatorUserResolver
+	vault    RunCredentialVault
+	attacher credentials.SecretAttacher
+	now      func() time.Time
 }
 
 func NewVaultedRunSecretPreparer(
 	users CreatorUserResolver,
 	vault RunCredentialVault,
-	principalStore RunPrincipalStore,
 	attacher credentials.SecretAttacher,
-	runTimeout time.Duration,
 ) (*VaultedRunSecretPreparer, error) {
-	if nilInterface(users) || nilInterface(vault) || nilInterface(principalStore) || nilInterface(attacher) {
+	if nilInterface(users) || nilInterface(vault) || nilInterface(attacher) {
 		return nil, ErrRunSecretPreparationFailure
 	}
-	if runTimeout <= 0 {
-		runTimeout = defaultRunPrincipalTimeout
-	}
 	return &VaultedRunSecretPreparer{
-		users: users, vault: vault, principalStore: principalStore,
-		attacher: attacher, runTimeout: runTimeout, now: time.Now,
+		users: users, vault: vault, attacher: attacher, now: time.Now,
 	}, nil
 }
 
@@ -234,7 +216,7 @@ func (p *VaultedRunSecretPreparer) Prepare(
 			return nil, err
 		}
 		if usable {
-			return p.prepared(admission, run, credential), nil
+			return p.prepared(credential), nil
 		}
 	}
 
@@ -258,7 +240,7 @@ func (p *VaultedRunSecretPreparer) Prepare(
 	if !usable {
 		return nil, ErrRunCredentialUnavailable
 	}
-	return p.prepared(admission, run, credential), nil
+	return p.prepared(credential), nil
 }
 
 func (p *VaultedRunSecretPreparer) resolveOwner(
@@ -292,29 +274,19 @@ func (p *VaultedRunSecretPreparer) resolveOwner(
 	return nil, false, nil
 }
 
-func (p *VaultedRunSecretPreparer) prepared(
-	admission AdmissionContext,
-	run db.AgentWorkflowRun,
-	credential *credentials.Credential,
-) *vaultedPreparedRunSecret {
+func (p *VaultedRunSecretPreparer) prepared(credential *credentials.Credential) *vaultedPreparedRunSecret {
 	return &vaultedPreparedRunSecret{
-		credential: *credential, admission: admission, workflowRunID: run.ID,
-		principalStore: p.principalStore, attacher: p.attacher,
-		runTimeout: p.runTimeout, now: p.now,
+		credential: *credential, attacher: p.attacher, now: p.now,
 	}
 }
 
 type vaultedPreparedRunSecret struct {
-	mu             sync.Mutex
-	credential     credentials.Credential
-	admission      AdmissionContext
-	workflowRunID  snapshot.WorkflowRunID
-	principalStore RunPrincipalStore
-	attacher       credentials.SecretAttacher
-	runTimeout     time.Duration
-	now            func() time.Time
-	attached       bool
-	pipelineRunID  int
+	mu            sync.Mutex
+	credential    credentials.Credential
+	attacher      credentials.SecretAttacher
+	now           func() time.Time
+	attached      bool
+	pipelineRunID int
 }
 
 func (p *vaultedPreparedRunSecret) Attach(ctx context.Context, pipelineRunID int) error {
@@ -340,44 +312,11 @@ func (p *vaultedPreparedRunSecret) Attach(ctx context.Context, pipelineRunID int
 		return ErrRunCredentialUnavailable
 	}
 
-	expires := p.now().Add(p.runTimeout).Unix()
-	principal, token, err := p.principalStore.Create(principals.CreateSpec{
-		Name: credentials.RunSecretName(pipelineRunID),
-		Description: fmt.Sprintf(
-			"per-run principal for workflow run %s (pipeline run %d)",
-			p.workflowRunID.String(), pipelineRunID,
-		),
-		Scopes: []string{
-			principals.ScopeTicketsRead,
-			principals.ScopeTicketsWrite,
-			principals.ScopeMetricsWrite,
-			principals.ScopeCostsWrite,
-			principals.ScopeQuestionsAnswer,
-		},
-		TeamName:  p.admission.TeamName,
-		CreatedBy: "workflow-run",
-		ExpiresAt: &expires,
-	})
-	if err != nil {
-		return ErrRunSecretAttachFailure
-	}
-	if principal.ID <= 0 || token == "" {
-		if principal.ID > 0 {
-			_, _ = p.principalStore.Revoke(principal.ID)
-		}
-		return ErrRunSecretAttachFailure
-	}
-	if err := ctx.Err(); err != nil {
-		_, _ = p.principalStore.Revoke(principal.ID)
-		return err
-	}
-
-	name, attachErr := p.attacher.Attach(ctx, pipelineRunID, &p.credential, token)
+	name, attachErr := p.attacher.Attach(ctx, pipelineRunID, &p.credential)
 	if attachErr != nil || name != credentials.RunSecretName(pipelineRunID) {
 		if ctx.Err() == nil {
 			_ = p.attacher.Cleanup(ctx, pipelineRunID)
 		}
-		_, _ = p.principalStore.Revoke(principal.ID)
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
 		}

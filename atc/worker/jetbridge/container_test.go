@@ -3379,14 +3379,14 @@ var _ = Describe("Run with sidecar containers", func() {
 					Dir:       "/workdir",
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 					Sidecars: []atc.SidecarConfig{
-						{Name: "platform", Image: "mcp-platform:v1"},
+						{Name: "auxiliary", Image: "mcp-auxiliary:v1"},
 						{Name: "dev", Image: "mcp-dev:v1"},
 					},
 					SidecarEnv: map[string][]string{
-						"platform": {"ATC_EXTERNAL_URL=https://ci.example.com", "AGENT_TICKET_ID=7"},
+						"auxiliary": {"ATC_EXTERNAL_URL=https://ci.example.com", "AGENT_TICKET_ID=7"},
 					},
 					SidecarSecretEnv: map[string]map[string]vars.SecretRef{
-						"platform": {"AGENT_PRINCIPAL_TOKEN": {Name: "agent-run-42", Key: "principal-token"}},
+						"auxiliary": {"AUXILIARY_SECRET": {Name: "unrelated-secret", Key: "token"}},
 					},
 				},
 				delegate,
@@ -3396,23 +3396,23 @@ var _ = Describe("Run with sidecar containers", func() {
 
 		It("applies literals then env rows then secret refs to the named sidecar only", func() {
 			pod := createdPod()
-			platform := containerByName(pod, "platform")
-			Expect(platform.Env).To(ContainElements(
+			auxiliary := containerByName(pod, "auxiliary")
+			Expect(auxiliary.Env).To(ContainElements(
 				corev1.EnvVar{Name: "ATC_EXTERNAL_URL", Value: "https://ci.example.com"},
 				corev1.EnvVar{Name: "AGENT_TICKET_ID", Value: "7"},
 			))
-			Expect(platform.Env).To(ContainElement(corev1.EnvVar{
-				Name: "AGENT_PRINCIPAL_TOKEN",
+			Expect(auxiliary.Env).To(ContainElement(corev1.EnvVar{
+				Name: "AUXILIARY_SECRET",
 				ValueFrom: &corev1.EnvVarSource{
 					SecretKeyRef: &corev1.SecretKeySelector{
-						LocalObjectReference: corev1.LocalObjectReference{Name: "agent-run-42"},
-						Key:                  "principal-token",
+						LocalObjectReference: corev1.LocalObjectReference{Name: "unrelated-secret"},
+						Key:                  "token",
 					},
 				},
 			}))
 			// the secret ref never appears as a literal Value
-			for _, e := range platform.Env {
-				if e.Name == "AGENT_PRINCIPAL_TOKEN" {
+			for _, e := range auxiliary.Env {
+				if e.Name == "AUXILIARY_SECRET" {
 					Expect(e.Value).To(BeEmpty())
 				}
 			}
@@ -3420,7 +3420,7 @@ var _ = Describe("Run with sidecar containers", func() {
 			for _, c := range []corev1.Container{containerByName(pod, "dev"), containerByName(pod, "main")} {
 				for _, e := range c.Env {
 					Expect(e.Name).ToNot(Or(
-						Equal("ATC_EXTERNAL_URL"), Equal("AGENT_TICKET_ID"), Equal("AGENT_PRINCIPAL_TOKEN")))
+						Equal("ATC_EXTERNAL_URL"), Equal("AGENT_TICKET_ID"), Equal("AUXILIARY_SECRET")))
 				}
 			}
 		})

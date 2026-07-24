@@ -587,11 +587,10 @@ func dispatchDeps(t *testing.T) (dispatch.Deps, *tickets.MemoryStore, *fakeSaver
 	runs.CreateRunReturns(run, nil)
 
 	deps := dispatch.Deps{
-		Tickets:    store,
-		Workflows:  &fakeWorkflows{byName: map[string]*workflow.Definition{"smoke": smokeDefinition()}},
-		Templates:  saver,
-		Runs:       runs,
-		Principals: principals.NewMemoryStore(),
+		Tickets:   store,
+		Workflows: &fakeWorkflows{byName: map[string]*workflow.Definition{"smoke": smokeDefinition()}},
+		Templates: saver,
+		Runs:      runs,
 		Credentials: &fakeBackend{
 			platformUserID: 9,
 			creds: map[int]map[string]*credentials.Credential{
@@ -657,12 +656,9 @@ func TestDispatchOneHappyPath(t *testing.T) {
 	if att.AttachCallCount() != 1 {
 		t.Fatalf("Attach calls = %d, want 1", att.AttachCallCount())
 	}
-	_, runID, cred, principalToken := att.AttachArgsForCall(0)
+	_, runID, cred := att.AttachArgsForCall(0)
 	if runID != 555 || cred == nil || cred.Token != "platform-tok" {
 		t.Errorf("Attach args: runID=%d cred=%+v", runID, cred)
-	}
-	if principalToken == "" {
-		t.Error("a per-run principal token must be minted into the secret")
 	}
 }
 
@@ -851,7 +847,7 @@ func TestDispatchOneResolvesAndPersistsUserID(t *testing.T) {
 	if attacher.AttachCallCount() != 1 {
 		t.Fatal("expected one Attach")
 	}
-	_, _, cred, _ := attacher.AttachArgsForCall(0)
+	_, _, cred := attacher.AttachArgsForCall(0)
 	if cred.Token != "tdm-tok" {
 		t.Errorf("user-first credential must fund the run once user_id resolves, got token %q", cred.Token)
 	}
@@ -873,54 +869,23 @@ func TestDispatchOneUnknownUserFallsBackToPlatform(t *testing.T) {
 	}
 }
 
-func principalByName(t *testing.T, store *principals.MemoryStore, name string) principals.Principal {
-	t.Helper()
-	list, err := store.List()
-	if err != nil {
-		t.Fatalf("list principals: %v", err)
-	}
-	for _, p := range list {
-		if p.Name == name {
-			return p
-		}
-	}
-	t.Fatalf("no principal named %q in %d principals", name, len(list))
-	return principals.Principal{}
-}
-
-func TestAttachMintsContractShapedPrincipal(t *testing.T) {
+func TestAttachLeavesPrincipalStoreEmpty(t *testing.T) {
 	deps, store, _, _ := dispatchDeps(t)
-	deps.RunTimeout = 6 * time.Hour
 	pstore := principals.NewMemoryStore()
-	deps.Principals = pstore
 	id := queuedTicket(t, store, "smoke")
 
-	before := time.Now()
 	if _, err := dispatch.DispatchOne(context.Background(), deps, id, "loop"); err != nil {
 		t.Fatalf("DispatchOne: %v", err)
 	}
-	// Run id 555 comes from dispatchDeps' FakePipelineRun.
-	p := principalByName(t, pstore, "agent-run-555")
-	wantScopes := map[string]bool{
-		principals.ScopeTicketsRead: true, principals.ScopeTicketsWrite: true,
-		principals.ScopeMetricsWrite: true, principals.ScopeCostsWrite: true,
-		principals.ScopeQuestionsAnswer: true,
+	if deps.Secrets.(*credentialsfakes.FakeSecretAttacher).AttachCallCount() != 1 {
+		t.Fatal("dispatch must attach the selected credential")
 	}
-	if len(p.Scopes) != len(wantScopes) {
-		t.Errorf("want 5 scopes incl. questions:answer, got %v", p.Scopes)
+	principals, err := pstore.List()
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, s := range p.Scopes {
-		if !wantScopes[s] {
-			t.Errorf("unexpected scope %q", s)
-		}
-	}
-	if p.ExpiresAt == nil {
-		t.Fatal("expiry must be set")
-	}
-	lo := before.Add(6*time.Hour - time.Minute).Unix()
-	hi := before.Add(6*time.Hour + time.Minute).Unix()
-	if *p.ExpiresAt < lo || *p.ExpiresAt > hi {
-		t.Errorf("expiry must be now+RunTimeout (6h), got %d not in [%d,%d]", *p.ExpiresAt, lo, hi)
+	if len(principals) != 0 {
+		t.Fatalf("per-run principal creation is removed, got %v", principals)
 	}
 }
 
@@ -943,7 +908,7 @@ func TestResolveRunCredentialSkipsExpiredNamingOwner(t *testing.T) {
 	if _, err := dispatch.DispatchOne(context.Background(), deps, id, "loop"); err != nil {
 		t.Fatalf("expired user cred must fall back to platform: %v", err)
 	}
-	_, _, cred, _ := attacher.AttachArgsForCall(0)
+	_, _, cred := attacher.AttachArgsForCall(0)
 	if cred.Token != "platform-tok" {
 		t.Errorf("expected platform fallback past expired user cred, got %q", cred.Token)
 	}

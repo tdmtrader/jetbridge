@@ -3,7 +3,6 @@ package db
 import (
 	"database/sql"
 	"errors"
-	"strings"
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
@@ -14,7 +13,6 @@ import (
 //counterfeiter:generate . AgentPrincipalsFactory
 type AgentPrincipalsFactory interface {
 	principals.Store
-	RevokeByName(string) error
 }
 
 func NewAgentPrincipalsFactory(conn DbConn) AgentPrincipalsFactory {
@@ -134,22 +132,6 @@ func (f *agentPrincipalsFactory) Revoke(id int) (bool, error) {
 	}
 	n, err := res.RowsAffected()
 	return n > 0, err
-}
-
-// RevokeByName durably revokes every principal with the exact name. Per-run
-// principals use the immutable agent-run-<pipeline-run-id> name, so this is
-// safe to replay after an ATC restart and also closes any duplicate-mint crash
-// window without relying on an in-memory principal index.
-func (f *agentPrincipalsFactory) RevokeByName(name string) error {
-	if strings.TrimSpace(name) == "" || name != strings.TrimSpace(name) {
-		return errors.New("db: agent principal name is required")
-	}
-	_, err := psql.Update("agent_principals").
-		Set("revoked_at", sq.Expr("COALESCE(revoked_at, now())")).
-		Where(sq.Eq{"name": name}).
-		RunWith(f.conn).
-		Exec()
-	return err
 }
 
 func (f *agentPrincipalsFactory) RecordUse(id int, usedAt time.Time) error {

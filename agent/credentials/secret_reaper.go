@@ -21,14 +21,6 @@ type RunChecker interface {
 	RunActive(runID int) (bool, error)
 }
 
-// PrincipalRevoker durably revokes every per-run principal named
-// agent-run-<run-id> (dispatch addendum 2026-07-08). Production binds the
-// database-backed principal store; a revocation failure keeps the labeled
-// secret as a durable retry marker for the next sweep.
-type PrincipalRevoker interface {
-	RevokeByName(name string) error
-}
-
 // RunSecretReapGrace protects dispatch's CreateRun→Attach ordering from
 // sweep races: secrets younger than this are never considered.
 const RunSecretReapGrace = 5 * time.Minute
@@ -37,14 +29,12 @@ const RunSecretReapGrace = 5 * time.Minute
 // dispatch's in-process Cleanup on abort/error paths is the first line of
 // defense, this polling component is the guarantee. It lists worker-
 // namespace secrets by the concourse/agent-run label, deletes any whose
-// run is complete or absent, and best-effort revokes the matching per-run
-// principal in the same pass.
+// run is complete or absent.
 type RunSecretReaper struct {
 	logger    lager.Logger
 	client    kubernetes.Interface
 	namespace string
 	runs      RunChecker
-	revoker   PrincipalRevoker // may be nil (see PrincipalRevoker)
 }
 
 func NewRunSecretReaper(
@@ -52,14 +42,12 @@ func NewRunSecretReaper(
 	client kubernetes.Interface,
 	namespace string,
 	runs RunChecker,
-	revoker PrincipalRevoker,
 ) *RunSecretReaper {
 	return &RunSecretReaper{
 		logger:    logger,
 		client:    client,
 		namespace: namespace,
 		runs:      runs,
-		revoker:   revoker,
 	}
 }
 
@@ -100,21 +88,6 @@ func (r *RunSecretReaper) Run(ctx context.Context) error {
 		}
 		if active {
 			continue
-		}
-
-		if r.revoker != nil {
-			if err := r.revoker.RevokeByName(RunSecretName(runID)); err != nil {
-				// Keep the secret so the next sweep has a durable retry marker.
-				// Deleting it first would permanently lose the only lifecycle
-				// signal after a transient principal-store failure.
-				r.logger.Error("failed-to-revoke-run-principal", err, lager.Data{
-					"principal": RunSecretName(runID),
-				})
-				if sweepErr == nil {
-					sweepErr = err
-				}
-				continue
-			}
 		}
 
 		err = r.client.CoreV1().Secrets(r.namespace).Delete(ctx, secret.Name, metav1.DeleteOptions{})

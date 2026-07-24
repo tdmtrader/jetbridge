@@ -29,16 +29,6 @@ func (f *fakeRunChecker) RunActive(runID int) (bool, error) {
 	return f.active[runID], nil
 }
 
-type fakeRevoker struct {
-	names []string
-	err   error
-}
-
-func (f *fakeRevoker) RevokeByName(name string) error {
-	f.names = append(f.names, name)
-	return f.err
-}
-
 func seedRunSecret(t *testing.T, clientset *fake.Clientset, ns string, runID int, age time.Duration) {
 	t.Helper()
 	_, err := clientset.CoreV1().Secrets(ns).Create(context.Background(), &corev1.Secret{
@@ -51,7 +41,6 @@ func seedRunSecret(t *testing.T, clientset *fake.Clientset, ns string, runID int
 		Type: corev1.SecretTypeOpaque,
 		StringData: map[string]string{
 			credentials.SecretKeyAnthropicToken: "tok",
-			credentials.SecretKeyPrincipalToken: "cap1.1.x",
 		},
 	}, metav1.CreateOptions{})
 	if err != nil {
@@ -59,13 +48,12 @@ func seedRunSecret(t *testing.T, clientset *fake.Clientset, ns string, runID int
 	}
 }
 
-func TestReaperDeletesFinishedRunSecretAndRevokesPrincipal(t *testing.T) {
+func TestReaperDeletesFinishedModelOnlyRunSecret(t *testing.T) {
 	clientset := fake.NewSimpleClientset()
 	seedRunSecret(t, clientset, "ns", 42, time.Hour) // finished
 	seedRunSecret(t, clientset, "ns", 43, time.Hour) // still running
 	checker := &fakeRunChecker{active: map[int]bool{43: true}}
-	revoker := &fakeRevoker{}
-	reaper := credentials.NewRunSecretReaper(lagertest.NewTestLogger("reaper"), clientset, "ns", checker, revoker)
+	reaper := credentials.NewRunSecretReaper(lagertest.NewTestLogger("reaper"), clientset, "ns", checker)
 
 	if err := reaper.Run(context.Background()); err != nil {
 		t.Fatal(err)
@@ -77,9 +65,6 @@ func TestReaperDeletesFinishedRunSecretAndRevokesPrincipal(t *testing.T) {
 	if _, err := clientset.CoreV1().Secrets("ns").Get(context.Background(), "agent-run-43", metav1.GetOptions{}); err != nil {
 		t.Fatalf("active run's secret must survive: %v", err)
 	}
-	if len(revoker.names) != 1 || revoker.names[0] != "agent-run-42" {
-		t.Fatalf("revoked principals: %v", revoker.names)
-	}
 }
 
 func TestReaperDeletesSecretWhoseRunRowIsAbsent(t *testing.T) {
@@ -88,7 +73,7 @@ func TestReaperDeletesSecretWhoseRunRowIsAbsent(t *testing.T) {
 	clientset := fake.NewSimpleClientset()
 	seedRunSecret(t, clientset, "ns", 7, time.Hour)
 	reaper := credentials.NewRunSecretReaper(
-		lagertest.NewTestLogger("reaper"), clientset, "ns", &fakeRunChecker{}, nil)
+		lagertest.NewTestLogger("reaper"), clientset, "ns", &fakeRunChecker{})
 
 	if err := reaper.Run(context.Background()); err != nil {
 		t.Fatal(err)
@@ -104,7 +89,7 @@ func TestReaperGraceWindowProtectsFreshSecrets(t *testing.T) {
 	clientset := fake.NewSimpleClientset()
 	seedRunSecret(t, clientset, "ns", 9, 0)
 	checker := &fakeRunChecker{}
-	reaper := credentials.NewRunSecretReaper(lagertest.NewTestLogger("reaper"), clientset, "ns", checker, nil)
+	reaper := credentials.NewRunSecretReaper(lagertest.NewTestLogger("reaper"), clientset, "ns", checker)
 
 	if err := reaper.Run(context.Background()); err != nil {
 		t.Fatal(err)
@@ -127,7 +112,7 @@ func TestReaperIgnoresSecretsWithoutRunLabel(t *testing.T) {
 		},
 	})
 	checker := &fakeRunChecker{}
-	reaper := credentials.NewRunSecretReaper(lagertest.NewTestLogger("reaper"), clientset, "ns", checker, nil)
+	reaper := credentials.NewRunSecretReaper(lagertest.NewTestLogger("reaper"), clientset, "ns", checker)
 
 	if err := reaper.Run(context.Background()); err != nil {
 		t.Fatal(err)
@@ -137,47 +122,6 @@ func TestReaperIgnoresSecretsWithoutRunLabel(t *testing.T) {
 	}
 	if len(checker.calls) != 0 {
 		t.Fatalf("unlabeled secrets must not be checked: %v", checker.calls)
-	}
-}
-
-func TestReaperUsesSecretAsDurablePrincipalRevocationRetryMarker(t *testing.T) {
-	// nil revoker (wave-1 wiring, before agent-identity binds it)
-	clientset := fake.NewSimpleClientset()
-	seedRunSecret(t, clientset, "ns", 11, time.Hour)
-	reaper := credentials.NewRunSecretReaper(
-		lagertest.NewTestLogger("reaper"), clientset, "ns", &fakeRunChecker{}, nil)
-	if err := reaper.Run(context.Background()); err != nil {
-		t.Fatalf("nil revoker must be tolerated: %v", err)
-	}
-	if _, err := clientset.CoreV1().Secrets("ns").Get(context.Background(), "agent-run-11", metav1.GetOptions{}); !apierrors.IsNotFound(err) {
-		t.Fatalf("secret must be reaped with nil revoker, got err=%v", err)
-	}
-
-	// A failing revoker keeps the secret so the next pass can retry the exact
-	// deterministic principal name rather than losing the lifecycle marker.
-	seedRunSecret(t, clientset, "ns", 12, time.Hour)
-	revoker := &fakeRevoker{err: fmt.Errorf("store down")}
-	reaper = credentials.NewRunSecretReaper(
-		lagertest.NewTestLogger("reaper"), clientset, "ns", &fakeRunChecker{}, revoker)
-	if err := reaper.Run(context.Background()); err == nil {
-		t.Fatal("revoker error must surface so the component retries")
-	}
-	if _, err := clientset.CoreV1().Secrets("ns").Get(context.Background(), "agent-run-12", metav1.GetOptions{}); err != nil {
-		t.Fatalf("secret must remain as a revocation retry marker: %v", err)
-	}
-	if len(revoker.names) != 1 || revoker.names[0] != "agent-run-12" {
-		t.Fatalf("revocation must be attempted: %v", revoker.names)
-	}
-
-	revoker.err = nil
-	if err := reaper.Run(context.Background()); err != nil {
-		t.Fatalf("successful retry: %v", err)
-	}
-	if _, err := clientset.CoreV1().Secrets("ns").Get(context.Background(), "agent-run-12", metav1.GetOptions{}); !apierrors.IsNotFound(err) {
-		t.Fatalf("secret must be deleted after principal revocation, got err=%v", err)
-	}
-	if len(revoker.names) != 2 || revoker.names[1] != "agent-run-12" {
-		t.Fatalf("revocation retry must use the same exact principal: %v", revoker.names)
 	}
 }
 
@@ -191,7 +135,7 @@ func TestReaperSkipsUnparseableRunLabel(t *testing.T) {
 		},
 	})
 	reaper := credentials.NewRunSecretReaper(
-		lagertest.NewTestLogger("reaper"), clientset, "ns", &fakeRunChecker{}, nil)
+		lagertest.NewTestLogger("reaper"), clientset, "ns", &fakeRunChecker{})
 
 	if err := reaper.Run(context.Background()); err != nil {
 		t.Fatal(err)
@@ -206,7 +150,7 @@ func TestReaperContinuesSweepWhenCheckerErrors(t *testing.T) {
 	seedRunSecret(t, clientset, "ns", 21, time.Hour) // checker errors
 	seedRunSecret(t, clientset, "ns", 22, time.Hour) // reapable
 	checker := &fakeRunChecker{failOn: map[int]bool{21: true}}
-	reaper := credentials.NewRunSecretReaper(lagertest.NewTestLogger("reaper"), clientset, "ns", checker, nil)
+	reaper := credentials.NewRunSecretReaper(lagertest.NewTestLogger("reaper"), clientset, "ns", checker)
 
 	err := reaper.Run(context.Background())
 	if err == nil {

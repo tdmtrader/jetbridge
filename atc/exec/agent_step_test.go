@@ -1200,11 +1200,11 @@ var _ = Describe("AgentStep", func() {
 	})
 
 	Describe("runtime seams (F15/F21)", func() {
-		Context("with platform and gateway sidecars on a platform run", func() {
+		Context("with auxiliary and gateway sidecars on a workflow run", func() {
 			BeforeEach(func() {
 				agentPlan.Env["AGENT_PIPELINE_RUN_ID"] = "42"
 				agentPlan.Sidecars = []atc.SidecarSource{
-					{Config: &atc.SidecarConfig{Name: "platform", Image: "img:v1"}},
+					{Config: &atc.SidecarConfig{Name: "auxiliary", Image: "img:v1"}},
 					{Config: &atc.SidecarConfig{Name: "gateway", Image: "img:v2"}},
 				}
 				fakeChecker.StepSliceReturns(budget.Remaining{
@@ -1226,10 +1226,10 @@ var _ = Describe("AgentStep", func() {
 				Expect(gotPipelineID).To(Equal(stepMetadata.PipelineID))
 
 				_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
-				Expect(spec.SidecarEnv["platform"]).To(ConsistOf(
+				Expect(spec.SidecarEnv["auxiliary"]).To(ConsistOf(
 					"BUILD_ID=" + strconv.Itoa(stepMetadata.BuildID),
 				))
-				Expect(spec.SidecarEnv["platform"]).ToNot(ContainElement(HavePrefix("ATC_EXTERNAL_URL=")))
+				Expect(spec.SidecarEnv["auxiliary"]).ToNot(ContainElement(HavePrefix("ATC_EXTERNAL_URL=")))
 				Expect(spec.SidecarEnv["gateway"]).To(ContainElement(HavePrefix("AGENT_BUDGET_SLICE_USD=")))
 				Expect(spec.SidecarSecretEnv).To(BeEmpty())
 			})
@@ -1247,6 +1247,7 @@ var _ = Describe("AgentStep", func() {
 				_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
 				Expect(spec.SecretEnv).To(HaveKeyWithValue(
 					"CLAUDE_CODE_OAUTH_TOKEN", vars.SecretRef{Name: "agent-run-42", Key: "anthropic-token"}))
+				Expect(spec.SidecarSecretEnv).To(BeEmpty())
 				// secretKeyRef-only — the token must never appear as a literal.
 				Expect(spec.Env).ToNot(ContainElement(HavePrefix("CLAUDE_CODE_OAUTH_TOKEN=")))
 			})

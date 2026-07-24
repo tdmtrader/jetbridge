@@ -11,7 +11,6 @@ import (
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 
-	"github.com/concourse/concourse/agent/api/principals"
 	"github.com/concourse/concourse/agent/api/tickets"
 	"github.com/concourse/concourse/agent/budget"
 	"github.com/concourse/concourse/agent/credentials"
@@ -127,10 +126,9 @@ type Deps struct {
 
 	// The §8.2 run-credential leg: the exec mounts CLAUDE_CODE_OAUTH_TOKEN
 	// exclusively from the agent-run-<id> secret on ticketed runs, so
-	// dispatch must mint a per-run principal, resolve a vaulted Anthropic
-	// credential, and Attach the secret before the step's pod starts.
+	// dispatch resolves a vaulted Anthropic credential and attaches the
+	// secret before the step's pod starts.
 	// Secrets == nil skips the leg (unit/DB tests without a cluster).
-	Principals  principals.Store
 	Credentials credentials.Backend
 
 	// Users, when non-nil, resolves the ticket's triggering user id at
@@ -138,10 +136,6 @@ type Deps struct {
 	// (platform-funded, as before).
 	Users   UserLookup
 	Secrets credentials.SecretAttacher
-
-	// RunTimeout bounds the per-run principal token (§2.8.2: expires_at =
-	// now + --agent-run-timeout). Zero preserves the pre-flag 24h default.
-	RunTimeout time.Duration
 
 	// SecretLabels, when non-nil, adds the concourse/ticket label after a
 	// successful Attach. Best-effort: failures are logged, never fatal.
@@ -566,44 +560,14 @@ func resolveTicketPorts(
 // attachRunSecret creates the §8.2 agent-run-<runID> secret: a vaulted
 // Anthropic credential (the ticket's triggering user when resolvable,
 // else the §1.13 platform service user — the same funding path
-// PlatformSecretSyncer maintains) plus a freshly-minted per-run
-// principal token (name run-<id>, 24h expiry; consumed by the
-// platform/gateway sidecars once wave 3 lands, inert until then).
+// PlatformSecretSyncer maintains).
 func attachRunSecret(ctx context.Context, deps Deps, t *tickets.Ticket, runID int) error {
 	cred, err := resolveRunCredential(deps, t)
 	if err != nil {
 		return err
 	}
 
-	principalToken := ""
-	if deps.Principals != nil {
-		timeout := deps.RunTimeout
-		if timeout <= 0 {
-			timeout = 24 * time.Hour // pre-flag default, kept for zero-value Deps
-		}
-		expires := time.Now().Add(timeout).Unix()
-		_, token, err := deps.Principals.Create(principals.CreateSpec{
-			// §2.8.2 name — identical to the secret name so the reaper's
-			// RevokeByName(RunSecretName(runID)) adapter finds it.
-			Name:        credentials.RunSecretName(runID),
-			Description: fmt.Sprintf("per-run principal for pipeline run %d (ticket %d)", runID, t.ID),
-			Scopes: []string{
-				principals.ScopeTicketsRead,
-				principals.ScopeTicketsWrite,
-				principals.ScopeMetricsWrite,
-				principals.ScopeCostsWrite,
-				principals.ScopeQuestionsAnswer, // wave-3 platform-mcp; additive now (tokens are immutable)
-			},
-			CreatedBy: "dispatch",
-			ExpiresAt: &expires,
-		})
-		if err != nil {
-			return fmt.Errorf("mint run principal: %w", err)
-		}
-		principalToken = token
-	}
-
-	if _, err := deps.Secrets.Attach(ctx, runID, cred, principalToken); err != nil {
+	if _, err := deps.Secrets.Attach(ctx, runID, cred); err != nil {
 		return err
 	}
 

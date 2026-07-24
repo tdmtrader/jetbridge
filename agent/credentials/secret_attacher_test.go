@@ -14,7 +14,7 @@ func TestAttachCreatesLabeledSecret(t *testing.T) {
 	attacher := credentials.NewK8sSecretAttacher(clientset, "concourse-workers")
 
 	cred := &credentials.Credential{UserID: 7, UserName: "alice", Kind: "anthropic_oauth", Token: "sk-tok"}
-	name, err := attacher.Attach(context.Background(), 42, cred, "cap1.9.secret")
+	name, err := attacher.Attach(context.Background(), 42, cred)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -26,11 +26,8 @@ func TestAttachCreatesLabeledSecret(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if secret.StringData["anthropic-token"] != "sk-tok" {
-		t.Fatalf("anthropic-token: %q", secret.StringData["anthropic-token"])
-	}
-	if secret.StringData["principal-token"] != "cap1.9.secret" {
-		t.Fatalf("principal-token: %q", secret.StringData["principal-token"])
+	if len(secret.StringData) != 1 || secret.StringData["anthropic-token"] != "sk-tok" {
+		t.Fatalf("secret data: %v", secret.StringData)
 	}
 	if secret.Labels["concourse/agent-run"] != "42" {
 		t.Fatalf("labels: %v", secret.Labels)
@@ -42,11 +39,11 @@ func TestAttachIsIdempotentPerRun(t *testing.T) {
 	attacher := credentials.NewK8sSecretAttacher(clientset, "ns")
 	cred := &credentials.Credential{Token: "tok-1"}
 
-	if _, err := attacher.Attach(context.Background(), 7, cred, "p-1"); err != nil {
+	if _, err := attacher.Attach(context.Background(), 7, cred); err != nil {
 		t.Fatal(err)
 	}
 	cred.Token = "tok-2"
-	name, err := attacher.Attach(context.Background(), 7, cred, "p-2")
+	name, err := attacher.Attach(context.Background(), 7, cred)
 	if err != nil {
 		t.Fatalf("second attach must update, not fail: %v", err)
 	}
@@ -57,14 +54,17 @@ func TestAttachIsIdempotentPerRun(t *testing.T) {
 	if secret.StringData["anthropic-token"] != "tok-2" {
 		t.Fatalf("attach did not refresh token: %q", secret.StringData["anthropic-token"])
 	}
+	if len(secret.StringData) != 1 {
+		t.Fatalf("secret data: %v", secret.StringData)
+	}
 }
 
 func TestAttachValidatesInput(t *testing.T) {
 	attacher := credentials.NewK8sSecretAttacher(fake.NewSimpleClientset(), "ns")
-	if _, err := attacher.Attach(context.Background(), 1, nil, "p"); err == nil {
+	if _, err := attacher.Attach(context.Background(), 1, nil); err == nil {
 		t.Fatal("nil credential accepted")
 	}
-	if _, err := attacher.Attach(context.Background(), 1, &credentials.Credential{}, "p"); err == nil {
+	if _, err := attacher.Attach(context.Background(), 1, &credentials.Credential{}); err == nil {
 		t.Fatal("empty token accepted")
 	}
 }
@@ -74,7 +74,7 @@ func TestCleanupDeletesAndTolerangesMissing(t *testing.T) {
 	attacher := credentials.NewK8sSecretAttacher(clientset, "ns")
 	cred := &credentials.Credential{Token: "tok"}
 
-	if _, err := attacher.Attach(context.Background(), 5, cred, "p"); err != nil {
+	if _, err := attacher.Attach(context.Background(), 5, cred); err != nil {
 		t.Fatal(err)
 	}
 	if err := attacher.Cleanup(context.Background(), 5); err != nil {

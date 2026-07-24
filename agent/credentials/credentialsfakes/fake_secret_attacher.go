@@ -9,13 +9,12 @@ import (
 )
 
 type FakeSecretAttacher struct {
-	AttachStub        func(context.Context, int, *credentials.Credential, string) (string, error)
+	AttachStub        func(context.Context, int, *credentials.Credential) (string, error)
 	attachMutex       sync.RWMutex
 	attachArgsForCall []struct {
 		arg1 context.Context
 		arg2 int
 		arg3 *credentials.Credential
-		arg4 string
 	}
 	attachReturns struct {
 		result1 string
@@ -41,21 +40,20 @@ type FakeSecretAttacher struct {
 	invocationsMutex sync.RWMutex
 }
 
-func (fake *FakeSecretAttacher) Attach(arg1 context.Context, arg2 int, arg3 *credentials.Credential, arg4 string) (string, error) {
+func (fake *FakeSecretAttacher) Attach(arg1 context.Context, arg2 int, arg3 *credentials.Credential) (string, error) {
 	fake.attachMutex.Lock()
 	ret, specificReturn := fake.attachReturnsOnCall[len(fake.attachArgsForCall)]
 	fake.attachArgsForCall = append(fake.attachArgsForCall, struct {
 		arg1 context.Context
 		arg2 int
 		arg3 *credentials.Credential
-		arg4 string
-	}{arg1, arg2, arg3, arg4})
+	}{arg1, arg2, arg3})
 	stub := fake.AttachStub
 	fakeReturns := fake.attachReturns
-	fake.recordInvocation("Attach", []interface{}{arg1, arg2, arg3, arg4})
+	fake.recordInvocation("Attach", []interface{}{arg1, arg2, arg3})
 	fake.attachMutex.Unlock()
 	if stub != nil {
-		return stub(arg1, arg2, arg3, arg4)
+		return stub(arg1, arg2, arg3)
 	}
 	if specificReturn {
 		return ret.result1, ret.result2
@@ -69,17 +67,17 @@ func (fake *FakeSecretAttacher) AttachCallCount() int {
 	return len(fake.attachArgsForCall)
 }
 
-func (fake *FakeSecretAttacher) AttachCalls(stub func(context.Context, int, *credentials.Credential, string) (string, error)) {
+func (fake *FakeSecretAttacher) AttachCalls(stub func(context.Context, int, *credentials.Credential) (string, error)) {
 	fake.attachMutex.Lock()
 	defer fake.attachMutex.Unlock()
 	fake.AttachStub = stub
 }
 
-func (fake *FakeSecretAttacher) AttachArgsForCall(i int) (context.Context, int, *credentials.Credential, string) {
+func (fake *FakeSecretAttacher) AttachArgsForCall(i int) (context.Context, int, *credentials.Credential) {
 	fake.attachMutex.RLock()
 	defer fake.attachMutex.RUnlock()
 	argsForCall := fake.attachArgsForCall[i]
-	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3, argsForCall.arg4
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3
 }
 
 func (fake *FakeSecretAttacher) AttachReturns(result1 string, result2 error) {

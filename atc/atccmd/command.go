@@ -379,9 +379,8 @@ type RunCommand struct {
 
 	AgentDailyBudgetUSD float64 `long:"agent-daily-budget-usd" default:"0" description:"Global daily agent LLM spend cap in USD across all agent work, enforced by atomic workflow and experiment reservations and reported by the cost rollup API. 0 disables the cap."`
 
-	AgentDispatcherEnabled     bool          `long:"agent-dispatcher-enabled" description:"Run the autonomous agent-ticket dispatcher loop (Kubernetes runtime only). When off, tickets dispatch only via the manual route/fly."`
-	AgentDispatcherMaxAttempts int           `long:"agent-dispatcher-max-attempts" default:"3" description:"Max automatic re-dispatches per ticket (reconciler send_back requeues); past the cap the ticket errors. 0 = uncapped."`
-	AgentRunTimeout            time.Duration `long:"agent-run-timeout" default:"6h" description:"Per-run agent principal token expiry (contracts §2.8.2). The run secret itself is collected by the run-secret reaper on run completion."`
+	AgentDispatcherEnabled     bool `long:"agent-dispatcher-enabled" description:"Run the autonomous agent-ticket dispatcher loop (Kubernetes runtime only). When off, tickets dispatch only via the manual route/fly."`
+	AgentDispatcherMaxAttempts int  `long:"agent-dispatcher-max-attempts" default:"3" description:"Max automatic re-dispatches per ticket (reconciler send_back requeues); past the cap the ticket errors. 0 = uncapped."`
 
 	AgentOutcomeGitDir          string        `long:"agent-outcome-git-dir" description:"Directory for the outcome watcher's bare git mirrors. Empty disables live Git merge detection and the ticket diff API; database-only terminal outcome projection remains enabled."`
 	AgentOutcomeGitURLTemplate  string        `long:"agent-outcome-git-url-template" default:"https://github.com/{repo}.git" description:"Template for mirror clone URLs; {repo} is the ticket's repo slug."`
@@ -1585,7 +1584,6 @@ func (cmd *RunCommand) backendComponents(
 				k8sClientset,
 				cmd.Kubernetes.Namespace,
 				db.NewAgentRunChecker(dbConn),
-				db.NewAgentPrincipalsFactory(dbConn),
 			),
 			Interval: time.Minute,
 		})
@@ -1658,9 +1656,7 @@ func (cmd *RunCommand) backendComponents(
 				workflowSecrets, err := workflowrun.NewVaultedRunSecretPreparer(
 					db.NewAgentUserLookup(dbConn),
 					db.NewAgentUserCredentialsFactory(dbConn),
-					db.NewAgentPrincipalsFactory(dbConn),
 					cmd.agentRunSecrets(),
-					cmd.AgentRunTimeout,
 				)
 				if err != nil {
 					return nil, fmt.Errorf("construct ticket workflow secret preparation: %w", err)
@@ -1715,7 +1711,6 @@ func (cmd *RunCommand) backendComponents(
 				WorkItems:        ticketWorkItems,
 				WorkflowBinder:   ticketWorkflowBinder,
 				WorkflowCanceler: ticketWorkflowCanceler,
-				Principals:       db.NewAgentPrincipalsFactory(dbConn),
 				Credentials:      db.NewAgentUserCredentialsFactory(dbConn),
 				Secrets:          cmd.agentRunSecrets(), // the ONE shared lazy attacher (bound just above)
 				Users:            db.NewAgentUserLookup(dbConn),
@@ -1725,7 +1720,6 @@ func (cmd *RunCommand) backendComponents(
 					budget.Config{GlobalDailyCapUSD: cmd.AgentDailyBudgetUSD},
 				),
 				SecretLabels:   dispatch.NewK8sRunSecretLabeler(k8sClientset, cmd.Kubernetes.Namespace),
-				RunTimeout:     cmd.AgentRunTimeout,
 				ATCExternalURL: cmd.ExternalURL.String(),
 				RepoBaseURL:    cmd.AgentRepoBaseURL,
 			}
@@ -3441,9 +3435,7 @@ func (cmd *RunCommand) constructAPIHandler(
 	workflowSecrets, err := workflowrun.NewVaultedRunSecretPreparer(
 		db.NewAgentUserLookup(dbConn),
 		db.NewAgentUserCredentialsFactory(dbConn),
-		agentPrincipalsFactory,
 		cmd.agentRunSecrets(),
-		cmd.AgentRunTimeout,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("construct workflow-run secret preparation: %w", err)
@@ -3606,7 +3598,6 @@ func (cmd *RunCommand) constructAPIHandler(
 			WorkItems:        ticketWorkItems,
 			WorkflowBinder:   workflowBinder,
 			WorkflowCanceler: workflowCanceler,
-			Principals:       agentPrincipalsFactory,
 			Credentials:      db.NewAgentUserCredentialsFactory(dbConn),
 			Secrets:          cmd.agentRunSecrets(),
 			Users:            db.NewAgentUserLookup(dbConn),
@@ -3615,7 +3606,6 @@ func (cmd *RunCommand) constructAPIHandler(
 				dispatch.NewTicketBudgets(db.NewAgentTicketsFactory(dbConn), db.NewAgentWorkflowsFactory(dbConn)),
 				budget.Config{GlobalDailyCapUSD: cmd.AgentDailyBudgetUSD},
 			),
-			RunTimeout:     cmd.AgentRunTimeout,
 			ATCExternalURL: cmd.ExternalURL.String(),
 			RepoBaseURL:    cmd.AgentRepoBaseURL,
 		}, func(r *http.Request) string {
@@ -3693,14 +3683,14 @@ func (l *lazySecretAttacher) bind(inner credentials.SecretAttacher) {
 	l.inner = inner
 }
 
-func (l *lazySecretAttacher) Attach(ctx context.Context, runID int, cred *credentials.Credential, principalToken string) (string, error) {
+func (l *lazySecretAttacher) Attach(ctx context.Context, runID int, cred *credentials.Credential) (string, error) {
 	l.mu.RLock()
 	inner := l.inner
 	l.mu.RUnlock()
 	if inner == nil {
 		return "", errors.New("agent run secrets require the kubernetes runtime (no clientset configured)")
 	}
-	return inner.Attach(ctx, runID, cred, principalToken)
+	return inner.Attach(ctx, runID, cred)
 }
 
 func (l *lazySecretAttacher) Cleanup(ctx context.Context, runID int) error {

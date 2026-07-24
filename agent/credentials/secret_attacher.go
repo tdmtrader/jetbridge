@@ -15,7 +15,6 @@ import (
 // (dispatch, gateway, agent-step exec) reads.
 const (
 	SecretKeyAnthropicToken = "anthropic-token"
-	SecretKeyPrincipalToken = "principal-token"
 	RunLabel                = "concourse/agent-run"
 
 	// PlatformSecretName is the long-lived platform credential secret
@@ -38,7 +37,7 @@ func NewK8sSecretAttacher(client kubernetes.Interface, namespace string) *K8sSec
 	return &K8sSecretAttacher{client: client, namespace: namespace}
 }
 
-func (a *K8sSecretAttacher) Attach(ctx context.Context, runID int, cred *Credential, principalToken string) (string, error) {
+func (a *K8sSecretAttacher) Attach(ctx context.Context, runID int, cred *Credential) (string, error) {
 	if cred == nil || cred.Token == "" {
 		return "", fmt.Errorf("attach run %d: credential with a decrypted token is required", runID)
 	}
@@ -54,7 +53,6 @@ func (a *K8sSecretAttacher) Attach(ctx context.Context, runID int, cred *Credent
 		Type: corev1.SecretTypeOpaque,
 		StringData: map[string]string{
 			SecretKeyAnthropicToken: cred.Token,
-			SecretKeyPrincipalToken: principalToken,
 		},
 	}
 
