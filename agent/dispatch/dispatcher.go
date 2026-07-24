@@ -101,11 +101,6 @@ func (d *Dispatcher) dispatchQueued(ctx context.Context, logger lager.Logger) er
 		switch {
 		case err == nil:
 			logger.Info("dispatched", lager.Data{"ticket": t.ID, "run": res.RunID, "pipeline": res.PipelineName})
-			// Advisory only (ticket #46): vocabulary that has triggered
-			// CLI usage-policy false refusals. Never blocks a dispatch.
-			for _, warning := range res.Warnings {
-				logger.Info("spec-lint", lager.Data{"ticket": t.ID, "warning": warning})
-			}
 		case errors.Is(err, ErrBudgetExhausted):
 			// §2.7: over-cap stays QUEUED, never failed. Re-admitted next
 			// pass — headroom returns at local midnight or on a raised cap.
@@ -118,11 +113,11 @@ func (d *Dispatcher) dispatchQueued(ctx context.Context, logger lager.Logger) er
 		case errors.Is(err, ErrNotQueued), errors.Is(err, tickets.ErrStaleTransition):
 			// Raced: the manual route or another pass claimed it. Benign.
 			logger.Debug("ticket-claimed-elsewhere", lager.Data{"ticket": t.ID})
-		case errors.Is(err, ErrRenderRefused), errors.Is(err, ErrNoWorkflow), errors.Is(err, ErrWorkflowNotFound),
+		case errors.Is(err, ErrRenderRefused), errors.Is(err, ErrNoWorkflow),
+			errors.Is(err, ErrWorkflowNotFound), errors.Is(err, ErrWorkflowNotV3),
 			errors.Is(err, tickets.ErrDispatchConflict):
-			// Malformed for v0: loud, non-fatal, stays queued for a human
-			// to fix the workflow or transition the ticket away (see plan
-			// Risks R2 for the log-cadence tradeoff).
+			// Permanently refused: loud, non-fatal, and queued for a human to
+			// fix the workflow or transition the ticket away.
 			logger.Error("dispatch-refused", err, lager.Data{"ticket": t.ID})
 		default:
 			// Platform fault: DispatchOne is pre-transition retry-safe, so

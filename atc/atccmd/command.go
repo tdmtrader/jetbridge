@@ -373,8 +373,6 @@ type RunCommand struct {
 
 	AgentStepImage string `long:"agent-step-image" description:"Container image for the agent: step's main container (must contain the claude CLI and agent-runner). Schema-v3 workflow runs and resource snapshot captures require an exact @sha256 digest; agent steps error at runtime when unset."`
 
-	AgentRepoBaseURL string `long:"agent-repo-base-url" default:"https://github.com" description:"Base URL prefixed to a ticket's repo slug when dispatch renders the run's git resource (manual-dispatch slice; anonymous clones only until harvest's git-cred machinery lands)."`
-
 	AgentPlatformTokenSecret string `long:"agent-platform-token-secret" description:"Name of a K8s secret (key 'anthropic-token') providing the Anthropic token for pure-CI agent steps that have no per-run agent-run-<id> secret. The per-run secret always takes precedence. Unset means pure-CI agent steps have no token path."`
 
 	AgentDailyBudgetUSD float64 `long:"agent-daily-budget-usd" default:"0" description:"Global daily agent LLM spend cap in USD across all agent work, enforced by atomic workflow and experiment reservations and reported by the cost rollup API. 0 disables the cap."`
@@ -1704,24 +1702,16 @@ func (cmd *RunCommand) backendComponents(
 			dispatcherDeps := dispatch.Deps{
 				Tickets:          db.NewAgentTicketsFactory(dbConn),
 				Workflows:        db.NewAgentWorkflowsFactory(dbConn),
-				Templates:        dispatch.NewTeamTemplateSaver(teamFactory, atc.DefaultTeamName),
-				Runs:             dbPipelineRunFactory,
 				TeamID:           ticketDispatchTeamID,
 				TeamName:         ticketDispatchTeamName,
 				WorkItems:        ticketWorkItems,
 				WorkflowBinder:   ticketWorkflowBinder,
 				WorkflowCanceler: ticketWorkflowCanceler,
-				Credentials:      db.NewAgentUserCredentialsFactory(dbConn),
-				Secrets:          cmd.agentRunSecrets(), // the ONE shared lazy attacher (bound just above)
-				Users:            db.NewAgentUserLookup(dbConn),
 				Budget: budget.NewChecker(
 					db.NewAgentCostLedgerFactory(dbConn),
 					dispatch.NewTicketBudgets(db.NewAgentTicketsFactory(dbConn), db.NewAgentWorkflowsFactory(dbConn)),
 					budget.Config{GlobalDailyCapUSD: cmd.AgentDailyBudgetUSD},
 				),
-				SecretLabels:   dispatch.NewK8sRunSecretLabeler(k8sClientset, cmd.Kubernetes.Namespace),
-				ATCExternalURL: cmd.ExternalURL.String(),
-				RepoBaseURL:    cmd.AgentRepoBaseURL,
 			}
 			components = append(components, RunnableComponent{
 				Component: atc.Component{
@@ -1738,7 +1728,7 @@ func (cmd *RunCommand) backendComponents(
 			})
 
 			// Dispatcher-family housekeeping (ticket #42): archive the
-			// agent-ticket-<id> pipelines of terminally-disposed tickets
+			// legacy per-ticket pipelines of terminally-disposed tickets
 			// by NAME — catching what the run-linkage pass in
 			// atc/runlifecycle misses. Polling-only, same reliability rule
 			// as the dispatcher above: no NOTIFY trigger, notifications
@@ -3590,23 +3580,16 @@ func (cmd *RunCommand) constructAPIHandler(
 		dispatch.NewHTTPHandler(dispatch.Deps{
 			Tickets:          db.NewAgentTicketsFactory(dbConn),
 			Workflows:        db.NewAgentWorkflowsFactory(dbConn),
-			Templates:        dispatch.NewTeamTemplateSaver(teamFactory, atc.DefaultTeamName),
-			Runs:             dbPipelineRunFactory,
 			TeamID:           mainTeam.ID(),
 			TeamName:         mainTeam.Name(),
 			WorkItems:        ticketWorkItems,
 			WorkflowBinder:   workflowBinder,
 			WorkflowCanceler: workflowCanceler,
-			Credentials:      db.NewAgentUserCredentialsFactory(dbConn),
-			Secrets:          cmd.agentRunSecrets(),
-			Users:            db.NewAgentUserLookup(dbConn),
 			Budget: budget.NewChecker(
 				db.NewAgentCostLedgerFactory(dbConn),
 				dispatch.NewTicketBudgets(db.NewAgentTicketsFactory(dbConn), db.NewAgentWorkflowsFactory(dbConn)),
 				budget.Config{GlobalDailyCapUSD: cmd.AgentDailyBudgetUSD},
 			),
-			ATCExternalURL: cmd.ExternalURL.String(),
-			RepoBaseURL:    cmd.AgentRepoBaseURL,
 		}, func(r *http.Request) string {
 			return accessor.GetAccessor(r).Claims().UserName
 		}),

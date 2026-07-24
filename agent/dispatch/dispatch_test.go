@@ -3,48 +3,22 @@ package dispatch_test
 import (
 	"strings"
 	"sync"
-	"time"
 
 	"context"
 	"errors"
 	"fmt"
 	"testing"
 
-	"github.com/concourse/concourse/agent/api/principals"
 	"github.com/concourse/concourse/agent/api/tickets"
 	"github.com/concourse/concourse/agent/budget"
 	"github.com/concourse/concourse/agent/budget/budgetfakes"
-	"github.com/concourse/concourse/agent/credentials"
-	"github.com/concourse/concourse/agent/credentials/credentialsfakes"
 	"github.com/concourse/concourse/agent/dispatch"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/agent/workflowrun"
 	"github.com/concourse/concourse/agent/workitem"
-	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
-	"github.com/concourse/concourse/atc/db/dbfakes"
 )
-
-// fakeBackend implements the two Backend calls dispatch makes:
-// platform-user resolution and credential decryption.
-type fakeBackend struct {
-	credentials.Backend
-	platformUserID int
-	creds          map[int]map[string]*credentials.Credential
-}
-
-func (f *fakeBackend) UserBySub(sub string) (int, string, bool, error) {
-	if sub == credentials.PlatformUserSub {
-		return f.platformUserID, credentials.PlatformUserName, true, nil
-	}
-	return 0, "", false, nil
-}
-
-func (f *fakeBackend) Resolve(userID int, kind string) (*credentials.Credential, bool, error) {
-	cred, ok := f.creds[userID][kind]
-	return cred, ok, nil
-}
 
 type fakeWorkflows struct {
 	byName map[string]*workflow.Definition
@@ -63,50 +37,29 @@ func (f *fakeWorkflows) Get(name string, version int) (*workflow.Definition, boo
 	return d, true, nil
 }
 
-type fakeSaver struct {
-	savedName string
-	savedCfg  atc.Config
-	id        int
-	err       error
-}
-
-func (f *fakeSaver) SaveTemplate(name string, cfg atc.Config) (int, error) {
-	f.savedName, f.savedCfg = name, cfg
-	if f.err != nil {
-		return 0, f.err
-	}
-	return f.id, nil
-}
-
-func smokeDefinition() *workflow.Definition {
-	return &workflow.Definition{
-		Name: "smoke", Version: 3, SchemaVersion: 2, ContentHash: "abc123", Live: true,
-		Config: workflow.Config{
-			SchemaVersion: 2,
-			Name:          "smoke",
-			SpecDelivery:  "files",
-			Defaults:      workflow.Defaults{Model: "claude-sonnet-5", MaxTurns: 5},
-			Prompts:       map[string]string{"do": "Do it."},
-			Steps: []workflow.Step{
-				{Agent: "implement", Prompt: "do", Inputs: []string{"ticket"}, Outputs: []string{"workspace"}},
-			},
-		},
-	}
-}
-
 type fakeWorkItemCapturer struct {
 	mu     sync.Mutex
 	calls  int
+	store  tickets.Store
 	result workitem.CaptureResult
 	found  bool
 	err    error
 }
 
-func (fake *fakeWorkItemCapturer) CaptureRevision(context.Context, int) (workitem.CaptureResult, bool, error) {
+func (fake *fakeWorkItemCapturer) CaptureRevision(_ context.Context, ticketID int) (workitem.CaptureResult, bool, error) {
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
 	fake.calls++
-	return fake.result, fake.found, fake.err
+	result := fake.result
+	result.TicketID = ticketID
+	if fake.store != nil {
+		ticket, found, err := fake.store.Get(ticketID)
+		if err != nil || !found {
+			return workitem.CaptureResult{}, found, err
+		}
+		result.Revision = ticket.Revision
+	}
+	return result, fake.found, fake.err
 }
 
 func (fake *fakeWorkItemCapturer) CallCount() int {
@@ -175,6 +128,20 @@ type ticketStoreRaceBeforeRunning struct {
 type ticketStoreRecordFailure struct {
 	tickets.Store
 	err error
+}
+
+type countingTicketStore struct {
+	tickets.Store
+	reserveCalls int
+}
+
+func (store *countingTicketStore) ReserveDispatch(
+	ctx context.Context,
+	id int,
+	request tickets.DispatchReservationRequest,
+) (tickets.DispatchReservation, error) {
+	store.reserveCalls++
+	return store.Store.ReserveDispatch(ctx, id, request)
 }
 
 func (store ticketStoreRecordFailure) RecordDispatchRun(
@@ -273,13 +240,12 @@ plan:
 	}
 }
 
-func v3DispatchDeps(t *testing.T) (dispatch.Deps, *tickets.MemoryStore, *fakeSaver, *dbfakes.FakePipelineRunFactory, *fakeWorkItemCapturer, *fakeWorkflowBinder) {
+func v3DispatchDeps(t *testing.T) (dispatch.Deps, *tickets.MemoryStore, *fakeWorkItemCapturer, *fakeWorkflowBinder) {
 	t.Helper()
-	deps, store, saver, legacyRuns := dispatchDeps(t)
+	store := tickets.NewMemoryStore()
 	definition := v3Definition(t, "work-item", "repository")
-	deps.Workflows = &fakeWorkflows{byName: map[string]*workflow.Definition{"smoke": definition}}
-	workItems := &fakeWorkItemCapturer{found: true, result: workitem.CaptureResult{
-		TicketID: 1, Revision: 4, Snapshot: snapshot.Snapshot{ID: snapshot.SnapshotID(202), Type: snapshot.TypeRef("work-item/v1")},
+	workItems := &fakeWorkItemCapturer{store: store, found: true, result: workitem.CaptureResult{
+		Revision: 4, Snapshot: snapshot.Snapshot{ID: snapshot.SnapshotID(202), Type: snapshot.TypeRef("work-item/v1")},
 	}}
 	pipelineRunID := 909
 	binder := &fakeWorkflowBinder{result: workflowrun.BindResult{Created: true, Run: db.AgentWorkflowRun{
@@ -289,10 +255,12 @@ func v3DispatchDeps(t *testing.T) (dispatch.Deps, *tickets.MemoryStore, *fakeSav
 		ParameterizedConfigHash: strings.Repeat("b", 64), PipelineRunID: &pipelineRunID,
 		Status: db.AgentWorkflowRunStatusRunning,
 	}}}
-	deps.TeamID, deps.TeamName = 1, "main"
-	deps.WorkItems, deps.WorkflowBinder = workItems, binder
-	deps.WorkflowCanceler = &fakeWorkflowRunCanceler{found: true}
-	return deps, store, saver, legacyRuns, workItems, binder
+	deps := dispatch.Deps{
+		Tickets: store, Workflows: &fakeWorkflows{byName: map[string]*workflow.Definition{"smoke": definition}},
+		TeamID: 1, TeamName: "main", WorkItems: workItems, WorkflowBinder: binder,
+		WorkflowCanceler: &fakeWorkflowRunCanceler{found: true},
+	}
+	return deps, store, workItems, binder
 }
 
 func setRepositorySnapshot(t *testing.T, store *tickets.MemoryStore, ticketID int, id snapshot.SnapshotID) {
@@ -303,9 +271,8 @@ func setRepositorySnapshot(t *testing.T, store *tickets.MemoryStore, ticketID in
 }
 
 func TestDispatchOneSchemaThreeBindsCapturedSnapshotsThroughGenericBinder(t *testing.T) {
-	deps, store, saver, legacyRuns, workItems, binder := v3DispatchDeps(t)
+	deps, store, workItems, binder := v3DispatchDeps(t)
 	id := queuedTicket(t, store, "smoke")
-	workItems.result.TicketID = id
 	setRepositorySnapshot(t, store, id, snapshot.SnapshotID(101))
 
 	result, err := dispatch.DispatchOne(context.Background(), deps, id, "admin")
@@ -314,12 +281,6 @@ func TestDispatchOneSchemaThreeBindsCapturedSnapshotsThroughGenericBinder(t *tes
 	}
 	if result.RunID != 909 || result.WorkflowRunID == nil || *result.WorkflowRunID != snapshot.WorkflowRunID(303) {
 		t.Fatalf("result = %+v", result)
-	}
-	if saver.savedName != "" || legacyRuns.CreateRunCallCount() != 0 {
-		t.Fatalf("v3 reached legacy persistence: saver=%q create-runs=%d", saver.savedName, legacyRuns.CreateRunCallCount())
-	}
-	if deps.Secrets.(*credentialsfakes.FakeSecretAttacher).AttachCallCount() != 0 {
-		t.Fatal("v3 secret attachment belongs to workflowrun.Binder, not the legacy ticket path")
 	}
 	if workItems.CallCount() != 1 {
 		t.Fatalf("work-item captures = %d, want 1", workItems.CallCount())
@@ -353,14 +314,13 @@ func TestDispatchOneSchemaThreeBindsCapturedSnapshotsThroughGenericBinder(t *tes
 }
 
 func TestDispatchOneSchemaThreeUsesExplicitPortMappingWithoutReservedNames(t *testing.T) {
-	deps, store, _, _, workItems, binder := v3DispatchDeps(t)
+	deps, store, _, binder := v3DispatchDeps(t)
 	definition := v3Definition(t, "request", "source")
 	deps.Workflows = &fakeWorkflows{byName: map[string]*workflow.Definition{"smoke": definition}}
 	deps.TicketPorts = staticPortResolver{mapping: dispatch.TicketPortMapping{WorkItem: "request", Repository: "source"}}
 	binder.result.Run.WorkflowDefinitionID = definition.ID
 	binder.result.Run.WorkflowVersion = definition.Version
 	id := queuedTicket(t, store, "smoke")
-	workItems.result.TicketID = id
 	setRepositorySnapshot(t, store, id, snapshot.SnapshotID(101))
 
 	if _, err := dispatch.DispatchOne(context.Background(), deps, id, "admin"); err != nil {
@@ -373,9 +333,8 @@ func TestDispatchOneSchemaThreeUsesExplicitPortMappingWithoutReservedNames(t *te
 }
 
 func TestDispatchOneSchemaThreeReservesAndDefersUntilRepositorySnapshotSelected(t *testing.T) {
-	deps, store, _, _, workItems, binder := v3DispatchDeps(t)
+	deps, store, workItems, binder := v3DispatchDeps(t)
 	id := queuedTicket(t, store, "smoke")
-	workItems.result.TicketID = id
 
 	_, err := dispatch.DispatchOne(context.Background(), deps, id, "admin")
 	if !errors.Is(err, dispatch.ErrInputsPending) {
@@ -405,9 +364,8 @@ func TestDispatchOneSchemaThreeReservesAndDefersUntilRepositorySnapshotSelected(
 }
 
 func TestDispatchOneSchemaThreeConcurrentCallsConvergeOnOneReservation(t *testing.T) {
-	deps, store, _, _, workItems, binder := v3DispatchDeps(t)
+	deps, store, _, binder := v3DispatchDeps(t)
 	id := queuedTicket(t, store, "smoke")
-	workItems.result.TicketID = id
 	setRepositorySnapshot(t, store, id, snapshot.SnapshotID(101))
 
 	const callers = 12
@@ -446,9 +404,8 @@ func TestDispatchOneSchemaThreeConcurrentCallsConvergeOnOneReservation(t *testin
 }
 
 func TestDispatchOneSchemaThreeCancelsRunWhenTicketLosesReservationBeforeLink(t *testing.T) {
-	deps, store, _, _, workItems, _ := v3DispatchDeps(t)
+	deps, store, _, _ := v3DispatchDeps(t)
 	id := queuedTicket(t, store, "smoke")
-	workItems.result.TicketID = id
 	setRepositorySnapshot(t, store, id, snapshot.SnapshotID(101))
 	canceler := &fakeWorkflowRunCanceler{found: true}
 	deps.WorkflowCanceler = canceler
@@ -465,9 +422,8 @@ func TestDispatchOneSchemaThreeCancelsRunWhenTicketLosesReservationBeforeLink(t 
 }
 
 func TestDispatchOneSchemaThreeCancelsLinkedRunWhenTicketIsUnqueuedBeforeRunning(t *testing.T) {
-	deps, store, _, _, workItems, _ := v3DispatchDeps(t)
+	deps, store, _, _ := v3DispatchDeps(t)
 	id := queuedTicket(t, store, "smoke")
-	workItems.result.TicketID = id
 	setRepositorySnapshot(t, store, id, snapshot.SnapshotID(101))
 	canceler := &fakeWorkflowRunCanceler{found: true}
 	deps.WorkflowCanceler = canceler
@@ -484,9 +440,8 @@ func TestDispatchOneSchemaThreeCancelsLinkedRunWhenTicketIsUnqueuedBeforeRunning
 }
 
 func TestDispatchOneSchemaThreeKeepsOwnedRunRetryableWhenRunLinkWriteFails(t *testing.T) {
-	deps, store, _, _, workItems, _ := v3DispatchDeps(t)
+	deps, store, _, _ := v3DispatchDeps(t)
 	id := queuedTicket(t, store, "smoke")
-	workItems.result.TicketID = id
 	setRepositorySnapshot(t, store, id, snapshot.SnapshotID(101))
 	canceler := &fakeWorkflowRunCanceler{found: true}
 	deps.WorkflowCanceler = canceler
@@ -507,9 +462,8 @@ func TestDispatchOneSchemaThreeKeepsOwnedRunRetryableWhenRunLinkWriteFails(t *te
 }
 
 func TestDispatchOneSchemaThreeKeepsCapturedInputAcrossLaterTicketEdits(t *testing.T) {
-	deps, store, _, _, workItems, binder := v3DispatchDeps(t)
+	deps, store, workItems, binder := v3DispatchDeps(t)
 	id := queuedTicket(t, store, "smoke")
-	workItems.result.TicketID = id
 	setRepositorySnapshot(t, store, id, snapshot.SnapshotID(101))
 	if _, err := dispatch.DispatchOne(context.Background(), deps, id, "admin"); err != nil {
 		t.Fatalf("first dispatch: %v", err)
@@ -533,9 +487,8 @@ func TestDispatchOneSchemaThreeKeepsCapturedInputAcrossLaterTicketEdits(t *testi
 }
 
 func TestDispatchOneSchemaThreeMapsGenericBudgetDenialToRetryableTicketDeferral(t *testing.T) {
-	deps, store, _, _, workItems, binder := v3DispatchDeps(t)
+	deps, store, _, binder := v3DispatchDeps(t)
 	id := queuedTicket(t, store, "smoke")
-	workItems.result.TicketID = id
 	setRepositorySnapshot(t, store, id, snapshot.SnapshotID(101))
 	binder.err = workflowrun.ErrBudgetDenied
 
@@ -550,9 +503,8 @@ func TestDispatchOneSchemaThreeMapsGenericBudgetDenialToRetryableTicketDeferral(
 }
 
 func TestDispatchOneSchemaThreeClassifiesRejectedSnapshotBindingAsClientInput(t *testing.T) {
-	deps, store, _, _, workItems, binder := v3DispatchDeps(t)
+	deps, store, _, binder := v3DispatchDeps(t)
 	id := queuedTicket(t, store, "smoke")
-	workItems.result.TicketID = id
 	setRepositorySnapshot(t, store, id, snapshot.SnapshotID(101))
 	binder.err = workflowrun.ErrSnapshotTypeMismatch
 
@@ -566,42 +518,37 @@ func TestDispatchOneSchemaThreeClassifiesRejectedSnapshotBindingAsClientInput(t 
 	}
 }
 
-func TestDispatchOneAcceptsSchemaOneOnLegacyPath(t *testing.T) {
-	deps, store, _, _ := dispatchDeps(t)
+func TestDispatchOneRejectsNonV3BeforeSideEffects(t *testing.T) {
+	deps, store, workItems, binder := v3DispatchDeps(t)
 	definition := deps.Workflows.(*fakeWorkflows).byName["smoke"]
-	definition.SchemaVersion = 1
-	definition.Config.SchemaVersion = 1
+	definition.SchemaVersion = 2
+	countingStore := &countingTicketStore{Store: store}
+	deps.Tickets = countingStore
 	id := queuedTicket(t, store, "smoke")
-	if _, err := dispatch.DispatchOne(context.Background(), deps, id, "admin"); err != nil {
-		t.Fatalf("schema-version-1 legacy dispatch: %v", err)
-	}
-}
 
-func dispatchDeps(t *testing.T) (dispatch.Deps, *tickets.MemoryStore, *fakeSaver, *dbfakes.FakePipelineRunFactory) {
-	t.Helper()
-	store := tickets.NewMemoryStore()
-	saver := &fakeSaver{id: 77}
-	runs := new(dbfakes.FakePipelineRunFactory)
-	run := new(dbfakes.FakePipelineRun)
-	run.IDReturns(555)
-	runs.CreateRunReturns(run, nil)
-
-	deps := dispatch.Deps{
-		Tickets:   store,
-		Workflows: &fakeWorkflows{byName: map[string]*workflow.Definition{"smoke": smokeDefinition()}},
-		Templates: saver,
-		Runs:      runs,
-		Credentials: &fakeBackend{
-			platformUserID: 9,
-			creds: map[int]map[string]*credentials.Credential{
-				9: {credentials.KindAnthropicOAuth: {Kind: credentials.KindAnthropicOAuth, Token: "platform-tok"}},
-			},
-		},
-		Secrets:        new(credentialsfakes.FakeSecretAttacher),
-		ATCExternalURL: "http://concourse.home",
-		RepoBaseURL:    "https://github.com",
+	_, err := dispatch.DispatchOne(context.Background(), deps, id, "admin")
+	if !errors.Is(err, dispatch.ErrWorkflowNotV3) {
+		t.Errorf("DispatchOne error = %v, want ErrWorkflowNotV3", err)
 	}
-	return deps, store, saver, runs
+	if countingStore.reserveCalls != 0 {
+		t.Errorf("ReserveDispatch calls = %d, want 0", countingStore.reserveCalls)
+	}
+	if workItems.CallCount() != 0 {
+		t.Errorf("CaptureRevision calls = %d, want 0", workItems.CallCount())
+	}
+	if _, calls := binder.Calls(); len(calls) != 0 {
+		t.Errorf("BindAndCreate calls = %d, want 0", len(calls))
+	}
+	got, found, getErr := store.Get(id)
+	if getErr != nil || !found {
+		t.Fatalf("read ticket after rejection: found=%v err=%v", found, getErr)
+	}
+	if got.WorkflowVersion != nil || got.WorkflowDefinitionID != nil ||
+		got.WorkItemSnapshotID != nil || got.RepositorySnapshotID != nil ||
+		got.WorkflowRunID != nil || got.PipelineRunID != nil ||
+		got.DispatchReservationKey != "" {
+		t.Errorf("non-v3 rejection linked dispatch state: %+v", got)
+	}
 }
 
 func queuedTicket(t *testing.T, store *tickets.MemoryStore, workflowName string) int {
@@ -620,98 +567,32 @@ func queuedTicket(t *testing.T, store *tickets.MemoryStore, workflowName string)
 	return id
 }
 
-func TestDispatchOneHappyPath(t *testing.T) {
-	deps, store, saver, runs := dispatchDeps(t)
-	id := queuedTicket(t, store, "smoke")
-
-	res, err := dispatch.DispatchOne(context.Background(), deps, id, "admin")
-	if err != nil {
-		t.Fatalf("DispatchOne: %v", err)
-	}
-	if res.RunID != 555 || res.PipelineName != fmt.Sprintf("agent-ticket-%d", id) {
-		t.Errorf("result = %+v", res)
-	}
-
-	if saver.savedName != fmt.Sprintf("agent-ticket-%d", id) || !saver.savedCfg.Template {
-		t.Errorf("template save wrong: name=%q template=%v", saver.savedName, saver.savedCfg.Template)
-	}
-
-	templateID, params, createdBy := runs.CreateRunArgsForCall(0)
-	if templateID != 77 || params != nil || createdBy != "admin" {
-		t.Errorf("CreateRun args = %d %v %q", templateID, params, createdBy)
-	}
-
-	got, _, _ := store.Get(id)
-	if got.State != tickets.StateRunning || got.PipelineRunID == nil || *got.PipelineRunID != 555 {
-		t.Errorf("ticket after dispatch = %+v", got)
-	}
-	if got.WorkflowVersion == nil || *got.WorkflowVersion != 3 {
-		t.Errorf("live workflow version must be frozen onto the ticket at dispatch, got %+v", got.WorkflowVersion)
-	}
-
-	// §8.2: the run secret is the ONLY token path into a ticketed agent
-	// pod — dispatch must attach agent-run-<id> before the step's pod
-	// can start (live finding: CreateContainerConfigError without it).
-	att := deps.Secrets.(*credentialsfakes.FakeSecretAttacher)
-	if att.AttachCallCount() != 1 {
-		t.Fatalf("Attach calls = %d, want 1", att.AttachCallCount())
-	}
-	_, runID, cred := att.AttachArgsForCall(0)
-	if runID != 555 || cred == nil || cred.Token != "platform-tok" {
-		t.Errorf("Attach args: runID=%d cred=%+v", runID, cred)
-	}
-}
-
-func TestDispatchOneAttachFailureLeavesTicketQueued(t *testing.T) {
-	deps, store, _, _ := dispatchDeps(t)
-	id := queuedTicket(t, store, "smoke")
-	deps.Secrets.(*credentialsfakes.FakeSecretAttacher).AttachReturns("", errors.New("k8s down"))
-
-	if _, err := dispatch.DispatchOne(context.Background(), deps, id, "admin"); err == nil {
-		t.Fatal("attach failure must surface")
-	}
-	got, _, _ := store.Get(id)
-	if got.State != tickets.StateQueued {
-		t.Errorf("ticket must stay queued for a retry, state = %s", got.State)
-	}
-}
-
-func TestDispatchOneNoCredentialFailsBeforeTransition(t *testing.T) {
-	deps, store, _, _ := dispatchDeps(t)
-	id := queuedTicket(t, store, "smoke")
-	deps.Credentials.(*fakeBackend).creds = map[int]map[string]*credentials.Credential{}
-
-	_, err := dispatch.DispatchOne(context.Background(), deps, id, "admin")
-	if err == nil {
-		t.Fatal("missing vaulted credential must surface")
-	}
-	got, _, _ := store.Get(id)
-	if got.State != tickets.StateQueued {
-		t.Errorf("ticket must stay queued, state = %s", got.State)
-	}
-}
-
 func TestDispatchOnePinnedVersion(t *testing.T) {
-	deps, store, _, _ := dispatchDeps(t)
+	deps, store, _, _ := v3DispatchDeps(t)
 	id := queuedTicket(t, store, "smoke")
-	pin := 3
-	store.Update(id, tickets.Update{WorkflowVersion: &pin})
+	pin := 7
+	if err := store.Update(id, tickets.Update{WorkflowVersion: &pin}); err != nil {
+		t.Fatal(err)
+	}
+	setRepositorySnapshot(t, store, id, 101)
 
 	if _, err := dispatch.DispatchOne(context.Background(), deps, id, "admin"); err != nil {
 		t.Fatalf("pinned dispatch: %v", err)
 	}
 
-	deps2, store2, _, _ := dispatchDeps(t)
+	deps2, store2, _, _ := v3DispatchDeps(t)
 	id2 := queuedTicket(t, store2, "smoke")
 	missing := 9
-	store2.Update(id2, tickets.Update{WorkflowVersion: &missing})
+	if err := store2.Update(id2, tickets.Update{WorkflowVersion: &missing}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := dispatch.DispatchOne(context.Background(), deps2, id2, "admin"); !errors.Is(err, dispatch.ErrWorkflowNotFound) {
 		t.Errorf("missing pinned version: got %v, want ErrWorkflowNotFound", err)
 	}
 }
 
 func TestDispatchOneRefusals(t *testing.T) {
-	deps, store, _, _ := dispatchDeps(t)
+	deps, store, _, _ := v3DispatchDeps(t)
 
 	if _, err := dispatch.DispatchOne(context.Background(), deps, 999, "admin"); !errors.Is(err, tickets.ErrTicketNotFound) {
 		t.Errorf("missing ticket: got %v", err)
@@ -733,22 +614,8 @@ func TestDispatchOneRefusals(t *testing.T) {
 	}
 }
 
-func TestDispatchOneRunCreationFailureLeavesTicketQueued(t *testing.T) {
-	deps, store, _, runs := dispatchDeps(t)
-	id := queuedTicket(t, store, "smoke")
-	runs.CreateRunReturns(nil, errors.New("boom"))
-
-	if _, err := dispatch.DispatchOne(context.Background(), deps, id, "admin"); err == nil {
-		t.Fatal("run-creation failure must surface")
-	}
-	got, _, _ := store.Get(id)
-	if got.State != tickets.StateQueued {
-		t.Errorf("ticket must stay queued for a retry, state = %s", got.State)
-	}
-}
-
 func TestDispatchOneDefersWhenTicketBudgetExhausted(t *testing.T) {
-	deps, store, _, runs := dispatchDeps(t)
+	deps, store, workItems, binder := v3DispatchDeps(t)
 	checker := new(budgetfakes.FakeChecker)
 	checker.TicketRemainingReturns(budget.Remaining{LimitUSD: 5, SpentUSD: 6, RemainingUSD: -1, Exhausted: true}, nil)
 	deps.Budget = checker
@@ -758,8 +625,11 @@ func TestDispatchOneDefersWhenTicketBudgetExhausted(t *testing.T) {
 	if !errors.Is(err, dispatch.ErrBudgetExhausted) {
 		t.Fatalf("want ErrBudgetExhausted, got %v", err)
 	}
-	if runs.CreateRunCallCount() != 0 {
-		t.Error("over-cap admission must run BEFORE CreateRun")
+	if workItems.CallCount() != 0 {
+		t.Error("over-cap admission must run before CaptureRevision")
+	}
+	if _, calls := binder.Calls(); len(calls) != 0 {
+		t.Error("over-cap admission must run before BindAndCreate")
 	}
 	got, _, _ := store.Get(id)
 	if got.State != tickets.StateQueued {
@@ -768,7 +638,7 @@ func TestDispatchOneDefersWhenTicketBudgetExhausted(t *testing.T) {
 }
 
 func TestDispatchOneDefersWhenGlobalDailyCapExhausted(t *testing.T) {
-	deps, store, _, runs := dispatchDeps(t)
+	deps, store, workItems, binder := v3DispatchDeps(t)
 	checker := new(budgetfakes.FakeChecker)
 	checker.TicketRemainingReturns(budget.Remaining{}, nil) // uncapped ticket
 	checker.GlobalDailyRemainingReturns(budget.Remaining{LimitUSD: 50, SpentUSD: 50, Exhausted: true}, nil)
@@ -779,8 +649,11 @@ func TestDispatchOneDefersWhenGlobalDailyCapExhausted(t *testing.T) {
 	if !errors.Is(err, dispatch.ErrBudgetExhausted) {
 		t.Fatalf("want ErrBudgetExhausted, got %v", err)
 	}
-	if runs.CreateRunCallCount() != 0 {
-		t.Error("daily-cap admission must run BEFORE CreateRun")
+	if workItems.CallCount() != 0 {
+		t.Error("daily-cap admission must run before CaptureRevision")
+	}
+	if _, calls := binder.Calls(); len(calls) != 0 {
+		t.Error("daily-cap admission must run before BindAndCreate")
 	}
 	got, _, _ := store.Get(id)
 	if got.State != tickets.StateQueued {
@@ -789,7 +662,7 @@ func TestDispatchOneDefersWhenGlobalDailyCapExhausted(t *testing.T) {
 }
 
 func TestDispatchOneBudgetCheckerErrorIsPlatformFaultNotDeferral(t *testing.T) {
-	deps, store, _, _ := dispatchDeps(t)
+	deps, store, _, _ := v3DispatchDeps(t)
 	checker := new(budgetfakes.FakeChecker)
 	checker.TicketRemainingReturns(budget.Remaining{}, errors.New("ledger down"))
 	deps.Budget = checker
@@ -806,131 +679,10 @@ func TestDispatchOneBudgetCheckerErrorIsPlatformFaultNotDeferral(t *testing.T) {
 }
 
 func TestDispatchOneNilBudgetSkipsAdmission(t *testing.T) {
-	deps, store, _, _ := dispatchDeps(t) // deps.Budget nil
+	deps, store, _, _ := v3DispatchDeps(t) // deps.Budget nil
 	id := queuedTicket(t, store, "smoke")
+	setRepositorySnapshot(t, store, id, 101)
 	if _, err := dispatch.DispatchOne(context.Background(), deps, id, "admin"); err != nil {
 		t.Fatalf("nil Budget must preserve landed behavior: %v", err)
-	}
-}
-
-var _ dispatch.RunCreator = db.PipelineRunFactory(nil)
-
-type fakeUserLookup struct{ ids map[string]int }
-
-func (f fakeUserLookup) FindByUsername(name string) (int, bool, error) {
-	id, ok := f.ids[name]
-	return id, ok, nil
-}
-
-func TestDispatchOneResolvesAndPersistsUserID(t *testing.T) {
-	deps, store, _, _ := dispatchDeps(t)
-	deps.Users = fakeUserLookup{ids: map[string]int{"tdm": 42}}
-	// Give user 42 a vaulted credential so user-first resolution is provable.
-	deps.Credentials = &fakeBackend{
-		platformUserID: 9,
-		creds: map[int]map[string]*credentials.Credential{
-			9:  {credentials.KindAnthropicOAuth: {UserID: 9, Kind: credentials.KindAnthropicOAuth, Token: "platform-tok"}},
-			42: {credentials.KindAnthropicOAuth: {UserID: 42, UserName: "tdm", Kind: credentials.KindAnthropicOAuth, Token: "tdm-tok"}},
-		},
-	}
-	attacher := new(credentialsfakes.FakeSecretAttacher)
-	deps.Secrets = attacher
-	id := queuedTicket(t, store, "smoke") // UserName "tdm", UserID nil
-
-	if _, err := dispatch.DispatchOne(context.Background(), deps, id, "loop"); err != nil {
-		t.Fatalf("DispatchOne: %v", err)
-	}
-	got, _, _ := store.Get(id)
-	if got.UserID == nil || *got.UserID != 42 {
-		t.Fatalf("user_id must be resolved+persisted at dispatch, got %v", got.UserID)
-	}
-	if attacher.AttachCallCount() != 1 {
-		t.Fatal("expected one Attach")
-	}
-	_, _, cred := attacher.AttachArgsForCall(0)
-	if cred.Token != "tdm-tok" {
-		t.Errorf("user-first credential must fund the run once user_id resolves, got token %q", cred.Token)
-	}
-}
-
-func TestDispatchOneUnknownUserFallsBackToPlatform(t *testing.T) {
-	deps, store, _, _ := dispatchDeps(t)
-	deps.Users = fakeUserLookup{ids: map[string]int{}} // "tdm" not found
-	attacher := new(credentialsfakes.FakeSecretAttacher)
-	deps.Secrets = attacher
-	id := queuedTicket(t, store, "smoke")
-
-	if _, err := dispatch.DispatchOne(context.Background(), deps, id, "loop"); err != nil {
-		t.Fatalf("unknown user must not block dispatch (platform funds it): %v", err)
-	}
-	got, _, _ := store.Get(id)
-	if got.UserID != nil {
-		t.Errorf("unresolvable user leaves user_id NULL, got %v", got.UserID)
-	}
-}
-
-func TestAttachLeavesPrincipalStoreEmpty(t *testing.T) {
-	deps, store, _, _ := dispatchDeps(t)
-	pstore := principals.NewMemoryStore()
-	id := queuedTicket(t, store, "smoke")
-
-	if _, err := dispatch.DispatchOne(context.Background(), deps, id, "loop"); err != nil {
-		t.Fatalf("DispatchOne: %v", err)
-	}
-	if deps.Secrets.(*credentialsfakes.FakeSecretAttacher).AttachCallCount() != 1 {
-		t.Fatal("dispatch must attach the selected credential")
-	}
-	principals, err := pstore.List()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(principals) != 0 {
-		t.Fatalf("per-run principal creation is removed, got %v", principals)
-	}
-}
-
-func TestResolveRunCredentialSkipsExpiredNamingOwner(t *testing.T) {
-	deps, store, _, _ := dispatchDeps(t)
-	deps.Users = fakeUserLookup{ids: map[string]int{"tdm": 42}}
-	expired := time.Now().Add(-time.Hour).Unix()
-	deps.Credentials = &fakeBackend{
-		platformUserID: 9,
-		creds: map[int]map[string]*credentials.Credential{
-			// user cred expired; platform cred valid → platform funds the run
-			42: {credentials.KindAnthropicOAuth: {UserID: 42, UserName: "tdm", Kind: credentials.KindAnthropicOAuth, Token: "stale", ExpiresAt: expired}},
-			9:  {credentials.KindAnthropicOAuth: {UserID: 9, Kind: credentials.KindAnthropicOAuth, Token: "platform-tok"}},
-		},
-	}
-	attacher := new(credentialsfakes.FakeSecretAttacher)
-	deps.Secrets = attacher
-	id := queuedTicket(t, store, "smoke")
-
-	if _, err := dispatch.DispatchOne(context.Background(), deps, id, "loop"); err != nil {
-		t.Fatalf("expired user cred must fall back to platform: %v", err)
-	}
-	_, _, cred := attacher.AttachArgsForCall(0)
-	if cred.Token != "platform-tok" {
-		t.Errorf("expected platform fallback past expired user cred, got %q", cred.Token)
-	}
-}
-
-func TestResolveRunCredentialAllExpiredErrorsWithOwner(t *testing.T) {
-	deps, store, _, _ := dispatchDeps(t)
-	expired := time.Now().Add(-time.Hour).Unix()
-	deps.Credentials = &fakeBackend{
-		platformUserID: 9,
-		creds: map[int]map[string]*credentials.Credential{
-			9: {credentials.KindAnthropicOAuth: {UserID: 9, UserName: "platform", Kind: credentials.KindAnthropicOAuth, Token: "stale", ExpiresAt: expired}},
-		},
-	}
-	id := queuedTicket(t, store, "smoke")
-
-	_, err := dispatch.DispatchOne(context.Background(), deps, id, "loop")
-	if err == nil || !strings.Contains(err.Error(), "expired") || !strings.Contains(err.Error(), "platform") {
-		t.Fatalf("all-expired must error naming the owner, got %v", err)
-	}
-	got, _, _ := store.Get(id)
-	if got.State != tickets.StateQueued {
-		t.Errorf("credential failure is pre-transition: ticket stays queued, got %s", got.State)
 	}
 }

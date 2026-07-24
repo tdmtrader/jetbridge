@@ -14,13 +14,14 @@ import (
 
 func intp(i int) *int { return &i }
 
-// reconcileScaffold: a MemoryStore holding one RUNNING ticket pinned to
-// workflow smoke/3 (matching smokeDefinition) and dispatched as run 100.
+// reconcileScaffold holds one running ticket and only the dependency needed
+// by reconciliation.
 func reconcileScaffold(t *testing.T) (dispatch.Deps, *tickets.MemoryStore, int) {
 	t.Helper()
-	deps, store, _, _ := dispatchDeps(t)
+	store := tickets.NewMemoryStore()
+	deps := dispatch.Deps{Tickets: store}
 	id := queuedTicket(t, store, "smoke")
-	v := 3
+	v := 7
 	if err := store.Update(id, tickets.Update{WorkflowVersion: &v}); err != nil {
 		t.Fatal(err)
 	}

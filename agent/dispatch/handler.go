@@ -34,7 +34,8 @@ func NewHTTPHandler(deps Deps, userName func(*http.Request) string) http.Handler
 		case errors.Is(err, ErrInputsPending):
 			http.Error(w, "workflow inputs pending", http.StatusConflict)
 			return
-		case errors.Is(err, ErrNoWorkflow), errors.Is(err, ErrWorkflowNotFound), errors.Is(err, ErrRenderRefused):
+		case errors.Is(err, ErrNoWorkflow), errors.Is(err, ErrWorkflowNotFound),
+			errors.Is(err, ErrWorkflowNotV3), errors.Is(err, ErrRenderRefused):
 			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 			return
 		case errors.Is(err, ErrBudgetExhausted):
@@ -51,7 +52,6 @@ func NewHTTPHandler(deps Deps, userName func(*http.Request) string) http.Handler
 			RunID:         res.RunID,
 			PipelineName:  res.PipelineName,
 			WorkflowRunID: res.WorkflowRunID,
-			Warnings:      res.Warnings,
 		})
 	})
 }

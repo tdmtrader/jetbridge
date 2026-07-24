@@ -181,6 +181,37 @@ func TestBindAndCreateAdmitsFromServerDerivedIdentity(t *testing.T) {
 	}
 }
 
+func TestBindAndCreateTreatsNonV3DefinitionAsPlatformFailure(t *testing.T) {
+	definition := binderTestDefinition()
+	definition.SchemaVersion = 2
+	binder, err := NewBinder(
+		&resolverStub{live: func(context.Context, string) (workflow.Definition, bool, error) {
+			return definition, true, nil
+		}},
+		&rendererStub{},
+		&authorizerStub{},
+		&storeStub{find: func(context.Context, int, string) (db.AgentWorkflowRun, bool, error) {
+			return db.AgentWorkflowRun{}, false, nil
+		}},
+		&budgetStub{},
+		&saverStub{},
+		&creatorStub{},
+		&secretStub{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = binder.BindAndCreate(context.Background(), AdmissionContext{
+		TeamID: 7, TeamName: "research", CreatedBy: "alice", Origin: Origin{Kind: "manual"},
+	}, BindRequest{
+		WorkflowName: definition.Name, IdempotencyKey: "non-v3-definition",
+	})
+	if !errors.Is(err, ErrPlatformFailure) {
+		t.Fatalf("error = %v, want ErrPlatformFailure", err)
+	}
+}
+
 func TestBindAndCreateRequiresExperimentGateEvenForExistingIdempotencyKey(t *testing.T) {
 	definition := binderTestDefinition()
 	rendered := binderTestRendered(t, definition)

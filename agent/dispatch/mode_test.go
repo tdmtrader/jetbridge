@@ -114,8 +114,9 @@ func TestDispatcherModeGating(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.mode, func(t *testing.T) {
-			deps, store, _, _ := dispatchDeps(t)
+			deps, store, _, _ := v3DispatchDeps(t)
 			queuedID := queuedTicket(t, store, "smoke")
+			setRepositorySnapshot(t, store, queuedID, 101)
 			runningTicketWithRun(t, store, 900)
 
 			reader := &countingRunReader{}

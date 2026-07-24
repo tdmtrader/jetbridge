@@ -55,7 +55,6 @@ func (adapter *ExperimentBinderAdapter) BindAndCreate(
 			return experiment.BindResult{}, fmt.Errorf("%w: %v", experiment.ErrBindBudgetDenied, err)
 		case errors.Is(err, ErrInvalidRequest),
 			errors.Is(err, ErrDefinitionOrTargetNotFound),
-			errors.Is(err, ErrLegacyDefinition),
 			errors.Is(err, ErrSnapshotUnavailable),
 			errors.Is(err, ErrSnapshotTypeMismatch),
 			errors.Is(err, ErrIdempotencyConflict):

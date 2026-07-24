@@ -14,7 +14,6 @@ import (
 var (
 	ErrInvalidRequest             = errors.New("workflow run: invalid request")
 	ErrDefinitionOrTargetNotFound = errors.New("workflow run: definition or target not found")
-	ErrLegacyDefinition           = errors.New("workflow run: legacy definition is not admissible")
 	ErrSnapshotUnavailable        = errors.New("workflow run: snapshot unavailable or unauthorized")
 	ErrSnapshotTypeMismatch       = errors.New("workflow run: snapshot type mismatch")
 	ErrBudgetDenied               = errors.New("workflow run: budget denied")

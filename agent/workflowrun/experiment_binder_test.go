@@ -10,6 +10,7 @@ import (
 
 	"github.com/concourse/concourse/agent/experiment"
 	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/atc/db"
 )
 
@@ -79,6 +80,47 @@ func TestExperimentBinderPreservesFrozenTargetIdentity(t *testing.T) {
 		result.WorkflowName != "review-flow" || result.WorkflowVersion != version ||
 		result.FunctionID != functionID || result.TargetConfigHash != hash {
 		t.Fatalf("bind result = %+v", result)
+	}
+}
+
+func TestExperimentBinderPreservesNonV3PlatformFailureClassification(t *testing.T) {
+	definition := binderTestDefinition()
+	definition.SchemaVersion = 2
+	binder, err := NewBinder(
+		&resolverStub{live: func(context.Context, string) (workflow.Definition, bool, error) {
+			return definition, true, nil
+		}},
+		&rendererStub{},
+		&authorizerStub{},
+		&storeStub{},
+		&budgetStub{},
+		&saverStub{},
+		&creatorStub{},
+		&secretStub{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter, err := NewExperimentBinderAdapter(binder)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = adapter.BindAndCreate(context.Background(), experiment.AdmissionContext{
+		TeamID: 7, TeamName: "research", CreatedBy: "alice",
+		Origin: experiment.Origin{Kind: "experiment", Reference: "experiment:11:cell:13"},
+	}, experiment.BindRequest{
+		WorkflowName: definition.Name, DefinitionID: int64(definition.ID),
+		IdempotencyKey: "experiment:11:cell:13:candidate",
+		AdmissionGate: experiment.AdmissionGate{
+			ExperimentID: 11, CellID: 13, Phase: experiment.AdmissionCandidate,
+		},
+	})
+	if !errors.Is(err, ErrPlatformFailure) {
+		t.Fatalf("error = %v, want ErrPlatformFailure", err)
+	}
+	if errors.Is(err, experiment.ErrBindInvalidRequest) {
+		t.Fatalf("platform failure was reclassified as invalid request: %v", err)
 	}
 }
 

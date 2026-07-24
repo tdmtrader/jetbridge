@@ -15,7 +15,9 @@ import (
 	"github.com/concourse/concourse/agent/api/workflowruns"
 	"github.com/concourse/concourse/agent/pagination"
 	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/agent/workflowrun"
+	"github.com/concourse/concourse/agent/workflowrun/workflowrunfakes"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 )
@@ -467,7 +469,6 @@ func TestCreateMapsDomainErrorsWithoutDisclosingTheirDetails(t *testing.T) {
 	}{
 		{name: "invalid", err: workflowrun.ErrInvalidRequest, wantStatus: 400, wantCode: "invalid_request"},
 		{name: "not found", err: workflowrun.ErrDefinitionOrTargetNotFound, wantStatus: 404, wantCode: "not_found"},
-		{name: "legacy", err: workflowrun.ErrLegacyDefinition, wantStatus: 422, wantCode: "validation_failed"},
 		{name: "unavailable", err: workflowrun.ErrSnapshotUnavailable, wantStatus: 422, wantCode: "inputs_unavailable"},
 		{name: "type mismatch", err: workflowrun.ErrSnapshotTypeMismatch, wantStatus: 422, wantCode: "inputs_unavailable"},
 		{name: "budget", err: workflowrun.ErrBudgetDenied, wantStatus: 422, wantCode: "admission_denied"},
@@ -494,6 +495,85 @@ func TestCreateMapsDomainErrorsWithoutDisclosingTheirDetails(t *testing.T) {
 				t.Fatalf("private dependency error disclosed: %s", recorder.Body.String())
 			}
 		})
+	}
+}
+
+func TestCreateMapsNonV3DefinitionPlatformFailureToRedactedInternalError(t *testing.T) {
+	compiled, err := workflow.ParseCompiled([]byte(`schema_version: 3
+name: deploy
+signature_version: 1
+inputs:
+  - name: repo
+    type: repository/v1
+outputs:
+  - name: report
+    type: opaque/v1
+    from: report
+plan:
+  - agent: work
+    function_id: work
+    prompt: Do the work.
+    inputs: [repo]
+    outputs: [report]
+    input_types:
+      repo: {type: repository/v1}
+    output_types:
+      report: opaque/v1
+`))
+	if err != nil {
+		t.Fatalf("parse valid v3 definition: %v", err)
+	}
+	definition := workflow.Definition{
+		ID: 41, Name: "deploy", Version: 7, SchemaVersion: 2, SignatureVersion: 1,
+		ContentHash: strings.Repeat("a", 64), Live: true, Compiled: *compiled,
+	}
+	resolver := new(workflowrunfakes.FakeDefinitionResolver)
+	resolver.LiveReturns(definition, true, nil)
+	runStore := new(workflowrunfakes.FakeWorkflowRunStore)
+	runStore.FindByIdempotencyKeyReturns(db.AgentWorkflowRun{}, false, nil)
+	binder, err := workflowrun.NewBinder(
+		resolver,
+		new(workflowrunfakes.FakeTargetRenderer),
+		new(workflowrunfakes.FakeSnapshotAuthorizer),
+		runStore,
+		new(workflowrunfakes.FakeBudgetAdmitter),
+		new(workflowrunfakes.FakeImmutableTemplateSaver),
+		new(workflowrunfakes.FakePipelineRunCreator),
+		new(workflowrunfakes.FakeRunSecretPreparer),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deps := defaultDeps()
+	handler, err := workflowruns.NewHandler(workflowruns.Config{
+		Team: workflowruns.TrustedTeam{ID: 1, Name: atc.DefaultTeamName}, Identity: deps.identity,
+		Binder: binder, Runs: deps.runs, Canceler: deps.canceler, Manifests: deps.manifests,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := httptest.NewRecorder()
+	handler.Create(recorder, jsonRequest(
+		http.MethodPost,
+		"/api/v1/agent/workflows/deploy/runs",
+		"deploy",
+		"",
+		nil,
+		`{"idempotency_key":"non-v3-definition"}`,
+	))
+	if recorder.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500; body=%s", recorder.Code, recorder.Body.String())
+	}
+	response := decodeError(t, recorder)
+	if response.Error != "internal_error" || response.Message != "workflow run service failed" {
+		t.Errorf("response = %+v, want stable redacted internal error", response)
+	}
+	lowerBody := strings.ToLower(recorder.Body.String())
+	for _, detail := range []string{"schema", "database", "private"} {
+		if strings.Contains(lowerBody, detail) {
+			t.Errorf("response disclosed %q detail: %s", detail, recorder.Body.String())
+		}
 	}
 }
 

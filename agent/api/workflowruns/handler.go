@@ -824,8 +824,6 @@ func writeBinderError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "workflow run request is invalid")
 	case errors.Is(err, workflowrun.ErrDefinitionOrTargetNotFound):
 		writeError(w, http.StatusNotFound, "not_found", "workflow or workflow version was not found")
-	case errors.Is(err, workflowrun.ErrLegacyDefinition):
-		writeError(w, http.StatusUnprocessableEntity, "validation_failed", "workflow version is not executable")
 	case errors.Is(err, workflowrun.ErrSnapshotUnavailable), errors.Is(err, workflowrun.ErrSnapshotTypeMismatch):
 		writeError(w, http.StatusUnprocessableEntity, "inputs_unavailable", "one or more inputs are unavailable or unauthorized")
 	case errors.Is(err, workflowrun.ErrBudgetDenied):

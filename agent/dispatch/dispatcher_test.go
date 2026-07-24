@@ -3,7 +3,11 @@ package dispatch_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
+
+	"code.cloudfoundry.org/lager/v3/lagerctx"
+	"code.cloudfoundry.org/lager/v3/lagertest"
 
 	"github.com/concourse/concourse/agent/api/tickets"
 	"github.com/concourse/concourse/agent/budget"
@@ -11,14 +15,15 @@ import (
 	"github.com/concourse/concourse/agent/dispatch"
 )
 
-// loopDeps builds Deps around the landed test scaffolding (dispatchDeps)
-// with n queued tickets in the MemoryStore.
+// loopDeps builds schema-v3 Deps with n queued tickets in the MemoryStore.
 func loopDeps(t *testing.T, n int) (dispatch.Deps, *tickets.MemoryStore, []int) {
 	t.Helper()
-	deps, store, _, _ := dispatchDeps(t)
+	deps, store, _, _ := v3DispatchDeps(t)
 	ids := make([]int, 0, n)
 	for i := 0; i < n; i++ {
-		ids = append(ids, queuedTicket(t, store, "smoke"))
+		id := queuedTicket(t, store, "smoke")
+		setRepositorySnapshot(t, store, id, 101)
+		ids = append(ids, id)
 	}
 	return deps, store, ids
 }
@@ -80,6 +85,50 @@ func TestDispatcherPlatformFaultIsolatedPerTicket(t *testing.T) {
 	}
 	if second.State != tickets.StateRunning {
 		t.Errorf("second ticket must still dispatch, got %s", second.State)
+	}
+}
+
+func TestDispatcherNonV3LogsDispatchRefused(t *testing.T) {
+	deps, store, ids := loopDeps(t, 2)
+	nonV3 := v3Definition(t, "work-item", "repository")
+	nonV3.SchemaVersion = 2
+	deps.Workflows.(*fakeWorkflows).byName["non-v3"] = nonV3
+	workflowName := "non-v3"
+	if err := store.Update(ids[0], tickets.Update{WorkflowName: &workflowName}); err != nil {
+		t.Fatal(err)
+	}
+	logger := lagertest.NewTestLogger("test")
+	ctx := lagerctx.NewContext(context.Background(), logger)
+
+	if err := dispatch.NewDispatcher(deps, dispatch.LoopConfig{}).Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	first, _, _ := store.Get(ids[0])
+	second, _, _ := store.Get(ids[1])
+	if first.State != tickets.StateQueued {
+		t.Errorf("non-v3 ticket state = %s, want queued", first.State)
+	}
+	if second.State != tickets.StateRunning {
+		t.Errorf("next queued ticket state = %s, want running", second.State)
+	}
+	_, binderCalls := deps.WorkflowBinder.(*fakeWorkflowBinder).Calls()
+	if len(binderCalls) != 1 {
+		t.Errorf("binder calls = %d, want 1 for the next queued ticket", len(binderCalls))
+	}
+
+	refused, failed := false, false
+	for _, message := range logger.LogMessages() {
+		refused = refused || strings.HasSuffix(message, ".dispatch-refused")
+		failed = failed || strings.HasSuffix(message, ".failed-to-dispatch")
+	}
+	if !refused {
+		t.Error("dispatch-refused was not logged")
+	}
+	if failed {
+		t.Error("failed-to-dispatch was logged for the non-v3 refusal")
+	}
+	if len(logger.Errors) != 1 || !errors.Is(logger.Errors[0], dispatch.ErrWorkflowNotV3) {
+		t.Errorf("logged errors = %v, want one error wrapping ErrWorkflowNotV3", logger.Errors)
 	}
 }
 

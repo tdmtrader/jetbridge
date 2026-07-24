@@ -701,7 +701,13 @@ func validateDefinition(definition workflow.Definition, request BindRequest) err
 		return fmt.Errorf("%w: inconsistent resolved version", ErrPlatformFailure)
 	}
 	if definition.SchemaVersion != 3 {
-		return ErrLegacyDefinition
+		return fmt.Errorf(
+			"%w: workflow %s v%d uses schema_version %d",
+			ErrPlatformFailure,
+			definition.Name,
+			definition.Version,
+			definition.SchemaVersion,
+		)
 	}
 	metadata, err := definition.Compiled.VersionMetadata()
 	if err != nil || definition.Compiled.Name != definition.Name ||
@@ -906,7 +912,7 @@ func canonicalConfig(raw json.RawMessage) (atc.Config, []byte, error) {
 
 func durableErrorMessage(err error) string {
 	for _, category := range []error{
-		ErrInvalidRequest, ErrDefinitionOrTargetNotFound, ErrLegacyDefinition,
+		ErrInvalidRequest, ErrDefinitionOrTargetNotFound,
 		ErrSnapshotUnavailable, ErrSnapshotTypeMismatch, ErrBudgetDenied,
 		ErrIdempotencyConflict, ErrImmutableTemplateCollision,
 		ErrCorruptPartialAdmission, ErrPlatformFailure,
