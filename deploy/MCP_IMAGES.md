@@ -10,9 +10,9 @@ Consumers: gateway-mcp (`mcp-gateway`).
 | Registry/name | `ghcr.io/tdmtrader/mcp-<name>` (`mcp-dev-concourse`, `mcp-gateway`) |
 | Version tag | the shipping repo's release tag when HEAD is tagged, else the short sha; `latest` is never pushed nor referenced (workflow-definition import validation rejects untagged/`latest` images) |
 | Entrypoint | bare static Go binary (`ENTRYPOINT ["/usr/local/bin/<name>"]`, no flags, no hardcoded paths) serving streamable-HTTP MCP (`POST /mcp`) on `MCP_LISTEN_ADDR` (defaults: `:7780` dev, `:7782` gateway) |
-| Workspace discovery | §8.5 CWD convention (co-signed dev-mcp, agent-step, harvest-step): images never hardcode a workspace path (no `/workspace`); every path-valued flag defaults relative to the process CWD (dev-mcp: `--config dev-mcp.yml`, `--workdir .`); the owning exec implementation sets the sidecar's `WorkingDir` to the workspace artifact's mount path inside the hashed build workdir (jetbridge falls back to the main container's Dir when no workspace artifact exists) |
+| Workspace discovery | §8.5 CWD convention (co-signed dev-mcp, agent-step): images never hardcode a workspace path (no `/workspace`); every path-valued flag defaults relative to the process CWD (dev-mcp: `--config dev-mcp.yml`, `--workdir .`); the owning exec implementation sets the sidecar's `WorkingDir` to the workspace artifact's mount path inside the hashed build workdir (jetbridge falls back to the main container's Dir when no workspace artifact exists) |
 | Health | `GET /healthz` → 200, used as the pod readiness probe |
-| User | non-root (uid 1000) — **MCP sidecar images only**; main-step runner images (`agent-runner`, `harvest-runner`) run as **root** like every other step image, because jetbridge hostPath step volumes are kubelet-created root:root 0755 and fsGroup is ignored for hostPath (§8.5 scoping, 2026-07-09) |
+| User | non-root (uid 1000) — **MCP sidecar images only**; main-step runner images (`agent-runner`) run as **root** like every other step image, because jetbridge hostPath step volumes are kubelet-created root:root 0755 and fsGroup is ignored for hostPath (§8.5 scoping, 2026-07-09) |
 | Gate | the image's contract-test kit MUST pass against the built image before push ("push on green") |
 
 ## CI job template

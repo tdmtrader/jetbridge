@@ -497,10 +497,10 @@ all =
             ]
         , describe "retired step (U1)"
             [ test "renders a retired harvest node from completed history" <|
-                given iVisitABuildWithARetiredHarvestStep
+                given iVisitABuildWithARetiredHarvestNode
                     >> then_ (iSeeText "retired: harvest")
             , test "shows the retired step name" <|
-                given iVisitABuildWithARetiredHarvestStep
+                given iVisitABuildWithARetiredHarvestNode
                     >> then_ (iSeeText "push-branch")
             ]
         , describe "unknown step fallback (U1 durability)"
@@ -1102,13 +1102,13 @@ thePlanContainsAnAgentStep =
             )
 
 
-iVisitABuildWithARetiredHarvestStep =
+iVisitABuildWithARetiredHarvestNode =
     iOpenTheBuildPage
         >> myBrowserFetchedTheBuild
-        >> thePlanContainsARetiredHarvestStep
+        >> thePlanContainsARetiredHarvestNode
 
 
-thePlanContainsARetiredHarvestStep =
+thePlanContainsARetiredHarvestNode =
     Tuple.first
         >> Application.handleCallback
             (Callback.PlanAndResourcesFetched 1 <|

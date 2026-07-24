@@ -192,7 +192,7 @@ type ContainerSpec struct {
 	// SidecarEnv maps a sidecar name (matching Sidecars[i].Name) to extra
 	// environment variables in "NAME=VALUE" form (same convention as Env),
 	// injected into that sidecar's container only. Populated by the owning
-	// exec implementation (agent/harvest/checkpoint steps) per
+	// exec implementation (the agent step) per
 	// shared-contracts §8.1 — never from public pipeline YAML.
 	SidecarEnv map[string][]string
 
