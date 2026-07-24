@@ -3,9 +3,9 @@ package migration_test
 import (
 	"database/sql"
 	"encoding/json"
+	"os"
 
 	"code.cloudfoundry.org/lager/v3"
-	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/db/migration"
 
@@ -42,6 +42,20 @@ var _ = Describe("workflow schema signature migration", func() {
 		}
 	})
 
+	It("isolates the historical payload and migration coverage from the runtime workflow package", func() {
+		runtimeWorkflowImport := "github.com/concourse/concourse/agent/" + "workflow"
+		for _, path := range []string{
+			"migrations/1773106101_add_workflow_schema_signature.up.go",
+			"add_workflow_schema_signature_test.go",
+			"legacyworkflow/decoder.go",
+			"legacyworkflow/decoder_test.go",
+		} {
+			source, err := os.ReadFile(path)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(source)).NotTo(ContainSubstring(runtimeWorkflowImport), path)
+		}
+	})
+
 	It("backfills real raw and manifest definitions and installs constraints and ordered indexes", func() {
 		v1 := `schema_version: 1
 name: migrated-v1
@@ -52,7 +66,7 @@ steps:
   prompt: work
   outputs: [workspace]
 `
-		v2Manifest := workflow.Manifest{
+		v2Manifest := map[string]string{
 			"workflow.yml": `schema_version: 2
 name: migrated-v2
 prompt_files:
@@ -199,6 +213,46 @@ plan:
 			VALUES
 				('duplicate-signature', 1, 'first', $1),
 				('duplicate-signature', 2, 'second', $2)`, first, second)
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(migrator.Migrate(nil, nil, 1773106101)).NotTo(Succeed())
+		var count int
+		Expect(database.QueryRow(`
+			SELECT COUNT(*) FROM information_schema.columns
+			WHERE table_name = 'agent_workflow_definitions'
+			  AND column_name IN ('schema_version', 'signature_version')`).Scan(&count)).To(Succeed())
+		Expect(count).To(Equal(0))
+	})
+
+	It("rejects a preexisting positive-signature group with different optionality atomically", func() {
+		required := `schema_version: 3
+name: optionality-signature
+signature_version: 1
+inputs:
+- {name: repository, type: repository/v1}
+outputs: []
+plan:
+- agent: work
+  function_id: work
+  prompt: work
+`
+		optional := `schema_version: 3
+name: optionality-signature
+signature_version: 1
+inputs:
+- {name: repository, type: repository/v1, optional: true}
+outputs: []
+plan:
+- agent: work
+  function_id: work
+  prompt: changed
+`
+		_, err := database.Exec(`
+			INSERT INTO agent_workflow_definitions
+				(name, version, content_hash, definition)
+			VALUES
+				('optionality-signature', 1, 'required', $1),
+				('optionality-signature', 2, 'optional', $2)`, required, optional)
 		Expect(err).NotTo(HaveOccurred())
 
 		Expect(migrator.Migrate(nil, nil, 1773106101)).NotTo(Succeed())

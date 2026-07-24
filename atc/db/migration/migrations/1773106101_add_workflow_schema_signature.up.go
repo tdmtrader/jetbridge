@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/concourse/concourse/agent/workflow"
+	"github.com/concourse/concourse/atc/db/migration/legacyworkflow"
 )
 
 type workflowSchemaSignatureBackfillRow struct {
@@ -14,13 +14,12 @@ type workflowSchemaSignatureBackfillRow struct {
 	version    int
 	definition string
 	manifest   sql.NullString
-	metadata   workflow.VersionMetadata
+	metadata   legacyworkflow.Metadata
 }
 
-// Up_1773106101 intentionally compiles real stored workflow source instead of
-// trusting a YAML scalar. CompileDefinition's schema-1/2 behavior is migration
-// ABI: future compiler tightening must retain these historical fixtures or
-// freeze an equivalent parser here before changing it.
+// Up_1773106101 intentionally decodes real stored workflow source instead of
+// trusting a YAML scalar. The migration-local decoder freezes the released
+// schema-1/2 and schema-3 behavior independently of the live runtime parser.
 func (m *migrations) Up_1773106101() error {
 	if _, err := m.Exec(`
 		ALTER TABLE agent_workflow_definitions
@@ -55,37 +54,37 @@ func (m *migrations) Up_1773106101() error {
 		return fmt.Errorf("workflow metadata migration: close definition rows: %w", err)
 	}
 
-	positiveSignatures := map[string]workflow.PublicSignature{}
+	positiveSignatures := map[string]legacyworkflow.PublicSignature{}
 	for index := range backfill {
 		row := &backfill[index]
-		source := workflow.Manifest{"workflow.yml": row.definition}
+		source := map[string]string{"workflow.yml": row.definition}
 		if row.manifest.Valid {
 			if err := json.Unmarshal([]byte(row.manifest.String), &source); err != nil {
 				return workflowMigrationRowError(*row, "stored manifest is malformed")
 			}
 		}
-		compiled, err := workflow.CompileDefinition(source)
+		metadata, signature, err := legacyworkflow.DecodeManifest(source)
 		if err != nil {
 			return workflowMigrationRowError(*row, "stored source does not compile")
 		}
-		if compiled.Name != row.name {
+		if metadata.Name != row.name {
 			return workflowMigrationRowError(*row, "compiled name does not match stored name")
 		}
-		metadata, err := compiled.VersionMetadata()
-		if err != nil {
+		if metadata.SchemaVersion <= 0 || metadata.SignatureVersion < 0 ||
+			(metadata.SchemaVersion <= 2 && metadata.SignatureVersion != 0) ||
+			(metadata.SchemaVersion >= 3 && metadata.SignatureVersion <= 0) {
 			return workflowMigrationRowError(*row, "compiled schema/signature metadata is invalid")
 		}
 		row.metadata = metadata
 		if metadata.SignatureVersion > 0 {
-			signature, err := compiled.PublicSignature()
-			if err != nil {
+			if signature == nil {
 				return workflowMigrationRowError(*row, "compiled public signature is invalid")
 			}
 			key := fmt.Sprintf("%s\x00%d", row.name, metadata.SignatureVersion)
-			if previous, found := positiveSignatures[key]; found && !previous.Equal(signature) {
+			if previous, found := positiveSignatures[key]; found && !previous.Equal(*signature) {
 				return workflowMigrationRowError(*row, "reuses an incompatible positive signature version")
 			}
-			positiveSignatures[key] = signature
+			positiveSignatures[key] = *signature
 		}
 	}
 
