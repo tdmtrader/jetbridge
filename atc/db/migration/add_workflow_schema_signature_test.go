@@ -160,7 +160,7 @@ plan:
 			  AND column_name IN ('schema_version', 'signature_version')`).Scan(&count)).To(Succeed())
 		Expect(count).To(Equal(0))
 	},
-		Entry("malformed raw YAML", "broken-raw", "schema_version: 1\nname: broken-raw\nsteps: []\n", nil),
+		Entry("malformed raw YAML", "broken-raw", "schema_version: [", nil),
 		Entry("malformed manifest shape", "broken-shape", "ignored", `{"workflow.yml":{"nested":"not a string"}}`),
 		Entry("manifest missing workflow.yml", "missing-workflow", "ignored", `{"notes.txt":"nothing"}`),
 		Entry("unresolved schema-2 asset", "missing-asset", `schema_version: 2

@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/goccy/go-yaml"
+	containername "github.com/google/go-containerregistry/pkg/name"
 )
 
 const (
@@ -25,7 +26,10 @@ const (
 	maxManifestBytes     = 10 << 20
 )
 
-var typeRefPattern = regexp.MustCompile(`^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)*/v[1-9][0-9]*$`)
+var (
+	typeRefPattern         = regexp.MustCompile(`^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)*/v[1-9][0-9]*$`)
+	agentOutputNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+)
 
 type Metadata struct {
 	Name             string
@@ -739,6 +743,9 @@ func decodeFunction(files map[string]string, raw string) (Metadata, *PublicSigna
 	if err := validateFunctionAssets(files, plan, source.Capabilities); err != nil {
 		return Metadata{}, nil, err
 	}
+	if err := validateFunctionSemantics(&source, plan); err != nil {
+		return Metadata{}, nil, err
+	}
 
 	metadata := Metadata{
 		Name:             source.Name,
@@ -855,6 +862,9 @@ func validateCapabilitySidecar(sidecar functionSidecar) error {
 			return fmt.Errorf("invalid capability sidecar: image digest must contain 64 lowercase hexadecimal characters")
 		}
 	}
+	if _, err := containername.NewDigest(sidecar.Image, containername.StrictValidation); err != nil {
+		return fmt.Errorf("invalid capability sidecar: image is not a valid OCI digest reference: %w", err)
+	}
 	return nil
 }
 
@@ -884,6 +894,37 @@ func validateFunctionSourceKeys(document any) error {
 				if err := rejectObjectKeys(object, fmt.Sprintf("workflow.outputs[%d]", index), []string{"name", "type", "optional", "description", "from"}); err != nil {
 					return err
 				}
+			}
+		}
+	}
+	for _, declaration := range []struct {
+		field   string
+		allowed []string
+	}{
+		{
+			field: "resources",
+			allowed: []string{
+				"name", "old_name", "public", "webhook_token", "type", "source", "check_every",
+				"check_timeout", "tags", "version", "icon", "expose_build_created_by",
+			},
+		},
+		{
+			field: "resource_types",
+			allowed: []string{
+				"name", "type", "image", "source", "defaults", "privileged", "check_every", "tags", "params",
+			},
+		},
+		{
+			field: "prototypes",
+			allowed: []string{
+				"name", "type", "source", "defaults", "privileged", "check_every", "tags", "params",
+			},
+		},
+		{field: "var_sources", allowed: []string{"name", "type", "config"}},
+	} {
+		if value, found := root[declaration.field]; found {
+			if err := validateObjectListSource(value, "workflow."+declaration.field, declaration.allowed); err != nil {
+				return err
 			}
 		}
 	}
@@ -931,6 +972,9 @@ func validateFunctionStepSource(value any, path string) error {
 	step, ok := value.(map[string]any)
 	if !ok {
 		return nil
+	}
+	if err := validateFunctionStepEnvelopeSource(step, path); err != nil {
+		return err
 	}
 	if _, isAgent := step["agent"]; isAgent {
 		if err := validateAgentAssetSourcePresence(step, path); err != nil {
@@ -996,14 +1040,91 @@ func validateFunctionStepSource(value any, path string) error {
 		}
 	}
 	if policy, found := step["gate_policy"]; found {
-		if err := validateObjectSource(policy, path+".gate_policy", []string{"gates", "on_gate_failure"}); err != nil {
+		if err := validateGatePolicySource(policy, path+".gate_policy"); err != nil {
 			return err
 		}
 	}
 	if judge, found := step["judge"]; found {
-		if err := validateObjectSource(judge, path+".judge", []string{"rubric", "pass_threshold", "model", "budget_usd"}); err != nil {
+		if err := validateJudgeSource(judge, path+".judge"); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+var functionStepCoreFields = map[string][]string{
+	"agent": {
+		"agent", "function_id", "prompt", "prompt_file", "system_prompt_file", "context_files",
+		"model", "max_turns", "budget_slice_usd", "output_schema", "system_prompt", "context",
+		"skills", "sidecars", "inputs", "outputs", "capabilities", "input_types", "output_types",
+		"env", "timeout", "container_limits", "container_requests",
+	},
+	"harvest": {
+		"harvest", "workspace", "repo", "target_branch", "ticket_id", "pipeline_run_id", "branch",
+		"push", "env", "dev_mcp", "gate_policy", "judge", "timeout",
+	},
+	"run": {
+		"run", "type", "params", "privileged", "tags", "container_limits", "container_requests", "timeout",
+	},
+	"task": {
+		"task", "function_id", "privileged", "hermetic", "file", "container_limits",
+		"container_requests", "config", "params", "vars", "tags", "input_mapping", "output_mapping",
+		"input_types", "output_types", "image", "timeout", "sidecars",
+	},
+	"put": {
+		"put", "resource", "params", "inputs", "tags", "get_params", "timeout", "no_get",
+	},
+	"get": {
+		"get", "resource", "version", "params", "passed", "trigger", "tags", "timeout", "skip_download",
+	},
+	"set_pipeline": {"set_pipeline", "file", "team", "vars", "var_files", "instance_vars"},
+	"load_var":     {"load_var", "file", "format", "reveal"},
+	"try":          {"try"},
+	"do":           {"do"},
+	"in_parallel":  {"in_parallel"},
+}
+
+var functionStepWrapperFields = []string{
+	"ensure", "on_error", "on_abort", "on_failure", "on_success",
+	"across", "attempts", "timeout",
+}
+
+func validateFunctionStepEnvelopeSource(step map[string]any, path string) error {
+	core := ""
+	for _, name := range []string{
+		"agent", "harvest", "run", "task", "put", "get",
+		"set_pipeline", "load_var", "try", "do", "in_parallel",
+	} {
+		if _, found := step[name]; !found {
+			continue
+		}
+		if core != "" {
+			return fmt.Errorf("workflow: %s: multiple core step fields %q and %q", path, core, name)
+		}
+		core = name
+	}
+	if core == "" {
+		return fmt.Errorf("workflow: %s: no core step type declared", path)
+	}
+
+	allowed := append([]string{}, functionStepCoreFields[core]...)
+	allowed = append(allowed, functionStepWrapperFields...)
+	if _, found := step["across"]; found {
+		allowed = append(allowed, "fail_fast")
+	}
+	allowedSet := make(map[string]struct{}, len(allowed))
+	for _, field := range allowed {
+		allowedSet[field] = struct{}{}
+	}
+	unknown := make([]string, 0)
+	for field := range step {
+		if _, found := allowedSet[field]; !found {
+			unknown = append(unknown, field)
+		}
+	}
+	if len(unknown) > 0 {
+		sort.Strings(unknown)
+		return fmt.Errorf("workflow: %s: unknown step field %q", path, unknown[0])
 	}
 	return nil
 }
@@ -1195,6 +1316,34 @@ func validateInlineSidecarSource(value any, path string) error {
 	return nil
 }
 
+func validateGatePolicySource(value any, path string) error {
+	policy, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	if err := rejectObjectKeys(policy, path, []string{"gates", "on_gate_failure"}); err != nil {
+		return err
+	}
+	if gates, found := policy["gates"]; found {
+		return validateObjectListSource(gates, path+".gates", []string{"gate", "scope", "focus", "timeout", "retries"})
+	}
+	return nil
+}
+
+func validateJudgeSource(value any, path string) error {
+	judge, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	if err := rejectObjectKeys(judge, path, []string{"rubric", "pass_threshold", "model", "budget_usd"}); err != nil {
+		return err
+	}
+	if rubric, found := judge["rubric"]; found {
+		return validateObjectListSource(rubric, path+".rubric", []string{"name", "weight", "guidance"})
+	}
+	return nil
+}
+
 func validateObjectSource(value any, path string, allowed []string) error {
 	object, ok := value.(map[string]any)
 	if !ok {
@@ -1238,44 +1387,75 @@ func rejectObjectKeys(object map[string]any, path string, allowedFields []string
 	return fmt.Errorf("workflow: %s: unknown field %q", path, unknown[0])
 }
 
+type functionAssetValidator struct {
+	files              map[string]string
+	catalog            map[string]functionCapability
+	manifestPaths      []string
+	skillTrees         map[string][]string
+	capabilityBytes    map[string]int
+	selectedSkillPaths map[string]struct{}
+	compiledAssetBytes int
+	compiledSkillBytes int
+}
+
 func validateFunctionAssets(files map[string]string, plan []any, catalog map[string]functionCapability) error {
+	validator := &functionAssetValidator{
+		files:              files,
+		catalog:            catalog,
+		manifestPaths:      make([]string, 0, len(files)),
+		skillTrees:         make(map[string][]string),
+		capabilityBytes:    make(map[string]int, len(catalog)),
+		selectedSkillPaths: make(map[string]struct{}),
+	}
+	for path := range files {
+		validator.manifestPaths = append(validator.manifestPaths, path)
+	}
+	sort.Strings(validator.manifestPaths)
+	for name, capability := range catalog {
+		canonical, err := json.Marshal(capability.Sidecar)
+		if err != nil {
+			return fmt.Errorf("workflow: capability %q: canonicalize sidecar: %w", name, err)
+		}
+		validator.capabilityBytes[name] = len(canonical)
+	}
+
 	for index, step := range plan {
-		if err := validateFunctionStepAssets(files, step, catalog, fmt.Sprintf("workflow.plan[%d]", index)); err != nil {
+		if err := validator.validateStep(step, fmt.Sprintf("workflow.plan[%d]", index)); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func validateFunctionStepAssets(files map[string]string, value any, catalog map[string]functionCapability, path string) error {
+func (validator *functionAssetValidator) validateStep(value any, path string) error {
 	step, ok := value.(map[string]any)
 	if !ok {
 		return fmt.Errorf("workflow: %s: step must be an object", path)
 	}
 	if _, isAgent := step["agent"]; isAgent {
-		if err := validateFunctionAgentAssets(files, step, catalog, path); err != nil {
+		if err := validator.validateAgent(step, path); err != nil {
 			return err
 		}
 	}
 	if nested, found := step["try"]; found {
-		if err := validateFunctionStepAssets(files, nested, catalog, path+".try"); err != nil {
+		if err := validator.validateStep(nested, path+".try"); err != nil {
 			return err
 		}
 	}
 	if nested, found := step["do"]; found {
-		if err := validateFunctionStepAssetList(files, nested, catalog, path+".do"); err != nil {
+		if err := validator.validateStepList(nested, path+".do"); err != nil {
 			return err
 		}
 	}
 	if nested, found := step["in_parallel"]; found {
 		switch config := nested.(type) {
 		case []any:
-			if err := validateFunctionStepAssetList(files, config, catalog, path+".in_parallel"); err != nil {
+			if err := validator.validateStepList(config, path+".in_parallel"); err != nil {
 				return err
 			}
 		case map[string]any:
 			if steps, found := config["steps"]; found {
-				if err := validateFunctionStepAssetList(files, steps, catalog, path+".in_parallel.steps"); err != nil {
+				if err := validator.validateStepList(steps, path+".in_parallel.steps"); err != nil {
 					return err
 				}
 			}
@@ -1283,7 +1463,7 @@ func validateFunctionStepAssets(files map[string]string, value any, catalog map[
 	}
 	for _, hook := range []string{"on_success", "on_failure", "on_abort", "on_error", "ensure"} {
 		if nested, found := step[hook]; found {
-			if err := validateFunctionStepAssets(files, nested, catalog, path+"."+hook); err != nil {
+			if err := validator.validateStep(nested, path+"."+hook); err != nil {
 				return err
 			}
 		}
@@ -1291,20 +1471,20 @@ func validateFunctionStepAssets(files map[string]string, value any, catalog map[
 	return nil
 }
 
-func validateFunctionStepAssetList(files map[string]string, value any, catalog map[string]functionCapability, path string) error {
+func (validator *functionAssetValidator) validateStepList(value any, path string) error {
 	steps, ok := value.([]any)
 	if !ok {
 		return nil
 	}
 	for index, step := range steps {
-		if err := validateFunctionStepAssets(files, step, catalog, fmt.Sprintf("%s[%d]", path, index)); err != nil {
+		if err := validator.validateStep(step, fmt.Sprintf("%s[%d]", path, index)); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func validateFunctionAgentAssets(files map[string]string, step map[string]any, catalog map[string]functionCapability, path string) error {
+func (validator *functionAssetValidator) validateAgent(step map[string]any, path string) error {
 	identity := rawAgentIdentity(step)
 	name, ok := step["agent"].(string)
 	if !ok || strings.TrimSpace(name) == "" {
@@ -1319,7 +1499,7 @@ func validateFunctionAgentAssets(files map[string]string, step map[string]any, c
 	prompt, _ := step["prompt"].(string)
 	if promptFile, found := step["prompt_file"]; found {
 		path, _ := promptFile.(string)
-		content, err := resolveManifestFile(files, path)
+		content, err := resolveManifestFile(validator.files, path)
 		if err != nil {
 			return fmt.Errorf("workflow: %s: prompt_file %q: %w", identity, path, err)
 		}
@@ -1328,19 +1508,40 @@ func validateFunctionAgentAssets(files map[string]string, step map[string]any, c
 	if prompt == "" {
 		return fmt.Errorf("workflow: %s: prompt is required", identity)
 	}
+	if err := validator.addCompiledAssetBytes(len(prompt), identity, "prompt"); err != nil {
+		return err
+	}
+
+	systemPrompt, _ := step["system_prompt"].(string)
 	if systemPath, found := step["system_prompt_file"]; found {
 		path, _ := systemPath.(string)
-		if _, err := resolveManifestFile(files, path); err != nil {
+		content, err := resolveManifestFile(validator.files, path)
+		if err != nil {
 			return fmt.Errorf("workflow: %s: system_prompt_file %q: %w", identity, path, err)
 		}
+		systemPrompt = content
+	}
+	if err := validator.addCompiledAssetBytes(len(systemPrompt), identity, "system_prompt"); err != nil {
+		return err
 	}
 	if context, found := step["context"]; found && context != "" {
 		return fmt.Errorf("workflow: %s: context is compiled-only; use context_files", identity)
 	}
 	if paths, found := step["context_files"]; found {
+		seenContext := make(map[string]struct{})
 		for _, path := range stringList(paths) {
-			if _, err := resolveManifestFile(files, path); err != nil {
+			if _, duplicate := seenContext[path]; duplicate {
+				continue
+			}
+			content, err := resolveManifestFile(validator.files, path)
+			if err != nil {
 				return fmt.Errorf("workflow: %s: context_file %q: %w", identity, path, err)
+			}
+			seenContext[path] = struct{}{}
+			for _, partBytes := range []int{len("## "), len(path), len("\n\n"), len(content), len("\n\n")} {
+				if err := validator.addCompiledAssetBytes(partBytes, identity, "context"); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -1350,8 +1551,22 @@ func validateFunctionAgentAssets(files map[string]string, step map[string]any, c
 			return fmt.Errorf("workflow: %s: %w", identity, err)
 		}
 		for _, name := range names {
-			if _, err := resolveManifestFile(files, "skills/"+name+"/SKILL.md"); err != nil {
+			tree, err := validator.skillTree(name)
+			if err != nil {
 				return fmt.Errorf("workflow: %s: skill %q: %w", identity, name, err)
+			}
+			for _, path := range tree {
+				if _, selected := validator.selectedSkillPaths[path]; selected {
+					continue
+				}
+				content := validator.files[path]
+				if err := validator.addCompiledSkillBytes(len(content), identity, path); err != nil {
+					return err
+				}
+				if err := validator.addCompiledAssetBytes(len(content), identity, "skill "+path); err != nil {
+					return err
+				}
+				validator.selectedSkillPaths[path] = struct{}{}
 			}
 		}
 	}
@@ -1362,11 +1577,49 @@ func validateFunctionAgentAssets(files map[string]string, step map[string]any, c
 				return fmt.Errorf("workflow: %s: duplicate capability reference %q", identity, name)
 			}
 			seen[name] = struct{}{}
-			if _, found := catalog[name]; !found {
+			if _, found := validator.catalog[name]; !found {
 				return fmt.Errorf("workflow: %s: unknown capability %q", identity, name)
+			}
+			if err := validator.addCompiledAssetBytes(validator.capabilityBytes[name], identity, "capability "+name); err != nil {
+				return err
 			}
 		}
 	}
+	return nil
+}
+
+func (validator *functionAssetValidator) skillTree(name string) ([]string, error) {
+	if tree, found := validator.skillTrees[name]; found {
+		return tree, nil
+	}
+	prefix := "skills/" + name + "/"
+	if _, err := resolveManifestFile(validator.files, prefix+"SKILL.md"); err != nil {
+		return nil, err
+	}
+	tree := make([]string, 0)
+	for _, path := range validator.manifestPaths {
+		if strings.HasPrefix(path, prefix) {
+			tree = append(tree, path)
+		}
+	}
+	validator.skillTrees[name] = tree
+	return tree, nil
+}
+
+func (validator *functionAssetValidator) addCompiledAssetBytes(amount int, identity, asset string) error {
+	if amount > maxManifestBytes-validator.compiledAssetBytes {
+		return fmt.Errorf("workflow: %s: compiled assets exceed %d bytes while adding %s", identity, maxManifestBytes, asset)
+	}
+	validator.compiledAssetBytes += amount
+	return nil
+}
+
+func (validator *functionAssetValidator) addCompiledSkillBytes(amount int, identity, path string) error {
+	const maxCompiledSkillBytes = 512 << 10
+	if amount > maxCompiledSkillBytes-validator.compiledSkillBytes {
+		return fmt.Errorf("workflow: %s: compiled skills exceed %d bytes while adding %q", identity, maxCompiledSkillBytes, path)
+	}
+	validator.compiledSkillBytes += amount
 	return nil
 }
 
@@ -1402,4 +1655,1182 @@ func stringList(value any) []string {
 		}
 	}
 	return result
+}
+
+type frozenSnapshotPresence uint8
+
+const (
+	frozenSnapshotGuaranteed frozenSnapshotPresence = iota
+	frozenSnapshotConditional
+)
+
+type frozenSnapshotProducer struct {
+	key  string
+	path string
+}
+
+type frozenSnapshotBinding struct {
+	typ       string
+	presence  frozenSnapshotPresence
+	typed     bool
+	ambiguous bool
+	producer  *frozenSnapshotProducer
+	writePath string
+}
+
+type frozenSnapshotEnvironment map[string]frozenSnapshotBinding
+
+type frozenSnapshotFlow struct {
+	env         frozenSnapshotEnvironment
+	produced    map[string]frozenSnapshotBinding
+	mayProduced map[string]frozenSnapshotBinding
+	allProduced map[string]frozenSnapshotBinding
+}
+
+type frozenSnapshotDeclaration struct {
+	Type     string
+	Optional bool
+}
+
+type frozenFlowChecker struct {
+	functionIDs map[string]string
+	acrossDepth int
+}
+
+func validateFunctionSemantics(source *functionSource, plan []any) error {
+	entry := make(frozenSnapshotEnvironment, len(source.Inputs))
+	for index, input := range source.Inputs {
+		presence := frozenSnapshotGuaranteed
+		if input.Optional {
+			presence = frozenSnapshotConditional
+		}
+		entry[input.Name] = frozenSnapshotBinding{
+			typ:       input.Type,
+			presence:  presence,
+			typed:     true,
+			writePath: fmt.Sprintf("inputs[%d]", index),
+		}
+	}
+
+	checker := &frozenFlowChecker{functionIDs: make(map[string]string)}
+	result, err := checker.checkSequence(plan, entry, "plan")
+	if err != nil {
+		return err
+	}
+	selected := make(map[string]string, len(source.Outputs))
+	for index, output := range source.Outputs {
+		binding, found := result.env[output.From]
+		if !found {
+			return fmt.Errorf("workflow: outputs[%d] %q: source %q is unavailable (use before produce)", index, output.Name, output.From)
+		}
+		if !binding.typed {
+			if binding.ambiguous {
+				return fmt.Errorf("workflow: outputs[%d] %q: source %q has ambiguous possible writes at %s", index, output.Name, output.From, binding.writePath)
+			}
+			return fmt.Errorf("workflow: outputs[%d] %q: source %q is occupied by an untyped producer at %s", index, output.Name, output.From, binding.writePath)
+		}
+		if binding.typ != output.Type {
+			return fmt.Errorf("workflow: outputs[%d] %q: source %q type mismatch: have %s, require %s", index, output.Name, output.From, binding.typ, output.Type)
+		}
+		if !output.Optional && binding.presence == frozenSnapshotConditional {
+			return fmt.Errorf("workflow: outputs[%d] %q: required public output cannot use conditional source %q", index, output.Name, output.From)
+		}
+		if binding.producer == nil {
+			return fmt.Errorf("workflow: outputs[%d] %q: source %q has no concrete typed producer; public input pass-through is unsupported", index, output.Name, output.From)
+		}
+		if previous, found := selected[binding.producer.key]; found {
+			return fmt.Errorf("workflow: outputs[%d] %q and public output %q select the same internal output %q from %s", index, output.Name, previous, output.From, binding.producer.path)
+		}
+		selected[binding.producer.key] = output.Name
+	}
+
+	return validateFrozenOrdinaryFunction(source, plan)
+}
+
+func (checker *frozenFlowChecker) checkSequence(steps []any, entry frozenSnapshotEnvironment, path string) (frozenSnapshotFlow, error) {
+	env := cloneFrozenEnvironment(entry)
+	produced := make(map[string]frozenSnapshotBinding)
+	mayProduced := make(map[string]frozenSnapshotBinding)
+	allProduced := make(map[string]frozenSnapshotBinding)
+	for index, value := range steps {
+		step, ok := value.(map[string]any)
+		if !ok {
+			return frozenSnapshotFlow{}, fmt.Errorf("workflow: %s[%d]: step config is required", path, index)
+		}
+		child, err := checker.checkStepFrom(step, env, fmt.Sprintf("%s[%d]", path, index), 0)
+		if err != nil {
+			return frozenSnapshotFlow{}, err
+		}
+		env = child.env
+		mergeFrozenProduced(produced, child.produced)
+		mergeFrozenPossible(mayProduced, child.mayProduced)
+		mergeFrozenPossible(allProduced, child.allProduced)
+	}
+	return frozenSnapshotFlow{env: env, produced: produced, mayProduced: mayProduced, allProduced: allProduced}, nil
+}
+
+var frozenStepPrecedence = []string{
+	"ensure", "on_error", "on_abort", "on_failure", "on_success",
+	"across", "attempts", "agent", "harvest", "run", "task", "put", "get",
+	"timeout", "set_pipeline", "load_var", "try", "do", "in_parallel",
+}
+
+func (checker *frozenFlowChecker) checkStepFrom(
+	step map[string]any,
+	entry frozenSnapshotEnvironment,
+	path string,
+	start int,
+) (frozenSnapshotFlow, error) {
+	for index := start; index < len(frozenStepPrecedence); index++ {
+		field := frozenStepPrecedence[index]
+		value, found := step[field]
+		if !found {
+			continue
+		}
+		switch field {
+		case "ensure":
+			main, err := checker.checkStepFrom(step, entry, path, index+1)
+			if err != nil {
+				return frozenSnapshotFlow{}, err
+			}
+			hookEntry := conservativeFrozenEnsureEnvironment(entry, main)
+			hook, err := checker.checkNestedStep(value, hookEntry, path+".ensure")
+			if err != nil {
+				return frozenSnapshotFlow{}, err
+			}
+			outgoing := applyFrozenSuccessfulFlow(main.env, hook)
+			produced := cloneFrozenProduced(main.produced)
+			mergeFrozenProduced(produced, hook.produced)
+			mayProduced := cloneFrozenProduced(main.mayProduced)
+			mergeFrozenPossible(mayProduced, hook.mayProduced)
+			allProduced := cloneFrozenProduced(main.allProduced)
+			mergeFrozenPossible(allProduced, hook.allProduced)
+			return frozenSnapshotFlow{env: outgoing, produced: produced, mayProduced: mayProduced, allProduced: allProduced}, nil
+		case "on_error", "on_abort", "on_failure":
+			main, err := checker.checkStepFrom(step, entry, path, index+1)
+			if err != nil {
+				return frozenSnapshotFlow{}, err
+			}
+			hook, err := checker.checkNestedStep(value, cloneFrozenEnvironment(entry), path+"."+field)
+			if err != nil {
+				return frozenSnapshotFlow{}, err
+			}
+			mergeFrozenPossible(main.allProduced, hook.allProduced)
+			return main, nil
+		case "on_success":
+			main, err := checker.checkStepFrom(step, entry, path, index+1)
+			if err != nil {
+				return frozenSnapshotFlow{}, err
+			}
+			hook, err := checker.checkNestedStep(value, main.env, path+".on_success")
+			if err != nil {
+				return frozenSnapshotFlow{}, err
+			}
+			mergeFrozenProduced(main.produced, hook.produced)
+			mergeFrozenPossible(main.mayProduced, hook.mayProduced)
+			mergeFrozenPossible(main.allProduced, hook.allProduced)
+			main.env = hook.env
+			return main, nil
+		case "across":
+			checker.acrossDepth++
+			_, err := checker.checkStepFrom(step, cloneFrozenEnvironment(entry), path+".across", index+1)
+			checker.acrossDepth--
+			if err != nil {
+				return frozenSnapshotFlow{}, err
+			}
+			return emptyFrozenFlow(entry), nil
+		case "attempts":
+			child, err := checker.checkStepFrom(step, entry, path+".attempts", index+1)
+			if err != nil {
+				return frozenSnapshotFlow{}, err
+			}
+			child.allProduced = cloneFrozenProduced(child.mayProduced)
+			return child, nil
+		case "timeout":
+			return checker.checkStepFrom(step, entry, path+".timeout", index+1)
+		case "agent", "task":
+			return checker.checkFrozenLeaf(field, step, entry, path)
+		case "get":
+			name, _ := value.(string)
+			return writeFrozenUntyped(entry, name, path+".get("+name+")"), nil
+		case "put", "run", "harvest", "set_pipeline", "load_var":
+			return emptyFrozenFlow(entry), nil
+		case "try":
+			child, err := checker.checkNestedStep(value, cloneFrozenEnvironment(entry), path+".try")
+			if err != nil {
+				return frozenSnapshotFlow{}, err
+			}
+			return conditionalFrozenTryFlow(entry, child), nil
+		case "do":
+			steps, ok := value.([]any)
+			if !ok {
+				return frozenSnapshotFlow{}, fmt.Errorf("workflow: %s.do: steps must be a list", path)
+			}
+			return checker.checkSequence(steps, entry, path+".do")
+		case "in_parallel":
+			steps, err := frozenParallelSteps(value)
+			if err != nil {
+				return frozenSnapshotFlow{}, fmt.Errorf("workflow: %s.in_parallel: %w", path, err)
+			}
+			return checker.checkParallel(steps, entry, path)
+		}
+	}
+	return frozenSnapshotFlow{}, fmt.Errorf("workflow: %s: step config is required", path)
+}
+
+func (checker *frozenFlowChecker) checkNestedStep(value any, entry frozenSnapshotEnvironment, path string) (frozenSnapshotFlow, error) {
+	step, ok := value.(map[string]any)
+	if !ok {
+		return frozenSnapshotFlow{}, fmt.Errorf("workflow: %s: step config is required", path)
+	}
+	return checker.checkStepFrom(step, entry, path, 0)
+}
+
+func frozenParallelSteps(value any) ([]any, error) {
+	switch config := value.(type) {
+	case []any:
+		return config, nil
+	case map[string]any:
+		steps, ok := config["steps"].([]any)
+		if !ok {
+			return nil, fmt.Errorf("steps must be a list")
+		}
+		return steps, nil
+	default:
+		return nil, fmt.Errorf("configuration must be a list or object")
+	}
+}
+
+func (checker *frozenFlowChecker) checkParallel(steps []any, entry frozenSnapshotEnvironment, path string) (frozenSnapshotFlow, error) {
+	branches := make([]frozenSnapshotFlow, len(steps))
+	producerBranch := make(map[string]int)
+	for index, value := range steps {
+		step, ok := value.(map[string]any)
+		if !ok {
+			return frozenSnapshotFlow{}, fmt.Errorf("workflow: %s.in_parallel.steps[%d]: step config is required", path, index)
+		}
+		branch, err := checker.checkStepFrom(step, cloneFrozenEnvironment(entry), fmt.Sprintf("%s.in_parallel.steps[%d]", path, index), 0)
+		if err != nil {
+			return frozenSnapshotFlow{}, err
+		}
+		branches[index] = branch
+		for _, name := range sortedFrozenBindingKeys(branch.mayProduced) {
+			if previous, found := producerBranch[name]; found {
+				return frozenSnapshotFlow{}, fmt.Errorf("workflow: %s: parallel branches both produce %q (branches %d and %d)", path, name, previous, index)
+			}
+			producerBranch[name] = index
+		}
+	}
+
+	env := cloneFrozenEnvironment(entry)
+	produced := make(map[string]frozenSnapshotBinding)
+	mayProduced := make(map[string]frozenSnapshotBinding)
+	allProduced := make(map[string]frozenSnapshotBinding)
+	names := make([]string, 0, len(producerBranch))
+	for name := range producerBranch {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		branch := producerBranch[name]
+		if binding, found := branches[branch].env[name]; found {
+			env[name] = binding
+		}
+		if binding, found := branches[branch].produced[name]; found {
+			produced[name] = binding
+		}
+		mayProduced[name] = branches[branch].mayProduced[name]
+	}
+	for index := range branches {
+		mergeFrozenPossible(allProduced, branches[index].allProduced)
+	}
+	return frozenSnapshotFlow{env: env, produced: produced, mayProduced: mayProduced, allProduced: allProduced}, nil
+}
+
+func (checker *frozenFlowChecker) checkFrozenLeaf(
+	kind string,
+	step map[string]any,
+	entry frozenSnapshotEnvironment,
+	path string,
+) (frozenSnapshotFlow, error) {
+	displayName, _ := step[kind].(string)
+	functionID, _ := step["function_id"].(string)
+	ordinaryInputs := stringList(step["inputs"])
+	ordinaryOutputs := stringList(step["outputs"])
+	if kind == "task" {
+		ordinaryInputs, ordinaryOutputs = frozenTaskArtifactNames(step)
+	}
+	typedInputs, err := frozenSnapshotInputs(step["input_types"])
+	if err != nil {
+		return frozenSnapshotFlow{}, fmt.Errorf("workflow: %s.%s(%q): %w", path, kind, displayName, err)
+	}
+	typedOutputs, err := frozenSnapshotOutputs(step["output_types"])
+	if err != nil {
+		return frozenSnapshotFlow{}, fmt.Errorf("workflow: %s.%s(%q): %w", path, kind, displayName, err)
+	}
+
+	identity := fmt.Sprintf("%s.%s(%q)", path, kind, displayName)
+	typedNode := functionID != "" || len(typedInputs) > 0 || len(typedOutputs) > 0
+	if typedNode {
+		if strings.TrimSpace(functionID) == "" {
+			return frozenSnapshotFlow{}, fmt.Errorf("workflow: %s: typed node requires a nonblank authored function_id", identity)
+		}
+		if previous, found := checker.functionIDs[functionID]; found {
+			return frozenSnapshotFlow{}, fmt.Errorf("workflow: %s: duplicate function_id %q; first declared at %s", identity, functionID, previous)
+		}
+		checker.functionIDs[functionID] = identity
+	}
+
+	for _, name := range sortedUniqueFrozenStrings(ordinaryInputs) {
+		binding, found := entry[name]
+		if !found || !binding.typed {
+			continue
+		}
+		if _, declared := typedInputs[name]; !declared {
+			return frozenSnapshotFlow{}, fmt.Errorf("workflow: %s: known typed artifact %q is consumed without input_types declaration", identity, name)
+		}
+	}
+	for _, name := range sortedFrozenDeclarationKeys(typedInputs) {
+		declaration := typedInputs[name]
+		binding, found := entry[name]
+		if !found {
+			return frozenSnapshotFlow{}, fmt.Errorf("workflow: %s: input %q is unavailable (use before produce or undeclared workflow input)", identity, name)
+		}
+		if !binding.typed {
+			if binding.ambiguous {
+				return frozenSnapshotFlow{}, fmt.Errorf("workflow: %s: input %q has ambiguous possible writes at %s", identity, name, binding.writePath)
+			}
+			return frozenSnapshotFlow{}, fmt.Errorf("workflow: %s: input %q is occupied by an untyped producer at %s", identity, name, binding.writePath)
+		}
+		if binding.typ != declaration.Type {
+			return frozenSnapshotFlow{}, fmt.Errorf("workflow: %s: input %q type mismatch: have %s, require %s", identity, name, binding.typ, declaration.Type)
+		}
+		if !declaration.Optional && binding.presence == frozenSnapshotConditional {
+			return frozenSnapshotFlow{}, fmt.Errorf("workflow: %s: required input %q cannot use a conditional binding", identity, name)
+		}
+	}
+
+	env := cloneFrozenEnvironment(entry)
+	produced := make(map[string]frozenSnapshotBinding)
+	for _, name := range sortedUniqueFrozenStrings(ordinaryOutputs) {
+		if _, typed := typedOutputs[name]; typed {
+			continue
+		}
+		binding := frozenSnapshotBinding{presence: frozenSnapshotGuaranteed, writePath: identity}
+		env[name] = binding
+		produced[name] = binding
+	}
+	for _, name := range sortedFrozenDeclarationKeys(typedOutputs) {
+		declaration := typedOutputs[name]
+		if checker.acrossDepth > 0 {
+			return frozenSnapshotFlow{}, fmt.Errorf("workflow: %s: typed output %q is not allowed inside across local scope", identity, name)
+		}
+		if _, found := env[name]; found && declaration.Optional {
+			return frozenSnapshotFlow{}, fmt.Errorf("workflow: %s: optional output %q shadows an existing artifact; its concrete producer would be path-dependent", identity, name)
+		}
+		presence := frozenSnapshotGuaranteed
+		if declaration.Optional {
+			presence = frozenSnapshotConditional
+		}
+		producer := &frozenSnapshotProducer{
+			key:  kind + "\x00" + identity + "\x00" + functionID + "\x00" + name,
+			path: identity,
+		}
+		binding := frozenSnapshotBinding{
+			typ:       declaration.Type,
+			presence:  presence,
+			typed:     true,
+			producer:  producer,
+			writePath: identity,
+		}
+		env[name] = binding
+		produced[name] = binding
+	}
+	return frozenSnapshotFlow{
+		env:         env,
+		produced:    produced,
+		mayProduced: cloneFrozenProduced(produced),
+		allProduced: cloneFrozenProduced(produced),
+	}, nil
+}
+
+func frozenSnapshotInputs(value any) (map[string]frozenSnapshotDeclaration, error) {
+	if value == nil {
+		return nil, nil
+	}
+	configs, ok := value.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("input_types must be an object")
+	}
+	result := make(map[string]frozenSnapshotDeclaration, len(configs))
+	for name, raw := range configs {
+		config, ok := raw.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("input_types[%q] must be an object", name)
+		}
+		typ, ok := config["type"].(string)
+		if !ok || !typeRefPattern.MatchString(typ) {
+			return nil, fmt.Errorf("input_types[%q] has invalid type reference", name)
+		}
+		optional := false
+		if rawOptional, found := config["optional"]; found {
+			var ok bool
+			optional, ok = rawOptional.(bool)
+			if !ok {
+				return nil, fmt.Errorf("input_types[%q].optional must be a boolean", name)
+			}
+		}
+		result[name] = frozenSnapshotDeclaration{Type: typ, Optional: optional}
+	}
+	return result, nil
+}
+
+func frozenSnapshotOutputs(value any) (map[string]frozenSnapshotDeclaration, error) {
+	if value == nil {
+		return nil, nil
+	}
+	configs, ok := value.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("output_types must be an object")
+	}
+	result := make(map[string]frozenSnapshotDeclaration, len(configs))
+	for name, raw := range configs {
+		typ, ok := raw.(string)
+		if !ok || !typeRefPattern.MatchString(typ) {
+			return nil, fmt.Errorf("output_types[%q] has invalid type reference", name)
+		}
+		result[name] = frozenSnapshotDeclaration{Type: typ}
+	}
+	return result, nil
+}
+
+func frozenTaskArtifactNames(step map[string]any) ([]string, []string) {
+	config, _ := step["config"].(map[string]any)
+	inputs := frozenNamedObjectList(config["inputs"])
+	outputs := frozenNamedObjectList(config["outputs"])
+	inputMapping := frozenStringMap(step["input_mapping"])
+	outputMapping := frozenStringMap(step["output_mapping"])
+	for index, name := range inputs {
+		if mapped, found := inputMapping[name]; found {
+			inputs[index] = mapped
+		}
+	}
+	for index, name := range outputs {
+		if mapped, found := outputMapping[name]; found {
+			outputs[index] = mapped
+		}
+	}
+	return inputs, outputs
+}
+
+func frozenNamedObjectList(value any) []string {
+	entries, _ := value.([]any)
+	result := make([]string, 0, len(entries))
+	for _, raw := range entries {
+		entry, _ := raw.(map[string]any)
+		name, _ := entry["name"].(string)
+		result = append(result, name)
+	}
+	return result
+}
+
+func frozenStringMap(value any) map[string]string {
+	entries, _ := value.(map[string]any)
+	result := make(map[string]string, len(entries))
+	for key, raw := range entries {
+		if text, ok := raw.(string); ok {
+			result[key] = text
+		}
+	}
+	return result
+}
+
+func writeFrozenUntyped(entry frozenSnapshotEnvironment, name, path string) frozenSnapshotFlow {
+	env := cloneFrozenEnvironment(entry)
+	binding := frozenSnapshotBinding{presence: frozenSnapshotGuaranteed, writePath: path}
+	env[name] = binding
+	writes := map[string]frozenSnapshotBinding{name: binding}
+	return frozenSnapshotFlow{
+		env:         env,
+		produced:    writes,
+		mayProduced: cloneFrozenProduced(writes),
+		allProduced: cloneFrozenProduced(writes),
+	}
+}
+
+func emptyFrozenFlow(entry frozenSnapshotEnvironment) frozenSnapshotFlow {
+	return frozenSnapshotFlow{
+		env:         cloneFrozenEnvironment(entry),
+		produced:    make(map[string]frozenSnapshotBinding),
+		mayProduced: make(map[string]frozenSnapshotBinding),
+		allProduced: make(map[string]frozenSnapshotBinding),
+	}
+}
+
+func conditionalFrozenTryFlow(entry frozenSnapshotEnvironment, child frozenSnapshotFlow) frozenSnapshotFlow {
+	env := cloneFrozenEnvironment(entry)
+	for _, name := range sortedFrozenBindingKeys(child.allProduced) {
+		previous, existed := entry[name]
+		if !existed {
+			continue
+		}
+		env[name] = mergeFrozenBindingAlternatives(previous, child.allProduced[name])
+	}
+	return frozenSnapshotFlow{
+		env:         env,
+		produced:    make(map[string]frozenSnapshotBinding),
+		mayProduced: cloneFrozenProduced(child.allProduced),
+		allProduced: cloneFrozenProduced(child.allProduced),
+	}
+}
+
+func conservativeFrozenEnsureEnvironment(entry frozenSnapshotEnvironment, main frozenSnapshotFlow) frozenSnapshotEnvironment {
+	env := cloneFrozenEnvironment(entry)
+	for _, name := range sortedFrozenBindingKeys(main.allProduced) {
+		write := main.allProduced[name]
+		previous, existed := entry[name]
+		if !existed {
+			write.presence = frozenSnapshotConditional
+			env[name] = write
+			continue
+		}
+		env[name] = mergeFrozenBindingAlternatives(previous, write)
+	}
+	return env
+}
+
+func applyFrozenSuccessfulFlow(base frozenSnapshotEnvironment, flow frozenSnapshotFlow) frozenSnapshotEnvironment {
+	env := cloneFrozenEnvironment(base)
+	for _, name := range sortedFrozenBindingKeys(flow.mayProduced) {
+		if _, found := flow.produced[name]; found {
+			if final, found := flow.env[name]; found {
+				env[name] = final
+			} else {
+				env[name] = flow.produced[name]
+			}
+			continue
+		}
+		previous, existed := env[name]
+		if existed {
+			env[name] = mergeFrozenBindingAlternatives(previous, flow.mayProduced[name])
+		}
+	}
+	return env
+}
+
+func mergeFrozenBindingAlternatives(left, right frozenSnapshotBinding) frozenSnapshotBinding {
+	merged := frozenSnapshotBinding{
+		presence:  frozenSnapshotGuaranteed,
+		ambiguous: true,
+		writePath: joinFrozenWritePaths(left.writePath, right.writePath),
+	}
+	if left.presence == frozenSnapshotConditional || right.presence == frozenSnapshotConditional {
+		merged.presence = frozenSnapshotConditional
+	}
+	if left.typed && right.typed && left.typ == right.typ {
+		merged.typed = true
+		merged.typ = left.typ
+		if left.producer == right.producer {
+			merged.producer = left.producer
+		}
+	}
+	return merged
+}
+
+func joinFrozenWritePaths(left, right string) string {
+	switch {
+	case left == "":
+		return right
+	case right == "" || left == right:
+		return left
+	default:
+		return left + " or " + right
+	}
+}
+
+func cloneFrozenEnvironment(source frozenSnapshotEnvironment) frozenSnapshotEnvironment {
+	clone := make(frozenSnapshotEnvironment, len(source))
+	for name, binding := range source {
+		clone[name] = binding
+	}
+	return clone
+}
+
+func cloneFrozenProduced(source map[string]frozenSnapshotBinding) map[string]frozenSnapshotBinding {
+	clone := make(map[string]frozenSnapshotBinding, len(source))
+	for name, binding := range source {
+		clone[name] = binding
+	}
+	return clone
+}
+
+func mergeFrozenProduced(destination, source map[string]frozenSnapshotBinding) {
+	for _, name := range sortedFrozenBindingKeys(source) {
+		destination[name] = source[name]
+	}
+}
+
+func mergeFrozenPossible(destination, source map[string]frozenSnapshotBinding) {
+	for _, name := range sortedFrozenBindingKeys(source) {
+		binding := source[name]
+		if previous, found := destination[name]; found {
+			binding = mergeFrozenBindingAlternatives(previous, binding)
+		}
+		destination[name] = binding
+	}
+}
+
+func sortedFrozenBindingKeys(values map[string]frozenSnapshotBinding) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func sortedFrozenDeclarationKeys(values map[string]frozenSnapshotDeclaration) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func sortedUniqueFrozenStrings(values []string) []string {
+	set := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		set[value] = struct{}{}
+	}
+	keys := make([]string, 0, len(set))
+	for key := range set {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+type frozenOrdinaryDeclaration struct {
+	name string
+	typ  string
+}
+
+type frozenOrdinaryValidator struct {
+	resources     map[string]frozenOrdinaryDeclaration
+	resourceTypes map[string]frozenOrdinaryDeclaration
+	prototypes    map[string]frozenOrdinaryDeclaration
+	usedResources map[string]struct{}
+	seenGetNames  map[string]struct{}
+}
+
+func validateFrozenOrdinaryFunction(source *functionSource, plan []any) error {
+	validator := &frozenOrdinaryValidator{
+		resources:     make(map[string]frozenOrdinaryDeclaration),
+		resourceTypes: make(map[string]frozenOrdinaryDeclaration),
+		prototypes:    make(map[string]frozenOrdinaryDeclaration),
+		usedResources: make(map[string]struct{}),
+		seenGetNames:  make(map[string]struct{}),
+	}
+	if err := validator.decodeDeclarations(source); err != nil {
+		return fmt.Errorf("workflow: invalid Concourse config: %w", err)
+	}
+	for index, value := range plan {
+		step, ok := value.(map[string]any)
+		if !ok {
+			return fmt.Errorf("workflow: invalid Concourse config: plan[%d] must be an object", index)
+		}
+		if err := validator.validateStep(step, fmt.Sprintf("jobs.entry.plan[%d]", index)); err != nil {
+			return fmt.Errorf("workflow: invalid Concourse config: %w", err)
+		}
+	}
+	for name := range validator.resources {
+		if _, used := validator.usedResources[name]; !used {
+			return fmt.Errorf("workflow: invalid Concourse config: resource %q is not used", name)
+		}
+	}
+	return nil
+}
+
+func (validator *frozenOrdinaryValidator) decodeDeclarations(source *functionSource) error {
+	resourceTypes, err := frozenDeclarationList(source.ResourceTypes, "resource_types")
+	if err != nil {
+		return err
+	}
+	for index, declaration := range resourceTypes {
+		if declaration.name == "" {
+			return fmt.Errorf("resource_types[%d] has no name", index)
+		}
+		raw := frozenObjectListEntry(source.ResourceTypes, index)
+		image, _ := raw["image"].(string)
+		if image != "" && declaration.typ != "" {
+			return fmt.Errorf("resource_types.%s cannot specify both 'image' and 'type'", declaration.name)
+		}
+		if image == "" && declaration.typ == "" {
+			return fmt.Errorf("resource_types.%s has no type", declaration.name)
+		}
+		if _, duplicate := validator.resourceTypes[declaration.name]; duplicate {
+			return fmt.Errorf("duplicate resource type %q", declaration.name)
+		}
+		validator.resourceTypes[declaration.name] = declaration
+	}
+
+	prototypes, err := frozenDeclarationList(source.Prototypes, "prototypes")
+	if err != nil {
+		return err
+	}
+	for index, declaration := range prototypes {
+		if declaration.name == "" {
+			return fmt.Errorf("prototypes[%d] has no name", index)
+		}
+		if declaration.typ == "" {
+			return fmt.Errorf("prototypes.%s has no type", declaration.name)
+		}
+		if _, duplicate := validator.prototypes[declaration.name]; duplicate {
+			return fmt.Errorf("duplicate prototype %q", declaration.name)
+		}
+		if _, duplicate := validator.resourceTypes[declaration.name]; duplicate {
+			return fmt.Errorf("resource type and prototype have the same name %q", declaration.name)
+		}
+		validator.prototypes[declaration.name] = declaration
+	}
+
+	resources, err := frozenDeclarationList(source.Resources, "resources")
+	if err != nil {
+		return err
+	}
+	for index, declaration := range resources {
+		if declaration.name == "" {
+			return fmt.Errorf("resources[%d] has no name", index)
+		}
+		if declaration.typ == "" {
+			return fmt.Errorf("resources.%s has no type", declaration.name)
+		}
+		if _, duplicate := validator.resources[declaration.name]; duplicate {
+			return fmt.Errorf("duplicate resource %q", declaration.name)
+		}
+		validator.resources[declaration.name] = declaration
+	}
+
+	if err := validateFrozenVarSources(source.VarSources); err != nil {
+		return err
+	}
+	return nil
+}
+
+func frozenDeclarationList(value any, field string) ([]frozenOrdinaryDeclaration, error) {
+	if value == nil {
+		return nil, nil
+	}
+	entries, ok := value.([]any)
+	if !ok {
+		return nil, fmt.Errorf("%s must be a list", field)
+	}
+	result := make([]frozenOrdinaryDeclaration, 0, len(entries))
+	for index, raw := range entries {
+		entry, ok := raw.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("%s[%d] must be an object", field, index)
+		}
+		name, _ := entry["name"].(string)
+		typ, _ := entry["type"].(string)
+		result = append(result, frozenOrdinaryDeclaration{name: name, typ: typ})
+	}
+	return result, nil
+}
+
+func frozenObjectListEntry(value any, index int) map[string]any {
+	entries, _ := value.([]any)
+	if index < 0 || index >= len(entries) {
+		return nil
+	}
+	entry, _ := entries[index].(map[string]any)
+	return entry
+}
+
+func validateFrozenVarSources(value any) error {
+	if value == nil {
+		return nil
+	}
+	entries, ok := value.([]any)
+	if !ok {
+		return fmt.Errorf("var_sources must be a list")
+	}
+	seen := make(map[string]struct{})
+	for index, raw := range entries {
+		entry, ok := raw.(map[string]any)
+		if !ok {
+			return fmt.Errorf("var_sources[%d] must be an object", index)
+		}
+		name, _ := entry["name"].(string)
+		typ, _ := entry["type"].(string)
+		if name == "" {
+			return fmt.Errorf("var_sources[%d] has no name", index)
+		}
+		if _, duplicate := seen[name]; duplicate {
+			return fmt.Errorf("duplicate variable source %q", name)
+		}
+		seen[name] = struct{}{}
+		switch typ {
+		case "vault", "dummy", "ssm", "secretsmanager", "idtoken":
+		default:
+			return fmt.Errorf("unknown credential manager type: %s", typ)
+		}
+	}
+	return nil
+}
+
+func (validator *frozenOrdinaryValidator) validateStep(step map[string]any, path string) error {
+	core := ""
+	for _, name := range []string{
+		"agent", "harvest", "run", "task", "put", "get",
+		"set_pipeline", "load_var", "try", "do", "in_parallel",
+	} {
+		if _, found := step[name]; found {
+			core = name
+			break
+		}
+	}
+	if attempts, found := step["attempts"]; found {
+		value, ok := frozenInt(attempts)
+		if !ok || value <= 0 {
+			return fmt.Errorf("%s.attempts must be greater than 0", path)
+		}
+	}
+	if timeout, found := step["timeout"]; found && frozenTimeoutIsWrapper(core) {
+		text, ok := timeout.(string)
+		if !ok {
+			return fmt.Errorf("%s.timeout must be a duration string", path)
+		}
+		if _, err := time.ParseDuration(text); err != nil {
+			return fmt.Errorf("%s.timeout invalid duration %q", path, text)
+		}
+	}
+	if across, found := step["across"]; found {
+		entries, ok := across.([]any)
+		if !ok || len(entries) == 0 {
+			return fmt.Errorf("%s.across has no vars specified", path)
+		}
+		for index, raw := range entries {
+			entry, ok := raw.(map[string]any)
+			if !ok {
+				return fmt.Errorf("%s.across[%d] must be an object", path, index)
+			}
+			name, _ := entry["var"].(string)
+			if name == "" {
+				return fmt.Errorf("%s.across[%d].var is required", path, index)
+			}
+			if rawLimit, found := entry["max_in_flight"]; found {
+				switch limit := rawLimit.(type) {
+				case string:
+					if limit != "all" {
+						return fmt.Errorf("%s.across[%d].max_in_flight is invalid", path, index)
+					}
+				default:
+					numeric, ok := frozenInt(rawLimit)
+					if !ok || numeric <= 0 {
+						return fmt.Errorf("%s.across[%d].max_in_flight must be greater than 0", path, index)
+					}
+				}
+			}
+		}
+	}
+
+	switch core {
+	case "agent":
+		if err := validator.validateAgent(step, path); err != nil {
+			return err
+		}
+	case "task":
+		if err := validator.validateTask(step, path); err != nil {
+			return err
+		}
+	case "get", "put":
+		name, _ := step[core].(string)
+		if name == "" {
+			return fmt.Errorf("%s.%s has an empty name", path, core)
+		}
+		resource, _ := step["resource"].(string)
+		if resource == "" {
+			resource = name
+		}
+		if _, found := validator.resources[resource]; !found {
+			return fmt.Errorf("%s.%s(%s): unknown resource %q", path, core, name, resource)
+		}
+		validator.usedResources[resource] = struct{}{}
+		if core == "get" {
+			if _, duplicate := validator.seenGetNames[name]; duplicate {
+				return fmt.Errorf("%s.get(%s): repeated name", path, name)
+			}
+			validator.seenGetNames[name] = struct{}{}
+		}
+	case "run":
+		message, _ := step["run"].(string)
+		typ, _ := step["type"].(string)
+		if message == "" {
+			return fmt.Errorf("%s.run has an empty message", path)
+		}
+		if _, found := validator.prototypes[typ]; !found {
+			return fmt.Errorf("%s.run(%s): unknown prototype %q", path, message, typ)
+		}
+	case "harvest":
+		if err := validateFrozenHarvest(step, path); err != nil {
+			return err
+		}
+	case "set_pipeline":
+		if name, _ := step["set_pipeline"].(string); name == "" {
+			return fmt.Errorf("%s.set_pipeline has an empty name", path)
+		}
+		if file, _ := step["file"].(string); file == "" {
+			return fmt.Errorf("%s.set_pipeline: no file specified", path)
+		}
+	case "load_var":
+		if name, _ := step["load_var"].(string); name == "" {
+			return fmt.Errorf("%s.load_var has an empty name", path)
+		}
+		if file, _ := step["file"].(string); file == "" {
+			return fmt.Errorf("%s.load_var: no file specified", path)
+		}
+	case "try":
+		if err := validator.validateNestedStep(step["try"], path+".try"); err != nil {
+			return err
+		}
+	case "do":
+		if err := validator.validateStepList(step["do"], path+".do"); err != nil {
+			return err
+		}
+	case "in_parallel":
+		steps, err := frozenParallelSteps(step["in_parallel"])
+		if err != nil {
+			return fmt.Errorf("%s.in_parallel: %w", path, err)
+		}
+		for index, raw := range steps {
+			nested, ok := raw.(map[string]any)
+			if !ok {
+				return fmt.Errorf("%s.in_parallel.steps[%d] must be an object", path, index)
+			}
+			if err := validator.validateStep(nested, fmt.Sprintf("%s.in_parallel.steps[%d]", path, index)); err != nil {
+				return err
+			}
+		}
+	}
+
+	for _, hook := range []string{"on_success", "on_failure", "on_abort", "on_error", "ensure"} {
+		if nested, found := step[hook]; found {
+			if err := validator.validateNestedStep(nested, path+"."+hook); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (validator *frozenOrdinaryValidator) validateNestedStep(value any, path string) error {
+	step, ok := value.(map[string]any)
+	if !ok {
+		return fmt.Errorf("%s must be an object", path)
+	}
+	return validator.validateStep(step, path)
+}
+
+func (validator *frozenOrdinaryValidator) validateStepList(value any, path string) error {
+	steps, ok := value.([]any)
+	if !ok {
+		return fmt.Errorf("%s must be a list", path)
+	}
+	for index, raw := range steps {
+		step, ok := raw.(map[string]any)
+		if !ok {
+			return fmt.Errorf("%s[%d] must be an object", path, index)
+		}
+		if err := validator.validateStep(step, fmt.Sprintf("%s[%d]", path, index)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (validator *frozenOrdinaryValidator) validateAgent(step map[string]any, path string) error {
+	name, _ := step["agent"].(string)
+	if name == "" {
+		return fmt.Errorf("%s.agent has an empty name", path)
+	}
+	prompt, _ := step["prompt"].(string)
+	promptFile, _ := step["prompt_file"].(string)
+	if prompt == "" && promptFile == "" {
+		return fmt.Errorf("%s.agent(%s): must specify either `prompt:` or `prompt_file:`", path, name)
+	}
+	if prompt != "" && promptFile != "" {
+		return fmt.Errorf("%s.agent(%s): must specify one of `prompt:` or `prompt_file:`, not both", path, name)
+	}
+	if budget, found := frozenFloat(step["budget_slice_usd"]); found && budget < 0 {
+		return fmt.Errorf("%s.agent(%s): budget_slice_usd must not be negative", path, name)
+	}
+	if turns, found := frozenInt(step["max_turns"]); found && turns < 0 {
+		return fmt.Errorf("%s.agent(%s): max_turns must not be negative", path, name)
+	}
+	inputs := stringList(step["inputs"])
+	outputs := stringList(step["outputs"])
+	typedInputs, err := frozenSnapshotInputs(step["input_types"])
+	if err != nil {
+		return err
+	}
+	typedOutputs, err := frozenSnapshotOutputs(step["output_types"])
+	if err != nil {
+		return err
+	}
+	if err := validateFrozenSnapshotMembership(typedInputs, inputs, "input_types", "declared agent input"); err != nil {
+		return fmt.Errorf("%s.agent(%s): %w", path, name, err)
+	}
+	if err := validateFrozenSnapshotMembership(typedOutputs, outputs, "output_types", "declared agent output"); err != nil {
+		return fmt.Errorf("%s.agent(%s): %w", path, name, err)
+	}
+	seenOutputs := make(map[string]struct{})
+	seenEnv := make(map[string]string)
+	for _, output := range outputs {
+		if _, duplicate := seenOutputs[output]; duplicate {
+			return fmt.Errorf("%s.agent(%s): duplicate agent output %q", path, name, output)
+		}
+		seenOutputs[output] = struct{}{}
+		if output == "flight" {
+			return fmt.Errorf("%s.agent(%s): output name 'flight' is reserved for the flight recorder", path, name)
+		}
+		if !agentOutputNamePattern.MatchString(output) {
+			return fmt.Errorf("%s.agent(%s): output name %q must contain only letters, digits, '-' and '_'", path, name, output)
+		}
+		mangled := strings.ToUpper(strings.ReplaceAll(output, "-", "_"))
+		if mangled == "SCHEMA" {
+			return fmt.Errorf("%s.agent(%s): output name %q collides with the reserved AGENT_OUTPUT_SCHEMA env var", path, name, output)
+		}
+		if previous, duplicate := seenEnv[mangled]; duplicate {
+			return fmt.Errorf("%s.agent(%s): output names %q and %q collide after AGENT_OUTPUT env-name mangling", path, name, previous, output)
+		}
+		seenEnv[mangled] = output
+	}
+	return nil
+}
+
+func frozenTimeoutIsWrapper(core string) bool {
+	switch core {
+	case "set_pipeline", "load_var", "try", "do", "in_parallel":
+		return true
+	default:
+		return false
+	}
+}
+
+func (validator *frozenOrdinaryValidator) validateTask(step map[string]any, path string) error {
+	name, _ := step["task"].(string)
+	if name == "" {
+		return fmt.Errorf("%s.task has an empty name", path)
+	}
+	config, hasConfig := step["config"].(map[string]any)
+	file, _ := step["file"].(string)
+	if !hasConfig && file == "" {
+		return fmt.Errorf("%s.task(%s): must specify either `file:` or `config:`", path, name)
+	}
+	if hasConfig && file != "" {
+		return fmt.Errorf("%s.task(%s): must specify one of `file:` or `config:`, not both", path, name)
+	}
+	if hasConfig {
+		platform, _ := config["platform"].(string)
+		if platform == "" {
+			return fmt.Errorf("%s.task(%s).config: missing 'platform'", path, name)
+		}
+		for _, field := range []string{"inputs", "outputs"} {
+			entries, _ := config[field].([]any)
+			for index, raw := range entries {
+				entry, _ := raw.(map[string]any)
+				if itemName, _ := entry["name"].(string); itemName == "" {
+					return fmt.Errorf("%s.task(%s).config.%s[%d] is missing a name", path, name, field, index)
+				}
+			}
+		}
+		inputs, outputs := frozenTaskArtifactNames(step)
+		typedInputs, err := frozenSnapshotInputs(step["input_types"])
+		if err != nil {
+			return err
+		}
+		typedOutputs, err := frozenSnapshotOutputs(step["output_types"])
+		if err != nil {
+			return err
+		}
+		if err := validateFrozenSnapshotMembership(typedInputs, inputs, "input_types", "effective task input"); err != nil {
+			return fmt.Errorf("%s.task(%s): %w", path, name, err)
+		}
+		if err := validateFrozenSnapshotMembership(typedOutputs, outputs, "output_types", "effective task output"); err != nil {
+			return fmt.Errorf("%s.task(%s): %w", path, name, err)
+		}
+	}
+	return nil
+}
+
+func validateFrozenSnapshotMembership(
+	declarations map[string]frozenSnapshotDeclaration,
+	members []string,
+	field string,
+	memberKind string,
+) error {
+	set := make(map[string]struct{}, len(members))
+	for _, member := range members {
+		set[member] = struct{}{}
+	}
+	for name := range declarations {
+		if name == "" {
+			return fmt.Errorf("%s key must not be empty", field)
+		}
+		if _, found := set[name]; !found {
+			return fmt.Errorf("%s[%q] does not name a %s", field, name, memberKind)
+		}
+	}
+	return nil
+}
+
+func validateFrozenHarvest(step map[string]any, path string) error {
+	name, _ := step["harvest"].(string)
+	if name == "" {
+		return fmt.Errorf("%s.harvest has an empty name", path)
+	}
+	if workspace, _ := step["workspace"].(string); workspace == "" {
+		return fmt.Errorf("%s.harvest(%s): must specify `workspace:`", path, name)
+	}
+	if repo, _ := step["repo"].(string); repo == "" {
+		return fmt.Errorf("%s.harvest(%s): must specify `repo:`", path, name)
+	}
+	push, _ := step["push"].(bool)
+	branch, _ := step["branch"].(string)
+	if push && branch == "" {
+		return fmt.Errorf("%s.harvest(%s): `push: true` requires `branch:`", path, name)
+	}
+	policy, _ := step["gate_policy"].(map[string]any)
+	gates, _ := policy["gates"].([]any)
+	if len(gates) > 0 {
+		if _, found := step["dev_mcp"]; !found {
+			return fmt.Errorf("%s.harvest(%s): gates require `dev_mcp:`", path, name)
+		}
+	}
+	return nil
+}
+
+func frozenInt(value any) (int, bool) {
+	switch number := value.(type) {
+	case int:
+		return number, true
+	case float64:
+		integer := int(number)
+		return integer, float64(integer) == number
+	default:
+		return 0, false
+	}
+}
+
+func frozenFloat(value any) (float64, bool) {
+	switch number := value.(type) {
+	case int:
+		return float64(number), true
+	case float64:
+		return number, true
+	default:
+		return 0, false
+	}
 }

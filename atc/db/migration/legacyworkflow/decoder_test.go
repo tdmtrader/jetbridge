@@ -1,6 +1,7 @@
 package legacyworkflow
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -266,6 +267,160 @@ plan:
 			t.Fatal("DecodeManifest accepted post-release long-form output_types")
 		}
 	})
+
+	t.Run("rejects an invalid OCI repository with a valid digest", func(t *testing.T) {
+		source := `schema_version: 3
+name: released-v3
+signature_version: 7
+inputs: []
+outputs: []
+capabilities:
+  tools:
+    contract: acme.tools/v1
+    sidecar:
+      name: tools
+      image: registry.example/Invalid_Name/tools@sha256:` + releasedDigest + `
+plan:
+- agent: work
+  prompt: work
+  capabilities: [tools]
+`
+		if _, _, err := DecodeManifest(map[string]string{"workflow.yml": source}); err == nil {
+			t.Fatal("DecodeManifest accepted an invalid OCI repository name")
+		}
+	})
+}
+
+func TestDecodeManifestPreservesReleasedSchema3SemanticValidation(t *testing.T) {
+	tests := map[string]string{
+		"unavailable public output": releasedV3(`
+inputs: []
+outputs:
+- {name: review, type: review/v1, from: unavailable}
+`),
+		"duplicate function IDs": `schema_version: 3
+name: duplicate-functions
+signature_version: 1
+inputs: []
+outputs: []
+plan:
+- agent: first
+  function_id: duplicate
+  prompt: first
+- agent: second
+  function_id: duplicate
+  prompt: second
+`,
+		"invalid ordinary task config": `schema_version: 3
+name: invalid-task
+signature_version: 1
+inputs: []
+outputs: []
+plan:
+- task: invalid
+  function_id: invalid
+  config:
+    run: {path: /bin/true}
+`,
+		"unknown plan envelope field": `schema_version: 3
+name: unknown-envelope
+signature_version: 1
+inputs: []
+outputs: []
+plan:
+- agent: work
+  prompt: work
+  typo: true
+`,
+		"unknown nested gate field": `schema_version: 3
+name: unknown-gate
+signature_version: 1
+inputs: []
+outputs: []
+plan:
+- harvest: publish
+  workspace: workspace
+  repo: example/repo
+  gate_policy:
+    gates:
+    - {gate: test, scope: full, typo: true}
+`,
+		"unknown nested rubric field": `schema_version: 3
+name: unknown-rubric
+signature_version: 1
+inputs: []
+outputs: []
+plan:
+- harvest: publish
+  workspace: workspace
+  repo: example/repo
+  judge:
+    rubric:
+    - {name: correctness, weight: 1, guidance: good, typo: true}
+    pass_threshold: 1
+`,
+	}
+
+	for name, source := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, _, err := DecodeManifest(map[string]string{"workflow.yml": source}); err == nil {
+				t.Fatal("DecodeManifest accepted source rejected by the released compiler")
+			}
+		})
+	}
+}
+
+func TestDecodeManifestPreservesReleasedCompiledAssetLimits(t *testing.T) {
+	t.Run("counts repeated prompt expansion per node", func(t *testing.T) {
+		prompt := strings.Repeat("p", 1<<20)
+		atBoundary := map[string]string{
+			"workflow.yml":    repeatedPromptFunction(10),
+			"prompts/work.md": prompt,
+		}
+		if _, _, err := DecodeManifest(atBoundary); err != nil {
+			t.Fatalf("DecodeManifest rejected exact compiled-asset boundary: %v", err)
+		}
+
+		aboveBoundary := map[string]string{
+			"workflow.yml":    repeatedPromptFunction(11),
+			"prompts/work.md": prompt,
+		}
+		if _, _, err := DecodeManifest(aboveBoundary); err == nil {
+			t.Fatal("DecodeManifest accepted repeated expanded assets above 10 MiB")
+		}
+	})
+
+	t.Run("counts the selected skill tree union once", func(t *testing.T) {
+		source := `schema_version: 3
+name: skill-union
+signature_version: 1
+inputs: []
+outputs: []
+plan:
+- agent: first
+  prompt: first
+  skills: [testing]
+- agent: second
+  prompt: second
+  skills: [testing]
+`
+		atBoundary := map[string]string{
+			"workflow.yml":            source,
+			"skills/testing/SKILL.md": strings.Repeat("s", 512<<10),
+		}
+		if _, _, err := DecodeManifest(atBoundary); err != nil {
+			t.Fatalf("DecodeManifest rejected exact selected-skill boundary: %v", err)
+		}
+
+		aboveBoundary := map[string]string{
+			"workflow.yml":                 source,
+			"skills/testing/SKILL.md":      strings.Repeat("s", 512<<10),
+			"skills/testing/refs/extra.md": "x",
+		}
+		if _, _, err := DecodeManifest(aboveBoundary); err == nil {
+			t.Fatal("DecodeManifest accepted selected skill union above 512 KiB")
+		}
+	})
 }
 
 func releasedV3(signature string) string {
@@ -276,5 +431,24 @@ signature_version: 7
 - agent: work
   function_id: work
   prompt: work
+  outputs: [result, first-result, changed-result]
+  output_types:
+    result: review/v1
+    first-result: review/v1
+    changed-result: review/v1
 `
+}
+
+func repeatedPromptFunction(agents int) string {
+	var plan strings.Builder
+	for index := 0; index < agents; index++ {
+		fmt.Fprintf(&plan, "- agent: work-%d\n  prompt_file: prompts/work.md\n", index)
+	}
+	return `schema_version: 3
+name: repeated-assets
+signature_version: 1
+inputs: []
+outputs: []
+plan:
+` + plan.String()
 }
