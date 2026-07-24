@@ -495,12 +495,12 @@ all =
                 given iVisitABuildWithAnAgentStep
                     >> then_ (iSeeText "implement")
             ]
-        , describe "harvest step (U1)"
-            [ test "renders a harvest: header" <|
-                given iVisitABuildWithAHarvestStep
-                    >> then_ (iSeeText "harvest:")
-            , test "shows the harvest step name" <|
-                given iVisitABuildWithAHarvestStep
+        , describe "retired step (U1)"
+            [ test "renders a retired harvest node from completed history" <|
+                given iVisitABuildWithARetiredHarvestStep
+                    >> then_ (iSeeText "retired: harvest")
+            , test "shows the retired step name" <|
+                given iVisitABuildWithARetiredHarvestStep
                     >> then_ (iSeeText "push-branch")
             ]
         , describe "unknown step fallback (U1 durability)"
@@ -1102,19 +1102,19 @@ thePlanContainsAnAgentStep =
             )
 
 
-iVisitABuildWithAHarvestStep =
+iVisitABuildWithARetiredHarvestStep =
     iOpenTheBuildPage
         >> myBrowserFetchedTheBuild
-        >> thePlanContainsAHarvestStep
+        >> thePlanContainsARetiredHarvestStep
 
 
-thePlanContainsAHarvestStep =
+thePlanContainsARetiredHarvestStep =
     Tuple.first
         >> Application.handleCallback
             (Callback.PlanAndResourcesFetched 1 <|
                 Ok
                     ( { id = "harvestStepId"
-                      , step = Concourse.BuildStepHarvest "push-branch"
+                      , step = Concourse.BuildStepRetired "harvest" "push-branch"
                       }
                     , { inputs = [], outputs = [] }
                     )

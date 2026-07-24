@@ -68,7 +68,7 @@ type StepTree
     | Timeout StepTree
     | Sidecar StepID
     | Agent StepID
-    | Harvest StepID
+    | Retired StepID
     | Unknown StepID
 
 
@@ -300,7 +300,7 @@ activeStepIds model tree =
         Agent stepId ->
             [ stepId ]
 
-        Harvest stepId ->
+        Retired stepId ->
             [ stepId ]
 
         Unknown stepId ->
@@ -392,7 +392,7 @@ updateTreeNodeAt id fn tree =
         Agent stepId ->
             updateSelf stepId
 
-        Harvest stepId ->
+        Retired stepId ->
             updateSelf stepId
 
         Unknown stepId ->
