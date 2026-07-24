@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/concourse/concourse/agent/api/outcomes"
 	"github.com/concourse/concourse/agent/gitcheck"
 	"github.com/concourse/concourse/agent/projection"
 	"github.com/concourse/concourse/agent/snapshot"
@@ -19,113 +18,7 @@ import (
 //counterfeiter:generate . AgentRepositoryChangesFactory
 type AgentRepositoryChangesFactory interface {
 	projection.RepositoryChangeStore
-	outcomes.TicketRepositoryChangeResolver
 	GetRepositoryChangeProjection(context.Context, snapshot.SnapshotID) (projection.RepositoryChange, bool, error)
-}
-
-func (factory *agentRepositoryChangesFactory) ResolveTicketRepositoryChange(ctx context.Context, ticketID int) (outcomes.TicketRepositoryChangeResolution, error) {
-	if ctx == nil {
-		return outcomes.TicketRepositoryChangeResolution{}, context.Canceled
-	}
-	if ticketID <= 0 {
-		return outcomes.TicketRepositoryChangeResolution{}, fmt.Errorf("db: ticket ID must be positive")
-	}
-	var schemaVersion int
-	var ticketReference string
-	var externalReference string
-	var workflowRunID sql.NullInt64
-	err := factory.conn.QueryRowContext(ctx, `
-		SELECT definition.schema_version,
-		       ticket.id::text,
-		       btrim(ticket.external_ref),
-		       ticket.workflow_run_id
-		FROM agent_tickets ticket
-		JOIN agent_workflow_definitions definition ON definition.id = ticket.workflow_definition_id
-		WHERE ticket.id = $1
-	`, ticketID).Scan(&schemaVersion, &ticketReference, &externalReference, &workflowRunID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return outcomes.TicketRepositoryChangeResolution{}, nil
-	}
-	if err != nil {
-		return outcomes.TicketRepositoryChangeResolution{}, err
-	}
-	var exactWorkflowRunID any
-	if workflowRunID.Valid {
-		exactWorkflowRunID = workflowRunID.Int64
-	}
-	rows, err := factory.conn.QueryContext(ctx, `
-		WITH RECURSIVE exact_root AS (
-			SELECT run.id, run.created_at
-			FROM agent_workflow_runs run
-			JOIN teams team ON team.id = run.team_id AND team.name = $4
-			WHERE $3::bigint IS NOT NULL AND run.id = $3
-		), numeric_roots AS (
-			SELECT run.id, run.created_at
-			FROM agent_workflow_runs run
-			JOIN teams team ON team.id = run.team_id AND team.name = $4
-			WHERE $3::bigint IS NULL
-			  AND run.origin_kind = 'ticket' AND run.origin_reference = $1
-		), roots AS (
-			SELECT id, created_at FROM exact_root
-			UNION
-			SELECT id, created_at FROM numeric_roots
-			UNION
-			SELECT run.id, run.created_at
-			FROM agent_workflow_runs run
-			JOIN teams team ON team.id = run.team_id AND team.name = $4
-			WHERE $3::bigint IS NULL
-			  AND NOT EXISTS (SELECT 1 FROM numeric_roots)
-			  AND run.origin_kind = 'ticket'
-			  AND $2 <> '' AND run.origin_reference = $2
-		), ticket_runs AS (
-			SELECT id, created_at FROM roots
-			UNION
-			SELECT retry.id, retry.created_at
-			FROM agent_workflow_runs retry
-			JOIN teams team ON team.id = retry.team_id AND team.name = $4
-			JOIN ticket_runs parent
-			  ON retry.origin_kind = 'retry' AND retry.origin_reference = parent.id::text
-		), latest_run AS (
-			SELECT id FROM ticket_runs ORDER BY created_at DESC, id DESC LIMIT 1
-		)
-		SELECT binding.snapshot_id
-		FROM latest_run
-		JOIN agent_workflow_run_snapshots binding
-		  ON binding.workflow_run_id = latest_run.id
-		 AND binding.direction = 'output'
-		 AND binding.promoted_at IS NOT NULL
-		JOIN agent_snapshots value ON value.id = binding.snapshot_id
-		WHERE value.type_name = 'repository-change' AND value.type_version = 1
-		ORDER BY binding.port_name
-	`, ticketReference, externalReference, exactWorkflowRunID, factory.ticketTeamName)
-	if err != nil {
-		return outcomes.TicketRepositoryChangeResolution{}, err
-	}
-	ids := make([]snapshot.SnapshotID, 0, 1)
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			Close(rows)
-			return outcomes.TicketRepositoryChangeResolution{}, err
-		}
-		ids = append(ids, snapshot.SnapshotID(id))
-	}
-	if err := rows.Err(); err != nil {
-		Close(rows)
-		return outcomes.TicketRepositoryChangeResolution{}, err
-	}
-	Close(rows)
-	if len(ids) > 1 {
-		return outcomes.TicketRepositoryChangeResolution{}, fmt.Errorf("db: ticket workflow run has ambiguous repository-change outputs")
-	}
-	if len(ids) == 1 {
-		change, found, err := factory.GetRepositoryChangeProjection(ctx, ids[0])
-		if err != nil {
-			return outcomes.TicketRepositoryChangeResolution{}, err
-		}
-		return outcomes.TicketRepositoryChangeResolution{Change: change, Found: found}, nil
-	}
-	return outcomes.TicketRepositoryChangeResolution{Legacy: schemaVersion == 1 || schemaVersion == 2}, nil
 }
 
 func NewAgentRepositoryChangesFactory(conn DbConn) AgentRepositoryChangesFactory {

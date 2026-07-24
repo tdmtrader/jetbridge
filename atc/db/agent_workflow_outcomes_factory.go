@@ -7,23 +7,17 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"strings"
 	"time"
 
 	sq "github.com/Masterminds/squirrel"
 	"github.com/concourse/concourse/agent/api/workflowoutcomes"
-	"github.com/concourse/concourse/agent/outcomewatcher"
 	"github.com/concourse/concourse/agent/snapshot"
-	"github.com/concourse/concourse/agent/workflow"
 )
 
 //counterfeiter:generate . AgentWorkflowOutcomesFactory
 type AgentWorkflowOutcomesFactory interface {
 	workflowoutcomes.Store
 	workflowoutcomes.Authorizer
-	outcomewatcher.GenericOutputResolver
-	outcomewatcher.GenericOutputPortResolver
-	outcomewatcher.DispositionOutputSelector
 }
 
 func NewAgentWorkflowOutcomesFactory(conn DbConn) AgentWorkflowOutcomesFactory {
@@ -32,41 +26,6 @@ func NewAgentWorkflowOutcomesFactory(conn DbConn) AgentWorkflowOutcomesFactory {
 
 type agentWorkflowOutcomesFactory struct {
 	conn DbConn
-}
-
-// SelectDispositionOutput reads projection metadata from the exact immutable
-// workflow definition pinned by a ticket's durable workflow-run link. It does
-// not infer a port from output order or type. Tickets without an exact v3 link
-// leave the single-output compatibility path in place.
-func (factory *agentWorkflowOutcomesFactory) SelectDispositionOutput(
-	ctx context.Context,
-	fact outcomewatcher.TerminalFact,
-) (string, bool, error) {
-	if ctx == nil || fact.TicketID <= 0 {
-		return "", false, fmt.Errorf("db: invalid disposition output lookup")
-	}
-	var raw string
-	err := factory.conn.QueryRowContext(ctx, `
-		SELECT definition
-		FROM agent_tickets ticket
-		JOIN agent_workflow_runs run ON run.id = ticket.workflow_run_id
-		JOIN agent_workflow_definitions definition ON definition.id = run.workflow_definition_id
-		WHERE ticket.id = $1 AND run.schema_version = 3
-	`, fact.TicketID).Scan(&raw)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", false, nil
-	}
-	if err != nil {
-		return "", false, err
-	}
-	definition, err := workflow.ParseCompiled([]byte(raw))
-	if err != nil {
-		return "", false, fmt.Errorf("db: parse pinned workflow disposition output: %w", err)
-	}
-	if definition.Function == nil || definition.Function.DispositionOutput == "" {
-		return "", false, nil
-	}
-	return definition.Function.DispositionOutput, true, nil
 }
 
 func (factory *agentWorkflowOutcomesFactory) AuthorizeRun(
@@ -111,173 +70,6 @@ func (factory *agentWorkflowOutcomesFactory) AuthorizeOutput(
 		)
 	`, teamID, int64(runID), int64(outputID)).Scan(&authorized)
 	return authorized, err
-}
-
-func (factory *agentWorkflowOutcomesFactory) ResolveLegacyTicketOutput(
-	ctx context.Context,
-	teamID int,
-	teamName string,
-	ticketID int,
-	_ bool,
-) (outcomewatcher.GenericOutputLink, bool, error) {
-	return factory.resolveLegacyTicketOutput(ctx, teamID, teamName, ticketID, "")
-}
-
-func (factory *agentWorkflowOutcomesFactory) ResolveLegacyTicketOutputAtPort(
-	ctx context.Context,
-	teamID int,
-	teamName string,
-	ticketID int,
-	portName string,
-) (outcomewatcher.GenericOutputLink, bool, error) {
-	if portName == "" || portName != strings.TrimSpace(portName) {
-		return outcomewatcher.GenericOutputLink{}, false, fmt.Errorf("db: invalid disposition output port %q", portName)
-	}
-	return factory.resolveLegacyTicketOutput(ctx, teamID, teamName, ticketID, portName)
-}
-
-func (factory *agentWorkflowOutcomesFactory) resolveLegacyTicketOutput(
-	ctx context.Context,
-	teamID int,
-	teamName string,
-	ticketID int,
-	portName string,
-) (outcomewatcher.GenericOutputLink, bool, error) {
-	if ctx == nil || teamID <= 0 || teamName == "" || ticketID <= 0 {
-		return outcomewatcher.GenericOutputLink{}, false, fmt.Errorf("db: invalid legacy ticket outcome lookup")
-	}
-	var ticketReference string
-	var externalReference string
-	var workflowRunID sql.NullInt64
-	err := factory.conn.QueryRowContext(ctx, `
-		SELECT id::text, btrim(external_ref), workflow_run_id
-		FROM agent_tickets
-		WHERE id = $1
-	`, ticketID).Scan(&ticketReference, &externalReference, &workflowRunID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return outcomewatcher.GenericOutputLink{}, false, nil
-	}
-	if err != nil {
-		return outcomewatcher.GenericOutputLink{}, false, err
-	}
-	type linkedRun struct {
-		id       snapshot.WorkflowRunID
-		teamID   int
-		teamName string
-		created  time.Time
-	}
-	var exactWorkflowRunID any
-	if workflowRunID.Valid {
-		exactWorkflowRunID = workflowRunID.Int64
-	}
-	// V3 dispatch persists an exact ticket -> workflow run FK. Older rows have
-	// no FK, so fall back first to the numeric ticket identity used by current
-	// dispatch and then to an external work-item key used by early adapters.
-	// The priority is deliberate: a free-form external key must never pull an
-	// unrelated run into an otherwise exact or numeric linkage.
-	rows, err := factory.conn.QueryContext(ctx, `
-		WITH RECURSIVE exact_root AS (
-			SELECT id, team_id, team_name, created_at
-			FROM agent_workflow_runs
-			WHERE $3::bigint IS NOT NULL AND id = $3
-		), numeric_roots AS (
-			SELECT id, team_id, team_name, created_at
-			FROM agent_workflow_runs
-			WHERE NOT EXISTS (SELECT 1 FROM exact_root)
-			  AND origin_kind = 'ticket' AND origin_reference = $1
-		), roots AS (
-			SELECT id, team_id, team_name, created_at FROM exact_root
-			UNION
-			SELECT id, team_id, team_name, created_at FROM numeric_roots
-			UNION
-			SELECT id, team_id, team_name, created_at
-			FROM agent_workflow_runs
-			WHERE NOT EXISTS (SELECT 1 FROM exact_root)
-			  AND NOT EXISTS (SELECT 1 FROM numeric_roots)
-			  AND origin_kind = 'ticket'
-			  AND $2 <> '' AND origin_reference = $2
-		), linked_runs AS (
-			SELECT id, team_id, team_name, created_at FROM roots
-			UNION
-			SELECT retry.id, retry.team_id, retry.team_name, retry.created_at
-			FROM agent_workflow_runs retry
-			JOIN linked_runs parent
-			  ON retry.origin_kind = 'retry' AND retry.origin_reference = parent.id::text
-		)
-		SELECT id, team_id, team_name, created_at
-		FROM linked_runs
-	`, ticketReference, externalReference, exactWorkflowRunID)
-	if err != nil {
-		return outcomewatcher.GenericOutputLink{}, false, err
-	}
-	linked := make([]linkedRun, 0)
-	for rows.Next() {
-		var id int64
-		var run linkedRun
-		if err := rows.Scan(&id, &run.teamID, &run.teamName, &run.created); err != nil {
-			Close(rows)
-			return outcomewatcher.GenericOutputLink{}, false, err
-		}
-		run.id = snapshot.WorkflowRunID(id)
-		linked = append(linked, run)
-	}
-	if err := rows.Err(); err != nil {
-		Close(rows)
-		return outcomewatcher.GenericOutputLink{}, false, err
-	}
-	Close(rows)
-	if len(linked) == 0 {
-		return outcomewatcher.GenericOutputLink{}, false, nil
-	}
-	for _, run := range linked {
-		if run.teamID != teamID || run.teamName != teamName {
-			return outcomewatcher.GenericOutputLink{}, false, outcomewatcher.ErrGenericOutputTeamMismatch
-		}
-	}
-	latest := linked[0]
-	for _, run := range linked[1:] {
-		if run.created.After(latest.created) || run.created.Equal(latest.created) && run.id > latest.id {
-			latest = run
-		}
-	}
-	rows, err = factory.conn.QueryContext(ctx, `
-		SELECT binding.snapshot_id
-		FROM agent_workflow_run_snapshots binding
-		WHERE binding.workflow_run_id = $1 AND binding.direction = 'output'
-		  AND binding.promoted_at IS NOT NULL
-		  AND ($2 = '' OR binding.port_name = $2)
-		ORDER BY binding.port_name
-	`, int64(latest.id), portName)
-	if err != nil {
-		return outcomewatcher.GenericOutputLink{}, false, err
-	}
-	unique := make(map[snapshot.SnapshotID]struct{})
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			Close(rows)
-			return outcomewatcher.GenericOutputLink{}, false, err
-		}
-		unique[snapshot.SnapshotID(id)] = struct{}{}
-	}
-	if err := rows.Err(); err != nil {
-		Close(rows)
-		return outcomewatcher.GenericOutputLink{}, false, err
-	}
-	Close(rows)
-	if len(unique) == 0 {
-		return outcomewatcher.GenericOutputLink{}, false, nil
-	}
-	if len(unique) != 1 {
-		return outcomewatcher.GenericOutputLink{}, false, outcomewatcher.ErrGenericOutputAmbiguous
-	}
-	var outputID snapshot.SnapshotID
-	for id := range unique {
-		outputID = id
-	}
-	return outcomewatcher.GenericOutputLink{
-		TeamID: teamID, WorkflowRunID: latest.id, OutputSnapshotID: outputID,
-	}, true, nil
 }
 
 type outcomeQueryRower interface {

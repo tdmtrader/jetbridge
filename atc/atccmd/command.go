@@ -25,16 +25,15 @@ import (
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"github.com/concourse/concourse"
 	experimentsapi "github.com/concourse/concourse/agent/api/experiments"
-	"github.com/concourse/concourse/agent/api/outcomes"
 	"github.com/concourse/concourse/agent/api/principals"
 	snapshotsapi "github.com/concourse/concourse/agent/api/snapshots"
+	workflowoutcomesapi "github.com/concourse/concourse/agent/api/workflowoutcomes"
 	workflowrunsapi "github.com/concourse/concourse/agent/api/workflowruns"
 	workflowwaitsapi "github.com/concourse/concourse/agent/api/workflowwaits"
 	"github.com/concourse/concourse/agent/artifactcap"
 	"github.com/concourse/concourse/agent/budget"
 	"github.com/concourse/concourse/agent/credentials"
 	"github.com/concourse/concourse/agent/dispatch"
-	"github.com/concourse/concourse/agent/outcomewatcher"
 	"github.com/concourse/concourse/agent/projection"
 	"github.com/concourse/concourse/agent/publisher"
 	"github.com/concourse/concourse/agent/resourcecapture"
@@ -228,16 +227,6 @@ type RunCommand struct {
 	// requires the jetbridge runtime.
 	agentRunSecretAttacher *lazySecretAttacher
 
-	// agentOutcomeMirrorProvider is the shared outcome-diff mirror cache
-	// (delivery-outcomes §1.11.1), built lazily via agentOutcomeMirrors()
-	// when --agent-outcome-git-dir is set (the master switch) and shared
-	// by the agent_outcome_watcher component and GetAgentTicketDiff's
-	// handler threading — the API handler and the backend component block
-	// race on construction order (same bridge reason as k8sArtifactLocator).
-	// Kept as the concrete type so the disabled case stays a TRUE nil
-	// interface at the handler seam (see agentOutcomeDiffProvider).
-	agentOutcomeMirrorProvider *outcomewatcher.MirrorCache
-
 	BindIP   flag.IP `long:"bind-ip"   default:"0.0.0.0" description:"IP address on which to listen for web traffic."`
 	BindPort uint16  `long:"bind-port" default:"8080"    description:"Port on which to listen for HTTP traffic."`
 
@@ -378,13 +367,6 @@ type RunCommand struct {
 
 	AgentDispatcherEnabled     bool `long:"agent-dispatcher-enabled" description:"Run the autonomous agent-ticket dispatcher loop (Kubernetes runtime only). When off, tickets dispatch only via the manual route/fly."`
 	AgentDispatcherMaxAttempts int  `long:"agent-dispatcher-max-attempts" default:"3" description:"Reserved dispatcher attempt-limit setting. Terminal subordinate runs always require human review."`
-
-	AgentOutcomeGitDir          string        `long:"agent-outcome-git-dir" description:"Directory for the outcome watcher's bare git mirrors. Empty disables live Git merge detection and the ticket diff API; database-only terminal outcome projection remains enabled."`
-	AgentOutcomeGitURLTemplate  string        `long:"agent-outcome-git-url-template" default:"https://github.com/{repo}.git" description:"Template for mirror clone URLs; {repo} is the ticket's repo slug."`
-	AgentOutcomeGitUsername     string        `long:"agent-outcome-git-username" description:"Optional username for mirror fetches (https only)."`
-	AgentOutcomeGitToken        string        `long:"agent-outcome-git-token" description:"Optional token for mirror fetches (https only; delivered via a temp credential helper, never argv)."`
-	AgentOutcomeCheckInterval   time.Duration `long:"agent-outcome-check-interval" default:"5m" description:"Outcome watcher polling interval (one fetch --prune per repo per tick)."`
-	AgentOutcomeSquashScanLimit int           `long:"agent-outcome-squash-scan-limit" default:"200" description:"How many recent target-branch commits the patch-id squash fallback scans."`
 
 	LogDBQueries   bool `long:"log-db-queries" description:"Log database queries."`
 	LogClusterName bool `long:"log-cluster-name" description:"Log cluster name."`
@@ -1727,38 +1709,6 @@ func (cmd *RunCommand) backendComponents(
 			})
 		}
 	}
-
-	// Outcome reconciliation (delivery-outcomes §1.11.1) is deliberately
-	// K8s-independent and always installed. A configured mirror cache adds live
-	// Git merge detection; without one the same runnable stays database-only and
-	// projects terminal legacy facts into durable generic outcomes.
-	mainTeam, found, err := teamFactory.FindTeam(atc.DefaultTeamName)
-	if err != nil {
-		return nil, fmt.Errorf("resolve main team for generic outcome projection: %w", err)
-	}
-	if !found || mainTeam == nil || mainTeam.ID() <= 0 || mainTeam.Name() != atc.DefaultTeamName {
-		return nil, errors.New("resolve main team for generic outcome projection: main team is unavailable")
-	}
-	workflowOutcomeStore := db.NewAgentWorkflowOutcomesFactory(dbConn)
-	outcomeWatcher, err := buildAgentOutcomeWatcher(
-		mainTeam,
-		db.NewAgentTicketsFactory(dbConn),
-		db.NewAgentOutcomesFactory(dbConn),
-		workflowOutcomeStore,
-		workflowOutcomeStore,
-		cmd.agentOutcomeMirrors(),
-		outcomewatcher.WithDispositionOutputSelector(workflowOutcomeStore),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("construct generic outcome projector: %w", err)
-	}
-	components = append(components, RunnableComponent{
-		Component: atc.Component{Name: atc.ComponentAgentOutcomeWatcher},
-		// Metrics-independent and polling-only by design. The notifications
-		// bus silently drops, so it cannot be the reliability path.
-		Runnable: outcomeWatcher,
-		Interval: cmd.AgentOutcomeCheckInterval,
-	})
 
 	if syslogDrainConfigured {
 		components = append(components, RunnableComponent{
@@ -3479,7 +3429,15 @@ func (cmd *RunCommand) constructAPIHandler(
 		return nil, fmt.Errorf("construct workflow-wait API: %w", err)
 	}
 	workflowOutcomeStore := db.NewAgentWorkflowOutcomesFactory(dbConn)
-	workflowOutcomeHandlers, err := buildWorkflowOutcomeAPI(mainTeam, workflowOutcomeStore, workflowOutcomeStore)
+	workflowOutcomeHandlers, err := workflowoutcomesapi.NewHandler(workflowoutcomesapi.HandlerConfig{
+		TeamID:   mainTeam.ID(),
+		TeamName: mainTeam.Name(),
+		Identity: func(request *http.Request) (string, error) {
+			return workflowRunCreatorIdentity(accessor.GetAccessor(request).UserInfo())
+		},
+		Store:      workflowOutcomeStore,
+		Authorizer: workflowOutcomeStore,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("construct workflow-outcome API: %w", err)
 	}
@@ -3549,9 +3507,6 @@ func (cmd *RunCommand) constructAPIHandler(
 		db.NewAgentCostLedgerFactory(dbConn),
 		cmd.AgentDailyBudgetUSD,
 		dispatch.NewTicketBudgets(db.NewAgentTicketsFactory(dbConn)),
-		db.NewAgentOutcomesFactory(dbConn),
-		cmd.agentOutcomeDiffProvider(),
-		db.NewAgentRepositoryChangesFactoryForTeam(dbConn, mainTeam.Name()),
 		workflowStore,
 		dispatch.NewHTTPHandler(dispatch.Deps{
 			Tickets:          db.NewAgentTicketsFactory(dbConn),
@@ -3585,39 +3540,6 @@ func workflowRunCreatorIdentity(info atc.UserInfo) (string, error) {
 		return "", errors.New("authenticated workflow-run creator is unavailable")
 	}
 	return info.DisplayUserId, nil
-}
-
-// agentOutcomeMirrors lazily builds the shared outcome-diff mirror cache;
-// nil when --agent-outcome-git-dir is empty — the MASTER SWITCH, which
-// disables both the agent_outcome_watcher component and the ticket diff
-// API. Lazy + nil-guarded because the API handler is constructed before
-// the backend component block (same construction-order bridge as
-// agentRunSecrets). The username/token are https-only and delivered via
-// gitcheck's temp credential helper, never argv.
-func (cmd *RunCommand) agentOutcomeMirrors() *outcomewatcher.MirrorCache {
-	if cmd.AgentOutcomeGitDir == "" {
-		return nil
-	}
-	if cmd.agentOutcomeMirrorProvider == nil {
-		cmd.agentOutcomeMirrorProvider = outcomewatcher.NewMirrorCache(
-			cmd.AgentOutcomeGitDir,
-			cmd.AgentOutcomeGitURLTemplate,
-			outcomewatcher.Auth{Username: cmd.AgentOutcomeGitUsername, Token: cmd.AgentOutcomeGitToken},
-			cmd.AgentOutcomeSquashScanLimit,
-		)
-	}
-	return cmd.agentOutcomeMirrorProvider
-}
-
-// agentOutcomeDiffProvider adapts the shared cache for GetAgentTicketDiff's
-// handler threading, returning a TRUE nil interface when the master switch
-// is off — assigning a typed-nil *MirrorCache would defeat the diff
-// handler's provider == nil check (→ 404 "diff API is not enabled").
-func (cmd *RunCommand) agentOutcomeDiffProvider() outcomes.MirrorProvider {
-	if cache := cmd.agentOutcomeMirrors(); cache != nil {
-		return cache
-	}
-	return nil
 }
 
 // agentRunSecrets lazily initializes the shared attacher bridge (the

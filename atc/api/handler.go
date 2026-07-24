@@ -13,7 +13,6 @@ import (
 	experimentsapi "github.com/concourse/concourse/agent/api/experiments"
 	"github.com/concourse/concourse/agent/api/feedback"
 	metricsapi "github.com/concourse/concourse/agent/api/metrics"
-	outcomesapi "github.com/concourse/concourse/agent/api/outcomes"
 	principalsapi "github.com/concourse/concourse/agent/api/principals"
 	reviewsapi "github.com/concourse/concourse/agent/api/reviews"
 	snapshotsapi "github.com/concourse/concourse/agent/api/snapshots"
@@ -118,13 +117,6 @@ func NewHandler(
 	costLedger budget.Ledger,
 	agentDailyBudgetUSD float64,
 	ticketBudgets budget.TicketBudgets,
-	// outcomesStore, outcomeDiffProvider, and outcomeDiffResolver backed the
-	// retired ticket outcome/disposition/diff routes. Those routes are gone
-	// (v3-only cleanup); these params are now unused and retained only to keep
-	// the caller signature stable until the legacy outcome runtime is deleted.
-	outcomesStore outcomesapi.Store,
-	outcomeDiffProvider outcomesapi.MirrorProvider,
-	outcomeDiffResolver outcomesapi.TicketRepositoryChangeResolver,
 	workflowStore workflow.Store,
 	// agentDispatchHandler serves DispatchAgentTicket (built in
 	// atccmd/command.go from dispatch.Deps; a stub in the test suite).

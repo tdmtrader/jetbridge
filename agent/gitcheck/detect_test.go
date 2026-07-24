@@ -3,8 +3,10 @@ package gitcheck_test
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -12,97 +14,48 @@ import (
 	"github.com/concourse/concourse/agent/gitcheck"
 )
 
-var _ = Describe("gitcheck.Detect + FileDiff", func() {
+func TestGitcheck(t *testing.T) {
+	RegisterFailHandler(Fail)
+	RunSpecs(t, "Gitcheck Suite")
+}
+
+// git runs a git command in dir with the given committer env, failing on error.
+func git(dir string, env []string, args ...string) string {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), env...)
+	out, err := cmd.CombinedOutput()
+	Expect(err).NotTo(HaveOccurred(), "git %v: %s", args, out)
+	return strings.TrimSpace(string(out))
+}
+
+var botEnv = []string{
+	"GIT_AUTHOR_NAME=concourse-agent[bot]", "GIT_AUTHOR_EMAIL=agent@concourse.local",
+	"GIT_COMMITTER_NAME=concourse-agent[bot]", "GIT_COMMITTER_EMAIL=agent@concourse.local",
+}
+
+// setupOrigin builds a bare origin with main at one base commit and returns
+// (bareDir, baseSha).
+func setupOrigin(tmp string) (string, string) {
+	bare := filepath.Join(tmp, "origin.git")
+	Expect(os.MkdirAll(bare, 0o755)).To(Succeed())
+	git(bare, nil, "init", "--bare", "--initial-branch=main")
+	seed := filepath.Join(tmp, "seed")
+	git(tmp, botEnv, "clone", bare, seed)
+	Expect(os.WriteFile(filepath.Join(seed, "base.txt"), []byte("base\n"), 0o644)).To(Succeed())
+	git(seed, botEnv, "add", ".")
+	git(seed, botEnv, "commit", "-m", "base")
+	git(seed, botEnv, "push", "origin", "HEAD:main")
+	base := git(seed, botEnv, "rev-parse", "HEAD")
+	return bare, base
+}
+
+var _ = Describe("gitcheck.DeriveRepositoryDiff", func() {
 	var tmp, bare, base string
 
 	BeforeEach(func() {
 		tmp = GinkgoT().TempDir()
 		bare, base = setupOrigin(tmp)
-	})
-
-	openMirror := func() *gitcheck.Mirror {
-		m, err := gitcheck.OpenMirror(filepath.Join(tmp, "cache"), "tdmtrader/concourse", bare, gitcheck.Auth{})
-		Expect(err).NotTo(HaveOccurred())
-		Expect(m.Fetch()).To(Succeed())
-		return m
-	}
-
-	It("returns nil for an open (unmerged) branch", func() {
-		ws := filepath.Join(tmp, "ws")
-		git(tmp, botEnv, "clone", bare, ws)
-		Expect(os.WriteFile(filepath.Join(ws, "f.go"), []byte("package f\n"), 0o644)).To(Succeed())
-		git(ws, botEnv, "add", ".")
-		git(ws, botEnv, "commit", "-m", "work")
-		pushed := git(ws, botEnv, "rev-parse", "HEAD")
-		git(ws, botEnv, "push", "origin", "HEAD:refs/heads/agent/ticket-1")
-
-		m := openMirror()
-		res, err := m.Detect(base, pushed, "agent/ticket-1", "main", 200)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(res).To(BeNil())
-	})
-
-	It("returns merged (no human commits) for a fast-forward with only bot commits", func() {
-		ws := filepath.Join(tmp, "ws")
-		git(tmp, botEnv, "clone", bare, ws)
-		Expect(os.WriteFile(filepath.Join(ws, "f.go"), []byte("package f\n"), 0o644)).To(Succeed())
-		git(ws, botEnv, "add", ".")
-		git(ws, botEnv, "commit", "-m", "work")
-		pushed := git(ws, botEnv, "rev-parse", "HEAD")
-		git(ws, botEnv, "push", "origin", "HEAD:refs/heads/agent/ticket-1")
-		git(ws, botEnv, "push", "origin", "HEAD:main")
-
-		m := openMirror()
-		res, err := m.Detect(base, pushed, "agent/ticket-1", "main", 200)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(res).NotTo(BeNil())
-		Expect(res.State).To(Equal(gitcheck.StateMerged))
-		Expect(res.HumanCommitCount).To(Equal(0))
-	})
-
-	It("returns merged_with_fixes when a human commit precedes the merge", func() {
-		ws := filepath.Join(tmp, "ws")
-		git(tmp, botEnv, "clone", bare, ws)
-		Expect(os.WriteFile(filepath.Join(ws, "f.go"), []byte("package f\n"), 0o644)).To(Succeed())
-		git(ws, botEnv, "add", ".")
-		git(ws, botEnv, "commit", "-m", "work")
-		pushed := git(ws, botEnv, "rev-parse", "HEAD")
-		Expect(os.WriteFile(filepath.Join(ws, "f.go"), []byte("package f\nvar Fix = 1\n"), 0o644)).To(Succeed())
-		git(ws, humanEnv, "add", ".")
-		git(ws, humanEnv, "commit", "-m", "human fix")
-		git(ws, humanEnv, "push", "origin", "HEAD:refs/heads/agent/ticket-1")
-		git(ws, humanEnv, "push", "origin", "HEAD:main")
-
-		m := openMirror()
-		res, err := m.Detect(base, pushed, "agent/ticket-1", "main", 200)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(res.State).To(Equal(gitcheck.StateMergedWithFixes))
-		Expect(res.HumanCommitCount).To(Equal(1))
-		Expect(res.HumanLinesAdded).To(Equal(1))
-	})
-
-	It("windows the diff by file with a has_more flag", func() {
-		ws := filepath.Join(tmp, "ws")
-		git(tmp, botEnv, "clone", bare, ws)
-		for _, f := range []string{"a.go", "b.go", "c.go"} {
-			Expect(os.WriteFile(filepath.Join(ws, f), []byte("package x\n"), 0o644)).To(Succeed())
-		}
-		git(ws, botEnv, "add", ".")
-		git(ws, botEnv, "commit", "-m", "three files")
-		pushed := git(ws, botEnv, "rev-parse", "HEAD")
-		git(ws, botEnv, "push", "origin", "HEAD:refs/heads/agent/ticket-1")
-
-		m := openMirror()
-		page, err := m.FileDiff(base, pushed, 0, 2)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(page.Files).To(HaveLen(2))
-		Expect(page.HasMore).To(BeTrue())
-		Expect(page.TotalFiles).To(Equal(3))
-
-		page2, err := m.FileDiff(base, pushed, 2, 2)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(page2.Files).To(HaveLen(1))
-		Expect(page2.HasMore).To(BeFalse())
 	})
 
 	It("derives offline changed-file statistics for binary, rename, and delete changes", func() {

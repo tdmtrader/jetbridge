@@ -18,7 +18,6 @@ import (
 	experimentsapi "github.com/concourse/concourse/agent/api/experiments"
 	"github.com/concourse/concourse/agent/api/feedback"
 	"github.com/concourse/concourse/agent/api/metrics"
-	"github.com/concourse/concourse/agent/api/outcomes"
 	"github.com/concourse/concourse/agent/api/principals"
 	"github.com/concourse/concourse/agent/api/reviews"
 	snapshotsapi "github.com/concourse/concourse/agent/api/snapshots"
@@ -341,9 +340,6 @@ var _ = BeforeEach(func() {
 		budget.NewMemoryLedger(),
 		0,
 		budget.NoTicketBudgets{},
-		outcomes.NewMemoryStore(),
-		nil, // outcomeDiffProvider: diff API disabled (no mirror cache in the suite)
-		nil, // outcomeDiffResolver: legacy compatibility in the API suite
 		workflow.NewMemoryStore(),
 		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusNotImplemented) // dispatch handler stub
