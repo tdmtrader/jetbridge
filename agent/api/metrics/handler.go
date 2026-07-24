@@ -47,7 +47,7 @@ func (h *Handler) SubmitMetrics(w http.ResponseWriter, r *http.Request) {
 }
 
 // ListRecent handles GET /api/v1/agent/metrics?limit=N — the most-recent agent
-// run metrics across all tickets/builds, newest-first (operator dashboard).
+// run metrics across all workflow runs/builds, newest-first (operator dashboard).
 func (h *Handler) ListRecent(w http.ResponseWriter, r *http.Request) {
 	limit := 0
 	if v := r.URL.Query().Get("limit"); v != "" {

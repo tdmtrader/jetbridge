@@ -87,51 +87,10 @@ var _ = Describe("Audit", func() {
 		})
 	})
 
-	// C1 touchpoint pinning for the delivery-outcomes routes: the
-	// all-routes loop above passes for any route that reaches SOME
-	// switch arm — these specs pin the two names to the system audit
-	// bucket, and pin the enforcement (unknown names still panic).
-	Describe("delivery-outcomes actions", func() {
-		Context("when EnableSystemAuditLog is true", func() {
-			BeforeEach(func() {
-				EnableSystemAuditLog = true
-			})
-
-			It("audits SetAgentTicketDisposition as a system action", func() {
-				aud.Audit(atc.SetAgentTicketDisposition, userName, req)
-				logs := logger.Logs()
-				Expect(logs).To(HaveLen(1))
-				Expect(logs[0].Data["action"]).To(Equal(atc.SetAgentTicketDisposition))
-			})
-
-			It("audits GetAgentTicketOutcome as a system action", func() {
-				aud.Audit(atc.GetAgentTicketOutcome, userName, req)
-				logs := logger.Logs()
-				Expect(logs).To(HaveLen(1))
-				Expect(logs[0].Data["action"]).To(Equal(atc.GetAgentTicketOutcome))
-			})
-
-			It("audits GetAgentTicketDiff as a system action", func() {
-				aud.Audit(atc.GetAgentTicketDiff, userName, req)
-				logs := logger.Logs()
-				Expect(logs).To(HaveLen(1))
-				Expect(logs[0].Data["action"]).To(Equal(atc.GetAgentTicketDiff))
-			})
-		})
-
-		Context("when EnableSystemAuditLog is false", func() {
-			BeforeEach(func() {
-				EnableSystemAuditLog = false
-			})
-
-			It("does not log any of the actions", func() {
-				aud.Audit(atc.SetAgentTicketDisposition, userName, req)
-				aud.Audit(atc.GetAgentTicketOutcome, userName, req)
-				aud.Audit(atc.GetAgentTicketDiff, userName, req)
-				Expect(logger.Logs()).To(BeEmpty())
-			})
-		})
-
+	// The all-routes loop above passes for any route that reaches SOME
+	// switch arm; this spec pins the enforcement that an unknown action
+	// name still panics rather than silently classifying.
+	Describe("unknown agent actions", func() {
 		It("still panics on an unknown action name", func() {
 			Expect(func() {
 				aud.Audit("SomeUnknownAgentAction", userName, req)

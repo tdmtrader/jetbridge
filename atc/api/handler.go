@@ -118,10 +118,11 @@ func NewHandler(
 	costLedger budget.Ledger,
 	agentDailyBudgetUSD float64,
 	ticketBudgets budget.TicketBudgets,
+	// outcomesStore, outcomeDiffProvider, and outcomeDiffResolver backed the
+	// retired ticket outcome/disposition/diff routes. Those routes are gone
+	// (v3-only cleanup); these params are now unused and retained only to keep
+	// the caller signature stable until the legacy outcome runtime is deleted.
 	outcomesStore outcomesapi.Store,
-	// outcomeDiffProvider backs GetAgentTicketDiff: the outcome watcher's
-	// shared MirrorCache when --agent-outcome-git-dir is set, a true nil
-	// interface otherwise (master switch off → the diff API 404s).
 	outcomeDiffProvider outcomesapi.MirrorProvider,
 	outcomeDiffResolver outcomesapi.TicketRepositoryChangeResolver,
 	workflowStore workflow.Store,
@@ -214,10 +215,6 @@ func NewHandler(
 	ticketsServer := ticketsapi.NewHandler(ticketsStore, func(r *http.Request) string {
 		return accessor.GetAccessor(r).Claims().UserName
 	})
-	outcomesServer := outcomesapi.NewHandler(outcomesStore, ticketsStore, func(r *http.Request) string {
-		return accessor.GetAccessor(r).Claims().UserName
-	})
-	outcomeDiffServer := outcomesapi.NewDiffHandlerWithProjection(outcomesStore, outcomeDiffProvider, outcomeDiffResolver)
 	workflowsServer := workflowsapi.NewHandler(workflowStore)
 	principalsServer := principalsapi.NewHandler(
 		principalsStore,
@@ -412,10 +409,6 @@ func NewHandler(
 		atc.SubmitAgentTicketPlan: http.HandlerFunc(ticketsServer.SubmitPlan),
 		atc.UpdateAgentTicketTask: http.HandlerFunc(ticketsServer.UpdateTask),
 		atc.DispatchAgentTicket:   agentDispatchHandler,
-
-		atc.SetAgentTicketDisposition: http.HandlerFunc(outcomesServer.SetDisposition),
-		atc.GetAgentTicketOutcome:     http.HandlerFunc(outcomesServer.GetOutcome),
-		atc.GetAgentTicketDiff:        http.HandlerFunc(outcomeDiffServer.GetDiff),
 
 		atc.SetAgentUserCredential:                     http.HandlerFunc(credentialsServer.Set),
 		atc.GetAgentUserCredentialStatus:               http.HandlerFunc(credentialsServer.Status),

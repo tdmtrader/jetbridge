@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/agent/api/costs"
-	"github.com/concourse/concourse/agent/api/outcomes"
 	"github.com/concourse/concourse/agent/api/tickets"
 	"github.com/concourse/concourse/agent/credentials"
 	agentschema "github.com/concourse/concourse/agent/schema"
@@ -55,8 +54,6 @@ type Client interface {
 	GetAgentTicket(id int) (tickets.TicketDetail, bool, error)
 	TransitionAgentTicket(id int, req tickets.TransitionRequest) (tickets.Ticket, error)
 	DispatchAgentTicket(id int) (tickets.DispatchResponse, error)
-	SetAgentTicketDisposition(id int, req outcomes.DispositionRequest) (outcomes.Outcome, error)
-	GetAgentTicketOutcome(id int) (outcomes.Outcome, bool, error)
 	// Agent principals are admin-only: minted, listed, and revoked by admins.
 	ListAgentPrincipals() ([]atc.AgentPrincipal, error)
 	CreateAgentPrincipal(spec atc.AgentPrincipalCreateSpec) (atc.AgentPrincipalCreated, error)
