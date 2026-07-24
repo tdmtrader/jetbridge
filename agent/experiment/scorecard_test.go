@@ -177,7 +177,7 @@ func TestBuildScorecardEmitsUnionMetricsWhenOneSideHasNoValues(t *testing.T) {
 	for index := range cells {
 		if cells[index].Variant == "control" && cells[index].Role == experiment.FixtureNormal {
 			cells[index].Measurements = append(cells[index].Measurements, contracts.Measurement{
-				Name: "control-only", Value: 1, Unit: "score", Direction: "higher",
+				ID: "control-only", Value: 1, Unit: "score", Direction: "higher-is-better",
 			})
 		}
 	}
@@ -207,13 +207,27 @@ func TestBuildScorecardRejectsContradictoryMetricDirectionsAndDuplicateCells(t *
 	cells := pairedCells("higher", 5, 1)
 	for index := range cells {
 		if cells[index].Variant == "candidate" && cells[index].Role == experiment.FixtureNormal {
-			cells[index].Measurements[0].Direction = "lower"
+			cells[index].Measurements[0].Direction = "lower-is-better"
 			break
 		}
 	}
 	_, err := experiment.BuildScorecard(experiment.ScorecardRequest{ExperimentID: 81, ControlLabel: "control", ExpectedCellsPerVariant: 15, Cells: cells})
 	if err == nil || !strings.Contains(err.Error(), "inconsistent direction") {
 		t.Fatalf("direction error = %v", err)
+	}
+
+	minimum, maximum, changedMaximum := 0.0, 20.0, 25.0
+	cells = pairedCells("higher", 5, 1)
+	for index := range cells {
+		cells[index].Measurements[0].Minimum = &minimum
+		cells[index].Measurements[0].Maximum = &maximum
+		if cells[index].Variant == "candidate" {
+			cells[index].Measurements[0].Maximum = &changedMaximum
+		}
+	}
+	_, err = experiment.BuildScorecard(experiment.ScorecardRequest{ExperimentID: 81, ControlLabel: "control", ExpectedCellsPerVariant: 15, Cells: cells})
+	if err == nil || !strings.Contains(err.Error(), "inconsistent bounds") {
+		t.Fatalf("bounds error = %v", err)
 	}
 
 	cells = pairedCells("higher", 5, 1)
@@ -256,7 +270,7 @@ func cellResultWithMeasurements(id experiment.CellID, fixture string, offset, co
 	metrics := make([]contracts.Measurement, count)
 	for index := range metrics {
 		metrics[index] = contracts.Measurement{
-			Name: fmt.Sprintf("metric-%d", offset+index), Value: float64(index), Unit: "score", Direction: "higher",
+			ID: fmt.Sprintf("metric-%d", offset+index), Value: float64(index), Unit: "score", Direction: "higher-is-better",
 		}
 	}
 	return experiment.CellResult{
@@ -266,6 +280,12 @@ func cellResultWithMeasurements(id experiment.CellID, fixture string, offset, co
 }
 
 func pairedCells(direction string, repetitions int, candidateOffset float64) []experiment.CellResult {
+	if direction == "higher" {
+		direction = "higher-is-better"
+	}
+	if direction == "lower" {
+		direction = "lower-is-better"
+	}
 	var cells []experiment.CellResult
 	cellID := experiment.CellID(1)
 	for _, variant := range []string{"control", "candidate"} {
@@ -282,7 +302,7 @@ func pairedCells(direction string, repetitions int, candidateOffset float64) []e
 				cells = append(cells, experiment.CellResult{
 					ID: cellID, Variant: variant, Fixture: fixture, Role: experiment.FixtureNormal,
 					Repetition: repetition, Status: experiment.CellValidMeasurement,
-					Measurements: []contracts.Measurement{{Name: "quality", Value: value, Unit: "score", Direction: direction}},
+					Measurements: []contracts.Measurement{{ID: "quality", Value: value, Unit: "score", Direction: direction}},
 					CostUSD:      0.10 * base, Latency: time.Duration(base) * time.Second,
 					InputTokens: int64(base * 100), OutputTokens: int64(base * 10), HumanInterventions: repetition % 2,
 				})
@@ -293,7 +313,7 @@ func pairedCells(direction string, repetitions int, candidateOffset float64) []e
 			cells = append(cells, experiment.CellResult{
 				ID: cellID, Variant: variant, Fixture: "negative", Role: experiment.FixtureNegativeControl,
 				Repetition: repetition, Status: experiment.CellValidMeasurement, NegativeControlPassed: true,
-				Measurements: []contracts.Measurement{{Name: "quality", Value: 0, Unit: "score", Direction: direction}},
+				Measurements: []contracts.Measurement{{ID: "quality", Value: 0, Unit: "score", Direction: direction}},
 				CostUSD:      0.05, Latency: time.Second, InputTokens: 25, OutputTokens: 5,
 			})
 			cellID++

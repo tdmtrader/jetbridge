@@ -5,63 +5,88 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/snapshot/contracts"
 )
 
-func TestMeasurementsContractValidatesFiniteNamedMetrics(t *testing.T) {
-	valid := contracts.MeasurementsDocument{
-		SchemaVersion:    "1.0.0",
-		EvaluatorVersion: "review-quality/v3",
-		Valid:            true,
+func TestMeasurementsRecordValidatesStableFiniteMetricDefinitions(t *testing.T) {
+	body := contracts.MeasurementsBody{
+		Conclusion: "measured",
 		Metrics: []contracts.Measurement{{
-			Name: "accuracy", Value: 0.9, Unit: "ratio", Direction: "higher",
+			ID: "accuracy", Value: 0.9, Unit: "ratio", Direction: "higher-is-better",
 		}},
 	}
-	if _, err := validateFiles(t, "measurements/v1", map[string][]byte{"measurements.json": marshalDocument(t, valid)}, emptyValidationContext(t)); err != nil {
+	record, err := contracts.NewRecord(
+		snapshot.TypeRef("measurements/v1"),
+		nil,
+		body,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := validateFiles(t, "measurements/v1", map[string][]byte{
+		"record.json": marshalRecord(t, record),
+	}, emptyValidationContext(t)); err != nil {
 		t.Fatalf("valid measurements error = %v", err)
 	}
 
 	for _, tc := range []struct {
 		name  string
-		setup func(*contracts.MeasurementsDocument)
+		setup func(*contracts.MeasurementsBody)
 		want  string
 	}{
-		{"wrong version", func(d *contracts.MeasurementsDocument) { d.SchemaVersion = "1.0" }, "1.0.0"},
-		{"blank evaluator", func(d *contracts.MeasurementsDocument) { d.EvaluatorVersion = " " }, "evaluator_version"},
-		{"valid with no metrics", func(d *contracts.MeasurementsDocument) { d.Metrics = nil }, "metrics"},
-		{"invalid direction", func(d *contracts.MeasurementsDocument) { d.Metrics[0].Direction = "sideways" }, "direction"},
-		{"duplicate name", func(d *contracts.MeasurementsDocument) { d.Metrics = append(d.Metrics, d.Metrics[0]) }, "duplicate"},
+		{"measured with no metrics", func(d *contracts.MeasurementsBody) { d.Metrics = nil }, "metric"},
+		{"invalid direction", func(d *contracts.MeasurementsBody) { d.Metrics[0].Direction = "higher" }, "direction"},
+		{"duplicate id", func(d *contracts.MeasurementsBody) { d.Metrics = append(d.Metrics, d.Metrics[0]) }, "duplicate"},
+		{"unsorted ids", func(d *contracts.MeasurementsBody) {
+			d.Metrics = append([]contracts.Measurement{{ID: "z", Value: 1, Unit: "ratio", Direction: "higher-is-better"}}, d.Metrics...)
+		}, "sorted"},
+		{"bounded minimum without maximum", func(d *contracts.MeasurementsBody) {
+			minimum := 0.0
+			d.Metrics[0].Minimum = &minimum
+		}, "maximum"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			document := valid
-			document.Metrics = append([]contracts.Measurement(nil), valid.Metrics...)
-			tc.setup(&document)
-			if _, err := validateFiles(t, "measurements/v1", map[string][]byte{"measurements.json": marshalDocument(t, document)}, emptyValidationContext(t)); err == nil || !strings.Contains(err.Error(), tc.want) {
+			candidate := body
+			candidate.Metrics = append([]contracts.Measurement(nil), body.Metrics...)
+			tc.setup(&candidate)
+			candidateRecord, err := contracts.NewRecord(snapshot.TypeRef("measurements/v1"), nil, candidate)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := validateFiles(t, "measurements/v1", map[string][]byte{
+				"record.json": marshalRecord(t, candidateRecord),
+			}, emptyValidationContext(t)); err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("validation error = %v, want %q", err, tc.want)
 			}
 		})
 	}
-	document := valid
-	document.Metrics = append([]contracts.Measurement(nil), valid.Metrics...)
-	document.Metrics[0].Value = math.Inf(1)
-	if err := document.Validate(); err == nil || !strings.Contains(err.Error(), "finite") {
+	body.Metrics[0].Value = math.Inf(1)
+	if err := body.Validate(nil); err == nil || !strings.Contains(err.Error(), "finite") {
 		t.Fatalf("nonfinite metric validation error = %v, want finite error", err)
 	}
 }
 
-func TestMeasurementsContractAllowsExplainedInvalidDocumentWithoutMetrics(t *testing.T) {
-	document := contracts.MeasurementsDocument{
-		SchemaVersion:    "1.0.0",
-		EvaluatorVersion: "review-quality/v3",
-		Valid:            false,
-		Explanation:      "evaluator output was not parseable",
+func TestMeasurementsRecordModelsPartialAndNotApplicableResults(t *testing.T) {
+	partial := contracts.MeasurementsBody{
+		Conclusion:  "partial",
+		Explanation: "one rubric dimension was unavailable",
+		Metrics: []contracts.Measurement{{
+			ID: "quality", Value: 8, Unit: "score", Direction: "higher-is-better",
+		}},
 	}
-	if _, err := validateFiles(t, "measurements/v1", map[string][]byte{"measurements.json": marshalDocument(t, document)}, emptyValidationContext(t)); err != nil {
-		t.Fatalf("explained invalid measurements error = %v", err)
+	if err := partial.Validate(nil); err != nil {
+		t.Fatalf("valid partial measurements: %v", err)
 	}
-
-	document.Explanation = " "
-	if _, err := validateFiles(t, "measurements/v1", map[string][]byte{"measurements.json": marshalDocument(t, document)}, emptyValidationContext(t)); err == nil || !strings.Contains(err.Error(), "explanation") {
-		t.Fatalf("unexplained invalid measurements error = %v, want explanation error", err)
+	notApplicable := contracts.MeasurementsBody{
+		Conclusion:  "not-applicable",
+		Explanation: "fixture has no measurable output",
+	}
+	if err := notApplicable.Validate(nil); err != nil {
+		t.Fatalf("valid not-applicable measurements: %v", err)
+	}
+	notApplicable.Metrics = partial.Metrics
+	if err := notApplicable.Validate(nil); err == nil || !strings.Contains(err.Error(), "no metrics") {
+		t.Fatalf("not-applicable metric error = %v", err)
 	}
 }

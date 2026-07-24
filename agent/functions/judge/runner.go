@@ -15,15 +15,17 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/snapshot/contracts"
 )
 
 const (
 	DefaultTimeout       = 10 * time.Minute
-	measurementsFileName = "measurements.json"
+	measurementsFileName = "record.json"
 )
 
 type Config struct {
@@ -260,22 +262,26 @@ func Run(ctx context.Context, config Config, options Options) (*Result, error) {
 	result.Total = weighted / weightSum
 	result.Pass = result.Total >= config.PassThreshold
 	result.Measurements = successfulMeasurements(config, result.Total, result.Dimensions)
-	if err := result.Measurements.Validate(); err != nil {
+	if err := result.Measurements.Validate(nil); err != nil {
 		return nil, fmt.Errorf("judge: produced invalid measurements/v1: %w", err)
 	}
 	return result, nil
 }
 
 func successfulMeasurements(config Config, total float64, dimensions []ScoreDimension) contracts.MeasurementsDocument {
+	_ = config // evaluator identity belongs to production provenance, not value bytes.
 	document := contracts.MeasurementsDocument{
-		SchemaVersion: "1.0.0", EvaluatorVersion: config.EvaluatorVersion, Valid: true,
-		Metrics: []contracts.Measurement{{Name: "judge.total", Value: total, Unit: "score/10", Direction: "higher"}},
+		Conclusion: "measured",
+		Metrics:    []contracts.Measurement{{ID: "judge.total", Value: total, Unit: "score-10", Direction: "higher-is-better"}},
 	}
 	for _, dimension := range dimensions {
 		document.Metrics = append(document.Metrics, contracts.Measurement{
-			Name: "judge.dimension." + dimension.Name, Value: dimension.Score, Unit: "score/10", Direction: "higher",
+			ID: "judge.dimension." + dimension.Name, Value: dimension.Score, Unit: "score-10", Direction: "higher-is-better",
 		})
 	}
+	sort.Slice(document.Metrics, func(left, right int) bool {
+		return document.Metrics[left].ID < document.Metrics[right].ID
+	})
 	return document
 }
 
@@ -289,10 +295,14 @@ func WriteMeasurements(ctx context.Context, outputRoot string, document contract
 	if strings.TrimSpace(outputRoot) == "" {
 		return fmt.Errorf("judge: output root is required")
 	}
-	if err := document.Validate(); err != nil {
+	if err := document.Validate(nil); err != nil {
 		return fmt.Errorf("judge: invalid measurements/v1: %w", err)
 	}
-	payload, err := json.MarshalIndent(document, "", "  ")
+	record, err := contracts.NewRecord(snapshot.TypeRef("measurements/v1"), nil, document)
+	if err != nil {
+		return fmt.Errorf("judge: construct measurements/v1: %w", err)
+	}
+	payload, err := json.MarshalIndent(record, "", "  ")
 	if err != nil {
 		return fmt.Errorf("judge: marshal measurements/v1: %w", err)
 	}

@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"os"
 	"strings"
@@ -100,7 +101,23 @@ func (store experimentContentStub) Open(context.Context, snapshot.Snapshot) (io.
 }
 
 func TestExperimentMeasurementsReaderVerifiesManifestAndStrictContract(t *testing.T) {
-	document := []byte(`{"schema_version":"1.0.0","evaluator_version":"judge-v2","valid":true,"metrics":[{"name":"quality","value":0.9,"unit":"ratio","direction":"higher"}]}`)
+	record, err := contracts.NewRecord(
+		snapshot.TypeRef("measurements/v1"),
+		nil,
+		contracts.MeasurementsBody{
+			Conclusion: "measured",
+			Metrics: []contracts.Measurement{{
+				ID: "quality", Value: 0.9, Unit: "ratio", Direction: "higher-is-better",
+			}},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	document, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
 	archive, manifest := canonicalMeasurementsFixture(t, document)
 	registry, err := contracts.NewRegistry()
 	if err != nil {
@@ -118,7 +135,7 @@ func TestExperimentMeasurementsReaderVerifiesManifestAndStrictContract(t *testin
 	if err != nil || !found {
 		t.Fatalf("ReadMeasurements = %#v, %v, %v", got, found, err)
 	}
-	if got.EvaluatorVersion != "judge-v2" || len(got.Metrics) != 1 || got.Metrics[0].Name != "quality" {
+	if got.Conclusion != "measured" || len(got.Metrics) != 1 || got.Metrics[0].ID != "quality" {
 		t.Fatalf("document = %#v", got)
 	}
 
@@ -134,7 +151,7 @@ func canonicalMeasurementsFixture(t *testing.T, document []byte) ([]byte, snapsh
 	t.Helper()
 	var raw bytes.Buffer
 	writer := tar.NewWriter(&raw)
-	if err := writer.WriteHeader(&tar.Header{Name: "measurements.json", Mode: 0600, Size: int64(len(document))}); err != nil {
+	if err := writer.WriteHeader(&tar.Header{Name: "record.json", Mode: 0600, Size: int64(len(document))}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := writer.Write(document); err != nil {

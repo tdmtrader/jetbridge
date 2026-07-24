@@ -33,10 +33,10 @@ func TestRunScoresDeclaredRubricAndProducesMeasurements(t *testing.T) {
 	if len(result.Issues) != 1 || result.Issues[0].Dimension != "tests" {
 		t.Fatalf("issues = %+v", result.Issues)
 	}
-	if result.Measurements.EvaluatorVersion != testConfig.EvaluatorVersion || !result.Measurements.Valid {
+	if result.Measurements.Conclusion != "measured" {
 		t.Fatalf("measurements = %+v", result.Measurements)
 	}
-	if err := result.Measurements.Validate(); err != nil {
+	if err := result.Measurements.Validate(nil); err != nil {
 		t.Fatalf("measurements/v1: %v", err)
 	}
 	if got := measurementValue(t, result, "judge.total"); got != 7 {
@@ -79,7 +79,7 @@ func TestWriteMeasurementsEmitsStrictSnapshotDocument(t *testing.T) {
 	if err := WriteMeasurements(context.Background(), root, document); err != nil {
 		t.Fatalf("WriteMeasurements: %v", err)
 	}
-	payload, err := os.ReadFile(filepath.Join(root, "measurements.json"))
+	payload, err := os.ReadFile(filepath.Join(root, "record.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,8 @@ func TestWriteMeasurementsEmitsStrictSnapshotDocument(t *testing.T) {
 	if err := json.Unmarshal(payload, &decoded); err != nil {
 		t.Fatal(err)
 	}
-	if decoded["evaluator_version"] != testConfig.EvaluatorVersion || decoded["valid"] != true {
+	body, ok := decoded["body"].(map[string]any)
+	if !ok || body["conclusion"] != "measured" || decoded["type"] != "measurements/v1" {
 		t.Fatalf("payload = %s", payload)
 	}
 }
@@ -95,7 +96,7 @@ func TestWriteMeasurementsEmitsStrictSnapshotDocument(t *testing.T) {
 func measurementValue(t *testing.T, result *Result, name string) float64 {
 	t.Helper()
 	for _, metric := range result.Measurements.Metrics {
-		if metric.Name == name {
+		if metric.ID == name {
 			return metric.Value
 		}
 	}

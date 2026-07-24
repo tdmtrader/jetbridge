@@ -711,8 +711,8 @@ plan:
 			Expect(err).NotTo(HaveOccurred())
 		}
 		document := contracts.MeasurementsDocument{
-			SchemaVersion: "1.0.0", EvaluatorVersion: "judge/v2", Valid: true,
-			Metrics: []contracts.Measurement{{Name: "quality", Value: 0.8, Unit: "score", Direction: "higher"}},
+			Conclusion: "measured",
+			Metrics:    []contracts.Measurement{{ID: "quality", Value: 0.8, Unit: "score", Direction: "higher-is-better"}},
 		}
 		Expect(factory.RecordMeasurements(ctx, reclaimed[0].ID, document)).To(Succeed())
 		Expect(factory.CompleteEvaluation(ctx, reclaimed[0].ID, experiment.CellValidMeasurement, &measurementSnapshot)).To(BeTrue())

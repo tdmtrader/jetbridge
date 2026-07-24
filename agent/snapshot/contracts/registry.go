@@ -75,6 +75,8 @@ func builtinValidator(ref snapshot.TypeRef, config registryConfig) (snapshot.Val
 		return workItemValidator{}, nil
 	case "measurements/v1":
 		return measurementsValidator{}, nil
+	case "selection/v1":
+		return selectionValidator{}, nil
 	case "upgrade-request/v1":
 		return documentValidator[*UpgradeRequestDocument]{fileName: "upgrade-request.json"}, nil
 	case "upgrade-report/v1":
@@ -149,6 +151,7 @@ func builtinTypeNames() []string {
 		"work-item/v1",
 		"log-bundle/v1",
 		"measurements/v1",
+		"selection/v1",
 		"validation/v1",
 		"upgrade-request/v1",
 		"upgrade-report/v1",
