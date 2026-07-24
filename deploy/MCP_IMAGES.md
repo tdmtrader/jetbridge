@@ -1,7 +1,7 @@
 # MCP sidecar image packaging convention
 
 Owner: dev-mcp workstream. Contract: 00-shared-contracts.md §8.5.
-Consumers: platform-mcp-hitl (`mcp-platform`), gateway-mcp (`mcp-gateway`).
+Consumers: gateway-mcp (`mcp-gateway`).
 
 ## Convention
 
@@ -24,7 +24,7 @@ a live-cluster task) will add the `build-mcp-dev-image` job to
 contract kit against it (`go test ./agent/devmcp/e2e/ -run
 TestLiveImageContract` with `DEV_MCP_ENDPOINT` set) → `docker push` on
 green. New sidecar images will copy that job, swap the Dockerfile and the
-contract-kit invocation (platform-mcp and gateway ship their own kits per
+contract-kit invocation (gateway ships its own kit per
 the spec's testing approach).
 
 ## Known v1 limitations (mcp-dev-concourse)
