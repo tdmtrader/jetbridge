@@ -526,6 +526,39 @@ func TestDecodeManifestMatchesFinalReleaseProbeMatrix(t *testing.T) {
 	}
 }
 
+func TestDecodeManifestMatchesFinalRereviewHarvestPortSemantics(t *testing.T) {
+	tests := []struct {
+		name     string
+		body     string
+		accepted bool
+	}{
+		{
+			name:     "ordinary task sidecar rejects invalid protocol",
+			body:     "plan:\n- task: work\n  config: {platform: linux}\n  sidecars:\n  - {name: tools, image: image, ports: [{containerPort: 8080, protocol: INVALID}]}\n",
+			accepted: false,
+		},
+		{
+			name:     "harvest dev mcp accepts invalid protocol without gates",
+			body:     "plan:\n- harvest: publish\n  workspace: workspace\n  repo: owner/repo\n  dev_mcp: {ports: [{containerPort: 8080, protocol: INVALID}]}\n",
+			accepted: true,
+		},
+		{
+			name:     "harvest dev mcp accepts invalid protocol with gates",
+			body:     "plan:\n- harvest: publish\n  workspace: workspace\n  repo: owner/repo\n  gate_policy: {gates: [{gate: test, scope: full}]}\n  dev_mcp: {ports: [{containerPort: 8080, protocol: INVALID}]}\n",
+			accepted: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, _, err := DecodeManifest(map[string]string{"workflow.yml": ordinaryV3(test.body)})
+			if (err == nil) != test.accepted {
+				t.Fatalf("DecodeManifest accepted=%t, want %t (err: %v)", err == nil, test.accepted, err)
+			}
+		})
+	}
+}
+
 func TestDecodeManifestMatchesAdjacentReleaseDecodeMatrix(t *testing.T) {
 	tests := []struct {
 		name     string

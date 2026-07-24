@@ -2898,7 +2898,7 @@ func frozenHarvestDevMCPType(value any, fieldPath string) error {
 	return validateFrozenTypedFields(sidecar, fieldPath, map[string]frozenTypeValidator{
 		"name": frozenStringType, "image": frozenStringType,
 		"command": frozenStringListType, "args": frozenStringListType,
-		"env": frozenSidecarEnvType, "ports": frozenSidecarPortsType,
+		"env": frozenSidecarEnvType, "ports": frozenSidecarPortsWireType,
 		"resources": frozenSidecarResourcesType, "workingDir": frozenStringType,
 		"image_artifact": frozenStringType,
 	})
@@ -2911,9 +2911,7 @@ func frozenSidecarEnvType(value any, fieldPath string) error {
 }
 
 func frozenSidecarPortsType(value any, fieldPath string) error {
-	if err := validateFrozenTypedObjectList(value, fieldPath, map[string]frozenTypeValidator{
-		"containerPort": frozenIntType, "protocol": frozenStringType,
-	}); err != nil {
+	if err := frozenSidecarPortsWireType(value, fieldPath); err != nil {
 		return err
 	}
 	entries, _ := value.([]any)
@@ -2927,6 +2925,12 @@ func frozenSidecarPortsType(value any, fieldPath string) error {
 		}
 	}
 	return nil
+}
+
+func frozenSidecarPortsWireType(value any, fieldPath string) error {
+	return validateFrozenTypedObjectList(value, fieldPath, map[string]frozenTypeValidator{
+		"containerPort": frozenIntType, "protocol": frozenStringType,
+	})
 }
 
 func frozenSidecarResourcesType(value any, fieldPath string) error {
