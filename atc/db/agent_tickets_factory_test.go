@@ -334,17 +334,14 @@ var _ = Describe("AgentTicketsFactory", func() {
 
 			Expect(factory.Transition(id, tickets.StateQueued, tickets.StateRunning,
 				tickets.TransitionMeta{})).To(Succeed())
-			// running→queued (retryable platform error OR rejected send_back
-			// checkpoint re-dispatch; attempt_count++). Second legitimate
-			// caller: dispatch's run-completion reconciler (checkpoint-seam
-			// delta §6, 2026-07-09), which requeues with TransitionMeta{}
-			// exactly as below — these side-effect assertions are its
-			// contract; do not narrow them.
+			// running→queued is the generic explicit/manual retry edge.
+			// TransitionMeta remains empty; these assertions pin the retry
+			// side effects and must not narrow the state-machine edge.
 			Expect(factory.Transition(id, tickets.StateRunning, tickets.StateQueued,
 				tickets.TransitionMeta{})).To(Succeed())
 			got, _, _ = factory.Get(id)
 			Expect(got.AttemptCount).To(Equal(1)) // running→queued increments
-			Expect(got.CompletedAt).To(BeZero())  // stays cleared for re-dispatch
+			Expect(got.CompletedAt).To(BeZero())  // stays cleared for explicit retry
 			var requeuedAt sql.NullTime
 			Expect(dbConn.QueryRow(`SELECT queued_at FROM agent_tickets WHERE id = $1`, id).
 				Scan(&requeuedAt)).To(Succeed())

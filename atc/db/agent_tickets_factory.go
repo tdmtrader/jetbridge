@@ -464,9 +464,8 @@ func (f *agentTicketsFactory) Transition(id int, from, to tickets.State, meta ti
 		q = q.Set("queued_at", sq.Expr("now()")).
 			Set("completed_at", nil)
 		if from == tickets.StateRunning {
-			// running → queued (retryable platform error OR rejected
-			// send_back checkpoint re-dispatch; attempt_count++) — called
-			// by dispatch's retry path and its run-completion reconciler.
+			// running → queued is the generic explicit/manual retry edge;
+			// each retry increments attempt_count.
 			q = q.Set("attempt_count", sq.Expr("attempt_count + 1"))
 		}
 		if from != tickets.StateDraft {
