@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	pathpkg "path"
 	"regexp"
 	"sort"
 	"strings"
@@ -27,8 +28,12 @@ const (
 )
 
 var (
-	typeRefPattern         = regexp.MustCompile(`^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)*/v[1-9][0-9]*$`)
-	agentOutputNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+	typeRefPattern           = regexp.MustCompile(`^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)*/v[1-9][0-9]*$`)
+	agentOutputNamePattern   = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+	frozenIdentifierPattern  = regexp.MustCompile(`^[\p{Ll}\p{Lt}\p{Lm}\p{Lo}\d][\p{Ll}\p{Lt}\p{Lm}\p{Lo}\d\-_.]*$`)
+	frozenNumericIdentifier  = regexp.MustCompile(`^\d+$`)
+	frozenMemoryLimitPattern = regexp.MustCompile(`(?i)^([0-9]+)(([KMG])(i)?B?)?$`)
+	frozenSourcedVarPattern  = regexp.MustCompile(`\(\(([-/.\w\pL]+):[-/.:@"\w\pL]+\)\)`)
 )
 
 type Metadata struct {
@@ -739,6 +744,9 @@ func decodeFunction(files map[string]string, raw string) (Metadata, *PublicSigna
 	}
 	if err := validateCapabilityCatalog(source.Capabilities); err != nil {
 		return Metadata{}, nil, err
+	}
+	if err := validateFrozenOrdinaryTypes(&source, plan); err != nil {
+		return Metadata{}, nil, fmt.Errorf("workflow: invalid Concourse config: %w", err)
 	}
 	if err := validateFunctionAssets(files, plan, source.Capabilities); err != nil {
 		return Metadata{}, nil, err
@@ -1649,9 +1657,11 @@ func stringList(value any) []string {
 	}
 	result := make([]string, 0, len(entries))
 	for _, entry := range entries {
-		text, ok := entry.(string)
-		if ok {
+		switch text := entry.(type) {
+		case string:
 			result = append(result, text)
+		case nil:
+			result = append(result, "")
 		}
 	}
 	return result
@@ -2140,6 +2150,8 @@ func frozenStringMap(value any) map[string]string {
 	for key, raw := range entries {
 		if text, ok := raw.(string); ok {
 			result[key] = text
+		} else if raw == nil {
+			result[key] = ""
 		}
 	}
 	return result
@@ -2311,9 +2323,699 @@ func sortedUniqueFrozenStrings(values []string) []string {
 	return keys
 }
 
+type frozenTypeValidator func(any, string) error
+
+var frozenOrdinaryDeclarationTypeFields = map[string]map[string]frozenTypeValidator{
+	"resources": {
+		"name": frozenStringType, "old_name": frozenStringType,
+		"public": frozenBoolType, "webhook_token": frozenStringType,
+		"type": frozenStringType, "source": frozenObjectType,
+		"check_every": frozenCheckEveryType, "check_timeout": frozenStringType,
+		"tags": frozenStringListType, "version": frozenStringMapType,
+		"icon": frozenStringType, "expose_build_created_by": frozenBoolType,
+	},
+	"resource_types": {
+		"name": frozenStringType, "type": frozenStringType, "image": frozenStringType,
+		"source": frozenObjectType, "defaults": frozenObjectType,
+		"privileged": frozenBoolType, "check_every": frozenCheckEveryType,
+		"tags": frozenStringListType, "params": frozenObjectType,
+	},
+	"prototypes": {
+		"name": frozenStringType, "type": frozenStringType,
+		"source": frozenObjectType, "defaults": frozenObjectType,
+		"privileged": frozenBoolType, "check_every": frozenCheckEveryType,
+		"tags": frozenStringListType, "params": frozenObjectType,
+	},
+	"var_sources": {
+		"name": frozenStringType, "type": frozenStringType, "config": frozenAnyType,
+	},
+}
+
+func validateFrozenOrdinaryTypes(source *functionSource, plan []any) error {
+	declarations := map[string]any{
+		"resources": source.Resources, "resource_types": source.ResourceTypes,
+		"prototypes": source.Prototypes, "var_sources": source.VarSources,
+	}
+	for _, name := range []string{"resources", "resource_types", "prototypes", "var_sources"} {
+		if err := validateFrozenTypedObjectList(declarations[name], name, frozenOrdinaryDeclarationTypeFields[name]); err != nil {
+			return err
+		}
+	}
+	for index, raw := range plan {
+		step, ok := raw.(map[string]any)
+		if !ok {
+			return fmt.Errorf("plan[%d] must be an object", index)
+		}
+		if err := validateFrozenStepTypes(step, fmt.Sprintf("jobs.entry.plan[%d]", index)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+var (
+	frozenOrdinaryStepTypeFields    map[string]map[string]frozenTypeValidator
+	frozenOrdinaryWrapperTypeFields map[string]frozenTypeValidator
+)
+
+func init() {
+	frozenOrdinaryStepTypeFields = map[string]map[string]frozenTypeValidator{
+		"agent": {
+			"agent": frozenStringType, "function_id": frozenStringType,
+			"prompt": frozenStringType, "prompt_file": frozenStringType,
+			"system_prompt_file": frozenStringType, "context_files": frozenStringListType,
+			"model": frozenStringType, "max_turns": frozenIntType,
+			"budget_slice_usd": frozenNumberType, "output_schema": frozenStringType,
+			"system_prompt": frozenStringType, "context": frozenStringType,
+			"skills": frozenStringListType, "sidecars": frozenSidecarListType,
+			"inputs": frozenStringListType, "outputs": frozenStringListType,
+			"capabilities": frozenStringListType, "input_types": frozenSnapshotInputMapType,
+			"output_types": frozenSnapshotOutputMapType, "env": frozenObjectType,
+			"timeout": frozenStringType, "container_limits": frozenContainerLimitsType,
+			"container_requests": frozenContainerLimitsType,
+		},
+		"harvest": {
+			"harvest": frozenStringType, "workspace": frozenStringType,
+			"repo": frozenStringType, "target_branch": frozenStringType,
+			"ticket_id": frozenIntType, "pipeline_run_id": frozenIntType,
+			"branch": frozenStringType, "push": frozenBoolType,
+			"env": frozenObjectType, "dev_mcp": frozenSidecarType,
+			"gate_policy": frozenGatePolicyType, "judge": frozenJudgeType,
+			"timeout": frozenStringType,
+		},
+		"run": {
+			"run": frozenStringType, "type": frozenStringType,
+			"params": frozenObjectType, "privileged": frozenBoolType,
+			"tags": frozenStringListType, "container_limits": frozenContainerLimitsType,
+			"container_requests": frozenContainerLimitsType, "timeout": frozenStringType,
+		},
+		"task": {
+			"task": frozenStringType, "function_id": frozenStringType,
+			"privileged": frozenBoolType, "hermetic": frozenBoolType,
+			"file": frozenStringType, "container_limits": frozenContainerLimitsType,
+			"container_requests": frozenContainerLimitsType, "config": frozenTaskConfigType,
+			"params": frozenObjectType, "vars": frozenObjectType,
+			"tags": frozenStringListType, "input_mapping": frozenStringMapType,
+			"output_mapping": frozenStringMapType, "input_types": frozenSnapshotInputMapType,
+			"output_types": frozenSnapshotOutputMapType, "image": frozenStringType,
+			"timeout": frozenStringType, "sidecars": frozenSidecarListType,
+		},
+		"put": {
+			"put": frozenStringType, "resource": frozenStringType,
+			"params": frozenObjectType, "inputs": frozenPutInputsType,
+			"tags": frozenStringListType, "get_params": frozenObjectType,
+			"timeout": frozenStringType, "no_get": frozenBoolType,
+		},
+		"get": {
+			"get": frozenStringType, "resource": frozenStringType,
+			"version": frozenVersionConfigType, "params": frozenObjectType,
+			"passed": frozenStringListType, "trigger": frozenBoolType,
+			"tags": frozenStringListType, "timeout": frozenStringType,
+			"skip_download": frozenBoolType,
+		},
+		"set_pipeline": {
+			"set_pipeline": frozenStringType, "file": frozenStringType,
+			"team": frozenStringType, "vars": frozenObjectType,
+			"var_files": frozenStringListType, "instance_vars": frozenObjectType,
+		},
+		"load_var": {
+			"load_var": frozenStringType, "file": frozenStringType,
+			"format": frozenStringType, "reveal": frozenBoolType,
+		},
+		"try":         {"try": frozenStepObjectType},
+		"do":          {"do": frozenStepListType},
+		"in_parallel": {"in_parallel": frozenInParallelType},
+	}
+
+	frozenOrdinaryWrapperTypeFields = map[string]frozenTypeValidator{
+		"ensure": frozenStepObjectType, "on_error": frozenStepObjectType,
+		"on_abort": frozenStepObjectType, "on_failure": frozenStepObjectType,
+		"on_success": frozenStepObjectType, "across": frozenAcrossType,
+		"attempts": frozenIntType, "timeout": frozenStringType,
+	}
+}
+
+func validateFrozenStepTypes(step map[string]any, stepPath string) error {
+	core := ""
+	for _, name := range []string{
+		"agent", "harvest", "run", "task", "put", "get",
+		"set_pipeline", "load_var", "try", "do", "in_parallel",
+	} {
+		if _, found := step[name]; found {
+			core = name
+			break
+		}
+	}
+	if fields := frozenOrdinaryStepTypeFields[core]; fields != nil {
+		if err := validateFrozenTypedFields(step, stepPath, fields); err != nil {
+			return err
+		}
+	}
+	for name, validator := range frozenOrdinaryWrapperTypeFields {
+		if value, found := step[name]; found {
+			if err := validator(value, stepPath+"."+name); err != nil {
+				return err
+			}
+		}
+	}
+	if value, found := step["fail_fast"]; found {
+		if err := frozenBoolType(value, stepPath+".fail_fast"); err != nil {
+			return err
+		}
+	}
+
+	if nested, found := step["try"]; found {
+		if err := validateFrozenTypedNestedStep(nested, stepPath+".try"); err != nil {
+			return err
+		}
+	}
+	if nested, found := step["do"]; found {
+		if err := validateFrozenTypedStepList(nested, stepPath+".do"); err != nil {
+			return err
+		}
+	}
+	if nested, found := step["in_parallel"]; found {
+		if err := validateFrozenTypedParallelSteps(nested, stepPath+".in_parallel"); err != nil {
+			return err
+		}
+	}
+	for _, hook := range []string{"on_success", "on_failure", "on_abort", "on_error", "ensure"} {
+		if nested, found := step[hook]; found {
+			if err := validateFrozenTypedNestedStep(nested, stepPath+"."+hook); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validateFrozenTypedFields(value map[string]any, objectPath string, fields map[string]frozenTypeValidator) error {
+	for name, validator := range fields {
+		if field, found := value[name]; found {
+			if err := validator(field, objectPath+"."+name); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validateFrozenTypedObjectList(value any, listPath string, fields map[string]frozenTypeValidator) error {
+	if value == nil {
+		return nil
+	}
+	entries, ok := value.([]any)
+	if !ok {
+		return fmt.Errorf("%s must be a list", listPath)
+	}
+	for index, raw := range entries {
+		entry, ok := raw.(map[string]any)
+		if !ok {
+			return fmt.Errorf("%s[%d] must be an object", listPath, index)
+		}
+		if err := validateFrozenTypedFields(entry, fmt.Sprintf("%s[%d]", listPath, index), fields); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func frozenAnyType(any, string) error { return nil }
+
+func frozenStringType(value any, fieldPath string) error {
+	if value == nil {
+		return nil
+	}
+	if _, ok := value.(string); !ok {
+		return fmt.Errorf("%s must be a string", fieldPath)
+	}
+	return nil
+}
+
+func frozenBoolType(value any, fieldPath string) error {
+	if value == nil {
+		return nil
+	}
+	if _, ok := value.(bool); !ok {
+		return fmt.Errorf("%s must be a boolean", fieldPath)
+	}
+	return nil
+}
+
+func frozenIntType(value any, fieldPath string) error {
+	if value == nil {
+		return nil
+	}
+	if _, ok := frozenInt(value); !ok {
+		return fmt.Errorf("%s must be an integer", fieldPath)
+	}
+	return nil
+}
+
+func frozenNumberType(value any, fieldPath string) error {
+	if value == nil {
+		return nil
+	}
+	if _, ok := frozenFloat(value); !ok {
+		return fmt.Errorf("%s must be a number", fieldPath)
+	}
+	return nil
+}
+
+func frozenObjectType(value any, fieldPath string) error {
+	if value == nil {
+		return nil
+	}
+	if _, ok := value.(map[string]any); !ok {
+		return fmt.Errorf("%s must be an object", fieldPath)
+	}
+	return nil
+}
+
+func frozenStringListType(value any, fieldPath string) error {
+	if value == nil {
+		return nil
+	}
+	entries, ok := value.([]any)
+	if !ok {
+		return fmt.Errorf("%s must be a list of strings", fieldPath)
+	}
+	for index, entry := range entries {
+		if _, ok := entry.(string); !ok && entry != nil {
+			return fmt.Errorf("%s[%d] must be a string", fieldPath, index)
+		}
+	}
+	return nil
+}
+
+func frozenStringMapType(value any, fieldPath string) error {
+	if value == nil {
+		return nil
+	}
+	entries, ok := value.(map[string]any)
+	if !ok {
+		return fmt.Errorf("%s must be an object", fieldPath)
+	}
+	for key, entry := range entries {
+		if _, ok := entry.(string); !ok && entry != nil {
+			return fmt.Errorf("%s[%q] must be a string", fieldPath, key)
+		}
+	}
+	return nil
+}
+
+func frozenCheckEveryType(value any, fieldPath string) error {
+	if err := frozenStringType(value, fieldPath); err != nil || value == nil {
+		return err
+	}
+	text := value.(string)
+	if text == "" || text == "never" {
+		return nil
+	}
+	if _, err := time.ParseDuration(text); err != nil {
+		return fmt.Errorf("%s must be a duration or \"never\"", fieldPath)
+	}
+	return nil
+}
+
+func frozenVersionConfigType(value any, fieldPath string) error {
+	if value == nil {
+		return nil
+	}
+	if _, ok := value.(string); ok {
+		return nil
+	}
+	return frozenStringMapType(value, fieldPath)
+}
+
+func frozenPutInputsType(value any, fieldPath string) error {
+	if value == nil {
+		return nil
+	}
+	if _, ok := value.(string); ok {
+		return nil
+	}
+	return frozenStringListType(value, fieldPath)
+}
+
+func frozenContainerLimitsType(value any, fieldPath string) error {
+	if value == nil {
+		return nil
+	}
+	limits, ok := value.(map[string]any)
+	if !ok {
+		return fmt.Errorf("%s must be an object", fieldPath)
+	}
+	if cpu, found := limits["cpu"]; found && cpu != nil {
+		if err := frozenNumberType(cpu, fieldPath+".cpu"); err != nil {
+			return err
+		}
+	}
+	for _, name := range []string{"memory", "ephemeral_storage"} {
+		quantity, found := limits[name]
+		if !found || quantity == nil {
+			continue
+		}
+		if text, stringValue := quantity.(string); stringValue {
+			if !frozenMemoryLimitPattern.MatchString(text) {
+				return fmt.Errorf("%s.%s must be a memory quantity", fieldPath, name)
+			}
+			continue
+		}
+		if _, numeric := frozenFloat(quantity); numeric {
+			continue
+		}
+		// The released custom unmarshaler had no default switch branch. Preserve
+		// its acceptance of other JSON values rather than tightening history.
+	}
+	return nil
+}
+
+func frozenSnapshotInputMapType(value any, fieldPath string) error {
+	_, err := frozenSnapshotInputs(value)
+	if err != nil {
+		return fmt.Errorf("%s: %w", fieldPath, err)
+	}
+	return nil
+}
+
+func frozenSnapshotOutputMapType(value any, fieldPath string) error {
+	_, err := frozenSnapshotOutputs(value)
+	if err != nil {
+		return fmt.Errorf("%s: %w", fieldPath, err)
+	}
+	return nil
+}
+
+func frozenTaskConfigType(value any, fieldPath string) error {
+	if value == nil {
+		return nil
+	}
+	config, ok := value.(map[string]any)
+	if !ok {
+		return fmt.Errorf("%s must be an object", fieldPath)
+	}
+	if err := validateFrozenTypedFields(config, fieldPath, map[string]frozenTypeValidator{
+		"platform": frozenStringType, "rootfs_uri": frozenStringType,
+		"image_resource":     frozenImageResourceType,
+		"container_limits":   frozenContainerLimitsType,
+		"container_requests": frozenContainerLimitsType,
+		"params":             frozenObjectType, "run": frozenTaskRunType,
+		"inputs": frozenTaskInputsType, "outputs": frozenTaskOutputsType,
+		"caches": frozenTaskPathsType, "scratch_paths": frozenTaskPathsType,
+	}); err != nil {
+		return err
+	}
+	return nil
+}
+
+func frozenImageResourceType(value any, fieldPath string) error {
+	if value == nil {
+		return nil
+	}
+	image, ok := value.(map[string]any)
+	if !ok {
+		return fmt.Errorf("%s must be an object", fieldPath)
+	}
+	return validateFrozenTypedFields(image, fieldPath, map[string]frozenTypeValidator{
+		"name": frozenStringType, "type": frozenStringType,
+		"source": frozenObjectType, "version": frozenStringMapType,
+		"params": frozenObjectType, "tags": frozenStringListType,
+	})
+}
+
+func frozenTaskRunType(value any, fieldPath string) error {
+	if value == nil {
+		return nil
+	}
+	run, ok := value.(map[string]any)
+	if !ok {
+		return fmt.Errorf("%s must be an object", fieldPath)
+	}
+	return validateFrozenTypedFields(run, fieldPath, map[string]frozenTypeValidator{
+		"path": frozenStringType, "args": frozenStringListType,
+		"dir": frozenStringType, "user": frozenStringType,
+	})
+}
+
+func frozenTaskInputsType(value any, fieldPath string) error {
+	return validateFrozenTypedObjectList(value, fieldPath, map[string]frozenTypeValidator{
+		"name": frozenStringType, "path": frozenStringType, "optional": frozenBoolType,
+	})
+}
+
+func frozenTaskOutputsType(value any, fieldPath string) error {
+	return validateFrozenTypedObjectList(value, fieldPath, map[string]frozenTypeValidator{
+		"name": frozenStringType, "path": frozenStringType,
+	})
+}
+
+func frozenTaskPathsType(value any, fieldPath string) error {
+	return validateFrozenTypedObjectList(value, fieldPath, map[string]frozenTypeValidator{
+		"path": frozenStringType,
+	})
+}
+
+func frozenSidecarListType(value any, fieldPath string) error {
+	if value == nil {
+		return nil
+	}
+	entries, ok := value.([]any)
+	if !ok {
+		return fmt.Errorf("%s must be a list", fieldPath)
+	}
+	for index, entry := range entries {
+		entryPath := fmt.Sprintf("%s[%d]", fieldPath, index)
+		if err := frozenSidecarType(entry, entryPath); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func frozenSidecarType(value any, fieldPath string) error {
+	if value == nil {
+		return nil
+	}
+	if _, ok := value.(string); ok {
+		return nil
+	}
+	sidecar, ok := value.(map[string]any)
+	if !ok {
+		return fmt.Errorf("%s must be a string or object", fieldPath)
+	}
+	if err := validateFrozenTypedFields(sidecar, fieldPath, map[string]frozenTypeValidator{
+		"name": frozenStringType, "image": frozenStringType,
+		"command": frozenStringListType, "args": frozenStringListType,
+		"env": frozenSidecarEnvType, "ports": frozenSidecarPortsType,
+		"resources": frozenSidecarResourcesType, "workingDir": frozenStringType,
+		"image_artifact": frozenStringType,
+	}); err != nil {
+		return err
+	}
+	name, _ := sidecar["name"].(string)
+	image, _ := sidecar["image"].(string)
+	artifact, _ := sidecar["image_artifact"].(string)
+	switch {
+	case name == "":
+		return fmt.Errorf("%s: invalid sidecar configuration: missing 'name'", fieldPath)
+	case image == "" && artifact == "":
+		return fmt.Errorf("%s: invalid sidecar configuration: missing 'image' or 'image_artifact'", fieldPath)
+	case image != "" && artifact != "":
+		return fmt.Errorf("%s: invalid sidecar configuration: cannot specify both 'image' and 'image_artifact'", fieldPath)
+	case name == "main" || name == "artifact-helper":
+		return fmt.Errorf("%s: reserved container name %q", fieldPath, name)
+	}
+	return nil
+}
+
+func frozenSidecarEnvType(value any, fieldPath string) error {
+	return validateFrozenTypedObjectList(value, fieldPath, map[string]frozenTypeValidator{
+		"name": frozenStringType, "value": frozenStringType,
+	})
+}
+
+func frozenSidecarPortsType(value any, fieldPath string) error {
+	if err := validateFrozenTypedObjectList(value, fieldPath, map[string]frozenTypeValidator{
+		"containerPort": frozenIntType, "protocol": frozenStringType,
+	}); err != nil {
+		return err
+	}
+	entries, _ := value.([]any)
+	for index, raw := range entries {
+		entry, _ := raw.(map[string]any)
+		protocol, _ := entry["protocol"].(string)
+		switch protocol {
+		case "", "TCP", "UDP", "SCTP":
+		default:
+			return fmt.Errorf("%s[%d].protocol is invalid", fieldPath, index)
+		}
+	}
+	return nil
+}
+
+func frozenSidecarResourcesType(value any, fieldPath string) error {
+	if value == nil {
+		return nil
+	}
+	resources, ok := value.(map[string]any)
+	if !ok {
+		return fmt.Errorf("%s must be an object", fieldPath)
+	}
+	for _, name := range []string{"requests", "limits"} {
+		raw, found := resources[name]
+		if !found || raw == nil {
+			continue
+		}
+		quantities, ok := raw.(map[string]any)
+		if !ok {
+			return fmt.Errorf("%s.%s must be an object", fieldPath, name)
+		}
+		if err := validateFrozenTypedFields(quantities, fieldPath+"."+name, map[string]frozenTypeValidator{
+			"cpu": frozenStringType, "memory": frozenStringType,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func frozenGatePolicyType(value any, fieldPath string) error {
+	if value == nil {
+		return nil
+	}
+	policy, ok := value.(map[string]any)
+	if !ok {
+		return fmt.Errorf("%s must be an object", fieldPath)
+	}
+	return validateFrozenTypedFields(policy, fieldPath, map[string]frozenTypeValidator{
+		"gates": frozenGatesType, "on_gate_failure": frozenStringType,
+	})
+}
+
+func frozenGatesType(value any, fieldPath string) error {
+	return validateFrozenTypedObjectList(value, fieldPath, map[string]frozenTypeValidator{
+		"gate": frozenStringType, "scope": frozenStringType,
+		"focus": frozenStringType, "timeout": frozenStringType,
+		"retries": frozenIntType,
+	})
+}
+
+func frozenJudgeType(value any, fieldPath string) error {
+	if value == nil {
+		return nil
+	}
+	judge, ok := value.(map[string]any)
+	if !ok {
+		return fmt.Errorf("%s must be an object", fieldPath)
+	}
+	return validateFrozenTypedFields(judge, fieldPath, map[string]frozenTypeValidator{
+		"rubric": frozenRubricType, "pass_threshold": frozenNumberType,
+		"model": frozenStringType, "budget_usd": frozenNumberType,
+	})
+}
+
+func frozenRubricType(value any, fieldPath string) error {
+	return validateFrozenTypedObjectList(value, fieldPath, map[string]frozenTypeValidator{
+		"name": frozenStringType, "weight": frozenNumberType, "guidance": frozenStringType,
+	})
+}
+
+func frozenAcrossType(value any, fieldPath string) error {
+	if err := validateFrozenTypedObjectList(value, fieldPath, map[string]frozenTypeValidator{
+		"var": frozenStringType, "values": frozenAnyType, "max_in_flight": frozenMaxInFlightType,
+	}); err != nil {
+		return err
+	}
+	return nil
+}
+
+func frozenMaxInFlightType(value any, fieldPath string) error {
+	if value == nil {
+		return nil
+	}
+	if text, ok := value.(string); ok {
+		if text != "all" {
+			return fmt.Errorf("%s must be \"all\" or an integer", fieldPath)
+		}
+		return nil
+	}
+	return frozenIntType(value, fieldPath)
+}
+
+func frozenStepObjectType(value any, fieldPath string) error {
+	if value == nil {
+		return nil
+	}
+	if _, ok := value.(map[string]any); !ok {
+		return fmt.Errorf("%s must be an object", fieldPath)
+	}
+	return nil
+}
+
+func frozenStepListType(value any, fieldPath string) error {
+	if value == nil {
+		return nil
+	}
+	if _, ok := value.([]any); !ok {
+		return fmt.Errorf("%s must be a list", fieldPath)
+	}
+	return validateFrozenTypedStepList(value, fieldPath)
+}
+
+func frozenInParallelType(value any, fieldPath string) error {
+	if value == nil {
+		return nil
+	}
+	if _, ok := value.([]any); ok {
+		return validateFrozenTypedStepList(value, fieldPath)
+	}
+	config, ok := value.(map[string]any)
+	if !ok {
+		return fmt.Errorf("%s must be a list or object", fieldPath)
+	}
+	return validateFrozenTypedFields(config, fieldPath, map[string]frozenTypeValidator{
+		"steps": frozenStepListType, "limit": frozenIntType, "fail_fast": frozenBoolType,
+	})
+}
+
+func validateFrozenTypedNestedStep(value any, stepPath string) error {
+	step, ok := value.(map[string]any)
+	if !ok {
+		return fmt.Errorf("%s must be an object", stepPath)
+	}
+	return validateFrozenStepTypes(step, stepPath)
+}
+
+func validateFrozenTypedStepList(value any, listPath string) error {
+	steps, ok := value.([]any)
+	if !ok {
+		return fmt.Errorf("%s must be a list", listPath)
+	}
+	for index, raw := range steps {
+		if err := validateFrozenTypedNestedStep(raw, fmt.Sprintf("%s[%d]", listPath, index)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateFrozenTypedParallelSteps(value any, parallelPath string) error {
+	switch config := value.(type) {
+	case []any:
+		return validateFrozenTypedStepList(config, parallelPath)
+	case map[string]any:
+		if steps, found := config["steps"]; found {
+			return validateFrozenTypedStepList(steps, parallelPath+".steps")
+		}
+	}
+	return nil
+}
+
 type frozenOrdinaryDeclaration struct {
-	name string
-	typ  string
+	name  string
+	typ   string
+	image string
 }
 
 type frozenOrdinaryValidator struct {
@@ -2372,6 +3074,7 @@ func (validator *frozenOrdinaryValidator) decodeDeclarations(source *functionSou
 		if _, duplicate := validator.resourceTypes[declaration.name]; duplicate {
 			return fmt.Errorf("duplicate resource type %q", declaration.name)
 		}
+		declaration.image, _ = raw["image"].(string)
 		validator.resourceTypes[declaration.name] = declaration
 	}
 
@@ -2457,6 +3160,8 @@ func validateFrozenVarSources(value any) error {
 		return fmt.Errorf("var_sources must be a list")
 	}
 	seen := make(map[string]struct{})
+	names := make([]string, 0, len(entries))
+	dependencies := make(map[string]map[string]struct{}, len(entries))
 	for index, raw := range entries {
 		entry, ok := raw.(map[string]any)
 		if !ok {
@@ -2476,6 +3181,58 @@ func validateFrozenVarSources(value any) error {
 		default:
 			return fmt.Errorf("unknown credential manager type: %s", typ)
 		}
+		if typ == "dummy" {
+			config, ok := entry["config"].(map[string]any)
+			if !ok {
+				return fmt.Errorf("failed to create credential manager %s: invalid dummy credential manager config", name)
+			}
+			if _, ok := config["vars"].(map[string]any); !ok {
+				return fmt.Errorf("failed to create credential manager %s: invalid vars config", name)
+			}
+		}
+		names = append(names, name)
+		encoded, err := json.Marshal(entry["config"])
+		if err != nil {
+			return fmt.Errorf("variable source %s config: %w", name, err)
+		}
+		dependencies[name] = make(map[string]struct{})
+		for _, match := range frozenSourcedVarPattern.FindAllStringSubmatch(string(encoded), -1) {
+			if len(match) > 1 {
+				dependencies[name][match[1]] = struct{}{}
+			}
+		}
+	}
+	resolved := make(map[string]struct{}, len(names))
+	for {
+		progress := false
+		for _, name := range names {
+			if _, done := resolved[name]; done {
+				continue
+			}
+			ready := true
+			for dependency := range dependencies[name] {
+				if _, found := resolved[dependency]; !found {
+					ready = false
+					break
+				}
+			}
+			if ready {
+				resolved[name] = struct{}{}
+				progress = true
+			}
+		}
+		if !progress {
+			break
+		}
+	}
+	if len(resolved) != len(names) {
+		pending := make([]string, 0, len(names)-len(resolved))
+		for _, name := range names {
+			if _, found := resolved[name]; !found {
+				pending = append(pending, name)
+			}
+		}
+		return fmt.Errorf("could not resolve inter-dependent var sources: %s", strings.Join(pending, ", "))
 	}
 	return nil
 }
@@ -2559,16 +3316,35 @@ func (validator *frozenOrdinaryValidator) validateStep(step map[string]any, path
 		}
 		validator.usedResources[resource] = struct{}{}
 		if core == "get" {
+			if skip, _ := step["skip_download"].(bool); skip {
+				resourceType := validator.resources[resource].typ
+				isImage := resourceType == "registry-image"
+				if declaration, found := validator.resourceTypes[resourceType]; found {
+					isImage = isImage || declaration.image != ""
+				}
+				if !isImage {
+					return fmt.Errorf("%s.get(%s): skip_download is only valid for image resources", path, name)
+				}
+			}
 			if _, duplicate := validator.seenGetNames[name]; duplicate {
 				return fmt.Errorf("%s.get(%s): repeated name", path, name)
 			}
 			validator.seenGetNames[name] = struct{}{}
+			for _, jobGlob := range stringList(step["passed"]) {
+				matched, _ := pathpkg.Match(jobGlob, "entry")
+				if !matched {
+					return fmt.Errorf("%s.get(%s).passed: no matching job(s) for %q", path, name, jobGlob)
+				}
+			}
 		}
 	case "run":
 		message, _ := step["run"].(string)
 		typ, _ := step["type"].(string)
 		if message == "" {
 			return fmt.Errorf("%s.run has an empty message", path)
+		}
+		if !frozenIdentifierPattern.MatchString(message) || frozenNumericIdentifier.MatchString(message) {
+			return fmt.Errorf("%s.run(%s): invalid identifier", path, message)
 		}
 		if _, found := validator.prototypes[typ]; !found {
 			return fmt.Errorf("%s.run(%s): unknown prototype %q", path, message, typ)
@@ -2707,6 +3483,31 @@ func (validator *frozenOrdinaryValidator) validateAgent(step map[string]any, pat
 		}
 		seenEnv[mangled] = output
 	}
+	seenSidecars := make(map[string]struct{})
+	if sidecars, ok := step["sidecars"].([]any); ok {
+		for _, raw := range sidecars {
+			sidecar, inline := raw.(map[string]any)
+			if !inline {
+				continue
+			}
+			sidecarName, _ := sidecar["name"].(string)
+			if _, duplicate := seenSidecars[sidecarName]; duplicate {
+				return fmt.Errorf("%s.agent(%s): duplicate sidecar name %q", path, name, sidecarName)
+			}
+			seenSidecars[sidecarName] = struct{}{}
+		}
+	}
+	if env, ok := step["env"].(map[string]any); ok {
+		for envName, raw := range env {
+			value, isString := raw.(string)
+			if !isString {
+				continue
+			}
+			if match := frozenSourcedVarPattern.FindStringSubmatch(value); len(match) > 1 {
+				return fmt.Errorf("%s.agent(%s): env %s references var source %q: agent env is static-only", path, name, envName, match[1])
+			}
+		}
+	}
 	return nil
 }
 
@@ -2761,6 +3562,15 @@ func (validator *frozenOrdinaryValidator) validateTask(step map[string]any, path
 		if err := validateFrozenSnapshotMembership(typedOutputs, outputs, "output_types", "effective task output"); err != nil {
 			return fmt.Errorf("%s.task(%s): %w", path, name, err)
 		}
+		if len(typedOutputs) > 0 {
+			seen := make(map[string]struct{}, len(outputs))
+			for _, output := range outputs {
+				if _, duplicate := seen[output]; duplicate {
+					return fmt.Errorf("%s.task(%s): duplicate effective task output %q", path, name, output)
+				}
+				seen[output] = struct{}{}
+			}
+		}
 	}
 	return nil
 }
@@ -2780,7 +3590,11 @@ func validateFrozenSnapshotMembership(
 			return fmt.Errorf("%s key must not be empty", field)
 		}
 		if _, found := set[name]; !found {
-			return fmt.Errorf("%s[%q] does not name a %s", field, name, memberKind)
+			article := "a"
+			if strings.HasPrefix(memberKind, "effective ") {
+				article = "an"
+			}
+			return fmt.Errorf("%s[%q] does not name %s %s", field, name, article, memberKind)
 		}
 	}
 	return nil
