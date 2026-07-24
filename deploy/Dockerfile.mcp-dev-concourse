@@ -1,7 +1,7 @@
 # ghcr.io/tdmtrader/mcp-dev-concourse — this repo's dev-mcp sidecar image.
 #
 # Packaging convention (00-shared-contracts.md §8.5, owned by dev-mcp and
-# reused by mcp-platform and mcp-gateway):
+# reused by mcp-gateway):
 #   - static Go binary ENTRYPOINT (bare — no hardcoded paths) serving
 #     streamable-HTTP MCP on MCP_LISTEN_ADDR (default :7780 for the dev role)
 #   - GET /healthz for the pod readiness probe
