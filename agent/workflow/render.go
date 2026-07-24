@@ -384,12 +384,6 @@ func validateRenderableFunction(function *FunctionConfig, signature PublicSignat
 			if leaf.WorkflowRunID != "" {
 				return fmt.Errorf("workflow: %s: publish_snapshot workflow_run_id is renderer-owned", path)
 			}
-		case *atc.HarvestStep:
-			if leaf.DevMCP != nil {
-				if err := validateImmutableSidecars([]atc.SidecarSource{*leaf.DevMCP}); err != nil {
-					return fmt.Errorf("workflow: %s: harvest sidecar: %w", path, err)
-				}
-			}
 		}
 		return nil
 	}); err != nil {
@@ -441,12 +435,6 @@ func validateImmutableRuntimeStep(step atc.Step, path string, acrossVars map[str
 		}
 		if err := rejectRuntimeInterpolationExcept(copy, path+".publish_snapshot", acrossVars); err != nil {
 			return fmt.Errorf("workflow: %w", err)
-		}
-	case *atc.HarvestStep:
-		if config.DevMCP != nil {
-			if err := rejectRuntimeInterpolationExcept(*config.DevMCP, path+".harvest.dev_mcp", acrossVars); err != nil {
-				return fmt.Errorf("workflow: %w", err)
-			}
 		}
 	case *atc.DoStep:
 		for index, child := range config.Steps {

@@ -606,12 +606,3 @@ func renderImmutableTask() *atc.TaskStep {
 		},
 	}
 }
-
-func renderHarvestStep(devMCP atc.SidecarSource) *atc.HarvestStep {
-	return &atc.HarvestStep{
-		Name:      "deliver",
-		Workspace: "workspace",
-		Repo:      "example/repo",
-		DevMCP:    &devMCP,
-	}
-}

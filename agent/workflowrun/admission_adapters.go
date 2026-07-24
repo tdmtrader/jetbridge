@@ -108,12 +108,6 @@ func boundedWorkflowBudgetUSD(config atc.Config) (float64, int, error) {
 		OnAgent: func(step *atc.AgentStep) error {
 			return addSlice(fmt.Sprintf("agent %q budget_slice_usd", step.Name), step.BudgetSliceUSD)
 		},
-		OnHarvest: func(step *atc.HarvestStep) error {
-			if step.Judge == nil {
-				return nil
-			}
-			return addSlice(fmt.Sprintf("harvest %q judge", step.Name), step.Judge.BudgetUSD)
-		},
 		OnRetry: func(*atc.RetryStep) error {
 			return fmt.Errorf("attempts cannot be statically reserved under the global cap")
 		},

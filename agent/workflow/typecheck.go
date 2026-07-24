@@ -309,8 +309,6 @@ func (checker *snapshotFlowChecker) checkStep(step atc.Step, entry snapshotEnvir
 		return snapshotFlow{}, fmt.Errorf("workflow: %s: prototype run steps are not executable in workflow functions", path)
 	case *atc.PutStep:
 		return snapshotFlow{}, fmt.Errorf("workflow: %s.put(%q): put is not permitted in schema-version-3 workflow functions; use publish_snapshot for governed outbound effects", path, config.Name)
-	case *atc.HarvestStep:
-		return snapshotFlow{}, fmt.Errorf("workflow: %s.harvest(%q): harvest is not permitted in schema-version-3 workflow functions; use publish_snapshot for governed outbound effects", path, config.Name)
 	case *atc.SetPipelineStep:
 		return snapshotFlow{}, fmt.Errorf("workflow: %s.set_pipeline(%q): set_pipeline is not permitted in schema-version-3 workflow functions; use publish_snapshot for governed outbound effects", path, config.Name)
 	case *atc.LoadVarStep:

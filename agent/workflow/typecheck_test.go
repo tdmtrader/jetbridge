@@ -560,7 +560,6 @@ func TestTypeCheckRejectsUngovernedOutboundEffects(t *testing.T) {
 		step atc.StepConfig
 	}{
 		{name: "put", step: &atc.PutStep{Name: "destination"}},
-		{name: "harvest", step: &atc.HarvestStep{Name: "deliver"}},
 		{name: "set_pipeline", step: &atc.SetPipelineStep{Name: "self"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {

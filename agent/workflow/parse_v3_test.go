@@ -95,6 +95,13 @@ func TestRequireSchemaVersion3RejectsUnsupportedVersions(t *testing.T) {
 	}
 }
 
+func TestParseCompiledRejectsRetiredHarvest(t *testing.T) {
+	_, err := workflow.ParseCompiled([]byte(v3WithPlan("\n  - harvest: publish\n    workspace: workspace\n    repo: example/repo\n")))
+	if err == nil || !strings.Contains(err.Error(), "no step configured") {
+		t.Fatalf("error = %v, want retired harvest parse rejection", err)
+	}
+}
+
 func TestParseV3ProgramExample(t *testing.T) {
 	definition, err := workflow.ParseCompiled([]byte(v3ProgramYAML))
 	if err != nil {
@@ -767,11 +774,6 @@ func TestParseV3StrictErrors(t *testing.T) {
 		"unknown inline sidecar port field":       v3WithPlan("\n  - agent: work\n    prompt: work\n    sidecars: [{name: helper, image: example/helper, ports: [{containerPort: 8080, typo: true}]}]"),
 		"unknown inline sidecar resources field":  v3WithPlan("\n  - agent: work\n    prompt: work\n    sidecars: [{name: helper, image: example/helper, resources: {requests: {cpu: 1}, typo: true}}]"),
 		"unknown inline sidecar quantity field":   v3WithPlan("\n  - agent: work\n    prompt: work\n    sidecars: [{name: helper, image: example/helper, resources: {requests: {cpu: 1, typo: 2}}}]"),
-		"unknown harvest gate policy field":       v3WithPlan("\n  - harvest: publish\n    workspace: workspace\n    repo: example/repo\n    gate_policy: {typo: true}"),
-		"wrong-case harvest gate policy field":    v3WithPlan("\n  - harvest: publish\n    workspace: workspace\n    repo: example/repo\n    gate_policy: {Gates: []}"),
-		"unknown harvest gate field":              v3WithPlan("\n  - harvest: publish\n    workspace: workspace\n    repo: example/repo\n    gate_policy: {gates: [{gate: test, scope: full, typo: true}]}"),
-		"unknown harvest judge field":             v3WithPlan("\n  - harvest: publish\n    workspace: workspace\n    repo: example/repo\n    judge: {rubric: [{name: correctness, weight: 1, guidance: good}], pass_threshold: 1, typo: true}"),
-		"unknown harvest rubric field":            v3WithPlan("\n  - harvest: publish\n    workspace: workspace\n    repo: example/repo\n    judge: {rubric: [{name: correctness, weight: 1, guidance: good, typo: true}], pass_threshold: 1}"),
 	}
 	for name, doc := range cases {
 		t.Run(name, func(t *testing.T) {

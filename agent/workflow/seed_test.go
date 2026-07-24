@@ -1,6 +1,7 @@
 package workflow_test
 
 import (
+	"fmt"
 	"os"
 	"reflect"
 	"sort"
@@ -147,19 +148,26 @@ func TestVersionThreeEngineeringSeedsCompileAndRender(t *testing.T) {
 			if len(rendered.Config.Jobs) != 1 || len(rendered.Config.Jobs[0].PlanSequence) <= len(test.inputs) {
 				t.Fatalf("rendered plan omitted the authored DAG: %+v", rendered.Config.Jobs)
 			}
-			var waits, publishers, harvests int
+			var waits, publishers int
+			unsupported := func(kind string) error {
+				return fmt.Errorf("version-3 seed rendered unsupported visible %s step", kind)
+			}
 			recursor := atc.StepRecursor{
+				OnTask:            func(*atc.TaskStep) error { return nil },
+				OnAgent:           func(*atc.AgentStep) error { return nil },
+				OnLoadSnapshot:    func(*atc.LoadSnapshotStep) error { return nil },
 				OnAwaitSnapshot:   func(*atc.AwaitSnapshotStep) error { waits++; return nil },
 				OnPublishSnapshot: func(*atc.PublishSnapshotStep) error { publishers++; return nil },
-				OnHarvest:         func(*atc.HarvestStep) error { harvests++; return nil },
+				OnGet:             func(*atc.GetStep) error { return unsupported("get") },
+				OnPut:             func(*atc.PutStep) error { return unsupported("put") },
+				OnRun:             func(*atc.RunStep) error { return unsupported("run") },
+				OnSetPipeline:     func(*atc.SetPipelineStep) error { return unsupported("set_pipeline") },
+				OnLoadVar:         func(*atc.LoadVarStep) error { return unsupported("load_var") },
 			}
 			for _, step := range rendered.Config.Jobs[0].PlanSequence {
 				if err := step.Config.Visit(recursor); err != nil {
 					t.Fatalf("inspect rendered plan: %v", err)
 				}
-			}
-			if harvests != 0 {
-				t.Fatal("version-3 seed gained an implicit compatibility harvest")
 			}
 			if (waits > 0) != test.humanWait || (publishers > 0) != test.publisher {
 				t.Fatalf("visible boundaries: waits=%d publishers=%d, want wait=%t publisher=%t", waits, publishers, test.humanWait, test.publisher)

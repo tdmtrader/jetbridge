@@ -378,7 +378,7 @@ func (collector *declarationCollector) walkStep(step atc.Step, insideAcross bool
 		return walkHook(config.Step, config.Hook)
 	case *atc.EnsureStep:
 		return walkHook(config.Step, config.Hook)
-	case *atc.GetStep, *atc.PutStep, *atc.RunStep, *atc.HarvestStep,
+	case *atc.GetStep, *atc.PutStep, *atc.RunStep,
 		*atc.SetPipelineStep, *atc.LoadVarStep, *atc.LoadSnapshotStep, *atc.PublishSnapshotStep:
 		return nil
 	default:
@@ -645,15 +645,6 @@ func (builder *provenanceBuilder) walkPlan(plan *atc.Plan, context walkContext, 
 		if err := builder.captureSidecars(plan.ID.String(), plan.Agent.Sidecars); err != nil {
 			return err
 		}
-	case plan.Harvest != nil:
-		if strings.TrimSpace(plan.Harvest.Name) == "" {
-			return invalidError("harvest plan %q has no name", plan.ID)
-		}
-		if plan.Harvest.DevMCP != nil {
-			if err := builder.captureSidecars(plan.ID.String(), []atc.SidecarSource{*plan.Harvest.DevMCP}); err != nil {
-				return err
-			}
-		}
 	case plan.Run != nil:
 		if strings.TrimSpace(plan.Run.Type) == "" {
 			return invalidError("run plan %q has no prototype type", plan.ID)
@@ -720,7 +711,7 @@ func planKind(plan *atc.Plan) (string, int) {
 	}{
 		{"get", plan.Get != nil}, {"put", plan.Put != nil}, {"check", plan.Check != nil},
 		{"task", plan.Task != nil}, {"run", plan.Run != nil}, {"agent", plan.Agent != nil},
-		{"harvest", plan.Harvest != nil}, {"set_pipeline", plan.SetPipeline != nil},
+		{"set_pipeline", plan.SetPipeline != nil},
 		{"load_var", plan.LoadVar != nil}, {"load_snapshot", plan.LoadSnapshot != nil},
 		{"await_snapshot", plan.AwaitSnapshot != nil},
 		{"publish_snapshot", plan.PublishSnapshot != nil},

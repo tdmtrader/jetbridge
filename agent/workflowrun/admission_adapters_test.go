@@ -64,6 +64,18 @@ func TestGlobalDailyBudgetAdmitterAtomicallyReservesExactExecutableBound(t *test
 	}
 }
 
+func TestBoundedWorkflowBudgetUSDCountsOnlyAgentSlices(t *testing.T) {
+	amount, agents, err := boundedWorkflowBudgetUSD(workflowBudgetConfig(
+		atc.Step{Config: &atc.AgentStep{Name: "implement", BudgetSliceUSD: 1.25}},
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if amount != 1.25 || agents != 1 {
+		t.Fatalf("bound = (%.6f, %d), want (1.250000, 1)", amount, agents)
+	}
+}
+
 func TestGlobalDailyBudgetAdmitterUsesTheEnclosingExperimentCellReservation(t *testing.T) {
 	admitter, err := NewGlobalDailyBudgetAdmitter(&workflowBudgetReserverStub{reserve: func(context.Context, snapshot.WorkflowRunID, float64) (bool, error) {
 		t.Fatal("experiment child must not reserve the same global liability twice")
