@@ -36,9 +36,7 @@ const (
 // single-writer function) consults it; nothing else writes state.
 //
 // Edge notes (do not narrow):
-//   - running → queued (retryable platform error OR rejected send_back
-//     checkpoint re-dispatch; attempt_count++) — callers: dispatch's
-//     retry path and dispatch's run-completion reconciler.
+//   - running → queued records a retry attempt (attempt_count++).
 //   - running → needs_review — two writers: harvest (primary) and
 //     dispatch's run-completion reconciler (backup/safety net).
 //   - needs_review → concluded — TERMINAL, explicit human disposition

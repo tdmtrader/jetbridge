@@ -28,10 +28,7 @@ func TestValidTransitionMatrix(t *testing.T) {
 		{tickets.StateQueued, tickets.StateRunning},
 		{tickets.StateQueued, tickets.StateDraft},
 		{tickets.StateQueued, tickets.StateAbandoned},
-		// running→queued: retryable platform error OR rejected send_back
-		// checkpoint re-dispatch (attempt_count++). TWO legitimate callers —
-		// dispatch's retry path AND dispatch's run-completion reconciler
-		// (checkpoint-seam delta §6, 2026-07-09). Do not narrow this edge.
+		// running→queued records a retry attempt. Do not narrow this edge.
 		{tickets.StateRunning, tickets.StateQueued},
 		// running→needs_review: TWO writers — harvest (primary, 09) and
 		// dispatch's run-completion reconciler (backup/safety net). Do not

@@ -290,8 +290,7 @@ func (m *MemoryStore) Transition(id int, from, to State, meta TransitionMeta) er
 	case StateQueued:
 		t.CompletedAt = 0
 		if from == StateRunning {
-			// running → queued (retryable platform error OR rejected
-			// send_back checkpoint re-dispatch; attempt_count++).
+			// running → queued records a retry attempt.
 			t.AttemptCount++
 		}
 		if from != StateDraft {

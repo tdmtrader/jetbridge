@@ -13,9 +13,7 @@ import (
 // are authenticated by the principal tier
 // (CheckAgentPrincipalHandlerFactory.HandlerFor); everything else —
 // user JWTs, anonymous — falls through to main-team authorization
-// (CheckAgentAuthorizationHandler). Owned by ticket-core; reused by
-// platform-mcp-hitl for GetAgentQuestion/AnswerAgentQuestion in wave 3
-// (ticket-core contract addendum).
+// (CheckAgentAuthorizationHandler).
 func AgentPrincipalOrMainTeamHandler(principalTier, mainTeamTier http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		bearer, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")

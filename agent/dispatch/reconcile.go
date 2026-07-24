@@ -3,9 +3,6 @@ package dispatch
 import (
 	"context"
 	"errors"
-	"fmt"
-	"sort"
-	"strings"
 
 	"code.cloudfoundry.org/lager/v3"
 
@@ -79,106 +76,8 @@ func (d *Dispatcher) reconcileOne(logger lager.Logger, t tickets.Ticket, status 
 		return
 	}
 
-	// (b) failed/errored/aborted. Checkpoint branches b.1/b.2 first — only
-	// reachable when a question lister is wired (plan 08; nil today).
-	if d.cfg.Questions != nil {
-		rows, err := d.cfg.Questions.ListByRun(*t.PipelineRunID)
-		if err != nil {
-			// Cannot classify without checkpoint state: do NOT guess.
-			// Retry next pass.
-			log.Error("failed-to-list-checkpoint-rows", err)
-			return
-		}
-		if d.reconcileCheckpoints(log, t, status, rows, transition) {
-			return
-		}
-	}
-
-	// (b.3) Checkpoint-free failure: agent step crashed, gate blew up
-	// pre-harvest, abort, drain death — human triage.
+	// (b) failed/errored/aborted: terminal subordinate runs are always
+	// projected to human review. Generic workflow outcomes and waits remain
+	// the canonical v3 mechanism.
 	transition(tickets.StateNeedsReview, tickets.TransitionMeta{})
-}
-
-// reconcileCheckpoints applies F17 b.1/b.2. Returns true when the ticket
-// was decided; false when the run is checkpoint-free / all-approved
-// (caller falls through to b.3).
-func (d *Dispatcher) reconcileCheckpoints(
-	log lager.Logger,
-	t tickets.Ticket,
-	status db.PipelineRunStatus,
-	rows []CheckpointRow,
-	transition func(tickets.State, tickets.TransitionMeta),
-) bool {
-	if len(rows) == 0 {
-		return false
-	}
-	sort.Slice(rows, func(i, j int) bool { return rows[i].AskedAt > rows[j].AskedAt })
-
-	// b.1: latest (max asked_at) row ANSWERED with answer != approve.
-	latest := rows[0]
-	if latest.Answered && latest.Answer != "approve" {
-		name := strings.TrimPrefix(latest.StepName, "checkpoint-")
-		if d.onRejectFor(log, t, name) == "send_back" {
-			// Attempt cap on the REQUEUE edge (not queued→errored, which
-			// is not a legal §1.7 edge): past the cap the platform gives
-			// up — errored, never failed (the run did not "run badly").
-			if d.cfg.MaxAttempts > 0 && t.AttemptCount+1 > d.cfg.MaxAttempts {
-				transition(tickets.StateErrored, tickets.TransitionMeta{
-					ErrorDetail: fmt.Sprintf("rejected checkpoint %q would exceed %d dispatch attempts", name, d.cfg.MaxAttempts),
-				})
-				return true
-			}
-			transition(tickets.StateQueued, tickets.TransitionMeta{}) // §2.1 bumps attempt_count
-			return true
-		}
-		// on_reject fail / empty / unknown step → human triage.
-		transition(tickets.StateNeedsReview, tickets.TransitionMeta{})
-		return true
-	}
-
-	// b.2: any UNANSWERED row on a completed run — sidecar death, abort
-	// while parked. Error the ticket, release the orphans so the
-	// open-questions index clears (§3.2: a dead row never stays open).
-	var unanswered []CheckpointRow
-	for _, r := range rows {
-		if !r.Answered {
-			unanswered = append(unanswered, r)
-		}
-	}
-	if len(unanswered) > 0 {
-		transition(tickets.StateErrored, tickets.TransitionMeta{
-			ErrorDetail: fmt.Sprintf("checkpoint %q unresolved: run completed %s while parked", unanswered[0].StepName, status),
-		})
-		for _, r := range unanswered {
-			if err := d.cfg.Questions.Answer(r.ID, "", "dispatcher"); err != nil {
-				log.Error("failed-to-release-orphan-question", err, lager.Data{"question": r.ID})
-			}
-		}
-		return true
-	}
-
-	return false // every checkpoint answered approve → b.3
-}
-
-// onRejectFor resolves the FROZEN workflow config (the version DispatchOne
-// pinned onto the ticket) and returns the named checkpoint's on_reject
-// ("" when unresolvable → the safe needs_review branch).
-func (d *Dispatcher) onRejectFor(log lager.Logger, t tickets.Ticket, checkpointName string) string {
-	if t.WorkflowName == "" || t.WorkflowVersion == nil {
-		return ""
-	}
-	def, found, err := d.deps.Workflows.Get(t.WorkflowName, *t.WorkflowVersion)
-	if err != nil {
-		log.Error("failed-to-resolve-frozen-workflow", err)
-		return ""
-	}
-	if !found {
-		return ""
-	}
-	for _, s := range def.Config.Steps {
-		if s.Checkpoint == checkpointName {
-			return s.OnReject
-		}
-	}
-	return ""
 }

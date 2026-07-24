@@ -2,12 +2,12 @@ package dispatch_test
 
 import (
 	"context"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/concourse/concourse/agent/api/tickets"
 	"github.com/concourse/concourse/agent/dispatch"
-	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
 )
@@ -71,21 +71,38 @@ func TestReconcileSucceededRunSafetyNet(t *testing.T) {
 	}
 }
 
-func TestReconcileFailedRunNoCheckpointsNeedsReview(t *testing.T) {
+func TestReconcileTerminalSubordinateRunNeedsReview(t *testing.T) {
 	for _, status := range []db.PipelineRunStatus{
-		db.PipelineRunFailed, db.PipelineRunErrored, db.PipelineRunAborted,
+		db.PipelineRunFailed,
+		db.PipelineRunErrored,
+		db.PipelineRunAborted,
 	} {
-		deps, store, id := reconcileScaffold(t)
-		d := dispatch.NewDispatcher(deps, dispatch.LoopConfig{
-			RunReader: runReaderFor(completedRun(100, status)),
+		t.Run(string(status), func(t *testing.T) {
+			deps, store, id := reconcileScaffold(t)
+			recorder := &transitionRecorder{Store: deps.Tickets}
+			deps.Tickets = recorder
+			d := dispatch.NewDispatcher(deps, dispatch.LoopConfig{
+				RunReader: runReaderFor(completedRun(100, status)),
+			})
+
+			if err := d.Run(context.Background()); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			got, _, _ := store.Get(id)
+			if got.State != tickets.StateNeedsReview {
+				t.Fatalf("terminal subordinate run => needs_review, got %s", got.State)
+			}
+			if len(recorder.transitions) != 1 {
+				t.Fatalf("expected one transition, got %d", len(recorder.transitions))
+			}
+			transition := recorder.transitions[0]
+			if transition.to != tickets.StateNeedsReview {
+				t.Errorf("transition destination = %s, want needs_review", transition.to)
+			}
+			if transition.meta != (tickets.TransitionMeta{}) {
+				t.Errorf("transition metadata = %#v, want empty", transition.meta)
+			}
 		})
-		if err := d.Run(context.Background()); err != nil {
-			t.Fatalf("[%s] Run: %v", status, err)
-		}
-		got, _, _ := store.Get(id)
-		if got.State != tickets.StateNeedsReview {
-			t.Errorf("[%s] checkpoint-free failure => needs_review (human triage), got %s", status, got.State)
-		}
 	}
 }
 
@@ -149,139 +166,28 @@ func (s staleOnTransition) Transition(int, tickets.State, tickets.State, tickets
 	return tickets.ErrStaleTransition
 }
 
-// --- checkpoint branches (dormant in prod; exercised via the seam) --------
-
-type fakeQuestions struct {
-	rows     []dispatch.CheckpointRow
-	released []int
+type recordedTransition struct {
+	to   tickets.State
+	meta tickets.TransitionMeta
 }
 
-func (q *fakeQuestions) ListByRun(int) ([]dispatch.CheckpointRow, error) { return q.rows, nil }
-func (q *fakeQuestions) Answer(id int, answer, by string) error {
-	q.released = append(q.released, id)
-	return nil
+type transitionRecorder struct {
+	tickets.Store
+	transitions []recordedTransition
 }
 
-// checkpointWorkflows: smokeDefinition plus a checkpoint step, registered
-// so the pinned smoke/3 lookup resolves the on_reject policy.
-func checkpointWorkflows(onReject string) *fakeWorkflows {
-	def := smokeDefinition()
-	def.Config.Steps = append(def.Config.Steps, workflow.Step{Checkpoint: "plan-approval", OnReject: onReject})
-	return &fakeWorkflows{byName: map[string]*workflow.Definition{"smoke": def}}
+func (r *transitionRecorder) Transition(id int, from, to tickets.State, meta tickets.TransitionMeta) error {
+	r.transitions = append(r.transitions, recordedTransition{to: to, meta: meta})
+	return r.Store.Transition(id, from, to, meta)
 }
 
-func TestReconcileRejectedSendBackRequeues(t *testing.T) {
-	deps, store, id := reconcileScaffold(t)
-	deps.Workflows = checkpointWorkflows("send_back")
-	qs := &fakeQuestions{rows: []dispatch.CheckpointRow{
-		{ID: 1, StepName: "checkpoint-plan-approval", AskedAt: 10, Answered: true, Answer: "reject"},
-	}}
-	d := dispatch.NewDispatcher(deps, dispatch.LoopConfig{
-		RunReader: runReaderFor(completedRun(100, db.PipelineRunFailed)),
-		Questions: qs, MaxAttempts: 3,
-	})
-	if err := d.Run(context.Background()); err != nil {
-		t.Fatalf("Run: %v", err)
+func TestLoopConfigRemovesCheckpointAuthority(t *testing.T) {
+	typ := reflect.TypeOf(dispatch.LoopConfig{})
+	var fields []string
+	for i := 0; i < typ.NumField(); i++ {
+		fields = append(fields, typ.Field(i).Name)
 	}
-	got, _, _ := store.Get(id)
-	// The SAME Run pass listed queued tickets BEFORE reconciling, so the
-	// requeued ticket is picked up next pass — assert queued now.
-	if got.State != tickets.StateQueued {
-		t.Errorf("rejected send_back must requeue, got %s", got.State)
-	}
-	if got.AttemptCount != 1 {
-		t.Errorf("running->queued bumps attempt_count (§2.1), got %d", got.AttemptCount)
-	}
-}
-
-func TestReconcileSendBackOverAttemptCapErrors(t *testing.T) {
-	deps, store, id := reconcileScaffold(t)
-	deps.Workflows = checkpointWorkflows("send_back")
-	// Reach the cap via the edge that owns attempt_count.
-	for i := 0; i < 3; i++ {
-		if err := store.Transition(id, tickets.StateRunning, tickets.StateQueued, tickets.TransitionMeta{}); err != nil {
-			t.Fatal(err)
-		}
-		if err := store.Transition(id, tickets.StateQueued, tickets.StateRunning,
-			tickets.TransitionMeta{PipelineRunID: intp(100)}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	qs := &fakeQuestions{rows: []dispatch.CheckpointRow{
-		{ID: 1, StepName: "checkpoint-plan-approval", AskedAt: 10, Answered: true, Answer: "reject"},
-	}}
-	d := dispatch.NewDispatcher(deps, dispatch.LoopConfig{
-		RunReader: runReaderFor(completedRun(100, db.PipelineRunFailed)),
-		Questions: qs, MaxAttempts: 3,
-	})
-	if err := d.Run(context.Background()); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	got, _, _ := store.Get(id)
-	if got.State != tickets.StateErrored {
-		t.Errorf("over-cap send_back => running->errored (legal edge), got %s", got.State)
-	}
-	if got.ErrorDetail == "" {
-		t.Error("cap trip must record error_detail")
-	}
-}
-
-func TestReconcileRejectedFailNeedsReview(t *testing.T) {
-	deps, store, id := reconcileScaffold(t)
-	deps.Workflows = checkpointWorkflows("fail")
-	qs := &fakeQuestions{rows: []dispatch.CheckpointRow{
-		{ID: 1, StepName: "checkpoint-plan-approval", AskedAt: 10, Answered: true, Answer: "reject"},
-	}}
-	d := dispatch.NewDispatcher(deps, dispatch.LoopConfig{
-		RunReader: runReaderFor(completedRun(100, db.PipelineRunFailed)),
-		Questions: qs,
-	})
-	if err := d.Run(context.Background()); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	got, _, _ := store.Get(id)
-	if got.State != tickets.StateNeedsReview {
-		t.Errorf("rejected fail checkpoint => needs_review, got %s", got.State)
-	}
-}
-
-func TestReconcileUnansweredCheckpointErrorsAndReleases(t *testing.T) {
-	deps, store, id := reconcileScaffold(t)
-	deps.Workflows = checkpointWorkflows("send_back")
-	qs := &fakeQuestions{rows: []dispatch.CheckpointRow{
-		{ID: 4, StepName: "checkpoint-plan-approval", AskedAt: 10, Answered: false},
-	}}
-	d := dispatch.NewDispatcher(deps, dispatch.LoopConfig{
-		RunReader: runReaderFor(completedRun(100, db.PipelineRunAborted)),
-		Questions: qs,
-	})
-	if err := d.Run(context.Background()); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	got, _, _ := store.Get(id)
-	if got.State != tickets.StateErrored {
-		t.Errorf("unanswered checkpoint on dead run => errored, got %s", got.State)
-	}
-	if len(qs.released) != 1 || qs.released[0] != 4 {
-		t.Errorf("orphan rows must be released via Answer(id, \"\", \"dispatcher\"), got %v", qs.released)
-	}
-}
-
-func TestReconcileAllApprovedFallsThroughToTriage(t *testing.T) {
-	deps, store, id := reconcileScaffold(t)
-	deps.Workflows = checkpointWorkflows("send_back")
-	qs := &fakeQuestions{rows: []dispatch.CheckpointRow{
-		{ID: 1, StepName: "checkpoint-plan-approval", AskedAt: 10, Answered: true, Answer: "approve"},
-	}}
-	d := dispatch.NewDispatcher(deps, dispatch.LoopConfig{
-		RunReader: runReaderFor(completedRun(100, db.PipelineRunFailed)),
-		Questions: qs,
-	})
-	if err := d.Run(context.Background()); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	got, _, _ := store.Get(id)
-	if got.State != tickets.StateNeedsReview {
-		t.Errorf("approved checkpoints + failed run => b.3 triage, got %s", got.State)
+	if want := []string{"Mode", "RunReader", "MaxAttempts"}; !reflect.DeepEqual(fields, want) {
+		t.Errorf("LoopConfig fields = %v, want %v", fields, want)
 	}
 }

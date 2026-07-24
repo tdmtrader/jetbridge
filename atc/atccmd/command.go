@@ -380,7 +380,7 @@ type RunCommand struct {
 	AgentDailyBudgetUSD float64 `long:"agent-daily-budget-usd" default:"0" description:"Global daily agent LLM spend cap in USD across all agent work, enforced by atomic workflow and experiment reservations and reported by the cost rollup API. 0 disables the cap."`
 
 	AgentDispatcherEnabled     bool `long:"agent-dispatcher-enabled" description:"Run the autonomous agent-ticket dispatcher loop (Kubernetes runtime only). When off, tickets dispatch only via the manual route/fly."`
-	AgentDispatcherMaxAttempts int  `long:"agent-dispatcher-max-attempts" default:"3" description:"Max automatic re-dispatches per ticket (reconciler send_back requeues); past the cap the ticket errors. 0 = uncapped."`
+	AgentDispatcherMaxAttempts int  `long:"agent-dispatcher-max-attempts" default:"3" description:"Reserved dispatcher attempt-limit setting. Terminal subordinate runs always require human review."`
 
 	AgentOutcomeGitDir          string        `long:"agent-outcome-git-dir" description:"Directory for the outcome watcher's bare git mirrors. Empty disables live Git merge detection and the ticket diff API; database-only terminal outcome projection remains enabled."`
 	AgentOutcomeGitURLTemplate  string        `long:"agent-outcome-git-url-template" default:"https://github.com/{repo}.git" description:"Template for mirror clone URLs; {repo} is the ticket's repo slug."`
@@ -1730,7 +1730,6 @@ func (cmd *RunCommand) backendComponents(
 				Runnable: dispatch.NewDispatcher(dispatcherDeps, dispatch.LoopConfig{
 					Mode:        modeResolver,
 					RunReader:   dbPipelineRunFactory,
-					Questions:   nil, // plan 08's checkpoint seam; checkpoints are render-refused until it lands
 					MaxAttempts: cmd.AgentDispatcherMaxAttempts,
 				}),
 				// Interval deliberately omitted: defaultComponentInterval (10s)

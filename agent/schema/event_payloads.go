@@ -3,21 +3,17 @@ package schema
 // New event types per shared-contracts §5. Producers may add data keys but
 // never repurpose them; consumers must ignore unknown keys and types.
 const (
-	EventStepStart         EventType = "step.start"
-	EventStepEnd           EventType = "step.end"
-	EventGateStart         EventType = "gate.start"
-	EventGateResult        EventType = "gate.result"
-	EventSubagentCall      EventType = "subagent.call"
-	EventSubagentResult    EventType = "subagent.result"
-	EventCostRecord        EventType = "cost.record"
-	EventBudgetWarn        EventType = "budget.warn"
-	EventBudgetStop        EventType = "budget.stop"
-	EventHumanAsk          EventType = "human.ask"
-	EventHumanAnswer       EventType = "human.answer"
-	EventCheckpointWait    EventType = "checkpoint.wait"
-	EventCheckpointRelease EventType = "checkpoint.release"
-	EventJudgeScore        EventType = "judge.score"
-	EventPushDone          EventType = "push.done"
+	EventStepStart      EventType = "step.start"
+	EventStepEnd        EventType = "step.end"
+	EventGateStart      EventType = "gate.start"
+	EventGateResult     EventType = "gate.result"
+	EventSubagentCall   EventType = "subagent.call"
+	EventSubagentResult EventType = "subagent.result"
+	EventCostRecord     EventType = "cost.record"
+	EventBudgetWarn     EventType = "budget.warn"
+	EventBudgetStop     EventType = "budget.stop"
+	EventJudgeScore     EventType = "judge.score"
+	EventPushDone       EventType = "push.done"
 )
 
 type StepStartData struct {
@@ -100,32 +96,6 @@ type BudgetData struct {
 	LimitUSD     float64 `json:"limit_usd"`
 	SpentUSD     float64 `json:"spent_usd"`
 	RemainingUSD float64 `json:"remaining_usd"`
-}
-
-type HumanAskData struct {
-	QuestionID int      `json:"question_id"`
-	Kind       string   `json:"kind"` // question | checkpoint
-	Question   string   `json:"question"`
-	Options    []string `json:"options"`
-}
-
-type HumanAnswerData struct {
-	QuestionID  int    `json:"question_id"`
-	Answer      string `json:"answer"`
-	AnsweredBy  string `json:"answered_by"`
-	WaitSeconds int    `json:"wait_seconds"`
-	TimedOut    bool   `json:"timed_out"`
-}
-
-type CheckpointWaitData struct {
-	QuestionID int    `json:"question_id"`
-	Checkpoint string `json:"checkpoint"`
-}
-
-type CheckpointReleaseData struct {
-	QuestionID int    `json:"question_id"`
-	Approved   bool   `json:"approved"`
-	AnsweredBy string `json:"answered_by"`
 }
 
 type JudgeScoreDimension struct {

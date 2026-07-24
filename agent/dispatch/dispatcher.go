@@ -22,15 +22,8 @@ type LoopConfig struct {
 	// RunReader powers the run-completion reconciler (reconcile.go). nil
 	// skips that pass entirely.
 	RunReader RunReader
-	// Questions is the plan-08 checkpoint seam. nil = no checkpoint rows
-	// can exist (checkpoints are render-refused; agent_run_questions is
-	// not landed) — the reconciler treats every completed run as
-	// checkpoint-free. Plan 08 wires the real store later.
-	Questions QuestionLister
-	// MaxAttempts caps the reconciler's automatic running→queued
-	// re-dispatches (§2.1 bumps attempt_count on that edge). <=0 =
-	// uncapped. NEVER enforced against queued tickets: queued→errored is
-	// not a legal edge (§1.7) and a human re-queue is explicit intent.
+	// MaxAttempts is retained as dispatcher configuration. Terminal run
+	// reconciliation always requires human review.
 	MaxAttempts int
 }
 
@@ -38,28 +31,6 @@ type LoopConfig struct {
 // db.PipelineRunFactory.GetRunByID, co-signed pipeline-runs).
 type RunReader interface {
 	GetRunByID(id int) (db.PipelineRun, bool, error)
-}
-
-// QuestionLister is the plan-08 checkpoint seam, deliberately narrow and
-// LOCAL to this package: agent_run_questions is not landed and checkpoints
-// are render-refused, so production wires nil and every completed run is
-// checkpoint-free. Plan 08 supplies an adapter over its questions store
-// without this package changing shape.
-type QuestionLister interface {
-	// ListByRun returns the run's kind='checkpoint' rows (any order).
-	ListByRun(pipelineRunID int) ([]CheckpointRow, error)
-	// Answer releases a row (orphan cleanup: answer "", answeredBy "dispatcher").
-	Answer(id int, answer, answeredBy string) error
-}
-
-// CheckpointRow is the narrow projection of agent_run_questions the F17
-// tree consumes.
-type CheckpointRow struct {
-	ID       int
-	StepName string // "checkpoint-<name>"
-	AskedAt  int64
-	Answered bool
-	Answer   string // meaningful only when Answered
 }
 
 // Dispatcher is the RunnableComponent behind atc.ComponentAgentDispatcher.
