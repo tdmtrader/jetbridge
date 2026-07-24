@@ -20,7 +20,7 @@ func runPublish(args []string) int {
 	err := publish.Publish(context.Background(), publish.Options{
 		ATCURL:     os.Getenv("ATC_EXTERNAL_URL"),
 		BuildID:    os.Getenv("BUILD_ID"),
-		Token:      os.Getenv("AGENT_REVIEW_PUBLISH_TOKEN"),
+		Token:      os.Getenv("AGENT_REVIEW_PRINCIPAL_TOKEN"),
 		ReviewPath: *reviewPath,
 	})
 	if err != nil {
@@ -33,7 +33,7 @@ func runPublish(args []string) int {
 		err := publish.PublishCosts(context.Background(), publish.CostsOptions{
 			ATCURL:    os.Getenv("ATC_EXTERNAL_URL"),
 			BuildID:   os.Getenv("BUILD_ID"),
-			Token:     os.Getenv("AGENT_REVIEW_PUBLISH_TOKEN"),
+			Token:     os.Getenv("AGENT_COST_PRINCIPAL_TOKEN"),
 			CostsPath: *costsPath,
 			Phase:     "review",
 			UserName:  os.Getenv("AGENT_COST_USER"),

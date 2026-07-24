@@ -18,7 +18,8 @@
 #
 # Credential posture (mirrors the harvest posture from the roadmap): the agent
 # task holds ONLY the Claude credential; the push task is the ONLY task holding
-# the GitHub credential. The review task holds Claude + the publish token.
+# the GitHub credential. The review task holds Claude + the scoped review/cost
+# publishing principals.
 
 resources:
 - name: repo
@@ -196,8 +197,9 @@ jobs:
   #    Diffs against the dogfood-base tag (= the ((base_branch)) commit this
   #    build got), so the review covers exactly what the agent changed.
   #    Known accepted exposure: this task runs git inside agent-writable
-  #    worked-repo while holding the (low-value, build-scoped) publish token;
-  #    the GitHub credential is protected by push-branch's pristine-clone push.
+  #    worked-repo while holding scoped, team-constrained operator-minted
+  #    publishing principals; the GitHub credential is protected by
+  #    push-branch's pristine-clone push.
   # ---------------------------------------------------------------------
   - task: agent-review
     config:
@@ -218,7 +220,8 @@ jobs:
         FAIL_ON_CRITICAL: "false"
         REVIEW_DIFF_ONLY: "true"
         BASE_REF: dogfood-base
-        AGENT_REVIEW_PUBLISH_TOKEN: ((agent-review-publish-token))
+        AGENT_REVIEW_PRINCIPAL_TOKEN: ((agent-review-principal-token))
+        AGENT_COST_PRINCIPAL_TOKEN: ((agent-cost-principal-token))
       run:
         path: sh
         args:
@@ -268,19 +271,27 @@ jobs:
           cat "$OUTPUT_DIR/review.json" | head -50
 
           set +x
-          has_publish_token=false
-          [ -n "${AGENT_REVIEW_PUBLISH_TOKEN:-}" ] && has_publish_token=true
+          if [ -z "${AGENT_REVIEW_PRINCIPAL_TOKEN:-}" ]; then
+            echo "AGENT_REVIEW_PRINCIPAL_TOKEN is not set"
+            exit 1
+          fi
+          has_cost_principal=false
+          [ -n "${AGENT_COST_PRINCIPAL_TOKEN:-}" ] && has_cost_principal=true
           set -x
-          if [ "$has_publish_token" = true ]; then
-            echo ""
-            echo "=== Publishing review to ATC ==="
-            if ci-agent publish --review "$OUTPUT_DIR/review.json"; then
-              echo "Published for build ${BUILD_ID:-unknown}"
-            else
-              echo "WARNING: failed to publish review to ATC (results still available as artifact)"
-            fi
+
+          set -- --review "$OUTPUT_DIR/review.json"
+          if [ "$has_cost_principal" = true ]; then
+            set -- "$@" --costs "$OUTPUT_DIR/costs.json"
           else
-            echo "AGENT_REVIEW_PUBLISH_TOKEN not set; skipping publish"
+            echo "AGENT_COST_PRINCIPAL_TOKEN not set; skipping cost publish"
+          fi
+
+          echo ""
+          echo "=== Publishing review to ATC ==="
+          if ci-agent publish "$@"; then
+            echo "Published for build ${BUILD_ID:-unknown}"
+          else
+            echo "WARNING: failed to publish review to ATC (results still available as artifact)"
           fi
 
   # ---------------------------------------------------------------------

@@ -143,7 +143,7 @@ jobs:
       inputs:
       - name: review
       params:
-        AGENT_REVIEW_PUBLISH_TOKEN: ((agent-review-publish-token))
+        AGENT_REVIEW_PRINCIPAL_TOKEN: ((agent-review-principal-token))
       run:
         path: sh
         args:
@@ -153,7 +153,7 @@ jobs:
           # -sS without -f: print the response body on failure instead of
           # swallowing it (a silent -f hid a 400 for two dual-runs).
           code=$(curl -sS -o /tmp/publish-resp -w '%{http_code}' -X POST \
-            -H "Authorization: Bearer ${AGENT_REVIEW_PUBLISH_TOKEN}" \
+            -H "Authorization: Bearer ${AGENT_REVIEW_PRINCIPAL_TOKEN}" \
             -H "Content-Type: application/json" \
             -d "{\"build_id\": ${BUILD_ID}, \"review\": $(cat review/review.json)}" \
             "http://concourse-web.cicd.svc.cluster.local:8080/api/v1/agent/reviews")

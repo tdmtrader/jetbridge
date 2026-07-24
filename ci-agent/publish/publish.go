@@ -40,7 +40,7 @@ func Publish(ctx context.Context, opts Options) error {
 		return fmt.Errorf("BUILD_ID is not set")
 	}
 	if opts.Token == "" {
-		return fmt.Errorf("AGENT_REVIEW_PUBLISH_TOKEN is not set")
+		return fmt.Errorf("AGENT_REVIEW_PRINCIPAL_TOKEN is not set")
 	}
 
 	buildID, err := strconv.Atoi(opts.BuildID)
@@ -147,7 +147,7 @@ func PublishCosts(ctx context.Context, opts CostsOptions) error {
 		return fmt.Errorf("ATC_EXTERNAL_URL is not set")
 	}
 	if opts.Token == "" {
-		return fmt.Errorf("AGENT_REVIEW_PUBLISH_TOKEN is not set")
+		return fmt.Errorf("AGENT_COST_PRINCIPAL_TOKEN is not set")
 	}
 	buildID, err := strconv.Atoi(opts.BuildID)
 	if err != nil {

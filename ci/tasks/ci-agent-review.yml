@@ -19,7 +19,8 @@ params:
   FAIL_ON_CRITICAL: "false"
   REVIEW_DIFF_ONLY: "false"
   BASE_REF: "main"
-  AGENT_REVIEW_PUBLISH_TOKEN: ""
+  AGENT_REVIEW_PRINCIPAL_TOKEN: ""
+  AGENT_COST_PRINCIPAL_TOKEN: ""
   AGENT_COST_USER: ""
 
 run:
@@ -56,17 +57,25 @@ run:
     cat "$OUTPUT_DIR/review.json" | head -50
 
     set +x
-    has_publish_token=false
-    [ -n "${AGENT_REVIEW_PUBLISH_TOKEN:-}" ] && has_publish_token=true
+    if [ -z "${AGENT_REVIEW_PRINCIPAL_TOKEN:-}" ]; then
+      echo "AGENT_REVIEW_PRINCIPAL_TOKEN is not set"
+      exit 1
+    fi
+    has_cost_principal=false
+    [ -n "${AGENT_COST_PRINCIPAL_TOKEN:-}" ] && has_cost_principal=true
     set -x
-    if [ "$has_publish_token" = true ]; then
-      echo ""
-      echo "=== Publishing review to ATC ==="
-      if ci-agent publish --review "$OUTPUT_DIR/review.json" --costs "$OUTPUT_DIR/costs.json"; then
-        echo "Published for build ${BUILD_ID:-unknown}"
-      else
-        echo "WARNING: failed to publish review to ATC (results still available as artifact)"
-      fi
+
+    set -- --review "$OUTPUT_DIR/review.json"
+    if [ "$has_cost_principal" = true ]; then
+      set -- "$@" --costs "$OUTPUT_DIR/costs.json"
     else
-      echo "AGENT_REVIEW_PUBLISH_TOKEN not set; skipping publish"
+      echo "AGENT_COST_PRINCIPAL_TOKEN not set; skipping cost publish"
+    fi
+
+    echo ""
+    echo "=== Publishing review to ATC ==="
+    if ci-agent publish "$@"; then
+      echo "Published for build ${BUILD_ID:-unknown}"
+    else
+      echo "WARNING: failed to publish review to ATC (results still available as artifact)"
     fi

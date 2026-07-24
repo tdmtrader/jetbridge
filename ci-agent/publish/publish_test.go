@@ -39,14 +39,23 @@ func TestPublishSuccess(t *testing.T) {
 	err := publish.Publish(context.Background(), publish.Options{
 		ATCURL:     srv.URL,
 		BuildID:    "42",
-		Token:      "tok",
+		Token:      "cap1.17.review",
 		ReviewPath: writeReview(t),
 	})
 	if err != nil {
 		t.Fatalf("expected success, got %v", err)
 	}
-	if gotAuth.Load() != "Bearer tok" {
+	if gotAuth.Load() != "Bearer cap1.17.review" {
 		t.Errorf("auth header = %v", gotAuth.Load())
+	}
+}
+
+func TestPublishRequiresReviewPrincipalToken(t *testing.T) {
+	err := publish.Publish(context.Background(), publish.Options{
+		ATCURL: "http://unused.invalid", BuildID: "42", ReviewPath: writeReview(t),
+	})
+	if err == nil || err.Error() != "AGENT_REVIEW_PRINCIPAL_TOKEN is not set" {
+		t.Fatalf("error = %v, want exact missing review principal message", err)
 	}
 }
 
@@ -146,7 +155,7 @@ func TestPublishCostsPostsEachRecord(t *testing.T) {
 	err := publish.PublishCosts(context.Background(), publish.CostsOptions{
 		ATCURL:    srv.URL,
 		BuildID:   "1234",
-		Token:     "publish-secret",
+		Token:     "cap1.18.cost",
 		CostsPath: costsPath,
 		Phase:     "review",
 		UserName:  "tdmtrader",
@@ -157,7 +166,7 @@ func TestPublishCostsPostsEachRecord(t *testing.T) {
 	if len(bodies) != 1 {
 		t.Fatalf("posted %d records", len(bodies))
 	}
-	if auths[0] != "Bearer publish-secret" {
+	if auths[0] != "Bearer cap1.18.cost" {
 		t.Fatalf("auth: %q", auths[0])
 	}
 
@@ -170,6 +179,15 @@ func TestPublishCostsPostsEachRecord(t *testing.T) {
 		rec["user_name"] != "tdmtrader" || rec["provider"] != "anthropic" ||
 		rec["turns"] != float64(4) || rec["input_tokens"] != float64(100) {
 		t.Fatalf("record: %v", rec)
+	}
+}
+
+func TestPublishCostsRequiresCostPrincipalToken(t *testing.T) {
+	err := publish.PublishCosts(context.Background(), publish.CostsOptions{
+		ATCURL: "http://unused.invalid", BuildID: "42",
+	})
+	if err == nil || err.Error() != "AGENT_COST_PRINCIPAL_TOKEN is not set" {
+		t.Fatalf("error = %v, want exact missing cost principal message", err)
 	}
 }
 
