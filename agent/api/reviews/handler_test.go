@@ -22,7 +22,7 @@ func newHandler(t *testing.T) (*reviews.Handler, *reviews.MemoryStore, *feedback
 		}
 		return reviews.BuildContext{}, false, nil
 	}
-	return reviews.NewHandler(store, fbStore, lookup, "secret-token", "main"), store, fbStore
+	return reviews.NewHandler(store, fbStore, lookup, "main"), store, fbStore
 }
 
 func TestCanonicalSnapshotAndWorkflowRunReviewReadsUseSnapshotFeedbackIdentity(t *testing.T) {
@@ -116,37 +116,20 @@ func postBody() string {
 	return `{"build_id": 42, "review": ` + validReview + `}`
 }
 
-func TestSubmitRequiresToken(t *testing.T) {
+func TestSubmitRequiresScopedPrincipal(t *testing.T) {
 	h, _, _ := newHandler(t)
-	for name, header := range map[string]string{"missing": "", "wrong": "Bearer nope"} {
-		req := httptest.NewRequest("POST", "/api/v1/agent/reviews", strings.NewReader(postBody()))
-		if header != "" {
-			req.Header.Set("Authorization", header)
-		}
-		rec := httptest.NewRecorder()
-		h.SubmitReview(rec, req)
-		if rec.Code != http.StatusUnauthorized {
-			t.Errorf("%s token: code = %d, want 401", name, rec.Code)
-		}
-	}
-}
-
-func TestSubmitRejectedWhenNoTokenConfigured(t *testing.T) {
-	h := reviews.NewHandler(reviews.NewMemoryStore(), feedback.NewMemoryStore(),
-		func(int) (reviews.BuildContext, bool, error) { return reviews.BuildContext{}, false, nil }, "", "main")
 	req := httptest.NewRequest("POST", "/api/v1/agent/reviews", strings.NewReader(postBody()))
-	req.Header.Set("Authorization", "Bearer anything")
 	rec := httptest.NewRecorder()
 	h.SubmitReview(rec, req)
 	if rec.Code != http.StatusForbidden {
-		t.Errorf("code = %d, want 403 when publishing is disabled", rec.Code)
+		t.Errorf("code = %d, want 403 without a scoped principal", rec.Code)
 	}
 }
 
 func TestSubmitUnknownBuild(t *testing.T) {
 	h, _, _ := newHandler(t)
 	req := httptest.NewRequest("POST", "/api/v1/agent/reviews", strings.NewReader(`{"build_id": 999, "review": `+validReview+`}`))
-	req.Header.Set("Authorization", "Bearer secret-token")
+	req = req.WithContext(principals.NewContext(req.Context(), principals.Principal{ID: 1, Name: "reviewer", TeamName: "main"}))
 	rec := httptest.NewRecorder()
 	h.SubmitReview(rec, req)
 	if rec.Code != http.StatusNotFound {
@@ -157,7 +140,7 @@ func TestSubmitUnknownBuild(t *testing.T) {
 func TestSubmitMalformed(t *testing.T) {
 	h, _, _ := newHandler(t)
 	req := httptest.NewRequest("POST", "/api/v1/agent/reviews", strings.NewReader(`{"build_id": 42}`))
-	req.Header.Set("Authorization", "Bearer secret-token")
+	req = req.WithContext(principals.NewContext(req.Context(), principals.Principal{ID: 1, Name: "reviewer", TeamName: "main"}))
 	rec := httptest.NewRecorder()
 	h.SubmitReview(rec, req)
 	if rec.Code != http.StatusBadRequest {
@@ -169,7 +152,7 @@ func TestSubmitOversizedBody(t *testing.T) {
 	h, _, _ := newHandler(t)
 	req := httptest.NewRequest("POST", "/api/v1/agent/reviews",
 		strings.NewReader(`{"build_id":42,"review":`+strings.Repeat(" ", 5<<20)+`}`))
-	req.Header.Set("Authorization", "Bearer secret-token")
+	req = req.WithContext(principals.NewContext(req.Context(), principals.Principal{ID: 1, Name: "reviewer", TeamName: "main"}))
 	rec := httptest.NewRecorder()
 	h.SubmitReview(rec, req)
 	if rec.Code != http.StatusRequestEntityTooLarge {
@@ -222,7 +205,7 @@ func TestGetByBuildToleratesMalformedFinding(t *testing.T) {
 func TestSubmitAndGetByBuild(t *testing.T) {
 	h, _, fbStore := newHandler(t)
 	req := httptest.NewRequest("POST", "/api/v1/agent/reviews", strings.NewReader(postBody()))
-	req.Header.Set("Authorization", "Bearer secret-token")
+	req = req.WithContext(principals.NewContext(req.Context(), principals.Principal{ID: 1, Name: "reviewer", TeamName: "main"}))
 	rec := httptest.NewRecorder()
 	h.SubmitReview(rec, req)
 	if rec.Code != http.StatusCreated {
@@ -268,7 +251,7 @@ func TestSubmitIsIdempotent(t *testing.T) {
 	h, store, _ := newHandler(t)
 	for i := 0; i < 2; i++ {
 		req := httptest.NewRequest("POST", "/api/v1/agent/reviews", strings.NewReader(postBody()))
-		req.Header.Set("Authorization", "Bearer secret-token")
+		req = req.WithContext(principals.NewContext(req.Context(), principals.Principal{ID: 1, Name: "reviewer", TeamName: "main"}))
 		rec := httptest.NewRecorder()
 		h.SubmitReview(rec, req)
 		if rec.Code != http.StatusCreated {
@@ -343,22 +326,5 @@ func TestSubmitWithPrincipalRejectsBuildFromAnotherTeam(t *testing.T) {
 	}
 	if len(recs) != 0 {
 		t.Fatalf("stored cross-team review = %+v", recs)
-	}
-}
-
-func TestSubmitWithStaticTokenAttributesLegacyPublish(t *testing.T) {
-	h, store, _ := newHandler(t)
-
-	req := httptest.NewRequest("POST", "/api/v1/agent/reviews", strings.NewReader(postBody()))
-	req.Header.Set("Authorization", "Bearer secret-token")
-	rec := httptest.NewRecorder()
-	h.SubmitReview(rec, req)
-
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("code = %d body %s, want 201", rec.Code, rec.Body)
-	}
-	recs, _ := store.GetByBuild(42)
-	if len(recs) != 1 || recs[0].SubmittedBy != principals.LegacyPublishPrincipalName {
-		t.Errorf("submitted_by = %+v, want legacy-publish", recs)
 	}
 }

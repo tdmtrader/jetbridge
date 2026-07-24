@@ -334,7 +334,6 @@ var _ = BeforeEach(func() {
 		metrics.NewMemoryStore(),
 		tickets.NewMemoryStore(),
 		principalsStore,
-		"test-agent-review-publish-token",
 		credentials.NewMemoryBackend(),
 		// lags the suite's "1.2.3" version param — the platform-info
 		// endpoint must report the skew (#45)

@@ -19,40 +19,34 @@ func newHandler() (*costs.Handler, *budget.MemoryLedger) {
 		GlobalDailyCapUSD: 50,
 		Location:          time.UTC,
 	})
-	return costs.NewHandler(ledger, checker, "publish-secret"), ledger
+	return costs.NewHandler(ledger, checker), ledger
 }
 
-func submit(t *testing.T, h *costs.Handler, token, body string) *httptest.ResponseRecorder {
+func submit(t *testing.T, h *costs.Handler, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest("POST", "/api/v1/agent/costs", strings.NewReader(body))
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
 	rec := httptest.NewRecorder()
 	h.SubmitRecord(rec, req)
 	return rec
 }
 
-func TestSubmitRequiresToken(t *testing.T) {
+func submitWithPrincipal(t *testing.T, h *costs.Handler, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest("POST", "/api/v1/agent/costs", strings.NewReader(body))
+	req = req.WithContext(principals.NewContext(req.Context(), principals.Principal{ID: 3, Name: "itest-recorder"}))
+	rec := httptest.NewRecorder()
+	h.SubmitRecord(rec, req)
+	return rec
+}
+
+func TestSubmitRequiresScopedPrincipal(t *testing.T) {
 	h, _ := newHandler()
-	if rec := submit(t, h, "", `{"source":"ci_agent","cost_usd":1}`); rec.Code != http.StatusUnauthorized {
-		t.Fatalf("missing token: got %d", rec.Code)
-	}
-	if rec := submit(t, h, "wrong", `{"source":"ci_agent","cost_usd":1}`); rec.Code != http.StatusUnauthorized {
-		t.Fatalf("wrong token: got %d", rec.Code)
+	if rec := submit(t, h, `{"source":"ci_agent","cost_usd":1}`); rec.Code != http.StatusForbidden {
+		t.Fatalf("got %d, want 403 without a scoped principal", rec.Code)
 	}
 }
 
-func TestSubmitDisabledWithoutConfiguredToken(t *testing.T) {
-	ledger := budget.NewMemoryLedger()
-	checker := budget.NewChecker(ledger, budget.NoTicketBudgets{}, budget.Config{Location: time.UTC})
-	h := costs.NewHandler(ledger, checker, "")
-	if rec := submit(t, h, "anything", `{"source":"ci_agent","cost_usd":1}`); rec.Code != http.StatusForbidden {
-		t.Fatalf("got %d", rec.Code)
-	}
-}
-
-func TestSubmitWithPrincipalContextSkipsStaticToken(t *testing.T) {
+func TestSubmitWithPrincipalContext(t *testing.T) {
 	h, ledger := newHandler()
 
 	req := httptest.NewRequest("POST", "/api/v1/agent/costs",
@@ -73,28 +67,13 @@ func TestSubmitWithPrincipalContextSkipsStaticToken(t *testing.T) {
 	}
 }
 
-func TestSubmitWithPrincipalContextWorksWithoutConfiguredToken(t *testing.T) {
-	ledger := budget.NewMemoryLedger()
-	checker := budget.NewChecker(ledger, budget.NoTicketBudgets{}, budget.Config{Location: time.UTC})
-	h := costs.NewHandler(ledger, checker, "")
-
-	req := httptest.NewRequest("POST", "/api/v1/agent/costs",
-		strings.NewReader(`{"source":"ci_agent","cost_usd":0.1}`))
-	req = req.WithContext(principals.NewContext(req.Context(), principals.Principal{
-		ID: 3, Name: "itest-recorder",
-	}))
-	rec := httptest.NewRecorder()
-	h.SubmitRecord(rec, req)
-
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("code = %d body %s, want 201", rec.Code, rec.Body)
-	}
-}
-
 func TestSubmitRecordsEntry(t *testing.T) {
 	h, ledger := newHandler()
-	rec := submit(t, h, "publish-secret",
-		`{"source":"ci_agent","cost_usd":0.42,"user_name":"alice","build_id":1234,"step_name":"review/analyze","model":"claude-sonnet-5","input_tokens":100,"output_tokens":50,"turns":4}`)
+	req := httptest.NewRequest("POST", "/api/v1/agent/costs", strings.NewReader(
+		`{"source":"ci_agent","cost_usd":0.42,"user_name":"alice","build_id":1234,"step_name":"review/analyze","model":"claude-sonnet-5","input_tokens":100,"output_tokens":50,"turns":4}`))
+	req = req.WithContext(principals.NewContext(req.Context(), principals.Principal{ID: 3, Name: "itest-recorder"}))
+	rec := httptest.NewRecorder()
+	h.SubmitRecord(rec, req)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -106,13 +85,13 @@ func TestSubmitRecordsEntry(t *testing.T) {
 
 func TestSubmitRejectsInvalidEntries(t *testing.T) {
 	h, _ := newHandler()
-	if rec := submit(t, h, "publish-secret", `{"source":"slack","cost_usd":1}`); rec.Code != http.StatusBadRequest {
+	if rec := submitWithPrincipal(t, h, `{"source":"slack","cost_usd":1}`); rec.Code != http.StatusBadRequest {
 		t.Fatalf("bad source: got %d", rec.Code)
 	}
-	if rec := submit(t, h, "publish-secret", `{"source":"ci_agent","cost_usd":-1}`); rec.Code != http.StatusBadRequest {
+	if rec := submitWithPrincipal(t, h, `{"source":"ci_agent","cost_usd":-1}`); rec.Code != http.StatusBadRequest {
 		t.Fatalf("negative cost: got %d", rec.Code)
 	}
-	if rec := submit(t, h, "publish-secret", `not json`); rec.Code != http.StatusBadRequest {
+	if rec := submitWithPrincipal(t, h, `not json`); rec.Code != http.StatusBadRequest {
 		t.Fatalf("bad json: got %d", rec.Code)
 	}
 }

@@ -1,13 +1,11 @@
 package reviews
 
 import (
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"strconv"
-	"strings"
 
 	"github.com/concourse/concourse/agent/api/feedback"
 	"github.com/concourse/concourse/agent/api/principals"
@@ -23,16 +21,14 @@ type Handler struct {
 	store          Store
 	feedbackStore  feedback.Store
 	lookupBuild    BuildLookupFunc
-	publishToken   string
 	projectionTeam string
 }
 
-func NewHandler(store Store, feedbackStore feedback.Store, lookup BuildLookupFunc, publishToken, projectionTeam string) *Handler {
+func NewHandler(store Store, feedbackStore feedback.Store, lookup BuildLookupFunc, projectionTeam string) *Handler {
 	return &Handler{
 		store:          store,
 		feedbackStore:  feedbackStore,
 		lookupBuild:    lookup,
-		publishToken:   publishToken,
 		projectionTeam: projectionTeam,
 	}
 }
@@ -71,30 +67,15 @@ type BuildReviewResponse struct {
 
 // SubmitReview handles POST /api/v1/agent/reviews.
 //
-// Auth: the wrappa wraps this route in principal(reviews:write) with a
-// legacy bypass (atc/wrappa/api_auth_wrappa.go). A verified principal
-// arrives via the request context; anything else falls back to the
-// static publish token this handler has always validated (dual-accept
-// window; removed with --agent-review-publish-token).
+// Auth: the wrappa wraps this route in principal(reviews:write). A verified
+// principal must arrive via the request context.
 func (h *Handler) SubmitReview(w http.ResponseWriter, r *http.Request) {
-	submittedBy := ""
-	principalTeam := ""
-	if p, ok := principals.FromContext(r.Context()); ok {
-		submittedBy = p.Name
-		principalTeam = p.TeamName
-	} else {
-		if h.publishToken == "" {
-			http.Error(w, "agent review publishing is not enabled", http.StatusForbidden)
-			return
-		}
-		auth := r.Header.Get("Authorization")
-		token, ok := strings.CutPrefix(auth, "Bearer ")
-		if !ok || subtle.ConstantTimeCompare([]byte(token), []byte(h.publishToken)) != 1 {
-			http.Error(w, "invalid publish token", http.StatusUnauthorized)
-			return
-		}
-		submittedBy = principals.LegacyPublishPrincipalName
+	p, ok := principals.FromContext(r.Context())
+	if !ok {
+		http.Error(w, "agent review publishing requires a scoped principal", http.StatusForbidden)
+		return
 	}
+	submittedBy, principalTeam := p.Name, p.TeamName
 
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4<<20))
 	if err != nil {
@@ -125,7 +106,7 @@ func (h *Handler) SubmitReview(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "principal is not authorized for the build team", http.StatusForbidden)
 		return
 	}
-	if submittedBy != principals.LegacyPublishPrincipalName && principalTeam == "" {
+	if principalTeam == "" {
 		http.Error(w, "principal team is required", http.StatusForbidden)
 		return
 	}

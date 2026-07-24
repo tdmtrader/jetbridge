@@ -423,6 +423,99 @@ var _ = Describe("APIAuthWrappa", func() {
 			})
 		})
 
+		Describe("agent review and cost publishing route tiers", func() {
+			var (
+				store        *principals.MemoryStore
+				wrapped      rata.Handlers
+				delegateHit  bool
+				fakeAccessor *accessorfakes.FakeAccessFactory
+				fakeaccess   *accessorfakes.FakeAccess
+			)
+
+			BeforeEach(func() {
+				delegateHit = false
+				fakeAccessor = new(accessorfakes.FakeAccessFactory)
+				fakeaccess = new(accessorfakes.FakeAccess)
+				fakeAccessor.CreateReturns(fakeaccess, nil)
+				store = principals.NewMemoryStore()
+
+				delegate := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					delegateHit = true
+					w.WriteHeader(http.StatusOK)
+				})
+
+				wrapped = wrappa.NewAPIAuthWrappa(
+					fakeCheckPipelineAccessHandlerFactory,
+					fakeCheckBuildReadAccessHandlerFactory,
+					fakeCheckBuildWriteAccessHandlerFactory,
+					fakeCheckWorkerTeamAccessHandlerFactory,
+					auth.NewCheckAgentPrincipalHandlerFactory(principals.NewVerifier(store)),
+				).Wrap(rata.Handlers{
+					atc.SubmitAgentReview:     delegate,
+					atc.SubmitAgentCostRecord: delegate,
+				})
+			})
+
+			serve := func(routeName, authorization string) *http.Response {
+				server := httptest.NewServer(accessor.NewHandler(
+					lagertest.NewTestLogger("api-auth-wrappa"),
+					"some-action",
+					wrapped[routeName],
+					fakeAccessor,
+					new(auditorfakes.FakeAuditor),
+					map[string]string{},
+				))
+				defer server.Close()
+
+				req, err := http.NewRequest(http.MethodPost, server.URL, nil)
+				Expect(err).NotTo(HaveOccurred())
+				if authorization != "" {
+					req.Header.Set("Authorization", authorization)
+				}
+				resp, err := http.DefaultClient.Do(req)
+				Expect(err).NotTo(HaveOccurred())
+				return resp
+			}
+
+			for _, tc := range []struct {
+				route      string
+				scope      string
+				otherScope string
+			}{
+				{atc.SubmitAgentReview, principals.ScopeReviewsWrite, principals.ScopeCostsWrite},
+				{atc.SubmitAgentCostRecord, principals.ScopeCostsWrite, principals.ScopeReviewsWrite},
+			} {
+				tc := tc
+				Describe(tc.route, func() {
+					It("admits a principal carrying the required scope", func() {
+						_, token, err := store.Create(principals.CreateSpec{Name: "writer", Scopes: []string{tc.scope}})
+						Expect(err).NotTo(HaveOccurred())
+
+						resp := serve(tc.route, "Bearer "+token)
+						Expect(resp.StatusCode).To(Equal(http.StatusOK))
+						Expect(delegateHit).To(BeTrue())
+					})
+
+					It("401s anonymous requests without a principal token", func() {
+						fakeaccess.IsAuthenticatedReturns(false)
+
+						resp := serve(tc.route, "")
+						Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
+						Expect(delegateHit).To(BeFalse())
+					})
+
+					It("401s a principal carrying another scope", func() {
+						_, token, err := store.Create(principals.CreateSpec{Name: "other-writer", Scopes: []string{tc.otherScope}})
+						Expect(err).NotTo(HaveOccurred())
+
+						resp := serve(tc.route, "Bearer "+token)
+						Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
+						Expect(delegateHit).To(BeFalse())
+					})
+				})
+			}
+		})
+
 		// Dispatcher runtime-control tier pinning (dispatcher-runtime-control
 		// wire contract): GetAgentDispatcher is merely authenticated (ANY
 		// signed-in user may READ status); SetAgentDispatcher is admin-only

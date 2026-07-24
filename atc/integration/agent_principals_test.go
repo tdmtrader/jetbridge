@@ -11,13 +11,7 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-const staticPublishTokenForPrincipalTest = "integration-static-token"
-
 var _ = Describe("Agent Principals API", func() {
-	BeforeEach(func() {
-		cmd.AgentReviewPublishToken = staticPublishTokenForPrincipalTest
-	})
-
 	reviewBodyFor := func(buildID int, commit string) []byte {
 		return []byte(`{
 			"build_id": ` + strconv.Itoa(buildID) + `,
@@ -73,28 +67,23 @@ var _ = Describe("Agent Principals API", func() {
 		Expect(reviews).To(HaveLen(1))
 		Expect(reviews[0]["submitted_by"]).To(Equal("itest-reviewer"))
 
-		By("still accepting the static token during the dual-accept window, attributed to legacy-publish")
-		build2, err := client.Team("main").CreateBuild(atc.Plan{})
-		Expect(err).NotTo(HaveOccurred())
-		pub = postAgentReview(atcURL, staticPublishTokenForPrincipalTest, reviewBodyFor(build2.ID, "cafe0002"))
-		Expect(pub.StatusCode).To(Equal(http.StatusCreated))
-
-		req, err = http.NewRequest("GET", atcURL+"/api/v1/builds/"+strconv.Itoa(build2.ID)+"/agent-reviews", nil)
-		Expect(err).NotTo(HaveOccurred())
-		getResp2, err := httpClient.Do(req)
-		Expect(err).NotTo(HaveOccurred())
-		defer getResp2.Body.Close()
-		reviews = nil
-		Expect(json.NewDecoder(getResp2.Body).Decode(&reviews)).To(Succeed())
-		Expect(reviews).To(HaveLen(1))
-		Expect(reviews[0]["submitted_by"]).To(Equal("legacy-publish"))
-
 		By("rejecting a wrong-scope principal with 401")
 		resp, wrongScope := mintPrincipal(httpClient,
 			`{"name": "itest-ticketer", "scopes": ["tickets:read"]}`)
 		Expect(resp.StatusCode).To(Equal(http.StatusCreated))
 		pub = postAgentReview(atcURL, wrongScope["token"].(string), reviewBodyFor(build.ID, "cafe0003"))
 		Expect(pub.StatusCode).To(Equal(http.StatusUnauthorized))
+
+		By("recording a cost with a costs:write principal")
+		resp, costWriter := mintPrincipal(httpClient,
+			`{"name": "itest-cost-writer", "scopes": ["costs:write"]}`)
+		Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+		cost := postAgentCost(atcURL, costWriter["token"].(string), []byte(`{"source":"ci_agent","cost_usd":0.42}`))
+		Expect(cost.StatusCode).To(Equal(http.StatusCreated))
+
+		By("rejecting a reviews:write principal on cost submission")
+		cost = postAgentCost(atcURL, token, []byte(`{"source":"ci_agent","cost_usd":0.42}`))
+		Expect(cost.StatusCode).To(Equal(http.StatusUnauthorized))
 
 		By("rejecting a principal revoked before first use")
 		resp, doomed := mintPrincipal(httpClient,
@@ -125,7 +114,6 @@ var _ = Describe("Agent Principals API", func() {
 		for _, p := range list {
 			byName[p["name"].(string)] = p
 		}
-		Expect(byName).To(HaveKey("legacy-publish"))
 		Expect(byName["itest-doomed"]["revoked_at"]).NotTo(BeNil())
 		Expect(byName["itest-reviewer"]["last_used_at"]).NotTo(BeNil())
 		Expect(byName["itest-reviewer"]).NotTo(HaveKey("token"))

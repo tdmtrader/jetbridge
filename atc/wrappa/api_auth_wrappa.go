@@ -119,21 +119,14 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			atc.GetSigningKeys:
 			newHandler = auth.CheckAuthenticationIfProvidedHandler(handler, rejector)
 
-		// principal(reviews:write) — 00-shared-contracts.md §4.1. The
-		// legacy static publish token is still accepted inside the
-		// handler during the dual-accept window, so requests without a
-		// cap1 token bypass to the delegate instead of being rejected
-		// (agent/api/reviews.Handler.SubmitReview,
-		// agent/api/costs.Handler.SubmitRecord validate it themselves;
-		// contract addendum 2026-07-08).
+		// principal(reviews:write) — 00-shared-contracts.md §4.1.
 		case atc.SubmitAgentReview:
-			newHandler = wrappa.checkAgentPrincipalHandlerFactory.HandlerForWithLegacyBypass(
+			newHandler = wrappa.checkAgentPrincipalHandlerFactory.HandlerFor(
 				handler, rejector, principals.ScopeReviewsWrite)
 
-		// principal(costs:write) — same dual-accept recipe as
-		// SubmitAgentReview above.
+		// principal(costs:write) — 00-shared-contracts.md §4.1.
 		case atc.SubmitAgentCostRecord:
-			newHandler = wrappa.checkAgentPrincipalHandlerFactory.HandlerForWithLegacyBypass(
+			newHandler = wrappa.checkAgentPrincipalHandlerFactory.HandlerFor(
 				handler, rejector, principals.ScopeCostsWrite)
 
 		// principal(metrics:write) — 00-shared-contracts.md §4.1/§4.2.

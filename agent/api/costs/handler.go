@@ -1,17 +1,14 @@
 // Package costs serves the agent cost-ledger API: POST /api/v1/agent/costs
-// (SubmitAgentCostRecord — principal(costs:write) via the wrappa, with a
-// static-token legacy bypass per the wave-1 contract addendum) and
+// (SubmitAgentCostRecord — principal(costs:write) via the wrappa) and
 // GET /api/v1/agent/costs (GetAgentCostRollup).
 package costs
 
 import (
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/concourse/concourse/agent/api/principals"
@@ -19,13 +16,12 @@ import (
 )
 
 type Handler struct {
-	ledger       budget.Ledger
-	checker      budget.Checker
-	publishToken string
+	ledger  budget.Ledger
+	checker budget.Checker
 }
 
-func NewHandler(ledger budget.Ledger, checker budget.Checker, publishToken string) *Handler {
-	return &Handler{ledger: ledger, checker: checker, publishToken: publishToken}
+func NewHandler(ledger budget.Ledger, checker budget.Checker) *Handler {
+	return &Handler{ledger: ledger, checker: checker}
 }
 
 // DailySummary reports today's spend against --agent-daily-budget-usd.
@@ -46,26 +42,14 @@ type RollupResponse struct {
 
 // SubmitRecord handles POST /api/v1/agent/costs.
 //
-// Auth: the wrappa wraps this route in principal(costs:write) with a
-// legacy bypass (atc/wrappa/api_auth_wrappa.go). A verified principal
-// arrives via the request context; anything else falls back to the
-// static publish token this handler has always validated (dual-accept
-// window; removed with --agent-cost-publish-token). The ledger schema
-// carries no submitter column, so the principal only authorizes — the
-// entry's source field is the CHECK-constrained spend type, not an
-// attribution.
+// Auth: the wrappa wraps this route in principal(costs:write). A verified
+// principal must arrive via the request context. The ledger schema carries no
+// submitter column, so the principal only authorizes — the entry's source
+// field is the CHECK-constrained spend type, not an attribution.
 func (h *Handler) SubmitRecord(w http.ResponseWriter, r *http.Request) {
 	if _, ok := principals.FromContext(r.Context()); !ok {
-		if h.publishToken == "" {
-			http.Error(w, "agent cost recording is not enabled", http.StatusForbidden)
-			return
-		}
-		auth := r.Header.Get("Authorization")
-		token, ok := strings.CutPrefix(auth, "Bearer ")
-		if !ok || subtle.ConstantTimeCompare([]byte(token), []byte(h.publishToken)) != 1 {
-			http.Error(w, "invalid publish token", http.StatusUnauthorized)
-			return
-		}
+		http.Error(w, "agent cost recording requires a scoped principal", http.StatusForbidden)
+		return
 	}
 
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))

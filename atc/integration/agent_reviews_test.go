@@ -12,15 +12,24 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-const agentReviewPublishTokenForTest = "integration-token"
-
 var _ = Describe("Agent Reviews API", func() {
-	BeforeEach(func() {
-		cmd.AgentReviewPublishToken = agentReviewPublishTokenForTest
-	})
-
-	It("accepts a published review, rejects a bad token, and serves it back by build and by team", func() {
+	It("accepts a scoped-principal review, rejects a bad token, and serves it back by build and by team", func() {
 		client := login(atcURL, "test", "test")
+		httpClient := client.HTTPClient()
+
+		By("minting a reviews:write principal through the admin API")
+		mintReq, err := http.NewRequest("POST", atcURL+"/api/v1/agent/principals", bytes.NewBufferString(
+			`{"name":"agent-review-writer","scopes":["reviews:write"]}`))
+		Expect(err).NotTo(HaveOccurred())
+		mintReq.Header.Set("Content-Type", "application/json")
+		mintResp, err := httpClient.Do(mintReq)
+		Expect(err).NotTo(HaveOccurred())
+		defer mintResp.Body.Close()
+		Expect(mintResp.StatusCode).To(Equal(http.StatusCreated))
+		var minted map[string]any
+		Expect(json.NewDecoder(mintResp.Body).Decode(&minted)).To(Succeed())
+		principalToken := minted["token"].(string)
+		Expect(principalToken).To(HavePrefix("cap1."))
 
 		build, err := client.Team("main").CreateBuild(atc.Plan{})
 		Expect(err).NotTo(HaveOccurred())
@@ -44,9 +53,9 @@ var _ = Describe("Agent Reviews API", func() {
 			Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
 		}
 
-		By("accepting a submission with the correct bearer token")
+		By("accepting a submission with the reviews:write principal token")
 		{
-			resp := postAgentReview(atcURL, agentReviewPublishTokenForTest, reviewBody)
+			resp := postAgentReview(atcURL, principalToken, reviewBody)
 			Expect(resp.StatusCode).To(Equal(http.StatusCreated))
 		}
 
@@ -135,6 +144,19 @@ var plainHTTPClient = &http.Client{}
 
 func postAgentReview(atcURL, token string, body []byte) *http.Response {
 	req, err := http.NewRequest("POST", atcURL+"/api/v1/agent/reviews", bytes.NewReader(body))
+	Expect(err).NotTo(HaveOccurred())
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := plainHTTPClient.Do(req)
+	Expect(err).NotTo(HaveOccurred())
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	return resp
+}
+
+func postAgentCost(atcURL, token string, body []byte) *http.Response {
+	req, err := http.NewRequest("POST", atcURL+"/api/v1/agent/costs", bytes.NewReader(body))
 	Expect(err).NotTo(HaveOccurred())
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)

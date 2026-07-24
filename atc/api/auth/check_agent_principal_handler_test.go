@@ -27,7 +27,6 @@ var _ = Describe("CheckAgentPrincipalHandler", func() {
 		token      string
 		seenName   string
 		seenHasCtx bool
-		legacy     bool
 		server     *httptest.Server
 		client     *http.Client
 	)
@@ -46,7 +45,6 @@ var _ = Describe("CheckAgentPrincipalHandler", func() {
 		fakeaccess = new(accessorfakes.FakeAccess)
 		seenName = ""
 		seenHasCtx = false
-		legacy = false
 
 		fakeRejector.UnauthorizedStub = func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "nope", http.StatusUnauthorized)
@@ -69,12 +67,7 @@ var _ = Describe("CheckAgentPrincipalHandler", func() {
 		fakeAccessor.CreateReturns(fakeaccess, nil)
 
 		factory := auth.NewCheckAgentPrincipalHandlerFactory(verifier)
-		var inner http.Handler
-		if legacy {
-			inner = factory.HandlerForWithLegacyBypass(echoHandler, fakeRejector, principals.ScopeReviewsWrite)
-		} else {
-			inner = factory.HandlerFor(echoHandler, fakeRejector, principals.ScopeReviewsWrite)
-		}
+		inner := factory.HandlerFor(echoHandler, fakeRejector, principals.ScopeReviewsWrite)
 
 		server = httptest.NewServer(accessor.NewHandler(
 			logger,
@@ -138,6 +131,13 @@ var _ = Describe("CheckAgentPrincipalHandler", func() {
 			Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
 		})
 
+		It("401s a non-principal bearer token", func() {
+			fakeaccess.IsAuthenticatedReturns(false)
+			resp := get("Bearer some-static-publish-token")
+			Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
+			Expect(seenHasCtx).To(BeFalse())
+		})
+
 		It("403s authenticated non-admins", func() {
 			fakeaccess.IsAuthenticatedReturns(true)
 			fakeaccess.IsAdminReturns(false)
@@ -145,22 +145,5 @@ var _ = Describe("CheckAgentPrincipalHandler", func() {
 			Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
 		})
 
-		Context("with the legacy bypass (dual-accept window)", func() {
-			BeforeEach(func() {
-				legacy = true
-			})
-
-			It("passes non-cap1 bearer tokens through to the delegate", func() {
-				fakeaccess.IsAuthenticatedReturns(false)
-				resp := get("Bearer some-static-publish-token")
-				Expect(resp.StatusCode).To(Equal(http.StatusOK))
-				Expect(seenHasCtx).To(BeFalse())
-			})
-
-			It("still verifies cap1 tokens instead of bypassing", func() {
-				resp := get("Bearer cap1.999.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
-				Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
-			})
-		})
 	})
 })

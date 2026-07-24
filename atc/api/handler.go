@@ -111,7 +111,6 @@ func NewHandler(
 	metricsStore metricsapi.Store,
 	ticketsStore ticketsapi.Store,
 	principalsStore principalsapi.Store,
-	agentReviewPublishToken string,
 	credentialsBackend credentials.Backend,
 	// agentStepImage is the configured --agent-step-image value; the
 	// platform-info endpoint derives image-version skew from it (#45).
@@ -209,7 +208,6 @@ func NewHandler(
 				JobName:      build.JobName(),
 			}, true, nil
 		},
-		agentReviewPublishToken,
 		atc.DefaultTeamName,
 	)
 	metricsServer := metricsapi.NewHandler(metricsStore)
@@ -255,7 +253,7 @@ func NewHandler(
 	costChecker := budget.NewChecker(costLedger, ticketBudgets, budget.Config{
 		GlobalDailyCapUSD: agentDailyBudgetUSD,
 	})
-	costsServer := costs.NewHandler(costLedger, costChecker, agentReviewPublishToken)
+	costsServer := costs.NewHandler(costLedger, costChecker)
 	if oidcIssuer == "" {
 		oidcIssuer = externalURL
 	}

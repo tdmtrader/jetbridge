@@ -371,8 +371,6 @@ type RunCommand struct {
 		ClientSecret            string `long:"client-secret" required:"true" description:"Client secret to use for login flow"`
 	} `group:"Web Server"`
 
-	AgentReviewPublishToken string `long:"agent-review-publish-token" description:"DEPRECATED: static bearer token accepted for publishing agent review results during the agent-principal dual-accept window. Mint a reviews:write agent principal instead (POST /api/v1/agent/principals). This flag will be removed at the end of the window."`
-
 	AgentStepImage string `long:"agent-step-image" description:"Container image for the agent: step's main container (must contain the claude CLI and agent-runner). Schema-v3 workflow runs and resource snapshot captures require an exact @sha256 digest; agent steps error at runtime when unset."`
 
 	AgentRepoBaseURL string `long:"agent-repo-base-url" default:"https://github.com" description:"Base URL prefixed to a ticket's repo slug when dispatch renders the run's git resource (manual-dispatch slice; anonymous clones only until harvest's git-cred machinery lands)."`
@@ -3589,7 +3587,6 @@ func (cmd *RunCommand) constructAPIHandler(
 		db.NewAgentRunMetricsFactory(dbConn),
 		db.NewAgentTicketsFactory(dbConn),
 		agentPrincipalsFactory,
-		cmd.AgentReviewPublishToken,
 		db.NewAgentUserCredentialsFactory(dbConn),
 		cmd.AgentStepImage,
 		db.NewAgentCostLedgerFactory(dbConn),

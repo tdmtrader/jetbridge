@@ -16,12 +16,6 @@ import (
 type CheckAgentPrincipalHandlerFactory interface {
 	// HandlerFor is the strict tier: principal token or admin user.
 	HandlerFor(delegate http.Handler, rejector Rejector, scope string) http.Handler
-	// HandlerForWithLegacyBypass additionally passes requests without a
-	// cap1 token through to the delegate, which validates the legacy
-	// static publish token itself
-	// (agent/api/reviews.Handler.SubmitReview). Dual-accept window
-	// only — removed together with --agent-review-publish-token.
-	HandlerForWithLegacyBypass(delegate http.Handler, rejector Rejector, scope string) http.Handler
 }
 
 func NewCheckAgentPrincipalHandlerFactory(verifier *principals.Verifier) CheckAgentPrincipalHandlerFactory {
@@ -38,19 +32,11 @@ func (f *checkAgentPrincipalHandlerFactory) HandlerFor(delegate http.Handler, re
 	}
 }
 
-func (f *checkAgentPrincipalHandlerFactory) HandlerForWithLegacyBypass(delegate http.Handler, rejector Rejector, scope string) http.Handler {
-	return checkAgentPrincipalHandler{
-		verifier: f.verifier, delegate: delegate, rejector: rejector, scope: scope,
-		legacyBypass: true,
-	}
-}
-
 type checkAgentPrincipalHandler struct {
-	verifier     *principals.Verifier
-	delegate     http.Handler
-	rejector     Rejector
-	scope        string
-	legacyBypass bool
+	verifier *principals.Verifier
+	delegate http.Handler
+	rejector Rejector
+	scope    string
 }
 
 func (h checkAgentPrincipalHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -68,13 +54,6 @@ func (h checkAgentPrincipalHandler) ServeHTTP(w http.ResponseWriter, r *http.Req
 
 	acc := accessor.GetAccessor(r)
 	if acc.IsAuthenticated() && acc.IsAdmin() {
-		h.delegate.ServeHTTP(w, r)
-		return
-	}
-
-	if h.legacyBypass {
-		// Dual-accept window: the delegate validates the static publish
-		// token itself and attributes the write to 'legacy-publish'.
 		h.delegate.ServeHTTP(w, r)
 		return
 	}
