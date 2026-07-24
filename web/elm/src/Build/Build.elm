@@ -40,7 +40,6 @@ import Html.Attributes
         ( attribute
         , class
         , classList
-        , href
         , id
         , style
         , tabindex
@@ -929,7 +928,7 @@ viewBuildPage session model =
             , style "overflow" "hidden"
             ]
             [ Header.view session model
-            , ticketContextBar model
+            , agentCostBar model.agentRunMetrics
             , body session model
             ]
 
@@ -937,108 +936,50 @@ viewBuildPage session model =
         LoadingIndicator.view
 
 
-{-| When a build belongs to an `agent-ticket-<id>` pipeline, show a slim
-provenance bar linking back to the originating ticket and attributing the run.
-Detection is purely from the pipeline name + instance vars the build already
-carries — no server round-trip. A build with recorded agent spend but no
-ticket context (e.g. a CI build running review steps) still gets the bar,
-reduced to just the cost chip. Renders nothing for ordinary builds.
--}
-ticketContextBar :
-    { a
-        | job : Maybe Concourse.JobIdentifier
-        , createdBy : Concourse.BuildCreatedBy
-        , agentRunMetrics : List Concourse.Agent.RunMetric
-    }
-    -> Html Message
-ticketContextBar { job, createdBy, agentRunMetrics } =
+agentCostBar : List Concourse.Agent.RunMetric -> Html Message
+agentCostBar agentRunMetrics =
     let
         totalCost =
             agentRunMetrics |> List.map .costUsd |> List.sum
 
-        costChip =
-            if totalCost > 0 then
-                [ Html.span
-                    [ id "build-agent-cost"
-                    , style "margin-left" "auto"
-                    , style "font-family" "monospace"
-                    , style "color" "#b0b0b0"
-                    ]
-                    [ Html.text
-                        ("agent spend $"
-                            ++ formatUsd totalCost
-                            ++ " · "
-                            ++ String.fromInt (List.length agentRunMetrics)
-                            ++ (if List.length agentRunMetrics == 1 then
-                                    " run"
-
-                                else
-                                    " runs"
-                               )
-                        )
-                    ]
-                ]
-
-            else
-                []
-
-        bar barId children =
-            Html.div
-                [ id barId
-                , style "display" "flex"
-                , style "align-items" "center"
-                , style "gap" "6px"
-                , style "padding" "6px 12px"
-                , style "background" "#1b222b"
-                , style "border-bottom" "1px solid #2d3a48"
-                , style "color" "#9aa39b"
-                , style "font-size" "13px"
-                ]
-                children
+        runCount =
+            List.length agentRunMetrics
     in
-    case job |> Maybe.andThen agentTicketId of
-        Nothing ->
-            if List.isEmpty costChip then
-                Html.text ""
+    if totalCost > 0 then
+        Html.div
+            [ id "build-agent-cost-bar"
+            , style "display" "flex"
+            , style "align-items" "center"
+            , style "gap" "6px"
+            , style "padding" "6px 12px"
+            , style "background" "#1b222b"
+            , style "border-bottom" "1px solid #2d3a48"
+            , style "color" "#9aa39b"
+            , style "font-size" "13px"
+            ]
+            [ Html.span
+                [ id "build-agent-cost"
+                , style "margin-left" "auto"
+                , style "font-family" "monospace"
+                , style "color" "#b0b0b0"
+                ]
+                [ Html.text
+                    ("agent spend $"
+                        ++ formatUsd totalCost
+                        ++ " · "
+                        ++ String.fromInt runCount
+                        ++ (if runCount == 1 then
+                                " run"
 
-            else
-                bar "build-agent-cost-bar" costChip
-
-        Just ticketId ->
-            let
-                runLabel =
-                    job
-                        |> Maybe.map (.pipelineInstanceVars >> Concourse.hyphenNotation)
-                        |> Maybe.withDefault ""
-                        |> (\s ->
-                                if s == "" then
-                                    ""
-
-                                else
-                                    " · " ++ s
+                            else
+                                " runs"
                            )
+                    )
+                ]
+            ]
 
-                attribution =
-                    case createdBy of
-                        Just who ->
-                            " · dispatched by " ++ who
-
-                        Nothing ->
-                            ""
-            in
-            bar "build-ticket-context"
-                ([ Html.text "part of"
-                 , Html.a
-                    [ href (Routes.toString (Routes.AgentTicket { id = ticketId }))
-                    , style "color" "#7a9ac0"
-                    , style "text-decoration" "none"
-                    , style "font-weight" "700"
-                    ]
-                    [ Html.text ("agent ticket #" ++ String.fromInt ticketId) ]
-                 , Html.text (runLabel ++ attribution)
-                 ]
-                    ++ costChip
-                )
+    else
+        Html.text ""
 
 
 {-| Same rendering as the other agent surfaces: cents-precision dollars.
@@ -1073,19 +1014,6 @@ formatUsd amount =
                 ""
     in
     sign ++ String.fromInt dollars ++ "." ++ fraction
-
-
-{-| Parse the ticket id out of an `agent-ticket-<id>` pipeline name.
--}
-agentTicketId : Concourse.JobIdentifier -> Maybe Int
-agentTicketId job =
-    if String.startsWith "agent-ticket-" job.pipelineName then
-        job.pipelineName
-            |> String.dropLeft (String.length "agent-ticket-")
-            |> String.toInt
-
-    else
-        Nothing
 
 
 body :

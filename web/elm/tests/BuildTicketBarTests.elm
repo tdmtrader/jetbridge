@@ -8,6 +8,7 @@ import Concourse.Agent
 import Concourse.BuildStatus exposing (BuildStatus(..))
 import Data
 import Dict
+import Expect
 import Html.Attributes as Attr
 import Message.Callback as Callback
 import Message.Effects as Effects
@@ -15,7 +16,7 @@ import Message.Subscription exposing (Delivery(..))
 import Routes
 import Test exposing (Test, describe, test)
 import Test.Html.Query as Query
-import Test.Html.Selector exposing (attribute, containing, id, tag, text)
+import Test.Html.Selector exposing (attribute, id, text)
 import Time
 
 
@@ -61,17 +62,16 @@ runMetricFor buildId cost =
 all : Test
 all =
     describe "build ticket-context bar"
-        [ test "links an agent-ticket build back to its ticket" <|
+        [ test "treats an agent-ticket-prefixed pipeline as an ordinary build" <|
             \_ ->
                 Common.init "/builds/1"
                     |> Application.handleCallback (Callback.BuildFetched (Ok agentBuild))
                     |> Tuple.first
                     |> Common.queryView
-                    |> Query.find [ id "build-ticket-context" ]
-                    |> Query.has
-                        [ tag "a"
-                        , attribute (Attr.href "/agent-tickets/12")
-                        , containing [ text "agent ticket #12" ]
+                    |> Expect.all
+                        [ Query.hasNot [ id "build-ticket-context" ]
+                        , Query.hasNot [ attribute (Attr.href "/agent-tickets/12") ]
+                        , Query.hasNot [ text "agent ticket #12" ]
                         ]
         , test "shows no context bar for an ordinary build" <|
             \_ ->
@@ -87,7 +87,7 @@ all =
                     |> Application.handleCallback (Callback.BuildFetched (Ok agentBuild))
                     |> Tuple.second
                     |> Common.contains (Effects.FetchBuildAgentMetrics 1)
-        , test "sums run costs into a chip on the ticket-context bar" <|
+        , test "sums run costs into the cost-only agent bar" <|
             \_ ->
                 Common.init "/builds/1"
                     |> Application.handleCallback (Callback.BuildFetched (Ok agentBuild))
@@ -96,8 +96,11 @@ all =
                         (Callback.BuildAgentMetricsFetched (Ok [ runMetric 0.5, runMetric 0.25 ]))
                     |> Tuple.first
                     |> Common.queryView
-                    |> Query.find [ id "build-agent-cost" ]
-                    |> Query.has [ text "$0.75" ]
+                    |> Query.find [ id "build-agent-cost-bar" ]
+                    |> Query.has
+                        [ id "build-agent-cost"
+                        , text "agent spend $0.75 · 2 runs"
+                        ]
         , test "shows the cost chip even for a build outside any ticket" <|
             \_ ->
                 Common.init "/builds/1"
@@ -119,7 +122,10 @@ all =
                         (Callback.BuildAgentMetricsFetched (Ok []))
                     |> Tuple.first
                     |> Common.queryView
-                    |> Query.hasNot [ id "build-agent-cost" ]
+                    |> Expect.all
+                        [ Query.hasNot [ id "build-agent-cost" ]
+                        , Query.hasNot [ id "build-agent-cost-bar" ]
+                        ]
         , test "refetches agent metrics when switching builds through history" <|
             \_ ->
                 switchToBuildTwo

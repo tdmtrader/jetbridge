@@ -61,8 +61,70 @@ all =
         , test "decodeDispatchResult reads run_id + pipeline_name" <|
             \_ ->
                 Json.Decode.decodeString AT.decodeDispatchResult
-                    """{ "run_id": 42, "pipeline_name": "agent-ticket-12" }"""
-                    |> Expect.equal (Ok { runId = 42, pipelineName = "agent-ticket-12" })
+                    """{ "run_id": 42, "pipeline_name": "develop-v3" }"""
+                    |> Expect.equal (Ok { runId = 42, pipelineName = "develop-v3" })
+        , test "keeps quoted ticket durable IDs above 2^53 exact" <|
+            \_ ->
+                Json.Decode.decodeString AT.decodeTicket
+                    """
+                    { "id": 12
+                    , "workflow_run_id": "9007199254740993"
+                    , "repository_snapshot_id": "9007199254740995"
+                    , "work_item_snapshot_id": "9007199254741003"
+                    }
+                    """
+                    |> Result.map
+                        (\ticket ->
+                            ( ticket.workflowRunId
+                            , ticket.repositorySnapshotId
+                            , ticket.workItemSnapshotId
+                            )
+                        )
+                    |> Expect.equal
+                        (Ok
+                            ( Just "9007199254740993"
+                            , Just "9007199254740995"
+                            , Just "9007199254741003"
+                            )
+                        )
+        , describe "durable ticket ID wire format"
+            ([ ( "workflow_run_id", "workflow run" )
+             , ( "repository_snapshot_id", "repository snapshot" )
+             , ( "work_item_snapshot_id", "work-item snapshot" )
+             ]
+                |> List.map
+                    (\( fieldName, label ) ->
+                        test ("rejects a numeric " ++ label ++ " ID") <|
+                            \_ ->
+                                Json.Decode.decodeString AT.decodeTicket
+                                    ("{ \"id\": 12, \"" ++ fieldName ++ "\": 9007199254740993 }")
+                                    |> Result.toMaybe
+                                    |> Expect.equal Nothing
+                    )
+            )
+        , test "decodes absent and null durable ticket IDs as Nothing" <|
+            \_ ->
+                Json.Decode.decodeString AT.decodeTicket
+                    """
+                    { "id": 12
+                    , "workflow_run_id": null
+                    , "repository_snapshot_id": null
+                    }
+                    """
+                    |> Result.map
+                        (\ticket ->
+                            ( ticket.workflowRunId
+                            , ticket.repositorySnapshotId
+                            , ticket.workItemSnapshotId
+                            )
+                        )
+                    |> Expect.equal (Ok ( Nothing, Nothing, Nothing ))
+        , test "rejects a noncanonical quoted durable ticket ID" <|
+            \_ ->
+                Json.Decode.decodeString AT.decodeTicket
+                    """{ "id": 12, "workflow_run_id": "01" }"""
+                    |> Result.toMaybe
+                    |> Expect.equal Nothing
         , test "repoWebUrl resolves a bare GitHub slug" <|
             \_ ->
                 AT.repoWebUrl "tdmtrader/jetbridge"

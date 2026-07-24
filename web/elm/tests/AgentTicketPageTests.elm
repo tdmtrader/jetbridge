@@ -102,6 +102,50 @@ renderWith path callback =
         |> Common.queryView
 
 
+runDetailFor workflowName workflowRunId =
+    let
+        detail =
+            AgenticData.runDetail
+
+        summary =
+            detail.summary
+    in
+    { detail
+        | summary =
+            { summary
+                | id = workflowRunId
+                , workflowName = workflowName
+            }
+    }
+
+
+sampleMetric =
+    { ticketId = Just 12
+    , pipelineRunId = Just 2
+    , buildId = 561978
+    , planId = "plan-xyz"
+    , stepName = "implement"
+    , workflowName = "develop"
+    , workflowVersion = Just 1
+    , status = "ok"
+    , buildStatus = "succeeded"
+    , outcome = "no_output"
+    , summary = ""
+    , model = ""
+    , usage =
+        { inputTokens = 19
+        , outputTokens = 2480
+        , cacheReadInputTokens = 0
+        , cacheCreationInputTokens = 0
+        }
+    , turns = 25
+    , wallTimeSeconds = 77
+    , costUsd = 0.21
+    , eventCounts = Dict.empty
+    , createdAt = 100
+    }
+
+
 all : Test
 all =
     describe "ticket detail page"
@@ -119,6 +163,20 @@ all =
                         [ Common.contains (Effects.FetchAgentTicket 12)
                         , Common.contains (Effects.FetchAgentTicketMetrics 12)
                         ]
+        , test "fetches the exact durable workflow run after the ticket loads" <|
+            \_ ->
+                withDetail sampleDetailJson <|
+                    \detail ->
+                        Common.init "/agent-tickets/12"
+                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok detail))
+                            |> Tuple.second
+                            |> Expect.all
+                                [ Common.contains
+                                    (Effects.FetchAgentWorkflowRun
+                                        "develop"
+                                        "9007199254740993"
+                                    )
+                                ]
         , test "links the captured revision, repository, durable run, and typed outputs" <|
             \_ ->
                 withDetail sampleDetailJson <|
@@ -127,16 +185,29 @@ all =
                             |> Application.handleCallback (Callback.AgentTicketFetched (Ok detail))
                             |> Tuple.first
                             |> Application.handleCallback
-                                (Callback.AgentWorkflowRunFetched AgenticData.runSummary.id (Ok AgenticData.runDetail))
+                                (Callback.AgentWorkflowRunFetched
+                                    "9007199254740993"
+                                    (Ok (runDetailFor "develop" "9007199254740993"))
+                                )
                             |> Tuple.first
                             |> Common.queryView
                             |> Query.find [ id "ticket-durable-evidence" ]
-                            |> Query.has
-                                [ attribute (Html.Attributes.href "/agent/snapshots/9007199254740995")
-                                , attribute (Html.Attributes.href "/agent/snapshots/9007199254741003")
-                                , attribute (Html.Attributes.href "/agent/workflows/develop/runs/9007199254740993")
-                                , attribute (Html.Attributes.href "/agent/snapshots/9007199254740997")
-                                , containing [ text "change repository-change/v1 #9007199254740997" ]
+                            |> Expect.all
+                                [ Query.has
+                                    [ attribute (Html.Attributes.href "/agent/snapshots/9007199254740995")
+                                    , attribute (Html.Attributes.href "/agent/snapshots/9007199254741003")
+                                    , attribute (Html.Attributes.href "/agent/workflows/develop/runs/9007199254740993")
+                                    , containing [ text "workflow run #9007199254740993" ]
+                                    , attribute (Html.Attributes.href "/agent/snapshots/9007199254740997")
+                                    , containing [ text "change repository-change/v1 #9007199254740997" ]
+                                    ]
+                                , Query.findAll
+                                    [ attribute
+                                        (Html.Attributes.href
+                                            "/agent/workflows/develop/runs/9007199254740993"
+                                        )
+                                    ]
+                                    >> Query.count (Expect.equal 1)
                                 ]
         , test "renders the ticket header, tabs and spec body" <|
             \_ ->
@@ -206,7 +277,7 @@ all =
                         renderWith "/agent-tickets/12" (Callback.AgentTicketFetched (Ok d))
                             |> Query.hasNot [ class "agent-ticket-compare-link" ]
                     )
-        , test "run history rows link to their build" <|
+        , test "step metrics still power budget text without creating build-linked run rows" <|
             \_ ->
                 withDetail sampleDetailJson
                     (\d ->
@@ -215,105 +286,328 @@ all =
                             |> Tuple.first
                             |> Application.handleCallback
                                 (Callback.AgentTicketMetricsFetched 12
-                                    (Ok
-                                        [ { ticketId = Just 12
-                                          , pipelineRunId = Just 2
-                                          , buildId = 561978
-                                          , planId = "plan-xyz"
-                                          , stepName = "implement"
-                                          , workflowName = "develop"
-                                          , workflowVersion = Just 1
-                                          , status = "ok"
-                                          , buildStatus = "succeeded"
-                                          , outcome = "no_output"
-                                          , summary = ""
-                                          , model = ""
-                                          , usage =
-                                                { inputTokens = 19
-                                                , outputTokens = 2480
-                                                , cacheReadInputTokens = 0
-                                                , cacheCreationInputTokens = 0
-                                                }
-                                          , turns = 25
-                                          , wallTimeSeconds = 77
-                                          , costUsd = 0.21
-                                          , eventCounts = Dict.empty
-                                          , createdAt = 100
-                                          }
-                                        ]
-                                    )
+                                    (Ok [ sampleMetric ])
                                 )
                             |> Tuple.first
                             |> Common.queryView
-                            |> Query.find [ class "agent-ticket-run-row" ]
-                            |> Query.has
-                                [ tag "a"
-                                , attribute (Html.Attributes.href "/builds/561978")
+                            |> Expect.all
+                                [ Query.hasNot [ class "agent-ticket-run-row" ]
+                                , Query.hasNot [ attribute (Html.Attributes.href "/builds/561978") ]
+                                , Query.has [ containing [ text "$0.21" ] ]
                                 ]
                     )
-        , test "run history shows one row per build, newest first, with per-build cost and final summary" <|
+        , test "a ticket without a durable run has no metric-derived run fallback" <|
             \_ ->
-                let
-                    metric buildId planId cost summary =
-                        { ticketId = Just 12
-                        , pipelineRunId = Just 2
-                        , buildId = buildId
-                        , planId = planId
-                        , stepName = "implement"
-                        , workflowName = "develop"
-                        , workflowVersion = Just 1
-                        , status = "ok"
-                        , buildStatus = "succeeded"
-                        , outcome = ""
-                        , summary = summary
-                        , model = ""
-                        , usage =
-                            { inputTokens = 0
-                            , outputTokens = 0
-                            , cacheReadInputTokens = 0
-                            , cacheCreationInputTokens = 0
-                            }
-                        , turns = 1
-                        , wallTimeSeconds = 1
-                        , costUsd = cost
-                        , eventCounts = Dict.empty
-                        , createdAt = 100
-                        }
-                in
-                withDetail sampleDetailJson
-                    (\d ->
+                withDetail queuedDetailJson
+                    (\detail ->
                         Common.init "/agent-tickets/12"
-                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
+                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok detail))
                             |> Tuple.first
                             |> Application.handleCallback
-                                (Callback.AgentTicketMetricsFetched 12
-                                    (Ok
-                                        -- rows arrive created_at ASC: build 100's
-                                        -- two steps, then build 200's single step
-                                        [ metric 100 "p1" 0.25 "agent self-report"
-                                        , metric 100 "p2" 0.25 "harvest verdict"
-                                        , metric 200 "p3" 1.5 "newest run verdict"
-                                        ]
-                                    )
-                                )
+                                (Callback.AgentTicketMetricsFetched 12 (Ok [ sampleMetric ]))
                             |> Tuple.first
                             |> Common.queryView
-                            |> Query.findAll [ class "agent-ticket-run-row" ]
                             |> Expect.all
-                                [ Query.count (Expect.equal 2)
-                                , Query.index 0
-                                    >> Expect.all
-                                        [ Query.has [ text "build 200" ]
-                                        , Query.has [ text "newest run verdict" ]
-                                        , Query.has [ text "$1.50" ]
-                                        ]
-                                , Query.index 1
-                                    >> Expect.all
-                                        [ Query.has [ text "build 100" ]
-                                        , Query.has [ text "harvest verdict" ]
-                                        , Query.has [ text "$0.50" ]
+                                [ Query.hasNot [ id "ticket-durable-evidence" ]
+                                , Query.hasNot [ class "agent-ticket-run-row" ]
+                                , Query.hasNot [ attribute (Html.Attributes.href "/builds/561978") ]
+                                , Query.hasNot [ attribute (Html.Attributes.href "/agent/workflows/develop/runs/9007199254740993") ]
+                                ]
+                    )
+        , test "a same durable pair keeps matching output detail while refreshing it" <|
+            \_ ->
+                withDetail sampleDetailJson
+                    (\detail ->
+                        Common.init "/agent-tickets/12"
+                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok detail))
+                            |> Tuple.first
+                            |> Application.handleCallback
+                                (Callback.AgentWorkflowRunFetched
+                                    "9007199254740993"
+                                    (Ok (runDetailFor "develop" "9007199254740993"))
+                                )
+                            |> Tuple.first
+                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok detail))
+                            |> Expect.all
+                                [ Tuple.second
+                                    >> Common.contains
+                                        (Effects.FetchAgentWorkflowRun
+                                            "develop"
+                                            "9007199254740993"
+                                        )
+                                , Tuple.first
+                                    >> Common.queryView
+                                    >> Query.has
+                                        [ attribute
+                                            (Html.Attributes.href
+                                                "/agent/snapshots/9007199254740997"
+                                            )
                                         ]
                                 ]
+                    )
+        , test "removing the durable ID clears outputs and rejects a late response" <|
+            \_ ->
+                withDetail sampleDetailJson
+                    (\detail ->
+                        let
+                            ticket =
+                                detail.ticket
+
+                            withoutRun =
+                                { detail | ticket = { ticket | workflowRunId = Nothing } }
+
+                            afterRefetch =
+                                Common.init "/agent-tickets/12"
+                                    |> Application.handleCallback (Callback.AgentTicketFetched (Ok detail))
+                                    |> Tuple.first
+                                    |> Application.handleCallback
+                                        (Callback.AgentWorkflowRunFetched
+                                            "9007199254740993"
+                                            (Ok (runDetailFor "develop" "9007199254740993"))
+                                        )
+                                    |> Tuple.first
+                                    |> Application.handleCallback (Callback.AgentTicketFetched (Ok withoutRun))
+                        in
+                        afterRefetch
+                            |> Expect.all
+                                [ Tuple.second
+                                    >> Common.notContains
+                                        (Effects.FetchAgentWorkflowRun
+                                            "develop"
+                                            "9007199254740993"
+                                        )
+                                , Tuple.first
+                                    >> Common.queryView
+                                    >> Query.hasNot
+                                        [ attribute
+                                            (Html.Attributes.href
+                                                "/agent/snapshots/9007199254740997"
+                                            )
+                                        ]
+                                , Tuple.first
+                                    >> Application.handleCallback
+                                        (Callback.AgentWorkflowRunFetched
+                                            "9007199254740993"
+                                            (Ok (runDetailFor "develop" "9007199254740993"))
+                                        )
+                                    >> Tuple.first
+                                    >> Common.queryView
+                                    >> Query.hasNot
+                                        [ attribute
+                                            (Html.Attributes.href
+                                                "/agent/snapshots/9007199254740997"
+                                            )
+                                        ]
+                                ]
+                    )
+        , test "blanking the workflow name clears outputs and rejects the old-name response" <|
+            \_ ->
+                withDetail sampleDetailJson
+                    (\detail ->
+                        let
+                            ticket =
+                                detail.ticket
+
+                            blankName =
+                                { detail | ticket = { ticket | workflowName = "  " } }
+
+                            afterRefetch =
+                                Common.init "/agent-tickets/12"
+                                    |> Application.handleCallback (Callback.AgentTicketFetched (Ok detail))
+                                    |> Tuple.first
+                                    |> Application.handleCallback
+                                        (Callback.AgentWorkflowRunFetched
+                                            "9007199254740993"
+                                            (Ok (runDetailFor "develop" "9007199254740993"))
+                                        )
+                                    |> Tuple.first
+                                    |> Application.handleCallback (Callback.AgentTicketFetched (Ok blankName))
+                        in
+                        afterRefetch
+                            |> Expect.all
+                                [ Tuple.second
+                                    >> Common.notContains
+                                        (Effects.FetchAgentWorkflowRun
+                                            "  "
+                                            "9007199254740993"
+                                        )
+                                , Tuple.first
+                                    >> Common.queryView
+                                    >> Query.hasNot
+                                        [ attribute
+                                            (Html.Attributes.href
+                                                "/agent/snapshots/9007199254740997"
+                                            )
+                                        ]
+                                , Tuple.first
+                                    >> Application.handleCallback
+                                        (Callback.AgentWorkflowRunFetched
+                                            "9007199254740993"
+                                            (Ok (runDetailFor "develop" "9007199254740993"))
+                                        )
+                                    >> Tuple.first
+                                    >> Common.queryView
+                                    >> Query.hasNot
+                                        [ attribute
+                                            (Html.Attributes.href
+                                                "/agent/snapshots/9007199254740997"
+                                            )
+                                        ]
+                                ]
+                    )
+        , test "changing the durable run ID clears old outputs and fetches only the new run" <|
+            \_ ->
+                withDetail sampleDetailJson
+                    (\detail ->
+                        let
+                            ticket =
+                                detail.ticket
+
+                            newRun =
+                                { detail
+                                    | ticket =
+                                        { ticket
+                                            | workflowRunId = Just "9007199254741005"
+                                        }
+                                }
+                        in
+                        Common.init "/agent-tickets/12"
+                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok detail))
+                            |> Tuple.first
+                            |> Application.handleCallback
+                                (Callback.AgentWorkflowRunFetched
+                                    "9007199254740993"
+                                    (Ok (runDetailFor "develop" "9007199254740993"))
+                                )
+                            |> Tuple.first
+                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok newRun))
+                            |> Expect.all
+                                [ Tuple.second
+                                    >> Common.contains
+                                        (Effects.FetchAgentWorkflowRun
+                                            "develop"
+                                            "9007199254741005"
+                                        )
+                                , Tuple.second
+                                    >> Common.notContains
+                                        (Effects.FetchAgentWorkflowRun
+                                            "develop"
+                                            "9007199254740993"
+                                        )
+                                , Tuple.first
+                                    >> Common.queryView
+                                    >> Query.hasNot
+                                        [ attribute
+                                            (Html.Attributes.href
+                                                "/agent/snapshots/9007199254740997"
+                                            )
+                                        ]
+                                ]
+                    )
+        , test "changing only the workflow name clears outputs and rejects the old-name response" <|
+            \_ ->
+                withDetail sampleDetailJson
+                    (\detail ->
+                        let
+                            ticket =
+                                detail.ticket
+
+                            renamed =
+                                { detail | ticket = { ticket | workflowName = "release" } }
+
+                            afterRefetch =
+                                Common.init "/agent-tickets/12"
+                                    |> Application.handleCallback (Callback.AgentTicketFetched (Ok detail))
+                                    |> Tuple.first
+                                    |> Application.handleCallback
+                                        (Callback.AgentWorkflowRunFetched
+                                            "9007199254740993"
+                                            (Ok (runDetailFor "develop" "9007199254740993"))
+                                        )
+                                    |> Tuple.first
+                                    |> Application.handleCallback (Callback.AgentTicketFetched (Ok renamed))
+                        in
+                        afterRefetch
+                            |> Expect.all
+                                [ Tuple.second
+                                    >> Common.contains
+                                        (Effects.FetchAgentWorkflowRun
+                                            "release"
+                                            "9007199254740993"
+                                        )
+                                , Tuple.first
+                                    >> Common.queryView
+                                    >> Query.hasNot
+                                        [ attribute
+                                            (Html.Attributes.href
+                                                "/agent/snapshots/9007199254740997"
+                                            )
+                                        ]
+                                , Tuple.first
+                                    >> Application.handleCallback
+                                        (Callback.AgentWorkflowRunFetched
+                                            "9007199254740993"
+                                            (Ok (runDetailFor "develop" "9007199254740993"))
+                                        )
+                                    >> Tuple.first
+                                    >> Common.queryView
+                                    >> Query.hasNot
+                                        [ attribute
+                                            (Html.Attributes.href
+                                                "/agent/snapshots/9007199254740997"
+                                            )
+                                        ]
+                                ]
+                    )
+        , test "rejects workflow-run details whose summary ID or name mismatches the current pair" <|
+            \_ ->
+                withDetail sampleDetailJson
+                    (\detail ->
+                        let
+                            loaded =
+                                Common.init "/agent-tickets/12"
+                                    |> Application.handleCallback (Callback.AgentTicketFetched (Ok detail))
+                                    |> Tuple.first
+
+                            mismatchedId =
+                                loaded
+                                    |> Application.handleCallback
+                                        (Callback.AgentWorkflowRunFetched
+                                            "9007199254740993"
+                                            (Ok (runDetailFor "develop" "9007199254741005"))
+                                        )
+                                    |> Tuple.first
+                                    |> Common.queryView
+
+                            mismatchedName =
+                                loaded
+                                    |> Application.handleCallback
+                                        (Callback.AgentWorkflowRunFetched
+                                            "9007199254740993"
+                                            (Ok (runDetailFor "release" "9007199254740993"))
+                                        )
+                                    |> Tuple.first
+                                    |> Common.queryView
+                        in
+                        Expect.all
+                            [ \_ ->
+                                mismatchedId
+                                    |> Query.hasNot
+                                        [ attribute
+                                            (Html.Attributes.href
+                                                "/agent/snapshots/9007199254740997"
+                                            )
+                                        ]
+                            , \_ ->
+                                mismatchedName
+                                    |> Query.hasNot
+                                        [ attribute
+                                            (Html.Attributes.href
+                                                "/agent/snapshots/9007199254740997"
+                                            )
+                                        ]
+                            ]
+                            ()
                     )
         , test "a periodic self-heal refetch does not clobber an open edit form" <|
             \_ ->

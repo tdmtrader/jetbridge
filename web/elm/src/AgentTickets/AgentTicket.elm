@@ -14,8 +14,8 @@ module AgentTickets.AgentTicket exposing
 
 Renders the ticket header, an editable title/body/budget form, the lifecycle
 action buttons (dispatch / transition), the spec & plan tabs, the task list,
-per-run cost history, and — reusing `Build.AgentReview` verbatim — the agent
-review for the ticket's most recent run build. The server state machine stays
+and — reusing `Build.AgentReview` verbatim — the agent review for the ticket's
+most recent run build. The server state machine stays
 authoritative: buttons only pick which transition to _offer_, and a rejected
 transition (409) surfaces inline and triggers a refetch.
 
@@ -63,7 +63,6 @@ type alias Model =
         { ticketId : Int
         , detail : Maybe AgentTicket.Detail
         , runMetrics : List Concourse.Agent.RunMetric
-        , runMetricsByBuild : Dict Int (List Concourse.Agent.RunMetric)
         , reviewBuildId : Maybe Int
         , durableRun : Maybe WorkflowRun.Detail
         , activeTab : Tab
@@ -95,7 +94,6 @@ init { id } =
     ( { ticketId = id
       , detail = Nothing
       , runMetrics = []
-      , runMetricsByBuild = Dict.empty
       , reviewBuildId = Nothing
       , durableRun = Nothing
       , activeTab = SpecTab
@@ -169,9 +167,38 @@ handleCallback callback ( model, effects ) =
                 -- to reach — exit the edit explicitly and say why.
                 editKilledByTerminal =
                     model.editing && isTerminal detail.ticket.state
+
+                currentDurableKey =
+                    model.detail
+                        |> Maybe.andThen (.ticket >> durableKey)
+
+                freshDurableKey =
+                    durableKey detail.ticket
+
+                durableRun =
+                    if currentDurableKey == freshDurableKey then
+                        case ( freshDurableKey, model.durableRun ) of
+                            ( Just ( workflowName, workflowRunId ), Just run ) ->
+                                if
+                                    run.summary.workflowName
+                                        == workflowName
+                                        && run.summary.id
+                                        == workflowRunId
+                                then
+                                    model.durableRun
+
+                                else
+                                    Nothing
+
+                            _ ->
+                                Nothing
+
+                    else
+                        Nothing
             in
             ( { model
                 | detail = Just detail
+                , durableRun = durableRun
                 , loaded = True
                 , loadError = False
 
@@ -201,15 +228,11 @@ handleCallback callback ( model, effects ) =
                         model.actionError
               }
             , effects
-                ++ (case ( detail.ticket.workflowRunId, detail.ticket.workflowName ) of
-                        ( Just workflowRunId, workflowName ) ->
-                            if workflowName == "" then
-                                []
+                ++ (case freshDurableKey of
+                        Just ( workflowName, workflowRunId ) ->
+                            [ FetchAgentWorkflowRun workflowName workflowRunId ]
 
-                            else
-                                [ FetchAgentWorkflowRun workflowName workflowRunId ]
-
-                        _ ->
+                        Nothing ->
                             []
                    )
             )
@@ -218,9 +241,16 @@ handleCallback callback ( model, effects ) =
             ( { model | loaded = True, loadError = True }, effects )
 
         AgentWorkflowRunFetched workflowRunId (Ok detail) ->
-            case model.detail |> Maybe.andThen (.ticket >> .workflowRunId) of
-                Just expected ->
-                    if expected == workflowRunId then
+            case model.detail |> Maybe.andThen (.ticket >> durableKey) of
+                Just ( expectedWorkflowName, expectedWorkflowRunId ) ->
+                    if
+                        expectedWorkflowRunId
+                            == workflowRunId
+                            && detail.summary.id
+                            == expectedWorkflowRunId
+                            && detail.summary.workflowName
+                            == expectedWorkflowName
+                    then
                         ( { model | durableRun = Just detail }, effects )
 
                     else
@@ -234,20 +264,18 @@ handleCallback callback ( model, effects ) =
 
         AgentTicketMetricsFetched _ (Ok fresh) ->
             let
-                -- Reference-preserved like the detail refetch above, and the
-                -- by-build grouping the run history renders from is computed
-                -- once per change instead of on every render.
-                ( metrics, metricsByBuild ) =
+                -- Reference-preserved like the detail refetch above.
+                metrics =
                     if fresh == model.runMetrics then
-                        ( model.runMetrics, model.runMetricsByBuild )
+                        model.runMetrics
 
                     else
-                        ( fresh, groupMetricsByBuild fresh )
+                        fresh
 
                 latestBuild =
                     metrics |> List.map .buildId |> List.maximum
             in
-            ( { model | runMetrics = metrics, runMetricsByBuild = metricsByBuild, reviewBuildId = latestBuild }
+            ( { model | runMetrics = metrics, reviewBuildId = latestBuild }
             , case latestBuild of
                 Just b ->
                     effects ++ [ FetchBuildAgentReviews b ]
@@ -547,7 +575,6 @@ content session model =
                         , tabsBar model
                         , Html.Lazy.lazy2 tabContent model.activeTab detail
                         , Html.Lazy.lazy taskList detail.tasks
-                        , Html.Lazy.lazy runHistory model.runMetricsByBuild
                         ]
                 in
                 Html.div []
@@ -663,32 +690,43 @@ durableEvidenceLine model ticket =
                     )
 
         runLink =
-            case ( ticket.workflowRunId, ticket.workflowName ) of
-                ( Just runId, workflowName ) ->
-                    if workflowName == "" then
-                        Nothing
-
-                    else
-                        Just
-                            (Html.a
-                                [ href
-                                    (Routes.toString
-                                        (Routes.AgentWorkflowRun
-                                            { workflowName = workflowName, id = runId }
-                                        )
+            case durableKey ticket of
+                Just ( workflowName, runId ) ->
+                    Just
+                        (Html.a
+                            [ href
+                                (Routes.toString
+                                    (Routes.AgentWorkflowRun
+                                        { workflowName = workflowName, id = runId }
                                     )
-                                , style "color" "#7a9ac0"
-                                ]
-                                [ Html.text ("workflow run #" ++ runId) ]
-                            )
+                                )
+                            , style "color" "#7a9ac0"
+                            ]
+                            [ Html.text ("workflow run #" ++ runId) ]
+                        )
 
-                _ ->
+                Nothing ->
                     Nothing
 
         outputs =
-            model.durableRun
-                |> Maybe.map .outputs
-                |> Maybe.withDefault []
+            case ( durableKey ticket, model.durableRun ) of
+                ( Just ( workflowName, workflowRunId ), Just detail ) ->
+                    if
+                        detail.summary.workflowName
+                            == workflowName
+                            && detail.summary.id
+                            == workflowRunId
+                    then
+                        detail.outputs
+
+                    else
+                        []
+
+                _ ->
+                    []
+
+        outputLinks =
+            outputs
                 |> List.map
                     (\output ->
                         Html.a
@@ -704,7 +742,7 @@ durableEvidenceLine model ticket =
                 , itemLink "captured ticket revision" ticket.workItemSnapshotId
                 , runLink
                 ]
-                ++ outputs
+                ++ outputLinks
     in
     if List.isEmpty links then
         Html.text ""
@@ -1277,97 +1315,6 @@ taskStatusColor status =
             "#9aa39b"
 
 
-{-| Per-run cost, aggregated from the step-level run metrics by build id.
-Renders from the by-build grouping computed once per metrics fetch —
-grouping or filtering here would re-scan every metric row for every run row
-on every render.
--}
-runHistory : Dict Int (List Concourse.Agent.RunMetric) -> Html Message
-runHistory metricsByBuild =
-    if Dict.isEmpty metricsByBuild then
-        Html.text ""
-
-    else
-        Html.div [ style "margin" "12px 0" ]
-            (formLabel "runs"
-                :: (metricsByBuild
-                        |> Dict.toList
-                        -- keys ascend; newest build renders first
-                        |> List.reverse
-                        |> List.map runRow
-                   )
-            )
-
-
-runRow : ( Int, List Concourse.Agent.RunMetric ) -> Html Message
-runRow ( buildId, forBuild ) =
-    let
-        cost =
-            forBuild |> List.map .costUsd |> List.sum
-
-        -- Rows arrive created_at ASC, one per step (agent, then harvest…), so
-        -- the run's effective status is the LATEST step's — except a parked
-        -- row anywhere wins, or a mid-build HITL park on a later step would
-        -- hide behind an earlier step's "ok" and render as merely Running.
-        runStatus =
-            case List.filter (\m -> m.status == "parked") forBuild of
-                parked :: _ ->
-                    parked.status
-
-                [] ->
-                    forBuild
-                        |> List.reverse
-                        |> List.head
-                        |> Maybe.map .status
-                        |> Maybe.withDefault ""
-
-        -- The joined build status is identical on every row of the build.
-        buildStatus =
-            forBuild |> List.head |> Maybe.map .buildStatus |> Maybe.withDefault ""
-
-        -- The delivered result is the LAST step's non-empty summary (the
-        -- harvest/judge verdict), not the first step's self-report.
-        summary =
-            lastNonEmptySummary forBuild
-
-        hasResult =
-            summary /= ""
-
-        -- U2/U3: the build status wins over the step status for display truth.
-        -- The per-ROW server `outcome` field is deliberately not used here:
-        -- this view collapses N step rows into ONE build-level verdict
-        -- (parked-anywhere, last step's status, last delivered summary), so
-        -- the last row's own fusion could lie — e.g. "no output" when an
-        -- earlier step delivered. The precedence rule itself is still shared:
-        -- runOutcome mirrors the server's agent/schema DeriveOutcome.
-        statusView =
-            case AgentBadge.runOutcome { buildStatus = buildStatus, runStatus = runStatus, hasResult = hasResult } of
-                Just s ->
-                    AgentBadge.view s
-
-                Nothing ->
-                    Html.span [ style "color" "#b0b0b0", style "font-size" "12px" ] [ Html.text runStatus ]
-    in
-    Html.a
-        [ class "agent-ticket-run-row"
-        , href (Routes.toString (Routes.OneOffBuild { id = buildId, highlight = Routes.HighlightNothing }))
-        , style "display" "flex"
-        , style "align-items" "center"
-        , style "gap" "10px"
-        , style "padding" "6px 0"
-        , style "border-bottom" "1px solid #2a2929"
-        , style "color" "inherit"
-        , style "text-decoration" "none"
-        ]
-        [ Html.span [ style "font-family" "monospace", style "color" "#7aa37a", style "min-width" "80px", style "flex-shrink" "0" ]
-            [ Html.text ("build " ++ String.fromInt buildId) ]
-        , Html.span [ style "flex-shrink" "0" ] [ statusView ]
-        , Html.span [ style "color" "#9aa39b", style "flex" "1", style "min-width" "0", style "font-size" "12px", style "overflow" "hidden", style "text-overflow" "ellipsis", style "white-space" "nowrap" ]
-            [ Html.text summary ]
-        , Html.span [ style "font-family" "monospace", style "color" "#b0b0b0", style "flex-shrink" "0" ] [ Html.text ("$" ++ formatUsd cost) ]
-        ]
-
-
 actionButton : String -> Message -> String -> Html Message
 actionButton kind msg label =
     let
@@ -1393,6 +1340,20 @@ actionButton kind msg label =
 
 
 -- HELPERS
+
+
+durableKey : AgentTicket.Ticket -> Maybe ( String, String )
+durableKey ticket =
+    case ticket.workflowRunId of
+        Just workflowRunId ->
+            if String.trim ticket.workflowName == "" then
+                Nothing
+
+            else
+                Just ( ticket.workflowName, workflowRunId )
+
+        Nothing ->
+            Nothing
 
 
 tabFromString : String -> Tab
@@ -1422,21 +1383,6 @@ toggleSet x set =
 
     else
         Set.insert x set
-
-
-{-| Group the step-level metric rows by build id, preserving each build's
-created\_at-ASC row order (the status/summary logic depends on it).
--}
-groupMetricsByBuild : List Concourse.Agent.RunMetric -> Dict Int (List Concourse.Agent.RunMetric)
-groupMetricsByBuild metrics =
-    metrics
-        |> List.foldl
-            (\m ->
-                Dict.update m.buildId
-                    (\rows -> Just (m :: Maybe.withDefault [] rows))
-            )
-            Dict.empty
-        |> Dict.map (\_ -> List.reverse)
 
 
 {-| The last non-empty summary of a build's metric rows (rows arrive

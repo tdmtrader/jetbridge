@@ -36,7 +36,7 @@ applyFilter q =
 
 all : Test
 all =
-    describe "dashboard is:agent filter"
+    describe "dashboard pipeline filtering"
         [ test "shows both pipelines with no filter" <|
             \_ ->
                 load
@@ -45,22 +45,31 @@ all =
                         [ Query.has [ class "card", containing [ text "agent-ticket-12" ] ]
                         , Query.has [ class "card", containing [ text "my-service" ] ]
                         ]
-        , test "is:agent keeps only agent-owned pipelines" <|
+        , test "finds an agent-ticket-prefixed pipeline as an ordinary name" <|
             \_ ->
                 load
-                    |> applyFilter "is:agent"
+                    |> applyFilter "agent-ticket-12"
                     |> Common.queryView
                     |> Expect.all
                         [ Query.has [ class "card", containing [ text "agent-ticket-12" ] ]
                         , Query.hasNot [ class "card", containing [ text "my-service" ] ]
                         ]
-        , test "-is:agent hides agent-owned pipelines" <|
+        , test "is:agent has no special ownership meaning" <|
+            \_ ->
+                load
+                    |> applyFilter "is:agent"
+                    |> Common.queryView
+                    |> Expect.all
+                        [ Query.hasNot [ class "card", containing [ text "agent-ticket-12" ] ]
+                        , Query.hasNot [ class "card", containing [ text "my-service" ] ]
+                        ]
+        , test "-is:agent does not hide pipelines by agent-ticket prefix" <|
             \_ ->
                 load
                     |> applyFilter "-is:agent"
                     |> Common.queryView
                     |> Expect.all
                         [ Query.has [ class "card", containing [ text "my-service" ] ]
-                        , Query.hasNot [ class "card", containing [ text "agent-ticket-12" ] ]
+                        , Query.has [ class "card", containing [ text "agent-ticket-12" ] ]
                         ]
         ]
