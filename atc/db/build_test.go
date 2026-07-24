@@ -121,6 +121,50 @@ var _ = Describe("Build", func() {
 			Expect(found).To(BeFalse())
 			Expect(err).To(MatchError(ContainSubstring("decode legacy plan")))
 		})
+
+		It("loads unfinished ordinary task data containing object-valued harvest", func() {
+			ordinaryTaskPlan := `{"id":"task","task":{"name":"ordinary","config":{"image_resource":{"params":{"payload":{"id":"customer-id","harvest":{"mode":"keep"}}}}}}}`
+			_, err := dbConn.Exec(
+				`UPDATE builds SET private_plan = $1, completed = false WHERE id = $2`,
+				ordinaryTaskPlan,
+				build.ID(),
+			)
+			Expect(err).NotTo(HaveOccurred())
+
+			found, err := build.Reload()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(build.PrivatePlan().Task).NotTo(BeNil())
+			Expect(build.PrivatePlan().Task.Name).To(Equal("ordinary"))
+		})
+
+		It("rejects unfinished harvest hidden in an across template", func() {
+			acrossHarvestPlan := `{"id":"across","across":{"vars":[],"substep_template":"{\"id\":\"hidden\",\"harvest\":{\"name\":\"push\"}}"}}`
+			_, err := dbConn.Exec(
+				`UPDATE builds SET private_plan = $1, completed = false WHERE id = $2`,
+				acrossHarvestPlan,
+				build.ID(),
+			)
+			Expect(err).NotTo(HaveOccurred())
+
+			found, err := build.Reload()
+			Expect(found).To(BeFalse())
+			Expect(err).To(MatchError(legacyplan.ErrActiveHarvestPlan))
+		})
+
+		It("rejects a malformed across template", func() {
+			malformedAcrossPlan := `{"id":"across","across":{"vars":[],"substep_template":"{\"id\":"}}`
+			_, err := dbConn.Exec(
+				`UPDATE builds SET private_plan = $1, completed = false WHERE id = $2`,
+				malformedAcrossPlan,
+				build.ID(),
+			)
+			Expect(err).NotTo(HaveOccurred())
+
+			found, err := build.Reload()
+			Expect(found).To(BeFalse())
+			Expect(err).To(MatchError(ContainSubstring("decode across substep template")))
+		})
 	})
 
 	It("create_time is current time", func() {
