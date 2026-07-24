@@ -20,6 +20,46 @@
 - `workflow_run_id` is the user-facing invocation identity. `pipeline_run_id` remains an execution reference; no active Fly or Elm path may derive `agent-ticket-<id>`.
 - Preserve v3 workflows, generic manual runs, retries, and experiments. This plan does not remove generic ATC MCP, snapshot APIs, `await_snapshot`, publishers, or ordinary Concourse pipelines.
 
+### Normative execution amendment
+
+Dependency reconnaissance proved that the original numeric order would create
+two non-compiling intermediate commits: Task 2 deleted legacy types before
+dispatch and database callers were removed, and Task 4 deleted the renderer
+before Task 5 deleted its caller. Preserve the final interfaces below, but
+execute the work in this buildable order:
+
+1. Task 1.
+2. Task 2A: close import/promotion admission to schema 3, but temporarily
+   retain the legacy model/parser for not-yet-removed consumers.
+3. Task 5: make ticket dispatch binder-only and remove every legacy dispatch
+   dependency.
+4. Task 3: make historical rows opaque and add migration `1773106123`.
+5. Task 4: delete the now-orphaned renderer/seeds and budget fallback.
+6. Task 2B: delete the now-unreferenced legacy model/parser/compiler.
+7. Tasks 6, 7, and 8.
+
+Task 2A must inspect the schema header before legacy compilation or asset
+resolution so valid schema 1/2 input always receives the stable typed 422.
+Use one canonical workflow schema-header admission helper that becomes the
+first step of the final v3 compiler; do not add a temporary public legacy
+compiler. Test legacy MemoryStore promotion with a package-internal test
+fixture, never a production seeding hook.
+
+Task 5 also owns all compile-time consumers of its removed interfaces:
+`agent/dispatch/handler.go`, `agent/workflowrun/experiment_binder.go`,
+`agent/api/workflowruns/handler.go` and tests, the binder's durable error
+mapping, `atc/db/agent_dispatch_test.go`, and `atc/atccmd/command.go`. Delete
+the legacy-only run-secret labeler and tests, remove `AgentRepoBaseURL` /
+`--agent-repo-base-url`, and replace the schema-2 DB dispatch fixture with a
+binder-backed schema-3 fixture. Task 4 owns every `NewTicketBudgets` caller
+when it removes the workflow-resolver argument. The no-`workflow.Config`
+completion assertion belongs to Task 2B, not Task 4.
+
+Task 7 additionally removes active `agent-ticket-<id>` pipeline-name
+derivation from Build and Dashboard Elm code/tests. CSS class names are not
+pipeline identity. Task 8 must use exact-cased Ginkgo focuses, module-correct
+commands, and the explicit Fly/Elm derivation scan specified in that task.
+
 ---
 
 ## File map
@@ -67,6 +107,14 @@ It("decodes released schema 1 and manifest-backed schema 2 records", func() {
 })
 ```
 
+Also pin the released schema-3 grammar and signature identity explicitly:
+
+- optionality and port order change `PublicSignature.Equal`;
+- descriptions and output `from` mappings do not;
+- the released no-port capability form is accepted;
+- post-release `disposition_output` is rejected;
+- post-release long-form plan `output_types: {type, optional}` is rejected.
+
 - [ ] **Step 2: Run the focused test to verify it fails**
 
 Run: `go test ./atc/db/migration/legacyworkflow && ginkgo --focus='workflow schema signature migration' ./atc/db/migration`
@@ -97,8 +145,9 @@ type PublicSignature struct {
 }
 
 type Port struct {
-    Name string
-    Type string
+    Name     string
+    Type     string
+    Optional bool
 }
 
 func DecodeManifest(files map[string]string) (Metadata, *PublicSignature, error) {
@@ -132,93 +181,78 @@ git add atc/db/migration/legacyworkflow atc/db/migration/migrations/1773106101_a
 git commit -m "refactor(migration): isolate legacy workflow decoding"
 ```
 
-### Task 2: Make workflow source, import, and promotion schema-v3-only
+### Task 2A: Close workflow import and promotion admission to schema 3
 
 **Files:**
 - Modify: `agent/workflow/definition.go`
 - Modify: `agent/workflow/parse.go`
-- Modify: `agent/workflow/compile.go`
-- Modify: `agent/workflow/parse_v3_test.go`
 - Modify: `agent/workflow/memory_store.go`
 - Modify: `agent/workflow/memory_store_test.go`
+- Create: `agent/workflow/memory_store_admission_internal_test.go`
 - Modify: `agent/api/workflows/handler.go`
 - Modify: `agent/api/workflows/handler_test.go`
-- Delete: `agent/workflow/config.go`
-- Delete: `agent/workflow/parse_test.go`
-- Delete: `agent/workflow/parse_v2_test.go`
+- Modify: `atc/db/agent_workflows_factory.go`
+- Modify: `atc/db/agent_workflows_factory_test.go`
 
 **Interfaces:**
-- Produces: `workflow.UnsupportedSchemaVersionError{Got int}` with stable text `workflow: unsupported schema_version <n>; only schema_version 3 is supported`.
-- Produces: `CompiledDefinition{SchemaVersion: 3, Name, Description, Function}`; it has no `Legacy` arm and `Definition` has no `Config` compatibility field.
-- Consumes: only v3 `workflow.yml` manifests.
+- Produces: `workflow.UnsupportedSchemaVersionError{Got int}` with stable text
+  `workflow: unsupported schema_version <n>; only schema_version 3 is supported`.
+- Produces: `workflow.RequireSchemaVersion3(source []byte) error`, the
+  schema-header-first boundary used before any legacy asset compilation.
+- Temporarily retains: `Config`, `Parse`, `Compile`, the compiled `Legacy`
+  arm, `Definition.Config`, and legacy seeds until Tasks 5, 4, and 2B.
 
-- [ ] **Step 1: Write failing runtime admission tests**
+- [ ] **Step 1: Write failing admission tests**
 
-```go
-func TestImportAndPromoteRejectNonV3WithStableError(t *testing.T) {
-    _, err := workflow.NewMemoryStore().Import("legacy", []byte("schema_version: 2\nname: legacy\nsteps: []\n"), "alice")
-    var unsupported workflow.UnsupportedSchemaVersionError
-    if !errors.As(err, &unsupported) || unsupported.Error() != "workflow: unsupported schema_version 2; only schema_version 3 is supported" {
-        t.Fatalf("err = %v", err)
-    }
-}
-```
+Assert raw and manifest imports of valid schema 1/2 return the exact typed
+error before missing legacy assets or other legacy validation can win. Assert
+malformed schema-3 YAML remains a normal invalid-definition error. Cover both
+MemoryStore and PostgreSQL imports.
 
-In `handler_test.go`, assert raw YAML and manifest imports of schema 1/2 return HTTP 422 with that exact message, schema 3 imports remain 200, and promotion of a persisted legacy metadata row returns HTTP 422 without changing the current live v3 row.
+In a package-internal MemoryStore test, seed one live v3 row and one legacy
+row directly into the private store. Assert legacy promotion returns
+`InvalidPromotionError` wrapping `UnsupportedSchemaVersionError` before the
+validator and leaves the v3 row live. Add the equivalent PostgreSQL promotion
+coverage using a direct historical-row insert.
 
-- [ ] **Step 2: Run the focused tests to verify they fail**
+At the HTTP boundary, assert raw and manifest legacy imports and legacy
+promotion return 422 with the stable message; malformed v3 remains 400.
 
-Run: `go test ./agent/workflow ./agent/api/workflows -run 'Test.*(NonV3|Unsupported|Import|Promote)' -count=1`
-
-Expected: FAIL because schema 1/2 imports and promotions currently succeed.
-
-- [ ] **Step 3: Collapse the runtime definition model to the v3 arm**
-
-Use this validation boundary in `definition.go`:
-
-```go
-type UnsupportedSchemaVersionError struct{ Got int }
-func (e UnsupportedSchemaVersionError) Error() string {
-    return fmt.Sprintf("workflow: unsupported schema_version %d; only schema_version 3 is supported", e.Got)
-}
-
-type CompiledDefinition struct {
-    SchemaVersion int             `json:"schema_version" yaml:"schema_version"`
-    Name          string          `json:"name" yaml:"name"`
-    Description   string          `json:"description,omitempty" yaml:"description,omitempty"`
-    Function      *FunctionConfig `json:"function" yaml:"function"`
-}
-
-func (d CompiledDefinition) Validate() error {
-    if d.SchemaVersion != 3 { return UnsupportedSchemaVersionError{Got: d.SchemaVersion} }
-    if d.Function == nil { return errors.New("workflow: schema_version 3 requires a function definition") }
-    return d.Function.Validate()
-}
-```
-
-Make `ParseCompiled` parse only v3 and return the typed error before any v1/v2
-parser is selected. Make `CompileDefinition` always compile v3 function assets
-and call `ValidateFunction`; delete `Compile`, `compileLegacy`, `Config`, legacy
-`Step`, budget, sidecar, checkpoint, and legacy source-format branches. Retain
-the schema-v3 manifest asset resolver for prompts, schemas, and skills. Make
-`MemoryStore.ImportManifest` populate only `Compiled`, and make `Promote`
-require the authoritative promotion validator for every stored definition.
-
-- [ ] **Step 4: Map the stable validation error at the HTTP boundary**
-
-In both manifest and raw import error branches, map `workflow.UnsupportedSchemaVersionError` to `http.StatusUnprocessableEntity`; preserve 400 for malformed v3. In `Promote`, make the store wrap a legacy target in `workflow.InvalidPromotionError{Err: workflow.UnsupportedSchemaVersionError{Got: target.SchemaVersion}}`, which the existing handler maps to 422.
-
-- [ ] **Step 5: Run the focused runtime suites**
-
-Run: `go test ./agent/workflow ./agent/api/workflows -count=1`
-
-Expected: PASS; all accepted definition fixtures declare `schema_version: 3`, and imports/promotions return the stable unsupported-schema error for 1/2.
-
-- [ ] **Step 6: Commit the runtime cutover**
+- [ ] **Step 2: Run the focused tests and verify red**
 
 ```bash
-git add agent/workflow agent/api/workflows
-git commit -m "feat(workflow): admit only schema v3 definitions"
+go test ./agent/workflow ./agent/api/workflows -run 'Test.*(NonV3|Unsupported|Import|Promote)' -count=1
+go run github.com/onsi/ginkgo/v2/ginkgo --focus='AgentWorkflowsFactory' ./atc/db
+```
+
+Expected: legacy import/promotion still succeeds or produces a non-stable
+legacy compiler error.
+
+- [ ] **Step 3: Implement schema-header-first rejection**
+
+Decode only `schema_version` first. Return the typed error for any valid
+non-3 header before `CompileDefinition`, legacy asset resolution, name
+validation, persistence, validator invocation, or live-state mutation.
+Memory and PostgreSQL imports use this boundary. Both promotions inspect
+persisted `SchemaVersion` and reject non-3 immediately. Map the typed error
+before the generic invalid-definition 400 branch in the handler.
+
+Do not delete or narrow the legacy runtime model in this task, and do not add
+a temporary legacy compiler.
+
+- [ ] **Step 4: Run complete admission suites**
+
+```bash
+go test ./agent/workflow ./agent/api/workflows -count=1
+go run github.com/onsi/ginkgo/v2/ginkgo --focus='AgentWorkflowsFactory' ./atc/db
+git diff --check
+```
+
+- [ ] **Step 5: Commit the admission cutover**
+
+```bash
+git add agent/workflow/definition.go agent/workflow/parse.go agent/workflow/memory_store.go agent/workflow/memory_store_test.go agent/workflow/memory_store_admission_internal_test.go agent/api/workflows atc/db/agent_workflows_factory.go atc/db/agent_workflows_factory_test.go
+git commit -m "feat(workflow): reject non-v3 admission"
 ```
 
 ### Task 3: Keep historical workflow rows opaque and enforce v3 live rows in PostgreSQL
@@ -230,10 +264,14 @@ git commit -m "feat(workflow): admit only schema v3 definitions"
 - Modify: `atc/db/agent_workflows_factory.go`
 - Modify: `atc/db/agent_workflows_factory_test.go`
 - Modify: `atc/db/migration/legacy_upgrade_test.go`
+- Modify: `docs/migration/migrate-preflight.sh`
+- Modify: `docs/migration/migrate-preflight_test.sh`
 
 **Interfaces:**
 - Produces: `agent_workflow_definitions_live_schema_v3_check CHECK (NOT live OR schema_version = 3)`.
-- Produces: `Get`/`Versions` responses for historical rows containing persisted metadata/source bytes but a zero `CompiledDefinition`; they never call `workflow.CompileDefinition`.
+- Produces: `Get`/`Latest` responses for historical rows containing persisted
+  metadata and exact `RawYAML`, a nil `SourceManifest`, and a zero
+  `CompiledDefinition`; `List`/`Versions` remain metadata-only.
 - Consumes: `1773106101` metadata columns and the immutable historical decoder from Task 1.
 
 - [ ] **Step 1: Write failing DB and migration specs**
@@ -256,7 +294,10 @@ Add factory tests proving `Get("legacy", 1)` returns the historical metadata/raw
 
 - [ ] **Step 2: Run the focused specs to verify they fail**
 
-Run: `ginkgo --focus='v3-only workflow|legacy upgrade' ./atc/db/migration && ginkgo --focus='AgentWorkflowsFactory' ./atc/db`
+```bash
+go run github.com/onsi/ginkgo/v2/ginkgo --focus='v3-only workflow|Legacy Database Upgrade' ./atc/db/migration
+go run github.com/onsi/ginkgo/v2/ginkgo --focus='AgentWorkflowsFactory' ./atc/db
+```
 
 Expected: FAIL because the forward migration and opaque-row behavior do not exist.
 
@@ -281,26 +322,44 @@ ALTER TABLE agent_workflow_definitions
 It must not set `live = true`. After the authority plan advances the branch
 head to `1773106122`, advance both `jetbridgeHeadMigration` and
 `JETBRIDGE_VERSION` to `1773106123`; extend the legacy-to-head assertions to
-verify the constraint and demoted rows.
+verify the constraint and demoted rows. In
+`docs/migration/migrate-preflight_test.sh`, change the simulated newer
+migration from `1773106123` to `1773106124` while keeping rolled-back HEAD at
+`1773106123 down / 1773106122`.
 
 - [ ] **Step 4: Stop DB reads from compiling legacy source**
 
-In `agent_workflows_factory.go`, branch on persisted `def.SchemaVersion` before `compileStoredWorkflowSource`: schema 3 follows the existing compile/metadata consistency path; schema 1/2 returns the row as opaque history and never touches `definition` or `source_manifest`. `Promote` must reject non-3 immediately after scanning metadata, before `compileStoredWorkflowSource`; `ImportManifest` can only receive v3 after Task 2.
+In `agent_workflows_factory.go`, branch on persisted `def.SchemaVersion`
+before `compileStoredWorkflowSource`: schema 3 follows the existing
+compile/metadata consistency path; schema 1/2 returns exact raw YAML and
+persisted metadata as opaque history without decoding YAML or
+`source_manifest`. Use malformed legacy YAML and valid wrong-shape JSONB
+(`[]::jsonb`) in the test so success proves neither decoder ran. `Promote`
+must reject non-3 immediately after scanning metadata, before
+`compileStoredWorkflowSource`; `ImportManifest` can only receive v3 after
+Task 2A.
 
 - [ ] **Step 5: Run focused migration and DB tests**
 
-Run: `ginkgo --focus='workflow schema signature migration|v3-only workflow|legacy upgrade' ./atc/db/migration && ginkgo --focus='AgentWorkflowsFactory' ./atc/db`
+```bash
+go run github.com/onsi/ginkgo/v2/ginkgo --focus='workflow schema signature migration|v3-only workflow|Legacy Database Upgrade' ./atc/db/migration
+go run github.com/onsi/ginkgo/v2/ginkgo --focus='AgentWorkflowsFactory' ./atc/db
+bash docs/migration/migrate-preflight_test.sh
+git diff --check
+```
 
 Expected: PASS; old databases upgrade, no legacy row remains live, and runtime DB reads never parse v1/v2 source.
 
 - [ ] **Step 6: Commit database enforcement**
 
 ```bash
-git add atc/db/migration atc/db/agent_workflows_factory.go atc/db/agent_workflows_factory_test.go
+git add atc/db/migration atc/db/agent_workflows_factory.go atc/db/agent_workflows_factory_test.go docs/migration/migrate-preflight.sh docs/migration/migrate-preflight_test.sh
 git commit -m "feat(db): enforce schema v3 workflow liveness"
 ```
 
 ### Task 4: Delete the legacy ticket renderer, legacy seeds, and workflow-budget fallback
+
+Execute after Task 5, when `RenderLegacyTicket` has no production caller.
 
 **Files:**
 - Delete: `agent/dispatch/render.go`
@@ -313,6 +372,8 @@ git commit -m "feat(db): enforce schema v3 workflow liveness"
 - Modify: `agent/workflow/seed_test.go`
 - Modify: `agent/dispatch/budgets.go`
 - Modify: `agent/dispatch/budgets_test.go`
+- Modify: `atc/atccmd/command.go`
+- Modify: `atc/db/agent_dispatch_test.go`
 
 **Interfaces:**
 - Produces: seed validation over only `*-v3/workflow.yml` manifests.
@@ -322,7 +383,7 @@ git commit -m "feat(db): enforce schema v3 workflow liveness"
 
 ```go
 func TestTicketBudgetDoesNotReadLegacyWorkflowDefaults(t *testing.T) {
-    amount, found, err := NewTicketBudgets(ticketGetter{ticket: ticketWithoutBudget}, workflowResolverThatPanics{}).BudgetUSD(42)
+    amount, found, err := NewTicketBudgets(ticketGetter{ticket: ticketWithoutBudget}).BudgetUSD(42)
     if err != nil || found || amount != 0 { t.Fatalf("amount=%v found=%v err=%v", amount, found, err) }
 }
 ```
@@ -348,15 +409,105 @@ delete generic v3 `await_snapshot` handling.
 
 - [ ] **Step 4: Run focused package tests**
 
-Run: `go test ./agent/dispatch ./agent/workflow -count=1`
+```bash
+go test ./agent/dispatch ./agent/workflow ./atc/atccmd -count=1
+go run github.com/onsi/ginkgo/v2/ginkgo --focus='dispatching a ticket end-to-end|the dispatcher loop over real stores' ./atc/db
+```
 
-Expected: PASS; no production package contains `RenderLegacyTicket`, `workflow.Config`, or a legacy seed name.
+Expected: PASS; no production package contains `RenderLegacyTicket`, a legacy
+seed name, or the workflow-budget fallback. The `workflow.Config` absence
+assertion runs in Task 2B.
 
 - [ ] **Step 5: Commit renderer and seed removal**
 
 ```bash
-git add agent/dispatch agent/workflow/seeds agent/workflow/seed_test.go
+git add agent/dispatch agent/workflow/seeds agent/workflow/seed_test.go atc/atccmd/command.go atc/db/agent_dispatch_test.go
 git commit -m "refactor(agent): remove legacy ticket workflow rendering"
+```
+
+### Task 2B: Delete the legacy runtime workflow model
+
+Execute only after Tasks 5, 3, and 4.
+
+**Files:**
+- Modify: `agent/workflow/definition.go`
+- Modify: `agent/workflow/parse.go`
+- Modify: `agent/workflow/compile.go`
+- Modify: `agent/workflow/parse_v3_test.go`
+- Modify: `agent/workflow/compile_test.go`
+- Modify: `agent/workflow/typecheck_test.go`
+- Modify or delete: `agent/workflow/validate_test.go`
+- Modify: `agent/workflow/memory_store.go`
+- Modify: `agent/workflow/memory_store_test.go`
+- Modify: `agent/workflow/seed_test.go`
+- Delete: `agent/workflow/config.go`
+- Delete: `agent/workflow/parse_test.go`
+- Delete: `agent/workflow/parse_v2_test.go`
+- Modify: `atc/db/agent_workflows_factory.go`
+- Modify: `atc/db/agent_workflows_factory_test.go`
+- Modify: `fly/commands/agent_workflows.go`
+- Create: `fly/commands/agent_workflows_test.go`
+- Modify: `fly/integration/agent_workflows_test.go`
+- Modify any additional compile-time reference returned by the required exact
+  scan; do not retain a compatibility alias.
+
+**Interfaces:**
+- Produces:
+  `CompiledDefinition{SchemaVersion: 3, Name, Description, Function}` with no
+  `Legacy` arm.
+- Produces: `Definition` with no `Config` compatibility field.
+- Consumes: only schema-3 `workflow.yml` manifests.
+- Removes: `Config`, legacy `Step`, `Parse`, `Compile`, `compileLegacy`, and
+  every legacy source-format branch/test fixture.
+
+- [ ] **Step 1: Write/convert the v3-only model tests**
+
+Convert accepted fixtures to schema 3. Assert `RequireSchemaVersion3` is the
+first `CompileDefinition` boundary and returns the stable typed error for
+schema 1/2. Remove tests whose only purpose is legacy runtime parsing, while
+retaining v3 asset limits, type checking, rendering, signature, and source
+validation coverage.
+
+Update Fly file and directory import tests to use only the v3 compiler and
+prove local v1/v2 input cannot be accepted. Historical migration fixtures stay
+legacy and remain owned by Task 1's decoder.
+
+- [ ] **Step 2: Run focused tests and verify red**
+
+```bash
+go test ./agent/workflow ./agent/api/workflows ./fly/commands -count=1
+go run github.com/onsi/ginkgo/v2/ginkgo --focus='AgentWorkflowsFactory' ./atc/db
+```
+
+Expected: legacy model arms and entry points remain referenced.
+
+- [ ] **Step 3: Collapse the model and compiler**
+
+Make `ParseCompiled` and `CompileDefinition` schema-v3-only. Delete the legacy
+types, compiler, parser branches, compatibility field population, and
+legacy-only tests. Preserve schema-v3 prompt/schema/skill resolution,
+function extraction, type checking, hermetic execution, and public signature
+behavior. PostgreSQL historical reads remain opaque per Task 3 and must not
+gain a decoder.
+
+- [ ] **Step 4: Run complete packages and exact absence scans**
+
+```bash
+go test ./agent/workflow ./agent/api/workflows ./agent/dispatch ./agent/workflowrun ./fly/commands -count=1
+go run github.com/onsi/ginkgo/v2/ginkgo --focus='AgentWorkflowsFactory' ./atc/db
+make test-fly-integration
+! rg -n 'workflow\.Config|Legacy\s+\*Config|compiled\.Legacy|definition\.Legacy|Compiled\.Legacy|Legacy:' agent/workflow atc/db/agent_workflows_factory.go fly/commands/agent_workflows.go
+! rg -n 'func Parse\(|func Compile\(|compileLegacy' agent/workflow
+git diff --check
+```
+
+Expected: PASS and no runtime legacy model/parser/compiler match.
+
+- [ ] **Step 5: Commit structural deletion**
+
+```bash
+git add agent/workflow agent/api/workflows atc/db/agent_workflows_factory.go atc/db/agent_workflows_factory_test.go fly/commands/agent_workflows.go fly/commands/agent_workflows_test.go fly/integration/agent_workflows_test.go
+git commit -m "refactor(workflow): remove legacy runtime model"
 ```
 
 ### Task 5: Make ticket dispatch a schema-v3 binder adapter only
@@ -368,12 +519,22 @@ git commit -m "refactor(agent): remove legacy ticket workflow rendering"
 - Modify: `agent/workflowrun/types.go`
 - Modify: `agent/workflowrun/binder.go`
 - Modify: `agent/workflowrun/binder_test.go`
+- Modify: `agent/workflowrun/experiment_binder.go`
+- Modify: `agent/api/workflowruns/handler.go`
+- Modify: `agent/api/workflowruns/handler_test.go`
+- Modify: `agent/dispatch/handler.go`
+- Modify: `agent/dispatch/handler_test.go`
+- Delete: `agent/dispatch/labels.go`
+- Delete: `agent/dispatch/labels_test.go`
+- Modify: `atc/db/agent_dispatch_test.go`
 - Modify: `atc/atccmd/command.go`
 
 **Interfaces:**
 - Produces: `dispatch.ErrWorkflowNotV3`, returned before reservation for selected schema 1/2 metadata.
 - Produces: `Result{RunID: pipelineRunID, WorkflowRunID: &durableID, PipelineName: templateName}` only from `workflowrun.BindAndCreate`.
 - Removes: `workflowrun.ErrLegacyDefinition`, `Deps.Templates`, `Deps.Runs`, `RepoBaseURL`, and every ticket-specific `agent-ticket-<id>` create path.
+- Removes: `RunSecretLabeler`, `SecretLabels`, `AgentRepoBaseURL`, and the
+  public `--agent-repo-base-url` flag.
 
 - [ ] **Step 1: Write failing binder-only dispatch tests**
 
@@ -406,16 +567,30 @@ return dispatchV3(ctx, deps, ticket, definition, dispatchedBy)
 
 Keep `dispatchV3`'s reservation → `CaptureRevision` → exact repository binding → `BindAndCreate` → `RecordDispatchRun` order and orphan cancellation. Remove all legacy freeze/spec/plan/render/template/CreateRun/attachRunSecret code and its dependencies. In the binder, delete `ErrLegacyDefinition` and replace the unreachable schema mismatch with `fmt.Errorf("%w: definition schema_version is not 3", ErrPlatformFailure)`. Update both dispatcher and API construction in `atc/atccmd/command.go` to pass only the binder adapter dependencies; preserve the generic workflow-run secret preparer wired into the binder.
 
+Delete `RunSecretLabeler`, `SecretLabels`, `labels.go`, and `labels_test.go`;
+model-secret reaping uses the workflow-run label and does not need the retired
+ticket patch. Delete `AgentRepoBaseURL` / `--agent-repo-base-url` and both
+runtime reads. Replace the DB schema-2/template-pipeline dispatch fixture with
+a binder-backed schema-3 fixture. Remove `ErrLegacyDefinition` handling from
+the experiment adapter, workflow-run HTTP handler, and durable error mapper.
+
 - [ ] **Step 4: Map the new dispatch error and run tests**
 
-Map `ErrWorkflowNotV3` to HTTP 422 in `agent/dispatch/handler.go`/tests. Run: `go test ./agent/dispatch ./agent/workflowrun ./atc/atccmd -run 'Test.*(Dispatch|WorkflowRun|Agent)' -count=1`
+Map `ErrWorkflowNotV3` to HTTP 422 in `agent/dispatch/handler.go`/tests.
+
+```bash
+go test ./agent/dispatch ./agent/workflowrun ./agent/api/workflowruns ./atc/atccmd -count=1
+go run github.com/onsi/ginkgo/v2/ginkgo --focus='dispatching a ticket end-to-end|the dispatcher loop over real stores' ./atc/db
+! rg -n 'ErrLegacyDefinition|RunSecretLabeler|SecretLabels|AgentRepoBaseURL|agent-repo-base-url' agent atc fly go-concourse --glob '!**/*_test.go'
+git diff --check
+```
 
 Expected: PASS; ticket dispatch has one v3 path and no ticket-specific template save/run creation.
 
 - [ ] **Step 5: Commit binder-only ticket dispatch**
 
 ```bash
-git add agent/dispatch agent/workflowrun atc/atccmd/command.go
+git add agent/dispatch agent/workflowrun agent/api/workflowruns atc/db/agent_dispatch_test.go atc/atccmd/command.go
 git commit -m "feat(dispatch): bind tickets only through workflow runs"
 ```
 
@@ -475,6 +650,10 @@ git commit -m "feat(fly): follow ticket workflow runs by durable id"
 - Modify: `web/elm/tests/AgentTicketPageTests.elm`
 - Modify: `web/elm/tests/AgentTicketTests.elm`
 - Modify: `web/elm/tests/WorkflowRunDecoderTests.elm`
+- Modify: `web/elm/src/Build/Build.elm`
+- Modify: `web/elm/src/Dashboard/Filter.elm`
+- Modify: `web/elm/tests/BuildTicketBarTests.elm`
+- Modify: `web/elm/tests/DashboardAgentFilterTests.elm`
 
 **Interfaces:**
 - Consumes: `workflow_run_id`, `work_item_snapshot_id`, `repository_snapshot_id`, and `Concourse.WorkflowRun.Detail`.
@@ -492,9 +671,22 @@ test "ticket durable evidence links the workflow run and exact snapshots" <|
 
 Add a decoder test for string durable IDs above JavaScript's safe integer range, and page tests proving a ticket with `workflow_run_id` fetches `FetchAgentWorkflowRun workflowName runId`; a ticket without one renders no build/pipeline fallback. Assert the ticket detail DOM has no `agent-ticket-run-row`/one-off-build route.
 
+Add Build/Dashboard tests proving ordinary pipeline names are not interpreted
+through an `agent-ticket-<id>` convention and no ticket bar/filter decision is
+derived from a pipeline-name prefix.
+
 - [ ] **Step 2: Run Elm tests to verify they fail**
 
-Run: `cd web/elm && npx elm-test tests/AgentTicketPageTests.elm tests/AgentTicketTests.elm tests/WorkflowRunDecoderTests.elm`
+Run:
+
+```bash
+cd web/elm && npx elm-test \
+  tests/AgentTicketPageTests.elm \
+  tests/AgentTicketTests.elm \
+  tests/WorkflowRunDecoderTests.elm \
+  tests/BuildTicketBarTests.elm \
+  tests/DashboardAgentFilterTests.elm
+```
 
 Expected: FAIL because the legacy metric-row build link remains reachable.
 
@@ -502,16 +694,29 @@ Expected: FAIL because the legacy metric-row build link remains reachable.
 
 Retain `durableEvidenceLine` as the single run identity line. Delete `runRow` rendering and any ticket page branch that links a build derived from ticket metrics. Keep snapshot and workflow-run fetch effects already keyed by `workflowRunId`; make decoders accept only the string durable-id representation for `workflow_run_id`, `work_item_snapshot_id`, and `repository_snapshot_id`.
 
+Delete the pipeline-name-derived ticket bar in `Build.elm` and the
+`String.startsWith "agent-ticket-"` dashboard classification in `Filter.elm`.
+Retain unrelated ticket-page CSS class names.
+
 - [ ] **Step 4: Run Elm tests**
 
-Run: `cd web/elm && npx elm-test tests/AgentTicketPageTests.elm tests/AgentTicketTests.elm tests/WorkflowRunDecoderTests.elm`
+Run:
+
+```bash
+cd web/elm && npx elm-test \
+  tests/AgentTicketPageTests.elm \
+  tests/AgentTicketTests.elm \
+  tests/WorkflowRunDecoderTests.elm \
+  tests/BuildTicketBarTests.elm \
+  tests/DashboardAgentFilterTests.elm
+```
 
 Expected: PASS; the ticket page is a projection shell over canonical workflow-run/snapshot data.
 
 - [ ] **Step 5: Commit the UI cutover**
 
 ```bash
-git add web/elm/src/AgentTickets/AgentTicket.elm web/elm/src/Concourse/AgentTicket.elm web/elm/tests/AgentTicketPageTests.elm web/elm/tests/AgentTicketTests.elm web/elm/tests/WorkflowRunDecoderTests.elm
+git add web/elm/src/AgentTickets/AgentTicket.elm web/elm/src/Concourse/AgentTicket.elm web/elm/src/Build/Build.elm web/elm/src/Dashboard/Filter.elm web/elm/tests/AgentTicketPageTests.elm web/elm/tests/AgentTicketTests.elm web/elm/tests/WorkflowRunDecoderTests.elm web/elm/tests/BuildTicketBarTests.elm web/elm/tests/DashboardAgentFilterTests.elm
 git commit -m "feat(web): link tickets to durable workflow runs"
 ```
 
@@ -544,15 +749,18 @@ Expected: FAIL until the preceding tasks are complete.
 
 - [ ] **Step 3: Run the complete required verification sequence**
 
-Run these commands in order (first run `pg_isready`; do not start DB-backed suites if PostgreSQL is unavailable):
+Run these commands in order. The focused DB suites use the repository's
+disposable PostgreSQL runner; verify `initdb`, `postgres`, and `psql` are
+available and use the module-pinned Ginkgo:
 
 ```bash
-pg_isready
+command -v initdb postgres psql
 go test ./agent/workflow ./agent/api/workflows ./agent/dispatch ./agent/workflowrun -count=1
-ginkgo --focus='workflow schema signature migration|v3-only workflow|legacy upgrade|AgentWorkflowsFactory|agent workflow run' ./atc/db ./atc/db/migration
+go run github.com/onsi/ginkgo/v2/ginkgo --focus='workflow schema signature migration|v3-only workflow|Legacy Database Upgrade' ./atc/db/migration
+go run github.com/onsi/ginkgo/v2/ginkgo --focus='AgentWorkflowsFactory|agent workflow run' ./atc/db
 make test-ci-agent
 make test-fly-integration
-cd web/elm && npx elm-test
+(cd web/elm && npx elm-test)
 make test-unit
 make test-integration
 ```
@@ -562,11 +770,15 @@ Expected: every command exits 0. If a generated fake changes with an interface d
 - [ ] **Step 4: Run invariant scans and record their zero-result output**
 
 ```bash
-rg -n 'RenderLegacyTicket|workflow\.Config|ErrLegacyDefinition|schema_version: [12]' agent atc fly web go-concourse --glob '!**/*_test.go' --glob '!atc/db/migration/**'
-rg -n 'github.com/concourse/concourse/agent/workflow' atc/db/migration/legacyworkflow atc/db/migration/migrations/1773106101_add_workflow_schema_signature.up.go
+! rg -n 'RenderLegacyTicket|workflow\.Config|ErrLegacyDefinition|schema_version: [12]' agent atc fly web go-concourse --glob '!**/*_test.go' --glob '!atc/db/migration/**'
+! rg -n 'github.com/concourse/concourse/agent/workflow' atc/db/migration/legacyworkflow atc/db/migration/migrations/1773106101_add_workflow_schema_signature.up.go
+! rg -n 'AgentRepoBaseURL|agent-repo-base-url' agent atc fly web go-concourse --glob '!**/*_test.go'
+! rg -n 'ticketPipelineName|String\.startsWith "agent-ticket-"|String\.dropLeft .*agent-ticket-' fly/commands web/elm/src
 ```
 
-Expected: the first scan has no production matches (historical migration fixtures may retain literal v1/v2 YAML only in migration tests); the second has no matches.
+Expected: all four scans have no matches. Historical migration fixtures may
+retain literal v1/v2 YAML only in migration tests; CSS class names do not
+match the structural derivation scan.
 
 - [ ] **Step 5: Commit verification evidence**
 
