@@ -1,0 +1,21 @@
+package deploy
+
+import (
+	"os"
+	"strings"
+	"testing"
+)
+
+func TestAgentRunnerDockerfile(t *testing.T) {
+	dockerfile, err := os.ReadFile("agent-runner/Dockerfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if strings.Contains(string(dockerfile), "harvest-runner") {
+		t.Fatal("agent runner image still packages harvest-runner")
+	}
+	if !strings.Contains(string(dockerfile), "go build -o /out/agent-runner ./cmd/agent-runner") {
+		t.Fatal("agent runner image no longer builds agent-runner")
+	}
+}

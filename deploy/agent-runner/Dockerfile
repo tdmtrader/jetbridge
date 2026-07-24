@@ -2,7 +2,6 @@ FROM golang:1.25-bookworm AS build
 WORKDIR /src
 COPY . .
 RUN CGO_ENABLED=0 go build -o /out/agent-runner ./cmd/agent-runner
-RUN CGO_ENABLED=0 go build -o /out/harvest-runner ./cmd/harvest-runner
 
 FROM node:20-bookworm-slim
 # Pin to the claude-code version the live theborg review job currently runs
@@ -11,9 +10,6 @@ RUN npm install -g @anthropic-ai/claude-code@2.0.1 \
     && apt-get update && apt-get install -y --no-install-recommends git ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/agent-runner /usr/local/bin/agent-runner
-# harvest-runner shares the image (§2.8.1: the harvest step's main
-# container is the agent-step image; git already present above).
-COPY --from=build /out/harvest-runner /usr/local/bin/harvest-runner
 COPY --from=build /usr/local/go /usr/local/go
 # Root, like every other step image: jetbridge hostPath step volumes are
 # kubelet-created root:root 0755 and fsGroup is ignored for hostPath, so a
