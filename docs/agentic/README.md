@@ -172,6 +172,39 @@ successful value from a non-retried typed node.
 All snapshot, workflow-run, experiment, and experiment-cell IDs are quoted
 decimal strings in JSON. Clients must not decode them as JavaScript numbers.
 
+## V3-only admission and durable ticket identity
+
+Only schema-v3 workflow manifests can be imported, promoted, or executed.
+Manifest validation (paths, UTF-8, file sizes, aggregate size, and required
+shape) runs before the schema gate and compiler.
+
+Historical schema-1/schema-2 records are inert metadata with no compiler, renderer, or runtime behavior.
+
+They may still be listed or read for audit identity, but have no source
+manifest and cannot become live.
+
+Manual, ticket, retry, and experiment invocations all use the generic
+workflow-run binder. Ticket dispatch first captures the exact ticket revision
+as one immutable `work-item/v1` snapshot and uses the ticket's exact
+`repository/v1` snapshot. It binds those two snapshots before recording the
+durable `workflow_run_id`. That ID remains the invocation identity after
+associated build, pipeline-run, instance-pipeline, or template-pipeline rows
+are deleted; `pipeline_run_id` is only an execution diagnostic.
+
+Operators inspect durable runs with `fly agent workflows show-run`; a
+target-qualified example is:
+
+```sh
+fly -t TARGET agent workflows show-run WORKFLOW WORKFLOW-RUN-ID
+```
+
+`fly agent tickets watch` delegates to the same durable run surface. This
+cutover does not add or promise a workflow-run archival or export surface.
+The compatibility renderer, root legacy seed manifests, workflow-resolver
+ticket-budget fallback, and Dashboard's special agent-pipeline filter have
+been removed. The five schema-v3 definitions listed below are the active
+examples.
+
 ## Optional output presence
 
 Jetbridge creates every declared task and agent output mount before execution,
@@ -193,9 +226,8 @@ content.
 plan attempt, question snapshot, and answer snapshot. Canceling a workflow run
 also terminates its unresolved waits. `publish_snapshot` is the only workflow
 primitive that performs an outbound side effect; transformations and
-projections never publish implicitly. Schema-v3 admission rejects legacy
-`put`, `harvest`, and `set_pipeline` nodes; legacy schema versions retain their
-existing behavior.
+projections never publish implicitly. Schema-v3 admission rejects `put`,
+`harvest`, and `set_pipeline` nodes.
 
 Branch, pull-request, work-item comment, and work-item state publication use a
 provider adapter supplied by the deployment. Without that adapter the engine
@@ -477,9 +509,7 @@ sum of the exact durable executable's agent `budget_slice_usd` values before
 any template, secret, build, or agent side effect. With a non-zero deployment
 daily cap, every ordinary agent leaf therefore needs a finite positive slice;
 `attempts` and `across` are rejected because their multiplicity is not bounded
-by this static reservation. The compatibility renderer also includes a
-legacy `harvest` judge's positive hard cap in the same bound. Active
-reservations carry across midnight, and a
+by this static reservation. Active reservations carry across midnight, and a
 terminal run's unused amount remains liable through its completion day so
 delayed ledger ingestion cannot briefly reopen the cap. Experiment cells own
 their combined candidate/evaluator reservation and do not reserve their child

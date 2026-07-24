@@ -2,19 +2,20 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use
 > `superpowers:subagent-driven-development` (recommended) or
-> `superpowers:executing-plans` to implement this plan task-by-task. Task 1 is
-> already complete and approved; all later tasks remain pending until their
-> dependency and independent-review gates pass.
+> `superpowers:executing-plans` to implement this plan task-by-task. Tasks 1,
+> 2A, 5, 3, 4, 2B, 6, and 7 are complete and independently approved. Task 8
+> starts from the exact approved Task 7 head recorded below.
 
 **Goal:** Make schema version 3 the only runtime workflow format, make tickets
 a binder-only `work-item/v1` adapter, and expose durable workflow-run identity
 in Fly and Elm.
 
-**Architecture:** Migration `1773106101` now owns an immutable, release-faithful
-legacy decoder. The remaining work closes schema-v3 admission, removes legacy
-dispatch before making historical rows opaque, deletes renderer/budget and
-runtime-model compatibility surfaces, moves Fly and Elm to durable
-workflow-run identity, and finishes with one four-path vertical-slice proof.
+**Architecture:** Migration `1773106101` owns an immutable, release-faithful
+legacy decoder. The completed cutover closes schema-v3 admission, removes
+legacy dispatch, makes historical rows opaque, deletes renderer/budget and
+runtime-model compatibility surfaces, and moves Fly and Elm to durable
+workflow-run identity. Task 8 supplies the final four-path vertical-slice
+proof and active documentation.
 
 **Tech stack:** Go, PostgreSQL migrations, Ginkgo/Gomega, Fly,
 go-concourse, Elm, shell audits, and Git.
@@ -31,10 +32,24 @@ The complete buildable order is:
 Task 1 -> Task 2A -> Task 5 -> Task 3 -> Task 4 -> Task 2B -> Task 6 -> Task 7 -> Task 8
 ```
 
-Task 1 is approved at
-`ea236ad28ee99ac49e5194c9224f437aa616c4fe`. Every pending task starts only
-from the exact independently approved predecessor SHA required by its section,
-with a clean tracked worktree and a recorded ancestry gate.
+The complete approved predecessor ledger is:
+
+| Boundary | Approved SHA | Approval manifest | Bound report / SHA-256 | Bound PASS review / SHA-256 | Reviewer |
+|---|---|---|---|---|---|
+| Task 1 | `ea236ad28ee99ac49e5194c9224f437aa616c4fe` | `.superpowers/sdd/v3-cutover-task-1-approval-manifest.sh` | `v3-cutover-task-1-report.md` / `519faf8bb705e86450c70a468914278639af53dcc500b8a104a12225433827f7` | `v3-cutover-task-1-approved-review.md` / `9fc2c52b23b372483b6cfef7f4f1520586fcfe3aad2d9d8f1c922a7367010019` | Codex independent prerequisite reviewer |
+| Task 2A | `6e7f68dfd3e7303946dc34776792f49c9526eb9d` | `.superpowers/sdd/v3-cutover-task-2a-approval-manifest.sh` | `v3-cutover-task-2a-report.md` / `afc1fd16ba589584673d66e4b0cc2d6aa5e47c99113e9410c19864732c86a204` | `v3-cutover-task-2a-approved-review.md` / `800869ee43c3c7c9d1f6187ee61b581e0b10bdccbdd3cb0d564ed313f9edea64` | Codex independent Task 2A approving reviewer |
+| Task 5 | `da8a08b11dd27168c404e09a5577b5f03d706d2d` | `.superpowers/sdd/v3-cutover-task-5-approval-manifest.sh` | `v3-cutover-task-5-report.md` / `79239dac6f297277b011423412be7f749d8b82bf7f5775df775311ff664ad160` | `v3-cutover-task-5-approved-review.md` / `b835580d8241ead44c28cd507b9c1afb287ea94db59b4b6d8b5131489de692c7` | Codex independent Task 5 approving reviewer |
+| Task 3 | `00629a0a5e0d8c5a67afe3969e3cc790a2b98253` | `.superpowers/sdd/v3-cutover-task-3-approval-manifest.sh` | `v3-cutover-task-3-report.md` / `4334c6b551813f50aaa0429005451b494c8d58bf4f51021349ff39ddcd20eff0` | `v3-cutover-task-3-approved-review.md` / `9f8a5a7f340b0fedc2c2193628badc6a7aa48e8a4a6c75a49172f595fb4ba5fd` | Codex independent Task 3 approving reviewer |
+| Task 4 | `cfe95f17e5a75a2a9c71053bc6cd901003f31263` | `.superpowers/sdd/v3-cutover-task-4-approval-manifest.sh` | `v3-cutover-task-4-report.md` / `b6609bb2d10349b82aee8e644e864628656d8542d62ac17597a9d98cc5898c3e` | `v3-cutover-task-4-approved-review.md` / `4c03fb373cfffdd26dcf43b4db672644f37342f38c387436bb80ba66d9bc2dbc` | Codex independent Task 4 approving reviewer |
+| Task 2B | `d4d111240f4f224a902f9c9ff674b6cbf529fac8` | `.superpowers/sdd/v3-cutover-task-2b-approval-manifest.sh` | `v3-cutover-task-2b-report.md` / `5aae81e5888f54021c4281f8f83a774aaeb887f9a7e24e53b0291fb33aff13ea` | `v3-cutover-task-2b-approved-review.md` / `21b3bbbd00b88fc33a71d9195accd52f7ee75171ed722de9b8855e06c0e9ce27` | Codex independent Task 2B approving reviewer |
+| Task 6 | `2bf21dfca5f9bb75409526c17a39631ce10b0189` | `.superpowers/sdd/v3-cutover-task-6-approval-manifest.sh` | `v3-cutover-task-6-report.md` / `4250362d1c5c6951679a3a9c84764348ae066a90e175374ff20c848413ec3320` | `v3-cutover-task-6-approved-review.md` / `615ca358514e6c032fb86c7f5ac1a960dc588bab94a6858e61335ea2e6054380` | Codex independent Task 6 approving reviewer |
+| Task 7 | `8161366953573b081b478c45a9d37f45506965b9` | `.superpowers/sdd/v3-cutover-task-7-approval-manifest.sh` | `v3-cutover-task-7-report.md` / `9b4025d524c490e067c48c0917be19a19e9a8bd54d72d35dfdb68afb350cd945` | `v3-cutover-task-7-approved-review.md` / `b71d91c01980b34e218d596584972f9a156ffef77c2ce246fc82f9f8318146b9` | Codex independent Task 7 approving reviewer |
+
+The ledger is an ancestry chain from fixed cutover base
+`d13849b8d10953e7d1ec76174780155cb125dc0f` through the exact Task 7 head.
+Every section below retains its literal owned/staged inventory, executable
+test selections, structural scans, preservation rules, and negative
+boundaries.
 
 The corrected Task 5 brief is authoritative at SHA-256
 `73f335172066313e2447595c205d5073c85e375b71d54d524851f7aefde54566`;
@@ -99,6 +114,15 @@ modify its paths in any later boundary.
 zero Critical and zero Important findings. The superseded FAIL at
 `6575a0973e` is not a dependency authority.
 
+Approval manifest:
+`.superpowers/sdd/v3-cutover-task-1-approval-manifest.sh`. The cumulative
+correction chain is `c8ea3fcbcada2866f0764b23960d9b6ede3466c3`,
+`b27f986f8aa1adf53b8b5f4eb6e5380204b0f920`,
+`4123dc86a055c6150fca580c740ea36354af8efe`,
+`6575a0973ea0508c0e999ef7aa5e3886fb3dc99d`, then the approved head. The
+immutable package is `review-d13849b8d1..ea236ad28e.diff`
+(`d0042d9c79d0fb91fc0dcd26e68d4faca57bb8d3cb793914dfe7a013069aedcd`).
+
 **Exact cumulative owned/staged paths:**
 
 ```text
@@ -137,6 +161,18 @@ must prove these four paths are unchanged from that SHA.
 
 ---
 ### Schema-v3 cutover Task 2A: Close import and promotion admission
+
+**Status:** COMPLETE and independently approved at
+`6e7f68dfd3e7303946dc34776792f49c9526eb9d`. Canonical evidence is
+`.superpowers/sdd/v3-cutover-task-2a-approval-manifest.sh`, binding the
+implementation report and PASS review recorded in the ordered ledger. The
+implementation's direct parent is the reconciled plan commit
+`7f059d24a456078e5f52df7c75f63881e93a06f2`. Its immutable package is
+`review-7f059d24a4..6e7f68dfd3.diff`
+(`3f688230526b6b80ccccfd0a070f20fdd10116b68e1d0708fd86bde31d470405`).
+The final ten-path range, exact admission order, typed 422 mapping,
+no-mutation checks, named Go tests, 22/22 DB focus, structural scans, and
+exact staging checks passed.
 
 **Repository:** `/Users/tdmtrader/concourse/concourse/.worktrees/agentic-functions`
 
@@ -337,6 +373,18 @@ git diff --check
 ---
 
 ### Schema-v3 cutover Task 5: Make ticket dispatch binder-only
+
+**Status:** COMPLETE and independently approved at
+`da8a08b11dd27168c404e09a5577b5f03d706d2d`. Canonical evidence is
+`.superpowers/sdd/v3-cutover-task-5-approval-manifest.sh`, binding the report
+and PASS review in the ledger. Initial implementation
+`9bb76056def8a20bcb9d16d5a62de5e0434708ec` was followed by the
+documentation-only correction at the approved head. The immutable cumulative
+package is `review-6e7f68dfd3..da8a08b11d.diff`
+(`4a56ad3419338b4bd9f1ef627d1673bb4c717bf50369a0c659938529144702de`).
+The final 19-path range, exact binder order, four invocation adapters,
+pre-side-effect rejection, deletion/preservation scans, six named tests,
+four-package regression, 4/4 DB focus, and exact staging checks passed.
 
 **Repository:** `/Users/tdmtrader/concourse/concourse/.worktrees/agentic-functions`
 
@@ -756,6 +804,17 @@ Use `apply_patch`; shared worktree, never revert other agents’ changes.
 
 ### Schema-v3 cutover Task 3: Opaque history and v3 live-row enforcement
 
+**Status:** COMPLETE and independently approved at
+`00629a0a5e0d8c5a67afe3969e3cc790a2b98253`. Canonical evidence is
+`.superpowers/sdd/v3-cutover-task-3-approval-manifest.sh`, binding the report
+and PASS review in the ledger. Its immutable package is
+`review-da8a08b11d..00629a0a5e.diff`
+(`fbe11f91f609c4c499211a07acf759160feefe9956fe5f0ccb28c2369a970f87`).
+The final eight-path range, opaque `Get`/`Latest`, corrupt-v3 failure,
+sole `1773106123` pair, same-row down/reactivate/re-up lifecycle, preflight
+heads, 2/2 migration, 17/17 upgrade, 22/22 workflow, 30/30 experiment, and
+29/29 combined focus results passed with exact staging.
+
 **Repository:** `/Users/tdmtrader/concourse/concourse/.worktrees/agentic-functions`
 
 **Dependency:** Start only after corrected Task 2A and Task 5 are committed
@@ -1006,6 +1065,17 @@ only the eight owned paths.
 ---
 
 ### Schema-v3 cutover Task 4: Remove legacy ticket rendering, seeds, and budget fallback
+
+**Status:** COMPLETE and independently approved at
+`cfe95f17e5a75a2a9c71053bc6cd901003f31263`. Canonical evidence is
+`.superpowers/sdd/v3-cutover-task-4-approval-manifest.sh`, binding the report
+and PASS review in the ledger. Its immutable package is
+`review-00629a0a5e..cfe95f17e5.diff`
+(`15d3af5c78696184a4df12b10fbe597b801a50e5d1aa2b3b2bd3ffd136e35779`).
+The final 16-path range deletes the four renderer paths and five root legacy
+seeds, retains exactly five v3 seeds discovered with `os.ReadDir("seeds")`,
+makes budget zero uncapped, removes the resolver fallback, and passed all six
+affected packages, the 4/4 DB focus, deletion scans, and exact staging.
 
 **Repository:** `/Users/tdmtrader/concourse/concourse/.worktrees/agentic-functions`
 
@@ -1416,6 +1486,16 @@ changes.
 ---
 
 # Schema-v3 cutover Task 2B: Delete the legacy runtime workflow model
+
+**Status:** COMPLETE and independently approved at
+`d4d111240f4f224a902f9c9ff674b6cbf529fac8`. Canonical evidence is
+`.superpowers/sdd/v3-cutover-task-2b-approval-manifest.sh`, binding the report
+and PASS review in the ledger. The exact 18-path range deletes all four
+legacy-model test/model files, creates the Fly command test, and modifies the
+13 other literal paths below. Compiler security order, opaque history,
+current-model scans, seven named workflow tests, three Fly command tests,
+22/22 workflow and 30/30 experiment DB focuses, 10/10 Fly integration focus,
+five affected packages, 668/668 Fly integration, and exact staging passed.
 
 **Repository:** `/Users/tdmtrader/concourse/concourse/.worktrees/agentic-functions`
 
@@ -2191,6 +2271,17 @@ changes.
 
 ### Schema-v3 cutover Task 6: Durable workflow-run navigation in Fly tickets
 
+**Status:** COMPLETE and independently approved at
+`2bf21dfca5f9bb75409526c17a39631ce10b0189`. Canonical evidence is
+`.superpowers/sdd/v3-cutover-task-6-approval-manifest.sh`, binding the report
+and PASS review in the ledger. The immutable cumulative binary diff has
+SHA-256
+`ffc2f596380899b1fdbd8b0d41dc17402171c7af6e9a7643e106e0c03474e0c7`.
+The exact five-path range passed all eight top-level plain-Go tests (ten RUN
+witnesses), 9/9 client specs, 31/31 Fly ticket specs, 676/676 full Fly
+integration, one-target watch routing, pipeline-only and malformed-201
+negatives, durable-navigation scans, and exact staging.
+
 **Repository:** `/Users/tdmtrader/concourse/concourse/.worktrees/agentic-functions`
 
 **Dependency:** Start only after Tasks 2A, 5, 3, 4, and 2B are committed and
@@ -2654,6 +2745,18 @@ commit SHA, and concerns.
 ---
 
 # Schema-v3 cutover Task 7: durable workflow-run ticket UI
+
+**Status:** COMPLETE and independently approved at
+`8161366953573b081b478c45a9d37f45506965b9`. Canonical evidence is
+`.superpowers/sdd/v3-cutover-task-7-approval-manifest.sh`, binding the report
+and PASS review in the ledger. The immutable cumulative binary diff has
+SHA-256
+`f87db6cf5c9bbed6064ba96ba0b5ced008fd19e9f415e9478fbdd9e21d473a4a`.
+The exact nine-path range recorded a 54/66 RED and 66/66 GREEN, then
+3,239/3,239 full Elm tests. Pair-key and summary gates, three lossless durable
+IDs, cost-only Build behavior, Dashboard filter removal, optimized asset
+reproduction (`0e9c93036b98c54080775a914fa3798a388f0c64b2b761cf045e2a2ecb4e7655`),
+immutable-dependency scans, and exact staging passed.
 
 > **For the implementation worker:** Use test-driven development. Add the
 > decoder, page, Build, and Dashboard assertions before changing production
@@ -3249,6 +3352,29 @@ Write `.superpowers/sdd/v3-cutover-task-7-report.md` with:
 ---
 
 ### Schema-v3 cutover Task 8: final vertical-slice and repository audit
+
+**Status:** COMPLETE from exact approved Task 7 base
+`8161366953573b081b478c45a9d37f45506965b9`. Task 8 owns exactly the four
+tracked paths named below and no production code. Its initial/final commit
+identity is recorded after commit in the ignored Task 8 ledger and report;
+`TASK8_INITIAL_SHA` is the direct child of Task 7 and `TASK8_FINAL_SHA`
+initially equals it.
+
+Final evidence: the exact Task 8 Go characterization and DB vertical slice
+passed; all focused migration, database, workflow, Fly command, Go client,
+and Fly integration selections were non-empty and passed. `make test-quick`
+passed 126 root Ginkgo suites plus agent/schema, ci-agent, and dev-MCP;
+`make test-fly-integration` passed 676/676; `make test-integration` passed
+25/25; `yarn test` passed 3239/3239; `yarn build-elm` succeeded; and the
+optimized `web/public/elm.min.js` remained unchanged. K8s was not run because
+Task 8 owns no K8s path. All removal, v3-survival, documentation,
+generated-dependency, and exact-scope audits passed.
+
+The ignored implementation brief's Task 6 fixture scan remained stale: it
+looked for the one-target witness only in the unit file and did not match
+“sends no compensating mutation.” This tracked plan now scopes the first
+scan to both unit and integration fixtures and uses `no compensat`, making
+the standalone plan executable without modifying approved Task 6 code.
 
 **Repository:** `/Users/tdmtrader/concourse/concourse/.worktrees/agentic-functions`
 
@@ -4489,8 +4615,8 @@ integration='fly/integration/agent_tickets_test.go'
 rg -n -i 'pipeline.only|pipeline-only' "$tests" "$integration"
 rg -n -i 'malformed.*dispatch|dispatch.*malformed' "$tests" "$integration"
 rg -n '201|StatusCreated' "$integration"
-rg -n -i 'second.*target|target.*once|one target' "$tests"
-rg -n -i 'no compensation|does not.*(delete|compensat)' "$integration"
+rg -n -i 'second.*target|target.*once|one target' "$tests" "$integration"
+rg -n -i 'no compensat|does not.*(delete|compensat)' "$integration"
 ```
 
 Reject stale commands/promises with exact status:

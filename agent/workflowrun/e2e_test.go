@@ -2,6 +2,8 @@ package workflowrun_test
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strconv"
 	"testing"
 
@@ -11,6 +13,52 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/builds"
 )
+
+func TestV3OnlyWorkflowCutoverRejectsLegacyBeforeExecution(t *testing.T) {
+	for _, schemaVersion := range []int{1, 2} {
+		schemaVersion := schemaVersion
+		t.Run(fmt.Sprintf("schema-%d source", schemaVersion), func(t *testing.T) {
+			manifest := workflow.Manifest{"workflow.yml": fmt.Sprintf(`
+schema_version: %d
+name: legacy-%d
+steps: []
+`, schemaVersion, schemaVersion)}
+			compiled, err := workflow.CompileDefinition(manifest)
+			if compiled != nil {
+				t.Fatalf("CompileDefinition returned %+v, want nil", compiled)
+			}
+			var unsupported workflow.UnsupportedSchemaVersionError
+			if !errors.As(err, &unsupported) {
+				t.Fatalf("CompileDefinition error = %T %v, want UnsupportedSchemaVersionError", err, err)
+			}
+			if unsupported.Got != schemaVersion {
+				t.Fatalf("unsupported schema = %d, want %d", unsupported.Got, schemaVersion)
+			}
+			want := fmt.Sprintf(
+				"workflow: unsupported schema_version %d; only schema_version 3 is supported",
+				schemaVersion,
+			)
+			if err.Error() != want {
+				t.Fatalf("CompileDefinition error = %q, want %q", err, want)
+			}
+		})
+	}
+
+	persistedLegacy := workflow.Definition{
+		ID: 71, Name: "persisted-legacy", Version: 4, SchemaVersion: 2,
+		SignatureVersion: 0, ContentHash: "legacy-history",
+	}
+	target, err := workflow.FullFunctionTarget(persistedLegacy)
+	if err == nil {
+		t.Fatalf("FullFunctionTarget = %+v, want persisted non-v3 rejection", target)
+	}
+	if got, want := err.Error(), "workflow: function targets require schema_version 3, got 2"; got != want {
+		t.Fatalf("persisted non-v3 error = %q, want %q", got, want)
+	}
+	if target.WorkflowDefinitionID != 0 || target.WorkflowName != "" || target.Function.Plan != nil {
+		t.Fatalf("rejected persisted definition produced executable target: %+v", target)
+	}
+}
 
 func TestCompiledFunctionMaterializesAndFreezesTypedExecutionProvenance(t *testing.T) {
 	manifest := workflow.Manifest{

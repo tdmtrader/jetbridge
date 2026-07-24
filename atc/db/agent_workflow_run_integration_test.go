@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/concourse/concourse/agent/api/tickets"
+	"github.com/concourse/concourse/agent/dispatch"
 	"github.com/concourse/concourse/agent/schema"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/snapshot/contracts"
@@ -28,72 +30,105 @@ import (
 
 var _ = Describe("agent workflow run vertical slice", func() {
 	It("imports, binds, executes, seals, reconciles, and preserves exact history after execution deletion", func() {
-		fixture := newWorkflowRunVerticalSlice("complete")
-		first := fixture.importAndPromote(1, "Review the immutable subject and emit review.json.", "review", "review/v1")
-		input := fixture.upload("subject.txt", []byte("immutable subject"))
+		fixture := newAgentDispatchFixture()
+		ticketID := fixture.queueTicket(nil)
+		dispatched, err := dispatch.DispatchOne(context.Background(), fixture.deps, ticketID, "admin")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(dispatched.WorkflowRunID).NotTo(BeNil())
 
-		result := fixture.bind(first.Version, input, "complete-run", nil)
-		Expect(result.Created).To(BeTrue())
-		Expect(result.Run.Status).To(Equal(db.AgentWorkflowRunStatusRunning))
-		Expect(result.Run.WorkflowDefinitionID).To(Equal(first.ID))
-		Expect(result.Run.PlannedBuildID).NotTo(BeNil())
-		Expect(result.Run.TemplatePipelineID).NotTo(BeNil())
-		Expect(result.Run.InstancePipelineID).NotTo(BeNil())
-		Expect(result.Run.PipelineRunID).NotTo(BeNil())
+		result, found, err := fixture.workflowRuns.Get(
+			context.Background(), defaultTeam.ID(), *dispatched.WorkflowRunID,
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(result.Status).To(Equal(db.AgentWorkflowRunStatusRunning))
+		Expect(result.OriginKind).To(Equal("ticket"))
+		Expect(result.OriginReference).To(Equal(fmt.Sprintf("%d", ticketID)))
+		Expect(result.WorkflowDefinitionID).To(Equal(fixture.definition.ID))
+		Expect(result.WorkflowVersion).To(Equal(fixture.definition.Version))
+		Expect(result.DefinitionContentHash).To(Equal(fixture.definition.ContentHash))
+		Expect(result.PlannedBuildID).NotTo(BeNil())
+		Expect(result.TemplatePipelineID).NotTo(BeNil())
+		Expect(result.InstancePipelineID).NotTo(BeNil())
+		Expect(result.PipelineRunID).NotTo(BeNil())
+		ticket, found, err := fixture.tickets.Get(ticketID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(ticket.WorkflowRunID).To(Equal(dispatched.WorkflowRunID))
+		Expect(ticket.WorkflowDefinitionID).To(Equal(&fixture.definition.ID))
+		Expect(ticket.WorkflowVersion).To(Equal(&fixture.definition.Version))
 
 		var concrete atc.Config
-		Expect(atc.UnmarshalConfig(result.Run.ConcreteConfig, &concrete)).To(Succeed())
+		Expect(atc.UnmarshalConfig(result.ConcreteConfig, &concrete)).To(Succeed())
 		Expect(concrete.Jobs).To(HaveLen(1))
 		plan, err := builds.NewPlanner(atc.NewPlanFactory(0)).Create(
 			concrete.Jobs[0].StepConfig(), nil, concrete.ResourceTypes, concrete.Prototypes, nil, false,
 		)
 		Expect(err).NotTo(HaveOccurred())
-		producer := findAgentPlan(plan, "review")
+		producer := findAgentPlan(plan, "implement")
 		Expect(producer).NotTo(BeNil())
-		Expect(producer.Agent.SnapshotOutputs["review"].WorkflowRunID).To(Equal(result.Run.ID.String()))
+		Expect(producer.Agent.SnapshotOutputs["report"].WorkflowRunID).To(Equal(result.ID.String()))
 
-		build, found, err := buildFactory.Build(int(*result.Run.PlannedBuildID))
+		build, found, err := buildFactory.Build(int(*result.PlannedBuildID))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue())
 		started, err := build.Start(plan)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(started).To(BeTrue())
 
-		reviewArchive := workflowRunTar(map[string][]byte{"review.json": validWorkflowReviewJSON()})
-		definitionID := first.ID
-		workflowRunID := result.Run.ID
-		sealed, err := fixture.sealer.Seal(context.Background(), snapshot.SealRequest{
+		registry, err := contracts.NewRegistry()
+		Expect(err).NotTo(HaveOccurred())
+		content := &workflowRunMemoryContent{objects: map[snapshot.Digest][]byte{}}
+		sealer, err := snapshot.NewBatchSealer(
+			snapshot.Canonicalizer{TempDir: GinkgoT().TempDir()},
+			registry,
+			db.NewAgentSnapshotsFactory(dbConn),
+			content,
+			db.NewAgentSnapshotDigestLocker(dbConn),
+		)
+		Expect(err).NotTo(HaveOccurred())
+		reportArchive := workflowRunTar(map[string][]byte{"report.txt": []byte("complete")})
+		definitionID := fixture.definition.ID
+		workflowRunID := result.ID
+		sealed, err := sealer.Seal(context.Background(), snapshot.SealRequest{
 			BuildID: build.ID(), TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(), CreatedBy: "alice",
-			PlanID: producer.ID.String(), Attempt: "1", StepKind: "agent", StepName: "review",
+			PlanID: producer.ID.String(), Attempt: "1", StepKind: "agent", StepName: "implement",
 			WorkflowDefinitionID: &definitionID, WorkflowRunID: &workflowRunID,
-			InputOrder: []string{"subject"},
+			InputOrder: []string{"work-item", "repository"},
 			Inputs: map[string]snapshot.SnapshotRef{
-				"subject": {ID: input.ID, Type: input.Type, Digest: input.Digest},
-			},
-			OutputDeclarations: []snapshot.Port{{Name: "review", Type: "review/v1"}},
-			Outputs: []snapshot.OutputSource{{
-				ClientKey: "review", Port: snapshot.Port{Name: "review", Type: "review/v1"},
-				OpenTar: func(context.Context) (io.ReadCloser, error) {
-					return io.NopCloser(bytes.NewReader(reviewArchive)), nil
+				"work-item": {
+					ID: fixture.workItemSnapshot.ID, Type: fixture.workItemSnapshot.Type,
+					Digest: fixture.workItemSnapshot.Digest,
 				},
-				Retention: snapshot.RetentionClassWorkflow, WorkflowPort: "review",
+				"repository": {
+					ID: fixture.repositorySnapshot.ID, Type: fixture.repositorySnapshot.Type,
+					Digest: fixture.repositorySnapshot.Digest,
+				},
+			},
+			OutputDeclarations: []snapshot.Port{{Name: "report", Type: "opaque/v1"}},
+			Outputs: []snapshot.OutputSource{{
+				ClientKey: "report", Port: snapshot.Port{Name: "report", Type: "opaque/v1"},
+				OpenTar: func(context.Context) (io.ReadCloser, error) {
+					return io.NopCloser(bytes.NewReader(reportArchive)), nil
+				},
+				Retention: snapshot.RetentionClassWorkflow, WorkflowPort: "report",
 			}},
 		})
 		Expect(err).NotTo(HaveOccurred())
-		Expect(sealed).To(HaveKey("review"))
-		output := sealed["review"].Snapshot
-		Expect(output.Type).To(Equal(snapshot.TypeRef("review/v1")))
+		Expect(sealed).To(HaveKey("report"))
+		output := sealed["report"].Snapshot
+		Expect(output.Type).To(Equal(snapshot.TypeRef("opaque/v1")))
 
 		Expect(build.Finish(db.BuildStatusSucceeded)).To(Succeed())
 		now := time.Now().Add(time.Hour)
 		reconciler, err := workflowrun.NewReconciler(
-			fixture.runs, logger, 10*time.Minute, time.Minute,
+			fixture.workflowRuns, logger, 10*time.Minute, time.Minute,
 			workflowrun.WithReconcilerClock(func() time.Time { return now }),
 		)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(reconciler.Run(context.Background())).To(Succeed())
 
-		completed, found, err := fixture.runs.Get(context.Background(), defaultTeam.ID(), result.Run.ID)
+		completed, found, err := fixture.workflowRuns.Get(context.Background(), defaultTeam.ID(), result.ID)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue())
 		Expect(completed.Status).To(Equal(db.AgentWorkflowRunStatusSucceeded))
@@ -101,28 +136,28 @@ var _ = Describe("agent workflow run vertical slice", func() {
 		Expect(*completed.ExecutionStatus).To(Equal(db.AgentWorkflowRunExecutionStatusSucceeded))
 		Expect(completed.ActualPlan).NotTo(BeEmpty())
 		Expect(completed.ActualPlanHash).NotTo(BeNil())
-		Expect(completed.ResolvedDependencies).To(MatchJSON(`{
-			"version": 1,
-			"resources": [],
-			"images": [{
-				"plan_id": "2",
-				"kind": "agent_runtime",
-				"name": "review",
-				"image_ref": "registry.example/agent-runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-			}],
-			"platform_resource_types": []
-		}`))
+		Expect(completed.ResolvedDependencies).To(ContainSubstring(dispatchRuntimeImage))
 
-		bindings, err := fixture.runs.Snapshots(context.Background(), completed.ID)
+		bindings, err := fixture.workflowRuns.Snapshots(context.Background(), completed.ID)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(bindings).To(ConsistOf(
 			db.AgentWorkflowRunSnapshotBinding{
 				WorkflowRunID: completed.ID, Direction: db.AgentWorkflowRunSnapshotInput,
-				PortName: "subject", Snapshot: snapshot.SnapshotRef{ID: input.ID, Type: input.Type, Digest: input.Digest},
+				PortName: "work-item", Snapshot: snapshot.SnapshotRef{
+					ID: fixture.workItemSnapshot.ID, Type: "work-item/v1",
+					Digest: fixture.workItemSnapshot.Digest,
+				},
+			},
+			db.AgentWorkflowRunSnapshotBinding{
+				WorkflowRunID: completed.ID, Direction: db.AgentWorkflowRunSnapshotInput,
+				PortName: "repository", Snapshot: snapshot.SnapshotRef{
+					ID: fixture.repositorySnapshot.ID, Type: "repository/v1",
+					Digest: fixture.repositorySnapshot.Digest,
+				},
 			},
 			db.AgentWorkflowRunSnapshotBinding{
 				WorkflowRunID: completed.ID, Direction: db.AgentWorkflowRunSnapshotOutput,
-				PortName: "review", Snapshot: output,
+				PortName: "report", Snapshot: output,
 			},
 		))
 		var durableOutputClaims int
@@ -130,7 +165,7 @@ var _ = Describe("agent workflow run vertical slice", func() {
 			SELECT count(*) FROM agent_snapshot_retention_claims
 			WHERE snapshot_id = $1 AND team_id = $2 AND class = 'workflow'
 			  AND expires_at IS NULL AND actor = $3
-		`, int64(output.ID), defaultTeam.ID(), fmt.Sprintf("workflow-run:%d:output:review", int64(completed.ID))).Scan(&durableOutputClaims)).To(Succeed())
+		`, int64(output.ID), defaultTeam.ID(), fmt.Sprintf("workflow-run:%d:output:report", int64(completed.ID))).Scan(&durableOutputClaims)).To(Succeed())
 		Expect(durableOutputClaims).To(Equal(1))
 
 		pipelineRunID := *completed.PipelineRunID
@@ -143,7 +178,7 @@ var _ = Describe("agent workflow run vertical slice", func() {
 		_, err = dbConn.Exec(`DELETE FROM pipelines WHERE id IN ($1, $2)`, instancePipelineID, templatePipelineID)
 		Expect(err).NotTo(HaveOccurred())
 
-		history, found, err := fixture.runs.Get(context.Background(), defaultTeam.ID(), completed.ID)
+		history, found, err := fixture.workflowRuns.Get(context.Background(), defaultTeam.ID(), completed.ID)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue())
 		Expect(history.Status).To(Equal(db.AgentWorkflowRunStatusSucceeded))
@@ -153,9 +188,29 @@ var _ = Describe("agent workflow run vertical slice", func() {
 		Expect(history.PlannedBuildID).To(Equal(&plannedBuildID))
 		Expect(history.ActualPlanHash).To(Equal(completed.ActualPlanHash))
 		Expect(history.ActualPlan).To(MatchJSON(completed.ActualPlan))
-		historyBindings, err := fixture.runs.Snapshots(context.Background(), completed.ID)
+		historyBindings, err := fixture.workflowRuns.Snapshots(context.Background(), completed.ID)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(historyBindings).To(ConsistOf(bindings))
+
+		durableTicket, found, err := fixture.tickets.Get(ticketID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(durableTicket.WorkflowRunID).To(Equal(&completed.ID))
+		Expect(durableTicket.WorkflowDefinitionID).To(Equal(&completed.WorkflowDefinitionID))
+		Expect(durableTicket.WorkflowVersion).To(Equal(&completed.WorkflowVersion))
+		_, legacyFound, err := defaultTeam.Pipeline(atc.PipelineRef{
+			Name: fmt.Sprintf("agent-ticket-%d", ticketID),
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(legacyFound).To(BeFalse())
+
+		Expect(fixture.tickets.Transition(
+			ticketID, tickets.StateRunning, tickets.StateQueued, tickets.TransitionMeta{},
+		)).To(Succeed())
+		requeued, err := dispatch.DispatchOne(context.Background(), fixture.deps, ticketID, "admin")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(requeued.WorkflowRunID).NotTo(BeNil())
+		Expect(*requeued.WorkflowRunID).NotTo(Equal(completed.ID))
 	})
 
 	It("promotes a prompt-only compatible version while keeping prior runs grouped and exact", func() {
