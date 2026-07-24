@@ -25,7 +25,6 @@ const (
 	ComponentAgentPlatformCredentialSyncer = "agent_platform_credential_syncer"
 	ComponentAgentRunSecretReaper          = "agent_run_secret_reaper"
 	ComponentAgentDispatcher               = "agent_dispatcher"
-	ComponentAgentPipelineArchiver         = "agent_pipeline_archiver"
 	ComponentAgentOutcomeWatcher           = "agent_outcome_watcher"
 	ComponentAgentSnapshotGC               = "agent_snapshot_gc"
 	ComponentAgentSnapshotRepair           = "agent_snapshot_repair"

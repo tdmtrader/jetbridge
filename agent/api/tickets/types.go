@@ -6,6 +6,7 @@ package tickets
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	"github.com/concourse/concourse/agent/snapshot"
@@ -333,11 +334,33 @@ type UpdateRequest struct {
 }
 
 type TransitionRequest struct {
-	From          State  `json:"from"`
-	To            State  `json:"to"`
-	PipelineRunID *int   `json:"pipeline_run_id,omitempty"`
-	Branch        string `json:"branch,omitempty"`
-	ErrorDetail   string `json:"error_detail,omitempty"`
+	From        State  `json:"from"`
+	To          State  `json:"to"`
+	Branch      string `json:"branch,omitempty"`
+	ErrorDetail string `json:"error_detail,omitempty"`
+}
+
+// UnmarshalJSON rejects the retired, server-owned pipeline_run_id key
+// instead of silently ignoring it. The durable workflow/pipeline link is
+// written only by in-process dispatch, never accepted from an HTTP caller
+// (F30 id class); a stale client that still sends the key learns its write
+// was dropped rather than believing it took effect. Presence alone is the
+// rejection — the value (including null) does not matter.
+func (r *TransitionRequest) UnmarshalJSON(data []byte) error {
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return err
+	}
+	if _, present := probe["pipeline_run_id"]; present {
+		return errors.New("pipeline_run_id is server-owned")
+	}
+	type alias TransitionRequest
+	var decoded alias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*r = TransitionRequest(decoded)
+	return nil
 }
 
 // SpecSubmission mirrors the §3.2 submit_spec tool input.

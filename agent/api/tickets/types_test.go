@@ -21,6 +21,34 @@ func TestTicketRevisionIsPublicAndLossless(t *testing.T) {
 	}
 }
 
+// v3-only cleanup (2026-07-24): pipeline_run_id is server-owned and is no
+// longer a writable TransitionRequest field. A body that still carries the
+// retired key must be rejected by the decoder — not silently ignored — so a
+// stale client learns its write was dropped. A body without it decodes the
+// remaining fields normally.
+func TestTransitionRequestRejectsServerOwnedPipelineRunID(t *testing.T) {
+	var withKey tickets.TransitionRequest
+	err := json.Unmarshal([]byte(`{"from":"queued","to":"running","pipeline_run_id":42}`), &withKey)
+	if err == nil || err.Error() != "pipeline_run_id is server-owned" {
+		t.Fatalf("decoding pipeline_run_id error = %v, want \"pipeline_run_id is server-owned\"", err)
+	}
+
+	// even a null value for the retired key is a rejection: presence is what
+	// matters, not the value.
+	if err := json.Unmarshal([]byte(`{"from":"queued","to":"running","pipeline_run_id":null}`), &withKey); err == nil {
+		t.Errorf("null pipeline_run_id decoded without error, want rejection")
+	}
+
+	var clean tickets.TransitionRequest
+	if err := json.Unmarshal([]byte(`{"from":"queued","to":"running","branch":"b","error_detail":"e"}`), &clean); err != nil {
+		t.Fatalf("clean transition decode = %v, want nil", err)
+	}
+	if clean.From != tickets.StateQueued || clean.To != tickets.StateRunning ||
+		clean.Branch != "b" || clean.ErrorDetail != "e" {
+		t.Errorf("clean transition = %+v", clean)
+	}
+}
+
 func TestValidTransitionMatrix(t *testing.T) {
 	allowed := []struct{ from, to tickets.State }{
 		{tickets.StateDraft, tickets.StateQueued},

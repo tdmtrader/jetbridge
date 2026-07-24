@@ -64,29 +64,18 @@ var _ = Describe("Lifecycler", func() {
 		Expect(good.FinishCallCount()).To(Equal(1))
 	})
 
-	// C3: terminally-disposed agent tickets leave dead dashboard cards; the
-	// lifecycler archives every attempt's run instance plus the base template.
-	It("archives the runs and templates of terminal tickets", func() {
-		run := new(dbfakes.FakePipelineRun)
-		factory.RunsForTerminalTicketsReturns([]db.PipelineRun{run}, nil)
-		template := new(dbfakes.FakePipeline)
-		factory.TemplatesForTerminalTicketsReturns([]db.Pipeline{template}, nil)
-
+	// Generic run lifecycle is preserved after the ticket-template archival
+	// passes were removed (v3-only cleanup): the retired ticket-named
+	// per-ticket pipeline lifecycle is gone, but finish, reopen, and retention
+	// archival of generic runs must all still run.
+	It("still finishes, reopens, and archives generic runs", func() {
+		running := new(dbfakes.FakePipelineRun)
+		running.CheckCompleteReturns(db.PipelineRunSucceeded, true, nil)
+		expired := new(dbfakes.FakePipelineRun)
+		factory.RunningRunsReturns([]db.PipelineRun{running}, nil)
+		factory.RunsToArchiveReturns([]db.PipelineRun{expired}, nil)
 		Expect(lifecycler.Run(context.Background())).To(Succeed())
-		Expect(run.ArchiveCallCount()).To(Equal(1))
-		Expect(template.ArchiveCallCount()).To(Equal(1))
-	})
-
-	It("continues past a failing terminal-ticket archive", func() {
-		bad := new(dbfakes.FakePipelineRun)
-		bad.ArchiveReturns(errors.New("boom"))
-		good := new(dbfakes.FakePipelineRun)
-		factory.RunsForTerminalTicketsReturns([]db.PipelineRun{bad, good}, nil)
-		template := new(dbfakes.FakePipeline)
-		factory.TemplatesForTerminalTicketsReturns([]db.Pipeline{template}, nil)
-
-		Expect(lifecycler.Run(context.Background())).To(Succeed())
-		Expect(good.ArchiveCallCount()).To(Equal(1))
-		Expect(template.ArchiveCallCount()).To(Equal(1))
+		Expect(running.FinishCallCount()).To(Equal(1))
+		Expect(expired.ArchiveCallCount()).To(Equal(1))
 	})
 })

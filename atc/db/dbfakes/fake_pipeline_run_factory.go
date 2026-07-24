@@ -116,20 +116,6 @@ type FakePipelineRunFactory struct {
 		result1 bool
 		result2 error
 	}
-	RunBelongsToTicketTemplateStub        func(int, int) (bool, error)
-	runBelongsToTicketTemplateMutex       sync.RWMutex
-	runBelongsToTicketTemplateArgsForCall []struct {
-		arg1 int
-		arg2 int
-	}
-	runBelongsToTicketTemplateReturns struct {
-		result1 bool
-		result2 error
-	}
-	runBelongsToTicketTemplateReturnsOnCall map[int]struct {
-		result1 bool
-		result2 error
-	}
 	RunningRunsStub        func() ([]db.PipelineRun, error)
 	runningRunsMutex       sync.RWMutex
 	runningRunsArgsForCall []struct {
@@ -139,18 +125,6 @@ type FakePipelineRunFactory struct {
 		result2 error
 	}
 	runningRunsReturnsOnCall map[int]struct {
-		result1 []db.PipelineRun
-		result2 error
-	}
-	RunsForTerminalTicketsStub        func() ([]db.PipelineRun, error)
-	runsForTerminalTicketsMutex       sync.RWMutex
-	runsForTerminalTicketsArgsForCall []struct {
-	}
-	runsForTerminalTicketsReturns struct {
-		result1 []db.PipelineRun
-		result2 error
-	}
-	runsForTerminalTicketsReturnsOnCall map[int]struct {
 		result1 []db.PipelineRun
 		result2 error
 	}
@@ -164,18 +138,6 @@ type FakePipelineRunFactory struct {
 	}
 	runsToArchiveReturnsOnCall map[int]struct {
 		result1 []db.PipelineRun
-		result2 error
-	}
-	TemplatesForTerminalTicketsStub        func() ([]db.Pipeline, error)
-	templatesForTerminalTicketsMutex       sync.RWMutex
-	templatesForTerminalTicketsArgsForCall []struct {
-	}
-	templatesForTerminalTicketsReturns struct {
-		result1 []db.Pipeline
-		result2 error
-	}
-	templatesForTerminalTicketsReturnsOnCall map[int]struct {
-		result1 []db.Pipeline
 		result2 error
 	}
 	TicketBelongsToRunStub        func(int, int) (bool, error)
@@ -655,71 +617,6 @@ func (fake *FakePipelineRunFactory) RunBelongsToPipelineReturnsOnCall(i int, res
 	}{result1, result2}
 }
 
-func (fake *FakePipelineRunFactory) RunBelongsToTicketTemplate(arg1 int, arg2 int) (bool, error) {
-	fake.runBelongsToTicketTemplateMutex.Lock()
-	ret, specificReturn := fake.runBelongsToTicketTemplateReturnsOnCall[len(fake.runBelongsToTicketTemplateArgsForCall)]
-	fake.runBelongsToTicketTemplateArgsForCall = append(fake.runBelongsToTicketTemplateArgsForCall, struct {
-		arg1 int
-		arg2 int
-	}{arg1, arg2})
-	stub := fake.RunBelongsToTicketTemplateStub
-	fakeReturns := fake.runBelongsToTicketTemplateReturns
-	fake.recordInvocation("RunBelongsToTicketTemplate", []interface{}{arg1, arg2})
-	fake.runBelongsToTicketTemplateMutex.Unlock()
-	if stub != nil {
-		return stub(arg1, arg2)
-	}
-	if specificReturn {
-		return ret.result1, ret.result2
-	}
-	return fakeReturns.result1, fakeReturns.result2
-}
-
-func (fake *FakePipelineRunFactory) RunBelongsToTicketTemplateCallCount() int {
-	fake.runBelongsToTicketTemplateMutex.RLock()
-	defer fake.runBelongsToTicketTemplateMutex.RUnlock()
-	return len(fake.runBelongsToTicketTemplateArgsForCall)
-}
-
-func (fake *FakePipelineRunFactory) RunBelongsToTicketTemplateCalls(stub func(int, int) (bool, error)) {
-	fake.runBelongsToTicketTemplateMutex.Lock()
-	defer fake.runBelongsToTicketTemplateMutex.Unlock()
-	fake.RunBelongsToTicketTemplateStub = stub
-}
-
-func (fake *FakePipelineRunFactory) RunBelongsToTicketTemplateArgsForCall(i int) (int, int) {
-	fake.runBelongsToTicketTemplateMutex.RLock()
-	defer fake.runBelongsToTicketTemplateMutex.RUnlock()
-	argsForCall := fake.runBelongsToTicketTemplateArgsForCall[i]
-	return argsForCall.arg1, argsForCall.arg2
-}
-
-func (fake *FakePipelineRunFactory) RunBelongsToTicketTemplateReturns(result1 bool, result2 error) {
-	fake.runBelongsToTicketTemplateMutex.Lock()
-	defer fake.runBelongsToTicketTemplateMutex.Unlock()
-	fake.RunBelongsToTicketTemplateStub = nil
-	fake.runBelongsToTicketTemplateReturns = struct {
-		result1 bool
-		result2 error
-	}{result1, result2}
-}
-
-func (fake *FakePipelineRunFactory) RunBelongsToTicketTemplateReturnsOnCall(i int, result1 bool, result2 error) {
-	fake.runBelongsToTicketTemplateMutex.Lock()
-	defer fake.runBelongsToTicketTemplateMutex.Unlock()
-	fake.RunBelongsToTicketTemplateStub = nil
-	if fake.runBelongsToTicketTemplateReturnsOnCall == nil {
-		fake.runBelongsToTicketTemplateReturnsOnCall = make(map[int]struct {
-			result1 bool
-			result2 error
-		})
-	}
-	fake.runBelongsToTicketTemplateReturnsOnCall[i] = struct {
-		result1 bool
-		result2 error
-	}{result1, result2}
-}
-
 func (fake *FakePipelineRunFactory) RunningRuns() ([]db.PipelineRun, error) {
 	fake.runningRunsMutex.Lock()
 	ret, specificReturn := fake.runningRunsReturnsOnCall[len(fake.runningRunsArgsForCall)]
@@ -771,62 +668,6 @@ func (fake *FakePipelineRunFactory) RunningRunsReturnsOnCall(i int, result1 []db
 		})
 	}
 	fake.runningRunsReturnsOnCall[i] = struct {
-		result1 []db.PipelineRun
-		result2 error
-	}{result1, result2}
-}
-
-func (fake *FakePipelineRunFactory) RunsForTerminalTickets() ([]db.PipelineRun, error) {
-	fake.runsForTerminalTicketsMutex.Lock()
-	ret, specificReturn := fake.runsForTerminalTicketsReturnsOnCall[len(fake.runsForTerminalTicketsArgsForCall)]
-	fake.runsForTerminalTicketsArgsForCall = append(fake.runsForTerminalTicketsArgsForCall, struct {
-	}{})
-	stub := fake.RunsForTerminalTicketsStub
-	fakeReturns := fake.runsForTerminalTicketsReturns
-	fake.recordInvocation("RunsForTerminalTickets", []interface{}{})
-	fake.runsForTerminalTicketsMutex.Unlock()
-	if stub != nil {
-		return stub()
-	}
-	if specificReturn {
-		return ret.result1, ret.result2
-	}
-	return fakeReturns.result1, fakeReturns.result2
-}
-
-func (fake *FakePipelineRunFactory) RunsForTerminalTicketsCallCount() int {
-	fake.runsForTerminalTicketsMutex.RLock()
-	defer fake.runsForTerminalTicketsMutex.RUnlock()
-	return len(fake.runsForTerminalTicketsArgsForCall)
-}
-
-func (fake *FakePipelineRunFactory) RunsForTerminalTicketsCalls(stub func() ([]db.PipelineRun, error)) {
-	fake.runsForTerminalTicketsMutex.Lock()
-	defer fake.runsForTerminalTicketsMutex.Unlock()
-	fake.RunsForTerminalTicketsStub = stub
-}
-
-func (fake *FakePipelineRunFactory) RunsForTerminalTicketsReturns(result1 []db.PipelineRun, result2 error) {
-	fake.runsForTerminalTicketsMutex.Lock()
-	defer fake.runsForTerminalTicketsMutex.Unlock()
-	fake.RunsForTerminalTicketsStub = nil
-	fake.runsForTerminalTicketsReturns = struct {
-		result1 []db.PipelineRun
-		result2 error
-	}{result1, result2}
-}
-
-func (fake *FakePipelineRunFactory) RunsForTerminalTicketsReturnsOnCall(i int, result1 []db.PipelineRun, result2 error) {
-	fake.runsForTerminalTicketsMutex.Lock()
-	defer fake.runsForTerminalTicketsMutex.Unlock()
-	fake.RunsForTerminalTicketsStub = nil
-	if fake.runsForTerminalTicketsReturnsOnCall == nil {
-		fake.runsForTerminalTicketsReturnsOnCall = make(map[int]struct {
-			result1 []db.PipelineRun
-			result2 error
-		})
-	}
-	fake.runsForTerminalTicketsReturnsOnCall[i] = struct {
 		result1 []db.PipelineRun
 		result2 error
 	}{result1, result2}
@@ -884,62 +725,6 @@ func (fake *FakePipelineRunFactory) RunsToArchiveReturnsOnCall(i int, result1 []
 	}
 	fake.runsToArchiveReturnsOnCall[i] = struct {
 		result1 []db.PipelineRun
-		result2 error
-	}{result1, result2}
-}
-
-func (fake *FakePipelineRunFactory) TemplatesForTerminalTickets() ([]db.Pipeline, error) {
-	fake.templatesForTerminalTicketsMutex.Lock()
-	ret, specificReturn := fake.templatesForTerminalTicketsReturnsOnCall[len(fake.templatesForTerminalTicketsArgsForCall)]
-	fake.templatesForTerminalTicketsArgsForCall = append(fake.templatesForTerminalTicketsArgsForCall, struct {
-	}{})
-	stub := fake.TemplatesForTerminalTicketsStub
-	fakeReturns := fake.templatesForTerminalTicketsReturns
-	fake.recordInvocation("TemplatesForTerminalTickets", []interface{}{})
-	fake.templatesForTerminalTicketsMutex.Unlock()
-	if stub != nil {
-		return stub()
-	}
-	if specificReturn {
-		return ret.result1, ret.result2
-	}
-	return fakeReturns.result1, fakeReturns.result2
-}
-
-func (fake *FakePipelineRunFactory) TemplatesForTerminalTicketsCallCount() int {
-	fake.templatesForTerminalTicketsMutex.RLock()
-	defer fake.templatesForTerminalTicketsMutex.RUnlock()
-	return len(fake.templatesForTerminalTicketsArgsForCall)
-}
-
-func (fake *FakePipelineRunFactory) TemplatesForTerminalTicketsCalls(stub func() ([]db.Pipeline, error)) {
-	fake.templatesForTerminalTicketsMutex.Lock()
-	defer fake.templatesForTerminalTicketsMutex.Unlock()
-	fake.TemplatesForTerminalTicketsStub = stub
-}
-
-func (fake *FakePipelineRunFactory) TemplatesForTerminalTicketsReturns(result1 []db.Pipeline, result2 error) {
-	fake.templatesForTerminalTicketsMutex.Lock()
-	defer fake.templatesForTerminalTicketsMutex.Unlock()
-	fake.TemplatesForTerminalTicketsStub = nil
-	fake.templatesForTerminalTicketsReturns = struct {
-		result1 []db.Pipeline
-		result2 error
-	}{result1, result2}
-}
-
-func (fake *FakePipelineRunFactory) TemplatesForTerminalTicketsReturnsOnCall(i int, result1 []db.Pipeline, result2 error) {
-	fake.templatesForTerminalTicketsMutex.Lock()
-	defer fake.templatesForTerminalTicketsMutex.Unlock()
-	fake.TemplatesForTerminalTicketsStub = nil
-	if fake.templatesForTerminalTicketsReturnsOnCall == nil {
-		fake.templatesForTerminalTicketsReturnsOnCall = make(map[int]struct {
-			result1 []db.Pipeline
-			result2 error
-		})
-	}
-	fake.templatesForTerminalTicketsReturnsOnCall[i] = struct {
-		result1 []db.Pipeline
 		result2 error
 	}{result1, result2}
 }

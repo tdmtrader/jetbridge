@@ -35,7 +35,6 @@ import (
 	"github.com/concourse/concourse/agent/credentials"
 	"github.com/concourse/concourse/agent/dispatch"
 	"github.com/concourse/concourse/agent/outcomewatcher"
-	"github.com/concourse/concourse/agent/pipelinearchiver"
 	"github.com/concourse/concourse/agent/projection"
 	"github.com/concourse/concourse/agent/publisher"
 	"github.com/concourse/concourse/agent/resourcecapture"
@@ -1725,23 +1724,6 @@ func (cmd *RunCommand) backendComponents(
 				// Interval deliberately omitted: defaultComponentInterval (10s)
 				// polling — agent_tickets has no NOTIFY trigger (recorded
 				// decision, dispatch-remainder plan §5).
-			})
-
-			// Dispatcher-family housekeeping (ticket #42): archive the
-			// legacy per-ticket pipelines of terminally-disposed tickets
-			// by NAME — catching what the run-linkage pass in
-			// atc/runlifecycle misses. Polling-only, same reliability rule
-			// as the dispatcher above: no NOTIFY trigger, notifications
-			// drop.
-			components = append(components, RunnableComponent{
-				Component: atc.Component{
-					Name: atc.ComponentAgentPipelineArchiver,
-				},
-				Runnable: pipelinearchiver.New(
-					db.NewAgentTicketsFactory(dbConn),
-					teamFactory,
-				),
-				Interval: time.Minute,
 			})
 		}
 	}
