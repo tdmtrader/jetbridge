@@ -18,4 +18,10 @@ func TestAgentRunnerDockerfile(t *testing.T) {
 	if !strings.Contains(string(dockerfile), "go build -o /out/agent-runner ./cmd/agent-runner") {
 		t.Fatal("agent runner image no longer builds agent-runner")
 	}
+	if !strings.Contains(string(dockerfile), "go build -o /out/function-runner ./cmd/function-runner") {
+		t.Fatal("agent runner image no longer builds function-runner")
+	}
+	if !strings.Contains(string(dockerfile), "COPY --from=build /out/function-runner /usr/local/bin/function-runner") {
+		t.Fatal("agent runner image builds function-runner but does not ship it")
+	}
 }

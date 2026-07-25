@@ -32,6 +32,7 @@ func TestOnlyVersionThreeEngineeringSeedsRemain(t *testing.T) {
 		"anonymization-audit-v3",
 		"code-review-v3",
 		"log-diagnosis-v3",
+		"merge-delivery-v3",
 		"small-fix-v3",
 		"version-upgrade-v3",
 	}
@@ -87,6 +88,22 @@ func TestVersionThreeEngineeringSeedsCompileAndRender(t *testing.T) {
 			},
 			dispositionOutput: "change",
 			humanWait:         true,
+		},
+		{
+			directory: "seeds/merge-delivery-v3",
+			name:      "merge-delivery",
+			inputs: []workflow.SignaturePort{
+				{Name: "base", Type: snapshot.TypeRef("repository/v1")},
+				{Name: "candidate", Type: snapshot.TypeRef("repository-change/v1")},
+				{Name: "target", Type: snapshot.TypeRef("repository/v1")},
+			},
+			outputs: []workflow.SignaturePort{
+				{Name: "merged-change", Type: snapshot.TypeRef("repository-change/v1")},
+				{Name: "merge-report", Type: snapshot.TypeRef("validation-report/v1")},
+			},
+			dispositionOutput: "merged-change",
+			humanWait:         true,
+			publisher:         true,
 		},
 		{
 			directory: "seeds/anonymization-audit-v3",

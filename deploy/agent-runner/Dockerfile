@@ -2,6 +2,7 @@ FROM golang:1.25-bookworm AS build
 WORKDIR /src
 COPY . .
 RUN CGO_ENABLED=0 go build -o /out/agent-runner ./cmd/agent-runner
+RUN CGO_ENABLED=0 go build -o /out/function-runner ./cmd/function-runner
 
 FROM node:20-bookworm-slim
 # Pin to the claude-code version the live theborg review job currently runs
@@ -20,6 +21,10 @@ RUN npm install -g @anthropic-ai/claude-code@2.0.1 \
 # egress. The elm-build gate (agent/functions/gates) tolerates a missing `elm` —
 # it errors that gate, which only fires on web/elm changes.
 COPY --from=build /out/agent-runner /usr/local/bin/agent-runner
+# The deterministic version-3 task functions (agent/functions) ship in the same
+# image: they run as ordinary task steps beside agent steps, and share the git
+# and Go toolchain already installed above.
+COPY --from=build /out/function-runner /usr/local/bin/function-runner
 COPY --from=build /usr/local/go /usr/local/go
 # Root, like every other step image: jetbridge hostPath step volumes are
 # kubelet-created root:root 0755 and fsGroup is ignored for hostPath, so a

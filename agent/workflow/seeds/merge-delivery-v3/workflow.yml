@@ -1,0 +1,129 @@
+schema_version: 3
+name: merge-delivery
+signature_version: 1
+disposition_output: merged-change
+description: >-
+  Rebase an approved repository change onto the current target tip and land it.
+  The merge itself is computed offline inside the pod; the only outbound effect
+  is the governed publish_snapshot boundary.
+inputs:
+  - name: base
+    type: repository/v1
+    description: The immutable base the candidate change was produced against.
+  - name: candidate
+    type: repository-change/v1
+    description: The change to deliver, still described relative to base.
+  - name: target
+    type: repository/v1
+    description: Current tip of the delivery target the change is rebased onto.
+outputs:
+  - name: merged-change
+    type: repository-change/v1
+    from: merged-change
+    description: The candidate rebased onto target, based on the target tip.
+  - name: merge-report
+    type: validation-report/v1
+    from: merge-report
+    description: Whether the delivery merge is clean, and which paths conflict.
+plan:
+  # Preflight always exits 0, so the report is sealed whether or not the merge
+  # is clean. It is the only durable evidence a conflicted delivery produces:
+  # the prepare step below fails the run, and a failed step seals no output.
+  - task: merge-preflight
+    function_id: merge-preflight
+    config:
+      platform: linux
+      image_resource:
+        type: registry-image
+        source:
+          repository: concourse/agent-runner
+        version:
+          digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+      inputs:
+        - name: base
+        - name: candidate
+        - name: target
+      outputs:
+        - name: merge-report
+      run:
+        path: function-runner
+        args:
+          - merge-preflight
+          - --candidate=candidate
+          - --target=target
+          - --base=base
+          - --output=merge-report
+          - --method=merge
+          - --message=Merge delivered change
+    input_types:
+      base: {type: repository/v1}
+      candidate: {type: repository-change/v1}
+      target: {type: repository/v1}
+    output_types:
+      merge-report: validation-report/v1
+  # Prepare recomputes the same merge and seals it as a repository-change/v1
+  # whose base is the target tip. It exits non-zero on conflict, which is why
+  # the guaranteed report above is a separate step.
+  - task: merge-prepare
+    function_id: merge-prepare
+    config:
+      platform: linux
+      image_resource:
+        type: registry-image
+        source:
+          repository: concourse/agent-runner
+        version:
+          digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+      inputs:
+        - name: base
+        - name: candidate
+        - name: target
+      outputs:
+        - name: merged-change
+      run:
+        path: function-runner
+        args:
+          - merge-prepare
+          - --candidate=candidate
+          - --target=target
+          - --base=base
+          - --output=merged-change
+          - --method=merge
+          - --message=Merge delivered change
+    input_types:
+      base: {type: repository/v1}
+      candidate: {type: repository-change/v1}
+      target: {type: repository/v1}
+    output_types:
+      merged-change: repository-change/v1
+  # A human approves the exact merged value that will be landed, not the
+  # candidate that was written before the rebase. The approval intent below and
+  # the publication that follows must describe the same operation byte for byte.
+  - await_snapshot: merge-approval
+    merge_approval:
+      input: merged-change
+      publisher: git-publisher/v1
+      destination: git.example/acme/widget
+      parameters:
+        target_branch: main
+        # The gateway refuses to land a merge whose base_sha is not this value,
+        # which is how a target that moved during the wait is caught. It names
+        # the tip the change was rebased onto, so a deployment re-authors it per
+        # delivery until a renderer can bind it from the target input.
+        expected_base_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      approval_policy_version: engineering/v1
+      prompt: Land this rebased change on main?
+    type: human-answer/v1
+    on_timeout: fail
+    timeout: 72h
+  - publish_snapshot: land-merge
+    publisher: git-publisher/v1
+    input: merged-change
+    input_type: repository-change/v1
+    destination: git.example/acme/widget
+    mode: merge
+    parameters:
+      target_branch: main
+      expected_base_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    approval_policy_version: engineering/v1
+    approval: merge-approval
