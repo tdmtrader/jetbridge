@@ -1102,7 +1102,13 @@ type SealCommitContext struct {
 	Upload          *UploadOccurrence      `json:"upload,omitempty"`
 	InputOrder      []string               `json:"input_order"`
 	Inputs          map[string]SnapshotRef `json:"inputs"`
-	ExpectedOutputs []Port                 `json:"expected_outputs"`
+	// InputExposures is the mount-time exposure lineage the executor captured
+	// for the exposed inputs, keyed by input port. It is occurrence data
+	// persisted alongside lineage and outside the sealed bytes, so it never
+	// takes part in content identity. An absent entry means the whole tree was
+	// exposed; see Exposures.
+	InputExposures  map[string]InputExposure `json:"input_exposures,omitempty"`
+	ExpectedOutputs []Port                   `json:"expected_outputs"`
 }
 
 func (c SealCommitContext) Validate() error {
@@ -1159,7 +1165,17 @@ func (c SealCommitContext) Validate() error {
 		}
 		seenInputs[name] = struct{}{}
 	}
+	if err := validateDeclaredExposures(c.InputExposures, c.Inputs); err != nil {
+		return err
+	}
 	return ValidatePorts(c.ExpectedOutputs)
+}
+
+// Exposures returns one exposure per exposed input, defaulting an undeclared
+// input to full-tree exposure. Callers persist this, so the lineage is total:
+// there is no exposed input whose materialization is unrecorded.
+func (c SealCommitContext) Exposures() map[string]InputExposure {
+	return resolveExposures(c.InputExposures, c.Inputs)
 }
 
 func (c SealCommitContext) Clone() SealCommitContext {
@@ -1173,6 +1189,7 @@ func (c SealCommitContext) Clone() SealCommitContext {
 	}
 	c.InputOrder = append([]string(nil), c.InputOrder...)
 	c.Inputs = cloneSnapshotRefs(c.Inputs)
+	c.InputExposures = cloneInputExposures(c.InputExposures)
 	c.ExpectedOutputs = append([]Port(nil), c.ExpectedOutputs...)
 	return c
 }
@@ -1226,8 +1243,19 @@ type SealRequest struct {
 	WorkflowRunID        *WorkflowRunID         `json:"workflow_run_id,omitempty"`
 	InputOrder           []string               `json:"input_order"`
 	Inputs               map[string]SnapshotRef `json:"inputs"`
-	OutputDeclarations   []Port                 `json:"output_declarations"`
-	Outputs              []OutputSource         `json:"-"`
+	// CandidateInputs are the exposed input ports the step declared as candidate
+	// ports. They come from the compiled workflow function's port declarations,
+	// never from produced content, and are the only authority a selection record
+	// may be judged against.
+	CandidateInputs []string `json:"candidate_inputs,omitempty"`
+	// InputExposures is the exposure lineage the executor captured at mount
+	// time, keyed by input port: the materialization mode plus, for a static
+	// selector, the exact exposed path set with per-path digests. It is
+	// occurrence data — it never enters the sealed bytes and never enters
+	// ValidationResult.IntrinsicMetadata.
+	InputExposures     map[string]InputExposure `json:"input_exposures,omitempty"`
+	OutputDeclarations []Port                   `json:"output_declarations"`
+	Outputs            []OutputSource           `json:"-"`
 }
 
 // UploadRequest is the process-local description of one authenticated manual
@@ -1296,6 +1324,16 @@ func (r SealRequest) Validate() error {
 	if err := ValidatePorts(r.OutputDeclarations); err != nil {
 		return err
 	}
+	candidateInputs := make(map[string]struct{}, len(r.CandidateInputs))
+	for _, name := range r.CandidateInputs {
+		if _, exposed := r.Inputs[name]; !exposed {
+			return fmt.Errorf("snapshot: candidate input %q is not an exposed input", name)
+		}
+		if _, duplicate := candidateInputs[name]; duplicate {
+			return fmt.Errorf("snapshot: candidate input %q is declared more than once", name)
+		}
+		candidateInputs[name] = struct{}{}
+	}
 	declarations := make(map[string]Port, len(r.OutputDeclarations))
 	for _, declaration := range r.OutputDeclarations {
 		declarations[declaration.Name] = declaration
@@ -1348,7 +1386,7 @@ func (r SealRequest) commitContext() SealCommitContext {
 			StepKind: r.StepKind, StepName: r.StepName,
 			WorkflowDefinitionID: r.WorkflowDefinitionID, WorkflowRunID: r.WorkflowRunID,
 		},
-		InputOrder: r.InputOrder, Inputs: r.Inputs,
+		InputOrder: r.InputOrder, Inputs: r.Inputs, InputExposures: r.InputExposures,
 	}
 }
 
@@ -1369,6 +1407,8 @@ func (r SealRequest) Clone() SealRequest {
 	r.WorkflowRunID = cloneWorkflowRunID(r.WorkflowRunID)
 	r.InputOrder = append([]string(nil), r.InputOrder...)
 	r.Inputs = cloneSnapshotRefs(r.Inputs)
+	r.CandidateInputs = append([]string(nil), r.CandidateInputs...)
+	r.InputExposures = cloneInputExposures(r.InputExposures)
 	r.OutputDeclarations = append([]Port(nil), r.OutputDeclarations...)
 	if r.Outputs != nil {
 		outputs := make([]OutputSource, len(r.Outputs))

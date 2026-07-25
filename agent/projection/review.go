@@ -113,7 +113,7 @@ func (projector *ReviewProjector) Project(ctx context.Context, ref snapshot.Snap
 	}
 
 	var sealed contracts.Record[contracts.ReviewBody]
-	if err := contracts.DecodeRecord(recordJSON, snapshot.TypeRef("review/v1"), &sealed); err != nil {
+	if err := contracts.DecodeSealedRecord(recordJSON, snapshot.TypeRef("review/v1"), &sealed); err != nil {
 		return fmt.Errorf("%w: decode record.json: %v", ErrCorruptSnapshot, err)
 	}
 	if err := sealed.Body.Validate(sealed.Subjects); err != nil {

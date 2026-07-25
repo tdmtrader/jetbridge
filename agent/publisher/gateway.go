@@ -958,7 +958,7 @@ func inspectRepositoryChangeRecord(ctx context.Context, rootPath string, maximum
 		return contracts.Record[contracts.RepositoryChangeBody]{}, fmt.Errorf("publisher gateway: anchor repository change: %w", err)
 	}
 	defer root.Close()
-	record, err := contracts.ReadRepositoryChangeRecord(ctx, root)
+	record, err := contracts.ReadSealedRepositoryChangeRecord(ctx, root)
 	if err != nil {
 		return contracts.Record[contracts.RepositoryChangeBody]{}, fmt.Errorf("publisher gateway: validate repository-change record: %w", err)
 	}

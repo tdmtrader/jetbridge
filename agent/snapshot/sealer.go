@@ -127,7 +127,12 @@ func (sealer *BatchSealer) Seal(ctx context.Context, request SealRequest) (resul
 		return map[string]SealedOutput{}, nil
 	}
 
-	validationContext, err := NewValidationContext(request.Inputs, sealer.inputOpener(request.TeamID))
+	validationContext, err := NewValidationContext(
+		request.Inputs,
+		sealer.inputOpener(request.TeamID),
+		WithCandidatePorts(request.CandidateInputs...),
+		WithInputExposures(request.InputExposures),
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -186,7 +191,9 @@ func (sealer *BatchSealer) Seal(ctx context.Context, request SealRequest) (resul
 			err = root.Close()
 			return nil, errors.Join(fmt.Errorf("snapshot: resolve output %q validator returned nil", source.ClientKey), err)
 		}
-		validation, validationErr := validator.Validate(ctx, root, validationContext)
+		// The sealer is the seal-time gate by definition: this tree is what the
+		// step just wrote and nothing about it has been certified yet.
+		validation, validationErr := validator.AdmitForSeal(ctx, root, validationContext)
 		closeErr = root.Close()
 		if validationErr != nil || closeErr != nil {
 			return nil, errors.Join(
@@ -270,7 +277,9 @@ func (sealer *BatchSealer) Upload(ctx context.Context, request UploadRequest) (r
 		closeErr = root.Close()
 		return Snapshot{}, errors.Join(contextErr, closeErr)
 	}
-	validation, validationErr := validator.Validate(ctx, root, validationContext)
+	// An upload is a fresh candidate too: the uploader has authority over
+	// nothing, so it goes through seal-time admission.
+	validation, validationErr := validator.AdmitForSeal(ctx, root, validationContext)
 	closeErr = root.Close()
 	if validationErr != nil || closeErr != nil {
 		return Snapshot{}, errors.Join(

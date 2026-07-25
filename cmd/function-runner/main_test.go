@@ -102,7 +102,7 @@ func TestMergeModesProduceASealableChangeAndAReport(t *testing.T) {
 		t.Fatal(err)
 	}
 	var record contracts.Record[contracts.RepositoryChangeBody]
-	if err := contracts.DecodeRecord(recordBytes, snapshot.TypeRef("repository-change/v1"), &record); err != nil {
+	if err := contracts.DecodeSealedRecord(recordBytes, snapshot.TypeRef("repository-change/v1"), &record); err != nil {
 		t.Fatalf("merged record.json is not a sealed repository-change/v1 record: %v", err)
 	}
 	if err := record.Body.Validate(record.Subjects); err != nil {
@@ -280,7 +280,7 @@ func repositoryIdentity(t *testing.T, directory string) string {
 		t.Fatal(err)
 	}
 	defer root.Close()
-	result, err := validator.Validate(context.Background(), root, snapshot.ValidationContext{})
+	result, err := validator.RevalidateSealed(context.Background(), root, snapshot.ValidationContext{})
 	if err != nil {
 		t.Fatalf("validate %s: %v", directory, err)
 	}

@@ -24,7 +24,11 @@ func (registry *registryStub) Lookup(ref snapshot.TypeRef) (snapshot.Validator, 
 
 type validatorFunc func(context.Context, *os.Root, snapshot.ValidationContext) (snapshot.ValidationResult, error)
 
-func (function validatorFunc) Validate(ctx context.Context, root *os.Root, validationContext snapshot.ValidationContext) (snapshot.ValidationResult, error) {
+func (function validatorFunc) AdmitForSeal(ctx context.Context, root *os.Root, validationContext snapshot.ValidationContext) (snapshot.ValidationResult, error) {
+	return function(ctx, root, validationContext)
+}
+
+func (function validatorFunc) RevalidateSealed(ctx context.Context, root *os.Root, validationContext snapshot.ValidationContext) (snapshot.ValidationResult, error) {
 	return function(ctx, root, validationContext)
 }
 

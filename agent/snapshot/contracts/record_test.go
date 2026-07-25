@@ -31,8 +31,8 @@ func TestRecordEnvelopeBindsAuthorityToExactInputs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRecord(): %v", err)
 	}
-	if err := record.ValidateEnvelope(mustTypeRef(t, "review/v1"), validationContext); err != nil {
-		t.Fatalf("ValidateEnvelope(): %v", err)
+	if err := record.AdmitForSeal(mustTypeRef(t, "review/v1"), validationContext); err != nil {
+		t.Fatalf("AdmitForSeal(): %v", err)
 	}
 
 	tests := []struct {
@@ -100,8 +100,8 @@ func TestRecordEnvelopeBindsAuthorityToExactInputs(t *testing.T) {
 			candidate := record
 			candidate.Subjects = append([]contracts.Subject(nil), record.Subjects...)
 			tc.setup(&candidate)
-			if err := candidate.ValidateEnvelope(mustTypeRef(t, "review/v1"), validationContext); err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("ValidateEnvelope() error = %v, want %q", err, tc.want)
+			if err := candidate.AdmitForSeal(mustTypeRef(t, "review/v1"), validationContext); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("AdmitForSeal() error = %v, want %q", err, tc.want)
 			}
 		})
 	}
@@ -135,8 +135,8 @@ func TestRecordEnvelopeStrictJSONHasNoLocalSnapshotID(t *testing.T) {
 		1,
 	))
 	var decoded contracts.Record[json.RawMessage]
-	if err := contracts.DecodeRecord(withLocalID, mustTypeRef(t, "review/v1"), &decoded); err == nil || !strings.Contains(err.Error(), "unknown field") {
-		t.Fatalf("DecodeRecord() error = %v, want strict unknown-field error", err)
+	if err := contracts.DecodeSealedRecord(withLocalID, mustTypeRef(t, "review/v1"), &decoded); err == nil || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("DecodeSealedRecord() error = %v, want strict unknown-field error", err)
 	}
 }
 

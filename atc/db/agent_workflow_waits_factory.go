@@ -665,6 +665,18 @@ func materializeWorkflowWaitAnswer(
 			return err
 		}
 	}
+	if rows == 1 {
+		// Exposure lineage stays total: the answering party was shown the whole
+		// question tree, and nothing was materialized into a filesystem mount.
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO agent_snapshot_exposures
+				(production_id, input_port, input_snapshot_id, materialization_mode, tree_digest)
+			VALUES ($1, $2, $3, 'full', $4)
+		`, productionID, wait.QuestionName, int64(wait.Question.ID), wait.Question.Digest.String())
+		if err != nil {
+			return err
+		}
+	}
 	var lineageID int64
 	err = tx.QueryRowContext(ctx, `
 		SELECT input_snapshot_id FROM agent_snapshot_lineage

@@ -3182,6 +3182,85 @@ var _ = Describe("typed snapshot step declarations", func() {
 		Expect(joined).To(ContainSubstring(`output_types["missing"] does not name a declared agent output`))
 	})
 
+	It("enforces candidate-port coherence for pipelines set directly, not only for workflow functions", func() {
+		// agent/workflow/typecheck.go enforces this pair of rules when a pipeline
+		// is compiled from a workflow-function source. A pipeline set directly with
+		// fly never goes through that checker, so without the same rule here a
+		// selection step with no candidate ports fails at seal time inside the
+		// build instead of at `fly set-pipeline`.
+		selectingAgent := func() *atc.AgentStep {
+			agent := validAgent()
+			agent.Inputs = []string{"left", "right"}
+			agent.Outputs = []string{"choice"}
+			agent.SnapshotInputs = map[string]atc.SnapshotInputConfig{
+				"left":  {Type: snapshot.TypeRef("repository-change/v1"), Candidate: true},
+				"right": {Type: snapshot.TypeRef("repository-change/v1"), Candidate: true},
+			}
+			agent.SnapshotOutputs = map[string]atc.SnapshotOutputConfig{
+				"choice": {Type: snapshot.TypeRef("selection/v1")},
+			}
+			return agent
+		}
+
+		By("accepting a coherent selecting step")
+		Expect(validateStep(selectingAgent())).To(BeEmpty())
+
+		By("rejecting a selection output with no candidate input port")
+		agent := selectingAgent()
+		agent.SnapshotInputs["left"] = atc.SnapshotInputConfig{Type: snapshot.TypeRef("repository-change/v1")}
+		agent.SnapshotInputs["right"] = atc.SnapshotInputConfig{Type: snapshot.TypeRef("repository-change/v1")}
+		Expect(strings.Join(validateStep(agent), "\n")).To(ContainSubstring(
+			`output_types: a "selection/v1" output requires at least one candidate input port`,
+		))
+
+		By("rejecting candidate input ports on a non-selecting step")
+		agent = selectingAgent()
+		agent.SnapshotOutputs["choice"] = atc.SnapshotOutputConfig{Type: snapshot.TypeRef("review/v1")}
+		Expect(strings.Join(validateStep(agent), "\n")).To(ContainSubstring(
+			`input_types: candidate input ports "left", "right" require a "selection/v1" output`,
+		))
+
+		By("rejecting candidate input ports that do not share one common snapshot type")
+		agent = selectingAgent()
+		agent.SnapshotInputs["right"] = atc.SnapshotInputConfig{Type: snapshot.TypeRef("review/v1"), Candidate: true}
+		Expect(strings.Join(validateStep(agent), "\n")).To(ContainSubstring(
+			`input_types: candidate input ports must share one common snapshot type`,
+		))
+
+		By("rejecting a candidate input port that is also optional")
+		// The executor only forwards BOUND candidate ports to the sealer
+		// (atc/exec/task_step.go, atc/exec/agent_step.go), so an unbound optional
+		// candidate silently leaves the declared candidate set. Candidacy is
+		// server-side authority and must not be run-dependent.
+		agent = selectingAgent()
+		agent.SnapshotInputs["right"] = atc.SnapshotInputConfig{
+			Type: snapshot.TypeRef("repository-change/v1"), Candidate: true, Optional: true,
+		}
+		Expect(strings.Join(validateStep(agent), "\n")).To(ContainSubstring(
+			`input_types["right"]: a candidate input port cannot be optional`,
+		))
+
+		By("applying the same rules to a task step set directly")
+		task := validTask()
+		task.Config.Inputs = []atc.TaskInputConfig{{Name: "left"}, {Name: "right"}}
+		task.Config.Outputs = []atc.TaskOutputConfig{{Name: "choice"}}
+		task.InputMapping = nil
+		task.OutputMapping = nil
+		task.SnapshotInputs = map[string]atc.SnapshotInputConfig{
+			"left":  {Type: snapshot.TypeRef("repository-change/v1"), Candidate: true},
+			"right": {Type: snapshot.TypeRef("repository-change/v1"), Candidate: true},
+		}
+		task.SnapshotOutputs = map[string]atc.SnapshotOutputConfig{
+			"choice": {Type: snapshot.TypeRef("selection/v1")},
+		}
+		Expect(validateStep(task)).To(BeEmpty())
+
+		task.SnapshotOutputs["choice"] = atc.SnapshotOutputConfig{Type: snapshot.TypeRef("repository-change/v1")}
+		Expect(strings.Join(validateStep(task), "\n")).To(ContainSubstring(
+			`input_types: candidate input ports "left", "right" require a "selection/v1" output`,
+		))
+	})
+
 	It("enforces producer retention and workflow metadata as an all-or-none group", func() {
 		cases := []struct {
 			name   string

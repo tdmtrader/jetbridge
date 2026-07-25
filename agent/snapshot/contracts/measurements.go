@@ -128,27 +128,33 @@ func (measurement Measurement) Validate(subjects map[string]struct{}) error {
 
 type measurementsValidator struct{}
 
-func ReadMeasurementsRecord(ctx context.Context, root *os.Root) (Record[MeasurementsBody], error) {
-	var record Record[MeasurementsBody]
-	if err := decodeStrictDocument(ctx, root, "record.json", &record); err != nil {
+// ReadSealedMeasurementsRecord re-validates one stored measurements/v1 tree at
+// the READ-TIME gate. It takes no step declarations, because a reader loading a
+// stored record has none.
+func ReadSealedMeasurementsRecord(ctx context.Context, root *os.Root) (Record[MeasurementsBody], error) {
+	record, err := readSealedRecord[MeasurementsBody](ctx, root, measurementsType)
+	if err != nil {
 		return Record[MeasurementsBody]{}, err
 	}
-	if err := record.validateEnvelopeShape(snapshot.TypeRef("measurements/v1")); err != nil {
-		return Record[MeasurementsBody]{}, fmt.Errorf("snapshot contracts: record.json: %w", err)
-	}
-	if err := record.Body.Validate(record.Subjects); err != nil {
-		return Record[MeasurementsBody]{}, fmt.Errorf("snapshot contracts: measurements record: %w", err)
-	}
-	return record, nil
+	return record, measurementsBody(record)
 }
 
-func (measurementsValidator) Validate(ctx context.Context, root *os.Root, validationContext snapshot.ValidationContext) (snapshot.ValidationResult, error) {
-	record, err := ReadMeasurementsRecord(ctx, root)
+func (measurementsValidator) AdmitForSeal(ctx context.Context, root *os.Root, declarations snapshot.ValidationContext) (snapshot.ValidationResult, error) {
+	record, err := admitRecordForSeal[MeasurementsBody](ctx, root, measurementsType, declarations)
 	if err != nil {
 		return snapshot.ValidationResult{}, err
 	}
-	if err := record.ValidateEnvelope(snapshot.TypeRef("measurements/v1"), validationContext); err != nil {
-		return snapshot.ValidationResult{}, fmt.Errorf("snapshot contracts: record.json: %w", err)
+	return snapshot.ValidationResult{}, measurementsBody(record)
+}
+
+func (measurementsValidator) RevalidateSealed(ctx context.Context, root *os.Root, _ snapshot.ValidationContext) (snapshot.ValidationResult, error) {
+	_, err := ReadSealedMeasurementsRecord(ctx, root)
+	return snapshot.ValidationResult{}, err
+}
+
+func measurementsBody(record Record[MeasurementsBody]) error {
+	if err := record.Body.Validate(record.Subjects); err != nil {
+		return fmt.Errorf("snapshot contracts: measurements record: %w", err)
 	}
-	return snapshot.ValidationResult{}, nil
+	return nil
 }

@@ -46,6 +46,54 @@ func TestSealRequestValidatesProcessLocalOutputSources(t *testing.T) {
 	}
 }
 
+func TestSealRequestValidatesDeclaredCandidateInputs(t *testing.T) {
+	workflowDefinitionID := 7
+	workflowRunID := WorkflowRunID(9)
+	openTar := func(context.Context) (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader("tar")), nil
+	}
+	digest := mustTestDigest(t)
+	base := SealRequest{
+		BuildID: 1, TeamID: 2, TeamName: "main", CreatedBy: "concourse",
+		PlanID: "plan", Attempt: "1", StepKind: "agent", StepName: "judge",
+		WorkflowDefinitionID: &workflowDefinitionID,
+		WorkflowRunID:        &workflowRunID,
+		InputOrder:           []string{"left", "right", "base"},
+		Inputs: map[string]SnapshotRef{
+			"left":  {ID: 1, Type: TypeRef("repository-change/v1"), Digest: digest},
+			"right": {ID: 2, Type: TypeRef("repository-change/v1"), Digest: digest},
+			"base":  {ID: 3, Type: TypeRef("repository/v1"), Digest: digest},
+		},
+		CandidateInputs:    []string{"left", "right"},
+		OutputDeclarations: []Port{{Name: "selection", Type: TypeRef("selection/v1")}},
+		Outputs: []OutputSource{{
+			ClientKey: "selection", Port: Port{Name: "selection", Type: TypeRef("selection/v1")},
+			OpenTar: openTar,
+		}},
+	}
+
+	if err := base.Validate(); err != nil {
+		t.Fatalf("SealRequest.Validate() error = %v", err)
+	}
+	clone := base.Clone()
+	clone.CandidateInputs[0] = "mutated"
+	if base.CandidateInputs[0] != "left" {
+		t.Fatalf("SealRequest.Clone() aliased candidate inputs: %q", base.CandidateInputs)
+	}
+
+	unexposed := base.Clone()
+	unexposed.CandidateInputs = []string{"left", "ghost"}
+	if err := unexposed.Validate(); err == nil || !strings.Contains(err.Error(), "candidate input") {
+		t.Fatalf("SealRequest.Validate() error = %v, want unexposed candidate-input rejection", err)
+	}
+
+	duplicate := base.Clone()
+	duplicate.CandidateInputs = []string{"left", "left"}
+	if err := duplicate.Validate(); err == nil || !strings.Contains(err.Error(), "candidate input") {
+		t.Fatalf("SealRequest.Validate() error = %v, want duplicate candidate-input rejection", err)
+	}
+}
+
 func TestSealRequestRejectsPartialWorkflowAssociation(t *testing.T) {
 	workflowDefinitionID := 7
 	request := SealRequest{

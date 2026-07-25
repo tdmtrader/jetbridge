@@ -520,7 +520,11 @@ func validateTreeMetadata(
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
-	result, validationErr := validator.Validate(ctx, root, validationContext)
+	// Everything this function validates was sealed by an earlier step: the
+	// candidate change and the delivery target are both stored snapshots. They go
+	// through read-time revalidation, so a descriptor bump that happened after
+	// they were sealed is a versioning event and not a merge failure.
+	result, validationErr := validator.RevalidateSealed(ctx, root, validationContext)
 	closeErr := root.Close()
 	if err := errors.Join(validationErr, closeErr); err != nil {
 		return nil, err
@@ -553,15 +557,18 @@ func repositoryMetadata(
 	return metadata, nil
 }
 
-// readChangeRecord reads the candidate's sealed record.json. The contract layer
-// owns the bounded strict decode, the envelope shape, and the body invariants,
-// so this package keeps no second copy of those rules.
+// readChangeRecord reads the candidate's sealed record.json at the READ-TIME
+// gate: the candidate was sealed by an earlier step, so it may legitimately carry
+// a superseded schema digest. The contract layer owns the bounded strict decode,
+// the envelope shape, and the body invariants, so this package keeps no second
+// copy of those rules. The subject binding against this step's own inputs is done
+// by the validator's RevalidateSealed, which Merge runs first.
 func readChangeRecord(ctx context.Context, changeRoot string) (contracts.Record[contracts.RepositoryChangeBody], error) {
 	root, err := os.OpenRoot(changeRoot)
 	if err != nil {
 		return contracts.Record[contracts.RepositoryChangeBody]{}, fmt.Errorf("open candidate root: %w", err)
 	}
-	record, readErr := contracts.ReadRepositoryChangeRecord(ctx, root)
+	record, readErr := contracts.ReadSealedRepositoryChangeRecord(ctx, root)
 	closeErr := root.Close()
 	if err := errors.Join(readErr, closeErr); err != nil {
 		return contracts.Record[contracts.RepositoryChangeBody]{}, fmt.Errorf("%s: %w", recordFileName, err)
@@ -882,12 +889,14 @@ func WriteMergedChange(ctx context.Context, outputRoot string, merged *Merged) e
 	}
 	encoded = append(encoded, '\n')
 	// A reader trusts the envelope for contract identity, so validate the exact
-	// bytes about to be written rather than the in-memory value: DecodeRecord
-	// rejects anything whose record_version, type, schema digest, or subject set
-	// is not the sealed shape, and the body carries the change invariants.
-	// Everything below is then driven by what was actually decoded.
+	// bytes about to be written rather than the in-memory value. These bytes are a
+	// candidate this function is authoring, so they go through the SEAL-TIME gate:
+	// DecodeRecordForSeal rejects anything whose record_version, type, subject set
+	// or schema digest is not the sealed shape, and in particular requires the
+	// CURRENT schema digest rather than any superseded revision. The body carries
+	// the change invariants. Everything below is driven by what was decoded.
 	var sealed contracts.Record[contracts.RepositoryChangeBody]
-	if err := contracts.DecodeRecord(encoded, repositoryChangeType, &sealed); err != nil {
+	if err := contracts.DecodeRecordForSeal(encoded, repositoryChangeType, &sealed); err != nil {
 		return fmt.Errorf("repository merge: invalid repository-change/v1: %w", err)
 	}
 	if err := sealed.Body.Validate(sealed.Subjects); err != nil {

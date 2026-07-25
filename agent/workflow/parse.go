@@ -486,8 +486,11 @@ func validateSnapshotTypeMapSource(value any, path string, output bool) error {
 		return nil
 	}
 
+	// candidate is an input-only port declaration: it marks an alternative a
+	// selecting step may choose between. Outputs have no candidate notion, so the
+	// key stays out of the output allowlist above.
 	for name, value := range configs {
-		if err := validateObjectSource(value, fmt.Sprintf("%s[%q]", path, name), []string{"type", "optional"}); err != nil {
+		if err := validateObjectSource(value, fmt.Sprintf("%s[%q]", path, name), []string{"type", "optional", "candidate"}); err != nil {
 			return err
 		}
 	}

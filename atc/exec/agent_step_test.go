@@ -516,6 +516,44 @@ var _ = Describe("AgentStep", func() {
 			Expect(flight.Snapshot).To(BeNil())
 		})
 
+		Context("when an input port is declared a candidate port", func() {
+			BeforeEach(func() {
+				declaration := agentPlan.SnapshotInputs["repository"]
+				declaration.Candidate = true
+				agentPlan.SnapshotInputs["repository"] = declaration
+			})
+
+			It("seals with the declared candidate ports so selection authority is server-side", func() {
+				ok, err := step.Run(ctx, state)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ok).To(BeTrue())
+				Expect(outputSealer.calls).To(HaveLen(1))
+				Expect(outputSealer.calls[0].CandidateInputs).To(Equal([]string{"repository"}))
+			})
+		})
+
+		It("captures full-tree exposure lineage at mount time for every typed input", func() {
+			ok, err := step.Run(ctx, state)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(ok).To(BeTrue())
+			Expect(outputSealer.calls).To(HaveLen(1))
+			Expect(outputSealer.calls[0].InputExposures).To(Equal(map[string]snapshot.InputExposure{
+				"repository": snapshot.FullTreeExposure("some-artifact-root/repository", inputRef.Digest),
+			}))
+			Expect(outputSealer.calls[0].InputExposures["repository"].MountPath).To(
+				Equal(chosenContainer.Spec.Inputs[0].DestinationPath),
+				"exposure lineage must record the path the input was actually mounted at",
+			)
+		})
+
+		It("seals with no candidate ports when none are declared", func() {
+			ok, err := step.Run(ctx, state)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(ok).To(BeTrue())
+			Expect(outputSealer.calls).To(HaveLen(1))
+			Expect(outputSealer.calls[0].CandidateInputs).To(BeEmpty())
+		})
+
 		Context("when the authenticated workflow producer has only an internal output", func() {
 			BeforeEach(func() {
 				declaration := agentPlan.SnapshotOutputs["workspace"]

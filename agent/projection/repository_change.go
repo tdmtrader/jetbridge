@@ -369,7 +369,7 @@ func readRepositoryChangeRecord(ctx context.Context, rootPath string) (contracts
 		return contracts.Record[contracts.RepositoryChangeBody]{}, fmt.Errorf("repository-change projection: anchor subject snapshot: %w", err)
 	}
 	defer root.Close()
-	record, err := contracts.ReadRepositoryChangeRecord(ctx, root)
+	record, err := contracts.ReadSealedRepositoryChangeRecord(ctx, root)
 	if err != nil {
 		return contracts.Record[contracts.RepositoryChangeBody]{}, fmt.Errorf("repository-change projection: %w", err)
 	}

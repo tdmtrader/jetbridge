@@ -91,7 +91,11 @@ func TestRegistryInstancesDoNotShareMutableState(t *testing.T) {
 
 type registryValidatorStub struct{}
 
-func (registryValidatorStub) Validate(context.Context, *os.Root, snapshot.ValidationContext) (snapshot.ValidationResult, error) {
+func (registryValidatorStub) AdmitForSeal(context.Context, *os.Root, snapshot.ValidationContext) (snapshot.ValidationResult, error) {
+	return snapshot.ValidationResult{}, nil
+}
+
+func (registryValidatorStub) RevalidateSealed(context.Context, *os.Root, snapshot.ValidationContext) (snapshot.ValidationResult, error) {
 	return snapshot.ValidationResult{}, nil
 }
 

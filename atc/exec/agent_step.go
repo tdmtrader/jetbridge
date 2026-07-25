@@ -501,11 +501,19 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 			if ref.Type != declaration.Type {
 				return false, fmt.Errorf("agent typed input %q snapshot type %q does not match declared type %q", name, ref.Type, declaration.Type)
 			}
+			destination := artifactPath(workdir, name, "")
 			containerSpec.Inputs = append(containerSpec.Inputs, runtime.Input{
-				Artifact: entry.Artifact, DestinationPath: artifactPath(workdir, name, ""), FromCache: entry.FromCache,
+				Artifact: entry.Artifact, DestinationPath: destination, FromCache: entry.FromCache,
 			})
 			snapshotInputs.order = append(snapshotInputs.order, name)
 			snapshotInputs.refs[name] = ref
+			// An agent could read anything under this mount, so lineage records
+			// the whole tree. Dynamic, agent-driven partial mounting is
+			// prohibited: its path set is unknown at admission.
+			snapshotInputs.recordExposure(name, ref, destination)
+			if declaration.Candidate {
+				snapshotInputs.candidates = append(snapshotInputs.candidates, name)
+			}
 			continue
 		}
 		entry, found := repository.ArtifactEntryFor(build.ArtifactName(name))
@@ -1273,6 +1281,8 @@ func (step *AgentStep) sealTypedOutputs(
 		StepKind: "agent", StepName: step.plan.Name,
 		WorkflowDefinitionID: workflowDefinitionID, WorkflowRunID: workflowRunID,
 		InputOrder: append([]string(nil), inputs.order...), Inputs: cloneExecSnapshotRefs(inputs.refs),
+		CandidateInputs:    append([]string(nil), inputs.candidates...),
+		InputExposures:     cloneExecInputExposures(inputs.exposures),
 		OutputDeclarations: declarations, Outputs: sources,
 	})
 	if err != nil {

@@ -17,6 +17,17 @@ import (
 
 const RecordVersion = "1.0.0"
 
+// The record contract types whose gates are spelled out in this package. Each
+// one has an entry in recordSchemaHistories.
+const (
+	reviewType           = snapshot.TypeRef("review/v1")
+	diagnosisType        = snapshot.TypeRef("diagnosis/v1")
+	validationType       = snapshot.TypeRef("validation/v1")
+	repositoryChangeType = snapshot.TypeRef("repository-change/v1")
+	selectionType        = snapshot.TypeRef("selection/v1")
+	measurementsType     = snapshot.TypeRef("measurements/v1")
+)
+
 type SubjectRole string
 
 const (
@@ -98,16 +109,43 @@ func NewRecord[T any](ref snapshot.TypeRef, subjects []Subject, body T) (Record[
 		Subjects:      append([]Subject(nil), subjects...),
 		Body:          body,
 	}
-	if err := record.validateEnvelopeShape(ref); err != nil {
+	if err := record.validateEnvelopeShape(ref, currentSchemaDigestOnly); err != nil {
 		return Record[T]{}, err
 	}
 	return record, nil
 }
 
-func (record Record[T]) ValidateEnvelope(expected snapshot.TypeRef, validationContext snapshot.ValidationContext) error {
-	if err := record.validateEnvelopeShape(expected); err != nil {
+// AdmitForSeal is the SEAL-TIME gate for a record envelope. It judges a
+// candidate an agent just authored, so it requires the CURRENT schema digest for
+// the type and binds every subject to a server-declared exposed input.
+//
+// The declarations are a mandatory argument rather than an option: seal-time
+// admission that cannot consult the server's own view of the step has nothing
+// left to check a producer's claims against.
+func (record Record[T]) AdmitForSeal(expected snapshot.TypeRef, declarations snapshot.ValidationContext) error {
+	if err := record.validateEnvelopeShape(expected, currentSchemaDigestOnly); err != nil {
 		return err
 	}
+	return record.RebindSubjectsToExposedInputs(declarations)
+}
+
+// RevalidateSealed is the READ-TIME gate for a record envelope. It judges bytes
+// the platform already sealed and certified, so it accepts any accepted schema
+// digest for the type and takes no declarations at all — a reader loading a
+// stored record has none, and requiring them would make the corpus unreadable.
+func (record Record[T]) RevalidateSealed(expected snapshot.TypeRef) error {
+	return record.validateEnvelopeShape(expected, anyAcceptedSchemaDigest)
+}
+
+// RebindSubjectsToExposedInputs checks every subject against the exposed inputs
+// of a live step.
+//
+// At seal time this is part of admission and AdmitForSeal always runs it. It is
+// exposed separately only for the read-time caller that happens to hold live
+// inputs — an offline merge re-checking the candidate it was handed against its
+// own port bindings. It is an ADDITIONAL check there, never a substitute for
+// RevalidateSealed, and never a precondition for a record being readable.
+func (record Record[T]) RebindSubjectsToExposedInputs(validationContext snapshot.ValidationContext) error {
 	for _, subject := range record.Subjects {
 		ref, found := validationContext.Input(subject.Input)
 		if !found {
@@ -123,7 +161,59 @@ func (record Record[T]) ValidateEnvelope(expected snapshot.TypeRef, validationCo
 	return nil
 }
 
-func (record Record[T]) validateEnvelopeShape(expected snapshot.TypeRef) error {
+// schemaAdmission is which of a record type's accepted schema digests one gate
+// lets a record pin.
+//
+// The zero value admits nothing. A new envelope path that forgets to state which
+// gate it is therefore fails closed rather than silently inheriting the looser
+// rule, which is the failure mode this type exists to prevent — there is no
+// third value to construct and no boolean to invert.
+type schemaAdmission int
+
+const (
+	schemaAdmissionUnstated schemaAdmission = iota
+
+	// currentSchemaDigestOnly is the SEAL-TIME rule. An agent-authored candidate
+	// must pin the digest the platform is handing out right now. Accepting an
+	// older revision here would let a producer choose which contract identity its
+	// own output advertises, which is authority manufactured from a producer's
+	// claim, and would falsify the promise the runner prompt makes to the agent
+	// that the values it was handed are verified again when the output is sealed.
+	currentSchemaDigestOnly
+
+	// anyAcceptedSchemaDigest is the READ-TIME rule. Stored records are re-decoded
+	// on read (agent/publisher/gateway.go, agent/projection/review.go,
+	// agent/projection/repository_change.go, agent/functions/repositorymerge), so
+	// demanding the current digest there would turn a descriptor bump into
+	// retroactive corruption of every record sealed under the previous revision,
+	// surfacing as ErrCorruptSnapshot rather than as a versioning event.
+	anyAcceptedSchemaDigest
+)
+
+func (admission schemaAdmission) admit(expected snapshot.TypeRef, schema snapshot.Digest) error {
+	current, found := SchemaDigestFor(expected)
+	if !found {
+		return fmt.Errorf("snapshot contracts: %q is not a record type", expected)
+	}
+	switch admission {
+	case currentSchemaDigestOnly:
+		if schema != current {
+			return fmt.Errorf(
+				"record schema must be exactly the current schema digest %q for %q at seal time, got %q",
+				current, expected, schema,
+			)
+		}
+	case anyAcceptedSchemaDigest:
+		if !IsAcceptedSchemaDigest(expected, schema) {
+			return fmt.Errorf("record schema %q is not an accepted schema digest for %q (current is %q)", schema, expected, current)
+		}
+	default:
+		return fmt.Errorf("snapshot contracts: record schema admission for %q did not state a gate", expected)
+	}
+	return nil
+}
+
+func (record Record[T]) validateEnvelopeShape(expected snapshot.TypeRef, admission schemaAdmission) error {
 	if record.RecordVersion != RecordVersion {
 		return fmt.Errorf("record_version must be exactly %s", RecordVersion)
 	}
@@ -133,12 +223,8 @@ func (record Record[T]) validateEnvelopeShape(expected snapshot.TypeRef) error {
 	if record.Type != expected {
 		return fmt.Errorf("record type must be exactly %q", expected)
 	}
-	schema, found := SchemaDigestFor(expected)
-	if !found {
-		return fmt.Errorf("snapshot contracts: %q is not a record type", expected)
-	}
-	if record.Schema != schema {
-		return fmt.Errorf("record schema must be exactly %q for %q", schema, expected)
+	if err := admission.admit(expected, record.Schema); err != nil {
+		return err
 	}
 	ids := make([]string, len(record.Subjects))
 	inputs := make(map[string]struct{}, len(record.Subjects))
@@ -155,7 +241,19 @@ func (record Record[T]) validateEnvelopeShape(expected snapshot.TypeRef) error {
 	return ValidateEntityIDs("subjects", ids)
 }
 
-func DecodeRecord[T any](data []byte, expected snapshot.TypeRef, target *Record[T]) error {
+// DecodeRecordForSeal decodes a candidate record.json the producing step just
+// wrote and runs the SEAL-TIME envelope gate over the exact bytes.
+func DecodeRecordForSeal[T any](data []byte, expected snapshot.TypeRef, target *Record[T]) error {
+	return decodeRecord(data, expected, target, currentSchemaDigestOnly)
+}
+
+// DecodeSealedRecord decodes a stored record.json the platform already sealed
+// and runs the READ-TIME envelope gate over it.
+func DecodeSealedRecord[T any](data []byte, expected snapshot.TypeRef, target *Record[T]) error {
+	return decodeRecord(data, expected, target, anyAcceptedSchemaDigest)
+}
+
+func decodeRecord[T any](data []byte, expected snapshot.TypeRef, target *Record[T], admission schemaAdmission) error {
 	if target == nil {
 		return fmt.Errorf("snapshot contracts: record target is required")
 	}
@@ -171,18 +269,33 @@ func DecodeRecord[T any](data []byte, expected snapshot.TypeRef, target *Record[
 		}
 		return fmt.Errorf("snapshot contracts: decode trailing record.json data: %w", err)
 	}
-	if err := target.validateEnvelopeShape(expected); err != nil {
+	if err := target.validateEnvelopeShape(expected, admission); err != nil {
 		return fmt.Errorf("snapshot contracts: record.json: %w", err)
 	}
 	return nil
 }
 
-func readRecord[T any](ctx context.Context, root *os.Root, expected snapshot.TypeRef, validationContext snapshot.ValidationContext) (Record[T], error) {
+// admitRecordForSeal reads one candidate record.json out of a tree the producing
+// step just wrote and runs the SEAL-TIME envelope gate over it.
+func admitRecordForSeal[T any](ctx context.Context, root *os.Root, expected snapshot.TypeRef, declarations snapshot.ValidationContext) (Record[T], error) {
 	var record Record[T]
 	if err := decodeStrictDocument(ctx, root, "record.json", &record); err != nil {
 		return Record[T]{}, err
 	}
-	if err := record.ValidateEnvelope(expected, validationContext); err != nil {
+	if err := record.AdmitForSeal(expected, declarations); err != nil {
+		return Record[T]{}, fmt.Errorf("snapshot contracts: record.json: %w", err)
+	}
+	return record, nil
+}
+
+// readSealedRecord reads one record.json out of a tree the platform already
+// sealed and runs the READ-TIME envelope gate over it.
+func readSealedRecord[T any](ctx context.Context, root *os.Root, expected snapshot.TypeRef) (Record[T], error) {
+	var record Record[T]
+	if err := decodeStrictDocument(ctx, root, "record.json", &record); err != nil {
+		return Record[T]{}, err
+	}
+	if err := record.RevalidateSealed(expected); err != nil {
 		return Record[T]{}, fmt.Errorf("snapshot contracts: record.json: %w", err)
 	}
 	return record, nil

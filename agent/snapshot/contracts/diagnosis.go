@@ -147,13 +147,25 @@ func (action DiagnosisAction) Validate(hypotheses map[string]struct{}) error {
 
 type diagnosisValidator struct{}
 
-func (diagnosisValidator) Validate(ctx context.Context, root *os.Root, validationContext snapshot.ValidationContext) (snapshot.ValidationResult, error) {
-	record, err := readRecord[DiagnosisBody](ctx, root, "diagnosis/v1", validationContext)
+func (diagnosisValidator) AdmitForSeal(ctx context.Context, root *os.Root, declarations snapshot.ValidationContext) (snapshot.ValidationResult, error) {
+	record, err := admitRecordForSeal[DiagnosisBody](ctx, root, diagnosisType, declarations)
 	if err != nil {
 		return snapshot.ValidationResult{}, err
 	}
-	if err := record.Body.Validate(record.Subjects); err != nil {
-		return snapshot.ValidationResult{}, fmt.Errorf("snapshot contracts: record.json body: %w", err)
+	return snapshot.ValidationResult{}, diagnosisBody(record)
+}
+
+func (diagnosisValidator) RevalidateSealed(ctx context.Context, root *os.Root, _ snapshot.ValidationContext) (snapshot.ValidationResult, error) {
+	record, err := readSealedRecord[DiagnosisBody](ctx, root, diagnosisType)
+	if err != nil {
+		return snapshot.ValidationResult{}, err
 	}
-	return snapshot.ValidationResult{}, nil
+	return snapshot.ValidationResult{}, diagnosisBody(record)
+}
+
+func diagnosisBody(record Record[DiagnosisBody]) error {
+	if err := record.Body.Validate(record.Subjects); err != nil {
+		return fmt.Errorf("snapshot contracts: record.json body: %w", err)
+	}
+	return nil
 }

@@ -35,7 +35,10 @@ v8.0.1:1765921815
 # the pointer passes it, a lower-numbered migration would be skipped, so
 # PARK-V2 must renumber above the deployed head at landing time (the
 # standing ticket-core precedent).
-JETBRIDGE_VERSION=1773106126
+# 1773106127 = agent_snapshot_exposures/_exposure_paths (exposure and
+# materialization lineage). Its down migration drops static-selector path
+# sets; full-tree exposure is re-derivable from agent_snapshot_lineage.
+JETBRIDGE_VERSION=1773106127
 
 # Minimum supported source version (v6.x)
 MIN_SUPPORTED_VERSION=1601993582

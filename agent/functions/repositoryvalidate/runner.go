@@ -83,7 +83,10 @@ func (runner *Runner) Run(ctx context.Context, request Request) (contracts.Recor
 	if err != nil {
 		return contracts.Record[contracts.ValidationBody]{}, fmt.Errorf("repository validate: open candidate root: %w", err)
 	}
-	result, validationErr := validator.Validate(ctx, root, validationContext)
+	// request.Change is an already-sealed snapshot this function was handed to
+	// report on, not a candidate it authored, so it goes through read-time
+	// revalidation.
+	result, validationErr := validator.RevalidateSealed(ctx, root, validationContext)
 	closeErr := root.Close()
 	if err := ctx.Err(); err != nil {
 		return contracts.Record[contracts.ValidationBody]{}, err

@@ -182,7 +182,7 @@ func (reader experimentMeasurementsReader) ReadMeasurements(
 }
 
 func decodeExperimentMeasurements(ctx context.Context, root *os.Root) (contracts.MeasurementsDocument, error) {
-	record, err := contracts.ReadMeasurementsRecord(ctx, root)
+	record, err := contracts.ReadSealedMeasurementsRecord(ctx, root)
 	if err != nil {
 		return contracts.MeasurementsDocument{}, err
 	}

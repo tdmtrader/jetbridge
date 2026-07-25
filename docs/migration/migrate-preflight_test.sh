@@ -79,23 +79,35 @@ run_case() {
   fi
 }
 
+# These cases are relative to the script's own target, not to hard-coded
+# numbers: two of them only mean what they say when the "previous" version IS
+# the JetBridge target, so pinning literals here silently breaks the suite on
+# every migration bump.
+JETBRIDGE_TARGET="$(sed -n 's/^JETBRIDGE_VERSION=\([0-9]*\)$/\1/p' "${PREFLIGHT}")"
+if [[ -z "${JETBRIDGE_TARGET}" ]]; then
+  echo "could not read JETBRIDGE_VERSION from ${PREFLIGHT}"
+  exit 1
+fi
+BELOW_TARGET="$((JETBRIDGE_TARGET - 1))"
+ABOVE_TARGET="$((JETBRIDGE_TARGET + 1))"
+
 run_case \
   "rolled back JetBridge head" \
-  "1773106123" "down" "1773106122" \
+  "${JETBRIDGE_TARGET}" "down" "${BELOW_TARGET}" \
   0 \
-  "Current migration version: 1773106122" \
+  "Current migration version: ${BELOW_TARGET}" \
   "already at JetBridge version"
 
 run_case \
   "rolled back newer head to JetBridge" \
-  "1773106124" "down" "1773106123" \
+  "${ABOVE_TARGET}" "down" "${JETBRIDGE_TARGET}" \
   0 \
   "already at JetBridge version" \
   "downgrade not supported"
 
 run_case \
   "applied newer head" \
-  "1773106124" "up" "1773106123" \
+  "${ABOVE_TARGET}" "up" "${JETBRIDGE_TARGET}" \
   1 \
   "downgrade not supported" \
   ""

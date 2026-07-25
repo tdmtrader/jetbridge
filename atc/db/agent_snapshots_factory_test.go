@@ -532,6 +532,255 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 		Expect(pending).To(BeEmpty())
 	})
 
+	It("persists exposure and materialization lineage outside the sealed value", func() {
+		typeRef := snapshot.TypeRef(fmt.Sprintf("exposure-lineage-%d/v1", time.Now().UnixNano()))
+		sourceBuildID := newBuild(defaultTeam.ID())
+		diffValue, baseValue := digest("7"), digest("8")
+		diffRef := seal(sourceBuildID, "produce-diff", nil, nil, []snapshot.SealCommitOutput{
+			output("diff", "diff", typeRef, diffValue, stage(diffValue, defaultTeam.ID(), "produce-diff")),
+		})["diff"].Snapshot
+		baseRef := seal(sourceBuildID, "produce-base", nil, nil, []snapshot.SealCommitOutput{
+			output("base", "base", typeRef, baseValue, stage(baseValue, defaultTeam.ID(), "produce-base")),
+		})["base"].Snapshot
+
+		selector, err := snapshot.NewStaticSelectorExposure("/tmp/build/plan/base", baseRef.Digest,
+			snapshot.ExposedPath{Path: "record.json", Digest: digest("9")},
+			snapshot.ExposedPath{Path: "findings/f-001.json", Digest: digest("a")},
+		)
+		Expect(err).NotTo(HaveOccurred())
+
+		judgeBuildID := newBuild(defaultTeam.ID())
+		reviewValue := digest("b")
+		review := output("review", "review", typeRef, reviewValue, stage(reviewValue, defaultTeam.ID(), "judge"))
+		commit := snapshot.SealCommit{
+			Context: snapshot.SealCommitContext{
+				TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(), CreatedBy: "alice",
+				Build: &snapshot.BuildOccurrence{
+					BuildID: judgeBuildID, PlanID: "plan-judge", Attempt: "judge",
+					StepKind: "agent", StepName: "judge",
+				},
+				InputOrder: []string{"diff", "base"},
+				Inputs:     map[string]snapshot.SnapshotRef{"diff": diffRef, "base": baseRef},
+				InputExposures: map[string]snapshot.InputExposure{
+					"diff": snapshot.FullTreeExposure("/tmp/build/plan/diff", diffRef.Digest),
+					"base": selector,
+				},
+				ExpectedOutputs: []snapshot.Port{review.Port},
+			},
+			Outputs: []snapshot.SealCommitOutput{review},
+		}
+		sealed, err := factory.CommitSealBatch(ctx, lease, commit)
+		Expect(err).NotTo(HaveOccurred())
+
+		var productionID int64
+		Expect(dbConn.QueryRow(`
+			SELECT id FROM agent_snapshot_productions
+			WHERE build_id = $1 AND plan_id = 'plan-judge' AND attempt = 'judge' AND output_port = 'review'
+		`, judgeBuildID).Scan(&productionID)).To(Succeed())
+
+		type exposureRow struct {
+			Mode      string
+			Tree      string
+			MountPath sql.NullString
+		}
+		readExposure := func(port string) exposureRow {
+			var row exposureRow
+			Expect(dbConn.QueryRow(`
+				SELECT materialization_mode, tree_digest, mount_path
+				FROM agent_snapshot_exposures WHERE production_id = $1 AND input_port = $2
+			`, productionID, port).Scan(&row.Mode, &row.Tree, &row.MountPath)).To(Succeed())
+			return row
+		}
+		Expect(readExposure("diff")).To(Equal(exposureRow{
+			Mode: "full", Tree: diffRef.Digest.String(),
+			MountPath: sql.NullString{String: "/tmp/build/plan/diff", Valid: true},
+		}))
+		Expect(readExposure("base")).To(Equal(exposureRow{
+			Mode: "static-selector", Tree: baseRef.Digest.String(),
+			MountPath: sql.NullString{String: "/tmp/build/plan/base", Valid: true},
+		}))
+
+		paths, err := dbConn.Query(`
+			SELECT path, digest FROM agent_snapshot_exposure_paths p
+			JOIN agent_snapshot_exposures e ON e.id = p.exposure_id
+			WHERE e.production_id = $1 AND e.input_port = 'base'
+			ORDER BY path
+		`, productionID)
+		Expect(err).NotTo(HaveOccurred())
+		defer paths.Close()
+		var exposedPaths []string
+		for paths.Next() {
+			var path, pathDigest string
+			Expect(paths.Scan(&path, &pathDigest)).To(Succeed())
+			exposedPaths = append(exposedPaths, path+"="+pathDigest)
+		}
+		Expect(paths.Err()).NotTo(HaveOccurred())
+		Expect(exposedPaths).To(Equal([]string{
+			"findings/f-001.json=" + digest("a").String(),
+			"record.json=" + digest("9").String(),
+		}))
+
+		By("keeping exposure lineage out of the deduplicated content identity")
+		var intrinsic sql.NullString
+		Expect(dbConn.QueryRow(`
+			SELECT intrinsic_metadata::text FROM agent_snapshots WHERE id = $1
+		`, int64(sealed["review"].Snapshot.ID)).Scan(&intrinsic)).To(Succeed())
+		Expect(intrinsic.String).NotTo(ContainSubstring("mount"))
+		Expect(intrinsic.String).NotTo(ContainSubstring("materializ"))
+
+		recommit := func(context snapshot.SealCommitContext) error {
+			retried := review.Clone()
+			retried.StagedUploadID = stage(reviewValue, defaultTeam.ID(), "judge").ID
+			_, err := factory.CommitSealBatch(ctx, lease, snapshot.SealCommit{
+				Context: context, Outputs: []snapshot.SealCommitOutput{retried},
+			})
+			return err
+		}
+
+		By("re-committing the identical occurrence idempotently")
+		Expect(recommit(commit.Context.Clone())).To(Succeed())
+
+		By("refusing an occurrence that reports a different exposure than it recorded")
+		conflicting := commit.Context.Clone()
+		conflicting.InputExposures["diff"] = snapshot.FullTreeExposure("/tmp/build/plan/elsewhere", diffRef.Digest)
+		Expect(recommit(conflicting)).To(MatchError(ContainSubstring("exposure")))
+
+		By("refusing an occurrence that reports a different exposed path set")
+		narrowed, err := snapshot.NewStaticSelectorExposure("/tmp/build/plan/base", baseRef.Digest,
+			snapshot.ExposedPath{Path: "record.json", Digest: digest("9")},
+		)
+		Expect(err).NotTo(HaveOccurred())
+		conflictingPaths := commit.Context.Clone()
+		conflictingPaths.InputExposures["base"] = narrowed
+		Expect(recommit(conflictingPaths)).To(MatchError(ContainSubstring("exposed path set")))
+
+		By("defaulting an undeclared exposure to the whole tree")
+		plainBuildID := newBuild(defaultTeam.ID())
+		plainValue := digest("c")
+		plain := output("plain", "plain", typeRef, plainValue, stage(plainValue, defaultTeam.ID(), "plain"))
+		_, err = factory.CommitSealBatch(ctx, lease, snapshot.SealCommit{
+			Context: snapshot.SealCommitContext{
+				TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(), CreatedBy: "alice",
+				Build: &snapshot.BuildOccurrence{
+					BuildID: plainBuildID, PlanID: "plan-plain", Attempt: "plain",
+					StepKind: "task", StepName: "plain",
+				},
+				InputOrder:      []string{"diff"},
+				Inputs:          map[string]snapshot.SnapshotRef{"diff": diffRef},
+				ExpectedOutputs: []snapshot.Port{plain.Port},
+			},
+			Outputs: []snapshot.SealCommitOutput{plain},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		var defaulted exposureRow
+		Expect(dbConn.QueryRow(`
+			SELECT e.materialization_mode, e.tree_digest, e.mount_path
+			FROM agent_snapshot_exposures e
+			JOIN agent_snapshot_productions p ON p.id = e.production_id
+			WHERE p.build_id = $1 AND e.input_port = 'diff'
+		`, plainBuildID).Scan(&defaulted.Mode, &defaulted.Tree, &defaulted.MountPath)).To(Succeed())
+		Expect(defaulted).To(Equal(exposureRow{Mode: "full", Tree: diffRef.Digest.String()}))
+	})
+
+	// commitStaticSelector commits one production that was shown exactly the
+	// given exposed path set through a static selector. It returns the commit
+	// error so a spec can assert that a legitimate path set is admitted rather
+	// than refused by the platform's own verification of the row it just wrote.
+	commitStaticSelector := func(label, baseHex, outputHex string, paths ...snapshot.ExposedPath) error {
+		typeRef := snapshot.TypeRef(fmt.Sprintf("exposure-order-%s-%d/v1", label, time.Now().UnixNano()))
+		baseValue := digest(baseHex)
+		baseRef := seal(newBuild(defaultTeam.ID()), "produce-"+label, nil, nil, []snapshot.SealCommitOutput{
+			output("base", "base", typeRef, baseValue, stage(baseValue, defaultTeam.ID(), "produce-"+label)),
+		})["base"].Snapshot
+
+		selector, err := snapshot.NewStaticSelectorExposure("/tmp/build/plan/base", baseRef.Digest, paths...)
+		Expect(err).NotTo(HaveOccurred())
+
+		reviewValue := digest(outputHex)
+		review := output("review", "review", typeRef, reviewValue, stage(reviewValue, defaultTeam.ID(), label))
+		_, err = factory.CommitSealBatch(ctx, lease, snapshot.SealCommit{
+			Context: snapshot.SealCommitContext{
+				TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(), CreatedBy: "alice",
+				Build: &snapshot.BuildOccurrence{
+					BuildID: newBuild(defaultTeam.ID()), PlanID: "plan-" + label, Attempt: label,
+					StepKind: "agent", StepName: "judge",
+				},
+				InputOrder:      []string{"base"},
+				Inputs:          map[string]snapshot.SnapshotRef{"base": baseRef},
+				InputExposures:  map[string]snapshot.InputExposure{"base": selector},
+				ExpectedOutputs: []snapshot.Port{review.Port},
+			},
+			Outputs: []snapshot.SealCommitOutput{review},
+		})
+		return err
+	}
+
+	It("admits an exposed path set whose paths outrank each other differently once digests are appended", func() {
+		// A path that is a prefix of a longer one which continues with a space
+		// orders one way as a bare path and the other way once " " + digest is
+		// appended: "docs/spec.md" precedes "docs/spec.md (1).md", but
+		// "docs/spec.md sha256:99…" follows "docs/spec.md (1).md sha256:aa…"
+		// because '(' sorts below 's'. Verification that sorts whole
+		// "path digest" lines therefore disagrees with the database's ordering
+		// by path alone, with no collation involved at all.
+		shorter := snapshot.ExposedPath{Path: "docs/spec.md", Digest: digest("9")}
+		longer := snapshot.ExposedPath{Path: "docs/spec.md (1).md", Digest: digest("a")}
+		Expect(shorter.Path < longer.Path).To(BeTrue(), "paths must be in byte order")
+		Expect(longer.Path+" "+longer.Digest.String() < shorter.Path+" "+shorter.Digest.String()).
+			To(BeTrue(), "appending the digest must invert the order, or this spec proves nothing")
+
+		Expect(commitStaticSelector("lines", "7", "b", shorter, longer)).To(Succeed())
+	})
+
+	It("admits an exposed path set whose paths sort differently under the database collation", func() {
+		// Exposed-path verification must not depend on how the database sorts
+		// text. This cluster's default collation is byte order ("C"), which
+		// agrees with Go, so the divergence is only observable once the column
+		// carries the locale collation a real deployment usually has.
+		lower := snapshot.ExposedPath{Path: "src/api-v1.go", Digest: digest("9")}
+		higher := snapshot.ExposedPath{Path: "src/api_v1.go", Digest: digest("a")}
+		Expect(lower.Path < higher.Path).To(BeTrue(), "paths must be in byte order ('-' 0x2d < '_' 0x5f)")
+
+		candidates, err := dbConn.Query(`
+			SELECT collname FROM pg_collation
+			WHERE collname NOT IN ('C', 'POSIX', 'ucs_basic')
+			  AND collencoding IN (-1, (SELECT encoding FROM pg_database WHERE datname = current_database()))
+			ORDER BY collname
+		`)
+		Expect(err).NotTo(HaveOccurred())
+		var names []string
+		for candidates.Next() {
+			var name string
+			Expect(candidates.Scan(&name)).To(Succeed())
+			names = append(names, name)
+		}
+		Expect(candidates.Err()).NotTo(HaveOccurred())
+		Expect(candidates.Close()).To(Succeed())
+
+		var collation string
+		for _, name := range names {
+			var inverted bool
+			probe := fmt.Sprintf(`SELECT ($1::text COLLATE "%s") > ($2::text COLLATE "%s")`, name, name)
+			if err := dbConn.QueryRow(probe, lower.Path, higher.Path).Scan(&inverted); err == nil && inverted {
+				collation = name
+				break
+			}
+		}
+		if collation == "" {
+			Skip("no installed collation orders these paths against byte order")
+		}
+
+		// The column collation is restored by construction, not by cleanup: the
+		// suite creates testdb from testdb_template in BeforeEach and drops it
+		// in AfterEach (db_suite_test.go:256), so this schema change cannot
+		// outlive the spec.
+		_, err = dbConn.Exec(fmt.Sprintf(
+			`ALTER TABLE agent_snapshot_exposure_paths ALTER COLUMN path TYPE text COLLATE "%s"`, collation))
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(commitStaticSelector("collation", "7", "b", lower, higher)).To(Succeed())
+	})
+
 	It("records honest idempotent upload occurrences without synthetic builds", func() {
 		value := digest("0")
 		staged := stage(value, defaultTeam.ID(), "upload:manual-1")

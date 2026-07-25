@@ -75,14 +75,47 @@ type repositoryChangeValidator struct {
 	canonicalizer snapshot.Canonicalizer
 }
 
-func (validator repositoryChangeValidator) Validate(ctx context.Context, root *os.Root, validationContext snapshot.ValidationContext) (snapshot.ValidationResult, error) {
-	record, err := ReadRepositoryChangeRecord(ctx, root)
+// AdmitForSeal runs the SEAL-TIME gate: the candidate an agent just wrote must
+// pin the current contract identity and bind its base subject to a
+// server-declared exposed input.
+func (validator repositoryChangeValidator) AdmitForSeal(ctx context.Context, root *os.Root, declarations snapshot.ValidationContext) (snapshot.ValidationResult, error) {
+	record, err := admitRecordForSeal[RepositoryChangeBody](ctx, root, repositoryChangeType, declarations)
 	if err != nil {
 		return snapshot.ValidationResult{}, err
 	}
-	if err := record.ValidateEnvelope(snapshot.TypeRef("repository-change/v1"), validationContext); err != nil {
+	if err := record.Body.Validate(record.Subjects); err != nil {
+		return snapshot.ValidationResult{}, fmt.Errorf("snapshot contracts: record.json body: %w", err)
+	}
+	return validator.verifyAgainstBase(ctx, root, record, declarations)
+}
+
+// RevalidateSealed runs the READ-TIME gate over an already-sealed candidate: an
+// offline merge or a delivery gate re-deriving whether a stored change still
+// applies to the base it names.
+//
+// Unlike the other record contracts, this one keeps the subject binding at read
+// time. The whole meaning of a repository-change is "these bytes apply to THAT
+// base repository", and the caller has to expose that base for the git lineage
+// to be verifiable at all — so dropping the binding here would drop a check
+// rather than relax an unavailable one. Readers that only want the document,
+// with no base exposed, use ReadSealedRepositoryChangeRecord instead.
+func (validator repositoryChangeValidator) RevalidateSealed(ctx context.Context, root *os.Root, exposed snapshot.ValidationContext) (snapshot.ValidationResult, error) {
+	record, err := ReadSealedRepositoryChangeRecord(ctx, root)
+	if err != nil {
+		return snapshot.ValidationResult{}, err
+	}
+	if err := record.RebindSubjectsToExposedInputs(exposed); err != nil {
 		return snapshot.ValidationResult{}, fmt.Errorf("snapshot contracts: record.json: %w", err)
 	}
+	return validator.verifyAgainstBase(ctx, root, record, exposed)
+}
+
+func (validator repositoryChangeValidator) verifyAgainstBase(
+	ctx context.Context,
+	root *os.Root,
+	record Record[RepositoryChangeBody],
+	validationContext snapshot.ValidationContext,
+) (snapshot.ValidationResult, error) {
 	document := record.Body
 	baseSubject := record.Subjects[0]
 
@@ -161,13 +194,13 @@ func (validator repositoryChangeValidator) Validate(ctx context.Context, root *o
 	return snapshot.ValidationResult{IntrinsicMetadata: encoded}, nil
 }
 
-func ReadRepositoryChangeRecord(ctx context.Context, root *os.Root) (Record[RepositoryChangeBody], error) {
-	var record Record[RepositoryChangeBody]
-	if err := decodeStrictDocument(ctx, root, "record.json", &record); err != nil {
+// ReadSealedRepositoryChangeRecord re-validates one stored repository-change/v1
+// record.json at the READ-TIME gate. It takes no step declarations, because a
+// reader loading a stored record has none.
+func ReadSealedRepositoryChangeRecord(ctx context.Context, root *os.Root) (Record[RepositoryChangeBody], error) {
+	record, err := readSealedRecord[RepositoryChangeBody](ctx, root, repositoryChangeType)
+	if err != nil {
 		return Record[RepositoryChangeBody]{}, err
-	}
-	if err := record.validateEnvelopeShape(snapshot.TypeRef("repository-change/v1")); err != nil {
-		return Record[RepositoryChangeBody]{}, fmt.Errorf("snapshot contracts: record.json: %w", err)
 	}
 	if err := record.Body.Validate(record.Subjects); err != nil {
 		return Record[RepositoryChangeBody]{}, fmt.Errorf("snapshot contracts: record.json body: %w", err)

@@ -180,13 +180,25 @@ func DeriveValidationConclusion(checks []ValidationCheck) string {
 
 type validationValidator struct{}
 
-func (validationValidator) Validate(ctx context.Context, root *os.Root, validationContext snapshot.ValidationContext) (snapshot.ValidationResult, error) {
-	record, err := readRecord[ValidationBody](ctx, root, "validation/v1", validationContext)
+func (validationValidator) AdmitForSeal(ctx context.Context, root *os.Root, declarations snapshot.ValidationContext) (snapshot.ValidationResult, error) {
+	record, err := admitRecordForSeal[ValidationBody](ctx, root, validationType, declarations)
 	if err != nil {
 		return snapshot.ValidationResult{}, err
 	}
-	if err := record.Body.Validate(record.Subjects); err != nil {
-		return snapshot.ValidationResult{}, fmt.Errorf("snapshot contracts: record.json body: %w", err)
+	return snapshot.ValidationResult{}, validationBody(record)
+}
+
+func (validationValidator) RevalidateSealed(ctx context.Context, root *os.Root, _ snapshot.ValidationContext) (snapshot.ValidationResult, error) {
+	record, err := readSealedRecord[ValidationBody](ctx, root, validationType)
+	if err != nil {
+		return snapshot.ValidationResult{}, err
 	}
-	return snapshot.ValidationResult{}, nil
+	return snapshot.ValidationResult{}, validationBody(record)
+}
+
+func validationBody(record Record[ValidationBody]) error {
+	if err := record.Body.Validate(record.Subjects); err != nil {
+		return fmt.Errorf("snapshot contracts: record.json body: %w", err)
+	}
+	return nil
 }

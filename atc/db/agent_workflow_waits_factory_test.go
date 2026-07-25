@@ -2,6 +2,7 @@ package db_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -359,6 +360,19 @@ var _ = Describe("AgentWorkflowWaitsFactory", func() {
 		Expect(stepKind).To(Equal("await_snapshot"))
 		Expect(dbConn.QueryRow(`SELECT input_snapshot_id FROM agent_snapshot_lineage WHERE production_id = $1`, productionID).Scan(&lineageID)).To(Succeed())
 		Expect(lineageID).To(Equal(int64(question.ID)))
+
+		// Every recorded lineage input carries exposure lineage, so "what was
+		// this production shown?" has no holes. The answering party saw the
+		// whole question tree, and nothing was mounted into a filesystem.
+		var mode, treeDigest string
+		var mountPath sql.NullString
+		Expect(dbConn.QueryRow(`
+			SELECT materialization_mode, tree_digest, mount_path
+			FROM agent_snapshot_exposures WHERE production_id = $1 AND input_port = $2
+		`, productionID, "question").Scan(&mode, &treeDigest, &mountPath)).To(Succeed())
+		Expect(mode).To(Equal("full"))
+		Expect(treeDigest).To(Equal(question.Digest.String()))
+		Expect(mountPath.Valid).To(BeFalse())
 	})
 
 	It("keeps a pre-deadline reservation replayable after the deadline", func() {

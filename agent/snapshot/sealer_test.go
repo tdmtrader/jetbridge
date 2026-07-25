@@ -19,7 +19,11 @@ import (
 
 type sealerValidatorFunc func(context.Context, *os.Root, ValidationContext) (ValidationResult, error)
 
-func (f sealerValidatorFunc) Validate(ctx context.Context, root *os.Root, inputs ValidationContext) (ValidationResult, error) {
+func (f sealerValidatorFunc) AdmitForSeal(ctx context.Context, root *os.Root, inputs ValidationContext) (ValidationResult, error) {
+	return f(ctx, root, inputs)
+}
+
+func (f sealerValidatorFunc) RevalidateSealed(ctx context.Context, root *os.Root, inputs ValidationContext) (ValidationResult, error) {
 	return f(ctx, root, inputs)
 }
 

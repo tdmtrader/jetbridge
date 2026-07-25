@@ -11,7 +11,23 @@ import (
 	"github.com/concourse/concourse/agent/snapshot/contracts"
 )
 
+// validateFiles drives the SEAL-TIME gate: the files are a candidate tree a step
+// has just written, which is what almost every contract test is about.
 func validateFiles(t *testing.T, rawType string, files map[string][]byte, validationContext snapshot.ValidationContext) (snapshot.ValidationResult, error) {
+	t.Helper()
+	return validateDirectory(t, rawType, writeTree(t, files), validationContext)
+}
+
+// revalidateSealedFiles drives the READ-TIME gate over the same tree, for tests
+// about whether a stored record is still readable.
+func revalidateSealedFiles(t *testing.T, rawType string, files map[string][]byte, validationContext snapshot.ValidationContext) (snapshot.ValidationResult, error) {
+	t.Helper()
+	return withValidator(t, rawType, writeTree(t, files), func(validator snapshot.Validator, root *os.Root) (snapshot.ValidationResult, error) {
+		return validator.RevalidateSealed(context.Background(), root, validationContext)
+	})
+}
+
+func writeTree(t *testing.T, files map[string][]byte) string {
 	t.Helper()
 	dir := t.TempDir()
 	for name, contents := range files {
@@ -23,10 +39,21 @@ func validateFiles(t *testing.T, rawType string, files map[string][]byte, valida
 			t.Fatalf("write %q: %v", name, err)
 		}
 	}
-	return validateDirectory(t, rawType, dir, validationContext)
+	return dir
 }
 
 func validateDirectory(t *testing.T, rawType, dir string, validationContext snapshot.ValidationContext) (snapshot.ValidationResult, error) {
+	t.Helper()
+	return withValidator(t, rawType, dir, func(validator snapshot.Validator, root *os.Root) (snapshot.ValidationResult, error) {
+		return validator.AdmitForSeal(context.Background(), root, validationContext)
+	})
+}
+
+func withValidator(
+	t *testing.T,
+	rawType, dir string,
+	gate func(snapshot.Validator, *os.Root) (snapshot.ValidationResult, error),
+) (snapshot.ValidationResult, error) {
 	t.Helper()
 	root, err := os.OpenRoot(dir)
 	if err != nil {
@@ -43,7 +70,7 @@ func validateDirectory(t *testing.T, rawType, dir string, validationContext snap
 	if err != nil {
 		t.Fatalf("Lookup(%q): %v", rawType, err)
 	}
-	return validator.Validate(context.Background(), root, validationContext)
+	return gate(validator, root)
 }
 
 func emptyValidationContext(t *testing.T) snapshot.ValidationContext {
@@ -69,6 +96,22 @@ func validationContextFor(t *testing.T, inputs map[string]snapshot.SnapshotRef) 
 	context, err := snapshot.NewValidationContext(inputs, nil)
 	if err != nil {
 		t.Fatalf("NewValidationContext(): %v", err)
+	}
+	return context
+}
+
+// candidateValidationContextFor exposes inputs and declares which of them are
+// candidate ports. Candidacy is a server-side port declaration, so tests must
+// supply it here rather than inside the record under validation.
+func candidateValidationContextFor(
+	t *testing.T,
+	inputs map[string]snapshot.SnapshotRef,
+	candidatePorts ...string,
+) snapshot.ValidationContext {
+	t.Helper()
+	context, err := snapshot.NewValidationContext(inputs, nil, snapshot.WithCandidatePorts(candidatePorts...))
+	if err != nil {
+		t.Fatalf("NewValidationContext(candidate ports %q): %v", candidatePorts, err)
 	}
 	return context
 }
