@@ -1675,15 +1675,19 @@ var _ = Describe("AgentStep", func() {
 				fakeMetricsStore.InsertIfAbsentReturns(true, nil)
 			})
 
-			It("records an error row via InsertIfAbsent", func() {
+			It("records an incomplete row via InsertIfAbsent", func() {
+				// L-1 (#41): no flight file read at all is a missing RECORDING,
+				// not a failed step — status=incomplete so DeriveOutcome fuses
+				// it to amber "unrecorded" on a succeeded build (never red). It
+				// still degrades through InsertIfAbsent (F24), never the upsert.
 				ok, err := step.Run(ctx, state)
 				Expect(err).ToNot(HaveOccurred())
 				Expect(ok).To(BeTrue()) // exit status still drives step success
 				Expect(fakeMetricsStore.UpsertReturningInsertedCallCount()).To(BeZero())
 				Expect(fakeMetricsStore.InsertIfAbsentCallCount()).To(Equal(1))
 				rm := fakeMetricsStore.InsertIfAbsentArgsForCall(0)
-				Expect(rm.Status).To(Equal("error"))
-				Expect(rm.Summary).To(ContainSubstring("flight recorder"))
+				Expect(rm.Status).To(Equal(schema.RunStatusIncomplete))
+				Expect(rm.Summary).To(ContainSubstring("no flight output"))
 			})
 
 			// --- review finding (2026-07-12): a StreamFile failure silently
@@ -2007,7 +2011,7 @@ var _ = Describe("AgentStep", func() {
 
 					Expect(fakeMetricsStore.InsertIfAbsentCallCount()).To(Equal(1))
 					rm := fakeMetricsStore.InsertIfAbsentArgsForCall(0)
-					Expect(rm.Status).To(Equal("error")) // still a degraded error row
+					Expect(rm.Status).To(Equal(schema.RunStatusIncomplete)) // L-1: no flight read ⇒ incomplete (amber), still the observed floor
 					Expect(rm.CostUSD).To(BeNumerically("~", 0.42, 1e-9))
 
 					Expect(fakeChecker.RecordCallCount()).To(Equal(1))
@@ -2137,5 +2141,136 @@ var _ = Describe("AgentStep", func() {
 				Expect(fakeChecker.RecordCallCount()).To(Equal(1))
 			})
 		})
+
+		// The runner-captured transcript (flight/transcript.ndjson) is produced
+		// by THIS step's own runner: the agent step's flight volume is the only
+		// place it ever lives. Ingestion therefore belongs in
+		// ingestFlightRecorder, keyed identically to the metrics row on
+		// (build_id, plan_id) and carrying the SAME server-owned v3 identity
+		// (workflow run + function id) — never anything read out of the
+		// attacker-writable recorder or plan env.
+		Context("with a transcript store wired", func() {
+			var (
+				transcriptStore *stubTranscriptStore
+				transcriptRaw   string
+			)
+
+			BeforeEach(func() {
+				transcriptStore = &stubTranscriptStore{}
+				transcriptRaw = `{"type":"system","subtype":"init"}` + "\n" +
+					`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/w/main.go"}}]}}` + "\n" +
+					`{"type":"result","total_cost_usd":0.42}` + "\n"
+
+				// Delegate every other path to the outer results.json/events.ndjson
+				// fixture; only transcript.ndjson is new here.
+				fakeStreamer.StreamFileStub = func(ctx context.Context, artifact runtime.Artifact, path string) (io.ReadCloser, error) {
+					if path == "transcript.ndjson" {
+						if err := ctx.Err(); err != nil {
+							return nil, err
+						}
+						return io.NopCloser(strings.NewReader(transcriptRaw)), nil
+					}
+					return streamFullFlight(ctx, artifact, path)
+				}
+
+				agentStepOptions = append(agentStepOptions, exec.WithAgentStepTranscriptStore(transcriptStore))
+			})
+
+			It("upserts the transcript keyed by build/plan and the v3 run identity, from the agent step's OWN flight", func() {
+				ok, err := step.Run(ctx, state)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(ok).To(BeTrue())
+
+				Expect(transcriptStore.upserted).To(HaveLen(1))
+				tr := transcriptStore.upserted[0]
+				Expect(tr.BuildID).To(Equal(stepMetadata.BuildID))
+				Expect(tr.PlanID).To(Equal(string(planID)))
+				Expect(tr.StepName).To(Equal("write-spec"))
+				// the durable workflow run off step.metadata and the function id
+				// off the immutable plan — the same pair the metrics row carries
+				Expect(tr.WorkflowRunID).ToNot(BeNil())
+				Expect(*tr.WorkflowRunID).To(Equal(flightRunID))
+				Expect(tr.FunctionID).To(Equal("review"))
+				Expect(tr.NDJSON).To(Equal(transcriptRaw))
+				Expect(tr.ByteLen).To(Equal(len(transcriptRaw)))
+				Expect(tr.Truncated).To(BeFalse())
+			})
+
+			Context("on a pure-CI agent step with no durable workflow run", func() {
+				BeforeEach(func() {
+					stepMetadata.WorkflowDefinitionID = nil
+					stepMetadata.WorkflowRunID = nil
+				})
+
+				It("leaves the workflow run unset rather than inventing one", func() {
+					ok, err := step.Run(ctx, state)
+					Expect(err).ToNot(HaveOccurred())
+					Expect(ok).To(BeTrue())
+
+					Expect(transcriptStore.upserted).To(HaveLen(1))
+					Expect(transcriptStore.upserted[0].WorkflowRunID).To(BeNil())
+					Expect(transcriptStore.upserted[0].FunctionID).To(Equal("review"))
+				})
+			})
+
+			It("bounds an over-512KiB transcript to the tail with the truncation marker", func() {
+				var b strings.Builder
+				for b.Len() < 600*1024 {
+					b.WriteString(`{"type":"assistant","message":{"content":[{"type":"text","text":"padding padding padding"}]}}` + "\n")
+				}
+				b.WriteString(`{"type":"result","total_cost_usd":9.9}` + "\n")
+				transcriptRaw = b.String()
+
+				ok, err := step.Run(ctx, state)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(ok).To(BeTrue())
+
+				Expect(transcriptStore.upserted).To(HaveLen(1))
+				tr := transcriptStore.upserted[0]
+				Expect(tr.Truncated).To(BeTrue())
+				Expect(tr.ByteLen).To(BeNumerically("<=", 512*1024+256))
+				Expect(tr.ByteLen).To(Equal(len(tr.NDJSON)))
+				Expect(tr.NDJSON).To(HavePrefix(`{"type":"transcript_truncated","dropped_bytes":`))
+				// the head-truncation drops a partial line, so the first data
+				// line is always whole
+				Expect(strings.Split(tr.NDJSON, "\n")[1]).To(HavePrefix(`{"type":"assistant"`))
+				// the diagnostic tail (the final result line) survives
+				Expect(tr.NDJSON).To(ContainSubstring(`"total_cost_usd":9.9`))
+			})
+
+			It("never fails the step when the transcript upsert errors", func() {
+				transcriptStore.err = errors.New("db down")
+				ok, err := step.Run(ctx, state)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(ok).To(BeTrue())
+				Expect(transcriptStore.upserted).To(HaveLen(1)) // attempted despite the error
+			})
+		})
+
+		// The base step in this Context (outer JustBeforeEach) wires NO
+		// transcript store. Ingestion must stay fully nil-guarded — not even
+		// the extra StreamFile call fires.
+		It("does not stream transcript.ndjson when no transcript store is configured", func() {
+			ok, err := step.Run(ctx, state)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(ok).To(BeTrue())
+			for i := 0; i < fakeStreamer.StreamFileCallCount(); i++ {
+				_, _, path := fakeStreamer.StreamFileArgsForCall(i)
+				Expect(path).ToNot(Equal("transcript.ndjson"))
+			}
+		})
 	})
 })
+
+// stubTranscriptStore records the transcripts the agent step's flight
+// ingestion upserts, and can fail on demand (observability is best-effort:
+// a store error must never fail the step).
+type stubTranscriptStore struct {
+	upserted []db.AgentRunTranscript
+	err      error
+}
+
+func (s *stubTranscriptStore) Upsert(t db.AgentRunTranscript) error {
+	s.upserted = append(s.upserted, t)
+	return s.err
+}

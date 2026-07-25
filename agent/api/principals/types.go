@@ -2,6 +2,7 @@ package principals
 
 import (
 	"fmt"
+	"regexp"
 	"slices"
 	"time"
 )
@@ -27,9 +28,37 @@ var ValidScopes = map[string]bool{
 	ScopeCostsWrite:   true,
 }
 
+// Principal kinds (ticket #44) distinguish operator-managed principals
+// from the dispatcher's ephemeral per-run credentials on list surfaces
+// (web /agent Principals table, `fly agent principals list`). Kind is
+// derived read-side by DeriveKind and is never persisted — the
+// agent_principals table has no kind/metadata column, and the mint path
+// (agent/dispatch.attachRunSecret) is intentionally left unchanged.
+const (
+	KindOperator = "operator"
+	KindRun      = "run"
+)
+
+// runPrincipalName matches the dispatcher's per-run principal naming
+// convention, credentials.RunSecretName: "agent-run-<runID>" (digits
+// only). This is the documented agent-run-<digits> prefix match (ticket
+// #44) used to derive Kind when only the name is available.
+var runPrincipalName = regexp.MustCompile(`^agent-run-\d+$`)
+
+// DeriveKind classifies a principal by name: KindRun for the dispatcher's
+// ephemeral per-run principals (agent-run-<id>, identical scope sets, 6h
+// expiry), KindOperator for everything else.
+func DeriveKind(name string) string {
+	if runPrincipalName.MatchString(name) {
+		return KindRun
+	}
+	return KindOperator
+}
+
 // Principal is one agent_principals row. Timestamps are Unix epoch
 // seconds in JSON (repo convention, matching agent_reviews). TokenHash
-// is needed for verification but must never serialize.
+// is needed for verification but must never serialize. Kind is derived
+// read-side (see DeriveKind) rather than stored.
 type Principal struct {
 	ID          int      `json:"id"`
 	Name        string   `json:"name"`
@@ -43,6 +72,7 @@ type Principal struct {
 	ExpiresAt   *int64   `json:"expires_at,omitempty"`
 	RevokedAt   *int64   `json:"revoked_at,omitempty"`
 	LastUsedAt  *int64   `json:"last_used_at,omitempty"`
+	Kind        string   `json:"kind,omitempty"`
 }
 
 // HasScope reports whether the principal holds the scope.

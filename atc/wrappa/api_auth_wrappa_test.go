@@ -253,6 +253,74 @@ var _ = Describe("APIAuthWrappa", func() {
 				}
 			})
 
+			// S-6 workflow lifecycle: GetAgentWorkflowStats is a plain
+			// authorized-viewer read; UpdateAgentWorkflow (annotate/deprecate)
+			// is human-only with NO principal path — a bare tickets:read
+			// principal token must be rejected, mirroring the deprecated verbs
+			// on tickets.
+			Describe("workflow lifecycle route tiers", func() {
+				BeforeEach(func() {
+					delegate := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						delegateHit = true
+						w.WriteHeader(http.StatusOK)
+					})
+
+					wrapped = wrappa.NewAPIAuthWrappa(
+						fakeCheckPipelineAccessHandlerFactory,
+						fakeCheckBuildReadAccessHandlerFactory,
+						fakeCheckBuildWriteAccessHandlerFactory,
+						fakeCheckWorkerTeamAccessHandlerFactory,
+						auth.NewCheckAgentPrincipalHandlerFactory(principals.NewVerifier(store)),
+					).Wrap(rata.Handlers{
+						atc.GetAgentWorkflowStats: delegate,
+						atc.UpdateAgentWorkflow:   delegate,
+					})
+				})
+
+				Describe("UpdateAgentWorkflow", func() {
+					It("REJECTS a bare tickets:read agent-principal token (human-only, no principal path)", func() {
+						_, token, err := store.Create(principals.CreateSpec{
+							Name: "ticket-reader", Scopes: []string{principals.ScopeTicketsRead},
+						})
+						Expect(err).NotTo(HaveOccurred())
+						fakeaccess.IsAuthenticatedReturns(false)
+
+						resp := serve(atc.UpdateAgentWorkflow, "Bearer "+token)
+						Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
+						Expect(delegateHit).To(BeFalse())
+					})
+
+					It("admits an authorized main-team member", func() {
+						fakeaccess.IsAuthenticatedReturns(true)
+						fakeaccess.IsAuthorizedReturns(true)
+
+						resp := serve(atc.UpdateAgentWorkflow, "")
+						Expect(resp.StatusCode).To(Equal(http.StatusOK))
+						Expect(delegateHit).To(BeTrue())
+						Expect(fakeaccess.IsAuthorizedArgsForCall(0)).To(Equal(atc.DefaultTeamName))
+					})
+				})
+
+				Describe("GetAgentWorkflowStats", func() {
+					It("401s unauthenticated requests", func() {
+						fakeaccess.IsAuthenticatedReturns(false)
+
+						resp := serve(atc.GetAgentWorkflowStats, "")
+						Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
+						Expect(delegateHit).To(BeFalse())
+					})
+
+					It("admits main-team-authorized users", func() {
+						fakeaccess.IsAuthenticatedReturns(true)
+						fakeaccess.IsAuthorizedReturns(true)
+
+						resp := serve(atc.GetAgentWorkflowStats, "")
+						Expect(resp.StatusCode).To(Equal(http.StatusOK))
+						Expect(delegateHit).To(BeTrue())
+					})
+				})
+			})
+
 			Describe("ListAgentWorkflowRunMetrics", func() {
 				It("401s unauthenticated requests", func() {
 					fakeaccess.IsAuthenticatedReturns(false)

@@ -42,6 +42,7 @@ import (
 	"github.com/concourse/concourse/atc/api/resourceserver/versionserver"
 	"github.com/concourse/concourse/atc/api/runserver"
 	"github.com/concourse/concourse/atc/api/teamserver"
+	"github.com/concourse/concourse/atc/api/transcriptserver"
 	"github.com/concourse/concourse/atc/api/usersserver"
 	"github.com/concourse/concourse/atc/api/volumeserver"
 	"github.com/concourse/concourse/atc/api/wallserver"
@@ -117,6 +118,9 @@ func NewHandler(
 	costLedger budget.Ledger,
 	agentDailyBudgetUSD float64,
 	ticketBudgets budget.TicketBudgets,
+	// agentRunTranscriptStore backs GetAgentWorkflowRunTranscript: the raw
+	// tool-call transcript the agent step persisted during flight ingestion.
+	agentRunTranscriptStore transcriptserver.Store,
 	workflowStore workflow.Store,
 	// agentDispatchHandler serves DispatchAgentTicket (built in
 	// atccmd/command.go from dispatch.Deps; a stub in the test suite).
@@ -207,7 +211,8 @@ func NewHandler(
 	ticketsServer := ticketsapi.NewHandler(ticketsStore, func(r *http.Request) string {
 		return accessor.GetAccessor(r).Claims().UserName
 	})
-	workflowsServer := workflowsapi.NewHandler(workflowStore)
+	transcriptServer := transcriptserver.NewServer(logger, agentRunTranscriptStore)
+	workflowsServer := workflowsapi.NewHandler(workflowStore, metricsStore)
 	principalsServer := principalsapi.NewHandler(
 		principalsStore,
 		func(r *http.Request) string {
@@ -413,6 +418,8 @@ func NewHandler(
 		atc.GetAgentWorkflowVersion:                    http.HandlerFunc(workflowsServer.Get),
 		atc.CreateAgentWorkflowVersion:                 http.HandlerFunc(workflowsServer.Import),
 		atc.PromoteAgentWorkflowVersion:                http.HandlerFunc(workflowsServer.Promote),
+		atc.GetAgentWorkflowStats:                      http.HandlerFunc(workflowsServer.Stats),
+		atc.UpdateAgentWorkflow:                        http.HandlerFunc(workflowsServer.Update),
 		atc.CreateAgentWorkflowRun:                     http.HandlerFunc(workflowRunHandlers.Create),
 		atc.ListAgentWorkflowRuns:                      http.HandlerFunc(workflowRunHandlers.List),
 		atc.GetAgentWorkflowRunOperationalStatusCounts: http.HandlerFunc(workflowRunHandlers.OperationalStatusCounts),
@@ -425,6 +432,7 @@ func NewHandler(
 		atc.ListAgentWorkflowRunOutcomes:               http.HandlerFunc(workflowOutcomeHandlers.List),
 		atc.SetAgentWorkflowRunOutputOutcome:           http.HandlerFunc(workflowOutcomeHandlers.Record),
 		atc.ListAgentWorkflowRunMetrics:                http.HandlerFunc(metricsServer.ListByWorkflowRun),
+		atc.GetAgentWorkflowRunTranscript:              http.HandlerFunc(transcriptServer.GetTranscript),
 		atc.CreateAgentExperiment:                      http.HandlerFunc(experimentHandlers.Create),
 		atc.ListAgentExperiments:                       http.HandlerFunc(experimentHandlers.List),
 		atc.GetAgentExperiment:                         http.HandlerFunc(experimentHandlers.Get),

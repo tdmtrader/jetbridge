@@ -160,6 +160,8 @@ const (
 	GetAgentWorkflowVersion                    = "GetAgentWorkflowVersion"
 	CreateAgentWorkflowVersion                 = "CreateAgentWorkflowVersion"
 	PromoteAgentWorkflowVersion                = "PromoteAgentWorkflowVersion"
+	GetAgentWorkflowStats                      = "GetAgentWorkflowStats"
+	UpdateAgentWorkflow                        = "UpdateAgentWorkflow"
 	CreateAgentWorkflowRun                     = "CreateAgentWorkflowRun"
 	ListAgentWorkflowRuns                      = "ListAgentWorkflowRuns"
 	GetAgentWorkflowRunOperationalStatusCounts = "GetAgentWorkflowRunOperationalStatusCounts"
@@ -172,6 +174,7 @@ const (
 	ListAgentWorkflowRunOutcomes               = "ListAgentWorkflowRunOutcomes"
 	SetAgentWorkflowRunOutputOutcome           = "SetAgentWorkflowRunOutputOutcome"
 	ListAgentWorkflowRunMetrics                = "ListAgentWorkflowRunMetrics"
+	GetAgentWorkflowRunTranscript              = "GetAgentWorkflowRunTranscript"
 
 	CreateAgentExperiment       = "CreateAgentExperiment"
 	ListAgentExperiments        = "ListAgentExperiments"
@@ -364,6 +367,8 @@ var Routes = rata.Routes([]rata.Route{
 	{Path: "/api/v1/agent/workflows/:workflow_name/versions/:version", Method: "GET", Name: GetAgentWorkflowVersion},
 	{Path: "/api/v1/agent/workflows/:workflow_name/versions", Method: "POST", Name: CreateAgentWorkflowVersion},
 	{Path: "/api/v1/agent/workflows/:workflow_name/versions/:version/live", Method: "PUT", Name: PromoteAgentWorkflowVersion},
+	{Path: "/api/v1/agent/workflows/:workflow_name/stats", Method: "GET", Name: GetAgentWorkflowStats},
+	{Path: "/api/v1/agent/workflows/:workflow_name", Method: "PUT", Name: UpdateAgentWorkflow},
 	{Path: "/api/v1/agent/workflows/:workflow_name/runs", Method: "POST", Name: CreateAgentWorkflowRun},
 	{Path: "/api/v1/agent/workflows/:workflow_name/runs", Method: "GET", Name: ListAgentWorkflowRuns},
 	{Path: "/api/v1/agent/workflows/:workflow_name/runs/operational-status-counts", Method: "GET", Name: GetAgentWorkflowRunOperationalStatusCounts},
@@ -376,6 +381,7 @@ var Routes = rata.Routes([]rata.Route{
 	{Path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/outcomes", Method: "GET", Name: ListAgentWorkflowRunOutcomes},
 	{Path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/outputs/:snapshot_id/outcome", Method: "PUT", Name: SetAgentWorkflowRunOutputOutcome},
 	{Path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/metrics", Method: "GET", Name: ListAgentWorkflowRunMetrics},
+	{Path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/transcripts/:plan_id", Method: "GET", Name: GetAgentWorkflowRunTranscript},
 	{Path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/reviews", Method: "GET", Name: ListAgentWorkflowRunReviews},
 
 	{Path: "/api/v1/agent/experiments", Method: "POST", Name: CreateAgentExperiment},

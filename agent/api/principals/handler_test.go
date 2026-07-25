@@ -86,6 +86,44 @@ func TestListPrincipalsOmitsTokens(t *testing.T) {
 	}
 }
 
+func TestListPrincipalsDerivesKind(t *testing.T) {
+	h, store := newHandler()
+	if _, _, err := store.Create(principals.CreateSpec{Name: "ci-agent-review", Scopes: []string{principals.ScopeReviewsWrite}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.Create(principals.CreateSpec{Name: "agent-run-482", Scopes: []string{principals.ScopeTicketsRead}}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest("GET", "/api/v1/agent/principals", nil)
+	rec := httptest.NewRecorder()
+	h.ListPrincipals(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code = %d, want 200", rec.Code)
+	}
+
+	var got []principals.Principal
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("len(got) = %d, want 2", len(got))
+	}
+
+	byName := map[string]principals.Principal{}
+	for _, p := range got {
+		byName[p.Name] = p
+	}
+
+	if kind := byName["ci-agent-review"].Kind; kind != principals.KindOperator {
+		t.Errorf("operator-named principal kind = %q, want %q", kind, principals.KindOperator)
+	}
+	if kind := byName["agent-run-482"].Kind; kind != principals.KindRun {
+		t.Errorf("agent-run-482 kind = %q, want %q", kind, principals.KindRun)
+	}
+}
+
 func TestRevokePrincipal(t *testing.T) {
 	h, store := newHandler()
 	created, _, err := store.Create(principals.CreateSpec{Name: "g", Scopes: []string{principals.ScopeCostsWrite}})

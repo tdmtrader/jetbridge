@@ -285,6 +285,50 @@ func workflowRunIDValue(rm *agentschema.RunMetrics) any {
 	return int64(*rm.WorkflowRunID)
 }
 
+// WorkflowStats aggregates agent_run_metrics per workflow_version for one
+// workflow. The build unit is a distinct build_id; cost/turns are summed across
+// the build's step rows (the LEFT JOIN to builds is 1:1 so there is no
+// fan-out) and success is counted from the joined build's terminal status.
+// The second count is over workflow_run_id, the DURABLE execution identity —
+// migration 1773106124 dropped agent_run_metrics.ticket_id, because a ticket is
+// a work-item adapter and was never an execution identity. NULL
+// workflow_version rows (ad-hoc CI) aggregate into their own bucket and sort
+// last.
+func (f *agentRunMetricsFactory) WorkflowStats(workflowName string) ([]agentschema.WorkflowVersionStats, error) {
+	rows, err := f.conn.Query(`
+		SELECT
+			m.workflow_version,
+			COUNT(DISTINCT m.build_id)                                                       AS runs,
+			COUNT(DISTINCT m.workflow_run_id) FILTER (WHERE m.workflow_run_id IS NOT NULL)    AS workflow_runs,
+			COUNT(DISTINCT m.build_id) FILTER (WHERE b.status = 'succeeded')                  AS succeeded_runs,
+			COALESCE(SUM(m.cost_usd), 0)                                                      AS total_cost_usd,
+			COALESCE(SUM(m.turns), 0)                                                         AS total_turns
+		FROM agent_run_metrics m
+		LEFT JOIN builds b ON b.id = m.build_id
+		WHERE m.workflow_name = $1
+		GROUP BY m.workflow_version
+		ORDER BY m.workflow_version DESC NULLS LAST`, workflowName)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []agentschema.WorkflowVersionStats{}
+	for rows.Next() {
+		var s agentschema.WorkflowVersionStats
+		var version sql.NullInt64
+		if err := rows.Scan(&version, &s.Runs, &s.WorkflowRuns, &s.SucceededRuns, &s.TotalCostUSD, &s.TotalTurns); err != nil {
+			return nil, err
+		}
+		if version.Valid {
+			v := int(version.Int64)
+			s.Version = &v
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
 func scanRunMetricsRows(rows *sql.Rows) ([]agentschema.RunMetrics, error) {
 	results := []agentschema.RunMetrics{}
 	for rows.Next() {

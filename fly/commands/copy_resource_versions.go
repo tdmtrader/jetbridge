@@ -9,8 +9,8 @@ import (
 
 type CopyResourceVersionsCommand struct {
 	Resource    flaghelpers.ResourceFlag `short:"r" long:"resource" required:"true" value-name:"PIPELINE/RESOURCE" description:"Name of the resource to copy versions into"`
-	FromScopeID int                     `long:"from-scope" value-name:"SCOPE_ID" description:"ID of the deprecated scope to copy versions from (use without flag to list available scopes)"`
-	Team        flaghelpers.TeamFlag    `long:"team" description:"Name of the team to which the pipeline belongs, if different from the target default"`
+	FromScopeID int                      `long:"from-scope" value-name:"SCOPE_ID" description:"ID of the deprecated scope to copy versions from (use without flag to list available scopes)"`
+	Team        flaghelpers.TeamFlag     `long:"team" description:"Name of the team to which the pipeline belongs, if different from the target default"`
 }
 
 func (command *CopyResourceVersionsCommand) Execute(args []string) error {

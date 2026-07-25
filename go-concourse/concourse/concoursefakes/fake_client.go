@@ -472,6 +472,20 @@ type FakeClient struct {
 	uRLReturnsOnCall map[int]struct {
 		result1 string
 	}
+	UpdateAgentTicketStub        func(int, tickets.UpdateRequest) (tickets.Ticket, error)
+	updateAgentTicketMutex       sync.RWMutex
+	updateAgentTicketArgsForCall []struct {
+		arg1 int
+		arg2 tickets.UpdateRequest
+	}
+	updateAgentTicketReturns struct {
+		result1 tickets.Ticket
+		result2 error
+	}
+	updateAgentTicketReturnsOnCall map[int]struct {
+		result1 tickets.Ticket
+		result2 error
+	}
 	UserInfoStub        func() (atc.UserInfo, error)
 	userInfoMutex       sync.RWMutex
 	userInfoArgsForCall []struct {
@@ -2691,6 +2705,71 @@ func (fake *FakeClient) URLReturnsOnCall(i int, result1 string) {
 	fake.uRLReturnsOnCall[i] = struct {
 		result1 string
 	}{result1}
+}
+
+func (fake *FakeClient) UpdateAgentTicket(arg1 int, arg2 tickets.UpdateRequest) (tickets.Ticket, error) {
+	fake.updateAgentTicketMutex.Lock()
+	ret, specificReturn := fake.updateAgentTicketReturnsOnCall[len(fake.updateAgentTicketArgsForCall)]
+	fake.updateAgentTicketArgsForCall = append(fake.updateAgentTicketArgsForCall, struct {
+		arg1 int
+		arg2 tickets.UpdateRequest
+	}{arg1, arg2})
+	stub := fake.UpdateAgentTicketStub
+	fakeReturns := fake.updateAgentTicketReturns
+	fake.recordInvocation("UpdateAgentTicket", []interface{}{arg1, arg2})
+	fake.updateAgentTicketMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeClient) UpdateAgentTicketCallCount() int {
+	fake.updateAgentTicketMutex.RLock()
+	defer fake.updateAgentTicketMutex.RUnlock()
+	return len(fake.updateAgentTicketArgsForCall)
+}
+
+func (fake *FakeClient) UpdateAgentTicketCalls(stub func(int, tickets.UpdateRequest) (tickets.Ticket, error)) {
+	fake.updateAgentTicketMutex.Lock()
+	defer fake.updateAgentTicketMutex.Unlock()
+	fake.UpdateAgentTicketStub = stub
+}
+
+func (fake *FakeClient) UpdateAgentTicketArgsForCall(i int) (int, tickets.UpdateRequest) {
+	fake.updateAgentTicketMutex.RLock()
+	defer fake.updateAgentTicketMutex.RUnlock()
+	argsForCall := fake.updateAgentTicketArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2
+}
+
+func (fake *FakeClient) UpdateAgentTicketReturns(result1 tickets.Ticket, result2 error) {
+	fake.updateAgentTicketMutex.Lock()
+	defer fake.updateAgentTicketMutex.Unlock()
+	fake.UpdateAgentTicketStub = nil
+	fake.updateAgentTicketReturns = struct {
+		result1 tickets.Ticket
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeClient) UpdateAgentTicketReturnsOnCall(i int, result1 tickets.Ticket, result2 error) {
+	fake.updateAgentTicketMutex.Lock()
+	defer fake.updateAgentTicketMutex.Unlock()
+	fake.UpdateAgentTicketStub = nil
+	if fake.updateAgentTicketReturnsOnCall == nil {
+		fake.updateAgentTicketReturnsOnCall = make(map[int]struct {
+			result1 tickets.Ticket
+			result2 error
+		})
+	}
+	fake.updateAgentTicketReturnsOnCall[i] = struct {
+		result1 tickets.Ticket
+		result2 error
+	}{result1, result2}
 }
 
 func (fake *FakeClient) UserInfo() (atc.UserInfo, error) {

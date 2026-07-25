@@ -61,6 +61,16 @@ func TestDeriveOutcome(t *testing.T) {
 		{"succeeded with nothing delivered", "succeeded", "ok", "", "", schema.RunOutcomeNoOutput},
 		{"started renders running", "started", "ok", "", "", schema.RunOutcomeRunning},
 		{"pending renders running", "pending", "ok", "", "", schema.RunOutcomeRunning},
+		// 4b. incomplete (L-1): a step that read no flight output is amber
+		// "unrecorded" on any non-failed build (never red), "running" while the
+		// build is still open, and still loses to a terminally-bad build.
+		{"incomplete under a succeeded build is unrecorded", "succeeded", schema.RunStatusIncomplete, "", "", schema.RunOutcomeUnrecorded},
+		{"incomplete under a failed build stays failed", "failed", schema.RunStatusIncomplete, "", "", schema.RunOutcomeFailed},
+		{"incomplete under an errored build stays errored", "errored", schema.RunStatusIncomplete, "", "", schema.RunOutcomeErrored},
+		{"incomplete under an aborted build stays aborted", "aborted", schema.RunStatusIncomplete, "", "", schema.RunOutcomeAborted},
+		{"incomplete under a started build is running", "started", schema.RunStatusIncomplete, "", "", schema.RunOutcomeRunning},
+		{"incomplete under a pending build is running", "pending", schema.RunStatusIncomplete, "", "", schema.RunOutcomeRunning},
+		{"incomplete with no build status is unrecorded", "", schema.RunStatusIncomplete, "", "", schema.RunOutcomeUnrecorded},
 		// 5. no/unknown build status: fall back to the step's own word
 		{"no build status, ok step", "", "ok", "", "", schema.RunOutcomeOK},
 		{"unknown build status, ok step", "mystery", "ok", "", "", schema.RunOutcomeOK},

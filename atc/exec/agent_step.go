@@ -1,6 +1,7 @@
 package exec
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -105,6 +106,23 @@ func WithAgentRunVerifier(v AgentRunVerifier) AgentStepOption {
 	return func(s *AgentStep) { s.runVerifier = v }
 }
 
+// AgentTranscriptStore persists the agent tool-call transcript
+// (flight/transcript.ndjson) so a run's actual behavior is inspectable.
+// Satisfied by db.AgentRunTranscriptFactory.
+type AgentTranscriptStore interface {
+	Upsert(t db.AgentRunTranscript) error
+}
+
+// WithAgentStepTranscriptStore sets the store the agent step's own
+// server-side flight ingestion upserts the runner-captured tool-call
+// transcript (flight/transcript.ndjson) into (agent_run_transcripts). The
+// transcript is captured by THIS step's runner — the agent step's flight
+// volume is the only place it ever lives. nil disables ingestion — never
+// fatal (observability is best-effort).
+func WithAgentStepTranscriptStore(ts AgentTranscriptStore) AgentStepOption {
+	return func(s *AgentStep) { s.transcriptStore = ts }
+}
+
 // WithAgentOutputSealer enables strict typed snapshot input and output
 // execution for agent plans. The flight artifact remains outside this path.
 func WithAgentOutputSealer(sealer snapshot.OutputSealer) AgentStepOption {
@@ -144,6 +162,10 @@ type AgentStep struct {
 	outputSealer          snapshot.OutputSealer
 	snapshotMetadataStore snapshot.MetadataStore
 	snapshotContentStore  snapshot.ContentStore
+
+	// transcriptStore is the transcript ingestion seam — optional,
+	// nil-guarded. Wired via WithAgentStepTranscriptStore.
+	transcriptStore AgentTranscriptStore
 }
 
 func NewAgentStep(
@@ -910,6 +932,58 @@ func (step *AgentStep) ingestFlightRecorder(
 				}
 			}
 		}
+
+		// transcript.ndjson: the raw tool-call transcript, captured by THIS
+		// step's runner — the agent step is where the transcript actually
+		// lives. Its own store, keyed like the metrics row on
+		// (build_id, plan_id); a missing/failed transcript never affects
+		// metric ingestion. Bounded to the last 512KiB server-side as
+		// defense-in-depth (the runner already bounded it) — observability is
+		// best-effort, never fatal.
+		if step.transcriptStore != nil {
+			rc, err = step.streamer.StreamFile(ingestCtx, flightArtifact, "transcript.ndjson")
+			if err != nil {
+				logger.Error("failed-to-stream-flight-file", err, lager.Data{"file": "transcript.ndjson"})
+			} else if rc != nil {
+				raw, readErr := io.ReadAll(io.LimitReader(rc, 8<<20))
+				rc.Close()
+				if readErr != nil {
+					logger.Error("failed-to-read-flight-file", readErr, lager.Data{"file": "transcript.ndjson"})
+				} else if len(raw) > 0 {
+					nd, byteLen, truncated := boundTranscriptTail(raw)
+					tr := db.AgentRunTranscript{
+						BuildID:   step.metadata.BuildID,
+						PlanID:    string(step.planID),
+						StepName:  step.plan.Name,
+						NDJSON:    nd,
+						ByteLen:   byteLen,
+						Truncated: truncated,
+					}
+					// Same server-owned execution identity the metrics row
+					// above carries: the durable workflow run off step.metadata
+					// and the function id off the immutable plan. Never read
+					// from the attacker-writable flight recorder or plan env.
+					if step.metadata.WorkflowRunID != nil {
+						runID := *step.metadata.WorkflowRunID
+						tr.WorkflowRunID = &runID
+					}
+					tr.FunctionID = step.plan.FunctionID
+					if err := step.transcriptStore.Upsert(tr); err != nil {
+						logger.Error("failed-to-ingest-transcript", err)
+					}
+				}
+			}
+		}
+	}
+
+	if !flightRead {
+		// No flight file was read at all — the step produced no flight output
+		// (dominant cause: a runner image predating the flight recorder). This
+		// is a missing RECORDING, not a failed step: record it as incomplete so
+		// DeriveOutcome renders it amber "unrecorded" on a succeeded build
+		// (never red), while a failed/errored build still wins on read.
+		rm.Status = schema.RunStatusIncomplete
+		rm.Summary = "no flight output (runner image predates flight recorder?)"
 	}
 
 	// The flight recorder is SELF-REPORTED: it is written inside the agent
@@ -1093,6 +1167,29 @@ func (step *AgentStep) stepContainerExists(logger lager.Logger) bool {
 		return false
 	}
 	return found
+}
+
+// maxTranscriptBytes bounds a persisted transcript to its last 512KiB — the
+// tail is the diagnostic part (commits/failures happen at the end).
+const maxTranscriptBytes = 512 * 1024
+
+// boundTranscriptTail keeps the last maxTranscriptBytes of a transcript,
+// aligned to a line boundary, and — when it truncated — prepends the
+// shared-contract head-truncation marker as the first line. Returns the
+// bounded ndjson, its byte length, and whether truncation occurred.
+func boundTranscriptTail(raw []byte) (string, int, bool) {
+	if len(raw) <= maxTranscriptBytes {
+		return string(raw), len(raw), false
+	}
+	tail := raw[len(raw)-maxTranscriptBytes:]
+	// drop a leading partial line so the first data line is whole
+	if i := bytes.IndexByte(tail, '\n'); i >= 0 && i+1 <= len(tail) {
+		tail = tail[i+1:]
+	}
+	dropped := len(raw) - len(tail)
+	marker := fmt.Sprintf(`{"type":"transcript_truncated","dropped_bytes":%d,"note":"head-truncated to last 512KiB"}`+"\n", dropped)
+	out := marker + string(tail)
+	return out, len(out), true
 }
 
 func envInt(env map[string]string, key string) (int, bool) {

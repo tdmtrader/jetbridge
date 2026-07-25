@@ -48,12 +48,12 @@ type PlanningContext struct {
 
 // PlanningInput is the input schema for the planning agent.
 type PlanningInput struct {
-	Title              string          `json:"title"`
-	Description        string          `json:"description"`
-	Type               StoryType       `json:"type,omitempty"`
-	Priority           Priority        `json:"priority,omitempty"`
-	Labels             []string        `json:"labels,omitempty"`
-	AcceptanceCriteria []string        `json:"acceptance_criteria,omitempty"`
+	Title              string           `json:"title"`
+	Description        string           `json:"description"`
+	Type               StoryType        `json:"type,omitempty"`
+	Priority           Priority         `json:"priority,omitempty"`
+	Labels             []string         `json:"labels,omitempty"`
+	AcceptanceCriteria []string         `json:"acceptance_criteria,omitempty"`
 	Context            *PlanningContext `json:"context,omitempty"`
 }
 

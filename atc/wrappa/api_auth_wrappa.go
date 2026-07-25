@@ -229,6 +229,11 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			atc.GetAgentWorkflowVersion,
 			atc.CreateAgentWorkflowVersion,
 			atc.PromoteAgentWorkflowVersion,
+			atc.GetAgentWorkflowStats,
+			// UpdateAgentWorkflow (annotate/deprecate) is deliberately
+			// human-only (no principal tier): deprecating a workflow is an
+			// operator decision, not something an agent principal may do.
+			atc.UpdateAgentWorkflow,
 			atc.CreateAgentWorkflowRun,
 			atc.ListAgentWorkflowRuns,
 			atc.GetAgentWorkflowRunOperationalStatusCounts,
@@ -241,6 +246,7 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			atc.ListAgentWorkflowRunOutcomes,
 			atc.SetAgentWorkflowRunOutputOutcome,
 			atc.ListAgentWorkflowRunMetrics,
+			atc.GetAgentWorkflowRunTranscript,
 			atc.CreateAgentExperiment,
 			atc.ListAgentExperiments,
 			atc.GetAgentExperiment,

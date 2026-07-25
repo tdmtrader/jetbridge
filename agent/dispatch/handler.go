@@ -52,6 +52,7 @@ func NewHTTPHandler(deps Deps, userName func(*http.Request) string) http.Handler
 			RunID:         res.RunID,
 			PipelineName:  res.PipelineName,
 			WorkflowRunID: res.WorkflowRunID,
+			Warnings:      res.Warnings,
 		})
 	})
 }

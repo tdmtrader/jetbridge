@@ -120,6 +120,31 @@ var _ = Describe("Agent Tickets", func() {
 		})
 	})
 
+	Describe("UpdateAgentTicket", func() {
+		BeforeEach(func() {
+			atcServer.AppendHandlers(
+				ghttp.CombineHandlers(
+					ghttp.VerifyRequest("PUT", "/api/v1/agent/tickets/7"),
+					ghttp.VerifyJSON(`{"workflow_name":"deploy","workflow_version":3}`),
+					ghttp.RespondWithJSONEncoded(http.StatusOK, tickets.Ticket{
+						ID: 7, WorkflowName: "deploy",
+					}),
+				),
+			)
+		})
+
+		It("puts the update and decodes the updated ticket", func() {
+			name := "deploy"
+			ver := 3
+			updated, err := client.UpdateAgentTicket(7, tickets.UpdateRequest{
+				WorkflowName:    &name,
+				WorkflowVersion: &ver,
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(updated.WorkflowName).To(Equal("deploy"))
+		})
+	})
+
 	Describe("DispatchAgentTicket", func() {
 		runID := snapshot.WorkflowRunID(9007199254740993)
 

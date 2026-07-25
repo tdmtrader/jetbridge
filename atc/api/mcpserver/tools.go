@@ -1220,13 +1220,13 @@ type agentCostRollupOutput struct {
 
 func registerAgentCostRollup(s *Server, costLedgerFactory db.AgentCostLedgerFactory) {
 	s.AddTool("agent_cost_rollup",
-		"Roll up agent cost-ledger spend grouped by day, user, ticket, or workflow over an optional time window. Returns aggregate totals plus per-group rows.",
+		"Roll up agent cost-ledger spend grouped by day, user, ticket, workflow, model, or step over an optional time window. Returns aggregate totals plus per-group rows.",
 		MustJSON(map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"group_by": map[string]any{
 					"type":        "string",
-					"enum":        []string{budget.GroupByDay, budget.GroupByUser, budget.GroupByTicket, budget.GroupByWorkflow},
+					"enum":        []string{budget.GroupByDay, budget.GroupByUser, budget.GroupByTicket, budget.GroupByWorkflow, budget.GroupByModel, budget.GroupByStep},
 					"description": "Grouping dimension (default: day)",
 				},
 				"since": map[string]any{"type": "string", "description": "Start of window, RFC3339 or YYYY-MM-DD (default: 30 days ago)"},
@@ -1246,7 +1246,7 @@ func registerAgentCostRollup(s *Server, costLedgerFactory db.AgentCostLedgerFact
 				groupBy = budget.GroupByDay
 			}
 			if !budget.ValidGroupBy(groupBy) {
-				return nil, fmt.Errorf("group_by must be one of day|user|ticket|workflow, got %q", groupBy)
+				return nil, fmt.Errorf("group_by must be one of day|user|ticket|workflow|model|step, got %q", groupBy)
 			}
 
 			since, err := costs.ParseTimeParam(input.Since)

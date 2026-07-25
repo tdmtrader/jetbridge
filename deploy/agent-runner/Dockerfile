@@ -9,6 +9,16 @@ FROM node:20-bookworm-slim
 RUN npm install -g @anthropic-ai/claude-code@2.0.1 \
     && apt-get update && apt-get install -y --no-install-recommends git ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
+# NOTE: the Elm 0.19.1 + uglify-js toolchain (WF-2, for front-end tickets) was
+# REMOVED from this image — the build pod's egress to external hosts is
+# unreliable/blocked: the elm-binary download (github release CDN) hit
+# `curl: (35) Connection reset by peer` and the ELM_HOME pre-warm could not reach
+# package.elm-lang.org (builds #8/#9/#10 all failed). It only made the agent-runner
+# image build flaky while UI tickets are blocked anyway. Re-add it ONLY with a
+# network-independent delivery: vendor the elm linux-x64 binary in-repo (or an
+# in-cluster mirror) and a pre-populated ELM_HOME, so the build needs no external
+# egress. The elm-build gate (agent/functions/gates) tolerates a missing `elm` —
+# it errors that gate, which only fires on web/elm changes.
 COPY --from=build /out/agent-runner /usr/local/bin/agent-runner
 COPY --from=build /usr/local/go /usr/local/go
 # Root, like every other step image: jetbridge hostPath step volumes are

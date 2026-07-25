@@ -14,6 +14,7 @@ import Test exposing (Test, describe, test)
 import Test.Html.Query as Query
 import Test.Html.Selector exposing (attribute, containing, id, tag, text)
 import Url
+import Views.Truncate
 
 
 ticketsFrom : String -> List AgentTicket.Ticket
@@ -35,6 +36,20 @@ mergedTickets =
 erroredTickets : List AgentTicket.Ticket
 erroredTickets =
     ticketsFrom """[ { "id": 8, "title": "blew up", "state": "errored", "created_at": 300 } ]"""
+
+
+longTailTitle : String
+longTailTitle =
+    "recorder plus evidence harvester rewrite pass two (T9 only)"
+
+
+longTitleTickets : List AgentTicket.Ticket
+longTitleTickets =
+    ticketsFrom
+        ("""[ { "id": 42, "title": \""""
+            ++ longTailTitle
+            ++ """", "state": "needs_review", "created_at": 400 } ]"""
+        )
 
 
 costRollup : Callback.Callback
@@ -121,4 +136,23 @@ all =
                         , attribute (Attr.href "/agent-tickets/8")
                         , containing [ text "#8 blew up" ]
                         ]
+        , test "middle-truncates a long chip label so the distinguishing tail survives (W-10)" <|
+            \_ ->
+                load
+                    |> Application.handleCallback (Callback.AgentTicketsFetched (Ok longTitleTickets))
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ id "agent-ticket-strip" ]
+                    |> Query.has
+                        [ containing
+                            [ text (Views.Truncate.middle 48 ("#42 " ++ longTailTitle)) ]
+                        ]
+        , test "keeps the full untruncated title on the chip tooltip (W-10)" <|
+            \_ ->
+                load
+                    |> Application.handleCallback (Callback.AgentTicketsFetched (Ok longTitleTickets))
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ id "agent-ticket-strip" ]
+                    |> Query.has [ attribute (Attr.title longTailTitle) ]
         ]

@@ -79,5 +79,5 @@ func formatRunDuration(run atc.PipelineRun) string {
 	if run.CompletedAt == 0 {
 		return "n/a"
 	}
-	return time.Duration((run.CompletedAt-run.CreatedAt)*int64(time.Second)).String()
+	return time.Duration((run.CompletedAt - run.CreatedAt) * int64(time.Second)).String()
 }

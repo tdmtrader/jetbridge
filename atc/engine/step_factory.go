@@ -37,6 +37,7 @@ type coreStepFactory struct {
 	imageResolver         imageresolver.Resolver
 	agentStepImage        string
 	agentMetricsStore     metrics.Store
+	agentTranscriptStore  exec.AgentTranscriptStore
 	agentBudgetChecker    budget.Checker
 	agentRunVerifier      exec.AgentRunVerifier
 	agentPlatformToken    string
@@ -108,6 +109,13 @@ func WithAgentStepImage(image string) CoreStepFactoryOption {
 // flight-recorder ingestion.
 func WithAgentMetricsStore(s metrics.Store) CoreStepFactoryOption {
 	return func(f *coreStepFactory) { f.agentMetricsStore = s }
+}
+
+// WithAgentTranscriptStore sets the store the agent step upserts the
+// runner-captured tool-call transcript (flight/transcript.ndjson) into
+// during server-side flight ingestion (agent_run_transcripts).
+func WithAgentTranscriptStore(s exec.AgentTranscriptStore) CoreStepFactoryOption {
+	return func(f *coreStepFactory) { f.agentTranscriptStore = s }
 }
 
 // WithAgentBudgetChecker sets the budget library used for step-slice
@@ -286,6 +294,11 @@ func (factory *coreStepFactory) AgentStep(
 	}
 	if factory.agentMetricsStore != nil {
 		agentOpts = append(agentOpts, exec.WithAgentMetricsStore(factory.agentMetricsStore))
+	}
+	if factory.agentTranscriptStore != nil {
+		// The transcript is captured by THIS step's runner: the agent step's
+		// flight volume is the only place flight/transcript.ndjson ever lives.
+		agentOpts = append(agentOpts, exec.WithAgentStepTranscriptStore(factory.agentTranscriptStore))
 	}
 	if factory.agentBudgetChecker != nil {
 		agentOpts = append(agentOpts, exec.WithAgentBudgetChecker(factory.agentBudgetChecker))

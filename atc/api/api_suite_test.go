@@ -94,6 +94,8 @@ var (
 	fakeClock               *fakeclock.FakeClock
 	dbSigningKeyFactory     *dbfakes.FakeSigningKeyFactory
 
+	fakeAgentRunTranscriptFactory *dbfakes.FakeAgentRunTranscriptFactory
+
 	constructedEventHandler *fakeEventHandlerFactory
 
 	server *httptest.Server
@@ -183,6 +185,7 @@ var _ = BeforeEach(func() {
 	fakePipelineRunFactory = new(dbfakes.FakePipelineRunFactory)
 	dbWall = new(dbfakes.FakeWall)
 	dbSigningKeyFactory = new(dbfakes.FakeSigningKeyFactory)
+	fakeAgentRunTranscriptFactory = new(dbfakes.FakeAgentRunTranscriptFactory)
 
 	interceptTimeoutFactory = new(containerserverfakes.FakeInterceptTimeoutFactory)
 	interceptTimeout = new(containerserverfakes.FakeInterceptTimeout)
@@ -340,6 +343,7 @@ var _ = BeforeEach(func() {
 		budget.NewMemoryLedger(),
 		0,
 		budget.NoTicketBudgets{},
+		fakeAgentRunTranscriptFactory,
 		workflow.NewMemoryStore(),
 		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusNotImplemented) // dispatch handler stub

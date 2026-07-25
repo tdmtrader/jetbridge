@@ -128,10 +128,10 @@ var _ = Describe("Scheduler Metrics & Observability", func() {
 	// MO-04/05: BuildsStarted vs CheckBuildsStarted counters
 	Describe("BuildsStarted and CheckBuildsStarted metrics", func() {
 		var (
-			buildStarter BuildStarter
-			fakePlanner  *schedulerfakes.FakeBuildPlanner
+			buildStarter  BuildStarter
+			fakePlanner   *schedulerfakes.FakeBuildPlanner
 			fakeAlgorithm *schedulerfakes.FakeAlgorithm
-			fakeJob      *dbfakes.FakeJob
+			fakeJob       *dbfakes.FakeJob
 		)
 
 		BeforeEach(func() {

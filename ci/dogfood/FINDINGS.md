@@ -5,6 +5,170 @@ jetbridge (concourse.home). This is the raw material the process-intelligence
 loop (plan 14) will eventually mine automatically; for now it's hand-kept.
 Newest first.
 
+## UX4 native-build enablement (2026-07-20, filing S-1..S-6 + W-items as tickets)
+
+- **UI/Elm work is NOT loop-buildable yet — the runner image has no Elm toolchain
+  and no workflow runs the elm-build gate. This blocks dispatching every UX ticket
+  (S-1 DAG, S-2 transcript, S-3 IA, S-4 diff, S-5 web-loop, S-6 workflows, W-5/10/11/13).**
+  WF-2 (merged this session, live at 5daa0678e3) added `elm 0.19.1` to
+  `deploy/agent-runner/Dockerfile` and an `elm-build` harvest gate to `agent/harvest`,
+  but three things are still missing before an agent can actually ship an Elm change:
+  (1) the runner image was never rebuilt/bumped — it is still `agent-runner:v0.2.196`
+  with no `elm` binary (WF-2 Task 6 is post-merge ops, deliberately deferred);
+  (2) `uglify-js` was intentionally left OUT of the Dockerfile because the *gate* only
+  needs `elm make` — but an *agent implementing a change* needs `elm make` **and**
+  `uglifyjs` to run `hack/build-web.sh` and regenerate the committed
+  `web/public/elm.min.js`; without uglifyjs the agent cannot produce the very bundle
+  the gate diff-checks for, so the gate would fail-closed on every Elm ticket;
+  (3) neither `develop` (v2, opus) nor `develop-fable` (v4) declares an `elm-build`
+  gate, so even on a fixed image the stale-bundle guard would not run.
+  → *Enablement checklist to make UI tickets loop-buildable:* add `uglify-js` to
+  `deploy/agent-runner/Dockerfile` (next to the elm layer); rebuild+push the
+  agent-runner image; bump `CONCOURSE_AGENT_STEP_IMAGE` in home-infra
+  `apps/concourse.yaml`; import a `develop-elm` workflow version whose gate_policy
+  includes `- gate: elm-build`. Until all four land, UI tickets can be *filed* but not
+  *dispatched* — filing them anyway (drafts) is correct so the backlog is visible.
+
+- **The `develop`/`develop-fable` gate command map is Go-only (`go build/test/lint`).**
+  The fixed `gateCommands` in `agent/harvest/gates.go` plus these two workflows cover
+  Go slices well (that is why the backend tickets #43/#44 and S-6's server half are
+  loop-ready today), but there is no front-end build/test in the loop at all until the
+  elm enablement above lands. Backend-only tickets dispatch cleanly now; anything that
+  touches `web/elm/**` does not.
+
+- **needs_review backlog is real friction, exactly as the audit predicted.** #41, #42,
+  #45, #46 all have their code merged + deployed to prod, yet the *tickets* still sit in
+  `needs_review` (their agent runs finished days ago). Dispositioning is a manual
+  `fly agent tickets` step with no nudge. #41 is a special case: its original agent run
+  correctly STOPPED at the status-CHECK-constraint migration gate, and the actual fix was
+  implemented out-of-band this session (migration 1773106092), so the ticket must be
+  *concluded as implemented elsewhere*, not merged from an `agent/ticket-41` branch that
+  never carried the fix. → *Signal:* a ticket whose work lands via a different path than
+  its own agent branch has no clean disposition verb; "concluded" is the least-wrong.
+
+- **Migration coordination is now load-bearing for the ticket queue.** #41 consumed slot
+  `1773106092`; S-6 (workflow lifecycle) and any future schema ticket must number ABOVE it
+  and merge in ascending order (the migrator is version-pointer based — a lower number
+  merged after a higher one deploys is silently never applied; see the migration-merge-order
+  rule below). File migration-bearing tickets with an explicit "claim the next free slot
+  above the current head; do not hard-code a number from a stale plan doc" instruction.
+
+- **`fly agent workflows import` validates the gate vocabulary CLIENT-SIDE, and
+  `fly sync` is broken — so an out-of-date local fly cannot import a workflow that
+  uses a just-shipped gate.** Importing `develop-elm` (which declares `- gate: elm-build`)
+  from a local fly v0.2.195 failed with `gate must be build|test|lint, got "elm-build"`
+  even though the deployed web (6d4b4811ff) already accepts it — fly parses the YAML
+  itself before POSTing. `fly -t home sync` then 500s: the web image does not ship
+  `fly-assets/fly-*.tgz`. → *Workaround:* build fly from the target commit locally
+  (`go build -o /tmp/fly ./fly`) and import with that. → *Leftward fix:* either make
+  workflow import server-validated only, or bundle the fly assets in the release image so
+  `fly sync` works.
+
+- **Enabling front-end tickets took THREE new pieces, not one.** WF-2 shipped the
+  `elm-build` gate + `elm` in the runner image, but making a UI ticket actually
+  loop-buildable also needed: (1) `uglify-js` in the runner image (the agent runs
+  `hack/build-web.sh` = `elm make` + `uglifyjs`; WF-2 deliberately omitted uglify because
+  the *gate* only needs `elm make`); (2) a `develop-elm` workflow whose gate_policy adds
+  `elm-build` AND whose prompt tells the agent to regenerate + commit `elm.min.js`; (3) a
+  separate `develop-gated` workflow for BACKEND tickets, because the prompt is per-workflow
+  — a front-end prompt ("work in web/elm, rebuild the bundle") is actively wrong for a Go
+  ticket, and the base `develop` workflow has NO gate at all while `develop-fable` is
+  fable-only. → *Signal:* "add a gate" and "add a toolchain" are not enough to make a new
+  work-kind loop-buildable; the workflow prompt is the third leg and it is work-kind-specific.
+
+- **WF-5 (this session) proven live:** `fly agent tickets queue --id 43 --workflow develop-gated`
+  assigned the workflow and queued in one step, then `dispatch --id 43` ran it — the
+  empty-workflow dead-end the audit found is closed end-to-end.
+
+- **A turn-capped run pushes an EMPTY branch and is marked needs_review — the ticket-loop
+  harvest has no no-op guard.** #43 (flight-events, a six-touchpoint + persistence + tests
+  feature) dispatched on `develop-gated` (max_turns 100) hit the cap: the run log shows
+  `{"type":"result","subtype":"error_max_turns","num_turns":100,"is_error":false,"total_cost_usd":5.98}`.
+  The implement agent committed NOTHING before the cap; because claude-code reports max-turns
+  as `is_error:false`, the harvest treated the run as clean, ran the `build` gate against the
+  UNCHANGED workspace (`base_sha == head_sha == 6d4b4811ff`) where it passed trivially, and
+  pushed `agent/ticket-43` at the base sha — an empty branch — with summary "1 gate(s) ok;
+  pushed agent/ticket-43" and ticket → needs_review. $5.98 spent, zero work delivered, looks
+  successful. The dogfood-pipeline.yml runner has an explicit empty-branch guard ("A blocked
+  agent fails loudly"); the ticket-loop harvest (agent/harvest) does NOT. → *Two leftward
+  fixes:* (1) harvest must FAIL (errored, not needs_review) when `head_sha == base_sha` /
+  zero commits — a gate that runs against an unchanged tree is meaningless; (2) treat
+  `error_max_turns` as a run failure (or at least surface it), not a clean finish.
+  → *Workflow-level mitigations applied here:* bumped develop-gated/develop-elm max_turns to
+  250 and added "commit after each logical chunk" so partial work survives a cap and the
+  branch is never empty. Re-dispatched #43.
+
+- **These S-track tickets may be too big for one run.** #43 is a whole plan-doc feature; the
+  agent burned 100 turns (8.2M cache-read tokens) without finishing. The proven loop strike
+  zone (cf. #16–40) was smaller slices. If the higher turn cap still caps out, the S-tickets
+  need slicing (each plan doc → 2–3 sub-tickets by task range, like ci/dogfood/dispatch.sh's
+  task-range model).
+
+- **CONFIRMED SYSTEMATIC: the ticket loop pushed TWO empty no-op branches for #43 and both
+  read as successful — the loop is not reliably materializing agent work into the pushed
+  branch.** Run 42 (develop-gated v1, sonnet): `error_max_turns` at 100 turns, $5.98, empty
+  branch. Run 43 (develop-gated v2, sonnet, max_turns 250 + commit-incrementally): terminated
+  `subtype:"success"` at only 48 turns / $2.15 / ~30k output tokens, yet ALSO pushed
+  `base_sha == head_sha` (empty). So the second failure is NOT the turn cap and NOT lack of
+  commits-guidance — the agent did ~30k tokens of work that never reached the `outputs:
+  [workspace]` dir the harvest pushes. Prime suspect: the resolve-once workspace protocol
+  (cp repo→$AGENT_OUTPUT_WORKSPACE, work + commit in WS) is still fragile under sonnet — the
+  agent likely works/commits in `repo/` or a mis-resolved path, leaving the WS output at base.
+  This is the #16 empty-expansion class the develop-v2 comment claims to have fixed; it is not
+  fixed for this path. **Debugging is blocked by the absence of transcript persistence** — the
+  build log carries only the flight-recorder `result` event, not the agent's tool calls, so
+  there is no way to see WHERE it wrote (ironically the exact capability tickets #43/#49
+  would add). ~$8 spent on two empty runs. → *Load-bearing leftward fixes, in priority order:*
+  (1) harvest MUST fail a run whose pushed head == base (no-op guard) — this alone stops the
+  money-burning "successful empty run"; (2) persist the agent transcript so workspace-protocol
+  failures are debuggable at all (#43/#49); (3) make the workspace materialization robust
+  (have the platform own the repo→WS copy, or have the harvest read the agent's actual cwd,
+  rather than trusting the agent to hand-resolve $AGENT_OUTPUT_WORKSPACE). Until (1)+(3) land,
+  the ticket loop cannot be trusted to build these tickets — build them the way Waves A/B/#41
+  were built (directly, adversarially reviewed) OR harden the loop first.
+
+- **The WF-2 elm pre-warm broke the agent-runner image build — the no-op guard + transcript
+  capture were never actually deployed until this was fixed.** `build-agent-runner-image` #8
+  (intended v0.2.200) and #9 (v0.2.201) both FAILED at the Dockerfile step
+  `cd /tmp/elm-prewarm/web/elm && elm make --optimize ...`: the build pod has no egress to
+  package.elm-lang.org, so `elm make` cannot resolve the repo's Elm deps (exactly WF-2 Open
+  Decision #4's warning). The `elm` binary (curl from github) and `uglify-js` (npm) installs
+  SUCCEEDED — only the package-registry pre-warm failed. CONSEQUENCE: the registry has no
+  v0.2.200/v0.2.201; home-infra pointed CONCOURSE_AGENT_STEP_IMAGE at a non-existent tag, so
+  dispatched run 44 errored with `failed to pull and unpack image: NotFound` (22s). The web
+  deploy was unaffected (it uses jetbridge:latest, not agent-runner), which masked the failure
+  — the poll had read the *attempted* tag out of the build log, not a successful push. LESSON:
+  after triggering build-agent-runner-image, VERIFY the tag actually landed in the registry
+  (`/v2/agent-runner/tags/list`) before bumping home-infra — a build-log tag string is not proof
+  of a push. → *Fix applied:* removed the pre-warm layer (keep elm+uglify binaries); a UI ticket
+  will need run-time egress to package.elm-lang.org or a vendored ELM_HOME (deferred).
+
+- **The transcript observability paid off immediately — and DISPROVED the "agent edits the
+  wrong tree" hypothesis.** With capture live (v0.2.202), #43 run 45's transcript (readable in
+  the build log: 205 assistant msgs, 177 tool_use, 174 tool_result) shows the agent worked in
+  the CORRECT workspace (`/tmp/build/<hash>/workspace`, NOT `repo/`) and deliberately STOPPED:
+  its final message — "Ticket #43 — STOPPED at Slice 1 gate; no code changes made. workspace/
+  is a clean copy of repo/... nothing committed." It stopped because #43's infrastructure
+  (agent_run_transcripts, transcriptserver, migration 1773106093, the fly command) was ALREADY
+  in the base branch — I built + merged it directly. So run 45's empty branch is CORRECT
+  behavior, and the no-op guard correctly failed it. → The earlier empty runs were run 42
+  (turn cap) and run 43 (early stop), NOT a workspace-materialization bug. **The runner-CWD
+  fix I feared is NOT needed** — the resolve-once workspace protocol works. Lesson: without a
+  transcript, three empty runs looked like a systemic workspace bug; one transcript showed the
+  truth in minutes. This is the single strongest argument for the observability itself.
+
+- **Transcript ingestion was wired to the wrong exec — captured but not persisted to the DB.**
+  `transcript.ndjson` is written by the IMPLEMENT step (agent-runner, whose flight is ingested
+  by `atc/exec/agent_step.go` `ingestFlightRecorder`), but the transcript ingestion block was
+  added to `atc/exec/harvest_step.go` (the HARVEST step, whose harvest-runner flight never
+  contains a transcript). So `StreamFile("transcript.ndjson")` on the harvest flight finds
+  nothing (no error, no row) and `agent_run_transcripts` stays empty. The step_factory wiring
+  and the ingestion code are both correct; only the LOCATION is wrong. → *Fix (web-only, no
+  image rebuild):* move the transcript-ingestion block from harvest_step.go into
+  agent_step.go's ingestFlightRecorder alongside results.json/events.ndjson. The review lenses
+  missed it because each half tested in isolation; nothing exercised implement-flight →
+  transcript-row end-to-end.
+
 ## Plan gaps the agents found (leftward candidates)
 
 - **Agent replace-instead-of-add error in exactly the code the gate can't test.**

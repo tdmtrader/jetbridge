@@ -315,7 +315,6 @@ var _ = Describe("Workers API", func() {
 				})
 			})
 
-
 			Context("when worker version is invalid", func() {
 				BeforeEach(func() {
 					worker.Version = "invalid"

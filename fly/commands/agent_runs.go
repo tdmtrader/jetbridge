@@ -118,12 +118,15 @@ func imageTag(ref string) string {
 
 // agentOutcomeColor colors the fused outcome with fly's build-status
 // conventions, plus the agent-specific states: blue for parked (waiting on a
-// human) and warn-yellow for no_output (green build that delivered nothing).
+// human), warn-yellow for no_output (green build that delivered nothing), and
+// amber for unrecorded (delivered, but the flight recording is missing — L-1).
 func agentOutcomeColor(outcome string) *color.Color {
 	switch outcome {
 	case agentschema.RunOutcomeOK:
 		return ui.SucceededColor
 	case agentschema.RunOutcomeNoOutput:
+		return color.New(color.FgYellow)
+	case agentschema.RunOutcomeUnrecorded:
 		return color.New(color.FgYellow)
 	case agentschema.RunOutcomeRunning:
 		return ui.StartedColor

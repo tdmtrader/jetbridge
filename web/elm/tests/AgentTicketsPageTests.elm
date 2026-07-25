@@ -269,4 +269,64 @@ all =
                     |> Common.queryView
                     |> Query.find [ Test.Html.Selector.id "unattributed-cost" ]
                     |> Query.has [ containing [ text "$11.08" ] ]
+        , test "renders the errored section above the draft section" <|
+            \_ ->
+                Common.init "/agent-tickets"
+                    |> Application.handleCallback
+                        (Callback.AgentTicketsFetched
+                            (Ok
+                                (ticketsFrom
+                                    """
+                                    [ { "id": 5, "title": "draft one", "state": "draft", "workflow_name": "develop", "created_at": 100 }
+                                    , { "id": 6, "title": "errored one", "state": "errored", "workflow_name": "develop", "created_at": 200 }
+                                    ]
+                                    """
+                                )
+                            )
+                        )
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.findAll [ Test.Html.Selector.tag "h2" ]
+                    |> Expect.all
+                        [ Query.index 0 >> Query.has [ text "Errored" ]
+                        , Query.index 1 >> Query.has [ text "Draft" ]
+                        ]
+        , test "section header carries a count and spend rollup" <|
+            \_ ->
+                Common.init "/agent-tickets"
+                    |> Application.handleCallback
+                        (Callback.AgentTicketsFetched
+                            (Ok
+                                (ticketsFrom
+                                    """
+                                    [ { "id": 5, "title": "one", "state": "merged", "workflow_name": "develop", "created_at": 100 }
+                                    , { "id": 6, "title": "two", "state": "merged", "workflow_name": "develop", "created_at": 200 }
+                                    ]
+                                    """
+                                )
+                            )
+                        )
+                    |> Tuple.first
+                    |> Application.handleCallback
+                        (Callback.AgentCostRollupFetched
+                            (Ok
+                                { groupBy = "ticket"
+                                , summary =
+                                    { dailyCapUsd = 0
+                                    , dailySpentUsd = 0
+                                    , dailyRemainingUsd = 0
+                                    , dailyExhausted = False
+                                    }
+                                , rows =
+                                    [ { key = "5", entries = 1, inputTokens = 0, outputTokens = 0, turns = 0, costUsd = 40.0 }
+                                    , { key = "6", entries = 1, inputTokens = 0, outputTokens = 0, turns = 0, costUsd = 3.1 }
+                                    ]
+                                }
+                            )
+                        )
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.findAll [ Test.Html.Selector.tag "h2" ]
+                    |> Query.first
+                    |> Query.has [ text "Merged (2) · $43.10" ]
         ]

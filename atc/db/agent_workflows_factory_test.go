@@ -746,3 +746,62 @@ plan:
 		})
 	})
 })
+
+var _ = Describe("AgentWorkflowsFactory lifecycle", func() {
+	var factory db.AgentWorkflowsFactory
+
+	const lcYAML = `schema_version: 3
+name: lc-wf
+description: lifecycle test
+signature_version: 1
+inputs: []
+outputs: []
+plan:
+  - agent: work
+    function_id: work
+    prompt: do it
+`
+
+	BeforeEach(func() {
+		factory = db.NewAgentWorkflowsFactory(dbConn)
+		_, err := factory.Import("lc-wf", []byte(lcYAML), "importer")
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("persists annotation and hidden and surfaces them in List", func() {
+		Expect(factory.Annotate("lc-wf", "hotfix workhorse", "alice")).To(Succeed())
+		Expect(factory.SetHidden("lc-wf", true, "alice")).To(Succeed())
+
+		defs, err := factory.List()
+		Expect(err).NotTo(HaveOccurred())
+		var found bool
+		for _, d := range defs {
+			if d.Name == "lc-wf" {
+				found = true
+				Expect(d.Annotation).To(Equal("hotfix workhorse"))
+				Expect(d.Hidden).To(BeTrue())
+			}
+		}
+		Expect(found).To(BeTrue())
+	})
+
+	It("surfaces lifecycle on Get/Versions read paths", func() {
+		Expect(factory.SetHidden("lc-wf", true, "alice")).To(Succeed())
+
+		def, found, err := factory.Get("lc-wf", 1)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(def.Hidden).To(BeTrue())
+
+		page, err := factory.Versions(context.Background(), "lc-wf", workflow.VersionPageRequest{Limit: workflow.MaxVersionPageSize})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(page.Found).To(BeTrue())
+		Expect(page.Definitions).To(HaveLen(1))
+		Expect(page.Definitions[0].Hidden).To(BeTrue())
+	})
+
+	It("returns ErrVersionNotFound for an unknown workflow", func() {
+		Expect(factory.Annotate("ghost", "x", "alice")).To(MatchError(workflow.ErrVersionNotFound))
+		Expect(factory.SetHidden("ghost", true, "alice")).To(MatchError(workflow.ErrVersionNotFound))
+	})
+})

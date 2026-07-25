@@ -201,6 +201,9 @@ func (errStore) ListByWorkflowRun(string, snapshot.WorkflowRunID) ([]schema.RunM
 	return nil, errors.New("boom")
 }
 func (errStore) ListRecent(int) ([]schema.RunMetrics, error) { return nil, errors.New("boom") }
+func (errStore) WorkflowStats(string) ([]schema.WorkflowVersionStats, error) {
+	return nil, errors.New("boom")
+}
 
 func TestListCarriesDerivedOutcome(t *testing.T) {
 	store := metrics.NewMemoryStore()

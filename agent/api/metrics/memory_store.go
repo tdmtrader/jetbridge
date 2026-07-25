@@ -80,6 +80,89 @@ func (s *MemoryStore) ListRecent(limit int) ([]schema.RunMetrics, error) {
 	return all, nil
 }
 
+// WorkflowStats mirrors the DB factory's aggregation (agent_run_metrics
+// GROUP BY workflow_version, LEFT JOIN builds for success truth) over the
+// in-memory rows: one row per distinct workflow_version for the named
+// workflow, newest version first with the NULL-version bucket last. The
+// "run" unit is a distinct build_id; success counts distinct build_ids whose
+// stored BuildStatus is "succeeded" (the in-memory stand-in for the builds
+// join). WorkflowRuns counts distinct non-nil WorkflowRunIDs — the durable
+// execution identity that replaced the retired ticket_id column. Raw counters
+// only — callers apply WithDerived for the ratios.
+func (s *MemoryStore) WorkflowStats(workflowName string) ([]schema.WorkflowVersionStats, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	type versionKey struct {
+		hasVersion bool
+		version    int
+	}
+	type agg struct {
+		version      *int
+		builds       map[int]struct{}
+		succeeded    map[int]struct{}
+		workflowRuns map[int64]struct{}
+		totalCostUSD float64
+		totalTurns   int
+	}
+	buckets := map[versionKey]*agg{}
+
+	for _, rm := range s.rows {
+		if rm.WorkflowName != workflowName {
+			continue
+		}
+		var key versionKey
+		var vptr *int
+		if rm.WorkflowVersion != nil {
+			key = versionKey{hasVersion: true, version: *rm.WorkflowVersion}
+			v := *rm.WorkflowVersion
+			vptr = &v
+		}
+		a := buckets[key]
+		if a == nil {
+			a = &agg{
+				version:      vptr,
+				builds:       map[int]struct{}{},
+				succeeded:    map[int]struct{}{},
+				workflowRuns: map[int64]struct{}{},
+			}
+			buckets[key] = a
+		}
+		a.builds[rm.BuildID] = struct{}{}
+		if rm.BuildStatus == "succeeded" {
+			a.succeeded[rm.BuildID] = struct{}{}
+		}
+		if rm.WorkflowRunID != nil {
+			a.workflowRuns[int64(*rm.WorkflowRunID)] = struct{}{}
+		}
+		a.totalCostUSD += rm.CostUSD
+		a.totalTurns += rm.Turns
+	}
+
+	out := make([]schema.WorkflowVersionStats, 0, len(buckets))
+	for _, a := range buckets {
+		out = append(out, schema.WorkflowVersionStats{
+			Version:       a.version,
+			Runs:          len(a.builds),
+			WorkflowRuns:  len(a.workflowRuns),
+			SucceededRuns: len(a.succeeded),
+			TotalCostUSD:  a.totalCostUSD,
+			TotalTurns:    a.totalTurns,
+		})
+	}
+	// ORDER BY workflow_version DESC NULLS LAST
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Version == nil {
+			return false
+		}
+		if out[j].Version == nil {
+			return true
+		}
+		return *out[i].Version > *out[j].Version
+	})
+	return out, nil
+}
+
 func (s *MemoryStore) list(match func(schema.RunMetrics) bool) ([]schema.RunMetrics, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

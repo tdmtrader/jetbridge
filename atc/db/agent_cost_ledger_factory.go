@@ -95,6 +95,10 @@ func (f *agentCostLedgerFactory) Rollup(groupBy string, since, until time.Time) 
 	case budget.GroupByWorkflow:
 		// Contract addendum: workflow attribution rides metadata->>'workflow'.
 		keyExpr = `COALESCE(metadata->>'workflow', '')`
+	case budget.GroupByModel:
+		keyExpr = `COALESCE(model, '')`
+	case budget.GroupByStep:
+		keyExpr = `COALESCE(step_name, '')`
 	case budget.GroupByDay:
 		keyExpr = `to_char((occurred_at AT TIME ZONE 'UTC')::date, 'YYYY-MM-DD')`
 	default:

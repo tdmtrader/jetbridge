@@ -535,6 +535,9 @@ routeMatchesModel route model =
         ( Routes.Dashboard _, SubPage.DashboardModel _ ) ->
             True
 
+        ( Routes.Agent, SubPage.AgentModel _ ) ->
+            True
+
         _ ->
             False
 

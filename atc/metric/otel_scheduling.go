@@ -9,8 +9,8 @@ import (
 )
 
 var (
-	jobsScheduledCounter          otelmetric.Float64Counter
-	jobsSchedulingUpDownCounter   otelmetric.Float64UpDownCounter
+	jobsScheduledCounter           otelmetric.Float64Counter
+	jobsSchedulingUpDownCounter    otelmetric.Float64UpDownCounter
 	schedulingJobDurationHistogram otelmetric.Float64Histogram
 )
 

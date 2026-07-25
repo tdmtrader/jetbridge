@@ -28,6 +28,7 @@ type AgentPrincipalsCommand struct {
 
 type AgentPrincipalsListCommand struct {
 	Json bool `long:"json" description:"Print command result as JSON"`
+	All  bool `long:"all" description:"List every ephemeral run principal individually instead of collapsing them to a summary line"`
 }
 
 func (command *AgentPrincipalsListCommand) Execute([]string) error {
@@ -45,6 +46,20 @@ func (command *AgentPrincipalsListCommand) Execute([]string) error {
 		return displayhelpers.JsonPrint(list)
 	}
 
+	// Operator-managed principals are the rows a human actually manages;
+	// the dispatcher's ephemeral per-run principals (agent-run-<id>,
+	// identical scope sets, 6h expiry) are printed first and would
+	// otherwise drown them, so they're grouped last and collapsed to a
+	// summary line unless --all is given (ticket #44).
+	var operators, runs []atc.AgentPrincipal
+	for _, p := range list {
+		if principals.DeriveKind(p.Name) == principals.KindRun {
+			runs = append(runs, p)
+		} else {
+			operators = append(operators, p)
+		}
+	}
+
 	table := ui.Table{Headers: ui.TableRow{
 		{Contents: "id", Color: color.New(color.Bold)},
 		{Contents: "name", Color: color.New(color.Bold)},
@@ -55,26 +70,40 @@ func (command *AgentPrincipalsListCommand) Execute([]string) error {
 		{Contents: "revoked", Color: color.New(color.Bold)},
 		{Contents: "last-used", Color: color.New(color.Bold)},
 	}}
-	for _, p := range list {
-		row := ui.TableRow{
-			{Contents: strconv.Itoa(p.ID)},
-			{Contents: p.Name},
-			{Contents: strings.Join(p.Scopes, ",")},
-			{Contents: p.TeamName},
-			{Contents: humanizePrincipalTime(&p.CreatedAt)},
-			{Contents: humanizePrincipalTime(p.ExpiresAt)},
-			{Contents: humanizePrincipalTime(p.RevokedAt)},
-			{Contents: humanizePrincipalTime(p.LastUsedAt)},
+	for _, p := range operators {
+		table.Data = append(table.Data, agentPrincipalRow(p))
+	}
+	if command.All {
+		for _, p := range runs {
+			table.Data = append(table.Data, agentPrincipalRow(p))
 		}
-		// Dim revoked principals so the live ones stand out.
-		if p.RevokedAt != nil {
-			for i := range row {
-				row[i].Color = color.New(color.Faint)
-			}
-		}
-		table.Data = append(table.Data, row)
+	} else if len(runs) > 0 {
+		table.Data = append(table.Data, ui.TableRow{
+			{Contents: fmt.Sprintf("%d ephemeral run principals (--all to list)", len(runs)), Color: color.New(color.Faint)},
+		})
 	}
 	return table.Render(os.Stdout, Fly.PrintTableHeaders)
+}
+
+// agentPrincipalRow renders one principals-list table row, dimmed when
+// the principal has been revoked so the live ones stand out.
+func agentPrincipalRow(p atc.AgentPrincipal) ui.TableRow {
+	row := ui.TableRow{
+		{Contents: strconv.Itoa(p.ID)},
+		{Contents: p.Name},
+		{Contents: strings.Join(p.Scopes, ",")},
+		{Contents: p.TeamName},
+		{Contents: humanizePrincipalTime(&p.CreatedAt)},
+		{Contents: humanizePrincipalTime(p.ExpiresAt)},
+		{Contents: humanizePrincipalTime(p.RevokedAt)},
+		{Contents: humanizePrincipalTime(p.LastUsedAt)},
+	}
+	if p.RevokedAt != nil {
+		for i := range row {
+			row[i].Color = color.New(color.Faint)
+		}
+	}
+	return row
 }
 
 type AgentPrincipalsMintCommand struct {

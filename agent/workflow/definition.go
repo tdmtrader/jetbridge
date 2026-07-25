@@ -118,6 +118,15 @@ type Definition struct {
 	// Compiled is the authoritative schema-version-3 representation.
 	Compiled CompiledDefinition `json:"compiled"`
 
+	// Hidden/Annotation are workflow-NAME-level lifecycle metadata (S-6),
+	// stored in agent_workflow_lifecycle and joined onto every version row on
+	// read. Hidden deprecates a workflow from default listings; Annotation is
+	// a human operator note distinct from the per-version YAML Description.
+	// They are name-scoped, so they are NOT part of the version's content hash
+	// or its public signature.
+	Hidden     bool   `json:"hidden"`
+	Annotation string `json:"annotation,omitempty"`
+
 	// RawYAML is the stored workflow.yml bytes. Populated by Get and
 	// Live; empty in List/Versions.
 	RawYAML string `json:"raw_yaml,omitempty"`
@@ -238,4 +247,10 @@ type Store interface {
 	// PromotionValidator and atomically swaps the live flag. Validation and
 	// the swap are serialized with imports and other promotions for name.
 	Promote(name string, version int, promotedBy string) (PromotionResult, error)
+	// Annotate sets the workflow's operator note (name-level). Returns
+	// ErrVersionNotFound if no version of name exists.
+	Annotate(name, annotation, updatedBy string) error
+	// SetHidden deprecates (hidden=true) or restores (false) a workflow from
+	// default listings. Returns ErrVersionNotFound if no version exists.
+	SetHidden(name string, hidden bool, updatedBy string) error
 }

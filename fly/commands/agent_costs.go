@@ -12,7 +12,7 @@ import (
 )
 
 type AgentCostsCommand struct {
-	GroupBy string `long:"group-by" default:"day" choice:"day" choice:"user" choice:"ticket" choice:"workflow" description:"Rollup dimension"`
+	GroupBy string `long:"group-by" default:"day" choice:"day" choice:"user" choice:"ticket" choice:"workflow" choice:"model" choice:"step" description:"Rollup dimension"`
 	Since   string `long:"since" description:"Start (YYYY-MM-DD or RFC3339); default 30 days ago"`
 	Until   string `long:"until" description:"End, exclusive (YYYY-MM-DD or RFC3339)"`
 	Json    bool   `long:"json" description:"Print command result as JSON"`

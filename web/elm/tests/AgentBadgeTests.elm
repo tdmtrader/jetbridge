@@ -23,6 +23,7 @@ allStatuses =
     , Aborted
     , Succeeded
     , NoOutput
+    , Unrecorded
     ]
 
 
@@ -185,5 +186,59 @@ all =
                 \_ ->
                     displayOutcome { outcome = "quantum_flux", buildStatus = "succeeded", runStatus = "ok", hasResult = True }
                         |> Expect.equal (Just Succeeded)
+            ]
+        , describe "W-14 — status vocabulary through the single display map"
+            [ test "the ok outcome displays as 'succeeded', not 'OK'" <|
+                \_ ->
+                    label Succeeded
+                        |> Expect.equal "succeeded"
+            , test "fromOutcomeToken 'ok' still decodes to Succeeded (token unchanged)" <|
+                \_ ->
+                    fromOutcomeToken "ok"
+                        |> Expect.equal (Just Succeeded)
+            , test "fromOutcomeToken 'unrecorded' (#41) decodes to the Unrecorded badge" <|
+                \_ ->
+                    fromOutcomeToken "unrecorded"
+                        |> Expect.equal (Just Unrecorded)
+            , test "the unrecorded badge is amber (Warn), the no_output colour family — not red" <|
+                \_ ->
+                    tone Unrecorded
+                        |> Expect.equal Warn
+            , test "runStatus 'incomplete' with no fused outcome degrades to amber, not red or empty" <|
+                \_ ->
+                    -- #41: a green build whose runner wrote no flight recording.
+                    runOutcome { buildStatus = "succeeded", runStatus = "incomplete", hasResult = False }
+                        |> Expect.equal (Just Unrecorded)
+            , test "an incomplete run on a server without any build status still shows amber, never empty" <|
+                \_ ->
+                    runOutcome { buildStatus = "", runStatus = "incomplete", hasResult = False }
+                        |> Expect.equal (Just Unrecorded)
+            , test "an incomplete run on a still-open build shows Running, mirroring DeriveOutcome (not amber)" <|
+                \_ ->
+                    -- the server's DeriveOutcome maps incomplete+started/pending
+                    -- to running; the local fusion must agree so an in-flight run
+                    -- does not flash amber before its recording lands.
+                    [ runOutcome { buildStatus = "started", runStatus = "incomplete", hasResult = False }
+                    , runOutcome { buildStatus = "pending", runStatus = "incomplete", hasResult = False }
+                    ]
+                        |> Expect.equal [ Just (Running Nothing), Just (Running Nothing) ]
+            , test "displayOutcome routes the 'unrecorded' token to the amber badge" <|
+                \_ ->
+                    displayOutcome { outcome = "unrecorded", buildStatus = "succeeded", runStatus = "incomplete", hasResult = False }
+                        |> Expect.equal (Just Unrecorded)
+            , test "toneColor returns the good hex for a Good status" <|
+                \_ ->
+                    AgentBadge.toneColor (AgentBadge.tone AgentBadge.Succeeded)
+                        |> Expect.equal "#11c560"
+            , test "toneColor returns the bad hex for a Failed status" <|
+                \_ ->
+                    AgentBadge.toneColor (AgentBadge.tone AgentBadge.Failed)
+                        |> Expect.equal "#ed4b35"
+            , test "toneColor covers every tone (no empty string)" <|
+                \_ ->
+                    [ AgentBadge.Neutral, AgentBadge.Info, AgentBadge.Active, AgentBadge.Attention, AgentBadge.Good, AgentBadge.GoodMuted, AgentBadge.Warn, AgentBadge.Calm, AgentBadge.Bad, AgentBadge.Error ]
+                        |> List.map AgentBadge.toneColor
+                        |> List.all (\c -> String.startsWith "#" c)
+                        |> Expect.equal True
             ]
         ]

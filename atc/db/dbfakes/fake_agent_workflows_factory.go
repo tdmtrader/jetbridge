@@ -10,6 +10,19 @@ import (
 )
 
 type FakeAgentWorkflowsFactory struct {
+	AnnotateStub        func(string, string, string) error
+	annotateMutex       sync.RWMutex
+	annotateArgsForCall []struct {
+		arg1 string
+		arg2 string
+		arg3 string
+	}
+	annotateReturns struct {
+		result1 error
+	}
+	annotateReturnsOnCall map[int]struct {
+		result1 error
+	}
 	GetStub        func(string, int) (*workflow.Definition, bool, error)
 	getMutex       sync.RWMutex
 	getArgsForCall []struct {
@@ -125,6 +138,19 @@ type FakeAgentWorkflowsFactory struct {
 		result1 workflow.PromotionResult
 		result2 error
 	}
+	SetHiddenStub        func(string, bool, string) error
+	setHiddenMutex       sync.RWMutex
+	setHiddenArgsForCall []struct {
+		arg1 string
+		arg2 bool
+		arg3 string
+	}
+	setHiddenReturns struct {
+		result1 error
+	}
+	setHiddenReturnsOnCall map[int]struct {
+		result1 error
+	}
 	VersionsStub        func(context.Context, string, workflow.VersionPageRequest) (workflow.VersionPage, error)
 	versionsMutex       sync.RWMutex
 	versionsArgsForCall []struct {
@@ -142,6 +168,69 @@ type FakeAgentWorkflowsFactory struct {
 	}
 	invocations      map[string][][]interface{}
 	invocationsMutex sync.RWMutex
+}
+
+func (fake *FakeAgentWorkflowsFactory) Annotate(arg1 string, arg2 string, arg3 string) error {
+	fake.annotateMutex.Lock()
+	ret, specificReturn := fake.annotateReturnsOnCall[len(fake.annotateArgsForCall)]
+	fake.annotateArgsForCall = append(fake.annotateArgsForCall, struct {
+		arg1 string
+		arg2 string
+		arg3 string
+	}{arg1, arg2, arg3})
+	stub := fake.AnnotateStub
+	fakeReturns := fake.annotateReturns
+	fake.recordInvocation("Annotate", []interface{}{arg1, arg2, arg3})
+	fake.annotateMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2, arg3)
+	}
+	if specificReturn {
+		return ret.result1
+	}
+	return fakeReturns.result1
+}
+
+func (fake *FakeAgentWorkflowsFactory) AnnotateCallCount() int {
+	fake.annotateMutex.RLock()
+	defer fake.annotateMutex.RUnlock()
+	return len(fake.annotateArgsForCall)
+}
+
+func (fake *FakeAgentWorkflowsFactory) AnnotateCalls(stub func(string, string, string) error) {
+	fake.annotateMutex.Lock()
+	defer fake.annotateMutex.Unlock()
+	fake.AnnotateStub = stub
+}
+
+func (fake *FakeAgentWorkflowsFactory) AnnotateArgsForCall(i int) (string, string, string) {
+	fake.annotateMutex.RLock()
+	defer fake.annotateMutex.RUnlock()
+	argsForCall := fake.annotateArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3
+}
+
+func (fake *FakeAgentWorkflowsFactory) AnnotateReturns(result1 error) {
+	fake.annotateMutex.Lock()
+	defer fake.annotateMutex.Unlock()
+	fake.AnnotateStub = nil
+	fake.annotateReturns = struct {
+		result1 error
+	}{result1}
+}
+
+func (fake *FakeAgentWorkflowsFactory) AnnotateReturnsOnCall(i int, result1 error) {
+	fake.annotateMutex.Lock()
+	defer fake.annotateMutex.Unlock()
+	fake.AnnotateStub = nil
+	if fake.annotateReturnsOnCall == nil {
+		fake.annotateReturnsOnCall = make(map[int]struct {
+			result1 error
+		})
+	}
+	fake.annotateReturnsOnCall[i] = struct {
+		result1 error
+	}{result1}
 }
 
 func (fake *FakeAgentWorkflowsFactory) Get(arg1 string, arg2 int) (*workflow.Definition, bool, error) {
@@ -659,6 +748,69 @@ func (fake *FakeAgentWorkflowsFactory) PromoteReturnsOnCall(i int, result1 workf
 		result1 workflow.PromotionResult
 		result2 error
 	}{result1, result2}
+}
+
+func (fake *FakeAgentWorkflowsFactory) SetHidden(arg1 string, arg2 bool, arg3 string) error {
+	fake.setHiddenMutex.Lock()
+	ret, specificReturn := fake.setHiddenReturnsOnCall[len(fake.setHiddenArgsForCall)]
+	fake.setHiddenArgsForCall = append(fake.setHiddenArgsForCall, struct {
+		arg1 string
+		arg2 bool
+		arg3 string
+	}{arg1, arg2, arg3})
+	stub := fake.SetHiddenStub
+	fakeReturns := fake.setHiddenReturns
+	fake.recordInvocation("SetHidden", []interface{}{arg1, arg2, arg3})
+	fake.setHiddenMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2, arg3)
+	}
+	if specificReturn {
+		return ret.result1
+	}
+	return fakeReturns.result1
+}
+
+func (fake *FakeAgentWorkflowsFactory) SetHiddenCallCount() int {
+	fake.setHiddenMutex.RLock()
+	defer fake.setHiddenMutex.RUnlock()
+	return len(fake.setHiddenArgsForCall)
+}
+
+func (fake *FakeAgentWorkflowsFactory) SetHiddenCalls(stub func(string, bool, string) error) {
+	fake.setHiddenMutex.Lock()
+	defer fake.setHiddenMutex.Unlock()
+	fake.SetHiddenStub = stub
+}
+
+func (fake *FakeAgentWorkflowsFactory) SetHiddenArgsForCall(i int) (string, bool, string) {
+	fake.setHiddenMutex.RLock()
+	defer fake.setHiddenMutex.RUnlock()
+	argsForCall := fake.setHiddenArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3
+}
+
+func (fake *FakeAgentWorkflowsFactory) SetHiddenReturns(result1 error) {
+	fake.setHiddenMutex.Lock()
+	defer fake.setHiddenMutex.Unlock()
+	fake.SetHiddenStub = nil
+	fake.setHiddenReturns = struct {
+		result1 error
+	}{result1}
+}
+
+func (fake *FakeAgentWorkflowsFactory) SetHiddenReturnsOnCall(i int, result1 error) {
+	fake.setHiddenMutex.Lock()
+	defer fake.setHiddenMutex.Unlock()
+	fake.SetHiddenStub = nil
+	if fake.setHiddenReturnsOnCall == nil {
+		fake.setHiddenReturnsOnCall = make(map[int]struct {
+			result1 error
+		})
+	}
+	fake.setHiddenReturnsOnCall[i] = struct {
+		result1 error
+	}{result1}
 }
 
 func (fake *FakeAgentWorkflowsFactory) Versions(arg1 context.Context, arg2 string, arg3 workflow.VersionPageRequest) (workflow.VersionPage, error) {

@@ -187,6 +187,51 @@ func TestRecordValidates(t *testing.T) {
 	}
 }
 
+func TestValidGroupByAcceptsModelAndStep(t *testing.T) {
+	for _, g := range []string{budget.GroupByModel, budget.GroupByStep} {
+		if !budget.ValidGroupBy(g) {
+			t.Fatalf("ValidGroupBy(%q) = false, want true", g)
+		}
+	}
+	if budget.GroupByModel != "model" || budget.GroupByStep != "step" {
+		t.Fatalf("group_by tokens drifted: model=%q step=%q", budget.GroupByModel, budget.GroupByStep)
+	}
+}
+
+func TestMemoryLedgerRollupByModelAndStep(t *testing.T) {
+	m := &budget.MemoryLedger{}
+	base := time.Date(2026, 7, 11, 10, 0, 0, 0, time.UTC)
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(m.Insert(budget.LedgerEntry{OccurredAt: base, Source: budget.SourceAgentStep, Model: "opus", StepName: "implement", CostUSD: 1.0}))
+	must(m.Insert(budget.LedgerEntry{OccurredAt: base, Source: budget.SourceAgentStep, Model: "opus", StepName: "harvest", CostUSD: 2.0}))
+	must(m.Insert(budget.LedgerEntry{OccurredAt: base, Source: budget.SourceAgentStep, Model: "sonnet", StepName: "implement", CostUSD: 4.0}))
+
+	byModel, err := m.Rollup(budget.GroupByModel, base.Add(-time.Hour), time.Time{})
+	must(err)
+	got := map[string]float64{}
+	for _, r := range byModel {
+		got[r.Key] = r.CostUSD
+	}
+	if got["opus"] != 3.0 || got["sonnet"] != 4.0 {
+		t.Fatalf("by model = %+v, want opus=3 sonnet=4", got)
+	}
+
+	byStep, err := m.Rollup(budget.GroupByStep, base.Add(-time.Hour), time.Time{})
+	must(err)
+	got = map[string]float64{}
+	for _, r := range byStep {
+		got[r.Key] = r.CostUSD
+	}
+	if got["implement"] != 5.0 || got["harvest"] != 2.0 {
+		t.Fatalf("by step = %+v, want implement=5 harvest=2", got)
+	}
+}
+
 func TestMemoryLedgerRollup(t *testing.T) {
 	ledger := budget.NewMemoryLedger()
 	day1 := time.Date(2026, 7, 7, 10, 0, 0, 0, time.UTC)

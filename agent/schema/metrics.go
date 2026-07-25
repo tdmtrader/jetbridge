@@ -75,7 +75,7 @@ type RunMetrics struct {
 	WorkflowName    string `json:"workflow_name,omitempty"`
 	WorkflowVersion *int   `json:"workflow_version,omitempty"`
 	WorkflowHash    string `json:"workflow_hash,omitempty"`
-	Status          string `json:"status"` // ok | failed | error — the AGENT STEP exit status
+	Status          string `json:"status"` // ok | failed | error | parked | incomplete — the AGENT STEP exit status
 	// BuildStatus is the status of the pipeline build the step ran in
 	// (pending|started|succeeded|failed|errored|aborted). It is derived
 	// server-side by joining the builds table on read and is never accepted
@@ -105,13 +105,14 @@ type RunMetrics struct {
 // the step statuses: terminal build states (errored/aborted) and the fused
 // display states (running/no_output) appear here but never in Status.
 const (
-	RunOutcomeOK       = "ok"
-	RunOutcomeNoOutput = "no_output"
-	RunOutcomeRunning  = "running"
-	RunOutcomeParked   = "parked"
-	RunOutcomeFailed   = "failed"
-	RunOutcomeErrored  = "errored"
-	RunOutcomeAborted  = "aborted"
+	RunOutcomeOK         = "ok"
+	RunOutcomeNoOutput   = "no_output"
+	RunOutcomeRunning    = "running"
+	RunOutcomeParked     = "parked"
+	RunOutcomeFailed     = "failed"
+	RunOutcomeErrored    = "errored"
+	RunOutcomeAborted    = "aborted"
+	RunOutcomeUnrecorded = "unrecorded" // delivered, but no flight recording (L-1)
 )
 
 // HasResult reports whether the run delivered anything: a structured results
@@ -138,7 +139,11 @@ func (rm RunMetrics) HasResult() bool {
 //  3. Otherwise a step-reported failure ("error"/"failed") is never masked —
 //     not by a succeeded build (attempts/try can fail an agent step inside a
 //     green build) and not by a still-open one.
-//  4. Only then does the build speak: succeeded is "ok" only with a result
+//  4. An "incomplete" step (the ingestion read no flight output) renders the
+//     amber "unrecorded" — the step almost certainly delivered (the build did
+//     not fail), we simply have no recording of it — except on a still-open
+//     build, which reads "running". Never red on a non-failed build.
+//  5. Only then does the build speak: succeeded is "ok" only with a result
 //     in hand (else "no_output" — never a green verdict on a run that did
 //     not deliver), started/pending render "running", and an absent or
 //     unknown build status falls back to the step's own word ("" when even
@@ -159,6 +164,18 @@ func (rm RunMetrics) DeriveOutcome() string {
 		return RunOutcomeErrored
 	case RunStatusFailed:
 		return RunOutcomeFailed
+	}
+	// incomplete (L-1): the ingestion read no flight output. A terminally-bad
+	// build already returned above; a still-open build is "running"; everything
+	// else is the amber "unrecorded" — the step almost certainly delivered (the
+	// build did not fail), we simply have no recording of it. Never red.
+	if rm.Status == RunStatusIncomplete {
+		switch rm.BuildStatus {
+		case "started", "pending":
+			return RunOutcomeRunning
+		default:
+			return RunOutcomeUnrecorded
+		}
 	}
 	switch rm.BuildStatus {
 	case "succeeded":

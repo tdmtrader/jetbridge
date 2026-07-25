@@ -19,8 +19,8 @@ type jwksVerifier struct {
 	jwksURL  string
 	audience []string
 
-	mu       sync.RWMutex
-	keys     *jose.JSONWebKeySet
+	mu        sync.RWMutex
+	keys      *jose.JSONWebKeySet
 	fetchedAt time.Time
 	cacheTTL  time.Duration
 }

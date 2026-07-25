@@ -16,6 +16,14 @@ type MemoryStore struct {
 	nextID             int
 	defs               []*Definition
 	promotionValidator PromotionValidator
+	lifecycle          map[string]lifecycleEntry
+}
+
+// lifecycleEntry is the name-keyed (not version-keyed) lifecycle metadata,
+// mirroring the DB store's agent_workflow_lifecycle row.
+type lifecycleEntry struct {
+	hidden     bool
+	annotation string
 }
 
 func NewMemoryStore(promotionValidators ...PromotionValidator) *MemoryStore {
@@ -124,7 +132,11 @@ func (m *MemoryStore) Get(name string, version int) (*Definition, bool, error) {
 	for _, d := range m.defs {
 		if d.Name == name && d.Version == version {
 			cp, err := cloneMemoryDefinition(d, true)
-			return cp, true, err
+			if err != nil {
+				return nil, false, err
+			}
+			*cp = m.decorate(*cp)
+			return cp, true, nil
 		}
 	}
 	return nil, false, nil
@@ -136,7 +148,11 @@ func (m *MemoryStore) Live(name string) (*Definition, bool, error) {
 	for _, d := range m.defs {
 		if d.Name == name && d.Live {
 			cp, err := cloneMemoryDefinition(d, true)
-			return cp, true, err
+			if err != nil {
+				return nil, false, err
+			}
+			*cp = m.decorate(*cp)
+			return cp, true, nil
 		}
 	}
 	return nil, false, nil
@@ -155,7 +171,11 @@ func (m *MemoryStore) Latest(name string) (*Definition, bool, error) {
 		return nil, false, nil
 	}
 	cp, err := cloneMemoryDefinition(latest, true)
-	return cp, true, err
+	if err != nil {
+		return nil, false, err
+	}
+	*cp = m.decorate(*cp)
+	return cp, true, nil
 }
 
 func (m *MemoryStore) LiveVersions() (map[string]int, error) {
@@ -181,11 +201,11 @@ func (m *MemoryStore) List() ([]Definition, error) {
 	}
 	out := []Definition{}
 	for _, d := range latest {
-		cp, err := cloneMemoryDefinition(d, false)
+		cp, err := cloneMemoryDefinition(d, false) // metadata-only listing
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, *cp)
+		out = append(out, m.decorate(*cp))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
@@ -227,7 +247,7 @@ func (m *MemoryStore) Versions(ctx context.Context, name string, request Version
 		if err != nil {
 			return VersionPage{}, err
 		}
-		page.Definitions = append(page.Definitions, *cp)
+		page.Definitions = append(page.Definitions, m.decorate(*cp))
 	}
 	return page, nil
 }
@@ -309,4 +329,54 @@ func cloneMemoryDefinition(definition *Definition, includeContent bool) (*Defini
 	clone.RawYAML = source["workflow.yml"]
 	clone.SourceManifest = source
 	return &clone, nil
+}
+
+func (m *MemoryStore) exists(name string) bool {
+	for _, d := range m.defs {
+		if d.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *MemoryStore) Annotate(name, annotation, updatedBy string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.exists(name) {
+		return ErrVersionNotFound
+	}
+	if m.lifecycle == nil {
+		m.lifecycle = map[string]lifecycleEntry{}
+	}
+	e := m.lifecycle[name]
+	e.annotation = annotation
+	m.lifecycle[name] = e
+	_ = updatedBy
+	return nil
+}
+
+func (m *MemoryStore) SetHidden(name string, hidden bool, updatedBy string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.exists(name) {
+		return ErrVersionNotFound
+	}
+	if m.lifecycle == nil {
+		m.lifecycle = map[string]lifecycleEntry{}
+	}
+	e := m.lifecycle[name]
+	e.hidden = hidden
+	m.lifecycle[name] = e
+	_ = updatedBy
+	return nil
+}
+
+// decorate stamps the name-level lifecycle metadata onto a returned copy.
+func (m *MemoryStore) decorate(d Definition) Definition {
+	if e, ok := m.lifecycle[d.Name]; ok {
+		d.Hidden = e.hidden
+		d.Annotation = e.annotation
+	}
+	return d
 }

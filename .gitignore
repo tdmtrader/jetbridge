@@ -45,8 +45,10 @@ worker/runtime/integration/sample/sample
 # Build artifacts
 /fly-assets/
 
-# Forge orchestrator logs
-forge/.orchestrator/
+# Forge workflow state (local dev tooling, not product source).
+# Untracked in full — prior contents remain in git history and are
+# recoverable, e.g. `git show <commit>:forge/tracks.md`.
+/forge/
 package-lock.json
 
 # local dev cluster state + build artifacts (hack/local-dev-up.sh)
@@ -57,3 +59,9 @@ package-lock.json
 
 # dev-mcp command logs (workspace-relative, contract §11 addendum)
 .dev-mcp/
+
+# stray step-runner binaries from `go build ./cmd/...` in the repo root
+/merge-runner
+/harvest-runner
+/agent-runner
+/platform-mcp

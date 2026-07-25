@@ -1,4 +1,4 @@
-module UserState exposing (UserState(..), isAnonymous, isMember)
+module UserState exposing (UserState(..), isAdmin, isAnonymous, isMember)
 
 import Concourse
 import Dict
@@ -18,6 +18,16 @@ isAnonymous userState =
 
         _ ->
             True
+
+
+isAdmin : UserState -> Bool
+isAdmin userState =
+    case userState of
+        UserStateLoggedIn user ->
+            user.isAdmin
+
+        _ ->
+            False
 
 
 isMember : { a | teamName : String, userState : UserState } -> Bool

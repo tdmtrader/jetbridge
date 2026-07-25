@@ -663,3 +663,61 @@ func TestPublicSignatureIgnoresDescriptionsAndOutputMappingsButNotOrderedPortIde
 		t.Fatalf("optionality did not change signature: equal=%v err=%v", want.Equal(changed), err)
 	}
 }
+
+// TestMemoryStoreAnnotateAndHide covers the name-level lifecycle metadata
+// (S-6): it decorates every read path (Get/Live/Latest/List/Versions) without
+// allocating a new version, and refuses a workflow that has no versions.
+func TestMemoryStoreAnnotateAndHide(t *testing.T) {
+	m := workflow.NewMemoryStore()
+	if _, err := m.Import("wf", defYAML("wf", "Do the work."), "importer"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.Annotate("wf", "prefer for hotfixes", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetHidden("wf", true, "alice"); err != nil {
+		t.Fatal(err)
+	}
+
+	defs, err := m.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(defs) != 1 || defs[0].Annotation != "prefer for hotfixes" || !defs[0].Hidden {
+		t.Fatalf("list did not surface lifecycle: %+v", defs)
+	}
+
+	got, found, err := m.Get("wf", 1)
+	if err != nil || !found || got.Annotation != "prefer for hotfixes" || !got.Hidden {
+		t.Fatalf("Get did not surface lifecycle: def=%+v found=%v err=%v", got, found, err)
+	}
+	latest, found, err := m.Latest("wf")
+	if err != nil || !found || !latest.Hidden {
+		t.Fatalf("Latest did not surface lifecycle: def=%+v found=%v err=%v", latest, found, err)
+	}
+	page, err := m.Versions(context.Background(), "wf", workflow.VersionPageRequest{Limit: workflow.MaxVersionPageSize})
+	if err != nil || len(page.Definitions) != 1 || !page.Definitions[0].Hidden ||
+		page.Definitions[0].Annotation != "prefer for hotfixes" {
+		t.Fatalf("Versions did not surface lifecycle: %+v err=%v", page.Definitions, err)
+	}
+
+	// Lifecycle writes are name-scoped: they never allocate a version.
+	if page.Definitions[0].Version != 1 {
+		t.Fatalf("lifecycle write allocated a version: %+v", page.Definitions)
+	}
+
+	if err := m.SetHidden("wf", false, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if defs, err = m.List(); err != nil || defs[0].Hidden {
+		t.Fatalf("un-hide did not stick: %+v err=%v", defs, err)
+	}
+
+	if err := m.Annotate("nope", "x", "alice"); !errors.Is(err, workflow.ErrVersionNotFound) {
+		t.Errorf("Annotate on unknown workflow = %v, want ErrVersionNotFound", err)
+	}
+	if err := m.SetHidden("nope", true, "alice"); !errors.Is(err, workflow.ErrVersionNotFound) {
+		t.Errorf("SetHidden on unknown workflow = %v, want ErrVersionNotFound", err)
+	}
+}

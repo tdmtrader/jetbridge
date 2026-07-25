@@ -20,6 +20,7 @@ see individually.
 | [workflow-source-format](2026-07-17-workflow-source-format.md) | 2026-07-17 spec (slice b only) | ~8 | L / medium | none |
 | [platform-mcp-hitl](2026-07-17-platform-mcp-hitl.md) | plan 08 | 30 | XL / high | 1773106070/71/72 |
 | [delivery-outcomes](2026-07-17-delivery-outcomes.md) | plan 12 | ~19 | XL / high | 1773106090 |
+| S-6 workflows-first-class (UX4) | 2026-07-19 S-6 plan | ~15 | L / medium | 1773106094 (agent_workflow_lifecycle) |
 
 All five independently resolved to a **split** execution level — the natural unit of
 dispatch is the *slice*, not the *track*.

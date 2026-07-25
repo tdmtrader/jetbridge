@@ -2992,6 +2992,7 @@ func (cmd *RunCommand) constructEngine(
 		engine.WithAgentStepImage(cmd.AgentStepImage),
 		engine.WithAgentPlatformTokenSecret(cmd.AgentPlatformTokenSecret),
 		engine.WithAgentMetricsStore(db.NewAgentRunMetricsFactory(dbConn)),
+		engine.WithAgentTranscriptStore(db.NewAgentRunTranscriptFactory(dbConn)),
 		engine.WithAgentBudgetChecker(agentBudgetChecker),
 		engine.WithAgentRunVerifier(pipelineRunFactory),
 		engine.WithWorkflowWaitStore(db.NewAgentWorkflowWaitsFactory(
@@ -3507,6 +3508,7 @@ func (cmd *RunCommand) constructAPIHandler(
 		db.NewAgentCostLedgerFactory(dbConn),
 		cmd.AgentDailyBudgetUSD,
 		dispatch.NewTicketBudgets(db.NewAgentTicketsFactory(dbConn)),
+		db.NewAgentRunTranscriptFactory(dbConn),
 		workflowStore,
 		dispatch.NewHTTPHandler(dispatch.Deps{
 			Tickets:          db.NewAgentTicketsFactory(dbConn),

@@ -46,11 +46,13 @@ const (
 	GroupByTicket   = "ticket"
 	GroupByDay      = "day"
 	GroupByWorkflow = "workflow" // reads metadata->>'workflow' (see contract addendum)
+	GroupByModel    = "model"    // reads the ledger model column
+	GroupByStep     = "step"     // reads the ledger step_name column
 )
 
 func ValidGroupBy(g string) bool {
 	switch g {
-	case GroupByUser, GroupByTicket, GroupByDay, GroupByWorkflow:
+	case GroupByUser, GroupByTicket, GroupByDay, GroupByWorkflow, GroupByModel, GroupByStep:
 		return true
 	}
 	return false

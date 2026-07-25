@@ -106,6 +106,10 @@ type Result struct {
 	RunID         int                     `json:"run_id"`
 	PipelineName  string                  `json:"pipeline_name"`
 	WorkflowRunID *snapshot.WorkflowRunID `json:"workflow_run_id,omitempty"`
+	// Warnings carries advisory SpecLint findings on the dispatched prose
+	// (ticket #46: vocabulary known to trigger CLI usage-policy false
+	// refusals). Advisory only — never a dispatch blocker.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // DispatchOne adapts a queued ticket to its selected schema-v3 workflow.
@@ -175,7 +179,19 @@ func DispatchOne(ctx context.Context, deps Deps, ticketID int, dispatchedBy stri
 		)
 	}
 
-	return dispatchV3(ctx, deps, t, def, dispatchedBy)
+	// Advisory spec lint (ticket #46): warn — NEVER block — on prose the
+	// claude CLI's usage-policy check has false-refused before. Only the
+	// work-item title and body are linted here: schema-v3 dispatch renders
+	// the ticket through its captured work-item/v1 snapshot and never reads
+	// a separate spec record.
+	warnings := SpecLint(t.Title, t.Body)
+
+	res, err := dispatchV3(ctx, deps, t, def, dispatchedBy)
+	if err != nil {
+		return res, err
+	}
+	res.Warnings = warnings
+	return res, nil
 }
 
 func dispatchV3(

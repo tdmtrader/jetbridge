@@ -13,7 +13,7 @@ var memoryRegex = regexp.MustCompile(`(?i)^([0-9]+)(([KMG])(i)?B?)?$`)
 type ContainerLimits struct {
 	CPU              *CPULimit              `json:"cpu,omitempty"`
 	Memory           *MemoryLimit           `json:"memory,omitempty"`
-	EphemeralStorage *EphemeralStorageLimit  `json:"ephemeral_storage,omitempty"`
+	EphemeralStorage *EphemeralStorageLimit `json:"ephemeral_storage,omitempty"`
 }
 
 type EphemeralStorageLimit uint64

@@ -64,9 +64,9 @@ type FeedbackRecord struct {
 	Verdict         Verdict               `json:"verdict"`
 	Confidence      float64               `json:"confidence"`
 	Notes           string                `json:"notes"`
-	Conversation    []ConversationMessage  `json:"conversation"`
+	Conversation    []ConversationMessage `json:"conversation"`
 	Reviewer        string                `json:"reviewer"`
-	Source          FeedbackSource         `json:"source"`
+	Source          FeedbackSource        `json:"source"`
 	Timestamp       string                `json:"timestamp,omitempty"`
 }
 
@@ -98,10 +98,10 @@ func (r *FeedbackRecord) Validate() error {
 
 // VerdictSummary aggregates feedback stats.
 type VerdictSummary struct {
-	Total         int            `json:"total"`
-	AccuracyRate  float64        `json:"accuracy_rate"`
-	FPRate        float64        `json:"false_positive_rate"`
-	ByVerdict     map[string]int `json:"by_verdict"`
-	ByCategory    map[string]int `json:"by_category"`
-	BySeverity    map[string]int `json:"by_severity"`
+	Total        int            `json:"total"`
+	AccuracyRate float64        `json:"accuracy_rate"`
+	FPRate       float64        `json:"false_positive_rate"`
+	ByVerdict    map[string]int `json:"by_verdict"`
+	ByCategory   map[string]int `json:"by_category"`
+	BySeverity   map[string]int `json:"by_severity"`
 }

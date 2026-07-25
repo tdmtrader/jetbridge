@@ -9,6 +9,7 @@ module AgentBadge exposing
     , label
     , runOutcome
     , tone
+    , toneColor
     , view
     )
 
@@ -32,6 +33,7 @@ type Status
     | Aborted
     | Succeeded
     | NoOutput
+    | Unrecorded
 
 
 type Tone
@@ -93,10 +95,13 @@ label status =
             "Aborted"
 
         Succeeded ->
-            "OK"
+            "succeeded"
 
         NoOutput ->
             "No output"
+
+        Unrecorded ->
+            "unrecorded"
 
 
 {-| A one-line, plain-English gloss for each status, surfaced as the badge's
@@ -151,6 +156,9 @@ description status =
         NoOutput ->
             "Finished but produced no result"
 
+        Unrecorded ->
+            "Delivered, but the runner wrote no flight recording"
+
 
 tone : Status -> Tone
 tone status =
@@ -198,6 +206,9 @@ tone status =
             Good
 
         NoOutput ->
+            Warn
+
+        Unrecorded ->
             Warn
 
 
@@ -310,6 +321,18 @@ runOutcome { buildStatus, runStatus, hasResult } =
             else if runStatus == "failed" then
                 Just Failed
 
+            else if runStatus == "incomplete" then
+                -- #41: the runner wrote no flight recording. Mirror the server's
+                -- DeriveOutcome exactly (agent/schema metrics.go): a terminally
+                -- bad build already returned red above; a still-open build is
+                -- Running; a succeeded/unknown build degrades to amber Unrecorded
+                -- (never red, never empty).
+                if buildStatus == "started" || buildStatus == "pending" then
+                    Just (Running Nothing)
+
+                else
+                    Just Unrecorded
+
             else
                 case buildStatus of
                     "succeeded" ->
@@ -342,6 +365,9 @@ fromOutcomeToken token =
 
         "no_output" ->
             Just NoOutput
+
+        "unrecorded" ->
+            Just Unrecorded
 
         "running" ->
             Just (Running Nothing)
@@ -409,6 +435,44 @@ toneClass t =
 
         Error ->
             "agent-badge--error"
+
+
+{-| The hex color for a tone — THE single source of the status palette,
+mirroring the `agent-badge--*` rules in web/public/main.css so the step-DAG
+boxes and the badges can never drift apart.
+-}
+toneColor : Tone -> String
+toneColor t =
+    case t of
+        Neutral ->
+            "#9b9b9b"
+
+        Info ->
+            "#4a90e2"
+
+        Active ->
+            "#f1c40f"
+
+        Attention ->
+            "#f5a623"
+
+        Good ->
+            "#11c560"
+
+        GoodMuted ->
+            "#419867"
+
+        Warn ->
+            "#ed4b35"
+
+        Calm ->
+            "#2d76cc"
+
+        Bad ->
+            "#ed4b35"
+
+        Error ->
+            "#d58808"
 
 
 pulses : Status -> Bool
