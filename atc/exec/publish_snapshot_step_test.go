@@ -154,9 +154,7 @@ func TestPublishSnapshotStepMergeFailsClosedWithoutDurableWaitApprovalVerifier(t
 	plan.Mode = publisher.ModeMerge
 	plan.Approval = "approval"
 	plan.WorkflowRunID = "91"
-	plan.Parameters = map[string]string{
-		"target_branch": "main", "expected_base_sha": strings.Repeat("b", 40),
-	}
+	plan.Parameters = map[string]string{"target_branch": "main"}
 
 	_, state, delegates, _ := loadSnapshotHarness()
 	registerPublishArtifact(t, state.ArtifactRepository(), manifest)
@@ -202,9 +200,7 @@ func TestPublishSnapshotStepBindsMergeToExactDurableApproval(t *testing.T) {
 	plan.Mode = publisher.ModeMerge
 	plan.Approval = "approval"
 	plan.WorkflowRunID = "91"
-	plan.Parameters = map[string]string{
-		"target_branch": "main", "expected_base_sha": strings.Repeat("b", 40),
-	}
+	plan.Parameters = map[string]string{"target_branch": "main"}
 	resolvedAt := time.Now().UTC()
 	question := snapshot.SnapshotRef{
 		ID: 79, Type: snapshot.TypeRef("question/v1"),
@@ -242,9 +238,9 @@ func TestPublishSnapshotStepBindsMergeToExactDurableApproval(t *testing.T) {
 		Input:    snapshot.SnapshotRef{ID: change.ID, Type: change.Type, Digest: change.Digest},
 		Approval: answerRef, Publisher: plan.Publisher, Mode: plan.Mode, Destination: plan.Destination,
 		Parameters: map[string]string{
-			"target_branch": "main", "expected_base_sha": strings.Repeat("b", 40),
+			"target_branch": "main", "expected_base_sha": publishMergeBaseFixture,
 		},
-		ExpectedBaseSHA: strings.Repeat("b", 40), ApprovalPolicyVersion: plan.ApprovalPolicyVersion,
+		ExpectedBaseSHA: publishMergeBaseFixture, ApprovalPolicyVersion: plan.ApprovalPolicyVersion,
 	}, verified)
 	require.Equal(t, snapshot.WorkflowRunID(91), published.Authority.WorkflowRunID)
 	require.Equal(t, "reviewer", published.ApprovedBy)
@@ -252,6 +248,76 @@ func TestPublishSnapshotStepBindsMergeToExactDurableApproval(t *testing.T) {
 		WaitID: 12, Question: question, Answer: answerRef,
 		ResolvedBy: "reviewer", ResolvedAt: resolvedAt,
 	}, published.Approval)
+	// The publication asserts the same server-derived base the approval was
+	// verified against, and the plan itself never carried one.
+	require.Equal(t, publishMergeBaseFixture, published.Parameters["expected_base_sha"])
+	require.NotContains(t, plan.Parameters, "expected_base_sha")
+}
+
+// A plan that authors the server-owned base assertion is refused outright: the
+// step must never quietly replace a value a reviewer might have been shown.
+func TestPublishSnapshotStepRefusesAuthoredMergeBase(t *testing.T) {
+	change := publishSnapshotManifest()
+	metadata := new(snapshotfakes.FakeMetadataStore)
+	metadata.GetAuthorizedReturns(change, true, nil)
+	_, state, delegates, _ := loadSnapshotHarness()
+	registerPublishArtifact(t, state.ArtifactRepository(), change)
+	plan := publishSnapshotPlan()
+	plan.Mode = publisher.ModeMerge
+	plan.Approval = "approval"
+	plan.WorkflowRunID = "91"
+	plan.Parameters = map[string]string{
+		"target_branch": "main", "expected_base_sha": strings.Repeat("b", 40),
+	}
+	verified := false
+	published := false
+	step := exec.NewPublishSnapshotStep("publish", plan,
+		exec.StepMetadata{TeamID: 17, TeamName: "main", BuildID: 42, SnapshotCreatedBy: "alice"}, delegates, metadata,
+		publisherExecutorFunc(func(context.Context, publisher.Request) (publisher.Publication, error) {
+			published = true
+			return publisher.Publication{}, nil
+		}),
+		mergeApprovalVerifierFunc(func(context.Context, publisher.MergeApprovalRequest) (publisher.ApprovalEvidence, error) {
+			verified = true
+			return publisher.ApprovalEvidence{}, nil
+		}))
+
+	ok, err := step.Run(context.Background(), state)
+	require.False(t, ok)
+	require.EqualError(t, err, "publish_snapshot: invalid publication plan")
+	require.False(t, verified)
+	require.False(t, published)
+}
+
+// Without a sealed base_sha there is nothing to assert, so the merge fails
+// closed before any approval verification or side effect.
+func TestPublishSnapshotStepFailsClosedWithoutSealedMergeBase(t *testing.T) {
+	change := publishSnapshotManifest()
+	change.IntrinsicMetadata = nil
+	metadata := new(snapshotfakes.FakeMetadataStore)
+	metadata.GetAuthorizedReturns(change, true, nil)
+	_, state, delegates, _ := loadSnapshotHarness()
+	registerPublishArtifact(t, state.ArtifactRepository(), change)
+	plan := publishSnapshotPlan()
+	plan.Mode = publisher.ModeMerge
+	plan.Approval = "approval"
+	plan.WorkflowRunID = "91"
+	plan.Parameters = map[string]string{"target_branch": "main"}
+	published := false
+	step := exec.NewPublishSnapshotStep("publish", plan,
+		exec.StepMetadata{TeamID: 17, TeamName: "main", BuildID: 42, SnapshotCreatedBy: "alice"}, delegates, metadata,
+		publisherExecutorFunc(func(context.Context, publisher.Request) (publisher.Publication, error) {
+			published = true
+			return publisher.Publication{}, nil
+		}),
+		mergeApprovalVerifierFunc(func(context.Context, publisher.MergeApprovalRequest) (publisher.ApprovalEvidence, error) {
+			return publisher.ApprovalEvidence{}, nil
+		}))
+
+	ok, err := step.Run(context.Background(), state)
+	require.False(t, ok)
+	require.EqualError(t, err, "publish_snapshot: merge base is unavailable for the published change")
+	require.False(t, published)
 }
 
 func TestPublishSnapshotStepFailsClosedForUnsealedUnauthorizedOrMismatchedInputs(t *testing.T) {
@@ -360,12 +426,18 @@ func publishSnapshotPlan() atc.PublishSnapshotPlan {
 	}
 }
 
+// publishMergeBaseFixture is the base_sha the repository-change contract
+// validator sealed into the fixture's intrinsic metadata. Nothing authors it;
+// the step reads it back out of the snapshot it publishes.
+const publishMergeBaseFixture = "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"
+
 func publishSnapshotManifest() snapshot.Snapshot {
 	return snapshot.Snapshot{
 		ID: 77, Type: snapshot.TypeRef("repository-change/v1"),
 		Digest: snapshot.Digest("sha256:" + strings.Repeat("a", 64)), ByteSize: 1024, FileCount: 3,
 		Representation: "application/x-tar", ContentState: snapshot.ContentStateAvailable,
-		CreatedAt: time.Now().UTC(),
+		IntrinsicMetadata: repositoryChangeIntrinsicMetadata(publishMergeBaseFixture),
+		CreatedAt:         time.Now().UTC(),
 	}
 }
 

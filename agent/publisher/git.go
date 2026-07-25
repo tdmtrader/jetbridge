@@ -169,8 +169,13 @@ func (service *GitService) Execute(ctx context.Context, request Request) (Public
 	if err := change.Validate(); err != nil {
 		return Publication{}, err
 	}
-	if authored := authorizedRequest.Parameters["expected_base_sha"]; authored != "" && authored != change.BaseSHA {
-		return Publication{}, fmt.Errorf("%w: expected_base_sha conflicts with repository-change/v1", ErrInvalidRequest)
+	// The base assertion is server-derived from the same snapshot this
+	// inspection just re-read (see MergeBaseParameter), so a mismatch here means
+	// the two views of one value disagree. It is a corruption assertion, NOT the
+	// stale-base gate: that is the CurrentBase comparison below, which is the
+	// only check that can see a destination that moved after approval.
+	if asserted := authorizedRequest.Parameters[MergeBaseParameter]; asserted != "" && asserted != change.BaseSHA {
+		return Publication{}, fmt.Errorf("%w: %s conflicts with repository-change/v1", ErrInvalidRequest, MergeBaseParameter)
 	}
 	prior, found, err := service.backend.Lookup(externalContext, credential, publication.OperationKey)
 	if err != nil {

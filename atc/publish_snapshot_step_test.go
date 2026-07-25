@@ -96,7 +96,6 @@ destination: github.example/team/repo
 mode: merge
 parameters:
   target_branch: main
-  expected_base_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 approval_policy_version: engineering/v2
 approval: merge-approval
 workflow_run_id: ((workflow_run_id))
@@ -125,9 +124,7 @@ workflow_run_id: ((workflow_run_id))
 	invalid := map[string]any{
 		"publish_snapshot": "merge-change", "publisher": "git-publisher/v1",
 		"input": "change", "input_type": "repository-change/v1", "destination": "github.example/team/repo",
-		"mode": "merge", "parameters": map[string]string{
-			"target_branch": "main", "expected_base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		},
+		"mode": "merge", "parameters": map[string]string{"target_branch": "main"},
 		"approval_policy_version": "engineering/v2", "approval": "merge-approval",
 	}
 	for name, mutate := range map[string]func(map[string]any){

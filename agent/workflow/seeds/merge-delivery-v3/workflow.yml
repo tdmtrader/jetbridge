@@ -104,13 +104,14 @@ plan:
       input: merged-change
       publisher: git-publisher/v1
       destination: git.example/acme/widget
+      # expected_base_sha is deliberately absent. It is server-derived at
+      # execution time from merged-change's sealed base_sha — the same snapshot
+      # publish_snapshot below binds — so the approval and the publication
+      # describe one merge without an author keeping two literals in sync. A
+      # target that moved during the wait is caught at publication by comparing
+      # the destination's current tip to that base, not by this assertion.
       parameters:
         target_branch: main
-        # The gateway refuses to land a merge whose base_sha is not this value,
-        # which is how a target that moved during the wait is caught. It names
-        # the tip the change was rebased onto, so a deployment re-authors it per
-        # delivery until a renderer can bind it from the target input.
-        expected_base_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
       approval_policy_version: engineering/v1
       prompt: Land this rebased change on main?
     type: human-answer/v1
@@ -124,6 +125,5 @@ plan:
     mode: merge
     parameters:
       target_branch: main
-      expected_base_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
     approval_policy_version: engineering/v1
     approval: merge-approval

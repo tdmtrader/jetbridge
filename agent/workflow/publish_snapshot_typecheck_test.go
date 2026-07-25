@@ -105,9 +105,7 @@ func TestTypeCheckMergePublisherRequiresExactGuaranteedHumanAnswer(t *testing.T)
 			Name: "merge-change", Publisher: publisher.GitPublisher,
 			Input: "change", InputType: repositoryChangeV1, Approval: "approval",
 			Destination: "github.example/team/repo", Mode: publisher.ModeMerge,
-			Parameters: map[string]string{
-				"target_branch": "main", "expected_base_sha": strings.Repeat("a", 40),
-			},
+			Parameters:            map[string]string{"target_branch": "main"},
 			ApprovalPolicyVersion: "engineering/v2",
 		}
 	}
@@ -117,10 +115,8 @@ func TestTypeCheckMergePublisherRequiresExactGuaranteedHumanAnswer(t *testing.T)
 			Name: "approval", Type: snapshot.TypeRef("human-answer/v1"),
 			MergeApproval: &atc.MergeApprovalIntent{
 				Input: "change", Publisher: publisher.GitPublisher,
-				Destination: "github.example/team/repo",
-				Parameters: map[string]string{
-					"target_branch": "main", "expected_base_sha": strings.Repeat("a", 40),
-				},
+				Destination:           "github.example/team/repo",
+				Parameters:            map[string]string{"target_branch": "main"},
 				ApprovalPolicyVersion: "engineering/v2", Prompt: "Merge this exact change?",
 			},
 			OnTimeout: atc.AwaitSnapshotOnTimeoutFail,
@@ -149,6 +145,38 @@ func TestTypeCheckMergePublisherRequiresExactGuaranteedHumanAnswer(t *testing.T)
 			}
 		})
 	}
+	// expected_base_sha names the target tip the change lands on, which is not
+	// knowable when a workflow is written. It is server-derived at execution
+	// time from the bound repository-change/v1 input; authoring it is refused
+	// so nobody reintroduces the unrunnable 40-hex placeholder the seed used to
+	// carry.
+	for name, mutate := range map[string]func(atc.Step, *atc.PublishSnapshotStep){
+		"await intent": func(waitStep atc.Step, _ *atc.PublishSnapshotStep) {
+			intent := waitStep.Config.(*atc.TimeoutStep).Step.(*atc.AwaitSnapshotStep).MergeApproval
+			intent.Parameters["expected_base_sha"] = strings.Repeat("a", 40)
+		},
+		"publication": func(_ atc.Step, publish *atc.PublishSnapshotStep) {
+			publish.Parameters["expected_base_sha"] = strings.Repeat("a", 40)
+		},
+		"both": func(waitStep atc.Step, publish *atc.PublishSnapshotStep) {
+			intent := waitStep.Config.(*atc.TimeoutStep).Step.(*atc.AwaitSnapshotStep).MergeApproval
+			intent.Parameters["expected_base_sha"] = strings.Repeat("a", 40)
+			publish.Parameters["expected_base_sha"] = strings.Repeat("a", 40)
+		},
+	} {
+		t.Run("authored merge base rejected in "+name, func(t *testing.T) {
+			waitStep := wait()
+			publish := merge()
+			mutate(waitStep, publish)
+			err := TypeCheckFunction(&FunctionConfig{
+				SignatureVersion: 1, Inputs: validInputs, Plan: []atc.Step{waitStep, {Config: publish}},
+			})
+			if err == nil || !strings.Contains(err.Error(), "expected_base_sha is server-derived") {
+				t.Fatalf("error = %v, want server-derived merge base refusal", err)
+			}
+		})
+	}
+
 	t.Run("ordinary authored question cannot authorize merge", func(t *testing.T) {
 		ordinary := atc.Step{Config: &atc.TimeoutStep{Duration: "1h", Step: &atc.AwaitSnapshotStep{
 			Name: "approval", Question: "question", Type: snapshot.TypeRef("human-answer/v1"),
@@ -194,10 +222,8 @@ func TestRenderMergePublisherInjectsUnforgeableWorkflowRunIdentity(t *testing.T)
 		Name: "approval", Type: snapshot.TypeRef("human-answer/v1"),
 		MergeApproval: &atc.MergeApprovalIntent{
 			Input: "repo", Publisher: publisher.GitPublisher,
-			Destination: "github.example/team/repo",
-			Parameters: map[string]string{
-				"target_branch": "main", "expected_base_sha": strings.Repeat("a", 40),
-			},
+			Destination:           "github.example/team/repo",
+			Parameters:            map[string]string{"target_branch": "main"},
 			ApprovalPolicyVersion: "engineering/v2", Prompt: "Merge this exact change?",
 		},
 		OnTimeout: atc.AwaitSnapshotOnTimeoutFail,
@@ -206,9 +232,7 @@ func TestRenderMergePublisherInjectsUnforgeableWorkflowRunIdentity(t *testing.T)
 		Name: "merge-change", Publisher: publisher.GitPublisher,
 		Input: "repo", InputType: repositoryChangeV1, Approval: "approval",
 		Destination: "github.example/team/repo", Mode: publisher.ModeMerge,
-		Parameters: map[string]string{
-			"target_branch": "main", "expected_base_sha": strings.Repeat("a", 40),
-		},
+		Parameters:            map[string]string{"target_branch": "main"},
 		ApprovalPolicyVersion: "engineering/v2",
 	}
 	definition.Compiled.Function.Plan = append(definition.Compiled.Function.Plan,

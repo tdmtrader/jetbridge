@@ -757,6 +757,15 @@ func validatePublishSnapshotPlan(plan *atc.PublishSnapshotPlan) error {
 		Authority: publisher.Authority{TeamID: 1, TeamName: "server-verified", BuildID: 1, Actor: "server-verified"},
 	}
 	if plan.Mode == publisher.ModeMerge {
+		// The merge base assertion is derived from the bound
+		// repository-change/v1 snapshot at execution time, so an immutable plan
+		// never carries it and must never author it. Stand a probe in to
+		// validate the rest of the publication shape.
+		probed, err := publisher.ProbeMergeBase(plan.Parameters)
+		if err != nil {
+			return err
+		}
+		request.Parameters = probed
 		// Runtime approval comes only from the server. This placeholder lets the
 		// provenance verifier validate the immutable publication shape without
 		// representing an authored approval actor.

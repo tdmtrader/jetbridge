@@ -291,7 +291,7 @@ func (step *AwaitSnapshotStep) questionRef(
 	runID snapshot.WorkflowRunID,
 ) (string, snapshot.SnapshotRef, error) {
 	if step.plan.MergeApproval == nil {
-		ref, err := step.authorizedAwaitInput(ctx, repository, step.plan.Question, snapshot.TypeRef("question/v1"))
+		ref, _, err := step.authorizedAwaitInput(ctx, repository, step.plan.Question, snapshot.TypeRef("question/v1"))
 		return step.plan.Question, ref, err
 	}
 	intent := step.plan.MergeApproval
@@ -306,15 +306,26 @@ func (step *AwaitSnapshotStep) questionRef(
 		publishParametersContainInterpolation(intent.Parameters) {
 		return "", snapshot.SnapshotRef{}, fmt.Errorf("await_snapshot: unresolved merge approval intent")
 	}
-	subject, err := step.authorizedAwaitInput(ctx, repository, intent.Input, snapshot.TypeRef("repository-change/v1"))
+	subject, subjectManifest, err := step.authorizedAwaitInput(ctx, repository, intent.Input, snapshot.TypeRef("repository-change/v1"))
 	if err != nil {
 		return "", snapshot.SnapshotRef{}, err
+	}
+	// The base assertion a human approves is derived from the exact snapshot
+	// being approved, never authored. publish_snapshot derives it from the same
+	// snapshot, so the two descriptions of one merge agree by construction.
+	baseSHA, err := publisher.MergeBaseFromChange(subjectManifest)
+	if err != nil {
+		return "", snapshot.SnapshotRef{}, fmt.Errorf("await_snapshot: merge base is unavailable for the approved change")
+	}
+	parameters, err := publisher.StampMergeBase(intent.Parameters, baseSHA)
+	if err != nil {
+		return "", snapshot.SnapshotRef{}, fmt.Errorf("await_snapshot: invalid merge approval intent")
 	}
 	approvalContext, err := publisher.BuildMergeApprovalContext(publisher.MergeApprovalRequest{
 		TeamID: step.metadata.TeamID, WorkflowRunID: runID, BuildID: int64(step.metadata.BuildID),
 		Input: subject, Publisher: intent.Publisher, Mode: publisher.ModeMerge,
-		Destination: intent.Destination, Parameters: clonePublishParameters(intent.Parameters),
-		ExpectedBaseSHA:       intent.Parameters["expected_base_sha"],
+		Destination: intent.Destination, Parameters: parameters,
+		ExpectedBaseSHA:       baseSHA,
 		ApprovalPolicyVersion: intent.ApprovalPolicyVersion,
 	})
 	if err != nil {
@@ -366,24 +377,24 @@ func (step *AwaitSnapshotStep) authorizedAwaitInput(
 	repository *build.Repository,
 	name string,
 	expectedType snapshot.TypeRef,
-) (snapshot.SnapshotRef, error) {
+) (snapshot.SnapshotRef, snapshot.Snapshot, error) {
 	entry, found := repository.ArtifactEntryFor(build.ArtifactName(name))
 	if !found || entry.Artifact == nil || entry.Snapshot == nil || entry.Snapshot.Type != expectedType {
-		return snapshot.SnapshotRef{}, fmt.Errorf("await_snapshot: sealed input snapshot is unavailable")
+		return snapshot.SnapshotRef{}, snapshot.Snapshot{}, fmt.Errorf("await_snapshot: sealed input snapshot is unavailable")
 	}
 	ref := *entry.Snapshot
 	if err := ref.Validate(); err != nil {
-		return snapshot.SnapshotRef{}, fmt.Errorf("await_snapshot: sealed input snapshot is unavailable")
+		return snapshot.SnapshotRef{}, snapshot.Snapshot{}, fmt.Errorf("await_snapshot: sealed input snapshot is unavailable")
 	}
 	manifest, found, err := step.metadataStore.GetAuthorized(ctx, step.metadata.TeamID, ref.ID)
 	if err != nil {
-		return snapshot.SnapshotRef{}, fmt.Errorf("await_snapshot: snapshot authorization failed")
+		return snapshot.SnapshotRef{}, snapshot.Snapshot{}, fmt.Errorf("await_snapshot: snapshot authorization failed")
 	}
 	if !found || manifest.Validate() != nil || manifest.ID != ref.ID || manifest.Type != ref.Type ||
 		manifest.Digest != ref.Digest || manifest.Type != expectedType || manifest.ContentState != snapshot.ContentStateAvailable {
-		return snapshot.SnapshotRef{}, fmt.Errorf("await_snapshot: sealed input snapshot is unavailable")
+		return snapshot.SnapshotRef{}, snapshot.Snapshot{}, fmt.Errorf("await_snapshot: sealed input snapshot is unavailable")
 	}
-	return ref, nil
+	return ref, manifest, nil
 }
 
 func mergeApprovalQuestionArchive(document contracts.QuestionDocument) ([]byte, error) {

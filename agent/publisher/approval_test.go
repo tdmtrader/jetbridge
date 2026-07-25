@@ -42,8 +42,22 @@ func TestDurableApprovalVerifierBindsExactAffirmativeHumanDecision(t *testing.T)
 func TestDurableApprovalVerifierRejectsDecisionThatDoesNotBindPublication(t *testing.T) {
 	tests := map[string]func(*approvalFixture){
 		"destination": func(fixture *approvalFixture) { fixture.request.Destination = "git.example/other/repo" },
-		"base":        func(fixture *approvalFixture) { fixture.request.ExpectedBaseSHA = strings.Repeat("e", 40) },
-		"policy":      func(fixture *approvalFixture) { fixture.request.ApprovalPolicyVersion = "engineering/v2" },
+		"base": func(fixture *approvalFixture) {
+			fixture.request.ExpectedBaseSHA = strings.Repeat("e", 40)
+			fixture.request.Parameters["expected_base_sha"] = strings.Repeat("e", 40)
+		},
+		// The assertion is server-derived, so a durable request always carries
+		// it in both the field and the parameter map, and they always agree.
+		// Verification refuses anything else rather than treating an absent
+		// assertion as "unspecified".
+		"missing derived base": func(fixture *approvalFixture) {
+			fixture.request.ExpectedBaseSHA = ""
+			delete(fixture.request.Parameters, "expected_base_sha")
+		},
+		"derived base disagrees with its parameter": func(fixture *approvalFixture) {
+			fixture.request.Parameters["expected_base_sha"] = strings.Repeat("e", 40)
+		},
+		"policy": func(fixture *approvalFixture) { fixture.request.ApprovalPolicyVersion = "engineering/v2" },
 		"target branch": func(fixture *approvalFixture) {
 			fixture.request.Parameters["target_branch"] = "release"
 		},
@@ -139,6 +153,9 @@ func newApprovalFixture(
 		TeamID: 9, WorkflowRunID: 17, BuildID: 12, Input: input,
 		Publisher: publisher.GitPublisher, Mode: publisher.ModeMerge,
 		Destination: "git.example/acme/widget",
+		// expected_base_sha is not authored anywhere: the exec steps stamp it
+		// from Input's sealed base_sha. It appears here as the value a server
+		// would have derived.
 		Parameters: map[string]string{
 			"target_branch": "main", "expected_base_sha": strings.Repeat("b", 40),
 		},

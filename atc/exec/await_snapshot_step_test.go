@@ -132,7 +132,7 @@ func TestAwaitSnapshotStepSynthesizesExactServerBoundMergeQuestion(t *testing.T)
 		"change": {Artifact: subjectArtifact, Snapshot: &subjectRef},
 	}))
 
-	parameters := map[string]string{"target_branch": "main", "expected_base_sha": strings.Repeat("d", 40)}
+	parameters := map[string]string{"target_branch": "main"}
 	plan := atc.AwaitSnapshotPlan{
 		Name: "approval", Type: "human-answer/v1", OnTimeout: atc.AwaitSnapshotOnTimeoutFail,
 		MergeApproval: &atc.MergeApprovalIntent{
@@ -187,16 +187,108 @@ func TestAwaitSnapshotStepSynthesizesExactServerBoundMergeQuestion(t *testing.T)
 	require.NoError(t, json.NewDecoder(archive).Decode(&document))
 	require.Equal(t, []string{"approve", "reject"}, document.Options)
 	require.Equal(t, "reject", document.Default)
+	// The question a human sees asserts the base the server read out of the
+	// approved snapshot, not anything the workflow author wrote.
 	expectedContext, err := publisher.BuildMergeApprovalContext(publisher.MergeApprovalRequest{
 		TeamID: 17, WorkflowRunID: 19, BuildID: 29, Input: subjectRef,
 		Publisher: publisher.GitPublisher, Mode: publisher.ModeMerge,
-		Destination: "git.example/acme/widget", Parameters: parameters,
-		ExpectedBaseSHA: strings.Repeat("d", 40), ApprovalPolicyVersion: "engineering/v1",
+		Destination: "git.example/acme/widget",
+		Parameters: map[string]string{
+			"target_branch": "main", "expected_base_sha": mergeBaseFixture,
+		},
+		ExpectedBaseSHA: mergeBaseFixture, ApprovalPolicyVersion: "engineering/v1",
 	})
 	require.NoError(t, err)
 	var actualContext publisher.MergeApprovalContext
 	require.NoError(t, json.Unmarshal([]byte(document.Context), &actualContext))
 	require.Equal(t, expectedContext, actualContext)
+	require.Equal(t, mergeBaseFixture, actualContext.ExpectedBaseSHA)
+	require.NotContains(t, parameters, "expected_base_sha", "the authored intent must not be mutated")
+}
+
+// The merge base is server-owned: a plan that authors one is refused rather
+// than silently overwritten, so the value a human approved can never differ
+// from the value the publication asserts.
+func TestAwaitSnapshotStepRefusesAuthoredMergeBase(t *testing.T) {
+	subject := awaitManifest(21, "repository-change/v1", 'a')
+	metadata := new(snapshotfakes.FakeMetadataStore)
+	metadata.GetAuthorizedReturns(subject, true, nil)
+	content := new(snapshotfakes.FakeContentStore)
+	repository, state, delegates := awaitHarness(t, subject, content)
+	subjectRef := awaitRef(subject)
+	subjectArtifact, err := runtime.NewSnapshotArtifact(subject, content)
+	require.NoError(t, err)
+	require.NoError(t, repository.RegisterArtifacts(map[build.ArtifactName]build.ArtifactEntry{
+		"change": {Artifact: subjectArtifact, Snapshot: &subjectRef},
+	}))
+
+	plan := atc.AwaitSnapshotPlan{
+		Name: "approval", Type: "human-answer/v1", OnTimeout: atc.AwaitSnapshotOnTimeoutFail,
+		MergeApproval: &atc.MergeApprovalIntent{
+			Input: "change", Publisher: publisher.GitPublisher, Destination: "git.example/acme/widget",
+			Parameters: map[string]string{
+				"target_branch": "main", "expected_base_sha": strings.Repeat("b", 40),
+			},
+			ApprovalPolicyVersion: "engineering/v1", Prompt: "Merge this exact change?",
+		},
+		WorkflowDefinitionID: 7, WorkflowRunID: "19",
+	}
+	sealer := &recordingOutputSealer{stub: func(context.Context, snapshot.SealRequest) (map[string]snapshot.SealedOutput, error) {
+		return nil, errors.New("no question may be sealed for an authored merge base")
+	}}
+	store := &waitStoreStub{}
+	store.create = func(context.Context, workflowwait.CreateRequest) (workflowwait.Wait, bool, error) {
+		return workflowwait.Wait{}, false, errors.New("no wait may be created for an authored merge base")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
+	defer cancel()
+	step := exec.NewAwaitSnapshotStep("plan-1", []int{2}, plan, exec.StepMetadata{
+		TeamID: 17, TeamName: "main", BuildID: 29, SnapshotCreatedBy: "build:29",
+	}, delegates, store, sealer, metadata, content, time.Millisecond)
+	ok, err := step.Run(ctx, state)
+	require.False(t, ok)
+	require.EqualError(t, err, "await_snapshot: invalid merge approval intent")
+	require.Equal(t, 0, store.createCall)
+}
+
+// A repository-change snapshot with no sealed base cannot be approved: there
+// is nothing to assert, so the step fails closed instead of guessing.
+func TestAwaitSnapshotStepFailsClosedWithoutSealedMergeBase(t *testing.T) {
+	subject := awaitManifest(21, "repository-change/v1", 'a')
+	subject.IntrinsicMetadata = nil
+	metadata := new(snapshotfakes.FakeMetadataStore)
+	metadata.GetAuthorizedReturns(subject, true, nil)
+	content := new(snapshotfakes.FakeContentStore)
+	repository, state, delegates := awaitHarness(t, subject, content)
+	subjectRef := awaitRef(subject)
+	subjectArtifact, err := runtime.NewSnapshotArtifact(subject, content)
+	require.NoError(t, err)
+	require.NoError(t, repository.RegisterArtifacts(map[build.ArtifactName]build.ArtifactEntry{
+		"change": {Artifact: subjectArtifact, Snapshot: &subjectRef},
+	}))
+
+	plan := atc.AwaitSnapshotPlan{
+		Name: "approval", Type: "human-answer/v1", OnTimeout: atc.AwaitSnapshotOnTimeoutFail,
+		MergeApproval: &atc.MergeApprovalIntent{
+			Input: "change", Publisher: publisher.GitPublisher, Destination: "git.example/acme/widget",
+			Parameters:            map[string]string{"target_branch": "main"},
+			ApprovalPolicyVersion: "engineering/v1", Prompt: "Merge this exact change?",
+		},
+		WorkflowDefinitionID: 7, WorkflowRunID: "19",
+	}
+	store := &waitStoreStub{}
+	store.create = func(context.Context, workflowwait.CreateRequest) (workflowwait.Wait, bool, error) {
+		return workflowwait.Wait{}, false, errors.New("no wait may be created without a sealed merge base")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
+	defer cancel()
+	step := exec.NewAwaitSnapshotStep("plan-1", []int{2}, plan, exec.StepMetadata{
+		TeamID: 17, TeamName: "main", BuildID: 29, SnapshotCreatedBy: "build:29",
+	}, delegates, store, &recordingOutputSealer{}, metadata, content, time.Millisecond)
+	ok, err := step.Run(ctx, state)
+	require.False(t, ok)
+	require.EqualError(t, err, "await_snapshot: merge base is unavailable for the approved change")
+	require.Equal(t, 0, store.createCall)
 }
 
 func TestAwaitSnapshotStepResumesExistingWaitWithoutResettingDeadline(t *testing.T) {
@@ -303,11 +395,35 @@ func awaitHarness(t *testing.T, question snapshot.Snapshot, content snapshot.Con
 }
 
 func awaitManifest(id snapshot.SnapshotID, typ snapshot.TypeRef, digestByte byte) snapshot.Snapshot {
-	return snapshot.Snapshot{
+	manifest := snapshot.Snapshot{
 		ID: id, Type: typ, Digest: snapshot.Digest("sha256:" + strings.Repeat(string(digestByte), 64)),
 		ByteSize: 1, FileCount: 1, Representation: "application/x-tar", ContentState: snapshot.ContentStateAvailable,
 		CreatedAt: time.Now().UTC(),
 	}
+	if typ == snapshot.TypeRef("repository-change/v1") {
+		// The repository-change contract validator writes this at seal time,
+		// having already proven base_sha equals the HEAD of the declared base
+		// repository. It is where the server-derived merge base comes from.
+		manifest.IntrinsicMetadata = repositoryChangeIntrinsicMetadata(mergeBaseFixture)
+	}
+	return manifest
+}
+
+// mergeBaseFixture is the sealed base_sha of the repository-change/v1 fixtures.
+// No step authors it: both await_snapshot and publish_snapshot read it back out
+// of the snapshot they bind.
+const mergeBaseFixture = "d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0"
+
+func repositoryChangeIntrinsicMetadata(baseSHA string) json.RawMessage {
+	encoded, err := json.Marshal(contracts.RepositoryChangeMetadata{
+		RepositoryID: "sha256:" + strings.Repeat("9", 64), BaseSHA: baseSHA,
+		ResultSHA: strings.Repeat("e", 40), ResultTreeSHA: strings.Repeat("f", 40),
+		Representation: "git-tree",
+	})
+	if err != nil {
+		panic(err)
+	}
+	return encoded
 }
 
 func awaitRef(manifest snapshot.Snapshot) snapshot.SnapshotRef {

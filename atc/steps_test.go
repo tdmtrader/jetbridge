@@ -993,8 +993,8 @@ func (s *StepsSuite) TestAwaitSnapshotWireContractIsStrictAndPinned() {
 		payload string
 	}{
 		{"missing question", `{"await_snapshot":"answer","type":"human-answer/v1","on_timeout":"fail"}`},
-		{"question and merge approval", `{"await_snapshot":"answer","question":"question","merge_approval":{"input":"change","publisher":"git-publisher/v1","destination":"git.example/repo","parameters":{"target_branch":"main","expected_base_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"approval_policy_version":"engineering/v1","prompt":"Merge?"},"type":"human-answer/v1","on_timeout":"fail"}`},
-		{"merge approval default", `{"await_snapshot":"answer","merge_approval":{"input":"change","publisher":"git-publisher/v1","destination":"git.example/repo","parameters":{"target_branch":"main","expected_base_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"approval_policy_version":"engineering/v1","prompt":"Merge?"},"type":"human-answer/v1","on_timeout":"default","default_snapshot_id":"1"}`},
+		{"question and merge approval", `{"await_snapshot":"answer","question":"question","merge_approval":{"input":"change","publisher":"git-publisher/v1","destination":"git.example/repo","parameters":{"target_branch":"main"},"approval_policy_version":"engineering/v1","prompt":"Merge?"},"type":"human-answer/v1","on_timeout":"fail"}`},
+		{"merge approval default", `{"await_snapshot":"answer","merge_approval":{"input":"change","publisher":"git-publisher/v1","destination":"git.example/repo","parameters":{"target_branch":"main"},"approval_policy_version":"engineering/v1","prompt":"Merge?"},"type":"human-answer/v1","on_timeout":"default","default_snapshot_id":"1"}`},
 		{"wrong output type", `{"await_snapshot":"answer","question":"question","type":"review/v1","on_timeout":"fail"}`},
 		{"unknown timeout policy", `{"await_snapshot":"answer","question":"question","type":"human-answer/v1","on_timeout":"continue"}`},
 		{"default lacks snapshot", `{"await_snapshot":"answer","question":"question","type":"human-answer/v1","on_timeout":"default"}`},
@@ -1022,7 +1022,7 @@ func (s *StepsSuite) TestAwaitSnapshotWireContractIsStrictAndPinned() {
 			"input":"change",
 			"publisher":"git-publisher/v1",
 			"destination":"git.example/repo",
-			"parameters":{"target_branch":"main","expected_base_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+			"parameters":{"target_branch":"main"},
 			"approval_policy_version":"engineering/v1",
 			"prompt":"Merge this exact change?"
 		},

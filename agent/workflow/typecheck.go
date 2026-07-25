@@ -395,6 +395,12 @@ func (checker *snapshotFlowChecker) checkPublishSnapshot(step *atc.PublishSnapsh
 		return snapshotFlow{}, fmt.Errorf("workflow: %s: input %q cannot use a conditional binding", identity, step.Input)
 	}
 	if step.Mode == publisher.ModeMerge {
+		// expected_base_sha is server-derived at execution time, exactly like
+		// workflow_run_id is renderer-owned. A workflow cannot know the target
+		// tip it will land on when it is authored.
+		if err := publisher.RejectAuthoredMergeBase(step.Parameters); err != nil {
+			return snapshotFlow{}, fmt.Errorf("workflow: %s: %w", identity, err)
+		}
 		approval, found := entry[step.Approval]
 		if !found {
 			return snapshotFlow{}, fmt.Errorf("workflow: %s: approval %q is unavailable (use before produce)", identity, step.Approval)
@@ -453,6 +459,9 @@ func (checker *snapshotFlowChecker) checkAwaitSnapshot(step *atc.AwaitSnapshotSt
 		return snapshotFlow{}, fmt.Errorf("workflow: %s: an ordinary timeout wrapper is required", identity)
 	}
 	if step.MergeApproval != nil {
+		if err := publisher.RejectAuthoredMergeBase(step.MergeApproval.Parameters); err != nil {
+			return snapshotFlow{}, fmt.Errorf("workflow: %s: %w", identity, err)
+		}
 		subject, found := entry[step.MergeApproval.Input]
 		if !found {
 			return snapshotFlow{}, fmt.Errorf("workflow: %s: merge approval input %q is unavailable (use before produce)", identity, step.MergeApproval.Input)

@@ -597,6 +597,10 @@ func (policy AwaitSnapshotOnTimeout) Validate() error {
 // trusted question/v1 artifact, or synthesizes a server-bound merge question
 // from one exact repository-change/v1 input, and publishes one immutable
 // human-answer/v1 artifact after the durable wait is resolved.
+// MergeApprovalIntent is the authored half of a merge approval. It carries no
+// base assertion: publisher.MergeBaseParameter is server-derived from the
+// bound repository-change/v1 input at execution time, exactly like
+// workflow_run_id is renderer-owned.
 type MergeApprovalIntent struct {
 	Input                 string            `json:"input"`
 	Publisher             snapshot.TypeRef  `json:"publisher"`
@@ -613,18 +617,10 @@ func (intent MergeApprovalIntent) validateWire() error {
 	if strings.TrimSpace(intent.Prompt) != intent.Prompt || intent.Prompt == "" || len(intent.Prompt) > 4096 || strings.IndexByte(intent.Prompt, 0) >= 0 {
 		return fmt.Errorf("await_snapshot: merge_approval prompt is invalid")
 	}
-	_, err := publisher.BuildMergeApprovalContext(publisher.MergeApprovalRequest{
-		TeamID: 1, WorkflowRunID: 1, BuildID: 1,
-		Input: snapshot.SnapshotRef{
-			ID: 1, Type: snapshot.TypeRef("repository-change/v1"),
-			Digest: snapshot.Digest("sha256:" + strings.Repeat("0", 64)),
-		},
-		Publisher: intent.Publisher, Mode: publisher.ModeMerge,
-		Destination: intent.Destination, Parameters: intent.Parameters,
-		ExpectedBaseSHA:       intent.Parameters["expected_base_sha"],
-		ApprovalPolicyVersion: intent.ApprovalPolicyVersion,
-	})
-	if err != nil {
+	if err := publisher.ValidateAuthoredMergeIntent(publisher.AuthoredMergeIntent{
+		Publisher: intent.Publisher, Destination: intent.Destination,
+		Parameters: intent.Parameters, ApprovalPolicyVersion: intent.ApprovalPolicyVersion,
+	}); err != nil {
 		return fmt.Errorf("await_snapshot: merge_approval intent is invalid: %w", err)
 	}
 	return nil
@@ -773,6 +769,14 @@ func (step PublishSnapshotStep) validateWire() error {
 		if warning, err := ValidateIdentifier(step.Approval); strings.TrimSpace(step.Approval) == "" || err != nil || warning != nil {
 			return fmt.Errorf("publish_snapshot: merge approval artifact is invalid")
 		}
+		// The base assertion is server-derived at execution time from the same
+		// repository-change/v1 snapshot the approval pinned by digest, so wire
+		// validation stands a probe in for it and refuses an authored one.
+		probed, err := publisher.ProbeMergeBase(step.Parameters)
+		if err != nil {
+			return fmt.Errorf("publish_snapshot: %w", err)
+		}
+		request.Parameters = probed
 		if step.WorkflowRunID != "" {
 			if parameter, templated := loadSnapshotParameterName(step.WorkflowRunID); templated {
 				if parameter != "workflow_run_id" {

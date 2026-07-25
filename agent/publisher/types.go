@@ -142,8 +142,11 @@ func (request Request) Validate() error {
 				return fmt.Errorf("%w: branch publication requires source_branch and target_branch", ErrInvalidRequest)
 			}
 		case ModeMerge:
-			if !requiredParameter(request.Parameters, "target_branch") || !requiredParameter(request.Parameters, "expected_base_sha") {
-				return fmt.Errorf("%w: merge requires target_branch and expected_base_sha", ErrInvalidRequest)
+			// A durable merge request always carries the base assertion. It is
+			// not authored: the execution boundary stamps it from the bound
+			// repository-change/v1 snapshot (see MergeBaseParameter).
+			if !requiredParameter(request.Parameters, "target_branch") || !requiredParameter(request.Parameters, MergeBaseParameter) {
+				return fmt.Errorf("%w: merge requires target_branch and %s", ErrInvalidRequest, MergeBaseParameter)
 			}
 			if !boundedText(request.ApprovedBy, 256, false) {
 				return fmt.Errorf("%w: merge requires verified approval", ErrInvalidRequest)

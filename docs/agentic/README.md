@@ -259,7 +259,6 @@ non-conditional) `human-answer/v1` artifact produced by `await_snapshot`:
     destination: git.example/acme/widget
     parameters:
       target_branch: main
-      expected_base_sha: 1111111111111111111111111111111111111111
     approval_policy_version: engineering/v1
     prompt: Merge this exact change?
   type: human-answer/v1
@@ -274,10 +273,17 @@ non-conditional) `human-answer/v1` artifact produced by `await_snapshot`:
   mode: merge
   parameters:
     target_branch: main
-    expected_base_sha: 1111111111111111111111111111111111111111
   approval_policy_version: engineering/v1
   approval: merge-approval
 ```
+
+Neither block writes `expected_base_sha`. That assertion names the commit the
+change is based on, which is only known once the change exists, so authoring it
+is refused: both steps derive it from the sealed `base_sha` of the exact
+`repository-change/v1` snapshot they bind, and therefore agree by construction.
+It is an assertion, not the stale-base gate — a destination that moved during
+the wait is caught at publication by comparing the target's current tip to that
+base (`stale_base`).
 
 Workflow authors do not supply trusted execution identity or an approval
 question. After `change` is sealed, the schema-v3 renderer and

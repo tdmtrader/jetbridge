@@ -76,13 +76,30 @@ func (step *PublishSnapshotStep) run(ctx context.Context, state RunState, delega
 		return false, fmt.Errorf("publish_snapshot: unresolved publication parameter")
 	}
 
-	ref, err := step.authorizedInput(ctx, state.ArtifactRepository())
+	ref, manifest, err := step.authorizedInput(ctx, state.ArtifactRepository())
 	if err != nil {
 		return false, err
 	}
+	parameters := clonePublishParameters(step.plan.Parameters)
+	if step.plan.Mode == publisher.ModeMerge {
+		if step.approvalVerifier == nil {
+			return false, fmt.Errorf("publish_snapshot: durable merge approval verification is unavailable")
+		}
+		// Derive the base assertion from the exact snapshot being published —
+		// the same snapshot the approval pinned by digest, so await_snapshot
+		// derived the identical value. See publisher.MergeBaseParameter.
+		baseSHA, err := publisher.MergeBaseFromChange(manifest)
+		if err != nil {
+			return false, fmt.Errorf("publish_snapshot: merge base is unavailable for the published change")
+		}
+		parameters, err = publisher.StampMergeBase(step.plan.Parameters, baseSHA)
+		if err != nil {
+			return false, fmt.Errorf("publish_snapshot: invalid publication plan")
+		}
+	}
 	request := publisher.Request{
 		Publisher: step.plan.Publisher, Input: ref, Destination: step.plan.Destination,
-		Mode: step.plan.Mode, Parameters: clonePublishParameters(step.plan.Parameters),
+		Mode: step.plan.Mode, Parameters: clonePublishParameters(parameters),
 		ApprovalPolicyVersion: step.plan.ApprovalPolicyVersion,
 		Authority: publisher.Authority{
 			TeamID: step.metadata.TeamID, TeamName: step.metadata.TeamName,
@@ -90,22 +107,19 @@ func (step *PublishSnapshotStep) run(ctx context.Context, state RunState, delega
 		},
 	}
 	if step.plan.Mode == publisher.ModeMerge {
-		if step.approvalVerifier == nil {
-			return false, fmt.Errorf("publish_snapshot: durable merge approval verification is unavailable")
-		}
 		runID, err := snapshot.ParseWorkflowRunID(step.plan.WorkflowRunID)
 		if err != nil {
 			return false, fmt.Errorf("publish_snapshot: invalid workflow run identifier")
 		}
-		approval, err := step.authorizedArtifact(ctx, state.ArtifactRepository(), step.plan.Approval, snapshot.TypeRef("human-answer/v1"))
+		approval, _, err := step.authorizedArtifact(ctx, state.ArtifactRepository(), step.plan.Approval, snapshot.TypeRef("human-answer/v1"))
 		if err != nil {
 			return false, err
 		}
 		evidence, err := step.approvalVerifier.Verify(ctx, publisher.MergeApprovalRequest{
 			TeamID: step.metadata.TeamID, WorkflowRunID: runID, BuildID: int64(step.metadata.BuildID),
 			Input: ref, Approval: approval, Publisher: step.plan.Publisher, Mode: step.plan.Mode,
-			Destination: step.plan.Destination, Parameters: clonePublishParameters(step.plan.Parameters),
-			ExpectedBaseSHA:       step.plan.Parameters["expected_base_sha"],
+			Destination: step.plan.Destination, Parameters: clonePublishParameters(parameters),
+			ExpectedBaseSHA:       parameters[publisher.MergeBaseParameter],
 			ApprovalPolicyVersion: step.plan.ApprovalPolicyVersion,
 		})
 		if err != nil {
@@ -147,29 +161,29 @@ func (step *PublishSnapshotStep) run(ctx context.Context, state RunState, delega
 	}
 }
 
-func (step *PublishSnapshotStep) authorizedInput(ctx context.Context, repository *build.Repository) (snapshot.SnapshotRef, error) {
+func (step *PublishSnapshotStep) authorizedInput(ctx context.Context, repository *build.Repository) (snapshot.SnapshotRef, snapshot.Snapshot, error) {
 	return step.authorizedArtifact(ctx, repository, step.plan.Input, step.plan.InputType)
 }
 
-func (step *PublishSnapshotStep) authorizedArtifact(ctx context.Context, repository *build.Repository, name string, expectedType snapshot.TypeRef) (snapshot.SnapshotRef, error) {
+func (step *PublishSnapshotStep) authorizedArtifact(ctx context.Context, repository *build.Repository, name string, expectedType snapshot.TypeRef) (snapshot.SnapshotRef, snapshot.Snapshot, error) {
 	entry, found := repository.ArtifactEntryFor(build.ArtifactName(name))
 	if !found || entry.Snapshot == nil || entry.Snapshot.Type != expectedType {
-		return snapshot.SnapshotRef{}, fmt.Errorf("publish_snapshot: sealed input snapshot is unavailable")
+		return snapshot.SnapshotRef{}, snapshot.Snapshot{}, fmt.Errorf("publish_snapshot: sealed input snapshot is unavailable")
 	}
 	ref := *entry.Snapshot
 	if err := ref.Validate(); err != nil {
-		return snapshot.SnapshotRef{}, fmt.Errorf("publish_snapshot: sealed input snapshot is unavailable")
+		return snapshot.SnapshotRef{}, snapshot.Snapshot{}, fmt.Errorf("publish_snapshot: sealed input snapshot is unavailable")
 	}
 	manifest, found, err := step.metadataStore.GetAuthorized(ctx, step.metadata.TeamID, ref.ID)
 	if err != nil {
-		return snapshot.SnapshotRef{}, fmt.Errorf("publish_snapshot: snapshot authorization failed")
+		return snapshot.SnapshotRef{}, snapshot.Snapshot{}, fmt.Errorf("publish_snapshot: snapshot authorization failed")
 	}
 	if !found || manifest.Validate() != nil || manifest.ID != ref.ID || manifest.Type != ref.Type ||
 		manifest.Digest != ref.Digest || manifest.Type != expectedType ||
 		manifest.ContentState != snapshot.ContentStateAvailable {
-		return snapshot.SnapshotRef{}, fmt.Errorf("publish_snapshot: sealed input snapshot is unavailable")
+		return snapshot.SnapshotRef{}, snapshot.Snapshot{}, fmt.Errorf("publish_snapshot: sealed input snapshot is unavailable")
 	}
-	return ref, nil
+	return ref, manifest, nil
 }
 
 func validatePublicationResponse(

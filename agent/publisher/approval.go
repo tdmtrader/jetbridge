@@ -41,15 +41,20 @@ type MergeApprovalContext struct {
 }
 
 type MergeApprovalRequest struct {
-	TeamID                int
-	WorkflowRunID         snapshot.WorkflowRunID
-	BuildID               int64
-	Input                 snapshot.SnapshotRef
-	Approval              snapshot.SnapshotRef
-	Publisher             snapshot.TypeRef
-	Mode                  Mode
-	Destination           string
-	Parameters            map[string]string
+	TeamID        int
+	WorkflowRunID snapshot.WorkflowRunID
+	BuildID       int64
+	Input         snapshot.SnapshotRef
+	Approval      snapshot.SnapshotRef
+	Publisher     snapshot.TypeRef
+	Mode          Mode
+	Destination   string
+	Parameters    map[string]string
+	// ExpectedBaseSHA is server-derived, never authored: it is read from the
+	// Input snapshot's sealed intrinsic metadata at execution time. See
+	// MergeBaseParameter in mergebase.go for the full decision record. A
+	// durable merge request must always carry it, and it must equal
+	// Parameters[MergeBaseParameter] so the intent digest covers it.
 	ExpectedBaseSHA       string
 	ApprovalPolicyVersion string
 }
@@ -126,7 +131,10 @@ func validateMergeApprovalRequest(request MergeApprovalRequest, requireApproval 
 		request.Input.Validate() != nil || request.Input.Type != snapshot.TypeRef("repository-change/v1") ||
 		request.Publisher != GitPublisher || request.Mode != ModeMerge ||
 		!boundedText(request.Destination, 2048, false) ||
-		!boundedText(request.ExpectedBaseSHA, 256, false) ||
+		// The base assertion is stamped by the server from the bound
+		// repository-change/v1 snapshot, so a durable request always has one
+		// and it is always a complete Git object ID.
+		!validGitObjectID(request.ExpectedBaseSHA) ||
 		!boundedText(request.ApprovalPolicyVersion, 128, false) {
 		return fmt.Errorf("%w: merge approval request is invalid", ErrInvalidRequest)
 	}
@@ -134,7 +142,7 @@ func validateMergeApprovalRequest(request MergeApprovalRequest, requireApproval 
 		return fmt.Errorf("%w: merge approval request is invalid", ErrInvalidRequest)
 	}
 	parameters := cloneParameters(request.Parameters)
-	if parameters["expected_base_sha"] != request.ExpectedBaseSHA || !requiredParameter(parameters, "target_branch") {
+	if parameters[MergeBaseParameter] != request.ExpectedBaseSHA || !requiredParameter(parameters, "target_branch") {
 		return fmt.Errorf("%w: merge approval request parameters are invalid", ErrInvalidRequest)
 	}
 	// Reuse the publisher request's parameter validation without pretending

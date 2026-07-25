@@ -46,9 +46,7 @@ func TestFromPlanBindsMergePublisherToFrozenWorkflowRun(t *testing.T) {
 	config := &atc.PublishSnapshotStep{
 		Name: "merge-change", Publisher: publisher.GitPublisher, Input: "change",
 		InputType: snapshot.TypeRef("repository-change/v1"), Destination: "github.example/team/repo",
-		Mode: publisher.ModeMerge, Parameters: map[string]string{
-			"target_branch": "main", "expected_base_sha": strings.Repeat("a", 40),
-		},
+		Mode: publisher.ModeMerge, Parameters: map[string]string{"target_branch": "main"},
 		ApprovalPolicyVersion: "engineering/v2", Approval: "approval",
 		WorkflowRunID: "((workflow_run_id))",
 	}

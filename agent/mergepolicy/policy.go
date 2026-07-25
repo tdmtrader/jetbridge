@@ -4,6 +4,24 @@
 // Every function here is pure — no I/O, no DB, no git. The fail-safe
 // direction is ESCALATE: any uncertainty resolves toward human review,
 // never toward a merge (design 2026-07-20 §3).
+//
+// PARKED, DELIBERATELY (2026-07-24). Nothing in the v3 runtime calls this
+// package, and that is not an oversight — do not delete it as dead code, and
+// do not wire it up opportunistically:
+//
+//   - The ladder chooses between merge and pull-request at RUN time, from the
+//     shape of the delivered diff. A v3 workflow plan is statically authored
+//     and frozen before the run: its publish_snapshot node commits to one
+//     literal mode, so there is no place for a per-run tier decision to land.
+//     Expressing it needs either a mode the plan can leave open, or two
+//     alternative publication branches the type checker can prove exclusive.
+//   - Even a decided TierAuto could not skip the human click today.
+//     workflow.checkPublishSnapshot forces every mode: merge publication
+//     through a server-bound merge_approval await_snapshot that only a human
+//     answer resolves, regardless of any policy outcome.
+//
+// It is kept, tested, and compiled so the fence semantics stay reviewed and
+// stable until the plan model can express a per-run mode selection.
 package mergepolicy
 
 import "errors"
