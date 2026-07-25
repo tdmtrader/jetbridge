@@ -115,7 +115,33 @@ func (reviewValidator) RevalidateSealed(ctx context.Context, root *os.Root, _ sn
 	return snapshot.ValidationResult{}, reviewBody(record)
 }
 
+// DecodeSealedReviewRecord decodes one stored review/v1 record.json at the
+// READ-TIME gate and runs the SAME composed body gate reviewValidator.
+// RevalidateSealed runs: the declared core first, then review/v1's semantic rules.
+//
+// It exists because the composition is the contract, and a read site that
+// assembled it by hand would be a third description of it. One already had:
+// agent/projection ran the envelope gate and ReviewBody.Validate and never the
+// declared schema at all, so a stored review could be projected into the reviews
+// table without the declared layer ever judging it — silently, and only on that
+// path. The other stored-record readers go through ReadSealedRepositoryChangeRecord
+// or ReadSealedSelectionRecord, which compose both halves; this is the equivalent
+// entry point for readers that hold BYTES rather than a directory.
+func DecodeSealedReviewRecord(data []byte) (Record[ReviewBody], error) {
+	var record Record[ReviewBody]
+	if err := DecodeSealedRecord(data, reviewType, &record); err != nil {
+		return Record[ReviewBody]{}, err
+	}
+	if err := reviewBody(record); err != nil {
+		return Record[ReviewBody]{}, err
+	}
+	return record, nil
+}
+
 func reviewBody(record Record[ReviewBody]) error {
+	if err := validateDeclaredBody(reviewType, record.Subjects, record.Body); err != nil {
+		return err
+	}
 	if err := record.Body.Validate(record.Subjects); err != nil {
 		return fmt.Errorf("snapshot contracts: record.json body: %w", err)
 	}

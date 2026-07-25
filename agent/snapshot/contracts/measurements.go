@@ -153,6 +153,9 @@ func (measurementsValidator) RevalidateSealed(ctx context.Context, root *os.Root
 }
 
 func measurementsBody(record Record[MeasurementsBody]) error {
+	if err := validateDeclaredBody(measurementsType, record.Subjects, record.Body); err != nil {
+		return err
+	}
 	if err := record.Body.Validate(record.Subjects); err != nil {
 		return fmt.Errorf("snapshot contracts: measurements record: %w", err)
 	}

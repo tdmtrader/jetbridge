@@ -1,0 +1,148 @@
+{
+  "dialect": "record-schema-dialect/1",
+  "contract": "diagnosis/v1",
+  "envelope": "record/v1",
+  "revision": 2,
+  "supersedes": 1,
+  "description": "A ranked set of hypotheses about one primary subject, each carrying a self-reported confidence, plus the actions the diagnosis recommends.",
+  "subject_shape": {
+    "minimum": 1,
+    "maximum": null,
+    "roles": {
+      "primary": { "minimum": 1, "maximum": 1 },
+      "evidence": { "minimum": 0, "maximum": null },
+      "context": { "minimum": 0, "maximum": null },
+      "reference": { "minimum": 0, "maximum": null }
+    },
+    "subject_type": null,
+    "uniform_subject_type": false,
+    "ports": "any-exposed-input"
+  },
+  "fields": {
+    "body": { "kind": "object", "presence": "required" },
+    "body/summary": { "kind": "markdown", "presence": "required", "label": "Summary" },
+    "body/conclusion": {
+      "kind": "enum",
+      "presence": "required",
+      "label": "Conclusion",
+      "values": [
+        { "value": "identified", "label": "Identified" },
+        { "value": "suspected", "label": "Suspected" },
+        { "value": "inconclusive", "label": "Inconclusive" }
+      ],
+      "go_rules": [
+        "identified-and-suspected-require-hypotheses",
+        "identified-requires-evidence-on-the-rank-one-hypothesis"
+      ]
+    },
+    "body/hypotheses": {
+      "kind": "entity-set",
+      "presence": "optional",
+      "id_field": "id",
+      "label": "Hypotheses",
+      "description": "Optional in the declared sense only: an inconclusive diagnosis may carry none, while identified and suspected cannot.",
+      "go_rules": [
+        "identified-and-suspected-require-hypotheses",
+        "hypothesis-ranks-are-unique-and-contiguous-from-one"
+      ]
+    },
+    "body/hypotheses/*/id": { "kind": "identifier", "presence": "required" },
+    "body/hypotheses/*/rank": {
+      "kind": "int",
+      "presence": "required",
+      "absent_image": "zero",
+      "minimum": 1,
+      "label": "Rank",
+      "go_rules": ["hypothesis-ranks-are-unique-and-contiguous-from-one"]
+    },
+    "body/hypotheses/*/statement": { "kind": "markdown", "presence": "required" },
+    "body/hypotheses/*/confidence": {
+      "kind": "score",
+      "presence": "required",
+      "scale": "unit-interval",
+      "direction": "higher-is-better",
+      "label": "Confidence",
+      "description": "Pinned to a higher-is-better unit-interval score, which makes minimum, maximum and target forbidden by derivation rather than by decree."
+    },
+    "body/hypotheses/*/evidence": {
+      "kind": "array",
+      "presence": "optional",
+      "element": "anchor",
+      "label": "Evidence",
+      "go_rules": [
+        "identified-requires-evidence-on-the-rank-one-hypothesis",
+        "anchor-subject-must-be-a-declared-subject",
+        "anchor-locator-kind-selects-which-fields-appear"
+      ]
+    },
+    "body/hypotheses/*/counterevidence": {
+      "kind": "array",
+      "presence": "optional",
+      "element": "anchor",
+      "label": "Counterevidence",
+      "go_rules": [
+        "anchor-subject-must-be-a-declared-subject",
+        "anchor-locator-kind-selects-which-fields-appear"
+      ]
+    },
+    "body/actions": {
+      "kind": "entity-set",
+      "presence": "optional",
+      "id_field": "id",
+      "label": "Recommended actions"
+    },
+    "body/actions/*/id": { "kind": "identifier", "presence": "required" },
+    "body/actions/*/priority": {
+      "kind": "enum",
+      "presence": "required",
+      "label": "Priority",
+      "values": [
+        { "value": "immediate", "label": "Immediate" },
+        { "value": "next", "label": "Next" },
+        { "value": "optional", "label": "Optional" }
+      ]
+    },
+    "body/actions/*/description": { "kind": "markdown", "presence": "required" },
+    "body/actions/*/addresses": {
+      "kind": "array",
+      "presence": "optional",
+      "element": "identifier",
+      "unique": true,
+      "sorted": true,
+      "label": "Addresses",
+      "description": "A leaf, not a container: the grammar cannot address an element of a scalar array, because scalars have no id and positions are not addresses.",
+      "go_rules": ["addresses-must-name-a-hypothesis-this-record-declares"]
+    },
+    "body/actions/*/rationale": { "kind": "markdown", "presence": "optional" }
+  },
+  "go_only_rules": [
+    {
+      "id": "identified-and-suspected-require-hypotheses",
+      "rule": "An identified or suspected conclusion requires at least one hypothesis; inconclusive requires none."
+    },
+    {
+      "id": "hypothesis-ranks-are-unique-and-contiguous-from-one",
+      "rule": "Hypothesis ranks must be unique and must cover exactly 1..N for N hypotheses; which hypothesis takes which rank is the producer's judgment."
+    },
+    {
+      "id": "identified-requires-evidence-on-the-rank-one-hypothesis",
+      "rule": "An identified conclusion requires the rank-1 hypothesis to carry at least one evidence anchor."
+    },
+    {
+      "id": "addresses-must-name-a-hypothesis-this-record-declares",
+      "rule": "Every entry of an action's addresses must name a hypothesis id declared by this same record."
+    },
+    {
+      "id": "anchor-subject-must-be-a-declared-subject",
+      "rule": "An anchor's subject must name a subject this record declares."
+    },
+    {
+      "id": "anchor-locator-kind-selects-which-fields-appear",
+      "rule": "The locator kind decides which locator fields must be present and forbids the rest: file-lines and log-lines require a canonical relative path with a positive start and an end at or after it; byte-range requires a path with a nonnegative start and an end strictly after it; json-pointer requires a valid non-root JSON pointer alone; opaque requires a value alone."
+    },
+    {
+      "id": "anchor-locators-are-unverified",
+      "rule": "Nothing verifies that an anchor points at anything. Anchor content hashes are deferred, so every locator detail is a producer claim."
+    }
+  ]
+}

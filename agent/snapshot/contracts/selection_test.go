@@ -126,8 +126,15 @@ func TestSelectionRecordRejectsSubjectsOutsideTheDeclaredCandidatePorts(t *testi
 	changeType := mustTypeRef(t, "repository-change/v1")
 	left := snapshot.SnapshotRef{ID: 41, Type: changeType, Digest: mustDigest(t, "sha256:"+strings.Repeat("4", 64))}
 	right := snapshot.SnapshotRef{ID: 42, Type: changeType, Digest: mustDigest(t, "sha256:"+strings.Repeat("5", 64))}
+	// The context input is the SAME snapshot type as the candidates. That is not
+	// incidental: selection/v1 declares uniform_subject_type, so a repository/v1
+	// among repository-change/v1 candidates would be rejected on its type before
+	// the candidate-port rule was ever reached, and the subtest below would be
+	// pinning a rule it no longer exercises.
+	// TestSelectionRecordRejectsCandidateSubjectsOfDifferentSnapshotTypes covers
+	// the uniformity rule on its own.
 	base := snapshot.SnapshotRef{
-		ID: 43, Type: mustTypeRef(t, "repository/v1"), Digest: mustDigest(t, "sha256:"+strings.Repeat("6", 64)),
+		ID: 43, Type: changeType, Digest: mustDigest(t, "sha256:"+strings.Repeat("6", 64)),
 	}
 	inputs := map[string]snapshot.SnapshotRef{"left": left, "right": right, "base": base}
 
@@ -167,6 +174,10 @@ func TestSelectionRecordRejectsSubjectsOutsideTheDeclaredCandidatePorts(t *testi
 				},
 				Rationale: "selecting an input that is not a candidate port",
 			},
+			// One rule, one message. The context input is type-identical to the
+			// candidates, so nothing about its SHAPE is wrong — the only thing
+			// wrong with it is that the step never declared its port selectable,
+			// which is exactly the rule this subtest exists to pin.
 			wantErrors: []string{"is not a declared candidate port"},
 		},
 		"omits a declared candidate port": {
@@ -241,6 +252,70 @@ func TestSelectionRecordRejectsSubjectsOutsideTheDeclaredCandidatePorts(t *testi
 			}
 			assertContainsOneOf(t, err, testCase.wantErrors)
 		})
+	}
+}
+
+// TestSelectionRecordRejectsCandidateSubjectsOfDifferentSnapshotTypes pins the
+// uniformity rule on its own, with the port rule deliberately satisfied.
+//
+// Every subject here IS a declared candidate port, so candidacy has nothing to
+// object to; the only thing wrong is that a repository/v1 is being ranked against
+// two repository-change/v1s. Isolating it matters because the two rules used to
+// be exercised by one record, and a subtest that accepts either message is a
+// subtest that has stopped saying which layer is doing the work.
+//
+// Both layers are asserted, because they are two descriptions of one truth:
+// selection/v1 declares uniform_subject_type, which the generic core validator
+// enforces and reaches first, and SelectionBody keeps the same rule for callers
+// that reach it directly.
+func TestSelectionRecordRejectsCandidateSubjectsOfDifferentSnapshotTypes(t *testing.T) {
+	changeType := mustTypeRef(t, "repository-change/v1")
+	left := snapshot.SnapshotRef{ID: 91, Type: changeType, Digest: mustDigest(t, "sha256:"+strings.Repeat("e", 64))}
+	right := snapshot.SnapshotRef{ID: 92, Type: changeType, Digest: mustDigest(t, "sha256:"+strings.Repeat("f", 64))}
+	repository := snapshot.SnapshotRef{
+		ID: 93, Type: mustTypeRef(t, "repository/v1"), Digest: mustDigest(t, "sha256:"+strings.Repeat("0", 64)),
+	}
+	validationContext := candidateValidationContextFor(t, map[string]snapshot.SnapshotRef{
+		"left": left, "right": right, "base": repository,
+	}, "left", "right", "base")
+
+	subjects := []contracts.Subject{
+		contracts.SubjectFromInput("base", contracts.SubjectRoleCandidate, "base", repository),
+		contracts.SubjectFromInput("left", contracts.SubjectRoleCandidate, "left", left),
+		contracts.SubjectFromInput("right", contracts.SubjectRoleCandidate, "right", right),
+	}
+	body := contracts.SelectionBody{
+		Selected: "left",
+		Candidates: []contracts.CandidateAssessment{
+			{ID: "base", Rank: 3, Summary: "a repository, not a change"},
+			{ID: "left", Rank: 1, Summary: "a change"},
+			{ID: "right", Rank: 2, Summary: "another change"},
+		},
+		Rationale: "ranking a repository against two changes",
+	}
+
+	record, err := contracts.NewRecord(mustTypeRef(t, "selection/v1"), subjects, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = validateFiles(t, "selection/v1", map[string][]byte{
+		"record.json": marshalRecord(t, record),
+	}, validationContext)
+	if err == nil {
+		t.Fatal("seal-time admission accepted candidate subjects of different snapshot types")
+	}
+	if !strings.Contains(err.Error(), "requires every subject to share one snapshot type") {
+		t.Fatalf("seal-time error = %v, want the declared subject-shape uniformity rejection", err)
+	}
+
+	// And the Go rule stands on its own, for a caller that reaches the body
+	// validator directly rather than through the declared-schema layer.
+	bodyErr := body.AdmitForSeal(subjects, validationContext)
+	if bodyErr == nil {
+		t.Fatal("SelectionBody.AdmitForSeal accepted candidate subjects of different snapshot types")
+	}
+	if !strings.Contains(bodyErr.Error(), "one common snapshot type") {
+		t.Fatalf("body error = %v, want the common-snapshot-type rejection", bodyErr)
 	}
 }
 

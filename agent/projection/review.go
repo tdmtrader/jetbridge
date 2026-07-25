@@ -112,11 +112,12 @@ func (projector *ReviewProjector) Project(ctx context.Context, ref snapshot.Snap
 		return errors.Join(readErr, closeErr)
 	}
 
-	var sealed contracts.Record[contracts.ReviewBody]
-	if err := contracts.DecodeSealedRecord(recordJSON, snapshot.TypeRef("review/v1"), &sealed); err != nil {
-		return fmt.Errorf("%w: decode record.json: %v", ErrCorruptSnapshot, err)
-	}
-	if err := sealed.Body.Validate(sealed.Subjects); err != nil {
+	// The composed READ-TIME gate, not its two halves re-assembled here. Decoding
+	// plus ReviewBody.Validate skipped the declared-schema layer entirely, so this
+	// production read path judged a stored review by a weaker contract than the
+	// one the platform sealed it under — and would have kept doing so silently.
+	sealed, err := contracts.DecodeSealedReviewRecord(recordJSON)
+	if err != nil {
 		return fmt.Errorf("%w: invalid review/v1 record: %v", ErrCorruptSnapshot, err)
 	}
 	primary := primaryReviewSubject(sealed.Subjects)

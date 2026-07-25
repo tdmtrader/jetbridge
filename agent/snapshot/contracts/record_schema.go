@@ -63,45 +63,92 @@ type recordSchemaHistory struct {
 // digests are carried by record values so changing a built-in validator cannot
 // silently preserve the same advertised contract identity.
 //
-// These strings are deliberately compact and canonical. A semantic validator
-// change must append a new revision here and, after external release, introduce
-// a new TypeRef version.
+// Two descriptor FORMS coexist here, and they are trivially distinguishable
+// because a revision-1 stamp begins with '{' and a framed canonical
+// serialization with 's':
+//
+//   - Revision 1 is the pre-dialect one-line stamp, written out as a literal. It
+//     is immutable and unparsed forever. Every record already sealed under it is
+//     re-validated against this table on every read, so editing a byte of it is
+//     retroactive corruption of stored data, reported as ErrCorruptSnapshot
+//     rather than as a versioning event.
+//   - Revision 2 is the canonical serialization of that type's embedded schema
+//     document (§10.2 of the dialect), DERIVED from the document rather than
+//     pasted. Pasting the bytes would put a second copy of the contract in the
+//     tree with nothing comparing the two, which is the failure the derivation
+//     exists to make impossible: the document is the contract, and this is the
+//     one expression of it.
+//
+// mustCanonicalSchemaDescriptor reads recordSchemaDocuments, which is the PARSE
+// phase of the loader (schema_document_load.go). That is load-bearing rather than
+// incidental: parsing references nothing that depends on this map, so the
+// initialisation graph stays acyclic. Reading from anything that validates
+// registration instead — the phase that cross-checks documents against these
+// histories — is an `initialization cycle for recordSchemaHistories` compile
+// error, not a subtlety.
+//
+// A semantic validator change must append a new revision here, as a new document
+// FILE, and, after external release, introduce a new TypeRef version.
 var recordSchemaHistories = map[snapshot.TypeRef]recordSchemaHistory{
 	"review/v1": {
 		current: recordSchemaRevision{
+			revision:   2,
+			descriptor: mustCanonicalSchemaDescriptorFor("review/v1", 2),
+		},
+		superseded: []recordSchemaRevision{{
 			revision:   1,
 			descriptor: `{"contract":"review/v1","envelope":"record/v1","revision":1}`,
-		},
+		}},
 	},
 	"diagnosis/v1": {
 		current: recordSchemaRevision{
+			revision:   2,
+			descriptor: mustCanonicalSchemaDescriptorFor("diagnosis/v1", 2),
+		},
+		superseded: []recordSchemaRevision{{
 			revision:   1,
 			descriptor: `{"contract":"diagnosis/v1","envelope":"record/v1","revision":1}`,
-		},
+		}},
 	},
 	"validation/v1": {
 		current: recordSchemaRevision{
+			revision:   2,
+			descriptor: mustCanonicalSchemaDescriptorFor("validation/v1", 2),
+		},
+		superseded: []recordSchemaRevision{{
 			revision:   1,
 			descriptor: `{"contract":"validation/v1","envelope":"record/v1","revision":1}`,
-		},
+		}},
 	},
 	"repository-change/v1": {
 		current: recordSchemaRevision{
+			revision:   2,
+			descriptor: mustCanonicalSchemaDescriptorFor("repository-change/v1", 2),
+		},
+		superseded: []recordSchemaRevision{{
 			revision:   1,
 			descriptor: `{"contract":"repository-change/v1","envelope":"record/v1","revision":1}`,
-		},
+		}},
 	},
 	"selection/v1": {
 		current: recordSchemaRevision{
+			revision:   2,
+			descriptor: mustCanonicalSchemaDescriptorFor("selection/v1", 2),
+		},
+		superseded: []recordSchemaRevision{{
 			revision:   1,
 			descriptor: `{"contract":"selection/v1","envelope":"record/v1","revision":1}`,
-		},
+		}},
 	},
 	"measurements/v1": {
 		current: recordSchemaRevision{
+			revision:   2,
+			descriptor: mustCanonicalSchemaDescriptorFor("measurements/v1", 2),
+		},
+		superseded: []recordSchemaRevision{{
 			revision:   1,
 			descriptor: `{"contract":"measurements/v1","envelope":"record/v1","revision":1}`,
-		},
+		}},
 	},
 }
 

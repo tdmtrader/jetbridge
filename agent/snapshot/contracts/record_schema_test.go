@@ -6,14 +6,25 @@ import (
 	"github.com/concourse/concourse/agent/snapshot/contracts"
 )
 
+// This pin freezes what NEWLY AUTHORED records carry, which is the one digest
+// seal-time admission accepts. It is REPLACED at a bump, never appended to — the
+// complete accepted history is the separate pin in record_schema_history_test.go,
+// and conflating the two is how a superseded digest ends up being handed to a
+// producer.
+//
+// These are the revision-2 digests: the canonical serialization of each embedded
+// schema document, pinned independently in
+// TestSchemaDocumentCanonicalSerializationIsStable before the bump so that this
+// change installs reviewed bytes rather than whatever the tree happens to compute
+// today.
 func TestRecordSchemaDigestsArePinnedForEveryRecordContract(t *testing.T) {
 	expected := map[string]string{
-		"review/v1":            "sha256:01d9f0644151274e8577875373f110b11f0ec34ff29ba12b143379744416fdb5",
-		"diagnosis/v1":         "sha256:7c7060b4d663d4546836898640f71bb576749d6aee7fee1df2b5616eea21064e",
-		"validation/v1":        "sha256:b5a08c5bf14754800b4bd02eeb7fae8bf3ed1aa08e2f4905d1cfda15a96c0363",
-		"repository-change/v1": "sha256:2dae971bc191c13eb9fc42f29992268d15c15765548a85d70bd808844af6e308",
-		"selection/v1":         "sha256:009409ee7157092f910c971b2b14be45cc7db84e8911687f75bc63a22446d7dc",
-		"measurements/v1":      "sha256:fea8ee17190c3dcf6c2d24065e2eea51acc9672c7cc091137fd3d6085e67a361",
+		"review/v1":            "sha256:8b460c4d9ea3a6ca6c7d1b8fb1e8dce448df8a2745f3d81a52992cec8e760220",
+		"diagnosis/v1":         "sha256:47301b1acc54725bd94804e6a20ca284b85568e4336d5592c64a89bcd2f58c47",
+		"validation/v1":        "sha256:68811d591b6f1f9cac7f2c27f36d96282717298c2420e3e16f521e5cd7351821",
+		"repository-change/v1": "sha256:afdb59e4eb682a09f86fb92165c57d3df215487be5a55e316944eba8bdc1f013",
+		"selection/v1":         "sha256:cc476af24a81b9762d4d38b79a1354279500eecfb2684b2818225cbc63a234a8",
+		"measurements/v1":      "sha256:d2e0b89126ce534c957a8e93166391f517e126aec5aa961f66a4c6c178bc57a0",
 	}
 	for raw, want := range expected {
 		ref := mustTypeRef(t, raw)

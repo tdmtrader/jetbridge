@@ -164,6 +164,9 @@ func (diagnosisValidator) RevalidateSealed(ctx context.Context, root *os.Root, _
 }
 
 func diagnosisBody(record Record[DiagnosisBody]) error {
+	if err := validateDeclaredBody(diagnosisType, record.Subjects, record.Body); err != nil {
+		return err
+	}
 	if err := record.Body.Validate(record.Subjects); err != nil {
 		return fmt.Errorf("snapshot contracts: record.json body: %w", err)
 	}

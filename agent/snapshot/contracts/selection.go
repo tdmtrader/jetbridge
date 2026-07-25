@@ -219,6 +219,9 @@ func admitSelectionRecordForSeal(record Record[SelectionBody], declarations snap
 	if err := record.AdmitForSeal(selectionType, declarations); err != nil {
 		return err
 	}
+	if err := validateDeclaredBody(selectionType, record.Subjects, record.Body); err != nil {
+		return err
+	}
 	// AdmitForSeal has already bound every subject to an exposed input with an
 	// exactly matching type and digest. What remains is candidate-port coverage,
 	// which SelectionBody.AdmitForSeal reads from the same server-side
@@ -236,6 +239,9 @@ func ReadSealedSelectionRecord(ctx context.Context, root *os.Root) (Record[Selec
 	if err != nil {
 		return Record[SelectionBody]{}, err
 	}
+	if err := validateDeclaredBody(selectionType, record.Subjects, record.Body); err != nil {
+		return Record[SelectionBody]{}, err
+	}
 	if err := record.Body.RevalidateSealed(record.Subjects); err != nil {
 		return Record[SelectionBody]{}, fmt.Errorf("snapshot contracts: selection record: %w", err)
 	}
@@ -247,6 +253,9 @@ type selectionValidator struct{}
 func (selectionValidator) AdmitForSeal(ctx context.Context, root *os.Root, declarations snapshot.ValidationContext) (snapshot.ValidationResult, error) {
 	record, err := admitRecordForSeal[SelectionBody](ctx, root, selectionType, declarations)
 	if err != nil {
+		return snapshot.ValidationResult{}, err
+	}
+	if err := validateDeclaredBody(selectionType, record.Subjects, record.Body); err != nil {
 		return snapshot.ValidationResult{}, err
 	}
 	if err := record.Body.AdmitForSeal(record.Subjects, declarations); err != nil {

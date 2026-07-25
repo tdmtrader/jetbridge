@@ -1,0 +1,138 @@
+{
+  "dialect": "record-schema-dialect/1",
+  "contract": "repository-change/v1",
+  "envelope": "record/v1",
+  "revision": 2,
+  "supersedes": 1,
+  "description": "A change that applies to exactly one base repository, carried as a patch, a git bundle, or a complete result tree, with the resulting git object ids recomputed by the platform rather than trusted.",
+  "subject_shape": {
+    "minimum": 1,
+    "maximum": 1,
+    "roles": {
+      "base": { "minimum": 1, "maximum": 1 }
+    },
+    "subject_type": "repository/v1",
+    "uniform_subject_type": false,
+    "ports": "any-exposed-input"
+  },
+  "fields": {
+    "body": { "kind": "object", "presence": "required" },
+    "body/repository_id": {
+      "kind": "identifier",
+      "presence": "required",
+      "label": "Repository",
+      "description": "A snapshot digest, which satisfies the identifier charset. Read out of the base repository and compared, so the producer transcribes it rather than choosing it.",
+      "go_rules": [
+        "repository-id-must-be-a-snapshot-digest",
+        "repository-id-must-equal-the-base-repository-id"
+      ]
+    },
+    "body/base_sha": {
+      "kind": "identifier",
+      "presence": "required",
+      "label": "Base commit",
+      "description": "A full git object id. Its width selects the object format for every other object id in this record.",
+      "go_rules": [
+        "base-sha-width-selects-the-object-format",
+        "base-sha-must-equal-the-base-repository-head",
+        "declared-object-ids-must-share-the-base-object-format"
+      ]
+    },
+    "body/representation": {
+      "kind": "enum",
+      "presence": "required",
+      "label": "Representation",
+      "values": [
+        { "value": "patch", "label": "Patch" },
+        { "value": "git-tree", "label": "Complete result tree" },
+        { "value": "git-bundle", "label": "Git bundle" }
+      ],
+      "go_rules": [
+        "representation-governs-result-commit",
+        "the-change-must-verify-against-the-base-repository"
+      ]
+    },
+    "body/payload": {
+      "kind": "blob",
+      "presence": "required",
+      "path_prefix": "content/",
+      "media_types": "open",
+      "label": "Payload",
+      "description": "Where inside this sealed tree the change bytes live. The path is the producer's choice; the digest is recomputed over the exact bytes.",
+      "go_rules": [
+        "payload-must-be-a-regular-file-within-the-size-limit",
+        "payload-digest-must-equal-the-exact-payload-bytes"
+      ]
+    },
+    "body/result_tree": {
+      "kind": "identifier",
+      "presence": "required",
+      "label": "Result tree",
+      "go_rules": [
+        "declared-object-ids-must-share-the-base-object-format",
+        "result-tree-must-equal-the-recomputed-tree"
+      ]
+    },
+    "body/result_commit": {
+      "kind": "identifier",
+      "presence": "optional",
+      "label": "Result commit",
+      "description": "Optional in the declared sense only: forbidden for a patch, which proves only a tree, and required for git-tree and git-bundle.",
+      "go_rules": [
+        "representation-governs-result-commit",
+        "declared-object-ids-must-share-the-base-object-format",
+        "result-commit-must-descend-from-base-sha"
+      ]
+    }
+  },
+  "go_only_rules": [
+    {
+      "id": "repository-id-must-be-a-snapshot-digest",
+      "rule": "The repository id must parse as a snapshot digest: sha256 followed by 64 lowercase hexadecimal characters."
+    },
+    {
+      "id": "repository-id-must-equal-the-base-repository-id",
+      "rule": "The repository id must equal the id read out of the bound base repository."
+    },
+    {
+      "id": "base-sha-width-selects-the-object-format",
+      "rule": "The base commit must be a full 40-character sha1 or 64-character sha256 object id; its width selects the object format."
+    },
+    {
+      "id": "base-sha-must-equal-the-base-repository-head",
+      "rule": "The base commit must equal the HEAD of the bound base repository."
+    },
+    {
+      "id": "declared-object-ids-must-share-the-base-object-format",
+      "rule": "The result tree and, when present, the result commit must be valid object ids in the same object format as the base repository."
+    },
+    {
+      "id": "representation-governs-result-commit",
+      "rule": "A patch must omit the result commit, because a patch proves only the result tree; git-tree and git-bundle require it."
+    },
+    {
+      "id": "payload-must-be-a-regular-file-within-the-size-limit",
+      "rule": "The payload path must resolve to a regular file inside this sealed tree, beneath content/, no larger than 10 GiB."
+    },
+    {
+      "id": "payload-digest-must-equal-the-exact-payload-bytes",
+      "rule": "The payload digest is recomputed over the exact bytes at the payload path and any mismatch is rejected."
+    },
+    {
+      "id": "result-tree-must-equal-the-recomputed-tree",
+      "rule": "The result tree is recomputed — git write-tree after applying a patch in a controlled scratch repository, or the result repository's own tree for git-tree and git-bundle — and must match."
+    },
+    {
+      "id": "result-commit-must-descend-from-base-sha",
+      "rule": "For git-tree and git-bundle the result commit must descend from the base commit, and a bundle must expose exactly one head equal to the result commit."
+    },
+    {
+      "id": "the-change-must-verify-against-the-base-repository",
+      "rule": "The change must actually apply or verify against the bound base repository: git apply --check --index for a patch, git bundle verify and unbundle for a bundle, a canonical repository tar for git-tree."
+    },
+    {
+      "id": "changed-files-is-not-a-body-field",
+      "rule": "The changed file list is derived by the platform into intrinsic metadata and deliberately has no place in the record body, because server-derived data stays out of sealed bodies."
+    }
+  ]
+}

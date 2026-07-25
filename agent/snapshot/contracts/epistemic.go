@@ -314,19 +314,47 @@ const maxRecordFieldDepth = 32
 // of ids — because the grammar has no way to address an element of it: scalars
 // have no id, and positions are not addresses.
 func recordLeafFieldPaths(recordType reflect.Type) ([]string, error) {
-	var paths []string
-	if err := appendLeafFieldPaths(recordType, "", &paths, 0); err != nil {
+	leaves, err := recordLeafFields(recordType)
+	if err != nil {
 		return nil, err
+	}
+	paths := make([]string, 0, len(leaves))
+	for _, leaf := range leaves {
+		paths = append(paths, leaf.path)
 	}
 	return paths, nil
 }
 
-func appendLeafFieldPaths(fieldType reflect.Type, prefix string, paths *[]string, depth int) error {
+// recordLeaf is one value-bearing field of a record type, with the two facts
+// about its Go representation that a declared schema has to agree with: what kind
+// of value it holds, and whether absence is distinguishable from the zero value.
+//
+// pointer is the whole reason `absent_image` exists in the dialect. An explicit 0
+// in a *float64 is a real, distinguishable value; an explicit 0 in a float64 is
+// indistinguishable from a missing key, and no rule can tell them apart.
+type recordLeaf struct {
+	path    string
+	kind    reflect.Kind
+	pointer bool
+	element reflect.Kind
+}
+
+func recordLeafFields(recordType reflect.Type) ([]recordLeaf, error) {
+	var leaves []recordLeaf
+	if err := appendLeafFields(recordType, "", &leaves, 0); err != nil {
+		return nil, err
+	}
+	return leaves, nil
+}
+
+func appendLeafFields(fieldType reflect.Type, prefix string, leaves *[]recordLeaf, depth int) error {
 	if depth > maxRecordFieldDepth {
 		return fmt.Errorf("field %q exceeds the maximum record field depth of %d", prefix, maxRecordFieldDepth)
 	}
+	pointer := false
 	for fieldType.Kind() == reflect.Pointer {
 		fieldType = fieldType.Elem()
+		pointer = true
 	}
 	switch fieldType.Kind() {
 	case reflect.Struct:
@@ -343,7 +371,7 @@ func appendLeafFieldPaths(fieldType reflect.Type, prefix string, paths *[]string
 			if prefix != "" {
 				child = prefix + fieldPathSeparator + name
 			}
-			if err := appendLeafFieldPaths(field.Type, child, paths, depth+1); err != nil {
+			if err := appendLeafFields(field.Type, child, leaves, depth+1); err != nil {
 				return err
 			}
 		}
@@ -354,14 +382,14 @@ func appendLeafFieldPaths(fieldType reflect.Type, prefix string, paths *[]string
 			element = element.Elem()
 		}
 		if element.Kind() == reflect.Struct {
-			return appendLeafFieldPaths(element, prefix+fieldPathSeparator+fieldPathWildcard, paths, depth+1)
+			return appendLeafFields(element, prefix+fieldPathSeparator+fieldPathWildcard, leaves, depth+1)
 		}
-		*paths = append(*paths, prefix)
+		*leaves = append(*leaves, recordLeaf{path: prefix, kind: fieldType.Kind(), element: element.Kind()})
 		return nil
 	case reflect.Map, reflect.Interface, reflect.Chan, reflect.Func, reflect.UnsafePointer:
 		return fmt.Errorf("field %q has kind %s, which the frozen field-path grammar cannot address", prefix, fieldType.Kind())
 	default:
-		*paths = append(*paths, prefix)
+		*leaves = append(*leaves, recordLeaf{path: prefix, kind: fieldType.Kind(), pointer: pointer})
 		return nil
 	}
 }

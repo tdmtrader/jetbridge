@@ -1,0 +1,159 @@
+{
+  "dialect": "record-schema-dialect/1",
+  "contract": "validation/v1",
+  "envelope": "record/v1",
+  "revision": 2,
+  "supersedes": 1,
+  "description": "The outcome of a set of mechanical checks over one primary subject, with each check's attempts recorded in order so a flake is distinguishable from a pass.",
+  "subject_shape": {
+    "minimum": 1,
+    "maximum": null,
+    "roles": {
+      "primary": { "minimum": 1, "maximum": 1 },
+      "evidence": { "minimum": 0, "maximum": null },
+      "context": { "minimum": 0, "maximum": null },
+      "reference": { "minimum": 0, "maximum": null }
+    },
+    "subject_type": null,
+    "uniform_subject_type": false,
+    "ports": "any-exposed-input"
+  },
+  "fields": {
+    "body": { "kind": "object", "presence": "required" },
+    "body/conclusion": {
+      "kind": "enum",
+      "presence": "required",
+      "label": "Conclusion",
+      "description": "Recomputed from the checks and rejected unless it matches exactly. The producer writes it and has no say in it.",
+      "values": [
+        { "value": "passed", "label": "Passed" },
+        { "value": "failed", "label": "Failed" },
+        { "value": "error", "label": "Error" },
+        { "value": "incomplete", "label": "Incomplete" }
+      ],
+      "go_rules": ["conclusion-is-recomputed-from-the-checks"]
+    },
+    "body/summary": { "kind": "markdown", "presence": "required", "label": "Summary" },
+    "body/checks": {
+      "kind": "entity-set",
+      "presence": "optional",
+      "id_field": "id",
+      "label": "Checks",
+      "description": "A record with no checks is valid and concludes incomplete.",
+      "go_rules": ["conclusion-is-recomputed-from-the-checks"]
+    },
+    "body/checks/*/id": { "kind": "identifier", "presence": "required" },
+    "body/checks/*/kind": {
+      "kind": "enum",
+      "presence": "required",
+      "label": "Kind",
+      "values": [
+        { "value": "build", "label": "Build" },
+        { "value": "test", "label": "Test" },
+        { "value": "lint", "label": "Lint" },
+        { "value": "security", "label": "Security" },
+        { "value": "policy", "label": "Policy" },
+        { "value": "custom", "label": "Custom" }
+      ]
+    },
+    "body/checks/*/name": { "kind": "string", "presence": "required" },
+    "body/checks/*/status": {
+      "kind": "enum",
+      "presence": "required",
+      "label": "Status",
+      "values": [
+        { "value": "passed", "label": "Passed" },
+        { "value": "failed", "label": "Failed" },
+        { "value": "error", "label": "Error" },
+        { "value": "skipped", "label": "Skipped" }
+      ],
+      "go_rules": [
+        "status-governs-attempt-count",
+        "check-status-equals-the-final-attempt-status"
+      ]
+    },
+    "body/checks/*/attempts": {
+      "kind": "array",
+      "presence": "optional",
+      "element": "object",
+      "label": "Attempts",
+      "description": "An array and not an entity-set: attempts have no id, so no stored address can name one. They are identified only by their position, and position is not an address.",
+      "go_rules": [
+        "status-governs-attempt-count",
+        "attempt-number-equals-its-position-plus-one",
+        "attempts-have-no-stable-id"
+      ]
+    },
+    "body/checks/*/attempts/*/number": {
+      "kind": "int",
+      "presence": "required",
+      "absent_image": "zero",
+      "minimum": 1,
+      "go_rules": ["attempt-number-equals-its-position-plus-one"]
+    },
+    "body/checks/*/attempts/*/status": {
+      "kind": "enum",
+      "presence": "required",
+      "values": [
+        { "value": "passed", "label": "Passed" },
+        { "value": "failed", "label": "Failed" },
+        { "value": "error", "label": "Error" }
+      ],
+      "description": "Narrower than a check's status: an attempt cannot be skipped, because a skipped check has no attempts.",
+      "go_rules": ["check-status-equals-the-final-attempt-status"]
+    },
+    "body/checks/*/attempts/*/duration": {
+      "kind": "duration",
+      "presence": "required",
+      "minimum": "0s",
+      "label": "Duration",
+      "description": "Nothing times the attempt independently; this is the producer's own measurement, constrained only in syntax and sign."
+    },
+    "body/checks/*/attempts/*/evidence": {
+      "kind": "array",
+      "presence": "optional",
+      "element": "anchor",
+      "label": "Evidence",
+      "go_rules": [
+        "anchor-subject-must-be-a-declared-subject",
+        "anchor-locator-kind-selects-which-fields-appear"
+      ]
+    },
+    "body/checks/*/attempts/*/detail": { "kind": "markdown", "presence": "optional" },
+    "body/checks/*/detail": { "kind": "markdown", "presence": "optional" }
+  },
+  "go_only_rules": [
+    {
+      "id": "conclusion-is-recomputed-from-the-checks",
+      "rule": "The conclusion is derived from the checks and must match exactly: any check in error yields error; otherwise any failed check yields failed; otherwise any skipped check, or no checks at all, yields incomplete; otherwise passed."
+    },
+    {
+      "id": "status-governs-attempt-count",
+      "rule": "A skipped check must have no attempts; a passed, failed or error check requires at least one."
+    },
+    {
+      "id": "attempt-number-equals-its-position-plus-one",
+      "rule": "Each attempt's number must equal its position in the array plus one, with no exception, so the field is pinned rather than chosen."
+    },
+    {
+      "id": "check-status-equals-the-final-attempt-status",
+      "rule": "A check with attempts must carry the status of its final attempt."
+    },
+    {
+      "id": "attempts-have-no-stable-id",
+      "rule": "Attempts are addressable only in declaration paths. Reordering them would repoint any position-based reference, which is why none exists."
+    },
+    {
+      "id": "anchor-subject-must-be-a-declared-subject",
+      "rule": "An anchor's subject must name a subject this record declares."
+    },
+    {
+      "id": "anchor-locator-kind-selects-which-fields-appear",
+      "rule": "The locator kind decides which locator fields must be present and forbids the rest: file-lines and log-lines require a canonical relative path with a positive start and an end at or after it; byte-range requires a path with a nonnegative start and an end strictly after it; json-pointer requires a valid non-root JSON pointer alone; opaque requires a value alone."
+    },
+    {
+      "id": "anchor-locators-are-unverified",
+      "rule": "Nothing verifies that an anchor points at anything. Anchor content hashes are deferred, so every locator detail is a producer claim."
+    }
+  ]
+}

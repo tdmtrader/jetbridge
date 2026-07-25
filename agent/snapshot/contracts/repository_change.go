@@ -83,8 +83,8 @@ func (validator repositoryChangeValidator) AdmitForSeal(ctx context.Context, roo
 	if err != nil {
 		return snapshot.ValidationResult{}, err
 	}
-	if err := record.Body.Validate(record.Subjects); err != nil {
-		return snapshot.ValidationResult{}, fmt.Errorf("snapshot contracts: record.json body: %w", err)
+	if err := repositoryChangeBody(record); err != nil {
+		return snapshot.ValidationResult{}, err
 	}
 	return validator.verifyAgainstBase(ctx, root, record, declarations)
 }
@@ -202,10 +202,23 @@ func ReadSealedRepositoryChangeRecord(ctx context.Context, root *os.Root) (Recor
 	if err != nil {
 		return Record[RepositoryChangeBody]{}, err
 	}
-	if err := record.Body.Validate(record.Subjects); err != nil {
-		return Record[RepositoryChangeBody]{}, fmt.Errorf("snapshot contracts: record.json body: %w", err)
+	if err := repositoryChangeBody(record); err != nil {
+		return Record[RepositoryChangeBody]{}, err
 	}
 	return record, nil
+}
+
+// repositoryChangeBody is the shape half of both gates: the declared core first,
+// then the type's own semantic rules. The git lineage half — apply, verify, descend
+// — lives in verifyAgainstBase and needs the bound base repository.
+func repositoryChangeBody(record Record[RepositoryChangeBody]) error {
+	if err := validateDeclaredBody(repositoryChangeType, record.Subjects, record.Body); err != nil {
+		return err
+	}
+	if err := record.Body.Validate(record.Subjects); err != nil {
+		return fmt.Errorf("snapshot contracts: record.json body: %w", err)
+	}
+	return nil
 }
 
 func validateGitTreeChange(

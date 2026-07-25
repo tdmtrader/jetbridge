@@ -1,0 +1,133 @@
+{
+  "dialect": "record-schema-dialect/1",
+  "contract": "review/v1",
+  "envelope": "record/v1",
+  "revision": 2,
+  "supersedes": 1,
+  "description": "One reviewer's judgment about one primary subject, with zero or more findings anchored into the subjects the review was exposed to.",
+  "subject_shape": {
+    "minimum": 1,
+    "maximum": null,
+    "roles": {
+      "primary": { "minimum": 1, "maximum": 1 },
+      "evidence": { "minimum": 0, "maximum": null },
+      "context": { "minimum": 0, "maximum": null },
+      "reference": { "minimum": 0, "maximum": null }
+    },
+    "subject_type": null,
+    "uniform_subject_type": false,
+    "ports": "any-exposed-input"
+  },
+  "fields": {
+    "body": { "kind": "object", "presence": "required" },
+    "body/conclusion": {
+      "kind": "enum",
+      "presence": "required",
+      "label": "Conclusion",
+      "values": [
+        { "value": "accept", "label": "Accept" },
+        { "value": "changes-required", "label": "Changes required" },
+        { "value": "inconclusive", "label": "Inconclusive" }
+      ],
+      "go_rules": [
+        "changes-required-requires-a-blocking-finding",
+        "accept-forbids-any-blocking-finding"
+      ]
+    },
+    "body/summary": {
+      "kind": "markdown",
+      "presence": "required",
+      "label": "Summary"
+    },
+    "body/findings": {
+      "kind": "entity-set",
+      "presence": "optional",
+      "id_field": "id",
+      "label": "Findings",
+      "description": "Optional in the declared sense only: an `accept` or `inconclusive` review may carry none, while `changes-required` cannot.",
+      "go_rules": [
+        "changes-required-requires-a-blocking-finding",
+        "accept-forbids-any-blocking-finding"
+      ]
+    },
+    "body/findings/*/id": { "kind": "identifier", "presence": "required" },
+    "body/findings/*/severity": {
+      "kind": "enum",
+      "presence": "required",
+      "label": "Severity",
+      "values": [
+        { "value": "observation", "label": "Observation" },
+        { "value": "low", "label": "Low" },
+        { "value": "medium", "label": "Medium" },
+        { "value": "high", "label": "High" },
+        { "value": "critical", "label": "Critical" }
+      ],
+      "go_rules": [
+        "severity-constrains-blocking",
+        "non-observation-finding-requires-evidence"
+      ]
+    },
+    "body/findings/*/blocking": {
+      "kind": "bool",
+      "presence": "optional",
+      "absent_image": "zero",
+      "label": "Blocking",
+      "description": "Absence decodes to false, which an observation, low or medium finding may legitimately be, so this cannot be declared required. A high or critical finding must set it.",
+      "go_rules": [
+        "severity-constrains-blocking",
+        "changes-required-requires-a-blocking-finding",
+        "accept-forbids-any-blocking-finding"
+      ]
+    },
+    "body/findings/*/category": {
+      "kind": "identifier",
+      "presence": "required",
+      "label": "Category",
+      "description": "An open set. Nothing constrains which categories exist."
+    },
+    "body/findings/*/title": { "kind": "string", "presence": "required" },
+    "body/findings/*/description": { "kind": "markdown", "presence": "required" },
+    "body/findings/*/evidence": {
+      "kind": "array",
+      "presence": "optional",
+      "element": "anchor",
+      "label": "Evidence",
+      "go_rules": [
+        "non-observation-finding-requires-evidence",
+        "anchor-subject-must-be-a-declared-subject",
+        "anchor-locator-kind-selects-which-fields-appear"
+      ]
+    },
+    "body/findings/*/recommendation": { "kind": "markdown", "presence": "optional" }
+  },
+  "go_only_rules": [
+    {
+      "id": "changes-required-requires-a-blocking-finding",
+      "rule": "A changes-required conclusion requires at least one finding whose blocking flag is set."
+    },
+    {
+      "id": "accept-forbids-any-blocking-finding",
+      "rule": "An accept conclusion may not contain any finding whose blocking flag is set."
+    },
+    {
+      "id": "severity-constrains-blocking",
+      "rule": "An observation finding may not be blocking; a high or critical finding must be; low and medium may be either."
+    },
+    {
+      "id": "non-observation-finding-requires-evidence",
+      "rule": "Every finding whose severity is not observation requires at least one evidence anchor."
+    },
+    {
+      "id": "anchor-subject-must-be-a-declared-subject",
+      "rule": "An anchor's subject must name a subject this record declares."
+    },
+    {
+      "id": "anchor-locator-kind-selects-which-fields-appear",
+      "rule": "The locator kind decides which locator fields must be present and forbids the rest: file-lines and log-lines require a canonical relative path with a positive start and an end at or after it; byte-range requires a path with a nonnegative start and an end strictly after it; json-pointer requires a valid non-root JSON pointer alone; opaque requires a value alone."
+    },
+    {
+      "id": "anchor-locators-are-unverified",
+      "rule": "Nothing verifies that an anchor points at anything. Anchor content hashes are deferred, so every locator detail is a producer claim."
+    }
+  ]
+}

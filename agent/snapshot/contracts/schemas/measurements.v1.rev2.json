@@ -1,0 +1,156 @@
+{
+  "dialect": "record-schema-dialect/1",
+  "contract": "measurements/v1",
+  "envelope": "record/v1",
+  "revision": 2,
+  "supersedes": 1,
+  "description": "A set of measured numbers with their units, directions and optional bounds. Alone among the six record types it constrains its subjects not at all: a measurements record with no subjects at all is valid, though any evidence anchor then has nothing to resolve against.",
+  "subject_shape": {
+    "minimum": 0,
+    "maximum": null,
+    "roles": {
+      "primary": { "minimum": 0, "maximum": null },
+      "base": { "minimum": 0, "maximum": null },
+      "evidence": { "minimum": 0, "maximum": null },
+      "context": { "minimum": 0, "maximum": null },
+      "candidate": { "minimum": 0, "maximum": null },
+      "reference": { "minimum": 0, "maximum": null }
+    },
+    "subject_type": null,
+    "uniform_subject_type": false,
+    "ports": "any-exposed-input"
+  },
+  "fields": {
+    "body": { "kind": "object", "presence": "required" },
+    "body/conclusion": {
+      "kind": "enum",
+      "presence": "required",
+      "label": "Conclusion",
+      "values": [
+        { "value": "measured", "label": "Measured" },
+        { "value": "partial", "label": "Partial" },
+        { "value": "not-applicable", "label": "Not applicable" }
+      ],
+      "go_rules": [
+        "conclusion-governs-the-metric-count",
+        "partial-and-not-applicable-require-an-explanation"
+      ]
+    },
+    "body/explanation": {
+      "kind": "markdown",
+      "presence": "optional",
+      "label": "Explanation",
+      "description": "Optional in the declared sense only: required for partial and not-applicable, and freely omitted for measured.",
+      "go_rules": ["partial-and-not-applicable-require-an-explanation"]
+    },
+    "body/metrics": {
+      "kind": "entity-set",
+      "presence": "optional",
+      "id_field": "id",
+      "label": "Metrics",
+      "description": "Optional in the declared sense only: required non-empty for measured and partial, required empty for not-applicable.",
+      "go_rules": ["conclusion-governs-the-metric-count"]
+    },
+    "body/metrics/*/id": { "kind": "identifier", "presence": "required" },
+    "body/metrics/*/value": {
+      "kind": "float",
+      "presence": "optional",
+      "absent_image": "zero",
+      "label": "Value",
+      "description": "Absence decodes to 0, which is a finite number and therefore acceptable, so this cannot be declared required despite being the point of the record. Nothing re-measures it.",
+      "go_rules": ["value-must-lie-within-any-declared-bounds"]
+    },
+    "body/metrics/*/unit": {
+      "kind": "identifier",
+      "presence": "required",
+      "label": "Unit",
+      "description": "An open set. Nothing constrains which units exist."
+    },
+    "body/metrics/*/direction": {
+      "kind": "enum",
+      "presence": "required",
+      "label": "Direction",
+      "values": [
+        { "value": "higher-is-better", "label": "Higher is better" },
+        { "value": "lower-is-better", "label": "Lower is better" },
+        { "value": "target", "label": "Target" }
+      ],
+      "go_rules": ["direction-governs-target"]
+    },
+    "body/metrics/*/minimum": {
+      "kind": "float",
+      "presence": "optional",
+      "absent_image": "null",
+      "go_rules": [
+        "bounds-are-declared-together-finite-and-ordered",
+        "value-must-lie-within-any-declared-bounds"
+      ]
+    },
+    "body/metrics/*/maximum": {
+      "kind": "float",
+      "presence": "optional",
+      "absent_image": "null",
+      "go_rules": [
+        "bounds-are-declared-together-finite-and-ordered",
+        "value-must-lie-within-any-declared-bounds"
+      ]
+    },
+    "body/metrics/*/target": {
+      "kind": "float",
+      "presence": "optional",
+      "absent_image": "null",
+      "go_rules": [
+        "direction-governs-target",
+        "value-must-lie-within-any-declared-bounds"
+      ]
+    },
+    "body/metrics/*/evidence": {
+      "kind": "array",
+      "presence": "optional",
+      "element": "anchor",
+      "label": "Evidence",
+      "go_rules": [
+        "anchor-subject-must-be-a-declared-subject",
+        "anchor-locator-kind-selects-which-fields-appear"
+      ]
+    }
+  },
+  "go_only_rules": [
+    {
+      "id": "conclusion-governs-the-metric-count",
+      "rule": "A measured or partial conclusion requires at least one metric; not-applicable requires none."
+    },
+    {
+      "id": "partial-and-not-applicable-require-an-explanation",
+      "rule": "A partial or not-applicable conclusion requires a non-blank explanation."
+    },
+    {
+      "id": "direction-governs-target",
+      "rule": "A target direction requires a finite target; higher-is-better and lower-is-better forbid one."
+    },
+    {
+      "id": "bounds-are-declared-together-finite-and-ordered",
+      "rule": "A metric's minimum and maximum must be declared together, both finite, with minimum not exceeding maximum."
+    },
+    {
+      "id": "value-must-lie-within-any-declared-bounds",
+      "rule": "When bounds are declared, both the value and any target must lie within them."
+    },
+    {
+      "id": "a-metric-is-not-a-score",
+      "rule": "A metric carries a direction and bounds but no scale, so it is deliberately not the score kind. Declaring it as one would claim a scale that no field carries and no validator checks."
+    },
+    {
+      "id": "anchor-subject-must-be-a-declared-subject",
+      "rule": "An anchor's subject must name a subject this record declares. With no subjects declared, any evidence anchor is rejected — which is the only thing tying this type's subject set to its body."
+    },
+    {
+      "id": "anchor-locator-kind-selects-which-fields-appear",
+      "rule": "The locator kind decides which locator fields must be present and forbids the rest: file-lines and log-lines require a canonical relative path with a positive start and an end at or after it; byte-range requires a path with a nonnegative start and an end strictly after it; json-pointer requires a valid non-root JSON pointer alone; opaque requires a value alone."
+    },
+    {
+      "id": "anchor-locators-are-unverified",
+      "rule": "Nothing verifies that an anchor points at anything. Anchor content hashes are deferred, so every locator detail is a producer claim."
+    }
+  ]
+}

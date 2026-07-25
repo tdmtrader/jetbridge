@@ -1,10 +1,6 @@
 package contracts
 
-import (
-	"fmt"
-
-	"github.com/concourse/concourse/agent/snapshot"
-)
+import "fmt"
 
 // epistemicFieldStatuses is the epistemic status of every field of every record
 // type, keyed by (type, revision).
@@ -58,8 +54,47 @@ import (
 // stating: production occurrence and server-derived data are kept out of the
 // body by invariant (agent/snapshot/validator.go:12-24,
 // repository_change.go:152-161), so a body field can never be platform-stamped.
+//
+// Both revisions of every type appear below, and both name the same builder.
+//
+// That is not an "inherit from the previous revision" rule — there deliberately
+// is none, and TestEveryRecordTypeDeclaresEpistemicStatusForEveryRevision
+// requires every (type, revision) to be its own key precisely so a bump cannot
+// ship a stale claim by omission. It is the narrower fact that the coordinated
+// descriptor bump changed contract IDENTITY and not one validator rule: revision
+// 2 describes exactly the validators revision 1 described, so writing the two
+// declarations out twice would assert a difference that does not exist and would
+// invite one to appear by typo.
+//
+// The direction that DOES need care is the next one. A revision 3 that changes a
+// validator must add a new builder and leave the existing one untouched: editing
+// it in place would silently rewrite revisions 1 and 2, whose entries describe
+// validators that no longer exist in the tree and which nothing else pins —
+// TestEveryEpistemicAssignmentIsPinnedByValidatorBehaviour drives the CURRENT
+// declaration only, by construction, because it has only today's validators to
+// drive.
 var epistemicFieldStatuses = map[epistemicKey]map[string]EpistemicStatus{
-	{ref: snapshot.TypeRef("review/v1"), revision: 1}: mergeEpistemicFields(
+	{ref: reviewType, revision: 1}: reviewEpistemicFields(),
+	{ref: reviewType, revision: 2}: reviewEpistemicFields(),
+
+	{ref: diagnosisType, revision: 1}: diagnosisEpistemicFields(),
+	{ref: diagnosisType, revision: 2}: diagnosisEpistemicFields(),
+
+	{ref: validationType, revision: 1}: validationEpistemicFields(),
+	{ref: validationType, revision: 2}: validationEpistemicFields(),
+
+	{ref: repositoryChangeType, revision: 1}: repositoryChangeEpistemicFields(),
+	{ref: repositoryChangeType, revision: 2}: repositoryChangeEpistemicFields(),
+
+	{ref: selectionType, revision: 1}: selectionEpistemicFields(),
+	{ref: selectionType, revision: 2}: selectionEpistemicFields(),
+
+	{ref: measurementsType, revision: 1}: measurementsEpistemicFields(),
+	{ref: measurementsType, revision: 2}: measurementsEpistemicFields(),
+}
+
+func reviewEpistemicFields() map[string]EpistemicStatus {
+	return mergeEpistemicFields(
 		recordEnvelopeEpistemicFields(),
 		map[string]EpistemicStatus{
 			// Closed vocabulary, cross-checked against the findings' blocking
@@ -88,9 +123,11 @@ var epistemicFieldStatuses = map[epistemicKey]map[string]EpistemicStatus{
 		// a closed vocabulary; everything about WHERE the anchor points is a
 		// producer claim until anchor content hashes land.
 		anchorEpistemicFields("body/findings/*/evidence/*"),
-	),
+	)
+}
 
-	{ref: snapshot.TypeRef("diagnosis/v1"), revision: 1}: mergeEpistemicFields(
+func diagnosisEpistemicFields() map[string]EpistemicStatus {
+	return mergeEpistemicFields(
 		recordEnvelopeEpistemicFields(),
 		map[string]EpistemicStatus{
 			"body/summary": EpistemicAsserted,
@@ -132,9 +169,11 @@ var epistemicFieldStatuses = map[epistemicKey]map[string]EpistemicStatus{
 		},
 		anchorEpistemicFields("body/hypotheses/*/evidence/*"),
 		anchorEpistemicFields("body/hypotheses/*/counterevidence/*"),
-	),
+	)
+}
 
-	{ref: snapshot.TypeRef("validation/v1"), revision: 1}: mergeEpistemicFields(
+func validationEpistemicFields() map[string]EpistemicStatus {
+	return mergeEpistemicFields(
 		recordEnvelopeEpistemicFields(),
 		map[string]EpistemicStatus{
 			// Recomputed by DeriveValidationConclusion and rejected unless it
@@ -166,9 +205,11 @@ var epistemicFieldStatuses = map[epistemicKey]map[string]EpistemicStatus{
 			"body/checks/*/attempts/*/detail":   EpistemicAsserted,
 		},
 		anchorEpistemicFields("body/checks/*/attempts/*/evidence/*"),
-	),
+	)
+}
 
-	{ref: snapshot.TypeRef("repository-change/v1"), revision: 1}: mergeEpistemicFields(
+func repositoryChangeEpistemicFields() map[string]EpistemicStatus {
+	return mergeEpistemicFields(
 		recordEnvelopeEpistemicFields(),
 		map[string]EpistemicStatus{
 			// Read out of the base repository the subject binds to and compared
@@ -194,9 +235,11 @@ var epistemicFieldStatuses = map[epistemicKey]map[string]EpistemicStatus{
 			// patch proves only the tree (repository_change.go:299-301, :56-60).
 			"body/result_commit": EpistemicDerived,
 		},
-	),
+	)
+}
 
-	{ref: snapshot.TypeRef("selection/v1"), revision: 1}: mergeEpistemicFields(
+func selectionEpistemicFields() map[string]EpistemicStatus {
+	return mergeEpistemicFields(
 		recordEnvelopeEpistemicFields(),
 		map[string]EpistemicStatus{
 			// Must be one of the record's own candidate subject ids, each of
@@ -229,9 +272,11 @@ var epistemicFieldStatuses = map[epistemicKey]map[string]EpistemicStatus{
 			"body/candidates/*/scores/*/score/maximum": EpistemicAsserted,
 			"body/candidates/*/scores/*/score/target":  EpistemicAsserted,
 		},
-	),
+	)
+}
 
-	{ref: snapshot.TypeRef("measurements/v1"), revision: 1}: mergeEpistemicFields(
+func measurementsEpistemicFields() map[string]EpistemicStatus {
+	return mergeEpistemicFields(
 		recordEnvelopeEpistemicFields(),
 		map[string]EpistemicStatus{
 			// Closed vocabulary with cross-field rules on metric count and
@@ -253,7 +298,7 @@ var epistemicFieldStatuses = map[epistemicKey]map[string]EpistemicStatus{
 			"body/metrics/*/target":  EpistemicAsserted,
 		},
 		anchorEpistemicFields("body/metrics/*/evidence/*"),
-	),
+	)
 }
 
 // recordEnvelopeEpistemicFields is the envelope's contribution to every record

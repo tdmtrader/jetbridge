@@ -197,6 +197,9 @@ func (validationValidator) RevalidateSealed(ctx context.Context, root *os.Root, 
 }
 
 func validationBody(record Record[ValidationBody]) error {
+	if err := validateDeclaredBody(validationType, record.Subjects, record.Body); err != nil {
+		return err
+	}
 	if err := record.Body.Validate(record.Subjects); err != nil {
 		return fmt.Errorf("snapshot contracts: record.json body: %w", err)
 	}
