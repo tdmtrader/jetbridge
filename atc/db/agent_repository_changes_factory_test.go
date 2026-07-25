@@ -24,7 +24,7 @@ func insertRepositoryChangeProjectionInput(suffix string) (snapshot.SnapshotID, 
 	Expect(err).NotTo(HaveOccurred())
 	changeMetadata, err := json.Marshal(contracts.RepositoryChangeMetadata{
 		RepositoryID: "sha256:" + strings.Repeat("a", 64), BaseSHA: strings.Repeat("b", 40),
-		ResultTreeSHA: strings.Repeat("c", 40), Representation: "patch",
+		ResultTree: strings.Repeat("c", 40), Representation: "patch",
 	})
 	Expect(err).NotTo(HaveOccurred())
 	var baseID snapshot.SnapshotID

@@ -32,7 +32,7 @@ func TestRunnerRevalidatesExactRepositoryChangeAndProducesReport(t *testing.T) {
 	change := validChangeRef()
 	base := snapshot.SnapshotRef{ID: 8, Type: "repository/v1", Digest: digest("b")}
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "change.json"), []byte(`{}`), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "record.json"), []byte(`{}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	registry := &registryStub{validator: validatorFunc(func(_ context.Context, _ *os.Root, validationContext snapshot.ValidationContext) (snapshot.ValidationResult, error) {
@@ -45,7 +45,7 @@ func TestRunnerRevalidatesExactRepositoryChangeAndProducesReport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRunner: %v", err)
 	}
-	document, err := runner.Run(context.Background(), Request{
+	record, err := runner.Run(context.Background(), Request{
 		Change: change, Root: root, Inputs: map[string]snapshot.SnapshotRef{"base": base},
 	})
 	if err != nil {
@@ -54,11 +54,11 @@ func TestRunnerRevalidatesExactRepositoryChangeAndProducesReport(t *testing.T) {
 	if registry.lookup != snapshot.TypeRef("repository-change/v1") {
 		t.Fatalf("lookup = %q", registry.lookup)
 	}
-	if err := document.Validate(); err != nil {
-		t.Fatalf("validation-report/v1: %v", err)
+	if err := record.Body.Validate(record.Subjects); err != nil {
+		t.Fatalf("validation/v1: %v", err)
 	}
-	if document.Status != "ok" || document.Subject != "snapshot:"+change.ID.String()+"@"+change.Digest.String() || len(document.Checks) != 1 {
-		t.Fatalf("document = %+v", document)
+	if record.Body.Conclusion != "passed" || record.Subjects[0].Digest != change.Digest || len(record.Body.Checks) != 1 {
+		t.Fatalf("record = %+v", record)
 	}
 }
 
@@ -81,14 +81,15 @@ func TestRunnerRecordsSemanticAndInfrastructureFailuresWithoutForgingSuccess(t *
 			if err != nil {
 				t.Fatal(err)
 			}
-			document, err := runner.Run(context.Background(), Request{Change: validChangeRef(), Root: t.TempDir()})
+			record, err := runner.Run(context.Background(), Request{Change: validChangeRef(), Root: t.TempDir()})
 			if err != nil {
 				t.Fatalf("Run: %v", err)
 			}
-			if document.Status != test.status || document.Checks[0].Status != test.status || !strings.Contains(document.Checks[0].Detail, test.err.Error()) {
-				t.Fatalf("document = %+v", document)
+			if record.Body.Conclusion != test.status || record.Body.Checks[0].Status != test.status ||
+				!strings.Contains(record.Body.Checks[0].Attempts[0].Detail, test.err.Error()) {
+				t.Fatalf("record = %+v", record)
 			}
-			if err := document.Validate(); err != nil {
+			if err := record.Body.Validate(record.Subjects); err != nil {
 				t.Fatalf("invalid report: %v", err)
 			}
 		})
@@ -116,12 +117,15 @@ func TestRunnerRejectsWrongTypeAndHonorsCancellation(t *testing.T) {
 }
 
 func TestWriteReportEmitsStrictSnapshotDocument(t *testing.T) {
-	document := successfulReport(validChangeRef())
+	record, err := successfulReport(validChangeRef())
+	if err != nil {
+		t.Fatal(err)
+	}
 	output := t.TempDir()
-	if err := WriteReport(context.Background(), output, document); err != nil {
+	if err := WriteReport(context.Background(), output, record); err != nil {
 		t.Fatalf("WriteReport: %v", err)
 	}
-	data, err := os.ReadFile(filepath.Join(output, "validation-report.json"))
+	data, err := os.ReadFile(filepath.Join(output, "record.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +133,8 @@ func TestWriteReportEmitsStrictSnapshotDocument(t *testing.T) {
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if decoded["schema_version"] != "1.0.0" || decoded["status"] != "ok" {
+	body, ok := decoded["body"].(map[string]any)
+	if !ok || decoded["type"] != "validation/v1" || body["conclusion"] != "passed" {
 		t.Fatalf("payload = %s", data)
 	}
 }

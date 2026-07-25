@@ -282,8 +282,8 @@ func TestEvaluatorRejectsAnOverBudgetMeasurementAfterTheRun(t *testing.T) {
 		}},
 	}}
 	reader := &measurementReader{documents: map[snapshot.SnapshotID]contracts.MeasurementsDocument{401: {
-		SchemaVersion: "1.0.0", EvaluatorVersion: "judge/v3", Valid: true,
-		Metrics: []contracts.Measurement{{Name: "score", Value: 8, Unit: "score", Direction: "higher"}},
+		Conclusion: "measured",
+		Metrics:    []contracts.Measurement{{ID: "score", Value: 8, Unit: "score", Direction: "higher-is-better"}},
 	}}}
 	evaluator, err := experiment.NewEvaluator(store, runs, reader, &experimentBinder{}, 10)
 	if err != nil {
@@ -310,11 +310,11 @@ func TestEvaluatorRejectsMeasurementsBeyondTheScorecardMetricBound(t *testing.T)
 	metrics := make([]contracts.Measurement, experiment.MaxMeasurementsPerCell+1)
 	for index := range metrics {
 		metrics[index] = contracts.Measurement{
-			Name: fmt.Sprintf("metric-%d", index), Value: float64(index), Unit: "score", Direction: "higher",
+			ID: fmt.Sprintf("metric-%d", index), Value: float64(index), Unit: "score", Direction: "higher-is-better",
 		}
 	}
 	reader := &measurementReader{documents: map[snapshot.SnapshotID]contracts.MeasurementsDocument{401: {
-		SchemaVersion: "1.0.0", EvaluatorVersion: "judge/v3", Valid: true, Metrics: metrics,
+		Conclusion: "measured", Metrics: metrics,
 	}}}
 	evaluator, err := experiment.NewEvaluator(store, runs, reader, &experimentBinder{}, 1)
 	if err != nil {
@@ -394,10 +394,10 @@ func TestEvaluatorCollectsStrictMeasurementsAndNegativeControlAssertions(t *test
 		}},
 	}}
 	reader := &measurementReader{documents: map[snapshot.SnapshotID]contracts.MeasurementsDocument{401: {
-		SchemaVersion: "1.0.0", EvaluatorVersion: "judge/v3", Valid: true,
+		Conclusion: "measured",
 		Metrics: []contracts.Measurement{
-			{Name: "defects", Value: 2, Unit: "count", Direction: "lower"},
-			{Name: "score", Value: 8, Unit: "score", Direction: "higher"},
+			{ID: "defects", Value: 2, Unit: "count", Direction: "lower-is-better"},
+			{ID: "score", Value: 8, Unit: "score", Direction: "higher-is-better"},
 		},
 	}}}
 	evaluator, err := experiment.NewEvaluator(store, runs, reader, &experimentBinder{}, 10)
@@ -410,7 +410,7 @@ func TestEvaluatorCollectsStrictMeasurementsAndNegativeControlAssertions(t *test
 	if store.completed[1] != experiment.CellValidMeasurement || store.measurement[1] != 401 {
 		t.Fatalf("completion = %#v / %#v", store.completed, store.measurement)
 	}
-	if got := store.documents[1]; got.EvaluatorVersion != "judge/v3" || len(got.Metrics) != 2 {
+	if got := store.documents[1]; got.Conclusion != "measured" || len(got.Metrics) != 2 {
 		t.Fatalf("persisted measurements = %#v", got)
 	}
 

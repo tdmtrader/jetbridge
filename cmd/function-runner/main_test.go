@@ -97,21 +97,32 @@ func TestMergeModesProduceASealableChangeAndAReport(t *testing.T) {
 	if code != exitOK {
 		t.Fatalf("merge-prepare exit = %d (stderr: %s)", code, stderr.String())
 	}
-	var document contracts.RepositoryChangeDocument
-	changeBytes, err := os.ReadFile(filepath.Join(root, "merged-change", "change.json"))
+	recordBytes, err := os.ReadFile(filepath.Join(root, "merged-change", "record.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := json.Unmarshal(changeBytes, &document); err != nil {
-		t.Fatal(err)
+	var record contracts.Record[contracts.RepositoryChangeBody]
+	if err := contracts.DecodeRecord(recordBytes, snapshot.TypeRef("repository-change/v1"), &record); err != nil {
+		t.Fatalf("merged record.json is not a sealed repository-change/v1 record: %v", err)
 	}
-	if err := document.Validate(); err != nil {
-		t.Fatalf("merged change.json is invalid: %v", err)
+	if err := record.Body.Validate(record.Subjects); err != nil {
+		t.Fatalf("merged record.json is invalid: %v", err)
 	}
-	if document.BaseInput != "target" || document.Representation != "git-tree" {
-		t.Fatalf("merged document = %+v", document)
+	// The merged change's base lineage is the target repository, carried as the
+	// record's single base subject rather than a bare base_input field.
+	if len(record.Subjects) != 1 {
+		t.Fatalf("merged subjects = %+v, want exactly one base subject", record.Subjects)
 	}
-	if _, err := os.Stat(filepath.Join(root, "merged-change", document.PayloadPath)); err != nil {
+	if record.Subjects[0].Role != contracts.SubjectRoleBase || record.Subjects[0].Input != "target" {
+		t.Fatalf("merged base subject = %+v, want the target port bound as base", record.Subjects[0])
+	}
+	if record.Body.Representation != "git-tree" {
+		t.Fatalf("merged body = %+v", record.Body)
+	}
+	if !strings.HasPrefix(record.Body.Payload.Path, "content/") {
+		t.Fatalf("merged payload path = %q, want it beneath content/", record.Body.Payload.Path)
+	}
+	if _, err := os.Stat(filepath.Join(root, "merged-change", record.Body.Payload.Path)); err != nil {
 		t.Fatalf("merged payload is missing: %v", err)
 	}
 }
@@ -148,7 +159,7 @@ func TestMergePrepareFailsTheStepOnConflict(t *testing.T) {
 	}, &stdout, &stderr); code != exitRejects {
 		t.Fatalf("merge-prepare exit = %d, want %d (stderr: %s)", code, exitRejects, stderr.String())
 	}
-	if _, err := os.Stat(filepath.Join(root, "merged-change", "change.json")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(root, "merged-change", "record.json")); !os.IsNotExist(err) {
 		t.Fatal("a conflicted merge must not materialize a merged change")
 	}
 }
@@ -183,31 +194,53 @@ func layoutMounts(t *testing.T, candidateFile, candidateBody string) string {
 	cliGit(t, target, "commit", "-m", "target moved")
 	cliGit(t, target, "remote", "remove", "origin")
 
-	payload := cliCanonicalize(t, work)
-	digest := sha256.Sum256(payload)
-	document := contracts.RepositoryChangeDocument{
-		SchemaVersion:  "1.0.0",
-		RepositoryID:   repositoryIdentity(t, base),
-		BaseInput:      "base",
-		BaseSHA:        baseSHA,
-		ResultSHA:      cliGit(t, work, "rev-parse", "HEAD"),
-		ResultTreeSHA:  cliGit(t, work, "rev-parse", "HEAD^{tree}"),
-		Representation: "git-tree",
-		PayloadPath:    "payload.tar",
-		PayloadDigest:  "sha256:" + hex.EncodeToString(digest[:]),
-	}
-	candidate := filepath.Join(root, "candidate")
-	if err := os.MkdirAll(candidate, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	encoded, err := json.Marshal(document)
+	payload, _ := cliCanonicalize(t, work)
+	sum := sha256.Sum256(payload)
+	payloadDigest, err := snapshot.ParseDigest("sha256:" + hex.EncodeToString(sum[:]))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(candidate, "change.json"), encoded, 0o600); err != nil {
+	// The CLI re-derives every input reference from the materialized bytes, so
+	// the candidate's base subject must name the base mount's canonical digest.
+	_, baseDigest := cliCanonicalize(t, base)
+	body := contracts.RepositoryChangeBody{
+		RepositoryID:   repositoryIdentity(t, base),
+		BaseSHA:        baseSHA,
+		Representation: "git-tree",
+		Payload: contracts.ContentRef{
+			Path:      "content/payload.tar",
+			Digest:    payloadDigest,
+			MediaType: "application/octet-stream",
+		},
+		ResultTree:   cliGit(t, work, "rev-parse", "HEAD^{tree}"),
+		ResultCommit: cliGit(t, work, "rev-parse", "HEAD"),
+	}
+	record, err := contracts.NewRecord(
+		snapshot.TypeRef("repository-change/v1"),
+		[]contracts.Subject{contracts.SubjectFromInput(
+			"base", contracts.SubjectRoleBase, "base",
+			snapshot.SnapshotRef{ID: 1, Type: "repository/v1", Digest: baseDigest},
+		)},
+		body,
+	)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(candidate, "payload.tar"), payload, 0o600); err != nil {
+	if err := body.Validate(record.Subjects); err != nil {
+		t.Fatalf("fixture candidate is not a valid repository-change body: %v", err)
+	}
+	candidate := filepath.Join(root, "candidate")
+	if err := os.MkdirAll(filepath.Join(candidate, "content"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(candidate, "record.json"), encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(candidate, body.Payload.Path), payload, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	for _, output := range []string{"merge-report", "merged-change"} {
@@ -218,7 +251,7 @@ func layoutMounts(t *testing.T, candidateFile, candidateBody string) string {
 	return root
 }
 
-func cliCanonicalize(t *testing.T, directory string) []byte {
+func cliCanonicalize(t *testing.T, directory string) ([]byte, snapshot.Digest) {
 	t.Helper()
 	tree, err := repositorymerge.CaptureDirectory(context.Background(), snapshot.Canonicalizer{}, directory)
 	if err != nil {
@@ -229,7 +262,7 @@ func cliCanonicalize(t *testing.T, directory string) []byte {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return archive
+	return archive, tree.Digest
 }
 
 func repositoryIdentity(t *testing.T, directory string) string {

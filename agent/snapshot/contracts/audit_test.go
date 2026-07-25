@@ -58,7 +58,7 @@ func TestDatabaseAndDeploymentSnapshotContractsRejectUnsafeOrMissingPayloads(t *
 	}
 }
 
-func TestAuditFindingsAndDiagnosisContractsValidateNestedData(t *testing.T) {
+func TestAuditFindingsContractValidatesNestedData(t *testing.T) {
 	audit := contracts.AuditFindingsDocument{
 		SchemaVersion: "1.0.0", Subject: "database configuration", Summary: "one finding",
 		Findings: []contracts.AuditFinding{{ID: "AUD-1", Severity: "high", Category: "access-control", Title: "weak setting", Description: "setting permits unsafe access", Path: "evidence/config.txt", Line: 1}},
@@ -69,26 +69,11 @@ func TestAuditFindingsAndDiagnosisContractsValidateNestedData(t *testing.T) {
 		t.Fatalf("valid audit findings error = %v", err)
 	}
 
-	diagnosis := contracts.DiagnosisDocument{
-		SchemaVersion: "1.0.0", Subject: "failed deployment", Summary: "image was unavailable",
-		Causes:   []string{"registry rejected the digest"},
-		Evidence: []contracts.DiagnosisEvidence{{Description: "pod event", Path: "evidence/event.txt"}},
-	}
-	if _, err := validateFiles(t, "diagnosis/v1", map[string][]byte{
-		"diagnosis.json": marshalDocument(t, diagnosis), "evidence/event.txt": []byte("pull failed"),
-	}, emptyValidationContext(t)); err != nil {
-		t.Fatalf("valid diagnosis error = %v", err)
-	}
-
 	audit.Findings = append(audit.Findings, audit.Findings[0])
 	if _, err := validateFiles(t, "audit-findings/v1", map[string][]byte{
 		"audit-findings.json": marshalDocument(t, audit), "evidence/config.txt": []byte("setting=true"),
 	}, emptyValidationContext(t)); err == nil || !strings.Contains(err.Error(), "duplicate") {
 		t.Fatalf("duplicate finding error = %v, want duplicate", err)
-	}
-	diagnosis.Evidence[0].Path = "/absolute"
-	if _, err := validateFiles(t, "diagnosis/v1", map[string][]byte{"diagnosis.json": marshalDocument(t, diagnosis)}, emptyValidationContext(t)); err == nil || !strings.Contains(err.Error(), "path") {
-		t.Fatalf("unsafe evidence error = %v, want path", err)
 	}
 	audit.Findings = audit.Findings[:1]
 	audit.Findings[0].Category = " "

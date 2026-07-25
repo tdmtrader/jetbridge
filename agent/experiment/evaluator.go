@@ -340,7 +340,9 @@ func (evaluator *EvaluatorRunner) collect(ctx context.Context, cell EvaluationCe
 	if err != nil {
 		return fmt.Errorf("experiment evaluator: read measurements for cell %s: %w", cell.ID.String(), err)
 	}
-	if !found || len(document.Metrics) > MaxMeasurementsPerCell || document.Validate() != nil || !document.Valid {
+	if !found || len(document.Metrics) > MaxMeasurementsPerCell ||
+		(document.Conclusion != "measured" && document.Conclusion != "partial") ||
+		len(document.Metrics) == 0 {
 		return evaluator.complete(ctx, cell.ID, CellEvaluatorFailure, nil)
 	}
 	if cell.Budget.Limited() {
@@ -408,7 +410,7 @@ func mapEvaluatorInputs(cell EvaluationCell, candidateOutputs map[string]snapsho
 func assertionsPass(assertions []Assertion, document contracts.MeasurementsDocument) bool {
 	metrics := make(map[string]float64, len(document.Metrics))
 	for _, metric := range document.Metrics {
-		metrics[metric.Name] = metric.Value
+		metrics[metric.ID] = metric.Value
 	}
 	for _, assertion := range assertions {
 		value, found := metrics[assertion.Metric]

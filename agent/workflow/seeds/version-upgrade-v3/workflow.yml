@@ -32,20 +32,18 @@ plan:
     output_types:
       candidate-change: repository-change/v1
       report: upgrade-report/v1
-  - agent: validate-and-review
+  - agent: review
     budget_slice_usd: 3
-    function_id: validate-and-review
+    function_id: review
     prompt: >-
-      Validate candidate-change against the immutable repository and exact
-      upgrade request. Run the relevant focused and broader tests, inspect
-      breaking API and migration risks, and fix only defects required for this
-      upgrade. Write a strict repository-change/v1 value beneath
-      $AGENT_OUTPUT_REVIEWED_CHANGE, a validation-report/v1 document beneath
-      $AGENT_OUTPUT_VALIDATION, and a question/v1 value beneath
-      $AGENT_OUTPUT_APPROVAL_QUESTION asking whether this exact sealed change may
-      be opened as a pull request. Do not contact any live system.
+      Review candidate-change against the immutable repository and exact upgrade
+      request. Inspect breaking API and migration risks and fix only defects
+      required for this upgrade. Write repository-change/v1 to
+      $AGENT_OUTPUT_REVIEWED_CHANGE/record.json with repository as its exact base
+      subject and its payload beneath content/. Copy all platform authority
+      values exactly. Do not contact any live system.
     inputs: [repository, request, candidate-change, report]
-    outputs: [reviewed-change, validation, approval-question]
+    outputs: [reviewed-change]
     input_types:
       repository: {type: repository/v1}
       request: {type: upgrade-request/v1}
@@ -53,7 +51,26 @@ plan:
       report: {type: upgrade-report/v1}
     output_types:
       reviewed-change: repository-change/v1
-      validation: validation-report/v1
+  - agent: validate-and-ask
+    budget_slice_usd: 2
+    function_id: validate-and-ask
+    prompt: >-
+      Validate the exact sealed reviewed-change, run the relevant focused and
+      broader tests, and write validation/v1 to
+      $AGENT_OUTPUT_VALIDATION/record.json with reviewed-change as the primary
+      subject and repository, request, and report as context. Preserve all retry
+      attempts and platform authority values. Write a question/v1 value beneath
+      $AGENT_OUTPUT_APPROVAL_QUESTION asking whether this exact sealed change may
+      be opened as a pull request. Do not contact any live system.
+    inputs: [repository, request, report, reviewed-change]
+    outputs: [validation, approval-question]
+    input_types:
+      repository: {type: repository/v1}
+      request: {type: upgrade-request/v1}
+      report: {type: upgrade-report/v1}
+      reviewed-change: {type: repository-change/v1}
+    output_types:
+      validation: validation/v1
       approval-question: question/v1
   - await_snapshot: approval
     question: approval-question
@@ -69,9 +86,10 @@ plan:
       repository-change/v1 value at $AGENT_OUTPUT_APPROVED_CHANGE. Preserve its
       base and content exactly. If it rejects or changes the request, submit no
       output so Jetbridge fails closed. Do not contact a live system.
-    inputs: [reviewed-change, approval]
+    inputs: [repository, reviewed-change, approval]
     outputs: [approved-change]
     input_types:
+      repository: {type: repository/v1}
       reviewed-change: {type: repository-change/v1}
       approval: {type: human-answer/v1}
     output_types:

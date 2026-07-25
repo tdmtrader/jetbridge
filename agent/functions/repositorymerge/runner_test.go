@@ -215,7 +215,7 @@ type fixture struct {
 	changeRoot string
 	inputs     map[string]snapshot.SnapshotRef
 	archives   map[string][]byte
-	document   contracts.RepositoryChangeDocument
+	record     contracts.Record[contracts.RepositoryChangeBody]
 }
 
 func (f fixture) opener() snapshot.InputOpener {
@@ -306,31 +306,52 @@ func buildFixture(t *testing.T, candidateFile, candidateBody, targetFile, target
 	baseArchive, baseDigest := captureDirectory(t, base)
 	targetArchive, targetDigest := captureDirectory(t, target)
 	payload, _ := captureDirectory(t, candidate)
-	payloadDigest := sha256.Sum256(payload)
-
-	document := contracts.RepositoryChangeDocument{
-		SchemaVersion:  "1.0.0",
-		RepositoryID:   repositoryIdentityOf(t, registry, base),
-		BaseInput:      "base",
-		BaseSHA:        baseSHA,
-		ResultSHA:      git(t, candidate, "rev-parse", "HEAD"),
-		ResultTreeSHA:  git(t, candidate, "rev-parse", "HEAD^{tree}"),
-		Representation: "git-tree",
-		PayloadPath:    "payload.tar",
-		PayloadDigest:  "sha256:" + hex.EncodeToString(payloadDigest[:]),
-	}
-	changeRoot := filepath.Join(tmp, "change")
-	if err := os.MkdirAll(changeRoot, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	encoded, err := json.Marshal(document)
+	payloadSum := sha256.Sum256(payload)
+	payloadDigest, err := snapshot.ParseDigest("sha256:" + hex.EncodeToString(payloadSum[:]))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(changeRoot, "change.json"), encoded, 0o600); err != nil {
+
+	baseRef := snapshot.SnapshotRef{ID: 1, Type: "repository/v1", Digest: baseDigest}
+	body := contracts.RepositoryChangeBody{
+		RepositoryID:   repositoryIdentityOf(t, registry, base),
+		BaseSHA:        baseSHA,
+		Representation: "git-tree",
+		Payload: contracts.ContentRef{
+			Path:      "content/payload.tar",
+			Digest:    payloadDigest,
+			MediaType: "application/octet-stream",
+		},
+		ResultTree:   git(t, candidate, "rev-parse", "HEAD^{tree}"),
+		ResultCommit: git(t, candidate, "rev-parse", "HEAD"),
+	}
+	// The candidate is a sealed record: its base lineage is the base SUBJECT,
+	// bound at the declared "base" port, not a bare field in the body.
+	record, err := contracts.NewRecord(
+		snapshot.TypeRef("repository-change/v1"),
+		[]contracts.Subject{contracts.SubjectFromInput(
+			"base", contracts.SubjectRoleBase, "base", baseRef,
+		)},
+		body,
+	)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(changeRoot, "payload.tar"), payload, 0o600); err != nil {
+	if err := body.Validate(record.Subjects); err != nil {
+		t.Fatalf("fixture candidate is not a valid repository-change body: %v", err)
+	}
+	changeRoot := filepath.Join(tmp, "change")
+	if err := os.MkdirAll(filepath.Join(changeRoot, "content"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(changeRoot, "record.json"), encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(changeRoot, body.Payload.Path), payload, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	changeArchive, changeDigest := captureDirectory(t, changeRoot)
@@ -339,9 +360,9 @@ func buildFixture(t *testing.T, candidateFile, candidateBody, targetFile, target
 		registry:   registry,
 		targetRoot: target,
 		changeRoot: changeRoot,
-		document:   document,
+		record:     record,
 		inputs: map[string]snapshot.SnapshotRef{
-			"base":      {ID: 1, Type: "repository/v1", Digest: baseDigest},
+			"base":      baseRef,
 			"target":    {ID: 2, Type: "repository/v1", Digest: targetDigest},
 			"candidate": {ID: 3, Type: "repository-change/v1", Digest: changeDigest},
 		},
@@ -401,28 +422,47 @@ func TestRunnerMergesOntoTheAdvancedTargetAndSealsAValidChange(t *testing.T) {
 	if merged.Report.Subject != "snapshot:"+f.inputs["candidate"].ID.String()+"@"+f.inputs["candidate"].Digest.String() {
 		t.Fatalf("subject = %q", merged.Report.Subject)
 	}
-	if merged.Change.BaseInput != "target" {
-		t.Fatalf("base_input = %q, want the target port", merged.Change.BaseInput)
+	// The merged change's base lineage is now a SUBJECT: the target repository,
+	// bound at the declared port the request named.
+	if len(merged.Change.Subjects) != 1 {
+		t.Fatalf("subjects = %+v, want exactly one base subject", merged.Change.Subjects)
 	}
-	if merged.Change.Representation != "git-tree" {
-		t.Fatalf("representation = %q", merged.Change.Representation)
+	baseSubject := merged.Change.Subjects[0]
+	if baseSubject.Role != contracts.SubjectRoleBase || baseSubject.Input != "target" {
+		t.Fatalf("base subject = %+v, want the target port bound as base", baseSubject)
+	}
+	if baseSubject.Type != f.inputs["target"].Type || baseSubject.Digest != f.inputs["target"].Digest {
+		t.Fatalf("base subject = %+v, want the exact target snapshot", baseSubject)
+	}
+	if merged.Change.Body.Representation != "git-tree" {
+		t.Fatalf("representation = %q", merged.Change.Body.Representation)
 	}
 	// base_sha must be the tip we rebased onto, not the candidate's own base.
-	if merged.Change.BaseSHA == f.document.BaseSHA {
+	if merged.Change.Body.BaseSHA == f.record.Body.BaseSHA {
 		t.Fatal("merged base_sha must be the target tip, not the candidate's base")
 	}
 	// The merge commit carries the candidate's result commit as a trailer.
-	body := git(t, f.targetRoot, "log", "-1", "--format=%B", merged.Change.ResultSHA)
-	if !strings.Contains(body, TrailerKey+": "+f.document.ResultSHA) {
+	body := git(t, f.targetRoot, "log", "-1", "--format=%B", merged.Change.Body.ResultCommit)
+	if !strings.Contains(body, TrailerKey+": "+f.record.Body.ResultCommit) {
 		t.Fatalf("merge commit message lacks the %s trailer:\n%s", TrailerKey, body)
 	}
 
 	// The sealed value must satisfy repository-change/v1 with the target bound
-	// as its base input — exactly what the platform checks when it seals the
-	// step's typed output.
+	// as its base subject's input — exactly what the platform checks when it
+	// seals the step's typed output.
 	output := t.TempDir()
 	if err := WriteMergedChange(context.Background(), output, merged); err != nil {
 		t.Fatalf("WriteMergedChange: %v", err)
+	}
+	// The payload must live beneath content/, and the envelope beside it.
+	if got := merged.Change.Body.Payload.Path; got != "content/payload.tar" {
+		t.Fatalf("payload path = %q, want it beneath content/", got)
+	}
+	if _, err := os.Stat(filepath.Join(output, merged.Change.Body.Payload.Path)); err != nil {
+		t.Fatalf("merged payload is missing beneath content/: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(output, "record.json")); err != nil {
+		t.Fatalf("merged record.json is missing: %v", err)
 	}
 	validator, err := f.registry.Lookup("repository-change/v1")
 	if err != nil {

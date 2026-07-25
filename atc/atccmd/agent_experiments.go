@@ -1,13 +1,10 @@
 package atccmd
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"strings"
 	"time"
@@ -20,8 +17,6 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/lock"
 )
-
-const maxExperimentMeasurementsBytes int64 = 1 << 20
 
 type experimentWorkflowRunStore interface {
 	Get(context.Context, int, snapshot.WorkflowRunID) (db.AgentWorkflowRun, bool, error)
@@ -176,61 +171,22 @@ func (reader experimentMeasurementsReader) ReadMeasurements(
 		return contracts.MeasurementsDocument{}, false, err
 	}
 	defer root.Close()
-	validator, err := reader.validators.Lookup(manifest.Type)
-	if err != nil || validator == nil {
-		return contracts.MeasurementsDocument{}, false, nil
-	}
-	if _, err := validator.Validate(ctx, root, snapshot.ValidationContext{}); err != nil {
+	if validator, err := reader.validators.Lookup(manifest.Type); err != nil || validator == nil {
 		return contracts.MeasurementsDocument{}, false, nil
 	}
 	document, err := decodeExperimentMeasurements(ctx, root)
-	if err != nil || document.Validate() != nil {
+	if err != nil {
 		return contracts.MeasurementsDocument{}, false, nil
 	}
 	return document, true, nil
 }
 
 func decodeExperimentMeasurements(ctx context.Context, root *os.Root) (contracts.MeasurementsDocument, error) {
-	const name = "measurements.json"
-	if err := ctx.Err(); err != nil {
-		return contracts.MeasurementsDocument{}, err
-	}
-	info, err := root.Lstat(name)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return contracts.MeasurementsDocument{}, fmt.Errorf("measurements document is missing")
-		}
-		return contracts.MeasurementsDocument{}, err
-	}
-	if !info.Mode().IsRegular() || info.Size() > maxExperimentMeasurementsBytes {
-		return contracts.MeasurementsDocument{}, fmt.Errorf("measurements document is not a bounded regular file")
-	}
-	file, err := root.Open(name)
+	record, err := contracts.ReadMeasurementsRecord(ctx, root)
 	if err != nil {
 		return contracts.MeasurementsDocument{}, err
 	}
-	defer file.Close()
-	contents, err := io.ReadAll(io.LimitReader(file, maxExperimentMeasurementsBytes+1))
-	if err != nil {
-		return contracts.MeasurementsDocument{}, fmt.Errorf("read bounded measurements document: %w", err)
-	}
-	if int64(len(contents)) > maxExperimentMeasurementsBytes {
-		return contracts.MeasurementsDocument{}, fmt.Errorf("measurements document exceeds %d bytes", maxExperimentMeasurementsBytes)
-	}
-	decoder := json.NewDecoder(bytes.NewReader(contents))
-	decoder.DisallowUnknownFields()
-	var document contracts.MeasurementsDocument
-	if err := decoder.Decode(&document); err != nil {
-		return contracts.MeasurementsDocument{}, err
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return contracts.MeasurementsDocument{}, fmt.Errorf("measurements document contains trailing JSON")
-		}
-		return contracts.MeasurementsDocument{}, err
-	}
-	return document, nil
+	return record.Body, nil
 }
 
 func (cmd *RunCommand) agentExperimentComponents(

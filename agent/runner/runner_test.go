@@ -861,6 +861,10 @@ func TestFromEnvDiscoversOutputPaths(t *testing.T) {
 	t.Setenv("AGENT_OUTPUT_WORKSPACE", "/work/workspace")
 	t.Setenv("AGENT_OUTPUT_MY_DOCS", "/work/my-docs")
 	t.Setenv("AGENT_OUTPUT_SCHEMA", "repo/schemas/spec.json")
+	t.Setenv("AGENT_INPUT_CHANGE_SNAPSHOT_TYPE", "repository-change/v1")
+	t.Setenv("AGENT_INPUT_CHANGE_SNAPSHOT_DIGEST", "sha256:"+strings.Repeat("a", 64))
+	t.Setenv("AGENT_OUTPUT_REVIEW_RECORD_TYPE", "review/v1")
+	t.Setenv("AGENT_OUTPUT_REVIEW_RECORD_SCHEMA", "sha256:"+strings.Repeat("b", 64))
 
 	cfg := runner.FromEnv()
 
@@ -872,6 +876,17 @@ func TestFromEnvDiscoversOutputPaths(t *testing.T) {
 	}
 	if _, ok := cfg.OutputPaths["AGENT_OUTPUT_SCHEMA"]; ok {
 		t.Error("AGENT_OUTPUT_SCHEMA is the schema path, must not be treated as an output")
+	}
+	if _, ok := cfg.OutputPaths["AGENT_OUTPUT_REVIEW_RECORD_TYPE"]; ok {
+		t.Error("record authority rows must not be treated as output paths")
+	}
+	if got := cfg.InputSnapshots["AGENT_INPUT_CHANGE"]; got.Type != "repository-change/v1" ||
+		got.Digest != "sha256:"+strings.Repeat("a", 64) {
+		t.Fatalf("input authority = %#v", got)
+	}
+	if got := cfg.RecordOutputs["AGENT_OUTPUT_REVIEW"]; got.Type != "review/v1" ||
+		got.Schema != "sha256:"+strings.Repeat("b", 64) {
+		t.Fatalf("record authority = %#v", got)
 	}
 }
 
@@ -893,6 +908,16 @@ func TestRunInjectsOutputPathLiteralsIntoPrompt(t *testing.T) {
 		OutputPaths: map[string]string{
 			"AGENT_OUTPUT_WORKSPACE": "/tmp/build/abc/workspace",
 			"AGENT_OUTPUT_REVIEW":    "/tmp/build/abc/review",
+		},
+		InputSnapshots: map[string]runner.SnapshotAuthority{
+			"AGENT_INPUT_CHANGE": {
+				Type: "repository-change/v1", Digest: "sha256:" + strings.Repeat("a", 64),
+			},
+		},
+		RecordOutputs: map[string]runner.RecordAuthority{
+			"AGENT_OUTPUT_REVIEW": {
+				Type: "review/v1", Schema: "sha256:" + strings.Repeat("b", 64),
+			},
 		},
 		FlightDir: flight, WorkDir: dir, StepName: "s", ClaudePath: claude,
 	})
@@ -919,6 +944,10 @@ func TestRunInjectsOutputPathLiteralsIntoPrompt(t *testing.T) {
 	for _, want := range []string{
 		"$AGENT_OUTPUT_REVIEW = /tmp/build/abc/review",
 		"$AGENT_OUTPUT_WORKSPACE = /tmp/build/abc/workspace",
+		"$AGENT_INPUT_CHANGE_SNAPSHOT_TYPE = repository-change/v1",
+		"$AGENT_INPUT_CHANGE_SNAPSHOT_DIGEST = sha256:" + strings.Repeat("a", 64),
+		"$AGENT_OUTPUT_REVIEW_RECORD_TYPE = review/v1",
+		"$AGENT_OUTPUT_REVIEW_RECORD_SCHEMA = sha256:" + strings.Repeat("b", 64),
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing output literal %q:\n%s", want, prompt)
@@ -928,10 +957,11 @@ func TestRunInjectsOutputPathLiteralsIntoPrompt(t *testing.T) {
 	// Layering: workflow context stays outermost, outputs block precedes
 	// the step prompt.
 	ctxIdx := strings.Index(prompt, "# Workflow context")
+	authorityIdx := strings.Index(prompt, "# Sealed record authority")
 	outIdx := strings.Index(prompt, "# Step outputs")
 	stepIdx := strings.Index(prompt, "do it")
-	if ctxIdx != 0 || outIdx < ctxIdx || stepIdx < outIdx || !strings.HasSuffix(prompt, "do it") {
-		t.Fatalf("prompt layering wrong (ctx %d, outputs %d, step %d):\n%s", ctxIdx, outIdx, stepIdx, prompt)
+	if ctxIdx != 0 || authorityIdx < ctxIdx || outIdx < authorityIdx || stepIdx < outIdx || !strings.HasSuffix(prompt, "do it") {
+		t.Fatalf("prompt layering wrong (ctx %d, authority %d, outputs %d, step %d):\n%s", ctxIdx, authorityIdx, outIdx, stepIdx, prompt)
 	}
 }
 

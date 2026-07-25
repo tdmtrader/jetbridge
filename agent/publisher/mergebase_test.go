@@ -22,7 +22,7 @@ func changeManifest(baseSHA string) snapshot.Snapshot {
 	}
 	encoded, err := json.Marshal(contracts.RepositoryChangeMetadata{
 		RepositoryID: "sha256:" + strings.Repeat("9", 64), BaseSHA: baseSHA,
-		ResultSHA: strings.Repeat("e", 40), ResultTreeSHA: strings.Repeat("f", 40),
+		ResultCommit: strings.Repeat("e", 40), ResultTree: strings.Repeat("f", 40),
 		Representation: "git-tree",
 	})
 	if err != nil {

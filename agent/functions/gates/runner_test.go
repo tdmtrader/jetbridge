@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/snapshot/contracts"
 )
 
@@ -47,14 +48,14 @@ func TestRunnerProducesGateResultsAndStopsAtFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if err := document.Validate(); err != nil {
-		t.Fatalf("gate-results/v1: %v", err)
+	if err := document.ValidateDetached(); err != nil {
+		t.Fatalf("validation/v1: %v", err)
 	}
-	if len(document.Gates) != 2 || len(executor.calls) != 2 {
-		t.Fatalf("document/calls = %+v/%+v, want build and test only", document.Gates, executor.calls)
+	if len(document.Checks) != 2 || len(executor.calls) != 2 {
+		t.Fatalf("document/calls = %+v/%+v, want build and test only", document.Checks, executor.calls)
 	}
-	if document.Gates[0].Status != "ok" || document.Gates[1].Status != "failed" {
-		t.Fatalf("statuses = %+v", document.Gates)
+	if document.Checks[0].Status != "passed" || document.Checks[1].Status != "failed" {
+		t.Fatalf("statuses = %+v", document.Checks)
 	}
 	want := []Command{
 		{Path: "go", Args: []string{"build", "./..."}},
@@ -72,9 +73,9 @@ func TestRunnerRetriesFailuresButNeverToolingErrors(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Run: %v", err)
 		}
-		outcome := document.Gates[0]
-		if outcome.Status != "ok" || outcome.Attempt != 2 || !outcome.Flaky || len(executor.calls) != 2 {
-			t.Fatalf("outcome/calls = %+v/%d", outcome, len(executor.calls))
+		check := document.Checks[0]
+		if check.Status != "passed" || len(check.Attempts) != 2 || !check.Flaky() || len(executor.calls) != 2 {
+			t.Fatalf("check/calls = %+v/%d", check, len(executor.calls))
 		}
 	})
 
@@ -84,9 +85,9 @@ func TestRunnerRetriesFailuresButNeverToolingErrors(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Run: %v", err)
 		}
-		outcome := document.Gates[0]
-		if outcome.Status != "error" || outcome.Attempt != 1 || len(executor.calls) != 1 || !strings.Contains(outcome.Detail, "cannot start") {
-			t.Fatalf("outcome/calls = %+v/%d", outcome, len(executor.calls))
+		check := document.Checks[0]
+		if check.Status != "error" || len(check.Attempts) != 1 || len(executor.calls) != 1 || !strings.Contains(check.Attempts[0].Detail, "cannot start") {
+			t.Fatalf("check/calls = %+v/%d", check, len(executor.calls))
 		}
 	})
 }
@@ -110,8 +111,8 @@ func TestRunnerFailsClosedForUnsupportedOrMalformedDeclarations(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Run: %v", err)
 			}
-			if len(document.Gates) != 1 || document.Gates[0].Status != "error" || document.Gates[0].Attempt != 1 ||
-				!strings.Contains(document.Gates[0].Detail, test.want) || len(executor.calls) != 0 {
+			if len(document.Checks) != 1 || document.Checks[0].Status != "error" || len(document.Checks[0].Attempts) != 1 ||
+				!strings.Contains(document.Checks[0].Attempts[0].Detail, test.want) || len(executor.calls) != 0 {
 				t.Fatalf("document/calls = %+v/%v, want tooling error containing %q", document, executor.calls, test.want)
 			}
 		})
@@ -128,7 +129,7 @@ func TestRunnerUsesBoundedPerGateContextAndHonorsCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if time.Since(started) > time.Second || document.Gates[0].Status != "error" || !strings.Contains(document.Gates[0].Detail, "timed out") {
+	if time.Since(started) > time.Second || document.Checks[0].Status != "error" || !strings.Contains(document.Checks[0].Attempts[0].Detail, "timed out") {
 		t.Fatalf("document/elapsed = %+v/%s", document, time.Since(started))
 	}
 
@@ -151,15 +152,30 @@ func TestDeterministicCommandsReturnsAnIsolatedCopy(t *testing.T) {
 }
 
 func TestWriteResultsEmitsStrictSnapshotDocument(t *testing.T) {
-	document := contracts.GateResultsDocument{
-		SchemaVersion: "1.0.0",
-		Gates:         []contracts.GateOutcome{{Gate: "test", Scope: "full", Status: "ok", Attempt: 1}},
+	body := contracts.ValidationBody{
+		Conclusion: "passed", Summary: "tests passed",
+		Checks: []contracts.ValidationCheck{{
+			ID: "test", Kind: "test", Name: "test", Status: "passed",
+			Attempts: []contracts.ValidationAttempt{{Number: 1, Status: "passed", Duration: "1s"}},
+		}},
+	}
+	subject := snapshot.SnapshotRef{
+		ID: 1, Type: "repository-change/v1",
+		Digest: snapshot.Digest("sha256:" + strings.Repeat("a", 64)),
+	}
+	record, err := contracts.NewRecord(
+		snapshot.TypeRef("validation/v1"),
+		[]contracts.Subject{contracts.SubjectFromInput("primary", contracts.SubjectRolePrimary, "change", subject)},
+		body,
+	)
+	if err != nil {
+		t.Fatal(err)
 	}
 	root := t.TempDir()
-	if err := WriteResults(context.Background(), root, document); err != nil {
+	if err := WriteResults(context.Background(), root, record); err != nil {
 		t.Fatalf("WriteResults: %v", err)
 	}
-	payload, err := os.ReadFile(filepath.Join(root, "gate-results.json"))
+	payload, err := os.ReadFile(filepath.Join(root, "record.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +183,7 @@ func TestWriteResultsEmitsStrictSnapshotDocument(t *testing.T) {
 	if err := json.Unmarshal(payload, &decoded); err != nil {
 		t.Fatal(err)
 	}
-	if decoded["schema_version"] != "1.0.0" {
+	if decoded["type"] != "validation/v1" {
 		t.Fatalf("payload = %s", payload)
 	}
 }

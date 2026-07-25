@@ -20,9 +20,8 @@ import (
 )
 
 const (
-	maxRepositoryChangeDocumentBytes int64 = 1 << 20
-	maxRepositoryChangePayloadBytes  int64 = 10 << 30
-	maxProjectionErrorBytes                = 4096
+	maxRepositoryChangePayloadBytes int64 = 10 << 30
+	maxProjectionErrorBytes               = 4096
 )
 
 type RepositoryChangeProjectionStatus string
@@ -168,12 +167,12 @@ func (projector *RepositoryChangeProjector) Project(ctx context.Context, ref sna
 		return projector.recordProjectionFailure(ctx, manifest.ID, err)
 	}
 	defer subjectTree.Close()
-	document, err := readRepositoryChangeDocument(ctx, subjectTree.Root)
+	record, err := readRepositoryChangeRecord(ctx, subjectTree.Root)
 	if err != nil {
 		return projector.recordProjectionFailure(ctx, manifest.ID, fmt.Errorf("%w: %v", ErrCorruptSnapshot, err))
 	}
 
-	baseManifest, err := selectRepositoryChangeBase(input.Inputs, document.BaseInput)
+	baseManifest, err := selectRepositoryChangeBase(input.Inputs, record.Subjects[0])
 	if err != nil {
 		return projector.recordProjectionFailure(ctx, manifest.ID, fmt.Errorf("%w: %v", ErrCorruptSnapshot, err))
 	}
@@ -249,28 +248,28 @@ func (projector *RepositoryChangeProjector) capture(ctx context.Context, manifes
 	return tree, nil
 }
 
-func selectRepositoryChangeBase(inputs []RepositoryChangeBaseInput, port string) (snapshot.Snapshot, error) {
+func selectRepositoryChangeBase(inputs []RepositoryChangeBaseInput, subject contracts.Subject) (snapshot.Snapshot, error) {
 	unique := make(map[snapshot.SnapshotID]snapshot.Snapshot)
 	for _, input := range inputs {
-		if input.Port != port {
+		if input.Port != subject.Input {
 			continue
 		}
-		if input.Snapshot.Type != "repository/v1" {
-			return snapshot.Snapshot{}, fmt.Errorf("base_input %q is not repository/v1", port)
+		if input.Snapshot.Type != subject.Type || input.Snapshot.Digest != subject.Digest {
+			return snapshot.Snapshot{}, fmt.Errorf("base subject %q does not match exact persisted lineage", subject.ID)
 		}
 		if existing, found := unique[input.Snapshot.ID]; found {
 			if existing.Digest != input.Snapshot.Digest {
-				return snapshot.Snapshot{}, fmt.Errorf("base_input %q has conflicting snapshot identities", port)
+				return snapshot.Snapshot{}, fmt.Errorf("base subject input %q has conflicting snapshot identities", subject.Input)
 			}
 			continue
 		}
 		unique[input.Snapshot.ID] = input.Snapshot
 	}
 	if len(unique) == 0 {
-		return snapshot.Snapshot{}, fmt.Errorf("base_input %q has no exact persisted lineage", port)
+		return snapshot.Snapshot{}, fmt.Errorf("base subject input %q has no exact persisted lineage", subject.Input)
 	}
 	if len(unique) != 1 {
-		return snapshot.Snapshot{}, fmt.Errorf("base_input %q is ambiguous across subject productions", port)
+		return snapshot.Snapshot{}, fmt.Errorf("base subject input %q is ambiguous across subject productions", subject.Input)
 	}
 	for _, manifest := range unique {
 		if err := manifest.Validate(); err != nil {
@@ -315,10 +314,11 @@ func DeriveRepositoryChange(ctx context.Context, input RepositoryChangeInput) (R
 		return RepositoryChange{}, fmt.Errorf("repository-change projection: change and base roots are required")
 	}
 
-	document, err := readRepositoryChangeDocument(ctx, input.ChangeRoot)
+	record, err := readRepositoryChangeRecord(ctx, input.ChangeRoot)
 	if err != nil {
 		return RepositoryChange{}, err
 	}
+	document := record.Body
 	if document.RepositoryID != input.BaseMetadata.RepositoryID {
 		return RepositoryChange{}, fmt.Errorf("repository-change projection: repository_id does not match base repository")
 	}
@@ -329,13 +329,13 @@ func DeriveRepositoryChange(ctx context.Context, input RepositoryChangeInput) (R
 		return RepositoryChange{}, err
 	}
 
-	payload, err := spoolRepositoryChangePayload(ctx, input.ChangeRoot, document.PayloadPath, input.Canonicalizer.TempDir)
+	payload, err := spoolRepositoryChangePayload(ctx, input.ChangeRoot, document.Payload.Path, input.Canonicalizer.TempDir)
 	if err != nil {
 		return RepositoryChange{}, fmt.Errorf("repository-change projection: payload: %w", err)
 	}
 	defer payload.Close()
-	if payload.digest != document.PayloadDigest {
-		return RepositoryChange{}, fmt.Errorf("repository-change projection: payload_digest does not match exact payload bytes")
+	if payload.digest != document.Payload.Digest.String() {
+		return RepositoryChange{}, fmt.Errorf("repository-change projection: payload.digest does not match exact payload bytes")
 	}
 
 	var diff gitcheck.RepositoryDiff
@@ -344,7 +344,7 @@ func DeriveRepositoryChange(ctx context.Context, input RepositoryChangeInput) (R
 		diff, err = deriveGitTreeChange(ctx, payload.path, document, input.BaseMetadata, input.Canonicalizer)
 	case "patch":
 		diff, err = derivePatchChange(ctx, input.BaseRoot, payload.path, document)
-	case "bundle":
+	case "git-bundle":
 		diff, err = deriveBundleChange(ctx, input.BaseRoot, payload.path, document)
 	default:
 		err = fmt.Errorf("unsupported representation %q", document.Representation)
@@ -355,49 +355,25 @@ func DeriveRepositoryChange(ctx context.Context, input RepositoryChangeInput) (R
 
 	return RepositoryChange{
 		SnapshotID: input.SnapshotID, Status: RepositoryChangeProjectionReady, RepositoryID: document.RepositoryID,
-		BaseSHA: document.BaseSHA, ResultSHA: document.ResultSHA,
-		ResultTreeSHA: document.ResultTreeSHA, Representation: document.Representation,
+		BaseSHA: document.BaseSHA, ResultSHA: document.ResultCommit,
+		ResultTreeSHA: document.ResultTree, Representation: document.Representation,
 		Files: diff.Files, FileCount: diff.FileCount, LinesAdded: diff.LinesAdded,
 		LinesDeleted: diff.LinesDeleted, UnifiedDiff: diff.UnifiedDiff,
 		Truncated: diff.Truncated, TruncationReason: diff.TruncationReason,
 	}, nil
 }
 
-func readRepositoryChangeDocument(ctx context.Context, rootPath string) (contracts.RepositoryChangeDocument, error) {
+func readRepositoryChangeRecord(ctx context.Context, rootPath string) (contracts.Record[contracts.RepositoryChangeBody], error) {
 	root, err := os.OpenRoot(rootPath)
 	if err != nil {
-		return contracts.RepositoryChangeDocument{}, fmt.Errorf("repository-change projection: anchor subject snapshot: %w", err)
+		return contracts.Record[contracts.RepositoryChangeBody]{}, fmt.Errorf("repository-change projection: anchor subject snapshot: %w", err)
 	}
 	defer root.Close()
-	info, err := root.Lstat("change.json")
+	record, err := contracts.ReadRepositoryChangeRecord(ctx, root)
 	if err != nil {
-		return contracts.RepositoryChangeDocument{}, fmt.Errorf("repository-change projection: read change.json: %w", err)
+		return contracts.Record[contracts.RepositoryChangeBody]{}, fmt.Errorf("repository-change projection: %w", err)
 	}
-	if !info.Mode().IsRegular() || info.Size() > maxRepositoryChangeDocumentBytes {
-		return contracts.RepositoryChangeDocument{}, fmt.Errorf("repository-change projection: change.json must be a bounded regular file")
-	}
-	file, err := root.Open("change.json")
-	if err != nil {
-		return contracts.RepositoryChangeDocument{}, fmt.Errorf("repository-change projection: open change.json: %w", err)
-	}
-	defer file.Close()
-	decoder := json.NewDecoder(io.LimitReader(contextProjectionReader{ctx: ctx, reader: file}, maxRepositoryChangeDocumentBytes+1))
-	decoder.DisallowUnknownFields()
-	var document contracts.RepositoryChangeDocument
-	if err := decoder.Decode(&document); err != nil {
-		return contracts.RepositoryChangeDocument{}, fmt.Errorf("repository-change projection: decode change.json: %w", err)
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		if err == nil {
-			err = fmt.Errorf("multiple JSON values")
-		}
-		return contracts.RepositoryChangeDocument{}, fmt.Errorf("repository-change projection: decode change.json: %w", err)
-	}
-	if err := document.Validate(); err != nil {
-		return contracts.RepositoryChangeDocument{}, fmt.Errorf("repository-change projection: change.json: %w", err)
-	}
-	return document, nil
+	return record, nil
 }
 
 func verifyBaseRepository(ctx context.Context, directory string, metadata contracts.RepositoryMetadata) error {
@@ -420,7 +396,7 @@ func verifyBaseRepository(ctx context.Context, directory string, metadata contra
 func deriveGitTreeChange(
 	ctx context.Context,
 	payloadPath string,
-	document contracts.RepositoryChangeDocument,
+	document contracts.RepositoryChangeBody,
 	base contracts.RepositoryMetadata,
 	canonicalizer snapshot.Canonicalizer,
 ) (gitcheck.RepositoryDiff, error) {
@@ -437,26 +413,26 @@ func deriveGitTreeChange(
 		return gitcheck.RepositoryDiff{}, fmt.Errorf("git-tree payload is not a canonical repository tar: %w", err)
 	}
 	defer tree.Close()
-	if tree.Digest.String() != document.PayloadDigest {
-		return gitcheck.RepositoryDiff{}, fmt.Errorf("git-tree payload is not the canonical tar named by payload_digest")
+	if tree.Digest != document.Payload.Digest {
+		return gitcheck.RepositoryDiff{}, fmt.Errorf("git-tree payload is not the canonical tar named by payload.digest")
 	}
 	runner := projectionGit{dir: tree.Root}
-	if result, err := runner.run(ctx, "rev-parse", "--verify", "HEAD^{commit}"); err != nil || result != document.ResultSHA {
-		return gitcheck.RepositoryDiff{}, fmt.Errorf("git-tree HEAD does not match result_sha")
+	if result, err := runner.run(ctx, "rev-parse", "--verify", "HEAD^{commit}"); err != nil || result != document.ResultCommit {
+		return gitcheck.RepositoryDiff{}, fmt.Errorf("git-tree HEAD does not match result_commit")
 	}
-	if resultTree, err := runner.run(ctx, "rev-parse", "--verify", document.ResultSHA+"^{tree}"); err != nil || resultTree != document.ResultTreeSHA {
-		return gitcheck.RepositoryDiff{}, fmt.Errorf("git-tree result does not match result_tree_sha")
+	if resultTree, err := runner.run(ctx, "rev-parse", "--verify", document.ResultCommit+"^{tree}"); err != nil || resultTree != document.ResultTree {
+		return gitcheck.RepositoryDiff{}, fmt.Errorf("git-tree result does not match result_tree")
 	}
 	if objectFormat, err := runner.run(ctx, "rev-parse", "--show-object-format=storage"); err != nil || objectFormat != base.ObjectFormat {
 		return gitcheck.RepositoryDiff{}, fmt.Errorf("git-tree object format differs from base")
 	}
-	if _, err := runner.run(ctx, "merge-base", "--is-ancestor", document.BaseSHA, document.ResultSHA); err != nil {
-		return gitcheck.RepositoryDiff{}, fmt.Errorf("result_sha does not descend from base_sha: %w", err)
+	if _, err := runner.run(ctx, "merge-base", "--is-ancestor", document.BaseSHA, document.ResultCommit); err != nil {
+		return gitcheck.RepositoryDiff{}, fmt.Errorf("result_commit does not descend from base_sha: %w", err)
 	}
-	return gitcheck.DeriveRepositoryDiff(ctx, tree.Root, document.BaseSHA, document.ResultSHA)
+	return gitcheck.DeriveRepositoryDiff(ctx, tree.Root, document.BaseSHA, document.ResultCommit)
 }
 
-func derivePatchChange(ctx context.Context, baseDirectory, payloadPath string, document contracts.RepositoryChangeDocument) (gitcheck.RepositoryDiff, error) {
+func derivePatchChange(ctx context.Context, baseDirectory, payloadPath string, document contracts.RepositoryChangeBody) (gitcheck.RepositoryDiff, error) {
 	runner := projectionGit{dir: baseDirectory}
 	if _, err := runner.run(ctx, "update-index", "--refresh"); err != nil {
 		return gitcheck.RepositoryDiff{}, fmt.Errorf("refresh scratch repository index: %w", err)
@@ -471,13 +447,13 @@ func derivePatchChange(ctx context.Context, baseDirectory, payloadPath string, d
 	if err != nil {
 		return gitcheck.RepositoryDiff{}, fmt.Errorf("calculate patched result tree: %w", err)
 	}
-	if resultTree != document.ResultTreeSHA {
-		return gitcheck.RepositoryDiff{}, fmt.Errorf("result_tree_sha does not match applied patch")
+	if resultTree != document.ResultTree {
+		return gitcheck.RepositoryDiff{}, fmt.Errorf("result_tree does not match applied patch")
 	}
 	return gitcheck.DeriveRepositoryDiff(ctx, baseDirectory, document.BaseSHA, resultTree)
 }
 
-func deriveBundleChange(ctx context.Context, baseDirectory, payloadPath string, document contracts.RepositoryChangeDocument) (gitcheck.RepositoryDiff, error) {
+func deriveBundleChange(ctx context.Context, baseDirectory, payloadPath string, document contracts.RepositoryChangeBody) (gitcheck.RepositoryDiff, error) {
 	runner := projectionGit{dir: baseDirectory}
 	if _, err := runner.run(ctx, "bundle", "verify", payloadPath); err != nil {
 		return gitcheck.RepositoryDiff{}, fmt.Errorf("bundle verify: %w", err)
@@ -492,20 +468,20 @@ func deriveBundleChange(ctx context.Context, baseDirectory, payloadPath string, 
 			lines = append(lines, fields)
 		}
 	}
-	if len(lines) != 1 || lines[0][0] != document.ResultSHA {
-		return gitcheck.RepositoryDiff{}, fmt.Errorf("bundle must expose exactly result_sha")
+	if len(lines) != 1 || lines[0][0] != document.ResultCommit {
+		return gitcheck.RepositoryDiff{}, fmt.Errorf("bundle must expose exactly result_commit")
 	}
 	if _, err := runner.run(ctx, "bundle", "unbundle", payloadPath); err != nil {
 		return gitcheck.RepositoryDiff{}, fmt.Errorf("unbundle: %w", err)
 	}
-	resultTree, err := runner.run(ctx, "rev-parse", "--verify", document.ResultSHA+"^{tree}")
-	if err != nil || resultTree != document.ResultTreeSHA {
-		return gitcheck.RepositoryDiff{}, fmt.Errorf("bundled result does not match result_tree_sha")
+	resultTree, err := runner.run(ctx, "rev-parse", "--verify", document.ResultCommit+"^{tree}")
+	if err != nil || resultTree != document.ResultTree {
+		return gitcheck.RepositoryDiff{}, fmt.Errorf("bundled result does not match result_tree")
 	}
-	if _, err := runner.run(ctx, "merge-base", "--is-ancestor", document.BaseSHA, document.ResultSHA); err != nil {
-		return gitcheck.RepositoryDiff{}, fmt.Errorf("result_sha does not descend from base_sha: %w", err)
+	if _, err := runner.run(ctx, "merge-base", "--is-ancestor", document.BaseSHA, document.ResultCommit); err != nil {
+		return gitcheck.RepositoryDiff{}, fmt.Errorf("result_commit does not descend from base_sha: %w", err)
 	}
-	return gitcheck.DeriveRepositoryDiff(ctx, baseDirectory, document.BaseSHA, document.ResultSHA)
+	return gitcheck.DeriveRepositoryDiff(ctx, baseDirectory, document.BaseSHA, document.ResultCommit)
 }
 
 type repositoryChangePayload struct {

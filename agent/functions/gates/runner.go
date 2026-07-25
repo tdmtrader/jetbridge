@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
@@ -18,7 +19,7 @@ import (
 
 const defaultTimeout = 30 * time.Minute
 
-const resultsFileName = "gate-results.json"
+const resultsFileName = "record.json"
 
 type Policy struct {
 	Gates         []Gate `json:"gates,omitempty"`
@@ -95,52 +96,70 @@ func (runner *Runner) WithObserver(observer Observer) *Runner {
 	return &copy
 }
 
-func (runner *Runner) Run(ctx context.Context, workspace string, policy Policy) (contracts.GateResultsDocument, error) {
+func (runner *Runner) Run(ctx context.Context, workspace string, policy Policy) (contracts.ValidationBody, error) {
 	if ctx == nil {
-		return contracts.GateResultsDocument{}, fmt.Errorf("gates: context is required")
+		return contracts.ValidationBody{}, fmt.Errorf("gates: context is required")
 	}
 	if err := ctx.Err(); err != nil {
-		return contracts.GateResultsDocument{}, err
+		return contracts.ValidationBody{}, err
 	}
 	if strings.TrimSpace(workspace) == "" {
-		return contracts.GateResultsDocument{}, fmt.Errorf("gates: workspace is required")
+		return contracts.ValidationBody{}, fmt.Errorf("gates: workspace is required")
 	}
 	if len(policy.Gates) == 0 {
-		return contracts.GateResultsDocument{}, fmt.Errorf("gates: at least one gate is required")
+		return contracts.ValidationBody{}, fmt.Errorf("gates: at least one gate is required")
 	}
 	seen := make(map[string]struct{}, len(policy.Gates))
 	for index, gate := range policy.Gates {
 		if strings.TrimSpace(gate.Name) == "" {
-			return contracts.GateResultsDocument{}, fmt.Errorf("gates: gate %d name is required", index)
+			return contracts.ValidationBody{}, fmt.Errorf("gates: gate %d name is required", index)
 		}
 		if _, found := seen[gate.Name]; found {
-			return contracts.GateResultsDocument{}, fmt.Errorf("gates: duplicate gate %q", gate.Name)
+			return contracts.ValidationBody{}, fmt.Errorf("gates: duplicate gate %q", gate.Name)
 		}
 		seen[gate.Name] = struct{}{}
 	}
 
-	document := contracts.GateResultsDocument{SchemaVersion: "1.0.0"}
+	document := contracts.ValidationBody{}
 	for _, gate := range policy.Gates {
-		outcome, err := runner.runGate(ctx, workspace, gate)
+		check, err := runner.runGate(ctx, workspace, gate)
 		if err != nil {
-			return contracts.GateResultsDocument{}, err
+			return contracts.ValidationBody{}, err
 		}
-		document.Gates = append(document.Gates, outcome)
-		if outcome.Status != "ok" {
+		document.Checks = append(document.Checks, check)
+		if check.Status != "passed" {
 			break
 		}
 	}
-	if err := document.Validate(); err != nil {
-		return contracts.GateResultsDocument{}, fmt.Errorf("gates: produced invalid gate-results/v1: %w", err)
+	sort.Slice(document.Checks, func(left, right int) bool {
+		return document.Checks[left].ID < document.Checks[right].ID
+	})
+	document.Conclusion = contracts.DeriveValidationConclusion(document.Checks)
+	switch document.Conclusion {
+	case "passed":
+		document.Summary = "all configured repository gates passed"
+	case "failed":
+		document.Summary = "a configured repository gate failed"
+	default:
+		document.Summary = "a configured repository gate could not complete"
+	}
+	if err := document.ValidateDetached(); err != nil {
+		return contracts.ValidationBody{}, fmt.Errorf("gates: produced invalid validation/v1: %w", err)
 	}
 	return document, nil
 }
 
-func (runner *Runner) runGate(ctx context.Context, workspace string, gate Gate) (contracts.GateOutcome, error) {
-	toolingError := func(detail string) contracts.GateOutcome {
-		return contracts.GateOutcome{
-			Gate: gate.Name, Scope: gate.Scope, Status: "error", Attempt: 1,
-			Detail: boundedDetail(detail),
+func (runner *Runner) runGate(ctx context.Context, workspace string, gate Gate) (contracts.ValidationCheck, error) {
+	kind := gate.Name
+	if _, found := commandCatalog[kind]; !found {
+		kind = "custom"
+	}
+	toolingError := func(detail string) contracts.ValidationCheck {
+		return contracts.ValidationCheck{
+			ID: gate.Name, Kind: kind, Name: gate.Name, Status: "error",
+			Attempts: []contracts.ValidationAttempt{{
+				Number: 1, Status: "error", Duration: "0s", Detail: boundedDetail(detail),
+			}},
 		}
 	}
 	if gate.Scope != "full" {
@@ -162,10 +181,10 @@ func (runner *Runner) runGate(ctx context.Context, workspace string, gate Gate) 
 		timeout = parsed
 	}
 
-	var last contracts.GateOutcome
+	check := contracts.ValidationCheck{ID: gate.Name, Kind: kind, Name: gate.Name}
 	for attempt := 1; attempt <= gate.Retries+1; attempt++ {
 		if err := ctx.Err(); err != nil {
-			return contracts.GateOutcome{}, err
+			return contracts.ValidationCheck{}, err
 		}
 		event := AttemptEvent{Gate: gate, Attempt: attempt}
 		if runner.observer != nil {
@@ -177,40 +196,54 @@ func (runner *Runner) runGate(ctx context.Context, workspace string, gate Gate) 
 		attemptErr := attemptCtx.Err()
 		cancel()
 		if err := ctx.Err(); err != nil {
-			return contracts.GateOutcome{}, err
+			return contracts.ValidationCheck{}, err
 		}
 
-		last = contracts.GateOutcome{
-			Gate: gate.Name, Scope: gate.Scope, Attempt: attempt,
-			DurationSeconds: nonnegativeDurationSeconds(runner.now().Sub(started)),
+		duration := runner.now().Sub(started)
+		if duration < 0 {
+			duration = 0
 		}
+		current := contracts.ValidationAttempt{Number: attempt, Duration: duration.String()}
+		var legacy contracts.GateOutcome
+		legacy.Gate, legacy.Scope, legacy.Attempt = gate.Name, gate.Scope, attempt
+		legacy.DurationSeconds = nonnegativeDurationSeconds(duration)
 		switch {
 		case errors.Is(attemptErr, context.DeadlineExceeded):
-			last.Status = "error"
-			last.Detail = fmt.Sprintf("gate timed out after %s", timeout)
+			current.Status = "error"
+			current.Detail = fmt.Sprintf("gate timed out after %s", timeout)
 		case executeErr != nil:
-			last.Status = "error"
-			last.Detail = executeErr.Error()
+			current.Status = "error"
+			current.Detail = executeErr.Error()
 		case execution.ExitCode == 0:
-			last.Status = "ok"
-			last.Detail = execution.Output
+			current.Status = "passed"
+			current.Detail = execution.Output
 		case execution.ExitCode > 0:
-			last.Status = "failed"
-			last.Detail = execution.Output
+			current.Status = "failed"
+			current.Detail = execution.Output
 		default:
-			last.Status = "error"
-			last.Detail = fmt.Sprintf("gate executor returned invalid exit code %d", execution.ExitCode)
+			current.Status = "error"
+			current.Detail = fmt.Sprintf("gate executor returned invalid exit code %d", execution.ExitCode)
 		}
-		last.Detail = boundedDetail(last.Detail)
-		last.Flaky = last.Status == "ok" && attempt > 1
+		current.Detail = boundedDetail(current.Detail)
+		check.Attempts = append(check.Attempts, current)
+		check.Status = current.Status
+		legacy.Status, legacy.Detail = legacyGateStatus(current.Status), current.Detail
+		legacy.Flaky = current.Status == "passed" && attempt > 1
 		if runner.observer != nil {
-			runner.observer.AttemptFinished(ctx, event, last)
+			runner.observer.AttemptFinished(ctx, event, legacy)
 		}
-		if last.Status == "ok" || last.Status == "error" {
-			return last, nil
+		if current.Status == "passed" || current.Status == "error" {
+			return check, nil
 		}
 	}
-	return last, nil
+	return check, nil
+}
+
+func legacyGateStatus(status string) string {
+	if status == "passed" {
+		return "ok"
+	}
+	return status
 }
 
 func nonnegativeDurationSeconds(duration time.Duration) float64 {
@@ -228,9 +261,9 @@ func boundedDetail(detail string) string {
 	return detail
 }
 
-// WriteResults materializes a validated gate-results/v1 value at the fixed
+// WriteResults materializes a validated validation/v1 value at the fixed
 // output path expected by the snapshot contract.
-func WriteResults(ctx context.Context, outputRoot string, document contracts.GateResultsDocument) error {
+func WriteResults(ctx context.Context, outputRoot string, record contracts.Record[contracts.ValidationBody]) error {
 	if ctx == nil {
 		return fmt.Errorf("gates: context is required")
 	}
@@ -240,12 +273,12 @@ func WriteResults(ctx context.Context, outputRoot string, document contracts.Gat
 	if strings.TrimSpace(outputRoot) == "" {
 		return fmt.Errorf("gates: output root is required")
 	}
-	if err := document.Validate(); err != nil {
-		return fmt.Errorf("gates: invalid gate-results/v1: %w", err)
+	if err := record.Body.Validate(record.Subjects); err != nil {
+		return fmt.Errorf("gates: invalid validation/v1: %w", err)
 	}
-	payload, err := json.MarshalIndent(document, "", "  ")
+	payload, err := json.MarshalIndent(record, "", "  ")
 	if err != nil {
-		return fmt.Errorf("gates: marshal gate-results/v1: %w", err)
+		return fmt.Errorf("gates: marshal validation/v1: %w", err)
 	}
 	payload = append(payload, '\n')
 	root, err := os.OpenRoot(outputRoot)

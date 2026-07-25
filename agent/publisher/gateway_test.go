@@ -463,7 +463,7 @@ func TestSnapshotChangeInspectorRevalidatesManifestMetadataDocumentAndPayload(t 
 	}
 
 	bad := fixture.manifest.Clone()
-	bad.IntrinsicMetadata = json.RawMessage(`{"repository_id":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","base_sha":"9999999999999999999999999999999999999999","result_sha":"2222222222222222222222222222222222222222","result_tree_sha":"3333333333333333333333333333333333333333","representation":"bundle"}`)
+	bad.IntrinsicMetadata = json.RawMessage(`{"repository_id":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","base_sha":"9999999999999999999999999999999999999999","result_commit":"2222222222222222222222222222222222222222","result_tree":"3333333333333333333333333333333333333333","representation":"git-bundle","changed_files":[]}`)
 	fixture.metadata.GetAuthorizedReturns(bad, true, nil)
 	if _, err := inspector.Inspect(context.Background(), gatewayGitRequest(fixture.ref)); err == nil || !strings.Contains(err.Error(), "intrinsic metadata") {
 		t.Fatalf("mismatched metadata error = %v", err)
@@ -508,16 +508,31 @@ type gatewaySnapshotFixture struct {
 func newGatewaySnapshotFixture(t *testing.T) gatewaySnapshotFixture {
 	t.Helper()
 	payload := []byte("bundle bytes")
-	document := contracts.RepositoryChangeDocument{
-		SchemaVersion: "1.0.0", RepositoryID: digestOf([]byte("repository")).String(), BaseInput: "repository",
-		BaseSHA: testBaseSHA, ResultSHA: testResultSHA, ResultTreeSHA: testTreeSHA,
-		Representation: "bundle", PayloadPath: "change.bundle", PayloadDigest: digestOf(payload).String(),
+	document := contracts.RepositoryChangeBody{
+		RepositoryID: digestOf([]byte("repository")).String(),
+		BaseSHA:      testBaseSHA, ResultCommit: testResultSHA, ResultTree: testTreeSHA,
+		Representation: "git-bundle",
+		Payload: contracts.ContentRef{
+			Path: "content/change.bundle", Digest: digestOf(payload),
+			MediaType: "application/x-git-bundle",
+		},
 	}
-	documentBytes, err := json.Marshal(document)
+	record, err := contracts.NewRecord(
+		snapshot.TypeRef("repository-change/v1"),
+		[]contracts.Subject{{
+			ID: "base", Role: contracts.SubjectRoleBase, Input: "repository",
+			Type: snapshot.TypeRef("repository/v1"), Digest: digestOf([]byte("base")),
+		}},
+		document,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw := tarBytes(t, map[string][]byte{"change.bundle": payload, "change.json": documentBytes})
+	documentBytes, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := tarBytes(t, map[string][]byte{"content/change.bundle": payload, "record.json": documentBytes})
 	tree, err := (snapshot.Canonicalizer{}).Capture(context.Background(), bytes.NewReader(raw))
 	if err != nil {
 		t.Fatal(err)
@@ -531,8 +546,8 @@ func newGatewaySnapshotFixture(t *testing.T) gatewaySnapshotFixture {
 		t.Fatal(err)
 	}
 	metadataBytes, err := json.Marshal(contracts.RepositoryChangeMetadata{
-		RepositoryID: document.RepositoryID, BaseSHA: testBaseSHA, ResultSHA: testResultSHA,
-		ResultTreeSHA: testTreeSHA, Representation: "bundle",
+		RepositoryID: document.RepositoryID, BaseSHA: testBaseSHA, ResultCommit: testResultSHA,
+		ResultTree: testTreeSHA, Representation: "git-bundle", ChangedFiles: []string{},
 	})
 	if err != nil {
 		t.Fatal(err)

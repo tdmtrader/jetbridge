@@ -18,7 +18,9 @@ import (
 	"net/textproto"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -31,7 +33,6 @@ const (
 	maxGatewayTokenBytes    int64 = 64 << 10
 	maxGatewayCABundleBytes int64 = 1 << 20
 	maxGatewayMetadataBytes int64 = 1 << 20
-	maxChangeDocumentBytes  int64 = 1 << 20
 	maxGatewayResponseBytes int64 = 16 << 20
 )
 
@@ -823,7 +824,7 @@ func (inspector *GatewaySnapshotValueInspector) InspectValue(ctx context.Context
 }
 
 // SnapshotChangeInspector authorizes the exact snapshot for the persisted
-// team, re-hashes its canonical bytes, and checks that change.json and its
+// team, re-hashes its canonical bytes, and checks that record.json and its
 // payload still agree with the sealed intrinsic metadata.
 type SnapshotChangeInspector struct {
 	metadata      snapshot.MetadataStore
@@ -894,23 +895,24 @@ func (inspector *SnapshotChangeInspector) Inspect(ctx context.Context, request R
 		_ = tree.Close()
 		return RepositoryChange{}, fmt.Errorf("publisher gateway: repository change content does not match its sealed manifest")
 	}
-	document, err := inspectRepositoryChangeDocument(ctx, tree.Root, manifest.ByteSize)
+	record, err := inspectRepositoryChangeRecord(ctx, tree.Root, manifest.ByteSize)
 	if err != nil {
 		_ = tree.Close()
 		return RepositoryChange{}, err
 	}
+	document := record.Body
 	if document.RepositoryID != metadata.RepositoryID || document.BaseSHA != metadata.BaseSHA ||
-		document.ResultSHA != metadata.ResultSHA || document.ResultTreeSHA != metadata.ResultTreeSHA ||
+		document.ResultCommit != metadata.ResultCommit || document.ResultTree != metadata.ResultTree ||
 		document.Representation != metadata.Representation {
 		_ = tree.Close()
 		return RepositoryChange{}, fmt.Errorf("publisher gateway: repository-change intrinsic metadata does not match exact content")
 	}
-	if metadata.ResultSHA == "" {
+	if metadata.ResultCommit == "" {
 		_ = tree.Close()
-		return RepositoryChange{}, fmt.Errorf("publisher gateway: repository change has no publishable result_sha")
+		return RepositoryChange{}, fmt.Errorf("publisher gateway: repository change has no publishable result_commit")
 	}
 	return RepositoryChange{
-		BaseSHA: metadata.BaseSHA, ResultSHA: metadata.ResultSHA,
+		BaseSHA: metadata.BaseSHA, ResultSHA: metadata.ResultCommit,
 		MaterializedRoot: tree.Root, CanonicalArchivePath: tree.ArchivePath,
 		close: tree.Close,
 	}, nil
@@ -929,64 +931,60 @@ func decodeRepositoryChangeMetadata(raw json.RawMessage) (contracts.RepositoryCh
 	if _, err := snapshot.ParseDigest(metadata.RepositoryID); err != nil {
 		return contracts.RepositoryChangeMetadata{}, err
 	}
-	if !validGitObjectID(metadata.BaseSHA) || !validGitObjectID(metadata.ResultTreeSHA) ||
-		(metadata.ResultSHA != "" && !validGitObjectID(metadata.ResultSHA)) {
+	if !validGitObjectID(metadata.BaseSHA) || !validGitObjectID(metadata.ResultTree) ||
+		(metadata.ResultCommit != "" && !validGitObjectID(metadata.ResultCommit)) {
 		return contracts.RepositoryChangeMetadata{}, fmt.Errorf("repository object identity is invalid")
 	}
-	if metadata.Representation != "git-tree" && metadata.Representation != "patch" && metadata.Representation != "bundle" {
+	if metadata.Representation != "git-tree" && metadata.Representation != "patch" && metadata.Representation != "git-bundle" {
 		return contracts.RepositoryChangeMetadata{}, fmt.Errorf("representation is invalid")
+	}
+	if !sort.StringsAreSorted(metadata.ChangedFiles) {
+		return contracts.RepositoryChangeMetadata{}, fmt.Errorf("changed_files must be sorted")
+	}
+	for index, name := range metadata.ChangedFiles {
+		if strings.TrimSpace(name) == "" || path.IsAbs(name) || path.Clean(name) != name || strings.HasPrefix(name, "../") {
+			return contracts.RepositoryChangeMetadata{}, fmt.Errorf("changed_files[%d] is invalid", index)
+		}
+		if index > 0 && metadata.ChangedFiles[index-1] == name {
+			return contracts.RepositoryChangeMetadata{}, fmt.Errorf("changed_files contains duplicate %q", name)
+		}
 	}
 	return metadata, nil
 }
 
-func inspectRepositoryChangeDocument(ctx context.Context, rootPath string, maximumPayloadBytes int64) (contracts.RepositoryChangeDocument, error) {
+func inspectRepositoryChangeRecord(ctx context.Context, rootPath string, maximumPayloadBytes int64) (contracts.Record[contracts.RepositoryChangeBody], error) {
 	root, err := os.OpenRoot(rootPath)
 	if err != nil {
-		return contracts.RepositoryChangeDocument{}, fmt.Errorf("publisher gateway: anchor repository change: %w", err)
+		return contracts.Record[contracts.RepositoryChangeBody]{}, fmt.Errorf("publisher gateway: anchor repository change: %w", err)
 	}
 	defer root.Close()
-	info, err := root.Lstat("change.json")
-	if err != nil || !info.Mode().IsRegular() || info.Size() > maxChangeDocumentBytes {
-		return contracts.RepositoryChangeDocument{}, fmt.Errorf("publisher gateway: change.json must be a bounded regular file")
-	}
-	file, err := root.Open("change.json")
+	record, err := contracts.ReadRepositoryChangeRecord(ctx, root)
 	if err != nil {
-		return contracts.RepositoryChangeDocument{}, fmt.Errorf("publisher gateway: open change.json: %w", err)
+		return contracts.Record[contracts.RepositoryChangeBody]{}, fmt.Errorf("publisher gateway: validate repository-change record: %w", err)
 	}
-	decoder := json.NewDecoder(io.LimitReader(file, maxChangeDocumentBytes+1))
-	decoder.DisallowUnknownFields()
-	var document contracts.RepositoryChangeDocument
-	decodeErr := decoder.Decode(&document)
-	trailingErr := requireJSONEOF(decoder)
-	closeErr := file.Close()
-	if err := errors.Join(decodeErr, trailingErr, closeErr); err != nil {
-		return contracts.RepositoryChangeDocument{}, fmt.Errorf("publisher gateway: decode change.json: %w", err)
-	}
-	if err := document.Validate(); err != nil {
-		return contracts.RepositoryChangeDocument{}, fmt.Errorf("publisher gateway: validate change.json: %w", err)
-	}
-	payloadInfo, err := root.Lstat(document.PayloadPath)
+	document := record.Body
+	payloadInfo, err := root.Lstat(document.Payload.Path)
 	if err != nil || !payloadInfo.Mode().IsRegular() || payloadInfo.Size() > maximumPayloadBytes {
-		return contracts.RepositoryChangeDocument{}, fmt.Errorf("publisher gateway: repository change payload must be a bounded regular file")
+		return contracts.Record[contracts.RepositoryChangeBody]{}, fmt.Errorf("publisher gateway: repository change payload must be a bounded regular file")
 	}
-	payload, err := root.Open(document.PayloadPath)
+	payload, err := root.Open(document.Payload.Path)
 	if err != nil {
-		return contracts.RepositoryChangeDocument{}, fmt.Errorf("publisher gateway: open repository change payload: %w", err)
+		return contracts.Record[contracts.RepositoryChangeBody]{}, fmt.Errorf("publisher gateway: open repository change payload: %w", err)
 	}
 	hash := sha256.New()
 	copied, copyErr := copyWithContext(ctx, hash, io.LimitReader(payload, maximumPayloadBytes+1))
-	closeErr = payload.Close()
+	closeErr := payload.Close()
 	if err := errors.Join(copyErr, closeErr); err != nil {
-		return contracts.RepositoryChangeDocument{}, fmt.Errorf("publisher gateway: hash repository change payload: %w", err)
+		return contracts.Record[contracts.RepositoryChangeBody]{}, fmt.Errorf("publisher gateway: hash repository change payload: %w", err)
 	}
 	if copied > maximumPayloadBytes {
-		return contracts.RepositoryChangeDocument{}, fmt.Errorf("publisher gateway: repository change payload exceeds its sealed snapshot")
+		return contracts.Record[contracts.RepositoryChangeBody]{}, fmt.Errorf("publisher gateway: repository change payload exceeds its sealed snapshot")
 	}
 	digest := "sha256:" + hex.EncodeToString(hash.Sum(nil))
-	if digest != document.PayloadDigest {
-		return contracts.RepositoryChangeDocument{}, fmt.Errorf("publisher gateway: repository change payload digest does not match change.json")
+	if digest != document.Payload.Digest.String() {
+		return contracts.Record[contracts.RepositoryChangeBody]{}, fmt.Errorf("publisher gateway: repository change payload digest does not match record.json")
 	}
-	return document, nil
+	return record, nil
 }
 
 func copyWithContext(ctx context.Context, destination io.Writer, source io.Reader) (int64, error) {

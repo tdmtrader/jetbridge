@@ -24,6 +24,7 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -38,13 +39,29 @@ const (
 	repositoryChangeType snapshot.TypeRef = "repository-change/v1"
 	repositoryType       snapshot.TypeRef = "repository/v1"
 
-	reportFileName  = "validation-report.json"
-	changeFileName  = "change.json"
-	payloadFileName = "payload.tar"
+	reportFileName = "validation-report.json"
+
+	// recordFileName is the sealed record envelope of a repository-change/v1
+	// value. The envelope carries record_version, the contract type, the frozen
+	// schema digest, and the subjects; the change itself is its body.
+	recordFileName = "record.json"
+
+	// contentDirectory is where a record's payloads live. ContentRef.Validate
+	// rejects any content path outside it, so the merged payload is written
+	// beneath it and payload.path names it.
+	contentDirectory = "content"
+	payloadFileName  = contentDirectory + "/payload.tar"
+
+	// payloadMediaType is what the rest of the platform already declares for a
+	// canonical repository tar payload (see the repository-change fixtures in
+	// agent/snapshot/contracts and agent/projection).
+	payloadMediaType = "application/octet-stream"
+
+	// baseSubjectID names the single base subject a repository-change record
+	// carries. For a merged change the base is the delivery target.
+	baseSubjectID = "base"
 
 	maximumDetailBytes = 4096
-
-	maxChangeDocumentBytes int64 = 1 << 20
 
 	// candidateRef holds the candidate's result commit after its objects have
 	// been copied into the target repository. It lives outside refs/heads so it
@@ -75,7 +92,7 @@ const (
 )
 
 // TrailerKey ties a merge commit back to the exact candidate result commit it
-// integrated. It is derivable offline from the candidate's change.json, so it
+// integrated. It is derivable offline from the candidate's record.json, so it
 // needs no renderer token and no execution identity.
 const TrailerKey = "Agent-Change"
 
@@ -260,13 +277,14 @@ type Request struct {
 	// the current tip of the delivery target.
 	Target snapshot.SnapshotRef
 	// TargetInput is the declared port name the target is bound at. It becomes
-	// base_input of the merged repository-change/v1 value, so the platform can
-	// resolve the merged change's base lineage when it seals the output.
+	// the input of the merged value's base SUBJECT, so the platform can resolve
+	// the merged change's base lineage when it seals the output.
 	TargetInput string
 	TargetRoot  string
 	// Inputs are the declared bindings visible to snapshot validation. They
 	// must include the candidate's own base repository under the port name its
-	// change.json names, and the target under TargetInput.
+	// record.json names as its base subject's input, and the target under
+	// TargetInput.
 	Inputs    map[string]snapshot.SnapshotRef
 	OpenInput snapshot.InputOpener
 	Method    Method
@@ -299,7 +317,7 @@ func (runner *Runner) WithCanonicalizer(canonicalizer snapshot.Canonicalizer) *R
 // written out.
 type Merged struct {
 	Report      contracts.ValidationReportDocument
-	Change      contracts.RepositoryChangeDocument
+	Change      contracts.Record[contracts.RepositoryChangeBody]
 	PayloadPath string
 
 	payload *snapshot.CapturedTree
@@ -335,7 +353,7 @@ func (runner *Runner) Run(ctx context.Context, request Request) (contracts.Valid
 // Merge revalidates the candidate against its own sealed base, copies its
 // objects into the target repository, and computes the three-way merge onto the
 // target tip. On success it materializes the merged repository as a canonical
-// git-tree payload and the matching repository-change/v1 document.
+// git-tree payload and the matching sealed repository-change/v1 record.
 //
 // The target working tree is MUTATED: the merge is computed in place, exactly
 // as a pod-side step runner does with its own input mount.
@@ -369,10 +387,14 @@ func (runner *Runner) Merge(ctx context.Context, request Request) (*Merged, erro
 	if err := validateTree(ctx, changeValidator, request.CandidateRoot, validationContext); err != nil {
 		return failed(request, fmt.Errorf("candidate is not a valid repository-change/v1: %w", err)), nil
 	}
-	document, err := readChangeDocument(ctx, request.CandidateRoot)
+	// validateTree above ran the full contract validator, which is what checks
+	// the record's subjects against the declared inputs. Reading the record now
+	// only re-derives the body the merge needs.
+	record, err := readChangeRecord(ctx, request.CandidateRoot)
 	if err != nil {
 		return failed(request, err), nil
 	}
+	document := record.Body
 
 	// 2. The target must still be an exact repository/v1. Its intrinsic
 	//    metadata is the authority for repository identity and base_sha; we
@@ -399,7 +421,7 @@ func (runner *Runner) Merge(ctx context.Context, request Request) (*Merged, erro
 	if err != nil {
 		return errored(request, err), nil
 	}
-	transferErr := transferCandidate(request.TargetRoot, candidate.Root, document.ResultSHA)
+	transferErr := transferCandidate(request.TargetRoot, candidate.Root, document.ResultCommit)
 	closeErr := candidate.Close()
 	if err := errors.Join(transferErr, closeErr); err != nil {
 		return errored(request, fmt.Errorf("copy candidate history into the target repository: %w", err)), nil
@@ -409,7 +431,7 @@ func (runner *Runner) Merge(ctx context.Context, request Request) (*Merged, erro
 	}
 
 	// 4. The merge itself.
-	message := appendTrailer(request.Message, TrailerKey+": "+document.ResultSHA)
+	message := appendTrailer(request.Message, TrailerKey+": "+document.ResultCommit)
 	result, err := Prepare(request.TargetRoot, Plan{
 		Branch: candidateRef, Target: targetMetadata.HeadSHA, Method: request.Method, Message: message,
 	})
@@ -531,53 +553,35 @@ func repositoryMetadata(
 	return metadata, nil
 }
 
-func readChangeDocument(ctx context.Context, changeRoot string) (contracts.RepositoryChangeDocument, error) {
+// readChangeRecord reads the candidate's sealed record.json. The contract layer
+// owns the bounded strict decode, the envelope shape, and the body invariants,
+// so this package keeps no second copy of those rules.
+func readChangeRecord(ctx context.Context, changeRoot string) (contracts.Record[contracts.RepositoryChangeBody], error) {
 	root, err := os.OpenRoot(changeRoot)
 	if err != nil {
-		return contracts.RepositoryChangeDocument{}, fmt.Errorf("open candidate root: %w", err)
+		return contracts.Record[contracts.RepositoryChangeBody]{}, fmt.Errorf("open candidate root: %w", err)
 	}
-	defer root.Close()
-	info, err := root.Lstat(changeFileName)
-	if err != nil {
-		return contracts.RepositoryChangeDocument{}, fmt.Errorf("read %s: %w", changeFileName, err)
+	record, readErr := contracts.ReadRepositoryChangeRecord(ctx, root)
+	closeErr := root.Close()
+	if err := errors.Join(readErr, closeErr); err != nil {
+		return contracts.Record[contracts.RepositoryChangeBody]{}, fmt.Errorf("%s: %w", recordFileName, err)
 	}
-	if !info.Mode().IsRegular() || info.Size() > maxChangeDocumentBytes {
-		return contracts.RepositoryChangeDocument{}, fmt.Errorf("%s must be a bounded regular file", changeFileName)
-	}
-	file, err := root.Open(changeFileName)
-	if err != nil {
-		return contracts.RepositoryChangeDocument{}, fmt.Errorf("open %s: %w", changeFileName, err)
-	}
-	defer file.Close()
-	decoder := json.NewDecoder(io.LimitReader(contextReader{ctx: ctx, reader: file}, maxChangeDocumentBytes+1))
-	decoder.DisallowUnknownFields()
-	var document contracts.RepositoryChangeDocument
-	if err := decoder.Decode(&document); err != nil {
-		return contracts.RepositoryChangeDocument{}, fmt.Errorf("decode %s: %w", changeFileName, err)
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return contracts.RepositoryChangeDocument{}, fmt.Errorf("%s contains trailing JSON", changeFileName)
-	}
-	if err := document.Validate(); err != nil {
-		return contracts.RepositoryChangeDocument{}, fmt.Errorf("%s: %w", changeFileName, err)
-	}
-	return document, nil
+	return record, nil
 }
 
 // materializeCandidate extracts the candidate's git-tree payload into a private
 // scratch repository. Its digest is re-derived from the exact emitted bytes, so
-// a payload that does not match the sealed document cannot be merged.
+// a payload that does not match the sealed record cannot be merged.
 func (runner *Runner) materializeCandidate(
 	ctx context.Context,
 	changeRoot string,
-	document contracts.RepositoryChangeDocument,
+	document contracts.RepositoryChangeBody,
 ) (*snapshot.CapturedTree, error) {
 	root, err := os.OpenRoot(changeRoot)
 	if err != nil {
 		return nil, fmt.Errorf("open candidate root: %w", err)
 	}
-	payload, err := root.Open(document.PayloadPath)
+	payload, err := root.Open(document.Payload.Path)
 	closeRootErr := root.Close()
 	if err := errors.Join(err, closeRootErr); err != nil {
 		return nil, fmt.Errorf("open candidate payload: %w", err)
@@ -590,9 +594,9 @@ func (runner *Runner) materializeCandidate(
 		}
 		return nil, fmt.Errorf("candidate payload is not a canonical repository tar: %w", err)
 	}
-	if tree.Digest.String() != document.PayloadDigest {
+	if tree.Digest != document.Payload.Digest {
 		_ = tree.Close()
-		return nil, fmt.Errorf("candidate payload_digest does not match the exact payload bytes")
+		return nil, fmt.Errorf("candidate payload.digest does not match the exact payload bytes")
 	}
 	return tree, nil
 }
@@ -600,7 +604,7 @@ func (runner *Runner) materializeCandidate(
 // transferCandidate copies the candidate's history into the target repository
 // over git's local transport. The source is a directory on this machine, so no
 // network, protocol helper, or credential is involved.
-func transferCandidate(targetRoot, candidateRoot, resultSHA string) error {
+func transferCandidate(targetRoot, candidateRoot, resultCommit string) error {
 	if _, err := run(targetRoot, "fetch", "--no-tags", "--force", candidateRoot, "HEAD:"+candidateRef); err != nil {
 		return err
 	}
@@ -608,8 +612,8 @@ func transferCandidate(targetRoot, candidateRoot, resultSHA string) error {
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(fetched) != resultSHA {
-		return fmt.Errorf("candidate payload HEAD %s does not equal result_sha %s", strings.TrimSpace(fetched), resultSHA)
+	if strings.TrimSpace(fetched) != resultCommit {
+		return fmt.Errorf("candidate payload HEAD %s does not equal result_commit %s", strings.TrimSpace(fetched), resultCommit)
 	}
 	return nil
 }
@@ -618,16 +622,16 @@ func (runner *Runner) materializeMerged(
 	ctx context.Context,
 	request Request,
 	target contracts.RepositoryMetadata,
-	resultSHA string,
+	resultCommit string,
 ) (*Merged, error) {
-	resultTreeSHA, err := run(request.TargetRoot, "rev-parse", "--verify", resultSHA+"^{tree}")
+	resultTree, err := run(request.TargetRoot, "rev-parse", "--verify", resultCommit+"^{tree}")
 	if err != nil {
 		return nil, fmt.Errorf("resolve merged tree: %w", err)
 	}
 	// A merge that grafted an unrelated history would change the repository's
 	// identity, and the platform would reject the sealed value later. Catch it
 	// here, where the diagnosis is still specific.
-	roots, err := run(request.TargetRoot, "rev-list", "--max-parents=0", resultSHA)
+	roots, err := run(request.TargetRoot, "rev-list", "--max-parents=0", resultCommit)
 	if err != nil {
 		return nil, fmt.Errorf("resolve merged root commits: %w", err)
 	}
@@ -639,24 +643,39 @@ func (runner *Runner) materializeMerged(
 	if err != nil {
 		return nil, fmt.Errorf("canonicalize merged repository: %w", err)
 	}
-	document := contracts.RepositoryChangeDocument{
-		SchemaVersion:  "1.0.0",
+	body := contracts.RepositoryChangeBody{
 		RepositoryID:   target.RepositoryID,
-		BaseInput:      request.TargetInput,
 		BaseSHA:        target.HeadSHA,
-		ResultSHA:      resultSHA,
-		ResultTreeSHA:  strings.TrimSpace(resultTreeSHA),
 		Representation: "git-tree",
-		PayloadPath:    payloadFileName,
-		PayloadDigest:  payload.Digest.String(),
+		Payload: contracts.ContentRef{
+			Path:      payloadFileName,
+			Digest:    payload.Digest,
+			MediaType: payloadMediaType,
+		},
+		ResultTree:   strings.TrimSpace(resultTree),
+		ResultCommit: resultCommit,
 	}
-	if err := document.Validate(); err != nil {
+	// The merged change's base is the delivery target, bound at the declared
+	// port the caller supplied. NewRecord seals the envelope: record_version,
+	// the contract type, and the frozen schema digest for it.
+	record, err := contracts.NewRecord(
+		repositoryChangeType,
+		[]contracts.Subject{contracts.SubjectFromInput(
+			baseSubjectID, contracts.SubjectRoleBase, request.TargetInput, request.Target,
+		)},
+		body,
+	)
+	if err != nil {
+		_ = payload.Close()
+		return nil, fmt.Errorf("produced invalid repository-change/v1: %w", err)
+	}
+	if err := body.Validate(record.Subjects); err != nil {
 		_ = payload.Close()
 		return nil, fmt.Errorf("produced invalid repository-change/v1: %w", err)
 	}
 	return &Merged{
 		Report:      reportFor(request, "ok", "merge is clean", nil),
-		Change:      document,
+		Change:      record,
 		PayloadPath: payload.ArchivePath,
 		payload:     payload,
 	}, nil
@@ -768,29 +787,29 @@ func failed(request Request, reason error) *Merged {
 	if isInfrastructureFailure(reason) {
 		return errored(request, reason)
 	}
-	return &Merged{Report: reportFor(request, "failed", "candidate cannot be merged", []contracts.ValidationCheck{{
+	return &Merged{Report: reportFor(request, "failed", "candidate cannot be merged", []contracts.LegacyValidationCheck{{
 		Name: "repository-merge", Status: "failed", Detail: boundedDetail(reason.Error()),
 	}})}
 }
 
 // errored records a tooling fault: the merge could not be decided either way.
 func errored(request Request, reason error) *Merged {
-	return &Merged{Report: reportFor(request, "error", "merge could not be evaluated", []contracts.ValidationCheck{{
+	return &Merged{Report: reportFor(request, "error", "merge could not be evaluated", []contracts.LegacyValidationCheck{{
 		Name: "repository-merge", Status: "error", Detail: boundedDetail(reason.Error()),
 	}})}
 }
 
 func conflicted(request Request, paths []string) *Merged {
-	checks := make([]contracts.ValidationCheck, 0, len(paths))
+	checks := make([]contracts.LegacyValidationCheck, 0, len(paths))
 	for _, path := range paths {
-		checks = append(checks, contracts.ValidationCheck{Name: path, Status: "failed", Detail: "unmerged"})
+		checks = append(checks, contracts.LegacyValidationCheck{Name: path, Status: "failed", Detail: "unmerged"})
 	}
 	return &Merged{Report: reportFor(request, "failed", "merge conflicts with the delivery target", checks)}
 }
 
-func reportFor(request Request, status, summary string, checks []contracts.ValidationCheck) contracts.ValidationReportDocument {
+func reportFor(request Request, status, summary string, checks []contracts.LegacyValidationCheck) contracts.ValidationReportDocument {
 	if len(checks) == 0 {
-		checks = []contracts.ValidationCheck{{
+		checks = []contracts.LegacyValidationCheck{{
 			Name: "repository-merge", Status: status, Detail: summary,
 		}}
 	}
@@ -842,8 +861,8 @@ func WriteReport(ctx context.Context, outputRoot string, document contracts.Vali
 }
 
 // WriteMergedChange materializes the merged repository-change/v1 value beneath
-// the caller-provided output mount: the canonical payload first, then the
-// document that names it.
+// the caller-provided output mount: the canonical payload first, beneath
+// content/, then the sealed record that names it.
 func WriteMergedChange(ctx context.Context, outputRoot string, merged *Merged) error {
 	if ctx == nil {
 		return fmt.Errorf("repository merge: context is required")
@@ -857,14 +876,23 @@ func WriteMergedChange(ctx context.Context, outputRoot string, merged *Merged) e
 	if merged == nil || merged.PayloadPath == "" {
 		return fmt.Errorf("repository merge: no merged change was produced")
 	}
-	if err := merged.Change.Validate(); err != nil {
-		return fmt.Errorf("repository merge: invalid repository-change/v1: %w", err)
-	}
 	encoded, err := json.MarshalIndent(merged.Change, "", "  ")
 	if err != nil {
 		return fmt.Errorf("repository merge: marshal repository-change/v1: %w", err)
 	}
 	encoded = append(encoded, '\n')
+	// A reader trusts the envelope for contract identity, so validate the exact
+	// bytes about to be written rather than the in-memory value: DecodeRecord
+	// rejects anything whose record_version, type, schema digest, or subject set
+	// is not the sealed shape, and the body carries the change invariants.
+	// Everything below is then driven by what was actually decoded.
+	var sealed contracts.Record[contracts.RepositoryChangeBody]
+	if err := contracts.DecodeRecord(encoded, repositoryChangeType, &sealed); err != nil {
+		return fmt.Errorf("repository merge: invalid repository-change/v1: %w", err)
+	}
+	if err := sealed.Body.Validate(sealed.Subjects); err != nil {
+		return fmt.Errorf("repository merge: invalid repository-change/v1: %w", err)
+	}
 
 	source, err := os.Open(merged.PayloadPath)
 	if err != nil {
@@ -877,16 +905,22 @@ func WriteMergedChange(ctx context.Context, outputRoot string, merged *Merged) e
 		return fmt.Errorf("repository merge: open output root: %w", err)
 	}
 	defer root.Close()
-	destination, err := root.Create(merged.Change.PayloadPath)
+	payloadPath := sealed.Body.Payload.Path
+	if directory := path.Dir(payloadPath); directory != "." {
+		if err := root.MkdirAll(directory, 0700); err != nil {
+			return fmt.Errorf("repository merge: create %s: %w", directory, err)
+		}
+	}
+	destination, err := root.Create(payloadPath)
 	if err != nil {
-		return fmt.Errorf("repository merge: create %s: %w", merged.Change.PayloadPath, err)
+		return fmt.Errorf("repository merge: create %s: %w", payloadPath, err)
 	}
 	_, copyErr := io.Copy(destination, contextReader{ctx: ctx, reader: source})
 	if err := errors.Join(copyErr, destination.Close()); err != nil {
-		return fmt.Errorf("repository merge: write %s: %w", merged.Change.PayloadPath, err)
+		return fmt.Errorf("repository merge: write %s: %w", payloadPath, err)
 	}
-	if err := root.WriteFile(changeFileName, encoded, 0600); err != nil {
-		return fmt.Errorf("repository merge: write %s: %w", changeFileName, err)
+	if err := root.WriteFile(recordFileName, encoded, 0600); err != nil {
+		return fmt.Errorf("repository merge: write %s: %w", recordFileName, err)
 	}
 	return nil
 }

@@ -211,17 +211,17 @@ func TestRepositoryChangeContractValidatesGitTree(t *testing.T) {
 	resultArchive, _ := canonicalRepositoryArchive(t, base)
 
 	document := validChangeDocument(baseMetadata, resultMetadata, "git-tree", "result.tar", digestBytes(resultArchive))
-	if _, err := validateFiles(t, "repository-change/v1", map[string][]byte{
-		"change.json": marshalDocument(t, document), "result.tar": resultArchive,
-	}, repositoryInputContext(t, "base", baseArchive, baseDigest)); err != nil {
+	if _, err := validateFiles(t, "repository-change/v1",
+		repositoryChangeFiles(t, document, "result.tar", resultArchive, baseDigest),
+		repositoryInputContext(t, "base", baseArchive, baseDigest)); err != nil {
 		t.Fatalf("valid git-tree change error = %v", err)
 	}
 
 	document.ResultTreeSHA = baseMetadata.TreeSHA
-	if _, err := validateFiles(t, "repository-change/v1", map[string][]byte{
-		"change.json": marshalDocument(t, document), "result.tar": resultArchive,
-	}, repositoryInputContext(t, "base", baseArchive, baseDigest)); err == nil || !strings.Contains(err.Error(), "result_tree_sha") {
-		t.Fatalf("wrong git-tree result error = %v, want result_tree_sha", err)
+	if _, err := validateFiles(t, "repository-change/v1",
+		repositoryChangeFiles(t, document, "result.tar", resultArchive, baseDigest),
+		repositoryInputContext(t, "base", baseArchive, baseDigest)); err == nil || !strings.Contains(err.Error(), "result_tree") {
+		t.Fatalf("wrong git-tree result error = %v, want result_tree", err)
 	}
 }
 
@@ -234,22 +234,22 @@ func TestRepositoryChangeContractValidatesPatchWithoutPretendingItProvesACommit(
 	patch := []byte(runTestGit(t, base, "diff", "--binary", "--no-ext-diff") + "\n")
 	runTestGit(t, base, "add", "README.md")
 	resultTree := runTestGit(t, base, "write-tree")
-	document := contracts.RepositoryChangeDocument{
+	document := repositoryChangeFixture{
 		SchemaVersion: "1.0.0", RepositoryID: baseMetadata.RepositoryID, BaseInput: "base",
 		BaseSHA: baseMetadata.HeadSHA, ResultTreeSHA: resultTree,
 		Representation: "patch", PayloadPath: "change.patch", PayloadDigest: digestBytes(patch),
 	}
-	if _, err := validateFiles(t, "repository-change/v1", map[string][]byte{
-		"change.json": marshalDocument(t, document), "change.patch": patch,
-	}, repositoryInputContext(t, "base", baseArchive, baseDigest)); err != nil {
+	if _, err := validateFiles(t, "repository-change/v1",
+		repositoryChangeFiles(t, document, "change.patch", patch, baseDigest),
+		repositoryInputContext(t, "base", baseArchive, baseDigest)); err != nil {
 		t.Fatalf("valid patch change error = %v", err)
 	}
 
 	document.ResultSHA = baseMetadata.HeadSHA
-	if _, err := validateFiles(t, "repository-change/v1", map[string][]byte{
-		"change.json": marshalDocument(t, document), "change.patch": patch,
-	}, repositoryInputContext(t, "base", baseArchive, baseDigest)); err == nil || !strings.Contains(err.Error(), "result_sha") {
-		t.Fatalf("patch result_sha error = %v, want result_sha rejection", err)
+	if _, err := validateFiles(t, "repository-change/v1",
+		repositoryChangeFiles(t, document, "change.patch", patch, baseDigest),
+		repositoryInputContext(t, "base", baseArchive, baseDigest)); err == nil || !strings.Contains(err.Error(), "result_commit") {
+		t.Fatalf("patch result_commit error = %v, want result_commit rejection", err)
 	}
 }
 
@@ -268,17 +268,17 @@ func TestRepositoryChangeContractValidatesBundleAndBaseAncestry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read bundle: %v", err)
 	}
-	document := validChangeDocument(baseMetadata, resultMetadata, "bundle", "result.bundle", digestBytes(bundle))
-	if _, err := validateFiles(t, "repository-change/v1", map[string][]byte{
-		"change.json": marshalDocument(t, document), "result.bundle": bundle,
-	}, repositoryInputContext(t, "base", baseArchive, baseDigest)); err != nil {
+	document := validChangeDocument(baseMetadata, resultMetadata, "git-bundle", "result.bundle", digestBytes(bundle))
+	if _, err := validateFiles(t, "repository-change/v1",
+		repositoryChangeFiles(t, document, "result.bundle", bundle, baseDigest),
+		repositoryInputContext(t, "base", baseArchive, baseDigest)); err != nil {
 		t.Fatalf("valid bundle change error = %v", err)
 	}
 
 	document.BaseSHA = strings.Repeat("0", len(baseMetadata.HeadSHA))
-	if _, err := validateFiles(t, "repository-change/v1", map[string][]byte{
-		"change.json": marshalDocument(t, document), "result.bundle": bundle,
-	}, repositoryInputContext(t, "base", baseArchive, baseDigest)); err == nil || !strings.Contains(err.Error(), "base_sha") {
+	if _, err := validateFiles(t, "repository-change/v1",
+		repositoryChangeFiles(t, document, "result.bundle", bundle, baseDigest),
+		repositoryInputContext(t, "base", baseArchive, baseDigest)); err == nil || !strings.Contains(err.Error(), "base_sha") {
 		t.Fatalf("wrong bundle base error = %v, want base_sha", err)
 	}
 }
@@ -287,14 +287,14 @@ func TestRepositoryChangeContractRejectsDigestPathAndExactInputMismatches(t *tes
 	base := newGitRepository(t, "")
 	baseArchive, baseDigest := canonicalRepositoryArchive(t, base)
 	metadata := repositoryMetadataForDirectory(t, base)
-	document := contracts.RepositoryChangeDocument{
+	document := repositoryChangeFixture{
 		SchemaVersion: "1.0.0", RepositoryID: metadata.RepositoryID, BaseInput: "before",
 		BaseSHA: metadata.HeadSHA, ResultTreeSHA: metadata.TreeSHA,
 		Representation: "patch", PayloadPath: "../change.patch", PayloadDigest: "sha256:" + strings.Repeat("0", 64),
 	}
-	if _, err := validateFiles(t, "repository-change/v1", map[string][]byte{
-		"change.json": marshalDocument(t, document), "change.patch": nil,
-	}, repositoryInputContext(t, "base", baseArchive, baseDigest)); err == nil || (!strings.Contains(err.Error(), "payload_path") && !strings.Contains(err.Error(), "before")) {
+	if _, err := validateFiles(t, "repository-change/v1",
+		repositoryChangeFiles(t, document, "change.patch", nil, baseDigest),
+		repositoryInputContext(t, "base", baseArchive, baseDigest)); err == nil || (!strings.Contains(err.Error(), "content path") && !strings.Contains(err.Error(), "before")) {
 		t.Fatalf("mismatch error = %v, want path or exact input error", err)
 	}
 }
@@ -313,9 +313,9 @@ func TestRepositoryChangeGitTreeRequiresActualHEADToEqualResultSHA(t *testing.T)
 	resultArchive, _ := canonicalRepositoryArchive(t, base)
 	document := validChangeDocument(baseMetadata, declaredResult, "git-tree", "result.tar", digestBytes(resultArchive))
 
-	if _, err := validateFiles(t, "repository-change/v1", map[string][]byte{
-		"change.json": marshalDocument(t, document), "result.tar": resultArchive,
-	}, repositoryInputContext(t, "base", baseArchive, baseDigest)); err == nil || !strings.Contains(err.Error(), "HEAD") {
+	if _, err := validateFiles(t, "repository-change/v1",
+		repositoryChangeFiles(t, document, "result.tar", resultArchive, baseDigest),
+		repositoryInputContext(t, "base", baseArchive, baseDigest)); err == nil || !strings.Contains(err.Error(), "HEAD") {
 		t.Fatalf("non-HEAD result error = %v, want HEAD mismatch", err)
 	}
 }
@@ -329,14 +329,14 @@ func TestRepositoryChangePatchRejectsEscapingSymlinkResult(t *testing.T) {
 	}
 	runTestGit(t, base, "add", "escape")
 	patch := []byte(runTestGit(t, base, "diff", "--cached", "--binary", "--no-ext-diff", "HEAD") + "\n")
-	document := contracts.RepositoryChangeDocument{
+	document := repositoryChangeFixture{
 		SchemaVersion: "1.0.0", RepositoryID: baseMetadata.RepositoryID, BaseInput: "base",
 		BaseSHA: baseMetadata.HeadSHA, ResultTreeSHA: runTestGit(t, base, "write-tree"),
 		Representation: "patch", PayloadPath: "change.patch", PayloadDigest: digestBytes(patch),
 	}
-	if _, err := validateFiles(t, "repository-change/v1", map[string][]byte{
-		"change.json": marshalDocument(t, document), "change.patch": patch,
-	}, repositoryInputContext(t, "base", baseArchive, baseDigest)); err == nil || !strings.Contains(err.Error(), "symlink") {
+	if _, err := validateFiles(t, "repository-change/v1",
+		repositoryChangeFiles(t, document, "change.patch", patch, baseDigest),
+		repositoryInputContext(t, "base", baseArchive, baseDigest)); err == nil || !strings.Contains(err.Error(), "symlink") {
 		t.Fatalf("escaping symlink patch error = %v, want symlink rejection", err)
 	}
 }
@@ -350,14 +350,14 @@ func TestRepositoryChangePatchRejectsNoncanonicalSymlinkTarget(t *testing.T) {
 	}
 	runTestGit(t, base, "add", "link")
 	patch := []byte(runTestGit(t, base, "diff", "--cached", "--binary", "--no-ext-diff", "HEAD") + "\n")
-	document := contracts.RepositoryChangeDocument{
+	document := repositoryChangeFixture{
 		SchemaVersion: "1.0.0", RepositoryID: baseMetadata.RepositoryID, BaseInput: "base",
 		BaseSHA: baseMetadata.HeadSHA, ResultTreeSHA: runTestGit(t, base, "write-tree"),
 		Representation: "patch", PayloadPath: "change.patch", PayloadDigest: digestBytes(patch),
 	}
-	if _, err := validateFiles(t, "repository-change/v1", map[string][]byte{
-		"change.json": marshalDocument(t, document), "change.patch": patch,
-	}, repositoryInputContext(t, "base", baseArchive, baseDigest)); err == nil || !strings.Contains(err.Error(), "canonical") {
+	if _, err := validateFiles(t, "repository-change/v1",
+		repositoryChangeFiles(t, document, "change.patch", patch, baseDigest),
+		repositoryInputContext(t, "base", baseArchive, baseDigest)); err == nil || !strings.Contains(err.Error(), "canonical") {
 		t.Fatalf("noncanonical symlink patch error = %v, want canonical-target rejection", err)
 	}
 }
@@ -376,10 +376,10 @@ func TestRepositoryChangeBundleRejectsGitlinksAndExtraHeads(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read gitlink bundle: %v", err)
 		}
-		document := validChangeDocument(baseMetadata, resultMetadata, "bundle", "result.bundle", digestBytes(bundle))
-		if _, err := validateFiles(t, "repository-change/v1", map[string][]byte{
-			"change.json": marshalDocument(t, document), "result.bundle": bundle,
-		}, repositoryInputContext(t, "base", baseArchive, baseDigest)); err == nil || !strings.Contains(err.Error(), "gitlink") {
+		document := validChangeDocument(baseMetadata, resultMetadata, "git-bundle", "result.bundle", digestBytes(bundle))
+		if _, err := validateFiles(t, "repository-change/v1",
+			repositoryChangeFiles(t, document, "result.bundle", bundle, baseDigest),
+			repositoryInputContext(t, "base", baseArchive, baseDigest)); err == nil || !strings.Contains(err.Error(), "gitlink") {
 			t.Fatalf("gitlink bundle error = %v, want gitlink rejection", err)
 		}
 	})
@@ -404,20 +404,69 @@ func TestRepositoryChangeBundleRejectsGitlinksAndExtraHeads(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read extra-head bundle: %v", err)
 		}
-		document := validChangeDocument(baseMetadata, resultMetadata, "bundle", "result.bundle", digestBytes(bundle))
-		if _, err := validateFiles(t, "repository-change/v1", map[string][]byte{
-			"change.json": marshalDocument(t, document), "result.bundle": bundle,
-		}, repositoryInputContext(t, "base", baseArchive, baseDigest)); err == nil || !strings.Contains(err.Error(), "exactly one") {
+		document := validChangeDocument(baseMetadata, resultMetadata, "git-bundle", "result.bundle", digestBytes(bundle))
+		if _, err := validateFiles(t, "repository-change/v1",
+			repositoryChangeFiles(t, document, "result.bundle", bundle, baseDigest),
+			repositoryInputContext(t, "base", baseArchive, baseDigest)); err == nil || !strings.Contains(err.Error(), "exactly one") {
 			t.Fatalf("extra-head bundle error = %v, want exactly-one-head rejection", err)
 		}
 	})
 }
 
-func validChangeDocument(base, result contracts.RepositoryMetadata, representation, payloadPath, payloadDigest string) contracts.RepositoryChangeDocument {
-	return contracts.RepositoryChangeDocument{
+type repositoryChangeFixture struct {
+	SchemaVersion  string
+	RepositoryID   string
+	BaseInput      string
+	BaseSHA        string
+	ResultSHA      string
+	ResultTreeSHA  string
+	Representation string
+	PayloadPath    string
+	PayloadDigest  string
+}
+
+func validChangeDocument(base, result contracts.RepositoryMetadata, representation, payloadPath, payloadDigest string) repositoryChangeFixture {
+	return repositoryChangeFixture{
 		SchemaVersion: "1.0.0", RepositoryID: base.RepositoryID, BaseInput: "base",
 		BaseSHA: base.HeadSHA, ResultSHA: result.HeadSHA, ResultTreeSHA: result.TreeSHA,
 		Representation: representation, PayloadPath: payloadPath, PayloadDigest: payloadDigest,
+	}
+}
+
+func repositoryChangeFiles(
+	t *testing.T,
+	document repositoryChangeFixture,
+	payloadName string,
+	payload []byte,
+	baseDigest snapshot.Digest,
+) map[string][]byte {
+	t.Helper()
+	payloadPath := document.PayloadPath
+	if !strings.HasPrefix(payloadPath, "../") && !strings.HasPrefix(payloadPath, "content/") {
+		payloadPath = "content/" + payloadPath
+	}
+	record, err := contracts.NewRecord(
+		mustTypeRef(t, "repository-change/v1"),
+		[]contracts.Subject{{
+			ID: "base", Role: contracts.SubjectRoleBase, Input: document.BaseInput,
+			Type: mustTypeRef(t, "repository/v1"), Digest: baseDigest,
+		}},
+		contracts.RepositoryChangeBody{
+			RepositoryID: document.RepositoryID, BaseSHA: document.BaseSHA,
+			Representation: document.Representation,
+			Payload: contracts.ContentRef{
+				Path: payloadPath, Digest: mustDigest(t, document.PayloadDigest),
+				MediaType: "application/octet-stream",
+			},
+			ResultTree: document.ResultTreeSHA, ResultCommit: document.ResultSHA,
+		},
+	)
+	if err != nil {
+		t.Fatalf("NewRecord(repository-change/v1): %v", err)
+	}
+	return map[string][]byte{
+		"record.json":            marshalRecord(t, record),
+		"content/" + payloadName: payload,
 	}
 }
 

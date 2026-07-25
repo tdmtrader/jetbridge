@@ -1256,7 +1256,8 @@ func (factory *agentExperimentsFactory) RecordMeasurements(
 	if len(document.Metrics) > experiment.MaxMeasurementsPerCell {
 		return fmt.Errorf("db: experiment measurements exceed limit of %d", experiment.MaxMeasurementsPerCell)
 	}
-	if err := document.Validate(); err != nil || !document.Valid {
+	if err := document.ValidateDetached(); err != nil ||
+		(document.Conclusion != "measured" && document.Conclusion != "partial") {
 		return fmt.Errorf("db: invalid experiment measurements: %v", err)
 	}
 	payload, err := json.Marshal(document)

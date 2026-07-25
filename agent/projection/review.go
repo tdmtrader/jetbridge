@@ -2,7 +2,6 @@ package projection
 
 import (
 	"archive/tar"
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -13,8 +12,8 @@ import (
 	"strings"
 
 	"github.com/concourse/concourse/agent/api/reviews"
-	"github.com/concourse/concourse/agent/schema"
 	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/agent/snapshot/contracts"
 )
 
 const maxReviewDocumentBytes int64 = 1 << 20
@@ -104,7 +103,7 @@ func (projector *ReviewProjector) Project(ctx context.Context, ref snapshot.Snap
 	if reader == nil {
 		return fmt.Errorf("%w: review snapshot %s returned no content", snapshot.ErrContentUnavailable, manifest.ID)
 	}
-	reviewJSON, readErr := readCanonicalReview(ctx, reader, manifest)
+	recordJSON, readErr := readCanonicalReview(ctx, reader, manifest)
 	closeErr := reader.Close()
 	if closeErr != nil {
 		closeErr = fmt.Errorf("%w: close review snapshot %s: %v", snapshot.ErrContentUnavailable, manifest.ID, closeErr)
@@ -113,19 +112,16 @@ func (projector *ReviewProjector) Project(ctx context.Context, ref snapshot.Snap
 		return errors.Join(readErr, closeErr)
 	}
 
-	var payload schema.ReviewOutput
-	decoder := json.NewDecoder(bytes.NewReader(reviewJSON))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&payload); err != nil {
-		return fmt.Errorf("%w: decode review.json: %v", ErrCorruptSnapshot, err)
+	var sealed contracts.Record[contracts.ReviewBody]
+	if err := contracts.DecodeRecord(recordJSON, snapshot.TypeRef("review/v1"), &sealed); err != nil {
+		return fmt.Errorf("%w: decode record.json: %v", ErrCorruptSnapshot, err)
 	}
-	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return fmt.Errorf("%w: review.json contains trailing JSON", ErrCorruptSnapshot)
+	if err := sealed.Body.Validate(sealed.Subjects); err != nil {
+		return fmt.Errorf("%w: invalid review/v1 record: %v", ErrCorruptSnapshot, err)
 	}
-	if err := payload.ValidateSnapshotV1(); err != nil {
-		return fmt.Errorf("%w: invalid review/v1 document: %v", ErrCorruptSnapshot, err)
-	}
+	primary := primaryReviewSubject(sealed.Subjects)
+	score, pass := reviewCompatibilityScore(sealed.Body.Conclusion)
+	proven, observations := reviewFindingCounts(sealed.Body.Findings)
 
 	snapshotID := manifest.ID
 	productionID := input.ProductionID
@@ -136,11 +132,11 @@ func (projector *ReviewProjector) Project(ctx context.Context, ref snapshot.Snap
 	record := &reviews.StoredReview{
 		BuildID: buildID, BuildName: input.BuildName, TeamName: input.TeamName,
 		PipelineName: input.PipelineName, JobName: input.JobName,
-		Repo: payload.Metadata.Repo, CommitSha: payload.Metadata.Commit, Branch: payload.Metadata.Branch,
-		Score: payload.Score.Value, MaxScore: payload.Score.Max, Pass: payload.Score.Pass,
-		ProvenCount: len(payload.ProvenIssues), ObservationCount: len(payload.Observations),
-		Summary: payload.Summary, AgentModel: payload.Metadata.AgentModel,
-		DurationSeconds: payload.Metadata.DurationSec, Review: append(json.RawMessage(nil), reviewJSON...),
+		Repo: primary.Type.String(), CommitSha: primary.Digest.String(), Branch: primary.ID,
+		Score: score, MaxScore: 1, Pass: pass,
+		ProvenCount: proven, ObservationCount: observations,
+		Summary:         sealed.Body.Summary,
+		DurationSeconds: 0, Review: append(json.RawMessage(nil), recordJSON...),
 		PipelineRunID: input.PipelineRunID, SubmittedBy: input.SubmittedBy,
 		SnapshotID: &snapshotID, WorkflowRunID: input.WorkflowRunID, ProductionID: &productionID,
 	}
@@ -148,6 +144,38 @@ func (projector *ReviewProjector) Project(ctx context.Context, ref snapshot.Snap
 		return fmt.Errorf("upsert review projection: %w", err)
 	}
 	return nil
+}
+
+func primaryReviewSubject(subjects []contracts.Subject) contracts.Subject {
+	for _, subject := range subjects {
+		if subject.Role == contracts.SubjectRolePrimary {
+			return subject
+		}
+	}
+	return contracts.Subject{}
+}
+
+func reviewCompatibilityScore(conclusion string) (float64, bool) {
+	switch conclusion {
+	case "accept":
+		return 1, true
+	case "inconclusive":
+		return 0.5, false
+	default:
+		return 0, false
+	}
+}
+
+func reviewFindingCounts(findings []contracts.Finding) (int, int) {
+	var substantive, observations int
+	for _, finding := range findings {
+		if finding.Severity == "observation" {
+			observations++
+		} else {
+			substantive++
+		}
+	}
+	return substantive, observations
 }
 
 func readCanonicalReview(ctx context.Context, reader io.Reader, manifest snapshot.Snapshot) ([]byte, error) {
@@ -172,24 +200,24 @@ func readCanonicalReview(ctx context.Context, reader io.Reader, manifest snapsho
 			parseErr = fmt.Errorf("read tar: %w", err)
 			break
 		}
-		if header.Name != "review.json" {
+		if header.Name != "record.json" {
 			continue
 		}
 		if reviewJSON != nil {
-			parseErr = fmt.Errorf("duplicate review.json")
+			parseErr = fmt.Errorf("duplicate record.json")
 			break
 		}
 		if header.Typeflag != tar.TypeReg && header.Typeflag != tar.TypeRegA {
-			parseErr = fmt.Errorf("review.json is not a regular file")
+			parseErr = fmt.Errorf("record.json is not a regular file")
 			break
 		}
 		if header.Size < 0 || header.Size > maxReviewDocumentBytes {
-			parseErr = fmt.Errorf("review.json exceeds %d bytes", maxReviewDocumentBytes)
+			parseErr = fmt.Errorf("record.json exceeds %d bytes", maxReviewDocumentBytes)
 			break
 		}
 		reviewJSON = make([]byte, header.Size)
 		if _, err := io.ReadFull(archive, reviewJSON); err != nil {
-			parseErr = fmt.Errorf("read review.json: %w", err)
+			parseErr = fmt.Errorf("read record.json: %w", err)
 			break
 		}
 	}
@@ -211,7 +239,7 @@ func readCanonicalReview(ctx context.Context, reader io.Reader, manifest snapsho
 		return nil, fmt.Errorf("%w: %v", ErrCorruptSnapshot, parseErr)
 	}
 	if reviewJSON == nil {
-		return nil, fmt.Errorf("%w: review.json is missing", ErrCorruptSnapshot)
+		return nil, fmt.Errorf("%w: record.json is missing", ErrCorruptSnapshot)
 	}
 	return reviewJSON, nil
 }

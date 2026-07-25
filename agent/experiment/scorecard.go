@@ -151,6 +151,17 @@ type variantAccumulator struct {
 	negativePass  bool
 }
 
+type metricDefinition struct {
+	unit       string
+	direction  string
+	minimumSet bool
+	minimum    float64
+	maximumSet bool
+	maximum    float64
+	targetSet  bool
+	target     float64
+}
+
 func BuildScorecard(request ScorecardRequest) (Scorecard, error) {
 	if err := request.ExperimentID.Validate(); err != nil {
 		return Scorecard{}, err
@@ -170,7 +181,7 @@ func BuildScorecard(request ScorecardRequest) (Scorecard, error) {
 	accumulators := make(map[string]*variantAccumulator)
 	identities := make(map[cellIdentity]struct{}, len(request.Cells))
 	globalDirections := make(map[string]string)
-	globalUnits := make(map[string]string)
+	globalDefinitions := make(map[string]metricDefinition)
 	matrixBudgetSkipped := false
 	for index, cell := range request.Cells {
 		if len(cell.Measurements) > MaxMeasurementsPerCell {
@@ -229,23 +240,28 @@ func BuildScorecard(request ScorecardRequest) (Scorecard, error) {
 		key := cellKey{fixture: cell.Fixture, repetition: cell.Repetition}
 		values := make(map[string]float64, len(cell.Measurements))
 		for _, measurement := range cell.Measurements {
-			if _, found := globalDirections[measurement.Name]; !found && len(globalDirections) >= MaxMeasurementsPerCell {
+			if _, found := globalDirections[measurement.ID]; !found && len(globalDirections) >= MaxMeasurementsPerCell {
 				return Scorecard{}, fmt.Errorf(
 					"experiment scorecard: distinct metrics exceed the measurement limit of %d",
 					MaxMeasurementsPerCell,
 				)
 			}
-			if direction, found := globalDirections[measurement.Name]; found && direction != measurement.Direction {
-				return Scorecard{}, fmt.Errorf("experiment scorecard: metric %q has inconsistent direction %q and %q", measurement.Name, direction, measurement.Direction)
+			definition := definitionOf(measurement)
+			if prior, found := globalDefinitions[measurement.ID]; found && prior != definition {
+				switch {
+				case prior.direction != definition.direction:
+					return Scorecard{}, fmt.Errorf("experiment scorecard: metric %q has inconsistent direction %q and %q", measurement.ID, prior.direction, definition.direction)
+				case prior.unit != definition.unit:
+					return Scorecard{}, fmt.Errorf("experiment scorecard: metric %q has inconsistent unit %q and %q", measurement.ID, prior.unit, definition.unit)
+				default:
+					return Scorecard{}, fmt.Errorf("experiment scorecard: metric %q has inconsistent bounds or target", measurement.ID)
+				}
 			}
-			globalDirections[measurement.Name] = measurement.Direction
-			if unit, found := globalUnits[measurement.Name]; found && unit != measurement.Unit {
-				return Scorecard{}, fmt.Errorf("experiment scorecard: metric %q has inconsistent unit %q and %q", measurement.Name, unit, measurement.Unit)
-			}
-			globalUnits[measurement.Name] = measurement.Unit
-			accumulator.directions[measurement.Name] = measurement.Direction
-			accumulator.metricValues[measurement.Name] = append(accumulator.metricValues[measurement.Name], measurement.Value)
-			values[measurement.Name] = measurement.Value
+			globalDefinitions[measurement.ID] = definition
+			globalDirections[measurement.ID] = measurement.Direction
+			accumulator.directions[measurement.ID] = measurement.Direction
+			accumulator.metricValues[measurement.ID] = append(accumulator.metricValues[measurement.ID], measurement.Value)
+			values[measurement.ID] = measurement.Value
 		}
 		accumulator.metricByCell[key] = values
 	}
@@ -334,7 +350,7 @@ func comparePaired(
 	}
 	for _, key := range keys {
 		delta := variant.metricByCell[key][metric] - control.metricByCell[key][metric]
-		if direction == "lower" {
+		if direction == "lower-is-better" {
 			delta = -delta
 		}
 		deltas = append(deltas, delta)
@@ -408,15 +424,54 @@ func validateScorecardCell(cell CellResult) error {
 	}
 	seen := make(map[string]struct{}, len(cell.Measurements))
 	for _, measurement := range cell.Measurements {
-		if strings.TrimSpace(measurement.Name) == "" || strings.TrimSpace(measurement.Unit) == "" ||
+		if strings.TrimSpace(measurement.ID) == "" || strings.TrimSpace(measurement.Unit) == "" ||
 			math.IsNaN(measurement.Value) || math.IsInf(measurement.Value, 0) ||
-			(measurement.Direction != "higher" && measurement.Direction != "lower") {
-			return fmt.Errorf("measurement %q is invalid", measurement.Name)
+			(measurement.Direction != "higher-is-better" && measurement.Direction != "lower-is-better" && measurement.Direction != "target") {
+			return fmt.Errorf("measurement %q is invalid", measurement.ID)
 		}
-		if _, found := seen[measurement.Name]; found {
-			return fmt.Errorf("duplicate measurement %q", measurement.Name)
+		if err := validateMetricDefinition(measurement); err != nil {
+			return fmt.Errorf("measurement %q is invalid: %w", measurement.ID, err)
 		}
-		seen[measurement.Name] = struct{}{}
+		if _, found := seen[measurement.ID]; found {
+			return fmt.Errorf("duplicate measurement %q", measurement.ID)
+		}
+		seen[measurement.ID] = struct{}{}
+	}
+	return nil
+}
+
+func definitionOf(measurement contracts.Measurement) metricDefinition {
+	definition := metricDefinition{unit: measurement.Unit, direction: measurement.Direction}
+	if measurement.Minimum != nil {
+		definition.minimumSet, definition.minimum = true, *measurement.Minimum
+	}
+	if measurement.Maximum != nil {
+		definition.maximumSet, definition.maximum = true, *measurement.Maximum
+	}
+	if measurement.Target != nil {
+		definition.targetSet, definition.target = true, *measurement.Target
+	}
+	return definition
+}
+
+func validateMetricDefinition(measurement contracts.Measurement) error {
+	if (measurement.Minimum == nil) != (measurement.Maximum == nil) {
+		return fmt.Errorf("minimum and maximum must be declared together")
+	}
+	if measurement.Minimum != nil {
+		if math.IsNaN(*measurement.Minimum) || math.IsInf(*measurement.Minimum, 0) ||
+			math.IsNaN(*measurement.Maximum) || math.IsInf(*measurement.Maximum, 0) ||
+			*measurement.Minimum > *measurement.Maximum ||
+			measurement.Value < *measurement.Minimum || measurement.Value > *measurement.Maximum {
+			return fmt.Errorf("bounds are invalid")
+		}
+	}
+	if measurement.Direction == "target" {
+		if measurement.Target == nil || math.IsNaN(*measurement.Target) || math.IsInf(*measurement.Target, 0) {
+			return fmt.Errorf("target is required")
+		}
+	} else if measurement.Target != nil {
+		return fmt.Errorf("target is valid only for target direction")
 	}
 	return nil
 }

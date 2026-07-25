@@ -70,14 +70,14 @@ func (d UpgradeReportDocument) Validate() error {
 }
 
 type ValidationReportDocument struct {
-	SchemaVersion string            `json:"schema_version"`
-	Subject       string            `json:"subject"`
-	Status        string            `json:"status"`
-	Summary       string            `json:"summary"`
-	Checks        []ValidationCheck `json:"checks"`
+	SchemaVersion string                  `json:"schema_version"`
+	Subject       string                  `json:"subject"`
+	Status        string                  `json:"status"`
+	Summary       string                  `json:"summary"`
+	Checks        []LegacyValidationCheck `json:"checks"`
 }
 
-type ValidationCheck struct {
+type LegacyValidationCheck struct {
 	Name   string `json:"name"`
 	Status string `json:"status"`
 	Detail string `json:"detail,omitempty"`

@@ -206,7 +206,7 @@ Each output contract separates three concepts:
 
 ```text
 type            review/v1
-representation  directory containing review.json
+representation  directory containing record.json and optional content/
 snapshot        one validated immutable review with a digest and lineage
 ```
 
@@ -214,11 +214,58 @@ Or:
 
 ```text
 type            repository-change/v1
-representation  commit, patch, bundle, or stored tree
+representation  record.json plus a patch, Git bundle, or tree beneath content/
 snapshot        one change with a declared base and resulting state
 ```
 
 The semantic repository-change contract should not require one transport encoding. It identifies at least the repository, base snapshot, resulting snapshot, and content needed to reconstruct or materialize the result. A structural validator proves that the representation is coherent.
+
+### Sealed records and exact subjects
+
+The analytical and content-bearing domain values use a common sealed-record
+envelope:
+
+```yaml
+record_version: 1.0.0
+type: review/v1
+schema: sha256:<frozen-contract-descriptor-digest>
+subjects:
+  - id: primary
+    role: primary
+    input: change
+    type: repository-change/v1
+    digest: sha256:<exact-input-snapshot-digest>
+body:
+  conclusion: accept
+  summary: No blocking findings.
+  findings: []
+```
+
+The six built-in record types are `review/v1`, `diagnosis/v1`,
+`validation/v1`, `repository-change/v1`, `selection/v1`, and
+`measurements/v1`. `validation/v1` is the single execution-observation
+contract; it replaces the earlier `validation-report/v1` and
+`gate-results/v1` split.
+
+The record contains stable value identity only. Local snapshot IDs, workflow
+run IDs, producer identity, model, timing, and attempt provenance remain on
+the production occurrence outside the bytes. Subject type and digest bind a
+record to the exact values it judges, explains, validates, changes, selects,
+or measures. Jetbridge exposes those values and the declared output
+type/schema to the producer, then checks them again at sealing; producer
+claims never create authority.
+
+Record entity sets are sorted by stable IDs before submission. Evidence
+anchors resolve through declared subjects instead of embedding unrelated
+snapshot references. `selection/v1` records a decision but resolves to the
+already-sealed selected input, so selection never copies or reseals candidate
+content.
+
+This record layer is also the boundary for a future Concourse prototype
+runtime. A prototype message may consume sealed records and emit candidate
+records, but records are immutable values rather than mutable prototype
+instances. Prototype configuration/cloning and semantic workflow data
+therefore remain distinct.
 
 ### Validity is not quality
 

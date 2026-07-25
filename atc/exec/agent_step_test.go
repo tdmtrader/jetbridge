@@ -499,6 +499,12 @@ var _ = Describe("AgentStep", func() {
 			Expect(chosenContainer.Spec.Inputs).To(ConsistOf(runtime.Input{
 				Artifact: inputVolume, DestinationPath: "some-artifact-root/repository", FromCache: true,
 			}))
+			Expect(chosenContainer.Spec.Env).To(ContainElements(
+				"AGENT_INPUT_REPOSITORY_SNAPSHOT_TYPE=repository/v1",
+				"AGENT_INPUT_REPOSITORY_SNAPSHOT_DIGEST="+inputRef.Digest.String(),
+				"AGENT_OUTPUT_WORKSPACE_RECORD_TYPE=repository-change/v1",
+				HavePrefix("AGENT_OUTPUT_WORKSPACE_RECORD_SCHEMA=sha256:"),
+			))
 
 			entry, found := repo.ArtifactEntryFor("workspace")
 			Expect(found).To(BeTrue())

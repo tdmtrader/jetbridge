@@ -215,6 +215,68 @@ ticket-budget fallback, and Dashboard's special agent-pipeline filter have
 been removed. The five schema-v3 definitions listed below are the active
 examples.
 
+## Sealed record outputs
+
+Six domain contracts share one canonical output representation:
+
+```text
+record.json
+content/       optional payloads and large evidence
+```
+
+They are `review/v1`, `diagnosis/v1`, `validation/v1`,
+`repository-change/v1`, `selection/v1`, and `measurements/v1`.
+`validation/v1` consolidates deterministic check execution and agent-authored
+validation; every retry is preserved as an attempt, while conclusion,
+flakiness, and total duration are derived.
+
+`record.json` has a strict common envelope:
+
+```json
+{
+  "record_version": "1.0.0",
+  "type": "review/v1",
+  "schema": "sha256:<frozen-contract-descriptor-digest>",
+  "subjects": [
+    {
+      "id": "primary",
+      "role": "primary",
+      "input": "change",
+      "type": "repository-change/v1",
+      "digest": "sha256:<exact-input-digest>"
+    }
+  ],
+  "body": {}
+}
+```
+
+Agent and task containers receive the authoritative values as environment
+variables:
+
+```text
+AGENT_INPUT_<PORT>_SNAPSHOT_TYPE
+AGENT_INPUT_<PORT>_SNAPSHOT_DIGEST
+AGENT_OUTPUT_<PORT>_RECORD_TYPE
+AGENT_OUTPUT_<PORT>_RECORD_SCHEMA
+```
+
+Copy these exact values into the candidate record. Jetbridge rejects unknown
+or mismatched subjects, type/schema mismatches, unsorted entity sets, invalid
+evidence anchors, and type-specific semantic inconsistencies before sealing.
+Database snapshot IDs, model identity, timing, producer identity, and
+workflow/build provenance never belong in the record body; they are stored on
+the production occurrence.
+
+Repository changes put their patch, Git bundle, or tree payload below
+`content/` and identify the exact `repository/v1` base as a `base` subject.
+Review, diagnosis, and validation use anchored evidence. Selection creates a
+decision record but returns the existing selected snapshot reference rather
+than copying its content. Measurement records contain stable metric
+definitions; evaluator identity/version remains provenance.
+
+The detailed contract and prototype boundary are specified in
+[Prototype-Informed Sealed Record Contracts](../superpowers/specs/2026-07-24-prototype-sealed-record-contracts-design.md).
+
 ## Optional output presence
 
 Jetbridge creates every declared task and agent output mount before execution,
@@ -459,7 +521,7 @@ team-scoped run/build authorization evidence for every occurrence.
 The Git stream is the immutable change snapshot, not a checkout obtained from
 a live remote. Before sending it, ATC loads the exact team-authorized manifest,
 re-hashes the complete canonical archive, strictly checks the sealed intrinsic
-metadata against `change.json`, and verifies the payload digest. Live provider
+metadata against `record.json`, and verifies the payload digest. Live provider
 access begins only at the explicit gateway boundary.
 
 ## Experiments

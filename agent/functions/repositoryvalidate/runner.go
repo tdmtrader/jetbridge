@@ -17,7 +17,7 @@ import (
 
 const (
 	repositoryChangeType snapshot.TypeRef = "repository-change/v1"
-	reportFileName                        = "validation-report.json"
+	reportFileName                        = "record.json"
 	maximumDetailBytes                    = 4096
 )
 
@@ -44,52 +44,52 @@ func NewRunner(registry snapshot.ValidatorRegistry) (*Runner, error) {
 
 // Run revalidates the candidate without granting the validator network or
 // storage access. A semantic rejection and an unavailable immutable input are
-// represented in validation-report/v1; malformed invocation and cancellation
+// represented in validation/v1; malformed invocation and cancellation
 // remain function errors.
-func (runner *Runner) Run(ctx context.Context, request Request) (contracts.ValidationReportDocument, error) {
+func (runner *Runner) Run(ctx context.Context, request Request) (contracts.Record[contracts.ValidationBody], error) {
 	if ctx == nil {
-		return contracts.ValidationReportDocument{}, fmt.Errorf("repository validate: context is required")
+		return contracts.Record[contracts.ValidationBody]{}, fmt.Errorf("repository validate: context is required")
 	}
 	if err := ctx.Err(); err != nil {
-		return contracts.ValidationReportDocument{}, err
+		return contracts.Record[contracts.ValidationBody]{}, err
 	}
 	if err := request.Change.Validate(); err != nil {
-		return contracts.ValidationReportDocument{}, fmt.Errorf("repository validate: change: %w", err)
+		return contracts.Record[contracts.ValidationBody]{}, fmt.Errorf("repository validate: change: %w", err)
 	}
 	if request.Change.Type != repositoryChangeType {
-		return contracts.ValidationReportDocument{}, fmt.Errorf(
+		return contracts.Record[contracts.ValidationBody]{}, fmt.Errorf(
 			"repository validate: change must have exact type %s, got %s",
 			repositoryChangeType,
 			request.Change.Type,
 		)
 	}
 	if strings.TrimSpace(request.Root) == "" {
-		return contracts.ValidationReportDocument{}, fmt.Errorf("repository validate: root is required")
+		return contracts.Record[contracts.ValidationBody]{}, fmt.Errorf("repository validate: root is required")
 	}
 
 	validationContext, err := snapshot.NewValidationContext(request.Inputs, request.OpenInput)
 	if err != nil {
-		return contracts.ValidationReportDocument{}, fmt.Errorf("repository validate: inputs: %w", err)
+		return contracts.Record[contracts.ValidationBody]{}, fmt.Errorf("repository validate: inputs: %w", err)
 	}
 	validator, err := runner.registry.Lookup(repositoryChangeType)
 	if err != nil {
-		return contracts.ValidationReportDocument{}, fmt.Errorf("repository validate: resolve %s validator: %w", repositoryChangeType, err)
+		return contracts.Record[contracts.ValidationBody]{}, fmt.Errorf("repository validate: resolve %s validator: %w", repositoryChangeType, err)
 	}
 	if isNilInterface(validator) {
-		return contracts.ValidationReportDocument{}, fmt.Errorf("repository validate: registry returned no %s validator", repositoryChangeType)
+		return contracts.Record[contracts.ValidationBody]{}, fmt.Errorf("repository validate: registry returned no %s validator", repositoryChangeType)
 	}
 
 	root, err := os.OpenRoot(request.Root)
 	if err != nil {
-		return contracts.ValidationReportDocument{}, fmt.Errorf("repository validate: open candidate root: %w", err)
+		return contracts.Record[contracts.ValidationBody]{}, fmt.Errorf("repository validate: open candidate root: %w", err)
 	}
 	result, validationErr := validator.Validate(ctx, root, validationContext)
 	closeErr := root.Close()
 	if err := ctx.Err(); err != nil {
-		return contracts.ValidationReportDocument{}, err
+		return contracts.Record[contracts.ValidationBody]{}, err
 	}
 	if closeErr != nil {
-		return contracts.ValidationReportDocument{}, fmt.Errorf("repository validate: close candidate root: %w", closeErr)
+		return contracts.Record[contracts.ValidationBody]{}, fmt.Errorf("repository validate: close candidate root: %w", closeErr)
 	}
 	if validationErr == nil {
 		validationErr = result.Validate()
@@ -98,19 +98,19 @@ func (runner *Runner) Run(ctx context.Context, request Request) (contracts.Valid
 		}
 	}
 
-	document := reportFor(request.Change, validationErr)
-	if err := document.Validate(); err != nil {
-		return contracts.ValidationReportDocument{}, fmt.Errorf("repository validate: produced invalid validation-report/v1: %w", err)
+	record, err := reportFor(request.Change, validationErr)
+	if err != nil {
+		return contracts.Record[contracts.ValidationBody]{}, fmt.Errorf("repository validate: produced invalid validation/v1: %w", err)
 	}
-	return document, nil
+	return record, nil
 }
 
-func successfulReport(change snapshot.SnapshotRef) contracts.ValidationReportDocument {
+func successfulReport(change snapshot.SnapshotRef) (contracts.Record[contracts.ValidationBody], error) {
 	return reportFor(change, nil)
 }
 
-func reportFor(change snapshot.SnapshotRef, validationErr error) contracts.ValidationReportDocument {
-	status := "ok"
+func reportFor(change snapshot.SnapshotRef, validationErr error) (contracts.Record[contracts.ValidationBody], error) {
+	status := "passed"
 	detail := "repository change satisfies repository-change/v1"
 	summary := "repository change is valid"
 	if validationErr != nil {
@@ -122,15 +122,31 @@ func reportFor(change snapshot.SnapshotRef, validationErr error) contracts.Valid
 		}
 		detail = boundedDetail(validationErr.Error())
 	}
-	return contracts.ValidationReportDocument{
-		SchemaVersion: "1.0.0",
-		Subject:       "snapshot:" + change.ID.String() + "@" + change.Digest.String(),
-		Status:        status,
-		Summary:       summary,
+	body := contracts.ValidationBody{
+		Conclusion: contracts.DeriveValidationConclusion([]contracts.ValidationCheck{{Status: status}}),
+		Summary:    summary,
 		Checks: []contracts.ValidationCheck{{
-			Name: "repository-change-contract", Status: status, Detail: detail,
+			ID: "repository-change-contract", Kind: "policy",
+			Name: "repository-change contract", Status: status,
+			Attempts: []contracts.ValidationAttempt{{
+				Number: 1, Status: status, Duration: "0s", Detail: detail,
+			}},
 		}},
 	}
+	record, err := contracts.NewRecord(
+		snapshot.TypeRef("validation/v1"),
+		[]contracts.Subject{contracts.SubjectFromInput(
+			"primary", contracts.SubjectRolePrimary, "change", change,
+		)},
+		body,
+	)
+	if err != nil {
+		return contracts.Record[contracts.ValidationBody]{}, err
+	}
+	if err := body.Validate(record.Subjects); err != nil {
+		return contracts.Record[contracts.ValidationBody]{}, err
+	}
+	return record, nil
 }
 
 func isInfrastructureFailure(err error) bool {
@@ -141,7 +157,7 @@ func isInfrastructureFailure(err error) bool {
 
 // WriteReport materializes the validated function result at a fixed path
 // beneath the caller-provided output mount.
-func WriteReport(ctx context.Context, outputRoot string, document contracts.ValidationReportDocument) error {
+func WriteReport(ctx context.Context, outputRoot string, record contracts.Record[contracts.ValidationBody]) error {
 	if ctx == nil {
 		return fmt.Errorf("repository validate: context is required")
 	}
@@ -151,12 +167,12 @@ func WriteReport(ctx context.Context, outputRoot string, document contracts.Vali
 	if strings.TrimSpace(outputRoot) == "" {
 		return fmt.Errorf("repository validate: output root is required")
 	}
-	if err := document.Validate(); err != nil {
-		return fmt.Errorf("repository validate: invalid validation-report/v1: %w", err)
+	if err := record.Body.Validate(record.Subjects); err != nil {
+		return fmt.Errorf("repository validate: invalid validation/v1: %w", err)
 	}
-	payload, err := json.MarshalIndent(document, "", "  ")
+	payload, err := json.MarshalIndent(record, "", "  ")
 	if err != nil {
-		return fmt.Errorf("repository validate: marshal validation-report/v1: %w", err)
+		return fmt.Errorf("repository validate: marshal validation/v1: %w", err)
 	}
 	payload = append(payload, '\n')
 	if err := ctx.Err(); err != nil {
