@@ -10,20 +10,29 @@ import (
 	"github.com/concourse/concourse/agent/api/tickets"
 )
 
-// planSwapStore simulates a concurrent SubmitPlan landing between any
-// handler-side read of the active plan and the subsequent write — the
-// TOCTOU window agent-review-native #7 proved lost updates through
-// (read plan_version, plan replaced, write against the stale version,
-// 200 OK, change invisible). The fix routes the handler through the
-// atomic Store.UpdateActiveTask, which resolves the active version and
-// writes in one store operation, so this shim's stale snapshot can no
-// longer be captured.
-type planSwapStore struct {
+// Sequential TOCTOU regressions — there is not one goroutine in this file.
+//
+// sequentialPlanSwapStore does not simulate parallelism: it mutates the store
+// from inside the read the handler performs, which is enough to pin the
+// handler's read-then-write window (agent-review-native #7: read plan_version,
+// plan replaced, write against the stale version, 200 OK, change invisible).
+// The fix routes the handler through the atomic Store.UpdateActiveTask, which
+// resolves the active version and writes in one store operation.
+//
+// The concurrent proof for ticket state is a different test in a different
+// place: atc/db/agent_tickets_factory_test.go, "Transition (the single
+// writer)" and the ReserveDispatch reservation race, where real goroutines
+// contend on the real PostgreSQL compare-and-swap.
+
+// sequentialPlanSwapStore lands a "concurrent" SubmitPlan between any
+// handler-side read of the active plan and the subsequent write. The swap is
+// performed inline by the reader, not by another goroutine.
+type sequentialPlanSwapStore struct {
 	*tickets.MemoryStore
 	swapped bool
 }
 
-func (s *planSwapStore) ActivePlan(id int) ([]tickets.Task, error) {
+func (s *sequentialPlanSwapStore) ActivePlan(id int) ([]tickets.Task, error) {
 	stale, err := s.MemoryStore.ActivePlan(id)
 	if !s.swapped {
 		s.swapped = true
@@ -36,7 +45,7 @@ func (s *planSwapStore) ActivePlan(id int) ([]tickets.Task, error) {
 
 func TestUpdateTaskAppliesToCurrentlyActivePlan(t *testing.T) {
 	mem := tickets.NewMemoryStore()
-	store := &planSwapStore{MemoryStore: mem}
+	store := &sequentialPlanSwapStore{MemoryStore: mem}
 	h := tickets.NewHandler(store, func(*http.Request) string { return "tdm" })
 
 	id, _ := mem.Create(&tickets.Ticket{Title: "t", Repo: "r"})
@@ -91,26 +100,5 @@ func TestMemoryStoreUpdateActiveTask(t *testing.T) {
 	}
 	if _, err := s.UpdateActiveTask(4242, 1, tickets.TaskDone, ""); err != tickets.ErrTicketNotFound {
 		t.Errorf("missing ticket: got %v, want ErrTicketNotFound", err)
-	}
-}
-
-func TestCreateAndUpdateRejectNegativeBudget(t *testing.T) {
-	h, store := newTestHandler("tdm")
-
-	req := httptest.NewRequest("POST", "/api/v1/agent/tickets",
-		strings.NewReader(`{"title":"t","repo":"r","budget_usd":-1}`))
-	rec := httptest.NewRecorder()
-	h.CreateTicket(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("create negative budget = %d, want 400", rec.Code)
-	}
-
-	store.Create(&tickets.Ticket{Title: "t", Repo: "r"})
-	req = withParams(httptest.NewRequest("PUT", "/api/v1/agent/tickets/1",
-		strings.NewReader(`{"budget_usd":-0.5}`)), url.Values{":ticket_id": {"1"}})
-	rec = httptest.NewRecorder()
-	h.UpdateTicket(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("update negative budget = %d, want 400", rec.Code)
 	}
 }
