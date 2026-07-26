@@ -518,11 +518,16 @@ authorized workflow-run occurrence. Replaying the same semantic write from a
 different run therefore reuses the provider result while preserving distinct,
 team-scoped run/build authorization evidence for every occurrence.
 
-Gateway responses are classified: `400`, `401`, `403`, `404`, `409`, and `422`
+Gateway responses are classified: `400`, `403`, `404`, `409`, and `422`
 are terminal and complete the publication as `failed`, because retrying
 identical request bytes cannot change the answer; every other status —
-including `408`, `429`, all `5xx`, and any status not named here — leaves the
-operation `pending` for a later lease reclaim. A gateway must therefore never
+including `401`, `408`, `429`, all `5xx`, and any status not named here — leaves
+the operation `pending` for a later lease reclaim. `401` is deliberately
+retryable, not terminal: the operation key is content-derived and excludes the
+`Authorization` header, so a rotated or briefly-unavailable token can be
+corrected without changing the operation, and completing it `failed` would
+poison that key for every future run. `403` ("understood and refused") stays
+terminal. A gateway must therefore never
 answer a permanently rejected request with a `5xx`. The obligations above are
 executable: `agent/publisher/contracttest` runs them against any endpoint, and
 `go test -tags live -run TestLiveGatewayContract ./agent/publisher/contracttest/`
