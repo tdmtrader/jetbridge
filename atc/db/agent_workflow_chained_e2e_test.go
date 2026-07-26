@@ -370,13 +370,23 @@ func answerChainedWait(
 	runID snapshot.WorkflowRunID,
 ) error {
 	var pending workflowwait.Wait
-	Eventually(func() bool {
+	Eventually(func() (bool, error) {
+		// A cancelled ctx (the caller's awaitCtx, cancelled via its defer as
+		// soon as the enclosing spec returns) must stop this loop right away.
+		// Without this check, an earlier failure elsewhere in the spec still
+		// leaves this goroutine polling — each waits.List call fails fast on
+		// the cancelled ctx, but plain `return false` would keep retrying
+		// for the rest of the 30s timeout regardless, and the eventual
+		// Fail() would land on whatever spec happens to be running by then.
+		if ctx.Err() != nil {
+			return false, StopTrying("await context cancelled while polling for the pending wait").Wrap(ctx.Err())
+		}
 		listed, err := waits.List(ctx, defaultTeam.ID(), runID)
 		if err != nil || len(listed) == 0 {
-			return false
+			return false, nil
 		}
 		pending = listed[0]
-		return pending.Status == workflowwait.StatusWaiting
+		return pending.Status == workflowwait.StatusWaiting, nil
 	}, 30*time.Second, 10*time.Millisecond).Should(BeTrue())
 
 	wait, intent, _, err := waits.ReserveResolution(ctx, workflowwait.ReserveResolutionRequest{

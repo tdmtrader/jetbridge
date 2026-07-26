@@ -31,12 +31,16 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-// fixtureOversizeBytes sizes the hostile-oversized fixture payload. It is
-// deliberately NOT fixtureagent's own default: passing the default would leave
-// the Authority.OversizeBytes plumbing without a witness, since a fixture that
-// ignored the field entirely would emit a byte-identical tar. Any value
-// comfortably above the archive-layer MaxContentBytes the hostile specs inject
-// works.
+// fixtureOversizeBytes sizes the hostile-oversized fixture payload used by
+// these specs. It only needs to comfortably exceed the small contentLimit
+// (512 bytes, see the "archive exceeds regular content limit" table below)
+// these specs inject, so AgentStep's real oversize-rejection path actually
+// trips. It is not chosen to witness Authority.OversizeBytes plumbing —
+// these specs never assert the payload's exact byte count, so a fixture that
+// ignored the field would pass here just as easily. That exact-length
+// witness lives in agent/fixtureagent/fixtures_test.go instead, where
+// TestHostileCatalogViolatesExactlyOneRuleEach asserts the emitted
+// payload.bin is precisely the injected size.
 const fixtureOversizeBytes = 2048
 
 // fixtureTarVolume is a runtime.Volume whose StreamOut hands back fixed raw tar

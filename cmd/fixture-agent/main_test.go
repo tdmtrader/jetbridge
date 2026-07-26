@@ -150,3 +150,76 @@ func TestRunFailsLoudlyWhenTheEnvContractIsIncomplete(t *testing.T) {
 		t.Fatalf("status = %q, want error", decoded.Status)
 	}
 }
+
+func TestRunWritesTheLegacyMarkerForAnUndeclaredOutputAlongsideATypedOne(t *testing.T) {
+	outputDir, flightDir, logsDir := t.TempDir(), t.TempDir(), t.TempDir()
+	env := envFixture(t, outputDir, flightDir)
+	// AGENT_OUTPUT_LOGS has no AGENT_OUTPUT_LOGS_RECORD_TYPE/_RECORD_SCHEMA
+	// pair, so classify's outputs map never gains an entry for it: it is a
+	// destination but not a declared typed output (main.go run(), the
+	// `!declared` branch).
+	env["AGENT_OUTPUT_LOGS"] = logsDir
+
+	var stderr bytes.Buffer
+	if code := run(env, &stderr); code != 0 {
+		t.Fatalf("run() = %d, stderr = %s", code, stderr.String())
+	}
+
+	body, err := os.ReadFile(filepath.Join(logsDir, "fixture.txt"))
+	if err != nil {
+		t.Fatalf("read fixture.txt: %v", err)
+	}
+	if string(body) != "fixture agent\n" {
+		t.Fatalf("fixture.txt = %q, want the untyped marker content", body)
+	}
+
+	// The typed output alongside it must still get a real record: an
+	// undeclared destination in the environment must not derail a declared
+	// one.
+	if _, err := os.Stat(filepath.Join(outputDir, "record.json")); err != nil {
+		t.Fatalf("typed output record.json missing: %v", err)
+	}
+}
+
+func TestRunFailsWhenFixtureSubjectInputNamesNoDeclaredInput(t *testing.T) {
+	outputDir, flightDir := t.TempDir(), t.TempDir()
+	env := envFixture(t, outputDir, flightDir)
+	env["FIXTURE_SUBJECT_INPUT"] = "no-such-input"
+
+	var stderr bytes.Buffer
+	if code := run(env, &stderr); code != 2 {
+		t.Fatalf("run() = %d, want 2", code)
+	}
+	if !strings.Contains(stderr.String(), "names no declared typed input") {
+		t.Fatalf("stderr = %s", stderr.String())
+	}
+}
+
+func TestClassifySkipsEnvVarsWithEmptyValues(t *testing.T) {
+	// Every row below is empty-valued except AGENT_OUTPUT_LOGS, so classify's
+	// `if value == "" { continue }` (main.go) should keep destinations,
+	// outputs, and inputs all empty except that one destination. A row with
+	// only ONE of a pair (e.g. TYPE but not DIGEST) non-empty would still
+	// populate that authority map, which would mask the skip not firing for
+	// the other row; keeping both halves of each pair empty avoids that.
+	destinations, outputs, inputs := classify(map[string]string{
+		"AGENT_OUTPUT_REVIEW":                "",
+		"AGENT_OUTPUT_LOGS":                  "/tmp/logs",
+		"AGENT_OUTPUT_REVIEW_RECORD_TYPE":    "",
+		"AGENT_OUTPUT_REVIEW_RECORD_SCHEMA":  "",
+		"AGENT_INPUT_CHANGE_SNAPSHOT_TYPE":   "",
+		"AGENT_INPUT_CHANGE_SNAPSHOT_DIGEST": "",
+	})
+	if _, present := destinations["AGENT_OUTPUT_REVIEW"]; present {
+		t.Fatalf("destinations = %v, want AGENT_OUTPUT_REVIEW excluded (empty value)", destinations)
+	}
+	if destinations["AGENT_OUTPUT_LOGS"] != "/tmp/logs" {
+		t.Fatalf("destinations = %v, want the non-empty AGENT_OUTPUT_LOGS present", destinations)
+	}
+	if len(outputs) != 0 {
+		t.Fatalf("outputs = %v, want none recorded from all-empty _RECORD_TYPE/_RECORD_SCHEMA rows", outputs)
+	}
+	if len(inputs) != 0 {
+		t.Fatalf("inputs = %v, want none recorded from all-empty _SNAPSHOT_TYPE/_SNAPSHOT_DIGEST rows", inputs)
+	}
+}

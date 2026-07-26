@@ -5,6 +5,12 @@
 # busybox, not scratch: jetbridge runs every supervised process as
 # `sh -c <supervisor script>` (atc/worker/jetbridge/supervisor.go), which needs
 # sh plus cat/sed/cut/tail/mkdir/mv/sleep.
+#
+# Unlike cmd/oom-trigger's helper (built on the host with a hardcoded
+# GOOS=linux GOARCH=amd64), this build stage compiles natively inside the
+# image, so it can't drift from whatever architecture the build actually
+# targets. The trade-off is a slower first build: this stage pulls and runs a
+# full Go toolchain image instead of copying in an already-built host binary.
 FROM golang:1.25-bookworm AS build
 WORKDIR /src
 COPY . .

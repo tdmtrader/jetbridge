@@ -97,6 +97,11 @@ plan:
 		Expect(readTarFile(download, "payload.txt")).To(Equal("immutable input\n"))
 	})
 
+	// The fixture-agent image is built and loaded by buildAndLoadFixtureAgentImage
+	// in cluster_lifecycle_test.go. A build/load failure there is now a
+	// non-fatal "warning:" line in the suite log rather than a hard abort, so if
+	// this spec fails with what looks like ImagePullBackOff, check the suite
+	// setup log first before debugging the agent step itself.
 	It("runs a real agent node that seals a review record through the fixture agent", func() {
 		subjectDir := filepath.Join(tmp, "agent-node-subject")
 		Expect(os.MkdirAll(subjectDir, 0o755)).To(Succeed())
@@ -148,7 +153,7 @@ jobs:
 		Eventually(list).Should(gexec.Exit(0))
 		var reviews []snapshot.Snapshot
 		Expect(json.Unmarshal(list.Out.Contents(), &reviews)).To(Succeed())
-		Expect(reviews).NotTo(BeEmpty())
+		Expect(reviews).To(HaveLen(1))
 		sealed := reviews[0]
 		Expect(sealed.Type.String()).To(Equal("review/v1"))
 		Expect(sealed.ContentState).To(Equal(snapshot.ContentStateAvailable))
@@ -157,8 +162,7 @@ jobs:
 		fly.Run("agent", "snapshots", "download", sealed.ID.String(), "--to="+download)
 
 		// The record the fixture wrote, bound to the exact subject the platform
-		// exposed to it — and the archive's bytes hash to the digest the seal
-		// committed, which is the whole content-addressing claim.
+		// exposed to it.
 		var record contracts.Record[contracts.ReviewBody]
 		Expect(json.Unmarshal([]byte(readTarFile(download, "record.json")), &record)).To(Succeed())
 		Expect(record.Type.String()).To(Equal("review/v1"))
@@ -167,6 +171,12 @@ jobs:
 		Expect(record.Subjects[0].Input).To(Equal("change"))
 		Expect(record.Subjects[0].Digest).To(Equal(subject.Digest))
 
+		// Cross-check that the digest "agent snapshots list" reported for this
+		// review matches the sha256 of the bytes we just downloaded. fly's
+		// download path already verifies the content against its ETag before
+		// writing the file, so this isn't the platform's sole content-addressing
+		// proof — it's a second, independently-computed hash agreeing with the
+		// first.
 		raw, err := os.ReadFile(download)
 		Expect(err).NotTo(HaveOccurred())
 		sum := sha256.Sum256(raw)

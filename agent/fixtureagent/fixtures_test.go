@@ -121,16 +121,34 @@ func TestEntriesRejectsAnUnknownCaseAndIncompleteAuthority(t *testing.T) {
 	if _, err := fixtureagent.Entries("no-such-case", testAuthority(t)); err == nil || !strings.Contains(err.Error(), "unknown fixture case") {
 		t.Fatalf("unknown case error = %v", err)
 	}
-	incomplete := testAuthority(t)
-	incomplete.RecordSchema = ""
-	if _, err := fixtureagent.Entries(fixtureagent.CaseReviewAccept, incomplete); err == nil || !strings.Contains(err.Error(), "record schema") {
-		t.Fatalf("incomplete authority error = %v", err)
+
+	// Authority.validate() (fixtures.go:80-92) has five required-field checks;
+	// witness all of them, not just RecordSchema, so a validation branch that
+	// silently stops firing gets caught.
+	for _, tc := range []struct {
+		field   string
+		mutate  func(*fixtureagent.Authority)
+		wantErr string
+	}{
+		{"RecordType", func(a *fixtureagent.Authority) { a.RecordType = "" }, "record type"},
+		{"RecordSchema", func(a *fixtureagent.Authority) { a.RecordSchema = "" }, "record schema"},
+		{"SubjectInput", func(a *fixtureagent.Authority) { a.SubjectInput = "" }, "subject input"},
+		{"SubjectType", func(a *fixtureagent.Authority) { a.SubjectType = "" }, "subject type"},
+		{"SubjectDigest", func(a *fixtureagent.Authority) { a.SubjectDigest = "" }, "subject digest"},
+	} {
+		t.Run(tc.field, func(t *testing.T) {
+			incomplete := testAuthority(t)
+			tc.mutate(&incomplete)
+			if _, err := fixtureagent.Entries(fixtureagent.CaseReviewAccept, incomplete); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("incomplete authority (%s) error = %v", tc.field, err)
+			}
+		})
 	}
 }
 
 func TestHostileCatalogViolatesExactlyOneRuleEach(t *testing.T) {
 	authority := testAuthority(t)
-	authority.OversizeBytes = 4096
+	authority.OversizeBytes = 3072
 
 	tests := []struct {
 		name  string
@@ -151,6 +169,17 @@ func TestHostileCatalogViolatesExactlyOneRuleEach(t *testing.T) {
 				if last.LinkTarget != "../../etc/passwd" {
 					t.Fatalf("last entry = %+v, want an escaping symlink", last)
 				}
+				// The symlink is appended after a normal record.json (see
+				// fixtures.go's CaseHostileSymlink); confirm that record is
+				// still present and undamaged, so the escaping symlink really
+				// is the only violation this case introduces.
+				record := decodeReview(t, entries)
+				if record.Schema.String() != authority.RecordSchema {
+					t.Fatalf("schema = %q, want the intact injected authority", record.Schema)
+				}
+				if record.Subjects[0].Input != "change" {
+					t.Fatalf("subject input = %q, want the intact injected authority", record.Subjects[0].Input)
+				}
 			},
 		},
 		{
@@ -159,6 +188,19 @@ func TestHostileCatalogViolatesExactlyOneRuleEach(t *testing.T) {
 				record := decodeReview(t, entries)
 				if record.Subjects[0].Input != "not-a-declared-input" {
 					t.Fatalf("subject input = %q", record.Subjects[0].Input)
+				}
+				// record.json is present (decodeReview would already have
+				// failed otherwise); confirm it is otherwise intact too, so
+				// this case violates only the subject-input binding and
+				// nothing else.
+				if record.Schema.String() != authority.RecordSchema {
+					t.Fatalf("schema = %q, want the intact injected authority", record.Schema)
+				}
+				if record.Subjects[0].Type.String() != authority.SubjectType {
+					t.Fatalf("subject type = %q, want the intact injected authority", record.Subjects[0].Type)
+				}
+				if record.Subjects[0].Digest.String() != authority.SubjectDigest {
+					t.Fatalf("subject digest = %q, want the intact injected authority", record.Subjects[0].Digest)
 				}
 			},
 		},
@@ -199,10 +241,16 @@ func TestHostileCatalogViolatesExactlyOneRuleEach(t *testing.T) {
 		{
 			name: fixtureagent.CaseHostileOversized,
 			check: func(t *testing.T, entries []fixtureagent.Entry) {
+				// 3072 is deliberately NOT fixtureagent's own default
+				// (4096, see defaultOversizeBytes): a fixture that ignored
+				// the injected Authority.OversizeBytes field entirely and
+				// fell back to the default would still produce a payload,
+				// just the wrong number of bytes, and this exact-length
+				// assertion is what catches that.
 				for _, entry := range entries {
 					if entry.Path == "payload.bin" {
-						if len(entry.Body) != 4096 {
-							t.Fatalf("payload = %d bytes, want 4096", len(entry.Body))
+						if len(entry.Body) != 3072 {
+							t.Fatalf("payload = %d bytes, want 3072", len(entry.Body))
 						}
 						return
 					}

@@ -128,12 +128,17 @@ All parameters are documented in [`values.yaml`](values.yaml). Complete referenc
 | `web.terminationGracePeriodSeconds` | `120` | Graceful shutdown timeout. |
 | `web.resources` | 100m/256Mi req, 2/2Gi limit | CPU/memory resources. |
 | `web.env` | `[]` | Extra env vars (supports `value` and `valueFrom`). |
+| `web.agentStepImage` | `""` | Container image for the agent: step's main container. Empty disables agent steps entirely (the web node errors at runtime if one runs); schema-v3 workflow runs additionally require an exact `@sha256` digest. |
 | `web.extraArgs` | `[]` | Additional CLI args for the web command. |
 | `web.extraVolumeMounts` | `[]` | Additional volume mounts (e.g. CA bundles). |
 | `web.extraVolumes` | `[]` | Additional volumes for the web pod. |
 | `web.nodeSelector` | `{}` | Node selector for the web pod. |
 | `web.tolerations` | `[]` | Tolerations for the web pod. |
 | `web.affinity` | `{}` | Affinity rules for the web pod. |
+
+Helm rejects `web.extraArgs` entries that start with `--agent-step-image` when
+`web.agentStepImage` is set: the image can only be set through the value, not
+appended alongside it as a raw flag.
 
 ### Web Security Context
 
