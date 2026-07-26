@@ -18,7 +18,7 @@ outputs:
 plan:
   - agent: review
     budget_slice_usd: 5
-    max_turns: 100
+    max_turns: 200
     function_id: review
     prompt_file: prompts/review.md
     inputs: [before, after]

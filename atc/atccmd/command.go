@@ -24,6 +24,7 @@ import (
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"github.com/concourse/concourse"
+	actionsapi "github.com/concourse/concourse/agent/api/actions"
 	experimentsapi "github.com/concourse/concourse/agent/api/experiments"
 	"github.com/concourse/concourse/agent/api/principals"
 	snapshotsapi "github.com/concourse/concourse/agent/api/snapshots"
@@ -3203,6 +3204,19 @@ func (cmd *RunCommand) constructTokenVerifier() accessor.TokenVerifier {
 	return accessor.NewJWKSVerifier(jwksURL.String(), validClients)
 }
 
+// agentActionsStore backs the cluster-wide action-suppression API (GET/PUT
+// /api/v1/agent/actions). It MUST be DB-backed: db.AgentSettingsFactory reads
+// and writes the single shared agent_settings row, so every ATC web node
+// observes the same switch. actionsapi.NewMemoryStore exists only for the
+// actions package's own unit tests — wiring it here instead would silently
+// turn the switch into a per-node brake: "fly agent actions suppress" would
+// engage on whichever node handled the PUT while every other node kept
+// publishing, which defeats the whole point of an emergency brake.
+// TestAgentActionsStoreIsDatabaseBackedNotPerNodeMemory pins this.
+func (cmd *RunCommand) agentActionsStore(dbConn db.DbConn) actionsapi.Store {
+	return db.NewAgentSettingsFactory(dbConn)
+}
+
 func (cmd *RunCommand) constructAPIHandler(
 	logger lager.Logger,
 	reconfigurableSink *lager.ReconfigurableSink,
@@ -3535,7 +3549,7 @@ func (cmd *RunCommand) constructAPIHandler(
 		}),
 		db.NewAgentSettingsFactory(dbConn),
 		cmd.AgentDispatcherEnabled,
-		db.NewAgentSettingsFactory(dbConn),
+		cmd.agentActionsStore(dbConn),
 		snapshotHandlers,
 		resourceCapturer,
 		workflowRunHandlers,

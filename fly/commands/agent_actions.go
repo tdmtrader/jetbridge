@@ -99,8 +99,8 @@ func printActionsStatus(status actionsStatus, asJSON bool) error {
 		}
 		updated = *status.UpdatedAt + by
 	}
-	fmt.Printf("actions: %s\n", status.Mode)
-	fmt.Printf("source:  %s\n", status.Source)
+	fmt.Printf("actions:      %s\n", status.Mode)
+	fmt.Printf("source:       %s\n", status.Source)
 	fmt.Printf("last updated: %s\n", updated)
 	if status.Mode == "suppressed" {
 		fmt.Println("external side effects (publisher writes) are REFUSED; runs still execute and seal")

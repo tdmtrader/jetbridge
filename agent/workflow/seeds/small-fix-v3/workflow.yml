@@ -22,7 +22,7 @@ outputs:
 plan:
   - agent: implement-and-test
     budget_slice_usd: 10
-    max_turns: 200
+    max_turns: 400
     function_id: implement-and-test
     prompt_file: prompts/implement.md
     inputs: [repository, work-item]
@@ -34,7 +34,7 @@ plan:
       candidate-change: repository-change/v1
   - agent: validate
     budget_slice_usd: 2
-    max_turns: 40
+    max_turns: 80
     function_id: validate
     prompt: >-
       Validate the exact sealed candidate-change against repository and the
@@ -56,7 +56,7 @@ plan:
       validation: validation/v1
   - agent: review
     budget_slice_usd: 3
-    max_turns: 60
+    max_turns: 120
     function_id: review
     prompt: >-
       Review candidate-change against repository and validation. Re-run or inspect
@@ -84,7 +84,7 @@ plan:
     timeout: 72h
   - agent: enforce-approval
     budget_slice_usd: 1
-    max_turns: 20
+    max_turns: 40
     function_id: enforce-approval
     prompt: >-
       Read the sealed human-answer/v1 input. Only when it explicitly approves

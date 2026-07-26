@@ -42,6 +42,20 @@ func TestOnlyVersionThreeEngineeringSeedsRemain(t *testing.T) {
 }
 
 func TestVersionThreeEngineeringSeedsCompileAndRender(t *testing.T) {
+	// Read the seed directory ourselves rather than trusting the table below
+	// to be complete. TestOnlyVersionThreeEngineeringSeedsRemain only checks
+	// seed ROOT ENTRIES against its own hand-maintained list; it has no idea
+	// what this function tests. Without the count check a few lines down, a
+	// brand-new seeds/<name>-v3/ directory could be added there and still
+	// never appear in `tests` below — so its workflow.yml would ship with an
+	// uncapped agent step and BOTH tests would stay green (verified by hand:
+	// a temporary seeds/fake-seed-v3/ directory makes the count check below
+	// fail with exactly that message; removing it goes back to green).
+	entries, err := os.ReadDir("seeds")
+	if err != nil {
+		t.Fatalf("read seeds: %v", err)
+	}
+
 	tests := []struct {
 		directory         string
 		name              string
@@ -128,6 +142,20 @@ func TestVersionThreeEngineeringSeedsCompileAndRender(t *testing.T) {
 				{Name: "diagnosis", Type: snapshot.TypeRef("diagnosis/v1")},
 			},
 		},
+	}
+
+	// Self-registration guard: every directory under seeds/ must have exactly
+	// one entry above. A count mismatch means a seed shipped (or was renamed)
+	// without updating this table, so its plan would silently never be swept
+	// for the max_turns cap below.
+	if len(tests) != len(entries) {
+		names := make([]string, 0, len(entries))
+		for _, entry := range entries {
+			names = append(names, entry.Name())
+		}
+		t.Fatalf("registered seed tests = %d, seed directories = %d (%q); add a table entry above for every "+
+			"directory under seeds/ so its rendered plan is checked for an uncapped agent step",
+			len(tests), len(entries), names)
 	}
 
 	for _, test := range tests {

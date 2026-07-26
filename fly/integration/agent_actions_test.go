@@ -32,7 +32,7 @@ var _ = Describe("fly agent actions", func() {
 			Expect(err).NotTo(HaveOccurred())
 			<-sess.Exited
 			Expect(sess.ExitCode()).To(Equal(0))
-			Expect(sess.Out).To(gbytes.Say(`actions: active`))
+			Expect(sess.Out).To(gbytes.Say(`actions:\s+active`))
 			Expect(sess.Out).To(gbytes.Say(`source:\s+default`))
 		})
 	})
@@ -57,7 +57,7 @@ var _ = Describe("fly agent actions", func() {
 			Expect(err).NotTo(HaveOccurred())
 			<-sess.Exited
 			Expect(sess.ExitCode()).To(Equal(0))
-			Expect(sess.Out).To(gbytes.Say(`actions: suppressed`))
+			Expect(sess.Out).To(gbytes.Say(`actions:\s+suppressed`))
 		})
 	})
 
@@ -81,7 +81,7 @@ var _ = Describe("fly agent actions", func() {
 			Expect(err).NotTo(HaveOccurred())
 			<-sess.Exited
 			Expect(sess.ExitCode()).To(Equal(0))
-			Expect(sess.Out).To(gbytes.Say(`actions: active`))
+			Expect(sess.Out).To(gbytes.Say(`actions:\s+active`))
 		})
 	})
 
