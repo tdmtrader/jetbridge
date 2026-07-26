@@ -1,3 +1,12 @@
+# HISTORICAL — superseded by deploy/concourse-pipeline.yml +
+# deploy/agent-pipeline.yml. Commit 3bef0e5c8b ("split into primary and agent
+# pipelines", 2026-02-10) split this monolith INTO those two files; this file
+# was never touched again (no dogfood job, no native agent-review step, no
+# db-tests, no RC-tag chain — it force-pushes straight to main via
+# promote-to-main). Nothing in this repo references or activates it (verified
+# 2026-07-25). Kept for history only. WS1
+# (docs/superpowers/plans/test-hardening/01-ci-execution.md) deliberately
+# does not add a db-tests job here — see that plan's Task 0.
 resources:
 - name: repo
   type: git

@@ -1,3 +1,12 @@
+# HISTORICAL — superseded by deploy/concourse-pipeline.yml. This file predates
+# the `repo` git-resource-input pattern: it triggers off a bare `time`
+# resource and its tasks `cd /src` (the image's baked-in COPY . . from
+# deploy/Dockerfile.test-runner, refreshed only when concourse-test-runner
+# itself is rebuilt), and it has no tag-rc/build-image/release chain. Nothing
+# in this repo references or activates it (verified 2026-07-25: no
+# set-pipeline script, doc, or Makefile target names it). Kept for history
+# only. WS1 (docs/superpowers/plans/test-hardening/01-ci-execution.md)
+# deliberately does not add a db-tests job here — see that plan's Task 0.
 resource_types:
 - name: custom-time
   type: registry-image
