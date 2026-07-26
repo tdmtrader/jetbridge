@@ -1095,13 +1095,13 @@ func (o UploadOccurrence) Validate() error {
 // context. Exactly one occurrence kind is required, and it deliberately
 // contains no pre-upload CandidateOutput values.
 type SealCommitContext struct {
-	TeamID          int                    `json:"team_id"`
-	TeamName        string                 `json:"team_name"`
-	CreatedBy       string                 `json:"created_by"`
-	Build           *BuildOccurrence       `json:"build,omitempty"`
-	Upload          *UploadOccurrence      `json:"upload,omitempty"`
-	InputOrder      []string               `json:"input_order"`
-	Inputs          map[string]SnapshotRef `json:"inputs"`
+	TeamID     int                    `json:"team_id"`
+	TeamName   string                 `json:"team_name"`
+	CreatedBy  string                 `json:"created_by"`
+	Build      *BuildOccurrence       `json:"build,omitempty"`
+	Upload     *UploadOccurrence      `json:"upload,omitempty"`
+	InputOrder []string               `json:"input_order"`
+	Inputs     map[string]SnapshotRef `json:"inputs"`
 	// InputExposures is the mount-time exposure lineage the executor captured
 	// for the exposed inputs, keyed by input port. It is occurrence data
 	// persisted alongside lineage and outside the sealed bytes, so it never
