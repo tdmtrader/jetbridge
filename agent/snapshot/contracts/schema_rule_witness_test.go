@@ -74,15 +74,6 @@ func (candidate witnessCandidate) admit(t *testing.T, ref snapshot.TypeRef) erro
 // witness table is written. It is deleted, along with every reference to it, by
 // the task that finishes the last table. Do not add to it.
 var pendingRules = map[snapshot.TypeRef][]string{
-	snapshot.TypeRef("diagnosis/v1"): {
-		"identified-and-suspected-require-hypotheses",
-		"hypothesis-ranks-are-unique-and-contiguous-from-one",
-		"identified-requires-evidence-on-the-rank-one-hypothesis",
-		"addresses-must-name-a-hypothesis-this-record-declares",
-		"anchor-subject-must-be-a-declared-subject",
-		"anchor-locator-kind-selects-which-fields-appear",
-		"anchor-locators-are-unverified",
-	},
 	snapshot.TypeRef("selection/v1"): {
 		"candidacy-is-declared-by-the-platform-and-sourced-differently-at-each-gate",
 		"every-candidate-port-has-exactly-one-subject-and-no-others-appear",
@@ -238,6 +229,7 @@ func ruleWitnesses(t *testing.T) map[snapshot.TypeRef][]ruleWitness {
 		snapshot.TypeRef("review/v1"):       reviewRuleWitnesses(t),
 		snapshot.TypeRef("validation/v1"):   validationRuleWitnesses(t),
 		snapshot.TypeRef("measurements/v1"): measurementsRuleWitnesses(t),
+		snapshot.TypeRef("diagnosis/v1"):    diagnosisRuleWitnesses(t),
 	}
 }
 
@@ -692,6 +684,142 @@ func measurementsRuleWitnesses(t *testing.T) []ruleWitness {
 					}
 				})
 				if err := candidate.admit(t, snapshot.TypeRef("measurements/v1")); err != nil {
+					t.Fatalf(
+						"the seal gate rejected an unresolvable anchor locator: %v; if locators are now verified, this rule's documentation is stale and the schema document is the thing to change",
+						err,
+					)
+				}
+			},
+		},
+	}
+}
+
+// diagnosisWitnessBase is one accepted diagnosis/v1 candidate: an identified
+// conclusion over two ranked hypotheses — the rank-1 carrying one opaque evidence
+// anchor — with one immediate action addressing the rank-1, bound to one primary
+// subject. Every witness starts here and breaks exactly one thing.
+func diagnosisWitnessBase(t *testing.T) (snapshot.ValidationContext, []contracts.Subject, contracts.DiagnosisBody) {
+	t.Helper()
+	ref := snapshot.SnapshotRef{
+		ID: 43, Type: mustTypeRef(t, "repository/v1"), Digest: recordDigest('a'),
+	}
+	declarations := validationContextFor(t, map[string]snapshot.SnapshotRef{"in": ref})
+	subjects := []contracts.Subject{
+		contracts.SubjectFromInput("primary", contracts.SubjectRolePrimary, "in", ref),
+	}
+	confidence := contracts.Score{Value: 0.9, Scale: "unit-interval", Direction: "higher-is-better"}
+	body := contracts.DiagnosisBody{
+		Summary:    "the lock is taken twice on one path",
+		Conclusion: "identified",
+		Hypotheses: []contracts.Hypothesis{
+			{
+				ID: "h-1", Rank: 1, Statement: "the lock is acquired twice on the retry path",
+				Confidence: confidence,
+				Evidence: []contracts.Anchor{{
+					Subject: "primary",
+					Locator: contracts.Locator{Kind: "opaque", Value: "trace line 8"},
+				}},
+			},
+			{
+				ID: "h-2", Rank: 2, Statement: "a second goroutine also contends for the lock",
+				Confidence: confidence,
+			},
+		},
+		Actions: []contracts.DiagnosisAction{{
+			ID: "a-1", Priority: "immediate", Description: "guard the second acquisition",
+			Addresses: []string{"h-1"},
+		}},
+	}
+	return declarations, subjects, body
+}
+
+func diagnosisWitness(t *testing.T, mutate func(*contracts.DiagnosisBody)) witnessCandidate {
+	t.Helper()
+	declarations, subjects, body := diagnosisWitnessBase(t)
+	mutate(&body)
+	record, err := contracts.NewRecord(mustTypeRef(t, "diagnosis/v1"), subjects, body)
+	if err != nil {
+		t.Fatalf("NewRecord(diagnosis/v1): %v", err)
+	}
+	return witnessCandidate{
+		files:        map[string][]byte{"record.json": marshalRecord(t, record)},
+		declarations: declarations,
+	}
+}
+
+func diagnosisRuleWitnesses(t *testing.T) []ruleWitness {
+	t.Helper()
+	return []ruleWitness{
+		{
+			rule: "identified-and-suspected-require-hypotheses",
+			build: func(t *testing.T) witnessCandidate {
+				return diagnosisWitness(t, func(body *contracts.DiagnosisBody) {
+					body.Hypotheses = nil
+					body.Actions = nil
+				})
+			},
+			wantErr: "identified conclusion requires hypotheses",
+		},
+		{
+			rule: "hypothesis-ranks-are-unique-and-contiguous-from-one",
+			build: func(t *testing.T) witnessCandidate {
+				return diagnosisWitness(t, func(body *contracts.DiagnosisBody) {
+					body.Hypotheses[1].Rank = 1
+				})
+			},
+			wantErr: "hypotheses[1].rank 1 is duplicate",
+		},
+		{
+			rule: "identified-requires-evidence-on-the-rank-one-hypothesis",
+			build: func(t *testing.T) witnessCandidate {
+				return diagnosisWitness(t, func(body *contracts.DiagnosisBody) {
+					body.Hypotheses[0].Evidence = nil
+				})
+			},
+			wantErr: "identified conclusion requires evidence for the rank-1 hypothesis",
+		},
+		{
+			rule: "addresses-must-name-a-hypothesis-this-record-declares",
+			build: func(t *testing.T) witnessCandidate {
+				return diagnosisWitness(t, func(body *contracts.DiagnosisBody) {
+					body.Actions[0].Addresses = []string{"h-9"}
+				})
+			},
+			wantErr: `action addresses unknown hypothesis "h-9"`,
+		},
+		{
+			rule: "anchor-subject-must-be-a-declared-subject",
+			build: func(t *testing.T) witnessCandidate {
+				return diagnosisWitness(t, func(body *contracts.DiagnosisBody) {
+					body.Hypotheses[0].Evidence[0].Subject = "ghost"
+				})
+			},
+			wantErr: `body/hypotheses/*/evidence/*/subject: "ghost" is not declared by this record`,
+		},
+		{
+			rule: "anchor-locator-kind-selects-which-fields-appear",
+			build: func(t *testing.T) witnessCandidate {
+				return diagnosisWitness(t, func(body *contracts.DiagnosisBody) {
+					body.Hypotheses[0].Evidence[0].Locator = contracts.Locator{
+						Kind: "byte-range", Path: "a.go", Start: intPointer(5), End: intPointer(5),
+					}
+				})
+			},
+			wantErr: "byte-range anchor requires nonnegative start and end > start",
+		},
+		{
+			rule: "anchor-locators-are-unverified",
+			documented: "This rule documents a deliberate NON-check: nothing resolves an anchor's " +
+				"locator against any content, because anchor content hashes are deferred. It has no " +
+				"rejection witness by construction. The pin makes the claim executable instead: an " +
+				"anchor naming a path that exists nowhere, at lines nothing has, is ACCEPTED.",
+			pin: func(t *testing.T) {
+				candidate := diagnosisWitness(t, func(body *contracts.DiagnosisBody) {
+					body.Hypotheses[0].Evidence[0].Locator = contracts.Locator{
+						Kind: "file-lines", Path: "does/not/exist.go", Start: intPointer(400000), End: intPointer(400001),
+					}
+				})
+				if err := candidate.admit(t, snapshot.TypeRef("diagnosis/v1")); err != nil {
 					t.Fatalf(
 						"the seal gate rejected an unresolvable anchor locator: %v; if locators are now verified, this rule's documentation is stale and the schema document is the thing to change",
 						err,
