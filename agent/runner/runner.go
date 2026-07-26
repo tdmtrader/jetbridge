@@ -408,6 +408,13 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 		args = append(args, "--model", cfg.Model)
 	}
 	if cfg.MaxTurns > 0 {
+		// --max-turns exists in the PINNED CLI (2.0.1, deploy/agent-runner/
+		// Dockerfile) but was dropped from claude-code 2.1.x's flag surface. If
+		// a version bump removes it, this either becomes a hard "unknown flag"
+		// rejection (loud) or is silently ignored (quiet, and the more likely
+		// failure) — in which case the watchdog's turn floor is the only
+		// remaining turn bound. That is exactly why the floor counts assistant
+		// messages itself instead of trusting the CLI's num_turns.
 		args = append(args, "--max-turns", strconv.Itoa(cfg.MaxTurns))
 	}
 	if cfg.BudgetSliceUSD > 0 {
@@ -436,7 +443,7 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	// cancel the runner, so the flight recorder is still written after a kill.
 	runCtx, killClaude := context.WithCancel(ctx)
 	defer killClaude()
-	dog := newWatchdog(cfg, killClaude)
+	dog := newWatchdog(cfg, stderr, killClaude)
 
 	var buf bytes.Buffer
 	cmd := exec.CommandContext(runCtx, claudePath, args...)
@@ -462,9 +469,16 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
 	cmd.Dir = cfg.WorkDir
+	// The watchdog's line splitter goes FIRST: io.MultiWriter stops at the
+	// first writer that errors, so with it last a failing step-log writer
+	// (a severed exec's closed stream, an EPIPE on os.Stdout) silently blinded
+	// the only thing bounding the run's spend while claude kept burning money
+	// (finding I5). It is also the one writer here that cannot fail — it
+	// always reports a full write — so putting it first costs the others
+	// nothing.
 	stdoutWriters := []io.Writer{&buf, stdout}
 	if dog.armed() {
-		stdoutWriters = append(stdoutWriters, &streamLineWriter{observe: dog.observe})
+		stdoutWriters = append([]io.Writer{&streamLineWriter{observe: dog.observe}}, stdoutWriters...)
 	}
 	cmd.Stdout = io.MultiWriter(stdoutWriters...)
 	cmd.Stderr = stderr
@@ -499,17 +513,74 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	env, parseErr := parseEnvelope(buf.Bytes())
 
 	terminatedReason, terminatedDetail := dog.terminated()
+
+	// ATTRIBUTION RULE: the watchdog owns the outcome only when its kill
+	// actually PREEMPTED the CLI.
+	//
+	// Cost reaches the stream on the terminal type:"result" line and nowhere
+	// else, and the CLI's own graceful --max-budget-usd / --max-turns stops
+	// print exactly that line (is_error:false) and then exit. So the budget
+	// arm fires, by construction, at the instant the CLI is already ending
+	// itself: without this rule every graceful budget stop was rewritten into
+	// a platform kill — status error, exit 2, the agent's own summary replaced
+	// by "agent-runner terminated the step" (finding C1). The wall-clock arm
+	// has the same shape across cmd.WaitDelay's drain window, where claude is
+	// already gone and only a leaked descendant holds the pipe (finding I3).
+	//
+	// When the CLI ended itself AND left a clean terminal envelope, that
+	// envelope is the truth and the trip is downgraded to a warning on the
+	// step log. A kill that really did preempt the run leaves no such envelope
+	// (or leaves the process signalled), and is still stamped below.
+	if terminatedReason != "" && claudeEndedItself(runErr, cmd.ProcessState) && parseErr == nil && env.Type == "result" {
+		fmt.Fprintf(stderr, "agent-runner: warning: the watchdog's %s arm tripped (%s) but the CLI exited on its own with a terminal %q envelope; reporting the CLI's own outcome, not a platform kill\n",
+			terminatedReason, terminatedDetail, env.Subtype)
+		terminatedReason, terminatedDetail = "", ""
+
+		// The kill we issued is ALSO what makes cmd.Run report an error on
+		// this path: cancelling runCtx surfaces as context.Canceled, or as a
+		// failed group signal once the group is already gone, and os/exec
+		// prefers either over the process's own clean status. That error is
+		// our artifact, not the CLI's outcome — leaving it would keep turning
+		// a graceful stop into status error / exit 2 by another route. Same
+		// normalization the ErrWaitDelay case above performs, and for the same
+		// reason: the envelope is authoritative. A genuine non-zero exit
+		// survives, because it arrives as *exec.ExitError.
+		var exitErr *exec.ExitError
+		if runErr != nil && !errors.As(runErr, &exitErr) {
+			runErr = nil
+		}
+	}
+
 	costUSD, turns := env.ResolvedCostUSD(), env.NumTurns
+	usage := env.Usage
+	var partial partialUsage
 	if terminatedReason != "" {
 		// A killed run has no final envelope; report what the watchdog
 		// actually saw so a runaway that was stopped is not ingested as free.
-		observedCost, observedTurns := dog.observed()
+		var observedCost float64
+		var observedTurns int
+		observedCost, observedTurns, partial = dog.observed()
 		if observedCost > costUSD {
 			costUSD = observedCost
 		}
 		if observedTurns > turns {
 			turns = observedTurns
 		}
+		// Tokens accumulated from the live stream's per-message usage blocks.
+		// This is the only token accounting a killed run has: the turn and
+		// wall-clock arms stop the run BEFORE the cost-bearing terminal line
+		// exists, so ingestion (which sums cost.record) used to record a flat
+		// zero for a step that really spent. Per-field max, not sum: where a
+		// terminal envelope did print, its `usage` is the run total and adding
+		// the per-message increments would double-count. No tokens->USD
+		// conversion happens here — the runner has no price table, and a
+		// fabricated dollar figure would enter agent_cost_ledger as if it had
+		// been measured. Tokens are reported as tokens; CostUSD stays whatever
+		// was actually observed (zero when nothing was ever streamed).
+		usage.InputTokens = max(usage.InputTokens, partial.InputTokens)
+		usage.OutputTokens = max(usage.OutputTokens, partial.OutputTokens)
+		usage.CacheReadInputTokens = max(usage.CacheReadInputTokens, partial.CacheReadInputTokens)
+		usage.CacheCreationInputTokens = max(usage.CacheCreationInputTokens, partial.CacheCreationInputTokens)
 		writeEvent(events, schema.EventError, map[string]string{
 			"message": "agent-runner watchdog terminated the step (" + terminatedReason + "): " + terminatedDetail,
 		})
@@ -519,10 +590,10 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 		Source:              "agent_step",
 		Provider:            "anthropic",
 		Model:               env.Model,
-		InputTokens:         env.Usage.InputTokens,
-		OutputTokens:        env.Usage.OutputTokens,
-		CacheReadTokens:     env.Usage.CacheReadInputTokens,
-		CacheCreationTokens: env.Usage.CacheCreationInputTokens,
+		InputTokens:         usage.InputTokens,
+		OutputTokens:        usage.OutputTokens,
+		CacheReadTokens:     usage.CacheReadInputTokens,
+		CacheCreationTokens: usage.CacheCreationInputTokens,
 		Turns:               turns,
 		CostUSD:             costUSD,
 	})
@@ -563,7 +634,15 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 		Artifacts:     []schema.Artifact{},
 	}
 	if terminatedReason != "" {
-		results.Metadata = map[string]any{"terminated_reason": terminatedReason}
+		// A terminated run asserts nothing: it was stopped mid-thought, so the
+		// confidence a completed step reports in its own conclusion is not
+		// meaningful here. schema.Results.Validate accepts [0.0, 1.0], so zero
+		// is legal — and it is the honest value.
+		results.Confidence = 0
+		results.Metadata = map[string]any{
+			"terminated_reason": terminatedReason,
+			"partial_usage":     partial.metadata(),
+		}
 	}
 	resultsJSON, err := json.Marshal(results)
 	if err != nil {
@@ -585,6 +664,22 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	})
 
 	return exitCode, nil
+}
+
+// claudeEndedItself reports whether the CLI process ended on its own terms
+// rather than being preempted by the watchdog's group SIGKILL — the first half
+// of Run's attribution rule.
+//
+// cmd.Run returning nil is the plain case (ErrWaitDelay is already normalized
+// to nil above: claude exited 0 and only a leaked descendant held the pipe).
+// A non-nil error can still be a self-exit: the CLI may exit non-zero on its
+// own, and when the watchdog cancels runCtx in the same instant claude exits,
+// os/exec prefers the interrupt goroutine's context.Canceled over the
+// process's clean status. So also accept a NORMAL (non-signalled) exit status,
+// which a SIGKILL can never produce — if the process left an exit code at all,
+// nothing killed it.
+func claudeEndedItself(runErr error, state *os.ProcessState) bool {
+	return runErr == nil || (state != nil && state.Exited())
 }
 
 func sortedAuthorityNames[T any](values map[string]T) []string {
