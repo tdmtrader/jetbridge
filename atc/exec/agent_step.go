@@ -427,6 +427,16 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 	if step.plan.MaxTurns > 0 {
 		env = append(env, "AGENT_MAX_TURNS="+strconv.Itoa(step.plan.MaxTurns))
 	}
+	// AGENT_MAX_WALL_CLOCK is the in-pod watchdog bound. It is DERIVED from
+	// the step's effective timeout (90% of it) rather than configured
+	// separately, so the runner always self-terminates and writes its flight
+	// recorder BEFORE the web-side deadline kills the pod — the difference
+	// between an operator-readable wall_clock row and the zero-cost,
+	// no-step.end error row a hard kill produces. A parse error is ignored
+	// here; MaybeTimeout reports it authoritatively below.
+	if effective, err := ResolveTimeout(step.plan.Timeout, step.defaultTimeout); err == nil && effective > 0 {
+		env = append(env, "AGENT_MAX_WALL_CLOCK="+(effective-effective/10).String())
+	}
 	if step.plan.OutputSchema != "" {
 		env = append(env, "AGENT_OUTPUT_SCHEMA="+step.plan.OutputSchema)
 	}

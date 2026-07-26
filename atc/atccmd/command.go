@@ -364,6 +364,8 @@ type RunCommand struct {
 
 	AgentStepImage string `long:"agent-step-image" description:"Container image for the agent: step's main container (must contain the claude CLI and agent-runner). Schema-v3 workflow runs and resource snapshot captures require an exact @sha256 digest; agent steps error at runtime when unset."`
 
+	AgentStepDefaultTimeout time.Duration `long:"agent-step-default-timeout" default:"2h" description:"Default wall-clock bound for agent: steps that declare no timeout:. An explicit per-step timeout: always wins; 0 disables the default and leaves agent steps unbounded. Agent steps do not inherit --default-task-timeout."`
+
 	AgentPlatformTokenSecret string `long:"agent-platform-token-secret" description:"Name of a K8s secret (key 'anthropic-token') providing the Anthropic token for pure-CI agent steps that have no per-run agent-run-<id> secret. The per-run secret always takes precedence. Unset means pure-CI agent steps have no token path."`
 
 	AgentDailyBudgetUSD float64 `long:"agent-daily-budget-usd" default:"0" description:"Global daily agent LLM spend cap in USD across all agent work, enforced by atomic workflow and experiment reservations and reported by the cost rollup API. 0 disables the cap."`
@@ -2998,6 +3000,7 @@ func (cmd *RunCommand) constructEngine(
 		engine.WithAgentMetricsStore(db.NewAgentRunMetricsFactory(dbConn)),
 		engine.WithAgentTranscriptStore(db.NewAgentRunTranscriptFactory(dbConn)),
 		engine.WithAgentBudgetChecker(agentBudgetChecker),
+		engine.WithAgentStepDefaultTimeout(cmd.AgentStepDefaultTimeout),
 		engine.WithAgentRunVerifier(pipelineRunFactory),
 		engine.WithWorkflowWaitStore(db.NewAgentWorkflowWaitsFactory(
 			dbConn, cmd.AgentSnapshots.BindingRetention,

@@ -7,6 +7,7 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"time"
 
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
@@ -61,8 +62,9 @@ var _ = Describe("AgentStep", func() {
 		fakeMetricsStore    *metricsfakes.FakeStore
 		fakeRunVerifier     *execfakes.FakeAgentRunVerifier
 
-		agentPlan  atc.AgentPlan
-		agentImage string
+		agentPlan           atc.AgentPlan
+		agentImage          string
+		agentDefaultTimeout time.Duration
 
 		state exec.RunState
 		repo  *build.Repository
@@ -159,6 +161,7 @@ var _ = Describe("AgentStep", func() {
 			},
 		}
 		agentImage = "registry.home/agent-runner:v1"
+		agentDefaultTimeout = 0
 
 		chosenWorker = runtimetest.NewWorker("worker").
 			WithContainer(
@@ -199,7 +202,7 @@ var _ = Describe("AgentStep", func() {
 			fakePool,
 			fakeStreamer,
 			fakeDelegateFactory,
-			0,
+			agentDefaultTimeout,
 			agentImage,
 			agentStepOptions...,
 		)
@@ -423,6 +426,66 @@ var _ = Describe("AgentStep", func() {
 
 		_, _, found = repo.ArtifactFor(build.ArtifactName("flight"))
 		Expect(found).To(BeTrue())
+	})
+
+	// An unbounded agent step is the runaway-overnight case: task/get/put
+	// steps all carry a platform default, agent steps did not, so a workflow
+	// that authored no timeout: ran until someone noticed. The platform
+	// default closes that hole, and the operator has to be able to SEE that
+	// it fired — hence TimeoutLogMessage, the same signal task steps emit.
+	Context("when a platform default timeout is configured and the step declares none", func() {
+		BeforeEach(func() {
+			agentDefaultTimeout = time.Millisecond
+			chosenContainer.ProcessDefs[0].Stub.Do = func(ctx context.Context, _ *runtimetest.Process) error {
+				select {
+				case <-ctx.Done():
+					return fmt.Errorf("wrapped: %w", ctx.Err())
+				case <-time.After(100 * time.Millisecond):
+					return nil
+				}
+			}
+		})
+
+		It("fails without error and surfaces the timeout to the operator", func() {
+			ok, err := step.Run(ctx, state)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(ok).To(BeFalse())
+
+			Expect(fakeDelegate.ErroredCallCount()).To(Equal(1))
+			_, status := fakeDelegate.ErroredArgsForCall(0)
+			Expect(status).To(Equal(exec.TimeoutLogMessage))
+		})
+	})
+
+	Context("when an explicit per-step timeout is set", func() {
+		BeforeEach(func() {
+			agentDefaultTimeout = 100 * time.Minute
+			agentPlan.Timeout = "20m"
+		})
+
+		// The pod-side watchdog bound is DERIVED from the step's effective
+		// timeout (90% of it), so the runner always self-terminates and writes
+		// its flight recorder inside the web-side deadline. An authored
+		// timeout: still wins over the platform default.
+		It("derives AGENT_MAX_WALL_CLOCK from the authored timeout", func() {
+			ok, err := step.Run(ctx, state)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(ok).To(BeTrue())
+
+			_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
+			Expect(spec.Env).To(ContainElement("AGENT_MAX_WALL_CLOCK=18m0s"))
+		})
+	})
+
+	Context("when neither a per-step nor a platform timeout is set", func() {
+		It("exports no AGENT_MAX_WALL_CLOCK row", func() {
+			ok, err := step.Run(ctx, state)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(ok).To(BeTrue())
+
+			_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
+			Expect(spec.Env).ToNot(ContainElement(HavePrefix("AGENT_MAX_WALL_CLOCK=")))
+		})
 	})
 
 	Context("with typed snapshot declarations", func() {

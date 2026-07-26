@@ -21,33 +21,34 @@ import (
 )
 
 type coreStepFactory struct {
-	pool                  worker.Pool
-	streamer              worker.Streamer
-	lockFactory           lock.LockFactory
-	teamFactory           db.TeamFactory
-	buildFactory          db.BuildFactory
-	resourceCacheFactory  db.ResourceCacheFactory
-	resourceConfigFactory db.ResourceConfigFactory
-	defaultLimits         atc.ContainerLimits
-	defaultRequests       atc.ContainerLimits
-	defaultCheckTimeout   time.Duration
-	defaultGetTimeout     time.Duration
-	defaultPutTimeout     time.Duration
-	defaultTaskTimeout    time.Duration
-	imageResolver         imageresolver.Resolver
-	agentStepImage        string
-	agentMetricsStore     metrics.Store
-	agentTranscriptStore  exec.AgentTranscriptStore
-	agentBudgetChecker    budget.Checker
-	agentRunVerifier      exec.AgentRunVerifier
-	agentPlatformToken    string
-	outputSealer          snapshot.OutputSealer
-	snapshotMetadataStore snapshot.MetadataStore
-	snapshotContentStore  snapshot.ContentStore
-	snapshotInputBindings exec.WorkflowInputBindingVerifier
-	snapshotCanonicalizer snapshot.Canonicalizer
-	workflowWaits         workflowwait.Store
-	snapshotPublisher     publisher.Executor
+	pool                    worker.Pool
+	streamer                worker.Streamer
+	lockFactory             lock.LockFactory
+	teamFactory             db.TeamFactory
+	buildFactory            db.BuildFactory
+	resourceCacheFactory    db.ResourceCacheFactory
+	resourceConfigFactory   db.ResourceConfigFactory
+	defaultLimits           atc.ContainerLimits
+	defaultRequests         atc.ContainerLimits
+	defaultCheckTimeout     time.Duration
+	defaultGetTimeout       time.Duration
+	defaultPutTimeout       time.Duration
+	defaultTaskTimeout      time.Duration
+	agentStepDefaultTimeout time.Duration
+	imageResolver           imageresolver.Resolver
+	agentStepImage          string
+	agentMetricsStore       metrics.Store
+	agentTranscriptStore    exec.AgentTranscriptStore
+	agentBudgetChecker      budget.Checker
+	agentRunVerifier        exec.AgentRunVerifier
+	agentPlatformToken      string
+	outputSealer            snapshot.OutputSealer
+	snapshotMetadataStore   snapshot.MetadataStore
+	snapshotContentStore    snapshot.ContentStore
+	snapshotInputBindings   exec.WorkflowInputBindingVerifier
+	snapshotCanonicalizer   snapshot.Canonicalizer
+	workflowWaits           workflowwait.Store
+	snapshotPublisher       publisher.Executor
 }
 
 // CoreStepFactoryOption configures optional fields on coreStepFactory.
@@ -103,6 +104,14 @@ func WithSnapshotPublisher(executor publisher.Executor) CoreStepFactoryOption {
 // (web flag --agent-step-image).
 func WithAgentStepImage(image string) CoreStepFactoryOption {
 	return func(f *coreStepFactory) { f.agentStepImage = image }
+}
+
+// WithAgentStepDefaultTimeout sets the platform wall-clock default applied to
+// agent: steps that declare no timeout:. Zero leaves agent steps unbounded.
+// Agent steps deliberately do NOT inherit --default-task-timeout: an agent's
+// runaway profile is unrelated to a task's, and one knob must own it.
+func WithAgentStepDefaultTimeout(timeout time.Duration) CoreStepFactoryOption {
+	return func(f *coreStepFactory) { f.agentStepDefaultTimeout = timeout }
 }
 
 // WithAgentMetricsStore sets the run-metrics store for server-side
@@ -326,7 +335,7 @@ func (factory *coreStepFactory) AgentStep(
 		factory.pool,
 		factory.streamer,
 		delegateFactory,
-		factory.defaultTaskTimeout,
+		factory.agentStepDefaultTimeout,
 		factory.agentStepImage,
 		agentOpts...,
 	)
