@@ -137,6 +137,27 @@ make test-dev-mcp
 go test ./agent/devmcp/... -count=1 -timeout 10m
 ```
 
+### 9. Fixture Agent & Real-Sealer Lane
+
+`agent/fixtureagent` (the record synthesizer + hostile catalog) and
+`cmd/fixture-agent` (the binary that materializes them) are the
+deterministic stand-in agent used by the `atc/exec` fixture specs and the
+K8s behavioral suite. Tier 1's `ginkgo -r` walk already covers both as
+plain-`testing.T` packages (see the `agent/` note above); this is the
+direct, explicit invocation for fast library-only iteration.
+
+- **Time:** under 1 second
+- **Prerequisites:** None
+- **What it covers:** the record synthesizer, the seven-case hostile catalog, and the binary's `AGENT_OUTPUT_*`/`AGENT_INPUT_*` env contract
+
+```bash
+go test ./agent/fixtureagent/ ./cmd/fixture-agent/ -count=1
+```
+
+`ginkgo --focus="fixture" ./atc/exec/` is the real-sealer lane: it runs
+`AgentStep` against a real `snapshot.BatchSealer` and `contracts.NewRegistry()`,
+with nothing faked between the step and contract validation.
+
 ## Prerequisites
 
 | Tool | Required For | Install |

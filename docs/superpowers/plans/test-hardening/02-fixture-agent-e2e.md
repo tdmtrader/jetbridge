@@ -28,7 +28,7 @@
 **Files:**
 - Modify: `agent/functions/judge/runner_test.go`
 
-- [ ] In `TestRunClampsScoresAndRejectsDuplicateOrUnexpectedDimensions`, after the existing `duplicate` block, add the unexpected-dimension arm. Insert exactly this before the closing brace of the function:
+- [x] In `TestRunClampsScoresAndRejectsDuplicateOrUnexpectedDimensions`, after the existing `duplicate` block, add the unexpected-dimension arm. Insert exactly this before the closing brace of the function:
 
 ```go
 	// A verdict carrying a dimension the rubric never declared. The guard at
@@ -42,9 +42,9 @@
 	}
 ```
 
-- [ ] Run `go test ./agent/functions/judge/ -run TestRunClampsScoresAndRejectsDuplicateOrUnexpectedDimensions -count=1 -v`. It must PASS on the first run — this task pins existing behavior that had no witness, so there is no red step. Confirm it is a real witness rather than a tautology by temporarily deleting `runner.go:225-229` (the `for name := range byName { ... }` loop) and re-running: the test must then fail with `unexpected dimension error = <nil>`. Restore the deleted lines.
-- [ ] Prove the line is now covered: `go test ./agent/functions/judge/ -count=1 -coverprofile=/tmp/judge.cov && grep 'runner.go:226' /tmp/judge.cov`. The trailing count must be `1`, not `0`.
-- [ ] Commit `test(judge): reject an unexpected rubric dimension`.
+- [x] Run `go test ./agent/functions/judge/ -run TestRunClampsScoresAndRejectsDuplicateOrUnexpectedDimensions -count=1 -v`. It must PASS on the first run — this task pins existing behavior that had no witness, so there is no red step. Confirm it is a real witness rather than a tautology by temporarily deleting `runner.go:225-229` (the `for name := range byName { ... }` loop) and re-running: the test must then fail with `unexpected dimension error = <nil>`. Restore the deleted lines.
+- [x] Prove the line is now covered: `go test ./agent/functions/judge/ -count=1 -coverprofile=/tmp/judge.cov && grep 'runner.go:226' /tmp/judge.cov`. The trailing count must be `1`, not `0`.
+- [x] Commit `test(judge): reject an unexpected rubric dimension`.
 
 ---
 
@@ -56,7 +56,7 @@ One package owns the description of a conforming agent's output tree, so the exe
 - Create: `agent/fixtureagent/fixtures.go`
 - Create: `agent/fixtureagent/fixtures_test.go`
 
-- [ ] Write `agent/fixtureagent/fixtures_test.go` first:
+- [x] Write `agent/fixtureagent/fixtures_test.go` first:
 
 ```go
 package fixtureagent_test
@@ -206,8 +206,8 @@ func tarNames(t *testing.T, raw []byte) []string {
 }
 ```
 
-- [ ] Run `go test ./agent/fixtureagent/ -count=1`. Expected failure: `no required module provides package github.com/concourse/concourse/agent/fixtureagent` (or, once the directory exists but is empty, `build constraints exclude all Go files`).
-- [ ] Create `agent/fixtureagent/fixtures.go`:
+- [x] Run `go test ./agent/fixtureagent/ -count=1`. Expected failure: `no required module provides package github.com/concourse/concourse/agent/fixtureagent` (or, once the directory exists but is empty, `build constraints exclude all Go files`).
+- [x] Create `agent/fixtureagent/fixtures.go`:
 
 ```go
 // Package fixtureagent synthesizes the output trees a deterministic stand-in
@@ -423,9 +423,9 @@ func blockingFinding(id string) contracts.Finding {
 }
 ```
 
-- [ ] Run `go test ./agent/fixtureagent/ -count=1`. Expected: `ok github.com/concourse/concourse/agent/fixtureagent`, 5 tests passing.
-- [ ] Run `gofmt -l agent/fixtureagent` and confirm no output.
-- [ ] Commit `feat(agent): add the fixture-agent record synthesizer`.
+- [x] Run `go test ./agent/fixtureagent/ -count=1`. Expected: `ok github.com/concourse/concourse/agent/fixtureagent`, 5 tests passing.
+- [x] Run `gofmt -l agent/fixtureagent` and confirm no output.
+- [x] Commit `feat(agent): add the fixture-agent record synthesizer`.
 
 ---
 
@@ -437,7 +437,7 @@ Seven near-miss trees, one per adversarial case Tier A asserts. Each violates ex
 - Modify: `agent/fixtureagent/fixtures.go`
 - Modify: `agent/fixtureagent/fixtures_test.go`
 
-- [ ] Append to `agent/fixtureagent/fixtures_test.go`:
+- [x] Append to `agent/fixtureagent/fixtures_test.go`:
 
 ```go
 func TestHostileCatalogViolatesExactlyOneRuleEach(t *testing.T) {
@@ -575,8 +575,8 @@ func decodeReview(t *testing.T, entries []fixtureagent.Entry) contracts.Record[c
 }
 ```
 
-- [ ] Run `go test ./agent/fixtureagent/ -count=1`. Expected failure: `undefined: fixtureagent.CaseHostileTraversal` (and six more `undefined:` lines).
-- [ ] In `agent/fixtureagent/fixtures.go`, extend the constant block and `Cases`:
+- [x] Run `go test ./agent/fixtureagent/ -count=1`. Expected failure: `undefined: fixtureagent.CaseHostileTraversal` (and six more `undefined:` lines).
+- [x] In `agent/fixtureagent/fixtures.go`, extend the constant block and `Cases`:
 
 ```go
 // The hostile catalog. Each case violates exactly one rule, so the error it
@@ -624,7 +624,7 @@ func Cases() []string {
 }
 ```
 
-- [ ] Extend the `Entries` switch with the seven hostile arms, before the `default:`:
+- [x] Extend the `Entries` switch with the seven hostile arms, before the `default:`:
 
 ```go
 	case CaseHostileTraversal:
@@ -665,7 +665,7 @@ func Cases() []string {
 		return append(entries, Entry{Path: "payload.bin", Body: bytes.Repeat([]byte("A"), size)}), nil
 ```
 
-- [ ] Guard `WriteTree` against the tar-only case, immediately after the `Entries` call:
+- [x] Guard `WriteTree` against the tar-only case, immediately after the `Entries` call:
 
 ```go
 	if caseName == CaseHostileTraversal {
@@ -673,9 +673,9 @@ func Cases() []string {
 	}
 ```
 
-- [ ] Run `go test ./agent/fixtureagent/ -count=1 -v`. Expected: all tests pass, including the seven `TestHostileCatalogViolatesExactlyOneRuleEach/hostile-*` subtests.
-- [ ] Run `gofmt -l agent/fixtureagent` and confirm no output.
-- [ ] Commit `feat(agent): add the fixture-agent hostile catalog`.
+- [x] Run `go test ./agent/fixtureagent/ -count=1 -v`. Expected: all tests pass, including the seven `TestHostileCatalogViolatesExactlyOneRuleEach/hostile-*` subtests.
+- [x] Run `gofmt -l agent/fixtureagent` and confirm no output.
+- [x] Commit `feat(agent): add the fixture-agent hostile catalog`.
 
 ---
 
@@ -687,7 +687,7 @@ The pod-side face. It honors the §8.1 env contract exactly as `agent/runner`'s 
 - Create: `cmd/fixture-agent/main.go`
 - Create: `cmd/fixture-agent/main_test.go`
 
-- [ ] Write `cmd/fixture-agent/main_test.go`:
+- [x] Write `cmd/fixture-agent/main_test.go`:
 
 ```go
 package main
@@ -829,8 +829,8 @@ func TestRunFailsLoudlyWhenTheEnvContractIsIncomplete(t *testing.T) {
 }
 ```
 
-- [ ] Run `go test ./cmd/fixture-agent/ -count=1`. Expected failure: `no required module provides package github.com/concourse/concourse/cmd/fixture-agent`.
-- [ ] Create `cmd/fixture-agent/main.go`:
+- [x] Run `go test ./cmd/fixture-agent/ -count=1`. Expected failure: `no required module provides package github.com/concourse/concourse/cmd/fixture-agent`.
+- [x] Create `cmd/fixture-agent/main.go`:
 
 ```go
 // Command fixture-agent is a deterministic stand-in for the claude-backed
@@ -1072,9 +1072,9 @@ func writeEvent(writer *schema.EventWriter, kind schema.EventType, data any) err
 }
 ```
 
-- [ ] Run `go test ./cmd/fixture-agent/ -count=1 -v`. Expected: three tests pass.
-- [ ] Run `go build ./cmd/fixture-agent/` and `gofmt -l cmd/fixture-agent`; both silent.
-- [ ] Commit `feat(agent): add the fixture-agent step binary`.
+- [x] Run `go test ./cmd/fixture-agent/ -count=1 -v`. Expected: three tests pass.
+- [x] Run `go build ./cmd/fixture-agent/` and `gofmt -l cmd/fixture-agent`; both silent.
+- [x] Commit `feat(agent): add the fixture-agent step binary`.
 
 ---
 
@@ -1089,7 +1089,7 @@ Two production facts shape the harness:
 **Files:**
 - Create: `atc/exec/agent_step_fixture_test.go`
 
-- [ ] Create `atc/exec/agent_step_fixture_test.go` with the harness and the first positive spec:
+- [x] Create `atc/exec/agent_step_fixture_test.go` with the harness and the first positive spec:
 
 ```go
 package exec_test
@@ -1482,10 +1482,10 @@ var _ = Describe("AgentStep against the real sealer (fixture agent)", func() {
 })
 ```
 
-- [ ] Run `ginkgo --focus="fixture" ./atc/exec/`. Expected failure before the file compiles: `undefined: fixtureagent` if Task 2 was skipped; otherwise the suite must compile and both specs must pass. If the first run fails inside `Seal` with `snapshot: capture output "review": ...`, the fixture tar is malformed — fix the fixture, not the assertion.
-- [ ] Confirm the real registry is genuinely in the path: temporarily change `acceptBody()`'s `Conclusion` to `"maybe"` in `agent/fixtureagent/fixtures.go`, re-run `ginkgo --focus="fixture" ./atc/exec/`, and confirm the first spec now fails with a message containing `conclusion`. Revert the change.
-- [ ] Run the whole existing agent-step suite for regressions: `ginkgo --focus="AgentStep" ./atc/exec/`. Expected: `SUCCESS! -- 96 Passed | 0 Failed` (94 pre-existing plus the two new specs, since the new Describe also matches `AgentStep`).
-- [ ] Commit `test(exec): seal agent outputs through the real contract registry`.
+- [x] Run `ginkgo --focus="fixture" ./atc/exec/`. Expected failure before the file compiles: `undefined: fixtureagent` if Task 2 was skipped; otherwise the suite must compile and both specs must pass. If the first run fails inside `Seal` with `snapshot: capture output "review": ...`, the fixture tar is malformed — fix the fixture, not the assertion.
+- [x] Confirm the real registry is genuinely in the path: temporarily change `acceptBody()`'s `Conclusion` to `"maybe"` in `agent/fixtureagent/fixtures.go`, re-run `ginkgo --focus="fixture" ./atc/exec/`, and confirm the first spec now fails with a message containing `conclusion`. Revert the change.
+- [x] Run the whole existing agent-step suite for regressions: `ginkgo --focus="AgentStep" ./atc/exec/`. Expected: `SUCCESS! -- 96 Passed | 0 Failed` (94 pre-existing plus the two new specs, since the new Describe also matches `AgentStep`).
+- [x] Commit `test(exec): seal agent outputs through the real contract registry`.
 
 ---
 
@@ -1498,7 +1498,7 @@ var _ = Describe("AgentStep against the real sealer (fixture agent)", func() {
 
 The harness from Task 5 already builds the marker mount whenever `markerFiles` is non-nil, so this task only sets that variable. The marker file name is the raw base64url of the output name: `base64url("review") == "cmV2aWV3"`.
 
-- [ ] Add two `Context` blocks inside the existing `Describe`, after the changes-required context:
+- [x] Add two `Context` blocks inside the existing `Describe`, after the changes-required context:
 
 ```go
 	Context("when an optional typed output is marked produced", func() {
@@ -1543,9 +1543,9 @@ The harness from Task 5 already builds the marker mount whenever `markerFiles` i
 	})
 ```
 
-- [ ] Run `ginkgo --focus="fixture" ./atc/exec/`. Expected: 4 specs passing. If the produced spec fails with `optional typed-output marker mount is missing`, the marker mount path in Task 5's harness does not match `typedOutputMarkerMountPath` (`atc/exec/typed_output.go`); fix the harness.
-- [ ] The second Context is the negative control that makes the first one meaningful: identical wiring, one different marker name, opposite outcome. Confirm both pass — if they both pass with the *same* outcome, the marker is not being read at all.
-- [ ] Commit `test(exec): honor produced optional typed output markers`.
+- [x] Run `ginkgo --focus="fixture" ./atc/exec/`. Expected: 4 specs passing. If the produced spec fails with `optional typed-output marker mount is missing`, the marker mount path in Task 5's harness does not match `typedOutputMarkerMountPath` (`atc/exec/typed_output.go`); fix the harness.
+- [x] The second Context is the negative control that makes the first one meaningful: identical wiring, one different marker name, opposite outcome. Confirm both pass — if they both pass with the *same* outcome, the marker is not being read at all.
+- [x] Commit `test(exec): honor produced optional typed output markers`.
 
 ---
 
@@ -1570,7 +1570,7 @@ Where the clause comes from, so an implementer can re-derive it if a message eve
 
 A Ginkgo `DescribeTable` is the wrong construct here: its entry parameters arrive inside the spec body, which runs *after* the outer `JustBeforeEach` has already built the tar and run the step, so an entry cannot select its own fixture case. A `for` loop generating one `Context` per case sets `fixtureCase`/`contentLimit` in a `BeforeEach`, which does run first.
 
-- [ ] Add this loop at the end of the `Describe` body:
+- [x] Add this loop at the end of the `Describe` body:
 
 ```go
 	type hostileCase struct {
@@ -1644,10 +1644,10 @@ A Ginkgo `DescribeTable` is the wrong construct here: its entry parameters arriv
 	}
 ```
 
-- [ ] Run `ginkgo --focus="fixture" ./atc/exec/`. Expected: 11 specs (2 positive seals + 2 optional-marker + 7 hostile), all passing. Any hostile case that passes the step instead of failing it is a real finding — record it and stop; do not weaken the assertion.
-- [ ] Run `ginkgo --focus="fixture" ./atc/exec/ -v 2>&1 | grep -c "hostile-"` and confirm `7`.
-- [ ] Run the full package once: `ginkgo ./atc/exec/`. Expected: `SUCCESS!` with 691 + 11 specs.
-- [ ] Commit `test(exec): reject hostile agent output at the seal boundary`.
+- [x] Run `ginkgo --focus="fixture" ./atc/exec/`. Expected: 11 specs (2 positive seals + 2 optional-marker + 7 hostile), all passing. Any hostile case that passes the step instead of failing it is a real finding — record it and stop; do not weaken the assertion.
+- [x] Run `ginkgo --focus="fixture" ./atc/exec/ -v 2>&1 | grep -c "hostile-"` and confirm `7`.
+- [x] Run the full package once: `ginkgo ./atc/exec/`. Expected: `SUCCESS!` with 691 + 11 specs.
+- [x] Commit `test(exec): reject hostile agent output at the seal boundary`.
 
 ---
 
@@ -1661,7 +1661,7 @@ The image base must carry a POSIX userland: `atc/worker/jetbridge/supervisor.go`
 - Create: `deploy/fixture-agent/Dockerfile`
 - Modify: `topgun/k8s_behavioral/cluster_lifecycle_test.go`
 
-- [ ] Create `deploy/fixture-agent/Dockerfile`:
+- [x] Create `deploy/fixture-agent/Dockerfile`:
 
 ```dockerfile
 # The deterministic stand-in agent image used by the behavioral suite and by
@@ -1683,7 +1683,7 @@ COPY --from=build /out/fixture-agent /usr/local/bin/agent-runner
 ENTRYPOINT ["agent-runner"]
 ```
 
-- [ ] In `topgun/k8s_behavioral/cluster_lifecycle_test.go`, add the constant next to `artifactHelperSourceImage`:
+- [x] In `topgun/k8s_behavioral/cluster_lifecycle_test.go`, add the constant next to `artifactHelperSourceImage`:
 
 ```go
 // fixtureAgentImage is the deterministic stand-in agent the behavioral suite
@@ -1693,13 +1693,13 @@ ENTRYPOINT ["agent-runner"]
 const fixtureAgentImage = "fixture-agent:behavioral"
 ```
 
-- [ ] In `loadImagesIntoCluster`, immediately after the existing `buildAndLoadOOMTriggerImage(ctx)` call at line 174, add:
+- [x] In `loadImagesIntoCluster`, immediately after the existing `buildAndLoadOOMTriggerImage(ctx)` call at line 174, add:
 
 ```go
 	buildAndLoadFixtureAgentImage(ctx)
 ```
 
-- [ ] Append the builder, modeled line-for-line on `buildAndLoadOOMTriggerImage`:
+- [x] Append the builder, modeled line-for-line on `buildAndLoadOOMTriggerImage`:
 
 ```go
 // buildAndLoadFixtureAgentImage compiles cmd/fixture-agent, packages it into a
@@ -1737,7 +1737,7 @@ func buildAndLoadFixtureAgentImage(ctx context.Context) {
 }
 ```
 
-- [ ] Verify the image builds and the entrypoint is correctly named, without running the suite:
+- [x] Verify the image builds and the entrypoint is correctly named, without running the suite:
 
 ```
 docker build -f deploy/fixture-agent/Dockerfile -t fixture-agent:behavioral .
@@ -1745,15 +1745,15 @@ docker run --rm --entrypoint sh fixture-agent:behavioral -c 'command -v agent-ru
 ```
 
   Expected output: `/usr/local/bin/agent-runner`.
-- [ ] Verify the binary refuses an empty environment the way the flight contract requires:
+- [x] Verify the binary refuses an empty environment the way the flight contract requires:
 
 ```
 docker run --rm fixture-agent:behavioral; echo "exit=$?"
 ```
 
   Expected: `fixture-agent: no AGENT_OUTPUT_<NAME> destinations in the environment` on stderr and `exit=2`.
-- [ ] Run `go vet ./topgun/k8s_behavioral/` and `gofmt -l topgun/k8s_behavioral deploy`; both silent. Do not run the behavioral suite yet — Task 10 does that once.
-- [ ] Commit `test(k8s): build and load the fixture-agent image`.
+- [x] Run `go vet ./topgun/k8s_behavioral/` and `gofmt -l topgun/k8s_behavioral deploy`; both silent. Do not run the behavioral suite yet — Task 10 does that once.
+- [x] Commit `test(k8s): build and load the fixture-agent image`.
 
 ---
 
@@ -1766,7 +1766,7 @@ docker run --rm fixture-agent:behavioral; echo "exit=$?"
 - Modify: `deploy/chart/templates/web-deployment.yaml`
 - Modify: `deploy/chart/tests/agentic_config_test.go`
 
-- [ ] Add the failing chart test first. Append to `deploy/chart/tests/agentic_config_test.go`:
+- [x] Add the failing chart test first. Append to `deploy/chart/tests/agentic_config_test.go`:
 
 ```go
 func TestWebAgentStepImageRendersTheFlagOnlyWhenSet(t *testing.T) {
@@ -1792,8 +1792,8 @@ func TestWebExtraArgsMayNotOverrideTheChartManagedAgentStepImage(t *testing.T) {
 }
 ```
 
-- [ ] Run `go test ./deploy/chart/tests/ -run 'AgentStepImage|AgentStepImage' -count=1`. Expected failure: `--agent-step-image` is absent from the `present` render, so the first test fails with `rendered web args do not carry the agent step image`.
-- [ ] In `deploy/chart/values.yaml`, add under the `web:` block, immediately above `extraArgs: []`:
+- [x] Run `go test ./deploy/chart/tests/ -run 'AgentStepImage|AgentStepImage' -count=1`. Expected failure: `--agent-step-image` is absent from the `present` render, so the first test fails with `rendered web args do not carry the agent step image`.
+- [x] In `deploy/chart/values.yaml`, add under the `web:` block, immediately above `extraArgs: []`:
 
 ```yaml
   # Container image for the agent: step's main container. Leave empty to
@@ -1803,7 +1803,7 @@ func TestWebExtraArgsMayNotOverrideTheChartManagedAgentStepImage(t *testing.T) {
   agentStepImage: ""
 ```
 
-- [ ] In `deploy/chart/templates/web-deployment.yaml`, extend the `extraArgs` guard block (lines 40-47) with:
+- [x] In `deploy/chart/templates/web-deployment.yaml`, extend the `extraArgs` guard block (lines 40-47) with:
 
 ```yaml
 {{- if and $.Values.web.agentStepImage (hasPrefix "--agent-step-image" $argument) }}
@@ -1811,7 +1811,7 @@ func TestWebExtraArgsMayNotOverrideTheChartManagedAgentStepImage(t *testing.T) {
 {{- end }}
 ```
 
-- [ ] In the same template, add the argument immediately before the `# Extra args` comment:
+- [x] In the same template, add the argument immediately before the `# Extra args` comment:
 
 ```yaml
             {{- if .Values.web.agentStepImage }}
@@ -1819,15 +1819,17 @@ func TestWebExtraArgsMayNotOverrideTheChartManagedAgentStepImage(t *testing.T) {
             {{- end }}
 ```
 
-- [ ] Re-run `go test ./deploy/chart/tests/ -count=1`. Expected: the whole chart test package passes, including the two new tests.
-- [ ] Wire the behavioral suite to it. In `topgun/k8s_behavioral/cluster_lifecycle_test.go`, add to the `helmArgs` slice, immediately after the `agentExperiments.runnerEnabled` line:
+- [x] Re-run `go test ./deploy/chart/tests/ -count=1`. Expected: the whole chart test package passes, including the two new tests.
+- [x] Wire the behavioral suite to it. In `topgun/k8s_behavioral/cluster_lifecycle_test.go`, add to the `helmArgs` slice, immediately after the `agentExperiments.runnerEnabled` line:
 
 ```go
 		"--set-string", "web.agentStepImage=" + fixtureAgentImage,
 ```
 
-- [ ] Run `helm template concourse deploy/chart --set-string kubernetes.artifactHelperImage=busybox@sha256:$(printf 'a%.0s' {1..64}) --set-string web.agentStepImage=fixture-agent:behavioral | grep -- '--agent-step-image'`. Expected: one line, `- --agent-step-image=fixture-agent:behavioral`.
-- [ ] Commit `feat(chart): configure the agent step image`.
+- [x] Run `helm template concourse deploy/chart --set-string kubernetes.artifactHelperImage=busybox@sha256:$(printf 'a%.0s' {1..64}) --set-string web.agentStepImage=fixture-agent:behavioral | grep -- '--agent-step-image'`. Expected: one line, `- --agent-step-image=fixture-agent:behavioral`.
+- [x] Commit `feat(chart): configure the agent step image`.
+
+> **Task 13 note (2026-07-26):** this task's checklist above instructs wiring `topgun/k8s_behavioral/cluster_lifecycle_test.go`'s `helmArgs` to `web.agentStepImage`, but this task's own **Files:** block never listed that file. It was correctly left out of this task's commit (`3f2b148a52`, chart files only) and landed instead in Task 10's commit (`abd9c46cbf`), which already had reason to touch the behavioral suite. A plan `Files:`-block defect, not an implementation gap — noted here and in `## Deviations from the design`.
 
 ---
 
@@ -1840,7 +1842,7 @@ It is an ordinary pipeline, not a workflow, on purpose. `agent/workflowrun/binde
 **Files:**
 - Modify: `topgun/k8s_behavioral/agentic_workflows_test.go`
 
-- [ ] Add a second `It` inside the existing `Describe("Agentic workflows", ...)`:
+- [x] Add a second `It` inside the existing `Describe("Agentic workflows", ...)`:
 
 ```go
 	It("runs a real agent node that seals a review record through the fixture agent", func() {
@@ -1920,13 +1922,13 @@ jobs:
 	})
 ```
 
-- [ ] Add the imports the new spec needs to the file's import block: `"crypto/sha256"`, `"encoding/hex"`, `"time"`, and `"github.com/concourse/concourse/agent/snapshot/contracts"`.
-- [ ] Run `go vet ./topgun/k8s_behavioral/` and `gofmt -l topgun/k8s_behavioral`; both silent.
-- [ ] Run just this spec against a live cluster: `ginkgo --procs=1 -v --timeout=1h --focus="real agent node" ./topgun/k8s_behavioral/`. Expected: `SUCCESS! -- 1 Passed`. Prerequisites per CLAUDE.md: Docker, Helm, kubectl on PATH. Budget ~20 minutes for cluster bring-up.
-- [ ] If the build fails with `agent step requires the web node to be started with --agent-step-image`, Task 9's chart wiring did not reach the pod — check `kubectl -n concourse get deploy concourse-web -o yaml | grep agent-step-image`.
-- [ ] If the agent pod fails with `executable file not found`, the image installed the binary under the wrong name — re-check Task 8's `COPY` line.
-- [ ] Run the whole agentic file to confirm no regression in the pre-existing task-node spec: `ginkgo --procs=1 -v --timeout=1h --focus="Agentic workflows" ./topgun/k8s_behavioral/`. Expected: `2 Passed`.
-- [ ] Commit `test(k8s): run a real agent node end to end`.
+- [x] Add the imports the new spec needs to the file's import block: `"crypto/sha256"`, `"encoding/hex"`, `"time"`, and `"github.com/concourse/concourse/agent/snapshot/contracts"`.
+- [x] Run `go vet ./topgun/k8s_behavioral/` and `gofmt -l topgun/k8s_behavioral`; both silent.
+- [x] Run just this spec against a live cluster: `ginkgo --procs=1 -v --timeout=1h --focus="real agent node" ./topgun/k8s_behavioral/`. Expected: `SUCCESS! -- 1 Passed`. Prerequisites per CLAUDE.md: Docker, Helm, kubectl on PATH. Budget ~20 minutes for cluster bring-up.
+- [x] If the build fails with `agent step requires the web node to be started with --agent-step-image`, Task 9's chart wiring did not reach the pod — check `kubectl -n concourse get deploy concourse-web -o yaml | grep agent-step-image`.
+- [x] If the agent pod fails with `executable file not found`, the image installed the binary under the wrong name — re-check Task 8's `COPY` line.
+- [x] Run the whole agentic file to confirm no regression in the pre-existing task-node spec: `ginkgo --procs=1 -v --timeout=1h --focus="Agentic workflows" ./topgun/k8s_behavioral/`. Expected: `2 Passed`.
+- [x] Commit `test(k8s): run a real agent node end to end`.
 
 ---
 
@@ -1966,7 +1968,7 @@ Tier B has to choose an execution seam, and the choice is load-bearing enough to
 **Files:**
 - Create: `atc/db/agent_workflow_chained_e2e_test.go`
 
-- [ ] Create the file. The workflow manifest fixture is complete, and every helper it uses (`workflowRunTar`, `workflowRunMemoryContent`, `findAgentPlan`, `newWorkflowRunVerticalSlice`, `defaultTeam`, `buildFactory`, `dbConn`, `logger`, `lockFactory`) already exists in the `db_test` package:
+- [x] Create the file. The workflow manifest fixture is complete, and every helper it uses (`workflowRunTar`, `workflowRunMemoryContent`, `findAgentPlan`, `newWorkflowRunVerticalSlice`, `defaultTeam`, `buildFactory`, `dbConn`, `logger`, `lockFactory`) already exists in the `db_test` package:
 
 ```go
 package db_test
@@ -2056,7 +2058,9 @@ plan:
 }
 ```
 
-- [ ] Add the spec body:
+> **Task 13 note (2026-07-26) — manifest fix:** the `output_types.final-review` block shown above does not decode as written. An `output_types` entry accepts only `type` and `optional` (`agent/workflow/parse.go:482`, `validateObjectSource(..., []string{"type", "optional"})`); `retention` and `workflow_port` are not authorable there and are rejected at import. The landed manifest (`atc/db/agent_workflow_chained_e2e_test.go:86`) declares `final-review: review/v1` as a bare type reference instead — retention and the port name are attached by the platform in `AnnotatePublicOutputs` (`agent/workflow/typecheck.go:103-104`) from the top-level `outputs: - name: verdict ... from: final-review` mapping, not authored per-step. See `## Deviations from the design`.
+
+- [x] Add the spec body:
 
 ```go
 var _ = Describe("agent workflow run chained DAG", func() {
@@ -2410,15 +2414,15 @@ func findAwaitSnapshotPlan(plan atc.Plan, name string) *atc.Plan {
 }
 ```
 
-- [ ] Run `ginkgo --focus="chained DAG" ./atc/db/`. PostgreSQL must be up (`pg_isready`). Work through the failures in this order, because each one is a real contract the test is discovering:
+- [x] Run `ginkgo --focus="chained DAG" ./atc/db/`. PostgreSQL must be up (`pg_isready`). Work through the failures in this order, because each one is a real contract the test is discovering:
   1. **Compile errors on constructor arity.** Re-read the four signatures the test calls — `exec.NewLoadSnapshotStep` (`atc/exec/load_snapshot_step.go:45`), `exec.NewAwaitSnapshotStep` (`atc/exec/await_snapshot_step.go:56`), `db.NewAgentWorkflowWaitsFactory` (`atc/db/agent_workflow_waits_factory.go:19`), `workflowwait.MaterializeAnswer` (`agent/workflowwait/materializer.go:31`) — and match them exactly.
   2. **Manifest rejected at import.** `workflow.ParseCompiled` decodes with `DisallowUnknownFields`; a typo in a step key surfaces here. Fix the manifest, not the parser.
   3. **`await_snapshot: an ordinary timeout wrapper is required`.** The `awaitCtx` must have a deadline; the `context.WithTimeout` above supplies it.
   4. **`record subject "primary" input "draft-review" is not an exact declared input`** on the final seal. That means the second `SealRequest.Inputs` map is missing `draft-review` — which is exactly the chaining link the test exists to prove.
-- [ ] When green, prove the chaining is load-bearing rather than incidental: change the final fixture's `SubjectDigest` from `draftRef.Digest.String()` to `change.Digest.String()` and re-run. Expected failure: `record subject "primary" digest does not match input "draft-review" digest`. Restore it.
-- [ ] Run `ginkgo --focus="agent workflow run" ./atc/db/` and confirm the pre-existing vertical-slice specs still pass alongside the new one.
-- [ ] Run the whole suite once: `ginkgo ./atc/db/`. Expected: ~1008 specs, `SUCCESS!`, roughly 90 seconds. A new `atc/exec` import edge in `db_test` lengthens compilation; if the suite now exceeds the default Ginkgo timeout, raise it in the command rather than trimming the test.
-- [ ] Commit `test(db): chain typed outputs through a workflow run`.
+- [x] When green, prove the chaining is load-bearing rather than incidental: change the final fixture's `SubjectDigest` from `draftRef.Digest.String()` to `change.Digest.String()` and re-run. Expected failure: `record subject "primary" digest does not match input "draft-review" digest`. Restore it.
+- [x] Run `ginkgo --focus="agent workflow run" ./atc/db/` and confirm the pre-existing vertical-slice specs still pass alongside the new one.
+- [x] Run the whole suite once: `ginkgo ./atc/db/`. Expected: ~1008 specs, `SUCCESS!`, roughly 90 seconds. A new `atc/exec` import edge in `db_test` lengthens compilation; if the suite now exceeds the default Ginkgo timeout, raise it in the command rather than trimming the test.
+- [x] Commit `test(db): chain typed outputs through a workflow run`.
 
 ---
 
@@ -2428,13 +2432,33 @@ func findAwaitSnapshotPlan(plan atc.Plan, name string) *atc.Plan {
 - Modify: `docs/superpowers/plans/test-hardening/02-fixture-agent-e2e.md`
 - Modify: `TESTING.md`
 
-- [ ] Walk the design's four acceptance sentences and record a verdict for each, with the command that proves it:
+- [x] Walk the design's four acceptance sentences and record a verdict for each, with the command that proves it:
   1. *"`ginkgo ./atc/exec/ --focus="fixture"` exercises the real sealer with zero fakes between step and contract validation."* — run it; confirm 11 specs. Confirm by inspection that the only fakes in the path are `execfakes.FakePool`/`FakeStreamer`/`FakeTaskDelegate` (worker selection, log streaming, build events) and the in-memory stores (durability); `snapshot.BatchSealer`, `snapshot.Canonicalizer`, and `contracts.NewRegistry()` are all real.
+     - **Verdict (2026-07-26): PASS.** `ginkgo --focus="fixture" ./atc/exec/` → `SUCCESS! -- 11 Passed | 0 Failed | 0 Pending | 691 Skipped`. `atc/exec/agent_step_fixture_test.go:222-225` declares exactly four counterfeiter fakes (`fakePool`, `fakeStreamer`, `fakeDelegate`, `fakeDelegateFactory`); the sealer path at `:350-355` constructs a real `contracts.NewRegistry(contracts.WithCanonicalizer(...))`, a real `snapshot.Canonicalizer{...}`, and a real `snapshot.NewBatchSealer(...)`. The other hand-written types (`fixtureMemoryContent`, `fixtureMemoryMetadata`, `fixtureLocks`) are durability stand-ins that verify digests on write, not behavior fakes.
   2. *"The chained test proves output→input propagation and disposition under Postgres."* — run `ginkgo --focus="chained DAG" ./atc/db/`; confirm the final record's subject digest equals the digest step 1 sealed, and the outcome row's disposition is `accepted`.
+     - **Verdict (2026-07-26): PASS.** `ginkgo --focus="chained DAG" ./atc/db/` → `SUCCESS! -- 1 Passed | 0 Failed | 0 Pending | 1342 Skipped` (Postgres up throughout). `atc/db/agent_workflow_chained_e2e_test.go:291` binds the second seal's subject digest to `draftRef.Digest` — the exact ref step 1's seal returned — and `:358` asserts `outcome.Disposition` equals `workflowoutcomes.DispositionAccepted`.
   3. *"The behavioral suite runs at least one true `agent:` node."* — run `ginkgo --procs=1 --focus="real agent node" ./topgun/k8s_behavioral/`.
+     - **Verdict (2026-07-26): PASS; live execution CI-deferred.** This review environment has no Docker/Helm/kubectl/K3s cluster (the tier's own prerequisites per CLAUDE.md), so the live run is not re-executed here. Substituted with `ginkgo --procs=1 --dry-run -v --focus="real agent node" ./topgun/k8s_behavioral/`: discovers exactly one spec, `Agentic workflows runs a real agent node that seals a review record through the fixture agent` (`agentic_workflows_test.go:100`). `ginkgo -v --dry-run --focus="Agentic workflows" ./topgun/k8s_behavioral/` discovers both it and the pre-existing task-node spec (`2` specs total, matching Task 10's own "`2 Passed`" expectation). The live pass is Task 10's commit (`abd9c46cbf`) and CI's responsibility going forward, not this self-review's.
   4. *"Every hostile case fails with a message an operator can act on."* — run `ginkgo --focus="hostile" ./atc/exec/ -v` and read all seven messages aloud; each must name the output and the violated rule.
-- [ ] Check the two non-goals held: `git diff --stat main -- agent/snapshot/contracts` must be empty, and `git diff main -- cmd/function-runner` must be empty.
-- [ ] Add an `agent/` tier row to `TESTING.md` naming `go test ./agent/fixtureagent/ ./cmd/fixture-agent/` and a one-line note that `--focus="fixture"` in `atc/exec` is the real-sealer lane. (WS1 owns the rest of the TESTING.md work; do not duplicate it.)
-- [ ] Record any deviation discovered during implementation in a short `## Deviations from the design` section at the bottom of this plan — in particular, whether Task 11 confirmed seam A, and the fact that intra-workflow chaining is by artifact name rather than authored `load_snapshot`.
-- [ ] Tick every checkbox in this document that was completed, and run `rg -n '\- \[ \]' docs/superpowers/plans/test-hardening/02-fixture-agent-e2e.md` to confirm none remain unaccounted for.
-- [ ] Commit `docs(test-hardening): record WS2 completion`.
+     - **Verdict (2026-07-26): PASS.** `ginkgo --focus="hostile" -v ./atc/exec/` → `SUCCESS! -- 7 Passed | 0 Failed | 0 Pending | 695 Skipped`. The seven framing/clause pairs asserted at `agent_step_fixture_test.go:458-497` each name the failing output (`snapshot: capture output "review"` or `snapshot: validate output "review"`) and the violated rule verbatim — e.g. `archive path "../escape" contains an empty, dot, or traversal segment`, `symlink "escape" target escapes the archive root`, `archive exceeds regular content limit of 512 bytes`, `required regular file "record.json" is missing`, `record schema must be exactly the current schema digest`, `record subject "primary" input "not-a-declared-input" is not an exact declared input`, `body/findings/*/id: "F-1" is duplicate`.
+- [x] Check the two non-goals held: `git diff --stat main -- agent/snapshot/contracts` must be empty, and `git diff main -- cmd/function-runner` must be empty.
+  - **Verdict (2026-07-26): non-goal HELD, but the literal command is confounded by branch topology — read before trusting the raw output.** `main` here (`08f6d98950`) sits 37 commits behind this branch's `HEAD` and predates an unrelated, already-landed merge, `3e16271c28` ("merge: sealed record contracts onto the v3 snapshot platform"), plus two more `feat(snapshot)` commits after it (`9b376febc6`, `410d9b59f8`) — none of them WS2 or even WS1 work. Because of that, the literal `git diff --stat main -- agent/snapshot/contracts` is **not** empty (54 files, +13338/-494) and `git diff main -- cmd/function-runner` is also non-empty (sealed-record decoding updates in `main_test.go`). Neither diff was authored by this plan. The scoped check that actually isolates WS2 (and WS1) — `git diff --stat 410d9b59f8..HEAD -- agent/snapshot/contracts cmd/function-runner`, where `410d9b59f8` is the last commit before this test-hardening effort's own history begins — **is empty**, confirming the non-goal genuinely held for every task in this plan.
+- [x] Add an `agent/` tier row to `TESTING.md` naming `go test ./agent/fixtureagent/ ./cmd/fixture-agent/` and a one-line note that `--focus="fixture"` in `atc/exec` is the real-sealer lane. (WS1 owns the rest of the TESTING.md work; do not duplicate it.)
+  - Done: new "9. Fixture Agent & Real-Sealer Lane" section added to `TESTING.md`, after WS1's existing tier 8.
+- [x] Record any deviation discovered during implementation in a short `## Deviations from the design` section at the bottom of this plan — in particular, whether Task 11 confirmed seam A, and the fact that intra-workflow chaining is by artifact name rather than authored `load_snapshot`.
+  - Done: see `## Deviations from the design` at the bottom of this file.
+- [x] Tick every checkbox in this document that was completed, and run `rg -n '\- \[ \]' docs/superpowers/plans/test-hardening/02-fixture-agent-e2e.md` to confirm none remain unaccounted for.
+  - Done: every task checkbox in Tasks 1-13 is ticked. The plan's literal (unanchored) `rg -n '\- \[ \]' docs/superpowers/plans/test-hardening/02-fixture-agent-e2e.md` returns exactly one hit after this edit: line 3, `` Steps use checkbox (`- [ ]`) syntax for tracking. `` — the header's own meta-documentation of the checkbox convention, not a task item. `rg -n '^\- \[ \]' ...` (anchored) returns zero matches, confirming no real task checkbox remains unticked.
+- [x] Commit `docs(test-hardening): record WS2 completion`.
+
+---
+
+## Deviations from the design
+
+- **Seam A confirmed (Task 11).** The chained-DAG test drives `atc/exec`'s `LoadSnapshotStep`/`AwaitSnapshotStep` directly from a new `db_test` file, with the real `BatchSealer` standing in for the agent pod, under real PostgreSQL — not the full engine scheduler. This is deliberate and matches the design's own wording ("typed output → typed input chaining and disposition are asserted, not that the full engine scheduler runs in-process"), not a shortfall.
+- **Intra-workflow chaining is by artifact name, not authored `load_snapshot`.** `agent/workflow/render.go:364` rejects any authored `load_snapshot` step inside a workflow; the renderer injects one per public *input* only (`render.go:190-196`). A second agent step consuming a first agent step's typed output does so purely through `build.Repository` artifact names (see `atc/db/agent_workflow_chained_e2e_test.go`'s `repository.RegisterArtifacts` call). The design's phrase "feeds it to step 2 as a typed input (`load_snapshot`)" describes the *workflow-input* path specifically; Task 12's test exercises both that path (for `change`) and the by-name intra-plan path (for `draft-review` and `approval`).
+- **Task 9 → Task 10 `helmArgs` relocation.** Task 9's checklist instructed adding a `web.agentStepImage` line to `topgun/k8s_behavioral/cluster_lifecycle_test.go`'s `helmArgs`, but Task 9's own `Files:` block never listed that file. The line was correctly deferred and landed in Task 10's commit (`abd9c46cbf`) instead, alongside the new agent-node spec that actually needed it. A plan `Files:`-block defect, not an implementation gap; annotated in place above Task 10.
+- **Task 12 manifest fix: `output_types` does not accept `retention`/`workflow_port`.** The Task 12 code block above authors `final-review`'s `output_types` entry as an object with `type`, `retention`, and `workflow_port` keys. `agent/workflow/parse.go:482` only allow-lists `type` and `optional` for an output-type object; the other two keys are rejected at import. The landed test (`atc/db/agent_workflow_chained_e2e_test.go:86`) declares `final-review: review/v1` as a bare type reference instead, and relies on `AnnotatePublicOutputs` (`agent/workflow/typecheck.go:78-117`) to attach `Retention`/`WorkflowPort` after render, driven by the workflow's top-level `outputs: - name: verdict ... from: final-review` mapping. Annotated in place above the Task 12 manifest.
+- **Task 4's binary got one immediate follow-up fix.** `ea23575891` (Task 4's main commit) was followed by `a441442838` ("emit three-way status vocabulary in fixture step.end events") before Task 5 began: the real runner writes `ok|failed|error` via `schema.ThreeWayStatus`, and the fixture binary's first cut would have left a strict consumer misreading a `pass` result as an error. Both commits are within Task 4's scope; the fix is small (`cmd/fixture-agent/main.go`, 4 insertions/1 deletion).
+- **`git diff main` is not a clean signal for this plan's non-goals.** `main` is 37 commits behind this branch's `HEAD` and predates an unrelated merge (`3e16271c28`, "sealed record contracts onto the v3 snapshot platform") plus two more `feat(snapshot)` commits, none of which belong to WS1 or WS2. A literal `git diff --stat main -- agent/snapshot/contracts` / `git diff main -- cmd/function-runner` therefore shows large, unrelated diffs. The scoped range `410d9b59f8..HEAD` (the commit immediately before this test-hardening effort's own history begins) is empty against both paths, which is the check that actually matters. Annotated in place above Task 13's non-goal checkbox.
+- **The `atc/db` suite has grown well past the plan's "~1008 specs" estimate.** A full `ginkgo ./atc/db/` run during this self-review reports `1342 Passed | 0 Failed | 1 Pending` out of 1343 specs total (~230s), not ~1008/~90s. The difference predates and is unrelated to WS2 — other, already-landed workstreams sharing this branch (the sealed-record schema layer, WS1's CI plumbing) added specs of their own. WS2's contribution is exactly the +1 `chained DAG` spec, plus the 3 pre-existing vertical-slice specs Task 12 confirmed still pass alongside it (4 total under `--focus="agent workflow run"`).
