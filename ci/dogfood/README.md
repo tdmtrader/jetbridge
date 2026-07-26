@@ -33,7 +33,9 @@ with `DOGFOOD_FLAT=1`.
   `db-tests` task passed — it runs atc/db, atc/gc, and atc/integration in CI against the
   PostgreSQL bundled in concourse-test-runner:v6 (WS1,
   docs/superpowers/plans/test-hardening/01-ci-execution.md); (3) run the plan's own
-  Execution-notes suites for the packages touched; (4) merge by hand.
+  Execution-notes suites for the packages touched; (4) merge by hand. The
+  concourse-test-runner:v6 image itself is built by the main pipeline's manual
+  build-test-runner-image job, not by this pipeline.
 - **Migration merge-order rule.** The migrator is version-pointer based: a lower-numbered
   migration merged AFTER a higher-numbered one deploys is never applied. Before merging
   any agent branch containing a migration, list every unmerged sibling branch's migration

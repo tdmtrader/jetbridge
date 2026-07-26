@@ -27,7 +27,7 @@ RUN curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-27.
 # policy-rc.d stops the postinst script from trying (and possibly failing)
 # to start a system-wide cluster during the image build, which we don't want
 # and don't use.
-RUN echo "exit 101" > /usr/sbin/policy-rc.d && chmod +x /usr/sbin/policy-rc.d \
+RUN printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d && chmod +x /usr/sbin/policy-rc.d \
     && apt-get update && apt-get install -y --no-install-recommends \
     postgresql \
     postgresql-contrib \
@@ -46,4 +46,9 @@ ENV PATH="/usr/lib/postgresql/current-bin:${PATH}"
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
+
+# Ginkgo CLI — db-tests runs `ginkgo -r`. Pin to go.mod's version: ginkgo v2
+# flags a CLI/library version mismatch and can fail the run.
+RUN go install github.com/onsi/ginkgo/v2/ginkgo@v2.27.3
+
 COPY . .

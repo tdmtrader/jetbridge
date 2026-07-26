@@ -10,7 +10,8 @@ PostgreSQL must be running locally for unit and integration tests. Check with `p
 |---------|-------------|------|---------------|
 | `make test-unit` | 79 Ginkgo suites (atc, fly, skymarshal, go-concourse, tracing) | ~3 min | PostgreSQL |
 | `make test-ci-agent` | ci-agent Go module (`cd ci-agent && go test ./...`) | ~2 min | None |
-| `make test-quick` | Unit + ci-agent combined | ~5 min | PostgreSQL |
+| `make test-dev-mcp` | devmcp contract kit + e2e (`go test ./agent/devmcp/...`) | ~5 sec | None |
+| `make test-quick` | Unit + ci-agent + dev-mcp combined | ~5 min | PostgreSQL |
 | `make test-agent-race` | `go test -race` over `agent/...` (plain testing + 2 Ginkgo suites, no ginkgo CLI) | ~1 min | None |
 | `make test-fly-integration` | Fly CLI against mock ATC (576 specs) | ~30 sec | None |
 | `make test-integration` | ATC integration with real Postgres (21 specs) | ~12 sec | PostgreSQL |

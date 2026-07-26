@@ -118,6 +118,25 @@ make test-agent-race
 go test -race -count=1 ./agent/...
 ```
 
+### 8. Dev-MCP Contract & E2E Tests (`make test-dev-mcp`)
+
+Runs the dev-mcp contract kit and end-to-end tests as plain `go test`
+packages (`agent/devmcp`, `agent/devmcp/contracttest`, `agent/devmcp/e2e`).
+Tier 1 (`make test-unit`) already walks these via its `ginkgo -r` (see the
+`agent/` note above) — this target exists as the explicit, CI-wired way to
+run them on their own, not because ginkgo skips them.
+
+- **Time:** ~5 seconds
+- **Prerequisites:** None (builds `ci-agent/cmd/dev-mcp` on the fly)
+- **What it covers:** devmcp contract tests + e2e tests
+
+```bash
+make test-dev-mcp
+
+# Equivalent direct invocation:
+go test ./agent/devmcp/... -count=1 -timeout 10m
+```
+
 ## Prerequisites
 
 | Tool | Required For | Install |

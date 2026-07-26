@@ -71,7 +71,7 @@ test-k8s-behavioral:
 # All K8s tests
 test-k8s: test-k8s-integration test-k8s-behavioral
 
-# Quick: unit + ci-agent only (~7 min)
+# Quick: unit + ci-agent + dev-mcp (~7 min)
 # Good for local development iteration
 test-quick: test-unit test-ci-agent test-dev-mcp
 

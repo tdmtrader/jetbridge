@@ -175,11 +175,16 @@ jobs:
       rootfs_uri: docker:///registry.home/concourse-test-runner:v5
       inputs:
       - name: repo
+      caches:
+      - path: gopath/pkg/mod
+      - path: gocache
       run:
         path: sh
         args:
         - -exc
         - |
+          export GOPATH="$(pwd)/gopath"
+          export GOCACHE="$(pwd)/gocache"
           cd repo
           echo "=== Running unit tests across the full codebase ==="
           echo "Excluding packages that require external infrastructure"
@@ -239,6 +244,7 @@ jobs:
     attempts: 2
     config:
       platform: linux
+      # Image built by the manual build-test-runner-image job below — trigger it once before this job first runs.
       rootfs_uri: docker:///registry.home/concourse-test-runner:v6
       inputs:
       - name: repo
@@ -252,12 +258,20 @@ jobs:
           initdb --version
           postgres --version
           id postgres
+          ginkgo version
+          psql --version
           echo ""
           echo "=== Running Postgres-backed atc/db and atc/gc suites ==="
-          ginkgo -r -p --keep-going --flake-attempts=1 ./atc/db ./atc/gc
+          ginkgo -r --procs=4 --keep-going --flake-attempts=1 ./atc/db ./atc/gc
+          echo ""
+          echo "=== Running atc/scheduler/algorithm and atc/worker suites ==="
+          # Non-recursive: `ginkgo -r` here would recurse into
+          # atc/worker/jetbridge, which already runs in k8s-runtime-tests —
+          # avoid double-running that suite by omitting -r for this line.
+          ginkgo --procs=4 --keep-going --flake-attempts=1 ./atc/scheduler/algorithm ./atc/worker
           echo ""
           echo "=== Running atc/integration suite ==="
-          ginkgo -r --keep-going -p ./atc/integration/
+          ginkgo -r --keep-going --procs=4 ./atc/integration/
           echo "=== All Postgres-backed suites passed ==="
 
 - name: k8s-runtime-tests
