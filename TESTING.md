@@ -16,6 +16,7 @@ Runs all Ginkgo test suites excluding integration/e2e. Uses parallel execution a
 - **Time:** ~3 minutes
 - **Prerequisites:** PostgreSQL running on localhost (port 5432 or via `initdb`)
 - **What it covers:** 79 test suites across atc/, fly/, skymarshal/, go-concourse/, tracing/
+- **`agent/` note:** `agent/...` is walked by this same `ginkgo -r` — including its plain-`testing.T` subpackages (e.g. `agent/devmcp/contracttest`, `agent/devmcp/e2e`), which ginkgo's CLI builds and runs as ordinary `go test` binaries whether or not they call `RunSpecs`. `agent/schema` is the one exception: it is a separate Go module (own `go.mod`), invisible to any `go list ./...`-based walk, and is run by its own explicit step (see `make test-unit`'s `cd agent/schema && go test ./...` line).
 
 ```bash
 # Run a specific package
@@ -94,6 +95,27 @@ K8S_PROCS=4 make test-k8s-behavioral
 
 # Manual single-proc for debugging
 ginkgo --procs=1 -v --timeout=3h --output-interceptor-mode=none ./topgun/k8s_behavioral/
+```
+
+### 7. Agent Race Lane (`make test-agent-race`)
+
+Runs the entire `agent/...` tree (both plain-`testing.T` packages and the two
+Ginkgo suites it contains, `agent/devmcp` and `agent/gitcheck`) under the Go
+race detector via a plain `go test -race`, not the `ginkgo` CLI — so the
+`-p` + `-race` parallel-compilation failure documented in CLAUDE.md's Key
+Notes (specific to the `ginkgo` binary) does not apply here.
+
+- **Time:** ~25-60s (varies with `-race` recompilation; not cached the same
+  way as a plain build)
+- **Prerequisites:** None — no package under `agent/` reaches Postgres,
+  Docker, or a live cluster
+- **What it covers:** every package under `agent/...`, race-instrumented
+
+```bash
+make test-agent-race
+
+# Equivalent direct invocation:
+go test -race -count=1 ./agent/...
 ```
 
 ## Prerequisites

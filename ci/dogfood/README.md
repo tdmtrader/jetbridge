@@ -13,7 +13,7 @@ fly -t cicd login -c https://concourse.home    # once (target per FLY_TARGET, de
 ci/dogfood/dispatch.sh docs/superpowers/plans/agentic-platform/03-pipeline-runs.md 3-6
 # prints the fly watch command and web URL; on success the branch
 # agent/dogfood-03-pipeline-runs-3-6 exists and the build page shows the review.
-# Then: read the review + diff, run `make test-quick` locally (postgres up), merge.
+# Then: read the review + diff, confirm CI's postgres-backed `db-tests` gate passed, merge.
 ```
 
 Pieces: `deploy/dogfood-pipeline.yml` (pipeline), `ci-agent/phases/dogfood-implement.yaml`

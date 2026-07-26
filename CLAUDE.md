@@ -11,6 +11,7 @@ PostgreSQL must be running locally for unit and integration tests. Check with `p
 | `make test-unit` | 79 Ginkgo suites (atc, fly, skymarshal, go-concourse, tracing) | ~3 min | PostgreSQL |
 | `make test-ci-agent` | ci-agent Go module (`cd ci-agent && go test ./...`) | ~2 min | None |
 | `make test-quick` | Unit + ci-agent combined | ~5 min | PostgreSQL |
+| `make test-agent-race` | `go test -race` over `agent/...` (plain testing + 2 Ginkgo suites, no ginkgo CLI) | ~1 min | None |
 | `make test-fly-integration` | Fly CLI against mock ATC (576 specs) | ~30 sec | None |
 | `make test-integration` | ATC integration with real Postgres (21 specs) | ~12 sec | PostgreSQL |
 | `make test-k8s-integration` | K8s integration via KinD cluster (117 specs) | ~23 min | Docker, KinD, Helm, kubectl |
@@ -31,7 +32,7 @@ The `atc/db` suite is the largest (~1007 specs, ~90s). It uses a template databa
 
 ### Key Notes
 
-- Unit tests run in parallel (`-p` flag, 9 procs by default). Do not use `--race` — it causes parallel compilation failures (`fork/exec db.test: no such file or directory`).
+- Unit tests run in parallel (`-p` flag, 9 procs by default). Do not use `--race` with the `ginkgo` CLI's own `-p` — it causes parallel compilation failures (`fork/exec db.test: no such file or directory`). Scoped exception: `make test-agent-race` runs a plain `go test -race -count=1 ./agent/...` (no `ginkgo` CLI involved, so this failure mode does not apply) and is wired as a CI step — see TESTING.md.
 - The `atc/db/worker_cache_test.go` uses `Eventually` with 10s timeouts and 500ms refresh intervals. These are timing-sensitive — do not reduce timeouts.
 - K8s behavioral tests have ~3/117 flaky specs due to GC timing. This is expected.
 - `testhelpers/otel` is excluded from `make test-unit` — it requires external Tempo/Loki services.
