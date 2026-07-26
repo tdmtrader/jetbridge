@@ -361,6 +361,7 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 		"--set", "agentSnapshots.enabled=true",
 		"--set", "agentSnapshots.replicationFactor=1",
 		"--set", "agentExperiments.runnerEnabled=true",
+		"--set-string", "web.agentStepImage=" + fixtureAgentImage,
 		"--timeout", "5m",
 	}
 
