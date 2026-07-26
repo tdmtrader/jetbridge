@@ -74,16 +74,6 @@ func (candidate witnessCandidate) admit(t *testing.T, ref snapshot.TypeRef) erro
 // witness table is written. It is deleted, along with every reference to it, by
 // the task that finishes the last table. Do not add to it.
 var pendingRules = map[snapshot.TypeRef][]string{
-	snapshot.TypeRef("validation/v1"): {
-		"conclusion-is-recomputed-from-the-checks",
-		"status-governs-attempt-count",
-		"attempt-number-equals-its-position-plus-one",
-		"check-status-equals-the-final-attempt-status",
-		"attempts-have-no-stable-id",
-		"anchor-subject-must-be-a-declared-subject",
-		"anchor-locator-kind-selects-which-fields-appear",
-		"anchor-locators-are-unverified",
-	},
 	snapshot.TypeRef("measurements/v1"): {
 		"conclusion-governs-the-metric-count",
 		"partial-and-not-applicable-require-an-explanation",
@@ -256,7 +246,8 @@ func sortedTypeRefs[T any](index map[snapshot.TypeRef]T) []snapshot.TypeRef {
 func ruleWitnesses(t *testing.T) map[snapshot.TypeRef][]ruleWitness {
 	t.Helper()
 	return map[snapshot.TypeRef][]ruleWitness{
-		snapshot.TypeRef("review/v1"): reviewRuleWitnesses(t),
+		snapshot.TypeRef("review/v1"):     reviewRuleWitnesses(t),
+		snapshot.TypeRef("validation/v1"): validationRuleWitnesses(t),
 	}
 }
 
@@ -372,6 +363,154 @@ func reviewRuleWitnesses(t *testing.T) []ruleWitness {
 					body.Findings[0].Evidence[0].Locator.End = intPointer(400001)
 				})
 				if err := candidate.admit(t, snapshot.TypeRef("review/v1")); err != nil {
+					t.Fatalf(
+						"the seal gate rejected an unresolvable anchor locator: %v; if locators are now verified, this rule's documentation is stale and the schema document is the thing to change",
+						err,
+					)
+				}
+			},
+		},
+	}
+}
+
+// validationWitnessBase is one accepted validation/v1 candidate: a single failed
+// check whose single failed attempt carries one file-lines anchor, bound to one
+// primary subject. Every witness starts here and breaks exactly one thing.
+func validationWitnessBase(t *testing.T) (snapshot.ValidationContext, []contracts.Subject, contracts.ValidationBody) {
+	t.Helper()
+	ref := snapshot.SnapshotRef{
+		ID: 41, Type: mustTypeRef(t, "repository/v1"), Digest: recordDigest('a'),
+	}
+	declarations := validationContextFor(t, map[string]snapshot.SnapshotRef{"in": ref})
+	subjects := []contracts.Subject{
+		contracts.SubjectFromInput("primary", contracts.SubjectRolePrimary, "in", ref),
+	}
+	body := contracts.ValidationBody{
+		Conclusion: "failed",
+		Summary:    "one suite fails",
+		Checks: []contracts.ValidationCheck{{
+			ID: "unit", Kind: "test", Name: "unit tests", Status: "failed",
+			Attempts: []contracts.ValidationAttempt{{
+				Number: 1, Status: "failed", Duration: "1s",
+				Evidence: []contracts.Anchor{{
+					Subject: "primary",
+					Locator: contracts.Locator{Kind: "file-lines", Path: "main.go", Start: intPointer(12), End: intPointer(18)},
+				}},
+			}},
+		}},
+	}
+	return declarations, subjects, body
+}
+
+func validationWitness(t *testing.T, mutate func(*contracts.ValidationBody)) witnessCandidate {
+	t.Helper()
+	declarations, subjects, body := validationWitnessBase(t)
+	mutate(&body)
+	record, err := contracts.NewRecord(mustTypeRef(t, "validation/v1"), subjects, body)
+	if err != nil {
+		t.Fatalf("NewRecord(validation/v1): %v", err)
+	}
+	return witnessCandidate{
+		files:        map[string][]byte{"record.json": marshalRecord(t, record)},
+		declarations: declarations,
+	}
+}
+
+func validationRuleWitnesses(t *testing.T) []ruleWitness {
+	t.Helper()
+	return []ruleWitness{
+		{
+			rule: "conclusion-is-recomputed-from-the-checks",
+			build: func(t *testing.T) witnessCandidate {
+				return validationWitness(t, func(body *contracts.ValidationBody) {
+					body.Conclusion = "passed"
+				})
+			},
+			wantErr: `conclusion must match derived conclusion "failed"`,
+		},
+		{
+			rule: "status-governs-attempt-count",
+			build: func(t *testing.T) witnessCandidate {
+				// The skipped arm: a skipped check keeps its attempt. Task 9's named
+				// test uses the non-skipped arm, so the two do not duplicate.
+				return validationWitness(t, func(body *contracts.ValidationBody) {
+					body.Checks[0].Status = "skipped"
+					body.Conclusion = "incomplete"
+				})
+			},
+			wantErr: "skipped check must have no attempts",
+		},
+		{
+			rule: "attempt-number-equals-its-position-plus-one",
+			build: func(t *testing.T) witnessCandidate {
+				return validationWitness(t, func(body *contracts.ValidationBody) {
+					body.Checks[0].Attempts[0].Number = 2
+				})
+			},
+			wantErr: "attempt numbers must be contiguous from 1",
+		},
+		{
+			rule: "check-status-equals-the-final-attempt-status",
+			build: func(t *testing.T) witnessCandidate {
+				return validationWitness(t, func(body *contracts.ValidationBody) {
+					body.Checks[0].Attempts = append(body.Checks[0].Attempts, contracts.ValidationAttempt{
+						Number: 2, Status: "passed", Duration: "1s",
+					})
+				})
+			},
+			wantErr: `check status "failed" must match final attempt status "passed"`,
+		},
+		{
+			rule: "attempts-have-no-stable-id",
+			documented: "Attempts are addressable only through declaration paths, which is a fact " +
+				"about the DECLARATION rather than a rule that rejects an instance: there is no id " +
+				"field to get wrong. The pin asserts the absence directly, so adding one becomes a " +
+				"visible contract change rather than a quiet convenience.",
+			pin: func(t *testing.T) {
+				document, found := contracts.SchemaDocumentFor(snapshot.TypeRef("validation/v1"))
+				if !found {
+					t.Fatal("validation/v1 has no schema document")
+				}
+				for path := range document.Fields {
+					if strings.HasPrefix(path, "body/checks/*/attempts/*/") && strings.HasSuffix(path, "/id") {
+						t.Fatalf("validation/v1 declares %q; attempts now have a stable id and the rule text is stale", path)
+					}
+				}
+			},
+		},
+		{
+			rule: "anchor-subject-must-be-a-declared-subject",
+			build: func(t *testing.T) witnessCandidate {
+				return validationWitness(t, func(body *contracts.ValidationBody) {
+					body.Checks[0].Attempts[0].Evidence[0].Subject = "ghost"
+				})
+			},
+			wantErr: `body/checks/*/attempts/*/evidence/*/subject: "ghost" is not declared by this record`,
+		},
+		{
+			rule: "anchor-locator-kind-selects-which-fields-appear",
+			build: func(t *testing.T) witnessCandidate {
+				return validationWitness(t, func(body *contracts.ValidationBody) {
+					body.Checks[0].Attempts[0].Evidence[0].Locator = contracts.Locator{
+						Kind: "json-pointer", Pointer: "/checks/0", Path: "a.go",
+					}
+				})
+			},
+			wantErr: "json-pointer anchor contains fields for another locator kind",
+		},
+		{
+			rule: "anchor-locators-are-unverified",
+			documented: "This rule documents a deliberate NON-check: nothing resolves an anchor's " +
+				"locator against any content, because anchor content hashes are deferred. It has no " +
+				"rejection witness by construction. The pin makes the claim executable instead: an " +
+				"anchor naming a path that exists nowhere, at lines nothing has, is ACCEPTED.",
+			pin: func(t *testing.T) {
+				candidate := validationWitness(t, func(body *contracts.ValidationBody) {
+					body.Checks[0].Attempts[0].Evidence[0].Locator.Path = "does/not/exist.go"
+					body.Checks[0].Attempts[0].Evidence[0].Locator.Start = intPointer(400000)
+					body.Checks[0].Attempts[0].Evidence[0].Locator.End = intPointer(400001)
+				})
+				if err := candidate.admit(t, snapshot.TypeRef("validation/v1")); err != nil {
 					t.Fatalf(
 						"the seal gate rejected an unresolvable anchor locator: %v; if locators are now verified, this rule's documentation is stale and the schema document is the thing to change",
 						err,
