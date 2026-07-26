@@ -366,6 +366,90 @@ var _ = Describe("AgentTicketsFactory", func() {
 			Expect(factory.Transition(987654, tickets.StateDraft, tickets.StateQueued,
 				tickets.TransitionMeta{})).To(MatchError(tickets.ErrTicketNotFound))
 		})
+
+		It("admits exactly one winner when many callers race the same from-state", func() {
+			// Each caller needs its own pooled connection; the suite default is
+			// deliberately small so accidental pool sharing is visible.
+			dbConn.SetMaxOpenConns(8)
+
+			const callers = 16
+			results := make(chan error, callers)
+			var wait sync.WaitGroup
+			for range callers {
+				wait.Add(1)
+				go func() {
+					defer GinkgoRecover()
+					defer wait.Done()
+					results <- factory.Transition(id, tickets.StateDraft, tickets.StateQueued,
+						tickets.TransitionMeta{})
+				}()
+			}
+			wait.Wait()
+			close(results)
+
+			winners, stale := 0, 0
+			for err := range results {
+				if err == nil {
+					winners++
+					continue
+				}
+				Expect(err).To(MatchError(tickets.ErrStaleTransition))
+				stale++
+			}
+			Expect(winners).To(Equal(1), "the from-state precondition must admit exactly one writer")
+			Expect(stale).To(Equal(callers - 1))
+
+			got, found, err := factory.Get(id)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(got.State).To(Equal(tickets.StateQueued))
+			// Create writes revision 1; exactly one Transition may bump it.
+			Expect(got.Revision).To(Equal(int64(2)))
+			var queuedAt sql.NullTime
+			Expect(dbConn.QueryRow(`SELECT queued_at FROM agent_tickets WHERE id = $1`, id).
+				Scan(&queuedAt)).To(Succeed())
+			Expect(queuedAt.Valid).To(BeTrue())
+		})
+
+		It("lets only one of two competing target states win from the same from-state", func() {
+			dbConn.SetMaxOpenConns(8)
+
+			const callersPerTarget = 8
+			type outcome struct {
+				target tickets.State
+				err    error
+			}
+			results := make(chan outcome, callersPerTarget*2)
+			var wait sync.WaitGroup
+			for _, target := range []tickets.State{tickets.StateQueued, tickets.StateAbandoned} {
+				for range callersPerTarget {
+					wait.Add(1)
+					go func() {
+						defer GinkgoRecover()
+						defer wait.Done()
+						results <- outcome{target: target, err: factory.Transition(
+							id, tickets.StateDraft, target, tickets.TransitionMeta{})}
+					}()
+				}
+			}
+			wait.Wait()
+			close(results)
+
+			winners := []tickets.State{}
+			for result := range results {
+				if result.err == nil {
+					winners = append(winners, result.target)
+					continue
+				}
+				Expect(result.err).To(MatchError(tickets.ErrStaleTransition))
+			}
+			Expect(winners).To(HaveLen(1))
+
+			got, _, err := factory.Get(id)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(got.State).To(Equal(winners[0]), "the durable state must be the winner's target")
+			Expect(got.Revision).To(Equal(int64(2)))
+		})
 	})
 
 	Describe("specs and plans", func() {
