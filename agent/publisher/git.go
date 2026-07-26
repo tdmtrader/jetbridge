@@ -194,6 +194,12 @@ func (service *GitService) Execute(ctx context.Context, request Request) (Public
 	}
 	prior, found, err := service.backend.Lookup(externalContext, credential, publication.OperationKey)
 	if err != nil {
+		if failed, handled, completeErr := terminalGatewayFailure(
+			ctx, service.store, publication.OperationKey, publication.Attempt,
+			"reconcile repository publication", err,
+		); handled {
+			return failed, completeErr
+		}
 		return Publication{}, preserveExternalError(externalContext, "reconcile repository publication", err)
 	}
 	if found {
@@ -207,6 +213,12 @@ func (service *GitService) Execute(ctx context.Context, request Request) (Public
 	targetBranch := authorizedRequest.Parameters["target_branch"]
 	currentBase, err := service.backend.CurrentBase(externalContext, credential, authorizedRequest.Destination, targetBranch)
 	if err != nil {
+		if failed, handled, completeErr := terminalGatewayFailure(
+			ctx, service.store, publication.OperationKey, publication.Attempt,
+			"read destination base", err,
+		); handled {
+			return failed, completeErr
+		}
 		return Publication{}, preserveExternalError(externalContext, "read destination base", err)
 	}
 	if currentBase != change.BaseSHA {
@@ -230,6 +242,12 @@ func (service *GitService) Execute(ctx context.Context, request Request) (Public
 		Authority: authorizedRequest.Authority,
 	})
 	if err != nil {
+		if failed, handled, completeErr := terminalGatewayFailure(
+			ctx, service.store, publication.OperationKey, publication.Attempt,
+			"publish repository change", err,
+		); handled {
+			return failed, completeErr
+		}
 		return Publication{}, preserveExternalError(externalContext, "publish repository change", err)
 	}
 	if gitResult.HeadSHA != change.ResultSHA {
@@ -239,6 +257,63 @@ func (service *GitService) Execute(ctx context.Context, request Request) (Public
 		Status: StatusSucceeded, ExternalID: gitResult.ExternalID, URL: gitResult.URL,
 		HeadSHA: gitResult.HeadSHA, BaseSHA: currentBase,
 	})
+}
+
+// terminalGatewayFailure converts a classified terminal gateway response into
+// a durable failed completion, which is what ends the retry-forever loop: a
+// terminal operation is never reclaimed on lease expiry. It reports
+// handled=false for every other error — retryable gateway errors, transport
+// errors, decode errors, context deadlines, and the action-suppression
+// sentinel — which keeps the caller's existing pending-and-reclaim behavior.
+//
+// The guard is the exported Retryable and nothing else. This is the ONLY code
+// path in the publisher that can complete an operation as StatusFailed, and
+// that completion is PERMANENT — Acquire never reclaims a terminal row — so
+// the decision must be asked of the one taxonomy boundary rather than
+// re-derived by inspecting the error here. Retryable checks
+// ErrActionsSuppressed FIRST and independently of the gateway classification
+// (gateway.go), so a suppressed attempt keeps its pending row even if a future
+// change wrapped that sentinel in a terminal *GatewayError.
+//
+// A terminal status on a write endpoint is ambiguous: the external effect may
+// have landed before the gateway rejected the request. Recording `failed` is
+// still safe (no later attempt runs, so nothing can double-publish), so the
+// detail names the endpoint and status for manual reconciliation instead of
+// guessing.
+func terminalGatewayFailure(
+	ctx context.Context,
+	store Store,
+	operationKey string,
+	attempt int,
+	operation string,
+	err error,
+) (Publication, bool, error) {
+	if Retryable(err) {
+		return Publication{}, false, nil
+	}
+	var gatewayErr *GatewayError
+	if !errors.As(err, &gatewayErr) {
+		// Unreachable while Retryable answers false only for a terminal
+		// *GatewayError. If that ever changes, stay pending: a reclaimable
+		// operation is the recoverable outcome, a failed one is not.
+		return Publication{}, false, nil
+	}
+	publication, completeErr := store.Complete(ctx, operationKey, attempt, Result{
+		Status: StatusFailed,
+		Detail: fmt.Sprintf(
+			"%s: gateway rejected %s with status %d; retrying the identical request cannot succeed",
+			operation, gatewayErr.Path, gatewayErr.Status,
+		),
+	})
+	if completeErr != nil {
+		// The row was not changed, so this operation is still pending and will
+		// be reclaimed. Report completeErr alone, deliberately not joined with
+		// the terminal gateway error: a pending operation must never hand a
+		// terminal classification upward, or a caller asking Retryable about
+		// this error would draw the opposite conclusion from the durable state.
+		return Publication{}, true, completeErr
+	}
+	return publication, true, nil
 }
 
 func preserveExternalError(ctx context.Context, operation string, err error) error {

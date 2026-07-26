@@ -139,6 +139,12 @@ func (service *WorkItemService) Execute(ctx context.Context, request Request) (P
 	}
 	prior, found, err := service.backend.Lookup(externalContext, credential, publication.OperationKey)
 	if err != nil {
+		if failed, handled, completeErr := terminalGatewayFailure(
+			ctx, service.store, publication.OperationKey, publication.Attempt,
+			"reconcile work-item publication", err,
+		); handled {
+			return failed, completeErr
+		}
 		return Publication{}, preserveExternalError(externalContext, "reconcile work-item publication", err)
 	}
 	if found {
@@ -153,6 +159,12 @@ func (service *WorkItemService) Execute(ctx context.Context, request Request) (P
 		CanonicalArchivePath:  value.CanonicalArchivePath, Authority: authorizedRequest.Authority,
 	})
 	if err != nil {
+		if failed, handled, completeErr := terminalGatewayFailure(
+			ctx, service.store, publication.OperationKey, publication.Attempt,
+			"publish work-item update", err,
+		); handled {
+			return failed, completeErr
+		}
 		return Publication{}, preserveExternalError(externalContext, "publish work-item update", err)
 	}
 	return service.store.Complete(ctx, publication.OperationKey, publication.Attempt, Result{

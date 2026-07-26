@@ -200,3 +200,269 @@ func TestGatewaySuppressedActionsCarryNoGatewayClassification(t *testing.T) {
 		t.Fatalf("a suppressed publisher must make no gateway request, got %v", got)
 	}
 }
+
+// newGatewayGitExecutorOnClock builds a Git-publisher executor over a memory
+// store whose clock the test owns. Advancing that clock past the lease is
+// exactly the condition that used to re-run a rejected publication — every
+// lease expiry, forever — so it is what the terminal/retryable pair below has
+// to reproduce.
+func newGatewayGitExecutorOnClock(
+	t *testing.T,
+	server *httptest.Server,
+	now *time.Time,
+	mutate func(*publisher.GatewayConfig),
+) (publisher.Executor, *publisher.MemoryStore, publisher.Request) {
+	t.Helper()
+	fixture := newGatewaySnapshotFixture(t)
+	config := gatewayTestConfig(t, server, gatewayGitPolicy)
+	if mutate != nil {
+		mutate(&config)
+	}
+	store := publisher.NewMemoryStore(func() time.Time { return *now })
+	executor, err := publisher.NewGatewayExecutor(store, fixture.metadata, fixture.content, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return executor, store, gatewayGitRequest(fixture.ref)
+}
+
+// gatewayDurableRow reads the durable publication behind request. The row —
+// not the value Execute returned — is what a later lease reclaim consults, so
+// it is the completion-side truth these tests assert on.
+func gatewayDurableRow(
+	t *testing.T,
+	store *publisher.MemoryStore,
+	request publisher.Request,
+) publisher.Publication {
+	t.Helper()
+	key, err := request.OperationKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	durable, found, err := store.Get(context.Background(), key)
+	if err != nil || !found {
+		t.Fatalf("durable publication = (%+v, %t, %v)", durable, found, err)
+	}
+	return durable
+}
+
+// TestGatewayTerminalStatusFailsPublicationInsteadOfRetryingForever pins the
+// user-visible change: a 403 from the gateway now lands the publication in
+// failed on the first attempt — the publish_snapshot step reports "publication
+// ended with status failed" — instead of leaving the row pending to be
+// re-attempted on every lease expiry, forever, each time re-reading the
+// snapshot and re-hitting the gateway.
+func TestGatewayTerminalStatusFailsPublicationInsteadOfRetryingForever(t *testing.T) {
+	server, calls := newGatewayFaultServer(t, map[string]gatewayFault{
+		"/v1/publications/lookup": {status: http.StatusForbidden},
+	})
+	now := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
+	executor, store, request := newGatewayGitExecutorOnClock(t, server, &now, nil)
+	publication, err := executor.Execute(context.Background(), request)
+	if err != nil {
+		t.Fatalf("a terminal gateway status must complete the publication, not error: %v", err)
+	}
+	// The same shape the stale-base gate already returns: a durable terminal
+	// answer handed back as (publication, nil), not an error the caller retries.
+	if publication.Status != publisher.StatusFailed {
+		t.Fatalf("publication = %+v, want status failed", publication)
+	}
+	if !strings.Contains(publication.Result.Detail, "403") ||
+		!strings.Contains(publication.Result.Detail, "/v1/publications/lookup") {
+		t.Fatalf("failure detail must name the endpoint and status, got %q", publication.Result.Detail)
+	}
+	durable := gatewayDurableRow(t, store, request)
+	if durable.Status != publisher.StatusFailed || !durable.LeaseUntil.IsZero() {
+		t.Fatalf("durable = %+v, want a failed row holding no lease to expire", durable)
+	}
+
+	// The old behavior — retry on every lease expiry, forever — must be gone.
+	// The clock moves past the lease, which is precisely when the old code
+	// reclaimed the row and re-hit the gateway; the new code makes no gateway
+	// request at all and answers with the same terminal result.
+	before := calls()
+	now = now.Add(2 * time.Minute)
+	replayed, err := executor.Execute(context.Background(), request)
+	if err != nil || replayed.Status != publisher.StatusFailed {
+		t.Fatalf("replay = (%+v, %v)", replayed, err)
+	}
+	if replayed.Result != publication.Result || replayed.Attempt != publication.Attempt {
+		t.Fatalf("replay = (%+v, attempt %d), want the identical terminal result of (%+v, attempt %d)",
+			replayed.Result, replayed.Attempt, publication.Result, publication.Attempt)
+	}
+	if after := calls(); !slices.Equal(before, after) {
+		t.Fatalf("terminal publication was retried: calls before=%v after=%v", before, after)
+	}
+}
+
+// TestGatewayRetryableStatusStaysPendingAndReclaimable is the other half of the
+// pair. A 503 is unchanged by this task: the row stays pending holding a lease,
+// and the attempt after that lease expires reaches the gateway again.
+func TestGatewayRetryableStatusStaysPendingAndReclaimable(t *testing.T) {
+	server, calls := newGatewayFaultServer(t, map[string]gatewayFault{
+		"/v1/publications/lookup": {status: http.StatusServiceUnavailable},
+	})
+	now := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
+	executor, store, request := newGatewayGitExecutorOnClock(t, server, &now, nil)
+	if _, err := executor.Execute(context.Background(), request); err == nil {
+		t.Fatal("a retryable gateway failure must surface as an error")
+	}
+	durable := gatewayDurableRow(t, store, request)
+	if durable.Status != publisher.StatusPending || durable.LeaseUntil.IsZero() {
+		t.Fatalf("durable = %+v, want a pending row holding a lease", durable)
+	}
+
+	now = now.Add(2 * time.Minute)
+	if _, err := executor.Execute(context.Background(), request); err == nil {
+		t.Fatal("the reclaimed attempt must surface the repeated retryable failure")
+	}
+	if want := []string{"/v1/publications/lookup", "/v1/publications/lookup"}; !slices.Equal(calls(), want) {
+		t.Fatalf("calls = %v, want %v: a retryable failure must still reach the backend again", calls(), want)
+	}
+	reclaimed := gatewayDurableRow(t, store, request)
+	if reclaimed.Status != publisher.StatusPending || reclaimed.Attempt != durable.Attempt+1 {
+		t.Fatalf("reclaimed = %+v, want a second pending attempt after attempt %d", reclaimed, durable.Attempt)
+	}
+}
+
+// TestGatewayTerminalStatusOnPublishFailsAfterTheEarlierCallsSucceeded covers
+// the ambiguous case: the rejection lands on the write endpoint, after lookup
+// and the base check already answered. The publication still ends failed, and
+// the detail names the endpoint so the effect can be reconciled by hand.
+func TestGatewayTerminalStatusOnPublishFailsAfterTheEarlierCallsSucceeded(t *testing.T) {
+	server, calls := newGatewayFaultServer(t, map[string]gatewayFault{
+		"/v1/git/publish": {status: http.StatusUnprocessableEntity},
+	})
+	publication, durable, err := executeGatewayGitPublication(t, server, nil)
+	if err != nil || publication.Status != publisher.StatusFailed || durable.Status != publisher.StatusFailed {
+		t.Fatalf("Execute = (%+v, %v), durable=%+v", publication, err, durable)
+	}
+	if want := []string{"/v1/publications/lookup", "/v1/git/current-base", "/v1/git/publish"}; !slices.Equal(calls(), want) {
+		t.Fatalf("calls = %v, want %v", calls(), want)
+	}
+	if !strings.Contains(durable.Result.Detail, "/v1/git/publish") {
+		t.Fatalf("detail = %q, want the publish endpoint named for manual reconciliation", durable.Result.Detail)
+	}
+}
+
+// TestGatewayTerminalStatusOnBaseReadFailsPublication covers the third routed
+// Git call. Each of the three has its own error branch, so each needs its own
+// proof: a branch left unrouted — or routed with the wrong operation string or
+// attempt — is invisible from the other two.
+func TestGatewayTerminalStatusOnBaseReadFailsPublication(t *testing.T) {
+	server, calls := newGatewayFaultServer(t, map[string]gatewayFault{
+		"/v1/git/current-base": {status: http.StatusConflict},
+	})
+	publication, durable, err := executeGatewayGitPublication(t, server, nil)
+	if err != nil || publication.Status != publisher.StatusFailed || durable.Status != publisher.StatusFailed {
+		t.Fatalf("Execute = (%+v, %v), durable=%+v", publication, err, durable)
+	}
+	if !strings.Contains(durable.Result.Detail, "read destination base") ||
+		!strings.Contains(durable.Result.Detail, "/v1/git/current-base") ||
+		!strings.Contains(durable.Result.Detail, "409") {
+		t.Fatalf("detail = %q, want the base read and its status named", durable.Result.Detail)
+	}
+	if want := []string{"/v1/publications/lookup", "/v1/git/current-base"}; !slices.Equal(calls(), want) {
+		t.Fatalf("calls = %v, want %v: nothing may be published after a terminal base read", calls(), want)
+	}
+}
+
+// TestGatewayWorkItemTerminalStatusFailsPublication proves the same routing
+// exists in the work-item service, which has its own copy of the external-call
+// sequence — both of its calls, for the same reason as above.
+func TestGatewayWorkItemTerminalStatusFailsPublication(t *testing.T) {
+	for name, expectation := range map[string]struct {
+		path      string
+		status    int
+		operation string
+	}{
+		"lookup": {
+			path: "/v1/publications/lookup", status: http.StatusBadRequest,
+			operation: "reconcile work-item publication",
+		},
+		"publish": {
+			path: "/v1/work-items/publish", status: http.StatusConflict,
+			operation: "publish work-item update",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			server, _ := newGatewayFaultServer(t, map[string]gatewayFault{
+				expectation.path: {status: expectation.status},
+			})
+			fixture := newGatewaySnapshotFixture(t)
+			config := gatewayTestConfig(t, server, `{
+				"schema_version":1,
+				"rules":[{"team":"engineering","publisher":"work-item-publisher/v1","modes":["comment"],"approval_policy_versions":["engineering/v1"],"destination_prefixes":["ENG-"]}]
+			}`)
+			store := publisher.NewMemoryStore(time.Now)
+			executor, err := publisher.NewGatewayExecutor(store, fixture.metadata, fixture.content, config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := publisher.Request{
+				Publisher: publisher.WorkItemPublisher, Input: fixture.ref,
+				Destination: "ENG-42", Mode: publisher.ModeComment,
+				Parameters: map[string]string{"body": "agent result"}, ApprovalPolicyVersion: "engineering/v1",
+				Authority: publisher.Authority{TeamID: 9, TeamName: "engineering", BuildID: 12, WorkflowRunID: 17, Actor: "build/12"},
+			}
+			publication, err := executor.Execute(context.Background(), request)
+			if err != nil || publication.Status != publisher.StatusFailed {
+				t.Fatalf("work-item terminal failure = (%+v, %v)", publication, err)
+			}
+			durable := gatewayDurableRow(t, store, request)
+			if durable.Status != publisher.StatusFailed ||
+				!strings.Contains(durable.Result.Detail, expectation.operation) ||
+				!strings.Contains(durable.Result.Detail, expectation.path) {
+				t.Fatalf("durable = %+v, want a terminal completion naming %q", durable, expectation.operation)
+			}
+		})
+	}
+}
+
+// TestGatewaySuppressedPublishIsNeverCompletedAsFailed is the completion-side
+// half of the suppression guard. Task 1's
+// TestGatewaySuppressedActionsCarryNoGatewayClassification proves the refusal
+// carries no gateway classification; this proves the durable consequence, on
+// the one code path that can now write StatusFailed.
+//
+// The fault server is primed with the terminal 403 that WOULD fail this
+// publication, so nothing but the ordering inside Retryable keeps the
+// suppressed attempt out of Complete(StatusFailed). That completion is
+// permanent — Acquire never reclaims a terminal row — so a suppressed attempt
+// misrouted onto it would poison this operation key forever, defeating the
+// entire point of refusing before any provider call: the identical semantic
+// operation must execute exactly once after an admin resumes actions.
+func TestGatewaySuppressedPublishIsNeverCompletedAsFailed(t *testing.T) {
+	server, calls := newGatewayFaultServer(t, map[string]gatewayFault{
+		"/v1/publications/lookup": {status: http.StatusForbidden},
+	})
+	now := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
+	actions := &actionsReaderStub{mode: publisher.ActionsModeSuppressed, found: true}
+	executor, store, request := newGatewayGitExecutorOnClock(t, server, &now, func(config *publisher.GatewayConfig) {
+		config.ActionsMode = actions
+	})
+	if _, err := executor.Execute(context.Background(), request); !errors.Is(err, publisher.ErrActionsSuppressed) {
+		t.Fatalf("error = %v, want ErrActionsSuppressed", err)
+	}
+	suppressed := gatewayDurableRow(t, store, request)
+	if suppressed.Status != publisher.StatusPending || suppressed.Result.Status != "" {
+		t.Fatalf("suppressed row = %+v, want pending with no recorded result — never failed", suppressed)
+	}
+	if got := calls(); len(got) != 0 {
+		t.Fatalf("a suppressed publisher must make no gateway request, got %v", got)
+	}
+
+	// The operation key is not poisoned: once an admin resumes actions and the
+	// lease expires, the identical semantic operation still executes. (That
+	// resumed attempt is the one allowed to observe the primed 403 and end
+	// terminally — which is also what makes the assertion above load-bearing.)
+	actions.mode = publisher.ActionsModeActive
+	now = now.Add(2 * time.Minute)
+	resumed, err := executor.Execute(context.Background(), request)
+	if err != nil || resumed.Status != publisher.StatusFailed {
+		t.Fatalf("resumed = (%+v, %v), want the reclaimed attempt to run", resumed, err)
+	}
+	if want := []string{"/v1/publications/lookup"}; !slices.Equal(calls(), want) {
+		t.Fatalf("calls = %v, want %v: only the resumed attempt may reach the gateway", calls(), want)
+	}
+}
