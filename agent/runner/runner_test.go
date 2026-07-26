@@ -173,6 +173,45 @@ func TestRunHardCapsClaudeAtTheAuthoredBudgetSlice(t *testing.T) {
 	}
 }
 
+// Both caps must appear LITERALLY in the constructed argv. Without this,
+// deleting the --max-turns append from runner.go leaves the whole suite green
+// while every agent step silently loses its turn cap.
+func TestRunPassesBothAuthoredCapsToTheCLI(t *testing.T) {
+	dir := t.TempDir()
+	flight := filepath.Join(dir, "flight")
+	if err := os.MkdirAll(flight, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	claude, argsPath := writeRecordingStubClaude(t, dir, okEnvelope)
+
+	exit, err := runner.Run(context.Background(), runner.Config{
+		Prompt: "do it", FlightDir: flight, WorkDir: dir, StepName: "capped",
+		ClaudePath: claude, MaxTurns: 12, BudgetSliceUSD: 3.5,
+		Stdout: new(bytes.Buffer), Stderr: new(bytes.Buffer),
+	})
+	if err != nil || exit != 0 {
+		t.Fatalf("Run() exit = %d, err = %v", exit, err)
+	}
+
+	raw, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := strings.Split(strings.TrimRight(string(raw), "\x00"), "\x00")
+
+	for _, want := range [][2]string{{"--max-turns", "12"}, {"--max-budget-usd", "3.5"}} {
+		found := false
+		for index := 0; index+1 < len(args); index++ {
+			if args[index] == want[0] && args[index+1] == want[1] {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("claude args = %q, want %s %s", args, want[0], want[1])
+		}
+	}
+}
+
 func TestFromEnvReadsStepIdentity(t *testing.T) {
 	// The §8.1 rows the agent-step exec sets on the main container; without
 	// these reads every step.start opens with build_id 0 / plan_id "".

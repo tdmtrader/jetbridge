@@ -170,8 +170,16 @@ func TestVersionThreeEngineeringSeedsCompileAndRender(t *testing.T) {
 				return fmt.Errorf("version-3 seed rendered unsupported visible %s step", kind)
 			}
 			recursor := atc.StepRecursor{
-				OnTask:            func(*atc.TaskStep) error { return nil },
-				OnAgent:           func(*atc.AgentStep) error { return nil },
+				OnTask: func(*atc.TaskStep) error { return nil },
+				// Every shipped agent step carries an explicit turn cap. The
+				// CLI's default is not a platform bound, and an uncapped agent
+				// is the runaway-overnight case WS3 exists to close.
+				OnAgent: func(step *atc.AgentStep) error {
+					if step.MaxTurns <= 0 {
+						return fmt.Errorf("agent step %q ships without a max_turns cap", step.Name)
+					}
+					return nil
+				},
 				OnLoadSnapshot:    func(*atc.LoadSnapshotStep) error { return nil },
 				OnAwaitSnapshot:   func(*atc.AwaitSnapshotStep) error { waits++; return nil },
 				OnPublishSnapshot: func(*atc.PublishSnapshotStep) error { publishers++; return nil },

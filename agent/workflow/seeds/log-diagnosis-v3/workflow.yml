@@ -18,6 +18,7 @@ outputs:
 plan:
   - agent: diagnose
     budget_slice_usd: 5
+    max_turns: 100
     function_id: diagnose-logs
     prompt_file: prompts/diagnose.md
     inputs: [logs, deployment]
