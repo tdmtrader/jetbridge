@@ -428,11 +428,16 @@ var _ = Describe("AgentStep", func() {
 		Expect(found).To(BeTrue())
 	})
 
-	// An unbounded agent step is the runaway-overnight case: task/get/put
-	// steps all carry a platform default, agent steps did not, so a workflow
-	// that authored no timeout: ran until someone noticed. The platform
-	// default closes that hole, and the operator has to be able to SEE that
-	// it fired — hence TimeoutLogMessage, the same signal task steps emit.
+	// An unbounded agent step is the runaway-overnight case. Task/get/put
+	// steps' platform-default timeout flags carry no default value of their
+	// own (0 = unbounded) unless an operator explicitly sets them, and agent
+	// steps used to just inherit --default-task-timeout wholesale — an agent
+	// step was unbounded exactly when tasks were. Agent steps now have their
+	// own --agent-step-default-timeout, and unlike every other step type it
+	// ships a non-zero default (2h): agent steps are the only step type with
+	// an opinionated non-zero platform default out of the box. The operator
+	// still has to be able to SEE it fire — hence TimeoutLogMessage, the same
+	// signal task steps emit.
 	Context("when a platform default timeout is configured and the step declares none", func() {
 		BeforeEach(func() {
 			agentDefaultTimeout = time.Millisecond
@@ -457,16 +462,24 @@ var _ = Describe("AgentStep", func() {
 		})
 	})
 
+	// The pod-side watchdog bound is DERIVED from the step's effective
+	// timeout: exported = effective - max(effective/10, 1 minute), skipped
+	// entirely (no row, never a zero or negative duration) once that
+	// subtracted slack would consume the whole bound. The runner NORMALLY
+	// self-terminates first and writes its flight recorder inside the
+	// web-side deadline, but the two clocks anchor at different moments (web
+	// deadline starts before the container exists; the runner's clock starts
+	// at cmd.Run) — the 1-minute floor keeps the runner ahead of the web
+	// deadline whenever the bound is large enough to allow it. An authored
+	// timeout: still wins over the platform default in every case below.
 	Context("when an explicit per-step timeout is set", func() {
 		BeforeEach(func() {
 			agentDefaultTimeout = 100 * time.Minute
 			agentPlan.Timeout = "20m"
 		})
 
-		// The pod-side watchdog bound is DERIVED from the step's effective
-		// timeout (90% of it), so the runner always self-terminates and writes
-		// its flight recorder inside the web-side deadline. An authored
-		// timeout: still wins over the platform default.
+		// 20m / 10 = 2m, which already clears the 1-minute floor, so this
+		// case is unaffected by the floor: exported = 20m - 2m = 18m.
 		It("derives AGENT_MAX_WALL_CLOCK from the authored timeout", func() {
 			ok, err := step.Run(ctx, state)
 			Expect(err).ToNot(HaveOccurred())
@@ -474,6 +487,44 @@ var _ = Describe("AgentStep", func() {
 
 			_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
 			Expect(spec.Env).To(ContainElement("AGENT_MAX_WALL_CLOCK=18m0s"))
+		})
+	})
+
+	Context("when an explicit per-step timeout is small enough for the 1-minute slack floor to bind", func() {
+		BeforeEach(func() {
+			agentDefaultTimeout = 100 * time.Minute
+			agentPlan.Timeout = "90s"
+		})
+
+		// 90s / 10 = 9s, below the 1-minute floor, so the floor raises the
+		// subtracted slack to 60s: exported = 90s - 60s = 30s.
+		It("floors the subtracted slack at 1 minute instead of 10% of the bound", func() {
+			ok, err := step.Run(ctx, state)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(ok).To(BeTrue())
+
+			_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
+			Expect(spec.Env).To(ContainElement("AGENT_MAX_WALL_CLOCK=30s"))
+		})
+	})
+
+	Context("when an explicit per-step timeout is at or below the 1-minute slack floor", func() {
+		BeforeEach(func() {
+			agentDefaultTimeout = 100 * time.Minute
+			agentPlan.Timeout = "45s"
+		})
+
+		// The floored slack (1m) is >= the 45s bound itself, so
+		// effective - slack would be <= 0. Skip the row rather than export a
+		// zero or negative wall-clock bound; the web-side deadline
+		// (MaybeTimeout) still applies at the full 45s regardless.
+		It("exports no AGENT_MAX_WALL_CLOCK row rather than a non-positive duration", func() {
+			ok, err := step.Run(ctx, state)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(ok).To(BeTrue())
+
+			_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
+			Expect(spec.Env).ToNot(ContainElement(HavePrefix("AGENT_MAX_WALL_CLOCK=")))
 		})
 	})
 

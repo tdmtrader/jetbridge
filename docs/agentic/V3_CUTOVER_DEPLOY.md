@@ -138,6 +138,29 @@ and does not expire.
   ticket create-form (`fly agent tickets create` still works). Transcripts are
   captured and served by API; only the viewer is gone.
 
+## Agent step default timeout
+
+Deployments that set `--default-task-timeout` used to have that value bound
+`agent:` steps too, since agent steps previously just inherited it. Agent
+steps now use their own `--agent-step-default-timeout` exclusively (default
+`2h`); `--default-task-timeout` no longer reaches them at all. If a
+deployment was relying on a tighter task default to also cap agent steps, set
+`--agent-step-default-timeout` explicitly — an authored `timeout:` on the
+step still wins over either flag.
+
+Follow-ups, not yet implemented:
+
+- **T6 — shared deadline anchor.** The web-side deadline and the in-pod
+  runner's own clock currently start at different moments (web: before the
+  container is created; runner: at `cmd.Run`), so they can drift apart at
+  small bounds. Exporting an absolute deadline instead of a derived duration
+  would let both sides agree on the same instant.
+- **HITL forward-hazard.** Once platform-MCP human-in-the-loop park lands, a
+  step parked waiting on a human still counts against this same wall-clock
+  bound — at the `2h` default it would be killed at ~1h48m even though it is
+  legitimately waiting, not running away. The HITL wave must raise or disable
+  the bound for parked steps before that ships.
+
 ## Rollback
 
 `git checkout v3-prototype-verified-20260724` restores the pre-merge branch state.

@@ -63,6 +63,9 @@ type factoryWiringHarness struct {
 	agentPlan       atc.Plan
 	fakeBuild       *dbfakes.FakeBuild
 	dbWorkerFactory *dbfakes.FakeWorkerFactory
+	runtimeWorker   *runtimetest.Worker
+	taskOwner       db.ContainerOwner
+	agentOwner      db.ContainerOwner
 }
 
 func TestWithOutputSealerKeepsOneSharedFactoryDependency(t *testing.T) {
@@ -210,6 +213,60 @@ func TestCoreStepFactoryDoesNotInjectASealerWhenDisabled(t *testing.T) {
 	}
 }
 
+// TestCoreStepFactoryAgentStepUsesTheAgentDefaultTimeoutNotTheTaskDefault
+// pins the Important-1 review fix: AgentStep must be constructed with
+// factory.agentStepDefaultTimeout, never factory.defaultTaskTimeout. It runs
+// the full factory -> AgentStep -> runtimetest-worker path (not just a
+// wiring-level field assertion) so a regression is caught in the same shape
+// production takes: an actual created container spec's env.
+//
+// To verify this spec bites: temporarily change step_factory.go's AgentStep
+// to pass factory.defaultTaskTimeout instead of factory.agentStepDefaultTimeout
+// and rerun it — the harness's defaultTaskTimeout is 0 (unset), so the
+// AGENT_MAX_WALL_CLOCK row disappears entirely and the spec fails.
+func TestCoreStepFactoryAgentStepUsesTheAgentDefaultTimeoutNotTheTaskDefault(t *testing.T) {
+	harness := newFactoryWiringHarness(t, WithAgentStepDefaultTimeout(20*time.Minute))
+
+	// Clear SnapshotOutputs on a local copy of the plan: this spec targets
+	// the timeout wiring alone, so it deliberately avoids also having to wire
+	// up an output sealer and durable snapshot stores just to let Run reach
+	// worker selection (see the sibling sealer-focused specs above for that).
+	agentPlan := harness.agentPlan
+	agentCopy := *agentPlan.Agent
+	agentCopy.SnapshotOutputs = nil
+	agentPlan.Agent = &agentCopy
+
+	agent := harness.factory.AgentStep(
+		agentPlan, harness.metadata, harness.agentMetadata,
+		DelegateFactory{build: harness.fakeBuild, plan: agentPlan},
+	)
+	ok, err := agent.Run(harness.ctx, harness.state)
+	if err != nil || !ok {
+		t.Fatalf("factory AgentStep.Run() = (%t, %v), want success", ok, err)
+	}
+
+	container, _, found := harness.runtimeWorker.FindContainerByOwner(harness.agentOwner)
+	if !found || container.Spec == nil {
+		t.Fatal("agent container spec was never recorded")
+	}
+	if !containsEnvRow(container.Spec.Env, "AGENT_MAX_WALL_CLOCK=18m0s") {
+		t.Fatalf(
+			"agent container spec env = %v, want to contain AGENT_MAX_WALL_CLOCK=18m0s "+
+				"(WithAgentStepDefaultTimeout(20m) as the platform default, no authored timeout: on the plan)",
+			container.Spec.Env,
+		)
+	}
+}
+
+func containsEnvRow(env []string, want string) bool {
+	for _, row := range env {
+		if row == want {
+			return true
+		}
+	}
+	return false
+}
+
 func newFactoryWiringHarness(t *testing.T, opts ...CoreStepFactoryOption) factoryWiringHarness {
 	t.Helper()
 	metadata := exec.StepMetadata{
@@ -279,6 +336,7 @@ func newFactoryWiringHarness(t *testing.T, opts ...CoreStepFactoryOption) factor
 		taskMetadata:  db.ContainerMetadata{Type: db.ContainerTypeTask, Attempt: "1"},
 		agentMetadata: db.ContainerMetadata{Type: db.ContainerTypeAgent, Attempt: "1"},
 		taskPlan:      taskPlan, agentPlan: agentPlan, fakeBuild: fakeBuild, dbWorkerFactory: dbWorkerFactory,
+		runtimeWorker: runtimeWorker, taskOwner: taskOwner, agentOwner: agentOwner,
 	}
 }
 
