@@ -24,6 +24,19 @@ const (
 // a clear error instead of a raw pg violation.
 var ErrInvalidDispatcherMode = errors.New("dispatcher_mode must be one of off|paused|active")
 
+// Valid action-suppression modes, mirrored by the agent_settings.actions_mode
+// CHECK constraint (migration 1773106128) and by agent/publisher. Bare strings
+// for the same reason as the dispatcher modes above: atc/db must not depend on
+// agent/publisher.
+const (
+	ActionsModeActive     = "active"
+	ActionsModeSuppressed = "suppressed"
+)
+
+// ErrInvalidActionsMode is returned by SetActionsMode for a mode outside
+// {active,suppressed} — a guard in front of the CHECK constraint.
+var ErrInvalidActionsMode = errors.New("actions_mode must be one of active|suppressed")
+
 //go:generate go run github.com/maxbrunsfeld/counterfeiter/v6 -generate
 
 // AgentSettingsFactory reads and writes the singleton agent_settings row.
@@ -42,6 +55,16 @@ type AgentSettingsFactory interface {
 	// SetDispatcherMode UPSERTs the singleton row (id=1). Validates mode before
 	// touching the DB; returns ErrInvalidDispatcherMode otherwise.
 	SetDispatcherMode(mode, updatedBy string) error
+	// GetActionsMode is the publisher's HOT read of the cluster-wide
+	// action-suppression switch. found=false means no admin has ever engaged
+	// it, which callers must treat as active.
+	GetActionsMode() (mode string, found bool, err error)
+	// GetActionsSetting backs the GET status API: the stored mode plus its own
+	// provenance. found=false means the switch has never been set.
+	GetActionsSetting() (mode string, updatedAt time.Time, updatedBy string, found bool, err error)
+	// SetActionsMode UPSERTs the singleton row (id=1) without touching
+	// dispatcher_mode or its provenance. Validates mode before touching the DB.
+	SetActionsMode(mode, updatedBy string) error
 }
 
 func NewAgentSettingsFactory(conn DbConn) AgentSettingsFactory {
@@ -68,7 +91,7 @@ func (f *agentSettingsFactory) GetDispatcherMode() (string, bool, error) {
 
 func (f *agentSettingsFactory) GetDispatcherSetting() (string, time.Time, string, bool, error) {
 	var (
-		mode      string
+		mode      sql.NullString
 		updatedAt time.Time
 		updatedBy sql.NullString
 	)
@@ -84,7 +107,13 @@ func (f *agentSettingsFactory) GetDispatcherSetting() (string, time.Time, string
 	if err != nil {
 		return "", time.Time{}, "", false, err
 	}
-	return mode, updatedAt, updatedBy.String, true, nil
+	if !mode.Valid {
+		// The row was created by SetActionsMode, which must not invent a
+		// dispatcher mode. NULL is exactly "never set" — same effective mode
+		// as no row, so the boot-flag fallback keeps applying.
+		return "", time.Time{}, "", false, nil
+	}
+	return mode.String, updatedAt, updatedBy.String, true, nil
 }
 
 func (f *agentSettingsFactory) SetDispatcherMode(mode, updatedBy string) error {
@@ -95,6 +124,61 @@ func (f *agentSettingsFactory) SetDispatcherMode(mode, updatedBy string) error {
 		Columns("id", "dispatcher_mode", "updated_at", "updated_by").
 		Values(1, mode, sq.Expr("now()"), updatedBy).
 		Suffix("ON CONFLICT (id) DO UPDATE SET dispatcher_mode = EXCLUDED.dispatcher_mode, updated_at = now(), updated_by = EXCLUDED.updated_by").
+		RunWith(f.conn).
+		Exec()
+	return err
+}
+
+func validActionsMode(mode string) bool {
+	switch mode {
+	case ActionsModeActive, ActionsModeSuppressed:
+		return true
+	default:
+		return false
+	}
+}
+
+func (f *agentSettingsFactory) GetActionsMode() (string, bool, error) {
+	mode, _, _, found, err := f.GetActionsSetting()
+	return mode, found, err
+}
+
+func (f *agentSettingsFactory) GetActionsSetting() (string, time.Time, string, bool, error) {
+	var (
+		mode      string
+		updatedAt sql.NullTime
+		updatedBy sql.NullString
+	)
+	err := psql.Select("actions_mode", "actions_updated_at", "actions_updated_by").
+		From("agent_settings").
+		Where(sq.Eq{"id": 1}).
+		RunWith(f.conn).
+		QueryRow().
+		Scan(&mode, &updatedAt, &updatedBy)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", time.Time{}, "", false, nil
+	}
+	if err != nil {
+		return "", time.Time{}, "", false, err
+	}
+	if !updatedAt.Valid {
+		// The row exists but nobody has touched the switch (SetDispatcherMode
+		// created it and the column default filled in 'active'). Absence is
+		// meaningful, so report it as unset rather than as an admin decision.
+		return "", time.Time{}, "", false, nil
+	}
+	return mode, updatedAt.Time, updatedBy.String, true, nil
+}
+
+func (f *agentSettingsFactory) SetActionsMode(mode, updatedBy string) error {
+	if !validActionsMode(mode) {
+		return fmt.Errorf("%w: got %q", ErrInvalidActionsMode, mode)
+	}
+	_, err := psql.Insert("agent_settings").
+		Columns("id", "actions_mode", "actions_updated_at", "actions_updated_by").
+		Values(1, mode, sq.Expr("now()"), updatedBy).
+		Suffix("ON CONFLICT (id) DO UPDATE SET actions_mode = EXCLUDED.actions_mode, " +
+			"actions_updated_at = now(), actions_updated_by = EXCLUDED.actions_updated_by").
 		RunWith(f.conn).
 		Exec()
 	return err

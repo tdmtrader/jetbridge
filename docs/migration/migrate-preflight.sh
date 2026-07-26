@@ -38,7 +38,12 @@ v8.0.1:1765921815
 # 1773106127 = agent_snapshot_exposures/_exposure_paths (exposure and
 # materialization lineage). Its down migration drops static-selector path
 # sets; full-tree exposure is re-derivable from agent_snapshot_lineage.
-JETBRIDGE_VERSION=1773106127
+# 1773106128 = agent_settings.actions_mode (the cluster-wide action-suppression
+# switch) plus its own provenance columns; dispatcher_mode becomes nullable so
+# the switch can create the singleton row without inventing a dispatcher mode.
+# Its down migration pins any switch-created row to dispatcher_mode='off'
+# (fail dormant, not fail dispatching) before restoring NOT NULL.
+JETBRIDGE_VERSION=1773106128
 
 # Minimum supported source version (v6.x)
 MIN_SUPPORTED_VERSION=1601993582

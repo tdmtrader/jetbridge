@@ -9,6 +9,38 @@ import (
 )
 
 type FakeAgentSettingsFactory struct {
+	GetActionsModeStub        func() (string, bool, error)
+	getActionsModeMutex       sync.RWMutex
+	getActionsModeArgsForCall []struct {
+	}
+	getActionsModeReturns struct {
+		result1 string
+		result2 bool
+		result3 error
+	}
+	getActionsModeReturnsOnCall map[int]struct {
+		result1 string
+		result2 bool
+		result3 error
+	}
+	GetActionsSettingStub        func() (string, time.Time, string, bool, error)
+	getActionsSettingMutex       sync.RWMutex
+	getActionsSettingArgsForCall []struct {
+	}
+	getActionsSettingReturns struct {
+		result1 string
+		result2 time.Time
+		result3 string
+		result4 bool
+		result5 error
+	}
+	getActionsSettingReturnsOnCall map[int]struct {
+		result1 string
+		result2 time.Time
+		result3 string
+		result4 bool
+		result5 error
+	}
 	GetDispatcherModeStub        func() (string, bool, error)
 	getDispatcherModeMutex       sync.RWMutex
 	getDispatcherModeArgsForCall []struct {
@@ -41,6 +73,18 @@ type FakeAgentSettingsFactory struct {
 		result4 bool
 		result5 error
 	}
+	SetActionsModeStub        func(string, string) error
+	setActionsModeMutex       sync.RWMutex
+	setActionsModeArgsForCall []struct {
+		arg1 string
+		arg2 string
+	}
+	setActionsModeReturns struct {
+		result1 error
+	}
+	setActionsModeReturnsOnCall map[int]struct {
+		result1 error
+	}
 	SetDispatcherModeStub        func(string, string) error
 	setDispatcherModeMutex       sync.RWMutex
 	setDispatcherModeArgsForCall []struct {
@@ -55,6 +99,130 @@ type FakeAgentSettingsFactory struct {
 	}
 	invocations      map[string][][]interface{}
 	invocationsMutex sync.RWMutex
+}
+
+func (fake *FakeAgentSettingsFactory) GetActionsMode() (string, bool, error) {
+	fake.getActionsModeMutex.Lock()
+	ret, specificReturn := fake.getActionsModeReturnsOnCall[len(fake.getActionsModeArgsForCall)]
+	fake.getActionsModeArgsForCall = append(fake.getActionsModeArgsForCall, struct {
+	}{})
+	stub := fake.GetActionsModeStub
+	fakeReturns := fake.getActionsModeReturns
+	fake.recordInvocation("GetActionsMode", []interface{}{})
+	fake.getActionsModeMutex.Unlock()
+	if stub != nil {
+		return stub()
+	}
+	if specificReturn {
+		return ret.result1, ret.result2, ret.result3
+	}
+	return fakeReturns.result1, fakeReturns.result2, fakeReturns.result3
+}
+
+func (fake *FakeAgentSettingsFactory) GetActionsModeCallCount() int {
+	fake.getActionsModeMutex.RLock()
+	defer fake.getActionsModeMutex.RUnlock()
+	return len(fake.getActionsModeArgsForCall)
+}
+
+func (fake *FakeAgentSettingsFactory) GetActionsModeCalls(stub func() (string, bool, error)) {
+	fake.getActionsModeMutex.Lock()
+	defer fake.getActionsModeMutex.Unlock()
+	fake.GetActionsModeStub = stub
+}
+
+func (fake *FakeAgentSettingsFactory) GetActionsModeReturns(result1 string, result2 bool, result3 error) {
+	fake.getActionsModeMutex.Lock()
+	defer fake.getActionsModeMutex.Unlock()
+	fake.GetActionsModeStub = nil
+	fake.getActionsModeReturns = struct {
+		result1 string
+		result2 bool
+		result3 error
+	}{result1, result2, result3}
+}
+
+func (fake *FakeAgentSettingsFactory) GetActionsModeReturnsOnCall(i int, result1 string, result2 bool, result3 error) {
+	fake.getActionsModeMutex.Lock()
+	defer fake.getActionsModeMutex.Unlock()
+	fake.GetActionsModeStub = nil
+	if fake.getActionsModeReturnsOnCall == nil {
+		fake.getActionsModeReturnsOnCall = make(map[int]struct {
+			result1 string
+			result2 bool
+			result3 error
+		})
+	}
+	fake.getActionsModeReturnsOnCall[i] = struct {
+		result1 string
+		result2 bool
+		result3 error
+	}{result1, result2, result3}
+}
+
+func (fake *FakeAgentSettingsFactory) GetActionsSetting() (string, time.Time, string, bool, error) {
+	fake.getActionsSettingMutex.Lock()
+	ret, specificReturn := fake.getActionsSettingReturnsOnCall[len(fake.getActionsSettingArgsForCall)]
+	fake.getActionsSettingArgsForCall = append(fake.getActionsSettingArgsForCall, struct {
+	}{})
+	stub := fake.GetActionsSettingStub
+	fakeReturns := fake.getActionsSettingReturns
+	fake.recordInvocation("GetActionsSetting", []interface{}{})
+	fake.getActionsSettingMutex.Unlock()
+	if stub != nil {
+		return stub()
+	}
+	if specificReturn {
+		return ret.result1, ret.result2, ret.result3, ret.result4, ret.result5
+	}
+	return fakeReturns.result1, fakeReturns.result2, fakeReturns.result3, fakeReturns.result4, fakeReturns.result5
+}
+
+func (fake *FakeAgentSettingsFactory) GetActionsSettingCallCount() int {
+	fake.getActionsSettingMutex.RLock()
+	defer fake.getActionsSettingMutex.RUnlock()
+	return len(fake.getActionsSettingArgsForCall)
+}
+
+func (fake *FakeAgentSettingsFactory) GetActionsSettingCalls(stub func() (string, time.Time, string, bool, error)) {
+	fake.getActionsSettingMutex.Lock()
+	defer fake.getActionsSettingMutex.Unlock()
+	fake.GetActionsSettingStub = stub
+}
+
+func (fake *FakeAgentSettingsFactory) GetActionsSettingReturns(result1 string, result2 time.Time, result3 string, result4 bool, result5 error) {
+	fake.getActionsSettingMutex.Lock()
+	defer fake.getActionsSettingMutex.Unlock()
+	fake.GetActionsSettingStub = nil
+	fake.getActionsSettingReturns = struct {
+		result1 string
+		result2 time.Time
+		result3 string
+		result4 bool
+		result5 error
+	}{result1, result2, result3, result4, result5}
+}
+
+func (fake *FakeAgentSettingsFactory) GetActionsSettingReturnsOnCall(i int, result1 string, result2 time.Time, result3 string, result4 bool, result5 error) {
+	fake.getActionsSettingMutex.Lock()
+	defer fake.getActionsSettingMutex.Unlock()
+	fake.GetActionsSettingStub = nil
+	if fake.getActionsSettingReturnsOnCall == nil {
+		fake.getActionsSettingReturnsOnCall = make(map[int]struct {
+			result1 string
+			result2 time.Time
+			result3 string
+			result4 bool
+			result5 error
+		})
+	}
+	fake.getActionsSettingReturnsOnCall[i] = struct {
+		result1 string
+		result2 time.Time
+		result3 string
+		result4 bool
+		result5 error
+	}{result1, result2, result3, result4, result5}
 }
 
 func (fake *FakeAgentSettingsFactory) GetDispatcherMode() (string, bool, error) {
@@ -179,6 +347,68 @@ func (fake *FakeAgentSettingsFactory) GetDispatcherSettingReturnsOnCall(i int, r
 		result4 bool
 		result5 error
 	}{result1, result2, result3, result4, result5}
+}
+
+func (fake *FakeAgentSettingsFactory) SetActionsMode(arg1 string, arg2 string) error {
+	fake.setActionsModeMutex.Lock()
+	ret, specificReturn := fake.setActionsModeReturnsOnCall[len(fake.setActionsModeArgsForCall)]
+	fake.setActionsModeArgsForCall = append(fake.setActionsModeArgsForCall, struct {
+		arg1 string
+		arg2 string
+	}{arg1, arg2})
+	stub := fake.SetActionsModeStub
+	fakeReturns := fake.setActionsModeReturns
+	fake.recordInvocation("SetActionsMode", []interface{}{arg1, arg2})
+	fake.setActionsModeMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2)
+	}
+	if specificReturn {
+		return ret.result1
+	}
+	return fakeReturns.result1
+}
+
+func (fake *FakeAgentSettingsFactory) SetActionsModeCallCount() int {
+	fake.setActionsModeMutex.RLock()
+	defer fake.setActionsModeMutex.RUnlock()
+	return len(fake.setActionsModeArgsForCall)
+}
+
+func (fake *FakeAgentSettingsFactory) SetActionsModeCalls(stub func(string, string) error) {
+	fake.setActionsModeMutex.Lock()
+	defer fake.setActionsModeMutex.Unlock()
+	fake.SetActionsModeStub = stub
+}
+
+func (fake *FakeAgentSettingsFactory) SetActionsModeArgsForCall(i int) (string, string) {
+	fake.setActionsModeMutex.RLock()
+	defer fake.setActionsModeMutex.RUnlock()
+	argsForCall := fake.setActionsModeArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2
+}
+
+func (fake *FakeAgentSettingsFactory) SetActionsModeReturns(result1 error) {
+	fake.setActionsModeMutex.Lock()
+	defer fake.setActionsModeMutex.Unlock()
+	fake.SetActionsModeStub = nil
+	fake.setActionsModeReturns = struct {
+		result1 error
+	}{result1}
+}
+
+func (fake *FakeAgentSettingsFactory) SetActionsModeReturnsOnCall(i int, result1 error) {
+	fake.setActionsModeMutex.Lock()
+	defer fake.setActionsModeMutex.Unlock()
+	fake.SetActionsModeStub = nil
+	if fake.setActionsModeReturnsOnCall == nil {
+		fake.setActionsModeReturnsOnCall = make(map[int]struct {
+			result1 error
+		})
+	}
+	fake.setActionsModeReturnsOnCall[i] = struct {
+		result1 error
+	}{result1}
 }
 
 func (fake *FakeAgentSettingsFactory) SetDispatcherMode(arg1 string, arg2 string) error {
