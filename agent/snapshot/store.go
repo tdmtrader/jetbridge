@@ -902,6 +902,14 @@ type MetadataStore interface {
 	// claim, no sibling stage has LeaseExpiresAt after now, and digest has zero
 	// recorded locations at transaction time.
 	MarkDigestExpired(context.Context, DigestLease, Digest, time.Time) (bool, error)
+	// ReapExpiredRetentionClaims deletes retention claims whose expiry is
+	// strictly older than expiredBefore and returns how many rows it removed.
+	// A NULL expiry retains forever and an expiry at or after the cutoff still
+	// retains, so neither is ever deleted: the sweep removes only rows that
+	// already have no effect on retention, which is why it needs no digest
+	// lease. Callers pass now minus a grace period, never a bare now, so
+	// recently-expired claims stay visible to operators.
+	ReapExpiredRetentionClaims(context.Context, time.Time) (int, error)
 	AddLocation(context.Context, DigestLease, Location) error
 	RemoveLocation(context.Context, DigestLease, Location) error
 }

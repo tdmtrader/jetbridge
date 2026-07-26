@@ -2203,6 +2203,88 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 			Expect(probe.Close()).To(Succeed())
 		})
 	})
+
+	It("reaps only retention claims whose expiry is strictly older than the cutoff", func() {
+		value := digest("c")
+		staged := stage(value, defaultTeam.ID(), "claim-reap")
+		ref := seal(newBuild(defaultTeam.ID()), "claim-reap", nil, nil, []snapshot.SealCommitOutput{
+			output("claim-reap", "result", "opaque/v1", value, staged),
+		})["claim-reap"].Snapshot
+
+		cutoff := time.Now().Truncate(time.Microsecond)
+		insertClaim := func(actor string, expiresAt any) {
+			_, err := dbConn.Exec(`
+				INSERT INTO agent_snapshot_retention_claims
+					(snapshot_id, team_id, class, expires_at, actor, reason)
+				VALUES ($1, $2, 'binding', $3, $4, 'claim reap test')
+			`, int64(ref.ID), defaultTeam.ID(), expiresAt, actor)
+			Expect(err).NotTo(HaveOccurred())
+		}
+		// The seal already created one 'binding' claim with actor "build"; give
+		// every other row a distinct actor to satisfy the unique key.
+		_, err := dbConn.Exec(`
+			UPDATE agent_snapshot_retention_claims
+			SET expires_at = $2 WHERE snapshot_id = $1 AND actor = 'build'
+		`, int64(ref.ID), cutoff.Add(-time.Second))
+		Expect(err).NotTo(HaveOccurred())
+		insertClaim("exactly-at-cutoff", cutoff)
+		insertClaim("still-retaining", cutoff.Add(time.Hour))
+		_, err = dbConn.Exec(`
+			INSERT INTO agent_snapshot_retention_claims
+				(snapshot_id, team_id, class, expires_at, actor, reason)
+			VALUES ($1, $2, 'pin', NULL, 'permanent-pin', 'claim reap test')
+		`, int64(ref.ID), defaultTeam.ID())
+		Expect(err).NotTo(HaveOccurred())
+
+		reaped, err := factory.ReapExpiredRetentionClaims(ctx, cutoff)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(reaped).To(Equal(1), "only the strictly-older claim may be deleted")
+
+		rows, err := dbConn.Query(`
+			SELECT actor FROM agent_snapshot_retention_claims
+			WHERE snapshot_id = $1 ORDER BY actor
+		`, int64(ref.ID))
+		Expect(err).NotTo(HaveOccurred())
+		defer rows.Close()
+		actors := []string{}
+		for rows.Next() {
+			var actor string
+			Expect(rows.Scan(&actor)).To(Succeed())
+			actors = append(actors, actor)
+		}
+		Expect(rows.Err()).NotTo(HaveOccurred())
+		Expect(actors).To(Equal([]string{"exactly-at-cutoff", "permanent-pin", "still-retaining"}))
+
+		// Idempotent: a second sweep at the same cutoff removes nothing.
+		reaped, err = factory.ReapExpiredRetentionClaims(ctx, cutoff)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(reaped).To(BeZero())
+	})
+
+	It("refuses a zero cutoff and deletes nothing", func() {
+		value := digest("d")
+		staged := stage(value, defaultTeam.ID(), "zero-cutoff")
+		ref := seal(newBuild(defaultTeam.ID()), "zero-cutoff", nil, nil, []snapshot.SealCommitOutput{
+			output("zero-cutoff", "result", "opaque/v1", value, staged),
+		})["zero-cutoff"].Snapshot
+		// Force the seal's binding claim a year into the past: any real cutoff
+		// would reap it, so a leaked guard would delete it here.
+		_, err := dbConn.Exec(`
+			UPDATE agent_snapshot_retention_claims
+			SET expires_at = now() - interval '365 days' WHERE snapshot_id = $1
+		`, int64(ref.ID))
+		Expect(err).NotTo(HaveOccurred())
+
+		reaped, err := factory.ReapExpiredRetentionClaims(ctx, time.Time{})
+		Expect(err).To(MatchError(ContainSubstring("cutoff is required")))
+		Expect(reaped).To(BeZero())
+
+		var remaining int
+		Expect(dbConn.QueryRow(`
+			SELECT count(*) FROM agent_snapshot_retention_claims WHERE snapshot_id = $1
+		`, int64(ref.ID)).Scan(&remaining)).To(Succeed())
+		Expect(remaining).To(Equal(1), "a zero cutoff must delete nothing")
+	})
 })
 
 func structTeam(name string) atc.Team { return atc.Team{Name: name} }

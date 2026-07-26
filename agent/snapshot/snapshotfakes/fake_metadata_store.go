@@ -151,6 +151,20 @@ type FakeMetadataStore struct {
 		result1 snapshot.RetentionClaim
 		result2 error
 	}
+	ReapExpiredRetentionClaimsStub        func(context.Context, time.Time) (int, error)
+	reapExpiredRetentionClaimsMutex       sync.RWMutex
+	reapExpiredRetentionClaimsArgsForCall []struct {
+		arg1 context.Context
+		arg2 time.Time
+	}
+	reapExpiredRetentionClaimsReturns struct {
+		result1 int
+		result2 error
+	}
+	reapExpiredRetentionClaimsReturnsOnCall map[int]struct {
+		result1 int
+		result2 error
+	}
 	RemoveLocationStub        func(context.Context, snapshot.DigestLease, snapshot.Location) error
 	removeLocationMutex       sync.RWMutex
 	removeLocationArgsForCall []struct {
@@ -809,6 +823,71 @@ func (fake *FakeMetadataStore) PinReturnsOnCall(i int, result1 snapshot.Retentio
 	}
 	fake.pinReturnsOnCall[i] = struct {
 		result1 snapshot.RetentionClaim
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeMetadataStore) ReapExpiredRetentionClaims(arg1 context.Context, arg2 time.Time) (int, error) {
+	fake.reapExpiredRetentionClaimsMutex.Lock()
+	ret, specificReturn := fake.reapExpiredRetentionClaimsReturnsOnCall[len(fake.reapExpiredRetentionClaimsArgsForCall)]
+	fake.reapExpiredRetentionClaimsArgsForCall = append(fake.reapExpiredRetentionClaimsArgsForCall, struct {
+		arg1 context.Context
+		arg2 time.Time
+	}{arg1, arg2})
+	stub := fake.ReapExpiredRetentionClaimsStub
+	fakeReturns := fake.reapExpiredRetentionClaimsReturns
+	fake.recordInvocation("ReapExpiredRetentionClaims", []interface{}{arg1, arg2})
+	fake.reapExpiredRetentionClaimsMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeMetadataStore) ReapExpiredRetentionClaimsCallCount() int {
+	fake.reapExpiredRetentionClaimsMutex.RLock()
+	defer fake.reapExpiredRetentionClaimsMutex.RUnlock()
+	return len(fake.reapExpiredRetentionClaimsArgsForCall)
+}
+
+func (fake *FakeMetadataStore) ReapExpiredRetentionClaimsCalls(stub func(context.Context, time.Time) (int, error)) {
+	fake.reapExpiredRetentionClaimsMutex.Lock()
+	defer fake.reapExpiredRetentionClaimsMutex.Unlock()
+	fake.ReapExpiredRetentionClaimsStub = stub
+}
+
+func (fake *FakeMetadataStore) ReapExpiredRetentionClaimsArgsForCall(i int) (context.Context, time.Time) {
+	fake.reapExpiredRetentionClaimsMutex.RLock()
+	defer fake.reapExpiredRetentionClaimsMutex.RUnlock()
+	argsForCall := fake.reapExpiredRetentionClaimsArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2
+}
+
+func (fake *FakeMetadataStore) ReapExpiredRetentionClaimsReturns(result1 int, result2 error) {
+	fake.reapExpiredRetentionClaimsMutex.Lock()
+	defer fake.reapExpiredRetentionClaimsMutex.Unlock()
+	fake.ReapExpiredRetentionClaimsStub = nil
+	fake.reapExpiredRetentionClaimsReturns = struct {
+		result1 int
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeMetadataStore) ReapExpiredRetentionClaimsReturnsOnCall(i int, result1 int, result2 error) {
+	fake.reapExpiredRetentionClaimsMutex.Lock()
+	defer fake.reapExpiredRetentionClaimsMutex.Unlock()
+	fake.ReapExpiredRetentionClaimsStub = nil
+	if fake.reapExpiredRetentionClaimsReturnsOnCall == nil {
+		fake.reapExpiredRetentionClaimsReturnsOnCall = make(map[int]struct {
+			result1 int
+			result2 error
+		})
+	}
+	fake.reapExpiredRetentionClaimsReturnsOnCall[i] = struct {
+		result1 int
 		result2 error
 	}{result1, result2}
 }

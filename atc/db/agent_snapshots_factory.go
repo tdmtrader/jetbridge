@@ -1624,6 +1624,30 @@ func (factory *agentSnapshotsFactory) MarkDigestExpired(
 	return true, nil
 }
 
+func (factory *agentSnapshotsFactory) ReapExpiredRetentionClaims(
+	ctx context.Context,
+	expiredBefore time.Time,
+) (int, error) {
+	if expiredBefore.IsZero() {
+		return 0, fmt.Errorf("db: retention claim reap cutoff is required")
+	}
+	// Strictly older than the cutoff, and never a NULL expiry: a claim that
+	// still retains anything is not reapable at any grace period, including
+	// zero.
+	result, err := factory.conn.ExecContext(ctx, `
+		DELETE FROM agent_snapshot_retention_claims
+		WHERE expires_at IS NOT NULL AND expires_at < $1
+	`, expiredBefore.UTC())
+	if err != nil {
+		return 0, err
+	}
+	deleted, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return int(deleted), nil
+}
+
 func (factory *agentSnapshotsFactory) AddLocation(
 	ctx context.Context,
 	lease snapshot.DigestLease,
