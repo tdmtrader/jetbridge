@@ -26,6 +26,9 @@ type lifecycleMetadata struct {
 	markResult        bool
 	markErr           error
 	markDigestExpired func(context.Context, DigestLease, Digest, time.Time) (bool, error)
+	reapCutoffs       []time.Time
+	reapCount         int
+	reapErr           error
 }
 
 func (m *lifecycleMetadata) DiscoverLifecycleCandidates(ctx context.Context, request LifecyclePageRequest) (LifecycleCandidatePage, error) {
@@ -108,6 +111,16 @@ func (m *lifecycleMetadata) MarkDigestExpired(ctx context.Context, lease DigestL
 		return m.markDigestExpired(ctx, lease, digest, now)
 	}
 	return m.markResult, m.markErr
+}
+
+// ReapExpiredRetentionClaims records the cutoff the collect sweep computes.
+// It intentionally does not append to m.events: content and metadata share
+// that slice in the exact-order Collect tests, and the reap runs last on every
+// Collect, so recording it there would perturb those unrelated assertions.
+// reapCutoffs is what the reap-focused tests inspect to prove the sweep ran.
+func (m *lifecycleMetadata) ReapExpiredRetentionClaims(_ context.Context, expiredBefore time.Time) (int, error) {
+	m.reapCutoffs = append(m.reapCutoffs, expiredBefore)
+	return m.reapCount, m.reapErr
 }
 
 type lifecycleContent struct {
@@ -1279,6 +1292,126 @@ func TestLifecycleRepairRetriesMetadataFailuresWithoutPruningBeforeAdd(t *testin
 			}
 		})
 	}
+}
+
+func TestLifecycleCollectReapsClaimsBehindTheGracePeriod(t *testing.T) {
+	now := lifecycleNow()
+	defer restoreRetentionClaimGrace(retentionClaimGracePeriod)
+	retentionClaimGracePeriod = 30 * 24 * time.Hour
+
+	metadata := &lifecycleMetadata{reapCount: 7}
+	lifecycle := mustLifecycle(t, metadata, &lifecycleContent{events: &metadata.events},
+		&lifecycleRepairer{}, &lifecycleLocks{}, now)
+	report, err := lifecycle.Collect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.ClaimsReaped != 7 {
+		t.Fatalf("report = %#v", report)
+	}
+	if len(metadata.reapCutoffs) != 1 || !metadata.reapCutoffs[0].Equal(now.Add(-30*24*time.Hour)) {
+		t.Fatalf("cutoffs = %v, want one at now-30d", metadata.reapCutoffs)
+	}
+}
+
+func TestLifecycleCollectZeroGraceStillPassesTheUnshiftedClock(t *testing.T) {
+	now := lifecycleNow()
+	defer restoreRetentionClaimGrace(retentionClaimGracePeriod)
+	retentionClaimGracePeriod = 0
+
+	metadata := &lifecycleMetadata{}
+	lifecycle := mustLifecycle(t, metadata, &lifecycleContent{events: &metadata.events},
+		&lifecycleRepairer{}, &lifecycleLocks{}, now)
+	if _, err := lifecycle.Collect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// The store deletes strictly before the cutoff, so a zero grace can still
+	// never reach a claim that expires at or after this instant.
+	if len(metadata.reapCutoffs) != 1 || !metadata.reapCutoffs[0].Equal(now) {
+		t.Fatalf("cutoffs = %v, want exactly [%s]", metadata.reapCutoffs, now)
+	}
+}
+
+func TestLifecycleCollectRefusesNegativeGraceAndReapsNothing(t *testing.T) {
+	defer restoreRetentionClaimGrace(retentionClaimGracePeriod)
+	retentionClaimGracePeriod = -time.Second
+
+	metadata := &lifecycleMetadata{}
+	lifecycle := mustLifecycle(t, metadata, &lifecycleContent{events: &metadata.events},
+		&lifecycleRepairer{}, &lifecycleLocks{}, lifecycleNow())
+	report, err := lifecycle.Collect(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "grace period must not be negative") {
+		t.Fatalf("error = %v", err)
+	}
+	if len(metadata.reapCutoffs) != 0 || report.ClaimsReaped != 0 {
+		t.Fatalf("a negative grace must never reach the store: %v", metadata.reapCutoffs)
+	}
+}
+
+func TestLifecycleCollectJoinsClaimReapFailureWithCandidateProgress(t *testing.T) {
+	now := lifecycleNow()
+	defer restoreRetentionClaimGrace(retentionClaimGracePeriod)
+	retentionClaimGracePeriod = time.Hour
+
+	digest := lifecycleDigest(t, '4')
+	metadata := &lifecycleMetadata{
+		page:      LifecycleCandidatePage{Candidates: []LifecycleCandidate{{Digest: digest, Kind: LifecycleCandidateRepair}}},
+		states:    map[Digest]DigestState{},
+		reapErr:   errors.New("claim sweep failed"),
+		reapCount: 3,
+	}
+	lifecycle := mustLifecycle(t, metadata, &lifecycleContent{events: &metadata.events},
+		&lifecycleRepairer{}, &lifecycleLocks{}, now)
+	report, err := lifecycle.Collect(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "claim sweep failed") {
+		t.Fatalf("error = %v", err)
+	}
+	if report.Scanned != 1 || report.Deferred != 1 || report.ClaimsReaped != 0 {
+		t.Fatalf("a failed sweep must not report reaped claims: %#v", report)
+	}
+}
+
+func TestLifecycleCollectSkipsClaimReapAfterCancellation(t *testing.T) {
+	now := lifecycleNow()
+	defer restoreRetentionClaimGrace(retentionClaimGracePeriod)
+	retentionClaimGracePeriod = time.Hour
+
+	digest := lifecycleDigest(t, '5')
+	metadata := &lifecycleMetadata{
+		page:      LifecycleCandidatePage{Candidates: []LifecycleCandidate{{Digest: digest, Kind: LifecycleCandidateOrphan}}},
+		states:    map[Digest]DigestState{digest: {Digest: digest}},
+		reapCount: 5,
+	}
+	lifecycle := mustLifecycle(t, metadata, &lifecycleContent{events: &metadata.events},
+		&lifecycleRepairer{}, &lifecycleLocks{}, now)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	report, err := lifecycle.Collect(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Collect() error = %v, want context.Canceled", err)
+	}
+	if len(metadata.reapCutoffs) != 0 {
+		t.Fatalf("claim reap ran after cancellation: %v", metadata.reapCutoffs)
+	}
+	if report.ClaimsReaped != 0 {
+		t.Fatalf("report.ClaimsReaped = %d after cancellation", report.ClaimsReaped)
+	}
+}
+
+func TestLifecycleRepairNeverReapsClaims(t *testing.T) {
+	metadata := &lifecycleMetadata{}
+	lifecycle := mustLifecycle(t, metadata, &lifecycleContent{events: &metadata.events},
+		&lifecycleRepairer{}, &lifecycleLocks{}, lifecycleNow())
+	if _, err := lifecycle.Repair(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(metadata.reapCutoffs) != 0 {
+		t.Fatalf("Repair reaped claims: %v", metadata.reapCutoffs)
+	}
+}
+
+func restoreRetentionClaimGrace(previous time.Duration) {
+	retentionClaimGracePeriod = previous
 }
 
 func lifecycleManifest(digest Digest, state ContentState) Snapshot {

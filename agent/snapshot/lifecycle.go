@@ -11,6 +11,12 @@ import (
 
 const defaultLifecyclePageSize = 100
 
+// retentionClaimGracePeriod is how far behind the collector's clock a claim's
+// expiry must be before its row is deleted. Expired claims already retain
+// nothing; the grace exists so an operator investigating a recent expiry can
+// still see the row that caused it. Package-level so tests can shorten it.
+var retentionClaimGracePeriod = 30 * 24 * time.Hour
+
 var (
 	ErrNoReadableReplica    = errors.New("snapshot: no readable replica")
 	ErrReplicaMissing       = errors.New("snapshot: replica missing")
@@ -95,6 +101,7 @@ type LifecycleReport struct {
 	LocationsDeleted int
 	LocationsAdded   int
 	StalePruned      int
+	ClaimsReaped     int
 }
 
 type Lifecycle struct {
@@ -169,7 +176,7 @@ func (lifecycle *Lifecycle) Collect(ctx context.Context) (LifecycleReport, error
 	}
 	lifecycle.collectMu.Lock()
 	defer lifecycle.collectMu.Unlock()
-	return lifecycle.runPage(ctx, &lifecycle.collectCursor, func(candidate LifecycleCandidate) bool {
+	report, err := lifecycle.runPage(ctx, &lifecycle.collectCursor, func(candidate LifecycleCandidate) bool {
 		return candidate.Kind == LifecycleCandidateOrphan || candidate.Kind == LifecycleCandidateExpiry
 	}, func(
 		ctx context.Context,
@@ -188,6 +195,25 @@ func (lifecycle *Lifecycle) Collect(ctx context.Context) (LifecycleReport, error
 			return false, nil
 		}
 	})
+	if ctx.Err() != nil {
+		return report, err
+	}
+	// Claim rows are not digest-scoped and an already-expired claim changes no
+	// retention decision, so this sweep needs no lease and cannot race the
+	// candidate work above.
+	grace := retentionClaimGracePeriod
+	if grace < 0 {
+		return report, errors.Join(err, fmt.Errorf("snapshot: retention claim grace period must not be negative"))
+	}
+	reaped, reapErr := lifecycle.metadata.ReapExpiredRetentionClaims(ctx, lifecycle.now().Add(-grace))
+	if reapErr != nil {
+		return report, errors.Join(err, reapErr)
+	}
+	if reaped < 0 {
+		return report, errors.Join(err, fmt.Errorf("snapshot: negative reaped retention claim count"))
+	}
+	report.ClaimsReaped = reaped
+	return report, err
 }
 
 func (lifecycle *Lifecycle) Repair(ctx context.Context) (LifecycleReport, error) {

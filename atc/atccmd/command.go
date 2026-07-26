@@ -2146,6 +2146,7 @@ func runAgentSnapshotLifecyclePass(
 		"locations_deleted": report.LocationsDeleted,
 		"locations_added":   report.LocationsAdded,
 		"stale_pruned":      report.StalePruned,
+		"claims_reaped":     report.ClaimsReaped,
 	}
 	logger := lagerctx.FromContext(ctx).Session("agent-snapshot-lifecycle")
 	if err != nil {
