@@ -1073,7 +1073,13 @@ func repositoryChangeRuleWitnesses(t *testing.T) []ruleWitness {
 					document.RepositoryID = "not-a-digest"
 				})
 			},
-			wantErr: "repository_id",
+			// The bare substring "repository_id" is also a substring of the
+			// sibling rule's error ("repository_id does not match base
+			// repository", verifyAgainstBase in repository_change.go), so it
+			// would keep passing even if this format check were deleted. Pin
+			// the exact text ParseDigest produces (types.go Digest.Validate)
+			// instead, which that sibling error does not contain.
+			wantErr: "snapshot: digest must be sha256 followed by 64 lowercase hexadecimal characters",
 		},
 		{
 			rule: "repository-id-must-equal-the-base-repository-id",
