@@ -29,6 +29,12 @@ var k3sImage = "rancher/k3s:v1.31.6-k3s1"
 
 const artifactHelperSourceImage = "docker.io/library/busybox:1.37.0"
 
+// fixtureAgentImage is the deterministic stand-in agent the behavioral suite
+// points --agent-step-image at. A tag, not a digest: the workflow renderer's
+// digest requirement only applies to schema-v3 workflow runs, and the agent
+// spec that uses this is an ordinary pipeline (see agentic_workflows_test.go).
+const fixtureAgentImage = "fixture-agent:behavioral"
+
 var exactArtifactHelperImage = regexp.MustCompile(`^[^@\s]+@sha256:[a-f0-9]{64}$`)
 
 // k3sContainer holds the testcontainers K3s instance for this Ginkgo process.
@@ -172,6 +178,7 @@ func loadImagesIntoCluster(concourseImage string) {
 	// by allocating large heap slices — shell-based approaches (awk, dd)
 	// don't reliably count against the container memory cgroup in K3s.
 	buildAndLoadOOMTriggerImage(ctx)
+	buildAndLoadFixtureAgentImage(ctx)
 }
 
 // resolvedArtifactHelperImage returns the immutable helper reference that was
@@ -249,6 +256,40 @@ func buildAndLoadOOMTriggerImage(ctx context.Context) {
 	log.Println("Loading oom-trigger into K3s cluster...")
 	if err := k3sContainer.LoadImages(ctx, imageName); err != nil {
 		log.Printf("warning: failed to load %s into K3s: %v", imageName, err)
+	}
+}
+
+// buildAndLoadFixtureAgentImage compiles cmd/fixture-agent, packages it into a
+// busybox image whose entrypoint binary is named agent-runner, and loads it
+// into the K3s cluster. Unlike the oom-trigger helper this one is FATAL on
+// failure: a missing fixture-agent image turns the agent-node spec into a
+// confusing ImagePullBackOff rather than a clear skip.
+func buildAndLoadFixtureAgentImage(ctx context.Context) {
+	if err := exec.Command("docker", "image", "inspect", fixtureAgentImage).Run(); err == nil &&
+		os.Getenv("CONCOURSE_REBUILD_IMAGE") != "1" {
+		log.Printf("fixture-agent image already exists, loading into K3s...")
+		if err := k3sContainer.LoadImages(ctx, fixtureAgentImage); err != nil {
+			log.Fatalf("failed to load %s into K3s: %v", fixtureAgentImage, err)
+		}
+		return
+	}
+
+	root := mustRepoRoot()
+	log.Println("Building fixture-agent Docker image...")
+	dockerBuild := exec.Command(
+		"docker", "build",
+		"-f", filepath.Join(root, "deploy", "fixture-agent", "Dockerfile"),
+		"-t", fixtureAgentImage, root,
+	)
+	dockerBuild.Stdout = os.Stderr
+	dockerBuild.Stderr = os.Stderr
+	if err := dockerBuild.Run(); err != nil {
+		log.Fatalf("failed to build %s: %v", fixtureAgentImage, err)
+	}
+
+	log.Println("Loading fixture-agent into K3s cluster...")
+	if err := k3sContainer.LoadImages(ctx, fixtureAgentImage); err != nil {
+		log.Fatalf("failed to load %s into K3s: %v", fixtureAgentImage, err)
 	}
 }
 
