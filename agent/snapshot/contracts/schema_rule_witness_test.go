@@ -74,17 +74,6 @@ func (candidate witnessCandidate) admit(t *testing.T, ref snapshot.TypeRef) erro
 // witness table is written. It is deleted, along with every reference to it, by
 // the task that finishes the last table. Do not add to it.
 var pendingRules = map[snapshot.TypeRef][]string{
-	snapshot.TypeRef("selection/v1"): {
-		"candidacy-is-declared-by-the-platform-and-sourced-differently-at-each-gate",
-		"every-candidate-port-has-exactly-one-subject-and-no-others-appear",
-		"candidate-subjects-share-one-snapshot-type",
-		"candidates-must-assess-every-candidate-subject-exactly-once",
-		"each-candidate-id-must-be-a-declared-candidate-subject",
-		"candidate-ranks-are-unique-within-one-to-the-candidate-count",
-		"selected-must-occur-exactly-once-among-the-candidates",
-		"score-internal-consistency",
-		"resolving-the-choice-is-a-seal-time-operation",
-	},
 	snapshot.TypeRef("repository-change/v1"): {
 		"repository-id-must-be-a-snapshot-digest",
 		"repository-id-must-equal-the-base-repository-id",
@@ -230,6 +219,7 @@ func ruleWitnesses(t *testing.T) map[snapshot.TypeRef][]ruleWitness {
 		snapshot.TypeRef("validation/v1"):   validationRuleWitnesses(t),
 		snapshot.TypeRef("measurements/v1"): measurementsRuleWitnesses(t),
 		snapshot.TypeRef("diagnosis/v1"):    diagnosisRuleWitnesses(t),
+		snapshot.TypeRef("selection/v1"):    selectionRuleWitnesses(t),
 	}
 }
 
@@ -824,6 +814,209 @@ func diagnosisRuleWitnesses(t *testing.T) []ruleWitness {
 						"the seal gate rejected an unresolvable anchor locator: %v; if locators are now verified, this rule's documentation is stale and the schema document is the thing to change",
 						err,
 					)
+				}
+			},
+		},
+	}
+}
+
+// selectionWitnessParts is the accepted selection every witness starts from,
+// exploded into the four things a mutation might have to move together. Selection
+// is the one type whose gate consults a server-side candidate-port declaration, so
+// a witness that changes a subject's snapshot type also has to move the exposed
+// input it binds to, and a witness about port coverage has to move the declared
+// ports — neither of which lives in the record's bytes.
+type selectionWitnessParts struct {
+	inputs   map[string]snapshot.SnapshotRef
+	ports    []string
+	subjects []contracts.Subject
+	body     contracts.SelectionBody
+}
+
+// selectionWitnessBase is one accepted selection/v1 candidate: two candidate
+// subjects, left and right, each a declared candidate port, both the same snapshot
+// type, ranked and selected. Subjects are lexicographically ordered by id, without
+// which NewRecord refuses the envelope before the gate is ever reached.
+func selectionWitnessBase(t *testing.T) selectionWitnessParts {
+	t.Helper()
+	changeType := mustTypeRef(t, "repository-change/v1")
+	left := snapshot.SnapshotRef{ID: 71, Type: changeType, Digest: recordDigest('a')}
+	right := snapshot.SnapshotRef{ID: 72, Type: changeType, Digest: recordDigest('b')}
+	return selectionWitnessParts{
+		inputs: map[string]snapshot.SnapshotRef{"left": left, "right": right},
+		ports:  []string{"left", "right"},
+		subjects: []contracts.Subject{
+			contracts.SubjectFromInput("left", contracts.SubjectRoleCandidate, "left", left),
+			contracts.SubjectFromInput("right", contracts.SubjectRoleCandidate, "right", right),
+		},
+		body: contracts.SelectionBody{
+			Selected: "right",
+			Candidates: []contracts.CandidateAssessment{
+				{ID: "left", Rank: 2, Summary: "viable"},
+				{ID: "right", Rank: 1, Summary: "best"},
+			},
+			Rationale: "right wins",
+		},
+	}
+}
+
+func buildSelectionCandidate(t *testing.T, parts selectionWitnessParts) witnessCandidate {
+	t.Helper()
+	record, err := contracts.NewRecord(mustTypeRef(t, "selection/v1"), parts.subjects, parts.body)
+	if err != nil {
+		t.Fatalf("NewRecord(selection/v1): %v", err)
+	}
+	return witnessCandidate{
+		files:        map[string][]byte{"record.json": marshalRecord(t, record)},
+		declarations: candidateValidationContextFor(t, parts.inputs, parts.ports...),
+	}
+}
+
+func selectionWitness(t *testing.T, mutate func(*selectionWitnessParts)) witnessCandidate {
+	t.Helper()
+	parts := selectionWitnessBase(t)
+	mutate(&parts)
+	return buildSelectionCandidate(t, parts)
+}
+
+// acceptedSelectionFiles is the accepted base's tree, shared by the rejection
+// witnesses (through selectionWitness) and the resolving-the-choice pin, so both
+// speak about one definition of a valid selection.
+func acceptedSelectionFiles(t *testing.T) map[string][]byte {
+	t.Helper()
+	return buildSelectionCandidate(t, selectionWitnessBase(t)).files
+}
+
+func selectionRuleWitnesses(t *testing.T) []ruleWitness {
+	t.Helper()
+	return []ruleWitness{
+		{
+			rule: "candidacy-is-declared-by-the-platform-and-sourced-differently-at-each-gate",
+			build: func(t *testing.T) witnessCandidate {
+				changeType := mustTypeRef(t, "repository-change/v1")
+				left := snapshot.SnapshotRef{ID: 81, Type: changeType, Digest: mustDigest(t, "sha256:"+strings.Repeat("c", 64))}
+				rubric := snapshot.SnapshotRef{ID: 82, Type: changeType, Digest: mustDigest(t, "sha256:"+strings.Repeat("d", 64))}
+				// The step declares exactly one candidate port. The producer writes both of
+				// its inputs as candidate subjects, promoting the rubric it was handed for
+				// context into something selectable. Seal-time candidacy comes from the
+				// server's port declarations, so the claim buys nothing. Hand-built rather
+				// than through NewRecord, matching TestSealTimeSelectionIgnoresProducerClaimedCandidateRoles.
+				declarations := candidateValidationContextFor(
+					t, map[string]snapshot.SnapshotRef{"left": left, "rubric": rubric}, "left",
+				)
+				record := contracts.Record[contracts.SelectionBody]{
+					RecordVersion: contracts.RecordVersion,
+					Type:          mustTypeRef(t, "selection/v1"),
+					Schema:        mustSelectionSchema(t),
+					Subjects: []contracts.Subject{
+						contracts.SubjectFromInput("left", contracts.SubjectRoleCandidate, "left", left),
+						contracts.SubjectFromInput("rubric", contracts.SubjectRoleCandidate, "rubric", rubric),
+					},
+					Body: contracts.SelectionBody{
+						Selected: "rubric",
+						Candidates: []contracts.CandidateAssessment{
+							{ID: "left", Rank: 2, Summary: "the only declared candidate"},
+							{ID: "rubric", Rank: 1, Summary: "context promoted to a candidate"},
+						},
+						Rationale: "claiming candidacy for an input that was never a candidate port",
+					},
+				}
+				return witnessCandidate{
+					files:        map[string][]byte{"record.json": marshalRecord(t, record)},
+					declarations: declarations,
+				}
+			},
+			wantErr: "is not a declared candidate port",
+		},
+		{
+			rule: "every-candidate-port-has-exactly-one-subject-and-no-others-appear",
+			build: func(t *testing.T) witnessCandidate {
+				// Drop the right subject while leaving "right" a declared candidate port: a
+				// port the producer was told to choose between now has no selection subject.
+				return selectionWitness(t, func(parts *selectionWitnessParts) {
+					parts.subjects = parts.subjects[:1]
+				})
+			},
+			wantErr: `declared candidate port "right" has no selection subject`,
+		},
+		{
+			rule: "candidate-subjects-share-one-snapshot-type",
+			build: func(t *testing.T) witnessCandidate {
+				// Rebind the right port to a review/v1 ref, moving the exposed input with it
+				// so the binding still matches exactly and the ONLY thing wrong is that two
+				// candidate subjects no longer share one snapshot type. The declared
+				// uniform_subject_type gate reaches this before the body validator does.
+				return selectionWitness(t, func(parts *selectionWitnessParts) {
+					review := snapshot.SnapshotRef{ID: 73, Type: mustTypeRef(t, "review/v1"), Digest: recordDigest('e')}
+					parts.inputs["right"] = review
+					parts.subjects[1] = contracts.SubjectFromInput("right", contracts.SubjectRoleCandidate, "right", review)
+				})
+			},
+			wantErr: "requires every subject to share one snapshot type",
+		},
+		{
+			rule: "candidates-must-assess-every-candidate-subject-exactly-once",
+			build: func(t *testing.T) witnessCandidate {
+				// Both candidate subjects survive, but only one is assessed.
+				return selectionWitness(t, func(parts *selectionWitnessParts) {
+					parts.body.Selected = "left"
+					parts.body.Candidates = []contracts.CandidateAssessment{
+						{ID: "left", Rank: 1, Summary: "the only assessed candidate"},
+					}
+				})
+			},
+			wantErr: "candidates must assess every candidate subject exactly once",
+		},
+		{
+			rule: "each-candidate-id-must-be-a-declared-candidate-subject",
+			build: func(t *testing.T) witnessCandidate {
+				return selectionWitness(t, func(parts *selectionWitnessParts) {
+					parts.body.Candidates[0].ID = "ghost"
+				})
+			},
+			wantErr: "is not a declared candidate subject",
+		},
+		{
+			rule: "candidate-ranks-are-unique-within-one-to-the-candidate-count",
+			build: func(t *testing.T) witnessCandidate {
+				return selectionWitness(t, func(parts *selectionWitnessParts) {
+					parts.body.Candidates[0].Rank = 1
+				})
+			},
+			wantErr: "candidates[1].rank 1 is duplicate",
+		},
+		{
+			rule: "selected-must-occur-exactly-once-among-the-candidates",
+			build: func(t *testing.T) witnessCandidate {
+				return selectionWitness(t, func(parts *selectionWitnessParts) {
+					parts.body.Selected = "nobody"
+				})
+			},
+			wantErr: "selected candidate must occur exactly once in candidates",
+		},
+		{
+			rule: "score-internal-consistency",
+			build: func(t *testing.T) witnessCandidate {
+				return selectionWitness(t, func(parts *selectionWitnessParts) {
+					parts.body.Candidates[0].Scores = []contracts.NamedScore{{
+						ID:    "s-1",
+						Score: contracts.Score{Value: 2, Scale: "unit-interval", Direction: "higher-is-better"},
+					}}
+				})
+			},
+			wantErr: "unit-interval score value must be within 0..1",
+		},
+		{
+			rule: "resolving-the-choice-is-a-seal-time-operation",
+			documented: "Turning a selection into a live snapshot reference needs the step's input " +
+				"bindings, which exist only while the step runs, so this rule rejects no instance — it " +
+				"says where the operation lives. The pin is its observable consequence: a stored " +
+				"selection revalidates with NO declarations at all, because a reader reads the chosen " +
+				"subject's type and digest out of the sealed bytes instead of resolving anything.",
+			pin: func(t *testing.T) {
+				files := acceptedSelectionFiles(t)
+				if _, err := revalidateSealedFiles(t, "selection/v1", files, emptyValidationContext(t)); err != nil {
+					t.Fatalf("read-time revalidation of a stored selection needed declarations: %v", err)
 				}
 			},
 		},
