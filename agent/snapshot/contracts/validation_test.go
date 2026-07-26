@@ -79,6 +79,24 @@ func TestValidationRecordDerivesIncompleteForSkippedOrEmptyChecks(t *testing.T) 
 	}
 }
 
+// TestValidationRecordRejectsANonSkippedCheckWithNoAttempts is the non-skipped
+// arm of the status-governs-attempt-count rule. The witness table exercises the
+// skipped arm (a skipped check that keeps an attempt); this pins its complement,
+// a failed check with none. attempts is declared optional in the core precisely
+// so a skipped check can be empty, so it is ValidationCheck.Validate that carries
+// this bound.
+func TestValidationRecordRejectsANonSkippedCheckWithNoAttempts(t *testing.T) {
+	subject := snapshot.SnapshotRef{ID: 61, Type: "repository-change/v1", Digest: recordDigest('c')}
+	context := validationContextFor(t, map[string]snapshot.SnapshotRef{"change": subject})
+	body := contracts.ValidationBody{
+		Conclusion: "failed", Summary: "one suite fails",
+		Checks: []contracts.ValidationCheck{{
+			ID: "unit", Kind: "test", Name: "unit tests", Status: "failed", Attempts: nil,
+		}},
+	}
+	validateValidationBody(t, body, subject, context, true, "failed check requires at least one attempt")
+}
+
 func validateValidationBody(
 	t *testing.T,
 	body contracts.ValidationBody,

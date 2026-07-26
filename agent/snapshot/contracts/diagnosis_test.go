@@ -72,6 +72,25 @@ func TestDiagnosisRecordAllowsEmptyInconclusiveAnalysis(t *testing.T) {
 	validateDiagnosisBody(t, body, subject, context, false, "")
 }
 
+// TestDiagnosisRecordRejectsDuplicateHypothesisRanks is the readable arm of the
+// hypothesis-ranks-are-unique-and-contiguous rule: two hypotheses claiming the
+// same rank. The duplicate is caught inside the per-hypothesis loop, before the
+// contiguity sweep, so the message points at the colliding element by index.
+func TestDiagnosisRecordRejectsDuplicateHypothesisRanks(t *testing.T) {
+	subject := snapshot.SnapshotRef{ID: 51, Type: "log-bundle/v1", Digest: recordDigest('b')}
+	context := validationContextFor(t, map[string]snapshot.SnapshotRef{"logs": subject})
+	confidence := contracts.Score{Value: 0.9, Scale: "unit-interval", Direction: "higher-is-better"}
+	body := contracts.DiagnosisBody{
+		Summary: "two hypotheses collide on rank", Conclusion: "suspected",
+		Hypotheses: []contracts.Hypothesis{
+			{ID: "h-1", Rank: 1, Statement: "the lock is acquired twice", Confidence: confidence},
+			{ID: "h-2", Rank: 1, Statement: "a second goroutine contends", Confidence: confidence},
+		},
+		Actions: []contracts.DiagnosisAction{},
+	}
+	validateDiagnosisBody(t, body, subject, context, true, "hypotheses[1].rank 1 is duplicate")
+}
+
 func validateDiagnosisBody(
 	t *testing.T,
 	body contracts.DiagnosisBody,
