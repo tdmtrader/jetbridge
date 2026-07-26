@@ -234,6 +234,74 @@ func TestRecordComponentsValidateAnchorsScoresAndContent(t *testing.T) {
 	}
 }
 
+// TestEveryEntitySetRejectsAnEmptyIdentity names, once per entity-set family, the
+// rejection of a blank element id. Empty ids are otherwise covered only by the
+// parity gate's generic blank mutation, which proves the two descriptions agree
+// rather than that the gate rejects.
+//
+// The assertion is on the frozen declared-grammar field path — body/<set>/*/id —
+// not on ValidateEntityIDs' findings[0].id spelling of the same rule. The declared
+// core validator composes before the per-type semantic validator at both gates, so
+// its message is the one an operator actually sees; a missing key and a blank value
+// reach it identically, which is exactly what the message says.
+func TestEveryEntitySetRejectsAnEmptyIdentity(t *testing.T) {
+	for name, tc := range map[string]struct {
+		ref   snapshot.TypeRef
+		build func(*testing.T) witnessCandidate
+		want  string
+	}{
+		"review/v1 findings": {
+			ref: snapshot.TypeRef("review/v1"),
+			build: func(t *testing.T) witnessCandidate {
+				return reviewWitness(t, func(body *contracts.ReviewBody) { body.Findings[0].ID = "" })
+			},
+			want: "body/findings/*/id: is required and must not be blank; a missing key and a blank value decode identically",
+		},
+		"validation/v1 checks": {
+			ref: snapshot.TypeRef("validation/v1"),
+			build: func(t *testing.T) witnessCandidate {
+				return validationWitness(t, func(body *contracts.ValidationBody) { body.Checks[0].ID = "" })
+			},
+			want: "body/checks/*/id: is required and must not be blank; a missing key and a blank value decode identically",
+		},
+		"measurements/v1 metrics": {
+			ref: snapshot.TypeRef("measurements/v1"),
+			build: func(t *testing.T) witnessCandidate {
+				return measurementsWitness(t, func(body *contracts.MeasurementsBody) { body.Metrics[0].ID = "" })
+			},
+			want: "body/metrics/*/id: is required and must not be blank; a missing key and a blank value decode identically",
+		},
+		"diagnosis/v1 hypotheses": {
+			ref: snapshot.TypeRef("diagnosis/v1"),
+			build: func(t *testing.T) witnessCandidate {
+				return diagnosisWitness(t, func(body *contracts.DiagnosisBody) { body.Hypotheses[0].ID = "" })
+			},
+			want: "body/hypotheses/*/id: is required and must not be blank; a missing key and a blank value decode identically",
+		},
+		"diagnosis/v1 actions": {
+			ref: snapshot.TypeRef("diagnosis/v1"),
+			build: func(t *testing.T) witnessCandidate {
+				return diagnosisWitness(t, func(body *contracts.DiagnosisBody) { body.Actions[0].ID = "" })
+			},
+			want: "body/actions/*/id: is required and must not be blank; a missing key and a blank value decode identically",
+		},
+		"selection/v1 candidates": {
+			ref: snapshot.TypeRef("selection/v1"),
+			build: func(t *testing.T) witnessCandidate {
+				return selectionWitness(t, func(parts *selectionWitnessParts) { parts.body.Candidates[0].ID = "" })
+			},
+			want: "body/candidates/*/id: is required and must not be blank; a missing key and a blank value decode identically",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := tc.build(t).admit(t, tc.ref)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("%s empty-id error = %v, want %q", name, err, tc.want)
+			}
+		})
+	}
+}
+
 func recordDigest(fill byte) snapshot.Digest {
 	return snapshot.Digest("sha256:" + strings.Repeat(string(fill), 64))
 }
