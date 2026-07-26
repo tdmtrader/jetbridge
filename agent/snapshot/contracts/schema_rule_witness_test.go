@@ -1,7 +1,10 @@
 package contracts_test
 
 import (
+	"bytes"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -73,22 +76,7 @@ func (candidate witnessCandidate) admit(t *testing.T, ref snapshot.TypeRef) erro
 // pendingRules is the staging mechanism that lets the harness land before every
 // witness table is written. It is deleted, along with every reference to it, by
 // the task that finishes the last table. Do not add to it.
-var pendingRules = map[snapshot.TypeRef][]string{
-	snapshot.TypeRef("repository-change/v1"): {
-		"repository-id-must-be-a-snapshot-digest",
-		"repository-id-must-equal-the-base-repository-id",
-		"base-sha-width-selects-the-object-format",
-		"base-sha-must-equal-the-base-repository-head",
-		"declared-object-ids-must-share-the-base-object-format",
-		"representation-governs-result-commit",
-		"payload-must-be-a-regular-file-within-the-size-limit",
-		"payload-digest-must-equal-the-exact-payload-bytes",
-		"result-tree-must-equal-the-recomputed-tree",
-		"result-commit-must-descend-from-base-sha",
-		"the-change-must-verify-against-the-base-repository",
-		"changed-files-is-not-a-body-field",
-	},
-}
+var pendingRules = map[snapshot.TypeRef][]string{}
 
 func TestEveryGoOnlyRuleHasARejectionWitness(t *testing.T) {
 	declared := declaredGoOnlyRules(t)
@@ -215,11 +203,12 @@ func sortedTypeRefs[T any](index map[snapshot.TypeRef]T) []snapshot.TypeRef {
 func ruleWitnesses(t *testing.T) map[snapshot.TypeRef][]ruleWitness {
 	t.Helper()
 	return map[snapshot.TypeRef][]ruleWitness{
-		snapshot.TypeRef("review/v1"):       reviewRuleWitnesses(t),
-		snapshot.TypeRef("validation/v1"):   validationRuleWitnesses(t),
-		snapshot.TypeRef("measurements/v1"): measurementsRuleWitnesses(t),
-		snapshot.TypeRef("diagnosis/v1"):    diagnosisRuleWitnesses(t),
-		snapshot.TypeRef("selection/v1"):    selectionRuleWitnesses(t),
+		snapshot.TypeRef("review/v1"):            reviewRuleWitnesses(t),
+		snapshot.TypeRef("validation/v1"):        validationRuleWitnesses(t),
+		snapshot.TypeRef("measurements/v1"):      measurementsRuleWitnesses(t),
+		snapshot.TypeRef("diagnosis/v1"):         diagnosisRuleWitnesses(t),
+		snapshot.TypeRef("selection/v1"):         selectionRuleWitnesses(t),
+		snapshot.TypeRef("repository-change/v1"): repositoryChangeRuleWitnesses(t),
 	}
 }
 
@@ -1019,6 +1008,233 @@ func selectionRuleWitnesses(t *testing.T) []ruleWitness {
 					t.Fatalf("read-time revalidation of a stored selection needed declarations: %v", err)
 				}
 			},
+		},
+	}
+}
+
+// repositoryChangeWitnessFixture is the one base repository every
+// repository-change witness shares. Building it once matters: each witness
+// otherwise pays a git init, a commit, a canonical capture and an fsck.
+type repositoryChangeWitnessFixture struct {
+	baseArchive  []byte
+	baseDigest   snapshot.Digest
+	baseMetadata contracts.RepositoryMetadata
+	patch        []byte
+	resultTree   string
+	declarations snapshot.ValidationContext
+}
+
+func newRepositoryChangeWitnessFixture(t *testing.T) repositoryChangeWitnessFixture {
+	t.Helper()
+	base := newGitRepository(t, "")
+	baseArchive, baseDigest := canonicalRepositoryArchive(t, base)
+	baseMetadata := repositoryMetadataForDirectory(t, base)
+
+	writeTestFile(t, filepath.Join(base, "README.md"), "patched\n")
+	patch := []byte(runTestGit(t, base, "diff", "--binary", "--no-ext-diff") + "\n")
+	runTestGit(t, base, "add", "README.md")
+	resultTree := runTestGit(t, base, "write-tree")
+	// Put the working tree back: canonicalRepositoryArchive already captured the
+	// bytes the declarations bind to, and leaving it dirty would make any later
+	// capture of this directory fail the cleanliness rule.
+	runTestGit(t, base, "reset", "-q", "--hard", "HEAD")
+
+	return repositoryChangeWitnessFixture{
+		baseArchive: baseArchive, baseDigest: baseDigest, baseMetadata: baseMetadata,
+		patch: patch, resultTree: resultTree,
+		declarations: repositoryInputContext(t, "base", baseArchive, baseDigest),
+	}
+}
+
+// accepted is the valid patch change every witness starts from.
+func (fixture repositoryChangeWitnessFixture) accepted() repositoryChangeFixture {
+	return repositoryChangeFixture{
+		SchemaVersion: "1.0.0", RepositoryID: fixture.baseMetadata.RepositoryID, BaseInput: "base",
+		BaseSHA: fixture.baseMetadata.HeadSHA, ResultTreeSHA: fixture.resultTree,
+		Representation: "patch", PayloadPath: "change.patch", PayloadDigest: digestBytes(fixture.patch),
+	}
+}
+
+func (fixture repositoryChangeWitnessFixture) witness(
+	t *testing.T, mutate func(*repositoryChangeFixture),
+) witnessCandidate {
+	t.Helper()
+	document := fixture.accepted()
+	mutate(&document)
+	return witnessCandidate{
+		files:        repositoryChangeFiles(t, document, "change.patch", fixture.patch, fixture.baseDigest),
+		declarations: fixture.declarations,
+	}
+}
+
+func repositoryChangeRuleWitnesses(t *testing.T) []ruleWitness {
+	t.Helper()
+	fixture := newRepositoryChangeWitnessFixture(t)
+	return []ruleWitness{
+		{
+			rule: "repository-id-must-be-a-snapshot-digest",
+			build: func(t *testing.T) witnessCandidate {
+				return fixture.witness(t, func(document *repositoryChangeFixture) {
+					document.RepositoryID = "not-a-digest"
+				})
+			},
+			wantErr: "repository_id",
+		},
+		{
+			rule: "repository-id-must-equal-the-base-repository-id",
+			build: func(t *testing.T) witnessCandidate {
+				return fixture.witness(t, func(document *repositoryChangeFixture) {
+					document.RepositoryID = "sha256:" + strings.Repeat("9", 64)
+				})
+			},
+			wantErr: "repository_id does not match base repository",
+		},
+		{
+			rule: "base-sha-width-selects-the-object-format",
+			build: func(t *testing.T) witnessCandidate {
+				return fixture.witness(t, func(document *repositoryChangeFixture) {
+					document.BaseSHA = strings.Repeat("a", 41)
+				})
+			},
+			wantErr: "base_sha: object ID must be a full sha1 or sha256 hexadecimal value",
+		},
+		{
+			rule: "base-sha-must-equal-the-base-repository-head",
+			build: func(t *testing.T) witnessCandidate {
+				return fixture.witness(t, func(document *repositoryChangeFixture) {
+					document.BaseSHA = strings.Repeat("f", 40)
+				})
+			},
+			wantErr: "base_sha does not match base repository HEAD",
+		},
+		{
+			rule: "declared-object-ids-must-share-the-base-object-format",
+			build: func(t *testing.T) witnessCandidate {
+				// A sha256-width result tree under a sha1 base: a well-formed object ID of
+				// the wrong format for this repository.
+				return fixture.witness(t, func(document *repositoryChangeFixture) {
+					document.ResultTreeSHA = strings.Repeat("b", 64)
+				})
+			},
+			wantErr: "result_tree: object ID must contain 40 lowercase hexadecimal characters",
+		},
+		{
+			rule: "representation-governs-result-commit",
+			build: func(t *testing.T) witnessCandidate {
+				// A patch proves only a tree, so it may not carry a result commit.
+				return fixture.witness(t, func(document *repositoryChangeFixture) {
+					document.ResultSHA = fixture.baseMetadata.HeadSHA
+				})
+			},
+			wantErr: "result_commit must be omitted for patch representation",
+		},
+		{
+			rule: "payload-must-be-a-regular-file-within-the-size-limit",
+			build: func(t *testing.T) witnessCandidate {
+				// The one witness that needs a real directory shape rather than a byte map:
+				// build the accepted tree, then replace the payload file with a directory.
+				candidate := fixture.witness(t, func(*repositoryChangeFixture) {})
+				dir := writeTree(t, candidate.files)
+				payload := filepath.Join(dir, "content", "change.patch")
+				if err := os.Remove(payload); err != nil {
+					t.Fatalf("remove payload: %v", err)
+				}
+				if err := os.Mkdir(payload, 0755); err != nil {
+					t.Fatalf("replace payload with a directory: %v", err)
+				}
+				return witnessCandidate{dir: dir, declarations: fixture.declarations}
+			},
+			wantErr: "payload.path: payload must be a regular file",
+		},
+		{
+			rule: "payload-digest-must-equal-the-exact-payload-bytes",
+			build: func(t *testing.T) witnessCandidate {
+				return fixture.witness(t, func(document *repositoryChangeFixture) {
+					document.PayloadDigest = "sha256:" + strings.Repeat("0", 64)
+				})
+			},
+			wantErr: "payload.digest does not match exact payload bytes",
+		},
+		{
+			rule: "result-tree-must-equal-the-recomputed-tree",
+			build: func(t *testing.T) witnessCandidate {
+				// Declare the UNCHANGED base tree as the result of a patch that changes a
+				// file: applying the patch recomputes a different tree.
+				return fixture.witness(t, func(document *repositoryChangeFixture) {
+					document.ResultTreeSHA = fixture.baseMetadata.TreeSHA
+				})
+			},
+			wantErr: "result_tree does not match the applied patch",
+		},
+		{
+			rule: "result-commit-must-descend-from-base-sha",
+			build: func(t *testing.T) witnessCandidate {
+				base := newGitRepository(t, "")
+				root := runTestGit(t, base, "rev-list", "--max-parents=0", "HEAD")
+				writeTestFile(t, filepath.Join(base, "README.md"), "second\n")
+				runTestGit(t, base, "add", "README.md")
+				runTestGit(t, base, "commit", "-q", "-m", "second")
+				baseArchive, baseDigest := canonicalRepositoryArchive(t, base)
+				baseMetadata := repositoryMetadataForDirectory(t, base)
+
+				// A sibling off the SAME root commit: a valid object, the same repository
+				// identity, and NOT a descendant of the base HEAD. Anything with a
+				// different root would be refused as a different repository first, and the
+				// ancestry rule would never be reached.
+				runTestGit(t, base, "checkout", "-q", "-b", "sibling", root)
+				writeTestFile(t, filepath.Join(base, "SIDE.md"), "side\n")
+				runTestGit(t, base, "add", "SIDE.md")
+				runTestGit(t, base, "commit", "-q", "-m", "sibling")
+				sibling := repositoryMetadataForDirectoryRevision(t, base, "HEAD", baseMetadata.RepositoryID)
+
+				bundlePath := filepath.Join(t.TempDir(), "sibling.bundle")
+				runTestGit(t, base, "bundle", "create", bundlePath, "HEAD", "^"+root)
+				bundle, err := os.ReadFile(bundlePath)
+				if err != nil {
+					t.Fatalf("read sibling bundle: %v", err)
+				}
+				document := validChangeDocument(baseMetadata, sibling, "git-bundle", "sibling.bundle", digestBytes(bundle))
+				return witnessCandidate{
+					files:        repositoryChangeFiles(t, document, "sibling.bundle", bundle, baseDigest),
+					declarations: repositoryInputContext(t, "base", baseArchive, baseDigest),
+				}
+			},
+			wantErr: "bundle result_commit does not descend from base_sha",
+		},
+		{
+			rule: "the-change-must-verify-against-the-base-repository",
+			build: func(t *testing.T) witnessCandidate {
+				// Rewrite the patch to target a path that does not exist in the base, and
+				// update the declared digest to match the rewritten bytes so the ONLY thing
+				// left wrong is that the change does not apply.
+				broken := bytes.ReplaceAll(fixture.patch, []byte("README.md"), []byte("NOSUCH.md"))
+				if bytes.Equal(broken, fixture.patch) {
+					t.Fatal("patch does not mention README.md; the rewrite matched nothing")
+				}
+				document := fixture.accepted()
+				document.PayloadDigest = digestBytes(broken)
+				return witnessCandidate{
+					files:        repositoryChangeFiles(t, document, "change.patch", broken, fixture.baseDigest),
+					declarations: fixture.declarations,
+				}
+			},
+			wantErr: "patch failed git apply --check --index",
+		},
+		{
+			rule: "changed-files-is-not-a-body-field",
+			build: func(t *testing.T) witnessCandidate {
+				// The Go type has no changed_files field to set, so the smuggling is a byte
+				// splice into the record's body; strict decoding refuses the unknown field.
+				candidate := fixture.witness(t, func(*repositoryChangeFixture) {})
+				record := candidate.files["record.json"]
+				smuggled := bytes.Replace(record, []byte(`"body":{`), []byte(`"body":{"changed_files":["README.md"],`), 1)
+				if bytes.Equal(record, smuggled) {
+					t.Fatal("record.json does not contain the expected body opening; the splice matched nothing")
+				}
+				candidate.files["record.json"] = smuggled
+				return candidate
+			},
+			wantErr: `unknown field "changed_files"`,
 		},
 	}
 }
