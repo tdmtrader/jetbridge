@@ -73,11 +73,6 @@ func (candidate witnessCandidate) admit(t *testing.T, ref snapshot.TypeRef) erro
 	return err
 }
 
-// pendingRules is the staging mechanism that lets the harness land before every
-// witness table is written. It is deleted, along with every reference to it, by
-// the task that finishes the last table. Do not add to it.
-var pendingRules = map[snapshot.TypeRef][]string{}
-
 func TestEveryGoOnlyRuleHasARejectionWitness(t *testing.T) {
 	declared := declaredGoOnlyRules(t)
 	total := 0
@@ -119,15 +114,11 @@ func TestEveryGoOnlyRuleHasARejectionWitness(t *testing.T) {
 		for _, rule := range declared[ref] {
 			entry, found := witnessFor(witnesses[ref], rule.ID)
 			if !found {
-				if isPendingRule(ref, rule.ID) {
-					t.Logf("%q rule %q is PENDING a witness", ref, rule.ID)
-					continue
-				}
-				t.Errorf("%q declares go rule %q but no witness discharges it and it is not listed as pending", ref, rule.ID)
+				t.Errorf(
+					"%q declares go rule %q but no witness discharges it; a rule in a schema document is a promise that something is rejected, and this test is where that promise is paid",
+					ref, rule.ID,
+				)
 				continue
-			}
-			if isPendingRule(ref, rule.ID) {
-				t.Errorf("%q rule %q has a witness and is still listed as pending; remove it from pendingRules", ref, rule.ID)
 			}
 			t.Run(fmt.Sprintf("%s/%s", ref, rule.ID), func(t *testing.T) {
 				if entry.documented != "" {
@@ -148,6 +139,19 @@ func TestEveryGoOnlyRuleHasARejectionWitness(t *testing.T) {
 				}
 			})
 		}
+	}
+
+	// The count is checked from both directions and both anchor on
+	// declaredGoOnlyRuleCount: the declared total at the top of this test, and the
+	// discharged total here. This runs after the per-rule loop deliberately, so a
+	// deleted witness is still named by that loop's missing-witness error before
+	// this total-coverage assertion stops the run.
+	discharged := 0
+	for _, entries := range witnesses {
+		discharged += len(entries)
+	}
+	if discharged != declaredGoOnlyRuleCount {
+		t.Fatalf("witness registry discharges %d rules, the documents declare %d", discharged, declaredGoOnlyRuleCount)
 	}
 }
 
@@ -178,15 +182,6 @@ func witnessFor(entries []ruleWitness, rule string) (ruleWitness, bool) {
 		}
 	}
 	return ruleWitness{}, false
-}
-
-func isPendingRule(ref snapshot.TypeRef, rule string) bool {
-	for _, pending := range pendingRules[ref] {
-		if pending == rule {
-			return true
-		}
-	}
-	return false
 }
 
 func sortedTypeRefs[T any](index map[snapshot.TypeRef]T) []snapshot.TypeRef {
