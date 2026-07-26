@@ -495,12 +495,17 @@ func TestGatewayClassifiesAdversarialResponses(t *testing.T) {
 		"bad gateway":                {fault: gatewayFault{status: 502}, wantStatus: 502, wantClass: publisher.StatusPending},
 		"service unavailable":        {fault: gatewayFault{status: 503}, wantStatus: 503, wantClass: publisher.StatusPending},
 		"unlisted status stays open": {fault: gatewayFault{status: 418}, wantStatus: 418, wantClass: publisher.StatusPending},
-		"bad request":                {fault: gatewayFault{status: 400}, wantStatus: 400, wantClass: publisher.StatusFailed},
-		"unauthorized":               {fault: gatewayFault{status: 401}, wantStatus: 401, wantClass: publisher.StatusFailed},
-		"forbidden":                  {fault: gatewayFault{status: 403}, wantStatus: 403, wantClass: publisher.StatusFailed},
-		"not found":                  {fault: gatewayFault{status: 404}, wantStatus: 404, wantClass: publisher.StatusFailed},
-		"conflict":                   {fault: gatewayFault{status: 409}, wantStatus: 409, wantClass: publisher.StatusFailed},
-		"unprocessable":              {fault: gatewayFault{status: 422}, wantStatus: 422, wantClass: publisher.StatusFailed},
+		// 401 is retryable, not terminal: the Authorization header is
+		// out-of-band from the operation key, so a bad token can be
+		// corrected (rotation, secret-remount lag) without the semantic
+		// operation changing. See gatewayStatusRetryable's doc comment in
+		// gateway.go for the full rationale.
+		"unauthorized":  {fault: gatewayFault{status: 401}, wantStatus: 401, wantClass: publisher.StatusPending},
+		"bad request":   {fault: gatewayFault{status: 400}, wantStatus: 400, wantClass: publisher.StatusFailed},
+		"forbidden":     {fault: gatewayFault{status: 403}, wantStatus: 403, wantClass: publisher.StatusFailed},
+		"not found":     {fault: gatewayFault{status: 404}, wantStatus: 404, wantClass: publisher.StatusFailed},
+		"conflict":      {fault: gatewayFault{status: 409}, wantStatus: 409, wantClass: publisher.StatusFailed},
+		"unprocessable": {fault: gatewayFault{status: 422}, wantStatus: 422, wantClass: publisher.StatusFailed},
 		// Regression guard for the classify-before-size ordering: a rejected
 		// request may answer with a huge provider error page, and that must
 		// not be reported as a size-bound failure.

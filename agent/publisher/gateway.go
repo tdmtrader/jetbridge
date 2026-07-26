@@ -107,15 +107,30 @@ func Retryable(err error) bool {
 
 // gatewayStatusRetryable is the deployment's retry taxonomy. The terminal set
 // is exactly the statuses whose answer cannot change while the request bytes
-// stay the same: malformed request, revoked or missing authorization, unknown
-// route or operation, conflicting state, and unprocessable content. Every
-// other status — 408, 429, all 5xx, and anything this list does not name —
-// stays retryable, which is the behavior every non-200 had before the
-// taxonomy existed. Never widen the terminal set by default: a wrong terminal
-// classification permanently fails a publication that would have succeeded.
+// stay the same: malformed request, an authenticated identity that was
+// understood and refused, unknown route or operation, conflicting state, and
+// unprocessable content. Every other status — 401, 408, 429, all 5xx, and
+// anything this list does not name — stays retryable, which is the behavior
+// every non-200 had before the taxonomy existed. Never widen the terminal set
+// by default: a wrong terminal classification permanently fails a publication
+// that would have succeeded.
+//
+// 401 is deliberately retryable, not terminal, even though it is a rejection.
+// Per RFC 7235, 401 means "authenticate and repeat the request": unlike the
+// request body, the Authorization header is out-of-band from the operation
+// key (OperationKey is derived purely from semantic content and excludes
+// BuildID), so a bad token can be corrected by rotation or a secret-remount
+// lag WITHOUT the semantic operation changing at all. Classifying it terminal
+// risks unrecoverable poisoning — a terminal completion is never reclaimed by
+// Acquire, so it would permanently block every future run sharing that
+// operation key over what may already be a fixed credential problem. Keeping
+// it retryable costs only a slow, visible, periodic retry against a
+// genuinely-bad token. 403 stays terminal: it means the identity was
+// authenticated and understood, and still refused — an answer that cannot
+// change no matter how many times the identical request repeats.
 func gatewayStatusRetryable(status int) bool {
 	switch status {
-	case http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden,
+	case http.StatusBadRequest, http.StatusForbidden,
 		http.StatusNotFound, http.StatusConflict, http.StatusUnprocessableEntity:
 		return false
 	default:

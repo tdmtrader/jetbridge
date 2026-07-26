@@ -9,7 +9,7 @@ import (
 
 func TestGatewayStatusRetryableSplitsTerminalFromRetryable(t *testing.T) {
 	terminal := []int{
-		http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden,
+		http.StatusBadRequest, http.StatusForbidden,
 		http.StatusNotFound, http.StatusConflict, http.StatusUnprocessableEntity,
 	}
 	for _, status := range terminal {
@@ -21,6 +21,13 @@ func TestGatewayStatusRetryableSplitsTerminalFromRetryable(t *testing.T) {
 		http.StatusRequestTimeout, http.StatusTooManyRequests,
 		http.StatusInternalServerError, http.StatusBadGateway,
 		http.StatusServiceUnavailable, http.StatusGatewayTimeout,
+		// 401 is retryable, not terminal: the Authorization header is
+		// out-of-band from the operation key, so a bad token can be corrected
+		// (rotation, secret-remount lag) without the semantic operation
+		// changing. Classifying it terminal would let one bad token
+		// permanently poison an operation key. See gatewayStatusRetryable's
+		// doc comment.
+		http.StatusUnauthorized,
 		// Deliberately unlisted statuses stay retryable: that is the behavior
 		// every non-200 had before this taxonomy existed, and widening the
 		// terminal set by accident would silently fail live publications.

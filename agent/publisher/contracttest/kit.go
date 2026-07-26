@@ -83,14 +83,25 @@ func Run(t *testing.T, config Config) {
 		return nil
 	})
 
-	run("bad_token_is_terminal", func(ctx context.Context) error {
+	// A rejected (wrong) token must answer 401, specifically — not 403 and not
+	// a 5xx. The publisher's taxonomy (agent/publisher/gateway.go,
+	// gatewayStatusRetryable) classifies 401 as retryable, on purpose: the
+	// Authorization header is out-of-band from the operation key, so a bad
+	// token can be corrected by rotation or a secret-remount lag WITHOUT the
+	// semantic operation changing, and the client retries it on the next
+	// lease. A gateway that answered 403 here would be classified terminal —
+	// permanently poisoning the operation key over what may be a transient
+	// credential problem, for every future run sharing that key. A 5xx would
+	// make the client retry a permanently-bad token forever instead of
+	// surfacing it.
+	run("bad_token_is_retryable", func(ctx context.Context) error {
 		key := randomKey()
 		status, _, err := post(ctx, client, config.Endpoint, "/v1/publications/lookup", token+"-wrong", key, lookupBody(key))
 		if err != nil {
 			return err
 		}
-		if status != http.StatusUnauthorized && status != http.StatusForbidden {
-			return fmt.Errorf("a rejected token answered %d; a 5xx here makes the client retry a permanently bad token until its lease expires forever", status)
+		if status != http.StatusUnauthorized {
+			return fmt.Errorf("a rejected token answered %d, want 401: 401 is retryable in the client's taxonomy, so a corrected token recovers on the next lease instead of the publication failing permanently", status)
 		}
 		return nil
 	})
@@ -114,14 +125,19 @@ func Run(t *testing.T, config Config) {
 		return nil
 	})
 
+	// Tightened to require a 4xx, not just "not 200": a 5xx here would be
+	// classified retryable by the client's own taxonomy, so a gateway that
+	// answered 500 would pass this check while making the client retry a
+	// permanently malformed request forever instead of learning it is
+	// malformed.
 	run("lookup_requires_the_idempotency_key", func(ctx context.Context) error {
 		key := randomKey()
 		status, _, err := post(ctx, client, config.Endpoint, "/v1/publications/lookup", token, "", lookupBody(key))
 		if err != nil {
 			return err
 		}
-		if status == http.StatusOK {
-			return fmt.Errorf("lookup without an Idempotency-Key answered 200; the key is how the durable operation is identified")
+		if status < 400 || status >= 500 {
+			return fmt.Errorf("lookup without an Idempotency-Key answered %d, want a 4xx: the key is how the durable operation is identified, and this request can never succeed by repeating it", status)
 		}
 		return nil
 	})
