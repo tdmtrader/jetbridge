@@ -2,6 +2,7 @@ package db_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -522,5 +523,69 @@ var _ = Describe("AgentPublicationsFactory", func() {
 		Expect(errors.Is(err, context.Canceled)).To(BeTrue())
 		_, err = factory.Complete(context.Background(), "sha256:"+strings.Repeat("0", 64), 1, publisher.Result{Status: publisher.StatusSucceeded})
 		Expect(errors.Is(err, publisher.ErrOperationNotFound)).To(BeTrue())
+	})
+
+	It("recreates a deleted outcome index row on terminal re-acquire", func() {
+		ctx := context.Background()
+		acquired, execute, err := factory.Acquire(ctx, request(), time.Minute)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(execute).To(BeTrue())
+		completed, err := factory.Complete(ctx, acquired.OperationKey, acquired.Attempt, publisher.Result{
+			Status: publisher.StatusSucceeded, ExternalID: "pr-31", URL: "https://github.example/pr/31",
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(completed.Status).To(Equal(publisher.StatusSucceeded))
+
+		type outcomeRow struct {
+			disposition       string
+			publicationState  string
+			publicationID     int64
+			publicationStatus string
+			humanModified     bool
+			interventionCount int
+			labels            string
+			actor             string
+			revision          int64
+		}
+		readOutcome := func() (outcomeRow, bool) {
+			var row outcomeRow
+			err := dbConn.QueryRow(`
+				SELECT disposition, publication_state, publication_id, publication_status,
+				       human_modified, intervention_count, labels::text, actor, revision
+				FROM agent_workflow_outcomes
+				WHERE team_id = $1 AND workflow_run_id = $2 AND output_snapshot_id = $3
+			`, defaultTeam.ID(), int64(workflowRunID), int64(input.ID)).Scan(
+				&row.disposition, &row.publicationState, &row.publicationID, &row.publicationStatus,
+				&row.humanModified, &row.interventionCount, &row.labels, &row.actor, &row.revision,
+			)
+			if errors.Is(err, sql.ErrNoRows) {
+				return outcomeRow{}, false
+			}
+			Expect(err).NotTo(HaveOccurred())
+			return row, true
+		}
+
+		indexed, found := readOutcome()
+		Expect(found).To(BeTrue())
+		Expect(indexed.publicationID).To(Equal(int64(completed.ID)))
+
+		// Lose the index row the way a bad migration or a manual repair would.
+		_, err = dbConn.Exec(`
+			DELETE FROM agent_workflow_outcomes
+			WHERE team_id = $1 AND workflow_run_id = $2 AND output_snapshot_id = $3
+		`, defaultTeam.ID(), int64(workflowRunID), int64(input.ID))
+		Expect(err).NotTo(HaveOccurred())
+		_, found = readOutcome()
+		Expect(found).To(BeFalse())
+
+		// A terminal re-acquire is the reconcile: it must rebuild the index.
+		replayed, execute, err := db.NewAgentPublicationsFactory(dbConn).Acquire(ctx, request(), time.Minute)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(execute).To(BeFalse(), "a terminal operation must never be re-executed")
+		Expect(replayed.ID).To(Equal(completed.ID))
+
+		repaired, found := readOutcome()
+		Expect(found).To(BeTrue(), "terminal re-acquire must recreate the outcome index row")
+		Expect(repaired).To(Equal(indexed), "the repaired row must carry identical content")
 	})
 })
