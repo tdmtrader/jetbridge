@@ -37,8 +37,8 @@ These were measured against the plan's base commit. Trust them; re-verify only i
 
 The harness lands with a `pendingRules` allowlist so this task is independently landable and green while five of the six witness tables are still unwritten. Task 7 empties and **deletes** that allowlist, after which a rule with no witness is permanently red.
 
-- [ ] Create `agent/snapshot/contracts/schema_rule_witness_test.go` in `package contracts_test` with the harness and the review table below, but leave `reviewRuleWitnesses` returning `nil` for the first run.
-- [ ] Run `go test ./agent/snapshot/contracts/ -run 'TestEveryGoOnlyRuleHasARejectionWitness' -v -count=1` and confirm it fails, listing all seven review rules:
+- [x] Create `agent/snapshot/contracts/schema_rule_witness_test.go` in `package contracts_test` with the harness and the review table below, but leave `reviewRuleWitnesses` returning `nil` for the first run.
+- [x] Run `go test ./agent/snapshot/contracts/ -run 'TestEveryGoOnlyRuleHasARejectionWitness' -v -count=1` and confirm it fails, listing all seven review rules:
 
 ```
 --- FAIL: TestEveryGoOnlyRuleHasARejectionWitness (0.00s)
@@ -48,7 +48,7 @@ The harness lands with a `pendingRules` allowlist so this task is independently 
 FAIL
 ```
 
-- [ ] Write the harness exactly as follows.
+- [x] Write the harness exactly as follows.
 
 ```go
 package contracts_test
@@ -258,7 +258,7 @@ func ruleWitnesses(t *testing.T) map[snapshot.TypeRef][]ruleWitness {
 }
 ```
 
-- [ ] Populate `pendingRules` with the five tables not yet written, so this task lands green. Each later task deletes its own entry.
+- [x] Populate `pendingRules` with the five tables not yet written, so this task lands green. Each later task deletes its own entry.
 
 ```go
 var pendingRules = map[snapshot.TypeRef][]string{
@@ -320,7 +320,7 @@ var pendingRules = map[snapshot.TypeRef][]string{
 }
 ```
 
-- [ ] Write review/v1's seven witnesses. The shared builder and the table:
+- [x] Write review/v1's seven witnesses. The shared builder and the table:
 
 ```go
 // reviewWitnessBase is one accepted review/v1 candidate. Every witness starts
@@ -446,10 +446,10 @@ func reviewRuleWitnesses(t *testing.T) []ruleWitness {
 }
 ```
 
-- [ ] Run `go test ./agent/snapshot/contracts/ -run 'TestEveryGoOnlyRuleHasARejectionWitness' -v -count=1` and confirm seven `review/v1` subtests pass and 45 rules log as `PENDING`.
-- [ ] Deliberately break the loop once to prove it bites: comment out the `accept-forbids-any-blocking-finding` entry, re-run, and confirm `"review/v1" declares go rule "accept-forbids-any-blocking-finding" but no witness discharges it and it is not listed as pending`. Restore it.
-- [ ] Run `gofmt -l agent/snapshot/contracts` and confirm no output.
-- [ ] Commit `test(contracts): require a rejection witness per declared go rule`.
+- [x] Run `go test ./agent/snapshot/contracts/ -run 'TestEveryGoOnlyRuleHasARejectionWitness' -v -count=1` and confirm seven `review/v1` subtests pass and 45 rules log as `PENDING`.
+- [x] Deliberately break the loop once to prove it bites: comment out the `accept-forbids-any-blocking-finding` entry, re-run, and confirm `"review/v1" declares go rule "accept-forbids-any-blocking-finding" but no witness discharges it and it is not listed as pending`. Restore it.
+- [x] Run `gofmt -l agent/snapshot/contracts` and confirm no output.
+- [x] Commit `test(contracts): require a rejection witness per declared go rule`.
 
 ---
 
@@ -471,8 +471,8 @@ Witness mutations are chosen to be *different arms* of their rule from the named
 | `anchor-locator-kind-selects-which-fields-appear` | replace the evidence anchor with `Locator{Kind: "json-pointer", Pointer: "/checks/0", Path: "a.go"}` | `json-pointer anchor contains fields for another locator kind` |
 | `anchor-locators-are-unverified` | documented + pin (path `does/not/exist.go`, lines 400000–400001, must be ACCEPTED) | — |
 
-- [ ] Add `validationWitnessBase` and `validationWitness` mirroring the review helpers. The accepted base is one `failed` check with one `failed` attempt carrying one file-lines anchor, `Conclusion: "failed"`, `Summary: "one suite fails"`, and one primary subject bound to input `in` of type `repository/v1`.
-- [ ] Write the eight entries. The two non-obvious ones:
+- [x] Add `validationWitnessBase` and `validationWitness` mirroring the review helpers. The accepted base is one `failed` check with one `failed` attempt carrying one file-lines anchor, `Conclusion: "failed"`, `Summary: "one suite fails"`, and one primary subject bound to input `in` of type `repository/v1`.
+- [x] Write the eight entries. The two non-obvious ones:
 
 ```go
 {
@@ -506,9 +506,9 @@ Witness mutations are chosen to be *different arms* of their rule from the named
 },
 ```
 
-- [ ] Register `snapshot.TypeRef("validation/v1"): validationRuleWitnesses(t)` in `ruleWitnesses` and delete the `validation/v1` entry from `pendingRules`.
-- [ ] Run `go test ./agent/snapshot/contracts/ -run 'TestEveryGoOnlyRuleHasARejectionWitness/validation' -v -count=1` and confirm eight passing subtests.
-- [ ] Commit `test(contracts): witness every validation/v1 go rule`.
+- [x] Register `snapshot.TypeRef("validation/v1"): validationRuleWitnesses(t)` in `ruleWitnesses` and delete the `validation/v1` entry from `pendingRules`.
+- [x] Run `go test ./agent/snapshot/contracts/ -run 'TestEveryGoOnlyRuleHasARejectionWitness/validation' -v -count=1` and confirm eight passing subtests.
+- [x] Commit `test(contracts): witness every validation/v1 go rule`.
 
 ---
 
@@ -531,7 +531,7 @@ Witness mutations are chosen to be *different arms* of their rule from the named
 | `anchor-locator-kind-selects-which-fields-appear` | opaque anchor also carrying `Path: "a.go"` | `opaque anchor contains fields for another locator kind` |
 | `anchor-locators-are-unverified` | documented + pin | — |
 
-- [ ] Write the pin for `a-metric-is-not-a-score`, which is a claim about the declaration:
+- [x] Write the pin for `a-metric-is-not-a-score`, which is a claim about the declaration:
 
 ```go
 {
@@ -559,9 +559,9 @@ Witness mutations are chosen to be *different arms* of their rule from the named
 },
 ```
 
-- [ ] Register the table and delete the `measurements/v1` entry from `pendingRules`.
-- [ ] Run `go test ./agent/snapshot/contracts/ -run 'TestEveryGoOnlyRuleHasARejectionWitness/measurements' -v -count=1` and confirm nine passing subtests.
-- [ ] Commit `test(contracts): witness every measurements/v1 go rule`.
+- [x] Register the table and delete the `measurements/v1` entry from `pendingRules`.
+- [x] Run `go test ./agent/snapshot/contracts/ -run 'TestEveryGoOnlyRuleHasARejectionWitness/measurements' -v -count=1` and confirm nine passing subtests.
+- [x] Commit `test(contracts): witness every measurements/v1 go rule`.
 
 ---
 
@@ -582,10 +582,10 @@ The accepted base: `Conclusion: "identified"`, `Summary: "the lock is taken twic
 | `anchor-locator-kind-selects-which-fields-appear` | replace with `Locator{Kind: "byte-range", Path: "a.go", Start: intPointer(5), End: intPointer(5)}` | `byte-range anchor requires nonnegative start and end > start` |
 | `anchor-locators-are-unverified` | documented + pin | — |
 
-- [ ] Write the seven entries with `diagnosisWitnessBase`/`diagnosisWitness` helpers mirroring the review pair.
-- [ ] Register the table and delete the `diagnosis/v1` entry from `pendingRules`.
-- [ ] Run `go test ./agent/snapshot/contracts/ -run 'TestEveryGoOnlyRuleHasARejectionWitness/diagnosis' -v -count=1` and confirm seven passing subtests.
-- [ ] Commit `test(contracts): witness every diagnosis/v1 go rule`.
+- [x] Write the seven entries with `diagnosisWitnessBase`/`diagnosisWitness` helpers mirroring the review pair.
+- [x] Register the table and delete the `diagnosis/v1` entry from `pendingRules`.
+- [x] Run `go test ./agent/snapshot/contracts/ -run 'TestEveryGoOnlyRuleHasARejectionWitness/diagnosis' -v -count=1` and confirm seven passing subtests.
+- [x] Commit `test(contracts): witness every diagnosis/v1 go rule`.
 
 ---
 
@@ -610,7 +610,7 @@ Accepted base: subjects `left` and `right` (both candidate role, bound to the id
 | `score-internal-consistency` | `Candidates[0].Scores = []NamedScore{{ID: "s-1", Score: Score{Value: 2, Scale: "unit-interval", Direction: "higher-is-better"}}}` | `unit-interval score value must be within 0..1` |
 | `resolving-the-choice-is-a-seal-time-operation` | documented + pin | — |
 
-- [ ] The producer-claimed-candidacy witness needs a hand-built record rather than `NewRecord`, matching the existing `TestSealTimeSelectionIgnoresProducerClaimedCandidateRoles`:
+- [x] The producer-claimed-candidacy witness needs a hand-built record rather than `NewRecord`, matching the existing `TestSealTimeSelectionIgnoresProducerClaimedCandidateRoles`:
 
 ```go
 {
@@ -652,7 +652,7 @@ Accepted base: subjects `left` and `right` (both candidate role, bound to the id
 },
 ```
 
-- [ ] Write the documented pin for `resolving-the-choice-is-a-seal-time-operation`, which is the read-time half of the same split:
+- [x] Write the documented pin for `resolving-the-choice-is-a-seal-time-operation`, which is the read-time half of the same split:
 
 ```go
 {
@@ -671,10 +671,10 @@ Accepted base: subjects `left` and `right` (both candidate role, bound to the id
 },
 ```
 
-- [ ] Add `acceptedSelectionFiles(t)` returning the accepted base's `map[string][]byte`, so the pin and the rejection witnesses share one definition of "valid".
-- [ ] Register the table and delete the `selection/v1` entry from `pendingRules`.
-- [ ] Run `go test ./agent/snapshot/contracts/ -run 'TestEveryGoOnlyRuleHasARejectionWitness/selection' -v -count=1` and confirm nine passing subtests.
-- [ ] Commit `test(contracts): witness every selection/v1 go rule`.
+- [x] Add `acceptedSelectionFiles(t)` returning the accepted base's `map[string][]byte`, so the pin and the rejection witnesses share one definition of "valid".
+- [x] Register the table and delete the `selection/v1` entry from `pendingRules`.
+- [x] Run `go test ./agent/snapshot/contracts/ -run 'TestEveryGoOnlyRuleHasARejectionWitness/selection' -v -count=1` and confirm nine passing subtests.
+- [x] Commit `test(contracts): witness every selection/v1 go rule`.
 
 ---
 
@@ -757,7 +757,7 @@ func (fixture repositoryChangeWitnessFixture) witness(
 | `the-change-must-verify-against-the-base-repository` | payload bytes with `README.md` rewritten to `NOSUCH.md`, digest updated to match | `patch failed git apply --check --index` |
 | `changed-files-is-not-a-body-field` | splice `"changed_files":["README.md"],` into the record's `"body":{` | `unknown field "changed_files"` |
 
-- [ ] Write the directory-payload witness, which is the one that needs `dir` rather than `files`:
+- [x] Write the directory-payload witness, which is the one that needs `dir` rather than `files`:
 
 ```go
 {
@@ -778,7 +778,7 @@ func (fixture repositoryChangeWitnessFixture) witness(
 },
 ```
 
-- [ ] Write the ancestry witness. A sibling commit off the **same root** keeps `repository_id` equal (identity is derived from the sorted root commits), so the ancestry rule is the only thing left to fire:
+- [x] Write the ancestry witness. A sibling commit off the **same root** keeps `repository_id` equal (identity is derived from the sorted root commits), so the ancestry rule is the only thing left to fire:
 
 ```go
 {
@@ -818,7 +818,7 @@ func (fixture repositoryChangeWitnessFixture) witness(
 },
 ```
 
-- [ ] Write the `changed-files-is-not-a-body-field` witness, which mutates bytes rather than a struct because the Go type has no field to set:
+- [x] Write the `changed-files-is-not-a-body-field` witness, which mutates bytes rather than a struct because the Go type has no field to set:
 
 ```go
 {
@@ -837,10 +837,10 @@ func (fixture repositoryChangeWitnessFixture) witness(
 },
 ```
 
-- [ ] Add `bytes`, `os` and `path/filepath` to the harness file's imports; the earlier tables needed none of them.
-- [ ] Register the table and delete the `repository-change/v1` entry from `pendingRules`.
-- [ ] Run `go test ./agent/snapshot/contracts/ -run 'TestEveryGoOnlyRuleHasARejectionWitness/repository-change' -v -count=1` and confirm twelve passing subtests in roughly ten seconds.
-- [ ] Commit `test(contracts): witness every repository-change/v1 go rule`.
+- [x] Add `bytes`, `os` and `path/filepath` to the harness file's imports; the earlier tables needed none of them.
+- [x] Register the table and delete the `repository-change/v1` entry from `pendingRules`.
+- [x] Run `go test ./agent/snapshot/contracts/ -run 'TestEveryGoOnlyRuleHasARejectionWitness/repository-change' -v -count=1` and confirm twelve passing subtests in roughly ten seconds.
+- [x] Commit `test(contracts): witness every repository-change/v1 go rule`.
 
 ---
 
@@ -849,8 +849,8 @@ func (fixture repositoryChangeWitnessFixture) witness(
 **Files:**
 - Modify: `agent/snapshot/contracts/schema_rule_witness_test.go`
 
-- [ ] Confirm `pendingRules` is now `map[snapshot.TypeRef][]string{}`.
-- [ ] Delete `pendingRules`, `isPendingRule`, and both call sites, so a declared rule with no witness fails unconditionally. Replace the missing-witness message with:
+- [x] Confirm `pendingRules` is now `map[snapshot.TypeRef][]string{}`.
+- [x] Delete `pendingRules`, `isPendingRule`, and both call sites, so a declared rule with no witness fails unconditionally. Replace the missing-witness message with:
 
 ```go
 t.Errorf(
@@ -859,7 +859,7 @@ t.Errorf(
 )
 ```
 
-- [ ] Add the total-coverage assertion so the count is checked from both directions:
+- [x] Add the total-coverage assertion so the count is checked from both directions:
 
 ```go
 discharged := 0
@@ -871,10 +871,10 @@ if discharged != declaredGoOnlyRuleCount {
 }
 ```
 
-- [ ] Run `rg -n 'pendingRules|isPendingRule' agent/snapshot/contracts` and confirm no output.
-- [ ] Run `go test ./agent/snapshot/contracts/ -run 'TestEveryGoOnlyRuleHasARejectionWitness' -count=1` and confirm 52 subtests pass.
-- [ ] Delete one witness entry, re-run, confirm the failure names the rule, and restore it.
-- [ ] Commit `test(contracts): make a rule without a witness fail unconditionally`.
+- [x] Run `rg -n 'pendingRules|isPendingRule' agent/snapshot/contracts` and confirm no output.
+- [x] Run `go test ./agent/snapshot/contracts/ -run 'TestEveryGoOnlyRuleHasARejectionWitness' -count=1` and confirm 52 subtests pass.
+- [x] Delete one witness entry, re-run, confirm the failure names the rule, and restore it.
+- [x] Commit `test(contracts): make a rule without a witness fail unconditionally`.
 
 ---
 
@@ -885,15 +885,15 @@ if discharged != declaredGoOnlyRuleCount {
 
 The witness table is machine-checked coverage; these are the human-readable regression tests the audit named. Each is a distinct arm from its witness.
 
-- [ ] Add `TestReviewRecordRejectsDuplicateFindingIdentities`, `TestReviewRecordRejectsAnUndeclaredConclusion`, and `TestReviewRecordRequiresExactlyOnePrimarySubject` (covering both the zero and the two case) to `review_test.go`.
-- [ ] Run `go test ./agent/snapshot/contracts/ -run 'TestReviewRecordRejects|TestReviewRecordRequiresExactly' -v -count=1` and confirm they fail to build:
+- [x] Add `TestReviewRecordRejectsDuplicateFindingIdentities`, `TestReviewRecordRejectsAnUndeclaredConclusion`, and `TestReviewRecordRequiresExactlyOnePrimarySubject` (covering both the zero and the two case) to `review_test.go`.
+- [x] Run `go test ./agent/snapshot/contracts/ -run 'TestReviewRecordRejects|TestReviewRecordRequiresExactly' -v -count=1` and confirm they fail to build:
 
 ```
 # github.com/concourse/concourse/agent/snapshot/contracts_test
 agent/snapshot/contracts/review_test.go:NN:6: undefined: ...
 ```
 
-- [ ] Implement them. The two-primary case needs two distinct inputs, and the subject ids must be lexicographically sorted:
+- [x] Implement them. The two-primary case needs two distinct inputs, and the subject ids must be lexicographically sorted:
 
 ```go
 // A record with no primary and a record with two are the two ways to miss the
@@ -932,9 +932,9 @@ func TestReviewRecordRequiresExactlyOnePrimarySubject(t *testing.T) {
 }
 ```
 
-- [ ] The duplicate-finding test appends a second copy of `f-1`; assert the fragment `body/findings/*/id: "f-1" is duplicate`. The garbage-conclusion test sets `Conclusion = "approved-with-love"`; assert `body/conclusion: "approved-with-love" is not one of accept, changes-required, inconclusive`.
-- [ ] Re-run the focused command and confirm three passing tests (four subtests).
-- [ ] Commit `test(contracts): name review/v1's duplicate, enum and primary-subject rejections`.
+- [x] The duplicate-finding test appends a second copy of `f-1`; assert the fragment `body/findings/*/id: "f-1" is duplicate`. The garbage-conclusion test sets `Conclusion = "approved-with-love"`; assert `body/conclusion: "approved-with-love" is not one of accept, changes-required, inconclusive`.
+- [x] Re-run the focused command and confirm three passing tests (four subtests).
+- [x] Commit `test(contracts): name review/v1's duplicate, enum and primary-subject rejections`.
 
 ---
 
@@ -953,9 +953,9 @@ func TestReviewRecordRequiresExactlyOnePrimarySubject(t *testing.T) {
 | `TestMeasurementsMetricDirectionGovernsItsTarget` | subtest `higher-is-better carries a target`: `Target = floatPointer(3)`; subtest `target direction carries none`: `Direction = "target"`, `Target = nil` | `measurement target is valid only for target direction` / `target direction requires a finite target` |
 | `TestDiagnosisRecordRejectsDuplicateHypothesisRanks` | two hypotheses both `Rank: 1` | `hypotheses[1].rank 1 is duplicate` |
 
-- [ ] Add all five tests. `TestMeasurementsMetricDirectionGovernsItsTarget` carries the note that this is the `Measurement`-level cross-rule, distinct from `Score.Validate`'s identically shaped rule — two types, two rules, and only `selection/v1` exercised the score one.
-- [ ] Run `go test ./agent/snapshot/contracts/ -run 'TestValidationRecordRejectsANonSkipped|TestMeasurements(RecordRejectsAPartial|RecordRequiresAnExplanation|MetricDirection)|TestDiagnosisRecordRejectsDuplicate' -v -count=1` and confirm they fail to build first, then pass.
-- [ ] Commit `test(contracts): close the validation, measurements and diagnosis negative holes`.
+- [x] Add all five tests. `TestMeasurementsMetricDirectionGovernsItsTarget` carries the note that this is the `Measurement`-level cross-rule, distinct from `Score.Validate`'s identically shaped rule — two types, two rules, and only `selection/v1` exercised the score one.
+- [x] Run `go test ./agent/snapshot/contracts/ -run 'TestValidationRecordRejectsANonSkipped|TestMeasurements(RecordRejectsAPartial|RecordRequiresAnExplanation|MetricDirection)|TestDiagnosisRecordRejectsDuplicate' -v -count=1` and confirm they fail to build first, then pass.
+- [x] Commit `test(contracts): close the validation, measurements and diagnosis negative holes`.
 
 ---
 
@@ -966,7 +966,7 @@ func TestReviewRecordRequiresExactlyOnePrimarySubject(t *testing.T) {
 
 Task 6 already discharges the directory-payload, non-ancestor, apply-check and base-sha-width rules as witnesses. These named tests are the readable arms, plus the one shape the witness table does not cover at all: the payload path resolving to a **symlink**.
 
-- [ ] Add `TestRepositoryChangeRejectsAPayloadThatIsNotARegularFile` with two subtests, `directory` and `symlink`, both asserting `payload.path: payload must be a regular file`. The symlink arm renames the real payload aside and links to it, so the target genuinely exists and the rejection is about the *kind* of the path rather than about a broken link:
+- [x] Add `TestRepositoryChangeRejectsAPayloadThatIsNotARegularFile` with two subtests, `directory` and `symlink`, both asserting `payload.path: payload must be a regular file`. The symlink arm renames the real payload aside and links to it, so the target genuinely exists and the rejection is about the *kind* of the path rather than about a broken link:
 
 ```go
 "symlink": func(t *testing.T, dir string) {
@@ -983,9 +983,9 @@ Task 6 already discharges the directory-payload, non-ancestor, apply-check and b
 },
 ```
 
-- [ ] Add `TestRepositoryChangeRejectsAValidResultCommitThatDoesNotDescendFromBase` using the sibling-branch bundle construction from Task 6, asserting `does not descend from base_sha`. Carry the comment about the shared root commit keeping `repository_id` equal.
-- [ ] Add `TestRepositoryChangeRejectsAPatchThatFailsGitApplyCheck`, rewriting `README.md` to `NOSUCH.md` in the patch bytes and re-deriving `PayloadDigest` with `digestBytes`, asserting `patch failed git apply --check --index`.
-- [ ] Add `TestRepositoryChangeRejectsObjectIdsOutsideTheBaseObjectFormat` with two subtests: `base_sha` of width 41 → `base_sha: object ID must be a full sha1 or sha256 hexadecimal value`, and a 64-hex `result_tree` under a 40-hex base → `result_tree: object ID must contain 40 lowercase hexadecimal characters`. Add the comment recording what scouting found:
+- [x] Add `TestRepositoryChangeRejectsAValidResultCommitThatDoesNotDescendFromBase` using the sibling-branch bundle construction from Task 6, asserting `does not descend from base_sha`. Carry the comment about the shared root commit keeping `repository_id` equal.
+- [x] Add `TestRepositoryChangeRejectsAPatchThatFailsGitApplyCheck`, rewriting `README.md` to `NOSUCH.md` in the patch bytes and re-deriving `PayloadDigest` with `digestBytes`, asserting `patch failed git apply --check --index`.
+- [x] Add `TestRepositoryChangeRejectsObjectIdsOutsideTheBaseObjectFormat` with two subtests: `base_sha` of width 41 → `base_sha: object ID must be a full sha1 or sha256 hexadecimal value`, and a 64-hex `result_tree` under a 40-hex base → `result_tree: object ID must contain 40 lowercase hexadecimal characters`. Add the comment recording what scouting found:
 
 ```go
 // The cross-check at repository_change.go's verifyAgainstBase — declared object
@@ -996,8 +996,8 @@ Task 6 already discharges the directory-payload, non-ancestor, apply-check and b
 // caught, so that is what this test pins.
 ```
 
-- [ ] Run `go test ./agent/snapshot/contracts/ -run 'TestRepositoryChangeRejects' -v -count=1` and confirm red-then-green.
-- [ ] Commit `test(contracts): close the repository-change payload, ancestry and object-format holes`.
+- [x] Run `go test ./agent/snapshot/contracts/ -run 'TestRepositoryChangeRejects' -v -count=1` and confirm red-then-green.
+- [x] Commit `test(contracts): close the repository-change payload, ancestry and object-format holes`.
 
 ---
 
@@ -1008,11 +1008,11 @@ Task 6 already discharges the directory-payload, non-ancestor, apply-check and b
 
 Empty ids are covered today only by the parity gate's generic blank mutation, which proves the two descriptions agree rather than that the gate rejects. One named, greppable test per entity-set family closes that.
 
-- [ ] Add `TestEveryEntitySetRejectsAnEmptyIdentity`, a table over the six entity-set families with one subtest each: `review/v1` findings, `validation/v1` checks, `measurements/v1` metrics, `diagnosis/v1` hypotheses, `diagnosis/v1` actions, `selection/v1` candidates.
-- [ ] Assert the exact declared-grammar fragment per family, all of the form `body/<set>/*/id: is required and must not be blank; a missing key and a blank value decode identically`. Concretely: `body/findings/*/id`, `body/checks/*/id`, `body/metrics/*/id`, `body/hypotheses/*/id`, `body/actions/*/id`, `body/candidates/*/id`.
-- [ ] Add the note that the assertion is on the frozen field-path grammar, not on `ValidateEntityIDs`' `findings[0].id` spelling, because the core validator runs first and its message is the one an operator sees.
-- [ ] Run `go test ./agent/snapshot/contracts/ -run 'TestEveryEntitySetRejectsAnEmptyIdentity' -v -count=1` and confirm six passing subtests.
-- [ ] Commit `test(contracts): name the empty-identity rejection of every entity set`.
+- [x] Add `TestEveryEntitySetRejectsAnEmptyIdentity`, a table over the six entity-set families with one subtest each: `review/v1` findings, `validation/v1` checks, `measurements/v1` metrics, `diagnosis/v1` hypotheses, `diagnosis/v1` actions, `selection/v1` candidates.
+- [x] Assert the exact declared-grammar fragment per family, all of the form `body/<set>/*/id: is required and must not be blank; a missing key and a blank value decode identically`. Concretely: `body/findings/*/id`, `body/checks/*/id`, `body/metrics/*/id`, `body/hypotheses/*/id`, `body/actions/*/id`, `body/candidates/*/id`.
+- [x] Add the note that the assertion is on the frozen field-path grammar, not on `ValidateEntityIDs`' `findings[0].id` spelling, because the core validator runs first and its message is the one an operator sees.
+- [x] Run `go test ./agent/snapshot/contracts/ -run 'TestEveryEntitySetRejectsAnEmptyIdentity' -v -count=1` and confirm six passing subtests.
+- [x] Commit `test(contracts): name the empty-identity rejection of every entity set`.
 
 ---
 
@@ -1027,7 +1027,7 @@ Empty ids are covered today only by the parity gate's generic blank mutation, wh
 
 The boundary pair is built by setting the limit to the candidate's exact size and then to one byte less. That exercises `>` versus `>=` directly and needs no padding: an off-by-one in either comparison flips exactly one of the two assertions.
 
-- [ ] Change `const maxJSONDocumentBytes int64 = 1 << 20` to a `var` and add the doc comment:
+- [x] Change `const maxJSONDocumentBytes int64 = 1 << 20` to a `var` and add the doc comment:
 
 ```go
 // maxJSONDocumentBytes bounds every strict JSON document a snapshot tree can
@@ -1036,9 +1036,9 @@ The boundary pair is built by setting the limit to the candidate's exact size an
 var maxJSONDocumentBytes int64 = 1 << 20
 ```
 
-- [ ] Change `const maxRepositoryPayloadBytes int64 = 10 << 30` to a `var` with the equivalent comment.
-- [ ] Run `go build ./agent/... && go vet ./agent/snapshot/...` and confirm both clean.
-- [ ] Create `agent/snapshot/contracts/schema_limits_internal_test.go` in `package contracts` with the internal seal-gate driver and the two override helpers:
+- [x] Change `const maxRepositoryPayloadBytes int64 = 10 << 30` to a `var` with the equivalent comment.
+- [x] Run `go build ./agent/... && go vet ./agent/snapshot/...` and confirm both clean.
+- [x] Create `agent/snapshot/contracts/schema_limits_internal_test.go` in `package contracts` with the internal seal-gate driver and the two override helpers:
 
 ```go
 package contracts
@@ -1107,14 +1107,14 @@ func withRepositoryPayloadLimit(t *testing.T, limit int64) {
 }
 ```
 
-- [ ] Write `TestStrictDocumentLimitAdmitsExactlyItsOwnSizeAndNoMore`: build an accepted `review/v1` candidate, write it, then admit twice — once with the limit set to `int64(len(encoded))` (must succeed) and once with `int64(len(encoded)) - 1` (must fail with `exceeds size limit of`). Expected failing output on a wrong comparison:
+- [x] Write `TestStrictDocumentLimitAdmitsExactlyItsOwnSizeAndNoMore`: build an accepted `review/v1` candidate, write it, then admit twice — once with the limit set to `int64(len(encoded))` (must succeed) and once with `int64(len(encoded)) - 1` (must fail with `exceeds size limit of`). Expected failing output on a wrong comparison:
 
 ```
 --- FAIL: TestStrictDocumentLimitAdmitsExactlyItsOwnSizeAndNoMore (0.01s)
     schema_limits_internal_test.go:NN: a record.json of exactly the limit was rejected: snapshot contracts: "record.json" exceeds size limit of 512 bytes
 ```
 
-- [ ] Write `TestRepositoryPayloadLimitAdmitsExactlyItsOwnSizeAndNoMore` the same way against the shared repository-change fixture, with the limit set to `int64(len(patch))` and then `int64(len(patch)) - 1`, asserting `payload exceeds size limit of`. Because this internal file cannot reach `repository_test.go`'s builders, drive the payload limit through `spoolRepositoryPayload` directly over a tree holding just the payload bytes — the limit is enforced there, before any git work, and the test says so:
+- [x] Write `TestRepositoryPayloadLimitAdmitsExactlyItsOwnSizeAndNoMore` the same way against the shared repository-change fixture, with the limit set to `int64(len(patch))` and then `int64(len(patch)) - 1`, asserting `payload exceeds size limit of`. Because this internal file cannot reach `repository_test.go`'s builders, drive the payload limit through `spoolRepositoryPayload` directly over a tree holding just the payload bytes — the limit is enforced there, before any git work, and the test says so:
 
 ```go
 // The payload limit is enforced in spoolRepositoryPayload, before any git
@@ -1123,8 +1123,8 @@ func withRepositoryPayloadLimit(t *testing.T, limit int64) {
 // comparison.
 ```
 
-- [ ] Run `go test ./agent/snapshot/contracts/ -run 'TestStrictDocumentLimit|TestRepositoryPayloadLimit' -v -count=1` and confirm both pass with four assertions.
-- [ ] Commit `feat(contracts): make the document and payload limits injectable and pin their boundaries`.
+- [x] Run `go test ./agent/snapshot/contracts/ -run 'TestStrictDocumentLimit|TestRepositoryPayloadLimit' -v -count=1` and confirm both pass with four assertions.
+- [x] Commit `feat(contracts): make the document and payload limits injectable and pin their boundaries`.
 
 ---
 
@@ -1135,8 +1135,8 @@ func withRepositoryPayloadLimit(t *testing.T, limit int64) {
 
 Entity sets have no declared cardinality bound; today the 1 MiB document limit is the only thing bounding them. That is worth knowing and worth pinning, and the instance also guards against a validator turning quadratic.
 
-- [ ] Add `encoding/json`, `fmt` and `time` to `schema_limits_internal_test.go`'s imports.
-- [ ] Add the generator and the test:
+- [x] Add `encoding/json`, `fmt` and `time` to `schema_limits_internal_test.go`'s imports. (Landed: `encoding/json` was already imported in Task 12, whose document-limit test marshals a record; Task 13 added only `fmt` and `time`.)
+- [x] Add the generator and the test:
 
 ```go
 // A review carrying ten thousand findings is 1.49 MB of record.json, so it does
@@ -1194,13 +1194,13 @@ func TestAReviewCarryingTenThousandFindingsValidatesQuickly(t *testing.T) {
 }
 ```
 
-- [ ] Run `go test ./agent/snapshot/contracts/ -run 'TestAReviewCarryingTenThousandFindings' -v -count=1` and confirm the log line reports about 1.49 MB and tens of milliseconds:
+- [x] Run `go test ./agent/snapshot/contracts/ -run 'TestAReviewCarryingTenThousandFindings' -v -count=1` and confirm the log line reports about 1.49 MB and tens of milliseconds:
 
 ```
     schema_limits_internal_test.go:NN: 10000 findings, 1490393 bytes of record.json, validated in 33ms
 ```
 
-- [ ] Commit `test(contracts): guard entity-set scale with a ten-thousand-finding review`.
+- [x] Commit `test(contracts): guard entity-set scale with a ten-thousand-finding review`.
 
 ---
 
@@ -1213,12 +1213,12 @@ func TestAReviewCarryingTenThousandFindingsValidatesQuickly(t *testing.T) {
 
 **Deviation from the spec's letter, with the measurement behind it.** WS5 asks for `utf8.ValidString` checks on free-text body fields. Scouting proves that check can never fire: Go's `encoding/json` *sanitizes* rather than refuses, mapping a raw `0xff` inside a string literal and a lone `\ud800` escape both to U+FFFD with a nil error, so every decoded body string is valid UTF-8 by construction. A field-level check would be dead code. The rule is therefore applied where it can bite — to the **exact bytes** of a candidate `record.json`, at the seal gate only — using the same two predicates canonical JSON already applies to a schema document. The intent of the spec item is met and strengthened: the byte gate also catches the unpaired-surrogate case, which no field-level check could see.
 
-- [ ] Write the failing tests first in `agent/snapshot/contracts/record_text_admission_test.go` (`package contracts_test`), all four driving the real gates:
+- [x] Write the failing tests first in `agent/snapshot/contracts/record_text_admission_test.go` (`package contracts_test`), all four driving the real gates:
   1. `TestSealTimeAdmissionRejectsRecordBytesThatAreNotValidUTF8` — splice a raw `0xff` into the summary value of an accepted `review/v1` record and admit; want an error naming `UTF-8`.
   2. `TestSealTimeAdmissionRejectsAnUnpairedSurrogateEscape` — splice `"lone \ud800 surrogate"` in; want an error naming `surrogate`.
   3. `TestStoredRecordsWithInvalidTextEncodingStillRevalidate` — the *same* two byte sequences through `revalidateSealedFiles`; both must **succeed**. This is the hard constraint made executable.
   4. `TestTheJSONDecoderSanitizesRatherThanRefusesBadTextEncoding` — decode both forms into a struct and assert `err == nil` and `utf8.ValidString(decoded)`, recording why the gate is byte-level.
-- [ ] Run `go test ./agent/snapshot/contracts/ -run 'TestSealTimeAdmissionRejects|TestStoredRecordsWithInvalidTextEncoding|TestTheJSONDecoderSanitizes' -v -count=1` and confirm the two rejection tests fail:
+- [x] Run `go test ./agent/snapshot/contracts/ -run 'TestSealTimeAdmissionRejects|TestStoredRecordsWithInvalidTextEncoding|TestTheJSONDecoderSanitizes' -v -count=1` and confirm the two rejection tests fail:
 
 ```
 --- FAIL: TestSealTimeAdmissionRejectsRecordBytesThatAreNotValidUTF8 (0.01s)
@@ -1227,7 +1227,7 @@ func TestAReviewCarryingTenThousandFindingsValidatesQuickly(t *testing.T) {
     record_text_admission_test.go:NN: seal gate error = <nil>, want it to name a surrogate escape
 ```
 
-- [ ] Split `decodeStrictDocument` in `json.go` into a read half and a decode half so the seal path can see the bytes, keeping the read path byte-for-byte identical:
+- [x] Split `decodeStrictDocument` in `json.go` into a read half and a decode half so the seal path can see the bytes, keeping the read path byte-for-byte identical:
 
 ```go
 func decodeStrictDocument(ctx context.Context, root *os.Root, name string, target any) error {
@@ -1252,8 +1252,8 @@ func admitStrictDocument(ctx context.Context, root *os.Root, name string, target
 }
 ```
 
-- [ ] Add `decodeStrictJSON(name string, contents []byte, target any) error` holding the existing decoder body verbatim (`DisallowUnknownFields`, the trailing-JSON check, the same two error strings).
-- [ ] Add `admitRecordTextEncoding` with the safety argument as its doc comment, verbatim:
+- [x] Add `decodeStrictJSON(name string, contents []byte, target any) error` holding the existing decoder body verbatim (`DisallowUnknownFields`, the trailing-JSON check, the same two error strings). (Landed as `decodeStrictJSONBytes`: `schema_document_load.go` already owns an unexported `decodeStrictJSON` with a different signature, so the plan's name would not compile; a doc comment on the helper records the rename.)
+- [x] Add `admitRecordTextEncoding` with the safety argument as its doc comment, verbatim:
 
 ```go
 // admitRecordTextEncoding is the SEAL-ONLY text-encoding gate over the exact
@@ -1297,10 +1297,10 @@ func admitRecordTextEncoding(name string, contents []byte) error {
 }
 ```
 
-- [ ] Point the two seal-time entry points at it, and only those: `admitRecordForSeal` in `record.go` swaps `decodeStrictDocument` for `admitStrictDocument`, and `decodeRecord` calls `admitRecordTextEncoding("record.json", data)` when `admission == currentSchemaDigestOnly` (that is the `DecodeRecordForSeal` path, whose one production caller is `agent/functions/repositorymerge/runner.go`). Leave `readSealedRecord` and `DecodeSealedRecord` alone.
-- [ ] Add `"unicode/utf8"` to `json.go`'s imports.
-- [ ] Run `go test ./agent/snapshot/contracts/ -run 'TestSealTimeAdmissionRejects|TestStoredRecordsWithInvalidTextEncoding|TestTheJSONDecoderSanitizes' -v -count=1` and confirm all four pass.
-- [ ] Add `TestEveryDeclaredFreeTextFieldIsCoveredByTheByteLevelTextGate` to the same file: walk `SchemaDocumentFor(ref).Fields` for every record type, collect the paths whose `Kind` is `contracts.KindString` or `contracts.KindMarkdown`, and assert the set equals a pinned list of fourteen paths. The pinned list, verified against the base commit:
+- [x] Point the two seal-time entry points at it, and only those: `admitRecordForSeal` in `record.go` swaps `decodeStrictDocument` for `admitStrictDocument`, and `decodeRecord` calls `admitRecordTextEncoding("record.json", data)` when `admission == currentSchemaDigestOnly` (that is the `DecodeRecordForSeal` path, whose one production caller is `agent/functions/repositorymerge/runner.go`). Leave `readSealedRecord` and `DecodeSealedRecord` alone.
+- [x] Add `"unicode/utf8"` to `json.go`'s imports.
+- [x] Run `go test ./agent/snapshot/contracts/ -run 'TestSealTimeAdmissionRejects|TestStoredRecordsWithInvalidTextEncoding|TestTheJSONDecoderSanitizes' -v -count=1` and confirm all four pass.
+- [x] Add `TestEveryDeclaredFreeTextFieldIsCoveredByTheByteLevelTextGate` to the same file: walk `SchemaDocumentFor(ref).Fields` for every record type, collect the paths whose `Kind` is `contracts.KindString` or `contracts.KindMarkdown`, and assert the set equals a pinned list of fifteen paths. (The prose above said "fourteen"; the declared set is fifteen `(type, path)` pairs — `body/summary` is a distinct declared leaf in three documents — and the pinned list below already enumerates all fifteen. The landed test asserts fifteen.) The pinned list, verified against the base commit:
 
 ```
 diagnosis/v1:           body/actions/*/description, body/actions/*/rationale,
@@ -1313,10 +1313,10 @@ validation/v1:          body/checks/*/attempts/*/detail, body/checks/*/detail,
                         body/checks/*/name, body/summary
 ```
 
-- [ ] Give that test the comment explaining what it is for: the gate is document-wide, so one witness covers every field, and this test is the ledger that makes adding a fifteenth free-text field a deliberate, reviewed act rather than a silent one.
-- [ ] Run the full package: `go test ./agent/snapshot/contracts/ -count=1` and confirm `ok` in roughly 20 s.
-- [ ] Run `go test ./agent/... -count=1` and confirm nothing downstream of the seal gate regressed, in particular `agent/functions/repositorymerge`.
-- [ ] Commit `feat(contracts): admit only well-formed text encoding at the seal gate`.
+- [x] Give that test the comment explaining what it is for: the gate is document-wide, so one witness covers every field, and this test is the ledger that makes adding a sixteenth free-text field a deliberate, reviewed act rather than a silent one.
+- [x] Run the full package: `go test ./agent/snapshot/contracts/ -count=1` and confirm `ok` in roughly 20 s.
+- [x] Run `go test ./agent/... -count=1` and confirm nothing downstream of the seal gate regressed, in particular `agent/functions/repositorymerge`.
+- [x] Commit `feat(contracts): admit only well-formed text encoding at the seal gate`.
 
 ---
 
@@ -1325,14 +1325,14 @@ validation/v1:          body/checks/*/attempts/*/detail, body/checks/*/detail,
 **Files:**
 - Modify: `docs/superpowers/plans/test-hardening/05-contract-conformance.md`
 
-- [ ] "Deleting any `go_only_rules` witness fails the linkage test": delete one entry from each of the six tables in turn, run `go test ./agent/snapshot/contracts/ -run 'TestEveryGoOnlyRuleHasARejectionWitness' -count=1`, confirm six distinct failures, restore each.
-- [ ] Adding a rule fails too: append a throwaway `{"id": "temporary-probe", "rule": "probe"}` to a **copy** of a schema document under `/tmp`, confirm by inspection that the harness's `declaredGoOnlyRuleCount` assertion is what would catch it, and record that the real file was not touched. Verify with `git status --porcelain agent/snapshot/contracts/schemas` producing no output.
-- [ ] "Every enumerated hole has a named red-then-green test": confirm one named test exists for each of duplicate finding id, garbage conclusion enum, zero primary subjects, two primary subjects, non-skipped check with zero attempts, partial with zero metrics, missing explanation for partial, missing explanation for not-applicable, `Measurement`-level direction/target, duplicate hypothesis rank, payload path is a directory, payload path is a symlink, non-ancestor `result_commit`, patch failing `git apply --check`, `base_sha` width versus object format, and an empty id per entity set.
-- [ ] "Limits are exercised at their boundaries with test-injected thresholds": confirm four boundary assertions across two limits, and that `rg -n 'maxJSONDocumentBytes|maxRepositoryPayloadBytes' agent/snapshot/contracts` shows both as `var` with no production assignment.
-- [ ] Confirm the witness total: `go test ./agent/snapshot/contracts/ -run 'TestEveryGoOnlyRuleHasARejectionWitness' -v -count=1 | rg -c '^\s+--- (PASS|FAIL)'` reports **52**.
-- [ ] Confirm the hard constraint: `git diff --stat` shows no change to any `RevalidateSealed`, `readSealedRecord`, `DecodeSealedRecord`, `ReadSealedRepositoryChangeRecord`, `ReadSealedSelectionRecord`, `ReadSealedMeasurementsRecord` or `DecodeSealedReviewRecord`, and no change under `agent/snapshot/contracts/schemas/`.
-- [ ] Run `go test ./agent/snapshot/... -count=1`, `go vet ./agent/snapshot/...`, and `gofmt -l agent/snapshot` and confirm all clean.
-- [ ] Tick every completed checkbox in this plan and commit `docs(test-hardening): record WS5 contract-conformance completion`.
+- [x] "Deleting any `go_only_rules` witness fails the linkage test": delete one entry from each of the six tables in turn, run `go test ./agent/snapshot/contracts/ -run 'TestEveryGoOnlyRuleHasARejectionWitness' -count=1`, confirm six distinct failures, restore each.
+- [x] Adding a rule fails too: append a throwaway `{"id": "temporary-probe", "rule": "probe"}` to a **copy** of a schema document under `/tmp`, confirm by inspection that the harness's `declaredGoOnlyRuleCount` assertion is what would catch it, and record that the real file was not touched. Verify with `git status --porcelain agent/snapshot/contracts/schemas` producing no output.
+- [x] "Every enumerated hole has a named red-then-green test": confirm one named test exists for each of duplicate finding id, garbage conclusion enum, zero primary subjects, two primary subjects, non-skipped check with zero attempts, partial with zero metrics, missing explanation for partial, missing explanation for not-applicable, `Measurement`-level direction/target, duplicate hypothesis rank, payload path is a directory, payload path is a symlink, non-ancestor `result_commit`, patch failing `git apply --check`, `base_sha` width versus object format, and an empty id per entity set.
+- [x] "Limits are exercised at their boundaries with test-injected thresholds": confirm four boundary assertions across two limits, and that `rg -n 'maxJSONDocumentBytes|maxRepositoryPayloadBytes' agent/snapshot/contracts` shows both as `var` with no production assignment.
+- [x] Confirm the witness total: `go test ./agent/snapshot/contracts/ -run 'TestEveryGoOnlyRuleHasARejectionWitness' -v -count=1 | rg -c '^\s+--- (PASS|FAIL)'` reports **52**.
+- [x] Confirm the hard constraint: `git diff --stat` shows no change to any `RevalidateSealed`, `readSealedRecord`, `DecodeSealedRecord`, `ReadSealedRepositoryChangeRecord`, `ReadSealedSelectionRecord`, `ReadSealedMeasurementsRecord` or `DecodeSealedReviewRecord`, and no change under `agent/snapshot/contracts/schemas/`.
+- [x] Run `go test ./agent/snapshot/... -count=1`, `go vet ./agent/snapshot/...`, and `gofmt -l agent/snapshot` and confirm all clean. (Landed: `go test` and `go vet` clean; `gofmt -l agent/snapshot` reports only `agent/snapshot/types.go`, which was already unformatted at the branch base `1aa847c09d` and is outside WS5's Files scope — all five files this workstream touched are gofmt-clean.)
+- [x] Tick every completed checkbox in this plan and commit `docs(test-hardening): record WS5 contract-conformance completion`.
 
 ---
 
