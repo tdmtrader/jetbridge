@@ -257,6 +257,17 @@ func decodeRecord[T any](data []byte, expected snapshot.TypeRef, target *Record[
 	if target == nil {
 		return fmt.Errorf("snapshot contracts: record target is required")
 	}
+	// SEAL-ONLY text-encoding gate: DecodeRecordForSeal admits candidate bytes a
+	// producer just wrote (its one production caller is
+	// agent/functions/repositorymerge/runner.go), so it runs the same byte-level
+	// check as the tree-based seal path. The read path (anyAcceptedSchemaDigest,
+	// i.e. DecodeSealedRecord) is deliberately excluded so no previously-sealed
+	// record is ever rejected on decode.
+	if admission == currentSchemaDigestOnly {
+		if err := admitRecordTextEncoding("record.json", data); err != nil {
+			return err
+		}
+	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
@@ -279,7 +290,7 @@ func decodeRecord[T any](data []byte, expected snapshot.TypeRef, target *Record[
 // step just wrote and runs the SEAL-TIME envelope gate over it.
 func admitRecordForSeal[T any](ctx context.Context, root *os.Root, expected snapshot.TypeRef, declarations snapshot.ValidationContext) (Record[T], error) {
 	var record Record[T]
-	if err := decodeStrictDocument(ctx, root, "record.json", &record); err != nil {
+	if err := admitStrictDocument(ctx, root, "record.json", &record); err != nil {
 		return Record[T]{}, err
 	}
 	if err := record.AdmitForSeal(expected, declarations); err != nil {
