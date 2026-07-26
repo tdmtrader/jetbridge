@@ -518,6 +518,30 @@ authorized workflow-run occurrence. Replaying the same semantic write from a
 different run therefore reuses the provider result while preserving distinct,
 team-scoped run/build authorization evidence for every occurrence.
 
+Gateway responses are classified: `400`, `401`, `403`, `404`, `409`, and `422`
+are terminal and complete the publication as `failed`, because retrying
+identical request bytes cannot change the answer; every other status —
+including `408`, `429`, all `5xx`, and any status not named here — leaves the
+operation `pending` for a later lease reclaim. A gateway must therefore never
+answer a permanently rejected request with a `5xx`. The obligations above are
+executable: `agent/publisher/contracttest` runs them against any endpoint, and
+`go test -tags live -run TestLiveGatewayContract ./agent/publisher/contracttest/`
+runs them against a deployment.
+
+Passing that kit does not by itself certify a gateway is safe against
+eventual-consistency double-publish. The kit's
+`publish_is_idempotent_under_one_key` check drives a second independent
+publication attempt through the real client, and the client looks up before it
+writes: against a gateway whose lookup answers, the second attempt recovers at
+lookup and never issues a second publish. A gateway with a working lookup but a
+non-deduplicating publish side therefore passes the check yet still
+double-publishes whenever its read side lags its write side. Certifying that
+property requires either the deferred concurrent-double-attempt strengthening of
+the kit or out-of-band verification that the gateway's durable `(publisher,
+operation_key)` map deduplicates on the publish path itself; in-repo that
+publish-side dedupe is pinned by the blind-lookup test in
+`agent/publisher/gateway_idempotency_test.go`.
+
 The Git stream is the immutable change snapshot, not a checkout obtained from
 a live remote. Before sending it, ATC loads the exact team-authorized manifest,
 re-hashes the complete canonical archive, strictly checks the sealed intrinsic
