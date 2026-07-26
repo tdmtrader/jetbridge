@@ -27,11 +27,39 @@ import (
 	"github.com/concourse/concourse/agent/snapshot/contracts"
 )
 
-// The benign cases. Hostile cases are added in Task 3.
+// The benign cases.
 const (
 	CaseReviewAccept          = "review-accept"
 	CaseReviewChangesRequired = "review-changes-required"
 )
+
+// The hostile catalog. Each case violates exactly one rule, so the error it
+// produces at the seal boundary names that rule and nothing else.
+const (
+	// CaseHostileTraversal puts a `../` segment in a tar entry name. It is
+	// TAR-ONLY: WriteTree refuses it rather than escaping the output mount.
+	CaseHostileTraversal = "hostile-traversal"
+	// CaseHostileSymlink adds a symlink whose target resolves above the root.
+	CaseHostileSymlink = "hostile-symlink"
+	// CaseHostileUnexposedSubject anchors the record's primary subject at an
+	// input the step never declared.
+	CaseHostileUnexposedSubject = "hostile-unexposed-subject"
+	// CaseHostileSchemaDigest pins a well-formed digest that is not the
+	// platform-injected one.
+	CaseHostileSchemaDigest = "hostile-schema-digest"
+	// CaseHostileDuplicateFinding repeats an entity-set id.
+	CaseHostileDuplicateFinding = "hostile-duplicate-finding"
+	// CaseHostileMissingRecord writes a non-empty tree with no record.json.
+	CaseHostileMissingRecord = "hostile-missing-record"
+	// CaseHostileOversized writes a payload larger than the ARCHIVE-layer
+	// configured limit (snapshot.Canonicalizer.MaxContentBytes). It is not
+	// about the contracts-layer document limits.
+	CaseHostileOversized = "hostile-oversized"
+)
+
+// defaultOversizeBytes is comfortably above the small MaxContentBytes the exec
+// specs inject and comfortably below anything a real deployment configures.
+const defaultOversizeBytes = 4096
 
 // Authority is the server-owned truth an agent step injects into its pod: the
 // declared type and current schema digest of one record output, and the type
@@ -77,7 +105,17 @@ type Entry struct {
 
 // Cases lists every fixture case, sorted, for help text and table tests.
 func Cases() []string {
-	return []string{CaseReviewAccept, CaseReviewChangesRequired}
+	return []string{
+		CaseHostileDuplicateFinding,
+		CaseHostileMissingRecord,
+		CaseHostileOversized,
+		CaseHostileSchemaDigest,
+		CaseHostileSymlink,
+		CaseHostileTraversal,
+		CaseHostileUnexposedSubject,
+		CaseReviewAccept,
+		CaseReviewChangesRequired,
+	}
 }
 
 // Entries returns the tree for one case. Entries are emitted in the order they
@@ -92,6 +130,42 @@ func Entries(caseName string, authority Authority) ([]Entry, error) {
 		return recordEntries(reviewRecord(authority, acceptBody()))
 	case CaseReviewChangesRequired:
 		return recordEntries(reviewRecord(authority, changesRequiredBody()))
+	case CaseHostileTraversal:
+		entries, err := recordEntries(reviewRecord(authority, acceptBody()))
+		if err != nil {
+			return nil, err
+		}
+		return append([]Entry{{Path: "../escape", Body: []byte("escaped\n")}}, entries...), nil
+	case CaseHostileSymlink:
+		entries, err := recordEntries(reviewRecord(authority, acceptBody()))
+		if err != nil {
+			return nil, err
+		}
+		return append(entries, Entry{Path: "escape", LinkTarget: "../../etc/passwd"}), nil
+	case CaseHostileUnexposedSubject:
+		hostile := authority
+		hostile.SubjectInput = "not-a-declared-input"
+		return recordEntries(reviewRecord(hostile, acceptBody()))
+	case CaseHostileSchemaDigest:
+		hostile := authority
+		hostile.RecordSchema = "sha256:" + strings.Repeat("f", 64)
+		return recordEntries(reviewRecord(hostile, acceptBody()))
+	case CaseHostileDuplicateFinding:
+		body := changesRequiredBody()
+		body.Findings = append(body.Findings, blockingFinding("F-1"))
+		return recordEntries(reviewRecord(authority, body))
+	case CaseHostileMissingRecord:
+		return []Entry{{Path: "notes.txt", Body: []byte("the fixture agent forgot record.json\n")}}, nil
+	case CaseHostileOversized:
+		size := authority.OversizeBytes
+		if size <= 0 {
+			size = defaultOversizeBytes
+		}
+		entries, err := recordEntries(reviewRecord(authority, acceptBody()))
+		if err != nil {
+			return nil, err
+		}
+		return append(entries, Entry{Path: "payload.bin", Body: bytes.Repeat([]byte("A"), size)}), nil
 	default:
 		return nil, fmt.Errorf("fixtureagent: unknown fixture case %q", caseName)
 	}
@@ -132,6 +206,9 @@ func WriteTree(dir, caseName string, authority Authority) error {
 	entries, err := Entries(caseName, authority)
 	if err != nil {
 		return err
+	}
+	if caseName == CaseHostileTraversal {
+		return fmt.Errorf("fixtureagent: case %q cannot be materialized on disk; it is a tar-layer attack", caseName)
 	}
 	for _, entry := range entries {
 		full := filepath.Join(dir, filepath.FromSlash(entry.Path))

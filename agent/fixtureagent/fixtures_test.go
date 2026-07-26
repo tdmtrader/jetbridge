@@ -128,6 +128,140 @@ func TestEntriesRejectsAnUnknownCaseAndIncompleteAuthority(t *testing.T) {
 	}
 }
 
+func TestHostileCatalogViolatesExactlyOneRuleEach(t *testing.T) {
+	authority := testAuthority(t)
+	authority.OversizeBytes = 4096
+
+	tests := []struct {
+		name  string
+		check func(*testing.T, []fixtureagent.Entry)
+	}{
+		{
+			name: fixtureagent.CaseHostileTraversal,
+			check: func(t *testing.T, entries []fixtureagent.Entry) {
+				if entries[0].Path != "../escape" {
+					t.Fatalf("first entry = %q, want a traversal path", entries[0].Path)
+				}
+			},
+		},
+		{
+			name: fixtureagent.CaseHostileSymlink,
+			check: func(t *testing.T, entries []fixtureagent.Entry) {
+				last := entries[len(entries)-1]
+				if last.LinkTarget != "../../etc/passwd" {
+					t.Fatalf("last entry = %+v, want an escaping symlink", last)
+				}
+			},
+		},
+		{
+			name: fixtureagent.CaseHostileUnexposedSubject,
+			check: func(t *testing.T, entries []fixtureagent.Entry) {
+				record := decodeReview(t, entries)
+				if record.Subjects[0].Input != "not-a-declared-input" {
+					t.Fatalf("subject input = %q", record.Subjects[0].Input)
+				}
+			},
+		},
+		{
+			name: fixtureagent.CaseHostileSchemaDigest,
+			check: func(t *testing.T, entries []fixtureagent.Entry) {
+				record := decodeReview(t, entries)
+				if record.Schema.String() == authority.RecordSchema {
+					t.Fatal("schema digest was not corrupted")
+				}
+				if err := record.Schema.Validate(); err != nil {
+					t.Fatalf("corrupted schema must still be a well-formed digest: %v", err)
+				}
+			},
+		},
+		{
+			name: fixtureagent.CaseHostileDuplicateFinding,
+			check: func(t *testing.T, entries []fixtureagent.Entry) {
+				record := decodeReview(t, entries)
+				if len(record.Body.Findings) != 2 || record.Body.Findings[0].ID != record.Body.Findings[1].ID {
+					t.Fatalf("findings = %+v, want two with the same id", record.Body.Findings)
+				}
+			},
+		},
+		{
+			name: fixtureagent.CaseHostileMissingRecord,
+			check: func(t *testing.T, entries []fixtureagent.Entry) {
+				for _, entry := range entries {
+					if entry.Path == "record.json" {
+						t.Fatal("record.json must be absent")
+					}
+				}
+				if len(entries) == 0 {
+					t.Fatal("the tree must not be empty, or capture fails for another reason")
+				}
+			},
+		},
+		{
+			name: fixtureagent.CaseHostileOversized,
+			check: func(t *testing.T, entries []fixtureagent.Entry) {
+				for _, entry := range entries {
+					if entry.Path == "payload.bin" {
+						if len(entry.Body) != 4096 {
+							t.Fatalf("payload = %d bytes, want 4096", len(entry.Body))
+						}
+						return
+					}
+				}
+				t.Fatal("no payload.bin entry")
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			entries, err := fixtureagent.Entries(tc.name, authority)
+			if err != nil {
+				t.Fatalf("Entries(%q): %v", tc.name, err)
+			}
+			tc.check(t, entries)
+			if _, err := fixtureagent.Tar(tc.name, authority); err != nil {
+				t.Fatalf("Tar(%q): %v", tc.name, err)
+			}
+		})
+	}
+}
+
+func TestCasesEnumeratesEveryCaseAndWriteTreeRefusesTheTarOnlyOne(t *testing.T) {
+	authority := testAuthority(t)
+	cases := fixtureagent.Cases()
+	if len(cases) != 9 {
+		t.Fatalf("Cases() = %v, want all nine", cases)
+	}
+	for _, name := range cases {
+		if _, err := fixtureagent.Entries(name, authority); err != nil {
+			t.Fatalf("Entries(%q): %v", name, err)
+		}
+	}
+	// A `../` path cannot be materialized inside a destination directory: that
+	// is a tar-layer attack only, and pretending otherwise would silently write
+	// outside the output mount.
+	if err := fixtureagent.WriteTree(t.TempDir(), fixtureagent.CaseHostileTraversal, authority); err == nil ||
+		!strings.Contains(err.Error(), "cannot be materialized on disk") {
+		t.Fatalf("WriteTree(traversal) error = %v", err)
+	}
+}
+
+func decodeReview(t *testing.T, entries []fixtureagent.Entry) contracts.Record[contracts.ReviewBody] {
+	t.Helper()
+	for _, entry := range entries {
+		if entry.Path != "record.json" {
+			continue
+		}
+		var record contracts.Record[contracts.ReviewBody]
+		if err := json.Unmarshal(entry.Body, &record); err != nil {
+			t.Fatalf("decode record.json: %v", err)
+		}
+		return record
+	}
+	t.Fatal("no record.json entry")
+	return contracts.Record[contracts.ReviewBody]{}
+}
+
 func tarNames(t *testing.T, raw []byte) []string {
 	t.Helper()
 	var names []string
