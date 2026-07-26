@@ -1,0 +1,383 @@
+package contracts_test
+
+import (
+	"fmt"
+	"sort"
+	"strings"
+	"testing"
+
+	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/agent/snapshot/contracts"
+)
+
+// THE LINKAGE HARNESS.
+//
+// The `go_only_rules` array in each schema document is a maintained enumeration
+// of every semantic rule the declared schema deliberately does NOT express.
+// TestSchemaDocumentGoRuleReferencesResolve already proves those references
+// resolve. Nothing proved that any of them REJECTS anything, which is the one
+// blind spot the parity gate structurally cannot cover: parity is differential,
+// so a rule both descriptions have wrong is invisible to it.
+//
+// This test closes that loop. Every declared rule must have a registered
+// witness, and every witness is driven through the REAL AdmitForSeal gate over a
+// real directory. Adding a rule to a schema document without adding its witness
+// turns CI red.
+//
+// The registry is keyed on (record type, rule id) rather than on the rule id
+// alone. Three anchor rules appear in four documents each, and those are four
+// separate Go code paths over four different body shapes; one witness speaking
+// for all four would be exactly the kind of assumed coverage this test exists to
+// remove.
+const declaredGoOnlyRuleCount = 52
+
+// witnessCandidate is the candidate tree a step is claiming to have written,
+// plus the declarations the server holds for that step. Exactly one of files and
+// dir is set: files is the ordinary case, dir is for a witness needing a shape a
+// map of bytes cannot express — a directory or a symlink where a regular file
+// belongs.
+type witnessCandidate struct {
+	files        map[string][]byte
+	dir          string
+	declarations snapshot.ValidationContext
+}
+
+// ruleWitness discharges one declared rule.
+//
+// A witness is normally a REJECTION witness: build an otherwise-valid instance
+// with exactly one thing wrong, and name a fragment the real gate's error must
+// contain. A handful of rules deliberately reject nothing — they document a
+// non-check, or a fact about where authority comes from — and those carry
+// `documented` instead, which is a written justification the reader can audit,
+// plus an optional `pin` that turns the documented claim into an assertion.
+type ruleWitness struct {
+	rule string
+
+	build   func(t *testing.T) witnessCandidate
+	wantErr string
+
+	documented string
+	pin        func(t *testing.T)
+}
+
+func (candidate witnessCandidate) admit(t *testing.T, ref snapshot.TypeRef) error {
+	t.Helper()
+	dir := candidate.dir
+	if dir == "" {
+		dir = writeTree(t, candidate.files)
+	}
+	_, err := validateDirectory(t, ref.String(), dir, candidate.declarations)
+	return err
+}
+
+// pendingRules is the staging mechanism that lets the harness land before every
+// witness table is written. It is deleted, along with every reference to it, by
+// the task that finishes the last table. Do not add to it.
+var pendingRules = map[snapshot.TypeRef][]string{
+	snapshot.TypeRef("validation/v1"): {
+		"conclusion-is-recomputed-from-the-checks",
+		"status-governs-attempt-count",
+		"attempt-number-equals-its-position-plus-one",
+		"check-status-equals-the-final-attempt-status",
+		"attempts-have-no-stable-id",
+		"anchor-subject-must-be-a-declared-subject",
+		"anchor-locator-kind-selects-which-fields-appear",
+		"anchor-locators-are-unverified",
+	},
+	snapshot.TypeRef("measurements/v1"): {
+		"conclusion-governs-the-metric-count",
+		"partial-and-not-applicable-require-an-explanation",
+		"direction-governs-target",
+		"bounds-are-declared-together-finite-and-ordered",
+		"value-must-lie-within-any-declared-bounds",
+		"a-metric-is-not-a-score",
+		"anchor-subject-must-be-a-declared-subject",
+		"anchor-locator-kind-selects-which-fields-appear",
+		"anchor-locators-are-unverified",
+	},
+	snapshot.TypeRef("diagnosis/v1"): {
+		"identified-and-suspected-require-hypotheses",
+		"hypothesis-ranks-are-unique-and-contiguous-from-one",
+		"identified-requires-evidence-on-the-rank-one-hypothesis",
+		"addresses-must-name-a-hypothesis-this-record-declares",
+		"anchor-subject-must-be-a-declared-subject",
+		"anchor-locator-kind-selects-which-fields-appear",
+		"anchor-locators-are-unverified",
+	},
+	snapshot.TypeRef("selection/v1"): {
+		"candidacy-is-declared-by-the-platform-and-sourced-differently-at-each-gate",
+		"every-candidate-port-has-exactly-one-subject-and-no-others-appear",
+		"candidate-subjects-share-one-snapshot-type",
+		"candidates-must-assess-every-candidate-subject-exactly-once",
+		"each-candidate-id-must-be-a-declared-candidate-subject",
+		"candidate-ranks-are-unique-within-one-to-the-candidate-count",
+		"selected-must-occur-exactly-once-among-the-candidates",
+		"score-internal-consistency",
+		"resolving-the-choice-is-a-seal-time-operation",
+	},
+	snapshot.TypeRef("repository-change/v1"): {
+		"repository-id-must-be-a-snapshot-digest",
+		"repository-id-must-equal-the-base-repository-id",
+		"base-sha-width-selects-the-object-format",
+		"base-sha-must-equal-the-base-repository-head",
+		"declared-object-ids-must-share-the-base-object-format",
+		"representation-governs-result-commit",
+		"payload-must-be-a-regular-file-within-the-size-limit",
+		"payload-digest-must-equal-the-exact-payload-bytes",
+		"result-tree-must-equal-the-recomputed-tree",
+		"result-commit-must-descend-from-base-sha",
+		"the-change-must-verify-against-the-base-repository",
+		"changed-files-is-not-a-body-field",
+	},
+}
+
+func TestEveryGoOnlyRuleHasARejectionWitness(t *testing.T) {
+	declared := declaredGoOnlyRules(t)
+	total := 0
+	for _, rules := range declared {
+		total += len(rules)
+	}
+	if total != declaredGoOnlyRuleCount {
+		t.Fatalf(
+			"the six schema documents declare %d go rules, want %d; a rule was added or removed, so update declaredGoOnlyRuleCount in the same change that adds or removes its witness",
+			total, declaredGoOnlyRuleCount,
+		)
+	}
+
+	witnesses := ruleWitnesses(t)
+	for ref, entries := range witnesses {
+		declaredIDs := make(map[string]struct{}, len(declared[ref]))
+		for _, rule := range declared[ref] {
+			declaredIDs[rule.ID] = struct{}{}
+		}
+		seen := make(map[string]struct{}, len(entries))
+		for _, entry := range entries {
+			if _, found := declaredIDs[entry.rule]; !found {
+				t.Errorf("%q has a witness for %q, which the document does not declare; a renamed rule leaves its witness behind", ref, entry.rule)
+			}
+			if _, duplicate := seen[entry.rule]; duplicate {
+				t.Errorf("%q has two witnesses for %q; one rule, one witness", ref, entry.rule)
+			}
+			seen[entry.rule] = struct{}{}
+			if (entry.build == nil) == (entry.documented == "") {
+				t.Errorf("%q witness for %q must set exactly one of build+wantErr and documented", ref, entry.rule)
+			}
+			if entry.build != nil && strings.TrimSpace(entry.wantErr) == "" {
+				t.Errorf("%q witness for %q builds an invalid instance but names no expected error fragment", ref, entry.rule)
+			}
+		}
+	}
+
+	for _, ref := range sortedTypeRefs(declared) {
+		for _, rule := range declared[ref] {
+			entry, found := witnessFor(witnesses[ref], rule.ID)
+			if !found {
+				if isPendingRule(ref, rule.ID) {
+					t.Logf("%q rule %q is PENDING a witness", ref, rule.ID)
+					continue
+				}
+				t.Errorf("%q declares go rule %q but no witness discharges it and it is not listed as pending", ref, rule.ID)
+				continue
+			}
+			if isPendingRule(ref, rule.ID) {
+				t.Errorf("%q rule %q has a witness and is still listed as pending; remove it from pendingRules", ref, rule.ID)
+			}
+			t.Run(fmt.Sprintf("%s/%s", ref, rule.ID), func(t *testing.T) {
+				if entry.documented != "" {
+					if entry.pin != nil {
+						entry.pin(t)
+					}
+					return
+				}
+				err := entry.build(t).admit(t, ref)
+				if err == nil {
+					t.Fatalf(
+						"the seal gate ACCEPTED the witness for %q; the rule the document declares is not enforced, which is a finding and not a test to relax",
+						rule.ID,
+					)
+				}
+				if !strings.Contains(err.Error(), entry.wantErr) {
+					t.Fatalf("seal gate error = %v, want it to contain %q", err, entry.wantErr)
+				}
+			})
+		}
+	}
+}
+
+func declaredGoOnlyRules(t *testing.T) map[snapshot.TypeRef][]contracts.GoOnlyRule {
+	t.Helper()
+	registry, err := contracts.NewRegistry()
+	if err != nil {
+		t.Fatalf("NewRegistry(): %v", err)
+	}
+	declared := make(map[snapshot.TypeRef][]contracts.GoOnlyRule)
+	for _, ref := range registry.Types() {
+		if !contracts.IsRecordType(ref) {
+			continue
+		}
+		document, found := contracts.SchemaDocumentFor(ref)
+		if !found {
+			t.Fatalf("%q is a record type with no schema document", ref)
+		}
+		declared[ref] = document.GoOnlyRules
+	}
+	return declared
+}
+
+func witnessFor(entries []ruleWitness, rule string) (ruleWitness, bool) {
+	for _, entry := range entries {
+		if entry.rule == rule {
+			return entry, true
+		}
+	}
+	return ruleWitness{}, false
+}
+
+func isPendingRule(ref snapshot.TypeRef, rule string) bool {
+	for _, pending := range pendingRules[ref] {
+		if pending == rule {
+			return true
+		}
+	}
+	return false
+}
+
+func sortedTypeRefs[T any](index map[snapshot.TypeRef]T) []snapshot.TypeRef {
+	refs := make([]snapshot.TypeRef, 0, len(index))
+	for ref := range index {
+		refs = append(refs, ref)
+	}
+	sort.Slice(refs, func(left, right int) bool { return refs[left] < refs[right] })
+	return refs
+}
+
+// ruleWitnesses is the registry. One function per record type, so a type's table
+// is one reviewable unit.
+func ruleWitnesses(t *testing.T) map[snapshot.TypeRef][]ruleWitness {
+	t.Helper()
+	return map[snapshot.TypeRef][]ruleWitness{
+		snapshot.TypeRef("review/v1"): reviewRuleWitnesses(t),
+	}
+}
+
+// reviewWitnessBase is one accepted review/v1 candidate. Every witness starts
+// from it and breaks exactly one thing, so the error a witness asserts is
+// attributable to the rule it discharges and to nothing else.
+func reviewWitnessBase(t *testing.T) (snapshot.ValidationContext, []contracts.Subject, contracts.ReviewBody) {
+	t.Helper()
+	ref := snapshot.SnapshotRef{
+		ID: 31, Type: mustTypeRef(t, "repository-change/v1"), Digest: recordDigest('a'),
+	}
+	declarations := validationContextFor(t, map[string]snapshot.SnapshotRef{"change": ref})
+	subjects := []contracts.Subject{
+		contracts.SubjectFromInput("primary", contracts.SubjectRolePrimary, "change", ref),
+	}
+	body := contracts.ReviewBody{
+		Conclusion: "changes-required",
+		Summary:    "one blocking defect",
+		Findings: []contracts.Finding{{
+			ID: "f-1", Severity: "high", Blocking: true,
+			Category: "correctness", Title: "unsafe race", Description: "concurrent writes race",
+			Evidence: []contracts.Anchor{{
+				Subject: "primary",
+				Locator: contracts.Locator{Kind: "file-lines", Path: "main.go", Start: intPointer(12), End: intPointer(18)},
+			}},
+		}},
+	}
+	return declarations, subjects, body
+}
+
+func reviewWitness(t *testing.T, mutate func(*contracts.ReviewBody)) witnessCandidate {
+	t.Helper()
+	declarations, subjects, body := reviewWitnessBase(t)
+	mutate(&body)
+	record, err := contracts.NewRecord(mustTypeRef(t, "review/v1"), subjects, body)
+	if err != nil {
+		t.Fatalf("NewRecord(review/v1): %v", err)
+	}
+	return witnessCandidate{
+		files:        map[string][]byte{"record.json": marshalRecord(t, record)},
+		declarations: declarations,
+	}
+}
+
+func reviewRuleWitnesses(t *testing.T) []ruleWitness {
+	t.Helper()
+	return []ruleWitness{
+		{
+			rule: "changes-required-requires-a-blocking-finding",
+			build: func(t *testing.T) witnessCandidate {
+				return reviewWitness(t, func(body *contracts.ReviewBody) {
+					body.Findings[0].Severity = "low"
+					body.Findings[0].Blocking = false
+				})
+			},
+			wantErr: "changes-required conclusion requires at least one blocking finding",
+		},
+		{
+			rule: "accept-forbids-any-blocking-finding",
+			build: func(t *testing.T) witnessCandidate {
+				return reviewWitness(t, func(body *contracts.ReviewBody) {
+					body.Conclusion = "accept"
+				})
+			},
+			wantErr: "accept conclusion cannot contain a blocking finding",
+		},
+		{
+			rule: "severity-constrains-blocking",
+			build: func(t *testing.T) witnessCandidate {
+				return reviewWitness(t, func(body *contracts.ReviewBody) {
+					body.Findings[0].Severity = "observation"
+				})
+			},
+			wantErr: "observation finding cannot be blocking",
+		},
+		{
+			rule: "non-observation-finding-requires-evidence",
+			build: func(t *testing.T) witnessCandidate {
+				return reviewWitness(t, func(body *contracts.ReviewBody) {
+					body.Findings[0].Evidence = nil
+				})
+			},
+			wantErr: "non-observation finding evidence is required",
+		},
+		{
+			rule: "anchor-subject-must-be-a-declared-subject",
+			build: func(t *testing.T) witnessCandidate {
+				return reviewWitness(t, func(body *contracts.ReviewBody) {
+					body.Findings[0].Evidence[0].Subject = "ghost"
+				})
+			},
+			wantErr: `body/findings/*/evidence/*/subject: "ghost" is not declared by this record`,
+		},
+		{
+			rule: "anchor-locator-kind-selects-which-fields-appear",
+			build: func(t *testing.T) witnessCandidate {
+				return reviewWitness(t, func(body *contracts.ReviewBody) {
+					body.Findings[0].Evidence[0].Locator.Pointer = "/findings/0"
+				})
+			},
+			wantErr: "file-lines anchor contains fields for another locator kind",
+		},
+		{
+			rule: "anchor-locators-are-unverified",
+			documented: "This rule documents a deliberate NON-check: nothing resolves an anchor's " +
+				"locator against any content, because anchor content hashes are deferred. It has no " +
+				"rejection witness by construction. The pin makes the claim executable instead: an " +
+				"anchor naming a path that exists nowhere, at lines nothing has, is ACCEPTED.",
+			pin: func(t *testing.T) {
+				candidate := reviewWitness(t, func(body *contracts.ReviewBody) {
+					body.Findings[0].Evidence[0].Locator.Path = "does/not/exist.go"
+					body.Findings[0].Evidence[0].Locator.Start = intPointer(400000)
+					body.Findings[0].Evidence[0].Locator.End = intPointer(400001)
+				})
+				if err := candidate.admit(t, snapshot.TypeRef("review/v1")); err != nil {
+					t.Fatalf(
+						"the seal gate rejected an unresolvable anchor locator: %v; if locators are now verified, this rule's documentation is stale and the schema document is the thing to change",
+						err,
+					)
+				}
+			},
+		},
+	}
+}
