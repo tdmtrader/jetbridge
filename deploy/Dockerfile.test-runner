@@ -1,5 +1,6 @@
 # Build environment for Concourse CI pipeline tasks.
-# Contains Go toolchain, kubectl, docker CLI, unzip, and source code at /src.
+# Contains Go toolchain, kubectl, docker CLI, unzip, PostgreSQL, and source
+# code at /src.
 FROM golang:1.25-bookworm
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -16,6 +17,30 @@ RUN curl -fsSL "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release
 # Install Docker CLI (for build-image job that mounts Docker socket)
 RUN curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-27.5.1.tgz \
     | tar xz --strip-components=1 -C /usr/local/bin docker/docker
+
+# Install PostgreSQL (for the db-tests job). atc/postgresrunner.Runner.Run
+# calls exec.LookPath("initdb")/exec.LookPath("postgres") directly and
+# self-provisions an ephemeral cluster per Ginkgo parallel process — see
+# atc/postgresrunner/postgresrunner.go and ginkgo.go. It does NOT use
+# pg_ctlcluster or a pre-started system service, so we only need the
+# binaries + the "postgres" OS user the package creates, nothing more.
+# policy-rc.d stops the postinst script from trying (and possibly failing)
+# to start a system-wide cluster during the image build, which we don't want
+# and don't use.
+RUN echo "exit 101" > /usr/sbin/policy-rc.d && chmod +x /usr/sbin/policy-rc.d \
+    && apt-get update && apt-get install -y --no-install-recommends \
+    postgresql \
+    postgresql-contrib \
+    && rm -rf /var/lib/apt/lists/*
+
+# Debian's postgresql-common package keeps the versioned server binaries
+# (initdb, postgres, pg_ctl, ...) out of PATH, under
+# /usr/lib/postgresql/<version>/bin, so multiple major versions can coexist.
+# exec.LookPath needs them on PATH; symlink whichever single version apt
+# installed to a stable, version-independent path so this Dockerfile never
+# has to hardcode a PostgreSQL major version.
+RUN ln -s "$(find /usr/lib/postgresql -mindepth 2 -maxdepth 2 -type d -name bin | head -1)" /usr/lib/postgresql/current-bin
+ENV PATH="/usr/lib/postgresql/current-bin:${PATH}"
 
 # Copy source and cache Go modules
 WORKDIR /src
