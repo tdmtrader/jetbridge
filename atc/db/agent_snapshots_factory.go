@@ -182,6 +182,9 @@ func (factory *agentSnapshotsFactory) CommitSealBatch(
 	if err != nil {
 		return nil, err
 	}
+	if err := lockSealInputDigests(ctx, tx, commit.Context); err != nil {
+		return nil, err
+	}
 	if err := validateSealInvocation(ctx, tx, commit.Context); err != nil {
 		return nil, err
 	}
@@ -387,6 +390,36 @@ func validateSealInvocation(ctx context.Context, tx Tx, commit snapshot.SealComm
 		}
 		if !actualPlanCaptured {
 			return fmt.Errorf("db: snapshot workflow output requires captured actual plan provenance")
+		}
+	}
+	return nil
+}
+
+// lockSealInputDigests serializes this commit against digest GC for every input
+// it is about to bind. Output digests are already covered by the caller's
+// session lease; inputs are not, and validateSealInputs' availability read is
+// otherwise a plain READ COMMITTED snapshot that a collector can invalidate
+// before this transaction commits — leaving a lineage row pointing at content
+// whose bytes were already being deleted. Same mechanism, key space, and
+// lexical acquisition order as lockWorkflowRunInputDigests.
+//
+// Re-entrancy: an input digest that is also an output digest is already held at
+// session scope by this connection's lease. PostgreSQL advisory locks stack
+// within a session, so the transaction-scoped acquisition below returns
+// immediately rather than self-deadlocking.
+func lockSealInputDigests(ctx context.Context, tx Tx, commit snapshot.SealCommitContext) error {
+	unique := make(map[snapshot.Digest]struct{}, len(commit.Inputs))
+	for _, ref := range commit.Inputs {
+		unique[ref.Digest] = struct{}{}
+	}
+	ordered := make([]snapshot.Digest, 0, len(unique))
+	for value := range unique {
+		ordered = append(ordered, value)
+	}
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i] < ordered[j] })
+	for _, value := range ordered {
+		if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, snapshotDigestLockKey(value)); err != nil {
+			return fmt.Errorf("db: lock snapshot seal input digest %s: %w", value, err)
 		}
 	}
 	return nil

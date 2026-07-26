@@ -1804,6 +1804,41 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 		Expect(locations).To(ConsistOf(location))
 	})
 
+	It("seals a pass-through output whose digest equals its input digest", func() {
+		value := digest("b")
+		sourceStage := stage(value, defaultTeam.ID(), "pass-through-source")
+		source := seal(newBuild(defaultTeam.ID()), "pass-through-source", nil, nil,
+			[]snapshot.SealCommitOutput{
+				output("pass-through-source", "result", "opaque/v1", value, sourceStage),
+			})["pass-through-source"].Snapshot
+
+		forwardStage := stage(value, defaultTeam.ID(), "pass-through-forward")
+		forward := output("pass-through-forward", "forwarded", "opaque/v1", value, forwardStage)
+		buildID := newBuild(defaultTeam.ID())
+		done := make(chan error, 1)
+		go func() {
+			defer GinkgoRecover()
+			_, commitErr := factory.CommitSealBatch(ctx, lease, snapshot.SealCommit{
+				Context: snapshot.SealCommitContext{
+					TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(), CreatedBy: "alice",
+					Build: &snapshot.BuildOccurrence{
+						BuildID: buildID, PlanID: "plan-forward", Attempt: "pass-through-forward",
+						StepKind: "task", StepName: "forward",
+					},
+					Inputs:          map[string]snapshot.SnapshotRef{"source": source},
+					InputOrder:      []string{"source"},
+					ExpectedOutputs: []snapshot.Port{forward.Port},
+				},
+				Outputs: []snapshot.SealCommitOutput{forward},
+			})
+			done <- commitErr
+		}()
+		var commitErr error
+		// A self-deadlock on the input lock would hang here instead of returning.
+		Eventually(done).WithTimeout(20 * time.Second).Should(Receive(&commitErr))
+		Expect(commitErr).NotTo(HaveOccurred())
+	})
+
 	Describe("real PostgreSQL digest-lock barriers", func() {
 		BeforeEach(func() {
 			Expect(lease.Close()).To(Succeed())
@@ -1992,6 +2027,85 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 			Expect(manifests).To(Equal(1))
 			Expect(productions).To(Equal(2))
 			Expect(locations).To(Equal(1))
+		})
+
+		It("serializes seal input availability with digest GC", func() {
+			inputValue, outputValue := digest("9"), digest("a")
+			inputRef, _ := makeUnretained(inputValue, "seal-input-source")
+
+			manager := db.NewAgentSnapshotDigestLocker(dbConn)
+			gcLease, err := manager.AcquireMany(ctx, []snapshot.Digest{inputValue})
+			Expect(err).NotTo(HaveOccurred())
+			defer gcLease.Close()
+
+			sealerLease, err := manager.AcquireMany(ctx, []snapshot.Digest{outputValue})
+			Expect(err).NotTo(HaveOccurred())
+			defer sealerLease.Close()
+			staged, err := factory.StageUpload(ctx, sealerLease, snapshot.StageUploadRequest{
+				Digest: outputValue, TeamID: defaultTeam.ID(), Attempt: "seal-input-race",
+				LeaseExpiresAt: time.Now().Add(time.Hour),
+			})
+			Expect(err).NotTo(HaveOccurred())
+			candidate := output("seal-input-race", "result", "opaque/v1", outputValue, staged)
+			buildID := newBuild(defaultTeam.ID())
+
+			commitResult := make(chan error, 1)
+			go func() {
+				defer GinkgoRecover()
+				_, commitErr := factory.CommitSealBatch(ctx, sealerLease, snapshot.SealCommit{
+					Context: snapshot.SealCommitContext{
+						TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(), CreatedBy: "alice",
+						Build: &snapshot.BuildOccurrence{
+							BuildID: buildID, PlanID: "plan-1", Attempt: "seal-input-race",
+							StepKind: "agent", StepName: "produce",
+						},
+						Inputs:          map[string]snapshot.SnapshotRef{"source": inputRef},
+						InputOrder:      []string{"source"},
+						ExpectedOutputs: []snapshot.Port{candidate.Port},
+					},
+					Outputs: []snapshot.SealCommitOutput{candidate},
+				})
+				commitResult <- commitErr
+			}()
+
+			// The commit must not be able to read this input as available while
+			// the collector owns its digest: it has to wait for that lock.
+			Eventually(func() (int, error) {
+				select {
+				case commitErr := <-commitResult:
+					return 0, fmt.Errorf("seal committed before the input digest barrier: %v", commitErr)
+				default:
+				}
+				var waiters int
+				queryErr := dbConn.QueryRow(`
+					SELECT count(*)
+					FROM pg_stat_activity
+					WHERE wait_event_type = 'Lock' AND wait_event = 'advisory'
+				`).Scan(&waiters)
+				return waiters, queryErr
+			}).WithTimeout(5 * time.Second).Should(BeNumerically(">", 0))
+
+			expired, err := factory.MarkDigestExpired(ctx, gcLease, inputValue, time.Now())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(expired).To(BeTrue())
+			Expect(gcLease.Close()).To(Succeed())
+
+			var sealErr error
+			Eventually(commitResult).WithTimeout(10 * time.Second).Should(Receive(&sealErr))
+			Expect(sealErr).To(MatchError(ContainSubstring("unavailable")))
+
+			var productions, lineage int
+			Expect(dbConn.QueryRow(`
+				SELECT count(*)
+				FROM agent_snapshot_productions p
+				JOIN agent_snapshots s ON s.id = p.snapshot_id
+				WHERE s.digest = $1
+			`, outputValue).Scan(&productions)).To(Succeed())
+			Expect(dbConn.QueryRow(`
+				SELECT count(*) FROM agent_snapshot_lineage WHERE input_snapshot_id = $1
+			`, int64(inputRef.ID)).Scan(&lineage)).To(Succeed())
+			Expect(productions).To(Equal(0), "no production may bind content expired at commit time")
+			Expect(lineage).To(Equal(0), "no lineage row may reference expired-at-commit content")
 		})
 
 		It("orders a pin before GC and preserves the newly retained digest", func() {
