@@ -1,0 +1,65 @@
+diff --git a/internal/eos/look.go b/internal/eos/look.go
+index 36d50ea..264e54b 100644
+--- a/internal/eos/look.go
++++ b/internal/eos/look.go
+@@ -3,8 +3,6 @@ package eos
+ import (
+ 	"context"
+ 	"fmt"
+-	"strconv"
+-	"strings"
+ )
+ 
+ // ColorTarget is an absolute color to apply: hue in degrees (0–360) and
+@@ -14,6 +12,12 @@ type ColorTarget struct {
+ 	Sat float64
+ }
+ 
++// blackoutCeiling is the top of the channel range SetLook zeros to clear the stage.
++// A generous upper bound for a single venue's patch; Eos ignores unpatched channels,
++// so sweeping high is harmless — and it lets the blackout be a deterministic write
++// instead of depending on a read of the live set (which is unreliable on real Eos).
++const blackoutCeiling = 1000
++
+ // SetLook establishes a fresh look in one call: it brings every currently-live
+ // channel to zero, then sets channels to level (and, when color is non-nil, to
+ // hue/sat), and returns the resulting live stage. It records nothing — fully
+@@ -38,17 +42,14 @@ func (c *Client) SetLook(ctx context.Context, channels string, level float64, co
+ 		}
+ 	}
+ 
+-	// Read what's live so the new look can replace it. Color isn't needed here —
+-	// we only need the channel numbers to clear them.
+-	live, _, err := c.ActiveChannels(ctx, nil)
+-	if err != nil {
++	// Black out the stage so the new look fully replaces the old one. Do this
++	// read-free: on real Eos the Select Active feedback is intermittently empty even
++	// when channels are live, and a missed read would silently skip the blackout.
++	// Zeroing a wide channel range is deterministic (a write; Eos ignores unpatched
++	// channels), so the look always gets replaced.
++	if err := c.SetChannelLevel(ctx, fmt.Sprintf("1 Thru %d", blackoutCeiling), 0); err != nil {
+ 		return nil, false, err
+ 	}
+-	if len(live) > 0 {
+-		if err := c.SetChannelLevel(ctx, channelsToSpec(live), 0); err != nil {
+-			return nil, false, err
+-		}
+-	}
+ 
+ 	// Set the new look.
+ 	if err := c.SetChannelLevel(ctx, channels, level); err != nil {
+@@ -63,14 +64,3 @@ func (c *Client) SetLook(ctx context.Context, channels string, level float64, co
+ 	// Report the resulting look.
+ 	return c.ActiveChannels(ctx, colorChannels)
+ }
+-
+-// channelsToSpec renders live channel states as an Eos selection ("1 + 2 + 70")
+-// for the strict command-line grammar. The channel numbers come from the console's
+-// own active-channel report, so they are plain positive integers.
+-func channelsToSpec(states []ChannelState) string {
+-	parts := make([]string, len(states))
+-	for i, s := range states {
+-		parts[i] = strconv.Itoa(s.Channel)
+-	}
+-	return strings.Join(parts, " + ")
+-}

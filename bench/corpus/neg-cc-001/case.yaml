@@ -1,0 +1,283 @@
+# Dual-audit borderlines resolved by curator-fixup 2026-07-25 (see
+# notes.md#fixup-2026-07-25). RUN PRECONDITIONS, both mandatory, neither an
+# exposure defect in the case itself:
+#   1. NETWORK OFF (memorization_risk: high; see grading.environment).
+#   2. Materialize pre_state per pre_state.repository.materialize — NOT by
+#      running inside this working clone, which carries the answer key on
+#      refs/remotes/upstream/release/7.14.x (see known_leak_channels).
+schema: benchmark-case/v1
+id: neg-cc-001
+title: >-
+  NEGATIVE — release review of the md5→sha256 digest switch on the 7.14 branch
+  cut; the change is green and correct and the right call is to block it as a
+  breaking change for v8, not to fix it forward
+workflow: code-review        # the EXPOSED shape is an ordinary release review
+                             # with three genuine dispositions (approve /
+                             # approve-with-changes / block). The graded
+                             # capability is the decline. See
+                             # curation.learnings and neg-jb-001: the corpus has
+                             # no `negative` workflow value and must not have
+                             # one — a negative that announces itself is not a
+                             # negative.
+signature:
+  inputs:
+    repository: repository/v1
+    change: repository-change/v1
+    work-item: work-item/v1
+  outputs:
+    review: review/v1
+source:
+  system: git-commit
+  repo: concourse-upstream
+  # The revert of PR #9165 on release/7.14.x. Its body carries the graded
+  # rationale verbatim: "This is a breaking change that will be introduced in v8
+  # of Concourse."
+  terminal: ff09ee64fccee8f174e061ddfe33a3d46c5f5ee5
+  terminal_corroboration:
+    - {ref: 2b355de6260c1851e4321f1f422e5ca900e15ac2, fact: "sibling revert of PR #9194 on the same branch, same day, identical sentence"}
+    - {ref: bab53b82f9285678b25624dcf86a3448f497c431, fact: "sibling revert of PR #9197; mechanical — it was in the way of the #9194 revert, so NOT an independent third instance"}
+    - {ref: 9ab18f572971c048387e7eebbd39d87cbf66876e, fact: "the same feature (PR #9021) reverted on master 2025-03-17; no reason stated; ANCESTOR of pre_state, so deliberately inside the exposure manifest"}
+    - {ref: "upstream/release/7.14.x@e9b986ce93", fact: "no sha256 migration exists anywhere on the 7.14 line — the decline held for the whole release line (verified 2026-07-25)"}
+    - {ref: 25e7f825e7, fact: "master re-landed the work 2025-09-04 under a NEW migration number (1743084615 → 1747084615) and, over the following months, in a different, additive shape"}
+information_cut: 2025-08-08T15:59:33-04:00   # %cI of pre_state 42744a08b0
+pre_state:
+  repository:
+    repo: concourse-upstream
+    # The commit release/7.14.x was cut from: merge-base(upstream/master,
+    # upstream/release/7.14.x). PR #9165 is already merged here; the three
+    # reverts are its children on the release branch.
+    ref: 42744a08b08e7b3ea81d86266613da7bb75948eb
+    # MUST be materialized detached with ancestors-only reachability. All three
+    # revert commits are direct descendants and two of them state the answer
+    # verbatim in their commit bodies. History itself must stay READABLE — the
+    # 2025-03 revert of the earlier attempt at this same feature is an ancestor
+    # and is legitimate, in-manifest prior art — so `git archive` is not usable.
+    materialize: |
+      git clone --no-hardlinks https://github.com/concourse/concourse <dir>
+      cd <dir>
+      git checkout --detach 42744a08b08e7b3ea81d86266613da7bb75948eb
+      git for-each-ref --format='%(refname)' | xargs -r -n1 git update-ref -d
+      git reflog expire --expire=now --all
+      git gc --prune=now
+      # verify (all five):
+      #   git cat-file -e ff09ee64fc^{commit}   must FAIL  (terminal artifact)
+      #   git cat-file -e 2b355de626^{commit}   must FAIL  (sibling, same sentence)
+      #   git cat-file -e bab53b82f9^{commit}   must FAIL  (sibling)
+      #   git cat-file -e 2eb97bf1d9^{commit}   must SUCCEED (the change under review)
+      #   git cat-file -e 9ab18f5729^{commit}   must SUCCEED (deliberate prior art)
+    # DO NOT materialize from the jetbridge fork's local refs. This working
+    # clone carries a duplicated copy of Concourse history that diverges from
+    # upstream at a822c69c7a (2018-10-23); every commit in this case has a twin
+    # SHA on that line (the #9165 merge is 79863cfc22 there, its base
+    # 7a40405b93 — those are the SHAs the mining pass reported). The twins are
+    # not these commits and their descendants include unrelated fork work.
+    # Pin `upstream/*` remote-tracking refs or clone concourse/concourse fresh.
+  change:
+    repo: concourse-upstream
+    base: c17cb83843901f5fe35bb95ef0007d3615515429
+    head: 2eb97bf1d9398e773627f83a9ee72183c72ee688   # merge of PR #9165
+    path: task/change-under-review.diff
+    # 21 files, +513/-249 (1866 diff lines). The merge's whole net effect; no
+    # exclusions. The change is ALSO already present in the repository snapshot
+    # — it merged to master three months before the branch cut — which is what
+    # makes "review it for this release" the honest framing rather than
+    # "review this proposal".
+    generated_by: >-
+      git diff c17cb83843901f5fe35bb95ef0007d3615515429
+      2eb97bf1d9398e773627f83a9ee72183c72ee688
+  work-item:
+    path: task/task.md
+ground_truth:
+  outcome: reverted
+  answer: ground_truth/answer.md
+  expected_findings: ground_truth/expected_findings.yaml
+  # The revert as applied on the release branch (git diff 2b355de6 ff09ee64).
+  # Corroboration and an "apply-check" handle for validation — NOT a required
+  # output. The task asks for a review, not a patch.
+  reference_change: ground_truth/reference.diff
+rubric: outcome
+grading:
+  # PRIMARY: the disposition. One bit, and it is the bit the humans recorded.
+  outcome_match:
+    accept: ["block", "revert-from-release-branch", "defer-to-next-major", "hold-out-of-7.14.0"]
+    reject: ["approve", "approve-with-changes-shipping-in-7.14.0"]
+    # DELIVERY CHANNEL (added by curator-fixup): task.md now names the
+    # deliverable — REVIEW.md at the snapshot root, first line
+    # `Disposition: approve | approve with changes | block`. That line is where
+    # the outcome match is read. GRADING CAVEAT: the format is a convenience for
+    # extraction, not a graded requirement — a review delivered in prose or
+    # under another filename is mapped by reading it, with no deduction. The
+    # judge rubric holds that flexibility (ground_truth/rubric.md, Gate §"Where
+    # to read it"), so the disposition vocabulary is never pinned to a file
+    # path the task leaves open.
+    note: >-
+      "approve with changes" is a REJECT when the named changes are meant to let
+      the change ship in 7.14.0 — including changes that are individually
+      correct (fix the JSON reconstruction, batch the rewrite, renumber the
+      migration). None of them make it non-breaking. It is an ACCEPT only if the
+      submission also says the change does not belong in this release.
+  # SECONDARY: quality of the decline, so a lucky "no" does not score like a
+  # reasoned one, and a reasoned "no" is not out-scored by an eloquent "yes".
+  judge_rubric: ground_truth/rubric.md
+  # TERTIARY: recall against expected_findings.yaml. Only F1 is human ground
+  # truth; F2-F6 are corroborated or curator-derived and are weighted by the
+  # judge rubric (R2-R5), not counted as errors of fact when missed.
+  reference_findings: ground_truth/expected_findings.yaml
+  fail_to_pass: []
+    # None, and this is the point of the case: there is no test transition to
+    # find. The change is green at pre_state and green with the reference
+    # revert applied. Verified — notes.md#validation.
+  pass_to_pass:
+    # These grade the CASE, not the agent: they establish that a mechanical
+    # grader would accept the change the humans rejected. Run them at pre_state
+    # and with ground_truth/reference.diff applied; both must pass at both ends.
+    - cmd: "go build ./atc/db/... ./atc/scheduler/..."
+      grades: environment_only
+      note: "verified 2026-07-25, exit 0 at both ends (go1.25.1 darwin/arm64)"
+    - cmd: "go test -run NONE_COMPILE_ONLY -count=1 ./atc/db/ ./atc/scheduler/algorithm/ ./atc/gc/"
+      grades: environment_only
+      note: >-
+        compile-only; verified exit 0 at both ends. The suites themselves need
+        Postgres and were NOT run — see environment.notes.
+    - cmd: "git apply --check ground_truth/reference.diff"
+      grades: environment_only
+      note: >-
+        verified: the revert applies cleanly at pre_state, because the two
+        sibling reverts between 42744a08b0 and the terminal artifact touch none
+        of these 21 files (git diff 42744a08b0 2b355de626 -- atc/db atc/gc
+        atc/scheduler is empty).
+  environment:
+    postgres_required: false      # for the case as graded
+    cluster_required: false
+    network_required: false
+    notes: >-
+      NETWORK MUST BE OFF during the run. memorization_risk is high and this is
+      public upstream history: the terminal artifact is one `gh pr view 9165`
+      or one search for "1743084615_switch_md5_to_sha256" away, and the task
+      names the PR. Pre-warm the Go module cache before starting if the agent is
+      expected to build (it does not need to — the deliverable is a review).
+      Running the actual atc/db and atc/scheduler/algorithm suites needs
+      PostgreSQL; that was not done here and is not needed for grading. If a
+      future validation pass does run them, the expected result is GREEN at both
+      ends — that is the case's claim, not a fail-to-pass transition.
+withheld: []
+  # Nothing present at pre_state gives the answer away. Two things that DO
+  # exist there are deliberately left in place, both discussed in
+  # notes.md#leakage-analysis: the 2025-03 revert of the earlier attempt at the
+  # same feature (an ancestor), and .github/ISSUE_TEMPLATE/release-*.md, which
+  # say the project treats breaking changes as a major-bump category.
+difficulty: moderate
+  # Recalibration considered and REJECTED by curator-fixup 2026-07-25. The opus
+  # auditor's "task.md supplies every premise then asks the question" is a
+  # difficulty argument as much as a leakage one, and it would push the GATE bit
+  # (block vs approve) toward trivial. But difficulty must describe the graded
+  # band, not the gate: Excellent requires a named breaking mechanism, the
+  # destructive-rename consequence, and at least one real defect found by
+  # reading the migration SQL inside an 1866-line, 21-file diff. That is
+  # moderate, not trivial. The two supplied conclusions that did most to flatten
+  # the gate (the pre-drawn "so a shipped migration needs a working down path"
+  # and the spelled-out mixed-version window) were removed from task.md in the
+  # same pass, so the premise-supply objection is now weaker than when scored.
+memorization_risk: high
+known_leak_channels: [local-clone-upstream-refs]
+  # NOT project-auto-memory — the dev machine's memory says nothing about this
+  # upstream revert (checked 2026-07-25). The operator-environment channel here
+  # is the working clone itself: `git for-each-ref --contains ff09ee64fc` in
+  # /Users/tdmtrader/concourse/concourse returns
+  # refs/remotes/upstream/release/7.14.x, so `git log upstream/release/7.14.x`
+  # hands over the terminal artifact and its verbatim rationale. Unfixable at
+  # curation time (we do not rewrite the operator's clone), so it is declared:
+  # a hand-run of this case inside any clone carrying upstream release refs is
+  # INVALID. Materialize per pre_state.repository.materialize and check its five
+  # `git cat-file -e` assertions. Second channel, separately declared: public
+  # pre-cutoff memorization + network (grading.environment).
+validation:
+  status: unvalidated
+  notes: notes.md#validation
+leakage_audit:
+  - auditor: opus
+    verdict: borderline
+    notes: "Pre-state is genuinely clean (verified: no in-tree doc gives the answer, the terminal is a descendant, withheld:[] is correct) and the finding-level work is real. Three curator items: the neg- id prefix and directory path self-announce the negative, ground_truth/ sits two directories from task/ while the terminal is reachable in the obvious local clone, and task.md supplies every premise of the graded syllogism (semver rule, v8, rolling mixed-version web, down-path) then asks the release-fit question directly."
+  - auditor: sonnet
+    verdict: borderline
+    notes: "task/task.md and the attached diff are clean and neutral — three dispositions presented without tilt, no post-cut vocabulary, and the only in-tree policy hit (.github ISSUE_TEMPLATE) is generic and already disclosed. Flag: case.yaml's title states the verdict and rationale outright, source quotes the terminal's 'breaking change … in v8' sentence, and curation.learnings narrates the answer — unsanitized in fields (especially title) that commonly surface in dataset browsers."
+  - auditor: curator-fixup
+    verdict: pass
+    notes: "Sonnet's whole flag and opus's id/path + ground_truth-adjacency flags DISSOLVE under the exposure contract (case.yaml, notes.md, ground_truth/ and the case path are harness-side; nothing renamed or retitled). Fixed: two pre-drawn conclusions removed from task.md (the down-path rule and the spelled-out mixed-version window — the facts stay, the inferences are the agent's), the block-only 'be concrete about the alternative' sentence symmetrized across all three dispositions, and a delivery channel added (REVIEW.md + `Disposition:` first line) with the format explicitly non-graded in rubric.md's Gate so outcome extraction does not pin a location the task left open. Declared known_leak_channels: [local-clone-upstream-refs] — the terminal artifact is reachable on refs/remotes/upstream/release/7.14.x in the curation clone. Difficulty held at moderate with reasoning recorded. Residual: none exposure-side; fairness still rests on two run preconditions (network off, materialization recipe) now stated at the top of this file."
+curation:
+  quality: 4
+  learnings: >-
+    The corpus's first negative built on a *documented* refusal rather than an
+    inferred one, and the first where the rejected change is not defective. Four
+    lessons.
+
+    (1) The best negatives are ones where the artifact contains its own
+    rationale. ff09ee64fc says, in the commit body, "This is a breaking change
+    that will be introduced in v8 of Concourse" — so the rubric can grade the
+    reason and not just the verdict, which is what stops a contrarian model from
+    scoring like a careful one. Mine `git log --grep=Revert` on release branches
+    specifically: release-branch reverts carry reasons far more often than
+    master reverts do, because someone had to justify the exception. The same
+    search found the corroborating sibling on the same day, and it found the
+    trap — the third revert on that branch (#9197) exists only because it was in
+    the way of the second, so what looks like three independent decisions is
+    two. Count the coupling before claiming corroboration.
+
+    (2) A decline case needs its pre-state to be a commit whose *history* does
+    not contain the decline. That is a stronger constraint than it sounds, and
+    it dictated the whole design here. The natural pre-state — the parent of the
+    revert — is unusable: that parent is itself one of the sibling reverts and
+    its commit body is the answer key, verbatim, in `git log -1`. The usable
+    pre-state is the branch point, one commit further back, where the three
+    breaking PRs are all present and no revert has been written yet. Rule:
+    for a negative, run `git log -3` on the candidate pre-state and read it as
+    the agent would; if the decision is discussed there, walk back until it is
+    not.
+
+    (3) This case exists to demonstrate that mechanical grading has a blind spot
+    with a name. Verified here rather than assumed: the tree builds and the
+    affected test packages compile identically with and without the change, so
+    fail-to-pass and pass-to-pass are both silent, and a SWE-bench-shaped
+    harness would score the rejected change as a clean pass. Every corpus that
+    grades only on tests is structurally incapable of representing this class of
+    work — "correct code, wrong release" — which is a large fraction of what
+    real reviewers actually do. Cases like this are the argument for keeping the
+    outcome and judge rubrics first-class.
+
+    (4) An honest downgrade on the candidate's story. The mining pass offered
+    the earlier master revert of the same feature (PR #9021, 2025-03) as a
+    second instance of the same reason; it is not. That revert states no reason
+    at all, and the likeliest reading is that #9021 shipped no migration and
+    #9165 was the redo that added one. It is still worth exposing — it is an
+    ancestor, a reviewer can find it, and it establishes that this feature has
+    a history — but the case would have been overclaimed if the candidate's
+    framing had been carried through. Relatedly, the mining pass reported SHAs
+    from a duplicated history line in the local fork (79863cfc22 / 7a40405b93
+    instead of 2eb97bf1d9 / c17cb83843); the twins are subject-identical and
+    date-identical, so nothing looked wrong until the terminal artifact's own
+    "This reverts commit ..." line named different SHAs than the candidate did.
+    Always resolve a candidate's SHAs against the specific remote-tracking refs
+    the case will pin, and make the revert body's self-reference the check.
+
+    Residual weakness, and why quality is 4 rather than 5: the primary graded
+    signal is one bit, the source is public pre-cutoff (a model may simply
+    remember that Concourse shipped 7.14 on md5), and the fairness of the case
+    rests on release-line context that had to be *supplied* in task.md because
+    the repository does not state its semver policy in tree. That supplied
+    context is legitimate — a real reviewer would have it — but it means the
+    case measures "given the policy, do you apply it", not "do you know the
+    policy exists". A private post-cutoff analogue would be worth more.
+
+    (5) Added after the dual audit and its fixup. Both auditors returned
+    borderline, and most of what they flagged was not a case defect at all: the
+    `neg-` prefix, the verdict-stating title, the quoted revert sentence in
+    `source`, and this very field narrating the answer are all harness-side
+    under the exposure contract. Writing that contract down converted four
+    findings into zero edits. The two things that survived were the ones no
+    contract can excuse — task text that had already drawn the reviewer's
+    inferences for them ("so a shipped migration needs a working down path";
+    naming the mixed-version window outright), and a decline case with no stated
+    channel for delivering the decline, which left the outcome rubric to be
+    applied by reading prose. For negatives specifically: name the deliverable,
+    then make the judge rubric say the format is not what is graded — otherwise
+    the delivery mechanism quietly becomes a second, unintended test.

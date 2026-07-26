@@ -1,0 +1,4443 @@
+_meta:
+  show: DareToDream2026
+  console: "tcp+slip 192.168.1.145:52999"
+  cue_list: 1
+  scope: "0.1-20.1"
+  kind: captured-current-state
+  current_captured: "0.1-20.1 fully captured (0.1-9.5 on 2026-06-24; 9.6-20.1 on 2026-06-25). Song-13 ladder chases (13.2/13.3/13.5) captured as stable base only — see notes."
+  rig_ref: rig.yaml
+  vocab_ref: show-map-README.md
+  target_note: "target.look initialized = current.look; EDIT cues to change, `diff show-current.yaml show-target.yaml` shows your edits"
+songs:
+  1:
+    name: Overture
+    audio: "01 Overture.mp3"
+  2:
+    name: A Dream Is A Wish Your Heart Makes
+    audio: "02 A Dream Is A Wish Your Heart Makes.mp3"
+  3:
+    name: Be Our Guest
+    audio: "03 Be Our Guest.mp3"
+  4:
+    name: When You Wish Upon A Star / A Dream Is A Wish (Reprise)
+    audio: "04 When You Wish Upon A Star A Dream Is A Wish Your Heart Makes (Reprise).mp3"
+  5:
+    name: "How Far I'll Go / Part Of Your World"
+    audio: "05_How_Far_I'll_Go_Part_Of_Your_World.mp3"
+  6:
+    name: Just Around The Riverbend / Out There
+    audio: "06 Just Around The Riverbend Out There.mp3"
+  8:
+    name: Surface Pressure
+    audio: "08 Surface Pressure.mp3"
+  9:
+    name: Let It Go
+    audio: "09 Let It Go.mp3"
+  11:
+    name: "You've Got A Friend In Me"
+    audio: "11 You've Got A Friend In Me.mp3"
+  13:
+    name: Try Everything
+    audio: "13 Try Everything.mp3"
+  14:
+    name: Go The Distance
+    audio: "14 Go The Distance.mp3"
+  15:
+    name: When I Am Older
+    audio: "15 When I Am Older.mp3"
+  16:
+    name: Hakuna Matata / Bare Necessities
+    audio: "16 Hakuna Matata Bare Necessities.mp3"
+  17:
+    name: Nonsense Medley
+    audio: "17 Nonsense Medley.mp3"
+  18:
+    name: Remember Me
+    audio: "18 Remember Me.mp3"
+  19:
+    name: "I've Got A Dream"
+    audio: "19 I've Got A Dream.mp3"
+  20:
+    name: Finale
+    audio: "20 Finale.mp3"
+cut_songs_in_body:
+  - 7
+  - 10
+  - 12
+cues:
+  - number: "0.1"
+    song: null
+    song_name: (preshow)
+    audio: null
+    moment: ""
+    look:
+      house: 100
+      entrance_aisle:
+        level: 100
+      audience_stair:
+        level: 100
+      alcove:
+        level: 100
+      desires:
+        level: 20
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+          - usr
+        color:
+          hue: 27.8
+          sat: 81.5
+          name: orange
+  - number: "0.2"
+    song: null
+    song_name: (preshow)
+    audio: null
+    moment: ""
+    look:
+      house:
+        ch3: 59
+        ch4: 58
+      entrance_aisle:
+        level: 56
+      audience_stair:
+        level: 100
+      alcove:
+        level: 51
+      desires:
+        level: 20
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+          - usr
+        color:
+          hue: 27.6
+          sat: 72.0
+          name: orange
+  - number: "1.1"
+    song: 1
+    song_name: Overture
+    audio: "01 Overture.mp3"
+    moment: ""
+    look:
+      house:
+        ch3: 27
+        ch4: 26
+      entrance_aisle:
+        level: 15
+      audience_stair:
+        level: 100
+      alcove:
+        level: 14
+      desires:
+        levels:
+          usl: 22
+          sl: 23
+          dsl: 23
+          dcs: 23
+          dsr: 23
+          sr: 23
+          usr: 23
+        color:
+          hue: 27.7
+          sat: 74.0
+          name: orange
+    notes: "Content changed THIS session via 'save in 1.1 without lights' update_cue — likely overwrote original (was red ladders+trough+warm desires). VERIFY vs backup."
+  - number: "1.2"
+    song: 1
+    song_name: Overture
+    audio: "01 Overture.mp3"
+    moment: ""
+    look:
+      house: 7
+      audience_stair:
+        level: 100
+      desires:
+        levels:
+          usl: 28
+          sl: 28
+          dsl: 28
+          dcs: 28
+          dsr: 28
+          sr: 28
+          usr: 29
+        color:
+          hue: 29.0
+          sat: 91.8
+          name: orange
+  - number: "1.3"
+    song: 1
+    song_name: Overture
+    audio: "01 Overture.mp3"
+    moment: ""
+    look:
+      ladders:
+        yellow:
+          booms:
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 35
+        orange:
+          booms:
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 15
+      audience_stair:
+        level: 100
+      trough:
+        level: 35
+        at:
+          - sl
+          - sr
+      desires:
+        level: 30
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+          - usr
+        color:
+          hue: 30.0
+          sat: 100.0
+          name: orange
+  - number: "1.4"
+    song: 1
+    song_name: Overture
+    audio: "01 Overture.mp3"
+    moment: ""
+    look: BLACKOUT
+  - number: "1.99"
+    song: 1
+    song_name: Overture
+    audio: "01 Overture.mp3"
+    moment: ""
+    look: ABSENT (new cue — create with record_cue)
+    proposal: NEW bridge after Overture
+  - number: "2.1"
+    song: 2
+    song_name: A Dream Is A Wish Your Heart Makes
+    audio: "02 A Dream Is A Wish Your Heart Makes.mp3"
+    moment: ""
+    look:
+      audience_stair:
+        level: 100
+      desires:
+        level: 13
+        at:
+          - usl
+        color:
+          hue: 30.0
+          sat: 100.0
+          name: orange
+  - number: "2.2"
+    song: 2
+    song_name: A Dream Is A Wish Your Heart Makes
+    audio: "02 A Dream Is A Wish Your Heart Makes.mp3"
+    moment: ""
+    look:
+      audience_stair:
+        level: 100
+      desires:
+        levels:
+          usl: 45
+          sl: 15
+          dsl: 15
+          dcs: 15
+          dsr: 15
+          sr: 15
+          usr: 15
+        color:
+          hue: 30.0
+          sat: 100.0
+          name: orange
+  - number: "2.3"
+    song: 2
+    song_name: A Dream Is A Wish Your Heart Makes
+    audio: "02 A Dream Is A Wish Your Heart Makes.mp3"
+    moment: ""
+    look:
+      audience_stair:
+        level: 100
+      circle:
+        level: 15
+        at:
+          - 1
+          - 3
+          - 5
+          - 7
+          - 9
+          - 11
+      desires:
+        level: 35
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+          - usr
+        color:
+          hue: 30.0
+          sat: 100.0
+          name: orange
+  - number: "2.4"
+    song: 2
+    song_name: A Dream Is A Wish Your Heart Makes
+    audio: "02 A Dream Is A Wish Your Heart Makes.mp3"
+    moment: ""
+    look:
+      ladders:
+        yellow:
+          booms:
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 15
+        orange:
+          booms:
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 25
+      audience_stair:
+        level: 100
+      circle:
+        level: 20
+        at:
+          - 1
+          - 3
+          - 5
+          - 7
+          - 9
+          - 11
+      desires:
+        level: 35
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+          - usr
+        color:
+          hue: 30.0
+          sat: 100.0
+          name: orange
+  - number: "2.5"
+    song: 2
+    song_name: A Dream Is A Wish Your Heart Makes
+    audio: "02 A Dream Is A Wish Your Heart Makes.mp3"
+    moment: ""
+    look:
+      ladders:
+        yellow:
+          booms:
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 15
+        orange:
+          booms:
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 25
+        pink:
+          booms:
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 40
+      audience_stair:
+        level: 100
+      circle:
+        level: 20
+        at:
+          - 1
+          - 3
+          - 5
+          - 7
+          - 9
+          - 11
+      desires:
+        level: 35
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+          - usr
+        color:
+          hue: 30.0
+          sat: 100.0
+          name: orange
+  - number: "2.99"
+    song: 2
+    song_name: A Dream Is A Wish Your Heart Makes
+    audio: "02 A Dream Is A Wish Your Heart Makes.mp3"
+    moment: ""
+    look: ABSENT (new cue — create with record_cue)
+    proposal: NEW bridge
+  - number: "3.1"
+    song: 3
+    song_name: Be Our Guest
+    audio: "03 Be Our Guest.mp3"
+    moment: ""
+    look:
+      ladders:
+        yellow:
+          booms:
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 15
+        orange:
+          booms:
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 25
+      audience_stair:
+        level: 100
+      circle:
+        level: 35
+        at:
+          - 1
+          - 3
+          - 5
+          - 7
+          - 9
+          - 11
+      desires:
+        level: 25
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+          - usr
+        color:
+          hue: 30.0
+          sat: 100.0
+          name: orange
+  - number: "3.2"
+    song: 3
+    song_name: Be Our Guest
+    audio: "03 Be Our Guest.mp3"
+    moment: ""
+    look:
+      ladders:
+        yellow:
+          boom_levels:
+            3: 20
+            4: 10
+            5: 20
+            6: 10
+        orange:
+          boom_levels:
+            3: 10
+            4: 40
+            5: 10
+            6: 40
+        white:
+          booms:
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 15
+      audience_stair:
+        level: 100
+      circle:
+        level: 20
+        at:
+          - 1
+          - 3
+          - 5
+          - 7
+          - 9
+          - 11
+      desires:
+        level: 35
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+          - usr
+        color:
+          hue: 30.0
+          sat: 100.0
+          name: orange
+  - number: "3.3"
+    song: 3
+    song_name: Be Our Guest
+    audio: "03 Be Our Guest.mp3"
+    moment: ""
+    look:
+      ladders:
+        yellow:
+          boom_levels:
+            1: 25
+            2: 15
+            3: 25
+            4: 15
+            5: 25
+            6: 15
+        orange:
+          boom_levels:
+            1: 15
+            2: 45
+            3: 15
+            4: 45
+            5: 15
+            6: 45
+        pink:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 15
+      audience_stair:
+        level: 100
+      circle:
+        level: 25
+        at:
+          - 1
+          - 3
+          - 5
+          - 7
+          - 9
+          - 11
+      desires:
+        level: 40
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+          - usr
+        color:
+          hue: 30.0
+          sat: 100.0
+          name: orange
+  - number: "3.4"
+    song: 3
+    song_name: Be Our Guest
+    audio: "03 Be Our Guest.mp3"
+    moment: ""
+    look:
+      ladders:
+        yellow:
+          booms:
+            - 5
+            - 6
+          level: 40
+        orange:
+          booms:
+            - 5
+            - 6
+          level: 60
+        pink:
+          booms:
+            - 5
+            - 6
+          level: 30
+      audience_stair:
+        level: 100
+      desires:
+        level: 40
+        at:
+          - usl
+          - usr
+        color:
+          hue: 40.9
+          sat: 100.0
+          name: amber
+    notes: "Sparse booms-5/6-only moment + desires 113&119 only."
+  - number: "3.5"
+    song: 3
+    song_name: Be Our Guest
+    audio: "03 Be Our Guest.mp3"
+    moment: ""
+    look:
+      ladders:
+        yellow:
+          boom_levels:
+            1: 29
+            2: 32
+            3: 30
+            4: 33
+            5: 40
+            6: 40
+        orange:
+          boom_levels:
+            1: 53
+            2: 58
+            3: 55
+            4: 59
+            5: 60
+            6: 60
+        pink:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 30
+      audience_stair:
+        level: 100
+      pars:
+        level: 20
+        at:
+          - usl
+          - usc
+          - usr
+      circle:
+        level: 20
+        at:
+          - 1
+          - 3
+          - 5
+          - 7
+          - 9
+          - 11
+      desires:
+        levels:
+          usl: 40
+          sl: 30
+          dsl: 30
+          dcs: 30
+          dsr: 30
+          sr: 30
+          usr: 40
+        color:
+          hue: 40.9
+          sat: 100.0
+          name: amber
+          gradient:
+            from: 13.9
+            to: 40.9
+  - number: "3.6"
+    song: 3
+    song_name: Be Our Guest
+    audio: "03 Be Our Guest.mp3"
+    moment: ""
+    look:
+      ladders:
+        yellow:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 40
+        orange:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 60
+        pink:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 30
+      audience_stair:
+        level: 100
+      pars:
+        level: 20
+        at:
+          - usl
+          - usc
+          - usr
+      circle:
+        level: 35
+        at:
+          - 1
+          - 3
+          - 5
+          - 7
+          - 9
+          - 11
+  - number: "3.7"
+    song: 3
+    song_name: Be Our Guest
+    audio: "03 Be Our Guest.mp3"
+    moment: ""
+    look:
+      ladders:
+        yellow:
+          boom_levels:
+            1: 3
+            3: 2
+            5: 1
+      audience_stair:
+        level: 100
+  - number: "3.99"
+    song: 3
+    song_name: Be Our Guest
+    audio: "03 Be Our Guest.mp3"
+    moment: ""
+    look:
+      audience_stair:
+        level: 100
+      circle:
+        level: 35
+        at:
+          - 1
+          - 3
+          - 5
+          - 7
+          - 9
+          - 11
+      desires:
+        level: 20
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+          - usr
+        color:
+          hue: 30.0
+          sat: 100.0
+          name: orange
+  - number: "4.1"
+    song: 4
+    song_name: When You Wish Upon A Star / A Dream Is A Wish (Reprise)
+    audio: "04 When You Wish Upon A Star A Dream Is A Wish Your Heart Makes (Reprise).mp3"
+    moment: ""
+    look:
+      ladders:
+        yellow:
+          boom_levels:
+            1: 68
+            2: 73
+        orange:
+          boom_levels:
+            1: 56
+            2: 57
+        pink:
+          boom_levels:
+            1: 29
+            2: 30
+      audience_stair:
+        level: 100
+      lonestars:
+        level: 25
+        at:
+          - dsl
+          - dsr
+          - hsl
+          - hcs
+          - hsr
+      desires:
+        level: 30
+        at:
+          - dsl
+          - dcs
+          - dsr
+  - number: "4.2"
+    song: 4
+    song_name: When You Wish Upon A Star / A Dream Is A Wish (Reprise)
+    audio: "04 When You Wish Upon A Star A Dream Is A Wish Your Heart Makes (Reprise).mp3"
+    moment: ""
+    look:
+      ladders:
+        yellow:
+          boom_levels:
+            1: 80
+            2: 80
+            3: 13
+            4: 16
+        orange:
+          boom_levels:
+            1: 60
+            2: 60
+            3: 14
+            4: 15
+        pink:
+          boom_levels:
+            1: 30
+            2: 30
+            3: 8
+            4: 9
+      audience_stair:
+        level: 100
+      lonestars:
+        level: 25
+        at:
+          - dsl
+          - dsr
+          - hsl
+          - hcs
+          - hsr
+      desires:
+        level: 30
+        at:
+          - dsl
+          - dcs
+          - dsr
+        color:
+          hue: 13.9
+          sat: 100.0
+          name: red
+  - number: "4.99"
+    song: 4
+    song_name: When You Wish Upon A Star / A Dream Is A Wish (Reprise)
+    audio: "04 When You Wish Upon A Star A Dream Is A Wish Your Heart Makes (Reprise).mp3"
+    moment: ""
+    look:
+      ladders:
+        yellow:
+          boom_levels:
+            1: 80
+            2: 80
+            3: 13
+            4: 16
+        orange:
+          boom_levels:
+            1: 60
+            2: 60
+            3: 14
+            4: 15
+        pink:
+          boom_levels:
+            1: 30
+            2: 30
+            3: 8
+            4: 9
+      audience_stair:
+        level: 100
+      lonestars:
+        levels:
+          dsl: 25
+          dsr: 25
+          hsl: 25
+          hcs: 80
+          hsr: 25
+      desires:
+        level: 20
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+          - usr
+        color:
+          hue: 40.9
+          sat: 100.0
+          name: amber
+          gradient:
+            from: 13.9
+            to: 40.9
+  - number: "5.1"
+    song: 5
+    song_name: "How Far I'll Go / Part Of Your World"
+    audio: "05_How_Far_I'll_Go_Part_Of_Your_World.mp3"
+    moment: ""
+    look:
+      ladders:
+        yellow:
+          boom_levels:
+            1: 39
+            2: 35
+            3: 6
+            4: 7
+        green:
+          boom_levels:
+            1: 36
+            2: 38
+            3: 37
+            4: 39
+        lt_blue:
+          boom_levels:
+            1: 33
+            2: 34
+            3: 34
+            4: 35
+        orange:
+          boom_levels:
+            1: 17
+            2: 15
+            3: 4
+            4: 4
+        pink:
+          boom_levels:
+            1: 7
+            2: 6
+            3: 2
+            4: 2
+      audience_stair:
+        level: 100
+      circle:
+        level: 17
+        at:
+          - 1
+          - 3
+          - 5
+          - 7
+          - 9
+          - 11
+      lonestars:
+        levels:
+          dsl: 71
+          dsr: 73
+          hsl: 0
+          hcs: 75
+          hsr: 0
+      desires:
+        level: 20
+        at:
+          - dsl
+          - dsr
+        color:
+          hue: 160.9
+          sat: 100.0
+          name: teal
+  - number: "5.2"
+    song: 5
+    song_name: "How Far I'll Go / Part Of Your World"
+    audio: "05_How_Far_I'll_Go_Part_Of_Your_World.mp3"
+    moment: ""
+    look:
+      ladders:
+        green:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+          level: 60
+        lt_blue:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+          level: 50
+      audience_stair:
+        level: 100
+      circle:
+        level: 10
+        at:
+          - 1
+          - 3
+          - 5
+          - 7
+          - 9
+          - 11
+      lonestars:
+        levels:
+          dsl: 75
+          dsr: 75
+          hsl: 45
+          hcs: 75
+          hsr: 45
+      desires:
+        level: 20
+        at:
+          - dsl
+          - dsr
+        color:
+          hue: 160.9
+          sat: 100.0
+          name: teal
+    notes: Byte-identical to 6.1 and 6.2 — confirm intentional hold.
+  - number: "5.99"
+    song: 5
+    song_name: "How Far I'll Go / Part Of Your World"
+    audio: "05_How_Far_I'll_Go_Part_Of_Your_World.mp3"
+    moment: ""
+    look: ABSENT (new cue — create with record_cue)
+    proposal: NEW bridge
+  - number: "6.1"
+    song: 6
+    song_name: Just Around The Riverbend / Out There
+    audio: "06 Just Around The Riverbend Out There.mp3"
+    moment: ""
+    look:
+      ladders:
+        green:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+          level: 60
+        lt_blue:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+          level: 50
+      audience_stair:
+        level: 100
+      circle:
+        level: 10
+        at:
+          - 1
+          - 3
+          - 5
+          - 7
+          - 9
+          - 11
+      lonestars:
+        levels:
+          dsl: 75
+          dsr: 75
+          hsl: 45
+          hcs: 75
+          hsr: 45
+      desires:
+        level: 20
+        at:
+          - dsl
+          - dsr
+        color:
+          hue: 160.9
+          sat: 100.0
+          name: teal
+    notes: Identical to 5.2/6.2.
+  - number: "6.2"
+    song: 6
+    song_name: Just Around The Riverbend / Out There
+    audio: "06 Just Around The Riverbend Out There.mp3"
+    moment: ""
+    look:
+      ladders:
+        green:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+          level: 60
+        lt_blue:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+          level: 50
+      audience_stair:
+        level: 100
+      circle:
+        level: 10
+        at:
+          - 1
+          - 3
+          - 5
+          - 7
+          - 9
+          - 11
+      lonestars:
+        levels:
+          dsl: 75
+          dsr: 75
+          hsl: 45
+          hcs: 75
+          hsr: 45
+      desires:
+        level: 20
+        at:
+          - dsl
+          - dsr
+        color:
+          hue: 160.9
+          sat: 100.0
+          name: teal
+    notes: Identical to 5.2/6.1.
+  - number: "6.3"
+    song: 6
+    song_name: Just Around The Riverbend / Out There
+    audio: "06 Just Around The Riverbend Out There.mp3"
+    moment: ""
+    look:
+      ladders:
+        green:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+          level: 50
+        lt_blue:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 60
+      audience_stair:
+        level: 100
+      circle:
+        level: 10
+        at:
+          - 1
+          - 3
+          - 5
+          - 7
+          - 9
+          - 11
+      lonestars:
+        levels:
+          dsl: 75
+          dsr: 75
+          hsl: 45
+          hcs: 75
+          hsr: 45
+      desires:
+        level: 15
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+          - usr
+        color:
+          hue: 35.5
+          sat: 82.6
+          name: amber
+  - number: "6.4"
+    song: 6
+    song_name: Just Around The Riverbend / Out There
+    audio: "06 Just Around The Riverbend Out There.mp3"
+    moment: ""
+    look:
+      circle:
+        level: 20
+        at:
+          - 1
+          - 3
+          - 5
+          - 7
+          - 9
+          - 11
+      specials:
+        level: 25
+        at:
+          - center_a
+          - center_b
+  - number: "6.5"
+    song: 6
+    song_name: Just Around The Riverbend / Out There
+    audio: "06 Just Around The Riverbend Out There.mp3"
+    moment: ""
+    look:
+      ladders:
+        orange:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 20
+        pink:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 50
+      trough:
+        level: 20
+        at:
+          - sl
+          - sr
+      circle:
+        level: 20
+        at:
+          - 1
+          - 3
+          - 5
+          - 7
+          - 9
+          - 11
+      desires:
+        level: 10
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+          - usr
+        color:
+          hue: 24.5
+          sat: 100.0
+          name: orange
+    notes: audience_stair(ch2 safety) absent — confirm.
+  - number: "6.6"
+    song: 6
+    song_name: Just Around The Riverbend / Out There
+    audio: "06 Just Around The Riverbend Out There.mp3"
+    moment: ""
+    look:
+      ladders:
+        yellow:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 30
+        orange:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 20
+        pink:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 50
+      trough:
+        level: 20
+        at:
+          - sl
+          - sr
+      circle:
+        level: 20
+        at:
+          - 1
+          - 3
+          - 5
+          - 7
+          - 9
+          - 11
+      desires:
+        level: 10
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+          - usr
+        color:
+          hue: 24.5
+          sat: 100.0
+          name: orange
+    notes: audience_stair(ch2 safety) absent — confirm.
+  - number: "6.7"
+    song: 6
+    song_name: Just Around The Riverbend / Out There
+    audio: "06 Just Around The Riverbend Out There.mp3"
+    moment: ""
+    look:
+      ladders:
+        yellow:
+          boom_levels:
+            1: 2
+            3: 1
+      desires:
+        level: 20
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+          - usr
+        color:
+          hue: 35.5
+          sat: 100.0
+          name: amber
+  - number: "6.99"
+    song: 6
+    song_name: Just Around The Riverbend / Out There
+    audio: "06 Just Around The Riverbend Out There.mp3"
+    moment: ""
+    look:
+      circle:
+        level: 30
+        at:
+          - 1
+          - 3
+          - 5
+          - 7
+          - 9
+          - 11
+      desires:
+        level: 20
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+          - usr
+        color:
+          hue: 35.5
+          sat: 100.0
+          name: amber
+  - number: "8.1"
+    song: 8
+    song_name: Surface Pressure
+    audio: "08 Surface Pressure.mp3"
+    moment: ""
+    look:
+      trough:
+        level: 100
+        at:
+          - sl
+          - sr
+  - number: "8.2"
+    song: 8
+    song_name: Surface Pressure
+    audio: "08 Surface Pressure.mp3"
+    moment: ""
+    look:
+      ladders:
+        red:
+          booms:
+            - 5
+            - 6
+          level: 40
+      trough:
+        level: 100
+        at:
+          - sl
+          - sr
+  - number: "8.3"
+    song: 8
+    song_name: Surface Pressure
+    audio: "08 Surface Pressure.mp3"
+    moment: ""
+    look:
+      ladders:
+        red:
+          booms:
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 40
+      trough:
+        level: 100
+        at:
+          - sl
+          - sr
+  - number: "8.4"
+    song: 8
+    song_name: Surface Pressure
+    audio: "08 Surface Pressure.mp3"
+    moment: ""
+    look:
+      ladders:
+        red:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 40
+      trough:
+        level: 100
+        at:
+          - sl
+          - sr
+  - number: "8.5"
+    song: 8
+    song_name: Surface Pressure
+    audio: "08 Surface Pressure.mp3"
+    moment: ""
+    look:
+      ladders:
+        orange:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 20
+        red:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 40
+      audience_stair:
+        level: 40
+      trough:
+        level: 100
+        at:
+          - sl
+          - sr
+      pars:
+        level: 10
+        at:
+          - dsl
+          - dsc
+          - dsr
+          - usl
+          - usc
+          - usr
+      lonestars:
+        level: 20
+        at:
+          - hcs
+      desires:
+        level: 50
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+          - usr
+  - number: "8.59"
+    song: 8
+    song_name: Surface Pressure
+    audio: "08 Surface Pressure.mp3"
+    moment: ""
+    look:
+      ladders:
+        lt_blue:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 50
+        orange:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 20
+        red:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 40
+      audience_stair:
+        level: 20
+      trough:
+        level: 50
+        at:
+          - sl
+          - sr
+      pars:
+        level: 10
+        at:
+          - dsl
+          - dsc
+          - dsr
+          - usl
+          - usc
+          - usr
+      desires:
+        level: 50
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+          - usr
+        color:
+          hue: 199.1
+          sat: 45.5
+          name: pale_blue
+  - number: "8.6"
+    song: 8
+    song_name: Surface Pressure
+    audio: "08 Surface Pressure.mp3"
+    moment: ""
+    look:
+      ladders:
+        lt_blue:
+          boom_levels:
+            1: 38
+            2: 36
+            3: 37
+            4: 36
+            5: 37
+            6: 36
+        orange:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 20
+        red:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 40
+      audience_stair:
+        level: 24
+      trough:
+        levels:
+          sl: 69
+          sr: 70
+      pars:
+        level: 10
+        at:
+          - dsl
+          - dsc
+          - dsr
+          - usl
+          - usc
+          - usr
+      lonestars:
+        levels:
+          dsl: 48
+          dsr: 50
+          hsl: 54
+          hcs: 59
+          hsr: 63
+      desires:
+        level: 50
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+          - usr
+        color:
+          hue: 305.7
+          sat: 81.6
+          name: magenta
+          gradient:
+            from: 305.7
+            to: 319.2
+  - number: "8.7"
+    song: 8
+    song_name: Surface Pressure
+    audio: "08 Surface Pressure.mp3"
+    moment: ""
+    look:
+      ladders:
+        lt_blue:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 50
+        orange:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 20
+        red:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 40
+      audience_stair:
+        level: 20
+      trough:
+        level: 50
+        at:
+          - sl
+          - sr
+      pars:
+        level: 10
+        at:
+          - dsl
+          - dsc
+          - dsr
+          - usl
+          - usc
+          - usr
+      lonestars:
+        level: 50
+        at:
+          - dsl
+          - dsr
+          - hsl
+          - hcs
+          - hsr
+      desires:
+        level: 50
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+          - usr
+        color:
+          hue: 199.1
+          sat: 45.5
+          name: pale_blue
+  - number: "8.8"
+    song: 8
+    song_name: Surface Pressure
+    audio: "08 Surface Pressure.mp3"
+    moment: ""
+    look:
+      ladders:
+        blue:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 35
+        green:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 20
+        lt_blue:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 35
+        orange:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 30
+        pink:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 25
+        dk_blue:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 35
+      lonestars:
+        level: 40
+        at:
+          - dsl
+          - dsr
+          - hsl
+          - hcs
+          - hsr
+      desires:
+        level: 20
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+          - usr
+        color:
+          hue: 240.0
+          sat: 100.0
+          name: blue
+    notes: audience_stair(ch2 safety) absent — confirm.
+  - number: "8.99"
+    song: 8
+    song_name: Surface Pressure
+    audio: "08 Surface Pressure.mp3"
+    moment: ""
+    look: ABSENT (new cue — create with record_cue)
+    proposal: NEW bridge
+  - number: "9.1"
+    song: 9
+    song_name: Let It Go
+    audio: "09 Let It Go.mp3"
+    moment: ""
+    look:
+      ladders:
+        blue:
+          boom_levels:
+            1: 21
+            2: 18
+            3: 20
+            4: 17
+            5: 18
+            6: 17
+        green:
+          boom_levels:
+            1: 9
+            2: 8
+            3: 9
+            4: 8
+            5: 9
+            6: 8
+        lt_blue:
+          boom_levels:
+            1: 29
+            2: 28
+            3: 29
+            4: 28
+            5: 28
+            6: 28
+        orange:
+          boom_levels:
+            1: 8
+            2: 7
+            3: 8
+            4: 7
+            5: 8
+            6: 6
+        pink:
+          boom_levels:
+            1: 5
+            2: 4
+            3: 4
+            4: 3
+            5: 4
+            6: 3
+        dk_blue:
+          boom_levels:
+            1: 4
+            2: 2
+            3: 3
+            4: 2
+            5: 3
+            6: 1
+      trough:
+        level: 25
+        at:
+          - sl
+          - sr
+      lonestars:
+        levels:
+          dsl: 0
+          dsr: 0
+          hsl: 100
+          hcs: 100
+          hsr: 100
+      desires:
+        level: 20
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+          - usr
+        color:
+          hue: 215.5
+          sat: 81.0
+          name: pale_blue
+    notes: "ch2 absent; lonestars flip 108/109 OFF, 110-112 FULL."
+  - number: "9.2"
+    song: 9
+    song_name: Let It Go
+    audio: "09 Let It Go.mp3"
+    moment: ""
+    look:
+      ladders:
+        lt_blue:
+          boom_levels:
+            1: 50
+            2: 50
+            3: 25
+            4: 25
+            5: 25
+            6: 25
+        dk_blue:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 100
+      trough:
+        level: 25
+        at:
+          - sl
+          - sr
+      lonestars:
+        level: 100
+        at:
+          - hsl
+          - hcs
+          - hsr
+      desires:
+        level: 25
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+          - usr
+        color:
+          hue: 215.5
+          sat: 81.0
+          name: pale_blue
+  - number: "9.3"
+    song: 9
+    song_name: Let It Go
+    audio: "09 Let It Go.mp3"
+    moment: ""
+    look:
+      ladders:
+        lt_blue:
+          boom_levels:
+            1: 50
+            2: 50
+            3: 25
+            4: 25
+            5: 25
+            6: 25
+        red:
+          booms:
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 15
+        dk_blue:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 100
+      trough:
+        level: 13
+        at:
+          - sl
+          - sr
+      lonestars:
+        level: 100
+        at:
+          - hsl
+          - hcs
+          - hsr
+      desires:
+        level: 25
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+          - usr
+        color:
+          hue: 240.0
+          sat: 100.0
+          name: blue
+  - number: "9.4"
+    song: 9
+    song_name: Let It Go
+    audio: "09 Let It Go.mp3"
+    moment: ""
+    look:
+      ladders:
+        lt_blue:
+          boom_levels:
+            1: 50
+            2: 50
+            3: 25
+            4: 25
+            5: 25
+            6: 25
+        red:
+          booms:
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 15
+        dk_blue:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 100
+      trough:
+        level: 13
+        at:
+          - sl
+          - sr
+      lonestars:
+        level: 100
+        at:
+          - dsl
+          - hsl
+          - hcs
+          - hsr
+      desires:
+        level: 25
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+        color:
+          hue: 240.0
+          sat: 100.0
+          name: blue
+  - number: "9.5"
+    song: 9
+    song_name: Let It Go
+    audio: "09 Let It Go.mp3"
+    moment: ""
+    look: BLACKOUT
+  - number: "9.6"
+    song: 9
+    song_name: Let It Go
+    audio: "09 Let It Go.mp3"
+    moment: ""
+    look:
+      ladders:
+        lt_blue:
+          boom_levels:
+            1: 50
+            2: 50
+            3: 25
+            4: 25
+            5: 25
+            6: 25
+        red:
+          booms:
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 15
+        dk_blue:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 100
+      trough:
+        level: 13
+        at:
+          - sl
+          - sr
+      lonestars:
+        level: 100
+        at:
+          - dsl
+          - dsr
+          - hsl
+          - hcs
+          - hsr
+      desires:
+        level: 25
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+          - usr
+        color:
+          hue: 240.0
+          sat: 100.0
+          name: blue
+  - number: "9.99"
+    song: 9
+    song_name: Let It Go
+    audio: "09 Let It Go.mp3"
+    moment: ""
+    look: ABSENT (new cue — create with record_cue)
+    proposal: "NEW bridge (note: '9.99 shift to side light' — tune as needed)"
+  - number: "11.1"
+    song: 11
+    song_name: "You've Got A Friend In Me"
+    audio: "11 You've Got A Friend In Me.mp3"
+    moment: ""
+    look:
+      ladders:
+        yellow:
+          boom_levels:
+            1: 20
+            2: 10
+            3: 20
+            4: 10
+      desires:
+        level: 20
+        at:
+          - dsr
+        color:
+          hue: 40.9
+          sat: 100.0
+          name: amber
+  - number: "11.2"
+    song: 11
+    song_name: "You've Got A Friend In Me"
+    audio: "11 You've Got A Friend In Me.mp3"
+    moment: ""
+    look:
+      ladders:
+        yellow:
+          booms:
+            - 1
+            - 3
+          level: 40
+        orange:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+          level: 20
+      lonestars:
+        levels:
+          dsr: 100
+          hsr: 35
+      desires:
+        levels:
+          usl: 10
+          sl: 10
+          dsl: 10
+          dcs: 10
+          dsr: 20
+          sr: 10
+          usr: 10
+        color:
+          hue: 40.9
+          sat: 100.0
+          name: amber
+  - number: "11.3"
+    song: 11
+    song_name: "You've Got A Friend In Me"
+    audio: "11 You've Got A Friend In Me.mp3"
+    moment: ""
+    look:
+      ladders:
+        yellow:
+          booms:
+            - 1
+            - 3
+          level: 40
+        orange:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+          level: 20
+      lonestars:
+        levels:
+          dsl: 43
+          hsl: 81
+          hsr: 35
+      desires:
+        levels:
+          usl: 10
+          sl: 10
+          dsl: 10
+          dcs: 10
+          dsr: 20
+          sr: 10
+          usr: 10
+        color:
+          hue: 40.9
+          sat: 100.0
+          name: amber
+  - number: "11.4"
+    song: 11
+    song_name: "You've Got A Friend In Me"
+    audio: "11 You've Got A Friend In Me.mp3"
+    moment: ""
+    look:
+      ladders:
+        yellow:
+          booms:
+            - 1
+            - 3
+          level: 40
+        orange:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+          level: 20
+      lonestars:
+        levels:
+          dsl: 43
+          hsl: 73
+          hsr: 35
+      desires:
+        levels:
+          usl: 10
+          sl: 10
+          dsl: 10
+          dcs: 10
+          dsr: 20
+          sr: 10
+          usr: 10
+        color:
+          hue: 40.9
+          sat: 100.0
+          name: amber
+  - number: "11.5"
+    song: 11
+    song_name: "You've Got A Friend In Me"
+    audio: "11 You've Got A Friend In Me.mp3"
+    moment: ""
+    look:
+      desires:
+        level: 10
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+          - usr
+    notes: "Desires 113-119 @10 read NO COLOR across 3 reads (cf 11.99 reads amber at same level). Recorded as read (white/raw); likely amber 40.9 dropped by low-level LED color-read quirk — VERIFY."
+  - number: "11.99"
+    song: 11
+    song_name: "You've Got A Friend In Me"
+    audio: "11 You've Got A Friend In Me.mp3"
+    moment: ""
+    look:
+      circle:
+        level: 30
+        at:
+          - 1
+          - 3
+          - 5
+          - 7
+          - 9
+          - 11
+      desires:
+        level: 10
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+          - usr
+        color:
+          hue: 40.9
+          sat: 100.0
+          name: amber
+  - number: "13.1"
+    song: 13
+    song_name: Try Everything
+    audio: "13 Try Everything.mp3"
+    moment: ""
+    look:
+      ladders:
+        blue:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 50
+        yellow:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 50
+        green:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 50
+        lt_blue:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 50
+        orange:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 50
+        pink:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 50
+        red:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 50
+        dk_blue:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 50
+      lonestars:
+        level: 50
+        at:
+          - dsl
+          - dsr
+          - hsl
+          - hcs
+          - hsr
+      desires:
+        level: 75
+        at:
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+        color:
+          hue: 35.5
+          sat: 82.6
+          name: amber
+  - number: "13.2"
+    song: 13
+    song_name: Try Everything
+    audio: "13 Try Everything.mp3"
+    moment: ""
+    look:
+      lonestars:
+        level: 50
+        at:
+          - dsl
+          - dsr
+          - hsl
+          - hcs
+          - hsr
+      desires:
+        level: 75
+        at:
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+        color:
+          hue: 35.5
+          sat: 82.6
+          name: amber
+    notes: "LIVE LADDER CHASE EFFECT — all 8 colors x6 booms oscillate ~35<->75 (confirmed by 2 differing reads). RAW holds the STABLE BASE only (lonestars@50 + desires@75 amber); ladders are dynamic — reprogram via effect, not static levels."
+  - number: "13.25"
+    song: 13
+    song_name: Try Everything
+    audio: "13 Try Everything.mp3"
+    moment: ""
+    look:
+      ladders:
+        blue:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 50
+        yellow:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 50
+        green:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 50
+        lt_blue:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 50
+        orange:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 50
+        pink:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 50
+        red:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 50
+        dk_blue:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 50
+      lonestars:
+        level: 100
+        at:
+          - dsl
+          - dsr
+          - hsl
+          - hcs
+          - hsr
+      desires:
+        level: 75
+        at:
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+        color:
+          hue: 35.5
+          sat: 82.6
+          name: amber
+  - number: "13.3"
+    song: 13
+    song_name: Try Everything
+    audio: "13 Try Everything.mp3"
+    moment: ""
+    look:
+      lonestars:
+        level: 50
+        at:
+          - dsl
+          - dsr
+          - hsl
+          - hcs
+          - hsr
+      desires:
+        level: 75
+        at:
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+        color:
+          hue: 35.5
+          sat: 82.6
+          name: amber
+    notes: "LIVE LADDER CHASE EFFECT — all 8 colors x6 booms, wider range ~20<->100. RAW = stable base only (LS@50 + desires@75 amber). Dynamic."
+  - number: "13.4"
+    song: 13
+    song_name: Try Everything
+    audio: "13 Try Everything.mp3"
+    moment: ""
+    look:
+      ladders:
+        blue:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 50
+        yellow:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 50
+        green:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 50
+        lt_blue:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 50
+        orange:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 50
+        pink:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 50
+        red:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 50
+        dk_blue:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 50
+      lonestars:
+        level: 50
+        at:
+          - dsl
+          - dsr
+          - hsl
+          - hcs
+          - hsr
+      desires:
+        level: 75
+        at:
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+        color:
+          hue: 35.5
+          sat: 82.6
+          name: amber
+  - number: "13.5"
+    song: 13
+    song_name: Try Everything
+    audio: "13 Try Everything.mp3"
+    moment: ""
+    look:
+      lonestars:
+        level: 100
+        at:
+          - dsl
+          - dsr
+          - hsl
+          - hcs
+          - hsr
+      desires:
+        level: 75
+        at:
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+        color:
+          hue: 35.5
+          sat: 82.6
+          name: amber
+    notes: "LIVE LADDER BUMP CHASE — sparse (ladders mostly 0, individual booms bump up; reads varied 50->11 ch). RAW = stable base only (LS@100 + desires@75 amber). Dynamic."
+  - number: "13.6"
+    song: 13
+    song_name: Try Everything
+    audio: "13 Try Everything.mp3"
+    moment: ""
+    look:
+      ladders:
+        blue:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 100
+        yellow:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 100
+        green:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 100
+        lt_blue:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 100
+        orange:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 100
+        pink:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 100
+        red:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 100
+        dk_blue:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 100
+      lonestars:
+        level: 100
+        at:
+          - dsl
+          - dsr
+          - hsl
+          - hcs
+          - hsr
+      desires:
+        level: 75
+        at:
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+        color:
+          hue: 35.5
+          sat: 82.6
+          name: amber
+  - number: "13.7"
+    song: 13
+    song_name: Try Everything
+    audio: "13 Try Everything.mp3"
+    moment: ""
+    look:
+      ladders:
+        blue:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 100
+        yellow:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 100
+        green:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 100
+        lt_blue:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 100
+        orange:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 100
+        pink:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 100
+        red:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 100
+        dk_blue:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 100
+      lonestars:
+        level: 100
+        at:
+          - dsl
+          - dsr
+          - hsl
+          - hcs
+          - hsr
+      desires:
+        level: 15
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+          - usr
+        color:
+          hue: 30.0
+          sat: 100.0
+          name: orange
+  - number: "13.99"
+    song: 13
+    song_name: Try Everything
+    audio: "13 Try Everything.mp3"
+    moment: ""
+    look:
+      desires:
+        level: 15
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+          - usr
+    notes: "Desires @15 read NO COLOR (likely orange h30 carried from 13.7 but not reported). Differs from target bridge (no stair/circle/LS)."
+  - number: "14"
+    song: 14
+    song_name: Go The Distance
+    audio: "14 Go The Distance.mp3"
+    moment: ""
+    look:
+      desires:
+        levels:
+          usl: 30
+          sl: 20
+          dsl: 20
+          dcs: 20
+          dsr: 20
+          sr: 20
+          usr: 30
+    notes: "Desires @20-30 read NO COLOR (adjacent 14.2 reads amber 35.5 at same fixtures -> likely amber; recorded as read). VERIFY."
+  - number: "14.1"
+    song: 14
+    song_name: Go The Distance
+    audio: "14 Go The Distance.mp3"
+    moment: ""
+    look:
+      desires:
+        levels:
+          usl: 30
+          sl: 20
+          dsl: 20
+          dcs: 20
+          dsr: 20
+          sr: 20
+          usr: 30
+    notes: Identical to cue 14; desires read NO COLOR (likely amber). VERIFY.
+  - number: "14.2"
+    song: 14
+    song_name: Go The Distance
+    audio: "14 Go The Distance.mp3"
+    moment: ""
+    look:
+      ladders:
+        yellow:
+          booms:
+            - 5
+            - 6
+          level: 30
+        orange:
+          booms:
+            - 5
+            - 6
+          level: 20
+      trough:
+        level: 30
+        at:
+          - sl
+          - sr
+      circle:
+        level: 10
+        at:
+          - 1
+          - 3
+          - 5
+          - 7
+          - 9
+          - 11
+      specials:
+        level: 15
+        at:
+          - center_a
+          - center_b
+      desires:
+        levels:
+          usl: 30
+          sl: 20
+          dsl: 20
+          dcs: 20
+          dsr: 20
+          sr: 20
+          usr: 30
+        color:
+          hue: 35.5
+          sat: 100.0
+          name: amber
+  - number: "14.3"
+    song: 14
+    song_name: Go The Distance
+    audio: "14 Go The Distance.mp3"
+    moment: ""
+    look:
+      ladders:
+        yellow:
+          booms:
+            - 5
+            - 6
+          level: 30
+        orange:
+          booms:
+            - 5
+            - 6
+          level: 20
+        pink:
+          booms:
+            - 5
+            - 6
+          level: 20
+      trough:
+        level: 30
+        at:
+          - sl
+          - sr
+      circle:
+        level: 15
+        at:
+          - 1
+          - 3
+          - 5
+          - 7
+          - 9
+          - 11
+      lonestars:
+        level: 100
+        at:
+          - hcs
+      desires:
+        levels:
+          usl: 30
+          sl: 20
+          dsl: 20
+          dcs: 20
+          dsr: 20
+          sr: 20
+          usr: 30
+        color:
+          hue: 35.5
+          sat: 100.0
+          name: amber
+  - number: "14.4"
+    song: 14
+    song_name: Go The Distance
+    audio: "14 Go The Distance.mp3"
+    moment: ""
+    look:
+      lonestars:
+        level: 100
+        at:
+          - hcs
+      desires:
+        level: 20
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+          - usr
+        color:
+          hue: 24.5
+          sat: 100.0
+          name: orange
+  - number: "14.99"
+    song: 14
+    song_name: Go The Distance
+    audio: "14 Go The Distance.mp3"
+    moment: ""
+    look: ABSENT (new cue — create with record_cue)
+    proposal: NEW bridge
+  - number: "15.1"
+    song: 15
+    song_name: When I Am Older
+    audio: "15 When I Am Older.mp3"
+    moment: ""
+    look:
+      ladders:
+        red:
+          booms:
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 15
+      audience_stair:
+        level: 43
+      lonestars:
+        level: 50
+        at:
+          - dsl
+          - dsr
+          - hcs
+      desires:
+        level: 30
+        at:
+          - dsl
+          - dsr
+        color:
+          hue: 248.9
+          sat: 100.0
+          name: blue
+  - number: "15.2"
+    song: 15
+    song_name: When I Am Older
+    audio: "15 When I Am Older.mp3"
+    moment: ""
+    look:
+      ladders:
+        red:
+          booms:
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 15
+      audience_stair:
+        level: 43
+      lonestars:
+        levels:
+          dsl: 50
+          dsr: 50
+          hsl: 100
+          hcs: 50
+          hsr: 100
+      desires:
+        level: 30
+        at:
+          - dsl
+          - dsr
+        color:
+          hue: 248.9
+          sat: 100.0
+          name: blue
+    notes: "Lonestars 110 & 112 STROBING (shutter_strobe ~50); 110 white + framing blades in, 112 violet. read_stage level capture is fine (strobe is a shutter param)."
+  - number: "15.3"
+    song: 15
+    song_name: When I Am Older
+    audio: "15 When I Am Older.mp3"
+    moment: ""
+    look:
+      ladders:
+        red:
+          booms:
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 15
+      audience_stair:
+        level: 43
+      lonestars:
+        level: 50
+        at:
+          - dsl
+          - dsr
+          - hcs
+      desires:
+        level: 30
+        at:
+          - dsl
+          - dsr
+        color:
+          hue: 248.9
+          sat: 100.0
+          name: blue
+  - number: "15.4"
+    song: 15
+    song_name: When I Am Older
+    audio: "15 When I Am Older.mp3"
+    moment: ""
+    look:
+      ladders:
+        orange:
+          booms:
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 20
+        pink:
+          booms:
+            - 3
+            - 4
+          level: 35
+        red:
+          booms:
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 15
+      audience_stair:
+        level: 43
+      lonestars:
+        level: 50
+        at:
+          - dsl
+          - dsr
+          - hcs
+      desires:
+        level: 30
+        at:
+          - dsl
+          - dsr
+        color:
+          hue: 248.9
+          sat: 100.0
+          name: blue
+  - number: "15.5"
+    song: 15
+    song_name: When I Am Older
+    audio: "15 When I Am Older.mp3"
+    moment: ""
+    look:
+      ladders:
+        yellow:
+          booms:
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 24
+        orange:
+          booms:
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 24
+        pink:
+          booms:
+            - 3
+            - 4
+          level: 42
+        red:
+          booms:
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 18
+      audience_stair:
+        level: 43
+      pars:
+        level: 12
+        at:
+          - dsl
+          - dsc
+          - dsr
+          - usl
+          - usc
+          - usr
+      lonestars:
+        level: 60
+        at:
+          - dsl
+          - dsr
+          - hcs
+      desires:
+        level: 36
+        at:
+          - dsl
+          - dsr
+        color:
+          hue: 248.9
+          sat: 100.0
+          name: blue
+  - number: "15.99"
+    song: 15
+    song_name: When I Am Older
+    audio: "15 When I Am Older.mp3"
+    moment: ""
+    look: ABSENT (new cue — create with record_cue)
+    proposal: NEW bridge
+  - number: "16.1"
+    song: 16
+    song_name: Hakuna Matata / Bare Necessities
+    audio: "16 Hakuna Matata Bare Necessities.mp3"
+    moment: ""
+    look:
+      ladders:
+        yellow:
+          booms:
+            - 5
+            - 6
+          level: 10
+        orange:
+          booms:
+            - 5
+            - 6
+          level: 15
+      audience_stair:
+        level: 43
+      trough:
+        level: 15
+        at:
+          - sl
+          - sr
+      circle:
+        level: 25
+        at:
+          - 1
+          - 3
+          - 5
+          - 7
+          - 9
+          - 11
+      desires:
+        level: 20
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+          - usr
+        color:
+          hue: 40.9
+          sat: 83.3
+          name: amber
+  - number: "16.2"
+    song: 16
+    song_name: Hakuna Matata / Bare Necessities
+    audio: "16 Hakuna Matata Bare Necessities.mp3"
+    moment: ""
+    look:
+      audience_stair:
+        level: 43
+      trough:
+        level: 35
+        at:
+          - sl
+          - sr
+      circle:
+        level: 25
+        at:
+          - 1
+          - 3
+          - 5
+          - 7
+          - 9
+          - 11
+      desires:
+        levels:
+          usl: 100
+          sl: 15
+          dsl: 15
+          dcs: 15
+          dsr: 15
+          sr: 15
+          usr: 15
+        color:
+          hue: 40.9
+          sat: 83.3
+          name: amber
+  - number: "16.3"
+    song: 16
+    song_name: Hakuna Matata / Bare Necessities
+    audio: "16 Hakuna Matata Bare Necessities.mp3"
+    moment: ""
+    look:
+      audience_stair:
+        level: 43
+      trough:
+        level: 35
+        at:
+          - sl
+          - sr
+      circle:
+        level: 25
+        at:
+          - 1
+          - 3
+          - 5
+          - 7
+          - 9
+          - 11
+      desires:
+        levels:
+          usl: 50
+          sl: 15
+          dsl: 15
+          dcs: 15
+          dsr: 15
+          sr: 15
+          usr: 100
+        color:
+          hue: 40.9
+          sat: 83.3
+          name: amber
+  - number: "16.4"
+    song: 16
+    song_name: Hakuna Matata / Bare Necessities
+    audio: "16 Hakuna Matata Bare Necessities.mp3"
+    moment: ""
+    look:
+      ladders:
+        yellow:
+          boom_levels:
+            1: 30
+            2: 30
+            3: 45
+            4: 45
+        orange:
+          boom_levels:
+            1: 20
+            2: 20
+            3: 25
+            4: 25
+      audience_stair:
+        level: 43
+      trough:
+        level: 35
+        at:
+          - sl
+          - sr
+      circle:
+        level: 25
+        at:
+          - 1
+          - 3
+          - 5
+          - 7
+          - 9
+          - 11
+      lonestars:
+        level: 30
+        at:
+          - dsl
+          - dsr
+          - hsl
+          - hcs
+          - hsr
+      desires:
+        level: 35
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+          - usr
+        color:
+          hue: 40.9
+          sat: 83.3
+          name: amber
+  - number: "16.5"
+    song: 16
+    song_name: Hakuna Matata / Bare Necessities
+    audio: "16 Hakuna Matata Bare Necessities.mp3"
+    moment: ""
+    look:
+      ladders:
+        yellow:
+          boom_levels:
+            1: 40
+            2: 40
+            3: 65
+            4: 65
+            5: 65
+            6: 65
+        orange:
+          boom_levels:
+            1: 30
+            2: 30
+            3: 45
+            4: 45
+            5: 45
+            6: 45
+        pink:
+          boom_levels:
+            1: 30
+            2: 30
+            3: 45
+            4: 45
+            5: 45
+            6: 45
+      audience_stair:
+        level: 43
+      trough:
+        level: 35
+        at:
+          - sl
+          - sr
+      circle:
+        level: 25
+        at:
+          - 1
+          - 3
+          - 5
+          - 7
+          - 9
+          - 11
+      lonestars:
+        level: 30
+        at:
+          - dsl
+          - dsr
+          - hsl
+          - hcs
+          - hsr
+      desires:
+        level: 50
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+          - usr
+        color:
+          hue: 40.9
+          sat: 83.3
+          name: amber
+  - number: "16.6"
+    song: 16
+    song_name: Hakuna Matata / Bare Necessities
+    audio: "16 Hakuna Matata Bare Necessities.mp3"
+    moment: ""
+    look:
+      ladders:
+        yellow:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 40
+        orange:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 30
+        pink:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 30
+      audience_stair:
+        level: 43
+      trough:
+        level: 35
+        at:
+          - sl
+          - sr
+      circle:
+        level: 35
+        at:
+          - 1
+          - 3
+          - 5
+          - 7
+          - 9
+          - 11
+      desires:
+        level: 50
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+          - usr
+        color:
+          hue: 40.9
+          sat: 83.3
+          name: amber
+  - number: "16.99"
+    song: 16
+    song_name: Hakuna Matata / Bare Necessities
+    audio: "16 Hakuna Matata Bare Necessities.mp3"
+    moment: ""
+    look: ABSENT (new cue — create with record_cue)
+    proposal: NEW bridge
+  - number: "17.1"
+    song: 17
+    song_name: Nonsense Medley
+    audio: "17 Nonsense Medley.mp3"
+    moment: ""
+    look:
+      ladders:
+        yellow:
+          booms:
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 30
+        orange:
+          booms:
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 15
+        white:
+          booms:
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 30
+      audience_stair:
+        level: 43
+      circle:
+        level: 15
+        at:
+          - 1
+          - 3
+          - 5
+          - 7
+          - 9
+          - 11
+      desires:
+        level: 4
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+          - usr
+        color:
+          hue: 35.5
+          sat: 82.6
+          name: amber
+  - number: "17.2"
+    song: 17
+    song_name: Nonsense Medley
+    audio: "17 Nonsense Medley.mp3"
+    moment: ""
+    look:
+      ladders:
+        yellow:
+          booms:
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 30
+        orange:
+          booms:
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 15
+      audience_stair:
+        level: 43
+      circle:
+        level: 15
+        at:
+          - 1
+          - 3
+          - 5
+          - 7
+          - 9
+          - 11
+      desires:
+        level: 35
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+          - usr
+        color:
+          hue: 35.5
+          sat: 82.6
+          name: amber
+  - number: "17.3"
+    song: 17
+    song_name: Nonsense Medley
+    audio: "17 Nonsense Medley.mp3"
+    moment: ""
+    look:
+      ladders:
+        yellow:
+          boom_levels:
+            1: 60
+            2: 60
+            3: 30
+            4: 30
+            5: 30
+            6: 30
+        orange:
+          boom_levels:
+            1: 40
+            2: 40
+            3: 15
+            4: 15
+            5: 15
+            6: 15
+      audience_stair:
+        level: 43
+      circle:
+        level: 15
+        at:
+          - 1
+          - 3
+          - 5
+          - 7
+          - 9
+          - 11
+      desires:
+        level: 35
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+          - usr
+        color:
+          hue: 35.5
+          sat: 82.6
+          name: amber
+  - number: "17.4"
+    song: 17
+    song_name: Nonsense Medley
+    audio: "17 Nonsense Medley.mp3"
+    moment: ""
+    look:
+      ladders:
+        blue:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 40
+        yellow:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 30
+        green:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 35
+      audience_stair:
+        level: 43
+      circle:
+        level: 15
+        at:
+          - 1
+          - 3
+          - 5
+          - 7
+          - 9
+          - 11
+      desires:
+        level: 35
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+          - usr
+        color:
+          hue: 175.7
+          sat: 85.2
+          name: teal
+  - number: "17.5"
+    song: 17
+    song_name: Nonsense Medley
+    audio: "17 Nonsense Medley.mp3"
+    moment: ""
+    look:
+      ladders:
+        yellow:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 50
+        green:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 50
+        pink:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 50
+      audience_stair:
+        level: 43
+      circle:
+        level: 25
+        at:
+          - 1
+          - 3
+          - 5
+          - 7
+          - 9
+          - 11
+      desires:
+        level: 35
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+          - usr
+        color:
+          hue: 330.0
+          sat: 60.0
+          name: pink
+  - number: "17.6"
+    song: 17
+    song_name: Nonsense Medley
+    audio: "17 Nonsense Medley.mp3"
+    moment: ""
+    look:
+      ladders:
+        green:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 50
+        pink:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 50
+        dk_blue:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 100
+      audience_stair:
+        level: 43
+      circle:
+        level: 10
+        at:
+          - 1
+          - 3
+          - 5
+          - 7
+          - 9
+          - 11
+      lonestars:
+        level: 65
+        at:
+          - dsl
+          - dsr
+          - hsl
+          - hcs
+          - hsr
+      desires:
+        level: 35
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+          - usr
+        color:
+          hue: 280.9
+          sat: 83.3
+          name: lavender
+  - number: "17.7"
+    song: 17
+    song_name: Nonsense Medley
+    audio: "17 Nonsense Medley.mp3"
+    moment: ""
+    look:
+      ladders:
+        lt_blue:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 35
+        pink:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 50
+      audience_stair:
+        level: 43
+      circle:
+        level: 15
+        at:
+          - 1
+          - 3
+          - 5
+          - 7
+          - 9
+          - 11
+      lonestars:
+        level: 25
+        at:
+          - dsl
+          - dsr
+      desires:
+        level: 45
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+          - usr
+        color:
+          hue: 319.1
+          sat: 50.8
+          name: pink
+  - number: "17.8"
+    song: 17
+    song_name: Nonsense Medley
+    audio: "17 Nonsense Medley.mp3"
+    moment: ""
+    look:
+      ladders:
+        lt_blue:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 50
+        pink:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 65
+      audience_stair:
+        level: 43
+      circle:
+        level: 40
+        at:
+          - 1
+          - 3
+          - 5
+          - 7
+          - 9
+          - 11
+      lonestars:
+        level: 25
+        at:
+          - dsl
+          - dsr
+      desires:
+        level: 60
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+          - usr
+        color:
+          hue: 319.1
+          sat: 50.8
+          name: pink
+  - number: "17.99"
+    song: 17
+    song_name: Nonsense Medley
+    audio: "17 Nonsense Medley.mp3"
+    moment: ""
+    look:
+      audience_stair:
+        level: 43
+      circle:
+        level: 20
+        at:
+          - 1
+          - 3
+          - 5
+          - 7
+          - 9
+          - 11
+      desires:
+        level: 10
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+          - usr
+        color:
+          hue: 330.0
+          sat: 73.9
+          name: pink
+    notes: "EXISTING 'Song 18 setup' content: stair@43 + circle@20 + desires@10 pink h330. Target proposes a neutral bridge — flagged for your review."
+  - number: "18.1"
+    song: 18
+    song_name: Remember Me
+    audio: "18 Remember Me.mp3"
+    moment: ""
+    look:
+      ladders:
+        pink:
+          booms:
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 35
+      audience_stair:
+        level: 43
+      circle:
+        level: 20
+        at:
+          - 1
+          - 3
+          - 5
+          - 7
+          - 9
+          - 11
+      desires:
+        level: 30
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+          - usr
+        color:
+          hue: 300.0
+          sat: 72.7
+          name: magenta
+  - number: "18.2"
+    song: 18
+    song_name: Remember Me
+    audio: "18 Remember Me.mp3"
+    moment: ""
+    look:
+      ladders:
+        orange:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 15
+        pink:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 50
+      audience_stair:
+        level: 43
+      trough:
+        level: 30
+        at:
+          - sl
+          - sr
+      circle:
+        level: 20
+        at:
+          - 1
+          - 3
+          - 5
+          - 7
+          - 9
+          - 11
+      desires:
+        level: 30
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+          - usr
+        color:
+          hue: 300.0
+          sat: 72.7
+          name: magenta
+  - number: "18.3"
+    song: 18
+    song_name: Remember Me
+    audio: "18 Remember Me.mp3"
+    moment: ""
+    look:
+      ladders:
+        orange:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 15
+        pink:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 50
+      audience_stair:
+        level: 43
+      circle:
+        level: 20
+        at:
+          - 1
+          - 3
+          - 5
+          - 7
+          - 9
+          - 11
+      desires:
+        level: 30
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+          - usr
+        color:
+          hue: 300.0
+          sat: 72.7
+          name: magenta
+  - number: "18.4"
+    song: 18
+    song_name: Remember Me
+    audio: "18 Remember Me.mp3"
+    moment: ""
+    look:
+      ladders:
+        orange:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 15
+        pink:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 50
+      audience_stair:
+        level: 43
+      circle:
+        level: 20
+        at:
+          - 1
+          - 3
+          - 5
+          - 7
+          - 9
+          - 11
+      desires:
+        levels:
+          usl: 10
+          sl: 10
+          dsl: 10
+          dcs: 45
+          dsr: 10
+          sr: 10
+          usr: 10
+        color:
+          hue: 300.0
+          sat: 72.7
+          name: magenta
+  - number: "18.99"
+    song: 18
+    song_name: Remember Me
+    audio: "18 Remember Me.mp3"
+    moment: ""
+    look: ABSENT (new cue — create with record_cue)
+    proposal: NEW bridge
+  - number: "19.1"
+    song: 19
+    song_name: "I've Got A Dream"
+    audio: "19 I've Got A Dream.mp3"
+    moment: ""
+    look:
+      ladders:
+        blue:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 10
+        yellow:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 50
+        green:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 10
+        lt_blue:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 10
+        orange:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 30
+        pink:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 40
+        red:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 10
+        dk_blue:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 10
+      audience_stair:
+        level: 43
+      circle:
+        level: 20
+        at:
+          - 1
+          - 3
+          - 5
+          - 7
+          - 9
+          - 11
+      lonestars:
+        level: 35
+        at:
+          - dsl
+          - dsr
+          - hsl
+          - hcs
+          - hsr
+      desires:
+        level: 25
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+          - usr
+        color:
+          hue: 35.5
+          sat: 82.6
+          name: amber
+  - number: "19.99"
+    song: 19
+    song_name: "I've Got A Dream"
+    audio: "19 I've Got A Dream.mp3"
+    moment: ""
+    look: ABSENT (new cue — create with record_cue)
+    proposal: NEW bridge
+  - number: "20.1"
+    song: 20
+    song_name: Finale
+    audio: "20 Finale.mp3"
+    moment: ""
+    look:
+      ladders:
+        blue:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 10
+        yellow:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 50
+        green:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 10
+        lt_blue:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 10
+        orange:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 30
+        pink:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 50
+        red:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 15
+        dk_blue:
+          booms:
+            - 1
+            - 2
+            - 3
+            - 4
+            - 5
+            - 6
+          level: 10
+      house: 35
+      audience_stair:
+        level: 43
+      circle:
+        level: 20
+        at:
+          - 1
+          - 3
+          - 5
+          - 7
+          - 9
+          - 11
+      lonestars:
+        level: 35
+        at:
+          - dsl
+          - dsr
+          - hsl
+          - hcs
+          - hsr
+      desires:
+        level: 25
+        at:
+          - usl
+          - sl
+          - dsl
+          - dcs
+          - dsr
+          - sr
+          - usr
+        color:
+          hue: 35.5
+          sat: 82.6
+          name: amber

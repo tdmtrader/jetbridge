@@ -1,0 +1,2237 @@
+console: tcp+slip 192.168.1.145:52999
+cue_list: 1
+captured_at: "2026-06-25T21:38:49Z"
+cues:
+    - number: "0.1"
+      up_time_ms: 0
+      rate: 100
+      look:
+        channels:
+            - channel: 1
+              level: 100
+            - channel: 2
+              level: 100
+            - channel: 3
+              level: 100
+            - channel: 4
+              level: 100
+            - channel: 5
+              level: 100
+            - channel: 108
+              level: 35
+            - channel: 109
+              level: 35
+            - channel: 110
+              level: 35
+            - channel: 111
+              level: 35
+            - channel: 112
+              level: 35
+            - channel: 113
+              level: 26
+              hue: 27.79599952697754
+              sat: 81.48200225830078
+            - channel: 114
+              level: 26
+            - channel: 115
+              level: 26
+            - channel: 116
+              level: 26
+            - channel: 117
+              level: 26
+            - channel: 118
+              level: 26
+            - channel: 119
+              level: 26
+    - number: "0.2"
+      up_time_ms: 5000
+      rate: 100
+      look:
+        channels:
+            - channel: 1
+              level: 73
+            - channel: 2
+              level: 100
+            - channel: 3
+              level: 77
+            - channel: 4
+              level: 75
+            - channel: 5
+              level: 66
+            - channel: 108
+              level: 35
+            - channel: 109
+              level: 35
+            - channel: 110
+              level: 35
+            - channel: 111
+              level: 35
+            - channel: 112
+              level: 35
+            - channel: 113
+              level: 26
+              hue: 27.576000213623047
+              sat: 67.5270004272461
+            - channel: 114
+              level: 26
+            - channel: 115
+              level: 26
+            - channel: 116
+              level: 26
+            - channel: 117
+              level: 26
+            - channel: 118
+              level: 26
+            - channel: 119
+              level: 26
+    - number: "1.1"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+      look:
+        channels:
+            - channel: 1
+              level: 20
+            - channel: 2
+              level: 100
+            - channel: 3
+              level: 35
+            - channel: 4
+              level: 34
+            - channel: 5
+              level: 18
+            - channel: 108
+              level: 35
+            - channel: 109
+              level: 35
+            - channel: 110
+              level: 35
+            - channel: 111
+              level: 35
+            - channel: 112
+              level: 35
+            - channel: 113
+              level: 29
+              hue: 27.79599952697754
+              sat: 81.48200225830078
+            - channel: 114
+              level: 30
+            - channel: 115
+              level: 30
+            - channel: 116
+              level: 30
+            - channel: 117
+              level: 30
+            - channel: 118
+              level: 30
+            - channel: 119
+              level: 30
+    - number: "1.2"
+      up_time_ms: 5000
+      rate: 100
+      look:
+        channels:
+            - channel: 1
+              level: 20
+            - channel: 2
+              level: 100
+            - channel: 3
+              level: 90
+            - channel: 4
+              level: 90
+            - channel: 5
+              level: 18
+            - channel: 108
+              level: 35
+            - channel: 109
+              level: 35
+            - channel: 110
+              level: 35
+            - channel: 111
+              level: 35
+            - channel: 112
+              level: 35
+            - channel: 113
+              level: 36
+              hue: 30
+              sat: 100
+            - channel: 114
+              level: 36
+            - channel: 115
+              level: 36
+            - channel: 116
+              level: 36
+            - channel: 117
+              level: 36
+            - channel: 118
+              level: 36
+            - channel: 119
+              level: 38
+    - number: "1.3"
+      up_time_ms: 500
+      rate: 100
+      look:
+        channels:
+            - channel: 1
+              level: 20
+            - channel: 2
+              level: 100
+            - channel: 3
+              level: 90
+            - channel: 4
+              level: 90
+            - channel: 5
+              level: 18
+            - channel: 15
+              level: 46
+            - channel: 16
+              level: 46
+            - channel: 18
+              level: 46
+            - channel: 19
+              level: 46
+            - channel: 36
+              level: 20
+            - channel: 37
+              level: 20
+            - channel: 39
+              level: 20
+            - channel: 40
+              level: 20
+            - channel: 70
+              level: 46
+            - channel: 71
+              level: 46
+            - channel: 108
+              level: 35
+            - channel: 109
+              level: 35
+            - channel: 110
+              level: 35
+            - channel: 111
+              level: 35
+            - channel: 112
+              level: 35
+            - channel: 113
+              level: 39
+              hue: 30
+              sat: 100
+            - channel: 114
+              level: 39
+            - channel: 115
+              level: 39
+            - channel: 116
+              level: 39
+            - channel: 117
+              level: 39
+            - channel: 118
+              level: 39
+            - channel: 119
+              level: 39
+    - number: "1.4"
+      up_time_ms: 500
+      rate: 100
+      look:
+        channels:
+            - channel: 2
+              level: 100
+            - channel: 3
+              level: 20
+            - channel: 4
+              level: 20
+            - channel: 5
+              level: 20
+            - channel: 6
+              level: 20
+            - channel: 108
+              level: 25
+            - channel: 109
+              level: 25
+            - channel: 110
+              level: 25
+            - channel: 111
+              level: 25
+            - channel: 112
+              level: 25
+            - channel: 113
+              level: 52
+              hue: 30
+              sat: 33.33300018310547
+            - channel: 114
+              level: 52
+            - channel: 115
+              level: 52
+            - channel: 116
+              level: 52
+            - channel: 117
+              level: 52
+            - channel: 118
+              level: 52
+            - channel: 119
+              level: 52
+    - number: "2.1"
+      up_time_ms: 5000
+      rate: 100
+      look:
+        channels:
+            - channel: 2
+              level: 100
+            - channel: 108
+              level: 35
+            - channel: 109
+              level: 35
+            - channel: 110
+              level: 35
+            - channel: 111
+              level: 35
+            - channel: 112
+              level: 35
+            - channel: 113
+              level: 17
+              hue: 30
+              sat: 100
+    - number: "2.2"
+      up_time_ms: 1500
+      rate: 100
+      look:
+        channels:
+            - channel: 2
+              level: 100
+            - channel: 108
+              level: 35
+            - channel: 109
+              level: 35
+            - channel: 110
+              level: 35
+            - channel: 111
+              level: 35
+            - channel: 112
+              level: 35
+            - channel: 113
+              level: 59
+              hue: 30
+              sat: 100
+            - channel: 114
+              level: 20
+            - channel: 115
+              level: 20
+            - channel: 116
+              level: 20
+            - channel: 117
+              level: 20
+            - channel: 118
+              level: 20
+            - channel: 119
+              level: 20
+    - number: "2.3"
+      up_time_ms: 2500
+      rate: 100
+      look:
+        channels:
+            - channel: 2
+              level: 100
+            - channel: 80
+              level: 20
+            - channel: 81
+              level: 20
+            - channel: 82
+              level: 20
+            - channel: 83
+              level: 20
+            - channel: 84
+              level: 20
+            - channel: 85
+              level: 20
+            - channel: 108
+              level: 35
+            - channel: 109
+              level: 35
+            - channel: 110
+              level: 35
+            - channel: 111
+              level: 35
+            - channel: 112
+              level: 35
+            - channel: 113
+              level: 46
+              hue: 30
+              sat: 100
+            - channel: 114
+              level: 46
+            - channel: 115
+              level: 46
+            - channel: 116
+              level: 46
+            - channel: 117
+              level: 46
+            - channel: 118
+              level: 46
+            - channel: 119
+              level: 46
+    - number: "2.4"
+      up_time_ms: 1500
+      rate: 100
+      look:
+        channels:
+            - channel: 2
+              level: 100
+            - channel: 15
+              level: 20
+            - channel: 16
+              level: 20
+            - channel: 18
+              level: 20
+            - channel: 19
+              level: 20
+            - channel: 36
+              level: 33
+            - channel: 37
+              level: 33
+            - channel: 39
+              level: 33
+            - channel: 40
+              level: 33
+            - channel: 80
+              level: 26
+            - channel: 81
+              level: 26
+            - channel: 82
+              level: 26
+            - channel: 83
+              level: 26
+            - channel: 84
+              level: 26
+            - channel: 85
+              level: 26
+            - channel: 108
+              level: 35
+            - channel: 109
+              level: 35
+            - channel: 110
+              level: 35
+            - channel: 111
+              level: 35
+            - channel: 112
+              level: 35
+            - channel: 113
+              level: 46
+              hue: 30
+              sat: 100
+            - channel: 114
+              level: 46
+            - channel: 115
+              level: 46
+            - channel: 116
+              level: 46
+            - channel: 117
+              level: 46
+            - channel: 118
+              level: 46
+            - channel: 119
+              level: 46
+    - number: "2.5"
+      up_time_ms: 2000
+      rate: 100
+      look:
+        channels:
+            - channel: 2
+              level: 100
+            - channel: 15
+              level: 20
+            - channel: 16
+              level: 20
+            - channel: 18
+              level: 20
+            - channel: 19
+              level: 20
+            - channel: 36
+              level: 33
+            - channel: 37
+              level: 33
+            - channel: 39
+              level: 33
+            - channel: 40
+              level: 33
+            - channel: 43
+              level: 52
+            - channel: 44
+              level: 52
+            - channel: 46
+              level: 52
+            - channel: 47
+              level: 52
+            - channel: 80
+              level: 26
+            - channel: 81
+              level: 26
+            - channel: 82
+              level: 26
+            - channel: 83
+              level: 26
+            - channel: 84
+              level: 26
+            - channel: 85
+              level: 26
+            - channel: 108
+              level: 35
+            - channel: 109
+              level: 35
+            - channel: 110
+              level: 35
+            - channel: 111
+              level: 35
+            - channel: 112
+              level: 35
+            - channel: 113
+              level: 46
+              hue: 30
+              sat: 100
+            - channel: 114
+              level: 46
+            - channel: 115
+              level: 46
+            - channel: 116
+              level: 46
+            - channel: 117
+              level: 46
+            - channel: 118
+              level: 46
+            - channel: 119
+              level: 46
+    - number: "3.1"
+      up_time_ms: 1500
+      rate: 100
+      look:
+        channels:
+            - channel: 2
+              level: 100
+            - channel: 15
+              level: 20
+            - channel: 16
+              level: 20
+            - channel: 18
+              level: 20
+            - channel: 19
+              level: 20
+            - channel: 36
+              level: 33
+            - channel: 37
+              level: 33
+            - channel: 39
+              level: 33
+            - channel: 40
+              level: 33
+            - channel: 43
+              level: 52
+            - channel: 44
+              level: 52
+            - channel: 46
+              level: 52
+            - channel: 47
+              level: 52
+            - channel: 80
+              level: 46
+            - channel: 81
+              level: 46
+            - channel: 82
+              level: 46
+            - channel: 83
+              level: 46
+            - channel: 84
+              level: 46
+            - channel: 85
+              level: 46
+            - channel: 108
+              level: 35
+            - channel: 109
+              level: 35
+            - channel: 110
+              level: 35
+            - channel: 111
+              level: 35
+            - channel: 112
+              level: 35
+            - channel: 113
+              level: 33
+              hue: 30
+              sat: 100
+            - channel: 114
+              level: 33
+            - channel: 115
+              level: 33
+            - channel: 116
+              level: 33
+            - channel: 117
+              level: 33
+            - channel: 118
+              level: 33
+            - channel: 119
+              level: 33
+    - number: "3.2"
+      up_time_ms: 500
+      rate: 100
+      look:
+        channels:
+            - channel: 2
+              level: 100
+            - channel: 15
+              level: 26
+            - channel: 16
+              level: 26
+            - channel: 18
+              level: 13
+            - channel: 19
+              level: 13
+            - channel: 36
+              level: 13
+            - channel: 37
+              level: 13
+            - channel: 39
+              level: 52
+            - channel: 40
+              level: 52
+            - channel: 43
+              level: 52
+            - channel: 44
+              level: 52
+            - channel: 46
+              level: 52
+            - channel: 47
+              level: 52
+            - channel: 64
+              level: 20
+            - channel: 65
+              level: 20
+            - channel: 67
+              level: 20
+            - channel: 68
+              level: 20
+            - channel: 80
+              level: 26
+            - channel: 81
+              level: 26
+            - channel: 82
+              level: 26
+            - channel: 83
+              level: 26
+            - channel: 84
+              level: 26
+            - channel: 85
+              level: 26
+            - channel: 108
+              level: 35
+            - channel: 109
+              level: 35
+            - channel: 110
+              level: 35
+            - channel: 111
+              level: 35
+            - channel: 112
+              level: 35
+            - channel: 113
+              level: 46
+              hue: 30
+              sat: 100
+            - channel: 114
+              level: 46
+            - channel: 115
+              level: 46
+            - channel: 116
+              level: 46
+            - channel: 117
+              level: 46
+            - channel: 118
+              level: 46
+            - channel: 119
+              level: 46
+    - number: "3.3"
+      up_time_ms: 1000
+      rate: 100
+      look:
+        channels:
+            - channel: 2
+              level: 100
+            - channel: 14
+              level: 33
+            - channel: 15
+              level: 33
+            - channel: 16
+              level: 33
+            - channel: 17
+              level: 20
+            - channel: 18
+              level: 20
+            - channel: 19
+              level: 20
+            - channel: 35
+              level: 20
+            - channel: 36
+              level: 20
+            - channel: 37
+              level: 20
+            - channel: 38
+              level: 59
+            - channel: 39
+              level: 59
+            - channel: 40
+              level: 59
+            - channel: 42
+              level: 20
+            - channel: 43
+              level: 20
+            - channel: 44
+              level: 20
+            - channel: 45
+              level: 20
+            - channel: 46
+              level: 20
+            - channel: 47
+              level: 20
+            - channel: 64
+              level: 20
+            - channel: 65
+              level: 20
+            - channel: 67
+              level: 20
+            - channel: 68
+              level: 20
+            - channel: 80
+              level: 33
+            - channel: 81
+              level: 33
+            - channel: 82
+              level: 33
+            - channel: 83
+              level: 33
+            - channel: 84
+              level: 33
+            - channel: 85
+              level: 33
+            - channel: 108
+              level: 35
+            - channel: 109
+              level: 35
+            - channel: 110
+              level: 35
+            - channel: 111
+              level: 35
+            - channel: 112
+              level: 35
+            - channel: 113
+              level: 52
+              hue: 30
+              sat: 100
+            - channel: 114
+              level: 52
+            - channel: 115
+              level: 52
+            - channel: 116
+              level: 52
+            - channel: 117
+              level: 52
+            - channel: 118
+              level: 52
+            - channel: 119
+              level: 52
+    - number: "3.4"
+      up_time_ms: 2000
+      rate: 100
+      block: b
+      look:
+        channels:
+            - channel: 2
+              level: 100
+            - channel: 14
+              level: 33
+            - channel: 15
+              level: 33
+            - channel: 16
+              level: 52
+            - channel: 17
+              level: 20
+            - channel: 18
+              level: 20
+            - channel: 19
+              level: 52
+            - channel: 35
+              level: 20
+            - channel: 36
+              level: 20
+            - channel: 37
+              level: 78
+            - channel: 38
+              level: 59
+            - channel: 39
+              level: 59
+            - channel: 40
+              level: 78
+            - channel: 42
+              level: 20
+            - channel: 43
+              level: 20
+            - channel: 44
+              level: 39
+            - channel: 45
+              level: 20
+            - channel: 46
+              level: 20
+            - channel: 47
+              level: 39
+            - channel: 64
+              level: 20
+            - channel: 65
+              level: 20
+            - channel: 67
+              level: 20
+            - channel: 68
+              level: 20
+            - channel: 80
+              level: 33
+            - channel: 81
+              level: 33
+            - channel: 82
+              level: 33
+            - channel: 83
+              level: 33
+            - channel: 84
+              level: 33
+            - channel: 85
+              level: 33
+            - channel: 108
+              level: 35
+            - channel: 109
+              level: 35
+            - channel: 110
+              level: 35
+            - channel: 111
+              level: 35
+            - channel: 112
+              level: 35
+            - channel: 113
+              level: 52
+              hue: 40.893001556396484
+              sat: 100
+            - channel: 114
+              level: 52
+              hue: 30
+            - channel: 115
+              level: 52
+            - channel: 116
+              level: 52
+            - channel: 117
+              level: 52
+            - channel: 118
+              level: 52
+            - channel: 119
+              level: 52
+    - number: "3.5"
+      up_time_ms: 3000
+      rate: 100
+      block: b
+      look:
+        channels:
+            - channel: 2
+              level: 100
+            - channel: 14
+              level: 38
+            - channel: 15
+              level: 39
+            - channel: 16
+              level: 52
+            - channel: 17
+              level: 42
+            - channel: 18
+              level: 43
+            - channel: 19
+              level: 52
+            - channel: 35
+              level: 69
+            - channel: 36
+              level: 72
+            - channel: 37
+              level: 78
+            - channel: 38
+              level: 75
+            - channel: 39
+              level: 77
+            - channel: 40
+              level: 78
+            - channel: 42
+              level: 39
+            - channel: 43
+              level: 39
+            - channel: 44
+              level: 39
+            - channel: 45
+              level: 39
+            - channel: 46
+              level: 39
+            - channel: 47
+              level: 39
+            - channel: 64
+              level: 20
+            - channel: 65
+              level: 20
+            - channel: 67
+              level: 20
+            - channel: 68
+              level: 20
+            - channel: 76
+              level: 26
+            - channel: 77
+              level: 26
+            - channel: 78
+              level: 26
+            - channel: 80
+              level: 26
+            - channel: 81
+              level: 26
+            - channel: 82
+              level: 26
+            - channel: 83
+              level: 26
+            - channel: 84
+              level: 26
+            - channel: 85
+              level: 26
+            - channel: 108
+              level: 35
+            - channel: 109
+              level: 35
+            - channel: 110
+              level: 35
+            - channel: 111
+              level: 35
+            - channel: 112
+              level: 35
+            - channel: 113
+              level: 52
+              hue: 40.893001556396484
+              sat: 100
+            - channel: 114
+              level: 39
+              hue: 13.89799976348877
+            - channel: 115
+              level: 39
+            - channel: 116
+              level: 39
+            - channel: 117
+              level: 39
+            - channel: 118
+              level: 39
+            - channel: 119
+              level: 52
+              hue: 40.893001556396484
+    - number: "3.6"
+      up_time_ms: 1000
+      rate: 100
+      look:
+        partial: true
+        channels:
+            - channel: 2
+              level: 100
+            - channel: 14
+              level: 52
+            - channel: 15
+              level: 52
+            - channel: 16
+              level: 52
+            - channel: 17
+              level: 52
+            - channel: 18
+              level: 52
+            - channel: 19
+              level: 52
+            - channel: 35
+              level: 78
+            - channel: 36
+              level: 78
+            - channel: 37
+              level: 78
+            - channel: 38
+              level: 78
+            - channel: 39
+              level: 78
+            - channel: 40
+              level: 78
+            - channel: 42
+              level: 39
+            - channel: 43
+              level: 39
+            - channel: 44
+              level: 39
+            - channel: 45
+              level: 39
+            - channel: 46
+              level: 39
+            - channel: 47
+              level: 39
+            - channel: 64
+              level: 20
+            - channel: 65
+              level: 20
+            - channel: 67
+              level: 20
+            - channel: 68
+              level: 20
+            - channel: 76
+              level: 26
+            - channel: 77
+              level: 26
+            - channel: 78
+              level: 26
+            - channel: 80
+              level: 46
+            - channel: 81
+              level: 46
+            - channel: 82
+              level: 46
+            - channel: 83
+              level: 46
+            - channel: 84
+              level: 46
+            - channel: 85
+              level: 46
+            - channel: 108
+              level: 35
+            - channel: 109
+              level: 35
+            - channel: 110
+              level: 35
+            - channel: 111
+              level: 35
+            - channel: 112
+              level: 35
+            - channel: 113
+              level: 52
+              hue: 40.893001556396484
+              sat: 100
+            - channel: 114
+              level: 39
+              hue: 13.89799976348877
+            - channel: 115
+              level: 39
+            - channel: 116
+              level: 39
+    - number: "3.7"
+      up_time_ms: 3000
+      rate: 100
+      look:
+        channels: []
+    - number: "3.99"
+      up_time_ms: 0
+      rate: 100
+      look:
+        channels: []
+    - number: "4.1"
+      up_time_ms: 3500
+      rate: 100
+      block: b
+      look:
+        channels: []
+    - number: "4.2"
+      up_time_ms: 0
+      rate: 100
+      look:
+        channels: []
+    - number: "4.99"
+      up_time_ms: 0
+      rate: 100
+      look:
+        channels: []
+    - number: "5.1"
+      up_time_ms: 5000
+      rate: 100
+    - number: "5.2"
+      up_time_ms: 3000
+      rate: 100
+    - number: "6.1"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "6.2"
+      up_time_ms: 3000
+      rate: 100
+    - number: "6.3"
+      up_time_ms: 2000
+      rate: 100
+    - number: "6.4"
+      up_time_ms: 1500
+      rate: 100
+    - number: "6.5"
+      up_time_ms: 5000
+      rate: 100
+    - number: "6.6"
+      up_time_ms: 2500
+      rate: 100
+    - number: "6.7"
+      up_time_ms: 2000
+      rate: 100
+      block: b
+    - number: "6.99"
+      up_time_ms: 0
+      rate: 100
+    - number: "8.1"
+      up_time_ms: 0
+      rate: 100
+      block: b
+    - number: "8.2"
+      up_time_ms: 0
+      rate: 100
+      block: b
+    - number: "8.3"
+      up_time_ms: 0
+      rate: 100
+    - number: "8.4"
+      up_time_ms: 0
+      rate: 100
+    - number: "8.5"
+      up_time_ms: 1500
+      rate: 100
+      block: b
+    - number: "8.59"
+      up_time_ms: 1000
+      rate: 100
+    - number: "8.6"
+      up_time_ms: 10000
+      rate: 100
+    - number: "8.7"
+      up_time_ms: 1500
+      rate: 100
+      block: b
+    - number: "8.8"
+      up_time_ms: 0
+      rate: 100
+    - number: "9.1"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "9.2"
+      up_time_ms: 2000
+      rate: 100
+    - number: "9.3"
+      up_time_ms: 0
+      rate: 100
+    - number: "9.4"
+      up_time_ms: 5000
+      rate: 100
+    - number: "9.5"
+      up_time_ms: 4000
+      rate: 100
+    - number: "9.6"
+      up_time_ms: 0
+      rate: 100
+      block: b
+    - number: "9.99"
+      label: Bridge
+      up_time_ms: 3000
+      rate: 100
+    - number: "11.1"
+      up_time_ms: 0
+      rate: 100
+      block: b
+    - number: "11.2"
+      up_time_ms: 0
+      rate: 100
+      block: b
+    - number: "11.3"
+      up_time_ms: 1500
+      rate: 100
+    - number: "11.4"
+      up_time_ms: 4000
+      rate: 100
+    - number: "11.5"
+      up_time_ms: 1500
+      rate: 100
+    - number: "11.99"
+      up_time_ms: 0
+      rate: 100
+    - number: "13.1"
+      up_time_ms: 1500
+      rate: 100
+      block: b
+    - number: "13.2"
+      up_time_ms: 0
+      rate: 100
+    - number: "13.25"
+      up_time_ms: 0
+      rate: 100
+    - number: "13.3"
+      up_time_ms: 0
+      rate: 100
+    - number: "13.4"
+      up_time_ms: 0
+      rate: 100
+    - number: "13.5"
+      up_time_ms: 0
+      rate: 100
+    - number: "13.6"
+      up_time_ms: 0
+      rate: 100
+    - number: "13.7"
+      up_time_ms: 0
+      rate: 100
+    - number: "13.99"
+      up_time_ms: 0
+      rate: 100
+      block: b
+    - number: "14"
+      up_time_ms: 0
+      rate: 100
+      block: b
+    - number: "14.1"
+      rate: 100
+    - number: "14.2"
+      up_time_ms: 0
+      rate: 100
+    - number: "14.3"
+      up_time_ms: 0
+      rate: 100
+    - number: "14.4"
+      up_time_ms: 0
+      rate: 100
+      block: b
+    - number: "14.99"
+      label: Bridge
+      up_time_ms: 3000
+      rate: 100
+    - number: "15.1"
+      up_time_ms: 0
+      rate: 100
+      block: b
+    - number: "15.2"
+      rate: 100
+      block: b
+    - number: "15.3"
+      up_time_ms: 0
+      rate: 100
+      block: b
+    - number: "15.4"
+      up_time_ms: 2500
+      rate: 100
+      block: b
+    - number: "15.5"
+      up_time_ms: 1500
+      rate: 100
+    - number: "15.99"
+      label: Bridge
+      up_time_ms: 3000
+      rate: 100
+    - number: "16.1"
+      up_time_ms: 1500
+      rate: 100
+      block: b
+    - number: "16.2"
+      up_time_ms: 1500
+      rate: 100
+    - number: "16.3"
+      up_time_ms: 1500
+      rate: 100
+    - number: "16.4"
+      up_time_ms: 1500
+      rate: 100
+    - number: "16.5"
+      up_time_ms: 1500
+      rate: 100
+    - number: "16.6"
+      up_time_ms: 1500
+      rate: 100
+      block: b
+    - number: "16.99"
+      label: Bridge
+      up_time_ms: 3000
+      rate: 100
+      block: b
+    - number: "17.1"
+      up_time_ms: 1500
+      rate: 100
+    - number: "17.2"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "17.3"
+      up_time_ms: 5000
+      rate: 100
+    - number: "17.4"
+      up_time_ms: 1500
+      rate: 100
+    - number: "17.5"
+      up_time_ms: 1500
+      rate: 100
+    - number: "17.6"
+      up_time_ms: 1500
+      rate: 100
+    - number: "17.7"
+      up_time_ms: 1500
+      rate: 100
+      block: b
+    - number: "17.8"
+      up_time_ms: 1500
+      rate: 100
+    - number: "17.99"
+      label: Song 18 setup
+      up_time_ms: 1500
+      rate: 100
+      block: b
+    - number: "18.1"
+      up_time_ms: 1500
+      rate: 100
+    - number: "18.2"
+      up_time_ms: 1500
+      rate: 100
+    - number: "18.3"
+      up_time_ms: 1500
+      rate: 100
+    - number: "18.4"
+      up_time_ms: 1500
+      rate: 100
+    - number: "18.99"
+      label: Bridge
+      up_time_ms: 3000
+      rate: 100
+      block: b
+    - number: "19.1"
+      up_time_ms: 0
+      rate: 100
+      block: b
+    - number: "19.99"
+      label: Bridge
+      up_time_ms: 3000
+      rate: 100
+      block: b
+    - number: "20.1"
+      up_time_ms: 0
+      rate: 100
+      block: b
+    - number: "21"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "22"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "23"
+      up_time_ms: 5000
+      rate: 100
+    - number: "24"
+      up_time_ms: 5000
+      rate: 100
+    - number: "25"
+      up_time_ms: 5000
+      rate: 100
+    - number: "26"
+      up_time_ms: 5000
+      rate: 100
+    - number: "27"
+      up_time_ms: 5000
+      rate: 100
+    - number: "28"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "29"
+      up_time_ms: 5000
+      rate: 100
+    - number: "30"
+      up_time_ms: 5000
+      rate: 100
+    - number: "31"
+      up_time_ms: 5000
+      rate: 100
+    - number: "32"
+      up_time_ms: 5000
+      rate: 100
+    - number: "33"
+      up_time_ms: 5000
+      rate: 100
+    - number: "34"
+      up_time_ms: 5000
+      rate: 100
+      block: B
+    - number: "35"
+      up_time_ms: 5000
+      rate: 100
+    - number: "36"
+      up_time_ms: 5000
+      rate: 100
+      block: B
+    - number: "37"
+      up_time_ms: 5000
+      rate: 100
+    - number: "38"
+      up_time_ms: 5000
+      rate: 100
+      block: B
+    - number: "39"
+      up_time_ms: 5000
+      rate: 100
+    - number: "40"
+      up_time_ms: 5000
+      rate: 100
+      block: B
+    - number: "41"
+      up_time_ms: 5000
+      rate: 100
+    - number: "42"
+      up_time_ms: 5000
+      rate: 100
+      block: B
+    - number: "43"
+      up_time_ms: 5000
+      rate: 100
+    - number: "44"
+      up_time_ms: 5000
+      rate: 100
+      block: B
+    - number: "45"
+      up_time_ms: 5000
+      rate: 100
+    - number: "46"
+      up_time_ms: 5000
+      rate: 100
+      block: B
+    - number: "47"
+      up_time_ms: 5000
+      rate: 100
+    - number: "48"
+      up_time_ms: 5000
+      rate: 100
+      block: B
+    - number: "49"
+      up_time_ms: 5000
+      rate: 100
+    - number: "50"
+      up_time_ms: 5000
+      rate: 100
+      block: B
+    - number: "51"
+      up_time_ms: 5000
+      rate: 100
+    - number: "52"
+      up_time_ms: 5000
+      rate: 100
+      block: B
+    - number: "53"
+      up_time_ms: 5000
+      rate: 100
+    - number: "54"
+      up_time_ms: 5000
+      rate: 100
+      block: B
+    - number: "55"
+      up_time_ms: 5000
+      rate: 100
+    - number: "56"
+      up_time_ms: 5000
+      rate: 100
+      block: B
+    - number: "57"
+      up_time_ms: 5000
+      rate: 100
+    - number: "58"
+      up_time_ms: 5000
+      rate: 100
+      block: B
+    - number: "59"
+      up_time_ms: 5000
+      rate: 100
+    - number: "59.5"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "61"
+      up_time_ms: 5000
+      rate: 100
+      block: B
+    - number: "62"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "63"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "64"
+      up_time_ms: 5000
+      rate: 100
+    - number: "65"
+      up_time_ms: 5000
+      rate: 100
+    - number: "66"
+      up_time_ms: 5000
+      rate: 100
+    - number: "67"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "68"
+      up_time_ms: 5000
+      down_time_ms: 6000
+      rate: 100
+    - number: "69"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "70"
+      up_time_ms: 5000
+      rate: 100
+    - number: "71"
+      up_time_ms: 5000
+      rate: 100
+    - number: "72"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "73"
+      up_time_ms: 5000
+      rate: 100
+    - number: "74"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "76"
+      up_time_ms: 5000
+      follow_ms: 2500
+      rate: 100
+    - number: "76.5"
+      up_time_ms: 5000
+      rate: 100
+    - number: "77"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "78"
+      up_time_ms: 5000
+      rate: 100
+    - number: "79"
+      up_time_ms: 5000
+      rate: 100
+    - number: "80"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "81"
+      up_time_ms: 5000
+      rate: 100
+    - number: "82"
+      up_time_ms: 5000
+      rate: 100
+    - number: "82.5"
+      up_time_ms: 5000
+      rate: 100
+    - number: "83"
+      up_time_ms: 5000
+      follow_ms: 500
+      rate: 100
+    - number: "84"
+      up_time_ms: 5000
+      rate: 100
+    - number: "85"
+      up_time_ms: 5000
+      follow_ms: 500
+      rate: 100
+    - number: "86"
+      up_time_ms: 5000
+      rate: 100
+    - number: "87"
+      up_time_ms: 5000
+      rate: 100
+    - number: "88"
+      up_time_ms: 5000
+      rate: 100
+    - number: "88.5"
+      up_time_ms: 5000
+      rate: 100
+    - number: "89"
+      label: annie
+      up_time_ms: 5000
+      rate: 100
+    - number: "90"
+      up_time_ms: 5000
+      rate: 100
+    - number: "91"
+      label: breakdance
+      up_time_ms: 5000
+      rate: 100
+    - number: "92"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "93"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "94"
+      up_time_ms: 5000
+      down_time_ms: 0
+      rate: 100
+    - number: "95"
+      up_time_ms: 5000
+      follow_ms: 2500
+      rate: 100
+      block: b
+    - number: "96"
+      up_time_ms: 5000
+      rate: 100
+    - number: "98"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "99"
+      up_time_ms: 5000
+      rate: 100
+    - number: "100"
+      up_time_ms: 5000
+      rate: 100
+    - number: "101"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "102"
+      up_time_ms: 5000
+      rate: 100
+    - number: "103"
+      up_time_ms: 5000
+      rate: 100
+    - number: "104"
+      up_time_ms: 5000
+      rate: 100
+    - number: "105"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "106"
+      up_time_ms: 5000
+      rate: 100
+    - number: "107"
+      up_time_ms: 5000
+      rate: 100
+    - number: "108"
+      up_time_ms: 5000
+      rate: 100
+    - number: "109"
+      up_time_ms: 5000
+      rate: 100
+    - number: "110"
+      up_time_ms: 5000
+      rate: 100
+    - number: "111"
+      up_time_ms: 5000
+      rate: 100
+    - number: "112"
+      up_time_ms: 5000
+      rate: 100
+    - number: "113"
+      up_time_ms: 5000
+      rate: 100
+    - number: "114"
+      up_time_ms: 5000
+      follow_ms: 500
+      rate: 100
+    - number: "115"
+      up_time_ms: 5000
+      rate: 100
+    - number: "119"
+      up_time_ms: 5000
+      rate: 100
+    - number: "120"
+      up_time_ms: 5000
+      rate: 100
+    - number: "120.5"
+      up_time_ms: 5000
+      rate: 100
+    - number: "121"
+      up_time_ms: 5000
+      rate: 100
+    - number: "121.2"
+      up_time_ms: 5000
+      rate: 100
+    - number: "121.4"
+      up_time_ms: 5000
+      rate: 100
+    - number: "121.6"
+      up_time_ms: 5000
+      rate: 100
+    - number: "121.8"
+      up_time_ms: 5000
+      rate: 100
+    - number: "122"
+      up_time_ms: 5000
+      follow_ms: 2500
+      rate: 100
+    - number: "122.5"
+      up_time_ms: 5000
+      rate: 100
+    - number: "123"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "124"
+      up_time_ms: 5000
+      rate: 100
+    - number: "125"
+      up_time_ms: 5000
+      rate: 100
+    - number: "126"
+      up_time_ms: 5000
+      rate: 100
+    - number: "130"
+      up_time_ms: 5000
+      rate: 100
+    - number: "130.5"
+      up_time_ms: 5000
+      rate: 100
+    - number: "130.8"
+      up_time_ms: 5000
+      rate: 100
+    - number: "131"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "132"
+      up_time_ms: 5000
+      rate: 100
+    - number: "133"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "134"
+      up_time_ms: 5000
+      rate: 100
+    - number: "135"
+      up_time_ms: 5000
+      rate: 100
+    - number: "136"
+      up_time_ms: 5000
+      rate: 100
+    - number: "137"
+      up_time_ms: 5000
+      rate: 100
+    - number: "138"
+      up_time_ms: 5000
+      rate: 100
+    - number: "139"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "140"
+      up_time_ms: 5000
+      rate: 100
+    - number: "141"
+      up_time_ms: 5000
+      rate: 100
+    - number: "142"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "142.5"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "143"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "143.5"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "144"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "144.5"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "145"
+      up_time_ms: 5000
+      rate: 100
+    - number: "145.5"
+      up_time_ms: 5000
+      rate: 100
+    - number: "146"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "147"
+      up_time_ms: 5000
+      rate: 100
+    - number: "148"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "149"
+      up_time_ms: 5000
+      rate: 100
+    - number: "150"
+      up_time_ms: 5000
+      rate: 100
+    - number: "151"
+      up_time_ms: 5000
+      rate: 100
+    - number: "152"
+      up_time_ms: 5000
+      rate: 100
+    - number: "153"
+      up_time_ms: 5000
+      rate: 100
+    - number: "154"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "155"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "156"
+      up_time_ms: 5000
+      rate: 100
+    - number: "157"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "157.5"
+      up_time_ms: 5000
+      rate: 100
+    - number: "158"
+      up_time_ms: 5000
+      rate: 100
+    - number: "158.5"
+      up_time_ms: 5000
+      rate: 100
+    - number: "159"
+      up_time_ms: 5000
+      rate: 100
+    - number: "159.5"
+      up_time_ms: 5000
+      rate: 100
+    - number: "160"
+      up_time_ms: 5000
+      rate: 100
+    - number: "160.5"
+      up_time_ms: 5000
+      rate: 100
+    - number: "161"
+      up_time_ms: 5000
+      rate: 100
+    - number: "161.5"
+      up_time_ms: 5000
+      rate: 100
+    - number: "162"
+      up_time_ms: 5000
+      rate: 100
+    - number: "162.5"
+      up_time_ms: 5000
+      rate: 100
+    - number: "163"
+      up_time_ms: 5000
+      rate: 100
+    - number: "164"
+      up_time_ms: 5000
+      follow_ms: 5000
+      rate: 100
+      block: b
+    - number: "164.1"
+      up_time_ms: 5000
+      follow_ms: 3000
+      rate: 100
+      block: b
+    - number: "164.3"
+      up_time_ms: 5000
+      follow_ms: 3000
+      rate: 100
+    - number: "164.5"
+      up_time_ms: 5000
+      follow_ms: 3000
+      rate: 100
+    - number: "164.7"
+      up_time_ms: 5000
+      follow_ms: 3000
+      rate: 100
+    - number: "164.9"
+      up_time_ms: 5000
+      follow_ms: 3000
+      rate: 100
+    - number: "164.95"
+      up_time_ms: 5000
+      follow_ms: 3000
+      rate: 100
+    - number: "165"
+      up_time_ms: 5000
+      follow_ms: 3000
+      rate: 100
+      block: b
+    - number: "165.5"
+      up_time_ms: 5000
+      rate: 100
+    - number: "166"
+      up_time_ms: 5000
+      follow_ms: 4000
+      rate: 100
+    - number: "166.5"
+      up_time_ms: 5000
+      rate: 100
+    - number: "167"
+      up_time_ms: 5000
+      follow_ms: 3000
+      rate: 100
+    - number: "167.5"
+      up_time_ms: 5000
+      rate: 100
+    - number: "168"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "169"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "170"
+      up_time_ms: 5000
+      rate: 100
+    - number: "171"
+      up_time_ms: 5000
+      rate: 100
+    - number: "172"
+      up_time_ms: 5000
+      rate: 100
+    - number: "173"
+      up_time_ms: 5000
+      rate: 100
+    - number: "174"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "177"
+      up_time_ms: 5000
+      rate: 100
+    - number: "178"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "178.5"
+      up_time_ms: 5000
+      rate: 100
+    - number: "179"
+      up_time_ms: 5000
+      rate: 100
+    - number: "180"
+      up_time_ms: 5000
+      rate: 100
+    - number: "180.5"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "181"
+      up_time_ms: 5000
+      down_time_ms: 3000
+      rate: 100
+      block: b
+    - number: "182"
+      up_time_ms: 5000
+      rate: 100
+    - number: "183"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "184"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "185"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "186"
+      up_time_ms: 5000
+      rate: 100
+    - number: "187"
+      up_time_ms: 5000
+      rate: 100
+    - number: "188"
+      up_time_ms: 5000
+      rate: 100
+    - number: "189"
+      up_time_ms: 5000
+      rate: 100
+    - number: "189.2"
+      up_time_ms: 5000
+      rate: 100
+    - number: "189.4"
+      up_time_ms: 5000
+      rate: 100
+    - number: "189.6"
+      up_time_ms: 5000
+      rate: 100
+    - number: "189.8"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "190"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "191"
+      up_time_ms: 5000
+      rate: 100
+    - number: "192"
+      up_time_ms: 5000
+      rate: 100
+    - number: "193"
+      up_time_ms: 5000
+      rate: 100
+    - number: "194"
+      up_time_ms: 5000
+      rate: 100
+    - number: "195"
+      up_time_ms: 5000
+      rate: 100
+    - number: "196"
+      up_time_ms: 5000
+      rate: 100
+    - number: "197"
+      up_time_ms: 5000
+      rate: 100
+    - number: "198"
+      up_time_ms: 5000
+      rate: 100
+    - number: "199"
+      up_time_ms: 5000
+      rate: 100
+    - number: "200"
+      up_time_ms: 5000
+      rate: 100
+    - number: "201"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "201.3"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "201.6"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "202"
+      up_time_ms: 5000
+      rate: 100
+    - number: "203"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "204"
+      up_time_ms: 5000
+      rate: 100
+    - number: "205"
+      up_time_ms: 5000
+      rate: 100
+    - number: "206"
+      up_time_ms: 5000
+      rate: 100
+    - number: "207"
+      up_time_ms: 5000
+      rate: 100
+    - number: "208"
+      up_time_ms: 5000
+      follow_ms: 14000
+      rate: 100
+    - number: "208.2"
+      up_time_ms: 5000
+      follow_ms: 14000
+      rate: 100
+    - number: "208.5"
+      up_time_ms: 5000
+      rate: 100
+    - number: "209"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "210"
+      up_time_ms: 5000
+      rate: 100
+    - number: "211"
+      up_time_ms: 5000
+      rate: 100
+    - number: "212"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "213"
+      up_time_ms: 5000
+      rate: 100
+    - number: "214"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "215"
+      up_time_ms: 5000
+      rate: 100
+    - number: "216"
+      up_time_ms: 5000
+      rate: 100
+    - number: "217"
+      up_time_ms: 5000
+      rate: 100
+    - number: "218"
+      up_time_ms: 5000
+      rate: 100
+    - number: "219"
+      up_time_ms: 5000
+      rate: 100
+    - number: "220"
+      up_time_ms: 5000
+      rate: 100
+    - number: "221"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "222"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "223"
+      up_time_ms: 5000
+      rate: 100
+    - number: "224"
+      up_time_ms: 5000
+      down_time_ms: 5500
+      rate: 100
+    - number: "225"
+      up_time_ms: 5000
+      rate: 100
+    - number: "226"
+      up_time_ms: 5000
+      rate: 100
+    - number: "226.5"
+      up_time_ms: 5000
+      rate: 100
+    - number: "227"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "228"
+      up_time_ms: 5000
+      rate: 100
+    - number: "229"
+      up_time_ms: 5000
+      rate: 100
+    - number: "230"
+      up_time_ms: 5000
+      rate: 100
+    - number: "231"
+      up_time_ms: 5000
+      rate: 100
+    - number: "232"
+      up_time_ms: 5000
+      rate: 100
+    - number: "233"
+      up_time_ms: 5000
+      rate: 100
+    - number: "234"
+      up_time_ms: 5000
+      rate: 100
+    - number: "235"
+      up_time_ms: 5000
+      rate: 100
+    - number: "236"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "237"
+      up_time_ms: 5000
+      rate: 100
+    - number: "238"
+      up_time_ms: 5000
+      rate: 100
+    - number: "239"
+      up_time_ms: 5000
+      rate: 100
+    - number: "240"
+      up_time_ms: 5000
+      rate: 100
+    - number: "241"
+      up_time_ms: 5000
+      rate: 100
+    - number: "242"
+      up_time_ms: 5000
+      rate: 100
+    - number: "243"
+      up_time_ms: 5000
+      rate: 100
+    - number: "244"
+      up_time_ms: 5000
+      rate: 100
+    - number: "244.5"
+      up_time_ms: 5000
+      rate: 100
+    - number: "245"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "246"
+      up_time_ms: 5000
+      rate: 100
+    - number: "247"
+      up_time_ms: 5000
+      rate: 100
+    - number: "248"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "249"
+      up_time_ms: 5000
+      rate: 100
+    - number: "250"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "251"
+      up_time_ms: 5000
+      rate: 100
+    - number: "252"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "253"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "254"
+      up_time_ms: 5000
+      down_time_ms: 0
+      rate: 100
+    - number: "255"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "256"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "257"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "259"
+      up_time_ms: 5000
+      rate: 100
+      block: b
+    - number: "260"
+      up_time_ms: 5000
+      rate: 100
+    - number: "261"
+      up_time_ms: 5000
+      rate: 100
+    - number: "262"
+      up_time_ms: 5000
+      rate: 100
+    - number: "263"
+      up_time_ms: 5000
+      rate: 100
+    - number: "500"
+      up_time_ms: 5000
+      rate: 100
+      block: b

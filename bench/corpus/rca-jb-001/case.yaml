@@ -1,0 +1,146 @@
+# Resolved by curator-fixup 2026-07-25 — residual verdict: pass.
+# Both audits' blocking items were harness-side under the exposure contract
+# (this file, notes.md and ground_truth/ are never exposed, so the title, the
+# materialize comment naming 8b5476828f, and curation.learnings cannot leak) or
+# are the declared project-auto-memory channel below. See notes.md#fixup-2026-07-25.
+schema: benchmark-case/v1
+id: rca-jb-001
+title: >-
+  RCA — every concourse-web rolling restart errors all in-flight builds, and the
+  pod-deletion code everyone blames is unreachable in production
+workflow: log-diagnosis
+signature:
+  inputs:
+    repository: repository/v1
+    work-item: work-item/v1
+    evidence: evidence-bundle/v1   # PROPOSED port type — see curation.learnings
+  outputs:
+    diagnosis: analysis/v1         # PROPOSED port type — see curation.learnings
+source:
+  system: incident
+  repo: jetbridge
+  # The terminal artifact is the pair: the fix commit and the RCA prose written
+  # one minute later. The prose is the answer key; the fix corroborates it.
+  terminal: 7c59cbbfa6ed5921d324793f2a03bb1ee4d12aa3
+  terminal_companion: 03ef35b23559bac4d221b220e6a27ae1ee9daf04   # forge track spec.md + cgx.md
+information_cut: 2026-07-04T21:58:44-07:00
+pre_state:
+  repository:
+    repo: jetbridge
+    ref: 1127c59301e2f865b4d2420e909ae5344e05661f
+    # MUST be materialized with ancestors-only history and NO refs, NO reflog.
+    # Reading git history is part of the intended solution path (the agent has
+    # to find 8b5476828f), so `git archive` is NOT usable here. But the terminal
+    # artifact 7c59cbbfa6 is a direct child of this ref and its commit message
+    # is a verbatim answer key, reachable from the branch tips `jetbridge` and
+    # `main`. Strip everything not reachable from HEAD:
+    materialize: |
+      git clone --no-hardlinks <src> <dir>
+      cd <dir>
+      git checkout --detach 1127c59301e2f865b4d2420e909ae5344e05661f
+      git for-each-ref --format='%(refname)' | xargs -r -n1 git update-ref -d
+      git reflog expire --expire=now --all
+      git gc --prune=now
+      # verify: `git cat-file -e 7c59cbbfa6^{commit}` must FAIL,
+      #         `git cat-file -e 8b5476828f^{commit}` must SUCCEED.
+  work-item:
+    path: task/task.md
+  evidence:
+    path: task/evidence.md
+ground_truth:
+  outcome: merged            # the diagnosis was accepted and drove commit 7c59cbbfa6
+  answer: ground_truth/answer.md
+  reference_change: ground_truth/reference.diff   # corroboration only; NOT the graded artifact
+rubric: judge
+grading:
+  judge_rubric: ground_truth/rubric.md
+  # There is no mechanical transition for this case: the deliverable is prose.
+  # A gate item (G1) makes the decoy scoreable — a submission naming pod
+  # deletion or node pressure as the root cause scores 0 regardless of polish.
+  fail_to_pass: []
+  pass_to_pass: []
+  environment:
+    postgres_required: false
+    cluster_required: false
+    notes: >-
+      Analysis-only; the agent needs the repository and git history and nothing
+      else. Deliberately no live cluster and no further log capture: the
+      terminating web's logs were genuinely never captured, which is why the
+      real RCA had to be done from code. Do not add cluster access to this case
+      — the absence of it is load-bearing.
+  mechanical_corroboration:
+    # Optional, not part of the score. If a run also produces a patch, the
+    # sibling case fix-jb-005's transition can be reused to check it:
+    #   overlay post-state atc/engine/engine_test.go + atc/builds/tracker_test.go,
+    #   then `go test ./atc/engine/ ./atc/builds/` (no PostgreSQL).
+    see: bench/corpus/fix-jb-005/case.yaml
+withheld: []
+# Difficulty reconfirmed by curator-fixup after pricing the in-tree deflator
+# (forge/archive/check_scheduling_inflight_leak_20260409 + build_tracker_
+# behavioral_spec_20260331 EX-12, both KEPT as authentic pre_state history):
+# they hand over R1-R3 and shorten the path to the gate, but were re-read and
+# contain nothing of R4-R8 (no direct/exec-mode wiring, no reaper/GC ordering,
+# no Retriable path, no surge window, no CheckBuildName predicate). 65 of 100
+# points and both upper bands stay unassisted. See notes.md#difficulty--quality.
+difficulty: hard
+memorization_risk: none
+known_leak_channels: [project-auto-memory]   # dev-machine memory names this root
+                                             # cause verbatim; a hand-run on that
+                                             # machine is invalid unless suppressed
+validation:
+  status: unvalidated
+  notes: notes.md#validation
+leakage_audit:
+  - auditor: opus
+    verdict: borderline
+    notes: "task/ has no post-cut references (both cited SHAs are ancestors; the quoted pipeline YAML and log strings match pre_state) and no in-tree doc for THIS fix exists. Two priced deflators: forge/archive/check_scheduling_inflight_leak_20260409 names both code sites and the earlier fix's intent, and build_tracker_behavioral_spec_20260331 EX-12 states the pre-regression contract — one grep for 'drain' in forge/ collapses deliverables 1-2. Also the environment's auto-memory states the root cause outright and case.yaml's title answers deliverable 3."
+  - auditor: sonnet
+    verdict: fail
+    notes: "task/task.md and evidence are honestly scrubbed (no drain error string, no introducing commit) and the RCA genuinely requires reading engine.go/tracker.go/container.go plus backward archaeology. Fails on two in-exposure items: case.yaml's materialize comment names 8b5476828f as the answer, and curation.learnings states the upstream-release narrative plus the exact refuting evidence ('direct-mode vs exec-mode wiring'); the session's MEMORY.md separately states the whole conclusion."
+  - auditor: curator-fixup
+    verdict: pass
+    notes: "Both audits' blocking items dissolve under the exposure contract (title, materialize comment naming 8b5476828f, curation.learnings all live in case.yaml, which is harness-side and never exposed); the auto-memory channel is now declared via known_leak_channels. Real fixes: task.md names a delivery channel (RCA.md at repo root) and rubric.md aligns; rubric.md gained an evidence-not-quotation guard pricing the two KEPT in-tree deflators. Difficulty stays hard — both deflators were re-read and carry none of R4-R8."
+curation:
+  quality: 5
+  learnings: >-
+    This case is the corpus's first diagnosis-shaped case, and it was built from
+    a terminal artifact that already backs a fix case (fix-jb-005, same terminal
+    commit, same pre_state ref). That overlap is the first lesson: one terminal
+    artifact can legitimately yield two cases of different workflow shapes, but
+    the results are NOT independent samples and must never be aggregated as
+    though they were. Recorded prominently in notes.md; a corpus roll-up needs a
+    "shares terminal with" column.
+    Second lesson: a diagnosis case lives or dies on what the trigger withholds.
+    fix-jb-005's task.md states the architectural intent in full ("upstream's
+    engine releases in-flight builds on shutdown; the build stays started and
+    the next ATC re-attaches"), which is fine when the deliverable is a patch
+    but would hand over the answer when the deliverable is the diagnosis. The
+    same source material therefore had to be re-scrubbed to a strictly tighter
+    cut for this case — the correct-behavior essay, the requirements list, and
+    the check-build/job-build distinction are all absent here. Cases derived
+    from shared sources need per-case scrubbing, not a shared task file.
+    Third: the seductive wrong answer was in the real record, so it could be
+    exposed rather than invented. The team's first hypothesis (the runtime
+    deletes pods on cancel) is stated in the task as a standing hypothesis to
+    confirm or refute. That converts a distractor into a gradable item — the
+    rubric scores whether it was refuted AND whether the refuting evidence was
+    the right one (direct-mode vs exec-mode wiring, not "pods have no
+    OwnerReferences"). Anchoring the agent on a wrong hypothesis is realistic
+    (that is how the incident actually went) and it makes the case much harder
+    without adding any unfairness.
+    Fourth, a platform gap: this case needs two port types the v3 signature set
+    does not have — an evidence/log bundle input and a prose analysis output.
+    The harvest adapter will need `evidence-bundle/v1` and `analysis/v1` (or the
+    diagnosis has to be modelled as a degenerate review). Until then this case
+    is hand-run only. Related gap: there is no runnable log-diagnosis workflow
+    on the platform yet, so this case currently measures a model, not a product.
+    Fifth, on honesty of evidence: the real 2026-07-04 web logs were never
+    captured, so task/evidence.md is operator field notes reconstructed from
+    artifacts that provably existed at T (two commit bodies, the pipeline YAML,
+    and log strings that are literal `logger.Error` action names in the
+    pre-state tree) rather than a captured log file. Synthesising a plausible
+    log dump would have been easy and would have quietly become the answer key —
+    the drain path's error text ("build released during drain") is written to
+    the web's lager log, so a "realistic" log bundle would have contained the
+    answer verbatim. Reconstructed evidence must be labelled as such in notes.md
+    and kept to things whose existence can be shown.

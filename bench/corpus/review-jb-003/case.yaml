@@ -1,0 +1,125 @@
+# Dual audit: borderline -> resolved by curator-fixup 2026-07-25. Both auditors'
+# residual items were either dissolved by the exposure contract (case.yaml and
+# notes.md are harness-side, never exposed) or fixed in task/. See leakage_audit
+# and notes.md "Fixup 2026-07-25".
+schema: benchmark-case/v1
+id: review-jb-003
+title: Adversarial review of the agentic UX wave — three time-dependent bugs in a 1.8k-line Elm branch
+workflow: code-review
+signature:                    # matches the platform's code-review-v3 seed exactly
+  inputs:
+    before: repository/v1
+    after: repository/v1
+  outputs:
+    review: review/v1
+source:
+  system: git-commit
+  repo: jetbridge
+  terminal: 20b808a92e977f38c9b903f3c103a76c389c912d
+information_cut: "2026-07-18T21:55:30-07:00"
+pre_state:
+  # code-review-v3 has no work-item port: the review request is carried by the
+  # workflow's own prompt, not by an input snapshot. task/task.md is exposed as
+  # that framing. See notes.md "Schema fit".
+  before: {repo: jetbridge, ref: 54b541a81e6235ca74256dfbd50666ec45a18d2c}
+  after: {repo: jetbridge, ref: 199ab7497399aa157065b660537caa652373791c}
+ground_truth:
+  outcome: merged             # all three findings were accepted and fixed in the terminal commit
+  expected_findings: ground_truth/expected_findings.yaml
+  reference_change: ground_truth/reference.diff   # the fix the findings produced — context, not the graded output
+  rubric_checklist: ground_truth/rubric.md
+rubric: reference
+grading:
+  # The graded artifact is a review, so there is no fail-to-pass transition for
+  # the agent. Recall/ranking against expected_findings.yaml is the primary
+  # score; rubric.md is the judge checklist for intent and scoping.
+  ranked_recall:
+    findings: ground_truth/expected_findings.yaml
+    must_find: [F1]
+    should_find: [F2, F3]
+    scoping_item: D1          # report AND mark pre-existing / follow-up
+    ranking_constraint: "F1 must outrank F3"
+  judge_checklist: ground_truth/rubric.md
+  # Grading caveat (2026-07-25): task/task.md asks for per-finding attribution
+  # ("introduced here or pre-existing") but no longer prescribes how a
+  # pre-existing finding should be handled — that sentence restated the D1
+  # scoping criterion verbatim and was removed as leading text. The flexibility
+  # now lives in ground_truth/rubric.md: a correctly attributed D1 is full credit
+  # regardless of wording, an unattributed D1 report is partial credit, and the
+  # full scoping signal requires report + attribution + not blocking the branch.
+  # These commands do NOT grade the agent. They prove the ground truth is real:
+  # each of F1-F3 is pinned by a regression test that fails at the reviewed state
+  # and passes with the fix. Run from a materialized tree; elm + elm-test on PATH
+  # (elm 0.19.1, elm-test 0.19.1-revision12). No Postgres, no network.
+  ground_truth_validation:
+    - cmd: "cd web/elm && elm-test tests/AgentBadgeTests.elm tests/AgentPageTests.elm tests/AgentTicketPageTests.elm"
+      tree: "199ab7497399aa157065b660537caa652373791c with the three test files replaced by their 20b808a92e version"
+      expect: "TEST RUN FAILED — 59 passed, 4 failed"
+      failing_specs:
+        - "a PARKED run shows Waiting on you even though its build is still 'started'   (F2)"
+        - "a parked run whose build later succeeded still shows Waiting on you, not OK  (F2)"
+        - "expanding a ledger row reveals the full run summary                          (F3)"
+        - "a periodic self-heal refetch does not clobber an open edit form              (F1)"
+    - cmd: "cd web/elm && elm-test tests/AgentBadgeTests.elm tests/AgentPageTests.elm tests/AgentTicketPageTests.elm"
+      tree: "20b808a92e977f38c9b903f3c103a76c389c912d"
+      expect: "TEST RUN PASSED — 63 passed"
+    - cmd: "cd web/elm && elm-test"
+      tree: "199ab7497399aa157065b660537caa652373791c"
+      expect: "TEST RUN PASSED — 3123 passed (the reviewed state is green; passing tests are not evidence of correctness)"
+  needs_postgres: false
+withheld: []                  # nothing at either ref describes these findings; see notes.md
+difficulty: moderate           # unchanged: neither auditor contested it; 31 files /
+                               # +1798 lines of Elm with three time-dependent
+                               # defects, two of them argued against by in-source
+                               # comments, is a defensible moderate
+memorization_risk: none
+known_leak_channels: [project-auto-memory]
+  # This dev machine's project auto-memory states F2's answer: MEMORY.md's
+  # "Agentic UX wave 2 (impl)" line names "runOutcome worst-truth-wins", and
+  # project_agentic_ux_wave_2.md spells out the settled precedence
+  # ("terminal-bad build -> then parked -> ..."). That is post-cut knowledge of
+  # this exact branch. A hand-run of this case on this machine is invalid unless
+  # project memory / session context is suppressed; the memory itself is correct
+  # and must not be edited to serve the bench.
+validation:
+  status: validated
+  notes: notes.md#validation
+leakage_audit:
+  - auditor: opus
+    verdict: borderline
+    notes: "No leak in task/: it names no module, function or mechanism, cites no post-cut artifact, and no in-tree doc — including the branch's own scope doc — contains the findings. Curator items: bullet 5 restates the D1 scoping criterion almost verbatim (coaching the discriminative judgement), the Go build_status sentence signposts F2's seam, and case.yaml's grading.ground_truth_validation.failing_specs enumerates F1/F2/F3 in plain English outside ground_truth/."
+  - auditor: sonnet
+    verdict: borderline
+    notes: "task.md is clean (grepped for clobber/ordinal/parked/waiting-on-you — nothing), and the two in-source comments that ease F3 and D1 are genuine developer-authored code under review, with D1's verified byte-identical at the base ref. Only issue: case.yaml's grading.ground_truth_validation.failing_specs and curation.learnings embed near-verbatim spoilers for F1/F2/F3 and D1 outside the access-controlled ground_truth/ tree."
+  - auditor: curator-fixup
+    verdict: pass
+    notes: "Fixed the two task/ items (bullet 5 no longer restates the D1 scoping criterion; the Go-slice sentence no longer names build_status) and moved D1's grading flexibility into rubric.md; added a judge instruction to credit causal reasoning over doc-quotation for the two deliberately-exposed docs. Both auditors' remaining items — failing_specs and curation.learnings spelling out F1-F3/D1 — are dissolved by the exposure contract: case.yaml and notes.md are harness-side and never exposed. Declared project-auto-memory as a known leak channel (memory names runOutcome's parked precedence)."
+curation:
+  quality: 5
+  learnings: >-
+    The first review case in the corpus, and it settles three format questions.
+    (1) A review case needs TWO repository refs, not a parent/child pair: the
+    platform's code-review-v3 signature is (before, after) -> review, and the
+    honest pre-state is "the branch tip the reviewer actually saw" — here the
+    bundle-rebuild commit immediately before the fix, NOT the merge commit, which
+    would have dragged the fix in. Backing out from the FIX commit and taking its
+    parent as `after` is the reliable recipe.
+    (2) A review case is not mechanically gradable, but its GROUND TRUTH is —
+    every finding here is pinned by a regression test in the fix commit, and
+    running those tests against the reviewed state (4 targeted failures, 3123
+    unrelated specs green) converts "the human said these are bugs" into "these
+    are bugs". Prefer review terminal artifacts that ship tests; it is the
+    difference between a graded opinion and a graded fact.
+    (3) The scoping item is what makes the case discriminative. Recall alone is
+    cheap to game by listing everything; this case also asks whether the agent
+    reports the pre-existing blank-finding-id collision AND declines to fold it
+    into the branch's bill. That is judgement, and it is only gradable because
+    the human left a paper trail — the deferral is in the commit message and the
+    follow-up landed separately (9e1fbf99e1).
+    Two cautions this case surfaced. The human's own commit message is not a
+    reliable oracle for detail: it describes the /agent ledger as refetching
+    every 5s when that page is on the one-minute clock, so the rubric has to
+    explicitly forgive the correct answer. And the severity labels are the
+    ranking rubric here only because the reviewer wrote them down — most review
+    artifacts do not, which is a strong selection criterion for future review
+    candidates.

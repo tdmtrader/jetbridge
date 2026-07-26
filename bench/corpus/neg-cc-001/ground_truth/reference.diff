@@ -1,0 +1,1866 @@
+diff --git a/atc/db/build.go b/atc/db/build.go
+index 0cf0536d67..7ba4c7e27c 100644
+--- a/atc/db/build.go
++++ b/atc/db/build.go
+@@ -656,7 +656,7 @@ func (b *build) Finish(status BuildStatus) error {
+ 			return err
+ 		}
+ 
+-		rows, err := psql.Select("o.resource_id", "o.version_sha256").
++		rows, err := psql.Select("o.resource_id", "o.version_md5").
+ 			From("build_resource_config_version_outputs o").
+ 			Where(sq.Eq{
+ 				"o.build_id": b.id,
+@@ -693,7 +693,7 @@ func (b *build) Finish(status BuildStatus) error {
+ 			}
+ 		}
+ 
+-		rows, err = psql.Select("i.resource_id", "i.version_sha256").
++		rows, err = psql.Select("i.resource_id", "i.version_md5").
+ 			From("build_resource_config_version_inputs i").
+ 			Where(sq.Eq{
+ 				"i.build_id": b.id,
+@@ -1326,8 +1326,8 @@ func (b *build) SaveOutput(
+ 	}
+ 
+ 	_, err = psql.Insert("build_resource_config_version_outputs").
+-		Columns("resource_id", "build_id", "version_sha256", "name").
+-		Values(theResource.ID(), strconv.Itoa(b.id), sq.Expr("encode(digest(?, 'sha256'), 'hex')", versionJSON), outputName).
++		Columns("resource_id", "build_id", "version_md5", "name").
++		Values(theResource.ID(), strconv.Itoa(b.id), sq.Expr("md5(?)", versionJSON), outputName).
+ 		Suffix("ON CONFLICT DO NOTHING").
+ 		RunWith(tx).
+ 		Exec()
+@@ -1384,13 +1384,13 @@ func (b *build) AdoptInputsAndPipes() ([]BuildInput, bool, error) {
+ 	}
+ 
+ 	rows, err := psql.Insert("build_resource_config_version_inputs").
+-		Columns("resource_id", "version_sha256", "name", "first_occurrence", "build_id").
+-		Select(psql.Select("i.resource_id", "i.version_sha256", "i.input_name", "i.first_occurrence").
++		Columns("resource_id", "version_md5", "name", "first_occurrence", "build_id").
++		Select(psql.Select("i.resource_id", "i.version_md5", "i.input_name", "i.first_occurrence").
+ 			Column("?", b.id).
+ 			From("next_build_inputs i").
+ 			Where(sq.Eq{"i.job_id": b.jobID})).
+-		Suffix("ON CONFLICT (build_id, resource_id, version_sha256, name) DO UPDATE SET first_occurrence = EXCLUDED.first_occurrence").
+-		Suffix("RETURNING name, resource_id, version_sha256, first_occurrence").
++		Suffix("ON CONFLICT (build_id, resource_id, version_md5, name) DO UPDATE SET first_occurrence = EXCLUDED.first_occurrence").
++		Suffix("RETURNING name, resource_id, version_md5, first_occurrence").
+ 		RunWith(tx).
+ 		Query()
+ 	if err != nil {
+@@ -1402,11 +1402,11 @@ func (b *build) AdoptInputsAndPipes() ([]BuildInput, bool, error) {
+ 		var (
+ 			inputName       string
+ 			firstOccurrence bool
+-			versionSHA256   string
++			versionMD5      string
+ 			resourceID      int
+ 		)
+ 
+-		err := rows.Scan(&inputName, &resourceID, &versionSHA256, &firstOccurrence)
++		err := rows.Scan(&inputName, &resourceID, &versionMD5, &firstOccurrence)
+ 		if err != nil {
+ 			return nil, false, err
+ 		}
+@@ -1415,7 +1415,7 @@ func (b *build) AdoptInputsAndPipes() ([]BuildInput, bool, error) {
+ 			Input: &AlgorithmInput{
+ 				AlgorithmVersion: AlgorithmVersion{
+ 					ResourceID: resourceID,
+-					Version:    ResourceVersion(versionSHA256),
++					Version:    ResourceVersion(versionMD5),
+ 				},
+ 				FirstOccurrence: firstOccurrence,
+ 			},
+@@ -1431,8 +1431,8 @@ func (b *build) AdoptInputsAndPipes() ([]BuildInput, bool, error) {
+ 			From("resource_config_versions v").
+ 			Join("resources r ON r.resource_config_scope_id = v.resource_config_scope_id").
+ 			Where(sq.Eq{
+-				"v.version_sha256": input.Input.Version,
+-				"r.id":             input.Input.ResourceID,
++				"v.version_md5": input.Input.Version,
++				"r.id":          input.Input.ResourceID,
+ 			}).
+ 			RunWith(tx).
+ 			QueryRow().
+@@ -1542,13 +1542,13 @@ func (b *build) AdoptRerunInputsAndPipes() ([]BuildInput, bool, error) {
+ 	}
+ 
+ 	rows, err := psql.Insert("build_resource_config_version_inputs").
+-		Columns("resource_id", "version_sha256", "name", "first_occurrence", "build_id").
+-		Select(psql.Select("i.resource_id", "i.version_sha256", "i.name", "false").
++		Columns("resource_id", "version_md5", "name", "first_occurrence", "build_id").
++		Select(psql.Select("i.resource_id", "i.version_md5", "i.name", "false").
+ 			Column("?", b.id).
+ 			From("build_resource_config_version_inputs i").
+ 			Where(sq.Eq{"i.build_id": b.rerunOf})).
+-		Suffix("ON CONFLICT (build_id, resource_id, version_sha256, name) DO NOTHING").
+-		Suffix("RETURNING name, resource_id, version_sha256, first_occurrence").
++		Suffix("ON CONFLICT (build_id, resource_id, version_md5, name) DO NOTHING").
++		Suffix("RETURNING name, resource_id, version_md5, first_occurrence").
+ 		RunWith(tx).
+ 		Query()
+ 	if err != nil {
+@@ -1560,11 +1560,11 @@ func (b *build) AdoptRerunInputsAndPipes() ([]BuildInput, bool, error) {
+ 		var (
+ 			inputName       string
+ 			firstOccurrence bool
+-			versionSHA256   string
++			versionMD5      string
+ 			resourceID      int
+ 		)
+ 
+-		err := rows.Scan(&inputName, &resourceID, &versionSHA256, &firstOccurrence)
++		err := rows.Scan(&inputName, &resourceID, &versionMD5, &firstOccurrence)
+ 		if err != nil {
+ 			return nil, false, err
+ 		}
+@@ -1573,7 +1573,7 @@ func (b *build) AdoptRerunInputsAndPipes() ([]BuildInput, bool, error) {
+ 			Input: &AlgorithmInput{
+ 				AlgorithmVersion: AlgorithmVersion{
+ 					ResourceID: resourceID,
+-					Version:    ResourceVersion(versionSHA256),
++					Version:    ResourceVersion(versionMD5),
+ 				},
+ 				FirstOccurrence: firstOccurrence,
+ 			},
+@@ -1588,8 +1588,8 @@ func (b *build) AdoptRerunInputsAndPipes() ([]BuildInput, bool, error) {
+ 			From("resource_config_versions v").
+ 			Join("resources r ON r.resource_config_scope_id = v.resource_config_scope_id").
+ 			Where(sq.Eq{
+-				"v.version_sha256": input.Input.Version,
+-				"r.id":             input.Input.ResourceID,
++				"v.version_md5": input.Input.Version,
++				"r.id":          input.Input.ResourceID,
+ 			}).
+ 			RunWith(tx).
+ 			QueryRow().
+@@ -1687,7 +1687,7 @@ func (b *build) Resources() ([]BuildInput, []BuildOutput, error) {
+ 	rows, err := psql.Select("inputs.name", "resources.id", "versions.version", `COALESCE(inputs.first_occurrence, NOT EXISTS (
+ 			SELECT 1
+ 			FROM build_resource_config_version_inputs i, builds b
+-			WHERE versions.version_sha256 = i.version_sha256
++			WHERE versions.version_md5 = i.version_md5
+ 			AND resources.resource_config_scope_id = versions.resource_config_scope_id
+ 			AND resources.id = i.resource_id
+ 			AND b.job_id = builds.job_id
+@@ -1697,13 +1697,13 @@ func (b *build) Resources() ([]BuildInput, []BuildOutput, error) {
+ 		From("resource_config_versions versions, build_resource_config_version_inputs inputs, builds, resources").
+ 		Where(sq.Eq{"builds.id": b.id}).
+ 		Where(sq.Expr("inputs.build_id = builds.id")).
+-		Where(sq.Expr("inputs.version_sha256 = versions.version_sha256")).
++		Where(sq.Expr("inputs.version_md5 = versions.version_md5")).
+ 		Where(sq.Expr("resources.resource_config_scope_id = versions.resource_config_scope_id")).
+ 		Where(sq.Expr("resources.id = inputs.resource_id")).
+ 		Where(sq.Expr(`NOT EXISTS (
+ 			SELECT 1
+ 			FROM build_resource_config_version_outputs outputs
+-			WHERE outputs.version_sha256 = versions.version_sha256
++			WHERE outputs.version_md5 = versions.version_md5
+ 			AND versions.resource_config_scope_id = resources.resource_config_scope_id
+ 			AND outputs.resource_id = resources.id
+ 			AND outputs.build_id = inputs.build_id
+@@ -1747,7 +1747,7 @@ func (b *build) Resources() ([]BuildInput, []BuildOutput, error) {
+ 		From("resource_config_versions versions, build_resource_config_version_outputs outputs, builds, resources").
+ 		Where(sq.Eq{"builds.id": b.id}).
+ 		Where(sq.Expr("outputs.build_id = builds.id")).
+-		Where(sq.Expr("outputs.version_sha256 = versions.version_sha256")).
++		Where(sq.Expr("outputs.version_md5 = versions.version_md5")).
+ 		Where(sq.Expr("outputs.resource_id = resources.id")).
+ 		Where(sq.Expr("resources.resource_config_scope_id = versions.resource_config_scope_id")).
+ 		RunWith(tx).
+diff --git a/atc/db/build_test.go b/atc/db/build_test.go
+index 8695dd3c68..27b70ac815 100644
+--- a/atc/db/build_test.go
++++ b/atc/db/build_test.go
+@@ -3,7 +3,7 @@ package db_test
+ import (
+ 	"code.cloudfoundry.org/clock/fakeclock"
+ 	"context"
+-	"crypto/sha256"
++	"crypto/md5"
+ 	"encoding/hex"
+ 	"encoding/json"
+ 	"fmt"
+@@ -544,19 +544,19 @@ var _ = Describe("Build", func() {
+ 
+ 			expectedOutputs = []db.AlgorithmVersion{
+ 				{
+-					Version:    db.ResourceVersion(convertToSHA256(atc.Version{"ver": "1"})),
++					Version:    db.ResourceVersion(convertToMD5(atc.Version{"ver": "1"})),
+ 					ResourceID: scenario.Resource("some-resource").ID(),
+ 				},
+ 				{
+-					Version:    db.ResourceVersion(convertToSHA256(atc.Version{"ver": "3"})),
++					Version:    db.ResourceVersion(convertToMD5(atc.Version{"ver": "3"})),
+ 					ResourceID: scenario.Resource("some-other-resource").ID(),
+ 				},
+ 				{
+-					Version:    db.ResourceVersion(convertToSHA256(atc.Version{"ver": "2"})),
++					Version:    db.ResourceVersion(convertToMD5(atc.Version{"ver": "2"})),
+ 					ResourceID: scenario.Resource("some-resource").ID(),
+ 				},
+ 				{
+-					Version:    db.ResourceVersion(convertToSHA256(atc.Version{"ver": "3"})),
++					Version:    db.ResourceVersion(convertToMD5(atc.Version{"ver": "3"})),
+ 					ResourceID: scenario.Resource("some-resource").ID(),
+ 				},
+ 			}
+@@ -1464,9 +1464,9 @@ var _ = Describe("Build", func() {
+ 				res, err := psql.Update("build_resource_config_version_inputs").
+ 					Set("first_occurrence", nil).
+ 					Where(sq.Eq{
+-						"build_id":       build.ID(),
+-						"resource_id":    inputResource.ID(),
+-						"version_sha256": convertToSHA256(atc.Version{"ver": "1"}),
++						"build_id":    build.ID(),
++						"resource_id": inputResource.ID(),
++						"version_md5": convertToMD5(atc.Version{"ver": "1"}),
+ 					}).
+ 					RunWith(dbConn).
+ 					Exec()
+@@ -1509,9 +1509,9 @@ var _ = Describe("Build", func() {
+ 					res, err := psql.Update("build_resource_config_version_inputs").
+ 						Set("first_occurrence", nil).
+ 						Where(sq.Eq{
+-							"build_id":       newBuild.ID(),
+-							"resource_id":    inputResource.ID(),
+-							"version_sha256": convertToSHA256(atc.Version{"ver": "1"}),
++							"build_id":    newBuild.ID(),
++							"resource_id": inputResource.ID(),
++							"version_md5": convertToMD5(atc.Version{"ver": "1"}),
+ 						}).
+ 						RunWith(dbConn).
+ 						Exec()
+@@ -2558,11 +2558,11 @@ func envelope(ev atc.Event, eventID string) event.Envelope {
+ 	}
+ }
+ 
+-func convertToSHA256(version atc.Version) string {
++func convertToMD5(version atc.Version) string {
+ 	versionJSON, err := json.Marshal(version)
+ 	Expect(err).ToNot(HaveOccurred())
+ 
+-	hasher := sha256.New()
++	hasher := md5.New()
+ 	hasher.Write([]byte(versionJSON))
+ 	return hex.EncodeToString(hasher.Sum(nil))
+ }
+diff --git a/atc/db/dbtest/builder.go b/atc/db/dbtest/builder.go
+index 103b117810..37279aade0 100644
+--- a/atc/db/dbtest/builder.go
++++ b/atc/db/dbtest/builder.go
+@@ -2,7 +2,7 @@ package dbtest
+ 
+ import (
+ 	"context"
+-	"crypto/sha256"
++	"crypto/md5"
+ 	"encoding/hex"
+ 	"encoding/json"
+ 	"errors"
+@@ -619,7 +619,7 @@ func (builder Builder) WithNextInputMapping(jobName string, inputs JobInputs) Se
+ 			mapping[input.Name] = db.InputResult{
+ 				Input: &db.AlgorithmInput{
+ 					AlgorithmVersion: db.AlgorithmVersion{
+-						Version:    db.ResourceVersion(sha256Version(i.Version)),
++						Version:    db.ResourceVersion(md5Version(i.Version)),
+ 						ResourceID: input.ResourceID,
+ 					},
+ 					FirstOccurrence: i.FirstOccurrence,
+@@ -1006,13 +1006,13 @@ func unique(kind string) string {
+ 	return kind + "-" + id.String()
+ }
+ 
+-func sha256Version(version atc.Version) string {
++func md5Version(version atc.Version) string {
+ 	versionJSON, err := json.Marshal(version)
+ 	if err != nil {
+ 		panic(err)
+ 	}
+ 
+-	hasher := sha256.New()
++	hasher := md5.New()
+ 	hasher.Write([]byte(versionJSON))
+ 	return hex.EncodeToString(hasher.Sum(nil))
+ }
+diff --git a/atc/db/job.go b/atc/db/job.go
+index f0b25af811..834ab045df 100644
+--- a/atc/db/job.go
++++ b/atc/db/job.go
+@@ -1199,12 +1199,12 @@ func (j *job) SaveNextInputMapping(inputMapping InputMapping, inputsDetermined b
+ 	}
+ 
+ 	builder := psql.Insert("next_build_inputs").
+-		Columns("input_name", "job_id", "version_sha256", "resource_id", "first_occurrence", "resolve_error")
++		Columns("input_name", "job_id", "version_md5", "resource_id", "first_occurrence", "resolve_error")
+ 
+ 	for inputName, inputResult := range inputMapping {
+ 		var resolveError sql.NullString
+ 		var firstOccurrence sql.NullBool
+-		var versionSHA256 sql.NullString
++		var versionMD5 sql.NullString
+ 		var resourceID sql.NullInt64
+ 
+ 		if inputResult.ResolveError != "" {
+@@ -1216,10 +1216,10 @@ func (j *job) SaveNextInputMapping(inputMapping InputMapping, inputsDetermined b
+ 
+ 			firstOccurrence = sql.NullBool{Bool: inputResult.Input.FirstOccurrence, Valid: true}
+ 			resourceID = sql.NullInt64{Int64: int64(inputResult.Input.ResourceID), Valid: true}
+-			versionSHA256 = sql.NullString{String: string(inputResult.Input.Version), Valid: true}
++			versionMD5 = sql.NullString{String: string(inputResult.Input.Version), Valid: true}
+ 		}
+ 
+-		builder = builder.Values(inputName, j.id, versionSHA256, resourceID, firstOccurrence, resolveError)
++		builder = builder.Values(inputName, j.id, versionMD5, resourceID, firstOccurrence, resolveError)
+ 	}
+ 
+ 	if len(inputMapping) != 0 {
+@@ -1322,7 +1322,7 @@ func (j *job) getNextBuildInputs(tx Tx) ([]BuildInput, error) {
+ 	rows, err := psql.Select("i.input_name, i.first_occurrence, i.resource_id, v.version, i.resolve_error, v.span_context").
+ 		From("next_build_inputs i").
+ 		LeftJoin("resources r ON r.id = i.resource_id").
+-		LeftJoin("resource_config_versions v ON v.version_sha256 = i.version_sha256 AND r.resource_config_scope_id = v.resource_config_scope_id").
++		LeftJoin("resource_config_versions v ON v.version_md5 = i.version_md5 AND r.resource_config_scope_id = v.resource_config_scope_id").
+ 		Where(sq.Eq{
+ 			"i.job_id": j.id,
+ 		}).
+diff --git a/atc/db/job_test.go b/atc/db/job_test.go
+index 863b6d1bf2..74f1ae4ef7 100644
+--- a/atc/db/job_test.go
++++ b/atc/db/job_test.go
+@@ -1469,7 +1469,7 @@ var _ = Describe("Job", func() {
+ 					"some-input-1": db.InputResult{
+ 						Input: &db.AlgorithmInput{
+ 							AlgorithmVersion: db.AlgorithmVersion{
+-								Version:    db.ResourceVersion(convertToSHA256(versions[0].Version)),
++								Version:    db.ResourceVersion(convertToMD5(versions[0].Version)),
+ 								ResourceID: scenario.Resource("some-resource").ID(),
+ 							},
+ 							FirstOccurrence: false,
+@@ -1479,7 +1479,7 @@ var _ = Describe("Job", func() {
+ 					"some-input-2": db.InputResult{
+ 						Input: &db.AlgorithmInput{
+ 							AlgorithmVersion: db.AlgorithmVersion{
+-								Version:    db.ResourceVersion(convertToSHA256(versions[1].Version)),
++								Version:    db.ResourceVersion(convertToMD5(versions[1].Version)),
+ 								ResourceID: scenario.Resource("some-resource").ID(),
+ 							},
+ 							FirstOccurrence: false,
+@@ -1489,7 +1489,7 @@ var _ = Describe("Job", func() {
+ 					"some-input-3": db.InputResult{
+ 						Input: &db.AlgorithmInput{
+ 							AlgorithmVersion: db.AlgorithmVersion{
+-								Version:    db.ResourceVersion(convertToSHA256(versions[2].Version)),
++								Version:    db.ResourceVersion(convertToMD5(versions[2].Version)),
+ 								ResourceID: scenario.Resource("some-resource").ID(),
+ 							},
+ 							FirstOccurrence: false,
+@@ -1608,7 +1608,7 @@ var _ = Describe("Job", func() {
+ 				"some-input-1": db.InputResult{
+ 					Input: &db.AlgorithmInput{
+ 						AlgorithmVersion: db.AlgorithmVersion{
+-							Version:    db.ResourceVersion(convertToSHA256(versions[0].Version)),
++							Version:    db.ResourceVersion(convertToMD5(versions[0].Version)),
+ 							ResourceID: scenarioPipeline1.Resource("some-resource").ID(),
+ 						},
+ 						FirstOccurrence: false,
+@@ -1618,7 +1618,7 @@ var _ = Describe("Job", func() {
+ 				"some-input-2": db.InputResult{
+ 					Input: &db.AlgorithmInput{
+ 						AlgorithmVersion: db.AlgorithmVersion{
+-							Version:    db.ResourceVersion(convertToSHA256(versions[1].Version)),
++							Version:    db.ResourceVersion(convertToMD5(versions[1].Version)),
+ 							ResourceID: scenarioPipeline1.Resource("some-resource").ID(),
+ 						},
+ 						FirstOccurrence: true,
+@@ -1633,7 +1633,7 @@ var _ = Describe("Job", func() {
+ 				"some-input-3": db.InputResult{
+ 					Input: &db.AlgorithmInput{
+ 						AlgorithmVersion: db.AlgorithmVersion{
+-							Version:    db.ResourceVersion(convertToSHA256(versions[2].Version)),
++							Version:    db.ResourceVersion(convertToMD5(versions[2].Version)),
+ 							ResourceID: scenarioPipeline2.Resource("some-resource").ID(),
+ 						},
+ 						FirstOccurrence: false,
+@@ -1670,7 +1670,7 @@ var _ = Describe("Job", func() {
+ 				"some-input-2": db.InputResult{
+ 					Input: &db.AlgorithmInput{
+ 						AlgorithmVersion: db.AlgorithmVersion{
+-							Version:    db.ResourceVersion(convertToSHA256(versions[2].Version)),
++							Version:    db.ResourceVersion(convertToMD5(versions[2].Version)),
+ 							ResourceID: scenarioPipeline1.Resource("some-resource").ID(),
+ 						},
+ 						FirstOccurrence: false,
+@@ -1680,7 +1680,7 @@ var _ = Describe("Job", func() {
+ 				"some-input-3": db.InputResult{
+ 					Input: &db.AlgorithmInput{
+ 						AlgorithmVersion: db.AlgorithmVersion{
+-							Version:    db.ResourceVersion(convertToSHA256(versions[2].Version)),
++							Version:    db.ResourceVersion(convertToMD5(versions[2].Version)),
+ 							ResourceID: scenarioPipeline1.Resource("some-resource").ID(),
+ 						},
+ 						FirstOccurrence: true,
+diff --git a/atc/db/migration/migrations/1743084615_switch_md5_to_sha256.down.sql b/atc/db/migration/migrations/1743084615_switch_md5_to_sha256.down.sql
+deleted file mode 100644
+index cab576cc24..0000000000
+--- a/atc/db/migration/migrations/1743084615_switch_md5_to_sha256.down.sql
++++ /dev/null
+@@ -1,131 +0,0 @@
+--- Step 1: Revert column renames from version_sha256 back to version_md5
+-ALTER TABLE resource_config_versions
+-RENAME COLUMN version_sha256 TO version_md5;
+-
+-ALTER TABLE build_resource_config_version_inputs
+-RENAME COLUMN version_sha256 TO version_md5;
+-
+-ALTER TABLE build_resource_config_version_outputs
+-RENAME COLUMN version_sha256 TO version_md5;
+-
+-ALTER TABLE next_build_inputs
+-RENAME COLUMN version_sha256 TO version_md5;
+-
+-ALTER TABLE resource_caches
+-RENAME COLUMN version_sha256 TO version_md5;
+-
+-ALTER TABLE resource_disabled_versions
+-RENAME COLUMN version_sha256 TO version_md5;
+-
+---- Drop Indexes
+--- resource_config_versions
+-ALTER TABLE resource_config_versions 
+-    DROP CONSTRAINT IF EXISTS resource_config_scope_id_and_version_sha_unique;
+-DROP INDEX IF EXISTS resource_config_versions_check_order_idx;
+-DROP INDEX IF EXISTS resource_config_versions_version;
+-
+--- resource_disabled_versions
+-DROP INDEX IF EXISTS resource_disabled_versions_resource_id_version_sha_uniq; 
+-
+--- resource_caches
+-DROP INDEX IF EXISTS resource_caches_resource_config_id_version_sha_params_hash_uniq;
+-DROP INDEX IF EXISTS resource_caches_resource_config_id;
+-
+--- build_resource_config_version_inputs
+-DROP INDEX IF EXISTS build_inputs_resource_versions_idx;
+-DROP INDEX IF EXISTS build_resource_config_version_inputs_uniq;
+-
+--- build_resource_config_version_outputs
+-DROP INDEX IF EXISTS build_resource_config_version_outputs_build_id_idx;
+-DROP INDEX IF EXISTS build_resource_config_version_outputs_resource_id_idx;
+-DROP INDEX IF EXISTS build_resource_config_version_outputs_uniq;
+-
+--- next_build_inputs
+-ALTER TABLE next_build_inputs 
+-    DROP CONSTRAINT IF EXISTS next_build_inputs_unique_job_id_input_name;
+-DROP INDEX IF EXISTS next_build_inputs_job_id;
+-
+--- Step 2: Revert all rows to their original md5 values
+-WITH json_string_cte AS (
+-    SELECT 
+-        rcv.id,
+-        rcv.version_md5 AS old_version_md5,
+-        '{' || string_agg('"' || kv.key || '":"' || kv.value || '"', ',' ORDER BY kv.key) || '}' AS json_string
+-    FROM resource_config_versions rcv
+-    JOIN jsonb_each_text(rcv.version::jsonb) AS kv ON true
+-    WHERE jsonb_typeof(rcv.version::jsonb) = 'object'
+-    GROUP BY rcv.id, rcv.version_md5
+-),
+-hashed_json_string_cte AS (
+-    SELECT 
+-        json_string_cte.id,
+-        json_string_cte.old_version_md5,
+-        md5(json_string_cte.json_string) AS new_version_md5
+-    FROM json_string_cte
+-),
+-update_resource_versions AS (
+-    UPDATE resource_config_versions rcv
+-    SET version_md5 = hjs.new_version_md5
+-    FROM hashed_json_string_cte hjs
+-    WHERE rcv.id = hjs.id
+-),
+-update_resource_disabled_versions AS (
+-    UPDATE resource_disabled_versions rdv
+-    SET version_md5 = hjs.new_version_md5
+-    FROM hashed_json_string_cte hjs
+-    WHERE rdv.version_md5 = hjs.old_version_md5
+-),
+-update_build_resource_config_version_inputs AS (
+-    UPDATE build_resource_config_version_inputs bri
+-    SET version_md5 = hjs.new_version_md5
+-    FROM hashed_json_string_cte hjs
+-    WHERE bri.version_md5 = hjs.old_version_md5
+-),
+-update_build_resource_config_version_outputs AS (
+-    UPDATE build_resource_config_version_outputs bro
+-    SET version_md5 = hjs.new_version_md5
+-    FROM hashed_json_string_cte hjs
+-    WHERE bro.version_md5 = hjs.old_version_md5
+-),
+-update_resource_caches AS (
+-    UPDATE resource_caches rc
+-    SET version_md5 = hjs.new_version_md5
+-    FROM hashed_json_string_cte hjs
+-    WHERE rc.version_md5 = hjs.old_version_md5
+-)
+-UPDATE next_build_inputs nbi
+-SET version_md5 = hjs.new_version_md5
+-FROM hashed_json_string_cte hjs
+-WHERE nbi.version_md5 = hjs.old_version_md5;
+-
+---- Recreate Indexes
+--- resource_config_versions
+-ALTER TABLE resource_config_versions
+-    ADD CONSTRAINT resource_config_scope_id_and_version_md5_unique UNIQUE (resource_config_scope_id, version_md5);
+-CREATE INDEX resource_config_versions_check_order_idx ON resource_config_versions (resource_config_scope_id, check_order DESC);
+-CREATE INDEX resource_config_versions_version ON resource_config_versions USING gin(version jsonb_path_ops) WITH (FASTUPDATE = false);
+-
+--- build_resource_config_version_inputs
+-CREATE INDEX build_inputs_resource_versions_idx ON build_resource_config_version_inputs (resource_id, version_md5);
+-CREATE UNIQUE INDEX build_resource_config_version_inputs_uniq
+-ON build_resource_config_version_inputs (build_id, resource_id, version_md5, name);
+-
+--- build_resource_config_version_outputs
+-CREATE INDEX build_resource_config_version_outputs_build_id_idx ON build_resource_config_version_outputs (build_id);
+-CREATE INDEX build_resource_config_version_outputs_resource_id_idx ON build_resource_config_version_outputs (resource_id);
+-CREATE UNIQUE INDEX build_resource_config_version_outputs_uniq
+-ON build_resource_config_version_outputs (build_id, resource_id, version_md5, name);
+-
+--- next_build_inputs
+-CREATE INDEX next_build_inputs_job_id ON next_build_inputs USING btree (job_id);
+-ALTER TABLE ONLY next_build_inputs
+-    ADD CONSTRAINT next_build_inputs_unique_job_id_input_name UNIQUE (job_id, input_name);
+-
+--- resource_caches
+-CREATE INDEX resource_caches_resource_config_id ON resource_caches USING btree (resource_config_id);
+-CREATE UNIQUE INDEX resource_caches_resource_config_id_version_md5_params_hash_uniq
+-ON resource_caches (resource_config_id, version_md5, params_hash);
+-
+--- resource_disabled_versions
+-CREATE UNIQUE INDEX resource_disabled_versions_resource_id_version_md5_uniq
+-ON resource_disabled_versions (resource_id, version_md5);
+diff --git a/atc/db/migration/migrations/1743084615_switch_md5_to_sha256.up.sql b/atc/db/migration/migrations/1743084615_switch_md5_to_sha256.up.sql
+deleted file mode 100644
+index 74d790d114..0000000000
+--- a/atc/db/migration/migrations/1743084615_switch_md5_to_sha256.up.sql
++++ /dev/null
+@@ -1,138 +0,0 @@
+--- Ensure the pgcrypto extension is available for hashing
+-CREATE EXTENSION IF NOT EXISTS pgcrypto;
+-
+--- Rename columns from version_md5 to version_sha256
+-ALTER TABLE resource_config_versions
+-RENAME COLUMN version_md5 TO version_sha256;
+-
+-ALTER TABLE build_resource_config_version_inputs
+-RENAME COLUMN version_md5 TO version_sha256;
+-
+-ALTER TABLE build_resource_config_version_outputs
+-RENAME COLUMN version_md5 TO version_sha256;
+-
+-ALTER TABLE next_build_inputs
+-RENAME COLUMN version_md5 TO version_sha256;
+-
+-ALTER TABLE resource_caches
+-RENAME COLUMN version_md5 TO version_sha256;
+-
+-ALTER TABLE resource_disabled_versions
+-RENAME COLUMN version_md5 TO version_sha256;
+-
+---- Drop Indexes
+--- resource_config_versions
+-ALTER TABLE resource_config_versions 
+-    DROP CONSTRAINT IF EXISTS resource_config_scope_id_and_version_md5_unique;
+-DROP INDEX IF EXISTS resource_config_versions_check_order_idx;
+-DROP INDEX IF EXISTS resource_config_versions_version;
+-
+--- resource_disabled_versions
+-DROP INDEX IF EXISTS resource_disabled_versions_resource_id_version_md5_uniq; 
+-
+--- resource_caches
+-DROP INDEX IF EXISTS resource_caches_resource_config_id_version_md5_params_hash_uniq;
+-DROP INDEX IF EXISTS resource_caches_resource_config_id;
+-
+--- build_resource_config_version_inputs
+-DROP INDEX IF EXISTS build_inputs_resource_versions_idx;
+-DROP INDEX IF EXISTS build_resource_config_version_inputs_uniq;
+-
+--- build_resource_config_version_outputs
+-DROP INDEX IF EXISTS build_resource_config_version_outputs_build_id_idx;
+-DROP INDEX IF EXISTS build_resource_config_version_outputs_resource_id_idx;
+-DROP INDEX IF EXISTS build_resource_config_version_outputs_uniq;
+-
+--- next_build_inputs
+-ALTER TABLE next_build_inputs 
+-    DROP CONSTRAINT IF EXISTS next_build_inputs_unique_job_id_input_name;
+-DROP INDEX IF EXISTS next_build_inputs_job_id;
+-
+--- Convert all rows to their new sha256 values
+-WITH json_string_cte AS (
+-    SELECT 
+-        rcv.id,
+-        rcv.version_sha256 AS old_version_sha256,
+-        '{' || string_agg('"' || kv.key || '":"' || kv.value || '"', ',' ORDER BY kv.key) || '}' AS json_string
+-    FROM resource_config_versions rcv
+-    JOIN jsonb_each_text(rcv.version::jsonb) AS kv ON true
+-    WHERE jsonb_typeof(rcv.version::jsonb) = 'object'
+-    GROUP BY rcv.id, rcv.version_sha256
+-),
+-hashed_json_string_cte AS (
+-    SELECT 
+-        json_string_cte.id,
+-        json_string_cte.old_version_sha256,
+-        encode(digest(json_string_cte.json_string, 'sha256'), 'hex') AS new_version_sha256
+-    FROM json_string_cte
+-),
+-
+-update_resource_versions AS (
+-    UPDATE resource_config_versions rcv
+-    SET version_sha256 = hjs.new_version_sha256
+-    FROM hashed_json_string_cte hjs
+-    WHERE rcv.id = hjs.id
+-),
+-update_resource_disabled_versions AS (
+-    UPDATE resource_disabled_versions rdv
+-    SET version_sha256 = hjs.new_version_sha256
+-    FROM hashed_json_string_cte hjs
+-    WHERE rdv.version_sha256 = hjs.old_version_sha256
+-),
+-update_build_resource_config_version_inputs AS (
+-    UPDATE build_resource_config_version_inputs bri
+-    SET version_sha256 = hjs.new_version_sha256
+-    FROM hashed_json_string_cte hjs
+-    WHERE bri.version_sha256 = hjs.old_version_sha256
+-),
+-update_build_resource_config_version_outputs AS (
+-    UPDATE build_resource_config_version_outputs bro
+-    SET version_sha256 = hjs.new_version_sha256
+-    FROM hashed_json_string_cte hjs
+-    WHERE bro.version_sha256 = hjs.old_version_sha256
+-),
+-update_resource_caches AS (
+-    UPDATE resource_caches rc
+-    SET version_sha256 = hjs.new_version_sha256
+-    FROM hashed_json_string_cte hjs
+-    WHERE rc.version_sha256 = hjs.old_version_sha256
+-)
+-
+-UPDATE next_build_inputs nbi
+-SET version_sha256 = hjs.new_version_sha256
+-FROM hashed_json_string_cte hjs
+-WHERE nbi.version_sha256 = hjs.old_version_sha256;
+-
+---- Recreate indexes
+--- resource_config_versions
+-ALTER TABLE resource_config_versions
+-    ADD CONSTRAINT resource_config_scope_id_and_version_sha_unique UNIQUE (resource_config_scope_id, version_sha256);
+-
+-CREATE INDEX resource_config_versions_check_order_idx ON resource_config_versions (resource_config_scope_id, check_order DESC);
+-CREATE INDEX resource_config_versions_version ON resource_config_versions USING gin(version jsonb_path_ops) WITH (FASTUPDATE = false);
+-
+--- build_resource_config_version_inputs
+-CREATE INDEX build_inputs_resource_versions_idx ON build_resource_config_version_inputs (resource_id, version_sha256);
+-CREATE UNIQUE INDEX build_resource_config_version_inputs_uniq
+-ON build_resource_config_version_inputs (build_id, resource_id, version_sha256, name);
+-
+--- build_resource_config_version_outputs
+-CREATE INDEX build_resource_config_version_outputs_build_id_idx ON build_resource_config_version_outputs (build_id);
+-CREATE INDEX build_resource_config_version_outputs_resource_id_idx ON build_resource_config_version_outputs (resource_id);
+-
+-CREATE UNIQUE INDEX build_resource_config_version_outputs_uniq
+-ON build_resource_config_version_outputs (build_id, resource_id, version_sha256, name);
+-
+--- next_build_inputs
+-CREATE INDEX next_build_inputs_job_id ON next_build_inputs USING btree (job_id);
+-ALTER TABLE ONLY next_build_inputs
+-    ADD CONSTRAINT next_build_inputs_unique_job_id_input_name UNIQUE (job_id, input_name);
+-
+--- resource_caches
+-CREATE INDEX resource_caches_resource_config_id ON resource_caches USING btree (resource_config_id);
+-CREATE UNIQUE INDEX resource_caches_resource_config_id_version_sha_params_hash_uniq
+-ON resource_caches (resource_config_id, version_sha256, params_hash);
+-
+--- resource_disabled_versions
+-CREATE UNIQUE INDEX resource_disabled_versions_resource_id_version_sha_uniq
+-ON resource_disabled_versions (resource_id, version_sha256);
+\ No newline at end of file
+diff --git a/atc/db/pipeline.go b/atc/db/pipeline.go
+index a2d41f2092..e64220b6d5 100644
+--- a/atc/db/pipeline.go
++++ b/atc/db/pipeline.go
+@@ -330,7 +330,7 @@ func (p *pipeline) ResourceVersion(resourceConfigVersionID int) (atc.ResourceVer
+ 		NOT EXISTS (
+ 			SELECT 1
+ 			FROM resource_disabled_versions d, resources r
+-			WHERE v.version_sha256 = d.version_sha256
++			WHERE v.version_md5 = d.version_md5
+ 			AND r.resource_config_scope_id = v.resource_config_scope_id
+ 			AND r.id = d.resource_id
+ 		)`
+@@ -367,7 +367,7 @@ func (p *pipeline) ResourceVersion(resourceConfigVersionID int) (atc.ResourceVer
+ func (p *pipeline) GetBuildsWithVersionAsInput(resourceID, resourceConfigVersionID int) ([]Build, error) {
+ 	rows, err := buildsQuery.
+ 		Join("build_resource_config_version_inputs bi ON bi.build_id = b.id").
+-		Join("resource_config_versions rcv ON rcv.version_sha256 = bi.version_sha256").
++		Join("resource_config_versions rcv ON rcv.version_md5 = bi.version_md5").
+ 		Where(sq.Eq{
+ 			"rcv.id":         resourceConfigVersionID,
+ 			"bi.resource_id": resourceID,
+@@ -395,7 +395,7 @@ func (p *pipeline) GetBuildsWithVersionAsInput(resourceID, resourceConfigVersion
+ func (p *pipeline) GetBuildsWithVersionAsOutput(resourceID, resourceConfigVersionID int) ([]Build, error) {
+ 	rows, err := buildsQuery.
+ 		Join("build_resource_config_version_outputs bo ON bo.build_id = b.id").
+-		Join("resource_config_versions rcv ON rcv.version_sha256 = bo.version_sha256").
++		Join("resource_config_versions rcv ON rcv.version_md5 = bo.version_md5").
+ 		Where(sq.Eq{
+ 			"rcv.id":         resourceConfigVersionID,
+ 			"bo.resource_id": resourceID,
+@@ -797,10 +797,10 @@ func (p *pipeline) LoadDebugVersionsDB() (*atc.DebugVersionsDB, error) {
+ 	rows, err := psql.Select("v.id, v.check_order, r.id, v.resource_config_scope_id, o.build_id, b.job_id").
+ 		From("build_resource_config_version_outputs o").
+ 		Join("builds b ON b.id = o.build_id").
+-		Join("resource_config_versions v ON v.version_sha256 = o.version_sha256").
++		Join("resource_config_versions v ON v.version_md5 = o.version_md5").
+ 		Join("resources r ON r.id = o.resource_id").
+ 		Where(sq.Expr("r.resource_config_scope_id = v.resource_config_scope_id")).
+-		Where(sq.Expr("(r.id, v.version_sha256) NOT IN (SELECT resource_id, version_sha256 from resource_disabled_versions)")).
++		Where(sq.Expr("(r.id, v.version_md5) NOT IN (SELECT resource_id, version_md5 from resource_disabled_versions)")).
+ 		Where(sq.Eq{
+ 			"b.status":      BuildStatusSucceeded,
+ 			"r.pipeline_id": p.id,
+@@ -829,10 +829,10 @@ func (p *pipeline) LoadDebugVersionsDB() (*atc.DebugVersionsDB, error) {
+ 	rows, err = psql.Select("v.id, v.check_order, r.id, v.resource_config_scope_id, i.build_id, i.name, b.job_id, b.status = 'succeeded'").
+ 		From("build_resource_config_version_inputs i").
+ 		Join("builds b ON b.id = i.build_id").
+-		Join("resource_config_versions v ON v.version_sha256 = i.version_sha256").
++		Join("resource_config_versions v ON v.version_md5 = i.version_md5").
+ 		Join("resources r ON r.id = i.resource_id").
+ 		Where(sq.Expr("r.resource_config_scope_id = v.resource_config_scope_id")).
+-		Where(sq.Expr("(r.id, v.version_sha256) NOT IN (SELECT resource_id, version_sha256 from resource_disabled_versions)")).
++		Where(sq.Expr("(r.id, v.version_md5) NOT IN (SELECT resource_id, version_md5 from resource_disabled_versions)")).
+ 		Where(sq.Eq{
+ 			"r.pipeline_id": p.id,
+ 			"r.active":      true,
+@@ -871,12 +871,12 @@ func (p *pipeline) LoadDebugVersionsDB() (*atc.DebugVersionsDB, error) {
+ 	rows, err = psql.Select("v.id, v.check_order, r.id, v.resource_config_scope_id").
+ 		From("resource_config_versions v").
+ 		Join("resources r ON r.resource_config_scope_id = v.resource_config_scope_id").
+-		LeftJoin("resource_disabled_versions d ON d.resource_id = r.id AND d.version_sha256 = v.version_sha256").
++		LeftJoin("resource_disabled_versions d ON d.resource_id = r.id AND d.version_md5 = v.version_md5").
+ 		Where(sq.Eq{
+-			"r.pipeline_id":    p.id,
+-			"r.active":         true,
+-			"d.resource_id":    nil,
+-			"d.version_sha256": nil,
++			"r.pipeline_id": p.id,
++			"r.active":      true,
++			"d.resource_id": nil,
++			"d.version_md5": nil,
+ 		}).
+ 		RunWith(tx).
+ 		Query()
+diff --git a/atc/db/pipeline_test.go b/atc/db/pipeline_test.go
+index cd213291d3..820eeaba56 100644
+--- a/atc/db/pipeline_test.go
++++ b/atc/db/pipeline_test.go
+@@ -988,7 +988,7 @@ var _ = Describe("Pipeline", func() {
+ 					"some-input-name": db.InputResult{
+ 						Input: &db.AlgorithmInput{
+ 							AlgorithmVersion: db.AlgorithmVersion{
+-								Version:    db.ResourceVersion(convertToSHA256(atc.Version{"version": "1"})),
++								Version:    db.ResourceVersion(convertToMD5(atc.Version{"version": "1"})),
+ 								ResourceID: resource.ID(),
+ 							},
+ 							FirstOccurrence: true,
+@@ -1163,7 +1163,7 @@ var _ = Describe("Pipeline", func() {
+ 				"build-input": db.InputResult{
+ 					Input: &db.AlgorithmInput{
+ 						AlgorithmVersion: db.AlgorithmVersion{
+-							Version:    db.ResourceVersion(convertToSHA256(atc.Version{"key": "value"})),
++							Version:    db.ResourceVersion(convertToMD5(atc.Version{"key": "value"})),
+ 							ResourceID: scenario.Resource("some-resource").ID(),
+ 						},
+ 						FirstOccurrence: true,
+@@ -1589,7 +1589,7 @@ var _ = Describe("Pipeline", func() {
+ 				"some-input": db.InputResult{
+ 					Input: &db.AlgorithmInput{
+ 						AlgorithmVersion: db.AlgorithmVersion{
+-							Version:    db.ResourceVersion(convertToSHA256(atc.Version{"version": "v1"})),
++							Version:    db.ResourceVersion(convertToMD5(atc.Version{"version": "v1"})),
+ 							ResourceID: scenario.Resource("some-resource").ID(),
+ 						},
+ 						FirstOccurrence: true,
+@@ -1617,7 +1617,7 @@ var _ = Describe("Pipeline", func() {
+ 				"some-input": db.InputResult{
+ 					Input: &db.AlgorithmInput{
+ 						AlgorithmVersion: db.AlgorithmVersion{
+-							Version:    db.ResourceVersion(convertToSHA256(atc.Version{"version": "v1"})),
++							Version:    db.ResourceVersion(convertToMD5(atc.Version{"version": "v1"})),
+ 							ResourceID: scenario.Resource("some-resource").ID(),
+ 						},
+ 						FirstOccurrence: true,
+@@ -1627,7 +1627,7 @@ var _ = Describe("Pipeline", func() {
+ 				"some-other-input": db.InputResult{
+ 					Input: &db.AlgorithmInput{
+ 						AlgorithmVersion: db.AlgorithmVersion{
+-							Version:    db.ResourceVersion(convertToSHA256(atc.Version{"version": "v3"})),
++							Version:    db.ResourceVersion(convertToMD5(atc.Version{"version": "v3"})),
+ 							ResourceID: scenario.Resource("some-resource").ID(),
+ 						},
+ 						FirstOccurrence: true,
+diff --git a/atc/db/resource.go b/atc/db/resource.go
+index e77a916fc4..fc245c7542 100644
+--- a/atc/db/resource.go
++++ b/atc/db/resource.go
+@@ -42,12 +42,12 @@ const (
+ WITH RECURSIVE build_ids AS (
+ 		SELECT DISTINCT i.build_id
+ 		FROM build_resource_config_version_inputs i
+-		WHERE i.resource_id=$1 AND i.version_sha256=$2
++		WHERE i.resource_id=$1 AND i.version_md5=$2
+ 	UNION
+ 		SELECT i.build_id
+ 		FROM build_ids bi
+ 		INNER JOIN build_resource_config_version_outputs o ON o.build_id = bi.build_id
+-		INNER JOIN build_resource_config_version_inputs i ON i.resource_id = o.resource_id AND i.version_sha256 = o.version_sha256
++		INNER JOIN build_resource_config_version_inputs i ON i.resource_id = o.resource_id AND i.version_md5 = o.version_md5
+ 		WHERE i.resource_id!=$1
+ )
+ `
+@@ -56,12 +56,12 @@ WITH RECURSIVE build_ids AS (
+ WITH RECURSIVE build_ids AS (
+ 		SELECT DISTINCT o.build_id
+ 		FROM build_resource_config_version_outputs o
+-		WHERE o.resource_id=$1 AND o.version_sha256=$2
++		WHERE o.resource_id=$1 AND o.version_md5=$2
+ 	UNION
+ 		SELECT o.build_id
+ 		FROM build_ids bi
+ 		INNER JOIN build_resource_config_version_inputs i ON i.build_id = bi.build_id
+-		INNER JOIN build_resource_config_version_outputs o ON o.resource_id = i.resource_id AND o.version_sha256 = i.version_sha256
++		INNER JOIN build_resource_config_version_outputs o ON o.resource_id = i.resource_id AND o.version_md5 = i.version_md5
+ 		WHERE i.resource_id!=$1
+ )
+ `
+@@ -412,7 +412,7 @@ func (r *resource) UpdateMetadata(version atc.Version, metadata ResourceConfigMe
+ 			"resource_config_scope_id": r.ResourceConfigScopeID(),
+ 		}).
+ 		Where(sq.Expr(
+-			"version_sha256 = encode(digest(?, 'sha256'), 'hex')", versionJSON,
++			"version_md5 = md5(?)", versionJSON,
+ 		)).
+ 		RunWith(r.conn).
+ 		Exec()
+@@ -445,7 +445,7 @@ func (r *resource) FindVersion(v atc.Version) (ResourceConfigVersion, bool, erro
+ 		Where(sq.Eq{
+ 			"v.resource_config_scope_id": r.resourceConfigScopeID,
+ 		}).
+-		Where(sq.Expr("v.version_sha256 = encode(digest(?, 'sha256'), 'hex')", versionByte)).
++		Where(sq.Expr("v.version_md5 = md5(?)", versionByte)).
+ 		RunWith(r.conn).
+ 		QueryRow()
+ 
+@@ -514,7 +514,7 @@ func (r *resource) Versions(page Page, versionFilter atc.Version) ([]atc.Resourc
+ 			NOT EXISTS (
+ 				SELECT 1
+ 				FROM resource_disabled_versions d
+-				WHERE v.version_sha256 = d.version_sha256
++				WHERE v.version_md5 = d.version_md5
+ 				AND r.resource_config_scope_id = v.resource_config_scope_id
+ 				AND r.id = d.resource_id
+ 			)
+@@ -783,12 +783,12 @@ func (r *resource) toggleVersion(rcvID int, enable bool) error {
+ 		results, err = tx.Exec(`
+ 			DELETE FROM resource_disabled_versions
+ 			WHERE resource_id = $1
+-			AND version_sha256 = (SELECT version_sha256 FROM resource_config_versions rcv WHERE rcv.id = $2)
++			AND version_md5 = (SELECT version_md5 FROM resource_config_versions rcv WHERE rcv.id = $2)
+ 			`, r.id, rcvID)
+ 	} else {
+ 		results, err = tx.Exec(`
+-			INSERT INTO resource_disabled_versions (resource_id, version_sha256)
+-			SELECT $1, rcv.version_sha256
++			INSERT INTO resource_disabled_versions (resource_id, version_md5)
++			SELECT $1, rcv.version_md5
+ 			FROM resource_config_versions rcv
+ 			WHERE rcv.id = $2
+ 			`, r.id, rcvID)
+@@ -839,7 +839,7 @@ func (r *resource) ClearResourceCache(version atc.Version) (int64, error) {
+ 		}
+ 
+ 		selectStatement = selectStatement.Where(
+-			sq.Expr("version_sha256 = encode(digest(?, 'sha256'), 'hex')", versionJson),
++			sq.Expr("version_md5 = md5(?)", versionJson),
+ 		)
+ 	}
+ 
+@@ -1184,11 +1184,11 @@ type resourceVersionKey struct {
+ // causalityBuilds figures out all the builds that are related to a particular resource version
+ // This can include builds that were used the resource version (and its descendents) as an input,
+ // and builds that generated some ancestor of the build that generated the resource version itself.
+-func causalityBuilds(tx Tx, resourceID int, versionSHA256 string, direction CausalityDirection) (map[int]*atc.CausalityBuild, map[int]*atc.CausalityJob, error) {
++func causalityBuilds(tx Tx, resourceID int, versionMD5 string, direction CausalityDirection) (map[int]*atc.CausalityBuild, map[int]*atc.CausalityJob, error) {
+ 	query := causalityQuery(direction)
+ 	// construct the job and build nodes. These are placed into a map for easy access down the line
+ 	rows, err := psql.Select("b.id", "b.name", "b.status", "j.id", "j.name").
+-		Prefix(query, resourceID, versionSHA256).
++		Prefix(query, resourceID, versionMD5).
+ 		From("build_ids bi").
+ 		Join("builds b ON b.id = bi.build_id").
+ 		Join("jobs j ON b.job_id = j.id").
+@@ -1241,7 +1241,7 @@ func causalityBuilds(tx Tx, resourceID int, versionSHA256 string, direction Caus
+ 	return builds, jobs, nil
+ }
+ 
+-func causalityResourceVersions(tx Tx, resourceID int, versionSHA256 string, direction CausalityDirection, result *atc.Causality) error {
++func causalityResourceVersions(tx Tx, resourceID int, versionMD5 string, direction CausalityDirection, result *atc.Causality) error {
+ 	// Bitmap to filter out resources that are not part of a output-input chain. This is done to filter out any other "root" resources.
+ 	// For now, the causality view is only intersted in the "downstream" resources, not neccessarily "parallel input" resources
+ 	// (reverse is true for upstream causality). If this ever changes in the future, it would be trivial to remove this filtering and get
+@@ -1276,7 +1276,7 @@ func causalityResourceVersions(tx Tx, resourceID int, versionSHA256 string, dire
+ 		handleOutput = buildAsChild
+ 	}
+ 
+-	builds, jobs, err := causalityBuilds(tx, resourceID, versionSHA256, direction)
++	builds, jobs, err := causalityBuilds(tx, resourceID, versionMD5, direction)
+ 	if err != nil {
+ 		return err
+ 	}
+@@ -1285,18 +1285,18 @@ func causalityResourceVersions(tx Tx, resourceID int, versionSHA256 string, dire
+ 	SELECT r.id, rcv.id, r.name, rcv.version, i.build_id, 'input' AS type
+ 	FROM build_resource_config_version_inputs i
+ 	JOIN resources r ON r.id = i.resource_id
+-	JOIN resource_config_versions rcv ON rcv.version_sha256 = i.version_sha256 AND rcv.resource_config_scope_id = r.resource_config_scope_id
++	JOIN resource_config_versions rcv ON rcv.version_md5 = i.version_md5 AND rcv.resource_config_scope_id = r.resource_config_scope_id
+ 	JOIN build_ids bi ON i.build_id = bi.build_id
+ UNION ALL
+ 	SELECT r.id, rcv.id, r.name, rcv.version, o.build_id, 'output' AS type
+ 	FROM build_resource_config_version_outputs o
+ 	JOIN resources r ON r.id = o.resource_id
+-	JOIN resource_config_versions rcv ON rcv.version_sha256 = o.version_sha256 AND rcv.resource_config_scope_id = r.resource_config_scope_id
++	JOIN resource_config_versions rcv ON rcv.version_md5 = o.version_md5 AND rcv.resource_config_scope_id = r.resource_config_scope_id
+ 	JOIN build_ids bi ON o.build_id = bi.build_id
+ LIMIT $3
+ `
+ 
+-	rows, err := tx.Query(query, resourceID, versionSHA256, causalityMaxInputsOutputs)
++	rows, err := tx.Query(query, resourceID, versionMD5, causalityMaxInputsOutputs)
+ 	if err != nil {
+ 		return err
+ 	}
+@@ -1407,17 +1407,17 @@ func (r *resource) Causality(rcvID int, direction CausalityDirection) (atc.Causa
+ 
+ 	defer Rollback(tx) // everything is readonly, so no need to commit
+ 
+-	var versionSHA256 string
+-	err = psql.Select("version_sha256").
++	var versionMD5 string
++	err = psql.Select("version_md5").
+ 		From("resource_config_versions").
+ 		Where(sq.Eq{"id": rcvID}).
+ 		RunWith(tx).
+-		Scan(&versionSHA256)
++		Scan(&versionMD5)
+ 	if err != nil {
+ 		return result, false, err
+ 	}
+ 
+-	err = causalityResourceVersions(tx, r.id, versionSHA256, direction, &result)
++	err = causalityResourceVersions(tx, r.id, versionMD5, direction, &result)
+ 	if err != nil {
+ 		return result, false, err
+ 	}
+diff --git a/atc/db/resource_cache_factory.go b/atc/db/resource_cache_factory.go
+index a3f077d40f..f0ff6179da 100644
+--- a/atc/db/resource_cache_factory.go
++++ b/atc/db/resource_cache_factory.go
+@@ -77,7 +77,7 @@ func (f *resourceCacheFactory) FindOrCreateResourceCache(
+ 			"resource_config_id": rc.id,
+ 			"params_hash":        paramsHash(params),
+ 		}).
+-		Where(sq.Expr("version_sha256 = encode(digest(?, 'sha256'), 'hex')", cacheVersion)).
++		Where(sq.Expr("version_md5 = md5(?)", cacheVersion)).
+ 		Suffix("FOR SHARE").
+ 		RunWith(tx).
+ 		QueryRow().
+@@ -95,20 +95,20 @@ func (f *resourceCacheFactory) FindOrCreateResourceCache(
+ 			Columns(
+ 				"resource_config_id",
+ 				"version",
+-				"version_sha256",
++				"version_md5",
+ 				"params_hash",
+ 			).
+ 			Values(
+ 				rc.id,
+ 				cacheVersion,
+-				sq.Expr("encode(digest(?, 'sha256'), 'hex')", cacheVersion),
++				sq.Expr("md5(?)", cacheVersion),
+ 				paramsHash(params),
+ 			).
+ 			Suffix(`
+-				ON CONFLICT (resource_config_id, version_sha256, params_hash) DO UPDATE SET
++				ON CONFLICT (resource_config_id, version_md5, params_hash) DO UPDATE SET
+ 				resource_config_id = EXCLUDED.resource_config_id,
+ 				version = EXCLUDED.version,
+-				version_sha256 = EXCLUDED.version_sha256,
++				version_md5 = EXCLUDED.version_md5,
+ 				params_hash = EXCLUDED.params_hash
+ 				RETURNING id
+ 			`).
+diff --git a/atc/db/resource_cache_factory_test.go b/atc/db/resource_cache_factory_test.go
+index 00517fa421..c2260f6676 100644
+--- a/atc/db/resource_cache_factory_test.go
++++ b/atc/db/resource_cache_factory_test.go
+@@ -1,6 +1,7 @@
+ package db_test
+ 
+ import (
++	"crypto/md5"
+ 	"crypto/sha256"
+ 	"database/sql"
+ 	"fmt"
+@@ -99,7 +100,7 @@ var _ = Describe("ResourceCacheFactory", func() {
+ 			Expect(err).ToNot(HaveOccurred())
+ 			Expect(usedResourceCache.Version()).To(Equal(atc.Version{"some": "version"}))
+ 
+-			rows, err := psql.Select("a.version, a.version_sha256, a.params_hash, o.source_hash, b.name").
++			rows, err := psql.Select("a.version, a.version_md5, a.params_hash, o.source_hash, b.name").
+ 				From("resource_caches a").
+ 				LeftJoin("resource_configs o ON a.resource_config_id = o.id").
+ 				LeftJoin("base_resource_types b ON o.base_resource_type_id = b.id").
+@@ -109,12 +110,12 @@ var _ = Describe("ResourceCacheFactory", func() {
+ 			resourceCaches := []resourceCache{}
+ 			for rows.Next() {
+ 				var version string
+-				var VersionSHA256 string
++				var versionMd5 string
+ 				var paramsHash string
+ 				var sourceHash sql.NullString
+ 				var baseResourceTypeName sql.NullString
+ 
+-				err := rows.Scan(&version, &VersionSHA256, &paramsHash, &sourceHash, &baseResourceTypeName)
++				err := rows.Scan(&version, &versionMd5, &paramsHash, &sourceHash, &baseResourceTypeName)
+ 				Expect(err).NotTo(HaveOccurred())
+ 
+ 				var sourceHashString string
+@@ -129,7 +130,7 @@ var _ = Describe("ResourceCacheFactory", func() {
+ 
+ 				resourceCaches = append(resourceCaches, resourceCache{
+ 					Version:          version,
+-					VersionSHA256:    VersionSHA256,
++					VersionMd5:       versionMd5,
+ 					ParamsHash:       paramsHash,
+ 					SourceHash:       sourceHashString,
+ 					BaseResourceName: baseResourceTypeNameString,
+@@ -140,25 +141,29 @@ var _ = Describe("ResourceCacheFactory", func() {
+ 				return fmt.Sprintf("%x", sha256.Sum256([]byte(s)))
+ 			}
+ 
++			var toMd5 = func(s string) string {
++				return fmt.Sprintf("%x", md5.Sum([]byte(s)))
++			}
++
+ 			Expect(resourceCaches).To(ConsistOf(
+ 				resourceCache{
+ 					Version:          `{"some-type-type": "version"}`,
+-					VersionSHA256:    toHash(`{"some-type-type":"version"}`),
++					VersionMd5:       toMd5(`{"some-type-type":"version"}`),
+ 					ParamsHash:       toHash(`{}`),
+ 					BaseResourceName: "some-base-type",
+ 					SourceHash:       toHash(`{"some-type-type":"some-secret-sauce"}`),
+ 				},
+ 				resourceCache{
+-					Version:       `{"some-type": "version"}`,
+-					VersionSHA256: toHash(`{"some-type":"version"}`),
+-					ParamsHash:    toHash(`{}`),
+-					SourceHash:    toHash(`{"some-type":"source"}`),
++					Version:    `{"some-type": "version"}`,
++					VersionMd5: toMd5(`{"some-type":"version"}`),
++					ParamsHash: toHash(`{}`),
++					SourceHash: toHash(`{"some-type":"source"}`),
+ 				},
+ 				resourceCache{
+-					Version:       `{"some": "version"}`,
+-					VersionSHA256: toHash(`{"some":"version"}`),
+-					ParamsHash:    toHash(`{"some":"params"}`),
+-					SourceHash:    toHash(`{"some":"source"}`),
++					Version:    `{"some": "version"}`,
++					VersionMd5: toMd5(`{"some":"version"}`),
++					ParamsHash: toHash(`{"some":"params"}`),
++					SourceHash: toHash(`{"some":"source"}`),
+ 				},
+ 			))
+ 		})
+@@ -340,7 +345,7 @@ var _ = Describe("ResourceCacheFactory", func() {
+ 
+ type resourceCache struct {
+ 	Version          string
+-	VersionSHA256    string
++	VersionMd5       string
+ 	ParamsHash       string
+ 	SourceHash       string
+ 	BaseResourceName string
+diff --git a/atc/db/resource_cache_lifecycle.go b/atc/db/resource_cache_lifecycle.go
+index 8bec0afef8..135c9cc3a9 100644
+--- a/atc/db/resource_cache_lifecycle.go
++++ b/atc/db/resource_cache_lifecycle.go
+@@ -105,8 +105,8 @@ func (f *resourceCacheLifecycle) CleanUpInvalidCaches(logger lager.Logger) error
+ 		Select("r_cache.id").
+ 		From("next_build_inputs nbi").
+ 		Join("resources r ON r.id = nbi.resource_id").
+-		Join("resource_config_versions rcv ON rcv.version_sha256 = nbi.version_sha256 AND rcv.resource_config_scope_id = r.resource_config_scope_id").
+-		Join("resource_caches r_cache ON r_cache.resource_config_id = r.resource_config_id AND r_cache.version_sha256 = rcv.version_sha256").
++		Join("resource_config_versions rcv ON rcv.version_md5 = nbi.version_md5 AND rcv.resource_config_scope_id = r.resource_config_scope_id").
++		Join("resource_caches r_cache ON r_cache.resource_config_id = r.resource_config_id AND r_cache.version_md5 = rcv.version_md5").
+ 		Join("jobs j ON nbi.job_id = j.id").
+ 		Join("pipelines p ON j.pipeline_id = p.id").
+ 		Where(sq.Expr("p.paused = false")).
+diff --git a/atc/db/resource_cache_lifecycle_test.go b/atc/db/resource_cache_lifecycle_test.go
+index ef5e852f6f..e16d60c30c 100644
+--- a/atc/db/resource_cache_lifecycle_test.go
++++ b/atc/db/resource_cache_lifecycle_test.go
+@@ -349,7 +349,7 @@ var _ = Describe("ResourceCacheLifecycle", func() {
+ 					"some-resource": db.InputResult{
+ 						Input: &db.AlgorithmInput{
+ 							AlgorithmVersion: db.AlgorithmVersion{
+-								Version:    db.ResourceVersion(convertToSHA256(atc.Version(resourceConfigVersion.Version()))),
++								Version:    db.ResourceVersion(convertToMD5(atc.Version(resourceConfigVersion.Version()))),
+ 								ResourceID: scenario.Resource("some-resource").ID(),
+ 							},
+ 						},
+diff --git a/atc/db/resource_config_scope.go b/atc/db/resource_config_scope.go
+index 824126460a..2f44678abd 100644
+--- a/atc/db/resource_config_scope.go
++++ b/atc/db/resource_config_scope.go
+@@ -149,7 +149,7 @@ func (r *resourceConfigScope) FindVersion(v atc.Version) (ResourceConfigVersion,
+ 		Where(sq.Eq{
+ 			"v.resource_config_scope_id": r.id,
+ 		}).
+-		Where(sq.Expr("v.version_sha256 = encode(digest(?, 'sha256'), 'hex')", versionByte)).
++		Where(sq.Expr("v.version_md5 = md5(?)", versionByte)).
+ 		RunWith(r.conn).
+ 		QueryRow()
+ 
+@@ -276,9 +276,9 @@ func saveResourceVersion(tx Tx, rcsID int, version atc.Version, metadata Resourc
+ 
+ 	var checkOrder int
+ 	err = tx.QueryRow(`
+-		INSERT INTO resource_config_versions (resource_config_scope_id, version, version_sha256, metadata, span_context)
+-		SELECT $1, $2, encode(digest($3, 'sha256'), 'hex'), $4, $5
+-		ON CONFLICT (resource_config_scope_id, version_sha256)
++		INSERT INTO resource_config_versions (resource_config_scope_id, version, version_md5, metadata, span_context)
++		SELECT $1, $2, md5($3), $4, $5
++		ON CONFLICT (resource_config_scope_id, version_md5)
+ 		DO UPDATE SET metadata = COALESCE(NULLIF(excluded.metadata, 'null'::jsonb), resource_config_versions.metadata)
+ 		RETURNING check_order
+ 		`, rcsID, string(versionJSON), string(versionJSON), string(metadataJSON), string(spanContextJSON)).Scan(&checkOrder)
+@@ -305,7 +305,7 @@ func incrementCheckOrder(tx Tx, rcsID int, version string) error {
+ 		SET check_order = mc.co + 1
+ 		FROM max_checkorder mc
+ 		WHERE resource_config_scope_id = $1
+-		AND version_sha256 = encode(digest($2, 'sha256'), 'hex')
++		AND version_md5 = md5($2)
+ 		AND check_order <= mc.co;`, rcsID, version)
+ 	return err
+ }
+diff --git a/atc/db/versions_db.go b/atc/db/versions_db.go
+index a7e83a34d2..94fc52d71c 100644
+--- a/atc/db/versions_db.go
++++ b/atc/db/versions_db.go
+@@ -32,7 +32,7 @@ func NewVersionsDB(conn DbConn, limitRows int, cache *gocache.Cache) VersionsDB
+ 	}
+ }
+ 
+-func (versions VersionsDB) IsFirstOccurrence(ctx context.Context, jobID int, inputName string, versionSHA256 ResourceVersion, resourceId int) (bool, error) {
++func (versions VersionsDB) IsFirstOccurrence(ctx context.Context, jobID int, inputName string, versionMD5 ResourceVersion, resourceId int) (bool, error) {
+ 	var exists bool
+ 	err := versions.conn.QueryRowContext(ctx, `
+ 		WITH builds_of_job AS (
+@@ -43,9 +43,9 @@ func (versions VersionsDB) IsFirstOccurrence(ctx context.Context, jobID int, inp
+ 			FROM build_resource_config_version_inputs i
+ 			JOIN builds_of_job b ON b.id = i.build_id
+ 			WHERE i.name = $2
+-			AND i.version_sha256 = $3
++			AND i.version_md5 = $3
+ 			AND i.resource_id = $4
+-		)`, jobID, inputName, versionSHA256, resourceId).
++		)`, jobID, inputName, versionMD5, resourceId).
+ 		Scan(&exists)
+ 	if err != nil {
+ 		return false, err
+@@ -54,15 +54,15 @@ func (versions VersionsDB) IsFirstOccurrence(ctx context.Context, jobID int, inp
+ 	return !exists, nil
+ }
+ 
+-func (versions VersionsDB) VersionIsDisabled(ctx context.Context, resourceID int, versionSHA256 ResourceVersion) (bool, error) {
++func (versions VersionsDB) VersionIsDisabled(ctx context.Context, resourceID int, versionMD5 ResourceVersion) (bool, error) {
+ 	var exists bool
+ 	err := versions.conn.QueryRow(`
+ 		SELECT EXISTS (
+ 			SELECT 1
+ 			FROM resource_disabled_versions
+ 			WHERE resource_id = $1
+-			AND version_sha256 = $2
+-		)`, resourceID, versionSHA256).
++			AND version_md5 = $2
++		)`, resourceID, versionMD5).
+ 		Scan(&exists)
+ 	if err != nil {
+ 		return false, err
+@@ -212,7 +212,7 @@ func (versions VersionsDB) SuccessfulBuildOutputs(ctx context.Context, buildID i
+ 	return algorithmOutputs, nil
+ }
+ 
+-func (versions VersionsDB) VersionExists(ctx context.Context, resourceID int, versionSHA256 ResourceVersion) (bool, error) {
++func (versions VersionsDB) VersionExists(ctx context.Context, resourceID int, versionMD5 ResourceVersion) (bool, error) {
+ 	var exists bool
+ 	err := versions.conn.QueryRowContext(ctx, `
+ 		SELECT EXISTS (
+@@ -220,8 +220,8 @@ func (versions VersionsDB) VersionExists(ctx context.Context, resourceID int, ve
+ 			FROM resource_config_versions v
+ 			JOIN resources r ON r.resource_config_scope_id = v.resource_config_scope_id
+ 			WHERE r.id = $1
+-			AND v.version_sha256 = $2
+-		)`, resourceID, versionSHA256).
++			AND v.version_md5 = $2
++		)`, resourceID, versionMD5).
+ 		Scan(&exists)
+ 	if err != nil {
+ 		return false, err
+@@ -244,7 +244,7 @@ func (versions VersionsDB) FindVersionOfResource(ctx context.Context, resourceID
+ 	}
+ 
+ 	var version ResourceVersion
+-	err = psql.Select("rcv.version_sha256").
++	err = psql.Select("rcv.version_md5").
+ 		From("resource_config_versions rcv").
+ 		Join("resources r ON r.resource_config_scope_id = rcv.resource_config_scope_id").
+ 		Where(sq.Eq{
+@@ -289,7 +289,7 @@ func (versions VersionsDB) NextEveryVersion(ctx context.Context, jobID int, reso
+ 				LIMIT 1
+ 			) AS build
+ 			WHERE i.resource_id = $2
+-			AND i.version_sha256 = rcv.version_sha256
++			AND i.version_md5 = rcv.version_md5
+ 			LIMIT 1
+ 		) AS inputs
+ 		WHERE rcv.resource_config_scope_id = (SELECT resource_config_scope_id FROM resources WHERE id = $2)
+@@ -318,10 +318,10 @@ func (versions VersionsDB) NextEveryVersion(ctx context.Context, jobID int, reso
+ 	}
+ 
+ 	var nextVersion ResourceVersion
+-	rows, err := psql.Select("rcv.version_sha256").
++	rows, err := psql.Select("rcv.version_md5").
+ 		From("resource_config_versions rcv").
+ 		Where(sq.Expr("rcv.resource_config_scope_id = (SELECT resource_config_scope_id FROM resources WHERE id = ?)", resourceID)).
+-		Where(sq.Expr("NOT EXISTS (SELECT 1 FROM resource_disabled_versions WHERE resource_id = ? AND version_sha256 = rcv.version_sha256)", resourceID)).
++		Where(sq.Expr("NOT EXISTS (SELECT 1 FROM resource_disabled_versions WHERE resource_id = ? AND version_md5 = rcv.version_md5)", resourceID)).
+ 		Where(sq.Gt{"rcv.check_order": checkOrder}).
+ 		OrderBy("rcv.check_order ASC").
+ 		Limit(2).
+@@ -352,10 +352,10 @@ func (versions VersionsDB) NextEveryVersion(ctx context.Context, jobID int, reso
+ 		return nextVersion, hasNext, true, nil
+ 	}
+ 
+-	err = psql.Select("rcv.version_sha256").
++	err = psql.Select("rcv.version_md5").
+ 		From("resource_config_versions rcv").
+ 		Where(sq.Expr("rcv.resource_config_scope_id = (SELECT resource_config_scope_id FROM resources WHERE id = ?)", resourceID)).
+-		Where(sq.Expr("NOT EXISTS (SELECT 1 FROM resource_disabled_versions WHERE resource_id = ? AND version_sha256 = rcv.version_sha256)", resourceID)).
++		Where(sq.Expr("NOT EXISTS (SELECT 1 FROM resource_disabled_versions WHERE resource_id = ? AND version_md5 = rcv.version_md5)", resourceID)).
+ 		Where(sq.LtOrEq{"rcv.check_order": checkOrder}).
+ 		OrderBy("rcv.check_order DESC").
+ 		Limit(1).
+@@ -423,7 +423,7 @@ func (versions VersionsDB) LatestBuildUsingLatestVersion(ctx context.Context, jo
+ 				LIMIT 1
+ 			) AS build
+ 			WHERE i.resource_id = $2
+-			AND i.version_sha256 = rcv.version_sha256
++			AND i.version_md5 = rcv.version_md5
+ 			LIMIT 1
+ 		) AS inputs
+ 		WHERE rcv.resource_config_scope_id = (SELECT resource_config_scope_id FROM resources WHERE id = $2)
+@@ -560,10 +560,10 @@ func (versions VersionsDB) latestVersionOfResource(ctx context.Context, tx Tx, r
+ 	}
+ 
+ 	var version ResourceVersion
+-	err = psql.Select("version_sha256").
++	err = psql.Select("version_md5").
+ 		From("resource_config_versions").
+ 		Where(sq.Eq{"resource_config_scope_id": scopeID}).
+-		Where(sq.Expr("version_sha256 NOT IN (SELECT version_sha256 FROM resource_disabled_versions WHERE resource_id = ?)", resourceID)).
++		Where(sq.Expr("version_md5 NOT IN (SELECT version_md5 FROM resource_disabled_versions WHERE resource_id = ?)", resourceID)).
+ 		OrderBy("check_order DESC").
+ 		Limit(1).
+ 		RunWith(tx).
+@@ -596,16 +596,16 @@ func (versions VersionsDB) migrateSingle(ctx context.Context, buildID int) (stri
+ 				SELECT b.id, b.job_id, json_object_agg(sp.resource_id, sp.v), b.rerun_of
+ 				FROM builds b
+ 				JOIN (
+-					SELECT build_id, resource_id, json_agg(version_sha256) AS v
++					SELECT build_id, resource_id, json_agg(version_md5) AS v
+ 					FROM (
+ 						(
+-							SELECT build_id, resource_id, version_sha256
++							SELECT build_id, resource_id, version_md5
+ 							FROM build_resource_config_version_outputs o
+ 							WHERE o.build_id = $1
+ 						)
+ 						UNION ALL
+ 						(
+-							SELECT build_id, resource_id, version_sha256
++							SELECT build_id, resource_id, version_md5
+ 							FROM build_resource_config_version_inputs i
+ 							WHERE i.build_id = $1
+ 						)
+@@ -764,16 +764,16 @@ func (bs *PaginatedBuilds) migrateLimit(ctx context.Context) (bool, error) {
+ 				SELECT bm.id, bm.job_id, json_object_agg(sp.resource_id, sp.v), bm.rerun_of
+ 				FROM builds_to_migrate bm
+ 				JOIN (
+-					SELECT build_id, resource_id, json_agg(version_sha256) AS v
++					SELECT build_id, resource_id, json_agg(version_md5) AS v
+ 					FROM (
+ 						(
+-							SELECT build_id, resource_id, version_sha256
++							SELECT build_id, resource_id, version_md5
+ 							FROM build_resource_config_version_outputs o
+ 							JOIN builds_to_migrate bm ON bm.id = o.build_id
+ 						)
+ 						UNION ALL
+ 						(
+-							SELECT build_id, resource_id, version_sha256
++							SELECT build_id, resource_id, version_md5
+ 							FROM build_resource_config_version_inputs i
+ 							JOIN builds_to_migrate bm ON bm.id = i.build_id
+ 						)
+diff --git a/atc/db/versions_db_test.go b/atc/db/versions_db_test.go
+index e8b128329b..1b0ae72955 100644
+--- a/atc/db/versions_db_test.go
++++ b/atc/db/versions_db_test.go
+@@ -757,9 +757,9 @@ var _ = Describe("VersionsDB", func() {
+ 				queryVersion = atc.Version{"tag": "v1"}
+ 			})
+ 
+-			It("return the version sha256", func() {
++			It("return the version md5", func() {
+ 				Expect(found).To(BeTrue())
+-				Expect(string(resourceVersion)).To(Equal(convertToSHA256(dbVersion)))
++				Expect(string(resourceVersion)).To(Equal(convertToMD5(dbVersion)))
+ 			})
+ 		})
+ 	})
+diff --git a/atc/gc/resource_cache_collector_test.go b/atc/gc/resource_cache_collector_test.go
+index 0372e228cd..ae7b81810e 100644
+--- a/atc/gc/resource_cache_collector_test.go
++++ b/atc/gc/resource_cache_collector_test.go
+@@ -124,20 +124,20 @@ var _ = Describe("ResourceCacheCollector", func() {
+ 
+ 				Context("when the cache is an input to a job", func() {
+ 					BeforeEach(func() {
+-						var versionSHA256 string
++						var versionMD5 string
+ 						version := `{"some":"version"}`
+ 						err = psql.Insert("resource_config_versions").
+-							Columns("version", "version_sha256", "metadata", "resource_config_scope_id").
+-							Values(version, sq.Expr(fmt.Sprintf("encode(digest('%s', 'sha256'), 'hex')", version)), `null`, jobCache.ResourceConfig().ID()).
+-							Suffix("RETURNING version_sha256").
+-							RunWith(dbConn).QueryRow().Scan(&versionSHA256)
++							Columns("version", "version_md5", "metadata", "resource_config_scope_id").
++							Values(version, sq.Expr(fmt.Sprintf("md5('%s')", version)), `null`, jobCache.ResourceConfig().ID()).
++							Suffix("RETURNING version_md5").
++							RunWith(dbConn).QueryRow().Scan(&versionMD5)
+ 						Expect(err).NotTo(HaveOccurred())
+ 
+ 						Expect(scenario.Job("some-job").SaveNextInputMapping(db.InputMapping{
+ 							"whatever": db.InputResult{
+ 								Input: &db.AlgorithmInput{
+ 									AlgorithmVersion: db.AlgorithmVersion{
+-										Version:    db.ResourceVersion(versionSHA256),
++										Version:    db.ResourceVersion(versionMD5),
+ 										ResourceID: scenario.Resource("some-resource").ID(),
+ 									},
+ 								},
+diff --git a/atc/scheduler/algorithm/firstoccurrence_test.go b/atc/scheduler/algorithm/firstoccurrence_test.go
+index e398fde4cf..d57fead92c 100644
+--- a/atc/scheduler/algorithm/firstoccurrence_test.go
++++ b/atc/scheduler/algorithm/firstoccurrence_test.go
+@@ -2,7 +2,7 @@ package algorithm_test
+ 
+ import (
+ 	"context"
+-	"crypto/sha256"
++	"crypto/md5"
+ 	"database/sql"
+ 	"encoding/hex"
+ 	"encoding/json"
+@@ -138,8 +138,8 @@ var _ = Describe("Resolve", func() {
+ 
+ 			resourceID := setup.resourceIDs.ID(buildOutput.ResourceName)
+ 			_, err = setup.psql.Insert("build_resource_config_version_outputs").
+-				Columns("build_id", "resource_id", "version_sha256", "name").
+-				Values(buildOutput.BuildID, resourceID, sq.Expr("encode(digest(?, 'sha256'), 'hex')", versionJSON), buildOutput.ResourceName).
++				Columns("build_id", "resource_id", "version_md5", "name").
++				Values(buildOutput.BuildID, resourceID, sq.Expr("md5(?)", versionJSON), buildOutput.ResourceName).
+ 				Exec()
+ 			Expect(err).ToNot(HaveOccurred())
+ 
+@@ -151,7 +151,7 @@ var _ = Describe("Resolve", func() {
+ 
+ 			key := strconv.Itoa(resourceID)
+ 
+-			outputs[key] = append(outputs[key], convertToSHA256(buildOutput.Version))
++			outputs[key] = append(outputs[key], convertToMD5(buildOutput.Version))
+ 			buildToJobID[buildOutput.BuildID] = setup.jobIDs.ID(buildOutput.JobName)
+ 		}
+ 
+@@ -175,8 +175,8 @@ var _ = Describe("Resolve", func() {
+ 
+ 			resourceID := setup.resourceIDs.ID(buildInput.ResourceName)
+ 			_, err = setup.psql.Insert("build_resource_config_version_inputs").
+-				Columns("build_id", "resource_id", "version_sha256", "name", "first_occurrence").
+-				Values(buildInput.BuildID, resourceID, sq.Expr("encode(digest(?, 'sha256'), 'hex')", versionJSON), buildInput.InputName, false).
++				Columns("build_id", "resource_id", "version_md5", "name", "first_occurrence").
++				Values(buildInput.BuildID, resourceID, sq.Expr("md5(?)", versionJSON), buildInput.InputName, false).
+ 				Exec()
+ 			Expect(err).ToNot(HaveOccurred())
+ 
+@@ -188,7 +188,7 @@ var _ = Describe("Resolve", func() {
+ 
+ 			key := strconv.Itoa(resourceID)
+ 
+-			outputs[key] = append(outputs[key], convertToSHA256(buildInput.Version))
++			outputs[key] = append(outputs[key], convertToMD5(buildInput.Version))
+ 			buildToJobID[buildInput.BuildID] = setup.jobIDs.ID(buildInput.JobName)
+ 
+ 			if buildInput.RerunBuildID != 0 {
+@@ -284,7 +284,7 @@ var _ = Describe("Resolve", func() {
+ 				"some-input": db.InputResult{
+ 					Input: &db.AlgorithmInput{
+ 						AlgorithmVersion: db.AlgorithmVersion{
+-							Version:    db.ResourceVersion(convertToSHA256("v2")),
++							Version:    db.ResourceVersion(convertToMD5("v2")),
+ 							ResourceID: 1,
+ 						},
+ 						FirstOccurrence: false,
+@@ -314,7 +314,7 @@ var _ = Describe("Resolve", func() {
+ 				"some-input": db.InputResult{
+ 					Input: &db.AlgorithmInput{
+ 						AlgorithmVersion: db.AlgorithmVersion{
+-							Version:    db.ResourceVersion(convertToSHA256("v2")),
++							Version:    db.ResourceVersion(convertToMD5("v2")),
+ 							ResourceID: 1},
+ 						FirstOccurrence: true,
+ 					},
+@@ -343,7 +343,7 @@ var _ = Describe("Resolve", func() {
+ 				"some-input": db.InputResult{
+ 					Input: &db.AlgorithmInput{
+ 						AlgorithmVersion: db.AlgorithmVersion{
+-							Version:    db.ResourceVersion(convertToSHA256("v2")),
++							Version:    db.ResourceVersion(convertToMD5("v2")),
+ 							ResourceID: 1},
+ 						FirstOccurrence: true,
+ 					},
+@@ -372,7 +372,7 @@ var _ = Describe("Resolve", func() {
+ 				"some-input": db.InputResult{
+ 					Input: &db.AlgorithmInput{
+ 						AlgorithmVersion: db.AlgorithmVersion{
+-							Version:    db.ResourceVersion(convertToSHA256("v2")),
++							Version:    db.ResourceVersion(convertToMD5("v2")),
+ 							ResourceID: 1},
+ 						FirstOccurrence: true,
+ 					},
+@@ -400,7 +400,7 @@ var _ = Describe("Resolve", func() {
+ 				"some-input": db.InputResult{
+ 					Input: &db.AlgorithmInput{
+ 						AlgorithmVersion: db.AlgorithmVersion{
+-							Version:    db.ResourceVersion(convertToSHA256("v2")),
++							Version:    db.ResourceVersion(convertToMD5("v2")),
+ 							ResourceID: 1},
+ 						FirstOccurrence: true,
+ 					},
+@@ -446,7 +446,7 @@ var _ = Describe("Resolve", func() {
+ 				"some-input": db.InputResult{
+ 					Input: &db.AlgorithmInput{
+ 						AlgorithmVersion: db.AlgorithmVersion{
+-							Version:    db.ResourceVersion(convertToSHA256("v2")),
++							Version:    db.ResourceVersion(convertToMD5("v2")),
+ 							ResourceID: 1},
+ 						FirstOccurrence: false,
+ 					},
+@@ -491,7 +491,7 @@ var _ = Describe("Resolve", func() {
+ 				"some-input": db.InputResult{
+ 					Input: &db.AlgorithmInput{
+ 						AlgorithmVersion: db.AlgorithmVersion{
+-							Version:    db.ResourceVersion(convertToSHA256("v3")),
++							Version:    db.ResourceVersion(convertToMD5("v3")),
+ 							ResourceID: 1,
+ 						},
+ 						FirstOccurrence: false,
+@@ -503,11 +503,11 @@ var _ = Describe("Resolve", func() {
+ 	})
+ })
+ 
+-func convertToSHA256(version string) string {
++func convertToMD5(version string) string {
+ 	versionJSON, err := json.Marshal(atc.Version{"ver": version})
+ 	Expect(err).ToNot(HaveOccurred())
+ 
+-	hasher := sha256.New()
++	hasher := md5.New()
+ 	hasher.Write([]byte(versionJSON))
+ 	return hex.EncodeToString(hasher.Sum(nil))
+ }
+diff --git a/atc/scheduler/algorithm/migration_test.go b/atc/scheduler/algorithm/migration_test.go
+index 50d91779df..4887829d88 100644
+--- a/atc/scheduler/algorithm/migration_test.go
++++ b/atc/scheduler/algorithm/migration_test.go
+@@ -1,7 +1,7 @@
+ package algorithm_test
+ 
+ import (
+-	"crypto/sha256"
++	"crypto/md5"
+ 	"encoding/hex"
+ 	"encoding/json"
+ 
+@@ -109,43 +109,43 @@ var _ = DescribeTable("Migrating build inputs and outputs into successful build
+ 			},
+ 			ExpectedMigrated: map[int]map[int][]string{
+ 				2: map[int][]string{
+-					1: []string{migratorConvertToSHA256("rxv2"), migratorConvertToSHA256("rxv1")},
+-					2: []string{migratorConvertToSHA256("ryv2")},
++					1: []string{migratorConvertToMD5("rxv2"), migratorConvertToMD5("rxv1")},
++					2: []string{migratorConvertToMD5("ryv2")},
+ 				},
+ 				3: map[int][]string{
+-					1: []string{migratorConvertToSHA256("rxv3"), migratorConvertToSHA256("rxv1")},
+-					2: []string{migratorConvertToSHA256("ryv3")},
++					1: []string{migratorConvertToMD5("rxv3"), migratorConvertToMD5("rxv1")},
++					2: []string{migratorConvertToMD5("ryv3")},
+ 				},
+ 				4: map[int][]string{
+-					1: []string{migratorConvertToSHA256("rxv2"), migratorConvertToSHA256("rxv1")},
+-					2: []string{migratorConvertToSHA256("ryv2")},
++					1: []string{migratorConvertToMD5("rxv2"), migratorConvertToMD5("rxv1")},
++					2: []string{migratorConvertToMD5("ryv2")},
+ 				},
+ 				5: map[int][]string{
+-					1: []string{migratorConvertToSHA256("rxv4"), migratorConvertToSHA256("rxv1")},
+-					2: []string{migratorConvertToSHA256("ryv4")},
++					1: []string{migratorConvertToMD5("rxv4"), migratorConvertToMD5("rxv1")},
++					2: []string{migratorConvertToMD5("ryv4")},
+ 				},
+ 				6: map[int][]string{
+-					1: []string{migratorConvertToSHA256("rxv1"), migratorConvertToSHA256("rxv1")},
+-					2: []string{migratorConvertToSHA256("ryv1")},
++					1: []string{migratorConvertToMD5("rxv1"), migratorConvertToMD5("rxv1")},
++					2: []string{migratorConvertToMD5("ryv1")},
+ 				},
+ 				7: map[int][]string{
+-					1: []string{migratorConvertToSHA256("rxv2"), migratorConvertToSHA256("rxv1")},
+-					2: []string{migratorConvertToSHA256("ryv2")},
++					1: []string{migratorConvertToMD5("rxv2"), migratorConvertToMD5("rxv1")},
++					2: []string{migratorConvertToMD5("ryv2")},
+ 				},
+ 				8: map[int][]string{
+-					1: []string{migratorConvertToSHA256("rxv3"), migratorConvertToSHA256("rxv1")},
+-					2: []string{migratorConvertToSHA256("ryv3")},
++					1: []string{migratorConvertToMD5("rxv3"), migratorConvertToMD5("rxv1")},
++					2: []string{migratorConvertToMD5("ryv3")},
+ 				},
+ 				9: map[int][]string{
+-					1: []string{migratorConvertToSHA256("rxv2"), migratorConvertToSHA256("rxv1")},
+-					2: []string{migratorConvertToSHA256("ryv2")},
++					1: []string{migratorConvertToMD5("rxv2"), migratorConvertToMD5("rxv1")},
++					2: []string{migratorConvertToMD5("ryv2")},
+ 				},
+ 				10: map[int][]string{
+-					1: []string{migratorConvertToSHA256("rxv4"), migratorConvertToSHA256("rxv1")},
+-					2: []string{migratorConvertToSHA256("ryv4")},
++					1: []string{migratorConvertToMD5("rxv4"), migratorConvertToMD5("rxv1")},
++					2: []string{migratorConvertToMD5("ryv4")},
+ 				},
+ 				11: map[int][]string{
+-					2: []string{migratorConvertToSHA256("ryv4")},
++					2: []string{migratorConvertToMD5("ryv4")},
+ 				},
+ 			},
+ 		},
+@@ -241,47 +241,47 @@ var _ = DescribeTable("Migrating build inputs and outputs into successful build
+ 			},
+ 			ExpectedMigrated: map[int]map[int][]string{
+ 				1: map[int][]string{
+-					1: []string{migratorConvertToSHA256("rxv1"), migratorConvertToSHA256("rxv1")},
+-					2: []string{migratorConvertToSHA256("ryv1")},
++					1: []string{migratorConvertToMD5("rxv1"), migratorConvertToMD5("rxv1")},
++					2: []string{migratorConvertToMD5("ryv1")},
+ 				},
+ 				2: map[int][]string{
+-					1: []string{migratorConvertToSHA256("rxv2"), migratorConvertToSHA256("rxv2")},
+-					2: []string{migratorConvertToSHA256("ryv2")},
++					1: []string{migratorConvertToMD5("rxv2"), migratorConvertToMD5("rxv2")},
++					2: []string{migratorConvertToMD5("ryv2")},
+ 				},
+ 				3: map[int][]string{
+-					1: []string{migratorConvertToSHA256("rxv3"), migratorConvertToSHA256("rxv3")},
+-					2: []string{migratorConvertToSHA256("ryv3")},
++					1: []string{migratorConvertToMD5("rxv3"), migratorConvertToMD5("rxv3")},
++					2: []string{migratorConvertToMD5("ryv3")},
+ 				},
+ 				4: map[int][]string{
+-					1: []string{migratorConvertToSHA256("rxv2"), migratorConvertToSHA256("rxv2")},
+-					2: []string{migratorConvertToSHA256("ryv2")},
++					1: []string{migratorConvertToMD5("rxv2"), migratorConvertToMD5("rxv2")},
++					2: []string{migratorConvertToMD5("ryv2")},
+ 				},
+ 				5: map[int][]string{
+-					1: []string{migratorConvertToSHA256("rxv4"), migratorConvertToSHA256("rxv4")},
+-					2: []string{migratorConvertToSHA256("ryv4")},
++					1: []string{migratorConvertToMD5("rxv4"), migratorConvertToMD5("rxv4")},
++					2: []string{migratorConvertToMD5("ryv4")},
+ 				},
+ 				6: map[int][]string{
+-					1: []string{migratorConvertToSHA256("rxv1"), migratorConvertToSHA256("rxv1")},
+-					2: []string{migratorConvertToSHA256("ryv1")},
++					1: []string{migratorConvertToMD5("rxv1"), migratorConvertToMD5("rxv1")},
++					2: []string{migratorConvertToMD5("ryv1")},
+ 				},
+ 				7: map[int][]string{
+-					1: []string{migratorConvertToSHA256("rxv2"), migratorConvertToSHA256("rxv2")},
+-					2: []string{migratorConvertToSHA256("ryv2")},
++					1: []string{migratorConvertToMD5("rxv2"), migratorConvertToMD5("rxv2")},
++					2: []string{migratorConvertToMD5("ryv2")},
+ 				},
+ 				8: map[int][]string{
+-					1: []string{migratorConvertToSHA256("rxv3"), migratorConvertToSHA256("rxv3")},
+-					2: []string{migratorConvertToSHA256("ryv3")},
++					1: []string{migratorConvertToMD5("rxv3"), migratorConvertToMD5("rxv3")},
++					2: []string{migratorConvertToMD5("ryv3")},
+ 				},
+ 				9: map[int][]string{
+-					1: []string{migratorConvertToSHA256("rxv2"), migratorConvertToSHA256("rxv2")},
+-					2: []string{migratorConvertToSHA256("ryv2")},
++					1: []string{migratorConvertToMD5("rxv2"), migratorConvertToMD5("rxv2")},
++					2: []string{migratorConvertToMD5("ryv2")},
+ 				},
+ 				10: map[int][]string{
+-					1: []string{migratorConvertToSHA256("rxv4"), migratorConvertToSHA256("rxv4")},
+-					2: []string{migratorConvertToSHA256("ryv4")},
++					1: []string{migratorConvertToMD5("rxv4"), migratorConvertToMD5("rxv4")},
++					2: []string{migratorConvertToMD5("ryv4")},
+ 				},
+ 				11: map[int][]string{
+-					2: []string{migratorConvertToSHA256("ryv5")},
++					2: []string{migratorConvertToMD5("ryv5")},
+ 				},
+ 			},
+ 		},
+@@ -333,13 +333,13 @@ var _ = DescribeTable("Migrating build inputs and outputs into successful build
+ 			},
+ 			ExpectedMigrated: map[int]map[int][]string{
+ 				2: map[int][]string{
+-					1: []string{migratorConvertToSHA256("rxv2")},
++					1: []string{migratorConvertToMD5("rxv2")},
+ 				},
+ 				3: map[int][]string{
+-					1: []string{migratorConvertToSHA256("rxv3")},
++					1: []string{migratorConvertToMD5("rxv3")},
+ 				},
+ 				6: map[int][]string{
+-					1: []string{migratorConvertToSHA256("rxv3")},
++					1: []string{migratorConvertToMD5("rxv3")},
+ 				},
+ 			},
+ 		},
+@@ -390,13 +390,13 @@ var _ = DescribeTable("Migrating build inputs and outputs into successful build
+ 			},
+ 			ExpectedMigrated: map[int]map[int][]string{
+ 				4: map[int][]string{
+-					1: []string{migratorConvertToSHA256("rxv4")},
++					1: []string{migratorConvertToMD5("rxv4")},
+ 				},
+ 				3: map[int][]string{
+-					1: []string{migratorConvertToSHA256("rxv3")},
++					1: []string{migratorConvertToMD5("rxv3")},
+ 				},
+ 				5: map[int][]string{
+-					1: []string{migratorConvertToSHA256("rxv3")},
++					1: []string{migratorConvertToMD5("rxv3")},
+ 				},
+ 			},
+ 		},
+@@ -438,13 +438,13 @@ var _ = DescribeTable("Migrating build inputs and outputs into successful build
+ 			},
+ 			ExpectedMigrated: map[int]map[int][]string{
+ 				3: map[int][]string{
+-					1: []string{migratorConvertToSHA256("rxv3")},
++					1: []string{migratorConvertToMD5("rxv3")},
+ 				},
+ 				4: map[int][]string{
+-					1: []string{migratorConvertToSHA256("rxv4")},
++					1: []string{migratorConvertToMD5("rxv4")},
+ 				},
+ 				6: map[int][]string{
+-					1: []string{migratorConvertToSHA256("rxv3")},
++					1: []string{migratorConvertToMD5("rxv3")},
+ 				},
+ 			},
+ 		},
+@@ -483,7 +483,7 @@ var _ = DescribeTable("Migrating build inputs and outputs into successful build
+ 			},
+ 			ExpectedMigrated: map[int]map[int][]string{
+ 				1: map[int][]string{
+-					1: []string{migratorConvertToSHA256("rxv2"), migratorConvertToSHA256("rxv1")},
++					1: []string{migratorConvertToMD5("rxv2"), migratorConvertToMD5("rxv1")},
+ 				},
+ 			},
+ 		},
+@@ -538,19 +538,19 @@ var _ = DescribeTable("Migrating build inputs and outputs into successful build
+ 			},
+ 			ExpectedMigrated: map[int]map[int][]string{
+ 				2: map[int][]string{
+-					1: []string{migratorConvertToSHA256("rxv2")},
++					1: []string{migratorConvertToMD5("rxv2")},
+ 				},
+ 				4: map[int][]string{
+-					1: []string{migratorConvertToSHA256("rxv4")},
++					1: []string{migratorConvertToMD5("rxv4")},
+ 				},
+ 				6: map[int][]string{
+-					1: []string{migratorConvertToSHA256("rxv1")},
++					1: []string{migratorConvertToMD5("rxv1")},
+ 				},
+ 				8: map[int][]string{
+-					1: []string{migratorConvertToSHA256("rxv3")},
++					1: []string{migratorConvertToMD5("rxv3")},
+ 				},
+ 				9: map[int][]string{
+-					1: []string{migratorConvertToSHA256("rxv4")},
++					1: []string{migratorConvertToMD5("rxv4")},
+ 				},
+ 			},
+ 		},
+@@ -600,17 +600,17 @@ var _ = DescribeTable("Migrating build inputs and outputs into successful build
+ 			},
+ 			ExpectedMigrated: map[int]map[int][]string{
+ 				4: map[int][]string{
+-					1: []string{migratorConvertToSHA256("rxv3")},
++					1: []string{migratorConvertToMD5("rxv3")},
+ 				},
+ 			},
+ 		},
+ 	}),
+ )
+ 
+-func migratorConvertToSHA256(version string) string {
++func migratorConvertToMD5(version string) string {
+ 	versionJSON, _ := json.Marshal(atc.Version{"ver": version})
+ 
+-	hasher := sha256.New()
++	hasher := md5.New()
+ 	hasher.Write([]byte(versionJSON))
+ 	return hex.EncodeToString(hasher.Sum(nil))
+ }
+diff --git a/atc/scheduler/algorithm/table_helpers_test.go b/atc/scheduler/algorithm/table_helpers_test.go
+index fef2e690cc..7b5c1c53f3 100644
+--- a/atc/scheduler/algorithm/table_helpers_test.go
++++ b/atc/scheduler/algorithm/table_helpers_test.go
+@@ -280,7 +280,7 @@ func (example Example) importVersionsDB(ctx context.Context, setup setupDB, cach
+ 			txn, err := pgxConn.Begin(ctx)
+ 			Expect(err).ToNot(HaveOccurred())
+ 
+-			cols := []string{"id", "resource_config_scope_id", "version", "version_sha256", "check_order"}
++			cols := []string{"id", "resource_config_scope_id", "version", "version_md5", "check_order"}
+ 			copyCount, err := txn.CopyFrom(ctx,
+ 				pgx.Identifier{"resource_config_versions"},
+ 				cols, pgx.CopyFromSlice(len(debugDB.ResourceVersions), func(i int) (row []any, err error) {
+@@ -441,7 +441,7 @@ func (example Example) importVersionsDB(ctx context.Context, setup setupDB, cach
+ 			txn, err := pgxConn.Begin(ctx)
+ 			Expect(err).ToNot(HaveOccurred())
+ 
+-			cols := []string{"build_id", "resource_id", "version_sha256", "name", "first_occurrence"}
++			cols := []string{"build_id", "resource_id", "version_md5", "name", "first_occurrence"}
+ 			copyCount, err := txn.CopyFrom(ctx,
+ 				pgx.Identifier{"build_resource_config_version_inputs"},
+ 				cols, pgx.CopyFromSlice(len(debugDB.BuildInputs), func(i int) (row []any, err error) {
+@@ -483,7 +483,7 @@ func (example Example) importVersionsDB(ctx context.Context, setup setupDB, cach
+ 			txn, err := pgxConn.Begin(ctx)
+ 			Expect(err).ToNot(HaveOccurred())
+ 
+-			cols := []string{"build_id", "resource_id", "version_sha256", "name"}
++			cols := []string{"build_id", "resource_id", "version_md5", "name"}
+ 			copyCount, err := txn.CopyFrom(ctx,
+ 				pgx.Identifier{"build_resource_config_version_outputs"},
+ 				cols, pgx.CopyFromSlice(len(debugDB.BuildOutputs), func(i int) (row []any, err error) {
+@@ -538,8 +538,8 @@ func (example Example) setupVersionsDB(ctx context.Context, setup setupDB, cache
+ 		Expect(err).ToNot(HaveOccurred())
+ 
+ 		_, err = setup.psql.Insert("build_resource_config_version_outputs").
+-			Columns("build_id", "resource_id", "version_sha256", "name").
+-			Values(row.BuildID, resourceID, sq.Expr("encode(digest(?, 'sha256'), 'hex')", versionJSON), row.Resource).
++			Columns("build_id", "resource_id", "version_md5", "name").
++			Values(row.BuildID, resourceID, sq.Expr("md5(?)", versionJSON), row.Resource).
+ 			Exec()
+ 		Expect(err).ToNot(HaveOccurred())
+ 
+@@ -552,7 +552,7 @@ func (example Example) setupVersionsDB(ctx context.Context, setup setupDB, cache
+ 
+ 			key := strconv.Itoa(resourceID)
+ 
+-			outputs[key] = append(outputs[key], convertToSHA256(row.Version))
++			outputs[key] = append(outputs[key], convertToMD5(row.Version))
+ 			buildToJobID[row.BuildID] = setup.jobIDs.ID(row.Job)
+ 
+ 			if row.RerunOfBuildID != 0 {
+@@ -571,8 +571,8 @@ func (example Example) setupVersionsDB(ctx context.Context, setup setupDB, cache
+ 		Expect(err).ToNot(HaveOccurred())
+ 
+ 		_, err = setup.psql.Insert("build_resource_config_version_inputs").
+-			Columns("build_id", "resource_id", "version_sha256", "name", "first_occurrence").
+-			Values(row.BuildID, resourceID, sq.Expr("encode(digest(?, 'sha256'), 'hex')", versionJSON), row.Resource, false).
++			Columns("build_id", "resource_id", "version_md5", "name", "first_occurrence").
++			Values(row.BuildID, resourceID, sq.Expr("md5(?)", versionJSON), row.Resource, false).
+ 			Exec()
+ 		Expect(err).ToNot(HaveOccurred())
+ 
+@@ -585,7 +585,7 @@ func (example Example) setupVersionsDB(ctx context.Context, setup setupDB, cache
+ 
+ 			key := strconv.Itoa(resourceID)
+ 
+-			outputs[key] = append(outputs[key], convertToSHA256(row.Version))
++			outputs[key] = append(outputs[key], convertToMD5(row.Version))
+ 			buildToJobID[row.BuildID] = setup.jobIDs.ID(row.Job)
+ 
+ 			if row.RerunOfBuildID != 0 {
+@@ -668,8 +668,8 @@ func (example Example) assert(
+ 						From("resource_config_versions v").
+ 						Join("resources r ON r.resource_config_scope_id = v.resource_config_scope_id").
+ 						Where(sq.Eq{
+-							"v.version_sha256": inputSource.Input.AlgorithmVersion.Version,
+-							"r.id":             inputSource.Input.ResourceID,
++							"v.version_md5": inputSource.Input.AlgorithmVersion.Version,
++							"r.id":          inputSource.Input.ResourceID,
+ 						}).
+ 						QueryRow().
+ 						Scan(&versionID)
+@@ -867,16 +867,16 @@ func (s setupDB) insertRowVersion(resources map[string]atc.ResourceConfig, row D
+ 	Expect(err).ToNot(HaveOccurred())
+ 
+ 	_, err = s.psql.Insert("resource_config_versions").
+-		Columns("id", "resource_config_scope_id", "version", "version_sha256", "check_order").
+-		Values(versionID, resourceID, versionJSON, sq.Expr("encode(digest(?, 'sha256'), 'hex')", versionJSON), row.CheckOrder).
++		Columns("id", "resource_config_scope_id", "version", "version_md5", "check_order").
++		Values(versionID, resourceID, versionJSON, sq.Expr("md5(?)", versionJSON), row.CheckOrder).
+ 		Suffix("ON CONFLICT DO NOTHING").
+ 		Exec()
+ 	Expect(err).ToNot(HaveOccurred())
+ 
+ 	if row.Disabled {
+ 		_, err = s.psql.Insert("resource_disabled_versions").
+-			Columns("resource_id", "version_sha256").
+-			Values(resourceID, sq.Expr("encode(digest(?, 'sha256'), 'hex')", versionJSON)).
++			Columns("resource_id", "version_md5").
++			Values(resourceID, sq.Expr("md5(?)", versionJSON)).
+ 			Suffix("ON CONFLICT DO NOTHING").
+ 			Exec()
+ 		Expect(err).ToNot(HaveOccurred())

@@ -1,0 +1,198 @@
+# Ground truth — review-jb-003
+#
+# The human reviewer's three confirmed findings, with the severity labels the
+# reviewer assigned (they are the ranking rubric), plus one finding that was
+# correctly identified as PRE-EXISTING and deliberately NOT fixed in this change.
+#
+# All line numbers anchor to the `after` snapshot
+# (jetbridge 199ab7497399aa157065b660537caa652373791c). They are for the grader's
+# convenience — an agent finding does not have to cite the same lines, only the
+# same defect at a location that overlaps the anchor region.
+#
+# Every finding below is pinned by a regression test added in the fix commit
+# (20b808a92e977f38c9b903f3c103a76c389c912d); see notes.md "Mechanical
+# verification" for the fail-at-pre / pass-at-post evidence.
+
+schema: expected-findings/v0
+case: review-jb-003
+source_of_truth:
+  fix_commit: 20b808a92e977f38c9b903f3c103a76c389c912d
+  reviewed_state: 199ab7497399aa157065b660537caa652373791c
+  base_state: 54b541a81e6235ca74256dfbd50666ec45a18d2c
+
+findings:
+  - id: F1
+    rank: 1
+    severity: high            # reviewer's own label ("HIGH")
+    blocking: true
+    provenance: aggravated-by-this-change
+    title: The 5s self-heal refetch overwrites an open edit form
+    file: web/elm/src/AgentTickets/AgentTicket.elm
+    region: {start: 130, end: 143}   # handleCallback / AgentTicketFetched (Ok detail)
+    anchor: "handleCallback → AgentTicketFetched (Ok detail): editTitle/editBody/editBudget are re-seeded from `detail.ticket` on every fetch"
+    supporting_regions:
+      - {file: web/elm/src/AgentTickets/AgentTicket.elm, start: 213, end: 220,
+         note: "handleDelivery: ClockTicked FiveSeconds fires FetchAgentTicket every tick; its comment claims it 'only replaces fetched data'"}
+      - {file: web/elm/src/AgentTickets/AgentTicket.elm, start: 326, end: 328,
+         note: "subscriptions: OnClockTick FiveSeconds (was OneMinute at `before`)"}
+      - {file: web/elm/src/AgentTickets/AgentTicket.elm, start: 248, end: 259,
+         note: "ClickAgentTicketSave sends model.editTitle/editBody/editBudget — whatever the last tick left there"}
+      - {file: web/elm/src/AgentTickets/AgentTicket.elm, start: 840, end: 857,
+         note: "the edit form's inputs are bound to those same buffers"}
+    description: >-
+      The ticket detail page now refetches itself every five seconds
+      (`ClockTicked FiveSeconds` → `FetchAgentTicket`), and the
+      `AgentTicketFetched (Ok …)` handler unconditionally re-seeds the edit
+      buffers `editTitle`, `editBody` and `editBudget` from the server payload.
+      While the user has the edit form open, every tick throws away what they
+      have typed and repaints the server's copy — mid-sentence, every five
+      seconds. Worse than the lost typing: a tick that lands between the last
+      keystroke and the Save click makes Save submit the reverted server values,
+      so the request succeeds, the form closes, and the edit is silently gone
+      with no error anywhere.
+    user_impact: >-
+      Silent data loss on a normal interaction (editing a ticket's title, body or
+      budget), with a success indication. The user cannot tell it happened.
+    match_criteria:
+      required:
+        - "identifies that the periodic refetch resets the edit buffers / the open edit form"
+        - "locates it in the AgentTicketFetched success branch (or names the edit buffers being re-seeded on fetch) in AgentTickets/AgentTicket.elm"
+      strong_signals:   # not required, but mark a genuinely deep finding
+        - "notes that a tick immediately before Save persists the reverted values as a silently successful no-op"
+        - "connects it to the cadence change from OneMinute to FiveSeconds"
+        - "notes the comment 'Only replaces fetched data' is false"
+    reference_fix: "leave editTitle/editBody/editBudget untouched while model.editing is True"
+
+  - id: F2
+    rank: 2
+    severity: medium          # reviewer's own label ("MEDIUM")
+    blocking: true
+    provenance: introduced-by-this-change
+    title: A parked (HITL) run renders as "Running" instead of awaiting the operator
+    file: web/elm/src/AgentBadge.elm
+    region: {start: 275, end: 301}   # runOutcome
+    anchor: "runOutcome: `case buildStatus of` is consulted first; \"started\"/\"pending\" return Running, so runStatus == \"parked\" is only reachable through the fallback branch"
+    supporting_regions:
+      - {file: web/elm/src/AgentBadge.elm, start: 248, end: 264,
+         note: "fromRunStatus maps \"parked\" → AwaitingHuman — reachable only when buildStatus is empty/unknown"}
+      - {file: web/elm/src/Agent/Agent.elm, start: 743, end: 743,
+         note: "call site: the /agent run ledger"}
+      - {file: web/elm/src/AgentTickets/AgentTicket.elm, start: 1106, end: 1106,
+         note: "call site: the ticket page's run rows"}
+    description: >-
+      `runOutcome` is the new display-truth rule (U3): the build status wins over
+      the agent step's own status. But a parked run — an agent stopped at a HITL
+      checkpoint waiting for a human answer — deliberately keeps its build in
+      `started`; that is the documented parked-run contract
+      (docs/superpowers/plans/agentic-platform/00-shared-contracts.md and
+      03-pipeline-runs.md: "a parked step keeps its build `started`, therefore a
+      parked run counts as `running`"). Because `buildStatus` is matched first,
+      `"started"` short-circuits to `Running` and the run reads as busy when it
+      is in fact blocked on the operator. The only signal that a human is needed
+      is suppressed by the very rule that was added to make the display honest —
+      a regression against the U3 intent, on both call sites.
+    user_impact: >-
+      A run waiting on a human looks like a run that is working. The operator has
+      no reason to open it, so the agent waits until the park times out.
+    match_criteria:
+      required:
+        - "identifies that a parked run is displayed as Running / that parked is masked by the build status"
+        - "locates it in runOutcome (AgentBadge.elm) or names the precedence between buildStatus and runStatus as the cause"
+      strong_signals:
+        - "cites the parked-run contract (parked keeps the build 'started')"
+        - "names it a regression against the U3 goal rather than a cosmetic issue"
+        - "notes it affects both the /agent ledger and the ticket page"
+    reference_fix: "check runStatus == \"parked\" before the buildStatus case"
+    grading_note: >-
+      The reference fix makes parked win over EVERY build status, including
+      terminal ones. The platform later settled on a narrower rule (a terminally
+      bad build — failed/errored/aborted — still wins, and parked beats
+      everything else). An agent that finds the defect and proposes the narrower
+      precedence is MORE correct than the reference, not less — credit it fully.
+
+  - id: F3
+    rank: 3
+    severity: low             # reviewer's own label ("LOW")
+    blocking: false
+    provenance: introduced-by-this-change
+    title: Ledger row expansion is keyed by list position, so a refetch moves it
+    file: web/elm/src/Agent/Agent.elm
+    region: {start: 634, end: 643}   # runsTable
+    anchor: "runsTable: `List.indexedMap (runRow zone expandedRuns) runs` passes the row ordinal as the expansion key"
+    supporting_regions:
+      - {file: web/elm/src/Agent/Agent.elm, start: 339, end: 351,
+         note: "AgentRunExpandToggled stores that ordinal in model.expandedRuns (Set Int)"}
+      - {file: web/elm/src/Agent/Agent.elm, start: 674, end: 704,
+         note: "runStepCell reads Set.member rowKey expandedRuns; its doc comment says 'keyed by the row ordinal'"}
+      - {file: web/elm/src/Agent/Agent.elm, start: 362, end: 390,
+         note: "handleDelivery: the self-healing refetch that re-orders the list (newest first)"}
+    description: >-
+      Expanded-row state on the /agent run ledger is stored as a set of row
+      ordinals. The page refetches its data on a timer and the list is
+      newest-first, so as soon as a new run is recorded every row shifts down by
+      one: the summary the user expanded collapses and a different run's summary
+      opens in its place, with no interaction from the user. The runs carry a
+      stable identifier (`buildId`) that is already in the row data.
+    user_impact: >-
+      A reader following one run's summary silently ends up reading a different
+      run's. Low severity because it is recoverable and visible, not because it
+      is harmless — it presents one run's text as another's.
+    match_criteria:
+      required:
+        - "identifies that row-expansion state is keyed by index/ordinal rather than a stable id"
+        - "locates it in the /agent runs table (Agent/Agent.elm runsTable / AgentRunExpandToggled)"
+      strong_signals:
+        - "explains the trigger: a periodic refetch prepending a newer run shifts every ordinal"
+        - "names buildId (or an equivalent stable key) as the fix"
+    reference_fix: "key the expansion by r.buildId (List.map over the runs) instead of the ordinal"
+    grading_note: >-
+      The fix commit's message says a \"5s refetch\" prepends the newer run. The
+      /agent page actually refetches on the OneMinute clock (Agent.elm
+      subscriptions), not 5s — the 5s cadence belongs to the ticket page. The
+      defect is identical either way. Do NOT penalize an agent that says
+      \"periodic refetch\" or \"60s refetch\"; do not require the \"5s\" detail.
+
+# Found during the same review, deliberately NOT fixed in the reviewed change.
+# The reviewer called it out as pre-existing and split it into its own follow-up
+# (landed later as 9e1fbf99e1d735115ee04954e5affefb1d379b34). Reporting it, and
+# scoping it correctly, is the precision/judgement half of this case.
+deferred_findings:
+  - id: D1
+    severity: medium
+    blocking: false
+    provenance: pre-existing
+    title: Findings with a blank id share interactive state in the review card
+    file: web/elm/src/Build/AgentReview.elm
+    region: {start: 225, end: 260}
+    anchor: "finding.id is the key for expandedFindings / expandedDescriptions / notes / verdicts; the read path tolerates a partial decode, so id can legitimately be \"\""
+    supporting_regions:
+      - {file: web/elm/src/Build/AgentReview.elm, start: 17, end: 20,
+         note: "expandedFindings : Set String — keyed by finding.id"}
+      - {file: web/elm/src/Build/AgentReview.elm, start: 281, end: 285,
+         note: "the anchor-id rendering already special-cases finding.id == \"\", so blank ids are known to occur"}
+      - {file: web/elm/src/Build/AgentReview.elm, start: 470, end: 500,
+         note: "note box and verdict buttons both key off finding.id"}
+    description: >-
+      Two findings that both carry an empty id collide: expanding one expands all
+      of them, a note typed against one appears under the others, and a verdict
+      click posts findingId="" so two distinct human verdicts collapse into one
+      last-write-wins record. The card predates this branch — but the branch
+      reuses it on the ticket page, which widens the exposure.
+    expected_handling: >-
+      Report it, mark it PRE-EXISTING (not introduced by this branch), and
+      recommend it as a separate follow-up rather than folding it into this
+      change. An agent that reports it as a defect of this branch is partially
+      wrong; an agent that stays silent about it misses it entirely.
+    later_fix: 9e1fbf99e1d735115ee04954e5affefb1d379b34
+
+# Guidance for scoring findings the human did NOT report. Human findings are a
+# weak oracle for precision: unmatched does not mean wrong.
+precision_guidance:
+  plausible_true_findings_not_in_the_human_set:
+    - "Polling amplification: the ticket page, the ticket list and the dashboard strip all moved to a 5s cadence (the list also adds a 1s clock) with no backoff and no document-visibility gating, multiplying ATC load per open tab."
+    - "The same edit-buffer clobber class applied to any other form state re-seeded from a fetch."
+    - "Test coverage: the new rendering rules land with unit coverage for the happy paths only; the timing interactions are untested."
+  treat_as_false_positive:
+    - "Findings about web/public/elm.js or web/public/elm.min.js content (generated artifacts, explicitly out of scope in the task)."
+    - "Style, naming or formatting complaints with no described failure."
+    - "Claims that the Elm test suite is failing — it is green at both the base and the reviewed state (3123 specs)."

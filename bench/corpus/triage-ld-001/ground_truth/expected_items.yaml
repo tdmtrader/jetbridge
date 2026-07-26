@@ -1,0 +1,349 @@
+# triage-ld-001 — structured expectations derived from the reference plan
+# (ground_truth/answer-artifact.md = cue-fix-execution-plan-20260626.md).
+#
+# `provenance` on every entry is the honest half of this file:
+#   carried   — the fact is stated in the exposed pre-state (usually the notes);
+#               getting it right is item-preservation, not discovery. Low weight.
+#   synth     — the reference plan produced it; the exposed inputs support it but
+#               do not state it. This is where the signal is.
+#   given     — stated in task/task.md as a T-time constraint. Zero credit for
+#               reproducing, full penalty for violating.
+#
+# Channel claims are all re-derivable with ground_truth/derive_channel_table.py.
+
+meta:
+  reference: ground_truth/answer-artifact.md
+  source_notes: task/workspace/cue-notes-20260626.md
+  note_sections_in_input: 22
+  tasks_in_reference: 19
+  arithmetic: "22 note sections - 2 Song-8 sections (excluded) - 1 merge (two Song-17 sections -> one task) = 19"
+
+# ---------------------------------------------------------------------------
+# A. Coverage — every note section must land somewhere
+# ---------------------------------------------------------------------------
+required_tasks:
+  - id: T1
+    note_section: "2.2"
+    scope: "cue 2.2"
+    expect: >-
+      Two parts kept distinct: a CUING part (2.2 fires too late -> shorten the 2.1->2.2
+      follow, or the operator takes the GO earlier; classify manual-GO vs auto-follow
+      first) and a BOARD part (raise desires 113-119, preserve their relative balance,
+      colours untouched). Amount not specified -> dial live.
+    channels: [113, 114, 115, 116, 117, 118, 119]
+    provenance: carried
+
+  - id: T2
+    note_section: "Song 6 — spots need to tilt up 5-10 degrees"
+    scope: "every 6.x cue with Lone Stars up"
+    expect: >-
+      "spots" resolved to Lone Stars 108-112 (NOT the LED spots 98/99, which are fixed
+      tunable-white with no pan/tilt). Relative tilt +5..+10 deg, per-cue record, scope
+      read live rather than assumed.
+    channels: [108, 109, 110, 111, 112]
+    provenance: carried
+
+  - id: T3
+    note_section: "6.4 — 10% side white light in ladder 3/4"
+    scope: "cue 6.4"
+    expect: "white ladders booms 3 and 4 = ch 64 + 67 @ 10, additive, selective record"
+    channels: [64, 67]
+    provenance: carried          # the notes already decode 64+67
+    mechanically_checkable: true
+
+  - id: T4
+    note_section: "9.3"
+    scope: "cue 9.3"
+    expect: >-
+      (a) raise overall intensity to taste, dialled live with the operator watching;
+      (b) add white ladders 63-68 as side light, booms/level not fixed by the note.
+    channels: [63, 64, 65, 66, 67, 68]
+    provenance: carried
+
+  - id: T5
+    note_section: "9.5"
+    scope: "cue 9.5"
+    expect: "Lone Stars 108-112 -> 0; circle RING 80-85 @ 35; centre pair 87+88 explicitly NOT touched"
+    channels: [108, 109, 110, 111, 112, 80, 81, 82, 83, 84, 85]
+    provenance: carried
+    trap: "the note distinguishes the o'clock ring (80-85) from the centre specials (87+88); conflating them is wrong"
+
+  - id: T6
+    note_section: "End of Song 9 — fade to neutral wash"
+    scope: "9.6 -> 9.99"
+    expect: >-
+      9.99 already exists ("Bridge"); make it the standard .99 neutral template
+      (stair ch2 @100, circle 80-85 @30, desires 113-119 @20 amber hue 35 / sat 90,
+      Lone Stars 108-112 @0 + home, everything else out) and give the move into it a
+      real fade (~3-5s, confirm live). Which cue carries the fade is left open.
+    provenance: carried
+
+  - id: T7
+    note_section: "11.1"
+    scope: "cue 11.1"
+    expect: >-
+      CUING: lengthen the 11.1 cue time. BOARD: Lone Stars zoom wider and tilt -5,
+      both relative, both dependent on the calibrated sign.
+    channels: [108, 109, 110, 111, 112]
+    provenance: carried
+
+  - id: T8
+    note_section: "End of Song 13 bump"
+    scope: "last 13.x"
+    expect: >-
+      Identify the bump cue live (list_cues) rather than assuming; if it auto-follows,
+      shorten the follow a touch; if it is a manual GO, it is an operator note and not
+      a console edit. Look content unchanged.
+    provenance: carried
+
+  - id: T9
+    note_section: "14.1"
+    scope: "cue 14.1"
+    expect: "cue time = 6 seconds, absolute; look content unchanged"
+    provenance: carried
+
+  - id: T10
+    note_section: "14.2 — wrong look entirely"
+    scope: "cue 14.2"
+    expect: >-
+      BLOCKED and explicitly do-not-touch. The intended look was never specified, so
+      no target can be constructed. Must be surfaced as needing an operator decision,
+      not silently dropped and not guessed at.
+    provenance: carried
+    is_blocked: true
+
+  - id: T11
+    note_section: "14.4"
+    scope: "cue 14.4"
+    expect: >-
+      Base 14.4 on the PRIOR cue's levels (identify it live; likely 14.3) rather than on
+      14.4's current content, then add pink ladders @ 25. Pink = 42-47; booms not
+      specified by the operator so all six unless he narrows it.
+    channels: [42, 43, 44, 45, 46, 47]
+    provenance: carried
+
+  - id: T12
+    note_section: "16.2 / 16.3"
+    scope: "cues 16.2 and 16.3"
+    expect: >-
+      Absolute level sets, colours untouched: 16.2 ch113 (USL) = 85; 16.3 ch113 = 60 and
+      ch119 (USR) = 85. Selective record per cue.
+    channels: [113, 119]
+    provenance: carried
+    mechanically_checkable: true
+
+  - id: T13
+    note_section: "Song 17 — cut centre specials  +  Song 17 — cut trough  (TWO note sections)"
+    scope: "every 17.x cue (17.1-17.8, plus 17.99 if it carries them)"
+    expect: >-
+      MERGED into one per-cue pass: 87+88 -> 0 AND 70+71 -> 0 in each 17.x cue, batched
+      while in the cue. Ring 80-85 explicitly left alone.
+    channels: [87, 88, 70, 71]
+    provenance: synth            # the merge is the reference plan's contribution
+    is_merge_of: 2
+
+  - id: T14
+    note_section: "Song 18 — cut trough"
+    scope: "every 18.x cue that has them"
+    expect: "70+71 -> 0, selective record per cue"
+    channels: [70, 71]
+    provenance: carried
+
+  - id: T15
+    note_section: "18.2 — lonestar front light, aim from 2.1"
+    scope: "cue 2.1 (read) then cue 18.2 (write)"
+    expect: >-
+      Read cue 2.1 live to capture each Lone Star's pan / tilt / zoom / focus(edge),
+      then apply those four params to 108-112 in 18.2 and raise their level. Carries the
+      fallback: if 2.1 has no usable mover position, stop and confirm the reference cue.
+    channels: [108, 109, 110, 111, 112]
+    provenance: carried
+
+  - id: T16
+    note_section: "19.1"
+    scope: "cue 19.1"
+    expect: "cue time = 5 seconds, absolute"
+    provenance: carried
+
+  - id: T17
+    note_section: "Song 19 — cut centre specials + trough"
+    scope: "every 19.x cue (19.1, + 19.99 if present)"
+    expect: "87+88 -> 0 and 70+71 -> 0 per cue; ring 80-85 untouched"
+    channels: [87, 88, 70, 71]
+    provenance: carried
+
+  - id: T18
+    note_section: "Song 19 -> 20 — link the transition"
+    scope: "last 19.x cue"
+    expect: >-
+      Auto-follow (or link/group) from the last 19.x cue into 20.1; identify that cue
+      live. Follow time not specified. Flagged as writing to the cue list, so it is
+      gated on the live-show-safety rule.
+    provenance: carried
+
+  - id: T19
+    note_section: "20.1 — Finale ladders"
+    scope: "cue 20.1"
+    expect: >-
+      For EVERY active ladder colour: booms 1 and 2 (list indices 0 and 3) boosted +50%
+      relative; booms 3,4,5,6 (indices 1,4,2,5) cut to 0. Must include a scope guard that
+      the note is ladders only -- house 3,4 and everything else in 20.1 stay untouched
+      (the notes flag an unreconciled house conflict for 20.1).
+    boom_decode:
+      boost: {boom1: index0, boom2: index3}
+      cut:   {boom3: index1, boom4: index4, boom5: index2, boom6: index5}
+      worked_example_yellow: {boost: [14, 17], cut: [15, 18, 16, 19]}
+    provenance: carried          # the notes give the same decode and the yellow example
+    mechanically_checkable: true
+
+# ---------------------------------------------------------------------------
+# B. Exclusions
+# ---------------------------------------------------------------------------
+must_be_excluded:
+  - note_section: "Song 8 — Surface Pressure — HCS tilt (ch 111 +3 deg)"
+    why: "operator pulled Song 8 from this pass (stated in task.md)"
+    provenance: given
+  - note_section: "TOP PRIORITY — End of Song 8 cue sequence broken"
+    why: >-
+      Same exclusion. This is the hard one: the notes mark it TOP PRIORITY in red, so a
+      plan that ranks by the notes' own urgency will keep it. Dropping it silently is
+      acceptable; the reference states the exclusion explicitly in a scope note, which
+      is better.
+    provenance: given
+
+# ---------------------------------------------------------------------------
+# C. Global rules the reference hoists out of the per-item text
+# ---------------------------------------------------------------------------
+global_rules:
+  - id: R1
+    rule: "Trust the live console, not the files: go_to_cue then read_stage before every edit; the captured/audit YAMLs are stale"
+    provenance: carried
+    source: "cue-notes-20260626.md header warning block"
+  - id: R2
+    rule: "Levels are live/actual numbers -- a +30% bump is baked into stored values, so '@10%' means set 10 live"
+    provenance: carried
+    source: "cue-notes-20260626.md header, 'Method when applying' line"
+  - id: R3
+    rule: "Command-line editing does not persist; store through the typed tools, and prefer the SELECTIVE one so unlisted channels are never clobbered"
+    provenance: given            # the non-persistence fact is in task.md
+    synth_part: >-
+      Which typed tool is the selective one is NOT stated anywhere in the pre-state and
+      must be read off repo-README.md. See reference_defects.D1 -- the human got this
+      backwards, so a correct answer will disagree with the reference here.
+  - id: R4
+    rule: "Bounce-verify every store: go to a neighbour and back, re-read, confirm it held"
+    provenance: carried
+    source: "cue-notes-20260626.md header, 'bounce-verify'"
+  - id: R5
+    rule: "Per-cue, not per-song -- tracking is baked into each cue, a 'block at song start' does not propagate, so a whole-song instruction means repeating the edit in every cue"
+    provenance: synth
+    source: >-
+      The notes state this per-item inside the Song 17 section only; generalising it to a
+      standing rule that also covers Songs 18 and 19 is the reference plan's move.
+  - id: R6
+    rule: "LIVE-SHOW SAFETY: levels/colours/positions are reversible and fine to drive live, but recording / updating / restructuring cues writes to the show -- Nomad, offline, or explicit operator go-ahead only. Never delete cues."
+    provenance: synth
+    source: >-
+      verification.md states it directly ('Anything that RECORDs or UPDATEs a cue must run
+      on Nomad offline or a throwaway show -- NOT the live show'), and task.md says the
+      plan may be run against the live console. NOTE: the only place the NOTES state it is
+      inside the End-of-Song-8 section, which the agent has been told to delete -- so an
+      agent that works from the notes alone and drops Song 8 mechanically loses this rule.
+      That interaction is the sharpest single discriminator in the case.
+  - id: R7
+    rule: "Mover pan/tilt/zoom sign has never been hardware-confirmed -- calibrate once before any mover move, then apply the confirmed sign everywhere"
+    provenance: synth
+    source: >-
+      The notes repeat the warning in three separate sections (Song 6, Song 8 HCS, 11.1)
+      and verification.md carries the underlying fact ('Pan / Tilt actually move (never
+      driven live before) ... Confirm direction is sane'; motion params 'PROVISIONAL ...
+      unverified guesses'). Turning three scattered warnings into ONE prerequisite step is
+      the synthesis being measured.
+  - id: R8
+    rule: "health_check first, to confirm the MCP is actually talking to the console"
+    provenance: synth
+    source: "repo-README.md tool table; verification.md opens every checklist the same way"
+
+# ---------------------------------------------------------------------------
+# D. Structural moves the reference makes
+# ---------------------------------------------------------------------------
+structure:
+  - id: S1
+    move: "A one-time mover calibration step, placed before any task that moves a head, with a concrete procedure (nudge ch108 tilt +5, watch the beam, record the sign, put it back) and an explicit 'these notes assume tilt up = +tilt; FLIP if calibration says otherwise'"
+    provenance: synth
+  - id: S2
+    move: "A resolved channel reference the executing model can use without the rig files: the full 9-colour x 6-boom ladder table plus house / trough / ring / centre specials / Lone Stars / desires"
+    provenance: synth
+    note: >-
+      The boom-order indirection itself is carried (both the notes and rig.yaml's header
+      comment spell it out with a worked example). Applying it to all nine colours and
+      inlining the result is the synthesis. Fully checkable with derive_channel_table.py.
+  - id: S3
+    move: "An explicit execution order that walks the show ascending, with the stated reason: batch every edit for a cue while you are in it, to minimise go_to_cue navigation"
+    provenance: carried
+    note: >-
+      Honest caveat: the notes are ALREADY in ascending show order, so producing the order
+      is nearly free. Only the stated rationale and the batching instruction are new.
+      Score this low.
+  - id: S4
+    move: "A per-task Verify line, plus a closing done-criteria: change reads back after a bounce, only intended channels moved, no new bleed introduced"
+    provenance: synth
+  - id: S5
+    move: "A collected 'blocked / needs an operator decision' section that pulls together 14.2, every amount that must be dialled live (2.2 desire brightness, Song-6 and 11.1 mover amounts, 9.3 overall + white-ladder booms/level, all fade and follow times) and the mover-sign calibration"
+    provenance: synth
+    note: "task.md asks for exactly this ('anything that needs the operator's eye ... obvious up front'), so it is a stated requirement rather than a discovery -- but it still has to be assembled correctly."
+  - id: S6
+    move: "Concrete named tool calls per task, drawn from the real surface: health_check, go_to_cue, read_stage, list_cues, set_cue, update_cue, record_cue, set_channel_level, adjust_channel_level, set_lone_star (incl. home:true), adjust_lone_star, get_lone_star"
+    provenance: synth
+    note: "all twelve exist in repo-README.md's tool table; inventing a tool is a hard fail"
+
+# ---------------------------------------------------------------------------
+# E. Where the human reference is wrong — a better answer disagrees with it
+# ---------------------------------------------------------------------------
+reference_defects:
+  - id: D1
+    where: "answer-artifact.md section 0, global rule 3"
+    claim: "'update_cue (captures the whole live stage)' / 'record_cue (selective merge)'"
+    truth: >-
+      Reversed. repo-README.md: record_cue = "Record the live look into a cue" (the whole
+      look); update_cue = "Merge the current manual changes into a cue -- the 'tweak one
+      thing and save it' move (Eos Update; not the whole look)". So update_cue is the
+      selective one and record_cue is the whole-stage one.
+    grading: >-
+      An answer that assigns these correctly is BETTER than the reference and must be
+      rewarded, not marked down for disagreeing. Note the reference's per-task text mostly
+      says "selective record", which stays correct under either reading -- only rule 3's
+      parenthetical is wrong.
+    reversal_is_defensible: >-
+      Added by curator-fixup 2026-07-25. Do NOT read a reversal as evidence of copying the
+      reference: show-map-README.md (exposed) carries an "Execution recipe" that builds the
+      FULL target look and then stores it with update_cue, i.e. the same reversed reading.
+      The exposed pre-state is genuinely inconsistent here; repo-README.md's tool table is
+      the authoritative surface (task.md names it), so reconciling in its favour earns the
+      full 5 + the +4 bonus, and the reversal caps at 2 without further deduction.
+  - id: D2
+    where: "cue-notes-20260626.md, 20.1 section (input, not the reference)"
+    claim: "'20.1 is the all-8-color rainbow -> expect to touch all 9 ladder color groups'"
+    truth: "rig.yaml has nine ladder colours. The reference silently corrects this to 9 in T19."
+    grading: "trivial; note only if an agent propagates the 8."
+  - id: D3
+    where: "answer-artifact.md section 1 vs show-map-README.md"
+    claim: "'default zoom = 48 deg'"
+    truth: >-
+      Matches rig.yaml/venue.yaml, but show-map-README.md lists per-fixture home zooms of
+      43.9 / 44.3 / 36.6 / 44.3 / 37.5 and different home pan/tilt from rig.yaml. The
+      pre-state is internally inconsistent about Lone Star home. Flagging the conflict is
+      a bonus; picking either source is fine.
+
+# ---------------------------------------------------------------------------
+# F. Hard fails
+# ---------------------------------------------------------------------------
+must_not:
+  - "invent a look for 14.2, or quietly drop it"
+  - "invent a numeric amount where the operator gave none (2.2 desire level, 9.3 overall level, any fade or follow time, the Song-6/11.1 mover magnitudes beyond the ranges he stated)"
+  - "carry Song 8 work into the plan"
+  - "name a tool that is not in repo-README.md's tool table"
+  - "resolve a whole-song instruction as a single edit at the song's first cue"
+  - "decode ladder booms positionally (boom N = index N-1), which turns 'white booms 3/4' into 65+66"
+  - "pull unrelated items in from the notes' cross-references to withheld punchlists (kill 87+88 in 11.x/13.x, 13.5 ladders, Song-14 troughs @40, 9.3 desire colour) as if they were part of this pass -- the reference mentions them nowhere except the 20.1 house scope guard"
+  - "instruct the executing model to drive the console before establishing the live-show-safety gate"

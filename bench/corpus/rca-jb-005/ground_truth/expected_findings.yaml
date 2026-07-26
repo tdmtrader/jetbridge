@@ -1,0 +1,69 @@
+# WITHHELD. Anchored findings for reference-style scoring of the diagnosis half.
+# Line numbers are against the pre_state ref c601df7f36af25ea57f0e957cb7f7432e189fd95.
+# F1 is the answer; F2 and F3 are the two halves of the fix. F4/F5 are negative
+# findings — an agent that asserts these files are broken is wrong.
+
+findings:
+  - id: F1
+    file: atc/exec/harvest_step.go
+    region: "722-753 (`if step.transcriptStore != nil` inside ingestFlightRecorder)"
+    severity: critical
+    description: >-
+      Transcript ingestion reads `transcript.ndjson` off the HARVEST step's
+      flight artifact. The harvest step is executed by `harvest-runner`
+      (`agent/harvest/`), which never writes a transcript — only
+      `agent/runner/runner.go` (the agent/implement step's runner) does, into its
+      own flight dir. StreamFile therefore never returns transcript bytes here,
+      `len(raw) > 0` is never true, and no row is ever inserted. The failure is
+      swallowed by design (best-effort observability), so nothing surfaces in the
+      build, the status or the UI.
+    must_be_named: true
+
+  - id: F2
+    file: atc/exec/agent_step.go
+    region: "684-839 (ingestFlightRecorder; the `if flightArtifact != nil` block, after events.ndjson)"
+    severity: critical
+    description: >-
+      This is the only server-side code holding a handle to the flight artifact
+      that actually contains `transcript.ndjson`, and it has no transcript
+      ingestion: `AgentStep` has no transcriptStore field and no option to set
+      one. The fix adds a nil-guarded StreamFile -> boundTranscriptTail ->
+      db.AgentRunTranscript -> Upsert block here, reusing the existing
+      `HarvestTranscriptStore` interface and `boundTranscriptTail` helper from
+      the same package, with all errors logged and swallowed.
+    must_be_named: true
+
+  - id: F3
+    file: atc/engine/step_factory.go
+    region: "266-300 (coreStepFactory.AgentStep option assembly)"
+    severity: major
+    description: >-
+      `factory.agentTranscriptStore` is populated at boot but only appended to
+      `harvestOpts` (line ~344). `AgentStep()` never passes it to the agent step,
+      so even a correct ingestion seam in agent_step.go would stay nil in
+      production. The fix appends the new agent-step transcript option here when
+      the field is non-nil.
+    must_be_named: true
+
+  - id: F4
+    file: atc/db/migration/migrations/1773106093_agent_run_transcripts.up.sql
+    region: "1-4 (header comment)"
+    severity: nit
+    description: >-
+      Negative/distractor finding. The table and its (build_id, plan_id) key are
+      correct and must not change; only the header comment's claim that "harvest
+      ingestion persists it here" encodes the wrong assumption. Noting the stale
+      comment is a bonus, not a requirement. An agent that proposes a schema or
+      migration change here has violated a task constraint.
+    negative: true
+
+  - id: F5
+    file: atc/api/transcriptserver/get.go
+    region: "39-45 (`if !found` -> 404)"
+    severity: none
+    description: >-
+      Negative finding. The 404 and the CLI's "no transcript available for run"
+      are correct behaviour for an absent row, not a bug in the read path. The
+      route, the go-concourse client method and the fly subcommand are all
+      correct and out of bounds per the task constraints.
+    negative: true

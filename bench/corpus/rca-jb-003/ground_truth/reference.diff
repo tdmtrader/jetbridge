@@ -1,0 +1,64 @@
+diff --git a/atc/worker/jetbridge/process_test.go b/atc/worker/jetbridge/process_test.go
+index 2b539ca7e2..5a4431513b 100644
+--- a/atc/worker/jetbridge/process_test.go
++++ b/atc/worker/jetbridge/process_test.go
+@@ -1574,7 +1574,7 @@ var _ = Describe("Process", func() {
+ 			Expect(kill.containerName).To(Equal("main"))
+ 			Expect(kill.tty).To(BeFalse())
+ 			Expect(kill.command).To(HaveLen(3))
+-			Expect(kill.command[2]).To(ContainSubstring(`kill -TERM -- "-$pgid"`))
++			Expect(kill.command[2]).To(ContainSubstring(`kill -TERM "-$pgid"`))
+ 
+ 			// The kill must resolve the SAME supervisor state dir as the
+ 			// run, or it tears down nothing.
+diff --git a/atc/worker/jetbridge/supervisor.go b/atc/worker/jetbridge/supervisor.go
+index cefead2e39..99fafff510 100644
+--- a/atc/worker/jetbridge/supervisor.go
++++ b/atc/worker/jetbridge/supervisor.go
+@@ -99,6 +99,10 @@ func supervisorCommand(processID string, spec runtime.ProcessSpec) []string {
+ // command never started or already finished. Like the supervisor script it
+ // needs only POSIX sh built-ins plus cat/sed/cut/sleep (busybox-compatible);
+ // `ps -o pgid=` is a fallback for /proc-less environments (test hosts).
++// Group kills use `kill -SIG "-$pgid"` with NO `--` separator: the dash and
++// busybox builtin kills reject `--` before a negative pid ("Illegal number:
++// -"), which would silently no-op the teardown; the separator-less form
++// parses on dash, busybox, and bash alike.
+ const supervisorKillScriptTemplate = `S=__STATE_DIR__
+ pid="$(cat "$S/pid" 2>/dev/null)"
+ [ -n "$pid" ] || exit 0
+@@ -112,13 +116,13 @@ if [ -z "$pgid" ]; then
+   kill -TERM "$pid" 2>/dev/null
+   exit 0
+ fi
+-kill -TERM -- "-$pgid" 2>/dev/null
++kill -TERM "-$pgid" 2>/dev/null
+ n=0
+-while [ "$n" -lt __GRACE_SECONDS__ ] && kill -0 -- "-$pgid" 2>/dev/null; do
++while [ "$n" -lt __GRACE_SECONDS__ ] && kill -0 "-$pgid" 2>/dev/null; do
+   sleep 1
+   n=$((n+1))
+ done
+-kill -0 -- "-$pgid" 2>/dev/null && kill -KILL -- "-$pgid" 2>/dev/null
++kill -0 "-$pgid" 2>/dev/null && kill -KILL "-$pgid" 2>/dev/null
+ exit 0`
+ 
+ // supervisorKillCommand returns the sh invocation that kills the supervised
+diff --git a/atc/worker/jetbridge/supervisor_test.go b/atc/worker/jetbridge/supervisor_test.go
+index 94509515dd..abf1b56499 100644
+--- a/atc/worker/jetbridge/supervisor_test.go
++++ b/atc/worker/jetbridge/supervisor_test.go
+@@ -107,8 +107,12 @@ var _ = Describe("Task exec supervisor", func() {
+ 
+ 		It("terminates the runner's whole process group, then escalates to KILL", func() {
+ 			kill := supervisorKillCommand("task", spec, 10)
+-			Expect(kill[2]).To(ContainSubstring(`kill -TERM -- "-$pgid"`))
+-			Expect(kill[2]).To(ContainSubstring(`kill -KILL -- "-$pgid"`))
++			// No `--` separator: dash and busybox builtin kills reject it
++			// before a negative pid, silently no-opping the teardown.
++			Expect(kill[2]).To(ContainSubstring(`kill -TERM "-$pgid"`))
++			Expect(kill[2]).To(ContainSubstring(`kill -KILL "-$pgid"`))
++			Expect(kill[2]).ToNot(ContainSubstring(`kill -TERM -- `))
++			Expect(kill[2]).ToNot(ContainSubstring(`kill -KILL -- `))
+ 		})
+ 
+ 		It("waits the given grace period between TERM and KILL", func() {

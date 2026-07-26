@@ -1,0 +1,56 @@
+diff --git a/atc/configvalidate/validate.go b/atc/configvalidate/validate.go
+index b7e93eb5ab..e67b1813b5 100644
+--- a/atc/configvalidate/validate.go
++++ b/atc/configvalidate/validate.go
+@@ -588,6 +588,14 @@ func validateParamsSchema(c atc.Config) error {
+ 	if c.RunRetention != nil && !c.Template {
+ 		errorMessages = append(errorMessages, "run_retention is only allowed on template pipelines (set template: true)")
+ 	}
++	if c.RunRetention != nil {
++		if c.RunRetention.KeepLast < 0 {
++			errorMessages = append(errorMessages, "run_retention.keep_last must not be negative")
++		}
++		if c.RunRetention.TTLDays < 0 {
++			errorMessages = append(errorMessages, "run_retention.ttl_days must not be negative")
++		}
++	}
+ 
+ 	seen := map[string]bool{}
+ 	for i, p := range c.Params {
+diff --git a/atc/configvalidate/validate_test.go b/atc/configvalidate/validate_test.go
+index 36f2c9bf86..d6e1f0ea67 100644
+--- a/atc/configvalidate/validate_test.go
++++ b/atc/configvalidate/validate_test.go
+@@ -2799,6 +2799,32 @@ var _ = Describe("params schema validation", func() {
+ 		Expect(errs).To(ContainElement(ContainSubstring("run_retention is only allowed on template pipelines")))
+ 	})
+ 
++	// review finding (2026-07-11): negative retention values were accepted at
++	// set-pipeline time and only misbehaved later in the archival query
++	It("rejects negative run_retention values", func() {
++		errs := validate(atc.Config{
++			Template:     true,
++			RunRetention: &atc.RunRetentionConfig{KeepLast: -1},
++			Jobs:         atc.JobConfigs{validJob},
++		})
++		Expect(errs).To(ContainElement(ContainSubstring("run_retention.keep_last must not be negative")))
++
++		errs = validate(atc.Config{
++			Template:     true,
++			RunRetention: &atc.RunRetentionConfig{TTLDays: -7},
++			Jobs:         atc.JobConfigs{validJob},
++		})
++		Expect(errs).To(ContainElement(ContainSubstring("run_retention.ttl_days must not be negative")))
++
++		errs = validate(atc.Config{
++			Template:     true,
++			RunRetention: &atc.RunRetentionConfig{KeepLast: -2, TTLDays: -3},
++			Jobs:         atc.JobConfigs{validJob},
++		})
++		Expect(errs).To(ContainElement(ContainSubstring("run_retention.keep_last must not be negative")))
++		Expect(errs).To(ContainElement(ContainSubstring("run_retention.ttl_days must not be negative")))
++	})
++
+ 	It("rejects the reserved names, duplicates, bad types, enums without values, and bad defaults", func() {
+ 		errs := validate(atc.Config{
+ 			Template: true,

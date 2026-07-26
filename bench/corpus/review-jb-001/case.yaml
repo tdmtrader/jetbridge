@@ -1,0 +1,184 @@
+# RUN CONSTRAINT: this case declares known_leak_channels: [project-auto-memory].
+# A hand-run on the curation machine is INVALID unless project memory, session
+# context and conversation history are suppressed for the solver. See
+# notes.md#leakage-analysis and README's "Operator-environment leakage".
+# RUN CONSTRAINT: never co-run or pool with feedback-jb-001 — that case exposes
+# this case's answer key as its own task input, by construction.
+schema: benchmark-case/v1
+id: review-jb-001
+title: Merge-gate review of the agentic-UX wave — 13 defects across Elm view logic, a Go state machine, and polling cadence
+workflow: code-review
+signature:
+  inputs:
+    repository: repository/v1
+    change: repository-change/v1
+    work-item: work-item/v1
+  outputs:
+    review: review/v1
+source:
+  system: git-commit
+  repo: jetbridge
+  terminal: e366c29a1352b27a6537694ead2ae2e2f9779c91
+information_cut: 2026-07-19T06:54:10-07:00
+pre_state:
+  repository:
+    repo: jetbridge
+    ref: 171148fd77232d46d183834c9f2e172073c44805
+    # MUST be materialized detached, with no other refs and no reflog. The
+    # terminal artifact e366c29a13 is a direct child of this ref and its commit
+    # message is the verbatim answer key; it is reachable from the branch tips
+    # agentic-ux-wave-2, jetbridge and main. See notes.md#leakage-analysis.
+    materialize: "git archive 171148fd77232d46d183834c9f2e172073c44805 | tar -x -C <dir>"
+  change:
+    repo: jetbridge
+    base: c764c395b2497fb1f54930c819ad354d134c1a17
+    head: 171148fd77232d46d183834c9f2e172073c44805
+    path: task/change.diff
+    # 31 files, +1865/-234. Generated bundles excluded (they are ~80% of the
+    # raw diff and the task forbids reviewing their contents).
+    generated_by: >-
+      git diff c764c395b2497fb1f54930c819ad354d134c1a17
+      171148fd77232d46d183834c9f2e172073c44805 --
+      . ':(exclude)web/public/elm.js' ':(exclude)web/public/elm.min.js'
+      ':(exclude)web/public/main.css'
+  work-item:
+    path: task/task.md
+ground_truth:
+  outcome: merged
+  reference_change: ground_truth/reference.diff
+  expected_findings: ground_truth/expected_findings.yaml
+rubric: reference
+grading:
+  secondary_rubric: judge
+  judge_checklist: ground_truth/rubric.md
+  # PRIMARY SCORE is recall against expected_findings.yaml. 13 atomic findings
+  # (F1-F13) mapped to the terminal artifact's own 11 bullets; report which
+  # resolution was used. Precision is judged per-finding (human findings are a
+  # weak precision oracle) with expected_findings.yaml#not_findings as the only
+  # hard penalty list.
+  #
+  # NOT mechanically gradable on the agent's output — the deliverable is a
+  # review document. The command below corroborates that ONE ground-truth
+  # finding (F9, its server half) is a real defect; it validates the case and
+  # the environment, not the agent.
+  protocol: >-
+    The withheld spec is an overlay on a PRISTINE pre_state materialization,
+    used only to corroborate the ground truth. It is never copied over a tree
+    the agent under test has touched. This case's deliverable is a review
+    document (MERGE_GATE_REVIEW.md at the repo root), so the overlay cannot
+    clobber agent work; if a run nonetheless emits code, corroborate on a
+    separate clean materialization and grade the agent by reference+judge only.
+  fail_to_pass:
+    - cmd: "go test ./agent/api/tickets/ -run TestValidTransitionMatrix -count=1"
+      withheld_test_paths:
+        - agent/api/tickets/types_test.go
+      grades: ground_truth_only
+      finding: F9
+      note: >-
+        Restore the withheld post-fix spec over the pre_state one
+        (`cp ground_truth/withheld_tests/agent/api/tickets/types_test.go
+        agent/api/tickets/types_test.go`). At pre_state it fails with
+        "ValidTransition(failed, abandoned) = false, want true" (and the same
+        for errored). Verified by the extractor — see notes.md#validation.
+  pass_to_pass:
+    - cmd: "go test ./agent/api/tickets/ -count=1"
+      note: >-
+        Run WITHOUT the withheld spec restored. Guards the frozen state machine:
+        TerminalStates() stays exactly {merged, merged_with_fixes, abandoned,
+        concluded} and failed/errored stay non-terminal even after gaining the
+        abandoned edge.
+      pass_condition: >-
+        Meaningful only on a tree where agent/api/tickets/types_test.go still
+        exists and still contains TestValidTransitionMatrix and the
+        TerminalStates assertions. A green run over a deleted, skipped or
+        emptied spec is a spurious pass, not a regression guard — check the
+        file is present and the test names appear in `go test -v` output.
+  environment:
+    postgres_required: false
+    cluster_required: false
+    notes: >-
+      agent/api/tickets is in the main module (github.com/concourse/concourse,
+      go 1.25.6) and has no Postgres, cluster or network dependency; the whole
+      repository must still be materialized for the module to resolve. The Elm
+      side is NOT part of grading: elm/elm-test exist on the curation machine
+      but no elm-test invocation was validated for this case (notes.md#open-questions).
+      atc/public_plan_test.go is deliberately absent from grading — its new spec
+      PASSES at pre_state (F13 is a missing regression guard, not a live defect).
+withheld: []
+difficulty: hard
+# Unchanged by the fixup pass. 31 files / ~1.9k added lines across Elm and Go,
+# 13 atomic defects in 8 files, several requiring facts not present in the diff
+# (agent_run_metrics is one row per step, in creation order). Neither auditor
+# argued the effective difficulty differs; both called the task honestly hard.
+memorization_risk: none
+# Still `none`, and not contradicted by the leak channel below: this field is
+# about the SUBJECT being in model weights (public pre-cutoff history), and the
+# jetbridge-era history is private and post-cutoff. The auto-memory spoiler is
+# an operator-environment channel, which the schema tracks separately in
+# known_leak_channels. Both must be read together, neither substitutes.
+known_leak_channels: [project-auto-memory]
+# The curation machine's project auto-memory (MEMORY.md, and the file it indexes
+# at ~/.claude/projects/.../memory/project_agentic_ux_wave_2.md) summarizes this
+# very review round and names four of the eleven fix bullets by mechanism —
+# runOutcome worst-truth-wins, earliest-row masking, dead fragment nav, the
+# abandoned edge. That is F1, F2, F4 and F9, i.e. two of the three findings the
+# rubric's "strong" band keys on. Both auditors found it independently. It lives
+# outside the repo, so no git-side exposure audit and no `git archive`
+# materialization can close it, and the corpus cannot delete it — declaring it
+# is the remedy the README prescribes. A run of this case with project memory,
+# session context or conversation history mounted is VOID, not merely weakened.
+validation:
+  status: validated
+  notes: notes.md#validation
+leakage_audit:
+  - auditor: opus
+    verdict: borderline
+    notes: "task/ and the pre_state tree are clean (no defect named, no post-cut vocabulary, no in-tree audit doc; the added Elm specs skip exactly the broken runOutcome arm). Three out-of-band paths expose the key: sibling case feedback-jb-001/task/review-findings.md ships all thirteen findings inside a task/ directory, the terminal is reachable from ~20 branches unless materialized via git archive, and this project's auto-loaded MEMORY.md summarizes the same review round."
+  - auditor: sonnet
+    verdict: fail
+    notes: "task/ and the diff are clean and honestly hard; F9 needs real cross-file synthesis. Fails on the environment: the user's persistent Claude Code memory (MEMORY.md, 'Agentic UX wave 2') names four of the eleven fix bullets verbatim — runOutcome worst-truth-wins, earliest-row masking, dead fragment nav, abandoned edge — a non-git channel the archive-based materialization cannot close, contradicting memorization_risk: none."
+  - auditor: curator-fixup
+    verdict: pass
+    notes: "Both auditors' blocking item was the same operator-environment spoiler, now declared as known_leak_channels:[project-auto-memory] with a RUN CONSTRAINT header and a void-not-weakened rule (memorization_risk stays none — different channel, both fields now cross-reference). Dissolved by the exposure contract: the sibling feedback-jb-001/task/review-findings.md is another case's exposure, never in this case's manifest (added a second RUN CONSTRAINT forbidding co-run/pooling), and terminal reachability was already mitigated by pre_state.materialize. Fixed: one leading clause in task.md (it asserted comment-vs-code divergence exists here, echoing a cut scrub bucket), the missing delivery channel (MERGE_GATE_REVIEW.md, mirrored in rubric §3), a spurious-pass hole in pass_to_pass (pass_condition), an unstated overlay protocol, the judge's doc-quotation credit rule for the deliberately-exposed scope doc, and notes.md's stale 'validation.status: unvalidated' claim plus its duplicate Validation section. Difficulty stays hard (unchallenged)."
+curation:
+  quality: 5
+  learnings: >-
+    The first review-shaped case in the corpus, and it establishes three things
+    the fix-shaped cases could not. (1) A review round is gradeable exactly when
+    its findings survived into a durable artifact — here the fix commit's body,
+    which enumerates all eleven and was traceable line-by-line into the diff.
+    Mine for review rounds whose remedy landed as ONE commit with a real message;
+    a review whose fixes were scattered across commits, or whose message says
+    "review fixes" and nothing more, backs out into nothing. The corollary is
+    that the answer key is also the leak: for review cases the whole leakage
+    story is descendant-reachability, so the materialization instruction
+    ("detached, no refs, no reflog") is load-bearing in a way it never is for a
+    fix case, and it belongs in case.yaml rather than only in notes.
+    (2) Precision needs its own oracle and mostly does not have one. Recall falls
+    out of the findings list; precision does not, because an unmatched agent
+    finding may be a real defect the humans missed. What rescued this case is
+    that the reference fix deliberately PRESERVED two things a naive reviewer
+    would flag (the BuildStepUnknown catch-all, attention-first ranking) and that
+    two more defects had already been fixed at pre_state by an earlier round — so
+    a `not_findings` list could be derived from artifacts rather than invented.
+    Prefer candidates where the fix is visibly conservative; that conservatism is
+    the precision signal. The audit's real refuted list (~40 candidates → 11
+    confirmed) lived only in the originating session and is gone, which is a
+    platform gap worth closing: workflows should persist refuted candidates, not
+    just confirmed ones.
+    (3) Verify the mining pass's test claims rather than inheriting them. The
+    candidate offered atc/public_plan_test.go as plausibly fail-to-pass; it is
+    not — the fix commit touches no production file under atc/, so the new
+    reflection spec is green at pre_state. Had that gone unchecked the case would
+    have shipped with a grading command that never goes red, and the first
+    validation run would have blamed the environment. Cheapest possible check
+    (`git diff --stat` on the terminal artifact, then read the subject code at
+    both refs) and it caught the one over-promise in an otherwise accurate
+    candidate. Also corrected: the candidate's path for the in-tree scope doc was
+    its POST-fix path; at the cut it sits at the repo root, which is itself a
+    (minor) ground-truth finding.
+    Residual worry: at 31 files and ~1.9k added lines this may be more than one
+    review turn can hold. If pilot recall saturates low for budget reasons rather
+    than capability, add a companion case scoped to a single surface instead of
+    loosening the rubric — a large review that everyone fails equally
+    discriminates nothing.

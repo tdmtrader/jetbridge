@@ -1,0 +1,94 @@
+# Semantic rig map — Eos CHANNELS by meaning. The agent reads this to translate a
+# request ("ladders 3 and 4 in pink", "the desires in blue") into the specific
+# channels to drive, then calls the numeric tools (set_channel_level, set_color,
+# set_look). It is reference data, not a fixed set of groups, and not parsed by the
+# server. Tools take channels, so dimmers are omitted.
+#
+# Stage shorthand: sl/sc/sr = left/center/right, ds/cs/us = down/center/up,
+# hl/hc/hr = house left/center/right.
+#
+# color_capable fixtures (the `leds:` block + `audience_stair`, `back.trough`) take
+# set_color (hue/sat via the palette). Everything else is GELLED: a color word there
+# SELECTS those channels (intensity only) — e.g. "pink" on the ladders means the
+# R39-gelled ladder channels, not a color parameter.
+
+front:
+  entrance_aisle: 1
+  audience_stair: 2 # color_capable (LED RGB)
+  house: [3, 4]
+  alcove: 5
+
+# 6 booms x 9 gel colors. Each color's 6 channels are listed in BOOM ORDER
+# [1,3,5,2,4,6], so boom 3 = index 1 and boom 4 = index 4:
+#   pink boom 3 = pink[1] = 43, pink boom 4 = pink[4] = 46  ->  "ladders 3/4 pink" = 43 + 46
+ladders:
+  boom_order: [1, 3, 5, 2, 4, 6]
+  blue: [7, 8, 9, 10, 11, 12] # R80
+  yellow: [14, 15, 16, 17, 18, 19] # R14
+  green: [21, 22, 23, 24, 25, 26] # R90
+  lt_blue: [28, 29, 30, 31, 32, 33] # R65
+  orange: [35, 36, 37, 38, 39, 40] # R22
+  pink: [42, 43, 44, 45, 46, 47] # R39
+  red: [49, 50, 51, 52, 53, 54] # R26
+  dk_blue: [56, 57, 58, 59, 60, 61] # R85
+  white: [63, 64, 65, 66, 67, 68] # no gel
+
+back:
+  trough: { sl: 70, sr: 71 } # color_capable (LED)
+  pars: { dsl: 73, dsc: 74, dsr: 75, usl: 76, usc: 77, usr: 78 }
+
+specials:
+  circle: { 1: 80, 3: 81, 5: 82, 7: 83, 9: 84, 11: 85 } # by o'clock
+  # Area specials — verified live 2026-06-22. 93, 94, 96 are empty/unpatched.
+  center_a: 87
+  center_b: 88
+  dsc: 89
+  dsr: 90
+  msr: 91
+  usr: 92
+  msl: 95
+
+leds: # all color_capable (take set_color)
+  spot: { hr: 98, hl: 99 } # tunable white
+  under_bench: { sr: 101, cs: 102, sl: 103 }
+  strip: { sr: 105, cs: 106, sl: 107 }
+  lone_star: { dsl: 108, dsr: 109, hsl: 110, hcs: 111, hsr: 112 }
+  desires: { usl: 113, sl: 114, dsl: 115, dcs: 116, dsr: 117, sr: 118, usr: 119 }
+
+# LED color words -> hue (0-360) / sat (0-100) for set_color / set_look. Gelled
+# fixtures ignore these. Tune against the real LEDs.
+palette:
+  blue: { hue: 240, sat: 100 }
+  orange: { hue: 30, sat: 100 }
+  pink: { hue: 320, sat: 100 }
+  red: { hue: 0, sat: 100 }
+  amber: { hue: 35, sat: 90 }
+  green: { hue: 120, sat: 100 }
+  lavender: { hue: 270, sat: 60 }
+  white: { hue: 0, sat: 0 }
+
+# Lone Star (High End Lonestar, ch 108-112) rotating-gobo wheel slots. The agent reads
+# this to translate "gobo seashell" -> set_lone_star { gobo: 6 }. Slot 1 = open (no
+# gobo). Confirmed live on DSL 2026-06-22; the Eos gobo_select index is 1:1 with the
+# manufacturer order (no split positions, unlike the color wheel).
+lone_star_gobos:
+  open: 1
+  bar: 2
+  starvolver: 3
+  fracked: 4
+  broken_tunnel: 5
+  seashell: 6
+  glacial: 7
+  shower: 8
+  ice: 9
+  branch_out: 10
+
+# Lone Star default ("home") aim — pan/tilt in degrees, captured live 2026-06-22 with all
+# five at their show-default positions. The agent reads this to send a unit back to its
+# default, e.g. set_lone_star { channels: "108", pan: -48, tilt: 50 }. Default zoom ≈ 48°.
+lone_star_home:
+  dsl: { pan: -48, tilt: 50 } # 108
+  dsr: { pan: 129, tilt: 67 } # 109
+  hsl: { pan: -31, tilt: 58 } # 110
+  hcs: { pan: -1, tilt: 61 } # 111
+  hsr: { pan: 31, tilt: 62 } # 112

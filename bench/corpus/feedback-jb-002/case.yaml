@@ -1,0 +1,241 @@
+schema: benchmark-case/v1
+id: feedback-jb-002
+title: >-
+  Act on review feedback on UX4 Wave A — narrow an unsatisfiable elm-build gate and
+  make a failed --workflow dispatch roll its own assignment back
+workflow: feedback-loop
+signature:
+  # The feedback loop receives the repository at the tip of the change it just
+  # produced, that change as a diff, and the review findings against it. It emits a
+  # follow-up change. `review-findings/v1` is a curator-chosen port type name; no
+  # snapshot type registry exists yet (same convention as review-jb-004).
+  inputs:
+    repository: repository/v1
+    change: repository-change/v1
+    review-findings: review-findings/v1
+  outputs:
+    change: repository-change/v1
+source:
+  system: git-commit
+  repo: jetbridge
+  terminal: 53736f9c73561708142663587ddad752478e7cce
+information_cut: 2026-07-19T21:35:26-07:00
+pre_state:
+  repository:
+    repo: jetbridge
+    ref: e7810cbb8a9c662fe24b542a0734504fd480b491
+    # MUST be materialized detached, with no other refs and no reflog. The terminal
+    # artifact 53736f9c73 is a DIRECT child of this ref and its commit message states
+    # both findings AND both remedies verbatim — it is the answer key. It is reachable
+    # from the branch tips jetbridge, main, claude/ux-audit-4-execution-269308 and
+    # several others, and from tags v0.2.197 onward. See notes.md#leakage-analysis.
+    materialize: "git archive e7810cbb8a9c662fe24b542a0734504fd480b491 | tar -x -C <dir>"
+  change:
+    repo: jetbridge
+    base: 12feb9397d9c65906ebc5043a641d02cb686bcd9
+    head: e7810cbb8a9c662fe24b542a0734504fd480b491
+    path: task/change.diff
+    # 14 files, +633/-20: the two reviewed features only (WF-2 elm-build gate,
+    # WF-5 --workflow assignment). The third branch merged in the same Wave A
+    # integration (s7-spend-backend: agent/api/costs, agent/budget,
+    # atc/db/agent_cost_ledger*, atc/api/mcpserver, fly/commands/agent_costs.go) is
+    # excluded — no finding touches it and it is pure distractor volume.
+    generated_by: >-
+      git diff 12feb9397d e7810cbb8a9c662fe24b542a0734504fd480b491 --
+      agent/harvest/ agent/workflow/config.go agent/workflow/parse.go
+      agent/workflow/validate_test.go deploy/agent-runner/Dockerfile
+      fly/commands/agent_tickets.go fly/integration/agent_tickets_test.go
+      go-concourse/concourse/agent_tickets.go
+      go-concourse/concourse/agent_tickets_test.go go-concourse/concourse/client.go
+      go-concourse/concourse/concoursefakes/fake_client.go
+  review-findings:
+    path: task/task.md
+ground_truth:
+  outcome: merged
+  reference_change: ground_truth/reference.diff
+rubric: mechanical
+grading:
+  secondary_rubric: judge
+  judge_checklist: ground_truth/rubric.md
+  # PRIMARY SCORE is the two fail_to_pass transitions; both were run by the extractor
+  # at pre_state and at the terminal artifact (notes.md#validation). The judge rubric
+  # is not optional decoration here: the mechanical gates cover the two applicability/
+  # rollback behaviours but say nothing about the two comment-honesty asks (rubric C-3),
+  # which are half of what the humans actually did.
+  overlay_protocol: >-
+    MANDATORY, and the reason it is spelled out: both withheld specs REPLACE files that the
+    task explicitly asks the solver to write into (task.md "Both findings need regression
+    tests"; the pre_state `agent/harvest/gates_elm_test.go` and
+    `fly/integration/agent_tickets_test.go` are the natural homes, and the reference change
+    edits both). A naive `cp` therefore destroys the very artifact rubric C-2 grades.
+    Grade in this order: (1) COPY the solver's versions of every path listed in
+    `withheld_test_paths` to `<run>/solution_tests/<same relative path>` and keep them —
+    those copies are the evidence for C-2 and must be handed to the judge; (2) run the
+    solver's own suites un-overlaid once (`go test ./agent/harvest/ -count=1` and
+    `go test ./fly/integration/ -count=1 -args -ginkgo.focus='fly agent tickets'`) and
+    record the result as `solver_tests_self_report` — informational, NOT part of the score,
+    since a solver may legitimately restructure those files; (3) only then apply the
+    overlay and run the graded commands below. Never report a solver as having skipped
+    tests on the basis of a post-overlay tree.
+  fail_to_pass:
+    - cmd: "go test ./agent/harvest/ -run 'TestElmGateNotApplicableForNonBundleElmPaths' -count=1"
+      withheld_test_paths:
+        - agent/harvest/gates_elm_test.go
+      finding: F1
+      note: >-
+        Restore the withheld post-fix spec over the pre_state one
+        (`cp ground_truth/withheld_tests/agent/harvest/gates_elm_test.go
+        agent/harvest/gates_elm_test.go`). At pre_state all three subtests fail
+        (web/elm/tests/MainTests.elm, web/elm/benchmarks/Bench.elm, web/elm/.gitignore)
+        because the gate applies to the whole web/elm subtree. Robust to the absence of
+        an Elm toolchain: with elm on PATH the pre_state outcome is `failed` (elm make
+        errors on the fixture), without it the outcome is `error` — neither is the `ok`
+        the spec requires. Verified both ways.
+    - cmd: "go test ./fly/integration/ -count=1 -args -ginkgo.focus='fly agent tickets'"
+      withheld_test_paths:
+        - fly/integration/agent_tickets_test.go
+      finding: F2
+      note: >-
+        Restore the withheld post-fix spec (`cp
+        ground_truth/withheld_tests/fly/integration/agent_tickets_test.go
+        fly/integration/agent_tickets_test.go`). 27 specs, ~5s at pre_state; 3 fail
+        (queue --workflow, dispatch --workflow, and the new rollback spec) with
+        "Method mismatch: Expected PUT to equal GET" — the pre_state code writes the
+        assignment without first reading the prior value. Builds the fly binary; no
+        Postgres, no cluster, no network.
+        CAVEAT: this spec pins ONE shape of the read-before-write (a GET on
+        /api/v1/agent/tickets/:id immediately before the PUT). A behaviourally
+        equivalent rollback that learns the prior workflow some other way would be
+        marked wrong by this command and right by the judge — reconcile via rubric F2-2.
+  pass_to_pass:
+    - cmd: "go test ./agent/harvest/ -run 'TestElmGateAppliesToElmJson' -count=1"
+      withheld_test_paths:
+        - agent/harvest/gates_elm_test.go
+      note: >-
+        The over-narrowing guard, and the sharpest single check in the case. Green at
+        pre_state AND at the terminal artifact, but RED for the most likely wrong answer
+        (narrowing applicability to web/elm/src/** alone and letting a dependency bump
+        through with a stale bundle). Run it with the withheld spec restored.
+    - cmd: "go test ./agent/harvest/ -count=1"
+      note: >-
+        Run WITHOUT the withheld spec restored (pre_state's own suite, ~9s). Regression
+        guard on the rest of the gate engine: fail-closed on a missing merge-base,
+        compile-failure vs toolchain-fault status split, retry/flaky accounting.
+        Needs a real git binary; several specs shell out to `go build`/`go test` on a
+        fixture module, so run it with a normal PATH.
+    - cmd: "go test ./fly/integration/ -count=1"
+      note: >-
+        Run WITH the withheld spec restored (650 specs, ~40s). Guards the whole fly CLI
+        surface against collateral damage.
+        NOT LISTED, deliberately: the pre_state fly/integration/agent_tickets_test.go is
+        NOT invariant across this fix. Two of its specs encode the un-compensated wire
+        sequence (PUT with no preceding GET) and go red against a correct fix. That is
+        why the withheld file replaces the whole file rather than adding to it.
+  environment:
+    postgres_required: false
+    cluster_required: false
+    elm_required: false
+    notes: >-
+      Both graded packages are in the main module (github.com/concourse/concourse,
+      go 1.25.6). Requirements are a Go toolchain and a real `git` binary — nothing
+      else. The elm-build gate's tests never invoke a real Elm compiler: the applicable
+      paths go through the HARVEST_ELM_CLI stub seam and the not-applicable paths return
+      before compiling. The whole repository must still be materialized for the module
+      to resolve. This is the cheapest runnable case in the corpus so far.
+withheld: []
+# Nothing at pre_state gives the answer away. Checked explicitly: the in-tree WF-2 plan
+# (docs/superpowers/plans/agentic-platform/2026-07-19-wf2-elm-build-gate.md) prescribes
+# the BUGGY `web/elm/**` applicability and is deliberately left exposed — the task cites
+# its Open Decision #1. The UX4 scoping doc's WF-5 entry describes the dead-end the
+# feature closed, not the rollback. `git grep` over the pre_state tree for
+# "bundle-feeding", "compensating", "worse than before" returns nothing.
+# See notes.md#leakage-analysis.
+difficulty: moderate
+# Reaffirmed at fixup 2026-07-25. Not trivial: the graded discriminator (F1-3/F1-4,
+# elm.json as bundle-feeding) is named nowhere in task.md and the in-tree plan argues the
+# opposite. Not hard: each remedy is a localized edit in one function, both APIs already
+# exist at pre_state, and the review names both symptoms precisely. The two secondary asks
+# (comment honesty, help text) ARE close to dictated by the review prompt — that is
+# authentic reviewer behaviour, so it is handled as a judge-weighting matter in
+# rubric.md#scoring-notes rather than by inflating or deflating difficulty.
+memorization_risk: none
+known_leak_channels: [project-auto-memory]
+# The dev machine's project auto-memory (project_agentic_ux_audit_4.md, the 2026-07-20
+# "EXECUTED" entry) states BOTH remedies verbatim — "review-narrowed applicability to
+# web/elm/src/**+elm.json", "compensating-rollback so a bad --workflow never leaves a
+# ticket worse", and the Open-Decision-1 tradeoff behind rubric C-3(a). A hand-run of this
+# case on this machine with project memory mounted is INVALID. Nothing in the case
+# directory can fix this; the replay harness must not mount project memory, session
+# context, or conversation history. See README "Operator-environment leakage".
+validation:
+  status: validated
+  notes: notes.md#validation
+leakage_audit:
+  - auditor: opus
+    verdict: pass
+    notes: "Clean: no post-cut references (every artifact task.md names exists at pre_state, including the WF-2 plan's Open Decision #1), no in-tree doc describes either remedy, and the pre_state design doc prescribes the BUGGY web/elm/** applicability. Hints are review-shaped rather than answer-shaped and elm.json is never named, so the discriminator holds. Curator note: the two secondary asks are close to dictated by the prompt, so about half the judge rubric is answerable by paraphrase."
+  - auditor: sonnet
+    verdict: pass
+    notes: "task.md states the symptom and constraints without naming the buggy function or the remedy; the elm.json nuance is a genuine domain inference (elm.json's own source-directories list is even a decoy toward including benchmarks/), and the WF-2 plan documents the buggy design with no mention of narrowing. Flag only that case.yaml's grading names TestElmGateAppliesToElmJson, whose name alone reveals the key discriminator — confirm it never reaches the solver."
+  - auditor: curator-fixup
+    verdict: pass
+    notes: >-
+      Sonnet's TestElmGateAppliesToElmJson flag DISSOLVED by the exposure contract
+      (case.yaml, grading configs and withheld_test_paths are harness-side and never reach
+      the solver; nothing renamed). Two real defects fixed: (1) the grading overlay
+      clobbered the exact test files task.md asks the solver to write — added
+      grading.overlay_protocol (preserve the solver's specs to solution_tests/ before
+      overlay and hand them to the judge for C-2); (2) notes.md still claimed
+      validation.status was `unvalidated` while case.yaml says validated — corrected, and
+      the duplicate `## Validation` heading disambiguated so notes.md#validation resolves.
+      Opus's "secondary asks answerable by paraphrase" handled as judge weighting in
+      rubric.md#scoring-notes; task.md left intact, since a reviewer really does ask for
+      comment honesty and softening it would falsify the trigger. NEW finding: declared
+      known_leak_channels: [project-auto-memory] — the operator auto-memory states both
+      remedies verbatim, including the `web/elm/src/**+elm.json` path set. Difficulty
+      reaffirmed moderate.
+curation:
+  quality: 5
+  learnings: >-
+    The first feedback-loop-shaped case, and it turns out to be the easiest workflow
+    shape to back out of git — much easier than review. A review case needs the findings
+    to have survived into a durable artifact and then has to solve precision (an
+    unmatched agent finding may still be true). A feedback case inverts the problem: the
+    findings are the INPUT, so the artifact that made the review case hard (a fix commit
+    whose message enumerates the findings) is exactly what makes the feedback case easy —
+    the message becomes the task, and grading falls back to ordinary fix-case machinery
+    (fail-to-pass tests + a behavioural rubric). Mine "review fixes" commits for feedback
+    cases, not for review cases. The corollary is that the same terminal artifact can
+    seed both shapes, and the two carry opposite leakage postures: for the review case
+    the findings are the answer, for the feedback case they are the prompt.
+    Second lesson, the one that changed this case: verify the fail-to-pass claim AND
+    hunt for the pass-to-pass that discriminates the plausible wrong answer. The mining
+    pass promised gates_elm_test.go as fail-to-pass and was right, but the test that
+    actually separates a good fix from a shallow one is TestElmGateAppliesToElmJson,
+    which is green at BOTH ends and would have been dropped by any "does it flip?" filter.
+    The dominant wrong answer here (narrow to web/elm/src/** and stop) satisfies every
+    word of the review and quietly opens a new hole; only the always-green pin catches
+    it. A corpus that grades exclusively on transitions will systematically fail to
+    notice fixes that trade one bug for another. Budget curation time for "what is the
+    attractive wrong answer, and what would catch it?".
+    Third, a caution about mechanical over-constraint. The fly gate pins a read-before-
+    write via one specific route; the rollback is behaviourally forced but its wire shape
+    is not. That is recorded in grading.note and in rubric F2-2 rather than fixed,
+    because loosening it would mean rewriting the humans' test — but it is the kind of
+    thing that will show up later as an unexplained red on an otherwise good run, and the
+    reconciliation instruction needs to be in the case, not in the runner's head.
+    Finally, an operational nick: the shared scratchpad is shared across parallel
+    extractor sessions. Two of them independently used ./pre and ./post and clobbered
+    each other mid-validation. Namespace scratch dirs by case id.
+    Added at fixup (2026-07-25), two lessons that generalise beyond this case. First, a
+    withheld-test overlay COLLIDES with any task that asks the solver for regression tests
+    whenever the human tests live in files that already exist at pre_state — the `cp` that
+    installs the oracle deletes the evidence for the "did it write tests?" criterion. Any
+    case with both `withheld_test_paths` and a "write tests" ask needs an explicit
+    preserve-then-overlay protocol (grading.overlay_protocol here); this is a schema gap
+    worth promoting to benchmark-case/v2 rather than restating per case. Second, the
+    dual audit is scoped to the case directory and the snapshot, so it structurally cannot
+    see operator-environment leakage: both auditors passed this case while the dev
+    machine's project memory recited both remedies verbatim. Auto-memory grep for the
+    remedy wording belongs in the audit checklist for every case harvested from this
+    repo's own incidents, not just the ones somebody happened to notice.

@@ -1,0 +1,187 @@
+schema: benchmark-case/v1
+id: neg-jb-001
+title: >-
+  NEGATIVE — a written, confident, WRONG diagnosis asks for a runner-CWD change;
+  the empty agent branches were a turn cap and a deliberate stop, and no fix was
+  needed
+workflow: small-fix          # the EXPOSED shape is an ordinary implement-this
+                             # ticket; the graded capability is triage/decline.
+                             # See curation.learnings — the corpus has no
+                             # `negative` workflow value and must not, because a
+                             # negative that announces itself is not a negative.
+signature:
+  inputs:  {repository: repository/v1, work-item: work-item/v1}
+  outputs: {change: repository-change/v1}
+source:
+  system: git-commit
+  repo: jetbridge
+  # The terminal artifact is a ci/dogfood/FINDINGS.md entry written ~3h after
+  # the cut that explicitly disproves the hypothesis the work item rests on:
+  # "The runner-CWD fix I feared is NOT needed".
+  terminal: 4dc43e1ac24c4cec344d6ed4a40c1bac383ca134
+  # Corroborating negative evidence, verified 2026-07-25 on both branch tips:
+  # agent/runner/runner.go never gained a working-directory change.
+  terminal_corroboration:
+    - {ref: jetbridge, fact: "cmd.Dir = cfg.WorkDir and WorkDir = os.Getwd() unchanged"}
+    - {ref: main,      fact: "cmd.Dir = cfg.WorkDir and WorkDir = os.Getwd() unchanged"}
+information_cut: 2026-07-20T13:26:12-07:00
+pre_state:
+  repository:
+    repo: jetbridge
+    ref: 5bbd7af075b03edf21fc6dd0f6e4056de97a3e8c
+    # MUST be materialized with ancestors-only history and NO refs, NO reflog.
+    # The terminal artifact 4dc43e1ac2 is 3 commits downstream on the same line
+    # and its FINDINGS entry is a verbatim answer key ("The runner-CWD fix I
+    # feared is NOT needed"); it is reachable from 18 local/remote branches, so
+    # a naive clone-and-checkout leaks the answer to `git log --all | head`.
+    # History itself must stay readable — the FINDINGS chronology (that run 42's
+    # turn-cap cause was documented BEFORE the "CONFIRMED SYSTEMATIC" entry) is
+    # legitimate evidence, so `git archive` is not usable here.
+    materialize: |
+      git clone --no-hardlinks <src> <dir>
+      cd <dir>
+      git checkout --detach 5bbd7af075b03edf21fc6dd0f6e4056de97a3e8c
+      git for-each-ref --format='%(refname)' | xargs -r -n1 git update-ref -d
+      git reflog expire --expire=now --all
+      git gc --prune=now
+      # verify: `git cat-file -e 4dc43e1ac2^{commit}` must FAIL
+      #         `git cat-file -e 4b9098e20d^{commit}` must SUCCEED (the trap)
+      #         `git cat-file -e 51ee029636^{commit}` must SUCCEED (run-42 entry)
+  work-item:
+    path: task/task.md
+ground_truth:
+  outcome: wont_fix
+  answer: ground_truth/answer.md
+  # The terminal FINDINGS diff. Corroboration / answer key only — the graded
+  # artifact is the agent's disposition of the ticket, not a diff match.
+  reference_change: ground_truth/reference.diff
+rubric: outcome
+grading:
+  # Binary primary signal.
+  outcome_match:
+    accept: ["wont_fix", "decline", "defer-pending-evidence"]
+    reject: ["implemented", "partially-implemented", "implemented-behind-flag"]
+    note: >-
+      A submission that ships any change to the agent-runner's working-directory
+      semantics (Config.WorkDir derivation, cmd.Dir, or an equivalent chdir into
+      the resolved output workspace) is a reject, regardless of accompanying
+      prose. "defer-pending-evidence" is accepted: at the cut, "not justified
+      until the transcript shows it" is the strongest defensible position and is
+      what the record actually did.
+    delivery: >-
+      GRADING CAVEAT (added by the 2026-07-25 fixup). The task asks for the
+      ticket's outcome as a `ci/dogfood/FINDINGS.md` entry opening with a
+      one-line `Disposition:`; that is the decline's delivery channel and it is
+      symmetric (an implementing submission writes one too). Consequence: a
+      correct decline normally arrives as a FINDINGS-only commit, NOT as a
+      literally empty diff. Classify on what the diff touches — any change under
+      `agent/runner` or `agent/harvest` working-directory semantics is
+      "implemented"; a docs-only entry recording a refusal is "wont_fix" /
+      "decline". Do not read a non-empty branch as an implementation.
+  # Quality of the decline, so a lucky refusal does not score like a reasoned one.
+  judge_rubric: ground_truth/rubric.md
+  fail_to_pass: []            # negative case: the correct CODE change is empty
+                              # (a correct decline still delivers the FINDINGS
+                              # entry — see grading.outcome_match.delivery)
+  pass_to_pass:
+    # Regression guards only. These pass at pre_state and must still pass after
+    # a correct (code-empty) submission; they are also the cheapest environment
+    # check.
+    - cmd: "go test ./agent/harvest/ -run TestRunNoOpEmptyBranchFails -count=1"
+      note: "the shipped no-op guard the correct answer endorses; needs git on PATH, no Postgres"
+    - cmd: "go test ./agent/runner/ -count=1"
+      note: >-
+        partial mechanical falsifier: TestRunResolvesPromptFromFile and
+        TestRunMaterializesSkills pin the WorkDir-relative contracts a naive
+        CWD relocation breaks. NOT decisive — a submission that only reassigns
+        cmd.Dir while leaving Config.WorkDir alone still passes, because both
+        tests pass WorkDir explicitly. Judge G1, not this command, is the gate.
+  environment:
+    postgres_required: false
+    cluster_required: false
+    notes: >-
+      Repository + git history only. Deliberately NO transcript, NO live build
+      log, NO cluster: the absence of transcript evidence is the load-bearing
+      fact of this case — it is what makes the pre-state diagnosis unverifiable
+      and the decline correct. Do not "improve" this case by adding run 45's
+      transcript; that artifact postdates the cut by ~3 hours and IS the answer.
+withheld: []                  # nothing at pre_state gives the answer away; the
+                              # trap document is deliberately left in place
+difficulty: hard              # reaffirmed 2026-07-25: both auditors independently
+                              # described the decline as requiring a four-point
+                              # cross-reference against an authority gradient; no
+                              # auditor argued for a different band.
+memorization_risk: none
+known_leak_channels: [project-auto-memory]
+                              # This machine's project auto-memory states the
+                              # answer verbatim — see notes.md#fixup-2026-07-25.
+                              # A hand-run on this machine is INVALID unless
+                              # project memory / session context is suppressed.
+validation:
+  status: validated
+  notes: notes.md#validation
+leakage_audit:
+  - auditor: opus
+    verdict: pass
+    notes: "Solver channel is clean: no post-cut references, and nothing at pre_state says the CWD fix is unnecessary — the tree argues the WRONG way (the pre_state commit message calls it a scoped follow-up, the shipped guard's failure string repeats the hypothesis, FINDINGS lists it as load-bearing). Refutation is fully inside the manifest (run 42's turn-cap cause, run 43's success at 48 turns, the #41 STOPPED precedent, the transcript-blocked admission, §8.1). Curator: keep case.yaml and the neg- path away from the solver."
+  - auditor: sonnet
+    verdict: pass
+    notes: "task.md reads as an ordinary confident implement-this ticket with no hedge; the trap document actively argues FOR the fix, so declining requires cross-referencing four separate points already in the manifest. No post-cut references (runs 44/45 absent, containment verified present at pre_state), and no in-tree doc uses retraction vocabulary about this hypothesis."
+  - auditor: curator-fixup
+    verdict: pass
+    notes: "Opus's 'keep case.yaml and the neg- path away from the solver' dissolved by the schema's exposure contract (harness-side; no rename, no retitle). Fixed: decline had no stated delivery channel — task.md now requires the FINDINGS entry to open with a one-line `Disposition:` (symmetric across both arms, no wink), rubric.md and grading.outcome_match.delivery aligned so a FINDINGS-only commit is not misread as an implementation; rubric.md now tells the judge to credit causal use of the in-tree evidence over quotation of it (R2/R3/R6). Declared known_leak_channels: [project-auto-memory] — this machine's memory states 'The feared runner-CWD fix is UNNEEDED' verbatim. Difficulty reaffirmed hard. Solver-visible exposure (pre_state minus withheld, plus task/) unchanged in substance."
+curation:
+  quality: 5
+  learnings: >-
+    The corpus's first negative, and it works because the wrong answer was
+    already written down by a human, in-tree, in confident capitals ("CONFIRMED
+    SYSTEMATIC") with a dollar figure attached (~$8). Curating a negative by
+    inventing a plausible-but-wrong premise produces a case that grades
+    contrarianism; curating one from a real recorded misdiagnosis grades
+    evidence discipline. Look for terminal artifacts whose text contains a
+    retraction — "NOT needed", "disproved", "supersedes the earlier hypothesis" —
+    they are the highest-yield seeds for this shape.
+
+    Second lesson: a negative needs a *reachable* refutation, not just a
+    contrary outcome. Here the decisive later evidence (run 45's transcript)
+    postdates the cut and could not be exposed without handing over the answer,
+    so the case would have been unfair if the pre-state did not independently
+    support the decline. It does, four ways, all in the exposure manifest: run
+    42's cause is documented in an EARLIER entry of the same file (so the
+    "systematic" pattern is a double-count leaving a sample of one); run 43's
+    `subtype:"success"` at 48 turns is the signature of an agent that stopped;
+    the same file records ticket #41's agent "correctly STOPPED" with the work
+    landing out-of-band (the exact class of explanation run 45 turned out to
+    be); and the trap entry itself admits "debugging is blocked by the absence
+    of transcript persistence". The rule this suggests: before sealing a
+    negative, enumerate the refutation path *at the cut* and check every step is
+    inside the manifest. If the only refutation is post-cut, discard — an
+    unanswerable case is worse than none.
+
+    Third, on task framing: the temptation to soften an implement-this ticket
+    with "or tell us if you disagree" has to be resisted, because that clause
+    converts a negative into a leading question and would also have to appear on
+    every positive case to stay comparable. It is unnecessary here for a reason
+    that is itself in the exposure manifest — this loop's own log records an
+    agent correctly stopping and refusing to deliver, so declining is a
+    demonstrated norm rather than an invited one. A negative planted in a repo
+    with no such precedent probably does need the clause on both arms.
+
+    Platform gap this case surfaces: the shipped no-op guard makes a CORRECT
+    decline indistinguishable from a broken run — both are head_sha == base_sha,
+    both fail loudly, and a human had to read a transcript to tell which was
+    which. The workflow signature has no way to express "the correct change is
+    empty": `repository-change/v1` with zero commits is currently a failure. The
+    same gap appears twice in the source record (ticket #41, "no clean
+    disposition verb"), which is a strong signal it is real. Until the platform
+    grows a "concluded / nothing to do" outcome, negatives cannot be run
+    end-to-end on the loop — this case is hand-run and measures a model, not a
+    product.
+
+    Finally, a corpus-hygiene note: this case's id uses a `neg-` prefix, which
+    is NOT a value in the schema's `<workflow>-<source>-<NNN>` convention. The
+    id is a curator-facing label; `workflow:` stays `small-fix` because that is
+    the shape the agent under test actually sees. If negatives become numerous,
+    the schema should gain an explicit `negative: true` flag rather than a
+    `negative` workflow value — the workflow field is exposed to routing, and a
+    negative that announces itself is not a negative.

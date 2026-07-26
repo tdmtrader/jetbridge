@@ -1,0 +1,171 @@
+# BORDERLINE (post-fixup 2026-07-25): exposure is clean — both auditors agreed
+# task/ leaks nothing, and the sonnet FAIL was entirely about case.yaml stating
+# the answer, which the exposure contract makes harness-side. What keeps this
+# case borderline is not leakage but evidence strength: memorization_risk is
+# high (public Aug-2025 PR, answer is one token) and the mechanical gate is blind
+# to the only judged decision. Usable; never usable on its own as an efficacy
+# claim.
+schema: benchmark-case/v1
+id: upgrade-cc-001
+title: Move the codebase from go-jose v3 to v4 across a required API break
+workflow: version-upgrade
+signature:
+  inputs:
+    repository: repository/v1
+    upgrade-request: upgrade-request/v1
+  outputs:
+    change: repository-change/v1
+    # Delivery channel: task.md asks for UPGRADE-REPORT.md at the repository
+    # root. Without that instruction the port had no materialization and
+    # rubric.md item 8 graded an artifact the task never requested; added
+    # 2026-07-25 (see notes.md#fixup-2026-07-25).
+    report: upgrade-report/v1
+source:
+  system: github-pr
+  repo: concourse-upstream
+  terminal: 85aa5482acca6fabd1e55841e4e36a6c868dab74
+information_cut: 2025-08-26T12:52:01-04:00
+pre_state:
+  repository:
+    repo: concourse-upstream
+    ref: f46b5e57b3ce90e7a270115b5be6fad6c87258c6
+  upgrade-request:
+    path: task/task.md
+ground_truth:
+  outcome: merged
+  reference_change: ground_truth/reference.diff
+  answer: ground_truth/answer.md
+rubric: mechanical
+grading:
+  # PRIMARY: mechanical. One composite gate — goal assertion, then build, then
+  # the Postgres-free unit suites, then a compile-only pass over the packages
+  # whose *tests* import go-jose. It fails at pre_state on the goal assertion
+  # (v3 is still everywhere) and passes at the terminal artifact.
+  #
+  # NOTE the gate deliberately does NOT run ./fly/integration or ./atc/db —
+  # fly/integration has an order-dependent flake unrelated to this change
+  # (`logout Command ... one fails` asserts /test1 vs /test2), and atc/db needs
+  # Postgres. Both are compiled, not run.
+  #
+  # JUDGE OVERLAY (required, see the caveat below): score the change against
+  # ground_truth/rubric.md. The mechanical gate cannot see the central decision
+  # in this task — substituting jose.ES256 for jose.RS256 in
+  # skymarshal/token/access_token.go compiles AND passes every runnable suite
+  # (verified). Mechanical pass alone is necessary, not sufficient.
+  #
+  # VERDICT RULE (2026-07-25): the case verdict is min(mechanical, judge). A run
+  # that goes green on fail_to_pass/pass_to_pass but fails rubric.md item 3 is a
+  # FAIL, and a green gate must never be reported as a case pass on its own —
+  # `rubric: mechanical` names the primary gate, not the whole grading contract
+  # (the schema has no mechanical+judge enum value; see notes.md#open-questions).
+  #
+  # NOT PINNED: the gate asserts the goal (no v3 in *.go or go.mod, tree builds,
+  # suites green), never a file list or a call-site-by-call-site shape. The
+  # latitude the task leaves open — how the per-call-site algorithm lists are
+  # expressed — lives in rubric.md ("Mechanical caveats"), not here.
+  judge_overlay: ground_truth/rubric.md
+  fail_to_pass:
+    - cmd: >-
+        if grep -rqF go-jose/go-jose/v3 --include="*.go" . ; then echo
+        GATE-FAIL:v3-imports-remain; exit 1; fi; if grep -qF
+        go-jose/go-jose/v3 go.mod; then echo GATE-FAIL:v3-in-go.mod; exit 1;
+        fi; go build ./atc/... ./skymarshal/... ./fly/... && go test -count=1
+        ./skymarshal/token/ ./atc/creds/idtoken/ ./atc/api/accessor/ && go test
+        -run NONE_COMPILE_ONLY -count=1 ./atc/api/ ./atc/db/ ./atc/gc/
+        ./fly/integration/ ./testflight/
+      withheld_test_paths: []
+      note: >-
+        No withheld tests. This is an upgrade case: the fail-at-pre signal is
+        the goal assertion, not a spec that did not exist yet. Every test in the
+        gate exists at pre_state and passes there; what does not hold at
+        pre_state is "the repository is on v4".
+  pass_to_pass:
+    # Green at pre_state AND at the terminal artifact; guards against an agent
+    # that reaches the goal by breaking something.
+    - cmd: "go build ./atc/... ./skymarshal/... ./fly/..."
+    - cmd: "go test -count=1 ./skymarshal/token/ ./atc/creds/idtoken/ ./atc/api/accessor/"
+    - cmd: "go test -run NONE_COMPILE_ONLY -count=1 ./atc/api/ ./atc/db/ ./atc/gc/ ./fly/integration/ ./testflight/"
+  environment:
+    postgres_required: false
+    cluster_required: false
+    network_required: true
+    notes: >-
+      Go 1.25 toolchain (validated on go1.25.6 darwin/arm64). Network (or a warm
+      module cache) is needed: nothing imports go-jose/v4 at pre_state, so its
+      zip may not be cached, and the pre_state dependency graph is upstream's
+      Aug-2025 set. `go build ./...` does NOT complete on darwin at either end —
+      worker/runtime is Linux-only (containerd), and its fakes fail to compile;
+      that is a platform limitation, not a case signal, which is why the gate
+      names package subsets. `go vet` is unusable as a gate: atc/db/listener.go
+      and atc/exec/artifact_input_step_test.go carry pre-existing findings at
+      pre_state. testflight/ requires a live Concourse and can only be compiled.
+withheld: []
+# Difficulty reviewed 2026-07-25 and held at moderate. Opus argued the case is
+# weak evidence, not that it is easier: the mechanics are genuinely non-trivial
+# (a naive `sed s|v3|v4|` fails to compile in two distinct places, 28 files,
+# packages that only compile), which is above trivial; but the work is
+# compiler-guided once started and the target version is already pinned in
+# go.mod, which keeps it below hard. The one hard sub-task (establishing the
+# issuer's algorithm from another repository) is a single judged item, and
+# memorization pushes its *effective* difficulty down rather than up. moderate.
+difficulty: moderate
+memorization_risk: high
+# No operator-environment leak: this machine's project auto-memory and CLAUDE.md
+# were grepped for go-jose / RS256 / ES256 / Dex / jose — zero hits — so no
+# known_leak_channels entry. The live leak channel here is model weights
+# (memorization_risk: high), which is declared above and priced in rubric.md.
+validation:
+  status: partial
+  notes: notes.md#validation
+leakage_audit:
+  - auditor: opus
+    verdict: borderline
+    notes: "No leak in task/: it never mentions ParseSigned, allow-lists, Serialize, Dex or RS256, and a whole-tree grep finds go-jose only in go.mod/go.sum with no ADR or plan. The case is nonetheless weak evidence — the mechanical 90% is compiler-guided, the one judged decision (the Dex algorithm) is unobservable to every runnable test, and memorization_risk is high on a public pre-cutoff PR. case.yaml must stay curator-only."
+  - auditor: sonnet
+    verdict: fail
+    notes: "task/task.md is clean and honestly hard — no v4 API names, no RS256/ES256 decision, and no in-tree doc states that Dex signs with RS256. Fails on case.yaml: the judge_overlay comment and curation.learnings name both API breaks verbatim and state that substituting jose.ES256 compiles and passes every runnable suite, i.e. the exact answer the judge overlay exists to test."
+  - auditor: curator-fixup
+    verdict: borderline
+    notes: "Sonnet's FAIL is dissolved by the exposure contract — case.yaml/notes.md/ground_truth are harness-side and may state the answer, so nothing was renamed, retitled or moved; both auditors agree task/ leaks nothing (no ParseSigned, Serialize, allow-list, Dex or RS256), withheld:[] verified by grep over pre_state. Fixed one real defect: signature declared a report output and rubric.md item 8 graded a write-up that task.md never asked for — task.md now names UPGRADE-REPORT.md as the delivery channel and rubric.md item 8 grades it on its own content (reference.diff has no such file). Also added a verdict rule (min(mechanical, judge); a green gate alone is never a pass), a rubric line pricing memorization (credit the derivation, not the recalled token), and fixed a stale validation.status claim in notes.md. Difficulty held at moderate with reasons; project auto-memory grepped, no hit, so no known_leak_channels. Residual borderline is evidence strength, not exposure: memorization_risk high + the mechanical gate is blind to the only judged decision."
+curation:
+  quality: 4
+  learnings: >-
+    The cleanest version-upgrade shape found so far, and the first case in the
+    corpus whose fail-at-pre signal is a *goal assertion* rather than a withheld
+    test. Four lessons. (1) Upgrade cases invert the fix-case grading structure:
+    there is no test that fails at pre_state, because the pre_state is green by
+    construction — the thing that is false at pre_state is the goal ("no v3
+    anywhere"). Encoding that as the first clause of a composite gate, with the
+    build and the suites chained behind it, gives a real fail-to-pass transition
+    without inventing a spec. Corpus builders should reach for this pattern for
+    every upgrade candidate. (2) The candidate's mining pass found one API break
+    (jwt.ParseSigned gaining an algorithm allow-list) and missed a second
+    (jwt.Builder.CompactSerialize renamed to Serialize). Both were only found by
+    materializing the tree and running a naive `sed s|v3|v4|` — which fails to
+    compile in exactly those two places. Mechanically simulating the lazy
+    solution is cheap and is the fastest way to learn whether a candidate has
+    any teeth; do it before trusting a mining summary's account of the
+    difficulty. (3) The most important discovery is a negative one: the single
+    decision in this PR that requires understanding — that Dex signs with RS256,
+    established by reading a different repository, because Dex exports no
+    constant for it — is invisible to every test in this repository.
+    Substituting jose.ES256 compiles and passes the whole suite (verified). So
+    the mechanical rubric grades the mechanics and is blind to the insight, and
+    the case needs a judge overlay to be worth anything. Treat "the mechanical
+    gate is green" as evidence about churn-handling, never about judgement,
+    unless you have checked that a plausible wrong answer actually goes red. (4)
+    memorization_risk is high and unusually so: this is a public upstream PR
+    from Aug 2025, well inside the training window, and the answer (RS256) is a
+    single token that a model may simply recall. Per bench/README this case must
+    never anchor an efficacy claim on its own. Its real value is as a
+    format-development vehicle for the upgrade signature and as a contrast case
+    against a private post-cutoff upgrade, if one can be mined. (5) Added at
+    fixup: a declared output port needs a declared delivery channel. This case
+    listed `report: upgrade-report/v1` in its signature and its rubric graded the
+    report's honesty, but `task.md` never asked for one — so a solver could do
+    everything right and lose the item for not guessing that a write-up was
+    wanted, and the port had nothing to bind to at harvest time. Every non-`change`
+    output port must name a concrete artifact the task asks for (here
+    `UPGRADE-REPORT.md` at the repo root). Worth sweeping the corpus for: it is
+    an easy defect to introduce because the signature is written from the
+    workflow shape while the task is written from the trigger.

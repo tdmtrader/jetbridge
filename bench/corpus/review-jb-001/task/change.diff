@@ -1,0 +1,3250 @@
+diff --git a/AGENTIC_UX_WAVE_2_SCOPE.md b/AGENTIC_UX_WAVE_2_SCOPE.md
+new file mode 100644
+index 0000000000..e42bcddf24
+--- /dev/null
++++ b/AGENTIC_UX_WAVE_2_SCOPE.md
+@@ -0,0 +1,40 @@
++# Agentic UX Wave 2 — scope & sequencing
++
++Branch `agentic-ux-wave-2` off `jetbridge@54b541a81e`. Findings U1–U24 from the
++fresh-eyes audit. NOTE: the branch has advanced past the live-deployed
++v0.2.180-rc — **re-verify each finding against the current tree before editing.**
++
++Bundle rule: after any `web/elm/src` change, `hack/build-web.sh` rebuilds
++`web/public/elm.min.js`. Compile-check each Elm slice with `elm make`; regenerate
++the committed bundle once at the end.
++
++## In scope (implement + verify + compile + test)
++
++| Slice | Findings | Surface | Notes |
++|---|---|---|---|
++| 1 | U1 client | Concourse.elm decoder + StepTree render | keystone; server half already committed (4f64b29745) |
++| 2 | U3 truth (Go) | schema DeliveredOutcome + runner empty-result guard + RunMetrics build_status LEFT JOIN + ParseSubmission guard | test-first |
++| 3 | U3 render (Elm) | AgentBadge outcome, ledger + ticket runRow render build truth | depends on 2 |
++| 4 | U4 U19 U18 U21 U22 U2 U6 | AgentTicket.elm (+Routes/Message) | mostly pure-Elm; review card already on page |
++| 5 | U9 U10 U11 U23 | AgentTickets.elm, Dashboard.elm, agent-badge.less | copy Dashboard live-clock pattern |
++| 6 | U13 U16 U17 U15-lite | Agent/Agent.elm (+shared prose) | cheap wins, no Route/Model/Effect variant |
++| 7 | U24 batch | AgentReview.elm, AgentReviews.elm, Agent.elm, AgentBadge.elm, Effects.elm | micro-fixes |
++| 8 | — | rebuild bundle, full build/test, adversarial review workflow | |
++
++## Deferred (documented follow-up tickets, with rationale)
++
++- **U7 full web ticket-create form** — `CreateAgentTicket` exists server-side, but a
++  new create form is substantial UI. Ship U7-lite (dispatch-confirm shows
++  workflow@version + model + budget); defer the create form.
++- **U8 workflow detail/source/version pages** — new Route + SubPage.Model variant
++  forces arms across Routes.toString/extractPid/getGroups and SubPage
++  init/genericUpdate/view/tooltip/subscriptions; needs new Go wire fields. Own track.
++- **U15 full IA split into sub-pages + real pagination** — needs new Go endpoints.
++  Ship U15-lite (anchors, section nav, fenced mint form, "newest 100" caption).
++- **U12 dashboard de-sprawl (stop minting bare template pipelines)** — dispatch
++  backend behavior change; risky. Own track.
++
++Sequential implementation (shared Elm modules — Message.elm, AgentTicket.elm,
++AgentBadge.elm — preclude safe parallel worktrees). Foundational slices 1–3 by
++orchestrator; page bundles 4–7 by sequential sub-agents in this worktree, each
++re-verifying + compile-checking; adversarial review workflow at the end.
+diff --git a/agent/api/metrics/types.go b/agent/api/metrics/types.go
+index 0146bf45a9..ad6568e5a6 100644
+--- a/agent/api/metrics/types.go
++++ b/agent/api/metrics/types.go
+@@ -77,5 +77,8 @@ func ParseSubmission(body []byte) (*schema.RunMetrics, error) {
+ 	default:
+ 		return nil, fmt.Errorf("status must be one of ok|failed|error|parked")
+ 	}
++	// BuildStatus is server-derived (joined from the builds table on read);
++	// never trust a client-supplied value on the ingest path.
++	rm.BuildStatus = ""
+ 	return &rm, nil
+ }
+diff --git a/agent/schema/metrics.go b/agent/schema/metrics.go
+index 605dc00817..4d87051220 100644
+--- a/agent/schema/metrics.go
++++ b/agent/schema/metrics.go
+@@ -23,7 +23,13 @@ type RunMetrics struct {
+ 	WorkflowName    string          `json:"workflow_name,omitempty"`
+ 	WorkflowVersion *int            `json:"workflow_version,omitempty"`
+ 	WorkflowHash    string          `json:"workflow_hash,omitempty"`
+-	Status          string          `json:"status"` // ok | failed | error
++	Status          string          `json:"status"` // ok | failed | error — the AGENT STEP exit status
++	// BuildStatus is the status of the pipeline build the step ran in
++	// (pending|started|succeeded|failed|errored|aborted). It is derived
++	// server-side by joining the builds table on read and is never accepted
++	// from the ingesting client; display surfaces render this as the run
++	// truth so a green step status can never mask a failed build (U3).
++	BuildStatus     string          `json:"build_status,omitempty"`
+ 	Summary         string          `json:"summary"`
+ 	Model           string          `json:"model"`
+ 	Usage           Usage           `json:"usage"`
+diff --git a/atc/db/agent_run_metrics_factory.go b/atc/db/agent_run_metrics_factory.go
+index 1fe2b113af..337e130b4c 100644
+--- a/atc/db/agent_run_metrics_factory.go
++++ b/atc/db/agent_run_metrics_factory.go
+@@ -210,11 +210,18 @@ const runMetricsColumns = `m.ticket_id, m.pipeline_run_id, m.build_id, m.plan_id
+ 	m.input_tokens, m.output_tokens, m.cache_read_tokens, m.cache_creation_tokens,
+ 	m.turns, m.wall_time_seconds, m.cost_usd,
+ 	m.results, m.events_artifact, m.event_counts,
+-	EXTRACT(EPOCH FROM m.created_at)::bigint`
++	EXTRACT(EPOCH FROM m.created_at)::bigint,
++	b.status`
++
++// runMetricsFrom joins the builds table so each metric row carries the
++// server-derived build status (U3). LEFT JOIN so a metric whose build row is
++// absent still returns (build_status scans as empty).
++const runMetricsFrom = ` FROM agent_run_metrics m
++	 LEFT JOIN builds b ON b.id = m.build_id`
+ 
+ func (f *agentRunMetricsFactory) GetByBuild(buildID int) ([]agentschema.RunMetrics, error) {
+ 	rows, err := f.conn.Query(
+-		`SELECT `+runMetricsColumns+` FROM agent_run_metrics m
++		`SELECT `+runMetricsColumns+runMetricsFrom+`
+ 		 WHERE m.build_id = $1 ORDER BY m.created_at ASC, m.id ASC`, buildID)
+ 	if err != nil {
+ 		return nil, err
+@@ -225,7 +232,7 @@ func (f *agentRunMetricsFactory) GetByBuild(buildID int) ([]agentschema.RunMetri
+ 
+ func (f *agentRunMetricsFactory) ListByTicket(ticketID int) ([]agentschema.RunMetrics, error) {
+ 	rows, err := f.conn.Query(
+-		`SELECT `+runMetricsColumns+` FROM agent_run_metrics m
++		`SELECT `+runMetricsColumns+runMetricsFrom+`
+ 		 WHERE m.ticket_id = $1 ORDER BY m.created_at ASC, m.id ASC`, ticketID)
+ 	if err != nil {
+ 		return nil, err
+@@ -246,7 +253,7 @@ func (f *agentRunMetricsFactory) ListRecent(limit int) ([]agentschema.RunMetrics
+ 		limit = defaultRecentLimit
+ 	}
+ 	rows, err := f.conn.Query(
+-		`SELECT `+runMetricsColumns+` FROM agent_run_metrics m
++		`SELECT `+runMetricsColumns+runMetricsFrom+`
+ 		 ORDER BY m.created_at DESC, m.id DESC LIMIT $1`, limit)
+ 	if err != nil {
+ 		return nil, err
+@@ -260,6 +267,7 @@ func scanRunMetricsRows(rows *sql.Rows) ([]agentschema.RunMetrics, error) {
+ 	for rows.Next() {
+ 		var rm agentschema.RunMetrics
+ 		var resultsPayload, eventCounts []byte
++		var buildStatus sql.NullString
+ 		err := rows.Scan(
+ 			&rm.TicketID, &rm.PipelineRunID, &rm.BuildID, &rm.PlanID, &rm.StepName,
+ 			&rm.WorkflowName, &rm.WorkflowVersion, &rm.WorkflowHash,
+@@ -268,10 +276,12 @@ func scanRunMetricsRows(rows *sql.Rows) ([]agentschema.RunMetrics, error) {
+ 			&rm.Turns, &rm.WallTimeSeconds, &rm.CostUSD,
+ 			&resultsPayload, &rm.EventsArtifact, &eventCounts,
+ 			&rm.CreatedAt,
++			&buildStatus,
+ 		)
+ 		if err != nil {
+ 			return nil, err
+ 		}
++		rm.BuildStatus = buildStatus.String
+ 		if len(resultsPayload) > 0 {
+ 			rm.Results = json.RawMessage(resultsPayload)
+ 		}
+diff --git a/atc/db/agent_run_metrics_factory_test.go b/atc/db/agent_run_metrics_factory_test.go
+index 6799b714f8..2a722d7e0a 100644
+--- a/atc/db/agent_run_metrics_factory_test.go
++++ b/atc/db/agent_run_metrics_factory_test.go
+@@ -67,6 +67,36 @@ var _ = Describe("AgentRunMetricsFactory", func() {
+ 		Expect(byBuild).To(HaveLen(1))
+ 	})
+ 
++	It("joins the pipeline build status onto each run metric (U3 display truth)", func() {
++		// The U3 lie: an agent STEP can exit "ok" while the pipeline BUILD
++		// it ran in failed. The read path must expose the build status so
++		// display surfaces stop rendering a green "ok" on a failed build.
++		build, err := defaultTeam.CreateOneOffBuild()
++		Expect(err).ToNot(HaveOccurred())
++		Expect(build.Finish(db.BuildStatusFailed)).To(Succeed())
++
++		Expect(factory.Upsert(&schema.RunMetrics{
++			BuildID: build.ID(), PlanID: "p1", StepName: "implement",
++			Status: "ok", Summary: "agent reported ok",
++		})).To(Succeed())
++
++		rows, err := factory.GetByBuild(build.ID())
++		Expect(err).ToNot(HaveOccurred())
++		Expect(rows).To(HaveLen(1))
++		Expect(rows[0].Status).To(Equal("ok"))            // agent step exit
++		Expect(rows[0].BuildStatus).To(Equal("failed"))   // the build truth
++	})
++
++	It("leaves BuildStatus empty when the metric references no real build", func() {
++		Expect(factory.Upsert(&schema.RunMetrics{
++			BuildID: 999123, PlanID: "orphan", StepName: "s", Status: "ok", Summary: "x",
++		})).To(Succeed())
++		rows, err := factory.GetByBuild(999123)
++		Expect(err).ToNot(HaveOccurred())
++		Expect(rows).To(HaveLen(1))
++		Expect(rows[0].BuildStatus).To(Equal("")) // LEFT JOIN, no match
++	})
++
+ 	It("stores NULL ticket/workflow tags for pure-CI steps", func() {
+ 		Expect(factory.Upsert(&schema.RunMetrics{
+ 			BuildID: 43, PlanID: "aa", StepName: "s", Status: "error", Summary: "crashed",
+diff --git a/atc/public_plan.go b/atc/public_plan.go
+index dcd13170e5..aa10f795ca 100644
+--- a/atc/public_plan.go
++++ b/atc/public_plan.go
+@@ -19,6 +19,7 @@ func (plan *Plan) Public() *json.RawMessage {
+ 		Task           *json.RawMessage `json:"task,omitempty"`
+ 		Run            *json.RawMessage `json:"run,omitempty"`
+ 		Agent          *json.RawMessage `json:"agent,omitempty"`
++		Harvest        *json.RawMessage `json:"harvest,omitempty"`
+ 		SetPipeline    *json.RawMessage `json:"set_pipeline,omitempty"`
+ 		LoadVar        *json.RawMessage `json:"load_var,omitempty"`
+ 		OnAbort        *json.RawMessage `json:"on_abort,omitempty"`
+@@ -73,6 +74,10 @@ func (plan *Plan) Public() *json.RawMessage {
+ 		public.Agent = plan.Agent.Public()
+ 	}
+ 
++	if plan.Harvest != nil {
++		public.Harvest = plan.Harvest.Public()
++	}
++
+ 	if plan.SetPipeline != nil {
+ 		public.SetPipeline = plan.SetPipeline.Public()
+ 	}
+diff --git a/atc/public_plan_test.go b/atc/public_plan_test.go
+index 474ed273d0..f9a4ba96a2 100644
+--- a/atc/public_plan_test.go
++++ b/atc/public_plan_test.go
+@@ -119,6 +119,56 @@ var _ = Describe("Plan", func() {
+ 		})
+ 	})
+ 
++	Describe("HarvestPlan Public", func() {
++		It("exposes name, repo, and branch under a \"harvest\" key, redacting env, judge, and ids", func() {
++			plan := atc.Plan{
++				ID: "8/harvest",
++				Harvest: &atc.HarvestPlan{
++					Name:          "harvest",
++					Workspace:     "workspace",
++					Repo:          "tdmtrader/jetbridge",
++					TargetBranch:  "main",
++					TicketID:      28,
++					PipelineRunID: 42,
++					Branch:        "agent/ticket-28",
++					Push:          true,
++					Env: map[string]string{
++						"SECRET_TOKEN": "literal-secret",
++					},
++				},
++			}
++			json := plan.Public()
++			Expect(json).ToNot(BeNil())
++			Expect([]byte(*json)).To(MatchJSON(`{
++				"id": "8/harvest",
++				"harvest": {
++					"name": "harvest",
++					"repo": "tdmtrader/jetbridge",
++					"branch": "agent/ticket-28"
++				}
++			}`))
++		})
++
++		It("omits branch when empty", func() {
++			plan := atc.Plan{
++				ID: "8/harvest",
++				Harvest: &atc.HarvestPlan{
++					Name: "harvest",
++					Repo: "tdmtrader/jetbridge",
++				},
++			}
++			json := plan.Public()
++			Expect(json).ToNot(BeNil())
++			Expect([]byte(*json)).To(MatchJSON(`{
++				"id": "8/harvest",
++				"harvest": {
++					"name": "harvest",
++					"repo": "tdmtrader/jetbridge"
++				}
++			}`))
++		})
++	})
++
+ 	Describe("Public", func() {
+ 		It("returns a sanitized form of the plan", func() {
+ 			plan := atc.Plan{
+diff --git a/hack/build-web.sh b/hack/build-web.sh
+new file mode 100755
+index 0000000000..58def98d24
+--- /dev/null
++++ b/hack/build-web.sh
+@@ -0,0 +1,13 @@
++#!/usr/bin/env bash
++# Rebuild the embedded Elm bundle (web/public/elm.min.js) after Elm source
++# changes. The served UI is elm.min.js — editing web/elm/src without running
++# this leaves the browser on the OLD bundle (a known stale-bundle trap).
++# Requires: elm 0.19.1 and uglify-js (npm i -g uglify-js).
++set -euo pipefail
++cd "$(dirname "$0")/../web/elm"
++elm make --optimize --output ../public/elm.js src/Main.elm
++uglifyjs ../public/elm.js \
++  --compress "pure_funcs=[F2,F3,F4,F5,F6,F7,F8,F9,A2,A3,A4,A5,A6,A7,A8,A9],pure_getters,keep_fargs=false,unsafe_comps,unsafe" \
++  | uglifyjs --mangle --output ../public/elm.min.js
++rm -f ../public/elm.js
++echo "built web/public/elm.min.js ($(wc -c < ../public/elm.min.js) bytes)"
+diff --git a/web/assets/css/agent-badge.less b/web/assets/css/agent-badge.less
+index 33e5177910..34ddf45b4d 100644
+--- a/web/assets/css/agent-badge.less
++++ b/web/assets/css/agent-badge.less
+@@ -46,3 +46,44 @@
+   50%  { opacity: 0.25; }
+   100% { opacity: 1; }
+ }
++
++/* U23 — mobile queue rows (AgentTickets.AgentTickets). The rows lay out with
++ * inline flex styles; on narrow screens the title gets truncated to a few
++ * characters and the branch/workflow columns squeeze the cost column off-screen.
++ * Let the title wrap to its own full-width line and stay visible, keep the cost
++ * visible, and drop the two lowest-value columns (branch + workflow). These
++ * override inline styles, so `!important` is required. */
++@media (max-width: 560px) {
++  .agent-ticket-row {
++    flex-wrap: wrap;
++    gap: 8px !important;
++  }
++
++  /* Title takes its own line and wraps in full instead of ellipsis-truncating. */
++  .agent-ticket-main {
++    flex-basis: 100% !important;
++    order: 2;
++  }
++
++  .agent-ticket-title {
++    white-space: normal !important;
++    overflow: visible !important;
++    text-overflow: clip !important;
++    overflow-wrap: anywhere;
++    word-break: break-word;
++  }
++
++  /* Branch + workflow are the least-critical columns on a phone — hide them so
++   * the id, badge and cost stay on the first line. */
++  .agent-ticket-branch,
++  .agent-ticket-workflow {
++    display: none !important;
++  }
++
++  /* Keep the spend visible and let it size to content rather than reserving a
++   * fixed min-width that pushes it out of view. */
++  .agent-ticket-cost {
++    min-width: 0 !important;
++    order: 1;
++  }
++}
+diff --git a/web/elm/src/Agent/Agent.elm b/web/elm/src/Agent/Agent.elm
+index 7ed5e494d8..05d6797a41 100644
+--- a/web/elm/src/Agent/Agent.elm
++++ b/web/elm/src/Agent/Agent.elm
+@@ -34,6 +34,7 @@ import Set exposing (Set)
+ import SideBar.SideBar as SideBar
+ import Time
+ import Tooltip
++import Views.Prose
+ import Views.Styles
+ import Views.TopBar as TopBar
+ 
+@@ -75,6 +76,7 @@ type alias Model =
+         , minting : Bool
+         , revokeError : Maybe String
+         , showEphemeralPrincipals : Bool
++        , expandedRuns : Set Int
+         }
+ 
+ 
+@@ -101,6 +103,7 @@ init =
+       , minting = False
+       , revokeError = Nothing
+       , showEphemeralPrincipals = False
++      , expandedRuns = Set.empty
+       , isUserMenuExpanded = False
+       }
+     , [ FetchAgentRunMetrics
+@@ -334,6 +337,19 @@ update msg ( model, effects ) =
+         AgentPrincipalsShowEphemeralToggled ->
+             ( { model | showEphemeralPrincipals = not model.showEphemeralPrincipals }, effects )
+ 
++        AgentRunExpandToggled rowKey ->
++            -- Toggle a single ledger row between its one-line summary and the
++            -- full run summary. Keyed by the row's ordinal in the fetched list.
++            let
++                expanded =
++                    if Set.member rowKey model.expandedRuns then
++                        Set.remove rowKey model.expandedRuns
++
++                    else
++                        Set.insert rowKey model.expandedRuns
++            in
++            ( { model | expandedRuns = expanded }, effects )
++
+         _ ->
+             ( model, effects )
+ 
+@@ -433,10 +449,10 @@ formatUsd amount =
+     sign ++ String.fromInt dollars ++ "." ++ fraction
+ 
+ 
+-sectionBlock : String -> List (Html Message) -> Html Message
+-sectionBlock title children =
++sectionBlock : String -> String -> List (Html Message) -> Html Message
++sectionBlock anchorId title children =
+     Html.div
+-        [ style "margin-top" "24px" ]
++        [ id anchorId, style "margin-top" "24px" ]
+         (Html.h2
+             [ style "font-size" "15px"
+             , style "margin" "0 0 8px 0"
+@@ -540,23 +556,61 @@ view session model =
+                     , style "margin" "4px 0 0 0"
+                     ]
+                     [ Html.text "workflows and spend" ]
+-                , runsSection model
++                , sectionNav
++                , runsSection session.timeZone model
+                 , workflowsSection model
+                 , costsSection model
+-                , credentialsSection model
+-                , principalsSection model
++                , credentialsSection session.timeZone model
++                , principalsSection session.timeZone model
+                 ]
+             ]
+         ]
+ 
+ 
+ 
++-- SECTION NAV
++
++
++{-| A slim in-page nav strip so the long single-column console can be jumped
++around without scroll-hunting. Each entry anchors to a section's `id`. -}
++sectionNav : Html Message
++sectionNav =
++    Html.div
++        [ class "agent-section-nav"
++        , style "display" "flex"
++        , style "flex-wrap" "wrap"
++        , style "gap" "12px"
++        , style "margin" "12px 0 0 0"
++        , style "font-family" "monospace"
++        , style "font-size" "12px"
++        ]
++        (List.map navLink
++            [ ( "agent-runs", "runs" )
++            , ( "agent-workflows", "workflows" )
++            , ( "agent-costs", "costs" )
++            , ( "agent-credentials", "credentials" )
++            , ( "agent-principals", "principals" )
++            ]
++        )
++
++
++navLink : ( String, String ) -> Html Message
++navLink ( anchorId, label ) =
++    Html.a
++        [ href ("#" ++ anchorId)
++        , style "color" "#7a9ac0"
++        , style "text-decoration" "none"
++        ]
++        [ Html.text label ]
++
++
++
+ -- RUNS SECTION
+ 
+ 
+-runsSection : Model -> Html Message
+-runsSection model =
+-    sectionBlock "Recent runs" <|
++runsSection : Time.Zone -> Model -> Html Message
++runsSection zone model =
++    sectionBlock "agent-runs" "Recent runs" <|
+         case model.runs of
+             Nothing ->
+                 case model.runsError of
+@@ -572,11 +626,13 @@ runsSection model =
+ 
+             Just runs ->
+                 staleDataWarning model.runsError
+-                    ++ [ runsTable runs ]
++                    ++ [ mutedLine "showing the newest 100 runs (capped server-side, most recent first)"
++                       , runsTable zone model.expandedRuns runs
++                       ]
+ 
+ 
+-runsTable : List Agent.RunMetric -> Html Message
+-runsTable runs =
++runsTable : Time.Zone -> Set Int -> List Agent.RunMetric -> Html Message
++runsTable zone expandedRuns runs =
+     Html.table
+         [ class "agent-runs-table"
+         , style "border-collapse" "collapse"
+@@ -584,7 +640,7 @@ runsTable runs =
+         , style "font-size" "12px"
+         , style "color" Colors.text
+         ]
+-        (runsHeaderRow :: List.map runRow runs)
++        (runsHeaderRow :: List.map (\r -> runRow zone expandedRuns r.buildId r) runs)
+ 
+ 
+ runsHeaderRow : Html Message
+@@ -597,72 +653,100 @@ runsHeaderRow =
+         , tableHeaderCell "right" "tokens (in+out)"
+         , tableHeaderCell "right" "turns"
+         , tableHeaderCell "left" "ticket"
+-        , tableHeaderCell "left" "when"
++        , tableHeaderCell "left" "when (local)"
+         ]
+ 
+ 
+-runRow : Agent.RunMetric -> Html Message
+-runRow r =
++runRow : Time.Zone -> Set Int -> Int -> Agent.RunMetric -> Html Message
++runRow zone expandedRuns rowKey r =
+     Html.tr [ class "agent-run-row" ]
+-        [ runStepCell r
++        [ runStepCell expandedRuns rowKey r
+         , tableCell "left" (workflowRef r.workflowName r.workflowVersion)
+-        , runStatusCell r.status
++        , runStatusCell r
+         , tableCell "right" ("$" ++ formatUsd r.costUsd)
+         , tableCell "right" (String.fromInt r.usage.inputTokens ++ "+" ++ String.fromInt r.usage.outputTokens)
+         , tableCell "right" (String.fromInt r.turns)
+         , ticketRefCell r
+-        , tableCell "left" (formatPosix (Just (secondsToPosix r.createdAt)))
++        , tableCell "left" (formatPosix zone (Just (secondsToPosix r.createdAt)))
+         ]
+ 
+ 
+-{-| The step name plus a muted one-line summary underneath it — omitted when
+-the summary is empty so the row does not carry a blank subtext line.
++{-| The step name plus its summary underneath it — omitted when the summary is
++empty so the row does not carry a blank subtext line. The summary is
++click-to-expand: collapsed it is a truncated one-liner; expanded it renders the
++full run summary as prose (`AgentRunExpandToggled`, keyed by build id so the
++expanded row stays put when a 5s refetch prepends a newer run).
+ -}
+-runStepCell : Agent.RunMetric -> Html Message
+-runStepCell r =
++runStepCell : Set Int -> Int -> Agent.RunMetric -> Html Message
++runStepCell expandedRuns rowKey r =
++    let
++        expanded =
++            Set.member rowKey expandedRuns
++
++        summaryBlock =
++            if r.summary == "" then
++                []
++
++            else if expanded then
++                [ Html.div
++                    [ class "agent-run-summary-full"
++                    , onClick (AgentRunExpandToggled rowKey)
++                    , style "max-width" "480px"
++                    , style "margin-top" "2px"
++                    , style "cursor" "pointer"
++                    , title "click to collapse"
++                    ]
++                    [ Views.Prose.view r.summary ]
++                ]
++
++            else
++                [ Html.div
++                    [ class "agent-run-summary"
++                    , onClick (AgentRunExpandToggled rowKey)
++                    , style "font-size" "11px"
++                    , style "color" mutedColor
++                    , style "max-width" "320px"
++                    , style "white-space" "nowrap"
++                    , style "overflow" "hidden"
++                    , style "text-overflow" "ellipsis"
++                    , style "cursor" "pointer"
++                    , title r.summary
++                    ]
++                    [ Html.text ("▸ " ++ r.summary) ]
++                ]
++    in
+     Html.td
+         [ style "text-align" "left"
+         , style "padding" "4px 16px 4px 0"
+         , style "border-bottom" rowBorder
++        , style "vertical-align" "top"
+         ]
+         (Html.div
+             [ style "font-weight" "700", style "color" Colors.text ]
+             [ Html.text r.stepName ]
+-            :: (if r.summary == "" then
+-                    []
+-
+-                else
+-                    [ Html.div
+-                        [ style "font-size" "11px"
+-                        , style "color" mutedColor
+-                        , style "max-width" "320px"
+-                        , style "white-space" "nowrap"
+-                        , style "overflow" "hidden"
+-                        , style "text-overflow" "ellipsis"
+-                        , title r.summary
+-                        ]
+-                        [ Html.text r.summary ]
+-                    ]
+-               )
++            :: summaryBlock
+         )
+ 
+ 
+-{-| Render an agent\_run\_metrics status ("ok"/"failed"/"parked"/"error") as an
+-AgentBadge; fall back to the raw string for any status the badge doesn't know.
++{-| Render the run's DISPLAY truth as an AgentBadge. The pipeline build status
++wins over the agent step status (U3), so a step that exited "ok" inside a
++failed build shows Failed, and an "ok" step that delivered no summary shows
++"No output" — never a green OK on a build that did not deliver. Falls back to
++the raw step status only when the badge can derive nothing.
+ -}
+-runStatusCell : String -> Html Message
+-runStatusCell status =
++runStatusCell : Agent.RunMetric -> Html Message
++runStatusCell r =
+     Html.td
+         [ style "text-align" "left"
+         , style "padding" "4px 16px 4px 0"
+         , style "border-bottom" rowBorder
+         ]
+-        [ case AgentBadge.fromRunStatus status of
++        [ case AgentBadge.runOutcome { buildStatus = r.buildStatus, runStatus = r.status, hasResult = r.summary /= "" } of
+             Just badgeStatus ->
+                 AgentBadge.view badgeStatus
+ 
+             Nothing ->
+-                Html.text status
++                Html.text r.status
+         ]
+ 
+ 
+@@ -696,13 +780,19 @@ ticketRefCell r =
+             Just t ->
+                 Html.a
+                     [ href (Routes.toString (Routes.AgentTicket { id = t }))
++                    , title ("Agent ticket #" ++ String.fromInt t)
+                     , style "color" "#7a9ac0"
+                     , style "text-decoration" "none"
+                     ]
+                     [ Html.text ("#" ++ String.fromInt t) ]
+ 
+             Nothing ->
+-                Html.text "CI"
++                Html.span
++                    [ title "Continuous-integration review run — not tied to an agent ticket"
++                    , style "color" subtleColor
++                    , style "cursor" "help"
++                    ]
++                    [ Html.text "CI" ]
+         ]
+ 
+ 
+@@ -717,7 +807,7 @@ secondsToPosix seconds =
+ 
+ workflowsSection : Model -> Html Message
+ workflowsSection model =
+-    sectionBlock "Workflows" <|
++    sectionBlock "agent-workflows" "Workflows" <|
+         case model.workflows of
+             Nothing ->
+                 case model.workflowsError of
+@@ -812,7 +902,7 @@ liveVersionLine w =
+ 
+ costsSection : Model -> Html Message
+ costsSection model =
+-    sectionBlock "Costs" <|
++    sectionBlock "agent-costs" "Costs" <|
+         case model.costRollup of
+             Nothing ->
+                 case model.costError of
+@@ -835,7 +925,7 @@ costSummaryLine : Agent.CostSummary -> Html Message
+ costSummaryLine summary =
+     let
+         spent =
+-            "today (UTC): $" ++ formatUsd summary.dailySpentUsd ++ " spent"
++            "today (UTC day): $" ++ formatUsd summary.dailySpentUsd ++ " spent"
+ 
+         cap =
+             if summary.dailyCapUsd > 0 then
+@@ -1005,27 +1095,28 @@ tableCell align content =
+         [ Html.text content ]
+ 
+ 
+-{-| Humanize an optional epoch timestamp as a UTC yyyy-mm-dd hh:mm, or "—"
+-when absent. Deliberately timezone-independent (UTC) so it is deterministic;
+-the minutes matter on an ops console where "which of today's runs came first"
+-is a real question.
++{-| Humanize an optional epoch timestamp as a yyyy-mm-dd hh:mm in the viewer's
++own time zone (from `session.timeZone`), or "—" when absent. Showing local time
++is what an operator expects for "which of today's runs came first"; the minutes
++matter on an ops console. The server-aggregated cost buckets stay labelled as
++UTC days separately.
+ -}
+-formatPosix : Maybe Time.Posix -> String
+-formatPosix maybe =
++formatPosix : Time.Zone -> Maybe Time.Posix -> String
++formatPosix zone maybe =
+     case maybe of
+         Nothing ->
+             "—"
+ 
+         Just posix ->
+-            String.fromInt (Time.toYear Time.utc posix)
++            String.fromInt (Time.toYear zone posix)
+                 ++ "-"
+-                ++ pad2 (monthNumber (Time.toMonth Time.utc posix))
++                ++ pad2 (monthNumber (Time.toMonth zone posix))
+                 ++ "-"
+-                ++ pad2 (Time.toDay Time.utc posix)
++                ++ pad2 (Time.toDay zone posix)
+                 ++ " "
+-                ++ pad2 (Time.toHour Time.utc posix)
++                ++ pad2 (Time.toHour zone posix)
+                 ++ ":"
+-                ++ pad2 (Time.toMinute Time.utc posix)
++                ++ pad2 (Time.toMinute zone posix)
+ 
+ 
+ pad2 : Int -> String
+@@ -1077,39 +1168,43 @@ monthNumber month =
+ -- CREDENTIALS SECTION (read-only status)
+ 
+ 
+-credentialsSection : Model -> Html Message
+-credentialsSection model =
+-    sectionBlock "Credentials" <|
+-        platformCredentialsBlock model.platformCredentials
+-            ++ mutedLine "set or rotate with: fly agent auth"
+-            :: (case model.credentials of
+-                    Nothing ->
+-                        case model.credentialsError of
+-                            Just message ->
+-                                [ errorLine message ]
++credentialsSection : Time.Zone -> Model -> Html Message
++credentialsSection zone model =
++    -- Two distinct slots, each behind its own labelled sub-header (U17): the
++    -- vaulted PLATFORM credential dispatched runs authenticate with, and the
++    -- viewer's OWN interactive credential. Keeping them apart stops an empty
++    -- personal slot from reading as "the platform auth is missing".
++    sectionBlock "agent-credentials" "Credentials" <|
++        platformCredentialsBlock zone model.platformCredentials
++            ++ personalCredentialsBlock zone model
+ 
+-                            Nothing ->
+-                                [ mutedLine "loading…" ]
+ 
+-                    Just [] ->
+-                        staleDataWarning model.credentialsError
+-                            ++ [ mutedLine "no credentials stored — run: fly agent auth" ]
+-
+-                    Just creds ->
+-                        staleDataWarning model.credentialsError
+-                            ++ [ credentialsTable creds ]
+-               )
++{-| A bold, muted sub-header naming one of the two credential slots so the
++platform slot and the personal slot can never be mistaken for one another.
++-}
++credentialSlotLabel : String -> Html Message
++credentialSlotLabel labelText =
++    Html.div
++        [ style "color" mutedColor
++        , style "font-family" "monospace"
++        , style "font-size" "12px"
++        , style "font-weight" "700"
++        , style "margin" "10px 0 2px 0"
++        ]
++        [ Html.text labelText ]
+ 
+ 
+ {-| The vaulted platform credential dispatched runs actually authenticate
+ with. Fetched with `?user=platform` (admin-only; a 403 hides the block), so
+ the section no longer claims "no credentials stored" while dispatch works.
++Rendered under its own "Platform credential" header.
+ -}
+-platformCredentialsBlock : Maybe (List Agent.CredentialStatus) -> List (Html Message)
+-platformCredentialsBlock maybeCreds =
++platformCredentialsBlock : Time.Zone -> Maybe (List Agent.CredentialStatus) -> List (Html Message)
++platformCredentialsBlock zone maybeCreds =
+     case maybeCreds of
+         Just (cred :: rest) ->
+-            [ Html.div
++            [ credentialSlotLabel "Platform credential (used by dispatched runs)"
++            , Html.div
+                 [ class "agent-platform-credential"
+                 , style "font-family" "monospace"
+                 , style "font-size" "12px"
+@@ -1120,11 +1215,10 @@ platformCredentialsBlock maybeCreds =
+                     (\c ->
+                         Html.div []
+                             [ Html.text
+-                                ("platform: "
+-                                    ++ c.kind
++                                (c.kind
+                                     ++ " (expires "
+-                                    ++ formatPosix c.expiresAt
+-                                    ++ ") — used by dispatched runs"
++                                    ++ formatPosix zone c.expiresAt
++                                    ++ ") — active"
+                                 )
+                             ]
+                     )
+@@ -1136,8 +1230,35 @@ platformCredentialsBlock maybeCreds =
+             []
+ 
+ 
+-credentialsTable : List Agent.CredentialStatus -> Html Message
+-credentialsTable creds =
++{-| The viewer's own credential, set via `fly agent auth`. Kept under its own
++header so an empty personal slot reads as "you have no personal credential",
++not "the platform auth is missing" (U17).
++-}
++personalCredentialsBlock : Time.Zone -> Model -> List (Html Message)
++personalCredentialsBlock zone model =
++    credentialSlotLabel "Your credential (interactive fly login)"
++        :: mutedLine "set or rotate with: fly agent auth"
++        :: (case model.credentials of
++                Nothing ->
++                    case model.credentialsError of
++                        Just message ->
++                            [ errorLine message ]
++
++                        Nothing ->
++                            [ mutedLine "loading…" ]
++
++                Just [] ->
++                    staleDataWarning model.credentialsError
++                        ++ [ mutedLine "no personal credential stored — run: fly agent auth" ]
++
++                Just creds ->
++                    staleDataWarning model.credentialsError
++                        ++ [ credentialsTable zone creds ]
++           )
++
++
++credentialsTable : Time.Zone -> List Agent.CredentialStatus -> Html Message
++credentialsTable zone creds =
+     Html.table
+         [ class "agent-credentials-table"
+         , style "border-collapse" "collapse"
+@@ -1150,16 +1271,16 @@ credentialsTable creds =
+             , tableHeaderCell "left" "expires"
+             , tableHeaderCell "left" "last verified"
+             ]
+-            :: List.map credentialRow creds
++            :: List.map (credentialRow zone) creds
+         )
+ 
+ 
+-credentialRow : Agent.CredentialStatus -> Html Message
+-credentialRow c =
++credentialRow : Time.Zone -> Agent.CredentialStatus -> Html Message
++credentialRow zone c =
+     Html.tr [ class "agent-credential-row" ]
+         [ tableCell "left" c.kind
+-        , tableCell "left" (formatPosix c.expiresAt)
+-        , tableCell "left" (formatPosix c.lastVerifiedAt)
++        , tableCell "left" (formatPosix zone c.expiresAt)
++        , tableCell "left" (formatPosix zone c.lastVerifiedAt)
+         ]
+ 
+ 
+@@ -1167,13 +1288,37 @@ credentialRow c =
+ -- PRINCIPALS SECTION (admin: mint / list / revoke)
+ 
+ 
+-principalsSection : Model -> Html Message
+-principalsSection model =
+-    sectionBlock "Principals"
+-        ([ mintForm model ]
+-            ++ mintedTokenBox model
+-            ++ [ revokeErrorLine model ]
+-            ++ principalsBody model
++principalsSection : Time.Zone -> Model -> Html Message
++principalsSection zone model =
++    sectionBlock "agent-principals" "Principals"
++        (mintFence model
++            :: revokeErrorLine model
++            :: principalsBody zone model
++        )
++
++
++{-| Fence the privileged mint form inside its own bordered, labelled box so it
++is unmistakably a credential-issuing control and does not read as just another
++read-only panel sitting under the spend tables (U15). -}
++mintFence : Model -> Html Message
++mintFence model =
++    Html.div
++        [ class "agent-mint-fence"
++        , style "border" ("1px solid " ++ amberColor)
++        , style "border-radius" "4px"
++        , style "padding" "10px 12px"
++        , style "margin" "4px 0 12px 0"
++        ]
++        (Html.div
++            [ style "color" amberColor
++            , style "font-family" "monospace"
++            , style "font-size" "12px"
++            , style "font-weight" "700"
++            , style "margin-bottom" "8px"
++            ]
++            [ Html.text "Mint a principal — issues a privileged API credential" ]
++            :: mintForm model
++            :: mintedTokenBox model
+         )
+ 
+ 
+@@ -1422,8 +1567,8 @@ mintedTokenBox model =
+             ]
+ 
+ 
+-principalsBody : Model -> List (Html Message)
+-principalsBody model =
++principalsBody : Time.Zone -> Model -> List (Html Message)
++principalsBody zone model =
+     case model.principals of
+         Nothing ->
+             case model.principalsError of
+@@ -1447,9 +1592,9 @@ principalsBody model =
+                         [ mutedLine "no durable principals — mint one above" ]
+ 
+                     else
+-                        [ principalsTable durable ]
++                        [ principalsTable zone durable ]
+                    )
+-                ++ ephemeralPrincipals model ephemeral
++                ++ ephemeralPrincipals zone model ephemeral
+ 
+ 
+ {-| Per-run agent tokens are named `run-<id>` and are minted/revoked
+@@ -1467,8 +1612,8 @@ isEphemeralPrincipal p =
+             False
+ 
+ 
+-ephemeralPrincipals : Model -> List Agent.Principal -> List (Html Message)
+-ephemeralPrincipals model ephemeral =
++ephemeralPrincipals : Time.Zone -> Model -> List Agent.Principal -> List (Html Message)
++ephemeralPrincipals zone model ephemeral =
+     if List.isEmpty ephemeral then
+         []
+ 
+@@ -1503,15 +1648,15 @@ ephemeralPrincipals model ephemeral =
+                 )
+             ]
+             :: (if model.showEphemeralPrincipals then
+-                    [ principalsTable ephemeral ]
++                    [ principalsTable zone ephemeral ]
+ 
+                 else
+                     []
+                )
+ 
+ 
+-principalsTable : List Agent.Principal -> Html Message
+-principalsTable principals =
++principalsTable : Time.Zone -> List Agent.Principal -> Html Message
++principalsTable zone principals =
+     Html.table
+         [ class "agent-principals-table"
+         , style "border-collapse" "collapse"
+@@ -1528,12 +1673,12 @@ principalsTable principals =
+             , tableHeaderCell "left" "last used"
+             , tableHeaderCell "left" ""
+             ]
+-            :: List.map principalRow principals
++            :: List.map (principalRow zone) principals
+         )
+ 
+ 
+-principalRow : Agent.Principal -> Html Message
+-principalRow p =
++principalRow : Time.Zone -> Agent.Principal -> Html Message
++principalRow zone p =
+     let
+         dim =
+             case p.revokedAt of
+@@ -1550,7 +1695,7 @@ principalRow p =
+                         [ class "agent-principal-revoked"
+                         , style "color" subtleColor
+                         ]
+-                        [ Html.text ("revoked " ++ formatPosix (Just revokedAt)) ]
++                        [ Html.text ("revoked " ++ formatPosix zone (Just revokedAt)) ]
+ 
+                 Nothing ->
+                     Html.button
+@@ -1571,9 +1716,9 @@ principalRow p =
+         [ tableCell "left" p.name
+         , tableCell "left" (String.join ", " p.scopes)
+         , tableCell "left" p.teamName
+-        , tableCell "left" (formatPosix (Just p.createdAt))
+-        , tableCell "left" (formatPosix p.expiresAt)
+-        , tableCell "left" (formatPosix p.lastUsedAt)
++        , tableCell "left" (formatPosix zone (Just p.createdAt))
++        , tableCell "left" (formatPosix zone p.expiresAt)
++        , tableCell "left" (formatPosix zone p.lastUsedAt)
+         , Html.td
+             [ style "padding" "4px 16px 4px 0"
+             , style "border-bottom" rowBorder
+diff --git a/web/elm/src/AgentBadge.elm b/web/elm/src/AgentBadge.elm
+index c27f081aa7..5831c7107c 100644
+--- a/web/elm/src/AgentBadge.elm
++++ b/web/elm/src/AgentBadge.elm
+@@ -1,15 +1,17 @@
+ module AgentBadge exposing
+     ( Status(..)
+     , Tone(..)
++    , description
+     , fromApiToken
+     , fromRunStatus
+     , label
++    , runOutcome
+     , tone
+     , view
+     )
+ 
+ import Html exposing (Html)
+-import Html.Attributes exposing (class)
++import Html.Attributes exposing (class, title)
+ 
+ 
+ type Status
+@@ -25,7 +27,9 @@ type Status
+     | Abandoned
+     | Failed
+     | Errored
++    | Aborted
+     | Succeeded
++    | NoOutput
+ 
+ 
+ type Tone
+@@ -83,9 +87,68 @@ label status =
+         Errored ->
+             "Errored"
+ 
++        Aborted ->
++            "Aborted"
++
+         Succeeded ->
+             "OK"
+ 
++        NoOutput ->
++            "No output"
++
++
++{-| A one-line, plain-English gloss for each status, surfaced as the badge's
++hover `title` so the terminal states (Merged / Concluded / Abandoned, …) carry
++their meaning in the UI instead of only in docs.
++-}
++description : Status -> String
++description status =
++    case status of
++        Draft ->
++            "Not queued yet — still being drafted"
++
++        Queued ->
++            "Waiting for an agent to pick it up"
++
++        Running _ ->
++            "An agent is working on it now"
++
++        AwaitingHuman ->
++            "Paused — waiting on your input"
++
++        NeedsReview ->
++            "Work is ready for your review"
++
++        Merged ->
++            "Branch merged to the target branch"
++
++        MergedWithFixes ->
++            "Merged after manual fixes on top"
++
++        SentBack ->
++            "Returned to the agent for changes"
++
++        Concluded ->
++            "Closed without merging (e.g. analysis-only)"
++
++        Abandoned ->
++            "Dropped without delivery"
++
++        Failed ->
++            "The run failed"
++
++        Errored ->
++            "The run hit an unexpected error"
++
++        Aborted ->
++            "The run was aborted"
++
++        Succeeded ->
++            "Completed successfully"
++
++        NoOutput ->
++            "Finished but produced no result"
++
+ 
+ tone : Status -> Tone
+ tone status =
+@@ -126,9 +189,15 @@ tone status =
+         Errored ->
+             Error
+ 
++        Aborted ->
++            Neutral
++
+         Succeeded ->
+             Good
+ 
++        NoOutput ->
++            Warn
++
+ 
+ fromApiToken : String -> Maybe Status
+ fromApiToken token =
+@@ -195,6 +264,51 @@ fromRunStatus status =
+             Nothing
+ 
+ 
++{-| runOutcome derives the DISPLAY truth for a finished run. The pipeline
++build status (server-derived) wins over the agent step status (U3): a step
++that exited "ok" inside a build that failed is Failed, and a step that exited
++"ok" in a build that succeeded but produced no result summary is NoOutput —
++never a green OK on a build that did not deliver. Falls back to the step
++status when the build status is absent (e.g. a metric that predates the final
++build state, or a still-running build).
++-}
++runOutcome : { buildStatus : String, runStatus : String, hasResult : Bool } -> Maybe Status
++runOutcome { buildStatus, runStatus, hasResult } =
++    -- A parked run is blocked awaiting a human (HITL checkpoint). Its build
++    -- deliberately stays "started" until the run continues, so parked must be
++    -- checked BEFORE the build status — otherwise "started" would render it as
++    -- Running and hide that it needs the operator's input.
++    if runStatus == "parked" then
++        Just AwaitingHuman
++
++    else
++        case buildStatus of
++            "failed" ->
++                Just Failed
++
++            "errored" ->
++                Just Errored
++
++            "aborted" ->
++                Just Aborted
++
++            "succeeded" ->
++                if hasResult then
++                    Just Succeeded
++
++                else
++                    Just NoOutput
++
++            "started" ->
++                Just (Running Nothing)
++
++            "pending" ->
++                Just (Running Nothing)
++
++            _ ->
++                fromRunStatus runStatus
++
++
+ toneClass : Tone -> String
+ toneClass t =
+     case t of
+@@ -256,7 +370,7 @@ view status =
+                    )
+     in
+     Html.span
+-        (List.map class classes)
++        (title (description status) :: List.map class classes)
+         [ Html.span [ class "agent-badge__dot" ] []
+         , Html.text (label status)
+         ]
+diff --git a/web/elm/src/AgentReviews/AgentReviews.elm b/web/elm/src/AgentReviews/AgentReviews.elm
+index 1a17631b9a..b371f654c6 100644
+--- a/web/elm/src/AgentReviews/AgentReviews.elm
++++ b/web/elm/src/AgentReviews/AgentReviews.elm
+@@ -270,10 +270,11 @@ reviewRow s =
+             ]
+         , Html.span [ style "margin-left" "auto", style "color" "#b0b0b0" ]
+             [ Html.text
+-                ("evaluated "
++                ("your feedback: "
+                     ++ String.fromInt s.evaluatedCount
+-                    ++ "/"
++                    ++ " of "
+                     ++ String.fromInt (s.provenCount + s.observationCount)
++                    ++ " verdicts"
+                 )
+             ]
+         ]
+diff --git a/web/elm/src/AgentTickets/AgentTicket.elm b/web/elm/src/AgentTickets/AgentTicket.elm
+index d02abbbd40..cee840f497 100644
+--- a/web/elm/src/AgentTickets/AgentTicket.elm
++++ b/web/elm/src/AgentTickets/AgentTicket.elm
+@@ -30,8 +30,9 @@ import Concourse.AgentTicket as AgentTicket
+ import Dict exposing (Dict)
+ import EffectTransformer exposing (ET)
+ import Html exposing (Html)
+-import Html.Attributes exposing (class, href, id, placeholder, style, value)
+-import Html.Events exposing (onClick, onInput)
++import Html.Attributes exposing (attribute, class, href, id, placeholder, style, value)
++import Html.Events exposing (on, onClick, onInput)
++import Json.Decode
+ import Login.Login as Login
+ import Message.Callback exposing (Callback(..))
+ import Message.Effects exposing (Effect(..))
+@@ -40,8 +41,10 @@ import Message.Subscription exposing (Delivery(..), Interval(..), Subscription(.
+ import Routes
+ import Set exposing (Set)
+ import SideBar.SideBar as SideBar
++import Time
+ import Tooltip
+ import UserState
++import Views.Prose
+ import Views.Styles
+ import Views.TopBar as TopBar
+ 
+@@ -66,6 +69,7 @@ type alias Model =
+         , editBody : String
+         , editBudget : String
+         , dispatchConfirm : Bool
++        , pendingTransition : Maybe String
+ 
+         -- Review panel state — structurally satisfies Build.AgentReview.PanelState
+         -- so the panel view can be reused unchanged.
+@@ -95,6 +99,7 @@ init { id } =
+       , editBody = ""
+       , editBudget = ""
+       , dispatchConfirm = False
++      , pendingTransition = Nothing
+       , agentReviews = []
+       , agentReviewLoadError = False
+       , agentReviewPanelExpanded = False
+@@ -123,16 +128,35 @@ handleCallback : Callback -> ET Model
+ handleCallback callback ( model, effects ) =
+     case callback of
+         AgentTicketFetched (Ok detail) ->
++            -- The 5s self-heal refetch must not clobber an open edit form: when
++            -- the user is editing, leave the edit buffers untouched (a periodic
++            -- refetch would otherwise silently revert their unsaved typing every
++            -- few seconds, and a tick just before Save would persist the reverted
++            -- server values as a no-op that looks successful).
+             ( { model
+                 | detail = Just detail
+                 , loaded = True
+                 , loadError = False
+-                , editTitle = detail.ticket.title
+-                , editBody = detail.ticket.body
++                , editTitle =
++                    if model.editing then
++                        model.editTitle
++
++                    else
++                        detail.ticket.title
++                , editBody =
++                    if model.editing then
++                        model.editBody
++
++                    else
++                        detail.ticket.body
+                 , editBudget =
+-                    detail.ticket.budgetUsd
+-                        |> Maybe.map String.fromFloat
+-                        |> Maybe.withDefault ""
++                    if model.editing then
++                        model.editBudget
++
++                    else
++                        detail.ticket.budgetUsd
++                            |> Maybe.map String.fromFloat
++                            |> Maybe.withDefault ""
+               }
+             , effects
+             )
+@@ -208,8 +232,10 @@ handleCallback callback ( model, effects ) =
+ handleDelivery : Delivery -> ET Model
+ handleDelivery delivery ( model, effects ) =
+     case delivery of
+-        ClockTicked OneMinute _ ->
+-            -- Self-healing refresh; only replaces fetched data.
++        ClockTicked FiveSeconds _ ->
++            -- U11: live-update on the dashboard's 5s cadence so state, spend and
++            -- runs stay current (a page was showing "Running" ~20 min after the
++            -- ticket errored). Only replaces fetched data.
+             ( model, effects ++ [ FetchAgentTicket model.ticketId, FetchAgentTicketMetrics model.ticketId ] )
+ 
+         _ ->
+@@ -250,15 +276,23 @@ update msg ( model, effects ) =
+             )
+ 
+         ClickAgentTicketTransition to ->
+-            ( { model | actionError = Nothing }
+-            , case model.detail of
+-                Just d ->
++            -- Two-step confirm: first click arms the disposition (naming the
++            -- action), a second click commits it. Mirrors the dispatch confirm.
++            ( { model | pendingTransition = Just to, actionError = Nothing }, effects )
++
++        ConfirmAgentTicketTransition ->
++            ( { model | pendingTransition = Nothing, actionError = Nothing }
++            , case ( model.detail, model.pendingTransition ) of
++                ( Just d, Just to ) ->
+                     effects ++ [ TransitionAgentTicket { id = model.ticketId, from = d.ticket.state, to = to } ]
+ 
+-                Nothing ->
++                _ ->
+                     effects
+             )
+ 
++        CancelAgentTicketTransition ->
++            ( { model | pendingTransition = Nothing }, effects )
++
+         ClickAgentTicketDispatch ->
+             ( { model | dispatchConfirm = True, actionError = Nothing }, effects )
+ 
+@@ -321,7 +355,7 @@ tooltip _ _ =
+ 
+ subscriptions : List Subscription
+ subscriptions =
+-    [ OnClockTick OneMinute ]
++    [ OnClockTick FiveSeconds ]
+ 
+ 
+ 
+@@ -366,34 +400,69 @@ content session model =
+                 Html.p [ style "color" "#b0b0b0" ] [ Html.text "Loading…" ]
+ 
+             Just detail ->
++                let
++                    ticket =
++                        detail.ticket
++
++                    reviewCard =
++                        Build.AgentReview.view (reviewerName session) model
++
++                    top =
++                        [ header model ticket
++                        , provenanceLine ticket
++                        , provenanceTimestamps session.timeZone ticket
++                        , errorNotice ticket
++                        , actionErrorBanner model
++                        ]
++
++                    rest =
++                        [ budgetBar ticket model.runMetrics
++                        , editForm model ticket
++                        , Html.div [ id "ticket-hitl-slot" ] []
++                        , tabsBar model
++                        , tabContent model detail
++                        , taskList detail.tasks
++                        , runHistory model.runMetrics
++                        ]
++                in
+                 Html.div []
+-                    [ header model detail.ticket
+-                    , provenanceLine detail.ticket
+-                    , actionErrorBanner model
+-                    , lifecycleBar model detail.ticket
+-                    , budgetBar detail.ticket model.runMetrics
+-                    , editForm model
+-                    , Html.div [ id "ticket-hitl-slot" ] []
+-                    , tabsBar model
+-                    , tabContent model detail
+-                    , taskList detail.tasks
+-                    , runHistory model.runMetrics
+-                    , Build.AgentReview.view (reviewerName session) model
+-                    ]
++                    (if ticket.state == "needs_review" then
++                        -- U6: keep the evidence (digest + review card) beside the
++                        -- decision (the disposition bar) so a reviewer sees both.
++                        top
++                            ++ [ reviewDigest ticket model.runMetrics
++                               , lifecycleBar model ticket
++                               , reviewCard
++                               ]
++                            ++ rest
++
++                     else
++                        top
++                            ++ [ lifecycleBar model ticket ]
++                            ++ rest
++                            ++ [ reviewCard ]
++                    )
+ 
+ 
+ header : Model -> AgentTicket.Ticket -> Html Message
+ header model ticket =
+     Html.div
+-        [ style "display" "flex", style "align-items" "center", style "gap" "12px", style "margin-bottom" "4px" ]
++        [ style "display" "flex", style "align-items" "flex-start", style "gap" "12px", style "margin-bottom" "4px" ]
+         [ Html.span
+-            [ style "font-family" "monospace", style "color" "#9aa39b" ]
++            [ style "font-family" "monospace", style "color" "#9aa39b", style "flex-shrink" "0", style "padding-top" "3px" ]
+             [ Html.text ("#" ++ String.fromInt ticket.id) ]
+-        , stateBadge ticket.state
++        , Html.span [ style "flex-shrink" "0", style "padding-top" "1px" ] [ stateBadge ticket.state ]
+         , Html.h1
+-            [ style "font-size" "18px", style "margin" "0", style "flex" "1" ]
++            [ style "font-size" "18px"
++            , style "margin" "0"
++            , style "flex" "1"
++            , style "min-width" "0"
++            , style "text-align" "left"
++            , style "overflow-wrap" "anywhere"
++            , style "word-break" "break-word"
++            ]
+             [ Html.text ticket.title ]
+-        , if model.editing then
++        , if model.editing || isTerminal ticket.state then
+             Html.text ""
+ 
+           else
+@@ -454,6 +523,74 @@ provenanceLine ticket =
+             (repoPart ++ branchPart)
+ 
+ 
++{-| Created / updated / completed provenance. The epoch-seconds fields ride on
++every ticket but were rendered nowhere; surface them as a small absolute-time
++line (UTC-offset by the viewer's zone). Updated is suppressed when it matches
++created, and completed only shows once the ticket has finished.
++-}
++provenanceTimestamps : Time.Zone -> AgentTicket.Ticket -> Html Message
++provenanceTimestamps zone ticket =
++    let
++        parts =
++            List.filterMap identity
++                [ if ticket.createdAt > 0 then
++                    Just ("created " ++ formatTimestamp zone ticket.createdAt)
++
++                  else
++                    Nothing
++                , if ticket.updatedAt > 0 && ticket.updatedAt /= ticket.createdAt then
++                    Just ("updated " ++ formatTimestamp zone ticket.updatedAt)
++
++                  else
++                    Nothing
++                , ticket.completedAt
++                    |> Maybe.map (\c -> "completed " ++ formatTimestamp zone c)
++                ]
++    in
++    if List.isEmpty parts then
++        Html.text ""
++
++    else
++        Html.div
++            [ id "ticket-timestamps"
++            , style "font-size" "11px"
++            , style "color" "#7a7a7a"
++            , style "margin" "0 0 8px 0"
++            ]
++            [ Html.text (String.join " · " parts) ]
++
++
++{-| U4: when a run errored the server records the failure text on the ticket
++(`error_detail`), but it was never shown. Surface it prominently, right above
++the Retry action, so the reviewer knows what to fix before re-queueing.
++-}
++errorNotice : AgentTicket.Ticket -> Html Message
++errorNotice ticket =
++    if ticket.errorDetail == "" then
++        Html.text ""
++
++    else
++        Html.div
++            [ id "ticket-error-detail"
++            , style "border" "1px solid #7a3a3a"
++            , style "background" "#2a1c1c"
++            , style "color" "#f0a0a0"
++            , style "padding" "10px 12px"
++            , style "margin" "10px 0"
++            ]
++            [ Html.div
++                [ style "font-weight" "bold", style "font-size" "12px", style "margin-bottom" "4px" ]
++                [ Html.text "Run error" ]
++            , Html.div
++                [ style "white-space" "pre-wrap"
++                , style "font-family" "monospace"
++                , style "font-size" "12px"
++                , style "line-height" "1.4"
++                ]
++                [ Html.text ticket.errorDetail ]
++            ]
++
++
+ stateBadge : String -> Html Message
+ stateBadge state =
+     case AgentBadge.fromApiToken state of
+@@ -501,8 +638,24 @@ lifecycleBar model ticket =
+                 []
+ 
+         transitionButtons =
+-            transitions
+-                |> List.map (\( to, label ) -> actionButton "secondary" (ClickAgentTicketTransition to) label)
++            case model.pendingTransition of
++                Just to ->
++                    let
++                        pendingLabel =
++                            transitions
++                                |> List.filter (\( t, _ ) -> t == to)
++                                |> List.head
++                                |> Maybe.map Tuple.second
++                                |> Maybe.withDefault to
++                    in
++                    [ Html.span [ style "color" "#b0b0b0" ] [ Html.text (pendingLabel ++ " this ticket?") ]
++                    , actionButton "primary" ConfirmAgentTicketTransition ("Confirm " ++ String.toLower pendingLabel)
++                    , actionButton "secondary" CancelAgentTicketTransition "Cancel"
++                    ]
++
++                Nothing ->
++                    transitions
++                        |> List.map (\( to, label ) -> actionButton "secondary" (ClickAgentTicketTransition to) label)
+     in
+     if List.isEmpty dispatchControls && List.isEmpty transitionButtons then
+         Html.text ""
+@@ -518,6 +671,17 @@ canDispatch state =
+     state == "queued"
+ 
+ 
++{-| U21: terminal states have no outgoing human transition (see the doc on
++`transitionTargets`), so editing them is meaningless — the Edit affordance and
++the edit form are both suppressed. `sent_back` is deliberately excluded: it is
++re-queueable, and the author is expected to revise before re-queueing.
++-}
++isTerminal : String -> Bool
++isTerminal state =
++    List.member state
++        [ "merged", "merged_with_fixes", "concluded", "abandoned" ]
++
++
+ {-| The transitions a human may drive from a given state, as (target, label).
+ Mirrors the server's `validTransitions` map (agent/api/tickets/types.go) — only
+ legal, human-initiated edges are offered. `running`'s edges (→queued/needs\_review/
+@@ -607,9 +771,103 @@ budgetBar ticket metrics =
+                 Html.text ""
+ 
+ 
+-editForm : Model -> Html Message
+-editForm model =
+-    if not model.editing then
++{-| U6: a compact evidence digest shown beside the disposition bar for a
++`needs_review` ticket — the latest run's one-line summary, a direct diff link,
++and spend-vs-budget — so the reviewer decides with the facts in view.
++-}
++reviewDigest : AgentTicket.Ticket -> List Concourse.Agent.RunMetric -> Html Message
++reviewDigest ticket metrics =
++    let
++        latestBuild =
++            metrics |> List.map .buildId |> List.maximum
++
++        latestSummary =
++            case latestBuild of
++                Just b ->
++                    metrics
++                        |> List.filter (\m -> m.buildId == b)
++                        |> List.filterMap
++                            (\m ->
++                                if m.summary == "" then
++                                    Nothing
++
++                                else
++                                    Just m.summary
++                            )
++                        |> List.head
++                        |> Maybe.withDefault ""
++
++                Nothing ->
++                    ""
++
++        summaryRow =
++            if latestSummary == "" then
++                Html.text ""
++
++            else
++                Html.div
++                    [ style "color" "#d0d0d0", style "line-height" "1.4", style "margin-bottom" "6px" ]
++                    [ Html.span [ style "color" "#9aa39b" ] [ Html.text "latest run — " ]
++                    , Html.text latestSummary
++                    ]
++
++        factsRow =
++            Html.div
++                [ style "display" "flex", style "flex-wrap" "wrap", style "gap" "12px", style "align-items" "center", style "font-size" "12px" ]
++                (digestCompareLink ticket
++                    ++ [ Html.span [ style "color" "#9aa39b" ] [ Html.text (costBudgetText ticket metrics) ] ]
++                )
++    in
++    Html.div
++        [ id "ticket-review-digest"
++        , style "border" "1px solid #3d3c3c"
++        , style "background" "#1b201b"
++        , style "padding" "10px 12px"
++        , style "margin" "10px 0"
++        ]
++        [ summaryRow, factsRow ]
++
++
++{-| The diff link for the digest. Kept on its own class so the primary compare
++affordance in the provenance line stays the single `agent-ticket-compare-link`.
++-}
++digestCompareLink : AgentTicket.Ticket -> List (Html Message)
++digestCompareLink ticket =
++    case AgentTicket.compareUrl ticket of
++        Just url ->
++            [ Html.a
++                [ class "agent-ticket-digest-compare-link"
++                , href url
++                , style "color" "#7aa37a"
++                , style "text-decoration" "none"
++                ]
++                [ Html.text ("review diff vs " ++ ticket.targetBranch) ]
++            ]
++
++        Nothing ->
++            []
++
++
++{-| Spend against the ticket's budget, always well-spaced (U19b): "$X spent /
++$Y budget", or just "$X spent" when no budget is set.
++-}
++costBudgetText : AgentTicket.Ticket -> List Concourse.Agent.RunMetric -> String
++costBudgetText ticket metrics =
++    let
++        spent =
++            metrics |> List.map .costUsd |> List.sum
++    in
++    case ticket.budgetUsd of
++        Just budget ->
++            "$" ++ formatUsd spent ++ " spent / $" ++ formatUsd budget ++ " budget"
++
++        Nothing ->
++            "$" ++ formatUsd spent ++ " spent"
++
++
++editForm : Model -> AgentTicket.Ticket -> Html Message
++editForm model ticket =
++    if not model.editing || isTerminal ticket.state then
+         Html.text ""
+ 
+     else
+@@ -656,7 +914,12 @@ inputStyles =
+ tabsBar : Model -> Html Message
+ tabsBar model =
+     Html.div
+-        [ style "display" "flex", style "gap" "0", style "border-bottom" "1px solid #3d3c3c", style "margin" "16px 0 0" ]
++        [ attribute "role" "tablist"
++        , style "display" "flex"
++        , style "gap" "0"
++        , style "border-bottom" "1px solid #3d3c3c"
++        , style "margin" "16px 0 0"
++        ]
+         [ tabButton model SpecTab "spec" "Spec"
+         , tabButton model PlanTab "plan" "Plan"
+         ]
+@@ -670,6 +933,15 @@ tabButton model tab token label =
+     in
+     Html.div
+         [ class "agent-ticket-tab"
++        , attribute "role" "tab"
++        , attribute "aria-selected"
++            (if active then
++                "true"
++
++             else
++                "false"
++            )
++        , attribute "tabindex" "0"
+         , style "padding" "6px 14px"
+         , style "cursor" "pointer"
+         , style "border-bottom"
+@@ -687,10 +959,29 @@ tabButton model tab token label =
+                 "#9aa39b"
+             )
+         , onClick (AgentTicketTabClicked token)
++        , onActivationKey (AgentTicketTabClicked token)
+         ]
+         [ Html.text label ]
+ 
+ 
++{-| Enter / Space activates a `role="tab"` (or any keyboard-operable) control,
++firing the same message a click would.
++-}
++onActivationKey : Message -> Html.Attribute Message
++onActivationKey msg =
++    on "keydown"
++        (Html.Events.keyCode
++            |> Json.Decode.andThen
++                (\code ->
++                    if code == 13 || code == 32 then
++                        Json.Decode.succeed msg
++
++                    else
++                        Json.Decode.fail "not an activation key"
++                )
++        )
++
++
+ tabContent : Model -> AgentTicket.Detail -> Html Message
+ tabContent model detail =
+     Html.div [ style "padding" "12px 0" ]
+@@ -721,10 +1012,14 @@ specView detail =
+                 ]
+ 
+         Nothing ->
+-            Html.div []
+-                [ Html.p [ style "color" "#9aa39b" ] [ Html.text "No spec submitted yet." ]
+-                , prose detail.ticket.body
+-                ]
++            -- U18b: with no formal spec, promote the ticket body as the spec
++            -- content instead of stacking an empty-state notice above it. The
++            -- notice only shows when there is genuinely nothing to read.
++            if String.trim detail.ticket.body == "" then
++                Html.p [ style "color" "#9aa39b" ] [ Html.text "No spec submitted yet." ]
++
++            else
++                prose detail.ticket.body
+ 
+ 
+ planView : AgentTicket.Detail -> Html Message
+@@ -736,13 +1031,12 @@ planView detail =
+         prose detail.ticket.body
+ 
+ 
+-{-| Preserve author line breaks without pulling in a markdown dependency.
++{-| Render the ticket/spec body as light prose (paragraphs, inline `code` and
++**bold**) via the shared Views.Prose renderer — no markdown dependency.
+ -}
+ prose : String -> Html Message
+-prose body =
+-    Html.div
+-        [ style "white-space" "pre-wrap", style "color" "#d0d0d0", style "line-height" "1.5" ]
+-        [ Html.text body ]
++prose =
++    Views.Prose.view
+ 
+ 
+ taskList : List AgentTicket.Task -> Html Message
+@@ -815,8 +1109,36 @@ runRow metrics buildId =
+         cost =
+             forBuild |> List.map .costUsd |> List.sum
+ 
+-        status =
++        runStatus =
+             forBuild |> List.head |> Maybe.map .status |> Maybe.withDefault ""
++
++        buildStatus =
++            forBuild |> List.head |> Maybe.map .buildStatus |> Maybe.withDefault ""
++
++        hasResult =
++            List.any (\m -> m.summary /= "") forBuild
++
++        summary =
++            forBuild
++                |> List.filterMap
++                    (\m ->
++                        if m.summary == "" then
++                            Nothing
++
++                        else
++                            Just m.summary
++                    )
++                |> List.head
++                |> Maybe.withDefault ""
++
++        -- U2/U3: the build status wins over the step status for display truth.
++        statusView =
++            case AgentBadge.runOutcome { buildStatus = buildStatus, runStatus = runStatus, hasResult = hasResult } of
++                Just s ->
++                    AgentBadge.view s
++
++                Nothing ->
++                    Html.span [ style "color" "#b0b0b0", style "font-size" "12px" ] [ Html.text runStatus ]
+     in
+     Html.a
+         [ class "agent-ticket-run-row"
+@@ -824,15 +1146,17 @@ runRow metrics buildId =
+         , style "display" "flex"
+         , style "align-items" "center"
+         , style "gap" "10px"
+-        , style "padding" "4px 0"
++        , style "padding" "6px 0"
+         , style "border-bottom" "1px solid #2a2929"
+         , style "color" "inherit"
+         , style "text-decoration" "none"
+         ]
+-        [ Html.span [ style "font-family" "monospace", style "color" "#7aa37a", style "min-width" "80px" ]
++        [ Html.span [ style "font-family" "monospace", style "color" "#7aa37a", style "min-width" "80px", style "flex-shrink" "0" ]
+             [ Html.text ("build " ++ String.fromInt buildId) ]
+-        , Html.span [ style "color" "#b0b0b0", style "flex" "1", style "font-size" "12px" ] [ Html.text status ]
+-        , Html.span [ style "font-family" "monospace", style "color" "#b0b0b0" ] [ Html.text ("$" ++ formatUsd cost) ]
++        , Html.span [ style "flex-shrink" "0" ] [ statusView ]
++        , Html.span [ style "color" "#9aa39b", style "flex" "1", style "min-width" "0", style "font-size" "12px", style "overflow" "hidden", style "text-overflow" "ellipsis", style "white-space" "nowrap" ]
++            [ Html.text summary ]
++        , Html.span [ style "font-family" "monospace", style "color" "#b0b0b0", style "flex-shrink" "0" ] [ Html.text ("$" ++ formatUsd cost) ]
+         ]
+ 
+ 
+@@ -916,6 +1240,70 @@ reviewerName session =
+             "anonymous"
+ 
+ 
++{-| Format an epoch-seconds timestamp as a compact absolute time in the
++viewer's zone, e.g. "Jul 18, 2026 14:30". Absolute (not relative) because the
++page has a zone but no live "now" clock to diff against.
++-}
++formatTimestamp : Time.Zone -> Int -> String
++formatTimestamp zone epochSeconds =
++    let
++        posix =
++            Time.millisToPosix (epochSeconds * 1000)
++
++        pad n =
++            String.padLeft 2 '0' (String.fromInt n)
++    in
++    monthAbbr (Time.toMonth zone posix)
++        ++ " "
++        ++ String.fromInt (Time.toDay zone posix)
++        ++ ", "
++        ++ String.fromInt (Time.toYear zone posix)
++        ++ " "
++        ++ pad (Time.toHour zone posix)
++        ++ ":"
++        ++ pad (Time.toMinute zone posix)
++
++
++monthAbbr : Time.Month -> String
++monthAbbr month =
++    case month of
++        Time.Jan ->
++            "Jan"
++
++        Time.Feb ->
++            "Feb"
++
++        Time.Mar ->
++            "Mar"
++
++        Time.Apr ->
++            "Apr"
++
++        Time.May ->
++            "May"
++
++        Time.Jun ->
++            "Jun"
++
++        Time.Jul ->
++            "Jul"
++
++        Time.Aug ->
++            "Aug"
++
++        Time.Sep ->
++            "Sep"
++
++        Time.Oct ->
++            "Oct"
++
++        Time.Nov ->
++            "Nov"
++
++        Time.Dec ->
++            "Dec"
++
++
+ formatUsd : Float -> String
+ formatUsd amount =
+     let
+diff --git a/web/elm/src/AgentTickets/AgentTickets.elm b/web/elm/src/AgentTickets/AgentTickets.elm
+index 351ab76af1..ca5af5f00e 100644
+--- a/web/elm/src/AgentTickets/AgentTickets.elm
++++ b/web/elm/src/AgentTickets/AgentTickets.elm
+@@ -14,9 +14,11 @@ import AgentBadge
+ import Application.Models exposing (Session)
+ import Concourse.AgentTicket as AgentTicket
+ import Dict exposing (Dict)
++import Duration
+ import EffectTransformer exposing (ET)
+ import Html exposing (Html)
+-import Html.Attributes exposing (class, href, id, style)
++import Html.Attributes exposing (class, href, id, placeholder, style, type_, value)
++import Html.Events exposing (onClick, onInput)
+ import Login.Login as Login
+ import Message.Callback exposing (Callback(..))
+ import Message.Effects exposing (Effect(..))
+@@ -24,6 +26,7 @@ import Message.Message exposing (Message(..))
+ import Message.Subscription exposing (Delivery(..), Interval(..), Subscription(..))
+ import Routes
+ import SideBar.SideBar as SideBar
++import Time
+ import Tooltip
+ import Views.Styles
+ import Views.TopBar as TopBar
+@@ -35,6 +38,9 @@ type alias Model =
+         , costByTicket : Dict String Float
+         , loaded : Bool
+         , loadError : Bool
++        , now : Maybe Time.Posix
++        , filter : String
++        , sortByWait : Bool
+         }
+ 
+ 
+@@ -66,6 +72,9 @@ init =
+       , costByTicket = Dict.empty
+       , loaded = False
+       , loadError = False
++      , now = Nothing
++      , filter = ""
++      , sortByWait = False
+       , isUserMenuExpanded = False
+       }
+     , [ FetchAgentTickets, FetchAgentTicketCosts ]
+@@ -106,8 +115,13 @@ handleCallback callback ( model, effects ) =
+ handleDelivery : Delivery -> ET Model
+ handleDelivery delivery ( model, effects ) =
+     case delivery of
+-        ClockTicked OneMinute _ ->
+-            -- Self-healing refresh; only replaces fetched data.
++        ClockTicked OneSecond time ->
++            -- U11: track a live "now" so elapsed-time on rows keeps ticking.
++            ( { model | now = Just time }, effects )
++
++        ClockTicked FiveSeconds _ ->
++            -- U11: live-update the queue on the dashboard's 5s cadence so state
++            -- and spend never go stale. Only replaces fetched data.
+             ( model, effects ++ [ FetchAgentTickets, FetchAgentTicketCosts ] )
+ 
+         _ ->
+@@ -115,8 +129,16 @@ handleDelivery delivery ( model, effects ) =
+ 
+ 
+ update : Message -> ET Model
+-update _ ( model, effects ) =
+-    ( model, effects )
++update msg ( model, effects ) =
++    case msg of
++        AgentTicketsFilterChanged v ->
++            ( { model | filter = v }, effects )
++
++        AgentTicketsSortToggled ->
++            ( { model | sortByWait = not model.sortByWait }, effects )
++
++        _ ->
++            ( model, effects )
+ 
+ 
+ tooltip : Model -> a -> Maybe Tooltip.Tooltip
+@@ -126,7 +148,7 @@ tooltip _ _ =
+ 
+ subscriptions : List Subscription
+ subscriptions =
+-    [ OnClockTick OneMinute ]
++    [ OnClockTick OneSecond, OnClockTick FiveSeconds ]
+ 
+ 
+ view : Session -> Model -> Html Message
+@@ -168,20 +190,109 @@ content model =
+ 
+     else
+         let
++            visible =
++                List.filter (matchesFilter model.filter) model.tickets
++
+             knownSections =
+-                List.filterMap (sectionView model.costByTicket model.tickets) sectionOrder
++                List.filterMap (sectionView model visible) sectionOrder
+ 
+             leftover =
+-                model.tickets
++                visible
+                     |> List.filter (\t -> not (List.member t.state sectionOrder))
++
++            body =
++                if List.isEmpty visible then
++                    [ Html.p
++                        [ style "color" "#b0b0b0", style "margin-top" "16px" ]
++                        [ Html.text "No tickets match the filter." ]
++                    ]
++
++                else
++                    knownSections ++ leftoverSection model leftover
+         in
+         Html.div []
+-            (knownSections
+-                ++ leftoverSection model.costByTicket leftover
++            (controlsBar model
++                :: body
+                 ++ unattributedFooter model.costByTicket
+             )
+ 
+ 
++{-| U10: client-side title filter — a case-insensitive substring match over the
++ticket title, id and author. An empty filter matches everything.
++-}
++matchesFilter : String -> AgentTicket.Ticket -> Bool
++matchesFilter raw t =
++    case String.trim (String.toLower raw) of
++        "" ->
++            True
++
++        needle ->
++            let
++                haystack =
++                    String.toLower
++                        (t.title
++                            ++ " #"
++                            ++ String.fromInt t.id
++                            ++ " "
++                            ++ t.userName
++                        )
++            in
++            String.contains needle haystack
++
++
++{-| U10: a lightweight filter/sort bar. The text box narrows the list by title;
++the sort toggle flips between newest-first (default) and longest-waiting-first
++so a reviewer can surface the tickets that have been queued the longest.
++-}
++controlsBar : Model -> Html Message
++controlsBar model =
++    Html.div
++        [ id "agent-ticket-controls"
++        , style "display" "flex"
++        , style "flex-wrap" "wrap"
++        , style "align-items" "center"
++        , style "gap" "8px"
++        , style "margin" "8px 0 4px 0"
++        ]
++        [ Html.input
++            [ class "agent-ticket-filter"
++            , type_ "text"
++            , placeholder "filter by title…"
++            , value model.filter
++            , onInput AgentTicketsFilterChanged
++            , style "background" "#141313"
++            , style "color" "#e0e0e0"
++            , style "border" "1px solid #3d3c3c"
++            , style "padding" "5px 8px"
++            , style "font-size" "13px"
++            , style "flex" "1"
++            , style "min-width" "160px"
++            , style "box-sizing" "border-box"
++            ]
++            []
++        , Html.button
++            [ class "agent-ticket-sort"
++            , type_ "button"
++            , onClick AgentTicketsSortToggled
++            , style "background" "#2a2929"
++            , style "color" "#d0d0d0"
++            , style "border" "1px solid #3d3c3c"
++            , style "padding" "5px 12px"
++            , style "cursor" "pointer"
++            , style "font-size" "13px"
++            , style "white-space" "nowrap"
++            ]
++            [ Html.text
++                (if model.sortByWait then
++                    "sort: longest waiting"
++
++                 else
++                    "sort: newest"
++                )
++            ]
++        ]
++
++
+ {-| Spend the cost rollup reports outside any ticket (per-push CI reviews,
+ platform runs — the rollup's empty-string key). Without this line the queue
+ page silently under-reports what the platform actually costs.
+@@ -216,28 +327,40 @@ unattributedFooter costs =
+             []
+ 
+ 
+-leftoverSection : Dict String Float -> List AgentTicket.Ticket -> List (Html Message)
+-leftoverSection costs tickets =
++leftoverSection : Model -> List AgentTicket.Ticket -> List (Html Message)
++leftoverSection model tickets =
+     if List.isEmpty tickets then
+         []
+ 
+     else
+-        [ sectionBlock "other" (List.map (ticketRow costs) (sortByRecent tickets)) ]
++        [ sectionBlock (withCount "other" tickets) (List.map (ticketRow model) (sortTickets model.sortByWait tickets)) ]
+ 
+ 
+-sectionView : Dict String Float -> List AgentTicket.Ticket -> String -> Maybe (Html Message)
+-sectionView costs tickets state =
++sectionView : Model -> List AgentTicket.Ticket -> String -> Maybe (Html Message)
++sectionView model tickets state =
+     case List.filter (\t -> t.state == state) tickets of
+         [] ->
+             Nothing
+ 
+         matching ->
+-            Just (sectionBlock (sectionLabel state) (List.map (ticketRow costs) (sortByRecent matching)))
++            Just (sectionBlock (withCount (sectionLabel state) matching) (List.map (ticketRow model) (sortTickets model.sortByWait matching)))
++
++
++{-| U10: append a per-section count, e.g. "needs review (2)" (uppercased by CSS).
++-}
++withCount : String -> List a -> String
++withCount label xs =
++    label ++ " (" ++ String.fromInt (List.length xs) ++ ")"
++
+ 
++sortTickets : Bool -> List AgentTicket.Ticket -> List AgentTicket.Ticket
++sortTickets sortByWait =
++    if sortByWait then
++        -- Oldest first: the ticket that has waited longest floats to the top.
++        List.sortBy .createdAt
+ 
+-sortByRecent : List AgentTicket.Ticket -> List AgentTicket.Ticket
+-sortByRecent =
+-    List.sortBy (\t -> negate t.createdAt)
++    else
++        List.sortBy (\t -> negate t.createdAt)
+ 
+ 
+ sectionLabel : String -> String
+@@ -266,8 +389,8 @@ sectionBlock title rows =
+         )
+ 
+ 
+-ticketRow : Dict String Float -> AgentTicket.Ticket -> Html Message
+-ticketRow costs t =
++ticketRow : Model -> AgentTicket.Ticket -> Html Message
++ticketRow model t =
+     Html.a
+         [ class "agent-ticket-row"
+         , href (Routes.toString (Routes.AgentTicket { id = t.id }))
+@@ -291,13 +414,23 @@ ticketRow costs t =
+ 
+             Nothing ->
+                 Html.span [ style "color" "#b0b0b0" ] [ Html.text t.state ]
+-        , Html.span
+-            [ style "flex" "1"
+-            , style "overflow" "hidden"
+-            , style "text-overflow" "ellipsis"
+-            , style "white-space" "nowrap"
++        , Html.div
++            [ class "agent-ticket-main"
++            , style "flex" "1"
++            , style "min-width" "0"
++            , style "display" "flex"
++            , style "flex-direction" "column"
++            , style "gap" "2px"
++            ]
++            [ Html.span
++                [ class "agent-ticket-title"
++                , style "overflow" "hidden"
++                , style "text-overflow" "ellipsis"
++                , style "white-space" "nowrap"
++                ]
++                [ Html.text t.title ]
++            , metaLine model t
+             ]
+-            [ Html.text t.title ]
+         , if t.branch == "" then
+             Html.text ""
+ 
+@@ -309,15 +442,102 @@ ticketRow costs t =
+                 , style "color" "#7aa37a"
+                 ]
+                 [ Html.text t.branch ]
++        , if t.workflowName == "" then
++            Html.text ""
++
++          else
++            Html.span
++                [ class "agent-ticket-workflow"
++                , style "font-family" "monospace"
++                , style "font-size" "12px"
++                , style "color" "#7a7a7a"
++                ]
++                [ Html.text (workflowLabel t) ]
+         , Html.span
+-            [ style "font-family" "monospace", style "font-size" "12px", style "color" "#7a7a7a" ]
+-            [ Html.text t.workflowName ]
+-        , Html.span
+-            [ style "font-family" "monospace", style "color" "#b0b0b0", style "min-width" "60px", style "text-align" "right" ]
+-            [ Html.text (costLabel costs t.id) ]
++            [ class "agent-ticket-cost"
++            , style "font-family" "monospace"
++            , style "color" "#b0b0b0"
++            , style "min-width" "60px"
++            , style "text-align" "right"
++            ]
++            [ Html.text (costLabel model.costByTicket t.id) ]
+         ]
+ 
+ 
++{-| U10: a compact secondary line under the title carrying the fields already on
++the decoded ticket — author, retry count (only when the ticket has been retried),
++and how long it has been waiting (needs the live `now` clock from U11).
++-}
++metaLine : Model -> AgentTicket.Ticket -> Html Message
++metaLine model t =
++    let
++        parts =
++            List.filterMap identity
++                [ if t.userName == "" then
++                    Nothing
++
++                  else
++                    Just t.userName
++                , if t.attemptCount > 1 then
++                    Just ("attempt " ++ String.fromInt t.attemptCount)
++
++                  else
++                    Nothing
++                , elapsedLabel model.now t.createdAt
++                ]
++    in
++    if List.isEmpty parts then
++        Html.text ""
++
++    else
++        Html.span
++            [ class "agent-ticket-meta"
++            , style "font-size" "11px"
++            , style "color" "#7a7a7a"
++            , style "overflow" "hidden"
++            , style "text-overflow" "ellipsis"
++            , style "white-space" "nowrap"
++            ]
++            [ Html.text (String.join " · " parts) ]
++
++
++{-| Workflow name, with its pinned version appended when the ticket froze one.
++-}
++workflowLabel : AgentTicket.Ticket -> String
++workflowLabel t =
++    case t.workflowVersion of
++        Just v ->
++            t.workflowName ++ " v" ++ String.fromInt v
++
++        Nothing ->
++            t.workflowName
++
++
++{-| Relative "N ago" from the ticket's creation epoch to the live clock. Nothing
++when the clock hasn't ticked yet or the timestamp is unknown / in the future.
++-}
++elapsedLabel : Maybe Time.Posix -> Int -> Maybe String
++elapsedLabel maybeNow createdAt =
++    case maybeNow of
++        Just now ->
++            if createdAt > 0 then
++                let
++                    elapsed =
++                        Duration.between (Time.millisToPosix (createdAt * 1000)) now
++                in
++                if elapsed >= 0 then
++                    Just (Duration.format elapsed ++ " ago")
++
++                else
++                    Nothing
++
++            else
++                Nothing
++
++        Nothing ->
++            Nothing
++
++
+ costLabel : Dict String Float -> Int -> String
+ costLabel costs ticketId =
+     case Dict.get (String.fromInt ticketId) costs of
+diff --git a/web/elm/src/Build/AgentReview.elm b/web/elm/src/Build/AgentReview.elm
+index abbc59048e..670316c38d 100644
+--- a/web/elm/src/Build/AgentReview.elm
++++ b/web/elm/src/Build/AgentReview.elm
+@@ -108,10 +108,11 @@ summaryBar review expanded =
+             ]
+         , Html.span [ style "margin-left" "auto", style "color" "#7a7a7a" ]
+             [ Html.text
+-                ("evaluated "
++                ("your feedback: "
+                     ++ String.fromInt s.evaluatedCount
+                     ++ " of "
+                     ++ String.fromInt review.findingCount
++                    ++ " verdicts"
+                 )
+             ]
+         , Html.span []
+@@ -161,33 +162,59 @@ panelBody reviewer review model =
+ 
+ observationsSection : String -> BuildReview -> PanelState a -> List (Html Message)
+ observationsSection reviewer review model =
+-    if List.isEmpty review.observations then
++    let
++        count =
++            List.length review.observations
++    in
++    if count == 0 then
+         []
+ 
+     else
++        let
++            -- A short list is worth reading, so it opens by default; a long
++            -- one stays folded. The toggle simply flips whichever default
++            -- applies, so `showObservations` still means "user overrode it".
++            open =
++                Basics.xor model.showObservations (count <= 5)
++        in
+         Html.button
+             (buttonReset
+                 ++ [ class "agent-review-observations-toggle"
+-                   , attribute "aria-expanded" (boolAttr model.showObservations)
++                   , attribute "aria-expanded" (boolAttr open)
++                   , style "display" "flex"
++                   , style "align-items" "center"
++                   , style "gap" "8px"
+                    , style "padding" "8px 0"
++                   , style "width" "100%"
+                    , style "cursor" "pointer"
+                    , style "color" "#b0b0b0"
+                    , onClick ToggleAgentReviewObservations
+                    ]
+             )
+-            [ Html.text
+-                ("observations ("
+-                    ++ String.fromInt (List.length review.observations)
+-                    ++ ") — advisory, no failing test "
+-                    ++ (if model.showObservations then
+-                            "▾"
++            [ Html.span [ style "font-size" "12px" ]
++                [ Html.text
++                    (if open then
++                        "▾"
+ 
+-                        else
+-                            "▸"
+-                       )
+-                )
++                     else
++                        "▸"
++                    )
++                ]
++            , Html.span [ style "font-weight" "700" ]
++                [ Html.text
++                    (String.fromInt count
++                        ++ (if count == 1 then
++                                " observation"
++
++                            else
++                                " observations"
++                           )
++                    )
++                ]
++            , Html.span [ style "color" "#7a7a7a", style "font-size" "12px" ]
++                [ Html.text "advisory — no failing test" ]
+             ]
+-            :: (if model.showObservations then
++            :: (if open then
+                     review.observations |> List.map (findingCard reviewer review False model)
+ 
+                 else
+diff --git a/web/elm/src/Build/StepTree/Models.elm b/web/elm/src/Build/StepTree/Models.elm
+index 993ca99feb..8fad0de6b3 100644
+--- a/web/elm/src/Build/StepTree/Models.elm
++++ b/web/elm/src/Build/StepTree/Models.elm
+@@ -67,6 +67,9 @@ type StepTree
+     | Try StepTree
+     | Timeout StepTree
+     | Sidecar StepID
++    | Agent StepID
++    | Harvest StepID
++    | Unknown StepID
+ 
+ 
+ type alias HookedStep =
+@@ -294,6 +297,15 @@ activeStepIds model tree =
+         Sidecar stepId ->
+             [ stepId ]
+ 
++        Agent stepId ->
++            [ stepId ]
++
++        Harvest stepId ->
++            [ stepId ]
++
++        Unknown stepId ->
++            [ stepId ]
++
+         Aggregate trees ->
+             List.concatMap (activeStepIds model) (Array.toList trees)
+ 
+@@ -377,6 +389,15 @@ updateTreeNodeAt id fn tree =
+         Sidecar stepId ->
+             updateSelf stepId
+ 
++        Agent stepId ->
++            updateSelf stepId
++
++        Harvest stepId ->
++            updateSelf stepId
++
++        Unknown stepId ->
++            updateSelf stepId
++
+         Aggregate trees ->
+             Aggregate <| Array.map (updateTreeNodeAt id fn) trees
+ 
+diff --git a/web/elm/src/Build/StepTree/StepTree.elm b/web/elm/src/Build/StepTree/StepTree.elm
+index e0cc01b640..e95b5641ce 100644
+--- a/web/elm/src/Build/StepTree/StepTree.elm
++++ b/web/elm/src/Build/StepTree/StepTree.elm
+@@ -182,6 +182,15 @@ init buildId hl resources plan =
+         Concourse.BuildStepSidecar _ ->
+             step |> initBottom buildId hl resources plan Sidecar
+ 
++        Concourse.BuildStepAgent _ ->
++            step |> initBottom buildId hl resources plan Agent
++
++        Concourse.BuildStepHarvest _ ->
++            step |> initBottom buildId hl resources plan Harvest
++
++        Concourse.BuildStepUnknown _ ->
++            step |> initBottom buildId hl resources plan Unknown
++
+ 
+ setImagePlans : Maybe Concourse.JobBuildIdentifier -> StepID -> Maybe Concourse.ImageBuildPlans -> StepTreeModel -> StepTreeModel
+ setImagePlans buildId stepId imagePlans model =
+@@ -618,6 +627,15 @@ viewTree session model tree depth =
+         Sidecar stepId ->
+             viewStep model session depth stepId
+ 
++        Agent stepId ->
++            viewStep model session depth stepId
++
++        Harvest stepId ->
++            viewStep model session depth stepId
++
++        Unknown stepId ->
++            viewStep model session depth stepId
++
+         Try subTree ->
+             viewTree session model subTree depth
+ 
+@@ -1361,6 +1379,15 @@ viewStepHeader step =
+         Concourse.BuildStepSidecar name ->
+             simpleHeader "sidecar:" Nothing name
+ 
++        Concourse.BuildStepAgent name ->
++            simpleHeader "agent:" Nothing name
++
++        Concourse.BuildStepHarvest name ->
++            simpleHeader "harvest:" Nothing name
++
++        Concourse.BuildStepUnknown name ->
++            simpleHeader "step:" Nothing name
++
+ 
+ stepName : Concourse.BuildStep -> Maybe String
+ stepName header =
+@@ -1431,6 +1458,15 @@ stepName header =
+         Concourse.BuildStepSidecar name ->
+             Just name
+ 
++        Concourse.BuildStepAgent name ->
++            Just name
++
++        Concourse.BuildStepHarvest name ->
++            Just name
++
++        Concourse.BuildStepUnknown name ->
++            Just name
++
+ 
+ resourceName : Concourse.BuildStep -> Maybe String
+ resourceName step =
+diff --git a/web/elm/src/Concourse.elm b/web/elm/src/Concourse.elm
+index e3d163ef82..a98f578635 100644
+--- a/web/elm/src/Concourse.elm
++++ b/web/elm/src/Concourse.elm
+@@ -475,6 +475,15 @@ mapBuildPlan fn plan =
+ 
+                 BuildStepSidecar _ ->
+                     []
++
++                BuildStepAgent _ ->
++                    []
++
++                BuildStepHarvest _ ->
++                    []
++
++                BuildStepUnknown _ ->
++                    []
+            )
+ 
+ 
+@@ -515,6 +524,9 @@ type BuildStep
+     | BuildStepRetry (Array BuildPlan)
+     | BuildStepTimeout BuildPlan
+     | BuildStepSidecar StepName
++    | BuildStepAgent StepName
++    | BuildStepHarvest StepName
++    | BuildStepUnknown StepName
+ 
+ 
+ type alias HookedPlan =
+@@ -718,6 +730,16 @@ decodeBuildPlan =
+                     lazy (\_ -> decodeBuildStepAcross)
+                 , Json.Decode.field "sidecar" <|
+                     lazy (\_ -> decodeBuildStepSidecar)
++                , Json.Decode.field "agent" <|
++                    lazy (\_ -> decodeBuildStepAgent)
++                , Json.Decode.field "harvest" <|
++                    lazy (\_ -> decodeBuildStepHarvest)
++
++                -- Durable fallback: any step type this client does not yet
++                -- recognize decodes to an "unknown" leaf instead of failing
++                -- the whole plan decode (which previously blanked the build
++                -- page). Keep this LAST — it always succeeds.
++                , lazy (\_ -> decodeBuildStepUnknown)
+                 ]
+             )
+ 
+@@ -734,6 +756,28 @@ decodeBuildStepSidecar =
+         |> andMap (Json.Decode.field "name" Json.Decode.string)
+ 
+ 
++decodeBuildStepAgent : Json.Decode.Decoder BuildStep
++decodeBuildStepAgent =
++    Json.Decode.succeed BuildStepAgent
++        |> andMap (Json.Decode.field "name" Json.Decode.string)
++
++
++decodeBuildStepHarvest : Json.Decode.Decoder BuildStep
++decodeBuildStepHarvest =
++    Json.Decode.succeed BuildStepHarvest
++        |> andMap (Json.Decode.field "name" Json.Decode.string)
++
++
++decodeBuildStepUnknown : Json.Decode.Decoder BuildStep
++decodeBuildStepUnknown =
++    Json.Decode.map BuildStepUnknown
++        (Json.Decode.oneOf
++            [ Json.Decode.field "name" Json.Decode.string
++            , Json.Decode.succeed "step"
++            ]
++        )
++
++
+ decodeBuildStepArtifactInput : Json.Decode.Decoder BuildStep
+ decodeBuildStepArtifactInput =
+     Json.Decode.succeed BuildStepArtifactInput
+diff --git a/web/elm/src/Concourse/Agent.elm b/web/elm/src/Concourse/Agent.elm
+index da5bbda4a5..4b0dce08e6 100644
+--- a/web/elm/src/Concourse/Agent.elm
++++ b/web/elm/src/Concourse/Agent.elm
+@@ -143,6 +143,7 @@ type alias RunMetric =
+     , workflowName : String
+     , workflowVersion : Maybe Int
+     , status : String
++    , buildStatus : String
+     , summary : String
+     , model : String
+     , usage : Usage
+@@ -174,6 +175,7 @@ decodeRunMetric =
+         |> andMap (defaultTo "" <| Json.Decode.field "workflow_name" Json.Decode.string)
+         |> andMap (optionalInt "workflow_version")
+         |> andMap (Json.Decode.field "status" Json.Decode.string)
++        |> andMap (defaultTo "" <| Json.Decode.field "build_status" Json.Decode.string)
+         |> andMap (defaultTo "" <| Json.Decode.field "summary" Json.Decode.string)
+         |> andMap (defaultTo "" <| Json.Decode.field "model" Json.Decode.string)
+         |> andMap (defaultTo (Usage 0 0 0 0) <| Json.Decode.field "usage" decodeUsage)
+diff --git a/web/elm/src/Dashboard/Dashboard.elm b/web/elm/src/Dashboard/Dashboard.elm
+index 753d9036d0..a73f667df1 100644
+--- a/web/elm/src/Dashboard/Dashboard.elm
++++ b/web/elm/src/Dashboard/Dashboard.elm
+@@ -1276,27 +1276,36 @@ agentTicketStrip model =
+ 
+ agentActiveStates : List String
+ agentActiveStates =
+-    [ "needs_review", "sent_back", "running", "queued" ]
++    [ "needs_review", "errored", "failed", "sent_back", "running", "queued" ]
+ 
+ 
+ agentStateOrder : String -> Int
+ agentStateOrder state =
++    -- Attention-first: needs_review is the human queue, and errored/failed are
++    -- the things that broke — rank them together at the top so they survive the
++    -- `List.take` cap on the strip and never get pushed off by running/queued.
+     case state of
+         "needs_review" ->
+             0
+ 
+-        "sent_back" ->
++        "errored" ->
+             1
+ 
+-        "running" ->
++        "failed" ->
+             2
+ 
+-        "queued" ->
++        "sent_back" ->
+             3
+ 
+-        _ ->
++        "running" ->
+             4
+ 
++        "queued" ->
++            5
++
++        _ ->
++            6
++
+ 
+ agentTicketChip : Dict String Float -> Concourse.AgentTicket.Ticket -> Html Message
+ agentTicketChip costs t =
+diff --git a/web/elm/src/Message/Message.elm b/web/elm/src/Message/Message.elm
+index ab9e06b144..7097d6e31d 100644
+--- a/web/elm/src/Message/Message.elm
++++ b/web/elm/src/Message/Message.elm
+@@ -67,6 +67,7 @@ type Message
+     | AgentMintedTokenDismissed
+     | AgentPrincipalRevokeClicked Int
+     | AgentPrincipalsShowEphemeralToggled
++    | AgentRunExpandToggled Int
+       -- Agent Ticket page (edit + disposition)
+     | ClickAgentTicketEdit
+     | AgentTicketTitleChanged String
+@@ -76,9 +77,14 @@ type Message
+     | ClickAgentTicketCancel
+     | AgentTicketTabClicked String
+     | ClickAgentTicketTransition String
++    | ConfirmAgentTicketTransition
++    | CancelAgentTicketTransition
+     | ClickAgentTicketDispatch
+     | ConfirmAgentTicketDispatch
+     | CancelAgentTicketDispatch
++      -- Agent Ticket queue page (client-side filter + sort)
++    | AgentTicketsFilterChanged String
++    | AgentTicketsSortToggled
+       -- common
+     | Hover (Maybe DomID)
+     | Click DomID
+diff --git a/web/elm/src/Views/Prose.elm b/web/elm/src/Views/Prose.elm
+new file mode 100644
+index 0000000000..94b2102cbe
+--- /dev/null
++++ b/web/elm/src/Views/Prose.elm
+@@ -0,0 +1,128 @@
++module Views.Prose exposing (view)
++
++{-| Render author-written text as light prose without pulling in a markdown
++dependency. Paragraphs split on blank lines, hard line breaks inside a
++paragraph are preserved, and inline `code` spans and \*\*bold\*\* runs are
++styled. Everything is emitted as Elm text nodes and styled spans, so there is
++no raw-HTML injection.
++-}
++
++import Html exposing (Html)
++import Html.Attributes exposing (style)
++
++
++view : String -> Html msg
++view body =
++    Html.div
++        [ style "color" "#d0d0d0", style "line-height" "1.5" ]
++        (body
++            |> splitParagraphs
++            |> List.map paragraph
++        )
++
++
++{-| Split on one or more blank lines. Normalises CRLF first and drops empty
++paragraphs so a trailing blank line does not render an empty block.
++-}
++splitParagraphs : String -> List String
++splitParagraphs body =
++    body
++        |> String.replace "\u{000D}\n" "\n"
++        |> String.split "\n\n"
++        |> List.map String.trim
++        |> List.filter (\p -> p /= "")
++
++
++{-| One paragraph. `pre-wrap` preserves the author's single line breaks; the
++inline pass styles code/bold within it.
++-}
++paragraph : String -> Html msg
++paragraph text =
++    Html.p
++        [ style "white-space" "pre-wrap", style "margin" "0 0 10px 0" ]
++        (inlines text)
++
++
++type Segment
++    = Code String
++    | Plain String
++
++
++{-| Split a paragraph into inline HTML: `code` spans first, then \*\*bold\*\*
++inside the remaining plain text.
++-}
++inlines : String -> List (Html msg)
++inlines text =
++    text
++        |> splitCode
++        |> List.concatMap segmentToHtml
++
++
++{-| Split on backticks into alternating plain/code segments. Only treats the
++runs as code when the backticks are balanced (an odd number of parts); an
++unbalanced backtick is left as literal plain text.
++-}
++splitCode : String -> List Segment
++splitCode text =
++    let
++        parts =
++            String.split "`" text
++    in
++    if modBy 2 (List.length parts) == 1 then
++        parts
++            |> List.indexedMap
++                (\i part ->
++                    if modBy 2 i == 1 then
++                        Code part
++
++                    else
++                        Plain part
++                )
++
++    else
++        [ Plain text ]
++
++
++segmentToHtml : Segment -> List (Html msg)
++segmentToHtml segment =
++    case segment of
++        Code c ->
++            [ Html.code
++                [ style "font-family" "monospace"
++                , style "background" "#2a2929"
++                , style "padding" "0 3px"
++                , style "border-radius" "2px"
++                ]
++                [ Html.text c ]
++            ]
++
++        Plain p ->
++            bolds p
++
++
++{-| Style \*\*bold\*\* runs within a plain-text segment. Only when the double
++asterisks are balanced; otherwise the text is left literal.
++-}
++bolds : String -> List (Html msg)
++bolds text =
++    let
++        parts =
++            String.split "**" text
++    in
++    if modBy 2 (List.length parts) == 1 then
++        parts
++            |> List.indexedMap
++                (\i part ->
++                    if modBy 2 i == 1 then
++                        Html.strong
++                            [ style "font-weight" "700"
++                            , style "color" "#e8e8e8"
++                            ]
++                            [ Html.text part ]
++
++                    else
++                        Html.text part
++                )
++
++    else
++        [ Html.text text ]
+diff --git a/web/elm/tests/AgentBadgeTests.elm b/web/elm/tests/AgentBadgeTests.elm
+index 0059095e39..c8f0bb5e7b 100644
+--- a/web/elm/tests/AgentBadgeTests.elm
++++ b/web/elm/tests/AgentBadgeTests.elm
+@@ -1,6 +1,6 @@
+ module AgentBadgeTests exposing (all)
+ 
+-import AgentBadge exposing (Status(..), Tone(..), fromApiToken, fromRunStatus, label, tone)
++import AgentBadge exposing (Status(..), Tone(..), description, fromApiToken, fromRunStatus, label, runOutcome, tone)
+ import Expect
+ import Test exposing (Test, describe, test)
+ 
+@@ -20,7 +20,9 @@ allStatuses =
+     , Abandoned
+     , Failed
+     , Errored
++    , Aborted
+     , Succeeded
++    , NoOutput
+     ]
+ 
+ 
+@@ -50,6 +52,12 @@ all =
+                     |> List.map label
+                     |> List.all (\l -> not (String.isEmpty l) && not (String.contains "_" l))
+                     |> Expect.equal True
++        , test "every status has a non-empty description" <|
++            \_ ->
++                allStatuses
++                    |> List.map description
++                    |> List.all (not << String.isEmpty)
++                    |> Expect.equal True
+         , test "NeedsReview and AwaitingHuman both map to Attention" <|
+             \_ ->
+                 ( tone NeedsReview, tone AwaitingHuman )
+@@ -78,4 +86,49 @@ all =
+             \_ ->
+                 tone Succeeded
+                     |> Expect.equal Good
++        , describe "runOutcome — build truth wins over step status (U3)"
++            [ test "a step that exited ok inside a FAILED build shows Failed, not OK" <|
++                \_ ->
++                    runOutcome { buildStatus = "failed", runStatus = "ok", hasResult = True }
++                        |> Expect.equal (Just Failed)
++            , test "an errored build shows Errored regardless of step status" <|
++                \_ ->
++                    runOutcome { buildStatus = "errored", runStatus = "ok", hasResult = True }
++                        |> Expect.equal (Just Errored)
++            , test "an aborted build shows Aborted" <|
++                \_ ->
++                    runOutcome { buildStatus = "aborted", runStatus = "ok", hasResult = True }
++                        |> Expect.equal (Just Aborted)
++            , test "a succeeded build that delivered a result is OK" <|
++                \_ ->
++                    runOutcome { buildStatus = "succeeded", runStatus = "ok", hasResult = True }
++                        |> Expect.equal (Just Succeeded)
++            , test "a succeeded build with NO result is No output, never a green OK" <|
++                \_ ->
++                    runOutcome { buildStatus = "succeeded", runStatus = "ok", hasResult = False }
++                        |> Expect.equal (Just NoOutput)
++            , test "No output is Warn-toned, not Good" <|
++                \_ ->
++                    tone NoOutput
++                        |> Expect.notEqual Good
++            , test "falls back to the step status when the build status is absent" <|
++                \_ ->
++                    runOutcome { buildStatus = "", runStatus = "failed", hasResult = True }
++                        |> Expect.equal (Just Failed)
++            , test "a still-running build shows Running" <|
++                \_ ->
++                    runOutcome { buildStatus = "started", runStatus = "ok", hasResult = False }
++                        |> Expect.equal (Just (Running Nothing))
++            , test "a PARKED run shows Waiting on you even though its build is still 'started'" <|
++                \_ ->
++                    -- A HITL checkpoint parks the run and keeps its build in
++                    -- 'started'; parked must win over the build status or the
++                    -- operator can't see the run is blocked on them.
++                    runOutcome { buildStatus = "started", runStatus = "parked", hasResult = True }
++                        |> Expect.equal (Just AwaitingHuman)
++            , test "a parked run whose build later succeeded still shows Waiting on you, not OK" <|
++                \_ ->
++                    runOutcome { buildStatus = "succeeded", runStatus = "parked", hasResult = True }
++                        |> Expect.equal (Just AwaitingHuman)
++            ]
+         ]
+diff --git a/web/elm/tests/AgentPageTests.elm b/web/elm/tests/AgentPageTests.elm
+index 3f371473d3..fc827c6e5a 100644
+--- a/web/elm/tests/AgentPageTests.elm
++++ b/web/elm/tests/AgentPageTests.elm
+@@ -151,6 +151,7 @@ sampleRun :
+     , workflowName : String
+     , workflowVersion : Maybe Int
+     , status : String
++    , buildStatus : String
+     , summary : String
+     , model : String
+     , usage :
+@@ -174,6 +175,7 @@ sampleRun =
+     , workflowName = "standard-dev"
+     , workflowVersion = Just 2
+     , status = "failed"
++    , buildStatus = "failed"
+     , summary = "one finding"
+     , model = "claude"
+     , usage =
+@@ -240,6 +242,28 @@ all =
+                         , attribute (Attr.href "/agent-tickets/42")
+                         , containing [ text "#42" ]
+                         ]
++        , test "a collapsed ledger row shows the truncated one-line summary" <|
++            \_ ->
++                Common.init "/agent"
++                    |> Application.handleCallback
++                        (Callback.AgentRunMetricsFetched (Ok [ sampleRun ]))
++                    |> Tuple.first
++                    |> Common.queryView
++                    |> Query.find [ class "agent-run-row" ]
++                    |> Query.has [ class "agent-run-summary", containing [ text "one finding" ] ]
++        , test "expanding a ledger row reveals the full run summary" <|
++            \_ ->
++                Common.init "/agent"
++                    |> Application.handleCallback
++                        (Callback.AgentRunMetricsFetched (Ok [ sampleRun ]))
++                    |> Tuple.first
++                    |> Application.update
++                        -- keyed by build id (stable across the 5s refetch), not the row ordinal
++                        (Msgs.Update (Message.Message.AgentRunExpandToggled 100))
++                    |> Tuple.first
++                    |> Common.queryView
++                    |> Query.find [ class "agent-run-row" ]
++                    |> Query.has [ class "agent-run-summary-full", containing [ text "one finding" ] ]
+         , test "renders a workflow name with a live indicator" <|
+             \_ ->
+                 Common.init "/agent"
+@@ -277,7 +301,7 @@ all =
+                         (Callback.AgentCostRollupFetched (Ok sampleRollup))
+                     |> Tuple.first
+                     |> Common.queryView
+-                    |> Query.has [ text "today (UTC): $12.34 spent / $20.00 cap ($7.66 left)" ]
++                    |> Query.has [ text "today (UTC day): $12.34 spent / $20.00 cap ($7.66 left)" ]
+         , test "renders a daily-cap gauge when a cap is configured" <|
+             \_ ->
+                 Common.init "/agent"
+@@ -368,8 +392,11 @@ all =
+                         )
+                     |> Tuple.first
+                     |> Common.queryView
+-                    |> Query.find [ class "agent-platform-credential" ]
+-                    |> Query.has [ text "platform: anthropic_oauth" ]
++                    |> Expect.all
++                        [ Query.has [ text "Platform credential (used by dispatched runs)" ]
++                        , Query.find [ class "agent-platform-credential" ]
++                            >> Query.has [ text "anthropic_oauth" ]
++                        ]
+         , test "shows an admin-only message when workflows fetch is forbidden" <|
+             \_ ->
+                 Common.init "/agent"
+diff --git a/web/elm/tests/AgentReviewsPageTests.elm b/web/elm/tests/AgentReviewsPageTests.elm
+index 204cd493ef..5535c64e2a 100644
+--- a/web/elm/tests/AgentReviewsPageTests.elm
++++ b/web/elm/tests/AgentReviewsPageTests.elm
+@@ -69,7 +69,7 @@ all =
+                     |> Query.has
+                         [ containing [ text "7.5" ]
+                         , containing [ text "cs / ar" ]
+-                        , containing [ text "evaluated 1/5" ]
++                        , containing [ text "your feedback: 1 of 5 verdicts" ]
+                         ]
+         , test "renders an error notice when reviews fail to load" <|
+             \_ ->
+diff --git a/web/elm/tests/AgentTicketPageTests.elm b/web/elm/tests/AgentTicketPageTests.elm
+index ba0f523aa1..4a79b26e23 100644
+--- a/web/elm/tests/AgentTicketPageTests.elm
++++ b/web/elm/tests/AgentTicketPageTests.elm
+@@ -10,6 +10,8 @@ import Html.Attributes
+ import Json.Decode
+ import Message.Callback as Callback
+ import Message.Effects as Effects
++import Message.Message
++import Message.TopLevelMessage as Msgs
+ import Test exposing (Test, describe, test)
+ import Test.Html.Query as Query
+ import Test.Html.Selector exposing (attribute, class, containing, tag, text)
+@@ -158,6 +160,7 @@ all =
+                                           , workflowName = "develop"
+                                           , workflowVersion = Just 1
+                                           , status = "ok"
++                                          , buildStatus = "succeeded"
+                                           , summary = ""
+                                           , model = ""
+                                           , usage =
+@@ -183,4 +186,24 @@ all =
+                                 , attribute (Html.Attributes.href "/builds/561978")
+                                 ]
+                     )
++        , test "a periodic self-heal refetch does not clobber an open edit form" <|
++            \_ ->
++                withDetail sampleDetailJson
++                    (\d ->
++                        Common.init "/agent-tickets/12"
++                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
++                            |> Tuple.first
++                            |> Application.update (Msgs.Update Message.Message.ClickAgentTicketEdit)
++                            |> Tuple.first
++                            |> Application.update (Msgs.Update (Message.Message.AgentTicketBodyChanged "MY UNSAVED EDIT"))
++                            |> Tuple.first
++                            -- the 5s refetch lands while the user is still editing:
++                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
++                            |> Tuple.first
++                            |> Common.queryView
++                            |> Query.has
++                                [ tag "textarea"
++                                , attribute (Html.Attributes.value "MY UNSAVED EDIT")
++                                ]
++                    )
+         ]
+diff --git a/web/elm/tests/AgentTicketsPageTests.elm b/web/elm/tests/AgentTicketsPageTests.elm
+index 657cbc00f2..2616af2934 100644
+--- a/web/elm/tests/AgentTicketsPageTests.elm
++++ b/web/elm/tests/AgentTicketsPageTests.elm
+@@ -8,9 +8,13 @@ import Expect
+ import Json.Decode
+ import Message.Callback as Callback
+ import Message.Effects as Effects
++import Message.Message as Message
++import Message.Subscription exposing (Delivery(..), Interval(..))
++import Message.TopLevelMessage as Msgs
+ import Test exposing (Test, describe, test)
+ import Test.Html.Query as Query
+ import Test.Html.Selector exposing (class, containing, text)
++import Time
+ import Url
+ 
+ 
+@@ -131,6 +135,50 @@ all =
+                     |> Common.queryView
+                     |> Query.find [ class "agent-ticket-branch" ]
+                     |> Query.has [ text "agent/ticket-12" ]
++        , test "live-updates: refetches tickets and costs on the five second tick" <|
++            \_ ->
++                Common.init "/agent-tickets"
++                    |> Application.update
++                        (Msgs.DeliveryReceived (ClockTicked FiveSeconds <| Time.millisToPosix 0))
++                    |> Tuple.second
++                    |> Expect.all
++                        [ Common.contains Effects.FetchAgentTickets
++                        , Common.contains Effects.FetchAgentTicketCosts
++                        ]
++        , test "client-side filter narrows the visible rows by title" <|
++            \_ ->
++                Common.init "/agent-tickets"
++                    |> Application.handleCallback (Callback.AgentTicketsFetched (Ok sampleTickets))
++                    |> Tuple.first
++                    |> Application.update (Msgs.Update (Message.AgentTicketsFilterChanged "gap"))
++                    |> Tuple.first
++                    |> Common.queryView
++                    |> Query.findAll [ class "agent-ticket-row" ]
++                    |> Query.count (Expect.equal 1)
++        , test "enriches a row with author, attempt count and workflow version" <|
++            \_ ->
++                Common.init "/agent-tickets"
++                    |> Application.handleCallback
++                        (Callback.AgentTicketsFetched
++                            (Ok
++                                (ticketsFrom
++                                    """
++                                    [ { "id": 3, "title": "ret, again", "state": "running"
++                                      , "workflow_name": "develop", "workflow_version": 2
++                                      , "user_name": "alice", "attempt_count": 2, "created_at": 100 }
++                                    ]
++                                    """
++                                )
++                            )
++                        )
++                    |> Tuple.first
++                    |> Common.queryView
++                    |> Query.find [ class "agent-ticket-row" ]
++                    |> Query.has
++                        [ containing [ text "alice" ]
++                        , containing [ text "attempt 2" ]
++                        , containing [ text "develop v2" ]
++                        ]
+         , test "surfaces unattributed spend as a footer line" <|
+             \_ ->
+                 Common.init "/agent-tickets"
+diff --git a/web/elm/tests/BuildStepTests.elm b/web/elm/tests/BuildStepTests.elm
+index 4e7b626d5d..fd4238024a 100644
+--- a/web/elm/tests/BuildStepTests.elm
++++ b/web/elm/tests/BuildStepTests.elm
+@@ -466,6 +466,27 @@ all =
+                     >> when iAmLookingAtTheStepBody
+                     >> then_ iSeeTheLoadVarName
+             ]
++        , describe "agent step (U1)"
++            [ test "renders the build page with an agent: header instead of blanking" <|
++                given iVisitABuildWithAnAgentStep
++                    >> then_ (iSeeText "agent:")
++            , test "shows the agent step name" <|
++                given iVisitABuildWithAnAgentStep
++                    >> then_ (iSeeText "implement")
++            ]
++        , describe "harvest step (U1)"
++            [ test "renders a harvest: header" <|
++                given iVisitABuildWithAHarvestStep
++                    >> then_ (iSeeText "harvest:")
++            , test "shows the harvest step name" <|
++                given iVisitABuildWithAHarvestStep
++                    >> then_ (iSeeText "push-branch")
++            ]
++        , describe "unknown step fallback (U1 durability)"
++            [ test "an unrecognized step type still renders with a step: header instead of blanking the page" <|
++                given iVisitABuildWithAnUnknownStep
++                    >> then_ (iSeeText "step:")
++            ]
+         ]
+ 
+ 
+@@ -1041,6 +1062,63 @@ thePlanContainsALoadVarStep =
+             )
+ 
+ 
++iVisitABuildWithAnAgentStep =
++    iOpenTheBuildPage
++        >> myBrowserFetchedTheBuild
++        >> thePlanContainsAnAgentStep
++
++
++thePlanContainsAnAgentStep =
++    Tuple.first
++        >> Application.handleCallback
++            (Callback.PlanAndResourcesFetched 1 <|
++                Ok
++                    ( { id = "agentStepId"
++                      , step = Concourse.BuildStepAgent "implement"
++                      }
++                    , { inputs = [], outputs = [] }
++                    )
++            )
++
++
++iVisitABuildWithAHarvestStep =
++    iOpenTheBuildPage
++        >> myBrowserFetchedTheBuild
++        >> thePlanContainsAHarvestStep
++
++
++thePlanContainsAHarvestStep =
++    Tuple.first
++        >> Application.handleCallback
++            (Callback.PlanAndResourcesFetched 1 <|
++                Ok
++                    ( { id = "harvestStepId"
++                      , step = Concourse.BuildStepHarvest "push-branch"
++                      }
++                    , { inputs = [], outputs = [] }
++                    )
++            )
++
++
++iVisitABuildWithAnUnknownStep =
++    iOpenTheBuildPage
++        >> myBrowserFetchedTheBuild
++        >> thePlanContainsAnUnknownStep
++
++
++thePlanContainsAnUnknownStep =
++    Tuple.first
++        >> Application.handleCallback
++            (Callback.PlanAndResourcesFetched 1 <|
++                Ok
++                    ( { id = "unknownStepId"
++                      , step = Concourse.BuildStepUnknown "mystery"
++                      }
++                    , { inputs = [], outputs = [] }
++                    )
++            )
++
++
+ setLoadVarStepId =
+     "loadVarStep"
+ 
+diff --git a/web/elm/tests/BuildTicketBarTests.elm b/web/elm/tests/BuildTicketBarTests.elm
+index 09b3fab869..789427648c 100644
+--- a/web/elm/tests/BuildTicketBarTests.elm
++++ b/web/elm/tests/BuildTicketBarTests.elm
+@@ -40,6 +40,7 @@ runMetricFor buildId cost =
+     , workflowName = "standard-dev"
+     , workflowVersion = Nothing
+     , status = "ok"
++    , buildStatus = ""
+     , summary = ""
+     , model = "claude"
+     , usage =
+diff --git a/web/elm/tests/DashboardAgentStripTests.elm b/web/elm/tests/DashboardAgentStripTests.elm
+index 6a2018e3d5..a43b7f740a 100644
+--- a/web/elm/tests/DashboardAgentStripTests.elm
++++ b/web/elm/tests/DashboardAgentStripTests.elm
+@@ -32,6 +32,11 @@ mergedTickets =
+     ticketsFrom """[ { "id": 5, "title": "already done", "state": "merged", "created_at": 1 } ]"""
+ 
+ 
++erroredTickets : List AgentTicket.Ticket
++erroredTickets =
++    ticketsFrom """[ { "id": 8, "title": "blew up", "state": "errored", "created_at": 300 } ]"""
++
++
+ costRollup : Callback.Callback
+ costRollup =
+     Callback.AgentCostRollupFetched
+@@ -104,4 +109,16 @@ all =
+                     |> Tuple.first
+                     |> Common.queryView
+                     |> Query.hasNot [ id "agent-ticket-strip" ]
++        , test "surfaces an errored ticket as a chip (U9)" <|
++            \_ ->
++                load
++                    |> Application.handleCallback (Callback.AgentTicketsFetched (Ok erroredTickets))
++                    |> Tuple.first
++                    |> Common.queryView
++                    |> Query.find [ id "agent-ticket-strip" ]
++                    |> Query.has
++                        [ tag "a"
++                        , attribute (Attr.href "/agent-tickets/8")
++                        , containing [ text "#8 blew up" ]
++                        ]
+         ]
+diff --git a/web/elm/tests/ViewsProseTests.elm b/web/elm/tests/ViewsProseTests.elm
+new file mode 100644
+index 0000000000..d543a1eed5
+--- /dev/null
++++ b/web/elm/tests/ViewsProseTests.elm
+@@ -0,0 +1,45 @@
++module ViewsProseTests exposing (all)
++
++import Expect
++import Html
++import Test exposing (Test, describe, test)
++import Test.Html.Query as Query
++import Test.Html.Selector exposing (tag, text)
++import Views.Prose
++
++
++{-| Wrap the prose output in a container so it can be queried as a single root.
++-}
++render : String -> Query.Single msg
++render body =
++    Html.div [] [ Views.Prose.view body ]
++        |> Query.fromHtml
++
++
++all : Test
++all =
++    describe "Views.Prose"
++        [ test "renders plain text" <|
++            \_ ->
++                render "hello world"
++                    |> Query.has [ text "hello world" ]
++        , test "splits blank-line-separated paragraphs into separate p elements" <|
++            \_ ->
++                render "first para\n\nsecond para"
++                    |> Query.findAll [ tag "p" ]
++                    |> Query.count (Expect.equal 2)
++        , test "renders an inline code span in a code element" <|
++            \_ ->
++                render "run `fly agent auth` now"
++                    |> Query.find [ tag "code" ]
++                    |> Query.has [ text "fly agent auth" ]
++        , test "renders a bold run in a strong element" <|
++            \_ ->
++                render "this is **important** text"
++                    |> Query.find [ tag "strong" ]
++                    |> Query.has [ text "important" ]
++        , test "leaves an unbalanced backtick as literal text (no code element)" <|
++            \_ ->
++                render "a lone ` backtick"
++                    |> Query.hasNot [ tag "code" ]
++        ]

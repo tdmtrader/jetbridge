@@ -1,0 +1,189 @@
+# Exposure audit resolved 2026-07-25 by curator-fixup (see leakage_audit and
+# notes.md#fixup-2026-07-25). The prior BORDERLINE/FAIL verdicts were raised
+# against case.yaml and ground_truth/ content, which the schema's exposure
+# contract keeps harness-side; the two exposed-text items were fixed.
+schema: benchmark-case/v1
+id: review-jb-004
+title: "Adversarial review: terminal-ticket pipeline archiver + build-page agent spend chip"
+workflow: code-review
+signature:
+  # The reviewer receives the repository at the tip of the change, the change
+  # itself as a diff, and the review request. It produces findings.
+  # `review-findings/v1` is a curator-chosen port type name; no snapshot type
+  # registry exists yet (see notes.md#open-questions).
+  inputs:
+    repository: repository/v1
+    change: repository-change/v1
+    work-item: work-item/v1
+  outputs:
+    findings: review-findings/v1
+source:
+  system: git-commit
+  repo: jetbridge
+  terminal: 793659c7fad09135eabb44420006414d1f1b0c5f
+information_cut: 2026-07-18T11:49:37-07:00
+pre_state:
+  # The tree with the change under review applied — this is what a reviewer sees.
+  repository: {repo: jetbridge, ref: c4d9fcb91412ae3be80c34a7e6d1fedf3f9bb355}
+  # The reviewed change, as `git diff <base>..<tip>` with generated files excluded.
+  change:
+    path: task/change.diff
+    base: dbc0545029fe0a98ff2a6edaeb7e6f359b8bacca
+    tip: c4d9fcb91412ae3be80c34a7e6d1fedf3f9bb355
+    commits:
+      - {sha: d3daa058c44a42fb960cce2d56b2e9edc2c27065, subject: "feat(web): agent cost chip on the build page (D1/F10)"}
+      - {sha: c4d9fcb91412ae3be80c34a7e6d1fedf3f9bb355, subject: "feat(atc): archive terminal agent-ticket pipelines (C3/F3)"}
+    excluded_from_diff:
+      # Generated artifacts only. Nothing hand-written was dropped.
+      - web/public/elm.js
+      - web/public/elm.min.js
+      - atc/db/dbfakes/fake_pipeline_run_factory.go
+    stat: "12 files changed, 548 insertions(+), 40 deletions(-)"
+  work-item: {path: task/task.md}
+ground_truth:
+  outcome: merged
+  # The remediation the humans shipped 28 minutes later. Not a grading target for
+  # a review workflow (the reviewer emits findings, not a diff) — it is the
+  # provenance of the oracle and the definition of "acceptable remediation".
+  reference_change: ground_truth/reference.diff
+  expected_findings: ground_truth/expected_findings.yaml
+rubric: reference
+grading:
+  # Primary: recall against the two `required: true` findings in
+  # expected_findings.yaml, judged for mechanism and anchoring per rubric.md.
+  # Precision is scored against the four `non_findings` traps.
+  primary:
+    kind: reference
+    oracle: ground_truth/expected_findings.yaml
+    required_findings: [F1-linkage-unpinned, F2-cost-chip-stale-on-build-switch]
+    bonus_findings: [F3-template-holdback-asymmetry, F2b-late-metrics-response-not-filtered, F2c-live-build-spend-never-refreshed]
+    precision_traps: [N1-to_regclass-probe, N2-reconciler-not-transition-hook, N3-terminal-states-duplication, N4-cost-chip-rounding]
+  judge_addendum: ground_truth/rubric.md
+
+  # NOT agent grading — ground-truth validation. These prove both reported
+  # defects are real and reproduce at pre_state. Each command overwrites the
+  # pre_state test file with the withheld post-fix copy, so it must FAIL at
+  # pre_sha and PASS at post_sha. Run these once when validating the case;
+  # never expose the withheld_tests/ tree to the agent under test.
+  ground_truth_validation:
+    - id: V1-elm-build-switch
+      cmd: >-
+        cp ${CASE_DIR}/ground_truth/withheld_tests/web/elm/tests/BuildTicketBarTests.elm
+        web/elm/tests/BuildTicketBarTests.elm && cd web/elm && elm-test tests/BuildTicketBarTests.elm
+      pre_sha: c4d9fcb91412ae3be80c34a7e6d1fedf3f9bb355
+      post_sha: 793659c7fad09135eabb44420006414d1f1b0c5f
+      expect: fail-at-pre,pass-at-post
+      proves: F2 (+ F2b, F2c — the four added specs cover all three)
+      needs_postgres: false
+      note: >-
+        Cheapest validation in the case: elm + elm-test are on PATH, no DB, no
+        Docker. The added specs are "refetches agent metrics when switching builds
+        through history", "clears the previous build's spend when switching
+        builds", "drops a late metrics response that belongs to the previous
+        build", "refetches agent metrics when a live-watched build finishes".
+        Repo-wide elm-test count went 3094 -> 3098 across the fix.
+    - id: V2-db-linkage-pin
+      cmd: >-
+        cp ${CASE_DIR}/ground_truth/withheld_tests/atc/db/pipeline_run_factory_test.go
+        atc/db/pipeline_run_factory_test.go &&
+        ginkgo --focus="RunsForTerminalTickets / TemplatesForTerminalTickets" ./atc/db/
+      pre_sha: c4d9fcb91412ae3be80c34a7e6d1fedf3f9bb355
+      post_sha: 793659c7fad09135eabb44420006414d1f1b0c5f
+      expect: fail-at-pre,pass-at-post
+      proves: F1 (spec "never selects a pipeline that is not the ticket's own agent-ticket template") and F3 (spec "holds back both the run and the template while the run is still aggregate-running")
+      needs_postgres: true
+      note: >-
+        Requires a local PostgreSQL (CLAUDE.md). The withheld spec file also
+        rewrites three pre-existing specs to use a properly-named
+        `agent-ticket-7` template on the main team, so the whole Describe block
+        must be swapped as a unit — do not cherry-pick individual specs.
+  environment:
+    needs_postgres: true      # V2 only; V1 and the review task itself need none
+    needs_docker: false
+    toolchain: "Go 1.x + ginkgo (V2); elm 0.19.1 + elm-test 0.19.1 (V1). Both verified present on the curation host."
+withheld: []
+difficulty: hard
+memorization_risk: none
+# The dev machine's project auto-memory (project_agentic_ui_wave.md) records the
+# remediation commit in prose and states BOTH required findings verbatim —
+# caller-writable `agent_tickets.pipeline_run_id` archiving any victim template,
+# and `Header.changeToBuild` stamping `model.id` before `BuildFetched` arrives.
+# A local hand-run of this case is invalid unless project memory, session
+# context, and conversation history are suppressed for the solver.
+known_leak_channels: [project-auto-memory]
+validation:
+  status: validated
+  notes: notes.md#validation
+leakage_audit:
+  - auditor: opus
+    verdict: borderline
+    notes: "task/ is clean — no post-cut vocabulary, the diff reproduces exactly, both required findings need crossing OUT of the diff (handler.go, Header.elm) so diff-skimming cannot solve it, and no in-tree doc carries the answers. Curator items: lens 2's 'out-of-order or late responses' names a bonus finding's mechanism, lens 5 has a single target (the F3-encoding spec), and case.yaml's self-describing finding slugs plus ground_truth_validation prose form an answer key that must never be surfaced."
+  - auditor: sonnet
+    verdict: fail
+    notes: "task/task.md and change.diff are well-built — generic review lenses, no post-cut names, and F1's discovery path is fair (pre-existing doc comments adjacent to, not inside, the diff). Fails on case.yaml: source.terminal names the remediation SHA, the finding slugs state each defect outright, ground_truth_validation prose describes the withheld assertions including the scrubbed agent-ticket-7/main-team hint, and curation.learnings is a prose walkthrough."
+  - auditor: curator-fixup
+    verdict: pass
+    notes: "Sonnet's FAIL and opus's answer-key item are entirely case.yaml/ground_truth content — harness-side under the exposure contract, so nothing was renamed or retitled. Fixed the two genuinely exposed items in task/task.md: lens 2 no longer enumerates 'out-of-order or late responses' (F2b's mechanism) and lens 5 no longer describes F3's shape; also dropped 'unattended' from the lifecycler orientation line. rubric.md gained an 'Evidence, not quotation' section so the kept in-tree deflators (F30 doc comments, 11-dispatch.md naming convention) cannot be cashed in by quotation. Added known_leak_channels: [project-auto-memory] — memory states both required findings verbatim. Difficulty stays hard; dates verified consistent with the pre_state commit."
+curation:
+  quality: 5
+  learnings: >-
+    Review cases back out of a *pair* of commits, not one: the terminal artifact
+    is the remediation commit, and the thing under review is everything between
+    the remediation's parent-of-parent and its parent. The commit body of the
+    remediation is the oracle, which makes review cases unusually cheap to ground
+    — but it is also the single worst leak in the corpus, because it states both
+    findings in prose. Withholding it means withholding the commit AND every
+    descendant; the pre_state ref must be the reviewed tip, never the branch head.
+
+    This repo's habit of writing the *reason* into doc comments is what makes the
+    security finding discoverable rather than psychic: `RunBelongsToPipeline` and
+    `TicketBelongsToRun` sit twenty lines above the new code and both say, in
+    prose, that these ids are attacker-writable. That is not leakage — it is the
+    codebase being reviewable, and a review that misses F1 with that precedent in
+    view has genuinely under-read. Curators should look for this shape
+    deliberately: a defect whose evidence is *adjacent to* but not *inside* the
+    diff is exactly the discrimination a review benchmark wants, because
+    diff-only skimming cannot reach it. Both findings here have that shape (F1's
+    write path is in `agent/api/tickets`; F2's cause is in `Header.elm`, a file
+    the diff never touches).
+
+    Two more curation notes. (1) The reviewed change's own tests *assert the bug*
+    for F3 ("the template itself never runs builds, so it archives right away") —
+    a green suite is not evidence, and an oracle should record which specs
+    encoded the wrong invariant so a judge can reward the reviewer who
+    disbelieved them. (2) The task text is where review cases leak most easily:
+    an honest adversarial-review request naturally wants to say "check
+    authorization" and "watch for stale client state", which maps 1:1 onto the two
+    findings. I generalized the ask into a five-lens checklist that covers the
+    findings without pointing at them, and dropped an early draft's pointers to
+    the build header module and the main-team naming convention. Anyone writing a
+    review case should draft the trigger, then re-read it asking "could I find the
+    bugs from this text alone?"
+
+    Finally: review cases are not mechanically gradable as agent output (findings,
+    not a diff), but they ARE mechanically *validatable* — the remediation shipped
+    tests, so `fail-at-pre / pass-at-post` proves the ground truth is real without
+    proving anything about the agent. Recording those as
+    `ground_truth_validation` rather than `fail_to_pass` keeps the distinction
+    honest and stops a future harness from mistaking them for a grading gate.
+
+    Fixup lesson (2026-07-25): the dual audit split on *where* the answer key is
+    allowed to live. Both auditors correctly saw that this manifest states both
+    defects outright — finding slugs, `source.terminal`, the
+    `ground_truth_validation` prose, these learnings — and one voted FAIL on that
+    basis. Under the schema's exposure contract that is not a leak: the solver
+    sees pre_state minus `withheld` plus `task/`, and never `case.yaml`,
+    `notes.md`, or `ground_truth/`. The real obligation the audit surfaces is
+    operational, not editorial — a hand-run must materialize `task/` into a
+    neutrally-named directory and must not let the manifest into the solver's
+    context. Review cases are the sharpest instance of this because their oracle
+    IS prose; a curator who scrubs the manifest to satisfy an audit only makes the
+    case harder to grade without making it harder to cheat.
+
+    The channel that IS real here is operator-environment leakage: this machine's
+    project auto-memory writes up the remediation commit and names both required
+    findings in the same words the oracle uses. That is unfixable from inside the
+    corpus (memory is not ours to edit), so it is declared in
+    `known_leak_channels` and any local hand-run without memory suppression is
+    invalid. Cases harvested from this repo's own recent incidents should be
+    assumed contaminated on this host until checked.

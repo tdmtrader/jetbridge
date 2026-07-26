@@ -1,0 +1,132 @@
+diff --git a/internal/eos/stage.go b/internal/eos/stage.go
+index eac1476..bf71d87 100644
+--- a/internal/eos/stage.go
++++ b/internal/eos/stage.go
+@@ -107,14 +107,16 @@ func (c *Client) awaitActiveChan(ctx context.Context, baseSeq uint64, quiet time
+ // ActiveChannels returns the channels currently live on stage (non-zero intensity
+ // or showing color) with their level, plus color for any channel in colorChannels.
+ // It presses Select Active to scope to the live set, then reads only those
+-// channels. The returned bool is true if any active channel did not report in time
+-// (partial). A disconnected console surfaces as ErrNotConnected from the select.
++// channels. The returned bool is true when the result is partial — either an
++// active channel did not report its level in time, or the console truncated the
++// selection string on a very busy look (see parseChannelList). A disconnected
++// console surfaces as ErrNotConnected from the select.
+ func (c *Client) ActiveChannels(ctx context.Context, colorChannels []int) ([]ChannelState, bool, error) {
+ 	raw, err := c.selectActive(ctx)
+ 	if err != nil {
+ 		return nil, false, err
+ 	}
+-	chans, err := parseChannelList(raw)
++	chans, truncated, err := parseChannelList(raw)
+ 	if err != nil {
+ 		return nil, false, err
+ 	}
+@@ -124,7 +126,9 @@ func (c *Client) ActiveChannels(ctx context.Context, colorChannels []int) ([]Cha
+ 	}
+ 
+ 	states := make([]ChannelState, 0, len(chans))
+-	partial := false
++	// A console-truncated selection means the returned set is already a subset of
++	// what is live, so the read is partial regardless of per-channel timeouts.
++	partial := truncated
+ 	for _, ch := range chans {
+ 		if ctx.Err() != nil {
+ 			partial = true
+@@ -151,13 +155,22 @@ func (c *Client) ActiveChannels(ctx context.Context, colorChannels []int) ([]Cha
+ // "A-B" ranges, separated by spaces, "+", or commas, with a trailing "[level]"
+ // summary that is ignored, e.g. "1-2,70  [100]". An empty string (blackout) yields
+ // nil. An unrecognized token is an error that includes the raw string.
+-func parseChannelList(s string) ([]int, error) {
++//
++// The returned bool is true when the console truncated the selection string: on
++// busy looks Eos cuts /eos/out/active/chan at a fixed display width (~100 chars),
++// leaving a dangling final token marked with an ellipsis (e.g. "…,80-85,10.."). A
++// '.' never appears in a real channel token, so it unambiguously marks the cut;
++// we salvage the complete channels before it and flag the result partial rather
++// than failing the whole read — read_stage should still report the crowded look,
++// just noting it may be incomplete. Only a *trailing* fragment is tolerated; a bad
++// token anywhere earlier is still a hard error.
++func parseChannelList(s string) ([]int, bool, error) {
+ 	if i := strings.IndexByte(s, '['); i >= 0 {
+ 		s = s[:i]
+ 	}
+ 	s = strings.TrimSpace(s)
+ 	if s == "" {
+-		return nil, nil
++		return nil, false, nil
+ 	}
+ 	seen := map[int]bool{}
+ 	var out []int
+@@ -170,15 +183,28 @@ func parseChannelList(s string) ([]int, error) {
+ 	fields := strings.FieldsFunc(s, func(r rune) bool {
+ 		return r == ' ' || r == '+' || r == ','
+ 	})
+-	for _, tok := range fields {
++	for i, tok := range fields {
+ 		if tok == "" || strings.EqualFold(tok, "Thru") {
+ 			continue
+ 		}
++		last := i == len(fields)-1
++		// An ellipsis fragment ("10..", "...") is the console's truncation marker —
++		// stop here and report the salvaged channels as partial.
++		if strings.ContainsRune(tok, '.') {
++			sort.Ints(out)
++			return out, true, nil
++		}
+ 		if lo, hi, ok := strings.Cut(tok, "-"); ok {
+ 			a, errA := strconv.Atoi(strings.TrimSpace(lo))
+ 			b, errB := strconv.Atoi(strings.TrimSpace(hi))
+ 			if errA != nil || errB != nil || a < 1 || b < a {
+-				return nil, fmt.Errorf("eos: cannot parse channel range %q in active-channel string %q", tok, s)
++				// A dangling range as the final token ("101-", "-") is a truncation
++				// fragment too; drop it and flag partial. Elsewhere it is malformed.
++				if last && (strings.TrimSpace(lo) == "" || strings.TrimSpace(hi) == "") {
++					sort.Ints(out)
++					return out, true, nil
++				}
++				return nil, false, fmt.Errorf("eos: cannot parse channel range %q in active-channel string %q", tok, s)
+ 			}
+ 			for n := a; n <= b; n++ {
+ 				add(n)
+@@ -187,10 +213,10 @@ func parseChannelList(s string) ([]int, error) {
+ 		}
+ 		n, err := strconv.Atoi(tok)
+ 		if err != nil || n < 1 {
+-			return nil, fmt.Errorf("eos: cannot parse channel %q in active-channel string %q", tok, s)
++			return nil, false, fmt.Errorf("eos: cannot parse channel %q in active-channel string %q", tok, s)
+ 		}
+ 		add(n)
+ 	}
+ 	sort.Ints(out)
+-	return out, nil
++	return out, false, nil
+ }
+diff --git a/internal/mcp/stage_tools.go b/internal/mcp/stage_tools.go
+index 8fee004..c446fbf 100644
+--- a/internal/mcp/stage_tools.go
++++ b/internal/mcp/stage_tools.go
+@@ -28,7 +28,7 @@ type StageChannel struct {
+ type ReadStageOutput struct {
+ 	Channels []StageChannel `json:"channels" jsonschema:"the live channels, sorted by channel number"`
+ 	Count    int            `json:"count" jsonschema:"how many channels are live"`
+-	Partial  bool           `json:"partial" jsonschema:"true if any active channel did not report in time"`
++	Partial  bool           `json:"partial" jsonschema:"true if the list may be incomplete — the console truncated a busy look, or some active channels did not report in time"`
+ 	Target   string         `json:"target" jsonschema:"the console this server is talking to"`
+ 	Detail   string         `json:"detail,omitempty" jsonschema:"a short, plain-language status message"`
+ }
+@@ -60,9 +60,12 @@ func readStageTool(core EosCore, colorChannels ...int) mcpsdk.ToolHandlerFor[NoI
+ 		}
+ 		out.Count = len(out.Channels)
+ 		out.Partial = partial
+-		if out.Count == 0 {
++		switch {
++		case out.Count == 0:
+ 			out.Detail = "No active channels."
+-		} else {
++		case partial:
++			out.Detail = fmt.Sprintf("%d channel(s) live (list may be incomplete — busy look).", out.Count)
++		default:
+ 			out.Detail = fmt.Sprintf("%d channel(s) live.", out.Count)
+ 		}
+ 		return nil, out, nil

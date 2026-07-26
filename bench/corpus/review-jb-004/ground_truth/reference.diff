@@ -1,0 +1,440 @@
+diff --git a/atc/db/pipeline_run_factory.go b/atc/db/pipeline_run_factory.go
+index 1e61ffc090..1eb610266d 100644
+--- a/atc/db/pipeline_run_factory.go
++++ b/atc/db/pipeline_run_factory.go
+@@ -68,14 +68,19 @@ type PipelineRunFactory interface {
+ 	// (C3, UI audit 2026-07-17). Scoped by template rather than the latest
+ 	// attempt: a requeued ticket leaves one run instance per attempt and
+ 	// every one of them is a dead dashboard card once the ticket is
+-	// terminal. Still-running runs are held back so the lifecycler's Finish
+-	// pass completes them first; both return empty on a pre-ticket-core DB.
++	// terminal. The linkage is pinned to the ticket's own
++	// `agent-ticket-<id>` template on the main team — pipeline_run_id is
++	// caller-writable (F30) and archival is destructive, so an unpinned
++	// join would archive arbitrary victim pipelines. Still-running runs are
++	// held back so the lifecycler's Finish pass completes them first; both
++	// return empty on a pre-ticket-core DB.
+ 	RunsForTerminalTickets() ([]PipelineRun, error)
+ 
+ 	// TemplatesForTerminalTickets returns the unarchived base template
+ 	// pipelines (template = true, no instance vars) of terminally-disposed
+-	// agent tickets. Without this the permanently-gray template card keeps
+-	// rendering after every run instance is archived.
++	// agent tickets, held back while any of their runs is still
++	// aggregate-running. Without this the permanently-gray template card
++	// keeps rendering after every run instance is archived.
+ 	TemplatesForTerminalTickets() ([]Pipeline, error)
+ }
+ 
+@@ -482,6 +487,16 @@ func (f *pipelineRunFactory) agentTicketsTableExists() (bool, error) {
+ // terminalTicketLinkage is the shared subquery: template pipeline ids
+ // reachable from a terminal ticket through its dispatched run
+ // (agent_tickets.pipeline_run_id → pipeline_runs.template_pipeline_id).
++// The linkage additionally requires the template to be the ticket's OWN
++// `agent-ticket-<id>` pipeline on the main team (the dispatch naming
++// convention, agent/dispatch/dispatch.go). pipeline_run_id is
++// caller-writable through PUT .../state (same F30 id class that
++// TicketBelongsToRun exists for), and this is a DESTRUCTIVE consumer — an
++// unconstrained join would let a tickets:write principal point a ticket at
++// an arbitrary victim run and have the lifecycler archive that victim's
++// template, re-archiving it every tick forever. With the name+team pin, a
++// poisoned run id can at worst archive the ticket's own pipelines, which
++// is what happens at terminal anyway.
+ func terminalTicketLinkage() (string, []any) {
+ 	states := tickets.TerminalStates()
+ 	marks := make([]string, len(states))
+@@ -490,11 +505,16 @@ func terminalTicketLinkage() (string, []any) {
+ 		marks[i] = "?"
+ 		args[i] = string(s)
+ 	}
++	args = append(args, atc.DefaultTeamName)
+ 	return fmt.Sprintf(`(
+ 		SELECT r0.template_pipeline_id
+ 		FROM agent_tickets t
+ 		JOIN pipeline_runs r0 ON r0.id = t.pipeline_run_id
+-		WHERE t.state IN (%s))`, strings.Join(marks, ",")), args
++		JOIN pipelines p0 ON p0.id = r0.template_pipeline_id
++		JOIN teams tm0 ON tm0.id = p0.team_id
++		WHERE t.state IN (%s)
++		  AND p0.name = 'agent-ticket-' || t.id::text
++		  AND tm0.name = ?)`, strings.Join(marks, ",")), args
+ }
+ 
+ func (f *pipelineRunFactory) RunsForTerminalTickets() ([]PipelineRun, error) {
+@@ -534,6 +554,12 @@ func (f *pipelineRunFactory) TemplatesForTerminalTickets() ([]Pipeline, error) {
+ 		Where(sq.Eq{"p.archived": false, "p.template": true}).
+ 		Where(sq.Expr("p.instance_vars IS NULL")).
+ 		Where(sq.Expr("p.id IN "+linkage, args...)).
++		// same hold-back as the runs pass: while any run of the template
++		// is still aggregate-running, leave the template so the group
++		// converges as one once the Finish pass completes the run.
++		Where(sq.Expr(`NOT EXISTS (
++			SELECT 1 FROM pipeline_runs r1
++			WHERE r1.template_pipeline_id = p.id AND r1.status = 'running')`)).
+ 		OrderBy("p.id ASC").
+ 		RunWith(f.conn).
+ 		Query()
+diff --git a/atc/db/pipeline_run_factory_test.go b/atc/db/pipeline_run_factory_test.go
+index 26e6b6b95e..74c66c7018 100644
+--- a/atc/db/pipeline_run_factory_test.go
++++ b/atc/db/pipeline_run_factory_test.go
+@@ -197,6 +197,25 @@ var _ = Describe("PipelineRunFactory", func() {
+ 	// agent-ticket-<id> pipelines are dead dashboard cards. The lifecycler
+ 	// archives them via these two selections.
+ 	Describe("RunsForTerminalTickets / TemplatesForTerminalTickets", func() {
++		// The linkage only trusts the dispatch naming convention: the
++		// ticket's own `agent-ticket-<id>` template on the main team.
++		// pipeline_run_id is caller-writable (F30), so anything else —
++		// including the suite's shared `run-template` fixture — must never
++		// be selected for archival.
++		var ticketTemplate db.Pipeline
++
++		BeforeEach(func() {
++			mainTeam, found, err := teamFactory.FindTeam(atc.DefaultTeamName)
++			Expect(err).ToNot(HaveOccurred())
++			if !found {
++				mainTeam, err = teamFactory.CreateTeam(atc.Team{Name: atc.DefaultTeamName})
++				Expect(err).ToNot(HaveOccurred())
++			}
++			ticketTemplate, _, err = mainTeam.SavePipeline(
++				atc.PipelineRef{Name: "agent-ticket-7"}, templateConfig, db.ConfigVersion(0), false)
++			Expect(err).ToNot(HaveOccurred())
++		})
++
+ 		runIDs := func(runs []db.PipelineRun) []int {
+ 			ids := []int{}
+ 			for _, r := range runs {
+@@ -228,11 +247,11 @@ var _ = Describe("PipelineRunFactory", func() {
+ 
+ 		It("selects every attempt's run plus the base template, exactly while the ticket is terminal", func() {
+ 			// two attempts = two run instances of the same template
+-			first, err := factory.CreateRun(template.ID(), nil, "some-user")
++			first, err := factory.CreateRun(ticketTemplate.ID(), nil, "some-user")
+ 			Expect(err).ToNot(HaveOccurred())
+ 			Expect(first.Finish(db.PipelineRunSucceeded)).To(Succeed())
+ 
+-			second, err := factory.CreateRun(template.ID(), nil, "some-user")
++			second, err := factory.CreateRun(ticketTemplate.ID(), nil, "some-user")
+ 			Expect(err).ToNot(HaveOccurred())
+ 			Expect(second.Finish(db.PipelineRunFailed)).To(Succeed())
+ 
+@@ -267,7 +286,7 @@ var _ = Describe("PipelineRunFactory", func() {
+ 
+ 				templates, err := factory.TemplatesForTerminalTickets()
+ 				Expect(err).ToNot(HaveOccurred())
+-				Expect(pipelineIDs(templates)).To(ConsistOf(template.ID()), "state %s", state)
++				Expect(pipelineIDs(templates)).To(ConsistOf(ticketTemplate.ID()), "state %s", state)
+ 			}
+ 
+ 			// archiving converges to steady-state empty selections
+@@ -291,8 +310,8 @@ var _ = Describe("PipelineRunFactory", func() {
+ 			Expect(templates).To(BeEmpty())
+ 		})
+ 
+-		It("holds back a run whose aggregate status is still running (Finish pass completes it a tick later)", func() {
+-			run, err := factory.CreateRun(template.ID(), nil, "some-user")
++		It("holds back both the run and the template while the run is still aggregate-running", func() {
++			run, err := factory.CreateRun(ticketTemplate.ID(), nil, "some-user")
+ 			Expect(err).ToNot(HaveOccurred())
+ 			// deliberately NOT finished: status stays 'running'
+ 
+@@ -305,10 +324,42 @@ var _ = Describe("PipelineRunFactory", func() {
+ 			Expect(err).ToNot(HaveOccurred())
+ 			Expect(runs).To(BeEmpty())
+ 
+-			// the template itself never runs builds, so it archives right away
+ 			templates, err := factory.TemplatesForTerminalTickets()
+ 			Expect(err).ToNot(HaveOccurred())
+-			Expect(pipelineIDs(templates)).To(ConsistOf(template.ID()))
++			Expect(templates).To(BeEmpty())
++
++			// once the Finish pass completes the run, the whole group goes
++			Expect(run.Finish(db.PipelineRunSucceeded)).To(Succeed())
++
++			runs, err = factory.RunsForTerminalTickets()
++			Expect(err).ToNot(HaveOccurred())
++			Expect(runIDs(runs)).To(ConsistOf(run.ID()))
++
++			templates, err = factory.TemplatesForTerminalTickets()
++			Expect(err).ToNot(HaveOccurred())
++			Expect(pipelineIDs(templates)).To(ConsistOf(ticketTemplate.ID()))
++		})
++
++		It("never selects a pipeline that is not the ticket's own agent-ticket template (poisoned pipeline_run_id, F30)", func() {
++			// a caller-writable pipeline_run_id pointed at a run of some
++			// unrelated template — here the suite's shared run-template on
++			// another team — must never mark that victim for archival
++			victim, err := factory.CreateRun(template.ID(), nil, "some-user")
++			Expect(err).ToNot(HaveOccurred())
++			Expect(victim.Finish(db.PipelineRunSucceeded)).To(Succeed())
++
++			_, err = dbConn.Exec(
++				`INSERT INTO agent_tickets (id, title, repo, state, pipeline_run_id) VALUES (7, 't', 'r', 'abandoned', $1)`,
++				victim.ID())
++			Expect(err).ToNot(HaveOccurred())
++
++			runs, err := factory.RunsForTerminalTickets()
++			Expect(err).ToNot(HaveOccurred())
++			Expect(runs).To(BeEmpty())
++
++			templates, err := factory.TemplatesForTerminalTickets()
++			Expect(err).ToNot(HaveOccurred())
++			Expect(templates).To(BeEmpty())
+ 		})
+ 
+ 		It("ignores terminal tickets that were never dispatched (no pipeline_run_id linkage)", func() {
+diff --git a/web/elm/src/Build/Build.elm b/web/elm/src/Build/Build.elm
+index f95a06f6f0..f09011f263 100644
+--- a/web/elm/src/Build/Build.elm
++++ b/web/elm/src/Build/Build.elm
+@@ -133,6 +133,7 @@ init flags =
+           , createdBy = Nothing
+           , agentReviews = []
+           , agentRunMetrics = []
++          , agentFetchedBuildId = Nothing
+           , agentReviewLoadError = False
+           , agentReviewPanelExpanded = True
+           , expandedFindings = Set.empty
+@@ -187,6 +188,7 @@ changeToBuild { highlight, pageType, fromBuildPage } ( model, effects ) =
+             , output = Empty
+             , autoScroll = True
+             , highlight = highlight
++            , agentRunMetrics = []
+           }
+         , case pageType of
+             OneOffBuildPage buildId ->
+@@ -330,7 +332,10 @@ handleCallback action ( model, effects ) =
+             ( { model | agentReviewLoadError = True }, effects )
+ 
+         BuildAgentMetricsFetched (Ok rows) ->
+-            ( { model | agentRunMetrics = rows }, effects )
++            -- The callback carries no build id, so a slow response for the
++            -- previous build can land after an in-app switch; each row
++            -- carries its build id, so keep only the current build's.
++            ( { model | agentRunMetrics = List.filter (\r -> r.buildId == model.id) rows }, effects )
+ 
+         BuildAgentMetricsFetched (Err _) ->
+             -- The cost chip is best-effort provenance; a fetch error just
+@@ -421,11 +426,25 @@ handleDelivery session delivery ( model, effects ) =
+             case ( model.hasLoadedYet, buildStatus ) of
+                 ( True, Just ( status, _ ) ) ->
+                     ( newModel
+-                    , if Concourse.BuildStatus.isRunning model.status then
++                    , (if Concourse.BuildStatus.isRunning model.status then
+                         newEffects ++ [ SetFavIcon (Just status) ]
+ 
+-                      else
++                       else
+                         newEffects
++                      )
++                        ++ (if
++                                Concourse.BuildStatus.isRunning model.status
++                                    && not (Concourse.BuildStatus.isRunning status)
++                            then
++                                -- agent steps ingest their metrics as they
++                                -- complete, so a build watched live holds the
++                                -- page-load snapshot; refresh the spend chip
++                                -- once the build finishes.
++                                [ FetchBuildAgentMetrics model.id ]
++
++                            else
++                                []
++                           )
+                     )
+ 
+                 _ ->
+@@ -658,6 +677,9 @@ updateOutput updater ( model, effects ) =
+ handleBuildFetched : Concourse.Build -> ET Model
+ handleBuildFetched build ( model, effects ) =
+     let
++        agentRefetch =
++            model.agentFetchedBuildId /= Just build.id
++
+         withBuild =
+             { model
+                 | reapTime = build.reapTime
+@@ -667,6 +689,25 @@ handleBuildFetched build ( model, effects ) =
+ 
+                     else
+                         Empty
++                , agentFetchedBuildId = Just build.id
++                , agentRunMetrics =
++                    if agentRefetch then
++                        []
++
++                    else
++                        model.agentRunMetrics
++                , agentReviews =
++                    if agentRefetch then
++                        []
++
++                    else
++                        model.agentReviews
++                , agentReviewLoadError =
++                    if agentRefetch then
++                        False
++
++                    else
++                        model.agentReviewLoadError
+             }
+ 
+         fetchJobAndHistory =
+@@ -680,12 +721,15 @@ handleBuildFetched build ( model, effects ) =
+                     []
+ 
+         fetchAgentReviews =
+-            -- Only fetch once per build: either this is the first fetch for a
+-            -- build we haven't loaded yet, or we're switching to a different
+-            -- build id. Without this guard, handleBuildFetched fires on every
+-            -- poll while a build is running and would re-request reviews
+-            -- continuously.
+-            if not model.hasLoadedYet || build.id /= model.id then
++            -- Fetch agent reviews/metrics once per build id, clearing the
++            -- previous build's rows when the id changes. model.id can't
++            -- serve as the guard: Header.changeToBuild stamps it with the
++            -- target build BEFORE that build's BuildFetched arrives, so an
++            -- id-comparison guard never fires on in-app build switches and
++            -- the previous build's reviews and spend would stick. Tracking
++            -- the id we last fetched for survives the switch and still
++            -- suppresses the 1s pending-poll spam.
++            if agentRefetch then
+                 [ FetchBuildAgentReviews build.id
+                 , FetchBuildAgentMetrics build.id
+                 ]
+diff --git a/web/elm/src/Build/Models.elm b/web/elm/src/Build/Models.elm
+index b6d645c666..64a14f3d66 100644
+--- a/web/elm/src/Build/Models.elm
++++ b/web/elm/src/Build/Models.elm
+@@ -38,6 +38,7 @@ type alias Model =
+                 , reapTime : Maybe Time.Posix
+                 , agentReviews : List Concourse.AgentReview.BuildReview
+                 , agentRunMetrics : List Concourse.Agent.RunMetric
++                , agentFetchedBuildId : Maybe Int
+                 , agentReviewLoadError : Bool
+                 , agentReviewPanelExpanded : Bool
+                 , expandedFindings : Set String
+diff --git a/web/elm/tests/BuildTicketBarTests.elm b/web/elm/tests/BuildTicketBarTests.elm
+index 61eb969428..09b3fab869 100644
+--- a/web/elm/tests/BuildTicketBarTests.elm
++++ b/web/elm/tests/BuildTicketBarTests.elm
+@@ -1,6 +1,7 @@
+ module BuildTicketBarTests exposing (all)
+ 
+ import Application.Application as Application
++import Build.StepTree.Models as STModels
+ import Common
+ import Concourse
+ import Concourse.Agent
+@@ -10,9 +11,12 @@ import Dict
+ import Html.Attributes as Attr
+ import Message.Callback as Callback
+ import Message.Effects as Effects
++import Message.Subscription exposing (Delivery(..))
++import Routes
+ import Test exposing (Test, describe, test)
+ import Test.Html.Query as Query
+ import Test.Html.Selector exposing (attribute, containing, id, tag, text)
++import Time
+ 
+ 
+ agentBuild : Concourse.Build
+@@ -22,10 +26,15 @@ agentBuild =
+ 
+ 
+ runMetric : Float -> Concourse.Agent.RunMetric
+-runMetric cost =
++runMetric =
++    runMetricFor 1
++
++
++runMetricFor : Int -> Float -> Concourse.Agent.RunMetric
++runMetricFor buildId cost =
+     { ticketId = Just 12
+     , pipelineRunId = Nothing
+-    , buildId = 1
++    , buildId = buildId
+     , planId = "plan"
+     , stepName = "implement"
+     , workflowName = "standard-dev"
+@@ -109,4 +118,81 @@ all =
+                     |> Tuple.first
+                     |> Common.queryView
+                     |> Query.hasNot [ id "build-agent-cost" ]
++        , test "refetches agent metrics when switching builds through history" <|
++            \_ ->
++                switchToBuildTwo
++                    |> Tuple.second
++                    |> Common.contains (Effects.FetchBuildAgentMetrics 2)
++        , test "clears the previous build's spend when switching builds" <|
++            \_ ->
++                switchToBuildTwo
++                    |> Tuple.first
++                    |> Common.queryView
++                    |> Query.hasNot [ id "build-agent-cost" ]
++        , test "drops a late metrics response that belongs to the previous build" <|
++            \_ ->
++                switchToBuildTwo
++                    |> Tuple.first
++                    |> Application.handleCallback
++                        (Callback.BuildAgentMetricsFetched (Ok [ runMetricFor 1 0.5 ]))
++                    |> Tuple.first
++                    |> Common.queryView
++                    |> Query.hasNot [ id "build-agent-cost" ]
++        , test "refetches agent metrics when a live-watched build finishes" <|
++            \_ ->
++                Common.init "/teams/t/pipelines/p/jobs/j/builds/1"
++                    |> Application.handleCallback
++                        (Callback.BuildFetched (Ok (Data.jobBuild BuildStatusStarted)))
++                    |> Tuple.first
++                    |> Application.handleDelivery
++                        (EventsReceived
++                            (Ok
++                                [ { url = "http://localhost:8080/api/v1/builds/1/events"
++                                  , data = STModels.BuildStatus BuildStatusSucceeded (Time.millisToPosix 0)
++                                  }
++                                ]
++                            )
++                        )
++                    |> Tuple.second
++                    |> Common.contains (Effects.FetchBuildAgentMetrics 1)
+         ]
++
++
++{-| Load build 1 with recorded spend, then switch to build 2 in-app the way
++users do: through the fetched history strip (Header.changeToBuild stamps
++model.id from history before build 2's BuildFetched arrives).
++-}
++switchToBuildTwo : ( Application.Model, List Effects.Effect )
++switchToBuildTwo =
++    let
++        buildTwo =
++            Data.jobBuild BuildStatusSucceeded
++                |> (\b -> { b | id = 2, name = "2" })
++    in
++    Common.init "/teams/t/pipelines/p/jobs/j/builds/1"
++        |> Application.handleCallback
++            (Callback.BuildFetched (Ok (Data.jobBuild BuildStatusSucceeded)))
++        |> Tuple.first
++        |> Application.handleCallback
++            (Callback.BuildAgentMetricsFetched (Ok [ runMetricFor 1 0.5 ]))
++        |> Tuple.first
++        |> Application.handleCallback
++            (Callback.BuildHistoryFetched
++                (Ok
++                    { pagination = { previousPage = Nothing, nextPage = Nothing }
++                    , content = [ Data.jobBuild BuildStatusSucceeded, buildTwo ]
++                    }
++                )
++            )
++        |> Tuple.first
++        |> Application.handleDelivery
++            (RouteChanged
++                (Routes.Build
++                    { id = Data.jobBuildId |> (\i -> { i | buildName = "2" })
++                    , highlight = Routes.HighlightNothing
++                    , groups = []
++                    }
++                )
++            )
++        |> Tuple.first
++        |> Application.handleCallback (Callback.BuildFetched (Ok buildTwo))

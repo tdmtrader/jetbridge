@@ -1,0 +1,186 @@
+# Ground-truth findings for review-jb-002 — WITHHELD.
+#
+# Backed out of the review-fix commit 0b2410f5fc54ae0b6adaedf4b45af4cdcf8ecdb2
+# ("review fixes: fail-safe dispatcher mode on DB read error + honest
+# updated_by"), whose message records the outcome of the human/agent review pass
+# over the change under test: "Adversarial review (2 lenses clean, 1 major,
+# 1 minor)".
+#
+# Line anchors are 1-indexed against the file AT head_ref
+# (335faaf363cb5085471a0c797c537f09d636b9d2), i.e. the tree the reviewer saw.
+
+schema: review-findings/v1
+change:
+  base_ref: 644184e3f011369f3da77dc82caee200bd8fd196
+  head_ref: 335faaf363cb5085471a0c797c537f09d636b9d2
+
+# Exactly two findings were raised and both were accepted and fixed. Two of the
+# four review angles came back clean and were recorded as clean — that is the
+# defensible precision ceiling for this case (see rubric.md).
+recorded_totals:
+  proven_issues: 2
+  clean_lenses: 2
+
+findings:
+  - id: F1
+    original_label: MAJOR
+    severity: high
+    category: security
+    title: >-
+      A failed agent_settings read falls back to the boot flag, so a transient DB
+      fault can resume auto-dispatch against an admin's explicit pause/off.
+    primary_anchor:
+      file: atc/atccmd/command.go
+      region: "RunCommand.backendComponents — the dispatcher `modeResolver` closure"
+      lines: [1424, 1433]
+      quote: |
+        modeResolver := func() string {
+            mode, found, err := dispatcherSettings.GetDispatcherMode()
+            if err != nil {
+                // A read fault must not silently activate the loop: fall
+                // back to the boot seed (off by default in current live).
+                logger.Error("failed-to-read-dispatcher-mode", err)
+                return dispatch.ResolveEffectiveMode(false, "", dispatcherBootFlag)
+            }
+            return dispatch.ResolveEffectiveMode(found, mode, dispatcherBootFlag)
+        }
+    secondary_anchors:
+      - file: agent/dispatch/mode.go
+        region: "ResolveEffectiveMode — no error-aware entry point exists; the only resolver treats 'no row' and 'could not read' as the same state"
+        lines: [29, 41]
+      - file: agent/dispatch/dispatcher.go
+        region: "Dispatcher.Run — the mode switch that the resolver's answer drives; ModeActive calls dispatchQueued"
+        lines: [97, 113]
+    causal_chain: >-
+      GetDispatcherMode() returns a non-nil error (connection reset, pool
+      exhaustion, statement timeout — the loop ticks every 10s against a live
+      Postgres, so this is a when-not-if). The error branch discards the read
+      entirely and calls ResolveEffectiveMode(found=false, "", bootFlag), which
+      is the "no row exists" path: if bootFlag is true it returns ModeActive.
+      Dispatcher.Run then takes the ModeActive arm and calls dispatchQueued,
+      which claims every queued ticket and creates runs. The admin's persisted
+      `paused` or `off` row is still sitting in the database, unread; the control
+      the operator was told is a kill switch has silently failed OPEN for the
+      duration of the fault, and each faulting tick spends budget, mints
+      credentials and pushes branches.
+    why_the_in_code_comment_is_wrong: >-
+      The comment at the error branch asserts the fallback is safe because the
+      boot seed is "off by default in current live". That is a statement about
+      today's deployment, not about the code: the flag is a documented, supported
+      operator setting, and the whole point of the change is that an admin can now
+      pause a dispatcher that was booted enabled. A reviewer who accepts the
+      comment at face value misses the finding — noticing that the safety argument
+      is deployment-contingent rather than structural is the core of F1.
+    accepted_remedies:
+      - >-
+        The reference fix: add an error-aware resolver
+        (dispatch.EffectiveModeFromRead(settingMode, found, readErr, bootFlag))
+        that returns ModePaused on any non-nil readErr — no dispatch, reconciler
+        stays alive — and delegates to ResolveEffectiveMode otherwise; wire it
+        into command.go in place of the boot-flag fallback.
+      - >-
+        Any other fail-CLOSED-for-dispatch policy on read error: returning
+        ModeOff, refusing to dispatch while the last read is stale, or serving a
+        cached last-known-good mode and only falling back to the boot flag when no
+        successful read has ever happened. ModePaused is preferable to ModeOff
+        because it keeps the completion reconciler (the safety net that re-queues
+        stuck runs) alive, but a reviewer proposing ModeOff has found the same
+        defect.
+    rejected_remedies:
+      - >-
+        Retrying the read, adding a metric, or upgrading the log line to Fatal
+        while keeping the boot-flag fallback — the fallback itself is the defect.
+      - >-
+        "Set the boot flag to false in the live deployment" — an operational
+        workaround that leaves the code fail-open for any operator who booted
+        enabled.
+    proving_test: >-
+      A table test over EffectiveModeFromRead (or, without the new function, a
+      test on the resolver closure / a fake settings factory that returns an
+      error) asserting that a read error yields a non-dispatching mode for every
+      combination of found/setting/bootFlag — in particular {row=paused,
+      boot=active} and {no row, boot=active}. See ground_truth/reference.diff,
+      agent/dispatch/mode_test.go:TestEffectiveModeFromRead.
+
+  - id: F2
+    original_label: MINOR
+    severity: low
+    category: security
+    title: >-
+      The PUT handler records updated_by="admin" when the accessor identity is
+      empty, fabricating an actor in the audit trail of a security-relevant
+      control.
+    primary_anchor:
+      file: agent/api/dispatcher/handler.go
+      region: "Handler.Set — identity fallback before SetDispatcherMode"
+      lines: [116, 120]
+      quote: |
+        identity := h.userName(r)
+        if identity == "" {
+            identity = "admin"
+        }
+        if err := h.store.SetDispatcherMode(body.Mode, identity); err != nil {
+    secondary_anchors:
+      - file: agent/api/dispatcher/handler_test.go
+        region: "TestPutMissingUserDefaultsToAdmin — the change ships a test that pins the fabricated value as intended behavior ('want admin fallback')"
+        lines: [85, 97]
+      - file: web/elm/src/AgentTickets/AgentTickets.elm
+        region: "dispatcherPillTitle — renders the value to operators as ' · set by <who>'"
+        lines: [317, 322]
+    causal_chain: >-
+      updated_by is written to agent_settings, returned on GET, surfaced in
+      `fly agent dispatcher` and rendered in the Elm status pill/banner. It is
+      provenance for who armed or disarmed an autonomous spending loop. When the
+      accessor yields no username — a token/system principal, a header the
+      accessor could not resolve, or any future auth path that does not populate
+      it — the handler invents the literal string "admin", which is
+      indistinguishable from a real user named admin. The audit trail then
+      asserts something the system does not know.
+    accepted_remedies:
+      - >-
+        The reference fix: record an honest sentinel ("unknown") instead of
+        "admin", and update the test to assert the sentinel.
+      - >-
+        Any equivalent honesty fix: leaving updated_by empty/NULL and rendering
+        it as unknown, or rejecting the PUT when no identity can be established
+        (stricter than the reference but not wrong).
+    rejected_remedies:
+      - >-
+        Keeping "admin" and documenting it. The value is displayed as an actor;
+        a comment does not reach the operator reading the pill.
+    proving_test: >-
+      Drive Handler.Set with no identity and assert updated_by is not a
+      real-looking actor name. See ground_truth/reference.diff,
+      agent/api/dispatcher/handler_test.go:TestPutMissingUserRecordsUnknown.
+
+# Deliberate design decisions in the change that LOOK like defects. Flagging one
+# of these is not automatically wrong, but it must not be scored as a match for
+# F1 or F2, and stacking several of them as high-severity proven issues is the
+# noise pattern this case is meant to penalize.
+non_findings:
+  - anchor: agent/dispatch/dispatcher.go — Dispatcher.effectiveMode()
+    note: >-
+      A nil Mode provider defaults to ModeActive. Deliberate back-compat for the
+      pre-existing tests and callers that predate the toggle; production always
+      supplies a resolver. Documented in LoopConfig.Mode.
+  - anchor: agent/dispatch/dispatcher.go — Run's `default:` arm
+    note: >-
+      An unrecognized mode string is treated as dormant. That IS the fail-safe
+      direction and is commented as such.
+  - anchor: agent/dispatch/mode.go — ResolveEffectiveMode honoring the boot flag when no row exists
+    note: >-
+      Intentional seeding so the first boot after the migration reproduces live
+      behavior. F1 is specifically about the READ-ERROR path reusing this
+      no-row path, not about the no-row path itself.
+  - anchor: agent/api/dispatcher/handler.go — Get returning 500 on a store error
+    note: >-
+      Deliberate: the read API refuses to report a mode it could not read.
+      (Contrast with F1, where the loop invents one.)
+  - anchor: atc/atccmd/command.go — dispatcher component now always wired
+    note: >-
+      Intentional and load-bearing for runtime control; the in-code NOTE warns
+      that housekeeping components must not be folded into the mode conditional.
+  - anchor: web/elm/src/Concourse/AgentDispatcher.elm — decoder tolerating unknown enum tokens
+    note: >-
+      Deliberate forward-compat (Unknown String) so a newer server mode does not
+      break the page.

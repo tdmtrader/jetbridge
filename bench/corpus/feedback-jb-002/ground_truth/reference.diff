@@ -1,0 +1,359 @@
+diff --git a/agent/harvest/gates.go b/agent/harvest/gates.go
+index b1bc47bfca..d8a80d5fc4 100644
+--- a/agent/harvest/gates.go
++++ b/agent/harvest/gates.go
+@@ -142,20 +142,42 @@ func runGate(gate Gate, workspaceDir, baseSHA string, events *schema.EventWriter
+ // concourse web app builds src/Main.elm from web/elm into the committed
+ // web/public/elm.min.js bundle (see package.json "build-elm"). dev-mcp
+ // (wave 3) will resolve these per-repo; until then they are hard-wired.
++//
++// Applicability is scoped to the paths that actually FEED the compiled bundle:
++// the source tree (web/elm/src/**) and the dependency manifest (web/elm/elm.json).
++// It deliberately excludes web/elm/tests/**, web/elm/benchmarks/**, and elm
++// dotfiles — none of those are in src/Main.elm's compile graph, so requiring a
++// bundle regeneration for them would be an unsatisfiable false-failure (a
++// correct rebuild produces a byte-identical bundle, so it would never appear in
++// the diff). (An unimported module under src/** is the residual over-trigger;
++// see the diff-presence caveat on runElmBuildGate.)
+ const (
+-	elmSourcePrefix = "web/elm/"
++	elmSourcePrefix = "web/elm/src/"
++	elmConfigPath   = "web/elm/elm.json"
+ 	elmBundlePath   = "web/public/elm.min.js"
+ 	elmSourceDir    = "web/elm"
+ 	elmMainModule   = "src/Main.elm"
+ )
+ 
+-// runElmBuildGate is the stale-bundle guard (WF-2). It applies ONLY when
+-// web/elm/** is in the pushed diff (base..HEAD). When it applies it (1)
+-// compiles web/elm with `elm make --optimize` to a throwaway output — a
+-// source that no longer compiles is a real "failed" finding — and (2)
+-// DIFF-CHECKS that web/public/elm.min.js was regenerated in the same diff.
+-// A changed web/elm with an unchanged bundle FAILS: that is exactly the
+-// deployed-stale-bundle failure mode this gate exists to kill.
++// runElmBuildGate is the stale-bundle guard (WF-2). It applies ONLY when a
++// bundle-feeding path (web/elm/src/** or web/elm/elm.json) is in the pushed
++// diff (base..HEAD). When it applies it (1) compiles web/elm with `elm make
++// --optimize` to a throwaway output — a source that no longer compiles is a
++// real "failed" finding — and (2) DIFF-CHECKS that web/public/elm.min.js was
++// regenerated in the same diff. A changed source with an unchanged bundle
++// FAILS: that is exactly the deployed-stale-bundle failure mode this gate
++// exists to kill.
++//
++// Scope (v0.5 tradeoff — Open Decision #1 in the WF-2 plan): this proves the
++// bundle is *present in the diff*, NOT that it byte-for-byte reproduces the
++// current source. It catches the dominant failure (edited src, forgot to
++// rebuild the bundle at all). It does NOT catch a bundle regenerated from an
++// EARLIER source state within a multi-commit push (commit A rebuilds, commit B
++// edits src again without rebuilding — both src and bundle appear in base..HEAD
++// so the gate passes though the bundle is stale relative to B). A byte-compare
++// would close that, but the committed bundle is elm make + uglify-js (minified)
++// and uglify is non-deterministic across versions, so a byte-compare would
++// itself produce false failures; deferred to dev-mcp per-repo build metadata.
+ //
+ // Retries are meaningless here (a stale bundle does not un-stale on a
+ // re-run, a compile error is deterministic), so the gate always reports
+@@ -187,7 +209,7 @@ func runElmBuildGate(gate Gate, workspaceDir, baseSHA string, events *schema.Eve
+ 	}
+ 	elmChanged, bundleChanged := false, false
+ 	for _, p := range changed {
+-		if strings.HasPrefix(p, elmSourcePrefix) {
++		if strings.HasPrefix(p, elmSourcePrefix) || p == elmConfigPath {
+ 			elmChanged = true
+ 		}
+ 		if p == elmBundlePath {
+@@ -195,7 +217,7 @@ func runElmBuildGate(gate Gate, workspaceDir, baseSHA string, events *schema.Eve
+ 		}
+ 	}
+ 	if !elmChanged {
+-		return finish("ok", "elm-build gate: no web/elm/** changes in the diff — not applicable")
++		return finish("ok", "elm-build gate: no web/elm/src/** or web/elm/elm.json changes in the diff — not applicable")
+ 	}
+ 
+ 	// web/elm changed: the source must still compile...
+diff --git a/agent/harvest/gates_elm_test.go b/agent/harvest/gates_elm_test.go
+index f813458788..51c485487f 100644
+--- a/agent/harvest/gates_elm_test.go
++++ b/agent/harvest/gates_elm_test.go
+@@ -70,6 +70,67 @@ func TestElmGateNotApplicableWhenElmUntouched(t *testing.T) {
+ 	}
+ }
+ 
++// TestElmGateNotApplicableForNonBundleElmPaths locks in the narrowed
++// applicability (WF-2 review fix): edits under web/elm that do NOT feed the
++// compiled bundle — tests, benchmarks, elm dotfiles — must NOT demand a bundle
++// regeneration. A correct rebuild of such a change produces a byte-identical
++// bundle, so requiring elm.min.js in the diff would be an unsatisfiable
++// false-failure. Each of these must read as "not applicable" (ok), and elm is
++// never invoked, so no stub is needed.
++func TestElmGateNotApplicableForNonBundleElmPaths(t *testing.T) {
++	for _, path := range []string{
++		"web/elm/tests/MainTests.elm",
++		"web/elm/benchmarks/Bench.elm",
++		"web/elm/.gitignore",
++	} {
++		t.Run(path, func(t *testing.T) {
++			dir, base := gitFixture(t,
++				map[string]string{path: "before\n"},
++				map[string]string{path: "after\n"}, // only a non-src/non-elm.json web/elm path
++			)
++			policy := harvest.GatePolicy{Gates: []harvest.Gate{{Gate: "elm-build", Scope: "full"}}}
++
++			outcomes, err := harvest.RunGates(policy, dir, base, nil)
++			if err != nil {
++				t.Fatalf("RunGates: %v", err)
++			}
++			if len(outcomes) != 1 || outcomes[0].Status != "ok" {
++				t.Fatalf("outcomes = %+v, want a single ok gate (%s does not feed the bundle => not applicable)", outcomes, path)
++			}
++			if !contains(outcomes[0].Detail, "not applicable") {
++				t.Errorf("detail = %q, want it to say the gate was not applicable", outcomes[0].Detail)
++			}
++		})
++	}
++}
++
++// TestElmGateAppliesToElmJson pins that web/elm/elm.json (the dependency
++// manifest, which DOES change the compiled bundle) is a bundle-feeding path:
++// changing it without regenerating the bundle FAILS the stale-bundle guard.
++func TestElmGateAppliesToElmJson(t *testing.T) {
++	stubElm(t, 0) // compiles fine
++	dir, baseSHA := gitFixture(t,
++		map[string]string{
++			"web/elm/src/Main.elm":  "module Main exposing (..)\nx = 1\n",
++			"web/elm/elm.json":      "{\"deps\":1}\n",
++			"web/public/elm.min.js": "old\n",
++		},
++		map[string]string{"web/elm/elm.json": "{\"deps\":2}\n"}, // dep bump, bundle NOT regenerated
++	)
++	policy := harvest.GatePolicy{Gates: []harvest.Gate{{Gate: "elm-build", Scope: "full"}}}
++
++	outcomes, err := harvest.RunGates(policy, dir, baseSHA, nil)
++	if err != nil {
++		t.Fatalf("RunGates: %v", err)
++	}
++	if len(outcomes) != 1 || outcomes[0].Status != "failed" {
++		t.Fatalf("outcomes = %+v, want failed (elm.json changed, bundle stale)", outcomes)
++	}
++	if !contains(outcomes[0].Detail, "stale-bundle guard") {
++		t.Errorf("detail = %q, want it to name the stale-bundle guard", outcomes[0].Detail)
++	}
++}
++
+ // stubElm writes an executable that exits with the given code, and points
+ // HARVEST_ELM_CLI at it so runElmBuildGate's compile step is deterministic
+ // without a real Elm toolchain (mirrors the judge's HARVEST_JUDGE_CLI seam).
+diff --git a/fly/commands/agent_tickets.go b/fly/commands/agent_tickets.go
+index 28ead873bc..815cf36299 100644
+--- a/fly/commands/agent_tickets.go
++++ b/fly/commands/agent_tickets.go
+@@ -44,15 +44,37 @@ func printSpecLintWarnings(warnings []string) {
+ 	}
+ }
+ 
+-// assignWorkflowIfRequested realizes the documented "decided at dispatch"
+-// semantics (WF-5): a ticket created with an empty workflow can have one
+-// assigned via --workflow / --workflow-version on queue or dispatch, closing
+-// the empty-workflow dead-end (DispatchOne's ErrNoWorkflow). A no-op when
+-// neither flag is set. Sends only the pointers the caller supplied.
+-func assignWorkflowIfRequested(client concourse.Client, id int, workflow string, workflowVer int) error {
++// assignWorkflow realizes the documented "decided at dispatch" semantics
++// (WF-5): a ticket created with an empty workflow can have one assigned via
++// --workflow / --workflow-version on queue or dispatch, closing the
++// empty-workflow dead-end (DispatchOne's ErrNoWorkflow). It is a no-op (and
++// returns a no-op restore) when neither flag is set.
++//
++// The assignment is COMPENSATING so a failed follow-up action never leaves the
++// ticket worse than before: it first reads the ticket's current workflow, then
++// applies the requested one, and returns restore() that reverts to the prior
++// value. Callers invoke restore() when the subsequent dispatch/queue fails, so
++// a bad --workflow value (e.g. a typo that DispatchOne cannot resolve) does not
++// clobber a previously valid assignment — the ticket is returned to exactly its
++// prior workflow, and the user can retry with a correct name. restore() is a
++// no-op when nothing was changed.
++func assignWorkflow(client concourse.Client, id int, workflow string, workflowVer int) (restore func(), err error) {
++	noop := func() {}
+ 	if workflow == "" && workflowVer <= 0 {
+-		return nil
++		return noop, nil
++	}
++
++	// Capture the prior workflow so a failed follow-up can be rolled back.
++	prior, found, err := client.GetAgentTicket(id)
++	if err != nil {
++		return noop, fmt.Errorf("read ticket #%d before assigning workflow: %w", id, err)
+ 	}
++	if !found {
++		return noop, fmt.Errorf("ticket #%d not found", id)
++	}
++	priorName := prior.Ticket.WorkflowName
++	priorVersion := prior.Ticket.WorkflowVersion
++
+ 	var req tickets.UpdateRequest
+ 	if workflow != "" {
+ 		req.WorkflowName = &workflow
+@@ -61,7 +83,7 @@ func assignWorkflowIfRequested(client concourse.Client, id int, workflow string,
+ 		req.WorkflowVersion = &workflowVer
+ 	}
+ 	if _, err := client.UpdateAgentTicket(id, req); err != nil {
+-		return fmt.Errorf("assign workflow to #%d failed: %w", id, err)
++		return noop, fmt.Errorf("assign workflow to #%d failed: %w", id, err)
+ 	}
+ 	switch {
+ 	case workflow != "" && workflowVer > 0:
+@@ -71,7 +93,28 @@ func assignWorkflowIfRequested(client concourse.Client, id int, workflow string,
+ 	default:
+ 		fmt.Printf("pinned workflow version %d on ticket #%d\n", workflowVer, id)
+ 	}
+-	return nil
++
++	restore = func() {
++		// Revert only the fields we changed. WorkflowName is always a settable
++		// string (an empty prior restores the un-assigned state). A pin we added
++		// can be reverted to a concrete prior pin; a prior "live" (nil) pin cannot
++		// be re-expressed through the partial UpdateRequest, so a pin we added on
++		// top of a live prior is left in place — inert without a resolvable name.
++		var rb tickets.UpdateRequest
++		if req.WorkflowName != nil {
++			rb.WorkflowName = &priorName
++		}
++		if req.WorkflowVersion != nil && priorVersion != nil {
++			rb.WorkflowVersion = priorVersion
++		}
++		if rb.WorkflowName == nil && rb.WorkflowVersion == nil {
++			return
++		}
++		if _, err := client.UpdateAgentTicket(id, rb); err != nil {
++			fmt.Fprintf(os.Stderr, "warning: could not restore ticket #%d workflow after a failed action: %v\n", id, err)
++		}
++	}
++	return restore, nil
+ }
+ 
+ type AgentTicketsListCommand struct {
+@@ -193,7 +236,7 @@ func (command *AgentTicketsCreateCommand) Execute([]string) error {
+ type AgentTicketsQueueCommand struct {
+ 	ID          int    `long:"id" required:"true" description:"Ticket id"`
+ 	Workflow    string `long:"workflow" description:"Assign this workflow before queueing (fixes an empty-workflow ticket)"`
+-	WorkflowVer int    `long:"workflow-version" description:"Pin a workflow definition version (0 = live)"`
++	WorkflowVer int    `long:"workflow-version" description:"Pin a specific workflow definition version (omit to use the live version)"`
+ }
+ 
+ func (command *AgentTicketsQueueCommand) Execute([]string) error {
+@@ -206,7 +249,8 @@ func (command *AgentTicketsQueueCommand) Execute([]string) error {
+ 	}
+ 	client := target.Client()
+ 
+-	if err := assignWorkflowIfRequested(client, command.ID, command.Workflow, command.WorkflowVer); err != nil {
++	restore, err := assignWorkflow(client, command.ID, command.Workflow, command.WorkflowVer)
++	if err != nil {
+ 		return err
+ 	}
+ 
+@@ -214,6 +258,9 @@ func (command *AgentTicketsQueueCommand) Execute([]string) error {
+ 		From: tickets.StateDraft, To: tickets.StateQueued,
+ 	})
+ 	if err != nil {
++		// Roll back a workflow we just assigned so a failed queue transition
++		// never leaves the ticket worse than before (WF-5).
++		restore()
+ 		return err
+ 	}
+ 	fmt.Printf("ticket #%d is now %s\n", updated.ID, updated.State)
+@@ -274,7 +321,7 @@ func (command *AgentTicketsTransitionCommand) Execute([]string) error {
+ type AgentTicketsDispatchCommand struct {
+ 	ID          int    `long:"id" required:"true" description:"Ticket id (must be queued)"`
+ 	Workflow    string `long:"workflow" description:"Assign this workflow before dispatch (fixes an empty-workflow ticket)"`
+-	WorkflowVer int    `long:"workflow-version" description:"Pin a workflow definition version (0 = live)"`
++	WorkflowVer int    `long:"workflow-version" description:"Pin a specific workflow definition version (omit to use the live version)"`
+ }
+ 
+ func (command *AgentTicketsDispatchCommand) Execute([]string) error {
+@@ -287,12 +334,17 @@ func (command *AgentTicketsDispatchCommand) Execute([]string) error {
+ 	}
+ 	client := target.Client()
+ 
+-	if err := assignWorkflowIfRequested(client, command.ID, command.Workflow, command.WorkflowVer); err != nil {
++	restore, err := assignWorkflow(client, command.ID, command.Workflow, command.WorkflowVer)
++	if err != nil {
+ 		return err
+ 	}
+ 
+ 	res, err := client.DispatchAgentTicket(command.ID)
+ 	if err != nil {
++		// A workflow we just assigned must not outlive a failed dispatch (e.g. a
++		// typo the server cannot resolve): roll it back so the ticket is never
++		// left worse than before (WF-5).
++		restore()
+ 		// Actionable hint for the empty-workflow dead-end: the ticket names no
+ 		// workflow and none was supplied here (WF-5). Never rewrites other errors.
+ 		if command.Workflow == "" && strings.Contains(err.Error(), "no workflow_name") {
+diff --git a/fly/integration/agent_tickets_test.go b/fly/integration/agent_tickets_test.go
+index 2f0b4efa9c..c987d20542 100644
+--- a/fly/integration/agent_tickets_test.go
++++ b/fly/integration/agent_tickets_test.go
+@@ -148,6 +148,10 @@ var _ = Describe("fly agent tickets", func() {
+ 
+ 		It("assigns the workflow before transitioning when --workflow is given", func() {
+ 			atcServer.AppendHandlers(
++				ghttp.CombineHandlers(
++					ghttp.VerifyRequest("GET", "/api/v1/agent/tickets/7"),
++					ghttp.RespondWithJSONEncoded(200, tickets.TicketDetail{Ticket: tickets.Ticket{ID: 7, WorkflowName: "", State: tickets.StateDraft}}),
++				),
+ 				ghttp.CombineHandlers(
+ 					ghttp.VerifyRequest("PUT", "/api/v1/agent/tickets/7"),
+ 					ghttp.VerifyJSON(`{"workflow_name":"foo"}`),
+@@ -449,6 +453,10 @@ var _ = Describe("fly agent tickets", func() {
+ 
+ 		It("assigns the workflow before dispatching when --workflow is given", func() {
+ 			atcServer.AppendHandlers(
++				ghttp.CombineHandlers(
++					ghttp.VerifyRequest("GET", "/api/v1/agent/tickets/7"),
++					ghttp.RespondWithJSONEncoded(200, tickets.TicketDetail{Ticket: tickets.Ticket{ID: 7, WorkflowName: "", State: tickets.StateQueued}}),
++				),
+ 				ghttp.CombineHandlers(
+ 					ghttp.VerifyRequest("PUT", "/api/v1/agent/tickets/7"),
+ 					ghttp.VerifyJSON(`{"workflow_name":"foo"}`),
+@@ -471,6 +479,42 @@ var _ = Describe("fly agent tickets", func() {
+ 			Expect(sess.Out).To(gbytes.Say(`dispatched ticket #7 as run 321 \(pipeline agent-ticket-7\)`))
+ 		})
+ 
++		It("rolls the assigned workflow back to its prior value when dispatch fails (WF-5 no-worse-than-before)", func() {
++			restored := false
++			atcServer.AppendHandlers(
++				// Ticket already has a valid workflow "deploy".
++				ghttp.CombineHandlers(
++					ghttp.VerifyRequest("GET", "/api/v1/agent/tickets/7"),
++					ghttp.RespondWithJSONEncoded(200, tickets.TicketDetail{Ticket: tickets.Ticket{ID: 7, WorkflowName: "deploy", State: tickets.StateQueued}}),
++				),
++				// User assigns a typo'd workflow.
++				ghttp.CombineHandlers(
++					ghttp.VerifyRequest("PUT", "/api/v1/agent/tickets/7"),
++					ghttp.VerifyJSON(`{"workflow_name":"deploi"}`),
++					ghttp.RespondWithJSONEncoded(200, tickets.Ticket{ID: 7, WorkflowName: "deploi", State: tickets.StateQueued}),
++				),
++				// Dispatch cannot resolve it.
++				ghttp.CombineHandlers(
++					ghttp.VerifyRequest("POST", "/api/v1/agent/tickets/7/dispatch"),
++					ghttp.RespondWith(422, "workflow definition not found: deploi live"),
++				),
++				// Compensating rollback restores the prior "deploy".
++				ghttp.CombineHandlers(
++					ghttp.VerifyRequest("PUT", "/api/v1/agent/tickets/7"),
++					ghttp.VerifyJSON(`{"workflow_name":"deploy"}`),
++					func(w http.ResponseWriter, r *http.Request) { restored = true },
++					ghttp.RespondWithJSONEncoded(200, tickets.Ticket{ID: 7, WorkflowName: "deploy", State: tickets.StateQueued}),
++				),
++			)
++
++			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "tickets", "dispatch", "--id", "7", "--workflow", "deploi")
++			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
++			Expect(err).NotTo(HaveOccurred())
++			<-sess.Exited
++			Expect(sess.ExitCode()).NotTo(Equal(0))
++			Expect(restored).To(BeTrue(), "a failed dispatch must roll the just-assigned workflow back to its prior value")
++		})
++
+ 		It("issues only the dispatch POST when no --workflow is given (backward compat)", func() {
+ 			atcServer.AppendHandlers(
+ 				ghttp.CombineHandlers(

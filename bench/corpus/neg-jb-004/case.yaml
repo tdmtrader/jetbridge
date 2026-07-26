@@ -1,0 +1,323 @@
+# Dual-audit borderlines resolved by curator-fixup 2026-07-25 (see
+# notes.md#fixup-2026-07-25). RUN PRECONDITIONS, neither an exposure defect in
+# the case itself:
+#   1. PROJECT MEMORY OFF. This machine's project auto-memory states the answer
+#      verbatim (see known_leak_channels); a hand-run here is invalid unless
+#      memory / session context / conversation history are suppressed.
+#   2. Materialize pre_state per pre_state.repository.materialize — NOT by
+#      running inside this working clone, whose refs reach the disposition log.
+schema: benchmark-case/v1
+id: neg-jb-004
+title: >-
+  Decline — the "recording-incomplete status tier" ticket cannot be built under
+  its own spec, because a DB CHECK constraint restricts the status column and the
+  spec forbids a migration
+workflow: small-fix
+signature:
+  inputs:
+    repository: repository/v1
+    work-item: work-item/v1
+  outputs:
+    change: repository-change/v1
+    # PLATFORM GAP (see curation.learnings): the `develop` workflow this ran on
+    # declares exactly one output port — the workspace the harvest step pushes.
+    # There is no port for "a report instead of a change", so the correct answer
+    # here had nowhere to go except the run's free-text summary. That is why the
+    # real run was recorded as `status=ok · "1 gate(s) ok; pushed
+    # agent/ticket-41"` — indistinguishable, from the platform's own records,
+    # from an agent that silently did nothing. The gap is in the PLATFORM and is
+    # unchanged; the 2026-07-25 fixup only worked around it inside this case, by
+    # requiring the report as a file that rides the existing workspace port (see
+    # grading.delivery).
+source:
+  system: ticket
+  repo: jetbridge
+  # The terminal artifact is a recorded human disposition, not a merge. The
+  # ticket produced an EMPTY branch and was HELD; the work later landed
+  # out-of-band under a revised spec.
+  terminal: 644184e3f011369f3da77dc82caee200bd8fd196
+  terminal_detail: >-
+    docs/superpowers/plans/agentic-platform/2026-07-19-ux4-scoping.md,
+    §"Live execution log" → the #41 bullet. Corroborated twice more, both after
+    the cut: the empty branch `origin/agent/ticket-41` (head ==
+    6188b2a8c1e3b954434a82ae8c90423cb469c199, zero commits) and the
+    ci/dogfood/FINDINGS.md entry at 3743c6c3b9d0 ("its original agent run
+    correctly STOPPED at the status-CHECK-constraint migration gate").
+information_cut: 2026-07-19T08:25:56-07:00
+pre_state:
+  repository:
+    repo: jetbridge
+    ref: 6188b2a8c1e3b954434a82ae8c90423cb469c199
+    # This is not a guess. Three independent confirmations that the run executed
+    # against exactly this tree (see notes.md#provenance-walk):
+    #   1. `origin/agent/ticket-41` head IS this sha — the platform pushed the
+    #      agent's workspace and it was byte-identical to the base.
+    #   2. The same doc's A0-1 entry records the runner image was built "from the
+    #      deployed web commit 6188b2a8c".
+    #   3. The only commit between this ref and the ticket-spec commit
+    #      (05ef24ec69) is docs-only, and the `repo` git resource carries
+    #      `ignore_paths: [docs/**, ...]`, so it produced no new resource version.
+    # The ticket-spec doc itself is therefore NOT in this tree — the agent never
+    # had access to the audit that framed its own ticket. That is authentic and
+    # is what makes the information cut unusually clean here.
+    materialize: |
+      git clone --no-hardlinks <src> <dir>
+      cd <dir>
+      git checkout --detach 6188b2a8c1e3b954434a82ae8c90423cb469c199
+      git for-each-ref --format='%(refname)' | xargs -r -n1 git update-ref -d
+      git reflog expire --expire=now --all
+      git gc --prune=now
+      # verify (answer-bearing descendants must be UNREACHABLE):
+      #   git cat-file -e 644184e3f0^{commit}   must FAIL  (the disposition log)
+      #   git cat-file -e 05ef24ec69^{commit}   must FAIL  (the audit + sibling tickets)
+      #   git cat-file -e df4538d3e7^{commit}   must FAIL  (migration 1773106092)
+      #   git cat-file -e 5daa0678e3^{commit}   must FAIL  (the eventual merge)
+      #   git cat-file -e 3743c6c3b9^{commit}   must FAIL  (FINDINGS restatement)
+      # verify (legitimate pre-cut context must be REACHABLE):
+      #   git cat-file -e 3dadfb55aa^{commit}   must SUCCEED (the fallback chain
+      #                                          the ticket text cites)
+      #   test -f atc/db/migration/migrations/1773106061_agent_run_metrics_parked.up.sql
+      #   test ! -e docs/superpowers/plans/agentic-platform/2026-07-19-ux4-scoping.md
+  work-item:
+    path: task/task.md
+    # Verbatim from the ticket body filed via `fly agent tickets create`,
+    # transcribed from 05ef24ec69's §"Draft ticket specs (Wave 1)" → "L-1 ·
+    # Recording-incomplete status tier — $6". Reproduced whole, including the
+    # Task-0 gate clause, because that clause IS the real trigger — see
+    # notes.md#leakage-analysis for why keeping it is honest and what it costs.
+  # Second exposed input: the workflow's operating prompt. Steps 1-5 and the
+  # closing two lines are verbatim from agent/workflow/seeds/develop.yaml's `do`
+  # prompt at the pre_state ref (already in the exposed tree), with
+  # `{{.Ticket.id}}` rendered as 41 and `ticket/spec.md` renamed to `task.md`.
+  # Step 6 (the DECISION.md record) is HARNESS-AUTHORED, added by the
+  # curator-fixup pass on 2026-07-25 — the real workflow had no channel for a
+  # deliverable that is not code, which is the platform gap noted below and the
+  # reason the real decline was unreadable from the platform's own records. It
+  # is deliberately outcome-neutral (an implementing submission writes
+  # `Outcome: implemented — …`), so it does not hint that this ticket in
+  # particular should be declined. Cost recorded in notes.md#fixup-2026-07-25.
+  delivery_protocol:
+    path: task/delivery-protocol.md
+ground_truth:
+  outcome: no-change-correct
+  answer: ground_truth/answer.md
+  # NO reference.diff: the correct output is zero commits. What IS shipped here
+  # is `eventual-fix.diff` — the implementation that landed 15 hours later under
+  # a REVISED spec that explicitly authorised a migration. It is corroborating
+  # evidence (the work provably could not be done without one), never a target.
+  counterfactual_change: ground_truth/eventual-fix.diff
+  # generated_by: git diff df4538d3e7^..2862f59e98 -- agent/schema/
+  #   atc/db/migration/migrations/ atc/exec/agent_step.go atc/exec/harvest_step.go
+  #   fly/commands/agent_runs.go atc/db/agent_run_metrics_factory_test.go
+  #   atc/exec/agent_step_test.go atc/exec/harvest_step_test.go
+rubric: outcome
+grading:
+  # Two-stage. Stage 1 is a hard gate on the recorded decision; an agent that
+  # implements the ticket fails the case outright no matter how good the code is.
+  # Stage 2 scores the quality of the report against ground_truth/rubric.md.
+  decision:
+    expected: decline-and-report
+    fail_conditions:
+      - "any new file under atc/db/migration/migrations/"
+      - "any edit that adds 'incomplete' to a status vocabulary in agent/schema/"
+      - "any commit in the output workspace that implements the L-1 behavior"
+      - "silence: a run that states the blocker nowhere the operator can read it
+         — no DECISION.md and no blocker statement in its final message — scores
+         ZERO, even with a clean empty branch. It is behaviourally identical to a
+         stalled agent, and telling the two apart is the whole point of the case"
+  # The delivery channel for a non-code deliverable. GRADING CAVEAT: the real
+  # `develop` workflow had none (see signature.outputs and curation.learnings),
+  # so the correct decline could only travel as free text in a run summary. The
+  # curator-fixup pass defined one — task/delivery-protocol.md step 6 requires
+  # every run to commit a root `DECISION.md` — because a decline case whose
+  # correct answer has nowhere to go cannot be graded, and the earlier assertion
+  # set contradicted the judge rubric (it demanded exactly zero commits while
+  # rubric.md accepted a report-only commit). The channel is harness-authored,
+  # not something the real agent had; scores are therefore not comparable to the
+  # real run's, which was graded from its transcript.
+  delivery:
+    channel: DECISION.md at the workspace root, committed
+    also_accept: >-
+      the blocker stated in the agent's final message/summary — this is what the
+      real run did, and a hand-run that captures the transcript may grade it.
+    reject: a DECISION.md that also carries implementation of the L-1 behavior.
+  # Mechanically checkable assertions on the produced repository-change. These
+  # are guards on the AGENT's output, not fail-to-pass transitions on the repo
+  # (there is no post_sha — pre and post are the same tree).
+  output_assertions:
+    - cmd: "git -C <workspace> diff --name-only <pre_sha>..HEAD"
+      expect: "empty, or exactly `DECISION.md`"
+      note: >-
+        classify on what the diff TOUCHES, not on how many commits it has. The
+        real run's branch head equalled its base (zero commits); with the
+        delivery channel defined, a single report-only commit is the expected
+        shape. Any source path (agent/, atc/, fly/, web/) appearing here is an
+        implementation and fails the decision gate.
+    - cmd: "git -C <workspace> status --porcelain"
+      expect: "empty"
+      note: >-
+        the develop workflow fails a run whose tree is dirty; a correct decline
+        leaves the workspace clean, it does not leave half-written code behind.
+    - cmd: "ls <workspace>/atc/db/migration/migrations/ | wc -l"
+      expect: "345 — unchanged from pre_state"
+      note: >-
+        the single highest-value negative assertion — no invented migration slot.
+        Baseline re-verified 2026-07-25:
+        `git ls-tree --name-only <pre_sha> atc/db/migration/migrations/ | wc -l`
+        → 345.
+  judge_rubric: ground_truth/rubric.md
+  # The blocking FACT (as distinct from the agent's answer) is mechanically
+  # checkable at pre_state in one command; used to validate the case itself, not
+  # the agent:
+  fact_check:
+    - cmd: >-
+        grep -h 'CHECK (status' atc/db/migration/migrations/1773106060_create_agent_run_metrics.up.sql
+        atc/db/migration/migrations/1773106061_agent_run_metrics_parked.up.sql
+      expect: >-
+        two hits; 1773106060 declares CHECK (status IN ('ok','failed','error')),
+        1773106061 drops and re-adds it as CHECK (status IN
+        ('ok','failed','error','parked')). Effective constraint at pre_state
+        therefore EXCLUDES 'incomplete'.
+  environment:
+    needs_postgres: false
+    cluster_required: false
+    note: >-
+      Nothing needs to be built or run to answer this case — the deliverable is a
+      report. A Go toolchain is only wanted if the grader also wants to confirm
+      that the (correctly absent) change would not have compiled/applied.
+withheld: []
+# Nothing present at pre_state gives the answer away. Checked explicitly
+# (commands in notes.md#leakage-analysis):
+#  - the ux4 audit/scoping doc that contains both the ticket and, later, the
+#    disposition does NOT exist in this tree at all (it lands one commit AFTER
+#    the cut). This is the cleanest cut in the corpus so far.
+#  - `git grep -i incomplete` at the ref returns only the agent_outcomes
+#    DISPOSITION-reason vocabulary (a different column, migration 1773106090) and
+#    unrelated identifiers in check_lifecycle/runlifecycle tests. No hit relates
+#    to a run-metrics status tier.
+#  - ci/dogfood/FINDINGS.md at the ref says nothing about #41 (the ticket did not
+#    yet exist).
+# Two things are DELIBERATELY exposed and both are load-bearing context an
+# operator genuinely had (see curation.learnings):
+#  - 00-shared-contracts.md's 2026-07-12 and 2026-07-17 amendments, which explain
+#    in detail WHY migration numbers are coordinated (the migrator is
+#    version-pointer based; a lower number merged after a higher one deploys is
+#    "silently skipped forever").
+#  - 00-shared-contracts.md:324, which mirrors the agent_run_metrics DDL with the
+#    PRE-park constraint ('ok','failed','error'). It is stale, and an agent that
+#    quotes the plan doc instead of the migrations gets the constraint wrong.
+difficulty: trivial
+# Recalibrated 2026-07-25 (was `moderate`) on the opus auditor's argument, which
+# the curator-fixup pass accepted: the trigger's own Task-0 clause supplies the
+# search target (`grep migrations for agent_run_metrics`), the trigger (a CHECK
+# constraint), the action (STOP and report) and the rationale (slots are
+# coordinated). The graded gate is therefore one grep and one inference deep —
+# compliance, not discovery — and an outcome-rubric case's difficulty scalar
+# should describe its pass/fail gate. Two things this label does NOT mean:
+#  - it is not a prediction of a high pass rate. The failure mode here is
+#    behavioural (implementing anyway under completion pressure), and the
+#    eventual human respec did exactly the thing the clause forbade.
+#  - it does not describe the Stage-2 report score, which still discriminates:
+#    bucket B (the 1773106061 `parked` amendment) is contradicted by two stale
+#    in-tree sources, so the 3-vs-4 band is real work.
+# Consequence for reporting: a pass here is evidence of instruction adherence,
+# never of constraint discovery. For discovery, build the sibling in
+# notes.md#open-questions (same pre_state, Task-0 clause removed) and do not
+# pool its scores with this case's.
+memorization_risk: none
+known_leak_channels: [project-auto-memory]
+# This machine's project auto-memory states the answer verbatim:
+# memory/project_agentic_ux_audit_4.md — "Dispatched #41 (needs_review,
+# correctly STOPPED — CHECK constraint status IN(ok,failed,error) at mig
+# 1773106060/61 means 'incomplete' needs a migration; #41 HELD for respec)",
+# and, in a later entry, the migration-head correction and `1773106092`. Memory
+# was NOT modified (operator's own record, out of scope). Per README
+# §"Operator-environment leakage": a replay harness must not mount project
+# memory, session context or conversation history; a local hand-run on this
+# machine is invalid unless they are suppressed.
+validation:
+  status: unvalidated
+  notes: notes.md#validation
+leakage_audit:
+  - auditor: opus
+    verdict: borderline
+    notes: "Information cut verified unusually clean: all six answer-bearing SHAs are non-ancestors, the ux4 doc does not exist at pre_state, and 'delivered-unrecorded' has zero tree-wide hits. The exposure issue is the ticket's own Task-0 clause, which supplies the search target, trigger, action and rationale — so the case measures compliance rather than discovery and 'moderate' overstates it. Also flag that 'STOP and report' has no delivery channel: a correct decline that commits a report trips output_assertion #1 while satisfying every fail_condition."
+  - auditor: sonnet
+    verdict: pass
+    notes: "Verified the ux4-scoping doc is absent from the pre_state tree, FINDINGS has no #41 entry, and fixed-string greps for ticket-41/recording-incomplete/delivered-unrecorded/1773106092 return zero; the exposed distractors (00-shared-contracts.md:324 and metrics.go's doc comment) are stale-but-genuine, misleading rather than revealing. The answer is guessable only because the ticket itself instructs the verification step, which is honest design and is disclosed in curation.learnings."
+  - auditor: curator-fixup
+    verdict: pass
+    notes: "Fixed the grading collision opus found: 'STOP and report' had no delivery channel, so a correct decline that committed a report tripped output_assertion #1 (expect 0 commits) while rubric.md explicitly accepted one — task/delivery-protocol.md gains an outcome-neutral step 6 (root DECISION.md, required of every run), assertions now classify on the paths a diff TOUCHES, and rubric.md/answer.md/grading.delivery are aligned; the caveat that the channel is harness-authored is recorded at grading.delivery. Difficulty recalibrated moderate→trivial per opus's compliance-not-discovery argument, with the Stage-2 discrimination and the no-discovery-evidence caveat written at the field. Declared known_leak_channels: [project-auto-memory] — memory/project_agentic_ux_audit_4.md states the STOP, the constraint and the migration number verbatim. The verbatim Task-0 clause in task.md was NOT softened (scrubbing it would falsify the trigger and destroy the single-correct-answer property — it is the reason the case has one), and nothing was renamed or retitled: the answer-stating title, `outcome: no-change-correct` and the `neg-` prefix are harness-side under the exposure contract. Re-verified read-only: all five answer-bearing SHAs are non-ancestors of the pre_state, 3dadfb55aa is, the ux4 doc is absent, migrations count is 345, and no DECISION.md exists at pre_state (the new channel collides with nothing)."
+curation:
+  quality: 5
+  learnings: >-
+    The rarest and most valuable thing this case has is a NEGATIVE whose ground
+    truth is proven by a later positive: the work was eventually done under a
+    revised spec, and doing it required exactly the migration the original spec
+    forbade (1773106092, `ground_truth/eventual-fix.diff`). Most "should have
+    declined" candidates rest on a curator's judgement that the work was
+    impossible; this one is settled by the repository. Mining signature worth
+    reusing: a work item containing a conditional STOP clause, plus a branch
+    whose head equals its base, plus a later commit implementing the same ticket
+    id from a different branch. All three are cheap to grep for.
+    Five lessons.
+    (1) A conditional gate in the trigger is not a leak, but it changes what the
+    case measures. The real ticket said "Task 0 must verify no DB CHECK
+    constraint restricts the status column ...; if one exists, STOP and report".
+    Removing that clause would have made the case ambiguous (adding a migration
+    would then be a defensible reading), so it stays verbatim. The consequence is
+    that this case tests instruction-adherence-under-completion-pressure, and
+    only secondarily discovery. Curators should say which of the two a negative
+    is measuring, because they are different capabilities and a corpus needs
+    both. A discovery-flavoured sibling is cheap to derive: drop the Task-0
+    clause, keep everything else, and grade on whether the agent notices the
+    constraint at all before writing code.
+    (2) The best distractor was already in the tree and points the wrong way by
+    being STALE, not by being wrong. `00-shared-contracts.md:324` mirrors the
+    agent_run_metrics DDL with `CHECK (status IN ('ok','failed','error'))` —
+    the pre-park version. `agent/schema/metrics.go:26`'s doc comment says the
+    same. Both predate migration 1773106061, which dropped that constraint and
+    re-added it including 'parked'. So an agent can find "the" constraint in
+    three places and still state it incorrectly. The single-file grep the ticket
+    suggests is sufficient to STOP but insufficient to describe the constraint;
+    the rubric splits those two things deliberately.
+    (3) Negatives need an anti-silence gate or they measure nothing. The real
+    platform recorded this run as `status=ok · "1 gate(s) ok; pushed
+    agent/ticket-41"` — a green run and a pushed branch, with zero commits on it.
+    From the platform's own records this decline is indistinguishable from an
+    agent that stalled, refused, or crashed; only a human reading the free-text
+    summary could tell. Sibling tickets in the same batch pushed empty branches
+    that read as successful for the bad reason. Any negative case that grades
+    only "did not produce a change" is therefore trivially gamed by doing
+    nothing; the decision gate here fails a silent no-op explicitly. Corollary
+    found during the 2026-07-25 fixup: an anti-silence gate is unfair unless the
+    task states HOW to speak. This case originally had none — the workflow's
+    only output port is a pushed workspace — so a correct decline that committed
+    a report failed a mechanical assertion demanding zero commits. The corpus
+    fix is to define the channel in the exposed task (a required, outcome-
+    neutral root `DECISION.md`) and grade on what a diff TOUCHES rather than on
+    commit count. Every decline case needs this pair, and the channel must be
+    required of all outcomes or it becomes a hint.
+    (4) Ground truth for a negative should be corroborated by at least two
+    artifacts written at different times by different mechanisms, because a
+    single human note is a weak oracle for "the agent was right". Here: the
+    disposition log (644184e3f0, +7h), the empty branch (a machine artifact), and
+    the FINDINGS retrospective (3743c6c3b9, +22h) all agree, and the eventual fix
+    (5daa0678e3, +20h) settles the impossibility claim.
+    (5) An honest negative should say what a GOOD decline costs. The eventual
+    out-of-band fix landed migration 1773106092 and did NOT bump either dual
+    constant (`jetbridgeHeadMigration` stayed 1773106090, `JETBRIDGE_VERSION`
+    stayed 1773106090) — a real defect fixed much later. So the coordination the
+    spec was protecting was genuinely fragile, and an agent that named the dual
+    constants in its report was more right than the humans who followed up. That
+    is a bonus rubric bucket, not a requirement; curators should resist promoting
+    "the agent noticed something the humans missed" into a pass condition, but
+    should record it, because it is the clearest evidence a case has signal above
+    its own ground truth.
+    Platform gaps surfaced: (a) the `develop` workflow has no output port for a
+    report — a decline can only travel as free text in a run summary, which is
+    why the outcome vocabulary could not represent it; (b) consequently there is
+    no disposition verb for "the work landed via a different path than this
+    ticket's own branch" ("concluded" was chosen as least-wrong); (c) no gate in
+    the loop distinguishes an empty pushed branch from a delivered one, so
+    "1 gate(s) ok" was reported for a run that delivered nothing.

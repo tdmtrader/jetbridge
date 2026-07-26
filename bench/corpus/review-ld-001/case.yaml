@@ -1,0 +1,161 @@
+# Dual-audit flags resolved by the curator-fixup pass, 2026-07-25: the two case.yaml
+# self-disclosure objections (incl. sonnet's FAIL) dissolve under the exposure contract
+# in schema/benchmark-case-v1.md -- case.yaml is harness-side and never exposed -- and
+# the two task.md items were fixed in the exposed text. See notes.md#fixup-2026-07-25
+# and the curator-fixup entry in leakage_audit below. No human spot-check outstanding.
+schema: benchmark-case/v1
+id: review-ld-001
+title: "Audit a live lighting-console capture against its design reference"
+workflow: code-review
+signature:
+  inputs:  {repository: repository/v1, work-item: work-item/v1}
+  outputs: {findings: review-findings/v1}
+source:
+  system: audit-doc
+  repo: lightingdesign
+  # Terminal artifact is an untracked human working file, not a commit. Sealed
+  # verbatim into this case as ground_truth/answer.md Part 1.
+  terminal: "~/LightingDesign/cue-audit-0.1-4.99.md (mtime 2026-06-25T15:17:35-0700, sha256 below)"
+  terminal_sha256: b8a06e9f481ec6b34db14e6e44a7790eb10f983d6c51457df31bd6a1429b6412
+information_cut: 2026-06-25T21:38:49Z   # = 2026-06-25T14:38:49-07:00; the capture's own
+                                        # recorded captured_at, i.e. the instant the last
+                                        # exposed input came into existence
+pre_state:
+  # The review subject is a data corpus that lives untracked in the LightingDesign
+  # working tree, so it cannot be materialized from a git ref. It is sealed here
+  # instead: task/workspace/ IS the repository port, byte-identical to the five
+  # files that were on disk at T. sha256 for each is recorded in notes.md.
+  repository:
+    repo: lightingdesign
+    ref: 66cfdcc6c2ab8eaa8a25b04236f3326ab073a9c3   # tip of main at T, provenance only
+    materialize: task/workspace/
+    note: >-
+      Do NOT materialize from the git ref. Two of the five inputs (show-current.yaml,
+      show-captured-live-20260625.yaml) are untracked and absent at every commit, and
+      the tracked rig.yaml differed from its committed form at T. Checking out the ref
+      would also expose the withheld audit documents. Use task/workspace/.
+  work-item: {path: task/task.md}
+ground_truth:
+  outcome: merged           # the audit was accepted and drove the next console session
+  expected_findings: ground_truth/expected_findings.yaml
+  answer: ground_truth/answer.md
+rubric: reference           # recall vs expected_findings; PAIR WITH judge (rubric.md)
+                            # for precision, systemic framing and coverage honesty --
+                            # see curation.learnings on the single-value limitation
+grading:
+  # Not mechanically gradable: there is no test transition, the deliverable is a
+  # findings document. fail_to_pass / pass_to_pass are intentionally empty.
+  fail_to_pass: []
+  pass_to_pass: []
+  reference:
+    findings: ground_truth/expected_findings.yaml
+    recall_over: required           # F1-F5, 5 items
+    precision_penalty_over: non_findings   # N1-N4
+    neutral: also_true              # A1-A5: verified true, unnamed by the human
+    judge_rubric: ground_truth/rubric.md
+    adjudication_tool: ground_truth/derive_discrepancies.py   # stdlib-only, ~1s
+    # Grading caveats -- what parts of the score are NOT discovery:
+    #  * N1 (x1.3 bump) and N2 (ch2 at 100) are stated in task.md because the operator
+    #    provably held both constraints at T. Section B therefore measures whether the
+    #    agent APPLIES a known filter across ~6700 lines, not whether it infers one.
+    #  * task.md states what an empty `look.channels` and `partial: true` mean, but (as
+    #    of 2026-07-25) no longer instructs the agent to report them. Section F scores
+    #    follow-through into the deliverable; rubric.md says not to award it for
+    #    restating task.md.
+    #  * The deliverable is a document (AUDIT.md), not a test transition; rubric.md
+    #    carries the fallback if an agent answers in-channel instead of writing it.
+withheld:
+  # Present in the LightingDesign working tree at T and each restates or pre-empts
+  # the findings. None are reachable through task/workspace/, but they are listed so
+  # a future adapter that materializes the whole tree excludes them.
+  - cue-audit-0.1-4.99.md          # THE terminal artifact
+  - cue-audit-0-9.5.md             # earlier audit over an overlapping range
+  - cue-fix-punchlist.md           # 2026-06-25 13:47; overlapping corrections + the bump constraint
+  - cue-fix-actionlist.md          # 2026-06-25 14:14; console-ready form of the corrections
+  - cue-fix-execution-plan-20260626.md
+  - cue-notes-20260626.md
+  - cue-notes-20260716-session.md
+  - cue-deltas-15-20.md
+  - lonestar-111-capture.md
+  - show-target.yaml               # hand-authored desired end-state; partially encodes the fixes
+  - cue-looks-list1-every5.yaml    # older raw console dump of the same cues
+  - verification.md
+  - tools/                         # _program_runbook.md, _rerecord_runbook.md,
+                                   # _capture_scratch.md, _overwritten-cues-backup.md,
+                                   # build_show_map.py and the runbook generators
+difficulty: hard                  # unchanged by the 2026-07-25 fixup: both auditors
+                                  # independently affirmed the difficulty (opus "honest
+                                  # difficulty", sonnet "legitimately hard"), and neither
+                                  # argued for recalibration. The graded work -- expanding
+                                  # 93 group-vocabulary looks into channel sets through
+                                  # rig.yaml's boom_order indirection and separating real
+                                  # defects from the x1.3 noise floor -- is untouched by
+                                  # the fixup edits.
+memorization_risk: none
+known_leak_channels:
+  # The dev-machine project auto-memory was checked and does NOT state this case's
+  # answer (no lighting/cue content beyond a one-line pointer to the repo path), so
+  # project-auto-memory is not declared here. What IS a channel: this case seals its
+  # inputs by copying bytes into task/workspace/, but every withheld document above
+  # still sits beside the originals in ~/LightingDesign on the machine that curated it.
+  # A hand-run there with filesystem or shell access can read the terminal artifact
+  # directly. Replay must confine the solver to task/workspace/; a local hand-run with
+  # ~/LightingDesign reachable is invalid.
+  - source-working-tree
+validation:
+  status: unvalidated
+  notes: notes.md#validation
+leakage_audit:
+  - auditor: opus
+    verdict: borderline
+    notes: "task.md names none of the substantive defects and there is no post-cut reference; the answer is derivable only by doing the group→channel expansion and ×1.3 arithmetic, i.e. honest difficulty. Curator items: case.yaml's curation.learnings states one true finding quantitatively (cue 1.2 house 90 vs spec 7) and discloses the F/N/A set sizes, task.md's empty-channels bullet supplies both the interpretation and the mandate to report the five unread cues, and show-map-README's 'Anomalies to resolve' pre-states the cue 1.1 overwrite."
+  - auditor: sonnet
+    verdict: fail
+    notes: "task.md and the sealed workspace are well-constructed and legitimately hard (real channel↔group translation against the ×1.3 and ch2 confounders). Fails on case.yaml's curation.learnings, which states a specific verified ground-truth finding quantitatively — 'cue 1.2's house at 90 against a spec of 7, the one level anomaly the x1.3 bump does not explain' — inside the audited exposure; fix is to move it to notes.md."
+  - auditor: curator-fixup
+    verdict: pass
+    notes: "Dissolved both case.yaml self-disclosure flags (A2 stated quantitatively, F/N/A set sizes) — case.yaml is harness-side per the exposure contract, so sonnet's FAIL and the move-to-notes.md remedy are moot; curation.learnings left intact. Fixed in task.md: dropped the two report-this mandates on empty-channel and partial reads (interpretation kept, so N4 stays suppressed while section F now scores follow-through), added the missing deliverable channel (AUDIT.md + read-and-report-only), neutralised evening/tonight wording against the 14:38-local cut. rubric.md gained the section-F caveat, the deliverable fallback and a credit-derivation-not-quotation rule that scores show-map-README's 'Anomalies to resolve' (incl. the in-range cue 1.1 overwrite, which is not one of F1–F5) as neutral — the README stays exposed, authenticity wins. difficulty hard reaffirmed; known_leak_channels: [source-working-tree] declared (project auto-memory checked, clean)."
+curation:
+  quality: 5
+  learnings: >-
+    The most useful thing this case proves is that a review workflow can be exercised
+    on a domain with no code in it at all: the shape (spec vs. observed state, produce
+    a ranked findings document) is identical, only the vocabulary changes. If the
+    platform's review workflow degrades here relative to the Go cases, that is a
+    real generalization gap and not an artifact of the domain being exotic.
+
+    Three curation lessons. (1) When the subject is untracked working data, stop
+    trying to pin a git ref and seal the bytes instead -- copying the five input files
+    into task/workspace/ made the exposure manifest closed and exact, and dissolved the
+    entire leakage problem (nine sibling cue-*.md documents in that directory restate
+    the answer). Pinning a ref would have been strictly worse: two inputs exist at no
+    commit, and a checkout would have handed the agent the audit itself. (2) The human
+    oracle is incomplete and knowing exactly how incomplete is what makes the precision
+    score honest. Re-deriving the full discrepancy set mechanically surfaced five true
+    findings the operator never wrote down -- including cue 1.2's house at 90 against a
+    spec of 7, the one level anomaly the x1.3 bump does not explain. Without that pass
+    a grader would have marked a better-than-human answer down for hallucinating.
+    Every review case should ship the derivation that bounds its oracle. (3) The
+    constraints that suppress false positives (the baked-in +30% bump, ch2 always at
+    100) had to go into task.md because the human demonstrably knew them at T -- they
+    were written down 90 minutes before the audit. Constraints are not leakage; leaving
+    them out would have made the precision measurement meaningless rather than harder.
+
+    Platform notes. The case has no runtime and no services: two YAML files, a channel
+    map and a CSV, so it runs anywhere and is a good hermetic non-Go smoke case. It
+    also wants two rubrics at once -- reference for recall, judge for precision,
+    systemic framing and coverage honesty -- which is the second case in a row
+    (see fix-ld-001) to argue that benchmark-case/v1's single-valued `rubric` field
+    should become a list. And it is the corpus's first case whose output port is a
+    document rather than a repository change, which the harvest adapter will need a
+    `review-findings/v1` snapshot type to represent.
+
+    Audit lesson (2026-07-25). Both leakage auditors scored this case on the contents
+    of case.yaml itself -- one of them failed it outright for the A2 sentence three
+    paragraphs above -- which is exactly what the exposure contract says not to do:
+    the solver sees pre_state minus withheld plus task/, and nothing else in this
+    directory. That paragraph stays where it is. The real cost of the ambiguity was
+    elsewhere: it drew attention away from the two genuine leads in the exposed text
+    (mandates to report the unread and partial cues, which handed over section F for
+    free) and away from the missing deliverable channel. Write the curation record for
+    the curator; audit the exposure manifest, not the manifest's paperwork.

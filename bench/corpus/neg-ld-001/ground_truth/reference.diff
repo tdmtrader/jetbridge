@@ -1,0 +1,193 @@
+commit 635c2d4a5490bceb48be36cd1344724a1e14dc1b
+Author: Thomas Moore <tdmtrader@Mac.localdomain>
+Date:   Sun Jun 21 07:04:28 2026 -0700
+
+    forge(set_cue): descope to timing only (drop label/notes)
+    
+    User steer: "I only care about things like timing." set_cue now ships
+    { cue, list?, time?, confirm? } sending `Cue <list> / <cue> Time <t>#`.
+    Dropping label/notes also avoids the Eos one-command-line conflict where a
+    cue label's free text swallows a trailing Note keyword. Mark track in_progress.
+    
+    Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+
+diff --git a/forge/tracks.md b/forge/tracks.md
+index 5a176a5..9a1f82d 100644
+--- a/forge/tracks.md
++++ b/forge/tracks.md
+@@ -5,7 +5,7 @@ Index of development tracks for LightingDesign. Newest first.
+ | Track ID | Title | Type | Status |
+ |----------|-------|------|--------|
+ | `record_smart_confirm_20260621` | record_cue — confirm only when overwriting an existing cue | feature | completed |
+-| `set_cue_20260621` | set_cue — edit a stored cue's attributes (time/label/notes) without re-recording | feature | planned |
++| `set_cue_20260621` | set_cue — edit a stored cue's fade time without re-recording | feature | in_progress |
+ | `live_state_subscription_20260621` | Reliable live stage reads — fix flaky Select Active polling | feature | planned |
+ | `cue_building_ii_20260620` | Cue building II — update_cue, record timing + label, raw command escape hatch | feature | completed |
+ | `venue_profile_20260619` | Venue profile — semantic rig map + `set_look` (rig awareness, G3) | feature | completed |
+diff --git a/forge/tracks/set_cue_20260621/cgx.md b/forge/tracks/set_cue_20260621/cgx.md
+index fe5775f..aa57ae9 100644
+--- a/forge/tracks/set_cue_20260621/cgx.md
++++ b/forge/tracks/set_cue_20260621/cgx.md
+@@ -9,6 +9,20 @@
+ 
+ ---
+ 
++## Scope decisions
++- [2026-06-21] **Descoped to timing only.** User: "I don't need note or labels. I only
++  care about things like timing." So `set_cue` ships `{ cue, list?, time?, confirm? }`
++  sending `Cue <list> / <cue> Time <t>#` — no label, no notes. This also sidesteps the
++  Label/Note one-line conflict below entirely (only one optional term, `Time`).
++- [2026-06-21] **Why the original Label+Note single line was risky:** `record.go`
++  documents a verified invariant — a cue Label's free text runs to end-of-line, so a
++  `Note` keyword placed after `Label` would be swallowed into the label string. Two
++  free-text fields can't safely share one Eos command line. Moot now that label/notes
++  are out of scope, but recorded for any future label/note editor (use separate command
++  lines, or keep Label strictly last).
++
++---
++
+ ## Patterns Observed
+ 
+ ### Good Patterns (to encode)
+diff --git a/forge/tracks/set_cue_20260621/metadata.json b/forge/tracks/set_cue_20260621/metadata.json
+index 8476b3f..c7254ea 100644
+--- a/forge/tracks/set_cue_20260621/metadata.json
++++ b/forge/tracks/set_cue_20260621/metadata.json
+@@ -1,8 +1,8 @@
+ {
+   "trackId": "set_cue_20260621",
+   "type": "feature",
+-  "status": "planned",
+-  "description": "set_cue — edit a stored cue's attributes (time, label, notes) without re-recording",
++  "status": "in_progress",
++  "description": "set_cue — edit a stored cue's fade time without re-recording",
+   "createdAt": "2026-06-21T12:50:23Z",
+-  "updatedAt": "2026-06-21T12:50:23Z"
++  "updatedAt": "2026-06-21T13:05:00Z"
+ }
+diff --git a/forge/tracks/set_cue_20260621/plan.md b/forge/tracks/set_cue_20260621/plan.md
+index f6b0593..5442c80 100644
+--- a/forge/tracks/set_cue_20260621/plan.md
++++ b/forge/tracks/set_cue_20260621/plan.md
+@@ -1,21 +1,21 @@
+ # Implementation Plan: set_cue
+ 
+ Mirrors the verified `record_cue`/`update_cue` pattern (command-line via `/eos/newcmd`,
+-confirm/preview). Reuses `cueOptsSuffix`, `ValidateRecord`, `validateLabel`,
+-`EosCore`/fake seam. TDD; Nomad smoke for the attribute forms (`Cue … Time/Label/Note#`).
++confirm/preview). Reuses `cueOptsSuffix`, `ValidateRecord`, `ValidateCueOpts`,
++`EosCore`/fake seam. TDD; Nomad smoke for the timing form (`Cue … Time <t>#`).
++**Scope: timing only** — label/notes out (see spec / cgx).
+ 
+-## Phase 1: Core — SetCueAttrs
++## Phase 1: Core — SetCueAttrs (timing)
+ 
+-- [ ] Extend the cue-opts suffix with an optional `Note <text>` term (notes guard for
+-      `#`/control chars); add `Notes` to `CueOpts` (or a `CueAttrs`).
+-- [ ] Test + implement `eos.SetCueAttrs(ctx, list, cue, opts)` → `Cue <list> / <cue>
+-      <suffix>#`; reject empty opts; `SetCuePreview`. Golden OSC for Time/Label/Note
+-      and combined; empty + injection rejection.
++- [~] Test + implement `eos.SetCueAttrs(ctx, list, cue, opts)` → `Cue <list> / <cue>
++      Time <t>#`, reusing `cueOptsSuffix`/`ValidateRecord`; reject empty opts; add
++      `SetCuePreview`. Golden OSC for Time (int + decimal, decimal cue + list);
++      empty-opts + validation (bad cue/list, time range) rejection.
+ - [ ] Phase 1 Verification: `go test -race ./internal/eos/` green.
+ 
+ ## Phase 2: MCP tool + docs + gate
+ 
+-- [ ] `set_cue` tool `{ cue, list?, time?, label?, notes?, confirm? }`; extend `EosCore`
+-      (+ fake); preview/confirm; register in `NewServer`. Tool tests.
+-- [ ] **Nomad smoke:** `set_cue {cue:"5", time:4, label:"Bows"}` → `list_cues` confirms.
++- [ ] `set_cue` tool `{ cue, list?, time, confirm? }`; extend `EosCore` (+ fake);
++      preview/confirm; register in `NewServer`. Tool tests.
++- [ ] **Nomad smoke:** `set_cue {cue:"5", time:4}` → `list_cues` shows `up_time_ms 4000`.
+ - [ ] README documents `set_cue`. Final gate: full `-race` green; vet/gofmt clean.
+diff --git a/forge/tracks/set_cue_20260621/spec.md b/forge/tracks/set_cue_20260621/spec.md
+index fa892f8..bcb7b99 100644
+--- a/forge/tracks/set_cue_20260621/spec.md
++++ b/forge/tracks/set_cue_20260621/spec.md
+@@ -6,52 +6,54 @@
+ 
+ ## Overview
+ 
+-Edit an existing cue's **attributes** — fade time, label, notes — **without
+-re-recording its look**. Today this is only possible through the `send_command` escape
+-hatch (`Cue 3 Time 5#`, verified on Nomad). A typed, guarded `set_cue` tool is the
+-clean, safe home for "change cue 3's fade to 5" / "label cue 8 'Bows'".
+-
+-Context: the `cue_building_ii` track found that **Eos *Update* does NOT set time/label**
+-(it merges level/color only), and `record_cue` only sets attributes at record time. So
+-editing the attributes of an already-recorded cue has no dedicated tool — this fills
++Edit an existing cue's **fade time** **without re-recording its look**. Today this is
++only possible through the `send_command` escape hatch (`Cue 3 Time 5#`, verified on
++Nomad). A typed, guarded `set_cue` tool is the clean, safe home for "change cue 3's
++fade to 5".
++
++Context: the `cue_building_ii` track found that **Eos *Update* does NOT set the time**
++(it merges level/color only), and `record_cue` only sets timing at record time. So
++editing the fade time of an already-recorded cue has no dedicated tool — this fills
+ that gap.
+ 
++**Scope (2026-06-21):** timing only. Label/notes editing is explicitly **out of scope**
++per the user ("I only care about things like timing"). That also avoids the Label/Note
++one-command-line conflict — Eos label text runs to end-of-line and would swallow a
++trailing `Note` keyword (see cgx).
++
+ ## What ships
+ 
+-`set_cue { cue, list?, time?, label?, notes?, confirm }` → sends
+-`Cue <list> / <cue> [Time <t>] [Label <text>] [Note <text>]#`. Modifies a stored cue
+-→ two-step confirm/preview (like record/update). At least one attribute required.
++`set_cue { cue, list?, time?, confirm }` → sends `Cue <list> / <cue> Time <t>#`.
++Modifies a stored cue → two-step confirm/preview (like record/update). The `time`
++attribute is required (nothing else to change).
+ 
+ ## Architecture & approach
+ 
+ - **`eos` core:** `SetCueAttrs(ctx, list, cue string, opts CueOpts) error` — verb-less
+-  `"Cue <list> / <cue><suffix>#"`, reusing the existing `cueOptsSuffix` (Time then
+-  Label) plus a Notes term; reject an empty opts (nothing to set). Add `SetCuePreview`.
+-  Reuse `ValidateRecord` (cue grammar) and `validateLabel` (and a notes guard).
+-- **`mcp` adapter:** `set_cue` tool mirroring `record_cue`/`update_cue` confirm flow;
+-  extend `EosCore` (+ fake). Register in `NewServer`.
++  `"Cue <list> / <cue><suffix>#"`, reusing the existing `cueOptsSuffix` (Time); reject
++  an empty opts (nothing to set). Add `SetCuePreview`. Reuse `ValidateRecord` (cue
++  grammar) and `ValidateCueOpts` (time range). No new `CueOpts` fields needed.
++- **`mcp` adapter:** `set_cue` tool mirroring `update_cue` confirm flow (preview without
++  confirm, apply with it); extend `EosCore` (+ fake). Register in `NewServer`.
+ - **Verified building block:** the command form `Cue <n> Time <t>#` is already
+-  confirmed on Nomad (it changed cue 92's time 3000→5000 via `send_command`). Add
+-  Label/Note and verify those too.
++  confirmed on Nomad (it changed cue 92's time 3000→5000 via `send_command`).
+ 
+ ## Functional requirements
+ 
+-1. `eos.SetCueAttrs` builds `Cue <list> / <cue>` + the `cueOptsSuffix` (extended with
+-   an optional `Note`), errors if no attribute is set, validates label/notes chars.
+-2. `set_cue` tool: `{ cue, list?:1, time?, label?, notes?, confirm? }`; preview without
+-   confirm, apply with it; not-connected non-fatal; invalid input → tool error.
+-3. Extend `CueOpts` (or a small `CueAttrs`) with `Notes`.
++1. `eos.SetCueAttrs` builds `Cue <list> / <cue>` + the `cueOptsSuffix` (Time), errors
++   if no attribute is set, validates time range.
++2. `set_cue` tool: `{ cue, list?:1, time?, confirm? }`; preview without confirm, apply
++   with it; not-connected non-fatal; invalid/missing time → tool error.
+ 
+ ## Safety / out of scope
+ 
+-- Modifies stored cues → confirm-gated. Label/notes validated for command-line-breaking
+-  chars (`#`, control). Out of scope: cue parts, links/loops, follow/hang, effects;
+-  discrete up/down fade split.
++- Modifies stored cues → confirm-gated. Out of scope: **label/notes editing** (user
++  steer); cue parts, links/loops, follow/hang, effects; discrete up/down fade split.
+ 
+ ## Acceptance criteria
+ 
+-- Golden OSC for `Cue 1 / 5 Time 3#`, `… Label X#`, `… Note Y#`, combined (Time, Label,
+-  Note order); empty-opts rejected; label/notes injection rejected; confirm/preview;
++- Golden OSC for `Cue 1 / 5 Time 3#` (int + decimal time, decimal cue + list);
++  empty-opts rejected; bad cue/list and out-of-range time rejected; confirm/preview;
+   not-connected non-fatal. Full `-race` suite green; vet/gofmt clean.
+-- **Nomad smoke:** `set_cue {cue:"5", time:4, label:"Bows"}` → `list_cues` shows
+-  `up_time_ms 4000`, `label "Bows"`. README documents `set_cue`.
++- **Nomad smoke:** `set_cue {cue:"5", time:4}` → `list_cues` shows `up_time_ms 4000`.
++  README documents `set_cue`.

@@ -1,0 +1,151 @@
+# BORDERLINE (post-fixup 2026-07-25): usable, but two things a human should
+# weigh before this case anchors a claim — (1) the in-tree forge/archive record
+# is a real, deliberately-kept deflator, (2) a hand-run on the curator's own dev
+# machine is invalid unless project auto-memory is suppressed
+# (known_leak_channels below).
+schema: benchmark-case/v1
+id: fix-jb-005
+title: In-flight job builds must survive a web drain instead of being errored
+workflow: small-fix
+signature:
+  inputs:
+    repository: repository/v1
+    work-item: work-item/v1
+  outputs:
+    change: repository-change/v1
+source:
+  system: git-commit
+  repo: jetbridge
+  terminal: 7c59cbbfa6ed5921d324793f2a03bb1ee4d12aa3
+information_cut: 2026-07-04T21:58:44-07:00
+pre_state:
+  repository:
+    repo: jetbridge
+    ref: 1127c59301e2f865b4d2420e909ae5344e05661f
+  work-item:
+    path: task/task.md
+ground_truth:
+  outcome: merged
+  reference_change: ground_truth/reference.diff
+  answer: ground_truth/answer.md
+rubric: mechanical
+grading:
+  fail_to_pass:
+    - cmd: "go test ./atc/engine/ ./atc/builds/"
+      withheld_test_paths:
+        - atc/engine/engine_test.go
+        - atc/builds/tracker_test.go
+      note: >-
+        Materialize pre_state, overwrite the two test files with their
+        post-state versions (from ground_truth/reference.diff), run the command:
+        it must FAIL at pre_state and PASS with the source half of the reference
+        change applied. Focused equivalents — BOTH require the same two-file
+        overlay; without it they go green at pre_state and give a false pass
+        (the Ginkgo context string already exists at pre_state, and neither
+        testify method name does, so the filter matches the old specs / nothing):
+        `go test ./atc/engine/ -run TestEngine -args -ginkgo.focus='when the build is released'`
+        and
+        `go test ./atc/builds/ -run TestTracker -testify.m 'TestTrackDoesNotFinalizeReleasedJobBuild|TestTrackFinalizesOrphanedCheckBuild'`.
+  caveats:
+    - id: overlay-clobbers-agent-tests
+      note: >-
+        The task asks the agent to add its own failing tests, and the mechanical
+        overlay overwrites exactly the two files it would most naturally add
+        them to. Runner order is therefore fixed: (1) run the submission's own
+        suite and record the result, (2) copy the submission's
+        atc/engine/engine_test.go and atc/builds/tracker_test.go aside for the
+        judge (rubric item 5 is scored from that copy), (3) only then apply the
+        overlay and run fail_to_pass. Never score the agent's testing behavior
+        from the post-overlay tree.
+    - id: overlay-assumes-reference-shape
+      note: >-
+        fail_to_pass encodes the reference design (keep the Finish() calls,
+        scope them to check builds). A correct alternative that guarantees the
+        inFlightChecks cleanup by another in-scope means can fail the
+        check-build finalize assertions while satisfying the task. A submission
+        that fails ONLY those assertions — job-build assertions green — must be
+        routed to the judge (ground_truth/rubric.md must-have 3), not scored as
+        an automatic fail. Any failure of the job-build assertions is a real
+        fail.
+    - id: overlay-compile-coupling
+      note: >-
+        The post-state test files compile against pre-state package internals.
+        A submission that renames or restructures symbols those tests touch can
+        break the overlay build; treat a compile failure of the overlay as
+        judge-adjudicated, not as a behavioral fail.
+  pass_to_pass:
+    - cmd: "go build ./atc/..."
+      note: compilation guard; must succeed before and after.
+    - cmd: "go test ./atc/exec/ ./atc/scheduler/"
+      note: >-
+        Neighbouring PostgreSQL-free packages that exercise step/retry and
+        scheduling behavior; must pass before and after. Do NOT widen to
+        ./atc/scheduler/... — atc/scheduler/algorithm needs PostgreSQL.
+  environment:
+    needs_postgres: false
+    note: >-
+      Verified empirically at corpus-build time: `PGHOST=127.0.0.1 PGPORT=1
+      go test ./atc/builds/ ./atc/engine/` passes, so neither grading package
+      touches a database (both are counterfeiter/dbfakes only). The repo's
+      `make test-unit` as a whole DOES need PostgreSQL — do not use it as the
+      gate for this case. Go toolchain only; no Docker, no cluster.
+withheld: []
+# Priced deflators kept exposed on purpose (authenticity wins; see notes.md
+# "Fixup 2026-07-25"): forge/archive/build_tracker_behavioral_spec_20260331/
+# (EX-12 states the engine half normatively, EX-10/EX-11 the job-vs-check
+# asymmetry) and forge/archive/check_scheduling_inflight_leak_20260409/ (names
+# both code sites and the leak rationale). Neither collapses the case on its
+# own — EX-12 is stale relative to 8b5476828f, and following it literally
+# reintroduces the leak — but together they price the task down from hard.
+difficulty: moderate   # recalibrated 2026-07-25 from `hard`: the in-tree archive
+                       # record supplies much of the causal chain to an agent
+                       # that greps for it (130 archived tracks, so it is still
+                       # a targeted search, not a handout). The trap remains
+                       # real: the naive delete-both fix fails.
+memorization_risk: none
+known_leak_channels: [project-auto-memory]
+validation:
+  status: validated
+  notes: notes.md#validation
+leakage_audit:
+  - auditor: opus
+    verdict: borderline
+    notes: "task.md is clean (no post-cut refs; all symptoms verifiable) but requirements 2/3/5 enumerate the exact code paths the diff touches and the constraints instruct the solver to read the history, turning discovery into instruction. Main issue is in-tree and un-withheld: forge/archive/build_tracker_behavioral_spec_20260331 EX-12 states the engine half as a normative MUST and EX-10/11 hand over the job-vs-check asymmetry, while check_scheduling_inflight_leak_20260409 names both code sites. Keep them (authentic history) but record as priced deflators and re-rate hard→medium; memorization_risk:none holds only with user memory disabled."
+  - auditor: sonnet
+    verdict: fail
+    notes: "task.md and case.yaml are clean and appropriately withhold the fix; the leak is un-withheld in-tree — forge/archive/build_tracker_behavioral_spec_20260331/spec.md EX-12 states in MUST language that drain must return from Run() without calling build.Finish(), matching Required Behavior #1 verbatim, with EX-09/EX-10/EX-11 and cgx.md restating the rest."
+  - auditor: curator-fixup
+    verdict: borderline
+    notes: "Softened leading text in task.md (dropped the read-the-history instruction and the tracker/ownership/retry-path mechanics from requirements 1/2/3/5); archive deflators KEPT as authentic history and priced (difficulty hard->moderate, judge guidance added to rubric.md crediting causal reasoning over doc quotation); fixed two grading defects (overlay clobbering the agent's own tests, focused legs silently passing without the overlay) plus an alternative-fix escape hatch in must-have 3; declared known_leak_channels [project-auto-memory] since auto-memory states this root cause verbatim. Residual borderline: the in-tree record still supplies much of the causal chain and the two prior auditors disagreed."
+curation:
+  quality: 5
+  learnings: >-
+    The best fix cases are ones where the naive fix is wrong. Here the symptom
+    ("every web restart errors all in-flight builds") points straight at two
+    lines of code, and deleting those two lines makes the symptom go away while
+    silently reintroducing a production defect (the in-flight check-tracking
+    leak) that was fixed three months earlier. That gives the case a real
+    discriminator: passing requires reading the history to learn *why* the
+    current behavior exists, then finding the narrower predicate. Regression-of-
+    a-regression commits are therefore a high-yield mining pattern — grep for
+    fixes whose body cites an earlier fix by SHA.
+    Second lesson: the trigger and the root cause must be separated by hand.
+    The in-tree track spec written *after* this fix opens with a perfectly good
+    work-item narrative (the WHY section) and then names the exact files, the
+    causing commit and the exact predicate two paragraphs later. Harvesting the
+    spec wholesale would have produced a case that grades an agent's ability to
+    apply a patch it was handed. Only the pre-investigation half is admissible.
+    Third: verify environment claims instead of inheriting them. The curation
+    hand-off asserted PostgreSQL was required; running the two packages against
+    an unreachable PostgreSQL showed it is not, which upgrades this case from
+    "needs a database fixture" to a pure-Go hermetic gate.
+    Fourth (fixup 2026-07-25): a repo that writes its history down is a repo
+    that partially answers its own benchmark. The archived track records for the
+    causing fix are exactly what a good engineer would find, so withholding them
+    would test a fake codebase — the honest move is to keep them, price the
+    difficulty down, and tell the judge to score causal reasoning rather than
+    quotation. Fifth: when a task asks the agent to write tests, a mechanical
+    overlay that overwrites those same files silently erases the behavior being
+    graded; run and snapshot the submission's suite before overlaying. Sixth:
+    "read the history" belongs in the rubric, not in the work item — an
+    instruction to investigate converts the discriminator into a checklist.

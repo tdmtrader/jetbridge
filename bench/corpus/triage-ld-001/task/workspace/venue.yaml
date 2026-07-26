@@ -1,0 +1,69 @@
+# Connection config for the live console. Point the server at this file:
+#   bin/lighting-mcp -config venue.yaml
+# The semantic rig map the agent reads to choose channels lives in rig.yaml.
+host: 192.168.1.145
+port: 52999
+transport: tcp+slip
+
+# Color-capable (LED) channels — read_stage / set_look read hue + saturation for
+# these. Gelled conventionals are intensity-only and intentionally omitted.
+color_channels:
+  - 2 # audience stair (LED RGB)
+  - 70 # back trough SL
+  - 71 # back trough SR
+  - 98 # spot HR
+  - 99 # spot HL
+  - 101 # under bench SR
+  - 102 # under bench CS
+  - 103 # under bench SL
+  - 105 # strip SR
+  - 106 # strip CS
+  - 107 # strip SL
+  - 108 # lone star DSL
+  - 109 # lone star DSR
+  - 110 # lone star HSL
+  - 111 # lone star HCS
+  - 112 # lone star HSR
+  - 113 # desire USL
+  - 114 # desire SL
+  - 115 # desire DSL
+  - 116 # desire DCS
+  - 117 # desire DSR
+  - 118 # desire SR
+  - 119 # desire USR
+
+# The channel span the selection "all" expands to (e.g. set_look "all" 0 to black out).
+all_channels: "1 Thru 119"
+
+# Semantic rig groups: a name the agent can use as a channel selection ("desires",
+# "orange ladders") -> the channels it means. Names are matched case-insensitively.
+# Mirrors the human-readable map in rig.yaml.
+groups:
+  # Ladders — all 9 gel colors (the R-number gels), each its 6 channels in boom order.
+  "blue ladders": "7 Thru 12"
+  "yellow ladders": "14 Thru 19"
+  "green ladders": "21 Thru 26"
+  "light blue ladders": "28 Thru 33"
+  "orange ladders": "35 Thru 40"
+  "pink ladders": "42 Thru 47"
+  "red ladders": "49 Thru 54"
+  "dark blue ladders": "56 Thru 61"
+  "white ladders": "63 Thru 68"
+  # The three blues together (blue + light blue + dark blue).
+  "blues": "7 Thru 12 + 28 Thru 33 + 56 Thru 61"
+  # Back wash.
+  "back troughs": "70 + 71"
+  "back pars": "73 Thru 78"
+  # Specials, LEDs, movers.
+  "circle specials": "80 Thru 85"
+  "lone stars": "108 Thru 112"
+  "desires": "113 Thru 119"
+
+# Lone Star default ("home") pan/tilt aim, in degrees (captured live 2026-06-22). Lets
+# set_lone_star {home: true} send a unit back to its show-default position in one call.
+lone_star_home:
+  108: { pan: -48, tilt: 50 } # DSL
+  109: { pan: 129, tilt: 67 } # DSR
+  110: { pan: -31, tilt: 58 } # HSL
+  111: { pan: -1, tilt: 61 } # HCS
+  112: { pan: 31, tilt: 62 } # HSR

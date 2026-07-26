@@ -1,0 +1,67 @@
+diff --git a/agent/schema/event_io_test.go b/agent/schema/event_io_test.go
+index 9bbbaf4d8e..d0495e3e9f 100644
+--- a/agent/schema/event_io_test.go
++++ b/agent/schema/event_io_test.go
+@@ -169,6 +169,34 @@ var _ = Describe("EventReader", func() {
+ 		Expect(events).To(HaveLen(2))
+ 	})
+ 
++	It("reads a line larger than the default 64KiB scanner limit", func() {
++		// A single NDJSON event whose payload exceeds bufio.Scanner's default
++		// 64KiB token limit must not abort the stream. Agent-step ingestion
++		// breaks its read loop on any reader error, so an oversized line
++		// mid-stream would otherwise discard every later cost.record and
++		// step.end event — leaving the step status=error even when a valid
++		// step.end followed (review finding, 2026-07-12).
++		big := strings.Repeat("x", 200*1024) // 200 KiB, well past the 64 KiB default
++		input := `{"ts":"2026-02-09T21:30:00Z","event":"tool.call","data":{"tool":"grep","blob":"` + big + `"}}` + "\n" +
++			`{"ts":"2026-02-09T21:30:01Z","event":"agent.end","data":{"status":"pass"}}` + "\n"
++
++		r := schema.NewEventReader(strings.NewReader(input))
++
++		events := []schema.Event{}
++		for {
++			event, err := r.Read()
++			if err == io.EOF {
++				break
++			}
++			Expect(err).NotTo(HaveOccurred())
++			events = append(events, *event)
++		}
++
++		Expect(events).To(HaveLen(2))
++		Expect(events[0].Type).To(Equal(schema.EventToolCall))
++		Expect(events[1].Type).To(Equal(schema.EventAgentEnd))
++	})
++
+ 	It("returns an error for invalid JSON", func() {
+ 		input := "not valid json\n"
+ 		r := schema.NewEventReader(strings.NewReader(input))
+diff --git a/agent/schema/event_reader.go b/agent/schema/event_reader.go
+index 2ca17ddceb..f28b0a658c 100644
+--- a/agent/schema/event_reader.go
++++ b/agent/schema/event_reader.go
+@@ -15,10 +15,22 @@ type EventReader struct {
+ 	line    int
+ }
+ 
++// maxEventLine caps a single NDJSON line at 5 MiB. bufio.Scanner's default
++// 64 KiB token limit is too small for a large event (e.g. a tool.call carrying
++// captured output): the line surfaces bufio.ErrTooLong, and because agent-step
++// ingestion breaks its read loop on any reader error, a single oversized line
++// mid-stream would silently discard every later cost.record and step.end event
++// — leaving the step as status=error even when a valid step.end followed
++// (review finding, 2026-07-12; contract 5 invites other producers to append
++// events).
++const maxEventLine = 5 << 20
++
+ // NewEventReader creates an EventReader that reads from r.
+ func NewEventReader(r io.Reader) *EventReader {
++	scanner := bufio.NewScanner(r)
++	scanner.Buffer(make([]byte, 0, 64*1024), maxEventLine)
+ 	return &EventReader{
+-		scanner: bufio.NewScanner(r),
++		scanner: scanner,
+ 	}
+ }
+ 

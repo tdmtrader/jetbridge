@@ -1,0 +1,406 @@
+# Ground-truth findings for review-jb-001.
+#
+# Source: the body of commit e366c29a1352b27a6537694ead2ae2e2f9779c91
+# ("fix(web)+fix(agent): merge-gate audit fixes for the agentic-UX wave"),
+# corroborated line-by-line against ground_truth/reference.diff. The commit
+# header says "Eleven verified findings"; it carries eleven bullets, two of
+# which each bundle two independent defects, plus a twelfth bullet for a test
+# gap. Atomised here into 13 gradeable items (F1–F13) so recall is countable;
+# `bullet` records the original grouping.
+#
+# All `region` line numbers are at the pre_state ref
+# 171148fd77232d46d183834c9f2e172073c44805.
+#
+# Severities are CURATOR-ASSIGNED. The source commit did not rank its findings;
+# the ranking here is derived from operator impact as argued in each commit
+# bullet and in the reference fix's own code comments. Do not treat a severity
+# mismatch as a miss.
+
+schema: expected-findings/v1
+case: review-jb-001
+pre_state_ref: 171148fd77232d46d183834c9f2e172073c44805
+reference: ground_truth/reference.diff
+
+findings:
+  - id: F1
+    bullet: 1
+    severity: high
+    title: runOutcome precedence is not worst-truth-wins — a stale parked row beats a dead build
+    anchors:
+      - {file: web/elm/src/AgentBadge.elm, region: "267-309", symbol: runOutcome}
+    description: >-
+      runOutcome checks `runStatus == "parked"` before it looks at buildStatus at
+      all, and never looks at a step-reported "error"/"failed" once a buildStatus
+      is present. Two distinct wrong renders follow. (a) A run that was ABORTED
+      (or failed/errored) while parked at a HITL checkpoint leaves the parked
+      metric row behind forever, so the badge pulses "Waiting on you" for a run
+      that is dead — the operator is asked for input that can never be consumed.
+      (b) A step that reported error/failed inside a build that still SUCCEEDED
+      (attempts:/try wrap the agent step) renders a green OK, and a step that
+      reported error while its build is still "started" renders Running
+      indefinitely for a wedged build, because the metric row lands at step end
+      but the badge defers to the open build.
+    expected_behavior: >-
+      Precedence must be worst-truth-wins: a terminally-bad build (failed /
+      errored / aborted) is final; otherwise parked wins; otherwise a
+      step-reported error/failed is never masked by a succeeded or still-open
+      build; only then does the build status speak.
+    failure_scenario: >-
+      runOutcome {buildStatus = "aborted", runStatus = "parked", hasResult =
+      False} yields AwaitingHuman instead of Aborted; runOutcome {buildStatus =
+      "succeeded", runStatus = "error", hasResult = True} yields Succeeded
+      instead of Errored.
+    note: >-
+      The parked-first ordering was itself introduced by the branch's EARLIER
+      review round (20b808a92e, "MEDIUM: runOutcome checked build status
+      first"). A reviewer who spots the over-correction is reading the change,
+      not the changelog.
+
+  - id: F2
+    bullet: 2
+    severity: high
+    title: Ticket run ledger and review digest read the EARLIEST metric row of a build
+    anchors:
+      - {file: web/elm/src/AgentTickets/AgentTicket.elm, region: "1112", symbol: "runRow/runStatus"}
+      - {file: web/elm/src/AgentTickets/AgentTicket.elm, region: "1119-1132", symbol: "runRow/hasResult+summary"}
+      - {file: web/elm/src/AgentTickets/AgentTicket.elm, region: "784-798", symbol: "reviewDigest/latestSummary"}
+    description: >-
+      A build produces one agent_run_metrics row per step (agent, then harvest,
+      then judge…), created_at ASC. Both call sites take `List.head` of the
+      build's rows, i.e. the FIRST step. The run's status is therefore the first
+      step's status, and the displayed summary is the first step's non-empty
+      summary — the agent's own self-report — so the review digest and the ledger
+      row never show the harvest/judge verdict that actually decided the run.
+      The status read has a second failure: a mid-build HITL park recorded on a
+      later step hides behind an earlier step's "ok".
+    expected_behavior: >-
+      Status: a parked row anywhere in the build wins; otherwise use the LATEST
+      step's status. Summary: use the LAST non-empty summary of the build's rows,
+      and derive `hasResult` from that same value rather than from "any row has a
+      summary" (otherwise a green OK can be claimed on the strength of a summary
+      that is not the one displayed).
+    failure_scenario: >-
+      Build 42 has rows [agent(status=ok, summary="I implemented X"),
+      harvest(status=failed, summary="gates failed: build")]. The ledger row
+      renders status "ok" with the agent's self-congratulation, and the digest
+      shows the same, while the run actually failed its gates.
+
+  - id: F3
+    bullet: 3
+    severity: medium
+    title: /agent ledger row expansion is keyed by build id alone, so sibling step rows expand together
+    anchors:
+      - {file: web/elm/src/Agent/Agent.elm, region: "643", symbol: "runsTable (rowKey = r.buildId)"}
+      - {file: web/elm/src/Agent/Agent.elm, region: "660-690", symbol: "runRow/runStepCell"}
+      - {file: web/elm/src/Agent/Agent.elm, region: "79", symbol: "Model.expandedRuns : Set Int"}
+    description: >-
+      `expandedRuns : Set Int` is keyed by build id, but the ledger renders one
+      row per metric row and a build contributes several (agent + harvest + …).
+      Expanding one step's summary expands every sibling step row of that build
+      at once.
+    expected_behavior: >-
+      Key by the metrics table's actual unique key — build id + plan id — so each
+      rendered row toggles independently and the key still survives the 5s
+      refetch prepending newer runs (which is why an ordinal is also wrong).
+    failure_scenario: >-
+      Build 100 has an agent row and a harvest row. Clicking "expand" on the
+      agent row also expands the harvest row; collapsing either collapses both.
+
+  - id: F4
+    bullet: 4
+    severity: medium
+    title: /agent section nav is entirely dead — fragment hrefs never scroll under Browser.application
+    anchors:
+      - {file: web/elm/src/Agent/Agent.elm, region: "597-605", symbol: navLink}
+      - {file: web/elm/src/Agent/Agent.elm, region: "576-594", symbol: sectionNav}
+    description: >-
+      navLink renders `Html.a [ href ("#" ++ anchorId) ]`. The app is a
+      `Browser.application`, which intercepts every internal link click and
+      re-routes it through `Routes`; `Routes` carries no fragment for this page,
+      so the browser never performs the jump. Every entry in the new nav strip is
+      a no-op — the feature ships 100% non-functional.
+    expected_behavior: >-
+      Scroll programmatically (the existing `scrollToId` port / `Scroll
+      (ScrollDirection.ToId …)` effect used by the build page), which also
+      requires the console body to be its own id'd scroll container.
+    failure_scenario: >-
+      Click any entry in the /agent section nav: nothing happens, no scroll, no
+      URL change.
+
+  - id: F5
+    bullet: 5
+    severity: medium
+    title: An armed transition/dispatch confirm is not disarmed when the refetch reveals a state change
+    anchors:
+      - {file: web/elm/src/AgentTickets/AgentTicket.elm, region: "127-162", symbol: "handleCallback / AgentTicketFetched (Ok detail)"}
+    description: >-
+      `pendingTransition` and `dispatchConfirm` are two-step confirms armed
+      against the state the user was looking at. The 5s refetch replaces
+      `model.detail` without touching either, so a confirm armed for the old
+      state stays armed and pointed at a decision that no longer applies.
+    expected_behavior: >-
+      When the refetched ticket's state differs from the one in the model, clear
+      `pendingTransition` and `dispatchConfirm` so the user re-decides against the
+      fresh state. (Confirming in the race window is separately safe — the POST
+      carries the old state as `from` and the server's CAS rejects it with 409 —
+      so this is a UI-truth fix, not a safety fix.)
+    failure_scenario: >-
+      Operator arms "Abandon" on a needs_review ticket; a refetch shows the
+      dispatcher re-queued it; the armed "Confirm Abandon" button is still on
+      screen offering a transition that is no longer the one being decided.
+
+  - id: F6
+    bullet: 5
+    severity: medium
+    title: An open edit whose ticket goes terminal strands editing=True with no Cancel
+    anchors:
+      - {file: web/elm/src/AgentTickets/AgentTicket.elm, region: "127-162", symbol: "handleCallback / AgentTicketFetched (Ok detail)"}
+      - {file: web/elm/src/AgentTickets/AgentTicket.elm, region: "465", symbol: "view (edit form suppressed for terminal states)"}
+      - {file: web/elm/src/AgentTickets/AgentTicket.elm, region: "870", symbol: "editor gate"}
+    description: >-
+      The edit form is suppressed whenever the ticket state is terminal. If a
+      ticket goes terminal while an edit is open, the refetch flips the render
+      but leaves `model.editing = True`; the form — and with it the only Cancel
+      control — vanishes, so the page is stuck in a state the user cannot leave
+      and cannot see, with unsaved input silently held in the model.
+    expected_behavior: >-
+      Detect the terminal transition under an open edit, exit editing explicitly,
+      and surface a notice that the ticket moved and unsaved changes were
+      discarded.
+    failure_scenario: >-
+      Operator opens edit on a needs_review ticket and starts typing; the merge
+      lands and the ticket becomes `merged`; the form disappears mid-keystroke
+      with no explanation and no way back.
+
+  - id: F7
+    bullet: 6
+    severity: medium
+    title: Observations toggle stores xor-of-default, so a refetch crossing the threshold inverts the user's choice
+    anchors:
+      - {file: web/elm/src/Build/AgentReview.elm, region: "163-195", symbol: observationsSection}
+      - {file: web/elm/src/Build/AgentReview.elm, region: "178", symbol: "open = Basics.xor model.showObservations (count <= 5)"}
+      - {file: web/elm/src/AgentTickets/AgentTicket.elm, region: "313-315", symbol: ToggleAgentReviewObservations}
+      - {file: web/elm/src/Build/Build.elm, region: "560-561", symbol: ToggleAgentReviewObservations}
+    description: >-
+      `showObservations : Bool` records "the user overrode the default", and the
+      rendered state is `xor showObservations (count <= 5)`. Reviews refetch while
+      the page is open. When a refetch pushes the observation count across the
+      five-item threshold the default flips, and because only the delta is stored,
+      the panel the user explicitly opened closes (or vice versa) with no
+      interaction.
+    expected_behavior: >-
+      Store an absolute user choice (`Maybe Bool`: Nothing = follow the default,
+      Just b = the user chose b) and have the toggle emit the target state.
+    failure_scenario: >-
+      A review with 5 observations renders open; the user folds it; a refetch
+      arrives with a 6th observation; the panel springs back open.
+
+  - id: F8
+    bullet: 7
+    severity: medium
+    title: Unknown-step decoder's "name" branch is dead — degraded rows render as anonymous "step"
+    anchors:
+      - {file: web/elm/src/Concourse.elm, region: "771-778", symbol: decodeBuildStepUnknown}
+    description: >-
+      The fallback decoder tries `Json.Decode.field "name"` at the TOP level of
+      the step object, but public-plan steps are shaped
+      `{"id": …, "<type>": {…, "name": …}}` — the name is nested one level down
+      under the type key. The branch can never match, so every unrecognized step
+      falls through to the literal string "step". The durable fallback that the
+      wave added specifically so a new step type degrades legibly instead
+      degrades anonymously — which is the same failure the wave's own U1 harvest
+      bug produced.
+    expected_behavior: >-
+      Label the step from its unknown type key, or from the name nested under
+      that key when present, falling back to a generic label only for a genuinely
+      typeless `{"id": …}` object.
+    failure_scenario: >-
+      `{"id":"1","fancy_step":{"name":"deploy"}}` decodes to BuildStepUnknown
+      "step" instead of BuildStepUnknown "deploy".
+
+  - id: F9
+    bullet: 8
+    severity: high
+    title: failed/errored tickets have no → abandoned edge, so dead tickets accumulate forever
+    anchors:
+      - {file: agent/api/tickets/types.go, region: "41-49", symbol: validTransitions}
+      - {file: web/elm/src/AgentTickets/AgentTicket.elm, region: "712-716", symbol: "transitionTargets (failed/errored arms)"}
+    description: >-
+      `validTransitions` gives StateFailed and StateErrored exactly one exit:
+      `queued`. The only way to clear a dead ticket is therefore a PAID
+      re-dispatch. Since failed/errored are also in the "active" set the wave just
+      surfaced on the dashboard strip and the queue page, undispositioned dead
+      tickets pile up in every active listing with no write-off available. The
+      Elm `transitionTargets` mirror has the same hole and must be fixed with it.
+    expected_behavior: >-
+      Add failed → abandoned and errored → abandoned to the server state machine
+      and to the Elm mirror (offered as "Abandon" alongside "Retry"). This is a
+      change to a frozen state machine outside the wave's own files and must be
+      called out as such.
+    failure_scenario: >-
+      A ticket errors on a bad prompt. The operator does not want to spend money
+      re-running it, and has no other action; the ticket stays in the dashboard
+      agent strip and the queue indefinitely.
+    cross_layer: true
+
+  - id: F10
+    bullet: 9
+    severity: medium
+    title: Dashboard agent strip lets attention states take all 8 slots and hide live work
+    anchors:
+      - {file: web/elm/src/Dashboard/Dashboard.elm, region: "1242-1274", symbol: agentTicketStrip}
+    description: >-
+      The strip sorts by `agentStateOrder` (attention states first) and then
+      `List.take 8`. A backlog of undispositioned needs_review/errored tickets —
+      exactly what F9 guarantees accumulates — fills every slot, so running and
+      queued tickets, the things actually moving right now, disappear from the
+      dashboard entirely.
+    expected_behavior: >-
+      Reserve slots for live work: cap attention chips (e.g. 6 of 8) so
+      running/queued always keep a couple of slots, with the full list still on
+      the queue page.
+    failure_scenario: >-
+      Nine needs_review tickets sit undispositioned; two runs are executing; the
+      dashboard strip shows only needs_review chips and no evidence anything is
+      running.
+    note: >-
+      The reference fix caps attention chips rather than reordering: attention-
+      first ranking is deliberate and preserved. A finding that demands the
+      ranking itself be abandoned is not this finding.
+
+  - id: F11
+    bullet: 10
+    severity: low
+    title: Queue page runs the whole-window cost rollup on the 5s tick and re-renders on a 1s tick
+    anchors:
+      - {file: web/elm/src/AgentTickets/AgentTickets.elm, region: "115-128", symbol: handleDelivery}
+      - {file: web/elm/src/AgentTickets/AgentTickets.elm, region: "149-151", symbol: subscriptions}
+    description: >-
+      `FetchAgentTicketCosts` is a whole-window ledger aggregation, fired every
+      five seconds per open tab (720 aggregations/hour) for numbers that move at
+      run granularity. Separately, a dedicated OneSecond tick updates `now`,
+      which re-filters and re-sorts the entire queue every second purely to move
+      "N ago" labels that the 5s refetch redraws anyway.
+    expected_behavior: >-
+      Move the cost rollup to the OneMinute tick (as the /agent page does), and
+      fold the `now` update into the existing 5s tick so the page carries two
+      subscriptions instead of three.
+    failure_scenario: >-
+      Every open /agent-tickets tab issues 720 ledger-aggregation queries per
+      hour and 3600 full-list re-renders.
+
+  - id: F12
+    bullet: 10
+    severity: low
+    title: Ticket page keeps polling after the ticket is terminal
+    anchors:
+      - {file: web/elm/src/AgentTickets/AgentTicket.elm, region: "232-241", symbol: "handleDelivery / ClockTicked FiveSeconds"}
+    description: >-
+      The 5s refetch of ticket + metrics runs unconditionally for the life of the
+      tab. Once the ticket is terminal nothing can change server-side — no
+      dispatch, frozen runs and costs — so the page refetches identical bytes
+      forever.
+    expected_behavior: >-
+      Stop polling once the loaded ticket is terminal; keep polling while the
+      detail is still unknown.
+    failure_scenario: >-
+      A merged ticket left open in a background tab polls two endpoints every
+      five seconds indefinitely.
+
+  - id: F13
+    bullet: 11
+    severity: low
+    class: test-gap
+    title: Plan.Public() exhaustiveness is unpinned — the next step type can silently serialize typeless
+    anchors:
+      - {file: atc/public_plan.go, region: "5-40", symbol: "Plan.Public()"}
+      - {file: atc/plan.go, region: "5-42", symbol: "atc.Plan"}
+      - {file: atc/public_plan_test.go, region: "whole file", symbol: "Plan spec"}
+    description: >-
+      `Plan.Public()` is a hand-maintained mirror of `atc.Plan`'s step fields.
+      A step type added to `atc.Plan` but not to `Public()` serializes as a
+      typeless `{"id": …}` object that the UI can only render as an anonymous
+      fallback step — which is exactly how the harvest step went missing from the
+      build page (the wave's own U1, fixed in this branch at
+      `atc/public_plan.go`). The wave fixes the instance and leaves the class
+      unguarded: nothing fails when the next step type is forgotten.
+    expected_behavior: >-
+      A reflection test over `atc.Plan`'s pointer fields asserting each one
+      appears under its json tag in `Plan.Public()` output.
+    failure_scenario: >-
+      Not a live defect at this ref — every pointer field of atc.Plan IS covered
+      by Public() at pre_state. This is a missing regression guard on a bug class
+      the branch just paid for once.
+    note: >-
+      Because it is a gap rather than a defect, this finding is the one most
+      likely to be legitimately missed by a reviewer told to report only
+      *verified defects*. Weight accordingly; see rubric.md.
+
+# Findings recorded in the terminal artifact's trailing "Also:" paragraph rather
+# than among the eleven. Real, minor, and gradeable as bonus recall — an agent
+# that reports them is not wrong, and an agent that misses them loses nothing.
+bonus_findings:
+  - id: B1
+    severity: minor
+    title: web/public/elm.js is committed but never served
+    anchors:
+      - {file: web/public/elm.js, region: "whole file"}
+      - {file: hack/build-web.sh, region: "whole file"}
+    description: >-
+      `hack/build-web.sh` produces `elm.js` only as an unminified intermediate
+      and deletes it; the served bundle is `elm.min.js`. The branch nonetheless
+      carries ~55k lines of `elm.js` churn in-tree, which is pure review and diff
+      noise.
+    expected_behavior: Drop web/public/elm.js from the repository.
+
+  - id: B2
+    severity: minor
+    title: Branch scope doc lives at the repo root
+    anchors:
+      - {file: AGENTIC_UX_WAVE_2_SCOPE.md, region: "whole file"}
+    description: >-
+      The wave's scope/sequencing doc is committed as a root-level
+      SHOUTING_CASE file; every other plan in the repo lives under
+      docs/superpowers/plans/ with a dated slug.
+    expected_behavior: Move to docs/superpowers/plans/2026-07-18-agentic-ux-wave-2-scope.md.
+
+# Candidates a reviewer may raise that are NOT findings here. Derived from what
+# the reference fix deliberately PRESERVED, plus what an earlier review round had
+# already fixed at pre_state. Used for precision judgement, not as a hard
+# penalty — see rubric.md §Precision.
+not_findings:
+  - id: N1
+    claim: "BuildStepUnknown's generic \"step\" catch-all should be removed / the decoder should fail loudly."
+    why_not: >-
+      The catch-all is deliberate and is retained by the reference fix. A bare
+      `{"id": …}` step must still render as something; the defect is only that
+      the named branches never fire (F8), not that a fallback exists.
+  - id: N2
+    claim: "The dashboard strip should stop ranking attention states first."
+    why_not: >-
+      Attention-first ranking is the intended behavior and is preserved by the
+      reference fix; only monopolisation is capped (F10).
+  - id: N3
+    claim: "The 5s refetch clobbers the open edit form's unsaved input."
+    why_not: >-
+      Already fixed at pre_state by the branch's earlier review round
+      (20b808a92e); handleCallback guards editTitle/editBody/editBudget behind
+      `model.editing`. Reporting it is a duplicate of work already done, not a
+      new defect. The residual defect in that same block is F5/F6.
+  - id: N4
+    claim: "Blank/empty finding ids collide in the agent-review card."
+    why_not: >-
+      Fixed on the mainline at 9e1fbf99e1 and merged into the branch at the
+      pre_state ref. Present in history, not in the change under review.
+  - id: N5
+    claim: "An armed confirm that fires against a stale state could corrupt the ticket."
+    why_not: >-
+      The server transition is a CAS on `from`; a stale confirm 409s. The defect
+      is the misleading armed control (F5), not a data-integrity hole. Claiming
+      data corruption overstates it.
+
+grouping_note: >-
+  The terminal artifact counts ELEVEN findings across eleven commit bullets;
+  bullet 5 bundles F5+F6 and bullet 10 bundles F11+F12. A grader computing recall
+  against the source's own count should score bullets (11); a grader wanting
+  finer resolution should score F1–F13. Report which was used.

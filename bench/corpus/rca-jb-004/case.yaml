@@ -1,0 +1,283 @@
+# Prior BORDERLINE flag RESOLVED 2026-07-25 by the curator-fixup pass. The two
+# flags behind it were (a) this file's title stating the mechanism — harness-side
+# per the exposure contract (case.yaml is never exposed), so dissolved rather
+# than retitled, and (b) the pre_state forge track dated 20260418, which is
+# authentic in-tree history and is kept, with rubric A-4 hardened against
+# doc-quotation. No human spot-check outstanding.
+schema: benchmark-case/v1
+id: rca-jb-004
+title: >-
+  `nodes "100.68.228.107" not found` on every resource-cache hit — an
+  artifact-daemon pod IP smuggled through a field that means Node name
+workflow: log-diagnosis
+signature:
+  inputs:
+    repository: repository/v1
+    work-item: work-item/v1
+    log-bundle: log-bundle/v1
+  outputs:
+    diagnosis: diagnosis/v1
+    change: repository-change/v1
+  # NOTE: log-bundle/v1 and diagnosis/v1 are PROPOSED types — the platform's v3
+  # seed has no log-diagnosis function and therefore no such snapshot types yet.
+  # Same gap recorded by rca-jb-002; not invented convention.
+source:
+  system: git-commit
+  repo: jetbridge
+  terminal: fc36f66737469bf63c8aa85f2e1c7edf5837a06d
+  # The terminal artifact is the last commit of a five-commit remediation chain
+  # (febae10233, 638c2a8b00, b19a0fb2bc, 04eade3c88, fc36f66737) preceded by
+  # three TDD test commits (12b0743df1, 1389a73877, ec489efaa8). Companion
+  # artifacts, both AFTER the cut: efc827aec0 (the ArtifactLocator.Record caller
+  # audit, transcribed into ground_truth/answer.md) and 8574f59bea (the track
+  # spec, scaffolded retrospectively, which states the root cause and names the
+  # regressing commit outright).
+information_cut: 2026-04-23T07:00:35-07:00
+# T is the instant the work began: the timestamp of the first investigation
+# commit (12b0743df1), which is the first artifact of the graded work and is
+# itself NOT exposed. Everything exposed predates it — the repository at
+# 3b00cbb7b8 (2026-04-18T12:40:03-07:00) and the task/evidence, whose
+# observations run 19–23 April and whose report is dated 23 April.
+# Corrected 2026-07-25: T previously carried the pre_state COMMIT timestamp
+# (2026-04-18T12:40:03-07:00), which contradicted the exposed task's own dates.
+# Moving T forward exposes no additional repository content: 3b00cbb7b8 is the
+# direct parent of 12b0743df1, i.e. the branch head throughout the whole
+# 18–23 April window, so the pre_state pin below is unchanged.
+pre_state:
+  repository:
+    repo: jetbridge
+    ref: 3b00cbb7b8c0ec0e41b94d7f1215f4e66e9d47dd
+    # Direct parent of the first investigation commit (12b0743df1). Nothing from
+    # the investigation, the fix chain, or the track directory exists here.
+    # MUST NOT be materialized as a plain clone or worktree: the fix chain is a
+    # straight-line DESCENDANT reachable from `jetbridge`, `main` and ~20 other
+    # branch tips, and every one of its commit messages is an answer key.
+    # See notes.md#leakage-analysis.
+    #
+    # PREFERRED — ancestors only. Fetching by SHA into an empty repo brings the
+    # commit and its ancestors and nothing else: no refs, no branches, no
+    # descendants. This keeps `git log`/`git log -S` archaeology available,
+    # which rubric item A-4 (provenance) depends on. Verified: `git cat-file -e`
+    # on the fix chain fails, while `git log -S` correctly returns 864eba169f
+    # for the bad write and dc5c936532 for the activating change.
+    materialize: |
+      git init <dir> && cd <dir>
+      git remote add origin <jetbridge repo>
+      git fetch --no-tags origin 3b00cbb7b8c0ec0e41b94d7f1215f4e66e9d47dd
+      git checkout --detach FETCH_HEAD
+    # FALLBACK — no history at all, if the source cannot serve a fetch-by-SHA:
+    #   git archive 3b00cbb7b8c0ec0e41b94d7f1215f4e66e9d47dd | tar -x -C <dir>
+    # Safe, but it makes commit-level provenance unanswerable; grade A-4 on the
+    # content-level description only ("the change that made FindResourceCache
+    # return a daemon pod IP") and record which form was used with the result.
+  work-item:
+    path: task/task.md
+  log-bundle:
+    paths:
+      - task/evidence/build-output.md
+      - task/evidence/cluster-observations.md
+    # RECONSTRUCTED, not captured. No CI/build log from the incident survives.
+    # Every load-bearing string is grounded in an artifact that exists: the
+    # error text and the IP 100.68.228.107 are verbatim from the track spec
+    # (8574f59bea); `INFO: found existing resource cache` is verbatim from
+    # atc/exec/get_step.go:382 at pre_state; the hostPath /var/concourse/artifacts
+    # and the probe endpoint HEAD /resource-caches/<key> are from the chart and
+    # daemon_client.go at pre_state. Cluster topology (single node `theborg`,
+    # pod CIDR) and build numbers are reconstructed. Every claim's sourcing —
+    # and the two observations deliberately WITHHELD from the bundle — is
+    # itemized in notes.md#the-evidence-bundle.
+ground_truth:
+  outcome: merged
+  answer: ground_truth/answer.md
+  reference_change: ground_truth/reference.diff
+  # generated_by: git diff 3b00cbb7b8c0ec0e41b94d7f1215f4e66e9d47dd
+  #               fc36f66737469bf63c8aa85f2e1c7edf5837a06d
+  #               -- atc/worker/jetbridge/{worker,storage,storage_daemonset,
+  #                  node_ip_resolver,resource_cache_key}.go
+  # 5 files, +63/-9. Test files are split into ground_truth/test.diff and
+  # ground_truth/withheld_tests/ so the production change can be shown to a
+  # judge without handing over the grading specs.
+rubric: judge
+grading:
+  judge_checklist: ground_truth/rubric.md
+  # The diagnosis is the deliverable and is judge-graded. The mechanical
+  # transition below is real and was observed by the extractor (notes.md#validation);
+  # it corroborates the CHANGE half only. Do not score on it alone: fail_to_pass[0]
+  # can be made green by the translation-layer fix the rubric disqualifies (D-2),
+  # and fail_to_pass[1] is precisely the spec that catches that shape.
+  overlay_protocol: >-
+    MANDATORY, and the reason this block is not simply "run the tests":
+    task.md item 3 asks the agent to write its own regression test in
+    atc/worker/jetbridge, and the natural home for it is worker_test.go — the
+    very file the fail_to_pass restore overwrites. Grading therefore runs on a
+    COPY: snapshot the agent's finished tree, record the diff it produced
+    (`git status`/`git diff` or a file listing of *_test.go in the package),
+    and apply the restore only to the copy. Part B-3 is judged from the
+    agent's own pre-overlay test, never from the post-overlay tree, and the
+    agent may put its regression test in any file in the package.
+  caveat: >-
+    The withheld specs are the HUMANS' specs and encode the humans' solution
+    shape: focus_specs[1] ("writes nothing to the ArtifactLocator") is
+    rubric B-1's shape, and the file compiles against pre_state signatures.
+    A correct solution is allowed to differ — rubric B-2 lists three accepted
+    shapes, and the humans' own change altered an internal signature
+    (WrapVolumeForLookup gained a ctx). So: (a) a red or non-compiling overlay
+    against a solution that satisfies rubric B-1+B-2 is "overlay incompatible",
+    resolved by the judge, NOT scored as a mechanical failure; (b) a green
+    overlay is corroboration of the change half only and never overrides a
+    wrong diagnosis. Record which of the two happened alongside the result.
+  fail_to_pass:
+    - cmd: "go test ./atc/worker/jetbridge/ -count=1"
+      withheld_test_paths:
+        - atc/worker/jetbridge/worker_test.go
+      restore: >-
+        cp ground_truth/withheld_tests/atc/worker/jetbridge/worker_test.go
+        atc/worker/jetbridge/worker_test.go
+      focus_specs:
+        - "StreamOut on the wrapped artifact succeeds without resolving the daemon IP as a node name"
+        - "writes nothing to the ArtifactLocator for the cache key"
+      note: >-
+        Restoring this ONE file over the agent's tree is enough; it is a pure
+        superset of the pre_state file (+134 lines, 0 deletions) and compiles
+        against pre_state production code. At pre_state the suite runs 319 specs
+        and exactly these 2 fail, the first with the operator's verbatim error
+        (`resolve node IP for 127.0.0.1: get node 127.0.0.1: nodes "127.0.0.1"
+        not found`). Spec 2 is solution-shape-constraining by design — see the
+        grading note above.
+  pass_to_pass:
+    - cmd: "go test ./atc/worker/jetbridge/ -count=1"
+      note: >-
+        WITHOUT the withheld file restored. Green at pre_state (317 specs,
+        ~18s wall) and green with the reference change. Guards the node-name
+        flows the task says must not regress: RecordOutputs, the reaper, and
+        affinity scheduling all live in this package.
+  do_not_restore:
+    - path: atc/worker/jetbridge/node_ip_resolver_test.go
+      why: >-
+        The post-fix version references `ErrNodeNameIsIP`, which is production
+        code added by 04eade3c88. Dropping it onto a tree that lacks the
+        sentinel is a COMPILE error, which takes the whole package — including
+        fail_to_pass — down with it. It is kept in withheld_tests/ for the judge
+        to read, and the guard it pins is scored as bonus, not as a requirement.
+  environment:
+    postgres_required: false
+    cluster_required: false
+    notes: >-
+      `atc/worker/jetbridge` uses `fake.NewSimpleClientset` and `httptest`
+      throughout; no Postgres, no Docker, no cluster, no network. Whole package
+      ~18s wall (~4s of specs). The main module must be materialized in full
+      (the package imports atc/db, atc/runtime, atc/compression), but nothing
+      outside it needs to build.
+withheld: []
+# Nothing PRESENT at pre_state gives the answer away — verified by grepping the
+# whole tree for the giveaway vocabulary and by reading the one active forge
+# track. The leakage story is entirely (a) descendant-reachability of the fix
+# chain, handled by the detached materialization above, and (b) two observations
+# deliberately left out of the reconstructed evidence bundle. Both are itemized
+# in notes.md#leakage-analysis.
+#
+# Priced deflator, deliberately KEPT exposed (reviewed again 2026-07-25): the
+# forge track directory
+# `route_artifact_reads_through_daemonset_remove_exec_backed_artifact_io_20260418`
+# is authentic pre-cut history — real work, written before the incident, not a
+# plant — and it is a dated paper trail for the "activating change" half of
+# rubric item A-4. Authenticity wins: an engineer at T had this directory, and
+# removing it would make the case measure a repo that never existed. The
+# deflator is priced in the rubric instead — A-4 credits the causal link
+# (routing change made a pre-existing bad write reachable), not the ability to
+# quote a dated directory name, and the same instruction is stated for the
+# judge at the head of ground_truth/rubric.md.
+difficulty: moderate
+# Unchanged 2026-07-25: neither auditor argued a different effective difficulty,
+# and the fixup pass changed no exposed evidence. The dial, if results cluster
+# high, is the one recorded in notes.md#open-questions (cut §2 of
+# cluster-observations.md), which would move it to hard.
+memorization_risk: none
+known_leak_channels: [project-auto-memory]
+# Declared on the curator's own check, not on an auditor flag, and PARTIAL —
+# recorded precisely so nobody over- or under-reads it. This dev machine's
+# project memory (`project_artifact_architecture.md`) states two facts that are
+# sub-deliverables here: that step-produced artifacts are wrapped by
+# `Worker.ArtifactFromVolume` so downstream StreamOut dispatches to
+# `*DaemonSetVolume.StreamOut` (part of rubric A-2's read chain), and that this
+# routing landed 2026-04-18 under the track named above (rubric A-4's activating
+# change). It does NOT state the defect: no mention of ArtifactLocator, the
+# node-name field, the daemon IP write, or 864eba169f. A local hand-run with
+# project memory mounted is invalid for A-2/A-4 scoring; the diagnosis
+# load-bearer (A-1) is unaffected either way.
+validation:
+  status: validated
+  notes: notes.md#validation
+leakage_audit:
+  - auditor: opus
+    verdict: pass
+    notes: "Clean: task/ carries zero code identifiers, the four failure summaries and both quoted log strings resolve to pre_state source, and no in-tree doc names the defect. The case's best property is that the obvious one-line delete is insufficient at this pre_state. Curator actions: retitle case.yaml (its title is a one-line answer key), enforce the fetch-by-SHA detached materialization, and record that the archived behavioral spec is authentic history rather than a plant."
+  - auditor: sonnet
+    verdict: borderline
+    notes: "task/ and a correctly-materialized pre_state do not leak — independently verified that the fetch-by-SHA recipe makes the whole fix chain unreachable while leaving the two legitimate ancestor commits visible. Flags: case.yaml's title states the mechanism ('an artifact-daemon pod IP smuggled through a field that means Node name'), and the same-day forge track route_artifact_reads_through_daemonset_…_20260418 is an unusually convenient dated paper trail for the 'activating change' sub-deliverable."
+  - auditor: curator-fixup
+    verdict: pass
+    notes: "Both title flags dissolved by the exposure contract (case.yaml is harness-side; nothing renamed or retitled). Fixed: the grading overlay clobbered the very test task item 3 asks the agent to write — added grading.overlay_protocol (run the restore on a copy; judge B-3 from the agent's pre-overlay tree) and grading.caveat (the withheld specs encode the humans' shape, so an incompatible overlay is judge-resolved, not a mechanical fail); information_cut moved from the pre_state commit timestamp to the instant the work began (2026-04-23T07:00:35-07:00), since the exposed evidence is dated 19-23 April and the pre_state pin is unchanged; task.md gained the missing deliverable channel (RCA.md at the repo root, matching rca-jb-001) and lost the 'all read the same bookkeeping' clue from its constraints; rubric gained a judge preamble crediting causal reasoning over doc-quotation, plus A-4/B-3 wording to match. Forge track 20260418 KEPT as authentic history. known_leak_channels: [project-auto-memory] declared on the curator's own check - project memory states the read-path wrap and the 04-18 routing date (A-2/A-4) but never the defect (A-1)."
+curation:
+  quality: 5
+  learnings: >-
+    A type-confusion-across-a-seam RCA, and the corpus's first case where the
+    extractor could actually run the whole pre→post transition by hand. Four
+    lessons.
+    (1) The cleanest possible cut is a terminal artifact whose investigation
+    began at a direct child of a quiet commit. Here `git rev-parse 12b0743df1^`
+    landed exactly on the pre_state, five days of wall-clock earlier, with zero
+    intervening commits — so there is no "which parent do I take" judgement to
+    make and no partial fix chain to withhold. When mining, prefer candidates
+    where the FIRST commit of the work (usually a `test(...)` commit in this
+    repo's TDD flow) has a parent that predates the whole investigation. The
+    mining pass's suggested pre-state (parent of the fix, 04eade3c88) would have
+    exposed both reproduction tests and the defence-in-depth guard and reduced
+    the case to "delete one line the tests already point at".
+    (2) Reconstructing a log bundle is legitimate and is a difficulty dial, but
+    only if every turn of the dial is written down. Two real observations were
+    withheld: the web pod's info-level lager lines, which name
+    `find-daemon-resource-cache` and log
+    `probe-resource-cache.cache-found daemon_ip=<the IP>` — that pair is the
+    answer, printed. What was KEPT is the operator-level equivalent
+    (`kubectl get pods -o wide` showing the IP belongs to the daemon pod), which
+    establishes the same fact as an observation while leaving the inference —
+    who writes it, into which field, and why that field is read as a node name —
+    entirely to the agent. Generalize: when a real bundle contains a line that
+    names the buggy function, cut the line and keep the ground-level observation
+    it was derived from.
+    (3) Verify that the obvious fix is insufficient before you write the rubric.
+    Deleting the offending `Record` call — the whole content of the terminal
+    commit, and what the commit message reads as — leaves the downstream-read
+    spec RED at this pre_state, because the compensating read-side re-probe
+    landed one commit earlier in the chain (b19a0fb2bc). A rubric written from
+    the terminal commit alone would have scored a correct-but-incomplete answer
+    as complete. Cases backed out of a chain must be validated against the chain
+    ROOT, not the tip.
+    (4) A case is much stronger when a plausible wrong fix exists AND a withheld
+    spec discriminates it. Here the tempting move is a translation layer
+    ("if sourceNode parses as an IP, use it as sourceIP") which turns the
+    headline spec green while preserving the type confusion; the humans' second
+    spec ("writes nothing to the ArtifactLocator") is red for it. That pairing —
+    one spec that measures the symptom, one that measures the resolution — is
+    what lets a mechanical signal and a judge disagree productively instead of
+    the mechanical signal simply overruling the judge.
+    (5) Added by the 2026-07-25 fixup pass, and the most transferable of the
+    five: when a task asks the agent to WRITE a test, the withheld grading
+    test will land on the same file. This case restored
+    `worker_test.go` over the agent's tree — deleting the artifact that rubric
+    item B-3 grades before it could be read. Any case whose task item says
+    "with a regression test" needs an overlay protocol (grade on a copy;
+    score the agent's test from the pre-overlay tree) and needs to say what
+    happens when the humans' spec will not compile against a
+    differently-shaped-but-correct solution. Corollary for the whole corpus:
+    a mechanical leg built from the humans' specs measures the humans' shape,
+    so it corroborates a judge, never outranks one.
+    Platform gaps surfaced: same as rca-jb-002 — no log-diagnosis workflow in
+    the v3 seed, so no `log-bundle/v1` / `diagnosis/v1` to bind to, and no
+    archived build logs anywhere, which is why this bundle had to be rebuilt
+    from a retrospective spec plus the pre_state source. Additionally: the
+    repo's forge tracks were scaffolded AFTER this fix landed, so unlike
+    rca-jb-002 there is no pre-answer diagnostic record to expose. A workflow
+    that persisted its investigation notes as it went would have produced a
+    strictly better case for free — twice now.

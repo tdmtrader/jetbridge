@@ -1,0 +1,150 @@
+diff --git a/atc/builds/tracker.go b/atc/builds/tracker.go
+index 2e20b35df4..a5084eaaad 100644
+--- a/atc/builds/tracker.go
++++ b/atc/builds/tracker.go
+@@ -96,12 +96,17 @@ func (bt *Tracker) trackBuild(logger lager.Logger, b db.Build) {
+ 				logger.Error("panic-in-tracker-build-run", err)
+ 
+ 				build.Finish(db.BuildStatusErrored)
+-			} else if build.IsRunning() {
+-				// Build exited Run() without calling Finish (e.g. lock
++			} else if build.IsRunning() && build.Name() == db.CheckBuildName {
++				// Check build exited Run() without calling Finish (e.g. lock
+ 				// acquisition error, engine drain). Finalize it so that
+ 				// in-flight check tracking is cleared and the resource
+ 				// is not permanently blocked from future checks.
+-				logger.Info("finalizing-orphaned-build", loggerData)
++				//
++				// Job builds are deliberately left running: Run() returning
++				// with the build still started means it should be resumed
++				// by a later tracker cycle (engine drain, tracking lock held
++				// by another web, retryable step error).
++				logger.Info("finalizing-orphaned-check-build", loggerData)
+ 				build.Finish(db.BuildStatusErrored)
+ 			}
+ 		}()
+diff --git a/atc/builds/tracker_test.go b/atc/builds/tracker_test.go
+index 54d974b2b5..c9c9c3d953 100644
+--- a/atc/builds/tracker_test.go
++++ b/atc/builds/tracker_test.go
+@@ -249,13 +249,47 @@ func (s *TrackerSuite) TestTrackerDrainsEngine() {
+ 	s.Equal(ctx, s.fakeEngine.DrainArgsForCall(0))
+ }
+ 
+-func (s *TrackerSuite) TestTrackFinalizesOrphanedBuild() {
+-	// Simulate a build where Run() exits without calling Finish().
+-	// This happens when engineBuild.Run() hits an early-return path
+-	// (e.g. AcquireTrackingLock error, engine drain). The build still
+-	// reports IsRunning()==true because Finish() was never called.
++func (s *TrackerSuite) TestTrackDoesNotFinalizeReleasedJobBuild() {
++	// A job build whose Run() exits while the build is still running is a
++	// legitimate resume path (engine drain, tracking lock held by another
++	// web, retryable step error). The tracker must NOT error it — the build
++	// stays "started" so a later tracker cycle (possibly on a new web)
++	// re-attaches to it.
+ 	fakeBuild := new(dbfakes.FakeBuild)
+ 	fakeBuild.IDReturns(1)
++	fakeBuild.NameReturns("42") // job builds have numeric names
++	fakeBuild.IsRunningReturns(true)
++
++	s.fakeBuildFactory.GetAllStartedBuildsReturns([]db.Build{fakeBuild}, nil)
++
++	done := make(chan struct{})
++	s.fakeEngine.NewBuildStub = func(build db.Build) builds.Runnable {
++		engineBuild := new(buildsfakes.FakeRunnable)
++		engineBuild.RunStub = func(context.Context) {
++			// Return without calling Finish — simulates early exit
++			close(done)
++		}
++		return engineBuild
++	}
++
++	err := s.tracker.Run(context.TODO())
++	s.NoError(err)
++
++	<-done
++
++	// Give the defer time to execute
++	time.Sleep(100 * time.Millisecond)
++
++	s.Equal(0, fakeBuild.FinishCallCount(), "tracker must not finalize a released job build")
++}
++
++func (s *TrackerSuite) TestTrackFinalizesOrphanedCheckBuild() {
++	// A check build whose Run() exits without calling Finish() must be
++	// finalized so the checkFactory's in-flight tracking (cleared via
++	// onFinishBuild.Finish) is not permanently leaked.
++	fakeBuild := new(dbfakes.FakeBuild)
++	fakeBuild.IDReturns(1)
++	fakeBuild.NameReturns(db.CheckBuildName)
+ 	fakeBuild.IsRunningReturns(true)
+ 
+ 	s.fakeBuildFactory.GetAllStartedBuildsReturns([]db.Build{fakeBuild}, nil)
+@@ -277,7 +311,7 @@ func (s *TrackerSuite) TestTrackFinalizesOrphanedBuild() {
+ 
+ 	s.Eventually(func() bool {
+ 		return fakeBuild.FinishCallCount() == 1
+-	}, time.Second, 10*time.Millisecond, "tracker should finalize orphaned build")
++	}, time.Second, 10*time.Millisecond, "tracker should finalize orphaned check build")
+ 
+ 	s.Equal(db.BuildStatusErrored, fakeBuild.FinishArgsForCall(0))
+ }
+@@ -319,6 +353,7 @@ func (s *TrackerSuite) TestTrackOrphanedInMemoryCheckCleansUpInFlightTracking()
+ 	fakeBuild := new(dbfakes.FakeBuild)
+ 	fakeBuild.IDReturns(0)
+ 	fakeBuild.ResourceIDReturns(42)
++	fakeBuild.NameReturns(db.CheckBuildName)
+ 	fakeBuild.IsRunningReturns(true)
+ 	// When Finish is called, signal cleanup
+ 	fakeBuild.FinishStub = func(status db.BuildStatus) error {
+diff --git a/atc/engine/engine.go b/atc/engine/engine.go
+index 5836c53597..34ca026365 100644
+--- a/atc/engine/engine.go
++++ b/atc/engine/engine.go
+@@ -224,7 +224,13 @@ func (b *engineBuild) Run(ctx context.Context) {
+ 	select {
+ 	case <-b.release:
+ 		logger.Info("releasing")
+-		b.finish(logger.Session("finish"), fmt.Errorf("build released during drain"), false)
++
++		// In-memory check builds cannot resume across a restart, so finalize
++		// them to clear in-flight check tracking. Job builds are left in
++		// "started" so the next web's build tracker re-attaches to them.
++		if b.build.Name() == db.CheckBuildName {
++			b.finish(logger.Session("finish"), fmt.Errorf("build released during drain"), false)
++		}
+ 
+ 	case <-done:
+ 		// Don't retry check build because if a check build drops into endless retry,
+diff --git a/atc/engine/engine_test.go b/atc/engine/engine_test.go
+index a66027eb28..51aa31ebd4 100644
+--- a/atc/engine/engine_test.go
++++ b/atc/engine/engine_test.go
+@@ -205,10 +205,23 @@ var _ = Describe("Engine", func() {
+ 										}
+ 									})
+ 
+-									It("finishes the build as errored so in-flight tracking is cleared", func() {
+-										waitGroup.Wait()
+-										Expect(fakeBuild.FinishCallCount()).To(Equal(1))
+-										Expect(fakeBuild.FinishArgsForCall(0)).To(Equal(db.BuildStatusErrored))
++									Context("when this is a job build", func() {
++										It("does not finish the build, leaving it running for the next web to resume", func() {
++											waitGroup.Wait()
++											Expect(fakeBuild.FinishCallCount()).To(Equal(0))
++										})
++									})
++
++									Context("when this is an in-memory check build", func() {
++										BeforeEach(func() {
++											fakeBuild.NameReturns(db.CheckBuildName)
++										})
++
++										It("finishes the build as errored so in-flight check tracking is cleared", func() {
++											waitGroup.Wait()
++											Expect(fakeBuild.FinishCallCount()).To(Equal(1))
++											Expect(fakeBuild.FinishArgsForCall(0)).To(Equal(db.BuildStatusErrored))
++										})
+ 									})
+ 								})
+ 

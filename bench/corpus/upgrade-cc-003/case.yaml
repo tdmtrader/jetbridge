@@ -1,0 +1,246 @@
+# Dual-audit borderline/fail resolved 2026-07-25 (curator-fixup). Both auditors'
+# leakage findings were about THIS FILE quoting the answer; per the exposure
+# contract in schema/benchmark-case-v1.md, case.yaml is harness-side and never
+# reaches the solver, so those findings dissolve and nothing was renamed or
+# redacted. The two real defects found (no delivery channel for the graded
+# escalation path; pass_to_pass entries that do not pass at pre_state) are fixed
+# below and in task/ + ground_truth/rubric.md. Standing caveats that are NOT
+# leakage bugs: memorization_risk is high, and this case still needs a
+# full-build validation pass (validation.status: partial).
+schema: benchmark-case/v1
+id: upgrade-cc-003
+title: "One dependency refresh, three broken subsystems — garden narrows TTY sizes to uint16, dex demands slog, and houdini breaks inside the dependency"
+workflow: version-upgrade
+
+signature:
+  inputs:
+    repository: repository/v1
+    work-item: work-item/v1
+  outputs:
+    change: repository-change/v1
+
+source:
+  system: github-pr
+  repo: concourse-upstream
+  terminal: 3bddb5e0e2e06d72ae722678af45f472b6c61504   # Merge pull request #9059 from concourse/bump-dex
+
+information_cut: 2025-01-24T10:45:46-05:00   # committer date of pre_state 4fe7b9a8b7
+
+pre_state:
+  repository:
+    repo: jetbridge            # the upstream commits are present in this repo's history
+    ref: 4fe7b9a8b789ba47e240d9038e9dfb977c98c03a   # "bump dependencies" — go.mod/go.sum only
+    materialize: "git archive 4fe7b9a8b789ba47e240d9038e9dfb977c98c03a | tar -x -C <dir>"
+    # MUST be materialized detached, with no other refs and no reflog. The two
+    # fix commits are direct descendants and their subjects are the answer key
+    # ("switch to concourse/houdini and pass slog into dex", "use uint16 because
+    # of garden update"). See notes.md#leakage-analysis.
+    # NOTE: this ref is MID-PR by design. The PR's first commit (the bump) is the
+    # pre-state; the task is to repair the build it broke. Pinning at the PR's
+    # merge-base instead would make the task "bump ~140 modules", which is
+    # unbounded and ungradeable.
+  work-item:
+    path: task/task.md
+
+ground_truth:
+  outcome: merged
+  reference_change: ground_truth/reference.diff   # git diff 4fe7b9a8b7 52c7742d09 (== the merge)
+  answer: ground_truth/answer.md
+  post_state_ref: 52c7742d09208e28813eb8365956581362a4c4fa   # PR head; content-identical to the merge
+
+rubric: judge
+
+grading:
+  judge_checklist: ground_truth/rubric.md
+  # PRIMARY SCORE is the judge checklist. This case is NOT fully mechanically
+  # gradable: the discriminating criteria (did the type narrowing propagate
+  # through the wire struct or get cast at the error site; was the houdini
+  # blocker diagnosed or blundered past) are style-and-reasoning judgements that
+  # every green build satisfies equally. The commands below are a build gate:
+  # necessary, not sufficient, and they also validate the case + environment.
+  #
+  # GRADING CAVEAT (escalation path). `go build ./worker/workercmd/` below is
+  # RED on a legitimate run: the task permits — and rubric.md D.4 awards partial
+  # credit for — correctly diagnosing that the break is inside the `vito/houdini`
+  # dependency and reporting it as a blocker instead of forking. This command set
+  # cannot express "failed, but for the right reason", so a red houdini gate is
+  # NOT by itself a zero. The judge resolves it: rubric.md "Gate 1 is not a kill
+  # switch" + D.4. The task deliberately does not name the blocker or the fork;
+  # it only supplies the channel for reporting one (task.md "How to report").
+  fail_to_pass:
+    - cmd: "go build ./..."
+      note: >-
+        The primary gate. NOT VERIFIED by the extractor — the curation machine
+        ran out of disk mid-build (see notes.md#validation). Fails at pre_state
+        in at least three packages by inspection + the two verified commands
+        below + the verified dependency build.
+      status: unverified
+    - cmd: "go vet ./atc/worker/gardenruntime/gclient/"
+      status: verified
+      note: >-
+        VERIFIED both ways by the extractor. At pre_state:
+        "retryable_garden_connection_test.go:382:47: cannot use 345678 (untyped
+        int constant) as uint16 value in struct literal (overflows)". Clean at
+        post_state. Note this failure is invisible to `go build` — it is in a
+        _test.go file. Light dependency footprint, no Postgres.
+    - cmd: "go vet ./skymarshal/storage/"
+      status: verified
+      note: >-
+        VERIFIED both ways by the extractor. At pre_state:
+        "storage.go:41:20: cannot use logger.New(log) (value of type
+        *logrus.Logger) as *slog.Logger value in argument to store.Open".
+        Clean at post_state. No Postgres needed to type-check.
+    - cmd: "go build ./worker/workercmd/"
+      status: unverified
+      note: >-
+        The houdini gate. Not run directly (pulls containerd; disk-bound), but
+        the underlying failure WAS verified: building
+        `github.com/vito/houdini/process` against the pre_state module graph
+        yields four "cannot use ... (variable of type uint16) as int value"
+        errors in the dependency's own spawn.go, and
+        `github.com/concourse/houdini` builds clean against the post_state
+        graph. See notes.md#validation.
+    - cmd: "go vet ./atc/... ./fly/... ./skymarshal/... ./worker/..."
+      status: unverified
+      note: >-
+        Broad type-check gate, and the probe for a HALF-DONE narrowing: a partial
+        `uint16` migration that leaves a mirror struct disagreeing with its peer
+        fails here (rubric A.6). Listed as fail_to_pass, not pass_to_pass —
+        it necessarily FAILS at pre_state, since the two verified failures above
+        are inside `./atc/...` and `./skymarshal/...`. Not run (disk).
+    - cmd: "go test ./atc/worker/gardenruntime/... -count=1"
+      status: unverified
+      note: >-
+        Also a fail_to_pass, not a regression guard: the `gclient` test file does
+        not compile at pre_state, so `go test` cannot be green there. No Postgres
+        required. Not run (disk).
+  pass_to_pass:
+    - cmd: "go test ./fly/commands/... -count=1"
+      status: unverified
+      note: >-
+        The only listed command that genuinely passes BEFORE and AFTER, which is
+        what pass_to_pass means. Verified by inspection that it type-checks at
+        pre_state: nothing under `fly/` imports `code.cloudfoundry.org/garden` or
+        `github.com/concourse/dex` (`git grep -l ... 4fe7b9a8b7 -- fly/` is
+        empty), and the root `atc` package does not import garden either, so the
+        pre_state narrowing does not reach this tree. It is a real regression
+        guard for subsystem A: `fly/commands/internal/hijacker/hijacker_test.go`
+        exercises the `atc.HijackWindowSize` producers the propagation touches.
+        Not executed (disk).
+  environment:
+    postgres_required: false          # for the graded commands; skymarshal's own suite does need it
+    network_required: true
+    notes: >-
+      Go 1.23+ toolchain (go.mod says `go 1.23.0` / `toolchain go1.23.4`; a
+      newer local toolchain satisfies it — validated on go1.25.6). Module proxy
+      access is mandatory: the pre_state module graph is not resolvable offline,
+      and the houdini subsystem cannot be solved at all without being able to
+      resolve a replacement module. Budget ~6 GB of GOMODCACHE and several GB of
+      GOCACHE; the curation machine failed on exactly this.
+
+withheld: []
+# Nothing at pre_state describes or prescribes any of these fixes. The pre_state
+# tree carries `skymarshal/logger/logger.go` (the now-unusable logrus bridge),
+# which biases AWAY from the answer rather than toward it — that is faithful and
+# stays. See notes.md#leakage-analysis.
+
+difficulty: hard
+# Unchanged at the 2026-07-25 fixup; neither auditor contested it, and it holds
+# on the merits: four upstream API changes across three subsystems that share no
+# code, one of which (houdini) cannot be repaired inside this repository at all.
+# The floor is not "find a compiler error" but "notice the fourth failure is a
+# dependency's own source and act correctly on that". Memorization can make an
+# individual RUN look easy — that is a risk on the result, recorded below and in
+# rubric P.2a, not a property of the task.
+
+memorization_risk: high
+# Public repository, PR merged 2025-01-28, well before the model cutoff. The
+# terminal artifact, both fix commits and their answer-key subject lines are on
+# github.com/concourse/concourse. This case must never anchor an efficacy claim
+# on its own.
+
+known_leak_channels: [upstream-git-history]
+# NOT project-auto-memory: the dev machine's memory files cover jetbridge's K8s
+# runtime and say nothing about garden/dex/houdini, so this case's answer is not
+# in that channel. The channel that IS live here is the materialization host's
+# own git objects: pre_state 4fe7b9a8b7 is reachable from `upstream/master` in
+# any clone of this repo, so a solver with refs, a reflog, or network access to
+# github.com/concourse/concourse is one `git log --all` from two commit subjects
+# that state the whole answer. Mitigated, not eliminated, by the mandatory
+# detached `git archive | tar -x` materialization in pre_state above; a replay
+# harness must also deny the solver any remote or ref access to this repository.
+
+validation:
+  status: partial
+  notes: notes.md#validation
+
+leakage_audit:
+  - auditor: opus
+    verdict: borderline
+    notes: "Solver-facing surface is clean and well-calibrated: task.md names no target type or module, `uint16` appears 13 times at pre_state all unrelated, `slog` zero times, concourse/houdini zero times, and no doc mentions the breakage; the one file that could look like a leak (skymarshal/logger) biases AWAY from the fix. Two curator actions: case.yaml quotes both fix-commit subjects as 'the answer key' and discloses the rubric's withheld cast-vs-propagate discriminator, and the escalation criterion is graded though task.md never signals that declaring blocked is acceptable."
+  - auditor: sonnet
+    verdict: fail
+    notes: "task/task.md alone is clean and genuinely diagnostic (symptom, module list, hygiene constraints; no houdini/slog/uint16), and no in-tree doc or TODO points at the fixes. Fails on case.yaml, which states the two fix commits' subjects verbatim and calls them 'the answer key', quotes compiler errors naming both target types, names the fork-swap technique, and discloses the rubric's deliberately-withheld cast-vs-propagate discriminator."
+  - auditor: curator-fixup
+    verdict: pass
+    notes: "Both audits' leakage findings were case.yaml-internal (fix-commit subjects, compiler quotes, rubric discriminator) and DISSOLVE under the exposure contract — case.yaml is harness-side, nothing renamed or redacted; both auditors independently found task/ and the pre_state tree clean. Fixed two real defects: the graded escalation criterion had no delivery channel (task.md now asks for UPGRADE-REPORT.md covering changes and anything blocked; rubric D.4 + a 'Gate 1 is not a kill switch' clause align to it), and both pass_to_pass entries provably failed at pre_state (moved to fail_to_pass; pass_to_pass is now `go test ./fly/commands/...`, confirmed garden/dex-free at pre_state). Also added known_leak_channels: [upstream-git-history] (NOT project-auto-memory), a memorization control to the rubric (P.2a), a B.4 clause so the task's no-new-capabilities constraint cannot double-penalize, and P.3 wording so the requested report is not scored as scope creep. Residual risks are non-leakage: memorization_risk high and validation still partial (disk-blocked full build)."
+
+curation:
+  quality: 4
+  learnings: >-
+    The best upgrade cases are the ones where a single `go.mod` bump fans out
+    into breakages that share no code, and this one fans out four ways across
+    three subsystems (hijack/TTY, skymarshal auth, worker backend). Three
+    curation lessons.
+    (1) MID-PR PRE-STATE IS THE WHOLE TECHNIQUE for upgrade cases. The natural
+    pre-state — the PR's merge-base — makes the task "bump ~140 modules", whose
+    ground truth is a lockfile no agent will reproduce and whose diff is
+    unbounded. Pinning at the PR's own first commit (bump applied, source
+    untouched) turns it into a bounded, gradeable "repair the build" task with a
+    real 11-file answer. Mine upgrade candidates for PRs whose author committed
+    the bump separately from the fixes; a single squashed upgrade commit backs
+    out into nothing.
+    (2) THE DEPENDENCY ITSELF CAN BE THE BUG, and that is the most valuable
+    thing in this case. `vito/houdini v1.1.3` does not compile against the new
+    garden, in a file the agent cannot edit, and the task's own hygiene
+    constraints (no pin-back, no `replace`, no deleting code) close every local
+    escape. The only real answers are "find the maintained fork" or "declare
+    yourself blocked, loudly" — so the rubric awards partial credit for correct
+    escalation. Cases that can distinguish "solved it", "escalated it", and
+    "silently left the build red" are rarer than they should be; look for
+    upgrade PRs that also change a module PATH, since that is the fingerprint of
+    a dependency that broke.
+    (3) A GREEN BUILD IS A WEAK ORACLE, so the rubric had to be judge-first. The
+    honest finding here is that the "wrong" shortcut (cast `int`→`uint16` at the
+    single compiler-error site, leave the ATC's mirror structs as `int`) compiles,
+    passes every test, and is behaviourally identical for any real terminal size.
+    It is worse — the wire struct stops mirroring the runtime it wraps — but it
+    is not a defect, and pretending otherwise would have produced a rubric that
+    punishes a defensible answer. The task text was deliberately left free of any
+    "propagate the type" hint so this stays a real discriminator rather than
+    instruction-following; the cost is that graders must read `answer.md`§A
+    before scoring. Platform gap noted: `grading` has no vocabulary for
+    "necessary-but-not-sufficient mechanical gate feeding a judge", so it is
+    expressed here by convention (`rubric: judge` + `fail_to_pass` entries
+    carrying a `status:`).
+    (4) ADDED AT THE 2026-07-25 FIXUP: IF YOU GRADE ESCALATION, GIVE ESCALATION A
+    CHANNEL. The dual audit's one substantive solver-side finding was not leakage
+    at all — rubric D.4 pays half credit for "declare yourself blocked, loudly"
+    while task.md never said that declaring blocked was an acceptable
+    deliverable, or where to put it. That is a case defect, not an agent
+    weakness: an agent that has no sanctioned way to report a blocker will either
+    bend a constraint or go quiet, and both are then scored as failures the case
+    manufactured. The fix is cheap and does not leak — a generic "record what you
+    changed and anything you could not do in UPGRADE-REPORT.md" is ordinary
+    upgrade-ticket boilerplate that names no subsystem and no count. General rule
+    for the corpus: every rubric criterion that scores something OTHER than the
+    diff (a decline, an escalation, a diagnosis) needs a matching delivery
+    channel in task/ and the same channel named in rubric.md.
+    (5) The audit also caught two `pass_to_pass` commands that fail at pre_state
+    — a superset-vet and a test run over a package whose test file does not
+    compile. `pass_to_pass` means green BEFORE and after; broad "everything must
+    be green at the end" commands are `fail_to_pass` gates wearing the wrong
+    label, and the mislabel silently converts a regression guard into a spurious
+    failure for any harness that runs the guard at pre_state. Worth a lint over
+    the corpus: no `pass_to_pass` command may share a package prefix with a
+    `fail_to_pass` failure.

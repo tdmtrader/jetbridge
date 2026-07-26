@@ -1,0 +1,118 @@
+schema: benchmark-case/v1
+id: fix-jb-001
+title: A panicking dev-mcp tool handler kills the whole sidecar process
+workflow: small-fix
+signature:
+  inputs:
+    repository: repository/v1
+    work-item: work-item/v1
+  outputs:
+    change: repository-change/v1
+source:
+  system: git-commit
+  repo: jetbridge
+  terminal: a1af1068c9cc1b231315e676b80f92be7277b31c
+information_cut: 2026-07-11T13:03:39-07:00
+pre_state:
+  repository:
+    repo: jetbridge
+    ref: 33d699c0d21b1e61dd0ecbd21d5e000030f2dd7a
+  work-item:
+    path: task/task.md
+ground_truth:
+  outcome: merged
+  reference_change: ground_truth/reference.diff
+rubric: mechanical
+grading:
+  # Grading restores the withheld spec file verbatim over whatever the agent
+  # wrote, then runs the ci-agent module's devmcp package. No Postgres, no
+  # cluster, no network beyond the Go module cache. Whole suite ~0.5s.
+  #
+  # Restore step (either form is equivalent):
+  #   git checkout a1af1068c9cc1b231315e676b80f92be7277b31c -- ci-agent/devmcp/server_test.go
+  #   cp ground_truth/withheld_tests/ci-agent/devmcp/server_test.go ci-agent/devmcp/server_test.go
+  #
+  # NOTE: at pre_state the failure mode is a hard process panic, not a spec
+  # failure — `go test` exits 1 with `panic: tool exploded` and the remaining
+  # specs never report. Grade on the exit code, not on parsed spec counts.
+  #
+  # CAVEAT 1 — the overlay collides with a deliverable task.md asks for.
+  # task.md requires the agent to add its own regression spec to the existing
+  # devmcp suite; the restore step above overwrites that file wholesale. Before
+  # restoring, capture the agent's tree:
+  #   cp ci-agent/devmcp/server_test.go <capture>/server_test.go
+  #   git status --porcelain ci-agent/devmcp   # note NEW *_test.go files too
+  # and move any agent-added files in package `devmcp_test` aside for the
+  # fail_to_pass leg — a new file that redeclares a helper the restored spec
+  # already defines is a compile error, i.e. a FALSE fail against a correct fix.
+  # The agent's own spec is scored from the capture against
+  # ground_truth/rubric.md item 6, never by this overlay run.
+  #
+  # CAVEAT 2 — the withheld spec pins message wording that task.md leaves open.
+  # It asserts ContainSubstring("panicked"); task.md asks only for a message
+  # "diagnosable from the agent transcript" and never names the failure mode.
+  # If that substring is the ONLY failing assertion while the -32603 code, the
+  # echoed request id, the SSE error frame and the follow-up ping all hold, the
+  # fix is correct: score it a pass and record the deviation (rubric.md
+  # § "Mechanical caveats"). Do not edit the withheld spec — it is the human
+  # artifact the validation run in notes.md was measured against.
+  fail_to_pass:
+    - cmd: "cd ci-agent && go test ./devmcp/ -count=1"
+      withheld_test_paths:
+        - ci-agent/devmcp/server_test.go
+      focus_spec: "survives a panicking tool handler on the SSE path and keeps serving"
+  pass_to_pass:
+    # Run WITHOUT the withheld spec restored, on the agent's tree as delivered;
+    # guards the pre-existing devmcp behavior (JSON path, error taxonomy, SSE
+    # progress heartbeats, runner). This leg also executes the agent's own
+    # regression spec: if it is the thing that goes red, that is a rubric item-6
+    # judgment about the agent's test, not a regression in existing behavior —
+    # say which in the score.
+    - cmd: "cd ci-agent && go test ./devmcp/ ./runner/... -count=1"
+  environment:
+    postgres_required: false
+    cluster_required: false
+    notes: >-
+      ci-agent is a separate Go module (github.com/concourse/ci-agent, go
+      1.25.1). devmcp/repoconfig_test.go reads the repo-root dev-mcp.yml via
+      ../../dev-mcp.yml, so the whole repository must be materialized, not just
+      the ci-agent subtree.
+withheld: []
+difficulty: moderate
+memorization_risk: none
+validation:
+  status: validated
+  notes: notes.md#validation
+leakage_audit:
+  - auditor: opus
+    verdict: pass
+    notes: "Clean: task.md never uses panic/recover/goroutine vocabulary, no post-cut refs, and no in-tree spoiler — the 04-dev-mcp.md plan embeds the UNFIXED goroutine verbatim, so it confirms the bug rather than the fix; verified the crash empirically. Only flag is curator hygiene: case.yaml title/focus_spec/learnings state the remedy, so the harness must ship task/ + pre_state only."
+  - auditor: sonnet
+    verdict: pass
+    notes: "task.md and pre_state are clean and honestly hard (one unrecovered goroutine among the server's paths; recover() is standard Go idiom and the in-repo prior art sits in the unimportable main module). case.yaml title/notes/learnings spoil it completely but are curator/grading-only, and no spoiler vocabulary bled into task.md."
+  - auditor: curator-fixup
+    verdict: pass
+    notes: "Both auditors' only flag (case.yaml title/focus_spec/learnings state the remedy) is dissolved by the exposure contract — harness-side, nothing renamed. Fixed two real grading defects instead: the overlay silently clobbers the regression spec task.md asks for (capture-before-restore + move agent-added test files aside, or a symbol collision false-fails a correct fix) and the withheld spec pins the message substring 'panicked' that task.md leaves open (both now caveated in grading and in rubric.md § Mechanical caveats). 04-dev-mcp.md kept exposed as a priced deflator with a rubric line crediting evidence over doc quotation; difficulty stays moderate; project auto-memory checked and does not state this answer, so no known_leak_channels."
+curation:
+  quality: 5
+  learnings: >-
+    Near-ideal mechanical case shape: a two-file defect (8 lines of production
+    code, one spec) in a standalone Go module with no Postgres, no cluster and a
+    sub-second suite, whose fail-at-pre signal is unambiguous — the pre-state
+    binary dies with a raw `panic: tool exploded` rather than merely reporting a
+    red spec. Three lessons for corpus building. (1) A crash-shaped fail_to_pass
+    is the strongest possible pre-state signal but breaks spec-count parsing;
+    graders must key on process exit code. (2) The symptom is fully statable
+    without the fix — "a panicking tool takes the sidecar down; it should return
+    an error frame and keep serving" — which is the property that made this
+    candidate survivable; the temptation to paste the panic stack trace into
+    task.md would have collapsed it to trivial, because the trace names the
+    exact goroutine. Withholding naturally-available triage evidence is a real
+    curation lever, and it must be recorded (see notes.md) rather than done
+    silently. (3) `memorization_risk: none` is about *this repo* being private
+    post-cutoff, which is true here; it does not mean the case is hard. The
+    remedy — recover() in a spawned goroutine — is one of the most idiomatic
+    patterns in public Go, so a strong model may localize it from the symptom
+    alone. Expect this case to discriminate on localization (finding the one
+    unrecovered goroutine among the server's paths) rather than on insight, and
+    do not read a pass here as evidence about hard defects.

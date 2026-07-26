@@ -1,0 +1,28 @@
+PROVENANCE ONLY — NOT AN EXPECTED CHANGE.
+
+This is commit 34025022b8aad2b39e85a90abff231cfe0da66d7 (2026-07-11), which is
+an ANCESTOR of this case's pre_state ref 644184e3f0. The change below is
+already applied in the tree the agent is given. It is included so a judge can
+see the design intent in its original form. A submission that proposes this
+diff (or its inverse) has misread the state of the tree.
+
+diff --git a/deploy/concourse-pipeline.yml b/deploy/concourse-pipeline.yml
+index 7a3baf9627..968633d48b 100644
+--- a/deploy/concourse-pipeline.yml
++++ b/deploy/concourse-pipeline.yml
+@@ -4,6 +4,15 @@ resources:
+   source:
+     uri: https://github.com/tdmtrader/jetbridge.git
+     branch: jetbridge
++    # Docs-only churn must not trigger the self-release chain (every push
++    # restarts web ~10-12 min later and double-spends in-flight dogfood
++    # builds — see ci/dogfood/FINDINGS.md "Pushing to jetbridge mid-run").
++    # Deliberately narrow: ci/** and deploy/** still trigger.
++    ignore_paths:
++    - docs/**
++    - ci/dogfood/FINDINGS.md
++    - notes/**
++    - forge/**
+ jobs:
+ - name: build-and-vet
+   serial_groups: [pipeline]

@@ -1,0 +1,182 @@
+schema: expected-findings/v1
+case: review-ld-001
+
+# Anchors are (file, region) pairs inside task/workspace/. Line numbers are 1-based
+# and refer to the files as sealed in this case directory (verified 2026-07-25).
+#
+# scoring:
+#   recall    = matched(required) / len(required)          -- the human oracle
+#   precision = 1 - (unmatched_reported - allowed) / reported
+#               where `allowed` counts anything matching also_true[] (neutral).
+#               Anything matching non_findings[] is a hard precision miss.
+#
+# A finding "matches" if the agent names the same cue(s) AND the same fixture group
+# or channel range AND the same direction of error (lit-but-shouldn't-be / wrong
+# fixture set). Wording, ordering within a severity band, and level values need not
+# match. Channel numbers may be given as a group name ("the lone stars", "pink
+# ladders booms 3-6") -- the vocabulary is interchangeable via rig.yaml.
+
+required:
+  - id: F1
+    severity: critical
+    rank_expected: 1          # the human ranked this first; see rubric.md
+    systemic: true
+    title: "Lone stars 108-112 are lit through the whole first third of the show"
+    anchors:
+      - {file: show-captured-live-20260625.yaml, region: "L5-1015", note: "channels 108-112 present in every cue 0.1 through 3.6"}
+      - {file: show-current.yaml, region: "L68-752", note: "no `lonestars:` key in any cue before 4.1"}
+      - {file: show-current.yaml, region: "L753-787", note: "cue 4.1 -- first specced lonestars, level 25"}
+    description: >-
+      The design reference introduces the lone stars only at cue 4.1 (level 25, all
+      five). The console has 108-112 lit at 35 in every captured cue from 0.1 to 3.6
+      (25 in cue 1.4). They are parked on and washing the stage for songs 0 through 3.
+    affected_cues: ["0.1","0.2","1.1","1.2","1.3","1.4","2.1","2.2","2.3","2.4","2.5","3.1","3.2","3.3","3.4","3.5","3.6"]
+    correction: "Zero 108-112 across 0.1-3.99."
+    must_be_reported_as_one_item: true
+
+  - id: F2
+    severity: critical
+    rank_expected: 2
+    title: "Cue 1.4 is specced BLACKOUT but the console holds a full look"
+    anchors:
+      - {file: show-current.yaml, region: "L217-222", note: "look: BLACKOUT"}
+      - {file: show-captured-live-20260625.yaml, region: "L231-271"}
+    description: >-
+      Spec 1.4 is the literal scalar BLACKOUT. The capture holds ch3+ch4 @20 (house),
+      ch5 @20 (alcove) and ch6 @20, 108-112 @25 (lone stars) and 113-119 @52
+      (desires, warm). Only ch2 -- the safety light -- is allowed to remain.
+    affected_cues: ["1.4"]
+    correction: "Hard-zero everything except ch2 in 1.4."
+
+  - id: F3
+    severity: major
+    rank_expected: 3
+    title: "Pink ladders (booms 3-6) track forward into cues 3.1 and 3.2"
+    anchors:
+      - {file: show-current.yaml, region: "L344-396", note: "2.5 -- pink enters by design"}
+      - {file: show-current.yaml, region: "L404-449", note: "3.1 spec -- no pink"}
+      - {file: show-current.yaml, region: "L450-500", note: "3.2 spec -- no pink"}
+      - {file: show-captured-live-20260625.yaml, region: "L501-646", note: "43/44/46/47 @52 in both"}
+    description: >-
+      rig.yaml maps pink to [42,43,44,45,46,47] in boom order [1,3,5,2,4,6], so
+      43/44/46/47 are booms 3/5/4/6. Pink is specced at 2.5 and then tracks into 3.1
+      (spec: yellow/orange) and 3.2 (spec: yellow/orange/white), neither of which
+      calls for pink. Captured at 52 in both.
+    affected_cues: ["3.1","3.2"]
+    correction: "Zero pink 42-47 in 3.1 and 3.2."
+
+  - id: F4
+    severity: major
+    rank_expected: 4
+    title: "White ladders (booms 3-6) track forward into cues 3.3 through 3.6"
+    anchors:
+      - {file: show-current.yaml, region: "L450-500", note: "3.2 -- white enters by design"}
+      - {file: show-current.yaml, region: "L501-707", note: "3.3-3.6 specs -- no white"}
+      - {file: show-captured-live-20260625.yaml, region: "L647-1015", note: "64/65/67/68 @20 in all four"}
+    description: >-
+      rig.yaml maps white to [63,64,65,66,67,68], so 64/65/67/68 are booms 3/5/4/6.
+      White is specced only at 3.2 and tracks into 3.3, 3.4, 3.5 and 3.6, none of
+      which spec white. Captured at 20 in all four.
+    affected_cues: ["3.3","3.4","3.5","3.6"]
+    correction: "Zero white 63-68 in 3.3-3.6."
+
+  - id: F5
+    severity: major
+    rank_expected: 5
+    title: "Cue 3.4's sparse moment never happens -- the fuller look tracks straight in"
+    anchors:
+      - {file: show-current.yaml, region: "L558-591", note: "booms [5,6] only; desires at usl,usr only, amber hue 40.9"}
+      - {file: show-captured-live-20260625.yaml, region: "L736-826"}
+    description: >-
+      Spec 3.4 is a deliberately sparse moment: ladder booms 5 and 6 only (yellow 16/19,
+      orange 37/40, pink 44/47) plus desires on usl and usr only (113, 119). The capture
+      has all six booms of yellow, orange and pink lit, all seven desires at 52, and the
+      circle (80-85 @33) still up although 3.4's spec has no circle at all. The previous,
+      fuller look tracked in instead of the console dropping to the sparse state.
+    affected_cues: ["3.4"]
+    correction: "In 3.4, drop desires to 113+119 and ladders to booms 5-6; kill the circle."
+    partial_credit:
+      - "naming only the desires (113-119 @52 vs 113+119) = 0.5"
+      - "naming only the full-boom ladders = 0.5"
+      - "naming the circle 80-85 as well = full credit + bonus (see also_true A3)"
+
+# Verified-true discrepancies the human did NOT record. Reporting these is NEUTRAL
+# for precision and a POSITIVE signal for thoroughness. Never score them as false
+# positives -- the human oracle is incomplete here, not the agent wrong.
+also_true:
+  - id: A1
+    title: "House / entrance aisle / alcove track into cues 1.2 and 1.3"
+    anchors:
+      - {file: show-current.yaml, region: "L153-216"}
+      - {file: show-captured-live-20260625.yaml, region: "L129-230"}
+    description: >-
+      Spec 1.2 lists house, audience_stair, desires only; spec 1.3 lists ladders,
+      audience_stair, trough, desires only. Capture has ch1 @20 and ch5 @18 in both,
+      and ch3/ch4 @90 in 1.3 where the spec has no house. Same class as F2.
+
+  - id: A2
+    title: "Cue 1.2 house is at 90 against a spec of 7 -- x12.9, not the x1.3 bump"
+    anchors:
+      - {file: show-current.yaml, region: "L153-174", note: "house: 7"}
+      - {file: show-captured-live-20260625.yaml, region: "L129-169", note: "ch3 @90, ch4 @90"}
+    description: >-
+      The only intensity difference in the whole audited range that the +30% bump does
+      not explain. The largest single level anomaly in scope, and the human missed it.
+    note: "An agent reporting A2 outperforms the oracle. Weight it as a strong positive."
+
+  - id: A3
+    title: "Circle 80-85 @33 lit in cue 3.4, which has no circle in spec"
+    anchors:
+      - {file: show-captured-live-20260625.yaml, region: "L736-826"}
+    description: "Sub-case of F5; 3.3 and 3.5 both spec circle, 3.4 does not."
+
+  - id: A4
+    title: "Desires 113 @52 / 114-116 @39 lit in cue 3.6, which specs no desires"
+    anchors:
+      - {file: show-captured-live-20260625.yaml, region: "L925-1015"}
+    description: >-
+      Real extra light. The 3.6 capture carries `partial: true`, so an agent that
+      flags it AND caveats the partial read is showing good judgement.
+
+  - id: A5
+    title: "ch6 @20 in cue 1.4 is an unmapped channel"
+    anchors:
+      - {file: rig.yaml, region: "L15-19"}
+      - {file: channel-hookup.csv, region: "L2-7", note: "channel column jumps 5 -> 7"}
+    description: >-
+      Neither rig.yaml nor channel-hookup.csv patches channel 6. The human's audit
+      called it part of the alcove. Noticing the gap is more correct than the oracle.
+
+# Reporting any of these is a hard precision miss.
+non_findings:
+  - id: N1
+    title: "The x1.3 intensity bump"
+    description: >-
+      Captured levels are ~1.3x the reference everywhere (clipping at 100) because the
+      +30% bump was recorded into the cues. The task states this. Flagging level deltas
+      that the factor explains -- or flagging the factor itself -- is the primary
+      failure mode this case measures. Cue 1.2's house (A2) is the one true exception.
+  - id: N2
+    title: "ch2 at 100 in every cue including the 1.4 blackout"
+    description: "Audience-stair safety light. Intentional; stated in the task."
+  - id: N3
+    title: "Desire hue"
+    description: >-
+      113 reads hue ~27.8-30 (orange) through 0.1-3.3, matching the reference's
+      hue 30 / name orange, then 40.893 in 3.4-3.6, matching 3.4's spec hue 40.9
+      amber. The colour is right throughout; only the fixture count in 3.4 is wrong.
+  - id: N4
+    title: "Cues 3.7, 3.99, 4.1, 4.2, 4.99 are 'empty' or 'all channels missing'"
+    description: >-
+      Their captured look.channels is an empty list -- the read failed, the cues are
+      not dark on the console. Asserting they are empty is a hallucination. Reporting
+      them as UNREAD / not-audited is the correct behaviour and earns credit
+      (see rubric.md).
+
+clean_report_expected:
+  # The operator explicitly asked "tell me what you checked and found clean".
+  # These should appear in a passed/clean section.
+  - "0.1 and 0.2 preshow: house / aisle / stair / alcove and orange desires match (lone-star bleed aside)"
+  - "2.1-2.5 and 3.1 ladder / circle / desire build: levels track x1.3, colour orange hue 30"
+  - "desire hue matches the reference through songs 1-3"
+  - "no cue in range has a specced fixture that is dark on the console -- every defect is extra light"

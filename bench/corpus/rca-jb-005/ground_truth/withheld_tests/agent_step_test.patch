@@ -1,0 +1,122 @@
+diff --git a/atc/exec/agent_step_test.go b/atc/exec/agent_step_test.go
+index d5e30a6705..f44f734df7 100644
+--- a/atc/exec/agent_step_test.go
++++ b/atc/exec/agent_step_test.go
+@@ -1646,5 +1646,117 @@ var _ = Describe("AgentStep", func() {
+ 				Expect(fakeChecker.RecordCallCount()).To(Equal(1))
+ 			})
+ 		})
++
++		// ticket #43 / transcript-ingest-fix: the runner-captured transcript
++		// (flight/transcript.ndjson) is produced by THIS step's own runner —
++		// the IMPLEMENT (agent) step — never the harvest step's, whose flight
++		// volume never contains it. Ingestion therefore belongs in
++		// ingestFlightRecorder, keyed identically to the harvest step's
++		// (build_id, plan_id, ticket_id) (see harvest_step_test.go's
++		// equivalent "flight ingestion (Slice F)" transcript specs).
++		Context("with a transcript store wired (ticket #43)", func() {
++			var (
++				transcriptStore *stubTranscriptStore
++				transcriptRaw   string
++			)
++
++			BeforeEach(func() {
++				transcriptStore = &stubTranscriptStore{}
++				transcriptRaw = `{"type":"system","subtype":"init"}` + "\n" +
++					`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/w/main.go"}}]}}` + "\n" +
++					`{"type":"result","total_cost_usd":0.42}` + "\n"
++
++				// Delegate every other path to the outer results.json/events.ndjson
++				// fixture; only transcript.ndjson is new here.
++				fakeStreamer.StreamFileStub = func(ctx context.Context, artifact runtime.Artifact, path string) (io.ReadCloser, error) {
++					if path == "transcript.ndjson" {
++						if err := ctx.Err(); err != nil {
++							return nil, err
++						}
++						return io.NopCloser(strings.NewReader(transcriptRaw)), nil
++					}
++					return streamFullFlight(ctx, artifact, path)
++				}
++			})
++
++			JustBeforeEach(func() {
++				step = exec.NewAgentStep(
++					planID,
++					agentPlan,
++					atc.ContainerLimits{},
++					atc.ContainerLimits{},
++					stepMetadata,
++					containerMetadata,
++					fakePool,
++					fakeStreamer,
++					fakeDelegateFactory,
++					0,
++					agentImage,
++					exec.WithAgentBudgetChecker(fakeChecker),
++					exec.WithAgentMetricsStore(fakeMetricsStore),
++					exec.WithAgentRunVerifier(fakeRunVerifier),
++					exec.WithAgentStepTranscriptStore(transcriptStore),
++				)
++			})
++
++			It("upserts the runner-captured transcript keyed by build/plan/ticket, from the agent step's OWN flight", func() {
++				ok, err := step.Run(ctx, state)
++				Expect(err).ToNot(HaveOccurred())
++				Expect(ok).To(BeTrue())
++
++				Expect(transcriptStore.upserted).To(HaveLen(1))
++				tr := transcriptStore.upserted[0]
++				Expect(tr.BuildID).To(Equal(stepMetadata.BuildID))
++				Expect(tr.PlanID).To(Equal(string(planID)))
++				Expect(tr.StepName).To(Equal("write-spec"))
++				Expect(*tr.TicketID).To(Equal(7))
++				Expect(tr.NDJSON).To(Equal(transcriptRaw))
++				Expect(tr.ByteLen).To(Equal(len(transcriptRaw)))
++				Expect(tr.Truncated).To(BeFalse())
++			})
++
++			It("bounds an over-512KiB transcript to the tail with the truncation marker", func() {
++				var b strings.Builder
++				for b.Len() < 600*1024 {
++					b.WriteString(`{"type":"assistant","message":{"content":[{"type":"text","text":"padding padding padding"}]}}` + "\n")
++				}
++				b.WriteString(`{"type":"result","total_cost_usd":9.9}` + "\n")
++				transcriptRaw = b.String()
++
++				ok, err := step.Run(ctx, state)
++				Expect(err).ToNot(HaveOccurred())
++				Expect(ok).To(BeTrue())
++
++				Expect(transcriptStore.upserted).To(HaveLen(1))
++				tr := transcriptStore.upserted[0]
++				Expect(tr.Truncated).To(BeTrue())
++				Expect(tr.ByteLen).To(BeNumerically("<=", 512*1024+256))
++				Expect(tr.NDJSON).To(HavePrefix(`{"type":"transcript_truncated","dropped_bytes":`))
++				// the diagnostic tail (the final result line) survives
++				Expect(tr.NDJSON).To(ContainSubstring(`"total_cost_usd":9.9`))
++			})
++
++			It("never fails the step when the transcript upsert errors", func() {
++				transcriptStore.err = errors.New("db down")
++				ok, err := step.Run(ctx, state)
++				Expect(err).ToNot(HaveOccurred())
++				Expect(ok).To(BeTrue())
++				Expect(transcriptStore.upserted).To(HaveLen(1)) // attempted despite the error
++			})
++		})
++
++		// Pre-fix regression guard: the base step in this Describe (outer
++		// JustBeforeEach) wires NO transcript store, mirroring every
++		// production agent step before this fix shipped. Ingestion must stay
++		// fully nil-guarded — not even the extra StreamFile call fires.
++		It("does not stream transcript.ndjson when no transcript store is configured", func() {
++			ok, err := step.Run(ctx, state)
++			Expect(err).ToNot(HaveOccurred())
++			Expect(ok).To(BeTrue())
++			for i := 0; i < fakeStreamer.StreamFileCallCount(); i++ {
++				_, _, path := fakeStreamer.StreamFileArgsForCall(i)
++				Expect(path).ToNot(Equal("transcript.ndjson"))
++			}
++		})
+ 	})
+ })

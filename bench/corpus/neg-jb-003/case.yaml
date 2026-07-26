@@ -1,0 +1,232 @@
+# Was BORDERLINE (audit split) — resolved 2026-07-25 by curator-fixup. The
+# sonnet FAIL rested entirely on case.yaml's own content (title, outcome field,
+# comments naming the terminal/decoy commits and the gates); under the schema's
+# exposure contract case.yaml is harness-side and never exposed, so those items
+# are dissolved, not fixed. The real items — the auto-memory leak channel, the
+# missing decline delivery channel, and the borg-pipeline near-miss — are
+# handled below and in task/ + ground_truth/. See notes.md#fixup-2026-07-25.
+schema: benchmark-case/v1
+id: neg-jb-003
+title: >-
+  Negative — a docs-only push produced no build, and the answer is `ignore_paths`
+  by design, not the dropped-NOTIFY scheduler bug this fork really once had
+workflow: log-diagnosis
+# NOTE ON `workflow`: this is a NEGATIVE (ground_truth.outcome = no-change-correct)
+# but negatives are not a workflow shape — the schema puts them on ordinary
+# workflows with declining outcomes. The deliverable here is a diagnosis, and
+# the trigger carries a log observation, so `log-diagnosis` is the honest fit.
+# `triage` is reserved in this corpus for "what should we do with this report"
+# cases with a recorded disposition; here the disposition is trivially "nothing"
+# and the whole difficulty is in the diagnosis. See curation.learnings.
+signature:
+  inputs:
+    repository: repository/v1
+    work-item: work-item/v1
+  outputs:
+    diagnosis: analysis/v1          # PROPOSED port type — see curation.learnings
+    change: repository-change/v1    # correct value is EMPTY; see rubric gate G2
+source:
+  system: git-commit
+  repo: jetbridge
+  # The terminal artifact is the commit that CREATED the intended behavior. It is
+  # an ANCESTOR of pre_state, not a descendant — the unusual shape of a
+  # working-as-intended negative: the "fix" already shipped, and the case tests
+  # whether an agent recognizes shipped intent instead of manufacturing a defect.
+  terminal: 34025022b8aad2b39e85a90abff231cfe0da66d7
+  # The decoy has its own provenance: a genuine dropped-notification bug in this
+  # same fork, fixed 4 months before the cut and still visible in the history the
+  # agent can read.
+  decoy_provenance: de76b735540f919311896569ed5fe576e4643092
+information_cut: 2026-07-19T13:46:04-07:00
+# The cut is exactly the pre_state commit instant, and it governs the exposed
+# TREE: nothing in the materialized repository postdates it. The trigger in
+# task/task.md is authored at roughly T+40min — the operator notices the missing
+# build after waiting — which is inherent to the shape (a report about a push
+# must postdate the push). task.md's internal dates are consistent with that:
+# "Opened: 2026-07-19", "about 40 minutes ago I pushed 644184e3f0", and the UX4
+# merges it calls "earlier today" all land before T. Nothing in the trigger
+# reports repository state from after T.
+pre_state:
+  repository:
+    repo: jetbridge
+    ref: 644184e3f011369f3da77dc82caee200bd8fd196
+    # This ref IS the docs-only commit the work item complains about
+    # (docs/superpowers/plans/agentic-platform/2026-07-19-ux4-scoping.md, 1 file,
+    # +17). Reading git history is part of the intended solution path — the
+    # terminal artifact 34025022b8 and the decoy de76b73554 are both ancestors
+    # and are both legitimately exposed — so `git archive` is NOT usable. But
+    # later commits on the `jetbridge` line must not be reachable. Strip refs:
+    materialize: |
+      git clone --no-hardlinks <src> <dir>
+      cd <dir>
+      git checkout --detach 644184e3f011369f3da77dc82caee200bd8fd196
+      git for-each-ref --format='%(refname)' | xargs -r -n1 git update-ref -d
+      git reflog expire --expire=now --all
+      git gc --prune=now
+      # verify: `git cat-file -e 34025022b8^{commit}` must SUCCEED (intended evidence),
+      #         `git cat-file -e de76b73554^{commit}` must SUCCEED (intended decoy),
+      #         `git cat-file -e 12feb9397d^{commit}` must FAIL   (future sentinel).
+  work-item:
+    path: task/task.md
+ground_truth:
+  outcome: no-change-correct
+  answer: ground_truth/answer.md
+  # Provenance only. This diff is ALREADY APPLIED at pre_state; it is not a
+  # reference change and must never be used as a diff-similarity target.
+  provenance_diff: ground_truth/design-intent.diff
+rubric: judge
+grading:
+  judge_rubric: ground_truth/rubric.md
+  # Two hard gates carry this case: G1 (names ignore_paths, not a scheduler
+  # defect) and G2 (produces no change). See rubric.md.
+  fail_to_pass: []
+  pass_to_pass: []
+  # A negative has no fail-to-pass transition by construction: the terminal
+  # artifact predates the pre_state, so there is no "post" state to test.
+  # The one mechanical signal available is the emptiness of the produced change.
+  mechanical_signal:
+    check: >-
+      no tracked file modified, added or deleted, with exactly one permitted
+      new untracked file: DECISION.md at the repository root. `git status
+      --porcelain` should show `?? DECISION.md` and nothing else.
+    rationale: >-
+      Directly enforces rubric gate G2 without a judge. Necessary but not
+      sufficient — an agent can produce no change while naming the wrong cause,
+      which G1 exists to catch.
+    delivery_channel: >-
+      DECISION.md is the case's decline channel, defined in task.md
+      §"How to send it back" and mirrored in ground_truth/rubric.md (G2 and the
+      delivery-channel penalty). It exists because "the agent changed nothing"
+      and "the agent produced no output" were otherwise indistinguishable — see
+      curation.learnings (5b). It is a DELIVERABLE, not a change: its presence
+      must never count against G2, and its absence is a -5 process penalty, not
+      a gate. DECISION.md does not exist at pre_state (verified), so it cannot
+      collide with tracked content.
+  environment:
+    postgres_required: false
+    cluster_required: false
+    notes: >-
+      Analysis-only. The agent needs the repository at the pinned ref and
+      nothing else. The absence of cluster access is load-bearing: the
+      confirming observation on a live system (`fly check-resource` succeeding
+      with no new version) would collapse the case to one step. The task states
+      the operator's ruled-out list instead, which is what the operator would
+      genuinely have known at T.
+withheld: []
+# Deliberately empty. The two in-tree documents that carry the answer —
+# deploy/concourse-pipeline.yml's comment block and ci/dogfood/FINDINGS.md's
+# loop-friction entry — both existed well before T and ARE the evidence the
+# case tests for. Withholding them would leave the correct answer unreachable.
+# See notes.md#leakage-analysis.
+difficulty: moderate
+memorization_risk: none
+known_leak_channels: [project-auto-memory]
+# This machine's project auto-memory states this case's answer nearly verbatim,
+# including the refutation: an entry asserting that the `repo` git resource has
+# `ignore_paths: [docs/**, ci/dogfood/FINDINGS.md, notes/**, forge/**]`, that a
+# docs-only push correctly produces no build BY DESIGN, that this must not be
+# mistaken for a broken scheduler, and that the scheduler logs only at DEBUG.
+# That is G1 + R3 + R4 + R5 handed over for free. Per README §"Operator-
+# environment leakage" the replay harness must not mount project memory,
+# CLAUDE.md-style operator context, or conversation history into the solver; a
+# hand-run of this case on this machine is INVALID unless memory is suppressed.
+# Not fixable case-side — memory is out of scope for curation — so it is
+# declared here instead.
+validation:
+  status: unvalidated
+  notes: notes.md#validation
+leakage_audit:
+  - auditor: opus
+    verdict: pass
+    notes: "Clean: no post-cut references (every job name and mechanism verified at pre_state), and no in-tree doc states the conclusion — ignore_paths appears in exactly one file and FINDINGS mentions the path filter only as an unshipped candidate; the pre_state even contains a stale line asserting that pushing triggers the chain, a third decoy. Curator items: the auto-memory states the whole answer including the DEBUG-logging refutation, case.yaml's title is an answer key, and borg-pipeline.yml defines a same-named repo resource with no ignore_paths so the rubric must require naming deploy/concourse-pipeline.yml."
+  - auditor: sonnet
+    verdict: fail
+    notes: "task.md is well-calibrated — the ruled-out list blocks a stale-config alternative while deliberately omitting 'check produced no new version', and it never names ignore_paths or FINDINGS.md. Fails on case.yaml, which is in the audited exposure: the title states the answer outright ('the answer is ignore_paths by design, not the dropped-NOTIFY scheduler bug'), ground_truth.outcome is a bare verdict field, and the comments name the terminal/decoy commits, the two evidence files, and the G1/G2 gates."
+  - auditor: curator-fixup
+    verdict: pass
+    notes: "Sonnet's FAIL dissolved by the exposure contract (case.yaml/notes/ground_truth/case-path are harness-side; title and gate comments stay as written). Fixed: added the missing decline channel (task.md 'How to send it back' → DECISION.md at repo root, mirrored in rubric G2 + a -5 channel penalty and in mechanical_signal), added the deploy/borg-pipeline.yml same-named-unfiltered-repo near-miss as an explicit G1 failing shape and answer.md note, added a judge instruction to credit the causal chain over quotation of the in-file comment / FINDINGS.md / commit 34025022b8, corrected task.md's chain order to the pipeline's real order, documented cut-vs-trigger date consistency. Declared known_leak_channels: [project-auto-memory] — memory states G1+R3+R4+R5 verbatim, so a local hand-run is invalid unless memory is suppressed. Difficulty stays moderate: no auditor contested it and neither fix moves the inference count."
+curation:
+  quality: 4
+  learnings: >-
+    First negative in the corpus, and it changed my model of what "backing out
+    of a terminal artifact" means. For fix/review/rca cases the terminal
+    artifact is a DESCENDANT of the pre-state — the work happened after T. For a
+    working-as-intended negative it is an ANCESTOR: the intent shipped first,
+    and the case is built by finding a later moment when that shipped intent
+    would be mistaken for a defect. That inversion has a practical consequence
+    the schema does not currently express: there is no `reference.diff` and no
+    fail-to-pass transition, because there is no post-state. I added
+    `ground_truth.provenance_diff` with a loud header rather than reuse
+    `reference_change`, because a judge handed a `reference.diff` will drift
+    toward diff similarity and here the correct diff is empty.
+
+    Second lesson, on where negative difficulty actually lives. The evidence is
+    nine lines of YAML with an explanatory comment directly above it — trivial
+    to read, impossible to misread. So the case cannot test comprehension; it
+    tests *where the agent looks first* and *whether it can conclude "nothing to
+    do"*. That made the decoy the load-bearing part of the design, and the best
+    decoys are not invented: this fork genuinely had a silent dropped-NOTIFY
+    scheduler outage (de76b73554), so an agent that pattern-matches on the
+    repo's own history is pulled hard toward a plausible, wrong, historically
+    grounded diagnosis. Corollary I would generalize: when scouting negatives,
+    scout the *decoy* first and the working-as-intended behavior second.
+
+    Third, on calibrating a negative's trigger. A negative must read exactly
+    like a positive, which means the trigger has to exert real change-pressure —
+    this one says "a fix, if this is a defect" — while still leaving "no change"
+    reachable. The dial is the ruled-out list. I deliberately included "the
+    server's stored config matches what is checked in" (otherwise stale-config
+    is a defensible alternative answer and the case is ill-posed) and
+    deliberately EXCLUDED "the check ran and produced no new version" (which is
+    the answer restated and would have made the case one step). Writing that
+    dial down explicitly is more useful than the difficulty label.
+
+    Fourth, a real trap I nearly walked into: the mining candidate's proposed
+    pre_state SHA was the terminal artifact's PARENT — the state *without*
+    `ignore_paths` — which would have inverted the case into a genuine bug.
+    Its prose said the opposite of its SHA. For negatives, verify the pre_state
+    on the behavior, not on the usual parent-of-the-fix reflex.
+
+    Fifth, platform gaps this case surfaces. (a) `analysis/v1` is still a
+    proposed port type (shared with rca-jb-001) — until it exists this case is
+    hand-run. (b) A negative needs the runner to expose an *empty*
+    `repository-change` as a first-class, gradable output; today "the agent
+    changed nothing" is indistinguishable from "the agent produced no output".
+    That is the one mechanical signal available here and the platform cannot
+    currently report it. The 2026-07-25 fixup works around it in-case rather
+    than in-platform: the task now names a decline channel (`DECISION.md` at the
+    repository root), so "declined, and here is why" is expressible without
+    touching a tracked file, and the mechanical signal becomes a crisp
+    `git status --porcelain` == `?? DECISION.md`. Generalizable rule: **every
+    negative needs an explicit delivery channel**, or the agent's only way to
+    show its work is to change something — which is precisely the behavior the
+    case exists to detect. The channel must be described symmetrically (change
+    → also edit the tree; no change → leave it) or it becomes a hint. (c) There
+    is still no runnable log-diagnosis workflow, so this case measures a model,
+    not a product.
+
+    Sixth, a caveat on this case's premise: "the live pipeline is current" is an
+    operator assertion in the task, not something recoverable from git — the
+    terminal commit itself warns that a one-time `fly set-pipeline` was needed.
+    Eight days elapsed and the behavior is independently attested, so the
+    premise is sound, but it is an authored fact and is flagged as such in
+    notes.md. Negatives lean on such premises more than positives do, because
+    ruling out the boring explanations is what makes "working as intended" the
+    only answer left.
+
+    Seventh (added by the 2026-07-25 fixup pass), two audit lessons. (i) An
+    auditor reading the whole case directory will flag the manifest for
+    "stating the answer"; under the schema's exposure contract that is a
+    category error — case.yaml, notes.md, ground_truth/ and the case path are
+    harness-side, and the corpus is better off with a title that says what the
+    case is than with a coy one. What that contract does NOT dissolve is the
+    operator environment: this machine's project auto-memory states this case's
+    answer verbatim (now declared in `known_leak_channels`), a leak the case
+    cannot fix and the harness must. Contract-dissolution and leak-declaration
+    are the two different answers to "the answer is written down somewhere",
+    and telling them apart is by where the text lives, not how damning it reads.
+    (ii) The tree contains a near-miss worth keeping: `deploy/borg-pipeline.yml`
+    declares a same-named, *unfiltered* `repo` resource on the same branch. It
+    is authentic, genuinely misleading, and the trigger disambiguates it (only
+    the real pipeline has `tag-rc`/`self-upgrade`), so it stays — but the rubric
+    now has to say which file counts, or two graders would disagree.

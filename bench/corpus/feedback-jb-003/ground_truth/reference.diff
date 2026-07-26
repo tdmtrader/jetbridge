@@ -1,0 +1,1849 @@
+diff --git a/docs/superpowers/plans/agentic-platform/00-shared-contracts.md b/docs/superpowers/plans/agentic-platform/00-shared-contracts.md
+index 8d4cffbfae..de2ffac54a 100644
+--- a/docs/superpowers/plans/agentic-platform/00-shared-contracts.md
++++ b/docs/superpowers/plans/agentic-platform/00-shared-contracts.md
+@@ -1062,7 +1062,7 @@ result (returned only when the answer arrives — this is the parking tool):
+ }
+ ```
+ 
+-**Park/resume protocol [DECIDED HERE]:** `ask_human` inserts an `agent_run_questions` row, fires the notification (§8.4), and then **blocks the MCP call** while the sidecar long-polls `GET /api/v1/agent/tickets/:id/questions/:qid` until `answered_at` is set. The agent process is idle-waiting on a tool call — the jetbridge supervisor's existing resume semantics keep the pod alive across web restarts, and the pipeline-run completion contract (§1.5) counts the build as running. Timeout behavior comes from the workflow definition's `hitl` block (§6), resolved at render time into sidecar env (`PLATFORM_MCP_ASK_TIMEOUT_SECONDS`, `PLATFORM_MCP_ASK_TIMEOUT_POLICY`). **Timeout resolution [DECIDED HERE]:** the sidecar itself enforces the timeout around its long-poll; on expiry it is the writer that resolves the question row, via `AnswerAgentQuestion` with its principal token (scope `questions:answer`, §4.1) — no human is involved. Policy `default`: it submits `answer` = the call's `default` field (persisted as `agent_run_questions.default_answer` at insert time) with `answered_by` = its principal name, then returns the ask_human result with `timed_out: true`. Policy `fail`: it resolves the row the same way with an empty answer (so the open-questions index and ticket UI release) and fails the `ask_human` call at the MCP layer, failing the step. Policy `park`: no timeout (`timeout_seconds` 0); the row is only ever resolved by a human. Either way a timed-out row never stays open. Checkpoints use the same mechanism: the rendered pipeline inserts a dedicated checkpoint step that calls the sidecar's internal `checkpoint` endpoint with `kind=checkpoint` and blocks until approved (reject ⇒ step fails ⇒ run fails ⇒ ticket `needs_review`).
++**Park/resume protocol [DECIDED HERE]:** `ask_human` inserts an `agent_run_questions` row, fires the notification (§8.4), and then **blocks the MCP call** while the sidecar long-polls `GET /api/v1/agent/tickets/:id/questions/:qid` until `answered_at` is set. The agent process is idle-waiting on a tool call — the jetbridge supervisor's existing resume semantics keep the pod alive across web restarts, and the pipeline-run completion contract (§1.5) counts the build as running. Timeout behavior comes from the workflow definition's `hitl` block (§6), resolved at render time into sidecar env (`PLATFORM_MCP_ASK_TIMEOUT_SECONDS`, `PLATFORM_MCP_ASK_TIMEOUT_POLICY`). **Timeout resolution [DECIDED HERE]:** the sidecar itself enforces the timeout around its long-poll; on expiry it is the writer that resolves the question row, via `AnswerAgentQuestion` with its principal token (scope `questions:answer`, §4.1) — no human is involved. Policy `default`: it submits `answer` = the call's `default` field (persisted as `agent_run_questions.default_answer` at insert time) with `answered_by` = its principal name, then returns the ask_human result with `timed_out: true`. Policy `fail`: it resolves the row the same way with an empty answer (so the open-questions index and ticket UI release) and fails the `ask_human` call at the MCP layer, failing the step. Policy `park`: no timeout (`timeout_seconds` 0); the row is only ever resolved by a human. Either way a timed-out row never stays open. Checkpoints reuse the same `agent_run_questions` park/resume table (`kind = 'checkpoint'`) but are **not** an agent/LLM step: the renderer emits a deterministic `atc.TaskStep` that runs the platform-mcp client command `platform-mcp checkpoint` (no `AGENT_TICKET_ID`-scoped LLM prompt, no `atc.AgentStep`). That command inserts the `kind=checkpoint` row (`options = ["approve","reject"]`, §1.9), fires the notification (§8.4), long-polls the same `GET /api/v1/agent/tickets/:id/questions/:qid` route until `answered_at` is set, and translates the answer into its process **exit code**: `approve` ⇒ exit 0 (task succeeds), `reject` ⇒ exit 1 (task fails). The exit-1 task failure fails the build ⇒ fails the run ⇒ ticket `needs_review` (mapped from `on_reject`, §6.1). There are no `PLATFORM_MCP_CHECKPOINT` / `PLATFORM_MCP_CHECKPOINT_ON_REJECT` env vars — the client reads its ticket/run identity from the standard `AGENT_TICKET_ID` / `AGENT_PIPELINE_RUN_ID` env (§8.1) and its checkpoint name/reject-policy from its argv, so nothing reads those removed vars.
+ 
+ ### 3.3 agent-gateway-mcp — owner: **gateway-mcp**; consumers: scorecards, process-intel-experiments
+ 
+@@ -1247,8 +1247,8 @@ New event types (constants added to `agent/schema/event.go`; `data` payloads def
+ | `budget.stop` | gateway / agent-step | same payload; the call/step was cut off |
+ | `human.ask` | platform-mcp sidecar | `{"question_id", "kind": "question\|checkpoint", "question", "options"}` |
+ | `human.answer` | platform-mcp sidecar | `{"question_id", "answer", "answered_by", "wait_seconds", "timed_out"}` |
+-| `checkpoint.wait` | checkpoint step | `{"question_id", "checkpoint": "<name from workflow def>"}` |
+-| `checkpoint.release` | checkpoint step | `{"question_id", "approved": bool, "answered_by"}` |
++| `checkpoint.wait` | checkpoint step (`atc.TaskStep` running `platform-mcp checkpoint`, §3.2) | `{"question_id", "checkpoint": "<name from workflow def>"}` |
++| `checkpoint.release` | checkpoint step (`atc.TaskStep` running `platform-mcp checkpoint`, §3.2) | `{"question_id", "approved": bool, "answered_by"}` — `approved` drives the client's exit code (`true`⇒0, `false`⇒1); step failure is exit-code-driven, not an LLM verdict |
+ | `judge.score` | harvest step | `{"rubric_hash", "dimensions": [{"name", "score", "max", "rationale"}], "total", "max_total", "model", "cost_usd"}` |
+ | `push.done` | harvest step | `{"branch", "sha", "manifest_artifact"}` |
+ 
+@@ -1449,7 +1449,7 @@ Set by the agent-step exec implementation (values resolved at render/dispatch ti
+ | `AGENT_PIPELINE_RUN_ID` | all | literal | pipeline_runs.id |
+ | `AGENT_STEP_NAME` | main | literal | step name from the plan |
+ | `AGENT_WORKFLOW_NAME` / `AGENT_WORKFLOW_VERSION` / `AGENT_WORKFLOW_HASH` | main | literal | provenance tags for metrics/events |
+-| `AGENT_BUDGET_SLICE_USD` | main, gateway | literal | step's slice (§2.7); gateway enforces |
++| `AGENT_BUDGET_SLICE_USD` | main, gateway | literal | step's slice (§2.7); gateway enforces for sub-agent calls only; the main agent's own spend is admission-gated (StepSlice) + post-hoc reconciled at ingestion, and turn/timeout-capped within a step — not cut off mid-call |
+ | `DEV_MCP_URL` | main | literal `http://127.0.0.1:7780/mcp` | |
+ | `PLATFORM_MCP_URL` | main | literal `http://127.0.0.1:7781/mcp` | |
+ | `GATEWAY_MCP_URL` | main | literal `http://127.0.0.1:7782/mcp` | |
+@@ -1462,14 +1462,14 @@ Set by the agent-step exec implementation (values resolved at render/dispatch ti
+ - **Name:** `agent-run-<pipeline_run_id>` in the jetbridge worker namespace.
+ - **Keys:** `anthropic-token` (decrypted user credential), `principal-token` (per-run principal).
+ - **Labels:** `concourse/agent-run: "<run-id>"`, `concourse/ticket: "<ticket-id>"` — the reaper's safety-net GC can find strays.
+-- **Lifecycle:** created by `credentials.SecretAttacher.Attach` (§2.6) during dispatch, before run creation; deleted by the pipeline-run lifecycle component on completion via `Cleanup` (plus a periodic sweep deleting labeled secrets whose run is complete — never notify-only, per fork lesson).
++- **Lifecycle:** created by `credentials.SecretAttacher.Attach` (§2.6) during dispatch, AFTER the queued→running claim is won (which records `pipeline_run_id` per §2.1) and BEFORE the build tracker schedules the entry-job pods — there is no runtime race; the create→claim→attach order is deliberate, so the secret name (`agent-run-<pipeline_run_id>`) is known before any pod that references it is scheduled. Deleted by the pipeline-run lifecycle component on completion via `Cleanup` (plus a periodic sweep deleting labeled secrets whose run is complete — never notify-only, per fork lesson).
+ - **Consumption:** env `secretKeyRef` only — tokens never land in files, argv, or the DB in plaintext.
+ 
+ **Long-lived platform credential secret [DECIDED HERE]** — owner: **credentials-and-budgets**; consumers: harvest-step, process-intel-experiments:
+ 
+ - **Name:** `agent-platform-credential` in the jetbridge worker namespace.
+ - **Keys:** `anthropic-token` — the decrypted credential of the `agent-platform` service user's `agent_user_credentials` row (§1.13).
+-- **Lifecycle:** created and kept in sync by the credentials-and-budgets workstream: re-written on `Store.Put` for the platform user's row and on encryption-key rotation; long-lived (not per-run), so harvest pods need no dispatch-time secret plumbing for it.
++- **Lifecycle:** created and kept in sync **bidirectionally** by the credentials-and-budgets workstream: re-written on `Store.Put` for the platform user's row and on encryption-key rotation; **and deleted when the platform credential is deleted from the vault** (`Store.Delete` for the platform user's row, e.g. via `fly agent auth --platform --delete`) — vault deletion removes this long-lived K8s secret. This propagates admin intent to the data plane (platform-funded pods can no longer authenticate) but does NOT revoke the upstream Anthropic token — the vault is only Concourse's store of it, so revocation at Anthropic is a separate, out-of-band admin action. Long-lived (not per-run), so harvest pods need no dispatch-time secret plumbing for it.
+ - **Consumption:** env `secretKeyRef` only (same rule as above), mounted exclusively into pods running platform-funded work — the harvest pod's judge (`CLAUDE_CODE_OAUTH_TOKEN`, §8.3) and retrospective/calibration jobs. Never mounted into agent-step pods, which carry only the per-run user credential.
+ 
+ ### 8.3 Harvest-only git credentials
+@@ -1527,7 +1527,7 @@ Set by the agent-step exec implementation (values resolved at render/dispatch ti
+ 9. Benchmark cases stored in DB, not in-repo (spec open item 6).
+ 10. MCP sidecars speak streamable HTTP on fixed ports 7780/7781/7782; discovery via env.
+ 11. dev-mcp result taxonomy `ok/failed/error` at payload level; MCP errors only for malformed input; progress notifications ≥ every 30s.
+-12. `ask_human` parks by blocking the MCP call over a long-poll route; checkpoints reuse the same table/mechanism with `kind=checkpoint`.
++12. `ask_human` parks by blocking the MCP call over a long-poll route; checkpoints reuse the same `agent_run_questions` table/park-resume route with `kind=checkpoint`, but render as a deterministic `atc.TaskStep` running `platform-mcp checkpoint` (exit 0 = approve, exit 1 = reject) — NOT an `atc.AgentStep`/LLM prompt; the `PLATFORM_MCP_CHECKPOINT`/`PLATFORM_MCP_CHECKPOINT_ON_REJECT` env vars are removed (read by nothing).
+ 13. Workflow grammar v1 is a linear sequence of `agent`/`checkpoint` steps; harvest appended implicitly; no branching/loops.
+ 14. Prompts inline in the workflow YAML (content hash covers them).
+ 15. Judge cited issues become `finding_type: "judge"` findings feeding the existing six-verdict feedback loop; dispositions stay ticket-level in `agent_outcomes`.
+@@ -1551,3 +1551,8 @@ Set by the agent-step exec implementation (values resolved at render/dispatch ti
+   - §8.2 / §8.3 / §1.13 / new decision 23 (affects: credentials-and-budgets, harvest-step, process-intel-experiments): defined the previously missing carrier for the platform Anthropic credential — long-lived `agent-platform-credential` secret.
+ - 2026-07-08: spec/plan delivery via granular platform-mcp read tools + optional file mount (affects: platform-mcp-hitl, dispatch, workflow-store, ticket-core-consumers). Supersedes the prior "rendered spec.md/plan.md as read-only workspace inputs via env vars AGENT_SPEC_MD/AGENT_PLAN_MD" design. §3.2: `read_ticket` returns envelope + spec **only** (tasks removed); added `list_tasks` (cheap skeleton) and `get_task` (one task with `detail_md`; unknown ordering → MCP tool error `isError=true`, matching how the shared `atc/api/mcpserver` surfaces handler errors — NOT a JSON-RPC `-32602` object); `update_task_status` unchanged (write-back, available in both delivery modes). §6: added optional top-level `spec_delivery: mcp|files` (default `mcp`; Go `workflow.Config.SpecDelivery`; normal hashed field; import validation rejects other values); seed-prompt convention now instructs the first agent step to begin with `read_ticket`/`list_tasks` (`get_task` per task). Default (`mcp`/empty) injects no spec/plan bytes into any step; `files` materializes read-only `spec.md`/`plan.md` (via `tickets.RenderSpecMarkdown`/`RenderPlanMarkdown`) mounted read-only as artifact `ticket`. §8.1 carries no `AGENT_SPEC_MD`/`AGENT_PLAN_MD` keys (never present here; dispatch deletes them where they existed). DB remains single source of truth; nothing flattened by default.
+ - 2026-07-08: `get_task` unknown-ordering error-mechanism correction (affects: platform-mcp-hitl). §3.2 previously promised an unknown `ordering` returns a JSON-RPC `-32602` error object, but the shared `atc/api/mcpserver` maps every tool handler's returned error to a `tools/call` result with `isError=true` (a successful call carrying error content) and only emits `-32602` for a malformed `tools/call` envelope — it has no path from a handler to a `-32602` error object (locked in by its committed tests). §3.2 now specifies an unknown ordering as an MCP tool error (`isError=true`), consistent with every other platform-mcp tool-validation error, and 08-platform-mcp-hitl's handler/tests assert the response carries NO top-level JSON-RPC error object plus `result.isError=true`.
++- 2026-07-09: design-review fixes F2, F11, F12, F1 (four corrections; the last co-signed):
++  - **F2** — §8.2 (ephemeral run secret, Lifecycle): reworded the misleading "during dispatch, before run creation" timing. The create→claim→attach order is deliberate and race-free: the secret is attached AFTER the queued→running claim is won (which records `pipeline_run_id` per §2.1) and BEFORE the build tracker schedules the entry-job pods, so `agent-run-<pipeline_run_id>` is known before any pod referencing it is scheduled. (Affects: credentials-and-budgets, dispatch, pipeline-runs. No contract-name changes.)
++  - **F11** — §8.2 (long-lived platform credential secret, Lifecycle): the `agent-platform-credential` sync contract is now stated **bidirectional** — vault deletion of the platform credential (`Store.Delete` for the platform user's row, e.g. `fly agent auth --platform --delete`) removes the long-lived K8s secret. Noted that this propagates admin intent to the data plane but does NOT revoke the upstream Anthropic token (the vault is only Concourse's store of it; upstream revocation is a separate out-of-band admin action). (Affects: credentials-and-budgets, harvest-step, process-intel-experiments.)
++  - **F12** — §8.1 (`AGENT_BUDGET_SLICE_USD` Meaning): corrected "gateway enforces" — the gateway enforces the slice **for sub-agent calls only**; the main agent's own spend is admission-gated (`Checker.StepSlice`, §2.7) + post-hoc reconciled at ingestion and turn/timeout-capped within a step, NOT cut off mid-call. (Affects: credentials-and-budgets, gateway-mcp, agent-step.)
++  - **F1** (co-signed: dispatch + platform-mcp-hitl) — §3.2 (Park/resume protocol), §5 (`checkpoint.wait`/`checkpoint.release`), decision 12: workflow CHECKPOINTS render as a deterministic `atc.TaskStep` invoking the platform-mcp client command `platform-mcp checkpoint` (exit 0 = approve, exit 1 = reject; exit-1 fails the task ⇒ build ⇒ run ⇒ ticket `needs_review`), NOT an `atc.AgentStep`/LLM prompt and NOT a call to a sidecar "internal `checkpoint` endpoint". The client inserts the `kind=checkpoint` `agent_run_questions` row, notifies (§8.4), and long-polls the same `.../questions/:qid` route as `ask_human`; it reads ticket/run identity from `AGENT_TICKET_ID`/`AGENT_PIPELINE_RUN_ID` (§8.1) and checkpoint name / reject-policy from argv (`on_reject`, §6.1). The `PLATFORM_MCP_CHECKPOINT` / `PLATFORM_MCP_CHECKPOINT_ON_REJECT` env vars are removed — they were read by nothing and never appeared in the §8.1 env table (no §8.1 row change needed). §5 checkpoint rows now state the step is exit-code-driven, not an LLM verdict.
+diff --git a/docs/superpowers/plans/agentic-platform/02-credentials-and-budgets.md b/docs/superpowers/plans/agentic-platform/02-credentials-and-budgets.md
+index 02eb8c1780..f0c94d99f5 100644
+--- a/docs/superpowers/plans/agentic-platform/02-credentials-and-budgets.md
++++ b/docs/superpowers/plans/agentic-platform/02-credentials-and-budgets.md
+@@ -3576,7 +3576,7 @@ git commit -m "feat(agent): ephemeral agent-run K8s secret attacher with idempot
+ 
+ ### Task 15: Platform-credential secret syncer (RunnableComponent)
+ 
+-§8.2 long-lived secret: keeps `agent-platform-credential` in sync with the `agent-platform` service user's vault row. Polling component (never notify-only — fork lesson), wired next to the K8s registrar/reaper in `atc/atccmd/command.go`.
++§8.2 long-lived secret: keeps `agent-platform-credential` in sync with the `agent-platform` service user's vault row. Sync is **bidirectional** (§8.2, amended 2026-07-09 in `00-shared-contracts.md`): credential vaulted → create/update the secret; credential absent → delete any existing secret so a revoked token can never be mounted. Polling component (never notify-only — fork lesson), wired next to the K8s registrar/reaper in `atc/atccmd/command.go`.
+ 
+ **Files:**
+ - Create: `agent/credentials/platform_syncer.go`
+@@ -3598,6 +3598,8 @@ import (
+ 
+ 	"code.cloudfoundry.org/lager/v3/lagertest"
+ 	"github.com/concourse/concourse/agent/credentials"
++	corev1 "k8s.io/api/core/v1"
++	apierrors "k8s.io/apimachinery/pkg/api/errors"
+ 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+ 	"k8s.io/client-go/kubernetes/fake"
+ )
+@@ -3656,15 +3658,47 @@ func TestSyncerNoopsWithoutPlatformCredential(t *testing.T) {
+ 		t.Fatal("secret must not exist when the vault has no platform credential")
+ 	}
+ }
++
++func TestSyncerDeletesSecretWhenCredentialUnvaulted(t *testing.T) {
++	// Seed the platform secret as if a prior sync (with a vaulted credential)
++	// had created it, then unvault the credential. Bidirectional sync (§8.2)
++	// requires the syncer to DELETE the now-stale secret so no pod can mount a
++	// revoked token.
++	syncer, _, clientset := newSyncerFixture(false)
++	seed := &corev1.Secret{
++		ObjectMeta: metav1.ObjectMeta{
++			Name:      credentials.PlatformSecretName,
++			Namespace: "concourse-workers",
++			Labels:    map[string]string{"concourse/agent-platform-credential": "true"},
++		},
++		Type:       corev1.SecretTypeOpaque,
++		StringData: map[string]string{"anthropic-token": "sk-stale"},
++	}
++	if _, err := clientset.CoreV1().Secrets("concourse-workers").
++		Create(context.Background(), seed, metav1.CreateOptions{}); err != nil {
++		t.Fatal(err)
++	}
++
++	if err := syncer.Run(context.Background()); err != nil {
++		t.Fatalf("unvaulted credential must not error the component: %v", err)
++	}
++
++	if _, err := clientset.CoreV1().Secrets("concourse-workers").
++		Get(context.Background(), credentials.PlatformSecretName, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
++		t.Fatalf("stale platform secret must be deleted after the credential is unvaulted, got err=%v", err)
++	}
++}
+ ```
+ 
++(`corev1` and `apierrors` are already in the import block above.)
++
+ - [ ] Run to verify it fails:
+ 
+ ```bash
+ go test ./agent/credentials/
+ ```
+ 
+-Expected failure: compile error `undefined: credentials.PlatformSecretSyncer`.
++Expected failure: compile error `undefined: credentials.PlatformSecretSyncer` (all four tests, including `TestSyncerDeletesSecretWhenCredentialUnvaulted`, fail to compile until the syncer exists). Once the syncer is written, `TestSyncerDeletesSecretWhenCredentialUnvaulted` is what drives the `!found` branch to DELETE rather than no-op — a no-op `!found` return leaves the seeded secret in place and fails the `IsNotFound` assertion.
+ 
+ - [ ] Write `agent/credentials/platform_syncer.go` (`PlatformUserSub`/`PlatformUserName` already live in `types.go`, Task 4):
+ 
+@@ -3732,7 +3766,20 @@ func (s *PlatformSecretSyncer) Run(ctx context.Context) error {
+ 	if !found {
+ 		// Not an error: the platform credential is provisioned by an admin
+ 		// running `fly agent auth --platform` (PutRequest.User = "platform").
+-		s.logger.Info("platform-credential-not-vaulted")
++		// Bidirectional sync (§8.2): if the credential was unvaulted (admin ran
++		// `fly agent auth --platform --delete`), the stale K8s secret MUST be
++		// removed so no pod can mount a revoked token. NotFound is tolerated —
++		// same idiom as the run-secret Cleanup path.
++		err := s.client.CoreV1().Secrets(s.namespace).Delete(ctx, PlatformSecretName, metav1.DeleteOptions{})
++		if apierrors.IsNotFound(err) {
++			s.logger.Info("platform-credential-not-vaulted")
++			return nil
++		}
++		if err != nil {
++			s.logger.Error("failed-to-delete-platform-secret", err)
++			return err
++		}
++		s.logger.Info("platform-secret-deleted")
+ 		return nil
+ 	}
+ 
+@@ -3822,7 +3869,7 @@ Expected: clean build.
+ ```bash
+ git add agent/credentials/platform_syncer.go agent/credentials/platform_syncer_test.go \
+         atc/component.go atc/atccmd/command.go
+-git commit -m "feat(atc): platform-credential secret syncer component"
++git commit -m "feat(atc): platform-credential secret syncer component (bidirectional: deletes secret on unvault)"
+ ```
+ 
+ ---
+@@ -5072,6 +5119,9 @@ If `ginkgo ./atc/db/` reports `database "testdb_template" already exists`, anoth
+ - Migrations: every `.up.sql` has an exact-inverse `.down.sql`; `concourse migrate --migrate-db-to-version 1773105504` returns to the pre-workstream schema. The 1773106022 down deletes the `agent-platform` users row (cascades its vault rows — intended).
+ - `atc/db/migration/encryption.go` rotation-list entry: safe to revert only together with dropping the vault table; with the table present, reverting reintroduces the silent-skip-on-rotation bug.
+ - `atc/wrappa` pass-through for `SubmitAgentCostRecord`: the handler enforces the static token; if the route must be disabled in an emergency, deploy with `--agent-review-publish-token=""` (both reviews and costs publishing turn off, returning 403).
+-- Platform syncer: removing the `RunnableComponent` block in `atccmd/command.go` disables it cleanly; the `agent-platform-credential` secret is inert data (delete with `kubectl delete secret agent-platform-credential -n <ns>`).
++- Platform syncer: removing the `RunnableComponent` block in `atccmd/command.go` disables it cleanly; the `agent-platform-credential` secret is inert data (delete with `kubectl delete secret agent-platform-credential -n <ns>`). Note: while the syncer is running it OWNS this secret bidirectionally — unvaulting the credential deletes the secret on the next pass (see the 2026-07-09 amendment below), so a manual `kubectl create` will be reaped unless a matching vault row exists.
++
++**Plan amendments:**
++- **2026-07-09 (design-review F11 — syncer deletes stale secret on unvault):** Task 15 `PlatformSecretSyncer.Run` no longer no-ops when the platform credential is absent. The `!found` branch now DELETEs any existing `agent-platform-credential` K8s secret (NotFound-tolerant, reusing the run-secret `Cleanup` idiom) so a revoked/unvaulted token can never remain mountable. Sync is now bidirectional: vaulted → create/update; absent → delete-if-present. Added failing test `TestSyncerDeletesSecretWhenCredentialUnvaulted` (seeds the secret, runs with no vaulted credential, asserts `IsNotFound`); the test file gains `corev1`/`apierrors` imports. The §8.2 bidirectional-sync contract text is amended in `00-shared-contracts.md` by the shared-contracts editor (same date); this plan references it and keeps `agent-platform-credential` / `anthropic-token` names identical.
+ - ci-agent feed: reverting the `--costs` flag from `ci/tasks/ci-agent-review.yml` stops ledger writes without code changes (publish skips when the flag is absent).
+ - `fly status` nag degrades silently against older ATCs (any error from the credentials route is swallowed), so fly/web version skew is safe in both directions.
+diff --git a/docs/superpowers/plans/agentic-platform/05-workflow-store.md b/docs/superpowers/plans/agentic-platform/05-workflow-store.md
+index 63419f0ff5..c96caf7394 100644
+--- a/docs/superpowers/plans/agentic-platform/05-workflow-store.md
++++ b/docs/superpowers/plans/agentic-platform/05-workflow-store.md
+@@ -548,6 +548,10 @@ func TestValidateRejects(t *testing.T) {
+ 		{"bad on_reject", mutate(t, "on_reject: fail", "on_reject: retry"), "on_reject"},
+ 		{"bad ask_timeout", mutate(t, "ask_timeout: park", "ask_timeout: snooze"), "ask_timeout"},
+ 		{"negative ask_timeout_seconds", mutate(t, "ask_timeout_seconds: 0", "ask_timeout_seconds: -5"), "ask_timeout_seconds"},
++		// default/fail timeout policy with a non-positive deadline never fires —
++		// the ask parks forever, defeating the policy. Reject it at import.
++		{"default ask_timeout with zero seconds", mutate(t, "ask_timeout: park", "ask_timeout: default"), "requires ask_timeout_seconds > 0"},
++		{"fail ask_timeout with zero seconds", mutate(t, "ask_timeout: park", "ask_timeout: fail"), "requires ask_timeout_seconds > 0"},
+ 		{"bad gate name", mutate(t, "- gate: lint", "- gate: vibes"), "gate"},
+ 		{"bad gate scope", mutate(t, "scope: affected_then_full", "scope: sometimes"), "scope"},
+ 		{"bad gate timeout", mutate(t, "timeout: 45m", "timeout: eventually"), "timeout"},
+@@ -731,6 +735,13 @@ func (c *Config) Validate() error {
+ 	if c.HITL.AskTimeoutSeconds < 0 {
+ 		return fmt.Errorf("workflow: hitl.ask_timeout_seconds must be >= 0")
+ 	}
++	// A default/fail timeout policy needs a positive deadline to act on: with
++	// ask_timeout_seconds <= 0 the ask never times out, so the policy never
++	// fires and the run parks forever anyway — the opposite of what the author
++	// asked for. Reject the incoherent combination loudly at import instead.
++	if (c.HITL.AskTimeout == "default" || c.HITL.AskTimeout == "fail") && c.HITL.AskTimeoutSeconds <= 0 {
++		return fmt.Errorf("workflow: hitl.ask_timeout %q requires ask_timeout_seconds > 0 (got %d) — otherwise the ask never times out and the run parks forever", c.HITL.AskTimeout, c.HITL.AskTimeoutSeconds)
++	}
+ 
+ 	for i, g := range c.GatePolicy.Gates {
+ 		if !validGates[g.Gate] {
+@@ -2540,6 +2551,7 @@ package workflow_test
+ 
+ import (
+ 	"os"
++	"strings"
+ 	"testing"
+ 
+ 	"github.com/concourse/concourse/agent/workflow"
+@@ -2585,6 +2597,30 @@ func TestSeedStandardDevValidates(t *testing.T) {
+ 		t.Error("seed must declare the judge rubric slot")
+ 	}
+ 
++	// The seed omits spec_delivery, so it must resolve to the default "mcp"
++	// read model — the reference workflow demonstrates the default path.
++	resolved := cfg.SpecDelivery
++	if resolved == "" {
++		resolved = "mcp"
++	}
++	if resolved != "mcp" {
++		t.Errorf("seed spec_delivery must resolve to mcp (default path), got %q", resolved)
++	}
++	// Coherence: under the mcp read model no spec/plan bytes are injected, so
++	// no prompt body may point agents at spec.md/plan.md files or embed the
++	// bare {{.Spec}}/{{.Tasks}} tokens — those belong only to spec_delivery:
++	// files. Agents must read via platform-mcp read_ticket/list_tasks/get_task.
++	if resolved == "mcp" {
++		forbidden := []string{"spec.md", "plan.md", "{{.Spec}}", "{{.Tasks}}"}
++		for name, body := range cfg.Prompts {
++			for _, tok := range forbidden {
++				if strings.Contains(body, tok) {
++					t.Errorf("prompt %q contains %q, incoherent with spec_delivery=mcp (read via platform-mcp read_ticket/list_tasks/get_task)", name, tok)
++				}
++			}
++		}
++	}
++
+ 	// The hash is the provenance unit: 64 hex chars over the exact bytes.
+ 	if len(workflow.Hash(raw)) != 64 {
+ 		t.Error("content hash must be a 64-char sha256 hex")
+@@ -2633,23 +2669,27 @@ prompts:
+     humans rely on them.
+   implement: |
+     You are an implementation agent working in the workspace repository.
+-    The approved spec and plan are in spec.md and plan.md. For each task in
+-    {{.Tasks}}, follow TDD red-green-refactor: write the failing test, make
+-    it pass minimally, refactor. After each task, run dev-mcp run_tests with
+-    the affected components and mark the task done with platform-mcp
+-    update_task_status. Commit after each green task.
++    Read the approved spec with platform-mcp read_ticket and the task list
++    with platform-mcp list_tasks (call get_task per task for its detail as
++    you reach it). For each task, follow TDD red-green-refactor: write the
++    failing test, make it pass minimally, refactor. After each task, run
++    dev-mcp run_tests with the affected components and mark the task done
++    with platform-mcp update_task_status. Commit after each green task.
+   qa: |
+-    You are a QA agent. Compare the implementation in the workspace against
+-    the acceptance criteria in {{.Spec}}. Identify untested behaviors and
+-    add meaningful coverage for them. Run dev-mcp run_tests on affected
+-    components, then the full suite. Fix any test you added that fails;
+-    report (do not fix) production defects you find, in the workspace notes.
++    You are a QA agent. Read the acceptance criteria with platform-mcp
++    read_ticket and the tasks with platform-mcp list_tasks / get_task, then
++    compare the implementation in the workspace against them. Identify
++    untested behaviors and add meaningful coverage for them. Run dev-mcp
++    run_tests on affected components, then the full suite. Fix any test you
++    added that fails; report (do not fix) production defects you find, in
++    the workspace notes.
+   review: |
+-    You are a code-review agent. Review the workspace diff against the base
+-    branch for correctness bugs, missing coverage, and scope creep relative
+-    to {{.Spec}}. For each finding, verify it by writing or running a test
+-    through dev-mcp before reporting. Write findings to review.json in the
+-    workspace.
++    You are a code-review agent. Read the spec and tasks with platform-mcp
++    read_ticket and list_tasks / get_task, then review the workspace diff
++    against the base branch for correctness bugs, missing coverage, and
++    scope creep relative to that spec. For each finding, verify it by
++    writing or running a test through dev-mcp before reporting. Write
++    findings to review.json in the workspace.
+   fix: |
+     You are a fix agent. Read review.json in the workspace. Apply fixes for
+     verified findings only, one commit per finding, re-running dev-mcp
+@@ -2768,3 +2808,7 @@ Never pass `--race` to the Ginkgo suites (parallel compilation failures, per CLA
+ ## Addendum
+ 
+ - **2026-07-08 (spec/plan delivery model — frozen delta):** Added the optional top-level `spec_delivery` grammar field to `workflow.Config` (Go `SpecDelivery string`, yaml/json `spec_delivery,omitempty`; values `""`/`mcp`/`files`, empty ⇒ `mcp`). Write-time validation (Task 4 `Config.Validate`) accepts only those three values and rejects any other; it is a normal hashed field (participates in the content hash like every other YAML key). This plan owns the grammar slot only — the field is INERT here (workflow-store never renders). It is consumed by **dispatch's renderer** (11-dispatch, which reads `SpecDelivery` to pick the read model: `mcp` injects no spec/plan bytes and DELETEs the old `AGENT_SPEC_MD`/`AGENT_PLAN_MD` env keys — agents read via the platform-mcp `read_ticket`/`list_tasks`/`get_task` tools; `files` materializes read-only `spec.md`/`plan.md` mounted as the `ticket` artifact) and is referenced by **contracts §6** (grammar mirror). Supersedes the prior "rendered spec.md/plan.md delivered via env vars" design so the DB stays the single source of truth and nothing is flattened by default. Affected workstreams: platform-mcp-hitl, dispatch, workflow-store, ticket-core-consumers. Edits landed: `Config` struct field (Task 3), `Validate` accept/reject rule (Task 4), Task 3 happy-path default-case assertion, Task 4 reject case + `files` accept assertion, and the Task 1 slot-shape freeze + §11 amendment-log entries.
++
++- **2026-07-09 (design-review F5 — seed prompt/delivery coherence, WAVE-1 blocker):** The `standard-dev` seed omits `spec_delivery`, so it resolves to the default `mcp` read model — but its Task 8 `implement`/`qa`/`review` prompts still told agents "the approved spec and plan are in spec.md and plan.md" and embedded the bare `{{.Spec}}`/`{{.Tasks}}` template tokens, which are only populated under `spec_delivery: files`. Under `mcp` no spec/plan bytes are injected, so those prompts pointed the reference workflow (the exemplar every import copies) at files that never exist. Rewrote all three prompts to the default MCP read model — read via platform-mcp `read_ticket` / `list_tasks` / `get_task`, mirroring the `plan` prompt — and dropped every `spec.md`/`plan.md`/`{{.Spec}}`/`{{.Tasks}}` reference from the seed body. The seed stays on the default path (NOT switched to `files`) so it demonstrates the reference read model. Guarded by a new coherence assertion in `TestSeedStandardDevValidates` (Task 8): resolve `spec_delivery` (empty ⇒ `mcp`) and, when it is `mcp`, fail if any `cfg.Prompts` body contains `"spec.md"`, `"plan.md"`, `"{{.Spec}}"`, or `"{{.Tasks}}"` (added `"strings"` import). Affected workstreams: dispatch (renderer contract unchanged — this only aligns the seed prose with the already-frozen `mcp` model), platform-mcp-hitl (read-tool surface). Edits landed: seed `implement`/`qa`/`review` prompt bodies (Task 8 yaml), `TestSeedStandardDevValidates` coherence assertion + `strings` import (Task 8 test).
++
++- **2026-07-09 (design-review F7 — ask_timeout cross-field validation):** `Config.Validate` (Task 4) validated `hitl.ask_timeout` (enum) and `hitl.ask_timeout_seconds` (>= 0) independently, so a definition with `ask_timeout: default` or `ask_timeout: fail` and `ask_timeout_seconds: 0` (or any value <= 0) passed import — yet that combination never times out, so the timeout policy never fires and the run silently parks forever, the exact opposite of what `default`/`fail` request. Added a cross-field rule after the two existing checks that REJECTS `ask_timeout ∈ {default, fail}` with `ask_timeout_seconds <= 0`, failing loudly at import. `park` (with or without a deadline) is unaffected, so the seed (`ask_timeout: park`, `ask_timeout_seconds: 0`) still validates. Guarded by two new `TestValidateRejects` cases (Task 4): mutate the fixture's `ask_timeout: park` to `default` and to `fail` (leaving `ask_timeout_seconds: 0`), each expecting the substring `requires ask_timeout_seconds > 0`. Affected workstreams: platform-mcp-hitl (consumes the `hitl` block; this only tightens import validation, no shape change). Edits landed: `Config.Validate` cross-field check (Task 4 parse.go), two `TestValidateRejects` cases (Task 4 test).
+diff --git a/docs/superpowers/plans/agentic-platform/07-agent-step.md b/docs/superpowers/plans/agentic-platform/07-agent-step.md
+index 91fff7276a..a4092c85bf 100644
+--- a/docs/superpowers/plans/agentic-platform/07-agent-step.md
++++ b/docs/superpowers/plans/agentic-platform/07-agent-step.md
+@@ -609,7 +609,7 @@ DROP TABLE agent_run_metrics;
+ 
+ ### Task 7: `agent/api/metrics` — Store interface, submission parsing, memory store, HTTP handler
+ 
+-Follows the `agent/api/reviews` idiom exactly (types + `Store` + `memory_store.go` + `handler.go`, `r.FormValue(":ticket_id")` for rata params).
++Follows the `agent/api/reviews` idiom exactly (types + `Store` + `memory_store.go` + `handler.go`, `r.FormValue(":ticket_id")` for rata params). The `Store` interface carries both `Upsert(rm) error` (the convenience form consumed by harvest-step and delivery-outcomes) and `UpsertReturningInserted(rm) (bool, error)` (a first-insert discriminator consumed by Task 13's ledger-dedup gate, finding F3) — additive, so existing consumers and the `metricsfakes.FakeStore` `Upsert*` methods are unchanged.
+ 
+ **Files:**
+ - Create: `agent/api/metrics/types.go`
+@@ -674,6 +674,16 @@ type Store interface {
+ 	// (BuildID, PlanID) key. Ingestion is idempotent across step retries
+ 	// and web-restart resumes.
+ 	Upsert(rm *schema.RunMetrics) error
++	// UpsertReturningInserted is Upsert with a first-insert discriminator:
++	// inserted is true only when the row was newly INSERTed (the
++	// ON CONFLICT (build_id, plan_id) clause did NOT fire), and false on a
++	// resume/retry that updated an existing row. The append-only
++	// agent_cost_ledger has no dedup key of its own (§1.4), so callers that
++	// append a ledger row per ingestion (Task 13) gate that append on this
++	// flag to charge each (build_id, plan_id) exactly once across web-restart
++	// resumes — reusing the metrics table's unique key as the single dedup
++	// authority. Upsert is Upsert(rm) = { _, err := UpsertReturningInserted(rm); return err }.
++	UpsertReturningInserted(rm *schema.RunMetrics) (inserted bool, err error)
+ 	// GetByBuild returns rows for a build, oldest-first.
+ 	GetByBuild(buildID int) ([]schema.RunMetrics, error)
+ 	// ListByTicket returns rows for a ticket, oldest-first.
+@@ -783,15 +793,21 @@ func NewMemoryStore() *MemoryStore {
+ }
+ 
+ func (s *MemoryStore) Upsert(rm *schema.RunMetrics) error {
++	_, err := s.UpsertReturningInserted(rm)
++	return err
++}
++
++func (s *MemoryStore) UpsertReturningInserted(rm *schema.RunMetrics) (bool, error) {
+ 	s.mu.Lock()
+ 	defer s.mu.Unlock()
+ 	key := [2]any{rm.BuildID, rm.PlanID}
+-	if _, ok := s.rows[key]; !ok {
++	_, existed := s.rows[key]
++	if !existed {
+ 		s.seq++
+ 		s.ord[key] = s.seq
+ 	}
+ 	s.rows[key] = *rm
+-	return nil
++	return !existed, nil
+ }
+ 
+ func (s *MemoryStore) GetByBuild(buildID int) ([]schema.RunMetrics, error) {
+@@ -898,7 +914,7 @@ func (h *Handler) ListByTicket(w http.ResponseWriter, r *http.Request) {
+ 
+ ### Task 8: `atc/db` AgentRunMetricsFactory
+ 
+-Implements `metrics.Store` with squirrel, upsert `ON CONFLICT (build_id, plan_id)`, epoch-seconds scan — the `agent_reviews_factory.go` recipe (atc/db/agent_reviews_factory.go:26 Upsert, :61 column scan).
++Implements `metrics.Store` with squirrel, upsert `ON CONFLICT (build_id, plan_id)`, epoch-seconds scan — the `agent_reviews_factory.go` recipe (atc/db/agent_reviews_factory.go:26 Upsert, :61 column scan). The upsert also returns a first-insert discriminator (`UpsertReturningInserted`, via `RETURNING (xmax = 0)`) that Task 13 gates the append-only ledger write on (finding F3).
+ 
+ **Files:**
+ - Create: `atc/db/agent_run_metrics_factory.go`
+@@ -940,11 +956,15 @@ var _ = Describe("AgentRunMetricsFactory", func() {
+ 			EventsArtifact: "vol-1",
+ 			EventCounts:    map[string]int{"tool.call": 4},
+ 		}
+-		Expect(factory.Upsert(rm)).To(Succeed())
++		inserted, err := factory.UpsertReturningInserted(rm)
++		Expect(err).ToNot(HaveOccurred())
++		Expect(inserted).To(BeTrue()) // first insert on (build_id, plan_id) 42/5f2a
+ 
+ 		rm.Summary = "second"
+ 		rm.CostUSD = 0.43
+-		Expect(factory.Upsert(rm)).To(Succeed())
++		inserted, err = factory.UpsertReturningInserted(rm)
++		Expect(err).ToNot(HaveOccurred())
++		Expect(inserted).To(BeFalse()) // ON CONFLICT fired — resume/retry, not a new row
+ 
+ 		rows, err := factory.ListByTicket(7)
+ 		Expect(err).ToNot(HaveOccurred())
+@@ -1000,11 +1020,24 @@ type agentRunMetricsFactory struct {
+ }
+ 
+ func (f *agentRunMetricsFactory) Upsert(rm *schema.RunMetrics) error {
++	_, err := f.UpsertReturningInserted(rm)
++	return err
++}
++
++// UpsertReturningInserted performs the ON CONFLICT (build_id, plan_id) upsert and
++// reports whether the row was newly inserted. The discriminator is Postgres's
++// system column `xmax`: on a fresh INSERT the tuple has no prior version so
++// `xmax = 0`; when the ON CONFLICT DO UPDATE fires, the update replaces an
++// existing tuple and `xmax <> 0`. `RETURNING (xmax = 0) AS inserted` therefore
++// distinguishes a first insert from a resume/retry update in the same statement,
++// with no extra round-trip. Callers gate the append-only ledger write on this
++// flag so a web-restart resume never double-charges (§1.4 has no ledger dedup key).
++func (f *agentRunMetricsFactory) UpsertReturningInserted(rm *schema.RunMetrics) (bool, error) {
+ 	var eventCounts, results any
+ 	if rm.EventCounts != nil {
+ 		b, err := json.Marshal(rm.EventCounts)
+ 		if err != nil {
+-			return err
++			return false, err
+ 		}
+ 		eventCounts = b
+ 	}
+@@ -1012,7 +1045,8 @@ func (f *agentRunMetricsFactory) Upsert(rm *schema.RunMetrics) error {
+ 		results = []byte(rm.Results)
+ 	}
+ 
+-	_, err := psql.Insert("agent_run_metrics").
++	var inserted bool
++	err := psql.Insert("agent_run_metrics").
+ 		Columns(
+ 			"ticket_id", "pipeline_run_id", "build_id", "plan_id", "step_name",
+ 			"workflow_name", "workflow_version", "workflow_hash",
+@@ -1048,10 +1082,12 @@ func (f *agentRunMetricsFactory) Upsert(rm *schema.RunMetrics) error {
+ 			cost_usd = EXCLUDED.cost_usd,
+ 			results = EXCLUDED.results,
+ 			events_artifact = EXCLUDED.events_artifact,
+-			event_counts = EXCLUDED.event_counts`).
++			event_counts = EXCLUDED.event_counts
++		RETURNING (xmax = 0) AS inserted`).
+ 		RunWith(f.conn).
+-		Exec()
+-	return err
++		QueryRow().
++		Scan(&inserted)
++	return inserted, err
+ }
+ 
+ const runMetricsColumns = `m.ticket_id, m.pipeline_run_id, m.build_id, m.plan_id, m.step_name,
+@@ -1117,7 +1153,7 @@ func scanRunMetricsRows(rows *sql.Rows) ([]schema.RunMetrics, error) {
+ 
+   Note: `cost_usd NUMERIC` scans into `float64` — match `agent_reviews`' handling (its `score` column scans into float64 directly and works in production); if the driver rejects NUMERIC→float64 here, scan into `[]byte` + `strconv.ParseFloat` instead.
+ - [ ] Run `ginkgo --focus="AgentRunMetricsFactory" ./atc/db/` — expect pass (full suite: `ginkgo ./atc/db/`, ~90s).
+-- [ ] Commit: `git add atc/db && git commit -m "feat(db): AgentRunMetricsFactory implementing metrics.Store"`
++- [ ] Commit: `git add atc/db && git commit -m "feat(db): AgentRunMetricsFactory implementing metrics.Store (with first-insert discriminator for ledger dedup, F3)"`
+ 
+ ---
+ 
+@@ -1692,6 +1728,10 @@ func (step *AgentStep) Run(ctx context.Context, state RunState) (bool, error) {
+ 
+ The ingestion-before-GC guarantee: ingestion runs synchronously inside `Run` before the step returns, reading from the just-registered `flight` output volume via `Streamer.StreamFile` (the DaemonSet fabric path — same seam `LoadVarStep` uses at load_var_step.go:138). Tolerant of crashed agents: missing/malformed files or a stream without `step.end` produce a `status=error` row; ingest failures never fail the step; a fire-and-forget ledger record lands cost in `agent_cost_ledger`.
+ 
++Two resume/timeout invariants this task must hold (design-review findings F3/F4, 2026-07-09):
++- **F3 — ledger charged exactly once.** The metrics row is idempotent under `ON CONFLICT (build_id, plan_id)`, but `agent_cost_ledger` is append-only with no dedup key (§1.4), so a web-restart resume (which re-runs the whole `Step.Run`: re-attach → `process.Wait` → re-register outputs → re-ingest) would double-append the cost row and inflate spend against both the per-ticket budget and the global daily cap. The ledger append is therefore gated on a first-insert discriminator returned by the metrics upsert (`Store.UpsertReturningInserted`, Task 7/8), reusing the `(build_id, plan_id)` key as the single dedup authority — no ledger schema change, and the gateway's own `source='gateway'` rows for the same build/plan are untouched.
++- **F4 — timed-out steps still measured.** Ingestion is called on the `DeadlineExceeded` path too, but the step's `ctx` is the timeout-scoped context (already expired), so reading through it would fail both `StreamFile` calls and record a zero-cost `status=error` row with no ledger entry — losing measurement on exactly the costliest (runaway) steps. `ingestFlightRecorder` therefore detaches from the deadline (`context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)`) before the reads.
++
+ **Files:**
+ - Modify: `atc/exec/agent_step.go` (add `ingestFlightRecorder` + call it from `run` after output registration)
+ - Test: `atc/exec/agent_step_test.go` (ingestion contexts)
+@@ -1702,14 +1742,21 @@ The ingestion-before-GC guarantee: ingestion runs synchronously inside `Run` bef
+   - `results.json` → `{"schema_version":"1.0","status":"pass","confidence":1,"summary":"done","artifacts":[]}`
+   - `events.ndjson` → four NDJSON lines: `step.start` (`{"step_name":"write-spec","build_id":1,"plan_id":"p"}`), `tool.call` (`{"tool":"run_tests"}`), `cost.record` (`{"source":"agent_step","provider":"anthropic","model":"m1","input_tokens":100,"output_tokens":50,"cache_read_tokens":1,"cache_creation_tokens":2,"turns":9,"cost_usd":0.42}`), `step.end` (`{"step_name":"write-spec","status":"ok","summary":"done","wall_time_seconds":61,"cost_usd":0.42,"turns":9}`).
+ 
++  Ingestion now calls `Store.UpsertReturningInserted` (Task 7), not `Upsert`, so assert against the counterfeiter fake's `UpsertReturningInserted*` methods. In the `BeforeEach`, default the fake to a fresh insert: `fakeMetricsStore.UpsertReturningInsertedReturns(true, nil)` — the ledger append is gated on that flag (finding F3), so the first `Run` in each spec must see `inserted=true`.
++
+ ```go
+ 	Context("flight-recorder ingestion", func() {
++		BeforeEach(func() {
++			// first ingestion of a (build_id, plan_id) is always a fresh insert
++			fakeMetricsStore.UpsertReturningInsertedReturns(true, nil)
++		})
++
+ 		It("upserts a RunMetrics row before Run returns", func() {
+ 			ok, err := step.Run(ctx, state)
+ 			Expect(err).ToNot(HaveOccurred())
+ 			Expect(ok).To(BeTrue())
+-			Expect(fakeMetricsStore.UpsertCallCount()).To(Equal(1))
+-			rm := fakeMetricsStore.UpsertArgsForCall(0)
++			Expect(fakeMetricsStore.UpsertReturningInsertedCallCount()).To(Equal(1))
++			rm := fakeMetricsStore.UpsertReturningInsertedArgsForCall(0)
+ 			Expect(rm.Status).To(Equal("ok"))
+ 			Expect(rm.BuildID).To(Equal(stepMetadata.BuildID))
+ 			Expect(rm.PlanID).To(Equal(string(planID)))
+@@ -1725,7 +1772,7 @@ The ingestion-before-GC guarantee: ingestion runs synchronously inside `Run` bef
+ 		It("records an error row when events.ndjson has no step.end", func() {
+ 			// events fixture truncated after tool.call
+ 			step.Run(ctx, state)
+-			rm := fakeMetricsStore.UpsertArgsForCall(0)
++			rm := fakeMetricsStore.UpsertReturningInsertedArgsForCall(0)
+ 			Expect(rm.Status).To(Equal("error"))
+ 			Expect(rm.EventCounts).To(HaveKeyWithValue("tool.call", 1)) // partial counts kept
+ 		})
+@@ -1735,16 +1782,18 @@ The ingestion-before-GC guarantee: ingestion runs synchronously inside `Run` bef
+ 			ok, err := step.Run(ctx, state)
+ 			Expect(err).ToNot(HaveOccurred())
+ 			Expect(ok).To(BeTrue()) // exit status still drives step success
+-			rm := fakeMetricsStore.UpsertArgsForCall(0)
++			rm := fakeMetricsStore.UpsertReturningInsertedArgsForCall(0)
+ 			Expect(rm.Status).To(Equal("error"))
+ 			Expect(rm.Summary).To(ContainSubstring("flight recorder"))
+ 		})
+ 
+ 		It("never fails the step when the metrics upsert errors", func() {
+-			fakeMetricsStore.UpsertReturns(errors.New("db down"))
++			fakeMetricsStore.UpsertReturningInsertedReturns(false, errors.New("db down"))
+ 			ok, err := step.Run(ctx, state)
+ 			Expect(err).ToNot(HaveOccurred())
+ 			Expect(ok).To(BeTrue())
++			// upsert failure ⇒ inserted=false ⇒ no ledger append (cannot prove first-insert)
++			Expect(fakeChecker.RecordCallCount()).To(Equal(0))
+ 		})
+ 
+ 		It("records a fire-and-forget ledger entry when cost was incurred", func() {
+@@ -1755,13 +1804,62 @@ The ingestion-before-GC guarantee: ingestion runs synchronously inside `Run` bef
+ 		It("maps abstain results to failed", func() {
+ 			// results.json fixture status "abstain"
+ 			step.Run(ctx, state)
+-			Expect(fakeMetricsStore.UpsertArgsForCall(0).Status).To(Equal("failed"))
++			Expect(fakeMetricsStore.UpsertReturningInsertedArgsForCall(0).Status).To(Equal("failed"))
++		})
++
++		// --- finding F3: ledger charged exactly once across a web-restart resume ---
++		It("appends the ledger entry exactly once across two Run invocations (resume)", func() {
++			// First Run: fresh insert → ledger append fires.
++			fakeMetricsStore.UpsertReturningInsertedReturns(true, nil)
++			_, err := step.Run(ctx, state)
++			Expect(err).ToNot(HaveOccurred())
++
++			// Web restart: Step.Run re-executes, re-attaches, re-ingests. The
++			// metrics upsert now hits ON CONFLICT and reports inserted=false.
++			fakeMetricsStore.UpsertReturningInsertedReturns(false, nil)
++			_, err = step.Run(ctx, state)
++			Expect(err).ToNot(HaveOccurred())
++
++			Expect(fakeMetricsStore.UpsertReturningInsertedCallCount()).To(Equal(2)) // upsert idempotent, both runs
++			Expect(fakeChecker.RecordCallCount()).To(Equal(1))                       // ledger charged ONCE
++		})
++
++		// --- finding F4: timed-out step still records pre-timeout cost + ledger ---
++		It("still ingests cost/tokens and records the ledger when the step times out", func() {
++			// runtimetest.ProcessStub.Err is a plain string, so use the Call hook
++			// to return the sentinel context.DeadlineExceeded from Wait (matching
++			// what MaybeTimeout's cancelled ctx surfaces). The flight volume stays
++			// fully populated — the runner flushed before the kill. ctx into Run is
++			// the expired timeout context, so ingestFlightRecorder must detach from
++			// it (WithoutCancel) or both StreamFile reads fail.
++			chosenContainer.WithProcess(
++				runtime.ProcessSpec{ID: "agent"},
++				runtimetest.ProcessStub{
++					Call: func(context.Context, *runtimetest.Process) (runtime.ProcessResult, error) {
++						return runtime.ProcessResult{}, context.DeadlineExceeded
++					},
++				},
++			)
++
++			ok, err := step.Run(ctx, state)
++			Expect(err).ToNot(HaveOccurred())
++			Expect(ok).To(BeFalse()) // timeout ⇒ step not successful
++
++			Expect(fakeMetricsStore.UpsertReturningInsertedCallCount()).To(Equal(1))
++			rm := fakeMetricsStore.UpsertReturningInsertedArgsForCall(0)
++			Expect(rm.CostUSD).To(BeNumerically("~", 0.42, 1e-9)) // pre-timeout cost preserved
++			Expect(rm.Turns).To(Equal(9))
++			Expect(rm.Usage.InputTokens).To(Equal(int64(100)))
++			Expect(rm.EventCounts).To(HaveKeyWithValue("tool.call", 1))
++			Expect(fakeChecker.RecordCallCount()).To(Equal(1)) // ledger entry recorded despite timeout
+ 		})
+ 	})
+ ```
+ 
+-- [ ] Run `ginkgo --focus="ingestion" ./atc/exec/` — expect failure.
+-- [ ] Implement in `atc/exec/agent_step.go` and call it from `run` immediately after output registration (step 10 of Task 12), on every path where the container ran — including the `DeadlineExceeded` branch — before the exit handling returns:
++  The F4 spec depends on the streamer fixture ignoring context cancellation — the fake `StreamFileStub` returns its reader regardless of the passed `ctx`, which is exactly the point: the production `Streamer` would fail on the expired `ctx`, and the fix is that `ingestFlightRecorder` never passes it one. If the existing test harness wires `fakeStreamer.StreamFileStub` to honor `ctx.Err()`, have it return the fixture reader when the context is live and an error otherwise — the detached `ingestCtx` keeps it live, so the assertion still holds and the pre-fix code (which threaded the expired `ctx`) fails it.
++
++- [ ] Run `ginkgo --focus="ingestion" ./atc/exec/` — expect failure (undefined `UpsertReturningInserted*` fake methods until Task 7's fake is regenerated; then the two new specs fail against pre-fix behavior).
++- [ ] Implement in `atc/exec/agent_step.go` and call it from `run` immediately after output registration (step 10 of Task 12), on every path where the container ran — including the `DeadlineExceeded` branch — before the exit handling returns. Pass the same timeout-scoped `ctx` you have in scope: `ingestFlightRecorder` **internally detaches** it (`context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)`) so a timed-out step still ingests its pre-timeout cost/tokens rather than reading through an already-cancelled deadline (finding F4). Do NOT pre-detach at the call site — the detach lives inside `ingestFlightRecorder` so both callers (normal + timeout) get it for free.
+ 
+ ```go
+ // ingestFlightRecorder reads flight/results.json and flight/events.ndjson
+@@ -1782,6 +1880,18 @@ func (step *AgentStep) ingestFlightRecorder(
+ 		return
+ 	}
+ 
++	// Detach from the step deadline. `ctx` is the timeout-scoped context from
++	// MaybeTimeout (Task 12 step 8); on the DeadlineExceeded path it is already
++	// cancelled, and every StreamFile call threads ctx down to
++	// http.NewRequestWithContext, so both reads below would fail instantly and a
++	// timed-out step — the costliest, most measurement-critical case — would
++	// record a bare status=error row with zero cost/tokens/event_counts and no
++	// ledger entry. WithoutCancel keeps the request-scoped values (tracing,
++	// lager) while dropping the deadline; the fresh 30s bound keeps ingestion
++	// (which blocks the build from completing) from hanging on a wedged fabric.
++	ingestCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
++	defer cancel()
++
+ 	rm := schema.RunMetrics{
+ 		BuildID:         step.metadata.BuildID,
+ 		PlanID:          string(step.planID),
+@@ -1814,7 +1924,7 @@ func (step *AgentStep) ingestFlightRecorder(
+ 
+ 	if flightArtifact != nil {
+ 		// results.json
+-		if rc, err := step.streamer.StreamFile(ctx, flightArtifact, "results.json"); err == nil {
++		if rc, err := step.streamer.StreamFile(ingestCtx, flightArtifact, "results.json"); err == nil {
+ 			raw, readErr := io.ReadAll(io.LimitReader(rc, 5<<20))
+ 			rc.Close()
+ 			var results schema.Results
+@@ -1832,7 +1942,7 @@ func (step *AgentStep) ingestFlightRecorder(
+ 		}
+ 
+ 		// events.ndjson: counts + cost rollup + step.end detection
+-		if rc, err := step.streamer.StreamFile(ctx, flightArtifact, "events.ndjson"); err == nil {
++		if rc, err := step.streamer.StreamFile(ingestCtx, flightArtifact, "events.ndjson"); err == nil {
+ 			counts := map[string]int{}
+ 			sawStepEnd := false
+ 			reader := schema.NewEventReader(rc)
+@@ -1877,11 +1987,21 @@ func (step *AgentStep) ingestFlightRecorder(
+ 		}
+ 	}
+ 
+-	if err := step.metricsStore.Upsert(&rm); err != nil {
++	// Upsert reports whether THIS ingestion inserted the row (inserted=true) or
++	// updated an existing one (inserted=false, i.e. a web-restart resume: the
++	// whole Step.Run re-executes, re-attaches, and re-ingests). The metrics row
++	// is idempotent under ON CONFLICT (build_id, plan_id), but agent_cost_ledger
++	// is append-only with no dedup key (§1.4) — so the ledger append below is
++	// gated on `inserted` to charge each step exactly once. On a metrics-store
++	// error inserted is false, so a failed upsert also skips the ledger append
++	// (we cannot prove first-insert), preserving "every dollar enters the ledger
++	// exactly once" over "at least once".
++	inserted, err := step.metricsStore.UpsertReturningInserted(&rm)
++	if err != nil {
+ 		logger.Error("failed-to-ingest-run-metrics", err)
+ 	}
+ 
+-	if step.budgetChecker != nil && rm.CostUSD > 0 {
++	if inserted && step.budgetChecker != nil && rm.CostUSD > 0 {
+ 		entry := budget.LedgerEntry{
+ 			// field names mirror agent_cost_ledger columns (contracts §1.4/§2.7);
+ 			// align to the exact struct credentials-and-budgets landed.
+@@ -1920,7 +2040,7 @@ func envInt(env map[string]string, key string) (int, bool) {
+ 
+   Step success remains purely a function of the process exit status — ingestion never changes the return values.
+ - [ ] Run `ginkgo ./atc/exec/` — expect pass.
+-- [ ] Commit: `git add atc/exec && git commit -m "feat(exec): synchronous server-side flight-recorder ingestion with tolerant parsing and ledger record"`
++- [ ] Commit: `git add atc/exec && git commit -m "feat(exec): synchronous server-side flight-recorder ingestion — detached ingest ctx (F4), first-insert-gated ledger record (F3)"`
+ 
+ ---
+ 
+@@ -2612,3 +2732,13 @@ Never use `--race` with the parallel Ginkgo runs (CLAUDE.md — parallel compila
+ - *Ingestion (Task 13)* is deliberately non-fatal end to end: a bad deploy degrades to missing metrics rows plus error-status rows, never failed builds.
+ 
+ **Deferred/known risks:** `budget.LedgerEntry` field names are derived from §1.4 column names — align to the struct credentials-and-budgets actually landed (one-line fixes at Tasks 13/16). The claude CLI pin in the agent-runner image must match what the live review job verifies today. The prompt port in Task 19 trades exact ci-agent parity for the permanent step — the dual-running window is the verification mechanism, and score divergence beyond ±2 blocks retirement of the shell job.
++
++---
++
++## §11 — Amendment log
++
++- **2026-07-09 (design-review findings F3 + F4, `REVIEW.md` §2 majors 3–4).** Two ~2-line correctness fixes to the shared flight-recorder ingestion path (`ingestFlightRecorder`, Task 13), both defending the program's "every dollar / everything measurable" invariants:
++  - **F3 — ledger double-charge on web-restart resume.** `budgetChecker.Record` was called unconditionally whenever `rm.CostUSD > 0`. Because the metrics row is idempotent under `ON CONFLICT (build_id, plan_id)` but `agent_cost_ledger` (§1.4) is append-only with no dedup key, a resume re-appended the cost row and inflated per-ticket and global-daily spend. Fix: `metrics.Store` (Task 7) gains an additive `UpsertReturningInserted(rm) (inserted bool, err error)`; the factory (Task 8) implements it via `RETURNING (xmax = 0) AS inserted` (fresh INSERT ⇒ `xmax = 0`; ON-CONFLICT UPDATE ⇒ `xmax <> 0`); Task 13 gates the ledger append on `inserted && rm.CostUSD > 0`. Reuses the `(build_id, plan_id)` key as the single dedup authority — no ledger schema change, and the gateway's own `source='gateway'` rows for the same build/plan are unaffected. `Upsert(rm) error` is retained (derived from the new method) so harvest-step (09) and delivery-outcomes (12) consumers and the `metricsfakes.FakeStore.Upsert*` methods are unchanged. New Task-13 spec asserts `Record` fires exactly once across two `Run` invocations (resume), and a Task-8 spec asserts `inserted` is true on first upsert and false on the ON-CONFLICT update.
++  - **F4 — timed-out steps recorded zero cost/tokens.** Task 13 ingests on the `DeadlineExceeded` path too, but the step's `ctx` is the already-expired timeout context from `MaybeTimeout`, so both `StreamFile` reads failed immediately and a timed-out step recorded a bare `status=error` row with zero cost/tokens/`event_counts` and no ledger entry — losing measurement on the costliest steps. Fix: `ingestFlightRecorder` detaches from the deadline before the reads (`ingestCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second); defer cancel()`) and threads `ingestCtx` into both `StreamFile` calls. New Task-13 spec forces `process.Wait` to return `context.DeadlineExceeded` with a populated flight volume and asserts the metrics row still carries pre-timeout cost/turns/`event_counts` and that a ledger entry is recorded.
++
++  No shared-contract table/column/route/env names changed; the `Store` change is additive within the agent-step-owned `agent/api/metrics` surface (§2.4 `RunMetrics` and §1.8 `agent_run_metrics` are byte-for-byte unchanged). No cross-workstream sign-off required.
+diff --git a/docs/superpowers/plans/agentic-platform/08-platform-mcp-hitl.md b/docs/superpowers/plans/agentic-platform/08-platform-mcp-hitl.md
+index 14b8a00524..04c91e8195 100644
+--- a/docs/superpowers/plans/agentic-platform/08-platform-mcp-hitl.md
++++ b/docs/superpowers/plans/agentic-platform/08-platform-mcp-hitl.md
+@@ -1847,6 +1847,33 @@ func TestConfigFromEnvDefaultsAndErrors(t *testing.T) {
+ 		t.Fatal("expected error when ATC_EXTERNAL_URL is missing")
+ 	}
+ }
++
++// TestConfigFromEnvTimeoutPolicyRequiresPositiveSeconds is the defense-in-depth
++// cross-field check (mirrors workflow-store): a non-park policy with a
++// non-positive timeout can never fire, so a hand-set sidecar env must fail
++// loudly at startup rather than park forever. park+0 stays legal (indefinite).
++func TestConfigFromEnvTimeoutPolicyRequiresPositiveSeconds(t *testing.T) {
++	base := func() {
++		t.Setenv("ATC_EXTERNAL_URL", "https://concourse.home")
++		t.Setenv("AGENT_PRINCIPAL_TOKEN", "cap1.9.secret")
++		t.Setenv("AGENT_TICKET_ID", "42")
++		t.Setenv("PLATFORM_MCP_ASK_TIMEOUT_SECONDS", "0")
++	}
++	for _, policy := range []string{"default", "fail"} {
++		base()
++		t.Setenv("PLATFORM_MCP_ASK_TIMEOUT_POLICY", policy)
++		if _, err := platformmcp.ConfigFromEnv(); err == nil {
++			t.Fatalf("policy %q + 0 seconds: expected error, got nil", policy)
++		}
++	}
++
++	// park + 0 is legal (wait indefinitely).
++	base()
++	t.Setenv("PLATFORM_MCP_ASK_TIMEOUT_POLICY", "park")
++	if _, err := platformmcp.ConfigFromEnv(); err != nil {
++		t.Fatalf("park + 0 seconds: expected no error, got %v", err)
++	}
++}
+ ```
+ 
+ - [ ] Run to verify it fails:
+@@ -1924,6 +1951,15 @@ func ConfigFromEnv() (Config, error) {
+ 	default:
+ 		return cfg, fmt.Errorf("invalid PLATFORM_MCP_ASK_TIMEOUT_POLICY %q", cfg.TimeoutPolicy)
+ 	}
++	// Defense-in-depth (mirrors workflow-store's cross-field check): a
++	// default/fail policy with a non-positive timeout would never fire and
++	// the sidecar would park indefinitely — the opposite of the operator's
++	// intent. A hand-set sidecar env must fail loudly at startup rather than
++	// silently degrade to park-forever. (park is the ONE policy where a 0
++	// timeout is legal — it means "wait indefinitely".)
++	if (cfg.TimeoutPolicy == "default" || cfg.TimeoutPolicy == "fail") && cfg.TimeoutSeconds <= 0 {
++		return cfg, fmt.Errorf("PLATFORM_MCP_ASK_TIMEOUT_SECONDS must be > 0 when PLATFORM_MCP_ASK_TIMEOUT_POLICY is %q", cfg.TimeoutPolicy)
++	}
+ 	if cfg.ListenAddr == "" {
+ 		cfg.ListenAddr = ":7781"
+ 	}
+@@ -3737,7 +3773,16 @@ git commit -m "feat(platform-mcp): sidecar binary serve mode" -m "Co-Authored-By
+ - Create: `cmd/platform-mcp/checkpoint.go` (replaces the Task 13 `runCheckpoint` temporary body)
+ - Test: `agent/platformmcp/checkpoint_test.go`, `cmd/platform-mcp/checkpoint_test.go`
+ 
+-Checkpoint gates (§3.2, Task 1 addendum) reuse the ask_human primitive: the rendered pipeline (wave 4; wave-3 hand-written pipelines do the same by hand) inserts a step whose main container runs `platform-mcp checkpoint --name <n>` with the platform sidecar mounted; the client POSTs the sidecar's `/checkpoint`, which files a `kind=checkpoint` question (`options: ["approve","reject"]`, always `park`) and blocks until a human resolves it. Reject ⇒ exit 1 ⇒ step fails ⇒ run fails ⇒ ticket `needs_review` (dispatch's renderer owns `on_reject: send_back` refinements — out of scope here).
++Checkpoint gates (§3.2, Task 1 addendum) reuse the ask_human primitive. **Render contract (co-signed with dispatch, §11 2026-07-09):** dispatch's renderer materializes a checkpoint declaration as a plain **`atc.TaskStep`** whose main container runs the **deterministic `platform-mcp checkpoint --name <n>` client** — NOT an LLM `AgentStep`. There is no model in the loop: the checkpoint is a container that runs a fixed CLI, POSTs the sidecar, and blocks on its HTTP response. The rendered pipeline (wave 4; wave-3 hand-written pipelines do the same by hand) mounts the platform sidecar into that task; the client POSTs the sidecar's `/checkpoint`, which files a `kind=checkpoint` question (`options: ["approve","reject"]`, always `park`) and blocks until a human resolves it.
++
++**Exit-code semantics (this plan OWNS them) — confirmed explicit:**
++- **Approve** ⇒ sidecar returns `{"approved": true}` ⇒ client **exits 0** ⇒ TaskStep succeeds ⇒ run continues.
++- **Reject / transport failure after retries** ⇒ sidecar returns `{"approved": false}` (or the client exhausts retries) ⇒ client **exits non-zero** (1) ⇒ TaskStep fails ⇒ run fails ⇒ ticket `needs_review`.
++- **Usage error** (missing `--name` / `PLATFORM_MCP_URL`) ⇒ client **exits 2**.
++
++**`on_reject` mapping (both values live in dispatch's renderer, wave 4; recorded here for the co-signed contract):**
++- `on_reject: fail` (default) ⇒ renderer emits the checkpoint client verbatim ⇒ reject ⇒ client exits non-zero ⇒ step fails ⇒ run fails ⇒ ticket `needs_review`. This is the ONLY path this plan implements.
++- `on_reject: send_back` ⇒ the renderer wraps/branches on the client's non-zero exit to route the run back to an earlier step and signal the sent-back outcome (renderer-owned; out of scope here). At the **step** level both values fail the step on reject; the difference is purely what dispatch renders around it.
+ 
+ - [ ] Write the failing test `agent/platformmcp/checkpoint_test.go`:
+ 
+@@ -5092,6 +5137,8 @@ make test-quick                             # final gate
+ 
+ **Amendment log (this plan):**
+ - 2026-07-08 (platform-mcp-hitl wave-3; FROZEN DELTA "spec/plan via granular platform-mcp read tools + optional file mount"): replaced the read model. `read_ticket` now returns envelope + spec ONLY (tasks removed); added `list_tasks` (skeleton) and `get_task(ordering)` (detail; unknown ordering → MCP tool error `isError=true`, matching how the shared `atc/api/mcpserver` surfaces handler errors — NOT a JSON-RPC `-32602` object) to Task 10 (registration, handlers via `ATCClient.GetTicket`, tests) and Task 15 (contract kit + stub). `update_task_status` unchanged. Tool count 5 → 7 updated everywhere it is enumerated (Goal, Architecture, scope table, Task 10 header/intro/tests, Task 15 `Run`). No spec/plan bytes are injected by default; the optional `files` mode (workflow field `spec_delivery`) is owned by workflow-store + dispatch (wave 4) and does not change this plan's tasks. Affected workstreams: platform-mcp-hitl, dispatch, workflow-store, ticket-core-consumers. Contract addendum bullet added to the Task 1 §11 block.
++- 2026-07-09 (design-review F1 — checkpoint render contract co-signed with dispatch; owners: platform-mcp-hitl + dispatch): recorded the render contract for the checkpoint mechanism this plan OWNS. Dispatch's renderer (wave 4) materializes a checkpoint declaration as a plain `atc.TaskStep` running the **deterministic `platform-mcp checkpoint --name <n>` client** (Task 14 / `cmd/platform-mcp/checkpoint.go`), NOT an LLM `AgentStep` — there is no model awaiting the checkpoint; a fixed CLI POSTs the sidecar's `POST /checkpoint` and blocks on its HTTP response. Confirmed the plan documents the client's exit-code semantics explicitly (approve → exit 0 → step succeeds; reject or transport-failure-after-retries → exit 1 → step fails → run fails → ticket `needs_review`; usage error → exit 2) and the `on_reject` mapping (`on_reject: fail` = the default this plan implements: client exits non-zero → step fails → run fails → ticket `needs_review`; `on_reject: send_back` = dispatch's renderer branches on the non-zero exit to route the run back and signal the sent-back outcome — renderer-owned, out of scope here; at the step level both values fail the step on reject). Reworded the Task 14 intro to state the render contract and enumerate the exit-code/on_reject mapping. Verified no task text implies the checkpoint is awaited by an LLM prompt (the sidecar `handleCheckpoint` "await" is the deterministic HTTP handler blocking on the answer row). This co-signs the already-frozen contracts §11 F1 bullet (2026-07-09, dispatch + platform-mcp-hitl) and decision 12, which are authoritative for the render contract; no new contracts bullet is added (the decision already exists there).
++- 2026-07-09 (design-review F7 — timeout defense-in-depth; owner: platform-mcp-hitl): added a cross-field check to `ConfigFromEnv` (Task 9, `agent/platformmcp/config.go`) mirroring workflow-store's new validation — a sidecar config with `PLATFORM_MCP_ASK_TIMEOUT_POLICY ∈ {default,fail}` but `PLATFORM_MCP_ASK_TIMEOUT_SECONDS <= 0` now fails loudly at startup (`must be > 0 when ... is %q`) rather than parking indefinitely; `park`+0 stays legal (wait forever). Added `TestConfigFromEnvTimeoutPolicyRequiresPositiveSeconds` to `agent/platformmcp/config_test.go` asserting default/fail+0 error and park+0 succeed. Defense-in-depth: the renderer (wave 4) normally guarantees this, but a hand-set sidecar env must not silently degrade.
+ - 2026-07-08 (consistency fix; owner: platform-mcp-hitl): corrected the `get_task` unknown-ordering error mechanism. The plan claimed an unknown ordering yields a JSON-RPC `-32602` error object, but Task 10's handler returns a plain `fmt.Errorf`, and the shared `atc/api/mcpserver` (already committed) maps every handler error to a `tools/call` result with `isError=true` — it only emits `-32602` for a malformed `tools/call` envelope, never for a handler's returned error (locked in by its committed tests). Reworded the §3.2 read-model addendum bullet (Task 1), the Task 10 intro + `getTask` doc comment, and the Task 10 header amendment (08:78) to state "MCP tool error (`isError=true`)" rather than "JSON-RPC `-32602`". Strengthened the Task 10 and Task 15 unknown-ordering tests to assert the response carries NO top-level JSON-RPC `error` object AND `result.isError=true` (previously they only checked `isErr` truthiness, which passed regardless of mechanism). Matching bullet appended to the contracts §11 amendment log.
+ 
+ **Rollback notes for the risky diffs:**
+diff --git a/docs/superpowers/plans/agentic-platform/11-dispatch.md b/docs/superpowers/plans/agentic-platform/11-dispatch.md
+index 7adc7c2ac0..74ba0f9bfe 100644
+--- a/docs/superpowers/plans/agentic-platform/11-dispatch.md
++++ b/docs/superpowers/plans/agentic-platform/11-dispatch.md
+@@ -52,6 +52,7 @@ The charter says schemas "agreed at wave start" must be written down, not assume
+ The renderer (`agent/dispatch.Render`) is a pure function `Render(RenderInput) (RenderOutput, error)` with no DB access. `RenderInput` carries the resolved `workflow.Config`, the `tickets.Ticket`, its latest `*tickets.Spec`, and active `[]tickets.Task`, plus the resolved image flags (`AgentStepImage`, and the per-sidecar images already inline in the workflow's `sidecars` map) and `ATCExternalURL`. `RenderOutput` carries the `atc.Config` (a `template: true` pipeline with exactly one job named `run`), the materialized run-input files (`map[string]string` of `spec.md`/`plan.md` → contents, produced via `tickets.RenderSpecMarkdown`/`RenderPlanMarkdown`, populated ONLY when `spec_delivery: files`), and the `params map[string]any` the dispatcher passes to `CreateRun`. `RenderInput` still carries Ticket + Spec + Tasks in both delivery modes — they are needed to materialize the files in `files` mode and to fill params.
+ 
+ - **Template shape:** one job `name: run`; its plan is the ordered `agent:`/checkpoint steps from the definition followed by the implicitly-appended terminal `harvest:` step (§6.1: harvest is never declared in `steps`). The job is an entry job (no `passed:`), so `CreateRun` auto-triggers it (§7.1 point 8).
++- **Checkpoint steps render as `task:`, not `agent:` (F1, 2026-07-09):** each `workflow.Step{Checkpoint:...}` becomes an `atc.TaskStep` named `checkpoint-<name>` whose `run` invokes `platform-mcp checkpoint --name <name>` (image = the workflow's `platform` sidecar image, which ships the `cmd/platform-mcp` binary) with the `platform` sidecar mounted and `PLATFORM_MCP_URL=http://127.0.0.1:7781/mcp` set as a literal param. The container's exit code natively gates the run (exit 0 approve / exit 1 reject; 08-platform-mcp-hitl.md §3.2). It is deliberately NOT an `atc.AgentStep` — an AgentStep's main process is hardwired to agent-runner/claude with no command override, so it could not run the checkpoint client and a rejected checkpoint would exit 0, defeating the gate. `on_reject: fail` needs no wrapper (the non-zero exit propagates → run fails → ticket needs_review); `on_reject: send_back` is the dispatcher's refinement of the same failed run (→queued re-dispatch). No `PLATFORM_MCP_CHECKPOINT*` env or LLM prompt is emitted.
+ - **Params schema declared by the rendered template:** exactly the run-identity params the dispatcher fills — `ticket_id` (number, required), `pipeline_run_id` is NOT a param (it is the run's own id, injected by the agent-step env at exec time from `AGENT_PIPELINE_RUN_ID`, which the renderer sets to the literal `((run))` var pipeline-runs injects). The reserved name `run` (§7.1 point 5) is never declared. Rationale: keeping the template's declared params minimal avoids params-schema validation coupling; ticket/workflow identity travels as literal step `env`, not as params, per the render-time-resolution rule (§2.8).
+ - **Read model (default = MCP):** by default (`spec_delivery: mcp` or omitted) the renderer injects NO spec/plan bytes into any agent step. There is no `AGENT_SPEC_MD`/`AGENT_PLAN_MD` env key — those keys are DELETED from the emission target. The agent reaches spec/plan exclusively through the platform-mcp read tools (`read_ticket`, `list_tasks`, `get_task`; contracts §3.2, implemented by 08-platform-mcp-hitl over the ticket-core `Store` methods `Get`/`LatestSpec`/`ActivePlan`), loading only what it needs and working the plan through task handles. The DB stays the single source of truth; nothing is flattened into a monolithic blob. The workflow's first agent step prompt instructs the agent to begin by calling `read_ticket` and `list_tasks` (and `get_task` per task as it works) — a one-line seed-prompt convention.
+ - **spec.md / plan.md as run inputs (opt-in `spec_delivery: files`):** when the resolved `workflow.Config.SpecDelivery == "files"`, the renderer materializes read-only `spec.md`/`plan.md` (contents produced via `tickets.RenderSpecMarkdown`/`RenderPlanMarkdown`, which are KEPT) into `RenderOutput.RunInputs` (filename→contents). The dispatcher mounts them READ-ONLY as an artifact named `ticket` on the agent steps — a file mount, NOT env vars. In `mcp` mode `RenderOutput.RunInputs` is empty. In BOTH modes the platform-mcp sidecar is mounted and all its tools work; `files` mode is purely additive (a read-only mount) and does not disable the MCP read path. `SpecDelivery` is read off the resolved `workflow.Config` (grammar owned by 05-workflow-store; contracts §6): yaml key `spec_delivery`, Go field `SpecDelivery string`, values `"mcp"` (default when empty) | `"files"`, a normal hashed field.
+@@ -66,6 +67,7 @@ The renderer (`agent/dispatch.Render`) is a pure function `Render(RenderInput) (
+ ```markdown
+ - 2026-07-08 (dispatch wave-4 planning; affects: process-intel-experiments, credentials-and-budgets, ticket-core, pipeline-runs — additive only): added §2.8.2 (Renderer pure-function shape `Render(RenderInput)(RenderOutput,error)`; rendered template is a single `template: true` pipeline named `agent-ticket-<id>` with one entry job `run` = agent/checkpoint steps + implicit terminal harvest; declared params minimal (`ticket_id`); ticket/workflow identity travels as literal step env not params; persistence via `Team.SavePipeline` then `PipelineRunFactory.CreateRun`; dispatch-owned `budget.TicketBudgets` implementation `dispatch.TicketBudgets` (tickets.budget_usd ?? workflow default); `concourse/ticket` secret label applied by dispatch via a `dispatch.RunSecretLabeler` follow-up Patch after Attach (best-effort; GC keys off `concourse/agent-run` alone); per-run principal `agent-run-<run-id>` scopes + expiry). No existing rows changed.
+ - 2026-07-08 (frozen delta — spec/plan via granular platform-mcp read tools + optional file mount; affects: platform-mcp-hitl, dispatch, workflow-store, ticket-core-consumers — supersedes the prior "inline env copy under `AGENT_SPEC_MD`/`AGENT_PLAN_MD`" design in §2.8.2): the default read model is MCP — agents reach spec/plan ONLY via platform-mcp read tools (`read_ticket`, `list_tasks`, `get_task`; §3.2) and no spec/plan bytes are injected into any agent step by default. The `AGENT_SPEC_MD`/`AGENT_PLAN_MD` env keys are DELETED from the renderer emission target. New optional workflow-definition field `spec_delivery` (Go `workflow.Config.SpecDelivery string`, values `"mcp"` default | `"files"`, a normal hashed field; 05-workflow-store owns the grammar, §6 mirrors it): `files` mode materializes read-only `spec.md`/`plan.md` (via `tickets.RenderSpecMarkdown`/`RenderPlanMarkdown`, KEPT) into `RenderOutput.RunInputs`, mounted READ-ONLY as an artifact named `ticket` on the agent steps — a mount, NOT env vars; `mcp` mode leaves `RunInputs` empty. In both modes the platform-mcp sidecar is mounted. `read_ticket` returns envelope+spec only (tasks removed); `list_tasks`/`get_task` provide the task skeleton/detail; `update_task_status` is the write-back in both modes. No existing rows changed.
++- 2026-07-09 (dispatch design-review fix F1 — checkpoint renders as a TASK step, not an agent step; co-signed with platform-mcp-hitl; affects: dispatch, platform-mcp-hitl — corrects §2.8.2 emission target, additive/no-row-change): the renderer emits each `workflow.Step{Checkpoint:...}` as an `atc.TaskStep` named `checkpoint-<name>`, NOT an `atc.AgentStep`. Rationale: an `AgentStep`'s main process is hardwired to agent-runner/claude with no command override, so it cannot run the deterministic checkpoint client — a rejected checkpoint would exit 0 and the run would proceed as if approved, defeating the human gate. The TaskStep's `Config.Run` invokes `platform-mcp checkpoint --name <checkpoint>` (image = the workflow's `platform` sidecar image `ghcr.io/tdmtrader/mcp-platform`, which ships the `cmd/platform-mcp` binary) with the `platform` sidecar mounted; the container's exit code natively drives step success/failure (exit 0 approve / exit 1 reject-or-error, per 08-platform-mcp-hitl.md §3.2 line 79), so `on_reject: fail` needs no wrapper — the non-zero exit propagates → run fails → dispatcher walks the ticket to `needs_review`. `on_reject: send_back` is the dispatcher's refinement of that same failed run (reads on_reject off the resolved `workflow.Config.Steps`, maps a rejected send_back checkpoint to the →queued re-dispatch path); the renderer emits the identical bare failing task step for both values. The checkpoint client reaches the sidecar via `PLATFORM_MCP_URL=http://127.0.0.1:7781/mcp` (set as a literal TaskStep param, since a task step does NOT get agent-step's MCP-URL-by-sidecar-name derivation). The two `PLATFORM_MCP_CHECKPOINT`/`PLATFORM_MCP_CHECKPOINT_ON_REJECT` env vars and the "Await human approval…" LLM prompt from the earlier agent-step rendering are DELETED — nothing read them and an LLM prompt cannot gate a run. `workflow.Step` carries no free-text description (grammar: `Checkpoint`+`OnReject` only), so the client is invoked with `--name` alone; `--description` stays optional/omitted. No existing rows changed.
+ ```
+ 
+ - [ ] **Step 3: Commit**
+@@ -680,6 +682,36 @@ func TestRenderProducesTemplatePipelineWithOneRunJob(t *testing.T) {
+ 		// resolved below in Step 2 helper
+ 	}
+ 
++	// The checkpoint (plan step index 1) MUST render as a task: step whose
++	// container exit code natively drives success/failure — NOT an agent: step
++	// (an AgentStep's hardwired agent-runner main process cannot run the
++	// deterministic checkpoint client, so a rejected checkpoint would exit 0
++	// and the run would proceed as if approved). Assert: it is a *atc.TaskStep;
++	// its run invokes `platform-mcp checkpoint --name plan-approval`; it mounts
++	// the platform sidecar; and it carries NEITHER stale PLATFORM_MCP_CHECKPOINT*
++	// env var (those are deleted — the container's exit code is the signal).
++	cp, ok := out.Config.Jobs[0].PlanSequence[1].Config.(*atcTask)
++	if !ok {
++		t.Fatalf("checkpoint step must be a task step, got %T", out.Config.Jobs[0].PlanSequence[1].Config)
++	}
++	if cp.Name != "checkpoint-plan-approval" {
++		t.Errorf("checkpoint step name = %q, want checkpoint-plan-approval", cp.Name)
++	}
++	if cp.Config == nil || cp.Config.Run.Path != "platform-mcp" ||
++		len(cp.Config.Run.Args) != 3 || cp.Config.Run.Args[0] != "checkpoint" ||
++		cp.Config.Run.Args[1] != "--name" || cp.Config.Run.Args[2] != "plan-approval" {
++		t.Fatalf("checkpoint run must be `platform-mcp checkpoint --name plan-approval`, got %+v", cp.Config.Run)
++	}
++	if len(cp.Sidecars) != 1 || cp.Sidecars[0].Config == nil || cp.Sidecars[0].Config.Name != "platform" {
++		t.Fatalf("checkpoint must mount the platform sidecar, got %+v", cp.Sidecars)
++	}
++	if _, present := cp.Params["PLATFORM_MCP_CHECKPOINT"]; present {
++		t.Errorf("stale PLATFORM_MCP_CHECKPOINT env must be deleted; the exit code is the signal")
++	}
++	if _, present := cp.Params["PLATFORM_MCP_CHECKPOINT_ON_REJECT"]; present {
++		t.Errorf("stale PLATFORM_MCP_CHECKPOINT_ON_REJECT env must be deleted; on_reject is the dispatcher's refinement, not container env")
++	}
++
+ 	// §2.8.2 default read model = MCP: NO spec/plan bytes are injected. RunInputs
+ 	// is empty and NO agent step carries AGENT_SPEC_MD/AGENT_PLAN_MD env — the
+ 	// agent reaches spec/plan via the platform-mcp read tools (read_ticket /
+@@ -734,6 +766,66 @@ func TestRenderFilesModeMaterializesRunInputs(t *testing.T) {
+ 		t.Errorf("files mode delivers spec via mount, never AGENT_SPEC_MD env; got %q", first.Env["AGENT_SPEC_MD"])
+ 	}
+ }
++
++// TestRenderCheckpointOnRejectFailFailsRun is the human-gate proof at render
++// level: with on_reject: fail, the checkpoint renders as a BARE task step whose
++// non-zero container exit propagates and fails the run. The client exits 1 on
++// reject (§3.2), so the only way the gate holds is if nothing in the rendered
++// plan swallows that exit — the step must NOT be wrapped in a `try:`, and must
++// carry no on_success/on_failure/ensure hook that would mask the failure. If a
++// future edit re-renders the checkpoint as an agent: step (main process
++// hardwired to agent-runner, always exit 0), this assertion catches it: an
++// agent: step cannot fail on reject, so the type assertion below fails.
++func TestRenderCheckpointOnRejectFailFailsRun(t *testing.T) {
++	cfg := fullWorkflow()
++	cfg.Defaults = workflow.Defaults{Model: "claude-sonnet-4-5", MaxTurns: 80}
++	cfg.Prompts = map[string]string{"spec": "s"}
++	cfg.Steps = []workflow.Step{
++		{Agent: "write-spec", Prompt: "spec", Sidecars: []string{"dev"}, BudgetSliceUSD: 2, Outputs: []string{"workspace"}},
++		{Checkpoint: "plan-approval", OnReject: "fail"},
++	}
++	in := dispatch.RenderInput{Workflow: cfg, AgentStepImage: "img:v1", ATCExternalURL: "https://concourse.home"}
++	in.Ticket = tickets.Ticket{ID: 42, Repo: "tdmtrader/concourse", TargetBranch: "main", Title: "Fix X"}
++
++	out, err := dispatch.Render(in)
++	if err != nil {
++		t.Fatalf("Render: %v", err)
++	}
++
++	step := out.Config.Jobs[0].PlanSequence[1]
++	if step.Config == nil {
++		t.Fatal("checkpoint plan step is empty")
++	}
++	// The checkpoint's StepConfig MUST be a bare *atc.TaskStep — the exit code
++	// IS the run's success signal. atc.Step wraps failure-masking modifiers as
++	// their own StepConfig types (TryStep, OnFailureStep, EnsureStep, …). If the
++	// checkpoint were wrapped in any of those, or re-rendered as an *AgentStep
++	// (main process hardwired to agent-runner => always exit 0), this direct
++	// type assertion fails and the human gate is proven broken.
++	switch step.Config.(type) {
++	case *atc.TryStep, *atc.OnFailureStep, *atc.OnSuccessStep, *atc.EnsureStep:
++		t.Fatalf("on_reject=fail checkpoint must not be wrapped in a failure-masking modifier; got %T", step.Config)
++	}
++	cp, ok := step.Config.(*atcTask)
++	if !ok {
++		t.Fatalf("on_reject=fail checkpoint must be a bare task step whose exit fails the run, got %T", step.Config)
++	}
++	// The client always exits 1 on reject; a task step's exit is unignored.
++	if cp.Config == nil || cp.Config.Run.Path != "platform-mcp" {
++		t.Errorf("checkpoint main process must be the platform-mcp client (exit 1 on reject), got %+v", cp.Config)
++	}
++
++	// The rendered plan (bare failing task step included) still validates.
++	if _, errs := configvalidate.Validate(out.Config); len(errs) != 0 {
++		t.Fatalf("configvalidate errors on rendered plan with fail-checkpoint: %v", errs)
++	}
++}
++```
++
++This test imports `configvalidate`; add it to the import block (the golden test in Task 6 also imports it, so if Task 6 lands first the import already exists — keep the two files' imports consistent):
++
++```go
++import "github.com/concourse/concourse/atc/configvalidate"
+ ```
+ 
+ - [ ] **Step 2: Add the type-assert helpers** at the bottom of `agent/dispatch/render_test.go`:
+@@ -743,11 +835,12 @@ import "github.com/concourse/concourse/atc"
+ 
+ type atcHarvest = atc.HarvestStep
+ type atcAgent = atc.AgentStep
++type atcTask = atc.TaskStep
+ ```
+ 
+ - [ ] **Step 3: Run to verify failure**
+ 
+-Run: `cd /Users/tdmtrader/concourse/concourse && go test ./agent/dispatch/ -run TestRenderProduces`
++Run: `cd /Users/tdmtrader/concourse/concourse && go test ./agent/dispatch/ -run 'TestRenderProduces|TestRenderFilesMode|TestRenderCheckpointOnReject'`
+ Expected: FAIL — `undefined: dispatch.Render`.
+ 
+ - [ ] **Step 4: Write `agent/dispatch/render.go`:**
+@@ -833,29 +926,62 @@ func Render(in RenderInput) (RenderOutput, error) {
+ 	}, nil
+ }
+ 
+-// renderCheckpointStep renders a workflow checkpoint into an agent: step
+-// running the platform sidecar's checkpoint endpoint (§3.2: checkpoints reuse
+-// the ask_human park/resume mechanism via a dedicated checkpoint step). The
+-// step's prompt is the internal directive the platform-mcp checkpoint runner
+-// recognizes; on_reject maps to the step's failure behavior (fail => step
+-// fails => run fails => ticket needs_review, per §3.2).
+-func renderCheckpointStep(in RenderInput, s workflow.Step) atc.AgentStep {
++// renderCheckpointStep renders a workflow checkpoint into a TASK step whose
++// main container runs the deterministic `platform-mcp checkpoint` client with
++// the platform sidecar mounted (§3.2 checkpoint addendum, 08-platform-mcp-hitl.md
++// line 79). It is NOT an agent: step — an AgentStep's main process is hardwired
++// to agent-runner/claude with no command override, so it could not run the
++// checkpoint client and a rejected checkpoint would exit 0 and let the run
++// proceed as if approved, defeating the human gate. As a TaskStep, the
++// container's own exit code natively drives step success/failure: the client
++// POSTs the sidecar's /checkpoint, blocks until a human resolves it, and exits
++// 0 (approve) or 1 (reject-or-error). Exit 1 fails the step => run fails =>
++// ticket needs_review (the single transition function's failed path).
++//
++// on_reject mapping (§3.2, 08-platform-mcp-hitl.md line 79): at the STEP level
++// BOTH `fail` and `send_back` fail the step on reject — the client always exits
++// 1, and the renderer emits the SAME bare failing task step for either value.
++// `fail` lets the non-zero exit propagate untouched: run fails => the
++// dispatcher walks the ticket to needs_review via the transition function.
++// `send_back` is the dispatcher's refinement of that same failed run: it reads
++// on_reject off the resolved workflow.Config.Steps (which the dispatcher
++// already has in hand — NOT re-derived from the rendered step) and, on a failed
++// run whose failing step is a `send_back` checkpoint, maps to the sent-back
++// path (→queued re-dispatch, attempt_count bumped per §2.1) instead of terminal
++// needs_review. The renderer does NOT change the container's behavior for
++// send_back; it only guarantees a failing task step so the dispatcher has a
++// failure to map.
++//
++// The checkpoint has no free-text description in the workflow grammar
++// (workflow.Step carries Checkpoint + OnReject only; §5 grammar), so the
++// client is invoked with --name alone; --description stays optional/omitted.
++func renderCheckpointStep(in RenderInput, s workflow.Step) atc.TaskStep {
+ 	platform := in.Workflow.Sidecars["platform"]
+-	env := map[string]string{
+-		"ATC_EXTERNAL_URL":            in.ATCExternalURL,
+-		"AGENT_TICKET_ID":             fmt.Sprintf("%d", in.Ticket.ID),
+-		"AGENT_PIPELINE_RUN_ID":       "((run))",
+-		"AGENT_STEP_NAME":             "checkpoint-" + s.Checkpoint,
+-		"PLATFORM_MCP_CHECKPOINT":     s.Checkpoint,
+-		"PLATFORM_MCP_CHECKPOINT_ON_REJECT": s.OnReject,
+-	}
+-	return atc.AgentStep{
+-		Name:   "checkpoint-" + s.Checkpoint,
+-		Prompt: fmt.Sprintf("Await human approval of checkpoint %q via platform-mcp.", s.Checkpoint),
++	// PLATFORM_MCP_URL is set literally here (a TaskStep does not get the
++	// agent-step MCP-URL-by-sidecar-name derivation); the checkpoint client
++	// trims /mcp and POSTs …/checkpoint (§8.1: platform => 127.0.0.1:7781).
++	params := atc.TaskEnv{
++		"ATC_EXTERNAL_URL":      in.ATCExternalURL,
++		"AGENT_TICKET_ID":       fmt.Sprintf("%d", in.Ticket.ID),
++		"AGENT_PIPELINE_RUN_ID": "((run))",
++		"AGENT_STEP_NAME":       "checkpoint-" + s.Checkpoint,
++		"AGENT_PRINCIPAL_TOKEN": "((principal-token))",
++		"PLATFORM_MCP_URL":      "http://127.0.0.1:7781/mcp",
++	}
++	return atc.TaskStep{
++		Name:     "checkpoint-" + s.Checkpoint,
++		Params:   params,
+ 		Sidecars: []atc.SidecarSource{
+ 			{Config: &atc.SidecarConfig{Name: platform.Role, Image: platform.Image}},
+ 		},
+-		Env: env,
++		Config: &atc.TaskConfig{
++			Platform:      "linux",
++			ImageResource: &atc.ImageResource{Type: "registry-image", Source: atc.Source{"repository": platform.Image}},
++			Run: atc.TaskRunConfig{
++				Path: "platform-mcp",
++				Args: []string{"checkpoint", "--name", s.Checkpoint},
++			},
++		},
+ 	}
+ }
+ ```
+@@ -863,7 +989,7 @@ func renderCheckpointStep(in RenderInput, s workflow.Step) atc.AgentStep {
+ - [ ] **Step 5: Run to verify pass**
+ 
+ Run: `cd /Users/tdmtrader/concourse/concourse && go test ./agent/dispatch/`
+-Expected: PASS (all render tests).
++Expected: PASS (all render tests, including `TestRenderProducesTemplatePipelineWithOneRunJob` asserting the checkpoint is a `*atc.TaskStep` invoking `platform-mcp checkpoint --name plan-approval` with the platform sidecar and no `PLATFORM_MCP_CHECKPOINT*` env, and `TestRenderCheckpointOnRejectFailFailsRun` asserting the on_reject=fail checkpoint is a bare task step whose non-zero exit fails the run and the plan still passes `configvalidate`).
+ 
+ - [ ] **Step 6: Commit**
+ 
+@@ -1025,7 +1151,7 @@ Expected: FAIL — `read golden (run with -update to create): ... no such file`.
+ Run: `cd /Users/tdmtrader/concourse/concourse && go test ./agent/dispatch/ -run TestRenderGolden -update`
+ Expected: PASS (writes `standard-dev.golden.yml`).
+ 
+-- [ ] **Step 5: Inspect the golden by eye** — open `agent/dispatch/testdata/standard-dev.golden.yml` and confirm: `template: true`; one job `run`; four plan steps (`agent: write-spec`, `agent: checkpoint-plan-approval`, `agent: implement`, `harvest: harvest`); the harvest step carries `gate_policy` with three gates and a `judge` with `pass_threshold: 6.5` and `budget_usd: 1`; agent steps carry inline sidecars with role-names `dev`/`platform` and the resolved images; env includes `AGENT_PIPELINE_RUN_ID: ((run))`. The fixture omits `spec_delivery` (default `mcp`), so NO agent step carries `AGENT_SPEC_MD`/`AGENT_PLAN_MD` env (§2.8.2 default read model); the agent reaches spec/plan via the platform-mcp read tools, seeded by the first step's prompt ("Read the ticket via platform-mcp read_ticket …").
++- [ ] **Step 5: Inspect the golden by eye** — open `agent/dispatch/testdata/standard-dev.golden.yml` and confirm: `template: true`; one job `run`; four plan steps (`agent: write-spec`, then a `task: checkpoint-plan-approval` whose `config.run.path: platform-mcp` with args `[checkpoint, --name, plan-approval]` and a `platform` sidecar — NOT an `agent:` step, and carrying neither `PLATFORM_MCP_CHECKPOINT` nor `PLATFORM_MCP_CHECKPOINT_ON_REJECT`, then `agent: implement`, then `harvest: harvest`); the harvest step carries `gate_policy` with three gates and a `judge` with `pass_threshold: 6.5` and `budget_usd: 1`; agent steps carry inline sidecars with role-names `dev`/`platform` and the resolved images; env includes `AGENT_PIPELINE_RUN_ID: ((run))`. The fixture omits `spec_delivery` (default `mcp`), so NO agent step carries `AGENT_SPEC_MD`/`AGENT_PLAN_MD` env (§2.8.2 default read model); the agent reaches spec/plan via the platform-mcp read tools, seeded by the first step's prompt ("Read the ticket via platform-mcp read_ticket …").
+ 
+ - [ ] **Step 6: Run to verify pass** (golden now compares clean)
+ 
+diff --git a/docs/superpowers/plans/agentic-platform/12-delivery-outcomes.md b/docs/superpowers/plans/agentic-platform/12-delivery-outcomes.md
+index 9ddbf6f313..e454e79dde 100644
+--- a/docs/superpowers/plans/agentic-platform/12-delivery-outcomes.md
++++ b/docs/superpowers/plans/agentic-platform/12-delivery-outcomes.md
+@@ -78,7 +78,7 @@ The charter requires the nullable-join schema "agreed with scorecards at wave st
+ 
+ **Human-touch delta definition [CONFIRMED — lines, not hunks; supersedes §1.11's prose only in unit precision]:** `human_lines_added`/`human_lines_deleted` are summed `git show --numstat` line counts of commits in `pushed_sha..<tip-at-merge>` (first-parent walk, merge commits excluded) whose author name is not `concourse-agent[bot]` (§8.3). `human_commit_count` counts those commits. `merged_with_fixes ⇔ human_commit_count > 0`. Binary files numstat as `-`/`-` and count 0 lines. Scorecards MUST label the columns "lines" in any UI.
+ 
+-**Outcome-row creation:** rows are created by the outcome watcher (NOT harvest). Each tick it scans tickets in `needs_review` with a non-empty `branch` and no outcome row, resolving `pushed_sha`/`base_sha` from the newest `agent_run_metrics` row for that ticket whose `results.metadata.pushed_branch` equals the ticket branch. Fallback when no metrics row carries the shas (e.g. metrics reaped): `pushed_sha` = remote branch head at first sync — weaker, because pre-existing human commits then dilute the delta baseline; `base_sha` stays `''` and the diff API returns 404 until it is known. While `merge_state = 'open'`, a re-push (send-back → re-dispatch cycle) refreshes `branch`/`pushed_sha`/`base_sha` in place; terminal rows are never refreshed.
++**Outcome-row creation:** rows are created by the outcome watcher (NOT harvest). Each tick it scans tickets in `needs_review` with a non-empty `branch` and no outcome row, resolving `pushed_sha`/`base_sha` from the newest `agent_run_metrics` row for that ticket whose `results.metadata.pushed_branch` equals the ticket branch. Fallback when no metrics row carries the shas (e.g. metrics reaped): `pushed_sha` = remote branch head at first sync — weaker, because pre-existing human commits then dilute the delta baseline; `base_sha` stays `''` and the diff API returns 404 until it is known. While `merge_state = 'open'`, a re-push refreshes `branch`/`pushed_sha`/`base_sha` in place. A send-back disposition drives the row to `closed_unmerged`; when the ticket later cycles `sent_back → queued → running → needs_review` and is re-dispatched, the watcher's `Ensure` **re-arms** that row — a row with `merge_state = 'closed_unmerged' AND disposition = 'sent_back'` is reset to `open` with fresh `branch`/`pushed_sha`/`base_sha` and its disposition fields cleared, so the re-worked branch's eventual human merge is still detected (F6). Truly terminal rows — `merged`/`merged_with_fixes`, or `closed_unmerged` via `abandoned` — are never refreshed.
+ 
+ **Merge-detection heuristics v1 [DECIDED HERE]:**
+ 1. **Primary (true merges + fast-forward):** merged ⇔ `git merge-base --is-ancestor <pushed_sha> refs/heads/<target_branch>` in a `--mirror` clone. `merged_sha` = the oldest merge commit on `git rev-list --ancestry-path --merges <pushed_sha>..<target>` (the commit that brought the branch in); tip-at-merge = that merge commit's second parent when it descends from `pushed_sha`, else `pushed_sha`. Fast-forward (no merge commit on the ancestry path): `merged_sha` = tip-at-merge = the agent branch's remote head if the branch still exists, else `pushed_sha`.
+@@ -108,6 +108,7 @@ The charter requires the nullable-join schema "agreed with scorecards at wave st
+ 
+ ```markdown
+ - 2026-07-08 (delivery-outcomes planning): added §1.11.1 — wave-start agent_outcomes agreement with scorecards (LEFT-JOIN-on-ticket_id contract; delta unit = LINES via numstat of non-bot first-parent commits; additive base_sha column + agent_outcomes_open partial index; Outcome gains BaseSha/CreatedAt/UpdatedAt), outcome-row creation from harvest run-metrics with branch-head fallback, merge-detection heuristics v1 (ancestor primary, patch-id squash fallback, documented limits: edited squashes/rebase-merges stay open; closed_unmerged only via disposition), watcher/diff web flags (--agent-outcome-git-dir master switch, url template, https-only creds, 5m interval, squash scan limit), and two additive §4.2 routes GetAgentTicketDiff / GetAgentTicketReviews (windowed diff; reviews-by-ticket in the GetBuildAgentReviews response shape). Affects: scorecards, process-intel-experiments.
++- 2026-07-09 (delivery-outcomes planning, F6 fix): clarified the §1.11.1 outcome-row lifecycle for the send-back → re-dispatch → merge loop. A send-back disposition sets `closed_unmerged`, but the state machine allows `sent_back → queued → running → needs_review`; on re-dispatch the watcher's `Store.Ensure` now RE-ARMS a row where `merge_state = 'closed_unmerged' AND disposition = 'sent_back'` back to `open` with fresh branch/pushed_sha/base_sha (disposition fields cleared), so the re-worked branch's eventual human merge is recorded (previously the merge — and the human-touch delta, spec §9 — was silently lost on the rework loop). `abandoned` and `merged`/`merged_with_fixes` rows remain terminal and are never re-armed. No schema change (Ensure ON CONFLICT WHERE broadened only). Affects: scorecards, process-intel-experiments.
+ ```
+ 
+ - [ ] Commit: `git add docs/superpowers/plans/agentic-platform/00-shared-contracts.md && git commit -m "docs(agentic): delivery-outcomes contract addendum - outcomes schema agreement, watcher heuristics, diff/reviews routes"`
+@@ -246,6 +247,41 @@ func TestMemoryStoreEnsureRefreshesOnlyOpenRows(t *testing.T) {
+ 	if got.PushedSha != "ccc" {
+ 		t.Fatalf("merged row must not refresh: %+v", got)
+ 	}
++
++	// F6: a send-back row (closed_unmerged + disposition='sent_back') is
++	// RE-ARMED by Ensure — reset to open with fresh shas and cleared
++	// disposition — so the re-dispatch loop's merge is detected.
++	if err := s.Ensure(&outcomes.Outcome{TicketID: 8, Repo: "r", Branch: "agent/ticket-8", PushedSha: "p1", BaseSha: "b1"}); err != nil {
++		t.Fatal(err)
++	}
++	if err := s.SetDisposition(8, outcomes.DispositionInput{Disposition: outcomes.DispositionSentBack, Reason: "incomplete", By: "u"}); err != nil {
++		t.Fatal(err)
++	}
++	if g, _, _ := s.Get(8); g.MergeState != outcomes.ClosedUnmerged {
++		t.Fatalf("send-back must close the row: %+v", g)
++	}
++	if err := s.Ensure(&outcomes.Outcome{TicketID: 8, Repo: "r", Branch: "agent/ticket-8", PushedSha: "p2", BaseSha: "b2"}); err != nil {
++		t.Fatal(err)
++	}
++	got, _, _ = s.Get(8)
++	if got.MergeState != outcomes.MergeOpen || got.PushedSha != "p2" || got.BaseSha != "b2" || got.Disposition != "" {
++		t.Fatalf("sent_back row must re-arm to open with fresh shas + cleared disposition: %+v", got)
++	}
++
++	// An abandoned closed row is terminal — Ensure must NOT re-arm it.
++	if err := s.Ensure(&outcomes.Outcome{TicketID: 9, Repo: "r", Branch: "agent/ticket-9", PushedSha: "q1"}); err != nil {
++		t.Fatal(err)
++	}
++	if err := s.SetDisposition(9, outcomes.DispositionInput{Disposition: outcomes.DispositionAbandoned, Reason: "wont_do", By: "u"}); err != nil {
++		t.Fatal(err)
++	}
++	if err := s.Ensure(&outcomes.Outcome{TicketID: 9, Repo: "r", Branch: "agent/ticket-9", PushedSha: "q2"}); err != nil {
++		t.Fatal(err)
++	}
++	got, _, _ = s.Get(9)
++	if got.MergeState != outcomes.ClosedUnmerged || got.PushedSha != "q1" {
++		t.Fatalf("abandoned row must stay closed and not refresh: %+v", got)
++	}
+ }
+ 
+ func TestMemoryStoreMergeAndDisposition(t *testing.T) {
+@@ -410,7 +446,13 @@ type DispositionInput struct {
+ type Store interface {
+ 	// Ensure inserts the row if absent (unique ticket_id). When the row
+ 	// exists and merge_state = 'open', it refreshes branch/pushed_sha/
+-	// base_sha (re-push after send-back); terminal rows are untouched.
++	// base_sha (re-push during the same review). It also RE-ARMS a row
++	// that a send-back disposition drove to closed_unmerged: when
++	// merge_state = 'closed_unmerged' AND disposition = 'sent_back', the
++	// row is reset to 'open' with fresh branch/pushed_sha/base_sha so the
++	// re-dispatch loop's eventual human merge is detected (F6). Other
++	// terminal rows (merged/merged_with_fixes, or closed_unmerged via
++	// 'abandoned') are untouched.
+ 	Ensure(o *Outcome) error
+ 	Get(ticketID int) (*Outcome, bool, error)
+ 	// ListOpen returns rows with merge_state = 'open', oldest-first.
+@@ -461,7 +503,18 @@ func (s *MemoryStore) Ensure(o *Outcome) error {
+ 		s.rows[o.TicketID] = &cp
+ 		return nil
+ 	}
+-	if existing.MergeState == MergeOpen {
++	// Re-arm a send-back row so the re-dispatch loop's merge is detected (F6):
++	// a sent_back disposition drove this open row to closed_unmerged, but the
++	// ticket has cycled sent_back → queued → running → needs_review again.
++	reArm := existing.MergeState == ClosedUnmerged && existing.Disposition == DispositionSentBack
++	if existing.MergeState == MergeOpen || reArm {
++		if reArm {
++			existing.MergeState = MergeOpen
++			existing.Disposition = ""
++			existing.DispositionReason = ""
++			existing.DispositionNotes = ""
++			existing.DisposedBy = ""
++		}
+ 		existing.Branch = o.Branch
+ 		existing.PushedSha = o.PushedSha
+ 		existing.BaseSha = o.BaseSha
+@@ -651,6 +704,31 @@ var _ = Describe("AgentOutcomesFactory", func() {
+ 		Expect(got.Disposition).To(Equal("sent_back"))
+ 	})
+ 
++	It("re-arms a sent_back row on Ensure but leaves an abandoned row terminal (F6)", func() {
++		// sent_back → Ensure reopens with fresh shas + cleared disposition
++		Expect(factory.Ensure(&outcomes.Outcome{TicketID: 506, Repo: "r", Branch: "agent/ticket-506", PushedSha: "p1", BaseSha: "b1"})).To(Succeed())
++		Expect(factory.SetDisposition(506, outcomes.DispositionInput{Disposition: "sent_back", Reason: "incomplete", By: "u"})).To(Succeed())
++		got, _, _ := factory.Get(506)
++		Expect(got.MergeState).To(Equal(outcomes.ClosedUnmerged))
++
++		Expect(factory.Ensure(&outcomes.Outcome{TicketID: 506, Repo: "r", Branch: "agent/ticket-506", PushedSha: "p2", BaseSha: "b2"})).To(Succeed())
++		got, _, _ = factory.Get(506)
++		Expect(got.MergeState).To(Equal(outcomes.MergeOpen))
++		Expect(got.PushedSha).To(Equal("p2"))
++		Expect(got.BaseSha).To(Equal("b2"))
++		Expect(got.Disposition).To(BeEmpty())
++		open, _ := factory.ListOpen()
++		Expect(open).To(HaveLen(1)) // the re-armed row is back on the work-list
++
++		// abandoned → Ensure must NOT re-arm; row stays closed and shas frozen
++		Expect(factory.Ensure(&outcomes.Outcome{TicketID: 507, Repo: "r", Branch: "agent/ticket-507", PushedSha: "q1"})).To(Succeed())
++		Expect(factory.SetDisposition(507, outcomes.DispositionInput{Disposition: "abandoned", Reason: "wont_do", By: "u"})).To(Succeed())
++		Expect(factory.Ensure(&outcomes.Outcome{TicketID: 507, Repo: "r", Branch: "agent/ticket-507", PushedSha: "q2"})).To(Succeed())
++		got, _, _ = factory.Get(507)
++		Expect(got.MergeState).To(Equal(outcomes.ClosedUnmerged))
++		Expect(got.PushedSha).To(Equal("q1"))
++	})
++
+ 	It("stamps last_checked_at on Touch", func() {
+ 		Expect(factory.Ensure(&outcomes.Outcome{TicketID: 505, Repo: "r", Branch: "b"})).To(Succeed())
+ 		Expect(factory.Touch(505)).To(Succeed())
+@@ -698,15 +776,30 @@ const outcomeColumns = `ticket_id, repo, branch, pushed_sha, base_sha, merge_sta
+ // on an existing OPEN row (re-push after send-back). The WHERE-guarded
+ // UPDATE-in-DO leaves terminal rows untouched.
+ func (f *agentOutcomesFactory) Ensure(o *outcomes.Outcome) error {
++	// The ON CONFLICT WHERE also re-arms a send-back row (closed_unmerged with
++	// disposition='sent_back') back to 'open' and clears the disposition, so the
++	// re-dispatch loop's eventual human merge is detected (F6). Truly terminal
++	// rows (merged/merged_with_fixes, or abandoned) never match the WHERE.
+ 	_, err := f.conn.Exec(
+ 		`INSERT INTO agent_outcomes (ticket_id, repo, branch, pushed_sha, base_sha, merge_state)
+ 		 VALUES ($1, $2, $3, $4, $5, 'open')
+ 		 ON CONFLICT (ticket_id) DO UPDATE SET
+-		   branch     = EXCLUDED.branch,
+-		   pushed_sha = EXCLUDED.pushed_sha,
+-		   base_sha   = EXCLUDED.base_sha,
++		   branch      = EXCLUDED.branch,
++		   pushed_sha  = EXCLUDED.pushed_sha,
++		   base_sha    = EXCLUDED.base_sha,
++		   merge_state = 'open',
++		   disposition = CASE WHEN agent_outcomes.merge_state = 'closed_unmerged'
++		                      THEN '' ELSE agent_outcomes.disposition END,
++		   disposition_reason = CASE WHEN agent_outcomes.merge_state = 'closed_unmerged'
++		                             THEN '' ELSE agent_outcomes.disposition_reason END,
++		   disposition_notes  = CASE WHEN agent_outcomes.merge_state = 'closed_unmerged'
++		                             THEN '' ELSE agent_outcomes.disposition_notes END,
++		   disposed_by = CASE WHEN agent_outcomes.merge_state = 'closed_unmerged'
++		                      THEN '' ELSE agent_outcomes.disposed_by END,
+ 		   updated_at = now()
+-		 WHERE agent_outcomes.merge_state = 'open'`,
++		 WHERE agent_outcomes.merge_state = 'open'
++		    OR (agent_outcomes.merge_state = 'closed_unmerged'
++		        AND agent_outcomes.disposition = 'sent_back')`,
+ 		o.TicketID, o.Repo, o.Branch, o.PushedSha, o.BaseSha,
+ 	)
+ 	return err
+@@ -2452,6 +2545,74 @@ var _ = Describe("outcomewatcher", func() {
+ 		Expect(tk.State).To(Equal(tickets.StateNeedsReview))
+ 	})
+ 
++	It("re-arms a sent-back row and detects the rework merge with the NEW shas (F6)", func() {
++		// tick 1: create the open row for the first push.
++		Expect(watcher.Run(nil)).To(Succeed())
++		o, _, _ := outcomeStore.Get(ticketID)
++		Expect(o.PushedSha).To(Equal(pushed))
++		Expect(o.MergeState).To(Equal(outcomes.MergeOpen))
++
++		// human sends the ticket back: disposition closes the row unmerged,
++		// then the ticket walks sent_back → queued → running.
++		Expect(outcomeStore.SetDisposition(ticketID, outcomes.DispositionInput{
++			Disposition: outcomes.DispositionSentBack, Reason: "incomplete", By: "tdmtrader",
++		})).To(Succeed())
++		o, _, _ = outcomeStore.Get(ticketID)
++		Expect(o.MergeState).To(Equal(outcomes.ClosedUnmerged))
++		_ = ticketStore.Transition(ticketID, tickets.StateNeedsReview, tickets.StateSentBack, tickets.TransitionMeta{})
++		_ = ticketStore.Transition(ticketID, tickets.StateSentBack, tickets.StateQueued, tickets.TransitionMeta{})
++		_ = ticketStore.Transition(ticketID, tickets.StateQueued, tickets.StateRunning, tickets.TransitionMeta{})
++
++		// the re-worked branch: a new HUMAN commit is pushed (new head) on top
++		// of the first push. A fresh harvest metrics row carries the NEW shas.
++		// The commit is authored by a human so the rework counts toward the
++		// human-touch delta (merged_with_fixes ⇔ human_commit_count > 0).
++		seed := filepath.Join(tmp, "seed")
++		newBase := pushed // the rework is based on the first push
++		Expect(os.WriteFile(filepath.Join(seed, "g.go"), []byte("package g\n"), 0o644)).To(Succeed())
++		git(seed, "add", ".")
++		humanCommit := exec.Command("git", "commit", "-m", "human rework")
++		humanCommit.Dir = seed
++		humanCommit.Env = append(os.Environ(),
++			"GIT_AUTHOR_NAME=Reviewer", "GIT_AUTHOR_EMAIL=rev@example.com",
++			"GIT_COMMITTER_NAME=Reviewer", "GIT_COMMITTER_EMAIL=rev@example.com")
++		out, err := humanCommit.CombinedOutput()
++		Expect(err).NotTo(HaveOccurred(), "human commit: %s", out)
++		reworked := git(seed, "rev-parse", "HEAD")
++		Expect(reworked).NotTo(Equal(pushed))
++		git(seed, "push", "origin", "HEAD:refs/heads/agent/ticket-1")
++		md, _ := json.Marshal(map[string]any{
++			"metadata": map[string]any{"pushed_branch": "agent/ticket-1", "head_sha": reworked, "base_sha": newBase},
++		})
++		_ = metricStore.Upsert(&schema.RunMetrics{
++			BuildID: 2, PlanID: "0.1", StepName: "harvest", TicketID: &ticketID,
++			Status: schema.RunStatusOK, Results: json.RawMessage(md),
++		})
++
++		// ticket is back at needs_review; the reworked branch is then merged.
++		_ = ticketStore.Transition(ticketID, tickets.StateRunning, tickets.StateNeedsReview, tickets.TransitionMeta{Branch: "agent/ticket-1"})
++		git(seed, "push", "origin", "HEAD:main")
++
++		// tick 2: seedRows must RE-ARM the closed_unmerged/sent_back row back to
++		// open with the NEW shas — not `continue` past it.
++		Expect(watcher.Run(nil)).To(Succeed())
++		o, _, _ = outcomeStore.Get(ticketID)
++		Expect(o.MergeState).To(Equal(outcomes.MergeOpen), "row must be re-armed to open")
++		Expect(o.PushedSha).To(Equal(reworked), "pushed_sha must be the reworked head")
++		Expect(o.BaseSha).To(Equal(newBase))
++		Expect(o.Disposition).To(BeEmpty(), "the send-back disposition must be cleared on re-arm")
++
++		// tick 3: detect the merge on the re-armed row. Because a human commit
++		// (the rework) precedes the merge, the outcome is merged_with_fixes.
++		Expect(watcher.Run(nil)).To(Succeed())
++		o, _, _ = outcomeStore.Get(ticketID)
++		Expect(o.MergeState).To(Equal(outcomes.MergedWithFixes))
++		Expect(o.PushedSha).To(Equal(reworked))
++		Expect(o.BaseSha).To(Equal(newBase))
++		tk, _, _ := ticketStore.Get(ticketID)
++		Expect(tk.State).To(Equal(tickets.StateMergedWithFixes))
++	})
++
+ 	It("serves the windowed diff via the MirrorProvider seam", func() {
+ 		Expect(watcher.Run(nil)).To(Succeed()) // creates the row + fetches the mirror
+ 		page, err := cache.Diff("tdmtrader/concourse", base, pushed, 0, 50)
+@@ -2605,11 +2766,15 @@ func (w *Watcher) seedRows() error {
+ 		if tk.Branch == "" {
+ 			continue
+ 		}
+-		if _, found, err := w.outcomes.Get(tk.ID); err != nil {
+-			return err
+-		} else if found {
+-			continue // already tracked; re-push refresh handled by RecordMerge/Ensure elsewhere
+-		}
++		// Ensure is idempotent and does the refresh itself: it inserts a new
++		// row, refreshes branch/pushed_sha/base_sha on an existing open row
++		// (plain needs_review → queued → needs_review re-dispatch, or a re-push
++		// mid-review), AND re-arms a send-back row (closed_unmerged +
++		// disposition='sent_back') back to open with fresh shas (F6). We must
++		// NOT `continue` on a found row — that was the old bug: the re-worked
++		// branch's new pushed_sha/base_sha never got re-resolved, so the human
++		// merge on the rework loop was silently lost (spec §9 delta). Terminal
++		// merged / abandoned rows are left untouched by Ensure.
+ 		pushed, base := w.resolveShas(tk)
+ 		if err := w.outcomes.Ensure(&outcomes.Outcome{
+ 			TicketID: tk.ID, Repo: tk.Repo, Branch: tk.Branch,
+@@ -2707,7 +2872,7 @@ func (w *Watcher) recordAndTransition(tk *tickets.Ticket, res *gitcheck.Result)
+ }
+ ```
+ 
+-- [ ] Run `ginkgo ./agent/outcomewatcher/` — expect green (row-creation, merge detection + transition, open-stays-open, and the diff-provider seam all pass against real git).
++- [ ] Run `ginkgo ./agent/outcomewatcher/` — expect green (row-creation, merge detection + transition, open-stays-open, the send-back re-arm + rework-merge loop (F6), and the diff-provider seam all pass against real git). Before the `seedRows` re-arm fix (unconditional `continue` on a found row) the F6 spec fails at `Expect(o.MergeState).To(Equal(outcomes.MergeOpen), "row must be re-armed to open")` — the row stays `closed_unmerged` and the rework merge is never recorded.
+ - [ ] Commit: `git add agent/outcomewatcher agent/gitcheck && git commit -m "feat(delivery-outcomes): outcome watcher RunnableComponent + mirror cache"`
+ 
+ ---
+@@ -3868,3 +4033,6 @@ Per CLAUDE.md: unit tests run in parallel with `-p`; **never** pass `--race` (pa
+ - **`agent/api/reviews.GetByBuild` refactor (Task 9)** is behaviour-preserving (the loop body was lifted verbatim into `BuildResponseFor`); its own handler_test is the guard. If the extracted function ever diverges, revert Task 9's `handler.go` edit and inline the loop again — the ticket reviews handler is the only other caller.
+ - **The disposition endpoint transitions the ticket through `tickets.Store.Transition` FIRST, then writes `agent_outcomes`** — if the transition is rejected (409), no disposition row is written, so ticket state and outcome state never diverge. This ordering is load-bearing; do not reorder it.
+ - **Single-writer discipline:** the watcher and the disposition handler are the only two writers of outcome-driven ticket states, and both go through `tickets.Store.Transition` with a `from` guard. A concurrent transition (e.g. a human abandons while the watcher detects a merge) makes the loser's `Transition` fail `ErrStaleTransition`/`ErrInvalidTransition` and no-op — never a corrupt state. The watcher's `detectMerges` re-checks `tk.State == needs_review` before acting, so a human disposition mid-tick is respected.
++
++**Design-review amendments:**
++- **2026-07-09 (F6 — send-back → re-dispatch → merge never recorded):** `seedRows` (Task 10 `agent/outcomewatcher/watcher.go`) previously `continue`d unconditionally on any found outcome row, so a re-dispatched ticket's row was never re-resolved. Combined with a send-back disposition moving the row to terminal `closed_unmerged` and `Ensure`'s refresh firing only `WHERE merge_state='open'`, the re-worked branch's eventual human merge was silently lost (spec §9 human-touch delta). Fix: (1) `Store.Ensure` — both `MemoryStore` (Task 3) and `agentOutcomesFactory` (Task 4 SQL) — now RE-ARM a row where `merge_state='closed_unmerged' AND disposition='sent_back'` back to `open` with fresh branch/pushed_sha/base_sha and cleared disposition fields; `abandoned` and merged rows stay terminal. (2) `seedRows` no longer `continue`s on a found row — it always calls `Ensure`, so the plain `needs_review → queued → needs_review` re-dispatch path also refreshes shas. (3) §1.11.1 prose + the `Store.Ensure` interface doc-comment now document the re-arm; the misleading "handled … elsewhere" comment was removed. Tests added: `TestMemoryStoreEnsureRefreshesOnlyOpenRows` gains send-back-re-arm + abandoned-stays-closed cases (Task 3); the `AgentOutcomesFactory` suite gains "re-arms a sent_back row on Ensure but leaves an abandoned row terminal (F6)" (Task 4); the `outcomewatcher` suite gains "re-arms a sent-back row and detects the rework merge with the NEW shas (F6)" driving `needs_review → sent_back → queued → running → needs_review(new sha) → merged` and asserting the row ends `merged_with_fixes` with the new base/pushed shas. Contract-visible surface unchanged (no new `Store` method, no schema change — `Ensure`'s `ON CONFLICT WHERE` was broadened only).
+diff --git a/docs/superpowers/plans/agentic-platform/13-scorecards.md b/docs/superpowers/plans/agentic-platform/13-scorecards.md
+index 493791c3c7..b668079089 100644
+--- a/docs/superpowers/plans/agentic-platform/13-scorecards.md
++++ b/docs/superpowers/plans/agentic-platform/13-scorecards.md
+@@ -310,7 +310,9 @@ git commit -m "feat(scorecards): aggregate domain types, versions CSV parse, Sto
+ 
+ ### Task 3: `atc/db` ScorecardStore — metrics-side aggregate (volume, taxonomy, cost, turns)
+ 
+-The first half of the SQL: everything computable from `agent_run_metrics` + `agent_cost_ledger` alone (volume denominators, the ok/failed/error split, cost/turns per ticket). Findings/judge/verdict (Task 4) and outcomes (Task 5) extend the same store. Follows the `agent_reviews_factory.go` recipe (squirrel `psql`, `f.conn.Query`, epoch-seconds scan).
++The first half of the SQL: the authoritative `live`/`content_hash` read from `agent_workflow_definitions` (§1.6), plus everything computable from `agent_run_metrics` + `agent_cost_ledger` alone (volume denominators, the ok/failed/error split, cost/turns per ticket). Findings/judge/verdict (Task 4) and outcomes (Task 5) extend the same store. Follows the `agent_reviews_factory.go` recipe (squirrel `psql`, `f.conn.Query`, epoch-seconds scan).
++
++The `definition` read is what makes `col.Live` and `col.ContentHash` authoritative: it runs FIRST in `perVersion` so the "live" badge (Task 9) reflects the promoted version and a not-yet-run candidate still reports its real content hash — the metrics-derived `MAX(workflow_hash)` becomes at most a fallback. Without it, `col.Live` is always false and a candidate version with no run rows returns an empty hash, defeating the live-vs-candidate comparison spec §8 says is the scorecard's reason to exist. It reads only what workflow-store's `Live(name)`/`Versions(name)` already expose (05-workflow-store.md:1073/1349).
+ 
+ **Files:**
+ - Create: `atc/db/scorecard_store.go`
+@@ -358,6 +360,20 @@ var _ = Describe("ScorecardStore", func() {
+ 			  (2, 'agent_step', 0.50, 5),
+ 			  (3, 'agent_step', 0.10, 1)`)
+ 		Expect(err).ToNot(HaveOccurred())
++
++		// Authoritative definitions (workflow-store §1.6): v3 is the promoted
++		// (live) version; v4 is a candidate (not live). content_hash here is the
++		// source of truth for col.ContentHash / col.Live — independent of whether
++		// the version has run. A row is inserted for v5 with NO run metrics to
++		// prove a not-yet-run candidate still returns its real content_hash.
++		_, err = dbConn.Exec(`
++			INSERT INTO agent_workflow_definitions
++			  (name, version, content_hash, live, definition, description, created_by)
++			VALUES
++			  ('standard-dev', 3, 'def-hash-v3', true,  '{}', '', 'seed'),
++			  ('standard-dev', 4, 'def-hash-v4', false, '{}', '', 'seed'),
++			  ('standard-dev', 5, 'def-hash-v5', false, '{}', '', 'seed')`)
++		Expect(err).ToNot(HaveOccurred())
+ 	})
+ 
+ 	It("aggregates volume, ok/failed/error taxonomy, cost, and turns per version", func() {
+@@ -392,6 +408,34 @@ var _ = Describe("ScorecardStore", func() {
+ 		Expect(sc.Columns[0].Version).To(Equal(99))
+ 		Expect(sc.Columns[0].TicketCount).To(Equal(0))
+ 		Expect(sc.Columns[0].CostUSDPerTicket).To(BeNil())
++		Expect(sc.Columns[0].Live).To(BeFalse())    // no definition row
++		Expect(sc.Columns[0].ContentHash).To(Equal("")) // undefined version
++	})
++
++	It("sets Live and ContentHash AUTHORITATIVELY from agent_workflow_definitions", func() {
++		// v3 is promoted (live), v4 is a candidate, v5 is a candidate that has
++		// NOT run yet (no agent_run_metrics rows). The live flag and content
++		// hash come from agent_workflow_definitions, not from run metrics.
++		sc, err := store.Scorecard("standard-dev", []int{3, 4, 5})
++		Expect(err).ToNot(HaveOccurred())
++		Expect(sc.Columns).To(HaveLen(3))
++
++		v3 := sc.Columns[0]
++		Expect(v3.Version).To(Equal(3))
++		Expect(v3.Live).To(BeTrue())                       // promoted version's badge lights
++		Expect(v3.ContentHash).To(Equal("def-hash-v3"))    // definition wins over metrics MAX(workflow_hash)="h3"
++
++		v4 := sc.Columns[1]
++		Expect(v4.Version).To(Equal(4))
++		Expect(v4.Live).To(BeFalse())                      // candidate is not live
++		Expect(v4.ContentHash).To(Equal("def-hash-v4"))
++
++		v5 := sc.Columns[2]
++		Expect(v5.Version).To(Equal(5))
++		Expect(v5.TicketCount).To(Equal(0))                // never ran
++		Expect(v5.StepCount).To(Equal(0))
++		Expect(v5.Live).To(BeFalse())
++		Expect(v5.ContentHash).To(Equal("def-hash-v5"))    // real hash even with zero run rows
+ 	})
+ })
+ ```
+@@ -441,18 +485,62 @@ func (s *scorecardStore) Scorecard(workflowName string, versions []int) (*scorec
+ func (s *scorecardStore) perVersion(name string, version int) (*scorecards.VersionColumn, error) {
+ 	col := &scorecards.VersionColumn{Version: version}
+ 
++	// definition() runs FIRST so col.Live and col.ContentHash come
++	// AUTHORITATIVELY from agent_workflow_definitions (the source of truth for
++	// which version is promoted and what its content hash is), independent of
++	// whether the version has any run rows yet. A not-yet-run candidate version
++	// must still report its real content_hash and live=false — that is the
++	// whole point of a live-vs-candidate scorecard comparison (spec §8).
++	if err := s.definition(name, version, col); err != nil {
++		return nil, err
++	}
+ 	if err := s.metricsAndCost(name, version, col); err != nil {
+ 		return nil, err
+ 	}
+ 	return col, nil
+ }
+ 
++// definition reads the authoritative live flag + content hash from
++// agent_workflow_definitions (workflow-store §1.6, unique on (name, version)).
++// This is the source of truth for the "live" badge (Task 9) and for the
++// content hash shown per column: a candidate version that has not run yet has
++// no agent_run_metrics rows, so a metrics-derived hash would be empty and the
++// column would look dark and not-live — defeating the promotion comparison.
++// Missing row (version not defined) leaves col.Live=false / col.ContentHash
++// unset; metricsAndCost's MAX(workflow_hash) is at most a fallback (§11
++// 2026-07-09 amendment). Reads only what workflow-store's Live(name)/
++// Versions(name) already expose (05-workflow-store.md:1073/1349).
++func (s *scorecardStore) definition(name string, version int, col *scorecards.VersionColumn) error {
++	var contentHash sql.NullString
++	var live sql.NullBool
++	err := s.conn.QueryRow(`
++		SELECT content_hash, live
++		FROM agent_workflow_definitions
++		WHERE name = $1 AND version = $2`,
++		name, version,
++	).Scan(&contentHash, &live)
++	if err == sql.ErrNoRows {
++		return nil // version not defined; leave Live=false, ContentHash unset
++	}
++	if err != nil {
++		return err
++	}
++	if contentHash.Valid {
++		col.ContentHash = contentHash.String
++	}
++	col.Live = live.Bool
++	return nil
++}
++
+ // metricsAndCost fills volume/taxonomy from agent_run_metrics and
+ // cost/turns from agent_cost_ledger (per §1.8/§1.4). Cost joins the ledger
+ // by ticket_id (authoritative per-ticket spend, incl. gateway rows) over
+ // the DISTINCT tickets this version ran — not by metadata->>'workflow',
+ // which is a display-attribution convenience that a hand-dispatched run
+-// may omit.
++// may omit. The MAX(workflow_hash) here is only a FALLBACK for col.ContentHash:
++// definition() (called first in perVersion) sets the authoritative hash from
++// agent_workflow_definitions, and this must not overwrite it — the metrics
++// hash is used only if the definition row was absent.
+ func (s *scorecardStore) metricsAndCost(name string, version int, col *scorecards.VersionColumn) error {
+ 	var stepCount, ticketCount, ok, failed, errored int
+ 	var workflowHash sql.NullString
+@@ -476,7 +564,10 @@ func (s *scorecardStore) metricsAndCost(name string, version int, col *scorecard
+ 	col.StepOK = ok
+ 	col.StepFailed = failed
+ 	col.StepError = errored
+-	if workflowHash.Valid {
++	// Fallback only: definition() already set the authoritative hash from
++	// agent_workflow_definitions. Never clobber it with the metrics-derived
++	// MAX(workflow_hash) — fill from metrics ONLY when definition() found no row.
++	if col.ContentHash == "" && workflowHash.Valid {
+ 		col.ContentHash = workflowHash.String
+ 	}
+ 
+@@ -2021,3 +2112,9 @@ git commit -m "feat(db): scorecard (workflow_version, day) covering indexes (mig
+ - The **migration** (Task 10) is index-only and fully reversible via its `.down.sql`; dropping the two indexes changes performance only, never correctness. It is the highest wave-4 number (`1773106110`); if it merges/deploys before a lower wave-4 migration, the version-pointer migrator will still apply the lower ones on the next deploy only if they land first — so merge wave-4 branches in migration-number order (`…090` delivery-outcomes → dispatch's block → `…110` scorecards) before any theborg deploy, per the wave-1 migration-ordering addendum.
+ - The **`agent_outcomes` LEFT JOIN** (Task 5) is guarded by `to_regclass('agent_outcomes') IS NOT NULL` — if delivery-outcomes' `1773106090` is not yet deployed, outcome columns render dark and the scorecard still returns. No rollback needed for the ordering; the guard is the safety.
+ - The **Elm ticket-page integration** (Task 8, Step 9) is the only edit to a file this plan does not own (`AgentTickets/AgentTicket.elm`, ticket-core's). It adds a model field, a fetch on the existing poll, and a panel render — additive. To back out: remove the `metrics` field, the `FetchTicketAgentMetrics` emit, and the `AgentMetricsPanel.view` call; the panel module and its route remain unused but compilable.
++
++---
++
++## §11. Amendments
++
++- **2026-07-09 (design-review F8 — live flag + authoritative content hash):** Fixed a defect where `col.Live` was never true (the "live" badge in Task 9 never lit) and `col.ContentHash` came only from `MAX(workflow_hash)` over `agent_run_metrics`, so a not-yet-run candidate version returned an all-zero, empty-hash, not-live column — defeating the live-vs-candidate promotion comparison that spec §8 says is the scorecard's reason to exist. **Change:** added a `definition(name, version, col)` read to `atc/db/scorecard_store.go` (`SELECT content_hash, live FROM agent_workflow_definitions WHERE name=$1 AND version=$2`, workflow-store §1.6, unique `(name, version)`), called FIRST in `perVersion` (Task 3), setting `col.Live` and `col.ContentHash` AUTHORITATIVELY. `metricsAndCost`'s `MAX(workflow_hash)` is now a fallback only (`if col.ContentHash == ""`), never clobbering the definition-derived hash. It reads only what `Live(name)`/`Versions(name)` already expose (05-workflow-store.md:1073/1349) — no new workflow-store surface. Added a Task 3 store spec asserting `col.Live` is true for the promoted version (v3) and false for candidates (v4, v5), and that a not-yet-run candidate (v5, zero run rows) still returns its real `content_hash` (`def-hash-v5`); extended the Task 3 `BeforeEach` fixture with `agent_workflow_definitions` rows for v3 (live) / v4 / v5. No contract, table, column, route, or migration change — `agent_workflow_definitions` and its `content_hash`/`live` columns are consumed exactly as workflow-store defines them.
+diff --git a/docs/superpowers/plans/agentic-platform/14-process-intel-experiments.md b/docs/superpowers/plans/agentic-platform/14-process-intel-experiments.md
+index ab4661186b..48469d631a 100644
+--- a/docs/superpowers/plans/agentic-platform/14-process-intel-experiments.md
++++ b/docs/superpowers/plans/agentic-platform/14-process-intel-experiments.md
+@@ -3149,6 +3149,8 @@ The Queryer runs read-only aggregate SQL. Findings-per-version joins `agent_run_
+ package db_test
+ 
+ import (
++	"time"
++
+ 	"github.com/concourse/concourse/agent/intel"
+ 	"github.com/concourse/concourse/atc/db"
+ 
+@@ -3181,10 +3183,43 @@ var _ = Describe("AgentIntelQueryer", func() {
+ 		Expect(err).NotTo(HaveOccurred())
+ 		Expect(counts).To(HaveKey("accurate"))
+ 	})
++
++	It("applies the SinceUnix/UntilUnix window to the counts", func() {
++		// Backdate a merged review + defect_link + feedback verdict to a fixed
++		// old instant, then confirm an all-time filter counts them but a window
++		// that starts AFTER them excludes them — proving applyWindow/the raw
++		// $since/$until binds actually reach the SQL (the routes advertise
++		// ?since/until and the handler parses them; before this fix the SQL
++		// ignored the window and every metric was all-time).
++		old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
++		seedWindowedIntelRow(dbConn, old) // suite helper below: inserts 1 merged review + defect_link + 1 'accurate' feedback dated `old`
++
++		allTimeMerged, err := q.MergedReviewCount(intel.Filter{})
++		Expect(err).NotTo(HaveOccurred())
++
++		// A window opening one second after the backdated row must not see it.
++		since := old.Add(time.Second).Unix()
++		windowedMerged, err := q.MergedReviewCount(intel.Filter{SinceUnix: since})
++		Expect(err).NotTo(HaveOccurred())
++		Expect(windowedMerged).To(BeNumerically("<", allTimeMerged),
++			"since-window must exclude the backdated merged review")
++
++		windowedMissed, err := q.DefectLinkCount(intel.Filter{SinceUnix: since})
++		Expect(err).NotTo(HaveOccurred())
++		allTimeMissed, err := q.DefectLinkCount(intel.Filter{})
++		Expect(err).NotTo(HaveOccurred())
++		Expect(windowedMissed).To(BeNumerically("<", allTimeMissed))
++
++		windowedVerdicts, err := q.VerdictCounts(intel.Filter{SinceUnix: since})
++		Expect(err).NotTo(HaveOccurred())
++		allTimeVerdicts, err := q.VerdictCounts(intel.Filter{})
++		Expect(err).NotTo(HaveOccurred())
++		Expect(windowedVerdicts["accurate"]).To(BeNumerically("<", allTimeVerdicts["accurate"]))
++	})
+ })
+ ```
+ 
+-(The seed helper is the existing `atc/db` agent-review test fixture; extend it in this task to insert one `agent_outcomes` merged row + one `defect_link` + one `agent_feedback` verdict, guarded so other specs are unaffected.)
++(The seed helper is the existing `atc/db` agent-review test fixture; extend it in this task to insert one `agent_outcomes` merged row + one `defect_link` + one `agent_feedback` verdict, guarded so other specs are unaffected. Add a second helper `seedWindowedIntelRow(conn, at time.Time)` that inserts a merged review + `defect_link` + one `accurate` feedback row with `created_at`/`occurred_at` forced to `at` — the windowing spec above uses it to prove the `[since, until)` bound reaches every metric. Add the `time` import to the spec file.)
+ 
+ - [ ] **Step 2: Run to see it fail:**
+ 
+@@ -3216,6 +3251,23 @@ func applyWorkflow(b sq.SelectBuilder, alias string, f intel.Filter) sq.SelectBu
+ 	return b
+ }
+ 
++// applyWindow bounds a query to the half-open interval [since, until) on the
++// given timestamp column (e.g. "m.created_at", "r.created_at", "occurred_at").
++// SinceUnix/UntilUnix are epoch seconds; 0 means unbounded on that end. Mirrors
++// the GetAgentCostRollup precedent (occurred_at >= $since [AND < $until]) so
++// every analytics metric respects the ?since=&until= route params instead of
++// silently reporting all-time. to_timestamp() converts epoch seconds to the
++// TIMESTAMPTZ the created_at/occurred_at columns store.
++func applyWindow(b sq.SelectBuilder, tsColumn string, f intel.Filter) sq.SelectBuilder {
++	if f.SinceUnix > 0 {
++		b = b.Where(sq.GtOrEq{tsColumn: sq.Expr("to_timestamp(?)", f.SinceUnix)})
++	}
++	if f.UntilUnix > 0 {
++		b = b.Where(sq.Lt{tsColumn: sq.Expr("to_timestamp(?)", f.UntilUnix)})
++	}
++	return b
++}
++
+ func (q *agentIntelQueryer) FindingsByVersion(f intel.Filter) ([]intel.VersionFindings, error) {
+ 	// findings = proven_issues + observations counts on reviews joined to
+ 	// run-metrics rows carrying workflow_name/version + ticket_id.
+@@ -3232,6 +3284,7 @@ func (q *agentIntelQueryer) FindingsByVersion(f intel.Filter) ([]intel.VersionFi
+ 		GroupBy("m.workflow_name", "m.workflow_version").
+ 		OrderBy("m.workflow_name", "m.workflow_version")
+ 	b = applyWorkflow(b, "m", f)
++	b = applyWindow(b, "m.created_at", f)
+ 	if f.Repo != "" {
+ 		b = b.Where(sq.Eq{"r.repo": f.Repo})
+ 	}
+@@ -3253,16 +3306,20 @@ func (q *agentIntelQueryer) FindingsByVersion(f intel.Filter) ([]intel.VersionFi
+ 
+ func (q *agentIntelQueryer) RecurringCategories(f intel.Filter) ([]intel.RecurringClass, error) {
+ 	// Unnest finding categories out of the stored review JSON.
++	// $2/$3 bound the window on r.created_at (0 = unbounded on that end),
++	// mirroring the GetAgentCostRollup since/until precedent.
+ 	const raw = `
+ SELECT obj->>'category' AS category, COUNT(*) AS n, COUNT(DISTINCT r.repo) AS repos
+ FROM agent_reviews r,
+      LATERAL jsonb_array_elements(COALESCE(r.review->'observations','[]'::jsonb)
+                                   || COALESCE(r.review->'proven_issues','[]'::jsonb)) AS obj
+ WHERE ($1 = '' OR r.repo = $1)
++  AND ($2 = 0 OR r.created_at >= to_timestamp($2))
++  AND ($3 = 0 OR r.created_at <  to_timestamp($3))
+ GROUP BY obj->>'category'
+ ORDER BY n DESC
+ LIMIT 20`
+-	rows, err := q.conn.Query(raw, f.Repo)
++	rows, err := q.conn.Query(raw, f.Repo, f.SinceUnix, f.UntilUnix)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+@@ -3279,6 +3336,9 @@ LIMIT 20`
+ }
+ 
+ func (q *agentIntelQueryer) LeftwardSeries(f intel.Filter) ([]intel.LeftwardPoint, error) {
++	// $1/$2 bound both CTEs to the [since, until) window (0 = unbounded on
++	// that end), per the GetAgentCostRollup since/until precedent — without
++	// this the leftward series ran over all history regardless of ?since/until.
+ 	const raw = `
+ WITH per_month AS (
+   SELECT to_char(m.created_at, 'YYYY-MM') AS bucket,
+@@ -3287,18 +3347,24 @@ WITH per_month AS (
+   FROM agent_run_metrics m
+   LEFT JOIN agent_reviews r ON r.ticket_id = m.ticket_id
+   WHERE m.ticket_id IS NOT NULL
++    AND ($1 = 0 OR m.created_at >= to_timestamp($1))
++    AND ($2 = 0 OR m.created_at <  to_timestamp($2))
+   GROUP BY 1
+ ),
+ defects AS (
+   SELECT to_char(created_at,'YYYY-MM') AS bucket, COUNT(*) AS escaped
+-  FROM agent_reviews WHERE defect_link IS NOT NULL GROUP BY 1
++  FROM agent_reviews
++  WHERE defect_link IS NOT NULL
++    AND ($1 = 0 OR created_at >= to_timestamp($1))
++    AND ($2 = 0 OR created_at <  to_timestamp($2))
++  GROUP BY 1
+ )
+ SELECT p.bucket,
+        CASE WHEN p.tickets>0 THEN p.findings::float/p.tickets ELSE 0 END,
+        COALESCE(d.escaped,0)
+ FROM per_month p LEFT JOIN defects d ON d.bucket = p.bucket
+ ORDER BY p.bucket`
+-	rows, err := q.conn.Query(raw)
++	rows, err := q.conn.Query(raw, f.SinceUnix, f.UntilUnix)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+@@ -3315,9 +3381,10 @@ ORDER BY p.bucket`
+ }
+ 
+ func (q *agentIntelQueryer) VerdictCounts(f intel.Filter) (map[string]int, error) {
+-	rows, err := psql.Select("verdict", "COUNT(*)").
+-		From("agent_feedback").GroupBy("verdict").
+-		RunWith(q.conn).Query()
++	b := psql.Select("verdict", "COUNT(*)").
++		From("agent_feedback").GroupBy("verdict")
++	b = applyWindow(b, "created_at", f)
++	rows, err := b.RunWith(q.conn).Query()
+ 	if err != nil {
+ 		return nil, err
+ 	}
+@@ -3336,24 +3403,29 @@ func (q *agentIntelQueryer) VerdictCounts(f intel.Filter) (map[string]int, error
+ 
+ func (q *agentIntelQueryer) MergedReviewCount(f intel.Filter) (int, error) {
+ 	var n int
+-	err := psql.Select("COUNT(*)").
++	b := psql.Select("COUNT(*)").
+ 		From("agent_reviews r").
+ 		Join("agent_outcomes o ON o.ticket_id = r.ticket_id").
+ 		Where(sq.Eq{"o.merge_state": []string{"merged", "merged_with_fixes"}}).
+-		Where("r.ticket_id IS NOT NULL").
+-		RunWith(q.conn).QueryRow().Scan(&n)
++		Where("r.ticket_id IS NOT NULL")
++	b = applyWindow(b, "r.created_at", f)
++	err := b.RunWith(q.conn).QueryRow().Scan(&n)
+ 	return n, err
+ }
+ 
+ func (q *agentIntelQueryer) DefectLinkCount(f intel.Filter) (int, error) {
+ 	var n int
+-	err := psql.Select("COUNT(*)").From("agent_reviews").
+-		Where("defect_link IS NOT NULL").
+-		RunWith(q.conn).QueryRow().Scan(&n)
++	b := psql.Select("COUNT(*)").From("agent_reviews").
++		Where("defect_link IS NOT NULL")
++	b = applyWindow(b, "created_at", f)
++	err := b.RunWith(q.conn).QueryRow().Scan(&n)
+ 	return n, err
+ }
+ 
+ func (q *agentIntelQueryer) FrictionAggregates(f intel.Filter) (loops, toolErr, turnBurn float64, sample int, err error) {
++	// $2/$3 bound the window on created_at (0 = unbounded on that end), per the
++	// GetAgentCostRollup since/until precedent — friction signatures respect
++	// ?since/until instead of aggregating every run ever recorded.
+ 	const raw = `
+ SELECT
+   COALESCE(AVG( (event_counts->>'gate.result')::int ),0)         AS loops,
+@@ -3364,13 +3436,15 @@ SELECT
+   COALESCE(percentile_cont(0.9) WITHIN GROUP (ORDER BY turns),0)  AS turn_burn,
+   COUNT(*)                                                        AS sample
+ FROM agent_run_metrics
+-WHERE ($1 = '' OR workflow_name = $1)`
+-	err = q.conn.QueryRow(raw, f.WorkflowName).Scan(&loops, &toolErr, &turnBurn, &sample)
++WHERE ($1 = '' OR workflow_name = $1)
++  AND ($2 = 0 OR created_at >= to_timestamp($2))
++  AND ($3 = 0 OR created_at <  to_timestamp($3))`
++	err = q.conn.QueryRow(raw, f.WorkflowName, f.SinceUnix, f.UntilUnix).Scan(&loops, &toolErr, &turnBurn, &sample)
+ 	return
+ }
+ ```
+ 
+-Note: `agent_reviews.proven_count`/`observation_count` are existing denormalized columns (`reviews.StoredReview`); `event_counts->>'gate.result'` etc. read the §1.8 JSONB. `psql`/`DbConn.Query`/`QueryRow` are the package-`db` idioms used throughout `*_factory.go`.
++Note: `agent_reviews.proven_count`/`observation_count` are existing denormalized columns (`reviews.StoredReview`); `event_counts->>'gate.result'` etc. read the §1.8 JSONB. `psql`/`DbConn.Query`/`QueryRow` are the package-`db` idioms used throughout `*_factory.go`. Every method applies the `Filter`'s `SinceUnix`/`UntilUnix` window (via `applyWindow` for squirrel builders, or `$since/$until` binds in the raw-SQL methods) against `created_at`/`occurred_at` — mirroring `GetAgentCostRollup`'s half-open `[since, until)` semantics (0 = unbounded on that end). Without this the routes advertise `?since=&until=` and the handler parses them, but the SQL ignored them and every metric was all-time.
+ 
+ - [ ] **Step 4: Run to green:**
+ 
+@@ -3589,11 +3663,11 @@ git commit -m "feat(web): minimal agent intel view (calibration + friction table
+ 
+ ### Task 18: Retrospective workflow definition + intel-context materializer
+ 
+-The retrospective is an `agent:` step run (not new execution machinery): a workflow definition whose single agent step reads a materialized intel summary and files `origin:retrospective` proposal tickets via platform-mcp's `read_ticket`/spec/plan tools + `CreateAgentTicket`. This task lands (a) the seed workflow YAML and (b) a materializer that renders the intel snapshot into a read-only `intel.md` workspace input.
++The retrospective is an `agent:` step run (not new execution machinery): a workflow definition whose single agent step reads the intel snapshot and files `origin:retrospective` proposal tickets via platform-mcp's `read_ticket`/`submit_spec` tools + `CreateAgentTicket`. This task lands (a) the seed workflow YAML and (b) a materializer (`RenderIntelMarkdown`) that renders the intel snapshot as markdown. That markdown is delivered to the agent as the retrospective ticket's **spec body** (Task 19 submits it via `tickets.Store.SubmitSpec`), which the agent reads through platform-mcp `read_ticket` in default `spec_delivery: mcp` mode — NOT as an `intel.md` workspace file (default mcp mode materializes no spec/plan files; contracts §3.2). The renderer just produces the markdown bytes; the trigger owns delivery.
+ 
+ **Files:**
+ - Create: `agent/retrospective/workflow.go` (the embedded seed definition YAML + `SeedDefinition() []byte`)
+-- Create: `agent/retrospective/context.go` (`RenderIntelMarkdown(FindingAnalytics, Calibration, Friction, outcomes summary) []byte`)
++- Create: `agent/retrospective/context.go` (`RenderIntelMarkdown(FindingAnalytics, Calibration, Friction) []byte` — the snapshot markdown Task 19 delivers as the ticket's spec body)
+ - Test: `agent/retrospective/context_test.go`
+ - Create: `docs/agentic/retrospective-workflow.yml` (human-readable copy of the seed, imported via `fly agent workflows import`)
+ 
+@@ -3658,8 +3732,12 @@ import (
+ 	"github.com/concourse/concourse/agent/intel"
+ )
+ 
+-// RenderIntelMarkdown produces the read-only intel.md workspace input the
+-// retrospective agent reads. Deterministic; no LLM. Sections: recurring
++// RenderIntelMarkdown produces the process-intelligence snapshot markdown the
++// retrospective agent reads. Task 19's trigger delivers this as the retrospective
++// ticket's spec body (via tickets.Store.SubmitSpec), so the agent reaches it
++// through platform-mcp read_ticket in default spec_delivery: mcp mode — it is
++// NOT written to an intel.md workspace file (default mcp mode materializes no
++// spec/plan files; contracts §3.2). Deterministic; no LLM. Sections: recurring
+ // finding classes (automation candidates), calibration, friction signatures.
+ func RenderIntelMarkdown(fa *intel.FindingAnalytics, cal *intel.Calibration, fr *intel.Friction) []byte {
+ 	var b strings.Builder
+@@ -3708,7 +3786,7 @@ var seedWorkflow []byte
+ func SeedDefinition() []byte { return seedWorkflow }
+ ```
+ 
+-- [ ] **Step 5: Write `agent/retrospective/seed_workflow.yml`** (embedded; a linear single-agent workflow that reads intel.md and files proposals):
++- [ ] **Step 5: Write `agent/retrospective/seed_workflow.yml`** (embedded; a linear single-agent workflow that reads the snapshot via platform-mcp `read_ticket` — the trigger delivers it as the ticket's spec — and files proposals):
+ 
+ ```yaml
+ schema_version: 1
+@@ -3730,9 +3808,11 @@ sidecars:
+ 
+ prompts:
+   retrospect: |
+-    You are running the platform's retrospective. Read intel.md in your
+-    workspace: recurring review findings, calibration rates, and friction
+-    signatures over the recent window.
++    You are running the platform's retrospective. Read the ticket via
++    platform-mcp: call read_ticket — its spec is the process-intelligence
++    snapshot (recurring review findings, calibration rates, and friction
++    signatures over the recent window). Read it from the returned spec's
++    body_md.
+ 
+     For each HIGH-SIGNAL, ACTIONABLE improvement (a recurring finding class that
+     a lint rule or dev-mcp gate could catch; a prompt amendment that would cut a
+@@ -3743,7 +3823,7 @@ prompts:
+       lint-rule | prompt-amendment | dev-mcp-gate | workflow-edit
+ 
+       ## Evidence
+-      <the intel.md numbers that justify this — e.g. "caught 4 times in review across 2 repos">
++      <the snapshot numbers from read_ticket's spec that justify this — e.g. "caught 4 times in review across 2 repos">
+ 
+       ## Concrete change
+       <the specific rule/prompt/gate/edit to make>
+@@ -3791,7 +3871,7 @@ git commit -m "feat(agent): retrospective seed workflow + intel-context material
+ 
+ ### Task 19: `retrospective_trigger` component — manual + recurring cadence
+ 
+-The charter: "manual-triggered cadence first, then recurring". Implement one trigger that (a) ensures the `retrospective` workflow is imported+live, (b) on demand or on a configurable interval, gathers the intel snapshot, and (c) files ONE `origin:retrospective` ticket whose body carries the rendered intel snapshot (so it reaches the agent as the dispatched run's `spec.md`), queued through `Transition` for the wave-4 dispatcher to render+run. Recurring cadence is a web-node flag `--agent-retrospective-interval` (0 = manual only). A manual trigger arrives via `fly agent retrospective run` (Task 20) which POSTs a "run now" that the trigger honors on its next tick (or immediately, via a DB flag row).
++The charter: "manual-triggered cadence first, then recurring". Implement one trigger that (a) ensures the `retrospective` workflow is imported+live, (b) on demand or on a configurable interval, gathers the intel snapshot over a bounded trailing window (30 days — charter "mine a month"; the analytics SQL honors `Filter.SinceUnix`/`UntilUnix` per Task 16), and (c) files ONE `origin:retrospective` ticket that delivers the rendered intel snapshot as the ticket's **versioned spec** (via `tickets.Store.SubmitSpec`) so the dispatched retrospective agent reaches it through platform-mcp `read_ticket` in default `spec_delivery: mcp` mode — the ticket is then queued through `Transition` for the wave-4 dispatcher to render+run. (The snapshot is NOT stuffed into `Ticket.Body`: `read_ticket` returns the latest spec via `LatestSpec`, not the raw body, so a body-only snapshot would never reach the agent — contracts §3.2.) Recurring cadence is a web-node flag `--agent-retrospective-interval` (0 = manual only). A manual trigger arrives via `fly agent retrospective run` (Task 20) which POSTs a "run now" that the trigger honors on its next tick (or immediately, via a DB flag row).
+ 
+ **Files:**
+ - Create: `agent/retrospective/trigger.go`
+@@ -3873,14 +3953,22 @@ var _ = Describe("Trigger", func() {
+ 		trig = retrospective.NewTrigger(stubQueryer{}, ticketStore, wfStore, "retrospective-agent")
+ 	})
+ 
+-	It("files one queued retrospective ticket with the intel snapshot in its body", func() {
++	It("files one queued retrospective ticket delivering the intel snapshot as the spec", func() {
+ 		Expect(trig.RunOnce(context.Background(), "manual")).To(Succeed())
+ 
+ 		Expect(ticketStore.CreateCallCount()).To(Equal(1))
+ 		created := ticketStore.CreateArgsForCall(0)
+ 		Expect(created.Origin).To(Equal("retrospective"))
+ 		Expect(created.WorkflowName).To(Equal("retrospective"))
+-		Expect(created.Body).To(ContainSubstring("nil-deref")) // intel snapshot embedded
++
++		// The snapshot is delivered as the ticket's VERSIONED SPEC (so
++		// platform-mcp read_ticket surfaces it in default mcp mode), NOT the
++		// raw Ticket.Body — read_ticket returns LatestSpec, not the body.
++		Expect(ticketStore.SubmitSpecCallCount()).To(Equal(1))
++		specTicketID, spec := ticketStore.SubmitSpecArgsForCall(0)
++		Expect(specTicketID).To(Equal(55))
++		Expect(spec.Body).To(ContainSubstring("nil-deref")) // intel snapshot in the spec
++
+ 		id, from, to, _ := ticketStore.TransitionArgsForCall(0)
+ 		Expect(id).To(Equal(55))
+ 		Expect(from).To(Equal(tickets.StateDraft))
+@@ -3914,7 +4002,9 @@ package retrospective
+ import (
+ 	"context"
+ 	"fmt"
++	"time"
+ 
++	"code.cloudfoundry.org/lager/v3"
+ 	"code.cloudfoundry.org/lager/v3/lagerctx"
+ 
+ 	"github.com/concourse/concourse/agent/api/tickets"
+@@ -3956,7 +4046,11 @@ func (t *Trigger) RunOnce(ctx context.Context, cause string) error {
+ 		logger.Info("imported-retrospective-seed")
+ 	}
+ 
+-	f := intel.Filter{}
++	// Mine a bounded trailing window (30 days), not all history — the charter
++	// ("mine a month") and the Step-3 prose both call for a recent window, and
++	// the analytics SQL now honors Filter.SinceUnix/UntilUnix (Task 16). An
++	// empty intel.Filter{} would report all-time and drown recent signal.
++	f := intel.Filter{SinceUnix: time.Now().Add(-30 * 24 * time.Hour).Unix()}
+ 	fa, err := t.analyzer.Findings(f)
+ 	if err != nil {
+ 		return err
+@@ -3973,7 +4067,7 @@ func (t *Trigger) RunOnce(ctx context.Context, cause string) error {
+ 
+ 	ticketID, err := t.tickets.Create(&tickets.Ticket{
+ 		Title:        fmt.Sprintf("Retrospective (%s)", cause),
+-		Body:         string(snapshot),
++		Body:         "Process-intelligence retrospective — the intel snapshot is the ticket's spec (read it via platform-mcp read_ticket).",
+ 		Origin:       "retrospective",
+ 		Repo:         "tdmtrader/concourse",
+ 		WorkflowName: "retrospective",
+@@ -3982,6 +4076,20 @@ func (t *Trigger) RunOnce(ctx context.Context, cause string) error {
+ 	if err != nil {
+ 		return err
+ 	}
++	// Deliver the intel snapshot as the ticket's VERSIONED SPEC (not Ticket.Body):
++	// the retrospective agent runs in default `spec_delivery: mcp` mode, so it
++	// reaches the snapshot only through platform-mcp `read_ticket`, which returns
++	// the latest spec via tickets.Store.LatestSpec (contracts §3.2). Putting the
++	// snapshot in Ticket.Body would NOT surface it to the agent — read_ticket
++	// returns the spec, not the raw body. SubmitSpec is the single spec writer
++	// (contracts §2.1); it stores the snapshot as spec version 1.
++	if _, err := t.tickets.SubmitSpec(ticketID, tickets.Spec{
++		Title:       fmt.Sprintf("Retrospective (%s)", cause),
++		Body:        string(snapshot),
++		SubmittedBy: t.createdBy,
++	}); err != nil {
++		return fmt.Errorf("submitting retrospective spec: %w", err)
++	}
+ 	// Attribution rides on Ticket.CreatedBy (set above at Create time);
+ 	// TransitionMeta has no By field (ticket-core §2.1.1).
+ 	if err := t.tickets.Transition(ticketID, tickets.StateDraft, tickets.StateQueued,
+@@ -3998,7 +4106,7 @@ func (t *Trigger) Run(ctx context.Context) error {
+ }
+ ```
+ 
+-Add the `lager` import (`code.cloudfoundry.org/lager/v3`).
++The import block above already carries `code.cloudfoundry.org/lager/v3` (for `lager.Data`) and `time` (for the 30-day trailing window).
+ 
+ - [ ] **Step 6: Run to green:**
+ 
+@@ -4235,3 +4343,11 @@ Both milestones exercise real dispatch → jetbridge pods, so a live smoke test
+ ### Milestone split at execution time
+ 
+ Per the charter and scaffolding decision 8, M1 (Tasks 1–11) and M2 (Tasks 12–20) are separately shippable. If executing as two forge tracks: M1 depends only on wave-4 dispatch/pipeline-runs/scorecards; M2 additionally depends on the `agent_reviews.defect_link` column (Task 12) and reads `agent_outcomes`/`agent_feedback` populated by real runs — M2's analytics are meaningful only once M1 (or normal dispatch) has produced run history, so land M1 first and let data accrue before trusting M2's numbers (charter risk: "friction signatures need run volume to mean anything — ship the queries, expect tuning").
++
++---
++
++## §11 Amendment log (this plan)
++
++- **2026-07-09 (design-review fixes F9, F10 — no contract-name changes; all names stay identical to 00-shared-contracts.md):**
++  - **F9 (analytics window never applied):** the routes advertise `?since=&until=`, `intel.Filter` carries `SinceUnix`/`UntilUnix`, and the handler parses them, but Task 16's Queryer SQL ignored the window (every metric was all-time) and Task 19's retrospective trigger passed an empty `intel.Filter{}` (mined all history) — contradicting the Step-3 prose and the charter's "mine a month". Fix: added an `applyWindow(b, tsColumn, f)` helper mirroring the existing `applyWorkflow`, and called it in every squirrel Queryer method (`FindingsByVersion` on `m.created_at`, `VerdictCounts` on `created_at`, `MergedReviewCount` on `r.created_at`, `DefectLinkCount` on `created_at`) against `created_at`/`occurred_at`; bound `$since/$until` into the three raw-SQL methods (`RecurringCategories`, `LeftwardSeries`, `FrictionAggregates`), following the `GetAgentCostRollup` half-open `[since, until)` precedent (0 = unbounded, `to_timestamp()` for the epoch-seconds→TIMESTAMPTZ conversion). Task 19's trigger now builds a bounded trailing-30-day filter (`SinceUnix: time.Now().Add(-30*24*time.Hour).Unix()`) instead of `intel.Filter{}`. Added a Task-16 Ginkgo spec ("applies the SinceUnix/UntilUnix window to the counts") that backdates a merged review + `defect_link` + `accurate` feedback to 2020 and asserts a since-window excludes them while an all-time filter counts them (new suite helper `seedWindowedIntelRow`; `time` import added to the spec).
++  - **F10 (retrospective intel delivery seam):** Task 18 built `RenderIntelMarkdown` as "the read-only intel.md workspace input" and the seed prompt said "Read intel.md in your workspace," but nothing produced an `intel.md` file — Task 19 put the snapshot in `Ticket.Body` (which is NOT the versioned Spec that `read_ticket`/`LatestSpec` returns; in default `spec_delivery: mcp` mode no file is materialized). Fix: (a) amended the seed prompt to "Read the ticket via platform-mcp: call `read_ticket` — its spec is the snapshot … `body_md`"; (b) Task 19's trigger now delivers the snapshot via `tickets.Store.SubmitSpec(ticketID, tickets.Spec{Title, Body: snapshot, SubmittedBy})` (spec version 1) between `Create` and `Transition`, with a lightweight pointer `Ticket.Body`, so `read_ticket` surfaces it (contracts §3.2); (c) corrected Task 18's framing (intro, `context.go` file line, `RenderIntelMarkdown` doc comment) and Step-5's seed description to describe spec-delivery rather than a non-existent `intel.md` workspace file. Updated the Task-19 spec ("files one queued retrospective ticket delivering the intel snapshot as the spec") to assert `SubmitSpecCallCount() == 1` and that the submitted `spec.Body` contains the snapshot, instead of checking `created.Body`. Contract-visible names used verbatim from ticket-core/platform-mcp: `tickets.Store.SubmitSpec`, `tickets.Spec{Title, Body, SubmittedBy}`, `read_ticket`, `submit_spec`, `spec_delivery: mcp`.
+diff --git a/docs/superpowers/plans/agentic-platform/REVIEW.md b/docs/superpowers/plans/agentic-platform/REVIEW.md
+index 7df38a45f5..023ac47248 100644
+--- a/docs/superpowers/plans/agentic-platform/REVIEW.md
++++ b/docs/superpowers/plans/agentic-platform/REVIEW.md
+@@ -205,3 +205,26 @@ These survived adversarial verification. Two verified as **partly-confirmed** (s
+ 10. **F12 — budget honesty** (spec Failure-handling + §8.1 annotation). Documentation correction; the between-step admission gate already contains the overrun — do **not** build the live per-turn cutoff.
+ 
+ **Defer (optional polish):** everything in §4. None gates execution; batch opportunistically when the relevant file is open.
++
++---
++
++## 7. Resolution log (2026-07-09)
++
++All 12 confirmed findings (F1–F12) were applied to their owning plan/spec files. Each fix landed as a TDD-style edit (failing→passing test where a code contract exists; prose-only correction where the finding is doc-only), with a dated 2026-07-09 amendment/sign-off note recorded in the touched file.
++
++| Finding | Status | Files touched | What changed |
++|---------|--------|---------------|--------------|
++| F1 | fixed | `11-dispatch.md`, `08-platform-mcp-hitl.md`, `00-shared-contracts.md` | `renderCheckpointStep` now emits an `atc.TaskStep` running `platform-mcp checkpoint --name <n>` (exit 0 approve / exit 1 reject gates the run); dead `PLATFORM_MCP_CHECKPOINT*` env vars + LLM prompt deleted; `on_reject` mapping documented; co-signed §11 amendment across dispatch + platform-mcp-hitl + contracts. |
++| F2 | fixed | `00-shared-contracts.md` | §8.2 reworded from "before run creation" to "after the queued→running claim is won, before the build tracker schedules entry-job pods"; §11 note that the §2.8.2 dispatch addendum supersedes the earlier phrasing. Doc-only (no runtime race). |
++| F3 | fixed | `07-agent-step.md` | Added additive `metrics.Store.UpsertReturningInserted`; `ingestFlightRecorder` gates the ledger `Record` on `inserted && CostUSD > 0`, so a web-restart resume no longer double-charges the append-only ledger. Test asserts `Record` fires exactly once across two `Run`s. |
++| F4 | fixed | `07-agent-step.md` | Ingestion now runs on `context.WithoutCancel(ctx)`+30s timeout so timed-out steps still read `results.json`/`events.ndjson`; test forces `DeadlineExceeded` and asserts non-zero cost/turns/`event_counts` + a ledger entry survive. |
++| F5 | fixed | `05-workflow-store.md` | Rewrote `implement`/`qa`/`review` seed prompts to the default `mcp` read model (`read_ticket`/`list_tasks`/`get_task`), dropping `spec.md`/`plan.md` and `{{.Spec}}`/`{{.Tasks}}`; `TestSeedStandardDevValidates` now fails any prompt that regresses to file-mode tokens. |
++| F6 | fixed | `12-delivery-outcomes.md` | `Ensure` re-arms a `closed_unmerged AND disposition='sent_back'` row back to `open` with fresh shas; `seedRows` no longer `continue`s on a found row; watcher test drives send-back → re-dispatch → merge ending `merged_with_fixes` with the reworked shas. |
++| F7 | fixed | `05-workflow-store.md`, `08-platform-mcp-hitl.md` | Cross-field check rejects `ask_timeout ∈ {default,fail}` with `ask_timeout_seconds <= 0` at import (`Validate`) and as defense-in-depth in `ConfigFromEnv`; `park`+0 stays legal. Tests cover both layers. |
++| F8 | fixed | `13-scorecards.md` | New `definition(name, version, col)` query runs first in `perVersion`, setting `col.Live`/`col.ContentHash` authoritatively from `agent_workflow_definitions` (metrics `MAX(workflow_hash)` demoted to fallback); test asserts a live version lights the badge and a never-run candidate returns a real hash. |
++| F9 | fixed | `14-process-intel-experiments.md` | Added `applyWindow` helper applied to all four squirrel Queryers + the three raw-SQL methods (half-open `[since,until)`, `0`=unbounded); retrospective trigger now passes a trailing-30-day filter instead of `intel.Filter{}`. Windowing test asserts fewer counts under a `SinceUnix` bound. |
++| F10 | fixed | `14-process-intel-experiments.md` | Retrospective snapshot delivered via `tickets.Store.SubmitSpec` and seed prompt changed to read the ticket via platform-mcp `read_ticket`; removed all references to the non-existent `intel.md` workspace file; test asserts `SubmitSpec` called once with the snapshot body. |
++| F11 | fixed | `02-credentials-and-budgets.md`, `00-shared-contracts.md` | `PlatformSecretSyncer.Run` `!found` branch now deletes the stale `agent-platform-credential` secret (NotFound-tolerant, mirrors `secret_attacher.go` Cleanup); §8.2 marked bidirectional; `TestSyncerDeletesSecretWhenCredentialUnvaulted` added. Noted it does not revoke the upstream token. |
++| F12 | fixed | `2026-07-07-agentic-platform-end-state-design.md`, `00-shared-contracts.md` | Prose/annotation honesty fix: main-agent own spend is admission-gated (`StepSlice`) + post-hoc reconciled and turn/timeout-capped, not cut off mid-call; §8.1 `AGENT_BUDGET_SLICE_USD` annotation corrected to "gateway enforces for sub-agent calls only." Doc-only; no live per-turn cutoff built. |
++
++**Verification.** The fixes were cross-file verified for coherence, not just per-finding completeness. The three highest-risk seams were checked end-to-end: **F1** — the co-signed checkpoint contract (`atc.TaskStep` + `platform-mcp checkpoint --name`, exit-code gating, deleted env vars, `on_reject` mapping) is now byte-consistent across `11-dispatch.md`, `08-platform-mcp-hitl.md`, and the already-frozen `00-shared-contracts.md` §11/decision-12; **F7** — the `ask_timeout`/`ask_timeout_seconds` cross-field rule matches between workflow-store `Validate` and platform-mcp `ConfigFromEnv`; **F3** — the additive `UpsertReturningInserted` change is confined to the agent-step-owned `Store` surface, leaving the `RunMetrics` (§2.4) and `agent_run_metrics` (§1.8) contracts and the `Upsert` calls in harvest-step (09) and delivery-outcomes (12) untouched. Contract-visible names (`agent-platform-credential`, `AGENT_BUDGET_SLICE_USD`, `StepSlice`, `read_ticket`/`list_tasks`/`get_task`, `spec_delivery: mcp|files`, `needs_review`, `on_reject: fail|send_back`) were confirmed identical to their defining sections across every touched file. No residual follow-ups remained after the pass: the verifier follow-up queue was empty, and each editor's self-consistency cleanup (e.g. removing the stale delivery-outcomes "handled elsewhere" comment and the redundant workflow-store import note) was applied in-line.
+diff --git a/docs/superpowers/specs/2026-07-07-agentic-platform-end-state-design.md b/docs/superpowers/specs/2026-07-07-agentic-platform-end-state-design.md
+index cd9e58fbde..d496d81d0a 100644
+--- a/docs/superpowers/specs/2026-07-07-agentic-platform-end-state-design.md
++++ b/docs/superpowers/specs/2026-07-07-agentic-platform-end-state-design.md
+@@ -175,6 +175,7 @@ Existing tables extended, not duplicated: `agent_reviews`, `agent_feedback`.
+ ## Failure handling
+ 
+ - Budget exhaustion → dispatch queues (daily cap) or run halts at the gateway with ticket state `needs-review` and a partial work product (per-ticket cap). Never silent truncation.
++- Budget enforcement points differ by spend source. The main agent's *own* claude-CLI spend is bounded per-step by `--max-turns` and the step timeout, then reconciled against the budget at step-admission (the dispatcher's daily-cap check and the agent step's `StepSlice` resolution) and post-hoc when its usage envelope is ingested — **not** interrupted mid-call. Only *cross-agent* gateway calls receive a mid-call dollar cutoff; the gateway is the one place a live dollar ceiling halts an in-flight LLM call.
+ - Harvest gate failure → ticket `needs-review` with failing evidence attached; nothing is pushed.
+ - Run timeout / platform fault → status `error` (not `failed`); dispatcher retry semantics with attempt caps.
+ - `ask_human` timeout → configurable per workflow definition (park indefinitely vs. proceed-with-default vs. fail).
+@@ -203,3 +204,7 @@ Existing tables extended, not duplicated: `agent_reviews`, `agent_feedback`.
+ 9. Retrospective workflow v1 scope (which inputs, proposal format, cadence).
+ 10. Jira sync design (phase 2).
+ 11. Consolidation strategy for ci-agent module / `agent/` package / atium concepts (shared schema module vs. contract tests).
++
++## Amendments
++
++- **2026-07-09 (F12 — budget-honesty correction, Failure handling):** Added a line to §Failure handling clarifying that the main agent's own claude-CLI spend is bounded per-step by `--max-turns` / step timeout and reconciled against the budget at step-admission (dispatcher daily-cap check + agent step `StepSlice`) and post-hoc at usage ingestion — **not** mid-call; only cross-agent gateway calls receive a mid-call dollar cutoff. This corrects the earlier implication (rev 2 §11 "Enforcement at the gateway (metering + cutoff)") that the gateway caps *all* agent spend. No contract names changed; consistent with 00-shared-contracts.md §2.7 (`budget.Checker.StepSlice`), §2.8 (`AgentStep.MaxTurns`), and 10-gateway-mcp.md (gateway cutoff enforced only against `AGENT_BUDGET_SLICE_USD`).

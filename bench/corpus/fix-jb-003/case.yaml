@@ -1,0 +1,181 @@
+# RESOLVED 2026-07-25 (curator-fixup): the merger's BORDERLINE hold is lifted.
+# The opus finding (leading text in task/task.md) was real and is fixed; the
+# sonnet FAIL was entirely about case.yaml metadata, which the schema's
+# exposure contract puts harness-side and never shows the solver. See
+# notes.md#fixup-2026-07-25.
+schema: benchmark-case/v1
+id: fix-jb-003
+title: "Harvest trailer stamp dies in the container: `git commit --amend` has no identity"
+workflow: small-fix
+
+signature:
+  inputs:
+    repository: repository/v1
+    work-item: work-item/v1
+  outputs:
+    change: repository-change/v1
+
+source:
+  system: git-commit
+  repo: jetbridge
+  terminal: a07237787d05da53f7a44fb5eba077e79052faac   # fix(harvest): StampTrailer must set its own git committer identity
+
+information_cut: 2026-07-21T18:48:54-07:00   # committer date of pre_state 3f4f161e10
+
+pre_state:
+  repository:
+    repo: jetbridge
+    ref: 3f4f161e10ce33ae17663e556c285fd347edd1d8   # chore: untrack the stray merge-runner binary; ignore step-runner builds
+  work-item:
+    path: task/task.md
+
+ground_truth:
+  outcome: merged
+  reference_change: ground_truth/reference.diff
+  answer: ground_truth/answer.md
+
+rubric: mechanical
+  # Primary and authoritative. ground_truth/rubric.md is a SECONDARY judge
+  # checklist over the same run (it scores diagnosis quality and whether the
+  # agent's own regression test has the fails-locally property, neither of
+  # which a test transition can see). The schema's single-value enum cannot
+  # express "mechanical + judge"; noted as a format gap rather than fudged.
+
+grading:
+  # PROCEDURE (load-bearing; the schema cannot express it in the path lists).
+  # agent/harvest/trailer_test.go EXISTS at pre_state with five specs and the
+  # ground truth APPENDS two more to that same file, so the file cannot be
+  # withheld wholesale — the harness must OVERLAY the post-state file over
+  # whatever the agent wrote. Run the steps in this order:
+  procedure:
+    - "1. Snapshot the agent's tree/diff BEFORE touching anything. rubric.md
+       item 7 and the Should items are judged on that snapshot; the overlay
+       destroys the agent's own test file, so grading it afterwards is
+       impossible. This is a known collision between the mechanical and judge
+       legs of this case, not a defect in the solution."
+    - "2. Copy ground_truth/grading_tests/trailer_test.go over
+       agent/harvest/trailer_test.go in a scratch copy of the agent's tree."
+    - "3. If the package now fails to COMPILE because the agent added another
+       *_test.go in package harvest_test that redeclares a helper
+       (trailerGit, workspaceWith) or a test name the overlay also defines,
+       move those agent-added test files aside, record which, and re-run. A
+       build break caused by the overlay must never be scored as a failed
+       solution."
+    - "4. Clear GIT_COMMITTER_NAME / GIT_COMMITTER_EMAIL / GIT_AUTHOR_NAME /
+       GIT_AUTHOR_EMAIL from the harness environment before every command
+       below (`env -u ...` inline; expanding the prefix from a shell variable
+       fails under zsh). If the harness leaks a bot committer identity into
+       the test process, the pre_state code inherits it and the fail_to_pass
+       leg passes at pre_state, destroying the signal."
+    - "5. Both fail_to_pass and pass_to_pass run WITH the overlay applied.
+       Running pass_to_pass against the agent's own test file would let a
+       solution that deleted or loosened a pre_state spec pass spuriously; the
+       overlay restores all five originals, so it cannot."
+  fail_to_pass:
+    - cmd: "go test ./agent/harvest/ -run 'TestStampTrailerSetsItsOwnCommitterIdentity' -count=1"
+      withheld_test_paths: [ground_truth/grading_tests/trailer_test.go]
+      note: >-
+        Fails at pre_state on ANY machine. Where an ambient git identity exists
+        (developer laptop, ~/.gitconfig) the amend succeeds but stamps that
+        human as committer, so %cn != "concourse-agent[bot]". Where none exists
+        (the agent-runner container) the amend errors out and StampTrailer
+        returns, so t.Fatal fires. This bidirectional failure is what makes the
+        case environment-independent. Asserts %cn ONLY — the bot email is
+        genuinely ambiguous in-tree (agent@concourse.invalid in agent/merge vs
+        agent@concourse.local in several test helpers) and is not graded.
+  pass_to_pass:
+    - cmd: "go test ./agent/harvest/ -run 'TestStampTrailerPreservesTheOriginalAuthor' -count=1"
+      withheld_test_paths: [ground_truth/grading_tests/trailer_test.go]
+      note: >-
+        OVER-CORRECTION GUARD. Reclassified from fail_to_pass to pass_to_pass
+        2026-07-25: on the reference (identity-having) host it passes at
+        pre_state AND post_state, because `git commit --amend` preserves the
+        author — validated at both SHAs. Leaving it under fail_to_pass made a
+        correct run look like a missing transition. Its job is to FAIL any
+        solution that reaches for `--amend --reset-author`, which is literally
+        what git's own error hint in task/task.md recommends. In an
+        identity-less environment it is additionally a true fail_to_pass (the
+        amend errors out at pre_state); that is a bonus, not the design.
+    - cmd: "go test ./agent/harvest/ -count=1"
+      note: >-
+        ~10s, no Postgres, no cluster. Requires the `git` binary on PATH.
+        Caveat: run this on a host WITH an ambient git identity. In an
+        identity-less environment four of the five pre-existing StampTrailer
+        specs already fail at pre_state — that failure IS the bug report in
+        task/task.md, so it cannot double as a regression guard there.
+
+withheld: []   # nothing at pre_state describes or prescribes this fix; see notes.md
+
+# Kept exposed on purpose (priced deflator, not a leak): 00-shared-contracts.md
+# §1.11 and 2026-07-20-platform-owned-merge-design.md §5 are authentic pre_state
+# docs. §1.11 defines the human-touch columns as counting non-agent AUTHORS,
+# which is the evidence the agent must reason from to avoid --reset-author; §5
+# says nothing about identity or environment. rubric.md tells the judge to
+# credit causal reasoning from that evidence, never doc-quotation.
+
+difficulty: moderate   # reaffirmed 2026-07-25 after the task softening: opus
+                       # argued medium-not-hard and the manifest already said
+                       # moderate. Removing the leading text raises the work
+                       # (root cause is no longer stated, the trap is no longer
+                       # pre-empted) but the log excerpt still names the failing
+                       # command and the exact git error, and the fix is ~10
+                       # lines in one file, so `hard` would be an overclaim.
+memorization_risk: none   # private repo, 2026-07, post-cutoff
+
+known_leak_channels: [project-auto-memory]
+  # This dev machine's project memory (memory/project_platform_owned_merge.md,
+  # "GIT IDENTITY GOTCHA") states the root cause, the CI build number, the
+  # GIT_COMMITTER_* fix AND the --amend-preserves-author resolution of the trap.
+  # A hand-run of this case on this machine is invalid unless project memory,
+  # session context, and conversation history are suppressed. Nothing in the
+  # repo snapshot leaks it; the channel is purely operator-environment.
+
+validation:
+  status: validated
+  notes: notes.md#validation
+
+leakage_audit:
+  - auditor: opus
+    verdict: borderline
+    notes: "Agent-visible material is clean (no post-cut refs; every cited artifact real at pre_state), but task.md is leading: expected-behaviour §2 states the root cause outright, constraint 3 pre-empts the --reset-author trap, and constraint 4 describes the graded spec's distinguishing property. Bot email is ambiguous in-tree (agent@concourse.invalid vs .local) so the spec should assert %cn only; difficulty is medium, not hard."
+  - auditor: sonnet
+    verdict: fail
+    notes: "task.md and pre_state are clean and fairly hard (merge.go's run() is legitimate prior art that fails the author-preservation guard if copied naively). Fails on case.yaml metadata inside the audited exposure: source.terminal quotes the fix commit's subject verbatim, fail_to_pass names both test names, the note spells out the --reset-author trap, and curation.learnings narrates the whole mechanism."
+  - auditor: curator-fixup
+    verdict: pass
+    notes: "Rewrote the leading parts of task.md (expected-behaviour no longer names the defect, the attribution constraint no longer pre-empts --reset-author or asks for the guard test, the coverage constraint no longer describes the graded spec's property, and the silent-degradation reading became an open question); sonnet's FAIL dissolved as harness-side under the exposure contract (case.yaml is never exposed — nothing renamed); over-correction guard reclassified fail_to_pass -> pass_to_pass; overlay/judge ordering, spurious-pass and env-hygiene rules written into grading.procedure; %cn-only / email-ungraded recorded; declared known_leak_channels: [project-auto-memory]; notes.md duplicate-Validation/stale-status inconsistency fixed."
+
+curation:
+  quality: 5
+  learnings: >-
+    The best small-fix cases are the ones where the developer's own machine is
+    part of the bug. Everything the agent needs is inside the snapshot (the
+    failing call site, the bot-identity constant in agent/merge/merge.go, the
+    human-touch-delta contract in 00-shared-contracts.md §1.11) yet the defect
+    is invisible unless you reason about the execution environment rather than
+    the code. Two curation lessons generalize. (1) A fail-to-pass assertion is
+    only worth having if it fails for a DIFFERENT reason in each environment
+    but still fails — "committer IS the bot" does that; "the amend succeeds"
+    would have passed on every laptop. (2) This case ships a built-in trap: git
+    prints `git commit --amend --reset-author` as its own remediation hint, and
+    taking that advice satisfies the primary symptom while silently destroying
+    the author attribution the outcome watcher's human-touch delta keys on. A
+    case with a plausible wrong fix already in the error text discriminates far
+    better than one with a single obvious answer, and it is worth hunting for
+    that property deliberately. Platform gap noted: `withheld` has no way to
+    express "withhold these two functions from an otherwise-exposed file", which
+    is why grading needs the overlay procedure above.
+    Fixup lessons (2026-07-25). (3) The curator who knows the answer writes the
+    bug report, and it shows: every leading phrase here was the curator being
+    helpful — naming the defect in the acceptance criteria, pre-empting the trap
+    in a constraint, and describing the graded spec's distinguishing property in
+    the "add a test" ask. The repair is to state each as a DEMAND with a pointer
+    ("§1.11 is the contract; the numbers must come out the same") instead of a
+    DIAGNOSIS ("attribution must not change"), which keeps the item fair to
+    grade while leaving the inference to the solver. (4) A trap guard is not a
+    fail_to_pass. This one passes at both ends on the reference host by design;
+    filing it under fail_to_pass would have reported every correct run as a
+    missing transition. (5) When a case grades mechanically AND by judge, the
+    order of operations is part of the case: the overlay that makes mechanical
+    grading trustworthy also destroys the artifact the judge scores, so
+    "snapshot the agent's tree first" has to be written down, not assumed.

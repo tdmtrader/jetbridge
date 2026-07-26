@@ -1,0 +1,101 @@
+schema: benchmark-case/v1
+id: fix-jb-002
+title: Agent reviews never publish when the model wraps its JSON in prose
+workflow: small-fix
+signature:
+  inputs:
+    repository: repository/v1
+    work-item: work-item/v1
+  outputs:
+    change: repository-change/v1
+source:
+  system: git-commit
+  repo: jetbridge
+  terminal: d21437fd10adae99b340dc8c7c233fa8f86c7886
+information_cut: "2026-07-10T06:11:16-07:00"
+pre_state:
+  repository: {repo: jetbridge, ref: a5b1cf267f7ec88b56ee6cd4fd3eb136b9a84187}
+  work-item: {path: task/task.md}
+ground_truth:
+  outcome: merged
+  reference_change: ground_truth/reference.diff
+  rubric_checklist: ground_truth/rubric.md
+rubric: mechanical
+grading:
+  protocol: >-
+    Mechanical is the PRIMARY leg but it is not complete on its own; two
+    documented caveats decide when to fall back to judge grading against
+    ground_truth/rubric.md.
+    (1) LAYER CAVEAT. fail_to_pass pins the behaviour at llm.ExtractJSON /
+    llm.ParseCLIEnvelope, but task.md only requires that "whatever ci-agent
+    hands to publish must be valid JSON" — a producer-side fix at the
+    phaserunner artifact boundary (runner.go: `output := cr.Result` →
+    writeArtifact → os.WriteFile) is equally legitimate and would leave the
+    withheld llm specs failing. A submission that changes phaserunner (or any
+    producer layer other than ci-agent/llm) and does NOT change ci-agent/llm
+    must NOT be scored from the fail_to_pass leg — run pass_to_pass plus the
+    agent's own tests, then grade by judge against ground_truth/rubric.md
+    ("Localization" now grants full credit for the boundary fix). Only a
+    submission that fixes inside ci-agent/llm is decided mechanically.
+    (2) DECOY CAVEAT. The pre-state suite has no spec pinning the json.Valid
+    guard in ci-agent/publish/publish.go (publish_test.go's six plain-Go tests
+    never feed Publish an unparseable file), so an agent that fixes the producer
+    AND relaxes that guard passes both legs. The rubric's "MUST NOT weaken the
+    publish guard" must be checked by reading the submitted diff for
+    publish.go and ci/tasks/ci-agent-review.yml. See rubric.md
+    "Scoring guidance for the grader".
+  fail_to_pass:
+    - cmd: "cd ci-agent && go test ./llm/"
+      withheld_test_paths: [ci-agent/llm/client_test.go]
+      note: >-
+        client_test.go exists at pre_state with 12 passing specs; the reference
+        commit ADDS 3 specs to it. Grading replaces the file with the post-state
+        version (obtainable as `git show d21437fd10:ci-agent/llm/client_test.go`).
+        At pre_state that file yields 3 failures / 12 passes; at post_state 15/15.
+        Because the agent under test may also edit this file, grade with the
+        withheld version overwriting whatever the agent wrote.
+      failing_specs:
+        - 'ExtractJSON extracts bare JSON preceded by prose (no code fence)'
+        - 'ExtractJSON extracts bare JSON followed by trailing prose (no code fence)'
+        - 'ParseCLIEnvelope extracts valid JSON when the result field wraps it in prose'
+  pass_to_pass:
+    - cmd: "cd ci-agent && go test ./..."
+      note: >-
+        Full ci-agent module, ~25s, hermetic (no Postgres, no network, no Claude
+        CLI). Verified green at both pre_state and post_state. Run with the
+        agent's own test file, not the withheld one.
+  needs_postgres: false
+withheld: []
+difficulty: moderate
+memorization_risk: low
+validation:
+  status: validated
+  notes: notes.md#validation
+leakage_audit:
+  - auditor: opus
+    verdict: pass
+    notes: "No post-cut refs; the one nearby doc (09-harvest-step.md) reimplements the BUGGY fence-only extractJSON, so it is an anti-leak, and withheld:[] is correct. Strongest steer is constraint 2 telling the solver bare+fenced already round-trip. Grading risks: fail_to_pass pins the fix at llm.ExtractJSON though task.md permits a phaserunner/publish-side fix, and publish_test.go has no json.Valid guard spec."
+  - auditor: sonnet
+    verdict: pass
+    notes: "task.md gives symptom plus two evidence shapes without naming the function; the fix is derivable by ordinary reading of a 6-line helper, and no in-tree doc describes it (09-harvest-step.md mirrors the buggy version). case.yaml's curation and fail_to_pass name the decoy and the three spec titles but are curator-only."
+  - auditor: curator-fixup
+    verdict: pass
+    notes: "Both grading gaps fixed, not dissolved: grading.protocol now routes a phaserunner-boundary fix to judge grading (rubric.md Localization grants it full credit) and flags that no publish_test.go spec pins the json.Valid guard, so the decoy MUST NOT needs diff inspection. Answer-key flags (case.yaml/curation/spec titles) dissolve under the exposure contract; no operator-environment leak (grep of project auto-memory finds no ExtractJSON/prose-wrapped/ParseCLIEnvelope fix statement), so known_leak_channels stays absent. difficulty moderate and validation evidence unchanged."
+curation:
+  quality: 4
+  learnings: >-
+    Strong shape for a small-fix case: a user-visible symptom (empty agent-review
+    panel) whose whole causal chain is inside one hermetic Go module, with a
+    decoy fix one hop away. The publish-side `json.Valid` guard is the loudest
+    thing in the evidence and is NOT where the fix belongs — that decoy is what
+    makes the case discriminative, so the task must hand over the error message
+    (real diagnostic input) while the rubric explicitly denies credit for
+    relaxing it. Two other lessons. (1) Fail-to-pass on a MODIFIED test file, not
+    a new one: the withheld artifact is a replacement, and grading must overwrite
+    whatever the agent wrote there, otherwise an agent that rewrites the file
+    grades itself. (2) The pre-state contains a design doc that reimplements the
+    BUGGY function verbatim (09-harvest-step.md's judge `extractJSON` mirrors the
+    fence-only version). That is anti-leakage — it biases toward the wrong answer
+    — and it is faithful to what the repo actually looked like, so it stays.
+    Leaving it in is the honest choice; scrubbing it would have made the case
+    easier than reality.

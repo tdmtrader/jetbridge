@@ -1,0 +1,116 @@
+# CALIBRATION ANCHOR — trivial by construction, floor of the difficulty range.
+# A failure here means the harness/environment is broken, not that capability is
+# absent; a pass is NOT capability evidence. See curation.learnings.
+schema: benchmark-case/v1
+id: fix-jb-006
+title: "Reject negative run_retention keep_last/ttl_days at config-validation time"
+workflow: small-fix
+signature:
+  inputs:
+    repository: repository/v1
+    work-item: work-item/v1
+  outputs:
+    change: repository-change/v1
+source:
+  system: git-commit
+  repo: jetbridge
+  terminal: 54767829cc273516b1d4919eac44dc4dafc7999b
+information_cut: 2026-07-11T13:07:28-07:00
+pre_state:
+  repository:
+    repo: jetbridge
+    ref: d1a8cdcf5331456bb73a87b7ce4d9cff40b63a69
+  work-item:
+    path: task/task.md
+ground_truth:
+  outcome: merged
+  reference_change: ground_truth/reference.diff
+rubric: mechanical
+grading:
+  # ADDITIVE overlay (curator-fixup 2026-07-25). The graded spec lands as a NEW
+  # file, so the spec task.md asks the agent to add to
+  # atc/configvalidate/validate_test.go — the deliverable rubric must-8 scores —
+  # survives grading intact. Do NOT grade by overwriting or patching
+  # validate_test.go: that file is part of the agent's answer, and
+  # reference.diff's test half is the historical record, not the grading apply.
+  # The graded spec is self-contained (its own local fixture/helper, no
+  # package-level identifiers) so it cannot collide with agent-added files, and
+  # its name is namespaced ("bench-graded: ...") so -ginkgo.focus can never
+  # select an agent-authored spec in place of the withheld oracle.
+  # Grade on exit code, not on absolute spec counts.
+  fail_to_pass:
+    - cmd: "cp $CASE_DIR/ground_truth/withheld_tests/zz_bench_fix_jb_006_test.go atc/configvalidate/ && go test ./atc/configvalidate/ -count=1 -ginkgo.focus='bench-graded: rejects negative run_retention values' -ginkgo.fail-on-empty"
+      withheld_test_paths:
+        - atc/configvalidate/zz_bench_fix_jb_006_test.go
+      role: primary
+      # -ginkgo.fail-on-empty makes a missing/renamed overlay FAIL rather than
+      # vacuously pass; re-confirmed load-bearing 2026-07-25.
+  pass_to_pass:
+    - cmd: "go test ./atc/configvalidate/ -count=1"
+    - cmd: "go build ./atc/..."
+  caveats:
+    # Recorded 2026-07-25 by curator-fixup, from the dual leakage audit.
+    - >-
+      Exact-wording gate. The withheld spec string-matches the reference's
+      literal messages ("run_retention.keep_last must not be negative"), which
+      task.md discloses as the expected message shape. A behaviourally correct
+      fix with different phrasing fails this leg while passing
+      ground_truth/rubric.md; route such a run to the judge and record both
+      outcomes rather than scoring it a case failure.
+    - >-
+      Necessary, not sufficient — and deliberately so. Green here proves rubric
+      musts 1-3 only. Musts 4-8 (validation-layer placement, no false positives,
+      template-only rule intact, no signature changes, agent-authored spec) are
+      judge-scored from the submitted diff. This is a calibration anchor: a
+      green gate is a harness health check, never capability evidence.
+withheld: []
+difficulty: trivial
+memorization_risk: none
+validation:
+  status: validated
+  notes: notes.md#validation
+leakage_audit:
+  - auditor: opus
+    verdict: borderline
+    notes: "No accidental exposure and withheld:[] is correct (the 'must not be negative' phrasing elsewhere is house style for unrelated fields). But the task prints both graded error strings verbatim and names the fix site while excluding the archival-query alternative, so the case measures execution only — acceptable as a declared calibration anchor, never as capability evidence. Curator items: the grading apply will collide with the spec the task asks the agent to add, and an anchor should not remain unvalidated."
+  - auditor: sonnet
+    verdict: pass
+    notes: "Trivial by design and declared so. The exact message string is the only give-away and is deliberately disclosed in curation.learnings because the withheld spec asserts literal text; no post-cut vocabulary, and greps of atc/ and docs/ found no doc pre-announcing this fix (the 'must not be negative' phrasing exists only for unrelated fields, i.e. house style)."
+  - auditor: curator-fixup
+    verdict: pass
+    notes: "Fixed the grading-apply collision (validate_test.go overwrite replaced by an additive, name-namespaced withheld spec file; re-validated FAIL at pre / PASS with the reference hunk, including alongside a simulated agent-authored spec), reconciled the contradictory unvalidated stub in notes.md, and hardened the never-cite-as-capability-evidence statement. Difficulty stays trivial: the disclosed error strings and the validation-layer constraint are load-bearing for the mechanical grader, so 'measures execution only' is the declared design, not a defect. No exposure problem: withheld:[] verified, pre_state predates bench/, and a grep of the operator auto-memory found no mention of run_retention/keep_last/ttl_days, so no known_leak_channels entry is warranted."
+curation:
+  quality: 4
+  learnings: >-
+    Deliberate trivial calibration case — built as a low-difficulty anchor, not
+    as a discriminating test. It must NEVER be cited as capability evidence, on
+    its own or as part of an aggregate score: the task discloses both graded
+    error strings and names the validation layer, so it measures execution, not
+    problem-solving. Its only legitimate use is as a floor/smoke signal — a run
+    that fails it indicates a harness or environment problem, and a run that
+    passes it has proved only that the harness works. Report it separately from
+    scored cases. Four transferable lessons. (1) Exact-string fail-to-pass is the
+    trivial case's hidden hazard: the withheld spec asserts the reference's
+    literal error text, so a semantically correct fix with different wording
+    fails mechanically. The task therefore states the expected message shape
+    ("e.g. `run_retention.keep_last must not be negative`") — legitimate for this
+    repo, whose contracts docs pin exact user-visible strings — and rubric.md
+    exists so a judge can catch mechanical-vs-intent disagreement. (2) A focused
+    Ginkgo run vacuously PASSES when the withheld spec is absent, which would
+    silently invert fail-at-pre; `-ginkgo.fail-on-empty` closes that hole and
+    should be standard for every focused-spec grading command in this corpus.
+    (3) The historical trigger was a code-review comment on the pipeline-runs
+    wave, not a bug report; reframing it symptom-first as a work item is what
+    makes it a small-fix case at all. That reframing had to add one constraint
+    the real trigger never needed ("fix at validation time, not in the archival
+    query") because the symptom alone admits a clamp-in-SQL solution that the
+    mechanical grader would reject — a reminder that reframing a review finding
+    into a work item can require inventing scope constraints, and those must be
+    declared (see notes.md) rather than smuggled in. (4) Grading overlays must
+    be ADDITIVE whenever the task asks the agent to write a test. The original
+    grading recipe restored the terminal commit's whole `validate_test.go`,
+    which would have silently deleted the spec task.md demands and rubric must-8
+    scores — and, worse, an un-namespaced `-ginkgo.focus` could then have graded
+    the agent's own spec instead of the withheld oracle. Ship the oracle as a
+    self-contained new file with a namespaced spec name; keep reference.diff as
+    the historical record only.

@@ -1,0 +1,163 @@
+diff --git a/atc/worker/jetbridge/node_ip_resolver.go b/atc/worker/jetbridge/node_ip_resolver.go
+index daff61f107..4877b4d104 100644
+--- a/atc/worker/jetbridge/node_ip_resolver.go
++++ b/atc/worker/jetbridge/node_ip_resolver.go
+@@ -2,7 +2,9 @@ package jetbridge
+ 
+ import (
+ 	"context"
++	"errors"
+ 	"fmt"
++	"net"
+ 	"sync"
+ 	"time"
+ 
+@@ -11,6 +13,12 @@ import (
+ 	"k8s.io/client-go/kubernetes"
+ )
+ 
++// ErrNodeNameIsIP is returned by Resolve when the caller passes an
++// IP-shaped string as a nodeName. The K8s Nodes API is keyed by Node
++// object name, never by IP, so such calls can only fail — surfacing
++// this sentinel makes accidental misuse loud.
++var ErrNodeNameIsIP = errors.New("node name argument is an IP address, not a K8s Node name")
++
+ // NodeIPResolver resolves Kubernetes node names to their internal IP addresses.
+ // Results are cached with a TTL to avoid repeated API calls.
+ type NodeIPResolver struct {
+@@ -37,6 +45,16 @@ func NewNodeIPResolver(clientset kubernetes.Interface) *NodeIPResolver {
+ 
+ // Resolve returns the internal IP address for the given node name.
+ func (r *NodeIPResolver) Resolve(ctx context.Context, nodeName string) (string, error) {
++	// Reject IP-shaped inputs up front. The K8s Nodes API is keyed by Node
++	// object name, not by IP, so a Get with an IP can only fail with a
++	// misleading "nodes \"<IP>\" not found". Surfacing a typed sentinel
++	// makes accidental misuse loud (e.g. callers conflating pod IPs with
++	// node names — see the daemon-IP-poisoning regression in
++	// FindDaemonResourceCache).
++	if net.ParseIP(nodeName) != nil {
++		return "", fmt.Errorf("%w: %q", ErrNodeNameIsIP, nodeName)
++	}
++
+ 	// Check cache first.
+ 	r.mu.RLock()
+ 	entry, ok := r.cache[nodeName]
+diff --git a/atc/worker/jetbridge/resource_cache_key.go b/atc/worker/jetbridge/resource_cache_key.go
+index caaf6b8714..74575e307e 100644
+--- a/atc/worker/jetbridge/resource_cache_key.go
++++ b/atc/worker/jetbridge/resource_cache_key.go
+@@ -1,6 +1,9 @@
+ package jetbridge
+ 
+-import "fmt"
++import (
++	"fmt"
++	"regexp"
++)
+ 
+ // ResourceCacheKey returns the daemon artifact key for a resource cache.
+ // This key is registered as an alias on the daemon after a successful get
+@@ -9,3 +12,12 @@ import "fmt"
+ func ResourceCacheKey(cacheID int) string {
+ 	return fmt.Sprintf("rc-%d", cacheID)
+ }
++
++var resourceCacheKeyPattern = regexp.MustCompile(`^rc-\d+$`)
++
++// isResourceCacheKey reports whether the given artifact key refers to a
++// resource cache (produced by ResourceCacheKey). Used by WrapVolumeForLookup
++// to decide whether to re-probe live daemons when the locator has no entry.
++func isResourceCacheKey(key string) bool {
++	return resourceCacheKeyPattern.MatchString(key)
++}
+diff --git a/atc/worker/jetbridge/storage.go b/atc/worker/jetbridge/storage.go
+index aca89cc3da..777bfff6e2 100644
+--- a/atc/worker/jetbridge/storage.go
++++ b/atc/worker/jetbridge/storage.go
+@@ -26,7 +26,7 @@ type StorageBackend interface {
+ 	BuildAffinity(inputs []runtime.Input) *corev1.Affinity
+ 	RecordOutputs(ctx context.Context, handle, nodeName string, volumes []*Volume, spec runtime.ContainerSpec)
+ 	WrapVolumeForArtifact(key, handle, workerName string, dbVolume db.CreatedVolume) runtime.Volume
+-	WrapVolumeForLookup(key, handle, workerName string, dbVolume db.CreatedVolume) runtime.Volume
++	WrapVolumeForLookup(ctx context.Context, key, handle, workerName string, dbVolume db.CreatedVolume) runtime.Volume
+ 
+ 	// RegisterResourceCache registers a resource cache alias on the daemon,
+ 	// mapping the stable cache key (rc-{id}) to the physical disk path of
+diff --git a/atc/worker/jetbridge/storage_daemonset.go b/atc/worker/jetbridge/storage_daemonset.go
+index 5d919ef245..bfb8cb3bb7 100644
+--- a/atc/worker/jetbridge/storage_daemonset.go
++++ b/atc/worker/jetbridge/storage_daemonset.go
+@@ -487,11 +487,28 @@ func (b *DaemonSetBackend) WrapVolumeForArtifact(key, handle, workerName string,
+ 	return vol
+ }
+ 
+-func (b *DaemonSetBackend) WrapVolumeForLookup(key, handle, workerName string, dbVolume db.CreatedVolume) runtime.Volume {
++func (b *DaemonSetBackend) WrapVolumeForLookup(ctx context.Context, key, handle, workerName string, dbVolume db.CreatedVolume) runtime.Volume {
+ 	var sourceNode string
+ 	if b.artifactLocator != nil {
+ 		sourceNode, _ = b.artifactLocator.LocateNode(key)
+ 	}
++
++	// Resource-cache handles (rc-{id}) never appear in the locator as
++	// an authoritative node-keyed entry: the original get step that
++	// populated the cache may have run in a different ATC process, on
++	// a different build, or long before the current lookup. When the
++	// locator has no entry, probe the live daemons to find which one
++	// currently has the cache and bind the volume directly to that
++	// pod IP. This sidesteps NodeIPResolver (which can't help — we
++	// never learned a node name) and avoids stale-entry risk.
++	if sourceNode == "" && b.daemonClient != nil && isResourceCacheKey(key) {
++		probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
++		defer cancel()
++		if daemonIP, found, err := b.daemonClient.ProbeResourceCache(probeCtx, key); err == nil && found {
++			return NewDaemonSetVolumeFromIP(key, handle, workerName, daemonIP, b.config)
++		}
++	}
++
+ 	return NewDaemonSetVolume(key, handle, workerName, dbVolume, sourceNode, b.config, b.nodeIPResolver)
+ }
+ 
+diff --git a/atc/worker/jetbridge/worker.go b/atc/worker/jetbridge/worker.go
+index 656d6cacb8..b6eba8b527 100644
+--- a/atc/worker/jetbridge/worker.go
++++ b/atc/worker/jetbridge/worker.go
+@@ -293,7 +293,7 @@ func (w *Worker) LookupVolume(ctx context.Context, handle string) (runtime.Volum
+ 
+ 	key := ArtifactKey(handle)
+ 	if w.storageBackend != nil {
+-		return w.storageBackend.WrapVolumeForLookup(key, handle, w.Name(), dbVolume), true, nil
++		return w.storageBackend.WrapVolumeForLookup(ctx, key, handle, w.Name(), dbVolume), true, nil
+ 	}
+ 	return NewDaemonSetVolume(key, handle, w.Name(), dbVolume, "", w.config, w.nodeIPResolver), true, nil
+ }
+@@ -361,10 +361,17 @@ func (w *Worker) FindDaemonResourceCache(ctx context.Context, cacheID int) (runt
+ 		return nil, false, nil
+ 	}
+ 
+-	// Record in locator so downstream steps get node affinity.
+-	if dsb, ok := w.storageBackend.(*DaemonSetBackend); ok && dsb.artifactLocator != nil {
+-		dsb.artifactLocator.Record(cacheKey, daemonIP, cacheKey)
+-	}
++	// Intentionally do NOT record in the ArtifactLocator here. The
++	// locator's NodeName field is contractually a K8s Node object name;
++	// we only learned a daemon pod IP from the probe, not a node name.
++	// Writing the IP under NodeName poisons downstream lookups: any
++	// later WrapVolumeForLookup on the same key would feed the IP into
++	// NodeIPResolver and fail with `nodes "<IP>" not found`.
++	//
++	// Downstream lookups (worker.LookupVolume, ArtifactFromVolume) re-probe
++	// live daemons for rc-* keys when the locator has no entry — see
++	// DaemonSetBackend.WrapVolumeForLookup. Re-probing on lookup is cheap
++	// (one EndpointSlice list + a few HEADs) and avoids stale-entry risk.
+ 
+ 	vol := NewDaemonSetVolumeFromIP(cacheKey, cacheKey, w.Name(), daemonIP, w.config)
+ 	return vol, true, nil
+@@ -391,7 +398,7 @@ func (w *Worker) ArtifactFromVolume(vol runtime.Volume) runtime.Artifact {
+ 		return vol
+ 	}
+ 	key := ArtifactKey(vol.Handle())
+-	return w.storageBackend.WrapVolumeForLookup(key, vol.Handle(), w.Name(), nil)
++	return w.storageBackend.WrapVolumeForLookup(context.Background(), key, vol.Handle(), w.Name(), nil)
+ }
+ 
+ func markContainerAsFailed(logger lager.Logger, container db.CreatingContainer) {

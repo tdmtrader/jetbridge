@@ -1,0 +1,841 @@
+diff --git a/agent/api/tickets/types.go b/agent/api/tickets/types.go
+index 5d1cbfb0d4..a194744307 100644
+--- a/agent/api/tickets/types.go
++++ b/agent/api/tickets/types.go
+@@ -57,16 +57,30 @@ func ValidTransition(from, to State) bool {
+ 	return false
+ }
+ 
++// TerminalStates returns the states with no outgoing edges in
++// validTransitions: the ticket is done and nothing will ever run for it
++// again. The pipeline-run lifecycler archives a ticket's pipelines once it
++// lands in one of these (C3), so adding a state here hides its dashboard
++// cards for good.
++func TerminalStates() []State {
++	return []State{StateMerged, StateMergedWithFixes, StateAbandoned, StateConcluded}
++}
++
++func IsTerminal(s State) bool {
++	for _, t := range TerminalStates() {
++		if t == s {
++			return true
++		}
++	}
++	return false
++}
++
+ func ValidState(s State) bool {
+ 	if _, ok := validTransitions[s]; ok {
+ 		return true
+ 	}
+ 	// terminal states have no outgoing edges but are still valid
+-	switch s {
+-	case StateMerged, StateMergedWithFixes, StateAbandoned, StateConcluded:
+-		return true
+-	}
+-	return false
++	return IsTerminal(s)
+ }
+ 
+ func ValidOrigin(o string) bool {
+diff --git a/agent/api/tickets/types_test.go b/agent/api/tickets/types_test.go
+index 9310d03c19..aa22e39641 100644
+--- a/agent/api/tickets/types_test.go
++++ b/agent/api/tickets/types_test.go
+@@ -46,12 +46,12 @@ func TestValidTransitionMatrix(t *testing.T) {
+ 	}
+ 
+ 	forbidden := []struct{ from, to tickets.State }{
+-		{tickets.StateDraft, tickets.StateRunning},       // must queue first
+-		{tickets.StateDraft, tickets.StateDraft},         // self-transition
+-		{tickets.StateQueued, tickets.StateNeedsReview},  // must run first
++		{tickets.StateDraft, tickets.StateRunning},      // must queue first
++		{tickets.StateDraft, tickets.StateDraft},        // self-transition
++		{tickets.StateQueued, tickets.StateNeedsReview}, // must run first
+ 		{tickets.StateRunning, tickets.StateDraft},
+ 		{tickets.StateRunning, tickets.StateMerged},
+-		{tickets.StateMerged, tickets.StateQueued},       // merged is terminal
++		{tickets.StateMerged, tickets.StateQueued}, // merged is terminal
+ 		{tickets.StateMergedWithFixes, tickets.StateQueued},
+ 		{tickets.StateAbandoned, tickets.StateQueued},    // abandoned is terminal
+ 		{tickets.StateNeedsReview, tickets.StateRunning}, // re-dispatch goes via queued
+@@ -102,3 +102,43 @@ func TestValidStateOriginTaskStatus(t *testing.T) {
+ 		t.Error("ValidTaskStatus accepted an unknown status")
+ 	}
+ }
++
++func TestTerminalStates(t *testing.T) {
++	// The terminal set is exactly the valid states with no outgoing edges:
++	// nothing will ever run for the ticket again, so the lifecycler may
++	// archive its pipelines. Pin both directions so a state-machine edit
++	// that adds or removes an exit keeps the set honest.
++	terminal := map[tickets.State]bool{}
++	for _, s := range tickets.TerminalStates() {
++		terminal[s] = true
++		if !tickets.IsTerminal(s) {
++			t.Errorf("IsTerminal(%q) = false for a member of TerminalStates", s)
++		}
++		if !tickets.ValidState(s) {
++			t.Errorf("terminal state %q is not a valid state", s)
++		}
++	}
++
++	want := []tickets.State{
++		tickets.StateMerged, tickets.StateMergedWithFixes,
++		tickets.StateAbandoned, tickets.StateConcluded,
++	}
++	if len(terminal) != len(want) {
++		t.Fatalf("TerminalStates() = %v, want exactly %v", tickets.TerminalStates(), want)
++	}
++	for _, s := range want {
++		if !terminal[s] {
++			t.Errorf("TerminalStates() missing %q", s)
++		}
++	}
++
++	for _, s := range []tickets.State{
++		tickets.StateDraft, tickets.StateQueued, tickets.StateRunning,
++		tickets.StateNeedsReview, tickets.StateSentBack,
++		tickets.StateFailed, tickets.StateErrored,
++	} {
++		if tickets.IsTerminal(s) {
++			t.Errorf("IsTerminal(%q) = true for a state with outgoing edges", s)
++		}
++	}
++}
+diff --git a/atc/db/pipeline_run_factory.go b/atc/db/pipeline_run_factory.go
+index fd88122982..1e61ffc090 100644
+--- a/atc/db/pipeline_run_factory.go
++++ b/atc/db/pipeline_run_factory.go
+@@ -6,10 +6,12 @@ import (
+ 	"encoding/json"
+ 	"errors"
+ 	"fmt"
++	"strings"
+ 
+ 	"code.cloudfoundry.org/lager/v3"
+ 	"code.cloudfoundry.org/lager/v3/lagerctx"
+ 	sq "github.com/Masterminds/squirrel"
++	"github.com/concourse/concourse/agent/api/tickets"
+ 	"github.com/concourse/concourse/atc"
+ 	"github.com/concourse/concourse/atc/db/lock"
+ )
+@@ -60,6 +62,21 @@ type PipelineRunFactory interface {
+ 	// migrated (or was downgraded) no ticket claim is verifiable and this
+ 	// reports false (fail closed — there are no legitimate tickets to claim).
+ 	TicketBelongsToRun(ticketID, runID int) (bool, error)
++
++	// RunsForTerminalTickets returns unarchived, no-longer-running runs
++	// whose template pipeline belongs to a terminally-disposed agent ticket
++	// (C3, UI audit 2026-07-17). Scoped by template rather than the latest
++	// attempt: a requeued ticket leaves one run instance per attempt and
++	// every one of them is a dead dashboard card once the ticket is
++	// terminal. Still-running runs are held back so the lifecycler's Finish
++	// pass completes them first; both return empty on a pre-ticket-core DB.
++	RunsForTerminalTickets() ([]PipelineRun, error)
++
++	// TemplatesForTerminalTickets returns the unarchived base template
++	// pipelines (template = true, no instance vars) of terminally-disposed
++	// agent tickets. Without this the permanently-gray template card keeps
++	// rendering after every run instance is archived.
++	TemplatesForTerminalTickets() ([]Pipeline, error)
+ }
+ 
+ // NewPipelineRunFactory constructs the factory. The CheckFactory is
+@@ -430,15 +447,9 @@ func (f *pipelineRunFactory) TicketBelongsToRun(ticketID, runID int) (bool, erro
+ 		return false, nil
+ 	}
+ 
+-	// agent_tickets is owned by ticket-core (migration 1773106062) and may
+-	// be absent on a not-yet-migrated or downgraded DB; cross-aggregate refs
+-	// are plain int columns with no SQL FKs (§1.1), so probe for the table
+-	// first. Absent table ⇒ there are no tickets, so no claim can be
+-	// legitimate: fail closed. The probe is a separate statement because
+-	// Postgres resolves every relation named in a query at parse time, even
+-	// in dead branches.
+-	var tableExists bool
+-	err := f.conn.QueryRow(`SELECT to_regclass('agent_tickets') IS NOT NULL`).Scan(&tableExists)
++	// Absent table ⇒ there are no tickets, so no claim can be legitimate:
++	// fail closed.
++	tableExists, err := f.agentTicketsTableExists()
+ 	if err != nil {
+ 		return false, err
+ 	}
+@@ -457,6 +468,81 @@ func (f *pipelineRunFactory) TicketBelongsToRun(ticketID, runID int) (bool, erro
+ 	return exists, nil
+ }
+ 
++// agentTicketsTableExists probes for ticket-core's table (migration
++// 1773106062), which may be absent on a not-yet-migrated or downgraded DB;
++// cross-aggregate refs are plain int columns with no SQL FKs (§1.1). The
++// probe is a separate statement because Postgres resolves every relation
++// named in a query at parse time, even in dead branches.
++func (f *pipelineRunFactory) agentTicketsTableExists() (bool, error) {
++	var tableExists bool
++	err := f.conn.QueryRow(`SELECT to_regclass('agent_tickets') IS NOT NULL`).Scan(&tableExists)
++	return tableExists, err
++}
++
++// terminalTicketLinkage is the shared subquery: template pipeline ids
++// reachable from a terminal ticket through its dispatched run
++// (agent_tickets.pipeline_run_id → pipeline_runs.template_pipeline_id).
++func terminalTicketLinkage() (string, []any) {
++	states := tickets.TerminalStates()
++	marks := make([]string, len(states))
++	args := make([]any, len(states))
++	for i, s := range states {
++		marks[i] = "?"
++		args[i] = string(s)
++	}
++	return fmt.Sprintf(`(
++		SELECT r0.template_pipeline_id
++		FROM agent_tickets t
++		JOIN pipeline_runs r0 ON r0.id = t.pipeline_run_id
++		WHERE t.state IN (%s))`, strings.Join(marks, ",")), args
++}
++
++func (f *pipelineRunFactory) RunsForTerminalTickets() ([]PipelineRun, error) {
++	tableExists, err := f.agentTicketsTableExists()
++	if err != nil {
++		return nil, err
++	}
++	if !tableExists {
++		return nil, nil
++	}
++
++	linkage, args := terminalTicketLinkage()
++	rows, err := pipelineRunsQuery.
++		Where(sq.Eq{"r.archived": false}).
++		Where(sq.NotEq{"r.status": string(PipelineRunRunning)}).
++		Where(sq.Expr("r.template_pipeline_id IN "+linkage, args...)).
++		OrderBy("r.id ASC").
++		RunWith(f.conn).
++		Query()
++	if err != nil {
++		return nil, err
++	}
++	return f.scanRuns(rows)
++}
++
++func (f *pipelineRunFactory) TemplatesForTerminalTickets() ([]Pipeline, error) {
++	tableExists, err := f.agentTicketsTableExists()
++	if err != nil {
++		return nil, err
++	}
++	if !tableExists {
++		return nil, nil
++	}
++
++	linkage, args := terminalTicketLinkage()
++	rows, err := pipelinesQuery.
++		Where(sq.Eq{"p.archived": false, "p.template": true}).
++		Where(sq.Expr("p.instance_vars IS NULL")).
++		Where(sq.Expr("p.id IN "+linkage, args...)).
++		OrderBy("p.id ASC").
++		RunWith(f.conn).
++		Query()
++	if err != nil {
++		return nil, err
++	}
++	return scanPipelines(f.conn, f.lockFactory, rows)
++}
++
+ func (f *pipelineRunFactory) scanRuns(rows *sql.Rows) ([]PipelineRun, error) {
+ 	defer Close(rows)
+ 	var runs []PipelineRun
+diff --git a/atc/db/pipeline_run_factory_test.go b/atc/db/pipeline_run_factory_test.go
+index 8e92bb6a84..26e6b6b95e 100644
+--- a/atc/db/pipeline_run_factory_test.go
++++ b/atc/db/pipeline_run_factory_test.go
+@@ -193,6 +193,139 @@ var _ = Describe("PipelineRunFactory", func() {
+ 		})
+ 	})
+ 
++	// C3 (UI audit 2026-07-17): once a ticket reaches a terminal state its
++	// agent-ticket-<id> pipelines are dead dashboard cards. The lifecycler
++	// archives them via these two selections.
++	Describe("RunsForTerminalTickets / TemplatesForTerminalTickets", func() {
++		runIDs := func(runs []db.PipelineRun) []int {
++			ids := []int{}
++			for _, r := range runs {
++				ids = append(ids, r.ID())
++			}
++			return ids
++		}
++
++		pipelineIDs := func(pipelines []db.Pipeline) []int {
++			ids := []int{}
++			for _, p := range pipelines {
++				ids = append(ids, p.ID())
++			}
++			return ids
++		}
++
++		It("no-ops when the agent_tickets table is absent (pre-ticket-core DB / downgrade window)", func() {
++			_, err := dbConn.Exec(`DROP TABLE agent_tickets CASCADE`)
++			Expect(err).ToNot(HaveOccurred())
++
++			runs, err := factory.RunsForTerminalTickets()
++			Expect(err).ToNot(HaveOccurred())
++			Expect(runs).To(BeEmpty())
++
++			templates, err := factory.TemplatesForTerminalTickets()
++			Expect(err).ToNot(HaveOccurred())
++			Expect(templates).To(BeEmpty())
++		})
++
++		It("selects every attempt's run plus the base template, exactly while the ticket is terminal", func() {
++			// two attempts = two run instances of the same template
++			first, err := factory.CreateRun(template.ID(), nil, "some-user")
++			Expect(err).ToNot(HaveOccurred())
++			Expect(first.Finish(db.PipelineRunSucceeded)).To(Succeed())
++
++			second, err := factory.CreateRun(template.ID(), nil, "some-user")
++			Expect(err).ToNot(HaveOccurred())
++			Expect(second.Finish(db.PipelineRunFailed)).To(Succeed())
++
++			// latest attempt is what the ticket links (contracts §1.7)
++			_, err = dbConn.Exec(
++				`INSERT INTO agent_tickets (id, title, repo, pipeline_run_id) VALUES (7, 't', 'r', $1)`,
++				second.ID())
++			Expect(err).ToNot(HaveOccurred())
++
++			// every live state keeps the pipelines alone
++			for _, state := range []string{"draft", "queued", "running", "needs_review", "sent_back", "failed", "errored"} {
++				_, err = dbConn.Exec(`UPDATE agent_tickets SET state = $1 WHERE id = 7`, state)
++				Expect(err).ToNot(HaveOccurred())
++
++				runs, err := factory.RunsForTerminalTickets()
++				Expect(err).ToNot(HaveOccurred())
++				Expect(runs).To(BeEmpty(), "state %s must not archive runs", state)
++
++				templates, err := factory.TemplatesForTerminalTickets()
++				Expect(err).ToNot(HaveOccurred())
++				Expect(templates).To(BeEmpty(), "state %s must not archive the template", state)
++			}
++
++			// every terminal state selects BOTH attempts' runs and the template
++			for _, state := range []string{"merged", "merged_with_fixes", "abandoned", "concluded"} {
++				_, err = dbConn.Exec(`UPDATE agent_tickets SET state = $1 WHERE id = 7`, state)
++				Expect(err).ToNot(HaveOccurred())
++
++				runs, err := factory.RunsForTerminalTickets()
++				Expect(err).ToNot(HaveOccurred())
++				Expect(runIDs(runs)).To(ConsistOf(first.ID(), second.ID()), "state %s", state)
++
++				templates, err := factory.TemplatesForTerminalTickets()
++				Expect(err).ToNot(HaveOccurred())
++				Expect(pipelineIDs(templates)).To(ConsistOf(template.ID()), "state %s", state)
++			}
++
++			// archiving converges to steady-state empty selections
++			runs, err := factory.RunsForTerminalTickets()
++			Expect(err).ToNot(HaveOccurred())
++			for _, run := range runs {
++				Expect(run.Archive()).To(Succeed())
++			}
++			templates, err := factory.TemplatesForTerminalTickets()
++			Expect(err).ToNot(HaveOccurred())
++			for _, p := range templates {
++				Expect(p.Archive()).To(Succeed())
++			}
++
++			runs, err = factory.RunsForTerminalTickets()
++			Expect(err).ToNot(HaveOccurred())
++			Expect(runs).To(BeEmpty())
++
++			templates, err = factory.TemplatesForTerminalTickets()
++			Expect(err).ToNot(HaveOccurred())
++			Expect(templates).To(BeEmpty())
++		})
++
++		It("holds back a run whose aggregate status is still running (Finish pass completes it a tick later)", func() {
++			run, err := factory.CreateRun(template.ID(), nil, "some-user")
++			Expect(err).ToNot(HaveOccurred())
++			// deliberately NOT finished: status stays 'running'
++
++			_, err = dbConn.Exec(
++				`INSERT INTO agent_tickets (id, title, repo, state, pipeline_run_id) VALUES (7, 't', 'r', 'merged', $1)`,
++				run.ID())
++			Expect(err).ToNot(HaveOccurred())
++
++			runs, err := factory.RunsForTerminalTickets()
++			Expect(err).ToNot(HaveOccurred())
++			Expect(runs).To(BeEmpty())
++
++			// the template itself never runs builds, so it archives right away
++			templates, err := factory.TemplatesForTerminalTickets()
++			Expect(err).ToNot(HaveOccurred())
++			Expect(pipelineIDs(templates)).To(ConsistOf(template.ID()))
++		})
++
++		It("ignores terminal tickets that were never dispatched (no pipeline_run_id linkage)", func() {
++			_, err := dbConn.Exec(
++				`INSERT INTO agent_tickets (id, title, repo, state) VALUES (7, 't', 'r', 'abandoned')`)
++			Expect(err).ToNot(HaveOccurred())
++
++			runs, err := factory.RunsForTerminalTickets()
++			Expect(err).ToNot(HaveOccurred())
++			Expect(runs).To(BeEmpty())
++
++			templates, err := factory.TemplatesForTerminalTickets()
++			Expect(err).ToNot(HaveOccurred())
++			Expect(templates).To(BeEmpty())
++		})
++	})
++
+ 	// review finding (2026-07-11): a pipeline instance {name, {"run": N}} can
+ 	// pre-exist (e.g. a user ran fly set-pipeline with those instance vars).
+ 	// CreateRun used to call savePipeline with from=0 assuming the instance
+diff --git a/atc/runlifecycle/lifecycler.go b/atc/runlifecycle/lifecycler.go
+index 23270a00b0..7385838f9f 100644
+--- a/atc/runlifecycle/lifecycler.go
++++ b/atc/runlifecycle/lifecycler.go
+@@ -10,8 +10,15 @@ import (
+ 
+ // Lifecycler is the pipeline_run_lifecycler RunnableComponent: it completes
+ // quiescent runs with a worst-of aggregate status, reopens completed runs
+-// that gained new builds (retriggers), and archives runs past their
+-// template's retention policy via the existing pipeline-archival machinery.
++// that gained new builds (retriggers), archives runs past their template's
++// retention policy via the existing pipeline-archival machinery, and
++// archives the runs and templates of terminally-disposed agent tickets (C3,
++// UI audit 2026-07-17) — dead dashboard cards otherwise. Archiving lives
++// here, not in a ticket-transition hook, so it catches every Transition
++// writer (HTTP, dispatch, harvest, future reconcilers), survives web
++// restarts between transition and archive, and can never block or fail a
++// transition; terminal states have no outgoing edges, so it never races a
++// requeue.
+ type Lifecycler struct {
+ 	runFactory db.PipelineRunFactory
+ }
+@@ -71,5 +78,31 @@ func (l *Lifecycler) Run(ctx context.Context) error {
+ 		logger.Info("run-archived", lager.Data{"run-id": run.ID()})
+ 	}
+ 
++	ticketRuns, err := l.runFactory.RunsForTerminalTickets()
++	if err != nil {
++		logger.Error("failed-to-list-terminal-ticket-runs", err)
++		return err
++	}
++	for _, run := range ticketRuns {
++		if err := run.Archive(); err != nil {
++			logger.Error("failed-to-archive-terminal-ticket-run", err, lager.Data{"run-id": run.ID()})
++			continue
++		}
++		logger.Info("run-archived-terminal-ticket", lager.Data{"run-id": run.ID()})
++	}
++
++	templates, err := l.runFactory.TemplatesForTerminalTickets()
++	if err != nil {
++		logger.Error("failed-to-list-terminal-ticket-templates", err)
++		return err
++	}
++	for _, pipeline := range templates {
++		if err := pipeline.Archive(); err != nil {
++			logger.Error("failed-to-archive-terminal-ticket-template", err, lager.Data{"pipeline-id": pipeline.ID(), "pipeline-name": pipeline.Name()})
++			continue
++		}
++		logger.Info("template-archived-terminal-ticket", lager.Data{"pipeline-id": pipeline.ID(), "pipeline-name": pipeline.Name()})
++	}
++
+ 	return nil
+ }
+diff --git a/atc/runlifecycle/lifecycler_test.go b/atc/runlifecycle/lifecycler_test.go
+index 3415aa78ed..967ccbd18f 100644
+--- a/atc/runlifecycle/lifecycler_test.go
++++ b/atc/runlifecycle/lifecycler_test.go
+@@ -63,4 +63,30 @@ var _ = Describe("Lifecycler", func() {
+ 		Expect(lifecycler.Run(context.Background())).To(Succeed())
+ 		Expect(good.FinishCallCount()).To(Equal(1))
+ 	})
++
++	// C3: terminally-disposed agent tickets leave dead dashboard cards; the
++	// lifecycler archives every attempt's run instance plus the base template.
++	It("archives the runs and templates of terminal tickets", func() {
++		run := new(dbfakes.FakePipelineRun)
++		factory.RunsForTerminalTicketsReturns([]db.PipelineRun{run}, nil)
++		template := new(dbfakes.FakePipeline)
++		factory.TemplatesForTerminalTicketsReturns([]db.Pipeline{template}, nil)
++
++		Expect(lifecycler.Run(context.Background())).To(Succeed())
++		Expect(run.ArchiveCallCount()).To(Equal(1))
++		Expect(template.ArchiveCallCount()).To(Equal(1))
++	})
++
++	It("continues past a failing terminal-ticket archive", func() {
++		bad := new(dbfakes.FakePipelineRun)
++		bad.ArchiveReturns(errors.New("boom"))
++		good := new(dbfakes.FakePipelineRun)
++		factory.RunsForTerminalTicketsReturns([]db.PipelineRun{bad, good}, nil)
++		template := new(dbfakes.FakePipeline)
++		factory.TemplatesForTerminalTicketsReturns([]db.Pipeline{template}, nil)
++
++		Expect(lifecycler.Run(context.Background())).To(Succeed())
++		Expect(good.ArchiveCallCount()).To(Equal(1))
++		Expect(template.ArchiveCallCount()).To(Equal(1))
++	})
+ })
+diff --git a/web/elm/src/Api/Endpoints.elm b/web/elm/src/Api/Endpoints.elm
+index f2cbbd2697..859cc61de1 100644
+--- a/web/elm/src/Api/Endpoints.elm
++++ b/web/elm/src/Api/Endpoints.elm
+@@ -34,6 +34,7 @@ type Endpoint
+     | Logout
+     | InstanceGroup Concourse.InstanceGroupIdentifier InstanceGroupEndpoint
+     | BuildAgentReviews Concourse.BuildId
++    | BuildAgentMetrics Concourse.BuildId
+     | TeamAgentReviews Concourse.TeamName
+     | AgentFeedback
+     | AgentMetrics
+@@ -214,6 +215,9 @@ builder endpoint =
+         BuildAgentReviews buildId ->
+             base |> appendPath [ "builds", String.fromInt buildId, "agent-reviews" ]
+ 
++        BuildAgentMetrics buildId ->
++            base |> appendPath [ "builds", String.fromInt buildId, "agent-metrics" ]
++
+         TeamAgentReviews teamName ->
+             base |> appendPath [ "teams", teamName, "agent-reviews" ]
+ 
+diff --git a/web/elm/src/Build/Build.elm b/web/elm/src/Build/Build.elm
+index 186eeff4e3..f95a06f6f0 100644
+--- a/web/elm/src/Build/Build.elm
++++ b/web/elm/src/Build/Build.elm
+@@ -27,6 +27,7 @@ import Build.StepTree.Models as STModels
+ import Build.StepTree.StepTree as StepTree
+ import Build.Styles as Styles
+ import Concourse
++import Concourse.Agent
+ import Concourse.AgentReview
+ import Concourse.BuildStatus exposing (BuildStatus(..))
+ import DateFormat
+@@ -131,6 +132,7 @@ init flags =
+           , reapTime = Nothing
+           , createdBy = Nothing
+           , agentReviews = []
++          , agentRunMetrics = []
+           , agentReviewLoadError = False
+           , agentReviewPanelExpanded = True
+           , expandedFindings = Set.empty
+@@ -327,6 +329,14 @@ handleCallback action ( model, effects ) =
+             -- of breaking the page.
+             ( { model | agentReviewLoadError = True }, effects )
+ 
++        BuildAgentMetricsFetched (Ok rows) ->
++            ( { model | agentRunMetrics = rows }, effects )
++
++        BuildAgentMetricsFetched (Err _) ->
++            -- The cost chip is best-effort provenance; a fetch error just
++            -- leaves it hidden.
++            ( model, effects )
++
+         AgentReviewVerdictSubmitted findingId (Ok ()) ->
+             ( { model | verdictErrors = Set.remove findingId model.verdictErrors }
+             , effects ++ [ FetchBuildAgentReviews model.id ]
+@@ -676,7 +686,9 @@ handleBuildFetched build ( model, effects ) =
+             -- poll while a build is running and would re-request reviews
+             -- continuously.
+             if not model.hasLoadedYet || build.id /= model.id then
+-                [ FetchBuildAgentReviews build.id ]
++                [ FetchBuildAgentReviews build.id
++                , FetchBuildAgentMetrics build.id
++                ]
+ 
+             else
+                 []
+@@ -872,13 +884,69 @@ viewBuildPage session model =
+ {-| When a build belongs to an `agent-ticket-<id>` pipeline, show a slim
+ provenance bar linking back to the originating ticket and attributing the run.
+ Detection is purely from the pipeline name + instance vars the build already
+-carries — no server round-trip. Renders nothing for ordinary builds.
++carries — no server round-trip. A build with recorded agent spend but no
++ticket context (e.g. a CI build running review steps) still gets the bar,
++reduced to just the cost chip. Renders nothing for ordinary builds.
+ -}
+-ticketContextBar : { a | job : Maybe Concourse.JobIdentifier, createdBy : Concourse.BuildCreatedBy } -> Html Message
+-ticketContextBar { job, createdBy } =
++ticketContextBar :
++    { a
++        | job : Maybe Concourse.JobIdentifier
++        , createdBy : Concourse.BuildCreatedBy
++        , agentRunMetrics : List Concourse.Agent.RunMetric
++    }
++    -> Html Message
++ticketContextBar { job, createdBy, agentRunMetrics } =
++    let
++        totalCost =
++            agentRunMetrics |> List.map .costUsd |> List.sum
++
++        costChip =
++            if totalCost > 0 then
++                [ Html.span
++                    [ id "build-agent-cost"
++                    , style "margin-left" "auto"
++                    , style "font-family" "monospace"
++                    , style "color" "#b0b0b0"
++                    ]
++                    [ Html.text
++                        ("agent spend $"
++                            ++ formatUsd totalCost
++                            ++ " · "
++                            ++ String.fromInt (List.length agentRunMetrics)
++                            ++ (if List.length agentRunMetrics == 1 then
++                                    " run"
++
++                                else
++                                    " runs"
++                               )
++                        )
++                    ]
++                ]
++
++            else
++                []
++
++        bar barId children =
++            Html.div
++                [ id barId
++                , style "display" "flex"
++                , style "align-items" "center"
++                , style "gap" "6px"
++                , style "padding" "6px 12px"
++                , style "background" "#1b222b"
++                , style "border-bottom" "1px solid #2d3a48"
++                , style "color" "#9aa39b"
++                , style "font-size" "13px"
++                ]
++                children
++    in
+     case job |> Maybe.andThen agentTicketId of
+         Nothing ->
+-            Html.text ""
++            if List.isEmpty costChip then
++                Html.text ""
++
++            else
++                bar "build-agent-cost-bar" costChip
+ 
+         Just ticketId ->
+             let
+@@ -902,27 +970,53 @@ ticketContextBar { job, createdBy } =
+                         Nothing ->
+                             ""
+             in
+-            Html.div
+-                [ id "build-ticket-context"
+-                , style "display" "flex"
+-                , style "align-items" "center"
+-                , style "gap" "6px"
+-                , style "padding" "6px 12px"
+-                , style "background" "#1b222b"
+-                , style "border-bottom" "1px solid #2d3a48"
+-                , style "color" "#9aa39b"
+-                , style "font-size" "13px"
+-                ]
+-                [ Html.text "part of"
+-                , Html.a
++            bar "build-ticket-context"
++                ([ Html.text "part of"
++                 , Html.a
+                     [ href (Routes.toString (Routes.AgentTicket { id = ticketId }))
+                     , style "color" "#7a9ac0"
+                     , style "text-decoration" "none"
+                     , style "font-weight" "700"
+                     ]
+                     [ Html.text ("agent ticket #" ++ String.fromInt ticketId) ]
+-                , Html.text (runLabel ++ attribution)
+-                ]
++                 , Html.text (runLabel ++ attribution)
++                 ]
++                    ++ costChip
++                )
++
++
++{-| Same rendering as the other agent surfaces: cents-precision dollars.
++-}
++formatUsd : Float -> String
++formatUsd amount =
++    let
++        cents =
++            round (amount * 100)
++
++        absCents =
++            abs cents
++
++        dollars =
++            absCents // 100
++
++        remainder =
++            modBy 100 absCents
++
++        fraction =
++            if remainder < 10 then
++                "0" ++ String.fromInt remainder
++
++            else
++                String.fromInt remainder
++
++        sign =
++            if cents < 0 then
++                "-"
++
++            else
++                ""
++    in
++    sign ++ String.fromInt dollars ++ "." ++ fraction
+ 
+ 
+ {-| Parse the ticket id out of an `agent-ticket-<id>` pipeline name.
+diff --git a/web/elm/src/Build/Models.elm b/web/elm/src/Build/Models.elm
+index 03d5fa2a82..b6d645c666 100644
+--- a/web/elm/src/Build/Models.elm
++++ b/web/elm/src/Build/Models.elm
+@@ -7,6 +7,7 @@ module Build.Models exposing
+ import Build.Header.Models exposing (BuildPageType(..), CommentBarVisibility, CurrentOutput(..), HistoryItem)
+ import Build.Output.Models exposing (OutputModel)
+ import Concourse
++import Concourse.Agent
+ import Concourse.AgentReview
+ import Concourse.BuildStatus as BuildStatus
+ import Dict exposing (Dict)
+@@ -36,6 +37,7 @@ type alias Model =
+                 , notFound : Bool
+                 , reapTime : Maybe Time.Posix
+                 , agentReviews : List Concourse.AgentReview.BuildReview
++                , agentRunMetrics : List Concourse.Agent.RunMetric
+                 , agentReviewLoadError : Bool
+                 , agentReviewPanelExpanded : Bool
+                 , expandedFindings : Set String
+diff --git a/web/elm/src/Message/Callback.elm b/web/elm/src/Message/Callback.elm
+index df7fbcfbd0..58bdcaa0d7 100644
+--- a/web/elm/src/Message/Callback.elm
++++ b/web/elm/src/Message/Callback.elm
+@@ -72,6 +72,7 @@ type Callback
+     | TeamAgentReviewsFetched (Fetched (List Concourse.AgentReview.Summary))
+     | AgentReviewVerdictSubmitted String (Fetched ())
+     | AgentRunMetricsFetched (Fetched (List Concourse.Agent.RunMetric))
++    | BuildAgentMetricsFetched (Fetched (List Concourse.Agent.RunMetric))
+     | AgentWorkflowsFetched (Fetched (List Concourse.Agent.WorkflowSummary))
+     | AgentCostRollupFetched (Fetched Concourse.Agent.CostRollup)
+     | AgentCredentialsFetched (Fetched (List Concourse.Agent.CredentialStatus))
+diff --git a/web/elm/src/Message/Effects.elm b/web/elm/src/Message/Effects.elm
+index f7414befbb..e938f47866 100644
+--- a/web/elm/src/Message/Effects.elm
++++ b/web/elm/src/Message/Effects.elm
+@@ -216,6 +216,7 @@ type Effect
+     | LoadFavoritedInstanceGroups
+     | GetHostname
+     | FetchBuildAgentReviews Concourse.BuildId
++    | FetchBuildAgentMetrics Concourse.BuildId
+     | FetchTeamAgentReviews Concourse.TeamName
+     | FetchPipelineRuns Concourse.PipelineIdentifier
+     | FetchAgentRunMetrics
+@@ -792,6 +793,12 @@ runEffect effect key csrfToken =
+                 |> Api.request
+                 |> Task.attempt BuildAgentReviewsFetched
+ 
++        FetchBuildAgentMetrics buildId ->
++            Api.get (Endpoints.BuildAgentMetrics buildId)
++                |> Api.expectJson (Json.Decode.list Concourse.Agent.decodeRunMetric)
++                |> Api.request
++                |> Task.attempt BuildAgentMetricsFetched
++
+         FetchTeamAgentReviews teamName ->
+             Api.get (Endpoints.TeamAgentReviews teamName)
+                 |> Api.expectJson (Json.Decode.list Concourse.AgentReview.decodeSummary)
+diff --git a/web/elm/tests/BuildTicketBarTests.elm b/web/elm/tests/BuildTicketBarTests.elm
+index d5269c76b4..61eb969428 100644
+--- a/web/elm/tests/BuildTicketBarTests.elm
++++ b/web/elm/tests/BuildTicketBarTests.elm
+@@ -3,10 +3,13 @@ module BuildTicketBarTests exposing (all)
+ import Application.Application as Application
+ import Common
+ import Concourse
++import Concourse.Agent
+ import Concourse.BuildStatus exposing (BuildStatus(..))
+ import Data
++import Dict
+ import Html.Attributes as Attr
+ import Message.Callback as Callback
++import Message.Effects as Effects
+ import Test exposing (Test, describe, test)
+ import Test.Html.Query as Query
+ import Test.Html.Selector exposing (attribute, containing, id, tag, text)
+@@ -18,6 +21,32 @@ agentBuild =
+         |> Data.withJob (Just (Data.jobId |> Data.withPipelineName "agent-ticket-12"))
+ 
+ 
++runMetric : Float -> Concourse.Agent.RunMetric
++runMetric cost =
++    { ticketId = Just 12
++    , pipelineRunId = Nothing
++    , buildId = 1
++    , planId = "plan"
++    , stepName = "implement"
++    , workflowName = "standard-dev"
++    , workflowVersion = Nothing
++    , status = "ok"
++    , summary = ""
++    , model = "claude"
++    , usage =
++        { inputTokens = 0
++        , outputTokens = 0
++        , cacheReadInputTokens = 0
++        , cacheCreationInputTokens = 0
++        }
++    , turns = 1
++    , wallTimeSeconds = 1
++    , costUsd = cost
++    , eventCounts = Dict.empty
++    , createdAt = 0
++    }
++
++
+ all : Test
+ all =
+     describe "build ticket-context bar"
+@@ -41,4 +70,43 @@ all =
+                     |> Tuple.first
+                     |> Common.queryView
+                     |> Query.hasNot [ id "build-ticket-context" ]
++        , test "fetches agent metrics when the build is first fetched" <|
++            \_ ->
++                Common.init "/builds/1"
++                    |> Application.handleCallback (Callback.BuildFetched (Ok agentBuild))
++                    |> Tuple.second
++                    |> Common.contains (Effects.FetchBuildAgentMetrics 1)
++        , test "sums run costs into a chip on the ticket-context bar" <|
++            \_ ->
++                Common.init "/builds/1"
++                    |> Application.handleCallback (Callback.BuildFetched (Ok agentBuild))
++                    |> Tuple.first
++                    |> Application.handleCallback
++                        (Callback.BuildAgentMetricsFetched (Ok [ runMetric 0.5, runMetric 0.25 ]))
++                    |> Tuple.first
++                    |> Common.queryView
++                    |> Query.find [ id "build-agent-cost" ]
++                    |> Query.has [ text "$0.75" ]
++        , test "shows the cost chip even for a build outside any ticket" <|
++            \_ ->
++                Common.init "/builds/1"
++                    |> Application.handleCallback
++                        (Callback.BuildFetched (Ok (Data.jobBuild BuildStatusSucceeded)))
++                    |> Tuple.first
++                    |> Application.handleCallback
++                        (Callback.BuildAgentMetricsFetched (Ok [ runMetric 1.25 ]))
++                    |> Tuple.first
++                    |> Common.queryView
++                    |> Query.find [ id "build-agent-cost" ]
++                    |> Query.has [ text "$1.25" ]
++        , test "shows no cost chip when the build has no agent runs" <|
++            \_ ->
++                Common.init "/builds/1"
++                    |> Application.handleCallback (Callback.BuildFetched (Ok agentBuild))
++                    |> Tuple.first
++                    |> Application.handleCallback
++                        (Callback.BuildAgentMetricsFetched (Ok []))
++                    |> Tuple.first
++                    |> Common.queryView
++                    |> Query.hasNot [ id "build-agent-cost" ]
+         ]

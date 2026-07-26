@@ -1,0 +1,48 @@
+diff --git a/docs/superpowers/plans/agentic-platform/2026-07-19-ux4-scoping.md b/docs/superpowers/plans/agentic-platform/2026-07-19-ux4-scoping.md
+index ee5ed8bb19..c007b8a10e 100644
+--- a/docs/superpowers/plans/agentic-platform/2026-07-19-ux4-scoping.md
++++ b/docs/superpowers/plans/agentic-platform/2026-07-19-ux4-scoping.md
+@@ -106,6 +106,22 @@ Acceptance for the wave: re-run the audit's five P0 screenshots; W-1/2/3/4 alone
+ 
+ ## Wave 3+ — structural tracks (each needs its own plan doc before execution)
+ 
++**Plan docs written 2026-07-19** (multi-agent workflow, each grounded in the repo + adversarially verified; TDD, writing-plans discipline). Every plan carries its own Open Decisions section:
++
++| ID | Plan doc | Tasks | Verify |
++|---|---|---|---|
++| S-1 | [2026-07-19-s1-ticket-step-dag.md](2026-07-19-s1-ticket-step-dag.md) | 6 | solid |
++| S-2 | [2026-07-19-s2-transcript-viewer.md](2026-07-19-s2-transcript-viewer.md) | 8 | fixed |
++| S-3 | [2026-07-19-s3-agent-routes-ia-split.md](2026-07-19-s3-agent-routes-ia-split.md) | 8 | fixed |
++| S-4 | [2026-07-19-s4-in-app-diff-review.md](2026-07-19-s4-in-app-diff-review.md) | 8 | fixed |
++| S-5 | [2026-07-19-s5-web-loop-closure.md](2026-07-19-s5-web-loop-closure.md) | 6 | fixed |
++| S-6 | [2026-07-19-s6-workflows-first-class.md](2026-07-19-s6-workflows-first-class.md) | 16 | fixed |
++| S-7 | [2026-07-19-s7-spend-dashboard.md](2026-07-19-s7-spend-dashboard.md) | 12 | fixed |
++| S-8 | [2026-07-19-s8-naming-spine.md](2026-07-19-s8-naming-spine.md) | 11 | fixed |
++| WF-2 | [2026-07-19-wf2-elm-build-gate.md](2026-07-19-wf2-elm-build-gate.md) | 6 | solid |
++
++Two grounded corrections these plans surfaced vs. this scoping doc: **S-1 needs NO new server endpoint** (the existing `GET /api/v1/agent/tickets/:id/metrics` already returns per-step name/outcome/cost/wall-time plus harvest-row `results.metadata.gates/judge/pushed_branch` — the only wire change is a decoder surfacing the currently-dropped `results` field); and **S-4/S-5 are Elm-only** (every endpoint they need already exists and is authorized for the cookie-authed web user). Also: the `remainders/README` migration head is **stale** — real head is `1773106090` (judge-evidence 080 + delivery-outcomes 090 have landed); `1773106067` is still free. Confirm before any migration.
++
+ | ID | Track | One-line scope | Blocked by |
+ |---|---|---|---|
+ | S-1 | **Ticket-page step DAG** (audit Proposal A) | Render each attempt as pipeline-grammar step boxes (ticket → implement → gate:build → judge → push → review → merge) with per-box cost/duration; recording noise as ⚠ annotation. Server: attempt-summary endpoint composing plan + metrics + gates (gates already in results metadata). Elm: new component reusing pipeline-graph visual language on AgentTicket. | L-1, W-2 |
+@@ -194,3 +210,20 @@ consumes in a later wave. Tests both layers.
+ *Done criteria for the whole scoping: the audit's five P0s each have either a merged fix or an owned
+ plan doc; re-running the audit journey (ticket → attempt → step → transcript → review → disposition)
+ never leaves the web UI and never shows a contradictory status pair.*
++
++---
++
++## Live execution log — 2026-07-19 (autonomous)
++
++**Wave 0 ops — DONE:**
++- **A0-2 hygiene:** abandoned #24, #23 (AUP-refusal duplicates; T9 scope landed via merged #25), and #1 (spent smoke). Left #2/#12 for the owner (#12 is a code-merge decision).
++- **A0-1 image refresh — DONE + VALIDATED:** `build-agent-runner-image` #7 built `registry.home/agent-runner:v0.2.196` from the deployed web commit `6188b2a8c`; home-infra `apps/concourse.yaml:45` bumped `v0.2.167→v0.2.196` (commit `681a7f6`, pushed to main); ArgoCD synced ~40s; web rolled out clean; ATC 200. **Validation:** run 38's harvest recorded `status=ok · "1 gate(s) ok; pushed agent/ticket-41"` — a REAL summary, not "flight recorder output missing." The 28-version skew that silently disabled the flight recorder is closed; the chronic ledger noise is fixed at the source.
++
++**Wave 1 dispatch — partial, on the fresh image:**
++- **#41** (recording-incomplete tier) dispatched (run 38) → `needs_review`. The agent correctly **STOPPED at the Task 0 gate**: a CHECK constraint `status IN ('ok','failed','error')` exists at migration `1773106060` (amended `1773106061`), so adding `incomplete` REQUIRES a migration — which the spec forbade. **#41 is HELD** pending a revised spec that (a) allows one migration numbered **above the real head `1773106090`** (i.e. `1773106091`, registered in remainders/README), and (b) alters the CHECK constraint to include `incomplete` (accounting for the `1773106061` park amendment). No code was pushed.
++- **#42** (pipeline-archiver), **#45** (image-skew visibility), **#46** (spec-lint) dispatched (runs 39/40/41) — clean, no-migration-risk tickets.
++- **HELD:** #43 (flight-events persistence — same evidence-store/migration-wall risk as #41; check before dispatch), #44 (principal kinds — clean via name-prefix fallback, deferred only to keep the review batch small).
++
++**New finding — WF-5 (workflow-assignment dead-end):** `fly agent tickets create --workflow ""` is allowed and documented as "decided at dispatch," but `dispatch` rejects an empty workflow (`agent/dispatch/dispatch.go:132` `ErrNoWorkflow`) and **no `fly` verb sets the workflow after create** (the web Edit only covers title/body/budget). A ticket can strand un-dispatchable; the only recovery is `PUT /api/v1/agent/tickets/:id {"workflow_name":...}` by hand (the UpdateTicket handler accepts it, no state gate). Fix options: (a) make `create` default the workflow to the live default when omitted, or reject empty at create; (b) add `--workflow` to `queue`/`dispatch`; (c) surface workflow in the web ticket Edit form. Loop-sized (server + fly). Owner call on which.
++
++**Not pushed:** the jetbridge doc commits (this file + the S-plan docs) remain local — pushing triggers the self-upgrade/release chain. Push when convenient (ideally when no dispatch is mid-flight).

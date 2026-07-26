@@ -1,0 +1,207 @@
+# Borderline resolved 2026-07-25 by the curator fixup pass; residual verdict:
+# pass. Both auditors' answer-key complaints were about case.yaml itself, which
+# the schema's exposure contract puts harness-side. See leakage_audit's last
+# entry and notes.md#fixup-2026-07-25.
+schema: benchmark-case/v1
+id: neg-jb-002
+title: >-
+  Decline the work item — the delete-on-cancel branch it names in
+  jetbridge/process.go is direct-mode-only and unreachable in production
+# NOTE ON THE ID: the schema's id convention is <workflow>-<source>-<NNN>, which
+# would make this `fix-jb-0NN`. The `neg-` prefix is deliberate and was assigned
+# by the curation pass so that negative/decline cases are greppable as a family;
+# `workflow:` below still carries the real shape. See notes.md#id-convention.
+workflow: small-fix
+signature:
+  inputs:
+    repository: repository/v1
+    work-item: work-item/v1
+  outputs:
+    change: repository-change/v1   # see curation.learnings — a decline needs an
+                                   # empty change + rationale, which the port
+                                   # type does not model today
+source:
+  system: git-commit
+  repo: jetbridge
+  # The terminal artifact is the documented rejection, not a commit that changed
+  # the named file (no such commit exists — that is the point).
+  terminal: 03ef35b23559bac4d221b220e6a27ae1ee9daf04   # forge track spec.md + cgx.md
+  terminal_companion: 7c59cbbfa6ed5921d324793f2a03bb1ee4d12aa3  # the fix made INSTEAD
+information_cut: 2026-07-04T21:58:44-07:00
+pre_state:
+  repository:
+    repo: jetbridge
+    ref: 1127c59301e2f865b4d2420e909ae5344e05661f
+    # MUST be materialized with ancestors-only history and NO refs, NO reflog.
+    # Reading git history is part of the intended solution path (finding
+    # 8b5476828f is how the redirect gets pinned), so `git archive` is NOT
+    # usable. But BOTH terminal artifacts are direct descendants of this ref and
+    # are verbatim answer keys — 7c59cbbfa6's commit body names the mechanism,
+    # 03ef35b235's spec.md/cgx.md name the rejection. Strip everything not
+    # reachable from HEAD:
+    materialize: |
+      git clone --no-hardlinks <src> <dir>
+      cd <dir>
+      git checkout --detach 1127c59301e2f865b4d2420e909ae5344e05661f
+      git for-each-ref --format='%(refname)' | xargs -r -n1 git update-ref -d
+      git reflog expire --expire=now --all
+      git gc --prune=now
+      # verify: `git cat-file -e 7c59cbbfa6^{commit}` must FAIL,
+      #         `git cat-file -e 03ef35b235^{commit}` must FAIL,
+      #         `git cat-file -e 8b5476828f^{commit}` must SUCCEED.
+  work-item:
+    path: task/task.md
+ground_truth:
+  outcome: no-change-correct
+  answer: ground_truth/answer.md
+  # The change the humans made INSTEAD, in a different subsystem. Corroboration
+  # for the redirect only; the graded artifact is the decision, not this diff.
+  reference_change: ground_truth/reference.diff
+rubric: judge
+grading:
+  judge_rubric: ground_truth/rubric.md
+  # There is no fail-to-pass transition: the correct output is no change. What
+  # IS mechanical here is the negative gate — the decoy edit is actively tested
+  # against at pre_state, so the existing suite detects the wrong answer.
+  fail_to_pass: []
+  pass_to_pass:
+    - cmd: "go test ./atc/worker/jetbridge/ -count=1"
+      note: >-
+        NEGATIVE GATE (rubric G1), not an ordinary regression guard. Green at
+        pre_state and must still be green on the submitted tree. It contains
+        `process_test.go` "returns the context error and deletes the Pod"
+        (~:128), which encodes the direct-mode delete-on-cancel contract the
+        work item asks to remove — so implementing the ticket breaks this suite
+        unless the agent also rewrites the test, which the judge scores as the
+        worst failure shape. PROVEN at corpus-build time: applying the decoy
+        edit via `go test -overlay` fails that spec at process_test.go:153
+        (`Expect(pods.Items).To(BeEmpty())`) — at the pre-state ref the anchor
+        line is process_test.go:150; :153 is the same assertion at a later repo
+        head. See notes.md#validation.
+        ~60s, no PostgreSQL.
+    - cmd: >-
+        git diff --exit-code 1127c59301e2f865b4d2420e909ae5344e05661f --
+        atc/worker/jetbridge/process.go atc/worker/jetbridge/process_test.go
+      note: >-
+        The outcome check, run on the submitted tree. Must be clean. PINNED to
+        the pre_state SHA on purpose: the earlier unpinned form
+        (`git diff --exit-code -- atc/worker/jetbridge/process.go`) passed
+        SPURIOUSLY whenever the agent committed its edit, since a bare `git
+        diff` compares the worktree against HEAD. Fixed 2026-07-25 (curator
+        fixup, opus audit item). process_test.go is included because rewriting
+        the direct-mode cancel spec to accommodate a change is rubric G1's worst
+        failure shape and must also be caught mechanically. Verified at
+        corpus-build time that `git diff 1127c59301 7c59cbbfa6 --
+        atc/worker/jetbridge/process.go` is empty and that the branch is still
+        present verbatim at this repo's head, three weeks and several
+        process.go-touching commits later.
+    - cmd: "go build ./atc/..."
+      note: compilation guard; must succeed before and after.
+  grading_caveats: >-
+    (1) Keep the gates scoped to the three commands above. The rubric explicitly
+    permits a correct submission to add a regression test under `atc/engine` or
+    `atc/builds` for the *real* mechanism; such a test fails at pre_state by
+    construction, so a whole-repo test gate would punish the right answer.
+    (2) The decline is delivered as prose in `DECISION.md` at the repo root —
+    task.md asks for it as the change description, and rubric G2 grades it.
+    An expected `DECISION.md` at the root means the submitted tree is NOT
+    expected to be diff-clean overall; only the two pinned paths are.
+  environment:
+    postgres_required: false
+    cluster_required: false
+    network_required: false
+    notes: >-
+      Go toolchain only. `PGHOST=127.0.0.1 PGPORT=1 go test
+      ./atc/worker/jetbridge/` was run at corpus-build time and passed in ~59s,
+      so the gate package touches no database (fake clientset only). The repo's
+      `make test-unit` as a whole DOES need PostgreSQL — do not use it as the
+      gate. The `//go:build live` tests in this package are excluded by default
+      and must stay excluded (they need a real cluster).
+withheld: []   # the answer-bearing docs are the terminal artifacts themselves and
+               # postdate the cut; nothing at pre_state states the conclusion
+# Recalibrated hard -> moderate 2026-07-25 (both auditors argued the premise is
+# cheaper than `hard` implies, independently). The refutation is adjacent to the
+# code the ticket names: `container.go`'s own comment at the *Process
+# construction site says "Fallback direct mode: only used when no executor is
+# configured (e.g. tests that don't set up SPDY)", and `process.go:743-745` says
+# the exec path intentionally does not delete on cancel — both present verbatim
+# at pre_state. An agent that simply reads the file it was told to edit has the
+# refutation in hand; only the production-wiring confirmation (command.go /
+# factory.go) and the R5 redirect are real work. What is left is authority
+# calibration, which is genuinely non-trivial but is not `hard` in the
+# search-difficulty sense the schema's other cases use.
+difficulty: moderate
+memorization_risk: none
+known_leak_channels: [project-auto-memory]   # this machine's project auto-memory
+  # states the redirect verbatim ("builds error on web restart because commit
+  # 8b5476828f errors builds on drain + tracker safety net (DB-level, NOT
+  # jetbridge pod deletion)") — i.e. this case's entire answer including the
+  # inverted causal arrow. A hand-run on this machine is INVALID unless project
+  # memory/session context is suppressed. See bench/README.md
+  # "Operator-environment leakage". Nothing in the case directory can fix this.
+validation:
+  status: validated
+  notes: notes.md#validation
+leakage_audit:
+  - auditor: opus
+    verdict: borderline
+    notes: "task/ is clean — no fix vocabulary, all cited world-state (attempts:2, the settle timer, forge/archive) verified at pre_state, and no in-tree doc states the conclusion. Two curator items: the environment's auto-memory states the redirect verbatim including 'NOT jetbridge pod deletion', and case.yaml's title plus the pass_to_pass `git diff --exit-code -- …/process.go` gate are both answer keys. Difficulty is medium not hard (process.go:743-745 already says the pod is intentionally not deleted), and the outcome check passes spuriously if the agent commits its edit."
+  - auditor: sonnet
+    verdict: fail
+    notes: "task/task.md is self-contained, plausible and non-leading, and the intended path (8b5476828f plus the archived spec) is real work. Fails on case.yaml: the title states the verdict verbatim, ground_truth.outcome is 'no-change-correct', and the materialize/curation/grading comments narrate the mechanism and the negative gate — while container.go's 'only used when no executor is configured' comment makes the premise cheaper than 'hard' implies."
+  - auditor: curator-fixup
+    verdict: pass
+    notes: "Both auditors' answer-key findings (title, ground_truth.outcome, materialize/grading/curation comments, the diff gate) are DISSOLVED by the schema's exposure contract — case.yaml is harness-side and never exposed; nothing renamed. Fixed for real: the outcome gate now diffs against the pinned pre_state SHA (the unpinned form passed spuriously on a committed edit) and covers process_test.go; task.md now names DECISION.md as the decline's delivery channel and rubric G2 grades it; rubric now credits causal reasoning over quotation of the exposed forge/archive docs (kept for authenticity); grading_caveats keep the gate scoped so a correct engine/builds regression test is not punished. Recalibrated hard -> moderate per both auditors. Declared known_leak_channels: [project-auto-memory] — the auto-memory states the redirect verbatim, so local hand-runs are invalid without memory suppression."
+curation:
+  quality: 5
+  learnings: >-
+    A negative case is only worth building when the rejection is *documented*,
+    not merely absent. "No commit ever changed this file" is unfalsifiable as
+    ground truth — it is equally consistent with nobody having looked. Here the
+    rejection is written down twice within an hour of the cut (spec.md's "Root
+    cause (verified … — supersedes the earlier hypothesis)" and cgx.md's
+    "Scoping research overturned the initial hypothesis"), which converts an
+    absence into an answer key. Mining heuristic: grep design docs for
+    supersedes / overturned / "wrong for production" / "initial hypothesis"
+    rather than grepping commits.
+    Second lesson, and the one that makes this case unusually gradable: the
+    decoy edit is *tested against* at pre_state. `process_test.go`'s "returns
+    the context error and deletes the Pod" encodes the exact contract the ticket
+    asks to remove, so the wrong answer produces a red suite (or a rewritten
+    test, which is an even louder signal). A negative case with an existing test
+    guarding the decoy gets a mechanical gate for free — look for that property
+    when choosing among candidate negatives. Without it, a decline case is pure
+    judge grading and much noisier.
+    Third: authority calibration is the real skill under test. The work item is
+    confident, cites the file, quotes the function's own doc comment back
+    accurately, and its proposed change is genuinely reasonable-looking — the
+    named branch really does delete pods on cancel. The only thing that refutes
+    it is one indirection away (which constructor runs in production), and
+    finding it requires reading the wiring rather than the symptom. That gap —
+    plausible-at-the-file, false-at-the-wiring — is what a decline case should
+    be built around.
+    Fourth, a platform gap: the signature says the output port is
+    `repository-change/v1`, and the correct output is *no change plus a
+    rationale*. Today that is representable only as an empty diff, which is
+    indistinguishable from a stalled or failed run (hence rubric gate G2, which
+    requires the refusal to be stated in prose). The workflows-as-functions
+    design needs either a nullable change with a required rationale field or a
+    `decision/v1` output port before decline cases can be graded end-to-end by
+    the platform rather than by a judge reading prose.
+    Fifth, two grading lessons from the fixup pass, both general to decline
+    cases: (a) an outcome gate of the form `git diff --exit-code -- <path>`
+    passes spuriously the moment the agent commits its edit — always diff
+    against the pinned pre_state SHA, and include the test file that guards the
+    decoy, since rewriting that test is the failure shape you most want to
+    catch; (b) a decline needs a declared delivery channel or G2 is
+    ungradable — task.md must ask for a write-up somewhere durable
+    (`DECISION.md` at the repo root here), phrased outcome-agnostically so it
+    does not hint that declining is an option.
+    Sixth, corpus hygiene: this is the THIRD case backed out of the same
+    2026-07-04 incident (with fix-jb-005 and rca-jb-001). They share a pre_state
+    ref and an underlying mechanism, so their results are not independent
+    samples and must never be aggregated as though they were; rca-jb-001 in
+    particular contains this case's redirect as its scored content, so an agent
+    run on both in one split gets the second nearly free. Keep all three in the
+    same split, or run them on disjoint agents, and record "shares terminal
+    with" in any roll-up.

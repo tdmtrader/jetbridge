@@ -1,0 +1,224 @@
+# Fixup 2026-07-25: the prior borderline/fail verdicts rested entirely on THIS
+# file (title + source comment stating the root cause). Per the schema's exposure
+# contract, case.yaml is harness-side and never exposed, so those items are
+# dissolved, not defects — nothing was renamed or retitled. See notes.md#fixup-2026-07-25.
+schema: benchmark-case/v1
+id: rca-jb-002
+title: >-
+  The k8s-e2e FK flake that was never in the code — CI ran a stale kind-runner
+  rootfs because the pipeline reuses a mutable image tag
+workflow: log-diagnosis
+signature:
+  inputs:
+    repository: repository/v1
+    work-item: work-item/v1
+    log-bundle: log-bundle/v1
+  outputs:
+    diagnosis: diagnosis/v1
+    change: repository-change/v1
+  # NOTE: log-bundle/v1 and diagnosis/v1 are PROPOSED types — the platform's v3
+  # seed has no log-diagnosis function and therefore no such snapshot types yet.
+  # Recorded as a platform gap in curation.learnings, not invented convention.
+source:
+  system: git-commit
+  repo: jetbridge
+  terminal: 4cdf75c6ccf9d884ec3147696d33982dc89c827e
+  # Companion terminal artifact carrying the narrative:
+  # c2a0b65d534daae8e02363b8664f8727bdcce92e (direct child of the fix) —
+  # "ROOT CAUSE CONFIRMED (2026-05-30): CI ran stale kind-runner images".
+information_cut: 2026-05-30T09:12:05-07:00
+# The cut IS the pre_state commit timestamp and stays there. One exposed input is
+# not "state before T" in the literal sense: task/evidence/instrumented-run.md is
+# an OBSERVATION OF the pre_state snapshot, produced by the run that pre_state's
+# own push triggered, and therefore necessarily postdates T (by ~2h40m, bounded
+# above by the fix at 11:53:22-07:00). This is inherent to log-diagnosis, not an
+# inconsistency to be papered over: the invariant enforced by hand is stricter
+# than the timestamp — the bundle carries no information that postdates the
+# DIAGNOSIS. Every line was split observation (kept) / inference (moved to
+# ground_truth/answer.md); see notes.md#the-run-observations. All dates appearing
+# in exposed content are 2026-05-30, the day of the cut.
+# observation_window: [2026-05-30T09:12:05-07:00, 2026-05-30T11:53:22-07:00]
+#   (recorded as a comment: the v1 schema has no such field yet — see
+#   curation.learnings and notes.md#open-questions.)
+pre_state:
+  repository:
+    repo: jetbridge
+    ref: 44697823b4e4c7b56b83e2e79e5b8052e0e244cb
+    # MUST be materialized detached, with no other refs and no reflog. The fix
+    # 4cdf75c6cc is a direct child of this ref and its commit message is the
+    # verbatim answer key; c2a0b65d53 (the next commit) restates it at length.
+    # Both are reachable from `jetbridge`, `main` and ~20 other branch tips.
+    # See notes.md#leakage-analysis.
+    materialize: "git archive 44697823b4e4c7b56b83e2e79e5b8052e0e244cb | tar -x -C <dir>"
+  work-item:
+    path: task/task.md
+  log-bundle:
+    paths:
+      - task/evidence/diagnostic-record.md
+      - task/evidence/instrumented-run.md
+    # diagnostic-record.md is a verbatim copy of
+    # forge/tracks/resource_config_scope_fk_leak_fix_20260530/cgx.md at the
+    # pre_state ref (also present in the repository snapshot; duplicated into
+    # task/ so the case is runnable by hand and the exposure is pinned).
+    # instrumented-run.md is transcribed from the run triggered by the pre_state
+    # commit's own push, with all interpretation removed — see
+    # notes.md#the-run-observations for the sourcing of every claim in it.
+ground_truth:
+  outcome: merged
+  answer: ground_truth/answer.md
+  reference_change: ground_truth/reference.diff
+  # generated_by: git diff 44697823b4e4c7b56b83e2e79e5b8052e0e244cb
+  #               4cdf75c6ccf9d884ec3147696d33982dc89c827e
+  #               -- deploy/k8s-e2e-pipeline.yml
+  # 1 file, +3/-3. That is the ENTIRE reference change; there is no unrelated
+  # churn to exclude.
+rubric: judge
+grading:
+  judge_checklist: ground_truth/rubric.md
+  # Grading caveats (fixup 2026-07-25):
+  # - Delivery channel: task.md now names
+  #   forge/tracks/resource_config_scope_fk_leak_fix_20260530/cgx.md as where the
+  #   conclusion is recorded (including a "no change here, and why" conclusion),
+  #   and rubric.md grades the UNION of that file and the agent's reply. Writing
+  #   to only one channel is not penalised; the cgx edit itself stays unweighted,
+  #   so the graded surface did not change.
+  # - Prior art is priced, not withheld: the snapshot contains completed
+  #   tag-bump tasks from two earlier CI tracks, so the right EDIT is reachable
+  #   by pattern-match. rubric.md#Calibration scores such a bump as D1-only + a
+  #   recorded "cargo-culted bump", never as bucket A.
+  # NOT mechanically gradable on the agent's output. The reference change is
+  # three one-token YAML edits whose effect is only observable on a live
+  # Concourse worker pulling from registry.home; there is no test that goes red
+  # at pre_state and green after. Diff similarity is also a near-useless signal
+  # here (three tokens), which is precisely why the rubric grades reasoning.
+  fail_to_pass: []
+  pass_to_pass:
+    - cmd: "ginkgo ./atc/exec/ --focus='FK violation'"
+      grades: ground_truth_only
+      note: >-
+        Matches the two contexts at check_step_test.go:734 ("when SaveVersions
+        fails with FK violation (scope deleted by GC)") and :766 ("when
+        PointToCheckedConfig fails with FK violation ..."). Corroborates the
+        NEGATIVE half of the answer — the FK guards in atc/exec/check_step.go are
+        correct at pre_state and must still be correct after. Green at pre_state
+        and after the reference change (which touches no Go file). UNVALIDATED as
+        written: the extractor did not run ginkgo against a materialized tree. A
+        hermetic equivalent WAS run — see notes.md#validation.
+    - cmd: "ginkgo ./atc/db/ --focus='IsForeignKeyViolation'"
+      grades: ground_truth_only
+      requires: postgres
+      note: >-
+        The real-DB GC-race regression spec added at ef4fc3f070, i.e. BEFORE the
+        cut. Green at pre_state; its greenness is part of the evidence bundle,
+        not a grading transition. Requires a local PostgreSQL (postgresrunner).
+  environment:
+    postgres_required: false
+    cluster_required: false
+    notes: >-
+      Nothing in the agent's required output needs Postgres, Docker or a cluster.
+      atc/exec has no postgresrunner dependency (verified by git grep at
+      pre_state); atc/db does. Reproducing the ORIGINAL failure would need the
+      live theborg cluster and is out of scope for grading — the case is graded
+      on the diagnosis, which is derivable from the repository plus the two
+      attached documents.
+withheld: []
+# Nothing PRESENT at pre_state gives the answer away. The entire leakage story is
+# descendant-reachability (see pre_state.repository.materialize) plus one
+# out-of-repo channel documented in notes.md#leakage-analysis. The track's own
+# cgx.md / plan.md / spec.md are deliberately EXPOSED: they are the evidence
+# bundle, they were written before the answer was known, and the hypothesis they
+# float is one the same documents refute.
+difficulty: hard
+# Recalibration check (fixup 2026-07-25): held at `hard`. The opus audit noted
+# that in-tree prior art (forge/tracks/k8s_e2e_ci_failures_20260407/plan.md's
+# completed "Bump kind-runner image tag (v28->v29->v30) to bust K8s node image
+# cache", plus the tag-bump history of deploy/k8s-e2e-pipeline.yml) makes the
+# ACTION cheap. It does not make the DIAGNOSIS cheap: the discriminating steps
+# are A2 (which of two plausible images is stale — the record already refuted the
+# other one) and A3 (why a successful push was not consumed), reached from
+# evidence of ABSENCE. Scoring is aligned to that: A+B carry 60/100, a run
+# scoring 0 on A is capped at 25 total, and rubric.md#Calibration now scores a
+# prior-art-cited bump with no evidence chain as D1-only + "cargo-culted bump".
+memorization_risk: none
+known_leak_channels: [project-auto-memory]
+# Declared per README#Operator-environment-leakage. Verified during fixup: the
+# machine's project auto-memory does NOT state this answer verbatim (no memory
+# file mentions concourse-kind-runner rootfs staleness or this FK flake). What it
+# does carry is the same FAILURE FAMILY, strongly enough to prime it —
+# project_jetbridge_release_pipeline.md's "stale embedded web bundle" entry (a
+# build silently shipping stale checked-in artifacts) and
+# project_theborg_disk_dns_outage_20260717.md's registry-GC entry, which names
+# mutable `kind-runner` tags in the registry. A local hand-run of this case on
+# this machine is invalid unless project memory / session context is suppressed.
+validation:
+  status: unvalidated
+  notes: notes.md#validation
+leakage_audit:
+  - auditor: opus
+    verdict: borderline
+    notes: "task/ is clean — every string it quotes exists in pre_state code, the exposed staleness hypothesis is the WRONG flavor and is refuted in-record, and no pre_state doc names the tag. Curator items: case.yaml's title states the root cause verbatim ('reuses a mutable image tag') and its source comment quotes the companion commit's 'ROOT CAUSE CONFIRMED' line; separately forge/tracks/k8s_e2e_ci_failures_20260407/plan.md records 'Bump kind-runner image tag … to bust K8s node image cache' as prior art, so credit only a causal argument, never a cargo-culted bump."
+  - auditor: sonnet
+    verdict: fail
+    notes: "task/task.md and both evidence files are legitimate, honestly sourced, and would support a real diagnosis (the zero-match instrumentation table against a reported-successful rebuild is genuine work). Fails on case.yaml: the title states the root cause outright and the source comment quotes the companion commit's 'ROOT CAUSE CONFIRMED (2026-05-30): CI ran stale kind-runner images', which case.yaml itself calls the verbatim answer key."
+  - auditor: curator-fixup
+    verdict: pass
+    notes: "Both audits' only blocking items were case.yaml title/comments — DISSOLVED by the exposure contract (harness-side, never exposed); nothing renamed or retitled, and both auditors independently cleared task/. Fixed: prior-art pricing added to rubric.md#Calibration (a tag bump cited from forge/tracks/k8s_e2e_ci_failures_20260407/plan.md with no evidence chain = D1-only + recorded 'cargo-culted bump'), diagnosis delivery channel named in task.md (cgx.md path, explicit 'no change here, and why' framing) with rubric grading the union of cgx.md + reply, task.md item 1 desymmetrised ('state where the evidence points' rather than 'if it points somewhere other than the code'), information_cut kept at the pre_state commit with the log-bundle observation window documented in-manifest. Declared known_leak_channels: [project-auto-memory] — memory does not state this answer verbatim (verified by grep) but primes the failure family. Difficulty held at hard, reasoning recorded."
+curation:
+  quality: 5
+  learnings: >-
+    The first log-diagnosis case in the corpus, and it argues for a shape the
+    other cases cannot reach: the answer is not in the diff, and the diff is not
+    the deliverable. Three things it teaches.
+    (1) Mine for evidence bundles written BEFORE the answer was known. This
+    repo's forge tracks keep a running cgx.md, so the diagnostic record at the
+    parent commit is a genuine pre-answer artifact — hypotheses, refutations, a
+    stated contradiction, and no hindsight. That is almost impossible to
+    reconstruct honestly after the fact, and it is what makes the case a
+    diagnosis test rather than a recall test. The signature to look for when
+    mining: a commit whose message begins "ROOT CAUSE CONFIRMED" or similar,
+    whose PARENT already contains the investigation notes. Everything else about
+    this case followed mechanically from that pattern.
+    (2) A refuted hypothesis in the bundle is an asset, not a leak — but only if
+    the rubric knows it. The record floats "deployed-binary / image-propagation
+    staleness" as its leading hypothesis and then refutes it for CI in Phase 2a.
+    Naively that reads as a solution-in-the-prompt leak, and the mining pass
+    flagged it as one and suggested truncating the bundle. Truncating would have
+    destroyed the case: it would have removed the trap and left a cleaner,
+    easier, less honest document. The right move is to keep the bundle verbatim
+    and price the leak in the rubric — here, the bare word "staleness" is
+    explicitly declared cheap and the discrimination is moved to *which* artifact
+    is stale and *why the push did not take*. Generalize: scrub the TASK, price
+    the EVIDENCE. A leak you can name and weight is better than a leak you
+    excise, because excision is invisible to the reader and changes what the case
+    measures.
+    (2b, added by the 2026-07-25 fixup) There is a SECOND kind of priced leak,
+    distinct from the evidence bundle: in-tree PRIOR ART that makes the right
+    ACTION cheap without making the DIAGNOSIS cheap. Here it is
+    forge/tracks/k8s_e2e_ci_failures_20260407/plan.md's completed "Bump
+    kind-runner image tag (v28->v29->v30) to bust K8s node image cache", plus the
+    tag-bump history of the pipeline file itself. Withholding it would be
+    ahistorical — a CI engineer in this repo has seen those bumps — so it is kept
+    and priced: the rubric now scores a bump that cites the prior art INSTEAD of
+    an evidence chain as D1-only with a recorded "cargo-culted bump", never as
+    bucket A. Generalise: when the fix is a well-worn local idiom, the case must
+    grade the argument, and the rubric has to say so explicitly, or a
+    pattern-matcher scores like a diagnostician.
+    (3) The information cut is fuzzier for log-diagnosis than the schema assumes.
+    A log bundle is by construction produced by RUNNING the pre_state snapshot,
+    so it necessarily postdates the pre_state commit — here by about 2h40m. The
+    schema's model ("everything exposed existed before T") has to be read as
+    "everything exposed is either state at T or an observation OF state at T,
+    containing no information from after the diagnosis". That distinction has to
+    be enforced by hand: the run observations were split line by line into
+    observation (kept) and inference (moved to answer.md), and the single most
+    load-bearing sentence in the original record — "=> the behavioral task
+    compiled Concourse from a STALE image's /src" — sits on the inference side of
+    that line. If the corpus grows a second log-diagnosis case, that split is the
+    step to budget time for; it is where the case is won or lost.
+    Platform gaps surfaced: there is no log-diagnosis workflow in the v3 seed and
+    therefore no log-bundle/v1 or diagnosis/v1 snapshot type to bind to, so this
+    case cannot yet be imported as an experiment fixture. And raw CI build logs
+    are not archived anywhere — the only surviving record of the decisive run is
+    the human's transcription of it, which is why this case's log bundle is a
+    transcription rather than a capture. A workflow that persisted the build log
+    it reasoned over would have produced a strictly better case for free.

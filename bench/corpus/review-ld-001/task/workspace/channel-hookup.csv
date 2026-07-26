@@ -1,0 +1,104 @@
+channel,dimmer_address,focus,instrument,color
+1,17,Entrance Aisle,Par 38-5,n/c
+2,2/503-508,Audience Stair lights,LED RGB 16B,n/c
+3,"52,54,55",house,Par 38-15,n/c
+4,"56,57,95",house,Par 38-15,n/c
+5,96,Alcove,Can Lights,n/c
+7,83,Ladder 1 Blue,S4-50*,80-Blue
+8,18,Ladder 3 Blue,Par64,80-Blue
+9,65,Ladder 5 Blue,Par64,80-Blue
+10,64,Ladder 2 Blue,Par64,80-Blue
+11,31,Ladder 4 Blue,Par64,80-Blue
+12,11,Ladder 6 Blue,Par64,80-Blue
+14,84,Ladder 1 Yellow,S4-50*,14-Yellow
+15,19,Ladder 3 Yellow,S4-50*,14-Yellow
+16,66,Ladder 5 Yellow,S4-50*,14-Yellow
+17,44,Ladder 2 Yellow,S4-50*,14-Yellow
+18,30,Ladder 4 Yellow,S4-50*,14-Yellow
+19,12,Ladder 6 Yellow,S4-50*,14-Yellow
+21,85,Ladder 1 Green,S4-50*,90-Green
+22,77,Ladder 3 Green,Par64,90-Green
+23,4,Ladder 5 Green,Par64,90-Green
+24,61,Ladder 2 Green,Par64,90-Green
+25,32,Ladder 4 Green,Par64,90-Green
+26,13,Ladder 6 Green,Par64,90-Green
+28,50,Ladder 1 Lt Blue,S4-50*,65-Lt Blue
+29,20,Ladder 3 Lt Blue,S4-50*,65-Lt Blue
+30,3,Ladder 5 Lt Blue,S4-50*,65-Lt Blue
+31,46,Ladder 2 Lt Blue,S4-50*,65-Lt Blue
+32,90,Ladder 4 Lt Blue,S4-50*,65-Lt Blue
+33,10,Ladder 6 Lt Blue,S4-50*,65-Lt Blue
+35,35,Ladder 1 Orange,S4-50*,22-Orange
+36,81,Ladder 3 Orange,Par64,22-Orange
+37,21,Ladder 5 Orange,Par64,22-Orange
+38,62,Ladder 2 Orange,Par64,22-Orange
+39,73,Ladder 4 Orange,Par64,22-Orange
+40,15,Ladder 6 Orange,Par64,22-Orange
+42,51,Ladder 1 Pink,S4-50*,39-Pink
+43,78,Ladder 3 Pink,S4-50*,39-Pink
+44,22,Ladder 5 Pink,S4-50*,39-Pink
+45,63,Ladder 2 Pink,S4-50*,39-Pink
+46,89,Ladder 4 Pink,S4-50*,39-Pink
+47,14,Ladder 6 Pink,S4-50*,39-Pink
+49,86,Ladder 1 Red,S4-50*,26-Red
+50,82,Ladder 3 Red,Par64,26-Red
+51,2,Ladder 5 Red,Par64,26-Red
+52,59,Ladder 2 Red,Par64,26-Red
+53,72,Ladder 4 Red,Par64,26-Red
+54,74,Ladder 6 Red,Par64,26-Red
+56,88,Ladder 1 Dk Blue,S4-50*,85-Dk Blue
+57,80,Ladder 3 Dk Blue,S4-50*,85-Dk Blue
+58,67,Ladder 5 Dk Blue,S4-50*,85-Dk Blue
+59,58,Ladder 2 Dk Blue,S4-50*,85-Dk Blue
+60,91,Ladder 4 Dk Blue,S4-50*,85-Dk Blue
+61,76,Ladder 6 Dk Blue,S4-50*,85-Dk Blue
+63,87,Ladder 1 White,S4 Par,n/c
+64,79,Ladder 3 White,S4 Par,n/c
+65,1,Ladder 5 White,S4 Par,n/c
+66,60,Ladder 2 White,S4 Par,n/c
+67,71,Ladder 4 White,S4 Par,n/c
+68,75,Ladder 6 White,S4 Par,n/c
+70,2/136-147,Back trough SL,S4 LED Series 3,a/c
+71,2/148-159,Back Trough SR,S4 LED Series 3,a/c
+73,5,Back DSL,S4 Par,n/c
+74,7,Back DSC,S4 Par,n/c
+75,27,Back DSR,S4 Par,n/c
+76,6,Back USL,S4 Par,n/c
+77,9,Back USC,S4 Par,n/c
+78,92,Back USR,S4 Par,n/c
+80,26,Circle 1 o'clock,S4-36*,n/c
+81,28,Circle 3 o'clock,S4-36*,n/c
+82,8,Circle 5 o'clock,S4-36*,n/c
+83,93,Circle 7 o'clock,S4-36*,n/c
+84,23,Circle 9 o'clock,S4-36*,n/c
+85,24,Circle 11 o'clock,S4-36*,n/c
+87,43,Spec DSR,S4-36*,n/c
+88,40,Spec CSL,S4-36*,n/c
+89,49,Spec DSC,S4-36*,n/c
+90,45,Spec DSR,S4-36*,n/c
+91,29,Spec CSR,S4-36*,n/c
+92,25,Spec USR,S4-36*,n/c
+93,69,Spec USC,S4-36*,n/c
+94,68,Spec USL,S4-36*,n/c
+95,38,Spec DSL,S4-36*,n/c
+96,70,Spec DSL,S4-36*,n/c
+98,2/1-4 & 53,Spot - HR,S4 LED White,n/c
+99,2/6-9 & 42,Spot - HL,S4 LED White,n/c
+101,2/181-190,Under Bench SR,Sprinkle,a/c
+102,2/191-200,Under Bench CS,Sprinkle,a/c
+103,2/171-180,Under Bench SL,Sprinkle,a/c
+105,2/361-364,Strip light SR,LED GRB 8B,a/c
+106,2/371-374,Strip light CS,LED GRB 8B,a/c
+107,2/381-384,Strip light SL,LED GRB 8B,a/c
+108,2/297-344,DSL,Lone Star,a/c
+109,2/249-296,DSR,Lone Star,a/c
+110,2/201-248,HSL,Lone Star,a/c
+111,2/447-494,HCS,Lone Star,a/c
+112,2/399-446,HSR,Lone Star,a/c
+113,2/16-30,USL,Desire 60 - Vivid,a/c
+114,2/31-45,SL,Desire 60 - Vivid,a/c
+115,2/46-60,DSL,Desire 60 - Vivid,a/c
+116,2/61-75,DCS,Desire 60 - Vivid,a/c
+117,2/76-90,DSR,Desire 60 - Vivid,a/c
+118,2/91-105,SR,Desire 60 - Vivid,a/c
+119,2/106-120,USR,Desire 60 - Vivid,a/c

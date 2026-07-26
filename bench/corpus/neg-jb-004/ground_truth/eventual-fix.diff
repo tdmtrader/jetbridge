@@ -1,0 +1,299 @@
+diff --git a/agent/schema/metrics.go b/agent/schema/metrics.go
+index 56f9723b1a..8ecbc100a4 100644
+--- a/agent/schema/metrics.go
++++ b/agent/schema/metrics.go
+@@ -23,7 +23,7 @@ type RunMetrics struct {
+ 	WorkflowName    string `json:"workflow_name,omitempty"`
+ 	WorkflowVersion *int   `json:"workflow_version,omitempty"`
+ 	WorkflowHash    string `json:"workflow_hash,omitempty"`
+-	Status          string `json:"status"` // ok | failed | error — the AGENT STEP exit status
++	Status          string `json:"status"` // ok | failed | error | parked | incomplete — the AGENT STEP exit status
+ 	// BuildStatus is the status of the pipeline build the step ran in
+ 	// (pending|started|succeeded|failed|errored|aborted). It is derived
+ 	// server-side by joining the builds table on read and is never accepted
+@@ -53,13 +53,14 @@ type RunMetrics struct {
+ // the step statuses: terminal build states (errored/aborted) and the fused
+ // display states (running/no_output) appear here but never in Status.
+ const (
+-	RunOutcomeOK       = "ok"
+-	RunOutcomeNoOutput = "no_output"
+-	RunOutcomeRunning  = "running"
+-	RunOutcomeParked   = "parked"
+-	RunOutcomeFailed   = "failed"
+-	RunOutcomeErrored  = "errored"
+-	RunOutcomeAborted  = "aborted"
++	RunOutcomeOK         = "ok"
++	RunOutcomeNoOutput   = "no_output"
++	RunOutcomeRunning    = "running"
++	RunOutcomeParked     = "parked"
++	RunOutcomeFailed     = "failed"
++	RunOutcomeErrored    = "errored"
++	RunOutcomeAborted    = "aborted"
++	RunOutcomeUnrecorded = "unrecorded" // delivered, but no flight recording (L-1)
+ )
+ 
+ // HasResult reports whether the run delivered anything: a structured results
+@@ -86,7 +87,11 @@ func (rm RunMetrics) HasResult() bool {
+ //  3. Otherwise a step-reported failure ("error"/"failed") is never masked —
+ //     not by a succeeded build (attempts/try can fail an agent step inside a
+ //     green build) and not by a still-open one.
+-//  4. Only then does the build speak: succeeded is "ok" only with a result
++//  4. An "incomplete" step (the ingestion read no flight output) renders the
++//     amber "unrecorded" — the step almost certainly delivered (the build did
++//     not fail), we simply have no recording of it — except on a still-open
++//     build, which reads "running". Never red on a non-failed build.
++//  5. Only then does the build speak: succeeded is "ok" only with a result
+ //     in hand (else "no_output" — never a green verdict on a run that did
+ //     not deliver), started/pending render "running", and an absent or
+ //     unknown build status falls back to the step's own word ("" when even
+@@ -108,6 +113,18 @@ func (rm RunMetrics) DeriveOutcome() string {
+ 	case RunStatusFailed:
+ 		return RunOutcomeFailed
+ 	}
++	// incomplete (L-1): the ingestion read no flight output. A terminally-bad
++	// build already returned above; a still-open build is "running"; everything
++	// else is the amber "unrecorded" — the step almost certainly delivered (the
++	// build did not fail), we simply have no recording of it. Never red.
++	if rm.Status == RunStatusIncomplete {
++		switch rm.BuildStatus {
++		case "started", "pending":
++			return RunOutcomeRunning
++		default:
++			return RunOutcomeUnrecorded
++		}
++	}
+ 	switch rm.BuildStatus {
+ 	case "succeeded":
+ 		if rm.HasResult() {
+diff --git a/agent/schema/metrics_test.go b/agent/schema/metrics_test.go
+index f4db61c0cd..02001099bd 100644
+--- a/agent/schema/metrics_test.go
++++ b/agent/schema/metrics_test.go
+@@ -57,6 +57,16 @@ func TestDeriveOutcome(t *testing.T) {
+ 		{"succeeded with nothing delivered", "succeeded", "ok", "", "", schema.RunOutcomeNoOutput},
+ 		{"started renders running", "started", "ok", "", "", schema.RunOutcomeRunning},
+ 		{"pending renders running", "pending", "ok", "", "", schema.RunOutcomeRunning},
++		// 4b. incomplete (L-1): a step that read no flight output is amber
++		// "unrecorded" on any non-failed build (never red), "running" while the
++		// build is still open, and still loses to a terminally-bad build.
++		{"incomplete under a succeeded build is unrecorded", "succeeded", schema.RunStatusIncomplete, "", "", schema.RunOutcomeUnrecorded},
++		{"incomplete under a failed build stays failed", "failed", schema.RunStatusIncomplete, "", "", schema.RunOutcomeFailed},
++		{"incomplete under an errored build stays errored", "errored", schema.RunStatusIncomplete, "", "", schema.RunOutcomeErrored},
++		{"incomplete under an aborted build stays aborted", "aborted", schema.RunStatusIncomplete, "", "", schema.RunOutcomeAborted},
++		{"incomplete under a started build is running", "started", schema.RunStatusIncomplete, "", "", schema.RunOutcomeRunning},
++		{"incomplete under a pending build is running", "pending", schema.RunStatusIncomplete, "", "", schema.RunOutcomeRunning},
++		{"incomplete with no build status is unrecorded", "", schema.RunStatusIncomplete, "", "", schema.RunOutcomeUnrecorded},
+ 		// 5. no/unknown build status: fall back to the step's own word
+ 		{"no build status, ok step", "", "ok", "", "", schema.RunOutcomeOK},
+ 		{"unknown build status, ok step", "mystery", "ok", "", "", schema.RunOutcomeOK},
+diff --git a/agent/schema/status.go b/agent/schema/status.go
+index 0622b50277..a40de0bc5c 100644
+--- a/agent/schema/status.go
++++ b/agent/schema/status.go
+@@ -12,6 +12,12 @@ const (
+ 	// PARK-V2 amendment): the step exited awaiting a human, with best-effort
+ 	// usage/cost — a defined end, not an error.
+ 	RunStatusParked = "parked"
++	// RunStatusIncomplete marks an ingestion that read NO flight output (L-1,
++	// #41): the step produced no results/events/review — dominant cause is a
++	// runner image predating the flight recorder. A missing RECORDING, not a
++	// failed step; DeriveOutcome renders it amber 'unrecorded' on a succeeded
++	// build (never red).
++	RunStatusIncomplete = "incomplete"
+ )
+ 
+ // ThreeWayStatus maps a results.json Status onto the three-way taxonomy.
+diff --git a/agent/schema/status_test.go b/agent/schema/status_test.go
+index b5860dfca1..c489f95808 100644
+--- a/agent/schema/status_test.go
++++ b/agent/schema/status_test.go
+@@ -29,3 +29,10 @@ func TestThreeWayStatus(t *testing.T) {
+ 		})
+ 	}
+ }
++
++func TestRunStatusIncompleteVocabulary(t *testing.T) {
++	// L-1 (#41): 'incomplete' is an ingestion-degradation status (no flight
++	// output read), never a results.json wire value — ThreeWayStatus must not
++	// emit it. It exists only for DeriveOutcome to fuse to amber "unrecorded".
++	requireEqual(t, schema.RunStatusIncomplete, "incomplete")
++}
+diff --git a/atc/db/agent_run_metrics_factory_test.go b/atc/db/agent_run_metrics_factory_test.go
+index cc195a536a..b88c86babd 100644
+--- a/atc/db/agent_run_metrics_factory_test.go
++++ b/atc/db/agent_run_metrics_factory_test.go
+@@ -176,6 +176,21 @@ var _ = Describe("AgentRunMetricsFactory", func() {
+ 		Expect(statuses).To(ContainElement(schema.RunStatusParked))
+ 	})
+ 
++	// --- L-1 (#41): the incomplete status (a server-set ingestion degradation,
++	// never client-submittable) round-trips through the CHECK constraint added
++	// by migration 1773106092. ---
++	It("stores and reads back a status=incomplete row (L-1 CHECK constraint)", func() {
++		Expect(factory.Upsert(&schema.RunMetrics{
++			BuildID: 60, PlanID: "no-flight", StepName: "implement",
++			Status: schema.RunStatusIncomplete, Summary: "no flight output (runner image predates flight recorder?)",
++		})).To(Succeed())
++
++		rows, err := factory.GetByBuild(60)
++		Expect(err).ToNot(HaveOccurred())
++		Expect(rows).To(HaveLen(1))
++		Expect(rows[0].Status).To(Equal(schema.RunStatusIncomplete))
++	})
++
+ 	// --- finding F24: degraded re-ingestion must never clobber a real row ---
+ 	It("InsertIfAbsent inserts when absent and preserves an existing row", func() {
+ 		good := &schema.RunMetrics{
+diff --git a/atc/db/migration/migrations/1773106092_agent_run_metrics_incomplete.down.sql b/atc/db/migration/migrations/1773106092_agent_run_metrics_incomplete.down.sql
+new file mode 100644
+index 0000000000..2ca21fe40c
+--- /dev/null
++++ b/atc/db/migration/migrations/1773106092_agent_run_metrics_incomplete.down.sql
+@@ -0,0 +1,6 @@
++-- Non-lossy revert: incomplete rows are real measurements, so fold them to the
++-- pre-L-1 vocabulary ('error') rather than deleting, then restore the constraint.
++UPDATE agent_run_metrics SET status = 'error' WHERE status = 'incomplete';
++ALTER TABLE agent_run_metrics DROP CONSTRAINT agent_run_metrics_status_check;
++ALTER TABLE agent_run_metrics ADD CONSTRAINT agent_run_metrics_status_check
++    CHECK (status IN ('ok','failed','error','parked'));
+diff --git a/atc/db/migration/migrations/1773106092_agent_run_metrics_incomplete.up.sql b/atc/db/migration/migrations/1773106092_agent_run_metrics_incomplete.up.sql
+new file mode 100644
+index 0000000000..6730d62227
+--- /dev/null
++++ b/atc/db/migration/migrations/1773106092_agent_run_metrics_incomplete.up.sql
+@@ -0,0 +1,7 @@
++-- L-1 (#41): a flight ingestion that reads NO flight output records
++-- status = 'incomplete' — a missing RECORDING (dominant cause: a runner image
++-- predating the flight recorder), not a failed step. DeriveOutcome fuses it to
++-- the amber 'unrecorded' outcome on a succeeded build (never red).
++ALTER TABLE agent_run_metrics DROP CONSTRAINT agent_run_metrics_status_check;
++ALTER TABLE agent_run_metrics ADD CONSTRAINT agent_run_metrics_status_check
++    CHECK (status IN ('ok','failed','error','parked','incomplete'));
+diff --git a/atc/exec/agent_step.go b/atc/exec/agent_step.go
+index 5dcdc5c149..38c0ec9089 100644
+--- a/atc/exec/agent_step.go
++++ b/atc/exec/agent_step.go
+@@ -838,6 +838,16 @@ func (step *AgentStep) ingestFlightRecorder(
+ 		}
+ 	}
+ 
++	if !flightRead {
++		// No flight file was read at all — the step produced no flight output
++		// (dominant cause: a runner image predating the flight recorder). This
++		// is a missing RECORDING, not a failed step: record it as incomplete so
++		// DeriveOutcome renders it amber "unrecorded" on a succeeded build
++		// (never red), while a failed/errored build still wins on read.
++		rm.Status = schema.RunStatusIncomplete
++		rm.Summary = "no flight output (runner image predates flight recorder?)"
++	}
++
+ 	// The flight recorder is SELF-REPORTED: it is written inside the agent
+ 	// pod, where claude runs as root with --dangerously-skip-permissions and
+ 	// AGENT_FLIGHT_DIR in its own env, so a prompt-injected agent (or a leaked
+diff --git a/atc/exec/agent_step_test.go b/atc/exec/agent_step_test.go
+index a63fe4e7ea..d5e30a6705 100644
+--- a/atc/exec/agent_step_test.go
++++ b/atc/exec/agent_step_test.go
+@@ -1180,15 +1180,19 @@ var _ = Describe("AgentStep", func() {
+ 				fakeMetricsStore.InsertIfAbsentReturns(true, nil)
+ 			})
+ 
+-			It("records an error row via InsertIfAbsent", func() {
++			It("records an incomplete row via InsertIfAbsent", func() {
++				// L-1 (#41): no flight file read at all is a missing RECORDING,
++				// not a failed step — status=incomplete so DeriveOutcome fuses
++				// it to amber "unrecorded" on a succeeded build (never red). It
++				// still degrades through InsertIfAbsent (F24), never the upsert.
+ 				ok, err := step.Run(ctx, state)
+ 				Expect(err).ToNot(HaveOccurred())
+ 				Expect(ok).To(BeTrue()) // exit status still drives step success
+ 				Expect(fakeMetricsStore.UpsertReturningInsertedCallCount()).To(BeZero())
+ 				Expect(fakeMetricsStore.InsertIfAbsentCallCount()).To(Equal(1))
+ 				rm := fakeMetricsStore.InsertIfAbsentArgsForCall(0)
+-				Expect(rm.Status).To(Equal("error"))
+-				Expect(rm.Summary).To(ContainSubstring("flight recorder"))
++				Expect(rm.Status).To(Equal(schema.RunStatusIncomplete))
++				Expect(rm.Summary).To(ContainSubstring("no flight output"))
+ 			})
+ 
+ 			// --- review finding (2026-07-12): a StreamFile failure silently
+@@ -1512,7 +1516,7 @@ var _ = Describe("AgentStep", func() {
+ 
+ 					Expect(fakeMetricsStore.InsertIfAbsentCallCount()).To(Equal(1))
+ 					rm := fakeMetricsStore.InsertIfAbsentArgsForCall(0)
+-					Expect(rm.Status).To(Equal("error")) // still a degraded error row
++					Expect(rm.Status).To(Equal(schema.RunStatusIncomplete)) // L-1: no flight read ⇒ incomplete (amber), still the observed floor
+ 					Expect(rm.CostUSD).To(BeNumerically("~", 0.42, 1e-9))
+ 
+ 					Expect(fakeChecker.RecordCallCount()).To(Equal(1))
+diff --git a/atc/exec/harvest_step.go b/atc/exec/harvest_step.go
+index 449ee2ae11..c458e64cf2 100644
+--- a/atc/exec/harvest_step.go
++++ b/atc/exec/harvest_step.go
+@@ -704,6 +704,16 @@ func (step *HarvestStep) ingestAndRecord(
+ 		}
+ 	}
+ 
++	if !flightRead {
++		// No flight file was read at all — the step produced no flight output
++		// (dominant cause: a runner image predating the flight recorder). This
++		// is a missing RECORDING, not a failed step: record it as incomplete so
++		// DeriveOutcome renders it amber "unrecorded" on a succeeded build
++		// (never red), while a failed/errored build still wins on read.
++		rm.Status = schema.RunStatusIncomplete
++		rm.Summary = "no flight output (runner image predates flight recorder?)"
++	}
++
+ 	// Evidence upsert — server-side trust pins (D9): Repo from the PLAN
+ 	// (never the pod-written payload), TicketID/PipelineRunID verified-or-
+ 	// nil, SubmittedBy "harvest". The payload supplies display columns only.
+diff --git a/atc/exec/harvest_step_test.go b/atc/exec/harvest_step_test.go
+index a9e033f3d7..119c9c7df7 100644
+--- a/atc/exec/harvest_step_test.go
++++ b/atc/exec/harvest_step_test.go
+@@ -529,7 +529,11 @@ var _ = Describe("HarvestStep", func() {
+ 				fakeMetricsStore.InsertIfAbsentReturns(true, nil)
+ 			})
+ 
+-			It("records a status=error row via InsertIfAbsent and skips evidence + ledger", func() {
++			It("records a status=incomplete row via InsertIfAbsent and skips evidence + ledger", func() {
++				// L-1 (#41): no flight file read at all is a missing RECORDING,
++				// not a failed step — status=incomplete so DeriveOutcome fuses
++				// it to amber "unrecorded" on a succeeded build (never red). It
++				// still degrades through InsertIfAbsent (F24), never the upsert.
+ 				ok, err := step.Run(ctx, state)
+ 				Expect(err).ToNot(HaveOccurred())
+ 				Expect(ok).To(BeTrue()) // exit status still drives step success
+@@ -538,8 +542,8 @@ var _ = Describe("HarvestStep", func() {
+ 				Expect(fakeMetricsStore.UpsertReturningInsertedCallCount()).To(BeZero())
+ 				Expect(fakeMetricsStore.InsertIfAbsentCallCount()).To(Equal(1))
+ 				rm := fakeMetricsStore.InsertIfAbsentArgsForCall(0)
+-				Expect(rm.Status).To(Equal("error"))
+-				Expect(rm.Summary).To(ContainSubstring("flight recorder"))
++				Expect(rm.Status).To(Equal(schema.RunStatusIncomplete))
++				Expect(rm.Summary).To(ContainSubstring("no flight output"))
+ 
+ 				recs, err := reviewsStore.GetByBuild(stepMetadata.BuildID)
+ 				Expect(err).ToNot(HaveOccurred())
+diff --git a/fly/commands/agent_runs.go b/fly/commands/agent_runs.go
+index ca3990bab2..2560e81628 100644
+--- a/fly/commands/agent_runs.go
++++ b/fly/commands/agent_runs.go
+@@ -107,13 +107,16 @@ func imageTag(ref string) string {
+ 
+ // agentOutcomeColor colors the fused outcome with fly's build-status
+ // conventions, plus the agent-specific states: blue for parked (waiting on a
+-// human) and warn-yellow for no_output (green build that delivered nothing).
++// human), warn-yellow for no_output (green build that delivered nothing), and
++// amber for unrecorded (delivered, but the flight recording is missing — L-1).
+ func agentOutcomeColor(outcome string) *color.Color {
+ 	switch outcome {
+ 	case agentschema.RunOutcomeOK:
+ 		return ui.SucceededColor
+ 	case agentschema.RunOutcomeNoOutput:
+ 		return color.New(color.FgYellow)
++	case agentschema.RunOutcomeUnrecorded:
++		return color.New(color.FgYellow)
+ 	case agentschema.RunOutcomeRunning:
+ 		return ui.StartedColor
+ 	case agentschema.RunOutcomeParked:

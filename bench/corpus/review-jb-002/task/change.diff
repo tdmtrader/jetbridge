@@ -1,0 +1,2289 @@
+diff --git a/agent/api/dispatcher/handler.go b/agent/api/dispatcher/handler.go
+new file mode 100644
+index 0000000000..932ba50b27
+--- /dev/null
++++ b/agent/api/dispatcher/handler.go
+@@ -0,0 +1,137 @@
++// Package dispatcher serves the dispatcher runtime-control API:
++// GET  /api/v1/agent/dispatcher (GetAgentDispatcher — any authenticated user)
++// PUT  /api/v1/agent/dispatcher (SetAgentDispatcher — admin only).
++//
++// The effective mode the dispatcher loop honors is resolved from the singleton
++// agent_settings row, falling back to the --agent-dispatcher-enabled boot flag
++// when no row exists. Authentication and admin authorization are enforced by
++// the wrappa layer (atc/wrappa/api_auth_wrappa.go); the handler trusts the
++// request.
++package dispatcher
++
++import (
++	"encoding/json"
++	"errors"
++	"net/http"
++	"time"
++
++	"github.com/concourse/concourse/agent/dispatch"
++)
++
++// errInvalidMode is returned by the memory store for a mode outside
++// {off,paused,active} (the db factory returns its own ErrInvalidDispatcherMode).
++var errInvalidMode = errors.New("dispatcher mode must be one of off|paused|active")
++
++// Store is the persistence seam. db.AgentSettingsFactory satisfies it; the
++// tests use a memory store. GetDispatcherSetting returns found=false when no
++// row exists yet (fall back to the boot default).
++type Store interface {
++	GetDispatcherSetting() (mode string, updatedAt time.Time, updatedBy string, found bool, err error)
++	SetDispatcherMode(mode, updatedBy string) error
++}
++
++// UserNameFunc derives the requesting user's username (injected from the
++// accessor by atc/api, mirroring principals.UserNameFunc — this package never
++// imports atc).
++type UserNameFunc func(*http.Request) string
++
++// Handler serves the dispatcher status/control routes.
++type Handler struct {
++	store    Store
++	bootFlag bool
++	userName UserNameFunc
++}
++
++// NewHandler wires the store, the --agent-dispatcher-enabled boot flag (the
++// fallback seed shown as boot_default and used when no setting row exists), and
++// the requester-identity func.
++func NewHandler(store Store, bootFlag bool, userName UserNameFunc) *Handler {
++	return &Handler{store: store, bootFlag: bootFlag, userName: userName}
++}
++
++// Response is the GET/PUT body. mode is the EFFECTIVE mode the loop honors now;
++// source is "setting" when it came from the agent_settings row, "boot-default"
++// when it fell back to the boot flag; boot_default is what the flag resolves to
++// (shown so the UI can explain the fallback). updated_at/updated_by are null
++// until a mode is set at runtime.
++type Response struct {
++	Mode        string  `json:"mode"`
++	Source      string  `json:"source"`
++	UpdatedAt   *string `json:"updated_at"`
++	UpdatedBy   *string `json:"updated_by"`
++	BootDefault string  `json:"boot_default"`
++}
++
++func (h *Handler) bootDefaultMode() string {
++	if h.bootFlag {
++		return dispatch.ModeActive
++	}
++	return dispatch.ModeOff
++}
++
++func (h *Handler) currentState() (Response, error) {
++	mode, updatedAt, updatedBy, found, err := h.store.GetDispatcherSetting()
++	if err != nil {
++		return Response{}, err
++	}
++	resp := Response{
++		Mode:        dispatch.ResolveEffectiveMode(found, mode, h.bootFlag),
++		Source:      "boot-default",
++		BootDefault: h.bootDefaultMode(),
++	}
++	if found {
++		resp.Source = "setting"
++		at := updatedAt.UTC().Format(time.RFC3339)
++		resp.UpdatedAt = &at
++		by := updatedBy
++		resp.UpdatedBy = &by
++	}
++	return resp, nil
++}
++
++// Get handles GET /api/v1/agent/dispatcher.
++func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
++	resp, err := h.currentState()
++	if err != nil {
++		http.Error(w, err.Error(), http.StatusInternalServerError)
++		return
++	}
++	writeJSON(w, http.StatusOK, resp)
++}
++
++// Set handles PUT /api/v1/agent/dispatcher.
++func (h *Handler) Set(w http.ResponseWriter, r *http.Request) {
++	var body struct {
++		Mode string `json:"mode"`
++	}
++	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&body); err != nil {
++		http.Error(w, "invalid JSON", http.StatusBadRequest)
++		return
++	}
++	if !dispatch.ValidMode(body.Mode) {
++		http.Error(w, "mode must be one of off|paused|active", http.StatusBadRequest)
++		return
++	}
++
++	identity := h.userName(r)
++	if identity == "" {
++		identity = "admin"
++	}
++	if err := h.store.SetDispatcherMode(body.Mode, identity); err != nil {
++		http.Error(w, err.Error(), http.StatusInternalServerError)
++		return
++	}
++
++	resp, err := h.currentState()
++	if err != nil {
++		http.Error(w, err.Error(), http.StatusInternalServerError)
++		return
++	}
++	writeJSON(w, http.StatusOK, resp)
++}
++
++func writeJSON(w http.ResponseWriter, status int, v any) {
++	w.Header().Set("Content-Type", "application/json")
++	w.WriteHeader(status)
++	json.NewEncoder(w).Encode(v)
++}
+diff --git a/agent/api/dispatcher/handler_test.go b/agent/api/dispatcher/handler_test.go
+new file mode 100644
+index 0000000000..0511f9eac9
+--- /dev/null
++++ b/agent/api/dispatcher/handler_test.go
+@@ -0,0 +1,113 @@
++package dispatcher_test
++
++import (
++	"encoding/json"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++
++	dispatcherapi "github.com/concourse/concourse/agent/api/dispatcher"
++)
++
++func newHandler(bootFlag bool) (*dispatcherapi.Handler, *dispatcherapi.MemoryStore) {
++	store := dispatcherapi.NewMemoryStore()
++	h := dispatcherapi.NewHandler(store, bootFlag, func(r *http.Request) string {
++		return r.Header.Get("X-Test-User")
++	})
++	return h, store
++}
++
++func getStatus(t *testing.T, h *dispatcherapi.Handler) dispatcherapi.Response {
++	t.Helper()
++	rec := httptest.NewRecorder()
++	h.Get(rec, httptest.NewRequest("GET", "/api/v1/agent/dispatcher", nil))
++	if rec.Code != http.StatusOK {
++		t.Fatalf("GET status = %d, body %s", rec.Code, rec.Body.String())
++	}
++	var resp dispatcherapi.Response
++	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
++		t.Fatalf("decode: %v", err)
++	}
++	return resp
++}
++
++func TestGetFallsBackToBootDefaultOff(t *testing.T) {
++	h, _ := newHandler(false)
++	resp := getStatus(t, h)
++	if resp.Mode != "off" || resp.Source != "boot-default" || resp.BootDefault != "off" {
++		t.Fatalf("got %+v, want mode=off source=boot-default boot_default=off", resp)
++	}
++	if resp.UpdatedAt != nil || resp.UpdatedBy != nil {
++		t.Errorf("expected null updated_at/updated_by, got %+v", resp)
++	}
++}
++
++func TestGetFallsBackToBootDefaultActive(t *testing.T) {
++	h, _ := newHandler(true) // --agent-dispatcher-enabled
++	resp := getStatus(t, h)
++	if resp.Mode != "active" || resp.Source != "boot-default" || resp.BootDefault != "active" {
++		t.Fatalf("got %+v, want mode=active source=boot-default boot_default=active", resp)
++	}
++}
++
++func TestPutSetsModeAndReturnsNewState(t *testing.T) {
++	h, _ := newHandler(false) // boot default off; runtime override to paused
++
++	rec := httptest.NewRecorder()
++	req := httptest.NewRequest("PUT", "/api/v1/agent/dispatcher", strings.NewReader(`{"mode":"paused"}`))
++	req.Header.Set("X-Test-User", "tdm")
++	h.Set(rec, req)
++	if rec.Code != http.StatusOK {
++		t.Fatalf("PUT = %d, body %s", rec.Code, rec.Body.String())
++	}
++	var resp dispatcherapi.Response
++	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
++		t.Fatal(err)
++	}
++	if resp.Mode != "paused" || resp.Source != "setting" || resp.BootDefault != "off" {
++		t.Fatalf("PUT response %+v, want mode=paused source=setting boot_default=off", resp)
++	}
++	if resp.UpdatedBy == nil || *resp.UpdatedBy != "tdm" {
++		t.Errorf("updated_by = %v, want tdm", resp.UpdatedBy)
++	}
++	if resp.UpdatedAt == nil {
++		t.Errorf("updated_at should be set, got nil")
++	}
++
++	// GET now reflects the persisted setting, overriding the boot default.
++	after := getStatus(t, h)
++	if after.Mode != "paused" || after.Source != "setting" {
++		t.Fatalf("GET after PUT = %+v, want mode=paused source=setting", after)
++	}
++}
++
++func TestPutMissingUserDefaultsToAdmin(t *testing.T) {
++	h, _ := newHandler(false)
++	rec := httptest.NewRecorder()
++	req := httptest.NewRequest("PUT", "/api/v1/agent/dispatcher", strings.NewReader(`{"mode":"active"}`))
++	// no X-Test-User header -> identity ""
++	h.Set(rec, req)
++	if rec.Code != http.StatusOK {
++		t.Fatalf("PUT = %d", rec.Code)
++	}
++	resp := getStatus(t, h)
++	if resp.UpdatedBy == nil || *resp.UpdatedBy != "admin" {
++		t.Errorf("updated_by = %v, want admin fallback", resp.UpdatedBy)
++	}
++}
++
++func TestPutRejectsInvalidMode(t *testing.T) {
++	h, _ := newHandler(false)
++	for _, bad := range []string{`{"mode":"on"}`, `{"mode":""}`, `{}`, `not json`} {
++		rec := httptest.NewRecorder()
++		h.Set(rec, httptest.NewRequest("PUT", "/api/v1/agent/dispatcher", strings.NewReader(bad)))
++		if rec.Code != http.StatusBadRequest {
++			t.Errorf("PUT %q = %d, want 400", bad, rec.Code)
++		}
++	}
++	// Nothing persisted -> still boot-default.
++	if resp := getStatus(t, h); resp.Source != "boot-default" {
++		t.Errorf("invalid PUTs must not persist; source = %s", resp.Source)
++	}
++}
+diff --git a/agent/api/dispatcher/memory_store.go b/agent/api/dispatcher/memory_store.go
+new file mode 100644
+index 0000000000..d738c9b9a1
+--- /dev/null
++++ b/agent/api/dispatcher/memory_store.go
+@@ -0,0 +1,42 @@
++package dispatcher
++
++import (
++	"sync"
++	"time"
++
++	"github.com/concourse/concourse/agent/dispatch"
++)
++
++// MemoryStore is an in-memory Store for tests. It mirrors the db factory's
++// contract: no row -> found=false; SetDispatcherMode validates the mode.
++type MemoryStore struct {
++	mu        sync.Mutex
++	set       bool
++	mode      string
++	updatedAt time.Time
++	updatedBy string
++}
++
++func NewMemoryStore() *MemoryStore { return &MemoryStore{} }
++
++func (m *MemoryStore) GetDispatcherSetting() (string, time.Time, string, bool, error) {
++	m.mu.Lock()
++	defer m.mu.Unlock()
++	if !m.set {
++		return "", time.Time{}, "", false, nil
++	}
++	return m.mode, m.updatedAt, m.updatedBy, true, nil
++}
++
++func (m *MemoryStore) SetDispatcherMode(mode, updatedBy string) error {
++	if !dispatch.ValidMode(mode) {
++		return errInvalidMode
++	}
++	m.mu.Lock()
++	defer m.mu.Unlock()
++	m.set = true
++	m.mode = mode
++	m.updatedBy = updatedBy
++	m.updatedAt = time.Now()
++	return nil
++}
+diff --git a/agent/dispatch/dispatcher.go b/agent/dispatch/dispatcher.go
+index ab38646faa..15e07dde6b 100644
+--- a/agent/dispatch/dispatcher.go
++++ b/agent/dispatch/dispatcher.go
+@@ -13,6 +13,12 @@ import (
+ 
+ // LoopConfig tunes the Dispatcher beyond DispatchOne's Deps.
+ type LoopConfig struct {
++	// Mode resolves the effective dispatcher mode HOT (read fresh each tick):
++	// active auto-dispatches + reconciles, paused reconciles only, off is
++	// dormant. Production wires a closure over agent_settings + the boot flag
++	// (ResolveEffectiveMode). nil defaults to active, preserving the
++	// always-dispatch behavior tests relied on before the runtime toggle.
++	Mode func() string
+ 	// RunReader powers the run-completion reconciler (reconcile.go). nil
+ 	// skips that pass entirely.
+ 	RunReader RunReader
+@@ -71,18 +77,41 @@ func NewDispatcher(deps Deps, cfg LoopConfig) *Dispatcher {
+ 	return &Dispatcher{deps: deps, cfg: cfg}
+ }
+ 
+-// Run dispatches every currently-queued ticket, then reconciles completed
+-// runs. Per-ticket failures never abort the pass (a poison ticket must not
+-// starve the queue); only listing failures return an error.
++// effectiveMode resolves the mode this tick honors. nil provider (older
++// callers / tests) defaults to active — the historical always-dispatch loop.
++func (d *Dispatcher) effectiveMode() string {
++	if d.cfg.Mode == nil {
++		return ModeActive
++	}
++	return d.cfg.Mode()
++}
++
++// Run gates on the effective mode (resolved once per tick, hot):
++//
++//	active — dispatch every currently-queued ticket, then reconcile.
++//	paused — skip dispatch, still reconcile (the safety net stays alive).
++//	off    — skip both (fully dormant).
++//
++// Per-ticket failures never abort the pass (a poison ticket must not starve the
++// queue); only listing failures return an error.
+ func (d *Dispatcher) Run(ctx context.Context) error {
+ 	logger := lagerctx.FromContext(ctx).Session("agent-dispatcher")
+-	logger.Debug("start")
++	mode := d.effectiveMode()
++	logger.Debug("start", lager.Data{"mode": mode})
+ 	defer logger.Debug("done")
+ 
+-	if err := d.dispatchQueued(ctx, logger); err != nil {
+-		return err
++	switch mode {
++	case ModeActive:
++		if err := d.dispatchQueued(ctx, logger); err != nil {
++			return err
++		}
++		return d.reconcileCompletedRuns(ctx, logger)
++	case ModePaused:
++		return d.reconcileCompletedRuns(ctx, logger)
++	default:
++		// off (or any unrecognized mode — fail safe to dormant).
++		return nil
+ 	}
+-	return d.reconcileCompletedRuns(ctx, logger)
+ }
+ 
+ func (d *Dispatcher) dispatchQueued(ctx context.Context, logger lager.Logger) error {
+diff --git a/agent/dispatch/mode.go b/agent/dispatch/mode.go
+new file mode 100644
+index 0000000000..cbd3c97a74
+--- /dev/null
++++ b/agent/dispatch/mode.go
+@@ -0,0 +1,42 @@
++package dispatch
++
++// Dispatcher runtime modes. These are the effective modes the loop honors and
++// the exact strings carried on the GET/PUT /api/v1/agent/dispatcher wire and
++// stored in agent_settings.dispatcher_mode.
++//
++//	active — auto-dispatch queued tickets AND run the completion reconciler.
++//	paused — do NOT auto-dispatch, but DO run the reconciler (safety net stays
++//	         alive; manual `fly agent tickets dispatch` still works — separate
++//	         ungated path).
++//	off    — do NOT auto-dispatch and do NOT reconcile (fully dormant;
++//	         equivalent to the historical --agent-dispatcher-enabled=false).
++const (
++	ModeOff    = "off"
++	ModePaused = "paused"
++	ModeActive = "active"
++)
++
++// ValidMode reports whether s is a recognized dispatcher mode.
++func ValidMode(s string) bool {
++	switch s {
++	case ModeOff, ModePaused, ModeActive:
++		return true
++	default:
++		return false
++	}
++}
++
++// ResolveEffectiveMode picks the mode the dispatcher loop honors this tick.
++// If a persisted setting exists (found), it wins verbatim. Otherwise fall back
++// to the --agent-dispatcher-enabled boot flag: true->active, false->off. This
++// preserves current live behavior (flag off -> effective off -> no
++// auto-dispatch) until an admin sets a mode at runtime.
++func ResolveEffectiveMode(found bool, settingMode string, bootFlag bool) string {
++	if found {
++		return settingMode
++	}
++	if bootFlag {
++		return ModeActive
++	}
++	return ModeOff
++}
+diff --git a/agent/dispatch/mode_test.go b/agent/dispatch/mode_test.go
+new file mode 100644
+index 0000000000..2d34b91f92
+--- /dev/null
++++ b/agent/dispatch/mode_test.go
+@@ -0,0 +1,123 @@
++package dispatch_test
++
++import (
++	"context"
++	"testing"
++
++	"github.com/concourse/concourse/agent/api/tickets"
++	"github.com/concourse/concourse/agent/dispatch"
++	"github.com/concourse/concourse/atc/db"
++)
++
++func TestResolveEffectiveMode(t *testing.T) {
++	cases := []struct {
++		name     string
++		found    bool
++		setting  string
++		bootFlag bool
++		want     string
++	}{
++		{"setting wins over boot flag on", true, dispatch.ModeOff, true, dispatch.ModeOff},
++		{"setting wins over boot flag off", true, dispatch.ModeActive, false, dispatch.ModeActive},
++		{"paused setting honored", true, dispatch.ModePaused, true, dispatch.ModePaused},
++		{"no row, boot flag on -> active", false, "", true, dispatch.ModeActive},
++		{"no row, boot flag off -> off", false, "", false, dispatch.ModeOff},
++		{"no row ignores stray setting string", false, dispatch.ModeActive, false, dispatch.ModeOff},
++	}
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			if got := dispatch.ResolveEffectiveMode(tc.found, tc.setting, tc.bootFlag); got != tc.want {
++				t.Errorf("ResolveEffectiveMode(%v,%q,%v) = %q, want %q",
++					tc.found, tc.setting, tc.bootFlag, got, tc.want)
++			}
++		})
++	}
++}
++
++func TestValidMode(t *testing.T) {
++	for _, m := range []string{dispatch.ModeOff, dispatch.ModePaused, dispatch.ModeActive} {
++		if !dispatch.ValidMode(m) {
++			t.Errorf("ValidMode(%q) = false, want true", m)
++		}
++	}
++	for _, m := range []string{"", "on", "ACTIVE", "disabled"} {
++		if dispatch.ValidMode(m) {
++			t.Errorf("ValidMode(%q) = true, want false", m)
++		}
++	}
++}
++
++// countingRunReader records reconciler invocations without a DB. Reporting the
++// run as vanished (found=false) is enough to prove the reconcile pass ran.
++type countingRunReader struct{ calls int }
++
++func (r *countingRunReader) GetRunByID(int) (db.PipelineRun, bool, error) {
++	r.calls++
++	return nil, false, nil
++}
++
++// runningTicketWithRun creates a ticket already in the running state with a
++// pipeline_run_id — the only shape reconcileCompletedRuns acts on.
++func runningTicketWithRun(t *testing.T, store *tickets.MemoryStore, runID int) int {
++	t.Helper()
++	id := queuedTicket(t, store, "smoke")
++	if err := store.Transition(id, tickets.StateQueued, tickets.StateRunning, tickets.TransitionMeta{PipelineRunID: &runID}); err != nil {
++		t.Fatal(err)
++	}
++	return id
++}
++
++func TestDispatcherModeGating(t *testing.T) {
++	cases := []struct {
++		mode           string
++		wantDispatched bool // queued ticket -> running
++		wantReconciled bool // reconciler visited the running ticket
++	}{
++		{dispatch.ModeActive, true, true},
++		{dispatch.ModePaused, false, true},
++		{dispatch.ModeOff, false, false},
++	}
++	for _, tc := range cases {
++		t.Run(tc.mode, func(t *testing.T) {
++			deps, store, _, _ := dispatchDeps(t)
++			queuedID := queuedTicket(t, store, "smoke")
++			runningTicketWithRun(t, store, 900)
++
++			reader := &countingRunReader{}
++			mode := tc.mode
++			d := dispatch.NewDispatcher(deps, dispatch.LoopConfig{
++				Mode:      func() string { return mode },
++				RunReader: reader,
++			})
++			if err := d.Run(context.Background()); err != nil {
++				t.Fatalf("Run: %v", err)
++			}
++
++			// A dispatched ticket leaves queued (active mode may then reconcile
++			// it onward to needs_review in the same pass — either way, no longer
++			// queued). paused/off leave it queued.
++			got, _, _ := store.Get(queuedID)
++			dispatched := got.State != tickets.StateQueued
++			if dispatched != tc.wantDispatched {
++				t.Errorf("dispatched = %v (state %s), want %v", dispatched, got.State, tc.wantDispatched)
++			}
++
++			reconciled := reader.calls > 0
++			if reconciled != tc.wantReconciled {
++				t.Errorf("reconciled = %v (reader.calls=%d), want %v", reconciled, reader.calls, tc.wantReconciled)
++			}
++		})
++	}
++}
++
++func TestDispatcherNilModeDefaultsToActive(t *testing.T) {
++	deps, store, ids := loopDeps(t, 1)
++	d := dispatch.NewDispatcher(deps, dispatch.LoopConfig{}) // Mode nil
++	if err := d.Run(context.Background()); err != nil {
++		t.Fatalf("Run: %v", err)
++	}
++	got, _, _ := store.Get(ids[0])
++	if got.State != tickets.StateRunning {
++		t.Errorf("nil Mode must default to active (dispatch); state = %s", got.State)
++	}
++}
+diff --git a/atc/api/api_suite_test.go b/atc/api/api_suite_test.go
+index 938a0edce3..634f692405 100644
+--- a/atc/api/api_suite_test.go
++++ b/atc/api/api_suite_test.go
+@@ -12,6 +12,7 @@ import (
+ 	"code.cloudfoundry.org/lager/v3"
+ 	"code.cloudfoundry.org/lager/v3/lagertest"
+ 
++	dispatcherapi "github.com/concourse/concourse/agent/api/dispatcher"
+ 	"github.com/concourse/concourse/agent/api/feedback"
+ 	"github.com/concourse/concourse/agent/api/metrics"
+ 	"github.com/concourse/concourse/agent/api/outcomes"
+@@ -252,6 +253,8 @@ var _ = BeforeEach(func() {
+ 		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+ 			w.WriteHeader(http.StatusNotImplemented) // dispatch handler stub
+ 		}),
++		dispatcherapi.NewMemoryStore(),
++		false, // agent dispatcher boot default (flag off)
+ 	)
+ 
+ 	Expect(err).NotTo(HaveOccurred())
+diff --git a/atc/api/handler.go b/atc/api/handler.go
+index 80bb6f1864..d244523478 100644
+--- a/atc/api/handler.go
++++ b/atc/api/handler.go
+@@ -8,6 +8,7 @@ import (
+ 	"code.cloudfoundry.org/clock"
+ 	"code.cloudfoundry.org/lager/v3"
+ 	"github.com/concourse/concourse/agent/api/costs"
++	dispatcherapi "github.com/concourse/concourse/agent/api/dispatcher"
+ 	"github.com/concourse/concourse/agent/api/feedback"
+ 	metricsapi "github.com/concourse/concourse/agent/api/metrics"
+ 	outcomesapi "github.com/concourse/concourse/agent/api/outcomes"
+@@ -118,6 +119,12 @@ func NewHandler(
+ 	// agentDispatchHandler serves DispatchAgentTicket (built in
+ 	// atccmd/command.go from dispatch.Deps; a stub in the test suite).
+ 	agentDispatchHandler http.Handler,
++	// agentSettingsStore + agentDispatcherBootDefault back the dispatcher
++	// runtime-control routes (GET/SetAgentDispatcher). The boot default is the
++	// --agent-dispatcher-enabled flag: the fallback effective mode when no
++	// agent_settings row exists.
++	agentSettingsStore dispatcherapi.Store,
++	agentDispatcherBootDefault bool,
+ ) (http.Handler, error) {
+ 
+ 	absCLIDownloadsDir, err := filepath.Abs(cliDownloadsDir)
+@@ -181,6 +188,13 @@ func NewHandler(
+ 			return accessor.GetAccessor(r).Claims().UserName
+ 		},
+ 	)
++	dispatcherServer := dispatcherapi.NewHandler(
++		agentSettingsStore,
++		agentDispatcherBootDefault,
++		func(r *http.Request) string {
++			return accessor.GetAccessor(r).Claims().UserName
++		},
++	)
+ 	credentialsServer := credentials.NewHandler(credentialsBackend, func(r *http.Request) (string, string, bool, bool) {
+ 		acc := accessor.GetAccessor(r)
+ 		claims := acc.Claims()
+@@ -370,6 +384,9 @@ func NewHandler(
+ 		atc.CreateAgentPrincipal: http.HandlerFunc(principalsServer.CreatePrincipal),
+ 		atc.ListAgentPrincipals:  http.HandlerFunc(principalsServer.ListPrincipals),
+ 		atc.RevokeAgentPrincipal: http.HandlerFunc(principalsServer.RevokePrincipal),
++
++		atc.GetAgentDispatcher: http.HandlerFunc(dispatcherServer.Get),
++		atc.SetAgentDispatcher: http.HandlerFunc(dispatcherServer.Set),
+ 	}
+ 
+ 	return rata.NewRouter(atc.Routes, wrapper.Wrap(handlers))
+diff --git a/atc/atccmd/command.go b/atc/atccmd/command.go
+index 65276be582..e0690600db 100644
+--- a/atc/atccmd/command.go
++++ b/atc/atccmd/command.go
+@@ -1405,7 +1405,33 @@ func (cmd *RunCommand) backendComponents(
+ 			Interval: time.Minute,
+ 		})
+ 
+-		if cmd.AgentDispatcherEnabled {
++		// The dispatcher component is ALWAYS wired now (runtime-controlled),
++		// not gated on --agent-dispatcher-enabled. The boot flag is instead the
++		// FALLBACK seed for the effective mode: when no agent_settings row
++		// exists, ResolveEffectiveMode(false, "", cmd.AgentDispatcherEnabled)
++		// reproduces the historical behavior (flag off -> effective "off" ->
++		// fully dormant loop). An admin flips the mode at runtime via
++		// PUT /api/v1/agent/dispatcher, read HOT on the loop's next tick.
++		//
++		// NOTE for the human: housekeeping components (e.g. ticket #42's
++		// unmerged pipeline-archiver) MUST wire independently of this dispatch
++		// mode — they are NOT part of the dispatch loop and must keep running
++		// even when the dispatcher is paused/off. Do not fold them into any
++		// dispatch-mode conditional.
++		{
++			dispatcherSettings := db.NewAgentSettingsFactory(dbConn)
++			dispatcherBootFlag := cmd.AgentDispatcherEnabled
++			modeResolver := func() string {
++				mode, found, err := dispatcherSettings.GetDispatcherMode()
++				if err != nil {
++					// A read fault must not silently activate the loop: fall
++					// back to the boot seed (off by default in current live).
++					logger.Error("failed-to-read-dispatcher-mode", err)
++					return dispatch.ResolveEffectiveMode(false, "", dispatcherBootFlag)
++				}
++				return dispatch.ResolveEffectiveMode(found, mode, dispatcherBootFlag)
++			}
++
+ 			dispatcherDeps := dispatch.Deps{
+ 				Tickets:     db.NewAgentTicketsFactory(dbConn),
+ 				Workflows:   db.NewAgentWorkflowsFactory(dbConn),
+@@ -1430,6 +1456,7 @@ func (cmd *RunCommand) backendComponents(
+ 					Name: atc.ComponentAgentDispatcher,
+ 				},
+ 				Runnable: dispatch.NewDispatcher(dispatcherDeps, dispatch.LoopConfig{
++					Mode:        modeResolver,
+ 					RunReader:   dbPipelineRunFactory,
+ 					Questions:   nil, // plan 08's checkpoint seam; checkpoints are render-refused until it lands
+ 					MaxAttempts: cmd.AgentDispatcherMaxAttempts,
+@@ -2502,6 +2529,8 @@ func (cmd *RunCommand) constructAPIHandler(
+ 		}, func(r *http.Request) string {
+ 			return accessor.GetAccessor(r).Claims().UserName
+ 		}),
++		db.NewAgentSettingsFactory(dbConn),
++		cmd.AgentDispatcherEnabled,
+ 	)
+ }
+ 
+diff --git a/atc/auditor/auditor.go b/atc/auditor/auditor.go
+index d6210255a1..6fbef04ec5 100644
+--- a/atc/auditor/auditor.go
++++ b/atc/auditor/auditor.go
+@@ -186,7 +186,9 @@ func (a *auditor) ValidateAction(action string) bool {
+ 		atc.DispatchAgentTicket,
+ 		atc.SetAgentTicketDisposition,
+ 		atc.GetAgentTicketOutcome,
+-		atc.GetAgentTicketDiff:
++		atc.GetAgentTicketDiff,
++		atc.GetAgentDispatcher,
++		atc.SetAgentDispatcher:
+ 		return a.EnableSystemAuditLog
+ 	case atc.ListTeams,
+ 		atc.SetTeam,
+diff --git a/atc/db/agent_settings.go b/atc/db/agent_settings.go
+new file mode 100644
+index 0000000000..4410633692
+--- /dev/null
++++ b/atc/db/agent_settings.go
+@@ -0,0 +1,101 @@
++package db
++
++import (
++	"database/sql"
++	"errors"
++	"fmt"
++	"time"
++
++	sq "github.com/Masterminds/squirrel"
++)
++
++// Valid dispatcher modes, mirrored by the agent_settings.dispatcher_mode CHECK
++// constraint (migration 1773106091) and by agent/dispatch.Mode. Kept as bare
++// strings here so atc/db has no dependency on agent/dispatch (which imports
++// atc/db — the reverse edge would be a cycle).
++const (
++	DispatcherModeOff    = "off"
++	DispatcherModePaused = "paused"
++	DispatcherModeActive = "active"
++)
++
++// ErrInvalidDispatcherMode is returned by SetDispatcherMode for a mode outside
++// {off,paused,active} — a guard in front of the CHECK constraint so callers get
++// a clear error instead of a raw pg violation.
++var ErrInvalidDispatcherMode = errors.New("dispatcher_mode must be one of off|paused|active")
++
++//go:generate go run github.com/maxbrunsfeld/counterfeiter/v6 -generate
++
++// AgentSettingsFactory reads and writes the singleton agent_settings row.
++// Reads are HOT (a fresh SELECT each call) so the dispatcher loop observes a
++// runtime mode change on its very next tick — mirroring the pipeline-pause
++// idiom (atc/db/pipeline.go CheckPaused).
++//
++//counterfeiter:generate . AgentSettingsFactory
++type AgentSettingsFactory interface {
++	// GetDispatcherMode is the dispatcher loop's hot read. found=false means
++	// no row exists yet (fall back to the boot flag).
++	GetDispatcherMode() (mode string, found bool, err error)
++	// GetDispatcherSetting backs the GET status API: the effective mode plus
++	// its provenance (updated_at/updated_by). found=false means no row.
++	GetDispatcherSetting() (mode string, updatedAt time.Time, updatedBy string, found bool, err error)
++	// SetDispatcherMode UPSERTs the singleton row (id=1). Validates mode before
++	// touching the DB; returns ErrInvalidDispatcherMode otherwise.
++	SetDispatcherMode(mode, updatedBy string) error
++}
++
++func NewAgentSettingsFactory(conn DbConn) AgentSettingsFactory {
++	return &agentSettingsFactory{conn: conn}
++}
++
++type agentSettingsFactory struct {
++	conn DbConn
++}
++
++func validDispatcherMode(mode string) bool {
++	switch mode {
++	case DispatcherModeOff, DispatcherModePaused, DispatcherModeActive:
++		return true
++	default:
++		return false
++	}
++}
++
++func (f *agentSettingsFactory) GetDispatcherMode() (string, bool, error) {
++	mode, _, _, found, err := f.GetDispatcherSetting()
++	return mode, found, err
++}
++
++func (f *agentSettingsFactory) GetDispatcherSetting() (string, time.Time, string, bool, error) {
++	var (
++		mode      string
++		updatedAt time.Time
++		updatedBy sql.NullString
++	)
++	err := psql.Select("dispatcher_mode", "updated_at", "updated_by").
++		From("agent_settings").
++		Where(sq.Eq{"id": 1}).
++		RunWith(f.conn).
++		QueryRow().
++		Scan(&mode, &updatedAt, &updatedBy)
++	if errors.Is(err, sql.ErrNoRows) {
++		return "", time.Time{}, "", false, nil
++	}
++	if err != nil {
++		return "", time.Time{}, "", false, err
++	}
++	return mode, updatedAt, updatedBy.String, true, nil
++}
++
++func (f *agentSettingsFactory) SetDispatcherMode(mode, updatedBy string) error {
++	if !validDispatcherMode(mode) {
++		return fmt.Errorf("%w: got %q", ErrInvalidDispatcherMode, mode)
++	}
++	_, err := psql.Insert("agent_settings").
++		Columns("id", "dispatcher_mode", "updated_at", "updated_by").
++		Values(1, mode, sq.Expr("now()"), updatedBy).
++		Suffix("ON CONFLICT (id) DO UPDATE SET dispatcher_mode = EXCLUDED.dispatcher_mode, updated_at = now(), updated_by = EXCLUDED.updated_by").
++		RunWith(f.conn).
++		Exec()
++	return err
++}
+diff --git a/atc/db/agent_settings_test.go b/atc/db/agent_settings_test.go
+new file mode 100644
+index 0000000000..975c5eec99
+--- /dev/null
++++ b/atc/db/agent_settings_test.go
+@@ -0,0 +1,65 @@
++package db_test
++
++import (
++	"errors"
++
++	"github.com/concourse/concourse/atc/db"
++
++	. "github.com/onsi/ginkgo/v2"
++	. "github.com/onsi/gomega"
++)
++
++var _ = Describe("agent settings", func() {
++	var settings db.AgentSettingsFactory
++
++	BeforeEach(func() {
++		settings = db.NewAgentSettingsFactory(dbConn)
++	})
++
++	It("reports absence without error when no row exists", func() {
++		mode, found, err := settings.GetDispatcherMode()
++		Expect(err).ToNot(HaveOccurred())
++		Expect(found).To(BeFalse())
++		Expect(mode).To(BeEmpty())
++
++		_, _, _, found, err = settings.GetDispatcherSetting()
++		Expect(err).ToNot(HaveOccurred())
++		Expect(found).To(BeFalse())
++	})
++
++	It("upserts the singleton row and reads it back hot", func() {
++		Expect(settings.SetDispatcherMode(db.DispatcherModeActive, "tdm")).To(Succeed())
++
++		mode, found, err := settings.GetDispatcherMode()
++		Expect(err).ToNot(HaveOccurred())
++		Expect(found).To(BeTrue())
++		Expect(mode).To(Equal(db.DispatcherModeActive))
++
++		gotMode, updatedAt, updatedBy, found, err := settings.GetDispatcherSetting()
++		Expect(err).ToNot(HaveOccurred())
++		Expect(found).To(BeTrue())
++		Expect(gotMode).To(Equal(db.DispatcherModeActive))
++		Expect(updatedBy).To(Equal("tdm"))
++		Expect(updatedAt).ToNot(BeZero())
++
++		// A second Set overwrites in place (no second row, id pinned to 1).
++		Expect(settings.SetDispatcherMode(db.DispatcherModePaused, "ada")).To(Succeed())
++		mode, _, err = settings.GetDispatcherMode()
++		Expect(err).ToNot(HaveOccurred())
++		Expect(mode).To(Equal(db.DispatcherModePaused))
++
++		var count int
++		Expect(dbConn.QueryRow(`SELECT count(*) FROM agent_settings`).Scan(&count)).To(Succeed())
++		Expect(count).To(Equal(1))
++	})
++
++	It("rejects an invalid mode before touching the DB", func() {
++		err := settings.SetDispatcherMode("bogus", "tdm")
++		Expect(err).To(HaveOccurred())
++		Expect(errors.Is(err, db.ErrInvalidDispatcherMode)).To(BeTrue())
++
++		_, found, err := settings.GetDispatcherMode()
++		Expect(err).ToNot(HaveOccurred())
++		Expect(found).To(BeFalse())
++	})
++})
+diff --git a/atc/db/dbfakes/fake_agent_settings_factory.go b/atc/db/dbfakes/fake_agent_settings_factory.go
+new file mode 100644
+index 0000000000..b2f5781750
+--- /dev/null
++++ b/atc/db/dbfakes/fake_agent_settings_factory.go
+@@ -0,0 +1,268 @@
++// Code generated by counterfeiter. DO NOT EDIT.
++package dbfakes
++
++import (
++	"sync"
++	"time"
++
++	"github.com/concourse/concourse/atc/db"
++)
++
++type FakeAgentSettingsFactory struct {
++	GetDispatcherModeStub        func() (string, bool, error)
++	getDispatcherModeMutex       sync.RWMutex
++	getDispatcherModeArgsForCall []struct {
++	}
++	getDispatcherModeReturns struct {
++		result1 string
++		result2 bool
++		result3 error
++	}
++	getDispatcherModeReturnsOnCall map[int]struct {
++		result1 string
++		result2 bool
++		result3 error
++	}
++	GetDispatcherSettingStub        func() (string, time.Time, string, bool, error)
++	getDispatcherSettingMutex       sync.RWMutex
++	getDispatcherSettingArgsForCall []struct {
++	}
++	getDispatcherSettingReturns struct {
++		result1 string
++		result2 time.Time
++		result3 string
++		result4 bool
++		result5 error
++	}
++	getDispatcherSettingReturnsOnCall map[int]struct {
++		result1 string
++		result2 time.Time
++		result3 string
++		result4 bool
++		result5 error
++	}
++	SetDispatcherModeStub        func(string, string) error
++	setDispatcherModeMutex       sync.RWMutex
++	setDispatcherModeArgsForCall []struct {
++		arg1 string
++		arg2 string
++	}
++	setDispatcherModeReturns struct {
++		result1 error
++	}
++	setDispatcherModeReturnsOnCall map[int]struct {
++		result1 error
++	}
++	invocations      map[string][][]interface{}
++	invocationsMutex sync.RWMutex
++}
++
++func (fake *FakeAgentSettingsFactory) GetDispatcherMode() (string, bool, error) {
++	fake.getDispatcherModeMutex.Lock()
++	ret, specificReturn := fake.getDispatcherModeReturnsOnCall[len(fake.getDispatcherModeArgsForCall)]
++	fake.getDispatcherModeArgsForCall = append(fake.getDispatcherModeArgsForCall, struct {
++	}{})
++	stub := fake.GetDispatcherModeStub
++	fakeReturns := fake.getDispatcherModeReturns
++	fake.recordInvocation("GetDispatcherMode", []interface{}{})
++	fake.getDispatcherModeMutex.Unlock()
++	if stub != nil {
++		return stub()
++	}
++	if specificReturn {
++		return ret.result1, ret.result2, ret.result3
++	}
++	return fakeReturns.result1, fakeReturns.result2, fakeReturns.result3
++}
++
++func (fake *FakeAgentSettingsFactory) GetDispatcherModeCallCount() int {
++	fake.getDispatcherModeMutex.RLock()
++	defer fake.getDispatcherModeMutex.RUnlock()
++	return len(fake.getDispatcherModeArgsForCall)
++}
++
++func (fake *FakeAgentSettingsFactory) GetDispatcherModeCalls(stub func() (string, bool, error)) {
++	fake.getDispatcherModeMutex.Lock()
++	defer fake.getDispatcherModeMutex.Unlock()
++	fake.GetDispatcherModeStub = stub
++}
++
++func (fake *FakeAgentSettingsFactory) GetDispatcherModeReturns(result1 string, result2 bool, result3 error) {
++	fake.getDispatcherModeMutex.Lock()
++	defer fake.getDispatcherModeMutex.Unlock()
++	fake.GetDispatcherModeStub = nil
++	fake.getDispatcherModeReturns = struct {
++		result1 string
++		result2 bool
++		result3 error
++	}{result1, result2, result3}
++}
++
++func (fake *FakeAgentSettingsFactory) GetDispatcherModeReturnsOnCall(i int, result1 string, result2 bool, result3 error) {
++	fake.getDispatcherModeMutex.Lock()
++	defer fake.getDispatcherModeMutex.Unlock()
++	fake.GetDispatcherModeStub = nil
++	if fake.getDispatcherModeReturnsOnCall == nil {
++		fake.getDispatcherModeReturnsOnCall = make(map[int]struct {
++			result1 string
++			result2 bool
++			result3 error
++		})
++	}
++	fake.getDispatcherModeReturnsOnCall[i] = struct {
++		result1 string
++		result2 bool
++		result3 error
++	}{result1, result2, result3}
++}
++
++func (fake *FakeAgentSettingsFactory) GetDispatcherSetting() (string, time.Time, string, bool, error) {
++	fake.getDispatcherSettingMutex.Lock()
++	ret, specificReturn := fake.getDispatcherSettingReturnsOnCall[len(fake.getDispatcherSettingArgsForCall)]
++	fake.getDispatcherSettingArgsForCall = append(fake.getDispatcherSettingArgsForCall, struct {
++	}{})
++	stub := fake.GetDispatcherSettingStub
++	fakeReturns := fake.getDispatcherSettingReturns
++	fake.recordInvocation("GetDispatcherSetting", []interface{}{})
++	fake.getDispatcherSettingMutex.Unlock()
++	if stub != nil {
++		return stub()
++	}
++	if specificReturn {
++		return ret.result1, ret.result2, ret.result3, ret.result4, ret.result5
++	}
++	return fakeReturns.result1, fakeReturns.result2, fakeReturns.result3, fakeReturns.result4, fakeReturns.result5
++}
++
++func (fake *FakeAgentSettingsFactory) GetDispatcherSettingCallCount() int {
++	fake.getDispatcherSettingMutex.RLock()
++	defer fake.getDispatcherSettingMutex.RUnlock()
++	return len(fake.getDispatcherSettingArgsForCall)
++}
++
++func (fake *FakeAgentSettingsFactory) GetDispatcherSettingCalls(stub func() (string, time.Time, string, bool, error)) {
++	fake.getDispatcherSettingMutex.Lock()
++	defer fake.getDispatcherSettingMutex.Unlock()
++	fake.GetDispatcherSettingStub = stub
++}
++
++func (fake *FakeAgentSettingsFactory) GetDispatcherSettingReturns(result1 string, result2 time.Time, result3 string, result4 bool, result5 error) {
++	fake.getDispatcherSettingMutex.Lock()
++	defer fake.getDispatcherSettingMutex.Unlock()
++	fake.GetDispatcherSettingStub = nil
++	fake.getDispatcherSettingReturns = struct {
++		result1 string
++		result2 time.Time
++		result3 string
++		result4 bool
++		result5 error
++	}{result1, result2, result3, result4, result5}
++}
++
++func (fake *FakeAgentSettingsFactory) GetDispatcherSettingReturnsOnCall(i int, result1 string, result2 time.Time, result3 string, result4 bool, result5 error) {
++	fake.getDispatcherSettingMutex.Lock()
++	defer fake.getDispatcherSettingMutex.Unlock()
++	fake.GetDispatcherSettingStub = nil
++	if fake.getDispatcherSettingReturnsOnCall == nil {
++		fake.getDispatcherSettingReturnsOnCall = make(map[int]struct {
++			result1 string
++			result2 time.Time
++			result3 string
++			result4 bool
++			result5 error
++		})
++	}
++	fake.getDispatcherSettingReturnsOnCall[i] = struct {
++		result1 string
++		result2 time.Time
++		result3 string
++		result4 bool
++		result5 error
++	}{result1, result2, result3, result4, result5}
++}
++
++func (fake *FakeAgentSettingsFactory) SetDispatcherMode(arg1 string, arg2 string) error {
++	fake.setDispatcherModeMutex.Lock()
++	ret, specificReturn := fake.setDispatcherModeReturnsOnCall[len(fake.setDispatcherModeArgsForCall)]
++	fake.setDispatcherModeArgsForCall = append(fake.setDispatcherModeArgsForCall, struct {
++		arg1 string
++		arg2 string
++	}{arg1, arg2})
++	stub := fake.SetDispatcherModeStub
++	fakeReturns := fake.setDispatcherModeReturns
++	fake.recordInvocation("SetDispatcherMode", []interface{}{arg1, arg2})
++	fake.setDispatcherModeMutex.Unlock()
++	if stub != nil {
++		return stub(arg1, arg2)
++	}
++	if specificReturn {
++		return ret.result1
++	}
++	return fakeReturns.result1
++}
++
++func (fake *FakeAgentSettingsFactory) SetDispatcherModeCallCount() int {
++	fake.setDispatcherModeMutex.RLock()
++	defer fake.setDispatcherModeMutex.RUnlock()
++	return len(fake.setDispatcherModeArgsForCall)
++}
++
++func (fake *FakeAgentSettingsFactory) SetDispatcherModeCalls(stub func(string, string) error) {
++	fake.setDispatcherModeMutex.Lock()
++	defer fake.setDispatcherModeMutex.Unlock()
++	fake.SetDispatcherModeStub = stub
++}
++
++func (fake *FakeAgentSettingsFactory) SetDispatcherModeArgsForCall(i int) (string, string) {
++	fake.setDispatcherModeMutex.RLock()
++	defer fake.setDispatcherModeMutex.RUnlock()
++	argsForCall := fake.setDispatcherModeArgsForCall[i]
++	return argsForCall.arg1, argsForCall.arg2
++}
++
++func (fake *FakeAgentSettingsFactory) SetDispatcherModeReturns(result1 error) {
++	fake.setDispatcherModeMutex.Lock()
++	defer fake.setDispatcherModeMutex.Unlock()
++	fake.SetDispatcherModeStub = nil
++	fake.setDispatcherModeReturns = struct {
++		result1 error
++	}{result1}
++}
++
++func (fake *FakeAgentSettingsFactory) SetDispatcherModeReturnsOnCall(i int, result1 error) {
++	fake.setDispatcherModeMutex.Lock()
++	defer fake.setDispatcherModeMutex.Unlock()
++	fake.SetDispatcherModeStub = nil
++	if fake.setDispatcherModeReturnsOnCall == nil {
++		fake.setDispatcherModeReturnsOnCall = make(map[int]struct {
++			result1 error
++		})
++	}
++	fake.setDispatcherModeReturnsOnCall[i] = struct {
++		result1 error
++	}{result1}
++}
++
++func (fake *FakeAgentSettingsFactory) Invocations() map[string][][]interface{} {
++	fake.invocationsMutex.RLock()
++	defer fake.invocationsMutex.RUnlock()
++	copiedInvocations := map[string][][]interface{}{}
++	for key, value := range fake.invocations {
++		copiedInvocations[key] = value
++	}
++	return copiedInvocations
++}
++
++func (fake *FakeAgentSettingsFactory) recordInvocation(key string, args []interface{}) {
++	fake.invocationsMutex.Lock()
++	defer fake.invocationsMutex.Unlock()
++	if fake.invocations == nil {
++		fake.invocations = map[string][][]interface{}{}
++	}
++	if fake.invocations[key] == nil {
++		fake.invocations[key] = [][]interface{}{}
++	}
++	fake.invocations[key] = append(fake.invocations[key], args)
++}
++
++var _ db.AgentSettingsFactory = new(FakeAgentSettingsFactory)
+diff --git a/atc/db/migration/migrations/1773106091_create_agent_settings.down.sql b/atc/db/migration/migrations/1773106091_create_agent_settings.down.sql
+new file mode 100644
+index 0000000000..16e2b4abdf
+--- /dev/null
++++ b/atc/db/migration/migrations/1773106091_create_agent_settings.down.sql
+@@ -0,0 +1 @@
++DROP TABLE agent_settings;
+diff --git a/atc/db/migration/migrations/1773106091_create_agent_settings.up.sql b/atc/db/migration/migrations/1773106091_create_agent_settings.up.sql
+new file mode 100644
+index 0000000000..bd18693c99
+--- /dev/null
++++ b/atc/db/migration/migrations/1773106091_create_agent_settings.up.sql
+@@ -0,0 +1,11 @@
++-- agent_settings is a SINGLETON row (id is pinned to 1) holding cluster-wide
++-- agent-platform runtime toggles. Today it carries dispatcher_mode, the
++-- runtime control for the autonomous dispatcher loop. ABSENCE of the row is
++-- meaningful: the dispatcher falls back to the --agent-dispatcher-enabled boot
++-- flag, which preserves current live behavior until an admin sets a mode.
++CREATE TABLE agent_settings (
++    id              INTEGER PRIMARY KEY CHECK (id = 1),
++    dispatcher_mode TEXT NOT NULL CHECK (dispatcher_mode IN ('off','paused','active')),
++    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
++    updated_by      TEXT
++);
+diff --git a/atc/routes.go b/atc/routes.go
+index 6f971e3e6f..010e96e4d3 100644
+--- a/atc/routes.go
++++ b/atc/routes.go
+@@ -167,6 +167,9 @@ const (
+ 	ListAgentPrincipals  = "ListAgentPrincipals"
+ 	RevokeAgentPrincipal = "RevokeAgentPrincipal"
+ 
++	GetAgentDispatcher = "GetAgentDispatcher"
++	SetAgentDispatcher = "SetAgentDispatcher"
++
+ 	MCPEndpoint = "MCPEndpoint"
+ )
+ 
+@@ -339,6 +342,9 @@ var Routes = rata.Routes([]rata.Route{
+ 	{Path: "/api/v1/agent/principals", Method: "GET", Name: ListAgentPrincipals},
+ 	{Path: "/api/v1/agent/principals/:principal_id", Method: "DELETE", Name: RevokeAgentPrincipal},
+ 
++	{Path: "/api/v1/agent/dispatcher", Method: "GET", Name: GetAgentDispatcher},
++	{Path: "/api/v1/agent/dispatcher", Method: "PUT", Name: SetAgentDispatcher},
++
+ 	{Path: "/api/v1/mcp", Method: "POST", Name: MCPEndpoint},
+ 
+ 	{Path: "/.well-known/openid-configuration", Method: "GET", Name: GetOpenIDConfiguration},
+diff --git a/atc/wrappa/api_auth_wrappa.go b/atc/wrappa/api_auth_wrappa.go
+index 710a9519c6..2af5d99e8e 100644
+--- a/atc/wrappa/api_auth_wrappa.go
++++ b/atc/wrappa/api_auth_wrappa.go
+@@ -93,6 +93,10 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
+ 			atc.SetAgentUserCredential,
+ 			atc.GetAgentUserCredentialStatus,
+ 			atc.DeleteAgentUserCredential,
++			// GetAgentDispatcher: any authenticated user may READ the
++			// dispatcher status. Mutating it (SetAgentDispatcher) is admin-only,
++			// pinned in the CheckAdminHandler block below.
++			atc.GetAgentDispatcher,
+ 			atc.MCPEndpoint:
+ 			newHandler = auth.CheckAuthenticationHandler(handler, rejector)
+ 
+@@ -152,7 +156,11 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
+ 			atc.ListSharedForResourceType,
+ 			atc.CreateAgentPrincipal,
+ 			atc.ListAgentPrincipals,
+-			atc.RevokeAgentPrincipal:
++			atc.RevokeAgentPrincipal,
++			// SetAgentDispatcher changes cluster-wide autonomous behavior — same
++			// admin tier as minting principals. Reads (GetAgentDispatcher) are
++			// merely authenticated (block above).
++			atc.SetAgentDispatcher:
+ 			newHandler = auth.CheckAdminHandler(handler, rejector)
+ 
+ 		// authorized (requested team matches resource team and has required role, or is admin)
+diff --git a/atc/wrappa/api_auth_wrappa_test.go b/atc/wrappa/api_auth_wrappa_test.go
+index c1834cb647..fe922224d7 100644
+--- a/atc/wrappa/api_auth_wrappa_test.go
++++ b/atc/wrappa/api_auth_wrappa_test.go
+@@ -422,5 +422,108 @@ var _ = Describe("APIAuthWrappa", func() {
+ 				})
+ 			})
+ 		})
++
++		// Dispatcher runtime-control tier pinning (dispatcher-runtime-control
++		// wire contract): GetAgentDispatcher is merely authenticated (ANY
++		// signed-in user may READ status); SetAgentDispatcher is admin-only
++		// (same CheckAdminHandler tier as CreateAgentPrincipal). The no-panic
++		// loop only proves the switch is exhaustive — these specs pin the tier,
++		// including the REJECTS-non-admin-PUT case.
++		Describe("dispatcher route tiers", func() {
++			var (
++				wrapped      rata.Handlers
++				delegateHit  bool
++				fakeAccessor *accessorfakes.FakeAccessFactory
++				fakeaccess   *accessorfakes.FakeAccess
++			)
++
++			BeforeEach(func() {
++				delegateHit = false
++				fakeAccessor = new(accessorfakes.FakeAccessFactory)
++				fakeaccess = new(accessorfakes.FakeAccess)
++				fakeAccessor.CreateReturns(fakeaccess, nil)
++
++				delegate := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++					delegateHit = true
++					w.WriteHeader(http.StatusOK)
++				})
++
++				wrapped = wrappa.NewAPIAuthWrappa(
++					fakeCheckPipelineAccessHandlerFactory,
++					fakeCheckBuildReadAccessHandlerFactory,
++					fakeCheckBuildWriteAccessHandlerFactory,
++					fakeCheckWorkerTeamAccessHandlerFactory,
++					auth.NewCheckAgentPrincipalHandlerFactory(principals.NewVerifier(principals.NewMemoryStore())),
++				).Wrap(rata.Handlers{
++					atc.GetAgentDispatcher: delegate,
++					atc.SetAgentDispatcher: delegate,
++				})
++			})
++
++			serveDispatcher := func(routeName string) *http.Response {
++				server := httptest.NewServer(accessor.NewHandler(
++					lagertest.NewTestLogger("api-auth-wrappa"),
++					"some-action",
++					wrapped[routeName],
++					fakeAccessor,
++					new(auditorfakes.FakeAuditor),
++					map[string]string{},
++				))
++				defer server.Close()
++
++				req, err := http.NewRequest("GET", server.URL, nil)
++				Expect(err).NotTo(HaveOccurred())
++				resp, err := http.DefaultClient.Do(req)
++				Expect(err).NotTo(HaveOccurred())
++				return resp
++			}
++
++			Describe("GetAgentDispatcher", func() {
++				It("401s unauthenticated requests", func() {
++					fakeaccess.IsAuthenticatedReturns(false)
++
++					resp := serveDispatcher(atc.GetAgentDispatcher)
++					Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
++					Expect(delegateHit).To(BeFalse())
++				})
++
++				It("admits ANY authenticated user, admin or not", func() {
++					fakeaccess.IsAuthenticatedReturns(true)
++					fakeaccess.IsAdminReturns(false)
++
++					resp := serveDispatcher(atc.GetAgentDispatcher)
++					Expect(resp.StatusCode).To(Equal(http.StatusOK))
++					Expect(delegateHit).To(BeTrue())
++				})
++			})
++
++			Describe("SetAgentDispatcher", func() {
++				It("401s unauthenticated requests", func() {
++					fakeaccess.IsAuthenticatedReturns(false)
++
++					resp := serveDispatcher(atc.SetAgentDispatcher)
++					Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
++					Expect(delegateHit).To(BeFalse())
++				})
++
++				It("REJECTS an authenticated non-admin (403)", func() {
++					fakeaccess.IsAuthenticatedReturns(true)
++					fakeaccess.IsAdminReturns(false)
++
++					resp := serveDispatcher(atc.SetAgentDispatcher)
++					Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
++					Expect(delegateHit).To(BeFalse())
++				})
++
++				It("admits admins", func() {
++					fakeaccess.IsAuthenticatedReturns(true)
++					fakeaccess.IsAdminReturns(true)
++
++					resp := serveDispatcher(atc.SetAgentDispatcher)
++					Expect(resp.StatusCode).To(Equal(http.StatusOK))
++					Expect(delegateHit).To(BeTrue())
++				})
++			})
++		})
+ 	})
+ })
+diff --git a/atc/wrappa/reject_archived_wrappa.go b/atc/wrappa/reject_archived_wrappa.go
+index 9bdcc4f6ae..a39c7ae69c 100644
+--- a/atc/wrappa/reject_archived_wrappa.go
++++ b/atc/wrappa/reject_archived_wrappa.go
+@@ -162,6 +162,8 @@ func (rw *RejectArchivedWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
+ 			atc.CreateAgentPrincipal,
+ 			atc.ListAgentPrincipals,
+ 			atc.RevokeAgentPrincipal,
++			atc.GetAgentDispatcher,
++			atc.SetAgentDispatcher,
+ 			atc.CopyResourceVersions,
+ 			atc.ListDeprecatedScopes,
+ 			atc.ListPipelineRuns,
+diff --git a/fly/commands/agent.go b/fly/commands/agent.go
+index 7045fbd23e..fd99b2488c 100644
+--- a/fly/commands/agent.go
++++ b/fly/commands/agent.go
+@@ -10,4 +10,5 @@ type AgentCommand struct {
+ 	Workflows  AgentWorkflowsCommand  `command:"workflows" description:"Manage versioned agent workflow definitions"`
+ 	Principals AgentPrincipalsCommand `command:"principals" description:"Mint, list, and revoke agent principals (admin)"`
+ 	Tickets    AgentTicketsCommand    `command:"tickets" description:"File and track agent tickets"`
++	Dispatcher AgentDispatcherCommand `command:"dispatcher" description:"Show or set the autonomous dispatcher mode (off|paused|active)"`
+ }
+diff --git a/fly/commands/agent_dispatcher.go b/fly/commands/agent_dispatcher.go
+new file mode 100644
+index 0000000000..b37512e5a6
+--- /dev/null
++++ b/fly/commands/agent_dispatcher.go
+@@ -0,0 +1,104 @@
++package commands
++
++import (
++	"bytes"
++	"encoding/json"
++	"fmt"
++	"os"
++
++	"github.com/concourse/concourse/fly/commands/internal/displayhelpers"
++)
++
++// AgentDispatcherCommand is a leaf command (not a subcommand group, so the
++// no-argument invocation runs Execute and prints status — go-flags would
++// otherwise demand a subcommand). An optional positional ACTION sets the mode:
++//
++//	fly agent dispatcher            → show current status
++//	fly agent dispatcher pause      → mode=paused (reconciler stays alive)
++//	fly agent dispatcher resume     → mode=active (auto-dispatch on)
++//	fly agent dispatcher off        → mode=off   (fully dormant)
++type AgentDispatcherCommand struct {
++	Args struct {
++		Action string `positional-arg-name:"ACTION" description:"pause | resume | off (omit to show status)"`
++	} `positional-args:"yes"`
++	Json bool `long:"json" description:"Print status as JSON"`
++}
++
++// dispatcherStatus mirrors agent/api/dispatcher.Response.
++type dispatcherStatus struct {
++	Mode        string  `json:"mode"`
++	Source      string  `json:"source"`
++	UpdatedAt   *string `json:"updated_at"`
++	UpdatedBy   *string `json:"updated_by"`
++	BootDefault string  `json:"boot_default"`
++}
++
++// actionToMode maps the CLI verb to the wire mode. ok=false for an unknown verb.
++func actionToMode(action string) (string, bool) {
++	switch action {
++	case "pause":
++		return "paused", true
++	case "resume", "active":
++		return "active", true
++	case "off":
++		return "off", true
++	default:
++		return "", false
++	}
++}
++
++func (command *AgentDispatcherCommand) Execute([]string) error {
++	target, err := loadAgentTarget()
++	if err != nil {
++		return err
++	}
++
++	var status dispatcherStatus
++	if command.Args.Action == "" {
++		resp, err := agentAPIRequest(target, "GET", "/api/v1/agent/dispatcher", nil)
++		if err != nil {
++			return err
++		}
++		if err := decodeOrError(resp, &status); err != nil {
++			return err
++		}
++		return printDispatcherStatus(status, command.Json)
++	}
++
++	mode, ok := actionToMode(command.Args.Action)
++	if !ok {
++		return fmt.Errorf("unknown action %q: want one of pause, resume, off", command.Args.Action)
++	}
++	payload, err := json.Marshal(map[string]string{"mode": mode})
++	if err != nil {
++		return err
++	}
++	resp, err := agentAPIRequestWithType(target, "PUT", "/api/v1/agent/dispatcher",
++		"application/json", bytes.NewReader(payload))
++	if err != nil {
++		return err
++	}
++	if err := decodeOrError(resp, &status); err != nil {
++		return err
++	}
++	fmt.Fprintf(os.Stderr, "dispatcher mode set to %s\n", status.Mode)
++	return printDispatcherStatus(status, command.Json)
++}
++
++func printDispatcherStatus(status dispatcherStatus, asJSON bool) error {
++	if asJSON {
++		return displayhelpers.JsonPrint(status)
++	}
++	updated := "never (using boot default)"
++	if status.UpdatedAt != nil {
++		by := ""
++		if status.UpdatedBy != nil {
++			by = " by " + *status.UpdatedBy
++		}
++		updated = *status.UpdatedAt + by
++	}
++	fmt.Printf("dispatcher mode: %s\n", status.Mode)
++	fmt.Printf("source:          %s (boot default: %s)\n", status.Source, status.BootDefault)
++	fmt.Printf("last updated:    %s\n", updated)
++	return nil
++}
+diff --git a/fly/integration/agent_dispatcher_test.go b/fly/integration/agent_dispatcher_test.go
+new file mode 100644
+index 0000000000..07bc91118c
+--- /dev/null
++++ b/fly/integration/agent_dispatcher_test.go
+@@ -0,0 +1,131 @@
++package integration_test
++
++import (
++	"net/http"
++	"os/exec"
++
++	. "github.com/onsi/ginkgo/v2"
++	. "github.com/onsi/gomega"
++
++	"github.com/onsi/gomega/gbytes"
++	"github.com/onsi/gomega/gexec"
++	"github.com/onsi/gomega/ghttp"
++)
++
++var _ = Describe("fly agent dispatcher", func() {
++	Describe("status (no subcommand)", func() {
++		BeforeEach(func() {
++			atcServer.AppendHandlers(
++				ghttp.CombineHandlers(
++					ghttp.VerifyRequest("GET", "/api/v1/agent/dispatcher"),
++					ghttp.RespondWithJSONEncoded(http.StatusOK, map[string]any{
++						"mode": "off", "source": "boot-default",
++						"updated_at": nil, "updated_by": nil, "boot_default": "off",
++					}),
++				),
++			)
++		})
++
++		It("prints the current mode and source", func() {
++			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "dispatcher")
++			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
++			Expect(err).NotTo(HaveOccurred())
++			<-sess.Exited
++			Expect(sess.ExitCode()).To(Equal(0))
++			Expect(sess.Out).To(gbytes.Say(`dispatcher mode: off`))
++			Expect(sess.Out).To(gbytes.Say(`source:\s+boot-default`))
++		})
++	})
++
++	Describe("pause", func() {
++		BeforeEach(func() {
++			atcServer.AppendHandlers(
++				ghttp.CombineHandlers(
++					ghttp.VerifyRequest("PUT", "/api/v1/agent/dispatcher"),
++					ghttp.VerifyJSONRepresenting(map[string]any{"mode": "paused"}),
++					ghttp.RespondWithJSONEncoded(http.StatusOK, map[string]any{
++						"mode": "paused", "source": "setting",
++						"updated_at": "2026-07-19T12:00:00Z", "updated_by": "tdm", "boot_default": "off",
++					}),
++				),
++			)
++		})
++
++		It("PUTs mode=paused and prints the new state", func() {
++			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "dispatcher", "pause")
++			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
++			Expect(err).NotTo(HaveOccurred())
++			<-sess.Exited
++			Expect(sess.ExitCode()).To(Equal(0))
++			Expect(sess.Out).To(gbytes.Say(`dispatcher mode: paused`))
++		})
++	})
++
++	Describe("resume", func() {
++		BeforeEach(func() {
++			atcServer.AppendHandlers(
++				ghttp.CombineHandlers(
++					ghttp.VerifyRequest("PUT", "/api/v1/agent/dispatcher"),
++					ghttp.VerifyJSONRepresenting(map[string]any{"mode": "active"}),
++					ghttp.RespondWithJSONEncoded(http.StatusOK, map[string]any{
++						"mode": "active", "source": "setting",
++						"updated_at": "2026-07-19T12:00:00Z", "updated_by": "tdm", "boot_default": "off",
++					}),
++				),
++			)
++		})
++
++		It("PUTs mode=active", func() {
++			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "dispatcher", "resume")
++			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
++			Expect(err).NotTo(HaveOccurred())
++			<-sess.Exited
++			Expect(sess.ExitCode()).To(Equal(0))
++			Expect(sess.Out).To(gbytes.Say(`dispatcher mode: active`))
++		})
++	})
++
++	Describe("off", func() {
++		BeforeEach(func() {
++			atcServer.AppendHandlers(
++				ghttp.CombineHandlers(
++					ghttp.VerifyRequest("PUT", "/api/v1/agent/dispatcher"),
++					ghttp.VerifyJSONRepresenting(map[string]any{"mode": "off"}),
++					ghttp.RespondWithJSONEncoded(http.StatusOK, map[string]any{
++						"mode": "off", "source": "setting",
++						"updated_at": "2026-07-19T12:00:00Z", "updated_by": "tdm", "boot_default": "active",
++					}),
++				),
++			)
++		})
++
++		It("PUTs mode=off", func() {
++			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "dispatcher", "off")
++			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
++			Expect(err).NotTo(HaveOccurred())
++			<-sess.Exited
++			Expect(sess.ExitCode()).To(Equal(0))
++			Expect(sess.Out).To(gbytes.Say(`dispatcher mode: off`))
++		})
++	})
++
++	Describe("server error", func() {
++		BeforeEach(func() {
++			atcServer.AppendHandlers(
++				ghttp.CombineHandlers(
++					ghttp.VerifyRequest("PUT", "/api/v1/agent/dispatcher"),
++					ghttp.RespondWith(http.StatusForbidden, "admin only"),
++				),
++			)
++		})
++
++		It("exits non-zero with the server message", func() {
++			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "dispatcher", "pause")
++			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
++			Expect(err).NotTo(HaveOccurred())
++			<-sess.Exited
++			Expect(sess.ExitCode()).NotTo(Equal(0))
++			Expect(sess.Err).To(gbytes.Say(`admin only`))
++		})
++	})
++})
+diff --git a/web/elm/src/AgentTickets/AgentTickets.elm b/web/elm/src/AgentTickets/AgentTickets.elm
+index bab0524c42..bbcee3ebdd 100644
+--- a/web/elm/src/AgentTickets/AgentTickets.elm
++++ b/web/elm/src/AgentTickets/AgentTickets.elm
+@@ -12,6 +12,7 @@ module AgentTickets.AgentTickets exposing
+ 
+ import AgentBadge
+ import Application.Models exposing (Session)
++import Concourse.AgentDispatcher as AgentDispatcher
+ import Concourse.AgentTicket as AgentTicket
+ import Dict exposing (Dict)
+ import Duration
+@@ -29,6 +30,7 @@ import Routes
+ import SideBar.SideBar as SideBar
+ import Time
+ import Tooltip
++import UserState exposing (UserState(..))
+ import Views.Styles
+ import Views.TopBar as TopBar
+ 
+@@ -42,6 +44,8 @@ type alias Model =
+         , now : Maybe Time.Posix
+         , filter : String
+         , sortByWait : Bool
++        , dispatcher : Maybe AgentDispatcher.Status
++        , armedMode : Maybe AgentDispatcher.Mode
+         }
+ 
+ 
+@@ -76,9 +80,11 @@ init =
+       , now = Nothing
+       , filter = ""
+       , sortByWait = False
++      , dispatcher = Nothing
++      , armedMode = Nothing
+       , isUserMenuExpanded = False
+       }
+-    , [ FetchAgentTickets, FetchAgentTicketCosts ]
++    , [ FetchAgentTickets, FetchAgentTicketCosts, FetchAgentDispatcher ]
+     )
+ 
+ 
+@@ -123,6 +129,22 @@ handleCallback callback ( model, effects ) =
+         AgentCostRollupFetched (Err _) ->
+             ( model, effects )
+ 
++        AgentDispatcherFetched (Ok status) ->
++            ( { model | dispatcher = Just status }, effects )
++
++        AgentDispatcherFetched (Err _) ->
++            ( model, effects )
++
++        AgentDispatcherSet (Ok status) ->
++            -- The PUT echoes the new effective state, so adopt it directly and
++            -- clear any armed pending action.
++            ( { model | dispatcher = Just status, armedMode = Nothing }, effects )
++
++        AgentDispatcherSet (Err _) ->
++            -- Leave the last-known status in place; disarm so the operator can
++            -- retry. A 403 (non-admin) surfaces as the global HTTP error toast.
++            ( { model | armedMode = Nothing }, effects )
++
+         _ ->
+             ( model, effects )
+ 
+@@ -169,6 +191,20 @@ update msg ( model, effects ) =
+         AgentTicketsSortToggled ->
+             ( { model | sortByWait = not model.sortByWait }, effects )
+ 
++        AgentDispatcherModeClicked token ->
++            -- First click arms the target mode; a second click on the same
++            -- action confirms (see ConfirmAgentDispatcherMode). Clicking a
++            -- different action re-arms to that one.
++            ( { model | armedMode = Just (AgentDispatcher.modeFromString token) }, effects )
++
++        ConfirmAgentDispatcherMode token ->
++            ( { model | armedMode = Nothing }
++            , effects ++ [ SetAgentDispatcher (AgentDispatcher.modeFromString token) ]
++            )
++
++        CancelAgentDispatcherMode ->
++            ( { model | armedMode = Nothing }, effects )
++
+         _ ->
+             ( model, effects )
+ 
+@@ -205,11 +241,226 @@ view session model =
+             [ SideBar.view session Nothing
+             , Html.div
+                 [ style "padding" "16px", style "width" "100%" ]
+-                [ Html.h1 [ style "font-size" "18px" ] [ Html.text "Ticket queue" ]
+-                , content model
++                (headerRow model
++                    :: dispatcherControls session model
++                    ++ [ dispatcherBanner model
++                       , content model
++                       ]
++                )
++            ]
++        ]
++
++
++{-| Page title with the live "Auto-dispatch: active/paused/off" status pill.
++-}
++headerRow : Model -> Html Message
++headerRow model =
++    Html.div
++        [ style "display" "flex"
++        , style "align-items" "center"
++        , style "gap" "12px"
++        , style "flex-wrap" "wrap"
++        ]
++        (Html.h1 [ style "font-size" "18px", style "margin" "0" ] [ Html.text "Ticket queue" ]
++            :: (case model.dispatcher of
++                    Just status ->
++                        [ dispatcherPill status ]
++
++                    Nothing ->
++                        []
++               )
++        )
++
++
++{-| Reuse the AgentBadge tone classes for the auto-dispatch pill: active is a
++green "good", paused an amber "warn", off/unknown a muted "neutral".
++-}
++dispatcherToneClass : AgentDispatcher.Mode -> String
++dispatcherToneClass mode =
++    case mode of
++        AgentDispatcher.Active ->
++            "agent-badge--good"
++
++        AgentDispatcher.Paused ->
++            "agent-badge--warn"
++
++        AgentDispatcher.Off ->
++            "agent-badge--neutral"
++
++        AgentDispatcher.Unknown _ ->
++            "agent-badge--neutral"
++
++
++dispatcherPill : AgentDispatcher.Status -> Html Message
++dispatcherPill status =
++    Html.span
++        [ class "agent-badge"
++        , class (dispatcherToneClass status.mode)
++        , id "dispatcher-status-pill"
++        , Html.Attributes.title (dispatcherPillTitle status)
++        ]
++        [ Html.span [ class "agent-badge__dot" ] []
++        , Html.text ("Auto-dispatch: " ++ AgentDispatcher.modeLabel status.mode)
++        ]
++
++
++dispatcherPillTitle : AgentDispatcher.Status -> String
++dispatcherPillTitle status =
++    let
++        srcNote =
++            if status.source == "boot-default" then
++                " (boot default: " ++ AgentDispatcher.modeLabel status.bootDefault ++ ")"
++
++            else
++                ""
++
++        byNote =
++            case status.updatedBy of
++                Just who ->
++                    " · set by " ++ who
++
++                Nothing ->
++                    ""
++
++        atNote =
++            case status.updatedAt of
++                Just when ->
++                    " · " ++ when
++
++                Nothing ->
++                    ""
++    in
++    "Auto-dispatch is " ++ AgentDispatcher.modeLabel status.mode ++ srcNote ++ byNote ++ atNote
++
++
++{-| When auto-dispatch is not active, explain that queued tickets will not run
++until it is resumed — and that manual dispatch from a ticket page still works.
++-}
++dispatcherBanner : Model -> Html Message
++dispatcherBanner model =
++    case Maybe.map .mode model.dispatcher of
++        Just AgentDispatcher.Paused ->
++            bannerBox "Auto-dispatch is paused — queued tickets will not run automatically until it is resumed. You can still dispatch any ticket manually from its page."
++
++        Just AgentDispatcher.Off ->
++            bannerBox "Auto-dispatch is off — queued tickets will not run automatically, and completed runs are not being reconciled. You can still dispatch any ticket manually from its page."
++
++        _ ->
++            Html.text ""
++
++
++bannerBox : String -> Html Message
++bannerBox message =
++    Html.div
++        [ id "dispatcher-banner"
++        , style "margin" "12px 0 0 0"
++        , style "padding" "8px 12px"
++        , style "border" "1px solid #6a5a1f"
++        , style "border-left" "3px solid #d4a72c"
++        , style "background" "#2a2410"
++        , style "color" "#e8d9a0"
++        , style "font-size" "13px"
++        ]
++        [ Html.text message ]
++
++
++{-| Admin-only pause/resume/off controls that PUT the dispatcher mode. The
++control is rendered only for an admin session; the server independently
++enforces the admin tier (a non-admin PUT gets a 403). Uses a two-step
++arm/confirm so a mode change is never a single stray click.
++-}
++dispatcherControls : Session -> Model -> List (Html Message)
++dispatcherControls session model =
++    case ( isAdmin session, model.dispatcher ) of
++        ( True, Just status ) ->
++            let
++                buttons =
++                    [ AgentDispatcher.Active, AgentDispatcher.Paused, AgentDispatcher.Off ]
++                        |> List.filter (\m -> m /= status.mode)
++                        |> List.map (modeButton model.armedMode)
++            in
++            [ Html.div
++                [ id "dispatcher-controls"
++                , style "display" "flex"
++                , style "align-items" "center"
++                , style "gap" "8px"
++                , style "flex-wrap" "wrap"
++                , style "margin" "10px 0 0 0"
+                 ]
++                buttons
+             ]
++
++        _ ->
++            []
++
++
++modeButton : Maybe AgentDispatcher.Mode -> AgentDispatcher.Mode -> Html Message
++modeButton armed target =
++    let
++        token =
++            AgentDispatcher.modeToken target
++    in
++    if armed == Just target then
++        Html.span
++            [ style "display" "inline-flex", style "gap" "6px", style "align-items" "center" ]
++            [ ctrlButton "primary" (ConfirmAgentDispatcherMode token) ("Confirm: " ++ modeActionLabel target)
++            , ctrlButton "secondary" CancelAgentDispatcherMode "Cancel"
++            ]
++
++    else
++        ctrlButton "secondary" (AgentDispatcherModeClicked token) (modeActionLabel target)
++
++
++{-| Verb-first label for the control that switches INTO a mode.
++-}
++modeActionLabel : AgentDispatcher.Mode -> String
++modeActionLabel mode =
++    case mode of
++        AgentDispatcher.Active ->
++            "Resume auto-dispatch"
++
++        AgentDispatcher.Paused ->
++            "Pause auto-dispatch"
++
++        AgentDispatcher.Off ->
++            "Turn off"
++
++        AgentDispatcher.Unknown other ->
++            "Set " ++ other
++
++
++ctrlButton : String -> Message -> String -> Html Message
++ctrlButton kind msg label =
++    let
++        ( bg, fg ) =
++            if kind == "primary" then
++                ( "#2e4f2e", "#cfe8cf" )
++
++            else
++                ( "#2a2929", "#d0d0d0" )
++    in
++    Html.button
++        [ type_ "button"
++        , onClick msg
++        , style "background" bg
++        , style "color" fg
++        , style "border" "1px solid #3d3c3c"
++        , style "padding" "5px 12px"
++        , style "cursor" "pointer"
++        , style "font-size" "13px"
++        , style "white-space" "nowrap"
+         ]
++        [ Html.text label ]
++
++
++isAdmin : Session -> Bool
++isAdmin session =
++    case session.userState of
++        UserStateLoggedIn user ->
++            user.isAdmin
++
++        _ ->
++            False
+ 
+ 
+ content : Model -> Html Message
+diff --git a/web/elm/src/Api/Endpoints.elm b/web/elm/src/Api/Endpoints.elm
+index 859cc61de1..c806737857 100644
+--- a/web/elm/src/Api/Endpoints.elm
++++ b/web/elm/src/Api/Endpoints.elm
+@@ -40,6 +40,7 @@ type Endpoint
+     | AgentMetrics
+     | AgentWorkflowsList
+     | AgentCostRollup
++    | AgentDispatcher
+     | AgentCredentialsStatus
+     | AgentPrincipalsList
+     | AgentPrincipal Int
+@@ -233,6 +234,9 @@ builder endpoint =
+         AgentCostRollup ->
+             base |> appendPath [ "agent", "costs" ]
+ 
++        AgentDispatcher ->
++            base |> appendPath [ "agent", "dispatcher" ]
++
+         AgentCredentialsStatus ->
+             base |> appendPath [ "agent", "user-credentials" ]
+ 
+diff --git a/web/elm/src/Concourse/AgentDispatcher.elm b/web/elm/src/Concourse/AgentDispatcher.elm
+new file mode 100644
+index 0000000000..a1281972d9
+--- /dev/null
++++ b/web/elm/src/Concourse/AgentDispatcher.elm
+@@ -0,0 +1,157 @@
++module Concourse.AgentDispatcher exposing
++    ( Mode(..)
++    , Status
++    , decodeStatus
++    , encodeMode
++    , modeFromString
++    , modeLabel
++    , modeToken
++    )
++
++import Json.Decode
++import Json.Decode.Extra exposing (andMap)
++import Json.Encode
++
++
++{-| The three dispatcher control modes plus an escape hatch for a token this
++build does not recognise. Decoding never crashes on an unknown string — the
++UI treats `Unknown` as a neutral, informational state so a newer server that
++grows the vocabulary degrades gracefully.
++
++  - `active` — the loop auto-dispatches queued tickets and runs the
++    run-completion reconciler.
++  - `paused` — the loop does NOT auto-dispatch, but the reconciler stays alive;
++    manual `fly agent tickets dispatch` still works (a separate, ungated path).
++  - `off` — the loop neither auto-dispatches nor reconciles (fully dormant).
++
++-}
++type Mode
++    = Off
++    | Paused
++    | Active
++    | Unknown String
++
++
++{-| The GET/PUT `/api/v1/agent/dispatcher` payload.
++
++  - `mode` is the EFFECTIVE mode the loop honours right now.
++  - `source` is "setting" when it came from the agent\_settings row, or
++    "boot-default" when no row exists yet (fell back to the boot flag).
++  - `bootDefault` is what the `--agent-dispatcher-enabled` boot flag resolves
++    to, shown so the UI can explain the fallback.
++  - `updatedAt` / `updatedBy` are null (→ Nothing) until someone sets a mode
++    at runtime. `updatedAt` is an RFC3339 string kept verbatim for display.
++
++-}
++type alias Status =
++    { mode : Mode
++    , source : String
++    , updatedAt : Maybe String
++    , updatedBy : Maybe String
++    , bootDefault : Mode
++    }
++
++
++{-| Parse a wire token into a Mode, tolerating anything unexpected. Empty and
++unknown strings become `Unknown` rather than failing the whole decode.
++-}
++modeFromString : String -> Mode
++modeFromString token =
++    case token of
++        "off" ->
++            Off
++
++        "paused" ->
++            Paused
++
++        "active" ->
++            Active
++
++        other ->
++            Unknown other
++
++
++{-| The wire token for a mode. `Unknown` round-trips its raw string.
++-}
++modeToken : Mode -> String
++modeToken mode =
++    case mode of
++        Off ->
++            "off"
++
++        Paused ->
++            "paused"
++
++        Active ->
++            "active"
++
++        Unknown other ->
++            other
++
++
++{-| A short human label for the pill / banner copy.
++-}
++modeLabel : Mode -> String
++modeLabel mode =
++    case mode of
++        Off ->
++            "off"
++
++        Paused ->
++            "paused"
++
++        Active ->
++            "active"
++
++        Unknown other ->
++            if other == "" then
++                "unknown"
++
++            else
++                other
++
++
++defaultTo : a -> Json.Decode.Decoder a -> Json.Decode.Decoder a
++defaultTo default =
++    Json.Decode.maybe >> Json.Decode.map (Maybe.withDefault default)
++
++
++{-| Decode an optional string field: absent OR JSON null OR an unreadable
++value → Nothing.
++-}
++optionalString : String -> Json.Decode.Decoder (Maybe String)
++optionalString fieldName =
++    Json.Decode.maybe (Json.Decode.field fieldName Json.Decode.string)
++        |> Json.Decode.map (Maybe.andThen keepNonEmpty)
++
++
++keepNonEmpty : String -> Maybe String
++keepNonEmpty s =
++    if s == "" then
++        Nothing
++
++    else
++        Just s
++
++
++decodeMode : String -> Json.Decode.Decoder Mode
++decodeMode fieldName =
++    defaultTo "" (Json.Decode.field fieldName Json.Decode.string)
++        |> Json.Decode.map modeFromString
++
++
++decodeStatus : Json.Decode.Decoder Status
++decodeStatus =
++    Json.Decode.succeed Status
++        |> andMap (decodeMode "mode")
++        |> andMap (defaultTo "" <| Json.Decode.field "source" Json.Decode.string)
++        |> andMap (optionalString "updated_at")
++        |> andMap (optionalString "updated_by")
++        |> andMap (decodeMode "boot_default")
++
++
++{-| The PUT body: `{ "mode": "off|paused|active" }`.
++-}
++encodeMode : Mode -> Json.Encode.Value
++encodeMode mode =
++    Json.Encode.object [ ( "mode", Json.Encode.string (modeToken mode) ) ]
+diff --git a/web/elm/src/Message/Callback.elm b/web/elm/src/Message/Callback.elm
+index 58bdcaa0d7..96a121e151 100644
+--- a/web/elm/src/Message/Callback.elm
++++ b/web/elm/src/Message/Callback.elm
+@@ -3,6 +3,7 @@ module Message.Callback exposing (Callback(..))
+ import Browser.Dom
+ import Concourse
+ import Concourse.Agent
++import Concourse.AgentDispatcher
+ import Concourse.AgentReview
+ import Concourse.AgentTicket
+ import Concourse.Pagination exposing (Page, Paginated)
+@@ -75,6 +76,8 @@ type Callback
+     | BuildAgentMetricsFetched (Fetched (List Concourse.Agent.RunMetric))
+     | AgentWorkflowsFetched (Fetched (List Concourse.Agent.WorkflowSummary))
+     | AgentCostRollupFetched (Fetched Concourse.Agent.CostRollup)
++    | AgentDispatcherFetched (Fetched Concourse.AgentDispatcher.Status)
++    | AgentDispatcherSet (Fetched Concourse.AgentDispatcher.Status)
+     | AgentCredentialsFetched (Fetched (List Concourse.Agent.CredentialStatus))
+     | AgentPlatformCredentialsFetched (Fetched (List Concourse.Agent.CredentialStatus))
+     | AgentPrincipalsFetched (Fetched (List Concourse.Agent.Principal))
+diff --git a/web/elm/src/Message/Effects.elm b/web/elm/src/Message/Effects.elm
+index e938f47866..f659b08122 100644
+--- a/web/elm/src/Message/Effects.elm
++++ b/web/elm/src/Message/Effects.elm
+@@ -16,6 +16,7 @@ import Browser.Dom exposing (Viewport, getElement, getViewport, getViewportOf, s
+ import Browser.Navigation as Navigation
+ import Concourse exposing (DatabaseID, encodeJob, encodePipeline, encodeTeam)
+ import Concourse.Agent
++import Concourse.AgentDispatcher
+ import Concourse.AgentReview
+ import Concourse.AgentTicket
+ import Concourse.BuildStatus exposing (BuildStatus)
+@@ -222,6 +223,8 @@ type Effect
+     | FetchAgentRunMetrics
+     | FetchAgentWorkflows
+     | FetchAgentCostRollup
++    | FetchAgentDispatcher
++    | SetAgentDispatcher Concourse.AgentDispatcher.Mode
+     | FetchAgentCredentials
+     | FetchAgentPlatformCredentials
+     | FetchAgentPrincipals
+@@ -829,6 +832,19 @@ runEffect effect key csrfToken =
+                 |> Api.request
+                 |> Task.attempt AgentCostRollupFetched
+ 
++        FetchAgentDispatcher ->
++            Api.get Endpoints.AgentDispatcher
++                |> Api.expectJson Concourse.AgentDispatcher.decodeStatus
++                |> Api.request
++                |> Task.attempt AgentDispatcherFetched
++
++        SetAgentDispatcher mode ->
++            Api.put Endpoints.AgentDispatcher csrfToken
++                |> Api.withJsonBody (Concourse.AgentDispatcher.encodeMode mode)
++                |> Api.expectJson Concourse.AgentDispatcher.decodeStatus
++                |> Api.request
++                |> Task.attempt AgentDispatcherSet
++
+         FetchAgentCredentials ->
+             Api.get Endpoints.AgentCredentialsStatus
+                 |> Api.expectJson Concourse.Agent.decodeCredentialStatuses
+diff --git a/web/elm/src/Message/Message.elm b/web/elm/src/Message/Message.elm
+index 95ae2a4d59..90e388c8d1 100644
+--- a/web/elm/src/Message/Message.elm
++++ b/web/elm/src/Message/Message.elm
+@@ -86,6 +86,10 @@ type Message
+       -- Agent Ticket queue page (client-side filter + sort)
+     | AgentTicketsFilterChanged String
+     | AgentTicketsSortToggled
++      -- Agent Ticket queue page (dispatcher runtime control)
++    | AgentDispatcherModeClicked String
++    | ConfirmAgentDispatcherMode String
++    | CancelAgentDispatcherMode
+       -- common
+     | Hover (Maybe DomID)
+     | Click DomID
+diff --git a/web/elm/tests/AgentTicketsPageTests.elm b/web/elm/tests/AgentTicketsPageTests.elm
+index f64e8c0b91..d3e28f3c8e 100644
+--- a/web/elm/tests/AgentTicketsPageTests.elm
++++ b/web/elm/tests/AgentTicketsPageTests.elm
+@@ -2,6 +2,7 @@ module AgentTicketsPageTests exposing (all)
+ 
+ import Application.Application as Application
+ import Common
++import Concourse.AgentDispatcher as AgentDispatcher
+ import Concourse.AgentTicket as AgentTicket
+ import Data
+ import Expect
+@@ -63,6 +64,19 @@ initAgentTickets =
+         }
+ 
+ 
++dispatcherStatus : String -> Callback.Callback
++dispatcherStatus modeToken =
++    Callback.AgentDispatcherFetched
++        (Ok
++            { mode = AgentDispatcher.modeFromString modeToken
++            , source = "setting"
++            , updatedAt = Just "2026-07-19T12:00:00Z"
++            , updatedBy = Just "operator"
++            , bootDefault = AgentDispatcher.Off
++            }
++        )
++
++
+ all : Test
+ all =
+     describe "ticket queue page"
+@@ -70,14 +84,55 @@ all =
+             \_ ->
+                 List.length sampleTickets
+                     |> Expect.equal 2
+-        , test "fetches tickets and costs on load" <|
++        , test "fetches tickets, costs and dispatcher status on load" <|
+             \_ ->
+                 initAgentTickets
+                     |> Tuple.second
+                     |> Expect.all
+                         [ Common.contains Effects.FetchAgentTickets
+                         , Common.contains Effects.FetchAgentTicketCosts
++                        , Common.contains Effects.FetchAgentDispatcher
+                         ]
++        , test "decodes the dispatcher status wire shape" <|
++            \_ ->
++                Json.Decode.decodeString AgentDispatcher.decodeStatus
++                    """
++                    { "mode": "paused", "source": "setting"
++                    , "updated_at": "2026-07-19T12:00:00Z", "updated_by": "operator"
++                    , "boot_default": "off" }
++                    """
++                    |> Result.map .mode
++                    |> Expect.equal (Ok AgentDispatcher.Paused)
++        , test "tolerates an unknown mode token without crashing" <|
++            \_ ->
++                Json.Decode.decodeString AgentDispatcher.decodeStatus
++                    """{ "mode": "hibernating", "source": "setting", "boot_default": "active" }"""
++                    |> Result.map .mode
++                    |> Expect.equal (Ok (AgentDispatcher.Unknown "hibernating"))
++        , test "renders the auto-dispatch status pill from the fetched status" <|
++            \_ ->
++                Common.init "/agent-tickets"
++                    |> Application.handleCallback (dispatcherStatus "active")
++                    |> Tuple.first
++                    |> Common.queryView
++                    |> Query.find [ Test.Html.Selector.id "dispatcher-status-pill" ]
++                    |> Query.has [ text "Auto-dispatch: active" ]
++        , test "shows the pause banner when auto-dispatch is not active" <|
++            \_ ->
++                Common.init "/agent-tickets"
++                    |> Application.handleCallback (dispatcherStatus "paused")
++                    |> Tuple.first
++                    |> Common.queryView
++                    |> Query.find [ Test.Html.Selector.id "dispatcher-banner" ]
++                    |> Query.has [ text "manually" ]
++        , test "shows no dispatcher banner when auto-dispatch is active" <|
++            \_ ->
++                Common.init "/agent-tickets"
++                    |> Application.handleCallback (dispatcherStatus "active")
++                    |> Tuple.first
++                    |> Common.queryView
++                    |> Query.findAll [ Test.Html.Selector.id "dispatcher-banner" ]
++                    |> Query.count (Expect.equal 0)
+         , test "renders a ticket row with id, title and workflow" <|
+             \_ ->
+                 Common.init "/agent-tickets"
+diff --git a/web/elm/tests/ApiEndpointsTests.elm b/web/elm/tests/ApiEndpointsTests.elm
+index 84aeb73467..d469c726f2 100644
+--- a/web/elm/tests/ApiEndpointsTests.elm
++++ b/web/elm/tests/ApiEndpointsTests.elm
+@@ -334,6 +334,13 @@ testEndpoints =
+                         |> toPath
+                         |> Expect.equal "/api/v1/agent/tickets/12/metrics"
+             ]
++        , describe "AgentDispatcher"
++            [ test "dispatcher control endpoint" <|
++                \_ ->
++                    AgentDispatcher
++                        |> toPath
++                        |> Expect.equal "/api/v1/agent/dispatcher"
++            ]
+         ]
+ 
+ 

@@ -1,0 +1,136 @@
+# Both dual-audit BORDERLINE verdicts were resolved by the curator-fixup pass of
+# 2026-07-25 (see leakage_audit tail + notes.md#fixup-2026-07-25): leading text softened
+# in task/task.md, trigger date reconciled with information_cut, title flag dissolved by
+# the schema's exposure contract (case.yaml is harness-side).
+schema: benchmark-case/v1
+id: fix-ld-002
+title: "read_stage fails on busy looks — console truncates the active-channel string"
+workflow: small-fix
+signature:
+  inputs:  {repository: repository/v1, work-item: work-item/v1}
+  outputs: {change: repository-change/v1}
+source:
+  system: git-commit
+  repo: lightingdesign
+  terminal: 5b96519f5cefba11b8f69828e6fc2eaa1931b4ab
+information_cut: 2026-06-25T15:31:30-07:00
+pre_state:
+  repository: {repo: lightingdesign, ref: 8b17eb9cef630a0f5370963efb0b593459739d1e}
+  work-item:  {path: task/task.md}
+ground_truth:
+  outcome: merged
+  reference_change: ground_truth/reference.diff
+rubric: mechanical
+grading:
+  # Setup: materialize pre_state, then copy the withheld test file into
+  # internal/eos/ BEFORE running fail_to_pass. The withheld test is a purpose-written
+  # black-box test (package eos_test) that drives the field-captured truncated string
+  # through the mock transport and asserts on the EXPORTED seam, eos.Client.ActiveChannels.
+  # It is deliberately NOT the humans' own test: theirs calls the unexported
+  # parseChannelList with the reference's new 3-value signature, so it fails to COMPILE
+  # at pre_state and forces one specific internal API shape. Never grade with it.
+  #
+  # Reproducing the reference state (validation only, NOT part of grading): apply BOTH
+  # ground_truth/reference.diff AND ground_truth/withheld_tests/human_stage_internal_test.diff.
+  # reference.diff alone does not compile at pre_state — it changes parseChannelList's
+  # arity, and the pre-existing internal/eos/stage_internal_test.go calls it with the old
+  # two-value signature. Do not apply either diff on top of the terminal SHA; that commit
+  # already contains both.
+  #
+  # Overlay-collision rule (the task ASKS the agent to write its own truncation test, so
+  # the graded overlay can collide with the solver's work):
+  #   - copy the withheld file in under a bench-reserved basename,
+  #     internal/eos/bench_stage_truncated_selection_test.go, never over a path the solver
+  #     may have authored (e.g. stage_truncated_selection_test.go). Package stays eos_test.
+  #   - the two graded function names (TestActiveChannelsSalvagesTruncatedSelection,
+  #     TestActiveChannelsMidSelectionGarbageStillErrors) are RESERVED by this case. If the
+  #     solver's tree happens to declare either, rename the solver's declaration (and record
+  #     that you did) rather than dropping the overlay — a name clash is a harness event,
+  #     not a solver failure, and dropping the overlay would grade a spurious pass.
+  #   - helper names in the overlay (truncatedActiveChan, startSelectionResponder,
+  #     connectedFakeClient) are reserved on the same terms.
+  #
+  # Ordering: the `go test -race ./... -count=1` pass_to_pass guard is meaningful on the
+  # tree AS MATERIALIZED. Run the pre_state leg WITHOUT the overlay (with it, pre_state
+  # fails by construction — fail_to_pass lives in internal/eos); run the post/solver leg
+  # with the overlay present.
+  #
+  # Mechanical caveat (flexibility lives in ground_truth/rubric.md): fail_to_pass asserts
+  # exactly 38 salvaged channels and partial=true on the exported seam. A correct-in-intent
+  # but conservative fix that also drops the last COMPLETE group (32 channels) fails
+  # mechanically; rubric.md §"Mechanical caveat" tells the judge to score that as a
+  # near-miss on salvage scope, not as a missed root cause. The diagnostic half of this case
+  # (why the missing bytes are unrecoverable) is judged from ground_truth/rubric.md; the
+  # mechanical verdict alone does not cover it.
+  fail_to_pass:
+    - cmd: "go test ./internal/eos/ -run '^TestActiveChannelsSalvagesTruncatedSelection$' -count=1"
+      withheld_test_paths: [ground_truth/withheld_tests/stage_truncated_selection_test.go]
+  pass_to_pass:
+    # Negative guard shipped in the same withheld file: leniency must stay scoped to the
+    # trailing fragment. Passes at pre_state AND with the reference change.
+    - cmd: "go test ./internal/eos/ -run '^TestActiveChannelsMidSelectionGarbageStillErrors$' -count=1"
+      withheld_test_paths: [ground_truth/withheld_tests/stage_truncated_selection_test.go]
+    - {cmd: "go test ./internal/eos/ ./internal/mcp/ -count=1"}
+    - {cmd: "go test -race ./... -count=1"}   # project's `make test`; hermetic, ~15s, no services
+withheld: []
+# Deliberately empty after the fixup re-check: the only pre_state doc that mentions
+# truncation is docs/superpowers/plans/2026-06-17-read-stage.md:54, about OSC feedback
+# timing, not the active-channel string. Kept exposed (authenticity wins); rubric.md
+# credits causal reasoning from evidence, not doc-quotation.
+difficulty: moderate   # unchanged; neither auditor contested it, see notes.md#difficulty
+memorization_risk: none
+# No operator-environment leak for this case: the dev machine's project auto-memory
+# covers jetbridge/concourse incidents only — re-grepped 2026-07-25 for eos /
+# active-channel / ActiveChannels / parseChannelList / read_stage, zero hits. No
+# known_leak_channels entry needed.
+validation:
+  status: validated
+  notes: notes.md#validation
+leakage_audit:
+  - auditor: opus
+    verdict: borderline
+    notes: "task.md is clean of fix vocabulary and no in-tree doc describes the salvage; the pasted 100-char string ending '10..' is unavoidable evidence. Two curator items: the 'Expected behavior' section prescribes salvage-plus-flag and pre-states the negative guard, and information_cut (2026-06-25) sits three weeks BEFORE the task's stated report date (2026-07-16), an internally inconsistent manifest. Also flag case.yaml's title stating 'console truncates', and confirm the withheld test does not force an API shape."
+  - auditor: sonnet
+    verdict: borderline
+    notes: "task.md + pre_state are clean — no fix vocabulary, no post-cut refs, and the only in-tree 'truncat' hit is an unrelated superseded settle-timing comment. Only issue: case.yaml's title restates the exact diagnosis word ('console truncates the active-channel string') that the task body deliberately withholds, inconsistent with the case's own stated scrub; recommend a symptom-level retitle."
+  - auditor: curator-fixup
+    verdict: pass
+    notes: "Fixed: task.md 'Expected behavior' softened (dropped the console-cannot-hand-over framing that pre-stated the load-bearing inference, the salvage-and-flag prescription, and the 'as opposed to whatever is going on above' clause that pre-classified the capture as non-garbage); trigger re-dated 2026-06-25 to match information_cut (cut stays the pre_state commit instant); grading gained an overlay-collision rule (bench-reserved filename + reserved test names) since the task asks the agent to write its own test, a pre_state-leg ordering note, and a mechanical-caveat pointer into rubric.md. Dissolved by exposure contract: both title flags (case.yaml is harness-side, may state the answer). Confirmed: withheld test asserts only on the exported eos.Client.ActiveChannels seam and forces no internal API shape. No auto-memory leak channel for this repo."
+curation:
+  quality: 4
+  learnings: >-
+    The lesson of this case is that the mechanical anchor should sit on the widest
+    exported seam that still discriminates. The humans' own tests exercised the
+    unexported parseChannelList and, in the same commit, changed its arity — so shipping
+    them as the grading artifact would have made "fail at pre_state" a compile error and
+    silently required one specific internal signature. Re-anchoring on
+    eos.Client.ActiveChannels (unchanged signature, black-box via the existing mock
+    transport) buys a real behavioral fail-to-pass and leaves the agent free to put the
+    truncation flag wherever it likes. Rule of thumb: if the reference commit changes a
+    signature the withheld test touches, move the test outward until it stops seeing the
+    change. A corollary the extraction turned up the hard way: a production-only
+    reference.diff is not necessarily a compiling state. Because the fix changes an
+    unexported signature, applying reference.diff alone to pre_state breaks the
+    pre-existing internal test's build — so the convention "reference.diff = production
+    change, tests split out" needs a companion rule: keep the humans' test diff and state
+    that reproducing the reference requires both. Second lesson, about triggers: the
+    honest field report ("read_stage is
+    throwing a parse error on busy looks") sat in an UNTRACKED session-notes file, so it
+    was never in the exposure manifest — but the same sentence named the root cause in
+    its parenthetical, which had to be cut. Operator symptom in, diagnosis out. Third:
+    including the pasted error string is unavoidable (without hardware it is the only
+    reproducible evidence) and it does hand over part of the diagnosis — the residual
+    difficulty is the inference that the missing bytes do not exist anywhere on our side,
+    which mechanical grading cannot see. That half is graded by rubric.md, which is why
+    this case wants mechanical AND judge; the schema's single-valued `rubric` field is
+    the second case in a row to want a list. Two more from the 2026-07-25 fixup. (a)
+    A trigger reconstructed from a real report inherits that report's date, and when the
+    subject repo was idle between the snapshot and the report, that date silently
+    contradicts information_cut. The cut is the pre_state commit instant; re-stamp the
+    exposed trigger to the cut and keep the true report date in the provenance walk —
+    changing the manifest to chase the trigger would mis-state what the pins mean.
+    (b) When the task asks the agent to write a test AND grading copies a withheld test
+    into the same package, the overlay can clobber or collide with the solver's own work.
+    Every such case needs an explicit collision rule: a bench-reserved destination
+    basename, reserved test/helper identifiers, and "rename the solver's declaration,
+    never drop the overlay" — silently dropping it grades a spurious pass.

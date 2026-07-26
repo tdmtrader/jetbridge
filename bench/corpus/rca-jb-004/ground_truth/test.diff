@@ -1,0 +1,273 @@
+diff --git a/atc/worker/jetbridge/node_ip_resolver_test.go b/atc/worker/jetbridge/node_ip_resolver_test.go
+index f908a44287..f3a0191916 100644
+--- a/atc/worker/jetbridge/node_ip_resolver_test.go
++++ b/atc/worker/jetbridge/node_ip_resolver_test.go
+@@ -2,6 +2,7 @@ package jetbridge
+ 
+ import (
+ 	"context"
++	"errors"
+ 	"testing"
+ 
+ 	corev1 "k8s.io/api/core/v1"
+@@ -51,6 +52,33 @@ func TestNodeIPResolver_NodeNotFound(t *testing.T) {
+ 	}
+ }
+ 
++// TestNodeIPResolver_IPShapedInputRejected guards against a regression where
++// callers accidentally pass a pod or node IP (e.g. "10.0.0.5") as the
++// nodeName argument. The K8s Nodes API is keyed by Node object name, never
++// by IP, so such calls would always 404 with a misleading "nodes \"<IP>\"
++// not found" error. We short-circuit before hitting the API.
++func TestNodeIPResolver_IPShapedInputRejected(t *testing.T) {
++	for _, name := range []string{"10.0.0.5", "127.0.0.1", "100.68.228.107", "::1", "2001:db8::1"} {
++		t.Run(name, func(t *testing.T) {
++			cs := fake.NewSimpleClientset()
++			resolver := NewNodeIPResolver(cs)
++
++			_, err := resolver.Resolve(context.Background(), name)
++			if err == nil {
++				t.Fatalf("Resolve(%q): expected error, got nil", name)
++			}
++			if !errors.Is(err, ErrNodeNameIsIP) {
++				t.Errorf("Resolve(%q): expected ErrNodeNameIsIP, got %v", name, err)
++			}
++
++			if actions := cs.Actions(); len(actions) != 0 {
++				t.Errorf("Resolve(%q): expected no K8s API calls, got %d: %+v",
++					name, len(actions), actions)
++			}
++		})
++	}
++}
++
+ func TestNodeIPResolver_NoInternalIP(t *testing.T) {
+ 	node := &corev1.Node{
+ 		ObjectMeta: metav1.ObjectMeta{Name: "node-1"},
+diff --git a/atc/worker/jetbridge/resource_cache_key_test.go b/atc/worker/jetbridge/resource_cache_key_test.go
+new file mode 100644
+index 0000000000..96f1ed33e4
+--- /dev/null
++++ b/atc/worker/jetbridge/resource_cache_key_test.go
+@@ -0,0 +1,47 @@
++package jetbridge
++
++import "testing"
++
++func TestIsResourceCacheKey(t *testing.T) {
++	cases := []struct {
++		key  string
++		want bool
++	}{
++		{"rc-0", true},
++		{"rc-1", true},
++		{"rc-42", true},
++		{"rc-1234567890", true},
++
++		{"", false},
++		{"rc-", false},
++		{"rc", false},
++		{"rc-abc", false},
++		{"rc-1a", false},
++		{"foo-rc-1", false},
++		{"rc-1-suffix", false},
++		{"RC-1", false},
++		{"rc--1", false},
++		{"rc-1/dir", false},
++		{"artifact-handle-1", false},
++	}
++
++	for _, tc := range cases {
++		t.Run(tc.key, func(t *testing.T) {
++			if got := isResourceCacheKey(tc.key); got != tc.want {
++				t.Errorf("isResourceCacheKey(%q) = %v, want %v", tc.key, got, tc.want)
++			}
++		})
++	}
++}
++
++// TestIsResourceCacheKey_MatchesResourceCacheKeyOutput ensures the predicate
++// keeps in sync with the ResourceCacheKey generator: whatever ResourceCacheKey
++// produces must be recognised by isResourceCacheKey.
++func TestIsResourceCacheKey_MatchesResourceCacheKeyOutput(t *testing.T) {
++	for _, id := range []int{0, 1, 7, 42, 99, 100, 9999} {
++		key := ResourceCacheKey(id)
++		if !isResourceCacheKey(key) {
++			t.Errorf("ResourceCacheKey(%d) produced %q, which isResourceCacheKey rejects", id, key)
++		}
++	}
++}
+diff --git a/atc/worker/jetbridge/storage_daemonset_test.go b/atc/worker/jetbridge/storage_daemonset_test.go
+index 33a5823428..9a11d639b9 100644
+--- a/atc/worker/jetbridge/storage_daemonset_test.go
++++ b/atc/worker/jetbridge/storage_daemonset_test.go
+@@ -488,7 +488,7 @@ func TestDaemonSetBackend_WrapVolumeForLookup_WithLocator(t *testing.T) {
+ 	locator.Record("key-1", "source-node", "handle/dir")
+ 
+ 	b := testBackend(locator)
+-	vol := b.WrapVolumeForLookup("key-1", "handle-1", "worker-1", nil)
++	vol := b.WrapVolumeForLookup(context.Background(), "key-1", "handle-1", "worker-1", nil)
+ 
+ 	dsv, ok := vol.(*DaemonSetVolume)
+ 	if !ok {
+@@ -501,7 +501,7 @@ func TestDaemonSetBackend_WrapVolumeForLookup_WithLocator(t *testing.T) {
+ 
+ func TestDaemonSetBackend_WrapVolumeForLookup_WithoutLocator(t *testing.T) {
+ 	b := NewDaemonSetBackend(testDaemonConfig(), nil, nil)
+-	vol := b.WrapVolumeForLookup("key-1", "handle-1", "worker-1", nil)
++	vol := b.WrapVolumeForLookup(context.Background(), "key-1", "handle-1", "worker-1", nil)
+ 
+ 	dsv, ok := vol.(*DaemonSetVolume)
+ 	if !ok {
+diff --git a/atc/worker/jetbridge/worker_test.go b/atc/worker/jetbridge/worker_test.go
+index d9d8b04804..7d4cc12717 100644
+--- a/atc/worker/jetbridge/worker_test.go
++++ b/atc/worker/jetbridge/worker_test.go
+@@ -3,6 +3,7 @@ package jetbridge_test
+ import (
+ 	"context"
+ 	"fmt"
++	"io"
+ 	"net/http"
+ 	"net/http/httptest"
+ 	"strconv"
+@@ -523,6 +524,139 @@ var _ = Describe("Worker", func() {
+ 			})
+ 		})
+ 
++		Context("when a downstream step wraps the returned volume via ArtifactFromVolume", func() {
++			// Regression: FindDaemonResourceCache used to write the daemon
++			// pod IP into the ArtifactLocator under the NodeName field.
++			// Downstream ArtifactFromVolume → WrapVolumeForLookup would
++			// then read that IP back and construct a DaemonSetVolume whose
++			// sourceNode was an IP. StreamOut would hand that IP to
++			// NodeIPResolver.Resolve, which hits the K8s Nodes API and
++			// fails with `nodes "<IP>" not found`.
++			//
++			// This test mirrors the production trigger in
++			// atc/exec/get_step.go:418 — `worker.ArtifactFromVolume(volume)`
++			// is called on whatever FindDaemonResourceCache returned.
++			It("StreamOut on the wrapped artifact succeeds without resolving the daemon IP as a node name", func() {
++				daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++					if r.Method == http.MethodHead && strings.Contains(r.URL.Path, "/resource-caches/") {
++						w.WriteHeader(http.StatusOK)
++						return
++					}
++					if r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/artifacts/") {
++						w.Write([]byte("cached-tar-data"))
++						return
++					}
++					w.WriteHeader(http.StatusNotFound)
++				}))
++				defer daemon.Close()
++
++				addr := daemon.Listener.Addr().String()
++				colonIdx := strings.LastIndex(addr, ":")
++				host := addr[:colonIdx]
++				port, _ := strconv.Atoi(addr[colonIdx+1:])
++
++				daemonClientset := fake.NewSimpleClientset(&discoveryv1.EndpointSlice{
++					ObjectMeta: metav1.ObjectMeta{
++						Name:      "artifact-daemon-abc",
++						Namespace: "test-namespace",
++						Labels: map[string]string{
++							discoveryv1.LabelServiceName: "artifact-daemon",
++						},
++					},
++					Endpoints: []discoveryv1.Endpoint{
++						{Addresses: []string{host}},
++					},
++				})
++
++				daemonCfg := cfg
++				daemonCfg.ArtifactDaemonHostPath = "/var/artifacts"
++				daemonCfg.ArtifactDaemonService = "artifact-daemon"
++				daemonCfg.ArtifactDaemonPort = port
++				daemonWorker := jetbridge.NewWorker(fakeDBWorker, daemonClientset, daemonCfg)
++
++				logger := lagertest.NewTestLogger("test")
++				client := jetbridge.NewDaemonClient(logger, daemonClientset, "test-namespace", "artifact-daemon", port, nil)
++				daemonWorker.SetDaemonClient(client)
++
++				vol, found, err := daemonWorker.FindDaemonResourceCache(ctx, 42)
++				Expect(err).ToNot(HaveOccurred())
++				Expect(found).To(BeTrue())
++				Expect(vol).ToNot(BeNil())
++
++				artifact := daemonWorker.ArtifactFromVolume(vol)
++				Expect(artifact).ToNot(BeNil())
++				Expect(artifact.Handle()).To(Equal("rc-42"))
++
++				reader, err := artifact.StreamOut(ctx, ".", nil)
++				Expect(err).ToNot(HaveOccurred(),
++					"StreamOut must not fail resolving the daemon pod IP as a K8s Node name")
++				Expect(reader).ToNot(BeNil())
++				defer reader.Close()
++
++				body, err := io.ReadAll(reader)
++				Expect(err).ToNot(HaveOccurred())
++				Expect(string(body)).To(Equal("cached-tar-data"))
++			})
++		})
++
++		Context("when a probe hit occurs", func() {
++			// The ArtifactLocator's NodeName field is contractually a K8s
++			// Node object name. A daemon pod IP is not a valid value for
++			// that field. The probe-hit code path does not learn a node
++			// name (it only learns a pod IP), so it must not write to the
++			// locator — downstream lookups re-probe instead.
++			It("writes nothing to the ArtifactLocator for the cache key", func() {
++				daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++					if r.Method == http.MethodHead && strings.Contains(r.URL.Path, "/resource-caches/") {
++						w.WriteHeader(http.StatusOK)
++						return
++					}
++					w.WriteHeader(http.StatusNotFound)
++				}))
++				defer daemon.Close()
++
++				addr := daemon.Listener.Addr().String()
++				colonIdx := strings.LastIndex(addr, ":")
++				host := addr[:colonIdx]
++				port, _ := strconv.Atoi(addr[colonIdx+1:])
++
++				daemonClientset := fake.NewSimpleClientset(&discoveryv1.EndpointSlice{
++					ObjectMeta: metav1.ObjectMeta{
++						Name:      "artifact-daemon-abc",
++						Namespace: "test-namespace",
++						Labels: map[string]string{
++							discoveryv1.LabelServiceName: "artifact-daemon",
++						},
++					},
++					Endpoints: []discoveryv1.Endpoint{
++						{Addresses: []string{host}},
++					},
++				})
++
++				daemonCfg := cfg
++				daemonCfg.ArtifactDaemonHostPath = "/var/artifacts"
++				daemonCfg.ArtifactDaemonService = "artifact-daemon"
++				daemonCfg.ArtifactDaemonPort = port
++				daemonWorker := jetbridge.NewWorker(fakeDBWorker, daemonClientset, daemonCfg)
++
++				logger := lagertest.NewTestLogger("test")
++				client := jetbridge.NewDaemonClient(logger, daemonClientset, "test-namespace", "artifact-daemon", port, nil)
++
++				locator := jetbridge.NewArtifactLocator()
++				daemonWorker.SetArtifactLocator(locator)
++				daemonWorker.SetDaemonClient(client)
++
++				_, found, err := daemonWorker.FindDaemonResourceCache(ctx, 42)
++				Expect(err).ToNot(HaveOccurred())
++				Expect(found).To(BeTrue())
++
++				_, ok := locator.Locate("rc-42")
++				Expect(ok).To(BeFalse(),
++					"probe hits must not write to the ArtifactLocator: "+
++						"the daemon pod IP is not a valid NodeName")
++			})
++		})
++
+ 		Context("when the locator has a stale entry for a dead node", func() {
+ 			It("does not return a cache hit from the stale locator entry", func() {
+ 				// Start a live daemon that does NOT have the cache.

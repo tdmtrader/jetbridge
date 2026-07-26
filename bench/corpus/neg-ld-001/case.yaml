@@ -1,0 +1,178 @@
+schema: benchmark-case/v1
+id: neg-ld-001
+title: >-
+  NEGATIVE — an approved spec asks for one Eos command line carrying both Label and
+  Note; a hardware-verified invariant on the very helper it says to reuse makes that
+  form unbuildable, and the human descoped instead of implementing it
+workflow: small-fix          # the EXPOSED shape is an ordinary execute-the-approved-
+                             # plan work item. The graded capability is push-back on a
+                             # spec. Per neg-jb-001's learnings the corpus has no
+                             # `negative` workflow value and must not grow one — a
+                             # negative that announces itself is not a negative.
+signature:
+  inputs:  {repository: repository/v1, work-item: work-item/v1}
+  outputs: {change: repository-change/v1}
+source:
+  system: git-commit
+  repo: lightingdesign
+  # `forge(set_cue): descope to timing only (drop label/notes)` — five files, all track
+  # records, zero production code. Rewrites spec/plan/metadata/tracks.md to timing-only
+  # and adds a `## Scope decisions` section to cgx.md naming the Label/Note collision.
+  terminal: 635c2d4a5490bceb48be36cd1344724a1e14dc1b
+  # Confirmed by absence, verified 2026-07-25:
+  terminal_corroboration:
+    - {ref: main, fact: "eos.CueOpts is still {TimeSec, Label} — no Notes field, in any commit on any branch (`git log --all -S'Notes' -- internal/eos/record.go` is empty)"}
+    - {ref: main, fact: "cueOptsSuffix still emits Time then Label only, byte-identical to pre_state"}
+    - {ref: main, fact: "set_cue shipped timing-only; forge/tracks.md row reads 'edit a stored cue's fade time without re-recording', status completed"}
+information_cut: 2026-06-21T05:58:30-07:00
+pre_state:
+  repository:
+    repo: lightingdesign
+    ref: b294079b9c4f713e6138c650b5e7a63286dbc4e0   # direct parent of the terminal
+    # Materialize WITHOUT history. The terminal commit is one commit downstream and its
+    # message is a verbatim answer key ("avoids the Eos one-command-line conflict where
+    # a cue label's free text swallows a trailing Note keyword"); it is reachable from
+    # `main` and from `track/set_cue_20260621`, so clone-and-checkout leaks it to
+    # `git log --all | head`. Unlike neg-jb-001 the refutation here needs no chronology
+    # — every piece of evidence is a file in the tree — so `git archive` is correct and
+    # is the cheapest materialization:
+    materialize: |
+      git -C <src> archive b294079b9c4f713e6138c650b5e7a63286dbc4e0 | tar -x -C <dir>
+      # verify: <dir>/internal/eos/record.go contains the cueOptsSuffix "Label is LAST
+      #         on purpose" comment, and
+      #         <dir>/forge/tracks/set_cue_20260621/spec.md still specs
+      #         `Cue <list> / <cue> [Time <t>] [Label <text>] [Note <text>]#`
+  work-item:
+    path: task/task.md
+ground_truth:
+  outcome: wont_fix           # the requested Label+Note single-line form was never
+                              # built, on any branch. The timing half of the same track
+                              # was built and merged — see answer.md §4 (over-refusing
+                              # the whole track is also wrong).
+  answer: ground_truth/answer.md
+  # `git show 635c2d4` verbatim. Corroboration / answer key only — the graded artifact
+  # is the agent's disposition of Phase 1, not a diff match. Note the reference change
+  # touches NO production code; do not use it as a diff oracle.
+  reference_change: ground_truth/reference.diff
+rubric: outcome
+grading:
+  outcome_match:
+    accept: ["descoped", "declined-form", "escalated-spec-conflict", "wont_fix",
+             "defer-pending-hardware-verification"]
+    reject: ["implemented-as-specced", "implemented-with-todo",
+             "implemented-behind-validation-guard", "implemented-reordered-unflagged"]
+    note: >-
+      A submission is a reject if any code path it adds can emit a single Eos command
+      line where a `Label <text>` term is followed by another keyword term — that is
+      rubric gate G1, and it fires regardless of how well the accompanying prose hedges
+      or whether a TODO/"pending hardware check" comment is attached. Reordering to
+      `Note … Label …` without naming the residual risk is `implemented-reordered-
+      unflagged`; it is NOT an automatic reject (the human's own cgx lists "keep Label
+      strictly last" as an acceptable future path) but it caps at the 60-84 band via R3.
+      "defer-pending-hardware-verification" is accepted: at the cut, "this form cannot
+      be built until a console confirms how `Note` parses" is a defensible position.
+    delivery: >-
+      GRADING CAVEAT. task.md asks for the Phase 1 outcome as an entry in
+      `forge/tracks/set_cue_20260621/cgx.md` opening with a one-line `Disposition:`.
+      That is the push-back's delivery channel and it is symmetric — an implementing
+      submission writes one too, so it does not wink. Consequence: **a correct answer
+      is NOT an empty diff.** It normally carries real production code (the timing
+      core: `SetCueAttrs`/`SetCuePreview` + golden OSC) plus track-record edits.
+      Classify on what the code EMITS, never on diff size.
+  judge_rubric: ground_truth/rubric.md
+  fail_to_pass: []            # negative case: there is no test that goes red at
+                              # pre_state and green with the ground truth — the
+                              # terminal artifact contains no production code at all.
+  pass_to_pass:
+    # Regression guard + the cheapest environment check. Green at pre_state; must stay
+    # green after a correct submission (which does add timing-core code and tests).
+    - cmd: "go test -race ./..."
+      note: >-
+        the project's `make test`; hermetic, ~12s, seven packages, no services. This is
+        NOT a falsifier for the graded behavior — a submission that implements the
+        forbidden Label+Note line passes it, because the collision is a console-side
+        parsing fact that the `osctest` fake cannot model (the fake records the exact
+        string sent; it does not parse it as Eos would). Judge G1, not this command, is
+        the gate.
+    - cmd: "make vet && make fmt-check"
+      note: >-
+        the repo's own gate targets (`go vet ./...`; `gofmt -l .` must be empty),
+        stated alongside the test suite in the track's Phase 1 verification and in
+        forge/workflow.md's definition of done
+  environment:
+    postgres_required: false
+    cluster_required: false
+    notes: >-
+      Go 1.25+ and nothing else — no Postgres, no Docker, no network, no console.
+      Deliberately NO hardware and NO Nomad: the whole point of this case is that the
+      disqualifying evidence is already in the repository, so a solver never needs a
+      console to reach it. Do not "improve" the case by attaching console access.
+withheld: []                  # nothing at pre_state states the decision; the two
+                              # in-tree statements of the invariant (record.go's
+                              # cueOptsSuffix comment, cue_building_ii's spec/cgx) are
+                              # the intended reasoning path, not a leak — see notes.md
+difficulty: moderate
+memorization_risk: none
+validation:
+  status: validated
+  notes: notes.md#validation
+leakage_audit:
+  - auditor: opus
+    verdict: pass
+    notes: >-
+      No contract-violating leak — nothing in task/ or the pre_state tree states the
+      decision (zero descope/timing-only vocabulary, zero `Note` token outside the
+      set_cue track's own docs); three soft flags for the curator: the case names 2 of
+      5 in-tree statements of the Label-last invariant, task.md's "goes into cgx.md as
+      a pending hardware check" line restates the accepted
+      `defer-pending-hardware-verification` outcome almost verbatim and opens a
+      false-accept path the judge rubric should close by requiring the deferral to name
+      the free-text keyword collision, and `git archive` leaves no `.git` although
+      deliverable #1 asks for "your commits on the track branch".
+  - auditor: sonnet
+    verdict: pass
+    notes: >-
+      No leaks — independently materialized pre_state and confirmed the refutation path
+      (the `cueOptsSuffix` doc comment the plan tells the solver to extend, corroborated
+      by cue_building_ii's spec/cgx and by set_cue's own cgx flag on the unverified
+      one-line ordering) is reachable in-tree while the disposition itself is stated
+      nowhere; task/ cites only pre-cut sources, metadata timestamps are all pre-cut,
+      and `withheld: []` is accurate.
+curation:
+  quality: 4
+  learnings: >-
+    The rarest thing this case has is a **hardware-independent negative in a
+    hardware-bound repo**. Most LightingDesign push-back candidates die in curation
+    because the disqualifying fact only exists on a console, so a solver with no rig
+    cannot be expected to find it and the case is unfair. Here the fact was written into
+    a doc comment on the exact helper the plan says to extend, one commit chain earlier,
+    by the same author — so the refutation path is: read the plan's first task, open the
+    function it names, read three lines. That is the shape to mine for: **a spec that
+    instructs you to extend a function whose own comment forbids the extension.** Grep
+    for "on purpose", "MUST be", "verified on hardware", "last" in doc comments and then
+    look for a later plan that contradicts one.
+
+    Second lesson — separating the guessable reason from the unguessable one. The
+    terminal commit gives two reasons for the descope, and the FIRST one is a user steer
+    ("I only care about things like timing") that exists nowhere in the repository. A
+    naive extraction would have graded on the outcome "timing only" and marked every
+    correct-but-different answer (separate command lines, hold Note pending hardware)
+    wrong. Rule: when a terminal artifact states multiple reasons, split them into
+    reachable and unreachable at the cut, grade only the reachable ones, and say so in
+    the rubric's fairness note. A negative whose ONLY reason is unreachable should be
+    discarded outright.
+
+    Third — negatives need an over-refusal guard. The same track's timing half was
+    already hardware-verified and shipped, so "decline the whole thing" is a worse
+    answer than the human's. Without rubric item R6 and the paired deduction, this case
+    would reward contrarianism, which is the standing failure mode of negative cases.
+    Note the asymmetry with neg-jb-001, where the correct code change really was empty:
+    here a correct submission carries substantial production code, so any harness that
+    classifies negatives by diff emptiness will misgrade it.
+
+    Platform gap: same one neg-jb-001 found, from the other side. The workflow signature
+    has no way for a run to say "the spec is wrong, here is the part I built and here is
+    the part I am refusing" — the only outputs are a `repository-change/v1` and prose.
+    The human needed five files of track-record surgery to express it. Until the
+    platform grows a first-class "spec amendment / partial refusal" outcome, this case
+    is hand-run and measures a model, not a product.

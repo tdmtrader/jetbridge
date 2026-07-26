@@ -1,0 +1,194 @@
+# Borderline resolved by curator-fixup 2026-07-25: the opus auditor's two
+# leading-text items were removed from task/task.md, the two rubric points the
+# work item states outright are now flagged as compliance-not-judgement in
+# ground_truth/rubric.md, and the project-auto-memory leak channel is declared
+# below. The remaining opus observation — that the review specifies most of the
+# remedy — is a property of the authentic input (the review IS the work item),
+# recorded in curation.learnings, not a defect. No human spot-check outstanding.
+schema: benchmark-case/v1
+id: feedback-jb-003
+title: Answer a 12-finding design review of the agentic-platform plan set — nine corrections, two documented refutations, and a downgraded severity
+workflow: feedback-loop
+signature:
+  inputs:
+    repository: repository/v1
+    review: review/v1          # REVIEW.md §1-§6 — in-tree at pre_state AND copied to task/review.md
+    work-item: work-item/v1    # task/task.md — the "address the review" instruction
+  outputs:
+    change: repository-change/v1
+source:
+  system: git-commit
+  repo: jetbridge
+  terminal: 8157023ae91960df4a3ca2208a87c2062d33c7f1
+information_cut: "2026-07-08T20:38:17-07:00"
+pre_state:
+  repository:
+    repo: jetbridge
+    ref: efb0a8cdb068c5e6e6074e0ffc1d0a63e7218b4f
+    # MUST be materialized detached, with no other refs and no reflog. The
+    # terminal artifact 8157023ae9 is the DIRECT CHILD of this ref: its diff is
+    # the answer and the REVIEW.md §7 section it appends is a per-finding answer
+    # key. It is reachable from `main`, `jetbridge` and ~18 other branch tips.
+    # See notes.md#leakage-analysis.
+    materialize: "git archive efb0a8cdb068c5e6e6074e0ffc1d0a63e7218b4f | tar -x -C <dir>"
+  review:
+    repo: jetbridge
+    path: task/review.md
+    # Byte-identical to docs/superpowers/plans/agentic-platform/REVIEW.md at the
+    # pinned ref (blob 7df38a45f57263f1e02ac886b74aba774c128ea3, 207 lines,
+    # §1-§6). §7 (the resolution log) does not exist at pre_state — the terminal
+    # commit adds it — so a clean checkout is already correctly scrubbed.
+    generated_by: >-
+      git show efb0a8cdb068c5e6e6074e0ffc1d0a63e7218b4f:docs/superpowers/plans/agentic-platform/REVIEW.md
+  work-item:
+    path: task/task.md
+ground_truth:
+  outcome: merged
+  reference_change: ground_truth/reference.diff
+  expected_findings: ground_truth/expected_findings.yaml
+  answer: ground_truth/answer.md
+rubric: judge
+grading:
+  judge_checklist: ground_truth/rubric.md
+  # PRIMARY SCORE is the judge checklist, reported on three separate axes —
+  # coverage (12), disposition (12), restraint (5) — plus cross-file coherence
+  # (3), right-remedy (2) and record-keeping (2). Do NOT collapse to one number
+  # without also reporting the split: the case's whole point is that a response
+  # can score high on coverage and fail on disposition/restraint.
+  #
+  # NOT mechanically gradable on the agent's output. The deliverable is an edit
+  # to 200-4000-line design documents; many textually different edits are
+  # correct, and `reference.diff` is one correct answer, not the only one.
+  #
+  # GRADING CAVEAT (curator-fixup 2026-07-25). Two checklist points are stated
+  # by the work item and therefore score compliance, not judgement: restraint's
+  # "+1 no file outside docs/superpowers/" (task.md scopes the change) and
+  # record-keeping's "+1 per-finding record" (task.md's Deliverable asks for
+  # one, naming no file or format). Both are annotated in rubric.md; when
+  # reporting the restraint axis, say whether the 4 remaining points — the two
+  # for leaving §4 alone, one for §5, one for not re-running the review — were
+  # earned, because those are the ones the work item does not hand over.
+  ground_truth_validation:
+    - cmd: "sh ground_truth/validate_ground_truth.sh"
+      tree: efb0a8cdb068c5e6e6074e0ffc1d0a63e7218b4f
+      expect: "14 MISS, exit 1"
+    - cmd: "sh ground_truth/validate_ground_truth.sh"
+      tree: 8157023ae91960df4a3ca2208a87c2062d33c7f1
+      expect: "14 ok, exit 0"
+      note: >-
+        Fourteen textual anchors (one or two per finding) that are absent at
+        pre_state and present at the terminal artifact. This proves the pinned
+        SHAs carry the claimed before/after states and that the reference diff
+        is real. It does NOT grade an agent — the anchors are keyed to the
+        reference author's exact identifiers, so a correct answer with
+        different names fails every check. Verified by the extractor:
+        notes.md#validation.
+  environment:
+    postgres_required: false
+    cluster_required: false
+    build_required: false
+    notes: >-
+      Nothing in this case compiles or runs. The subject files are markdown
+      design documents; the Go/SQL/YAML inside them are scripts for code that
+      does not exist yet at pre_state (verified: atc/exec/agent_step.go,
+      agent/dispatch/render.go, agent/workflow/parse.go,
+      agent/credentials/platform_syncer.go, agent/outcomewatcher/watcher.go,
+      atc/db/scorecard_store.go and agent/api/metrics/* are all absent). The
+      full repository must still be materialized so the agent can see the
+      surrounding plan set, ROADMAP and spec.
+withheld: []                  # nothing present at pre_state leaks the answer; the
+                              # review IS the task input. See notes.md#leakage-analysis
+                              # for the descendant-reachability story, which is the
+                              # whole exposure risk here.
+difficulty: hard
+# Difficulty re-examined 2026-07-25 against the opus auditor's "the review
+# specifies ~80% of the answer" observation, and KEPT at hard. The observation
+# is about which skill is tested (execution + disposition + restraint rather
+# than diagnosis), not about how hard clearing the bar is: the exposed surface
+# is 2.15 MB across 18 documents, a correct response edits 11 files coherently
+# including a three-owner co-signed seam, and two of the twelve findings are
+# scored 0 if the responder does the obvious thing. Nothing about that is
+# moderate. See notes.md#fixup-2026-07-25.
+memorization_risk: none
+known_leak_channels: [project-auto-memory]
+# This dev machine's project auto-memory summarises decisions downstream of this
+# very review (project_agentic_platform_end_state.md,
+# project_remainder_plans_scoped.md, project_agentic_functions_v3_cleanup.md).
+# It is outside the repo and cannot leak through the exposure manifest, but it
+# IS in a local Claude Code session's context: a hand-run of this case on this
+# machine is void unless project memory, session context and conversation
+# history are suppressed. See notes.md#leakage-analysis.
+validation:
+  status: validated
+  notes: notes.md#validation
+leakage_audit:
+  - auditor: opus
+    verdict: borderline
+    notes: "task/review.md is byte-identical to the in-tree REVIEW.md at pre_state (verified), so the prescriptive 'Recommended change' paragraphs are the authentic input, not a curation leak, and §1-§6 with no §7 confirms the scrub was zero-judgement. But the review specifies ~80% of the answer including all 12 dispositions and the §4 deferral list, so the case grades execution and restraint rather than diagnosis; task.md then softens three of six rubric axes (the 'read what each finding concluded' bullet, 'do not widen the blast radius', and the per-finding record)."
+  - auditor: sonnet
+    verdict: pass
+    notes: "Verified task/review.md is byte-identical to the pre_state REVIEW.md with no §7, and task/ contains no ground_truth/§7/terminal-SHA references. Swept the plan tree for pre-emptive addenda — all existing ones are pre-review wave-start agreements, and spec.md's ambiguous 'Failure handling' sentence is the target of F12, not a hint. Note only that §6 states every disposition in prose, so the disposition trap tests careful reading more than independent judgement."
+  - auditor: curator-fixup
+    verdict: pass
+    notes: "Fixed the two leading-text items in task.md (dropped the 'its verification pass changed some findings — read what each finding actually concluded' cue that pre-warned the disposition trap, and 'do not widen the blast radius' that pre-warned restraint; dropped the clause pointing the record at REVIEW.md itself). House discipline that survives is verified in-tree at the pinned ref (ROADMAP.md:9-12 normativity/Task-1 co-sign/§11 amendment log). Flagged the two rubric points task.md still states outright as compliance-not-judgement, and added a judge note to credit reasoning against the plans over quotation of the review. Declared known_leak_channels: [project-auto-memory]. Corrected the exposed-surface figure in curation.learnings (1.5 MB/15 docs -> 2.15 MB/18 docs, measured) and the stale 'validation.status: unvalidated' line in notes.md. Difficulty re-examined and kept at hard. Residual: the review is prescriptive by construction, which is the case's declared shape, not an exposure defect."
+curation:
+  quality: 5
+  learnings: >-
+    The first feedback-loop case in the corpus, and it establishes the shape:
+    a review that landed as a COMMITTED DOCUMENT, answered by ONE commit that
+    appends its own per-finding resolution log to that same document. Both
+    halves matter. Because the review is in-tree at the cut, the task input is
+    verbatim rather than reconstructed — no scrubbing judgement is needed on
+    the trigger at all, which is the opposite of every fix-shaped case. Because
+    the response records a per-finding disposition, the ground truth is
+    finding-granular instead of diff-granular, which is what makes a judge
+    rubric scoreable. Mine for review documents whose answering commit writes a
+    resolution table; a review answered by scattered commits, or by a commit
+    whose message says "review fixes", backs out into nothing gradeable.
+    The property that makes this case worth its size is that the correct
+    response is HETEROGENEOUS on purpose. Nine findings want a change to the
+    plans' scripts; two (F2, F12) were REFUTED by the review's own verification
+    pass and must be answered with prose, because the mechanism each claimed
+    does not exist; one (F11) is "partly-confirmed" and still needs the code
+    change with only its severity framing walked back. So the severity label
+    and the verification paragraph point in opposite directions twice, in
+    opposite directions from each other. An agent that keys off "BLOCKER" fixes
+    F2's non-existent race; an agent that keys off "partly-confirmed" leaves
+    F11's real bug. Neither failure shows up in coverage — only in disposition.
+    That is the discriminator the corpus was missing, and it argues for hunting
+    specifically for review rounds that ARGUED BACK, not ones where every
+    finding was accepted. A review with no refutations makes a much weaker case.
+    Two construction lessons. (1) The precision oracle came free here and is
+    unusually strong: §6 explicitly defers all of §4's ~20 polish items, and the
+    reference leaves six whole plan files untouched — so "what a correct answer
+    does NOT touch" is derived from artifacts rather than inferred, which
+    review-jb-001 could not do. When a review ranks and defers its own findings,
+    the deferral list is the precision oracle; take it. (2) A doc-only case can
+    still be mechanically VALIDATED even when it cannot be mechanically GRADED.
+    Fourteen textual anchors that are absent at the parent and present at the
+    child prove the SHAs and the diff are what the case claims, in a second, on
+    a tree that needs no toolchain at all — and the same anchors are useless for
+    scoring an agent, because they encode one author's identifiers. Keeping
+    those two uses separated (ground_truth_validation vs rubric) is the thing to
+    carry forward; the temptation to promote a cheap grep into a grader is
+    exactly how a corpus starts rewarding mimicry.
+    (3) Added by the 2026-07-25 fixup, and it generalises: when the curator
+    writes the rubric and the task in the same sitting, the rubric's axes leak
+    into the task as well-meant advice. Three of six axes here had a matching
+    bullet in task.md ("read what each finding actually concluded" for
+    disposition, "do not widen the blast radius" for restraint, a pointer at the
+    review document for record-keeping) — none of which the real trigger (a
+    spoken "apply the review") contained. Nothing was factually false and no
+    answer was named, so a leakage audit scanning for answers finds nothing; the
+    damage is that a judgement axis quietly becomes a compliance axis. Write the
+    task from the trigger alone, then diff it against the rubric and delete
+    every sentence that exists only because you knew what you were going to
+    score. Where a hint must stay because the deliverable genuinely requires it
+    (here: the scope boundary and the ask for a per-finding record), annotate
+    that point in the rubric as compliance rather than deleting the requirement.
+    Residual worry: size. The exposed surface is 2.15 MB of plan markdown across
+    18 documents (verified at the pinned ref: 18 files, 2,153,243 bytes) and the
+    correct response touches 11 of them. If pilot runs fail
+    on budget rather than judgement, the fix is a companion case scoped to one
+    wave (F3+F4+F5 are a natural wave-1/2 slice with the same disposition
+    trap) — not a looser rubric.

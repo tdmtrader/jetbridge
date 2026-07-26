@@ -1,0 +1,228 @@
+# This file is WITHHELD. It is the anchored ground truth for review-jb-004,
+# derived from the remediation commit 793659c7fad09135eabb44420006414d1f1b0c5f
+# ("Adversarial review of the previous two commits confirmed two majors"), which
+# lands 28 minutes after the reviewed change and states both findings in its body.
+#
+# Line numbers are 1-indexed against the PRE-STATE tree
+# (c4d9fcb91412ae3be80c34a7e6d1fedf3f9bb355), i.e. the tree the reviewer sees.
+# Recall is scored over `required: true` findings. Findings with
+# `required: false` were fixed in the same commit but are not the headline
+# majors; credit them, never penalize their absence.
+
+schema: expected-findings/v1
+case: review-jb-004
+oracle:
+  source: git-commit
+  sha: 793659c7fad09135eabb44420006414d1f1b0c5f
+  note: >-
+    A human-authored oracle is a strong recall signal and a weak precision
+    signal. An agent finding that does not appear here may still be true; judge
+    unmatched findings on their own merits (see rubric.md §"Unmatched findings").
+
+findings:
+  - id: F1-linkage-unpinned
+    required: true
+    severity: major
+    class: security/authorization
+    title: >-
+      Destructive pipeline archival is driven by a caller-writable id, so a
+      tickets:write principal can permanently archive another team's pipeline
+    file: atc/db/pipeline_run_factory.go
+    region:
+      anchor: "func terminalTicketLinkage() (string, []any)"
+      lines: "482-498 (pre-state)"
+      also:
+        - {file: atc/db/pipeline_run_factory.go, anchor: "func (f *pipelineRunFactory) RunsForTerminalTickets()", lines: "500-521"}
+        - {file: atc/db/pipeline_run_factory.go, anchor: "func (f *pipelineRunFactory) TemplatesForTerminalTickets()", lines: "523-544"}
+        - {file: atc/runlifecycle/lifecycler.go, anchor: "Run() — new terminal-ticket archive loops", lines: "81-105"}
+    description: >-
+      terminalTicketLinkage() selects template pipeline ids by joining
+      agent_tickets.pipeline_run_id -> pipeline_runs.template_pipeline_id with no
+      constraint tying the resulting pipeline back to the ticket that named it.
+      The two consumers feed those ids straight into run.Archive() /
+      pipeline.Archive() inside the lifecycler's unattended 10s pass. But
+      pipeline_run_id is caller-supplied: PUT /api/v1/agent/tickets/:id/state
+      (agent/api/tickets/handler.go TransitionTicket, ~line 251) copies
+      req.PipelineRunID into TransitionMeta with no validation, and
+      atc/db/agent_tickets_factory.go (~line 240) writes it verbatim
+      (`q.Set("pipeline_run_id", *meta.PipelineRunID)`).
+    exploit: >-
+      A principal with tickets:write creates a ticket, transitions it to a
+      terminal state (e.g. abandoned) with pipeline_run_id pointing at ANY
+      pipeline_runs row it can name — including a run of an unrelated team's
+      pipeline. Within 10s the lifecycler archives that victim's run instance and
+      its base template. Because the ticket stays terminal, every subsequent tick
+      re-archives it: un-archiving by the owner is undone within 10s. Cross-tenant,
+      destructive, unattended, and permanent.
+    why_missed: >-
+      Nothing in the diff shows the write path. The reviewer must leave the diff,
+      find who writes agent_tickets.pipeline_run_id, and notice that this is the
+      first DESTRUCTIVE consumer of that column. The precedent is directly above
+      the new code in the same file: RunBelongsToPipeline and TicketBelongsToRun
+      both exist precisely because these ids are "attacker-writable plan env
+      (F30)" — their doc comments say so at pre-state.
+    reference_fix: >-
+      Pin the linkage to the ticket's OWN dispatch-convention pipeline: join
+      pipelines/teams and require `p0.name = 'agent-ticket-' || t.id::text` AND
+      the team be atc.DefaultTeamName. A poisoned run id can then at worst archive
+      the ticket's own pipelines, which happens at terminal anyway.
+    acceptable_alternatives:
+      - "Verify the linkage server-side at write time (reject a transition whose pipeline_run_id is not a run of the ticket's own agent-ticket-<id> template) instead of at read time."
+      - "Make pipeline_run_id non-caller-settable on the transition route (dispatch-only writer) and reject client-supplied values."
+      - "Any other fix that bounds the blast radius to pipelines the ticket legitimately owns."
+    not_acceptable:
+      - "Only logging the archive, or making it reversible, without bounding which pipelines can be selected."
+      - "Restricting the tickets:write scope in docs without a code-level bound."
+
+  - id: F2-cost-chip-stale-on-build-switch
+    required: true
+    severity: major
+    class: correctness/state-staleness
+    title: >-
+      The once-per-build agent fetch guard never fires on an in-app build switch,
+      so build B renders build A's agent spend
+    file: web/elm/src/Build/Build.elm
+    region:
+      anchor: "handleBuildFetched -> let fetchAgentReviews = ..."
+      lines: "682-694 (pre-state)"
+      also:
+        - {file: web/elm/src/Build/Build.elm, anchor: "handleCallback -> BuildAgentMetricsFetched (Ok rows)", lines: "332-333"}
+        - {file: web/elm/src/Build/Build.elm, anchor: "changeToBuild — resets prep/output/autoScroll/highlight only", lines: "185-190"}
+        - {file: web/elm/src/Build/Header/Header.elm, anchor: "changeToBuild -> updatedModel = { model | id = b.id, ... }", lines: "347-379 (unchanged by the diff; this is the cause)"}
+    description: >-
+      The new metrics fetch is placed inside the pre-existing guard
+      `if not model.hasLoadedYet || build.id /= model.id`. On an in-app build
+      switch (clicking another build in the history strip) Build.changeToBuild
+      delegates to Header.changeToBuild, which stamps `model.id = b.id` from the
+      already-fetched history BEFORE build B's BuildFetched callback arrives. By
+      the time handleBuildFetched runs, `build.id == model.id` and
+      `model.hasLoadedYet` is True, so the guard is false: neither
+      FetchBuildAgentReviews nor FetchBuildAgentMetrics is issued. Nothing clears
+      model.agentRunMetrics either — changeToBuild resets prep/output/autoScroll/
+      highlight and not the agent state — so the page keeps rendering build A's
+      rows under build B's header.
+    exploit: >-
+      Open build 1 of an agent job (recorded spend $0.50), click build 2 in the
+      history strip. Build 2's page shows "agent spend $0.50 · 1 run". The chip is
+      money attributed to the wrong build, with no error and no loading state, and
+      it persists until a full page reload.
+    why_missed: >-
+      The guard is pre-existing code the diff only adds a line to, and its comment
+      asserts the opposite of what happens. Confirming the defect requires reading
+      Header.changeToBuild, which the diff does not touch, and knowing the order in
+      which changeToBuild and BuildFetched run.
+    reference_fix: >-
+      Track the build id the agent data was last fetched for
+      (`agentFetchedBuildId : Maybe Int` on the model); gate the fetch on
+      `model.agentFetchedBuildId /= Just build.id` and, when it differs, clear
+      agentRunMetrics / agentReviews / agentReviewLoadError.
+    acceptable_alternatives:
+      - "Clear the agent state in changeToBuild and gate the fetch on the cleared state."
+      - "Any guard that survives Header stamping model.id early — the requirement is that switching builds refetches AND does not render the previous build's rows."
+    not_acceptable:
+      - "Removing the guard entirely so every 1s pending-poll re-requests reviews and metrics (the guard exists to stop that; regressing it is a different bug, not a fix)."
+      - "Hiding the chip while a fetch is in flight without ever issuing the fetch."
+
+  - id: F2b-late-metrics-response-not-filtered
+    required: false
+    severity: minor
+    class: correctness/race
+    title: >-
+      BuildAgentMetricsFetched carries no build id, so a slow response for the
+      previous build overwrites the current build's rows
+    file: web/elm/src/Build/Build.elm
+    region:
+      anchor: "handleCallback -> BuildAgentMetricsFetched (Ok rows) -> ( { model | agentRunMetrics = rows }, effects )"
+      lines: "332-333 (pre-state)"
+    description: >-
+      The callback is assigned unconditionally. Each RunMetric row already carries
+      its own buildId, but nothing checks it against model.id, so a response that
+      was in flight when the user switched builds lands on the new build.
+    reference_fix: "Filter the incoming rows by `r.buildId == model.id`."
+    note: >-
+      Same cluster as F2 and fixed in the same hunk. Credit it as part of F2 or on
+      its own; do not require it separately.
+
+  - id: F2c-live-build-spend-never-refreshed
+    required: false
+    severity: minor
+    class: correctness/staleness
+    title: >-
+      A build watched live keeps its page-load spend snapshot after it finishes
+    file: web/elm/src/Build/Build.elm
+    region:
+      anchor: "handleDelivery -> EventsReceived, `case ( model.hasLoadedYet, buildStatus ) of`"
+      lines: "421-432 (pre-state)"
+    description: >-
+      Agent steps ingest their cost metrics as they complete. A user who loads a
+      running build fetches metrics once at page load and never again, so when the
+      build finishes the chip still shows whatever had been recorded at load time
+      (usually $0 / no chip at all).
+    reference_fix: >-
+      When a build the page is watching transitions from running to a terminal
+      status, emit FetchBuildAgentMetrics model.id.
+    note: "Fixed in the same commit; not a headline major. Credit, do not require."
+
+  - id: F3-template-holdback-asymmetry
+    required: false
+    severity: minor
+    class: correctness/consistency
+    title: >-
+      TemplatesForTerminalTickets has no still-running hold-back, so the base
+      template archives while one of its runs is still executing
+    file: atc/db/pipeline_run_factory.go
+    region:
+      anchor: "func (f *pipelineRunFactory) TemplatesForTerminalTickets()"
+      lines: "523-544 (pre-state)"
+    description: >-
+      RunsForTerminalTickets deliberately holds back runs whose status is still
+      'running' so the lifecycler's Finish pass can complete them first. The
+      templates pass has no equivalent predicate, so a ticket that goes terminal
+      while an attempt is still executing loses its template card immediately while
+      the run instance survives — the group does not converge as a unit, and the
+      still-running run's pipeline is archived out from under it.
+    evidence_in_diff: >-
+      The reviewed change's own spec asserts the asymmetry as intended: "the
+      template itself never runs builds, so it archives right away"
+      (atc/db/pipeline_run_factory_test.go, the aggregate-running hold-back spec).
+      A reviewer who reads the tests against the commit message should notice the
+      hold-back claim applies to only one of the two passes.
+    reference_fix: >-
+      Mirror the hold-back onto the templates pass:
+      `NOT EXISTS (SELECT 1 FROM pipeline_runs r1 WHERE r1.template_pipeline_id = p.id AND r1.status = 'running')`.
+    note: >-
+      Named by the oracle commit only as a rider on F1 ("Also mirrored the
+      still-running hold-back onto the templates pass"). A strong review finds it;
+      recall is not scored on it.
+
+non_findings:
+  # Things that look like defects at a glance and are NOT. Flagging one of these
+  # as a major is a precision miss; see rubric.md.
+  - id: N1-to_regclass-probe
+    claim: "The agentTicketsTableExists() to_regclass probe is a TOCTOU race / an extra round trip per tick."
+    verdict: not-a-defect
+    why: >-
+      Deliberate and documented: Postgres resolves every relation named in a query
+      at parse time, even in dead branches, so a pre-ticket-core DB would error on
+      the main query regardless of any Go-side guard. Two cheap statements per 10s
+      tick is not a cost problem. Losing the race only means one wasted tick.
+  - id: N2-reconciler-not-transition-hook
+    claim: "Archiving should hang off the ticket transition rather than a 10s reconciler."
+    verdict: not-a-defect
+    why: >-
+      Explicitly argued in the commit message and correct: the reconciler catches
+      every Transition writer, survives a restart between transition and archive,
+      and can never block or fail a transition. Terminal states have no outgoing
+      edges, so it cannot race a requeue.
+  - id: N3-terminal-states-duplication
+    claim: "tickets.TerminalStates() duplicates the validTransitions map."
+    verdict: not-a-defect
+    why: >-
+      The commit removes the duplicate switch in ValidState and routes it through
+      IsTerminal — this is the de-duplication, not a new copy.
+  - id: N4-cost-chip-rounding
+    claim: "Summing Float costs client-side loses precision."
+    verdict: nit-at-most
+    why: >-
+      Real but immaterial at USD-cents scale for a provenance chip; not a major and
+      not what the change is for.

@@ -1,0 +1,102 @@
+# Status: RESOLVED by curator-fixup 2026-07-25. The v0 borderline/fail votes were
+# either dissolved by the exposure contract (case.yaml, grading configs and withheld
+# filenames are harness-side and never exposed) or fixed here; see leakage_audit and
+# notes.md#fixup-2026-07-25.
+schema: benchmark-case/v1
+id: fix-ld-001
+title: "set_look fails to replace the look on a real console"
+workflow: small-fix
+signature:
+  inputs:  {repository: repository/v1, work-item: work-item/v1}
+  outputs: {change: repository-change/v1}
+source:
+  system: git-commit
+  repo: lightingdesign
+  terminal: 7d48580013ad63963dacc8c81e4b6593d217cc22
+information_cut: 2026-06-20T08:41:57-07:00
+pre_state:
+  repository: {repo: lightingdesign, ref: 0eee2d88c3d827e7c0ad30e05d009068e3a5414d}
+  work-item:  {path: task/task.md}
+ground_truth:
+  outcome: merged
+  reference_change: ground_truth/reference.diff
+rubric: mechanical
+grading:
+  # Setup: materialize pre_state, then copy the withheld test file into
+  # internal/eos/ BEFORE running fail_to_pass. The withheld test is delivered as a
+  # standalone file (package eos_test) rather than as a patch to the existing
+  # internal/eos/look_test.go, so it can be dropped in without conflicting with
+  # whatever the agent writes. Do NOT also apply it on top of the terminal SHA —
+  # that commit already contains the same function inside look_test.go.
+  #
+  # Collision rule: the task asks the agent to write its own failing test, so the
+  # overlay can in principle clash with it (same function name, or the same file
+  # path). If injecting the overlay produces a redeclaration/compile error, rename
+  # the INJECTED copy (file and function) and re-run. That is a harness collision,
+  # never a fail_to_pass failure, and the agent's own test must never be deleted or
+  # overwritten to make room for the overlay.
+  #
+  # Overlay ordering: pass_to_pass is evaluated on the tree WITHOUT the overlay
+  # copied in. With it present, `go test ./internal/eos/` and `go test -race ./...`
+  # fail at pre_state by construction (the overlay IS the fail_to_pass test), which
+  # would read as a spurious regression. Run the guards before injecting, or inject
+  # into a separate copy of the tree.
+  #
+  # CAVEAT — the mechanical oracle is prescriptive about a form the task leaves open.
+  # fail_to_pass asserts the literal `Chan 1 Thru <N> At 0#` ordered before the target
+  # set. task.md asks only for a fix; it names no wire form and no ceiling, and the
+  # repo already ships an equally read-free primitive (ReleaseChannels ->
+  # `Chan <spec> At Out#`, internal/eos/levels.go). A read-free clear written that way
+  # is CORRECT and fails this test. Grade such runs with ground_truth/rubric.md
+  # ("Accepted alternatives to the reference wire form") and report the mechanical and
+  # rubric results separately — never average them, never record a rubric-passing run
+  # as a plain fail.
+  fail_to_pass:
+    - cmd: "go test ./internal/eos/ -run '^TestSetLookBlackoutIsReadFree$' -count=1"
+      withheld_test_paths: [ground_truth/withheld_tests/look_readfree_blackout_test.go]
+  pass_to_pass:
+    - {cmd: "go test ./internal/eos/ -count=1"}
+    - {cmd: "go test ./internal/mcp/ ./internal/osctest/ -count=1"}
+    - {cmd: "go test -race ./..."}   # project's `make test`; hermetic, ~12s, no services
+withheld: []
+difficulty: moderate
+memorization_risk: none
+validation:
+  status: validated
+  notes: notes.md#validation
+leakage_audit:
+  - auditor: opus
+    verdict: borderline
+    notes: "Solver channel is clean — no post-cut vocabulary, and the in-tree pre_state docs point AWAY from the fix (cgx.md endorses the ActiveChannels read that IS the bug). Mild hint: the 'other observations' block pairs the empty-stage flakiness with its mechanism, most of the analytic leap. Real risks are curator-side: fail_to_pass names TestSetLookBlackoutIsReadFree, the withheld filename is look_readfree_blackout_test.go, and learnings quote the exact wire form; grading may pin a form the task leaves open (At 0# vs the in-repo ReleaseChannels 'At Out#' precedent, and N unspecified)."
+  - auditor: sonnet
+    verdict: fail
+    notes: "task.md and pre_state are clean and the diagnosis is honestly derivable from in-tree design docs plus the `if len(live) > 0` gate. Fails on case.yaml, which sits inside the audited exposure: learnings quote the root cause ('this code path must not depend on a read') and the exact wire form ('Chan 1 Thru N At 0#'), name the wrong alternatives, and cite a post-fix SHA, while the fail_to_pass test name encodes 'read free'."
+  - auditor: curator-fixup
+    verdict: pass
+    notes: "Dissolved sonnet's FAIL and opus's curator-side items by the exposure contract (case.yaml/grading/withheld filenames are never exposed — no renames). Fixed: softened the task.md 'empty read_stage' bullet to drop the mechanism restatement (kept the symptom; the mechanism stays derivable from in-tree cgx); moved the wire-form flexibility into rubric.md (ReleaseChannels `At Out#` and unspecified ceiling N now first-class alternatives, split reporting mandated) and recorded the caveat in grading; added overlay-collision and pass_to_pass-ordering rules; told the judge to credit causal reasoning over doc-quotation. withheld stays [] (in-tree track docs point at the buggy design, not the fix); no operator-memory leak found for this case."
+curation:
+  quality: 5
+  learnings: >-
+    A bug that only exists against real hardware backs out into an unusually clean
+    case: the pre-state test suite is fully green, so the agent gets no free signal
+    from the repo, and the whole difficulty sits in reasoning from an operator
+    symptom to "this code path must not depend on a read". The trigger had to be
+    reconstructed from a cgx note written one commit AFTER the fix (8d464dd) —
+    worth knowing that in forge-style repos the honest symptom text usually lives
+    in the post-hoc track log, and must be split from the root-cause text that sits
+    beside it in the same paragraph. The mechanical test is prescriptive about the
+    wire form ("Chan 1 Thru N At 0#"), so a correct-but-different fix (per-channel
+    sweep, a Sneak/fade) fails it; pairing mechanical with the judge rubric is the
+    mitigation, and cases like this argue for the schema allowing a rubric list
+    rather than one value. Sharpened at fixup: the strongest counter-example is not
+    hypothetical — the repo already ships ReleaseChannels ("Chan <spec> At Out#"), so
+    the most idiomatic read-free fix available to the agent fails the oracle on a
+    suffix. Rule of thumb this case yields: when the trigger deliberately leaves a
+    form open, the mechanical oracle is one accepted witness, not the definition of
+    correct; the accepted-alternatives list belongs in rubric.md with split (never
+    averaged) reporting. Second fixup lesson: both v0 auditors spent most of their
+    verdict on case.yaml, test names and withheld filenames — text the exposure
+    contract dissolves — so auditors must be given the exposure boundary up front or
+    they burn budget on harness-side strings and under-audit task/. Platform note:
+    this case needs no database and no
+    network, which makes it a good smoke case for a hermetic non-jetbridge runner.

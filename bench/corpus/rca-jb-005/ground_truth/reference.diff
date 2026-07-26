@@ -1,0 +1,95 @@
+diff --git a/atc/engine/step_factory.go b/atc/engine/step_factory.go
+index 9f5d4271be..89fd5241d9 100644
+--- a/atc/engine/step_factory.go
++++ b/atc/engine/step_factory.go
+@@ -279,6 +279,13 @@ func (factory *coreStepFactory) AgentStep(
+ 	if factory.agentMetricsStore != nil {
+ 		agentOpts = append(agentOpts, exec.WithAgentMetricsStore(factory.agentMetricsStore))
+ 	}
++	if factory.agentTranscriptStore != nil {
++		// The transcript is captured by THIS step's runner (the IMPLEMENT
++		// step) — never the harvest step's, whose flight volume never
++		// contains it — so ingestion must be wired here, not (only) into
++		// harvestOpts below.
++		agentOpts = append(agentOpts, exec.WithAgentStepTranscriptStore(factory.agentTranscriptStore))
++	}
+ 	if factory.agentBudgetChecker != nil {
+ 		agentOpts = append(agentOpts, exec.WithAgentBudgetChecker(factory.agentBudgetChecker))
+ 	}
+diff --git a/atc/exec/agent_step.go b/atc/exec/agent_step.go
+index 38c0ec9089..198ab5b53b 100644
+--- a/atc/exec/agent_step.go
++++ b/atc/exec/agent_step.go
+@@ -101,6 +101,17 @@ func WithAgentRunVerifier(v AgentRunVerifier) AgentStepOption {
+ 	return func(s *AgentStep) { s.runVerifier = v }
+ }
+ 
++// WithAgentStepTranscriptStore sets the store the agent step's own
++// server-side flight ingestion upserts the runner-captured tool-call
++// transcript (flight/transcript.ndjson) into (agent_run_transcripts, ticket
++// #43). The transcript is captured by THIS step's runner — the IMPLEMENT
++// (agent) step — never the harvest step's, whose flight volume never
++// contains it. nil disables ingestion — never fatal (observability is
++// best-effort).
++func WithAgentStepTranscriptStore(ts HarvestTranscriptStore) AgentStepOption {
++	return func(s *AgentStep) { s.transcriptStore = ts }
++}
++
+ // AgentStep runs the claude CLI (via the agent-runner entrypoint) in a
+ // jetbridge pod with declared MCP sidecars, then ingests the flight
+ // recorder server-side (shared-contracts §2.8, §5, §8.1).
+@@ -121,6 +132,10 @@ type AgentStep struct {
+ 	budgetChecker       budget.Checker
+ 	runVerifier         AgentRunVerifier
+ 	platformTokenSecret string
++
++	// transcriptStore is the ticket #43 ingestion seam — optional,
++	// nil-guarded. Wired via WithAgentStepTranscriptStore.
++	transcriptStore HarvestTranscriptStore
+ }
+ 
+ func NewAgentStep(
+@@ -836,6 +851,43 @@ func (step *AgentStep) ingestFlightRecorder(
+ 				}
+ 			}
+ 		}
++
++		// transcript.ndjson: the raw tool-call transcript (ticket #43),
++		// captured by THIS step's runner — the agent step is where the
++		// transcript actually lives; the harvest step's flight volume never
++		// contains it. Its own store, keyed like the metrics row on
++		// (build_id, plan_id); a missing/failed transcript never affects
++		// metric ingestion. Bounded to the last 512KiB server-side as
++		// defense-in-depth (the runner already bounded it) — observability is
++		// best-effort, never fatal.
++		if step.transcriptStore != nil {
++			rc, err = step.streamer.StreamFile(ingestCtx, flightArtifact, "transcript.ndjson")
++			if err != nil {
++				logger.Error("failed-to-stream-flight-file", err, lager.Data{"file": "transcript.ndjson"})
++			} else if rc != nil {
++				raw, readErr := io.ReadAll(io.LimitReader(rc, 8<<20))
++				rc.Close()
++				if readErr != nil {
++					logger.Error("failed-to-read-flight-file", readErr, lager.Data{"file": "transcript.ndjson"})
++				} else if len(raw) > 0 {
++					nd, byteLen, truncated := boundTranscriptTail(raw)
++					tr := db.AgentRunTranscript{
++						BuildID:   step.metadata.BuildID,
++						PlanID:    string(step.planID),
++						StepName:  step.plan.Name,
++						NDJSON:    nd,
++						ByteLen:   byteLen,
++						Truncated: truncated,
++					}
++					if ticketID > 0 {
++						tr.TicketID = &ticketID
++					}
++					if err := step.transcriptStore.Upsert(tr); err != nil {
++						logger.Error("failed-to-ingest-transcript", err)
++					}
++				}
++			}
++		}
+ 	}
+ 
+ 	if !flightRead {

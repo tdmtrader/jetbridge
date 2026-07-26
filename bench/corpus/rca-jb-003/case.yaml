@@ -1,0 +1,288 @@
+schema: benchmark-case/v1
+id: rca-jb-003
+title: >-
+  RCA — the terminal-end process-group kill is a silent no-op on every Linux
+  image, because dash's built-in kill rejects the `--` before a negative pid
+workflow: log-diagnosis
+signature:
+  inputs:
+    repository: repository/v1
+    work-item: work-item/v1
+    evidence: evidence-bundle/v1   # PROPOSED port type — see curation.learnings
+  outputs:
+    diagnosis: analysis/v1         # PROPOSED port type — see curation.learnings
+    change: repository-change/v1
+source:
+  system: git-commit
+  # The fix. Its subject line and its added doc comment both name the mechanism
+  # verbatim ("dash and busybox builtin kills reject `--` before a negative
+  # pid"), so it is a complete answer key and must never be reachable.
+  terminal: 45bd9f34b217c5c7374928e16a68a73a04504c2f
+information_cut: 2026-07-16T16:29:11-07:00
+pre_state:
+  repository:
+    repo: jetbridge
+    ref: 44fdad0f64b079979b9573de8095ead6bbafff2b
+    # Git history AT AND BELOW this ref is legitimate context and should be kept:
+    # the defect and its behavioural spec arrive together at 3b81488ef1 with a
+    # message that never mentions shells, and 582f4aebe8 is a genuine prior about
+    # a *different* busybox quirk (see notes.md#leakage-analysis — deliberately
+    # not withheld). What must not be reachable is the fix, which is a direct
+    # CHILD of this ref and is on the `jetbridge` tip plus ~20 other branch tips.
+    # `git archive` is sufficient if the agent gets no repository history at all;
+    # if it gets a working git repo, strip everything not reachable from HEAD:
+    materialize: |
+      git clone --no-hardlinks <src> <dir>
+      cd <dir>
+      git checkout --detach 44fdad0f64b079979b9573de8095ead6bbafff2b
+      git for-each-ref --format='%(refname)' | xargs -r -n1 git update-ref -d
+      git reflog expire --expire=now --all
+      git gc --prune=now
+      # verify: `git cat-file -e 45bd9f34b2^{commit}` must FAIL
+      #         `git cat-file -e 44fdad0f64^{commit}` must SUCCEED
+      #         `git cat-file -e 3b81488ef1^{commit}` must SUCCEED
+      #         `git ls-tree HEAD bench/` must be EMPTY (self-hosted-corpus check)
+  work-item:
+    path: task/task.md
+  evidence:
+    # Build output for the red job + the green local run, and the two-machine
+    # environment comparison. Reconstructed, not captured — the reconstruction is
+    # grounded in a real dash reproduction; see notes.md#leakage-analysis for
+    # exactly what is observed and what is inferred.
+    path: task/evidence/          # ci-build-log.md + environment.md
+ground_truth:
+  outcome: merged
+  reference_change: ground_truth/reference.diff
+  answer: ground_truth/answer.md
+rubric: mechanical
+grading:
+  # THE UNUSUAL PROPERTY OF THIS CASE: the fail-to-pass spec is not a test written
+  # alongside the fix. `supervisor_script_test.go` is byte-identical at pre_state
+  # and at the terminal artifact — it already existed, already executed the kill
+  # script through the local `sh`, and was already red on Linux. Nothing has to be
+  # withheld to make the gate honest, and no test can be tuned to the fix.
+  #
+  # THE GATE IS ENVIRONMENTAL. The spec passes at pre_state under a bash `sh` and
+  # fails at pre_state under a dash `sh`. A grader that runs only on macOS sees
+  # green before AND after and learns nothing. `sh` MUST resolve to dash (or
+  # busybox ash) for the fail_to_pass command. `preflight` below turns that from
+  # a comment a harness can ignore into a command that fails loudly.
+  preflight:
+    # MANDATORY, RUN FIRST. Asserts the environment can discriminate the defect at
+    # all: that the `sh` the graded commands will use parses `kill -0 -- "-<pid>"`
+    # DIFFERENTLY from `kill -0 "-<pid>"`. Under dash the two differ (exit 2 vs 1);
+    # under bash they are identical, and under bash this whole case is a no-op that
+    # reports green at both ends — the most dangerous outcome a bench can produce.
+    # Behaviour-based on purpose: it does not name a shell, so busybox ash, dash and
+    # any future built-in with the same parsing rule all satisfy it.
+    - cmd: >-
+        mkdir -p /tmp/rca-jb-003-shim &&
+        ln -sf "$(command -v dash || echo /bin/dash)" /tmp/rca-jb-003-shim/sh &&
+        PATH=/tmp/rca-jb-003-shim:$PATH sh -c
+        'a=$(kill -0 -- "-999999" 2>/dev/null; echo $?);
+        b=$(kill -0 "-999999" 2>/dev/null; echo $?);
+        [ "$a" != "$b" ]'
+      expect: >-
+        exit 0. If this exits non-zero the environment cannot express this case:
+        the run MUST be reported as ERRORED / NOT-RUN. Reporting it as a pass — of
+        the fix, of the pre_state, or of anything else — is a false result.
+        (Verified on the curation host 2026-07-25: dash-shim exit 0, bash `/bin/sh`
+        exit 1.)
+  fail_to_pass:
+    - cmd: >-
+        mkdir -p /tmp/rca-jb-003-shim &&
+        ln -sf "$(command -v dash || echo /bin/dash)" /tmp/rca-jb-003-shim/sh &&
+        PATH=/tmp/rca-jb-003-shim:$PATH
+        go test ./atc/worker/jetbridge/ -count=1 -timeout 20m
+        -args -ginkgo.focus='terminal-end kill tears down the still-running supervised process tree'
+      withheld_test_paths: []      # none: the oracle spec exists at pre_state
+      focus_spec: >-
+        Task exec supervisor script execution / terminal-end kill tears down the
+        still-running supervised process tree
+      note: >-
+        On a Debian/Alpine host `/bin/sh` is already dash/ash and the shim is a
+        no-op; the shim exists so the gate is also runnable on macOS, where
+        `/bin/sh` is bash 3.2 and would mask the defect. Expected: FAIL at
+        pre_state (Eventually times out after 10s at supervisor_script_test.go:152),
+        PASS with the reference change.
+  pass_to_pass:
+    # SCOPED, and the scoping is load-bearing. Two specs at pre_state assert the
+    # BUGGY script text literally — `supervisor_test.go` "terminates the runner's
+    # whole process group..." and `process_test.go` "kills the supervised agent
+    # process tree...". They pass at pre_state and go red against ANY correct fix,
+    # because they pin the defect. They are therefore not regression guards; they
+    # are part of the defect, and the reference change rewrites them. Grading them
+    # here would fail an otherwise-correct minimal fix for declining an item that
+    # ground_truth/rubric.md §A lists as credit-not-required. Both focus fragments
+    # are unique in the package at pre_state (checked with `git show <pre>:<file>`),
+    # so the run must report exactly 2 skipped — 3 on the dash leg, see below.
+    # The dash leg additionally skips the oracle spec itself — `fail_to_pass` owns
+    # it, and it is red at pre_state under dash, so including it here would mean
+    # this "must pass before and after" command does not pass before.
+    - cmd: >-
+        mkdir -p /tmp/rca-jb-003-shim &&
+        ln -sf "$(command -v dash || echo /bin/dash)" /tmp/rca-jb-003-shim/sh &&
+        PATH=/tmp/rca-jb-003-shim:$PATH
+        go test ./atc/worker/jetbridge/ -count=1 -timeout 20m
+        -args -ginkgo.skip='terminates the runner|kills the supervised agent process tree|terminal-end kill tears down'
+      expect: "pass at pre_state AND after the change, with exactly 3 specs skipped"
+    # And on the host shell, which is where the developer runs it. No oracle skip
+    # here: under bash that spec is green at both ends, and its being green is the
+    # evidence that this is a portability defect and not a broken test.
+    - cmd: >-
+        go test ./atc/worker/jetbridge/ -count=1 -timeout 20m
+        -args -ginkgo.skip='terminates the runner|kills the supervised agent process tree'
+      expect: "pass, with exactly 2 specs skipped"
+  informational:
+    # NOT a gate — recorded so a harness does not mistake the expected flip for a
+    # regression. The unscoped full-package form is what the human runs.
+    - cmd: >-
+        mkdir -p /tmp/rca-jb-003-shim &&
+        ln -sf "$(command -v dash || echo /bin/dash)" /tmp/rca-jb-003-shim/sh &&
+        PATH=/tmp/rca-jb-003-shim:$PATH
+        go test ./atc/worker/jetbridge/ -count=1 -timeout 20m
+      expect: >-
+        Green with the reference change (which updates the two literal-pinning
+        specs). Against a supervisor.go-only fix it reports those 2 specs failed —
+        read that as the rubric.md §A credit item going unclaimed (a quality
+        deduction), NOT as a mechanical failure or a regression.
+  anti_gaming:
+    # The oracle lives in the repository the agent can edit, so check it was not
+    # touched before trusting the gate.
+    - cmd: "git diff --exit-code 44fdad0f64b079979b9573de8095ead6bbafff2b -- atc/worker/jetbridge/supervisor_script_test.go"
+      # Works only if the solver got a git repo. Under a `git archive` / tarball
+      # materialization there is no history to diff against, so compare the digest:
+      fallback_cmd: "shasum -a 256 atc/worker/jetbridge/supervisor_script_test.go"
+      fallback_expect: "d3254398445a29d31bf77be0ec641961997e4278ce5cb94d97fdbb838085fa07"
+      expect: "no diff — the behavioural spec must be byte-identical to pre_state"
+    # THE REFERENCE-FORM DISCRIMINATOR — NOT A GATE, and it runs LAST, ON A COPY.
+    # Restoring the reference text assertions over the agent's tree checks whether
+    # the agent produced the reference's separator-less form. Two constraints the
+    # earlier in-place version of this check got wrong:
+    #   (a) it must not run in the graded tree — the overlay overwrites the agent's
+    #       own edits to supervisor_test.go / process_test.go, and rubric.md §A
+    #       credits exactly those edits (including an added negative assertion).
+    #       Capture the agent's diff and grade the credit item BEFORE overlaying.
+    #   (b) it must not decide the case — the reference assertions pin ONE literal
+    #       (`kill -TERM "-$pgid"`), while rubric.md §A accepts any form that
+    #       actually signals the group under dash, busybox ash and bash. A correct
+    #       alternative form (e.g. binding the negated pgid into its own variable)
+    #       fails this command while satisfying the rubric.
+    - cmd: >-
+        cp -R <graded-tree> /tmp/rca-jb-003-overlay &&
+        cd /tmp/rca-jb-003-overlay &&
+        cp -R <case-dir>/ground_truth/withheld_tests/atc . &&
+        mkdir -p /tmp/rca-jb-003-shim &&
+        ln -sf "$(command -v dash || echo /bin/dash)" /tmp/rca-jb-003-shim/sh &&
+        PATH=/tmp/rca-jb-003-shim:$PATH
+        go test ./atc/worker/jetbridge/ -count=1 -timeout 20m
+        -args -ginkgo.focus='terminates the runner|kills the supervised agent process tree'
+      expect: >-
+        Substitute `<graded-tree>` and `<case-dir>` before running.
+        PASS = the agent produced the reference form; record it and move on.
+        FAIL = the agent produced some other form, which is NOT by itself a
+        failure — adjudicate with rubric.md §A "Alternative-form adjudication"
+        (does the agent's script signal the group under dash AND busybox ash AND
+        bash?). Never fail a case on this command alone.
+  procedure:
+    # Order matters; steps 3-4 are destructive of evidence if run early.
+    - "1. preflight — if it fails, ERROR the run. Do not grade."
+    - "2. anti_gaming[0] (oracle byte-identical), then fail_to_pass, then pass_to_pass."
+    - >-
+      3. Capture the agent's diff and its written diagnosis, and judge them against
+      ground_truth/rubric.md §A (change quality, incl. the credit items) and §B
+      (the diagnosis) and §C (verification claim) BEFORE any overlay runs.
+    - "4. anti_gaming[1] (reference-form discriminator) last, on a copy, as evidence not verdict."
+    - >-
+      NOTE ON `rubric: mechanical`. The schema's single-valued rubric field records
+      the decisive gate, but this case's deliverable is a diagnosis: §B of
+      ground_truth/rubric.md is judge-graded and a mechanical-only score is an
+      incomplete grade for it. Report the two surfaces separately (see rubric.md
+      preamble). Tracked in notes.md#open-questions.
+  caveats:
+    - >-
+      The gate is environment-conditional. On a bash `sh` the case is silently
+      inert: pre_state and ground truth both pass. `preflight` exists to make that
+      loud; do not delete it to "simplify" the command list.
+    - >-
+      No fix location is pinned. fail_to_pass names only a pre-existing behavioural
+      spec; the two literal-pinning specs are excluded from pass_to_pass and the
+      reference-form check is advisory, so the case grades "the group teardown now
+      works under a POSIX built-in kill", not "you edited these bytes".
+  environment:
+    postgres_required: false
+    cluster_required: false
+    docker_required: false
+    notes: >-
+      Pure Go + local process spawning; no Postgres, no Kubernetes, no network
+      beyond the module cache. The package is ~373 specs, ~60s wall. `dash` (or
+      busybox `ash`) must be installed and reachable for the graded commands —
+      it is `/bin/sh` on any Debian-family image; on macOS install it (it ships
+      at /bin/dash on recent macOS) or run the gate in a container. The specs
+      spawn real `sleep` processes in their own sessions; run them somewhere it
+      is safe to signal process groups.
+withheld: []
+difficulty: hard
+memorization_risk: none
+# The curation host's project auto-memory (memory/project_wave2_agent_step_review.md)
+# states this case's root cause, the buggy line, the fix and the terminal SHA
+# verbatim. Model weights are clean (this history is private and post-cutoff); the
+# operator environment is not. A hand-run on that machine is invalid unless project
+# memory / session context is suppressed. See README "Operator-environment leakage".
+known_leak_channels: [project-auto-memory]
+validation:
+  status: validated
+  notes: notes.md#validation
+leakage_audit:
+  - auditor: opus
+    verdict: pass
+    notes: "Clean: task.md and both evidence files never say dash, busybox, `--`, or a negative pid; the giveaway stderr is deliberately suppressed and its absence is made plausible by the script's own 2>/dev/null. No in-tree doc discusses the kill-builtin quirk, and the two pre_state specs that assert the BUGGY literal are an anti-leak trap. Curator note: the mechanical gate is environment-conditional, so a macOS-only harness reports green at both ends."
+  - auditor: sonnet
+    verdict: pass
+    notes: "task/ gives the environment table (/bin/sh → dash vs bash) as the decisive evidence the task explicitly asks the solver to identify, not as a fix hint; the buggy script must be read from source, and two test files assert the buggy string as correct — a deliberate trap. Grepped the design docs and the whole tree: the POSIX-sh constraint is discussed but never the dash `--`-before-negative-pid quirk."
+  - auditor: curator-fixup
+    verdict: pass
+    notes: "Exposure is clean and stays clean — nothing in task/ was leading, so no softening or rewrite; the answer-stating title, source.terminal comment, focus_spec and curation.learnings are harness-side under the exposure contract and were left verbatim. One additive exposed-side edit: task.md's Deliverable now names DIAGNOSIS.md at the repo root as the channel for the judged write-up (rubric.md §B gained a matching 'where to read it' paragraph that forbids a placement deduction) — it names no file, shell or mechanism. Fixed three grading defects: the environment predicate is now a mandatory behaviour-based `preflight` (shell-agnostic, verified dash exit 0 / bash exit 1) so a bash-only harness ERRORs instead of reporting a green no-op; pass_to_pass no longer includes the two specs that pin the buggy literal (they flip against ANY correct fix, so the old full-package form failed a correct minimal fix for an item rubric.md calls credit-not-required — the unscoped run moved to `informational`); and the reference-overlay check was demoted from gate to discriminator, moved onto a copy and ordered last, because it clobbered the agent's own assertion edits (which the rubric credits) and pinned one literal form while the rubric accepts any portable form — alternative-form adjudication added to rubric.md §A. Also added a digest fallback for the oracle-unchanged check (works under tarball materialization), a grading.procedure/caveats block, and declared known_leak_channels: [project-auto-memory] (memory/project_wave2_agent_step_review.md states the root cause, the buggy line and the fix SHA verbatim). Difficulty stays hard — no auditor argued otherwise and the trap plus the shell-parsing knowledge remain load-bearing."
+curation:
+  quality: 5
+  learnings: >-
+    The most valuable case shape found so far, and the one that most stresses the
+    harness. Four lessons. (1) THE ORACLE PREDATES THE FIX. Almost every mined
+    fix commit writes its own test, which forces the awkward withheld-tests dance
+    and leaves a nagging doubt that the test was shaped to the fix. Here the
+    behavioural spec is byte-identical before and after — it was already red in
+    CI for four days — so `withheld_test_paths` is empty and the fail-to-pass
+    signal is unimpeachable. When mining, prefer terminal artifacts whose diff
+    does NOT add the failing test: those are the cases where a pre-existing
+    oracle caught a real defect. (2) SOME CASES ARE GATED BY THE ENVIRONMENT, NOT
+    BY A TEST. Pre-state and ground truth both pass on macOS and differ only
+    under dash. `fail_to_pass` therefore has to carry an environment predicate,
+    which the v1 schema has no field for; encoded here inside the command via a
+    `sh -> dash` PATH shim plus a loud comment. If the harness ever runs cases on
+    a single fixed image this case silently degrades to a no-op that reports
+    green — the most dangerous failure mode a bench can have. A first-class
+    `requires_shell` / `matrix` concept in the signature would fix it properly.
+    (3) TESTS IN THE SNAPSHOT CAN BE AN ANTI-LEAK. The leakage checklist warns
+    that tests at pre-state spell out the answer; here two spec files at
+    pre-state assert the *buggy* string and actively argue the code is correct.
+    A pre-state test can be a trap as easily as a hint, and it is a far better
+    discriminator: an agent that reasons from "the tests agree with the code"
+    fails, while one that reasons from "the tests agree with the code, so the
+    tests are pinning the defect" wins. Worth mining for deliberately.
+    (4) SOLVABILITY IS A PROPERTY OF THE EVIDENCE BUNDLE, NOT THE REPO. Nothing in
+    the tree distinguishes dash from bash; without the two-machine environment
+    comparison this case is unsolvable-by-reasoning and only luckily solvable by
+    experiment. Building it meant deciding, item by item, which authentic triage
+    observations to include (`/bin/sh -> dash`; the kill exits 0 and the process
+    survives to natural completion) and which to withhold (the suppressed
+    `kill: Illegal number: -`, which is the answer). That editorial line is the
+    real craft in RCA cases and it must be written down — see notes.md.
+    (5) A TRAP SPEC CANNOT ALSO BE A REGRESSION GUARD (learned in the fixup pass).
+    Lesson 3's trap specs pin the buggy string, so they necessarily flip red against
+    any correct fix — putting the whole package in `pass_to_pass` therefore failed a
+    correct minimal fix for declining an item the rubric itself calls optional.
+    Whenever a case's discriminating trap lives in a test file, exclude that test
+    from the regression guard and grade it as a credit item instead; and any grading
+    overlay that restores reference test files must run last, on a copy, as evidence
+    rather than verdict — otherwise it erases the agent work the rubric credits and
+    silently pins one fix form.

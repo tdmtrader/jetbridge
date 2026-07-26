@@ -1,0 +1,143 @@
+diff --git a/agent/api/dispatcher/handler.go b/agent/api/dispatcher/handler.go
+index 932ba50b27..60db4ee990 100644
+--- a/agent/api/dispatcher/handler.go
++++ b/agent/api/dispatcher/handler.go
+@@ -115,7 +115,10 @@ func (h *Handler) Set(w http.ResponseWriter, r *http.Request) {
+ 
+ 	identity := h.userName(r)
+ 	if identity == "" {
+-		identity = "admin"
++		// Record an honest sentinel rather than masquerading as a real
++		// "admin" — updated_by is display/audit provenance for a
++		// security-relevant control, so don't fabricate an actor.
++		identity = "unknown"
+ 	}
+ 	if err := h.store.SetDispatcherMode(body.Mode, identity); err != nil {
+ 		http.Error(w, err.Error(), http.StatusInternalServerError)
+diff --git a/agent/api/dispatcher/handler_test.go b/agent/api/dispatcher/handler_test.go
+index 0511f9eac9..602066bcd6 100644
+--- a/agent/api/dispatcher/handler_test.go
++++ b/agent/api/dispatcher/handler_test.go
+@@ -82,18 +82,19 @@ func TestPutSetsModeAndReturnsNewState(t *testing.T) {
+ 	}
+ }
+ 
+-func TestPutMissingUserDefaultsToAdmin(t *testing.T) {
++func TestPutMissingUserRecordsUnknown(t *testing.T) {
+ 	h, _ := newHandler(false)
+ 	rec := httptest.NewRecorder()
+ 	req := httptest.NewRequest("PUT", "/api/v1/agent/dispatcher", strings.NewReader(`{"mode":"active"}`))
+-	// no X-Test-User header -> identity ""
++	// no X-Test-User header -> identity "" -> recorded as the honest "unknown"
++	// sentinel, NOT fabricated as a real "admin" actor.
+ 	h.Set(rec, req)
+ 	if rec.Code != http.StatusOK {
+ 		t.Fatalf("PUT = %d", rec.Code)
+ 	}
+ 	resp := getStatus(t, h)
+-	if resp.UpdatedBy == nil || *resp.UpdatedBy != "admin" {
+-		t.Errorf("updated_by = %v, want admin fallback", resp.UpdatedBy)
++	if resp.UpdatedBy == nil || *resp.UpdatedBy != "unknown" {
++		t.Errorf("updated_by = %v, want unknown sentinel", resp.UpdatedBy)
+ 	}
+ }
+ 
+diff --git a/agent/dispatch/mode.go b/agent/dispatch/mode.go
+index cbd3c97a74..bd1fc80954 100644
+--- a/agent/dispatch/mode.go
++++ b/agent/dispatch/mode.go
+@@ -40,3 +40,19 @@ func ResolveEffectiveMode(found bool, settingMode string, bootFlag bool) string
+ 	}
+ 	return ModeOff
+ }
++
++// EffectiveModeFromRead resolves the mode for one tick from a settings read,
++// applying the fail-safe policy: a read FAULT must never auto-dispatch. On a
++// non-nil readErr we cannot tell whether an admin persisted paused/off, so we
++// return ModePaused — no auto-dispatch (an admin's pause/off is never
++// overridden by a transient DB blip) while keeping the reconciler safety net
++// alive; dispatch resumes on the next successful read. Only when the read
++// succeeds do we honor a persisted setting or the boot-flag seed. The boot
++// flag is deliberately NOT consulted on error: falling back to it could resume
++// auto-dispatch against an explicit pause whenever the flag seed is "active".
++func EffectiveModeFromRead(settingMode string, found bool, readErr error, bootFlag bool) string {
++	if readErr != nil {
++		return ModePaused
++	}
++	return ResolveEffectiveMode(found, settingMode, bootFlag)
++}
+diff --git a/agent/dispatch/mode_test.go b/agent/dispatch/mode_test.go
+index 2d34b91f92..05ca3457ea 100644
+--- a/agent/dispatch/mode_test.go
++++ b/agent/dispatch/mode_test.go
+@@ -2,6 +2,7 @@ package dispatch_test
+ 
+ import (
+ 	"context"
++	"errors"
+ 	"testing"
+ 
+ 	"github.com/concourse/concourse/agent/api/tickets"
+@@ -34,6 +35,40 @@ func TestResolveEffectiveMode(t *testing.T) {
+ 	}
+ }
+ 
++func TestEffectiveModeFromRead(t *testing.T) {
++	readErr := errors.New("connection reset")
++
++	// A read fault fails safe to paused REGARDLESS of found/setting/bootFlag —
++	// an admin's pause/off must never be overridden by a transient DB blip,
++	// and a boot flag seeded "active" must not resume dispatch on error.
++	for _, tc := range []struct {
++		name     string
++		setting  string
++		found    bool
++		bootFlag bool
++	}{
++		{"err with paused row + boot active", dispatch.ModePaused, true, true},
++		{"err with off row + boot active", dispatch.ModeOff, true, true},
++		{"err with no row + boot active", "", false, true},
++		{"err with no row + boot off", "", false, false},
++	} {
++		if got := dispatch.EffectiveModeFromRead(tc.setting, tc.found, readErr, tc.bootFlag); got != dispatch.ModePaused {
++			t.Errorf("%s: read error must fail-safe to paused, got %q", tc.name, got)
++		}
++	}
++
++	// No error delegates to ResolveEffectiveMode.
++	if got := dispatch.EffectiveModeFromRead(dispatch.ModeOff, true, nil, true); got != dispatch.ModeOff {
++		t.Errorf("no error, found row: got %q, want off", got)
++	}
++	if got := dispatch.EffectiveModeFromRead("", false, nil, true); got != dispatch.ModeActive {
++		t.Errorf("no error, no row, boot on: got %q, want active", got)
++	}
++	if got := dispatch.EffectiveModeFromRead("", false, nil, false); got != dispatch.ModeOff {
++		t.Errorf("no error, no row, boot off: got %q, want off", got)
++	}
++}
++
+ func TestValidMode(t *testing.T) {
+ 	for _, m := range []string{dispatch.ModeOff, dispatch.ModePaused, dispatch.ModeActive} {
+ 		if !dispatch.ValidMode(m) {
+diff --git a/atc/atccmd/command.go b/atc/atccmd/command.go
+index e0690600db..7f022ba270 100644
+--- a/atc/atccmd/command.go
++++ b/atc/atccmd/command.go
+@@ -1424,12 +1424,13 @@ func (cmd *RunCommand) backendComponents(
+ 			modeResolver := func() string {
+ 				mode, found, err := dispatcherSettings.GetDispatcherMode()
+ 				if err != nil {
+-					// A read fault must not silently activate the loop: fall
+-					// back to the boot seed (off by default in current live).
++					// Fail-safe: a read fault must never auto-dispatch against
++					// an admin's explicit pause/off. EffectiveModeFromRead
++					// returns ModePaused on error (no dispatch, reconciler
++					// stays alive), independent of the boot seed.
+ 					logger.Error("failed-to-read-dispatcher-mode", err)
+-					return dispatch.ResolveEffectiveMode(false, "", dispatcherBootFlag)
+ 				}
+-				return dispatch.ResolveEffectiveMode(found, mode, dispatcherBootFlag)
++				return dispatch.EffectiveModeFromRead(mode, found, err, dispatcherBootFlag)
+ 			}
+ 
+ 			dispatcherDeps := dispatch.Deps{

@@ -1,0 +1,242 @@
+# Curated 2026-07-25 (curator-fixup): the dual audit's disagreement is resolved.
+# Sonnet's FAIL was entirely about THIS file (title + ground_truth comments state
+# the root cause) — harness-side under the schema's exposure contract, so nothing
+# was renamed. Opus's curator notes were real and are fixed in task/.
+# A hand-run of this case ON THIS MACHINE is invalid unless project auto-memory is
+# suppressed (known_leak_channels below).
+schema: benchmark-case/v1
+id: rca-jb-005
+title: >-
+  RCA — the agent transcript feature shipped complete and stores nothing, because
+  the ingestion reads the wrong step's flight volume
+workflow: log-diagnosis
+signature:
+  inputs:
+    repository: repository/v1
+    work-item: work-item/v1
+    evidence: evidence-bundle/v1   # PROPOSED port type — see curation.learnings
+  outputs:
+    diagnosis: analysis/v1         # PROPOSED port type — see curation.learnings
+    change: repository-change/v1
+source:
+  system: git-commit
+  repo: jetbridge
+  # The terminal artifact is the fix; its message states the root cause verbatim.
+  terminal: 711974f49cf942610f960d472b847cc3eaa8a3a8
+  # Two companions, both AFTER the cut, both independent restatements of the
+  # answer — see notes.md#provenance-walk:
+  #   9b0049e7ededecb831224f2d29aa8f23218d9912  the withheld fail-to-pass tests
+  #   4dc43e1ac24c4cec344d6ed4a40c1bac383ca134  ci/dogfood/FINDINGS.md entry
+  terminal_companion: 9b0049e7ededecb831224f2d29aa8f23218d9912
+information_cut: 2026-07-20T15:34:20-07:00
+pre_state:
+  repository:
+    repo: jetbridge
+    ref: c601df7f36af25ea57f0e957cb7f7432e189fd95
+    # Git history at/below this ref is legitimate context (the mis-located
+    # ingestion arrives at edaf43a116 with a message that does NOT name the bug,
+    # and the runner-side capture at e73a2fedb5 is genuinely useful), so
+    # `git archive` is too blunt. But the fix 711974f49c is a direct CHILD of
+    # this ref, its message is a verbatim answer key, and 4dc43e1ac2 restates it
+    # in ci/dogfood/FINDINGS.md two commits later — all reachable from the
+    # `jetbridge` and `main` tips and ~20 other branch tips. Strip everything not
+    # reachable from HEAD:
+    materialize: |
+      git clone --no-hardlinks <src> <dir>
+      cd <dir>
+      git checkout --detach c601df7f36af25ea57f0e957cb7f7432e189fd95
+      git for-each-ref --format='%(refname)' | xargs -r -n1 git update-ref -d
+      git reflog expire --expire=now --all
+      git gc --prune=now
+      # verify: `git cat-file -e 711974f49c^{commit}` must FAIL,
+      #         `git cat-file -e 9b0049e7ed^{commit}` must FAIL,
+      #         `git cat-file -e 4dc43e1ac2^{commit}` must FAIL,
+      #         `git cat-file -e edaf43a116^{commit}` must SUCCEED,
+      #         `git cat-file -e e73a2fedb5^{commit}` must SUCCEED.
+  work-item:
+    path: task/task.md
+  evidence:
+    path: task/evidence/observations.md
+    # Operator field notes: deployment state, the psql queries and their output,
+    # the fly/curl 404, the build-log negative. Reconstructed, not captured —
+    # see notes.md#leakage-analysis for what is grounded in what.
+ground_truth:
+  outcome: merged
+  answer: ground_truth/answer.md
+  expected_findings: ground_truth/expected_findings.yaml
+  reference_change: ground_truth/reference.diff
+  # generated_by: git diff c601df7f36af25ea57f0e957cb7f7432e189fd95
+  #               711974f49cf942610f960d472b847cc3eaa8a3a8
+  #               -- atc/exec/agent_step.go atc/engine/step_factory.go
+  # Those two paths ARE the whole commit (+59/-0); there is no unrelated churn
+  # to exclude.
+rubric: judge
+grading:
+  judge_rubric: ground_truth/rubric.md
+  # The deliverable is a diagnosis plus a change. The judge rubric is primary
+  # because the discriminating content is "which step's flight volume", which a
+  # diff comparison scores badly (the reference is largely a copy of a block
+  # already present in the tree, so an agent can look textually close while
+  # having fixed nothing). The mechanical transition below is a genuine gate on
+  # the fix half and doubles as the case's own environment validation.
+  fail_to_pass:
+    - cmd: "git apply ${CASE_DIR}/ground_truth/withheld_tests/agent_step_test.patch && go test ./atc/exec/ -count=1"
+      withheld_test_paths: [atc/exec/agent_step_test.go]
+      note: >-
+        The withheld specs live in a commit AFTER the fix (9b0049e7ed) and are
+        stored here as a patch against the pre_state blob
+        d5e30a6705aede2fdd62097ab5730406f78f72e1 (verified identical at the fix
+        commit, which touched no tests), so the patch applies cleanly at
+        pre_state and at post_state. At pre_state the package does not compile
+        (`exec.WithAgentStepTranscriptStore` undefined) — that IS the red. With
+        the reference change applied it passes. Focused variant:
+        `go test ./atc/exec/ -count=1 -args -ginkgo.focus='transcript store wired'
+        -ginkgo.fail-on-empty`.
+        CAVEAT when grading an AGENT's patch rather than the reference: the
+        withheld specs pin the constructor-option name
+        `exec.WithAgentStepTranscriptStore`. A correct fix that names its seam
+        differently will fail to compile against them. Rename in the overlay
+        before judging a mechanical failure, or fall back to rubric bucket C —
+        the option name is explicitly declared not load-bearing there. If the
+        agent edited `atc/exec/agent_step_test.go` itself, use
+        `git apply -3` / `patch -p1 --forward` and record the conflict.
+        Full procedure (rename-then-rerun, agent's-own-tests-aside, and the
+        "a green overlay is not sufficient for bucket C either" rule) is written
+        into rubric.md § "Mechanical gate caveat".
+  deliverable:
+    diagnosis_path: DIAGNOSIS.md
+    note: >-
+      task.md asks for the written diagnosis as DIAGNOSIS.md at the root of the
+      materialized repository (same convention as rca-jb-001's RCA.md). If the
+      harness collects the agent's final response instead, grade that — rubric.md
+      says not to deduct on channel alone. An untracked DIAGNOSIS.md at the repo
+      root does not affect either pass_to_pass leg.
+  pass_to_pass:
+    - cmd: "go build ./atc/..."
+      note: compilation guard; must succeed before and after.
+    - cmd: "go test ./atc/exec/ -count=1"
+      note: >-
+        WITHOUT the overlay. Green at pre_state and after the reference change —
+        guards the "purely additive, never fatal" property: the existing agent
+        step and harvest step ingestion specs (including harvest's own transcript
+        specs) must keep passing.
+  environment:
+    needs_postgres: false
+    cluster_required: false
+    note: >-
+      `atc/exec` is counterfeiter/dbfakes only — no postgresrunner import at
+      pre_state (verified by reading atc/exec/exec_suite_test.go at the pinned
+      ref: it registers a fake policy agent and nothing else). Go toolchain only,
+      no Docker, no cluster. NOTE the repo-level caveat in CLAUDE.md that
+      `make test-unit` as a whole needs PostgreSQL — do not use it as this
+      case's gate. CONFIRMED at validation (2026-07-25): every leg ran with
+      `PGHOST=127.0.0.1 PGPORT=1` in the environment and still passed, and the
+      historical `atc/exec/artifact_input_step_test.go` vet failure did not
+      resurface, so `-vet=off` is not needed. See notes.md#validation.
+withheld: []
+# Nothing present at pre_state gives the answer away. Checked explicitly:
+#  - ci/dogfood/FINDINGS.md at the pinned ref does NOT contain the ingestion-
+#    location entry (that lands at 4dc43e1ac2, 43 minutes after the cut); it
+#    contains only the pre-cut motivation ("debugging is blocked by the absence
+#    of transcript persistence"), which is context, not answer.
+#  - No plan/spec under docs/superpowers/ names transcript ingestion's location;
+#    07-agent-step.md and the judge-evidence remainder discuss
+#    ingestFlightRecorder only w.r.t. results.json/events.ndjson/review.json.
+#  - atc/exec/harvest_step_test.go's transcript specs are pre-cut and are part
+#    of the authentic difficulty (they are green and prove nothing).
+# The one artifact that points the WRONG way (the migration header comment
+# "harvest ingestion persists it here") is deliberately EXPOSED — see
+# curation.learnings.
+difficulty: moderate
+# Reaffirmed at fixup. Neither auditor asked for a recalibration, and the two
+# candidate arguments cancel: the symptom is zero-signal (pushing toward hard),
+# but `grep -r transcript.ndjson` reaches both the producer
+# (agent/runner/runner.go) and the mis-located consumer (atc/exec/harvest_step.go)
+# in one command, leaving a single "are these the same flight volume?" hop
+# (pushing toward trivial). Moderate is the defensible middle.
+memorization_risk: none
+known_leak_channels: [project-auto-memory]
+# This dev machine's project auto-memory states the answer verbatim:
+# memory/project_agentic_ux_audit_4.md — "Transcript persistence had a wrong-exec
+# bug (ingestion in harvest_step.go but transcript written by the agent/implement
+# step -> fixed: added to atc/exec/agent_step.go ingestFlightRecorder +
+# WithAgentStepTranscriptStore wired in step_factory AgentStep)". That is A1+A2+C1
+# +C2 of the rubric in one sentence, including the option name the mechanical gate
+# pins. Memory is NOT edited; the replay harness must not mount project memory,
+# session context or conversation history into the solver.
+validation:
+  status: validated
+  notes: notes.md#validation
+leakage_audit:
+  - auditor: opus
+    verdict: pass
+    notes: "Clean: task/ has no post-cut references (every named artifact verified at pre_state), no in-tree doc states where ingestion lives, and the pre_state contains a genuine contradiction (migration 1773106093's 'harvest ingestion persists it here' vs the Get() ORDER BY preferring 'implement') plus GREEN harvest transcript specs that actively mislead. Curator notes: task.md's 'producer/consumer mismatch' names the bug class, evidence §3 editorializes past its 'observations only' header, and the negative-results half is largely copy-back."
+  - auditor: sonnet
+    verdict: fail
+    notes: "task/task.md and observations.md are clean, authentic-looking field notes and the mechanism requires real multi-file archaeology (harvest_step.go's flight artifact vs agent/runner's transcript writer, with no comment admitting the gap). Fails on case.yaml: the title states the root cause almost verbatim ('the ingestion reads the wrong step's flight volume') and the ground_truth block's inline comment names the exact two files the fix touches and that it is purely additive (+59/-0)."
+  - auditor: curator-fixup
+    verdict: pass
+    notes: "Sonnet's FAIL is dissolved by the schema's exposure contract — case.yaml is harness-side and never exposed, so the title and the ground_truth/materialize/curation comments may state the answer; nothing renamed or retitled. Fixed for real (all from opus's curator notes): task.md no longer names the bug class ('identify the specific producer/consumer mismatch' -> pin it to files and call sites) and its runner-image constraint no longer pre-empts the runner-blame trap ('justify why nothing on the web side can fix it' -> 'justify the cost'); evidence §3's editorial paragraph — which pre-argued rubric B1's whole inference — is gone, leaving only the queries and their output, and the bundle header no longer over-claims 'no interpretation'; rubric B1 now says the inference is the agent's to make, and D3 gets an anti-copy-back clause so restating the bundle's supplied negatives earns at most 1/3. Grading hardened: task.md now names DIAGNOSIS.md as the diagnosis channel with grading.deliverable and a rubric clause saying not to deduct on channel alone, and the option-name collision (fail_to_pass pins exec.WithAgentStepTranscriptStore, which task.md leaves open) is now a full rubric section 'Mechanical gate caveat' with the rename-then-rerun and agent-tests-aside procedure. Migration-comment distractor and the green harvest transcript specs KEPT as priced deflators (rubric already credits reasoning over quotation). Difficulty reaffirmed moderate with the reasoning recorded. Declared known_leak_channels: [project-auto-memory] — memory/project_agentic_ux_audit_4.md states the wrong-exec bug, both fixed files and the pinned option name verbatim."
+curation:
+  quality: 5
+  learnings: >-
+    A zero-signal case: no stack trace, no failing test, no red build, no
+    user-visible error — the entire symptom is a row count of 0. That shape is
+    rare and worth mining for deliberately, because it defeats every reflex an
+    agent has for locating a defect (read the traceback, run the failing test,
+    bisect the regression) and forces the one skill this corpus most wants to
+    measure: reason about which component PRODUCES an artifact and which
+    component CONSUMES it, from the code alone. Mining signature: a fix commit
+    whose message contains "where it actually lives" / "wrong step" / "was never
+    called", whose diff is purely ADDITIVE, and whose parent already contains a
+    complete, plausible, tested implementation of the feature.
+    Four lessons.
+    (1) Purely-additive fixes make unusually clean cases. The mis-located block
+    is left in the tree by the real fix, so the reference diff has no deletions,
+    the pre_state is a coherent shipped feature rather than a half-built one, and
+    the case cannot be solved by "find the thing that looks unfinished". But it
+    also means a diff-similarity grader is nearly useless here: an agent can copy
+    the block into the wrong file and score high on overlap. Additive fixes
+    should default to judge or mechanical rubrics, never reference-diff.
+    (2) The best distractor was already in the repository and did not have to be
+    invented. Migration 1773106093's own header comment says "harvest ingestion
+    persists it here" — the authors' wrong belief, committed before the cut, in a
+    file an agent will certainly read. Directly opposite it, and equally
+    pre-cut, sits AgentRunTranscriptFactory.Get's doc comment and ORDER BY, which
+    "prefers the implement/agent step over the terminal harvest step". The case
+    is a contradiction between two in-tree comments that the agent must resolve
+    against the actual code. Look for these: when a feature is built on a wrong
+    assumption, the assumption is usually written down somewhere in the same
+    commit range, and it is worth more than any distractor a curator can author.
+    (3) Deciding what to LEAVE OUT of an evidence bundle is a difficulty dial
+    that must be recorded, not just exercised. The web pod's lager log for these
+    runs contains a `failed-to-stream-flight-file` line naming
+    `transcript.ndjson` from the harvest step's ingestion session — attaching it
+    would hand over most of the answer and turn a moderate case into a trivial
+    one. It is omitted, and the omission is honest (the operator notes say the
+    build log and UI are clean, which is true; they never claim nothing is logged
+    anywhere). Both the omission and its effect on the score bands are written
+    into rubric.md's calibration notes so a future variant with the log attached
+    is not silently compared against this one.
+    (4) A withheld test commit that lands SECONDS after the fix is the ideal
+    grading asset, but check what it pins. Here the specs assert exactly the
+    right behaviour ("from the agent step's OWN flight") and cannot pass at
+    pre_state — yet they also pin a constructor-option NAME the agent has no way
+    to guess. Mechanical gates on option/API names silently punish correct fixes;
+    every such gate needs either a rename step in the overlay or an explicit
+    "name is not load-bearing" clause in the judge rubric. fix-jb-006 hit the
+    same class of coupling (an exact error string) and solved it by naming the
+    expected string in the task; that escape hatch is unavailable here, because
+    the option name `WithAgentStepTranscriptStore` contains the answer. When the
+    pinned surface encodes the fix location, the honest options are to caveat the
+    gate or to rewrite the withheld test — never to leak the name into the task
+    to keep the grader mechanical.
+    Platform gaps surfaced (same two as rca-jb-001/002, unchanged): there is no
+    log-diagnosis workflow in the v3 seed and therefore no evidence-bundle/v1 or
+    analysis/v1 snapshot type to bind these ports to, so this case is hand-run
+    only. Additionally: nothing in the platform captures the web's own lager log
+    alongside a build, so the single most decisive server-side signal for this
+    class of bug is not archived anywhere and had to be reconstructed by reading
+    code. A platform that shipped per-build web-side ingestion logs would have
+    made this a five-minute diagnosis — which is itself a finding worth acting
+    on.

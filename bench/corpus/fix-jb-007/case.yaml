@@ -1,0 +1,168 @@
+schema: benchmark-case/v1
+id: fix-jb-007
+title: "Failed-early harvest vanishes from the ticket step DAG (Elm)"
+workflow: small-fix
+signature:
+  inputs:  {repository: repository/v1, work-item: work-item/v1}
+  outputs: {change: repository-change/v1}
+source:
+  system: git-commit
+  repo: jetbridge
+  terminal: 6116d379ef0f22a094f28bd37114613e6036d69f
+information_cut: 2026-07-20T17:48:55-07:00
+pre_state:
+  repository: {repo: jetbridge, ref: 8ff9f6558fe3777cc4ae0e4d570a19712f4f4569}
+  work-item:  {path: task/task.md}
+ground_truth:
+  outcome: merged
+  reference_change: ground_truth/reference.diff
+  answer: ground_truth/rubric.md
+rubric: mechanical
+grading:
+  # Materialize the repo at pre_state, let the agent work, then OVERWRITE the
+  # step-DAG test module with a withheld ground-truth copy before running.
+  # The whole module is swapped (not just the new cases) because the graded
+  # tests are appended inside an existing 15-test module that ships at pre_state.
+  #
+  # PHASE ORDER MATTERS — the swap destroys the regression test task.md asks the
+  # agent to write (its natural home is that same module):
+  #   1. run pass_to_pass against the agent's OWN tree (its test included);
+  #   2. preserve the agent's module OUTSIDE web/elm/tests/ — elm-test compiles
+  #      every .elm under tests/, so a backup left in there breaks the run;
+  #   3. apply setup, run fail_to_pass;
+  #   4. run teardown, so rubric MUST-8 is graded from what the agent wrote.
+  setup:
+    - "mkdir -p ${WORK_DIR}/agent-tests"
+    - "cp web/elm/tests/AgentStepDagTests.elm ${WORK_DIR}/agent-tests/AgentStepDagTests.agent.elm"
+    - "cp ${CASE_DIR}/ground_truth/AgentStepDagTests.discriminating.elm web/elm/tests/AgentStepDagTests.elm"
+  teardown:
+    - "cp ${WORK_DIR}/agent-tests/AgentStepDagTests.agent.elm web/elm/tests/AgentStepDagTests.elm"
+  fail_to_pass:
+    # Tier 1 + tier 2 live in one module and run in one command; the counts below
+    # let a grader tell a hardcoded-tone fix from a correct one.
+    - cmd: "cd web/elm && elm-test tests/AgentStepDagTests.elm"
+      withheld_test_paths: [web/elm/tests/AgentStepDagTests.elm]
+      expect: "17 passed"
+      note: >-
+        Observed counts (validated): pre_state 15 passed / 2 failed;
+        terminal commit 17 passed / 0 failed.
+        Tier 1 (human, verbatim from the merged commit) — "a harvest that failed
+        before any gate/judge/push still renders exactly one harvest box (never
+        vanishes)": at pre_state expects Just ["ticket","implement","harvest"],
+        gets Just ["ticket","implement"].
+        Tier 2 (CURATOR-AUTHORED, not in the merged commit) — "a harvest that
+        SUCCEEDED with no gate/judge/push facts renders one box in its own
+        (non-red) color": the discriminator. A fallback box with a hardcoded
+        failure tone passes tier 1 and fails tier 2 (validated: 16 passed /
+        1 failed against exactly that mutant).
+  # Human-only variant, if a run wants the merged commit's own gate untouched by
+  # curator additions. Weaker: it does NOT catch the hardcoded-tone fix.
+  # Its inline cp is the same clobber as `setup` — it must run inside the same
+  # preserve/restore phases, never against an un-backed-up tree.
+  fail_to_pass_human_only:
+    - cmd: "cp ${CASE_DIR}/ground_truth/AgentStepDagTests.elm web/elm/tests/AgentStepDagTests.elm && cd web/elm && elm-test tests/AgentStepDagTests.elm"
+      expect: "16 passed"
+      note: "pre_state 15 passed / 1 failed; terminal commit 16 passed / 0 failed."
+  pass_to_pass:
+    # Phase 1: run BEFORE the setup swap, i.e. against the agent's own test files
+    # (this is also where an agent-authored regression test gets exercised).
+    - cmd: "cd web/elm && elm-test"
+      expect: "all pass"
+      note: "3265 specs pass at pre_state; 3266 at the terminal commit (the +1 is the withheld test)."
+  grading_caveats:
+    - >-
+      OVERLAY CLOBBER (fixed, but the runner must honour the phase order above):
+      fail_to_pass replaces web/elm/tests/AgentStepDagTests.elm wholesale, because
+      the graded tests use that module's local `row` / `byBuild` helpers. task.md
+      asks the agent for a regression test, whose natural home is that same module,
+      so the swap would delete the very artifact rubric MUST-8 grades. The setup /
+      teardown pair preserves and restores it; MUST-8 is scored from the preserved
+      copy or the agent's diff, NEVER from the post-overlay tree.
+    - >-
+      LABEL PINNING: tier 1 asserts the chain is exactly ["ticket","implement",
+      "harvest"], i.e. it pins the fallback box's label to the row's step name.
+      task.md now states that expectation observationally ("a single box named for
+      the step it stands for"), so the gate is fair — but the label remains a
+      grading choice rather than a hard requirement of the report. A behaviourally
+      correct fix that labels the box differently should be scored against
+      ground_truth/rubric.md MUST 1/2/3/5 rather than auto-failed on the count.
+    - >-
+      COMPILE-FAIL != BEHAVIOUR-FAIL: the overlay module compiles against
+      StepDag.attempts and the AgentBadge tone constructors. A fix that renames or
+      relocates that entry point fails the overlay at compile time; a grader seeing
+      a compile error must inspect the diff before recording a mechanical fail.
+  environment:
+    needs_postgres: false
+    needs_docker: false
+    toolchain: >-
+      elm 0.19.1 + elm-test 0.19.1-revision12 (node). The elm package cache
+      (~/.elm) must be warm, or the runner needs network for the first compile.
+    runtime: "~15s cold compile, <2s warm; fully hermetic once packages are cached."
+  judge_addendum: ground_truth/rubric.md
+withheld: []
+difficulty: moderate
+memorization_risk: none
+known_leak_channels: [project-auto-memory]
+validation:
+  status: validated
+  notes: notes.md#validation
+leakage_audit:
+  - auditor: opus
+    verdict: pass
+    notes: "No answer leak: task.md names the surface but not the module, function or mechanism, and the S-1 plan doc quotes the DEFECTIVE harvestBoxes verbatim as intended spec (anti-leak). Curator notes only: the fail_to_pass setup cp clobbers the regression test task.md asks for, tier-1 pins an exact box label the task never states, and the constraints partly telegraph the tier-2 hardcoded-red discriminator."
+  - auditor: sonnet
+    verdict: pass
+    notes: "task.md is a code-free bug report; the defect (harvestBoxes returning gateBoxes++judgeBoxes++pushBoxes with no base case) is found by reading source, which is the intended work. The one adjacent doc, 2026-07-19-s1-ticket-step-dag.md, reproduces the buggy function verbatim as correct design — misleading if anything, not a leak."
+  - auditor: curator-fixup
+    verdict: pass
+    notes: "Fixed the three curator flags: setup/teardown now preserves+restores the agent's regression test the overlay clobbered (MUST-8 graded from the preserved copy), task.md 'What I expect' now states the per-step box label tier 1 pins, and the constraint that telegraphed the tier-2 discriminator ('a recording gap is green, never red') is softened to a generic palette rule. Added known_leak_channels [project-auto-memory]: memory file project_agentic_ux_audit_4.md states 'S-1 DAG dropped failed-harvest boxes (fixed fallback)' — symptom and fix shape. Difficulty held at moderate (no auditor contested it); S-1 plan doc stays exposed per the priced-deflator default."
+curation:
+  quality: 4
+  learnings: >-
+    Front-end/Elm cases are the cheapest mechanical cases in this repo: 3265
+    specs in under two seconds, no Postgres, no Docker, no fixtures — the
+    opposite of the atc/db-shaped Go cases. Worth over-sampling for that alone,
+    and the toolchain (elm + elm-test on PATH) turned out to be already
+    installed, so the anticipated toolchain gap did not materialize.
+
+    The load-bearing lesson: a passing fail_to_pass test is NOT proof the agent
+    understood the bug. The merged commit's own test asserts tone == Bad on a
+    failed harvest, so a fallback box with a hardcoded red tone passes it while
+    silently breaking the succeeded-harvest-with-no-facts path (push disabled or
+    no gates configured — reachable in agent/harvest/runner.go). I built that
+    mutant and confirmed it goes 16/16 green against the human test. Rather than
+    demote the case to judge-only, the fix was to author ONE extra assertion that
+    pins the invariant the humans only pinned by example, and to validate it
+    three ways (pre: fails, post: passes, mutant: fails). Generalization: when
+    the human test pins the reported symptom rather than the invariant, the
+    curator should write the missing assertion and prove it discriminates — and
+    keep it in a separate file so the human ground truth stays verbatim.
+
+    Second lesson, on trigger scrubbing: the honest symptom report ("harvests
+    that fail early vanish; harvests that reach their gates render fine") already
+    hands over half the diagnosis, because the contrast IS the observation. That
+    is not leakage to scrub — a real reporter sees exactly that — but it caps how
+    much diagnostic credit a purely-visual bug can measure. Such cases test
+    localization and fix quality, not diagnosis.
+
+    Third: the pre-state contains the in-tree S-1 plan doc that specified this
+    component and quotes the buggy function verbatim. It documents the design
+    that produced the bug and says nothing about the fix, so it stays exposed —
+    if anything it biases toward believing the buggy code is correct. Worth
+    recording as the shape of "design doc present but not a leak", since this
+    repo writes plans before code and most jetbridge cases will hit the same
+    question.
+
+    Fourth, a process gotcha: parallel extractor subagents share one scratchpad
+    directory. A sibling wiped my materialized pre-state tree mid-validation.
+    Extractors must namespace scratch work per case id.
+
+    Fifth (curator-fixup): when a case's trigger asks the agent for a test AND
+    the mechanical gate overlays a test module, the two collide — the gate
+    deletes the deliverable another rubric item grades. Any case with a
+    whole-module overlay needs an explicit phase order with preserve/restore, and
+    the backup must live outside the test directory or the test runner compiles
+    it. Sixth: this case's answer is stated in six words in the dev machine's
+    project auto-memory ("S-1 DAG dropped failed-harvest boxes (fixed fallback)"),
+    which no in-directory audit can see — leak auditing has to include the
+    operator environment, not just the case files.

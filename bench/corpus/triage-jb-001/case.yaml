@@ -1,0 +1,196 @@
+# Curator-fixup 2026-07-25 resolved the opus/sonnet split: the sonnet FAIL and one
+# opus item were about curation.learnings stating the answer, which is harness-side
+# under the schema's exposure contract and dissolves; the auto-memory channel is now
+# declared in known_leak_channels; the in-tree quotable rule is kept and priced in
+# ground_truth/rubric.md. See notes.md#fixup-2026-07-25.
+schema: benchmark-case/v1
+id: triage-jb-001
+title: >-
+  Triage — route 34 UX-audit findings across five executor classes, where the
+  tempting class (autonomous agent) is the one the deployment cannot execute
+workflow: triage
+signature:
+  inputs:
+    repository: repository/v1
+    work-item: work-item/v1
+    findings: audit-report/v1      # PROPOSED port type — see curation.learnings
+  outputs:
+    routing: triage-decision/v1    # PROPOSED port type — see curation.learnings
+source:
+  system: audit-doc
+  repo: jetbridge
+  # The terminal artifact is the scoping document: every audit finding routed to
+  # an executor class, with rationale, constraints and an execution order.
+  terminal: 05ef24ec6972e3c28a7711122e60dae0a4ba24cc
+  # Same file, ~2h20m later: the log of what happened when the routing was
+  # executed live. This is the outcome signal — withheld, in ground_truth/.
+  terminal_companion: 644184e3f011369f3da77dc82caee200bd8fd196
+information_cut: 2026-07-19T08:25:56-07:00
+pre_state:
+  repository:
+    repo: jetbridge
+    ref: 6188b2a8c1e3b954434a82ae8c90423cb469c199
+    # Direct parent of the terminal commit, and — verified from the terminal
+    # document's own header (`v0.2.195-rc = HEAD 6188b2a8c1, verified via
+    # vcs.revision`) — the exact commit the audited deployment was running. The
+    # triager saw this tree.
+    #
+    # History matters here: the routing turns on evidence in the tree (the
+    # runner Dockerfile, the gate vocabulary, the migration files, the
+    # coordination docs) AND on one version->commit walk through tags
+    # (v0.2.167 -> 5715e7db2d, which does not contain agent/harvest/flight.go).
+    # So `git archive` is not usable; tags must survive. But the terminal
+    # commit is reachable from the branch tips and from v0.2.196 onward, so
+    # strip every ref that is not an ancestor of HEAD:
+    materialize: |
+      git clone --no-hardlinks <src> <dir>
+      cd <dir>
+      git checkout --detach 6188b2a8c1e3b954434a82ae8c90423cb469c199
+      git tag --merged HEAD > /tmp/keep-tags
+      git for-each-ref --format='%(refname)' | while read -r r; do
+        case "$r" in
+          refs/tags/*) t="${r#refs/tags/}"; grep -qxF "$t" /tmp/keep-tags || git update-ref -d "$r" ;;
+          *) git update-ref -d "$r" ;;
+        esac
+      done
+      rm -f /tmp/keep-tags
+      git reflog expire --expire=now --all
+      git gc --prune=now
+      # verify: `git cat-file -e 05ef24ec69^{commit}` must FAIL
+      #         `git cat-file -e 644184e3f0^{commit}` must FAIL
+      #         `git rev-parse v0.2.167` must SUCCEED (-> 5715e7db2d)
+      #         `git tag --list 'v0.2.19[6-9]'` must be EMPTY
+  work-item:
+    path: task/task.md
+  findings:
+    path: task/audit-findings.md
+ground_truth:
+  # The routing was adopted and executed the same day; the scoping document is
+  # in the shipped history. (The schema's outcome enum has no triage-shaped
+  # value — see curation.learnings.)
+  outcome: merged
+  answer: ground_truth/answer.md
+  reference_change: ground_truth/reference.diff      # the scoping doc as committed
+  outcome_log: ground_truth/outcome-log.diff         # what the routing produced, same day
+rubric: outcome
+grading:
+  # Two-part, both in ground_truth/rubric.md. Part A is the outcome rubric the
+  # case is built for: per-finding exact/near match against the recorded class,
+  # 34 items, 60 pts. Part B is judge-scored behaviour, 40 pts, plus 12 bonus.
+  outcome_rubric: ground_truth/rubric.md#part-a--routing-accuracy-60-pts
+  judge_rubric: ground_truth/rubric.md#part-b--behavioural-checklist-40-pts
+  # No test transition exists: the deliverable is a decision document.
+  fail_to_pass: []
+  pass_to_pass: []
+  # Delivery channel, so the grader has one artifact to collect: task.md asks for a
+  # single new file `TRIAGE.md` at the checkout root. rubric.md's preamble matches,
+  # and grades the routing wherever it appears if the file is missing (recording the
+  # delivery miss rather than deducting twice for it).
+  deliverable: TRIAGE.md
+  # Grading caveat: Part A scores against the recorded routing, but the record is
+  # known-wrong on one item (F-02's migration assumption) — rubric.md bonus X1
+  # rewards a submission for contradicting it on pre-state evidence. Do not
+  # "correct" a submission toward the record there.
+  environment:
+    postgres_required: false
+    cluster_required: false
+    notes: >-
+      Analysis-only. The agent needs the repository with ancestor tags and git
+      history, the two task files, and nothing else. Deliberately no cluster:
+      the two live facts the routing needs (deployed web version, deployed
+      agent-step image tag) are handed over in task.md's environment block
+      exactly as an operator handed them to the triager, because the UI did not
+      expose them at this commit. Do not add cluster access — the routing must
+      be argued from the repository.
+# Kept empty on purpose. The one candidate is the pair of remainder plans that
+# state the Elm rule in prose (2026-07-17-delivery-outcomes.md:105,
+# 2026-07-17-platform-mcp-hitl.md). They are authentic pre-cut repo convention, they
+# do not decide any per-item routing, F-01's root cause or the six ops dispositions,
+# and rubric item B3 presumes the coordination constraints are findable — so
+# authenticity wins and the deflator is priced in the rubric (B1 caps a
+# rule-quotation-only argument at 4/10) rather than removed from the tree.
+withheld: []
+# Held at moderate after fixup. The deflator above lowers sixteen of the 34 items
+# from "derive the capability boundary" to "find and cite it", which is the argument
+# for trivial — but it does not touch the other eighteen (the wave/plan/loop split,
+# F-01's version->commit walk, the six live-queue dispositions), the rubric no longer
+# pays full credit for the citation, and the deliverable still demands self-contained
+# ticket bodies and an execution order. Not hard either: no live cluster, no code, and
+# the record's own answer is reachable from the pre-state tree.
+difficulty: moderate
+memorization_risk: none
+# The dev machine's project auto-memory (MEMORY.md's index line for
+# project_agentic_ux_audit_4.md, and that file itself) states this case's answers
+# verbatim: the v0.2.167 stale-image root cause, the A0-1 ops item, the P0 list and
+# the "Elm items deliberately NOT loop tickets" decision. Nothing in the case can fix
+# that; a hand-run on this machine with memory enabled is invalid.
+known_leak_channels: [project-auto-memory]
+validation:
+  status: unvalidated
+  notes: notes.md#validation
+leakage_audit:
+  - auditor: opus
+    verdict: borderline
+    notes: "task/ is clean of post-cut vocabulary and the finding IDs/headings were genuinely scrubbed of executor class. Three curator items: this project's auto-loaded MEMORY.md names the v0.2.167 stale-image root cause and the A0-1 ops item; case.yaml's curation.learnings states the discriminating capability rule, its 16/34 blast radius and the three evidence files; and the rule is quotable in-tree (remainders/2026-07-17-delivery-outcomes.md:105, TICKETS.md:14), so Part A partly measures retrieval — keep the docs but weight the derived chain."
+  - auditor: sonnet
+    verdict: fail
+    notes: "task/task.md and audit-findings.md are well-specified and honestly scrubbed (flat F-01..F-34, sections grouped by surface). Fails on case.yaml's curation.learnings, which states the governing rule ('presentation work cannot go to the autonomous loop'), quantifies it as sixteen of 34 items, names all three evidence artifacts, cites remainders/2026-07-17-delivery-outcomes.md:105 verbatim, and discloses a post-cut outcome-log fact (the 'no migration needed' ticket blocked by a CHECK constraint)."
+  - auditor: curator-fixup
+    verdict: pass
+    notes: "Both audits' case.yaml/curation.learnings objections (the whole sonnet FAIL) dissolve under the schema's exposure contract — case.yaml is harness-side and never exposed. Declared known_leak_channels: [project-auto-memory] for the MEMORY.md channel; kept the in-tree Elm-rule docs exposed and priced the deflator in rubric.md (B1 now needs a mechanical artifact, rule-quotation alone caps at 4/10, plus a reasoning-not-quotation preamble); fixed the missing delivery channel (task.md now asks for TRIAGE.md at the checkout root, rubric.md and grading.deliverable aligned); re-verified task/ carries no answer-stating text and difficulty stays moderate."
+curation:
+  quality: 4
+  learnings: >-
+    First triage-shaped case in the corpus, and the shape turns out to have a
+    structural problem the fix/review shapes do not: the terminal artifact IS
+    the answer key AND the only surviving record of the task input. The audit
+    report that triggered this scoping is an external claude.ai artifact that no
+    longer resolves, so the 34-item finding list in task/audit-findings.md had
+    to be reconstructed by taking the scoping document's own item descriptions
+    and stripping the routing out of them. That is a real fidelity cost, honestly
+    recorded: the decomposition granularity in the task is the triager's, not the
+    auditor's, so the case grades "route these items" rather than the harder
+    "decompose these findings into items, then route them". A future triage case
+    should be sourced from a terminal artifact whose *input* survives separately
+    (a GitHub issue list, a filed ticket batch, a captured report), not from a
+    document that is both input record and decision record.
+    The second lesson is about ID leakage in a routing case. The source
+    document's item IDs — A0-*, L-*, W-*, S-* — literally encode the class each
+    item was routed to, and its section headings ("Wave 0 — ops actions",
+    "Wave 1 — loop tickets") encode it again. Renaming every item to a flat F-NN
+    space and regrouping by where the auditor hit the finding, rather than by
+    executor, was the single largest scrubbing operation in this case. Any case
+    whose ground truth is a taxonomy assignment needs this check: does the input
+    carry the taxonomy in its naming, its ordering, or its grouping?
+    Third, on what makes a routing gradable rather than arbitrary: this case
+    works because the discriminating call — presentation work cannot go to the
+    autonomous loop — is decidable from the pre-state tree
+    (deploy/agent-runner/Dockerfile has no Elm compiler; agent/harvest/gates.go's
+    entire gate vocabulary is `go build` / `go test` / `go vet`; the committed
+    web/public/elm.min.js means an un-regenerated bundle ships a silent no-op).
+    Sixteen of the 34 items hinge on that one capability fact. It is worth
+    noticing that this also makes the case *easier* than it looks: the same rule
+    is already written down in the pre-state repo
+    (remainders/2026-07-17-delivery-outcomes.md:105, "no Elm toolchain in gates —
+    do NOT dispatch this slice to the loop"), so a thorough agent can find it
+    rather than derive it. Cases that hinge on a capability boundary should
+    record whether that boundary is derivable, documented, or both.
+    Fourth, and the reason this case is worth more than its quality score
+    suggests: it has a downstream truth signal. The same file gained a live
+    execution log ~2h20m later recording what the routing actually produced,
+    including where it was *wrong* — the ticket asserting "no migration needed"
+    stopped dead on a CHECK constraint that is plainly visible at pre-state in
+    1773106060_create_agent_run_metrics.up.sql. So the rubric can reward a
+    submission for disagreeing with the recorded answer on evidence. Terminal
+    artifacts that are later amended in place with an outcome record are a
+    high-value seam to mine; grep the corpus sources for docs whose second commit
+    is a "what happened" section.
+    Fifth, a platform gap. This case needs two port types v3 does not have —
+    an audit/finding-list input and a routing-decision output — and its ground
+    truth outcome does not fit the schema's enum (a triage decision is neither
+    merged-code nor wont_fix; `merged` here means "the routing was adopted and
+    executed"). It also needs a grading mode the schema does not name: Part A is
+    a mechanical per-item taxonomy match, which is neither `mechanical` (no test
+    transition) nor `judge` (no judgement required). If triage becomes a real
+    corpus category, `rubric: outcome` needs a per-item-match sub-shape, and
+    ground_truth needs a slot for an outcome log distinct from a reference change.

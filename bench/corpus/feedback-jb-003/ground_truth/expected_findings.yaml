@@ -1,0 +1,323 @@
+# feedback-jb-003 — per-finding ground truth
+#
+# WITHHELD. Derived from the terminal artifact 8157023ae91960df4a3ca2208a87c2062d33c7f1
+# (its diff and its REVIEW.md §7 resolution log). Every `anchor` line number is
+# 1-indexed at pre_state efb0a8cdb068c5e6e6074e0ffc1d0a63e7218b4f and was read
+# there directly with `git show` (see notes.md#verification-performed).
+#
+# `disposition` is the ONE field that discriminates this case:
+#   code-in-plan  — the finding requires editing the plan's Go/SQL/YAML script
+#                   (and, per the repo's TDD convention, the test it tells the
+#                   implementer to write first)
+#   doc-only      — the review's verification pass REFUTED or DOWNGRADED the
+#                   mechanism claim; the correct answer is prose/annotation and
+#                   a code change is a FAILURE, not extra credit
+#
+# All paths are relative to docs/superpowers/ unless noted.
+
+schema: expected-findings/v1
+case: feedback-jb-003
+source_of_truth: "8157023ae91960df4a3ca2208a87c2062d33c7f1 + REVIEW.md §7"
+total: 12
+
+findings:
+
+  - id: F1
+    severity: blocker
+    disposition: code-in-plan
+    class: cross-workstream-seam
+    workstreams: [dispatch, platform-mcp-hitl, shared-contracts]
+    anchors:
+      - {file: plans/agentic-platform/11-dispatch.md, line: 842, region: "func renderCheckpointStep(...) atc.AgentStep"}
+      - {file: plans/agentic-platform/11-dispatch.md, line: 854, region: "LLM prompt \"Await human approval of checkpoint %q via platform-mcp.\""}
+      - {file: plans/agentic-platform/11-dispatch.md, line: 849, region: "PLATFORM_MCP_CHECKPOINT env"}
+      - {file: plans/agentic-platform/11-dispatch.md, line: 850, region: "PLATFORM_MCP_CHECKPOINT_ON_REJECT env"}
+      - {file: plans/agentic-platform/08-platform-mcp-hitl.md, line: 3740, region: "Task 14 checkpoint-client intro"}
+      - {file: plans/agentic-platform/00-shared-contracts.md, line: 1065, region: "§3.2 park/resume protocol, checkpoint sentence"}
+      - {file: plans/agentic-platform/00-shared-contracts.md, line: 1250, region: "§5 checkpoint.wait / checkpoint.release event rows"}
+      - {file: plans/agentic-platform/00-shared-contracts.md, line: 1530, region: "decision 12"}
+    required:
+      - "renderCheckpointStep returns an atc.TaskStep (not atc.AgentStep) whose TaskConfig.Run invokes the deterministic client `platform-mcp checkpoint --name <s.Checkpoint>`, with the platform sidecar mounted, so the container exit code natively drives step failure"
+      - "both PLATFORM_MCP_CHECKPOINT and PLATFORM_MCP_CHECKPOINT_ON_REJECT env vars are removed from the emitted step, and the 'Await human approval…' LLM prompt is gone"
+      - "on_reject is wired: `fail` lets the non-zero exit propagate (run fails -> ticket needs_review); `send_back` is the dispatcher's refinement of the same failed run — the renderer emits the same bare failing task step for both"
+      - "co-signed across all three owners: 11-dispatch, 08-platform-mcp-hitl AND 00-shared-contracts (§3.2, §5 event rows, decision 12, §11 amendment log). A fix in 11-dispatch alone is INCOMPLETE."
+      - "the plan's render test is updated to assert the checkpoint is a *atc.TaskStep running platform-mcp checkpoint, and that neither PLATFORM_MCP_CHECKPOINT* param survives"
+    forbidden:
+      - "introducing a new step type, or adding a command/entrypoint/image-override field to atc.AgentStep, without a §2.8 contract addendum"
+      - "leaving the checkpoint as an agent step with a better prompt"
+    reference_bonus:
+      - "the reference also adds TestRenderCheckpointOnRejectFailFailsRun, proving the on_reject:fail checkpoint is a BARE task step (not wrapped in try/on_failure/ensure, which would swallow the exit) and that the rendered plan still passes configvalidate — this is the human-gate proof, and is above the bar"
+
+  - id: F2
+    severity: "blocker as filed -> downgraded to trivial doc fix on verification"
+    disposition: doc-only
+    class: refuted-mechanism
+    workstreams: [dispatch, credentials-and-budgets]
+    anchors:
+      - {file: plans/agentic-platform/00-shared-contracts.md, line: 1465, region: "§8.2 ephemeral run secret, Lifecycle: 'during dispatch, before run creation'"}
+    required:
+      - "§8.2's Lifecycle sentence is reworded: the secret is attached AFTER the queued->running claim is won (which records pipeline_run_id per §2.1) and BEFORE the build tracker schedules the entry-job pods"
+      - "the wording states there is no runtime race and that create->claim->attach is deliberate"
+      - "a §11 amendment-log note records that dispatch's §2.8.2 addendum supersedes the earlier credentials-and-budgets phrasing"
+    forbidden:
+      - "ANY reordering of DispatchOne (11-dispatch Task 10) to move Attach before CreateRun — the review verified the race is not real (CreateRun only inserts a pending build; pod creation is asynchronous via scheduler + build tracker) and the existing order is a deliberate decision"
+      - "adding a synchronisation primitive, retry, or 'wait for secret' step anywhere in the dispatch path"
+    discriminator: true
+    discriminator_note: >-
+      This is the primary push-back test. The finding is filed as a BLOCKER and
+      reads like one; only its verification paragraph refutes it. An agent that
+      skims severities and 'fixes' the ordering has failed the case even though
+      it produced a plausible-looking change.
+
+  - id: F3
+    severity: major
+    disposition: code-in-plan
+    class: correctness
+    workstreams: [agent-step]
+    anchors:
+      - {file: plans/agentic-platform/07-agent-step.md, line: 1884, region: "if step.budgetChecker != nil && rm.CostUSD > 0 { ... } — unconditional ledger append"}
+      - {file: plans/agentic-platform/07-agent-step.md, line: 1880, region: "step.metricsStore.Upsert(&rm)"}
+      - {file: plans/agentic-platform/07-agent-step.md, region: "Task 7 metrics.Store interface / Task 8 agentRunMetricsFactory.Upsert"}
+    required:
+      - "the metrics upsert gains a first-insert discriminator (reference: additive `UpsertReturningInserted(rm) (inserted bool, err error)` implemented via `RETURNING (xmax = 0)`), and the ledger append is gated on it: `inserted && rm.CostUSD > 0`"
+      - "the (build_id, plan_id) unique key is reused as the single dedup authority — no new ledger schema, no ON CONFLICT on the append-only agent_cost_ledger"
+      - "a Task-13 spec asserts Record fires exactly once across two Run invocations (the web-restart resume)"
+    constraints:
+      - "the change must be ADDITIVE on the agent-step-owned Store surface: `Upsert(rm) error` is retained so harvest-step (09) and delivery-outcomes (12) consumers and the metricsfakes Upsert* methods are unaffected"
+      - "§2.4 RunMetrics and §1.8 agent_run_metrics stay byte-for-byte unchanged; no cross-workstream sign-off is required"
+    forbidden:
+      - "changing Upsert's signature in place (breaks two other workstreams' plans)"
+      - "adding a dedup key/unique index to agent_cost_ledger (the gateway writes its own source='gateway' rows for the same build/plan)"
+
+  - id: F4
+    severity: major
+    disposition: code-in-plan
+    class: correctness
+    workstreams: [agent-step]
+    anchors:
+      - {file: plans/agentic-platform/07-agent-step.md, line: 1817, region: "step.streamer.StreamFile(ctx, flightArtifact, \"results.json\")"}
+      - {file: plans/agentic-platform/07-agent-step.md, line: 1835, region: "step.streamer.StreamFile(ctx, flightArtifact, \"events.ndjson\")"}
+    required:
+      - "ingestion reads on a context detached from the step deadline — reference: `ingestCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)` — and both StreamFile calls take ingestCtx"
+      - "a Task-13 spec forces process.Wait to return context.DeadlineExceeded with a populated flight volume and asserts the metrics row still carries pre-timeout cost/turns/event_counts AND that a ledger entry is recorded"
+    constraints:
+      - "the detach belongs INSIDE ingestFlightRecorder so both the normal and DeadlineExceeded callers get it (the reference says so explicitly); a call-site-only detach is a weaker but acceptable answer"
+      - "a bound must remain (ingestion blocks build completion) — an undetached-and-uncancellable context.Background() with no timeout is worse, not better"
+    interaction_with_F3:
+      note: >-
+        F3 and F4 both edit ingestFlightRecorder. A correct answer keeps them
+        coherent: on a metrics-store error `inserted` is false, so the ledger
+        append is skipped — preferring "exactly once" over "at least once".
+
+  - id: F5
+    severity: major
+    disposition: code-in-plan
+    class: internal-incoherence
+    wave_1_blocker: true
+    workstreams: [workflow-store]
+    anchors:
+      - {file: plans/agentic-platform/05-workflow-store.md, line: 2634, region: "seed standard-dev `implement` prompt: 'The approved spec and plan are in spec.md and plan.md'"}
+      - {file: plans/agentic-platform/05-workflow-store.md, line: 2641, region: "seed `qa` prompt embedding {{.Spec}}"}
+      - {file: plans/agentic-platform/05-workflow-store.md, line: 2647, region: "seed `review` prompt embedding {{.Spec}}"}
+      - {file: plans/agentic-platform/05-workflow-store.md, line: 2548, region: "TestSeedStandardDevValidates — structure-only, never checks prompt/delivery coherence"}
+    required:
+      - "the implement/qa/review prompts are rewritten to the DEFAULT mcp read model — read via platform-mcp read_ticket / list_tasks / get_task, mirroring the seed's existing `plan` prompt"
+      - "every spec.md / plan.md / {{.Spec}} / {{.Tasks}} reference is gone from the seed body"
+      - "TestSeedStandardDevValidates gains a coherence assertion tying prompt content to the RESOLVED spec_delivery (empty => mcp), failing any prompt body containing the file-mode tokens"
+    forbidden:
+      - "setting `spec_delivery: files` on the seed to make the prompts true — the review explicitly prefers rewriting the prompts, because the shipped reference definition must demonstrate the default path the rest of the design centers on"
+      - "adding Go-template substitution to the dispatch renderer so {{.Spec}} would expand (the renderer inlines prompts verbatim by design)"
+    discriminator: true
+    discriminator_note: >-
+      Two plausible fixes, and the review names which one is right. Choosing the
+      other (spec_delivery: files) resolves the incoherence but breaks the
+      exemplar's purpose.
+
+  - id: F6
+    severity: major
+    disposition: code-in-plan
+    class: correctness
+    workstreams: [delivery-outcomes]
+    anchors:
+      - {file: plans/agentic-platform/12-delivery-outcomes.md, line: 2611, region: "seedRows: `continue // already tracked; re-push refresh handled by RecordMerge/Ensure elsewhere`"}
+      - {file: plans/agentic-platform/12-delivery-outcomes.md, line: 452, region: "MemoryStore.Ensure — refresh only when MergeState == MergeOpen"}
+      - {file: plans/agentic-platform/12-delivery-outcomes.md, line: 700, region: "agentOutcomesFactory.Ensure — ON CONFLICT ... WHERE merge_state = 'open'"}
+    required:
+      - "Ensure re-arms a row where merge_state='closed_unmerged' AND disposition='sent_back' back to 'open' with fresh branch/pushed_sha/base_sha and cleared disposition fields"
+      - "BOTH implementations move together — MemoryStore (Task 3) and the squirrel/SQL factory (Task 4 ON CONFLICT WHERE)"
+      - "seedRows stops `continue`-ing on a found row so the plain needs_review -> queued -> needs_review path also re-resolves shas"
+      - "abandoned and merged/merged_with_fixes rows stay terminal and are never re-armed"
+      - "a watcher spec drives needs_review -> sent_back -> queued -> running -> needs_review(new sha) -> merged and asserts the row ends merged_with_fixes with the NEW base/pushed shas"
+    reference_bonus:
+      - "the reference also deletes the misleading 'handled by RecordMerge/Ensure elsewhere' comment (the review asks for this explicitly) and updates the §1.11.1 prose plus the Store.Ensure doc comment"
+
+  - id: F7
+    severity: major
+    disposition: code-in-plan
+    class: validation-gap
+    workstreams: [workflow-store, platform-mcp-hitl]
+    anchors:
+      - {file: plans/agentic-platform/05-workflow-store.md, line: 731, region: "Config.Validate — AskTimeoutSeconds < 0 check, no cross-field rule"}
+      - {file: plans/agentic-platform/08-platform-mcp-hitl.md, line: 1889, region: "ConfigFromEnv — policy enum validated independently of TimeoutSeconds"}
+    required:
+      - "a cross-field check rejects ask_timeout in {default, fail} with ask_timeout_seconds <= 0 at the cheapest upstream layer, workflow-store Config.Validate, so import fails loudly before any dispatch"
+      - "the same rule is mirrored in platform-mcp ConfigFromEnv as defense-in-depth for a hand-set sidecar env"
+      - "park + 0 stays legal (indefinite) — the seed itself uses it, so a rule that rejects park+0 breaks the seed"
+      - "tests at both layers (a TestValidateRejects case and a ConfigFromEnv case)"
+    forbidden:
+      - "silently coercing a 0 timeout to a default value instead of rejecting"
+    constraints:
+      - "the two layers must agree; a rule in only one of them is half the finding"
+
+  - id: F8
+    severity: major
+    disposition: code-in-plan
+    class: unpopulated-field
+    workstreams: [scorecards]
+    anchors:
+      - {file: plans/agentic-platform/13-scorecards.md, line: 441, region: "perVersion — calls only metricsAndCost"}
+      - {file: plans/agentic-platform/13-scorecards.md, line: 456, region: "metricsAndCost — ContentHash from MAX(workflow_hash) over agent_run_metrics; Live never set"}
+    required:
+      - "a definition(name, version, col) read of `SELECT content_hash, live FROM agent_workflow_definitions WHERE name=$1 AND version=$2`, called from perVersion, setting col.Live and col.ContentHash authoritatively"
+      - "the metrics-derived MAX(workflow_hash) is demoted to a fallback and must not clobber the definition-derived hash (reference: run definition() FIRST and guard the metrics assignment with `col.ContentHash == \"\"`)"
+      - "a store spec asserting Live is true for the promoted version and false for candidates, and that a NEVER-RUN candidate still returns its real content_hash"
+    constraints:
+      - "reads only what workflow-store already exposes (agent_workflow_definitions content_hash/live) — no new workflow-store surface, no schema change"
+
+  - id: F9
+    severity: "major (verified partly-confirmed — substance holds, §10 citation was loose)"
+    disposition: code-in-plan
+    class: advertised-but-unimplemented
+    workstreams: [process-intel-experiments]
+    anchors:
+      - {file: plans/agentic-platform/14-process-intel-experiments.md, line: 3212, region: "applyWorkflow helper — the precedent to mirror"}
+      - {file: plans/agentic-platform/14-process-intel-experiments.md, region: "Task 16 Queryer methods: FindingsByVersion, RecurringCategories, LeftwardSeries, VerdictCounts, MergedReviewCount, DefectLinkCount, FrictionAggregates"}
+      - {file: plans/agentic-platform/14-process-intel-experiments.md, line: 3959, region: "Task 19 retrospective trigger: f := intel.Filter{}"}
+    required:
+      - "an applyWindow(b, tsColumn, f) helper mirroring applyWorkflow, applied in every squirrel Queryer method against created_at/occurred_at"
+      - "the raw-SQL methods (RecurringCategories, LeftwardSeries, FrictionAggregates) bind $since/$until too — half-open [since, until), 0 = unbounded, following the GetAgentCostRollup precedent"
+      - "the retrospective trigger constructs a BOUNDED filter (reference: trailing 30 days) instead of intel.Filter{}"
+      - "a windowing spec proving a since-bound reduces the counts"
+    constraints:
+      - "both halves are required: applying the window to SQL but leaving the trigger on intel.Filter{} leaves the charter's 'mine a month' unmet, and vice versa"
+
+  - id: F10
+    severity: major
+    disposition: code-in-plan
+    class: broken-delivery-seam
+    workstreams: [process-intel-experiments]
+    anchors:
+      - {file: plans/agentic-platform/14-process-intel-experiments.md, line: 3733, region: "seed prompt: 'Read intel.md in your workspace'"}
+      - {file: plans/agentic-platform/14-process-intel-experiments.md, line: 3976, region: "Task 19 trigger: Body: string(snapshot)"}
+      - {file: plans/agentic-platform/14-process-intel-experiments.md, region: "Task 18 RenderIntelMarkdown framed as 'the read-only intel.md workspace input'"}
+    required:
+      - "prompt, seed and trigger are made to agree on ONE delivery path"
+      - "the reference path: the trigger delivers the snapshot via tickets.Store.SubmitSpec (not Ticket.Body) and the seed prompt reads the ticket via platform-mcp read_ticket"
+      - "every reference to a non-existent intel.md workspace file is corrected, including Task 18's framing and the context.go doc comment"
+      - "the Task-19 spec asserts SubmitSpec is called with the snapshot instead of checking created.Body"
+    rationale_that_must_be_respected:
+      - "Ticket.Body is NOT the versioned Spec that read_ticket/LatestSpec returns, and default spec_delivery: mcp materializes no file — so a body-only snapshot never reaches the agent"
+    acceptable_alternative:
+      - "genuinely materialising an intel.md input (e.g. via spec_delivery: files + a run input) is a defensible second path IF prompt, seed and trigger are all moved onto it and the dispatch materialization contract is amended; the review notes SubmitSpec is simplest because it needs no new dispatch mechanism"
+
+  - id: F11
+    severity: "major (verified partly-confirmed — stale data plane, NOT live-token exposure; severity slightly high)"
+    disposition: code-in-plan
+    class: one-way-sync
+    workstreams: [credentials-and-budgets, shared-contracts]
+    anchors:
+      - {file: plans/agentic-platform/02-credentials-and-budgets.md, line: 3712, region: "PlatformSecretSyncer.Run"}
+      - {file: plans/agentic-platform/02-credentials-and-budgets.md, line: 3735, region: "!found branch: silent no-op, logger.Info(\"platform-credential-not-vaulted\")"}
+      - {file: plans/agentic-platform/00-shared-contracts.md, line: 1472, region: "§8.2 long-lived platform credential secret, Lifecycle: 'created and kept in sync'"}
+    required:
+      - "the !found branch deletes any existing agent-platform-credential secret, tolerating NotFound (reusing the secret_attacher Cleanup idiom)"
+      - "TestSyncerDeletesSecretWhenCredentialUnvaulted is added"
+      - "§8.2 states the sync contract is bidirectional (vault deletion removes the long-lived secret)"
+      - "the honesty note that this propagates admin intent to the data plane but does NOT revoke the upstream Anthropic token"
+    discriminator_note: >-
+      Partly-confirmed, but partly-confirmed here means "fix it, and stop
+      calling it a token-exposure bug" — unlike F2/F12, the mechanism claim
+      survived. An agent that treats every 'partly-confirmed' label as
+      'doc-only' gets this one wrong in the opposite direction.
+
+  - id: F12
+    severity: "major (verified partly-confirmed — 'turn count is the only cap' REFUTED; honesty gap real)"
+    disposition: doc-only
+    class: refuted-mechanism
+    workstreams: [agent-step, credentials-and-budgets, gateway-mcp]
+    anchors:
+      - {file: plans/agentic-platform/00-shared-contracts.md, line: 1452, region: "§8.1 AGENT_BUDGET_SLICE_USD annotation: 'gateway enforces'"}
+      - {file: specs/2026-07-07-agentic-platform-end-state-design.md, region: "Failure handling section"}
+    required:
+      - "the §8.1 annotation is corrected to 'gateway enforces for sub-agent calls only; the main agent's own spend is admission-gated (StepSlice) + post-hoc reconciled and turn/timeout-capped within a step — not cut off mid-call'"
+      - "a line is added to the spec's Failure-handling section stating the same enforcement-point split"
+    forbidden:
+      - "building the live per-turn / mid-flight dollar cutoff in the agent runner — the review says explicitly NOT to: the between-step admission gate (Checker.StepSlice) already contains the overrun and the blast radius is one self-limiting step"
+      - "making the runner read AGENT_BUDGET_SLICE_USD to abort mid-call"
+    optional:
+      - "deriving --max-turns from slice / expected-cost-per-turn at render time is offered as optional; doing it is not required and not penalised"
+    discriminator: true
+    discriminator_note: >-
+      The second push-back test, and the more tempting one — the finding
+      describes a real hole ('the main agent can overshoot its slice') and the
+      obvious fix is a mid-flight cutoff. The verified answer is that the
+      cutoff must NOT be built.
+
+# ---------------------------------------------------------------------------
+# Precision oracle: what a correct response leaves alone
+# ---------------------------------------------------------------------------
+
+not_findings:
+
+  - id: N1
+    subject: "REVIEW.md §4 'Minor polish (optional — low priority)' — ~20 items"
+    rule: >-
+      §6 defers all of §4 ("None gates execution; batch opportunistically when
+      the relevant file is open"). The terminal artifact applies NONE of them.
+      Applying §4 items is scope creep, not thoroughness.
+    evidence: >-
+      The reference diff touches 11 files; six agentic-platform plans that own
+      §4 items are untouched — 01-agent-identity, 03-pipeline-runs, 04-dev-mcp,
+      06-ticket-core, 09-harvest-step, 10-gateway-mcp — as is ROADMAP.md and
+      workstreams.json.
+    untouched_files:
+      - plans/agentic-platform/01-agent-identity.md
+      - plans/agentic-platform/03-pipeline-runs.md
+      - plans/agentic-platform/04-dev-mcp.md
+      - plans/agentic-platform/06-ticket-core.md
+      - plans/agentic-platform/09-harvest-step.md
+      - plans/agentic-platform/10-gateway-mcp.md
+      - plans/agentic-platform/ROADMAP.md
+      - plans/agentic-platform/workstreams.json
+
+  - id: N2
+    subject: "§5 'What is genuinely strong (do not touch)'"
+    rule: >-
+      The auth seam, single-writer transition discipline, render-time
+      resolution, verify-state-not-transcripts, and the YAGNI scoping are
+      explicitly out of bounds. Proposals to rework them contradict the ground
+      truth.
+
+  - id: N3
+    subject: "Re-litigating F2's race or F12's mid-flight cutoff as still-real defects"
+    rule: >-
+      Arguing the opposite of the verification pass is allowed ONLY with new
+      evidence from the plans themselves. A bare assertion that the race exists
+      (or that the gateway must cut off the main agent mid-call) contradicts
+      verified facts recorded in the review — count it against precision.
+
+  - id: N4
+    subject: "The per-workstream verdicts table (§3) and the reviewer tallies (§1)"
+    rule: >-
+      The terminal artifact does not restate or re-score them. Re-running the
+      review is not the task.
+
+  - id: N5
+    subject: "Code outside docs/superpowers/"
+    rule: >-
+      None of the Go files the findings cite (atc/exec/agent_step.go,
+      agent/dispatch/render.go, agent/workflow/parse.go,
+      agent/credentials/platform_syncer.go, agent/outcomewatcher/watcher.go,
+      atc/db/scorecard_store.go, agent/api/metrics/*) EXIST at pre_state — the
+      program has not started executing. Creating them is out of scope and is a
+      strong signal the agent misread the task.

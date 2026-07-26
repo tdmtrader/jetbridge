@@ -1,0 +1,953 @@
+diff --git a/agent/api/tickets/types.go b/agent/api/tickets/types.go
+index d63bb3f21f..63afdaceb3 100644
+--- a/agent/api/tickets/types.go
++++ b/agent/api/tickets/types.go
+@@ -38,14 +38,18 @@ const (
+ //   - needs_review → concluded — TERMINAL, explicit human disposition
+ //     ONLY: "run finished, human reviewed, no merge intended"
+ //     (spike/research flows; FLOWS.md §3). Positive sibling of abandoned.
++//   - failed/errored → abandoned — human disposition of a dead ticket.
++//     Without this edge the ONLY exit from failed/errored is a paid
++//     re-dispatch, so dead tickets accumulate forever in every "active"
++//     listing (dashboard strip, queue) with no way to write them off.
+ var validTransitions = map[State][]State{
+ 	StateDraft:       {StateQueued, StateAbandoned},
+ 	StateQueued:      {StateRunning, StateDraft, StateAbandoned},
+ 	StateRunning:     {StateQueued, StateNeedsReview, StateFailed, StateErrored},
+ 	StateNeedsReview: {StateMerged, StateMergedWithFixes, StateSentBack, StateAbandoned, StateConcluded, StateQueued},
+ 	StateSentBack:    {StateQueued},
+-	StateFailed:      {StateQueued},
+-	StateErrored:     {StateQueued},
++	StateFailed:      {StateQueued, StateAbandoned},
++	StateErrored:     {StateQueued, StateAbandoned},
+ }
+ 
+ func ValidTransition(from, to State) bool {
+diff --git a/agent/api/tickets/types_test.go b/agent/api/tickets/types_test.go
+index aa22e39641..148b75051f 100644
+--- a/agent/api/tickets/types_test.go
++++ b/agent/api/tickets/types_test.go
+@@ -38,6 +38,11 @@ func TestValidTransitionMatrix(t *testing.T) {
+ 		{tickets.StateSentBack, tickets.StateQueued},
+ 		{tickets.StateFailed, tickets.StateQueued},
+ 		{tickets.StateErrored, tickets.StateQueued},
++		// failed/errored→abandoned: human write-off of a dead ticket. The
++		// only other exit is a PAID re-dispatch, so without this edge dead
++		// tickets pile up in every active listing forever.
++		{tickets.StateFailed, tickets.StateAbandoned},
++		{tickets.StateErrored, tickets.StateAbandoned},
+ 	}
+ 	for _, tr := range allowed {
+ 		if !tickets.ValidTransition(tr.from, tr.to) {
+diff --git a/atc/public_plan_test.go b/atc/public_plan_test.go
+index f9a4ba96a2..ede1cfd469 100644
+--- a/atc/public_plan_test.go
++++ b/atc/public_plan_test.go
+@@ -1,6 +1,10 @@
+ package atc_test
+ 
+ import (
++	"encoding/json"
++	"reflect"
++	"strings"
++
+ 	"github.com/concourse/concourse/atc"
+ 	. "github.com/onsi/ginkgo/v2"
+ 	. "github.com/onsi/gomega"
+@@ -8,6 +12,36 @@ import (
+ )
+ 
+ var _ = Describe("Plan", func() {
++	Describe("Public exhaustiveness", func() {
++		// Public() is a hand-maintained mirror of atc.Plan. A step type
++		// missing from it serializes as a typeless {"id": ...} object, which
++		// the web UI can only render as an anonymous fallback step (this is
++		// exactly how the harvest step went missing from the build page).
++		It("serializes every step pointer field of Plan under its JSON key", func() {
++			planType := reflect.TypeOf(atc.Plan{})
++			for i := 0; i < planType.NumField(); i++ {
++				field := planType.Field(i)
++				if field.Type.Kind() != reflect.Ptr {
++					continue
++				}
++				tag := strings.Split(field.Tag.Get("json"), ",")[0]
++				Expect(tag).ToNot(BeEmpty(), "step field %q needs a json tag", field.Name)
++
++				plan := atc.Plan{ID: "1"}
++				reflect.ValueOf(&plan).Elem().Field(i).Set(reflect.New(field.Type.Elem()))
++
++				public := plan.Public()
++				Expect(public).ToNot(BeNil())
++
++				var decoded map[string]json.RawMessage
++				Expect(json.Unmarshal([]byte(*public), &decoded)).To(Succeed())
++				Expect(decoded).To(HaveKey(tag),
++					"atc.Plan field %q (json %q) is dropped by Plan.Public() — add a case for it so the build page can render the step",
++					field.Name, tag)
++			}
++		})
++	})
++
+ 	Describe("SidecarPlanID", func() {
+ 		It("derives a plan ID from the parent and sidecar name", func() {
+ 			id := atc.SidecarPlanID("42", "cloud-sql-proxy")
+diff --git a/AGENTIC_UX_WAVE_2_SCOPE.md b/docs/superpowers/plans/2026-07-18-agentic-ux-wave-2-scope.md
+similarity index 100%
+rename from AGENTIC_UX_WAVE_2_SCOPE.md
+rename to docs/superpowers/plans/2026-07-18-agentic-ux-wave-2-scope.md
+diff --git a/web/elm/src/Agent/Agent.elm b/web/elm/src/Agent/Agent.elm
+index 05d6797a41..259aef17ed 100644
+--- a/web/elm/src/Agent/Agent.elm
++++ b/web/elm/src/Agent/Agent.elm
+@@ -23,6 +23,7 @@ import Login.Login as Login
+ import Message.Callback exposing (Callback(..))
+ import Message.Effects exposing (Effect(..))
+ import Message.Message exposing (Message(..))
++import Message.ScrollDirection as ScrollDirection
+ import Message.Subscription
+     exposing
+         ( Delivery(..)
+@@ -76,7 +77,7 @@ type alias Model =
+         , minting : Bool
+         , revokeError : Maybe String
+         , showEphemeralPrincipals : Bool
+-        , expandedRuns : Set Int
++        , expandedRuns : Set String
+         }
+ 
+ 
+@@ -337,9 +338,15 @@ update msg ( model, effects ) =
+         AgentPrincipalsShowEphemeralToggled ->
+             ( { model | showEphemeralPrincipals = not model.showEphemeralPrincipals }, effects )
+ 
++        AgentSectionNavClicked anchorId ->
++            ( model, effects ++ [ Scroll (ScrollDirection.ToId anchorId) agentContentId ] )
++
+         AgentRunExpandToggled rowKey ->
+             -- Toggle a single ledger row between its one-line summary and the
+-            -- full run summary. Keyed by the row's ordinal in the fetched list.
++            -- full run summary. Keyed by build id + plan id (see runKey): a
++            -- build carries one metric row per step (agent + harvest), so the
++            -- build id alone would toggle sibling rows together, and an
++            -- ordinal would jump when the 5s refetch prepends a newer run.
+             let
+                 expanded =
+                     if Set.member rowKey model.expandedRuns then
+@@ -542,7 +549,15 @@ view session model =
+             (id "page-below-top-bar" :: Views.Styles.pageBelowTopBar route)
+             [ SideBar.view session Nothing
+             , Html.div
+-                [ style "padding" "16px", style "width" "100%" ]
++                -- The console's own scroll container (like the build page's
++                -- body): the section nav jumps by setting its scrollTop via
++                -- the scrollToId port, which needs a scrolling parent by id.
++                [ id agentContentId
++                , style "padding" "16px"
++                , style "width" "100%"
++                , style "box-sizing" "border-box"
++                , style "overflow-y" "auto"
++                ]
+                 [ Html.h1
+                     [ style "font-size" "18px"
+                     , style "margin" "0"
+@@ -571,8 +586,16 @@ view session model =
+ -- SECTION NAV
+ 
+ 
++agentContentId : String
++agentContentId =
++    "agent-content"
++
++
+ {-| A slim in-page nav strip so the long single-column console can be jumped
+-around without scroll-hunting. Each entry anchors to a section's `id`. -}
++around without scroll-hunting. Each entry scrolls to a section's `id` via the
++`scrollToId` port — a plain `#fragment` href is dead here: `Browser.application`
++intercepts every internal link click and re-navigates through `Routes`, which
++carries no fragment for this page, so the browser never performs the jump. -}
+ sectionNav : Html Message
+ sectionNav =
+     Html.div
+@@ -596,10 +619,15 @@ sectionNav =
+ 
+ navLink : ( String, String ) -> Html Message
+ navLink ( anchorId, label ) =
+-    Html.a
+-        [ href ("#" ++ anchorId)
++    Html.button
++        [ onClick (AgentSectionNavClicked anchorId)
++        , type_ "button"
++        , style "background" "transparent"
++        , style "border" "none"
++        , style "padding" "0"
++        , style "font" "inherit"
+         , style "color" "#7a9ac0"
+-        , style "text-decoration" "none"
++        , style "cursor" "pointer"
+         ]
+         [ Html.text label ]
+ 
+@@ -631,7 +659,7 @@ runsSection zone model =
+                        ]
+ 
+ 
+-runsTable : Time.Zone -> Set Int -> List Agent.RunMetric -> Html Message
++runsTable : Time.Zone -> Set String -> List Agent.RunMetric -> Html Message
+ runsTable zone expandedRuns runs =
+     Html.table
+         [ class "agent-runs-table"
+@@ -640,7 +668,7 @@ runsTable zone expandedRuns runs =
+         , style "font-size" "12px"
+         , style "color" Colors.text
+         ]
+-        (runsHeaderRow :: List.map (\r -> runRow zone expandedRuns r.buildId r) runs)
++        (runsHeaderRow :: List.map (runRow zone expandedRuns) runs)
+ 
+ 
+ runsHeaderRow : Html Message
+@@ -657,10 +685,19 @@ runsHeaderRow =
+         ]
+ 
+ 
+-runRow : Time.Zone -> Set Int -> Int -> Agent.RunMetric -> Html Message
+-runRow zone expandedRuns rowKey r =
++{-| Stable identity for a ledger row. (build id, plan id) is the metrics
++table's unique key — a build id alone is shared by sibling step rows of the
++same build, and a list ordinal changes when the refetch prepends a newer run.
++-}
++runKey : Agent.RunMetric -> String
++runKey r =
++    String.fromInt r.buildId ++ ":" ++ r.planId
++
++
++runRow : Time.Zone -> Set String -> Agent.RunMetric -> Html Message
++runRow zone expandedRuns r =
+     Html.tr [ class "agent-run-row" ]
+-        [ runStepCell expandedRuns rowKey r
++        [ runStepCell expandedRuns r
+         , tableCell "left" (workflowRef r.workflowName r.workflowVersion)
+         , runStatusCell r
+         , tableCell "right" ("$" ++ formatUsd r.costUsd)
+@@ -674,12 +711,15 @@ runRow zone expandedRuns rowKey r =
+ {-| The step name plus its summary underneath it — omitted when the summary is
+ empty so the row does not carry a blank subtext line. The summary is
+ click-to-expand: collapsed it is a truncated one-liner; expanded it renders the
+-full run summary as prose (`AgentRunExpandToggled`, keyed by build id so the
++full run summary as prose (`AgentRunExpandToggled`, keyed by `runKey` so the
+ expanded row stays put when a 5s refetch prepends a newer run).
+ -}
+-runStepCell : Set Int -> Int -> Agent.RunMetric -> Html Message
+-runStepCell expandedRuns rowKey r =
++runStepCell : Set String -> Agent.RunMetric -> Html Message
++runStepCell expandedRuns r =
+     let
++        rowKey =
++            runKey r
++
+         expanded =
+             Set.member rowKey expandedRuns
+ 
+diff --git a/web/elm/src/AgentBadge.elm b/web/elm/src/AgentBadge.elm
+index 5831c7107c..b2175651e1 100644
+--- a/web/elm/src/AgentBadge.elm
++++ b/web/elm/src/AgentBadge.elm
+@@ -264,49 +264,66 @@ fromRunStatus status =
+             Nothing
+ 
+ 
+-{-| runOutcome derives the DISPLAY truth for a finished run. The pipeline
+-build status (server-derived) wins over the agent step status (U3): a step
+-that exited "ok" inside a build that failed is Failed, and a step that exited
+-"ok" in a build that succeeded but produced no result summary is NoOutput —
+-never a green OK on a build that did not deliver. Falls back to the step
+-status when the build status is absent (e.g. a metric that predates the final
+-build state, or a still-running build).
++{-| runOutcome derives the DISPLAY truth for a run, fusing the server-derived
++pipeline build status with the agent step's own status (U3). The precedence is
++"worst truth wins":
++
++1.  A terminally-bad BUILD is final — failed/errored/aborted render as such
++    even if the metric row still says "parked" (an abort-while-parked leaves
++    the parked row behind forever; it must not pulse "Waiting on you" for a
++    dead run).
++2.  Otherwise parked beats everything: the build deliberately stays "started"
++    while a HITL checkpoint waits, and a merely-open (or even succeeded)
++    build must not hide that the operator is needed.
++3.  Otherwise a step-reported failure ("error"/"failed") is never masked — not
++    by a succeeded build (attempts/try can fail an agent step inside a green
++    build) and not by a still-open one (the row lands at step end, so a dead
++    run would otherwise show Running until the build closes, indefinitely for
++    wedged builds).
++4.  Only then does the build status speak: succeeded is a green OK only with a
++    result in hand (else NoOutput — never a green OK on a run that did not
++    deliver), started/pending render Running, and an absent build status
++    falls back to the step status alone.
+ -}
+ runOutcome : { buildStatus : String, runStatus : String, hasResult : Bool } -> Maybe Status
+ runOutcome { buildStatus, runStatus, hasResult } =
+-    -- A parked run is blocked awaiting a human (HITL checkpoint). Its build
+-    -- deliberately stays "started" until the run continues, so parked must be
+-    -- checked BEFORE the build status — otherwise "started" would render it as
+-    -- Running and hide that it needs the operator's input.
+-    if runStatus == "parked" then
+-        Just AwaitingHuman
+-
+-    else
+-        case buildStatus of
+-            "failed" ->
+-                Just Failed
++    case buildStatus of
++        "failed" ->
++            Just Failed
++
++        "errored" ->
++            Just Errored
++
++        "aborted" ->
++            Just Aborted
+ 
+-            "errored" ->
++        _ ->
++            if runStatus == "parked" then
++                Just AwaitingHuman
++
++            else if runStatus == "error" then
+                 Just Errored
+ 
+-            "aborted" ->
+-                Just Aborted
++            else if runStatus == "failed" then
++                Just Failed
+ 
+-            "succeeded" ->
+-                if hasResult then
+-                    Just Succeeded
++            else
++                case buildStatus of
++                    "succeeded" ->
++                        if hasResult then
++                            Just Succeeded
+ 
+-                else
+-                    Just NoOutput
++                        else
++                            Just NoOutput
+ 
+-            "started" ->
+-                Just (Running Nothing)
++                    "started" ->
++                        Just (Running Nothing)
+ 
+-            "pending" ->
+-                Just (Running Nothing)
++                    "pending" ->
++                        Just (Running Nothing)
+ 
+-            _ ->
+-                fromRunStatus runStatus
++                    _ ->
++                        fromRunStatus runStatus
+ 
+ 
+ toneClass : Tone -> String
+diff --git a/web/elm/src/AgentTickets/AgentTicket.elm b/web/elm/src/AgentTickets/AgentTicket.elm
+index cee840f497..3da58f88ec 100644
+--- a/web/elm/src/AgentTickets/AgentTicket.elm
++++ b/web/elm/src/AgentTickets/AgentTicket.elm
+@@ -77,7 +77,7 @@ type alias Model =
+         , agentReviewLoadError : Bool
+         , agentReviewPanelExpanded : Bool
+         , expandedFindings : Set String
+-        , showObservations : Bool
++        , showObservations : Maybe Bool
+         , agentReviewNotes : Dict String String
+         , verdictErrors : Set String
+         , expandedDescriptions : Set String
+@@ -104,7 +104,7 @@ init { id } =
+       , agentReviewLoadError = False
+       , agentReviewPanelExpanded = False
+       , expandedFindings = Set.empty
+-      , showObservations = False
++      , showObservations = Nothing
+       , agentReviewNotes = Dict.empty
+       , verdictErrors = Set.empty
+       , expandedDescriptions = Set.empty
+@@ -133,24 +133,65 @@ handleCallback callback ( model, effects ) =
+             -- refetch would otherwise silently revert their unsaved typing every
+             -- few seconds, and a tick just before Save would persist the reverted
+             -- server values as a no-op that looks successful).
++            let
++                stateChanged =
++                    model.detail
++                        |> Maybe.map (\old -> old.ticket.state /= detail.ticket.state)
++                        |> Maybe.withDefault False
++
++                -- The edit form is suppressed for terminal states, so if the
++                -- ticket goes terminal under an open edit the form would
++                -- silently vanish with `editing` stuck True and no Cancel left
++                -- to reach — exit the edit explicitly and say why.
++                editKilledByTerminal =
++                    model.editing && isTerminal detail.ticket.state
++
++                stillEditing =
++                    model.editing && not editKilledByTerminal
++            in
+             ( { model
+                 | detail = Just detail
+                 , loaded = True
+                 , loadError = False
++
++                -- An armed-but-unconfirmed transition (or dispatch) was a
++                -- decision about the PREVIOUS state; if the state changed
++                -- underneath it, disarm so the user re-decides against the
++                -- fresh state. (Confirm racing ahead of this refetch is safe:
++                -- it posts the old state as `from`, which the server's CAS
++                -- rejects with a 409.)
++                , pendingTransition =
++                    if stateChanged then
++                        Nothing
++
++                    else
++                        model.pendingTransition
++                , dispatchConfirm = model.dispatchConfirm && not stateChanged
++                , editing = stillEditing
++                , actionError =
++                    if editKilledByTerminal then
++                        Just
++                            ("Ticket moved to \""
++                                ++ detail.ticket.state
++                                ++ "\" while you were editing — unsaved changes were discarded."
++                            )
++
++                    else
++                        model.actionError
+                 , editTitle =
+-                    if model.editing then
++                    if stillEditing then
+                         model.editTitle
+ 
+                     else
+                         detail.ticket.title
+                 , editBody =
+-                    if model.editing then
++                    if stillEditing then
+                         model.editBody
+ 
+                     else
+                         detail.ticket.body
+                 , editBudget =
+-                    if model.editing then
++                    if stillEditing then
+                         model.editBudget
+ 
+                     else
+@@ -235,8 +276,22 @@ handleDelivery delivery ( model, effects ) =
+         ClockTicked FiveSeconds _ ->
+             -- U11: live-update on the dashboard's 5s cadence so state, spend and
+             -- runs stay current (a page was showing "Running" ~20 min after the
+-            -- ticket errored). Only replaces fetched data.
+-            ( model, effects ++ [ FetchAgentTicket model.ticketId, FetchAgentTicketMetrics model.ticketId ] )
++            -- ticket errored). Only replaces fetched data. Once the ticket is
++            -- terminal nothing can change server-side (no dispatch, frozen
++            -- runs/costs), so stop polling instead of refetching identical
++            -- bytes for the life of the tab; keep polling while detail is
++            -- still unknown.
++            let
++                settled =
++                    model.detail
++                        |> Maybe.map (\d -> isTerminal d.ticket.state)
++                        |> Maybe.withDefault False
++            in
++            if settled then
++                ( model, effects )
++
++            else
++                ( model, effects ++ [ FetchAgentTicket model.ticketId, FetchAgentTicketMetrics model.ticketId ] )
+ 
+         _ ->
+             ( model, effects )
+@@ -310,8 +365,8 @@ update msg ( model, effects ) =
+         ToggleAgentReviewFinding findingId ->
+             ( { model | expandedFindings = toggleSet findingId model.expandedFindings }, effects )
+ 
+-        ToggleAgentReviewObservations ->
+-            ( { model | showObservations = not model.showObservations }, effects )
++        ToggleAgentReviewObservations open ->
++            ( { model | showObservations = Just open }, effects )
+ 
+         ToggleAgentReviewFindingBody findingId ->
+             ( { model | expandedDescriptions = toggleSet findingId model.expandedDescriptions }, effects )
+@@ -710,10 +765,10 @@ transitionTargets state =
+             [ ( "queued", "Re-queue" ) ]
+ 
+         "failed" ->
+-            [ ( "queued", "Retry" ) ]
++            [ ( "queued", "Retry" ), ( "abandoned", "Abandon" ) ]
+ 
+         "errored" ->
+-            [ ( "queued", "Retry" ) ]
++            [ ( "queued", "Retry" ), ( "abandoned", "Abandon" ) ]
+ 
+         _ ->
+             []
+@@ -781,21 +836,14 @@ reviewDigest ticket metrics =
+         latestBuild =
+             metrics |> List.map .buildId |> List.maximum
+ 
++        -- Rows are created_at ASC, so the LAST non-empty summary is the final
++        -- step's verdict (harvest/judge), not the agent's own first words.
+         latestSummary =
+             case latestBuild of
+                 Just b ->
+                     metrics
+                         |> List.filter (\m -> m.buildId == b)
+-                        |> List.filterMap
+-                            (\m ->
+-                                if m.summary == "" then
+-                                    Nothing
+-
+-                                else
+-                                    Just m.summary
+-                            )
+-                        |> List.head
+-                        |> Maybe.withDefault ""
++                        |> lastNonEmptySummary
+ 
+                 Nothing ->
+                     ""
+@@ -1109,27 +1157,33 @@ runRow metrics buildId =
+         cost =
+             forBuild |> List.map .costUsd |> List.sum
+ 
++        -- Rows arrive created_at ASC, one per step (agent, then harvest…), so
++        -- the run's effective status is the LATEST step's — except a parked
++        -- row anywhere wins, or a mid-build HITL park on a later step would
++        -- hide behind an earlier step's "ok" and render as merely Running.
+         runStatus =
+-            forBuild |> List.head |> Maybe.map .status |> Maybe.withDefault ""
++            case List.filter (\m -> m.status == "parked") forBuild of
++                parked :: _ ->
++                    parked.status
++
++                [] ->
++                    forBuild
++                        |> List.reverse
++                        |> List.head
++                        |> Maybe.map .status
++                        |> Maybe.withDefault ""
+ 
++        -- The joined build status is identical on every row of the build.
+         buildStatus =
+             forBuild |> List.head |> Maybe.map .buildStatus |> Maybe.withDefault ""
+ 
+-        hasResult =
+-            List.any (\m -> m.summary /= "") forBuild
+-
++        -- The delivered result is the LAST step's non-empty summary (the
++        -- harvest/judge verdict), not the first step's self-report.
+         summary =
+-            forBuild
+-                |> List.filterMap
+-                    (\m ->
+-                        if m.summary == "" then
+-                            Nothing
++            lastNonEmptySummary forBuild
+ 
+-                        else
+-                            Just m.summary
+-                    )
+-                |> List.head
+-                |> Maybe.withDefault ""
++        hasResult =
++            summary /= ""
+ 
+         -- U2/U3: the build status wins over the step status for display truth.
+         statusView =
+@@ -1230,6 +1284,25 @@ unique xs =
+             []
+ 
+ 
++{-| The last non-empty summary of a build's metric rows (rows arrive
++created_at ASC): the final step's verdict, not the first step's self-report.
++-}
++lastNonEmptySummary : List Concourse.Agent.RunMetric -> String
++lastNonEmptySummary rows =
++    rows
++        |> List.filterMap
++            (\m ->
++                if m.summary == "" then
++                    Nothing
++
++                else
++                    Just m.summary
++            )
++        |> List.reverse
++        |> List.head
++        |> Maybe.withDefault ""
++
++
+ reviewerName : Session -> String
+ reviewerName session =
+     case session.userState of
+diff --git a/web/elm/src/AgentTickets/AgentTickets.elm b/web/elm/src/AgentTickets/AgentTickets.elm
+index ca5af5f00e..d829c87aa5 100644
+--- a/web/elm/src/AgentTickets/AgentTickets.elm
++++ b/web/elm/src/AgentTickets/AgentTickets.elm
+@@ -115,14 +115,19 @@ handleCallback callback ( model, effects ) =
+ handleDelivery : Delivery -> ET Model
+ handleDelivery delivery ( model, effects ) =
+     case delivery of
+-        ClockTicked OneSecond time ->
+-            -- U11: track a live "now" so elapsed-time on rows keeps ticking.
+-            ( { model | now = Just time }, effects )
+-
+-        ClockTicked FiveSeconds _ ->
++        ClockTicked FiveSeconds time ->
+             -- U11: live-update the queue on the dashboard's 5s cadence so state
+-            -- and spend never go stale. Only replaces fetched data.
+-            ( model, effects ++ [ FetchAgentTickets, FetchAgentTicketCosts ] )
++            -- never goes stale, and advance "now" for the elapsed-time labels
++            -- on the same beat (a dedicated OneSecond tick re-filtered and
++            -- re-sorted the whole queue every second just to move "N ago"
++            -- labels the refetch redraws anyway). Only replaces fetched data.
++            ( { model | now = Just time }, effects ++ [ FetchAgentTickets ] )
++
++        ClockTicked OneMinute _ ->
++            -- The cost rollup is a whole-window ledger aggregation — far too
++            -- heavy to run 12x/minute per open tab for numbers that move at
++            -- run granularity. Refresh it on the minute like the /agent page.
++            ( model, effects ++ [ FetchAgentTicketCosts ] )
+ 
+         _ ->
+             ( model, effects )
+@@ -148,7 +153,7 @@ tooltip _ _ =
+ 
+ subscriptions : List Subscription
+ subscriptions =
+-    [ OnClockTick OneSecond, OnClockTick FiveSeconds ]
++    [ OnClockTick FiveSeconds, OnClockTick OneMinute ]
+ 
+ 
+ view : Session -> Model -> Html Message
+diff --git a/web/elm/src/Build/AgentReview.elm b/web/elm/src/Build/AgentReview.elm
+index 670316c38d..8ec2d5f8ae 100644
+--- a/web/elm/src/Build/AgentReview.elm
++++ b/web/elm/src/Build/AgentReview.elm
+@@ -15,7 +15,7 @@ type alias PanelState a =
+         , agentReviewLoadError : Bool
+         , agentReviewPanelExpanded : Bool
+         , expandedFindings : Set String
+-        , showObservations : Bool
++        , showObservations : Maybe Bool
+         , agentReviewNotes : Dict String String
+         , verdictErrors : Set String
+         , expandedDescriptions : Set String
+@@ -172,10 +172,12 @@ observationsSection reviewer review model =
+     else
+         let
+             -- A short list is worth reading, so it opens by default; a long
+-            -- one stays folded. The toggle simply flips whichever default
+-            -- applies, so `showObservations` still means "user overrode it".
++            -- one stays folded. A user click records an ABSOLUTE choice
++            -- (Just open/closed) rather than "flip the default": reviews
++            -- refetch while the page is open, and a count crossing the
++            -- threshold must not invert what the user chose.
+             open =
+-                Basics.xor model.showObservations (count <= 5)
++                model.showObservations |> Maybe.withDefault (count <= 5)
+         in
+         Html.button
+             (buttonReset
+@@ -188,7 +190,7 @@ observationsSection reviewer review model =
+                    , style "width" "100%"
+                    , style "cursor" "pointer"
+                    , style "color" "#b0b0b0"
+-                   , onClick ToggleAgentReviewObservations
++                   , onClick (ToggleAgentReviewObservations (not open))
+                    ]
+             )
+             [ Html.span [ style "font-size" "12px" ]
+diff --git a/web/elm/src/Build/Build.elm b/web/elm/src/Build/Build.elm
+index 0115c64bce..a5233b8ee3 100644
+--- a/web/elm/src/Build/Build.elm
++++ b/web/elm/src/Build/Build.elm
+@@ -137,7 +137,7 @@ init flags =
+           , agentReviewLoadError = False
+           , agentReviewPanelExpanded = True
+           , expandedFindings = Set.empty
+-          , showObservations = False
++          , showObservations = Nothing
+           , agentReviewNotes = Dict.empty
+           , verdictErrors = Set.empty
+           , expandedDescriptions = Set.empty
+@@ -557,8 +557,8 @@ update msg ( model, effects ) =
+             , effects
+             )
+ 
+-        ToggleAgentReviewObservations ->
+-            ( { model | showObservations = not model.showObservations }, effects )
++        ToggleAgentReviewObservations open ->
++            ( { model | showObservations = Just open }, effects )
+ 
+         ToggleAgentReviewFindingBody findingId ->
+             ( { model
+@@ -1105,7 +1105,7 @@ body :
+             , agentReviewLoadError : Bool
+             , agentReviewPanelExpanded : Bool
+             , expandedFindings : Set String
+-            , showObservations : Bool
++            , showObservations : Maybe Bool
+             , agentReviewNotes : Dict String String
+             , verdictErrors : Set String
+             , expandedDescriptions : Set String
+diff --git a/web/elm/src/Build/Models.elm b/web/elm/src/Build/Models.elm
+index 64a14f3d66..cd164278d8 100644
+--- a/web/elm/src/Build/Models.elm
++++ b/web/elm/src/Build/Models.elm
+@@ -42,7 +42,7 @@ type alias Model =
+                 , agentReviewLoadError : Bool
+                 , agentReviewPanelExpanded : Bool
+                 , expandedFindings : Set String
+-                , showObservations : Bool
++                , showObservations : Maybe Bool
+                 , agentReviewNotes : Dict String String
+                 , verdictErrors : Set String
+                 , expandedDescriptions : Set String
+diff --git a/web/elm/src/Concourse.elm b/web/elm/src/Concourse.elm
+index a98f578635..3960a7d0f1 100644
+--- a/web/elm/src/Concourse.elm
++++ b/web/elm/src/Concourse.elm
+@@ -768,13 +768,31 @@ decodeBuildStepHarvest =
+         |> andMap (Json.Decode.field "name" Json.Decode.string)
+ 
+ 
++{-| Public-plan steps are shaped `{"id": …, "<type>": {…, "name": …}}`, so an
++unrecognized step's identity lives under its unknown type key — label it with
++the nested name when present, else the type key itself, so the degraded row
++reads "deploy" or "fancy_step" instead of an anonymous "step".
++-}
+ decodeBuildStepUnknown : Json.Decode.Decoder BuildStep
+ decodeBuildStepUnknown =
+     Json.Decode.map BuildStepUnknown
+-        (Json.Decode.oneOf
+-            [ Json.Decode.field "name" Json.Decode.string
+-            , Json.Decode.succeed "step"
+-            ]
++        (Json.Decode.keyValuePairs Json.Decode.value
++            |> Json.Decode.map
++                (\pairs ->
++                    pairs
++                        |> List.filter (\( key, _ ) -> key /= "id" && key /= "attempts")
++                        |> List.head
++                        |> Maybe.map
++                            (\( key, value ) ->
++                                case Json.Decode.decodeValue (Json.Decode.field "name" Json.Decode.string) value of
++                                    Ok name ->
++                                        name
++
++                                    Err _ ->
++                                        key
++                            )
++                        |> Maybe.withDefault "step"
++                )
+         )
+ 
+ 
+diff --git a/web/elm/src/Dashboard/Dashboard.elm b/web/elm/src/Dashboard/Dashboard.elm
+index a73f667df1..dd0f0dbd30 100644
+--- a/web/elm/src/Dashboard/Dashboard.elm
++++ b/web/elm/src/Dashboard/Dashboard.elm
+@@ -1246,6 +1246,17 @@ agentTicketStrip model =
+             model.agentTickets
+                 |> List.filter (\t -> List.member t.state agentActiveStates)
+                 |> List.sortBy (\t -> ( agentStateOrder t.state, negate t.createdAt ))
++
++        -- Attention states rank first but must not monopolize the strip: a
++        -- backlog of undispositioned needs_review/errored tickets would
++        -- otherwise fill all 8 slots and hide every RUNNING/QUEUED ticket —
++        -- the things actually moving. Cap attention chips at 6 so live work
++        -- always keeps at least two slots (the queue page shows everything).
++        shown =
++            (List.take 6 (List.filter (\t -> agentStateOrder t.state <= 3) active)
++                ++ List.filter (\t -> agentStateOrder t.state > 3) active
++            )
++                |> List.take 8
+     in
+     if List.isEmpty active then
+         Html.text ""
+@@ -1270,7 +1281,7 @@ agentTicketStrip model =
+                 , style "font-size" "13px"
+                 ]
+                 [ Html.text "agent tickets" ]
+-                :: List.map (agentTicketChip model.agentTicketCosts) (List.take 8 active)
++                :: List.map (agentTicketChip model.agentTicketCosts) shown
+             )
+ 
+ 
+diff --git a/web/elm/src/Message/Message.elm b/web/elm/src/Message/Message.elm
+index 7097d6e31d..95ae2a4d59 100644
+--- a/web/elm/src/Message/Message.elm
++++ b/web/elm/src/Message/Message.elm
+@@ -47,7 +47,7 @@ type Message
+     | ToggleAgentReviewPanel
+     | ToggleAgentReviewFinding String
+     | ToggleAgentReviewFindingBody String
+-    | ToggleAgentReviewObservations
++    | ToggleAgentReviewObservations Bool
+     | AgentReviewVerdictClicked
+         { repo : String
+         , commitSha : String
+@@ -67,7 +67,8 @@ type Message
+     | AgentMintedTokenDismissed
+     | AgentPrincipalRevokeClicked Int
+     | AgentPrincipalsShowEphemeralToggled
+-    | AgentRunExpandToggled Int
++    | AgentRunExpandToggled String
++    | AgentSectionNavClicked String
+       -- Agent Ticket page (edit + disposition)
+     | ClickAgentTicketEdit
+     | AgentTicketTitleChanged String
+diff --git a/web/elm/tests/AgentBadgeTests.elm b/web/elm/tests/AgentBadgeTests.elm
+index c8f0bb5e7b..ba768f8262 100644
+--- a/web/elm/tests/AgentBadgeTests.elm
++++ b/web/elm/tests/AgentBadgeTests.elm
+@@ -130,5 +130,31 @@ all =
+                 \_ ->
+                     runOutcome { buildStatus = "succeeded", runStatus = "parked", hasResult = True }
+                         |> Expect.equal (Just AwaitingHuman)
++            , test "a parked run whose build was ABORTED shows Aborted, not Waiting on you" <|
++                \_ ->
++                    -- abort-while-parked leaves the metric row parked forever;
++                    -- the dead run must not keep asking for the operator.
++                    runOutcome { buildStatus = "aborted", runStatus = "parked", hasResult = False }
++                        |> Expect.equal (Just Aborted)
++            , test "a parked run whose build ERRORED shows Errored, not Waiting on you" <|
++                \_ ->
++                    runOutcome { buildStatus = "errored", runStatus = "parked", hasResult = False }
++                        |> Expect.equal (Just Errored)
++            , test "a step that reported error inside a SUCCEEDED build is Errored, never a green OK" <|
++                \_ ->
++                    -- attempts:/try can fail an agent step inside a build that
++                    -- still succeeds; the run's own failure must not be masked.
++                    runOutcome { buildStatus = "succeeded", runStatus = "error", hasResult = True }
++                        |> Expect.equal (Just Errored)
++            , test "a step that reported failed inside a SUCCEEDED build is Failed" <|
++                \_ ->
++                    runOutcome { buildStatus = "succeeded", runStatus = "failed", hasResult = True }
++                        |> Expect.equal (Just Failed)
++            , test "a step that reported error while its build is still open is Errored, not Running" <|
++                \_ ->
++                    -- the metric row lands at step end; hooks or a wedged build
++                    -- can hold the build open long after the run died.
++                    runOutcome { buildStatus = "started", runStatus = "error", hasResult = False }
++                        |> Expect.equal (Just Errored)
+             ]
+         ]
+diff --git a/web/elm/tests/AgentPageTests.elm b/web/elm/tests/AgentPageTests.elm
+index fc827c6e5a..fbd6d1a487 100644
+--- a/web/elm/tests/AgentPageTests.elm
++++ b/web/elm/tests/AgentPageTests.elm
+@@ -258,8 +258,9 @@ all =
+                         (Callback.AgentRunMetricsFetched (Ok [ sampleRun ]))
+                     |> Tuple.first
+                     |> Application.update
+-                        -- keyed by build id (stable across the 5s refetch), not the row ordinal
+-                        (Msgs.Update (Message.Message.AgentRunExpandToggled 100))
++                        -- keyed by build id + plan id (stable across the 5s
++                        -- refetch, unique across sibling step rows of a build)
++                        (Msgs.Update (Message.Message.AgentRunExpandToggled "100:plan-abc"))
+                     |> Tuple.first
+                     |> Common.queryView
+                     |> Query.find [ class "agent-run-row" ]
+diff --git a/web/elm/tests/AgentTicketsPageTests.elm b/web/elm/tests/AgentTicketsPageTests.elm
+index 2616af2934..f64e8c0b91 100644
+--- a/web/elm/tests/AgentTicketsPageTests.elm
++++ b/web/elm/tests/AgentTicketsPageTests.elm
+@@ -135,7 +135,7 @@ all =
+                     |> Common.queryView
+                     |> Query.find [ class "agent-ticket-branch" ]
+                     |> Query.has [ text "agent/ticket-12" ]
+-        , test "live-updates: refetches tickets and costs on the five second tick" <|
++        , test "live-updates: refetches tickets on the five second tick, but not the heavy cost rollup" <|
+             \_ ->
+                 Common.init "/agent-tickets"
+                     |> Application.update
+@@ -143,8 +143,17 @@ all =
+                     |> Tuple.second
+                     |> Expect.all
+                         [ Common.contains Effects.FetchAgentTickets
+-                        , Common.contains Effects.FetchAgentTicketCosts
++                        , Common.notContains Effects.FetchAgentTicketCosts
+                         ]
++        , test "live-updates: refreshes the cost rollup on the minute tick" <|
++            \_ ->
++                -- the rollup is a whole-window ledger aggregation; 5s polling
++                -- would run it 720x/hour per open tab for run-granularity data
++                Common.init "/agent-tickets"
++                    |> Application.update
++                        (Msgs.DeliveryReceived (ClockTicked OneMinute <| Time.millisToPosix 0))
++                    |> Tuple.second
++                    |> Common.contains Effects.FetchAgentTicketCosts
+         , test "client-side filter narrows the visible rows by title" <|
+             \_ ->
+                 Common.init "/agent-tickets"
+diff --git a/web/elm/tests/BuildAgentReviewTests.elm b/web/elm/tests/BuildAgentReviewTests.elm
+index 2688dcccd2..84c02024af 100644
+--- a/web/elm/tests/BuildAgentReviewTests.elm
++++ b/web/elm/tests/BuildAgentReviewTests.elm
+@@ -170,12 +170,12 @@ all =
+                         ]
+         , test "id-less observations show their body read-only, no controls" <|
+             \_ ->
++                -- a short observation list (≤5) opens by default, so no
++                -- toggle is needed to reveal the body
+                 Common.init "/builds/1"
+                     |> withBuildLoaded
+                     |> Application.handleCallback (Callback.BuildAgentReviewsFetched (Ok [ idlessObservationsReview ]))
+                     |> Tuple.first
+-                    |> Application.update (Msgs.Update Message.Message.ToggleAgentReviewObservations)
+-                    |> Tuple.first
+                     |> Common.queryView
+                     |> Query.find [ id "agent-review-panel" ]
+                     |> Expect.all
+diff --git a/web/elm/tests/BuildStepTests.elm b/web/elm/tests/BuildStepTests.elm
+index fd4238024a..a55f5507c8 100644
+--- a/web/elm/tests/BuildStepTests.elm
++++ b/web/elm/tests/BuildStepTests.elm
+@@ -20,6 +20,7 @@ import Concourse.BuildStatus exposing (BuildStatus(..))
+ import DashboardTests exposing (iconSelector)
+ import Dict
+ import Expect
++import Json.Decode
+ import Json.Encode
+ import Message.Callback as Callback
+ import Message.Effects as Effects
+@@ -37,7 +38,27 @@ import Views.Styles
+ all : Test
+ all =
+     describe "build steps"
+-        [ describe "get step metadata"
++        [ describe "unknown step decode fallback"
++            [ test "labels an unrecognized step with its nested name" <|
++                \_ ->
++                    """{"id":"1","fancy_step":{"name":"deploy"}}"""
++                        |> Json.Decode.decodeString Concourse.decodeBuildPlan
++                        |> Result.map .step
++                        |> Expect.equal (Ok (Concourse.BuildStepUnknown "deploy"))
++            , test "labels an unrecognized step with its type key when it has no name" <|
++                \_ ->
++                    """{"id":"1","fancy_step":{}}"""
++                        |> Json.Decode.decodeString Concourse.decodeBuildPlan
++                        |> Result.map .step
++                        |> Expect.equal (Ok (Concourse.BuildStepUnknown "fancy_step"))
++            , test "falls back to a generic label for a bare typeless step" <|
++                \_ ->
++                    """{"id":"1"}"""
++                        |> Json.Decode.decodeString Concourse.decodeBuildPlan
++                        |> Result.map .step
++                        |> Expect.equal (Ok (Concourse.BuildStepUnknown "step"))
++            ]
++        , describe "get step metadata"
+             [ test "has a table that left aligns text in cells" <|
+                 given iVisitABuildWithAGetStep
+                     >> given theGetStepIsExpanded

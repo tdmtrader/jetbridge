@@ -1,0 +1,208 @@
+# Audit status (curator-fixup, 2026-07-25): the opus/sonnet disagreement recorded
+# in leakage_audit is RESOLVED. Sonnet's fail rested entirely on case.yaml content
+# (this title, curation.learnings, and the grading block naming post-cut symbols);
+# under schema/benchmark-case-v1.md §"The exposure contract" case.yaml, notes.md
+# and ground_truth/ are harness-side and never enter the solver's manifest, so
+# none of that is leakage. Both auditors agreed task/ and change.diff are clean.
+# Nothing was renamed or retitled. Residual verdict: pass.
+schema: benchmark-case/v1
+id: review-jb-002
+# Answer-stating by design: harness-side per the exposure contract. A hand-run
+# must present only task/ (in a neutrally named directory) over materialized
+# pre_state — never this file.
+title: >-
+  Review of the dispatcher runtime-control feature — a settings-read fault
+  fails OPEN back to the boot flag, and the PUT handler invents an audit actor
+workflow: code-review
+signature:
+  inputs:
+    repository: repository/v1
+    change: repository-change/v1
+  outputs:
+    findings: review-findings/v1
+source:
+  system: git-commit
+  repo: jetbridge
+  terminal: 0b2410f5fc54ae0b6adaedf4b45af4cdcf8ecdb2
+information_cut: 2026-07-19T20:13:05-07:00
+pre_state:
+  repository:
+    repo: jetbridge
+    # The tree UNDER review: the merge of the dispatcher runtime-control backend
+    # and its Elm UI. The review-fix commit is this commit's child and is not
+    # reachable from it, so materializing with full history is safe.
+    # MATERIALIZE DETACHED at this exact SHA (archive/export or a detached
+    # worktree). Never materialize by checking out a branch: `git branch -a
+    # --contains 335faaf363` lists feat/dispatcher-runtime-control, jetbridge and
+    # main, all of which carry the terminal fix 0b2410f5fc and its commit message,
+    # which states both findings verbatim.
+    ref: 335faaf363cb5085471a0c797c537f09d636b9d2
+  change:
+    repo: jetbridge
+    # base..head is exactly the two feature commits (0d1deeacaa backend,
+    # 87467b3176 elm), both branched off 6188b2a8c1. base is the mainline tip
+    # immediately before their merges, which keeps the diff free of the three
+    # docs-only commits that landed on mainline the same afternoon.
+    base_ref: 644184e3f011369f3da77dc82caee200bd8fd196
+    head_ref: 335faaf363cb5085471a0c797c537f09d636b9d2
+    path: task/change.diff
+    excluded_paths:
+      # Generated Elm bundle: one rewritten minified line, ~1 MB of noise.
+      # The Elm sources it is built from ARE in the diff.
+      - web/public/elm.min.js
+    shortstat: "30 files changed, 1849 insertions(+), 14 deletions(-)"
+ground_truth:
+  outcome: merged
+  reference_change: ground_truth/reference.diff
+  expected_findings: ground_truth/expected_findings.yaml
+rubric: reference
+grading:
+  # PRIMARY (agent grading): anchored-finding recall against
+  # ground_truth/expected_findings.yaml, with precision judged per
+  # ground_truth/rubric.md §2. The recorded human outcome is 2 proven issues
+  # (1 major, 1 minor) and 2 review angles explicitly reported clean.
+  reference:
+    expected_findings: ground_truth/expected_findings.yaml
+    required: [F1]          # F1 alone is the discriminating finding
+    bonus: [F2]
+    precision_reference:
+      proven_issues: 2
+      clean_lenses: 2
+    judge_checklist: ground_truth/rubric.md
+  # SECONDARY (case validation, NOT agent grading): proves the ground truth is
+  # real and non-trivial. Restore the two post-cut test files over the pre_state
+  # tree and run the two packages; they must fail at pre_state and pass at the
+  # terminal artifact. This gate proves the case; it does NOT grade an agent —
+  # including in a fix-after-review variant. See CAVEAT 1.
+  #
+  #   git show 0b2410f5fc:agent/dispatch/mode_test.go \
+  #        > agent/dispatch/mode_test.go
+  #   git show 0b2410f5fc:agent/api/dispatcher/handler_test.go \
+  #        > agent/api/dispatcher/handler_test.go
+  #   go test ./agent/dispatch/ ./agent/api/dispatcher/ -count=1
+  #
+  # (Redirects, not `git checkout <sha> -- <path>`: checkout mutates the index and
+  # the harness must stay read-only. Under zsh, quote or inline the SHA — `$P:agent/…`
+  # mis-expands because `:a` is a path modifier. See notes.md#validation.)
+  #
+  # CAVEAT 1 — do not grade with this gate. At pre_state the agent/dispatch half
+  # fails as a COMPILE error (`undefined: dispatch.EffectiveModeFromRead`), not as
+  # a red test. That is an unambiguous fail signal for validating the case, but it
+  # pins the reference's exact function name and signature, so it must not be used
+  # to grade an agent that was free to fix the defect its own way. Grade fixes with
+  # rubric.md §4, which states the behavior required and explicitly frees the name.
+  #
+  # CAVEAT 2 — overlay collision with the agent's own work. task.md asks the agent
+  # to PROVE each finding with a failing Go test, and the two natural homes for
+  # those tests are exactly the two files this overlay restores
+  # (agent/dispatch/mode_test.go, agent/api/dispatcher/handler_test.go). Applying
+  # the overlay onto a solved workspace silently destroys the agent's evidence and
+  # replaces it with the reference's. Run both legs on a PRISTINE materialization
+  # of pre_state (plus, for a fix variant, only the agent's non-test changes);
+  # never over the workspace the agent worked in.
+  #
+  # CAVEAT 3 — pass_to_pass is not a regression signal on a solved workspace. With
+  # the agent's proving tests present and no fix applied, `go test` on these two
+  # packages is SUPPOSED to be red: that is the task being done correctly, not a
+  # regression. Score the regression guard only against a tree with agent-authored
+  # test files excluded.
+  validation_only:
+    fail_to_pass:
+      - cmd: "go test ./agent/dispatch/ ./agent/api/dispatcher/ -count=1"
+        withheld_test_paths:
+          - agent/dispatch/mode_test.go
+          - agent/api/dispatcher/handler_test.go
+        expect_at_pre: "agent/dispatch: build failed (undefined: dispatch.EffectiveModeFromRead); agent/api/dispatcher: FAIL TestPutMissingUserRecordsUnknown"
+    pass_to_pass:
+      # Without the withheld tests restored: pre_state is green, so a fix must
+      # not break the feature's own suites.
+      - cmd: "go test ./agent/dispatch/ ./agent/api/dispatcher/ -count=1"
+  environment:
+    postgres_required: false
+    cluster_required: false
+    notes: >-
+      Both packages are plain `testing` (no Ginkgo, no Postgres, no cluster,
+      no network beyond the Go module cache); together they run in ~1.1s. They
+      live in the main module github.com/concourse/concourse (go 1.25.6), so the
+      whole repository must be materialized, not just the agent/ subtree. The
+      wider blast radius of the change — atc/db/agent_settings_test.go,
+      atc/wrappa, fly/integration — needs Postgres or a built fly binary and is
+      deliberately NOT part of the gate.
+# Nothing at pre_state gives either finding away. Deliberately NOT withheld (see
+# notes.md#adjacent-but-deliberately-not-withheld): the in-tree
+# remainders/2026-07-17-dispatcher-budget-reconciler.md argues fail-open on a
+# *budget* read is wrong. It is authentic house convention the real reviewer had,
+# it never mentions agent_settings or the mode resolver, and it does not
+# single-handedly collapse the task — keeping it preserves the repo the reviewer
+# worked in. rubric.md §1 tells the judge to credit the causal chain, not the
+# quotation of that doc.
+withheld: []
+# Kept at moderate (curator-fixup 2026-07-25). Neither auditor argued the
+# effective difficulty differs: opus called the exposure clean and sonnet called
+# task/ + change.diff "appropriately hard", and sonnet's fail was about
+# harness-side files, not about the task being easier than labeled. F1 needs a
+# reviewer to disbelieve an in-code safety comment and trace a three-hop chain
+# (resolver closure → ResolveEffectiveMode's no-row arm → Run's ModeActive arm);
+# the adjacent budget-reconciler convention raises the ceiling but does not name
+# this subsystem. Neither trivial nor hard.
+difficulty: moderate
+memorization_risk: none
+# The dev machine's project auto-memory carries
+# reference_agent_dispatcher_control.md ("dispatcher is a BOOT flag only …
+# runtime-toggle design = pipeline-pause clone (DB hot-read gating only
+# dispatchQueued) + agent_settings singleton"). It states NEITHER finding, but it
+# describes this feature's design and post-dates parts of the work, so a local
+# hand-run is only valid with project memory, session context and conversation
+# history suppressed. Declared per bench/README.md#leakage-checklist.
+known_leak_channels: [project-auto-memory]
+validation:
+  status: validated
+  notes: notes.md#validation
+leakage_audit:
+  - auditor: opus
+    verdict: pass
+    notes: "Agent exposure is clean: task.md names no defective path or post-fix symbol, no in-tree doc at pre_state describes the error handling, and the defect is self-incriminating inside the artifact under review (the '(off by default in current live)' comment), which is deliberate design. Two curator actions: never ship case.yaml (title + validation_only name EffectiveModeFromRead and TestPutMissingUserRecordsUnknown), and materialize detached — the terminal is reachable from main and from a branch named feat/dispatcher-runtime-control."
+  - auditor: sonnet
+    verdict: fail
+    notes: "task/task.md and change.diff are clean and appropriately hard — both findings are discoverable by careful diff reading. Fails on case.yaml, which is in the audited exposure: the title states both findings almost verbatim, curation.learnings supplies the F1 analytical conclusion, and expect_at_pre names the post-cut symbol dispatch.EffectiveModeFromRead plus the test TestPutMissingUserRecordsUnknown."
+  - auditor: curator-fixup
+    verdict: pass
+    notes: "Sonnet's fail DISSOLVED by the exposure contract (case.yaml/notes.md/ground_truth are harness-side; no rename, no retitle); opus's 'materialize detached' turned into a pinned pre_state instruction naming the three branches that carry the terminal fix. Real fixes: overlay-collision + spurious-red caveats on the validation gate (it restores the same two test paths task.md asks the agent to write), read-only `git show` redirects replacing the index-mutating `git checkout` form, and a rubric §1 clause crediting the causal chain over quotation of the in-tree budget-reconciler doc (kept exposed). Declared known_leak_channels: [project-auto-memory]; difficulty stays moderate."
+curation:
+  quality: 5
+  learnings: >-
+    The cheapest possible review case: a self-contained new feature whose entire
+    accepted-finding surface is 5 files and +65/−9 of pure Go, gradable without
+    Postgres or a cluster. Four lessons for corpus building. (1) A review case
+    needs TWO refs, and choosing the base is a curation decision, not
+    bookkeeping — the natural parent (6188b2a8c1, the branch point of both
+    feature commits) drags in three unrelated docs-only mainline commits worth
+    10.8k lines, so the base is pinned to the mainline tip immediately before the
+    merges (644184e3f0) and the reviewer's tree is the merge itself. Diff scope
+    is part of the task; get it wrong and you are testing patience. (2) The best
+    review cases are ones where the WRONG reasoning is written down in the code
+    under review. The pre-state carries a comment asserting the fallback is safe
+    "(off by default in current live)" — a deployment-contingent argument dressed
+    as a structural one. That is exactly the artifact that separates a reviewer
+    who reads comments from one who checks them, and it is invisible to any
+    diff-similarity metric. Prefer candidates whose defect is defended in-tree.
+    (3) A commit message that records what came back CLEAN ("2 lenses clean, 1
+    major, 1 minor") is worth more than one that only lists findings: it supplies
+    a defensible precision ceiling, so a reviewer inventing four more majors can
+    be penalized instead of merely unmatched. Mine for that phrasing. (4) The
+    mechanical gate that validates a review case is not the gate that should
+    grade one. Here the ported ground-truth test fails at pre_state as
+    `undefined: dispatch.EffectiveModeFromRead` — perfect for proving the case is
+    real, useless (actively harmful) for grading a fix that was free to solve it
+    differently. The two roles are recorded separately in `grading` so a future
+    harness cannot conflate them. (5) Added by the 2026-07-25 fixup: when a review
+    task asks the agent to PROVE findings with tests, the validation overlay and
+    the agent's own evidence compete for the same file paths — restoring the
+    ground-truth test files over a solved workspace deletes the agent's proof and
+    grades the reference against itself. Any case whose task says "write a failing
+    test" must state that its gates run on a pristine pre_state, and must say that
+    red packages on a solved workspace are the task being done, not a regression.
+    (6) The dual audit split on this case only because one auditor treated
+    case.yaml as exposed. The exposure contract now settles that centrally; the
+    corpus lesson is that a leakage audit must be given the manifest boundary
+    up front, or it will spend its budget policing harness-side prose.

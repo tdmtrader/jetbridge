@@ -1,0 +1,188 @@
+schema: benchmark-case/v1
+id: fix-cc-001
+title: instance_vars silently lose to step-level vars when set_pipeline renders a config
+workflow: small-fix
+signature:
+  inputs:
+    repository: repository/v1
+    work-item: work-item/v1
+  outputs:
+    change: repository-change/v1
+source:
+  system: github-pr
+  repo: concourse-upstream
+  # Merge commit of concourse/concourse#9362 (branch aeijdenberg/fix/gh-9356,
+  # closes issue #9356). Second parent a2e2367cb8161ad47ba31311e2152a7c2ef6ebe0
+  # is the fix; its parent ef5857d889bf91bb7e2206095669fd0d47b99df2 is the
+  # deliberately-failing test the author landed first.
+  terminal: 0e6b0c62d7fd86729f0e62d05bddb18ae83f7d7a
+information_cut: 2025-11-16T16:34:24-05:00
+pre_state:
+  repository:
+    repo: concourse-upstream
+    # Parent of the TEST commit, i.e. the last tree with neither the test nor the
+    # fix. NOT the test commit itself — that tree already contains the grading
+    # test, which is the withheld artifact.
+    ref: 7105d31847abb17e0627244900561f0068f3217b
+  work-item:
+    path: task/task.md
+ground_truth:
+  outcome: merged
+  reference_change: ground_truth/reference.diff
+rubric: mechanical
+grading:
+  # Grading restores the withheld test file verbatim over whatever the agent
+  # wrote, then runs the atc/exec Ginkgo suite. No Postgres, no cluster, no
+  # network beyond the Go module cache — atc/exec/exec_suite_test.go wires only
+  # lagertest + policyfakes, and no *_test.go in the package touches a database.
+  #
+  # Restore step (either form is equivalent):
+  #   git show a2e2367cb8161ad47ba31311e2152a7c2ef6ebe0:atc/exec/set_pipeline_step_test.go > atc/exec/set_pipeline_step_test.go
+  #   cp ground_truth/withheld_tests/atc/exec/set_pipeline_step_test.go atc/exec/set_pipeline_step_test.go
+  #
+  # SHAPE NOTE — the withheld test is NOT a new spec. The upstream author changed
+  # three things in the existing file's shared fixtures: the `pipelineContent`
+  # const now interpolates `((branch))` instead of a literal, `pipelineObject`
+  # now expects `Args: ["feature/foo"]`, and the outer `spPlan` BeforeEach gains
+  # `Vars: {branch: "feature/this-should-be-overridden-by-instance-var-with-same-name"}`.
+  # The fail-at-pre signal therefore lands on three PRE-EXISTING spec names in
+  # the `when specified pipeline exists already / when no diff` context:
+  #   - "should log 'no changes to apply'"
+  #   - "should send a set pipeline changed event"   (expects changed == false)
+  #   - "should update the job and build id"         (SetParentIDs called once)
+  # With the bug, `((branch))` renders to the step-level var, so the rendered
+  # config differs from the fake's stored config, `existingConfig.Diff` returns
+  # true and the step takes the save path instead of the no-diff path. Do not
+  # look for a spec named after instance vars; there isn't one.
+  #
+  # CAVEAT 1 — the overlay collides with a deliverable task.md asks for.
+  # task.md requires the agent to add its own regression coverage to the existing
+  # atc/exec suite, and the natural place to put it is the very file this overlay
+  # replaces. Before restoring, capture the agent's tree:
+  #   cp atc/exec/set_pipeline_step_test.go <capture>/set_pipeline_step_test.go
+  #   git status --porcelain atc/exec        # note NEW *_test.go files too
+  # and move any agent-added files in package `exec_test` aside for the
+  # fail_to_pass leg — a new file that redeclares a helper or a fixture the
+  # restored file already defines is a compile error, i.e. a FALSE fail against a
+  # correct fix. Score the agent's own test from the capture against
+  # ground_truth/rubric.md item 5, never by this overlay run.
+  #
+  # CAVEAT 2 — an inverted resolver passes the fail_to_pass gate. Making
+  # vars.MultiVars.Get prefer the LAST matching source instead of the first also
+  # turns the withheld specs green, while inverting precedence for every other
+  # consumer (atc/exec/task_config_source.go, atc/db/pipeline.go,
+  # fly/commands/internal/templatehelpers). The leg that actually catches this is
+  # `go test ./vars/`: vars/multi_vars_test.go pins first-wins directly ("return
+  # found value as soon as one source succeeds", asserting the later source's
+  # Get is never called) and vars/template_resolver_test.go evaluates both source
+  # orders. A green fail_to_pass with a red ./vars/ leg is a FAIL, not a partial
+  # pass. The ./fly/commands/internal/templatehelpers/ leg is weaker — its specs
+  # do not assert multi-file precedence — but that package's yaml_template.go
+  # depends on first-wins by construction (it walks --load-vars-from in reverse
+  # so that later flags land earlier in the slice), so it is kept as a
+  # compile-plus-behavior guard and as evidence for rubric item 4.
+  fail_to_pass:
+    - cmd: "go test ./atc/exec/ -count=1"
+      withheld_test_paths:
+        - atc/exec/set_pipeline_step_test.go
+      focus_spec: "SetPipelineStep when file is configured when pipeline file is good when specified pipeline exists already when no diff"
+  pass_to_pass:
+    # Run WITHOUT the overlay, on the agent's tree as delivered. The first leg
+    # guards the rest of the step's behavior (and also executes the agent's own
+    # regression test: if that is the thing that goes red, say so — it is a
+    # rubric item-5 judgment about the agent's test, not a regression). The
+    # remaining legs guard the shared variable-resolution machinery the fix must
+    # not have reached for; see CAVEAT 2.
+    - cmd: "go test ./atc/exec/ -count=1"
+    - cmd: "go test ./vars/ -count=1"
+    - cmd: "go test ./fly/commands/internal/templatehelpers/ -count=1"
+    - cmd: "go build ./atc/... ./vars/... ./fly/..."
+  environment:
+    postgres_required: false
+    cluster_required: false
+    network_required: true
+    notes: >-
+      Upstream Concourse at go 1.25.0 (go.mod); validated toolchain on this
+      machine is go1.25.6 darwin/arm64. Network (or a warm module cache) is
+      needed because the pre_state dependency set is upstream's Nov-2025 graph,
+      which a jetbridge-era cache does not fully cover. `go build ./...` does NOT
+      complete on darwin at either end — worker/runtime is Linux-only
+      (containerd) and its fakes fail to compile — which is why the build leg
+      names package subsets. `go vet` is unusable as a gate: at this pre_state
+      atc/exec/artifact_input_step_test.go already reports an unkeyed composite
+      literal and atc/db/listener.go a context leak; neither is in the default
+      `go test` vet subset, so `go test ./atc/exec/` still builds. Materialize
+      with `git archive <sha> | tar -x` — the whole module is needed, but the
+      tree is only ~35 MB uncompressed.
+withheld: []
+difficulty: moderate
+memorization_risk: high
+# No operator-environment leak: this machine's project auto-memory
+# (~/.claude/projects/-Users-tdmtrader-concourse-concourse/memory/) and the
+# repo CLAUDE.md were grepped for instance_vars / set_pipeline / MultiVars /
+# TemplateResolver / 9356 / 9362 — the only two hits are unrelated (an Elm
+# instanced-pipeline route and a pipeline-runs design note), neither states
+# anything about variable precedence. known_leak_channels is therefore not set.
+# The live leak channel here is model weights: see memorization_risk.
+validation:
+  # 2026-07-25: fail_to_pass transition OBSERVED end to end (red at pre with the
+  # withheld oracle — exactly the three predicted specs, 471/474; green at post —
+  # 474/474). Three of four pass_to_pass legs observed green at both ends. The
+  # `go build ./atc/... ./vars/... ./fly/...` leg is environment-blocked (ENOSPC:
+  # the host volume had <300 MB free), not failing. Hence `partial`.
+  status: partial
+  notes: notes.md#validation
+leakage_audit:
+  - auditor: opus
+    verdict: pass
+    notes: >-
+      No post-cut identifiers in task/ (no #9356/#9362, no SHAs, no file paths);
+      flags task.md's "do not change the general resolution contract" constraint
+      as a soft steer that pre-empts the inverted-MultiVars trap, so a green
+      ./vars/ leg is weak evidence the agent avoided it unaided; notes first-wins
+      is stated in in-tree prose (NewTemplateResolver doc comment, multi_vars_test
+      spec, fly yaml_template) which is legitimate but caps honest difficulty at
+      moderate; dominant leak channels are memorization and git-history
+      materialization — enforce `git archive`, never a clone/worktree.
+  - auditor: sonnet
+    verdict: pass
+    notes: >-
+      No leaks found; task.md carries no PR/issue/commit references and names no
+      file, function, or the word precedence; pre_state exposes only the defective
+      file plus the vars/ machinery an agent must read anyway, and the pre-fix
+      fixtures confirm the withheld overlay is genuinely absent from the tree;
+      sole caveat is the already-recorded high memorization risk, which is a
+      model-weights concern outside task/+pre_state scope.
+curation:
+  quality: 5
+  learnings: >-
+    The cleanest fix-case shape in the corpus so far, because a human already cut
+    it for us: the upstream contributor landed the failing test as its own commit
+    (ef5857d, "This test demonstrates the current broken behaviour") and the fix
+    as the next one (a2e2367), which is exactly the withheld-fail-to-pass-test
+    grading model. Corpus builders should treat "PR whose first commit is a
+    failing test" as a high-yield mining query — the human has already separated
+    the oracle from the answer, and pre_state is unambiguously the test commit's
+    parent. Four further lessons. (1) A withheld test need not be a new spec. Here
+    it is a three-line edit to shared fixtures inside an existing Ginkgo file, and
+    the failure surfaces on three pre-existing spec names that say nothing about
+    instance vars. Graders that look for a spec named after the bug will find
+    nothing; the case.yaml has to state which existing specs flip. (2) The gate
+    admits a wrong fix that no amount of atc/exec testing can see: inverting
+    vars.MultiVars.Get to last-source-wins turns the withheld specs green while
+    reversing precedence for task config, pipeline var scoping and fly. The
+    pass_to_pass legs on ./vars/ and ./fly/.../templatehelpers/ are what make the
+    mechanical rubric trustworthy here — this is the same "check that a plausible
+    wrong answer actually goes red" discipline upgrade-cc-001 learned, applied
+    preemptively rather than after the fact. (3) The defect is a genuine
+    reasoning test rather than pattern matching: the pre_state code reads as
+    correct under the common intuition that a later append overrides an earlier
+    one, and only `vars.MultiVars.Get` returning on the first hit — two files
+    away, documented in a comment on NewTemplateResolver — establishes that the
+    slice is a precedence list. An agent that never opens vars/ cannot know which
+    direction to move the block. (4) memorization_risk is high and materially so:
+    public upstream, Nov 2025, well inside the training window, and the answer is
+    a six-line move whose commit subject is a one-line statement of it. Per
+    bench/README this case must never anchor an efficacy claim on its own; its
+    value is as a well-formed contrast against private post-cutoff fix cases, and
+    as evidence about the ordering-reasoning shape rather than about difficulty.

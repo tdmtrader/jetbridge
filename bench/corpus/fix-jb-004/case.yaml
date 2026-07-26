@@ -1,0 +1,119 @@
+# Dual-audit findings resolved 2026-07-25 (curator-fixup); see
+# notes.md § "Fixup 2026-07-25". Runnable, with two conditions:
+# suppress project auto-memory (known_leak_channels) and read grading.caveats
+# before scoring.
+schema: benchmark-case/v1
+id: fix-jb-004
+title: Flight-recorder ingestion silently drops every event after an oversized NDJSON line
+workflow: small-fix
+signature:
+  inputs:  {repository: repository/v1, work-item: work-item/v1}
+  outputs: {change: repository-change/v1}
+source:
+  system: git-commit
+  repo: jetbridge
+  terminal: 6e113b067b10bc6b426108fffac8297dd75e6151
+information_cut: "2026-07-12T06:53:40-06:00"   # committer date of pre_state sha
+pre_state:
+  repository: {repo: jetbridge, ref: b899579fc50a9e578483a61a98435d49486c68ae}
+  work-item:  {path: task/task.md}
+ground_truth:
+  outcome: merged
+  reference_change: ground_truth/reference.diff
+  answer: ground_truth/answer.md
+rubric: mechanical
+grading:
+  fail_to_pass:
+    # PRIMARY (additive). A separate Ginkgo Describe in its own file, so the
+    # overlay never touches event_io_test.go and the agent's own test — which
+    # task.md asks for and rubric must-6 scores — survives grading intact.
+    # agent/schema has its own go.mod, so it is NOT reachable from the root
+    # module's ./... — `go test -C` is mandatory.
+    # Verified 2026-07-25: FAILs at pre_state with
+    # "bufio.Scanner: token too long"; PASSes at the terminal sha.
+    - cmd: "cp $CASE_DIR/ground_truth/withheld_tests/event_reader_bigline_test.go agent/schema/ && go test -C agent/schema ./... -count=1"
+      withheld_test_paths: [agent/schema/event_reader_bigline_test.go]
+      role: primary
+    # FALLBACK ONLY — do not run by default. Injects the historical spec that
+    # lives only in the post-cut commit. Use if and only if the additive file
+    # fails to COMPILE (e.g. the agent converted the package's test style, as
+    # 3294f724ef does later upstream). Also validated 2026-07-25.
+    - cmd: "git show 6e113b067b10bc6b426108fffac8297dd75e6151:agent/schema/event_io_test.go > agent/schema/event_io_test.go && go test -C agent/schema ./... -count=1"
+      withheld_test_paths: [agent/schema/event_io_test.go]
+      role: fallback-only
+      destructive: true
+      note: >-
+        Overwrites the agent's own edits to event_io_test.go, destroying the
+        test rubric must-6 scores. If this form is used, score must-6 from the
+        submitted diff BEFORE applying the overlay.
+  pass_to_pass:
+    # 123 specs at pre_state, no Postgres, no network, ~0.5s.
+    - {cmd: "go test -C agent/schema ./... -count=1"}
+  caveats:
+    # Recorded 2026-07-25 by curator-fixup, from the dual leakage audit.
+    - >-
+      Necessary, not sufficient. The gate proves only rubric must-2 (stream
+      read to completion). An unbounded buffer — scanner.Buffer(..., math.MaxInt)
+      or io.ReadAll — passes it while failing must-3. Musts 1/3/4/5/6 require
+      judge scoring against ground_truth/rubric.md; a green gate alone must
+      never be reported as a solve.
+    - >-
+      The gate pins a fix LOCATION that task.md deliberately leaves open. It
+      compiles against schema.NewEventReader(io.Reader), so a behaviorally
+      correct fix that lands in atc/exec/agent_step.go instead, or that changes
+      the reader's signature (permitted — rubric should-7, not a must), fails
+      or fails-to-compile through no fault of its own. Treat such a failure as
+      "route to judge", not as a case failure; rubric.md § "Judge guidance"
+      carries the flexibility.
+withheld: []
+difficulty: moderate      # see notes.md § "Fixup 2026-07-25" for the recalibration argument
+memorization_risk: none
+known_leak_channels: [project-auto-memory]
+validation:
+  status: validated
+  notes: notes.md#validation
+leakage_audit:
+  - auditor: opus
+    verdict: borderline
+    notes: "No leak in solver-facing text, but four fair-looking details compound — the one-of-a-kind error literal that greps straight to ingestFlightRecorder, the 'events exist on disk' statement, the verbose-run correlation, and the phrase 'arbitrarily long line' — so diagnosis is nearly free and effective difficulty is easy, not moderate. Also: grading runs only agent/schema while task.md never says the fix must live there, and the withheld filename event_reader_bigline_test.go self-spoils on a directory listing."
+  - auditor: sonnet
+    verdict: fail
+    notes: "task.md itself is symptom-level and clean, but case.yaml's title/note/learnings name the mechanism ('oversized NDJSON line', 'bufio.Scanner: token too long', \"bufio.Scanner's 64 KiB default\"), and un-withheld atc/exec/agent_cost_observer.go implements the exact bounded-discard-and-continue pattern for an explicitly analogous problem using task.md's own vocabulary, while ingestFlightRecorder's comment exposes the swallow-as-EOF."
+  - auditor: curator-fixup
+    verdict: pass
+    notes: "Fixed: task.md 'arbitrarily long line' -> 'arbitrary amount of output' (only answer-shaped phrase); additive gate promoted to primary so the overlay no longer clobbers the test task.md asks for; grading.caveats records the necessary-not-sufficient gate and the pinned-location collision, with the location flexibility moved into rubric.md's new Judge guidance. Dissolved per the exposure contract: case.yaml title/note/learnings and the self-spoiling withheld filename are harness-side. Kept as priced deflators (authenticity wins, both are non-withholdable production code): agent_cost_observer.go's bounded-line precedent and ingestFlightRecorder's swallow-as-EOF comment — rubric now credits causal reasoning over pattern-copying. Difficulty stays moderate (the enum has no 'easy'; the symptom->cause hop across two modules is the graded signal). Declared known_leak_channels: [project-auto-memory] — memory/project_wave2_agent_step_review.md names the 5MiB NDJSON bump and the EventReader rework verbatim."
+curation:
+  quality: 5
+  learnings: >-
+    Best-shaped fix case found so far. Three properties compound: (1) the fix
+    lands in a standalone stdlib-only Go module (agent/schema/go.mod), so
+    grading is hermetic and sub-second — no Postgres, no root module, no
+    network; (2) the terminal commit is exactly two files with zero
+    same-commit companions (no docs, no version bump, no CHANGELOG), so the
+    reference diff needs no churn filtering; (3) the bug is observable
+    several hops away from its cause — a DB row says status=error while the
+    file on disk says the agent passed — which is precisely the shape that
+    lets a task be written at the symptom layer without naming the fix.
+    Cases whose cause and symptom sit in the same file cannot be scrubbed
+    this cleanly. The counter-lesson: the ANSWER here is Go common knowledge
+    (bufio.Scanner's 64 KiB default), so the case measures whether the agent
+    navigates from symptom to the right read path, not whether it knows the
+    remedy — the diagnosis hop is the whole signal, and a task that leaked
+    "check the scanner buffer" would measure nothing. Also worth carrying
+    forward: this repo's "[review finding]" commit runs (twenty in a row on
+    2026-07-12) are a dense, pre-triaged seam of small, mechanically gradable
+    fixes, and the human-authored spec that ships with each one doubles as a
+    ready-made withheld grading test.
+    Three more lessons from the 2026-07-25 fixup pass. (a) A grading overlay
+    must never write into a file the task asks the agent to create: the
+    original gate overwrote event_io_test.go, erasing the very test rubric
+    must-6 scores. Additive-by-default (own file, own Describe) is the rule;
+    keep the clobbering form only as a compile-failure fallback. (b) When the
+    analogous bounded pattern lives in live PRODUCTION code (here
+    atc/exec/agent_cost_observer.go, wired into agent_step.go), it cannot be
+    withheld without falsifying the snapshot — price it in the rubric instead,
+    by requiring the causal chain and scoring pattern-copying-without-diagnosis
+    as a partial. `withheld` is for docs, not for the repository under test.
+    (c) A mechanical gate is a proof of ONE property; every must it cannot see
+    (memory-boundedness, dependency hygiene, preserved error semantics) needs a
+    judge leg, or the case reports unbounded-buffer answers as solves.

@@ -1,0 +1,44 @@
+diff --git a/atc/builds/tracker.go b/atc/builds/tracker.go
+index 2e20b35df4..a5084eaaad 100644
+--- a/atc/builds/tracker.go
++++ b/atc/builds/tracker.go
+@@ -96,12 +96,17 @@ func (bt *Tracker) trackBuild(logger lager.Logger, b db.Build) {
+ 				logger.Error("panic-in-tracker-build-run", err)
+ 
+ 				build.Finish(db.BuildStatusErrored)
+-			} else if build.IsRunning() {
+-				// Build exited Run() without calling Finish (e.g. lock
++			} else if build.IsRunning() && build.Name() == db.CheckBuildName {
++				// Check build exited Run() without calling Finish (e.g. lock
+ 				// acquisition error, engine drain). Finalize it so that
+ 				// in-flight check tracking is cleared and the resource
+ 				// is not permanently blocked from future checks.
+-				logger.Info("finalizing-orphaned-build", loggerData)
++				//
++				// Job builds are deliberately left running: Run() returning
++				// with the build still started means it should be resumed
++				// by a later tracker cycle (engine drain, tracking lock held
++				// by another web, retryable step error).
++				logger.Info("finalizing-orphaned-check-build", loggerData)
+ 				build.Finish(db.BuildStatusErrored)
+ 			}
+ 		}()
+diff --git a/atc/engine/engine.go b/atc/engine/engine.go
+index 5836c53597..34ca026365 100644
+--- a/atc/engine/engine.go
++++ b/atc/engine/engine.go
+@@ -224,7 +224,13 @@ func (b *engineBuild) Run(ctx context.Context) {
+ 	select {
+ 	case <-b.release:
+ 		logger.Info("releasing")
+-		b.finish(logger.Session("finish"), fmt.Errorf("build released during drain"), false)
++
++		// In-memory check builds cannot resume across a restart, so finalize
++		// them to clear in-flight check tracking. Job builds are left in
++		// "started" so the next web's build tracker re-attaches to them.
++		if b.build.Name() == db.CheckBuildName {
++			b.finish(logger.Session("finish"), fmt.Errorf("build released during drain"), false)
++		}
+ 
+ 	case <-done:
+ 		// Don't retry check build because if a check build drops into endless retry,

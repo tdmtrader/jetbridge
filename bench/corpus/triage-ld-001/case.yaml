@@ -1,0 +1,210 @@
+# BORDERLINE resolved by curator-fixup 2026-07-25 — both of the opus auditor's unresolved
+# items were settled with evidence (see notes.md#fixup-2026-07-25); one leading sentence in
+# task.md was softened, one grading-fairness caveat added, difficulty recalibrated to
+# moderate, and project-auto-memory declared as a leak channel. No human spot-check pending.
+schema: benchmark-case/v1
+id: triage-ld-001
+title: "Turn a session's worth of operator cue notes into an executable console plan"
+workflow: triage
+signature:
+  inputs:  {repository: repository/v1, work-item: work-item/v1}
+  outputs: {plan: execution-plan/v1}   # NEW TYPE — see curation.learnings
+source:
+  system: audit-doc
+  repo: lightingdesign
+  # Terminal artifact is an untracked human working file, not a commit. Sealed
+  # verbatim into this case as ground_truth/answer-artifact.md.
+  terminal: "~/LightingDesign/cue-fix-execution-plan-20260626.md (mtime 2026-06-26T11:14:10-0700)"
+  terminal_sha256: 4aef718486a925f94f5d2caf10303ca58a8b79a022e85f541f987e56edd45bc3
+information_cut: 2026-06-26T18:07:46Z   # = 2026-06-26T11:07:46-07:00, the mtime of
+                                        # cue-notes-20260626.md — the instant the last
+                                        # exposed input came into existence. The terminal
+                                        # artifact was written 6m24s later.
+pre_state:
+  # Both the input notes and the terminal artifact are untracked working files, and the
+  # three tracked reference files (rig.yaml, README.md, verification.md) all differ from
+  # every commit. There is no ref that materializes this case. Bytes are sealed instead.
+  repository:
+    repo: lightingdesign
+    ref: 8b17eb9cef630a0f5370963efb0b593459739d1e   # tip of write-verification at T; provenance only
+    materialize: task/workspace/
+    note: >-
+      Do NOT materialize from the git ref. cue-notes-20260626.md is untracked and exists at
+      no commit; rig.yaml at that SHA still carries the old `spec: [87..96]` block instead of
+      the `center_a: 87 / center_b: 88` split the plan depends on; README.md and
+      verification.md also differ. A checkout would additionally drop nine sibling cue-*.md
+      working documents into the exposure manifest. Use task/workspace/, which is
+      byte-identical to what was on disk at T (sha256 in notes.md).
+    uncommitted_at_T: >-
+      repo-README.md and verification.md are uncommitted working-tree edits that predate the
+      cut, NOT post-cut state sealed in: their on-disk mtimes are 2026-06-25T14:04:03 and
+      2026-06-25T14:05:14 -0700, and neither has been written since (re-verified 2026-07-25;
+      the sealed bytes are still `diff -q` clean against the working tree). The most visible
+      delta from the pinned ref — the `send_command` escape-hatch row is gone from the tool
+      table — was therefore the tool surface the human actually had at T. Resolves the opus
+      auditor's open item; see notes.md#fixup-2026-07-25.
+  work-item: {path: task/task.md}
+ground_truth:
+  outcome: merged           # the plan was accepted as the deliverable of the triage step;
+                            # per-task execution is NOT attested — see ground_truth/answer.md
+  answer: ground_truth/answer.md
+rubric: judge               # judge over rubric.md; expected_items.yaml is the structured
+                            # oracle and derive_channel_table.py settles channel disputes
+grading:
+  # No test transition exists: the deliverable is a document. Empty by design.
+  fail_to_pass: []
+  pass_to_pass: []
+  judge:
+    rubric: ground_truth/rubric.md
+    items: ground_truth/expected_items.yaml
+    reference: ground_truth/answer-artifact.md
+    adjudication_tool: ground_truth/derive_channel_table.py   # stdlib-only, ~1s, --check
+    caution: >-
+      expected_items.yaml tags every expectation carried | synth | given. The exposed input
+      notes already contain most channel resolutions, the ascending order and four of the
+      eight global rules; scoring those as discoveries flatters every answer. The reference
+      also gets update_cue/record_cue backwards — a candidate that gets it right is better
+      than the oracle and must be scored up (rubric §D3, bonus +4).
+  grading_caveats:
+    # Added by curator-fixup 2026-07-25.
+    - >-
+      D3 is not a copying detector. show-map-README.md (exposed) stores a full target look
+      with update_cue, i.e. it independently plants the reference's reversed semantics. The
+      rubric now says so: a reversal caps at 2/5 with no further deduction, and only
+      reconciling against repo-README.md's tool table earns 5 + the bonus.
+    - >-
+      task.md states R3 ("command-line editing does not store") and the live-console premise
+      as T-time constraints. They are tagged `given` in expected_items.yaml and carry ZERO
+      discovery credit — rubric §C scores none of them. What §C1 measures is the mitigation
+      (Nomad/offline or an explicit go-ahead), which is recoverable only from
+      verification.md plus the Song-8 section the exclusion deletes.
+withheld:
+  # All present in the LightingDesign working tree at T. Each restates the resolutions,
+  # the ordering, or the standing rules the plan is supposed to synthesize. None is
+  # reachable through task/workspace/; they are enumerated so a future harvest adapter
+  # that materializes the whole tree excludes them.
+  - cue-fix-execution-plan-20260626.md   # THE terminal artifact
+  - cue-fix-punchlist.md                 # 2026-06-25 13:47 — states the command-line-does-NOT-store
+                                         # rule and the +30% bump; overlapping corrections
+  - cue-fix-actionlist.md                # 2026-06-25 14:14 — console-ready form of the same,
+                                         # incl. the "Method for every store" preamble
+  - cue-deltas-15-20.md                  # 2026-06-26 10:13 — the .99 neutral-bridge template
+                                         # and the songs 15-20 deltas
+  - cue-audit-0.1-4.99.md                # the review-ld-001 terminal artifact
+  - cue-audit-0-9.5.md
+  - lonestar-111-capture.md
+  - cue-notes-20260716-session.md        # POST-CUT (2026-07-16); confirms the mover-sign answer
+  - show-current.yaml                    # stale captures the plan tells the executor to distrust
+  - show-target.yaml
+  - show-captured-live-20260625.yaml
+  - cue-looks-list1-every5.yaml
+  - channel-hookup.csv                   # independent confirmation of the boom mapping
+  - tools/                               # _program_runbook.md, _rerecord_runbook.md,
+                                         # _capture_scratch.md, _overwritten-cues-backup.md,
+                                         # build_show_map.py, the runbook generators
+  # Added by curator-fixup 2026-07-25 — untracked paths the original enumeration missed.
+  # None is reachable through task/workspace/; they exist so a whole-tree materializer
+  # excludes them too.
+  - augment3d/                           # pre-T (2026-06-21), generated FROM rig.yaml +
+                                         # channel-hookup.csv: eos-import.csv / positions.csv
+                                         # re-state the boom layout and the channel→fixture
+                                         # mapping, i.e. the same independent confirmation
+                                         # channel-hookup.csv is withheld for
+  - AGENTS.md                            # POST-CUT (2026-07-20), 47 bytes, no show content
+  - .agents/                             # POST-CUT (2026-07-20), imported skill definitions
+difficulty: moderate       # recalibrated from `hard` by curator-fixup 2026-07-25 — see
+                           # curation.learnings and notes.md#fixup-2026-07-25
+memorization_risk: none
+known_leak_channels: [project-auto-memory]   # ~/.claude/projects/-Users-tdmtrader-LightingDesign/
+                           # memory states this case's highest-weighted answers verbatim; a
+                           # hand-run on this machine is invalid unless memory is suppressed.
+                           # See notes.md#fixup-2026-07-25 for the specific files.
+validation:
+  status: unvalidated
+  notes: notes.md#validation
+leakage_audit:
+  - auditor: opus
+    verdict: borderline
+    notes: "No post-cut dates or fix vocabulary in task/, and no tracked file at the ref restates the plan; derivability comes from the notes already being a worked-up capture, which case.yaml discloses. Unresolved: workspace/repo-README.md and verification.md have send_command REMOVED relative to the pinned ref and that state is reachable from no ancestor — either an uncommitted edit at T or post-cut state sealed in, and it pre-shapes the tool surface toward the plan's 'typed tools' rule. Also AGENTS.md is untracked and absent from withheld, and task.md hands over two standing rules plus the transformation strategy."
+  - auditor: sonnet
+    verdict: pass
+    notes: "task/ is clean and self-consistent: every date is at or before the cut, the two hyperlinked withheld docs are explicitly flagged as unresolvable-and-flag-them, and the tracked tree at the ref concerns only the MCP software, not the show. Difficulty is narrower than 'hard' because the notes are already resolved, but that is honest source material; noting that case.yaml's curation names the synthesis moves and the reference's update_cue/record_cue error, and that show-map-README's update_cue advice may plant that same error."
+  - auditor: curator-fixup
+    verdict: pass
+    notes: "Opus's two open items closed with evidence: repo-README.md / verification.md mtimes (2026-06-25T14:04:03 and 14:05:14 -0700, unwritten since) prove the send_command-less tool surface is a pre-T uncommitted edit, not post-cut state sealed in; AGENTS.md and .agents/ are post-cut (2026-07-20) and augment3d/ is pre-T but derivative of the already-withheld channel-hookup.csv — all three added to withheld. Real defect fixed: task.md's 'several of them repeat the same warning / each one stands alone' telegraphed the §C hoisting move and was softened without weakening the trigger. Grading defect fixed: show-map-README.md does plant the update_cue reversal, so §D3 no longer reads a reversal as evidence of copying (caps at 2/5, no extra deduction). Dissolved by the exposure contract: case.yaml's curation naming the synthesis moves and the reference defect is harness-side and never exposed. Difficulty hard→moderate per the sonnet auditor and the case's own verification finding. DECLARED known_leak_channels: [project-auto-memory] — the LightingDesign project memory states C1, R2, R3, R4 and the D3 bonus answer verbatim."
+curation:
+  quality: 4
+  learnings: >-
+    This is the corpus's first triage case and its second non-code one, and the useful
+    thing it proves is that the triage signature — ambiguous work items in, an ordered
+    executable plan out — is exercisable with a real human reference and a mechanically
+    checkable core. The workflow does not exist on the platform yet, so the case is also a
+    specification of what it would have to produce.
+
+    The curation lesson is a correction, and it is the one worth carrying forward. The
+    mining pass described the input as "raw operator deltas" and the case as
+    "resolve symbolic references to concrete identifiers". It is not. cue-notes-20260626.md
+    is itself a worked-up capture — it already decodes white booms 3/4 to ch 64+67, already
+    resolves "spots" to the Lone Stars, already marks 14.2 blocked, and its body is already
+    in ascending show order. Verification killed roughly half the claimed difficulty. What
+    survives is a different and narrower skill: hoisting scattered per-item warnings into
+    standing rules, collapsing three repeated "confirm the sign" notes into one calibration
+    step, completing a nine-row table from a rule stated with two examples, grounding every
+    step in a real tool surface, and applying a scope exclusion the input argues against.
+    That is still worth measuring — but only because expected_items.yaml tags every
+    expectation carried | synth | given, so the judge cannot award discovery credit for
+    preservation. **Every derived case should carry that tagging.** Without it the reported
+    score is dominated by copying, and the case silently stops measuring anything.
+
+    A structural find worth reusing: the sharpest discriminator here was created by the
+    scope exclusion, not by the content. The live-show-safety rule appears in the notes
+    exactly once, inside the End-of-Song-8 section — the section task.md tells the agent to
+    delete. An agent that drops Song 8 mechanically loses the rule unless it also reads
+    verification.md. That kind of interaction between a constraint and the input's
+    structure is worth looking for deliberately when deriving a task, and it costs nothing.
+
+    Third: the human reference is wrong about something checkable — it describes update_cue
+    and record_cue with their semantics reversed — so the rubric has to award points for
+    disagreeing with the oracle. That is the second case in a row (see review-ld-001's
+    also_true set) where bounding the oracle's error was necessary to avoid penalising a
+    better-than-human answer. Treat "where is the reference wrong?" as a required step in
+    deriving ground truth, not an optional one.
+
+    Platform notes. No runtime, no services, six text files, ~55 KB — runs anywhere and is a
+    good hermetic non-Go smoke case. Its output port is `execution-plan/v1`, a type that
+    does not exist; combined with review-ld-001's `review-findings/v1`, two of the corpus's
+    first three non-code cases produce documents rather than repository changes, which the
+    harvest adapter will have to represent. And like fix-ld-001 and review-ld-001 it wants
+    two rubrics at once: judge for the plan as a whole, plus a mechanical assertion
+    (derive_channel_table.py --check) for the channel table. Third case in a row arguing
+    benchmark-case/v1's single-valued `rubric` field should become a list.
+
+    Curator-fixup addendum, 2026-07-25. Two lessons the audit produced, both generalisable.
+
+    First: **the operator's own environment is part of the exposure surface.** This case's
+    subject repo has a project auto-memory directory whose files hand over the case's
+    single highest-weighted rubric item (`live-console-safety-guardrails.md` IS rule R6 /
+    §C1) and the answer to the "beat the oracle" bonus (`eos-cue-editing-method.md` states
+    the correct update_cue/record_cue semantics, the +30% bump and the bounce-verify
+    workflow). Nothing in the case leaks; the machine does. `known_leak_channels:
+    [project-auto-memory]` is declared and a hand-run here is invalid unless memory is
+    suppressed. Generalise the check: for every case, ask what the *dev machine* knows,
+    not only what the case directory contains.
+
+    Second: **check whether an exposed file independently plants the oracle's error before
+    scoring "beats the oracle".** Here it does — `show-map-README.md`'s execution recipe
+    stores a full target look with `update_cue`, the reference's exact reversal. The bonus
+    survives, but the deduction had to be capped and the "reproducing the reversal implies
+    copying" inference had to be withdrawn. A bonus for disagreeing with the reference is
+    only sound once you know every path in the pre-state that leads to the reference's
+    reading.
+
+    Difficulty was recalibrated `hard` → `moderate` here rather than in a later pass. The
+    mechanical proxies (~420 lines in, 19 tasks out, nine applications of an inverted
+    index) measure volume, and this file already concedes that verification killed about
+    half the claimed difficulty: the resolutions, the ordering, the disambiguation and the
+    blocked-item detection are all carried. What is left is competent long-context
+    transformation plus a small number of traps, one of which (§C1) is genuinely sharp but
+    unvalidated. `moderate` is the defensible label until an end-to-end run shows models
+    failing the Song-8 exclusion or losing the safety rule; the honest `hard` variant is
+    triage-ld-002 (expose only the 22 verbatim quotes — see notes.md#open-questions).

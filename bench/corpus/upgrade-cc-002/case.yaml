@@ -1,0 +1,201 @@
+# Audited borderline/fail, then reworked by curator-fixup on 2026-07-25; residual
+# verdict PASS. The sonnet FAIL was entirely about this file (title, grading
+# notes) and is dissolved by the exposure contract — case.yaml is harness-side and
+# never exposed. The opus borderline (task.md pre-announcing two traps) was fixed
+# by softening task.md. Remaining caveats are declared properties, not exposure
+# defects: memorization_risk is high and replay needs the module proxy.
+schema: benchmark-case/v1
+id: upgrade-cc-002
+title: Renovate's go.mod-only major bump leaves the tree unbuildable — port fly to mpb v8, topgun to caarlos0/env v9, and decline yaml.v3
+workflow: version-upgrade
+signature:
+  inputs:
+    repository: repository/v1
+    work-item: work-item/v1
+  outputs:
+    change: repository-change/v1
+source:
+  system: github-pr
+  repo: concourse-upstream
+  # concourse/concourse#8843, branch `renovate/all`, merged 2023-10-18.
+  terminal: 750512af503e11d391f48e6ed097bbda4e28d5d0
+information_cut: 2023-10-16T21:00:57+00:00
+pre_state:
+  repository:
+    repo: concourse-upstream
+    # NOT the merge's first parent. This is the raw Renovate bot commit on the
+    # PR branch: a 3-line go.mod-only edit whose tree provably does not build.
+    # Reachable from `upstream/master` in this repo and from
+    # https://github.com/concourse/concourse.git .
+    ref: 45bf8658bfafcc68783ed08e01d2422bed40cdd6
+    upstream_url: https://github.com/concourse/concourse.git
+    # Last buildable ancestor, used as the pass_to_pass baseline (see grading).
+    baseline_ref: 44d233a1a76b9cd359ba660e162f4f10d799c450
+    # Inline extension, same status as baseline_ref (see notes.md#open-questions).
+    # MANDATORY for a valid run: materialize a TREE, not a clone parked at this
+    # SHA. In any clone of concourse/concourse this ref is reachable from
+    # upstream/master and from the upstream renovate/all branch, so `git log
+    # --all`, `git show 57e50564b6` or a branch listing hands over the whole
+    # answer. `git archive <ref> | tar -x` has the right property by construction.
+    materialization: archive-tree
+  work-item:
+    path: task/task.md
+ground_truth:
+  outcome: merged
+  reference_change: ground_truth/reference.diff   # git diff 45bf8658bf..57e50564b6
+  answer: ground_truth/answer.md
+rubric: mechanical
+grading:
+  # The whole module is un-analyzable at pre_state: with go.mod out of sync
+  # with the import graph, EVERY `go` command exits 1 with
+  #   go: updates to go.mod needed; to update it:
+  #       go mod tidy
+  # So fail-at-pre is trivially satisfied by any Go command; the discrimination
+  # lives in what passes at post, plus the anti-revert invariant below.
+  fail_to_pass:
+    - cmd: "go vet ./fly/... ./topgun/k8s/"
+      note: >-
+        Cheap compile gate and the load-bearing one: it type-checks the seven
+        mpb call sites AND the test-only caarlos0/env site in
+        topgun/k8s/k8s_suite_test.go, which `go build ./...` never reaches.
+        No linking, so it runs in a few hundred MB of scratch.
+    - cmd: "go test ./vars/ -count=1"
+      note: >-
+        The yaml decision, made mechanical. Passes only if vars/template.go
+        stays on gopkg.in/yaml.v2. Migrating it to yaml.v3 fails 10 of 91
+        specs on marshalling indentation — verified at 091b31d875, the
+        maintainer's own reverted attempt.
+    - cmd: "go build ./..."
+      note: >-
+        Canonical full compile gate named by the task. Links every main
+        package, so it needs roughly 2 GiB of free scratch space; prefer the
+        vet gate on a constrained machine.
+  pass_to_pass:
+    - cmd: "! grep -qE 'github.com/vbauerster/mpb/v4|github.com/caarlos0/env/v6' go.mod"
+      note: >-
+        ANTI-REVERT INVARIANT. Holds at pre_state (the bot already removed both)
+        and must still hold after the change. `go mod tidy` on the pre_state
+        tree makes every build gate above go green while silently restoring
+        mpb/v4 and env/v6 and dropping v8/v9 — verified. Without this check the
+        case grades a full revert as a pass.
+    - cmd: "go test ./fly/ui/... ./fly/version/... ./fly/rc/... ./fly/eventstream/... -count=1"
+      baseline_ref: 44d233a1a76b9cd359ba660e162f4f10d799c450
+      note: >-
+        Regression guard around the changed code. Cannot literally run at
+        pre_state (nothing in the module builds there), so "before" is measured
+        at baseline_ref, the last buildable ancestor. ~1.7s total.
+        fly/ui/progress itself has NO test files — the progress-bar behavior in
+        rubric.md items 5-6 is judge-scored only.
+  environment:
+    postgres_required: false
+    cluster_required: false
+    network_required: true
+    notes: >-
+      Go 1.21+ toolchain (module declares `go 1.21`; validated on go1.25.6
+      darwin/arm64). Needs the module proxy: at pre_state go.sum carries only
+      the `/go.mod` hashes for mpb/v8 v8.6.2 and env/v9 v9.0.0, so their real
+      module zips must be fetched. No Postgres, no cluster, no Docker.
+      `go build ./...` links several large binaries — reserve ~2 GiB of scratch
+      or use the vet gate instead. topgun is compile-only; it is never run.
+  caveats:
+    - >-
+      Narrowed vet. task.md's acceptance list says `go vet ./...`; the graded
+      command is `go vet ./fly/... ./topgun/k8s/`, a cheaper subset chosen for
+      scratch-space reasons. It covers both changed areas including the
+      test-only site; breakage elsewhere is caught by `go build ./...`. A run
+      that can afford the full `go vet ./...` should prefer it — the subset is
+      a cost concession, not a narrower spec.
+    - >-
+      fail_to_pass is uninformative on its own here and is not evidence of
+      difficulty: at pre_state every `go` command exits 1 with the same
+      go.mod-out-of-sync message, so all three gates fail for free. The
+      discrimination is entirely in pass_to_pass's anti-revert grep. Report the
+      grep's result explicitly in any results table; a green build alone means
+      nothing for this case.
+    - >-
+      No gate pins a fix location. The graded commands name packages, not
+      files; which files move is left open by the task and judged from
+      ground_truth/rubric.md. rubric items 5-6 (progress-bar behavior) are
+      judge-only — `fly/ui/progress` has no test files.
+    - >-
+      task.md was softened on 2026-07-25 (it no longer explains that `go mod
+      tidy` restores the old majors, and no longer hints that some packages are
+      test-only). The anti-revert grep stays fair because task.md still states
+      the outcome requirement — the superseded majors must be gone from go.mod.
+      Results produced against the pre-fixup task text are not comparable.
+withheld: []
+# Recalibration considered on 2026-07-25 and deliberately left at moderate.
+# Removing the two task.md affordances raises effective difficulty (the tidy
+# revert and the test-only site are now discoveries), which argues for hard;
+# against it: the exact three version moves are handed over, the anti-revert
+# intent is still stated as an acceptance criterion, and memorization_risk is
+# high enough that a model may recall the mpb v4->v8 delta outright. moderate
+# is the label that survives both arguments.
+difficulty: moderate
+memorization_risk: high
+validation:
+  status: partial
+  notes: notes.md#validation
+leakage_audit:
+  - auditor: opus
+    verdict: borderline
+    notes: "No post-cut vocabulary (all three version strings are already in go.mod at pre_state) and no in-tree spoiler — swept every .md plus .github/renovate.json. But task.md pre-announces two of the three designed traps: the go-mod-tidy warning restates the decisive anti-revert grep, and the 'some packages are test-only' hint points at the caarlos0 site that `go vet ./...` already covers. Also flag the terminal's reachability from upstream/master and upstream/renovate/all in this clone."
+  - auditor: sonnet
+    verdict: fail
+    notes: "task/task.md is well-specified and non-leading — all three bumps are treated symmetrically and it never says which must be declined. Fails on case.yaml: the title states the full resolution verbatim ('port fly to mpb v8, topgun to caarlos0/env v9, and decline yaml.v3'), the vars/ note gives away the yaml decision plus a post-cut in-branch revert SHA, and the vet note names the exact trap count and location."
+  - auditor: curator-fixup
+    verdict: pass
+    notes: "Sonnet's FAIL dissolved by the exposure contract (title/grading notes are harness-side, never exposed — no rename); opus's leading-text finding FIXED by softening task.md (dropped the go-mod-tidy mechanism warning, keeping only the outcome requirement, and dropped the test-only hint); decline delivery channel made in-tree explicit in task.md + rubric item 10; branch-reachability flag resolved with a mandatory pre_state.materialization: archive-tree; grading caveats and a memorization/no-credit-for-warnings judge instruction added; difficulty re-argued and held at moderate; withheld stays empty (no in-tree spoiler exists at pre_state)."
+curation:
+  quality: 4
+  learnings: >-
+    The cleanest (repository, upgrade-request) -> (repository-change) shape
+    found so far, and the first corpus case whose pre_state is deliberately a
+    BROKEN intermediate commit rather than a merge parent. Four lessons.
+    (1) "Compile gate" is not automatically a good grader. Here the pre_state
+    is so broken that every Go command fails identically, which makes
+    fail-at-pre free and therefore uninformative; all of the real signal had to
+    be moved into pass_to_pass. The decisive check is a two-token grep for the
+    old major versions, because `go mod tidy` — the first thing any agent runs,
+    and what the error message literally instructs — turns the build green by
+    reverting the entire upgrade. A version-upgrade case is not gradable by
+    "does it build"; it needs an explicit "did the version actually move"
+    invariant, and that generalizes to every upgrade case we will build.
+    (2) Test-only packages are a free difficulty knob and a real-world trap:
+    the caarlos0/env site lives in topgun/k8s/k8s_suite_test.go, which
+    `go build ./...` silently skips, so an agent that validates the way the
+    task's own headline command suggests half-reverts the upgrade without ever
+    seeing an error. We only found this because we enumerated import sites
+    before trusting the candidate's command list.
+    (3) In-PR self-correction is the highest-value thing to look for when
+    mining. This PR contains a migration to yaml.v3 and its own revert one
+    commit later, which hands us a graded negative for free — and, better, a
+    MECHANICAL one, because the reverted attempt fails 10 vars specs. Terminal
+    artifacts that argue with themselves are worth more than clean ones; the
+    mining pass should rank multi-commit PRs with a revert-in-branch above
+    single-commit merges.
+    (4) The cost side: memorization_risk is genuinely high (public repo,
+    October 2023, and the mpb v4->v8 API delta is exactly the kind of thing a
+    model may recall verbatim), and the case needs live module-proxy access,
+    which breaks hermeticity. Treat this case as an environment/harness smoke
+    test and a source of traps to copy into private-repo upgrade cases — never
+    as evidence of upgrade capability on its own.
+    (5) The dual audit split exactly along the exposure-contract line, and that
+    is the reusable lesson: one auditor failed the case for what its *manifest*
+    says (a title that states the resolution, grading notes that name the trap
+    and cite a post-cut SHA) while agreeing the exposed task was clean. Under
+    the contract that whole class is a non-finding — but only because the
+    contract is honored at run time, and honoring it is now two concrete
+    obligations for this case: materialize the repo as a tree
+    (`pre_state.materialization: archive-tree`, since the answer commit is
+    reachable from upstream/master in any clone) and present `task/` from a
+    neutrally-named directory. Auditors should be told the contract up front so
+    their attention goes to `task/` and to grading fairness; a manifest-leak
+    finding is only real if the runner violates the contract.
+    (6) Solvability affordances in the trigger are load-bearing and should be
+    argued, not accumulated. The pre-fixup task pre-announced two of the three
+    designed traps in the name of not measuring prompt-luck. The fixup kept the
+    *requirement* the grader checks ("the superseded majors must be gone") and
+    deleted the *mechanism* explanation ("a bare `go mod tidy` puts them back"),
+    which is the general rule: a work item may state what done means, and must
+    not narrate the failure mode the case exists to detect.

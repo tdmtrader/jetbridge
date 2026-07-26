@@ -1,0 +1,164 @@
+# Expected findings — neg-cc-001
+#
+# WITHHELD. Never exposed.
+#
+# READ THIS BEFORE SCORING RECALL AGAINST THIS FILE.
+#
+# Only F1 is human ground truth in the strict sense: it is the reason the
+# maintainers themselves wrote into the terminal artifact. Everything else is
+# either (a) corroborated by a LATER upstream commit that fixed exactly that
+# thing, or (b) curator-derived analysis of the diff. Each finding carries a
+# `provenance` field saying which. A submission that misses a curator-derived
+# finding has not necessarily made an error; a submission that misses F1 has.
+#
+# Precision oracle: weak, as always for review cases. `not_findings` at the
+# bottom is the only hard penalty list.
+
+case: neg-cc-001
+pre_state: 42744a08b08e7b3ea81d86266613da7bb75948eb
+change_under_review:
+  base: c17cb83843901f5fe35bb95ef0007d3615515429
+  head: 2eb97bf1d9398e773627f83a9ee72183c72ee688   # merge of PR #9165
+
+findings:
+  - id: F1
+    required: true
+    severity: blocker
+    provenance: artifact
+    provenance_ref: ff09ee64fccee8f174e061ddfe33a3d46c5f5ee5
+    file: atc/db/migration/migrations/1743084615_switch_md5_to_sha256.up.sql
+    region: whole change (21 files); the migration is the concrete carrier
+    description: >-
+      Release-line fit. Changing the digest algorithm for resource versions is a
+      breaking change for operators — it rewrites the schema and every version
+      digest in the database, and it cannot be undone once shipped. Under the
+      project's semver policy a breaking change ships in a major release, not in
+      the 7.14.0 minor. The correct disposition is BLOCK: keep it on master for
+      the next major (v8) and back it out of release/7.14.x now.
+    verbatim_reason_from_artifact: >-
+      "This is a breaking change that will be introduced in v8 of Concourse."
+
+  - id: F2
+    required: false
+    severity: blocker
+    provenance: artifact-corroborated
+    provenance_ref: >-
+      upstream/master:atc/db/migration/migrations/1747084615_switch_md5_to_sha256.up.sql
+      (the design that actually shipped, Sep 2025 onward) — it ADDs
+      version_sha256 to resource_config_versions, renames the other five columns
+      to a neutral version_digest, keeps version_md5, and re-creates an index on
+      version_md5, with the in-file comment "Keep version_md5 so the
+      scheduler/algorithm planning keeps working with historical data".
+    file: atc/db/migration/migrations/1743084615_switch_md5_to_sha256.up.sql
+    region: "ALTER TABLE ... RENAME COLUMN version_md5 TO version_sha256 (six tables, lines 4-22)"
+    description: >-
+      The change is a destructive in-place rename with no compatibility window.
+      There is no interval in which both digests are readable, so (a) any web
+      process still running the previous version breaks the moment the new one
+      runs the migration — it queries a column that no longer exists — which is
+      exactly the mixed-version window a rolling web upgrade creates, and (b)
+      nothing can look up a historical row by its old md5 digest afterwards. An
+      additive column plus a dual-read window is the shape this needs.
+
+  - id: F3
+    required: false
+    severity: major
+    provenance: artifact-corroborated
+    provenance_ref: >-
+      e2dad0b8b9 "fix: handle '{}' values in JSON aggregation for version
+      columns" (2025-09-09) and 46127b3a64 "handle json null values in the
+      resource_config_versions table" (2026-01-28) — both are later upstream
+      fixes to this exact statement, carried on the renumbered migration.
+    file: atc/db/migration/migrations/1743084615_switch_md5_to_sha256.up.sql
+    region: "json_string_cte / hashed_json_string_cte (lines ~50-70), and the mirror of it in the .down.sql"
+    description: >-
+      The migration recomputes digests by rebuilding the version JSON in SQL by
+      hand — `'{' || string_agg('"' || kv.key || '":"' || kv.value || '"', ','
+      ORDER BY kv.key) || '}'` — and this does not reliably reproduce the string
+      the Go side hashes. Three concrete defects: rows are filtered to
+      `jsonb_typeof(version::jsonb) = 'object'`, so any other row silently keeps
+      its md5 value in a column now named version_sha256; the lateral
+      `JOIN jsonb_each_text(version::jsonb) ON true` is an inner join, so a
+      version with no keys (`{}`) contributes no rows and is dropped from the
+      rewrite entirely rather than hashing as "{}"; and no escaping is applied
+      to keys or values, so any version field containing a quote or backslash
+      hashes differently in SQL than in Go. Divergent digests do not fail the
+      migration — they orphan resource caches, disabled versions and build
+      inputs/outputs silently.
+
+  - id: F4
+    required: false
+    severity: major
+    provenance: curator-derived
+    file: atc/db/migration/migrations/1743084615_switch_md5_to_sha256.up.sql
+    region: whole file
+    description: >-
+      Operational cost of the migration. It drops roughly ten indexes and unique
+      constraints, UPDATEs every row of the six largest tables in the schema
+      (resource_config_versions and its five dependants) inside one statement,
+      then rebuilds the indexes — all inside one transaction, run at web startup
+      while holding the migration lock. On any deployment of real size this is a
+      long full-cluster outage on upgrade, with no batching and no way to resume.
+
+  - id: F5
+    required: false
+    severity: major
+    provenance: curator-derived
+    file: atc/db/migration/migrations/1743084615_switch_md5_to_sha256.down.sql
+    region: whole file
+    description: >-
+      The down path is the same destructive rewrite in reverse (rename back,
+      recompute md5 over the same hand-built JSON, rebuild indexes) and inherits
+      F3's defects. So the documented escape hatch — `concourse migrate
+      --target-version` back to the 7.13 schema — is itself a long, lossy
+      operation. A shipped migration whose rollback is as risky as the roll
+      forward is not a safe thing to put in a minor release.
+
+  - id: F6
+    required: false
+    severity: minor
+    provenance: curator-derived
+    file: atc/db/migration/migration.go
+    region: "migrator.Migrate, `if currentVersion < m.Version && m.Version <= toVersion`"
+    description: >-
+      Timing. The migrator only runs migrations strictly above the recorded
+      high-water mark in migrations_history, so once any deployment has applied
+      1743084615 the file cannot simply be deleted — removing it later is a
+      no-op for that database, and re-landing the work needs a fresh, higher
+      migration number. The window for pulling this cleanly closes when 7.14.0
+      (or an RC built from this branch) reaches anyone. A reviewer who reaches
+      the BLOCK conclusion should also say "and it has to come out before we cut
+      an RC".
+      (Upstream did exactly this renumber when it re-landed the work on master:
+      25e7f825e7 "update migration number for switch_md5_to_sha256", 2025-09-04,
+      1743084615 -> 1747084615.)
+
+# Findings a reviewer might raise that are NOT defects here. Penalise only
+# these; anything else unmatched is judged on its own merits.
+not_findings:
+  - claim: "The Go changes are wrong / inconsistent."
+    why: >-
+      They are not. The Go side is a complete, self-consistent rename —
+      atc/db/{build,job,pipeline,resource,resource_cache_factory,
+      resource_cache_lifecycle,resource_config_scope,versions_db}.go and the
+      scheduler algorithm all move together, the tests were updated with them,
+      and the tree builds and the affected test packages compile both with and
+      without the change (verified: notes.md#validation; the suites themselves
+      need Postgres and were not run). Calling the Go rename defective is a
+      false positive.
+  - claim: "sha256 is the wrong choice / md5 should be kept for its speed."
+    why: >-
+      Nobody argued this. The direction was accepted upstream; it shipped on the
+      v8 line. The objection is to the vehicle and the shape, not the algorithm.
+  - claim: "The change is missing tests."
+    why: >-
+      It updates every affected suite (build_test, job_test, pipeline_test,
+      resource_cache_factory_test, resource_cache_lifecycle_test,
+      versions_db_test, gc/resource_cache_collector_test and three scheduler
+      algorithm suites). Test coverage is not the gap here.
+  - claim: "pgcrypto may not be installed / CREATE EXTENSION needs superuser."
+    why: >-
+      Worth a sentence, not a finding — the migration guards with CREATE
+      EXTENSION IF NOT EXISTS and Concourse already requires a database it owns.
+      Do not count this as one of the substantive findings, but do not penalise
+      it either unless it is offered as the PRIMARY objection.

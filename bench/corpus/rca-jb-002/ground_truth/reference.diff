@@ -1,0 +1,31 @@
+diff --git a/deploy/k8s-e2e-pipeline.yml b/deploy/k8s-e2e-pipeline.yml
+index 0a03e98078..8ab1682bf1 100644
+--- a/deploy/k8s-e2e-pipeline.yml
++++ b/deploy/k8s-e2e-pipeline.yml
+@@ -27,7 +27,7 @@ jobs:
+         - -exc
+         - |
+           REGISTRY="registry-docker-registry.cicd.svc.cluster.local:5000"
+-          IMAGE_TAG="v33"
++          IMAGE_TAG="v34"
+           IMAGE="${REGISTRY}/concourse-kind-runner:${IMAGE_TAG}"
+           BUILDER_POD="kind-runner-builder-$$"
+ 
+@@ -141,7 +141,7 @@ jobs:
+     timeout: 45m
+     config:
+       platform: linux
+-      rootfs_uri: docker:///registry.home/concourse-kind-runner:v33
++      rootfs_uri: docker:///registry.home/concourse-kind-runner:v34
+       run:
+         path: sh
+         args:
+@@ -230,7 +230,7 @@ jobs:
+     timeout: 4h
+     config:
+       platform: linux
+-      rootfs_uri: docker:///registry.home/concourse-kind-runner:v33
++      rootfs_uri: docker:///registry.home/concourse-kind-runner:v34
+       run:
+         path: sh
+         args:

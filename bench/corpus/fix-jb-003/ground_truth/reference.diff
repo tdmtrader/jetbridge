@@ -1,0 +1,103 @@
+diff --git a/agent/harvest/trailer.go b/agent/harvest/trailer.go
+index b3dbe125ee..9ecbbe3e63 100644
+--- a/agent/harvest/trailer.go
++++ b/agent/harvest/trailer.go
+@@ -2,6 +2,7 @@ package harvest
+ 
+ import (
+ 	"fmt"
++	"os"
+ 	"os/exec"
+ 	"regexp"
+ 	"strconv"
+@@ -16,6 +17,13 @@ import (
+ // exactly this reason.
+ const TrailerKey = "Agent-Ticket"
+ 
++// Bot identity for the trailer amend. Matches outcomes.BotAuthor so a
++// platform-authored commit is never counted as human touch.
++const (
++	BotName  = "concourse-agent[bot]"
++	BotEmail = "agent@concourse.invalid"
++)
++
+ // trailerLine matches a conventional git trailer ("Key: value"), used to
+ // decide whether the new trailer joins an existing block or starts one.
+ var trailerLine = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9-]*:\s`)
+@@ -74,6 +82,21 @@ func appendTrailer(msg, trailer string) string {
+ func trailerGitRun(dir string, args ...string) (string, error) {
+ 	cmd := exec.Command("git", args...)
+ 	cmd.Dir = dir
++	// A deterministic committer identity is REQUIRED, not cosmetic: the
++	// harvest pod never commits (it only pushes), so it has no git identity
++	// and `commit --amend` fails with "Committer identity unknown" — which
++	// silently degraded every trailer to the best-effort error path. Caught
++	// by CI, masked locally by an ambient ~/.gitconfig.
++	//
++	// --amend PRESERVES the original author (verified), so a human's commit
++	// keeps its attribution and the human-touch delta — which filters on
++	// author, not committer — is unaffected.
++	cmd.Env = append(os.Environ(),
++		"GIT_AUTHOR_NAME="+BotName,
++		"GIT_AUTHOR_EMAIL="+BotEmail,
++		"GIT_COMMITTER_NAME="+BotName,
++		"GIT_COMMITTER_EMAIL="+BotEmail,
++	)
+ 	out, err := cmd.CombinedOutput()
+ 	trimmed := strings.TrimSpace(string(out))
+ 	if err != nil {
+diff --git a/agent/harvest/trailer_test.go b/agent/harvest/trailer_test.go
+index f038302e0d..5a2563263e 100644
+--- a/agent/harvest/trailer_test.go
++++ b/agent/harvest/trailer_test.go
+@@ -119,3 +119,50 @@ func TestStampTrailerRejectsNonPositiveTicket(t *testing.T) {
+ 		t.Fatal("a non-positive ticket id must be rejected rather than stamped")
+ 	}
+ }
++
++// REGRESSION (CI failure 587725): the harvest pod never commits, so it has
++// no ambient git identity and `commit --amend` died with "Committer
++// identity unknown" — silently degrading every trailer to the error path.
++// A local ~/.gitconfig masked it.
++//
++// Asserting the committer IS the bot is environment-independent: it can only
++// hold if StampTrailer sets the identity itself, and it fails on any machine
++// if the fix is reverted (the ambient identity would win instead).
++func TestStampTrailerSetsItsOwnCommitterIdentity(t *testing.T) {
++	dir := workspaceWith(t, "implement the thing")
++
++	if _, err := harvest.StampTrailer(dir, 12); err != nil {
++		t.Fatal(err)
++	}
++	if got := trailerGit(t, dir, "log", "-1", "--format=%cn"); got != "concourse-agent[bot]" {
++		t.Fatalf("committer = %q; StampTrailer must set its own identity, not inherit an ambient one", got)
++	}
++}
++
++// The amend must not rewrite authorship: the human-touch delta filters on
++// AUTHOR, so a human commit that gets stamped must stay attributed to them.
++func TestStampTrailerPreservesTheOriginalAuthor(t *testing.T) {
++	dir := t.TempDir()
++	trailerGit(t, dir, "init", "--initial-branch=main")
++	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("work\n"), 0o644); err != nil {
++		t.Fatal(err)
++	}
++	trailerGit(t, dir, "add", ".")
++	// commit authored by a human, not the bot
++	cmd := exec.Command("git", "commit", "-m", "human work")
++	cmd.Dir = dir
++	cmd.Env = append(os.Environ(),
++		"GIT_AUTHOR_NAME=Real Human", "GIT_AUTHOR_EMAIL=h@example.com",
++		"GIT_COMMITTER_NAME=Real Human", "GIT_COMMITTER_EMAIL=h@example.com",
++	)
++	if out, err := cmd.CombinedOutput(); err != nil {
++		t.Fatalf("seed commit: %v\n%s", err, out)
++	}
++
++	if _, err := harvest.StampTrailer(dir, 5); err != nil {
++		t.Fatal(err)
++	}
++	if got := trailerGit(t, dir, "log", "-1", "--format=%an"); got != "Real Human" {
++		t.Fatalf("author = %q, want it preserved — the delta metric keys on author", got)
++	}
++}

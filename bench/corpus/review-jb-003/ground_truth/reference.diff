@@ -1,0 +1,203 @@
+diff --git a/web/elm/src/Agent/Agent.elm b/web/elm/src/Agent/Agent.elm
+index 0fad66cc43..05d6797a41 100644
+--- a/web/elm/src/Agent/Agent.elm
++++ b/web/elm/src/Agent/Agent.elm
+@@ -640,7 +640,7 @@ runsTable zone expandedRuns runs =
+         , style "font-size" "12px"
+         , style "color" Colors.text
+         ]
+-        (runsHeaderRow :: List.indexedMap (runRow zone expandedRuns) runs)
++        (runsHeaderRow :: List.map (\r -> runRow zone expandedRuns r.buildId r) runs)
+ 
+ 
+ runsHeaderRow : Html Message
+@@ -674,7 +674,8 @@ runRow zone expandedRuns rowKey r =
+ {-| The step name plus its summary underneath it — omitted when the summary is
+ empty so the row does not carry a blank subtext line. The summary is
+ click-to-expand: collapsed it is a truncated one-liner; expanded it renders the
+-full run summary as prose (`AgentRunExpandToggled`, keyed by the row ordinal).
++full run summary as prose (`AgentRunExpandToggled`, keyed by build id so the
++expanded row stays put when a 5s refetch prepends a newer run).
+ -}
+ runStepCell : Set Int -> Int -> Agent.RunMetric -> Html Message
+ runStepCell expandedRuns rowKey r =
+diff --git a/web/elm/src/AgentBadge.elm b/web/elm/src/AgentBadge.elm
+index dfad7a3d99..5831c7107c 100644
+--- a/web/elm/src/AgentBadge.elm
++++ b/web/elm/src/AgentBadge.elm
+@@ -274,31 +274,39 @@ build state, or a still-running build).
+ -}
+ runOutcome : { buildStatus : String, runStatus : String, hasResult : Bool } -> Maybe Status
+ runOutcome { buildStatus, runStatus, hasResult } =
+-    case buildStatus of
+-        "failed" ->
+-            Just Failed
++    -- A parked run is blocked awaiting a human (HITL checkpoint). Its build
++    -- deliberately stays "started" until the run continues, so parked must be
++    -- checked BEFORE the build status — otherwise "started" would render it as
++    -- Running and hide that it needs the operator's input.
++    if runStatus == "parked" then
++        Just AwaitingHuman
+ 
+-        "errored" ->
+-            Just Errored
++    else
++        case buildStatus of
++            "failed" ->
++                Just Failed
+ 
+-        "aborted" ->
+-            Just Aborted
++            "errored" ->
++                Just Errored
+ 
+-        "succeeded" ->
+-            if hasResult then
+-                Just Succeeded
++            "aborted" ->
++                Just Aborted
+ 
+-            else
+-                Just NoOutput
++            "succeeded" ->
++                if hasResult then
++                    Just Succeeded
+ 
+-        "started" ->
+-            Just (Running Nothing)
++                else
++                    Just NoOutput
+ 
+-        "pending" ->
+-            Just (Running Nothing)
++            "started" ->
++                Just (Running Nothing)
+ 
+-        _ ->
+-            fromRunStatus runStatus
++            "pending" ->
++                Just (Running Nothing)
++
++            _ ->
++                fromRunStatus runStatus
+ 
+ 
+ toneClass : Tone -> String
+diff --git a/web/elm/src/AgentTickets/AgentTicket.elm b/web/elm/src/AgentTickets/AgentTicket.elm
+index c6ef68f3cd..7625530cf3 100644
+--- a/web/elm/src/AgentTickets/AgentTicket.elm
++++ b/web/elm/src/AgentTickets/AgentTicket.elm
+@@ -128,16 +128,35 @@ handleCallback : Callback -> ET Model
+ handleCallback callback ( model, effects ) =
+     case callback of
+         AgentTicketFetched (Ok detail) ->
++            -- The 5s self-heal refetch must not clobber an open edit form: when
++            -- the user is editing, leave the edit buffers untouched (a periodic
++            -- refetch would otherwise silently revert their unsaved typing every
++            -- few seconds, and a tick just before Save would persist the reverted
++            -- server values as a no-op that looks successful).
+             ( { model
+                 | detail = Just detail
+                 , loaded = True
+                 , loadError = False
+-                , editTitle = detail.ticket.title
+-                , editBody = detail.ticket.body
++                , editTitle =
++                    if model.editing then
++                        model.editTitle
++
++                    else
++                        detail.ticket.title
++                , editBody =
++                    if model.editing then
++                        model.editBody
++
++                    else
++                        detail.ticket.body
+                 , editBudget =
+-                    detail.ticket.budgetUsd
+-                        |> Maybe.map String.fromFloat
+-                        |> Maybe.withDefault ""
++                    if model.editing then
++                        model.editBudget
++
++                    else
++                        detail.ticket.budgetUsd
++                            |> Maybe.map String.fromFloat
++                            |> Maybe.withDefault ""
+               }
+             , effects
+             )
+diff --git a/web/elm/tests/AgentBadgeTests.elm b/web/elm/tests/AgentBadgeTests.elm
+index 499f5a2876..c8f0bb5e7b 100644
+--- a/web/elm/tests/AgentBadgeTests.elm
++++ b/web/elm/tests/AgentBadgeTests.elm
+@@ -119,5 +119,16 @@ all =
+                 \_ ->
+                     runOutcome { buildStatus = "started", runStatus = "ok", hasResult = False }
+                         |> Expect.equal (Just (Running Nothing))
++            , test "a PARKED run shows Waiting on you even though its build is still 'started'" <|
++                \_ ->
++                    -- A HITL checkpoint parks the run and keeps its build in
++                    -- 'started'; parked must win over the build status or the
++                    -- operator can't see the run is blocked on them.
++                    runOutcome { buildStatus = "started", runStatus = "parked", hasResult = True }
++                        |> Expect.equal (Just AwaitingHuman)
++            , test "a parked run whose build later succeeded still shows Waiting on you, not OK" <|
++                \_ ->
++                    runOutcome { buildStatus = "succeeded", runStatus = "parked", hasResult = True }
++                        |> Expect.equal (Just AwaitingHuman)
+             ]
+         ]
+diff --git a/web/elm/tests/AgentPageTests.elm b/web/elm/tests/AgentPageTests.elm
+index 68375b9bc4..fc827c6e5a 100644
+--- a/web/elm/tests/AgentPageTests.elm
++++ b/web/elm/tests/AgentPageTests.elm
+@@ -258,7 +258,8 @@ all =
+                         (Callback.AgentRunMetricsFetched (Ok [ sampleRun ]))
+                     |> Tuple.first
+                     |> Application.update
+-                        (Msgs.Update (Message.Message.AgentRunExpandToggled 0))
++                        -- keyed by build id (stable across the 5s refetch), not the row ordinal
++                        (Msgs.Update (Message.Message.AgentRunExpandToggled 100))
+                     |> Tuple.first
+                     |> Common.queryView
+                     |> Query.find [ class "agent-run-row" ]
+diff --git a/web/elm/tests/AgentTicketPageTests.elm b/web/elm/tests/AgentTicketPageTests.elm
+index 401bbef399..4a79b26e23 100644
+--- a/web/elm/tests/AgentTicketPageTests.elm
++++ b/web/elm/tests/AgentTicketPageTests.elm
+@@ -10,6 +10,8 @@ import Html.Attributes
+ import Json.Decode
+ import Message.Callback as Callback
+ import Message.Effects as Effects
++import Message.Message
++import Message.TopLevelMessage as Msgs
+ import Test exposing (Test, describe, test)
+ import Test.Html.Query as Query
+ import Test.Html.Selector exposing (attribute, class, containing, tag, text)
+@@ -184,4 +186,24 @@ all =
+                                 , attribute (Html.Attributes.href "/builds/561978")
+                                 ]
+                     )
++        , test "a periodic self-heal refetch does not clobber an open edit form" <|
++            \_ ->
++                withDetail sampleDetailJson
++                    (\d ->
++                        Common.init "/agent-tickets/12"
++                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
++                            |> Tuple.first
++                            |> Application.update (Msgs.Update Message.Message.ClickAgentTicketEdit)
++                            |> Tuple.first
++                            |> Application.update (Msgs.Update (Message.Message.AgentTicketBodyChanged "MY UNSAVED EDIT"))
++                            |> Tuple.first
++                            -- the 5s refetch lands while the user is still editing:
++                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
++                            |> Tuple.first
++                            |> Common.queryView
++                            |> Query.has
++                                [ tag "textarea"
++                                , attribute (Html.Attributes.value "MY UNSAVED EDIT")
++                                ]
++                    )
+         ]
