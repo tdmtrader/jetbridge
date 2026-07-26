@@ -14,7 +14,10 @@ test-ci-agent:
 	@echo "==> Running ci-agent tests..."
 	cd ci-agent && go test ./... -count=1 -timeout 5m
 
-# dev-mcp contract kit + e2e (plain go tests; ginkgo -r does not pick these up)
+# dev-mcp contract kit + e2e (plain go tests). NOTE: `ginkgo -r` (test-unit)
+# actually runs these too — see the corrected package comment in
+# agent/devmcp/e2e/e2e_test.go. This target exists as the explicit,
+# CI-wired way to run them on their own, not because ginkgo skips them.
 # Requires: nothing (builds ci-agent/cmd/dev-mcp on the fly)
 test-dev-mcp:
 	@echo "==> Running dev-mcp contract/e2e tests..."

@@ -2,8 +2,16 @@
 // whole stack: binary + config against the contract-test kit, and the Go
 // client path (the exact call path harvest-step will use).
 //
-// NOTE: this package has no Ginkgo suite, so `ginkgo -r` (make test-unit)
-// skips it — run it via `make test-dev-mcp` or `go test ./agent/devmcp/...`.
+// NOTE: contrary to an earlier belief recorded here, `ginkgo -r` (make
+// test-unit) DOES run this package. It has no Ginkgo suite bootstrap, but
+// ginkgo's CLI still builds and executes plain `Test*` functions in every
+// package its recursive walk finds, regardless of whether that package
+// calls RunSpecs (verified 2026-07-25: `ginkgo -r --dry-run
+// ./agent/devmcp/` runs this package's tests for real, with non-zero
+// durations, even though --dry-run no-ops the sibling agent/devmcp Ginkgo
+// suite's specs). `make test-dev-mcp` / `go test ./agent/devmcp/...`
+// remains the explicit, CI-wired way to run this package on its own — see
+// TESTING.md — it is not the only way it runs.
 package e2e_test
 
 import (
