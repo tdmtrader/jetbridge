@@ -50,6 +50,12 @@ type GatewayConfig struct {
 	LeaseDuration         time.Duration
 	MaxResponseBytes      int64
 	SnapshotCanonicalizer snapshot.Canonicalizer
+
+	// ActionsMode is the cluster-wide action-suppression switch. It is
+	// REQUIRED by NewGatewayExecutor (but deliberately NOT by
+	// ValidateGatewayConfig, which runs at flag-validation time before a
+	// database connection exists).
+	ActionsMode ActionsModeReader
 }
 
 // ValidateGatewayConfig performs side-effect-free validation suitable for
@@ -116,6 +122,9 @@ func NewGatewayExecutor(
 	if nilInterface(store) || nilInterface(metadata) || nilInterface(content) {
 		return nil, fmt.Errorf("publisher gateway: store, snapshot metadata, and snapshot content are required")
 	}
+	if nilInterface(config.ActionsMode) {
+		return nil, fmt.Errorf("publisher gateway: an actions-mode reader is required; without it the cluster-wide action switch cannot suppress this publisher")
+	}
 	endpoint, err := config.validate()
 	if err != nil {
 		return nil, err
@@ -137,7 +146,7 @@ func NewGatewayExecutor(
 	if err != nil {
 		return nil, err
 	}
-	gitService, err := NewGitService(store, credentials, changes, gatewayGitBackend{client: client}, config.RequestTimeout, config.LeaseDuration)
+	gitService, err := NewGitService(store, credentials, changes, gatewayGitBackend{client: client}, config.RequestTimeout, config.LeaseDuration, WithActionsGate(config.ActionsMode))
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +154,7 @@ func NewGatewayExecutor(
 	if err != nil {
 		return nil, err
 	}
-	workItemService, err := NewWorkItemService(store, credentials, values, gatewayWorkItemBackend{client: client}, config.RequestTimeout, config.LeaseDuration)
+	workItemService, err := NewWorkItemService(store, credentials, values, gatewayWorkItemBackend{client: client}, config.RequestTimeout, config.LeaseDuration, WithActionsGate(config.ActionsMode))
 	if err != nil {
 		return nil, err
 	}

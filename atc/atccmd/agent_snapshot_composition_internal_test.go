@@ -145,14 +145,17 @@ func TestAgentSnapshotComponentsAreComposedOnceWithExplicitConnection(t *testing
 	var gotPublicationStore publisher.Store
 	var publisherMetadata snapshot.MetadataStore
 	var publisherContent snapshot.ContentStore
+	var gotActionsReader publisher.ActionsModeReader
 	command.agentSnapshotPublisherComposer = func(
 		store publisher.Store,
 		metadata snapshot.MetadataStore,
 		content snapshot.ContentStore,
+		actions publisher.ActionsModeReader,
 	) (publisher.Executor, error) {
 		gotPublicationStore = store
 		publisherMetadata = metadata
 		publisherContent = content
+		gotActionsReader = actions
 		return wantPublisher, nil
 	}
 	wantLifecycle := &compositionLifecycle{}
@@ -193,6 +196,9 @@ func TestAgentSnapshotComponentsAreComposedOnceWithExplicitConnection(t *testing
 	}
 	if gotPublicationStore == nil || publisherMetadata != command.agentSnapshotMetadataStore || publisherContent != wantStore {
 		t.Fatal("publisher did not receive the durable audit and exact command-scoped snapshot stores")
+	}
+	if gotActionsReader == nil {
+		t.Fatal("publisher composition was not given the cluster-wide action switch")
 	}
 	if _, ok := command.agentSnapshotCreator.(*projection.ProjectingCreator); !ok {
 		t.Fatalf("snapshot creator = %T, want post-seal projection decorator", command.agentSnapshotCreator)

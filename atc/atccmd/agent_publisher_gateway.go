@@ -70,11 +70,14 @@ func (cmd *RunCommand) buildAgentPublisherGateway(
 	store publisher.Store,
 	metadata snapshot.MetadataStore,
 	content snapshot.ContentStore,
+	actions publisher.ActionsModeReader,
 ) (publisher.Executor, error) {
 	if !cmd.AgentPublisherGateway.Enabled {
 		return nil, fmt.Errorf("publisher gateway is disabled")
 	}
-	executor, err := publisher.NewGatewayExecutor(store, metadata, content, cmd.agentPublisherGatewayConfig())
+	config := cmd.agentPublisherGatewayConfig()
+	config.ActionsMode = actions
+	executor, err := publisher.NewGatewayExecutor(store, metadata, content, config)
 	if err != nil {
 		return nil, fmt.Errorf("build publisher gateway: %w", err)
 	}

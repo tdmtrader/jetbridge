@@ -441,6 +441,87 @@ func TestGatewayConfigurationFailsClosed(t *testing.T) {
 	}
 }
 
+func TestNewGatewayExecutorRequiresAnActionsModeReader(t *testing.T) {
+	// A deployment that can perform external side effects must be able to stop
+	// them without a redeploy. Composing a publisher with no switch is a
+	// startup error, not a silently unstoppable publisher.
+	fixture := newGatewaySnapshotFixture(t)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer server.Close()
+	config := gatewayTestConfig(t, server, `{
+		"schema_version":1,
+		"rules":[{"team":"engineering","publisher":"git-publisher/v1","modes":["pull-request"],"approval_policy_versions":["engineering/v1"],"target_branches":["main"],"destinations":["git.example/acme/widget"]}]
+	}`)
+	config.ActionsMode = nil
+
+	_, err := publisher.NewGatewayExecutor(
+		publisher.NewMemoryStore(time.Now), fixture.metadata, fixture.content, config,
+	)
+	if err == nil || !strings.Contains(err.Error(), "actions-mode reader") {
+		t.Fatalf("NewGatewayExecutor error = %v, want an actions-mode reader requirement", err)
+	}
+
+	// The same switch-less config must still pass flag-time validation:
+	// --agent-publisher-gateway-* is validated before any database connection
+	// exists, so requiring the reader there would make the flags unvalidatable.
+	if err := publisher.ValidateGatewayConfig(config); err != nil {
+		t.Fatalf("ValidateGatewayConfig without an actions-mode reader = %v, want nil", err)
+	}
+}
+
+func TestGatewayExecutorSuppressesBothPublishersWithoutTouchingTheProvider(t *testing.T) {
+	// Composition is what makes the switch enforceable: one executor hands the
+	// same reader to BOTH services, so a single engaged brake stops Git and
+	// work-item effects alike — before the first packet and before the exact
+	// snapshot is even reopened.
+	fixture := newGatewaySnapshotFixture(t)
+	requests := 0
+	server := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests++ }))
+	defer server.Close()
+	config := gatewayTestConfig(t, server, `{
+		"schema_version":1,
+		"rules":[
+			{"team":"engineering","publisher":"git-publisher/v1","modes":["pull-request"],"approval_policy_versions":["engineering/v1"],"target_branches":["main"],"destinations":["git.example/acme/widget"]},
+			{"team":"engineering","publisher":"work-item-publisher/v1","modes":["comment"],"approval_policy_versions":["engineering/v1"],"destination_prefixes":["ENG-"]}
+		]
+	}`)
+	actions := &actionsReaderStub{mode: publisher.ActionsModeSuppressed, found: true}
+	config.ActionsMode = actions
+	executor, err := publisher.NewGatewayExecutor(
+		publisher.NewMemoryStore(time.Now), fixture.metadata, fixture.content, config,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Both requests are permitted by policy: the only thing refusing them is
+	// the cluster-wide switch.
+	for name, request := range map[string]publisher.Request{
+		"git": gatewayGitRequest(fixture.ref),
+		"work item": {
+			Publisher:   publisher.WorkItemPublisher,
+			Input:       fixture.ref,
+			Destination: "ENG-42", Mode: publisher.ModeComment,
+			Parameters: map[string]string{"body": "agent result"}, ApprovalPolicyVersion: "engineering/v1",
+			Authority: publisher.Authority{TeamID: 9, TeamName: "engineering", BuildID: 12, WorkflowRunID: 17, Actor: "build/12"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := executor.Execute(context.Background(), request); !errors.Is(err, publisher.ErrActionsSuppressed) {
+				t.Fatalf("Execute error = %v, want ErrActionsSuppressed", err)
+			}
+		})
+	}
+
+	if requests != 0 || fixture.metadata.GetAuthorizedCallCount() != 0 || fixture.content.OpenCallCount() != 0 {
+		t.Fatalf("suppressed publisher crossed the gateway/snapshot boundary: network=%d metadata=%d content=%d",
+			requests, fixture.metadata.GetAuthorizedCallCount(), fixture.content.OpenCallCount())
+	}
+	if actions.reads != 2 {
+		t.Fatalf("switch reads = %d, want one per composed service so neither publisher is left ungated", actions.reads)
+	}
+}
+
 func TestSnapshotChangeInspectorRevalidatesManifestMetadataDocumentAndPayload(t *testing.T) {
 	fixture := newGatewaySnapshotFixture(t)
 	inspector, err := publisher.NewSnapshotChangeInspector(fixture.metadata, fixture.content, snapshot.Canonicalizer{})
@@ -688,6 +769,10 @@ func gatewayTestConfig(t *testing.T, server *httptest.Server, policy string) pub
 	return publisher.GatewayConfig{
 		Endpoint: server.URL, PolicyFile: policyPath, TokenFile: tokenPath, CACertificateFile: caPath,
 		RequestTimeout: 5 * time.Second, LeaseDuration: time.Minute, MaxResponseBytes: 1 << 20,
+		// Composition REQUIRES the cluster-wide switch, so every gateway
+		// fixture carries one. Tests about the switch itself replace this
+		// reader; the rest exercise a publisher whose brake is released.
+		ActionsMode: &actionsReaderStub{mode: publisher.ActionsModeActive, found: true},
 	}
 }
 

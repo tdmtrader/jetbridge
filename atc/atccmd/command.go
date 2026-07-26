@@ -171,6 +171,9 @@ type snapshotPublisherComposer func(
 	publisher.Store,
 	snapshot.MetadataStore,
 	snapshot.ContentStore,
+	// The cluster-wide action switch. Threaded explicitly rather than read off
+	// the command so a deployment-supplied composer cannot forget it.
+	publisher.ActionsModeReader,
 ) (publisher.Executor, error)
 
 func isNilDependency(value any) bool {
@@ -1840,6 +1843,7 @@ func (cmd *RunCommand) composeAgentSnapshots(connection db.DbConn, logger lager.
 			db.NewAgentPublicationsFactory(connection),
 			metadataStore,
 			contentStore,
+			db.NewAgentSettingsFactory(connection),
 		)
 		if err != nil {
 			return fmt.Errorf("compose agent snapshot publisher: %w", err)
