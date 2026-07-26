@@ -74,17 +74,6 @@ func (candidate witnessCandidate) admit(t *testing.T, ref snapshot.TypeRef) erro
 // witness table is written. It is deleted, along with every reference to it, by
 // the task that finishes the last table. Do not add to it.
 var pendingRules = map[snapshot.TypeRef][]string{
-	snapshot.TypeRef("measurements/v1"): {
-		"conclusion-governs-the-metric-count",
-		"partial-and-not-applicable-require-an-explanation",
-		"direction-governs-target",
-		"bounds-are-declared-together-finite-and-ordered",
-		"value-must-lie-within-any-declared-bounds",
-		"a-metric-is-not-a-score",
-		"anchor-subject-must-be-a-declared-subject",
-		"anchor-locator-kind-selects-which-fields-appear",
-		"anchor-locators-are-unverified",
-	},
 	snapshot.TypeRef("diagnosis/v1"): {
 		"identified-and-suspected-require-hypotheses",
 		"hypothesis-ranks-are-unique-and-contiguous-from-one",
@@ -246,8 +235,9 @@ func sortedTypeRefs[T any](index map[snapshot.TypeRef]T) []snapshot.TypeRef {
 func ruleWitnesses(t *testing.T) map[snapshot.TypeRef][]ruleWitness {
 	t.Helper()
 	return map[snapshot.TypeRef][]ruleWitness{
-		snapshot.TypeRef("review/v1"):     reviewRuleWitnesses(t),
-		snapshot.TypeRef("validation/v1"): validationRuleWitnesses(t),
+		snapshot.TypeRef("review/v1"):       reviewRuleWitnesses(t),
+		snapshot.TypeRef("validation/v1"):   validationRuleWitnesses(t),
+		snapshot.TypeRef("measurements/v1"): measurementsRuleWitnesses(t),
 	}
 }
 
@@ -511,6 +501,197 @@ func validationRuleWitnesses(t *testing.T) []ruleWitness {
 					body.Checks[0].Attempts[0].Evidence[0].Locator.End = intPointer(400001)
 				})
 				if err := candidate.admit(t, snapshot.TypeRef("validation/v1")); err != nil {
+					t.Fatalf(
+						"the seal gate rejected an unresolvable anchor locator: %v; if locators are now verified, this rule's documentation is stale and the schema document is the thing to change",
+						err,
+					)
+				}
+			},
+		},
+	}
+}
+
+// measurementsWitnessBase is one accepted measurements/v1 candidate with no
+// subjects at all — measurements admits an empty subject set — carrying one
+// lower-is-better metric whose value sits outside any bound it does not declare.
+// The non-anchor witnesses start here.
+func measurementsWitnessBase(t *testing.T) (snapshot.ValidationContext, []contracts.Subject, contracts.MeasurementsBody) {
+	t.Helper()
+	body := contracts.MeasurementsBody{
+		Conclusion: "measured",
+		Metrics: []contracts.Measurement{{
+			ID: "latency", Value: 1.5, Unit: "milliseconds", Direction: "lower-is-better",
+		}},
+	}
+	return emptyValidationContext(t), nil, body
+}
+
+// measurementsAnchorWitnessBase is the one-primary variant the anchor witnesses
+// need: the same metric now carries one opaque evidence anchor bound to the
+// declared subject, so a mutation to that anchor is the only thing wrong.
+func measurementsAnchorWitnessBase(t *testing.T) (snapshot.ValidationContext, []contracts.Subject, contracts.MeasurementsBody) {
+	t.Helper()
+	ref := snapshot.SnapshotRef{
+		ID: 42, Type: mustTypeRef(t, "repository/v1"), Digest: recordDigest('a'),
+	}
+	declarations := validationContextFor(t, map[string]snapshot.SnapshotRef{"in": ref})
+	subjects := []contracts.Subject{
+		contracts.SubjectFromInput("primary", contracts.SubjectRolePrimary, "in", ref),
+	}
+	body := contracts.MeasurementsBody{
+		Conclusion: "measured",
+		Metrics: []contracts.Measurement{{
+			ID: "latency", Value: 1.5, Unit: "milliseconds", Direction: "lower-is-better",
+			Evidence: []contracts.Anchor{{
+				Subject: "primary",
+				Locator: contracts.Locator{Kind: "opaque", Value: "build log line 44"},
+			}},
+		}},
+	}
+	return declarations, subjects, body
+}
+
+func newMeasurementsWitness(
+	t *testing.T,
+	declarations snapshot.ValidationContext,
+	subjects []contracts.Subject,
+	body contracts.MeasurementsBody,
+) witnessCandidate {
+	t.Helper()
+	record, err := contracts.NewRecord(mustTypeRef(t, "measurements/v1"), subjects, body)
+	if err != nil {
+		t.Fatalf("NewRecord(measurements/v1): %v", err)
+	}
+	return witnessCandidate{
+		files:        map[string][]byte{"record.json": marshalRecord(t, record)},
+		declarations: declarations,
+	}
+}
+
+func measurementsWitness(t *testing.T, mutate func(*contracts.MeasurementsBody)) witnessCandidate {
+	t.Helper()
+	declarations, subjects, body := measurementsWitnessBase(t)
+	mutate(&body)
+	return newMeasurementsWitness(t, declarations, subjects, body)
+}
+
+func measurementsAnchorWitness(t *testing.T, mutate func(*contracts.MeasurementsBody)) witnessCandidate {
+	t.Helper()
+	declarations, subjects, body := measurementsAnchorWitnessBase(t)
+	mutate(&body)
+	return newMeasurementsWitness(t, declarations, subjects, body)
+}
+
+func measurementsRuleWitnesses(t *testing.T) []ruleWitness {
+	t.Helper()
+	return []ruleWitness{
+		{
+			rule: "conclusion-governs-the-metric-count",
+			build: func(t *testing.T) witnessCandidate {
+				return measurementsWitness(t, func(body *contracts.MeasurementsBody) {
+					body.Metrics = nil
+				})
+			},
+			wantErr: "measured conclusion requires at least one metric",
+		},
+		{
+			rule: "partial-and-not-applicable-require-an-explanation",
+			build: func(t *testing.T) witnessCandidate {
+				return measurementsWitness(t, func(body *contracts.MeasurementsBody) {
+					body.Conclusion = "partial"
+				})
+			},
+			wantErr: "partial conclusion requires an explanation",
+		},
+		{
+			rule: "direction-governs-target",
+			build: func(t *testing.T) witnessCandidate {
+				return measurementsWitness(t, func(body *contracts.MeasurementsBody) {
+					body.Metrics[0].Target = floatPointer(3)
+				})
+			},
+			wantErr: "measurement target is valid only for target direction",
+		},
+		{
+			rule: "bounds-are-declared-together-finite-and-ordered",
+			build: func(t *testing.T) witnessCandidate {
+				return measurementsWitness(t, func(body *contracts.MeasurementsBody) {
+					body.Metrics[0].Minimum = floatPointer(0)
+				})
+			},
+			wantErr: "measurement minimum and maximum must be declared together",
+		},
+		{
+			rule: "value-must-lie-within-any-declared-bounds",
+			build: func(t *testing.T) witnessCandidate {
+				return measurementsWitness(t, func(body *contracts.MeasurementsBody) {
+					body.Metrics[0].Minimum = floatPointer(0)
+					body.Metrics[0].Maximum = floatPointer(1)
+				})
+			},
+			wantErr: "measurement value must be within its declared bounds",
+		},
+		{
+			rule: "a-metric-is-not-a-score",
+			documented: "A metric carries a direction and bounds but no scale, so it is deliberately " +
+				"NOT declared as the score kind. Declaring it as one would claim a scale that no field " +
+				"carries and no validator checks. There is no instance that violates this — the Go type " +
+				"has no scale field to set — so the pin asserts the declaration instead.",
+			pin: func(t *testing.T) {
+				document, found := contracts.SchemaDocumentFor(snapshot.TypeRef("measurements/v1"))
+				if !found {
+					t.Fatal("measurements/v1 has no schema document")
+				}
+				// The metric is an entity-set whose element fields are enumerated at
+				// body/metrics/*; the element itself is declared at body/metrics.
+				element, declared := document.Fields["body/metrics"]
+				if !declared {
+					t.Fatal("measurements/v1 declares no body/metrics element")
+				}
+				if element.Kind == contracts.KindScore {
+					t.Fatal("measurements/v1 now declares its metric element as a score, claiming a scale no field carries")
+				}
+				if _, found := document.Fields["body/metrics/*/scale"]; found {
+					t.Fatal("measurements/v1 now declares body/metrics/*/scale; a metric with a scale is a score and the rule text is stale")
+				}
+			},
+		},
+		{
+			rule: "anchor-subject-must-be-a-declared-subject",
+			build: func(t *testing.T) witnessCandidate {
+				return measurementsAnchorWitness(t, func(body *contracts.MeasurementsBody) {
+					body.Metrics[0].Evidence = []contracts.Anchor{{
+						Subject: "ghost",
+						Locator: contracts.Locator{Kind: "opaque", Value: "build log line 44"},
+					}}
+				})
+			},
+			wantErr: `body/metrics/*/evidence/*/subject: "ghost" is not declared by this record`,
+		},
+		{
+			rule: "anchor-locator-kind-selects-which-fields-appear",
+			build: func(t *testing.T) witnessCandidate {
+				return measurementsAnchorWitness(t, func(body *contracts.MeasurementsBody) {
+					body.Metrics[0].Evidence[0].Locator = contracts.Locator{
+						Kind: "opaque", Value: "build log line 44", Path: "a.go",
+					}
+				})
+			},
+			wantErr: "opaque anchor contains fields for another locator kind",
+		},
+		{
+			rule: "anchor-locators-are-unverified",
+			documented: "This rule documents a deliberate NON-check: nothing resolves an anchor's " +
+				"locator against any content, because anchor content hashes are deferred. It has no " +
+				"rejection witness by construction. The pin makes the claim executable instead: an " +
+				"anchor naming a path that exists nowhere, at lines nothing has, is ACCEPTED.",
+			pin: func(t *testing.T) {
+				candidate := measurementsAnchorWitness(t, func(body *contracts.MeasurementsBody) {
+					body.Metrics[0].Evidence[0].Locator = contracts.Locator{
+						Kind: "file-lines", Path: "does/not/exist.go", Start: intPointer(400000), End: intPointer(400001),
+					}
+				})
+				if err := candidate.admit(t, snapshot.TypeRef("measurements/v1")); err != nil {
 					t.Fatalf(
 						"the seal gate rejected an unresolvable anchor locator: %v; if locators are now verified, this rule's documentation is stale and the schema document is the thing to change",
 						err,
