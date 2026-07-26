@@ -34,6 +34,19 @@ func validSnapshotValueInspector() *snapshotValueInspectorStub {
 	return &snapshotValueInspectorStub{value: publisher.SnapshotValue{CanonicalArchivePath: "/canonical/input.tar"}}
 }
 
+// commentRequest is the shared explicit-comment fixture: one semantic work-item
+// operation, reused by both the idempotency spec and the action-suppression
+// spec so they exercise the same identity.
+func commentRequest() publisher.Request {
+	return publisher.Request{
+		Publisher:   publisher.WorkItemPublisher,
+		Input:       snapshot.SnapshotRef{ID: 8, Type: "review/v1", Digest: digest("b")},
+		Destination: "JIRA-42", Mode: publisher.ModeComment,
+		Parameters: map[string]string{"body": "review complete"}, ApprovalPolicyVersion: "comment/v1",
+		Authority: publicationAuthority(),
+	}
+}
+
 func (stub *workItemBackendStub) Lookup(context.Context, publisher.Credential, string) (publisher.WorkItemResult, bool, error) {
 	stub.lookups++
 	return stub.lookup, stub.found, nil
@@ -59,13 +72,7 @@ func TestWorkItemServicePublishesExplicitCommentIdempotently(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := publisher.Request{
-		Publisher:   publisher.WorkItemPublisher,
-		Input:       snapshot.SnapshotRef{ID: 8, Type: "review/v1", Digest: digest("b")},
-		Destination: "JIRA-42", Mode: publisher.ModeComment,
-		Parameters: map[string]string{"body": "review complete"}, ApprovalPolicyVersion: "comment/v1",
-		Authority: publicationAuthority(),
-	}
+	request := commentRequest()
 	publication, err := service.Execute(context.Background(), request)
 	if err != nil || publication.Status != publisher.StatusSucceeded || len(backend.requests) != 1 {
 		t.Fatalf("Execute = (%+v, %v), requests=%+v", publication, err, backend.requests)

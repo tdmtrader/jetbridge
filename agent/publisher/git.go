@@ -108,6 +108,7 @@ type GitService struct {
 	backend     GitBackend
 	timeout     time.Duration
 	lease       time.Duration
+	actions     ActionsModeReader
 }
 
 func NewGitService(
@@ -117,6 +118,7 @@ func NewGitService(
 	backend GitBackend,
 	timeout time.Duration,
 	lease time.Duration,
+	options ...ServiceOption,
 ) (*GitService, error) {
 	if nilInterface(store) || nilInterface(credentials) || nilInterface(changes) || nilInterface(backend) {
 		return nil, fmt.Errorf("publisher: git store, credentials, change inspector, and backend are required")
@@ -124,7 +126,10 @@ func NewGitService(
 	if timeout <= 0 || timeout > time.Hour || lease <= 0 || lease > 24*time.Hour {
 		return nil, fmt.Errorf("publisher: git timeout and lease are invalid")
 	}
-	return &GitService{store: store, credentials: credentials, changes: changes, backend: backend, timeout: timeout, lease: lease}, nil
+	return &GitService{
+		store: store, credentials: credentials, changes: changes, backend: backend,
+		timeout: timeout, lease: lease, actions: buildServiceOptions(options).actions,
+	}, nil
 }
 
 func (service *GitService) Execute(ctx context.Context, request Request) (Publication, error) {
@@ -147,6 +152,13 @@ func (service *GitService) Execute(ctx context.Context, request Request) (Public
 	}
 	if err := publication.Request.ValidatePersisted(); err != nil {
 		return Publication{}, fmt.Errorf("publisher: acquired publication authority is invalid: %w", err)
+	}
+	// The action switch is checked AFTER the durable intent is acquired and
+	// BEFORE any external interaction (including the recovery Lookup): the
+	// operation row stays pending, so this exact semantic operation is retried
+	// unchanged — and executed exactly once — after an admin resumes actions.
+	if err := checkActionsAdmitted(service.actions); err != nil {
+		return Publication{}, err
 	}
 	authorizedRequest := publication.Request.Clone()
 	externalContext, cancel := context.WithTimeout(ctx, service.timeout)

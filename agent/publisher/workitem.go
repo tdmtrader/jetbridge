@@ -64,6 +64,7 @@ type WorkItemService struct {
 	backend     WorkItemBackend
 	timeout     time.Duration
 	lease       time.Duration
+	actions     ActionsModeReader
 }
 
 func NewWorkItemService(
@@ -73,6 +74,7 @@ func NewWorkItemService(
 	backend WorkItemBackend,
 	timeout time.Duration,
 	lease time.Duration,
+	options ...ServiceOption,
 ) (*WorkItemService, error) {
 	if nilInterface(store) || nilInterface(credentials) || nilInterface(values) || nilInterface(backend) {
 		return nil, fmt.Errorf("publisher: work-item store, credentials, snapshot inspector, and backend are required")
@@ -80,7 +82,10 @@ func NewWorkItemService(
 	if timeout <= 0 || timeout > time.Hour || lease <= 0 || lease > 24*time.Hour {
 		return nil, fmt.Errorf("publisher: work-item timeout and lease are invalid")
 	}
-	return &WorkItemService{store: store, credentials: credentials, values: values, backend: backend, timeout: timeout, lease: lease}, nil
+	return &WorkItemService{
+		store: store, credentials: credentials, values: values, backend: backend,
+		timeout: timeout, lease: lease, actions: buildServiceOptions(options).actions,
+	}, nil
 }
 
 func (service *WorkItemService) Execute(ctx context.Context, request Request) (Publication, error) {
@@ -103,6 +108,13 @@ func (service *WorkItemService) Execute(ctx context.Context, request Request) (P
 	}
 	if err := publication.Request.ValidatePersisted(); err != nil {
 		return Publication{}, fmt.Errorf("publisher: acquired publication authority is invalid: %w", err)
+	}
+	// The action switch is checked AFTER the durable intent is acquired and
+	// BEFORE any external interaction (including the recovery Lookup): the
+	// operation row stays pending, so this exact semantic operation is retried
+	// unchanged — and executed exactly once — after an admin resumes actions.
+	if err := checkActionsAdmitted(service.actions); err != nil {
+		return Publication{}, err
 	}
 	externalContext, cancel := context.WithTimeout(ctx, service.timeout)
 	defer cancel()
