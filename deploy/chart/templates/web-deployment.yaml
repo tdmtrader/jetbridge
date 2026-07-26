@@ -44,6 +44,9 @@
 {{- if and $.Values.agentSnapshots.enabled (hasPrefix "--agent-snapshot-temp-dir" $argument) }}
 {{- fail "web.extraArgs may not override the chart-managed agent snapshot temp directory" }}
 {{- end }}
+{{- if and $.Values.web.agentStepImage (hasPrefix "--agent-step-image" $argument) }}
+{{- fail "web.extraArgs may not override web.agentStepImage" }}
+{{- end }}
 {{- end }}
 {{- if .Values.agentSnapshots.enabled }}
 {{- range $environment := .Values.web.env }}
@@ -381,6 +384,9 @@ spec:
             {{- end }}
             {{- if .Values.web.backendMaxConns }}
             - --backend-max-conns={{ .Values.web.backendMaxConns }}
+            {{- end }}
+            {{- if .Values.web.agentStepImage }}
+            - --agent-step-image={{ .Values.web.agentStepImage }}
             {{- end }}
             # Extra args
             {{- range .Values.web.extraArgs }}

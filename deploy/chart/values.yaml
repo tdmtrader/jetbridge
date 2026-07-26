@@ -106,6 +106,12 @@ web:
   #         key: client-secret
   env: []
 
+  # -- Container image for the agent: step's main container. Leave empty to
+  # disable agent steps entirely; the web node errors at runtime when an agent
+  # step runs without it. Schema-v3 workflow runs additionally require an exact
+  # @sha256 digest, which the web node validates at render time.
+  agentStepImage: ""
+
   # -- Additional CLI args for the web command
   extraArgs: []
 

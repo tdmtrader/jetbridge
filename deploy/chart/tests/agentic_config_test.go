@@ -459,3 +459,25 @@ func renderChartFailure(t *testing.T, sets ...string) string {
 	}
 	return string(output)
 }
+
+func TestWebAgentStepImageRendersTheFlagOnlyWhenSet(t *testing.T) {
+	absent := renderChart(t)
+	if strings.Contains(absent, "--agent-step-image") {
+		t.Fatal("--agent-step-image must not render when web.agentStepImage is empty")
+	}
+
+	present := renderChartSetString(t, "web.agentStepImage=fixture-agent:behavioral")
+	if !strings.Contains(present, "- --agent-step-image=fixture-agent:behavioral") {
+		t.Fatalf("rendered web args do not carry the agent step image:\n%s", present)
+	}
+}
+
+func TestWebExtraArgsMayNotOverrideTheChartManagedAgentStepImage(t *testing.T) {
+	output := renderChartFailure(t,
+		"web.agentStepImage=fixture-agent:behavioral",
+		"web.extraArgs={--agent-step-image=other:tag}",
+	)
+	if !strings.Contains(output, "web.extraArgs may not override web.agentStepImage") {
+		t.Fatalf("render output = %s", output)
+	}
+}
