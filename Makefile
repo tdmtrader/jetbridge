@@ -1,4 +1,4 @@
-.PHONY: test-unit test-ci-agent test-dev-mcp test-fly-integration test-integration test-k8s test-k8s-integration test-k8s-behavioral test-quick test-all
+.PHONY: test-unit test-ci-agent test-dev-mcp test-agent-race test-fly-integration test-integration test-k8s test-k8s-integration test-k8s-behavioral test-quick test-all
 
 # Unit tests: all packages except integration/e2e suites (~5 min)
 # Requires: PostgreSQL running locally
@@ -22,6 +22,16 @@ test-ci-agent:
 test-dev-mcp:
 	@echo "==> Running dev-mcp contract/e2e tests..."
 	go test ./agent/devmcp/... -count=1 -timeout 10m
+
+# Agent race lane (plain go test, NOT the ginkgo CLI — the -p + -race
+# parallel-compilation failure documented in CLAUDE.md's Key Notes is a
+# ginkgo-CLI-specific bug and does not apply to a plain `go test -race`).
+# Requires: nothing (verified: no package under agent/... needs postgres,
+# docker, or a live cluster — see this plan's Task 8 for how that was
+# confirmed).
+test-agent-race:
+	@echo "==> Running agent/ race lane..."
+	go test -race -count=1 ./agent/...
 
 # Fly integration tests (~10 min)
 # Requires: nothing (uses mock HTTP server)
@@ -66,4 +76,4 @@ test-k8s: test-k8s-integration test-k8s-behavioral
 test-quick: test-unit test-ci-agent test-dev-mcp
 
 # All tests in order of speed
-test-all: test-unit test-ci-agent test-dev-mcp test-fly-integration test-integration test-k8s
+test-all: test-unit test-ci-agent test-dev-mcp test-agent-race test-fly-integration test-integration test-k8s
