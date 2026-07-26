@@ -447,4 +447,74 @@ var _ = Describe("AgentStep against the real sealer (fixture agent)", func() {
 			Expect(contentStore.objects).To(BeEmpty())
 		})
 	})
+
+	type hostileCase struct {
+		name         string
+		contentLimit int64
+		framing      string
+		clause       string
+	}
+
+	for _, hostile := range []hostileCase{
+		{
+			name:    fixtureagent.CaseHostileTraversal,
+			framing: `snapshot: capture output "review"`,
+			clause:  `archive path "../escape" contains an empty, dot, or traversal segment`,
+		},
+		{
+			name:    fixtureagent.CaseHostileSymlink,
+			framing: `snapshot: capture output "review"`,
+			clause:  `symlink "escape" target escapes the archive root`,
+		},
+		{
+			// The ARCHIVE-layer configured limit, injected here and nowhere
+			// else. The contracts-layer document limits belong to WS5 and are
+			// deliberately untouched.
+			name:         fixtureagent.CaseHostileOversized,
+			contentLimit: 512,
+			framing:      `snapshot: capture output "review"`,
+			clause:       `archive exceeds regular content limit of 512 bytes`,
+		},
+		{
+			name:    fixtureagent.CaseHostileMissingRecord,
+			framing: `snapshot: validate output "review"`,
+			clause:  `required regular file "record.json" is missing`,
+		},
+		{
+			name:    fixtureagent.CaseHostileSchemaDigest,
+			framing: `snapshot: validate output "review"`,
+			clause:  `record schema must be exactly the current schema digest`,
+		},
+		{
+			name:    fixtureagent.CaseHostileUnexposedSubject,
+			framing: `snapshot: validate output "review"`,
+			clause:  `record subject "primary" input "not-a-declared-input" is not an exact declared input`,
+		},
+		{
+			name:    fixtureagent.CaseHostileDuplicateFinding,
+			framing: `snapshot: validate output "review"`,
+			clause:  `body/findings/*/id: "F-1" is duplicate`,
+		},
+	} {
+		hostile := hostile
+
+		Context("when the fixture writes "+hostile.name, func() {
+			BeforeEach(func() {
+				fixtureCase = hostile.name
+				contentLimit = hostile.contentLimit
+			})
+
+			It("fails the step with an operator-actionable message and publishes nothing", func() {
+				Expect(runErr).To(HaveOccurred())
+				Expect(runOK).To(BeFalse())
+				// Two verbatim halves: which output failed, and what was wrong.
+				Expect(runErr.Error()).To(ContainSubstring(hostile.framing))
+				Expect(runErr.Error()).To(ContainSubstring(hostile.clause))
+
+				_, found := repo.ArtifactEntryFor("review")
+				Expect(found).To(BeFalse())
+				Expect(contentStore.objects).To(BeEmpty())
+			})
+		})
+	}
 })
