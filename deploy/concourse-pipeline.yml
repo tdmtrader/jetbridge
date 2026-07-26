@@ -203,6 +203,38 @@ jobs:
           go test -count=1 -timeout 10m $PACKAGES
           echo "=== All unit tests passed ==="
 
+- name: db-tests
+  serial_groups: [pipeline]
+  plan:
+  - get: repo
+    trigger: true
+    params: {depth: 1}
+    passed: [unit-tests]
+  - task: db-tests
+    attempts: 2
+    config:
+      platform: linux
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v6
+      inputs:
+      - name: repo
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          cd repo
+          echo "=== Verifying PostgreSQL is available in this image ==="
+          initdb --version
+          postgres --version
+          id postgres
+          echo ""
+          echo "=== Running Postgres-backed atc/db and atc/gc suites ==="
+          ginkgo -r -p --keep-going --flake-attempts=1 ./atc/db ./atc/gc
+          echo ""
+          echo "=== Running atc/integration suite ==="
+          ginkgo -r --keep-going -p ./atc/integration/
+          echo "=== All Postgres-backed suites passed ==="
+
 - name: k8s-runtime-tests
   serial: true
   serial_groups: [pipeline]
@@ -210,7 +242,7 @@ jobs:
   - get: repo
     trigger: true
     params: {depth: 1}
-    passed: [unit-tests]
+    passed: [db-tests]
   - task: k8s-runtime-integration-tests
     attempts: 2
     config:
