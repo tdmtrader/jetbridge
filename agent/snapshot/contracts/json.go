@@ -11,7 +11,10 @@ import (
 	"os"
 )
 
-const maxJSONDocumentBytes int64 = 1 << 20
+// maxJSONDocumentBytes bounds every strict JSON document a snapshot tree can
+// carry. It is a var rather than a const only so tests can drive its boundary
+// with a candidate small enough to build; production never assigns it.
+var maxJSONDocumentBytes int64 = 1 << 20
 
 func decodeStrictDocument(ctx context.Context, root *os.Root, name string, target any) error {
 	contents, err := readRegularFile(ctx, root, name, maxJSONDocumentBytes)

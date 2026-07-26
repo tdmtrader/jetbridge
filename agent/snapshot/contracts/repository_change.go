@@ -16,7 +16,10 @@ import (
 	"github.com/concourse/concourse/agent/snapshot"
 )
 
-const maxRepositoryPayloadBytes int64 = 10 << 30
+// maxRepositoryPayloadBytes bounds every repository-change payload a snapshot
+// tree can carry. It is a var rather than a const only so tests can drive its
+// boundary with a candidate small enough to build; production never assigns it.
+var maxRepositoryPayloadBytes int64 = 10 << 30
 
 type RepositoryChangeMetadata struct {
 	RepositoryID   string   `json:"repository_id"`
