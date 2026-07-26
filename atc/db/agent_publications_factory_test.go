@@ -212,6 +212,49 @@ var _ = Describe("AgentPublicationsFactory", func() {
 		Expect(execute).To(BeFalse())
 	})
 
+	It("completes a terminally rejected publication as failed, publishes no outcome, and never reclaims it", func() {
+		acquired, execute, err := factory.Acquire(context.Background(), request(), time.Minute)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(execute).To(BeTrue())
+
+		result := publisher.Result{
+			Status: publisher.StatusFailed,
+			Detail: "publish repository change: gateway rejected /v1/git/publish with status 403; retrying the identical request cannot succeed",
+		}
+		failed, err := factory.Complete(context.Background(), acquired.OperationKey, acquired.Attempt, result)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(failed.Status).To(Equal(publisher.StatusFailed))
+		Expect(failed.Result).To(Equal(result))
+		Expect(failed.LeaseUntil).To(BeZero())
+
+		// A terminal row's lease_until is unconditionally NULL: the table's own
+		// CHECK constraint (status <> 'pending' AND lease_until IS NULL) makes
+		// it impossible to force an "expired lease" onto a failed row the way
+		// the pending-row lifecycle test does above, and Acquire's terminal
+		// branch returns before it ever consults lease_until (it is checked
+		// first, unconditionally). There is no lease left to expire, at any
+		// distance in time, which is what ends the retry-forever loop for a
+		// gateway rejection.
+		reacquired, execute, err := db.NewAgentPublicationsFactory(dbConn).Acquire(context.Background(), request(), time.Minute)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(execute).To(BeFalse())
+		Expect(reacquired.Status).To(Equal(publisher.StatusFailed))
+		Expect(reacquired.Attempt).To(Equal(failed.Attempt))
+
+		var outcomes int
+		Expect(dbConn.QueryRow(`
+			SELECT count(*) FROM agent_workflow_outcomes
+			WHERE team_id = $1 AND workflow_run_id = $2 AND output_snapshot_id = $3
+		`, defaultTeam.ID(), int64(workflowRunID), int64(input.ID)).Scan(&outcomes)).To(Succeed())
+		Expect(outcomes).To(Equal(0), "a failed publication must not claim a published workflow outcome")
+
+		replayed, err := db.NewAgentPublicationsFactory(dbConn).Complete(
+			context.Background(), acquired.OperationKey, acquired.Attempt, result,
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(replayed).To(Equal(failed))
+	})
+
 	It("serializes concurrent first acquisition and clones request maps", func() {
 		const contenders = 12
 		results := make(chan bool, contenders)

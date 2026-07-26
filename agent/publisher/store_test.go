@@ -137,6 +137,32 @@ func TestMemoryStorePreservesCancellationAndClonesRequests(t *testing.T) {
 	}
 }
 
+func TestMemoryStoreCompletesTerminalFailureAndRefusesReclaim(t *testing.T) {
+	now := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
+	store := publisher.NewMemoryStore(func() time.Time { return now })
+	request := branchRequest()
+	publication, execute, err := store.Acquire(context.Background(), request, time.Minute)
+	if err != nil || !execute {
+		t.Fatalf("Acquire = (%+v, %t, %v)", publication, execute, err)
+	}
+	result := publisher.Result{
+		Status: publisher.StatusFailed,
+		Detail: "publish repository change: gateway rejected /v1/git/publish with status 403; retrying the identical request cannot succeed",
+	}
+	failed, err := store.Complete(context.Background(), publication.OperationKey, publication.Attempt, result)
+	if err != nil || failed.Status != publisher.StatusFailed || failed.Result != result || !failed.LeaseUntil.IsZero() {
+		t.Fatalf("Complete = (%+v, %v)", failed, err)
+	}
+	now = now.Add(time.Hour)
+	reacquired, execute, err := store.Acquire(context.Background(), request, time.Minute)
+	if err != nil || execute {
+		t.Fatalf("a failed publication must never be reclaimed: (%+v, %t, %v)", reacquired, execute, err)
+	}
+	if reacquired.Status != publisher.StatusFailed {
+		t.Fatalf("reacquired status = %s", reacquired.Status)
+	}
+}
+
 func branchRequest() publisher.Request {
 	return publisher.Request{
 		Publisher: publisher.GitPublisher, Input: changeRef(), Destination: "github.example/team/repo",
