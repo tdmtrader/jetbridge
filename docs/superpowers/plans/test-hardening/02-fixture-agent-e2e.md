@@ -1937,11 +1937,13 @@ Tier B has to choose an execution seam, and the choice is load-bearing enough to
 **Files:**
 - Modify: `docs/superpowers/plans/test-hardening/02-fixture-agent-e2e.md`
 
-- [ ] Read the current vertical slice end to end: `atc/db/agent_workflow_run_integration_test.go:32-214`. Note what it already proves (import → promote → `DispatchOne` → plan → `build.Start` → real `BatchSealer` → `build.Finish` → reconciler → lineage/retention/history) and the two things it does not: the sealed output is hand-built from a literal tar, and nothing consumes it as a later step's input.
-- [ ] Establish the two facts that constrain the choice:
+- [x] Read the current vertical slice end to end: `atc/db/agent_workflow_run_integration_test.go:32-214`. Note what it already proves (import → promote → `DispatchOne` → plan → `build.Start` → real `BatchSealer` → `build.Finish` → reconciler → lineage/retention/history) and the two things it does not: the sealed output is hand-built from a literal tar, and nothing consumes it as a later step's input.
+- [x] Establish the two facts that constrain the choice:
   - Run `rg -n 'authored load_snapshot' agent/workflow/render.go`. Confirm `render.go:364`: **authored `load_snapshot` steps are rejected inside a workflow**; the renderer injects one per public *input* at `render.go:189-194`. Intra-plan chaining between two agent steps is therefore by artifact **name** through `build.Repository`, not by `load_snapshot`. Record this: the spec's phrase "feeds it to step 2 as a typed input (`load_snapshot`)" describes the workflow-input path, and the plan covers both.
+    - **Confirmed (2026-07-26).** `render.go:364` is verbatim `workflow: %s: authored load_snapshot steps are not allowed; workflow inputs are loaded by the renderer`. The renderer's injection is at `render.go:190-196` (`loads = append(loads, atc.Step{Config: &atc.LoadSnapshotStep{...}})`) — six lines later than the plan's `189-194`, an offset only, same construct.
   - Run `rg -l 'concourse/atc/exec' atc/db/*_test.go`. Confirm there are currently **zero** hits, then confirm no import cycle exists: `atc/exec` imports `atc/db` (`atc/exec/agent_step.go:23`), and `db_test` is an external test package, so `db_test` → `atc/exec` → `atc/db` is legal Go.
-- [ ] Evaluate exactly three candidate seams against three criteria — (a) does it execute the real `atc/exec` steps, (b) does it run under real PostgreSQL, (c) what does it cost the suite it lands in:
+    - **Confirmed (2026-07-26).** `rg -l 'concourse/atc/exec' atc/db/*_test.go` exits 1 with no output — zero hits. `go list -f '{{join .Imports "\n"}}' ./atc/db/ | grep -c 'concourse/atc/exec'` prints `0`, so the non-test `atc/db` package has no edge back to `atc/exec`; `atc/exec` does import `github.com/concourse/concourse/atc/db` (`agent_step.go:23`). Every one of the 84 test files in `atc/db` declares `package db_test` (checked with `rg -N '^package ' atc/db/*_test.go | sort -u`) — there is no in-package `package db` test file that a new `atc/exec` import could cycle through.
+- [x] Evaluate exactly three candidate seams against three criteria — (a) does it execute the real `atc/exec` steps, (b) does it run under real PostgreSQL, (c) what does it cost the suite it lands in:
 
   | Seam | Real exec steps | Real Postgres | Cost |
   |---|---|---|---|
@@ -1949,10 +1951,13 @@ Tier B has to choose an execution seam, and the choice is load-bearing enough to
   | **B.** New Postgres wiring inside the `atc/exec` suite | all | requires adding `atc/postgresrunner` to a suite that has none | high; makes a 0.07s unit suite DB-dependent |
   | **C.** Full engine through `atc/integration` | all | yes | highest; that suite drives a real ATC over HTTP and has no snapshot fixtures |
 
-- [ ] **Choose seam A** unless one of the two facts above turns out false. Record the decision by replacing this bullet in the plan document with: `Decision (<date>): seam A. <one sentence on what the two fact-checks showed>.` Seam A is what the design's own wording asks for — "typed output → typed input chaining and disposition are asserted, not that the full engine scheduler runs in-process".
-- [ ] Confirm the wait-answering API before writing any test. Run `rg -n 'func \(factory \*agentWorkflowWaitsFactory\)' atc/db/agent_workflow_waits_factory.go` and confirm the server-side answer is a **two-phase outbox**, not a single call: `ReserveResolution` (`:173`) → `workflowwait.MaterializeAnswer` (`agent/workflowwait/materializer.go:31`) → `Resolve` (`:340`). There is no `AnswerWait`/`SubmitAnswer`.
-- [ ] Confirm `AwaitSnapshotStep` needs a context deadline: `rg -n 'an ordinary timeout wrapper is required' atc/exec/await_snapshot_step.go` (`:131`). Task 12 must wrap its context with `context.WithTimeout`.
-- [ ] Commit `docs(test-hardening): pin the chained DAG execution seam`.
+**Decision (2026-07-26): seam A.** Both fact-checks held — authored `load_snapshot` is still rejected at `render.go:364` (so intra-plan chaining must go by artifact name through `build.Repository`, while the renderer's injected `load_snapshot` covers the public-input path), and `atc/db`'s test files are uniformly `package db_test` with zero existing `atc/exec` imports and no `atc/db` → `atc/exec` edge, so the new import edge is legal Go rather than a cycle. Seam A is what the design's own wording asks for — "typed output → typed input chaining and disposition are asserted, not that the full engine scheduler runs in-process".
+
+- [x] Confirm the wait-answering API before writing any test. Run `rg -n 'func \(factory \*agentWorkflowWaitsFactory\)' atc/db/agent_workflow_waits_factory.go` and confirm the server-side answer is a **two-phase outbox**, not a single call: `ReserveResolution` (`:173`) → `workflowwait.MaterializeAnswer` (`agent/workflowwait/materializer.go:31`) → `Resolve` (`:340`). There is no `AnswerWait`/`SubmitAnswer`.
+  - **Confirmed (2026-07-26).** The factory exposes exactly `CreateOrGet` (`:48`), `Get` (`:127`), `List` (`:142`), `ReserveResolution` (`:173`), `PendingResolutions` (`:276`), `Resolve` (`:340`), `Expire` (`:435`), `CancelRun` (`:481`) — all three plan line numbers exact, and no single-call answer method exists. `MaterializeAnswer` is at `agent/workflowwait/materializer.go:31` as stated.
+- [x] Confirm `AwaitSnapshotStep` needs a context deadline: `rg -n 'an ordinary timeout wrapper is required' atc/exec/await_snapshot_step.go` (`:131`). Task 12 must wrap its context with `context.WithTimeout`.
+  - **Confirmed (2026-07-26)** at `:132` (one line below the plan's `:131`): `return false, fmt.Errorf("await_snapshot: an ordinary timeout wrapper is required")`.
+- [x] Commit `docs(test-hardening): pin the chained DAG execution seam`.
 
 ---
 
