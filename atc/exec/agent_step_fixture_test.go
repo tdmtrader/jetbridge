@@ -9,6 +9,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"testing/fstest"
 	"time"
 
 	"github.com/concourse/concourse/agent/fixtureagent"
@@ -403,6 +404,47 @@ var _ = Describe("AgentStep against the real sealer (fixture agent)", func() {
 			entry, found := repo.ArtifactEntryFor("review")
 			Expect(found).To(BeTrue())
 			Expect(entry.Snapshot.Type).To(Equal(snapshot.TypeRef("review/v1")))
+		})
+	})
+
+	Context("when an optional typed output is marked produced", func() {
+		BeforeEach(func() {
+			declaration := agentPlan.SnapshotOutputs["review"]
+			declaration.Optional = true
+			agentPlan.SnapshotOutputs["review"] = declaration
+			markerFiles = runtimetest.VolumeContent{
+				"cmV2aWV3": &fstest.MapFile{Data: []byte{}},
+			}
+		})
+
+		It("seals the optional output and publishes it", func() {
+			Expect(runErr).NotTo(HaveOccurred())
+			Expect(runOK).To(BeTrue())
+			entry, found := repo.ArtifactEntryFor("review")
+			Expect(found).To(BeTrue())
+			Expect(entry.Snapshot).NotTo(BeNil())
+			Expect(entry.Snapshot.Type).To(Equal(snapshot.TypeRef("review/v1")))
+		})
+	})
+
+	Context("when an optional typed output's marker names a different output", func() {
+		BeforeEach(func() {
+			declaration := agentPlan.SnapshotOutputs["review"]
+			declaration.Optional = true
+			agentPlan.SnapshotOutputs["review"] = declaration
+			// base64url("preview"), not base64url("review"): the marker mount
+			// exists and is non-empty, but nothing marks THIS output produced.
+			markerFiles = runtimetest.VolumeContent{
+				"cHJldmlldw": &fstest.MapFile{Data: []byte{}},
+			}
+		})
+
+		It("treats the output as absent and seals nothing", func() {
+			Expect(runErr).NotTo(HaveOccurred())
+			Expect(runOK).To(BeTrue())
+			_, found := repo.ArtifactEntryFor("review")
+			Expect(found).To(BeFalse())
+			Expect(contentStore.objects).To(BeEmpty())
 		})
 	})
 })
