@@ -21,10 +21,20 @@ func TestSealCarriesExposureLineageToValidatorsButNotIntoContentIdentity(t *test
 	body := tarBytes(t, "value", "same")
 	inputDigest := mustTestDigest(t)
 
+	// The seal-time exposure gate opens every static-selector input's stored
+	// bytes to recompute its per-path digests, so the exposed input must be
+	// authorized and openable here even though this test is about lineage, not
+	// verification. record.json in this archive is what the selector below claims.
+	exposedArchive := exposedTree(t)
+
 	var seen []InputExposure
 	sealOnce := func(exposure InputExposure) *SealCommit {
-		metadata := &sealerMetadataStore{}
-		content := &sealerContentStore{events: &metadata.events}
+		metadata := &sealerMetadataStore{authorized: map[SnapshotID]Snapshot{5: {
+			ID: 5, Type: TypeRef("repository/v1"), Digest: inputDigest,
+			ByteSize: int64(len(exposedArchive)), FileCount: 4, Representation: "application/x-tar",
+			ContentState: ContentStateAvailable, CreatedAt: now,
+		}}}
+		content := &sealerContentStore{events: &metadata.events, openContent: map[SnapshotID][]byte{5: exposedArchive}}
 		locks := &sealerLocks{lease: &sealerLease{digests: map[Digest]bool{}}}
 		sealer := mustNewSealer(t, t.TempDir(), metadata, content, locks,
 			sealerValidatorFunc(func(_ context.Context, _ *os.Root, validationContext ValidationContext) (ValidationResult, error) {
@@ -50,7 +60,7 @@ func TestSealCarriesExposureLineageToValidatorsButNotIntoContentIdentity(t *test
 	}
 
 	selector, err := NewStaticSelectorExposure("/tmp/build/plan/base", inputDigest,
-		ExposedPath{Path: "record.json", Digest: mustTestDigest(t)},
+		ExposedPath{Path: "record.json", Digest: contentDigest(exposedRecordBody)},
 	)
 	if err != nil {
 		t.Fatalf("NewStaticSelectorExposure() error = %v", err)

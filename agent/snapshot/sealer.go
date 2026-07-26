@@ -136,6 +136,9 @@ func (sealer *BatchSealer) Seal(ctx context.Context, request SealRequest) (resul
 	if err != nil {
 		return nil, err
 	}
+	if err := sealer.verifyExposedPaths(ctx, request); err != nil {
+		return nil, err
+	}
 	sourcesByPort := make(map[string]OutputSource, len(request.Outputs))
 	for _, source := range request.Outputs {
 		sourcesByPort[source.Port.Name] = source.Clone()
@@ -485,6 +488,61 @@ func (sealer *BatchSealer) inputOpener(teamID int) InputOpener {
 		}
 		return sealer.content.Open(ctx, persisted)
 	}
+}
+
+// verifyExposedPaths recomputes every enumerated exposed-path digest against the
+// exposed input's own stored bytes, using the same authorized opener a validator
+// would get. It runs before any capture, stage, upload or commit, so a false
+// exposure costs nothing and reaches no storage.
+//
+// Only static selectors are checked, because only they make a claim: a full-tree
+// exposure enumerates nothing and its tree digest is already bound to the input
+// reference by validateDeclaredExposures.
+//
+// This is a seal-time gate. It never runs on a read path and can therefore never
+// reject stored bytes; exposure lineage is production-occurrence data that is not
+// part of any sealed archive.
+func (sealer *BatchSealer) verifyExposedPaths(ctx context.Context, request SealRequest) error {
+	if len(request.InputExposures) == 0 {
+		return nil
+	}
+	ports := make([]string, 0, len(request.InputExposures))
+	for port := range request.InputExposures {
+		if request.InputExposures[port].Mode == MaterializationStaticSelector {
+			ports = append(ports, port)
+		}
+	}
+	if len(ports) == 0 {
+		return nil
+	}
+	sort.Strings(ports)
+
+	opener := sealer.inputOpener(request.TeamID)
+	for _, port := range ports {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		ref, exposed := request.Inputs[port]
+		if !exposed {
+			return fmt.Errorf("snapshot: exposure input port %q is not an exposed input", port)
+		}
+		archive, err := opener(ctx, port, ref)
+		if err != nil {
+			return fmt.Errorf("snapshot: open exposed input %q for verification: %w", port, err)
+		}
+		if archive == nil {
+			return fmt.Errorf("snapshot: exposed input %q opened no reader", port)
+		}
+		verifyErr := VerifyExposedPaths(ctx, archive, request.InputExposures[port])
+		closeErr := archive.Close()
+		if verifyErr != nil || closeErr != nil {
+			return errors.Join(
+				wrapIfNonNil(fmt.Sprintf("snapshot: verify exposed paths for input %q", port), verifyErr),
+				wrapIfNonNil(fmt.Sprintf("snapshot: close exposed input %q", port), closeErr),
+			)
+		}
+	}
+	return nil
 }
 
 func (sealer *BatchSealer) verifiedLocations(ctx context.Context, state DigestState) ([]Location, error) {

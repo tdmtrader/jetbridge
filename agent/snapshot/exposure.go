@@ -96,6 +96,14 @@ func (m *MaterializationMode) UnmarshalJSON(data []byte) error {
 // digest of the bytes that were exposed. The path is relative to the canonical
 // archive root — the only namespace verifiable at seal time — never to a pod
 // mount path.
+//
+// Digest is SHA-256 over the exact content bytes of the regular file at Path,
+// spelled "sha256:<lowercase hex>": the same algorithm and spelling as a tree
+// digest, one level down. Validate checks only that it parses; VerifyExposedPaths
+// is what recomputes it against the exposed input's stored bytes, and the seal
+// gate calls that on every static selector. A path digest is the one piece of
+// exposure lineage that is a claim rather than a server-observed fact, which is
+// exactly why it is the one piece that gets recomputed.
 type ExposedPath struct {
 	Path   string `json:"path"`
 	Digest Digest `json:"digest"`
