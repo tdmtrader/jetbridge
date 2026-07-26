@@ -3,6 +3,7 @@ package contracts_test
 import (
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/concourse/concourse/agent/snapshot"
@@ -56,6 +57,16 @@ func TestRepositoryChangeRecordBindsItsExactBaseAndDerivesChangedFiles(t *testin
 	}
 	if len(metadata.ChangedFiles) != 1 || metadata.ChangedFiles[0] != "README.md" {
 		t.Fatalf("changed files = %v, want [README.md]", metadata.ChangedFiles)
+	}
+	// The pre-record intrinsic-metadata names are tolerated on READ only. Sealing
+	// must keep emitting the current shape, so newly sealed bytes never carry them.
+	if _, err := contracts.DecodeRepositoryChangeMetadata(result.IntrinsicMetadata); err != nil {
+		t.Fatalf("sealed metadata is not the current shape: %v", err)
+	}
+	for _, retired := range []string{`"result_sha"`, `"result_tree_sha"`, `"representation":"bundle"`} {
+		if strings.Contains(string(result.IntrinsicMetadata), retired) {
+			t.Fatalf("sealed metadata writes the retired %s: %s", retired, result.IntrinsicMetadata)
+		}
 	}
 }
 

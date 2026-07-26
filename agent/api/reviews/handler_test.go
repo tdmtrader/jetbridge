@@ -11,6 +11,7 @@ import (
 	"github.com/concourse/concourse/agent/api/principals"
 	"github.com/concourse/concourse/agent/api/reviews"
 	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/agent/snapshot/contracts"
 )
 
 func newHandler(t *testing.T) (*reviews.Handler, *reviews.MemoryStore, *feedback.MemoryStore) {
@@ -87,6 +88,105 @@ func TestCanonicalSnapshotAndWorkflowRunReviewReadsUseSnapshotFeedbackIdentity(t
 	}
 	if runReviews[0].Feedback["PI-1"].Verdict == runReviews[1].Feedback["PI-1"].Verdict {
 		t.Fatalf("same-commit snapshot feedback collided: %#v", runReviews)
+	}
+}
+
+// sealedReviewRecord is what a projected row actually stores: the canonical
+// review/v1 record.json bytes the platform sealed, not the legacy submission
+// payload.
+func sealedReviewRecord(t *testing.T) []byte {
+	t.Helper()
+	line := 12
+	subject := snapshot.SnapshotRef{
+		ID: 7, Type: "repository-change/v1",
+		Digest: snapshot.Digest("sha256:" + strings.Repeat("a", 64)),
+	}
+	record, err := contracts.NewRecord(
+		snapshot.TypeRef("review/v1"),
+		[]contracts.Subject{contracts.SubjectFromInput(
+			"change", contracts.SubjectRolePrimary, "candidate", subject,
+		)},
+		contracts.ReviewBody{
+			Conclusion: "changes-required",
+			Summary:    "the merge base assertion is client-supplied",
+			Findings: []contracts.Finding{
+				{
+					ID: "blocking-1", Severity: "critical", Blocking: true,
+					Category: "correctness", Title: "merge base is trusted from the client",
+					Description: "the publisher accepts the caller's merge base",
+					Evidence: []contracts.Anchor{{
+						Subject: "change",
+						Locator: contracts.Locator{
+							Kind: "file-lines", Path: "agent/publisher/gateway.go",
+							Start: &line, End: &line,
+						},
+					}},
+					Recommendation: "derive it server-side",
+				},
+				{
+					ID: "note-1", Severity: "observation", Category: "maintainability",
+					Title: "helper could be shared", Description: "two call sites repeat the shape",
+				},
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encoded
+}
+
+func TestProjectedSnapshotReviewRendersSealedRecordFindings(t *testing.T) {
+	h, store, _ := newHandler(t)
+	snapshotID := snapshot.SnapshotID(501)
+	productionID := snapshot.DatabaseID(9)
+	if err := store.Upsert(&reviews.StoredReview{
+		BuildID: 42, TeamName: "main",
+		Summary: "the merge base assertion is client-supplied",
+		Score:   0, MaxScore: 1, ProvenCount: 1, ObservationCount: 1,
+		SnapshotID: &snapshotID, ProductionID: &productionID,
+		Review: json.RawMessage(sealedReviewRecord(t)),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agent/snapshots/501/projections/review", nil)
+	req.URL.RawQuery = "%3Asnapshot_id=501"
+	response := httptest.NewRecorder()
+	h.GetBySnapshot(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("code = %d: %s", response.Code, response.Body.String())
+	}
+	var got reviews.BuildReviewResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+
+	if got.Summary != "the merge base assertion is client-supplied" {
+		t.Errorf("summary = %q", got.Summary)
+	}
+	if got.FindingCount != 2 {
+		t.Errorf("finding_count = %d, want 2", got.FindingCount)
+	}
+	if len(got.ProvenIssues) != 1 || len(got.Observations) != 1 {
+		t.Fatalf("proven=%d observations=%d, want 1/1: %+v", len(got.ProvenIssues), len(got.Observations), got)
+	}
+	issue := got.ProvenIssues[0]
+	if issue.ID != "blocking-1" || issue.Severity != "critical" ||
+		issue.Category != "correctness" || issue.Title != "merge base is trusted from the client" ||
+		issue.Description != "the publisher accepts the caller's merge base" {
+		t.Errorf("proven issue = %+v", issue)
+	}
+	if issue.File != "agent/publisher/gateway.go" || issue.Line != 12 {
+		t.Errorf("proven issue anchor = %q:%d, want agent/publisher/gateway.go:12", issue.File, issue.Line)
+	}
+	note := got.Observations[0]
+	if note.ID != "note-1" || note.Severity != "observation" || note.Title != "helper could be shared" {
+		t.Errorf("observation = %+v", note)
 	}
 }
 

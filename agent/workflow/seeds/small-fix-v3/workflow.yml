@@ -37,10 +37,13 @@ plan:
     prompt: >-
       Validate the exact sealed candidate-change against repository and the
       captured work-item. Re-run the relevant checks without modifying any
-      input. Write validation/v1 to $AGENT_OUTPUT_VALIDATION/record.json,
-      declaring candidate-change as the primary subject and repository and
-      work-item as context subjects. Preserve every retry attempt and copy all
-      platform-provided type, digest, and schema values exactly.
+      input. Write validation/v1 to $AGENT_OUTPUT_VALIDATION/record.json. The
+      subjects array is sorted lexicographically by id, never by role, so
+      declare candidate-change with role primary, then repository with role
+      context, then work-item with role context. Sort the checks array
+      lexicographically by check id as well; unsorted or duplicate ids are
+      rejected when the output is sealed. Preserve every retry attempt and copy
+      all platform-provided type, digest, and schema values exactly.
     inputs: [repository, work-item, candidate-change]
     outputs: [validation]
     input_types:

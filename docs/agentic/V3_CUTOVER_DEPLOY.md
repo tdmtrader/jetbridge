@@ -16,7 +16,7 @@ historical agent data needs to be preserved.
 | Execution identity | ticket + `agent-ticket-<id>` pipeline | **durable workflow run** |
 | Delivery | `harvest:` step pushed from the pod | `publish_snapshot` → publisher → **gateway** |
 | Merge compute | `merge:` step (pod-side push) | **`agent/functions/repositorymerge`** via `function-runner` |
-| Migration head | `1773106095` | **`1773106126`** |
+| Migration head | `1773106095` | **`1773106127`** |
 
 ## Order of operations
 
@@ -42,7 +42,7 @@ reject a tag. Agent steps error at runtime when it is unset.
 
 ### 3. Reset the database
 
-Migrations `1773106100`–`1773106126` all apply in one boot. Because no history is
+Migrations `1773106100`–`1773106127` all apply in one boot. Because no history is
 being preserved, dropping the database is cleaner than migrating through:
 
 - it skips `1773106124`'s backfill, which would otherwise NULL every historical
@@ -50,10 +50,14 @@ being preserved, dropping the database is cleaner than migrating through:
 - it skips `1773106125`, which would archive every legacy outcome as
   `missing-run` for the same reason;
 - `1773106126` is written defensively (`CREATE TABLE IF NOT EXISTS` /
-  `DROP TABLE IF EXISTS`) so it applies either way.
+  `DROP TABLE IF EXISTS`) so it applies either way;
+- `1773106127` — exposure lineage tables (`agent_snapshot_exposures`,
+  `agent_snapshot_exposure_paths`) plus a backfill that records every existing
+  lineage row as a `full` exposure of its input snapshot's own digest; on a
+  dropped database there is nothing to backfill.
 
 Verify afterwards: `docs/migration/migrate-preflight.sh` expects
-`JETBRIDGE_VERSION=1773106126`.
+`JETBRIDGE_VERSION=1773106127`.
 
 ### 4. Deploy the web, then import v3 workflow sources
 
@@ -74,6 +78,49 @@ Seeds: `small-fix-v3`, `code-review-v3`, `log-diagnosis-v3`,
 2. Create and dispatch a ticket against `small-fix-v3`; confirm the dispatch
    response carries `workflow_run_id` and the run reaches a terminal state.
 3. Open the run in the web UI; confirm steps, metrics and outputs render.
+
+## Post-upgrade sequence — every deploy after the cutover
+
+The cutover order above is one-time. Every subsequent deploy of this branch runs
+this sequence, **in this order**:
+
+1. **Push, self-build, migrate, restart web.** The push triggers the self-build
+   chain; the new web image applies any pending migrations on boot and restarts.
+2. **Rebuild the agent-runner image from the *same commit*** via the manual
+   `build-agent-runner-image` job, then bump the digest in home-infra. The web
+   and the pod-side binaries (`agent-runner`, `function-runner`) are two
+   halves of one contract — record schema descriptors, gate wording and
+   contract types are compiled into both.
+3. **Re-import all six v3 seeds with `--set-live`**:
+   ```bash
+   fly -t <target> agent workflows import agent/workflow/seeds/<name>-v3 --set-live
+   ```
+   Seed prompt or plan changes are not picked up by the web restart — they are
+   stored workflow versions, created only by an import.
+4. **Only then dispatch.**
+
+Why the order is not advisory:
+
+- A run dispatched between (1) and (2) executes against the **old** pod image.
+  Its steps burn the full budget slice and then fail the seal gate, or worse
+  succeed against stale contract code. That spend is not recoverable.
+- Dispatch **freezes the workflow version** onto the ticket
+  (`agent/dispatch/dispatch.go` pins `WorkflowVersion` at dispatch and
+  subsequently resolves by that exact version instead of `Live`). A run queued
+  before (3) therefore stays bound to the pre-import version forever — a later
+  import does not repair it. Re-dispatch on a fresh ticket instead.
+
+### Permanent coupling: descriptor bumps require an agent-runner rebuild
+
+Any future **record-schema descriptor bump** must ship an agent-runner rebuild
+**in the same deploy**. The pod-side `function-runner` stamps `record.schema`
+from its own compiled-in descriptors (`contracts.NewRecord` →
+`contracts.SchemaDigestFor`), while the web's seal gate admits only the current
+digest by exact equality (`currentSchemaDigestOnly` in
+`agent/snapshot/contracts/record.go`). A web that has moved to revision *n+1*
+against a pod still stamping revision *n* rejects every record that pod
+produces, after each step has already been paid for. This coupling is structural
+and does not expire.
 
 ## Known limitations
 

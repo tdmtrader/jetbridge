@@ -23,6 +23,9 @@ var builtinTypes = []string{
 	"validation/v1",
 	"upgrade-request/v1",
 	"upgrade-report/v1",
+	// A document type, kept because merge-delivery-v3 declares it as an output
+	// port. See engineering_report_registration_test.go.
+	"validation-report/v1",
 	"database-snapshot/v1",
 	"deployment-snapshot/v1",
 	"audit-findings/v1",
@@ -48,8 +51,8 @@ func TestRegistryContainsExactlyTheNamedV1Contracts(t *testing.T) {
 	if got := registry.Types(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Types() = %q, want exact ordered types %q", got, want)
 	}
-	if len(registry.Types()) != 17 {
-		t.Fatalf("registry type count = %d, want 17", len(registry.Types()))
+	if len(registry.Types()) != 18 {
+		t.Fatalf("registry type count = %d, want 18", len(registry.Types()))
 	}
 
 	for _, raw := range []string{"review/v2", "dev-mcp/v1", "Review/v1"} {

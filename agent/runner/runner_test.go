@@ -948,6 +948,15 @@ func TestRunInjectsOutputPathLiteralsIntoPrompt(t *testing.T) {
 		"$AGENT_INPUT_CHANGE_SNAPSHOT_DIGEST = sha256:" + strings.Repeat("a", 64),
 		"$AGENT_OUTPUT_REVIEW_RECORD_TYPE = review/v1",
 		"$AGENT_OUTPUT_REVIEW_RECORD_SCHEMA = sha256:" + strings.Repeat("b", 64),
+		// The sealer requires subjects and every body entity set to be
+		// lexicographically sorted by id (contracts.ValidateEntityIDs).
+		// That gate fires after the step has spent its budget, so the
+		// rule belongs in the authority block, which reaches every
+		// agent — seed prompts only reach their own seed.
+		"Sort record subjects and every body entity list (findings, hypotheses, actions, " +
+			"checks, candidates, metrics) lexicographically by id with no duplicates — " +
+			"including any id-reference list inside an entry, such as an action's addresses; " +
+			"unsorted ids are rejected when the output is sealed.",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing output literal %q:\n%s", want, prompt)

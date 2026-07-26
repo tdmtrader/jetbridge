@@ -115,9 +115,19 @@ func TestReviewProjectorRevalidatesIdentityAndDerivesProjection(t *testing.T) {
 	if got.WorkflowRunID == nil || *got.WorkflowRunID != runID {
 		t.Fatalf("workflow_run_id = %#v", got.WorkflowRunID)
 	}
-	if got.BuildID != buildID || got.Repo != "repository-change/v1" ||
-		got.CommitSha != testDigest('a').String() || got.Branch != "primary" {
-		t.Fatalf("identity fields = %#v", got)
+	if got.BuildID != buildID {
+		t.Fatalf("build linkage = %#v", got)
+	}
+	// review/v1 names its subjects by snapshot identity. A subject's type,
+	// digest and entity ID are not a repository URL, a commit SHA and a branch,
+	// and presenting them under those column names is a mislabel, not a value.
+	if got.Repo != "" || got.CommitSha != "" || got.Branch != "" {
+		t.Fatalf("repository coordinates invented from subject identity: repo=%q commit=%q branch=%q",
+			got.Repo, got.CommitSha, got.Branch)
+	}
+	// agent_model and duration_seconds died with the legacy submission payload.
+	if got.AgentModel != "" || got.DurationSeconds != 0 {
+		t.Fatalf("legacy run metadata invented: model=%q duration=%d", got.AgentModel, got.DurationSeconds)
 	}
 	if got.Score != 1 || got.MaxScore != 1 || !got.Pass || got.ProvenCount != 1 || got.ObservationCount != 1 || got.Summary != "reviewed" {
 		t.Fatalf("derived summary fields = %#v", got)

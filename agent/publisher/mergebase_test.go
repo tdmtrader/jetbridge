@@ -49,6 +49,27 @@ func TestMergeBaseIsDerivedFromTheSealedRepositoryChange(t *testing.T) {
 	}
 }
 
+// The merge base of a snapshot sealed before the intrinsic-metadata rename is
+// still readable: base_sha keeps its spelling, but the surrounding document does
+// not, so a reader that decodes the whole shape has to accept the old one.
+func TestMergeBaseIsDerivedFromAPreUpgradeRepositoryChange(t *testing.T) {
+	base := strings.Repeat("b", 40)
+	legacy, err := json.Marshal(preUpgradeIntrinsicMetadata{
+		RepositoryID: "sha256:" + strings.Repeat("9", 64), BaseSHA: base,
+		ResultSHA: strings.Repeat("e", 40), ResultTreeSHA: strings.Repeat("f", 40),
+		Representation: "bundle",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := changeManifest(base)
+	manifest.IntrinsicMetadata = legacy
+	derived, err := publisher.MergeBaseFromChange(manifest)
+	if err != nil || derived != base {
+		t.Fatalf("derived merge base = (%q, %v), want %q", derived, err, base)
+	}
+}
+
 func TestMergeBaseDerivationFailsClosed(t *testing.T) {
 	for name, mutate := range map[string]func(*snapshot.Snapshot){
 		"wrong type": func(manifest *snapshot.Snapshot) {

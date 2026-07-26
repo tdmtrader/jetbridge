@@ -79,13 +79,21 @@ type recordSchemaHistory struct {
 //     exists to make impossible: the document is the contract, and this is the
 //     one expression of it.
 //
-// mustCanonicalSchemaDescriptor reads recordSchemaDocuments, which is the PARSE
-// phase of the loader (schema_document_load.go). That is load-bearing rather than
-// incidental: parsing references nothing that depends on this map, so the
-// initialisation graph stays acyclic. Reading from anything that validates
-// registration instead — the phase that cross-checks documents against these
-// histories — is an `initialization cycle for recordSchemaHistories` compile
-// error, not a subtlety.
+// mustCanonicalSchemaDescriptorFor reads recordSchemaDocumentRevisions, which the
+// PARSE phase of the loader (schema_document_load.go) populates alongside
+// recordSchemaDocuments. Both properties of that lookup are load-bearing rather
+// than incidental:
+//
+//   - It is the PARSE phase, so the initialisation graph stays acyclic. Parsing
+//     references nothing that depends on this map. Reading from anything that
+//     validates registration instead — the phase that cross-checks documents
+//     against these histories — is an `initialization cycle for
+//     recordSchemaHistories` compile error, not a subtlety.
+//   - It is keyed by (type, revision), not by newest-document-for-type. The
+//     loader deliberately permits a STAGED document at current+1 to sit in the
+//     embed tree while its bytes are under review; resolving by type would let
+//     that staged file silently redefine the bytes an already-adopted entry
+//     hashes.
 //
 // A semantic validator change must append a new revision here, as a new document
 // FILE, and, after external release, introduce a new TypeRef version.

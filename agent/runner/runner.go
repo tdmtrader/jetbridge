@@ -311,6 +311,12 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 			fmt.Fprintf(&b, "$%s_RECORD_SCHEMA = %s\n", name, authority.Schema)
 		}
 		b.WriteString("\nCopy these exact values into record.json; they are verified again when the output is sealed.\n")
+		// The seal gate (contracts.ValidateEntityIDs, reached from
+		// Record.validateEnvelopeShape and every body Validate) rejects
+		// an unsorted or duplicate id set. It fires only after the step
+		// has spent its whole budget slice, so the rule has to reach
+		// every agent — a seed prompt only reaches its own seed.
+		b.WriteString("Sort record subjects and every body entity list (findings, hypotheses, actions, checks, candidates, metrics) lexicographically by id with no duplicates — including any id-reference list inside an entry, such as an action's addresses; unsorted ids are rejected when the output is sealed.\n")
 		prompt = b.String() + "\n---\n\n" + prompt
 	}
 

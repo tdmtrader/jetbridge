@@ -120,7 +120,6 @@ func (projector *ReviewProjector) Project(ctx context.Context, ref snapshot.Snap
 	if err != nil {
 		return fmt.Errorf("%w: invalid review/v1 record: %v", ErrCorruptSnapshot, err)
 	}
-	primary := primaryReviewSubject(sealed.Subjects)
 	score, pass := reviewCompatibilityScore(sealed.Body.Conclusion)
 	proven, observations := reviewFindingCounts(sealed.Body.Findings)
 
@@ -133,11 +132,33 @@ func (projector *ReviewProjector) Project(ctx context.Context, ref snapshot.Snap
 	record := &reviews.StoredReview{
 		BuildID: buildID, BuildName: input.BuildName, TeamName: input.TeamName,
 		PipelineName: input.PipelineName, JobName: input.JobName,
-		Repo: primary.Type.String(), CommitSha: primary.Digest.String(), Branch: primary.ID,
+
+		// Repo, CommitSha and Branch stay empty on purpose. The legacy
+		// submission payload carried metadata.repo/commit/branch; review/v1
+		// carries subjects, which name what was reviewed by snapshot type and
+		// digest. A subject's type is not a clone URL, its content digest is
+		// not a commit SHA, and its entity ID ("primary", "change") is not a
+		// branch. Writing them into those columns produced rows the reviews
+		// page rendered as `primary @ sha256: · N issues`, and projected rows
+		// are written once at seal time, so the mislabel would have persisted.
+		// Neither the record body nor the production occurrence
+		// (agent_snapshot_productions, joined in FindReviewInput) carries
+		// repository coordinates, so there is nothing faithful to source here.
+		Repo: "", CommitSha: "", Branch: "",
+
+		// Score is the conclusion projected onto the legacy 0..1 pass scale, so
+		// MaxScore is genuinely 1 rather than a leftover of payload.score.max.
 		Score: score, MaxScore: 1, Pass: pass,
+
 		ProvenCount: proven, ObservationCount: observations,
-		Summary:         sealed.Body.Summary,
-		DurationSeconds: 0, Review: append(json.RawMessage(nil), recordJSON...),
+		Summary: sealed.Body.Summary,
+
+		// AgentModel and DurationSeconds died with the legacy payload's
+		// metadata block. review/v1 records a judgment, not who produced it or
+		// how long it took, and the production row does not carry them either.
+		AgentModel: "", DurationSeconds: 0,
+
+		Review:        append(json.RawMessage(nil), recordJSON...),
 		PipelineRunID: input.PipelineRunID, SubmittedBy: input.SubmittedBy,
 		SnapshotID: &snapshotID, WorkflowRunID: input.WorkflowRunID, ProductionID: &productionID,
 	}
@@ -145,15 +166,6 @@ func (projector *ReviewProjector) Project(ctx context.Context, ref snapshot.Snap
 		return fmt.Errorf("upsert review projection: %w", err)
 	}
 	return nil
-}
-
-func primaryReviewSubject(subjects []contracts.Subject) contracts.Subject {
-	for _, subject := range subjects {
-		if subject.Role == contracts.SubjectRolePrimary {
-			return subject
-		}
-	}
-	return contracts.Subject{}
 }
 
 func reviewCompatibilityScore(conclusion string) (float64, bool) {

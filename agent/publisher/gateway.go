@@ -918,14 +918,13 @@ func (inspector *SnapshotChangeInspector) Inspect(ctx context.Context, request R
 	}, nil
 }
 
+// decodeRepositoryChangeMetadata reads the sealed intrinsic metadata and then
+// applies the semantic rules the gateway needs. The shape half is delegated so
+// that snapshots sealed before the intrinsic-metadata rename stay readable;
+// every rule below still runs over the normalized current-shape values.
 func decodeRepositoryChangeMetadata(raw json.RawMessage) (contracts.RepositoryChangeMetadata, error) {
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	var metadata contracts.RepositoryChangeMetadata
-	if err := decoder.Decode(&metadata); err != nil {
-		return contracts.RepositoryChangeMetadata{}, err
-	}
-	if err := requireJSONEOF(decoder); err != nil {
+	metadata, err := contracts.DecodeRepositoryChangeMetadata(raw)
+	if err != nil {
 		return contracts.RepositoryChangeMetadata{}, err
 	}
 	if _, err := snapshot.ParseDigest(metadata.RepositoryID); err != nil {

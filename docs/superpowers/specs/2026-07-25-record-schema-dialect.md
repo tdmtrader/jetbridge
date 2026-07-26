@@ -797,8 +797,14 @@ failing test.
 The mechanism is verifiable against what already exists: revision 1 of `review/v1`
 has descriptor `{"contract":"review/v1","envelope":"record/v1","revision":1}`, 60
 bytes, and `sha256` over exactly those bytes is
-`sha256:01d9f0644151274e8577875373f110b11f0ec34ff29ba12b143379744416fdb5` — the
-digest the running validator reports as current for `review/v1`.
+`sha256:01d9f0644151274e8577875373f110b11f0ec34ff29ba12b143379744416fdb5`.
+
+That is the **superseded** digest, not the current one. The revision-2 bump has
+landed, so `SchemaDigestFor("review/v1")` now returns
+`sha256:8b460c4d9ea3a6ca6c7d1b8fb1e8dce448df8a2745f3d81a52992cec8e760220` — the
+canonical serialization of the embedded `review/v1` schema document, pinned by
+`TestRecordSchemaDigestsArePinnedForEveryRecordContract`. Both digests remain
+accepted at read time; only the revision-2 one is admitted at seal time.
 
 ## 11. How a schema document becomes the next descriptor revision
 
@@ -927,7 +933,7 @@ behaviour at all.
    "review/v1": {
        current: recordSchemaRevision{
            revision:   2,
-           descriptor: mustCanonicalSchemaDescriptor(recordSchemaDocuments["review/v1"]),
+           descriptor: mustCanonicalSchemaDescriptorFor("review/v1", 2),
        },
        superseded: []recordSchemaRevision{{
            revision:   1,
@@ -936,9 +942,17 @@ behaviour at all.
    },
    ```
 
-   Reading from `recordSchemaDocuments` — the **phase-1** map — is what keeps the
-   graph acyclic. Reading from anything that validates registration would
-   reintroduce the cycle, and the compiler says so immediately.
+   The lookup is pinned to the exact `(type, revision)` — never
+   `mustCanonicalSchemaDescriptor(recordSchemaDocuments[…])`, which resolves the
+   *newest* document for the type — because the loader deliberately permits a
+   **staged** document at `current+1` to sit in the embed tree while its bytes are
+   under review, and a by-type lookup would let that staged file silently redefine
+   the bytes an already-adopted entry hashes.
+
+   Both forms read `recordSchemaDocumentRevisions` / `recordSchemaDocuments` — the
+   **phase-1** maps — which is what keeps the graph acyclic. Reading from anything
+   that validates registration would reintroduce the cycle, and the compiler says
+   so immediately.
 
 4. **Move the three pinned expectations.** Exactly three places freeze what the
    histories currently say, and each needs a specific edit — no others exist
@@ -1069,9 +1083,11 @@ six types' contract identities**. Precisely:
   the gate-level wrappers at **both** gates, before each type's semantic rules, so
   the declared schema rejects records in production paths.
 - **Adopted.** Each type's `recordSchemaHistories` entry is at revision 2, and its
-  `current.descriptor` is `mustCanonicalSchemaDescriptor(recordSchemaDocuments[…])`
-  — derived from the embedded document, never pasted, so there is exactly one copy
-  of each contract in the tree. Revision 1 moved verbatim into `superseded` and is
+  `current.descriptor` is `mustCanonicalSchemaDescriptorFor("<type>", 2)` — derived
+  from the embedded document at that exact revision, never pasted and never
+  resolved by newest-document-for-type, so there is exactly one copy of each
+  contract in the tree and a staged next-revision document cannot redefine an
+  adopted entry. Revision 1 moved verbatim into `superseded` and is
   the pre-dialect one-line stamp, unparsed and immutable. The loader still permits
   a document one past the current revision, which is what a **staged** revision 3
   would be while its bytes are under review; document resolution in the core

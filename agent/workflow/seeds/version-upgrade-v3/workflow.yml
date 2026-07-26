@@ -57,8 +57,12 @@ plan:
     prompt: >-
       Validate the exact sealed reviewed-change, run the relevant focused and
       broader tests, and write validation/v1 to
-      $AGENT_OUTPUT_VALIDATION/record.json with reviewed-change as the primary
-      subject and repository, request, and report as context. Preserve all retry
+      $AGENT_OUTPUT_VALIDATION/record.json. The subjects array is sorted
+      lexicographically by id, never by role, so declare them in exactly this
+      order: report with role context, repository with role context, request
+      with role context, then reviewed-change with role primary. Sort the checks
+      array lexicographically by check id as well; unsorted or duplicate ids are
+      rejected when the output is sealed. Preserve all retry
       attempts and platform authority values. Write a question/v1 value beneath
       $AGENT_OUTPUT_APPROVAL_QUESTION asking whether this exact sealed change may
       be opened as a pull request. Do not contact any live system.

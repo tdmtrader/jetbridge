@@ -1,7 +1,6 @@
 package publisher
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -87,9 +86,10 @@ func MergeBaseFromChange(manifest snapshot.Snapshot) (string, error) {
 	if len(manifest.IntrinsicMetadata) == 0 {
 		return "", fmt.Errorf("%w: repository-change/v1 snapshot carries no sealed merge base", ErrInvalidRequest)
 	}
-	var metadata contracts.RepositoryChangeMetadata
-	decoder := json.NewDecoder(strings.NewReader(string(manifest.IntrinsicMetadata)))
-	if err := decoder.Decode(&metadata); err != nil {
+	// Shared with the gateway inspector so both readers tolerate exactly the same
+	// set of sealed shapes: the current one and the pre-rename one, nothing else.
+	metadata, err := contracts.DecodeRepositoryChangeMetadata(manifest.IntrinsicMetadata)
+	if err != nil {
 		return "", fmt.Errorf("%w: repository-change/v1 intrinsic metadata is unreadable", ErrInvalidRequest)
 	}
 	if !validGitObjectID(metadata.BaseSHA) {

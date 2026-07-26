@@ -33,6 +33,29 @@ func decodeStrictDocument(ctx context.Context, root *os.Root, name string, targe
 	return nil
 }
 
+// decodeExactJSONDocument decodes bytes into exactly one closed shape: unknown
+// fields and trailing JSON are both refused. Callers that try more than one
+// shape rely on that strictness — it is what keeps a multi-shape read from
+// degenerating into accepting anything.
+func decodeExactJSONDocument[T any](raw []byte) (T, error) {
+	var value T
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&value); err != nil {
+		var zero T
+		return zero, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		var zero T
+		if err == nil {
+			return zero, fmt.Errorf("document contains trailing JSON")
+		}
+		return zero, fmt.Errorf("decode trailing data: %w", err)
+	}
+	return value, nil
+}
+
 func readRegularFile(ctx context.Context, root *os.Root, name string, limit int64) ([]byte, error) {
 	if root == nil {
 		return nil, fmt.Errorf("snapshot contracts: snapshot root is required")

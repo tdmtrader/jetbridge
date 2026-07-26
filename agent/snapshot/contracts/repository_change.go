@@ -27,6 +27,67 @@ type RepositoryChangeMetadata struct {
 	ChangedFiles   []string `json:"changed_files"`
 }
 
+// preRecordRepositoryChangeMetadata is the exact intrinsic-metadata shape the
+// pre-record validator sealed into snapshots: result_sha / result_tree_sha, the
+// "bundle" spelling of the bundle representation, and no changed_files at all.
+// Sealed bytes are immutable, so every snapshot produced before this branch
+// carries this shape forever and it is a permanent READ shape. Nothing writes
+// it, and it must never gain a field.
+type preRecordRepositoryChangeMetadata struct {
+	RepositoryID   string `json:"repository_id"`
+	BaseSHA        string `json:"base_sha"`
+	ResultSHA      string `json:"result_sha,omitempty"`
+	ResultTreeSHA  string `json:"result_tree_sha"`
+	Representation string `json:"representation"`
+}
+
+// preRecordRepresentations maps every representation spelling the pre-record
+// writer could emit onto its current name. A pre-record document naming
+// anything else is refused rather than passed through, so this branch cannot
+// widen the set of representations a reader will accept.
+var preRecordRepresentations = map[string]string{
+	"git-tree": "git-tree",
+	"patch":    "patch",
+	"bundle":   "git-bundle",
+}
+
+// DecodeRepositoryChangeMetadata decodes sealed repository-change/v1 intrinsic
+// metadata into the current shape, accepting the pre-record shape on read.
+//
+// Two CLOSED shapes are tried, current first, pre-record only after the current
+// decode fails. Both attempts use DisallowUnknownFields over a struct with no
+// catch-all member and both refuse trailing JSON, so this is not a lenient
+// fallback that swallows junk: a document that is not exactly one of the two
+// shapes fails both. A document that mixes the spellings fails both as well,
+// because each vocabulary's names are unknown fields to the other struct. The
+// error reported is always the current-shape error, so a malformed modern
+// document is not misdiagnosed as a legacy one.
+//
+// This is READ-ONLY normalization. The seal path keeps writing the current
+// shape, and the values this returns are exactly the values the current writer
+// would have produced for the same change.
+func DecodeRepositoryChangeMetadata(raw []byte) (RepositoryChangeMetadata, error) {
+	metadata, currentErr := decodeExactJSONDocument[RepositoryChangeMetadata](raw)
+	if currentErr == nil {
+		return metadata, nil
+	}
+	legacy, legacyErr := decodeExactJSONDocument[preRecordRepositoryChangeMetadata](raw)
+	if legacyErr != nil {
+		return RepositoryChangeMetadata{}, currentErr
+	}
+	representation, known := preRecordRepresentations[legacy.Representation]
+	if !known {
+		return RepositoryChangeMetadata{}, currentErr
+	}
+	return RepositoryChangeMetadata{
+		RepositoryID:   legacy.RepositoryID,
+		BaseSHA:        legacy.BaseSHA,
+		ResultCommit:   legacy.ResultSHA,
+		ResultTree:     legacy.ResultTreeSHA,
+		Representation: representation,
+	}, nil
+}
+
 func (d RepositoryChangeBody) Validate(subjects []Subject) error {
 	if err := requireStrings([]namedString{
 		{"repository_id", d.RepositoryID}, {"base_sha", d.BaseSHA},
