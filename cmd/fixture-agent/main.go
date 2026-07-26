@@ -204,8 +204,11 @@ func writeFlight(flightDir, stepName string, env map[string]string, status schem
 		_ = writeEvent(writer, schema.EventStepStart, schema.StepStartData{
 			StepName: stepName, BuildID: buildID, PlanID: env["AGENT_PLAN_ID"],
 		})
+		// StepEndData.Status speaks the three-way ok|failed|error vocabulary the
+		// real runner emits, not the results.json pass/fail vocabulary.
+		threeWay, _ := schema.ThreeWayStatus(status)
 		_ = writeEvent(writer, schema.EventStepEnd, schema.StepEndData{
-			StepName: stepName, Status: string(status), Summary: summary,
+			StepName: stepName, Status: threeWay, Summary: summary,
 			WallTimeSeconds: int(time.Since(start).Seconds()),
 		})
 	}
