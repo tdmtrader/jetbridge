@@ -38,6 +38,91 @@ const (
 
 var ErrDestinationNotAllowed = errors.New("publisher gateway: destination is not allowed")
 
+// GatewayError classifies a gateway response so the publisher services can
+// tell "this can never work" from "try again after the lease expires".
+// Status is the HTTP status code, or 0 when the request never produced one
+// (transport failure, TLS failure). Retryable errors keep the durable
+// publication pending for a later lease reclaim; a terminal error completes
+// it as failed.
+//
+// A *GatewayError is produced at exactly one place — the gateway HTTP
+// boundary in gatewayClient.do — and classifies exactly one thing: the
+// answer the gateway gave to a request that was actually sent. Nothing
+// refused before that boundary is ever wrapped in one. See Retryable.
+type GatewayError struct {
+	Status    int
+	Path      string
+	Retryable bool
+	Err       error
+}
+
+func (gatewayErr *GatewayError) Error() string {
+	class := "terminal"
+	if gatewayErr.Retryable {
+		class = "retryable"
+	}
+	if gatewayErr.Status == 0 {
+		return fmt.Sprintf("publisher gateway: %s request failed (%s): %v", gatewayErr.Path, class, gatewayErr.Err)
+	}
+	return fmt.Sprintf("publisher gateway: %s responded with status %d (%s)", gatewayErr.Path, gatewayErr.Status, class)
+}
+
+func (gatewayErr *GatewayError) Unwrap() error { return gatewayErr.Err }
+
+// Retryable reports whether err may be re-attempted on a later lease. It is
+// the mechanical boundary of the gateway taxonomy, and every caller that
+// decides whether to end an operation must ask it rather than inspecting an
+// error by hand.
+//
+// Only a TERMINAL *GatewayError answers false. Everything else answers true:
+// ErrActionsSuppressed, transport failures, decode failures, size-bound
+// failures, context deadlines, unclassified errors, and no error at all.
+//
+// The hazard this guards is unrecoverable. A terminal classification completes
+// the durable publication with StatusFailed, and a terminal row is NEVER
+// reclaimed — Acquire refuses to execute it again (see
+// atc/db/agent_publications_factory.go and MemoryStore.Acquire). Completing an
+// operation key as failed is therefore permanent: it poisons that key, and the
+// identical semantic operation can never be resumed for that input.
+//
+// ErrActionsSuppressed is checked FIRST, ahead of the gateway classification
+// and independently of it. The action switch refuses BEFORE any provider call
+// — including the recovery Lookup (agent/publisher/actions.go,
+// checkActionsAdmitted) — precisely so the pending row survives and the
+// operation executes exactly once after an admin resumes actions. It is
+// retryable by construction and must never reach Complete(StatusFailed). The
+// ordering means the sentinel stays retryable even if a future change wrapped
+// it in a *GatewayError, because that mistake would be unrecoverable in
+// production and merely redundant here.
+func Retryable(err error) bool {
+	if errors.Is(err, ErrActionsSuppressed) {
+		return true
+	}
+	var gatewayErr *GatewayError
+	if errors.As(err, &gatewayErr) {
+		return gatewayErr.Retryable
+	}
+	return true
+}
+
+// gatewayStatusRetryable is the deployment's retry taxonomy. The terminal set
+// is exactly the statuses whose answer cannot change while the request bytes
+// stay the same: malformed request, revoked or missing authorization, unknown
+// route or operation, conflicting state, and unprocessable content. Every
+// other status — 408, 429, all 5xx, and anything this list does not name —
+// stays retryable, which is the behavior every non-200 had before the
+// taxonomy existed. Never widen the terminal set by default: a wrong terminal
+// classification permanently fails a publication that would have succeeded.
+func gatewayStatusRetryable(status int) bool {
+	switch status {
+	case http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden,
+		http.StatusNotFound, http.StatusConflict, http.StatusUnprocessableEntity:
+		return false
+	default:
+		return true
+	}
+}
+
 // GatewayConfig contains only non-secret process configuration. TokenFile is
 // a mounted file path: the bearer token itself is never accepted as a flag,
 // serialized into a publication, or included in an error.
@@ -664,18 +749,26 @@ func (client *gatewayClient) do(
 	}
 	response, err := client.http.Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("publisher gateway: request failed: %w", err)
+		return nil, &GatewayError{Path: path, Retryable: true, Err: err}
 	}
 	defer response.Body.Close()
+	// Classify before touching the body. The status is the authoritative
+	// answer, and a rejected request may reply with an arbitrarily large
+	// provider error page that must not mask a terminal classification as a
+	// size-bound failure.
+	if response.StatusCode != http.StatusOK {
+		return nil, &GatewayError{
+			Status: response.StatusCode, Path: path,
+			Retryable: gatewayStatusRetryable(response.StatusCode),
+		}
+	}
 	responseBody, err := io.ReadAll(io.LimitReader(response.Body, client.maxResponseBytes+1))
 	if err != nil {
-		return nil, fmt.Errorf("publisher gateway: read response: %w", err)
+		// A truncated 200 is an unknown answer, never a terminal one.
+		return nil, &GatewayError{Status: response.StatusCode, Path: path, Retryable: true, Err: err}
 	}
 	if int64(len(responseBody)) > client.maxResponseBytes {
 		return nil, fmt.Errorf("publisher gateway: response exceeds %d bytes", client.maxResponseBytes)
-	}
-	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("publisher gateway: response status %d", response.StatusCode)
 	}
 	mediaType, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
 	if err != nil || mediaType != "application/json" {
