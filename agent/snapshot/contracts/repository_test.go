@@ -413,6 +413,177 @@ func TestRepositoryChangeBundleRejectsGitlinksAndExtraHeads(t *testing.T) {
 	})
 }
 
+// TestRepositoryChangeRejectsAPayloadThatIsNotARegularFile is the readable arm of
+// the payload-must-be-a-regular-file rule, over both shapes a byte map cannot
+// express. The directory arm mirrors the witness; the symlink arm is the shape
+// the witness table does not cover at all — the target exists and holds the exact
+// declared bytes, so the rejection is about the payload path's KIND, not a broken
+// link, a distinction os.Root alone would not draw.
+func TestRepositoryChangeRejectsAPayloadThatIsNotARegularFile(t *testing.T) {
+	base := newGitRepository(t, "")
+	baseArchive, baseDigest := canonicalRepositoryArchive(t, base)
+	baseMetadata := repositoryMetadataForDirectory(t, base)
+	writeTestFile(t, filepath.Join(base, "README.md"), "patched\n")
+	patch := []byte(runTestGit(t, base, "diff", "--binary", "--no-ext-diff") + "\n")
+	runTestGit(t, base, "add", "README.md")
+	resultTree := runTestGit(t, base, "write-tree")
+	document := repositoryChangeFixture{
+		SchemaVersion: "1.0.0", RepositoryID: baseMetadata.RepositoryID, BaseInput: "base",
+		BaseSHA: baseMetadata.HeadSHA, ResultTreeSHA: resultTree,
+		Representation: "patch", PayloadPath: "change.patch", PayloadDigest: digestBytes(patch),
+	}
+
+	for name, corrupt := range map[string]func(*testing.T, string){
+		"directory": func(t *testing.T, dir string) {
+			payload := filepath.Join(dir, "content", "change.patch")
+			if err := os.Remove(payload); err != nil {
+				t.Fatalf("remove payload: %v", err)
+			}
+			if err := os.Mkdir(payload, 0755); err != nil {
+				t.Fatalf("replace payload with a directory: %v", err)
+			}
+		},
+		"symlink": func(t *testing.T, dir string) {
+			content := filepath.Join(dir, "content")
+			if err := os.Rename(filepath.Join(content, "change.patch"), filepath.Join(content, "real.patch")); err != nil {
+				t.Fatalf("move payload aside: %v", err)
+			}
+			// The link target exists and holds the exact declared bytes. The rejection
+			// is about the payload path not being a regular file, not about a dangling
+			// link, which is the distinction os.Root alone would not draw.
+			if err := os.Symlink("real.patch", filepath.Join(content, "change.patch")); err != nil {
+				t.Fatalf("link payload: %v", err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := writeTree(t, repositoryChangeFiles(t, document, "change.patch", patch, baseDigest))
+			corrupt(t, dir)
+			if _, err := validateDirectory(t, "repository-change/v1", dir,
+				repositoryInputContext(t, "base", baseArchive, baseDigest)); err == nil || !strings.Contains(err.Error(), "payload.path: payload must be a regular file") {
+				t.Fatalf("%s payload error = %v, want regular-file rejection", name, err)
+			}
+		})
+	}
+}
+
+// TestRepositoryChangeRejectsAValidResultCommitThatDoesNotDescendFromBase pins the
+// bundle ancestry rule with a commit that is real and belongs to the same
+// repository yet is not a descendant of the base HEAD.
+func TestRepositoryChangeRejectsAValidResultCommitThatDoesNotDescendFromBase(t *testing.T) {
+	base := newGitRepository(t, "")
+	root := runTestGit(t, base, "rev-list", "--max-parents=0", "HEAD")
+	writeTestFile(t, filepath.Join(base, "README.md"), "second\n")
+	runTestGit(t, base, "add", "README.md")
+	runTestGit(t, base, "commit", "-q", "-m", "second")
+	baseArchive, baseDigest := canonicalRepositoryArchive(t, base)
+	baseMetadata := repositoryMetadataForDirectory(t, base)
+
+	// A sibling off the SAME root commit: a valid object, the same repository
+	// identity because the shared root keeps repository_id equal, and NOT a
+	// descendant of the base HEAD. Anything with a different root would be refused
+	// as a different repository first, and the ancestry rule would never be reached.
+	runTestGit(t, base, "checkout", "-q", "-b", "sibling", root)
+	writeTestFile(t, filepath.Join(base, "SIDE.md"), "side\n")
+	runTestGit(t, base, "add", "SIDE.md")
+	runTestGit(t, base, "commit", "-q", "-m", "sibling")
+	sibling := repositoryMetadataForDirectoryRevision(t, base, "HEAD", baseMetadata.RepositoryID)
+
+	bundlePath := filepath.Join(t.TempDir(), "sibling.bundle")
+	runTestGit(t, base, "bundle", "create", bundlePath, "HEAD", "^"+root)
+	bundle, err := os.ReadFile(bundlePath)
+	if err != nil {
+		t.Fatalf("read sibling bundle: %v", err)
+	}
+	document := validChangeDocument(baseMetadata, sibling, "git-bundle", "sibling.bundle", digestBytes(bundle))
+	if _, err := validateFiles(t, "repository-change/v1",
+		repositoryChangeFiles(t, document, "sibling.bundle", bundle, baseDigest),
+		repositoryInputContext(t, "base", baseArchive, baseDigest)); err == nil || !strings.Contains(err.Error(), "does not descend from base_sha") {
+		t.Fatalf("sibling bundle error = %v, want does-not-descend rejection", err)
+	}
+}
+
+// TestRepositoryChangeRejectsAPatchThatFailsGitApplyCheck pins the apply-check
+// gate with a patch that is well-formed but targets a path the base does not have.
+func TestRepositoryChangeRejectsAPatchThatFailsGitApplyCheck(t *testing.T) {
+	base := newGitRepository(t, "")
+	baseArchive, baseDigest := canonicalRepositoryArchive(t, base)
+	baseMetadata := repositoryMetadataForDirectory(t, base)
+	writeTestFile(t, filepath.Join(base, "README.md"), "patched\n")
+	patch := []byte(runTestGit(t, base, "diff", "--binary", "--no-ext-diff") + "\n")
+	runTestGit(t, base, "add", "README.md")
+	resultTree := runTestGit(t, base, "write-tree")
+
+	// Rewrite the patch to target a path the base does not have and re-derive the
+	// declared digest, so the payload still matches its bytes exactly and the only
+	// thing left wrong is that the change does not apply.
+	broken := bytes.ReplaceAll(patch, []byte("README.md"), []byte("NOSUCH.md"))
+	if bytes.Equal(broken, patch) {
+		t.Fatal("patch does not mention README.md; the rewrite matched nothing")
+	}
+	document := repositoryChangeFixture{
+		SchemaVersion: "1.0.0", RepositoryID: baseMetadata.RepositoryID, BaseInput: "base",
+		BaseSHA: baseMetadata.HeadSHA, ResultTreeSHA: resultTree,
+		Representation: "patch", PayloadPath: "change.patch", PayloadDigest: digestBytes(broken),
+	}
+	if _, err := validateFiles(t, "repository-change/v1",
+		repositoryChangeFiles(t, document, "change.patch", broken, baseDigest),
+		repositoryInputContext(t, "base", baseArchive, baseDigest)); err == nil || !strings.Contains(err.Error(), "patch failed git apply --check --index") {
+		t.Fatalf("broken patch error = %v, want git apply --check rejection", err)
+	}
+}
+
+// TestRepositoryChangeRejectsObjectIdsOutsideTheBaseObjectFormat pins the width
+// rule in RepositoryChangeBody.Validate for both a malformed base_sha and a
+// well-formed object ID of the wrong format.
+//
+// The cross-check at repository_change.go's verifyAgainstBase — declared object
+// format versus the base repository's — is defensive only and is not reachable
+// from here: base_sha must equal the base HEAD before it runs, and a string
+// equal to the HEAD necessarily has the HEAD's width. The width rule in
+// RepositoryChangeBody.Validate is where a mismatched object format is actually
+// caught, so that is what this test pins.
+func TestRepositoryChangeRejectsObjectIdsOutsideTheBaseObjectFormat(t *testing.T) {
+	base := newGitRepository(t, "")
+	baseArchive, baseDigest := canonicalRepositoryArchive(t, base)
+	baseMetadata := repositoryMetadataForDirectory(t, base)
+	writeTestFile(t, filepath.Join(base, "README.md"), "patched\n")
+	patch := []byte(runTestGit(t, base, "diff", "--binary", "--no-ext-diff") + "\n")
+	runTestGit(t, base, "add", "README.md")
+	resultTree := runTestGit(t, base, "write-tree")
+	accepted := repositoryChangeFixture{
+		SchemaVersion: "1.0.0", RepositoryID: baseMetadata.RepositoryID, BaseInput: "base",
+		BaseSHA: baseMetadata.HeadSHA, ResultTreeSHA: resultTree,
+		Representation: "patch", PayloadPath: "change.patch", PayloadDigest: digestBytes(patch),
+	}
+
+	for name, tc := range map[string]struct {
+		mutate func(*repositoryChangeFixture)
+		want   string
+	}{
+		"base_sha of the wrong width": {
+			mutate: func(d *repositoryChangeFixture) { d.BaseSHA = strings.Repeat("a", 41) },
+			want:   "base_sha: object ID must be a full sha1 or sha256 hexadecimal value",
+		},
+		"result_tree in another object format": {
+			// A sha256-width result tree under a sha1 base: a well-formed object ID of
+			// the wrong format for this repository.
+			mutate: func(d *repositoryChangeFixture) { d.ResultTreeSHA = strings.Repeat("b", 64) },
+			want:   "result_tree: object ID must contain 40 lowercase hexadecimal characters",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			document := accepted
+			tc.mutate(&document)
+			if _, err := validateFiles(t, "repository-change/v1",
+				repositoryChangeFiles(t, document, "change.patch", patch, baseDigest),
+				repositoryInputContext(t, "base", baseArchive, baseDigest)); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("%s error = %v, want %q", name, err, tc.want)
+			}
+		})
+	}
+}
+
 type repositoryChangeFixture struct {
 	SchemaVersion  string
 	RepositoryID   string
