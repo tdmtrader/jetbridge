@@ -26,3 +26,17 @@ func WriteTranscript(flightDir string, raw []byte) error {
 func ParseEnvelope(out []byte) (schema.CLIEnvelope, error) {
 	return parseEnvelope(out)
 }
+
+// ObserveStreamLinesForTest folds the given stream-json lines through a
+// watchdog armed by cfg and reports the winning breach reason (empty when
+// none), the cumulative totals it saw, and whether it fired the kill.
+func ObserveStreamLinesForTest(cfg Config, lines ...string) (reason string, cost float64, turns int, killed bool) {
+	dog := newWatchdog(cfg, func() { killed = true })
+	writer := &streamLineWriter{observe: dog.observe}
+	for _, line := range lines {
+		_, _ = writer.Write([]byte(line + "\n"))
+	}
+	reason, _ = dog.terminated()
+	cost, turns = dog.observed()
+	return reason, cost, turns, killed
+}

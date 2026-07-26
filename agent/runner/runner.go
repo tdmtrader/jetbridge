@@ -47,10 +47,18 @@ const maxSummaryChars = 500
 
 // Config drives one agent-step execution.
 type Config struct {
-	Prompt       string
-	PromptFile   string
-	Model        string
-	MaxTurns     int
+	Prompt     string
+	PromptFile string
+	Model      string
+	MaxTurns   int
+
+	// MaxWallClock is the in-pod watchdog's wall-clock bound (env
+	// AGENT_MAX_WALL_CLOCK, a Go duration string). The web side derives it
+	// from the agent step's effective timeout so the runner self-terminates
+	// and writes its flight recorder BEFORE the step deadline kills the pod.
+	// Zero means no wall-clock bound.
+	MaxWallClock time.Duration
+
 	OutputSchema string
 
 	// Source-format layers (design 2026-07-17 §4).
@@ -153,6 +161,12 @@ func FromEnv() Config {
 	if v := os.Getenv("AGENT_MAX_TURNS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			cfg.MaxTurns = n
+		}
+	}
+
+	if v := os.Getenv("AGENT_MAX_WALL_CLOCK"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			cfg.MaxWallClock = d
 		}
 	}
 
@@ -415,8 +429,17 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	defer os.Remove(mcpConfigPath)
 	args = append(args, "--mcp-config", mcpConfigPath, "--strict-mcp-config")
 
+	// Platform-side containment backstop: the same caps handed to the CLI
+	// above, plus AGENT_MAX_WALL_CLOCK, enforced HERE by killing claude's
+	// process group. runCtx derives from ctx, so an ordinary step timeout or
+	// build abort still tears the group down; cancelling runCtx does NOT
+	// cancel the runner, so the flight recorder is still written after a kill.
+	runCtx, killClaude := context.WithCancel(ctx)
+	defer killClaude()
+	dog := newWatchdog(cfg, killClaude)
+
 	var buf bytes.Buffer
-	cmd := exec.CommandContext(ctx, claudePath, args...)
+	cmd := exec.CommandContext(runCtx, claudePath, args...)
 	// Own process group: a severed exec session tears down the pod's pty and
 	// the kernel HUPs the pty's FOREGROUND group. The supervisor's
 	// `trap '' HUP` shield only protects processes that keep the inherited
@@ -439,10 +462,19 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
 	cmd.Dir = cfg.WorkDir
-	cmd.Stdout = io.MultiWriter(&buf, stdout)
+	stdoutWriters := []io.Writer{&buf, stdout}
+	if dog.armed() {
+		stdoutWriters = append(stdoutWriters, &streamLineWriter{observe: dog.observe})
+	}
+	cmd.Stdout = io.MultiWriter(stdoutWriters...)
 	cmd.Stderr = stderr
 	cmd.WaitDelay = claudeWaitDelay
+	claudeDone := make(chan struct{})
+	if dog.armed() {
+		go dog.watchWallClock(time.Now(), claudeDone)
+	}
 	runErr := cmd.Run()
+	close(claudeDone)
 	if errors.Is(runErr, exec.ErrWaitDelay) {
 		// ErrWaitDelay is only returned when Wait would otherwise return
 		// nil: claude exited 0 and its envelope (if any) is already in buf —
@@ -466,6 +498,23 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	// tolerating leading non-JSON output.
 	env, parseErr := parseEnvelope(buf.Bytes())
 
+	terminatedReason, terminatedDetail := dog.terminated()
+	costUSD, turns := env.ResolvedCostUSD(), env.NumTurns
+	if terminatedReason != "" {
+		// A killed run has no final envelope; report what the watchdog
+		// actually saw so a runaway that was stopped is not ingested as free.
+		observedCost, observedTurns := dog.observed()
+		if observedCost > costUSD {
+			costUSD = observedCost
+		}
+		if observedTurns > turns {
+			turns = observedTurns
+		}
+		writeEvent(events, schema.EventError, map[string]string{
+			"message": "agent-runner watchdog terminated the step (" + terminatedReason + "): " + terminatedDetail,
+		})
+	}
+
 	writeEvent(events, schema.EventCostRecord, schema.CostRecordData{
 		Source:              "agent_step",
 		Provider:            "anthropic",
@@ -474,13 +523,13 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 		OutputTokens:        env.Usage.OutputTokens,
 		CacheReadTokens:     env.Usage.CacheReadInputTokens,
 		CacheCreationTokens: env.Usage.CacheCreationInputTokens,
-		Turns:               env.NumTurns,
-		CostUSD:             env.ResolvedCostUSD(),
+		Turns:               turns,
+		CostUSD:             costUSD,
 	})
 
 	// 6. Map the outcome onto the results.json wire status.
 	status := schema.StatusPass
-	if runErr != nil || parseErr != nil || env.IsError {
+	if runErr != nil || parseErr != nil || env.IsError || terminatedReason != "" {
 		status = schema.StatusError
 	}
 	exitCode := 0
@@ -499,6 +548,11 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 			summary = "(no result)"
 		}
 	}
+	if terminatedReason != "" {
+		// The kill is the authoritative outcome; a partial CLI result (or the
+		// bare "signal: killed" from cmd.Run) must not hide WHY the step ended.
+		summary = fmt.Sprintf("agent-runner terminated the step (%s): %s", terminatedReason, terminatedDetail)
+	}
 	summary = truncate(summary, maxSummaryChars)
 
 	results := schema.Results{
@@ -507,6 +561,9 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 		Confidence:    1,
 		Summary:       summary,
 		Artifacts:     []schema.Artifact{},
+	}
+	if terminatedReason != "" {
+		results.Metadata = map[string]any{"terminated_reason": terminatedReason}
 	}
 	resultsJSON, err := json.Marshal(results)
 	if err != nil {
@@ -523,8 +580,8 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 		Status:          threeWay,
 		Summary:         summary,
 		WallTimeSeconds: int(time.Since(start).Seconds()),
-		CostUSD:         env.ResolvedCostUSD(),
-		Turns:           env.NumTurns,
+		CostUSD:         costUSD,
+		Turns:           turns,
 	})
 
 	return exitCode, nil
