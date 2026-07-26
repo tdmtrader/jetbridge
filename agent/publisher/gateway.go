@@ -146,7 +146,7 @@ func NewGatewayExecutor(
 	if err != nil {
 		return nil, err
 	}
-	gitService, err := NewGitService(store, credentials, changes, gatewayGitBackend{client: client}, config.RequestTimeout, config.LeaseDuration, WithActionsGate(config.ActionsMode))
+	gitService, err := NewGitService(store, credentials, changes, gatewayGitBackend{client: client}, config.ActionsMode, config.RequestTimeout, config.LeaseDuration)
 	if err != nil {
 		return nil, err
 	}
@@ -154,7 +154,7 @@ func NewGatewayExecutor(
 	if err != nil {
 		return nil, err
 	}
-	workItemService, err := NewWorkItemService(store, credentials, values, gatewayWorkItemBackend{client: client}, config.RequestTimeout, config.LeaseDuration, WithActionsGate(config.ActionsMode))
+	workItemService, err := NewWorkItemService(store, credentials, values, gatewayWorkItemBackend{client: client}, config.ActionsMode, config.RequestTimeout, config.LeaseDuration)
 	if err != nil {
 		return nil, err
 	}

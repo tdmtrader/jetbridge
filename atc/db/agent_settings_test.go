@@ -117,17 +117,48 @@ var _ = Describe("agent settings", func() {
 		Expect(found).To(BeFalse())
 	})
 
-	It("keeps the switch unset when only the dispatcher mode is set", func() {
+	// The two reads answer DIFFERENT questions and split here on purpose.
+	// GetActionsSetting answers "did an admin decide something, and who?" — so
+	// a row the dispatcher created reports the switch as unset. GetActionsMode
+	// answers "is the brake engaged?" — and the column is NOT NULL DEFAULT
+	// 'active', so the row's own value is always a complete answer. Keying the
+	// hot read on provenance instead would fail OPEN for any mode written
+	// without provenance (see the break-glass spec below).
+	It("keeps the switch unset but the mode readable when only the dispatcher mode is set", func() {
 		Expect(settings.SetDispatcherMode(db.DispatcherModeActive, "tdm")).To(Succeed())
 
 		mode, found, err := settings.GetActionsMode()
 		Expect(err).ToNot(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(mode).To(Equal(db.ActionsModeActive))
+
+		_, _, _, found, err = settings.GetActionsSetting()
+		Expect(err).ToNot(HaveOccurred())
 		Expect(found).To(BeFalse())
-		Expect(mode).To(BeEmpty())
 
 		dispatcherMode, found, err := settings.GetDispatcherMode()
 		Expect(err).ToNot(HaveOccurred())
 		Expect(found).To(BeTrue())
 		Expect(dispatcherMode).To(Equal(db.DispatcherModeActive))
+	})
+
+	// BREAK GLASS: engaging the brake by direct SQL is the operator's recourse
+	// when the API is unreachable — precisely the incident the switch exists
+	// for. Such an UPDATE leaves actions_updated_at NULL, so the publisher's hot
+	// read must key on the mode column and NOT on provenance, or the emergency
+	// brake silently fails open.
+	It("engages for a direct SQL update that carries no provenance", func() {
+		Expect(settings.SetDispatcherMode(db.DispatcherModeActive, "tdm")).To(Succeed())
+		_, err := dbConn.Exec(`UPDATE agent_settings SET actions_mode = 'suppressed' WHERE id = 1`)
+		Expect(err).ToNot(HaveOccurred())
+
+		var updatedAt any
+		Expect(dbConn.QueryRow(`SELECT actions_updated_at FROM agent_settings WHERE id = 1`).Scan(&updatedAt)).To(Succeed())
+		Expect(updatedAt).To(BeNil(), "the break-glass UPDATE must leave provenance NULL for this spec to mean anything")
+
+		mode, found, err := settings.GetActionsMode()
+		Expect(err).ToNot(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(mode).To(Equal(db.ActionsModeSuppressed))
 	})
 })

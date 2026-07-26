@@ -215,7 +215,7 @@ func TestServerDerivedBaseDoesNotBypassTheCurrentBaseGate(t *testing.T) {
 		&credentialsStub{credential: publisher.Credential{Reference: "secret/git"}},
 		changeInspectorStub{change: publisher.RepositoryChange{
 			BaseSHA: derivedBase, ResultSHA: "head", MaterializedRoot: "/change",
-		}}, backend, time.Minute, time.Minute)
+		}}, backend, activeActions(), time.Minute, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,7 +251,7 @@ func TestServerDerivedBaseDoesNotBypassTheCurrentBaseGate(t *testing.T) {
 		&credentialsStub{credential: publisher.Credential{Reference: "secret/git"}},
 		changeInspectorStub{change: publisher.RepositoryChange{
 			BaseSHA: derivedBase, ResultSHA: "head", MaterializedRoot: "/change",
-		}}, backend, time.Minute, time.Minute)
+		}}, backend, activeActions(), time.Minute, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}

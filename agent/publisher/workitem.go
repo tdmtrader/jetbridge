@@ -72,19 +72,22 @@ func NewWorkItemService(
 	credentials CredentialProvider,
 	values SnapshotValueInspector,
 	backend WorkItemBackend,
+	actions ActionsModeReader,
 	timeout time.Duration,
 	lease time.Duration,
-	options ...ServiceOption,
 ) (*WorkItemService, error) {
 	if nilInterface(store) || nilInterface(credentials) || nilInterface(values) || nilInterface(backend) {
 		return nil, fmt.Errorf("publisher: work-item store, credentials, snapshot inspector, and backend are required")
+	}
+	if nilInterface(actions) {
+		return nil, errActionsReaderRequired
 	}
 	if timeout <= 0 || timeout > time.Hour || lease <= 0 || lease > 24*time.Hour {
 		return nil, fmt.Errorf("publisher: work-item timeout and lease are invalid")
 	}
 	return &WorkItemService{
 		store: store, credentials: credentials, values: values, backend: backend,
-		timeout: timeout, lease: lease, actions: buildServiceOptions(options).actions,
+		timeout: timeout, lease: lease, actions: actions,
 	}, nil
 }
 

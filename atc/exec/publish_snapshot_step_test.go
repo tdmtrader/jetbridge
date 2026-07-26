@@ -3,6 +3,7 @@ package exec_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -413,6 +414,40 @@ func TestPublishSnapshotStepReturnsSafeTerminalAndDependencyErrors(t *testing.T)
 			require.NotContains(t, err.Error(), "private")
 		})
 	}
+}
+
+// The action switch is the ONE executor error a build log must explain rather
+// than flatten: nothing was published because an operator engaged a
+// cluster-wide brake, and the message names the command that releases it. The
+// executor's suppression error folds the raw database error in with %v when the
+// switch cannot be read, so the step must surface the sentinel's own canned
+// text and nothing else.
+func TestPublishSnapshotStepSurfacesTheActionSuppressionRefusal(t *testing.T) {
+	manifest := publishSnapshotManifest()
+	metadata := new(snapshotfakes.FakeMetadataStore)
+	metadata.GetAuthorizedReturns(manifest, true, nil)
+	_, state, delegates, delegate := loadSnapshotHarness()
+	registerPublishArtifact(t, state.ArtifactRepository(), manifest)
+
+	wrapped := fmt.Errorf("%w (the switch could not be read: %v)", publisher.ErrActionsSuppressed,
+		errors.New("dial tcp 10.9.9.9:5432: connect: connection refused"))
+	step := exec.NewPublishSnapshotStep("publish", publishSnapshotPlan(),
+		exec.StepMetadata{TeamID: 17, TeamName: "main", BuildID: 42, SnapshotCreatedBy: "concourse"}, delegates, metadata,
+		publisherExecutorFunc(func(context.Context, publisher.Request) (publisher.Publication, error) {
+			return publisher.Publication{}, wrapped
+		}), nil)
+
+	ok, err := step.Run(context.Background(), state)
+	require.False(t, ok)
+	require.ErrorIs(t, err, publisher.ErrActionsSuppressed)
+	require.Contains(t, err.Error(), publisher.ErrActionsSuppressed.Error())
+	require.Contains(t, err.Error(), "fly agent actions resume")
+	// The refusal is neither anonymized into the generic failure nor allowed to
+	// carry the DB connection detail the wrapped variant appends.
+	require.NotContains(t, err.Error(), "publication execution failed")
+	require.NotContains(t, err.Error(), "10.9.9.9")
+	require.NotContains(t, err.Error(), "connection refused")
+	require.Equal(t, 0, delegate.FinishedCallCount())
 }
 
 func publishSnapshotPlan() atc.PublishSnapshotPlan {

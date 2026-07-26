@@ -3,6 +3,7 @@ package publisher_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,6 +20,35 @@ type actionsReaderStub struct {
 func (stub *actionsReaderStub) GetActionsMode() (string, bool, error) {
 	stub.reads++
 	return stub.mode, stub.found, stub.err
+}
+
+// activeActions is the gate every test that is NOT about suppression passes.
+// The reader is a required constructor argument precisely so no test — and no
+// deployment — can quietly compose a publisher the switch cannot stop.
+func activeActions() publisher.ActionsModeReader {
+	return &actionsReaderStub{mode: publisher.ActionsModeActive, found: true}
+}
+
+// Construction, not configuration: an ungated publisher must be unbuildable.
+func TestPublisherServicesRefuseToBuildWithoutTheActionsGate(t *testing.T) {
+	store := publisher.NewMemoryStore(time.Now)
+	git, err := publisher.NewGitService(store, &credentialsStub{}, changeInspectorStub{}, &gitBackendStub{},
+		nil, time.Minute, time.Minute)
+	if err == nil || git != nil {
+		t.Fatalf("NewGitService without a gate = (%v, %v), want a refusal", git, err)
+	}
+	if !strings.Contains(err.Error(), "actions-mode reader is required") {
+		t.Fatalf("git refusal = %q, want it to name the missing gate", err)
+	}
+
+	workItem, err := publisher.NewWorkItemService(store, &credentialsStub{}, validSnapshotValueInspector(),
+		&workItemBackendStub{}, nil, time.Minute, time.Minute)
+	if err == nil || workItem != nil {
+		t.Fatalf("NewWorkItemService without a gate = (%v, %v), want a refusal", workItem, err)
+	}
+	if !strings.Contains(err.Error(), "actions-mode reader is required") {
+		t.Fatalf("work-item refusal = %q, want it to name the missing gate", err)
+	}
 }
 
 func TestEffectiveActionsModeFailsSafe(t *testing.T) {
@@ -55,8 +85,7 @@ func TestGitServiceMakesNoExternalCallWhileActionsAreSuppressed(t *testing.T) {
 		changeInspectorStub{change: publisher.RepositoryChange{
 			BaseSHA: "base-sha", ResultSHA: "head-sha", MaterializedRoot: "/change",
 		}},
-		backend, time.Minute, time.Minute,
-		publisher.WithActionsGate(actions),
+		backend, actions, time.Minute, time.Minute,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -69,6 +98,11 @@ func TestGitServiceMakesNoExternalCallWhileActionsAreSuppressed(t *testing.T) {
 	if backend.lookups != 0 || len(backend.operations) != 0 || backend.baseReads != 0 {
 		t.Fatalf("suppressed publish touched the provider: lookups=%d bases=%d operations=%d",
 			backend.lookups, backend.baseReads, len(backend.operations))
+	}
+	// Exactly one read: the switch is consulted once per execution attempt — a
+	// hot read (never cached across attempts) and not a per-provider-call poll.
+	if actions.reads != 1 {
+		t.Fatalf("switch reads = %d, want exactly 1 per execution attempt", actions.reads)
 	}
 
 	key, err := request.OperationKey()
@@ -93,8 +127,7 @@ func TestGitServiceSuppressesWhenTheSwitchCannotBeRead(t *testing.T) {
 		changeInspectorStub{change: publisher.RepositoryChange{
 			BaseSHA: "base-sha", ResultSHA: "head-sha", MaterializedRoot: "/change",
 		}},
-		backend, time.Minute, time.Minute,
-		publisher.WithActionsGate(&actionsReaderStub{err: errors.New("connection refused")}),
+		backend, &actionsReaderStub{err: errors.New("connection refused")}, time.Minute, time.Minute,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -122,8 +155,7 @@ func TestGitServicePublishesExactlyOnceAfterActionsResume(t *testing.T) {
 		changeInspectorStub{change: publisher.RepositoryChange{
 			BaseSHA: "base-sha", ResultSHA: "head-sha", MaterializedRoot: "/change",
 		}},
-		backend, time.Minute, time.Minute,
-		publisher.WithActionsGate(actions),
+		backend, actions, time.Minute, time.Minute,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -168,8 +200,7 @@ func TestWorkItemServiceMakesNoExternalCallWhileActionsAreSuppressed(t *testing.
 		store,
 		&credentialsStub{credential: publisher.Credential{Reference: "secret/jira"}},
 		validSnapshotValueInspector(),
-		backend, time.Minute, time.Minute,
-		publisher.WithActionsGate(&actionsReaderStub{mode: publisher.ActionsModeSuppressed, found: true}),
+		backend, &actionsReaderStub{mode: publisher.ActionsModeSuppressed, found: true}, time.Minute, time.Minute,
 	)
 	if err != nil {
 		t.Fatal(err)

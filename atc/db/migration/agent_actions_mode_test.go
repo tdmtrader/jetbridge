@@ -89,11 +89,15 @@ var _ = Describe("agent actions mode migration", func() {
 
 		Expect(migrator.Migrate(nil, nil, beforeVersion)).To(Succeed())
 
-		var dispatcherMode string
+		var dispatcherMode, updatedBy string
 		Expect(database.QueryRow(`
-			SELECT dispatcher_mode FROM agent_settings WHERE id = 1
-		`).Scan(&dispatcherMode)).To(Succeed())
+			SELECT dispatcher_mode, updated_by FROM agent_settings WHERE id = 1
+		`).Scan(&dispatcherMode, &updatedBy)).To(Succeed())
 		Expect(dispatcherMode).To(Equal("off"))
+		// The rollback signs its own backfill: attributing 'off' to the last
+		// admin who touched the row would hide that a migration, not a person,
+		// stopped the dispatcher.
+		Expect(updatedBy).To(Equal("migration-1773106128-down"))
 
 		var columns int
 		Expect(database.QueryRow(`

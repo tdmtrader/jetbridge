@@ -42,7 +42,14 @@ v8.0.1:1765921815
 # switch) plus its own provenance columns; dispatcher_mode becomes nullable so
 # the switch can create the singleton row without inventing a dispatcher mode.
 # Its down migration pins any switch-created row to dispatcher_mode='off'
-# (fail dormant, not fail dispatching) before restoring NOT NULL.
+# (fail dormant, not fail dispatching) before restoring NOT NULL, stamping
+# updated_by='migration-1773106128-down' so the backfill is not misread as an
+# admin decision. That backfill is ONE-WAY: a down->up cycle converts
+# "dispatcher unset (boot flag applies)" into "dispatcher explicitly off"
+# permanently, and an admin must set the mode again to undo it. Down-migrating
+# UNDER A NEW BINARY also drops actions_mode out from under the publisher's hot
+# read, which fails safe by suppressing every external publish until the binary
+# is rolled back too — roll back code and schema together.
 JETBRIDGE_VERSION=1773106128
 
 # Minimum supported source version (v6.x)

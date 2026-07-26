@@ -66,39 +66,21 @@ func EffectiveActionsMode(mode string, found bool, readErr error) string {
 	return ActionsModeSuppressed
 }
 
-// ServiceOption configures optional publisher-service dependencies without
-// changing the existing positional constructors.
-type ServiceOption func(*serviceOptions)
-
-type serviceOptions struct {
-	actions ActionsModeReader
-}
-
-// WithActionsGate makes the service consult the cluster-wide
-// action-suppression switch before every external interaction.
-func WithActionsGate(reader ActionsModeReader) ServiceOption {
-	return func(options *serviceOptions) { options.actions = reader }
-}
-
-func buildServiceOptions(options []ServiceOption) serviceOptions {
-	var resolved serviceOptions
-	for _, option := range options {
-		option(&resolved)
-	}
-	return resolved
-}
+// errActionsReaderRequired is what every publisher-service constructor returns
+// for a nil ActionsModeReader. The gate is a REQUIRED positional dependency,
+// not an option: an ungated service is one the cluster-wide switch cannot stop,
+// and a construction path that silently produced one would be the most
+// permissive default in the system.
+var errActionsReaderRequired = errors.New(
+	"publisher: an actions-mode reader is required; without it the cluster-wide action switch cannot suppress this publisher")
 
 // checkActionsAdmitted is the choke point every external side effect calls
 // before touching a provider — including the recovery Lookup, so a suppressed
 // publisher makes no network call at all.
 //
-// A nil reader means the deployment composed a service without the switch.
-// NewGatewayExecutor refuses that at startup, so nil here can only come from a
-// direct in-test construction and is admitted.
+// reader is never nil: every constructor that can produce a service refuses a
+// nil reader, so there is no ungated service to admit.
 func checkActionsAdmitted(reader ActionsModeReader) error {
-	if nilInterface(reader) {
-		return nil
-	}
 	mode, found, err := reader.GetActionsMode()
 	if EffectiveActionsMode(mode, found, err) == ActionsModeSuppressed {
 		if err != nil {

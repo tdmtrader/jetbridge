@@ -2,6 +2,7 @@ package exec
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"strings"
@@ -142,6 +143,14 @@ func (step *PublishSnapshotStep) run(ctx context.Context, state RunState, delega
 	if err != nil {
 		if contextErr := ctx.Err(); contextErr != nil {
 			return false, contextErr
+		}
+		// The action switch is an OPERATOR-FACING refusal, not a dependency
+		// fault: the build must say why nothing was published and how to
+		// resume. Surface the sentinel's OWN canned text — never err, whose
+		// suppression variant folds a raw database error in with %v and would
+		// put connection detail in a build log the whole team can read.
+		if errors.Is(err, publisher.ErrActionsSuppressed) {
+			return false, fmt.Errorf("publish_snapshot: %w", publisher.ErrActionsSuppressed)
 		}
 		return false, fmt.Errorf("publish_snapshot: publication execution failed")
 	}

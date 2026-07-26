@@ -68,7 +68,7 @@ func TestWorkItemServicePublishesExplicitCommentIdempotently(t *testing.T) {
 	credentials := &credentialsStub{credential: publisher.Credential{Reference: "secret/jira"}}
 	backend := &workItemBackendStub{result: publisher.WorkItemResult{ExternalID: "comment-9", URL: "https://jira.example/JIRA-42"}}
 	values := validSnapshotValueInspector()
-	service, err := publisher.NewWorkItemService(store, credentials, values, backend, time.Minute, time.Minute)
+	service, err := publisher.NewWorkItemService(store, credentials, values, backend, activeActions(), time.Minute, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestWorkItemServiceSupportsStateModeAndLeavesExternalErrorsRetryable(t *tes
 	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
 	store := publisher.NewMemoryStore(func() time.Time { return now })
 	backend := &workItemBackendStub{err: context.DeadlineExceeded}
-	service, err := publisher.NewWorkItemService(store, &credentialsStub{credential: publisher.Credential{Reference: "secret/jira"}}, validSnapshotValueInspector(), backend, time.Minute, time.Minute)
+	service, err := publisher.NewWorkItemService(store, &credentialsStub{credential: publisher.Credential{Reference: "secret/jira"}}, validSnapshotValueInspector(), backend, activeActions(), time.Minute, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestWorkItemServiceReconcilesCrashAfterProviderSuccessWithoutRepeatingWrite
 		result:     publisher.WorkItemResult{ExternalID: "comment-9", URL: "https://work.example/9"},
 		crashAfter: true,
 	}
-	service, err := publisher.NewWorkItemService(store, &credentialsStub{credential: publisher.Credential{Reference: "secret/work"}}, validSnapshotValueInspector(), backend, time.Minute, time.Minute)
+	service, err := publisher.NewWorkItemService(store, &credentialsStub{credential: publisher.Credential{Reference: "secret/work"}}, validSnapshotValueInspector(), backend, activeActions(), time.Minute, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}

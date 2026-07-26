@@ -112,7 +112,7 @@ func TestGitServicePublishesOnceWithScopedCredential(t *testing.T) {
 	}
 	service, err := publisher.NewGitService(store, credentials, changeInspectorStub{change: publisher.RepositoryChange{
 		BaseSHA: "base-sha", ResultSHA: "head-sha", MaterializedRoot: "/workspace/change",
-	}}, backend, time.Minute, time.Minute)
+	}}, backend, activeActions(), time.Minute, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,6 +142,7 @@ func TestGitServiceWaitsForConcurrentSemanticOperationAndReturnsCurrentOccurrenc
 			BaseSHA: "base", ResultSHA: "head", MaterializedRoot: "/change",
 		}},
 		backend,
+		activeActions(),
 		5*time.Second,
 		time.Second,
 	)
@@ -204,7 +205,7 @@ func TestGitServiceRejectsStaleBaseBeforeSideEffect(t *testing.T) {
 	backend := &gitBackendStub{base: "new-base"}
 	service, err := publisher.NewGitService(store, &credentialsStub{credential: publisher.Credential{Reference: "secret/git"}}, changeInspectorStub{change: publisher.RepositoryChange{
 		BaseSHA: "old-base", ResultSHA: "head", MaterializedRoot: "/change",
-	}}, backend, time.Minute, time.Minute)
+	}}, backend, activeActions(), time.Minute, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,7 +232,7 @@ func TestGitServiceTimeoutLeavesOperationRetryable(t *testing.T) {
 	backend := &gitBackendStub{base: "base", block: true}
 	service, err := publisher.NewGitService(store, &credentialsStub{credential: publisher.Credential{Reference: "secret/git"}}, changeInspectorStub{change: publisher.RepositoryChange{
 		BaseSHA: "base", ResultSHA: "head", MaterializedRoot: "/change",
-	}}, backend, 5*time.Millisecond, time.Minute)
+	}}, backend, activeActions(), 5*time.Millisecond, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,7 +263,7 @@ func TestGitServiceReconcilesCrashAfterProviderSuccessWithoutRepeatingWrite(t *t
 	}
 	service, err := publisher.NewGitService(store, &credentialsStub{credential: publisher.Credential{Reference: "secret/git"}}, changeInspectorStub{change: publisher.RepositoryChange{
 		BaseSHA: "base", ResultSHA: "head", MaterializedRoot: "/change",
-	}}, backend, time.Minute, time.Minute)
+	}}, backend, activeActions(), time.Minute, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,7 +293,7 @@ func TestGitServiceRejectsProviderResultForAnyCommitOtherThanTheExactSnapshotRes
 				&credentialsStub{credential: publisher.Credential{Reference: "secret/git"}},
 				changeInspectorStub{change: publisher.RepositoryChange{
 					BaseSHA: "base", ResultSHA: "exact-head", MaterializedRoot: "/change",
-				}}, backend, time.Minute, time.Minute)
+				}}, backend, activeActions(), time.Minute, time.Minute)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -311,7 +312,7 @@ func TestGitServiceRejectsProviderResultForAnyCommitOtherThanTheExactSnapshotRes
 
 func TestGitServiceFailsBeforeAcquireForUnapprovedMerge(t *testing.T) {
 	store := publisher.NewMemoryStore(time.Now)
-	service, err := publisher.NewGitService(store, &credentialsStub{}, changeInspectorStub{}, &gitBackendStub{}, time.Minute, time.Minute)
+	service, err := publisher.NewGitService(store, &credentialsStub{}, changeInspectorStub{}, &gitBackendStub{}, activeActions(), time.Minute, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -328,7 +329,7 @@ func TestGitServiceFailsClosedWhenCredentialProviderReturnsEmptyHandle(t *testin
 	backend := &gitBackendStub{base: "base"}
 	service, err := publisher.NewGitService(store, &credentialsStub{}, changeInspectorStub{change: publisher.RepositoryChange{
 		BaseSHA: "base", ResultSHA: "head", MaterializedRoot: "/change",
-	}}, backend, time.Minute, time.Minute)
+	}}, backend, activeActions(), time.Minute, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -347,7 +348,7 @@ func TestGitServiceUsesReclaimingOccurrenceApprovalAndAuthority(t *testing.T) {
 	backend := &gitBackendStub{base: "base", result: publisher.GitResult{HeadSHA: "head"}}
 	service, err := publisher.NewGitService(store, credentials, changeInspectorStub{change: publisher.RepositoryChange{
 		BaseSHA: "base", ResultSHA: "head", MaterializedRoot: "/change",
-	}}, backend, time.Minute, time.Minute)
+	}}, backend, activeActions(), time.Minute, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}

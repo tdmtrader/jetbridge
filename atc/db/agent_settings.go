@@ -56,8 +56,9 @@ type AgentSettingsFactory interface {
 	// touching the DB; returns ErrInvalidDispatcherMode otherwise.
 	SetDispatcherMode(mode, updatedBy string) error
 	// GetActionsMode is the publisher's HOT read of the cluster-wide
-	// action-suppression switch. found=false means no admin has ever engaged
-	// it, which callers must treat as active.
+	// action-suppression switch. found reports ROW EXISTENCE, not provenance:
+	// found=false means no settings row exists at all, which callers must treat
+	// as active.
 	GetActionsMode() (mode string, found bool, err error)
 	// GetActionsSetting backs the GET status API: the stored mode plus its own
 	// provenance. found=false means the switch has never been set.
@@ -138,9 +139,33 @@ func validActionsMode(mode string) bool {
 	}
 }
 
+// GetActionsMode reads the BRAKE ITSELF, never its provenance. It deliberately
+// does NOT delegate to GetActionsSetting: keying the hot read on
+// actions_updated_at would make a break-glass `UPDATE agent_settings SET
+// actions_mode = 'suppressed'` — the operator's recourse when the API is down,
+// which is exactly when the switch matters most — read back as "never engaged",
+// and publishes would proceed. actions_mode is NOT NULL DEFAULT 'active'
+// (migration 1773106128), so every existing row carries a total, trustworthy
+// mode and no provenance is needed to interpret it. found=false therefore means
+// only "no settings row exists"; callers map that to active via
+// publisher.EffectiveActionsMode. GetActionsSetting keeps the provenance-based
+// "never set" answer for the status API, where "who engaged it, and when" is
+// the question being asked.
 func (f *agentSettingsFactory) GetActionsMode() (string, bool, error) {
-	mode, _, _, found, err := f.GetActionsSetting()
-	return mode, found, err
+	var mode string
+	err := psql.Select("actions_mode").
+		From("agent_settings").
+		Where(sq.Eq{"id": 1}).
+		RunWith(f.conn).
+		QueryRow().
+		Scan(&mode)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return mode, true, nil
 }
 
 func (f *agentSettingsFactory) GetActionsSetting() (string, time.Time, string, bool, error) {

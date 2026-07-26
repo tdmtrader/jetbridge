@@ -116,19 +116,22 @@ func NewGitService(
 	credentials CredentialProvider,
 	changes ChangeInspector,
 	backend GitBackend,
+	actions ActionsModeReader,
 	timeout time.Duration,
 	lease time.Duration,
-	options ...ServiceOption,
 ) (*GitService, error) {
 	if nilInterface(store) || nilInterface(credentials) || nilInterface(changes) || nilInterface(backend) {
 		return nil, fmt.Errorf("publisher: git store, credentials, change inspector, and backend are required")
+	}
+	if nilInterface(actions) {
+		return nil, errActionsReaderRequired
 	}
 	if timeout <= 0 || timeout > time.Hour || lease <= 0 || lease > 24*time.Hour {
 		return nil, fmt.Errorf("publisher: git timeout and lease are invalid")
 	}
 	return &GitService{
 		store: store, credentials: credentials, changes: changes, backend: backend,
-		timeout: timeout, lease: lease, actions: buildServiceOptions(options).actions,
+		timeout: timeout, lease: lease, actions: actions,
 	}, nil
 }
 
