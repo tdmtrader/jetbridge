@@ -194,6 +194,10 @@ jobs:
           echo "=== Running ci-agent module tests ==="
           cd ci-agent
           go test ./... -count=1 -timeout 5m
+          cd ..
+          echo ""
+          echo "=== Running dev-mcp contract/e2e tests ==="
+          go test ./agent/devmcp/... -count=1 -timeout 10m
           echo "=== test-quick gate passed ==="
 
   # ---------------------------------------------------------------------

@@ -66,4 +66,4 @@ test-k8s: test-k8s-integration test-k8s-behavioral
 test-quick: test-unit test-ci-agent test-dev-mcp
 
 # All tests in order of speed
-test-all: test-unit test-ci-agent test-fly-integration test-integration test-k8s
+test-all: test-unit test-ci-agent test-dev-mcp test-fly-integration test-integration test-k8s

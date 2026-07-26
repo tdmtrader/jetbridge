@@ -185,12 +185,21 @@ func TestGoClientRunTestsEndToEnd(t *testing.T) {
 }
 
 // TestLiveImageContract exercises a running mcp-dev-concourse container.
-// It is driven by the build-mcp-dev-image CI job (deploy/concourse-pipeline.yml)
-// and skipped everywhere else.
+// It requires DEV_MCP_IMAGE_TEST=1 as an explicit opt-in on top of
+// DEV_MCP_ENDPOINT — this is a live-container test, not something that runs
+// by merely being in the package. No CI job sets these today; the
+// build-mcp-dev-image job this comment used to reference has never existed
+// in this repo (verified 2026-07-25). A human wanting to run this locally
+// against an already-running mcp-dev-concourse container (see
+// deploy/Dockerfile.mcp-dev-concourse, deploy/MCP_IMAGES.md) sets both env
+// vars themselves.
 func TestLiveImageContract(t *testing.T) {
+	if os.Getenv("DEV_MCP_IMAGE_TEST") != "1" {
+		t.Skip("DEV_MCP_IMAGE_TEST != 1; this live-container test does not run by default (see comment above)")
+	}
 	endpoint := os.Getenv("DEV_MCP_ENDPOINT")
 	if endpoint == "" {
-		t.Skip("DEV_MCP_ENDPOINT not set; this test runs in the build-mcp-dev-image CI job")
+		t.Fatal("DEV_MCP_IMAGE_TEST=1 but DEV_MCP_ENDPOINT is not set")
 	}
 	contracttest.RunWithOptions(t, endpoint, contracttest.Options{
 		ExerciseComponent: "ci-agent",
