@@ -334,7 +334,12 @@ func TestGatewayPolicyRequiresExactModeTargetBranchAndPolicyVersion(t *testing.T
 	}
 }
 
-func TestGatewayRejectsOversizedAndMalformedResponses(t *testing.T) {
+// TestGatewayRejectsResponsesLargerThanTheConfiguredBound is the size-bound
+// half of what used to be one misnamed test: the 1 KiB body never reached the
+// JSON decoder, because MaxResponseBytes = 128 makes the size guard fire first.
+// The malformed-body half it claimed to cover now lives in
+// TestGatewayRejectsMalformedResponseBodies, where the decoder is reached.
+func TestGatewayRejectsResponsesLargerThanTheConfiguredBound(t *testing.T) {
 	fixture := newGatewaySnapshotFixture(t)
 	server := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		response.Header().Set("Content-Type", "application/json")

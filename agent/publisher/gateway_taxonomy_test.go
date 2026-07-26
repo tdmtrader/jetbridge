@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -51,6 +53,13 @@ func newGatewayFaultServer(t *testing.T, faults map[string]gatewayFault) (*httpt
 		}
 		fault := faults[request.URL.Path]
 		if fault.delay > 0 {
+			// Drain the request body before blocking. net/http only starts the
+			// background read that cancels request.Context() on a client
+			// disconnect once the body hits EOF, so without this the handler
+			// sleeps the entire delay after the client has already given up —
+			// and httptest.Server.Close waits for it, making the deadline test
+			// cost its full delay in wall-clock time.
+			_, _ = io.Copy(io.Discard, request.Body)
 			select {
 			case <-request.Context().Done():
 				return
@@ -464,5 +473,167 @@ func TestGatewaySuppressedPublishIsNeverCompletedAsFailed(t *testing.T) {
 	}
 	if want := []string{"/v1/publications/lookup"}; !slices.Equal(calls(), want) {
 		t.Fatalf("calls = %v, want %v: only the resumed attempt may reach the gateway", calls(), want)
+	}
+}
+
+// TestGatewayClassifiesAdversarialResponses is the suite the coverage audit
+// found missing: before it, every HTTP response the publisher tests ever
+// observed was a 200. Each row asserts BOTH halves of one answer — the
+// classification the client draws (*publisher.GatewayError, terminal or
+// retryable) and the durable consequence that classification has (a pending row
+// a later lease reclaims, or a failed row that is never re-attempted).
+func TestGatewayClassifiesAdversarialResponses(t *testing.T) {
+	for name, testCase := range map[string]struct {
+		fault      gatewayFault
+		mutate     func(*publisher.GatewayConfig)
+		wantStatus int
+		wantClass  publisher.Status // pending (retryable) or failed (terminal)
+	}{
+		"throttled":                  {fault: gatewayFault{status: 429, retryAfter: "30"}, wantStatus: 429, wantClass: publisher.StatusPending},
+		"request timeout":            {fault: gatewayFault{status: 408}, wantStatus: 408, wantClass: publisher.StatusPending},
+		"internal server error":      {fault: gatewayFault{status: 500}, wantStatus: 500, wantClass: publisher.StatusPending},
+		"bad gateway":                {fault: gatewayFault{status: 502}, wantStatus: 502, wantClass: publisher.StatusPending},
+		"service unavailable":        {fault: gatewayFault{status: 503}, wantStatus: 503, wantClass: publisher.StatusPending},
+		"unlisted status stays open": {fault: gatewayFault{status: 418}, wantStatus: 418, wantClass: publisher.StatusPending},
+		"bad request":                {fault: gatewayFault{status: 400}, wantStatus: 400, wantClass: publisher.StatusFailed},
+		"unauthorized":               {fault: gatewayFault{status: 401}, wantStatus: 401, wantClass: publisher.StatusFailed},
+		"forbidden":                  {fault: gatewayFault{status: 403}, wantStatus: 403, wantClass: publisher.StatusFailed},
+		"not found":                  {fault: gatewayFault{status: 404}, wantStatus: 404, wantClass: publisher.StatusFailed},
+		"conflict":                   {fault: gatewayFault{status: 409}, wantStatus: 409, wantClass: publisher.StatusFailed},
+		"unprocessable":              {fault: gatewayFault{status: 422}, wantStatus: 422, wantClass: publisher.StatusFailed},
+		// Regression guard for the classify-before-size ordering: a rejected
+		// request may answer with a huge provider error page, and that must
+		// not be reported as a size-bound failure.
+		"oversized error page": {
+			fault:      gatewayFault{status: 503, body: `{"error":"` + strings.Repeat("x", 4096) + `"}`},
+			mutate:     func(config *publisher.GatewayConfig) { config.MaxResponseBytes = 128 },
+			wantStatus: 503, wantClass: publisher.StatusPending,
+		},
+		// A truncated 200 is an unknown answer, never a terminal one.
+		"truncated response body": {fault: gatewayFault{truncate: true}, wantStatus: 200, wantClass: publisher.StatusPending},
+	} {
+		t.Run(name, func(t *testing.T) {
+			server, _ := newGatewayFaultServer(t, map[string]gatewayFault{"/v1/publications/lookup": testCase.fault})
+			publication, durable, err := executeGatewayGitPublication(t, server, testCase.mutate)
+			if durable.Status != testCase.wantClass {
+				t.Fatalf("durable status = %s, want %s (publication=%+v, err=%v)",
+					durable.Status, testCase.wantClass, publication, err)
+			}
+			if testCase.wantClass == publisher.StatusFailed {
+				if err != nil {
+					t.Fatalf("a terminal classification must complete the operation, not error: %v", err)
+				}
+				// A terminal *GatewayError never reaches the caller — it is
+				// converted into this failed completion — so the row it wrote
+				// is the only place the classified status is still observable.
+				if !strings.Contains(durable.Result.Detail, strconv.Itoa(testCase.wantStatus)) ||
+					!strings.Contains(durable.Result.Detail, "/v1/publications/lookup") {
+					t.Fatalf("failure detail = %q, want status %d and the endpoint named for manual reconciliation",
+						durable.Result.Detail, testCase.wantStatus)
+				}
+				return
+			}
+			var gatewayErr *publisher.GatewayError
+			if !errors.As(err, &gatewayErr) {
+				t.Fatalf("error = %v, want a *publisher.GatewayError", err)
+			}
+			if gatewayErr.Status != testCase.wantStatus || !gatewayErr.Retryable {
+				t.Fatalf("classification = %+v, want status %d retryable", gatewayErr, testCase.wantStatus)
+			}
+			// Retry-After is deliberately unread: retries happen at lease
+			// expiry, not in an in-process loop, so there is no backoff to
+			// honor. Assert we never claim otherwise.
+			if strings.Contains(strings.ToLower(err.Error()), "retry-after") {
+				t.Fatalf("error claims to honor Retry-After: %v", err)
+			}
+		})
+	}
+}
+
+// TestGatewayClassifiesTransportFailureAsRetryable covers the arm with no
+// status at all: the request never reached a server, so Status is 0 and the
+// underlying transport error must survive for operators to read.
+func TestGatewayClassifiesTransportFailureAsRetryable(t *testing.T) {
+	live, _ := newGatewayFaultServer(t, nil) // only for its certificate
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, durable, err := executeGatewayGitPublication(t, live, func(config *publisher.GatewayConfig) {
+		config.Endpoint = "https://" + address
+	})
+	var gatewayErr *publisher.GatewayError
+	if !errors.As(err, &gatewayErr) {
+		t.Fatalf("error = %v, want a *publisher.GatewayError", err)
+	}
+	if gatewayErr.Status != 0 || !gatewayErr.Retryable || gatewayErr.Unwrap() == nil {
+		t.Fatalf("transport classification = %+v", gatewayErr)
+	}
+	if durable.Status != publisher.StatusPending {
+		t.Fatalf("durable status = %s, want pending", durable.Status)
+	}
+}
+
+// TestGatewaySlowResponseHitsTheRequestDeadlineAndStaysRetryable pins the
+// timeout-shaped arm. The transport also carries a ResponseHeaderTimeout equal
+// to the request timeout, but the per-request context deadline always wins
+// (both are armed from RequestTimeout, and the context is armed first, before
+// the credential resolve and the snapshot re-read), so the deadline is the
+// behavior that is actually observable — and a deadline is retryable, never
+// terminal.
+func TestGatewaySlowResponseHitsTheRequestDeadlineAndStaysRetryable(t *testing.T) {
+	server, _ := newGatewayFaultServer(t, map[string]gatewayFault{
+		"/v1/publications/lookup": {delay: 5 * time.Second},
+	})
+	_, durable, err := executeGatewayGitPublication(t, server, func(config *publisher.GatewayConfig) {
+		// The deadline is armed before the credential resolve and the
+		// snapshot re-capture (the context.WithTimeout in GitService.Execute),
+		// so leave real margin for those: half a second is ~10x the capture
+		// of this two-file fixture.
+		config.RequestTimeout = 500 * time.Millisecond
+		config.LeaseDuration = 5 * time.Second
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("slow gateway error = %v, want a context deadline", err)
+	}
+	if durable.Status != publisher.StatusPending {
+		t.Fatalf("durable status = %s, want pending", durable.Status)
+	}
+}
+
+// TestGatewayRejectsMalformedResponseBodies covers the malformed-body cases the
+// old TestGatewayRejectsOversizedAndMalformedResponses never reached: with
+// MaxResponseBytes at its default the size guard no longer fires first, so
+// decodeGatewayJSON, DisallowUnknownFields and requireJSONEOF are actually
+// exercised. Each row asserts the decoder's own words reach the caller — that
+// is the proof the body was parsed rather than rejected by its length — and
+// that a body we cannot understand leaves the operation reclaimable.
+func TestGatewayRejectsMalformedResponseBodies(t *testing.T) {
+	for name, testCase := range map[string]struct {
+		body     string
+		wantText string
+	}{
+		"unknown field":     {body: `{"found":false,"padding":"x"}`, wantText: `unknown field "padding"`},
+		"trailing value":    {body: `{"found":false}{"found":true}`, wantText: "multiple JSON values"},
+		"truncated object":  {body: `{"found":`, wantText: "unexpected EOF"},
+		"wrong shape":       {body: `["found"]`, wantText: "cannot unmarshal"},
+		"result without id": {body: `{"found":true,"result":{"url":"https://git.example/pull/7"}}`, wantText: "external_id is invalid"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			server, _ := newGatewayFaultServer(t, map[string]gatewayFault{
+				"/v1/publications/lookup": {body: testCase.body},
+			})
+			_, durable, err := executeGatewayGitPublication(t, server, nil)
+			if err == nil || !strings.Contains(err.Error(), testCase.wantText) {
+				t.Fatalf("malformed response error = %v, want it to contain %q", err, testCase.wantText)
+			}
+			if durable.Status != publisher.StatusPending {
+				t.Fatalf("a malformed response must stay retryable, got %s", durable.Status)
+			}
+		})
 	}
 }
