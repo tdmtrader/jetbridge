@@ -2,7 +2,9 @@ package db_test
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -734,5 +736,174 @@ var _ = Describe("AgentTicketsFactory", func() {
 				captures++
 			}
 		})
+	})
+
+	It("never rebinds a dispatched run when the ticket is edited afterwards (CU-11)", func() {
+		ctx := context.Background()
+		runs := db.NewAgentWorkflowRunsFactory(dbConn)
+		unique := time.Now().UnixNano()
+		definitionName := fmt.Sprintf("cu11-workflow-%d", unique)
+		contentHash := strings.Repeat("a", 64)
+
+		var definitionID int
+		Expect(dbConn.QueryRow(`
+			INSERT INTO agent_workflow_definitions
+				(name, version, content_hash, definition, created_by, schema_version, signature_version)
+			VALUES ($1, 7, $2, 'schema_version: 3', 'alice', 3, 1)
+			RETURNING id
+		`, definitionName, contentHash).Scan(&definitionID)).To(Succeed())
+
+		insertSnapshot := func(typeName string, digest string) snapshot.SnapshotID {
+			var id snapshot.SnapshotID
+			Expect(dbConn.QueryRow(`
+				INSERT INTO agent_snapshots
+					(type_name, type_version, digest, byte_size, file_count, representation)
+				VALUES ($1, 1, $2, 32, 1, 'application/vnd.jetbridge.snapshot.tar.v1')
+				RETURNING id
+			`, typeName, digest).Scan(&id)).To(Succeed())
+			_, err := dbConn.Exec(`
+				INSERT INTO agent_snapshot_grants (snapshot_id, team_id, granted_by, reason)
+				VALUES ($1, $2, 'alice', 'cu11 test')
+			`, int64(id), defaultTeam.ID())
+			Expect(err).NotTo(HaveOccurred())
+			return id
+		}
+		documentDigest := func(document []byte) string {
+			sum := sha256.Sum256(document)
+			return "sha256:" + hex.EncodeToString(sum[:])
+		}
+
+		repositoryDigest := "sha256:" + strings.Repeat("b", 64)
+		repositoryID := insertSnapshot("repository", repositoryDigest)
+
+		ticketID, err := factory.Create(&tickets.Ticket{
+			Title: "original title", Body: "original body", Origin: "fly", Repo: "example/repo",
+			WorkflowName: definitionName, UserName: "tdm", CreatedBy: "tdm",
+			RepositorySnapshotID: &repositoryID,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(factory.Transition(ticketID, tickets.StateDraft, tickets.StateQueued,
+			tickets.TransitionMeta{})).To(Succeed())
+		queued, found, err := factory.Get(ticketID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+
+		reservation, err := factory.ReserveDispatch(ctx, ticketID, tickets.DispatchReservationRequest{
+			ExpectedRevision: queued.Revision, WorkflowVersion: 7, WorkflowDefinitionID: definitionID,
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		capture, found, err := factory.CaptureRevision(ctx, ticketID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(capture.Validate()).To(Succeed())
+		boundDocument := append([]byte(nil), capture.Document...)
+		boundDigest := documentDigest(boundDocument)
+		workItemID := insertSnapshot("work-item", boundDigest)
+		Expect(factory.RecordDispatchWorkItem(
+			ctx, ticketID, reservation.Key, capture.Revision, workItemID)).To(Succeed())
+
+		parameterizedConfig := []byte(`{"jobs":[{"name":"run"}]}`)
+		run, created, err := runs.CreateWithInputs(ctx, db.AgentWorkflowRunCreateRequest{
+			TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(),
+			WorkflowDefinitionID: definitionID, WorkflowName: definitionName, WorkflowVersion: 7,
+			SchemaVersion: 3, SignatureVersion: 1, DefinitionContentHash: contentHash,
+			IdempotencyKey:          reservation.Key,
+			ParameterizedConfig:     parameterizedConfig,
+			ParameterizedConfigHash: strings.Repeat("c", 64),
+			OriginKind:              "ticket", OriginReference: strconv.Itoa(ticketID),
+			CreatedBy: "tdm", Status: db.AgentWorkflowRunStatusAdmitting,
+			Inputs: map[string]snapshot.SnapshotRef{
+				"work_item":  {ID: workItemID, Type: "work-item/v1", Digest: snapshot.Digest(boundDigest)},
+				"repository": {ID: repositoryID, Type: "repository/v1", Digest: snapshot.Digest(repositoryDigest)},
+			},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(created).To(BeTrue())
+
+		var pipelineID, pipelineRunID int
+		Expect(dbConn.QueryRow(`
+			INSERT INTO pipelines (name, team_id, secondary_ordering)
+			VALUES ($1, $2, 1) RETURNING id
+		`, fmt.Sprintf("cu11-pipeline-%d", unique), defaultTeam.ID()).Scan(&pipelineID)).To(Succeed())
+		Expect(dbConn.QueryRow(`
+			INSERT INTO pipeline_runs (template_pipeline_id, instance_pipeline_id, number)
+			VALUES ($1, $1, 1) RETURNING id
+		`, pipelineID).Scan(&pipelineRunID)).To(Succeed())
+		Expect(factory.RecordDispatchRun(ctx, ticketID, reservation.Key, run.ID, pipelineRunID)).To(Succeed())
+		Expect(factory.Transition(ticketID, tickets.StateQueued, tickets.StateRunning,
+			tickets.TransitionMeta{PipelineRunID: &pipelineRunID})).To(Succeed())
+
+		type binding struct {
+			direction string
+			port      string
+			snapshot  int64
+			digest    string
+		}
+		readBindings := func() []binding {
+			rows, err := dbConn.Query(`
+				SELECT b.direction, b.port_name, b.snapshot_id, s.digest
+				FROM agent_workflow_run_snapshots b
+				JOIN agent_snapshots s ON s.id = b.snapshot_id
+				WHERE b.workflow_run_id = $1
+				ORDER BY b.direction, b.port_name
+			`, int64(run.ID))
+			Expect(err).NotTo(HaveOccurred())
+			defer rows.Close()
+			bindings := []binding{}
+			for rows.Next() {
+				var got binding
+				Expect(rows.Scan(&got.direction, &got.port, &got.snapshot, &got.digest)).To(Succeed())
+				bindings = append(bindings, got)
+			}
+			Expect(rows.Err()).NotTo(HaveOccurred())
+			return bindings
+		}
+		readRenderedConfig := func() (string, string) {
+			var config, hash string
+			Expect(dbConn.QueryRow(`
+				SELECT parameterized_config::text, parameterized_config_hash
+				FROM agent_workflow_runs WHERE id = $1
+			`, int64(run.ID)).Scan(&config, &hash)).To(Succeed())
+			return config, hash
+		}
+		boundBindings := readBindings()
+		boundConfig, boundConfigHash := readRenderedConfig()
+		Expect(boundBindings).To(HaveLen(2))
+
+		// Every mutable surface a human can touch after dispatch.
+		newTitle, newBody := "edited title", "edited body"
+		Expect(factory.Update(ticketID, tickets.Update{Title: &newTitle, Body: &newBody})).To(Succeed())
+		_, err = factory.SubmitSpec(ticketID, tickets.Spec{
+			Title: "spec after dispatch", Body: "written while the run is live", SubmittedBy: "tdm",
+		})
+		Expect(err).NotTo(HaveOccurred())
+		rebound := insertSnapshot("repository", "sha256:"+strings.Repeat("d", 64))
+		Expect(factory.Update(ticketID, tickets.Update{RepositorySnapshotID: &rebound})).
+			To(MatchError(tickets.ErrDispatchConflict), "a dispatched ticket must refuse input rebinding")
+
+		// The edits are real: a fresh capture of the same ticket differs.
+		recapture, found, err := factory.CaptureRevision(ctx, ticketID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(recapture.Document).NotTo(Equal(boundDocument))
+		Expect(documentDigest(recapture.Document)).NotTo(Equal(boundDigest))
+
+		// The dispatched run is untouched by all of it.
+		Expect(readBindings()).To(Equal(boundBindings))
+		config, hash := readRenderedConfig()
+		Expect(config).To(Equal(boundConfig))
+		Expect(hash).To(Equal(boundConfigHash))
+
+		edited, found, err := factory.Get(ticketID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(edited.Title).To(Equal(newTitle))
+		Expect(*edited.WorkItemSnapshotID).To(Equal(workItemID))
+		Expect(*edited.RepositorySnapshotID).To(Equal(repositoryID))
+		var boundWorkItemDigest string
+		Expect(dbConn.QueryRow(`SELECT digest FROM agent_snapshots WHERE id = $1`,
+			int64(workItemID)).Scan(&boundWorkItemDigest)).To(Succeed())
+		Expect(boundWorkItemDigest).To(Equal(boundDigest))
 	})
 })
