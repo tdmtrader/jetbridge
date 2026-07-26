@@ -584,6 +584,367 @@ func TestBindAndCreateRepairsCompleteAdmittingCrashWindowWithoutExternalSideEffe
 	}
 }
 
+// TestBindAndCreateLostAdmissionCASStaysRetryableAndResumes pins binder.go's
+// advanceAdmission lost-CAS arm (the transitioned==false branch at
+// binder.go:429-432). handleExisting routes an admitting run whose execution is
+// already complete into advanceAdmission; when Transition reports it did NOT win
+// the admitting->running compare-and-swap (transitioned==false) yet the row is
+// still admitting with a complete execution, another writer owns the CAS.
+// Correct behavior, read off binder.go:419-432: return ErrPlatformFailure
+// (retryable) with the "workflow admission CAS did not advance" explanation,
+// never ErrCorruptPartialAdmission, and never re-create the execution. The next
+// call must resume the same durable identity once the winner advances the row.
+func TestBindAndCreateLostAdmissionCASStaysRetryableAndResumes(t *testing.T) {
+	definition := binderTestDefinition()
+	rendered := binderTestRendered(t, definition)
+	admitting := db.AgentWorkflowRun{
+		ID: 41, TeamID: 7, TeamName: "research", WorkflowDefinitionID: definition.ID,
+		WorkflowName: definition.Name, WorkflowVersion: definition.Version,
+		SchemaVersion: 3, SignatureVersion: 1, DefinitionContentHash: definition.ContentHash,
+		IdempotencyKey: "lost-advance-cas", ParameterizedConfig: mustCanonical(t, rendered.Config),
+		ParameterizedConfigHash: rendered.TargetConfigHash, OriginKind: "manual", CreatedBy: "alice",
+		Status: db.AgentWorkflowRunStatusAdmitting,
+	}
+	pipelineRunID, templateID, instanceID := 73, 2, 3
+	plannedBuildID := int64(5)
+	concreteHash := strings.Repeat("c", 64)
+	admitting.PipelineRunID, admitting.TemplatePipelineID, admitting.InstancePipelineID =
+		&pipelineRunID, &templateID, &instanceID
+	admitting.ConcreteConfig, admitting.ConcreteConfigHash = mustCanonical(t, rendered.Config), &concreteHash
+	admitting.PlannedBuildID = &plannedBuildID
+	running := admitting
+	running.Status = db.AgentWorkflowRunStatusRunning
+
+	// The concurrent winner only becomes visible after it has advanced the row.
+	winnerAdvanced := false
+	transitions := 0
+	store := &storeStub{
+		find: func(context.Context, int, string) (db.AgentWorkflowRun, bool, error) {
+			if winnerAdvanced {
+				return running, true, nil
+			}
+			return admitting, true, nil
+		},
+		snapshots: func(context.Context, snapshot.WorkflowRunID) ([]db.AgentWorkflowRunSnapshotBinding, error) {
+			return nil, nil
+		},
+		transition: func(_ context.Context, id snapshot.WorkflowRunID, from, to db.AgentWorkflowRunStatus, message string) (bool, error) {
+			transitions++
+			if id != admitting.ID || from != db.AgentWorkflowRunStatusAdmitting ||
+				to != db.AgentWorkflowRunStatusRunning || message != "" {
+				t.Fatalf("transition = (%s, %s, %s, %q)", id.String(), from, to, message)
+			}
+			return false, nil
+		},
+	}
+	unwanted := errors.New("unexpected external side effect")
+	binder, err := NewBinder(
+		&resolverStub{live: func(context.Context, string) (workflow.Definition, bool, error) {
+			return workflow.Definition{}, false, unwanted
+		}},
+		&rendererStub{},
+		&authorizerStub{get: func(context.Context, int, snapshot.SnapshotID) (snapshot.Snapshot, bool, error) {
+			return snapshot.Snapshot{}, false, unwanted
+		}},
+		store,
+		&budgetStub{admit: func(context.Context, BudgetAdmission) error { return unwanted }},
+		&saverStub{save: func(context.Context, AdmissionContext, ImmutableTemplateSpec) (WorkflowRunTemplateRef, error) {
+			return WorkflowRunTemplateRef{}, unwanted
+		}},
+		&creatorStub{create: func(context.Context, snapshot.WorkflowRunID, WorkflowRunTemplateRef, map[string]any, string, BeforeWorkflowRunCommit) (WorkflowRunExecution, bool, error) {
+			t.Fatal("a lost admission CAS must never start a second execution")
+			return WorkflowRunExecution{}, false, nil
+		}},
+		&secretStub{prepare: func(context.Context, AdmissionContext, db.AgentWorkflowRun) (PreparedRunSecret, error) {
+			return nil, unwanted
+		}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admission := AdmissionContext{TeamID: 7, TeamName: "research", CreatedBy: "alice", Origin: Origin{Kind: "manual"}}
+	request := BindRequest{
+		WorkflowName: definition.Name, Inputs: map[string]snapshot.SnapshotID{},
+		IdempotencyKey: "lost-advance-cas",
+	}
+
+	_, err = binder.BindAndCreate(context.Background(), admission, request)
+	if !errors.Is(err, ErrPlatformFailure) {
+		t.Fatalf("error = %v, want platform failure", err)
+	}
+	if errors.Is(err, ErrCorruptPartialAdmission) {
+		t.Fatalf("a lost CAS is not corruption: %v", err)
+	}
+	if !strings.Contains(err.Error(), "workflow admission CAS did not advance") {
+		t.Fatalf("error = %q, want the lost-CAS explanation", err)
+	}
+	if transitions != 1 {
+		t.Fatalf("transition attempts = %d, want 1", transitions)
+	}
+
+	// No wedge: once the winner has advanced the row, the same call succeeds
+	// against the same durable identity without re-running admission.
+	winnerAdvanced = true
+	result, err := binder.BindAndCreate(context.Background(), admission, request)
+	if err != nil {
+		t.Fatalf("retry BindAndCreate: %v", err)
+	}
+	if result.Created || result.Run.ID != admitting.ID || result.Run.Status != db.AgentWorkflowRunStatusRunning {
+		t.Fatalf("retry result = %+v", result)
+	}
+	if transitions != 1 {
+		t.Fatalf("retry re-attempted the CAS: transitions = %d", transitions)
+	}
+}
+
+// TestBindAndCreateWonAdmissionCASWithUnadvancedRowIsCorrupt is the sibling arm:
+// advanceAdmission with transitioned==true while the row still reads admitting
+// with a complete execution is genuinely impossible (this writer won the
+// admitting->running CAS, so the row cannot still be admitting). Correct
+// behavior at binder.go:429-430 is ErrCorruptPartialAdmission, and no execution
+// may be started.
+func TestBindAndCreateWonAdmissionCASWithUnadvancedRowIsCorrupt(t *testing.T) {
+	definition := binderTestDefinition()
+	rendered := binderTestRendered(t, definition)
+	admitting := db.AgentWorkflowRun{
+		ID: 41, TeamID: 7, TeamName: "research", WorkflowDefinitionID: definition.ID,
+		WorkflowName: definition.Name, WorkflowVersion: definition.Version,
+		SchemaVersion: 3, SignatureVersion: 1, DefinitionContentHash: definition.ContentHash,
+		IdempotencyKey: "won-cas-unadvanced", ParameterizedConfig: mustCanonical(t, rendered.Config),
+		ParameterizedConfigHash: rendered.TargetConfigHash, OriginKind: "manual", CreatedBy: "alice",
+		Status: db.AgentWorkflowRunStatusAdmitting,
+	}
+	pipelineRunID, templateID, instanceID := 73, 2, 3
+	plannedBuildID := int64(5)
+	concreteHash := strings.Repeat("c", 64)
+	admitting.PipelineRunID, admitting.TemplatePipelineID, admitting.InstancePipelineID =
+		&pipelineRunID, &templateID, &instanceID
+	admitting.ConcreteConfig, admitting.ConcreteConfigHash = mustCanonical(t, rendered.Config), &concreteHash
+	admitting.PlannedBuildID = &plannedBuildID
+
+	transitions := 0
+	store := &storeStub{
+		find: func(context.Context, int, string) (db.AgentWorkflowRun, bool, error) {
+			return admitting, true, nil
+		},
+		snapshots: func(context.Context, snapshot.WorkflowRunID) ([]db.AgentWorkflowRunSnapshotBinding, error) {
+			return nil, nil
+		},
+		transition: func(_ context.Context, id snapshot.WorkflowRunID, from, to db.AgentWorkflowRunStatus, message string) (bool, error) {
+			transitions++
+			if id != admitting.ID || from != db.AgentWorkflowRunStatusAdmitting ||
+				to != db.AgentWorkflowRunStatusRunning || message != "" {
+				t.Fatalf("transition = (%s, %s, %s, %q)", id.String(), from, to, message)
+			}
+			return true, nil
+		},
+	}
+	unwanted := errors.New("unexpected external side effect")
+	binder, err := NewBinder(
+		&resolverStub{live: func(context.Context, string) (workflow.Definition, bool, error) {
+			return workflow.Definition{}, false, unwanted
+		}},
+		&rendererStub{},
+		&authorizerStub{get: func(context.Context, int, snapshot.SnapshotID) (snapshot.Snapshot, bool, error) {
+			return snapshot.Snapshot{}, false, unwanted
+		}},
+		store,
+		&budgetStub{admit: func(context.Context, BudgetAdmission) error { return unwanted }},
+		&saverStub{save: func(context.Context, AdmissionContext, ImmutableTemplateSpec) (WorkflowRunTemplateRef, error) {
+			return WorkflowRunTemplateRef{}, unwanted
+		}},
+		&creatorStub{create: func(context.Context, snapshot.WorkflowRunID, WorkflowRunTemplateRef, map[string]any, string, BeforeWorkflowRunCommit) (WorkflowRunExecution, bool, error) {
+			t.Fatal("an impossible corrupt admitting state must never start an execution")
+			return WorkflowRunExecution{}, false, nil
+		}},
+		&secretStub{prepare: func(context.Context, AdmissionContext, db.AgentWorkflowRun) (PreparedRunSecret, error) {
+			return nil, unwanted
+		}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admission := AdmissionContext{TeamID: 7, TeamName: "research", CreatedBy: "alice", Origin: Origin{Kind: "manual"}}
+	request := BindRequest{
+		WorkflowName: definition.Name, Inputs: map[string]snapshot.SnapshotID{},
+		IdempotencyKey: "won-cas-unadvanced",
+	}
+
+	_, err = binder.BindAndCreate(context.Background(), admission, request)
+	if !errors.Is(err, ErrCorruptPartialAdmission) {
+		t.Fatalf("error = %v, want corrupt partial admission", err)
+	}
+	if transitions != 1 {
+		t.Fatalf("transition attempts = %d, want 1", transitions)
+	}
+}
+
+// TestBindAndCreateLostFailureCASDefersToDurableWinner pins failAllocated's
+// lost-CAS arm (the transitioned==false branch at binder.go:459-468). resume
+// denies budget on an admitting run with an empty execution, so failAllocated
+// tries to mark it errored; when Transition reports it did NOT win the
+// admitting->errored CAS (transitioned==false) a concurrent writer already
+// advanced the durable identity. Correct behavior at binder.go:462-467: read the
+// durable winner and defer to it -- return BindResult{Run: winner} with a nil
+// error, discarding our own budget-denied cause -- rather than surface a failure
+// for a run another writer is successfully driving.
+func TestBindAndCreateLostFailureCASDefersToDurableWinner(t *testing.T) {
+	definition := binderTestDefinition()
+	rendered := binderTestRendered(t, definition)
+	run := db.AgentWorkflowRun{
+		ID: 41, TeamID: 7, TeamName: "research", WorkflowDefinitionID: definition.ID,
+		WorkflowName: definition.Name, WorkflowVersion: definition.Version,
+		SchemaVersion: 3, SignatureVersion: 1, DefinitionContentHash: definition.ContentHash,
+		IdempotencyKey: "lost-failure-cas", ParameterizedConfig: mustCanonical(t, rendered.Config),
+		ParameterizedConfigHash: rendered.TargetConfigHash, OriginKind: "manual", CreatedBy: "alice",
+		Status: db.AgentWorkflowRunStatusAdmitting,
+	}
+	winner := run
+	winner.Status = db.AgentWorkflowRunStatusRunning
+	pipelineRunID, templateID, instanceID := 73, 2, 3
+	plannedBuildID := int64(5)
+	concreteHash := strings.Repeat("c", 64)
+	winner.PipelineRunID, winner.TemplatePipelineID, winner.InstancePipelineID =
+		&pipelineRunID, &templateID, &instanceID
+	winner.ConcreteConfig, winner.ConcreteConfigHash = mustCanonical(t, rendered.Config), &concreteHash
+	winner.PlannedBuildID = &plannedBuildID
+
+	findCalls := 0
+	store := &storeStub{
+		find: func(context.Context, int, string) (db.AgentWorkflowRun, bool, error) {
+			findCalls++
+			if findCalls == 1 {
+				return run, true, nil
+			}
+			return winner, true, nil
+		},
+		snapshots: func(context.Context, snapshot.WorkflowRunID) ([]db.AgentWorkflowRunSnapshotBinding, error) {
+			return nil, nil
+		},
+		transition: func(_ context.Context, id snapshot.WorkflowRunID, from, to db.AgentWorkflowRunStatus, message string) (bool, error) {
+			if id != run.ID || from != db.AgentWorkflowRunStatusAdmitting ||
+				to != db.AgentWorkflowRunStatusErrored || message != ErrBudgetDenied.Error() {
+				t.Fatalf("transition = (%s, %s, %s, %q)", id.String(), from, to, message)
+			}
+			return false, nil
+		},
+	}
+	unwanted := errors.New("unexpected external side effect")
+	binder, err := NewBinder(
+		&resolverStub{live: func(context.Context, string) (workflow.Definition, bool, error) {
+			return workflow.Definition{}, false, unwanted
+		}},
+		&rendererStub{},
+		&authorizerStub{},
+		store,
+		&budgetStub{admit: func(context.Context, BudgetAdmission) error { return ErrBudgetDenied }},
+		&saverStub{save: func(context.Context, AdmissionContext, ImmutableTemplateSpec) (WorkflowRunTemplateRef, error) {
+			return WorkflowRunTemplateRef{}, unwanted
+		}},
+		&creatorStub{create: func(context.Context, snapshot.WorkflowRunID, WorkflowRunTemplateRef, map[string]any, string, BeforeWorkflowRunCommit) (WorkflowRunExecution, bool, error) {
+			t.Fatal("a denied admission must never start an execution")
+			return WorkflowRunExecution{}, false, nil
+		}},
+		&secretStub{prepare: func(context.Context, AdmissionContext, db.AgentWorkflowRun) (PreparedRunSecret, error) {
+			t.Fatal("budget denial precedes secret preparation")
+			return nil, nil
+		}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := binder.BindAndCreate(context.Background(), AdmissionContext{
+		TeamID: 7, TeamName: "research", CreatedBy: "alice", Origin: Origin{Kind: "manual"},
+	}, BindRequest{
+		WorkflowName: definition.Name, Inputs: map[string]snapshot.SnapshotID{},
+		IdempotencyKey: "lost-failure-cas",
+	})
+	if err != nil {
+		t.Fatalf("a lost failure CAS must defer to the durable winner, got %v", err)
+	}
+	if result.Created || result.Run.ID != run.ID || result.Run.Status != db.AgentWorkflowRunStatusRunning {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+// TestBindAndCreateLostFailureCASWithoutWinnerReturnsCause pins the other
+// transitioned==false exit of failAllocated (binder.go:469): our admitting->
+// errored CAS lost, but a re-read finds no durable winner to defer to. With
+// nothing else driving the run, correct behavior is to surface the original
+// cause (here ErrBudgetDenied) rather than fabricate a winner or corruption
+// error, and still start no execution.
+func TestBindAndCreateLostFailureCASWithoutWinnerReturnsCause(t *testing.T) {
+	definition := binderTestDefinition()
+	rendered := binderTestRendered(t, definition)
+	run := db.AgentWorkflowRun{
+		ID: 41, TeamID: 7, TeamName: "research", WorkflowDefinitionID: definition.ID,
+		WorkflowName: definition.Name, WorkflowVersion: definition.Version,
+		SchemaVersion: 3, SignatureVersion: 1, DefinitionContentHash: definition.ContentHash,
+		IdempotencyKey: "lost-failure-cas-no-winner", ParameterizedConfig: mustCanonical(t, rendered.Config),
+		ParameterizedConfigHash: rendered.TargetConfigHash, OriginKind: "manual", CreatedBy: "alice",
+		Status: db.AgentWorkflowRunStatusAdmitting,
+	}
+
+	findCalls := 0
+	store := &storeStub{
+		find: func(context.Context, int, string) (db.AgentWorkflowRun, bool, error) {
+			findCalls++
+			if findCalls == 1 {
+				return run, true, nil
+			}
+			// The failure-marking CAS lost, yet no durable winner is visible:
+			// there is nothing to defer to.
+			return db.AgentWorkflowRun{}, false, nil
+		},
+		snapshots: func(context.Context, snapshot.WorkflowRunID) ([]db.AgentWorkflowRunSnapshotBinding, error) {
+			return nil, nil
+		},
+		transition: func(_ context.Context, id snapshot.WorkflowRunID, from, to db.AgentWorkflowRunStatus, message string) (bool, error) {
+			if id != run.ID || from != db.AgentWorkflowRunStatusAdmitting ||
+				to != db.AgentWorkflowRunStatusErrored || message != ErrBudgetDenied.Error() {
+				t.Fatalf("transition = (%s, %s, %s, %q)", id.String(), from, to, message)
+			}
+			return false, nil
+		},
+	}
+	unwanted := errors.New("unexpected external side effect")
+	binder, err := NewBinder(
+		&resolverStub{live: func(context.Context, string) (workflow.Definition, bool, error) {
+			return workflow.Definition{}, false, unwanted
+		}},
+		&rendererStub{},
+		&authorizerStub{},
+		store,
+		&budgetStub{admit: func(context.Context, BudgetAdmission) error { return ErrBudgetDenied }},
+		&saverStub{save: func(context.Context, AdmissionContext, ImmutableTemplateSpec) (WorkflowRunTemplateRef, error) {
+			return WorkflowRunTemplateRef{}, unwanted
+		}},
+		&creatorStub{create: func(context.Context, snapshot.WorkflowRunID, WorkflowRunTemplateRef, map[string]any, string, BeforeWorkflowRunCommit) (WorkflowRunExecution, bool, error) {
+			t.Fatal("a denied admission must never start an execution")
+			return WorkflowRunExecution{}, false, nil
+		}},
+		&secretStub{prepare: func(context.Context, AdmissionContext, db.AgentWorkflowRun) (PreparedRunSecret, error) {
+			t.Fatal("budget denial precedes secret preparation")
+			return nil, nil
+		}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = binder.BindAndCreate(context.Background(), AdmissionContext{
+		TeamID: 7, TeamName: "research", CreatedBy: "alice", Origin: Origin{Kind: "manual"},
+	}, BindRequest{
+		WorkflowName: definition.Name, Inputs: map[string]snapshot.SnapshotID{},
+		IdempotencyKey: "lost-failure-cas-no-winner",
+	})
+	if !errors.Is(err, ErrBudgetDenied) {
+		t.Fatalf("a lost failure CAS with no durable winner must return the original cause, got %v", err)
+	}
+	if findCalls != 2 {
+		t.Fatalf("find calls = %d, want 2 (initial existing + post-CAS winner read)", findCalls)
+	}
+}
+
 func TestBindAndCreateLeavesPostAllocationPlatformFailureRetryableAndRedacted(t *testing.T) {
 	definition := binderTestDefinition()
 	rendered := binderTestRendered(t, definition)
