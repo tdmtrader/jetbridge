@@ -2,6 +2,7 @@ package publisher_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -146,5 +147,115 @@ func TestWorkItemServiceReconcilesCrashAfterProviderSuccessWithoutRepeatingWrite
 	}
 	if len(backend.requests) != 1 || backend.lookups != 2 {
 		t.Fatalf("writes/lookups = %d/%d, want 1/2", len(backend.requests), backend.lookups)
+	}
+}
+
+func TestWorkItemServiceRefusesRecoveredResultWithoutExternalIdentity(t *testing.T) {
+	now := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
+	store := publisher.NewMemoryStore(func() time.Time { return now })
+	backend := &workItemBackendStub{found: true, lookup: publisher.WorkItemResult{}}
+	service, err := publisher.NewWorkItemService(
+		store, &credentialsStub{credential: publisher.Credential{Reference: "secret/work"}},
+		validSnapshotValueInspector(), backend, activeActions(), time.Minute, time.Minute,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := commentRequest()
+	_, err = service.Execute(context.Background(), request)
+	if err == nil || !strings.Contains(err.Error(), "external identity") {
+		t.Fatalf("empty recovered result = %v, want a named refusal", err)
+	}
+	// The refusal must never be classifiable terminal: terminalGatewayFailure
+	// completes an operation as failed PERMANENTLY, and it asks Retryable and
+	// nothing else. A refusal that answered false here would be one wrapping
+	// change away from burning a publication that a later attempt could land.
+	if !publisher.Retryable(err) {
+		t.Fatalf("Retryable(%v) = false, want true — the refusal must not be terminal", err)
+	}
+	key, _ := request.OperationKey()
+	pending, found, err := store.Get(context.Background(), key)
+	if err != nil || !found || pending.Status != publisher.StatusPending {
+		t.Fatalf("refusal must stay retryable: (%+v, %t, %v)", pending, found, err)
+	}
+
+	// The refusal is retryable, not terminal: once the backend answers with a
+	// real identity the same operation completes.
+	now = now.Add(2 * time.Minute)
+	backend.lookup = publisher.WorkItemResult{ExternalID: "comment-9", URL: "https://work.example/9"}
+	completed, err := service.Execute(context.Background(), request)
+	if err != nil || completed.Status != publisher.StatusSucceeded || completed.Result.ExternalID != "comment-9" {
+		t.Fatalf("retry after a usable identity = (%+v, %v)", completed, err)
+	}
+}
+
+// TestWorkItemServiceRefusesFreshResultWithoutExternalIdentity is the second
+// application point. It is a distinct code path with a distinct hazard: the
+// external write has already happened, so the refusal cannot mean "nothing
+// landed" — only "the provider did not tell us what landed". Staying pending is
+// still the safe answer, because the next attempt reaches Lookup first and so
+// cannot repeat the write.
+func TestWorkItemServiceRefusesFreshResultWithoutExternalIdentity(t *testing.T) {
+	now := time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)
+	store := publisher.NewMemoryStore(func() time.Time { return now })
+	backend := &workItemBackendStub{result: publisher.WorkItemResult{URL: "https://work.example/9"}}
+	service, err := publisher.NewWorkItemService(
+		store, &credentialsStub{credential: publisher.Credential{Reference: "secret/work"}},
+		validSnapshotValueInspector(), backend, activeActions(), time.Minute, time.Minute,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := commentRequest()
+	_, err = service.Execute(context.Background(), request)
+	if err == nil || !strings.Contains(err.Error(), "external identity") {
+		t.Fatalf("fresh result without an external id = %v, want a named refusal", err)
+	}
+	if !publisher.Retryable(err) {
+		t.Fatalf("Retryable(%v) = false, want true — the refusal must not be terminal", err)
+	}
+	key, _ := request.OperationKey()
+	pending, found, err := store.Get(context.Background(), key)
+	if err != nil || !found || pending.Status != publisher.StatusPending {
+		t.Fatalf("refusal must stay retryable: (%+v, %t, %v)", pending, found, err)
+	}
+
+	now = now.Add(2 * time.Minute)
+	backend.result = publisher.WorkItemResult{ExternalID: "comment-9", URL: "https://work.example/9"}
+	completed, err := service.Execute(context.Background(), request)
+	if err != nil || completed.Status != publisher.StatusSucceeded || completed.Result.ExternalID != "comment-9" {
+		t.Fatalf("retry after a usable identity = (%+v, %v)", completed, err)
+	}
+}
+
+func TestWorkItemServiceRefusesResultsWithUnusableIdentities(t *testing.T) {
+	for name, result := range map[string]publisher.WorkItemResult{
+		"empty external id":     {ExternalID: ""},
+		"blank external id":     {ExternalID: "   "},
+		"untrimmed external id": {ExternalID: "comment-9 "},
+		"control character":     {ExternalID: "comment\x009"},
+		"plaintext url":         {ExternalID: "comment-9", URL: "http://work.example/9"},
+		"url with credentials":  {ExternalID: "comment-9", URL: "https://user:pass@work.example/9"},
+		"url without a host":    {ExternalID: "comment-9", URL: "https:///9"},
+		// net/url rejects DEL and every byte below 0x20 outright.
+		"unparseable url": {ExternalID: "comment-9", URL: "https://work.example/\x7f"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			for _, recovered := range []bool{false, true} {
+				store := publisher.NewMemoryStore(time.Now)
+				backend := &workItemBackendStub{found: recovered, lookup: result, result: result}
+				service, err := publisher.NewWorkItemService(
+					store, &credentialsStub{credential: publisher.Credential{Reference: "secret/work"}},
+					validSnapshotValueInspector(), backend, activeActions(), time.Minute, time.Minute,
+				)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := service.Execute(context.Background(), commentRequest()); err == nil ||
+					!strings.Contains(err.Error(), "external identity") {
+					t.Fatalf("recovered=%t result %+v = %v, want a named refusal", recovered, result, err)
+				}
+			}
+		})
 	}
 }

@@ -3,6 +3,7 @@ package publisher
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"time"
 
 	"github.com/concourse/concourse/agent/snapshot"
@@ -22,6 +23,40 @@ type WorkItemOperation struct {
 type WorkItemResult struct {
 	ExternalID string
 	URL        string
+}
+
+// Validate requires a work-item result to be a usable external identity.
+//
+// This is the work-item analogue of the Git service's head_sha cross-check
+// (git.go, the "reconciled Git result does not match" refusal): it is what a
+// service may trust before recording a terminal success. It is deliberately
+// weaker, because it can be. A Git result carries independently derived truth
+// — the result commit of the exact snapshot being published — so a recovered
+// result can be *cross-checked* against content. A work-item result carries
+// only an external ID and a URL; the wire response echoes nothing
+// request-derived (see gatewayResult in gateway.go), and demanding that a
+// provider's external ID or URL embed the destination would couple this
+// package to one provider's formatting. So the enforceable invariant is
+// identity usability, applied to both a recovered result and a fresh one. A
+// violation is a retryable refusal: the operation stays pending, because a
+// backend that answers this way once may answer correctly on the next attempt.
+//
+// Result.Validate (store.go) already rejects malformed non-empty text, but it
+// cannot stand in for this gate: it accepts an empty external_id outright and
+// says nothing about a URL's scheme, host, or userinfo. This is also why the
+// refusal must be raised here rather than left to Store.Complete — the caller
+// needs a named identity failure, not an incidental result-encoding failure.
+func (result WorkItemResult) Validate() error {
+	if !boundedText(result.ExternalID, 4096, false) {
+		return fmt.Errorf("publisher: work-item result carries no usable external identity")
+	}
+	if result.URL != "" {
+		parsed, err := url.Parse(result.URL)
+		if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil {
+			return fmt.Errorf("publisher: work-item result carries no usable external identity: URL is invalid")
+		}
+	}
+	return nil
 }
 
 type WorkItemBackend interface {
@@ -148,6 +183,9 @@ func (service *WorkItemService) Execute(ctx context.Context, request Request) (P
 		return Publication{}, preserveExternalError(externalContext, "reconcile work-item publication", err)
 	}
 	if found {
+		if err := prior.Validate(); err != nil {
+			return Publication{}, err
+		}
 		return service.store.Complete(ctx, publication.OperationKey, publication.Attempt, Result{
 			Status: StatusSucceeded, ExternalID: prior.ExternalID, URL: prior.URL,
 		})
@@ -166,6 +204,9 @@ func (service *WorkItemService) Execute(ctx context.Context, request Request) (P
 			return failed, completeErr
 		}
 		return Publication{}, preserveExternalError(externalContext, "publish work-item update", err)
+	}
+	if err := result.Validate(); err != nil {
+		return Publication{}, err
 	}
 	return service.store.Complete(ctx, publication.OperationKey, publication.Attempt, Result{
 		Status: StatusSucceeded, ExternalID: result.ExternalID, URL: result.URL,
