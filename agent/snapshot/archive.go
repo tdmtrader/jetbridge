@@ -173,6 +173,21 @@ func CanonicalArchiveByteLimit(maxContentBytes, maxEntries int64) (int64, error)
 // Snapshot paths form a bytewise POSIX namespace. Snapshot storage execution
 // is supported on Linux and Darwin; Windows is not a storage execution target.
 // Host filesystems that alias distinct POSIX names fail closed at extraction.
+//
+// What the emitted bytes are identity FOR is stated by two tests, which are the
+// normative form of this boundary rather than illustrations of it.
+// TestCanonicalCaptureDistinguishesNearMissTrees fixes what must produce a
+// different digest: an empty file is not an absent file, an empty directory is
+// not an absent directory, a name is not a type, a trailing newline is content,
+// separator placement is identity, and the executable bit is identity.
+// TestCanonicalCaptureIdentityBoundaryIsExecBitOnly fixes what must NOT: every
+// permission bit except the executable one, uid/gid and owner names, and all
+// three timestamps.
+//
+// Moving either line changes every digest ever computed, so it is a named
+// identity-migration event in exactly the sense the tar.FormatGNU comment in
+// writeCanonicalEntries means it. A mode-preserving change is the specific case
+// to watch: it looks local and is not.
 type Canonicalizer struct {
 	MaxEntries      int64
 	MaxContentBytes int64
