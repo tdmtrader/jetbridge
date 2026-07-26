@@ -29,10 +29,11 @@ with `DOGFOOD_FLAT=1`.
   that loops on a failing test can burn much more. Keep TASK_RANGE small (2–6 tasks);
   the phase hard-stops at TIMEOUT=120m.
 - **Review-before-merge protocol.** An `agent/dogfood-*` branch NEVER merges unreviewed:
-  (1) read the published review on the build page and the branch diff; (2) run
-  `make test-quick` locally with PostgreSQL up — the CI gate excludes postgres-backed
-  suites (atc/db, atc/gc, ...) because the test-runner image has no postgres; (3) run the
-  plan's own Execution-notes suites for the packages touched; (4) merge by hand.
+  (1) read the published review on the build page and the branch diff; (2) confirm the
+  `db-tests` task passed — it runs atc/db, atc/gc, and atc/integration in CI against the
+  PostgreSQL bundled in concourse-test-runner:v6 (WS1,
+  docs/superpowers/plans/test-hardening/01-ci-execution.md); (3) run the plan's own
+  Execution-notes suites for the packages touched; (4) merge by hand.
 - **Migration merge-order rule.** The migrator is version-pointer based: a lower-numbered
   migration merged AFTER a higher-numbered one deploys is never applied. Before merging
   any agent branch containing a migration, list every unmerged sibling branch's migration

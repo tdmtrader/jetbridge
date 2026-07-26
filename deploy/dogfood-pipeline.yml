@@ -142,12 +142,13 @@ jobs:
 
   # ---------------------------------------------------------------------
   # 2. Test-quick gate.
-  #    This is the CI equivalent of `make test-quick` (unit + ci-agent). The
-  #    concourse-test-runner image has no local PostgreSQL and no ginkgo, so —
-  #    copying the live unit-tests job's postgres approach exactly — the
-  #    postgres-backed packages are excluded here and remain a HUMAN-RUN local
-  #    gate (`make test-quick` with pg_isready green) before merging the
-  #    pushed branch. See ci/dogfood/README.md.
+  #    This is the CI equivalent of `make test-quick` (unit + ci-agent +
+  #    dev-mcp). Postgres-backed packages (atc/db, atc/gc, atc/integration)
+  #    are still excluded from THIS task's go-test sweep — they now run as
+  #    their own gate below (task 3, db-tests) against the PostgreSQL that
+  #    ships in concourse-test-runner:v6. See
+  #    docs/superpowers/plans/test-hardening/01-ci-execution.md (WS1) and
+  #    ci/dogfood/README.md.
   # ---------------------------------------------------------------------
   - task: test-quick-gate
     attempts: 2
@@ -193,7 +194,42 @@ jobs:
           echo "=== test-quick gate passed ==="
 
   # ---------------------------------------------------------------------
-  # 3. Diff-aware agent review of the slice + publish to the build page.
+  # 3. Postgres-backed db-tests gate (WS1). Runs atc/db, atc/gc, and
+  #    atc/integration against the PostgreSQL that ships in
+  #    concourse-test-runner:v6 — see deploy/Dockerfile.test-runner and
+  #    atc/postgresrunner (each Ginkgo suite self-provisions its own
+  #    ephemeral cluster via postgresrunner.GinkgoRunner; this task only
+  #    needs the initdb/postgres binaries + a "postgres" OS user, both of
+  #    which the image now provides — no separate database bootstrap step
+  #    is needed here).
+  # ---------------------------------------------------------------------
+  - task: db-tests
+    attempts: 2
+    config:
+      platform: linux
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v6
+      inputs:
+      - name: worked-repo
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          cd worked-repo
+          echo "=== Verifying PostgreSQL is available in this image ==="
+          initdb --version
+          postgres --version
+          id postgres
+          echo ""
+          echo "=== Running Postgres-backed atc/db and atc/gc suites ==="
+          ginkgo -r -p --keep-going --flake-attempts=1 ./atc/db ./atc/gc
+          echo ""
+          echo "=== Running atc/integration suite ==="
+          ginkgo -r --keep-going -p ./atc/integration/
+          echo "=== All Postgres-backed suites passed ==="
+
+  # ---------------------------------------------------------------------
+  # 4. Diff-aware agent review of the slice + publish to the build page.
   #    Diffs against the dogfood-base tag (= the ((base_branch)) commit this
   #    build got), so the review covers exactly what the agent changed.
   #    Known accepted exposure: this task runs git inside agent-writable
@@ -295,7 +331,7 @@ jobs:
           fi
 
   # ---------------------------------------------------------------------
-  # 4. Push the branch. The ONLY task holding the GitHub credential — the
+  # 5. Push the branch. The ONLY task holding the GitHub credential — the
   #    agent tasks above never see it (harvest posture).
   #
   #    SECURITY: never execute git INSIDE worked-repo here. Its .git dir was
