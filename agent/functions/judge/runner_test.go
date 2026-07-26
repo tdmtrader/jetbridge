@@ -71,6 +71,16 @@ func TestRunClampsScoresAndRejectsDuplicateOrUnexpectedDimensions(t *testing.T) 
 	if _, err := Run(context.Background(), testConfig, Options{CLIPath: stubCLI(t, duplicate), WorkDir: t.TempDir()}); err == nil || !strings.Contains(err.Error(), "duplicate dimension") {
 		t.Fatalf("duplicate error = %v", err)
 	}
+
+	// A verdict carrying a dimension the rubric never declared. The guard at
+	// runner.go:224-229 only runs when the verdict's dimension count differs
+	// from the rubric's, so this fixture must be a strict SUPERSET of the
+	// rubric — an equal-count substitution falls through to the
+	// missing-dimension check instead and never reaches this branch.
+	unexpected := `{"type":"result","result":"{\"dimensions\":[{\"name\":\"correctness\",\"score\":8,\"rationale\":\"ok\",\"issues\":[]},{\"name\":\"style\",\"score\":8,\"rationale\":\"ok\",\"issues\":[]},{\"name\":\"tests\",\"score\":8,\"rationale\":\"ok\",\"issues\":[]}]}","model":"test-model","is_error":false,"usage":{}}`
+	if _, err := Run(context.Background(), testConfig, Options{CLIPath: stubCLI(t, unexpected), WorkDir: t.TempDir()}); err == nil || !strings.Contains(err.Error(), `unexpected dimension "style"`) {
+		t.Fatalf("unexpected dimension error = %v", err)
+	}
 }
 
 func TestWriteMeasurementsEmitsStrictSnapshotDocument(t *testing.T) {
