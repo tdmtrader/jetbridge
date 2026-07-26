@@ -217,35 +217,102 @@ func TestCaptureRetriesTheExactSucceededGenerationWhenItsOutputExpired(t *testin
 	templates := &fakeTemplates{save: func(_ context.Context, spec resourcecapture.TemplateSpec) (resourcecapture.TemplateRef, error) {
 		return resourcecapture.TemplateRef{ID: 41, TeamID: 7, Name: spec.Name, ConfigVersion: 2, FullHash: spec.FullHash}, nil
 	}}
+
+	firstDigest := snapshot.Digest("sha256:" + strings.Repeat("a", 64))
+	secondDigest := snapshot.Digest("sha256:" + strings.Repeat("b", 64))
+	manifestFor := func(id snapshot.SnapshotID, digest snapshot.Digest) snapshot.Snapshot {
+		return snapshot.Snapshot{
+			ID: id, Type: snapshot.TypeRef("repository/v1"), Digest: digest,
+			ByteSize: 4096, FileCount: 9, Representation: "application/x-tar",
+			ContentState: snapshot.ContentStateAvailable, CreatedAt: repositoryResource().CapturedAt,
+		}
+	}
+
+	// Generation 51 succeeded and was finalized once; its bytes then expired.
+	// Generation 52 is the retry the platform binds under the SAME capture
+	// identity, and it finalizes its own manifest.
 	executions := &fakeExecutions{}
-	call := 0
+	executionCall := 0
 	executions.start = func(_ context.Context, request resourcecapture.ExecutionRequest) (resourcecapture.Execution, bool, error) {
-		call++
-		if call == 1 {
+		executionCall++
+		switch executionCall {
+		case 1, 2:
 			if request.RetryPipelineRunID != 0 {
-				t.Fatalf("initial execution requested retry: %#v", request)
+				t.Fatalf("initial execution requested a retry: %#v", request)
 			}
 			return resourcecapture.Execution{PipelineRunID: 51, TemplatePipelineID: 41, InstancePipelineID: 61, Status: db.PipelineRunSucceeded}, false, nil
+		case 3:
+			if request.RetryPipelineRunID != 51 {
+				t.Fatalf("retry did not bind the expired generation: %#v", request)
+			}
+			return resourcecapture.Execution{PipelineRunID: 52, TemplatePipelineID: 41, InstancePipelineID: 62, Status: db.PipelineRunSucceeded}, true, nil
+		default:
+			t.Fatalf("unexpected execution call %d: %#v", executionCall, request)
+			return resourcecapture.Execution{}, false, nil
 		}
-		if request.RetryPipelineRunID != 51 {
-			t.Fatalf("retry did not bind the expired generation: %#v", request)
-		}
-		return resourcecapture.Execution{PipelineRunID: 52, TemplatePipelineID: 41, InstancePipelineID: 62, Status: db.PipelineRunRunning}, true, nil
 	}
-	outputs := &fakeOutputs{finalize: func(context.Context, resourcecapture.OutputRequest) (snapshot.Snapshot, bool, error) {
-		return snapshot.Snapshot{}, false, resourcecapture.ErrOutputUnavailable
-	}}
+	outputs := &fakeOutputs{}
 	capturer := newCapturer(t, resolver, templates, executions, outputs)
 
-	result, err := capturer.Capture(context.Background(), validRequest())
+	// The first Capture finalizes generation 51 normally.
+	outputs.finalize = func(_ context.Context, request resourcecapture.OutputRequest) (snapshot.Snapshot, bool, error) {
+		if request.PipelineRunID != 51 {
+			t.Fatalf("unexpected finalize for run %d", request.PipelineRunID)
+		}
+		return manifestFor(71, firstDigest), true, nil
+	}
+	first, err := capturer.Capture(context.Background(), validRequest())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.Created || result.Snapshot != nil || result.Execution.PipelineRunID != 52 || result.Execution.Status != db.PipelineRunRunning {
-		t.Fatalf("retry result = %#v", result)
+	if first.Snapshot == nil || first.Snapshot.Digest != firstDigest {
+		t.Fatalf("first capture = %#v", first)
 	}
-	if len(executions.calls) != 2 || len(outputs.calls) != 1 {
+
+	// The second Capture finds generation 51's bytes gone and retries it.
+	outputs.finalize = func(_ context.Context, request resourcecapture.OutputRequest) (snapshot.Snapshot, bool, error) {
+		if request.PipelineRunID == 51 {
+			return snapshot.Snapshot{}, false, resourcecapture.ErrOutputUnavailable
+		}
+		if request.PipelineRunID != 52 {
+			t.Fatalf("unexpected finalize for run %d", request.PipelineRunID)
+		}
+		return manifestFor(72, secondDigest), true, nil
+	}
+	second, err := capturer.Capture(context.Background(), validRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if second.Execution.PipelineRunID != 52 || !second.Created {
+		t.Fatalf("retry result = %#v", second)
+	}
+	if second.Snapshot == nil {
+		t.Fatalf("retry produced no snapshot: %#v", second)
+	}
+	if len(executions.calls) != 3 || len(outputs.calls) != 3 {
 		t.Fatalf("retry calls = executions %d outputs %d", len(executions.calls), len(outputs.calls))
+	}
+
+	// Capture re-run is NOT byte-deterministic, and this is the assertion that
+	// says so out loud. A git resource's output carries .git, whose index stores
+	// per-file stat data and whose logs store wall-clock times; the canonicalizer
+	// zeroes filesystem metadata but never rewrites file content, and git stores
+	// its metadata as content. Observed 2026-07-25 by capturing two independent
+	// checkouts of one commit through the real Canonicalizer.
+	//
+	// What IS stable is the capture identity. The retry binds a NEW digest under
+	// the SAME operation key, and nothing in the capture path may compare the two
+	// or refuse the mismatch — if a future change adds such a comparison, this
+	// test is what fails.
+	if second.Snapshot.Digest == first.Snapshot.Digest {
+		t.Fatalf("the retry generation was expected to bind a new digest, got %s twice", second.Snapshot.Digest)
+	}
+	if second.OperationKey != first.OperationKey {
+		t.Fatalf("re-capture changed the capture identity: %q != %q", second.OperationKey, first.OperationKey)
+	}
+	if second.Snapshot.ID == first.Snapshot.ID {
+		t.Fatalf("the retry generation reused snapshot ID %s", second.Snapshot.ID)
 	}
 }
 

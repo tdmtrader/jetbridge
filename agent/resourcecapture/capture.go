@@ -2,6 +2,17 @@
 // version into a durable typed snapshot through a server-owned one-shot
 // pipeline. The resource source remains ordinary Concourse configuration; the
 // persisted production metadata contains only safe identifiers and hashes.
+//
+// Capturing the same pinned version twice is MEMOIZATION, not determinism. The
+// operation key is derived from the request — team, pipeline, resource, pinned
+// version, resource-config hash, task image — and never from bytes, so a second
+// generation under the same key may legitimately bind a different tree digest:
+// a git resource's output carries .git, whose index and reflog record per-run
+// stat data and wall-clock times as file CONTENT, which canonicalization does
+// not normalize. Callers must therefore treat "same version" as "same request",
+// never as "same digest", and nothing here may refuse a generation because its
+// digest differs from an earlier one. See
+// TestCaptureRetriesTheExactSucceededGenerationWhenItsOutputExpired.
 package resourcecapture
 
 import (
