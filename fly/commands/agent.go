@@ -11,6 +11,7 @@ type AgentCommand struct {
 	Principals  AgentPrincipalsCommand  `command:"principals" description:"Mint, list, and revoke agent principals (admin)"`
 	Tickets     AgentTicketsCommand     `command:"tickets" description:"File and track agent tickets"`
 	Dispatcher  AgentDispatcherCommand  `command:"dispatcher" description:"Show or set the autonomous dispatcher mode (off|paused|active)"`
+	Actions     AgentActionsCommand     `command:"actions" description:"Show or set the cluster-wide external-action switch (active|suppressed)" long-description:"After resume, a publish retried within --agent-publisher-gateway-lease-duration (default 5m) of a suppressed attempt still reports \"publication is still pending\" until that attempt's lease expires. Resume is not instantly effective for already-refused operations."`
 	Snapshots   AgentSnapshotsCommand   `command:"snapshots" description:"Create, inspect, retain, and download typed snapshots"`
 	Experiments AgentExperimentsCommand `command:"experiments" description:"Create, run, and inspect controlled workflow experiments"`
 
