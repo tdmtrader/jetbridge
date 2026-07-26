@@ -1,4 +1,4 @@
-.PHONY: test-unit test-ci-agent test-dev-mcp test-agent-race test-fly-integration test-integration test-k8s test-k8s-integration test-k8s-behavioral test-quick test-all
+.PHONY: test-unit test-ci-agent test-dev-mcp test-fuzz test-agent-race test-fly-integration test-integration test-k8s test-k8s-integration test-k8s-behavioral test-quick test-all
 
 # Unit tests: all packages except integration/e2e suites (~5 min)
 # Requires: PostgreSQL running locally
@@ -22,6 +22,22 @@ test-ci-agent:
 test-dev-mcp:
 	@echo "==> Running dev-mcp contract/e2e tests..."
 	go test ./agent/devmcp/... -count=1 -timeout 10m
+
+# Native Go fuzz targets, time-boxed as a smoke lane (~1 min)
+# Requires: nothing. Longer campaigns are manual — raise -fuzztime.
+#
+# -fuzzminimizetime is NOT optional. Its default is 60s per interesting input
+# and the coordinator stops fuzzing while it minimizes, so a 30s budget with the
+# default is spent almost entirely on minimization: measured 223 executions in
+# 30s with the default, versus 34,790 in the same 30s at a 1s minimize budget.
+#
+# New corpus entries go to the build cache, not the repository. A FAILING input,
+# however, is written to <package>/testdata/fuzz/<Target>/<hash> — that file is a
+# permanent regression seed and must be committed together with its fix.
+test-fuzz:
+	@echo "==> Running fuzz targets (30s each)..."
+	go test ./agent/snapshot/ -run '^$$' -fuzz='^FuzzCanonicalCapture$$' -fuzztime=30s -fuzzminimizetime=2s
+	go test ./agent/snapshot/contracts/ -run '^$$' -fuzz='^FuzzCanonicalJSON$$' -fuzztime=30s -fuzzminimizetime=2s
 
 # Agent race lane (plain go test, NOT the ginkgo CLI — the -p + -race
 # parallel-compilation failure documented in CLAUDE.md's Key Notes is a
@@ -76,4 +92,4 @@ test-k8s: test-k8s-integration test-k8s-behavioral
 test-quick: test-unit test-ci-agent test-dev-mcp
 
 # All tests in order of speed
-test-all: test-unit test-ci-agent test-dev-mcp test-agent-race test-fly-integration test-integration test-k8s
+test-all: test-unit test-ci-agent test-dev-mcp test-fuzz test-agent-race test-fly-integration test-integration test-k8s

@@ -1370,7 +1370,7 @@ func TestCanonicalCaptureJoinsCleanupErrorsAndCloseRetries(t *testing.T) {
 	})
 }
 
-func makeTar(t *testing.T, entries []tarEntry) []byte {
+func makeTar(t testing.TB, entries []tarEntry) []byte {
 	t.Helper()
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
