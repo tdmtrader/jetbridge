@@ -3532,6 +3532,7 @@ func (cmd *RunCommand) constructAPIHandler(
 		}),
 		db.NewAgentSettingsFactory(dbConn),
 		cmd.AgentDispatcherEnabled,
+		db.NewAgentSettingsFactory(dbConn),
 		snapshotHandlers,
 		resourceCapturer,
 		workflowRunHandlers,

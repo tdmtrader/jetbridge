@@ -14,6 +14,7 @@ import (
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagertest"
 
+	actionsapi "github.com/concourse/concourse/agent/api/actions"
 	dispatcherapi "github.com/concourse/concourse/agent/api/dispatcher"
 	experimentsapi "github.com/concourse/concourse/agent/api/experiments"
 	"github.com/concourse/concourse/agent/api/feedback"
@@ -350,6 +351,7 @@ var _ = BeforeEach(func() {
 		}),
 		dispatcherapi.NewMemoryStore(),
 		false, // agent dispatcher boot default (flag off)
+		actionsapi.NewMemoryStore(),
 		snapshotHandlers,
 		nil, // resource capture disabled with the snapshot service in this suite
 		workflowRunHandlers,

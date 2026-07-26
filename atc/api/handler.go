@@ -8,6 +8,7 @@ import (
 
 	"code.cloudfoundry.org/clock"
 	"code.cloudfoundry.org/lager/v3"
+	actionsapi "github.com/concourse/concourse/agent/api/actions"
 	"github.com/concourse/concourse/agent/api/costs"
 	dispatcherapi "github.com/concourse/concourse/agent/api/dispatcher"
 	experimentsapi "github.com/concourse/concourse/agent/api/experiments"
@@ -131,6 +132,8 @@ func NewHandler(
 	// agent_settings row exists.
 	agentSettingsStore dispatcherapi.Store,
 	agentDispatcherBootDefault bool,
+	// agentActionsStore backs the cluster-wide action-suppression routes (Get/SetAgentActions).
+	agentActionsStore actionsapi.Store,
 	snapshotHandlers *snapshotsapi.HandlerFactory,
 	resourceCapturer snapshotsapi.ResourceCapturer,
 	workflowRunHandlers *workflowrunsapi.Handler,
@@ -222,6 +225,12 @@ func NewHandler(
 	dispatcherServer := dispatcherapi.NewHandler(
 		agentSettingsStore,
 		agentDispatcherBootDefault,
+		func(r *http.Request) string {
+			return accessor.GetAccessor(r).Claims().UserName
+		},
+	)
+	actionsServer := actionsapi.NewHandler(
+		agentActionsStore,
 		func(r *http.Request) string {
 			return accessor.GetAccessor(r).Claims().UserName
 		},
@@ -450,6 +459,9 @@ func NewHandler(
 
 		atc.GetAgentDispatcher: http.HandlerFunc(dispatcherServer.Get),
 		atc.SetAgentDispatcher: http.HandlerFunc(dispatcherServer.Set),
+
+		atc.GetAgentActions: http.HandlerFunc(actionsServer.Get),
+		atc.SetAgentActions: http.HandlerFunc(actionsServer.Set),
 
 		atc.CreateAgentSnapshot: teamHandlerFactory.HandlerFor(snapshotTeamHandler(snapshotHandlers.Create)),
 		atc.CaptureAgentResourceSnapshot: teamHandlerFactory.HandlerFor(snapshotTeamHandler(func(team snapshotsapi.TrustedTeam) http.Handler {

@@ -203,6 +203,9 @@ const (
 	GetAgentDispatcher = "GetAgentDispatcher"
 	SetAgentDispatcher = "SetAgentDispatcher"
 
+	GetAgentActions = "GetAgentActions"
+	SetAgentActions = "SetAgentActions"
+
 	MCPEndpoint = "MCPEndpoint"
 )
 
@@ -410,6 +413,9 @@ var Routes = rata.Routes([]rata.Route{
 
 	{Path: "/api/v1/agent/dispatcher", Method: "GET", Name: GetAgentDispatcher},
 	{Path: "/api/v1/agent/dispatcher", Method: "PUT", Name: SetAgentDispatcher},
+
+	{Path: "/api/v1/agent/actions", Method: "GET", Name: GetAgentActions},
+	{Path: "/api/v1/agent/actions", Method: "PUT", Name: SetAgentActions},
 
 	{Path: "/api/v1/mcp", Method: "POST", Name: MCPEndpoint},
 

@@ -479,6 +479,8 @@ var _ = Describe("APIAuthWrappa", func() {
 				).Wrap(rata.Handlers{
 					atc.GetAgentDispatcher: delegate,
 					atc.SetAgentDispatcher: delegate,
+					atc.GetAgentActions:    delegate,
+					atc.SetAgentActions:    delegate,
 				})
 			})
 
@@ -542,6 +544,53 @@ var _ = Describe("APIAuthWrappa", func() {
 					fakeaccess.IsAdminReturns(true)
 
 					resp := serveDispatcher(atc.SetAgentDispatcher)
+					Expect(resp.StatusCode).To(Equal(http.StatusOK))
+					Expect(delegateHit).To(BeTrue())
+				})
+			})
+
+			Describe("GetAgentActions", func() {
+				It("401s unauthenticated requests", func() {
+					fakeaccess.IsAuthenticatedReturns(false)
+
+					resp := serveDispatcher(atc.GetAgentActions)
+					Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
+					Expect(delegateHit).To(BeFalse())
+				})
+
+				It("admits ANY authenticated user, admin or not", func() {
+					fakeaccess.IsAuthenticatedReturns(true)
+					fakeaccess.IsAdminReturns(false)
+
+					resp := serveDispatcher(atc.GetAgentActions)
+					Expect(resp.StatusCode).To(Equal(http.StatusOK))
+					Expect(delegateHit).To(BeTrue())
+				})
+			})
+
+			Describe("SetAgentActions", func() {
+				It("401s unauthenticated requests", func() {
+					fakeaccess.IsAuthenticatedReturns(false)
+
+					resp := serveDispatcher(atc.SetAgentActions)
+					Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
+					Expect(delegateHit).To(BeFalse())
+				})
+
+				It("REJECTS an authenticated non-admin (403)", func() {
+					fakeaccess.IsAuthenticatedReturns(true)
+					fakeaccess.IsAdminReturns(false)
+
+					resp := serveDispatcher(atc.SetAgentActions)
+					Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
+					Expect(delegateHit).To(BeFalse())
+				})
+
+				It("admits admins", func() {
+					fakeaccess.IsAuthenticatedReturns(true)
+					fakeaccess.IsAdminReturns(true)
+
+					resp := serveDispatcher(atc.SetAgentActions)
 					Expect(resp.StatusCode).To(Equal(http.StatusOK))
 					Expect(delegateHit).To(BeTrue())
 				})
