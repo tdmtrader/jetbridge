@@ -3,10 +3,12 @@ package contracts
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/concourse/concourse/agent/snapshot"
 )
@@ -149,4 +151,58 @@ func TestRepositoryPayloadLimitAdmitsExactlyItsOwnSizeAndNoMore(t *testing.T) {
 			t.Fatalf("payload gate error = %v, want it to name the size limit", err)
 		}
 	})
+}
+
+// A review carrying ten thousand findings is 1.49 MB of record.json, so it does
+// not fit under the ordinary document limit — which is the finding, not an
+// inconvenience: no entity set declares a cardinality bound, and the document
+// limit is currently the only thing bounding one. This test raises that limit
+// deliberately so the remaining question is the one it is about, namely whether
+// the validators stay linear. They do: the measured time is around 30 ms, so a
+// quadratic regression at this size would blow the ceiling below by orders of
+// magnitude rather than by a flaky margin.
+func TestAReviewCarryingTenThousandFindingsValidatesQuickly(t *testing.T) {
+	withJSONDocumentLimit(t, 64<<20)
+
+	const count = 10000
+	const ceiling = 60 * time.Second
+
+	ref := snapshot.SnapshotRef{ID: 71, Type: snapshot.TypeRef("repository-change/v1"), Digest: fixtureDigest('a')}
+	declarations, err := snapshot.NewValidationContext(map[string]snapshot.SnapshotRef{"change": ref}, nil)
+	if err != nil {
+		t.Fatalf("NewValidationContext(): %v", err)
+	}
+
+	findings := make([]Finding, 0, count)
+	for index := 1; index <= count; index++ {
+		// Zero-padded, so lexicographic order is numeric order and the entity-set
+		// sort rule is satisfied by construction. Observation severity needs no
+		// evidence and may not be blocking, so the instance stays valid at any size.
+		findings = append(findings, Finding{
+			ID: fmt.Sprintf("f-%06d", index), Severity: "observation", Category: "style",
+			Title: "naming", Description: "prefer a fuller name",
+		})
+	}
+	record, err := NewRecord(reviewType,
+		[]Subject{SubjectFromInput("primary", SubjectRolePrimary, "change", ref)},
+		ReviewBody{Conclusion: "inconclusive", Summary: "ten thousand observations", Findings: findings},
+	)
+	if err != nil {
+		t.Fatalf("NewRecord(review/v1): %v", err)
+	}
+	encoded, err := json.Marshal(record)
+	if err != nil {
+		t.Fatalf("marshal record: %v", err)
+	}
+	dir := writeCandidateTree(t, map[string][]byte{"record.json": encoded})
+
+	started := time.Now()
+	if err := admitTreeForSeal(t, reviewType, dir, declarations); err != nil {
+		t.Fatalf("a %d-finding review was rejected: %v", count, err)
+	}
+	elapsed := time.Since(started)
+	t.Logf("%d findings, %d bytes of record.json, validated in %s", count, len(encoded), elapsed.Round(time.Millisecond))
+	if elapsed > ceiling {
+		t.Fatalf("validating %d findings took %s, over the %s ceiling; a validator has gone superlinear", count, elapsed, ceiling)
+	}
 }
