@@ -217,6 +217,16 @@ jobs:
           echo "=== Running agent/ race lane (go test -race) ==="
           go test -race -count=1 ./agent/...
           echo "=== agent/ race lane passed ==="
+          echo ""
+          echo "=== Fuzz smoke lane (make test-fuzz, if wired yet) ==="
+          if grep -qE '^test-fuzz:' Makefile; then
+            make test-fuzz
+          else
+            echo "SKIP: 'test-fuzz' Makefile target does not exist on this commit yet."
+            echo "It lands via the WS6 plan (Sealing and digest hardening,"
+            echo "docs/superpowers/plans/test-hardening/06-*.md). This guard is a"
+            echo "deliberate no-op until then - see 01-ci-execution.md Task 9."
+          fi
 
 - name: db-tests
   serial_groups: [pipeline]
