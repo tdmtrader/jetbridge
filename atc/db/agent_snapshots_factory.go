@@ -407,6 +407,17 @@ func validateSealInvocation(ctx context.Context, tx Tx, commit snapshot.SealComm
 // session scope by this connection's lease. PostgreSQL advisory locks stack
 // within a session, so the transaction-scoped acquisition below returns
 // immediately rather than self-deadlocking.
+//
+// Cross-pattern deadlock recovery: two concurrent sealers that acquire an
+// overlapping input and output digest in opposite orders (out=X/in=Y vs
+// out=Y/in=X) can still deadlock despite the sorted acquisition here, because
+// each output digest is already held at session scope by the lease before this
+// transaction runs. PostgreSQL's deadlock detector resolves that by aborting one
+// transaction with SQLSTATE 40P01, which propagates out of CommitSealBatch as a
+// step error. There is no in-process retry loop in agent/snapshot: recovery is
+// an EXTERNAL re-run of the step. (The landed T5 commit message calls this
+// "abort-and-retry" -- the abort is PostgreSQL's; any retry is the caller
+// re-running the step, and nothing here retries automatically.)
 func lockSealInputDigests(ctx context.Context, tx Tx, commit snapshot.SealCommitContext) error {
 	unique := make(map[snapshot.Digest]struct{}, len(commit.Inputs))
 	for _, ref := range commit.Inputs {
@@ -1634,9 +1645,26 @@ func (factory *agentSnapshotsFactory) ReapExpiredRetentionClaims(
 	// Strictly older than the cutoff, and never a NULL expiry: a claim that
 	// still retains anything is not reapable at any grace period, including
 	// zero.
+	//
+	// The class allowlist is defense in depth, not a live filter: only
+	// 'binding' claims are ever stamped with a finite expires_at
+	// (stampBindingRetention in agent/snapshot/sealer.go). 'run' is pinned to a
+	// NULL expiry by agent_snapshot_retention_claims_run_shape_check, and
+	// 'workflow', 'fixture', and 'pin' are permanent (NULL) by construction, so
+	// the expires_at predicate already excludes every non-binding class today.
+	// Naming the reapable class makes that structural and deliberate: a
+	// 'fixture' claim is the referent of
+	// agent_experiment_fixture_bindings.retention_claim_id, an ON DELETE
+	// RESTRICT foreign key (migration 1773106111). If such a claim ever acquired
+	// a past finite expiry, an unscoped all-or-nothing DELETE would trip that
+	// RESTRICT and fail on every Collect pass -- a recurring error that reaps
+	// nothing. Scoping the DELETE to the reapable class makes it impossible to
+	// target a RESTRICT-referenced row. Extend the list only for a class that
+	// both earns a grace-period expiry and carries no inbound RESTRICT reference.
 	result, err := factory.conn.ExecContext(ctx, `
 		DELETE FROM agent_snapshot_retention_claims
-		WHERE expires_at IS NOT NULL AND expires_at < $1
+		WHERE class IN ('binding')
+		  AND expires_at IS NOT NULL AND expires_at < $1
 	`, expiredBefore.UTC())
 	if err != nil {
 		return 0, err

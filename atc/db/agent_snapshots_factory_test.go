@@ -2261,6 +2261,83 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 		Expect(reaped).To(BeZero())
 	})
 
+	It("never reaps a fixture claim held by the fixture-binding RESTRICT foreign key", func() {
+		// agent_experiment_fixture_bindings.retention_claim_id references a
+		// fixture-class retention claim with ON DELETE RESTRICT (migration
+		// 1773106111). Fixture claims are created with a NULL expiry today, but
+		// the schema permits a finite one, so force the latent poison: give the
+		// RESTRICT-referenced claim a long-past expiry alongside an ordinary
+		// reapable binding claim on the same snapshot. The class guard must reap
+		// the binding claim while leaving the fixture claim untouched. Without the
+		// guard the all-or-nothing DELETE would target the fixture claim, trip the
+		// RESTRICT, error, and reap nothing at all.
+		value := digest("f")
+		staged := stage(value, defaultTeam.ID(), "fixture-poison")
+		ref := seal(newBuild(defaultTeam.ID()), "fixture-poison", nil, nil, []snapshot.SealCommitOutput{
+			output("fixture-poison", "result", "opaque/v1", value, staged),
+		})["fixture-poison"].Snapshot
+
+		// Minimal experiment -> fixture scaffold so a binding row can carry the
+		// inbound RESTRICT reference to the fixture claim.
+		var experimentID int64
+		Expect(dbConn.QueryRow(`
+			INSERT INTO agent_experiments
+				(team_id, team_name, name, candidate_signature, repetitions,
+				 evaluator_target_kind, evaluator_workflow_name, evaluator_definition_id,
+				 evaluator_workflow_version, evaluator_signature, evaluator_measurements_port, created_by)
+			VALUES ($1, $2, 'fixture-poison-exp', '{}'::jsonb, 1,
+				'workflow', 'eval-wf', 1, 1, '{}'::jsonb, 'measurements', 'tester')
+			RETURNING id
+		`, defaultTeam.ID(), defaultTeam.Name()).Scan(&experimentID)).To(Succeed())
+
+		var fixtureID int64
+		Expect(dbConn.QueryRow(`
+			INSERT INTO agent_experiment_fixtures (experiment_id, label, role)
+			VALUES ($1, 'fx', 'normal') RETURNING id
+		`, experimentID).Scan(&fixtureID)).To(Succeed())
+
+		var fixtureClaimID int64
+		Expect(dbConn.QueryRow(`
+			INSERT INTO agent_snapshot_retention_claims
+				(snapshot_id, team_id, class, actor, reason)
+			VALUES ($1, $2, 'fixture', 'experiment:fixture:port', 'experiment fixture binding')
+			RETURNING id
+		`, int64(ref.ID), defaultTeam.ID()).Scan(&fixtureClaimID)).To(Succeed())
+
+		_, err := dbConn.Exec(`
+			INSERT INTO agent_experiment_fixture_bindings
+				(fixture_id, port_name, snapshot_id, retention_claim_id)
+			VALUES ($1, 'port', $2, $3)
+		`, fixtureID, int64(ref.ID), fixtureClaimID)
+		Expect(err).NotTo(HaveOccurred())
+
+		// Force the RESTRICT-referenced fixture claim and the seal's ordinary
+		// binding claim a year into the past. The schema forbids only 'run' from
+		// carrying an expiry, so the fixture claim now looks reapable by date.
+		_, err = dbConn.Exec(`
+			UPDATE agent_snapshot_retention_claims
+			SET expires_at = now() - interval '365 days' WHERE snapshot_id = $1
+		`, int64(ref.ID))
+		Expect(err).NotTo(HaveOccurred())
+
+		reaped, err := factory.ReapExpiredRetentionClaims(ctx, time.Now())
+		Expect(err).NotTo(HaveOccurred(), "the RESTRICT-referenced fixture claim must never be targeted")
+		Expect(reaped).To(Equal(1), "only the ordinary binding claim is reaped; the fixture claim is not")
+
+		var fixtureClaimSurvives int
+		Expect(dbConn.QueryRow(`
+			SELECT count(*) FROM agent_snapshot_retention_claims WHERE id = $1
+		`, fixtureClaimID).Scan(&fixtureClaimSurvives)).To(Succeed())
+		Expect(fixtureClaimSurvives).To(Equal(1), "the fixture claim survives the reap")
+
+		var bindingClaimsRemaining int
+		Expect(dbConn.QueryRow(`
+			SELECT count(*) FROM agent_snapshot_retention_claims
+			WHERE snapshot_id = $1 AND class = 'binding'
+		`, int64(ref.ID)).Scan(&bindingClaimsRemaining)).To(Succeed())
+		Expect(bindingClaimsRemaining).To(BeZero(), "the ordinary binding claim was reaped, proving the DELETE ran")
+	})
+
 	It("refuses a zero cutoff and deletes nothing", func() {
 		value := digest("d")
 		staged := stage(value, defaultTeam.ID(), "zero-cutoff")
