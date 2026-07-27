@@ -2,6 +2,7 @@ package workflowruns
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"github.com/concourse/concourse/agent/pagination"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/workflowrun"
@@ -84,7 +86,7 @@ func (handler *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		Inputs: cloneSnapshotIDs(request.Inputs), IdempotencyKey: request.IdempotencyKey,
 	})
 	if err != nil {
-		writeBinderError(w, err)
+		writeBinderError(r.Context(), w, err)
 		return
 	}
 	if result.Run.IdempotencyKey != request.IdempotencyKey || result.Run.CreatedBy != creator ||
@@ -283,7 +285,7 @@ func (handler *Handler) Retry(w http.ResponseWriter, r *http.Request) {
 		Inputs: inputs, IdempotencyKey: retryRequest.IdempotencyKey, RetryOf: cloneWorkflowRunID(&source.ID),
 	})
 	if err != nil {
-		writeBinderError(w, err)
+		writeBinderError(r.Context(), w, err)
 		return
 	}
 	if result.Run.ID == source.ID || result.Run.WorkflowVersion != source.WorkflowVersion ||
@@ -818,7 +820,16 @@ func requireNoBody(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
-func writeBinderError(w http.ResponseWriter, err error) {
+// writeBinderError maps a bind failure onto a response. Every recognised cause
+// carries its own status and message; anything else is a 500 whose body
+// deliberately says nothing useful to the caller.
+//
+// The default branch therefore has to log. Without it the error is discarded
+// at the only point it exists, and the failure reaches the operator as
+// "workflow run service failed" with no cause anywhere — not in the response,
+// not in the web logs. That is exactly what stalled diagnosis of the behavioral
+// suite's last failing spec: a 500 with no explanation on either side.
+func writeBinderError(ctx context.Context, w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, workflowrun.ErrInvalidRequest):
 		writeError(w, http.StatusBadRequest, "invalid_request", "workflow run request is invalid")
@@ -831,6 +842,7 @@ func writeBinderError(w http.ResponseWriter, err error) {
 	case errors.Is(err, workflowrun.ErrIdempotencyConflict):
 		writeError(w, http.StatusConflict, "conflict", "idempotency key conflicts with immutable workflow-run state")
 	default:
+		lagerctx.FromContext(ctx).Error("workflow-run-bind-failed", err)
 		writeInternalError(w)
 	}
 }
