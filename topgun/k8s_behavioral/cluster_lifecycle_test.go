@@ -313,8 +313,8 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 		"--set", "image.pullPolicy=IfNotPresent",
 		"--set-string", "kubernetes.artifactHelperImage=" + artifactHelperImage,
 		"--set", "postgresql.persistence.enabled=false",
-		"--set", "cachePvc.enabled=false",
-		"--set", "artifactStorePvc.enabled=false",
+		// Keep the artifact daemon explicit so the test documents the required
+		// runtime mode even though it is also the chart default.
 		"--set", "artifactDaemon.enabled=true",
 		"--set", "artifactDaemon.tls.enabled=true",
 		"--set", "agentSnapshots.enabled=true",

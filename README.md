@@ -10,7 +10,7 @@ Kubernetes-native fork of [Concourse CI](https://github.com/concourse/concourse)
 - **Task Sidecars** — service containers (databases, caches, etc.) that run alongside task steps in a shared pod network
 - **`skip_download`** — get steps can resolve version metadata without downloading artifacts
 - **Configurable base resource types** — override default resource type images via `--kubernetes-base-resource-type name=image`
-- **GCS Fuse artifact store** — artifact PVC backed by Google Cloud Storage on GKE
+- **Artifact daemon** — per-node DaemonSet that stores, mirrors, and resolves step artifacts over node-local storage
 - **Health endpoint** — `GET /api/v1/health` with DB + worker checks (used for K8s readiness probes)
 - **OpenTelemetry** — distributed tracing (OTLP, Jaeger, Honeycomb, Stackdriver) and metrics export
 
@@ -91,15 +91,15 @@ The web node registers itself as a synthetic worker (`k8s-<namespace>`) by writi
 
 Key file: [`registrar.go`](atc/worker/jetbridge/registrar.go)
 
-### Artifact passing via PVC
+### Artifact passing via the artifact daemon
 
-A shared PVC replaces SPDY streaming for artifact transfer between steps. An artifact-helper sidecar tars outputs to the PVC; init containers in downstream pods extract them.
+A per-node DaemonSet replaces SPDY streaming for artifact transfer between steps. Step outputs stay on the producing node's host path; the daemon registers them, mirrors them to peers, and resolves each downstream input — fetching a remote copy when the artifact was produced on another node.
 
-Key files: [`volume_artifactstore.go`](atc/worker/jetbridge/volume_artifactstore.go), [`config.go`](atc/worker/jetbridge/config.go)
+Key files: [`volume_daemonset.go`](atc/worker/jetbridge/volume_daemonset.go), [`daemon_client.go`](atc/worker/jetbridge/daemon_client.go), [`config.go`](atc/worker/jetbridge/config.go)
 
 ### Resource caching
 
-Shared PVC mounted at `/concourse/cache` with subPath mounts per cache entry. Configured via `--kubernetes-cache-pvc` and `--kubernetes-artifact-store-claim`.
+Node-local cache directories under the daemon's host path, with subPath mounts per cache entry. Configured via `--kubernetes-cache-store` and `--kubernetes-cache-host-path`.
 
 Key file: [`config.go`](atc/worker/jetbridge/config.go)
 
@@ -111,7 +111,7 @@ Key file: [`errors.go`](atc/worker/jetbridge/errors.go)
 
 ### Garbage collection
 
-A reaper runs every 30 seconds to reconcile pods with the database, delete completed/orphaned pods, and clean up cache and artifact PVC contents.
+A reaper runs every 30 seconds to reconcile pods with the database, delete completed/orphaned pods, and ask the artifact daemon to release the node-local artifacts they produced.
 
 Key file: [`reaper.go`](atc/worker/jetbridge/reaper.go)
 
@@ -123,8 +123,9 @@ Key file: [`reaper.go`](atc/worker/jetbridge/reaper.go)
 | `executor.go` | Command execution via K8s exec API (SPDY) |
 | `podname.go` | Deterministic pod name generation |
 | `registrar.go` | Synthetic worker registration (direct DB) |
-| `volume_artifactstore.go` | PVC-based artifact store volumes |
-| `config.go` | K8s flags, PVC config, image mappings |
+| `volume_daemonset.go` | Artifact-daemon backed volumes |
+| `daemon_client.go` | HTTP client for the per-node artifact daemon |
+| `config.go` | K8s flags, cache/artifact config, image mappings |
 | `errors.go` | Transient error classification and retry |
 | `reaper.go` | Pod and volume garbage collection |
 | `process.go` | Process abstraction over K8s exec |
@@ -334,13 +335,12 @@ curl -X POST https://concourse.example.com/api/v1/agent/feedback \
 - Agent feedback API
 - Deterministic pod naming
 - Transient error retry with K8s error classification
-- PVC-based artifact passing and resource caching
+- Artifact-daemon based artifact passing and node-local resource caching
 
 ### Known limitations
 
 - **No TTY** — `SetTTY` is a no-op for Kubernetes pods
 - **Single namespace per worker** — worker name is deterministic (`k8s-<namespace>`)
-- **`fly execute -i` with artifact store** — when `ArtifactStoreClaim` is configured, `fly execute --input` needs additional work for the upload path
 
 ---
 
@@ -393,9 +393,9 @@ go test ./atc/api/agentfeedback/...
 See [`JETBRIDGE.md`](JETBRIDGE.md) for the full deployment guide, including:
 
 - Complete configuration reference (all `--kubernetes-*`, `--tracing-*`, `--otel-metrics-*`, `--gc-*` flags)
-- New pipeline features (`skip_download`, sidecars, configurable base resource types, GCS Fuse)
+- New pipeline features (`skip_download`, sidecars, configurable base resource types)
 - Health endpoint (`GET /api/v1/health`) response schema
-- Production checklist (external DB, auth, secrets, multi-node PVC, connection pool sizing)
+- Production checklist (external DB, auth, secrets, multi-node artifact mirroring, connection pool sizing)
 - RBAC requirements
 - Troubleshooting (pod startup, image pulls, artifact passing, GC)
 - Monitoring: Prometheus metrics, OpenTelemetry tracing/metrics, ServiceMonitor

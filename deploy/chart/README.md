@@ -7,8 +7,8 @@ Kubernetes pods directly for every pipeline step.
 **Key differences from the official Concourse chart:**
 
 - No worker StatefulSet. Task pods are created on-demand by the web node.
-- Artifact passing uses a shared PVC with init containers and a sidecar (no SPDY streaming between workers).
-- The web node needs RBAC permissions to create pods, PVCs, and exec into containers in its namespace.
+- Artifact passing goes through a per-node artifact DaemonSet over node-local storage (no shared RWX volume, no SPDY streaming between workers).
+- The web node needs RBAC permissions to create pods and exec into containers in its namespace.
 
 ## Quickstart (k3s)
 
@@ -242,38 +242,27 @@ container explicitly run as UID 0 because task outputs on the hostPath can
 have arbitrary ownership; the container still drops every capability and adds
 back only `DAC_OVERRIDE`, with privilege escalation disabled.
 
-### Storage — Cache PVC
+### Storage — DaemonSet and Node-Local Caches
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `cachePvc.enabled` | `true` | Enable cache PVC for resource/task caches. |
-| `cachePvc.name` | `concourse-cache` | PVC name. |
-| `cachePvc.size` | `5Gi` | Storage size. |
-| `cachePvc.storageClass` | `""` (cluster default) | Storage class. |
-| `cachePvc.accessModes` | `[ReadWriteOnce]` | Access modes. |
+| `cacheStore` | `""` (auto) | Task cache backend: `hostpath` or `emptydir`. Auto uses the artifact DaemonSet's node-local storage. |
+| `cacheHostPath` | `""` | Optional separate node-local directory for persistent task caches. |
+| `artifactDaemon.enabled` | `true` | Deploy the required per-node artifact daemon. Must remain enabled for the Kubernetes runtime. |
+| `artifactDaemon.port` | `7780` | Daemon HTTP/host port. |
+| `artifactDaemon.hostPath` | `/var/concourse/artifacts` | Node-local artifact and default cache root. |
+| `artifactDaemon.ttl` | `2h` | Retention period for daemon-managed artifacts. |
+| `artifactDaemon.mirror.replicas` | `2` | Total desired copies, including the local copy; `all` mirrors to every peer. |
+| `artifactDaemon.mirror.concurrency` | `4` | Maximum concurrent mirror jobs per daemon. |
+| `artifactDaemon.mirror.timeout` | `5m` | Per-peer mirror timeout. |
+| `artifactDaemon.preemption.enabled` | `false` | Watch GCP spot-preemption metadata and evacuate artifacts before shutdown. |
+| `artifactDaemon.tls.enabled` | `false` | Enable HTTPS and mutual TLS between web and daemon peers. |
+| `artifactDaemon.networkPolicy.enabled` | `false` | Restrict daemon ingress to Concourse components. |
 
-### Storage — Artifact Store PVC
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `artifactStorePvc.enabled` | `true` | Enable artifact store PVC for cross-pod volume passing. |
-| `artifactStorePvc.name` | `concourse-artifacts` | PVC name. |
-| `artifactStorePvc.size` | `10Gi` | Storage size (nominal for GCS Fuse). |
-| `artifactStorePvc.storageClass` | `""` (cluster default) | Storage class. |
-| `artifactStorePvc.accessModes` | `[ReadWriteOnce]` | Access modes. **Use `ReadWriteMany` for multi-replica or concurrent builds.** |
-
-### Storage — GCS Fuse (GKE Only)
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `artifactStorePvc.gcsFuse.enabled` | `false` | Enable GCS Fuse-backed artifact store. |
-| `artifactStorePvc.gcsFuse.bucketName` | `""` | GCS bucket name. |
-| `artifactStorePvc.gcsFuse.onlyDir` | `""` | Restrict mount to subdirectory prefix. |
-| `artifactStorePvc.gcsFuse.mountOptions` | `[implicit-dirs]` | Mount options for GCS Fuse driver. |
-
-When enabled, the chart creates a PV + PVC backed by a GCS bucket using
-the `gcsfuse.csi.storage.gke.io` CSI driver. The `implicit-dirs` mount
-option is recommended for Concourse's tar-based artifact layout.
+The current runtime no longer supports the retired cache/artifact PVC flags.
+Artifacts live on the producing node's host path and are served and replicated
+by the DaemonSet. Downstream pods resolve inputs through the local daemon,
+which fetches a peer copy when the artifact originated on another node.
 
 ### PostgreSQL
 
@@ -388,11 +377,33 @@ to the Kubernetes API.
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `secrets.create` | `true` | Auto-generate signing keys. Set `false` for multi-replica. |
-| `secrets.signingKeySecret` | `""` | Pre-existing Secret with signing keys (required when `create=false`). |
+| `secrets.create` | `true` | Create and manage the `<fullname>-keys` Secret holding the session signing key. Ignored when `signingKeySecret` is set. |
+| `secrets.signingKeySecret` | `""` | Pre-existing Secret with signing keys. Takes precedence over `create`. Leaving it empty with `create=false` selects the single-replica `emptyDir` fallback described below. |
 
 All web replicas MUST share the same signing keys — sessions fail when
 requests hit a replica with different keys.
+
+With `secrets.create=true` the chart mints one RSA key, stores it in
+`<fullname>-keys` (annotated `helm.sh/resource-policy: keep`), and mounts that
+Secret into every web pod. Subsequent renders reuse the stored key instead of
+reminting it, so `web.replicas > 1` works and sessions survive pod restarts and
+upgrades. Only when `create=false` **and** `signingKeySecret` is empty does the
+chart fall back to a per-pod `emptyDir` key generated by an init container;
+that mode is single-replica and drops all sessions on every restart.
+
+**GitOps caveat:** key reuse depends on Helm's `lookup`, which returns nothing
+when the chart is rendered without a cluster connection. Tools that only run
+`helm template` (Argo CD without the Helm hook/plugin path,
+`helm template | kubectl apply`) generate a *new* key on every render and would
+churn the Secret. Set an explicit `secrets.signingKeySecret` in those pipelines
+and manage the key outside the chart.
+
+**Do not commit rendered manifests.** The same cluster-less render puts a live
+4096-bit RSA private key into the Secret's `data` as ordinary base64, so
+`helm template > manifests.yaml` in a rendered-manifests-in-git workflow
+publishes a usable signing key to version control (and every `helm diff` shows
+the Secret changing). `secrets.signingKeySecret` avoids this too: with it set,
+the chart renders no Secret at all.
 
 ### Network Policy
 
@@ -463,8 +474,37 @@ hermetic pods in the release namespace.
 | `serviceMonitor.interval` | `30s` | Scrape interval. |
 | `serviceMonitor.labels` | `{}` | Labels for Prometheus discovery. |
 | `serviceMonitor.namespace` | `""` | Namespace for ServiceMonitor. |
+| `serviceMonitor.artifactDaemon.enabled` | `true` | Also scrape the artifact daemon's `/metrics`. Requires `serviceMonitor.enabled` and `artifactDaemon.enabled`. |
+| `serviceMonitor.artifactDaemon.interval` | `""` (inherits) | Scrape interval override for the daemon. |
+| `serviceMonitor.artifactDaemon.tlsConfig` | `{}` | Endpoint `tlsConfig`, used only when `artifactDaemon.tls.enabled=true`. |
+| `serviceMonitor.scrapeFrom` | `[]` | NetworkPolicy peers allowed to scrape the daemon port. Required when a NetworkPolicy and the daemon ServiceMonitor are both enabled. |
 | `alertingRules.enabled` | `false` | Create PrometheusRule CRD. |
 | `alertingRules.labels` | `{}` | Labels for alert rule discovery. |
+
+Two ServiceMonitors are rendered: one selecting the web Service and one
+selecting the artifact-daemon headless Service, whose per-node pods export
+resolve latency, peer-fetch counts, and snapshot operation counts and bytes.
+
+Under `artifactDaemon.tls.enabled=true` the daemon serves that same port over
+HTTPS, so the daemon endpoint switches to `scheme: https`. `/metrics` is one of
+the routes the daemon leaves outside client-certificate enforcement
+(`VerifyClientCertIfGiven`), so a scraper needs no client cert — but it does
+have to accept the server cert, and the chart-generated CA is self-signed with
+SANs covering the headless Service rather than the pod IPs Prometheus targets.
+The chart therefore defaults that endpoint to `insecureSkipVerify: true`. To
+verify properly, set `serviceMonitor.artifactDaemon.tlsConfig` to a full
+prometheus-operator `tlsConfig` (CA/cert/key secret refs plus `serverName`);
+note that prometheus-operator resolves those Secret references in the
+Prometheus instance's namespace, not the Concourse release namespace.
+
+If a chart NetworkPolicy is enabled (`networkPolicy.enabled` or
+`artifactDaemon.networkPolicy.enabled`), the daemon policy restricts ingress on
+the daemon port, which would silently drop every scrape. Because that port also
+serves the artifact API, the chart refuses to open it to all peers: rendering
+fails until `serviceMonitor.scrapeFrom` names the Prometheus peers (e.g. a
+`namespaceSelector` for the monitoring namespace) — or the daemon
+ServiceMonitor is disabled. The web ServiceMonitor is unaffected (the web
+policy's metrics ingress is open by default).
 
 ## Architecture
 
@@ -482,27 +522,33 @@ hermetic pods in the release namespace.
      |  task pod   |     |   get pod     |     |   put pod     |
      | (on-demand) |     |  (on-demand)  |     |  (on-demand)  |
      +------+------+     +-------+-------+     +-------+-------+
-            |                     |                     |
-            +--------- artifact-store PVC --------------+
-                    (init containers extract inputs,
-                     sidecar uploads outputs as tars)
+            +---------------------+---------------------+
+                                  |
+                         +--------+---------+
+                         | node hostPath    |
+                         +--------+---------+
+                                  |
+                         +--------+---------+     +--------------+
+                         | artifact daemon  |<--->| peer daemons |
+                         +------------------+     +--------------+
 ```
 
 **Artifact passing flow:**
 
-1. Step A runs and produces output in an emptyDir volume.
-2. The artifact-helper sidecar tars the emptyDir to the artifact store PVC.
-3. Step B's init container extracts the tar from the PVC into its own emptyDir.
-4. Step B runs with the extracted data available as input.
+1. Step A writes output into a node-local hostPath managed by JetBridge.
+2. The node's artifact daemon registers the output and asynchronously mirrors it to peers.
+3. Step B's init container asks its local daemon to resolve each input; the daemon fetches from the source node or a mirror when needed.
+4. Step B starts with the resolved hostPath mounted at the declared input path.
 
-The artifact store PVC can use any storage class: hostPath (single-node),
-NFS, GCS FUSE, EBS, etc. Multi-node clusters need `ReadWriteMany` access.
+No RWX PersistentVolumeClaim is required. For multi-node resilience, schedule
+the DaemonSet on every eligible build node and keep
+`artifactDaemon.mirror.replicas` greater than one.
 
 ## Production Notes
 
-- **Secrets:** Replace `web.localUsers` with OIDC/OAuth via `web.extraArgs`. Generate signing keys externally and set `secrets.create=false`.
+- **Secrets:** Replace `web.localUsers` with OIDC/OAuth via `web.extraArgs`. `secrets.create=true` is safe for multi-replica; supply `secrets.signingKeySecret` instead when the key is managed externally or the deployment is rendered without a cluster connection.
 - **Database:** Use an external managed database (Cloud SQL, RDS) with `postgresql.enabled=false`.
-- **Multi-node:** Set `artifactStorePvc.accessModes: [ReadWriteMany]` and use a storage class that supports it.
+- **Multi-node:** Run the artifact DaemonSet on every eligible build node and set `artifactDaemon.mirror.replicas` for the desired failure tolerance.
 - **TLS:** For native HTTPS, set `web.tls.enabled=true` and create a K8s Secret with your cert/key. Alternatively, terminate TLS at the ingress layer with `ingress.enabled=true`.
 - **Ingress:** Enable `ingress.enabled=true` with your ingress controller and TLS.
 - **Resources:** Tune `web.resources` based on pipeline count. The web node is the control plane and doesn't run builds.

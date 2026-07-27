@@ -64,11 +64,6 @@ rules:
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get", "list", "create", "update", "delete"]
-  # Read-only PVC access for cache and artifact volume discovery.
-  # No create/delete — PVCs are pre-provisioned by operators or hostPath-backed.
-  - apiGroups: [""]
-    resources: ["persistentvolumeclaims"]
-    verbs: ["get", "list"]
   # Worker registrar updates the web deployment's annotations to
   # record worker state and heartbeat timestamps.
   - apiGroups: ["apps"]

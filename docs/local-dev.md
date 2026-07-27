@@ -166,25 +166,15 @@ helm upgrade --install concourse ./deploy/chart \
   --set image.pullPolicy=Never \
   --set-string kubernetes.artifactHelperImage="${ARTIFACT_HELPER_IMAGE}" \
   --set postgresql.persistence.enabled=false \
-  --set cachePvc.enabled=false \
-  --set artifactStorePvc.enabled=false \
   --set artifactDaemon.enabled=true
 ```
 
-Why each override (all three failure modes were hit and verified):
+Why each override (both failure modes were hit and verified):
 
 - `postgresql.persistence.enabled=false` — kind's `standard` storage class is
   a hostPath-style local-path PV, where `fsGroup` is not applied; postgres
   (uid 999) fails `initdb` with `could not change permissions ... Operation
   not permitted`. emptyDir honors fsGroup. (Data is ephemeral — fine locally.)
-- `cachePvc.enabled=false` and `artifactStorePvc.enabled=false` — **chart/
-  binary skew on the jetbridge branch**: the chart emits
-  `--kubernetes-cache-pvc` / `--kubernetes-artifact-store-claim`, but those
-  flags only exist on `master` (commit 81b6d63a61), not in this branch's
-  binary → web pod crashloops with ``unknown flag `kubernetes-cache-pvc` ``.
-  The `topgun/k8s/integration` suite already applies exactly these same
-  overrides for the same reason (see `helmDeployConcourse` in
-  `topgun/k8s/integration/cluster_lifecycle_test.go`).
 - `artifactDaemon.enabled=true` is the values.yaml default; kept explicit
   because the web node refuses to start without
   `--kubernetes-artifact-daemon-host-path` on the K8s runtime.

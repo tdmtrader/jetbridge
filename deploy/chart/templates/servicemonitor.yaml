@@ -10,6 +10,12 @@ metadata:
     {{- toYaml . | nindent 4 }}
     {{- end }}
 spec:
+  # prometheus-operator defaults a ServiceMonitor's search space to its OWN
+  # namespace, so a serviceMonitor.namespace elsewhere would silently match no
+  # Service at all. The web Service always lives in the release namespace.
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
   selector:
     matchLabels:
       {{- include "concourse.selectorLabels" . | nindent 6 }}

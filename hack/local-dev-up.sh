@@ -115,8 +115,6 @@ helm upgrade --install concourse "${REPO_ROOT}/deploy/chart" \
   --set image.pullPolicy=Never \
   --set-string kubernetes.artifactHelperImage="${ARTIFACT_HELPER_IMAGE}" \
   --set postgresql.persistence.enabled=false \
-  --set cachePvc.enabled=false \
-  --set artifactStorePvc.enabled=false \
   --set artifactDaemon.enabled=true \
   --timeout 5m
 

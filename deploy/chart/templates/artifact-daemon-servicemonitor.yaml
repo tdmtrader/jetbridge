@@ -1,0 +1,40 @@
+{{- if and .Values.serviceMonitor.enabled .Values.serviceMonitor.artifactDaemon.enabled .Values.artifactDaemon.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "concourse.artifactDaemonServiceName" . }}
+  namespace: {{ .Values.serviceMonitor.namespace | default .Release.Namespace }}
+  labels:
+    {{- include "concourse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: artifact-daemon
+    {{- with .Values.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  # prometheus-operator defaults a ServiceMonitor's search space to its OWN
+  # namespace, so a serviceMonitor.namespace elsewhere would silently match no
+  # Service at all. The daemon Service always lives in the release namespace.
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "concourse.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: artifact-daemon
+  endpoints:
+    - port: http
+      interval: {{ .Values.serviceMonitor.artifactDaemon.interval | default .Values.serviceMonitor.interval }}
+      path: /metrics
+      {{- if .Values.artifactDaemon.tls.enabled }}
+      scheme: https
+      tlsConfig:
+        {{- if .Values.serviceMonitor.artifactDaemon.tlsConfig }}
+        {{- toYaml .Values.serviceMonitor.artifactDaemon.tlsConfig | nindent 8 }}
+        {{- else }}
+        # The chart-generated daemon CA is self-signed and its SANs cover the
+        # headless Service, not the pod IPs Prometheus scrapes.
+        insecureSkipVerify: true
+        {{- end }}
+      {{- end }}
+{{- end }}

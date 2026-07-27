@@ -92,6 +92,21 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .Values.artifactDaemon.port | default 7780 }}
+    {{- if and .Values.serviceMonitor.enabled .Values.serviceMonitor.artifactDaemon.enabled }}
+    # Prometheus scrapes /metrics on the daemon port (see the artifact-daemon
+    # ServiceMonitor). The scrape sources must be named explicitly: the daemon
+    # port also serves the artifact API, so this policy never opens it to all
+    # peers the way the web policy's metrics ingress does.
+    {{- with .Values.serviceMonitor.scrapeFrom }}
+    - from:
+        {{- toYaml . | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: {{ $.Values.artifactDaemon.port | default 7780 }}
+    {{- else }}
+      {{- fail "serviceMonitor.scrapeFrom must list the Prometheus NetworkPolicyPeers (e.g. a namespaceSelector) when a NetworkPolicy and the artifact-daemon ServiceMonitor are both enabled — otherwise every scrape of the daemon port is silently dropped. Alternatively set serviceMonitor.artifactDaemon.enabled=false." }}
+    {{- end }}
+    {{- end }}
   {{- if .Values.artifactDaemon.networkPolicy.enabled }}
   egress:
     {{- with .Values.artifactDaemon.networkPolicy.dnsEgressTo }}

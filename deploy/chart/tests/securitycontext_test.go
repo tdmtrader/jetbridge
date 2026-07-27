@@ -99,6 +99,9 @@ type podVolume struct {
 	PersistentVolumeClaim *struct {
 		ClaimName string `json:"claimName"`
 	} `json:"persistentVolumeClaim"`
+	Secret *struct {
+		SecretName string `json:"secretName"`
+	} `json:"secret"`
 	Projected *struct {
 		Sources []struct {
 			ServiceAccountToken *struct {

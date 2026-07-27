@@ -1,3 +1,6 @@
+{{- if not .Values.artifactDaemon.enabled }}
+{{- fail "artifactDaemon.enabled must be true: the Kubernetes runtime requires the per-node artifact daemon" }}
+{{- end }}
 {{- $artifactHelperImage := .Values.kubernetes.artifactHelperImage | default "" }}
 {{- if empty $artifactHelperImage }}
 {{- fail "kubernetes.artifactHelperImage is required and must identify a tar-capable image by digest" }}
@@ -116,6 +119,20 @@
 {{- end }}
 {{- end }}
 {{- end }}
+{{- /*
+   Session signing key source. An operator-supplied Secret always wins; when
+   secrets.create is on, the chart's own Secret (see secrets.yaml, which reuses
+   any existing key rather than reminting it) is mounted so the key is stable
+   across pod restarts and identical on every replica. Only when neither is
+   configured do we fall back to a per-pod emptyDir key, which invalidates
+   sessions on restart and cannot be used with more than one replica.
+*/ -}}
+{{- $signingKeySecretName := "" }}
+{{- if .Values.secrets.signingKeySecret }}
+{{- $signingKeySecretName = .Values.secrets.signingKeySecret }}
+{{- else if .Values.secrets.create }}
+{{- $signingKeySecretName = printf "%s-keys" (include "concourse.fullname" .) }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -146,7 +163,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       initContainers:
-        {{- if .Values.secrets.create }}
+        {{- if not $signingKeySecretName }}
         - name: generate-keys
           image: {{ include "concourse.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
@@ -293,17 +310,8 @@ spec:
             {{- if .Values.cacheStore }}
             - --kubernetes-cache-store={{ .Values.cacheStore }}
             {{- end }}
-            {{- if .Values.cachePvc.enabled }}
-            - --kubernetes-cache-pvc={{ .Values.cachePvc.name }}
-            {{- end }}
             {{- if .Values.cacheHostPath }}
             - --kubernetes-cache-host-path={{ .Values.cacheHostPath }}
-            {{- end }}
-            {{- if .Values.artifactStorePvc.enabled }}
-            - --kubernetes-artifact-store-claim={{ .Values.artifactStorePvc.name }}
-            {{- if .Values.artifactStorePvc.gcsFuse.enabled }}
-            - --kubernetes-artifact-store-gcs-fuse
-            {{- end }}
             {{- end }}
             {{- if .Values.artifactDaemon.enabled }}
             - --kubernetes-artifact-daemon-port={{ .Values.artifactDaemon.port | default 7780 }}
@@ -502,10 +510,10 @@ spec:
             sizeLimit: {{ .Values.agentSnapshots.scratch.sizeLimit }}
           {{- end }}
         {{- end }}
-        {{- if and (not .Values.secrets.create) .Values.secrets.signingKeySecret }}
+        {{- if $signingKeySecretName }}
         - name: keys
           secret:
-            secretName: {{ .Values.secrets.signingKeySecret }}
+            secretName: {{ $signingKeySecretName }}
         {{- else }}
         - name: keys
           emptyDir: {}

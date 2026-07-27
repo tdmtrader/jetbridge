@@ -280,12 +280,9 @@ func helmDeployConcourse(kubeconfig, namespace, chartPath, image string) {
 		// Use emptyDir for PostgreSQL — ephemeral test clusters don't need
 		// persistent storage, and PVC provisioning can stall in DinD.
 		"--set", "postgresql.persistence.enabled=false",
-		// Disable cache PVC — the flag --kubernetes-cache-pvc doesn't exist
-		// in the built binary yet. The artifact daemon approach is used instead.
-		"--set", "cachePvc.enabled=false",
-		"--set", "artifactStorePvc.enabled=false",
 		// Enable the DaemonSet artifact daemon — needed for artifact passing
-		// between steps. Default is false in values.yaml.
+		// between steps. Keep this explicit so the test documents the required
+		// runtime mode even though it is also the chart default.
 		"--set", "artifactDaemon.enabled=true",
 		"--timeout", "5m",
 	}
