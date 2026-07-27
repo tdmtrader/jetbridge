@@ -1,0 +1,13 @@
+## Ship Summary
+
+**Message:** docs: design reusable node definitions
+
+**Files Changed:** 1
+
+**Timestamp:** 2026-07-27T14:17:57Z
+
+### Key Changes
+
+- Added the approved conceptual design for first-class reusable node definitions.
+
+- Captured immutable versions, direct testing, release, workflow pinning, compatibility, and opt-in consumer upgrades.
