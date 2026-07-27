@@ -58,7 +58,13 @@ jobs:
           spec:
             containers:
             - name: dind
-              image: docker:dind
+              # Pinned to 26.x (runc 1.1.x). The rolling docker:dind tag moved to
+              # runc >=1.2, whose /proc masking (tmpfs nr_inodes=1) theborg's 5.4
+              # kernel rejects with "can't mask dir /proc/acpi: invalid argument".
+              # 73c02640de pinned concourse-pipeline.yml's three builders on
+              # 2026-07-10 but stopped at "build-image and release"; this builder
+              # kept the rolling tag and has failed every run since that same day.
+              image: docker:26-dind
               securityContext:
                 privileged: true
               env:
