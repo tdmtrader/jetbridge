@@ -167,10 +167,30 @@ const (
 	extractedSymlink
 )
 
+// normalizedTarPath returns the root-relative path a tar member extracts to,
+// or "." for the archive root entry, which names the extraction root itself and
+// so has nothing of its own to materialize.
+//
+// `tar -C <dir> .` prefixes every member with "./" and emits "./" for the root.
+// That is the shape fly execute uploads (getFiles returns ["."] when ignored
+// files are included) and the shape volume streaming produces, so it has to be
+// accepted: rejecting it failed stream-in with 400 and left the artifact
+// unstored, which surfaced much later as a 500 from /resolve-batch.
+//
+// Cleaning before validating cannot launder an escaping path. path.Clean only
+// collapses interior "..", and any leading ".." survives it and is still
+// rejected below — as is an absolute path.
 func normalizedTarPath(hdr *tar.Header) (string, error) {
+	if hdr.Name == "" {
+		return "", fmt.Errorf("tar entry has an empty path")
+	}
 	name := hdr.Name
 	if hdr.Typeflag == tar.TypeDir {
 		name = strings.TrimSuffix(name, "/")
+	}
+	name = path.Clean(name)
+	if name == "." {
+		return ".", nil
 	}
 	if err := validateCanonicalRelativeKey(name); err != nil {
 		return "", fmt.Errorf("unsafe tar path %q: %w", hdr.Name, err)
@@ -262,6 +282,10 @@ func extractTarAnchored(ctx context.Context, root *os.Root, source io.Reader) er
 		name, err := normalizedTarPath(hdr)
 		if err != nil {
 			return err
+		}
+		if name == "." {
+			// The archive root; the caller already owns and created it.
+			continue
 		}
 		if err := ensureArchiveParents(root, name, materialized); err != nil {
 			return fmt.Errorf("prepare tar path %q: %w", name, err)
