@@ -19,17 +19,9 @@ import (
 )
 
 func completeRevision() workitem.Revision {
-	workflowVersion := 3
-	definitionID := 91
 	return workitem.Revision{
 		TicketID: 42, Revision: 8, UpdatedAt: time.Date(2026, 7, 22, 12, 34, 56, 123000000, time.UTC),
-		Adapter: "jetbridge", ExternalID: "JIRA-42", Title: "Upgrade PostgreSQL", Body: "Move to 18.", State: "queued",
-		Workflow: workitem.WorkflowSelection{Name: "version-upgrade", Version: &workflowVersion, DefinitionID: &definitionID},
-		Spec: &workitem.SpecRevision{Version: 2, Title: "Upgrade safely", Body: "Preserve compatibility.",
-			AcceptanceCriteria: []string{"tests pass"}, SubmittedBy: "alice", CreatedAt: 100},
-		Plan: &workitem.PlanRevision{Version: 4, Tasks: []workitem.TaskRevision{{
-			Ordering: 1, Title: "bump", Detail: "edit go.mod", Status: "in_progress", UpdatedAt: 101,
-		}}},
+		Adapter: "jetbridge", ExternalID: "JIRA-42", Title: "Upgrade PostgreSQL", Body: "Move to 18.",
 	}
 }
 
@@ -51,27 +43,20 @@ func TestMarshalRevisionCapturesStrictCompleteWorkItem(t *testing.T) {
 	if err := document.Validate(); err != nil {
 		t.Fatalf("strict work-item/v1 validation: %v", err)
 	}
-	if document.Revision != "8" || document.Body != "Move to 18." || document.State != "queued" ||
-		document.Workflow == nil || document.Workflow.Name != "version-upgrade" || document.Workflow.Version == nil || *document.Workflow.Version != 3 {
-		t.Fatalf("document identity/workflow = %+v", document)
+	if document.Revision != "8" || document.Body != "Move to 18." {
+		t.Fatalf("document identity = %+v", document)
 	}
-	if document.Spec == nil || document.Spec.Revision != "2" || document.Plan == nil || document.Plan.Revision != "4" {
-		t.Fatalf("document revisions = %+v", document)
-	}
-
-	var spec workitem.SpecRevision
-	if err := json.Unmarshal([]byte(document.Spec.Content), &spec); err != nil || spec.Body != "Preserve compatibility." {
-		t.Fatalf("spec content = %+v, %v", spec, err)
-	}
-	var plan workitem.PlanRevision
-	if err := json.Unmarshal([]byte(document.Plan.Content), &plan); err != nil || len(plan.Tasks) != 1 || plan.Tasks[0].Status != "in_progress" {
-		t.Fatalf("plan content = %+v, %v", plan, err)
-	}
-	// work-item/v1 carries no comments key: the ticket comment surface is gone,
-	// and DisallowUnknownFields above proves the captured bytes do not smuggle
-	// one back in.
-	if bytes.Contains(captured.Document, []byte(`"comments"`)) {
-		t.Fatalf("captured document carries a comments key: %s", captured.Document)
+	// The captured value is the authored content and nothing else: no lifecycle
+	// state, no workflow selection, no spec/plan sub-document, no comments. State
+	// and workflow belong to the durable run, which records which function ran
+	// over which snapshot; spec/plan and comments mirrored tables that no longer
+	// exist, and a work item's prose lives only in its body. DisallowUnknownFields
+	// above already proves a re-read would reject each key, so this checks the
+	// bytes the capture actually emitted.
+	for _, key := range []string{`"state"`, `"workflow"`, `"spec"`, `"plan"`, `"comments"`} {
+		if bytes.Contains(captured.Document, []byte(key)) {
+			t.Fatalf("captured document carries %s: %s", key, captured.Document)
+		}
 	}
 }
 
@@ -192,17 +177,19 @@ func TestCapturerPreservesSourceCancellation(t *testing.T) {
 
 func TestMemoryCaptureNeverTearsConcurrentTicketMutation(t *testing.T) {
 	store := tickets.NewMemoryStore()
-	workflow := "old-workflow"
-	id, err := store.Create(&tickets.Ticket{Title: "work", Body: "old-body", Repo: "repo", WorkflowName: workflow})
+	id, err := store.Create(&tickets.Ticket{Title: "work", Body: "old-body", Repo: "repo", WorkflowName: "old-workflow"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	newBody, newWorkflow := "new-body", "new-workflow"
+	newBody, newTitle := "new-body", "new-title"
 	start := make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
 		<-start
-		done <- store.Update(id, tickets.Update{Body: &newBody, WorkflowName: &newWorkflow})
+		// Two captured fields mutated by one update: a capture that observed one
+		// and not the other would be torn. The workflow selection used to serve
+		// this role and no longer can — it is not captured any more.
+		done <- store.Update(id, tickets.Update{Body: &newBody, Title: &newTitle})
 	}()
 	close(start)
 
@@ -216,9 +203,9 @@ func TestMemoryCaptureNeverTearsConcurrentTicketMutation(t *testing.T) {
 		if err := json.Unmarshal(captured.Document, &document); err != nil {
 			t.Fatal(err)
 		}
-		pair := []string{document.Body, document.Workflow.Name}
-		if !reflect.DeepEqual(pair, []string{"old-body", "old-workflow"}) &&
-			!reflect.DeepEqual(pair, []string{"new-body", "new-workflow"}) {
+		pair := []string{document.Body, document.Title}
+		if !reflect.DeepEqual(pair, []string{"old-body", "work"}) &&
+			!reflect.DeepEqual(pair, []string{"new-body", "new-title"}) {
 			t.Fatalf("torn capture at revision %d: %v", captured.Revision, pair)
 		}
 		seen[pair[0]] = true
@@ -234,7 +221,7 @@ func TestMemoryCaptureNeverTearsConcurrentTicketMutation(t *testing.T) {
 	if err := json.Unmarshal(final.Document, &document); err != nil {
 		t.Fatal(err)
 	}
-	if document.Body != "new-body" || document.Workflow.Name != "new-workflow" || final.Revision != 2 {
+	if document.Body != "new-body" || document.Title != "new-title" || final.Revision != 2 {
 		t.Fatalf("final revision = %+v, document = %+v, seen = %v", final, document, seen)
 	}
 }

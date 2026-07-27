@@ -17,9 +17,9 @@ import (
 type AgentTicketsCommand struct {
 	List       AgentTicketsListCommand       `command:"list" description:"List agent tickets"`
 	Create     AgentTicketsCreateCommand     `command:"create" description:"File a new agent ticket (state: draft)"`
-	Show       AgentTicketsShowCommand       `command:"show" description:"Show one ticket with its spec and plan"`
+	Show       AgentTicketsShowCommand       `command:"show" description:"Show one ticket"`
 	Queue      AgentTicketsQueueCommand      `command:"queue" description:"Queue a draft ticket for dispatch"`
-	Transition AgentTicketsTransitionCommand `command:"transition" description:"Move a ticket along the lifecycle (single-writer state machine)"`
+	Transition AgentTicketsTransitionCommand `command:"transition" description:"Move a ticket along the queue lifecycle (single-writer state machine)"`
 	Dispatch   AgentTicketsDispatchCommand   `command:"dispatch" description:"Dispatch a queued ticket as a durable workflow run (manual trigger)"`
 	Watch      AgentTicketsWatchCommand      `command:"watch" description:"Follow a ticket's durable workflow run"`
 }
@@ -108,7 +108,7 @@ func assignWorkflow(client concourse.Client, id int, workflow string, workflowVe
 }
 
 type AgentTicketsListCommand struct {
-	State  string `long:"state" description:"Filter by lifecycle state (draft, queued, running, needs_review, merged, merged_with_fixes, sent_back, abandoned, concluded, failed, errored)"`
+	State  string `long:"state" description:"Filter by queue state (draft, queued, running, needs_review, closed)"`
 	Repo   string `long:"repo" description:"Filter by repo slug (e.g. tdmtrader/concourse)"`
 	Origin string `long:"origin" description:"Filter by origin (web, fly, jira, retrospective)"`
 	Limit  int    `long:"limit" default:"50" description:"Maximum tickets to list"`
@@ -162,15 +162,14 @@ func agentTicketWorkflowRunCell(ticket tickets.Ticket) string {
 }
 
 type AgentTicketsCreateCommand struct {
-	Title        string  `long:"title" required:"true" description:"Ticket title"`
-	Body         string  `long:"body" short:"m" description:"Markdown problem statement"`
-	Repo         string  `long:"repo" required:"true" description:"Target repo slug (e.g. tdmtrader/concourse)"`
-	TargetBranch string  `long:"target-branch" default:"main" description:"Branch the work targets"`
-	Workflow     string  `long:"workflow" description:"Workflow definition name (empty = decided at dispatch)"`
-	WorkflowVer  int     `long:"workflow-version" description:"Pin a workflow definition version (0 = live version)"`
-	Budget       float64 `long:"budget" description:"Per-ticket budget in USD (0 = uncapped)"`
-	Queue        bool    `long:"queue" description:"Queue the ticket immediately after creating it"`
-	Dispatch     bool    `long:"dispatch" description:"Queue and dispatch the ticket immediately (implies --queue)"`
+	Title        string `long:"title" required:"true" description:"Ticket title"`
+	Body         string `long:"body" short:"m" description:"Markdown problem statement"`
+	Repo         string `long:"repo" required:"true" description:"Target repo slug (e.g. tdmtrader/concourse)"`
+	TargetBranch string `long:"target-branch" default:"main" description:"Branch the work targets"`
+	Workflow     string `long:"workflow" description:"Workflow definition name (empty = decided at dispatch)"`
+	WorkflowVer  int    `long:"workflow-version" description:"Pin a workflow definition version (0 = live version)"`
+	Queue        bool   `long:"queue" description:"Queue the ticket immediately after creating it"`
+	Dispatch     bool   `long:"dispatch" description:"Queue and dispatch the ticket immediately (implies --queue)"`
 }
 
 func (command *AgentTicketsCreateCommand) Execute([]string) error {
@@ -192,9 +191,6 @@ func (command *AgentTicketsCreateCommand) Execute([]string) error {
 	}
 	if command.WorkflowVer > 0 {
 		req.WorkflowVersion = &command.WorkflowVer
-	}
-	if command.Budget > 0 {
-		req.BudgetUSD = &command.Budget
 	}
 
 	client := target.Client()
@@ -270,11 +266,10 @@ func (command *AgentTicketsQueueCommand) Execute([]string) error {
 }
 
 type AgentTicketsTransitionCommand struct {
-	ID          int    `long:"id" required:"true" description:"Ticket id"`
-	From        string `long:"from" description:"Expected current state (optimistic concurrency guard; default: read from server)"`
-	To          string `long:"to" required:"true" description:"Target state"`
-	Branch      string `long:"branch" description:"Branch to record (needs_review transitions)"`
-	ErrorDetail string `long:"error-detail" description:"Error detail to record (errored transitions)"`
+	ID     int    `long:"id" required:"true" description:"Ticket id"`
+	From   string `long:"from" description:"Expected current state (optimistic concurrency guard; default: read from server)"`
+	To     string `long:"to" required:"true" description:"Target queue state (draft, queued, running, needs_review, closed)"`
+	Branch string `long:"branch" description:"Branch to record (needs_review transitions)"`
 }
 
 func (command *AgentTicketsTransitionCommand) Execute([]string) error {
@@ -304,10 +299,9 @@ func (command *AgentTicketsTransitionCommand) Execute([]string) error {
 	}
 
 	updated, err := client.TransitionAgentTicket(command.ID, tickets.TransitionRequest{
-		From:        from,
-		To:          tickets.State(command.To),
-		Branch:      command.Branch,
-		ErrorDetail: command.ErrorDetail,
+		From:   from,
+		To:     tickets.State(command.To),
+		Branch: command.Branch,
 	})
 	if err != nil {
 		return err
@@ -397,9 +391,6 @@ func (command *AgentTicketsShowCommand) Execute([]string) error {
 	t := detail.Ticket
 	fmt.Printf("ticket #%d: %s\n", t.ID, t.Title)
 	fmt.Printf("state: %s · origin: %s · repo: %s @ %s\n", t.State, t.Origin, t.Repo, t.TargetBranch)
-	if t.BudgetUSD != nil {
-		fmt.Printf("budget: $%.2f\n", *t.BudgetUSD)
-	}
 	if t.Branch != "" {
 		fmt.Printf("branch: %s\n", t.Branch)
 	}
@@ -408,15 +399,6 @@ func (command *AgentTicketsShowCommand) Execute([]string) error {
 	}
 	if t.Body != "" {
 		fmt.Printf("\n%s\n", t.Body)
-	}
-	if detail.Spec != nil {
-		fmt.Printf("\nspec v%d: %s\n", detail.Spec.Version, detail.Spec.Title)
-	}
-	if len(detail.Tasks) > 0 {
-		fmt.Println("\nplan:")
-		for _, task := range detail.Tasks {
-			fmt.Printf("  %d. [%s] %s\n", task.Ordering, task.Status, task.Title)
-		}
 	}
 	return nil
 }

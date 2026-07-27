@@ -28,14 +28,9 @@ needsReviewTickets =
     ticketsFrom """[ { "id": 12, "title": "ship fly archives", "state": "needs_review", "created_at": 200 } ]"""
 
 
-mergedTickets : List AgentTicket.Ticket
-mergedTickets =
-    ticketsFrom """[ { "id": 5, "title": "already done", "state": "merged", "created_at": 1 } ]"""
-
-
-erroredTickets : List AgentTicket.Ticket
-erroredTickets =
-    ticketsFrom """[ { "id": 8, "title": "blew up", "state": "errored", "created_at": 300 } ]"""
+closedTickets : List AgentTicket.Ticket
+closedTickets =
+    ticketsFrom """[ { "id": 5, "title": "already done", "state": "closed", "created_at": 1 } ]"""
 
 
 longTailTitle : String
@@ -49,17 +44,6 @@ longTitleTickets =
         ("""[ { "id": 42, "title": \""""
             ++ longTailTitle
             ++ """", "state": "needs_review", "created_at": 400 } ]"""
-        )
-
-
-costRollup : Callback.Callback
-costRollup =
-    Callback.AgentCostRollupFetched
-        (Ok
-            { groupBy = "ticket"
-            , summary = { dailyCapUsd = 0, dailySpentUsd = 0, dailyRemainingUsd = 0, dailyExhausted = False }
-            , rows = [ { key = "12", entries = 1, inputTokens = 0, outputTokens = 0, turns = 0, costUsd = 0.18 } ]
-            }
         )
 
 
@@ -87,13 +71,15 @@ initDashboard =
 all : Test
 all =
     describe "dashboard agent-ticket strip"
-        [ test "fetches agent tickets and costs on load" <|
+        [ test "fetches agent tickets on load, and no per-ticket cost rollup" <|
             \_ ->
+                -- The strip shows queue state only: cost is the workflow run's,
+                -- and the ticket-keyed rollup it used to join is gone.
                 initDashboard
                     |> Tuple.second
                     |> Expect.all
                         [ Common.contains Effects.FetchAgentTickets
-                        , Common.contains Effects.FetchAgentTicketCosts
+                        , Common.notContains Effects.FetchAgentCostRollup
                         ]
         , test "surfaces a needs_review ticket as a chip linking to its detail page" <|
             \_ ->
@@ -107,35 +93,13 @@ all =
                         , attribute (Attr.href "/agent-tickets/12")
                         , containing [ text "#12 ship fly archives" ]
                         ]
-        , test "joins per-ticket cost into the chip" <|
+        , test "renders no strip when every ticket is closed" <|
             \_ ->
                 load
-                    |> Application.handleCallback (Callback.AgentTicketsFetched (Ok needsReviewTickets))
-                    |> Tuple.first
-                    |> Application.handleCallback costRollup
-                    |> Tuple.first
-                    |> Common.queryView
-                    |> Query.find [ id "agent-ticket-strip" ]
-                    |> Query.has [ containing [ text "$0.18" ] ]
-        , test "renders no strip when no tickets need attention" <|
-            \_ ->
-                load
-                    |> Application.handleCallback (Callback.AgentTicketsFetched (Ok mergedTickets))
+                    |> Application.handleCallback (Callback.AgentTicketsFetched (Ok closedTickets))
                     |> Tuple.first
                     |> Common.queryView
                     |> Query.hasNot [ id "agent-ticket-strip" ]
-        , test "surfaces an errored ticket as a chip (U9)" <|
-            \_ ->
-                load
-                    |> Application.handleCallback (Callback.AgentTicketsFetched (Ok erroredTickets))
-                    |> Tuple.first
-                    |> Common.queryView
-                    |> Query.find [ id "agent-ticket-strip" ]
-                    |> Query.has
-                        [ tag "a"
-                        , attribute (Attr.href "/agent-tickets/8")
-                        , containing [ text "#8 blew up" ]
-                        ]
         , test "middle-truncates a long chip label so the distinguishing tail survives (W-10)" <|
             \_ ->
                 load

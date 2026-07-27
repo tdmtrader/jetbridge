@@ -19,7 +19,6 @@ detailJson =
         , "target_branch": "main"
         , "workflow_name": "develop"
         , "workflow_version": 1
-        , "budget_usd": 5.0
         , "user_name": "admin"
         , "pipeline_run_id": 10
         , "branch": "agent/ticket-12"
@@ -27,11 +26,6 @@ detailJson =
         , "created_at": 1784000000
         , "updated_at": 1784000100
         }
-    , "spec": null
-    , "tasks":
-        [ { "ordering": 1, "title": "patch build-image", "status": "done" }
-        , { "ordering": 2, "title": "verify matrix", "detail": "CI", "status": "in_progress" }
-        ]
     }
     """
 
@@ -39,19 +33,34 @@ detailJson =
 all : Test
 all =
     describe "Concourse.AgentTicket"
-        [ test "decodeDetail tolerates a null spec and reads ticket + tasks" <|
+        [ test "decodeDetail reads the ticket — its body is the whole of its content" <|
             \_ ->
                 Json.Decode.decodeString AT.decodeDetail detailJson
                     |> Result.map
                         (\d ->
                             { id = d.ticket.id
                             , state = d.ticket.state
-                            , hasSpec = d.spec /= Nothing
-                            , tasks = List.length d.tasks
+                            , body = d.ticket.body
                             }
                         )
                     |> Expect.equal
-                        (Ok { id = 12, state = "needs_review", hasSpec = False, tasks = 2 })
+                        (Ok
+                            { id = 12
+                            , state = "needs_review"
+                            , body = "make all four platform archives"
+                            }
+                        )
+        , test "ignores retired spec/tasks/budget keys from a stale server" <|
+            \_ ->
+                Json.Decode.decodeString AT.decodeDetail
+                    """
+                    { "ticket": { "id": 12, "state": "closed", "budget_usd": 5.0 }
+                    , "spec": { "version": 2, "title": "gone" }
+                    , "tasks": [ { "ordering": 1, "title": "gone", "status": "done" } ]
+                    }
+                    """
+                    |> Result.map (\d -> ( d.ticket.id, d.ticket.state ))
+                    |> Expect.equal (Ok ( 12, "closed" ))
         , test "decodeTicket keeps enriched fields (attemptCount, pipelineRunId)" <|
             \_ ->
                 Json.Decode.decodeString AT.decodeTicket

@@ -4,9 +4,13 @@ module Concourse.AgentReview exposing
     , FindingFeedback
     , Summary
     , allVerdicts
+    , conclusionLabel
+    , conclusionTone
     , decodeBuildReview
     , decodeSummary
-    , repoBlobUrl
+    , findingTotal
+    , observationCount
+    , substantiveCount
     , verdictLabel
     )
 
@@ -16,21 +20,24 @@ import Json.Decode
 import Json.Decode.Extra exposing (andMap)
 
 
+{-| Summary is one review/v1 snapshot as the API renders it.
+
+The build/pipeline/job/workflow fields describe the production occurrence the
+server selected, not the review: the same sealed review can be produced by more
+than one run. `conclusion` is the record's verdict verbatim — there is no score,
+no maximum and no pass flag, because review/v1 states none of those.
+
+-}
 type alias Summary =
     { buildId : Int
     , buildName : String
     , teamName : String
     , pipelineName : String
     , jobName : String
-    , repo : String
-    , commitSha : String
-    , branch : String
-    , score : Float
-    , maxScore : Float
-    , pass : Bool
-    , provenCount : Int
-    , observationCount : Int
+    , workflowName : String
+    , conclusion : String
     , summary : String
+    , severityCounts : Dict String Int
     , createdAt : Int
     , evaluatedCount : Int
     , snapshotId : Maybe String
@@ -42,13 +49,12 @@ type alias Summary =
 type alias Finding =
     { id : String
     , severity : String
+    , blocking : Bool
     , title : String
     , description : String
     , file : String
     , line : Int
     , category : String
-    , testName : String
-    , testOutput : String
     }
 
 
@@ -84,34 +90,65 @@ verdictLabel verdict =
     String.replace "_" " " verdict
 
 
-{-| Build a GitHub-style blob URL for a finding's file at the reviewed sha.
-The review's `repo` is a full clone URL (e.g. <https://github.com/org/repo.git>);
-strip the trailing `.git` and append `/blob/<sha>/<file>#L<line>`. Returns
-Nothing for empty or non-http repos so the caller falls back to plain text
-rather than emitting a broken link.
+{-| The three conclusions review/v1 admits, spelled for a reader. An unknown
+value is shown as-is rather than mapped onto one of the three — a review whose
+conclusion we don't recognise has not been judged by us.
 -}
-repoBlobUrl : String -> String -> String -> Int -> Maybe String
-repoBlobUrl repo sha file line =
-    if not (String.startsWith "http" repo) || sha == "" || file == "" then
-        Nothing
+conclusionLabel : String -> String
+conclusionLabel conclusion =
+    case conclusion of
+        "accept" ->
+            "accept"
 
-    else
-        let
-            base =
-                if String.endsWith ".git" repo then
-                    String.dropRight 4 repo
+        "changes-required" ->
+            "changes required"
 
-                else
-                    repo
+        "inconclusive" ->
+            "inconclusive"
 
-            anchor =
-                if line > 0 then
-                    "#L" ++ String.fromInt line
+        "" ->
+            "no conclusion"
 
-                else
-                    ""
-        in
-        Just (base ++ "/blob/" ++ sha ++ "/" ++ file ++ anchor)
+        other ->
+            other
+
+
+{-| ( background, foreground ) for the conclusion badge. Inconclusive is amber
+rather than red: it is the reviewer declining to decide, not a rejection.
+-}
+conclusionTone : String -> ( String, String )
+conclusionTone conclusion =
+    case conclusion of
+        "accept" ->
+            ( "#2e4f2e", "#9fdf9f" )
+
+        "changes-required" ->
+            ( "#5c2626", "#f0a0a0" )
+
+        "inconclusive" ->
+            ( "#5c4a26", "#f0d0a0" )
+
+        _ ->
+            ( "#3d3c3c", "#b0b0b0" )
+
+
+findingTotal : Summary -> Int
+findingTotal info =
+    Dict.foldl (\_ count total -> total + count) 0 info.severityCounts
+
+
+observationCount : Summary -> Int
+observationCount info =
+    Dict.get "observation" info.severityCounts |> Maybe.withDefault 0
+
+
+{-| Everything that is not an observation. review/v1 makes observation the exact
+complement of a substantive finding, so this needs no severity list of its own —
+a severity added to the contract lands here without a code change.
+-}
+substantiveCount : Summary -> Int
+substantiveCount info =
+    findingTotal info - observationCount info
 
 
 defaultTo : a -> Json.Decode.Decoder a -> Json.Decode.Decoder a
@@ -127,15 +164,10 @@ decodeSummary =
         |> andMap (defaultTo "main" <| Json.Decode.field "team_name" Json.Decode.string)
         |> andMap (defaultTo "" <| Json.Decode.field "pipeline_name" Json.Decode.string)
         |> andMap (defaultTo "" <| Json.Decode.field "job_name" Json.Decode.string)
-        |> andMap (defaultTo "" <| Json.Decode.field "repo" Json.Decode.string)
-        |> andMap (defaultTo "" <| Json.Decode.field "commit_sha" Json.Decode.string)
-        |> andMap (defaultTo "" <| Json.Decode.field "branch" Json.Decode.string)
-        |> andMap (Json.Decode.field "score" Json.Decode.float)
-        |> andMap (Json.Decode.field "max_score" Json.Decode.float)
-        |> andMap (Json.Decode.field "pass" Json.Decode.bool)
-        |> andMap (Json.Decode.field "proven_count" Json.Decode.int)
-        |> andMap (Json.Decode.field "observation_count" Json.Decode.int)
+        |> andMap (defaultTo "" <| Json.Decode.field "workflow_name" Json.Decode.string)
+        |> andMap (defaultTo "" <| Json.Decode.field "conclusion" Json.Decode.string)
         |> andMap (defaultTo "" <| Json.Decode.field "summary" Json.Decode.string)
+        |> andMap (defaultTo Dict.empty <| Json.Decode.field "severity_counts" (Json.Decode.dict Json.Decode.int))
         |> andMap (defaultTo 0 <| Json.Decode.field "created_at" Json.Decode.int)
         |> andMap (defaultTo 0 <| Json.Decode.field "evaluated_count" Json.Decode.int)
         |> andMap (Snapshot.decodeOptionalIdField "snapshot_id")
@@ -143,21 +175,21 @@ decodeSummary =
         |> andMap (Snapshot.decodeOptionalIdField "production_id")
 
 
-{-| All fields tolerant: the ATC keeps partially-decoded findings rather than
-dropping them, so nothing here may be required.
+{-| Prose fields stay tolerant so one unexpected finding can't empty the panel,
+but id/severity/category come straight from a record the server already put
+through the read-time contract gate.
 -}
 decodeFinding : Json.Decode.Decoder Finding
 decodeFinding =
     Json.Decode.succeed Finding
         |> andMap (defaultTo "" <| Json.Decode.field "id" Json.Decode.string)
         |> andMap (defaultTo "" <| Json.Decode.field "severity" Json.Decode.string)
+        |> andMap (defaultTo False <| Json.Decode.field "blocking" Json.Decode.bool)
         |> andMap (defaultTo "" <| Json.Decode.field "title" Json.Decode.string)
         |> andMap (defaultTo "" <| Json.Decode.field "description" Json.Decode.string)
         |> andMap (defaultTo "" <| Json.Decode.field "file" Json.Decode.string)
         |> andMap (defaultTo 0 <| Json.Decode.field "line" Json.Decode.int)
         |> andMap (defaultTo "" <| Json.Decode.field "category" Json.Decode.string)
-        |> andMap (defaultTo "" <| Json.Decode.field "test_name" Json.Decode.string)
-        |> andMap (defaultTo "" <| Json.Decode.field "test_output" Json.Decode.string)
 
 
 decodeFeedback : Json.Decode.Decoder FindingFeedback

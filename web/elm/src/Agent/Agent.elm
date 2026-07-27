@@ -73,7 +73,6 @@ type alias Model =
         , credentials : Maybe (List Agent.CredentialStatus)
         , credentialsError : Maybe String
         , platformCredentials : Maybe (List Agent.CredentialStatus)
-        , unattributedUsd : Maybe Float
         , principals : Maybe (List Agent.Principal)
         , principalsError : Maybe String
         , mintName : String
@@ -106,7 +105,6 @@ init =
       , credentials = Nothing
       , credentialsError = Nothing
       , platformCredentials = Nothing
-      , unattributedUsd = Nothing
       , principals = Nothing
       , principalsError = Nothing
       , mintName = ""
@@ -126,7 +124,6 @@ init =
       , FetchAgentCostRollup
       , FetchAgentWorkflowCosts
       , FetchAgentExperiments
-      , FetchAgentTicketCosts
       , FetchAgentCredentials
       , FetchAgentPlatformCredentials
       , FetchAgentPrincipals
@@ -210,26 +207,14 @@ handleCallback callback ( model, effects ) =
 
         AgentCostRollupFetched (Ok costRollup) ->
             -- The console fires both the by-day rollup (the Costs table) and
-            -- the by-ticket rollup (for the unattributed bucket); they share
-            -- one callback and are told apart by the response's group_by.
+            -- the by-workflow rollup (the per-workflow spend column); they
+            -- share one callback and are told apart by the response's group_by.
             if costRollup.groupBy == "workflow" then
                 ( { model
                     | costByWorkflow =
                         costRollup.rows
                             |> List.map (\row -> ( row.key, row.costUsd ))
                             |> Dict.fromList
-                  }
-                , effects
-                )
-
-            else if costRollup.groupBy == "ticket" then
-                ( { model
-                    | unattributedUsd =
-                        costRollup.rows
-                            |> List.filter (\row -> row.key == "")
-                            |> List.map .costUsd
-                            |> List.sum
-                            |> Just
                   }
                 , effects
                 )
@@ -462,7 +447,6 @@ polls =
                 , FetchAgentCostRollup
                 , FetchAgentWorkflowCosts
                 , FetchAgentExperiments
-                , FetchAgentTicketCosts
                 , FetchAgentCredentials
                 , FetchAgentPlatformCredentials
                 , FetchAgentPrincipals
@@ -1202,7 +1186,6 @@ costsSection model =
                     ++ [ costSummaryLine rollup.summary
                        , dailyCapGauge rollup.summary
                        , costTable rollup.rows
-                       , unattributedLine model.unattributedUsd
                        ]
 
 
@@ -1289,31 +1272,6 @@ dailyCapGauge summary =
                 ]
                 []
             ]
-
-
-{-| Spend the by-ticket rollup reports under no ticket at all (the CI review
-runs, harvest pushes, platform housekeeping — the rollup's empty-string key).
-It is a large share of real spend and would otherwise appear nowhere.
--}
-unattributedLine : Maybe Float -> Html Message
-unattributedLine maybeUsd =
-    case maybeUsd of
-        Just usd ->
-            if usd > 0 then
-                Html.div
-                    [ class "agent-unattributed-cost"
-                    , style "margin" "8px 0 0 0"
-                    , style "font-family" "monospace"
-                    , style "font-size" "12px"
-                    , style "color" mutedColor
-                    ]
-                    [ Html.text ("unattributed (no ticket, all time): $" ++ formatUsd usd) ]
-
-            else
-                Html.text ""
-
-        Nothing ->
-            Html.text ""
 
 
 costTable : List Agent.CostRow -> Html Message

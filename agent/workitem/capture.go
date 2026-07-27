@@ -24,41 +24,13 @@ var (
 	ErrCaptureFailed   = errors.New("work item: snapshot capture failed")
 )
 
-type WorkflowSelection struct {
-	Name         string `json:"name,omitempty"`
-	Version      *int   `json:"version,omitempty"`
-	DefinitionID *int   `json:"definition_id,omitempty"`
-}
-
-type SpecRevision struct {
-	Version            int      `json:"version"`
-	Title              string   `json:"title"`
-	Body               string   `json:"body"`
-	AcceptanceCriteria []string `json:"acceptance_criteria"`
-	Links              []Link   `json:"links"`
-	SubmittedBy        string   `json:"submitted_by"`
-	CreatedAt          int64    `json:"created_at"`
-}
-
-type Link struct {
-	Title string `json:"title"`
-	URL   string `json:"url"`
-}
-
-type TaskRevision struct {
-	Ordering  int    `json:"ordering"`
-	Title     string `json:"title"`
-	Detail    string `json:"detail,omitempty"`
-	Status    string `json:"status"`
-	UpdatedAt int64  `json:"updated_at"`
-}
-
-type PlanRevision struct {
-	Version int            `json:"version"`
-	Tasks   []TaskRevision `json:"tasks"`
-}
-
-// Revision is all mutable work-item state read from one source snapshot.
+// Revision is the authored content of one work item read from one source
+// snapshot: its identity, its title, and its markdown body.
+//
+// It deliberately carries no lifecycle state, no workflow selection, and no
+// separate spec/plan documents. State and workflow belong to the consumer (the
+// durable run records which function ran over which snapshot), and a work
+// item's prose lives in exactly one place — the body.
 type Revision struct {
 	TicketID   int
 	Revision   int64
@@ -67,10 +39,6 @@ type Revision struct {
 	ExternalID string
 	Title      string
 	Body       string
-	State      string
-	Workflow   WorkflowSelection
-	Spec       *SpecRevision
-	Plan       *PlanRevision
 }
 
 type CapturedRevision struct {
@@ -127,36 +95,23 @@ func MarshalRevision(revision Revision) (CapturedRevision, error) {
 	}
 	for label, value := range map[string]string{
 		"adapter": revision.Adapter, "external ID": revision.ExternalID,
-		"title": revision.Title, "body": revision.Body, "state": revision.State,
+		"title": revision.Title, "body": revision.Body,
 	} {
 		if strings.TrimSpace(value) == "" {
 			return CapturedRevision{}, fmt.Errorf("%w: %s is required", ErrInvalidRevision, label)
 		}
 	}
 
+	// work-item/v1 is the authored content at one revision and nothing else.
+	// The ticket's lifecycle state and the workflow chosen to consume it belong
+	// to the durable run, which already records which function ran over which
+	// snapshot; freezing either here would mint a second copy that is stale the
+	// moment the ticket moves.
 	document := contracts.WorkItemDocument{
 		SchemaVersion: "1.0.0", Adapter: revision.Adapter, ExternalID: revision.ExternalID,
 		Revision:   strconv.FormatInt(revision.Revision, 10),
 		CapturedAt: revision.UpdatedAt.UTC().Format(time.RFC3339Nano),
-		Title:      revision.Title, Body: revision.Body, State: revision.State,
-		Workflow: &contracts.WorkItemWorkflowSelection{
-			Name: revision.Workflow.Name, Version: cloneInt(revision.Workflow.Version),
-			DefinitionID: cloneInt(revision.Workflow.DefinitionID),
-		},
-	}
-	if revision.Spec != nil {
-		content, err := json.Marshal(revision.Spec)
-		if err != nil {
-			return CapturedRevision{}, fmt.Errorf("%w: encode spec: %v", ErrInvalidRevision, err)
-		}
-		document.Spec = &contracts.WorkItemRevision{Revision: strconv.Itoa(revision.Spec.Version), Content: string(content)}
-	}
-	if revision.Plan != nil {
-		content, err := json.Marshal(revision.Plan)
-		if err != nil {
-			return CapturedRevision{}, fmt.Errorf("%w: encode plan: %v", ErrInvalidRevision, err)
-		}
-		document.Plan = &contracts.WorkItemRevision{Revision: strconv.Itoa(revision.Plan.Version), Content: string(content)}
+		Title:      revision.Title, Body: revision.Body,
 	}
 	if err := document.Validate(); err != nil {
 		return CapturedRevision{}, fmt.Errorf("%w: %v", ErrInvalidRevision, err)
@@ -173,14 +128,6 @@ func MarshalRevision(revision Revision) (CapturedRevision, error) {
 		return CapturedRevision{}, err
 	}
 	return captured, nil
-}
-
-func cloneInt(value *int) *int {
-	if value == nil {
-		return nil
-	}
-	cloned := *value
-	return &cloned
 }
 
 type Source interface {

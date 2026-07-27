@@ -35,23 +35,6 @@ sampleTickets =
         """
 
 
-costRollup : Callback.Callback
-costRollup =
-    Callback.AgentCostRollupFetched
-        (Ok
-            { groupBy = "ticket"
-            , summary =
-                { dailyCapUsd = 0
-                , dailySpentUsd = 0
-                , dailyRemainingUsd = 0
-                , dailyExhausted = False
-                }
-            , rows =
-                [ { key = "12", entries = 1, inputTokens = 0, outputTokens = 0, turns = 0, costUsd = 0.18 } ]
-            }
-        )
-
-
 initAgentTickets : ( Application.Model, List Effects.Effect )
 initAgentTickets =
     Application.init Data.flags
@@ -84,14 +67,17 @@ all =
             \_ ->
                 List.length sampleTickets
                     |> Expect.equal 2
-        , test "fetches tickets, costs and dispatcher status on load" <|
+        , test "fetches tickets and dispatcher status on load — and no per-ticket cost rollup" <|
             \_ ->
+                -- Cost belongs to the workflow run; the ticket-keyed rollup the
+                -- queue page used to poll is not a server dimension any more.
                 initAgentTickets
                     |> Tuple.second
                     |> Expect.all
                         [ Common.contains Effects.FetchAgentTickets
-                        , Common.contains Effects.FetchAgentTicketCosts
                         , Common.contains Effects.FetchAgentDispatcher
+                        , Common.notContains Effects.FetchAgentCostRollup
+                        , Common.notContains Effects.FetchAgentWorkflowCosts
                         ]
         , test "decodes the dispatcher status wire shape" <|
             \_ ->
@@ -146,17 +132,6 @@ all =
                         , containing [ text "ship fly archives" ]
                         , containing [ text "develop" ]
                         ]
-        , test "joins per-ticket cost into the matching row" <|
-            \_ ->
-                Common.init "/agent-tickets"
-                    |> Application.handleCallback (Callback.AgentTicketsFetched (Ok sampleTickets))
-                    |> Tuple.first
-                    |> Application.handleCallback costRollup
-                    |> Tuple.first
-                    |> Common.queryView
-                    |> Query.findAll [ class "agent-ticket-row" ]
-                    |> Query.first
-                    |> Query.has [ containing [ text "$0.18" ] ]
         , test "shows an empty-state notice when there are no tickets" <|
             \_ ->
                 Common.init "/agent-tickets"
@@ -190,25 +165,13 @@ all =
                     |> Common.queryView
                     |> Query.find [ class "agent-ticket-branch" ]
                     |> Query.has [ text "agent/ticket-12" ]
-        , test "live-updates: refetches tickets on the five second tick, but not the heavy cost rollup" <|
+        , test "live-updates: refetches tickets on the five second tick" <|
             \_ ->
                 Common.init "/agent-tickets"
                     |> Application.update
                         (Msgs.DeliveryReceived (ClockTicked FiveSeconds <| Time.millisToPosix 0))
                     |> Tuple.second
-                    |> Expect.all
-                        [ Common.contains Effects.FetchAgentTickets
-                        , Common.notContains Effects.FetchAgentTicketCosts
-                        ]
-        , test "live-updates: refreshes the cost rollup on the minute tick" <|
-            \_ ->
-                -- the rollup is a whole-window ledger aggregation; 5s polling
-                -- would run it 720x/hour per open tab for run-granularity data
-                Common.init "/agent-tickets"
-                    |> Application.update
-                        (Msgs.DeliveryReceived (ClockTicked OneMinute <| Time.millisToPosix 0))
-                    |> Tuple.second
-                    |> Common.contains Effects.FetchAgentTicketCosts
+                    |> Common.contains Effects.FetchAgentTickets
         , test "client-side filter narrows the visible rows by title" <|
             \_ ->
                 Common.init "/agent-tickets"
@@ -243,33 +206,7 @@ all =
                         , containing [ text "attempt 2" ]
                         , containing [ text "develop v2" ]
                         ]
-        , test "surfaces unattributed spend as a footer line" <|
-            \_ ->
-                Common.init "/agent-tickets"
-                    |> Application.handleCallback (Callback.AgentTicketsFetched (Ok sampleTickets))
-                    |> Tuple.first
-                    |> Application.handleCallback
-                        (Callback.AgentCostRollupFetched
-                            (Ok
-                                { groupBy = "ticket"
-                                , summary =
-                                    { dailyCapUsd = 0
-                                    , dailySpentUsd = 0
-                                    , dailyRemainingUsd = 0
-                                    , dailyExhausted = False
-                                    }
-                                , rows =
-                                    [ { key = "", entries = 5, inputTokens = 0, outputTokens = 0, turns = 0, costUsd = 11.08 }
-                                    , { key = "12", entries = 1, inputTokens = 0, outputTokens = 0, turns = 0, costUsd = 0.18 }
-                                    ]
-                                }
-                            )
-                        )
-                    |> Tuple.first
-                    |> Common.queryView
-                    |> Query.find [ Test.Html.Selector.id "unattributed-cost" ]
-                    |> Query.has [ containing [ text "$11.08" ] ]
-        , test "renders the errored section above the draft section" <|
+        , test "renders the needs-review section above the draft section" <|
             \_ ->
                 Common.init "/agent-tickets"
                     |> Application.handleCallback
@@ -278,7 +215,7 @@ all =
                                 (ticketsFrom
                                     """
                                     [ { "id": 5, "title": "draft one", "state": "draft", "workflow_name": "develop", "created_at": 100 }
-                                    , { "id": 6, "title": "errored one", "state": "errored", "workflow_name": "develop", "created_at": 200 }
+                                    , { "id": 6, "title": "waiting on you", "state": "needs_review", "workflow_name": "develop", "created_at": 200 }
                                     ]
                                     """
                                 )
@@ -288,10 +225,10 @@ all =
                     |> Common.queryView
                     |> Query.findAll [ Test.Html.Selector.tag "h2" ]
                     |> Expect.all
-                        [ Query.index 0 >> Query.has [ text "Errored" ]
+                        [ Query.index 0 >> Query.has [ text "Needs your review" ]
                         , Query.index 1 >> Query.has [ text "Draft" ]
                         ]
-        , test "section header carries a count and spend rollup" <|
+        , test "section header carries a count, and closed is the one terminal section" <|
             \_ ->
                 Common.init "/agent-tickets"
                     |> Application.handleCallback
@@ -299,34 +236,16 @@ all =
                             (Ok
                                 (ticketsFrom
                                     """
-                                    [ { "id": 5, "title": "one", "state": "merged", "workflow_name": "develop", "created_at": 100 }
-                                    , { "id": 6, "title": "two", "state": "merged", "workflow_name": "develop", "created_at": 200 }
+                                    [ { "id": 5, "title": "one", "state": "closed", "workflow_name": "develop", "created_at": 100 }
+                                    , { "id": 6, "title": "two", "state": "closed", "workflow_name": "develop", "created_at": 200 }
                                     ]
                                     """
                                 )
                             )
                         )
                     |> Tuple.first
-                    |> Application.handleCallback
-                        (Callback.AgentCostRollupFetched
-                            (Ok
-                                { groupBy = "ticket"
-                                , summary =
-                                    { dailyCapUsd = 0
-                                    , dailySpentUsd = 0
-                                    , dailyRemainingUsd = 0
-                                    , dailyExhausted = False
-                                    }
-                                , rows =
-                                    [ { key = "5", entries = 1, inputTokens = 0, outputTokens = 0, turns = 0, costUsd = 40.0 }
-                                    , { key = "6", entries = 1, inputTokens = 0, outputTokens = 0, turns = 0, costUsd = 3.1 }
-                                    ]
-                                }
-                            )
-                        )
-                    |> Tuple.first
                     |> Common.queryView
                     |> Query.findAll [ Test.Html.Selector.tag "h2" ]
                     |> Query.first
-                    |> Query.has [ text "Merged (2) · $43.10" ]
+                    |> Query.has [ text "Closed (2)" ]
         ]

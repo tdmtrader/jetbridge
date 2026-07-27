@@ -64,8 +64,7 @@ var _ = Describe("Agent Tickets", func() {
 					ghttp.CombineHandlers(
 						ghttp.VerifyRequest("GET", "/api/v1/agent/tickets/7"),
 						ghttp.RespondWithJSONEncoded(http.StatusOK, tickets.TicketDetail{
-							Ticket: tickets.Ticket{ID: 7, Title: "fix X", State: tickets.StateRunning},
-							Tasks:  []tickets.Task{{Ordering: 1, Title: "one", Status: tickets.TaskDone}},
+							Ticket: tickets.Ticket{ID: 7, Title: "fix X", State: tickets.StateRunning, Body: "details"},
 						}),
 					),
 				)
@@ -76,7 +75,7 @@ var _ = Describe("Agent Tickets", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(found).To(BeTrue())
 				Expect(detail.Ticket.ID).To(Equal(7))
-				Expect(detail.Tasks).To(HaveLen(1))
+				Expect(detail.Ticket.Body).To(Equal("details"))
 			})
 		})
 

@@ -1,6 +1,7 @@
 package reviews_test
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -27,23 +28,23 @@ func TestCanonicalSnapshotAndWorkflowRunReviewReadsUseSnapshotFeedbackIdentity(t
 	productionID := snapshot.DatabaseID(9007199254740997)
 	for index, snapshotID := range []snapshot.SnapshotID{first, second} {
 		review := &reviews.StoredReview{
-			BuildID: 42, TeamName: "main", Repo: "org/repo", CommitSha: "same-commit",
-			SnapshotID: &snapshotID, WorkflowRunID: &runID, ProductionID: &productionID,
-			Review: json.RawMessage(validReview), CreatedAt: int64(index + 1),
+			BuildID: 42, TeamName: "main", Conclusion: "changes-required",
+			SnapshotID: snapshotID, WorkflowRunID: &runID, ProductionID: &productionID,
+			Review: json.RawMessage(sealedReviewRecord(t)), CreatedAt: int64(index + 1),
 		}
-		if err := store.Upsert(review); err != nil {
+		if err := store.UpsertReviewProjection(context.Background(), review); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if err := fbStore.Save(&feedback.StoredFeedback{
-		ReviewSnapshotID: &first, ReviewTeamName: "main",
-		FindingID: "PI-1", Verdict: "accurate", Reviewer: "alice",
+		ReviewSnapshotID: first, ReviewTeamName: "main",
+		FindingID: "blocking-1", Verdict: "accurate", Reviewer: "alice",
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := fbStore.Save(&feedback.StoredFeedback{
-		ReviewSnapshotID: &second, ReviewTeamName: "main",
-		FindingID: "PI-1", Verdict: "false_positive", Reviewer: "alice",
+		ReviewSnapshotID: second, ReviewTeamName: "main",
+		FindingID: "blocking-1", Verdict: "false_positive", Reviewer: "alice",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +63,7 @@ func TestCanonicalSnapshotAndWorkflowRunReviewReadsUseSnapshotFeedbackIdentity(t
 	if err := json.Unmarshal(snapshotResponse.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.SnapshotID == nil || *got.SnapshotID != first || got.Feedback["PI-1"].Verdict != "accurate" {
+	if got.SnapshotID != first || got.Feedback["blocking-1"].Verdict != "accurate" {
 		t.Fatalf("snapshot response = %#v", got)
 	}
 
@@ -77,17 +78,16 @@ func TestCanonicalSnapshotAndWorkflowRunReviewReadsUseSnapshotFeedbackIdentity(t
 	if err := json.Unmarshal(runResponse.Body.Bytes(), &runReviews); err != nil {
 		t.Fatal(err)
 	}
-	if len(runReviews) != 2 || runReviews[0].SnapshotID == nil || runReviews[1].SnapshotID == nil {
+	if len(runReviews) != 2 || runReviews[0].SnapshotID == 0 || runReviews[1].SnapshotID == 0 {
 		t.Fatalf("run reviews = %#v", runReviews)
 	}
-	if runReviews[0].Feedback["PI-1"].Verdict == runReviews[1].Feedback["PI-1"].Verdict {
-		t.Fatalf("same-commit snapshot feedback collided: %#v", runReviews)
+	if runReviews[0].Feedback["blocking-1"].Verdict == runReviews[1].Feedback["blocking-1"].Verdict {
+		t.Fatalf("same-record snapshot feedback collided: %#v", runReviews)
 	}
 }
 
 // sealedReviewRecord is what a projected row actually stores: the canonical
-// review/v1 record.json bytes the platform sealed, not the legacy submission
-// payload.
+// review/v1 record.json bytes the platform sealed.
 func sealedReviewRecord(t *testing.T) []byte {
 	t.Helper()
 	line := 12
@@ -136,13 +136,13 @@ func sealedReviewRecord(t *testing.T) []byte {
 
 func TestProjectedSnapshotReviewRendersSealedRecordFindings(t *testing.T) {
 	h, store, _ := newHandler(t)
-	snapshotID := snapshot.SnapshotID(501)
 	productionID := snapshot.DatabaseID(9)
-	if err := store.Upsert(&reviews.StoredReview{
+	if err := store.UpsertReviewProjection(context.Background(), &reviews.StoredReview{
 		BuildID: 42, TeamName: "main",
-		Summary: "the merge base assertion is client-supplied",
-		Score:   0, MaxScore: 1, ProvenCount: 1, ObservationCount: 1,
-		SnapshotID: &snapshotID, ProductionID: &productionID,
+		Conclusion:     "changes-required",
+		Summary:        "the merge base assertion is client-supplied",
+		SeverityCounts: map[string]int{"critical": 1, "observation": 1},
+		SnapshotID:     501, ProductionID: &productionID,
 		Review: json.RawMessage(sealedReviewRecord(t)),
 	}); err != nil {
 		t.Fatal(err)
@@ -155,13 +155,25 @@ func TestProjectedSnapshotReviewRendersSealedRecordFindings(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("code = %d: %s", response.Code, response.Body.String())
 	}
+	// The v1 envelope is gone from the wire, not merely unused by the web.
+	for _, gone := range []string{"score", "max_score", `"pass"`, "agent_model", "duration_seconds", "test_file", "test_name", "test_output"} {
+		if strings.Contains(response.Body.String(), gone) {
+			t.Errorf("v1 envelope field %s survived: %s", gone, response.Body.String())
+		}
+	}
 	var got reviews.BuildReviewResponse
 	if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
 
+	if got.Conclusion != "changes-required" {
+		t.Errorf("conclusion = %q", got.Conclusion)
+	}
 	if got.Summary != "the merge base assertion is client-supplied" {
 		t.Errorf("summary = %q", got.Summary)
+	}
+	if got.SeverityCounts["critical"] != 1 || got.SeverityCounts["observation"] != 1 {
+		t.Errorf("severity counts = %v", got.SeverityCounts)
 	}
 	if got.FindingCount != 2 {
 		t.Errorf("finding_count = %d, want 2", got.FindingCount)
@@ -170,7 +182,7 @@ func TestProjectedSnapshotReviewRendersSealedRecordFindings(t *testing.T) {
 		t.Fatalf("proven=%d observations=%d, want 1/1: %+v", len(got.ProvenIssues), len(got.Observations), got)
 	}
 	issue := got.ProvenIssues[0]
-	if issue.ID != "blocking-1" || issue.Severity != "critical" ||
+	if issue.ID != "blocking-1" || issue.Severity != "critical" || !issue.Blocking ||
 		issue.Category != "correctness" || issue.Title != "merge base is trusted from the client" ||
 		issue.Description != "the publisher accepts the caller's merge base" {
 		t.Errorf("proven issue = %+v", issue)
@@ -179,7 +191,7 @@ func TestProjectedSnapshotReviewRendersSealedRecordFindings(t *testing.T) {
 		t.Errorf("proven issue anchor = %q:%d, want agent/publisher/gateway.go:12", issue.File, issue.Line)
 	}
 	note := got.Observations[0]
-	if note.ID != "note-1" || note.Severity != "observation" || note.Title != "helper could be shared" {
+	if note.ID != "note-1" || note.Severity != "observation" || note.Blocking || note.Title != "helper could be shared" {
 		t.Errorf("observation = %+v", note)
 	}
 }
@@ -206,24 +218,18 @@ func TestCanonicalReviewReadsRejectShadowedRouteIdentity(t *testing.T) {
 	}
 }
 
-func TestGetByBuildToleratesMalformedFinding(t *testing.T) {
+// A record the read-time gate rejects is not downgraded to a looser decode. The
+// findings are withheld and the projected severity counts stay the only claim.
+func TestGetByBuildWithholdsFindingsFromAnUndecodableRecord(t *testing.T) {
 	h, store, _ := newHandler(t)
-	// One well-formed and one malformed proven issue ("line": "ten").
-	review := `{
-		"schema_version": "1.0.0",
-		"metadata": {"repo": "concourse", "commit": "def456"},
-		"score": {"value": 5, "max": 10, "pass": false},
-		"proven_issues": [
-			{"id": "PI-1", "title": "good", "file": "a.go", "line": 1, "category": "correctness"},
-			{"id": "PI-2", "title": "bad line", "file": "b.go", "line": "ten", "category": "correctness"}
-		],
-		"observations": [],
-		"summary": "mixed"
-	}`
-	store.Upsert(&reviews.StoredReview{
-		BuildID: 42, TeamName: "main", Repo: "concourse", CommitSha: "def456",
-		ProvenCount: 2, ObservationCount: 0, Review: json.RawMessage(review),
-	})
+	productionID := snapshot.DatabaseID(3)
+	if err := store.UpsertReviewProjection(context.Background(), &reviews.StoredReview{
+		BuildID: 42, TeamName: "main", SnapshotID: 601, ProductionID: &productionID,
+		Conclusion: "accept", SeverityCounts: map[string]int{"low": 2},
+		Review: json.RawMessage(`{"record_version":"1.0.0","type":"review/v1","body":{}}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	req := httptest.NewRequest("GET", "/api/v1/builds/42/agent-reviews", nil)
 	req.Form = map[string][]string{":build_id": {"42"}}
@@ -239,22 +245,24 @@ func TestGetByBuildToleratesMalformedFinding(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("got %d reviews", len(got))
 	}
-	if len(got[0].ProvenIssues) != 2 {
-		t.Errorf("proven issues = %d, want 2 (malformed entry must not vanish)", len(got[0].ProvenIssues))
+	if len(got[0].ProvenIssues) != 0 || len(got[0].Observations) != 0 {
+		t.Errorf("ungated findings rendered: %+v", got[0])
 	}
-	if got[0].FindingCount != got[0].ProvenCount+got[0].ObservationCount {
-		t.Errorf("finding_count %d disagrees with proven+observation %d",
-			got[0].FindingCount, got[0].ProvenCount+got[0].ObservationCount)
+	if got[0].FindingCount != 2 {
+		t.Errorf("finding_count = %d, want the projected severity total 2", got[0].FindingCount)
 	}
 }
 
-func TestGetByBuildUnpacksLegacyFindings(t *testing.T) {
+func TestGetByBuildRendersTheSealedRecord(t *testing.T) {
 	h, store, _ := newHandler(t)
-	if err := store.Upsert(&reviews.StoredReview{
+	productionID := snapshot.DatabaseID(4)
+	if err := store.UpsertReviewProjection(context.Background(), &reviews.StoredReview{
 		BuildID: 42, BuildName: "3", TeamName: "main", PipelineName: "concourse-self",
-		JobName: "agent-review", Repo: "concourse", CommitSha: "abc123",
-		Score: 7.5, MaxScore: 10, ProvenCount: 1, ObservationCount: 1,
-		Review: json.RawMessage(validReview),
+		JobName: "agent-review", WorkflowName: "code-review",
+		SnapshotID: 602, ProductionID: &productionID,
+		Conclusion:     "changes-required",
+		SeverityCounts: map[string]int{"critical": 1, "observation": 1},
+		Review:         json.RawMessage(sealedReviewRecord(t)),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -273,7 +281,7 @@ func TestGetByBuildUnpacksLegacyFindings(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("got %d reviews", len(got))
 	}
-	if got[0].TeamName != "main" || got[0].Score != 7.5 {
+	if got[0].TeamName != "main" || got[0].WorkflowName != "code-review" || got[0].Conclusion != "changes-required" {
 		t.Errorf("summary fields wrong: %+v", got[0])
 	}
 	if len(got[0].ProvenIssues) != 1 || len(got[0].Observations) != 1 {
@@ -282,18 +290,22 @@ func TestGetByBuildUnpacksLegacyFindings(t *testing.T) {
 	if got[0].FindingCount != 2 {
 		t.Errorf("finding_count = %d, want 2", got[0].FindingCount)
 	}
-	// A row with no snapshot id predates the projection, so it can carry no
-	// verdicts: feedback is keyed by review snapshot and nothing else.
 	if len(got[0].Feedback) != 0 || got[0].EvaluatedCount != 0 {
-		t.Errorf("legacy row must join no feedback, got %+v", got[0].Feedback)
+		t.Errorf("unevaluated review must join no feedback, got %+v", got[0].Feedback)
 	}
 }
 
 func TestListByTeam(t *testing.T) {
 	h, store, _ := newHandler(t)
-	store.Upsert(&reviews.StoredReview{BuildID: 1, TeamName: "main", PipelineName: "p1", Repo: "r", CommitSha: "c1", Review: json.RawMessage(`{}`)})
-	store.Upsert(&reviews.StoredReview{BuildID: 2, TeamName: "main", PipelineName: "p2", Repo: "r", CommitSha: "c2", Review: json.RawMessage(`{}`)})
-	store.Upsert(&reviews.StoredReview{BuildID: 3, TeamName: "other", PipelineName: "p1", Repo: "r", CommitSha: "c3", Review: json.RawMessage(`{}`)})
+	for _, rec := range []*reviews.StoredReview{
+		projected(1001, reviews.StoredReview{BuildID: 1, TeamName: "main", PipelineName: "p1"}),
+		projected(1002, reviews.StoredReview{BuildID: 2, TeamName: "main", PipelineName: "p2"}),
+		projected(1003, reviews.StoredReview{BuildID: 3, TeamName: "other", PipelineName: "p1"}),
+	} {
+		if err := store.UpsertReviewProjection(context.Background(), rec); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	req := httptest.NewRequest("GET", "/api/v1/teams/main/agent-reviews?pipeline=p1", nil)
 	req.Form = map[string][]string{":team_name": {"main"}}

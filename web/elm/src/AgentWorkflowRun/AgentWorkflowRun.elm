@@ -303,8 +303,6 @@ update message ( model, effects ) =
             , effects
                 ++ [ SubmitAgentReviewVerdict
                         { reviewSnapshotId = params.reviewSnapshotId
-                        , repo = params.repo
-                        , commitSha = params.commitSha
                         , findingId = params.findingId
                         , verdict = params.verdict
                         , notes = Dict.get params.findingId model.agentReviewNotes |> Maybe.withDefault ""

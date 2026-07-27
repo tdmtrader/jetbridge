@@ -192,14 +192,24 @@ associated build, pipeline-run, instance-pipeline, or template-pipeline rows
 are deleted; `pipeline_run_id` is only an execution diagnostic.
 
 The ticket is a `work-item/v1` projection shell, not an execution identity. Its
-web page renders only ticket content (title/body/spec/plan/tasks), the captured
-revision and repository selection, and the human queue/dispatch/disposition
-controls. Every piece of execution evidence — the agent review, the
-repository-change diff, run cost, and the run outcome — belongs to the durable
-workflow run and is reached only through canonical links to that run
-(`Routes.AgentWorkflowRun`) and its promoted output snapshots. The legacy
-per-ticket disposition, outcome, diff, and metrics endpoints, and the Elm state
-that called them, have been removed.
+state is the QUEUE lifecycle and nothing else — `draft`, `queued`, `running`,
+`needs_review`, `closed` — and `closed` is the single terminal state, reached by
+a human from `needs_review` after a run, or from `draft`/`queued` to drop a work
+item that never ran. Its web page renders only
+ticket content (title and markdown body), the captured revision and repository
+selection, and the human queue/dispatch/close controls. Every piece of execution
+evidence — the agent review, the repository-change diff, run cost, and above all
+the run's outcome and DISPOSITION — belongs to the durable workflow run and its
+`agent_workflow_outcomes` row, and is reached only through canonical links to
+that run (`Routes.AgentWorkflowRun`) and its promoted output snapshots.
+
+The v2 disposition verbs the ticket used to mirror (`merged`,
+`merged_with_fixes`, `sent_back`, `concluded`, `abandoned`, `failed`, `errored`)
+are gone, along with the per-ticket `budget_usd` and `error_detail` columns, the
+`agent_ticket_specs` / `agent_ticket_tasks` content tables (write-orphaned once
+the agent submit routes were deleted — a ticket's prose is its body), and the
+legacy per-ticket disposition, outcome, diff, and metrics endpoints and the Elm
+state that called them.
 
 Operators inspect durable runs with `fly agent workflows show-run`; a
 target-qualified example is:

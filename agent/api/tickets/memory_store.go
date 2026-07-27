@@ -15,18 +15,13 @@ import (
 // precedent). It mirrors the DB factory's semantics, including the
 // single-writer transition rules.
 type MemoryStore struct {
-	mu      sync.Mutex
-	nextID  int
-	byID    map[int]*Ticket
-	specs   map[int][]Spec // keyed by ticket id, ascending version
-	tasks   map[int][]Task // keyed by ticket id, all plan versions
-	taskSeq int
+	mu     sync.Mutex
+	nextID int
+	byID   map[int]*Ticket
 }
 
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{
-		byID: map[int]*Ticket{}, specs: map[int][]Spec{}, tasks: map[int][]Task{},
-	}
+	return &MemoryStore{byID: map[int]*Ticket{}}
 }
 
 func (m *MemoryStore) Create(t *Ticket) (int, error) {
@@ -100,10 +95,6 @@ func (m *MemoryStore) Update(id int, upd Update) error {
 	}
 	if upd.Body != nil {
 		t.Body = *upd.Body
-	}
-	if upd.BudgetUSD != nil {
-		v := *upd.BudgetUSD
-		t.BudgetUSD = &v
 	}
 	if upd.UserID != nil {
 		v := *upd.UserID
@@ -305,99 +296,10 @@ func (m *MemoryStore) Transition(id int, from, to State, meta TransitionMeta) er
 		if meta.Branch != "" {
 			t.Branch = meta.Branch
 		}
-	case StateMerged, StateMergedWithFixes, StateSentBack, StateAbandoned, StateConcluded, StateFailed, StateErrored:
+	case StateClosed:
 		t.CompletedAt = time.Now().Unix()
-		if to == StateErrored {
-			t.ErrorDetail = meta.ErrorDetail
-		}
 	}
 	return nil
-}
-
-// SeedSpec plants one agent_ticket_specs row. The platform has no spec write
-// surface any more (the v1 POST .../spec route is gone); the read side
-// (LatestSpec, CaptureRevision) still serves rows written before it was
-// removed, so this double needs a way to stand those rows up.
-func (m *MemoryStore) SeedSpec(ticketID int, spec Spec) (int, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if _, ok := m.byID[ticketID]; !ok {
-		return 0, ErrTicketNotFound
-	}
-	version := len(m.specs[ticketID]) + 1
-	spec.ID = version
-	spec.TicketID = ticketID
-	spec.Version = version
-	spec.CreatedAt = time.Now().Unix()
-	if spec.AcceptanceCriteria == nil {
-		spec.AcceptanceCriteria = []string{}
-	}
-	if spec.Links == nil {
-		spec.Links = []Link{}
-	}
-	m.specs[ticketID] = append(m.specs[ticketID], spec)
-	m.bump(m.byID[ticketID])
-	return version, nil
-}
-
-func (m *MemoryStore) LatestSpec(ticketID int) (*Spec, bool, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	specs := m.specs[ticketID]
-	if len(specs) == 0 {
-		return nil, false, nil
-	}
-	cp := specs[len(specs)-1]
-	return &cp, true, nil
-}
-
-// SeedPlan plants one agent_ticket_tasks plan version. Test-double seeding
-// for the surviving read side — see SeedSpec.
-func (m *MemoryStore) SeedPlan(ticketID int, ts []Task) (int, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if _, ok := m.byID[ticketID]; !ok {
-		return 0, ErrTicketNotFound
-	}
-	maxVersion := 0
-	for _, existing := range m.tasks[ticketID] {
-		if existing.PlanVersion > maxVersion {
-			maxVersion = existing.PlanVersion
-		}
-	}
-	planVersion := maxVersion + 1
-	for i, task := range ts {
-		m.taskSeq++
-		task.ID = m.taskSeq
-		task.TicketID = ticketID
-		task.PlanVersion = planVersion
-		task.Ordering = i + 1
-		if task.Status == "" {
-			task.Status = TaskPending
-		}
-		task.UpdatedAt = time.Now().Unix()
-		m.tasks[ticketID] = append(m.tasks[ticketID], task)
-	}
-	m.bump(m.byID[ticketID])
-	return planVersion, nil
-}
-
-func (m *MemoryStore) ActivePlan(ticketID int) ([]Task, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	maxVersion := 0
-	for _, t := range m.tasks[ticketID] {
-		if t.PlanVersion > maxVersion {
-			maxVersion = t.PlanVersion
-		}
-	}
-	out := []Task{}
-	for _, t := range m.tasks[ticketID] {
-		if t.PlanVersion == maxVersion {
-			out = append(out, t)
-		}
-	}
-	return out, nil
 }
 
 func (m *MemoryStore) CaptureRevision(ctx context.Context, ticketID int) (workitem.CapturedRevision, bool, error) {
@@ -414,32 +316,14 @@ func (m *MemoryStore) CaptureRevision(ctx context.Context, ticketID int) (workit
 		return workitem.CapturedRevision{}, false, nil
 	}
 
+	// State and the workflow selection are deliberately absent: work-item/v1
+	// freezes authored content only, and both of those belong to the durable
+	// run (contracts.WorkItemDocument).
 	revision := workitem.Revision{
 		TicketID: ticket.ID, Revision: ticket.Revision,
 		UpdatedAt: time.Unix(ticket.UpdatedAt, 0).UTC(),
 		Adapter:   ticketAdapter(*ticket), ExternalID: ticketExternalID(*ticket),
-		Title: ticket.Title, Body: ticket.Body, State: string(ticket.State),
-		Workflow: workitem.WorkflowSelection{
-			Name: ticket.WorkflowName, Version: cloneTicketInt(ticket.WorkflowVersion),
-			DefinitionID: cloneTicketInt(ticket.WorkflowDefinitionID),
-		},
-	}
-	if specs := m.specs[ticketID]; len(specs) > 0 {
-		revision.Spec = workItemSpec(specs[len(specs)-1])
-	}
-	maxPlan := 0
-	for _, task := range m.tasks[ticketID] {
-		if task.PlanVersion > maxPlan {
-			maxPlan = task.PlanVersion
-		}
-	}
-	if maxPlan > 0 {
-		revision.Plan = &workitem.PlanRevision{Version: maxPlan, Tasks: []workitem.TaskRevision{}}
-		for _, task := range m.tasks[ticketID] {
-			if task.PlanVersion == maxPlan {
-				revision.Plan.Tasks = append(revision.Plan.Tasks, workItemTask(task))
-			}
-		}
+		Title: ticket.Title, Body: ticket.Body,
 	}
 	captured, err := workitem.MarshalRevision(revision)
 	if err != nil {
@@ -493,23 +377,4 @@ func cloneTicket(ticket Ticket) Ticket {
 		ticket.RepositorySnapshotID = &value
 	}
 	return ticket
-}
-
-func workItemSpec(spec Spec) *workitem.SpecRevision {
-	criteria := append([]string(nil), spec.AcceptanceCriteria...)
-	links := make([]workitem.Link, len(spec.Links))
-	for index, link := range spec.Links {
-		links[index] = workitem.Link{Title: link.Title, URL: link.URL}
-	}
-	return &workitem.SpecRevision{
-		Version: spec.Version, Title: spec.Title, Body: spec.Body,
-		AcceptanceCriteria: criteria, Links: links, SubmittedBy: spec.SubmittedBy, CreatedAt: spec.CreatedAt,
-	}
-}
-
-func workItemTask(task Task) workitem.TaskRevision {
-	return workitem.TaskRevision{
-		Ordering: task.Ordering, Title: task.Title, Detail: task.Detail,
-		Status: string(task.Status), UpdatedAt: task.UpdatedAt,
-	}
 }

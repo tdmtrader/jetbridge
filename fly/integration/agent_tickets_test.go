@@ -60,14 +60,14 @@ var _ = Describe("fly agent tickets", func() {
 			atcServer.AppendHandlers(
 				ghttp.CombineHandlers(
 					ghttp.VerifyRequest("POST", "/api/v1/agent/tickets"),
-					ghttp.VerifyJSON(`{"title":"fix X","body":"details","origin":"fly","repo":"tdmtrader/concourse","target_branch":"main","budget_usd":5}`),
+					ghttp.VerifyJSON(`{"title":"fix X","body":"details","origin":"fly","repo":"tdmtrader/concourse","target_branch":"main"}`),
 					ghttp.RespondWithJSONEncoded(201, tickets.Ticket{ID: 8, State: tickets.StateDraft}),
 				),
 			)
 
 			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "tickets", "create",
 				"--title", "fix X", "--body", "details",
-				"--repo", "tdmtrader/concourse", "--budget", "5")
+				"--repo", "tdmtrader/concourse")
 			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
 			Expect(err).NotTo(HaveOccurred())
 			<-sess.Exited
@@ -77,18 +77,13 @@ var _ = Describe("fly agent tickets", func() {
 	})
 
 	Describe("show", func() {
-		It("prints ticket, spec, and plan", func() {
+		It("prints the ticket and its body", func() {
 			atcServer.AppendHandlers(
 				ghttp.CombineHandlers(
 					ghttp.VerifyRequest("GET", "/api/v1/agent/tickets/7"),
 					ghttp.RespondWithJSONEncoded(200, tickets.TicketDetail{
 						Ticket: tickets.Ticket{ID: 7, Title: "fix X", State: tickets.StateRunning,
 							Origin: "fly", Repo: "tdmtrader/concourse", TargetBranch: "main", Body: "details"},
-						Spec: &tickets.Spec{Version: 2, Title: "the spec"},
-						Tasks: []tickets.Task{
-							{Ordering: 1, Title: "one", Status: tickets.TaskDone},
-							{Ordering: 2, Title: "two", Status: tickets.TaskPending},
-						},
 					}),
 				),
 			)
@@ -100,9 +95,7 @@ var _ = Describe("fly agent tickets", func() {
 			Expect(sess.ExitCode()).To(Equal(0))
 			Expect(sess.Out).To(gbytes.Say(`ticket #7: fix X`))
 			Expect(sess.Out).To(gbytes.Say(`state: running`))
-			Expect(sess.Out).To(gbytes.Say(`spec v2: the spec`))
-			Expect(sess.Out).To(gbytes.Say(`1. \[done\] one`))
-			Expect(sess.Out).To(gbytes.Say(`2. \[pending\] two`))
+			Expect(sess.Out).To(gbytes.Say(`details`))
 		})
 
 		It("exits 1 when the ticket does not exist", func() {
@@ -195,18 +188,18 @@ var _ = Describe("fly agent tickets", func() {
 			atcServer.AppendHandlers(
 				ghttp.CombineHandlers(
 					ghttp.VerifyRequest("PUT", "/api/v1/agent/tickets/7/state"),
-					ghttp.VerifyJSON(`{"from":"needs_review","to":"concluded"}`),
-					ghttp.RespondWithJSONEncoded(200, tickets.Ticket{ID: 7, State: tickets.StateConcluded}),
+					ghttp.VerifyJSON(`{"from":"needs_review","to":"closed"}`),
+					ghttp.RespondWithJSONEncoded(200, tickets.Ticket{ID: 7, State: tickets.StateClosed}),
 				),
 			)
 
 			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "tickets", "transition",
-				"--id", "7", "--from", "needs_review", "--to", "concluded")
+				"--id", "7", "--from", "needs_review", "--to", "closed")
 			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
 			Expect(err).NotTo(HaveOccurred())
 			<-sess.Exited
 			Expect(sess.ExitCode()).To(Equal(0))
-			Expect(sess.Out).To(gbytes.Say("ticket #7 is now concluded"))
+			Expect(sess.Out).To(gbytes.Say("ticket #7 is now closed"))
 		})
 
 		It("defaults --from to the ticket's current server state", func() {

@@ -30,7 +30,7 @@ func withParams(r *http.Request, params url.Values) *http.Request {
 func TestCreateTicketAsHuman(t *testing.T) {
 	h, store := newTestHandler("tdm")
 	req := httptest.NewRequest("POST", "/api/v1/agent/tickets",
-		strings.NewReader(`{"title":"fix X","repo":"tdmtrader/concourse","origin":"fly","budget_usd":5}`))
+		strings.NewReader(`{"title":"fix X","repo":"tdmtrader/concourse","origin":"fly"}`))
 	rec := httptest.NewRecorder()
 	h.CreateTicket(rec, req)
 
@@ -43,8 +43,8 @@ func TestCreateTicketAsHuman(t *testing.T) {
 		created.UserName != "tdm" || created.CreatedBy != "tdm" {
 		t.Errorf("created = %+v", created)
 	}
-	if got, _, _ := store.Get(1); got.BudgetUSD == nil || *got.BudgetUSD != 5 {
-		t.Errorf("budget not stored: %+v", got)
+	if got, _, _ := store.Get(1); got.Title != "fix X" {
+		t.Errorf("stored ticket = %+v", got)
 	}
 }
 
@@ -135,35 +135,34 @@ func TestListTickets(t *testing.T) {
 	}
 }
 
+// The detail payload is the ticket and nothing else: the spec and task-plan
+// tables went with their (deleted) agent write routes, so the markdown body
+// is the only ticket prose there is.
 func TestGetTicketDetail(t *testing.T) {
 	h, store := newTestHandler("tdm")
-	id, _ := store.Create(&tickets.Ticket{Title: "t", Repo: "r"})
+	store.Create(&tickets.Ticket{Title: "t", Repo: "r", Body: "the whole story"})
 
-	get := func() (int, tickets.TicketDetail) {
-		req := withParams(httptest.NewRequest("GET", "/api/v1/agent/tickets/1", nil),
-			url.Values{":ticket_id": {"1"}})
-		rec := httptest.NewRecorder()
-		h.GetTicket(rec, req)
-		var detail tickets.TicketDetail
-		json.Unmarshal(rec.Body.Bytes(), &detail)
-		return rec.Code, detail
-	}
-
-	code, detail := get()
-	if code != http.StatusOK || detail.Spec != nil || len(detail.Tasks) != 0 {
-		t.Fatalf("empty detail = %d %+v", code, detail)
-	}
-
-	store.SeedSpec(id, tickets.Spec{Title: "s", Body: "b"})
-	store.SeedPlan(id, []tickets.Task{{Title: "one"}})
-	code, detail = get()
-	if code != http.StatusOK || detail.Spec == nil || detail.Spec.Version != 1 || len(detail.Tasks) != 1 {
-		t.Fatalf("filled detail = %d %+v", code, detail)
-	}
-
-	req := withParams(httptest.NewRequest("GET", "/api/v1/agent/tickets/99", nil),
-		url.Values{":ticket_id": {"99"}})
+	req := withParams(httptest.NewRequest("GET", "/api/v1/agent/tickets/1", nil),
+		url.Values{":ticket_id": {"1"}})
 	rec := httptest.NewRecorder()
+	h.GetTicket(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("detail = %d body %s", rec.Code, rec.Body)
+	}
+	var detail tickets.TicketDetail
+	json.Unmarshal(rec.Body.Bytes(), &detail)
+	if detail.Ticket.ID != 1 || detail.Ticket.Body != "the whole story" {
+		t.Fatalf("detail = %+v", detail)
+	}
+	for _, retired := range []string{`"spec"`, `"tasks"`} {
+		if strings.Contains(rec.Body.String(), retired) {
+			t.Errorf("detail body still carries %s: %s", retired, rec.Body.String())
+		}
+	}
+
+	req = withParams(httptest.NewRequest("GET", "/api/v1/agent/tickets/99", nil),
+		url.Values{":ticket_id": {"99"}})
+	rec = httptest.NewRecorder()
 	h.GetTicket(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("missing ticket = %d, want 404", rec.Code)
@@ -175,14 +174,14 @@ func TestUpdateTicket(t *testing.T) {
 	store.Create(&tickets.Ticket{Title: "t", Repo: "r"})
 
 	req := withParams(httptest.NewRequest("PUT", "/api/v1/agent/tickets/1",
-		strings.NewReader(`{"title":"t2","budget_usd":7.5}`)), url.Values{":ticket_id": {"1"}})
+		strings.NewReader(`{"title":"t2","body":"b2"}`)), url.Values{":ticket_id": {"1"}})
 	rec := httptest.NewRecorder()
 	h.UpdateTicket(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("code = %d body %s", rec.Code, rec.Body)
 	}
 	got, _, _ := store.Get(1)
-	if got.Title != "t2" || got.BudgetUSD == nil || *got.BudgetUSD != 7.5 {
+	if got.Title != "t2" || got.Body != "b2" {
 		t.Errorf("update = %+v", got)
 	}
 
@@ -225,11 +224,16 @@ func TestTransitionTicket(t *testing.T) {
 	if rec := transition(`{"from":"draft","to":"queued"}`); rec.Code != http.StatusConflict {
 		t.Errorf("stale = %d, want 409", rec.Code)
 	}
-	if rec := transition(`{"from":"queued","to":"merged"}`); rec.Code != http.StatusConflict {
+	if rec := transition(`{"from":"queued","to":"needs_review"}`); rec.Code != http.StatusConflict {
 		t.Errorf("illegal = %d, want 409", rec.Code)
 	}
 	if rec := transition(`{"from":"queued","to":"open"}`); rec.Code != http.StatusBadRequest {
 		t.Errorf("bogus state = %d, want 400", rec.Code)
+	}
+	// The retired disposition verbs are not states any more: a stale client
+	// asking for one gets 400, not a silent no-op.
+	if rec := transition(`{"from":"queued","to":"merged"}`); rec.Code != http.StatusBadRequest {
+		t.Errorf("retired disposition = %d, want 400", rec.Code)
 	}
 	if got, _, _ := store.Get(1); got.State != tickets.StateQueued {
 		t.Errorf("state = %s, want queued", got.State)

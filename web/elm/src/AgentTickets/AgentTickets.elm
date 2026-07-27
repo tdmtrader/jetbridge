@@ -38,7 +38,6 @@ import Views.TopBar as TopBar
 type alias Model =
     Login.Model
         { tickets : List AgentTicket.Ticket
-        , costByTicket : Dict String Float
         , loaded : Bool
         , loadError : Bool
         , now : Maybe Time.Posix
@@ -49,9 +48,9 @@ type alias Model =
         }
 
 
-{-| Lifecycle states in the order they surface in the queue. `needs_review`
-is pinned first because it is the human work queue; terminal states sink to
-the bottom. States the server reports but not listed here still render under
+{-| Queue states in the order they surface. `needs_review` is pinned first
+because it is the human work queue; the one terminal state sinks to the
+bottom. States the server reports but not listed here still render under
 their raw token via a trailing catch-all section.
 -}
 sectionOrder : List String
@@ -60,21 +59,14 @@ sectionOrder =
     , "awaiting_human"
     , "running"
     , "queued"
-    , "errored"
     , "draft"
-    , "sent_back"
-    , "failed"
-    , "merged"
-    , "merged_with_fixes"
-    , "concluded"
-    , "abandoned"
+    , "closed"
     ]
 
 
 init : ( Model, List Effect )
 init =
     ( { tickets = []
-      , costByTicket = Dict.empty
       , loaded = False
       , loadError = False
       , now = Nothing
@@ -84,7 +76,7 @@ init =
       , armedMode = Nothing
       , isUserMenuExpanded = False
       }
-    , [ FetchAgentTickets, FetchAgentTicketCosts, FetchAgentDispatcher ]
+    , [ FetchAgentTickets, FetchAgentDispatcher ]
     )
 
 
@@ -116,19 +108,6 @@ handleCallback callback ( model, effects ) =
         AgentTicketsFetched (Err _) ->
             ( { model | loaded = True, loadError = True }, effects )
 
-        AgentCostRollupFetched (Ok rollup) ->
-            ( { model
-                | costByTicket =
-                    rollup.rows
-                        |> List.map (\row -> ( row.key, row.costUsd ))
-                        |> Dict.fromList
-              }
-            , effects
-            )
-
-        AgentCostRollupFetched (Err _) ->
-            ( model, effects )
-
         AgentDispatcherFetched (Ok status) ->
             ( { model | dispatcher = Just status }, effects )
 
@@ -154,10 +133,6 @@ polls =
     [ -- U11: live-update the queue on the dashboard's 5s cadence so state
       -- never goes stale.
       { interval = FiveSeconds, fetch = \_ -> [ FetchAgentTickets ] }
-    , -- The cost rollup is a whole-window ledger aggregation — far too
-      -- heavy to run 12x/minute per open tab for numbers that move at
-      -- run granularity. Refresh it on the minute like the /agent page.
-      { interval = OneMinute, fetch = \_ -> [ FetchAgentTicketCosts ] }
     ]
 
 
@@ -502,10 +477,7 @@ content model =
                     knownSections ++ leftoverSection model leftover
         in
         Html.div []
-            (controlsBar model
-                :: body
-                ++ unattributedFooter model.costByTicket
-            )
+            (controlsBar model :: body)
 
 
 {-| U10: client-side title filter — a case-insensitive substring match over the
@@ -584,47 +556,13 @@ controlsBar model =
         ]
 
 
-{-| Spend the cost rollup reports outside any ticket (per-push CI reviews,
-platform runs — the rollup's empty-string key). Without this line the queue
-page silently under-reports what the platform actually costs.
--}
-unattributedFooter : Dict String Float -> List (Html Message)
-unattributedFooter costs =
-    case Dict.get "" costs of
-        Just cost ->
-            if cost > 0 then
-                [ Html.div
-                    [ id "unattributed-cost"
-                    , style "display" "flex"
-                    , style "gap" "12px"
-                    , style "margin-top" "24px"
-                    , style "padding" "8px 12px"
-                    , style "border-top" "1px solid #3d3c3c"
-                    , style "font-family" "monospace"
-                    , style "font-size" "12px"
-                    , style "color" "#9aa39b"
-                    ]
-                    [ Html.span [ style "flex" "1" ]
-                        [ Html.text "unattributed (no ticket: CI reviews, platform runs, all time)" ]
-                    , Html.span [ style "color" "#b0b0b0" ]
-                        [ Html.text ("$" ++ formatUsd cost) ]
-                    ]
-                ]
-
-            else
-                []
-
-        Nothing ->
-            []
-
-
 leftoverSection : Model -> List AgentTicket.Ticket -> List (Html Message)
 leftoverSection model tickets =
     if List.isEmpty tickets then
         []
 
     else
-        [ sectionBlock (sectionHeader model.costByTicket "other" tickets) (List.map (ticketRow model) (sortTickets model.sortByWait tickets)) ]
+        [ sectionBlock (withCount "other" tickets) (List.map (ticketRow model) (sortTickets model.sortByWait tickets)) ]
 
 
 sectionView : Model -> Dict String (List AgentTicket.Ticket) -> String -> Maybe (Html Message)
@@ -634,7 +572,7 @@ sectionView model byState state =
             Nothing
 
         Just matching ->
-            Just (sectionBlock (sectionHeader model.costByTicket (sectionLabel state) matching) (List.map (ticketRow model) (sortTickets model.sortByWait matching)))
+            Just (sectionBlock (withCount (sectionLabel state) matching) (List.map (ticketRow model) (sortTickets model.sortByWait matching)))
 
 
 {-| Group the visible tickets by lifecycle state, preserving within-state
@@ -657,25 +595,6 @@ groupByState tickets =
 withCount : String -> List a -> String
 withCount label xs =
     label ++ " (" ++ String.fromInt (List.length xs) ++ ")"
-
-
-{-| W-8: a section header carrying the count plus a spend rollup summed from the
-per-ticket costs the rows already display, e.g. "merged (20) · $43.10". Sections
-with no spend data (or zero spend) fall back to just the count, as before.
--}
-sectionHeader : Dict String Float -> String -> List AgentTicket.Ticket -> String
-sectionHeader costs label tickets =
-    let
-        spend =
-            tickets
-                |> List.filterMap (\t -> Dict.get (String.fromInt t.id) costs)
-                |> List.sum
-    in
-    if spend > 0 then
-        withCount label tickets ++ " · $" ++ formatUsd spend
-
-    else
-        withCount label tickets
 
 
 sortTickets : Bool -> List AgentTicket.Ticket -> List AgentTicket.Ticket
@@ -778,14 +697,6 @@ ticketRow model t =
                 , style "color" "#7a7a7a"
                 ]
                 [ Html.text (workflowLabel t) ]
-        , Html.span
-            [ class "agent-ticket-cost"
-            , style "font-family" "monospace"
-            , style "color" "#b0b0b0"
-            , style "min-width" "60px"
-            , style "text-align" "right"
-            ]
-            [ Html.text (costLabel model.costByTicket t.id) ]
         ]
 
 
@@ -861,38 +772,3 @@ elapsedLabel maybeNow createdAt =
 
         Nothing ->
             Nothing
-
-
-costLabel : Dict String Float -> Int -> String
-costLabel costs ticketId =
-    case Dict.get (String.fromInt ticketId) costs of
-        Just cost ->
-            "$" ++ formatUsd cost
-
-        Nothing ->
-            "—"
-
-
-formatUsd : Float -> String
-formatUsd amount =
-    let
-        cents =
-            round (amount * 100)
-
-        absCents =
-            abs cents
-
-        dollars =
-            absCents // 100
-
-        remainder =
-            modBy 100 absCents
-
-        fraction =
-            if remainder < 10 then
-                "0" ++ String.fromInt remainder
-
-            else
-                String.fromInt remainder
-    in
-    String.fromInt dollars ++ "." ++ fraction

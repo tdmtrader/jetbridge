@@ -135,7 +135,6 @@ init f =
       , pipelineJobs = Dict.empty
       , effectsToRetry = []
       , agentTickets = []
-      , agentTicketCosts = Dict.empty
       }
     , [ FetchAllTeams
       , PinTeamNames Message.Effects.stickyHeaderConfig
@@ -148,7 +147,6 @@ init f =
       , LoadCachedTeams
       , GetViewportOf Dashboard
       , FetchAgentTickets
-      , FetchAgentTicketCosts
       ]
     )
 
@@ -489,19 +487,6 @@ handleCallback callback ( model, effects ) =
         AgentTicketsFetched (Err _) ->
             ( model, effects )
 
-        AgentCostRollupFetched (Ok rollup) ->
-            ( { model
-                | agentTicketCosts =
-                    rollup.rows
-                        |> List.map (\row -> ( row.key, row.costUsd ))
-                        |> Dict.fromList
-              }
-            , effects
-            )
-
-        AgentCostRollupFetched (Err _) ->
-            ( model, effects )
-
         _ ->
             ( model, effects )
     )
@@ -548,7 +533,7 @@ handleDeliveryBody delivery ( model, effects ) =
 
         ClockTicked FiveSeconds _ ->
             -- Refresh the agent-ticket strip on the dashboard's existing cadence.
-            ( model, effects ++ [ FetchAgentTickets, FetchAgentTicketCosts ] )
+            ( model, effects ++ [ FetchAgentTickets ] )
 
         WindowResized _ _ ->
             ( model, effects ++ [ GetViewportOf Dashboard ] )
@@ -1236,9 +1221,10 @@ loadingView =
 
 {-| A compact strip surfacing the agent tickets that need human attention
 (needs\_review first) right on the dashboard, each linking to its detail page
-with a state badge, title, and today's cost. Reuses the existing ticket-list
-and cost-rollup endpoints — renders nothing when there are no active tickets,
-so non-agent clusters see no change.
+with a queue-state badge and title. Reuses the existing ticket-list endpoint —
+renders nothing when there are no active tickets, so non-agent clusters see no
+change. Per-ticket spend is deliberately absent: cost belongs to the workflow
+run, and the ticket-keyed cost rollup it used to read no longer exists.
 -}
 agentTicketStrip : Model -> Html Message
 agentTicketStrip model =
@@ -1283,7 +1269,7 @@ agentTicketStrip model =
                 ]
                 [ Html.text "agent tickets" ]
                 :: agentReviewsChip
-                :: List.map (agentTicketChip model.agentTicketCosts) shown
+                :: List.map agentTicketChip shown
             )
 
 
@@ -1306,26 +1292,17 @@ agentReviewsChip =
 
 agentActiveStates : List String
 agentActiveStates =
-    [ "needs_review", "errored", "failed", "sent_back", "running", "queued" ]
+    [ "needs_review", "running", "queued" ]
 
 
 agentStateOrder : String -> Int
 agentStateOrder state =
-    -- Attention-first: needs_review is the human queue, and errored/failed are
-    -- the things that broke — rank them together at the top so they survive the
-    -- `List.take` cap on the strip and never get pushed off by running/queued.
+    -- Attention-first: needs_review is the human queue — every run that ended,
+    -- however it ended, lands there — so it ranks above the things still
+    -- moving and survives the `List.take` cap on the strip.
     case state of
         "needs_review" ->
             0
-
-        "errored" ->
-            1
-
-        "failed" ->
-            2
-
-        "sent_back" ->
-            3
 
         "running" ->
             4
@@ -1337,8 +1314,8 @@ agentStateOrder state =
             6
 
 
-agentTicketChip : Dict String Float -> Concourse.AgentTicket.Ticket -> Html Message
-agentTicketChip costs t =
+agentTicketChip : Concourse.AgentTicket.Ticket -> Html Message
+agentTicketChip t =
     Html.a
         [ class "agent-ticket-chip"
         , href (Routes.toString (Routes.AgentTicket { id = t.id }))
@@ -1368,45 +1345,7 @@ agentTicketChip costs t =
             -- "(T9 only)") survives — plain CSS ellipsis would eat the tail.
             -- The full title stays on the chip's `title` tooltip above.
             [ Html.text (Views.Truncate.middle 48 ("#" ++ String.fromInt t.id ++ " " ++ t.title)) ]
-        , Html.span
-            [ style "font-family" "monospace", style "color" "#b0b0b0" ]
-            [ Html.text (agentCostLabel costs t.id) ]
         ]
-
-
-agentCostLabel : Dict String Float -> Int -> String
-agentCostLabel costs ticketId =
-    case Dict.get (String.fromInt ticketId) costs of
-        Just cost ->
-            "$" ++ agentFormatUsd cost
-
-        Nothing ->
-            ""
-
-
-agentFormatUsd : Float -> String
-agentFormatUsd amount =
-    let
-        cents =
-            round (amount * 100)
-
-        absCents =
-            abs cents
-
-        dollars =
-            absCents // 100
-
-        remainder =
-            modBy 100 absCents
-
-        fraction =
-            if remainder < 10 then
-                "0" ++ String.fromInt remainder
-
-            else
-                String.fromInt remainder
-    in
-    String.fromInt dollars ++ "." ++ fraction
 
 
 welcomeCard :

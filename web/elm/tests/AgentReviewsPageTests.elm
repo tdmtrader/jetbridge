@@ -3,14 +3,16 @@ module AgentReviewsPageTests exposing (all)
 import Application.Application as Application
 import Common
 import Data
+import Dict
 import Expect
+import Html.Attributes as Attr
 import Message.Callback as Callback
 import Message.Effects as Effects
 import Message.Message
 import Message.TopLevelMessage as Msgs
 import Test exposing (Test, describe, test)
 import Test.Html.Query as Query
-import Test.Html.Selector exposing (class, containing, text)
+import Test.Html.Selector exposing (attribute, class, containing, tag, text)
 import Url
 
 
@@ -20,20 +22,23 @@ sampleSummary =
     , teamName = "main"
     , pipelineName = "cs"
     , jobName = "ar"
-    , repo = "concourse"
-    , commitSha = "abc123def456"
-    , branch = "jetbridge"
-    , score = 7.5
-    , maxScore = 10
-    , pass = True
-    , provenCount = 2
-    , observationCount = 3
+    , workflowName = ""
+    , conclusion = "accept"
     , summary = "stuff"
+    , severityCounts = Dict.fromList [ ( "medium", 2 ), ( "observation", 3 ) ]
     , createdAt = 0
     , evaluatedCount = 1
-    , snapshotId = Nothing
+    , snapshotId = Just "9007199254740993"
     , workflowRunId = Nothing
     , productionId = Nothing
+    }
+
+
+runSummary =
+    { sampleSummary
+        | workflowName = "code-review"
+        , workflowRunId = Just "9007199254740995"
+        , conclusion = "changes-required"
     }
 
 
@@ -61,7 +66,7 @@ all =
                 initTeamAgentReviews
                     |> Tuple.second
                     |> Common.contains (Effects.FetchTeamAgentReviews "main")
-        , test "renders review rows with score and evaluated count" <|
+        , test "renders the conclusion and the evaluated count, not a score" <|
             \_ ->
                 Common.init "/teams/main/agent-reviews"
                     |> Application.handleCallback
@@ -70,9 +75,48 @@ all =
                     |> Common.queryView
                     |> Query.find [ class "agent-review-row" ]
                     |> Query.has
-                        [ containing [ text "7.5" ]
-                        , containing [ text "cs / ar" ]
+                        [ containing [ text "accept" ]
+                        , containing [ text "2 findings · 3 obs" ]
                         , containing [ text "your feedback: 1 of 5 verdicts" ]
+                        ]
+        , test "links a review through its durable workflow run" <|
+            \_ ->
+                Common.init "/teams/main/agent-reviews"
+                    |> Application.handleCallback
+                        (Callback.TeamAgentReviewsFetched (Ok [ runSummary ]))
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ class "agent-review-row" ]
+                    |> Expect.all
+                        [ Query.has
+                            [ tag "a"
+                            , attribute
+                                (Attr.href "/agent/workflows/code-review/runs/9007199254740995")
+                            ]
+                        , Query.has [ containing [ text "code-review · run 9007199254740995" ] ]
+                        ]
+        , test "falls back to the build when the review has no run" <|
+            \_ ->
+                Common.init "/teams/main/agent-reviews"
+                    |> Application.handleCallback
+                        (Callback.TeamAgentReviewsFetched (Ok [ sampleSummary ]))
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ class "agent-review-row" ]
+                    |> Query.has [ tag "a", attribute (Attr.href "/builds/42") ]
+        , test "an upload-only review is not a link to build zero" <|
+            \_ ->
+                Common.init "/teams/main/agent-reviews"
+                    |> Application.handleCallback
+                        (Callback.TeamAgentReviewsFetched
+                            (Ok [ { sampleSummary | buildId = 0, pipelineName = "", jobName = "" } ])
+                        )
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ class "agent-review-row" ]
+                    |> Expect.all
+                        [ Query.hasNot [ tag "a" ]
+                        , Query.has [ containing [ text "uploaded review" ] ]
                         ]
         , test "renders an error notice when reviews fail to load" <|
             \_ ->

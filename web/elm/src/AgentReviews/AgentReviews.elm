@@ -178,7 +178,7 @@ pipelineMatches filter s =
 
 isUnevaluated : AgentReview.Summary -> Bool
 isUnevaluated s =
-    s.evaluatedCount < s.provenCount + s.observationCount
+    s.evaluatedCount < AgentReview.findingTotal s
 
 
 filterBar : Model -> Html Message
@@ -220,66 +220,125 @@ filterBar model =
         ]
 
 
+{-| Where a row goes when you click it.
+
+The durable workflow run owns the review, so that is the first destination: it
+is the page that holds the run's steps, cost, outcome and this very review. A
+build link is the fallback for a review produced outside a run, and a review
+with neither (an upload occurrence) is not a link at all — a href to
+`/builds/0` was a dead end dressed up as navigation.
+
+-}
+rowDestination : AgentReview.Summary -> Maybe String
+rowDestination s =
+    case ( s.workflowRunId, s.workflowName ) of
+        ( Just runId, workflowName ) ->
+            if workflowName == "" then
+                buildDestination s
+
+            else
+                Just (Routes.toString (Routes.AgentWorkflowRun { workflowName = workflowName, id = runId }))
+
+        ( Nothing, _ ) ->
+            buildDestination s
+
+
+buildDestination : AgentReview.Summary -> Maybe String
+buildDestination s =
+    if s.buildId > 0 then
+        Just (Routes.toString (Routes.OneOffBuild { id = s.buildId, highlight = Routes.HighlightNothing }))
+
+    else
+        Nothing
+
+
+rowStyles : List (Html.Attribute Message)
+rowStyles =
+    [ class "agent-review-row"
+    , style "display" "flex"
+    , style "align-items" "center"
+    , style "gap" "12px"
+    , style "padding" "8px 12px"
+    , style "border-bottom" "1px solid #3d3c3c"
+    , style "color" "inherit"
+    , style "text-decoration" "none"
+    ]
+
+
 reviewRow : AgentReview.Summary -> Html Message
 reviewRow s =
-    Html.a
-        [ class "agent-review-row"
-        , href (Routes.toString (Routes.OneOffBuild { id = s.buildId, highlight = Routes.HighlightNothing }))
-        , style "display" "flex"
-        , style "align-items" "center"
-        , style "gap" "12px"
-        , style "padding" "8px 12px"
-        , style "border-bottom" "1px solid #3d3c3c"
-        , style "color" "inherit"
-        , style "text-decoration" "none"
+    let
+        body =
+            rowBody s
+    in
+    case rowDestination s of
+        Just destination ->
+            Html.a (href destination :: rowStyles) body
+
+        Nothing ->
+            Html.div rowStyles body
+
+
+rowBody : AgentReview.Summary -> List (Html Message)
+rowBody s =
+    let
+        ( background, foreground ) =
+            AgentReview.conclusionTone s.conclusion
+
+        total =
+            AgentReview.findingTotal s
+    in
+    [ Html.span
+        [ class "agent-review-conclusion"
+        , style "padding" "2px 8px"
+        , style "font-weight" "700"
+        , style "background" background
+        , style "color" foreground
         ]
-        [ Html.span
-            [ style "padding" "2px 8px"
-            , style "font-weight" "700"
-            , style "background"
-                (if s.pass then
-                    "#2e4f2e"
-
-                 else
-                    "#5c2626"
-                )
-            , style "color"
-                (if s.pass then
-                    "#9fdf9f"
-
-                 else
-                    "#f0a0a0"
-                )
-            ]
-            [ Html.text (String.fromFloat s.score) ]
-        , Html.div []
-            [ Html.div []
-                [ Html.text (s.pipelineName ++ " / " ++ s.jobName ++ " #" ++ s.buildName)
-                , Html.span
-                    [ style "color" "#7a7a7a" ]
-                    [ Html.text (" · build " ++ String.fromInt s.buildId) ]
-                ]
-            , Html.div
-                [ style "font-family" "monospace", style "font-size" "12px", style "color" "#7a7a7a" ]
-                [ Html.text
-                    (s.branch
-                        ++ " @ "
-                        ++ String.left 7 s.commitSha
-                        ++ " · "
-                        ++ String.fromInt s.provenCount
-                        ++ " issues · "
-                        ++ String.fromInt s.observationCount
-                        ++ " obs"
-                    )
-                ]
-            ]
-        , Html.span [ style "margin-left" "auto", style "color" "#b0b0b0" ]
+        [ Html.text (AgentReview.conclusionLabel s.conclusion) ]
+    , Html.div []
+        [ Html.div [] [ Html.text (rowTitle s) ]
+        , Html.div
+            [ style "font-family" "monospace", style "font-size" "12px", style "color" "#7a7a7a" ]
             [ Html.text
-                ("your feedback: "
-                    ++ String.fromInt s.evaluatedCount
-                    ++ " of "
-                    ++ String.fromInt (s.provenCount + s.observationCount)
-                    ++ " verdicts"
+                (String.fromInt (AgentReview.substantiveCount s)
+                    ++ " findings · "
+                    ++ String.fromInt (AgentReview.observationCount s)
+                    ++ " obs"
                 )
             ]
         ]
+    , Html.span [ style "margin-left" "auto", style "color" "#b0b0b0" ]
+        [ Html.text
+            ("your feedback: "
+                ++ String.fromInt s.evaluatedCount
+                ++ " of "
+                ++ String.fromInt total
+                ++ " verdicts"
+            )
+        ]
+    ]
+
+
+{-| Name the occurrence with whatever it actually has. A review produced by a
+workflow run is named by the workflow; one produced in a build by its
+pipeline/job/build; an upload occurrence by neither, so it says so instead of
+rendering ` / ` separators around empty strings.
+-}
+rowTitle : AgentReview.Summary -> String
+rowTitle s =
+    if s.workflowName /= "" then
+        s.workflowName
+            ++ (case s.workflowRunId of
+                    Just runId ->
+                        " · run " ++ runId
+
+                    Nothing ->
+                        ""
+               )
+
+    else if s.buildId > 0 then
+        s.pipelineName ++ " / " ++ s.jobName ++ " #" ++ s.buildName ++ " · build " ++ String.fromInt s.buildId
+
+    else
+        "uploaded review"

@@ -10,42 +10,27 @@ import (
 	"github.com/concourse/concourse/agent/snapshot"
 )
 
+// WorkItemDocument is the immutable capture of one work item's authored content
+// at one revision.
+//
+// It deliberately carries NEITHER the ticket's lifecycle state NOR the identity
+// of the workflow that consumes it. Both are properties of the consumer, not of
+// the value: the durable workflow run already records which function ran over
+// which snapshot, and embedding a mutable state or a workflow selection here
+// would freeze a second, immediately stale copy of that truth inside a value
+// whose whole point is that it never changes.
+//
+// It also carries no separate spec/plan sub-documents. Those mirrored the
+// agent_ticket_specs / agent_ticket_tasks tables, which are gone: a work item's
+// prose lives in exactly one place, its body.
 type WorkItemDocument struct {
-	SchemaVersion string                     `json:"schema_version"`
-	Adapter       string                     `json:"adapter"`
-	ExternalID    string                     `json:"external_id"`
-	Revision      string                     `json:"revision"`
-	CapturedAt    string                     `json:"captured_at"`
-	Title         string                     `json:"title"`
-	Body          string                     `json:"body"`
-	State         string                     `json:"state"`
-	Workflow      *WorkItemWorkflowSelection `json:"workflow,omitempty"`
-	Spec          *WorkItemRevision          `json:"spec,omitempty"`
-	Plan          *WorkItemRevision          `json:"plan,omitempty"`
-}
-
-type WorkItemWorkflowSelection struct {
-	Name         string `json:"name,omitempty"`
-	Version      *int   `json:"version,omitempty"`
-	DefinitionID *int   `json:"definition_id,omitempty"`
-}
-
-func (selection WorkItemWorkflowSelection) validate() error {
-	if selection.Version != nil && *selection.Version <= 0 {
-		return fmt.Errorf("workflow.version must be positive")
-	}
-	if selection.DefinitionID != nil && *selection.DefinitionID <= 0 {
-		return fmt.Errorf("workflow.definition_id must be positive")
-	}
-	if (selection.Version != nil || selection.DefinitionID != nil) && strings.TrimSpace(selection.Name) == "" {
-		return fmt.Errorf("workflow.name is required when a version or definition is selected")
-	}
-	return nil
-}
-
-type WorkItemRevision struct {
-	Revision string `json:"revision"`
-	Content  string `json:"content"`
+	SchemaVersion string `json:"schema_version"`
+	Adapter       string `json:"adapter"`
+	ExternalID    string `json:"external_id"`
+	Revision      string `json:"revision"`
+	CapturedAt    string `json:"captured_at"`
+	Title         string `json:"title"`
+	Body          string `json:"body"`
 }
 
 func (d WorkItemDocument) Validate() error {
@@ -54,7 +39,7 @@ func (d WorkItemDocument) Validate() error {
 	}
 	for name, value := range map[string]string{
 		"adapter": d.Adapter, "external_id": d.ExternalID, "revision": d.Revision,
-		"captured_at": d.CapturedAt, "title": d.Title, "body": d.Body, "state": d.State,
+		"captured_at": d.CapturedAt, "title": d.Title, "body": d.Body,
 	} {
 		if strings.TrimSpace(value) == "" {
 			return fmt.Errorf("%s is required", name)
@@ -62,31 +47,6 @@ func (d WorkItemDocument) Validate() error {
 	}
 	if _, err := time.Parse(time.RFC3339, d.CapturedAt); err != nil {
 		return fmt.Errorf("captured_at must be RFC3339: %w", err)
-	}
-	if d.Spec != nil {
-		if err := d.Spec.validate("spec"); err != nil {
-			return err
-		}
-	}
-	if d.Workflow != nil {
-		if err := d.Workflow.validate(); err != nil {
-			return err
-		}
-	}
-	if d.Plan != nil {
-		if err := d.Plan.validate("plan"); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (r WorkItemRevision) validate(name string) error {
-	if strings.TrimSpace(r.Revision) == "" {
-		return fmt.Errorf("%s.revision is required", name)
-	}
-	if strings.TrimSpace(r.Content) == "" {
-		return fmt.Errorf("%s.content is required", name)
 	}
 	return nil
 }

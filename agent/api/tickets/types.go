@@ -1,7 +1,12 @@
-// Package tickets is the ticket-core domain: agent_tickets /
-// agent_ticket_specs / agent_ticket_tasks types, the lifecycle state
-// machine, and the single-writer Store contract
-// (00-shared-contracts.md §1.7 / §2.1 + ticket-core addendum).
+// Package tickets is the ticket-core domain: the agent_tickets type, the
+// QUEUE lifecycle state machine, and the single-writer Store contract.
+//
+// The ticket is a work-item/v1 projection shell — a queue slot, not an
+// execution record. Its state answers one question only: where is this work
+// item in the human/dispatch queue. What actually happened when it ran (the
+// review, the repository-change diff, the cost, the disposition) belongs to
+// the durable workflow run and its agent_workflow_outcomes row; the ticket
+// never mirrors it.
 package tickets
 
 import (
@@ -15,46 +20,44 @@ import (
 
 type State string
 
+// The queue lifecycle, and nothing else. There is deliberately no
+// merged / merged_with_fixes / sent_back / concluded / abandoned /
+// failed / errored: those were DISPOSITIONS and OUTCOMES mirrored onto
+// the ticket, and they now live only on the workflow run
+// (agent_workflow_outcomes). A ticket is drafted, queued, run, put in
+// front of a human, and closed.
 const (
-	StateDraft           State = "draft"
-	StateQueued          State = "queued"
-	StateRunning         State = "running"
-	StateNeedsReview     State = "needs_review"
-	StateMerged          State = "merged"
-	StateMergedWithFixes State = "merged_with_fixes"
-	StateSentBack        State = "sent_back"
-	StateAbandoned       State = "abandoned"
-	// StateConcluded is TERMINAL: run finished, human reviewed, no merge
-	// intended (spike/research flows) — the positive sibling of abandoned.
-	// In the frozen enum from day one per FLOWS.md §3/§4 (pre-freeze add,
-	// 2026-07-09), so it never needs a later migration.
-	StateConcluded State = "concluded"
-	StateFailed    State = "failed"
-	StateErrored   State = "errored"
+	StateDraft       State = "draft"
+	StateQueued      State = "queued"
+	StateRunning     State = "running"
+	StateNeedsReview State = "needs_review"
+	// StateClosed is TERMINAL and disposition-free: the human is done with
+	// this work item. WHY it closed — merged, merged after fixes, dropped,
+	// analysis-only — is read from the durable run's outcome, never from
+	// the ticket.
+	StateClosed State = "closed"
 )
 
-// validTransitions is the §1.7 state machine. Transition (the
+// validTransitions is the queue state machine. Transition (the
 // single-writer function) consults it; nothing else writes state.
 //
 // Edge notes (do not narrow):
 //   - running → queued records a retry attempt (attempt_count++).
-//   - running → needs_review — two writers: harvest (primary) and
-//     dispatch's run-completion reconciler (backup/safety net).
-//   - needs_review → concluded — TERMINAL, explicit human disposition
-//     ONLY: "run finished, human reviewed, no merge intended"
-//     (spike/research flows; FLOWS.md §3). Positive sibling of abandoned.
-//   - failed/errored → abandoned — human disposition of a dead ticket.
-//     Without this edge the ONLY exit from failed/errored is a paid
-//     re-dispatch, so dead tickets accumulate forever in every "active"
-//     listing (dashboard strip, queue) with no way to write them off.
+//   - running → needs_review is the ONLY completion edge, written by
+//     dispatch's run-completion reconciler however the run ended. A run
+//     that failed still needs a human to look at it and decide.
+//   - needs_review → closed is the human close action after a run; a run
+//     that succeeded and one that died close the same way, and the durable
+//     run carries the difference.
+//   - needs_review → queued re-queues for another attempt.
+//   - draft → closed and queued → closed drop a work item that never ran.
+//     Without them the only exit from a mistaken or obsolete ticket would be
+//     to pay for a dispatch first.
 var validTransitions = map[State][]State{
-	StateDraft:       {StateQueued, StateAbandoned},
-	StateQueued:      {StateRunning, StateDraft, StateAbandoned},
-	StateRunning:     {StateQueued, StateNeedsReview, StateFailed, StateErrored},
-	StateNeedsReview: {StateMerged, StateMergedWithFixes, StateSentBack, StateAbandoned, StateConcluded, StateQueued},
-	StateSentBack:    {StateQueued},
-	StateFailed:      {StateQueued, StateAbandoned},
-	StateErrored:     {StateQueued, StateAbandoned},
+	StateDraft:       {StateQueued, StateClosed},
+	StateQueued:      {StateRunning, StateDraft, StateClosed},
+	StateRunning:     {StateQueued, StateNeedsReview},
+	StateNeedsReview: {StateQueued, StateClosed},
 }
 
 func ValidTransition(from, to State) bool {
@@ -72,7 +75,7 @@ func ValidTransition(from, to State) bool {
 // lands in one of these (C3), so adding a state here hides its dashboard
 // cards for good.
 func TerminalStates() []State {
-	return []State{StateMerged, StateMergedWithFixes, StateAbandoned, StateConcluded}
+	return []State{StateClosed}
 }
 
 func IsTerminal(s State) bool {
@@ -100,24 +103,6 @@ func ValidOrigin(o string) bool {
 	return false
 }
 
-type TaskStatus string
-
-const (
-	TaskPending    TaskStatus = "pending"
-	TaskInProgress TaskStatus = "in_progress"
-	TaskDone       TaskStatus = "done"
-	TaskSkipped    TaskStatus = "skipped"
-	TaskBlocked    TaskStatus = "blocked"
-)
-
-func ValidTaskStatus(s TaskStatus) bool {
-	switch s {
-	case TaskPending, TaskInProgress, TaskDone, TaskSkipped, TaskBlocked:
-		return true
-	}
-	return false
-}
-
 var (
 	ErrInvalidTransition = errors.New("invalid ticket state transition")
 	ErrTicketNotFound    = errors.New("ticket not found")
@@ -127,7 +112,7 @@ var (
 	ErrDispatchConflict = errors.New("ticket dispatch reservation conflict")
 )
 
-// Ticket is the §2.1 API shape (epoch-seconds timestamps).
+// Ticket is the API shape (epoch-seconds timestamps).
 type Ticket struct {
 	ID                     int                     `json:"id"`
 	Revision               int64                   `json:"revision"`
@@ -140,7 +125,6 @@ type Ticket struct {
 	WorkflowName           string                  `json:"workflow_name"`
 	WorkflowVersion        *int                    `json:"workflow_version,omitempty"`
 	WorkflowDefinitionID   *int                    `json:"workflow_definition_id,omitempty"`
-	BudgetUSD              *float64                `json:"budget_usd,omitempty"`
 	UserID                 *int                    `json:"user_id,omitempty"`
 	UserName               string                  `json:"user_name"`
 	PipelineRunID          *int                    `json:"pipeline_run_id,omitempty"`
@@ -150,7 +134,6 @@ type Ticket struct {
 	DispatchReservationKey string                  `json:"dispatch_reservation_key,omitempty"`
 	Branch                 string                  `json:"branch"`
 	AttemptCount           int                     `json:"attempt_count"`
-	ErrorDetail            string                  `json:"error_detail,omitempty"`
 	CreatedBy              string                  `json:"created_by,omitempty"`   // audit attribution (addendum)
 	ExternalRef            string                  `json:"external_ref,omitempty"` // Jira phase-2 seam (addendum)
 	CreatedAt              int64                   `json:"created_at"`
@@ -158,41 +141,13 @@ type Ticket struct {
 	CompletedAt            int64                   `json:"completed_at,omitempty"`
 }
 
-type Link struct {
-	Title string `json:"title"`
-	URL   string `json:"url"`
-}
-
-// Spec is one agent_ticket_specs row (structured envelope + markdown body).
-type Spec struct {
-	ID                 int      `json:"id"`
-	TicketID           int      `json:"ticket_id"`
-	Version            int      `json:"version"`
-	Title              string   `json:"title"`
-	Body               string   `json:"body"`
-	AcceptanceCriteria []string `json:"acceptance_criteria"`
-	Links              []Link   `json:"links"`
-	SubmittedBy        string   `json:"submitted_by"`
-	CreatedAt          int64    `json:"created_at"`
-}
-
-// Task is one agent_ticket_tasks row.
-type Task struct {
-	ID          int        `json:"id"`
-	TicketID    int        `json:"ticket_id"`
-	PlanVersion int        `json:"plan_version"`
-	Ordering    int        `json:"ordering"`
-	Title       string     `json:"title"`
-	Detail      string     `json:"detail,omitempty"`
-	Status      TaskStatus `json:"status"`
-	UpdatedAt   int64      `json:"updated_at"`
-}
-
-// TicketDetail is the GetAgentTicket response payload.
+// TicketDetail is the GetAgentTicket response payload. The ticket's own
+// content IS the detail: the separate spec and task-plan tables were an
+// agent-authored progress surface whose only writers (the sidecar submit
+// routes) are gone, so the markdown body is the single place ticket prose
+// lives.
 type TicketDetail struct {
 	Ticket Ticket `json:"ticket"`
-	Spec   *Spec  `json:"spec"`
-	Tasks  []Task `json:"tasks"`
 }
 
 type ListFilter struct {
@@ -202,13 +157,12 @@ type ListFilter struct {
 	Limit  int
 }
 
-// Update is the non-state mutation set (title/body/budget/workflow
-// ref/target branch). nil = leave unchanged. State is NEVER here —
-// Transition is the only state writer.
+// Update is the non-state mutation set (title/body/workflow ref/target
+// branch). nil = leave unchanged. State is NEVER here — Transition is the
+// only state writer.
 type Update struct {
 	Title           *string
 	Body            *string
-	BudgetUSD       *float64
 	WorkflowName    *string
 	WorkflowVersion *int
 	TargetBranch    *string
@@ -245,29 +199,25 @@ type DispatchReservation struct {
 type TransitionMeta struct {
 	PipelineRunID *int   // recorded on → running (set by dispatch)
 	Branch        string // recorded on → needs_review (harvest, the primary writer; the reconciler backup-writer leaves it empty)
-	ErrorDetail   string // recorded on → errored
 }
 
 // Store is the single-writer contract. Transition is THE ONLY way any
 // code path (API handler, dispatcher — including its run-completion
-// reconciler — harvest, outcome watcher, HITL) changes Ticket.State. It enforces the state machine in
-// shared-contracts §1.7, records timestamps, and returns
-// ErrInvalidTransition otherwise. It uses optimistic concurrency: the
-// UPDATE is guarded by the expected `from` state.
+// reconciler — harvest, HITL) changes Ticket.State. It enforces the queue
+// state machine, records timestamps, and returns ErrInvalidTransition
+// otherwise. It uses optimistic concurrency: the UPDATE is guarded by the
+// expected `from` state.
 //
 //counterfeiter:generate . Store
 type Store interface {
 	Create(t *Ticket) (int, error)
 	Get(id int) (*Ticket, bool, error)
 	List(filter ListFilter) ([]Ticket, error)
-	Update(id int, upd Update) error // title/body/budget/workflow ref; never state
+	Update(id int, upd Update) error // title/body/workflow ref; never state
 	Transition(id int, from, to State, meta TransitionMeta) error
 	ReserveDispatch(context.Context, int, DispatchReservationRequest) (DispatchReservation, error)
 	RecordDispatchWorkItem(context.Context, int, string, int64, snapshot.SnapshotID) error
 	RecordDispatchRun(context.Context, int, string, snapshot.WorkflowRunID, int) error
-
-	ActivePlan(ticketID int) ([]Task, error)
-	LatestSpec(ticketID int) (*Spec, bool, error)
 
 	// CaptureRevision returns strict work-item/v1 bytes assembled from one
 	// source snapshot. Implementations must never compose this by calling the
@@ -285,7 +235,6 @@ type CreateRequest struct {
 	TargetBranch         string               `json:"target_branch,omitempty"`
 	WorkflowName         string               `json:"workflow_name,omitempty"`
 	WorkflowVersion      *int                 `json:"workflow_version,omitempty"`
-	BudgetUSD            *float64             `json:"budget_usd,omitempty"`
 	ExternalRef          string               `json:"external_ref,omitempty"`
 	RepositorySnapshotID *snapshot.SnapshotID `json:"repository_snapshot_id,omitempty"`
 }
@@ -293,7 +242,6 @@ type CreateRequest struct {
 type UpdateRequest struct {
 	Title                *string              `json:"title,omitempty"`
 	Body                 *string              `json:"body,omitempty"`
-	BudgetUSD            *float64             `json:"budget_usd,omitempty"`
 	WorkflowName         *string              `json:"workflow_name,omitempty"`
 	WorkflowVersion      *int                 `json:"workflow_version,omitempty"`
 	TargetBranch         *string              `json:"target_branch,omitempty"`
@@ -301,10 +249,9 @@ type UpdateRequest struct {
 }
 
 type TransitionRequest struct {
-	From        State  `json:"from"`
-	To          State  `json:"to"`
-	Branch      string `json:"branch,omitempty"`
-	ErrorDetail string `json:"error_detail,omitempty"`
+	From   State  `json:"from"`
+	To     State  `json:"to"`
+	Branch string `json:"branch,omitempty"`
 }
 
 // UnmarshalJSON rejects the retired, server-owned pipeline_run_id key

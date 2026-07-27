@@ -45,7 +45,6 @@ type alias Model =
             , pipelineJobs : Dict Concourse.DatabaseID (List Concourse.JobName)
             , effectsToRetry : List Effect
             , agentTickets : List Concourse.AgentTicket.Ticket
-            , agentTicketCosts : Dict String Float
             }
         )
 

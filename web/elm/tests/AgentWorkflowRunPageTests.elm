@@ -77,9 +77,7 @@ all =
                     |> Application.update
                         (Msgs.Update <|
                             Message.AgentReviewVerdictClicked
-                                { reviewSnapshotId = Just "9007199254740997"
-                                , repo = "concourse"
-                                , commitSha = "abc123"
+                                { reviewSnapshotId = "9007199254740997"
                                 , findingId = "finding-1"
                                 , verdict = "accurate"
                                 , reviewer = "alice"
@@ -88,9 +86,7 @@ all =
                     |> Tuple.second
                     |> Common.contains
                         (Effects.SubmitAgentReviewVerdict
-                            { reviewSnapshotId = Just "9007199254740997"
-                            , repo = "concourse"
-                            , commitSha = "abc123"
+                            { reviewSnapshotId = "9007199254740997"
                             , findingId = "finding-1"
                             , verdict = "accurate"
                             , notes = ""

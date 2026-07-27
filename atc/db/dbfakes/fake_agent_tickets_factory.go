@@ -12,19 +12,6 @@ import (
 )
 
 type FakeAgentTicketsFactory struct {
-	ActivePlanStub        func(int) ([]tickets.Task, error)
-	activePlanMutex       sync.RWMutex
-	activePlanArgsForCall []struct {
-		arg1 int
-	}
-	activePlanReturns struct {
-		result1 []tickets.Task
-		result2 error
-	}
-	activePlanReturnsOnCall map[int]struct {
-		result1 []tickets.Task
-		result2 error
-	}
 	CaptureRevisionStub        func(context.Context, int) (workitem.CapturedRevision, bool, error)
 	captureRevisionMutex       sync.RWMutex
 	captureRevisionArgsForCall []struct {
@@ -66,21 +53,6 @@ type FakeAgentTicketsFactory struct {
 	}
 	getReturnsOnCall map[int]struct {
 		result1 *tickets.Ticket
-		result2 bool
-		result3 error
-	}
-	LatestSpecStub        func(int) (*tickets.Spec, bool, error)
-	latestSpecMutex       sync.RWMutex
-	latestSpecArgsForCall []struct {
-		arg1 int
-	}
-	latestSpecReturns struct {
-		result1 *tickets.Spec
-		result2 bool
-		result3 error
-	}
-	latestSpecReturnsOnCall map[int]struct {
-		result1 *tickets.Spec
 		result2 bool
 		result3 error
 	}
@@ -170,70 +142,6 @@ type FakeAgentTicketsFactory struct {
 	}
 	invocations      map[string][][]interface{}
 	invocationsMutex sync.RWMutex
-}
-
-func (fake *FakeAgentTicketsFactory) ActivePlan(arg1 int) ([]tickets.Task, error) {
-	fake.activePlanMutex.Lock()
-	ret, specificReturn := fake.activePlanReturnsOnCall[len(fake.activePlanArgsForCall)]
-	fake.activePlanArgsForCall = append(fake.activePlanArgsForCall, struct {
-		arg1 int
-	}{arg1})
-	stub := fake.ActivePlanStub
-	fakeReturns := fake.activePlanReturns
-	fake.recordInvocation("ActivePlan", []interface{}{arg1})
-	fake.activePlanMutex.Unlock()
-	if stub != nil {
-		return stub(arg1)
-	}
-	if specificReturn {
-		return ret.result1, ret.result2
-	}
-	return fakeReturns.result1, fakeReturns.result2
-}
-
-func (fake *FakeAgentTicketsFactory) ActivePlanCallCount() int {
-	fake.activePlanMutex.RLock()
-	defer fake.activePlanMutex.RUnlock()
-	return len(fake.activePlanArgsForCall)
-}
-
-func (fake *FakeAgentTicketsFactory) ActivePlanCalls(stub func(int) ([]tickets.Task, error)) {
-	fake.activePlanMutex.Lock()
-	defer fake.activePlanMutex.Unlock()
-	fake.ActivePlanStub = stub
-}
-
-func (fake *FakeAgentTicketsFactory) ActivePlanArgsForCall(i int) int {
-	fake.activePlanMutex.RLock()
-	defer fake.activePlanMutex.RUnlock()
-	argsForCall := fake.activePlanArgsForCall[i]
-	return argsForCall.arg1
-}
-
-func (fake *FakeAgentTicketsFactory) ActivePlanReturns(result1 []tickets.Task, result2 error) {
-	fake.activePlanMutex.Lock()
-	defer fake.activePlanMutex.Unlock()
-	fake.ActivePlanStub = nil
-	fake.activePlanReturns = struct {
-		result1 []tickets.Task
-		result2 error
-	}{result1, result2}
-}
-
-func (fake *FakeAgentTicketsFactory) ActivePlanReturnsOnCall(i int, result1 []tickets.Task, result2 error) {
-	fake.activePlanMutex.Lock()
-	defer fake.activePlanMutex.Unlock()
-	fake.ActivePlanStub = nil
-	if fake.activePlanReturnsOnCall == nil {
-		fake.activePlanReturnsOnCall = make(map[int]struct {
-			result1 []tickets.Task
-			result2 error
-		})
-	}
-	fake.activePlanReturnsOnCall[i] = struct {
-		result1 []tickets.Task
-		result2 error
-	}{result1, result2}
 }
 
 func (fake *FakeAgentTicketsFactory) CaptureRevision(arg1 context.Context, arg2 int) (workitem.CapturedRevision, bool, error) {
@@ -430,73 +338,6 @@ func (fake *FakeAgentTicketsFactory) GetReturnsOnCall(i int, result1 *tickets.Ti
 	}
 	fake.getReturnsOnCall[i] = struct {
 		result1 *tickets.Ticket
-		result2 bool
-		result3 error
-	}{result1, result2, result3}
-}
-
-func (fake *FakeAgentTicketsFactory) LatestSpec(arg1 int) (*tickets.Spec, bool, error) {
-	fake.latestSpecMutex.Lock()
-	ret, specificReturn := fake.latestSpecReturnsOnCall[len(fake.latestSpecArgsForCall)]
-	fake.latestSpecArgsForCall = append(fake.latestSpecArgsForCall, struct {
-		arg1 int
-	}{arg1})
-	stub := fake.LatestSpecStub
-	fakeReturns := fake.latestSpecReturns
-	fake.recordInvocation("LatestSpec", []interface{}{arg1})
-	fake.latestSpecMutex.Unlock()
-	if stub != nil {
-		return stub(arg1)
-	}
-	if specificReturn {
-		return ret.result1, ret.result2, ret.result3
-	}
-	return fakeReturns.result1, fakeReturns.result2, fakeReturns.result3
-}
-
-func (fake *FakeAgentTicketsFactory) LatestSpecCallCount() int {
-	fake.latestSpecMutex.RLock()
-	defer fake.latestSpecMutex.RUnlock()
-	return len(fake.latestSpecArgsForCall)
-}
-
-func (fake *FakeAgentTicketsFactory) LatestSpecCalls(stub func(int) (*tickets.Spec, bool, error)) {
-	fake.latestSpecMutex.Lock()
-	defer fake.latestSpecMutex.Unlock()
-	fake.LatestSpecStub = stub
-}
-
-func (fake *FakeAgentTicketsFactory) LatestSpecArgsForCall(i int) int {
-	fake.latestSpecMutex.RLock()
-	defer fake.latestSpecMutex.RUnlock()
-	argsForCall := fake.latestSpecArgsForCall[i]
-	return argsForCall.arg1
-}
-
-func (fake *FakeAgentTicketsFactory) LatestSpecReturns(result1 *tickets.Spec, result2 bool, result3 error) {
-	fake.latestSpecMutex.Lock()
-	defer fake.latestSpecMutex.Unlock()
-	fake.LatestSpecStub = nil
-	fake.latestSpecReturns = struct {
-		result1 *tickets.Spec
-		result2 bool
-		result3 error
-	}{result1, result2, result3}
-}
-
-func (fake *FakeAgentTicketsFactory) LatestSpecReturnsOnCall(i int, result1 *tickets.Spec, result2 bool, result3 error) {
-	fake.latestSpecMutex.Lock()
-	defer fake.latestSpecMutex.Unlock()
-	fake.LatestSpecStub = nil
-	if fake.latestSpecReturnsOnCall == nil {
-		fake.latestSpecReturnsOnCall = make(map[int]struct {
-			result1 *tickets.Spec
-			result2 bool
-			result3 error
-		})
-	}
-	fake.latestSpecReturnsOnCall[i] = struct {
-		result1 *tickets.Spec
 		result2 bool
 		result3 error
 	}{result1, result2, result3}

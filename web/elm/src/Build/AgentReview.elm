@@ -3,7 +3,7 @@ module Build.AgentReview exposing (view)
 import Concourse.AgentReview as AgentReview exposing (BuildReview, Finding)
 import Dict exposing (Dict)
 import Html exposing (Html)
-import Html.Attributes exposing (attribute, class, href, id, placeholder, rel, style, target, type_, value)
+import Html.Attributes exposing (attribute, class, id, placeholder, style, type_, value)
 import Html.Events exposing (onClick, onInput)
 import Message.Message exposing (Message(..))
 import Set exposing (Set)
@@ -97,12 +97,12 @@ summaryBar review expanded =
                ]
         )
         [ Html.span [ style "font-weight" "700" ] [ Html.text "agent review" ]
-        , scoreBadge s
+        , conclusionBadge s.conclusion
         , Html.span [ style "color" "#b0b0b0" ]
             [ Html.text
-                (String.fromInt s.provenCount
-                    ++ " proven · "
-                    ++ String.fromInt s.observationCount
+                (String.fromInt (AgentReview.substantiveCount s)
+                    ++ " findings · "
+                    ++ String.fromInt (AgentReview.observationCount s)
                     ++ " observations"
                 )
             ]
@@ -127,27 +127,24 @@ summaryBar review expanded =
         ]
 
 
-scoreBadge : { a | score : Float, maxScore : Float, pass : Bool } -> Html Message
-scoreBadge s =
+{-| The record's conclusion, verbatim. review/v1 states a verdict and no score,
+so there is nothing to render as "7.5 / 10" — and a number derived from the
+verdict was free to disagree with the findings listed underneath it.
+-}
+conclusionBadge : String -> Html Message
+conclusionBadge conclusion =
+    let
+        ( background, foreground ) =
+            AgentReview.conclusionTone conclusion
+    in
     Html.span
-        [ style "padding" "2px 8px"
+        [ class "agent-review-conclusion"
+        , style "padding" "2px 8px"
         , style "font-weight" "700"
-        , style "background"
-            (if s.pass then
-                "#2e4f2e"
-
-             else
-                "#5c2626"
-            )
-        , style "color"
-            (if s.pass then
-                "#9fdf9f"
-
-             else
-                "#f0a0a0"
-            )
+        , style "background" background
+        , style "color" foreground
         ]
-        [ Html.text (String.fromFloat s.score ++ " / " ++ String.fromFloat s.maxScore) ]
+        [ Html.text (AgentReview.conclusionLabel conclusion) ]
 
 
 panelBody : String -> BuildReview -> PanelState a -> Html Message
@@ -256,13 +253,12 @@ findingCard reviewer review isProven model finding =
             , style "gap" "8px"
             ]
             [ findingHeader interactive expanded finding
-            , fileRef review.info finding
+            , fileRef finding
             ]
          ]
             ++ (if expanded then
                     descriptionBlock interactive model finding
-                        ++ testEvidence finding
-                        ++ (if interactive then
+                        ++ (if interactive && review.info.snapshotId /= Nothing then
                                 [ verdictRow reviewer review finding recorded model ]
 
                             else
@@ -325,41 +321,26 @@ findingAnchor finding =
         [ id ("agent-review-finding-" ++ finding.id) ]
 
 
-{-| The <file:line> reference, rendered as a real link to the blob at the reviewed
-sha when the repo URL is usable, otherwise as plain monospace text. Sibling of —
-never nested inside — the header toggle button, so the two are independent
-controls for assistive tech.
+{-| The <file:line> reference as plain monospace text.
+
+It is not a link. A review/v1 finding anchors into a SUBJECT — a snapshot named
+by type and digest — and a subject is not a clone URL at a commit, so there is no
+blob address to build. The old link was assembled from the review row's `repo`
+and `commit_sha`, which the projector had already stopped filling.
 -}
-fileRef : AgentReview.Summary -> Finding -> Html Message
-fileRef info finding =
+fileRef : Finding -> Html Message
+fileRef finding =
     if finding.file == "" then
         Html.text ""
 
     else
-        let
-            label =
-                finding.file ++ ":" ++ String.fromInt finding.line
-        in
-        case AgentReview.repoBlobUrl info.repo info.commitSha finding.file finding.line of
-            Just url ->
-                Html.a
-                    [ href url
-                    , target "_blank"
-                    , rel "noopener noreferrer"
-                    , style "margin-left" "auto"
-                    , style "font-family" "monospace"
-                    , style "color" "#7a9ac0"
-                    , style "text-decoration" "none"
-                    ]
-                    [ Html.text label ]
-
-            Nothing ->
-                Html.span
-                    [ style "margin-left" "auto"
-                    , style "font-family" "monospace"
-                    , style "color" "#7a7a7a"
-                    ]
-                    [ Html.text label ]
+        Html.span
+            [ class "agent-review-finding-location"
+            , style "margin-left" "auto"
+            , style "font-family" "monospace"
+            , style "color" "#7a7a7a"
+            ]
+            [ Html.text (finding.file ++ ":" ++ String.fromInt finding.line) ]
 
 
 {-| The finding description, line-clamped when long with a show-more/less toggle
@@ -450,22 +431,6 @@ severityBadge severity =
             [ Html.text severity ]
 
 
-testEvidence : Finding -> List (Html Message)
-testEvidence finding =
-    if finding.testOutput == "" then
-        []
-
-    else
-        [ Html.pre
-            [ style "background" "#141313"
-            , style "padding" "8px"
-            , style "font-size" "12px"
-            , style "overflow-x" "auto"
-            ]
-            [ Html.text finding.testOutput ]
-        ]
-
-
 verdictRow :
     String
     -> BuildReview
@@ -514,9 +479,8 @@ verdictRow reviewer review finding recorded model =
                                         )
                                    , onClick
                                         (AgentReviewVerdictClicked
-                                            { reviewSnapshotId = review.info.snapshotId
-                                            , repo = review.info.repo
-                                            , commitSha = review.info.commitSha
+                                            { reviewSnapshotId =
+                                                review.info.snapshotId |> Maybe.withDefault ""
                                             , findingId = finding.id
                                             , verdict = verdict
                                             , reviewer = reviewer

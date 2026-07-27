@@ -16,7 +16,7 @@ historical agent data needs to be preserved.
 | Execution identity | ticket + `agent-ticket-<id>` pipeline | **durable workflow run** |
 | Delivery | `harvest:` step pushed from the pod | `publish_snapshot` → publisher → **gateway** |
 | Merge compute | `merge:` step (pod-side push) | **`agent/functions/repositorymerge`** via `function-runner` |
-| Migration head | `1773106095` | **`1773106131`** |
+| Migration head | `1773106095` | **`1773106135`** |
 
 ## Order of operations
 
@@ -42,7 +42,7 @@ reject a tag. Agent steps error at runtime when it is unset.
 
 ### 3. Reset the database
 
-Migrations `1773106100`–`1773106131` all apply in one boot. Because no history is
+Migrations `1773106100`–`1773106135` all apply in one boot. Because no history is
 being preserved, dropping the database is cleaner than migrating through:
 
 - it skips `1773106124`'s backfill, which would otherwise NULL every historical
@@ -67,9 +67,23 @@ being preserved, dropping the database is cleaner than migrating through:
 - `1773106131` drops `agent_ticket_comments` along with the ticket comment
   surface (no route, no reader; `work-item/v1` no longer carries a `comments`
   key). Its down migration recreates the table empty.
+- `1773106132` makes `agent_reviews` snapshot-keyed: it **deletes every review
+  row with no `snapshot_id`** (the owner-test corpus of the deleted v1 ingestion
+  route), projects `conclusion` / `severity_counts` out of the stored record,
+  and drops the derived `score`/`pass`/`*_count` columns along with `build_id`,
+  `repo`, `commit_sha`, `branch`, `ticket_id` and `pipeline_run_id`.
+- `1773106133` reduces the ticket to a queue shell: the terminal dispositions
+  fold to `closed`, `sent_back`/`failed`/`errored` fold back to `needs_review`,
+  `error_detail` is dropped, and `agent_ticket_specs` / `agent_ticket_tasks` are
+  **dropped after folding each ticket's newest spec body into its body**.
+- `1773106134` drops `agent_tickets.budget_usd`; budget lives on the experiment.
+- `1773106135` makes `agent_feedback` snapshot-keyed: it **deletes every
+  feedback row with no `review_snapshot_id`** — unreachable since `1773106132`
+  removed the repo/commit columns any such row was keyed against — and drops
+  `repo`, `commit_sha` and the write-orphaned `ticket_id`.
 
 Verify afterwards: `docs/migration/migrate-preflight.sh` expects
-`JETBRIDGE_VERSION=1773106131`.
+`JETBRIDGE_VERSION=1773106135`.
 
 ### 3a. Vault the platform credential — the only model-credential path
 

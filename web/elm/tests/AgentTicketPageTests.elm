@@ -25,15 +25,13 @@ sampleDetailJson =
     """
     { "ticket":
         { "id": 12, "title": "ship fly archives", "state": "needs_review"
-        , "workflow_name": "develop", "body": "do the thing", "budget_usd": 5.0
+        , "workflow_name": "develop", "body": "do the thing"
         , "created_at": 200
         , "repo": "tdmtrader/jetbridge", "target_branch": "main", "branch": "agent/ticket-12"
         , "workflow_run_id": "9007199254740993"
         , "work_item_snapshot_id": "9007199254741003"
         , "repository_snapshot_id": "9007199254740995"
         }
-    , "spec": { "title": "spec title", "body": "spec body", "acceptance_criteria": ["crit a"] }
-    , "tasks": [ { "ordering": 1, "title": "first task", "status": "done" } ]
     }
     """
 
@@ -41,33 +39,25 @@ sampleDetailJson =
 queuedDetailJson : String
 queuedDetailJson =
     """
-    { "ticket": { "id": 9, "title": "queued work", "state": "queued", "workflow_name": "develop", "created_at": 50 }
-    , "spec": null
-    , "tasks": []
-    }
+    { "ticket": { "id": 9, "title": "queued work", "state": "queued", "workflow_name": "develop", "created_at": 50 } }
     """
 
 
 runningDetailJson : String
 runningDetailJson =
     """
-    { "ticket": { "id": 9, "title": "queued work", "state": "running", "workflow_name": "develop", "created_at": 50 }
-    , "spec": null
-    , "tasks": []
-    }
+    { "ticket": { "id": 9, "title": "queued work", "state": "running", "workflow_name": "develop", "created_at": 50 } }
     """
 
 
-mergedDetailJson : String
-mergedDetailJson =
+closedDetailJson : String
+closedDetailJson =
     """
     { "ticket":
-        { "id": 12, "title": "ship fly archives", "state": "merged"
-        , "workflow_name": "develop", "body": "do the thing", "budget_usd": 5.0
+        { "id": 12, "title": "ship fly archives", "state": "closed"
+        , "workflow_name": "develop", "body": "do the thing"
         , "created_at": 200
         }
-    , "spec": null
-    , "tasks": []
     }
     """
 
@@ -121,12 +111,12 @@ runDetailFor workflowName workflowRunId =
 all : Test
 all =
     describe "ticket detail page"
-        [ test "decodes a detail fixture with a present spec" <|
+        [ test "decodes a detail fixture" <|
             \_ ->
                 withDetail sampleDetailJson (\d -> Expect.equal d.ticket.title "ship fly archives")
-        , test "decodes a detail fixture with a null spec" <|
+        , test "decodes a detail fixture with only a ticket" <|
             \_ ->
-                withDetail queuedDetailJson (\d -> Expect.equal d.spec Nothing)
+                withDetail queuedDetailJson (\d -> Expect.equal d.ticket.state "queued")
         , test "fetches the ticket on load and requests no legacy ticket metrics" <|
             \_ ->
                 initDetail
@@ -178,16 +168,18 @@ all =
                                     ]
                                     >> Query.count (Expect.equal 1)
                                 ]
-        , test "renders the ticket header, tabs and spec body" <|
+        , test "renders the ticket header and body — no spec/plan tabs" <|
             \_ ->
                 withDetail sampleDetailJson
                     (\d ->
                         renderWith "/agent-tickets/12" (Callback.AgentTicketFetched (Ok d))
-                            |> Query.has
-                                [ containing [ text "ship fly archives" ]
-                                , containing [ text "Spec" ]
-                                , containing [ text "Plan" ]
-                                , containing [ text "spec body" ]
+                            |> Expect.all
+                                [ Query.has
+                                    [ containing [ text "ship fly archives" ]
+                                    , containing [ text "do the thing" ]
+                                    ]
+                                , Query.hasNot [ text "Spec" ]
+                                , Query.hasNot [ text "Plan" ]
                                 ]
                     )
         , test "shows the created timestamp in the app-wide date format" <|
@@ -205,15 +197,50 @@ all =
                             |> Query.find [ id "ticket-timestamps" ]
                             |> Query.has [ text "created Jul 18, 2026 14:30" ]
                     )
-        , test "offers merge / send-back transitions for a needs_review ticket" <|
+        , test "offers exactly Close and Re-queue for a needs_review ticket" <|
             \_ ->
+                -- ONE close action, not a disposition menu: whether the work
+                -- merged, was dropped or was analysis-only is the durable run's
+                -- outcome, never a ticket state.
                 withDetail sampleDetailJson
                     (\d ->
                         renderWith "/agent-tickets/12" (Callback.AgentTicketFetched (Ok d))
-                            |> Query.has
-                                [ containing [ text "Merge" ]
-                                , containing [ text "Send back" ]
+                            |> Expect.all
+                                [ Query.has
+                                    [ containing [ text "Close" ]
+                                    , containing [ text "Re-queue" ]
+                                    ]
+                                , Query.hasNot [ text "Merge with fixes" ]
+                                , Query.hasNot [ text "Send back" ]
+                                , Query.hasNot [ text "Abandon" ]
+                                , Query.hasNot [ text "Conclude" ]
                                 ]
+                    )
+        , test "reads the run outcome from the durable run, not from ticket state" <|
+            \_ ->
+                withDetail sampleDetailJson
+                    (\d ->
+                        Common.init "/agent-tickets/12"
+                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
+                            |> Tuple.first
+                            |> Application.handleCallback
+                                (Callback.AgentWorkflowRunFetched
+                                    "9007199254740993"
+                                    (Ok (runDetailFor "develop" "9007199254740993"))
+                                )
+                            |> Tuple.first
+                            |> Common.queryView
+                            |> Query.find [ id "ticket-run-outcome" ]
+                            |> Query.has [ text "run outcome" ]
+                    )
+        , test "shows no run-outcome chip before the durable run is in hand" <|
+            \_ ->
+                -- inventing an outcome from ticket state is the second truth
+                -- this page exists to stop showing
+                withDetail sampleDetailJson
+                    (\d ->
+                        renderWith "/agent-tickets/12" (Callback.AgentTicketFetched (Ok d))
+                            |> Query.hasNot [ id "ticket-run-outcome" ]
                     )
         , test "offers a dispatch button for a queued ticket" <|
             \_ ->
@@ -602,7 +629,6 @@ all =
                                     { id = 12
                                     , title = "ship fly archives"
                                     , body = "MY UNSAVED EDIT"
-                                    , budgetUsd = Just 5
                                     }
                                 )
                     )
@@ -619,15 +645,15 @@ all =
                             |> Expect.all
                                 [ Query.has [ tag "input", attribute (Html.Attributes.value "ship fly archives") ]
                                 , Query.has [ tag "textarea", attribute (Html.Attributes.value "do the thing") ]
-                                , Query.has [ tag "input", attribute (Html.Attributes.value "5") ]
+                                , Query.findAll [ tag "input" ] >> Query.count (Expect.equal 1)
                                 ]
                     )
         , test "a ticket going terminal mid-edit closes the form and says why" <|
             \_ ->
                 withDetail sampleDetailJson
                     (\d ->
-                        withDetail mergedDetailJson
-                            (\merged ->
+                        withDetail closedDetailJson
+                            (\closed ->
                                 Common.init "/agent-tickets/12"
                                     |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
                                     |> Tuple.first
@@ -635,7 +661,7 @@ all =
                                     |> Tuple.first
                                     |> Application.update (Msgs.Update (Message.Message.AgentTicketBodyChanged "MY UNSAVED EDIT"))
                                     |> Tuple.first
-                                    |> Application.handleCallback (Callback.AgentTicketFetched (Ok merged))
+                                    |> Application.handleCallback (Callback.AgentTicketFetched (Ok closed))
                                     |> Tuple.first
                                     |> Common.queryView
                                     |> Expect.all
@@ -653,12 +679,12 @@ all =
                                 Common.init "/agent-tickets/12"
                                     |> Application.handleCallback (Callback.AgentTicketFetched (Ok queued))
                                     |> Tuple.first
-                                    |> Application.update (Msgs.Update (Message.Message.ClickAgentTicketTransition "abandoned"))
+                                    |> Application.update (Msgs.Update (Message.Message.ClickAgentTicketTransition "closed"))
                                     |> Tuple.first
                                     |> Application.handleCallback (Callback.AgentTicketFetched (Ok running))
                                     |> Tuple.first
                                     |> Common.queryView
-                                    |> Query.hasNot [ text "Confirm abandon" ]
+                                    |> Query.hasNot [ text "Confirm close" ]
                             )
                     )
         , test "a same-state refetch leaves an armed transition armed" <|
@@ -668,12 +694,12 @@ all =
                         Common.init "/agent-tickets/12"
                             |> Application.handleCallback (Callback.AgentTicketFetched (Ok queued))
                             |> Tuple.first
-                            |> Application.update (Msgs.Update (Message.Message.ClickAgentTicketTransition "abandoned"))
+                            |> Application.update (Msgs.Update (Message.Message.ClickAgentTicketTransition "closed"))
                             |> Tuple.first
                             |> Application.handleCallback (Callback.AgentTicketFetched (Ok queued))
                             |> Tuple.first
                             |> Common.queryView
-                            |> Query.has [ text "Confirm abandon" ]
+                            |> Query.has [ text "Confirm close" ]
                     )
         , test "the 5s tick refetches the ticket while it can still change" <|
             \_ ->
@@ -696,10 +722,10 @@ all =
                     |> Common.contains (Effects.FetchAgentTicket 12)
         , test "the 5s tick stops refetching once the ticket is terminal" <|
             \_ ->
-                withDetail mergedDetailJson
-                    (\merged ->
+                withDetail closedDetailJson
+                    (\closed ->
                         Common.init "/agent-tickets/12"
-                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok merged))
+                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok closed))
                             |> Tuple.first
                             |> Application.update
                                 (Msgs.DeliveryReceived (ClockTicked FiveSeconds <| Time.millisToPosix 0))

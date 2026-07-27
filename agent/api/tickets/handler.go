@@ -98,10 +98,6 @@ func (h *Handler) CreateTicket(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "origin 'jira' arrives with the phase-2 sync component", http.StatusBadRequest)
 		return
 	}
-	if req.BudgetUSD != nil && *req.BudgetUSD < 0 {
-		http.Error(w, "budget_usd must not be negative", http.StatusBadRequest)
-		return
-	}
 
 	name, isPrincipal := h.writer(r)
 	if isPrincipal && origin != "retrospective" {
@@ -121,7 +117,6 @@ func (h *Handler) CreateTicket(w http.ResponseWriter, r *http.Request) {
 		TargetBranch:         req.TargetBranch,
 		WorkflowName:         req.WorkflowName,
 		WorkflowVersion:      req.WorkflowVersion,
-		BudgetUSD:            req.BudgetUSD,
 		RepositorySnapshotID: req.RepositorySnapshotID,
 		CreatedBy:            name,
 		ExternalRef:          req.ExternalRef,
@@ -191,21 +186,11 @@ func (h *Handler) GetTicket(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "ticket not found", http.StatusNotFound)
 		return
 	}
-	spec, _, err := h.store.LatestSpec(id)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	tasks, err := h.store.ActivePlan(id)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	writeJSON(w, http.StatusOK, TicketDetail{Ticket: *t, Spec: spec, Tasks: tasks})
+	writeJSON(w, http.StatusOK, TicketDetail{Ticket: *t})
 }
 
 // UpdateTicket handles PUT /api/v1/agent/tickets/:ticket_id —
-// title/body/budget/workflow ref/target branch. NEVER state.
+// title/body/workflow ref/target branch. NEVER state.
 func (h *Handler) UpdateTicket(w http.ResponseWriter, r *http.Request) {
 	id, ok := ticketIDParam(w, r)
 	if !ok {
@@ -215,18 +200,14 @@ func (h *Handler) UpdateTicket(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &req) {
 		return
 	}
-	if req.Title == nil && req.Body == nil && req.BudgetUSD == nil &&
+	if req.Title == nil && req.Body == nil &&
 		req.WorkflowName == nil && req.WorkflowVersion == nil && req.TargetBranch == nil &&
 		req.RepositorySnapshotID == nil {
 		http.Error(w, "no fields to update", http.StatusBadRequest)
 		return
 	}
-	if req.BudgetUSD != nil && *req.BudgetUSD < 0 {
-		http.Error(w, "budget_usd must not be negative", http.StatusBadRequest)
-		return
-	}
 	err := h.store.Update(id, Update{
-		Title: req.Title, Body: req.Body, BudgetUSD: req.BudgetUSD,
+		Title: req.Title, Body: req.Body,
 		WorkflowName: req.WorkflowName, WorkflowVersion: req.WorkflowVersion,
 		TargetBranch: req.TargetBranch, RepositorySnapshotID: req.RepositorySnapshotID,
 	})
@@ -272,8 +253,7 @@ func (h *Handler) TransitionTicket(w http.ResponseWriter, r *http.Request) {
 	// class). TransitionRequest's decoder rejects the retired key outright, so
 	// no pipeline identity flows from HTTP into TransitionMeta here.
 	err := h.store.Transition(id, req.From, req.To, TransitionMeta{
-		Branch:      req.Branch,
-		ErrorDetail: req.ErrorDetail,
+		Branch: req.Branch,
 	})
 	switch {
 	case errors.Is(err, ErrTicketNotFound):

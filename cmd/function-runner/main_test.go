@@ -72,16 +72,9 @@ func TestMergeModesProduceASealableChangeAndAReport(t *testing.T) {
 	if code != exitOK {
 		t.Fatalf("merge-preflight exit = %d (stderr: %s)", code, stderr.String())
 	}
-	reportBytes, err := os.ReadFile(filepath.Join(root, "merge-report", "validation-report.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var report contracts.ValidationReportDocument
-	if err := json.Unmarshal(reportBytes, &report); err != nil {
-		t.Fatal(err)
-	}
-	if report.Status != "ok" {
-		t.Fatalf("preflight report = %+v", report)
+	report := readMergeReport(t, root)
+	if report.Body.Conclusion != "passed" {
+		t.Fatalf("preflight report = %+v", report.Body)
 	}
 
 	// Preflight mutated its own target mount, so prepare runs against a fresh
@@ -138,16 +131,12 @@ func TestMergePrepareFailsTheStepOnConflict(t *testing.T) {
 	}, &stdout, &stderr); code != exitOK {
 		t.Fatalf("merge-preflight must still exit 0 on conflict, got %d (stderr: %s)", code, stderr.String())
 	}
-	reportBytes, err := os.ReadFile(filepath.Join(root, "merge-report", "validation-report.json"))
-	if err != nil {
-		t.Fatal(err)
+	report := readMergeReport(t, root)
+	if report.Body.Conclusion != "failed" {
+		t.Fatalf("preflight report = %+v", report.Body)
 	}
-	var report contracts.ValidationReportDocument
-	if err := json.Unmarshal(reportBytes, &report); err != nil {
-		t.Fatal(err)
-	}
-	if report.Status != "failed" {
-		t.Fatalf("preflight report = %+v", report)
+	if len(report.Body.Checks) != 1 || len(report.Body.Checks[0].Attempts[0].Evidence) == 0 {
+		t.Fatalf("a conflicted preflight must anchor the unmerged paths: %+v", report.Body.Checks)
 	}
 
 	root = layoutMounts(t, "base.txt", "candidate version\n")
@@ -161,6 +150,62 @@ func TestMergePrepareFailsTheStepOnConflict(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "merged-change", "record.json")); !os.IsNotExist(err) {
 		t.Fatal("a conflicted merge must not materialize a merged change")
+	}
+}
+
+// readMergeReport reads the preflight's sealed validation/v1 record through the
+// READ-TIME envelope gate, which is how any later reader of the stored report
+// sees it.
+func readMergeReport(t *testing.T, root string) contracts.Record[contracts.ValidationBody] {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(root, "merge-report", "record.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var report contracts.Record[contracts.ValidationBody]
+	if err := contracts.DecodeSealedRecord(data, snapshot.TypeRef("validation/v1"), &report); err != nil {
+		t.Fatalf("merge report is not a sealed validation/v1 record: %v", err)
+	}
+	if err := report.Body.Validate(report.Subjects); err != nil {
+		t.Fatalf("merge report body is invalid: %v", err)
+	}
+	return report
+}
+
+// TestMergePreflightCopiesTheDeclaredRecordIdentity proves the pod takes the
+// merge-report's contract identity from the platform rather than deriving one.
+// atc/exec publishes AGENT_OUTPUT_<PORT>_RECORD_TYPE and _RECORD_SCHEMA for every
+// record-typed output port, and those exact values must reach the envelope: the
+// agent-runner image is released independently of the web, so a pod that stamped
+// its own compiled digest would advertise an identity the sealing side never
+// declared.
+func TestMergePreflightCopiesTheDeclaredRecordIdentity(t *testing.T) {
+	root := layoutMounts(t, "candidate.txt", "candidate\n")
+	declared, found := contracts.SchemaDigestFor(snapshot.TypeRef("validation/v1"))
+	if !found {
+		t.Fatal("validation/v1 has no schema digest")
+	}
+	// The port is "merge-report"; the platform mangles it to MERGE_REPORT.
+	t.Setenv("AGENT_OUTPUT_MERGE_REPORT_RECORD_TYPE", "validation/v1")
+	t.Setenv("AGENT_OUTPUT_MERGE_REPORT_RECORD_SCHEMA", declared.String())
+
+	var stdout, stderr strings.Builder
+	if code := runCLI(context.Background(), []string{
+		"merge-preflight", "--root", root,
+		"--candidate", "candidate", "--target", "target", "--base", "base", "--output", "merge-report",
+	}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("merge-preflight exit = %d (stderr: %s)", code, stderr.String())
+	}
+	report := readMergeReport(t, root)
+	if report.Type != snapshot.TypeRef("validation/v1") || report.Schema != declared {
+		t.Fatalf("envelope identity = %q/%q, want the declared %q/%q", report.Type, report.Schema, "validation/v1", declared)
+	}
+	// The report judges the candidate at the port it was declared on, with the
+	// target as context; the platform rebinds both when it seals the output.
+	if len(report.Subjects) != 2 ||
+		report.Subjects[0].ID != "candidate" || report.Subjects[0].Input != "candidate" ||
+		report.Subjects[1].ID != "target" || report.Subjects[1].Input != "target" {
+		t.Fatalf("report subjects = %+v", report.Subjects)
 	}
 }
 
@@ -249,6 +294,37 @@ func layoutMounts(t *testing.T, candidateFile, candidateBody string) string {
 		}
 	}
 	return root
+}
+
+// declareReportPort publishes the record-identity rows the platform exports for
+// a validation/v1 output port (atc/exec/record_authority_env.go). The CLI copies
+// them into the envelope verbatim, so the test asserts against what it declared
+// here rather than against anything the binary derived.
+func declareReportPort(t *testing.T, port string) snapshot.Digest {
+	t.Helper()
+	schema, found := contracts.SchemaDigestFor(validationType)
+	if !found {
+		t.Fatalf("SchemaDigestFor(%s) not found", validationType)
+	}
+	prefix := "AGENT_OUTPUT_" + authorityEnvPort(port)
+	t.Setenv(prefix+"_RECORD_TYPE", validationType.String())
+	t.Setenv(prefix+"_RECORD_SCHEMA", schema.String())
+	return schema
+}
+
+func readReport(t *testing.T, root string) contracts.Record[contracts.ValidationBody] {
+	t.Helper()
+	// The report is a sealed RECORD, so it lives at record.json beside any
+	// content it references — not at a type-specific document file name.
+	data, err := os.ReadFile(filepath.Join(root, "merge-report", "record.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var report contracts.Record[contracts.ValidationBody]
+	if err := contracts.DecodeSealedRecord(data, validationType, &report); err != nil {
+		t.Fatalf("merge report is not a sealed %s record: %v", validationType, err)
+	}
+	return report
 }
 
 func cliCanonicalize(t *testing.T, directory string) ([]byte, snapshot.Digest) {

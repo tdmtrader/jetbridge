@@ -32,31 +32,25 @@ sampleReview =
         , teamName = "t"
         , pipelineName = "p"
         , jobName = "j"
-        , repo = "concourse"
-        , commitSha = "abc123def"
-        , branch = "jetbridge"
-        , score = 7.5
-        , maxScore = 10
-        , pass = True
-        , provenCount = 1
-        , observationCount = 1
+        , workflowName = "code-review"
+        , conclusion = "changes-required"
         , summary = "one bug"
+        , severityCounts = Dict.fromList [ ( "critical", 1 ), ( "observation", 1 ) ]
         , createdAt = 0
         , evaluatedCount = 0
-        , snapshotId = Nothing
-        , workflowRunId = Nothing
-        , productionId = Nothing
+        , snapshotId = Just "9007199254740993"
+        , workflowRunId = Just "9007199254740995"
+        , productionId = Just "9007199254740997"
         }
     , provenIssues =
         [ { id = "PI-1"
-          , severity = "high"
+          , severity = "critical"
+          , blocking = True
           , title = "nil deref"
           , description = "boom"
           , file = "a.go"
           , line = 10
           , category = "correctness"
-          , testName = "TestNil"
-          , testOutput = "FAIL"
           }
         ]
     , observations = []
@@ -65,29 +59,16 @@ sampleReview =
     }
 
 
-linkedReview : AgentReview.BuildReview
-linkedReview =
-    { sampleReview
-        | info =
-            let
-                info =
-                    sampleReview.info
-            in
-            { info | repo = "https://github.com/org/repo.git", commitSha = "deadbeef" }
-    }
-
-
 idlessFinding : String -> AgentReview.Finding
 idlessFinding title =
     { id = ""
-    , severity = "high"
+    , severity = "critical"
+    , blocking = True
     , title = title
     , description = "boom"
     , file = "a.go"
     , line = 10
     , category = "correctness"
-    , testName = "TestNil"
-    , testOutput = "FAIL"
     }
 
 
@@ -109,7 +90,16 @@ idlessObservationsReview =
     { sampleReview
         | provenIssues = []
         , observations =
-            [ { id = "", severity = "", title = "idless obs", description = "advisory prose", file = "c.go", line = 3, category = "testing", testName = "", testOutput = "" } ]
+            [ { id = ""
+              , severity = "observation"
+              , blocking = False
+              , title = "idless obs"
+              , description = "advisory prose"
+              , file = "c.go"
+              , line = 3
+              , category = "testing"
+              }
+            ]
         , findingCount = 1
     }
 
@@ -132,7 +122,7 @@ all =
                     |> Tuple.first
                     |> Common.queryView
                     |> Query.hasNot [ id "agent-review-panel" ]
-        , test "renders summary bar with score and counts" <|
+        , test "renders the summary bar with the conclusion and counts, never a score" <|
             \_ ->
                 Common.init "/builds/1"
                     |> withBuildLoaded
@@ -141,8 +131,9 @@ all =
                     |> Common.queryView
                     |> Query.find [ id "agent-review-panel" ]
                     |> Expect.all
-                        [ Query.has [ containing [ text "7.5" ] ]
-                        , Query.has [ containing [ text "1 proven" ] ]
+                        [ Query.has [ class "agent-review-conclusion", containing [ text "changes required" ] ]
+                        , Query.has [ containing [ text "1 findings · 1 observations" ] ]
+                        , Query.hasNot [ containing [ text "/ 10" ] ]
                         ]
         , test "shows all six verdicts on an expanded finding" <|
             \_ ->
@@ -156,6 +147,22 @@ all =
                         (AgentReview.allVerdicts
                             |> List.map (\v -> Query.has [ containing [ text (AgentReview.verdictLabel v) ] ])
                         )
+        , test "offers no verdict controls when the review has no snapshot identity" <|
+            \_ ->
+                let
+                    info =
+                        sampleReview.info
+                in
+                Common.init "/builds/1"
+                    |> withBuildLoaded
+                    |> Application.handleCallback
+                        (Callback.BuildAgentReviewsFetched
+                            (Ok [ { sampleReview | info = { info | snapshotId = Nothing } } ])
+                        )
+                    |> Tuple.first
+                    |> Common.queryView
+                    |> Query.find [ id "agent-review-panel" ]
+                    |> Query.hasNot [ class "agent-review-verdicts" ]
         , test "renders id-less findings read-only so their interactive state can't collide" <|
             \_ ->
                 Common.init "/builds/1"
@@ -198,7 +205,7 @@ all =
                         [ Query.hasNot [ id "agent-review-panel" ]
                         , Query.has [ containing [ text "Couldn't load agent review." ] ]
                         ]
-        , test "clicking a verdict submits it with the typed note" <|
+        , test "clicking a verdict submits it against the review snapshot with the typed note" <|
             \_ ->
                 Common.init "/builds/1"
                     |> withBuildLoaded
@@ -212,9 +219,7 @@ all =
                     |> Application.update
                         (Msgs.Update <|
                             Message.Message.AgentReviewVerdictClicked
-                                { reviewSnapshotId = Nothing
-                                , repo = "concourse"
-                                , commitSha = "abc123def"
+                                { reviewSnapshotId = "9007199254740993"
                                 , findingId = "PI-1"
                                 , verdict = "accurate"
                                 , reviewer = "anonymous"
@@ -223,51 +228,13 @@ all =
                     |> Tuple.second
                     |> Common.contains
                         (Effects.SubmitAgentReviewVerdict
-                            { reviewSnapshotId = Nothing
-                            , repo = "concourse"
-                            , commitSha = "abc123def"
+                            { reviewSnapshotId = "9007199254740993"
                             , findingId = "PI-1"
                             , verdict = "accurate"
                             , notes = "my note"
                             , reviewer = "anonymous"
                             }
                         )
-        , test "clicking a verdict twice submits twice (no dedupe in v1)" <|
-            \_ ->
-                let
-                    click =
-                        Application.update
-                            (Msgs.Update <|
-                                Message.Message.AgentReviewVerdictClicked
-                                    { reviewSnapshotId = Nothing
-                                    , repo = "concourse"
-                                    , commitSha = "abc123def"
-                                    , findingId = "PI-1"
-                                    , verdict = "accurate"
-                                    , reviewer = "anonymous"
-                                    }
-                            )
-
-                    submit =
-                        Effects.SubmitAgentReviewVerdict
-                            { reviewSnapshotId = Nothing
-                            , repo = "concourse"
-                            , commitSha = "abc123def"
-                            , findingId = "PI-1"
-                            , verdict = "accurate"
-                            , notes = ""
-                            , reviewer = "anonymous"
-                            }
-                in
-                Common.init "/builds/1"
-                    |> withBuildLoaded
-                    |> Application.handleCallback (Callback.BuildAgentReviewsFetched (Ok [ sampleReview ]))
-                    |> Tuple.first
-                    |> click
-                    |> Tuple.first
-                    |> click
-                    |> Tuple.second
-                    |> Common.contains submit
         , test "a verdict click with an empty findingId is dropped, never submitted" <|
             \_ ->
                 Common.init "/builds/1"
@@ -277,9 +244,7 @@ all =
                     |> Application.update
                         (Msgs.Update <|
                             Message.Message.AgentReviewVerdictClicked
-                                { reviewSnapshotId = Nothing
-                                , repo = "concourse"
-                                , commitSha = "abc123def"
+                                { reviewSnapshotId = "9007199254740993"
                                 , findingId = ""
                                 , verdict = "accurate"
                                 , reviewer = "anonymous"
@@ -288,10 +253,33 @@ all =
                     |> Tuple.second
                     |> Common.notContains
                         (Effects.SubmitAgentReviewVerdict
-                            { reviewSnapshotId = Nothing
-                            , repo = "concourse"
-                            , commitSha = "abc123def"
+                            { reviewSnapshotId = "9007199254740993"
                             , findingId = ""
+                            , verdict = "accurate"
+                            , notes = ""
+                            , reviewer = "anonymous"
+                            }
+                        )
+        , test "a verdict click with no review snapshot names no review, so it is dropped" <|
+            \_ ->
+                Common.init "/builds/1"
+                    |> withBuildLoaded
+                    |> Application.handleCallback (Callback.BuildAgentReviewsFetched (Ok [ sampleReview ]))
+                    |> Tuple.first
+                    |> Application.update
+                        (Msgs.Update <|
+                            Message.Message.AgentReviewVerdictClicked
+                                { reviewSnapshotId = ""
+                                , findingId = "PI-1"
+                                , verdict = "accurate"
+                                , reviewer = "anonymous"
+                                }
+                        )
+                    |> Tuple.second
+                    |> Common.notContains
+                        (Effects.SubmitAgentReviewVerdict
+                            { reviewSnapshotId = ""
+                            , findingId = "PI-1"
                             , verdict = "accurate"
                             , notes = ""
                             , reviewer = "anonymous"
@@ -306,19 +294,7 @@ all =
                     |> Common.queryView
                     |> Query.find [ class "agent-review-summary" ]
                     |> Query.has [ tag "button", attribute (Attr.attribute "aria-expanded" "true") ]
-        , test "links a finding's file:line to the blob at the reviewed sha" <|
-            \_ ->
-                Common.init "/builds/1"
-                    |> withBuildLoaded
-                    |> Application.handleCallback (Callback.BuildAgentReviewsFetched (Ok [ linkedReview ]))
-                    |> Tuple.first
-                    |> Common.queryView
-                    |> Query.find [ id "agent-review-panel" ]
-                    |> Query.has
-                        [ tag "a"
-                        , attribute (Attr.href "https://github.com/org/repo/blob/deadbeef/a.go#L10")
-                        ]
-        , test "a bare (non-URL) repo renders file:line as plain text, not a link" <|
+        , test "a finding's file:line is plain text — a subject digest is not a blob URL" <|
             \_ ->
                 Common.init "/builds/1"
                     |> withBuildLoaded
@@ -326,5 +302,8 @@ all =
                     |> Tuple.first
                     |> Common.queryView
                     |> Query.find [ id "agent-review-panel" ]
-                    |> Query.hasNot [ tag "a" ]
+                    |> Expect.all
+                        [ Query.has [ class "agent-review-finding-location", containing [ text "a.go:10" ] ]
+                        , Query.hasNot [ tag "a" ]
+                        ]
         ]

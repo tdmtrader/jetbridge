@@ -23,39 +23,28 @@ var validVerdicts = map[string]bool{
 
 var ErrReviewProjectionNotFound = errors.New("feedback: review projection not found")
 
-// ReviewRef identifies a specific review session.
-type ReviewRef struct {
-	Repo     string `json:"repo"`
-	Commit   string `json:"commit"`
-	ReviewTS string `json:"review_timestamp,omitempty"`
-}
-
 // FeedbackRequest is the POST body for submitting feedback.
+//
+// A review is one sealed review/v1 snapshot, so the snapshot ID is the only way
+// to name the review being judged. The repo/commit `review_ref` this route used
+// to accept is gone: reviews carry no repository coordinates, so no client could
+// supply a ref that resolved to one, and the rows it wrote were never returned
+// by any read.
 type FeedbackRequest struct {
-	ReviewSnapshotID *snapshot.SnapshotID `json:"review_snapshot_id,omitempty"`
-	ReviewRef        ReviewRef            `json:"review_ref"`
-	FindingID        string               `json:"finding_id"`
-	FindingType      string               `json:"finding_type"`
-	FindingSnapshot  json.RawMessage      `json:"finding_snapshot"`
-	Verdict          string               `json:"verdict"`
-	Confidence       float64              `json:"confidence"`
-	Notes            string               `json:"notes"`
-	Reviewer         string               `json:"reviewer"`
-	Source           string               `json:"source"`
+	ReviewSnapshotID snapshot.SnapshotID `json:"review_snapshot_id"`
+	FindingID        string              `json:"finding_id"`
+	FindingType      string              `json:"finding_type"`
+	FindingSnapshot  json.RawMessage     `json:"finding_snapshot"`
+	Verdict          string              `json:"verdict"`
+	Confidence       float64             `json:"confidence"`
+	Notes            string              `json:"notes"`
+	Reviewer         string              `json:"reviewer"`
+	Source           string              `json:"source"`
 }
 
 func (r *FeedbackRequest) validate() error {
-	if r.ReviewSnapshotID != nil {
-		if err := r.ReviewSnapshotID.Validate(); err != nil {
-			return fmt.Errorf("review_snapshot_id: %w", err)
-		}
-	} else {
-		if r.ReviewRef.Repo == "" {
-			return fmt.Errorf("review_ref.repo is required")
-		}
-		if r.ReviewRef.Commit == "" {
-			return fmt.Errorf("review_ref.commit is required")
-		}
+	if err := r.ReviewSnapshotID.Validate(); err != nil {
+		return fmt.Errorf("review_snapshot_id: %w", err)
 	}
 	if r.FindingID == "" {
 		return fmt.Errorf("finding_id is required")
@@ -69,19 +58,19 @@ func (r *FeedbackRequest) validate() error {
 	return nil
 }
 
-// StoredFeedback is the persisted form of a feedback record.
+// StoredFeedback is the persisted form of a feedback record. Its identity is
+// (ReviewSnapshotID, ReviewTeamName, FindingID, Reviewer) and there is no other.
 type StoredFeedback struct {
-	ReviewSnapshotID *snapshot.SnapshotID `json:"review_snapshot_id,omitempty"`
-	ReviewTeamName   string               `json:"review_team_name,omitempty"`
-	ReviewRef        ReviewRef            `json:"review_ref"`
-	FindingID        string               `json:"finding_id"`
-	FindingType      string               `json:"finding_type,omitempty"`
-	FindingSnapshot  json.RawMessage      `json:"finding_snapshot,omitempty"`
-	Verdict          string               `json:"verdict"`
-	Confidence       float64              `json:"confidence"`
-	Notes            string               `json:"notes,omitempty"`
-	Reviewer         string               `json:"reviewer"`
-	Source           string               `json:"source,omitempty"`
+	ReviewSnapshotID snapshot.SnapshotID `json:"review_snapshot_id"`
+	ReviewTeamName   string              `json:"review_team_name"`
+	FindingID        string              `json:"finding_id"`
+	FindingType      string              `json:"finding_type,omitempty"`
+	FindingSnapshot  json.RawMessage     `json:"finding_snapshot,omitempty"`
+	Verdict          string              `json:"verdict"`
+	Confidence       float64             `json:"confidence"`
+	Notes            string              `json:"notes,omitempty"`
+	Reviewer         string              `json:"reviewer"`
+	Source           string              `json:"source,omitempty"`
 }
 
 // Store is the interface for feedback persistence.
@@ -149,7 +138,7 @@ func (h *Handler) SubmitFeedback(w http.ResponseWriter, r *http.Request) {
 
 	rec := &StoredFeedback{
 		ReviewSnapshotID: req.ReviewSnapshotID,
-		ReviewRef:        req.ReviewRef,
+		ReviewTeamName:   h.snapshotTeam,
 		FindingID:        req.FindingID,
 		FindingType:      req.FindingType,
 		FindingSnapshot:  req.FindingSnapshot,
@@ -158,9 +147,6 @@ func (h *Handler) SubmitFeedback(w http.ResponseWriter, r *http.Request) {
 		Notes:            req.Notes,
 		Reviewer:         req.Reviewer,
 		Source:           req.Source,
-	}
-	if req.ReviewSnapshotID != nil {
-		rec.ReviewTeamName = h.snapshotTeam
 	}
 
 	if err := h.store.Save(rec); err != nil {
@@ -191,18 +177,10 @@ func (m *MemoryStore) Save(rec *StoredFeedback) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Projected feedback is authoritative by
-	// (review_snapshot_id,finding_id,reviewer); legacy feedback retains the
-	// repo/commit compatibility key.
+	// One identity: (review_snapshot_id, review_team, finding_id, reviewer).
 	for i, existing := range m.records {
-		sameReview := false
-		if rec.ReviewSnapshotID != nil && existing.ReviewSnapshotID != nil {
-			sameReview = *existing.ReviewSnapshotID == *rec.ReviewSnapshotID &&
-				existing.ReviewTeamName == rec.ReviewTeamName
-		} else if rec.ReviewSnapshotID == nil && existing.ReviewSnapshotID == nil {
-			sameReview = existing.ReviewRef.Repo == rec.ReviewRef.Repo &&
-				existing.ReviewRef.Commit == rec.ReviewRef.Commit
-		}
+		sameReview := existing.ReviewSnapshotID == rec.ReviewSnapshotID &&
+			existing.ReviewTeamName == rec.ReviewTeamName
 		if sameReview && existing.FindingID == rec.FindingID && existing.Reviewer == rec.Reviewer {
 			cp := cloneFeedback(rec)
 			m.records[i] = &cp
@@ -219,7 +197,7 @@ func (m *MemoryStore) GetByReviewSnapshot(id snapshot.SnapshotID, teamName strin
 	defer m.mu.Unlock()
 	results := []StoredFeedback{}
 	for _, rec := range m.records {
-		if rec.ReviewSnapshotID != nil && *rec.ReviewSnapshotID == id && rec.ReviewTeamName == teamName {
+		if rec.ReviewSnapshotID == id && rec.ReviewTeamName == teamName {
 			results = append(results, cloneFeedback(rec))
 		}
 	}
@@ -228,10 +206,6 @@ func (m *MemoryStore) GetByReviewSnapshot(id snapshot.SnapshotID, teamName strin
 
 func cloneFeedback(rec *StoredFeedback) StoredFeedback {
 	cp := *rec
-	if rec.ReviewSnapshotID != nil {
-		id := *rec.ReviewSnapshotID
-		cp.ReviewSnapshotID = &id
-	}
 	cp.FindingSnapshot = append(json.RawMessage(nil), rec.FindingSnapshot...)
 	return cp
 }

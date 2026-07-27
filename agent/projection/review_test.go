@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"reflect"
 	"testing"
 	"time"
 
@@ -87,13 +88,12 @@ func TestReviewProjectorRevalidatesIdentityAndDerivesProjection(t *testing.T) {
 	archive := reviewArchive(t, reviewJSON)
 	manifest := projectedManifest(41, archive)
 	runID := snapshot.WorkflowRunID(9)
-	buildID, pipelineRunID := 101, 17
 	store := &reviewProjectionStore{
 		found: true,
 		input: projection.ReviewInput{
 			Snapshot: manifest, ProductionID: 77, WorkflowRunID: &runID,
-			BuildID: &buildID, BuildName: "3", TeamName: "main",
-			PipelineName: "agent", JobName: "review", PipelineRunID: &pipelineRunID,
+			BuildName: "3", TeamName: "main",
+			PipelineName: "agent", JobName: "review",
 			SubmittedBy: "review-agent",
 		},
 	}
@@ -109,31 +109,34 @@ func TestReviewProjectorRevalidatesIdentityAndDerivesProjection(t *testing.T) {
 		t.Fatalf("upserts = %d, want 1", len(store.upserts))
 	}
 	got := store.upserts[0]
-	if got.SnapshotID == nil || *got.SnapshotID != manifest.ID || got.ProductionID == nil || *got.ProductionID != 77 {
+	if got.SnapshotID != manifest.ID || got.ProductionID == nil || *got.ProductionID != 77 {
 		t.Fatalf("snapshot/production linkage = %#v/%#v", got.SnapshotID, got.ProductionID)
 	}
 	if got.WorkflowRunID == nil || *got.WorkflowRunID != runID {
 		t.Fatalf("workflow_run_id = %#v", got.WorkflowRunID)
 	}
-	if got.BuildID != buildID {
-		t.Fatalf("build linkage = %#v", got)
+	// The record's judgment is projected verbatim. A numeric score derived from
+	// the conclusion would be a second description of the same verdict.
+	if got.Conclusion != "accept" || got.Summary != "reviewed" {
+		t.Fatalf("projected judgment = %#v", got)
 	}
-	// review/v1 names its subjects by snapshot identity. A subject's type,
-	// digest and entity ID are not a repository URL, a commit SHA and a branch,
-	// and presenting them under those column names is a mislabel, not a value.
-	if got.Repo != "" || got.CommitSha != "" || got.Branch != "" {
-		t.Fatalf("repository coordinates invented from subject identity: repo=%q commit=%q branch=%q",
-			got.Repo, got.CommitSha, got.Branch)
-	}
-	// agent_model and duration_seconds died with the legacy submission payload.
-	if got.AgentModel != "" || got.DurationSeconds != 0 {
-		t.Fatalf("legacy run metadata invented: model=%q duration=%d", got.AgentModel, got.DurationSeconds)
-	}
-	if got.Score != 1 || got.MaxScore != 1 || !got.Pass || got.ProvenCount != 1 || got.ObservationCount != 1 || got.Summary != "reviewed" {
-		t.Fatalf("derived summary fields = %#v", got)
+	if len(got.SeverityCounts) != 2 || got.SeverityCounts["low"] != 1 || got.SeverityCounts["observation"] != 1 {
+		t.Fatalf("severity counts = %v", got.SeverityCounts)
 	}
 	if !bytes.Equal(got.Review, reviewJSON) {
 		t.Fatalf("stored review differs from canonical record.json\ngot:  %s\nwant: %s", got.Review, reviewJSON)
+	}
+}
+
+// review/v1 names its subjects by snapshot identity. A subject's type, digest
+// and entity ID are not a repository URL, a commit SHA and a branch, so the
+// projection has no field to put them in and invents none.
+func TestReviewProjectionCarriesNoRepositoryCoordinates(t *testing.T) {
+	projected := reflect.TypeOf(reviews.StoredReview{})
+	for _, gone := range []string{"Repo", "CommitSha", "Branch", "Score", "MaxScore", "Pass", "AgentModel", "DurationSeconds", "TicketID", "PipelineRunID"} {
+		if _, found := projected.FieldByName(gone); found {
+			t.Errorf("StoredReview.%s has no writer and must not exist", gone)
+		}
 	}
 }
 

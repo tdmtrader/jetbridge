@@ -99,7 +99,7 @@ func TestVersionThreeEngineeringSeedsCompileAndRender(t *testing.T) {
 			},
 			outputs: []workflow.SignaturePort{
 				{Name: "merged-change", Type: snapshot.TypeRef("repository-change/v1")},
-				{Name: "merge-report", Type: snapshot.TypeRef("validation-report/v1")},
+				{Name: "merge-report", Type: snapshot.TypeRef("validation/v1")},
 			},
 			dispositionOutput: "merged-change",
 			humanWait:         true,

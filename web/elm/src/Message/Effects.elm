@@ -240,9 +240,7 @@ type Effect
         }
     | RevokeAgentPrincipal Int
     | SubmitAgentReviewVerdict
-        { reviewSnapshotId : Maybe String
-        , repo : String
-        , commitSha : String
+        { reviewSnapshotId : String
         , findingId : String
         , verdict : String
         , notes : String
@@ -250,10 +248,9 @@ type Effect
         }
     | FetchAgentTickets
     | FetchAgentTicket Int
-    | SaveAgentTicket { id : Int, title : String, body : String, budgetUsd : Maybe Float }
+    | SaveAgentTicket { id : Int, title : String, body : String }
     | TransitionAgentTicket { id : Int, from : String, to : String }
     | DispatchAgentTicket Int
-    | FetchAgentTicketCosts
     | FetchAgentWorkflowVersions String
     | PromoteAgentWorkflowVersion String Int
     | FetchAgentWorkflowRuns String
@@ -927,28 +924,20 @@ runEffect effect key csrfToken =
                 |> Task.attempt AgentPrincipalRevoked
 
         SubmitAgentReviewVerdict params ->
+            -- Feedback is keyed by the review snapshot and nothing else. There
+            -- is no repo/commit review_ref to send: the platform stopped
+            -- writing those coordinates onto reviews, so a verdict that
+            -- travelled under them named no review at all.
             Api.post Endpoints.AgentFeedback csrfToken
                 |> Api.withJsonBody
                     (Json.Encode.object
-                        (( "review_ref"
-                         , Json.Encode.object
-                            [ ( "repo", Json.Encode.string params.repo )
-                            , ( "commit", Json.Encode.string params.commitSha )
-                            ]
-                         )
-                            :: ( "finding_id", Json.Encode.string params.findingId )
-                            :: ( "verdict", Json.Encode.string params.verdict )
-                            :: ( "notes", Json.Encode.string params.notes )
-                            :: ( "reviewer", Json.Encode.string params.reviewer )
-                            :: ( "source", Json.Encode.string "interactive" )
-                            :: (case params.reviewSnapshotId of
-                                    Just snapshotId ->
-                                        [ ( "review_snapshot_id", Json.Encode.string snapshotId ) ]
-
-                                    Nothing ->
-                                        []
-                               )
-                        )
+                        [ ( "review_snapshot_id", Json.Encode.string params.reviewSnapshotId )
+                        , ( "finding_id", Json.Encode.string params.findingId )
+                        , ( "verdict", Json.Encode.string params.verdict )
+                        , ( "notes", Json.Encode.string params.notes )
+                        , ( "reviewer", Json.Encode.string params.reviewer )
+                        , ( "source", Json.Encode.string "interactive" )
+                        ]
                     )
                 |> Api.request
                 |> Task.attempt (AgentReviewVerdictSubmitted params.findingId)
@@ -987,16 +976,6 @@ runEffect effect key csrfToken =
                 |> Api.expectJson Concourse.AgentTicket.decodeDispatchResult
                 |> Api.request
                 |> Task.attempt (AgentTicketDispatched ticketId)
-
-        FetchAgentTicketCosts ->
-            let
-                base =
-                    Api.get Endpoints.AgentCostRollup
-            in
-            { base | query = [ Url.Builder.string "group_by" "ticket" ] }
-                |> Api.expectJson Concourse.Agent.decodeCostRollup
-                |> Api.request
-                |> Task.attempt AgentCostRollupFetched
 
         FetchAgentWorkflowVersions workflowName ->
             Api.get (Endpoints.AgentWorkflowVersions workflowName)
@@ -1184,19 +1163,12 @@ runEffect effect key csrfToken =
                 |> Task.attempt (AgentExperimentCanceled experimentId)
 
 
-encodeTicketUpdate : { id : Int, title : String, body : String, budgetUsd : Maybe Float } -> Json.Encode.Value
+encodeTicketUpdate : { id : Int, title : String, body : String } -> Json.Encode.Value
 encodeTicketUpdate params =
     Json.Encode.object
-        (( "title", Json.Encode.string params.title )
-            :: ( "body", Json.Encode.string params.body )
-            :: (case params.budgetUsd of
-                    Just b ->
-                        [ ( "budget_usd", Json.Encode.float b ) ]
-
-                    Nothing ->
-                        []
-               )
-        )
+        [ ( "title", Json.Encode.string params.title )
+        , ( "body", Json.Encode.string params.body )
+        ]
 
 
 encodeCreatePrincipal :

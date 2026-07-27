@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/snapshot/contracts"
@@ -230,15 +231,54 @@ func (f fixture) opener() snapshot.InputOpener {
 
 func (f fixture) request() Request {
 	return Request{
-		Candidate:     f.inputs["candidate"],
-		CandidateRoot: f.changeRoot,
-		Target:        f.inputs["target"],
-		TargetInput:   "target",
-		TargetRoot:    f.targetRoot,
-		Inputs:        f.inputs,
-		OpenInput:     f.opener(),
-		Method:        MethodMerge,
-		Message:       "merge candidate into target",
+		Candidate:       f.inputs["candidate"],
+		CandidateRoot:   f.changeRoot,
+		CandidateInput:  "candidate",
+		Target:          f.inputs["target"],
+		TargetInput:     "target",
+		TargetRoot:      f.targetRoot,
+		Inputs:          f.inputs,
+		OpenInput:       f.opener(),
+		Method:          MethodMerge,
+		Message:         "merge candidate into target",
+		ReportAuthority: declaredReportAuthority(),
+	}
+}
+
+// declaredReportAuthority stands in for the AGENT_OUTPUT_<PORT>_RECORD_TYPE and
+// _RECORD_SCHEMA rows the platform publishes for the merge-report port. The
+// values are this build's own, which is what a lockstep deployment declares.
+func declaredReportAuthority() RecordAuthority {
+	schema, _ := contracts.SchemaDigestFor(validationType)
+	return RecordAuthority{Type: validationType, Schema: schema}
+}
+
+// sealReport writes the report to a fresh output mount and drives it through the
+// REAL validation/v1 seal-time gate with the fixture's own port bindings —
+// exactly what the platform does when it seals the merge-preflight step. A
+// report that only satisfies this package's own checks would be worthless: the
+// step fails at seal time and the conflicted delivery loses its only evidence.
+func (f fixture) sealReport(t *testing.T, report contracts.Record[contracts.ValidationBody]) {
+	t.Helper()
+	output := t.TempDir()
+	if err := WriteReport(context.Background(), output, report); err != nil {
+		t.Fatalf("WriteReport: %v", err)
+	}
+	validator, err := f.registry.Lookup(validationType)
+	if err != nil {
+		t.Fatal(err)
+	}
+	validationContext, err := snapshot.NewValidationContext(f.inputs, f.opener())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	if _, err := validator.AdmitForSeal(context.Background(), root, validationContext); err != nil {
+		t.Fatalf("the merge report is not a sealable %s: %v", validationType, err)
 	}
 }
 
@@ -413,15 +453,23 @@ func TestRunnerMergesOntoTheAdvancedTargetAndSealsAValidChange(t *testing.T) {
 	}
 	defer merged.Close()
 
-	if merged.Report.Status != "ok" {
+	if merged.Conclusion() != "passed" {
 		t.Fatalf("report = %+v", merged.Report)
 	}
-	if err := merged.Report.Validate(); err != nil {
-		t.Fatalf("invalid validation-report/v1: %v", err)
+	// The report is a sealed validation/v1 record whose PRIMARY subject is the
+	// exact candidate snapshot it judged, bound at the port it was declared on.
+	if len(merged.Report.Subjects) != 2 {
+		t.Fatalf("report subjects = %+v, want the candidate and the target", merged.Report.Subjects)
 	}
-	if merged.Report.Subject != "snapshot:"+f.inputs["candidate"].ID.String()+"@"+f.inputs["candidate"].Digest.String() {
-		t.Fatalf("subject = %q", merged.Report.Subject)
+	primary := merged.Report.Subjects[0]
+	if primary.Role != contracts.SubjectRolePrimary || primary.Input != "candidate" ||
+		primary.Digest != f.inputs["candidate"].Digest {
+		t.Fatalf("report primary subject = %+v, want the exact candidate bound at its port", primary)
 	}
+	if context := merged.Report.Subjects[1]; context.Role != contracts.SubjectRoleContext || context.Input != "target" {
+		t.Fatalf("report context subject = %+v, want the target port", context)
+	}
+	f.sealReport(t, merged.Report)
 	// The merged change's base lineage is now a SUBJECT: the target repository,
 	// bound at the declared port the request named.
 	if len(merged.Change.Subjects) != 1 {
@@ -489,21 +537,32 @@ func TestRunnerReportsConflictAsAStatusRatherThanAnError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if report.Status != "failed" {
-		t.Fatalf("report = %+v", report)
+	if report.Body.Conclusion != "failed" {
+		t.Fatalf("report = %+v", report.Body)
 	}
-	if err := report.Validate(); err != nil {
-		t.Fatalf("invalid validation-report/v1: %v", err)
+	// The conflict is ONE check with ONE attempt; the unmerged paths are that
+	// attempt's evidence, anchored to the candidate being judged.
+	if len(report.Body.Checks) != 1 || report.Body.Checks[0].ID != mergeCheckID ||
+		report.Body.Checks[0].Status != "failed" || len(report.Body.Checks[0].Attempts) != 1 {
+		t.Fatalf("checks = %+v, want one failed check with one attempt", report.Body.Checks)
+	}
+	attempt := report.Body.Checks[0].Attempts[0]
+	if attempt.Number != 1 || attempt.Status != "failed" {
+		t.Fatalf("attempt = %+v", attempt)
+	}
+	if _, err := time.ParseDuration(attempt.Duration); err != nil {
+		t.Fatalf("attempt duration %q is not a Go duration: %v", attempt.Duration, err)
 	}
 	found := false
-	for _, check := range report.Checks {
-		if check.Name == "base.txt" && check.Status == "failed" && check.Detail == "unmerged" {
+	for _, anchor := range attempt.Evidence {
+		if anchor.Subject == candidateSubjectID && anchor.Locator.Kind == "opaque" && anchor.Locator.Value == "base.txt" {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("expected an unmerged check for base.txt, got %+v", report.Checks)
+		t.Fatalf("expected base.txt anchored as evidence, got %+v", attempt.Evidence)
 	}
+	f.sealReport(t, report)
 	if status := git(t, f.targetRoot, "status", "--porcelain=v1", "--untracked-files=all"); status != "" {
 		t.Fatalf("a conflicting merge must leave a clean work tree, got:\n%s", status)
 	}
@@ -522,15 +581,13 @@ func TestRunnerRejectsAValidCandidateForADifferentRepository(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if report.Status != "failed" {
-		t.Fatalf("report = %+v", report)
+	if report.Body.Conclusion != "failed" {
+		t.Fatalf("report = %+v", report.Body)
 	}
-	if !strings.Contains(report.Checks[0].Detail, "not the delivery target") {
-		t.Fatalf("checks = %+v", report.Checks)
+	if !strings.Contains(report.Body.Checks[0].Detail, "not the delivery target") {
+		t.Fatalf("checks = %+v", report.Body.Checks)
 	}
-	if err := report.Validate(); err != nil {
-		t.Fatalf("invalid validation-report/v1: %v", err)
-	}
+	f.sealReport(t, report)
 }
 
 func TestRunnerRejectsMalformedInvocationAndHonorsCancellation(t *testing.T) {
@@ -552,10 +609,30 @@ func TestRunnerRejectsMalformedInvocationAndHonorsCancellation(t *testing.T) {
 		t.Fatalf("unbound target input error = %v", err)
 	}
 
+	unboundCandidate := f.request()
+	unboundCandidate.CandidateInput = "not-a-declared-input"
+	if _, err := runner.Merge(context.Background(), unboundCandidate); err == nil || !strings.Contains(err.Error(), "not-a-declared-input") {
+		t.Fatalf("unbound candidate input error = %v", err)
+	}
+
 	unknownMethod := f.request()
 	unknownMethod.Method = "yolo"
 	if _, err := runner.Merge(context.Background(), unknownMethod); err == nil {
 		t.Fatal("an unknown merge method must be rejected")
+	}
+
+	// The report identity is declared by the platform. A caller that supplies
+	// none cannot produce a sealable report, and must be told before the merge
+	// is computed rather than after.
+	noAuthority := f.request()
+	noAuthority.ReportAuthority = RecordAuthority{}
+	if _, err := runner.Merge(context.Background(), noAuthority); err == nil || !strings.Contains(err.Error(), "merge report type") {
+		t.Fatalf("missing report authority error = %v", err)
+	}
+	wrongSchema := f.request()
+	wrongSchema.ReportAuthority.Schema = "not-a-digest"
+	if _, err := runner.Merge(context.Background(), wrongSchema); err == nil || !strings.Contains(err.Error(), "merge report schema") {
+		t.Fatalf("malformed report schema error = %v", err)
 	}
 
 	canceled, cancel := context.WithCancel(context.Background())
@@ -575,16 +652,42 @@ func TestNewRunnerRequiresARegistry(t *testing.T) {
 	}
 }
 
-func TestWriteReportEmitsStrictSnapshotDocument(t *testing.T) {
-	request := Request{Candidate: snapshot.SnapshotRef{
-		ID: 7, Type: "repository-change/v1", Digest: snapshot.Digest("sha256:" + strings.Repeat("a", 64)),
-	}}
-	document := reportFor(request, "ok", "merge is clean", nil)
-	output := t.TempDir()
-	if err := WriteReport(context.Background(), output, document); err != nil {
-		t.Fatalf("WriteReport: %v", err)
+// TestReportCopiesTheDeclaredContractIdentityVerbatim pins the one thing the pod
+// is NOT allowed to decide for itself.
+//
+// The type and schema digest come from the platform as
+// AGENT_OUTPUT_<PORT>_RECORD_* rows. The agent-runner image ships independently
+// of the web node, so a runner that stamped its own compiled digest would
+// advertise an identity the sealing side never declared — and one that re-judged
+// the digest it was handed would refuse to write the only durable artifact a
+// conflicted delivery produces. Both halves are asserted here with a digest this
+// build would never choose on its own.
+func TestReportCopiesTheDeclaredContractIdentityVerbatim(t *testing.T) {
+	f := newFixture(t, "candidate.txt", "candidate\n", "target.txt", "target\n")
+	runner, err := NewRunner(f.registry)
+	if err != nil {
+		t.Fatal(err)
 	}
-	data, err := os.ReadFile(filepath.Join(output, "validation-report.json"))
+	declared := snapshot.Digest("sha256:" + strings.Repeat("b", 64))
+	if current, _ := contracts.SchemaDigestFor(validationType); current == declared {
+		t.Fatal("the fixture digest must differ from this build's own, or the test proves nothing")
+	}
+	request := f.request()
+	request.ReportAuthority = RecordAuthority{Type: validationType, Schema: declared}
+
+	report, err := runner.Run(context.Background(), request)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if report.Type != validationType || report.Schema != declared {
+		t.Fatalf("envelope = %s %s, want the declared identity %s %s", report.Type, report.Schema, validationType, declared)
+	}
+
+	output := t.TempDir()
+	if err := WriteReport(context.Background(), output, report); err != nil {
+		t.Fatalf("WriteReport must not re-judge a digest the platform issued: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(output, "record.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -592,7 +695,41 @@ func TestWriteReportEmitsStrictSnapshotDocument(t *testing.T) {
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if decoded["schema_version"] != "1.0.0" || decoded["status"] != "ok" {
-		t.Fatalf("payload = %s", data)
+	if decoded["record_version"] != contracts.RecordVersion ||
+		decoded["type"] != validationType.String() || decoded["schema"] != declared.String() {
+		t.Fatalf("record.json = %s", data)
+	}
+}
+
+func TestWriteReportRejectsAReportItIsTheAuthorityOn(t *testing.T) {
+	f := newFixture(t, "candidate.txt", "candidate\n", "target.txt", "target\n")
+	runner, err := NewRunner(f.registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := runner.Run(context.Background(), f.request())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	for name, corrupt := range map[string]func(*contracts.Record[contracts.ValidationBody]){
+		"wrong record version": func(r *contracts.Record[contracts.ValidationBody]) { r.RecordVersion = "2.0.0" },
+		"wrong contract type":  func(r *contracts.Record[contracts.ValidationBody]) { r.Type = "review/v1" },
+		"malformed digest":     func(r *contracts.Record[contracts.ValidationBody]) { r.Schema = "not-a-digest" },
+		"unsorted subjects": func(r *contracts.Record[contracts.ValidationBody]) {
+			r.Subjects[0], r.Subjects[1] = r.Subjects[1], r.Subjects[0]
+		},
+		"conclusion disagrees with the checks": func(r *contracts.Record[contracts.ValidationBody]) {
+			r.Body.Conclusion = "failed"
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			broken := report
+			broken.Subjects = append([]contracts.Subject(nil), report.Subjects...)
+			corrupt(&broken)
+			if err := WriteReport(context.Background(), t.TempDir(), broken); err == nil {
+				t.Fatalf("WriteReport(%s) succeeded, want a rejection", name)
+			}
+		})
 	}
 }

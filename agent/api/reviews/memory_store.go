@@ -1,6 +1,8 @@
 package reviews
 
 import (
+	"context"
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -8,32 +10,43 @@ import (
 	"github.com/concourse/concourse/agent/snapshot"
 )
 
-// MemoryStore is an in-memory Store for testing.
+// MemoryStore is an in-memory Store for testing. It has the same single writer
+// as the database store: a review exists because a review/v1 snapshot was
+// sealed and projected, never because something posted one.
 type MemoryStore struct {
 	mu      sync.Mutex
 	records []*StoredReview
 }
 
+// The in-memory store is held to exactly the contract the database store
+// implements — including the single writer — so a test cannot seed a review the
+// platform could never have produced.
+var (
+	_ Store            = (*MemoryStore)(nil)
+	_ ProjectionReader = (*MemoryStore)(nil)
+	_ ProjectionWriter = (*MemoryStore)(nil)
+)
+
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{}
 }
 
-func (m *MemoryStore) Upsert(rec *StoredReview) error {
+func (m *MemoryStore) UpsertReviewProjection(_ context.Context, rec *StoredReview) error {
+	if rec == nil {
+		return fmt.Errorf("reviews: projected review is required")
+	}
+	if err := rec.SnapshotID.Validate(); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	// Store a copy so caller mutation after Upsert can't alter the store.
+	// Store a copy so caller mutation after the upsert can't alter the store.
 	cp := *rec
 	if cp.CreatedAt == 0 {
 		cp.CreatedAt = time.Now().Unix()
 	}
 	for i, existing := range m.records {
-		sameIdentity := false
-		if cp.SnapshotID != nil && existing.SnapshotID != nil {
-			sameIdentity = *existing.SnapshotID == *cp.SnapshotID
-		} else if cp.SnapshotID == nil && existing.SnapshotID == nil {
-			sameIdentity = existing.BuildID == cp.BuildID && existing.Repo == cp.Repo && existing.CommitSha == cp.CommitSha
-		}
-		if sameIdentity {
+		if existing.SnapshotID == cp.SnapshotID {
 			m.records[i] = &cp
 			return nil
 		}
@@ -46,7 +59,7 @@ func (m *MemoryStore) GetBySnapshot(teamName string, id snapshot.SnapshotID) (St
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, rec := range m.records {
-		if rec.SnapshotID != nil && *rec.SnapshotID == id && rec.TeamName == teamName {
+		if rec.SnapshotID == id && rec.TeamName == teamName {
 			return *rec, true, nil
 		}
 	}
@@ -78,22 +91,6 @@ func (m *MemoryStore) GetByBuild(buildID int) ([]StoredReview, error) {
 	return results, nil
 }
 
-// ListByTicket returns records whose TicketID matches, oldest-first
-// (BuildID ascending as the in-memory proxy for created-ascending).
-func (m *MemoryStore) ListByTicket(ticketID int) ([]StoredReview, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	var out []StoredReview
-	for _, rec := range m.records {
-		if rec.TicketID != nil && *rec.TicketID == ticketID {
-			out = append(out, *rec)
-		}
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].BuildID < out[j].BuildID })
-	return out, nil
-}
-
 func (m *MemoryStore) ListByTeam(team string, filter ListFilter) ([]StoredReview, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -107,9 +104,6 @@ func (m *MemoryStore) ListByTeam(team string, filter ListFilter) ([]StoredReview
 			continue
 		}
 		if filter.Pipeline != "" && rec.PipelineName != filter.Pipeline {
-			continue
-		}
-		if filter.Repo != "" && rec.Repo != filter.Repo {
 			continue
 		}
 		results = append(results, *rec)

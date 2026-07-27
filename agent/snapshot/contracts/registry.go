@@ -104,25 +104,6 @@ func builtinValidator(ref snapshot.TypeRef, config registryConfig) (snapshot.Val
 		return gateInvariant{documentValidator[*UpgradeRequestDocument]{fileName: "upgrade-request.json"}.Validate}, nil
 	case "upgrade-report/v1":
 		return gateInvariant{documentValidator[*UpgradeReportDocument]{fileName: "upgrade-report.json"}.Validate}, nil
-	// validation-report/v1 is a plain versioned DOCUMENT, not a record envelope,
-	// and it is registered because a live path emits it: the merge-delivery-v3 seed
-	// declares `merge-report: validation-report/v1` and
-	// agent/functions/repositorymerge writes validation-report.json. The seal path
-	// resolves that port type here by exact match (agent/snapshot/sealer.go:185),
-	// so unregistering it kills the whole merge chain in a way no operator can
-	// repair — the type name is compiled into the seed and the validator into the
-	// server.
-	//
-	// Being a document rather than a record is what keeps this cheap to keep: it
-	// carries no schema digest, so it must NOT appear in recordSchemaHistories, has
-	// no embedded schema document, and IsRecordType stays false for it. See
-	// TestValidationReportIsADocumentTypeNotARecordType.
-	//
-	// gate-results/v1 was removed in the same change and is deliberately NOT
-	// restored: no seed declares it and no function writes it, so registering it
-	// would re-admit a type this deployment cannot produce.
-	case "validation-report/v1":
-		return gateInvariant{documentValidator[*ValidationReportDocument]{fileName: "validation-report.json"}.Validate}, nil
 	case "database-snapshot/v1":
 		return gateInvariant{auditValidator{kind: "database"}.Validate}, nil
 	case "deployment-snapshot/v1":
@@ -197,7 +178,6 @@ func builtinTypeNames() []string {
 		"validation/v1",
 		"upgrade-request/v1",
 		"upgrade-report/v1",
-		"validation-report/v1",
 		"database-snapshot/v1",
 		"deployment-snapshot/v1",
 		"audit-findings/v1",

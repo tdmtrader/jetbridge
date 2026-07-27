@@ -23,9 +23,6 @@ var builtinTypes = []string{
 	"validation/v1",
 	"upgrade-request/v1",
 	"upgrade-report/v1",
-	// A document type, kept because merge-delivery-v3 declares it as an output
-	// port. See engineering_report_registration_test.go.
-	"validation-report/v1",
 	"database-snapshot/v1",
 	"deployment-snapshot/v1",
 	"audit-findings/v1",
@@ -51,14 +48,40 @@ func TestRegistryContainsExactlyTheNamedV1Contracts(t *testing.T) {
 	if got := registry.Types(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Types() = %q, want exact ordered types %q", got, want)
 	}
-	if len(registry.Types()) != 18 {
-		t.Fatalf("registry type count = %d, want 18", len(registry.Types()))
+	if len(registry.Types()) != 17 {
+		t.Fatalf("registry type count = %d, want 17", len(registry.Types()))
 	}
 
 	for _, raw := range []string{"review/v2", "dev-mcp/v1", "Review/v1"} {
 		ref := snapshot.TypeRef(raw)
 		if _, err := registry.Lookup(ref); err == nil {
 			t.Errorf("Lookup(%q) succeeded, want exact-match unsupported type error", raw)
+		}
+	}
+}
+
+// TestRetiredEngineeringDocumentTypesStayUnregistered records a decision rather
+// than leaving it to be re-litigated.
+//
+// validation-report/v1 and gate-results/v1 were both plain versioned documents
+// describing check outcomes. validation/v1 is the single sealed-record
+// representation of that domain now: merge-delivery-v3 declares
+// `merge-report: validation/v1` and agent/functions/repositorymerge writes the
+// record envelope. Registering either retired name again would re-admit a type
+// no seed declares and no function writes, so the deployment could accept a
+// snapshot it can never produce.
+func TestRetiredEngineeringDocumentTypesStayUnregistered(t *testing.T) {
+	registry, err := contracts.NewRegistry()
+	if err != nil {
+		t.Fatalf("NewRegistry(): %v", err)
+	}
+	for _, raw := range []string{"validation-report/v1", "gate-results/v1"} {
+		ref := snapshot.TypeRef(raw)
+		if _, err := registry.Lookup(ref); err == nil {
+			t.Errorf("Lookup(%q) succeeded; if a live path now emits it, register it deliberately and update this test", raw)
+		}
+		if contracts.IsRecordType(ref) {
+			t.Errorf("IsRecordType(%q) = true; a retired document type must not appear in the record schema tables", raw)
 		}
 	}
 }

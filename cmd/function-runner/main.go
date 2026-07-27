@@ -9,8 +9,8 @@
 // Modes:
 //
 //	merge-preflight  compute the prospective delivery merge and always emit a
-//	                 validation-report/v1 describing it. Exits 0 whether the
-//	                 merge is clean or conflicted, so the report is always
+//	                 sealed validation/v1 record describing it. Exits 0 whether
+//	                 the merge is clean or conflicted, so the report is always
 //	                 sealed and a human can see conflicts before approving.
 //	merge-prepare    compute the same merge and emit the merged
 //	                 repository-change/v1. Exits non-zero on conflict, because a
@@ -30,6 +30,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/concourse/concourse/agent/functions/repositorymerge"
 	"github.com/concourse/concourse/agent/snapshot"
@@ -40,6 +41,8 @@ const (
 	exitOK      = 0
 	exitRejects = 1
 	exitUsage   = 2
+
+	validationType snapshot.TypeRef = "validation/v1"
 )
 
 func main() {
@@ -93,21 +96,26 @@ func runMergeMode(ctx context.Context, mode string, args []string, stdout, stder
 		return exitUsage
 	}
 
-	report, err := executeMerge(ctx, mode, options, stdout)
+	conclusion, err := executeMerge(ctx, mode, options, stdout)
 	if err != nil {
 		fmt.Fprintf(stderr, "function-runner: %s: %v\n", mode, err)
 		return exitUsage
 	}
-	if mode == "merge-prepare" && report != "ok" {
+	if mode == "merge-prepare" && conclusion != mergeConclusionPassed {
 		// A conflicted or unevaluable merge has no merged change to seal. Fail
 		// the step so no downstream approval or publication can proceed.
-		fmt.Fprintf(stderr, "function-runner: %s: merge is %s; see the preflight report\n", mode, report)
+		fmt.Fprintf(stderr, "function-runner: %s: merge is %s; see the preflight report\n", mode, conclusion)
 		return exitRejects
 	}
 	return exitOK
 }
 
-// executeMerge returns the merge report status ("ok", "failed", or "error").
+// mergeConclusionPassed is the one validation/v1 conclusion that means a merged
+// change exists. Every other conclusion ("failed", "error", "incomplete") means
+// there is nothing to seal.
+const mergeConclusionPassed = "passed"
+
+// executeMerge returns the merge report's derived conclusion.
 func executeMerge(ctx context.Context, mode string, options mergeOptions, stdout io.Writer) (string, error) {
 	for name, value := range map[string]string{
 		"candidate": options.candidate, "target": options.target,
@@ -129,7 +137,7 @@ func executeMerge(ctx context.Context, mode string, options mergeOptions, stdout
 	if err != nil {
 		return "", err
 	}
-	_, outputPath, err := parseMount(options.root, options.output)
+	outputPort, outputPath, err := parseMount(options.root, options.output)
 	if err != nil {
 		return "", err
 	}
@@ -158,23 +166,25 @@ func executeMerge(ctx context.Context, mode string, options mergeOptions, stdout
 	defer bindings.Close()
 
 	merged, err := runner.WithCanonicalizer(canonicalizer).Merge(ctx, repositorymerge.Request{
-		Candidate:     bindings.refs[candidatePort],
-		CandidateRoot: candidatePath,
-		Target:        bindings.refs[targetPort],
-		TargetInput:   targetPort,
-		TargetRoot:    targetPath,
-		Inputs:        bindings.refs,
-		OpenInput:     bindings.Open,
-		Method:        repositorymerge.Method(options.method),
-		Message:       options.message,
+		Candidate:       bindings.refs[candidatePort],
+		CandidateRoot:   candidatePath,
+		CandidateInput:  candidatePort,
+		Target:          bindings.refs[targetPort],
+		TargetInput:     targetPort,
+		TargetRoot:      targetPath,
+		Inputs:          bindings.refs,
+		OpenInput:       bindings.Open,
+		Method:          repositorymerge.Method(options.method),
+		Message:         options.message,
+		ReportAuthority: reportAuthority(mode, outputPort),
 	})
 	if err != nil {
 		return "", err
 	}
 	defer merged.Close()
 
-	fmt.Fprintf(stdout, "%s: %s\n", merged.Report.Status, merged.Report.Summary)
-	for _, check := range merged.Report.Checks {
+	fmt.Fprintf(stdout, "%s: %s\n", merged.Conclusion(), merged.Report.Body.Summary)
+	for _, check := range merged.Report.Body.Checks {
 		fmt.Fprintf(stdout, "  %s: %s %s\n", check.Status, check.Name, check.Detail)
 	}
 
@@ -184,14 +194,52 @@ func executeMerge(ctx context.Context, mode string, options mergeOptions, stdout
 			return "", err
 		}
 	case "merge-prepare":
-		if merged.Report.Status != "ok" {
-			return merged.Report.Status, nil
+		if merged.Conclusion() != mergeConclusionPassed {
+			return merged.Conclusion(), nil
 		}
 		if err := repositorymerge.WriteMergedChange(ctx, outputPath, merged); err != nil {
 			return "", err
 		}
 	}
-	return merged.Report.Status, nil
+	return merged.Conclusion(), nil
+}
+
+// reportAuthority resolves the contract identity the merge report must advertise.
+//
+// In merge-preflight the output mount IS the validation/v1 port, so the platform
+// published its declared identity as AGENT_OUTPUT_<PORT>_RECORD_TYPE and
+// _RECORD_SCHEMA (atc/exec/record_authority_env.go) and those exact values are
+// copied through. merge-prepare writes no report — its output port is the merged
+// change, whose identity is a different type entirely — so there is nothing to
+// copy and the in-memory report, which that mode only reads a conclusion from,
+// carries this build's own identity. The same fallback covers a hand-run CLI.
+func reportAuthority(mode, outputPort string) repositorymerge.RecordAuthority {
+	if mode == "merge-preflight" {
+		prefix := "AGENT_OUTPUT_" + authorityEnvPort(outputPort)
+		declaredType := strings.TrimSpace(os.Getenv(prefix + "_RECORD_TYPE"))
+		declaredSchema := strings.TrimSpace(os.Getenv(prefix + "_RECORD_SCHEMA"))
+		if declaredType != "" && declaredSchema != "" {
+			return repositorymerge.RecordAuthority{
+				Type:   snapshot.TypeRef(declaredType),
+				Schema: snapshot.Digest(declaredSchema),
+			}
+		}
+	}
+	schema, _ := contracts.SchemaDigestFor(validationType)
+	return repositorymerge.RecordAuthority{Type: validationType, Schema: schema}
+}
+
+// authorityEnvPort mangles a port name into the environment-variable spelling the
+// platform uses. It must stay identical to authorityEnvPort in
+// atc/exec/record_authority_env.go, which is what produced the rows being read;
+// duplicating eight lines keeps this pod-side binary from importing the web.
+func authorityEnvPort(port string) string {
+	return strings.Map(func(value rune) rune {
+		if unicode.IsLetter(value) || unicode.IsDigit(value) {
+			return unicode.ToUpper(value)
+		}
+		return '_'
+	}, port)
 }
 
 // parseMount resolves one task mount. The bare form names an artifact whose

@@ -49,9 +49,7 @@ type Message
     | ToggleAgentReviewFindingBody String
     | ToggleAgentReviewObservations Bool
     | AgentReviewVerdictClicked
-        { reviewSnapshotId : Maybe String
-        , repo : String
-        , commitSha : String
+        { reviewSnapshotId : String
         , findingId : String
         , verdict : String
         , reviewer : String

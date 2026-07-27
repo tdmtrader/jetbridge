@@ -34,7 +34,7 @@ const v713LastMigration = 1666754000
 const v801LastMigration = 1765921815
 
 // JetBridge HEAD (last migration)
-const jetbridgeHeadMigration = 1773106131
+const jetbridgeHeadMigration = 1773106135
 
 var _ = Describe("Legacy Database Upgrade", func() {
 	var (
@@ -709,21 +709,68 @@ func verifyJetBridgeSchemaChanges(db *sql.DB) {
 	Expect(err).NotTo(HaveOccurred())
 	Expect(repositoryProjectionStatusCheck).To(ContainSubstring("65536"))
 
-	// review/v1 values project through canonical snapshot and production links;
-	// legacy build reviews remain nullable/unlinked.
-	for table, columns := range map[string][]string{
-		"agent_reviews":  {"snapshot_id", "workflow_run_id", "production_id"},
-		"agent_feedback": {"review_snapshot_id", "review_team_id"},
+	// A review IS its sealed review/v1 snapshot: snapshot_id is mandatory at
+	// HEAD, and the v1 rows that could not carry one are gone. The occurrence
+	// links stay nullable — a review shared to a team that never produced it
+	// resolves no production, and an upload occurrence has no workflow run.
+	var reviewSnapshotNullable string
+	err = db.QueryRow(`
+		SELECT is_nullable FROM information_schema.columns
+		WHERE table_name = 'agent_reviews' AND column_name = 'snapshot_id'
+	`).Scan(&reviewSnapshotNullable)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(reviewSnapshotNullable).To(Equal("NO"), "a review with no snapshot is not a review")
+
+	for _, column := range []string{"workflow_run_id", "production_id"} {
+		var nullable string
+		err := db.QueryRow(`
+			SELECT is_nullable FROM information_schema.columns
+			WHERE table_name = 'agent_reviews' AND column_name = $1
+		`, column).Scan(&nullable)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(nullable).To(Equal("YES"), "agent_reviews.%s must stay optional", column)
+	}
+
+	// Feedback is a verdict on one finding of one sealed review snapshot, and
+	// that snapshot (scoped to the team that can see it) is its only identity.
+	// The legacy repo/commit key became unwritable the moment agent_reviews lost
+	// those columns, so both halves of the pair are mandatory at HEAD.
+	for _, column := range []string{"review_snapshot_id", "review_team_id"} {
+		var nullable string
+		err := db.QueryRow(`
+			SELECT is_nullable FROM information_schema.columns
+			WHERE table_name = 'agent_feedback' AND column_name = $1
+		`, column).Scan(&nullable)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(nullable).To(Equal("NO"), "agent_feedback.%s is the only feedback identity", column)
+	}
+	for _, column := range []string{"repo", "commit_sha", "ticket_id"} {
+		var exists bool
+		err := db.QueryRow(`
+			SELECT EXISTS (
+				SELECT 1 FROM information_schema.columns
+				WHERE table_name = 'agent_feedback' AND column_name = $1
+			)
+		`, column).Scan(&exists)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(exists).To(BeFalse(), "agent_feedback.%s has no writer and must be gone", column)
+	}
+
+	// The v1 review envelope has no writer and no reader at HEAD.
+	for _, column := range []string{
+		"build_id", "repo", "commit_sha", "branch", "score", "max_score", "pass",
+		"proven_count", "observation_count", "agent_model", "duration_seconds",
+		"ticket_id", "pipeline_run_id",
 	} {
-		for _, column := range columns {
-			var nullable string
-			err := db.QueryRow(`
-				SELECT is_nullable FROM information_schema.columns
-				WHERE table_name = $1 AND column_name = $2
-			`, table, column).Scan(&nullable)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(nullable).To(Equal("YES"), "%s.%s must preserve legacy rows", table, column)
-		}
+		var exists bool
+		err := db.QueryRow(`
+			SELECT EXISTS (
+				SELECT 1 FROM information_schema.columns
+				WHERE table_name = 'agent_reviews' AND column_name = $1
+			)
+		`, column).Scan(&exists)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(exists).To(BeFalse(), "agent_reviews.%s has no writer and must be gone", column)
 	}
 
 	// Mutable ticket state is revisioned so adapters can capture one immutable
@@ -741,6 +788,29 @@ func verifyJetBridgeSchemaChanges(db *sql.DB) {
 	err = db.QueryRow(`SELECT to_regclass('agent_ticket_comments') IS NOT NULL`).Scan(&ticketCommentsExists)
 	Expect(err).NotTo(HaveOccurred())
 	Expect(ticketCommentsExists).To(BeFalse())
+
+	// The ticket is a pure queue shell at HEAD: the agent-authored spec/task
+	// content tables are gone with their (deleted) write routes, and so are
+	// the two columns that only the retired disposition states fed —
+	// error_detail (written only on 'errored') and budget_usd (per-ticket
+	// budgets). Run outcome and spend live on the workflow run.
+	for _, table := range []string{"agent_ticket_specs", "agent_ticket_tasks"} {
+		var exists bool
+		err = db.QueryRow(`SELECT to_regclass($1) IS NOT NULL`, table).Scan(&exists)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(exists).To(BeFalse(), "%s must be gone", table)
+	}
+	for _, column := range []string{"error_detail", "budget_usd"} {
+		var exists bool
+		err = db.QueryRow(`
+			SELECT EXISTS (
+				SELECT 1 FROM information_schema.columns
+				WHERE table_name = 'agent_tickets' AND column_name = $1
+			)
+		`, column).Scan(&exists)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(exists).To(BeFalse(), "agent_tickets.%s must be gone", column)
+	}
 
 	// Ticket dispatch is an adapter over durable generic workflow runs. All
 	// links stay nullable so legacy v1/v2 attempts round-trip unchanged.

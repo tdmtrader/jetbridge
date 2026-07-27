@@ -18,19 +18,17 @@ import (
 
 const maxReviewDocumentBytes int64 = 1 << 20
 
-// ReviewInput is immutable snapshot identity plus the selected production
-// occurrence used only for legacy/build presentation linkage. Snapshot bytes,
-// not these denormalized fields, remain the review's canonical truth.
+// ReviewInput is immutable snapshot identity plus the production occurrence
+// that authorizes and dates the projection. Snapshot bytes, not these
+// denormalized fields, remain the review's canonical truth.
 type ReviewInput struct {
 	Snapshot      snapshot.Snapshot
 	ProductionID  snapshot.DatabaseID
 	WorkflowRunID *snapshot.WorkflowRunID
-	BuildID       *int
 	BuildName     string
 	TeamName      string
 	PipelineName  string
 	JobName       string
-	PipelineRunID *int
 	SubmittedBy   string
 }
 
@@ -120,47 +118,30 @@ func (projector *ReviewProjector) Project(ctx context.Context, ref snapshot.Snap
 	if err != nil {
 		return fmt.Errorf("%w: invalid review/v1 record: %v", ErrCorruptSnapshot, err)
 	}
-	score, pass := reviewCompatibilityScore(sealed.Body.Conclusion)
-	proven, observations := reviewFindingCounts(sealed.Body.Findings)
 
-	snapshotID := manifest.ID
 	productionID := input.ProductionID
-	buildID := 0
-	if input.BuildID != nil {
-		buildID = *input.BuildID
-	}
 	record := &reviews.StoredReview{
-		BuildID: buildID, BuildName: input.BuildName, TeamName: input.TeamName,
+		BuildName: input.BuildName, TeamName: input.TeamName,
 		PipelineName: input.PipelineName, JobName: input.JobName,
 
-		// Repo, CommitSha and Branch stay empty on purpose. The legacy
-		// submission payload carried metadata.repo/commit/branch; review/v1
-		// carries subjects, which name what was reviewed by snapshot type and
-		// digest. A subject's type is not a clone URL, its content digest is
-		// not a commit SHA, and its entity ID ("primary", "change") is not a
-		// branch. Writing them into those columns produced rows the reviews
-		// page rendered as `primary @ sha256: · N issues`, and projected rows
-		// are written once at seal time, so the mislabel would have persisted.
-		// Neither the record body nor the production occurrence
-		// (agent_snapshot_productions, joined in FindReviewInput) carries
-		// repository coordinates, so there is nothing faithful to source here.
-		Repo: "", CommitSha: "", Branch: "",
+		// The record's judgment, verbatim. review/v1 states a conclusion; it
+		// does not state a score, and projecting one onto a 0..1 pass scale
+		// invented a second, weaker description of the same verdict — one the
+		// build page then rendered as a green/red badge that could disagree
+		// with the findings underneath it.
+		Conclusion:     sealed.Body.Conclusion,
+		Summary:        sealed.Body.Summary,
+		SeverityCounts: reviewSeverityCounts(sealed.Body.Findings),
 
-		// Score is the conclusion projected onto the legacy 0..1 pass scale, so
-		// MaxScore is genuinely 1 rather than a leftover of payload.score.max.
-		Score: score, MaxScore: 1, Pass: pass,
-
-		ProvenCount: proven, ObservationCount: observations,
-		Summary: sealed.Body.Summary,
-
-		// AgentModel and DurationSeconds died with the legacy payload's
-		// metadata block. review/v1 records a judgment, not who produced it or
-		// how long it took, and the production row does not carry them either.
-		AgentModel: "", DurationSeconds: 0,
-
-		Review:        append(json.RawMessage(nil), recordJSON...),
-		PipelineRunID: input.PipelineRunID, SubmittedBy: input.SubmittedBy,
-		SnapshotID: &snapshotID, WorkflowRunID: input.WorkflowRunID, ProductionID: &productionID,
+		// Repository coordinates are absent on purpose. review/v1 carries
+		// subjects, which name what was reviewed by snapshot type and digest.
+		// A subject's type is not a clone URL, its content digest is not a
+		// commit SHA, and its entity ID ("primary", "change") is not a branch;
+		// neither the record body nor the production occurrence carries
+		// repository coordinates, so there is nothing faithful to write.
+		Review:      append(json.RawMessage(nil), recordJSON...),
+		SubmittedBy: input.SubmittedBy,
+		SnapshotID:  manifest.ID, WorkflowRunID: input.WorkflowRunID, ProductionID: &productionID,
 	}
 	if err := projector.store.UpsertReviewProjection(ctx, record); err != nil {
 		return fmt.Errorf("upsert review projection: %w", err)
@@ -168,27 +149,16 @@ func (projector *ReviewProjector) Project(ctx context.Context, ref snapshot.Snap
 	return nil
 }
 
-func reviewCompatibilityScore(conclusion string) (float64, bool) {
-	switch conclusion {
-	case "accept":
-		return 1, true
-	case "inconclusive":
-		return 0.5, false
-	default:
-		return 0, false
-	}
-}
-
-func reviewFindingCounts(findings []contracts.Finding) (int, int) {
-	var substantive, observations int
+// reviewSeverityCounts tallies findings by review/v1 severity. A severity with
+// no findings is absent rather than zero: the map says what the record
+// contains, and an explicit 0 would read as a claim the reviewer looked and
+// found none.
+func reviewSeverityCounts(findings []contracts.Finding) map[string]int {
+	counts := map[string]int{}
 	for _, finding := range findings {
-		if finding.Severity == "observation" {
-			observations++
-		} else {
-			substantive++
-		}
+		counts[finding.Severity]++
 	}
-	return substantive, observations
+	return counts
 }
 
 func readCanonicalReview(ctx context.Context, reader io.Reader, manifest snapshot.Snapshot) ([]byte, error) {

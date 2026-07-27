@@ -3,7 +3,6 @@ package db
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -34,13 +33,6 @@ func ticketNullInt(p *int) any {
 	return *p
 }
 
-func ticketNullFloat(p *float64) any {
-	if p == nil {
-		return nil
-	}
-	return *p
-}
-
 func ticketNullSnapshotID(p *snapshot.SnapshotID) any {
 	if p == nil {
 		return nil
@@ -65,12 +57,12 @@ func (f *agentTicketsFactory) Create(t *tickets.Ticket) (int, error) {
 	err := psql.Insert("agent_tickets").
 		Columns(
 			"title", "body", "origin", "repo", "target_branch",
-			"workflow_name", "workflow_version", "budget_usd",
+			"workflow_name", "workflow_version",
 			"user_id", "user_name", "created_by", "external_ref", "repository_snapshot_id",
 		).
 		Values(
 			t.Title, t.Body, origin, t.Repo, targetBranch,
-			t.WorkflowName, ticketNullInt(t.WorkflowVersion), ticketNullFloat(t.BudgetUSD),
+			t.WorkflowName, ticketNullInt(t.WorkflowVersion),
 			ticketNullInt(t.UserID), t.UserName, t.CreatedBy, t.ExternalRef, ticketNullSnapshotID(t.RepositorySnapshotID),
 		).
 		Suffix("RETURNING id").
@@ -82,9 +74,9 @@ func (f *agentTicketsFactory) Create(t *tickets.Ticket) (int, error) {
 
 const ticketColumns = `t.id, t.revision, t.title, t.body, t.state, t.origin, t.repo, t.target_branch,
 	t.workflow_name, t.workflow_version, t.workflow_definition_id,
-	t.budget_usd, t.user_id, t.user_name, t.created_by, t.external_ref,
+	t.user_id, t.user_name, t.created_by, t.external_ref,
 	t.pipeline_run_id, t.workflow_run_id, t.work_item_snapshot_id, t.repository_snapshot_id,
-	t.dispatch_reservation_key, t.branch, t.attempt_count, t.error_detail,
+	t.dispatch_reservation_key, t.branch, t.attempt_count,
 	EXTRACT(EPOCH FROM t.created_at)::bigint,
 	EXTRACT(EPOCH FROM t.updated_at)::bigint,
 	COALESCE(EXTRACT(EPOCH FROM t.completed_at)::bigint, 0)`
@@ -96,13 +88,12 @@ type ticketScanner interface {
 func scanTicket(row ticketScanner) (*tickets.Ticket, error) {
 	var t tickets.Ticket
 	var wfVersion, wfDefID, userID, runID, workflowRunID, workItemSnapshotID, repositorySnapshotID sql.NullInt64
-	var budget sql.NullFloat64
 	err := row.Scan(
 		&t.ID, &t.Revision, &t.Title, &t.Body, &t.State, &t.Origin, &t.Repo, &t.TargetBranch,
 		&t.WorkflowName, &wfVersion, &wfDefID,
-		&budget, &userID, &t.UserName, &t.CreatedBy, &t.ExternalRef,
+		&userID, &t.UserName, &t.CreatedBy, &t.ExternalRef,
 		&runID, &workflowRunID, &workItemSnapshotID, &repositorySnapshotID,
-		&t.DispatchReservationKey, &t.Branch, &t.AttemptCount, &t.ErrorDetail,
+		&t.DispatchReservationKey, &t.Branch, &t.AttemptCount,
 		&t.CreatedAt, &t.UpdatedAt, &t.CompletedAt,
 	)
 	if err != nil {
@@ -135,10 +126,6 @@ func scanTicket(row ticketScanner) (*tickets.Ticket, error) {
 	if repositorySnapshotID.Valid {
 		v := snapshot.SnapshotID(repositorySnapshotID.Int64)
 		t.RepositorySnapshotID = &v
-	}
-	if budget.Valid {
-		v := budget.Float64
-		t.BudgetUSD = &v
 	}
 	return &t, nil
 }
@@ -204,9 +191,6 @@ func (f *agentTicketsFactory) Update(id int, upd tickets.Update) error {
 	}
 	if upd.Body != nil {
 		q = q.Set("body", *upd.Body)
-	}
-	if upd.BudgetUSD != nil {
-		q = q.Set("budget_usd", *upd.BudgetUSD)
 	}
 	if upd.WorkflowName != nil {
 		protected = true
@@ -482,12 +466,8 @@ func (f *agentTicketsFactory) Transition(id int, from, to tickets.State, meta ti
 		if meta.Branch != "" {
 			q = q.Set("branch", meta.Branch)
 		}
-	case tickets.StateMerged, tickets.StateMergedWithFixes, tickets.StateSentBack,
-		tickets.StateAbandoned, tickets.StateConcluded, tickets.StateFailed, tickets.StateErrored:
+	case tickets.StateClosed:
 		q = q.Set("completed_at", sq.Expr("now()"))
-		if to == tickets.StateErrored {
-			q = q.Set("error_detail", meta.ErrorDetail)
-		}
 	}
 
 	res, err := q.RunWith(f.conn).Exec()
@@ -512,103 +492,11 @@ func (f *agentTicketsFactory) Transition(id int, from, to tickets.State, meta ti
 	return nil
 }
 
-func emptyIfNilStrings(s []string) []string {
-	if s == nil {
-		return []string{}
-	}
-	return s
-}
-
-func emptyIfNilLinks(l []tickets.Link) []tickets.Link {
-	if l == nil {
-		return []tickets.Link{}
-	}
-	return l
-}
-
-// lockTicket takes a FOR UPDATE row lock on the ticket inside tx so
-// concurrent spec/plan submissions serialize their version allocation.
-func lockTicket(tx Tx, ticketID int) error {
-	var one int
-	err := tx.QueryRow(`SELECT 1 FROM agent_tickets WHERE id = $1 FOR UPDATE`, ticketID).Scan(&one)
-	if errors.Is(err, sql.ErrNoRows) {
-		return tickets.ErrTicketNotFound
-	}
-	return err
-}
-
-func bumpTicketRevision(tx Tx, ticketID int) error {
-	result, err := tx.Exec(`
-		UPDATE agent_tickets
-		SET revision = revision + 1, updated_at = now()
-		WHERE id = $1
-	`, ticketID)
-	if err != nil {
-		return err
-	}
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if rows != 1 {
-		return tickets.ErrTicketNotFound
-	}
-	return nil
-}
-
-func (f *agentTicketsFactory) LatestSpec(ticketID int) (*tickets.Spec, bool, error) {
-	var s tickets.Spec
-	var criteria, links []byte
-	err := f.conn.QueryRow(
-		`SELECT id, ticket_id, version, title, body, acceptance_criteria, links, submitted_by,
-			EXTRACT(EPOCH FROM created_at)::bigint
-		 FROM agent_ticket_specs
-		 WHERE ticket_id = $1
-		 ORDER BY version DESC
-		 LIMIT 1`, ticketID).
-		Scan(&s.ID, &s.TicketID, &s.Version, &s.Title, &s.Body, &criteria, &links,
-			&s.SubmittedBy, &s.CreatedAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, false, nil
-	}
-	if err != nil {
-		return nil, false, err
-	}
-	if err := json.Unmarshal(criteria, &s.AcceptanceCriteria); err != nil {
-		return nil, false, err
-	}
-	if err := json.Unmarshal(links, &s.Links); err != nil {
-		return nil, false, err
-	}
-	return &s, true, nil
-}
-
-func (f *agentTicketsFactory) ActivePlan(ticketID int) ([]tickets.Task, error) {
-	rows, err := f.conn.Query(
-		`SELECT id, ticket_id, plan_version, ordering, title, detail, status,
-			EXTRACT(EPOCH FROM updated_at)::bigint
-		 FROM agent_ticket_tasks
-		 WHERE ticket_id = $1
-		   AND plan_version = (SELECT COALESCE(MAX(plan_version), 0)
-		                       FROM agent_ticket_tasks WHERE ticket_id = $1)
-		 ORDER BY ordering ASC`, ticketID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	out := []tickets.Task{}
-	for rows.Next() {
-		var t tickets.Task
-		if err := rows.Scan(&t.ID, &t.TicketID, &t.PlanVersion, &t.Ordering,
-			&t.Title, &t.Detail, &t.Status, &t.UpdatedAt); err != nil {
-			return nil, err
-		}
-		out = append(out, t)
-	}
-	return out, rows.Err()
-}
-
+// captureTicketRevisionSQL reads exactly what work-item/v1 freezes: the
+// authored content at one revision. The ticket's lifecycle state and the
+// workflow selected to consume it are deliberately NOT read — they belong to
+// the durable run, and capturing them would mint a second copy that is stale
+// the moment the ticket moves.
 const captureTicketRevisionSQL = `
 	SELECT t.id,
 	       t.revision,
@@ -616,51 +504,8 @@ const captureTicketRevisionSQL = `
 	       t.origin,
 	       t.external_ref,
 	       t.title,
-	       t.body,
-	       t.state,
-	       t.workflow_name,
-	       t.workflow_version,
-	       t.workflow_definition_id,
-	       COALESCE(latest_spec.payload, 'null'::jsonb),
-	       COALESCE(active_plan.payload, 'null'::jsonb)
+	       t.body
 	FROM agent_tickets t
-	LEFT JOIN LATERAL (
-		SELECT jsonb_build_object(
-			'version', s.version,
-			'title', s.title,
-			'body', s.body,
-			'acceptance_criteria', s.acceptance_criteria,
-			'links', s.links,
-			'submitted_by', s.submitted_by,
-			'created_at', EXTRACT(EPOCH FROM s.created_at)::bigint
-		) AS payload
-		FROM agent_ticket_specs s
-		WHERE s.ticket_id = t.id
-		ORDER BY s.version DESC
-		LIMIT 1
-	) latest_spec ON TRUE
-	LEFT JOIN LATERAL (
-		SELECT jsonb_build_object(
-			'version', task.plan_version,
-			'tasks', jsonb_agg(
-				jsonb_build_object(
-					'ordering', task.ordering,
-					'title', task.title,
-					'detail', task.detail,
-					'status', task.status,
-					'updated_at', EXTRACT(EPOCH FROM task.updated_at)::bigint
-				) ORDER BY task.ordering
-			)
-		) AS payload
-		FROM agent_ticket_tasks task
-		WHERE task.ticket_id = t.id
-		  AND task.plan_version = (
-			SELECT MAX(candidate.plan_version)
-			FROM agent_ticket_tasks candidate
-			WHERE candidate.ticket_id = t.id
-		  )
-		GROUP BY task.plan_version
-	) active_plan ON TRUE
 	WHERE t.id = $1
 `
 
@@ -681,10 +526,6 @@ func (f *agentTicketsFactory) CaptureRevision(ctx context.Context, ticketID int)
 		revision    workitem.Revision
 		origin      string
 		externalRef string
-		workflowVer sql.NullInt64
-		workflowDef sql.NullInt64
-		specJSON    []byte
-		planJSON    []byte
 	)
 	err = tx.QueryRowContext(ctx, captureTicketRevisionSQL, ticketID).Scan(
 		&revision.TicketID,
@@ -694,12 +535,6 @@ func (f *agentTicketsFactory) CaptureRevision(ctx context.Context, ticketID int)
 		&externalRef,
 		&revision.Title,
 		&revision.Body,
-		&revision.State,
-		&revision.Workflow.Name,
-		&workflowVer,
-		&workflowDef,
-		&specJSON,
-		&planJSON,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return workitem.CapturedRevision{}, false, nil
@@ -716,20 +551,6 @@ func (f *agentTicketsFactory) CaptureRevision(ctx context.Context, ticketID int)
 		revision.ExternalID = externalRef
 	} else {
 		revision.ExternalID = strconv.Itoa(revision.TicketID)
-	}
-	if workflowVer.Valid {
-		value := int(workflowVer.Int64)
-		revision.Workflow.Version = &value
-	}
-	if workflowDef.Valid {
-		value := int(workflowDef.Int64)
-		revision.Workflow.DefinitionID = &value
-	}
-	if err := json.Unmarshal(specJSON, &revision.Spec); err != nil {
-		return workitem.CapturedRevision{}, false, err
-	}
-	if err := json.Unmarshal(planJSON, &revision.Plan); err != nil {
-		return workitem.CapturedRevision{}, false, err
 	}
 	captured, err := workitem.MarshalRevision(revision)
 	if err != nil {

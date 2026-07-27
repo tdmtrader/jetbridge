@@ -23,11 +23,7 @@ type Status
     | Running (Maybe String)
     | AwaitingHuman
     | NeedsReview
-    | Merged
-    | MergedWithFixes
-    | SentBack
-    | Concluded
-    | Abandoned
+    | Closed
     | Failed
     | Errored
     | Aborted
@@ -42,9 +38,7 @@ type Tone
     | Active
     | Attention
     | Good
-    | GoodMuted
     | Warn
-    | Calm
     | Bad
     | Error
 
@@ -70,20 +64,8 @@ label status =
         NeedsReview ->
             "Needs your review"
 
-        Merged ->
-            "Merged"
-
-        MergedWithFixes ->
-            "Merged with fixes"
-
-        SentBack ->
-            "Sent back"
-
-        Concluded ->
-            "Concluded"
-
-        Abandoned ->
-            "Abandoned"
+        Closed ->
+            "Closed"
 
         Failed ->
             "Failed"
@@ -105,8 +87,8 @@ label status =
 
 
 {-| A one-line, plain-English gloss for each status, surfaced as the badge's
-hover `title` so the terminal states (Merged / Concluded / Abandoned, …) carry
-their meaning in the UI instead of only in docs.
+hover `title` so the terminal state carries its meaning in the UI instead of
+only in docs.
 -}
 description : Status -> String
 description status =
@@ -124,22 +106,10 @@ description status =
             "Paused — waiting on your input"
 
         NeedsReview ->
-            "Work is ready for your review"
+            "The run finished — it is waiting on your decision"
 
-        Merged ->
-            "Branch merged to the target branch"
-
-        MergedWithFixes ->
-            "Merged after manual fixes on top"
-
-        SentBack ->
-            "Returned to the agent for changes"
-
-        Concluded ->
-            "Closed without merging (e.g. analysis-only)"
-
-        Abandoned ->
-            "Dropped without delivery"
+        Closed ->
+            "You are done with this work item — how the run turned out is on the run"
 
         Failed ->
             "The run failed"
@@ -178,19 +148,7 @@ tone status =
         NeedsReview ->
             Attention
 
-        Merged ->
-            Good
-
-        MergedWithFixes ->
-            GoodMuted
-
-        SentBack ->
-            Warn
-
-        Concluded ->
-            Calm
-
-        Abandoned ->
+        Closed ->
             Neutral
 
         Failed ->
@@ -230,20 +188,8 @@ fromApiToken token =
         "needs_review" ->
             Just NeedsReview
 
-        "merged" ->
-            Just Merged
-
-        "merged_with_fixes" ->
-            Just MergedWithFixes
-
-        "sent_back" ->
-            Just SentBack
-
-        "concluded" ->
-            Just Concluded
-
-        "abandoned" ->
-            Just Abandoned
+        "closed" ->
+            Just Closed
 
         "failed" ->
             Just Failed
@@ -421,14 +367,8 @@ toneClass t =
         Good ->
             "agent-badge--good"
 
-        GoodMuted ->
-            "agent-badge--good-muted"
-
         Warn ->
             "agent-badge--warn"
-
-        Calm ->
-            "agent-badge--calm"
 
         Bad ->
             "agent-badge--bad"
@@ -459,14 +399,8 @@ toneColor t =
         Good ->
             "#11c560"
 
-        GoodMuted ->
-            "#419867"
-
         Warn ->
             "#ed4b35"
-
-        Calm ->
-            "#2d76cc"
 
         Bad ->
             "#ed4b35"

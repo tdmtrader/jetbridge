@@ -10,17 +10,18 @@ module AgentTickets.AgentTicket exposing
     , view
     )
 
-{-| The agent-ticket DETAIL page (a PR-style view for one ticket).
+{-| The agent-ticket DETAIL page (a queue-slot view for one ticket).
 
 The ticket is a `work-item/v1` projection shell, never an execution identity:
-it renders the ticket header, an editable title/body/budget form, the lifecycle
-action buttons (dispatch / transition), the spec & plan tabs, and the task list.
-All execution evidence — the agent review, the repository-change diff, run cost
-and outcome — belongs to the ticket's durable workflow run, and is reached only
-by links out to that run and its promoted output snapshots (see
-`durableEvidenceLine`); it is never embedded or recomputed here. The server
-state machine stays authoritative: buttons only pick which transition to
-_offer_, and a rejected transition (409) surfaces inline and triggers a refetch.
+it renders the ticket header, an editable title/body form, the QUEUE actions
+(dispatch / queue / close), and the ticket's markdown body — that is the whole
+of its own content. All execution evidence — the agent review, the
+repository-change diff, run cost, and above all the run's OUTCOME and
+DISPOSITION — belongs to the ticket's durable workflow run and is read from the
+run data this page already fetches (see `durableEvidenceLine` and
+`runOutcomeChip`); it is never mirrored onto the ticket. The server state
+machine stays authoritative: buttons only pick which transition to _offer_, and
+a rejected transition (409) surfaces inline and triggers a refetch.
 
 -}
 
@@ -50,24 +51,17 @@ import Views.Styles
 import Views.TopBar as TopBar
 
 
-type Tab
-    = SpecTab
-    | PlanTab
-
-
 type alias Model =
     Login.Model
         { ticketId : Int
         , detail : Maybe AgentTicket.Detail
         , durableRun : Maybe WorkflowRun.Detail
-        , activeTab : Tab
         , loaded : Bool
         , loadError : Bool
         , actionError : Maybe String
         , editing : Bool
         , editTitle : String
         , editBody : String
-        , editBudget : String
         , dispatchConfirm : Bool
         , pendingTransition : Maybe String
         }
@@ -78,14 +72,12 @@ init { id } =
     ( { ticketId = id
       , detail = Nothing
       , durableRun = Nothing
-      , activeTab = SpecTab
       , loaded = False
       , loadError = False
       , actionError = Nothing
       , editing = False
       , editTitle = ""
       , editBody = ""
-      , editBudget = ""
       , dispatchConfirm = False
       , pendingTransition = Nothing
       , isUserMenuExpanded = False
@@ -300,9 +292,6 @@ handleDelivery =
 update : Message -> ET Model
 update msg ( model, effects ) =
     case msg of
-        AgentTicketTabClicked tab ->
-            ( { model | activeTab = tabFromString tab }, effects )
-
         ClickAgentTicketEdit ->
             -- Entering edit seeds the buffers from the last-fetched ticket,
             -- once. The fetch callback never writes them (see
@@ -316,10 +305,6 @@ update msg ( model, effects ) =
                         , actionError = Nothing
                         , editTitle = ticket.title
                         , editBody = ticket.body
-                        , editBudget =
-                            ticket.budgetUsd
-                                |> Maybe.map String.fromFloat
-                                |> Maybe.withDefault ""
                       }
                     , effects
                     )
@@ -335,9 +320,6 @@ update msg ( model, effects ) =
         AgentTicketBodyChanged v ->
             ( { model | editBody = v }, effects )
 
-        AgentTicketBudgetChanged v ->
-            ( { model | editBudget = v }, effects )
-
         ClickAgentTicketCancel ->
             ( { model | editing = False }, effects )
 
@@ -348,14 +330,13 @@ update msg ( model, effects ) =
                         { id = model.ticketId
                         , title = model.editTitle
                         , body = model.editBody
-                        , budgetUsd = parseBudget model.editBudget
                         }
                    ]
             )
 
         ClickAgentTicketTransition to ->
-            -- Two-step confirm: first click arms the disposition (naming the
-            -- action), a second click commits it. Mirrors the dispatch confirm.
+            -- Two-step confirm: first click arms the action (naming it), a
+            -- second click commits it. Mirrors the dispatch confirm.
             ( { model | pendingTransition = Just to, actionError = Nothing }, effects )
 
         ConfirmAgentTicketTransition ->
@@ -443,29 +424,26 @@ content session model =
                         detail.ticket
 
                     -- The ticket page is a projection shell: it renders ticket
-                    -- content and the human queue/dispatch/disposition controls,
-                    -- and links out to the durable workflow run for all execution
-                    -- evidence (review, repository-change, cost). It never embeds
-                    -- that evidence itself.
+                    -- content and the human queue/dispatch/close controls, and
+                    -- reads the durable workflow run for every piece of execution
+                    -- evidence (outcome, review, repository-change, cost). It
+                    -- never mirrors that evidence onto the ticket itself.
                     top =
                         [ header model ticket
                         , provenanceLine ticket
+                        , runOutcomeLine model ticket
                         , durableEvidenceLine model ticket
                         , provenanceTimestamps session.timeZone ticket
-                        , errorNotice ticket
                         , actionErrorBanner model
                         ]
 
-                    -- The heavy sub-views render lazily: their arguments are
-                    -- reference-stable across the 5s self-heal refetch (see
-                    -- handleCallback), so a tick that changed nothing skips
-                    -- them entirely.
+                    -- The body renders lazily: its argument is reference-stable
+                    -- across the 5s self-heal refetch (see handleCallback), so a
+                    -- tick that changed nothing skips the tokenization entirely.
                     rest =
                         [ editForm model ticket
                         , Html.div [ id "ticket-hitl-slot" ] []
-                        , tabsBar model
-                        , Html.Lazy.lazy2 tabContent model.activeTab detail
-                        , Html.Lazy.lazy taskList detail.tasks
+                        , ticketBody ticket
                         ]
                 in
                 Html.div []
@@ -541,6 +519,61 @@ provenanceLine ticket =
             , style "margin" "2px 0 8px 0"
             ]
             (repoPart ++ branchPart)
+
+
+{-| The run's OUTCOME, read from the durable run — never from the ticket.
+
+The ticket state answers "where is this in the queue"; it deliberately cannot
+say whether the work merged, was dropped, or failed. That truth is the workflow
+run's, so this line renders the run's own status/execution status straight from
+the run detail the page already fetched, and links to the run for the full
+disposition record. Nothing renders until the run detail is in hand: a chip
+invented from ticket state is exactly the second truth this page is here to
+stop showing.
+-}
+runOutcomeLine : Model -> AgentTicket.Ticket -> Html Message
+runOutcomeLine model ticket =
+    case ( durableKey ticket, model.durableRun ) of
+        ( Just ( workflowName, workflowRunId ), Just detail ) ->
+            if
+                detail.summary.workflowName
+                    == workflowName
+                    && detail.summary.id
+                    == workflowRunId
+            then
+                Html.div
+                    [ id "ticket-run-outcome"
+                    , style "display" "flex"
+                    , style "flex-wrap" "wrap"
+                    , style "align-items" "center"
+                    , style "gap" "8px"
+                    , style "margin" "2px 0 8px"
+                    , style "font-size" "12px"
+                    ]
+                    [ Html.span [ style "color" "#9aa39b" ] [ Html.text "run outcome" ]
+                    , runStatusChip detail.summary.status
+                    , Html.span
+                        [ style "font-family" "monospace", style "color" "#9aa39b" ]
+                        [ Html.text (Maybe.withDefault "not started" detail.summary.executionStatus) ]
+                    ]
+
+            else
+                Html.text ""
+
+        _ ->
+            Html.text ""
+
+
+runStatusChip : String -> Html Message
+runStatusChip status =
+    case AgentBadge.fromApiToken status of
+        Just badge ->
+            AgentBadge.view badge
+
+        Nothing ->
+            Html.span
+                [ style "font-family" "monospace", style "color" "#d0d0d0" ]
+                [ Html.text status ]
 
 
 durableEvidenceLine : Model -> AgentTicket.Ticket -> Html Message
@@ -665,37 +698,6 @@ provenanceTimestamps zone ticket =
             [ Html.text (String.join " · " parts) ]
 
 
-{-| U4: when a run errored the server records the failure text on the ticket
-(`error_detail`), but it was never shown. Surface it prominently, right above
-the Retry action, so the reviewer knows what to fix before re-queueing.
--}
-errorNotice : AgentTicket.Ticket -> Html Message
-errorNotice ticket =
-    if ticket.errorDetail == "" then
-        Html.text ""
-
-    else
-        Html.div
-            [ id "ticket-error-detail"
-            , style "border" "1px solid #7a3a3a"
-            , style "background" "#2a1c1c"
-            , style "color" "#f0a0a0"
-            , style "padding" "10px 12px"
-            , style "margin" "10px 0"
-            ]
-            [ Html.div
-                [ style "font-weight" "bold", style "font-size" "12px", style "margin-bottom" "4px" ]
-                [ Html.text "Run error" ]
-            , Html.div
-                [ style "white-space" "pre-wrap"
-                , style "font-family" "monospace"
-                , style "font-size" "12px"
-                , style "line-height" "1.4"
-                ]
-                [ Html.text ticket.errorDetail ]
-            ]
-
-
 stateBadge : String -> Html Message
 stateBadge state =
     case AgentBadge.fromApiToken state of
@@ -776,49 +778,36 @@ canDispatch state =
     state == "queued"
 
 
-{-| U21: terminal states have no outgoing human transition (see the doc on
-`transitionTargets`), so editing them is meaningless — the Edit affordance and
-the edit form are both suppressed. `sent_back` is deliberately excluded: it is
-re-queueable, and the author is expected to revise before re-queueing.
+{-| `closed` is the one terminal state: it has no outgoing human transition
+(see the doc on `transitionTargets`), so editing it is meaningless — the Edit
+affordance and the edit form are both suppressed.
 -}
 isTerminal : String -> Bool
 isTerminal state =
-    List.member state
-        [ "merged", "merged_with_fixes", "concluded", "abandoned" ]
+    state == "closed"
 
 
 {-| The transitions a human may drive from a given state, as (target, label).
 Mirrors the server's `validTransitions` map (agent/api/tickets/types.go) — only
-legal, human-initiated edges are offered. `running`'s edges (→queued/needs\_review/
-failed/errored) are all system-driven, so it offers nothing. Terminal states
-(merged, merged\_with\_fixes, abandoned, concluded) also offer nothing. The server
-stays authoritative and rejects anything stale with a 409.
+legal, human-initiated edges are offered. `running`'s edges (→queued /
+→needs\_review) are system-driven, so it offers nothing, and `closed` is
+terminal. The server stays authoritative and rejects anything stale with a 409.
+
+There is exactly ONE close action, not a menu of dispositions: whether the work
+was merged, dropped or was analysis-only is the durable run's outcome, read
+back from the run (see `runOutcomeLine`) rather than re-asserted here.
 -}
 transitionTargets : String -> List ( String, String )
 transitionTargets state =
     case state of
         "needs_review" ->
-            [ ( "merged", "Merge" )
-            , ( "merged_with_fixes", "Merge with fixes" )
-            , ( "sent_back", "Send back" )
-            , ( "concluded", "Conclude" )
-            , ( "abandoned", "Abandon" )
-            ]
+            [ ( "queued", "Re-queue" ), ( "closed", "Close" ) ]
 
         "draft" ->
-            [ ( "queued", "Queue" ), ( "abandoned", "Abandon" ) ]
+            [ ( "queued", "Queue" ), ( "closed", "Close" ) ]
 
         "queued" ->
-            [ ( "draft", "Unqueue" ), ( "abandoned", "Abandon" ) ]
-
-        "sent_back" ->
-            [ ( "queued", "Re-queue" ) ]
-
-        "failed" ->
-            [ ( "queued", "Retry" ), ( "abandoned", "Abandon" ) ]
-
-        "errored" ->
-            [ ( "queued", "Retry" ), ( "abandoned", "Abandon" ) ]
+            [ ( "draft", "Unqueue" ), ( "closed", "Close" ) ]
 
         _ ->
             []
@@ -839,10 +828,6 @@ editForm model ticket =
             , formLabel "body"
             , Html.textarea
                 (value model.editBody :: onInput AgentTicketBodyChanged :: style "min-height" "120px" :: inputStyles)
-                []
-            , formLabel "budget (USD)"
-            , Html.input
-                (value model.editBudget :: placeholder "e.g. 5.00" :: onInput AgentTicketBudgetChanged :: inputStyles)
                 []
             , Html.div
                 [ style "display" "flex", style "gap" "8px", style "margin-top" "10px" ]
@@ -870,178 +855,23 @@ inputStyles =
     ]
 
 
-tabsBar : Model -> Html Message
-tabsBar model =
-    Html.div
-        [ attribute "role" "tablist"
-        , style "display" "flex"
-        , style "gap" "0"
-        , style "border-bottom" "1px solid #3d3c3c"
-        , style "margin" "16px 0 0"
-        ]
-        [ tabButton model SpecTab "spec" "Spec"
-        , tabButton model PlanTab "plan" "Plan"
-        ]
+{-| The ticket's own content is its markdown body — nothing else. The spec and
+plan tabs went with the agent-authored spec/task tables, whose only writers (the
+sidecar submit routes) are gone; keeping empty tabs would have advertised a
+surface that can never be filled.
 
-
-tabButton : Model -> Tab -> String -> String -> Html Message
-tabButton model tab token label =
-    let
-        active =
-            model.activeTab == tab
-    in
-    Html.div
-        [ class "agent-ticket-tab"
-        , attribute "role" "tab"
-        , attribute "aria-selected"
-            (if active then
-                "true"
-
-             else
-                "false"
-            )
-        , attribute "tabindex" "0"
-        , style "padding" "6px 14px"
-        , style "cursor" "pointer"
-        , style "border-bottom"
-            (if active then
-                "2px solid #7aa37a"
-
-             else
-                "2px solid transparent"
-            )
-        , style "color"
-            (if active then
-                "#e0e0e0"
-
-             else
-                "#9aa39b"
-            )
-        , onClick (AgentTicketTabClicked token)
-        , onActivationKey (AgentTicketTabClicked token)
-        ]
-        [ Html.text label ]
-
-
-{-| Enter / Space activates a `role="tab"` (or any keyboard-operable) control,
-firing the same message a click would.
--}
-onActivationKey : Message -> Html.Attribute Message
-onActivationKey msg =
-    on "keydown"
-        (Html.Events.keyCode
-            |> Json.Decode.andThen
-                (\code ->
-                    if code == 13 || code == 32 then
-                        Json.Decode.succeed msg
-
-                    else
-                        Json.Decode.fail "not an activation key"
-                )
-        )
-
-
-{-| Takes the active tab rather than the whole model so the caller can wrap it
-in Html.Lazy: both arguments are reference-stable when nothing changed, where
-the model record is rebuilt by every update.
--}
-tabContent : Tab -> AgentTicket.Detail -> Html Message
-tabContent activeTab detail =
-    Html.div [ style "padding" "12px 0" ]
-        [ case activeTab of
-            SpecTab ->
-                specView detail
-
-            PlanTab ->
-                planView detail
-        ]
-
-
-specView : AgentTicket.Detail -> Html Message
-specView detail =
-    case detail.spec of
-        Just spec ->
-            Html.div []
-                [ prose spec.body
-                , if List.isEmpty spec.acceptanceCriteria then
-                    Html.text ""
-
-                  else
-                    Html.div []
-                        [ formLabel "acceptance criteria"
-                        , Html.ul [ style "margin" "4px 0", style "padding-left" "20px" ]
-                            (List.map (\c -> Html.li [ style "color" "#b0b0b0" ] [ Html.text c ]) spec.acceptanceCriteria)
-                        ]
-                ]
-
-        Nothing ->
-            -- U18b: with no formal spec, promote the ticket body as the spec
-            -- content instead of stacking an empty-state notice above it. The
-            -- notice only shows when there is genuinely nothing to read.
-            if String.trim detail.ticket.body == "" then
-                Html.p [ style "color" "#9aa39b" ] [ Html.text "No spec submitted yet." ]
-
-            else
-                prose detail.ticket.body
-
-
-planView : AgentTicket.Detail -> Html Message
-planView detail =
-    if List.isEmpty detail.tasks then
-        Html.p [ style "color" "#9aa39b" ] [ Html.text "No plan yet." ]
-
-    else
-        prose detail.ticket.body
-
-
-{-| Render the ticket/spec body as light prose (paragraphs, inline `code` and
-**bold**) via the shared Views.Prose renderer — no markdown dependency.
 Lazy on the body string, so the full-text tokenization re-runs only when the
 text itself changes, not on every 5s-refetch render.
 -}
-prose : String -> Html Message
-prose =
-    Html.Lazy.lazy Views.Prose.view
+ticketBody : AgentTicket.Ticket -> Html Message
+ticketBody ticket =
+    Html.div [ id "ticket-body", style "padding" "12px 0" ]
+        [ if String.trim ticket.body == "" then
+            Html.p [ style "color" "#9aa39b" ] [ Html.text "No description." ]
 
-
-taskList : List AgentTicket.Task -> Html Message
-taskList tasks =
-    if List.isEmpty tasks then
-        Html.text ""
-
-    else
-        Html.div [ style "margin" "12px 0" ]
-            (formLabel "tasks"
-                :: List.map taskRow (List.sortBy .ordering tasks)
-            )
-
-
-taskRow : AgentTicket.Task -> Html Message
-taskRow task =
-    Html.div
-        [ style "display" "flex", style "align-items" "baseline", style "gap" "10px", style "padding" "4px 0", style "border-bottom" "1px solid #2a2929" ]
-        [ Html.span [ style "font-family" "monospace", style "color" "#7a7a7a", style "min-width" "24px" ]
-            [ Html.text (String.fromInt task.ordering) ]
-        , Html.span [ style "color" (taskStatusColor task.status), style "min-width" "80px", style "font-size" "12px" ]
-            [ Html.text task.status ]
-        , Html.span [ style "flex" "1", style "color" "#d0d0d0" ] [ Html.text task.title ]
+          else
+            Html.Lazy.lazy Views.Prose.view ticket.body
         ]
-
-
-taskStatusColor : String -> String
-taskStatusColor status =
-    case status of
-        "done" ->
-            "#7aa37a"
-
-        "in_progress" ->
-            "#d0c07a"
-
-        "failed" ->
-            "#f0a0a0"
-
-        _ ->
-            "#9aa39b"
 
 
 actionButton : String -> Message -> String -> Html Message
@@ -1083,26 +913,6 @@ durableKey ticket =
 
         Nothing ->
             Nothing
-
-
-tabFromString : String -> Tab
-tabFromString tab =
-    case tab of
-        "plan" ->
-            PlanTab
-
-        _ ->
-            SpecTab
-
-
-parseBudget : String -> Maybe Float
-parseBudget raw =
-    case String.trim raw of
-        "" ->
-            Nothing
-
-        trimmed ->
-            String.toFloat trimmed
 
 
 {-| Format an epoch-seconds timestamp as a compact absolute time in the

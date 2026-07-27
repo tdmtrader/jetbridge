@@ -575,7 +575,9 @@ update msg ( model, effects ) =
             -- A blank findingId can't disambiguate one finding from another, so
             -- a verdict keyed on it would misattribute human triage feedback.
             -- The card renders blank-id findings read-only, but guard here too.
-            if params.findingId == "" then
+            -- A blank reviewSnapshotId names no review, and feedback is keyed
+            -- by exactly that, so it is dropped for the same reason.
+            if params.findingId == "" || params.reviewSnapshotId == "" then
                 ( model, effects )
 
             else
@@ -583,8 +585,6 @@ update msg ( model, effects ) =
                 , effects
                     ++ [ SubmitAgentReviewVerdict
                             { reviewSnapshotId = params.reviewSnapshotId
-                            , repo = params.repo
-                            , commitSha = params.commitSha
                             , findingId = params.findingId
                             , verdict = params.verdict
                             , notes = Dict.get params.findingId model.agentReviewNotes |> Maybe.withDefault ""

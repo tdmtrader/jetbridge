@@ -22,7 +22,7 @@ outputs:
     from: merged-change
     description: The candidate rebased onto target, based on the target tip.
   - name: merge-report
-    type: validation-report/v1
+    type: validation/v1
     from: merge-report
     description: Whether the delivery merge is clean, and which paths conflict.
 plan:
@@ -60,7 +60,7 @@ plan:
       candidate: {type: repository-change/v1}
       target: {type: repository/v1}
     output_types:
-      merge-report: validation-report/v1
+      merge-report: validation/v1
   # Prepare recomputes the same merge and seals it as a repository-change/v1
   # whose base is the target tip. It exits non-zero on conflict, which is why
   # the guaranteed report above is a separate step.

@@ -25,19 +25,20 @@ func NewHandler(store Store, feedbackStore feedback.Store, projectionTeam string
 	}
 }
 
-// Finding matches the shape stored in review JSON for proven issues
-// and observations (superset; observations leave test fields empty).
+// Finding is one review/v1 finding on the wire. It carries what the record
+// carries: identity, severity, whether the finding blocks, its prose, and the
+// first file-anchored evidence locator. The legacy payload's test_file /
+// test_name / test_output have no counterpart in review/v1 and are gone rather
+// than emitted empty.
 type Finding struct {
 	ID          string `json:"id"`
 	Severity    string `json:"severity,omitempty"`
+	Blocking    bool   `json:"blocking"`
 	Title       string `json:"title"`
 	Description string `json:"description,omitempty"`
 	File        string `json:"file"`
 	Line        int    `json:"line"`
 	Category    string `json:"category"`
-	TestFile    string `json:"test_file,omitempty"`
-	TestName    string `json:"test_name,omitempty"`
-	TestOutput  string `json:"test_output,omitempty"`
 }
 
 // FindingFeedback is the recorded verdict for one finding.
@@ -47,8 +48,9 @@ type FindingFeedback struct {
 	Reviewer string `json:"reviewer"`
 }
 
-// BuildReviewResponse is the GET /api/v1/builds/:build_id/agent-reviews
-// element: summary fields plus unpacked findings and feedback.
+// BuildReviewResponse is one review rendered from its sealed record: the
+// projection's summary fields plus the record's findings, split on severity,
+// and the reader's own verdicts.
 type BuildReviewResponse struct {
 	StoredReview
 	ProvenIssues []Finding                  `json:"proven_issues"`
@@ -110,7 +112,7 @@ func (h *Handler) GetBySnapshot(w http.ResponseWriter, r *http.Request) {
 }
 
 // ListByWorkflowRun returns every review snapshot linked to a durable generic
-// run. Repository and commit are presentation fields and do not collapse rows.
+// run, one element per production occurrence in the run.
 func (h *Handler) ListByWorkflowRun(w http.ResponseWriter, r *http.Request) {
 	workflowName, ok := exactRouteValue(r, "workflow_name")
 	if !ok {
@@ -166,16 +168,13 @@ func (h *Handler) detailResponses(recs []StoredReview) []BuildReviewResponse {
 		}
 
 		// Feedback is keyed by the review snapshot — the only review identity
-		// the platform still writes. Rows with no snapshot id predate the
-		// projection and can carry no verdicts.
-		if rec.SnapshotID != nil {
-			if store, ok := h.feedbackStore.(feedback.SnapshotStore); ok {
-				fbs, err := store.GetByReviewSnapshot(*rec.SnapshotID, rec.TeamName)
-				if err == nil {
-					for _, fb := range fbs {
-						resp.Feedback[fb.FindingID] = FindingFeedback{
-							Verdict: fb.Verdict, Notes: fb.Notes, Reviewer: fb.Reviewer,
-						}
+		// the platform writes.
+		if store, ok := h.feedbackStore.(feedback.SnapshotStore); ok {
+			fbs, err := store.GetByReviewSnapshot(rec.SnapshotID, rec.TeamName)
+			if err == nil {
+				for _, fb := range fbs {
+					resp.Feedback[fb.FindingID] = FindingFeedback{
+						Verdict: fb.Verdict, Notes: fb.Notes, Reviewer: fb.Reviewer,
 					}
 				}
 			}
@@ -190,30 +189,15 @@ func (h *Handler) detailResponses(recs []StoredReview) []BuildReviewResponse {
 // unpackFindings turns one stored review's bytes into the API's
 // proven_issues/observations/finding_count triple.
 //
-// SnapshotID selects which shape the bytes are, and it is authoritative rather
-// than a guess: UpsertReviewProjection is the only writer that sets it and it
-// always stores the sealed review/v1 record.json, while the legacy build
-// submission path never sets it and always stores the ReviewPayload the agent
-// posted. Sniffing instead would be worse than useless here — json.Unmarshal
-// into ReviewPayload "succeeds" against a record.json with every legacy field
-// absent, which is exactly how every projected review came to render as an
-// empty, zero-count review.
+// There is one shape to decode. Every stored review holds the sealed review/v1
+// record.json that UpsertReviewProjection wrote, so this read goes through the
+// same READ-TIME gate the projector used: the declared core schema first, then
+// review/v1's semantic rules. A record this rejects is not downgraded to some
+// looser decode — the projected severity counts stay the only claim.
 func unpackFindings(rec StoredReview) ([]Finding, []Finding, int) {
-	if rec.SnapshotID == nil {
-		var payload ReviewPayload
-		if err := json.Unmarshal(rec.Review, &payload); err != nil {
-			return nil, nil, rec.ProvenCount + rec.ObservationCount
-		}
-		proven := decodeFindings(payload.ProvenIssues)
-		observations := decodeFindings(payload.Observations)
-		return proven, observations, len(proven) + len(observations)
-	}
-	// Projected rows hold sealed bytes, so this read goes through the same
-	// READ-TIME gate the projector used. A record this rejects is not silently
-	// downgraded to a legacy decode; the projected counts stay the only claim.
 	record, err := contracts.DecodeSealedReviewRecord(rec.Review)
 	if err != nil {
-		return nil, nil, rec.ProvenCount + rec.ObservationCount
+		return nil, nil, rec.FindingCount()
 	}
 	var proven, observations []Finding
 	for _, finding := range record.Body.Findings {
@@ -230,27 +214,26 @@ func unpackFindings(rec StoredReview) ([]Finding, []Finding, int) {
 // nothing actionable. The contract makes it the exact complement of a
 // substantive finding: an observation may never be blocking, and high and
 // critical must be, so splitting on severity == "observation" is the same cut
-// the projector's ProvenCount/ObservationCount already writes, and the two
-// cannot disagree about where a blocking finding lands.
+// the projector's severity counts already record, and the two cannot disagree
+// about where a blocking finding lands.
 const observationSeverity = "observation"
 
 // recordFinding maps one review/v1 finding onto the wire shape the web decodes.
-// Recommendation has no field in that shape and the record carries no
-// test_file/test_name/test_output equivalent, so those stay empty rather than
-// being filled with something adjacent.
+// Recommendation has no field in that shape, so it stays out rather than being
+// folded into the description.
 func recordFinding(finding contracts.Finding) Finding {
 	mapped := Finding{
-		ID: finding.ID, Severity: finding.Severity, Title: finding.Title,
-		Description: finding.Description, Category: finding.Category,
+		ID: finding.ID, Severity: finding.Severity, Blocking: finding.Blocking,
+		Title: finding.Title, Description: finding.Description, Category: finding.Category,
 	}
 	mapped.File, mapped.Line = findingLocation(finding.Evidence)
 	return mapped
 }
 
-// findingLocation takes the first file-anchored evidence locator, which is what
-// repoBlobUrl in the web needs. Log lines, JSON pointers, byte ranges and
-// opaque anchors name no source file, so they leave file/line empty instead of
-// pointing the reader at a path that is not one.
+// findingLocation takes the first file-anchored evidence locator. Log lines,
+// JSON pointers, byte ranges and opaque anchors name no source file, so they
+// leave file/line empty instead of pointing the reader at a path that is not
+// one.
 func findingLocation(evidence []contracts.Anchor) (string, int) {
 	for _, anchor := range evidence {
 		if anchor.Locator.Kind != "file-lines" || anchor.Locator.Start == nil {
@@ -259,17 +242,6 @@ func findingLocation(evidence []contracts.Anchor) (string, int) {
 		return anchor.Locator.Path, *anchor.Locator.Start
 	}
 	return "", 0
-}
-
-func decodeFindings(raws []json.RawMessage) []Finding {
-	findings := make([]Finding, 0, len(raws))
-	for _, raw := range raws {
-		var f Finding
-		// tolerate partial decode — never drop a finding the ingest counted
-		json.Unmarshal(raw, &f)
-		findings = append(findings, f)
-	}
-	return findings
 }
 
 // ListByTeam handles GET /api/v1/teams/:team_name/agent-reviews.
@@ -287,7 +259,6 @@ func (h *Handler) ListByTeam(w http.ResponseWriter, r *http.Request) {
 
 	recs, err := h.store.ListByTeam(team, ListFilter{
 		Pipeline: r.URL.Query().Get("pipeline"),
-		Repo:     r.URL.Query().Get("repo"),
 		Limit:    limit,
 	})
 	if err != nil {

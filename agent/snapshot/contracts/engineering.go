@@ -69,56 +69,6 @@ func (d UpgradeReportDocument) Validate() error {
 	return nil
 }
 
-type ValidationReportDocument struct {
-	SchemaVersion string                  `json:"schema_version"`
-	Subject       string                  `json:"subject"`
-	Status        string                  `json:"status"`
-	Summary       string                  `json:"summary"`
-	Checks        []LegacyValidationCheck `json:"checks"`
-}
-
-type LegacyValidationCheck struct {
-	Name   string `json:"name"`
-	Status string `json:"status"`
-	Detail string `json:"detail,omitempty"`
-}
-
-func (d ValidationReportDocument) Validate() error {
-	if err := validateDocumentVersion(d.SchemaVersion); err != nil {
-		return err
-	}
-	if err := requireStrings([]namedString{{"subject", d.Subject}, {"summary", d.Summary}}); err != nil {
-		return err
-	}
-	if err := validateResultStatus(d.Status); err != nil {
-		return fmt.Errorf("status: %w", err)
-	}
-	if len(d.Checks) == 0 {
-		return fmt.Errorf("checks must contain at least one result")
-	}
-	seen := make(map[string]struct{}, len(d.Checks))
-	worstStatus := "ok"
-	for i, check := range d.Checks {
-		if err := requireStrings([]namedString{{"name", check.Name}}); err != nil {
-			return fmt.Errorf("checks[%d]: %w", i, err)
-		}
-		if err := validateResultStatus(check.Status); err != nil {
-			return fmt.Errorf("checks[%d].status: %w", i, err)
-		}
-		if _, found := seen[check.Name]; found {
-			return fmt.Errorf("checks[%d].name %q is duplicate", i, check.Name)
-		}
-		seen[check.Name] = struct{}{}
-		if resultStatusRank(check.Status) > resultStatusRank(worstStatus) {
-			worstStatus = check.Status
-		}
-	}
-	if d.Status != worstStatus {
-		return fmt.Errorf("status must match the worst check status %q", worstStatus)
-	}
-	return nil
-}
-
 type GateResultsDocument struct {
 	SchemaVersion string        `json:"schema_version"`
 	Gates         []GateOutcome `json:"gates"`
@@ -175,17 +125,6 @@ func validateResultStatus(status string) error {
 		return nil
 	default:
 		return fmt.Errorf("must be one of ok, failed, error")
-	}
-}
-
-func resultStatusRank(status string) int {
-	switch status {
-	case "error":
-		return 2
-	case "failed":
-		return 1
-	default:
-		return 0
 	}
 }
 

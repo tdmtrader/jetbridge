@@ -13,11 +13,7 @@ allStatuses =
     , Running (Just "step")
     , AwaitingHuman
     , NeedsReview
-    , Merged
-    , MergedWithFixes
-    , SentBack
-    , Concluded
-    , Abandoned
+    , Closed
     , Failed
     , Errored
     , Aborted
@@ -34,14 +30,19 @@ wireTokens =
     , "running"
     , "awaiting_human"
     , "needs_review"
-    , "merged"
-    , "merged_with_fixes"
-    , "sent_back"
-    , "concluded"
-    , "abandoned"
+    , "closed"
     , "failed"
     , "errored"
     ]
+
+
+{-| The v2 ticket dispositions were deleted with the per-ticket outcome mirror:
+whether work merged, was sent back, or was dropped is the workflow run's
+outcome, and the badge must not resurrect a second vocabulary for it.
+-}
+retiredTokens : List String
+retiredTokens =
+    [ "merged", "merged_with_fixes", "sent_back", "concluded", "abandoned" ]
 
 
 all : Test
@@ -73,6 +74,12 @@ all =
             \_ ->
                 fromApiToken "bogus"
                     |> Expect.equal Nothing
+        , test "fromApiToken refuses the retired ticket dispositions" <|
+            \_ ->
+                retiredTokens
+                    |> List.map fromApiToken
+                    |> List.all (\m -> m == Nothing)
+                    |> Expect.equal True
         , test "fromRunStatus maps every agent_run_metrics status to a badge" <|
             \_ ->
                 [ "ok", "failed", "parked", "error" ]
@@ -236,7 +243,7 @@ all =
                         |> Expect.equal "#ed4b35"
             , test "toneColor covers every tone (no empty string)" <|
                 \_ ->
-                    [ AgentBadge.Neutral, AgentBadge.Info, AgentBadge.Active, AgentBadge.Attention, AgentBadge.Good, AgentBadge.GoodMuted, AgentBadge.Warn, AgentBadge.Calm, AgentBadge.Bad, AgentBadge.Error ]
+                    [ AgentBadge.Neutral, AgentBadge.Info, AgentBadge.Active, AgentBadge.Attention, AgentBadge.Good, AgentBadge.Warn, AgentBadge.Bad, AgentBadge.Error ]
                         |> List.map AgentBadge.toneColor
                         |> List.all (\c -> String.startsWith "#" c)
                         |> Expect.equal True

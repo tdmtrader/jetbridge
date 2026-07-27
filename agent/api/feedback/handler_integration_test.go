@@ -45,9 +45,9 @@ func TestRoundTripSubmitStoresEveryFinding(t *testing.T) {
 
 	reviewID := snapshot.SnapshotID(4242)
 	records := []feedback.FeedbackRequest{
-		{ReviewSnapshotID: &reviewID, FindingID: "ISS-001", Verdict: "accurate", Reviewer: "alice"},
-		{ReviewSnapshotID: &reviewID, FindingID: "ISS-002", Verdict: "false_positive", Reviewer: "alice"},
-		{ReviewSnapshotID: &reviewID, FindingID: "ISS-003", Verdict: "accurate", Reviewer: "bob"},
+		{ReviewSnapshotID: reviewID, FindingID: "ISS-001", Verdict: "accurate", Reviewer: "alice"},
+		{ReviewSnapshotID: reviewID, FindingID: "ISS-002", Verdict: "false_positive", Reviewer: "alice"},
+		{ReviewSnapshotID: reviewID, FindingID: "ISS-003", Verdict: "accurate", Reviewer: "bob"},
 	}
 	for _, rec := range records {
 		resp := submitFeedback(t, server.URL, rec)
@@ -75,7 +75,7 @@ func TestRoundTripUpsertBehavior(t *testing.T) {
 	// Same reviewer + finding submitted twice with different verdicts.
 	for _, verdict := range []string{"false_positive", "accurate"} {
 		resp := submitFeedback(t, server.URL, feedback.FeedbackRequest{
-			ReviewSnapshotID: &reviewID, FindingID: "ISS-010",
+			ReviewSnapshotID: reviewID, FindingID: "ISS-010",
 			Verdict: verdict, Reviewer: "alice",
 		})
 		resp.Body.Close()

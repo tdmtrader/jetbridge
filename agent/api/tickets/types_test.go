@@ -40,11 +40,10 @@ func TestTransitionRequestRejectsServerOwnedPipelineRunID(t *testing.T) {
 	}
 
 	var clean tickets.TransitionRequest
-	if err := json.Unmarshal([]byte(`{"from":"queued","to":"running","branch":"b","error_detail":"e"}`), &clean); err != nil {
+	if err := json.Unmarshal([]byte(`{"from":"queued","to":"running","branch":"b"}`), &clean); err != nil {
 		t.Fatalf("clean transition decode = %v, want nil", err)
 	}
-	if clean.From != tickets.StateQueued || clean.To != tickets.StateRunning ||
-		clean.Branch != "b" || clean.ErrorDetail != "e" {
+	if clean.From != tickets.StateQueued || clean.To != tickets.StateRunning || clean.Branch != "b" {
 		t.Errorf("clean transition = %+v", clean)
 	}
 }
@@ -52,37 +51,19 @@ func TestTransitionRequestRejectsServerOwnedPipelineRunID(t *testing.T) {
 func TestValidTransitionMatrix(t *testing.T) {
 	allowed := []struct{ from, to tickets.State }{
 		{tickets.StateDraft, tickets.StateQueued},
-		{tickets.StateDraft, tickets.StateAbandoned},
+		{tickets.StateDraft, tickets.StateClosed},
 		{tickets.StateQueued, tickets.StateRunning},
 		{tickets.StateQueued, tickets.StateDraft},
-		{tickets.StateQueued, tickets.StateAbandoned},
+		{tickets.StateQueued, tickets.StateClosed},
 		// running→queued records a retry attempt. Do not narrow this edge.
 		{tickets.StateRunning, tickets.StateQueued},
-		// running→needs_review: TWO writers — harvest (primary, 09) and
-		// dispatch's run-completion reconciler (backup/safety net). Do not
-		// narrow this edge either.
+		// running→needs_review is the ONLY completion edge, written by
+		// dispatch's run-completion reconciler however the run ended.
 		{tickets.StateRunning, tickets.StateNeedsReview},
-		{tickets.StateRunning, tickets.StateFailed},
-		{tickets.StateRunning, tickets.StateErrored},
-		{tickets.StateNeedsReview, tickets.StateMerged},
-		{tickets.StateNeedsReview, tickets.StateMergedWithFixes},
-		{tickets.StateNeedsReview, tickets.StateSentBack},
-		{tickets.StateNeedsReview, tickets.StateAbandoned},
-		// needs_review→concluded: TERMINAL positive sibling of abandoned —
-		// "run finished, human reviewed, no merge intended" (spike/research
-		// flows; FLOWS.md §3 spike-research, §4 state-enum decision).
-		// Explicit human disposition ONLY; added pre-freeze (2026-07-09) so
-		// the frozen enum never needs a later migration.
-		{tickets.StateNeedsReview, tickets.StateConcluded},
+		// needs_review→closed is the single human close action; the durable
+		// run's outcome carries WHY (merged / dropped / analysis-only).
+		{tickets.StateNeedsReview, tickets.StateClosed},
 		{tickets.StateNeedsReview, tickets.StateQueued},
-		{tickets.StateSentBack, tickets.StateQueued},
-		{tickets.StateFailed, tickets.StateQueued},
-		{tickets.StateErrored, tickets.StateQueued},
-		// failed/errored→abandoned: human write-off of a dead ticket. The
-		// only other exit is a PAID re-dispatch, so without this edge dead
-		// tickets pile up in every active listing forever.
-		{tickets.StateFailed, tickets.StateAbandoned},
-		{tickets.StateErrored, tickets.StateAbandoned},
 	}
 	for _, tr := range allowed {
 		if !tickets.ValidTransition(tr.from, tr.to) {
@@ -95,14 +76,10 @@ func TestValidTransitionMatrix(t *testing.T) {
 		{tickets.StateDraft, tickets.StateDraft},        // self-transition
 		{tickets.StateQueued, tickets.StateNeedsReview}, // must run first
 		{tickets.StateRunning, tickets.StateDraft},
-		{tickets.StateRunning, tickets.StateMerged},
-		{tickets.StateMerged, tickets.StateQueued}, // merged is terminal
-		{tickets.StateMergedWithFixes, tickets.StateQueued},
-		{tickets.StateAbandoned, tickets.StateQueued},    // abandoned is terminal
+		{tickets.StateRunning, tickets.StateClosed},      // a run lands in front of a human first
+		{tickets.StateClosed, tickets.StateQueued},       // closed is terminal — no exits
+		{tickets.StateClosed, tickets.StateNeedsReview},  //
 		{tickets.StateNeedsReview, tickets.StateRunning}, // re-dispatch goes via queued
-		{tickets.StateDraft, tickets.StateConcluded},     // concluding requires a reviewed run
-		{tickets.StateRunning, tickets.StateConcluded},   // must land in needs_review first
-		{tickets.StateConcluded, tickets.StateQueued},    // concluded is terminal — no exits
 	}
 	for _, tr := range forbidden {
 		if tickets.ValidTransition(tr.from, tr.to) {
@@ -111,12 +88,27 @@ func TestValidTransitionMatrix(t *testing.T) {
 	}
 }
 
-func TestValidStateOriginTaskStatus(t *testing.T) {
+// The queue vocabulary is exactly five tokens. The v2 disposition verbs were
+// deleted with the per-ticket outcome mirror: a client that still sends one
+// must be rejected, not quietly accepted into a state nothing can leave.
+func TestRetiredDispositionStatesAreRejected(t *testing.T) {
+	for _, retired := range []tickets.State{
+		"merged", "merged_with_fixes", "sent_back", "concluded",
+		"abandoned", "failed", "errored",
+	} {
+		if tickets.ValidState(retired) {
+			t.Errorf("ValidState(%q) = true; the disposition verbs live on the workflow run now", retired)
+		}
+		if tickets.ValidTransition(tickets.StateNeedsReview, retired) {
+			t.Errorf("ValidTransition(needs_review, %q) = true, want false", retired)
+		}
+	}
+}
+
+func TestValidStateAndOrigin(t *testing.T) {
 	for _, s := range []tickets.State{
 		tickets.StateDraft, tickets.StateQueued, tickets.StateRunning,
-		tickets.StateNeedsReview, tickets.StateMerged, tickets.StateMergedWithFixes,
-		tickets.StateSentBack, tickets.StateAbandoned, tickets.StateConcluded,
-		tickets.StateFailed, tickets.StateErrored,
+		tickets.StateNeedsReview, tickets.StateClosed,
 	} {
 		if !tickets.ValidState(s) {
 			t.Errorf("ValidState(%q) = false, want true", s)
@@ -133,18 +125,6 @@ func TestValidStateOriginTaskStatus(t *testing.T) {
 	}
 	if tickets.ValidOrigin("email") || tickets.ValidOrigin("") {
 		t.Error("ValidOrigin accepted an unknown origin")
-	}
-
-	for _, s := range []tickets.TaskStatus{
-		tickets.TaskPending, tickets.TaskInProgress, tickets.TaskDone,
-		tickets.TaskSkipped, tickets.TaskBlocked,
-	} {
-		if !tickets.ValidTaskStatus(s) {
-			t.Errorf("ValidTaskStatus(%q) = false, want true", s)
-		}
-	}
-	if tickets.ValidTaskStatus("started") {
-		t.Error("ValidTaskStatus accepted an unknown status")
 	}
 }
 
@@ -164,10 +144,7 @@ func TestTerminalStates(t *testing.T) {
 		}
 	}
 
-	want := []tickets.State{
-		tickets.StateMerged, tickets.StateMergedWithFixes,
-		tickets.StateAbandoned, tickets.StateConcluded,
-	}
+	want := []tickets.State{tickets.StateClosed}
 	if len(terminal) != len(want) {
 		t.Fatalf("TerminalStates() = %v, want exactly %v", tickets.TerminalStates(), want)
 	}
@@ -178,9 +155,8 @@ func TestTerminalStates(t *testing.T) {
 	}
 
 	for _, s := range []tickets.State{
-		tickets.StateDraft, tickets.StateQueued, tickets.StateRunning,
-		tickets.StateNeedsReview, tickets.StateSentBack,
-		tickets.StateFailed, tickets.StateErrored,
+		tickets.StateDraft, tickets.StateQueued,
+		tickets.StateRunning, tickets.StateNeedsReview,
 	} {
 		if tickets.IsTerminal(s) {
 			t.Errorf("IsTerminal(%q) = true for a state with outgoing edges", s)

@@ -459,48 +459,19 @@ all =
                     |> Tuple.first
                     |> Common.queryView
                     |> Query.has [ class "agent-daily-cap-none" ]
-        , test "surfaces the unattributed bucket from the by-ticket rollup" <|
+        , test "an unrecognized group_by rollup does not clobber the by-day cost table" <|
             \_ ->
+                -- The by-day and by-workflow rollups share one callback and are
+                -- told apart by group_by. The by-ticket dimension is gone from
+                -- the server; a stale response carrying it must not blank the
+                -- table the page is showing.
                 Common.init "/agent"
                     |> Application.handleCallback
                         (Callback.AgentCostRollupFetched (Ok sampleRollup))
                     |> Tuple.first
                     |> Application.handleCallback
                         (Callback.AgentCostRollupFetched
-                            (Ok
-                                { sampleRollup
-                                    | groupBy = "ticket"
-                                    , rows =
-                                        [ { key = ""
-                                          , entries = 5
-                                          , inputTokens = 10
-                                          , outputTokens = 20
-                                          , turns = 30
-                                          , costUsd = 11.08
-                                          }
-                                        , { key = "12"
-                                          , entries = 1
-                                          , inputTokens = 1
-                                          , outputTokens = 2
-                                          , turns = 3
-                                          , costUsd = 0.4
-                                          }
-                                        ]
-                                }
-                            )
-                        )
-                    |> Tuple.first
-                    |> Common.queryView
-                    |> Query.has [ text "unattributed (no ticket, all time): $11.08" ]
-        , test "the by-ticket rollup does not clobber the by-day cost table" <|
-            \_ ->
-                Common.init "/agent"
-                    |> Application.handleCallback
-                        (Callback.AgentCostRollupFetched (Ok sampleRollup))
-                    |> Tuple.first
-                    |> Application.handleCallback
-                        (Callback.AgentCostRollupFetched
-                            (Ok { sampleRollup | groupBy = "ticket", rows = [] })
+                            (Ok { sampleRollup | groupBy = "workflow", rows = [] })
                         )
                     |> Tuple.first
                     |> Common.queryView

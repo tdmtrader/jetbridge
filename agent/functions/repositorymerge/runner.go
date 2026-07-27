@@ -11,7 +11,7 @@
 //
 // Errors are reserved for malformed invocation and cancellation. A content
 // conflict, an invalid candidate, and an unavailable immutable input are all
-// reported as a status inside validation-report/v1.
+// reported as a conclusion inside validation/v1.
 package repositorymerge
 
 import (
@@ -30,6 +30,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/snapshot/contracts"
@@ -38,12 +39,13 @@ import (
 const (
 	repositoryChangeType snapshot.TypeRef = "repository-change/v1"
 	repositoryType       snapshot.TypeRef = "repository/v1"
+	validationType       snapshot.TypeRef = "validation/v1"
 
-	reportFileName = "validation-report.json"
-
-	// recordFileName is the sealed record envelope of a repository-change/v1
-	// value. The envelope carries record_version, the contract type, the frozen
-	// schema digest, and the subjects; the change itself is its body.
+	// recordFileName is the sealed record envelope of a repository-change/v1 or
+	// validation/v1 value. The envelope carries record_version, the contract
+	// type, the frozen schema digest, and the subjects; the change or the check
+	// result is its body. Both live at the root of their own output mount, so
+	// one name serves both.
 	recordFileName = "record.json"
 
 	// contentDirectory is where a record's payloads live. ContentRef.Validate
@@ -62,6 +64,22 @@ const (
 	baseSubjectID = "base"
 
 	maximumDetailBytes = 4096
+
+	// The preflight runs exactly ONE check — can this candidate be rebased onto
+	// the delivery target — so its validation/v1 record carries one
+	// ValidationCheck with one attempt. Conflicting paths are that attempt's
+	// evidence rather than checks of their own: they are not independent
+	// verdicts, they are where the single verdict came from, and a check id must
+	// be an identifier, which a repository path is not.
+	mergeCheckID   = "repository-merge"
+	mergeCheckKind = "policy"
+	mergeCheckName = "delivery merge"
+
+	// The report's subjects: the candidate is what is being judged, and the
+	// target is the context the judgement was made against. Subject ids are
+	// declared in lexicographic order because record envelopes require it.
+	candidateSubjectID = "candidate"
+	targetSubjectID    = "target"
 
 	// candidateRef holds the candidate's result commit after its objects have
 	// been copied into the target repository. It lives outside refs/heads so it
@@ -266,6 +284,20 @@ func appendTrailer(message, trailer string) string {
 	return message + "\n\n" + trailer
 }
 
+// RecordAuthority is the contract identity the PLATFORM declares for one record
+// output port, handed to the pod as AGENT_OUTPUT_<PORT>_RECORD_TYPE and
+// AGENT_OUTPUT_<PORT>_RECORD_SCHEMA.
+//
+// It is copied into the record envelope verbatim. A producer does not get to
+// choose which contract identity its own output advertises, so it must not
+// derive one: the agent-runner image is released independently of the web node,
+// and a pod that stamped its own compiled digest would advertise an identity the
+// side that seals the output never declared.
+type RecordAuthority struct {
+	Type   snapshot.TypeRef
+	Schema snapshot.Digest
+}
+
 // Request identifies the exact immutable candidate, the exact repository tip it
 // must be rebased onto, and the input bindings needed to revalidate both.
 // OpenInput is the only way the candidate's base lineage may be read.
@@ -273,22 +305,31 @@ type Request struct {
 	// Candidate is the repository-change/v1 value being delivered.
 	Candidate     snapshot.SnapshotRef
 	CandidateRoot string
+	// CandidateInput is the declared port name the candidate is bound at. It
+	// becomes the input of the report's PRIMARY subject: the report is a
+	// judgement about that exact snapshot, bound at that exact port.
+	CandidateInput string
 	// Target is the repository/v1 value the candidate is rebased onto. It is
 	// the current tip of the delivery target.
 	Target snapshot.SnapshotRef
 	// TargetInput is the declared port name the target is bound at. It becomes
 	// the input of the merged value's base SUBJECT, so the platform can resolve
-	// the merged change's base lineage when it seals the output.
+	// the merged change's base lineage when it seals the output, and the input
+	// of the report's context subject.
 	TargetInput string
 	TargetRoot  string
 	// Inputs are the declared bindings visible to snapshot validation. They
 	// must include the candidate's own base repository under the port name its
-	// record.json names as its base subject's input, and the target under
-	// TargetInput.
+	// record.json names as its base subject's input, the candidate under
+	// CandidateInput, and the target under TargetInput.
 	Inputs    map[string]snapshot.SnapshotRef
 	OpenInput snapshot.InputOpener
 	Method    Method
 	Message   string
+	// ReportAuthority is the declared contract identity of the validation/v1
+	// port the merge report is sealed at. The caller reads it out of the task
+	// environment; this package never derives it.
+	ReportAuthority RecordAuthority
 }
 
 type Runner struct {
@@ -312,15 +353,25 @@ func (runner *Runner) WithCanonicalizer(canonicalizer snapshot.Canonicalizer) *R
 }
 
 // Merged is one completed merge attempt. Report is always populated and always
-// valid. Change and PayloadPath are meaningful only when Report.Status is "ok".
-// Close releases the materialized payload; call it once the value has been
-// written out.
+// valid. Change and PayloadPath are meaningful only when the report's derived
+// conclusion is "passed". Close releases the materialized payload; call it once
+// the value has been written out.
 type Merged struct {
-	Report      contracts.ValidationReportDocument
+	Report      contracts.Record[contracts.ValidationBody]
 	Change      contracts.Record[contracts.RepositoryChangeBody]
 	PayloadPath string
 
 	payload *snapshot.CapturedTree
+}
+
+// Conclusion is the derived verdict of the merge attempt: "passed", "failed", or
+// "error". It is the single place callers should read the outcome from — the
+// contract recomputes it from the checks and rejects a record that disagrees.
+func (merged *Merged) Conclusion() string {
+	if merged == nil {
+		return ""
+	}
+	return merged.Report.Body.Conclusion
 }
 
 func (merged *Merged) Close() error {
@@ -338,14 +389,14 @@ func (merged *Merged) Close() error {
 // Discarding the value is not the same as leaving the target untouched — the
 // merge is computed in the target mount, which stays mutated. Preflight and
 // prepare are separate steps with separate mounts, so that never leaks.
-func (runner *Runner) Run(ctx context.Context, request Request) (contracts.ValidationReportDocument, error) {
+func (runner *Runner) Run(ctx context.Context, request Request) (contracts.Record[contracts.ValidationBody], error) {
 	merged, err := runner.Merge(ctx, request)
 	if err != nil {
-		return contracts.ValidationReportDocument{}, err
+		return contracts.Record[contracts.ValidationBody]{}, err
 	}
 	closeErr := merged.Close()
 	if closeErr != nil {
-		return contracts.ValidationReportDocument{}, fmt.Errorf("repository merge: release merged payload: %w", closeErr)
+		return contracts.Record[contracts.ValidationBody]{}, fmt.Errorf("repository merge: release merged payload: %w", closeErr)
 	}
 	return merged.Report, nil
 }
@@ -367,6 +418,10 @@ func (runner *Runner) Merge(ctx context.Context, request Request) (*Merged, erro
 	if err := request.validate(); err != nil {
 		return nil, err
 	}
+	// Every exit below reports the same single attempt, so the clock starts once,
+	// here, and the duration the record carries is the whole evaluation rather
+	// than whichever stage happened to reject it.
+	attempt := newMergeAttempt(request)
 
 	validationContext, err := snapshot.NewValidationContext(request.Inputs, request.OpenInput)
 	if err != nil {
@@ -385,14 +440,14 @@ func (runner *Runner) Merge(ctx context.Context, request Request) (*Merged, erro
 	//    exact base lineage it names. A candidate that no longer validates is a
 	//    semantic rejection, never a merge attempt.
 	if err := validateTree(ctx, changeValidator, request.CandidateRoot, validationContext); err != nil {
-		return failed(request, fmt.Errorf("candidate is not a valid repository-change/v1: %w", err)), nil
+		return attempt.failed(fmt.Errorf("candidate is not a valid repository-change/v1: %w", err)), nil
 	}
 	// validateTree above ran the full contract validator, which is what checks
 	// the record's subjects against the declared inputs. Reading the record now
 	// only re-derives the body the merge needs.
 	record, err := readChangeRecord(ctx, request.CandidateRoot)
 	if err != nil {
-		return failed(request, err), nil
+		return attempt.failed(err), nil
 	}
 	document := record.Body
 
@@ -401,17 +456,17 @@ func (runner *Runner) Merge(ctx context.Context, request Request) (*Merged, erro
 	//    deliberately do not recompute either.
 	targetMetadata, err := repositoryMetadata(ctx, repositoryValidator, request.TargetRoot, validationContext)
 	if err != nil {
-		return errored(request, fmt.Errorf("target is not a usable repository/v1: %w", err)), nil
+		return attempt.errored(fmt.Errorf("target is not a usable repository/v1: %w", err)), nil
 	}
 	if document.RepositoryID != targetMetadata.RepositoryID {
-		return failed(request, fmt.Errorf("candidate targets repository %s, which is not the delivery target", document.RepositoryID)), nil
+		return attempt.failed(fmt.Errorf("candidate targets repository %s, which is not the delivery target", document.RepositoryID)), nil
 	}
 	if document.Representation != "git-tree" {
 		// A patch carries no commit to merge and a bundle can only be unbundled
 		// when its prerequisites are already present in the target. Both are
 		// deliberately out of scope for the offline merge; the caller can
 		// re-express such a candidate as git-tree.
-		return errored(request, fmt.Errorf("representation %q cannot be merged offline; only git-tree candidates carry the commits a three-way merge needs", document.Representation)), nil
+		return attempt.errored(fmt.Errorf("representation %q cannot be merged offline; only git-tree candidates carry the commits a three-way merge needs", document.Representation)), nil
 	}
 
 	// 3. Copy the candidate's objects into the target repository. This is a
@@ -419,12 +474,12 @@ func (runner *Runner) Merge(ctx context.Context, request Request) (*Merged, erro
 	//    and no credential.
 	candidate, err := runner.materializeCandidate(ctx, request.CandidateRoot, document)
 	if err != nil {
-		return errored(request, err), nil
+		return attempt.errored(err), nil
 	}
 	transferErr := transferCandidate(request.TargetRoot, candidate.Root, document.ResultCommit)
 	closeErr := candidate.Close()
 	if err := errors.Join(transferErr, closeErr); err != nil {
-		return errored(request, fmt.Errorf("copy candidate history into the target repository: %w", err)), nil
+		return attempt.errored(fmt.Errorf("copy candidate history into the target repository: %w", err)), nil
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -436,10 +491,10 @@ func (runner *Runner) Merge(ctx context.Context, request Request) (*Merged, erro
 		Branch: candidateRef, Target: targetMetadata.HeadSHA, Method: request.Method, Message: message,
 	})
 	if err != nil {
-		return errored(request, fmt.Errorf("compute merge: %w", err)), nil
+		return attempt.errored(fmt.Errorf("compute merge: %w", err)), nil
 	}
 	if result.Conflict {
-		return conflicted(request, result.ConflictPaths), nil
+		return attempt.conflicted(result.ConflictPaths), nil
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -447,9 +502,9 @@ func (runner *Runner) Merge(ctx context.Context, request Request) (*Merged, erro
 
 	// 5. Seal the merged repository as a fresh repository-change/v1 value whose
 	//    base is the target tip we merged onto.
-	merged, err := runner.materializeMerged(ctx, request, targetMetadata, result.ResultSha)
+	merged, err := runner.materializeMerged(ctx, attempt, targetMetadata, result.ResultSha)
 	if err != nil {
-		return errored(request, err), nil
+		return attempt.errored(err), nil
 	}
 	return merged, nil
 }
@@ -479,11 +534,29 @@ func (request Request) validate() error {
 	if strings.TrimSpace(request.TargetRoot) == "" {
 		return fmt.Errorf("repository merge: target root is required")
 	}
+	if strings.TrimSpace(request.CandidateInput) == "" {
+		return fmt.Errorf("repository merge: candidate input port is required")
+	}
+	if bound, found := request.Inputs[request.CandidateInput]; !found || bound != request.Candidate {
+		return fmt.Errorf("repository merge: candidate input %q is not bound to the exact candidate snapshot", request.CandidateInput)
+	}
 	if strings.TrimSpace(request.TargetInput) == "" {
 		return fmt.Errorf("repository merge: target input port is required")
 	}
 	if bound, found := request.Inputs[request.TargetInput]; !found || bound != request.Target {
 		return fmt.Errorf("repository merge: target input %q is not bound to the exact target snapshot", request.TargetInput)
+	}
+	// The report identity is declared by the platform, never derived here, so a
+	// caller that did not supply one has no way to produce a sealable report and
+	// must be told now rather than after the merge has been computed.
+	if request.ReportAuthority.Type != validationType {
+		return fmt.Errorf(
+			"repository merge: merge report type must be exactly %s, got %q",
+			validationType, request.ReportAuthority.Type,
+		)
+	}
+	if err := request.ReportAuthority.Schema.Validate(); err != nil {
+		return fmt.Errorf("repository merge: merge report schema: %w", err)
 	}
 	if request.Method != MethodMerge && request.Method != MethodSquash {
 		return fmt.Errorf("repository merge: unknown merge method %q", request.Method)
@@ -627,10 +700,11 @@ func transferCandidate(targetRoot, candidateRoot, resultCommit string) error {
 
 func (runner *Runner) materializeMerged(
 	ctx context.Context,
-	request Request,
+	attempt mergeAttempt,
 	target contracts.RepositoryMetadata,
 	resultCommit string,
 ) (*Merged, error) {
+	request := attempt.request
 	resultTree, err := run(request.TargetRoot, "rev-parse", "--verify", resultCommit+"^{tree}")
 	if err != nil {
 		return nil, fmt.Errorf("resolve merged tree: %w", err)
@@ -681,7 +755,7 @@ func (runner *Runner) materializeMerged(
 		return nil, fmt.Errorf("produced invalid repository-change/v1: %w", err)
 	}
 	return &Merged{
-		Report:      reportFor(request, "ok", "merge is clean", nil),
+		Report:      attempt.report("passed", "merge is clean", "the candidate rebases onto the delivery target with no conflict", nil),
 		Change:      record,
 		PayloadPath: payload.ArchivePath,
 		payload:     payload,
@@ -787,45 +861,98 @@ func writeDirectoryTar(ctx context.Context, directory string, sink io.Writer) er
 	return writer.Close()
 }
 
+// mergeAttempt is one merge evaluation in progress: the request being evaluated
+// and when the evaluation started. Every exit path derives its validation/v1
+// record from it, so the single check the preflight runs always carries the
+// elapsed time of the whole evaluation rather than of whichever stage rejected
+// it.
+type mergeAttempt struct {
+	request Request
+	started time.Time
+}
+
+func newMergeAttempt(request Request) mergeAttempt {
+	return mergeAttempt{request: request, started: time.Now()}
+}
+
 // failed records a semantic rejection: the candidate itself is not mergeable.
 // An unavailable or expired immutable input is not the candidate's fault, so it
 // is escalated to a tooling error instead.
-func failed(request Request, reason error) *Merged {
+func (attempt mergeAttempt) failed(reason error) *Merged {
 	if isInfrastructureFailure(reason) {
-		return errored(request, reason)
+		return attempt.errored(reason)
 	}
-	return &Merged{Report: reportFor(request, "failed", "candidate cannot be merged", []contracts.LegacyValidationCheck{{
-		Name: "repository-merge", Status: "failed", Detail: boundedDetail(reason.Error()),
-	}})}
+	return &Merged{Report: attempt.report("failed", "candidate cannot be merged", boundedDetail(reason.Error()), nil)}
 }
 
 // errored records a tooling fault: the merge could not be decided either way.
-func errored(request Request, reason error) *Merged {
-	return &Merged{Report: reportFor(request, "error", "merge could not be evaluated", []contracts.LegacyValidationCheck{{
-		Name: "repository-merge", Status: "error", Detail: boundedDetail(reason.Error()),
-	}})}
+func (attempt mergeAttempt) errored(reason error) *Merged {
+	return &Merged{Report: attempt.report("error", "merge could not be evaluated", boundedDetail(reason.Error()), nil)}
 }
 
-func conflicted(request Request, paths []string) *Merged {
-	checks := make([]contracts.LegacyValidationCheck, 0, len(paths))
+// conflicted records the one outcome a human most needs to see. Each unmerged
+// path becomes an EVIDENCE anchor on the attempt, anchored to the candidate:
+// the paths are where the single verdict came from, not verdicts of their own.
+func (attempt mergeAttempt) conflicted(paths []string) *Merged {
+	evidence := make([]contracts.Anchor, 0, len(paths))
 	for _, path := range paths {
-		checks = append(checks, contracts.LegacyValidationCheck{Name: path, Status: "failed", Detail: "unmerged"})
+		evidence = append(evidence, contracts.Anchor{
+			Subject: candidateSubjectID,
+			// An opaque locator is the honest kind here: the merge knows the path
+			// is unmerged and knows nothing about which of its lines conflict, so
+			// a line- or byte-range would be a fabricated claim.
+			Locator: contracts.Locator{Kind: "opaque", Value: path},
+		})
 	}
-	return &Merged{Report: reportFor(request, "failed", "merge conflicts with the delivery target", checks)}
+	return &Merged{Report: attempt.report(
+		"failed", "merge conflicts with the delivery target",
+		boundedDetail("unmerged paths: "+strings.Join(paths, ", ")), evidence,
+	)}
 }
 
-func reportFor(request Request, status, summary string, checks []contracts.LegacyValidationCheck) contracts.ValidationReportDocument {
-	if len(checks) == 0 {
-		checks = []contracts.LegacyValidationCheck{{
-			Name: "repository-merge", Status: status, Detail: summary,
-		}}
+// report derives the guaranteed validation/v1 record for this attempt. The
+// envelope's contract identity is copied from the platform-declared authority
+// verbatim and the conclusion is derived from the checks, so neither is a claim
+// this function gets to make up.
+func (attempt mergeAttempt) report(status, summary, detail string, evidence []contracts.Anchor) contracts.Record[contracts.ValidationBody] {
+	checks := []contracts.ValidationCheck{{
+		ID:     mergeCheckID,
+		Kind:   mergeCheckKind,
+		Name:   mergeCheckName,
+		Status: status,
+		Detail: detail,
+		Attempts: []contracts.ValidationAttempt{{
+			Number:   1,
+			Status:   status,
+			Duration: time.Since(attempt.started).String(),
+			Evidence: evidence,
+			Detail:   detail,
+		}},
+	}}
+	return contracts.Record[contracts.ValidationBody]{
+		RecordVersion: contracts.RecordVersion,
+		Type:          attempt.request.ReportAuthority.Type,
+		Schema:        attempt.request.ReportAuthority.Schema,
+		Subjects:      attempt.request.reportSubjects(),
+		Body: contracts.ValidationBody{
+			Conclusion: contracts.DeriveValidationConclusion(checks),
+			Summary:    summary,
+			Checks:     checks,
+		},
 	}
-	return contracts.ValidationReportDocument{
-		SchemaVersion: "1.0.0",
-		Subject:       "snapshot:" + request.Candidate.ID.String() + "@" + request.Candidate.Digest.String(),
-		Status:        status,
-		Summary:       summary,
-		Checks:        checks,
+}
+
+// reportSubjects binds the report to the exact snapshots it judged, at the exact
+// ports they were declared on. The platform re-checks both against its own view
+// of the step when it seals the output.
+func (request Request) reportSubjects() []contracts.Subject {
+	return []contracts.Subject{
+		contracts.SubjectFromInput(
+			candidateSubjectID, contracts.SubjectRolePrimary, request.CandidateInput, request.Candidate,
+		),
+		contracts.SubjectFromInput(
+			targetSubjectID, contracts.SubjectRoleContext, request.TargetInput, request.Target,
+		),
 	}
 }
 
@@ -835,9 +962,9 @@ func isInfrastructureFailure(err error) bool {
 		errors.Is(err, snapshot.ErrNotFound)
 }
 
-// WriteReport materializes the validated merge report at a fixed path beneath
-// the caller-provided output mount.
-func WriteReport(ctx context.Context, outputRoot string, document contracts.ValidationReportDocument) error {
+// WriteReport materializes the guaranteed merge report as a sealed validation/v1
+// record beneath the caller-provided output mount.
+func WriteReport(ctx context.Context, outputRoot string, report contracts.Record[contracts.ValidationBody]) error {
 	if ctx == nil {
 		return fmt.Errorf("repository merge: context is required")
 	}
@@ -847,24 +974,62 @@ func WriteReport(ctx context.Context, outputRoot string, document contracts.Vali
 	if strings.TrimSpace(outputRoot) == "" {
 		return fmt.Errorf("repository merge: output root is required")
 	}
-	if err := document.Validate(); err != nil {
-		return fmt.Errorf("repository merge: invalid validation-report/v1: %w", err)
+	if err := validateReportEnvelope(report); err != nil {
+		return fmt.Errorf("repository merge: invalid %s: %w", validationType, err)
 	}
-	payload, err := json.MarshalIndent(document, "", "  ")
+	if err := report.Body.Validate(report.Subjects); err != nil {
+		return fmt.Errorf("repository merge: invalid %s: %w", validationType, err)
+	}
+	payload, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
-		return fmt.Errorf("repository merge: marshal validation-report/v1: %w", err)
+		return fmt.Errorf("repository merge: marshal %s: %w", validationType, err)
 	}
 	payload = append(payload, '\n')
 	root, err := os.OpenRoot(outputRoot)
 	if err != nil {
 		return fmt.Errorf("repository merge: open output root: %w", err)
 	}
-	writeErr := root.WriteFile(reportFileName, payload, 0600)
+	writeErr := root.WriteFile(recordFileName, payload, 0600)
 	closeErr := root.Close()
 	if err := errors.Join(writeErr, closeErr); err != nil {
-		return fmt.Errorf("repository merge: write %s: %w", reportFileName, err)
+		return fmt.Errorf("repository merge: write %s: %w", recordFileName, err)
 	}
 	return nil
+}
+
+// validateReportEnvelope checks everything this function is the authority on,
+// and deliberately stops short of the schema-DIGEST gate.
+//
+// The digest arrived from the web node as AGENT_OUTPUT_<PORT>_RECORD_SCHEMA and
+// is copied through verbatim. The agent-runner image is released independently
+// of the web, so a pod that re-judged the digest against its own compiled table
+// would reject a perfectly good identity the moment the two builds differ — and
+// it would do so by refusing to write the one durable artifact a conflicted
+// delivery produces. contracts.Record.AdmitForSeal on the web is where the
+// digest is judged, by the side that issued it.
+func validateReportEnvelope(report contracts.Record[contracts.ValidationBody]) error {
+	if report.RecordVersion != contracts.RecordVersion {
+		return fmt.Errorf("record_version must be exactly %s", contracts.RecordVersion)
+	}
+	if report.Type != validationType {
+		return fmt.Errorf("record type must be exactly %s, got %q", validationType, report.Type)
+	}
+	if err := report.Schema.Validate(); err != nil {
+		return fmt.Errorf("record schema: %w", err)
+	}
+	ids := make([]string, len(report.Subjects))
+	inputs := make(map[string]struct{}, len(report.Subjects))
+	for index, subject := range report.Subjects {
+		if err := subject.Validate(); err != nil {
+			return fmt.Errorf("subjects[%d]: %w", index, err)
+		}
+		if _, found := inputs[subject.Input]; found {
+			return fmt.Errorf("subjects[%d].input %q is duplicate", index, subject.Input)
+		}
+		inputs[subject.Input] = struct{}{}
+		ids[index] = subject.ID
+	}
+	return contracts.ValidateEntityIDs("subjects", ids)
 }
 
 // WriteMergedChange materializes the merged repository-change/v1 value beneath
