@@ -176,15 +176,6 @@ table{border-collapse:collapse;}
 .origin p{margin:0;max-width:none;}
 .origin p+p{margin-top:.7rem;}
 
-.blocker-banner{
-  margin-top:1.6rem;display:flex;gap:.8rem;align-items:flex-start;
-  padding:.9rem 1.1rem;border:1px solid var(--danger-line);background:var(--danger-bg);
-  border-radius:var(--radius);max-width:74ch;
-}
-.blocker-banner .glyph{font-family:var(--font-display);font-weight:700;color:var(--danger);flex:none;}
-.blocker-banner p{margin:0;font-size:.92rem;color:var(--text);max-width:none;}
-.blocker-banner a{color:var(--danger);font-weight:600;}
-
 /* ---- TOC ---- */
 .toc-wrap{border:none;}
 .toc-wrap summary{list-style:none;cursor:pointer;}
@@ -388,10 +379,6 @@ footer.page-footer{border-top:1px solid var(--border);margin-top:2rem;padding-to
     <p>JetBridge started from a simple itch: Concourse tasks already look like functions — inputs in, outputs out — so a Kubernetes-native backend seemed like a natural rewrite, and that same function shape looked like a good fit for agentic CI. Everything in the fork is agentically coded: the author specified outcomes, not implementations, and treated it as an open question how far that could go.</p>
     <p>That history matters for how you should read this document. Some subsystems are fully wired and battle-tested; others are scaffolding — implemented, tested, and deliberately or accidentally never connected to anything. <a href="#maturity">The maturity section</a> is the map of which is which.</p>
   </div>
-  <div class="blocker-banner">
-    <span class="glyph">!</span>
-    <p><strong>Before you deploy this branch:</strong> the default Helm chart values render two CLI flags the current binary no longer accepts, and a plain <code class="flag">helm install</code> is expected to crash-loop the web pod. See <a href="#deploy-blocker">Operating &amp; deploying</a> for the fix.</p>
-  </div>
 </header>
 
 <div class="shell">
@@ -540,7 +527,7 @@ footer.page-footer{border-top:1px solid var(--border);margin-top:2rem;padding-to
     <p>A reaper component runs on a configurable interval (30s default) and deletes pods the database has marked for destruction. Artifact cleanup is now an HTTP delete against the owning node's daemon rather than an exec-based <code class="flag">rm</code> inside a live pod — a cleaner design that also doesn't depend on any pod being around to exec into.</p>
 
     <h3 class="subhead">Security posture &amp; RBAC</h3>
-    <p>The web pod's namespaced role covers the obvious pod lifecycle permissions (get/list/watch/create/update/patch/delete on pods, pod exec, and pod logs), plus several things worth knowing about explicitly: it can create and delete <strong>secrets</strong> (used for per-run agent credentials, described in <a href="#execution">Execution, budget &amp; credentials</a>), read PVCs, and patch both <code class="flag">Deployments</code> (its own, for the worker-registrar heartbeat) and <code class="flag">DaemonSets</code> (so a self-upgrade rollout check on the artifact-daemon doesn't hang). A separate cluster-scoped role grants read-only access to secrets and nodes, used for cross-namespace credential resolution and artifact-daemon peer IP lookup. The chart disables ambient service-account token automount on the web pod and instead projects a bounded, roughly one-hour API token, CA, and namespace directly into the web container — init containers never receive that credential at all.</p>
+    <p>The web pod's namespaced role covers the obvious pod lifecycle permissions (get/list/watch/create/update/patch/delete on pods, pod exec, and pod logs), plus several things worth knowing about explicitly: it can create and delete <strong>secrets</strong> (used for per-run agent credentials, described in <a href="#execution">Execution, budget &amp; credentials</a>) and patch both <code class="flag">Deployments</code> (its own, for the worker-registrar heartbeat) and <code class="flag">DaemonSets</code> (so a self-upgrade rollout check on the artifact-daemon doesn't hang). A separate cluster-scoped role grants read-only access to secrets and nodes, used for cross-namespace credential resolution and artifact-daemon peer IP lookup. The chart disables ambient service-account token automount on the web pod and instead projects a bounded, roughly one-hour API token, CA, and namespace directly into the web container — init containers never receive that credential at all.</p>
 
     <div class="table-wrap">
       <table>
@@ -559,8 +546,7 @@ footer.page-footer{border-top:1px solid var(--border);margin-top:2rem;padding-to
     <div class="callout callout-drift">
       <div class="callout-head">Drift from JETBRIDGE.md</div>
       <ul>
-        <li>Its "Artifact passing via PVC," "Resource caching via PVC," and "GCS Fuse artifact store" sections describe a subsystem that no longer exists — those flags were removed from the binary entirely, superseded by the mandatory artifact daemon above.</li>
-        <li>Its RBAC section only lists the pod/exec/log grant; the actual role is materially broader (secrets, PVCs, Deployments, DaemonSets — see above).</li>
+        <li>Its RBAC section only lists the pod/exec/log grant; the actual role is materially broader (secrets, Deployments, DaemonSets — see above).</li>
         <li>The GC section describes cleanup via exec-ing into a live pod; cleanup is now an HTTP call to the artifact daemon and no longer depends on a pod being alive.</li>
         <li>Minor: the pause-pod command is no longer a bare <code class="id">sleep 86400</code> — it's a small trap/loop so a long-hijacked pod survives past the 24-hour boundary. Same idea, more robust.</li>
       </ul>
@@ -672,7 +658,7 @@ footer.page-footer{border-top:1px solid var(--border);margin-top:2rem;padding-to
     <p class="dek">A versioned function signature, compiled from a directory of prompt/skill/config files into an ordinary Concourse DAG — plus a type-checker that treats admission as a proof obligation, not a lint pass.</p>
 
     <h3 class="subhead">Source, import, and promotion</h3>
-    <p>A workflow's source is a directory: a <code class="flag">workflow.yml</code> plus whatever prompt, system-prompt, context, and skill files it references. <code class="flag">fly agent workflows import</code> packages that directory and compiles it — resolving file references into literal content, expanding any declared capabilities into sidecar containers (below), and marking every node hermetic. <strong>Import is deliberately permissive</strong>: it only has to compile and type-check, so an author can inspect a draft that couldn't actually run yet. <strong>Promotion is strict</strong>: <code class="flag">--set-live</code> additionally fully renders the definition, re-validates every runtime dependency is immutable (no file-backed task configs, no unresolved variables), and only then can a version become live — backed by a database constraint that makes it structurally impossible for a pre-v3 definition to ever be promoted again.</p>
+    <p>A workflow's source is a directory: a <code class="flag">workflow.yaml</code> (the legacy <code class="flag">workflow.yml</code> name is still accepted) plus whatever prompt, system-prompt, context, and skill files it references. <code class="flag">fly agent workflows import</code> packages that directory and compiles it — resolving file references into literal content, expanding any declared capabilities into sidecar containers (below), and marking every node hermetic. <strong>Import is deliberately permissive</strong>: it only has to compile and type-check, so an author can inspect a draft that couldn't actually run yet. <strong>Promotion is strict</strong>: <code class="flag">--set-live</code> additionally fully renders the definition, re-validates every runtime dependency is immutable (no file-backed task configs, no unresolved variables), and only then can a version become live — backed by a database constraint that makes it structurally impossible for a pre-v3 definition to ever be promoted again.</p>
     <div class="cmd">fly -t TARGET agent workflows import agent/workflow/seeds/version-upgrade-v3 --set-live</div>
 
     <h3 class="subhead">Typed nodes are the whole admission model</h3>
@@ -805,24 +791,25 @@ fly -t TARGET agent experiments scorecard EXPERIMENT</div>
   <section class="section" id="operating">
     <span class="section-kicker kicker-neutral">Running it</span>
     <h2>Operating &amp; deploying</h2>
-    <p class="dek">The Helm chart is the deployment surface for both phases. Two things here will bite you if you skip this section.</p>
+    <p class="dek">The Helm chart is the deployment surface for both phases. Two of its defaults are worth understanding before you install.</p>
 
-    <div class="callout callout-warn" id="deploy-blocker">
-      <div class="callout-head">Known blocker on this branch</div>
-      <p>The chart's default values (<code class="flag">artifactStorePvc.enabled</code> and <code class="flag">cachePvc.enabled</code>, both <code class="flag">true</code> out of the box) still render <code class="flag">--kubernetes-artifact-store-claim</code>, <code class="flag">--kubernetes-artifact-store-gcs-fuse</code>, and <code class="flag">--kubernetes-cache-pvc</code> onto the web container's args. None of those flags exist in the current binary — they were removed along with the old PVC-based artifact store (see <a href="#runtime">the runtime section</a>) — and the flag parser rejects unknown flags rather than ignoring them. A plain <code class="flag">helm install</code> with default values is expected to crash-loop the web pod on startup with an unrecognized-flag error.</p>
-      <p style="margin-top:.6rem"><strong>Fix before deploying:</strong> set <code class="flag">artifactStorePvc.enabled=false</code> and <code class="flag">cachePvc.enabled=false</code> explicitly until the chart templates are reconciled with the current binary — the mandatory artifact daemon supersedes both of these entirely, so disabling them isn't a functional loss, it's catching up the chart to what the runtime already does. (Two earlier commits already made this exact fix elsewhere in the project's history but aren't ancestors of this branch — a merge-lineage gap worth closing rather than re-discovering.)</p>
+    <div class="callout callout-note">
+      <div class="callout-head">Chart and binary are reconciled</div>
+      <p>The retired PVC storage configuration is now gone from both sides. The chart no longer has <code class="flag">artifactStorePvc</code> or <code class="flag">cachePvc</code> values (nor the PVC template they drove), so a default <code class="flag">helm install</code> renders only flags the current binary still parses. The three retired flags — <code class="flag">--kubernetes-artifact-store-claim</code>, <code class="flag">--kubernetes-artifact-store-gcs-fuse</code>, and <code class="flag">--kubernetes-cache-pvc</code> — were removed from the binary along with the old PVC-based artifact store (see <a href="#runtime">the runtime section</a>). A chart test now renders the default values and rejects any web argument the binary's flag parser doesn't know, so this class of skew fails in CI instead of at pod startup.</p>
+      <p style="margin-top:.6rem"><strong>If you carry an older values file:</strong> delete the <code class="flag">artifactStorePvc</code> and <code class="flag">cachePvc</code> blocks. Helm accepts unknown keys silently, so leaving them behind is inert but misleading. The mandatory artifact daemon supersedes both entirely: artifacts live on the producing node and are mirrored between daemons, and task caches default to node-local directories under <code class="flag">artifactDaemon.hostPath</code>.</p>
     </div>
 
-    <div class="callout callout-warn">
-      <div class="callout-head">Multi-replica signing-key gotcha</div>
-      <p>With the chart's default <code class="flag">secrets.create=true</code>, the session signing key is generated fresh inside an ephemeral, per-pod volume on every pod start — the Secret object the chart also creates is never actually mounted anywhere. Harmless at <code class="flag">web.replicas: 1</code>. Scale past one replica without also setting <code class="flag">secrets.create=false</code> and providing a shared <code class="flag">signingKeySecret</code>, and each replica gets its own unshared key, so session validation will randomly succeed or fail depending which replica handles a given request. There's no chart guard against this misconfiguration — it's on you to remember.</p>
+    <div class="callout callout-note">
+      <div class="callout-head">Session signing key</div>
+      <p>With the chart's default <code class="flag">secrets.create=true</code>, one RSA key is minted into the <code class="flag">&lt;fullname&gt;-keys</code> Secret and mounted into every web pod, and later renders reuse the stored key instead of reminting it — so <code class="flag">web.replicas &gt; 1</code> shares a single key and sessions survive pod restarts and upgrades. Only <code class="flag">secrets.create=false</code> with no <code class="flag">signingKeySecret</code> falls back to the old per-pod <code class="flag">emptyDir</code> key, which is single-replica and drops every session on restart.</p>
+      <p style="margin-top:.6rem"><strong>Rendering without a cluster is the caveat.</strong> Reuse depends on Helm's <code class="flag">lookup</code>, which returns nothing during a plain <code class="flag">helm template</code> (Argo CD without the Helm plugin path, <code class="flag">helm template | kubectl apply</code>). Those pipelines mint a <em>new</em> key on every render, and the rendered manifest carries that live private key in cleartext base64 — so never commit rendered output to git. Set <code class="flag">secrets.signingKeySecret</code> and manage the key outside the chart instead.</p>
     </div>
 
     <h3 class="subhead">What's in the chart</h3>
-    <p>Beyond the artifact-daemon, snapshot, experiment, and publisher-gateway configuration groups covered in earlier sections, the chart bundles a full deployment: an optional in-chart PostgreSQL (or external-database fields for a managed instance), an Ingress template, replica count plus a PodDisruptionBudget, a ServiceMonitor and PrometheusRule (both require prometheus-operator CRDs and are off by default), and OpenTelemetry tracing/metrics configuration. The chart's own <code class="flag">README.md</code> is the accurate, complete values reference — the two callouts above are the specific gaps worth knowing before you trust it.</p>
+    <p>Beyond the artifact-daemon, snapshot, experiment, and publisher-gateway configuration groups covered in earlier sections, the chart bundles a full deployment: an optional in-chart PostgreSQL (or external-database fields for a managed instance), an Ingress template, replica count plus a PodDisruptionBudget, ServiceMonitors and a PrometheusRule (all require prometheus-operator CRDs and are off by default), and OpenTelemetry tracing/metrics configuration. The chart's own <code class="flag">README.md</code> is the accurate, complete values reference — the two callouts above are the defaults most worth understanding first.</p>
 
-    <h4>Monitoring gap</h4>
-    <p>The artifact-daemon exposes its own Prometheus metrics endpoint (resolve latency, peer-fetch counts, snapshot operation counts and bytes) on every node pod, but the chart's <code class="flag">ServiceMonitor</code> currently only scrapes the web Service — the daemon's metrics aren't wired up yet even when monitoring is otherwise enabled.</p>
+    <h4>Monitoring</h4>
+    <p>Enabling <code class="flag">serviceMonitor.enabled</code> renders two ServiceMonitors: one for the web Service and one for the artifact-daemon's headless Service, whose per-node pods export resolve latency, peer-fetch counts, and snapshot operation counts and bytes. Turn the second one off with <code class="flag">serviceMonitor.artifactDaemon.enabled=false</code>. Under <code class="flag">artifactDaemon.tls.enabled</code> the daemon serves that port over HTTPS; <code class="flag">/metrics</code> needs no client certificate, but the chart-generated CA is self-signed with SANs covering the Service rather than the pod IPs Prometheus targets, so the daemon endpoint defaults to <code class="flag">insecureSkipVerify</code> unless you supply <code class="flag">serviceMonitor.artifactDaemon.tlsConfig</code>. If a chart NetworkPolicy is also enabled, the daemon policy restricts ingress on the daemon port, so the chart requires <code class="flag">serviceMonitor.scrapeFrom</code> to name the Prometheus peers — rendering fails rather than letting every scrape be silently dropped or opening the artifact API port to all pods.</p>
 
     <h3 class="subhead">Self-hosting: two release pipelines exist</h3>
     <p>There are two independent pipelines in <code class="flag">deploy/</code> that can build and deploy this project against itself, and it's worth confirming with whoever operates a given cluster which one is actually authoritative there:</p>
@@ -830,7 +817,7 @@ fly -t TARGET agent experiments scorecard EXPERIMENT</div>
       <li><strong>The hardened chain</strong> — build, native agent review, unit tests, K8s runtime tests, a release-candidate tag, image build, self-upgrade, a post-upgrade verification pass, live K8s tests, then release. It has concrete, comment-documented guards for most of the historically recurring failure modes: retries around single-node flakiness, the RBAC grant that lets the post-upgrade rollout check actually complete instead of hanging, and an image-existence check that runs before any git tag/push so a failed build can never leave a phantom version tag behind.</li>
       <li><strong>The simpler chain</strong> — build, test, build an image tagged <code class="flag">:latest</code>, a short-lived pod that restarts the live deployment, then promote to main. No release-candidate dance. This looks like what's actually driving day-to-day deploys in practice.</li>
     </ul>
-    <p>One historically recurring failure mode — a stale, committed frontend bundle silently shipping in a rebuilt image — is now structurally closed rather than merely guarded against: the image build always regenerates the frontend from source and overwrites whatever's committed before the Go binary embeds it, so a forgotten "rebuild and commit" step is a cosmetic git-diff annoyance now, not a shipped-bug risk.</p>
+    <p>One historically recurring failure mode — a stale, committed frontend bundle silently shipping in a rebuilt image, which is how one release candidate once went out with a months-old UI — is now structurally closed in <em>both</em> pipelines rather than merely guarded against. The simpler chain builds through the multi-stage Dockerfile, whose first stage regenerates the Elm/LESS/webpack output before the Go stage runs; the hardened chain runs an equivalent frontend build task and copies its output over <code class="flag">web/public</code> before compiling, and fails the build outright if that task produced nothing. Either way the regenerated assets overwrite whatever's committed before the Go binary embeds them, so a forgotten "rebuild and commit" step is a cosmetic git-diff annoyance now, not a shipped-bug risk.</p>
 
     <h4>Building the agent-runner image</h4>
     <p>Confirmed to ship both binaries described in <a href="#execution">Execution, budget &amp; credentials</a>, plus a full Go toolchain (so deterministic compute functions written in Go can build/test/lint a target repo) and a pinned Claude Code CLI. It intentionally runs as root — jetbridge's shared host-path step volumes are created by the kubelet as root-owned and a pod's <code class="flag">fsGroup</code> is ignored for host-path mounts, so this is a considered trust boundary, not an oversight. Building this image is <strong>not</strong> on the per-commit release chain; it's a manual job you re-run and re-pin (by digest, into <code class="flag">--agent-step-image</code>) only when its Dockerfile actually changes.</p>
@@ -891,7 +878,6 @@ fly -t TARGET agent experiments scorecard EXPERIMENT</div>
           <tr><td>Experiment "failed" terminal state</td><td><span class="pill pill-gap">Gap</span></td><td>A valid, schema-checked state that no current code path ever assigns.</td></tr>
           <tr><td>Task-cache reclamation on the artifact daemon</td><td><span class="pill pill-gap">Gap</span></td><td>The daemon explicitly does not sweep cache content by TTL, and the database-driven GC path that might otherwise cover it appears unwired. Worth monitoring disk usage until confirmed.</td></tr>
           <tr><td>Front-end/UI agent tickets</td><td><span class="pill pill-gap">Gap</span></td><td>Blocked on the missing Elm toolchain in the agent-runner image (see <a href="#operating">Operating &amp; deploying</a>).</td></tr>
-          <tr><td>Chart artifact/cache PVC flags</td><td><span class="pill pill-gap">Gap</span></td><td>Deployment-breaking on this branch until fixed — see the blocker banner above.</td></tr>
         </tbody>
       </table>
     </div>
@@ -906,7 +892,7 @@ fly -t TARGET agent experiments scorecard EXPERIMENT</div>
     <ul class="reading-list">
       <li>
         <div class="rl-file">JETBRIDGE.md</div>
-        <p>The exhaustive flag/troubleshooting/RBAC reference for the K8s-native runtime. Still accurate on pod behavior, sidecars, and exec-mode. Stale on artifact/cache storage (the PVC model it describes is gone, replaced by the mandatory artifact daemon) and understates the actual RBAC grant — see <a href="#runtime">The Kubernetes-native runtime</a> for the corrections.</p>
+        <p>The exhaustive flag/troubleshooting/RBAC reference for the K8s-native runtime. Still accurate on pod behavior, sidecars, and exec-mode. Understates the actual RBAC grant — see <a href="#runtime">The Kubernetes-native runtime</a> for the corrections.</p>
       </li>
       <li>
         <div class="rl-file">docs/agentic/README.md</div>
