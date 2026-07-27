@@ -50,7 +50,11 @@ v8.0.1:1765921815
 # 1773106137 = drops agent_snapshot_exposure_paths and narrows the exposure
 # materialization mode to 'full'. Nothing ever wrote a static selector, so the
 # table was empty; whole-tree exposure is the only mode the runtime records.
-JETBRIDGE_VERSION=1773106137
+# 1773106138 = seeds the singleton agent_settings row with dispatcher_mode
+# 'off'. The --agent-dispatcher-enabled boot flag is gone, so the row is the
+# only authority; a cluster that was auto-dispatching must be resumed with
+# `fly agent dispatcher resume` after the upgrade.
+JETBRIDGE_VERSION=1773106138
 
 # Minimum supported source version (v6.x)
 MIN_SUPPORTED_VERSION=1601993582

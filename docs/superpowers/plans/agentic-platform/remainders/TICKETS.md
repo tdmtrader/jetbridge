@@ -1,5 +1,7 @@
 # Remainder tracks → jetbridge tickets
 
+> **SUPERSEDED — historical implementation record (not executable).** The approved [Agentic Workflows as Functions over Snapshots design](../../../specs/2026-07-21-agentic-workflows-as-functions-design.md) and [Agentic Functions program plan](../../2026-07-21-agentic-functions-program.md) are authoritative. This mapping of remainder-plan slices onto jetbridge tickets is historical; the ticket system itself is now a compatibility adapter, not the orchestration center.
+
 **Date:** 2026-07-18 · maps the five [remainder plans](README.md) onto the ticket system.
 
 Each plan **slice** is one ticket. A slice was sized to the proven loop envelope

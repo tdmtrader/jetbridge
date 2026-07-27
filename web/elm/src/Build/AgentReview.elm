@@ -327,6 +327,7 @@ It is not a link. A review/v1 finding anchors into a SUBJECT — a snapshot name
 by type and digest — and a subject is not a clone URL at a commit, so there is no
 blob address to build. The old link was assembled from the review row's `repo`
 and `commit_sha`, which the projector had already stopped filling.
+
 -}
 fileRef : Finding -> Html Message
 fileRef finding =

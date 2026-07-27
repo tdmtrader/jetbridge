@@ -1,5 +1,7 @@
 # Versioned Workflow Definition Store Implementation Plan
 
+> **SUPERSEDED — historical implementation record (not executable).** The approved [Agentic Workflows as Functions over Snapshots design](../../specs/2026-07-21-agentic-workflows-as-functions-design.md) and [Agentic Functions program plan](../2026-07-21-agentic-functions-program.md) are authoritative. Workflow definitions are now snapshot-keyed functions rather than ticket-composed grammar; the versioned-store mechanics below are a historical implementation record only.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Store, hash, version, import, and promote workflow definitions in `agent_workflow_definitions` — with the §6 composition grammar validated at write time, a content-hash provenance function generalized from ci-agent, API + `fly agent workflows` commands, and today's five ci-agent phases decomposed into a seed `standard-dev` v1 definition — plus two equal-standing flow-decoupling seeds, `direct-dev` (direct one-shot) and `test-first-dev` (test-first contract), per FLOWS.md E3 (2026-07-09 amendment).

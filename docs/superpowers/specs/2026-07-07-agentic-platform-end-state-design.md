@@ -1,5 +1,7 @@
 # Agentic Development Platform — End-State Design
 
+> **SUPERSEDED — historical implementation record (not executable).** The approved [Agentic Workflows as Functions over Snapshots design](2026-07-21-agentic-workflows-as-functions-design.md) and [Agentic Functions program plan](../plans/2026-07-21-agentic-functions-program.md) are authoritative. This end-state design birthed the ticket-centric wave plans (`00`-`15`) that are now historical; it is retained as the original vision document, superseded in its particulars by the 2026-07-21 functions-over-snapshots rework.
+
 - **Date:** 2026-07-07 (rev 2, after design challenge round)
 - **Status:** Draft for review (pre-planning; workstream decomposition happens in a later session)
 - **Scope:** End-state architecture for evolving the jetbridge Concourse fork into an agentic development platform for a small team, adjacent to and augmenting existing CI functionality.

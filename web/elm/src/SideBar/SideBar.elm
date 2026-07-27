@@ -12,6 +12,7 @@ module SideBar.SideBar exposing
     , view
     )
 
+import AgentPage.Nav as AgentNav
 import Assets
 import Concourse
 import EffectTransformer exposing (ET)
@@ -218,13 +219,19 @@ handleDeliverySidebar delivery ( model, effects ) =
             ( model, effects )
 
 
+{-| The sidebar has two independent sections, and only the pipelines half
+depends on there being pipelines.
+
+It used to render nothing at all unless `hasVisiblePipelines` — which quietly
+made the agent-platform nav a hostage of the pipeline list: a fresh install, or
+one where every pipeline is archived, had no way to reach the agent pages from
+the sidebar even though they were all perfectly reachable. The agent section now
+renders whenever the sidebar is open; the pipelines sections keep their own gate.
+
+-}
 view : Model m -> Maybe (PipelineScoped a) -> Html Message
 view model currentPipeline =
-    if
-        model.sideBarState.isOpen
-            && hasVisiblePipelines model
-            && (model.screenSize /= ScreenSize.Mobile)
-    then
+    if model.sideBarState.isOpen && (model.screenSize /= ScreenSize.Mobile) then
         let
             oldState =
                 model.sideBarState
@@ -236,9 +243,8 @@ view model currentPipeline =
             (id "side-bar" :: Styles.sideBar newState)
             -- I'd love to use the curPipeline function instead of passing it in to view,
             -- but that doesn't work for OneOffBuilds that point to a JobBuild
-            (agentPlatformLink
-                ++ favoritedPipelinesSection model currentPipeline
-                ++ allPipelinesSection model currentPipeline
+            (agentPlatformSection
+                ++ pipelinesSections model currentPipeline
                 ++ [ Html.div
                         (Styles.sideBarHandle newState
                             ++ [ onMouseDown <| Click SideBarResizeHandle ]
@@ -251,12 +257,19 @@ view model currentPipeline =
         Html.text ""
 
 
+pipelinesSections : Model m -> Maybe (PipelineScoped a) -> List (Html Message)
+pipelinesSections model currentPipeline =
+    if hasVisiblePipelines model then
+        favoritedPipelinesSection model currentPipeline
+            ++ allPipelinesSection model currentPipeline
+
+    else
+        []
+
+
 tooltip : Model m -> Maybe Tooltip.Tooltip
 tooltip model =
     let
-        isSideBarClickable =
-            hasVisiblePipelines model
-
         beyondStarOffset =
             Styles.tooltipArrowSize
                 + (Styles.starPadding * 2)
@@ -318,10 +331,7 @@ tooltip model =
         HoverState.Tooltip SideBarIcon _ ->
             let
                 text =
-                    if not isSideBarClickable then
-                        "no visible pipelines"
-
-                    else if model.sideBarState.isOpen then
+                    if model.sideBarState.isOpen then
                         "hide sidebar"
 
                     else
@@ -341,20 +351,19 @@ tooltip model =
             Nothing
 
 
-agentPlatformLink : List (Html Message)
-agentPlatformLink =
-    [ agentNavLink "sidebar-agent-platform" Routes.Agent "Agent workflows"
-    , agentNavLink "sidebar-agent-tickets" Routes.AgentTickets "Ticket queue"
-    , agentNavLink "sidebar-agent-reviews" (Routes.AgentReviews { teamName = "main" }) "Review queue"
-    , agentNavLink "sidebar-agent-experiments" Routes.AgentExperiments "Experiment laboratory"
-    ]
+{-| The agent-platform destinations, read from the one shared list every agent
+nav uses (see `AgentPage.Nav`).
+-}
+agentPlatformSection : List (Html Message)
+agentPlatformSection =
+    List.map agentNavLink AgentNav.items
 
 
-agentNavLink : String -> Routes.Route -> String -> Html Message
-agentNavLink elementId route text =
+agentNavLink : AgentNav.Item -> Html Message
+agentNavLink item =
     Html.a
-        [ id elementId
-        , href (Routes.toString route)
+        [ id ("sidebar-" ++ item.id)
+        , href (Routes.toString item.route)
         , style "display" "flex"
         , style "align-items" "center"
         , style "padding" "10px 16px"
@@ -363,7 +372,7 @@ agentNavLink elementId route text =
         , style "font-weight" "700"
         , style "border-bottom" "1px solid #3d3c3c"
         ]
-        [ Html.text text ]
+        [ Html.text item.label ]
 
 
 allPipelinesSection : Model m -> Maybe (PipelineScoped a) -> List (Html Message)
@@ -490,9 +499,6 @@ sideBarIcon model =
 
     else
         let
-            isSideBarClickable =
-                hasVisiblePipelines model
-
             isOpen =
                 model.sideBarState.isOpen
 
@@ -500,10 +506,7 @@ sideBarIcon model =
                 HoverState.isHovered SideBarIcon model.hovered
 
             assetSideBarIcon =
-                if not isSideBarClickable then
-                    Assets.SideBarIconOpenedGrey
-
-                else if isOpen && isHovered then
+                if isOpen && isHovered then
                     Assets.SideBarIconClosedWhite
 
                 else if isOpen && not isHovered then
@@ -517,16 +520,11 @@ sideBarIcon model =
         in
         Html.div
             (id "sidebar-icon"
-                :: Styles.sideBarMenu isSideBarClickable
+                :: Styles.sideBarMenu True
                 ++ [ onMouseEnter <| Hover <| Just SideBarIcon
                    , onMouseLeave <| Hover Nothing
+                   , onClick <| Click SideBarIcon
                    ]
-                ++ (if isSideBarClickable then
-                        [ onClick <| Click SideBarIcon ]
-
-                    else
-                        []
-                   )
             )
             [ Icon.icon
                 { sizePx = 22, image = assetSideBarIcon }

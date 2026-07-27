@@ -1,4 +1,5 @@
 {
+  "_superseded": "SUPERSEDED — historical implementation record (not executable). The approved Agentic Workflows as Functions over Snapshots design (docs/superpowers/specs/2026-07-21-agentic-workflows-as-functions-design.md) and Agentic Functions program plan (docs/superpowers/plans/2026-07-21-agentic-functions-program.md) are authoritative. This wave/workstream decomposition (the abandoned ticket-centric roadmap) is historical; it is not consumed by any code path.",
   "workstreams": [
     {
       "id": "agent-identity",

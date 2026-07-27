@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/concourse/concourse/agent/gitcheck"
 	"github.com/concourse/concourse/agent/projection"
+	"github.com/concourse/concourse/agent/repodiff"
 	"github.com/concourse/concourse/agent/snapshot"
 )
 
@@ -201,7 +201,7 @@ func (factory *agentRepositoryChangesFactory) UpsertRepositoryChangeProjection(c
 	}
 	files := value.Files
 	if files == nil {
-		files = []gitcheck.ChangedFile{}
+		files = []repodiff.ChangedFile{}
 	}
 	encodedFiles, err := json.Marshal(files)
 	if err != nil {
@@ -263,7 +263,7 @@ func (factory *agentRepositoryChangesFactory) GetRepositoryChangeProjection(ctx 
 		ResultTreeSHA: resultTreeSHA.String, Representation: representation.String,
 		FileCount: int(fileCount.Int64), LinesAdded: int(linesAdded.Int64), LinesDeleted: int(linesDeleted.Int64),
 		UnifiedDiff: unifiedDiff.String, Truncated: truncated.Bool, TruncationReason: truncationReason.String,
-		Files: []gitcheck.ChangedFile{},
+		Files: []repodiff.ChangedFile{},
 	}
 	if len(files) > 0 {
 		decoder := json.NewDecoder(strings.NewReader(string(files)))
@@ -299,7 +299,7 @@ func validateReadyRepositoryChange(value projection.RepositoryChange) error {
 	if value.FileCount < 0 || value.LinesAdded < 0 || value.LinesDeleted < 0 || value.FileCount != len(value.Files) {
 		return fmt.Errorf("db: repository-change projection counts are invalid")
 	}
-	if len(value.UnifiedDiff) > gitcheck.BoundedUnifiedDiffBytes {
+	if len(value.UnifiedDiff) > repodiff.BoundedUnifiedDiffBytes {
 		return fmt.Errorf("db: repository-change unified diff exceeds 65536 bytes")
 	}
 	if value.Truncated && strings.TrimSpace(value.TruncationReason) == "" {

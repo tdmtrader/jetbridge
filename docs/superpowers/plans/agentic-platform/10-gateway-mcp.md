@@ -1,5 +1,7 @@
 # agent-gateway-mcp Implementation Plan
 
+> **SUPERSEDED — historical implementation record (not executable).** The approved [Agentic Workflows as Functions over Snapshots design](../../specs/2026-07-21-agentic-workflows-as-functions-design.md) and [Agentic Functions program plan](../2026-07-21-agentic-functions-program.md) are authoritative. The mcp-gateway sidecar's provider-adapter and cost-metering shape remain relevant; its ticket/budget-slice cutoff wiring below is historical.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Ship the `mcp-gateway` sidecar exposing `request_review(diff, rubric)` and `ask_agent(prompt, provider, model)` over a provider-adapter layer, meter every cross-agent call into the flight-recorder (`agent/schema` events) and the cost ledger (fire-and-forget `POST /api/v1/agent/costs`), and enforce a budget-slice cutoff via the credentials-and-budgets library that halts with a `budget cutoff:` `failed` signal instead of ever silently truncating.

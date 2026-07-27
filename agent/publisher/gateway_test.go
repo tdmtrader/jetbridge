@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/agent/publisher"
+	"github.com/concourse/concourse/agent/publisher/publishertest"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/snapshot/contracts"
 	"github.com/concourse/concourse/agent/snapshot/snapshotfakes"
@@ -111,7 +112,7 @@ func TestGatewayExecutorStreamsExactAuthorizedRepositoryChange(t *testing.T) {
 	captureDirectory := t.TempDir()
 	config.SnapshotCanonicalizer.TempDir = captureDirectory
 	executor, err := publisher.NewGatewayExecutor(
-		publisher.NewMemoryStore(time.Now), fixture.metadata, fixture.content, config,
+		publishertest.NewMemoryStore(time.Now), fixture.metadata, fixture.content, config,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -168,7 +169,7 @@ func TestGatewayExecutorRecoversProviderResultBeforeRetryingWrite(t *testing.T) 
 		"schema_version":1,
 		"rules":[{"team":"engineering","publisher":"git-publisher/v1","modes":["pull-request"],"approval_policy_versions":["engineering/v1"],"target_branches":["main"],"destinations":["git.example/acme/widget"]}]
 	}`)
-	executor, err := publisher.NewGatewayExecutor(publisher.NewMemoryStore(time.Now), fixture.metadata, fixture.content, config)
+	executor, err := publisher.NewGatewayExecutor(publishertest.NewMemoryStore(time.Now), fixture.metadata, fixture.content, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,7 +239,7 @@ func TestGatewayWorkItemPolicySupportsExplicitPrefixAndRotatedToken(t *testing.T
 	if err := os.WriteFile(config.TokenFile, []byte("rotated-token\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	executor, err := publisher.NewGatewayExecutor(publisher.NewMemoryStore(time.Now), fixture.metadata, fixture.content, config)
+	executor, err := publisher.NewGatewayExecutor(publishertest.NewMemoryStore(time.Now), fixture.metadata, fixture.content, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,7 +275,7 @@ func TestGatewayPolicyDeniesUnlistedTeamDestinationWithoutNetworkAndDoesNotLeakT
 		"schema_version":1,
 		"rules":[{"team":"other-team","publisher":"git-publisher/v1","modes":["pull-request"],"approval_policy_versions":["engineering/v1"],"target_branches":["main"],"destinations":["git.example/acme/widget"]}]
 	}`)
-	executor, err := publisher.NewGatewayExecutor(publisher.NewMemoryStore(time.Now), fixture.metadata, fixture.content, config)
+	executor, err := publisher.NewGatewayExecutor(publishertest.NewMemoryStore(time.Now), fixture.metadata, fixture.content, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -317,7 +318,7 @@ func TestGatewayPolicyRequiresExactModeTargetBranchAndPolicyVersion(t *testing.T
 				"schema_version":1,
 				"rules":[{"team":"engineering","publisher":"git-publisher/v1","modes":["pull-request"],"approval_policy_versions":["engineering/v1"],"target_branches":["main"],"destinations":["git.example/acme/widget"]}]
 			}`)
-			executor, err := publisher.NewGatewayExecutor(publisher.NewMemoryStore(time.Now), fixture.metadata, fixture.content, config)
+			executor, err := publisher.NewGatewayExecutor(publishertest.NewMemoryStore(time.Now), fixture.metadata, fixture.content, config)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -346,7 +347,7 @@ func TestGatewayRejectsOversizedAndMalformedResponses(t *testing.T) {
 		"rules":[{"team":"engineering","publisher":"git-publisher/v1","modes":["pull-request"],"approval_policy_versions":["engineering/v1"],"target_branches":["main"],"destinations":["git.example/acme/widget"]}]
 	}`)
 	config.MaxResponseBytes = 128
-	executor, err := publisher.NewGatewayExecutor(publisher.NewMemoryStore(time.Now), fixture.metadata, fixture.content, config)
+	executor, err := publisher.NewGatewayExecutor(publishertest.NewMemoryStore(time.Now), fixture.metadata, fixture.content, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -377,7 +378,7 @@ func TestGatewayRejectsInsecureProviderResultURL(t *testing.T) {
 		"schema_version":1,
 		"rules":[{"team":"engineering","publisher":"git-publisher/v1","modes":["pull-request"],"approval_policy_versions":["engineering/v1"],"target_branches":["main"],"destinations":["git.example/acme/widget"]}]
 	}`)
-	executor, err := publisher.NewGatewayExecutor(publisher.NewMemoryStore(time.Now), fixture.metadata, fixture.content, config)
+	executor, err := publisher.NewGatewayExecutor(publishertest.NewMemoryStore(time.Now), fixture.metadata, fixture.content, config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -414,7 +415,7 @@ func TestGatewayConfigurationFailsClosed(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			config := valid
 			mutate(&config)
-			if _, err := publisher.NewGatewayExecutor(publisher.NewMemoryStore(time.Now), fixture.metadata, fixture.content, config); err == nil {
+			if _, err := publisher.NewGatewayExecutor(publishertest.NewMemoryStore(time.Now), fixture.metadata, fixture.content, config); err == nil {
 				t.Fatal("invalid gateway configuration was accepted")
 			}
 		})
@@ -434,7 +435,7 @@ func TestGatewayConfigurationFailsClosed(t *testing.T) {
 			if err := os.WriteFile(config.PolicyFile, []byte(policy), 0600); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := publisher.NewGatewayExecutor(publisher.NewMemoryStore(time.Now), fixture.metadata, fixture.content, config); err == nil {
+			if _, err := publisher.NewGatewayExecutor(publishertest.NewMemoryStore(time.Now), fixture.metadata, fixture.content, config); err == nil {
 				t.Fatal("invalid gateway policy was accepted")
 			}
 		})

@@ -1,5 +1,7 @@
 # Harvest Step Implementation Plan
 
+> **SUPERSEDED — historical implementation record (not executable).** The approved [Agentic Workflows as Functions over Snapshots design](../../specs/2026-07-21-agentic-workflows-as-functions-design.md) and [Agentic Functions program plan](../2026-07-21-agentic-functions-program.md) are authoritative. The harvest step's independent gate re-run and judge scoring remain live in spirit; its ticket-transition and per-ticket credential model below are historical — see the current outcomes/snapshot design.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Ship the deterministic terminal `harvest:` step that independently re-runs build/test/lint gates through the repo's dev-mcp (as code, via the Go client), scores the branch with a platform-funded rubric judge, pushes `agent/ticket-<n>` with git credentials that exist only in the harvest pod, and walks the ticket to its outcome through ticket-core's transition function with evidence attached.

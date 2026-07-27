@@ -59,12 +59,8 @@ func TestWriteAgentSnapshotTarIsDeterministicAndNormalized(t *testing.T) {
 	}
 
 	var one, two bytes.Buffer
-	if err := writeAgentSnapshotTar(context.Background(), first, &one); err != nil {
-		t.Fatal(err)
-	}
-	if err := writeAgentSnapshotTar(context.Background(), second, &two); err != nil {
-		t.Fatal(err)
-	}
+	archiveAgentSnapshotDirectory(t, first, &one)
+	archiveAgentSnapshotDirectory(t, second, &two)
 	if !bytes.Equal(one.Bytes(), two.Bytes()) {
 		t.Fatal("equivalent directory trees produced different tar bytes")
 	}
@@ -121,7 +117,10 @@ func TestWriteAgentSnapshotTarRejectsUnsafeFilesystemEntries(t *testing.T) {
 			if err := setup(root); err != nil {
 				t.Fatal(err)
 			}
-			if err := writeAgentSnapshotTar(context.Background(), root, io.Discard); err == nil {
+			// The unsafe-entry preflight lives in the directory open, which
+			// is what anchors the trust boundary for the archive itself.
+			if opened, err := openAgentSnapshotDirectory(root); err == nil {
+				opened.Close()
 				t.Fatal("unsafe tree was accepted")
 			}
 		})
@@ -141,8 +140,28 @@ func TestWriteAgentSnapshotTarHonorsCancellation(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	writer := &cancelingWriter{cancel: cancel}
-	if err := writeAgentSnapshotTar(ctx, root, writer); !errors.Is(err, context.Canceled) {
-		t.Fatalf("writeAgentSnapshotTar() error = %v, want context cancellation", err)
+	opened, err := openAgentSnapshotDirectory(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer opened.Close()
+	if err := writeAgentSnapshotTarFromRoot(ctx, opened, writer); !errors.Is(err, context.Canceled) {
+		t.Fatalf("writeAgentSnapshotTarFromRoot() error = %v, want context cancellation", err)
+	}
+}
+
+// archiveAgentSnapshotDirectory performs the two steps the create command
+// performs — open the directory as an anchored os.Root, then archive that
+// exact descriptor — so path-based archive assertions stay readable.
+func archiveAgentSnapshotDirectory(t *testing.T, directory string, output io.Writer) {
+	t.Helper()
+	root, err := openAgentSnapshotDirectory(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	if err := writeAgentSnapshotTarFromRoot(context.Background(), root, output); err != nil {
+		t.Fatal(err)
 	}
 }
 

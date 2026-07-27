@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"strconv"
-	"strings"
 
 	agentschema "github.com/concourse/concourse/agent/schema"
 	"github.com/concourse/concourse/fly/commands/internal/displayhelpers"
@@ -34,16 +33,6 @@ func (command *AgentRunsCommand) Execute([]string) error {
 
 	if command.Json {
 		return displayhelpers.JsonPrint(runs)
-	}
-
-	// Ticket #45 (runner-image skew visibility): one advisory line on
-	// stderr before the table when the agent step image lags the web
-	// binary. Best-effort — older servers don't serve the endpoint, and a
-	// skew warning must never break the listing itself.
-	if info, err := target.Client().AgentPlatformInfo(); err == nil && info.ImageVersionSkew {
-		fmt.Fprintf(os.Stderr,
-			"note: agent step image %s lags web %s - rebuild build-agent-runner-image + bump home-infra\n",
-			imageTag(info.AgentStepImage), info.WebVersion)
 	}
 
 	table := ui.Table{Headers: ui.TableRow{
@@ -95,21 +84,6 @@ func runLabel(r agentschema.RunMetrics) string {
 		label += " " + r.FunctionID
 	}
 	return label
-}
-
-// imageTag extracts the tag for the one-line skew advisory ("v0.2.167"
-// from "registry.home/agent-runner:v0.2.167"). A ":" before the last "/"
-// is a registry port, not a tag; falls back to the full ref when there is
-// no tag (skew is only ever true for parseable tags anyway).
-func imageTag(ref string) string {
-	if i := strings.Index(ref, "@"); i >= 0 {
-		ref = ref[:i]
-	}
-	slash := strings.LastIndex(ref, "/")
-	if colon := strings.LastIndex(ref, ":"); colon > slash {
-		return ref[colon+1:]
-	}
-	return ref
 }
 
 // agentOutcomeColor colors the fused outcome with fly's build-status

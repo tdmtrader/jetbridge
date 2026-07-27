@@ -9,10 +9,20 @@ import (
 	sq "github.com/Masterminds/squirrel"
 )
 
-// Valid dispatcher modes, mirrored by the agent_settings.dispatcher_mode CHECK
-// constraint (migration 1773106091) and by agent/dispatch.Mode. Kept as bare
-// strings here so atc/db has no dependency on agent/dispatch (which imports
-// atc/db — the reverse edge would be a cycle).
+// The dispatcher-mode vocabulary. These constants are THE definition: the
+// agent_settings.dispatcher_mode CHECK constraint (migration 1773106091) and
+// agent/dispatch's ModeOff/ModePaused/ModeActive are both anchored here —
+// agent/dispatch aliases these values rather than restating them. They live in
+// atc/db because agent/dispatch imports atc/db; the reverse edge would be an
+// import cycle.
+//
+//	active — the dispatcher component auto-dispatches queued tickets.
+//	paused — it does not (the fail-safe a settings-read fault resolves to).
+//	off    — it does not (an operator's explicit disable).
+//
+// paused and off differ only in provenance now that ticket terminalization
+// lives in the always-on workflow-run reconciler, which no dispatcher mode can
+// switch off. See docs/agentic/README.md.
 const (
 	DispatcherModeOff    = "off"
 	DispatcherModePaused = "paused"
@@ -31,10 +41,13 @@ var ErrInvalidDispatcherMode = errors.New("dispatcher_mode must be one of off|pa
 // runtime mode change on its very next tick — mirroring the pipeline-pause
 // idiom (atc/db/pipeline.go CheckPaused).
 //
+// Migration 1773106137 seeds the singleton row, so found=true on every
+// migrated cluster; a missing row means someone deleted it, and every reader
+// fails safe to off.
+//
 //counterfeiter:generate . AgentSettingsFactory
 type AgentSettingsFactory interface {
-	// GetDispatcherMode is the dispatcher loop's hot read. found=false means
-	// no row exists yet (fall back to the boot flag).
+	// GetDispatcherMode is the dispatcher loop's hot read.
 	GetDispatcherMode() (mode string, found bool, err error)
 	// GetDispatcherSetting backs the GET status API: the effective mode plus
 	// its provenance (updated_at/updated_by). found=false means no row.

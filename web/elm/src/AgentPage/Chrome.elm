@@ -1,5 +1,15 @@
-module AgentPage.Chrome exposing (view)
+module AgentPage.Chrome exposing (contentId, view)
 
+{-| The ONE page shell every agent-platform page renders through.
+
+Before this existed each agent page hand-rolled the same top bar, sidebar,
+content container, `<h1>` and nav strip, so the pages drifted apart in padding,
+scroll behaviour and nav content. `view` takes the two things a page actually
+differs by — its title and one-line subtitle — plus its body.
+
+-}
+
+import AgentPage.Nav as Nav
 import Application.Models exposing (Session)
 import Colors
 import Html exposing (Html)
@@ -10,6 +20,15 @@ import Routes
 import SideBar.SideBar as SideBar
 import Views.Styles
 import Views.TopBar as TopBar
+
+
+{-| The shell's scrolling content element. Pages that jump to their own
+sections via the `scrollToId` port need a scrolling parent addressable by id —
+this is it, so no page has to opt out of the shell to keep an in-page nav.
+-}
+contentId : String
+contentId =
+    "agent-page-content"
 
 
 view :
@@ -37,6 +56,7 @@ view session model route title subtitle children =
             [ SideBar.view session Nothing
             , Html.main_
                 [ class "agent-page"
+                , id contentId
                 , style "padding" "20px 24px 48px"
                 , style "width" "100%"
                 , style "box-sizing" "border-box"
@@ -75,21 +95,19 @@ agentNav =
     Html.nav
         [ class "agent-local-nav"
         , style "display" "flex"
+        , style "flex-wrap" "wrap"
         , style "gap" "12px"
         , style "font-size" "12px"
         ]
-        [ navLink (Routes.toString Routes.Agent) "workflows"
-        , navLink (Routes.toString Routes.AgentTickets) "tickets"
-        , navLink (Routes.toString (Routes.AgentReviews { teamName = "main" })) "reviews"
-        , navLink (Routes.toString Routes.AgentExperiments) "experiments"
-        ]
+        (List.map navLink Nav.items)
 
 
-navLink : String -> String -> Html Message
-navLink url label =
+navLink : Nav.Item -> Html Message
+navLink item =
     Html.a
-        [ href url
+        [ id ("agent-nav-" ++ item.id)
+        , href (Routes.toString item.route)
         , style "color" "#7a9ac0"
         , style "text-decoration" "none"
         ]
-        [ Html.text label ]
+        [ Html.text item.label ]

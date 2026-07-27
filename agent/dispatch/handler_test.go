@@ -2,7 +2,6 @@ package dispatch_test
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/concourse/concourse/agent/api/tickets"
 	"github.com/concourse/concourse/agent/dispatch"
+	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/workflowrun"
 )
 
@@ -34,7 +34,8 @@ func TestDispatchHandlerHappyPath(t *testing.T) {
 	}
 	var resp tickets.DispatchResponse
 	json.Unmarshal(rec.Body.Bytes(), &resp)
-	if resp.RunID != 909 || resp.PipelineName == "" || resp.WorkflowRunID == nil {
+	if resp.WorkflowRunID != snapshot.WorkflowRunID(303) ||
+		resp.PipelineRunID == nil || *resp.PipelineRunID != 909 {
 		t.Errorf("response = %+v", resp)
 	}
 
@@ -80,15 +81,16 @@ func TestDispatchHandlerErrorMapping(t *testing.T) {
 		t.Errorf("unknown workflow = %d, want 422", rec.Code)
 	}
 
-	// ticket-input adaptation refusal -> 422, not 500
-	deps.TicketPorts = staticPortResolver{err: errors.New("ambiguous ticket ports")}
+	// a workflow whose signature cannot carry a ticket -> 422, not 500
+	deps.Workflows.(*fakeWorkflows).byName["no-repo"] =
+		definitionWithInputs(t, portSpec{"work-item", "work-item/v1"})
 	h = dispatch.NewHTTPHandler(deps, func(*http.Request) string { return "tdm" })
-	id = queuedTicket(t, store, "smoke")
+	id = queuedTicket(t, store, "no-repo")
 	setRepositorySnapshot(t, store, id, 101)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, dispatchRequest(itoa(id)))
 	if rec.Code != http.StatusUnprocessableEntity {
-		t.Errorf("render refusal = %d, want 422", rec.Code)
+		t.Errorf("undispatchable signature = %d, want 422", rec.Code)
 	}
 
 	// bad param -> 400
@@ -142,7 +144,10 @@ func TestDispatchHandlerV3InputsPendingMapsToSanitizedConflict(t *testing.T) {
 	}
 }
 
-func TestDispatchHandlerV3KeepsLegacyRunFieldsAndAddsWorkflowRunIdentity(t *testing.T) {
+// The 201 body is the batch dispatch contract: the workflow run as a quoted
+// decimal identity, the pipeline run as an optional diagnostic, and no
+// pipeline NAME at all.
+func TestDispatchHandlerBodyIsTheDispatchContract(t *testing.T) {
 	deps, store, _, _ := v3DispatchDeps(t)
 	id := queuedTicket(t, store, "smoke")
 	setRepositorySnapshot(t, store, id, 101)
@@ -151,53 +156,50 @@ func TestDispatchHandlerV3KeepsLegacyRunFieldsAndAddsWorkflowRunIdentity(t *test
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, dispatchRequest(itoa(id)))
 	if rec.Code != http.StatusCreated {
-		t.Fatalf("v3 dispatch = %d body %s", rec.Code, rec.Body)
+		t.Fatalf("dispatch = %d body %s", rec.Code, rec.Body)
 	}
+	var wire map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &wire); err != nil {
+		t.Fatal(err)
+	}
+	if wire["workflow_run_id"] != "303" {
+		t.Errorf("workflow_run_id must be a quoted decimal identity, got %#v", wire["workflow_run_id"])
+	}
+	if wire["pipeline_run_id"] != float64(909) {
+		t.Errorf("pipeline_run_id = %#v, want 909", wire["pipeline_run_id"])
+	}
+	for _, retired := range []string{"pipeline_name", "run_id"} {
+		if _, present := wire[retired]; present {
+			t.Errorf("%q must not be on the wire: %v", retired, wire)
+		}
+	}
+
 	var response tickets.DispatchResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if response.RunID != 909 || response.PipelineName == "" || response.WorkflowRunID == nil || response.WorkflowRunID.String() != "303" {
-		t.Fatalf("v3 response = %+v", response)
+	if response.WorkflowRunID.String() != "303" {
+		t.Fatalf("decoded response = %+v", response)
 	}
 }
 
-func TestDispatchHandlerNonV3MapsToUnprocessableEntity(t *testing.T) {
-	deps, store, workItems, binder := v3DispatchDeps(t)
-	definition := deps.Workflows.(*fakeWorkflows).byName["smoke"]
-	definition.SchemaVersion = 2
-	countingStore := &countingTicketStore{Store: store}
-	deps.Tickets = countingStore
+// A run with no execution linkage omits pipeline_run_id rather than reporting
+// a zero — but it also cannot link the ticket, so the route reports the fault.
+func TestDispatchHandlerMissingPipelineRunIsNotABadRequest(t *testing.T) {
+	deps, store, _, binder := v3DispatchDeps(t)
+	binder.result.Run.PipelineRunID = nil
 	id := queuedTicket(t, store, "smoke")
-	handler := dispatch.NewHTTPHandler(deps, func(*http.Request) string { return "tdm" })
+	setRepositorySnapshot(t, store, id, 101)
+	h := dispatch.NewHTTPHandler(deps, func(*http.Request) string { return "tdm" })
 
-	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, dispatchRequest(itoa(id)))
-	if recorder.Code != http.StatusUnprocessableEntity {
-		t.Errorf("status = %d, want 422; body=%q", recorder.Code, recorder.Body.String())
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, dispatchRequest(itoa(id)))
+	if rec.Code == http.StatusUnprocessableEntity || rec.Code == http.StatusConflict {
+		t.Errorf("a missing pipeline run is not the caller's fault, got %d: %s", rec.Code, rec.Body)
 	}
-	wantBody := "workflow definition is not schema v3: workflow smoke v7 uses schema_version 2\n"
-	if recorder.Body.String() != wantBody {
-		t.Errorf("body = %q, want %q", recorder.Body.String(), wantBody)
-	}
-	if countingStore.reserveCalls != 0 {
-		t.Errorf("ReserveDispatch calls = %d, want 0", countingStore.reserveCalls)
-	}
-	if workItems.CallCount() != 0 {
-		t.Errorf("CaptureRevision calls = %d, want 0", workItems.CallCount())
-	}
-	if _, calls := binder.Calls(); len(calls) != 0 {
-		t.Errorf("BindAndCreate calls = %d, want 0", len(calls))
-	}
-	got, found, getErr := store.Get(id)
-	if getErr != nil || !found {
-		t.Fatalf("read ticket after rejection: found=%v err=%v", found, getErr)
-	}
-	if got.WorkflowVersion != nil || got.WorkflowDefinitionID != nil ||
-		got.WorkItemSnapshotID != nil || got.RepositorySnapshotID != nil ||
-		got.WorkflowRunID != nil || got.PipelineRunID != nil ||
-		got.DispatchReservationKey != "" {
-		t.Errorf("non-v3 HTTP rejection linked dispatch state: %+v", got)
+	got, _, _ := store.Get(id)
+	if got.State != tickets.StateQueued {
+		t.Errorf("ticket must stay queued for the retry, got %s", got.State)
 	}
 }
 

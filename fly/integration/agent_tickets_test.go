@@ -133,7 +133,10 @@ var _ = Describe("fly agent tickets", func() {
 			Expect(sess.Out).To(gbytes.Say("ticket #7 is now queued"))
 		})
 
-		It("prints advisory spec-lint warnings on stderr without failing", func() {
+		// fly does not lint. The server owns the pattern table and returns its
+		// findings with the DISPATCH, so a fly binary can never disagree with
+		// the cluster it is talking to about what reads badly.
+		It("does not lint the ticket prose client-side", func() {
 			atcServer.AppendHandlers(
 				ghttp.CombineHandlers(
 					ghttp.VerifyRequest("PUT", "/api/v1/agent/tickets/7/state"),
@@ -152,7 +155,7 @@ var _ = Describe("fly agent tickets", func() {
 			<-sess.Exited
 			Expect(sess.ExitCode()).To(Equal(0))
 			Expect(sess.Out).To(gbytes.Say("ticket #7 is now queued"))
-			Expect(sess.Err).To(gbytes.Say(`spec-lint: "flight recorder"`))
+			Expect(sess.Err.Contents()).NotTo(ContainSubstring("lint"))
 		})
 
 		It("assigns the workflow before transitioning when --workflow is given", func() {
@@ -234,7 +237,7 @@ var _ = Describe("fly agent tickets", func() {
 				ghttp.CombineHandlers(
 					ghttp.VerifyRequest("POST", "/api/v1/agent/tickets/7/dispatch"),
 					ghttp.RespondWithJSONEncoded(201, tickets.DispatchResponse{
-						RunID: 321, PipelineName: "must-not-print", WorkflowRunID: &workflowRunID,
+						WorkflowRunID: workflowRunID, PipelineRunID: intPtr(321),
 					}),
 				),
 			)
@@ -245,16 +248,15 @@ var _ = Describe("fly agent tickets", func() {
 			<-sess.Exited
 			Expect(sess.ExitCode()).To(Equal(0))
 			Expect(sess.Out).To(gbytes.Say(`dispatched ticket #7 as workflow run 9007199254740993 \(pipeline run 321\)`))
-			Expect(sess.Out.Contents()).NotTo(ContainSubstring("must-not-print"))
 		})
 
-		It("prints server spec-lint warnings on stderr without failing", func() {
+		It("prints the advisory warnings the server returned, on stderr, without failing", func() {
 			workflowRunID := snapshot.WorkflowRunID(9007199254740993)
 			atcServer.AppendHandlers(
 				ghttp.CombineHandlers(
 					ghttp.VerifyRequest("POST", "/api/v1/agent/tickets/7/dispatch"),
 					ghttp.RespondWithJSONEncoded(201, tickets.DispatchResponse{
-						RunID: 321, PipelineName: "must-not-print", WorkflowRunID: &workflowRunID,
+						WorkflowRunID: workflowRunID, PipelineRunID: intPtr(321),
 						Warnings: []string{`"flight recorder": reword before the CLI refuses it`},
 					}),
 				),
@@ -266,17 +268,16 @@ var _ = Describe("fly agent tickets", func() {
 			<-sess.Exited
 			Expect(sess.ExitCode()).To(Equal(0))
 			Expect(sess.Out).To(gbytes.Say(`dispatched ticket #7 as workflow run 9007199254740993 \(pipeline run 321\)`))
-			Expect(sess.Err).To(gbytes.Say(`spec-lint: "flight recorder": reword before the CLI refuses it`))
-			Expect(sess.Out.Contents()).NotTo(ContainSubstring("must-not-print"))
+			Expect(sess.Err).To(gbytes.Say(`work-item-lint: "flight recorder": reword before the CLI refuses it`))
 		})
 
 		It("rejects a malformed successful dispatch without durable identity and sends no compensating mutation", func() {
 			atcServer.AppendHandlers(
 				ghttp.CombineHandlers(
 					ghttp.VerifyRequest("POST", "/api/v1/agent/tickets/7/dispatch"),
-					ghttp.RespondWithJSONEncoded(201, tickets.DispatchResponse{
-						RunID: 321, PipelineName: "pipeline-diagnostic",
-					}),
+					// Raw map, not DispatchResponse: the typed value cannot even
+					// MARSHAL without a workflow run, which is the point.
+					ghttp.RespondWithJSONEncoded(201, map[string]any{"pipeline_run_id": 321}),
 				),
 			)
 			before := len(atcServer.ReceivedRequests())
@@ -288,7 +289,6 @@ var _ = Describe("fly agent tickets", func() {
 			Expect(sess.ExitCode()).To(Equal(1))
 			Expect(sess.Err).To(gbytes.Say("dispatch response for ticket 7 omitted workflow_run_id"))
 			Expect(sess.Out.Contents()).NotTo(ContainSubstring("dispatched ticket"))
-			Expect(sess.Out.Contents()).NotTo(ContainSubstring("pipeline-diagnostic"))
 			Expect(requestPaths(atcServer.ReceivedRequests()[before:])).To(Equal([]string{
 				"/api/v1/info",
 				"/api/v1/agent/tickets/7/dispatch",
@@ -310,7 +310,7 @@ var _ = Describe("fly agent tickets", func() {
 				ghttp.CombineHandlers(
 					ghttp.VerifyRequest("POST", "/api/v1/agent/tickets/7/dispatch"),
 					ghttp.RespondWithJSONEncoded(201, tickets.DispatchResponse{
-						RunID: 321, PipelineName: "must-not-print", WorkflowRunID: &workflowRunID,
+						WorkflowRunID: workflowRunID, PipelineRunID: intPtr(321),
 					}),
 				),
 			)
@@ -322,7 +322,6 @@ var _ = Describe("fly agent tickets", func() {
 			Expect(sess.ExitCode()).To(Equal(0))
 			Expect(sess.Out).To(gbytes.Say(`assigned workflow "foo" to ticket #7`))
 			Expect(sess.Out).To(gbytes.Say(`dispatched ticket #7 as workflow run 9007199254740993 \(pipeline run 321\)`))
-			Expect(sess.Out.Contents()).NotTo(ContainSubstring("must-not-print"))
 		})
 
 		It("rolls the assigned workflow back to its prior value when dispatch fails (WF-5 no-worse-than-before)", func() {
@@ -367,7 +366,7 @@ var _ = Describe("fly agent tickets", func() {
 				ghttp.CombineHandlers(
 					ghttp.VerifyRequest("POST", "/api/v1/agent/tickets/7/dispatch"),
 					ghttp.RespondWithJSONEncoded(201, tickets.DispatchResponse{
-						RunID: 321, PipelineName: "must-not-print", WorkflowRunID: &workflowRunID,
+						WorkflowRunID: workflowRunID, PipelineRunID: intPtr(321),
 					}),
 				),
 			)
@@ -401,7 +400,7 @@ var _ = Describe("fly agent tickets", func() {
 				ghttp.CombineHandlers(
 					ghttp.VerifyRequest("POST", "/api/v1/agent/tickets/9/dispatch"),
 					ghttp.RespondWithJSONEncoded(201, tickets.DispatchResponse{
-						RunID: 5, PipelineName: "must-not-print", WorkflowRunID: &workflowRunID,
+						WorkflowRunID: workflowRunID, PipelineRunID: intPtr(5),
 					}),
 				),
 			)
@@ -415,7 +414,6 @@ var _ = Describe("fly agent tickets", func() {
 			Expect(sess.Out).To(gbytes.Say("created ticket #9"))
 			Expect(sess.Out).To(gbytes.Say("queued"))
 			Expect(sess.Out).To(gbytes.Say(`dispatched ticket #9 as workflow run 9007199254740993 \(pipeline run 5\)`))
-			Expect(sess.Out.Contents()).NotTo(ContainSubstring("must-not-print"))
 		})
 
 		It("preserves created-and-queued context when a malformed dispatch omits durable identity", func() {
@@ -431,9 +429,7 @@ var _ = Describe("fly agent tickets", func() {
 				),
 				ghttp.CombineHandlers(
 					ghttp.VerifyRequest("POST", "/api/v1/agent/tickets/9/dispatch"),
-					ghttp.RespondWithJSONEncoded(201, tickets.DispatchResponse{
-						RunID: 5, PipelineName: "pipeline-diagnostic",
-					}),
+					ghttp.RespondWithJSONEncoded(201, map[string]any{"pipeline_run_id": 5}),
 				),
 			)
 			before := len(atcServer.ReceivedRequests())
@@ -448,7 +444,6 @@ var _ = Describe("fly agent tickets", func() {
 			Expect(sess.Out).To(gbytes.Say("created ticket #9"))
 			Expect(sess.Out).To(gbytes.Say("ticket #9 is now queued"))
 			Expect(sess.Out.Contents()).NotTo(ContainSubstring("dispatched ticket"))
-			Expect(sess.Out.Contents()).NotTo(ContainSubstring("pipeline-diagnostic"))
 			Expect(requestPaths(atcServer.ReceivedRequests()[before:])).To(Equal([]string{
 				"/api/v1/info",
 				"/api/v1/agent/tickets",
@@ -647,3 +642,6 @@ func requestPaths(requests []*http.Request) []string {
 	}
 	return paths
 }
+
+// intPtr keeps the optional pipeline-run diagnostic readable at the call site.
+func intPtr(value int) *int { return &value }

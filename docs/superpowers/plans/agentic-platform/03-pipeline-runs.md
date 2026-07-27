@@ -1,5 +1,7 @@
 # Pipeline Runs Implementation Plan
 
+> **SUPERSEDED — historical implementation record (not executable).** The approved [Agentic Workflows as Functions over Snapshots design](../../specs/2026-07-21-agentic-workflows-as-functions-design.md) and [Agentic Functions program plan](../2026-07-21-agentic-functions-program.md) are authoritative. The run-once pipeline lifecycle (`template: true`, numbered runs, retention) is retained as general-CI infrastructure; its positioning as a dependency for the ticket-centric wave plan below is historical.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add a run-once lifecycle over instanced pipelines — `template: true` pipelines with params schemas, numbered one-shot runs created via `POST .../runs` / `fly run-pipeline`, worst-of aggregate completion status computed by a lifecycle component, and keep_last/ttl retention — as a pure general-CI improvement that provably does not regress reactive pipelines.

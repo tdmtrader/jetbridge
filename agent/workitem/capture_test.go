@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/agent/api/tickets"
+	"github.com/concourse/concourse/agent/api/tickets/ticketstest"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/snapshot/contracts"
 	"github.com/concourse/concourse/agent/workitem"
@@ -176,7 +177,7 @@ func TestCapturerPreservesSourceCancellation(t *testing.T) {
 }
 
 func TestMemoryCaptureNeverTearsConcurrentTicketMutation(t *testing.T) {
-	store := tickets.NewMemoryStore()
+	store := ticketstest.NewMemoryStore()
 	id, err := store.Create(&tickets.Ticket{Title: "work", Body: "old-body", Repo: "repo", WorkflowName: "old-workflow"})
 	if err != nil {
 		t.Fatal(err)

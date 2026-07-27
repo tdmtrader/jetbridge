@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 
 	"github.com/concourse/concourse/agent/api/principals"
+	"github.com/concourse/concourse/agent/api/principals/principalstest"
 	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/api/accessor/accessorfakes"
 	"github.com/concourse/concourse/atc/api/auth"
@@ -21,7 +22,7 @@ var _ = Describe("CheckAgentPrincipalHandler", func() {
 		fakeRejector *authfakes.FakeRejector
 		fakeAccessor *accessorfakes.FakeAccessFactory
 		fakeaccess   *accessorfakes.FakeAccess
-		store        *principals.MemoryStore
+		store        *principalstest.MemoryStore
 		verifier     *principals.Verifier
 
 		token      string
@@ -53,7 +54,7 @@ var _ = Describe("CheckAgentPrincipalHandler", func() {
 			http.Error(w, "still nope", http.StatusForbidden)
 		}
 
-		store = principals.NewMemoryStore()
+		store = principalstest.NewMemoryStore()
 		verifier = principals.NewVerifier(store)
 
 		var err error

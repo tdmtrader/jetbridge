@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/agent/experiment"
-	"github.com/concourse/concourse/agent/pagination"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/fly/rc"
@@ -451,44 +450,35 @@ func (command *ExperimentsListCommand) Execute([]string) error {
 
 func (command *ExperimentsListCommand) execute(target rc.Target, output io.Writer) error {
 	var stored []agentExperimentRecord
-	cursor := ""
-	seenCursors := make(map[string]struct{})
 	seenExperiments := make(map[experiment.ID]struct{})
-	for {
+	err := followAgentHistoryPages("experiment", opaqueAgentHistoryCursor, func(cursor string) (string, bool, error) {
 		query := url.Values{"limit": {strconv.Itoa(experiment.MaxListedExperiments)}}
 		if cursor != "" {
 			query.Set("cursor", cursor)
 		}
 		response, err := agentAPIRequest(target, http.MethodGet, agentExperimentsPath+"?"+query.Encode(), nil)
 		if err != nil {
-			return err
+			return "", false, err
 		}
 		nextCursor := response.Header.Get("X-Next-Cursor")
 		var page []agentExperimentRecord
 		if err := decodeOrError(response, &page); err != nil {
-			return err
+			return "", false, err
 		}
 		if len(page) > experiment.MaxListedExperiments {
-			return fmt.Errorf("server returned too many experiments in one page")
+			return "", false, fmt.Errorf("server returned too many experiments in one page")
 		}
 		for _, value := range page {
 			if _, duplicate := seenExperiments[value.ID]; duplicate {
-				return fmt.Errorf("server returned duplicate experiment %s across pages", value.ID.String())
+				return "", false, fmt.Errorf("server returned duplicate experiment %s across pages", value.ID.String())
 			}
 			seenExperiments[value.ID] = struct{}{}
 			stored = append(stored, value)
 		}
-		if nextCursor == "" {
-			break
-		}
-		if _, err := pagination.Decode(nextCursor); err != nil {
-			return fmt.Errorf("server returned invalid experiment cursor: %w", err)
-		}
-		if _, duplicate := seenCursors[nextCursor]; duplicate {
-			return fmt.Errorf("server returned repeated experiment cursor %q", nextCursor)
-		}
-		seenCursors[nextCursor] = struct{}{}
-		cursor = nextCursor
+		return nextCursor, false, nil
+	})
+	if err != nil {
+		return err
 	}
 	return renderAgentExperiments(output, stored, command.Json, Fly.PrintTableHeaders)
 }

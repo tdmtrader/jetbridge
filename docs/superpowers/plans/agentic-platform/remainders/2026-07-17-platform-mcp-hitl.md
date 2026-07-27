@@ -1,5 +1,7 @@
 # platform-mcp + HITL — wave-3 remainder plan (plan 08, re-scoped against the 2026-07-17 tree)
 
+> **SUPERSEDED — historical implementation record (not executable).** The approved [Agentic Workflows as Functions over Snapshots design](../../../specs/2026-07-21-agentic-workflows-as-functions-design.md) and [Agentic Functions program plan](../../2026-07-21-agentic-functions-program.md) are authoritative. This remainder plan re-scopes plan 08 against the 2026-07-17 tree; the platform-mcp sidecar it wraps remains live, but the ticket-centric identity model below is historical.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. This plan is a **delta wrapper**: most task bodies live in `docs/superpowers/plans/agentic-platform/08-platform-mcp-hitl.md` ("plan 08") and are executed *as written there* plus the delta notes below. Read a referenced task's full plan-08 text before executing it; the deltas amend, they do not replace.
 
 **Date:** 2026-07-17

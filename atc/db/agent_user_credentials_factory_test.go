@@ -87,22 +87,6 @@ var _ = Describe("AgentUserCredentialsFactory", func() {
 		Expect(status).To(HaveLen(1))
 	})
 
-	It("lists credentials expiring within a horizon", func() {
-		idSoon := createUser("cred-sub-d", "dana")
-		idLater := createUser("cred-sub-e", "erin")
-		Expect(factory.Put(idSoon, "dana", "anthropic_oauth", "t", time.Now().Add(24*time.Hour))).To(Succeed())
-		Expect(factory.Put(idLater, "erin", "anthropic_oauth", "t", time.Now().Add(90*24*time.Hour))).To(Succeed())
-
-		expiring, err := factory.ExpiringWithin(30 * 24 * time.Hour)
-		Expect(err).ToNot(HaveOccurred())
-		names := []string{}
-		for _, c := range expiring {
-			names = append(names, c.UserName)
-		}
-		Expect(names).To(ContainElement("dana"))
-		Expect(names).ToNot(ContainElement("erin"))
-	})
-
 	It("deletes by kind", func() {
 		id := createUser("cred-sub-f", "finn")
 		Expect(factory.Put(id, "finn", "anthropic_api_key", "key", time.Time{})).To(Succeed())

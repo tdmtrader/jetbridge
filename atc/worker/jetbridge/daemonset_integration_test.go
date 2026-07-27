@@ -1819,7 +1819,7 @@ func TestDaemonSetMode_SidecarGetsHostPathMounts(t *testing.T) {
 	}
 
 	volumes, mounts := c.buildVolumeMounts()
-	sidecarContainers := buildSidecarContainers(c.containerSpec.Sidecars, mounts, c.containerSpec.Dir, c.containerSpec.SidecarEnv, c.containerSpec.SidecarSecretEnv, false)
+	sidecarContainers := buildSidecarContainers(c.containerSpec.Sidecars, mounts, c.containerSpec.Dir, c.containerSpec.SidecarEnv, false)
 
 	if len(sidecarContainers) != 1 {
 		t.Fatalf("expected 1 sidecar container, got %d", len(sidecarContainers))
@@ -1900,7 +1900,7 @@ func TestDaemonSetMode_SidecarWithOverlappingInputOutput(t *testing.T) {
 	}
 
 	volumes, mounts := c.buildVolumeMounts()
-	sidecarContainers := buildSidecarContainers(c.containerSpec.Sidecars, mounts, c.containerSpec.Dir, c.containerSpec.SidecarEnv, c.containerSpec.SidecarSecretEnv, false)
+	sidecarContainers := buildSidecarContainers(c.containerSpec.Sidecars, mounts, c.containerSpec.Dir, c.containerSpec.SidecarEnv, false)
 
 	if len(sidecarContainers) != 1 {
 		t.Fatalf("expected 1 sidecar, got %d", len(sidecarContainers))

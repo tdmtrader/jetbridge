@@ -1,5 +1,7 @@
 # Agent IA Split — Real /agent/* Routes Implementation Plan
 
+> **SUPERSEDED — historical implementation record (not executable).** The approved [Agentic Workflows as Functions over Snapshots design](../../specs/2026-07-21-agentic-workflows-as-functions-design.md) and [Agentic Functions program plan](../2026-07-21-agentic-functions-program.md) are authoritative. This /agent/* route split targeted the ticket-centric IA; check current `atc/routes.go` for the live route set.
+
 > For agentic workers: REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox syntax.
 
 **Track:** S-3 (UX Audit №4, Proposal E) · **Branch:** jetbridge · **Date:** 2026-07-19

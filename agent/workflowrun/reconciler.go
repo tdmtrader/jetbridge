@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,7 +23,10 @@ const reconciliationBatchLimit = 100
 // without treating arbitrary error text as a contract failure.
 const OutputContractMismatchReason = "workflow output contract mismatch"
 
-var errReconciliationRowFailed = errors.New("workflow-run reconciliation row failed")
+var (
+	errReconciliationRowFailed = errors.New("workflow-run reconciliation row failed")
+	errTicketProjectionFailed  = errors.New("workflow-run ticket projection failed")
+)
 
 type ReconciliationStore interface {
 	ClaimForReconciliation(context.Context, time.Time, time.Duration, int) ([]snapshot.WorkflowRunID, error)
@@ -49,6 +53,16 @@ type WaitResolutionCompleter interface {
 	ReconcilePending(context.Context, int, string, snapshot.WorkflowRunID) error
 }
 
+// TicketProjector projects a finalized workflow run onto the ticket that owns
+// it (Origin.Kind == OriginKindTicket, Origin.Reference == the ticket ID).
+// This reconciler is the ONE place a ticket is terminalized: no ticket loop
+// watches for finished work, and no dispatcher mode can switch the projection
+// off. Implementations must be idempotent and must treat "the ticket already
+// moved" as success — agent/dispatch.TicketProjector is the production one.
+type TicketProjector interface {
+	ProjectFinalizedRun(ctx context.Context, ticketID int, runID snapshot.WorkflowRunID) error
+}
+
 type Reconciler struct {
 	store            ReconciliationStore
 	logger           lager.Logger
@@ -59,6 +73,7 @@ type Reconciler struct {
 	provenance       provenanceVerifier
 	waitResolutions  WaitResolutionCompleter
 	waits            WaitCanceler
+	tickets          TicketProjector
 }
 
 type ReconcilerOption func(*Reconciler) error
@@ -89,6 +104,20 @@ func WithWaitResolutionCompleter(completer WaitResolutionCompleter) ReconcilerOp
 			return fmt.Errorf("workflow run reconciler: wait resolution completer is required")
 		}
 		reconciler.waitResolutions = completer
+		return nil
+	}
+}
+
+// WithTicketProjector installs the ticket terminalizer. Without it a
+// finalized run simply has no ticket to project onto (clusters that never
+// dispatch tickets); with it, every terminal outcome moves the owning ticket to
+// needs_review.
+func WithTicketProjector(projector TicketProjector) ReconcilerOption {
+	return func(reconciler *Reconciler) error {
+		if nilInterface(projector) {
+			return fmt.Errorf("workflow run reconciler: ticket projector is required")
+		}
+		reconciler.tickets = projector
 		return nil
 	}
 }
@@ -225,11 +254,15 @@ func (reconciler *Reconciler) reconcileRow(
 	case db.AgentWorkflowRunStatusSucceeded,
 		db.AgentWorkflowRunStatusFailed,
 		db.AgentWorkflowRunStatusErrored:
+		// Already terminal (another node finalized it, or this row was
+		// re-claimed): re-project so a projection that failed once still lands.
+		reconciler.projectOwningTicket(ctx, view.Run)
 		return metric.WorkflowRunReconcilerRowAdvanced, nil
 	case db.AgentWorkflowRunStatusAborted:
 		if err := reconciler.cancelOpenWaits(ctx, view.Run, now); err != nil {
 			return "", err
 		}
+		reconciler.projectOwningTicket(ctx, view.Run)
 		return metric.WorkflowRunReconcilerRowAdvanced, nil
 	default:
 		return "", newRowFailure("invalid_status", fmt.Errorf("invalid active workflow-run status"))
@@ -406,7 +439,7 @@ func (reconciler *Reconciler) finalize(
 	message string,
 	outputs []db.AgentWorkflowRunExpectedOutput,
 ) (metric.WorkflowRunReconcilerRowResult, error) {
-	_, _, err := reconciler.store.Finalize(ctx, db.AgentWorkflowRunFinalization{
+	_, applied, err := reconciler.store.Finalize(ctx, db.AgentWorkflowRunFinalization{
 		WorkflowRunID:           run.ID,
 		ExpectedStatus:          run.Status,
 		ExpectedExecutionStatus: run.ExecutionStatus,
@@ -418,7 +451,39 @@ func (reconciler *Reconciler) finalize(
 	if err != nil {
 		return "", newRowFailure("finalize", err)
 	}
+	if applied {
+		// This node's CAS won, so this node owns the projection. A lost CAS
+		// means another node finalized the run and projects it itself.
+		reconciler.projectOwningTicket(ctx, run)
+	}
 	return metric.WorkflowRunReconcilerRowAdvanced, nil
+}
+
+// projectOwningTicket terminalizes the ticket that owns a finished run. It is
+// deliberately not a row failure: the run IS finalized, and a projection fault
+// must not re-classify that outcome. It is loud in the log instead, and the
+// already-terminal path above re-attempts it on any later claim.
+func (reconciler *Reconciler) projectOwningTicket(ctx context.Context, run db.AgentWorkflowRun) {
+	if reconciler.tickets == nil || run.OriginKind != OriginKindTicket {
+		return
+	}
+	ticketID, err := strconv.Atoi(strings.TrimSpace(run.OriginReference))
+	if err != nil || ticketID <= 0 {
+		reconciler.logger.Error("ticket-origin-unreadable", errTicketProjectionFailed, lager.Data{
+			"workflow_run_id":  run.ID.String(),
+			"origin_reference": run.OriginReference,
+		})
+		return
+	}
+	if err := reconciler.tickets.ProjectFinalizedRun(ctx, ticketID, run.ID); err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		reconciler.logger.Error("ticket-projection-failed", err, lager.Data{
+			"workflow_run_id": run.ID.String(),
+			"ticket":          ticketID,
+		})
+	}
 }
 
 type executionLinkCompleteness uint8

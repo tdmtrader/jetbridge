@@ -7,6 +7,7 @@ import (
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/agent/api/principals"
+	"github.com/concourse/concourse/agent/api/principals/principalstest"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/api/accessor/accessorfakes"
@@ -22,7 +23,7 @@ func TestAgentWorkflowWaitRoutesUseHumanMainTeamAuthorization(t *testing.T) {
 	teamFactory := new(dbfakes.FakeTeamFactory)
 	workerFactory := new(dbfakes.FakeWorkerFactory)
 	buildFactory := new(dbfakes.FakeBuildFactory)
-	principalStore := principals.NewMemoryStore()
+	principalStore := principalstest.NewMemoryStore()
 	_, principalToken, err := principalStore.Create(principals.CreateSpec{
 		Name: "ticket-writer", Scopes: []string{principals.ScopeTicketsWrite},
 	})

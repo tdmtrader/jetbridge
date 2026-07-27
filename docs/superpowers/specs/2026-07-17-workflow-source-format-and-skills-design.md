@@ -1,5 +1,7 @@
 # Workflow Source Format, Deploy Model, and Skills — Design
 
+> **SUPERSEDED — historical implementation record (not executable).** The approved [Agentic Workflows as Functions over Snapshots design](2026-07-21-agentic-workflows-as-functions-design.md) and [Agentic Functions program plan](../plans/2026-07-21-agentic-functions-program.md) are authoritative. The workflow source format and skills materialization it specifies remain live; its framing around ticket-centric dispatch and the plan-05/plan-11 workstreams below is historical.
+
 **Date:** 2026-07-17
 **Status:** Approved direction (amends §2 and §6 of `2026-07-07-agentic-platform-end-state-design.md`)
 **Depends on:** workflow-store (plan 05, landed), manual dispatch (plan 11 slice, landed)

@@ -218,6 +218,11 @@ type RunCommand struct {
 	agentSnapshotPublisherComposer  snapshotPublisherComposer
 	agentSnapshotPublisher          publisher.Executor
 
+	// The ticket/workflow admission graph is composed ONCE and shared by the
+	// dispatcher component and the dispatch API route. See agentDispatchGraph.
+	agentDispatchMu    sync.Mutex
+	agentDispatchGraph *agentDispatchGraph
+
 	artifactResolveCapabilityMu  sync.Mutex
 	artifactResolveCapabilityKey []byte
 
@@ -358,9 +363,6 @@ type RunCommand struct {
 	AgentPlatformTokenSecret string `long:"agent-platform-token-secret" default:"agent-platform-credential" description:"Name of the K8s secret (keys 'anthropic-token' and 'kind') every agent pod mounts its Anthropic token from. The default is the secret the platform-credential syncer maintains from the vaulted platform credential (fly agent auth --platform); point it elsewhere only to supply the secret out of band. Empty means agent steps have no token path."`
 
 	AgentDailyBudgetUSD float64 `long:"agent-daily-budget-usd" default:"0" description:"Global daily agent LLM spend cap in USD across all agent work, enforced by atomic workflow and experiment reservations and reported by the cost rollup API. 0 disables the cap."`
-
-	AgentDispatcherEnabled     bool `long:"agent-dispatcher-enabled" description:"Run the autonomous agent-ticket dispatcher loop (Kubernetes runtime only). When off, tickets dispatch only via the manual route/fly."`
-	AgentDispatcherMaxAttempts int  `long:"agent-dispatcher-max-attempts" default:"3" description:"Reserved dispatcher attempt-limit setting. Terminal subordinate runs always require human review."`
 
 	LogDBQueries   bool `long:"log-db-queries" description:"Log database queries."`
 	LogClusterName bool `long:"log-cluster-name" description:"Log cluster name."`
@@ -1269,8 +1271,22 @@ func (cmd *RunCommand) backendComponents(
 	dbAgentWorkflowWaitsFactory := db.NewAgentWorkflowWaitsFactory(
 		dbConn, cmd.AgentSnapshots.BindingRetention,
 	)
+	// One admission graph for the whole process. The API side composed it
+	// first (it is what creates the default team); this call returns that
+	// identical graph, so the dispatcher component, the dispatch route and the
+	// terminalizer below all share one binder, canceler and workflow store.
+	dispatchGraph, err := cmd.composeAgentDispatch(
+		dbConn, lockFactory, teamFactory, dbBuildFactory, dbPipelineRunFactory,
+	)
+	if err != nil {
+		return nil, err
+	}
 	reconcilerOptions := []workflowrun.ReconcilerOption{
 		workflowrun.WithWaitCanceler(dbAgentWorkflowWaitsFactory),
+		// THE terminalizer: a finished workflow run projects its owning ticket
+		// to needs_review from here, in the always-on reconciler, and nowhere
+		// else.
+		workflowrun.WithTicketProjector(dispatchGraph.projector),
 	}
 	cmd.agentSnapshotMu.Lock()
 	agentSnapshotCreator := cmd.agentSnapshotCreator
@@ -1545,13 +1561,12 @@ func (cmd *RunCommand) backendComponents(
 			Interval: time.Minute,
 		})
 
-		// The dispatcher component is ALWAYS wired now (runtime-controlled),
-		// not gated on --agent-dispatcher-enabled. The boot flag is instead the
-		// FALLBACK seed for the effective mode: when no agent_settings row
-		// exists, ResolveEffectiveMode(false, "", cmd.AgentDispatcherEnabled)
-		// reproduces the historical behavior (flag off -> effective "off" ->
-		// fully dormant loop). An admin flips the mode at runtime via
-		// PUT /api/v1/agent/dispatcher, read HOT on the loop's next tick.
+		// The dispatcher component is ALWAYS wired: the seeded agent_settings
+		// row is the only control, read HOT on the loop's next tick, and an
+		// admin flips it at runtime via PUT /api/v1/agent/dispatcher. The
+		// component ONLY dispatches queued tickets — terminalizing a ticket
+		// whose run finished is the always-on workflow-run reconciler's job,
+		// so no dispatcher mode can strand a running ticket.
 		//
 		// NOTE for the human: housekeeping components (e.g. ticket #42's
 		// unmerged pipeline-archiver) MUST wire independently of this dispatch
@@ -1560,124 +1575,28 @@ func (cmd *RunCommand) backendComponents(
 		// dispatch-mode conditional.
 		{
 			dispatcherSettings := db.NewAgentSettingsFactory(dbConn)
-			dispatcherBootFlag := cmd.AgentDispatcherEnabled
 			modeResolver := func() string {
 				mode, found, err := dispatcherSettings.GetDispatcherMode()
 				if err != nil {
 					// Fail-safe: a read fault must never auto-dispatch against
 					// an admin's explicit pause/off. EffectiveModeFromRead
-					// returns ModePaused on error (no dispatch, reconciler
-					// stays alive), independent of the boot seed.
+					// returns ModePaused on error.
 					logger.Error("failed-to-read-dispatcher-mode", err)
 				}
-				return dispatch.EffectiveModeFromRead(mode, found, err, dispatcherBootFlag)
+				return dispatch.EffectiveModeFromRead(mode, found, err)
 			}
 
-			var (
-				ticketDispatchTeamID   int
-				ticketDispatchTeamName string
-				ticketWorkItems        dispatch.WorkItemCapturer
-				ticketWorkflowBinder   dispatch.WorkflowBinder
-				ticketWorkflowCanceler dispatch.WorkflowRunCanceler
-			)
-			if cmd.AgentSnapshots.Enabled {
-				mainTeam, found, err := teamFactory.FindTeam(atc.DefaultTeamName)
-				if err != nil {
-					return nil, fmt.Errorf("resolve main team for ticket workflow dispatch: %w", err)
-				}
-				if !found || mainTeam == nil || mainTeam.ID() <= 0 || mainTeam.Name() != atc.DefaultTeamName {
-					return nil, errors.New("resolve main team for ticket workflow dispatch: main team is unavailable")
-				}
-				ticketDispatchTeamID, ticketDispatchTeamName = mainTeam.ID(), mainTeam.Name()
-
-				workflowStore := db.NewAgentWorkflowsFactory(dbConn)
-				snapshotStore := db.NewAgentSnapshotsFactory(dbConn)
-				templateSaver, err := workflowrun.NewTemplateSaver(
-					teamFactory,
-					db.NewWorkflowRunTemplateFactory(dbConn, lockFactory),
-				)
-				if err != nil {
-					return nil, fmt.Errorf("construct ticket workflow template saver: %w", err)
-				}
-				workflowBudget, err := workflowrun.NewGlobalDailyBudgetAdmitter(
-					db.NewAgentWorkflowBudgetReservationsFactory(dbConn, db.AgentWorkflowBudgetConfig{
-						GlobalDailyCapUSD: cmd.AgentDailyBudgetUSD,
-						Location:          time.Local,
-						Now:               time.Now,
-					}),
-					cmd.AgentDailyBudgetUSD,
-				)
-				if err != nil {
-					return nil, fmt.Errorf("construct ticket workflow budget admission: %w", err)
-				}
-				workflowCredential, err := workflowrun.NewPlatformCredentialAdmitter(
-					db.NewAgentUserCredentialsFactory(dbConn),
-					cmd.AgentPlatformTokenSecret,
-				)
-				if err != nil {
-					return nil, fmt.Errorf("construct ticket workflow model credential admission: %w", err)
-				}
-				ticketWorkflowBinder, err = workflowrun.NewBinder(
-					workflowrun.WorkflowDefinitionStoreResolver{Store: workflowStore},
-					workflowrun.WorkflowTargetRenderer{RuntimeImage: cmd.AgentStepImage},
-					snapshotStore,
-					dbAgentWorkflowRunsFactory,
-					workflowBudget,
-					templateSaver,
-					dbPipelineRunFactory,
-					workflowCredential,
-				)
-				if err != nil {
-					return nil, fmt.Errorf("construct ticket workflow binder: %w", err)
-				}
-				ticketWorkflowCanceler, err = workflowrun.NewCancelerWithWaits(
-					dbAgentWorkflowRunsFactory,
-					dbBuildFactory,
-					db.NewAgentWorkflowWaitsFactory(dbConn),
-				)
-				if err != nil {
-					return nil, fmt.Errorf("construct ticket workflow canceler: %w", err)
-				}
-				cmd.agentSnapshotMu.Lock()
-				snapshotCreator := cmd.agentSnapshotCreator
-				cmd.agentSnapshotMu.Unlock()
-				if isNilDependency(snapshotCreator) {
-					return nil, errors.New("construct ticket work-item capturer: snapshot creator is unavailable")
-				}
-				ticketWorkItems, err = workitem.NewCapturer(
-					db.NewAgentTicketsFactory(dbConn),
-					snapshotCreator,
-					workitem.Authority{
-						TeamID: mainTeam.ID(), TeamName: mainTeam.Name(),
-						Actor: "ticket-dispatch-adapter", DisplayName: "ticket-dispatch-adapter",
-					},
-				)
-				if err != nil {
-					return nil, fmt.Errorf("construct ticket work-item capturer: %w", err)
-				}
-			}
-
-			dispatcherDeps := dispatch.Deps{
-				Tickets:          db.NewAgentTicketsFactory(dbConn),
-				Workflows:        db.NewAgentWorkflowsFactory(dbConn),
-				TeamID:           ticketDispatchTeamID,
-				TeamName:         ticketDispatchTeamName,
-				WorkItems:        ticketWorkItems,
-				WorkflowBinder:   ticketWorkflowBinder,
-				WorkflowCanceler: ticketWorkflowCanceler,
-			}
 			components = append(components, RunnableComponent{
 				Component: atc.Component{
 					Name: atc.ComponentAgentDispatcher,
 				},
-				Runnable: dispatch.NewDispatcher(dispatcherDeps, dispatch.LoopConfig{
-					Mode:        modeResolver,
-					RunReader:   dbPipelineRunFactory,
-					MaxAttempts: cmd.AgentDispatcherMaxAttempts,
+				Runnable: dispatch.NewDispatcher(dispatchGraph.deps, dispatch.LoopConfig{
+					Mode: modeResolver,
 				}),
 				// Interval deliberately omitted: defaultComponentInterval (10s)
-				// polling — agent_tickets has no NOTIFY trigger (recorded
-				// decision, dispatch-remainder plan §5).
+				// polling — agent_tickets has no NOTIFY trigger, and this fork
+				// never runs a component notify-only (see docs/agentic/README.md
+				// and the dropped-notification rule in CLAUDE.md).
 			})
 		}
 	}
@@ -1716,6 +1635,165 @@ func (cmd *RunCommand) backendComponents(
 	components = append(components, experimentComponents...)
 
 	return components, err
+}
+
+// agentDispatchGraph is the ONE ticket/workflow admission object graph. The
+// dispatcher component and the POST .../dispatch route both admit through the
+// exact same binder, canceler, work-item capturer and promotion-validated
+// workflow store; the terminalizer that projects a finished run back onto its
+// ticket is built here too, so all three see one truth.
+//
+// Two graphs meant two chances to diverge, and they had diverged: the
+// component's workflow store was built with NO promotion validator (so a
+// schema-v3 promotion resolved differently depending on which side asked) and
+// its wait store with no binding retention.
+type agentDispatchGraph struct {
+	teamID   int
+	teamName string
+
+	targetRenderer workflowrun.WorkflowTargetRenderer
+	workflows      db.AgentWorkflowsFactory
+	runs           db.AgentWorkflowRunsFactory
+	snapshots      db.AgentSnapshotsFactory
+	waits          db.AgentWorkflowWaitsFactory
+	templates      *workflowrun.TemplateSaver
+	binder         *workflowrun.Binder
+	canceler       *workflowrun.Canceler
+	tickets        db.AgentTicketsFactory
+	projector      *dispatch.TicketProjector
+
+	// deps is what both dispatch entry points pass to DispatchOne. It is a
+	// value, but every field in it is one of the shared singletons above.
+	deps dispatch.Deps
+}
+
+// composeAgentDispatch builds the admission graph once and memoises it. The
+// FIRST caller wins and every later caller gets that identical graph, so the
+// arguments must describe the same cluster (they do: one process, one DB).
+//
+// Ordering is not accidental: constructAPIMembers runs before
+// backendComponents and is what creates the default team, which this
+// composition requires — so the API side composes and the dispatcher component
+// reuses. That also fixes which connection pool admission runs on: the API
+// one. The alternative — composing on the backend pool — would mean minting a
+// SECOND pipeline-run factory (and a second check factory behind it) for the
+// same connection, trading the divergence this graph exists to remove for a
+// different one.
+func (cmd *RunCommand) composeAgentDispatch(
+	conn db.DbConn,
+	lockFactory lock.LockFactory,
+	teamFactory db.TeamFactory,
+	buildFactory db.BuildFactory,
+	pipelineRunFactory db.PipelineRunFactory,
+) (*agentDispatchGraph, error) {
+	cmd.agentDispatchMu.Lock()
+	defer cmd.agentDispatchMu.Unlock()
+	if cmd.agentDispatchGraph != nil {
+		return cmd.agentDispatchGraph, nil
+	}
+	if conn == nil || lockFactory == nil || teamFactory == nil || buildFactory == nil || pipelineRunFactory == nil {
+		return nil, errors.New("compose ticket dispatch: incomplete dependencies")
+	}
+
+	mainTeam, found, err := teamFactory.FindTeam(atc.DefaultTeamName)
+	if err != nil {
+		return nil, fmt.Errorf("resolve main team for ticket dispatch: %w", err)
+	}
+	if !found || mainTeam == nil || mainTeam.ID() <= 0 || mainTeam.Name() != atc.DefaultTeamName {
+		return nil, errors.New("resolve main team for ticket dispatch: main team is unavailable")
+	}
+
+	// ONE promotion validator for every workflow-store read in the graph.
+	targetRenderer := workflowrun.WorkflowTargetRenderer{RuntimeImage: cmd.AgentStepImage}
+	graph := &agentDispatchGraph{
+		teamID:         mainTeam.ID(),
+		teamName:       mainTeam.Name(),
+		targetRenderer: targetRenderer,
+		workflows:      db.NewAgentWorkflowsFactory(conn, targetRenderer),
+		runs:           db.NewAgentWorkflowRunsFactory(conn),
+		snapshots:      db.NewAgentSnapshotsFactory(conn),
+		waits:          db.NewAgentWorkflowWaitsFactory(conn, cmd.AgentSnapshots.BindingRetention),
+		tickets:        db.NewAgentTicketsFactory(conn),
+	}
+
+	graph.templates, err = workflowrun.NewTemplateSaver(
+		teamFactory,
+		db.NewWorkflowRunTemplateFactory(conn, lockFactory),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("construct workflow-run template saver: %w", err)
+	}
+	budget, err := workflowrun.NewGlobalDailyBudgetAdmitter(
+		db.NewAgentWorkflowBudgetReservationsFactory(conn, db.AgentWorkflowBudgetConfig{
+			GlobalDailyCapUSD: cmd.AgentDailyBudgetUSD,
+			Location:          time.Local,
+			Now:               time.Now,
+		}),
+		cmd.AgentDailyBudgetUSD,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("construct workflow-run budget admission: %w", err)
+	}
+	credential, err := workflowrun.NewPlatformCredentialAdmitter(
+		db.NewAgentUserCredentialsFactory(conn),
+		cmd.AgentPlatformTokenSecret,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("construct workflow-run model credential admission: %w", err)
+	}
+	graph.binder, err = workflowrun.NewBinder(
+		workflowrun.WorkflowDefinitionStoreResolver{Store: graph.workflows},
+		targetRenderer,
+		graph.snapshots,
+		graph.runs,
+		budget,
+		graph.templates,
+		pipelineRunFactory,
+		credential,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("construct workflow-run binder: %w", err)
+	}
+	graph.canceler, err = workflowrun.NewCancelerWithWaits(graph.runs, buildFactory, graph.waits)
+	if err != nil {
+		return nil, fmt.Errorf("construct workflow-run canceler: %w", err)
+	}
+	graph.projector, err = dispatch.NewTicketProjector(graph.tickets)
+	if err != nil {
+		return nil, fmt.Errorf("construct ticket terminalizer: %w", err)
+	}
+
+	graph.deps = dispatch.Deps{
+		Tickets:          graph.tickets,
+		Workflows:        graph.workflows,
+		TeamID:           graph.teamID,
+		TeamName:         graph.teamName,
+		WorkflowBinder:   graph.binder,
+		WorkflowCanceler: graph.canceler,
+	}
+	if cmd.AgentSnapshots.Enabled {
+		cmd.agentSnapshotMu.Lock()
+		snapshotCreator := cmd.agentSnapshotCreator
+		cmd.agentSnapshotMu.Unlock()
+		if isNilDependency(snapshotCreator) {
+			return nil, errors.New("construct ticket work-item capturer: snapshot creator is unavailable")
+		}
+		capturer, err := workitem.NewCapturer(
+			graph.tickets,
+			snapshotCreator,
+			workitem.Authority{
+				TeamID: graph.teamID, TeamName: graph.teamName,
+				Actor: "ticket-dispatch-adapter", DisplayName: "ticket-dispatch-adapter",
+			},
+		)
+		if err != nil {
+			return nil, fmt.Errorf("construct ticket work-item capturer: %w", err)
+		}
+		graph.deps.WorkItems = capturer
+	}
+
+	cmd.agentDispatchGraph = graph
+	return graph, nil
 }
 
 func (cmd *RunCommand) compression() compression.Compression {
@@ -3285,24 +3363,20 @@ func (cmd *RunCommand) constructAPIHandler(
 		wrappa.NewCompressionWrappa(logger),
 	}
 
-	mainTeam, found, err := teamFactory.FindTeam(atc.DefaultTeamName)
-	if err != nil {
-		return nil, fmt.Errorf("resolve main team for workflow-run API: %w", err)
-	}
-	if !found || mainTeam == nil || mainTeam.ID() <= 0 || mainTeam.Name() != atc.DefaultTeamName {
-		return nil, errors.New("resolve main team for workflow-run API: main team is unavailable")
-	}
-	targetRenderer := workflowrun.WorkflowTargetRenderer{RuntimeImage: cmd.AgentStepImage}
-	workflowStore := db.NewAgentWorkflowsFactory(dbConn, targetRenderer)
-	workflowRunStore := db.NewAgentWorkflowRunsFactory(dbConn)
-	snapshotStore := db.NewAgentSnapshotsFactory(dbConn)
-	templateSaver, err := workflowrun.NewTemplateSaver(
-		teamFactory,
-		db.NewWorkflowRunTemplateFactory(dbConn, lockFactory),
+	// Compose the one ticket/workflow admission graph here — this runs before
+	// backendComponents, and the default team it needs exists by now. The
+	// dispatcher component reuses this exact graph.
+	dispatchGraph, err := cmd.composeAgentDispatch(
+		dbConn, lockFactory, teamFactory, dbBuildFactory, dbPipelineRunFactory,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("construct workflow-run template saver: %w", err)
+		return nil, err
 	}
+	targetRenderer := dispatchGraph.targetRenderer
+	workflowStore := dispatchGraph.workflows
+	workflowRunStore := dispatchGraph.runs
+	snapshotStore := dispatchGraph.snapshots
+	templateSaver := dispatchGraph.templates
 	var resourceCapturer snapshotsapi.ResourceCapturer
 	if cmd.AgentSnapshots.Enabled {
 		resolver, err := resourcecapture.NewATCResolver(teamFactory)
@@ -3342,72 +3416,15 @@ func (cmd *RunCommand) constructAPIHandler(
 			return nil, fmt.Errorf("construct resource capturer: %w", err)
 		}
 	}
-	workflowBudget, err := workflowrun.NewGlobalDailyBudgetAdmitter(
-		db.NewAgentWorkflowBudgetReservationsFactory(dbConn, db.AgentWorkflowBudgetConfig{
-			GlobalDailyCapUSD: cmd.AgentDailyBudgetUSD,
-			Location:          time.Local,
-			Now:               time.Now,
-		}),
-		cmd.AgentDailyBudgetUSD,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("construct workflow-run budget admission: %w", err)
-	}
-	workflowCredential, err := workflowrun.NewPlatformCredentialAdmitter(
-		db.NewAgentUserCredentialsFactory(dbConn),
-		cmd.AgentPlatformTokenSecret,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("construct workflow-run model credential admission: %w", err)
-	}
-	workflowBinder, err := workflowrun.NewBinder(
-		workflowrun.WorkflowDefinitionStoreResolver{Store: workflowStore},
-		targetRenderer,
-		snapshotStore,
-		workflowRunStore,
-		workflowBudget,
-		templateSaver,
-		dbPipelineRunFactory,
-		workflowCredential,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("construct workflow-run binder: %w", err)
-	}
-	var ticketWorkItems dispatch.WorkItemCapturer
-	if cmd.AgentSnapshots.Enabled {
-		cmd.agentSnapshotMu.Lock()
-		snapshotCreator := cmd.agentSnapshotCreator
-		cmd.agentSnapshotMu.Unlock()
-		if isNilDependency(snapshotCreator) {
-			return nil, errors.New("construct ticket work-item capturer: snapshot creator is unavailable")
-		}
-		ticketWorkItems, err = workitem.NewCapturer(
-			db.NewAgentTicketsFactory(dbConn),
-			snapshotCreator,
-			workitem.Authority{
-				TeamID: mainTeam.ID(), TeamName: mainTeam.Name(),
-				Actor: "ticket-dispatch-adapter", DisplayName: "ticket-dispatch-adapter",
-			},
-		)
-		if err != nil {
-			return nil, fmt.Errorf("construct ticket work-item capturer: %w", err)
-		}
-	}
-	workflowWaitStore := db.NewAgentWorkflowWaitsFactory(
-		dbConn, cmd.AgentSnapshots.BindingRetention,
-	)
-	workflowCanceler, err := workflowrun.NewCancelerWithWaits(workflowRunStore, dbBuildFactory, workflowWaitStore)
-	if err != nil {
-		return nil, fmt.Errorf("construct workflow-run canceler: %w", err)
-	}
+	workflowWaitStore := dispatchGraph.waits
 	workflowRunHandlers, err := workflowrunsapi.NewHandler(workflowrunsapi.Config{
 		Logger: logger.Session("workflow-runs-api"),
-		Team:   workflowrunsapi.TrustedTeam{ID: mainTeam.ID(), Name: mainTeam.Name()},
+		Team:   workflowrunsapi.TrustedTeam{ID: dispatchGraph.teamID, Name: dispatchGraph.teamName},
 		Identity: func(r *http.Request) (string, error) {
 			return workflowRunCreatorIdentity(accessor.GetAccessor(r).UserInfo())
 		},
-		Binder: workflowBinder, Runs: workflowRunStore,
-		Canceler: workflowCanceler, Manifests: snapshotStore,
+		Binder: dispatchGraph.binder, Runs: workflowRunStore,
+		Canceler: dispatchGraph.canceler, Manifests: snapshotStore,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("construct workflow-run API: %w", err)
@@ -3418,7 +3435,7 @@ func (cmd *RunCommand) constructAPIHandler(
 	workflowWaitArchiveLimits := cmd.agentSnapshotArchiveLimits
 	cmd.agentSnapshotMu.Unlock()
 	workflowWaitHandlers, err := workflowwaitsapi.NewHandler(workflowwaitsapi.Config{
-		Team: workflowwaitsapi.TrustedTeam{ID: mainTeam.ID(), Name: mainTeam.Name()},
+		Team: workflowwaitsapi.TrustedTeam{ID: dispatchGraph.teamID, Name: dispatchGraph.teamName},
 		Identity: func(r *http.Request) (workflowwaitsapi.RequestIdentity, error) {
 			identity, err := agentSnapshotIdentity(accessor.GetAccessor(r).Claims())
 			return workflowwaitsapi.RequestIdentity{
@@ -3436,8 +3453,8 @@ func (cmd *RunCommand) constructAPIHandler(
 	}
 	workflowOutcomeStore := db.NewAgentWorkflowOutcomesFactory(dbConn)
 	workflowOutcomeHandlers, err := workflowoutcomesapi.NewHandler(workflowoutcomesapi.HandlerConfig{
-		TeamID:   mainTeam.ID(),
-		TeamName: mainTeam.Name(),
+		TeamID:   dispatchGraph.teamID,
+		TeamName: dispatchGraph.teamName,
 		Identity: func(request *http.Request) (string, error) {
 			return workflowRunCreatorIdentity(accessor.GetAccessor(request).UserInfo())
 		},
@@ -3449,8 +3466,8 @@ func (cmd *RunCommand) constructAPIHandler(
 	}
 	experimentStore := cmd.newAgentExperimentsFactory(dbConn, targetRenderer)
 	experimentHandlers, err := experimentsapi.NewHandler(experimentsapi.Config{
-		TeamID:   mainTeam.ID(),
-		TeamName: mainTeam.Name(),
+		TeamID:   dispatchGraph.teamID,
+		TeamName: dispatchGraph.teamName,
 		Identity: func(r *http.Request) (string, error) {
 			return workflowRunCreatorIdentity(accessor.GetAccessor(r).UserInfo())
 		},
@@ -3506,27 +3523,18 @@ func (cmd *RunCommand) constructAPIHandler(
 		db.NewAgentFeedbackFactory(dbConn),
 		db.NewAgentReviewsFactory(dbConn),
 		db.NewAgentRunMetricsFactory(dbConn),
-		db.NewAgentTicketsFactory(dbConn),
+		dispatchGraph.tickets,
 		agentPrincipalsFactory,
 		db.NewAgentUserCredentialsFactory(dbConn),
-		cmd.AgentStepImage,
 		db.NewAgentCostLedgerFactory(dbConn),
 		cmd.AgentDailyBudgetUSD,
 		db.NewAgentRunTranscriptFactory(dbConn),
 		workflowStore,
-		dispatch.NewHTTPHandler(dispatch.Deps{
-			Tickets:          db.NewAgentTicketsFactory(dbConn),
-			Workflows:        db.NewAgentWorkflowsFactory(dbConn),
-			TeamID:           mainTeam.ID(),
-			TeamName:         mainTeam.Name(),
-			WorkItems:        ticketWorkItems,
-			WorkflowBinder:   workflowBinder,
-			WorkflowCanceler: workflowCanceler,
-		}, func(r *http.Request) string {
+		// The SAME Deps the dispatcher component runs on.
+		dispatch.NewHTTPHandler(dispatchGraph.deps, func(r *http.Request) string {
 			return accessor.GetAccessor(r).Claims().UserName
 		}),
 		db.NewAgentSettingsFactory(dbConn),
-		cmd.AgentDispatcherEnabled,
 		snapshotHandlers,
 		resourceCapturer,
 		workflowRunHandlers,

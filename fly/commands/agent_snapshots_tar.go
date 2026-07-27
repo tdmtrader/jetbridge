@@ -25,26 +25,13 @@ func parseAgentSnapshotID(raw string) (string, error) {
 	return id.String(), nil
 }
 
-// writeAgentSnapshotTar emits the portable, deterministic directory
-// representation accepted by the snapshot API. The server canonicalizer is
-// still authoritative; these checks prevent obviously unsafe local entries
-// and make retries/content hashes stable before the request leaves Fly.
-func writeAgentSnapshotTar(ctx context.Context, directory string, output io.Writer) (err error) {
-	if ctx == nil || output == nil {
-		return fmt.Errorf("agent snapshot: context and output are required")
-	}
-	root, err := openAgentSnapshotDirectory(directory)
-	if err != nil {
-		return err
-	}
-	defer func() { err = errors.Join(err, root.Close()) }()
-	return writeAgentSnapshotTarFromRoot(ctx, root, output)
-}
-
-// writeAgentSnapshotTarFromRoot archives the exact directory object opened
-// and preflighted by the caller. Keeping that descriptor anchored across the
-// HTTP setup and stream prevents a pathname swap from changing the trust
-// boundary after preflight.
+// writeAgentSnapshotTarFromRoot emits the portable, deterministic directory
+// representation accepted by the snapshot API, archiving the exact directory
+// object opened and preflighted by the caller. The server canonicalizer is
+// still authoritative; the local checks prevent obviously unsafe entries and
+// make retries/content hashes stable before the request leaves Fly. Keeping
+// that descriptor anchored across the HTTP setup and stream prevents a
+// pathname swap from changing the trust boundary after preflight.
 func writeAgentSnapshotTarFromRoot(ctx context.Context, root *os.Root, output io.Writer) (err error) {
 	if ctx == nil || root == nil || output == nil {
 		return fmt.Errorf("agent snapshot: context, source root, and output are required")

@@ -217,7 +217,14 @@ func (cmd *RunCommand) agentExperimentComponents(
 		return nil, fmt.Errorf("construct experiment runtime: main team is unavailable")
 	}
 
-	workflowStore := db.NewAgentWorkflowsFactory(dbConn)
+	// One renderer serves both roles it is trusted for: the binder's target
+	// renderer AND the workflow store's promotion validator. Constructing the
+	// store without it would leave this object graph unable to promote a
+	// schema-v3 definition at all (ErrPromotionValidatorRequired) — a silent
+	// divergence from the dispatch graph, even though today the experiment
+	// runtime only READS definitions through this store.
+	targetRenderer := workflowrun.WorkflowTargetRenderer{RuntimeImage: cmd.AgentStepImage}
+	workflowStore := db.NewAgentWorkflowsFactory(dbConn, targetRenderer)
 	runStore := db.NewAgentWorkflowRunsFactory(dbConn)
 	templateSaver, err := workflowrun.NewTemplateSaver(
 		teamFactory,
@@ -237,7 +244,6 @@ func (cmd *RunCommand) agentExperimentComponents(
 	if err != nil {
 		return nil, fmt.Errorf("construct experiment model credential admission: %w", err)
 	}
-	targetRenderer := workflowrun.WorkflowTargetRenderer{RuntimeImage: cmd.AgentStepImage}
 	binder, err := workflowrun.NewBinder(
 		workflowrun.WorkflowDefinitionStoreResolver{Store: workflowStore},
 		targetRenderer,

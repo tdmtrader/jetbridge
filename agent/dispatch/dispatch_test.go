@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/concourse/concourse/agent/api/tickets"
+	"github.com/concourse/concourse/agent/api/tickets/ticketstest"
 	"github.com/concourse/concourse/agent/dispatch"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/workflow"
@@ -200,26 +201,25 @@ func cloneSnapshotIDs(values map[string]snapshot.SnapshotID) map[string]snapshot
 	return cloned
 }
 
-type staticPortResolver struct {
-	mapping dispatch.TicketPortMapping
-	err     error
-}
+type portSpec struct{ name, portType string }
 
-func (resolver staticPortResolver) ResolveTicketPorts(context.Context, workflow.Definition) (dispatch.TicketPortMapping, error) {
-	return resolver.mapping, resolver.err
-}
-
-func v3Definition(t *testing.T, workItemPort, repositoryPort string) *workflow.Definition {
+// definitionWithInputs compiles a one-step schema-v3 workflow whose authored
+// input signature is exactly `ports` — the knob every ticket-dispatchability
+// case turns.
+func definitionWithInputs(t *testing.T, ports ...portSpec) *workflow.Definition {
 	t.Helper()
+	var declared, types strings.Builder
+	names := make([]string, 0, len(ports))
+	for _, port := range ports {
+		fmt.Fprintf(&declared, "  - name: %s\n    type: %s\n", port.name, port.portType)
+		fmt.Fprintf(&types, "      %s: {type: %s}\n", port.name, port.portType)
+		names = append(names, port.name)
+	}
 	raw := fmt.Sprintf(`schema_version: 3
 name: smoke
 signature_version: 1
 inputs:
-  - name: %s
-    type: work-item/v1
-  - name: %s
-    type: repository/v1
-outputs:
+%soutputs:
   - name: report
     type: opaque/v1
     from: report
@@ -227,14 +227,12 @@ plan:
   - agent: work
     function_id: work
     prompt: Do the captured work.
-    inputs: [%s, %s]
+    inputs: [%s]
     outputs: [report]
     input_types:
-      %s: {type: work-item/v1}
-      %s: {type: repository/v1}
-    output_types:
+%s    output_types:
       report: opaque/v1
-`, workItemPort, repositoryPort, workItemPort, repositoryPort, workItemPort, repositoryPort)
+`, declared.String(), strings.Join(names, ", "), types.String())
 	compiled, err := workflow.ParseCompiled([]byte(raw))
 	if err != nil {
 		t.Fatalf("parse v3 definition: %v", err)
@@ -245,9 +243,17 @@ plan:
 	}
 }
 
-func v3DispatchDeps(t *testing.T) (dispatch.Deps, *tickets.MemoryStore, *fakeWorkItemCapturer, *fakeWorkflowBinder) {
+func v3Definition(t *testing.T, workItemPort, repositoryPort string) *workflow.Definition {
 	t.Helper()
-	store := tickets.NewMemoryStore()
+	return definitionWithInputs(t,
+		portSpec{workItemPort, "work-item/v1"},
+		portSpec{repositoryPort, "repository/v1"},
+	)
+}
+
+func v3DispatchDeps(t *testing.T) (dispatch.Deps, *ticketstest.MemoryStore, *fakeWorkItemCapturer, *fakeWorkflowBinder) {
+	t.Helper()
+	store := ticketstest.NewMemoryStore()
 	definition := v3Definition(t, "work-item", "repository")
 	workItems := &fakeWorkItemCapturer{store: store, found: true, result: workitem.CaptureResult{
 		Revision: 4, Snapshot: snapshot.Snapshot{ID: snapshot.SnapshotID(202), Type: snapshot.TypeRef("work-item/v1")},
@@ -268,7 +274,7 @@ func v3DispatchDeps(t *testing.T) (dispatch.Deps, *tickets.MemoryStore, *fakeWor
 	return deps, store, workItems, binder
 }
 
-func setRepositorySnapshot(t *testing.T, store *tickets.MemoryStore, ticketID int, id snapshot.SnapshotID) {
+func setRepositorySnapshot(t *testing.T, store *ticketstest.MemoryStore, ticketID int, id snapshot.SnapshotID) {
 	t.Helper()
 	if err := store.Update(ticketID, tickets.Update{RepositorySnapshotID: &id}); err != nil {
 		t.Fatalf("select repository snapshot: %v", err)
@@ -284,7 +290,8 @@ func TestDispatchOneSchemaThreeBindsCapturedSnapshotsThroughGenericBinder(t *tes
 	if err != nil {
 		t.Fatalf("DispatchOne: %v", err)
 	}
-	if result.RunID != 909 || result.WorkflowRunID == nil || *result.WorkflowRunID != snapshot.WorkflowRunID(303) {
+	if result.WorkflowRunID != snapshot.WorkflowRunID(303) ||
+		result.PipelineRunID == nil || *result.PipelineRunID != 909 {
 		t.Fatalf("result = %+v", result)
 	}
 	if workItems.CallCount() != 1 {
@@ -318,13 +325,12 @@ func TestDispatchOneSchemaThreeBindsCapturedSnapshotsThroughGenericBinder(t *tes
 	}
 }
 
-func TestDispatchOneSchemaThreeUsesExplicitPortMappingWithoutReservedNames(t *testing.T) {
+// Port names are NOT reserved in schema v3. Inference is by TYPE and is the
+// only rule — there is no configurable resolver to disagree with it.
+func TestDispatchOneInfersTicketPortsByTypeWhateverTheyAreNamed(t *testing.T) {
 	deps, store, _, binder := v3DispatchDeps(t)
 	definition := v3Definition(t, "request", "source")
 	deps.Workflows = &fakeWorkflows{byName: map[string]*workflow.Definition{"smoke": definition}}
-	deps.TicketPorts = staticPortResolver{mapping: dispatch.TicketPortMapping{WorkItem: "request", Repository: "source"}}
-	binder.result.Run.WorkflowDefinitionID = definition.ID
-	binder.result.Run.WorkflowVersion = definition.Version
 	id := queuedTicket(t, store, "smoke")
 	setRepositorySnapshot(t, store, id, snapshot.SnapshotID(101))
 
@@ -333,7 +339,118 @@ func TestDispatchOneSchemaThreeUsesExplicitPortMappingWithoutReservedNames(t *te
 	}
 	_, calls := binder.Calls()
 	if calls[0].Inputs["request"] != snapshot.SnapshotID(202) || calls[0].Inputs["source"] != snapshot.SnapshotID(101) {
-		t.Fatalf("explicit mapped inputs = %+v", calls[0].Inputs)
+		t.Fatalf("type-inferred inputs = %+v", calls[0].Inputs)
+	}
+}
+
+// A workflow that does not present exactly one work-item/v1 and one
+// repository/v1 input is not something a ticket can run, and saying so is a
+// pure read of the authored signature — so it happens before ANY side effect.
+func TestDispatchOneRefusesUndispatchableSignatureBeforeSideEffects(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		ports       []portSpec
+		wantMessage string
+	}{
+		{
+			name:        "no work-item input",
+			ports:       []portSpec{{"repository", "repository/v1"}},
+			wantMessage: "declares 0 work-item/v1 and 1 repository/v1 inputs",
+		},
+		{
+			name:        "no repository input",
+			ports:       []portSpec{{"work-item", "work-item/v1"}},
+			wantMessage: "declares 1 work-item/v1 and 0 repository/v1 inputs",
+		},
+		{
+			name: "two work-item inputs is ambiguous",
+			ports: []portSpec{
+				{"work-item", "work-item/v1"},
+				{"other-work-item", "work-item/v1"},
+				{"repository", "repository/v1"},
+			},
+			wantMessage: "declares 2 work-item/v1 and 1 repository/v1 inputs",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			deps, store, workItems, binder := v3DispatchDeps(t)
+			deps.Workflows = &fakeWorkflows{byName: map[string]*workflow.Definition{
+				"smoke": definitionWithInputs(t, tc.ports...),
+			}}
+			countingStore := &countingTicketStore{Store: store}
+			deps.Tickets = countingStore
+			id := queuedTicket(t, store, "smoke")
+			setRepositorySnapshot(t, store, id, snapshot.SnapshotID(101))
+
+			_, err := dispatch.DispatchOne(context.Background(), deps, id, "admin")
+			if !errors.Is(err, dispatch.ErrNotTicketDispatchable) {
+				t.Fatalf("error = %v, want ErrNotTicketDispatchable", err)
+			}
+			if !strings.Contains(err.Error(), tc.wantMessage) {
+				t.Errorf("error %q must say which way the signature is wrong (%q)", err, tc.wantMessage)
+			}
+			if countingStore.reserveCalls != 0 {
+				t.Errorf("ReserveDispatch calls = %d, want 0", countingStore.reserveCalls)
+			}
+			if workItems.CallCount() != 0 {
+				t.Errorf("CaptureRevision calls = %d, want 0", workItems.CallCount())
+			}
+			if _, calls := binder.Calls(); len(calls) != 0 {
+				t.Errorf("BindAndCreate calls = %d, want 0", len(calls))
+			}
+			got, _, _ := store.Get(id)
+			if got.DispatchReservationKey != "" || got.WorkItemSnapshotID != nil || got.WorkflowRunID != nil {
+				t.Errorf("refusal linked dispatch state: %+v", got)
+			}
+		})
+	}
+}
+
+// Schema admission belongs to the binder, which is the one authority that
+// actually creates the run. Dispatch no longer keeps its own copy of the gate,
+// so a non-v3 definition is refused BY THE BINDER and surfaces as its error.
+func TestDispatchOneLeavesSchemaAdmissionToTheBinder(t *testing.T) {
+	deps, store, _, binder := v3DispatchDeps(t)
+	deps.Workflows.(*fakeWorkflows).byName["smoke"].SchemaVersion = 2
+	binder.err = fmt.Errorf("%w: workflow smoke v7 uses schema_version 2", workflowrun.ErrPlatformFailure)
+	id := queuedTicket(t, store, "smoke")
+	setRepositorySnapshot(t, store, id, snapshot.SnapshotID(101))
+
+	_, err := dispatch.DispatchOne(context.Background(), deps, id, "admin")
+	if !errors.Is(err, workflowrun.ErrPlatformFailure) {
+		t.Fatalf("error = %v, want the binder's own refusal", err)
+	}
+	if _, calls := binder.Calls(); len(calls) != 1 {
+		t.Fatalf("the binder must be consulted, calls = %d", len(calls))
+	}
+	got, _, _ := store.Get(id)
+	if got.State != tickets.StateQueued || got.WorkflowRunID != nil {
+		t.Errorf("refused ticket must stay queued and unlinked: %+v", got)
+	}
+}
+
+// A run with no execution linkage is legal (an admission that never reached a
+// pipeline run). It is not a dispatch CONFLICT, and the workflow-run identity
+// still comes back so a caller can inspect it.
+func TestDispatchOneMissingPipelineRunIsNotAConflict(t *testing.T) {
+	deps, store, _, binder := v3DispatchDeps(t)
+	binder.result.Run.PipelineRunID = nil
+	id := queuedTicket(t, store, "smoke")
+	setRepositorySnapshot(t, store, id, snapshot.SnapshotID(101))
+
+	result, err := dispatch.DispatchOne(context.Background(), deps, id, "admin")
+	if err == nil {
+		t.Fatal("a ticket cannot be linked without execution linkage; want a retryable error")
+	}
+	if errors.Is(err, tickets.ErrDispatchConflict) {
+		t.Errorf("a missing pipeline run is not a conflict: %v", err)
+	}
+	if result.WorkflowRunID != snapshot.WorkflowRunID(303) || result.PipelineRunID != nil {
+		t.Errorf("result must still carry the identity: %+v", result)
+	}
+	got, _, _ := store.Get(id)
+	if got.State != tickets.StateQueued || got.DispatchReservationKey == "" {
+		t.Errorf("the reservation must survive for the next pass: %+v", got)
 	}
 }
 
@@ -514,8 +631,8 @@ func TestDispatchOneSchemaThreeClassifiesRejectedSnapshotBindingAsClientInput(t 
 	binder.err = workflowrun.ErrSnapshotTypeMismatch
 
 	_, err := dispatch.DispatchOne(context.Background(), deps, id, "admin")
-	if !errors.Is(err, dispatch.ErrRenderRefused) {
-		t.Fatalf("error = %v, want ErrRenderRefused", err)
+	if !errors.Is(err, dispatch.ErrNotTicketDispatchable) {
+		t.Fatalf("error = %v, want ErrNotTicketDispatchable", err)
 	}
 	got, _, _ := store.Get(id)
 	if got.State != tickets.StateQueued || got.DispatchReservationKey == "" || got.WorkItemSnapshotID == nil || got.WorkflowRunID != nil {
@@ -523,40 +640,7 @@ func TestDispatchOneSchemaThreeClassifiesRejectedSnapshotBindingAsClientInput(t 
 	}
 }
 
-func TestDispatchOneRejectsNonV3BeforeSideEffects(t *testing.T) {
-	deps, store, workItems, binder := v3DispatchDeps(t)
-	definition := deps.Workflows.(*fakeWorkflows).byName["smoke"]
-	definition.SchemaVersion = 2
-	countingStore := &countingTicketStore{Store: store}
-	deps.Tickets = countingStore
-	id := queuedTicket(t, store, "smoke")
-
-	_, err := dispatch.DispatchOne(context.Background(), deps, id, "admin")
-	if !errors.Is(err, dispatch.ErrWorkflowNotV3) {
-		t.Errorf("DispatchOne error = %v, want ErrWorkflowNotV3", err)
-	}
-	if countingStore.reserveCalls != 0 {
-		t.Errorf("ReserveDispatch calls = %d, want 0", countingStore.reserveCalls)
-	}
-	if workItems.CallCount() != 0 {
-		t.Errorf("CaptureRevision calls = %d, want 0", workItems.CallCount())
-	}
-	if _, calls := binder.Calls(); len(calls) != 0 {
-		t.Errorf("BindAndCreate calls = %d, want 0", len(calls))
-	}
-	got, found, getErr := store.Get(id)
-	if getErr != nil || !found {
-		t.Fatalf("read ticket after rejection: found=%v err=%v", found, getErr)
-	}
-	if got.WorkflowVersion != nil || got.WorkflowDefinitionID != nil ||
-		got.WorkItemSnapshotID != nil || got.RepositorySnapshotID != nil ||
-		got.WorkflowRunID != nil || got.PipelineRunID != nil ||
-		got.DispatchReservationKey != "" {
-		t.Errorf("non-v3 rejection linked dispatch state: %+v", got)
-	}
-}
-
-func queuedTicket(t *testing.T, store *tickets.MemoryStore, workflowName string) int {
+func queuedTicket(t *testing.T, store *ticketstest.MemoryStore, workflowName string) int {
 	t.Helper()
 	id, err := store.Create(&tickets.Ticket{
 		Title: "fix X", Body: "details", Origin: "fly",

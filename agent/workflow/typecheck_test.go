@@ -931,11 +931,15 @@ func TestTypeCheckFunctionDelegatesOrdinaryStepAndDeclarationErrors(t *testing.T
 			want: "must specify either `file:` or `config:`",
 		},
 		{
-			name: "agent prompt exclusivity",
+			// prompt_file is source-only: CompileDefinition inlines it into
+			// Prompt and clears it BEFORE ValidateFunction runs, so a
+			// prompt_file that reaches the validator was never compiled and
+			// would reach the pod as no instructions at all.
+			name: "agent prompt_file survived compilation",
 			function: &FunctionConfig{SignatureVersion: 1, Plan: []atc.Step{{Config: &atc.AgentStep{
 				Name: "prompt", FunctionID: "prompt", Prompt: "literal", PromptFile: "source.md",
 			}}}},
-			want: "must specify one of `prompt:` or `prompt_file:`",
+			want: "`prompt_file:` must be compiled into `prompt:`",
 		},
 		{
 			name: "reserved sidecar",

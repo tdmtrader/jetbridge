@@ -1,5 +1,7 @@
 # S-6 Workflows as First-Class Objects Implementation Plan
 
+> **SUPERSEDED — historical implementation record (not executable).** The approved [Agentic Workflows as Functions over Snapshots design](../../specs/2026-07-21-agentic-workflows-as-functions-design.md) and [Agentic Functions program plan](../2026-07-21-agentic-functions-program.md) are authoritative. This workflow-detail-page proposal targeted ticket-composed workflow definitions; workflows are now snapshot-keyed functions — see the 2026-07-21 design.
+
 > For agentic workers: REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox syntax.
 
 **Goal:** Give every agent workflow a first-class detail page — step DAG, prompt text, gate policy, budget, version history with structural diffs, live-version promotion, and per-workflow run statistics — plus the server aggregation and the describe/annotate + deprecate/hide lifecycle verbs the API currently lacks.

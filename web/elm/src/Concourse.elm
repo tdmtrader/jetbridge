@@ -759,7 +759,7 @@ decodeBuildStepAgent =
 {-| Public-plan steps are shaped `{"id": …, "<type>": {…, "name": …}}`, so an
 unrecognized step's identity lives under its unknown type key — label it with
 the nested name when present, else the type key itself, so the degraded row
-reads "deploy" or "fancy_step" instead of an anonymous "step".
+reads "deploy" or "fancy\_step" instead of an anonymous "step".
 -}
 decodeBuildStepUnknown : Json.Decode.Decoder BuildStep
 decodeBuildStepUnknown =

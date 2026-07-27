@@ -9,11 +9,12 @@ module AgentReviews.AgentReviews exposing
     , view
     )
 
+import AgentPage.Chrome as Chrome
 import Application.Models exposing (Session)
 import Concourse.AgentReview as AgentReview
 import EffectTransformer exposing (ET)
 import Html exposing (Html)
-import Html.Attributes exposing (checked, class, href, id, placeholder, style, type_, value)
+import Html.Attributes exposing (checked, class, href, placeholder, style, type_, value)
 import Html.Events exposing (onCheck, onInput)
 import Login.Login as Login
 import Message.Callback exposing (Callback(..))
@@ -21,10 +22,7 @@ import Message.Effects exposing (Effect(..))
 import Message.Message exposing (Message(..))
 import Message.Subscription exposing (Subscription)
 import Routes
-import SideBar.SideBar as SideBar
 import Tooltip
-import Views.Styles
-import Views.TopBar as TopBar
 
 
 type alias Model =
@@ -95,32 +93,12 @@ subscriptions =
 
 view : Session -> Model -> Html Message
 view session model =
-    let
-        route =
-            Routes.AgentReviews { teamName = model.teamName }
-    in
-    Html.div
-        (id "page-including-top-bar" :: Views.Styles.pageIncludingTopBar)
-        [ Html.div
-            (id "top-bar-app" :: Views.Styles.topBar False)
-            [ Html.div
-                [ style "display" "flex", style "align-items" "center" ]
-                (SideBar.sideBarIcon session
-                    :: TopBar.breadcrumbs session route
-                )
-            , Login.view session.userState model
-            ]
-        , Html.div
-            (id "page-below-top-bar" :: Views.Styles.pageBelowTopBar route)
-            [ SideBar.view session Nothing
-            , Html.div
-                [ style "padding" "16px", style "width" "100%" ]
-                [ Html.h1 [ style "font-size" "18px" ]
-                    [ Html.text ("Agent reviews — " ++ model.teamName) ]
-                , content model
-                ]
-            ]
-        ]
+    Chrome.view session
+        model
+        (Routes.AgentReviews { teamName = model.teamName })
+        ("Agent reviews — " ++ model.teamName)
+        "review projections, keyed by the snapshot each one judged"
+        [ content model ]
 
 
 content : Model -> Html Message
@@ -323,7 +301,7 @@ rowBody s =
 {-| Name the occurrence with whatever it actually has. A review produced by a
 workflow run is named by the workflow; one produced in a build by its
 pipeline/job/build; an upload occurrence by neither, so it says so instead of
-rendering ` / ` separators around empty strings.
+rendering `/` separators around empty strings.
 -}
 rowTitle : AgentReview.Summary -> String
 rowTitle s =

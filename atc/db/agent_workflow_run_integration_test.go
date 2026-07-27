@@ -33,10 +33,10 @@ var _ = Describe("agent workflow run vertical slice", func() {
 		ticketID := fixture.queueTicket()
 		dispatched, err := dispatch.DispatchOne(context.Background(), fixture.deps, ticketID, "admin")
 		Expect(err).NotTo(HaveOccurred())
-		Expect(dispatched.WorkflowRunID).NotTo(BeNil())
+		Expect(dispatched.WorkflowRunID.Validate()).To(Succeed())
 
 		result, found, err := fixture.workflowRuns.Get(
-			context.Background(), defaultTeam.ID(), *dispatched.WorkflowRunID,
+			context.Background(), defaultTeam.ID(), dispatched.WorkflowRunID,
 		)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue())
@@ -53,7 +53,7 @@ var _ = Describe("agent workflow run vertical slice", func() {
 		ticket, found, err := fixture.tickets.Get(ticketID)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue())
-		Expect(ticket.WorkflowRunID).To(Equal(dispatched.WorkflowRunID))
+		Expect(ticket.WorkflowRunID).To(Equal(&dispatched.WorkflowRunID))
 		Expect(ticket.WorkflowDefinitionID).To(Equal(&fixture.definition.ID))
 		Expect(ticket.WorkflowVersion).To(Equal(&fixture.definition.Version))
 
@@ -120,9 +120,12 @@ var _ = Describe("agent workflow run vertical slice", func() {
 
 		Expect(build.Finish(db.BuildStatusSucceeded)).To(Succeed())
 		now := time.Now().Add(time.Hour)
+		projector, err := dispatch.NewTicketProjector(fixture.tickets)
+		Expect(err).NotTo(HaveOccurred())
 		reconciler, err := workflowrun.NewReconciler(
 			fixture.workflowRuns, logger, 10*time.Minute, time.Minute,
 			workflowrun.WithReconcilerClock(func() time.Time { return now }),
+			workflowrun.WithTicketProjector(projector),
 		)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(reconciler.Run(context.Background())).To(Succeed())
@@ -194,6 +197,9 @@ var _ = Describe("agent workflow run vertical slice", func() {
 		durableTicket, found, err := fixture.tickets.Get(ticketID)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue())
+		// Finalizing the run is what terminalized the ticket — one
+		// terminalizer, in the reconciler, for every terminal outcome.
+		Expect(durableTicket.State).To(Equal(tickets.StateNeedsReview))
 		Expect(durableTicket.WorkflowRunID).To(Equal(&completed.ID))
 		Expect(durableTicket.WorkflowDefinitionID).To(Equal(&completed.WorkflowDefinitionID))
 		Expect(durableTicket.WorkflowVersion).To(Equal(&completed.WorkflowVersion))
@@ -204,12 +210,11 @@ var _ = Describe("agent workflow run vertical slice", func() {
 		Expect(legacyFound).To(BeFalse())
 
 		Expect(fixture.tickets.Transition(
-			ticketID, tickets.StateRunning, tickets.StateQueued, tickets.TransitionMeta{},
+			ticketID, tickets.StateNeedsReview, tickets.StateQueued, tickets.TransitionMeta{},
 		)).To(Succeed())
 		requeued, err := dispatch.DispatchOne(context.Background(), fixture.deps, ticketID, "admin")
 		Expect(err).NotTo(HaveOccurred())
-		Expect(requeued.WorkflowRunID).NotTo(BeNil())
-		Expect(*requeued.WorkflowRunID).NotTo(Equal(completed.ID))
+		Expect(requeued.WorkflowRunID).NotTo(Equal(completed.ID))
 	})
 
 	It("promotes a prompt-only compatible version while keeping prior runs grouped and exact", func() {

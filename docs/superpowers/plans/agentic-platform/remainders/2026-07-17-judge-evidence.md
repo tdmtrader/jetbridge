@@ -1,5 +1,7 @@
 # Judge + Evidence — plan 09 harvest-step remainder
 
+> **SUPERSEDED — historical implementation record (not executable).** The approved [Agentic Workflows as Functions over Snapshots design](../../../specs/2026-07-21-agentic-workflows-as-functions-design.md) and [Agentic Functions program plan](../../2026-07-21-agentic-functions-program.md) are authoritative. This remainder plan wraps the harvest v0.5 judge/evidence landing (2026-07-17); the judge concept remains live (batch 6) though the ticket-transition wiring below is historical.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. This is a REMAINDER plan: it amends the landed harvest v0.5 core (commits b6e8743a98, 0689163540, 96e96a8461, 59d3410745) — read "Landed state" before touching anything, and never rebuild what it lists. Where a task says "execute plan 09 Task N as written", open `09-harvest-step.md`, apply the delta notes here FIRST (they are corrections for code that landed after plan 09 was written), then run its checkbox steps.
 
 **Date:** 2026-07-17

@@ -127,7 +127,6 @@ const (
 	SetAgentUserCredential       = "SetAgentUserCredential"
 	GetAgentUserCredentialStatus = "GetAgentUserCredentialStatus"
 	DeleteAgentUserCredential    = "DeleteAgentUserCredential"
-	GetAgentPlatformInfo         = "GetAgentPlatformInfo"
 	GetAgentCostRollup           = "GetAgentCostRollup"
 
 	GetBuildAgentReviews        = "GetBuildAgentReviews"
@@ -326,7 +325,6 @@ var Routes = rata.Routes([]rata.Route{
 	{Path: "/api/v1/agent/user-credentials", Method: "PUT", Name: SetAgentUserCredential},
 	{Path: "/api/v1/agent/user-credentials", Method: "GET", Name: GetAgentUserCredentialStatus},
 	{Path: "/api/v1/agent/user-credentials/:kind", Method: "DELETE", Name: DeleteAgentUserCredential},
-	{Path: "/api/v1/agent/platform-info", Method: "GET", Name: GetAgentPlatformInfo},
 	{Path: "/api/v1/agent/costs", Method: "GET", Name: GetAgentCostRollup},
 
 	{Path: "/api/v1/builds/:build_id/agent-reviews", Method: "GET", Name: GetBuildAgentReviews},

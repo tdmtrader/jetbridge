@@ -118,7 +118,7 @@ func TestPreemptionWatcher_FiresEvacuate_FlushesUnmirroredToPeer(t *testing.T) {
 
 	// Live peer that records PUTs.
 	var (
-		mu        sync.Mutex
+		mu          sync.Mutex
 		receivedKey string
 	)
 	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

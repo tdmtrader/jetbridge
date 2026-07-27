@@ -12,7 +12,7 @@ import (
 )
 
 // PlatformSecretSyncer keeps the long-lived agent-platform-credential
-// secret (§8.2) in sync with the platform user's vault row. It runs as a
+// secret in sync with the platform user's vault row. It runs as a
 // polling RunnableComponent (never notify-only, per the fork's
 // notifications lesson), which also covers encryption-key rotation: the
 // vault row decrypts with the current strategy on every pass.
@@ -61,7 +61,7 @@ func (s *PlatformSecretSyncer) Run(ctx context.Context) error {
 	if !found {
 		// Not an error: the platform credential is provisioned by an admin
 		// running `fly agent auth --platform` (PutRequest.User = "platform").
-		// Bidirectional sync (§8.2): if the credential was unvaulted (admin ran
+		// Bidirectional sync: if the credential was unvaulted (admin ran
 		// `fly agent auth --platform --delete`), the stale K8s secret MUST be
 		// removed so no pod can mount a revoked token. NotFound is tolerated.
 		err := s.client.CoreV1().Secrets(s.namespace).Delete(ctx, PlatformSecretName, metav1.DeleteOptions{})

@@ -167,7 +167,6 @@ type credentialBackendStub struct {
 	platform func(string) (int, string, bool, error)
 	put      func(int, string, string, string, time.Time) error
 	status   func(int) ([]credentials.Credential, error)
-	expiring func(time.Duration) ([]credentials.Credential, error)
 	delete   func(int, string) error
 }
 
@@ -187,10 +186,6 @@ func (s *credentialBackendStub) Status(userID int) ([]credentials.Credential, er
 	return s.status(userID)
 }
 
-func (s *credentialBackendStub) ExpiringWithin(within time.Duration) ([]credentials.Credential, error) {
-	return s.expiring(within)
-}
-
 func (s *credentialBackendStub) Delete(userID int, kind string) error {
 	return s.delete(userID, kind)
 }
@@ -199,9 +194,6 @@ func newCredentialBackendStub() *credentialBackendStub {
 	return &credentialBackendStub{
 		put:    func(int, string, string, string, time.Time) error { panic("unexpected Put") },
 		status: func(int) ([]credentials.Credential, error) { panic("unexpected Status") },
-		expiring: func(time.Duration) ([]credentials.Credential, error) {
-			panic("unexpected ExpiringWithin")
-		},
 		delete: func(int, string) error { panic("unexpected Delete") },
 	}
 }

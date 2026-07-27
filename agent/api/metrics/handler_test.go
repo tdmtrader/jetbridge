@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/concourse/concourse/agent/api/metrics"
+	"github.com/concourse/concourse/agent/api/metrics/metricstest"
 	schema "github.com/concourse/concourse/agent/schema"
 	"github.com/concourse/concourse/agent/snapshot"
 )
@@ -23,7 +24,7 @@ func runMetricsRequest(workflowName, runID string) *http.Request {
 }
 
 func TestListByWorkflowRun(t *testing.T) {
-	store := metrics.NewMemoryStore()
+	store := metricstest.NewMemoryStore()
 	h := metrics.NewHandler(store)
 
 	// Seed the way the exec's in-process ingestion materializes durable
@@ -66,7 +67,7 @@ func TestListByWorkflowRun(t *testing.T) {
 }
 
 func TestListByBuild(t *testing.T) {
-	store := metrics.NewMemoryStore()
+	store := metricstest.NewMemoryStore()
 	h := metrics.NewHandler(store)
 
 	for _, rm := range []schema.RunMetrics{
@@ -101,7 +102,7 @@ func TestListByBuild(t *testing.T) {
 }
 
 func TestListByBuildEmptyIsJSONArray(t *testing.T) {
-	h := metrics.NewHandler(metrics.NewMemoryStore())
+	h := metrics.NewHandler(metricstest.NewMemoryStore())
 	req := httptest.NewRequest("GET", "/api/v1/builds/42/agent-metrics", nil)
 	req.Form = map[string][]string{":build_id": {"42"}}
 	rec := httptest.NewRecorder()
@@ -115,7 +116,7 @@ func TestListByBuildEmptyIsJSONArray(t *testing.T) {
 }
 
 func TestListByBuildRejectsInvalidBuildID(t *testing.T) {
-	h := metrics.NewHandler(metrics.NewMemoryStore())
+	h := metrics.NewHandler(metricstest.NewMemoryStore())
 	for _, tc := range []struct{ name, id string }{
 		{"missing", ""},
 		{"non-numeric", "abc"},
@@ -134,7 +135,7 @@ func TestListByBuildRejectsInvalidBuildID(t *testing.T) {
 }
 
 func TestListByWorkflowRunRejectsBadParams(t *testing.T) {
-	h := metrics.NewHandler(metrics.NewMemoryStore())
+	h := metrics.NewHandler(metricstest.NewMemoryStore())
 	for _, tc := range []struct{ name, workflow, run string }{
 		{"missing workflow name", "", "71"},
 		{"invalid workflow name", "Bad Name!", "71"},
@@ -187,7 +188,7 @@ func (errStore) WorkflowStats(string) ([]schema.WorkflowVersionStats, error) {
 }
 
 func TestListCarriesDerivedOutcome(t *testing.T) {
-	store := metrics.NewMemoryStore()
+	store := metricstest.NewMemoryStore()
 	h := metrics.NewHandler(store)
 
 	// The exact truth split U3 kills: a green step inside a failed build.

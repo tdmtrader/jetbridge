@@ -125,6 +125,10 @@ var _ = Describe("AgentStep", func() {
 			Outputs:        []string{"workspace"},
 			Env: map[string]string{
 				"BASE_REF": "main",
+				// Capability endpoints reach the main container ONLY as
+				// compiler-emitted <CAPABILITY>_MCP_URL plan env; the exec
+				// never derives a URL from a sidecar's name.
+				"PLATFORM_MCP_URL": "http://127.0.0.1:7781/mcp",
 			},
 			Sidecars: []atc.SidecarSource{
 				{Config: &atc.SidecarConfig{Name: "platform", Image: "img:v1"}},
@@ -347,19 +351,21 @@ var _ = Describe("AgentStep", func() {
 		Expect(spec.Env).To(ContainElement("BASE_REF=main"))
 	})
 
-	Context("when the plan carries a prompt file", func() {
+	// The pod only ever receives literal prompt text: prompt_file is a
+	// workflow-source field the compiler inlines, and no AGENT_PROMPT_FILE
+	// row exists any more (the runner never read one).
+	Context("when the plan carries no prompt", func() {
 		BeforeEach(func() {
 			agentPlan.Prompt = ""
-			agentPlan.PromptFile = "repo/prompts/spec.md"
 		})
 
-		It("uses AGENT_PROMPT_FILE", func() {
+		It("emits no AGENT_PROMPT row at all", func() {
 			_, err := step.Run(ctx, state)
 			Expect(err).ToNot(HaveOccurred())
 
 			_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
-			Expect(spec.Env).To(ContainElement("AGENT_PROMPT_FILE=repo/prompts/spec.md"))
 			Expect(spec.Env).ToNot(ContainElement(HavePrefix("AGENT_PROMPT=")))
+			Expect(spec.Env).ToNot(ContainElement(HavePrefix("AGENT_PROMPT_FILE=")))
 		})
 	})
 
@@ -892,8 +898,6 @@ var _ = Describe("AgentStep", func() {
 					"BUILD_ID=" + strconv.Itoa(stepMetadata.BuildID),
 				))
 				Expect(spec.SidecarEnv["auxiliary"]).ToNot(ContainElement(HavePrefix("ATC_EXTERNAL_URL=")))
-				Expect(spec.SidecarEnv["gateway"]).To(ContainElement(HavePrefix("AGENT_BUDGET_SLICE_USD=")))
-				Expect(spec.SidecarSecretEnv).To(BeEmpty())
 			})
 
 			// §8.1 pins CLAUDE_CODE_OAUTH_TOKEN to the MAIN container from the
@@ -908,7 +912,6 @@ var _ = Describe("AgentStep", func() {
 				Expect(spec.SecretEnv).To(HaveKeyWithValue(
 					"CLAUDE_CODE_OAUTH_TOKEN",
 					vars.SecretRef{Name: "agent-platform-credential", Key: "anthropic-token"}))
-				Expect(spec.SidecarSecretEnv).To(BeEmpty())
 				// secretKeyRef-only — the token must never appear as a literal.
 				Expect(spec.Env).ToNot(ContainElement(HavePrefix("CLAUDE_CODE_OAUTH_TOKEN=")))
 			})
@@ -963,7 +966,6 @@ var _ = Describe("AgentStep", func() {
 
 				_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
 				Expect(spec.SecretEnv).To(BeEmpty())
-				Expect(spec.SidecarSecretEnv).To(BeEmpty())
 			})
 
 			It("keeps the principal token off the main container", func() {
@@ -1051,7 +1053,6 @@ var _ = Describe("AgentStep", func() {
 					"BUILD_ID=" + strconv.Itoa(stepMetadata.BuildID),
 				))
 				Expect(spec.Sidecars[0].WorkingDir).To(HaveSuffix("/workspace"))
-				Expect(spec.SidecarSecretEnv).To(BeEmpty())
 			})
 		})
 	})

@@ -1,5 +1,7 @@
 # Agent-Step Transcript Viewer (S-2, Proposal C) Implementation Plan
 
+> **SUPERSEDED — historical implementation record (not executable).** The approved [Agentic Workflows as Functions over Snapshots design](../../specs/2026-07-21-agentic-workflows-as-functions-design.md) and [Agentic Functions program plan](../2026-07-21-agentic-functions-program.md) are authoritative. The transcript viewer shipped (batch 6, judge + transcript view); this plan's ticket/attempt framing below is historical — the live viewer operates on workflow runs.
+
 > For agentic workers: REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox syntax.
 
 **Goal:** Give the spectator a dedicated per-attempt page that fetches a run's flight-events NDJSON and renders a collapsible turn timeline (step boundaries, cost records, gate results, judge verdicts, pushes, and — when present — tool calls / file edits / thinking) with a live totals bar (turns / tokens / dollars) and a raw-JSON toggle.

@@ -6,6 +6,7 @@ import (
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/agent/api/principals"
+	"github.com/concourse/concourse/agent/api/principals/principalstest"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/api/accessor/accessorfakes"
@@ -53,7 +54,7 @@ var _ = Describe("APIAuthWrappa", func() {
 					fakeCheckBuildReadAccessHandlerFactory,
 					fakeCheckBuildWriteAccessHandlerFactory,
 					fakeCheckWorkerTeamAccessHandlerFactory,
-					auth.NewCheckAgentPrincipalHandlerFactory(principals.NewVerifier(principals.NewMemoryStore())),
+					auth.NewCheckAgentPrincipalHandlerFactory(principals.NewVerifier(principalstest.NewMemoryStore())),
 				).Wrap(inputHandlers)
 			}).NotTo(Panic())
 		})
@@ -65,7 +66,7 @@ var _ = Describe("APIAuthWrappa", func() {
 		// gone with POST /api/v1/agent/metrics: metrics are written in-process.)
 		Describe("agent run metrics route tiers", func() {
 			var (
-				store        *principals.MemoryStore
+				store        *principalstest.MemoryStore
 				wrapped      rata.Handlers
 				delegateHit  bool
 				fakeAccessor *accessorfakes.FakeAccessFactory
@@ -78,7 +79,7 @@ var _ = Describe("APIAuthWrappa", func() {
 				fakeaccess = new(accessorfakes.FakeAccess)
 				fakeAccessor.CreateReturns(fakeaccess, nil)
 
-				store = principals.NewMemoryStore()
+				store = principalstest.NewMemoryStore()
 
 				delegate := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					delegateHit = true
@@ -317,7 +318,7 @@ var _ = Describe("APIAuthWrappa", func() {
 		// OR an authorized main-team human.
 		Describe("agent ticket route tiers", func() {
 			var (
-				store        *principals.MemoryStore
+				store        *principalstest.MemoryStore
 				wrapped      rata.Handlers
 				delegateHit  bool
 				fakeAccessor *accessorfakes.FakeAccessFactory
@@ -329,7 +330,7 @@ var _ = Describe("APIAuthWrappa", func() {
 				fakeAccessor = new(accessorfakes.FakeAccessFactory)
 				fakeaccess = new(accessorfakes.FakeAccess)
 				fakeAccessor.CreateReturns(fakeaccess, nil)
-				store = principals.NewMemoryStore()
+				store = principalstest.NewMemoryStore()
 
 				delegate := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					delegateHit = true
@@ -449,7 +450,7 @@ var _ = Describe("APIAuthWrappa", func() {
 					fakeCheckBuildReadAccessHandlerFactory,
 					fakeCheckBuildWriteAccessHandlerFactory,
 					fakeCheckWorkerTeamAccessHandlerFactory,
-					auth.NewCheckAgentPrincipalHandlerFactory(principals.NewVerifier(principals.NewMemoryStore())),
+					auth.NewCheckAgentPrincipalHandlerFactory(principals.NewVerifier(principalstest.NewMemoryStore())),
 				).Wrap(rata.Handlers{
 					atc.GetAgentDispatcher: delegate,
 					atc.SetAgentDispatcher: delegate,

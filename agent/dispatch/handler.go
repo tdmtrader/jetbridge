@@ -1,20 +1,20 @@
 package dispatch
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
 
 	"github.com/concourse/concourse/agent/api/tickets"
-
-	"encoding/json"
 )
 
-// NewHTTPHandler serves POST /api/v1/agent/tickets/:ticket_id/dispatch —
-// the manual dispatch trigger. Auth is the wrappa's member tier
-// (human-only, deliberately no principal tier: the human trigger is the
-// budget gate while budget admission is deferred). userName resolves the
-// authenticated username for run attribution (created_by).
+// NewHTTPHandler serves POST /api/v1/agent/tickets/:ticket_id/dispatch — the
+// manual dispatch trigger, on the SAME Deps the dispatcher component runs.
+// Auth is the wrappa's member tier (human-only, deliberately no principal
+// tier: an agent must not be able to spend the cluster's budget by calling
+// this). userName resolves the authenticated username for run attribution
+// (created_by).
 func NewHTTPHandler(deps Deps, userName func(*http.Request) string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id, err := strconv.Atoi(r.FormValue(":ticket_id"))
@@ -35,7 +35,7 @@ func NewHTTPHandler(deps Deps, userName func(*http.Request) string) http.Handler
 			http.Error(w, "workflow inputs pending", http.StatusConflict)
 			return
 		case errors.Is(err, ErrNoWorkflow), errors.Is(err, ErrWorkflowNotFound),
-			errors.Is(err, ErrWorkflowNotV3), errors.Is(err, ErrRenderRefused):
+			errors.Is(err, ErrNotTicketDispatchable):
 			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 			return
 		case errors.Is(err, ErrBudgetExhausted):
@@ -49,9 +49,8 @@ func NewHTTPHandler(deps Deps, userName func(*http.Request) string) http.Handler
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(tickets.DispatchResponse{
-			RunID:         res.RunID,
-			PipelineName:  res.PipelineName,
 			WorkflowRunID: res.WorkflowRunID,
+			PipelineRunID: res.PipelineRunID,
 			Warnings:      res.Warnings,
 		})
 	})

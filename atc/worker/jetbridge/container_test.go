@@ -3385,42 +3385,29 @@ var _ = Describe("Run with sidecar containers", func() {
 					SidecarEnv: map[string][]string{
 						"auxiliary": {"ATC_EXTERNAL_URL=https://ci.example.com", "AGENT_TICKET_ID=7"},
 					},
-					SidecarSecretEnv: map[string]map[string]vars.SecretRef{
-						"auxiliary": {"AUXILIARY_SECRET": {Name: "unrelated-secret", Key: "token"}},
-					},
 				},
 				delegate,
 			)
 			Expect(err).ToNot(HaveOccurred())
 		})
 
-		It("applies literals then env rows then secret refs to the named sidecar only", func() {
+		It("applies literals then env rows to the named sidecar only", func() {
 			pod := createdPod()
 			auxiliary := containerByName(pod, "auxiliary")
 			Expect(auxiliary.Env).To(ContainElements(
 				corev1.EnvVar{Name: "ATC_EXTERNAL_URL", Value: "https://ci.example.com"},
 				corev1.EnvVar{Name: "AGENT_TICKET_ID", Value: "7"},
 			))
-			Expect(auxiliary.Env).To(ContainElement(corev1.EnvVar{
-				Name: "AUXILIARY_SECRET",
-				ValueFrom: &corev1.EnvVarSource{
-					SecretKeyRef: &corev1.SecretKeySelector{
-						LocalObjectReference: corev1.LocalObjectReference{Name: "unrelated-secret"},
-						Key:                  "token",
-					},
-				},
-			}))
-			// the secret ref never appears as a literal Value
+			// no sidecar env row ever carries a K8s secret reference: the
+			// platform credential is main-container-only (§8.1/§8.2)
 			for _, e := range auxiliary.Env {
-				if e.Name == "AUXILIARY_SECRET" {
-					Expect(e.Value).To(BeEmpty())
-				}
+				Expect(e.ValueFrom).To(BeNil())
 			}
 			// the dev sidecar and the main container carry NONE of these entries
 			for _, c := range []corev1.Container{containerByName(pod, "dev"), containerByName(pod, "main")} {
 				for _, e := range c.Env {
 					Expect(e.Name).ToNot(Or(
-						Equal("ATC_EXTERNAL_URL"), Equal("AGENT_TICKET_ID"), Equal("AUXILIARY_SECRET")))
+						Equal("ATC_EXTERNAL_URL"), Equal("AGENT_TICKET_ID")))
 				}
 			}
 		})

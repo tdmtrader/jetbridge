@@ -103,7 +103,7 @@ const scratchBranch = "concourse-merge-scratch"
 
 // Bot identity for platform-generated commits, so a platform merge commit is
 // never counted as human touch. This is the single surviving v3 agent identity
-// (see agent/gitcheck).
+// (see agent/repodiff).
 const (
 	BotName  = "concourse-agent[bot]"
 	BotEmail = "agent@concourse.local"

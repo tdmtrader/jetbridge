@@ -10,10 +10,11 @@ import (
 
 	"github.com/concourse/concourse/agent/api/costs"
 	"github.com/concourse/concourse/agent/budget"
+	"github.com/concourse/concourse/agent/budget/budgettest"
 )
 
-func newHandler() (*costs.Handler, *budget.MemoryLedger) {
-	ledger := budget.NewMemoryLedger()
+func newHandler() (*costs.Handler, *budgettest.MemoryLedger) {
+	ledger := budgettest.NewMemoryLedger()
 	checker := budget.NewChecker(ledger, budget.Config{
 		GlobalDailyCapUSD: 50,
 		Location:          time.UTC,

@@ -15,7 +15,7 @@ import (
 	"github.com/concourse/concourse/agent/publisher"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/snapshot/snapshotfakes"
-	"github.com/concourse/concourse/agent/workflowwait"
+	"github.com/concourse/concourse/agent/workflowwait/workflowwaittest"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
@@ -113,7 +113,7 @@ func TestWithSnapshotCanonicalizerKeepsDedicatedScratchConfiguration(t *testing.
 }
 
 func TestWithWorkflowWaitStoreKeepsExactCommandScopedDependency(t *testing.T) {
-	store := workflowwait.NewMemoryStore(time.Now)
+	store := workflowwaittest.NewMemoryStore(time.Now)
 	factory := &coreStepFactory{}
 	WithWorkflowWaitStore(store)(factory)
 	if factory.workflowWaits != store {

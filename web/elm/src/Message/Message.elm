@@ -72,16 +72,15 @@ type Message
     | ClickAgentTicketEdit
     | AgentTicketTitleChanged String
     | AgentTicketBodyChanged String
-    | AgentTicketBudgetChanged String
     | ClickAgentTicketSave
     | ClickAgentTicketCancel
-    | AgentTicketTabClicked String
     | ClickAgentTicketTransition String
     | ConfirmAgentTicketTransition
     | CancelAgentTicketTransition
     | ClickAgentTicketDispatch
     | ConfirmAgentTicketDispatch
     | CancelAgentTicketDispatch
+    | DismissAgentTicketDispatchNotice
       -- Agent Ticket queue page (client-side filter + sort)
     | AgentTicketsFilterChanged String
     | AgentTicketsSortToggled

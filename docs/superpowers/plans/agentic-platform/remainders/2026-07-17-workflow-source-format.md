@@ -1,5 +1,7 @@
 # Workflow Source Format + Skills — Remainder Plan (slice-a close-out + slice b)
 
+> **SUPERSEDED — historical implementation record (not executable).** The approved [Agentic Workflows as Functions over Snapshots design](../../../specs/2026-07-21-agentic-workflows-as-functions-design.md) and [Agentic Functions program plan](../../2026-07-21-agentic-functions-program.md) are authoritative. This remainder plan closed out the workflow-source-format slice (landed) and scoped slice b; workflow source itself remains live, but the ticket-centric composition model below is historical.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Slice (a) — the entire committed plan `docs/superpowers/plans/2026-07-17-workflow-source-format.md` — is ALREADY LANDED (ten commits, `6ccb6c2162`..`187cad4926`); do NOT re-execute it. This plan carries the full text of everything that remains: the slice-(a) contract amendment and cutover runbook, and all of slice (b).
 
 **Date:** 2026-07-17

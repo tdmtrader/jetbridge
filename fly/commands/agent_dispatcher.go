@@ -26,11 +26,9 @@ type AgentDispatcherCommand struct {
 
 // dispatcherStatus mirrors agent/api/dispatcher.Response.
 type dispatcherStatus struct {
-	Mode        string  `json:"mode"`
-	Source      string  `json:"source"`
-	UpdatedAt   *string `json:"updated_at"`
-	UpdatedBy   *string `json:"updated_by"`
-	BootDefault string  `json:"boot_default"`
+	Mode      string  `json:"mode"`
+	UpdatedAt *string `json:"updated_at"`
+	UpdatedBy *string `json:"updated_by"`
 }
 
 // actionToMode maps the CLI verb to the wire mode. ok=false for an unknown verb.
@@ -89,7 +87,7 @@ func printDispatcherStatus(status dispatcherStatus, asJSON bool) error {
 	if asJSON {
 		return displayhelpers.JsonPrint(status)
 	}
-	updated := "never (using boot default)"
+	updated := "unknown (no settings row)"
 	if status.UpdatedAt != nil {
 		by := ""
 		if status.UpdatedBy != nil {
@@ -98,7 +96,6 @@ func printDispatcherStatus(status dispatcherStatus, asJSON bool) error {
 		updated = *status.UpdatedAt + by
 	}
 	fmt.Printf("dispatcher mode: %s\n", status.Mode)
-	fmt.Printf("source:          %s (boot default: %s)\n", status.Source, status.BootDefault)
 	fmt.Printf("last updated:    %s\n", updated)
 	return nil
 }

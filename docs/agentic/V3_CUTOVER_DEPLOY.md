@@ -16,7 +16,7 @@ historical agent data needs to be preserved.
 | Execution identity | ticket + `agent-ticket-<id>` pipeline | **durable workflow run** |
 | Delivery | `harvest:` step pushed from the pod | `publish_snapshot` → publisher → **gateway** |
 | Merge compute | `merge:` step (pod-side push) | **`agent/functions/repositorymerge`** via `function-runner` |
-| Migration head | `1773106095` | **`1773106137`** |
+| Migration head | `1773106095` | **`1773106138`** |
 
 ## Order of operations
 
@@ -42,7 +42,7 @@ reject a tag. Agent steps error at runtime when it is unset.
 
 ### 3. Reset the database
 
-Migrations `1773106100`–`1773106137` all apply in one boot. Because no history is
+Migrations `1773106100`–`1773106138` all apply in one boot. Because no history is
 being preserved, dropping the database is cleaner than migrating through:
 
 - it skips `1773106124`'s backfill, which would otherwise NULL every historical
@@ -97,9 +97,18 @@ being preserved, dropping the database is cleaner than migrating through:
   materializes whole artifacts, so no static selector was ever written and the
   path table was empty; partial exposure is now unrepresentable rather than
   merely unused.
+- `1773106138` seeds the singleton `agent_settings` row with `dispatcher_mode
+  'off'`. The `--agent-dispatcher-enabled` and `--agent-dispatcher-max-attempts`
+  boot flags are **gone** — remove them from the web command or it will refuse
+  to start — and the seeded row is the only authority on whether the dispatcher
+  auto-dispatches. A cluster that was auto-dispatching before the upgrade comes
+  back dormant until someone runs `fly agent dispatcher resume`. Pausing is now
+  strictly about dispatch: terminalizing a ticket whose run finished moved into
+  the always-on workflow-run reconciler, so a paused dispatcher can no longer
+  strand a running ticket.
 
 Verify afterwards: `docs/migration/migrate-preflight.sh` expects
-`JETBRIDGE_VERSION=1773106137`.
+`JETBRIDGE_VERSION=1773106138`.
 
 ### 3a. Vault the platform credential — the only model-credential path
 
@@ -137,18 +146,21 @@ raw API key.
 
 Migration `1773106123` sets `live = false` on every non-v3 workflow definition and
 adds a CHECK preventing re-promotion, so **the platform boots with no live
-workflows**. That is expected. Import the six v3 seeds:
+workflows**. That is expected. Import the seven v3 seeds:
 
 ```bash
 fly -t <target> agent workflows import agent/workflow/seeds/<name>-v3 --set-live
 ```
 
 Seeds: `small-fix-v3`, `code-review-v3`, `log-diagnosis-v3`,
-`version-upgrade-v3`, `anonymization-audit-v3`, `merge-delivery-v3`.
+`version-upgrade-v3`, `anonymization-audit-v3`, `merge-delivery-v3`,
+`measure-review-v3` (the shipped experiment evaluator — see docs/agentic/README.md
+"Experiments"; it takes no budget and produces no side effect, so importing it
+live is safe even before any experiment references it).
 
 ### 5. Smoke test
 
-1. `fly agent workflows list` — six live workflows.
+1. `fly agent workflows list` — seven live workflows.
 2. Create and dispatch a ticket against `small-fix-v3`; confirm the dispatch
    response carries `workflow_run_id` and the run reaches a terminal state.
 3. Open the run in the web UI; confirm steps, metrics and outputs render.
@@ -165,7 +177,7 @@ this sequence, **in this order**:
    and the pod-side binaries (`agent-runner`, `function-runner`) are two
    halves of one contract — record schema descriptors, gate wording and
    contract types are compiled into both.
-3. **Re-import all six v3 seeds with `--set-live`**:
+3. **Re-import all seven v3 seeds with `--set-live`**:
    ```bash
    fly -t <target> agent workflows import agent/workflow/seeds/<name>-v3 --set-live
    ```
@@ -207,9 +219,26 @@ and does not expire.
   merge definition carrying it must be re-imported without it.
 - A `repository-change/v1` snapshot sealed without contract-validator intrinsic
   metadata cannot be merged (fails closed with "merge base is unavailable").
-- Deliberately dropped in the cutover, tracked as follow-ups: the step DAG, the
-  in-app diff, per-section `/agent/*` routes, and the web ticket create-form
-  (`fly agent tickets create` still works).
+- Deliberately dropped in the cutover, tracked as follow-ups: the agentic step
+  DAG (the run page's execution card links out to the plain Concourse build
+  page instead) and the web ticket create-form (`fly agent tickets create`
+  still works). Two items previously listed here are **done**: a genuine
+  inline unified-diff viewer for repository changes shipped on both the
+  snapshot page and inline in the run page, and the agent sections have their
+  own web routes — `/agent`, `/agent/workflows/:name`,
+  `/agent/workflows/:name/runs/:id`, `/agent/snapshots/:id`,
+  `/agent/experiments`, `/agent/experiments/:id`. Only two sections still sit
+  on their pre-split flat paths: `/agent-tickets` (and `/agent-tickets/:id`)
+  and `/teams/:team/agent-reviews`. Moving those is a URL change with saved
+  links behind it, so it stays a follow-up rather than a cutover step.
+- There is no legacy-pipeline cleanup step. The one-time
+  `fly agent cleanup-legacy-pipelines` command has been removed: it only
+  archived orphaned `agent-ticket-<id>` pipelines left behind by the pre-v3
+  per-ticket dispatch lifecycle, and a dropped-and-recreated database never
+  creates one (v3 dispatch renders `agent-workflow-*` pipelines instead). A
+  deployment that instead upgraded in place from a pre-v3 tree without
+  resetting its database can archive those pipelines with
+  `fly archive-pipeline`, which is what the command called.
 - The transcript viewer is back on the workflow-run page: the run lists which of
   its steps captured a transcript (`GET .../runs/:id/transcripts`) and each one
   opens into the parsed conversation, fetching its ndjson body
@@ -218,5 +247,5 @@ and does not expire.
 ## Rollback
 
 `git checkout v3-prototype-verified-20260724` restores the pre-merge branch state.
-There is no in-place database downgrade path worth trusting across 27 migrations —
+There is no in-place database downgrade path worth trusting across 36 migrations —
 roll back by restoring the previous image and dropping the database again.

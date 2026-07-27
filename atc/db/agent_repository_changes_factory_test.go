@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/concourse/concourse/agent/gitcheck"
 	"github.com/concourse/concourse/agent/projection"
+	"github.com/concourse/concourse/agent/repodiff"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/snapshot/contracts"
 	"github.com/concourse/concourse/atc/db"
@@ -134,7 +134,7 @@ var _ = Describe("AgentRepositoryChangesFactory", func() {
 			SnapshotID: changeID, Status: projection.RepositoryChangeProjectionReady,
 			RepositoryID: "sha256:" + strings.Repeat("a", 64), BaseSHA: strings.Repeat("b", 40),
 			ResultTreeSHA: strings.Repeat("c", 40), Representation: "patch",
-			Files:     []gitcheck.ChangedFile{{Path: "README.md", Status: gitcheck.ChangeModified, LinesAdded: 2, LinesDeleted: 1, Patch: "patch"}},
+			Files:     []repodiff.ChangedFile{{Path: "README.md", Status: repodiff.ChangeModified, LinesAdded: 2, LinesDeleted: 1, Patch: "patch"}},
 			FileCount: 1, LinesAdded: 2, LinesDeleted: 1, UnifiedDiff: "diff --git a/README.md b/README.md\n",
 		}
 		Expect(factory.UpsertRepositoryChangeProjection(context.Background(), value)).To(Succeed())
@@ -172,7 +172,7 @@ var _ = Describe("AgentRepositoryChangesFactory", func() {
 			SnapshotID: changeID, Status: projection.RepositoryChangeProjectionReady,
 			RepositoryID: "sha256:" + strings.Repeat("a", 64), BaseSHA: strings.Repeat("b", 40),
 			ResultTreeSHA: strings.Repeat("c", 40), Representation: "patch",
-			Files: []gitcheck.ChangedFile{}, UnifiedDiff: strings.Repeat("x", gitcheck.BoundedUnifiedDiffBytes+1),
+			Files: []repodiff.ChangedFile{}, UnifiedDiff: strings.Repeat("x", repodiff.BoundedUnifiedDiffBytes+1),
 		}
 		Expect(factory.UpsertRepositoryChangeProjection(context.Background(), value)).To(MatchError(ContainSubstring("65536")))
 	})

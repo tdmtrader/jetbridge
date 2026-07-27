@@ -1,5 +1,7 @@
 # WF-2 Elm-Capable Agent Loop + elm-build Gate Implementation Plan
 
+> **SUPERSEDED — historical implementation record (not executable).** The approved [Agentic Workflows as Functions over Snapshots design](../../specs/2026-07-21-agentic-workflows-as-functions-design.md) and [Agentic Functions program plan](../2026-07-21-agentic-functions-program.md) are authoritative. This Elm-capable agent loop + elm-build gate proposal targeted the ticket-centric dispatch flow; the elm-build gate concept remains relevant to the live workflow pipeline.
+
 > For agentic workers: REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox syntax.
 
 ## Goal

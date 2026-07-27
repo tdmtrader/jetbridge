@@ -24,6 +24,12 @@ var (
 	ErrPlatformFailure            = errors.New("workflow run: platform failure")
 )
 
+// OriginKindTicket is the Origin.Kind a ticket-adapter dispatch stamps on the
+// workflow run it admits, with the ticket ID as the reference. It is the ONLY
+// link from a run back to a ticket, so the reconciler's terminalizer and
+// agent/dispatch both read it from here.
+const OriginKindTicket = "ticket"
+
 type Origin struct {
 	Kind      string
 	Reference string

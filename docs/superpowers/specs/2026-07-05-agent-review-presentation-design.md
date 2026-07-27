@@ -1,5 +1,7 @@
 # Agent review presentation — design
 
+> **SUPERSEDED — historical implementation record (not executable).** The approved [Agentic Workflows as Functions over Snapshots design](2026-07-21-agentic-workflows-as-functions-design.md) and [Agentic Functions program plan](../plans/2026-07-21-agentic-functions-program.md) are authoritative. This review-presentation design targeted ci-agent's `review.json` and the pre-ticket verdict taxonomy; ci-agent is deleted and reviews are now snapshot-keyed — see the judge + transcript view (batch 6) for the live surface.
+
 Date: 2026-07-05
 Status: approved (pending spec review)
 

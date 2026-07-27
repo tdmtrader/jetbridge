@@ -18,11 +18,18 @@ build does not recognise. Decoding never crashes on an unknown string — the
 UI treats `Unknown` as a neutral, informational state so a newer server that
 grows the vocabulary degrades gracefully.
 
-  - `active` — the loop auto-dispatches queued tickets and runs the
-    run-completion reconciler.
-  - `paused` — the loop does NOT auto-dispatch, but the reconciler stays alive;
-    manual `fly agent tickets dispatch` still works (a separate, ungated path).
-  - `off` — the loop neither auto-dispatches nor reconciles (fully dormant).
+  - `active` — the loop auto-dispatches queued tickets.
+  - `paused` — the loop does NOT auto-dispatch. This is the fail-safe a
+    settings-read fault resolves to.
+  - `off` — the loop does NOT auto-dispatch. This is an operator's explicit
+    disable.
+
+`paused` and `off` are behaviourally identical to the loop; they differ only
+in PROVENANCE (a read fault vs. a deliberate choice), which is why the UI
+still renders them as distinct labels. No mode stops a finished workflow run
+from terminalizing its ticket — that is the always-on workflow-run
+reconciler, not the dispatcher — and manual `fly agent tickets dispatch`
+remains a separate, ungated path in every mode.
 
 -}
 type Mode
@@ -34,21 +41,21 @@ type Mode
 
 {-| The GET/PUT `/api/v1/agent/dispatcher` payload.
 
-  - `mode` is the EFFECTIVE mode the loop honours right now.
-  - `source` is "setting" when it came from the agent\_settings row, or
-    "boot-default" when no row exists yet (fell back to the boot flag).
-  - `bootDefault` is what the `--agent-dispatcher-enabled` boot flag resolves
-    to, shown so the UI can explain the fallback.
+  - `mode` is the EFFECTIVE mode the loop honours right now — the single truth
+    about whether queued tickets auto-dispatch.
   - `updatedAt` / `updatedBy` are null (→ Nothing) until someone sets a mode
     at runtime. `updatedAt` is an RFC3339 string kept verbatim for display.
+
+The old `source` / `boot_default` pair is gone. The stored setting is now the
+only input to the effective mode, so there is no boot-flag fallback left to
+explain, and rendering "(boot default: off)" next to an active dispatcher
+described a mechanism that no longer decides anything.
 
 -}
 type alias Status =
     { mode : Mode
-    , source : String
     , updatedAt : Maybe String
     , updatedBy : Maybe String
-    , bootDefault : Mode
     }
 
 
@@ -144,10 +151,8 @@ decodeStatus : Json.Decode.Decoder Status
 decodeStatus =
     Json.Decode.succeed Status
         |> andMap (decodeMode "mode")
-        |> andMap (defaultTo "" <| Json.Decode.field "source" Json.Decode.string)
         |> andMap (optionalString "updated_at")
         |> andMap (optionalString "updated_by")
-        |> andMap (decodeMode "boot_default")
 
 
 {-| The PUT body: `{ "mode": "off|paused|active" }`.

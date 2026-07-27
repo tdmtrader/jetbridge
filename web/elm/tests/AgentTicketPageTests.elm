@@ -50,6 +50,13 @@ runningDetailJson =
     """
 
 
+namelessDetailJson : String
+namelessDetailJson =
+    """
+    { "ticket": { "id": 9, "title": "queued work", "state": "queued", "created_at": 50 } }
+    """
+
+
 closedDetailJson : String
 closedDetailJson =
     """
@@ -248,6 +255,108 @@ all =
                     (\d ->
                         renderWith "/agent-tickets/12" (Callback.AgentTicketFetched (Ok d))
                             |> Query.has [ containing [ text "Dispatch run" ] ]
+                    )
+        , test "a clean dispatch navigates to the durable run it created" <|
+            \_ ->
+                -- Dispatch's one product is a workflow run; the old code
+                -- decoded the response and discarded it, leaving the user on an
+                -- unchanged ticket with no sign of what had been created.
+                withDetail queuedDetailJson
+                    (\d ->
+                        Common.init "/agent-tickets/9"
+                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
+                            |> Tuple.first
+                            |> Application.handleCallback
+                                (Callback.AgentTicketDispatched 9
+                                    (Ok { workflowRunId = "9007199254740993", warnings = [] })
+                                )
+                            |> Tuple.second
+                            |> Common.contains
+                                (Effects.NavigateTo
+                                    "/agent/workflows/develop/runs/9007199254740993"
+                                )
+                    )
+        , test "a dispatch with warnings holds the page and surfaces them" <|
+            \_ ->
+                withDetail queuedDetailJson
+                    (\d ->
+                        Common.init "/agent-tickets/9"
+                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
+                            |> Tuple.first
+                            |> Application.handleCallback
+                                (Callback.AgentTicketDispatched 9
+                                    (Ok
+                                        { workflowRunId = "9007199254740993"
+                                        , warnings = [ "auto-dispatch is paused" ]
+                                        }
+                                    )
+                                )
+                            |> Expect.all
+                                [ Tuple.second
+                                    >> Common.notContains
+                                        (Effects.NavigateTo
+                                            "/agent/workflows/develop/runs/9007199254740993"
+                                        )
+                                , Tuple.first
+                                    >> Common.queryView
+                                    >> Query.find [ id "ticket-dispatch-notice" ]
+                                    >> Expect.all
+                                        [ Query.has [ text "auto-dispatch is paused" ]
+                                        , Query.has
+                                            [ attribute
+                                                (Html.Attributes.href
+                                                    "/agent/workflows/develop/runs/9007199254740993"
+                                                )
+                                            ]
+                                        ]
+                                ]
+                    )
+        , test "dismissing the dispatch warning notice clears it" <|
+            \_ ->
+                withDetail queuedDetailJson
+                    (\d ->
+                        Common.init "/agent-tickets/9"
+                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
+                            |> Tuple.first
+                            |> Application.handleCallback
+                                (Callback.AgentTicketDispatched 9
+                                    (Ok
+                                        { workflowRunId = "9007199254740993"
+                                        , warnings = [ "auto-dispatch is paused" ]
+                                        }
+                                    )
+                                )
+                            |> Tuple.first
+                            |> Application.update
+                                (Msgs.Update Message.Message.DismissAgentTicketDispatchNotice)
+                            |> Tuple.first
+                            |> Common.queryView
+                            |> Query.hasNot [ id "ticket-dispatch-notice" ]
+                    )
+        , test "a dispatch with no workflow name to route with names the run instead" <|
+            \_ ->
+                -- There is no run route to build without a workflow name, so
+                -- navigating is impossible — but the run ID must not be lost.
+                withDetail namelessDetailJson
+                    (\d ->
+                        Common.init "/agent-tickets/9"
+                            |> Application.handleCallback (Callback.AgentTicketFetched (Ok d))
+                            |> Tuple.first
+                            |> Application.handleCallback
+                                (Callback.AgentTicketDispatched 9
+                                    (Ok { workflowRunId = "9007199254740993", warnings = [] })
+                                )
+                            |> Expect.all
+                                [ Tuple.second
+                                    >> Common.notContains
+                                        (Effects.NavigateTo
+                                            "/agent/workflows//runs/9007199254740993"
+                                        )
+                                , Tuple.first
+                                    >> Common.queryView
+                                    >> Query.find [ id "ticket-dispatch-notice" ]
+                                    >> Query.has [ text "workflow run #9007199254740993" ]
+                                ]
                     )
         , test "shows an error notice when the ticket fails to load" <|
             \_ ->

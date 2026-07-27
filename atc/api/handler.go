@@ -112,9 +112,6 @@ func NewHandler(
 	ticketsStore ticketsapi.Store,
 	principalsStore principalsapi.Store,
 	credentialsBackend credentials.Backend,
-	// agentStepImage is the configured --agent-step-image value; the
-	// platform-info endpoint derives image-version skew from it (#45).
-	agentStepImage string,
 	costLedger budget.Ledger,
 	agentDailyBudgetUSD float64,
 	// agentRunTranscriptStore backs GetAgentWorkflowRunTranscript: the raw
@@ -124,12 +121,10 @@ func NewHandler(
 	// agentDispatchHandler serves DispatchAgentTicket (built in
 	// atccmd/command.go from dispatch.Deps; a stub in the test suite).
 	agentDispatchHandler http.Handler,
-	// agentSettingsStore + agentDispatcherBootDefault back the dispatcher
-	// runtime-control routes (GET/SetAgentDispatcher). The boot default is the
-	// --agent-dispatcher-enabled flag: the fallback effective mode when no
-	// agent_settings row exists.
+	// agentSettingsStore backs the dispatcher runtime-control routes
+	// (Get/SetAgentDispatcher). The seeded agent_settings row is the only
+	// authority on the dispatcher mode — there is no boot flag behind it.
 	agentSettingsStore dispatcherapi.Store,
-	agentDispatcherBootDefault bool,
 	snapshotHandlers *snapshotsapi.HandlerFactory,
 	resourceCapturer snapshotsapi.ResourceCapturer,
 	workflowRunHandlers *workflowrunsapi.Handler,
@@ -204,7 +199,6 @@ func NewHandler(
 	)
 	dispatcherServer := dispatcherapi.NewHandler(
 		agentSettingsStore,
-		agentDispatcherBootDefault,
 		func(r *http.Request) string {
 			return accessor.GetAccessor(r).Claims().UserName
 		},
@@ -223,10 +217,6 @@ func NewHandler(
 		}
 		return claims.Sub, name, acc.IsAdmin(), claims.Sub != ""
 	})
-	// Ticket #45 (runner-image skew visibility): the platform facts served
-	// beside the /agent page's credentials/platform section. `version` is
-	// concourse.Version at build time — the web binary the image can lag.
-	platformInfoServer := credentials.PlatformInfoHandler(credentials.NewPlatformInfo(agentStepImage, version))
 	costChecker := budget.NewChecker(costLedger, budget.Config{
 		GlobalDailyCapUSD: agentDailyBudgetUSD,
 	})
@@ -384,7 +374,6 @@ func NewHandler(
 		atc.SetAgentUserCredential:                     http.HandlerFunc(credentialsServer.Set),
 		atc.GetAgentUserCredentialStatus:               http.HandlerFunc(credentialsServer.Status),
 		atc.DeleteAgentUserCredential:                  http.HandlerFunc(credentialsServer.Delete),
-		atc.GetAgentPlatformInfo:                       platformInfoServer,
 		atc.GetAgentCostRollup:                         http.HandlerFunc(costsServer.GetRollup),
 		atc.ListAgentWorkflows:                         http.HandlerFunc(workflowsServer.List),
 		atc.ListAgentWorkflowVersions:                  http.HandlerFunc(workflowsServer.Versions),

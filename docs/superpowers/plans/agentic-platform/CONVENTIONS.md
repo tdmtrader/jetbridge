@@ -1,5 +1,7 @@
 # Cross-plan conventions (normative)
 
+> **SUPERSEDED — historical implementation record (not executable).** The approved [Agentic Workflows as Functions over Snapshots design](../../specs/2026-07-21-agentic-workflows-as-functions-design.md) and [Agentic Functions program plan](../2026-07-21-agentic-functions-program.md) are authoritative. These cross-plan rules governed the abandoned ticket-centric wave plans; check current code and `CLAUDE.md` for the conventions actually in force.
+
 Recurring rules every agentic-platform plan task MUST follow. Plans reference
 these checklists with one-line pointers instead of restating them; each rule
 exists because an executing agent already got it wrong once (see

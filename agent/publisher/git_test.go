@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/agent/publisher"
+	"github.com/concourse/concourse/agent/publisher/publishertest"
 )
 
 type credentialsStub struct {
@@ -104,7 +105,7 @@ func (stub *gitBackendStub) Publish(ctx context.Context, _ publisher.Credential,
 
 func TestGitServicePublishesOnceWithScopedCredential(t *testing.T) {
 	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
-	store := publisher.NewMemoryStore(func() time.Time { return now })
+	store := publishertest.NewMemoryStore(func() time.Time { return now })
 	credentials := &credentialsStub{credential: publisher.Credential{Reference: "secret/git/team/repo"}}
 	backend := &gitBackendStub{
 		base:   "base-sha",
@@ -133,7 +134,7 @@ func TestGitServicePublishesOnceWithScopedCredential(t *testing.T) {
 }
 
 func TestGitServiceWaitsForConcurrentSemanticOperationAndReturnsCurrentOccurrence(t *testing.T) {
-	store := publisher.NewMemoryStore(time.Now)
+	store := publishertest.NewMemoryStore(time.Now)
 	backend := &concurrentGitBackend{started: make(chan struct{}), release: make(chan struct{})}
 	service, err := publisher.NewGitService(
 		store,
@@ -200,7 +201,7 @@ func TestGitServiceWaitsForConcurrentSemanticOperationAndReturnsCurrentOccurrenc
 }
 
 func TestGitServiceRejectsStaleBaseBeforeSideEffect(t *testing.T) {
-	store := publisher.NewMemoryStore(time.Now)
+	store := publishertest.NewMemoryStore(time.Now)
 	backend := &gitBackendStub{base: "new-base"}
 	service, err := publisher.NewGitService(store, &credentialsStub{credential: publisher.Credential{Reference: "secret/git"}}, changeInspectorStub{change: publisher.RepositoryChange{
 		BaseSHA: "old-base", ResultSHA: "head", MaterializedRoot: "/change",
@@ -227,7 +228,7 @@ func TestGitServiceRejectsStaleBaseBeforeSideEffect(t *testing.T) {
 
 func TestGitServiceTimeoutLeavesOperationRetryable(t *testing.T) {
 	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
-	store := publisher.NewMemoryStore(func() time.Time { return now })
+	store := publishertest.NewMemoryStore(func() time.Time { return now })
 	backend := &gitBackendStub{base: "base", block: true}
 	service, err := publisher.NewGitService(store, &credentialsStub{credential: publisher.Credential{Reference: "secret/git"}}, changeInspectorStub{change: publisher.RepositoryChange{
 		BaseSHA: "base", ResultSHA: "head", MaterializedRoot: "/change",
@@ -255,7 +256,7 @@ func TestGitServiceTimeoutLeavesOperationRetryable(t *testing.T) {
 
 func TestGitServiceReconcilesCrashAfterProviderSuccessWithoutRepeatingWrite(t *testing.T) {
 	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
-	store := publisher.NewMemoryStore(func() time.Time { return now })
+	store := publishertest.NewMemoryStore(func() time.Time { return now })
 	backend := &gitBackendStub{
 		base: "base", result: publisher.GitResult{ExternalID: "pr-9", URL: "https://git.example/pr/9", HeadSHA: "head"},
 		crashAfter: true,
@@ -283,7 +284,7 @@ func TestGitServiceReconcilesCrashAfterProviderSuccessWithoutRepeatingWrite(t *t
 func TestGitServiceRejectsProviderResultForAnyCommitOtherThanTheExactSnapshotResult(t *testing.T) {
 	for _, recovered := range []bool{false, true} {
 		t.Run(map[bool]string{false: "publish", true: "reconcile"}[recovered], func(t *testing.T) {
-			store := publisher.NewMemoryStore(time.Now)
+			store := publishertest.NewMemoryStore(time.Now)
 			backend := &gitBackendStub{
 				base: "base", result: publisher.GitResult{HeadSHA: "different-head"},
 				found: recovered, lookup: publisher.GitResult{HeadSHA: "different-head"},
@@ -310,7 +311,7 @@ func TestGitServiceRejectsProviderResultForAnyCommitOtherThanTheExactSnapshotRes
 }
 
 func TestGitServiceFailsBeforeAcquireForUnapprovedMerge(t *testing.T) {
-	store := publisher.NewMemoryStore(time.Now)
+	store := publishertest.NewMemoryStore(time.Now)
 	service, err := publisher.NewGitService(store, &credentialsStub{}, changeInspectorStub{}, &gitBackendStub{}, time.Minute, time.Minute)
 	if err != nil {
 		t.Fatal(err)
@@ -324,7 +325,7 @@ func TestGitServiceFailsBeforeAcquireForUnapprovedMerge(t *testing.T) {
 }
 
 func TestGitServiceFailsClosedWhenCredentialProviderReturnsEmptyHandle(t *testing.T) {
-	store := publisher.NewMemoryStore(time.Now)
+	store := publishertest.NewMemoryStore(time.Now)
 	backend := &gitBackendStub{base: "base"}
 	service, err := publisher.NewGitService(store, &credentialsStub{}, changeInspectorStub{change: publisher.RepositoryChange{
 		BaseSHA: "base", ResultSHA: "head", MaterializedRoot: "/change",
@@ -342,7 +343,7 @@ func TestGitServiceFailsClosedWhenCredentialProviderReturnsEmptyHandle(t *testin
 
 func TestGitServiceUsesReclaimingOccurrenceApprovalAndAuthority(t *testing.T) {
 	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
-	store := publisher.NewMemoryStore(func() time.Time { return now })
+	store := publishertest.NewMemoryStore(func() time.Time { return now })
 	credentials := &credentialsStub{err: errors.New("vault unavailable")}
 	backend := &gitBackendStub{base: "base", result: publisher.GitResult{HeadSHA: "head"}}
 	service, err := publisher.NewGitService(store, credentials, changeInspectorStub{change: publisher.RepositoryChange{

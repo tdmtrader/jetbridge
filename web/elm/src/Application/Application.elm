@@ -239,7 +239,8 @@ handleCallback callback model =
 
         GotCurrentTimeZone zone ->
             let
-                session = model.session
+                session =
+                    model.session
             in
             ( { model | session = { session | timeZone = zone } }, [] )
 
@@ -247,10 +248,12 @@ handleCallback callback model =
             let
                 newMsg =
                     let
-                        trimmed = String.trim wall.message
+                        trimmed =
+                            String.trim wall.message
                     in
                     if trimmed == "" then
                         Nothing
+
                     else
                         Just trimmed
             in
@@ -480,12 +483,14 @@ view model =
                 Just msg ->
                     Html.div [ id "wall-banner", style "white-space" "pre-wrap" ] <|
                         wallLinks msg
+
                 Nothing ->
                     Html.text ""
             , Html.div
                 ([ id "page-wrapper", style "height" "100%" ]
                     ++ (if model.session.draggingSideBar then
                             Styles.disableInteraction
+
                         else
                             []
                        )
@@ -535,7 +540,7 @@ routeMatchesModel route model =
         ( Routes.Dashboard _, SubPage.DashboardModel _ ) ->
             True
 
-        ( Routes.Agent, SubPage.AgentModel _ ) ->
+        ( Routes.Agent, SubPage.AgentPlatformModel _ ) ->
             True
 
         _ ->
@@ -545,21 +550,27 @@ routeMatchesModel route model =
 wallLinks : String -> List (Html.Html msg)
 wallLinks msg =
     let
-        tokens = String.split " " msg
+        tokens =
+            String.split " " msg
 
         stripTrailingPunct original =
             let
-                punctuations = [ '.', ',' ]
+                punctuations =
+                    [ '.', ',' ]
 
                 dropWhileEnd s =
                     case String.uncons (String.reverse s) of
                         Just ( c, restRev ) ->
                             if List.member c punctuations then
                                 let
-                                    trimmed = String.reverse restRev
-                                    ( url, trailing ) = dropWhileEnd trimmed
+                                    trimmed =
+                                        String.reverse restRev
+
+                                    ( url, trailing ) =
+                                        dropWhileEnd trimmed
                                 in
                                 ( url, String.fromChar c ++ trailing )
+
                             else
                                 ( s, "" )
 
@@ -571,13 +582,18 @@ wallLinks msg =
         render t =
             if String.startsWith "http://" t || String.startsWith "https://" t then
                 let
-                    ( url, trailing ) = stripTrailingPunct t
-                    anchor = Html.a [ href url, target "_blank", rel "noopener noreferrer", style "text-decoration" "underline", style "margin-right" "0.25em" ] [ Html.text url ]
+                    ( url, trailing ) =
+                        stripTrailingPunct t
+
+                    anchor =
+                        Html.a [ href url, target "_blank", rel "noopener noreferrer", style "text-decoration" "underline", style "margin-right" "0.25em" ] [ Html.text url ]
                 in
                 if trailing == "" then
                     [ anchor ]
+
                 else
                     [ anchor, Html.text trailing ]
+
             else
                 [ Html.text t ]
     in

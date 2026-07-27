@@ -118,22 +118,22 @@ hasSideBar iAmLookingAtThePage =
                     }
                 , hoverable = Message.SideBarIcon
                 , hoveredSelector =
-                    { description = "still grey"
-                    , selector = sideBarIcon True
+                    { description = "white"
+                    , selector = hoveredSideBarIcon True
                     }
                 }
-            , test "is not clickable" <|
+            , test "is clickable" <|
                 given iAmLookingAtThePage
                     >> given iAmOnANonPhoneScreen
                     >> when iAmLookingAtTheSideBarIconContainer
-                    >> then_ itIsNotClickable
+                    >> then_ (itIsClickable Message.SideBarIcon)
             ]
-        , test "is not clickable when there are no pipelines" <|
+        , test "is clickable when there are no pipelines" <|
             given iAmLookingAtThePage
                 >> given iAmOnANonPhoneScreen
                 >> given myBrowserFetchedNoPipelines
                 >> when iAmLookingAtTheSideBarIconContainer
-                >> then_ itIsNotClickable
+                >> then_ (itIsClickable Message.SideBarIcon)
         , test """has a dark dividing line separating it from the concourse
                   logo""" <|
             given iAmLookingAtThePage
@@ -199,10 +199,10 @@ hasSideBar iAmLookingAtThePage =
                 given iHaveAClosedSideBar_
                     >> when iHoverOverTheSideBarIcon
                     >> then_ iSeeShowSideBarMessage
-            , test "shows no pipelines tooltip when is not clickable" <|
+            , test "shows show-sidebar tooltip even when there are no pipelines" <|
                 given iHaveANotClickableSiteBar_
                     >> when iHoverOverTheSideBarIcon
-                    >> then_ iSeeNoPipelineSideBarMessage
+                    >> then_ iSeeShowSideBarMessage
             , defineHoverBehaviour
                 { name = "sidebar icon"
                 , setup =
@@ -228,12 +228,18 @@ hasSideBar iAmLookingAtThePage =
                 >> given iShrankTheViewport
                 >> when iAmLookingAtTheLeftHandSectionOfTheTopBar
                 >> then_ iSeeNoSideBarIcon
-        , test "side bar does not expand before teams and pipelines are fetched" <|
+        , test "side bar opens with the agent platform before pipelines are fetched" <|
             given iAmLookingAtThePage
                 >> given iAmOnANonPhoneScreen
                 >> given iClickedTheSideBarIcon
                 >> when iAmLookingAtThePageBelowTheTopBar
-                >> then_ iSeeNoSideBar
+                >> then_ iSeeASideBar
+        , test "side bar shows no pipelines section before pipelines are fetched" <|
+            given iAmLookingAtThePage
+                >> given iAmOnANonPhoneScreen
+                >> given iClickedTheSideBarIcon
+                >> when iAmLookingAtTheSideBar
+                >> then_ iSeeNoPipelinesSection
         ]
     , describe "sidebar layout"
         [ test "sidebar state is read from sessionstorage" <|
@@ -376,16 +382,24 @@ hasSideBar iAmLookingAtThePage =
                 >> given myBrowserFetchedFavoritedPipelines
                 >> when iAmLookingAtTheSideBar
                 >> then_ iSeeTheArchivedPipeline
-        , test "if all pipelines are archived, does not show sidebar" <|
+        , test "if all pipelines are archived, drops the pipelines section" <|
             given iHaveAnOpenSideBar_
                 >> given myBrowserFetchedOnlyArchivedPipelines
                 >> when iAmLookingAtTheSideBar
-                >> then_ iSeeNoSideBar
-        , test "if all pipelines are archived, sidebar is not clickable" <|
+                >> then_ iSeeNoPipelinesSection
+        , test "if all pipelines are archived, the agent platform is still reachable" <|
+            -- The agent pages have nothing to do with the pipeline list; making
+            -- them disappear with it left an agent-only install with no
+            -- sidebar route to them at all.
+            given iHaveAnOpenSideBar_
+                >> given myBrowserFetchedOnlyArchivedPipelines
+                >> when iAmLookingAtTheSideBar
+                >> then_ iSeeTheAgentPlatformSection
+        , test "if all pipelines are archived, sidebar icon stays clickable" <|
             given iHaveAnOpenSideBar_
                 >> given myBrowserFetchedOnlyArchivedPipelines
                 >> when iAmLookingAtTheSideBarIconContainer
-                >> then_ itIsNotClickable
+                >> then_ (itIsClickable Message.SideBarIcon)
         ]
     , describe "teams list" <|
         [ test "sidebar contains pipeline groups" <|
@@ -987,10 +1001,6 @@ iSeeHideSideBarMessage =
 
 iSeeShowSideBarMessage =
     expectTooltip Message.SideBarIcon "show sidebar"
-
-
-iSeeNoPipelineSideBarMessage =
-    expectTooltip Message.SideBarIcon "no visible pipelines"
 
 
 iSeeAnOpenedSideBarIcon =
@@ -1801,6 +1811,23 @@ iSeeNoSideBar =
     Query.hasNot [ id "side-bar" ]
 
 
+iSeeNoPipelinesSection =
+    Expect.all
+        [ Query.hasNot [ id "all-pipelines" ]
+        , Query.hasNot [ text "all pipelines" ]
+        , Query.hasNot [ text "favorite pipelines" ]
+        ]
+
+
+iSeeTheAgentPlatformSection =
+    Expect.all
+        [ Query.has [ id "sidebar-agent-platform" ]
+        , Query.has [ id "sidebar-agent-tickets" ]
+        , Query.has [ id "sidebar-agent-reviews" ]
+        , Query.has [ id "sidebar-agent-experiments" ]
+        ]
+
+
 iSeeFavoritesSection =
     Query.has [ text "favorite pipelines" ]
 
@@ -1919,13 +1946,6 @@ myBrowserFetchedFavoritedPipelinesThatDoNotExist =
 
 iAmLookingAtTheTeamInTheFavoritesSection =
     iAmLookingAtTheFavoritesSection >> Query.children [ containing [ text "team" ] ] >> Query.first
-
-
-itIsNotClickable =
-    Expect.all
-        [ Query.has [ style "cursor" "default" ]
-        , Event.simulate Event.click >> Event.toResult >> Expect.err
-        ]
 
 
 iSeeTheTurbulenceMessage =

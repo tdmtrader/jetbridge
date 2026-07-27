@@ -16,9 +16,9 @@ import (
 	"time"
 
 	snapshotsapi "github.com/concourse/concourse/agent/api/snapshots"
-	"github.com/concourse/concourse/agent/gitcheck"
 	"github.com/concourse/concourse/agent/pagination"
 	"github.com/concourse/concourse/agent/projection"
+	"github.com/concourse/concourse/agent/repodiff"
 	"github.com/concourse/concourse/agent/snapshot"
 )
 
@@ -256,7 +256,7 @@ func TestRepositoryChangeProjectionIsTeamScopedAndReturnsDurableDiff(t *testing.
 			SnapshotID: id, Status: projection.RepositoryChangeProjectionReady,
 			RepositoryID: "sha256:" + strings.Repeat("b", 64), BaseSHA: strings.Repeat("c", 40),
 			ResultTreeSHA: strings.Repeat("d", 40), Representation: "patch",
-			Files:     []gitcheck.ChangedFile{{Path: "README.md", Status: gitcheck.ChangeModified, LinesAdded: 1}},
+			Files:     []repodiff.ChangedFile{{Path: "README.md", Status: repodiff.ChangeModified, LinesAdded: 1}},
 			FileCount: 1, LinesAdded: 1, UnifiedDiff: "diff --git a/README.md b/README.md\n",
 		}, true, nil
 	}

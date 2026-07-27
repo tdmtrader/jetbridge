@@ -444,7 +444,6 @@ type AgentStep struct {
 	Model            string   `json:"model,omitempty"`
 	MaxTurns         int      `json:"max_turns,omitempty"`
 	BudgetSliceUSD   float64  `json:"budget_slice_usd,omitempty"`
-	OutputSchema     string   `json:"output_schema,omitempty"`
 
 	// Source-format layers (design 2026-07-17 §4), renderer-resolved to
 	// literal values like Prompt: SystemPrompt is appended to the

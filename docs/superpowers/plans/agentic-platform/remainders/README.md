@@ -1,5 +1,7 @@
 # Agentic-platform remainder plans — program index
 
+> **SUPERSEDED — historical implementation record (not executable).** The approved [Agentic Workflows as Functions over Snapshots design](../../../specs/2026-07-21-agentic-workflows-as-functions-design.md) and [Agentic Functions program plan](../../2026-07-21-agentic-functions-program.md) are authoritative. This program index scoped the five remainder plans against the 2026-07-17 ticket-centric tree; retained as a historical index only.
+
 **Date:** 2026-07-17 · **Branch:** jetbridge · **Head migration:** 1773106066 (next free 1773106067)
 
 These five plans scope the work remaining after the 2026-07-17 landings (ticket-core,

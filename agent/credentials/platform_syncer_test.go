@@ -7,14 +7,15 @@ import (
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/agent/credentials"
+	"github.com/concourse/concourse/agent/credentials/credentialstest"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 )
 
-func newSyncerFixture(withCred bool) (*credentials.PlatformSecretSyncer, *credentials.MemoryBackend, *fake.Clientset) {
-	backend := credentials.NewMemoryBackend()
+func newSyncerFixture(withCred bool) (*credentials.PlatformSecretSyncer, *credentialstest.MemoryBackend, *fake.Clientset) {
+	backend := credentialstest.NewMemoryBackend()
 	backend.AddUser(credentials.PlatformUserSub, 99, "platform")
 	if withCred {
 		_ = backend.Put(99, "platform", credentials.KindAnthropicOAuth, "sk-platform", time.Now().Add(time.Hour))
@@ -48,7 +49,7 @@ func TestSyncerCreatesPlatformSecret(t *testing.T) {
 // vault row that switched from OAuth to a raw API key must rewrite it — a
 // token-only comparison would leave the pod exporting the wrong variable.
 func TestSyncerRefreshesChangedKind(t *testing.T) {
-	backend := credentials.NewMemoryBackend()
+	backend := credentialstest.NewMemoryBackend()
 	backend.AddUser(credentials.PlatformUserSub, 99, "platform")
 	_ = backend.Put(99, "platform", credentials.KindAnthropicOAuth, "sk-same", time.Now().Add(time.Hour))
 	clientset := fake.NewSimpleClientset()

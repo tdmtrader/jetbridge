@@ -24,9 +24,9 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/concourse/concourse/agent/gitcheck"
 	"github.com/concourse/concourse/agent/pagination"
 	"github.com/concourse/concourse/agent/projection"
+	"github.com/concourse/concourse/agent/repodiff"
 	"github.com/concourse/concourse/agent/snapshot"
 )
 
@@ -324,7 +324,7 @@ func (factory *HandlerFactory) repositoryChangeProjection(w http.ResponseWriter,
 	if !found {
 		writeJSON(w, http.StatusAccepted, projection.RepositoryChange{
 			SnapshotID: id, Status: projection.RepositoryChangeProjectionPending,
-			Files: []gitcheck.ChangedFile{},
+			Files: []repodiff.ChangedFile{},
 		})
 		return
 	}
@@ -336,15 +336,15 @@ func (factory *HandlerFactory) repositoryChangeProjection(w http.ResponseWriter,
 	case projection.RepositoryChangeProjectionPending,
 		projection.RepositoryChangeProjectionUnavailable,
 		projection.RepositoryChangeProjectionInvalid:
-		value.Files = []gitcheck.ChangedFile{}
+		value.Files = []repodiff.ChangedFile{}
 		value.UnifiedDiff = ""
 	case projection.RepositoryChangeProjectionReady:
-		if value.FileCount != len(value.Files) || len(value.UnifiedDiff) > gitcheck.BoundedUnifiedDiffBytes {
+		if value.FileCount != len(value.Files) || len(value.UnifiedDiff) > repodiff.BoundedUnifiedDiffBytes {
 			writeError(w, http.StatusInternalServerError, "internal_error", "snapshot service failed")
 			return
 		}
 		if value.Files == nil {
-			value.Files = []gitcheck.ChangedFile{}
+			value.Files = []repodiff.ChangedFile{}
 		}
 	default:
 		writeError(w, http.StatusInternalServerError, "internal_error", "snapshot service failed")

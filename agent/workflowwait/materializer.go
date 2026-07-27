@@ -38,7 +38,7 @@ func MaterializeAnswer(
 	intent ResolutionIntent,
 ) (snapshot.Snapshot, error) {
 	if workflowWaitDependencyNil(creator) || strings.TrimSpace(teamName) == "" ||
-		validateResolutionIdentity(
+		ValidateResolutionIdentity(
 			teamID,
 			runID,
 			waitID,

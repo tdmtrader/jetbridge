@@ -1,5 +1,7 @@
 # S-4 In-app Diff Review Implementation Plan
 
+> **SUPERSEDED — historical implementation record (not executable).** The approved [Agentic Workflows as Functions over Snapshots design](../../specs/2026-07-21-agentic-workflows-as-functions-design.md) and [Agentic Functions program plan](../2026-07-21-agentic-functions-program.md) are authoritative. This diff-review proposal targeted per-ticket diffs; diff review now operates over workflow-run outcomes — see the delivery-outcomes design.
+
 > For agentic workers: REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox syntax.
 
 **Goal:** Render the ticket's `base_sha..pushed_sha` unified diff directly on the agent-ticket detail page as colored hunks — the primary review surface — and demote the stale-prone GitHub compare link to a secondary "compare on GitHub" affordance.

@@ -44,9 +44,6 @@ type Client interface {
 	AgentUserCredentialStatus() ([]credentials.Credential, error)
 	// platform=true targets the §1.13 service user's credential (admin only).
 	DeleteAgentUserCredential(kind string, platform bool) error
-	// AgentPlatformInfo reports the configured agent step image and whether
-	// its version tag lags the web binary (#45). Older servers 404.
-	AgentPlatformInfo() (credentials.PlatformInfo, error)
 	AgentCostRollup(groupBy, since, until string) (costs.RollupResponse, error)
 	AgentRunMetrics(limit int) ([]agentschema.RunMetrics, error)
 	ListAgentTickets(filter tickets.ListFilter) ([]tickets.Ticket, error)

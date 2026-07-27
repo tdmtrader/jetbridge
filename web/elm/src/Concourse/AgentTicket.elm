@@ -13,7 +13,10 @@ module Concourse.AgentTicket exposing
 The ticket is a queue shell: title, body, where it sits in the queue, and the
 durable identifiers that link out to the workflow run carrying every piece of
 execution evidence. It has no spec/plan/task content of its own (those tables
-went with their deleted write routes) and no budget or run-error mirror.
+went with their deleted write routes) and no budget or run-error mirror. It also
+does not carry the ticket's `pipeline_run_id`: the server may still send it, but
+a pipeline run is an execution detail of the durable workflow run, rendered
+there, so decoding it here only produced a field nothing could render.
 
 All decoders are tolerant (mirroring Concourse.AgentReview): missing string
 fields default to "" and missing scalars to a sensible zero, so a partial
@@ -39,7 +42,6 @@ type alias Ticket =
     , createdAt : Int
     , updatedAt : Int
     , workflowVersion : Maybe Int
-    , pipelineRunId : Maybe Int
     , attemptCount : Int
     , completedAt : Maybe Int
     , workflowRunId : Maybe String
@@ -53,9 +55,23 @@ type alias Detail =
     }
 
 
+{-| The response to `POST /api/v1/agent/tickets/:id/dispatch`.
+
+The dispatch response carries ONE identity: the durable workflow run it
+created, as a quoted canonical decimal (durable IDs exceed 2^53, so a JSON
+number would silently round). The old `run_id` + `pipeline_name` pair is gone —
+a pipeline name is an execution detail of one attempt, never the thing the user
+was sent to look at.
+
+`pipeline_run_id` may ride along as a server-side diagnostic; it is
+deliberately NOT decoded here. The run page renders that diagnostic from the
+run's own summary (the durable record), so decoding a second copy off a
+transient response would only create a field with nowhere honest to render.
+
+-}
 type alias DispatchResult =
-    { runId : Int
-    , pipelineName : String
+    { workflowRunId : String
+    , warnings : List String
     }
 
 
@@ -84,7 +100,6 @@ decodeTicket =
         |> andMap (defaultTo 0 <| Json.Decode.field "created_at" Json.Decode.int)
         |> andMap (defaultTo 0 <| Json.Decode.field "updated_at" Json.Decode.int)
         |> andMap (optionalInt "workflow_version")
-        |> andMap (optionalInt "pipeline_run_id")
         |> andMap (defaultTo 0 <| Json.Decode.field "attempt_count" Json.Decode.int)
         |> andMap (optionalInt "completed_at")
         |> andMap (Snapshot.decodeOptionalIdField "workflow_run_id")
@@ -98,11 +113,18 @@ decodeDetail =
         |> andMap (Json.Decode.field "ticket" decodeTicket)
 
 
+{-| Unlike the tolerant ticket decoders, `workflow_run_id` is REQUIRED: it is
+the only thing the caller can act on, so a response without it is a failed
+dispatch, not a dispatch with a blank field. `warnings` defaults to empty.
+-}
 decodeDispatchResult : Json.Decode.Decoder DispatchResult
 decodeDispatchResult =
     Json.Decode.succeed DispatchResult
-        |> andMap (defaultTo 0 <| Json.Decode.field "run_id" Json.Decode.int)
-        |> andMap (defaultTo "" <| Json.Decode.field "pipeline_name" Json.Decode.string)
+        |> andMap (Json.Decode.field "workflow_run_id" Snapshot.decodeId)
+        |> andMap
+            (defaultTo [] <|
+                Json.Decode.field "warnings" (Json.Decode.list Json.Decode.string)
+            )
 
 
 {-| Normalize the ticket's `repo` field to a browsable web URL. The field

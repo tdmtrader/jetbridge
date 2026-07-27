@@ -31,9 +31,7 @@
 .agent-badge--active    { color: @yellow;        border-color: @yellow; }
 .agent-badge--attention { color: @amber-primary; border-color: @amber-primary; }
 .agent-badge--good      { color: @green-primary; border-color: @green-primary; }
-.agent-badge--good-muted { color: @green-secondary; border-color: @green-secondary; }
 .agent-badge--warn      { color: @red-primary;   border-color: @red-primary; }
-.agent-badge--calm      { color: @blue-secondary; border-color: @blue-secondary; }
 .agent-badge--bad       { color: @red-primary;   border-color: @red-primary; }
 .agent-badge--error     { color: @amber-secondary; border-color: @amber-secondary; }
 
@@ -49,10 +47,9 @@
 
 /* U23 — mobile queue rows (AgentTickets.AgentTickets). The rows lay out with
  * inline flex styles; on narrow screens the title gets truncated to a few
- * characters and the branch/workflow columns squeeze the cost column off-screen.
- * Let the title wrap to its own full-width line and stay visible, keep the cost
- * visible, and drop the two lowest-value columns (branch + workflow). These
- * override inline styles, so `!important` is required. */
+ * characters. Let the title wrap to its own full-width line and stay visible,
+ * and drop the lowest-value column (workflow). These override inline styles,
+ * so `!important` is required. */
 @media (max-width: 560px) {
   .agent-ticket-row {
     flex-wrap: wrap;
@@ -73,17 +70,9 @@
     word-break: break-word;
   }
 
-  /* Branch + workflow are the least-critical columns on a phone — hide them so
-   * the id, badge and cost stay on the first line. */
-  .agent-ticket-branch,
+  /* Workflow is the least-critical column on a phone — hide it so the id and
+   * badge stay on the first line. */
   .agent-ticket-workflow {
     display: none !important;
-  }
-
-  /* Keep the spend visible and let it size to content rather than reserving a
-   * fixed min-width that pushes it out of view. */
-  .agent-ticket-cost {
-    min-width: 0 !important;
-    order: 1;
   }
 }

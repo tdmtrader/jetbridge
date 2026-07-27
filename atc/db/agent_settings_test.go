@@ -16,7 +16,27 @@ var _ = Describe("agent settings", func() {
 		settings = db.NewAgentSettingsFactory(dbConn)
 	})
 
-	It("reports absence without error when no row exists", func() {
+	// Migration 1773106137 seeds the singleton, so the dispatcher mode always
+	// has a value, an author, and a timestamp. There is no "no row yet" state
+	// to fall back from any more.
+	It("reads the seeded singleton on a migrated database", func() {
+		mode, found, err := settings.GetDispatcherMode()
+		Expect(err).ToNot(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(mode).To(Equal(db.DispatcherModeOff))
+
+		gotMode, updatedAt, updatedBy, found, err := settings.GetDispatcherSetting()
+		Expect(err).ToNot(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(gotMode).To(Equal(db.DispatcherModeOff))
+		Expect(updatedBy).To(Equal("migration"))
+		Expect(updatedAt).ToNot(BeZero())
+	})
+
+	It("reports absence without error when the row is deleted", func() {
+		_, err := dbConn.Exec(`DELETE FROM agent_settings`)
+		Expect(err).ToNot(HaveOccurred())
+
 		mode, found, err := settings.GetDispatcherMode()
 		Expect(err).ToNot(HaveOccurred())
 		Expect(found).To(BeFalse())
@@ -58,8 +78,9 @@ var _ = Describe("agent settings", func() {
 		Expect(err).To(HaveOccurred())
 		Expect(errors.Is(err, db.ErrInvalidDispatcherMode)).To(BeTrue())
 
-		_, found, err := settings.GetDispatcherMode()
+		mode, found, err := settings.GetDispatcherMode()
 		Expect(err).ToNot(HaveOccurred())
-		Expect(found).To(BeFalse())
+		Expect(found).To(BeTrue())
+		Expect(mode).To(Equal(db.DispatcherModeOff), "the seeded mode must be untouched")
 	})
 })

@@ -1,5 +1,7 @@
 # FLOWS — Workflow Shapes & the Spec→Plan→Implement Coupling
 
+> **SUPERSEDED — historical implementation record (not executable).** The approved [Agentic Workflows as Functions over Snapshots design](../../specs/2026-07-21-agentic-workflows-as-functions-design.md) and [Agentic Functions program plan](../2026-07-21-agentic-functions-program.md) are authoritative. This spec→plan→implement coupling analysis applied to the abandoned ticket-centric wave plans; it is retained for historical context only.
+
 **Status:** program doc, 2026-07-10. Companion to `00-shared-contracts.md` and the wave plans (05, 06, 08, 09, 11–14).
 **Question answered:** is the superpowers spec→plan→implement flow a *requirement* or an *option*?
 **Verdict:** it is already mechanically an option. The coupling is rhetorical and soft, concentrated in seed content and doc framing — plus one under-specified render edge. Six small edits make spec-less/plan-less workflows first-class and *tested*, not merely tolerated.

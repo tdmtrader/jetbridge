@@ -2,10 +2,16 @@
 
 # Unit tests: all packages except integration/e2e suites (~5 min)
 # Requires: PostgreSQL running locally
+#
+# `bench` is skipped, not excused: bench/corpus/*/ground_truth/withheld_tests
+# are SEALED fixtures — verbatim copies of tests as they existed at each case's
+# terminal artifact, deliberately frozen at a past tree state. They are graded
+# against a materialized pre_state, never against HEAD, so compiling them here
+# only reports that the tree has moved on since the case was harvested.
 test-unit:
 	@echo "==> Running unit tests..."
 	ginkgo -r -p --keep-going --flake-attempts=1 \
-		--skip-package=./integration,testflight,topgun,./worker/integration,./worker/runtime/integration,./worker/baggageclaim,fly/integration,testhelpers/otel,agent/schema,ci-agent
+		--skip-package=./integration,testflight,topgun,./worker/integration,./worker/runtime/integration,./worker/baggageclaim,fly/integration,testhelpers/otel,agent/schema,ci-agent,bench
 	cd agent/schema && go test ./... -count=1
 
 # Retained dev-mcp server (see ci-agent/RETAINED.md)

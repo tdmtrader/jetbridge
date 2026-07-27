@@ -19,21 +19,21 @@ var _ = Describe("fly agent dispatcher", func() {
 				ghttp.CombineHandlers(
 					ghttp.VerifyRequest("GET", "/api/v1/agent/dispatcher"),
 					ghttp.RespondWithJSONEncoded(http.StatusOK, map[string]any{
-						"mode": "off", "source": "boot-default",
-						"updated_at": nil, "updated_by": nil, "boot_default": "off",
+						"mode": "off", "updated_at": "2026-07-26T09:00:00Z", "updated_by": "migration",
 					}),
 				),
 			)
 		})
 
-		It("prints the current mode and source", func() {
+		It("prints the current mode and who set it", func() {
 			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "dispatcher")
 			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
 			Expect(err).NotTo(HaveOccurred())
 			<-sess.Exited
 			Expect(sess.ExitCode()).To(Equal(0))
 			Expect(sess.Out).To(gbytes.Say(`dispatcher mode: off`))
-			Expect(sess.Out).To(gbytes.Say(`source:\s+boot-default`))
+			Expect(sess.Out).To(gbytes.Say(`last updated:\s+2026-07-26T09:00:00Z by migration`))
+			Expect(sess.Out.Contents()).NotTo(ContainSubstring("boot default"))
 		})
 	})
 
@@ -44,8 +44,8 @@ var _ = Describe("fly agent dispatcher", func() {
 					ghttp.VerifyRequest("PUT", "/api/v1/agent/dispatcher"),
 					ghttp.VerifyJSONRepresenting(map[string]any{"mode": "paused"}),
 					ghttp.RespondWithJSONEncoded(http.StatusOK, map[string]any{
-						"mode": "paused", "source": "setting",
-						"updated_at": "2026-07-19T12:00:00Z", "updated_by": "tdm", "boot_default": "off",
+						"mode":       "paused",
+						"updated_at": "2026-07-19T12:00:00Z", "updated_by": "tdm",
 					}),
 				),
 			)
@@ -68,8 +68,8 @@ var _ = Describe("fly agent dispatcher", func() {
 					ghttp.VerifyRequest("PUT", "/api/v1/agent/dispatcher"),
 					ghttp.VerifyJSONRepresenting(map[string]any{"mode": "active"}),
 					ghttp.RespondWithJSONEncoded(http.StatusOK, map[string]any{
-						"mode": "active", "source": "setting",
-						"updated_at": "2026-07-19T12:00:00Z", "updated_by": "tdm", "boot_default": "off",
+						"mode":       "active",
+						"updated_at": "2026-07-19T12:00:00Z", "updated_by": "tdm",
 					}),
 				),
 			)
@@ -92,8 +92,8 @@ var _ = Describe("fly agent dispatcher", func() {
 					ghttp.VerifyRequest("PUT", "/api/v1/agent/dispatcher"),
 					ghttp.VerifyJSONRepresenting(map[string]any{"mode": "off"}),
 					ghttp.RespondWithJSONEncoded(http.StatusOK, map[string]any{
-						"mode": "off", "source": "setting",
-						"updated_at": "2026-07-19T12:00:00Z", "updated_by": "tdm", "boot_default": "active",
+						"mode":       "off",
+						"updated_at": "2026-07-19T12:00:00Z", "updated_by": "tdm",
 					}),
 				),
 			)

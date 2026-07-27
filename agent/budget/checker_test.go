@@ -5,11 +5,12 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/agent/budget"
+	"github.com/concourse/concourse/agent/budget/budgettest"
 )
 
 func newChecker(t *testing.T, dailyCap float64, entries []budget.LedgerEntry) budget.Checker {
 	t.Helper()
-	ledger := budget.NewMemoryLedger()
+	ledger := budgettest.NewMemoryLedger()
 	for _, e := range entries {
 		if err := ledger.Insert(e); err != nil {
 			t.Fatal(err)
@@ -120,7 +121,7 @@ func TestValidGroupByAcceptsModelAndStep(t *testing.T) {
 }
 
 func TestMemoryLedgerRollupByModelAndStep(t *testing.T) {
-	m := &budget.MemoryLedger{}
+	m := &budgettest.MemoryLedger{}
 	base := time.Date(2026, 7, 11, 10, 0, 0, 0, time.UTC)
 	must := func(err error) {
 		t.Helper()
@@ -154,7 +155,7 @@ func TestMemoryLedgerRollupByModelAndStep(t *testing.T) {
 }
 
 func TestMemoryLedgerRollup(t *testing.T) {
-	ledger := budget.NewMemoryLedger()
+	ledger := budgettest.NewMemoryLedger()
 	day1 := time.Date(2026, 7, 7, 10, 0, 0, 0, time.UTC)
 	day2 := time.Date(2026, 7, 8, 10, 0, 0, 0, time.UTC)
 	entries := []budget.LedgerEntry{

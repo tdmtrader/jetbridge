@@ -1,19 +1,27 @@
 package dispatch
 
-// Dispatcher runtime modes. These are the effective modes the loop honors and
-// the exact strings carried on the GET/PUT /api/v1/agent/dispatcher wire and
-// stored in agent_settings.dispatcher_mode.
+import "github.com/concourse/concourse/atc/db"
+
+// Dispatcher runtime modes. There is ONE vocabulary: these are aliases of the
+// storage constants in atc/db (agent_settings.dispatcher_mode and its CHECK
+// constraint), which is also the exact string set carried on the GET/PUT
+// /api/v1/agent/dispatcher wire. atc/db cannot import this package (it would
+// close an import cycle), so the definition lives there and the loop consumes
+// it here.
 //
-//	active — auto-dispatch queued tickets AND run the completion reconciler.
-//	paused — do NOT auto-dispatch, but DO run the reconciler (safety net stays
-//	         alive; manual `fly agent tickets dispatch` still works — separate
-//	         ungated path).
-//	off    — do NOT auto-dispatch and do NOT reconcile (fully dormant;
-//	         equivalent to the historical --agent-dispatcher-enabled=false).
+//	active — auto-dispatch queued tickets.
+//	paused — do not auto-dispatch (the fail-safe a settings-read fault
+//	         resolves to; manual `fly agent tickets dispatch` is a separate,
+//	         ungated path and still works).
+//	off    — do not auto-dispatch (an operator's explicit disable).
+//
+// No mode disables ticket terminalization: a finished workflow run projects
+// its owning ticket to needs_review from the always-on workflow-run
+// reconciler. See docs/agentic/README.md.
 const (
-	ModeOff    = "off"
-	ModePaused = "paused"
-	ModeActive = "active"
+	ModeOff    = db.DispatcherModeOff
+	ModePaused = db.DispatcherModePaused
+	ModeActive = db.DispatcherModeActive
 )
 
 // ValidMode reports whether s is a recognized dispatcher mode.
@@ -26,17 +34,13 @@ func ValidMode(s string) bool {
 	}
 }
 
-// ResolveEffectiveMode picks the mode the dispatcher loop honors this tick.
-// If a persisted setting exists (found), it wins verbatim. Otherwise fall back
-// to the --agent-dispatcher-enabled boot flag: true->active, false->off. This
-// preserves current live behavior (flag off -> effective off -> no
-// auto-dispatch) until an admin sets a mode at runtime.
-func ResolveEffectiveMode(found bool, settingMode string, bootFlag bool) string {
-	if found {
+// ResolveEffectiveMode picks the mode the dispatcher loop honors this tick from
+// a successful settings read. Migration 1773106137 seeds the singleton row, so
+// found is true on every migrated cluster; a deleted row or an unrecognized
+// stored string fails safe to off rather than guessing.
+func ResolveEffectiveMode(found bool, settingMode string) string {
+	if found && ValidMode(settingMode) {
 		return settingMode
-	}
-	if bootFlag {
-		return ModeActive
 	}
 	return ModeOff
 }
@@ -44,15 +48,11 @@ func ResolveEffectiveMode(found bool, settingMode string, bootFlag bool) string 
 // EffectiveModeFromRead resolves the mode for one tick from a settings read,
 // applying the fail-safe policy: a read FAULT must never auto-dispatch. On a
 // non-nil readErr we cannot tell whether an admin persisted paused/off, so we
-// return ModePaused — no auto-dispatch (an admin's pause/off is never
-// overridden by a transient DB blip) while keeping the reconciler safety net
-// alive; dispatch resumes on the next successful read. Only when the read
-// succeeds do we honor a persisted setting or the boot-flag seed. The boot
-// flag is deliberately NOT consulted on error: falling back to it could resume
-// auto-dispatch against an explicit pause whenever the flag seed is "active".
-func EffectiveModeFromRead(settingMode string, found bool, readErr error, bootFlag bool) string {
+// return ModePaused — an admin's pause/off is never overridden by a transient
+// DB blip, and dispatch resumes on the next successful read.
+func EffectiveModeFromRead(settingMode string, found bool, readErr error) string {
 	if readErr != nil {
 		return ModePaused
 	}
-	return ResolveEffectiveMode(found, settingMode, bootFlag)
+	return ResolveEffectiveMode(found, settingMode)
 }

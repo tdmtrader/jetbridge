@@ -1,5 +1,7 @@
 # Dispatcher + Budget Admission + Run-Completion Reconciler (plan 11 dispatch remainder)
 
+> **SUPERSEDED — historical implementation record (not executable).** The approved [Agentic Workflows as Functions over Snapshots design](../../../specs/2026-07-21-agentic-workflows-as-functions-design.md) and [Agentic Functions program plan](../../2026-07-21-agentic-functions-program.md) are authoritative. This remainder plan wraps ticket-centric dispatch/budget code landed 2026-07-17; retained as a historical record of that landing.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. This is a REMAINDER plan: it amends and wraps code that landed 2026-07-17 — read "Landed state" first and do NOT rebuild anything listed there.
 
 **Date:** 2026-07-17

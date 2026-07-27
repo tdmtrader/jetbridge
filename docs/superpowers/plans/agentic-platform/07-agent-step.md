@@ -1,5 +1,7 @@
 # Agent Step Implementation Plan
 
+> **SUPERSEDED — historical implementation record (not executable).** The approved [Agentic Workflows as Functions over Snapshots design](../../specs/2026-07-21-agentic-workflows-as-functions-design.md) and [Agentic Functions program plan](../2026-07-21-agentic-functions-program.md) are authoritative. The `agent:` step type and its flight-recorder ingestion landed and remain live; the ticket/pipeline-run identity model it was built against here is historical — see `agent/schema/SCHEMA.md` for the current pod-side contract.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add a first-class `agent:` step type that runs the claude CLI in a jetbridge pod with declared MCP sidecars, ingests its flight recorder (results.json + events.ndjson) server-side into `agent_run_metrics`, proves sidecar-MCP wiring on a live theborg cluster, and cuts the live theborg/cicd agent-review job over to it with a dual-running verification period.

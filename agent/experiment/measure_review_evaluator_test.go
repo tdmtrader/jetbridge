@@ -13,6 +13,7 @@ import (
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/snapshot/contracts"
 	"github.com/concourse/concourse/agent/workflow"
+	"github.com/concourse/concourse/agent/workflow/workflowtest"
 	"github.com/concourse/concourse/atc"
 )
 
@@ -327,7 +328,7 @@ func compileSeed(t *testing.T, directory, name string) *workflow.Definition {
 	if err != nil {
 		t.Fatalf("ManifestFromDir(%q): %v", directory, err)
 	}
-	definition, err := workflow.NewMemoryStore().ImportManifest(name, manifest, "experiment-test")
+	definition, err := workflowtest.NewMemoryStore().ImportManifest(name, manifest, "experiment-test")
 	if err != nil {
 		t.Fatalf("ImportManifest(%q): %v", directory, err)
 	}

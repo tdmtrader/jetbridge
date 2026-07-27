@@ -514,7 +514,7 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 
 	containers = append(containers, buildSidecarContainers(
 		c.containerSpec.Sidecars, volumeMounts, dir,
-		c.containerSpec.SidecarEnv, c.containerSpec.SidecarSecretEnv,
+		c.containerSpec.SidecarEnv,
 		c.containerSpec.Hermetic)...)
 
 	// Pause pods trap SIGTERM and exit immediately; 10s is more than
@@ -596,18 +596,18 @@ func (c *Container) buildCleanupInitContainer() *corev1.Container {
 // so it can access inputs, outputs, and caches. Sidecars that do not specify
 // their own WorkingDir inherit defaultDir from the main container.
 //
-// sidecarEnv and sidecarSecretEnv carry per-sidecar env rows and secret refs
-// keyed by sidecar name (ContainerSpec.SidecarEnv/SidecarSecretEnv). Env
-// ordering is deterministic: YAML-declared literals first (declaration
-// order), then sidecarEnv rows (caller order), then SecretEnv-only appends
-// (sorted by name, via applySecretRefs). Nil maps are no-ops, so existing
-// callers build byte-identical pods.
+// sidecarEnv carries per-sidecar env rows keyed by sidecar name
+// (ContainerSpec.SidecarEnv). Env ordering is deterministic: YAML-declared
+// literals first (declaration order), then sidecarEnv rows (caller order).
+// A sidecar NEVER receives a K8s secret reference: the platform credential
+// is main-container-only (§8.1/§8.2), and a sidecar name is
+// workflow-authored data that must never act as a credential grant. Nil
+// maps are no-ops.
 func buildSidecarContainers(
 	sidecars []atc.SidecarConfig,
 	mainMounts []corev1.VolumeMount,
 	defaultDir string,
 	sidecarEnv map[string][]string,
-	sidecarSecretEnv map[string]map[string]vars.SecretRef,
 	hermetic bool,
 ) []corev1.Container {
 	if len(sidecars) == 0 {
@@ -643,7 +643,6 @@ func buildSidecarContainers(
 			env = append(env, corev1.EnvVar{Name: e.Name, Value: e.Value})
 		}
 		env = append(env, envVars(sidecarEnv[sc.Name])...)
-		env = applySecretRefs(env, sidecarSecretEnv[sc.Name])
 		c.Env = env
 
 		for _, p := range sc.Ports {

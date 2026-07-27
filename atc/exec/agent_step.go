@@ -36,14 +36,9 @@ const agentProcessID = "agent"
 
 // agentFlightArtifact is the implicit output every agent step produces: the
 // flight recorder directory (results.json + events.ndjson), ingested
-// server-side before the step returns (shared-contracts §1.8, plan 07 Task 1
-// addendum).
+// server-side before the step returns (docs/agentic/README.md, "Sealed
+// record outputs").
 const agentFlightArtifact = "flight"
-
-// mcpSidecarPorts is the schema-v1/2 compatibility map. Schema-v3
-// capabilities compile their declared TCP endpoints into *_MCP_URL env rows
-// and do not depend on role names.
-var mcpSidecarPorts = map[string]int{"dev": 7780, "platform": 7781, "gateway": 7782}
 
 // errAgentCostUnderReport marks a suspicious ingestion: the pod-written
 // flight recorder claimed less cost than the web node itself observed on the
@@ -72,7 +67,7 @@ func WithAgentBudgetChecker(c budget.Checker) AgentStepOption {
 
 // WithAgentPlatformTokenSecret sets the name of the K8s secret holding the
 // platform Anthropic token (key "anthropic-token", plus the optional "kind"
-// key). It is the ONLY model-credential path into an agent pod (§8.1):
+// key). It is the ONLY model-credential path into an agent pod:
 // CLAUDE_CODE_OAUTH_TOKEN and AGENT_MODEL_TOKEN_KIND are wired from it as
 // secretKeyRefs, never as literal env. The web's default is the
 // platform-secret syncer's own secret (credentials.PlatformSecretName).
@@ -115,7 +110,7 @@ func WithAgentSnapshotStores(metadata snapshot.MetadataStore, content snapshot.C
 
 // AgentStep runs the claude CLI (via the agent-runner entrypoint) in a
 // jetbridge pod with declared MCP sidecars, then ingests the flight
-// recorder server-side (shared-contracts §2.8, §5, §8.1).
+// recorder server-side (docs/agentic/README.md).
 type AgentStep struct {
 	planID                atc.PlanID
 	plan                  atc.AgentPlan
@@ -224,7 +219,7 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 		return false, fmt.Errorf("agent %q has typed snapshot outputs but durable snapshot stores are not configured", step.plan.Name)
 	}
 
-	// Agent env is STATIC-ONLY (contracts §2.8): the renderer resolves
+	// Agent env is STATIC-ONLY: the renderer resolves
 	// everything to literal values at render/dispatch time, and run
 	// materialization interpolates ((run))/((run_id))/params into the
 	// instance config before any build exists — so plan env reaches this
@@ -233,7 +228,7 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 	// would let `env: {CLAUDE_CODE_OAUTH_TOKEN: ((vault:agent/token))}`
 	// land the resolved secret as a literal pod-spec env var — readable by
 	// anyone with pod read in the shared worker namespace and persisted in
-	// etcd — violating §8.2's secretKeyRef-only rule (review finding,
+	// etcd — violating the secretKeyRef-only rule (review finding,
 	// 2026-07-12). A value still carrying a ((var)) reference at this point
 	// was not resolved at materialization, meaning it names a runtime var
 	// source (or an undeclared param): fail closed instead of interpolating
@@ -249,7 +244,7 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 	for _, k := range envKeys {
 		value := step.plan.Env[k]
 		if refs := vars.ExtractVarRefs(value); len(refs) > 0 {
-			return false, fmt.Errorf("agent env %s contains unresolved var reference ((%s)): agent env is static-only (contracts §2.8) — values resolve at render/dispatch time and are never interpolated through runtime var sources", k, refs[0].String())
+			return false, fmt.Errorf("agent env %s contains unresolved var reference ((%s)): agent env is static-only — values resolve at render/dispatch time and are never interpolated through runtime var sources", k, refs[0].String())
 		}
 		planEnv[k] = value
 	}
@@ -263,7 +258,7 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 
 	workdir := step.containerMetadata.WorkingDirectory
 
-	// §8.1 main-container env contract.
+	// Main-container env contract (docs/agentic/README.md).
 	env := step.metadata.TaskEnv()
 	for _, k := range envKeys {
 		env = append(env, k+"="+planEnv[k])
@@ -271,7 +266,7 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 	env = append(env, "AGENT_STEP_NAME="+step.plan.Name)
 	// Exec-set identity row (never public YAML, like AGENT_STEP_NAME): the
 	// runner needs the plan id to populate step.start's non-optional plan_id —
-	// (build_id, plan_id) is the §5 correlation key joining the event stream
+	// (build_id, plan_id) is the correlation key joining the event stream
 	// back to its agent_run_metrics row, and no renderer-emitted env carries
 	// it (review finding, 2026-07-12).
 	env = append(env, "AGENT_PLAN_ID="+string(step.planID))
@@ -281,16 +276,11 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 	if step.plan.MaxTurns > 0 {
 		env = append(env, "AGENT_MAX_TURNS="+strconv.Itoa(step.plan.MaxTurns))
 	}
-	if step.plan.OutputSchema != "" {
-		env = append(env, "AGENT_OUTPUT_SCHEMA="+step.plan.OutputSchema)
-	}
 	if step.plan.Prompt != "" {
 		env = append(env, "AGENT_PROMPT="+step.plan.Prompt)
-	} else if step.plan.PromptFile != "" {
-		env = append(env, "AGENT_PROMPT_FILE="+step.plan.PromptFile)
 	}
 	env = append(env, "AGENT_FLIGHT_DIR="+artifactPath(workdir, agentFlightArtifact, ""))
-	// §8.1: export every declared output's absolute in-pod path
+	// Export every declared output's absolute in-pod path
 	// (AGENT_OUTPUT_<NAME>, uppercased, dashes to underscores) so prompts
 	// can target outputs deterministically. Without this the agent can only
 	// guess cwd-relative paths — the first live dual-run wrote its review
@@ -298,7 +288,7 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 	for _, name := range step.plan.Outputs {
 		env = append(env, "AGENT_OUTPUT_"+strings.ToUpper(strings.ReplaceAll(name, "-", "_"))+"="+artifactPath(workdir, name, ""))
 	}
-	// Source-format layers (design 2026-07-17 §4): resolved text travels
+	// Source-format layers (docs/agentic/README.md): resolved text travels
 	// like AGENT_PROMPT; skill CONTENT travels via the "skills" input
 	// artifact, so only the selected names and the mount path go here.
 	if step.plan.SystemPrompt != "" {
@@ -436,16 +426,6 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 		delegate.EmitSidecarPlans(logger, sidecars)
 	}
 
-	// MCP URL derivation is strictly by well-known sidecar name; other
-	// names get no URL (§8.1). Done after loading so file-sourced sidecars
-	// count too.
-	for _, sc := range sidecars {
-		if port, ok := mcpSidecarPorts[sc.Name]; ok {
-			containerSpec.Env = append(containerSpec.Env,
-				strings.ToUpper(sc.Name)+"_MCP_URL=http://127.0.0.1:"+strconv.Itoa(port)+"/mcp")
-		}
-	}
-
 	// Sidecars always receive build correlation. Legacy non-hermetic agent
 	// steps also retain their historical ATC/run metadata, but hermetic
 	// transformation capabilities receive only local execution state. In
@@ -455,8 +435,8 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 		common = append(common, "ATC_EXTERNAL_URL="+step.metadata.ExternalURL)
 	}
 
-	// The platform secret is the ONLY model-credential path into an agent pod
-	// (§8.1): CLAUDE_CODE_OAUTH_TOKEN is a secretKeyRef, never a literal, and
+	// The platform secret is the ONLY model-credential path into an agent
+	// pod: CLAUDE_CODE_OAUTH_TOKEN is a secretKeyRef, never a literal, and
 	// the credential is intentionally main-container-only — a sidecar name is
 	// workflow-authored data and must never act as a credential grant.
 	//
@@ -472,7 +452,7 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 		}
 	}
 
-	// §8.5 CWD convention (F21): sidecar images never hardcode /workspace.
+	// CWD convention (F21): sidecar images never hardcode /workspace.
 	// When the plan carries a `workspace` artifact, the owning exec points
 	// each unset MCP-sidecar WorkingDir at its mount path; otherwise leave
 	// unset (jetbridge falls back to the main container's Dir).
@@ -486,24 +466,10 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 	for i := range sidecars {
 		name := sidecars[i].Name
 
-		rows := append([]string{}, common...)
-		switch name {
-		case "platform":
-			for _, k := range []string{"PLATFORM_MCP_ASK_TIMEOUT_POLICY", "PLATFORM_MCP_ASK_TIMEOUT_SECONDS"} {
-				if v := planEnv[k]; v != "" {
-					rows = append(rows, k+"="+v)
-				}
-			}
-		case "gateway":
-			if slice > 0 {
-				rows = append(rows, "AGENT_BUDGET_SLICE_USD="+strconv.FormatFloat(slice, 'f', -1, 64))
-			}
-			// case "dev": common+identity only
-		}
 		if containerSpec.SidecarEnv == nil {
 			containerSpec.SidecarEnv = map[string][]string{}
 		}
-		containerSpec.SidecarEnv[name] = rows
+		containerSpec.SidecarEnv[name] = append([]string{}, common...)
 
 		if wsPath != "" && sidecars[i].WorkingDir == "" {
 			sidecars[i].WorkingDir = wsPath
@@ -753,7 +719,7 @@ func (step *AgentStep) ingestFlightRecorder(
 			rm.EventCounts = counts
 			if !sawStepEnd {
 				// crashed agent: a stream missing step.end is defined as error
-				// (shared-contracts §5 ingestion rule), with no exceptions. The
+				// (the flight-ingestion rule), with no exceptions. The
 				// PARK-V2 carve-out for a step.park-terminated stream is gone
 				// along with the parked status: the runner has no park exit, and
 				// a v3 human wait is a row in agent_workflow_waits on the durable
@@ -837,7 +803,7 @@ func (step *AgentStep) ingestFlightRecorder(
 	// capture is PARK-V2 stream-json teeing work), and a reattach may miss
 	// already-streamed output — in those shapes the floor is zero and flight
 	// data stands alone; admission + turn/timeout caps remain the in-step
-	// levers (§8.1).
+	// levers.
 	if observed.CostUSD > rm.CostUSD {
 		logger.Error("flight-recorder-under-reported-cost", errAgentCostUnderReport, lager.Data{
 			"build-id":          rm.BuildID,
@@ -862,7 +828,7 @@ func (step *AgentStep) ingestFlightRecorder(
 	// Step.Run re-executes, re-attaches, and re-ingests), and on an update also
 	// returns the previous row's ledger-relevant counters. The metrics row is
 	// idempotent under ON CONFLICT (build_id, plan_id), but agent_cost_ledger
-	// is append-only with no dedup key (§1.4) — so the ledger append below
+	// is append-only with no dedup key — so the ledger append below
 	// charges the DELTA against what this (build_id, plan_id) already recorded
 	// (finding F3, amended for the severed-exec case): a fresh insert charges
 	// rm's full cost; an update charges cost - prev.cost. Because every append

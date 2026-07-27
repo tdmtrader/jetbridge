@@ -1264,11 +1264,14 @@ var _ = Describe("ValidateConfig", func() {
 
 				It("returns an error", func() {
 					Expect(errorMessages).To(HaveLen(1))
-					Expect(errorMessages[0]).To(ContainSubstring("must specify either `prompt:` or `prompt_file:`"))
+					Expect(errorMessages[0]).To(ContainSubstring("must specify `prompt:`"))
 				})
 			})
 
-			Context("when an agent step has both prompt and prompt_file", func() {
+			// prompt_file is a workflow-source field the schema-v3 compiler
+			// inlines into prompt. Nothing downstream reads it, so one that
+			// survives to validation means an agent with no instructions.
+			Context("when an agent step still carries an uncompiled prompt_file", func() {
 				BeforeEach(func() {
 					job.PlanSequence = append(job.PlanSequence, atc.Step{
 						Config: &atc.AgentStep{Name: "write-spec", Prompt: "p", PromptFile: "repo/p.md"},
@@ -1279,7 +1282,7 @@ var _ = Describe("ValidateConfig", func() {
 
 				It("returns an error", func() {
 					Expect(errorMessages).To(HaveLen(1))
-					Expect(errorMessages[0]).To(ContainSubstring("must specify one of `prompt:` or `prompt_file:`, not both"))
+					Expect(errorMessages[0]).To(ContainSubstring("`prompt_file:` must be compiled into `prompt:`"))
 				})
 			})
 
@@ -1299,10 +1302,11 @@ var _ = Describe("ValidateConfig", func() {
 			})
 
 			// Native review findings (agent-review-native #5): the exec
-			// exports AGENT_OUTPUT_<NAME> per output (uppercased, -→_), so
-			// an output named "schema" clobbers the load-bearing
-			// AGENT_OUTPUT_SCHEMA row, and names differing only in -/_ or
-			// case collide after mangling, silently dropping one path.
+			// exports AGENT_OUTPUT_<NAME> per output (uppercased, -→_).
+			// AGENT_OUTPUT_SCHEMA stays reserved — the runner excludes that
+			// exact name from its output-path scan — and names differing
+			// only in -/_ or case collide after mangling, silently dropping
+			// one path.
 			Context("when an agent step declares an output that collides with AGENT_OUTPUT_SCHEMA", func() {
 				BeforeEach(func() {
 					job.PlanSequence = append(job.PlanSequence, atc.Step{
@@ -3230,14 +3234,13 @@ var _ = Describe("typed snapshot step declarations", func() {
 		Expect(strings.Join(validateStep(agent), "\n")).To(ContainSubstring(`duplicate agent output "review"`))
 	})
 
-	It("never infers types from OutputSchema", func() {
+	It("rejects output_types entries that name no declared agent output", func() {
 		agent := validAgent()
-		agent.OutputSchema = "review/v1"
 		agent.SnapshotOutputs = nil
 		Expect(validateStep(agent)).To(BeEmpty())
 
 		agent.SnapshotOutputs = map[string]atc.SnapshotOutputConfig{
-			"not-declared": {Type: snapshot.TypeRef(agent.OutputSchema)},
+			"not-declared": {Type: snapshot.TypeRef("review/v1")},
 		}
 		Expect(strings.Join(validateStep(agent), "\n")).To(ContainSubstring(`output_types["not-declared"] does not name a declared agent output`))
 	})

@@ -14,7 +14,8 @@ the local cluster.
 Requires local PostgreSQL (`pg_isready`).
 
 ```bash
-make test-quick        # Ginkgo unit suites (~5m)
+make test-quick        # alias for test-unit: Ginkgo unit suites (~5m)
+make test-dev-mcp      # retained ci-agent/devmcp server tests, no Postgres needed
 make test-fly-integration
 make test-integration  # real ATC + Postgres, ~12s
 ```
@@ -217,9 +218,13 @@ colima stop                            # optional
 
 ## Status summary (2026-07-11)
 
-Historical record of a point-in-time run. Note that `make test-quick` no longer
-builds a separate `ci-agent` module — that module was removed with the v1
-agentic surface; the target is now unit suites only.
+Historical record of a point-in-time run. Note that `make test-quick` is now a
+plain alias for `make test-unit` and no longer touches `ci-agent` — the v1
+standalone phase runner that module held was deleted with the v1 agentic
+surface. A small slice of `ci-agent` (the dev-mcp server, its binary, and
+`dev-mcp.yml`) is deliberately retained as the in-repo build/test MCP
+implementation — see `ci-agent/RETAINED.md` — and is exercised separately by
+`make test-dev-mcp`, not by `test-quick`/`test-unit`.
 
 | Tier | Status |
 |------|--------|

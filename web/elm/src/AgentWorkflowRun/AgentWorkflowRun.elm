@@ -580,6 +580,59 @@ originReference reference =
         " · " ++ reference
 
 
+{-| Where this run came from when it is not the first attempt.
+
+`retry_of_workflow_run_id` rode on every summary and was rendered nowhere, so a
+retry looked exactly like an original run and the chain back to the failure that
+caused it was invisible. A retry reuses the original's frozen inputs, so the
+predecessor is the only place its inputs can be explained.
+
+-}
+retryOfBadge : WorkflowRun.Summary -> Html Message
+retryOfBadge run =
+    case run.retryOf of
+        Nothing ->
+            Html.text ""
+
+        Just predecessorId ->
+            Html.a
+                [ class "agent-run-retry-of"
+                , href
+                    (Routes.toString
+                        (Routes.AgentWorkflowRun
+                            { workflowName = run.workflowName, id = predecessorId }
+                        )
+                    )
+                , style "color" "#7a9ac0"
+                ]
+                [ Html.text ("retry of run #" ++ predecessorId) ]
+
+
+{-| The Concourse pipeline run this workflow run was planned into.
+
+It is an EXECUTION diagnostic, not an identity: the workflow run ID above is
+what every API, link and record is keyed by. It renders small and last so an
+operator correlating with pipeline-side logs can find it without it competing
+with the durable identity.
+
+-}
+pipelineRunDiagnostic : WorkflowRun.Summary -> Html Message
+pipelineRunDiagnostic run =
+    case run.pipelineRunId of
+        Nothing ->
+            Html.text ""
+
+        Just pipelineRunId ->
+            Html.p
+                [ class "agent-run-pipeline-diagnostic"
+                , style "margin" "10px 0 0"
+                , style "font-family" "monospace"
+                , style "font-size" "11px"
+                , style "color" "#8a8a8a"
+                ]
+                [ Html.text ("execution diagnostic · pipeline run " ++ String.fromInt pipelineRunId) ]
+
+
 executionCard : Model -> WorkflowRun.Summary -> Html Message
 executionCard model run =
     Html.section [ class "agent-run-execution", cardStyle ]
@@ -602,6 +655,7 @@ executionCard model run =
 
                 Nothing ->
                     Html.span [ style "color" "#8a8a8a" ] [ Html.text "Concourse execution not yet planned" ]
+            , retryOfBadge run
             ]
         , Html.div [ style "margin-top" "10px", style "display" "flex", style "gap" "8px" ]
             [ Html.button
@@ -630,6 +684,7 @@ executionCard model run =
 
           else
             Html.text ""
+        , pipelineRunDiagnostic run
         ]
 
 

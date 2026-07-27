@@ -1,5 +1,7 @@
 # Spend Dashboard + Cap Control Implementation Plan
 
+> **SUPERSEDED — historical implementation record (not executable).** The approved [Agentic Workflows as Functions over Snapshots design](../../specs/2026-07-21-agentic-workflows-as-functions-design.md) and [Agentic Functions program plan](../2026-07-21-agentic-functions-program.md) are authoritative. This spend-dashboard proposal targeted the ticket/cost-ledger model; check the current cost-ledger and outcomes surfaces for the live shape.
+
 > For agentic workers: REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox syntax.
 
 **Goal:** Ship a dedicated `/agent/spend` dashboard (audit Proposal H) that renders a daily-spend sparkline, a burn-down of open tickets against their per-ticket budgets, spend broken down by workflow / model / step, and an explicit unattributed bucket — all from the existing agent cost-ledger rollups.

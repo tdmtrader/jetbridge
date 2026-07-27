@@ -18,8 +18,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/concourse/concourse/agent/gitcheck"
 	"github.com/concourse/concourse/agent/projection"
+	"github.com/concourse/concourse/agent/repodiff"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/snapshot/contracts"
 )
@@ -49,7 +49,7 @@ func (store *repositoryProjectionStore) ListUnprojectedRepositoryChanges(context
 }
 
 func (store *repositoryProjectionStore) UpsertRepositoryChangeProjection(_ context.Context, value projection.RepositoryChange) error {
-	value.Files = append([]gitcheck.ChangedFile(nil), value.Files...)
+	value.Files = append([]repodiff.ChangedFile(nil), value.Files...)
 	store.upserts = append(store.upserts, value)
 	return store.upsertErr
 }
@@ -109,7 +109,7 @@ func TestRepositoryChangeProjectorRevalidatesCanonicalInputsAndUpsertsIdempotent
 	value := store.upserts[0]
 	if value.SnapshotID != changeManifest.ID || value.RepositoryID != metadata.RepositoryID ||
 		value.Status != projection.RepositoryChangeProjectionReady || value.FileCount != 1 ||
-		value.Files[0].Path != "README.md" || value.Files[0].Status != gitcheck.ChangeModified {
+		value.Files[0].Path != "README.md" || value.Files[0].Status != repodiff.ChangeModified {
 		t.Fatalf("projection = %#v", value)
 	}
 	if len(store.statuses) != 2 || store.statuses[0].status != projection.RepositoryChangeProjectionPending ||

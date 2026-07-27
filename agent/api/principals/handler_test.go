@@ -10,10 +10,11 @@ import (
 	"testing"
 
 	"github.com/concourse/concourse/agent/api/principals"
+	"github.com/concourse/concourse/agent/api/principals/principalstest"
 )
 
-func newHandler() (*principals.Handler, *principals.MemoryStore) {
-	store := principals.NewMemoryStore()
+func newHandler() (*principals.Handler, *principalstest.MemoryStore) {
+	store := principalstest.NewMemoryStore()
 	return principals.NewHandler(store, func(r *http.Request) string { return "test-admin" }), store
 }
 

@@ -1,5 +1,7 @@
 # Agentic Platform — UX Assessment
 
+> **SUPERSEDED — historical implementation record (not executable).** The approved [Agentic Workflows as Functions over Snapshots design](../../specs/2026-07-21-agentic-workflows-as-functions-design.md) and [Agentic Functions program plan](../2026-07-21-agentic-functions-program.md) are authoritative. This UX assessment was written against the pre-build ticket-centric foundation; see the later UX audits (Nos. 3-5) for assessments of the shipped platform.
+
 > Read after `ROADMAP.md`. Written at the moment the foundation (identity, budget, credentials) is merged and **no UI exists yet** — the cheapest possible point to fix user experience, because every finding here is a plan edit or a small net-new surface, not a rebuild. Sourced from three review lenses (web surfaces, fly CLI surfaces, vocabulary/labels). Owner ask: "make sure we're on board with a clean UI and clear user experience before more of the platform is built."
 
 ## 1. The assembled user journey

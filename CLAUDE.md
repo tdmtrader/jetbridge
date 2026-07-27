@@ -8,8 +8,9 @@ PostgreSQL must be running locally for unit and integration tests. Check with `p
 
 | Command | What it runs | Time | Prerequisites |
 |---------|-------------|------|---------------|
-| `make test-unit` | 79 Ginkgo suites (atc, fly, skymarshal, go-concourse, tracing) | ~3 min | PostgreSQL |
-| `make test-quick` | Unit tests only (alias for `test-unit`) | ~3 min | PostgreSQL |
+| `make test-unit` | 121 Ginkgo suites (atc, agent, fly, skymarshal, go-concourse, tracing) | ~8 min | PostgreSQL |
+| `make test-quick` | Unit tests only (alias for `test-unit`) | ~8 min | PostgreSQL |
+| `make test-dev-mcp` | Retained dev-mcp server module (see ci-agent/RETAINED.md) | ~3 sec | None |
 | `make test-fly-integration` | Fly CLI against mock ATC (576 specs) | ~30 sec | None |
 | `make test-integration` | ATC integration with real Postgres (21 specs) | ~12 sec | PostgreSQL |
 | `make test-k8s-integration` | K8s integration via KinD cluster (117 specs) | ~23 min | Docker, KinD, Helm, kubectl |
@@ -26,7 +27,7 @@ ginkgo --focus="test name" ./atc/db/      # single test by name
 
 ### Running atc/db Tests
 
-The `atc/db` suite is the largest (~1007 specs, ~90s). It uses a template database for fast setup. If you see `database "testdb_template" already exists`, another test process is still running — wait for it or kill it.
+The `atc/db` suite is the largest (~1300 specs, ~2-3 min). It uses a template database for fast setup. If you see `database "testdb_template" already exists`, another test process is still running — wait for it or kill it.
 
 ### Key Notes
 

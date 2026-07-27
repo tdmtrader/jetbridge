@@ -20,7 +20,6 @@ detailJson =
         , "workflow_name": "develop"
         , "workflow_version": 1
         , "user_name": "admin"
-        , "pipeline_run_id": 10
         , "branch": "agent/ticket-12"
         , "attempt_count": 2
         , "created_at": 1784000000
@@ -61,17 +60,56 @@ all =
                     """
                     |> Result.map (\d -> ( d.ticket.id, d.ticket.state ))
                     |> Expect.equal (Ok ( 12, "closed" ))
-        , test "decodeTicket keeps enriched fields (attemptCount, pipelineRunId)" <|
+        , test "decodeTicket keeps the attempt count" <|
             \_ ->
                 Json.Decode.decodeString AT.decodeTicket
-                    """{ "id": 3, "title": "t", "state": "running", "attempt_count": 2, "pipeline_run_id": 8 }"""
-                    |> Result.map (\t -> ( t.id, t.attemptCount, t.pipelineRunId ))
-                    |> Expect.equal (Ok ( 3, 2, Just 8 ))
-        , test "decodeDispatchResult reads run_id + pipeline_name" <|
+                    """{ "id": 3, "title": "t", "state": "running", "attempt_count": 2 }"""
+                    |> Result.map (\t -> ( t.id, t.attemptCount ))
+                    |> Expect.equal (Ok ( 3, 2 ))
+        , test "decodeTicket ignores a pipeline_run_id the server still sends" <|
+            \_ ->
+                -- The pipeline run is an execution detail of the durable
+                -- workflow run and is rendered there; the ticket has nowhere
+                -- honest to show it, so it is not decoded — and its presence
+                -- must not fail the ticket.
+                Json.Decode.decodeString AT.decodeTicket
+                    """{ "id": 3, "title": "t", "state": "running", "pipeline_run_id": 8 }"""
+                    |> Result.map .id
+                    |> Expect.equal (Ok 3)
+        , test "decodeDispatchResult reads the quoted workflow run ID and warnings" <|
             \_ ->
                 Json.Decode.decodeString AT.decodeDispatchResult
-                    """{ "run_id": 42, "pipeline_name": "develop-v3" }"""
-                    |> Expect.equal (Ok { runId = 42, pipelineName = "develop-v3" })
+                    """{ "workflow_run_id": "9007199254740993", "pipeline_run_id": 42
+                       , "warnings": [ "auto-dispatch is paused" ] }"""
+                    |> Expect.equal
+                        (Ok
+                            { workflowRunId = "9007199254740993"
+                            , warnings = [ "auto-dispatch is paused" ]
+                            }
+                        )
+        , test "decodeDispatchResult defaults absent warnings to none" <|
+            \_ ->
+                -- pipeline_run_id is optional diagnostic: its absence is not an
+                -- error, and neither is an absent warnings list.
+                Json.Decode.decodeString AT.decodeDispatchResult
+                    """{ "workflow_run_id": "42" }"""
+                    |> Expect.equal (Ok { workflowRunId = "42", warnings = [] })
+        , test "decodeDispatchResult rejects a numeric workflow run ID" <|
+            \_ ->
+                -- Durable IDs exceed 2^53; a JSON number would round silently
+                -- and send the user to someone else's run.
+                Json.Decode.decodeString AT.decodeDispatchResult
+                    """{ "workflow_run_id": 9007199254740993 }"""
+                    |> Result.toMaybe
+                    |> Expect.equal Nothing
+        , test "decodeDispatchResult fails without a workflow run ID" <|
+            \_ ->
+                -- The run is the only thing the caller can act on, so a
+                -- response without one is a failed dispatch, not a blank field.
+                Json.Decode.decodeString AT.decodeDispatchResult
+                    """{ "pipeline_run_id": 42, "warnings": [] }"""
+                    |> Result.toMaybe
+                    |> Expect.equal Nothing
         , test "keeps quoted ticket durable IDs above 2^53 exact" <|
             \_ ->
                 Json.Decode.decodeString AT.decodeTicket

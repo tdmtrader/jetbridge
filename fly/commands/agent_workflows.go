@@ -199,9 +199,8 @@ func (command *WorkflowsShowCommand) Execute([]string) error {
 
 func resolveDefaultWorkflowVersion(target rc.Target, escapedName string) (int, error) {
 	latest := 0
-	cursor := ""
-	seen := map[string]struct{}{}
-	for {
+	live := 0
+	err := followAgentHistoryPages("workflow version", workflowVersionCursor, func(cursor string) (string, bool, error) {
 		query := url.Values{
 			"limit": {strconv.Itoa(workflow.MaxVersionPageSize)},
 		}
@@ -215,37 +214,34 @@ func resolveDefaultWorkflowVersion(target rc.Target, escapedName string) (int, e
 			nil,
 		)
 		if err != nil {
-			return 0, err
+			return "", false, err
 		}
 		nextCursor := resp.Header.Get("X-Next-Cursor")
 		var versions []workflow.Definition
 		if err := decodeOrError(resp, &versions); err != nil {
-			return 0, err
+			return "", false, err
 		}
 		for _, candidate := range versions {
 			if candidate.Version > latest {
 				latest = candidate.Version
 			}
 			if candidate.Live {
-				return candidate.Version, nil
+				live = candidate.Version
+				return "", true, nil
 			}
 		}
-		if nextCursor == "" {
-			if latest == 0 {
-				return 0, fmt.Errorf("workflow has no versions")
-			}
-			return latest, nil
-		}
-		parsed, err := strconv.Atoi(nextCursor)
-		if err != nil || parsed <= 0 {
-			return 0, fmt.Errorf("server returned invalid workflow version cursor %q", nextCursor)
-		}
-		if _, duplicate := seen[nextCursor]; duplicate {
-			return 0, fmt.Errorf("server returned repeated workflow version cursor %q", nextCursor)
-		}
-		seen[nextCursor] = struct{}{}
-		cursor = nextCursor
+		return nextCursor, false, nil
+	})
+	if err != nil {
+		return 0, err
 	}
+	if live > 0 {
+		return live, nil
+	}
+	if latest == 0 {
+		return 0, fmt.Errorf("workflow has no versions")
+	}
+	return latest, nil
 }
 
 type WorkflowsImportCommand struct {
@@ -274,7 +270,7 @@ func (command *WorkflowsImportCommand) Execute([]string) error {
 		return err
 	}
 	// Each import is independent and idempotent: a failure leaves the
-	// others in place and a re-run converges (design 2026-07-17 §5).
+	// others in place and a re-run converges (docs/agentic/README.md).
 	for _, dir := range dirs {
 		if err := importWorkflowDir(target, dir, command.SetLive); err != nil {
 			return fmt.Errorf("%s: %w", dir, err)

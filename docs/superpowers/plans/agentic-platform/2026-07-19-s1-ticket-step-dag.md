@@ -1,5 +1,7 @@
 # Ticket-page Step DAG (S-1, audit Proposal A) Implementation Plan
 
+> **SUPERSEDED — historical implementation record (not executable).** The approved [Agentic Workflows as Functions over Snapshots design](../../specs/2026-07-21-agentic-workflows-as-functions-design.md) and [Agentic Functions program plan](../2026-07-21-agentic-functions-program.md) are authoritative. This ticket-page step DAG proposal targeted the ticket-centric pipeline-attempt model; the shipped DAG/transcript views (batch 6) render workflow runs instead.
+
 > For agentic workers: REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox syntax.
 
 **Goal:** Render each ticket ATTEMPT (one pipeline build) on the ticket detail page as a horizontal chain of pipeline-grammar step boxes (ticket → agent steps → gate:build → judge → push → review → merge), each box colored by state, annotated with cost and duration, and click-through to its build.

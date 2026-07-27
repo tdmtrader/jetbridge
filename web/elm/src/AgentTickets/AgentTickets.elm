@@ -11,6 +11,7 @@ module AgentTickets.AgentTickets exposing
     )
 
 import AgentBadge
+import AgentPage.Chrome as Chrome
 import Application.Models exposing (Session)
 import Concourse.AgentDispatcher as AgentDispatcher
 import Concourse.AgentTicket as AgentTicket
@@ -27,12 +28,9 @@ import Message.Message exposing (Message(..))
 import Message.Subscription exposing (Delivery(..), Interval(..), Subscription)
 import Polling
 import Routes
-import SideBar.SideBar as SideBar
 import Time
 import Tooltip
 import UserState exposing (UserState(..))
-import Views.Styles
-import Views.TopBar as TopBar
 
 
 type alias Model =
@@ -195,55 +193,38 @@ subscriptions =
 
 view : Session -> Model -> Html Message
 view session model =
-    let
-        route =
-            Routes.AgentTickets
-    in
-    Html.div
-        (id "page-including-top-bar" :: Views.Styles.pageIncludingTopBar)
-        [ Html.div
-            (id "top-bar-app" :: Views.Styles.topBar False)
-            [ Html.div
-                [ style "display" "flex", style "align-items" "center" ]
-                (SideBar.sideBarIcon session
-                    :: TopBar.breadcrumbs session route
-                )
-            , Login.view session.userState model
-            ]
-        , Html.div
-            (id "page-below-top-bar" :: Views.Styles.pageBelowTopBar route)
-            [ SideBar.view session Nothing
-            , Html.div
-                [ style "padding" "16px", style "width" "100%" ]
-                (headerRow model
-                    :: dispatcherControls session model
-                    ++ [ dispatcherBanner model
-                       , content model
-                       ]
-                )
-            ]
-        ]
-
-
-{-| Page title with the live "Auto-dispatch: active/paused/off" status pill.
--}
-headerRow : Model -> Html Message
-headerRow model =
-    Html.div
-        [ style "display" "flex"
-        , style "align-items" "center"
-        , style "gap" "12px"
-        , style "flex-wrap" "wrap"
-        ]
-        (Html.h1 [ style "font-size" "18px", style "margin" "0" ] [ Html.text "Ticket queue" ]
-            :: (case model.dispatcher of
-                    Just status ->
-                        [ dispatcherPill status ]
-
-                    Nothing ->
-                        []
-               )
+    Chrome.view session
+        model
+        Routes.AgentTickets
+        "Ticket queue"
+        "work items waiting for, or already spent on, a durable workflow run"
+        (statusRow model
+            :: dispatcherControls session model
+            ++ [ dispatcherBanner model
+               , content model
+               ]
         )
+
+
+{-| The live "Auto-dispatch: active/paused/off" status pill. The page title
+itself is the shell's (see `AgentPage.Chrome`); this row carries only what is
+specific to the queue.
+-}
+statusRow : Model -> Html Message
+statusRow model =
+    case model.dispatcher of
+        Just status ->
+            Html.div
+                [ style "display" "flex"
+                , style "align-items" "center"
+                , style "gap" "12px"
+                , style "flex-wrap" "wrap"
+                , style "margin-bottom" "8px"
+                ]
+                [ dispatcherPill status ]
+
+        Nothing ->
+            Html.text ""
 
 
 {-| Reuse the AgentBadge tone classes for the auto-dispatch pill: active is a
@@ -281,13 +262,6 @@ dispatcherPill status =
 dispatcherPillTitle : AgentDispatcher.Status -> String
 dispatcherPillTitle status =
     let
-        srcNote =
-            if status.source == "boot-default" then
-                " (boot default: " ++ AgentDispatcher.modeLabel status.bootDefault ++ ")"
-
-            else
-                ""
-
         byNote =
             case status.updatedBy of
                 Just who ->
@@ -304,7 +278,7 @@ dispatcherPillTitle status =
                 Nothing ->
                     ""
     in
-    "Auto-dispatch is " ++ AgentDispatcher.modeLabel status.mode ++ srcNote ++ byNote ++ atNote
+    "Auto-dispatch is " ++ AgentDispatcher.modeLabel status.mode ++ byNote ++ atNote
 
 
 {-| When auto-dispatch is not active, explain that queued tickets will not run
@@ -317,7 +291,7 @@ dispatcherBanner model =
             bannerBox "Auto-dispatch is paused — queued tickets will not run automatically until it is resumed. You can still dispatch any ticket manually from its page."
 
         Just AgentDispatcher.Off ->
-            bannerBox "Auto-dispatch is off — queued tickets will not run automatically, and completed runs are not being reconciled. You can still dispatch any ticket manually from its page."
+            bannerBox "Auto-dispatch is off — queued tickets will not run automatically until it is resumed. You can still dispatch any ticket manually from its page."
 
         _ ->
             Html.text ""

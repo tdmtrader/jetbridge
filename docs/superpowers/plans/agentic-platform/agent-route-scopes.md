@@ -1,5 +1,7 @@
 # /api/v1/agent/* route scope audit — owner: agent-identity
 
+> **SUPERSEDED — historical implementation record (not executable).** The approved [Agentic Workflows as Functions over Snapshots design](../../specs/2026-07-21-agentic-workflows-as-functions-design.md) and [Agentic Functions program plan](../2026-07-21-agentic-functions-program.md) are authoritative. This route-scope audit predates the platform-token consolidation (batch 1) and the workflow-run identity model; treat it as a historical snapshot, not the current auth reference.
+
 Status: authoritative per-route auth reference for the agentic platform.
 Later workstreams adding a route MUST add a row here in the same change.
 Source of truth for tiers: 00-shared-contracts.md §4.1/§4.2.

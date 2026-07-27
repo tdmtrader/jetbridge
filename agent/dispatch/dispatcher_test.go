@@ -10,12 +10,13 @@ import (
 	"code.cloudfoundry.org/lager/v3/lagertest"
 
 	"github.com/concourse/concourse/agent/api/tickets"
+	"github.com/concourse/concourse/agent/api/tickets/ticketstest"
 	"github.com/concourse/concourse/agent/dispatch"
 	"github.com/concourse/concourse/agent/workflowrun"
 )
 
 // loopDeps builds schema-v3 Deps with n queued tickets in the MemoryStore.
-func loopDeps(t *testing.T, n int) (dispatch.Deps, *tickets.MemoryStore, []int, *fakeWorkflowBinder) {
+func loopDeps(t *testing.T, n int) (dispatch.Deps, *ticketstest.MemoryStore, []int, *fakeWorkflowBinder) {
 	t.Helper()
 	deps, store, _, binder := v3DispatchDeps(t)
 	ids := make([]int, 0, n)
@@ -85,12 +86,11 @@ func TestDispatcherPlatformFaultIsolatedPerTicket(t *testing.T) {
 	}
 }
 
-func TestDispatcherNonV3LogsDispatchRefused(t *testing.T) {
+func TestDispatcherUndispatchableWorkflowLogsDispatchRefused(t *testing.T) {
 	deps, store, ids, _ := loopDeps(t, 2)
-	nonV3 := v3Definition(t, "work-item", "repository")
-	nonV3.SchemaVersion = 2
-	deps.Workflows.(*fakeWorkflows).byName["non-v3"] = nonV3
-	workflowName := "non-v3"
+	deps.Workflows.(*fakeWorkflows).byName["no-repo"] =
+		definitionWithInputs(t, portSpec{"work-item", "work-item/v1"})
+	workflowName := "no-repo"
 	if err := store.Update(ids[0], tickets.Update{WorkflowName: &workflowName}); err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +103,7 @@ func TestDispatcherNonV3LogsDispatchRefused(t *testing.T) {
 	first, _, _ := store.Get(ids[0])
 	second, _, _ := store.Get(ids[1])
 	if first.State != tickets.StateQueued {
-		t.Errorf("non-v3 ticket state = %s, want queued", first.State)
+		t.Errorf("undispatchable ticket state = %s, want queued", first.State)
 	}
 	if second.State != tickets.StateRunning {
 		t.Errorf("next queued ticket state = %s, want running", second.State)
@@ -122,10 +122,10 @@ func TestDispatcherNonV3LogsDispatchRefused(t *testing.T) {
 		t.Error("dispatch-refused was not logged")
 	}
 	if failed {
-		t.Error("failed-to-dispatch was logged for the non-v3 refusal")
+		t.Error("failed-to-dispatch was logged for an inspectable refusal")
 	}
-	if len(logger.Errors) != 1 || !errors.Is(logger.Errors[0], dispatch.ErrWorkflowNotV3) {
-		t.Errorf("logged errors = %v, want one error wrapping ErrWorkflowNotV3", logger.Errors)
+	if len(logger.Errors) != 1 || !errors.Is(logger.Errors[0], dispatch.ErrNotTicketDispatchable) {
+		t.Errorf("logged errors = %v, want one error wrapping ErrNotTicketDispatchable", logger.Errors)
 	}
 }
 

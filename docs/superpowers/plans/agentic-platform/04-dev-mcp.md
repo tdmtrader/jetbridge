@@ -1,5 +1,7 @@
 # dev-mcp Implementation Plan
 
+> **SUPERSEDED — historical implementation record (not executable).** The approved [Agentic Workflows as Functions over Snapshots design](../../specs/2026-07-21-agentic-workflows-as-functions-design.md) and [Agentic Functions program plan](../2026-07-21-agentic-functions-program.md) are authoritative. The five-tool dev-mcp contract and sidecar packaging convention remain in force; their ticket-centric wave placement below is historical.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Freeze the five-tool per-repo dev-mcp contract and ship its four artifacts — a contract-test kit, a code-callable Go client, this repo's own config-driven reference implementation, and the sidecar image packaging convention (Dockerfile + theborg CI job) that every later MCP sidecar reuses.

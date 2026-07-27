@@ -283,12 +283,18 @@ func (validator *StepValidator) VisitAgent(step *AgentStep) error {
 		validator.recordWarning(*warning)
 	}
 
-	if step.Prompt == "" && step.PromptFile == "" {
-		validator.recordError("must specify either `prompt:` or `prompt_file:`")
+	if step.Prompt == "" {
+		validator.recordError("must specify `prompt:`")
 	}
 
-	if step.Prompt != "" && step.PromptFile != "" {
-		validator.recordError("must specify one of `prompt:` or `prompt_file:`, not both")
+	// `prompt_file:` is a workflow-SOURCE field: the schema-v3 compiler
+	// resolves it against the workflow manifest and inlines the text into
+	// `prompt:` before anything is planned. Nothing downstream reads it —
+	// the plan does not carry it and the pod never sees it — so a
+	// prompt_file that survives to validation would silently produce an
+	// agent with no instructions. Fail here instead of in-pod.
+	if step.PromptFile != "" {
+		validator.recordError("`prompt_file:` must be compiled into `prompt:` by the workflow compiler; it is not resolved at run time")
 	}
 
 	if step.BudgetSliceUSD < 0 {
@@ -312,9 +318,11 @@ func (validator *StepValidator) VisitAgent(step *AgentStep) error {
 	}
 
 	// The exec exports AGENT_OUTPUT_<NAME> (uppercased, -→_) per declared
-	// output, so names must stay distinct AFTER mangling and must not
-	// reproduce the load-bearing AGENT_OUTPUT_SCHEMA row (native review
-	// findings, agent-review-native #5).
+	// output, so names must stay distinct AFTER mangling (native review
+	// findings, agent-review-native #5). AGENT_OUTPUT_SCHEMA stays reserved
+	// even though the exec no longer emits it: the runner still excludes
+	// that exact name from its output-path scan, so an output named
+	// "schema" would be discovered nowhere in-pod.
 	seenOutputEnv := map[string]string{}
 	for _, output := range step.Outputs {
 		if output == "flight" {

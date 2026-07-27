@@ -14,7 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/concourse/concourse/agent/gitcheck"
+	"github.com/concourse/concourse/agent/repodiff"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/snapshot/contracts"
 )
@@ -56,7 +56,7 @@ type RepositoryChange struct {
 	ResultSHA        string                           `json:"result_sha,omitempty"`
 	ResultTreeSHA    string                           `json:"result_tree_sha"`
 	Representation   string                           `json:"representation"`
-	Files            []gitcheck.ChangedFile           `json:"files"`
+	Files            []repodiff.ChangedFile           `json:"files"`
 	FileCount        int                              `json:"file_count"`
 	LinesAdded       int                              `json:"lines_added"`
 	LinesDeleted     int                              `json:"lines_deleted"`
@@ -338,7 +338,7 @@ func DeriveRepositoryChange(ctx context.Context, input RepositoryChangeInput) (R
 		return RepositoryChange{}, fmt.Errorf("repository-change projection: payload.digest does not match exact payload bytes")
 	}
 
-	var diff gitcheck.RepositoryDiff
+	var diff repodiff.RepositoryDiff
 	switch document.Representation {
 	case "git-tree":
 		diff, err = deriveGitTreeChange(ctx, payload.path, document, input.BaseMetadata, input.Canonicalizer)
@@ -399,10 +399,10 @@ func deriveGitTreeChange(
 	document contracts.RepositoryChangeBody,
 	base contracts.RepositoryMetadata,
 	canonicalizer snapshot.Canonicalizer,
-) (gitcheck.RepositoryDiff, error) {
+) (repodiff.RepositoryDiff, error) {
 	payload, err := os.Open(payloadPath)
 	if err != nil {
-		return gitcheck.RepositoryDiff{}, err
+		return repodiff.RepositoryDiff{}, err
 	}
 	tree, captureErr := canonicalizer.Capture(ctx, payload)
 	closeErr := payload.Close()
@@ -410,57 +410,57 @@ func deriveGitTreeChange(
 		if tree != nil {
 			_ = tree.Close()
 		}
-		return gitcheck.RepositoryDiff{}, fmt.Errorf("git-tree payload is not a canonical repository tar: %w", err)
+		return repodiff.RepositoryDiff{}, fmt.Errorf("git-tree payload is not a canonical repository tar: %w", err)
 	}
 	defer tree.Close()
 	if tree.Digest != document.Payload.Digest {
-		return gitcheck.RepositoryDiff{}, fmt.Errorf("git-tree payload is not the canonical tar named by payload.digest")
+		return repodiff.RepositoryDiff{}, fmt.Errorf("git-tree payload is not the canonical tar named by payload.digest")
 	}
 	runner := projectionGit{dir: tree.Root}
 	if result, err := runner.run(ctx, "rev-parse", "--verify", "HEAD^{commit}"); err != nil || result != document.ResultCommit {
-		return gitcheck.RepositoryDiff{}, fmt.Errorf("git-tree HEAD does not match result_commit")
+		return repodiff.RepositoryDiff{}, fmt.Errorf("git-tree HEAD does not match result_commit")
 	}
 	if resultTree, err := runner.run(ctx, "rev-parse", "--verify", document.ResultCommit+"^{tree}"); err != nil || resultTree != document.ResultTree {
-		return gitcheck.RepositoryDiff{}, fmt.Errorf("git-tree result does not match result_tree")
+		return repodiff.RepositoryDiff{}, fmt.Errorf("git-tree result does not match result_tree")
 	}
 	if objectFormat, err := runner.run(ctx, "rev-parse", "--show-object-format=storage"); err != nil || objectFormat != base.ObjectFormat {
-		return gitcheck.RepositoryDiff{}, fmt.Errorf("git-tree object format differs from base")
+		return repodiff.RepositoryDiff{}, fmt.Errorf("git-tree object format differs from base")
 	}
 	if _, err := runner.run(ctx, "merge-base", "--is-ancestor", document.BaseSHA, document.ResultCommit); err != nil {
-		return gitcheck.RepositoryDiff{}, fmt.Errorf("result_commit does not descend from base_sha: %w", err)
+		return repodiff.RepositoryDiff{}, fmt.Errorf("result_commit does not descend from base_sha: %w", err)
 	}
-	return gitcheck.DeriveRepositoryDiff(ctx, tree.Root, document.BaseSHA, document.ResultCommit)
+	return repodiff.DeriveRepositoryDiff(ctx, tree.Root, document.BaseSHA, document.ResultCommit)
 }
 
-func derivePatchChange(ctx context.Context, baseDirectory, payloadPath string, document contracts.RepositoryChangeBody) (gitcheck.RepositoryDiff, error) {
+func derivePatchChange(ctx context.Context, baseDirectory, payloadPath string, document contracts.RepositoryChangeBody) (repodiff.RepositoryDiff, error) {
 	runner := projectionGit{dir: baseDirectory}
 	if _, err := runner.run(ctx, "update-index", "--refresh"); err != nil {
-		return gitcheck.RepositoryDiff{}, fmt.Errorf("refresh scratch repository index: %w", err)
+		return repodiff.RepositoryDiff{}, fmt.Errorf("refresh scratch repository index: %w", err)
 	}
 	if _, err := runner.run(ctx, "apply", "--check", "--index", "--whitespace=nowarn", payloadPath); err != nil {
-		return gitcheck.RepositoryDiff{}, fmt.Errorf("patch failed git apply --check --index: %w", err)
+		return repodiff.RepositoryDiff{}, fmt.Errorf("patch failed git apply --check --index: %w", err)
 	}
 	if _, err := runner.run(ctx, "apply", "--index", "--whitespace=nowarn", payloadPath); err != nil {
-		return gitcheck.RepositoryDiff{}, fmt.Errorf("apply patch: %w", err)
+		return repodiff.RepositoryDiff{}, fmt.Errorf("apply patch: %w", err)
 	}
 	resultTree, err := runner.run(ctx, "write-tree")
 	if err != nil {
-		return gitcheck.RepositoryDiff{}, fmt.Errorf("calculate patched result tree: %w", err)
+		return repodiff.RepositoryDiff{}, fmt.Errorf("calculate patched result tree: %w", err)
 	}
 	if resultTree != document.ResultTree {
-		return gitcheck.RepositoryDiff{}, fmt.Errorf("result_tree does not match applied patch")
+		return repodiff.RepositoryDiff{}, fmt.Errorf("result_tree does not match applied patch")
 	}
-	return gitcheck.DeriveRepositoryDiff(ctx, baseDirectory, document.BaseSHA, resultTree)
+	return repodiff.DeriveRepositoryDiff(ctx, baseDirectory, document.BaseSHA, resultTree)
 }
 
-func deriveBundleChange(ctx context.Context, baseDirectory, payloadPath string, document contracts.RepositoryChangeBody) (gitcheck.RepositoryDiff, error) {
+func deriveBundleChange(ctx context.Context, baseDirectory, payloadPath string, document contracts.RepositoryChangeBody) (repodiff.RepositoryDiff, error) {
 	runner := projectionGit{dir: baseDirectory}
 	if _, err := runner.run(ctx, "bundle", "verify", payloadPath); err != nil {
-		return gitcheck.RepositoryDiff{}, fmt.Errorf("bundle verify: %w", err)
+		return repodiff.RepositoryDiff{}, fmt.Errorf("bundle verify: %w", err)
 	}
 	heads, err := runner.run(ctx, "bundle", "list-heads", payloadPath)
 	if err != nil {
-		return gitcheck.RepositoryDiff{}, fmt.Errorf("list bundle heads: %w", err)
+		return repodiff.RepositoryDiff{}, fmt.Errorf("list bundle heads: %w", err)
 	}
 	lines := make([][]string, 0, 1)
 	for _, line := range strings.Split(heads, "\n") {
@@ -469,19 +469,19 @@ func deriveBundleChange(ctx context.Context, baseDirectory, payloadPath string, 
 		}
 	}
 	if len(lines) != 1 || lines[0][0] != document.ResultCommit {
-		return gitcheck.RepositoryDiff{}, fmt.Errorf("bundle must expose exactly result_commit")
+		return repodiff.RepositoryDiff{}, fmt.Errorf("bundle must expose exactly result_commit")
 	}
 	if _, err := runner.run(ctx, "bundle", "unbundle", payloadPath); err != nil {
-		return gitcheck.RepositoryDiff{}, fmt.Errorf("unbundle: %w", err)
+		return repodiff.RepositoryDiff{}, fmt.Errorf("unbundle: %w", err)
 	}
 	resultTree, err := runner.run(ctx, "rev-parse", "--verify", document.ResultCommit+"^{tree}")
 	if err != nil || resultTree != document.ResultTree {
-		return gitcheck.RepositoryDiff{}, fmt.Errorf("bundled result does not match result_tree")
+		return repodiff.RepositoryDiff{}, fmt.Errorf("bundled result does not match result_tree")
 	}
 	if _, err := runner.run(ctx, "merge-base", "--is-ancestor", document.BaseSHA, document.ResultCommit); err != nil {
-		return gitcheck.RepositoryDiff{}, fmt.Errorf("result_commit does not descend from base_sha: %w", err)
+		return repodiff.RepositoryDiff{}, fmt.Errorf("result_commit does not descend from base_sha: %w", err)
 	}
-	return gitcheck.DeriveRepositoryDiff(ctx, baseDirectory, document.BaseSHA, document.ResultCommit)
+	return repodiff.DeriveRepositoryDiff(ctx, baseDirectory, document.BaseSHA, document.ResultCommit)
 }
 
 type repositoryChangePayload struct {

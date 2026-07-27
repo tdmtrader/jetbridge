@@ -195,11 +195,6 @@ type ContainerSpec struct {
 	// exec implementation (the agent step) per
 	// shared-contracts §8.1 — never from public pipeline YAML.
 	SidecarEnv map[string][]string
-
-	// SidecarSecretEnv maps a sidecar name to env-var-name → K8s Secret
-	// coordinates, emitted as ValueFrom.SecretKeyRef in that sidecar's
-	// container spec (same secretKeyRef-only rule as SecretEnv, §8.2).
-	SidecarSecretEnv map[string]map[string]vars.SecretRef
 }
 
 type BuildStepDelegate interface {

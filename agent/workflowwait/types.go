@@ -233,26 +233,3 @@ func (wait Wait) Validate() error {
 	}
 	return nil
 }
-
-func cloneRef(ref *snapshot.SnapshotRef) *snapshot.SnapshotRef {
-	if ref == nil {
-		return nil
-	}
-	copy := *ref
-	return &copy
-}
-
-func cloneTime(value *time.Time) *time.Time {
-	if value == nil {
-		return nil
-	}
-	copy := *value
-	return &copy
-}
-
-func cloneWait(wait Wait) Wait {
-	wait.Default = cloneRef(wait.Default)
-	wait.Answer = cloneRef(wait.Answer)
-	wait.ResolvedAt = cloneTime(wait.ResolvedAt)
-	return wait
-}

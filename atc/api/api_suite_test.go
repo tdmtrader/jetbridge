@@ -14,23 +14,24 @@ import (
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagertest"
 
-	dispatcherapi "github.com/concourse/concourse/agent/api/dispatcher"
+	"github.com/concourse/concourse/agent/api/dispatcher/dispatchertest"
 	experimentsapi "github.com/concourse/concourse/agent/api/experiments"
 	"github.com/concourse/concourse/agent/api/feedback"
-	"github.com/concourse/concourse/agent/api/metrics"
+	"github.com/concourse/concourse/agent/api/metrics/metricstest"
 	"github.com/concourse/concourse/agent/api/principals"
-	"github.com/concourse/concourse/agent/api/reviews"
+	"github.com/concourse/concourse/agent/api/principals/principalstest"
+	"github.com/concourse/concourse/agent/api/reviews/reviewstest"
 	snapshotsapi "github.com/concourse/concourse/agent/api/snapshots"
-	"github.com/concourse/concourse/agent/api/tickets"
+	"github.com/concourse/concourse/agent/api/tickets/ticketstest"
 	workflowoutcomesapi "github.com/concourse/concourse/agent/api/workflowoutcomes"
 	workflowrunsapi "github.com/concourse/concourse/agent/api/workflowruns"
 	workflowwaitsapi "github.com/concourse/concourse/agent/api/workflowwaits"
-	"github.com/concourse/concourse/agent/budget"
-	"github.com/concourse/concourse/agent/credentials"
+	"github.com/concourse/concourse/agent/budget/budgettest"
+	"github.com/concourse/concourse/agent/credentials/credentialstest"
 	"github.com/concourse/concourse/agent/snapshot"
-	"github.com/concourse/concourse/agent/workflow"
+	"github.com/concourse/concourse/agent/workflow/workflowtest"
 	"github.com/concourse/concourse/agent/workflowrun"
-	"github.com/concourse/concourse/agent/workflowwait"
+	"github.com/concourse/concourse/agent/workflowwait/workflowwaittest"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api"
 	"github.com/concourse/concourse/atc/api/accessor"
@@ -242,7 +243,7 @@ var _ = BeforeEach(func() {
 	fakePolicyChecker = new(policycheckerfakes.FakePolicyChecker)
 	fakePolicyChecker.CheckReturns(policy.PassedPolicyCheck(), nil)
 
-	principalsStore := principals.NewMemoryStore()
+	principalsStore := principalstest.NewMemoryStore()
 	checkAgentPrincipalHandlerFactory := auth.NewCheckAgentPrincipalHandlerFactory(principals.NewVerifier(principalsStore))
 
 	apiWrapper := wrappa.MultiWrappa{
@@ -278,7 +279,7 @@ var _ = BeforeEach(func() {
 		Identity: func(*http.Request) (workflowwaitsapi.RequestIdentity, error) {
 			return workflowwaitsapi.RequestIdentity{Actor: "subject:sha256:api-suite", DisplayName: "api-suite"}, nil
 		},
-		Runs: workflowRunBackend, Waits: workflowwait.NewMemoryStore(time.Now), Manifests: workflowRunBackend,
+		Runs: workflowRunBackend, Waits: workflowwaittest.NewMemoryStore(time.Now), Manifests: workflowRunBackend,
 	})
 	Expect(err).NotTo(HaveOccurred())
 	experimentHandlers, err := experimentsapi.NewHandler(experimentsapi.Config{
@@ -332,23 +333,19 @@ var _ = BeforeEach(func() {
 		dbSigningKeyFactory,
 		nil,
 		feedback.NewMemoryStore(),
-		reviews.NewMemoryStore(),
-		metrics.NewMemoryStore(),
-		tickets.NewMemoryStore(),
+		reviewstest.NewMemoryStore(),
+		metricstest.NewMemoryStore(),
+		ticketstest.NewMemoryStore(),
 		principalsStore,
-		credentials.NewMemoryBackend(),
-		// lags the suite's "1.2.3" version param — the platform-info
-		// endpoint must report the skew (#45)
-		"registry.example/agent-runner:v1.2.2",
-		budget.NewMemoryLedger(),
+		credentialstest.NewMemoryBackend(),
+		budgettest.NewMemoryLedger(),
 		0,
 		fakeAgentRunTranscriptFactory,
-		workflow.NewMemoryStore(),
+		workflowtest.NewMemoryStore(),
 		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusNotImplemented) // dispatch handler stub
 		}),
-		dispatcherapi.NewMemoryStore(),
-		false, // agent dispatcher boot default (flag off)
+		dispatchertest.NewMemoryStore(),
 		snapshotHandlers,
 		nil, // resource capture disabled with the snapshot service in this suite
 		workflowRunHandlers,

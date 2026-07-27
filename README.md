@@ -204,7 +204,9 @@ config:
 AI-assisted pipeline automation — versioned workflow functions running as
 ordinary visible Concourse DAGs over immutable, typed snapshots. This
 replaced an earlier standalone `ci-agent` module and ticket-centric review
-pipeline, both removed.
+pipeline; both are gone except a small retained `ci-agent/devmcp` server
+(see `ci-agent/RETAINED.md`) kept as the in-repo build/test MCP
+implementation.
 
 See [`docs/agentic/README.md`](docs/agentic/README.md) for the authoritative
 description: runtime prerequisites, snapshot storage, workflow-def format,

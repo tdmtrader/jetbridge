@@ -281,15 +281,17 @@ func (r *TransitionRequest) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// DispatchResponse is the DispatchAgentTicket 201 body (manual-dispatch
-// slice, 2026-07-17): the created pipeline run and the per-ticket
-// template pipeline it materialized from.
+// DispatchResponse is the DispatchAgentTicket 201 body. The workflow run IS
+// the dispatch identity — it is what the ticket is durably linked to and what
+// every view keys on — and it is carried as a quoted decimal. The pipeline run
+// is an optional execution-linkage diagnostic and may be absent; no pipeline
+// NAME is reported, because a workflow run's execution pipeline is an
+// implementation detail of admission, not an address a caller should use.
 type DispatchResponse struct {
-	RunID         int                     `json:"run_id"`
-	PipelineName  string                  `json:"pipeline_name"`
-	WorkflowRunID *snapshot.WorkflowRunID `json:"workflow_run_id,omitempty"`
-	// Warnings carries advisory spec-lint findings (ticket #46:
-	// vocabulary known to trigger CLI usage-policy false refusals).
-	// Additive and omitempty — never a dispatch blocker.
+	WorkflowRunID snapshot.WorkflowRunID `json:"workflow_run_id"`
+	PipelineRunID *int                   `json:"pipeline_run_id,omitempty"`
+	// Warnings carries advisory work-item text-lint findings (vocabulary known
+	// to trigger CLI usage-policy false refusals). Additive and omitempty —
+	// never a dispatch blocker.
 	Warnings []string `json:"warnings,omitempty"`
 }

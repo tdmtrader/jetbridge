@@ -1,5 +1,7 @@
 # Ticket-detail layout contract (ws15 Task 4, Step 1)
 
+> **SUPERSEDED — historical implementation record (not executable).** The approved [Agentic Workflows as Functions over Snapshots design](../../../specs/2026-07-21-agentic-workflows-as-functions-design.md) and [Agentic Functions program plan](../../2026-07-21-agentic-functions-program.md) are authoritative. This ticket-detail layout contract governed the abandoned ticket-centric UI; the live ticket compatibility UI (see `docs/agentic/README.md`) may differ.
+
 Status: **frozen** (wave-start deliverable). Downstream plans render INTO the
 named sections below; none adds a new top-level page.
 

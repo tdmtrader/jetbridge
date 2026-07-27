@@ -9,10 +9,11 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/agent/credentials"
+	"github.com/concourse/concourse/agent/credentials/credentialstest"
 )
 
-func newCredHandler() (*credentials.Handler, *credentials.MemoryBackend) {
-	backend := credentials.NewMemoryBackend()
+func newCredHandler() (*credentials.Handler, *credentialstest.MemoryBackend) {
+	backend := credentialstest.NewMemoryBackend()
 	backend.AddUser("sub-alice", 7, "alice")
 	backend.AddUser(credentials.PlatformUserSub, 99, "platform")
 	claims := func(r *http.Request) (string, string, bool, bool) {

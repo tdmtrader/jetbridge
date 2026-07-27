@@ -124,30 +124,6 @@ func (f *agentUserCredentialsFactory) Resolve(userID int, kind string) (*credent
 	return &cred, true, nil
 }
 
-func (f *agentUserCredentialsFactory) ExpiringWithin(d time.Duration) ([]credentials.Credential, error) {
-	rows, err := f.conn.Query(
-		`SELECT `+credentialColumns+`
-		 FROM agent_user_credentials
-		 WHERE expires_at IS NOT NULL AND expires_at < $1
-		 ORDER BY expires_at ASC`,
-		time.Now().Add(d),
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	out := []credentials.Credential{}
-	for rows.Next() {
-		cred, _, _, err := scanCredential(rows.Scan, false)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, cred)
-	}
-	return out, rows.Err()
-}
-
 func (f *agentUserCredentialsFactory) Delete(userID int, kind string) error {
 	_, err := psql.Delete("agent_user_credentials").
 		Where(sq.Eq{"user_id": userID, "kind": kind}).

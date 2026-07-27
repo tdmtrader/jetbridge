@@ -1,5 +1,7 @@
 # Platform-Owned Merge — Design Delta
 
+> **SUPERSEDED — historical implementation record (not executable).** The approved [Agentic Workflows as Functions over Snapshots design](2026-07-21-agentic-workflows-as-functions-design.md) and [Agentic Functions program plan](../plans/2026-07-21-agentic-functions-program.md) are authoritative. This merge design targeted the universal ticket lifecycle; merge state, human modifications, and disposition are retained as evaluation data but decoupled from tickets — see the functions-over-snapshots design's outcomes section.
+
 - **Date:** 2026-07-20
 - **Status:** Self-approved for implementation (owner waived the review gate in-session, 2026-07-20)
 - **Descends from:** `12-delivery-outcomes.md`, `00-shared-contracts.md` §1.11/§1.11.1

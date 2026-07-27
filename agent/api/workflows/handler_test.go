@@ -13,6 +13,7 @@ import (
 	"github.com/concourse/concourse/agent/api/workflows"
 	schema "github.com/concourse/concourse/agent/schema"
 	"github.com/concourse/concourse/agent/workflow"
+	"github.com/concourse/concourse/agent/workflow/workflowtest"
 	"github.com/concourse/concourse/agent/workflowrun"
 )
 
@@ -37,9 +38,9 @@ func (f fakeStats) WorkflowStats(string) ([]schema.WorkflowVersionStats, error) 
 	return f.rows, f.err
 }
 
-func newHandler(t *testing.T) (*workflows.Handler, *workflow.MemoryStore) {
+func newHandler(t *testing.T) (*workflows.Handler, *workflowtest.MemoryStore) {
 	t.Helper()
-	store := workflow.NewMemoryStore(workflowrun.WorkflowTargetRenderer{
+	store := workflowtest.NewMemoryStore(workflowrun.WorkflowTargetRenderer{
 		RuntimeImage: "registry.example/agent-runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 	})
 	return workflows.NewHandler(store, fakeStats{}), store
@@ -364,7 +365,7 @@ func TestPromoteUnsupportedSchemaVersionReturns422(t *testing.T) {
 }
 
 func TestPromoteRejectsSchemaV3WithoutDigestPinnedTrustedRuntime(t *testing.T) {
-	store := workflow.NewMemoryStore(workflowrun.WorkflowTargetRenderer{
+	store := workflowtest.NewMemoryStore(workflowrun.WorkflowTargetRenderer{
 		RuntimeImage: "registry.example/agent-runner:mutable",
 	})
 	h := workflows.NewHandler(store, fakeStats{})
@@ -397,7 +398,7 @@ plan:
 }
 
 func TestStatsReturnsDerivedRows(t *testing.T) {
-	store := workflow.NewMemoryStore(workflowrun.WorkflowTargetRenderer{
+	store := workflowtest.NewMemoryStore(workflowrun.WorkflowTargetRenderer{
 		RuntimeImage: "registry.example/agent-runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 	})
 	v := 2

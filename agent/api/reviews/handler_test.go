@@ -10,13 +10,14 @@ import (
 
 	"github.com/concourse/concourse/agent/api/feedback"
 	"github.com/concourse/concourse/agent/api/reviews"
+	"github.com/concourse/concourse/agent/api/reviews/reviewstest"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/snapshot/contracts"
 )
 
-func newHandler(t *testing.T) (*reviews.Handler, *reviews.MemoryStore, *feedback.MemoryStore) {
+func newHandler(t *testing.T) (*reviews.Handler, *reviewstest.MemoryStore, *feedback.MemoryStore) {
 	t.Helper()
-	store := reviews.NewMemoryStore()
+	store := reviewstest.NewMemoryStore()
 	fbStore := feedback.NewMemoryStore()
 	return reviews.NewHandler(store, fbStore, "main"), store, fbStore
 }

@@ -47,7 +47,6 @@ type AgentSnapshotsCaptureResourceCommand struct {
 	Resource string                   `short:"r" long:"resource" required:"true" description:"Resource name"`
 	Version  *atc.Version             `short:"v" long:"version" required:"true" value-name:"KEY:VALUE" description:"Exact resource version (repeat for every field)"`
 	Type     string                   `long:"type" description:"Versioned snapshot type; defaults to repository/v1 for git resources"`
-	Wait     bool                     `long:"wait" description:"Wait for capture execution to complete (the default; retained for compatibility)"`
 	NoWait   bool                     `long:"no-wait" description:"Return after starting the durable capture execution"`
 	Json     bool                     `long:"json" description:"Print command result as JSON"`
 }
@@ -66,9 +65,6 @@ func (command *AgentSnapshotsCaptureResourceCommand) Validate() error {
 		if _, err := snapshot.ParseTypeRef(command.Type); err != nil {
 			return err
 		}
-	}
-	if command.Wait && command.NoWait {
-		return fmt.Errorf("agent snapshot capture-resource: --wait and --no-wait are mutually exclusive")
 	}
 	return nil
 }
@@ -201,14 +197,6 @@ func (command *AgentSnapshotsCreateCommand) Execute([]string) error {
 		return err
 	}
 	return printAgentSnapshotManifest(manifest, command.Json)
-}
-
-func preflightAgentSnapshotDirectory(directory string) error {
-	root, err := openAgentSnapshotDirectory(directory)
-	if err != nil {
-		return err
-	}
-	return root.Close()
 }
 
 func openAgentSnapshotDirectory(directory string) (root *os.Root, err error) {

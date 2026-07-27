@@ -5,6 +5,7 @@ import Application.Application as Application
 import Common
 import Concourse.Agent
 import Concourse.Transcript
+import Concourse.WorkflowRun
 import Data
 import Dict
 import Expect
@@ -37,6 +38,42 @@ all =
                         , attribute (Attr.href "/agent/snapshots/9007199254740995")
                         , attribute (Attr.href "/agent/snapshots/9007199254740997")
                         ]
+        , test "renders the pipeline run as an execution diagnostic, not an identity" <|
+            \_ ->
+                -- pipeline_run_id was decoded and rendered nowhere. It is a
+                -- correlation handle for pipeline-side logs, so it renders —
+                -- small, and clearly subordinate to the durable run ID.
+                initialized
+                    |> Common.queryView
+                    |> Query.find [ class "agent-run-pipeline-diagnostic" ]
+                    |> Query.has [ text "pipeline run 12" ]
+        , test "omits the pipeline diagnostic when the run has no pipeline run" <|
+            \_ ->
+                withSummary (\s -> { s | pipelineRunId = Nothing })
+                    |> Common.queryView
+                    |> Query.hasNot [ class "agent-run-pipeline-diagnostic" ]
+        , test "links a retry back to the run it retried" <|
+            \_ ->
+                -- Without this a retry was indistinguishable from an original
+                -- run, and the failure whose frozen inputs it reuses was
+                -- unreachable from it.
+                withSummary (\s -> { s | retryOf = Just "9007199254740991" })
+                    |> Common.queryView
+                    |> Query.find [ class "agent-run-retry-of" ]
+                    |> Expect.all
+                        [ Query.has [ text "retry of run #9007199254740991" ]
+                        , Query.has
+                            [ attribute
+                                (Attr.href
+                                    "/agent/workflows/review-api/runs/9007199254740991"
+                                )
+                            ]
+                        ]
+        , test "shows no retry badge on an original run" <|
+            \_ ->
+                initialized
+                    |> Common.queryView
+                    |> Query.hasNot [ class "agent-run-retry-of" ]
         , test "renders bounded repository-change projection from the server" <|
             \_ ->
                 initialized
@@ -342,6 +379,24 @@ initialized =
     Common.init "/agent/workflows/review-api/runs/9007199254740993"
         |> Application.handleCallback
             (Callback.AgentWorkflowRunFetched AgenticData.runSummary.id (Ok AgenticData.runDetail))
+        |> Tuple.first
+
+
+{-| The run page loaded with one field of the summary changed.
+-}
+withSummary :
+    (Concourse.WorkflowRun.Summary -> Concourse.WorkflowRun.Summary)
+    -> Application.Model
+withSummary f =
+    let
+        detail =
+            AgenticData.runDetail
+    in
+    Common.init "/agent/workflows/review-api/runs/9007199254740993"
+        |> Application.handleCallback
+            (Callback.AgentWorkflowRunFetched AgenticData.runSummary.id
+                (Ok { detail | summary = f detail.summary })
+            )
         |> Tuple.first
 
 

@@ -85,10 +85,10 @@ func TestAgentTicketsWatchRejectsBlankWorkflowName(t *testing.T) {
 }
 
 func TestAgentTicketsDispatchFormattingSeparatesDurableAndPipelineIDs(t *testing.T) {
+	pipelineRunID := 321
 	line, err := agentTicketDispatchLine(7, tickets.DispatchResponse{
-		RunID:         321,
-		PipelineName:  "must-not-print",
-		WorkflowRunID: workflowRunIDPtr(agentTicketsLargeWorkflowRunID),
+		WorkflowRunID: agentTicketsLargeWorkflowRunID,
+		PipelineRunID: &pipelineRunID,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -97,16 +97,26 @@ func TestAgentTicketsDispatchFormattingSeparatesDurableAndPipelineIDs(t *testing
 	if line != want {
 		t.Fatalf("dispatch line = %q, want %q", line, want)
 	}
-	if strings.Contains(line, "must-not-print") {
-		t.Fatalf("dispatch line exposes pipeline name: %q", line)
+}
+
+// The pipeline run is a diagnostic. Its absence is reported by saying nothing
+// about it, never by inventing a zero.
+func TestAgentTicketsDispatchFormattingOmitsAnAbsentPipelineRun(t *testing.T) {
+	line, err := agentTicketDispatchLine(7, tickets.DispatchResponse{
+		WorkflowRunID: agentTicketsLargeWorkflowRunID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "dispatched ticket #7 as workflow run 9007199254740993"
+	if line != want {
+		t.Fatalf("dispatch line = %q, want %q", line, want)
 	}
 }
 
 func TestAgentTicketsDispatchRejectsMalformedSuccessWithoutWorkflowRunID(t *testing.T) {
-	_, err := agentTicketDispatchLine(7, tickets.DispatchResponse{
-		RunID:        321,
-		PipelineName: "agent-ticket-7",
-	})
+	pipelineRunID := 321
+	_, err := agentTicketDispatchLine(7, tickets.DispatchResponse{PipelineRunID: &pipelineRunID})
 	if err == nil || !strings.Contains(err.Error(), "dispatch response for ticket 7 omitted workflow_run_id") {
 		t.Fatalf("error = %v, want missing workflow_run_id", err)
 	}

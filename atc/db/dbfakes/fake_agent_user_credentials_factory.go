@@ -22,19 +22,6 @@ type FakeAgentUserCredentialsFactory struct {
 	deleteReturnsOnCall map[int]struct {
 		result1 error
 	}
-	ExpiringWithinStub        func(time.Duration) ([]credentials.Credential, error)
-	expiringWithinMutex       sync.RWMutex
-	expiringWithinArgsForCall []struct {
-		arg1 time.Duration
-	}
-	expiringWithinReturns struct {
-		result1 []credentials.Credential
-		result2 error
-	}
-	expiringWithinReturnsOnCall map[int]struct {
-		result1 []credentials.Credential
-		result2 error
-	}
 	PutStub        func(int, string, string, string, time.Time) error
 	putMutex       sync.RWMutex
 	putArgsForCall []struct {
@@ -160,70 +147,6 @@ func (fake *FakeAgentUserCredentialsFactory) DeleteReturnsOnCall(i int, result1 
 	fake.deleteReturnsOnCall[i] = struct {
 		result1 error
 	}{result1}
-}
-
-func (fake *FakeAgentUserCredentialsFactory) ExpiringWithin(arg1 time.Duration) ([]credentials.Credential, error) {
-	fake.expiringWithinMutex.Lock()
-	ret, specificReturn := fake.expiringWithinReturnsOnCall[len(fake.expiringWithinArgsForCall)]
-	fake.expiringWithinArgsForCall = append(fake.expiringWithinArgsForCall, struct {
-		arg1 time.Duration
-	}{arg1})
-	stub := fake.ExpiringWithinStub
-	fakeReturns := fake.expiringWithinReturns
-	fake.recordInvocation("ExpiringWithin", []interface{}{arg1})
-	fake.expiringWithinMutex.Unlock()
-	if stub != nil {
-		return stub(arg1)
-	}
-	if specificReturn {
-		return ret.result1, ret.result2
-	}
-	return fakeReturns.result1, fakeReturns.result2
-}
-
-func (fake *FakeAgentUserCredentialsFactory) ExpiringWithinCallCount() int {
-	fake.expiringWithinMutex.RLock()
-	defer fake.expiringWithinMutex.RUnlock()
-	return len(fake.expiringWithinArgsForCall)
-}
-
-func (fake *FakeAgentUserCredentialsFactory) ExpiringWithinCalls(stub func(time.Duration) ([]credentials.Credential, error)) {
-	fake.expiringWithinMutex.Lock()
-	defer fake.expiringWithinMutex.Unlock()
-	fake.ExpiringWithinStub = stub
-}
-
-func (fake *FakeAgentUserCredentialsFactory) ExpiringWithinArgsForCall(i int) time.Duration {
-	fake.expiringWithinMutex.RLock()
-	defer fake.expiringWithinMutex.RUnlock()
-	argsForCall := fake.expiringWithinArgsForCall[i]
-	return argsForCall.arg1
-}
-
-func (fake *FakeAgentUserCredentialsFactory) ExpiringWithinReturns(result1 []credentials.Credential, result2 error) {
-	fake.expiringWithinMutex.Lock()
-	defer fake.expiringWithinMutex.Unlock()
-	fake.ExpiringWithinStub = nil
-	fake.expiringWithinReturns = struct {
-		result1 []credentials.Credential
-		result2 error
-	}{result1, result2}
-}
-
-func (fake *FakeAgentUserCredentialsFactory) ExpiringWithinReturnsOnCall(i int, result1 []credentials.Credential, result2 error) {
-	fake.expiringWithinMutex.Lock()
-	defer fake.expiringWithinMutex.Unlock()
-	fake.ExpiringWithinStub = nil
-	if fake.expiringWithinReturnsOnCall == nil {
-		fake.expiringWithinReturnsOnCall = make(map[int]struct {
-			result1 []credentials.Credential
-			result2 error
-		})
-	}
-	fake.expiringWithinReturnsOnCall[i] = struct {
-		result1 []credentials.Credential
-		result2 error
-	}{result1, result2}
 }
 
 func (fake *FakeAgentUserCredentialsFactory) Put(arg1 int, arg2 string, arg3 string, arg4 string, arg5 time.Time) error {

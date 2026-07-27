@@ -52,10 +52,8 @@ dispatcherStatus modeToken =
     Callback.AgentDispatcherFetched
         (Ok
             { mode = AgentDispatcher.modeFromString modeToken
-            , source = "setting"
             , updatedAt = Just "2026-07-19T12:00:00Z"
             , updatedBy = Just "operator"
-            , bootDefault = AgentDispatcher.Off
             }
         )
 
@@ -83,16 +81,29 @@ all =
             \_ ->
                 Json.Decode.decodeString AgentDispatcher.decodeStatus
                     """
-                    { "mode": "paused", "source": "setting"
-                    , "updated_at": "2026-07-19T12:00:00Z", "updated_by": "operator"
-                    , "boot_default": "off" }
+                    { "mode": "paused"
+                    , "updated_at": "2026-07-19T12:00:00Z", "updated_by": "operator" }
                     """
+                    |> Expect.equal
+                        (Ok
+                            { mode = AgentDispatcher.Paused
+                            , updatedAt = Just "2026-07-19T12:00:00Z"
+                            , updatedBy = Just "operator"
+                            }
+                        )
+        , test "ignores a source/boot_default pair a stale server still sends" <|
+            \_ ->
+                -- The stored setting is the only input to the effective mode
+                -- now, so there is no boot-flag fallback left to explain — but
+                -- an older server's extra keys must not fail the decode.
+                Json.Decode.decodeString AgentDispatcher.decodeStatus
+                    """{ "mode": "active", "source": "boot-default", "boot_default": "active" }"""
                     |> Result.map .mode
-                    |> Expect.equal (Ok AgentDispatcher.Paused)
+                    |> Expect.equal (Ok AgentDispatcher.Active)
         , test "tolerates an unknown mode token without crashing" <|
             \_ ->
                 Json.Decode.decodeString AgentDispatcher.decodeStatus
-                    """{ "mode": "hibernating", "source": "setting", "boot_default": "active" }"""
+                    """{ "mode": "hibernating" }"""
                     |> Result.map .mode
                     |> Expect.equal (Ok (AgentDispatcher.Unknown "hibernating"))
         , test "renders the auto-dispatch status pill from the fetched status" <|

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/agent/credentials"
+	"github.com/concourse/concourse/agent/credentials/credentialstest"
 )
 
 func TestValidKind(t *testing.T) {
@@ -51,7 +52,7 @@ func TestPutRequestValidate(t *testing.T) {
 }
 
 func TestMemoryBackendRoundTrip(t *testing.T) {
-	m := credentials.NewMemoryBackend()
+	m := credentialstest.NewMemoryBackend()
 	m.AddUser("sub-1", 7, "alice")
 
 	id, name, found, err := m.UserBySub("sub-1")
@@ -78,15 +79,6 @@ func TestMemoryBackendRoundTrip(t *testing.T) {
 	cred, found, err := m.Resolve(7, "anthropic_oauth")
 	if err != nil || !found || cred.Token != "sk-tok" {
 		t.Fatalf("Resolve: %+v %v %v", cred, found, err)
-	}
-
-	expiring, err := m.ExpiringWithin(2 * time.Hour)
-	if err != nil || len(expiring) != 1 {
-		t.Fatalf("ExpiringWithin(2h): %v %v", expiring, err)
-	}
-	expiring, err = m.ExpiringWithin(time.Minute)
-	if err != nil || len(expiring) != 0 {
-		t.Fatalf("ExpiringWithin(1m): %v %v", expiring, err)
 	}
 
 	if err := m.Delete(7, "anthropic_oauth"); err != nil {

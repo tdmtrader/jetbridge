@@ -13,6 +13,4 @@ type AgentCommand struct {
 	Dispatcher  AgentDispatcherCommand  `command:"dispatcher" description:"Show or set the autonomous dispatcher mode (off|paused|active)"`
 	Snapshots   AgentSnapshotsCommand   `command:"snapshots" description:"Create, inspect, retain, and download typed snapshots"`
 	Experiments AgentExperimentsCommand `command:"experiments" description:"Create, run, and inspect controlled workflow experiments"`
-
-	CleanupLegacyPipelines AgentCleanupLegacyPipelinesCommand `command:"cleanup-legacy-pipelines" description:"One-time: archive retired agent-ticket-<id> pipelines (main team only)"`
 }

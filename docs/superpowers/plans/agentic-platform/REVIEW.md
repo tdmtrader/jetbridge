@@ -1,5 +1,7 @@
 # Agentic Platform — Design Review
 
+> **SUPERSEDED — historical implementation record (not executable).** The approved [Agentic Workflows as Functions over Snapshots design](../../specs/2026-07-21-agentic-workflows-as-functions-design.md) and [Agentic Functions program plan](../2026-07-21-agentic-functions-program.md) are authoritative. This design review evaluated the abandoned ticket-centric wave plans (01-14) against `00-shared-contracts.md`; it is retained as a historical record only.
+
 **Reviewed:** 2026-07-08 · **Scope:** all 14 workstream plans (`01`–`14`) against `00-shared-contracts.md`, the end-state spec, and `ROADMAP.md` · **Reviewers:** 14 per-plan + 4 cross-cutting = 18 verdicts.
 
 ---

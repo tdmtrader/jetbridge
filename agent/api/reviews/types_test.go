@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/concourse/concourse/agent/api/reviews"
+	"github.com/concourse/concourse/agent/api/reviews/reviewstest"
 	"github.com/concourse/concourse/agent/snapshot"
 )
 
@@ -21,7 +22,7 @@ func projected(id snapshot.SnapshotID, rec reviews.StoredReview) *reviews.Stored
 }
 
 func TestMemoryStoreUpsertsProjectedReviewsBySnapshotID(t *testing.T) {
-	store := reviews.NewMemoryStore()
+	store := reviewstest.NewMemoryStore()
 	first, second := snapshot.SnapshotID(301), snapshot.SnapshotID(302)
 	for _, snapshotID := range []snapshot.SnapshotID{first, second} {
 		if err := store.UpsertReviewProjection(context.Background(), projected(snapshotID, reviews.StoredReview{
@@ -49,7 +50,7 @@ func TestMemoryStoreUpsertsProjectedReviewsBySnapshotID(t *testing.T) {
 }
 
 func TestMemoryStoreRejectsAReviewWithNoSnapshotIdentity(t *testing.T) {
-	store := reviews.NewMemoryStore()
+	store := reviewstest.NewMemoryStore()
 	if err := store.UpsertReviewProjection(context.Background(), &reviews.StoredReview{
 		TeamName: "main", Conclusion: "accept",
 	}); err == nil {
@@ -58,7 +59,7 @@ func TestMemoryStoreRejectsAReviewWithNoSnapshotIdentity(t *testing.T) {
 }
 
 func TestMemoryStoreGetByBuildKeepsEveryReviewOfTheBuild(t *testing.T) {
-	store := reviews.NewMemoryStore()
+	store := reviewstest.NewMemoryStore()
 	for _, rec := range []*reviews.StoredReview{
 		projected(701, reviews.StoredReview{BuildID: 7, Summary: "first"}),
 		projected(702, reviews.StoredReview{BuildID: 7, Summary: "second"}),
@@ -78,7 +79,7 @@ func TestMemoryStoreGetByBuildKeepsEveryReviewOfTheBuild(t *testing.T) {
 }
 
 func TestMemoryStoreListByTeamNewestFirstWithLimit(t *testing.T) {
-	store := reviews.NewMemoryStore()
+	store := reviewstest.NewMemoryStore()
 	for index, id := range []snapshot.SnapshotID{801, 802, 803} {
 		if err := store.UpsertReviewProjection(context.Background(), projected(id, reviews.StoredReview{
 			TeamName: "main", Summary: string(rune('a' + index)),
@@ -100,7 +101,7 @@ func TestMemoryStoreListByTeamNewestFirstWithLimit(t *testing.T) {
 }
 
 func TestMemoryStoreCopiesOnUpsert(t *testing.T) {
-	store := reviews.NewMemoryStore()
+	store := reviewstest.NewMemoryStore()
 	rec := projected(901, reviews.StoredReview{BuildID: 1, Conclusion: "accept"})
 	if err := store.UpsertReviewProjection(context.Background(), rec); err != nil {
 		t.Fatal(err)

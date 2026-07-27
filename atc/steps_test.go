@@ -336,7 +336,6 @@ var factoryTests = []StepTest{
 			model: claude-sonnet-4-5
 			max_turns: 80
 			budget_slice_usd: 2.5
-			output_schema: repo/schemas/spec.json
 			sidecars:
 			- name: platform
 			  image: ghcr.io/tdmtrader/mcp-platform:v1.0.0
@@ -353,7 +352,6 @@ var factoryTests = []StepTest{
 			Model:          "claude-sonnet-4-5",
 			MaxTurns:       80,
 			BudgetSliceUSD: 2.5,
-			OutputSchema:   "repo/schemas/spec.json",
 			Sidecars: []atc.SidecarSource{
 				{Config: &atc.SidecarConfig{Name: "platform", Image: "ghcr.io/tdmtrader/mcp-platform:v1.0.0"}},
 			},
@@ -914,7 +912,6 @@ jobs:
       change: {type: repository-change/v1}
     output_types:
       review: review/v1
-    output_schema: repo/schemas/review.json
 `)
 		var config atc.Config
 		s.NoError(atc.UnmarshalConfig(payload, &config))
@@ -934,7 +931,6 @@ jobs:
 		s.Equal([]string{"dev", "jira"}, agent.Capabilities)
 		s.Equal([]string{"change"}, agent.Inputs)
 		s.Equal([]string{"review"}, agent.Outputs)
-		s.Equal("repo/schemas/review.json", agent.OutputSchema)
 		s.Equal(snapshot.TypeRef("review/v1"), agent.SnapshotOutputs["review"].Type)
 
 		encoded, err := json.Marshal(config)
@@ -949,7 +945,6 @@ jobs:
 		plan := jobs[0].(map[string]any)["plan"].([]any)
 		agentWire := plan[1].(map[string]any)
 		s.Equal("review-change", agentWire["function_id"])
-		s.Equal("repo/schemas/review.json", agentWire["output_schema"])
 		outputTypes := agentWire["output_types"].(map[string]any)
 		s.Equal(map[string]any{"type": "review/v1"}, outputTypes["review"])
 	})

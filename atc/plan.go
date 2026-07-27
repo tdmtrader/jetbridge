@@ -432,11 +432,9 @@ type AgentPlan struct {
 	Hermetic        bool                            `json:"hermetic,omitempty"`
 	RuntimeImage    string                          `json:"runtime_image,omitempty"`
 	Prompt          string                          `json:"prompt,omitempty"`
-	PromptFile      string                          `json:"prompt_file,omitempty"`
 	Model           string                          `json:"model,omitempty"`
 	MaxTurns        int                             `json:"max_turns,omitempty"`
 	BudgetSliceUSD  float64                         `json:"budget_slice_usd,omitempty"`
-	OutputSchema    string                          `json:"output_schema,omitempty"`
 	SystemPrompt    string                          `json:"system_prompt,omitempty"`
 	Context         string                          `json:"context,omitempty"`
 	Skills          []string                        `json:"skills,omitempty"`

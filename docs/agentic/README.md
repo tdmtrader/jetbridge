@@ -222,8 +222,28 @@ fly -t TARGET agent workflows show-run WORKFLOW WORKFLOW-RUN-ID
 cutover does not add or promise a workflow-run archival or export surface.
 The compatibility renderer, root legacy seed manifests, workflow-resolver
 ticket-budget fallback, and Dashboard's special agent-pipeline filter have
-been removed. The five schema-v3 definitions listed below are the active
+been removed. The seven schema-v3 definitions listed below are the active
 examples.
+
+### Dispatcher runtime toggle
+
+Manual dispatch (`fly agent tickets dispatch`) always works. Automatic
+dispatch of the whole ticket queue is a separate three-state mode — `off` /
+`paused` / `active` — held in a single hot-read row
+(`agent_settings.dispatcher_mode`, no restart required to change it):
+
+```sh
+fly -t TARGET agent dispatcher          # show current mode (omit ACTION for status)
+fly -t TARGET agent dispatcher resume   # mode=active: auto-dispatch queued tickets
+fly -t TARGET agent dispatcher pause    # mode=paused: do not auto-dispatch
+fly -t TARGET agent dispatcher off      # mode=off: do not auto-dispatch
+```
+
+The same three states are readable and (admin-only) settable from the web UI.
+The setting is seeded `off`; there is no separate boot flag to configure —
+this hot-read row is the only control surface, and a transient read fault
+fails safe to `paused` rather than silently resuming against an explicit
+pause.
 
 ## Sealed record outputs
 
@@ -637,6 +657,26 @@ terminal, when Jetbridge freezes the exact cell results and then-known selected
 and anomalous build telemetry. Later metric ingestion cannot rewrite it.
 Budget-skipped cells are separate from platform errors and suppress winner
 recommendations because the comparison matrix is incomplete.
+
+## Operator MCP surface
+
+`POST /api/v1/mcp` is a separate, authenticated MCP server for driving
+Concourse itself from an MCP client (Claude Desktop, an editor, another
+agent) — pipelines, jobs, builds, resources, plus a handful of agent-platform
+read tools (`list_agent_workflows`, `get_agent_workflow`, `agent_cost_rollup`,
+`list_pipeline_runs`, `get_pipeline_run`). It exposes 25 tools over the MCP
+Streamable HTTP transport and requires the same bearer authentication as any
+other `/api/v1` route (any authenticated user may call it; nothing here is
+admin-gated beyond what the underlying operations already require).
+
+This is unrelated to the named-capability sidecars a workflow declares (`dev`,
+`gateway`, custom MCP capabilities): those run beside an agent's pod and speak
+to external or repo-local tools, not to Concourse's own API. Hermetic agent
+and task pods have no route to `/api/v1/mcp` — the deny-egress NetworkPolicy
+they run under only exempts the node-local artifact daemon, and this endpoint
+carries no run principal or model credential for them to use even if network
+policy allowed the connection. It is an operator/human-tooling surface, not a
+capability a workflow can declare or reach.
 
 ## Included workflows
 

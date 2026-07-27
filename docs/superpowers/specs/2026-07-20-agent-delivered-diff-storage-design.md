@@ -1,5 +1,7 @@
 # Agent-Delivered Diff Storage Design
 
+> **SUPERSEDED — historical implementation record (not executable).** The approved [Agentic Workflows as Functions over Snapshots design](2026-07-21-agentic-workflows-as-functions-design.md) and [Agentic Functions program plan](../plans/2026-07-21-agentic-functions-program.md) are authoritative. This diff-storage design targeted the ticket review model; diffs are now recorded against workflow-run outcomes under the snapshot layer — see the current delivery-outcomes shape.
+
 - **Date:** 2026-07-20
 - **Status:** Proposed for implementation
 - **Scope:** Make JetBridge's ticket review diff work without a Git mirror or local Git directory on the web node. Automated merge detection and human-touch outcome capture are deliberately deferred.

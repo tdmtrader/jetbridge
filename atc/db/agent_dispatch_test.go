@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/concourse/concourse/agent/api/tickets"
 	"github.com/concourse/concourse/agent/dispatch"
@@ -194,21 +195,24 @@ var _ = Describe("dispatching a ticket end-to-end", func() {
 
 		result, err := dispatch.DispatchOne(context.Background(), fixture.deps, ticketID, "admin")
 		Expect(err).NotTo(HaveOccurred())
-		Expect(result.RunID).To(BeNumerically(">", 0))
-		Expect(result.WorkflowRunID).ToNot(BeNil())
-		Expect(result.PipelineName).To(HavePrefix("agent-workflow-smoke-v1-"))
+		Expect(result.WorkflowRunID.Validate()).To(Succeed())
+		Expect(result.PipelineRunID).ToNot(BeNil())
+		Expect(*result.PipelineRunID).To(BeNumerically(">", 0))
 
 		run, found, err := fixture.workflowRuns.Get(
-			context.Background(), defaultTeam.ID(), *result.WorkflowRunID,
+			context.Background(), defaultTeam.ID(), result.WorkflowRunID,
 		)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue())
 		Expect(run.PipelineRunID).ToNot(BeNil())
-		Expect(*run.PipelineRunID).To(Equal(result.RunID))
+		Expect(*run.PipelineRunID).To(Equal(*result.PipelineRunID))
 		Expect(run.WorkflowDefinitionID).To(Equal(fixture.definition.ID))
 		Expect(run.WorkflowVersion).To(Equal(fixture.definition.Version))
 		Expect(run.Status).To(Equal(db.AgentWorkflowRunStatusRunning))
-		expectedTemplateName, err := workflow.TemplateName(
+		// The execution pipeline is an implementation detail of admission, so
+		// the dispatch result does not name it. Derive it here to assert the
+		// run really did materialize one.
+		templateName, err := workflow.TemplateName(
 			workflow.TargetWorkflow,
 			fixture.definition.Name,
 			fixture.definition.Version,
@@ -216,26 +220,27 @@ var _ = Describe("dispatching a ticket end-to-end", func() {
 			run.ParameterizedConfigHash,
 		)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(result.PipelineName).To(Equal(expectedTemplateName))
+		Expect(templateName).To(HavePrefix("agent-workflow-smoke-v1-"))
 
 		got, found, err := fixture.tickets.Get(ticketID)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue())
 		Expect(got.State).To(Equal(tickets.StateRunning))
-		Expect(got.WorkflowRunID).To(Equal(result.WorkflowRunID))
+		Expect(got.WorkflowRunID).ToNot(BeNil())
+		Expect(*got.WorkflowRunID).To(Equal(result.WorkflowRunID))
 		Expect(got.PipelineRunID).ToNot(BeNil())
-		Expect(*got.PipelineRunID).To(Equal(result.RunID))
+		Expect(*got.PipelineRunID).To(Equal(*result.PipelineRunID))
 		Expect(got.WorkflowDefinitionID).ToNot(BeNil())
 		Expect(*got.WorkflowDefinitionID).To(Equal(fixture.definition.ID))
 		Expect(got.WorkflowVersion).ToNot(BeNil())
 		Expect(*got.WorkflowVersion).To(Equal(fixture.definition.Version))
 
-		bindings := fixture.inputBindings(*result.WorkflowRunID)
+		bindings := fixture.inputBindings(result.WorkflowRunID)
 		Expect(bindings).To(HaveLen(2))
 		Expect(bindings["repository"]).To(Equal(fixture.repositorySnapshot.ID))
 		Expect(bindings["work-item"]).To(Equal(fixture.workItemSnapshot.ID))
 
-		template, found, err := defaultTeam.Pipeline(atc.PipelineRef{Name: result.PipelineName})
+		template, found, err := defaultTeam.Pipeline(atc.PipelineRef{Name: templateName})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue())
 		Expect(template.Paused()).To(BeFalse())
@@ -249,12 +254,13 @@ var _ = Describe("dispatching a ticket end-to-end", func() {
 
 		replay, err := dispatch.DispatchOne(context.Background(), fixture.deps, ticketID, "admin")
 		Expect(err).NotTo(HaveOccurred())
-		Expect(replay.RunID).To(Equal(result.RunID))
+		Expect(replay.PipelineRunID).ToNot(BeNil())
+		Expect(*replay.PipelineRunID).To(Equal(*result.PipelineRunID))
 		Expect(replay.WorkflowRunID).To(Equal(result.WorkflowRunID))
 
 		editedTitle := "edited after immutable binding"
 		Expect(fixture.tickets.Update(ticketID, tickets.Update{Title: &editedTitle})).To(Succeed())
-		Expect(fixture.inputBindings(*result.WorkflowRunID)["repository"]).To(
+		Expect(fixture.inputBindings(result.WorkflowRunID)["repository"]).To(
 			Equal(fixture.repositorySnapshot.ID),
 		)
 		replacementID := fixture.secondRepository.ID
@@ -268,7 +274,7 @@ var _ = Describe("dispatching a ticket end-to-end", func() {
 		Expect(got.Title).To(Equal(editedTitle))
 		Expect(got.RepositorySnapshotID).ToNot(BeNil())
 		Expect(*got.RepositorySnapshotID).To(Equal(fixture.repositorySnapshot.ID))
-		Expect(fixture.inputBindings(*result.WorkflowRunID)["repository"]).To(
+		Expect(fixture.inputBindings(result.WorkflowRunID)["repository"]).To(
 			Equal(fixture.repositorySnapshot.ID),
 		)
 
@@ -277,11 +283,10 @@ var _ = Describe("dispatching a ticket end-to-end", func() {
 		)).To(Succeed())
 		second, err := dispatch.DispatchOne(context.Background(), fixture.deps, ticketID, "admin")
 		Expect(err).NotTo(HaveOccurred())
-		Expect(second.WorkflowRunID).ToNot(BeNil())
-		Expect(*second.WorkflowRunID).ToNot(Equal(*result.WorkflowRunID))
-		Expect(second.RunID).ToNot(Equal(result.RunID))
-		Expect(second.PipelineName).To(Equal(result.PipelineName))
-		Expect(fixture.inputBindings(*second.WorkflowRunID)["repository"]).To(
+		Expect(second.WorkflowRunID).ToNot(Equal(result.WorkflowRunID))
+		Expect(second.PipelineRunID).ToNot(BeNil())
+		Expect(*second.PipelineRunID).ToNot(Equal(*result.PipelineRunID))
+		Expect(fixture.inputBindings(second.WorkflowRunID)["repository"]).To(
 			Equal(fixture.repositorySnapshot.ID),
 		)
 		got, found, err = fixture.tickets.Get(ticketID)
@@ -311,24 +316,51 @@ var _ = Describe("the dispatcher loop over real stores", func() {
 		}
 	})
 
-	It("reconciles a run that died before its review transition to needs_review", func() {
+	// The dispatcher ONLY dispatches. Terminalizing a ticket whose run has
+	// finished belongs to the always-on workflow-run reconciler, so a paused
+	// or off dispatcher can never strand a running ticket.
+	It("leaves terminalization to the workflow-run reconciler", func() {
 		fixture := newAgentDispatchFixture()
 		id := fixture.queueTicket()
-		dispatcher := dispatch.NewDispatcher(fixture.deps, dispatch.LoopConfig{
-			RunReader: fixture.pipelineRuns,
-		})
-		Expect(dispatcher.Run(context.Background())).To(Succeed())
+		Expect(dispatch.NewDispatcher(fixture.deps, dispatch.LoopConfig{}).
+			Run(context.Background())).To(Succeed())
 
 		got, found, err := fixture.tickets.Get(id)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue())
 		Expect(got.State).To(Equal(tickets.StateRunning))
-		run, found, err := fixture.pipelineRuns.GetRunByID(*got.PipelineRunID)
+		Expect(got.WorkflowRunID).ToNot(BeNil())
+
+		run, found, err := fixture.workflowRuns.Get(
+			context.Background(), defaultTeam.ID(), *got.WorkflowRunID,
+		)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue())
-		Expect(run.Finish(db.PipelineRunFailed)).To(Succeed())
+		Expect(run.PlannedBuildID).ToNot(BeNil())
+		build, found, err := buildFactory.Build(int(*run.PlannedBuildID))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(build.Finish(db.BuildStatusFailed)).To(Succeed())
 
-		Expect(dispatcher.Run(context.Background())).To(Succeed())
+		// Another dispatch pass changes nothing: it does not look at running
+		// tickets at all.
+		Expect(dispatch.NewDispatcher(fixture.deps, dispatch.LoopConfig{}).
+			Run(context.Background())).To(Succeed())
+		got, _, err = fixture.tickets.Get(id)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(got.State).To(Equal(tickets.StateRunning))
+
+		projector, err := dispatch.NewTicketProjector(fixture.tickets)
+		Expect(err).NotTo(HaveOccurred())
+		now := time.Now().Add(time.Hour)
+		reconciler, err := workflowrun.NewReconciler(
+			fixture.workflowRuns, logger, 10*time.Minute, time.Minute,
+			workflowrun.WithReconcilerClock(func() time.Time { return now }),
+			workflowrun.WithTicketProjector(projector),
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(reconciler.Run(context.Background())).To(Succeed())
+
 		got, found, err = fixture.tickets.Get(id)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue())

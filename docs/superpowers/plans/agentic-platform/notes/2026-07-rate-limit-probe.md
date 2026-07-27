@@ -1,5 +1,7 @@
 # Rate-limit probe — decision memo
 
+> **SUPERSEDED — historical implementation record (not executable).** The approved [Agentic Workflows as Functions over Snapshots design](../../../specs/2026-07-21-agentic-workflows-as-functions-design.md) and [Agentic Functions program plan](../../2026-07-21-agentic-functions-program.md) are authoritative. This decision memo (shared rate-limit window) remains factually valid; it is retained here as a historical note under the abandoned ticket-centric wave-plan directory.
+
 - **Status:** ANSWERED (owner-confirmed, 2026-07-11). No live probe run required.
 - **Question (charter, plan 02 Task 3):** Does headless Claude usage (the
   `CLAUDE_CODE_OAUTH_TOKEN` path) share the owner's *interactive* rate-limit

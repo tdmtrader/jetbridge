@@ -1,0 +1,103 @@
+// Package credentialstest provides the in-memory credential vault backend the
+// credentials tests, the workflow-admission tests, and the atc/api suite run
+// against. It lives outside the production package so no test double is
+// compiled into the web binary.
+package credentialstest
+
+import (
+	"github.com/concourse/concourse/agent/credentials"
+	"sync"
+	"time"
+)
+
+// MemoryBackend is an in-memory Backend for tests.
+type MemoryBackend struct {
+	mu    sync.Mutex
+	users map[string]memUser // sub -> user
+	creds map[int]map[string]memCred
+}
+
+type memUser struct {
+	id   int
+	name string
+}
+
+type memCred struct {
+	token     string
+	expiresAt time.Time
+	userName  string
+}
+
+func NewMemoryBackend() *MemoryBackend {
+	return &MemoryBackend{
+		users: map[string]memUser{},
+		creds: map[int]map[string]memCred{},
+	}
+}
+
+// AddUser registers a fake users row (login-created in production).
+func (m *MemoryBackend) AddUser(sub string, id int, name string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.users[sub] = memUser{id: id, name: name}
+}
+
+func (m *MemoryBackend) UserBySub(sub string) (int, string, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	u, ok := m.users[sub]
+	return u.id, u.name, ok, nil
+}
+
+func (m *MemoryBackend) Put(userID int, userName, kind, token string, expiresAt time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.creds[userID] == nil {
+		m.creds[userID] = map[string]memCred{}
+	}
+	m.creds[userID][kind] = memCred{token: token, expiresAt: expiresAt, userName: userName}
+	return nil
+}
+
+func (m *MemoryBackend) Status(userID int) ([]credentials.Credential, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := []credentials.Credential{}
+	for kind, c := range m.creds[userID] {
+		out = append(out, m.toCredential(userID, kind, c, false))
+	}
+	return out, nil
+}
+
+func (m *MemoryBackend) Resolve(userID int, kind string) (*credentials.Credential, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c, ok := m.creds[userID][kind]
+	if !ok {
+		return nil, false, nil
+	}
+	cred := m.toCredential(userID, kind, c, true)
+	return &cred, true, nil
+}
+
+func (m *MemoryBackend) Delete(userID int, kind string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.creds[userID], kind)
+	return nil
+}
+
+func (m *MemoryBackend) toCredential(userID int, kind string, c memCred, withToken bool) credentials.Credential {
+	cred := credentials.Credential{
+		UserID:   userID,
+		UserName: c.userName,
+		Kind:     kind,
+	}
+	if !c.expiresAt.IsZero() {
+		cred.ExpiresAt = c.expiresAt.Unix()
+	}
+	if withToken {
+		cred.Token = c.token
+	}
+	return cred
+}

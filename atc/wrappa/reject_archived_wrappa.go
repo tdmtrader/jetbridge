@@ -141,7 +141,6 @@ func (rw *RejectArchivedWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			atc.SetAgentUserCredential,
 			atc.GetAgentUserCredentialStatus,
 			atc.DeleteAgentUserCredential,
-			atc.GetAgentPlatformInfo,
 			atc.GetAgentCostRollup,
 			atc.ListAgentWorkflows,
 			atc.ListAgentWorkflowVersions,

@@ -2,29 +2,24 @@
 // GET  /api/v1/agent/dispatcher (GetAgentDispatcher — any authenticated user)
 // PUT  /api/v1/agent/dispatcher (SetAgentDispatcher — admin only).
 //
-// The effective mode the dispatcher loop honors is resolved from the singleton
-// agent_settings row, falling back to the --agent-dispatcher-enabled boot flag
-// when no row exists. Authentication and admin authorization are enforced by
-// the wrappa layer (atc/wrappa/api_auth_wrappa.go); the handler trusts the
-// request.
+// The mode the dispatcher loop honors is the singleton agent_settings row and
+// nothing else — there is no boot flag behind it. Migration 1773106137 seeds
+// that row, so the mode always has an author and a timestamp. Authentication
+// and admin authorization are enforced by the wrappa layer
+// (atc/wrappa/api_auth_wrappa.go); the handler trusts the request.
 package dispatcher
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
 	"time"
 
 	"github.com/concourse/concourse/agent/dispatch"
 )
 
-// errInvalidMode is returned by the memory store for a mode outside
-// {off,paused,active} (the db factory returns its own ErrInvalidDispatcherMode).
-var errInvalidMode = errors.New("dispatcher mode must be one of off|paused|active")
-
 // Store is the persistence seam. db.AgentSettingsFactory satisfies it; the
-// tests use a memory store. GetDispatcherSetting returns found=false when no
-// row exists yet (fall back to the boot default).
+// tests use a memory store. GetDispatcherSetting returns found=false only if
+// the seeded singleton row was deleted, which every reader treats as off.
 type Store interface {
 	GetDispatcherSetting() (mode string, updatedAt time.Time, updatedBy string, found bool, err error)
 	SetDispatcherMode(mode, updatedBy string) error
@@ -38,35 +33,20 @@ type UserNameFunc func(*http.Request) string
 // Handler serves the dispatcher status/control routes.
 type Handler struct {
 	store    Store
-	bootFlag bool
 	userName UserNameFunc
 }
 
-// NewHandler wires the store, the --agent-dispatcher-enabled boot flag (the
-// fallback seed shown as boot_default and used when no setting row exists), and
-// the requester-identity func.
-func NewHandler(store Store, bootFlag bool, userName UserNameFunc) *Handler {
-	return &Handler{store: store, bootFlag: bootFlag, userName: userName}
+// NewHandler wires the settings store and the requester-identity func.
+func NewHandler(store Store, userName UserNameFunc) *Handler {
+	return &Handler{store: store, userName: userName}
 }
 
-// Response is the GET/PUT body. mode is the EFFECTIVE mode the loop honors now;
-// source is "setting" when it came from the agent_settings row, "boot-default"
-// when it fell back to the boot flag; boot_default is what the flag resolves to
-// (shown so the UI can explain the fallback). updated_at/updated_by are null
-// until a mode is set at runtime.
+// Response is the GET/PUT body: the mode the loop honors now, plus who set it
+// and when. updated_at/updated_by are null only if the seeded row was deleted.
 type Response struct {
-	Mode        string  `json:"mode"`
-	Source      string  `json:"source"`
-	UpdatedAt   *string `json:"updated_at"`
-	UpdatedBy   *string `json:"updated_by"`
-	BootDefault string  `json:"boot_default"`
-}
-
-func (h *Handler) bootDefaultMode() string {
-	if h.bootFlag {
-		return dispatch.ModeActive
-	}
-	return dispatch.ModeOff
+	Mode      string  `json:"mode"`
+	UpdatedAt *string `json:"updated_at"`
+	UpdatedBy *string `json:"updated_by"`
 }
 
 func (h *Handler) currentState() (Response, error) {
@@ -74,13 +54,8 @@ func (h *Handler) currentState() (Response, error) {
 	if err != nil {
 		return Response{}, err
 	}
-	resp := Response{
-		Mode:        dispatch.ResolveEffectiveMode(found, mode, h.bootFlag),
-		Source:      "boot-default",
-		BootDefault: h.bootDefaultMode(),
-	}
+	resp := Response{Mode: dispatch.ResolveEffectiveMode(found, mode)}
 	if found {
-		resp.Source = "setting"
 		at := updatedAt.UTC().Format(time.RFC3339)
 		resp.UpdatedAt = &at
 		by := updatedBy

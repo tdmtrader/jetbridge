@@ -3,6 +3,8 @@ package workflowwait
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/concourse/concourse/agent/snapshot"
@@ -58,4 +60,32 @@ type Store interface {
 	Resolve(context.Context, ResolveRequest) (Wait, bool, error)
 	Expire(context.Context, ExecutionKey, time.Time) (Wait, bool, error)
 	CancelRun(context.Context, int, snapshot.WorkflowRunID, string, time.Time) (int, error)
+}
+
+// ValidateResolutionIdentity is the shared scope/identity check every
+// resolution path applies: the durable store, the in-memory double, and
+// MaterializeAnswer, which re-applies it because a materialized answer
+// snapshot is durable evidence of WHO answered.
+func ValidateResolutionIdentity(
+
+	teamID int,
+	runID snapshot.WorkflowRunID,
+	waitID ID,
+	answerValue string,
+	actor string,
+	displayName string,
+) error {
+	if teamID <= 0 || runID.Validate() != nil || waitID.Validate() != nil {
+		return fmt.Errorf("workflow wait: resolution scope is invalid")
+	}
+	for label, value := range map[string]string{
+		"answer":       answerValue,
+		"actor":        actor,
+		"display name": displayName,
+	} {
+		if strings.TrimSpace(value) == "" || len(value) > 16<<10 || strings.ContainsRune(value, '\x00') {
+			return fmt.Errorf("workflow wait: resolution %s is invalid", label)
+		}
+	}
+	return nil
 }

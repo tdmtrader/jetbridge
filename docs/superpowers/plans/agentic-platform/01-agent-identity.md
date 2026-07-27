@@ -1,5 +1,7 @@
 # Agent Identity Implementation Plan
 
+> **SUPERSEDED — historical implementation record (not executable).** The approved [Agentic Workflows as Functions over Snapshots design](../../specs/2026-07-21-agentic-workflows-as-functions-design.md) and [Agentic Functions program plan](../2026-07-21-agentic-functions-program.md) are authoritative. This document's per-agent principal model and route-scope audit are retained as foundational identity primitives; the ticket-centric wave numbering and cross-workstream dependency ordering below are historical.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace the single static agent-review publish token with scoped, issuable/revocable per-agent principals (`agent_principals` table, `cap1.` tokens, a `principal(<scope>)` auth tier), cut the live theborg/cicd publisher over during a dual-accept window, and land the per-route scope audit and audit-attribution convention that every wave-2+ workstream codes against.

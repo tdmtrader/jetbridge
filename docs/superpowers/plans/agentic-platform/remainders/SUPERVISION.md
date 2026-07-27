@@ -1,5 +1,7 @@
 # Supervision log — Fable agents vs. the remainder plans
 
+> **SUPERSEDED — historical implementation record (not executable).** The approved [Agentic Workflows as Functions over Snapshots design](../../../specs/2026-07-21-agentic-workflows-as-functions-design.md) and [Agentic Functions program plan](../../2026-07-21-agentic-functions-program.md) are authoritative. This supervision log recorded Fable-agent runs against the ticket-centric remainder plans (2026-07-18); retained as a historical record.
+
 **Run context:** 2026-07-18, concourse.home, workflow `develop-fable` v1 (claude-fable-5,
 max_turns 80, full-scope build/test/lint gates, on_gate_failure: needs_review,
 budget ticket $10 / slice $6 — declared, unenforced until this very batch lands).

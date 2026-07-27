@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/concourse/concourse/agent/api/tickets"
-	"github.com/concourse/concourse/agent/dispatch"
 	"github.com/concourse/concourse/fly/rc"
 	"github.com/concourse/concourse/fly/ui"
 	"github.com/concourse/concourse/go-concourse/concourse"
@@ -24,13 +23,15 @@ type AgentTicketsCommand struct {
 	Watch      AgentTicketsWatchCommand      `command:"watch" description:"Follow a ticket's durable workflow run"`
 }
 
-// printSpecLintWarnings surfaces advisory spec-lint findings (ticket #46:
-// vocabulary known to trigger claude CLI usage-policy false refusals) on
-// stderr, one "spec-lint:" line each. Purely informational — callers never
-// alter their exit code or flow on them.
-func printSpecLintWarnings(warnings []string) {
+// printDispatchWarnings surfaces the advisory warnings the SERVER returned
+// with a dispatch (vocabulary in the ticket's title/body known to trigger
+// claude CLI usage-policy false refusals) on stderr, one "work-item-lint:"
+// line each. fly does not lint anything itself — the server owns the pattern
+// table, so a fly binary can never disagree with the cluster it is talking to.
+// Purely informational: callers never alter their exit code or flow on them.
+func printDispatchWarnings(warnings []string) {
 	for _, w := range warnings {
-		fmt.Fprintf(os.Stderr, "spec-lint: %s\n", w)
+		fmt.Fprintf(os.Stderr, "work-item-lint: %s\n", w)
 	}
 }
 
@@ -222,7 +223,7 @@ func (command *AgentTicketsCreateCommand) Execute([]string) error {
 			return fmt.Errorf("created #%d (queued); dispatch failed: %w", created.ID, err)
 		}
 		fmt.Println(line)
-		printSpecLintWarnings(res.Warnings)
+		printDispatchWarnings(res.Warnings)
 	}
 	return nil
 }
@@ -258,10 +259,6 @@ func (command *AgentTicketsQueueCommand) Execute([]string) error {
 		return err
 	}
 	fmt.Printf("ticket #%d is now %s\n", updated.ID, updated.State)
-	// Client-side advisory lint at queue time (ticket #46): the queue
-	// transition response carries the ticket prose, so warn here before
-	// any dollars are spent. Never affects the exit code.
-	printSpecLintWarnings(dispatch.SpecLint(updated.Title, updated.Body))
 	return nil
 }
 
@@ -347,22 +344,28 @@ func (command *AgentTicketsDispatchCommand) Execute([]string) error {
 		return err
 	}
 	fmt.Println(line)
-	// Server-computed advisory lint (ticket #46) rides the dispatch
-	// response; surface it without touching the exit code.
-	printSpecLintWarnings(res.Warnings)
+	// Advisory lint the SERVER computed rides the dispatch response; surface
+	// it without touching the exit code.
+	printDispatchWarnings(res.Warnings)
 	return nil
 }
 
+// agentTicketDispatchLine reports the dispatch by its identity — the workflow
+// run. The pipeline run is a diagnostic and may be absent, so it is appended
+// only when the server sent one.
 func agentTicketDispatchLine(ticketID int, response tickets.DispatchResponse) (string, error) {
-	if response.WorkflowRunID == nil {
+	if response.WorkflowRunID.Validate() != nil {
 		return "", fmt.Errorf("dispatch response for ticket %d omitted workflow_run_id", ticketID)
 	}
-	return fmt.Sprintf(
-		"dispatched ticket #%d as workflow run %s (pipeline run %d)",
+	line := fmt.Sprintf(
+		"dispatched ticket #%d as workflow run %s",
 		ticketID,
 		response.WorkflowRunID.String(),
-		response.RunID,
-	), nil
+	)
+	if response.PipelineRunID != nil {
+		line += fmt.Sprintf(" (pipeline run %d)", *response.PipelineRunID)
+	}
+	return line, nil
 }
 
 type AgentTicketsShowCommand struct {

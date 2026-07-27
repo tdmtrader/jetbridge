@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/agent/publisher"
+	"github.com/concourse/concourse/agent/publisher/publishertest"
 	"github.com/concourse/concourse/agent/snapshot"
 )
 
@@ -51,7 +52,7 @@ func (stub *workItemBackendStub) Publish(_ context.Context, credential publisher
 }
 
 func TestWorkItemServicePublishesExplicitCommentIdempotently(t *testing.T) {
-	store := publisher.NewMemoryStore(time.Now)
+	store := publishertest.NewMemoryStore(time.Now)
 	credentials := &credentialsStub{credential: publisher.Credential{Reference: "secret/jira"}}
 	backend := &workItemBackendStub{result: publisher.WorkItemResult{ExternalID: "comment-9", URL: "https://jira.example/JIRA-42"}}
 	values := validSnapshotValueInspector()
@@ -81,7 +82,7 @@ func TestWorkItemServicePublishesExplicitCommentIdempotently(t *testing.T) {
 
 func TestWorkItemServiceSupportsStateModeAndLeavesExternalErrorsRetryable(t *testing.T) {
 	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
-	store := publisher.NewMemoryStore(func() time.Time { return now })
+	store := publishertest.NewMemoryStore(func() time.Time { return now })
 	backend := &workItemBackendStub{err: context.DeadlineExceeded}
 	service, err := publisher.NewWorkItemService(store, &credentialsStub{credential: publisher.Credential{Reference: "secret/jira"}}, validSnapshotValueInspector(), backend, time.Minute, time.Minute)
 	if err != nil {
@@ -113,7 +114,7 @@ func TestWorkItemServiceSupportsStateModeAndLeavesExternalErrorsRetryable(t *tes
 
 func TestWorkItemServiceReconcilesCrashAfterProviderSuccessWithoutRepeatingWrite(t *testing.T) {
 	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
-	store := publisher.NewMemoryStore(func() time.Time { return now })
+	store := publishertest.NewMemoryStore(func() time.Time { return now })
 	backend := &workItemBackendStub{
 		result:     publisher.WorkItemResult{ExternalID: "comment-9", URL: "https://work.example/9"},
 		crashAfter: true,

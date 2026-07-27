@@ -24,7 +24,7 @@ func NewHandler(backend Backend, claims ClaimsFunc) *Handler {
 }
 
 // resolveTarget resolves the users row a request operates on: the caller's
-// own row, or — for admins that requested PlatformUserName — the §1.13
+// own row, or — for admins that requested PlatformUserName — the
 // service user's row (the only permitted non-self target).
 func (h *Handler) resolveTarget(w http.ResponseWriter, r *http.Request, requested string) (int, string, bool) {
 	sub, claimName, isAdmin, ok := h.claims(r)
@@ -61,7 +61,7 @@ func (h *Handler) resolveTarget(w http.ResponseWriter, r *http.Request, requeste
 }
 
 // Set handles PUT /api/v1/agent/user-credentials (self only; admins may
-// pass "user":"platform" to vault the §1.13 platform credential).
+// pass "user":"platform" to vault the platform service user's credential).
 func (h *Handler) Set(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
 	if err != nil {

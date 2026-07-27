@@ -21,6 +21,7 @@ import (
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/snapshot/contracts"
 	"github.com/concourse/concourse/agent/workflowwait"
+	"github.com/concourse/concourse/agent/workflowwait/workflowwaittest"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 )
@@ -319,7 +320,7 @@ func TestHandlerBoundsDependencyErrorsAndRequiresVerifiedIdentity(t *testing.T) 
 }
 
 type waitFixture struct {
-	store     *workflowwait.MemoryStore
+	store     *workflowwaittest.MemoryStore
 	wait      workflowwait.Wait
 	manifests *manifestStoreStub
 	content   *contentStoreStub
@@ -342,7 +343,7 @@ func seededWait(t *testing.T, now time.Time) waitFixture {
 		},
 		now,
 	)
-	store := workflowwait.NewMemoryStore(func() time.Time { return now })
+	store := workflowwaittest.NewMemoryStore(func() time.Time { return now })
 	defaultValue := snapshot.SnapshotRef{ID: 39, Type: "human-answer/v1", Digest: digest('d')}
 	wait, _, err := store.CreateOrGet(context.Background(), workflowwait.CreateRequest{
 		Key: workflowwait.ExecutionKey{

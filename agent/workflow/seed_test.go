@@ -10,6 +10,7 @@ import (
 
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/workflow"
+	"github.com/concourse/concourse/agent/workflow/workflowtest"
 	"github.com/concourse/concourse/atc"
 )
 
@@ -150,7 +151,7 @@ func TestVersionThreeEngineeringSeedsCompileAndRender(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ManifestFromDir: %v", err)
 			}
-			definition, err := workflow.NewMemoryStore().ImportManifest(test.name, manifest, "seed-test")
+			definition, err := workflowtest.NewMemoryStore().ImportManifest(test.name, manifest, "seed-test")
 			if err != nil {
 				t.Fatalf("compile/import seed: %v", err)
 			}
@@ -226,7 +227,7 @@ func TestMeasureReviewSeedStaysAdmissibleAsAnExperimentEvaluator(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ManifestFromDir: %v", err)
 	}
-	definition, err := workflow.NewMemoryStore().ImportManifest("measure-review", manifest, "seed-test")
+	definition, err := workflowtest.NewMemoryStore().ImportManifest("measure-review", manifest, "seed-test")
 	if err != nil {
 		t.Fatalf("compile/import seed: %v", err)
 	}

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/agent/publisher"
+	"github.com/concourse/concourse/agent/publisher/publishertest"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/snapshot/contracts"
 )
@@ -209,7 +210,7 @@ func TestMergeApprovalContextRequiresACompleteDerivedBase(t *testing.T) {
 // caught by comparing the backend's CURRENT base, with no side effect.
 func TestServerDerivedBaseDoesNotBypassTheCurrentBaseGate(t *testing.T) {
 	derivedBase := strings.Repeat("b", 40)
-	store := publisher.NewMemoryStore(time.Now)
+	store := publishertest.NewMemoryStore(time.Now)
 	backend := &gitBackendStub{base: strings.Repeat("c", 40)}
 	service, err := publisher.NewGitService(store,
 		&credentialsStub{credential: publisher.Credential{Reference: "secret/git"}},
@@ -247,7 +248,7 @@ func TestServerDerivedBaseDoesNotBypassTheCurrentBaseGate(t *testing.T) {
 	// above is terminal for this operation key.
 	backend.base = derivedBase
 	backend.result = publisher.GitResult{HeadSHA: "head"}
-	landing, err := publisher.NewGitService(publisher.NewMemoryStore(time.Now),
+	landing, err := publisher.NewGitService(publishertest.NewMemoryStore(time.Now),
 		&credentialsStub{credential: publisher.Credential{Reference: "secret/git"}},
 		changeInspectorStub{change: publisher.RepositoryChange{
 			BaseSHA: derivedBase, ResultSHA: "head", MaterializedRoot: "/change",

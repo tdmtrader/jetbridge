@@ -10,10 +10,11 @@ import (
 
 	"github.com/concourse/concourse/agent/api/principals"
 	"github.com/concourse/concourse/agent/api/tickets"
+	"github.com/concourse/concourse/agent/api/tickets/ticketstest"
 )
 
-func newTestHandler(username string) (*tickets.Handler, *tickets.MemoryStore) {
-	store := tickets.NewMemoryStore()
+func newTestHandler(username string) (*tickets.Handler, *ticketstest.MemoryStore) {
+	store := ticketstest.NewMemoryStore()
 	h := tickets.NewHandler(store, func(*http.Request) string { return username })
 	return h, store
 }

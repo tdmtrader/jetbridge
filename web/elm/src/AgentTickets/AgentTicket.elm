@@ -23,19 +23,24 @@ run data this page already fetches (see `durableEvidenceLine` and
 machine stays authoritative: buttons only pick which transition to _offer_, and
 a rejected transition (409) surfaces inline and triggers a refetch.
 
+Dispatch is the one action that produces something new, and what it produces is
+a durable workflow run — so a clean dispatch hands the user straight to that
+run's page rather than leaving them on a ticket that looks unchanged (see
+`handleCallback`'s `AgentTicketDispatched` and `dispatchNoticeBanner`).
+
 -}
 
 import AgentBadge
+import AgentPage.Chrome as Chrome
 import Application.Models exposing (Session)
 import Concourse.AgentTicket as AgentTicket
 import Concourse.WorkflowRun as WorkflowRun
 import DateFormat
 import EffectTransformer exposing (ET)
 import Html exposing (Html)
-import Html.Attributes exposing (attribute, class, href, id, placeholder, style, value)
-import Html.Events exposing (on, onClick, onInput)
+import Html.Attributes exposing (href, id, style, value)
+import Html.Events exposing (onClick, onInput)
 import Html.Lazy
-import Json.Decode
 import Login.Login as Login
 import Message.Callback exposing (Callback(..))
 import Message.Effects exposing (Effect(..))
@@ -43,12 +48,9 @@ import Message.Message exposing (Message(..))
 import Message.Subscription exposing (Delivery, Interval(..), Subscription)
 import Polling
 import Routes
-import SideBar.SideBar as SideBar
 import Time
 import Tooltip
 import Views.Prose
-import Views.Styles
-import Views.TopBar as TopBar
 
 
 type alias Model =
@@ -63,8 +65,25 @@ type alias Model =
         , editTitle : String
         , editBody : String
         , dispatchConfirm : Bool
+        , dispatchNotice : Maybe DispatchNotice
         , pendingTransition : Maybe String
         }
+
+
+{-| What a dispatch that could NOT simply hand the user to its run has to say.
+
+A clean dispatch navigates straight to the durable run it created — that run is
+the thing the user asked for, and the ticket page has nothing new to show. When
+the server attaches warnings (or the ticket carries no workflow name, so there
+is no run route to build), navigation would throw that away, so the page holds
+still and renders this instead, with a link on to the run.
+
+-}
+type alias DispatchNotice =
+    { workflowRunId : String
+    , workflowName : String
+    , warnings : List String
+    }
 
 
 init : { id : Int } -> ( Model, List Effect )
@@ -79,6 +98,7 @@ init { id } =
       , editTitle = ""
       , editBody = ""
       , dispatchConfirm = False
+      , dispatchNotice = Nothing
       , pendingTransition = Nothing
       , isUserMenuExpanded = False
       }
@@ -246,10 +266,34 @@ handleCallback callback ( model, effects ) =
             , effects ++ [ FetchAgentTicket model.ticketId ]
             )
 
-        AgentTicketDispatched _ (Ok _) ->
-            ( { model | actionError = Nothing }
-            , effects ++ [ FetchAgentTicket model.ticketId ]
-            )
+        -- Dispatch's one product is a durable workflow run, and the run page is
+        -- where every subsequent truth about it lives. The old code decoded the
+        -- response and threw it away (`Ok _`), leaving the user on an unchanged
+        -- ticket with no clue what had just been created, so take them there.
+        AgentTicketDispatched _ (Ok result) ->
+            let
+                workflowName =
+                    model.detail
+                        |> Maybe.map (.ticket >> .workflowName >> String.trim)
+                        |> Maybe.withDefault ""
+
+                notice =
+                    { workflowRunId = result.workflowRunId
+                    , workflowName = workflowName
+                    , warnings = result.warnings
+                    }
+            in
+            if List.isEmpty result.warnings && workflowName /= "" then
+                ( { model | actionError = Nothing, dispatchNotice = Nothing }
+                , effects ++ [ NavigateTo (Routes.toString (dispatchedRunRoute notice)) ]
+                )
+
+            else
+                -- Warnings (or a ticket with no workflow name to route with)
+                -- must not be swallowed by a navigation the user never sees.
+                ( { model | actionError = Nothing, dispatchNotice = Just notice }
+                , effects ++ [ FetchAgentTicket model.ticketId ]
+                )
 
         AgentTicketDispatched _ (Err _) ->
             ( { model | actionError = Just "Dispatch failed." }, effects )
@@ -356,12 +400,15 @@ update msg ( model, effects ) =
             ( { model | dispatchConfirm = True, actionError = Nothing }, effects )
 
         ConfirmAgentTicketDispatch ->
-            ( { model | dispatchConfirm = False }
+            ( { model | dispatchConfirm = False, dispatchNotice = Nothing }
             , effects ++ [ DispatchAgentTicket model.ticketId ]
             )
 
         CancelAgentTicketDispatch ->
             ( { model | dispatchConfirm = False }, effects )
+
+        DismissAgentTicketDispatchNotice ->
+            ( { model | dispatchNotice = Nothing }, effects )
 
         _ ->
             ( model, effects )
@@ -383,29 +430,12 @@ subscriptions =
 
 view : Session -> Model -> Html Message
 view session model =
-    let
-        route =
-            Routes.AgentTicket { id = model.ticketId }
-    in
-    Html.div
-        (id "page-including-top-bar" :: Views.Styles.pageIncludingTopBar)
-        [ Html.div
-            (id "top-bar-app" :: Views.Styles.topBar False)
-            [ Html.div
-                [ style "display" "flex", style "align-items" "center" ]
-                (SideBar.sideBarIcon session
-                    :: TopBar.breadcrumbs session route
-                )
-            , Login.view session.userState model
-            ]
-        , Html.div
-            (id "page-below-top-bar" :: Views.Styles.pageBelowTopBar route)
-            [ SideBar.view session Nothing
-            , Html.div
-                [ style "padding" "16px", style "width" "100%", style "max-width" "900px" ]
-                [ content session model ]
-            ]
-        ]
+    Chrome.view session
+        model
+        (Routes.AgentTicket { id = model.ticketId })
+        ("Ticket #" ++ String.fromInt model.ticketId)
+        "a queue slot — every execution truth belongs to its durable run"
+        [ Html.div [ style "max-width" "900px" ] [ content session model ] ]
 
 
 content : Session -> Model -> Html Message
@@ -435,6 +465,7 @@ content session model =
                         , durableEvidenceLine model ticket
                         , provenanceTimestamps session.timeZone ticket
                         , actionErrorBanner model
+                        , dispatchNoticeBanner model
                         ]
 
                     -- The body renders lazily: its argument is reference-stable
@@ -458,7 +489,10 @@ header model ticket =
             [ style "font-family" "monospace", style "color" "#9aa39b", style "flex-shrink" "0", style "padding-top" "3px" ]
             [ Html.text ("#" ++ String.fromInt ticket.id) ]
         , Html.span [ style "flex-shrink" "0", style "padding-top" "1px" ] [ stateBadge ticket.state ]
-        , Html.h1
+
+        -- h2, not h1: the shell already owns the page's single h1
+        -- ("Ticket #N"); the ticket's own title is the level below it.
+        , Html.h2
             [ style "font-size" "18px"
             , style "margin" "0"
             , style "flex" "1"
@@ -519,6 +553,7 @@ the run detail the page already fetched, and links to the run for the full
 disposition record. Nothing renders until the run detail is in hand: a chip
 invented from ticket state is exactly the second truth this page is here to
 stop showing.
+
 -}
 runOutcomeLine : Model -> AgentTicket.Ticket -> Html Message
 runOutcomeLine model ticket =
@@ -709,6 +744,63 @@ actionErrorBanner model =
             Html.text ""
 
 
+dispatchedRunRoute : DispatchNotice -> Routes.Route
+dispatchedRunRoute notice =
+    Routes.AgentWorkflowRun
+        { workflowName = notice.workflowName, id = notice.workflowRunId }
+
+
+{-| The held-back dispatch result: what the server warned about, and the way on
+to the run it nevertheless created. Dismissing it only clears the notice — the
+run link stays reachable from `durableEvidenceLine` once the ticket refetch
+lands, so dismissing can never strand the user.
+-}
+dispatchNoticeBanner : Model -> Html Message
+dispatchNoticeBanner model =
+    case model.dispatchNotice of
+        Nothing ->
+            Html.text ""
+
+        Just notice ->
+            let
+                runLabel =
+                    "workflow run #" ++ notice.workflowRunId
+
+                runElement =
+                    if notice.workflowName == "" then
+                        -- No workflow name means no run route exists to build;
+                        -- name the run anyway so the ID is not lost.
+                        Html.span [ style "font-family" "monospace" ] [ Html.text runLabel ]
+
+                    else
+                        Html.a
+                            [ id "ticket-dispatch-notice-run-link"
+                            , href (Routes.toString (dispatchedRunRoute notice))
+                            , style "color" "#7a9ac0"
+                            ]
+                            [ Html.text ("Open " ++ runLabel) ]
+            in
+            Html.div
+                [ id "ticket-dispatch-notice"
+                , style "border" "1px solid #6b5a2a"
+                , style "background" "#2a2618"
+                , style "color" "#e0cf9a"
+                , style "padding" "8px 10px"
+                , style "margin" "8px 0"
+                ]
+                [ Html.div [ style "margin-bottom" "6px" ]
+                    [ Html.text "Dispatched with warnings." ]
+                , Html.ul
+                    [ id "ticket-dispatch-warnings", style "margin" "0 0 8px", style "padding-left" "18px" ]
+                    (List.map (\w -> Html.li [] [ Html.text w ]) notice.warnings)
+                , Html.div
+                    [ style "display" "flex", style "align-items" "center", style "gap" "12px" ]
+                    [ runElement
+                    , actionButton "secondary" DismissAgentTicketDispatchNotice "Dismiss"
+                    ]
+                ]
+
+
 {-| Human lifecycle actions. The buttons offered depend on the current state,
 but the server is the authority: an illegal/stale transition returns 409 and is
 surfaced via `actionError`, then the ticket is refetched.
@@ -785,6 +877,7 @@ terminal. The server stays authoritative and rejects anything stale with a 409.
 There is exactly ONE close action, not a menu of dispositions: whether the work
 was merged, dropped or was analysis-only is the durable run's outcome, read
 back from the run (see `runOutcomeLine`) rather than re-asserted here.
+
 -}
 transitionTargets : String -> List ( String, String )
 transitionTargets state =
@@ -851,6 +944,7 @@ surface that can never be filled.
 
 Lazy on the body string, so the full-text tokenization re-runs only when the
 text itself changes, not on every 5s-refetch render.
+
 -}
 ticketBody : AgentTicket.Ticket -> Html Message
 ticketBody ticket =

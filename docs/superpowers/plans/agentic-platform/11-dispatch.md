@@ -1,5 +1,7 @@
 # Workflow Renderer + Dispatcher Implementation Plan
 
+> **SUPERSEDED — historical implementation record (not executable).** The approved [Agentic Workflows as Functions over Snapshots design](../../specs/2026-07-21-agentic-workflows-as-functions-design.md) and [Agentic Functions program plan](../2026-07-21-agentic-functions-program.md) are authoritative. The renderer and dispatcher mechanics informed the live implementation; the ticket-claim/transition-function model they render against here is historical — dispatch now operates over workflow runs and snapshots.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Render a live workflow-definition version into a `template: true` pipeline (golden-file validated) whose `agent:` steps and terminal `harvest:` step are fully self-contained, then ship the `dispatcher` RunnableComponent that claims `queued` tickets, admits them against budgets, attaches the filer's vaulted credential as an ephemeral K8s secret, creates the pipeline run, and walks the ticket through the single transition function.

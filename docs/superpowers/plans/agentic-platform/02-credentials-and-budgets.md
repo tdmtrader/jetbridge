@@ -1,5 +1,7 @@
 # Credential Vault, Rate-Limit Probe, Cost Ledger, and Budget Model Implementation Plan
 
+> **SUPERSEDED — historical implementation record (not executable).** The approved [Agentic Workflows as Functions over Snapshots design](../../specs/2026-07-21-agentic-workflows-as-functions-design.md) and [Agentic Functions program plan](../2026-07-21-agentic-functions-program.md) are authoritative. The credential vault and rate-limit probe findings remain in force; the ticket/budget-slice arithmetic tied to the abandoned ticket-centric model is historical.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Vault per-user Anthropic tokens encrypted at rest, empirically answer the shared-rate-limit question on theborg before anything is designed around it, land the append-only cost ledger fed by the existing agent-review job, and ship the budget Go library that owns all budget arithmetic.

@@ -146,25 +146,27 @@ var _ = Describe("Agent Tickets", func() {
 
 	Describe("DispatchAgentTicket", func() {
 		runID := snapshot.WorkflowRunID(9007199254740993)
+		pipelineRunID := 321
 
 		BeforeEach(func() {
 			atcServer.AppendHandlers(
 				ghttp.CombineHandlers(
 					ghttp.VerifyRequest("POST", "/api/v1/agent/tickets/7/dispatch"),
 					ghttp.RespondWithJSONEncoded(http.StatusCreated, tickets.DispatchResponse{
-						RunID: 321, PipelineName: "agent-ticket-7", WorkflowRunID: &runID,
+						WorkflowRunID: runID, PipelineRunID: &pipelineRunID,
 					}),
 				),
 			)
 		})
 
-		It("posts the dispatch and decodes the run", func() {
+		// The workflow run is the identity and survives the JavaScript-unsafe
+		// integer range because it is carried as a quoted decimal.
+		It("posts the dispatch and decodes the workflow-run identity", func() {
 			res, err := client.DispatchAgentTicket(7)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(res.RunID).To(Equal(321))
-			Expect(res.PipelineName).To(Equal("agent-ticket-7"))
-			Expect(res.WorkflowRunID).NotTo(BeNil())
-			Expect(*res.WorkflowRunID).To(Equal(runID))
+			Expect(res.WorkflowRunID).To(Equal(runID))
+			Expect(res.PipelineRunID).NotTo(BeNil())
+			Expect(*res.PipelineRunID).To(Equal(321))
 		})
 	})
 })

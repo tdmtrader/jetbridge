@@ -11,9 +11,9 @@ module SubPage.SubPage exposing
     , view
     )
 
-import Agent.Agent as Agent
 import AgentExperiment.AgentExperiment as AgentExperiment
 import AgentExperiments.AgentExperiments as AgentExperiments
+import AgentPlatform.AgentPlatform as AgentPlatform
 import AgentReviews.AgentReviews as AgentReviews
 import AgentSnapshot.AgentSnapshot as AgentSnapshot
 import AgentTickets.AgentTicket as AgentTicket
@@ -61,7 +61,7 @@ type Model
     | CausalityModel Causality.Model
     | DownloadFlyModel DownloadFly.Model.Model
     | AgentReviewsModel AgentReviews.Model
-    | AgentModel Agent.Model
+    | AgentPlatformModel AgentPlatform.Model
     | AgentTicketsModel AgentTickets.Model
     | AgentTicketModel AgentTicket.Model
     | AgentWorkflowModel AgentWorkflow.Model
@@ -150,8 +150,8 @@ init session route =
                 |> Tuple.mapFirst AgentReviewsModel
 
         Routes.Agent ->
-            Agent.init
-                |> Tuple.mapFirst AgentModel
+            AgentPlatform.init
+                |> Tuple.mapFirst AgentPlatformModel
 
         Routes.AgentTickets ->
             AgentTickets.init
@@ -229,7 +229,7 @@ genericUpdate :
     -> ET FlySuccess.Models.Model
     -> ET DownloadFly.Model.Model
     -> ET AgentReviews.Model
-    -> ET Agent.Model
+    -> ET AgentPlatform.Model
     -> ET AgentTickets.Model
     -> ET AgentTicket.Model
     -> ET AgentWorkflow.Model
@@ -280,9 +280,9 @@ genericUpdate fBuild fJob fRes fPipe fDash fCaus fNF fFS dFly fAR fAgent fATs fA
             fAR ( agentReviewsModel, effects )
                 |> Tuple.mapFirst AgentReviewsModel
 
-        AgentModel agentModel ->
-            fAgent ( agentModel, effects )
-                |> Tuple.mapFirst AgentModel
+        AgentPlatformModel agentPlatformModel ->
+            fAgent ( agentPlatformModel, effects )
+                |> Tuple.mapFirst AgentPlatformModel
 
         AgentTicketsModel agentTicketsModel ->
             fATs ( agentTicketsModel, effects )
@@ -326,7 +326,7 @@ handleCallback callback session =
         identity
         identity
         (AgentReviews.handleCallback callback)
-        (Agent.handleCallback callback)
+        (AgentPlatform.handleCallback callback)
         (AgentTickets.handleCallback callback)
         (AgentTicket.handleCallback callback)
         (AgentWorkflow.handleCallback callback)
@@ -388,7 +388,7 @@ handleDelivery session delivery =
         (FlySuccess.handleDelivery delivery)
         (DownloadFly.handleDelivery delivery)
         identity
-        (Agent.handleDelivery delivery)
+        (AgentPlatform.handleDelivery delivery)
         (AgentTickets.handleDelivery delivery)
         (AgentTicket.handleDelivery delivery)
         (AgentWorkflow.handleDelivery delivery)
@@ -411,7 +411,7 @@ update session msg =
         (Login.update msg >> FlySuccess.update msg)
         (Login.update msg >> DownloadFly.update msg)
         (Login.update msg >> AgentReviews.update msg)
-        (Login.update msg >> Agent.update msg)
+        (Login.update msg >> AgentPlatform.update msg)
         (Login.update msg >> AgentTickets.update msg)
         (Login.update msg >> AgentTicket.update msg)
         (Login.update msg >> AgentWorkflow.update msg)
@@ -600,9 +600,9 @@ view ({ userState } as session) mdl =
             , AgentTicket.view session model
             )
 
-        AgentModel model ->
-            ( Agent.documentTitle
-            , Agent.view session model
+        AgentPlatformModel model ->
+            ( AgentPlatform.documentTitle
+            , AgentPlatform.view session model
             )
 
         AgentWorkflowModel model ->
@@ -664,8 +664,8 @@ tooltip mdl =
         AgentReviewsModel model ->
             AgentReviews.tooltip model
 
-        AgentModel model ->
-            Agent.tooltip model
+        AgentPlatformModel model ->
+            AgentPlatform.tooltip model
 
         AgentTicketsModel model ->
             AgentTickets.tooltip model
@@ -722,8 +722,8 @@ subscriptions mdl =
         AgentReviewsModel _ ->
             AgentReviews.subscriptions
 
-        AgentModel _ ->
-            Agent.subscriptions
+        AgentPlatformModel _ ->
+            AgentPlatform.subscriptions
 
         AgentTicketsModel _ ->
             AgentTickets.subscriptions

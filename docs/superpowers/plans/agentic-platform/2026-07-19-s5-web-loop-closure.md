@@ -1,5 +1,7 @@
 # S-5 Web Loop Closure Implementation Plan
 
+> **SUPERSEDED — historical implementation record (not executable).** The approved [Agentic Workflows as Functions over Snapshots design](../../specs/2026-07-21-agentic-workflows-as-functions-design.md) and [Agentic Functions program plan](../2026-07-21-agentic-functions-program.md) are authoritative. This web-loop-closure plan targeted ticket create/queue/dispatch; the live loop dispatches workflow runs — see `docs/agentic/README.md`.
+
 > For agentic workers: REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox syntax.
 
 **Goal:** Let a human create, queue-with-workflow, and dispatch an agent ticket entirely from the web UI, then watch the resulting attempt live — closing the loop that today only `fly` can drive.

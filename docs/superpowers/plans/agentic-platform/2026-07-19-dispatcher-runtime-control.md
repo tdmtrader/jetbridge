@@ -1,5 +1,7 @@
 # Dispatcher runtime control + UX visibility — DELIVERED (branch `feat/dispatcher-runtime-control`)
 
+> **SUPERSEDED — historical implementation record (not executable).** The approved [Agentic Workflows as Functions over Snapshots design](../../specs/2026-07-21-agentic-workflows-as-functions-design.md) and [Agentic Functions program plan](../2026-07-21-agentic-functions-program.md) are authoritative. This dispatcher runtime-control design was delivered against the ticket-centric dispatcher; the runtime-toggle concept survived (see `docs/agentic/README.md`) but the ticket-claim mechanics below are historical.
+
 **Date:** 2026-07-19 · **Base:** jetbridge · **Status:** implemented, tested, adversarially reviewed, committed on `feat/dispatcher-runtime-control`. **NOT deployed** (deploy runs a prod migration + self-upgrade — owner's call). Descends from the UX audit №4 control-plane finding + the "dispatcher should be configurable, not a flag" ask.
 
 ## What it does

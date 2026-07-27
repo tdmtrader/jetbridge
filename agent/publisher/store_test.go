@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/agent/publisher"
+	"github.com/concourse/concourse/agent/publisher/publishertest"
 	"github.com/concourse/concourse/agent/snapshot"
 )
 
@@ -35,7 +36,7 @@ func TestPublicationMarshalsDatabaseIdentityAsQuotedDecimal(t *testing.T) {
 
 func TestMemoryStoreAcquiresOnceReclaimsExpiredAndCompletesByAttempt(t *testing.T) {
 	now := time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
-	store := publisher.NewMemoryStore(func() time.Time { return now })
+	store := publishertest.NewMemoryStore(func() time.Time { return now })
 	request := branchRequest()
 	first, execute, err := store.Acquire(context.Background(), request, time.Minute)
 	if err != nil || !execute || first.Attempt != 1 || first.Status != publisher.StatusPending {
@@ -67,7 +68,7 @@ func TestMemoryStoreAcquiresOnceReclaimsExpiredAndCompletesByAttempt(t *testing.
 }
 
 func TestMemoryStoreRejectsOperationKeyCollisionAndMismatchedCompletion(t *testing.T) {
-	store := publisher.NewMemoryStore(time.Now)
+	store := publishertest.NewMemoryStore(time.Now)
 	request := branchRequest()
 	publication, _, err := store.Acquire(context.Background(), request, time.Minute)
 	if err != nil {
@@ -82,7 +83,7 @@ func TestMemoryStoreRejectsOperationKeyCollisionAndMismatchedCompletion(t *testi
 }
 
 func TestMemoryStoreReturnsOccurrenceAuthorityForSemanticReplay(t *testing.T) {
-	store := publisher.NewMemoryStore(time.Now)
+	store := publishertest.NewMemoryStore(time.Now)
 	firstRequest := branchRequest()
 	first, execute, err := store.Acquire(context.Background(), firstRequest, time.Minute)
 	if err != nil || !execute {
@@ -111,7 +112,7 @@ func TestMemoryStoreReturnsOccurrenceAuthorityForSemanticReplay(t *testing.T) {
 }
 
 func TestMemoryStoreRejectsUnverifiedWorkflowRunAuthority(t *testing.T) {
-	store := publisher.NewMemoryStore(time.Now)
+	store := publishertest.NewMemoryStore(time.Now)
 	request := branchRequest()
 	request.Authority.WorkflowRunID = 0
 	if _, _, err := store.Acquire(context.Background(), request, time.Minute); !errors.Is(err, publisher.ErrInvalidRequest) {
@@ -120,7 +121,7 @@ func TestMemoryStoreRejectsUnverifiedWorkflowRunAuthority(t *testing.T) {
 }
 
 func TestMemoryStorePreservesCancellationAndClonesRequests(t *testing.T) {
-	store := publisher.NewMemoryStore(time.Now)
+	store := publishertest.NewMemoryStore(time.Now)
 	request := branchRequest()
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
