@@ -198,15 +198,19 @@ func normalizedTarPath(hdr *tar.Header) (string, error) {
 	return name, nil
 }
 
+// validateArchiveSymlink applies the shared symlink rule (see
+// validateReproducibleSymlink) to tar members, so an archive round-trips
+// through the daemon unchanged: what tarOpenedDirectory is willing to emit,
+// extraction is willing to ingest. Judging targets differently on the two
+// sides would leave the daemon unable to re-ingest its own mirror stream.
+//
+// Extraction is the one path where a later member could be written *through*
+// an earlier symlink, and that is contained structurally rather than by
+// inspecting this string: every write goes through an *os.Root, which refuses
+// to resolve a path out of the root regardless of what the symlink says. The
+// adversarial cases are pinned in TestExtractTarAnchored_SymlinkCannotEscape.
 func validateArchiveSymlink(name, target string) error {
-	if target == "" || strings.ContainsAny(target, "\\\x00") || path.IsAbs(target) {
-		return fmt.Errorf("unsafe symlink target %q", target)
-	}
-	resolved := path.Clean(path.Join(path.Dir(name), target))
-	if resolved == ".." || strings.HasPrefix(resolved, "../") || path.IsAbs(resolved) {
-		return fmt.Errorf("symlink target escapes extraction root")
-	}
-	return nil
+	return validateReproducibleSymlink(name, target)
 }
 
 func ensureArchiveParents(root *os.Root, name string, materialized map[string]extractedPathKind) error {

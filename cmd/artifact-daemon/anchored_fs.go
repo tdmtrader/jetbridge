@@ -173,7 +173,7 @@ func writeOpenedTarTree(tw *tar.Writer, directory *os.File, prefix string) error
 			if err != nil {
 				return err
 			}
-			if err := validateSafeRelativeSymlink(entryPath, target); err != nil {
+			if err := validateReproducibleSymlink(entryPath, target); err != nil {
 				return err
 			}
 			if err := tw.WriteHeader(&tar.Header{Name: entryPath, Typeflag: tar.TypeSymlink, Linkname: target, Mode: 0777}); err != nil {
@@ -526,7 +526,7 @@ func copyOpenedTree(ctx context.Context, src, dst *os.File, prefix string) error
 			if err != nil {
 				return fmt.Errorf("read artifact symlink %q: %w", entryPath, err)
 			}
-			if err := validateCopyableSymlink(entryPath, target); err != nil {
+			if err := validateReproducibleSymlink(entryPath, target); err != nil {
 				return err
 			}
 			if err := unix.Symlinkat(target, int(dst.Fd()), name); err != nil {
@@ -585,45 +585,35 @@ func readlinkAt(dirfd int, name string) (string, error) {
 	return "", fmt.Errorf("symlink target is too long")
 }
 
-func validateSafeRelativeSymlink(name, target string) error {
-	if target == "" || strings.ContainsRune(target, '\x00') || path.IsAbs(target) {
-		return fmt.Errorf("unsafe artifact symlink %q -> %q", name, target)
-	}
-	resolved := path.Clean(path.Join(path.Dir(name), target))
-	if resolved == ".." || strings.HasPrefix(resolved, "../") || path.IsAbs(resolved) {
-		return fmt.Errorf("artifact symlink %q escapes its tree", name)
-	}
-	return nil
-}
-
-// validateCopyableSymlink is the copy-path counterpart to
-// validateSafeRelativeSymlink, and differs from it in one respect: an absolute
-// target is allowed.
+// validateReproducibleSymlink is the single symlink rule for every path that
+// stores, serves, copies or mirrors an artifact.
 //
-// Container rootfs trees are full of them — /var/spool/mail -> /var/mail ships
-// in every Debian-derived image — so refusing them meant the daemon could
-// accept a rootfs artifact into its store and then fail every resolve of it.
+// A symlink is content, not a path this daemon resolves, so the only targets
+// refused are the ones that cannot be reproduced at all: empty, or containing
+// NUL. Everything else — including absolute targets — is carried through
+// verbatim.
 //
-// Copying cannot be subverted by the target. The entry is recreated with
-// Symlinkat and never dereferenced, so nothing is written through it, and the
-// walk descends only into directories that are real in the *source* tree,
-// which a symlink is not. The target is data being reproduced, not a path this
-// process resolves. Where it points is meaningful only later, inside the
-// consumer's own filesystem, which the consumer already reaches directly.
+// Judging targets by their text was the wrong boundary, and it cost three
+// separate outages' worth of rejected-but-legitimate content. Container rootfs
+// trees are built from absolute symlinks (/var/spool/mail -> /var/mail ships in
+// every Debian-derived image, and busybox points hundreds of applets at one
+// binary), so a text rule against them means the daemon cannot hold an image at
+// all. Dereferencing instead of reproducing would be worse still: an absolute
+// target resolves against *this* process's filesystem, so copying its contents
+// turns any artifact into a read primitive against the daemon's own disk.
 //
-// Relative targets that climb out of the tree stay rejected: that guard is
-// unchanged, and extraction keeps the stricter rule, where a later member
-// genuinely could be written through an earlier symlink.
-func validateCopyableSymlink(name, target string) error {
+// The boundary that actually matters is that nothing is ever written *through*
+// a symlink, and that is enforced structurally rather than textually:
+//
+//   - extraction writes through an *os.Root, which refuses to resolve any path
+//     leaving the root and fails with "path escapes from parent" — proven for
+//     absolute and relative-escaping targets in TestOsRootBlocksSymlinkEscape;
+//   - copying creates entries with Symlinkat, which never dereferences, and
+//     descends only into directories that are real in the source tree;
+//   - tarring is read-only: a symlink becomes a header, resolving nothing.
+func validateReproducibleSymlink(name, target string) error {
 	if target == "" || strings.ContainsRune(target, '\x00') {
-		return fmt.Errorf("unsafe artifact symlink %q -> %q", name, target)
-	}
-	if path.IsAbs(target) {
-		return nil
-	}
-	resolved := path.Clean(path.Join(path.Dir(name), target))
-	if resolved == ".." || strings.HasPrefix(resolved, "../") || path.IsAbs(resolved) {
-		return fmt.Errorf("artifact symlink %q escapes its tree", name)
+		return fmt.Errorf("unrepresentable artifact symlink %q -> %q", name, target)
 	}
 	return nil
 }
