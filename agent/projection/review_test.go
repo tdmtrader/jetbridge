@@ -92,9 +92,7 @@ func TestReviewProjectorRevalidatesIdentityAndDerivesProjection(t *testing.T) {
 		found: true,
 		input: projection.ReviewInput{
 			Snapshot: manifest, ProductionID: 77, WorkflowRunID: &runID,
-			BuildName: "3", TeamName: "main",
-			PipelineName: "agent", JobName: "review",
-			SubmittedBy: "review-agent",
+			TeamName: "main",
 		},
 	}
 	projector, err := projection.NewReviewProjector(store, reviewContent{data: archive})
@@ -125,6 +123,14 @@ func TestReviewProjectorRevalidatesIdentityAndDerivesProjection(t *testing.T) {
 	}
 	if !bytes.Equal(got.Review, reviewJSON) {
 		t.Fatalf("stored review differs from canonical record.json\ngot:  %s\nwant: %s", got.Review, reviewJSON)
+	}
+	// The occurrence — which build, pipeline, job and publisher — is NOT copied
+	// onto the projected row. One review snapshot can be produced more than
+	// once, so a copy could only ever name one occurrence; every read resolves
+	// it from the production row the query selected.
+	if got.BuildName != "" || got.TeamName != "" || got.PipelineName != "" ||
+		got.JobName != "" || got.SubmittedBy != "" {
+		t.Fatalf("projection copied occurrence context onto the review row: %#v", got)
 	}
 }
 

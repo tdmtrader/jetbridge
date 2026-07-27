@@ -97,13 +97,6 @@ func (h *Handler) Set(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if req.JiraAccountID != "" {
-		if err := h.backend.SetJiraAccountID(userID, req.JiraAccountID); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-	}
-
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
 		"status":     "saved",

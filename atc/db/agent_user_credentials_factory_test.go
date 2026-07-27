@@ -103,13 +103,12 @@ var _ = Describe("AgentUserCredentialsFactory", func() {
 		Expect(names).ToNot(ContainElement("erin"))
 	})
 
-	It("deletes by kind and records the jira seam", func() {
+	It("deletes by kind", func() {
 		id := createUser("cred-sub-f", "finn")
 		Expect(factory.Put(id, "finn", "anthropic_api_key", "key", time.Time{})).To(Succeed())
-		Expect(factory.SetJiraAccountID(id, "acct-9")).To(Succeed())
 
 		status, _ := factory.Status(id)
-		Expect(status[0].JiraAccountID).To(Equal("acct-9"))
+		Expect(status).To(HaveLen(1))
 
 		Expect(factory.Delete(id, "anthropic_api_key")).To(Succeed())
 		_, found, err := factory.Resolve(id, "anthropic_api_key")

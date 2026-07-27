@@ -41,19 +41,23 @@ func (disposition Disposition) Validate() error {
 
 type PublicationState string
 
+// The only two states an outcome row can hold. The evidence-shape constraint
+// (migration 1773106115) admits exactly "not_requested with no evidence" and
+// "published with an FK-verified succeeded publication" — the in-flight
+// 'pending' and terminal-failure 'failed' tokens the API used to advertise were
+// rejected by the database on write, so a caller could only ever learn they
+// were unusable by getting a constraint violation back.
 const (
 	PublicationNotRequested PublicationState = "not_requested"
-	PublicationPending      PublicationState = "pending"
 	PublicationPublished    PublicationState = "published"
-	PublicationFailed       PublicationState = "failed"
 )
 
 func (state PublicationState) Validate() error {
 	switch state {
-	case PublicationNotRequested, PublicationPending, PublicationPublished, PublicationFailed:
+	case PublicationNotRequested, PublicationPublished:
 		return nil
 	default:
-		return fmt.Errorf("%w: publication_state must be not_requested, pending, published, or failed", ErrInvalidOutcome)
+		return fmt.Errorf("%w: publication_state must be not_requested or published", ErrInvalidOutcome)
 	}
 }
 
@@ -95,7 +99,10 @@ func (outcome Outcome) Validate() error {
 			return fmt.Errorf("%w: published state requires exact publication evidence", ErrInvalidOutcome)
 		}
 	default:
-		return fmt.Errorf("%w: publication state is not an authoritative terminal result", ErrInvalidOutcome)
+		// Unreachable while PublicationState.Validate above is the same
+		// two-token vocabulary. It stays as the guard that a state added there
+		// without an evidence shape here cannot slip through unchecked.
+		return fmt.Errorf("%w: publication state has no evidence shape", ErrInvalidOutcome)
 	}
 	if outcome.PublicationID != nil {
 		if *outcome.PublicationID <= 0 {

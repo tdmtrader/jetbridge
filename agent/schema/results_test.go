@@ -47,7 +47,6 @@ func TestResultsValidate(t *testing.T) {
 			schema.StatusFail,
 			schema.StatusError,
 			schema.StatusAbstain,
-			schema.StatusParked,
 		} {
 			r := validResults()
 			r.Status = s
@@ -55,22 +54,13 @@ func TestResultsValidate(t *testing.T) {
 		}
 	})
 
-	t.Run("accepts and round-trips the parked wire status (PARK-V2)", func(t *testing.T) {
+	// PARK-V2 is gone. The runner has no park exit — a v3 human wait is a row
+	// in agent_workflow_waits on the durable run — so 'parked' is not a status
+	// a results.json may claim, and the DB CHECK no longer accepts it either.
+	t.Run("rejects the retired parked wire status", func(t *testing.T) {
 		r := validResults()
-		r.Status = schema.StatusParked
-		requireNoErr(t, r.Validate())
-
-		data, err := json.Marshal(r)
-		requireNoErr(t, err)
-
-		var decoded schema.Results
-		requireNoErr(t, json.Unmarshal(data, &decoded))
-		requireEqual(t, decoded.Status, schema.StatusParked)
-
-		// parked maps to parked, not error — the whole point of the fix.
-		status, abstained := schema.ThreeWayStatus(decoded.Status)
-		requireEqual(t, status, schema.RunStatusParked)
-		requireFalse(t, abstained)
+		r.Status = schema.Status("parked")
+		requireErrContains(t, r.Validate(), "status")
 	})
 
 	t.Run("rejects missing summary", func(t *testing.T) {

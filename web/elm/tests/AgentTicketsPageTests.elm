@@ -146,8 +146,12 @@ all =
                     |> Tuple.first
                     |> Common.queryView
                     |> Query.has [ text "Couldn't load tickets." ]
-        , test "shows the branch on rows that have a harvest branch" <|
+        , test "never renders a delivered branch: the ticket does not carry one" <|
             \_ ->
+                -- agent_tickets.branch was written by harvest, which is gone.
+                -- A server that still sends the key must not resurrect the
+                -- column on the queue row; the delivered branch lives on the
+                -- durable workflow run.
                 Common.init "/agent-tickets"
                     |> Application.handleCallback
                         (Callback.AgentTicketsFetched
@@ -163,8 +167,7 @@ all =
                         )
                     |> Tuple.first
                     |> Common.queryView
-                    |> Query.find [ class "agent-ticket-branch" ]
-                    |> Query.has [ text "agent/ticket-12" ]
+                    |> Query.hasNot [ text "agent/ticket-12" ]
         , test "live-updates: refetches tickets on the five second tick" <|
             \_ ->
                 Common.init "/agent-tickets"

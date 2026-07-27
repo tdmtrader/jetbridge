@@ -476,15 +476,15 @@ header model ticket =
         ]
 
 
-{-| Where this ticket's work lives: the repository selection, and the branch
-name for orientation. The reviewable diff is not computed here — it lives on
-the durable workflow run's repository-change output, linked from
+{-| Where this ticket's work lives: the repository the human selected when they
+filed it. The branch the agent actually delivered on is NOT here — that is the
+durable workflow run's repository-change output, linked from
 `durableEvidenceLine`. The repo degrades to plain text when the field can't be
 resolved to a web URL.
 -}
 provenanceLine : AgentTicket.Ticket -> Html Message
 provenanceLine ticket =
-    if ticket.repo == "" && ticket.branch == "" then
+    if ticket.repo == "" then
         Html.text ""
 
     else
@@ -498,18 +498,7 @@ provenanceLine ticket =
                         [ Html.a (href url :: linkStyle) [ Html.text ticket.repo ] ]
 
                     Nothing ->
-                        if ticket.repo == "" then
-                            []
-
-                        else
-                            [ Html.text ticket.repo ]
-
-            branchPart =
-                if ticket.branch == "" then
-                    []
-
-                else
-                    [ Html.text (" · branch " ++ ticket.branch) ]
+                        [ Html.text ticket.repo ]
         in
         Html.div
             [ id "ticket-provenance"
@@ -518,7 +507,7 @@ provenanceLine ticket =
             , style "color" "#9aa39b"
             , style "margin" "2px 0 8px 0"
             ]
-            (repoPart ++ branchPart)
+            repoPart
 
 
 {-| The run's OUTCOME, read from the durable run — never from the ticket.

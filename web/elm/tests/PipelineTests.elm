@@ -884,10 +884,10 @@ all =
                     , completedAt = Just (Time.millisToPosix 65000)
                     }
 
-                awaitingRun =
+                openRun =
                     { id = 2
                     , number = 7
-                    , status = "awaiting_human"
+                    , status = "running"
                     , params = Dict.empty
                     , createdAt = Time.millisToPosix 0
                     , completedAt = Nothing
@@ -958,23 +958,6 @@ all =
                         |> Tuple.first
                         |> Common.queryView
                         |> Query.hasNot [ class "pipeline-runs" ]
-            , test "awaiting_human run renders the shared attention AgentBadge" <|
-                \_ ->
-                    Common.init "/teams/team/pipelines/pipeline"
-                        |> Application.handleCallback
-                            (Callback.PipelineFetched (Ok templatePipeline))
-                        |> Tuple.first
-                        |> Application.handleCallback
-                            (Callback.PipelineRunsFetched (Ok [ awaitingRun ]))
-                        |> Tuple.first
-                        |> Common.queryView
-                        |> Query.find [ class "pipeline-runs" ]
-                        |> Query.has
-                            [ class "agent-badge"
-                            , class "agent-badge--attention"
-                            , class "agent-badge--pulse"
-                            , text "Waiting on you"
-                            ]
             , test "failed run renders through the shared AgentBadge" <|
                 \_ ->
                     Common.init "/teams/team/pipelines/pipeline"
@@ -983,7 +966,7 @@ all =
                         |> Tuple.first
                         |> Application.handleCallback
                             (Callback.PipelineRunsFetched
-                                (Ok [ { awaitingRun | status = "failed" } ])
+                                (Ok [ { openRun | status = "failed" } ])
                             )
                         |> Tuple.first
                         |> Common.queryView

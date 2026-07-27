@@ -234,7 +234,6 @@ var _ = Describe("AgentReviewsFactory snapshot projections", func() {
 		Expect(input.Snapshot.ID).To(Equal(id))
 		Expect(input.ProductionID).To(Equal(productionID))
 		Expect(input.TeamName).To(Equal(defaultTeam.Name()))
-		Expect(input.SubmittedBy).To(Equal("projection-test"))
 
 		Expect(factory.UpsertReviewProjection(context.Background(), projectedReview(
 			id, productionID, "accept", map[string]int{}))).To(Succeed())

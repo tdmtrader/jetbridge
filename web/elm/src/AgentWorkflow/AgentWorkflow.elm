@@ -16,6 +16,7 @@ import Char
 import Concourse.Agent as Agent
 import Concourse.Experiment as Experiment
 import Concourse.WorkflowRun as WorkflowRun
+import DateFormat
 import Dict exposing (Dict)
 import EffectTransformer exposing (ET)
 import Html exposing (Html)
@@ -267,6 +268,8 @@ latestVersion versions =
             , description = ""
             , createdBy = ""
             , createdAt = Time.millisToPosix 0
+            , promotedAt = Nothing
+            , promotedBy = ""
             , signature = Agent.WorkflowSignature [] []
             }
 
@@ -392,7 +395,7 @@ view session model =
           else
             Html.text ""
         , signatureAndStart model
-        , versionTimeline model
+        , versionTimeline session.timeZone model
         , experimentLinks model
         , runsSection model
         ]
@@ -535,8 +538,8 @@ inputBinding model signaturePort =
         ]
 
 
-versionTimeline : Model -> Html Message
-versionTimeline model =
+versionTimeline : Time.Zone -> Model -> Html Message
+versionTimeline zone model =
     Html.section [ class "agent-workflow-versions", cardStyle ]
         [ heading "Definition versions"
         , case model.versions of
@@ -547,7 +550,7 @@ versionTimeline model =
                 Html.div []
                     (versions
                         |> List.sortBy (negate << .version)
-                        |> List.map versionRow
+                        |> List.map (versionRow zone)
                     )
         , if model.promotionError then
             errorLine "Version promotion failed."
@@ -557,8 +560,12 @@ versionTimeline model =
         ]
 
 
-versionRow : Agent.WorkflowVersion -> Html Message
-versionRow version =
+{-| One version in the timeline. The promotion audit — who made this version
+live and when — is rendered beside the authorship line whenever the server
+recorded one; a version that has never been promoted simply omits it.
+-}
+versionRow : Time.Zone -> Agent.WorkflowVersion -> Html Message
+versionRow zone version =
     Html.div
         [ class "agent-workflow-version"
         , style "display" "grid"
@@ -589,6 +596,7 @@ versionRow version =
                     ++ String.left 16 version.contentHash
                     ++ " · by "
                     ++ version.createdBy
+                    ++ promotionSuffix zone version
                 )
             ]
         , if version.live then
@@ -599,6 +607,41 @@ versionRow version =
                 [ type_ "button", onClick (AgentWorkflowPromoteClicked version.version) ]
                 [ Html.text "promote live" ]
         ]
+
+
+promotionSuffix : Time.Zone -> Agent.WorkflowVersion -> String
+promotionSuffix zone version =
+    case version.promotedAt of
+        Nothing ->
+            ""
+
+        Just promotedAt ->
+            " · promoted by "
+                ++ (if version.promotedBy == "" then
+                        "unknown"
+
+                    else
+                        version.promotedBy
+                   )
+                ++ " on "
+                ++ formatPromotedAt zone promotedAt
+
+
+formatPromotedAt : Time.Zone -> Time.Posix -> String
+formatPromotedAt zone posix =
+    DateFormat.format
+        [ DateFormat.monthNameAbbreviated
+        , DateFormat.text " "
+        , DateFormat.dayOfMonthNumber
+        , DateFormat.text ", "
+        , DateFormat.yearNumber
+        , DateFormat.text " "
+        , DateFormat.hourMilitaryFixed
+        , DateFormat.text ":"
+        , DateFormat.minuteFixed
+        ]
+        zone
+        posix
 
 
 experimentLinks : Model -> Html Message

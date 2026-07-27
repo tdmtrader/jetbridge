@@ -1,5 +1,5 @@
 // Package gates implements the deterministic repository gate function used by
-// version-3 workflows and by the legacy harvest compatibility composition.
+// version-3 workflows.
 package gates
 
 import (

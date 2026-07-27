@@ -393,8 +393,8 @@ func (c *Container) createPod(ctx context.Context, processSpec runtime.ProcessSp
 // pauseCommand is the shell command used by pause pods. It idles forever
 // (a looped bounded sleep — busybox sh has no infinite sleep) and exits
 // cleanly on SIGTERM so the pod can be stopped. The loop matters: a bare
-// `sleep 86400` kills the pod 24h after creation, which breaks parked
-// agent steps (ask_human/checkpoint park can exceed 24h).
+// `sleep 86400` kills the pod 24h after creation, which silently ends any
+// pause that outlives a day.
 const pauseCommand = "trap 'exit 0' TERM; while :; do sleep 86400 & wait $!; done"
 
 // createPausePod creates a Pod that runs indefinitely (pause mode) so that

@@ -754,12 +754,13 @@ func (step *AgentStep) ingestFlightRecorder(
 				logger.Info("flight-events-skipped-oversized-lines", lager.Data{"count": n})
 			}
 			rm.EventCounts = counts
-			if !sawStepEnd && rm.Status != schema.RunStatusParked {
+			if !sawStepEnd {
 				// crashed agent: a stream missing step.end is defined as error
-				// (shared-contracts §5 ingestion rule). A park-exit is the
-				// sanctioned exception (§3.2): its stream ends with step.park,
-				// not step.end, so a parked results.json must NOT be rewritten
-				// to error here (review finding F#11, 2026-07-12).
+				// (shared-contracts §5 ingestion rule), with no exceptions. The
+				// PARK-V2 carve-out for a step.park-terminated stream is gone
+				// along with the parked status: the runner has no park exit, and
+				// a v3 human wait is a row in agent_workflow_waits on the durable
+				// run, not a way for a step to end.
 				rm.Status = schema.RunStatusError
 				if rm.Summary == "" || rm.Summary == "flight recorder output missing" {
 					rm.Summary = "event stream ended without step.end"

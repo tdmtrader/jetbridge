@@ -40,10 +40,10 @@ func TestTransitionRequestRejectsServerOwnedPipelineRunID(t *testing.T) {
 	}
 
 	var clean tickets.TransitionRequest
-	if err := json.Unmarshal([]byte(`{"from":"queued","to":"running","branch":"b"}`), &clean); err != nil {
+	if err := json.Unmarshal([]byte(`{"from":"queued","to":"running"}`), &clean); err != nil {
 		t.Fatalf("clean transition decode = %v, want nil", err)
 	}
-	if clean.From != tickets.StateQueued || clean.To != tickets.StateRunning || clean.Branch != "b" {
+	if clean.From != tickets.StateQueued || clean.To != tickets.StateRunning {
 		t.Errorf("clean transition = %+v", clean)
 	}
 }
@@ -118,12 +118,14 @@ func TestValidStateAndOrigin(t *testing.T) {
 		t.Error("ValidState accepted an unknown state")
 	}
 
-	for _, o := range []string{"web", "fly", "jira", "retrospective"} {
+	for _, o := range []string{"web", "fly", "retrospective"} {
 		if !tickets.ValidOrigin(o) {
 			t.Errorf("ValidOrigin(%q) = false, want true", o)
 		}
 	}
-	if tickets.ValidOrigin("email") || tickets.ValidOrigin("") {
+	// 'jira' was a seam the create handler rejected with a 400 from the day it
+	// was written. It is not a valid origin, and no adapter branches on it.
+	if tickets.ValidOrigin("jira") || tickets.ValidOrigin("email") || tickets.ValidOrigin("") {
 		t.Error("ValidOrigin accepted an unknown origin")
 	}
 }

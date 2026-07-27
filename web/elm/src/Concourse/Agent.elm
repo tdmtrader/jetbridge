@@ -62,6 +62,8 @@ type alias WorkflowVersion =
     , description : String
     , createdBy : String
     , createdAt : Time.Posix
+    , promotedAt : Maybe Time.Posix
+    , promotedBy : String
     , signature : WorkflowSignature
     }
 
@@ -93,15 +95,12 @@ type alias CostRollup =
 
 {-| Read-only status of a stored agent credential. The wire type never
 carries the secret itself — secrets are set out-of-band via
-`fly agent auth`. `expires_at` / `last_verified_at` are epoch-seconds and
-omitted (→ absent → Nothing) when unknown; `jira_account_id` is omitted
-when empty (→ "").
+`fly agent auth`. `expires_at` is epoch-seconds and omitted (→ absent →
+Nothing) when unknown.
 -}
 type alias CredentialStatus =
     { kind : String
     , expiresAt : Maybe Time.Posix
-    , lastVerifiedAt : Maybe Time.Posix
-    , jiraAccountId : String
     }
 
 
@@ -277,6 +276,8 @@ decodeWorkflowVersion =
         |> andMap (defaultTo "" <| Json.Decode.field "description" Json.Decode.string)
         |> andMap (defaultTo "" <| Json.Decode.field "created_by" Json.Decode.string)
         |> andMap (defaultTo (dateFromSeconds 0) <| Json.Decode.field "created_at" (Json.Decode.map dateFromSeconds Json.Decode.int))
+        |> andMap (optionalPosix "promoted_at")
+        |> andMap (defaultTo "" <| Json.Decode.field "promoted_by" Json.Decode.string)
         |> andMap
             (defaultTo (WorkflowSignature [] []) <|
                 Json.Decode.at [ "compiled", "function" ] decodeWorkflowSignature
@@ -329,8 +330,6 @@ decodeCredentialStatus =
     Json.Decode.succeed CredentialStatus
         |> andMap (defaultTo "" <| Json.Decode.field "kind" Json.Decode.string)
         |> andMap (optionalPosix "expires_at")
-        |> andMap (optionalPosix "last_verified_at")
-        |> andMap (defaultTo "" <| Json.Decode.field "jira_account_id" Json.Decode.string)
 
 
 {-| Decode the credential-status list. Tolerates a null top-level array

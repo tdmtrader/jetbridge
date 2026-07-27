@@ -129,7 +129,7 @@ func TestMemoryLedgerRollupByModelAndStep(t *testing.T) {
 		}
 	}
 	must(m.Insert(budget.LedgerEntry{OccurredAt: base, Source: budget.SourceAgentStep, Model: "opus", StepName: "implement", CostUSD: 1.0}))
-	must(m.Insert(budget.LedgerEntry{OccurredAt: base, Source: budget.SourceAgentStep, Model: "opus", StepName: "harvest", CostUSD: 2.0}))
+	must(m.Insert(budget.LedgerEntry{OccurredAt: base, Source: budget.SourceAgentStep, Model: "opus", StepName: "gates", CostUSD: 2.0}))
 	must(m.Insert(budget.LedgerEntry{OccurredAt: base, Source: budget.SourceAgentStep, Model: "sonnet", StepName: "implement", CostUSD: 4.0}))
 
 	byModel, err := m.Rollup(budget.GroupByModel, base.Add(-time.Hour), time.Time{})
@@ -148,8 +148,8 @@ func TestMemoryLedgerRollupByModelAndStep(t *testing.T) {
 	for _, r := range byStep {
 		got[r.Key] = r.CostUSD
 	}
-	if got["implement"] != 5.0 || got["harvest"] != 2.0 {
-		t.Fatalf("by step = %+v, want implement=5 harvest=2", got)
+	if got["implement"] != 5.0 || got["gates"] != 2.0 {
+		t.Fatalf("by step = %+v, want implement=5 gates=2", got)
 	}
 }
 

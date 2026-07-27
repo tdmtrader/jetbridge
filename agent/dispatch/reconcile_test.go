@@ -151,7 +151,7 @@ func TestReconcileNilRunReaderSkipsPass(t *testing.T) {
 
 func TestReconcileStaleTransitionBenign(t *testing.T) {
 	deps, _, _ := reconcileScaffold(t)
-	// Harvest races us: simulate by making every Transition stale.
+	// Another writer races us: simulate by making every Transition stale.
 	deps.Tickets = staleOnTransition{Store: deps.Tickets}
 	d := dispatch.NewDispatcher(deps, dispatch.LoopConfig{
 		RunReader: runReaderFor(completedRun(100, db.PipelineRunFailed)),

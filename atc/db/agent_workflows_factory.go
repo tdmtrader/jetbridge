@@ -35,7 +35,8 @@ type agentWorkflowsFactory struct {
 // workflowMetaFrom, which aliases agent_workflow_definitions as d.
 const workflowMetaColumns = `d.id, d.name, d.version, d.content_hash, d.live, d.description, d.created_by,
 	EXTRACT(EPOCH FROM d.created_at)::bigint, d.schema_version, d.signature_version,
-	COALESCE(l.hidden, false), COALESCE(l.annotation, '')`
+	COALESCE(l.hidden, false), COALESCE(l.annotation, ''),
+	COALESCE(EXTRACT(EPOCH FROM d.promoted_at)::bigint, 0), d.promoted_by`
 
 // workflowMetaFrom LEFT JOINs the name-keyed lifecycle table so every version
 // row carries its workflow's hidden/annotation (S-6). LEFT JOIN so a workflow
@@ -95,7 +96,7 @@ func (f *agentWorkflowsFactory) ImportManifest(name string, src workflow.Manifes
 		name, hash,
 	).Scan(&def.ID, &def.Name, &def.Version, &def.ContentHash, &def.Live,
 		&def.Description, &def.CreatedBy, &def.CreatedAt, &def.SchemaVersion, &def.SignatureVersion,
-		&def.Hidden, &def.Annotation)
+		&def.Hidden, &def.Annotation, &def.PromotedAt, &def.PromotedBy)
 	if err == nil {
 		// Idempotent on hash: byte-identical source returns the existing
 		// version untouched (contracts §1.6).
@@ -211,7 +212,7 @@ func (f *agentWorkflowsFactory) getOne(where string, args ...any) (*workflow.Def
 		WHERE `+where, args...,
 	).Scan(&def.ID, &def.Name, &def.Version, &def.ContentHash, &def.Live,
 		&def.Description, &def.CreatedBy, &def.CreatedAt, &def.SchemaVersion, &def.SignatureVersion,
-		&def.Hidden, &def.Annotation,
+		&def.Hidden, &def.Annotation, &def.PromotedAt, &def.PromotedBy,
 		&def.RawYAML, &manifestJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil
@@ -330,6 +331,8 @@ func (f *agentWorkflowsFactory) Promote(name string, version int, promotedBy str
 		&targetDefinition.SignatureVersion,
 		&targetDefinition.Hidden,
 		&targetDefinition.Annotation,
+		&targetDefinition.PromotedAt,
+		&targetDefinition.PromotedBy,
 		&targetDefinition.RawYAML,
 		&targetManifest,
 	)
@@ -462,7 +465,7 @@ func scanWorkflowMetaRows(rows *sql.Rows) ([]workflow.Definition, error) {
 		var def workflow.Definition
 		if err := rows.Scan(&def.ID, &def.Name, &def.Version, &def.ContentHash, &def.Live,
 			&def.Description, &def.CreatedBy, &def.CreatedAt, &def.SchemaVersion, &def.SignatureVersion,
-			&def.Hidden, &def.Annotation); err != nil {
+			&def.Hidden, &def.Annotation, &def.PromotedAt, &def.PromotedBy); err != nil {
 			return nil, err
 		}
 		out = append(out, def)

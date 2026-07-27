@@ -47,7 +47,7 @@ v8.0.1:1765921815
 # 1773106131 = drops agent_ticket_comments with the ticket comment surface
 # (no route, no reader; work-item/v1 no longer carries a comments key). The
 # down migration recreates the table empty — rows are not recoverable.
-JETBRIDGE_VERSION=1773106135
+JETBRIDGE_VERSION=1773106136
 
 # Minimum supported source version (v6.x)
 MIN_SUPPORTED_VERSION=1601993582

@@ -76,7 +76,7 @@ const ticketColumns = `t.id, t.revision, t.title, t.body, t.state, t.origin, t.r
 	t.workflow_name, t.workflow_version, t.workflow_definition_id,
 	t.user_id, t.user_name, t.created_by, t.external_ref,
 	t.pipeline_run_id, t.workflow_run_id, t.work_item_snapshot_id, t.repository_snapshot_id,
-	t.dispatch_reservation_key, t.branch, t.attempt_count,
+	t.dispatch_reservation_key, t.attempt_count,
 	EXTRACT(EPOCH FROM t.created_at)::bigint,
 	EXTRACT(EPOCH FROM t.updated_at)::bigint,
 	COALESCE(EXTRACT(EPOCH FROM t.completed_at)::bigint, 0)`
@@ -93,7 +93,7 @@ func scanTicket(row ticketScanner) (*tickets.Ticket, error) {
 		&t.WorkflowName, &wfVersion, &wfDefID,
 		&userID, &t.UserName, &t.CreatedBy, &t.ExternalRef,
 		&runID, &workflowRunID, &workItemSnapshotID, &repositorySnapshotID,
-		&t.DispatchReservationKey, &t.Branch, &t.AttemptCount,
+		&t.DispatchReservationKey, &t.AttemptCount,
 		&t.CreatedAt, &t.UpdatedAt, &t.CompletedAt,
 	)
 	if err != nil {
@@ -462,10 +462,6 @@ func (f *agentTicketsFactory) Transition(id int, from, to tickets.State, meta ti
 		if meta.PipelineRunID != nil {
 			q = q.Set("pipeline_run_id", *meta.PipelineRunID)
 		}
-	case tickets.StateNeedsReview:
-		if meta.Branch != "" {
-			q = q.Set("branch", meta.Branch)
-		}
 	case tickets.StateClosed:
 		q = q.Set("completed_at", sq.Expr("now()"))
 	}
@@ -501,7 +497,6 @@ const captureTicketRevisionSQL = `
 	SELECT t.id,
 	       t.revision,
 	       t.updated_at,
-	       t.origin,
 	       t.external_ref,
 	       t.title,
 	       t.body
@@ -524,14 +519,12 @@ func (f *agentTicketsFactory) CaptureRevision(ctx context.Context, ticketID int)
 
 	var (
 		revision    workitem.Revision
-		origin      string
 		externalRef string
 	)
 	err = tx.QueryRowContext(ctx, captureTicketRevisionSQL, ticketID).Scan(
 		&revision.TicketID,
 		&revision.Revision,
 		&revision.UpdatedAt,
-		&origin,
 		&externalRef,
 		&revision.Title,
 		&revision.Body,
@@ -542,11 +535,7 @@ func (f *agentTicketsFactory) CaptureRevision(ctx context.Context, ticketID int)
 	if err != nil {
 		return workitem.CapturedRevision{}, false, err
 	}
-	if origin == "jira" {
-		revision.Adapter = "jira"
-	} else {
-		revision.Adapter = "jetbridge"
-	}
+	revision.Adapter = "jetbridge"
 	if externalRef != "" {
 		revision.ExternalID = externalRef
 	} else {

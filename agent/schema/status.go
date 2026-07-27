@@ -8,10 +8,6 @@ const (
 	RunStatusOK     = "ok"
 	RunStatusFailed = "failed"
 	RunStatusError  = "error"
-	// RunStatusParked marks a park-exit partial ingestion (§1.8, 2026-07-10
-	// PARK-V2 amendment): the step exited awaiting a human, with best-effort
-	// usage/cost — a defined end, not an error.
-	RunStatusParked = "parked"
 	// RunStatusIncomplete marks an ingestion that read NO flight output (L-1,
 	// #41): the step produced no results/events/review — dominant cause is a
 	// runner image predating the flight recorder. A missing RECORDING, not a
@@ -22,9 +18,7 @@ const (
 
 // ThreeWayStatus maps a results.json Status onto the three-way taxonomy.
 // abstain maps to failed with abstained=true so callers can record
-// `"abstained": true` metadata. parked maps to parked (PARK-V2, §1.8) so a
-// park-exit ingestion is not silently rewritten to error. Unknown values map
-// to error.
+// `"abstained": true` metadata. Unknown values map to error.
 func ThreeWayStatus(s Status) (status string, abstained bool) {
 	switch s {
 	case StatusPass:
@@ -35,8 +29,6 @@ func ThreeWayStatus(s Status) (status string, abstained bool) {
 		return RunStatusError, false
 	case StatusAbstain:
 		return RunStatusFailed, true
-	case StatusParked:
-		return RunStatusParked, false
 	default:
 		return RunStatusError, false
 	}

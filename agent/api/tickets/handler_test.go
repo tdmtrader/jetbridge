@@ -77,7 +77,8 @@ func TestCreateTicketOriginRules(t *testing.T) {
 		t.Errorf("human retrospective = %d, want 403", rec.Code)
 	}
 
-	// jira -> 400 until phase 2
+	// 'jira' is not an origin; it fails the same invalid-origin check as any
+	// other unknown token.
 	req = httptest.NewRequest("POST", "/api/v1/agent/tickets",
 		strings.NewReader(`{"title":"t","repo":"r","origin":"jira"}`))
 	rec = httptest.NewRecorder()

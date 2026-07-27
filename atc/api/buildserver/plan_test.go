@@ -10,15 +10,13 @@ import (
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc/api/buildserver"
 	"github.com/concourse/concourse/atc/db/dbfakes"
-	"github.com/concourse/concourse/atc/legacyplan"
 )
 
-func TestGetBuildPlanRewritesCompletedHistoricalHarvest(t *testing.T) {
-	raw := json.RawMessage(`{"id":"0","do":[{"id":"8/harvest","harvest":{"name":"push-branch","repo":"private/repo"}}]}`)
+func TestGetBuildPlanServesTheStoredPublicPlan(t *testing.T) {
+	raw := json.RawMessage(`{"id":"0","do":[{"id":"8/task","task":{"name":"build"}}]}`)
 	build := new(dbfakes.FakeBuildForAPI)
 	build.HasPlanReturns(true)
-	build.IsRunningReturns(false)
-	build.SchemaReturns("exec.v1")
+	build.SchemaReturns("exec.v2")
 	build.PublicPlanReturns(&raw)
 
 	response := requestBuildPlan(t, build)
@@ -26,43 +24,20 @@ func TestGetBuildPlanRewritesCompletedHistoricalHarvest(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
 	}
 	body := response.Body.String()
-	if !strings.Contains(body, `"retired_step":{"kind":"harvest","name":"push-branch"}`) {
-		t.Fatalf("missing retired step: %s", body)
+	if !strings.Contains(body, `"plan":{"id":"0","do":[{"id":"8/task","task":{"name":"build"}}]}`) {
+		t.Fatalf("plan not served verbatim: %s", body)
 	}
-	if strings.Contains(body, `"harvest":`) {
-		t.Fatalf("raw harvest leaked: %s", body)
-	}
-}
-
-func TestGetBuildPlanRejectsRunningHistoricalHarvest(t *testing.T) {
-	raw := json.RawMessage(`{"id":"8/harvest","harvest":{"name":"push-branch"}}`)
-	build := new(dbfakes.FakeBuildForAPI)
-	build.HasPlanReturns(true)
-	build.IsRunningReturns(true)
-	build.PublicPlanReturns(&raw)
-
-	response := requestBuildPlan(t, build)
-	if response.Code != http.StatusConflict {
-		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
-	}
-	body := response.Body.String()
-	if !strings.Contains(body, legacyplan.ErrActiveHarvestPlan.Error()) {
-		t.Fatalf("missing retired-plan error: %s", body)
-	}
-	if strings.Contains(body, `"harvest":`) {
-		t.Fatalf("raw harvest leaked: %s", body)
+	if !strings.Contains(body, `"schema":"exec.v2"`) {
+		t.Fatalf("missing schema: %s", body)
 	}
 }
 
-func TestGetBuildPlanRejectsMalformedHistoricalJSON(t *testing.T) {
-	raw := json.RawMessage(`{"id":`)
+func TestGetBuildPlanReturnsNotFoundWithoutAPlan(t *testing.T) {
 	build := new(dbfakes.FakeBuildForAPI)
-	build.HasPlanReturns(true)
-	build.IsRunningReturns(false)
-	build.PublicPlanReturns(&raw)
+	build.HasPlanReturns(false)
 
 	response := requestBuildPlan(t, build)
-	if response.Code != http.StatusInternalServerError {
+	if response.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
 	}
 }
@@ -70,7 +45,6 @@ func TestGetBuildPlanRejectsMalformedHistoricalJSON(t *testing.T) {
 func TestGetBuildPlanPreservesNilPlan(t *testing.T) {
 	build := new(dbfakes.FakeBuildForAPI)
 	build.HasPlanReturns(true)
-	build.IsRunningReturns(false)
 	build.SchemaReturns("exec.v1")
 	build.PublicPlanReturns(nil)
 

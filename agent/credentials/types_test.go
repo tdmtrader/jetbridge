@@ -89,14 +89,6 @@ func TestMemoryBackendRoundTrip(t *testing.T) {
 		t.Fatalf("ExpiringWithin(1m): %v %v", expiring, err)
 	}
 
-	if err := m.SetJiraAccountID(7, "jira-123"); err != nil {
-		t.Fatal(err)
-	}
-	status, _ = m.Status(7)
-	if status[0].JiraAccountID != "jira-123" {
-		t.Fatal("jira seam not persisted")
-	}
-
 	if err := m.Delete(7, "anthropic_oauth"); err != nil {
 		t.Fatal(err)
 	}

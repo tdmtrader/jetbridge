@@ -275,9 +275,8 @@ var _ = Describe("AgentTicketsFactory", func() {
 			Expect(dispatchedAt.Valid).To(BeTrue())
 
 			Expect(factory.Transition(id, tickets.StateRunning, tickets.StateNeedsReview,
-				tickets.TransitionMeta{Branch: "agent/ticket-7"})).To(Succeed())
+				tickets.TransitionMeta{})).To(Succeed())
 			got, _, _ = factory.Get(id)
-			Expect(got.Branch).To(Equal("agent/ticket-7"))
 			Expect(got.CompletedAt).To(BeZero()) // needs_review is not terminal
 
 			// needs_review → closed is the ONE human close action. WHY it
@@ -353,7 +352,7 @@ var _ = Describe("AgentTicketsFactory", func() {
 		It("increments every mutable path and captures the complete current revision", func() {
 			version := 3
 			ticket := newTicket("upgrade postgres", "tdmtrader/concourse")
-			ticket.Origin = "jira"
+			ticket.Origin = "web"
 			ticket.ExternalRef = "ENG-42"
 			ticket.WorkflowName = "version-upgrade"
 			ticket.WorkflowVersion = &version
@@ -382,7 +381,7 @@ var _ = Describe("AgentTicketsFactory", func() {
 			var document contracts.WorkItemDocument
 			Expect(json.Unmarshal(captured.Document, &document)).To(Succeed())
 			Expect(document.Validate()).To(Succeed())
-			Expect(document.Adapter).To(Equal("jira"))
+			Expect(document.Adapter).To(Equal("jetbridge"))
 			Expect(document.ExternalID).To(Equal("ENG-42"))
 			Expect(document.Title).To(Equal("upgrade postgres"))
 			Expect(document.Body).To(Equal(body))

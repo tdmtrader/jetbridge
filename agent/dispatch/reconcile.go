@@ -12,11 +12,10 @@ import (
 
 // reconcileCompletedRuns walks RUNNING tickets whose pipeline run is complete
 // and applies the board's human-attention transition through the single
-// writer. For v1/v2 it remains the backup when compatibility harvest never
-// executes. For v3 it projects generic execution completion onto the ticket
-// adapter; the linked workflow run and snapshots remain canonical. Stale or
-// missing transitions are benign races. PARK-V2's awaiting_human runs (not
-// landed) keep completed_at NULL, so they can never be candidates here.
+// writer. It projects generic execution completion onto the ticket adapter;
+// the linked workflow run and snapshots remain canonical. Stale or missing
+// transitions are benign races. A run still waiting on a human keeps
+// completed_at NULL, so it can never be a candidate here.
 func (d *Dispatcher) reconcileCompletedRuns(ctx context.Context, logger lager.Logger) error {
 	if d.cfg.RunReader == nil {
 		return nil
@@ -62,15 +61,14 @@ func (d *Dispatcher) reconcileOne(logger lager.Logger, t tickets.Ticket, status 
 		case err == nil:
 			log.Info("reconciled", lager.Data{"to": string(to)})
 		case errors.Is(err, tickets.ErrStaleTransition), errors.Is(err, tickets.ErrTicketNotFound):
-			log.Debug("reconcile-raced", lager.Data{"to": string(to)}) // harvest won; benign
+			log.Debug("reconcile-raced", lager.Data{"to": string(to)}) // another writer won; benign
 		default:
 			log.Error("failed-to-transition", err, lager.Data{"to": string(to)})
 		}
 	}
 
-	// (a) Run succeeded but the ticket never left running: harvest should
-	// have moved it — safety net. Branch meta stays empty (harvest is the
-	// Branch field's only legitimate writer; §2.1 TransitionMeta note).
+	// (a) Run succeeded but the ticket never left running: the API
+	// transition caller should have moved it — safety net.
 	if status == db.PipelineRunSucceeded {
 		transition(tickets.StateNeedsReview, tickets.TransitionMeta{})
 		return

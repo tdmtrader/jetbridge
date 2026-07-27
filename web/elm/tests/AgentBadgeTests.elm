@@ -11,7 +11,6 @@ allStatuses =
     , Queued
     , Running Nothing
     , Running (Just "step")
-    , AwaitingHuman
     , NeedsReview
     , Closed
     , Failed
@@ -28,7 +27,6 @@ wireTokens =
     [ "draft"
     , "queued"
     , "running"
-    , "awaiting_human"
     , "needs_review"
     , "closed"
     , "failed"
@@ -39,10 +37,12 @@ wireTokens =
 {-| The v2 ticket dispositions were deleted with the per-ticket outcome mirror:
 whether work merged, was sent back, or was dropped is the workflow run's
 outcome, and the badge must not resurrect a second vocabulary for it.
+`awaiting_human` went the same way with PARK-V2: a v3 human wait is a row on
+the durable run, never a step exit status the badge can be asked to render.
 -}
 retiredTokens : List String
 retiredTokens =
-    [ "merged", "merged_with_fixes", "sent_back", "concluded", "abandoned" ]
+    [ "merged", "merged_with_fixes", "sent_back", "concluded", "abandoned", "awaiting_human" ]
 
 
 all : Test
@@ -60,10 +60,10 @@ all =
                     |> List.map description
                     |> List.all (not << String.isEmpty)
                     |> Expect.equal True
-        , test "NeedsReview and AwaitingHuman both map to Attention" <|
+        , test "NeedsReview maps to Attention" <|
             \_ ->
-                ( tone NeedsReview, tone AwaitingHuman )
-                    |> Expect.equal ( Attention, Attention )
+                tone NeedsReview
+                    |> Expect.equal Attention
         , test "fromApiToken returns Just for every wire token" <|
             \_ ->
                 wireTokens
@@ -82,10 +82,14 @@ all =
                     |> Expect.equal True
         , test "fromRunStatus maps every agent_run_metrics status to a badge" <|
             \_ ->
-                [ "ok", "failed", "parked", "error" ]
+                [ "ok", "failed", "error" ]
                     |> List.map fromRunStatus
                     |> Expect.equal
-                        [ Just Succeeded, Just Failed, Just AwaitingHuman, Just Errored ]
+                        [ Just Succeeded, Just Failed, Just Errored ]
+        , test "fromRunStatus refuses the retired parked status" <|
+            \_ ->
+                fromRunStatus "parked"
+                    |> Expect.equal Nothing
         , test "fromRunStatus returns Nothing for an unknown status" <|
             \_ ->
                 fromRunStatus "bogus"
@@ -127,27 +131,13 @@ all =
                 \_ ->
                     runOutcome { buildStatus = "started", runStatus = "ok", hasResult = False }
                         |> Expect.equal (Just (Running Nothing))
-            , test "a PARKED run shows Waiting on you even though its build is still 'started'" <|
+            , test "the retired parked status under an open build derives nothing" <|
                 \_ ->
-                    -- A HITL checkpoint parks the run and keeps its build in
-                    -- 'started'; parked must win over the build status or the
-                    -- operator can't see the run is blocked on them.
-                    runOutcome { buildStatus = "started", runStatus = "parked", hasResult = True }
-                        |> Expect.equal (Just AwaitingHuman)
-            , test "a parked run whose build later succeeded still shows Waiting on you, not OK" <|
-                \_ ->
-                    runOutcome { buildStatus = "succeeded", runStatus = "parked", hasResult = True }
-                        |> Expect.equal (Just AwaitingHuman)
-            , test "a parked run whose build was ABORTED shows Aborted, not Waiting on you" <|
-                \_ ->
-                    -- abort-while-parked leaves the metric row parked forever;
-                    -- the dead run must not keep asking for the operator.
-                    runOutcome { buildStatus = "aborted", runStatus = "parked", hasResult = False }
-                        |> Expect.equal (Just Aborted)
-            , test "a parked run whose build ERRORED shows Errored, not Waiting on you" <|
-                \_ ->
-                    runOutcome { buildStatus = "errored", runStatus = "parked", hasResult = False }
-                        |> Expect.equal (Just Errored)
+                    -- PARK-V2 is gone; 'parked' is now an unknown step status,
+                    -- and an unknown status under a build that says nothing
+                    -- useful must not be invented into a verdict.
+                    runOutcome { buildStatus = "", runStatus = "parked", hasResult = True }
+                        |> Expect.equal Nothing
             , test "a step that reported error inside a SUCCEEDED build is Errored, never a green OK" <|
                 \_ ->
                     -- attempts:/try can fail an agent step inside a build that
@@ -168,13 +158,12 @@ all =
         , describe "displayOutcome — the server-derived outcome wins when present"
             [ test "fromOutcomeToken maps every server outcome token to its badge" <|
                 \_ ->
-                    [ "ok", "no_output", "running", "parked", "failed", "errored", "aborted" ]
+                    [ "ok", "no_output", "running", "failed", "errored", "aborted" ]
                         |> List.map fromOutcomeToken
                         |> Expect.equal
                             [ Just Succeeded
                             , Just NoOutput
                             , Just (Running Nothing)
-                            , Just AwaitingHuman
                             , Just Failed
                             , Just Errored
                             , Just Aborted

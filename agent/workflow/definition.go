@@ -115,6 +115,14 @@ type Definition struct {
 	CreatedBy        string `json:"created_by"`
 	CreatedAt        int64  `json:"created_at"`
 
+	// PromotedAt/PromotedBy are the promotion audit: WHO made this version
+	// live and WHEN. Promote has always written them; nothing read them, so
+	// the one governance fact the platform records about going live was
+	// invisible on every surface. PromotedAt is epoch seconds, 0 for a version
+	// that has never been promoted (PromotedBy is then empty).
+	PromotedAt int64  `json:"promoted_at,omitempty"`
+	PromotedBy string `json:"promoted_by,omitempty"`
+
 	// Compiled is the authoritative schema-version-3 representation.
 	Compiled CompiledDefinition `json:"compiled"`
 

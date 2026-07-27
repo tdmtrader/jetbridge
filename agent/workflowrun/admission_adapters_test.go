@@ -163,13 +163,12 @@ func workflowBudgetConfig(steps ...atc.Step) atc.Config {
 }
 
 type credentialBackendStub struct {
-	resolve   func(int, string) (*credentials.Credential, bool, error)
-	platform  func(string) (int, string, bool, error)
-	put       func(int, string, string, string, time.Time) error
-	status    func(int) ([]credentials.Credential, error)
-	expiring  func(time.Duration) ([]credentials.Credential, error)
-	delete    func(int, string) error
-	setJiraID func(int, string) error
+	resolve  func(int, string) (*credentials.Credential, bool, error)
+	platform func(string) (int, string, bool, error)
+	put      func(int, string, string, string, time.Time) error
+	status   func(int) ([]credentials.Credential, error)
+	expiring func(time.Duration) ([]credentials.Credential, error)
+	delete   func(int, string) error
 }
 
 func (s *credentialBackendStub) Resolve(userID int, kind string) (*credentials.Credential, bool, error) {
@@ -196,10 +195,6 @@ func (s *credentialBackendStub) Delete(userID int, kind string) error {
 	return s.delete(userID, kind)
 }
 
-func (s *credentialBackendStub) SetJiraAccountID(userID int, accountID string) error {
-	return s.setJiraID(userID, accountID)
-}
-
 func newCredentialBackendStub() *credentialBackendStub {
 	return &credentialBackendStub{
 		put:    func(int, string, string, string, time.Time) error { panic("unexpected Put") },
@@ -207,8 +202,7 @@ func newCredentialBackendStub() *credentialBackendStub {
 		expiring: func(time.Duration) ([]credentials.Credential, error) {
 			panic("unexpected ExpiringWithin")
 		},
-		delete:    func(int, string) error { panic("unexpected Delete") },
-		setJiraID: func(int, string) error { panic("unexpected SetJiraAccountID") },
+		delete: func(int, string) error { panic("unexpected Delete") },
 	}
 }
 

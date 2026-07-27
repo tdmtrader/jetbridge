@@ -68,9 +68,9 @@ var _ = Describe("PipelineRun completion", func() {
 		Expect(complete).To(BeFalse())
 	})
 
-	It("does not complete while a build is started — the parked-run contract", func() {
-		// a parked agent step (ask_human / checkpoint) keeps its build in
-		// 'started'; a parked run must therefore stay 'running'
+	It("does not complete while a build is started", func() {
+		// a run whose entry build is still open is still running, whatever the
+		// other builds did
 		instanceID := instance.ID()
 		_, err := dbConn.Exec(
 			`UPDATE builds SET status = 'started' WHERE pipeline_id = $1`, instanceID)

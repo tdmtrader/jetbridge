@@ -72,7 +72,7 @@ type RunMetrics struct {
 	BuildID    int    `json:"build_id"`
 	PlanID     string `json:"plan_id"`
 	StepName   string `json:"step_name"`
-	Status     string `json:"status"` // ok | failed | error | parked | incomplete — the AGENT STEP exit status
+	Status     string `json:"status"` // ok | failed | error | incomplete — the AGENT STEP exit status
 	// BuildStatus is the status of the pipeline build the step ran in
 	// (pending|started|succeeded|failed|errored|aborted). It is derived
 	// server-side by joining the builds table on read and is never accepted
@@ -105,7 +105,6 @@ const (
 	RunOutcomeOK         = "ok"
 	RunOutcomeNoOutput   = "no_output"
 	RunOutcomeRunning    = "running"
-	RunOutcomeParked     = "parked"
 	RunOutcomeFailed     = "failed"
 	RunOutcomeErrored    = "errored"
 	RunOutcomeAborted    = "aborted"
@@ -127,20 +126,15 @@ func (rm RunMetrics) HasResult() bool {
 // precedence is "worst truth wins":
 //
 //  1. A terminally-bad BUILD is final — failed/errored/aborted render as such
-//     even if the metric row still says "parked" (an abort-while-parked
-//     leaves the parked row behind forever; it must not read as "waiting on
-//     a human" for a dead run).
-//  2. Otherwise parked beats everything: the build deliberately stays
-//     "started" while a HITL checkpoint waits, and a merely-open (or even
-//     succeeded) build must not hide that the operator is needed.
-//  3. Otherwise a step-reported failure ("error"/"failed") is never masked —
+//     whatever the step's own row says.
+//  2. Otherwise a step-reported failure ("error"/"failed") is never masked —
 //     not by a succeeded build (attempts/try can fail an agent step inside a
 //     green build) and not by a still-open one.
-//  4. An "incomplete" step (the ingestion read no flight output) renders the
+//  3. An "incomplete" step (the ingestion read no flight output) renders the
 //     amber "unrecorded" — the step almost certainly delivered (the build did
 //     not fail), we simply have no recording of it — except on a still-open
 //     build, which reads "running". Never red on a non-failed build.
-//  5. Only then does the build speak: succeeded is "ok" only with a result
+//  4. Only then does the build speak: succeeded is "ok" only with a result
 //     in hand (else "no_output" — never a green verdict on a run that did
 //     not deliver), started/pending render "running", and an absent or
 //     unknown build status falls back to the step's own word ("" when even
@@ -155,8 +149,6 @@ func (rm RunMetrics) DeriveOutcome() string {
 		return RunOutcomeAborted
 	}
 	switch rm.Status {
-	case RunStatusParked:
-		return RunOutcomeParked
 	case RunStatusError:
 		return RunOutcomeErrored
 	case RunStatusFailed:

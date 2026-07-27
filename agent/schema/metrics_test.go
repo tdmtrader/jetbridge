@@ -41,27 +41,22 @@ func TestDeriveOutcome(t *testing.T) {
 		results     string
 		want        string
 	}{
-		// 1. a terminally-bad build is final — even over parked, or an
-		// abort-while-parked run pulses "waiting on you" forever
+		// 1. a terminally-bad build is final, whatever the step's row says
 		{"failed build masks an ok step", "failed", "ok", "looked fine", `{"status":"pass"}`, schema.RunOutcomeFailed},
-		{"errored build wins over parked", "errored", "parked", "", "", schema.RunOutcomeErrored},
-		{"aborted build wins over parked", "aborted", "parked", "", "", schema.RunOutcomeAborted},
-		// 2. otherwise parked beats everything, including a succeeded build
-		{"parked under a started build", "started", "parked", "", "", schema.RunOutcomeParked},
-		{"parked under a succeeded build", "succeeded", "parked", "", "", schema.RunOutcomeParked},
-		{"parked with no build status", "", "parked", "", "", schema.RunOutcomeParked},
-		// 3. otherwise a step-reported failure is never masked
+		{"errored build masks an ok step", "errored", "ok", "looked fine", "", schema.RunOutcomeErrored},
+		{"aborted build masks an ok step", "aborted", "ok", "looked fine", "", schema.RunOutcomeAborted},
+		// 2. a step-reported failure is never masked
 		{"step error under a started build", "started", "error", "", "", schema.RunOutcomeErrored},
 		{"step error under a succeeded build", "succeeded", "error", "", "", schema.RunOutcomeErrored},
 		{"step failed under a succeeded build", "succeeded", "failed", "", "", schema.RunOutcomeFailed},
 		{"step failed with no build status", "", "failed", "", "", schema.RunOutcomeFailed},
-		// 4. only then does the build speak: green needs a delivered result
+		// 3. only then does the build speak: green needs a delivered result
 		{"succeeded with a results payload", "succeeded", "ok", "", `{"status":"pass"}`, schema.RunOutcomeOK},
 		{"succeeded with a summary only", "succeeded", "ok", "did the thing", "", schema.RunOutcomeOK},
 		{"succeeded with nothing delivered", "succeeded", "ok", "", "", schema.RunOutcomeNoOutput},
 		{"started renders running", "started", "ok", "", "", schema.RunOutcomeRunning},
 		{"pending renders running", "pending", "ok", "", "", schema.RunOutcomeRunning},
-		// 4b. incomplete (L-1): a step that read no flight output is amber
+		// 3b. incomplete (L-1): a step that read no flight output is amber
 		// "unrecorded" on any non-failed build (never red), "running" while the
 		// build is still open, and still loses to a terminally-bad build.
 		{"incomplete under a succeeded build is unrecorded", "succeeded", schema.RunStatusIncomplete, "", "", schema.RunOutcomeUnrecorded},
@@ -71,7 +66,7 @@ func TestDeriveOutcome(t *testing.T) {
 		{"incomplete under a started build is running", "started", schema.RunStatusIncomplete, "", "", schema.RunOutcomeRunning},
 		{"incomplete under a pending build is running", "pending", schema.RunStatusIncomplete, "", "", schema.RunOutcomeRunning},
 		{"incomplete with no build status is unrecorded", "", schema.RunStatusIncomplete, "", "", schema.RunOutcomeUnrecorded},
-		// 5. no/unknown build status: fall back to the step's own word
+		// 4. no/unknown build status: fall back to the step's own word
 		{"no build status, ok step", "", "ok", "", "", schema.RunOutcomeOK},
 		{"unknown build status, ok step", "mystery", "ok", "", "", schema.RunOutcomeOK},
 		{"nothing derivable", "", "bogus", "", "", ""},

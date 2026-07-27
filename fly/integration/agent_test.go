@@ -148,7 +148,7 @@ var _ = Describe("fly agent", func() {
 						{
 							// a pre-outcome server: build_status but no outcome
 							// — fly derives the same fusion locally
-							BuildID: 2, PlanID: "p2", StepName: "harvest",
+							BuildID: 2, PlanID: "p2", StepName: "gates",
 							Status: "ok", BuildStatus: "failed",
 						},
 						{
@@ -173,7 +173,7 @@ var _ = Describe("fly agent", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Eventually(sess).Should(gexec.Exit(0))
 			Expect(sess.Out).To(gbytes.Say(`implement\s+develop\s+failed`))
-			Expect(sess.Out).To(gbytes.Say(`harvest\s+failed`))
+			Expect(sess.Out).To(gbytes.Say(`gates\s+failed`))
 			Expect(sess.Out).To(gbytes.Say(`review\s+ok`))
 			Expect(string(sess.Err.Contents())).NotTo(ContainSubstring("lags web"))
 		})

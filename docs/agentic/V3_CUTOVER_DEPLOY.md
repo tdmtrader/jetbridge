@@ -16,7 +16,7 @@ historical agent data needs to be preserved.
 | Execution identity | ticket + `agent-ticket-<id>` pipeline | **durable workflow run** |
 | Delivery | `harvest:` step pushed from the pod | `publish_snapshot` → publisher → **gateway** |
 | Merge compute | `merge:` step (pod-side push) | **`agent/functions/repositorymerge`** via `function-runner` |
-| Migration head | `1773106095` | **`1773106135`** |
+| Migration head | `1773106095` | **`1773106136`** |
 
 ## Order of operations
 
@@ -42,7 +42,7 @@ reject a tag. Agent steps error at runtime when it is unset.
 
 ### 3. Reset the database
 
-Migrations `1773106100`–`1773106135` all apply in one boot. Because no history is
+Migrations `1773106100`–`1773106136` all apply in one boot. Because no history is
 being preserved, dropping the database is cleaner than migrating through:
 
 - it skips `1773106124`'s backfill, which would otherwise NULL every historical
@@ -81,9 +81,20 @@ being preserved, dropping the database is cleaner than migrating through:
   feedback row with no `review_snapshot_id`** — unreachable since `1773106132`
   removed the repo/commit columns any such row was keyed against — and drops
   `repo`, `commit_sha` and the write-orphaned `ticket_id`.
+- `1773106136` drops the write-only leftovers: PARK-V2 (`agent_run_metrics`
+  loses `session_id` and the `parked` status — **surviving `parked` rows become
+  `error`**, which is what the ingestion rule now produces), the unread
+  `agent_cost_daily_rollup` view, the Jira seams (`agent_user_credentials.
+  jira_account_id`, origin `jira`), the read-never-written
+  `agent_user_credentials.last_verified_at`, `agent_tickets.branch` (its writer
+  was harvest), and the `agent_reviews` occurrence copies
+  (`build_name`/`team_name`/`pipeline_name`/`job_name`/`submitted_by`, every
+  read already joins the production). It also narrows
+  `agent_workflow_outcomes.publication_state` to the two states `1773106115`'s
+  evidence-shape constraint can actually hold.
 
 Verify afterwards: `docs/migration/migrate-preflight.sh` expects
-`JETBRIDGE_VERSION=1773106135`.
+`JETBRIDGE_VERSION=1773106136`.
 
 ### 3a. Vault the platform credential — the only model-credential path
 

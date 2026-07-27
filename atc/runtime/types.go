@@ -144,7 +144,7 @@ type ContainerSpec struct {
 
 	// SecretMounts mounts whole K8s Secrets read-only at fixed paths on
 	// the MAIN container only — sidecars never receive them (§8.3, the
-	// harvest git-credential contract).
+	// git-credential contract).
 	SecretMounts []SecretMount
 	// Type is the type of step the Container is for (e.g. task, get, etc.).
 	Type db.ContainerType

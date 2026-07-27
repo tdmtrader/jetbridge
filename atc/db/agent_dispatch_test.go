@@ -311,7 +311,7 @@ var _ = Describe("the dispatcher loop over real stores", func() {
 		}
 	})
 
-	It("reconciles a run that died before harvest to needs_review", func() {
+	It("reconciles a run that died before its review transition to needs_review", func() {
 		fixture := newAgentDispatchFixture()
 		id := fixture.queueTicket()
 		dispatcher := dispatch.NewDispatcher(fixture.deps, dispatch.LoopConfig{

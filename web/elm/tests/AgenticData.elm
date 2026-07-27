@@ -29,6 +29,8 @@ workflowVersion =
     , description = "review a repository snapshot"
     , createdBy = "alice"
     , createdAt = Time.millisToPosix 0
+    , promotedAt = Just (Time.millisToPosix 1750000000000)
+    , promotedBy = "carol"
     , signature =
         { inputs = [ { name = "repository", typeRef = "repository/v1", optional = False } ]
         , outputs = [ { name = "review", typeRef = "review/v1", optional = False } ]

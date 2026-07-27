@@ -409,8 +409,8 @@ update msg ( model, effects ) =
         AgentRunExpandToggled rowKey ->
             -- Toggle a single ledger row between its one-line summary and the
             -- full run summary. Keyed by build id + plan id (see runKey): a
-            -- build carries one metric row per step (agent + harvest), so the
-            -- build id alone would toggle sibling rows together, and an
+            -- build carries one metric row per step, so the build id alone
+            -- would toggle sibling rows together, and an
             -- ordinal would jump when the 5s refetch prepends a newer run.
             let
                 expanded =
@@ -1471,7 +1471,6 @@ credentialsTable zone creds =
         (Html.tr []
             [ tableHeaderCell "left" "kind"
             , tableHeaderCell "left" "expires"
-            , tableHeaderCell "left" "last verified"
             ]
             :: List.map (credentialRow zone) creds
         )
@@ -1482,7 +1481,6 @@ credentialRow zone c =
     Html.tr [ class "agent-credential-row" ]
         [ tableCell "left" c.kind
         , tableCell "left" (formatPosix zone c.expiresAt)
-        , tableCell "left" (formatPosix zone c.lastVerifiedAt)
         ]
 
 

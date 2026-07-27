@@ -310,6 +310,22 @@ plan: []
 		Expect(err).ToNot(HaveOccurred())
 		Expect(v1.Live).To(BeFalse())
 
+		// The promotion audit is READ BACK, not merely written: who made a
+		// version live and when is the one governance fact the platform
+		// records about it, and it must reach every surface.
+		Expect(v1.PromotedBy).To(Equal("alice"))
+		Expect(v1.PromotedAt).To(BeNumerically(">", 0))
+		Expect(live.PromotedBy).To(Equal("bob"))
+		Expect(live.PromotedAt).To(BeNumerically(">", 0))
+
+		// A version that was never promoted carries no audit at all.
+		_, err = factory.Import("wf-promote", defYAML("wf-promote", "Three."), "alice")
+		Expect(err).ToNot(HaveOccurred())
+		v3, _, err := factory.Get("wf-promote", 3)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(v3.PromotedBy).To(BeEmpty())
+		Expect(v3.PromotedAt).To(BeZero())
+
 		_, err = factory.Promote("wf-promote", 99, "alice")
 		Expect(err).To(MatchError(workflow.ErrVersionNotFound))
 		_, err = factory.Promote("wf-nonexistent", 1, "alice")

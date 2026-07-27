@@ -110,7 +110,7 @@ func assignWorkflow(client concourse.Client, id int, workflow string, workflowVe
 type AgentTicketsListCommand struct {
 	State  string `long:"state" description:"Filter by queue state (draft, queued, running, needs_review, closed)"`
 	Repo   string `long:"repo" description:"Filter by repo slug (e.g. tdmtrader/concourse)"`
-	Origin string `long:"origin" description:"Filter by origin (web, fly, jira, retrospective)"`
+	Origin string `long:"origin" description:"Filter by origin (web, fly, retrospective)"`
 	Limit  int    `long:"limit" default:"50" description:"Maximum tickets to list"`
 }
 
@@ -266,10 +266,9 @@ func (command *AgentTicketsQueueCommand) Execute([]string) error {
 }
 
 type AgentTicketsTransitionCommand struct {
-	ID     int    `long:"id" required:"true" description:"Ticket id"`
-	From   string `long:"from" description:"Expected current state (optimistic concurrency guard; default: read from server)"`
-	To     string `long:"to" required:"true" description:"Target queue state (draft, queued, running, needs_review, closed)"`
-	Branch string `long:"branch" description:"Branch to record (needs_review transitions)"`
+	ID   int    `long:"id" required:"true" description:"Ticket id"`
+	From string `long:"from" description:"Expected current state (optimistic concurrency guard; default: read from server)"`
+	To   string `long:"to" required:"true" description:"Target queue state (draft, queued, running, needs_review, closed)"`
 }
 
 func (command *AgentTicketsTransitionCommand) Execute([]string) error {
@@ -299,9 +298,8 @@ func (command *AgentTicketsTransitionCommand) Execute([]string) error {
 	}
 
 	updated, err := client.TransitionAgentTicket(command.ID, tickets.TransitionRequest{
-		From:   from,
-		To:     tickets.State(command.To),
-		Branch: command.Branch,
+		From: from,
+		To:   tickets.State(command.To),
 	})
 	if err != nil {
 		return err
@@ -391,9 +389,6 @@ func (command *AgentTicketsShowCommand) Execute([]string) error {
 	t := detail.Ticket
 	fmt.Printf("ticket #%d: %s\n", t.ID, t.Title)
 	fmt.Printf("state: %s · origin: %s · repo: %s @ %s\n", t.State, t.Origin, t.Repo, t.TargetBranch)
-	if t.Branch != "" {
-		fmt.Printf("branch: %s\n", t.Branch)
-	}
 	for _, line := range agentTicketRunLines(t, string(Fly.Target)) {
 		fmt.Println(line)
 	}

@@ -71,8 +71,7 @@ func ticketIDParam(w http.ResponseWriter, r *http.Request) (int, bool) {
 //
 // Origin rules (contract addendum): principal-authenticated writes may
 // ONLY create origin 'retrospective'; human writes may create 'web' or
-// 'fly'; 'jira' is rejected until the phase-2 sync component exists
-// (spec open item 10 — design note deferred with plan 06 Task 14).
+// 'fly'.
 func (h *Handler) CreateTicket(w http.ResponseWriter, r *http.Request) {
 	var req CreateRequest
 	if !readJSON(w, r, &req) {
@@ -94,11 +93,6 @@ func (h *Handler) CreateTicket(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid origin", http.StatusBadRequest)
 		return
 	}
-	if origin == "jira" {
-		http.Error(w, "origin 'jira' arrives with the phase-2 sync component", http.StatusBadRequest)
-		return
-	}
-
 	name, isPrincipal := h.writer(r)
 	if isPrincipal && origin != "retrospective" {
 		http.Error(w, "agent principals may only create retrospective tickets", http.StatusForbidden)
@@ -252,9 +246,7 @@ func (h *Handler) TransitionTicket(w http.ResponseWriter, r *http.Request) {
 	// passes through this HTTP handler), never accepted from a caller (F30 id
 	// class). TransitionRequest's decoder rejects the retired key outright, so
 	// no pipeline identity flows from HTTP into TransitionMeta here.
-	err := h.store.Transition(id, req.From, req.To, TransitionMeta{
-		Branch: req.Branch,
-	})
+	err := h.store.Transition(id, req.From, req.To, TransitionMeta{})
 	switch {
 	case errors.Is(err, ErrTicketNotFound):
 		http.Error(w, "ticket not found", http.StatusNotFound)

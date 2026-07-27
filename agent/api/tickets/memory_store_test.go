@@ -245,7 +245,7 @@ func TestMemoryStoreCapturesTicketContent(t *testing.T) {
 	s := tickets.NewMemoryStore()
 	version := 3
 	id, err := s.Create(&tickets.Ticket{
-		Title: "upgrade", Body: "upgrade the dependency", Origin: "jira", ExternalRef: "ENG-42", Repo: "repo",
+		Title: "upgrade", Body: "upgrade the dependency", Origin: "web", ExternalRef: "ENG-42", Repo: "repo",
 		WorkflowName: "version-upgrade", WorkflowVersion: &version, CreatedBy: "alice",
 	})
 	if err != nil {
@@ -263,7 +263,7 @@ func TestMemoryStoreCapturesTicketContent(t *testing.T) {
 	if err := json.Unmarshal(captured.Document, &document); err != nil {
 		t.Fatal(err)
 	}
-	if document.Adapter != "jira" || document.ExternalID != "ENG-42" ||
+	if document.Adapter != "jetbridge" || document.ExternalID != "ENG-42" ||
 		document.Title != "upgrade" || document.Body != "upgrade the dependency" {
 		t.Fatalf("captured document = %+v", document)
 	}

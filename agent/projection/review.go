@@ -19,17 +19,16 @@ import (
 const maxReviewDocumentBytes int64 = 1 << 20
 
 // ReviewInput is immutable snapshot identity plus the production occurrence
-// that authorizes and dates the projection. Snapshot bytes, not these
-// denormalized fields, remain the review's canonical truth.
+// that authorizes the projection. It carries no build/pipeline/job/publisher
+// names: those describe WHERE one occurrence happened, a review snapshot can
+// have several, and every read resolves them from the production row it
+// selected. TeamName is here as the ownership check — a production that
+// resolved no team is not an authorization the projector may act on.
 type ReviewInput struct {
 	Snapshot      snapshot.Snapshot
 	ProductionID  snapshot.DatabaseID
 	WorkflowRunID *snapshot.WorkflowRunID
-	BuildName     string
 	TeamName      string
-	PipelineName  string
-	JobName       string
-	SubmittedBy   string
 }
 
 type ReviewStore interface {
@@ -121,9 +120,6 @@ func (projector *ReviewProjector) Project(ctx context.Context, ref snapshot.Snap
 
 	productionID := input.ProductionID
 	record := &reviews.StoredReview{
-		BuildName: input.BuildName, TeamName: input.TeamName,
-		PipelineName: input.PipelineName, JobName: input.JobName,
-
 		// The record's judgment, verbatim. review/v1 states a conclusion; it
 		// does not state a score, and projecting one onto a 0..1 pass scale
 		// invented a second, weaker description of the same verdict — one the
@@ -139,9 +135,8 @@ func (projector *ReviewProjector) Project(ctx context.Context, ref snapshot.Snap
 		// commit SHA, and its entity ID ("primary", "change") is not a branch;
 		// neither the record body nor the production occurrence carries
 		// repository coordinates, so there is nothing faithful to write.
-		Review:      append(json.RawMessage(nil), recordJSON...),
-		SubmittedBy: input.SubmittedBy,
-		SnapshotID:  manifest.ID, WorkflowRunID: input.WorkflowRunID, ProductionID: &productionID,
+		Review:     append(json.RawMessage(nil), recordJSON...),
+		SnapshotID: manifest.ID, WorkflowRunID: input.WorkflowRunID, ProductionID: &productionID,
 	}
 	if err := projector.store.UpsertReviewProjection(ctx, record); err != nil {
 		return fmt.Errorf("upsert review projection: %w", err)

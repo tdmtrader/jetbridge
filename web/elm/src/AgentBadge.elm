@@ -21,7 +21,6 @@ type Status
     = Draft
     | Queued
     | Running (Maybe String)
-    | AwaitingHuman
     | NeedsReview
     | Closed
     | Failed
@@ -57,9 +56,6 @@ label status =
 
         Running Nothing ->
             "Running"
-
-        AwaitingHuman ->
-            "Waiting on you"
 
         NeedsReview ->
             "Needs your review"
@@ -102,9 +98,6 @@ description status =
         Running _ ->
             "An agent is working on it now"
 
-        AwaitingHuman ->
-            "Paused — waiting on your input"
-
         NeedsReview ->
             "The run finished — it is waiting on your decision"
 
@@ -141,9 +134,6 @@ tone status =
 
         Running _ ->
             Active
-
-        AwaitingHuman ->
-            Attention
 
         NeedsReview ->
             Attention
@@ -182,9 +172,6 @@ fromApiToken token =
         "running" ->
             Just (Running Nothing)
 
-        "awaiting_human" ->
-            Just AwaitingHuman
-
         "needs_review" ->
             Just NeedsReview
 
@@ -201,8 +188,8 @@ fromApiToken token =
             Nothing
 
 
-{-| fromRunStatus maps an agent\_run\_metrics status ("ok"/"failed"/"parked"/
-"error") to a badge. A parked run is awaiting a human, so it reuses that tone.
+{-| fromRunStatus maps an agent\_run\_metrics status ("ok"/"failed"/"error")
+to a badge.
 -}
 fromRunStatus : String -> Maybe Status
 fromRunStatus status =
@@ -212,9 +199,6 @@ fromRunStatus status =
 
         "failed" ->
             Just Failed
-
-        "parked" ->
-            Just AwaitingHuman
 
         "error" ->
             Just Errored
@@ -228,18 +212,13 @@ pipeline build status with the agent step's own status (U3). The precedence is
 "worst truth wins":
 
 1.  A terminally-bad BUILD is final — failed/errored/aborted render as such
-    even if the metric row still says "parked" (an abort-while-parked leaves
-    the parked row behind forever; it must not pulse "Waiting on you" for a
-    dead run).
-2.  Otherwise parked beats everything: the build deliberately stays "started"
-    while a HITL checkpoint waits, and a merely-open (or even succeeded)
-    build must not hide that the operator is needed.
-3.  Otherwise a step-reported failure ("error"/"failed") is never masked — not
+    whatever the step's own row says.
+2.  Otherwise a step-reported failure ("error"/"failed") is never masked — not
     by a succeeded build (attempts/try can fail an agent step inside a green
     build) and not by a still-open one (the row lands at step end, so a dead
     run would otherwise show Running until the build closes, indefinitely for
     wedged builds).
-4.  Only then does the build status speak: succeeded is a green OK only with a
+3.  Only then does the build status speak: succeeded is a green OK only with a
     result in hand (else NoOutput — never a green OK on a run that did not
     deliver), started/pending render Running, and an absent build status
     falls back to the step status alone.
@@ -258,10 +237,7 @@ runOutcome { buildStatus, runStatus, hasResult } =
             Just Aborted
 
         _ ->
-            if runStatus == "parked" then
-                Just AwaitingHuman
-
-            else if runStatus == "error" then
+            if runStatus == "error" then
                 Just Errored
 
             else if runStatus == "failed" then
@@ -317,9 +293,6 @@ fromOutcomeToken token =
 
         "running" ->
             Just (Running Nothing)
-
-        "parked" ->
-            Just AwaitingHuman
 
         "failed" ->
             Just Failed
@@ -413,9 +386,6 @@ pulses : Status -> Bool
 pulses status =
     case status of
         Running _ ->
-            True
-
-        AwaitingHuman ->
             True
 
         _ ->

@@ -174,7 +174,7 @@ var _ = Describe("AgentRunMetricsFactory", func() {
 		})).To(Succeed())
 		// green build, nothing delivered → no_output, never a green verdict
 		Expect(upsert(&schema.RunMetrics{
-			BuildID: greenBuild.ID(), PlanID: "p2", StepName: "harvest",
+			BuildID: greenBuild.ID(), PlanID: "p2", StepName: "gates",
 			Status: "ok",
 		})).To(Succeed())
 
@@ -184,17 +184,18 @@ var _ = Describe("AgentRunMetricsFactory", func() {
 		Expect(rows[0].Outcome).To(Equal(schema.RunOutcomeOK))
 		Expect(rows[1].Outcome).To(Equal(schema.RunOutcomeNoOutput))
 
-		// parked under a still-open build → parked (HITL checkpoint visible)
+		// a step-reported failure under a still-open build is never masked by
+		// the build still being open
 		openBuild, err := defaultTeam.CreateOneOffBuild()
 		Expect(err).ToNot(HaveOccurred())
 		Expect(upsert(&schema.RunMetrics{
 			BuildID: openBuild.ID(), PlanID: "p1", StepName: "implement",
-			Status: "parked",
+			Status: "failed", Summary: "did not converge",
 		})).To(Succeed())
 		rows, err = factory.GetByBuild(openBuild.ID())
 		Expect(err).ToNot(HaveOccurred())
 		Expect(rows).To(HaveLen(1))
-		Expect(rows[0].Outcome).To(Equal(schema.RunOutcomeParked))
+		Expect(rows[0].Outcome).To(Equal(schema.RunOutcomeFailed))
 	})
 
 	It("stores NULL workflow identity for pure-CI steps", func() {
@@ -207,14 +208,12 @@ var _ = Describe("AgentRunMetricsFactory", func() {
 	})
 
 	// --- review finding 2026-07-12: the schema must accept every status the
-	// contract defines (ok|failed|error|parked). The handler suite runs on
-	// MemoryStore, which has no CHECK, so only a real-DB spec can see a
-	// contract/CHECK mismatch. Before migration 1773106061 a park-exit partial
-	// ingestion (PARK-V2 §1.8) violated the status CHECK here and the row was
-	// lost with a 500.
-	It("stores every contract status, including parked (PARK-V2)", func() {
+	// contract defines, and ONLY those. The handler suite runs on MemoryStore,
+	// which has no CHECK, so only a real-DB spec can see a contract/CHECK
+	// mismatch.
+	It("stores every contract status and rejects the retired parked status", func() {
 		for i, status := range []string{
-			schema.RunStatusOK, schema.RunStatusFailed, schema.RunStatusError, schema.RunStatusParked,
+			schema.RunStatusOK, schema.RunStatusFailed, schema.RunStatusError,
 		} {
 			inserted, prev, err := factory.UpsertReturningInserted(&schema.RunMetrics{
 				BuildID: 50, PlanID: "plan-" + status, StepName: "implement", Status: status,
@@ -226,12 +225,14 @@ var _ = Describe("AgentRunMetricsFactory", func() {
 
 		rows, err := factory.GetByBuild(50)
 		Expect(err).ToNot(HaveOccurred())
-		Expect(rows).To(HaveLen(4))
-		statuses := []string{}
-		for _, row := range rows {
-			statuses = append(statuses, row.Status)
-		}
-		Expect(statuses).To(ContainElement(schema.RunStatusParked))
+		Expect(rows).To(HaveLen(3))
+
+		// PARK-V2 is gone: the runner has no park exit, so the CHECK must not
+		// accept a status no writer can produce.
+		_, _, err = factory.UpsertReturningInserted(&schema.RunMetrics{
+			BuildID: 50, PlanID: "plan-parked", StepName: "implement", Status: "parked",
+		})
+		Expect(err).To(HaveOccurred())
 	})
 
 	// --- L-1 (#41): the incomplete status (a server-set ingestion degradation,

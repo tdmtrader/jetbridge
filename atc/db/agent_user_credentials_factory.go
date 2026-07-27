@@ -60,9 +60,7 @@ func (f *agentUserCredentialsFactory) Put(userID int, userName, kind, token stri
 }
 
 const credentialColumns = `user_id, user_name, kind,
-	COALESCE(EXTRACT(EPOCH FROM expires_at)::bigint, 0),
-	COALESCE(EXTRACT(EPOCH FROM last_verified_at)::bigint, 0),
-	jira_account_id`
+	COALESCE(EXTRACT(EPOCH FROM expires_at)::bigint, 0)`
 
 func scanCredential(scan func(...any) error, withSecret bool) (credentials.Credential, string, *string, error) {
 	var (
@@ -70,10 +68,7 @@ func scanCredential(scan func(...any) error, withSecret bool) (credentials.Crede
 		enc   string
 		nonce sql.NullString
 	)
-	dest := []any{
-		&cred.UserID, &cred.UserName, &cred.Kind,
-		&cred.ExpiresAt, &cred.LastVerifiedAt, &cred.JiraAccountID,
-	}
+	dest := []any{&cred.UserID, &cred.UserName, &cred.Kind, &cred.ExpiresAt}
 	if withSecret {
 		dest = append(dest, &enc, &nonce)
 	}
@@ -156,16 +151,6 @@ func (f *agentUserCredentialsFactory) ExpiringWithin(d time.Duration) ([]credent
 func (f *agentUserCredentialsFactory) Delete(userID int, kind string) error {
 	_, err := psql.Delete("agent_user_credentials").
 		Where(sq.Eq{"user_id": userID, "kind": kind}).
-		RunWith(f.conn).
-		Exec()
-	return err
-}
-
-func (f *agentUserCredentialsFactory) SetJiraAccountID(userID int, jiraAccountID string) error {
-	_, err := psql.Update("agent_user_credentials").
-		Set("jira_account_id", jiraAccountID).
-		Set("updated_at", sq.Expr("now()")).
-		Where(sq.Eq{"user_id": userID}).
 		RunWith(f.conn).
 		Exec()
 	return err

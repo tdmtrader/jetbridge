@@ -159,7 +159,7 @@ var _ = Describe("AgentCostLedgerFactory", func() {
 
 		By("seeding known model/step fixture rows")
 		Expect(ledger.Insert(budget.LedgerEntry{OccurredAt: since.Add(time.Hour), Source: budget.SourceAgentStep, Model: "opus", StepName: "implement", CostUSD: 1.0})).NotTo(HaveOccurred())
-		Expect(ledger.Insert(budget.LedgerEntry{OccurredAt: since.Add(time.Hour), Source: budget.SourceAgentStep, Model: "opus", StepName: "harvest", CostUSD: 2.0})).NotTo(HaveOccurred())
+		Expect(ledger.Insert(budget.LedgerEntry{OccurredAt: since.Add(time.Hour), Source: budget.SourceAgentStep, Model: "opus", StepName: "gates", CostUSD: 2.0})).NotTo(HaveOccurred())
 		Expect(ledger.Insert(budget.LedgerEntry{OccurredAt: since.Add(time.Hour), Source: budget.SourceAgentStep, Model: "sonnet", StepName: "implement", CostUSD: 4.0})).NotTo(HaveOccurred())
 
 		By("rolling up by model")
@@ -180,7 +180,7 @@ var _ = Describe("AgentCostLedgerFactory", func() {
 			stepCost[r.Key] = r.CostUSD
 		}
 		Expect(stepCost["implement"]).To(BeNumerically("~", 5.0, 0.0001))
-		Expect(stepCost["harvest"]).To(BeNumerically("~", 2.0, 0.0001))
+		Expect(stepCost["gates"]).To(BeNumerically("~", 2.0, 0.0001))
 
 		By("bounding with until")
 		rows, err = ledger.Rollup(budget.GroupByDay, since, day2.Add(-time.Hour))

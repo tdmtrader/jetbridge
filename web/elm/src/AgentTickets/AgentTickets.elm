@@ -56,7 +56,6 @@ their raw token via a trailing catch-all section.
 sectionOrder : List String
 sectionOrder =
     [ "needs_review"
-    , "awaiting_human"
     , "running"
     , "queued"
     , "draft"
@@ -675,17 +674,6 @@ ticketRow model t =
                 [ Html.text t.title ]
             , metaLine model t
             ]
-        , if t.branch == "" then
-            Html.text ""
-
-          else
-            Html.span
-                [ class "agent-ticket-branch"
-                , style "font-family" "monospace"
-                , style "font-size" "12px"
-                , style "color" "#7aa37a"
-                ]
-                [ Html.text t.branch ]
         , if t.workflowName == "" then
             Html.text ""
 

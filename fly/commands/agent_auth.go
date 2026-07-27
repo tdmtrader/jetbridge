@@ -17,7 +17,7 @@ type AgentAuthCommand struct {
 	Kind      string        `long:"kind" default:"anthropic_oauth" choice:"anthropic_oauth" choice:"anthropic_api_key" description:"Credential kind"`
 	ExpiresIn time.Duration `long:"expires-in" default:"8760h" description:"How long until the token expires (claude setup-token issues ~1-year tokens)"`
 	Delete    bool          `long:"delete" description:"Delete the stored credential of --kind instead of storing one"`
-	Platform  bool          `long:"platform" description:"Manage the shared platform credential (funds harvest judge / retrospective work) instead of your own. Admin only."`
+	Platform  bool          `long:"platform" description:"Manage the shared platform credential (funds platform-initiated work such as the judge) instead of your own. Admin only."`
 }
 
 func (command *AgentAuthCommand) Execute([]string) error {

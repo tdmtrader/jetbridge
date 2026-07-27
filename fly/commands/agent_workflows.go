@@ -10,6 +10,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"time"
 
 	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/fly/commands/internal/displayhelpers"
@@ -174,6 +175,16 @@ func (command *WorkflowsShowCommand) Execute([]string) error {
 	}
 	fmt.Fprintf(os.Stderr, "# %s version %d  schema=%d signature=%d  hash %s  live=%v\n",
 		def.Name, def.Version, def.SchemaVersion, def.SignatureVersion, def.ContentHash, def.Live)
+	// The promotion audit: who made this version live, and when. Absent for a
+	// version that has never been promoted.
+	if def.PromotedAt > 0 {
+		promotedBy := def.PromotedBy
+		if promotedBy == "" {
+			promotedBy = "unknown"
+		}
+		fmt.Fprintf(os.Stderr, "# promoted by %s at %s\n",
+			promotedBy, time.Unix(def.PromotedAt, 0).Local().Format("2006-01-02 15:04"))
+	}
 	fmt.Print(def.RawYAML)
 	// Manifest-backed definitions get a source summary (per-file sizes)
 	// instead of a tree dump; stderr keeps stdout pipeable YAML.

@@ -66,18 +66,6 @@ type FakeAgentUserCredentialsFactory struct {
 		result2 bool
 		result3 error
 	}
-	SetJiraAccountIDStub        func(int, string) error
-	setJiraAccountIDMutex       sync.RWMutex
-	setJiraAccountIDArgsForCall []struct {
-		arg1 int
-		arg2 string
-	}
-	setJiraAccountIDReturns struct {
-		result1 error
-	}
-	setJiraAccountIDReturnsOnCall map[int]struct {
-		result1 error
-	}
 	StatusStub        func(int) ([]credentials.Credential, error)
 	statusMutex       sync.RWMutex
 	statusArgsForCall []struct {
@@ -369,68 +357,6 @@ func (fake *FakeAgentUserCredentialsFactory) ResolveReturnsOnCall(i int, result1
 		result2 bool
 		result3 error
 	}{result1, result2, result3}
-}
-
-func (fake *FakeAgentUserCredentialsFactory) SetJiraAccountID(arg1 int, arg2 string) error {
-	fake.setJiraAccountIDMutex.Lock()
-	ret, specificReturn := fake.setJiraAccountIDReturnsOnCall[len(fake.setJiraAccountIDArgsForCall)]
-	fake.setJiraAccountIDArgsForCall = append(fake.setJiraAccountIDArgsForCall, struct {
-		arg1 int
-		arg2 string
-	}{arg1, arg2})
-	stub := fake.SetJiraAccountIDStub
-	fakeReturns := fake.setJiraAccountIDReturns
-	fake.recordInvocation("SetJiraAccountID", []interface{}{arg1, arg2})
-	fake.setJiraAccountIDMutex.Unlock()
-	if stub != nil {
-		return stub(arg1, arg2)
-	}
-	if specificReturn {
-		return ret.result1
-	}
-	return fakeReturns.result1
-}
-
-func (fake *FakeAgentUserCredentialsFactory) SetJiraAccountIDCallCount() int {
-	fake.setJiraAccountIDMutex.RLock()
-	defer fake.setJiraAccountIDMutex.RUnlock()
-	return len(fake.setJiraAccountIDArgsForCall)
-}
-
-func (fake *FakeAgentUserCredentialsFactory) SetJiraAccountIDCalls(stub func(int, string) error) {
-	fake.setJiraAccountIDMutex.Lock()
-	defer fake.setJiraAccountIDMutex.Unlock()
-	fake.SetJiraAccountIDStub = stub
-}
-
-func (fake *FakeAgentUserCredentialsFactory) SetJiraAccountIDArgsForCall(i int) (int, string) {
-	fake.setJiraAccountIDMutex.RLock()
-	defer fake.setJiraAccountIDMutex.RUnlock()
-	argsForCall := fake.setJiraAccountIDArgsForCall[i]
-	return argsForCall.arg1, argsForCall.arg2
-}
-
-func (fake *FakeAgentUserCredentialsFactory) SetJiraAccountIDReturns(result1 error) {
-	fake.setJiraAccountIDMutex.Lock()
-	defer fake.setJiraAccountIDMutex.Unlock()
-	fake.SetJiraAccountIDStub = nil
-	fake.setJiraAccountIDReturns = struct {
-		result1 error
-	}{result1}
-}
-
-func (fake *FakeAgentUserCredentialsFactory) SetJiraAccountIDReturnsOnCall(i int, result1 error) {
-	fake.setJiraAccountIDMutex.Lock()
-	defer fake.setJiraAccountIDMutex.Unlock()
-	fake.SetJiraAccountIDStub = nil
-	if fake.setJiraAccountIDReturnsOnCall == nil {
-		fake.setJiraAccountIDReturnsOnCall = make(map[int]struct {
-			result1 error
-		})
-	}
-	fake.setJiraAccountIDReturnsOnCall[i] = struct {
-		result1 error
-	}{result1}
 }
 
 func (fake *FakeAgentUserCredentialsFactory) Status(arg1 int) ([]credentials.Credential, error) {

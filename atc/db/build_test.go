@@ -21,7 +21,6 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbtest"
 	"github.com/concourse/concourse/atc/event"
-	"github.com/concourse/concourse/atc/legacyplan"
 	"github.com/concourse/concourse/tracing"
 	"github.com/concourse/concourse/vars"
 	. "github.com/onsi/ginkgo/v2"
@@ -79,13 +78,12 @@ var _ = Describe("Build", func() {
 		Expect(build.HasPlan()).To(BeFalse())
 	})
 
-	Describe("loading historical private plans", func() {
-		const historicalHarvestPlan = `{"id":"h","harvest":{"name":"push"}}`
-
-		It("keeps completed harvest history inert", func() {
+	Describe("loading private plans", func() {
+		It("decodes the stored private plan", func() {
+			taskPlan := `{"id":"task","task":{"name":"ordinary","config":{"platform":"linux"}}}`
 			_, err := dbConn.Exec(
-				`UPDATE builds SET private_plan = $1, completed = true WHERE id = $2`,
-				historicalHarvestPlan,
+				`UPDATE builds SET private_plan = $1, completed = false WHERE id = $2`,
+				taskPlan,
 				build.ID(),
 			)
 			Expect(err).NotTo(HaveOccurred())
@@ -93,20 +91,8 @@ var _ = Describe("Build", func() {
 			found, err := build.Reload()
 			Expect(err).NotTo(HaveOccurred())
 			Expect(found).To(BeTrue())
-			Expect(build.PrivatePlan()).To(Equal(atc.Plan{}))
-		})
-
-		It("rejects an unfinished historical harvest plan", func() {
-			_, err := dbConn.Exec(
-				`UPDATE builds SET private_plan = $1, completed = false WHERE id = $2`,
-				historicalHarvestPlan,
-				build.ID(),
-			)
-			Expect(err).NotTo(HaveOccurred())
-
-			found, err := build.Reload()
-			Expect(found).To(BeFalse())
-			Expect(err).To(MatchError(legacyplan.ErrActiveHarvestPlan))
+			Expect(build.PrivatePlan().Task).NotTo(BeNil())
+			Expect(build.PrivatePlan().Task.Name).To(Equal("ordinary"))
 		})
 
 		It("rejects malformed private-plan JSON", func() {
@@ -119,51 +105,7 @@ var _ = Describe("Build", func() {
 
 			found, err := build.Reload()
 			Expect(found).To(BeFalse())
-			Expect(err).To(MatchError(ContainSubstring("decode legacy plan")))
-		})
-
-		It("loads unfinished ordinary task data containing object-valued harvest", func() {
-			ordinaryTaskPlan := `{"id":"task","task":{"name":"ordinary","config":{"image_resource":{"params":{"payload":{"id":"customer-id","harvest":{"mode":"keep"}}}}}}}`
-			_, err := dbConn.Exec(
-				`UPDATE builds SET private_plan = $1, completed = false WHERE id = $2`,
-				ordinaryTaskPlan,
-				build.ID(),
-			)
-			Expect(err).NotTo(HaveOccurred())
-
-			found, err := build.Reload()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(found).To(BeTrue())
-			Expect(build.PrivatePlan().Task).NotTo(BeNil())
-			Expect(build.PrivatePlan().Task.Name).To(Equal("ordinary"))
-		})
-
-		It("rejects unfinished harvest hidden in an across template", func() {
-			acrossHarvestPlan := `{"id":"across","across":{"vars":[],"substep_template":"{\"id\":\"hidden\",\"harvest\":{\"name\":\"push\"}}"}}`
-			_, err := dbConn.Exec(
-				`UPDATE builds SET private_plan = $1, completed = false WHERE id = $2`,
-				acrossHarvestPlan,
-				build.ID(),
-			)
-			Expect(err).NotTo(HaveOccurred())
-
-			found, err := build.Reload()
-			Expect(found).To(BeFalse())
-			Expect(err).To(MatchError(legacyplan.ErrActiveHarvestPlan))
-		})
-
-		It("rejects a malformed across template", func() {
-			malformedAcrossPlan := `{"id":"across","across":{"vars":[],"substep_template":"{\"id\":"}}`
-			_, err := dbConn.Exec(
-				`UPDATE builds SET private_plan = $1, completed = false WHERE id = $2`,
-				malformedAcrossPlan,
-				build.ID(),
-			)
-			Expect(err).NotTo(HaveOccurred())
-
-			found, err := build.Reload()
-			Expect(found).To(BeFalse())
-			Expect(err).To(MatchError(ContainSubstring("decode across substep template")))
+			Expect(err).To(HaveOccurred())
 		})
 	})
 

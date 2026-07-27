@@ -37,7 +37,7 @@ const (
 // The §1.13 platform service user, seeded by migration 1773106022. It
 // never logs in; admins vault its credential via `fly agent auth
 // --platform` (PutRequest.User = PlatformUserName). Its credential funds
-// platform-initiated LLM work (harvest judge, retrospective, calibration).
+// platform-initiated LLM work (judge, calibration).
 const (
 	PlatformUserSub  = "agent-platform"
 	PlatformUserName = "platform"
@@ -52,12 +52,10 @@ func ValidKind(kind string) bool {
 // Credential never carries the decrypted token in API responses;
 // Token is populated only by Store.Resolve for dispatch/secret-attach.
 type Credential struct {
-	UserID         int    `json:"user_id"`
-	UserName       string `json:"user_name"`
-	Kind           string `json:"kind"` // anthropic_oauth | anthropic_api_key
-	ExpiresAt      int64  `json:"expires_at,omitempty"`
-	LastVerifiedAt int64  `json:"last_verified_at,omitempty"`
-	JiraAccountID  string `json:"jira_account_id,omitempty"`
+	UserID    int    `json:"user_id"`
+	UserName  string `json:"user_name"`
+	Kind      string `json:"kind"` // anthropic_oauth | anthropic_api_key
+	ExpiresAt int64  `json:"expires_at,omitempty"`
 
 	Token string `json:"-"` // decrypted; in-memory only
 }
@@ -79,17 +77,13 @@ type Backend interface {
 	// UserBySub resolves a users row by its OIDC sub claim (users.sub is
 	// UNIQUE; rows are created at login by skymarshal).
 	UserBySub(sub string) (userID int, userName string, found bool, err error)
-	// SetJiraAccountID records the phase-2 Jira mapping seam value on all
-	// of the user's credential rows.
-	SetJiraAccountID(userID int, jiraAccountID string) error
 }
 
 // PutRequest is the parsed PUT /api/v1/agent/user-credentials body.
 type PutRequest struct {
-	Kind          string `json:"kind"`
-	Token         string `json:"token"`
-	ExpiresAt     int64  `json:"expires_at,omitempty"` // unix seconds; 0 = unknown
-	JiraAccountID string `json:"jira_account_id,omitempty"`
+	Kind      string `json:"kind"`
+	Token     string `json:"token"`
+	ExpiresAt int64  `json:"expires_at,omitempty"` // unix seconds; 0 = unknown
 	// User is empty for the normal self-scoped write. The ONLY other value
 	// is PlatformUserName ("platform"), accepted from admins only: it
 	// vaults the credential onto the §1.13 service user's row (the service

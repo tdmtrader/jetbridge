@@ -36,26 +36,24 @@ func (f *agentReviewsFactory) UpsertReviewProjection(ctx context.Context, rec *r
 	if err != nil {
 		return err
 	}
+	// Only the record's own judgment and its snapshot/production links are
+	// stored. WHERE a review was produced is never copied onto the row: one
+	// snapshot can be produced in several builds and runs, so a single column
+	// could only ever name one of them, and every read below resolves the
+	// occurrence from the production it selected.
 	_, err = psql.Insert("agent_reviews").
 		Columns(
-			"build_name", "team_name", "pipeline_name", "job_name",
-			"conclusion", "summary", "severity_counts", "submitted_by", "review",
+			"conclusion", "summary", "severity_counts", "review",
 			"snapshot_id", "workflow_run_id", "production_id",
 		).
 		Values(
-			rec.BuildName, rec.TeamName, rec.PipelineName, rec.JobName,
-			rec.Conclusion, rec.Summary, severityCounts, rec.SubmittedBy, []byte(rec.Review),
+			rec.Conclusion, rec.Summary, severityCounts, []byte(rec.Review),
 			int64(rec.SnapshotID), optionalWorkflowRunID(rec.WorkflowRunID), *rec.ProductionID,
 		).
 		Suffix(`ON CONFLICT (snapshot_id) DO UPDATE SET
-			build_name = EXCLUDED.build_name,
-			team_name = EXCLUDED.team_name,
-			pipeline_name = EXCLUDED.pipeline_name,
-			job_name = EXCLUDED.job_name,
 			conclusion = EXCLUDED.conclusion,
 			summary = EXCLUDED.summary,
 			severity_counts = EXCLUDED.severity_counts,
-			submitted_by = EXCLUDED.submitted_by,
 			review = EXCLUDED.review,
 			workflow_run_id = COALESCE(EXCLUDED.workflow_run_id, agent_reviews.workflow_run_id),
 			production_id = COALESCE(agent_reviews.production_id, EXCLUDED.production_id),
@@ -266,21 +264,12 @@ func (f *agentReviewsFactory) FindReviewInput(ctx context.Context, id snapshot.S
 		workflowRunID sql.NullInt64
 	)
 	err = f.conn.QueryRowContext(ctx, `
-		SELECT p.id, p.workflow_run_id, COALESCE(b.name, ''),
-		       p.team_name, COALESCE(pipe.name, ''), COALESCE(j.name, ''),
-		       p.created_by
+		SELECT p.id, p.workflow_run_id, p.team_name
 		FROM agent_snapshot_productions p
-		LEFT JOIN builds b ON b.id = p.build_id
-		LEFT JOIN pipelines pipe ON pipe.id = b.pipeline_id
-		LEFT JOIN jobs j ON j.id = b.job_id
 		WHERE p.snapshot_id = $1
 		ORDER BY (p.workflow_run_id IS NULL), p.created_at, p.id
 		LIMIT 1
-	`, int64(id)).Scan(
-		&input.ProductionID, &workflowRunID, &input.BuildName,
-		&input.TeamName, &input.PipelineName, &input.JobName,
-		&input.SubmittedBy,
-	)
+	`, int64(id)).Scan(&input.ProductionID, &workflowRunID, &input.TeamName)
 	if errors.Is(err, sql.ErrNoRows) {
 		return projection.ReviewInput{}, false, nil
 	}

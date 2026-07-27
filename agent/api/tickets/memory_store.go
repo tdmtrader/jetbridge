@@ -292,10 +292,6 @@ func (m *MemoryStore) Transition(id int, from, to State, meta TransitionMeta) er
 			v := *meta.PipelineRunID
 			t.PipelineRunID = &v
 		}
-	case StateNeedsReview:
-		if meta.Branch != "" {
-			t.Branch = meta.Branch
-		}
 	case StateClosed:
 		t.CompletedAt = time.Now().Unix()
 	}
@@ -322,7 +318,7 @@ func (m *MemoryStore) CaptureRevision(ctx context.Context, ticketID int) (workit
 	revision := workitem.Revision{
 		TicketID: ticket.ID, Revision: ticket.Revision,
 		UpdatedAt: time.Unix(ticket.UpdatedAt, 0).UTC(),
-		Adapter:   ticketAdapter(*ticket), ExternalID: ticketExternalID(*ticket),
+		Adapter:   "jetbridge", ExternalID: ticketExternalID(*ticket),
 		Title: ticket.Title, Body: ticket.Body,
 	}
 	captured, err := workitem.MarshalRevision(revision)
@@ -335,13 +331,6 @@ func (m *MemoryStore) CaptureRevision(ctx context.Context, ticketID int) (workit
 func (m *MemoryStore) bump(ticket *Ticket) {
 	ticket.Revision++
 	ticket.UpdatedAt = time.Now().Unix()
-}
-
-func ticketAdapter(ticket Ticket) string {
-	if ticket.Origin == "jira" {
-		return "jira"
-	}
-	return "jetbridge"
 }
 
 func ticketExternalID(ticket Ticket) string {

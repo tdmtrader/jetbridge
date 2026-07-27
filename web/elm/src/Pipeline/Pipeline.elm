@@ -1031,11 +1031,7 @@ runDurationSummary : Concourse.PipelineRun -> String
 runDurationSummary run =
     case run.completedAt of
         Nothing ->
-            if run.status == "awaiting_human" then
-                "waiting"
-
-            else
-                "running"
+            "running"
 
         Just completedAt ->
             let

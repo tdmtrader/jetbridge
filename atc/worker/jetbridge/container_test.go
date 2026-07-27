@@ -3502,7 +3502,7 @@ var _ = Describe("Run with sidecar containers", func() {
 		})
 	})
 
-	Context("SecretMounts (§8.3 harvest git credentials)", func() {
+	Context("SecretMounts (§8.3 git credentials)", func() {
 		BeforeEach(func() {
 			setupFakeDBContainer(fakeDBWorker, "secret-mount-handle")
 
@@ -3516,7 +3516,7 @@ var _ = Describe("Run with sidecar containers", func() {
 					Dir:       "/workdir",
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 					SecretMounts: []runtime.SecretMount{
-						{SecretName: "agent-harvest-git-tdmtrader-jetbridge", MountPath: "/var/run/agent/git"},
+						{SecretName: "agent-git-tdmtrader-jetbridge", MountPath: "/var/run/agent/git"},
 					},
 					Sidecars: []atc.SidecarConfig{
 						{Name: "dev", Image: "docker:///dev-mcp"},
@@ -3541,7 +3541,7 @@ var _ = Describe("Run with sidecar containers", func() {
 
 			var secretVol *corev1.Volume
 			for i, v := range pod.Spec.Volumes {
-				if v.Secret != nil && v.Secret.SecretName == "agent-harvest-git-tdmtrader-jetbridge" {
+				if v.Secret != nil && v.Secret.SecretName == "agent-git-tdmtrader-jetbridge" {
 					secretVol = &pod.Spec.Volumes[i]
 				}
 			}

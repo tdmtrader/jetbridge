@@ -95,9 +95,13 @@ func ValidState(s State) bool {
 	return IsTerminal(s)
 }
 
+// ValidOrigin gates who filed the work item. There is no 'jira': the create
+// handler rejected that origin with a 400 from the day it was written ("arrives
+// with the phase-2 sync component"), so no row has ever carried it and no
+// adapter branch keyed off it was ever taken.
 func ValidOrigin(o string) bool {
 	switch o {
-	case "web", "fly", "jira", "retrospective":
+	case "web", "fly", "retrospective":
 		return true
 	}
 	return false
@@ -132,13 +136,15 @@ type Ticket struct {
 	WorkItemSnapshotID     *snapshot.SnapshotID    `json:"work_item_snapshot_id,omitempty"`
 	RepositorySnapshotID   *snapshot.SnapshotID    `json:"repository_snapshot_id,omitempty"`
 	DispatchReservationKey string                  `json:"dispatch_reservation_key,omitempty"`
-	Branch                 string                  `json:"branch"`
 	AttemptCount           int                     `json:"attempt_count"`
-	CreatedBy              string                  `json:"created_by,omitempty"`   // audit attribution (addendum)
-	ExternalRef            string                  `json:"external_ref,omitempty"` // Jira phase-2 seam (addendum)
-	CreatedAt              int64                   `json:"created_at"`
-	UpdatedAt              int64                   `json:"updated_at"`
-	CompletedAt            int64                   `json:"completed_at,omitempty"`
+	CreatedBy              string                  `json:"created_by,omitempty"` // audit attribution (addendum)
+	// ExternalRef is the work item's identifier in whatever system filed it —
+	// origin-agnostic. Empty means the ticket is native and its own id is its
+	// external id.
+	ExternalRef string `json:"external_ref,omitempty"`
+	CreatedAt   int64  `json:"created_at"`
+	UpdatedAt   int64  `json:"updated_at"`
+	CompletedAt int64  `json:"completed_at,omitempty"`
 }
 
 // TicketDetail is the GetAgentTicket response payload. The ticket's own
@@ -197,13 +203,12 @@ type DispatchReservation struct {
 
 // TransitionMeta carries the side-band values a transition records.
 type TransitionMeta struct {
-	PipelineRunID *int   // recorded on → running (set by dispatch)
-	Branch        string // recorded on → needs_review (harvest, the primary writer; the reconciler backup-writer leaves it empty)
+	PipelineRunID *int // recorded on → running (set by dispatch)
 }
 
 // Store is the single-writer contract. Transition is THE ONLY way any
 // code path (API handler, dispatcher — including its run-completion
-// reconciler — harvest, HITL) changes Ticket.State. It enforces the queue
+// reconciler — HITL) changes Ticket.State. It enforces the queue
 // state machine, records timestamps, and returns ErrInvalidTransition
 // otherwise. It uses optimistic concurrency: the UPDATE is guarded by the
 // expected `from` state.
@@ -249,9 +254,8 @@ type UpdateRequest struct {
 }
 
 type TransitionRequest struct {
-	From   State  `json:"from"`
-	To     State  `json:"to"`
-	Branch string `json:"branch,omitempty"`
+	From State `json:"from"`
+	To   State `json:"to"`
 }
 
 // UnmarshalJSON rejects the retired, server-owned pipeline_run_id key

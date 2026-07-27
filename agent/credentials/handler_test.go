@@ -26,7 +26,7 @@ func newCredHandler() (*credentials.Handler, *credentials.MemoryBackend) {
 func TestSetStoresCredentialForSelf(t *testing.T) {
 	h, backend := newCredHandler()
 	exp := time.Now().Add(365 * 24 * time.Hour).Unix()
-	body := `{"kind":"anthropic_oauth","token":"sk-tok","expires_at":` + jsonInt(exp) + `,"jira_account_id":"acct-1"}`
+	body := `{"kind":"anthropic_oauth","token":"sk-tok","expires_at":` + jsonInt(exp) + `}`
 	req := httptest.NewRequest("PUT", "/api/v1/agent/user-credentials", strings.NewReader(body))
 	req.Header.Set("X-Test-Sub", "sub-alice")
 	rec := httptest.NewRecorder()
@@ -38,10 +38,6 @@ func TestSetStoresCredentialForSelf(t *testing.T) {
 	cred, found, _ := backend.Resolve(7, "anthropic_oauth")
 	if !found || cred.Token != "sk-tok" || cred.ExpiresAt != exp {
 		t.Fatalf("stored: %+v found=%v", cred, found)
-	}
-	status, _ := backend.Status(7)
-	if status[0].JiraAccountID != "acct-1" {
-		t.Fatalf("jira seam not stored: %+v", status[0])
 	}
 }
 

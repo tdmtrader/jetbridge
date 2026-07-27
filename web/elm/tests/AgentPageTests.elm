@@ -107,14 +107,10 @@ sampleRollup =
 sampleCredential :
     { kind : String
     , expiresAt : Maybe Time.Posix
-    , lastVerifiedAt : Maybe Time.Posix
-    , jiraAccountId : String
     }
 sampleCredential =
     { kind = "anthropic_oauth"
     , expiresAt = Just (Time.millisToPosix 0)
-    , lastVerifiedAt = Just (Time.millisToPosix 0)
-    , jiraAccountId = "acct-123"
     }
 
 
@@ -485,8 +481,6 @@ all =
                             (Ok
                                 [ { kind = "anthropic_oauth"
                                   , expiresAt = Nothing
-                                  , lastVerifiedAt = Nothing
-                                  , jiraAccountId = ""
                                   }
                                 ]
                             )

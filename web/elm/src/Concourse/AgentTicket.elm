@@ -36,7 +36,6 @@ type alias Ticket =
     , targetBranch : String
     , workflowName : String
     , userName : String
-    , branch : String
     , createdAt : Int
     , updatedAt : Int
     , workflowVersion : Maybe Int
@@ -82,7 +81,6 @@ decodeTicket =
         |> andMap (defaultTo "" <| Json.Decode.field "target_branch" Json.Decode.string)
         |> andMap (defaultTo "" <| Json.Decode.field "workflow_name" Json.Decode.string)
         |> andMap (defaultTo "" <| Json.Decode.field "user_name" Json.Decode.string)
-        |> andMap (defaultTo "" <| Json.Decode.field "branch" Json.Decode.string)
         |> andMap (defaultTo 0 <| Json.Decode.field "created_at" Json.Decode.int)
         |> andMap (defaultTo 0 <| Json.Decode.field "updated_at" Json.Decode.int)
         |> andMap (optionalInt "workflow_version")

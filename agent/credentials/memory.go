@@ -18,11 +18,9 @@ type memUser struct {
 }
 
 type memCred struct {
-	token          string
-	expiresAt      time.Time
-	lastVerifiedAt time.Time
-	jiraAccountID  string
-	userName       string
+	token     string
+	expiresAt time.Time
+	userName  string
 }
 
 func NewMemoryBackend() *MemoryBackend {
@@ -52,11 +50,7 @@ func (m *MemoryBackend) Put(userID int, userName, kind, token string, expiresAt 
 	if m.creds[userID] == nil {
 		m.creds[userID] = map[string]memCred{}
 	}
-	prev := m.creds[userID][kind]
-	m.creds[userID][kind] = memCred{
-		token: token, expiresAt: expiresAt, userName: userName,
-		jiraAccountID: prev.jiraAccountID,
-	}
+	m.creds[userID][kind] = memCred{token: token, expiresAt: expiresAt, userName: userName}
 	return nil
 }
 
@@ -103,28 +97,14 @@ func (m *MemoryBackend) Delete(userID int, kind string) error {
 	return nil
 }
 
-func (m *MemoryBackend) SetJiraAccountID(userID int, jiraAccountID string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for kind, c := range m.creds[userID] {
-		c.jiraAccountID = jiraAccountID
-		m.creds[userID][kind] = c
-	}
-	return nil
-}
-
 func (m *MemoryBackend) toCredential(userID int, kind string, c memCred, withToken bool) Credential {
 	cred := Credential{
-		UserID:        userID,
-		UserName:      c.userName,
-		Kind:          kind,
-		JiraAccountID: c.jiraAccountID,
+		UserID:   userID,
+		UserName: c.userName,
+		Kind:     kind,
 	}
 	if !c.expiresAt.IsZero() {
 		cred.ExpiresAt = c.expiresAt.Unix()
-	}
-	if !c.lastVerifiedAt.IsZero() {
-		cred.LastVerifiedAt = c.lastVerifiedAt.Unix()
 	}
 	if withToken {
 		cred.Token = c.token
