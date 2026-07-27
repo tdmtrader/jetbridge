@@ -30,6 +30,12 @@ RUN chmod +x /usr/local/bin/helm
 # Copy source and cache Go modules + ginkgo CLI
 WORKDIR /src
 COPY go.mod go.sum ./
+# The root module replaces github.com/concourse/concourse/agent/schema with
+# ./agent/schema, and `go mod download` resolves replace targets — so that
+# nested go.mod has to exist before this layer runs, or the build dies with
+# "reading agent/schema/go.mod: no such file or directory". It declares no
+# external dependencies, hence no go.sum to copy alongside it.
+COPY agent/schema/go.mod ./agent/schema/
 RUN go mod download
 RUN go install github.com/onsi/ginkgo/v2/ginkgo@latest
 

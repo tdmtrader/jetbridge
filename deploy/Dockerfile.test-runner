@@ -20,5 +20,10 @@ RUN curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-27.
 # Copy source and cache Go modules
 WORKDIR /src
 COPY go.mod go.sum ./
+# See Dockerfile.kind-runner: the root module's replace of
+# github.com/concourse/concourse/agent/schema => ./agent/schema must resolve
+# during `go mod download`. Latent here — the in-use v5 image predates the
+# replace — but this recipe would fail identically on the next rebuild.
+COPY agent/schema/go.mod ./agent/schema/
 RUN go mod download
 COPY . .
