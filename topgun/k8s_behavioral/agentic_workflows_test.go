@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"log"
+
 	workflowrunsapi "github.com/concourse/concourse/agent/api/workflowruns"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc/db"
@@ -18,6 +20,26 @@ import (
 )
 
 var _ = Describe("Agentic workflows", func() {
+	// taskImageDigest returns the sha256 digest a workflow task must pin its
+	// image to. Schema v3 requires an explicit immutable version
+	// (agent/workflow/extract.go, "task image resource requires an explicit
+	// immutable version"), so a bare `repository: busybox` is refused at import
+	// with 422 — the platform enforcing reproducibility, not a defect.
+	//
+	// It has to be a real digest rather than the placeholder the shipped seeds
+	// carry, because this workflow is actually executed: the task pod pulls the
+	// image. Reusing the artifact helper's resolution keeps that digest tied to
+	// the same busybox the suite already loads into the cluster, so it resolves
+	// from the local containerd store instead of depending on a registry fetch.
+	taskImageDigest := func() string {
+		reference := resolvedArtifactHelperImage()
+		at := strings.LastIndex(reference, "@")
+		if at < 0 {
+			log.Fatalf("artifact helper reference %q carries no digest", reference)
+		}
+		return reference[at+1:]
+	}
+
 	It("runs a versioned task function over an immutable snapshot and seals its output", func() {
 		inputDir := filepath.Join(tmp, "agentic-input")
 		Expect(os.MkdirAll(inputDir, 0o755)).To(Succeed())
@@ -55,6 +77,7 @@ plan:
       image_resource:
         type: registry-image
         source: {repository: busybox}
+        version: {digest: %s}
       inputs: [{name: source}]
       outputs: [{name: result}]
       run:
@@ -64,7 +87,7 @@ plan:
       source: {type: opaque/v1}
     output_types:
       result: opaque/v1
-`, workflowName)
+`, workflowName, taskImageDigest())
 		Expect(os.WriteFile(filepath.Join(workflowDir, "workflow.yml"), []byte(definition), 0o644)).To(Succeed())
 
 		imported := fly.Start("agent", "workflows", "import", workflowDir, "--set-live")
