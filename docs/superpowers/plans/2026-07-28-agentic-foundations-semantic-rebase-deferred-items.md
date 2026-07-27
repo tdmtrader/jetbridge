@@ -343,3 +343,41 @@ to evaluate independently.
 - Suggested follow-up: Complete Tasks 13 and 14, then run Task 19 once as the
   final milestone rather than repeatedly running broad suites against a
   knowingly incomplete branch.
+
+### DEFERRED-010 — Correct the JetBridge reaper cadence documentation
+
+- Task/area: JetBridge operator documentation, garbage-collection cadence
+- Classification: Documentation correctness; adjacent to retired-storage replay
+- Status: Deferred
+- Evidence: `README.md` still says that the reaper runs every 30 seconds, and
+  `JETBRIDGE.md` advertises a `--gc-interval` flag with a 30-second default in
+  its reaper overview, flag table, and troubleshooting guidance.
+  `atc/atccmd/command.go` defines no such general flag; the Kubernetes reaper
+  has no explicit component interval and therefore uses the shared 10-second
+  `defaultComponentInterval`.
+- Why it is nonblocking: The runtime is unaffected, and the current bounded
+  semantic replay only removes retired PVC/artifact-store instructions from
+  the previous cleanup commit. Correcting every GC cadence reference is a
+  separate documentation audit rather than a prerequisite for that replay.
+- Suggested follow-up: Correct the cadence in `README.md`, remove the
+  nonexistent flag from `JETBRIDGE.md`, describe the reaper's shared 10-second
+  component interval, and recheck the remaining GC flag table against
+  `atc/atccmd/command.go`.
+
+### DEFERRED-011 — Remove retired storage terminology from JetBridge internals
+
+- Task/area: JetBridge internal comments and artifact integration-test intent
+- Classification: Test-quality and maintainability; adjacent to retired-storage replay
+- Status: Deferred
+- Evidence: `atc/worker/jetbridge/reaper.go` still describes cache cleanup as
+  removing PVC subdirectories even though the implementation delegates cleanup
+  to the artifact daemon over HTTP. `atc/worker/jetbridge/artifact_integration_test.go`
+  still labels an expectation as artifact-helper sidecar tar calls, while the
+  current Kubernetes path uses fetch init containers and the mandatory daemon.
+- Why it is nonblocking: Active runtime behavior and operator guidance do not
+  depend on these comments. Recasting the integration expectation also needs a
+  deliberate observable-behavior test, not a text-only cleanup folded into this
+  documentation replay.
+- Suggested follow-up: Update the reaper comments to name daemon cleanup and
+  replace the legacy sidecar expectation with coverage of current fetch-init or
+  daemon behavior.

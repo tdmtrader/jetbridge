@@ -87,11 +87,11 @@ A reaper component runs every 30 seconds (configurable via `--gc-interval`) and:
 1. Lists pods with the `concourse.ci/worker` label.
 2. Reports active containers to the DB (marks missing ones for GC).
 3. Deletes pods the DB has marked for destruction.
-4. Cleans up cache PVC subdirectories by exec-ing `rm -rf` in an active pod.
-5. Cleans up artifact store tar files by exec-ing `rm -f` in an active pod's
-   artifact-helper sidecar.
+4. Deletes each destroyed container's daemon artifact entry with an HTTP
+   request to the producing node's daemon.
 
-Cache and artifact cleanup require at least one active pod in the namespace.
+The artifact daemon owns TTL cleanup and mirror lifecycle; the reaper neither
+execs `rm` in cache PVCs nor relies on an artifact-helper sidecar.
 
 ## What Didn't Change
 
@@ -272,19 +272,27 @@ Source: `atc/api/infoserver/health.go`
 
 ### Kubernetes Runtime Flags
 
-JetBridge is enabled by setting `--kubernetes-namespace`. All other
-Kubernetes flags are optional.
+JetBridge is enabled by setting `--kubernetes-namespace`. The artifact daemon
+host path, resolve-capability key, and a digest-pinned helper image are also
+required; the remaining Kubernetes flags are optional.
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--kubernetes-namespace` | (required) | Namespace for task pods. Enables K8s backend. |
 | `--kubernetes-kubeconfig` | in-cluster | Path to kubeconfig. Empty uses the pod's service account. |
 | `--kubernetes-pod-startup-timeout` | `5m` | Max time for a pod to reach Running before failing the task. |
+| `--kubernetes-pod-scheduling-timeout` | `15m` | Max time to wait for an Unschedulable pod to be scheduled before failing the task. Non-positive values use the `15m` runtime default. |
 | `--kubernetes-cache-store` | (auto) | Task cache backend: `hostpath` (node-local dirs) or `emptydir` (ephemeral). |
 | `--kubernetes-cache-host-path` | (none) | Base directory on the host node for persistent task caches. Defaults to a directory under the artifact daemon's host path. |
 | `--kubernetes-artifact-daemon-host-path` | (required) | Host path for node-local artifact storage. Required whenever `--kubernetes-namespace` is set. |
 | `--kubernetes-artifact-daemon-port` | `7780` | HTTP(S) port of the per-node artifact daemon. |
-| `--kubernetes-artifact-helper-image` | set explicitly | Tar-capable image for runtime init containers and the artifact-helper sidecar. The Helm chart requires an exact `@sha256` reference and rejects tags. |
+| `--kubernetes-artifact-daemon-service` | `artifact-daemon` | Headless Service name for DaemonSet per-pod DNS. |
+| `--kubernetes-artifact-daemon-resolve-capability-key` | (required) | Path to the raw 32-byte key that authorizes artifact resolve operations. |
+| `--kubernetes-artifact-daemon-resolve-capability-ttl` | `2h` | Lifetime of operation-bound resolve capabilities; it must cover pod admission and init retry bounds. |
+| `--kubernetes-artifact-daemon-tls-cert` | (none) | Client certificate path for mTLS with the artifact daemon. |
+| `--kubernetes-artifact-daemon-tls-key` | (none) | Client private-key path for mTLS with the artifact daemon. |
+| `--kubernetes-artifact-daemon-tls-ca-cert` | (none) | CA certificate path for verifying the artifact daemon. |
+| `--kubernetes-artifact-helper-image` | (required) | Digest-pinned helper image for artifact fetch and cleanup init containers. It must use an exact `@sha256` reference. |
 | `--kubernetes-image-pull-secret` | (none) | K8s Secret for imagePullSecrets on task pods. Repeatable. |
 | `--kubernetes-service-account` | namespace default | ServiceAccount for task pods. |
 | `--kubernetes-image-registry-prefix` | (none) | Registry prefix for custom resource type images (e.g. `gcr.io/my-project/concourse`). |
@@ -464,7 +472,7 @@ kubectl -n concourse describe pod <pod-name>
 **Common causes**:
 - Image pull failure (wrong image name, missing pull secret)
 - Insufficient resources (no node can schedule the pod)
-- PVC not bound (storage class misconfigured)
+- Artifact daemon unavailable on the selected node, or its host path is not ready
 
 JetBridge writes pod failure diagnostics to the build log, including the
 pod phase, conditions, and container waiting reasons. Look for the
@@ -497,8 +505,8 @@ kubectl -n concourse get pods -l app.kubernetes.io/component=artifact-daemon -o 
 # Check the daemon on the node that produced the artifact
 kubectl -n concourse logs <artifact-daemon-pod>
 
-# Check the artifact-helper sidecar logs
-kubectl -n concourse logs <pod-name> -c artifact-helper
+# Check the downstream fetch init container logs
+kubectl -n concourse logs <pod-name> -c fetch-inputs
 ```
 
 **Common causes**:
@@ -507,8 +515,8 @@ kubectl -n concourse logs <pod-name> -c artifact-helper
   (`artifactDaemon.mirror.replicas: 1` keeps only the local copy)
 - The consuming pod landed on a node without the
   `concourse.dev/artifact-cache=ready` label
-- Init container failed (the artifact was never registered — check that the
-  upstream step completed successfully)
+- The `fetch-inputs` init container failed to resolve the producer or a
+  mirrored peer; verify the upstream step completed successfully
 
 ### Build output missing
 
@@ -574,7 +582,7 @@ otelMetrics:
 ### Key things to watch
 
 - **Pod startup latency**: If `pod_startup_duration_ms` climbs, check node
-  capacity, image pull times, or volume mount delays.
+  capacity, image pull times, or artifact-daemon readiness.
 - **Image pull failures**: Sustained failures indicate a registry issue or
   misconfigured pull secrets.
 - **Node disk usage**: Monitor `artifactDaemon.hostPath` on every build node.
@@ -607,11 +615,12 @@ kubectl -n concourse exec <artifact-daemon-pod> -- df -h /var/concourse/artifact
 
 | File | Purpose |
 |------|---------|
-| `atc/worker/jetbridge/config.go` | K8s flags, cache/artifact config, base resource type image mappings |
+| `atc/worker/jetbridge/config.go` | K8s flags, node-local cache config, base resource type image mappings |
 | `atc/worker/jetbridge/container.go` | Pod creation, lifecycle management, sidecar injection |
 | `atc/worker/jetbridge/executor.go` | Command execution via K8s exec API |
 | `atc/worker/jetbridge/podname.go` | Deterministic pod name generation |
 | `atc/worker/jetbridge/registrar.go` | Synthetic worker registration (direct DB write) |
+| `atc/worker/jetbridge/storage_daemonset.go` | Daemon-backed artifact and cache storage decisions |
 | `atc/worker/jetbridge/volume_daemonset.go` | Artifact-daemon backed volumes |
 | `atc/worker/jetbridge/daemon_client.go` | HTTP client for the per-node artifact daemon |
 | `atc/worker/jetbridge/errors.go` | Transient error classification and retry |
