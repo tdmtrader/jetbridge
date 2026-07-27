@@ -19,7 +19,6 @@ var builtinTypes = []string{
 	"work-item/v1",
 	"log-bundle/v1",
 	"measurements/v1",
-	"selection/v1",
 	"validation/v1",
 	"upgrade-request/v1",
 	"upgrade-report/v1",
@@ -48,8 +47,8 @@ func TestRegistryContainsExactlyTheNamedV1Contracts(t *testing.T) {
 	if got := registry.Types(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Types() = %q, want exact ordered types %q", got, want)
 	}
-	if len(registry.Types()) != 17 {
-		t.Fatalf("registry type count = %d, want 17", len(registry.Types()))
+	if len(registry.Types()) != 16 {
+		t.Fatalf("registry type count = %d, want 16", len(registry.Types()))
 	}
 
 	for _, raw := range []string{"review/v2", "dev-mcp/v1", "Review/v1"} {
@@ -70,12 +69,19 @@ func TestRegistryContainsExactlyTheNamedV1Contracts(t *testing.T) {
 // record envelope. Registering either retired name again would re-admit a type
 // no seed declares and no function writes, so the deployment could accept a
 // snapshot it can never produce.
+//
+// selection/v1 is the same decision reached from the other end. It was a full
+// sealed-record contract with its own schema document and a candidate-port
+// admission rule reaching from atc.SnapshotInputConfig through both step
+// validators into the sealer, and nothing ever produced one: no seed declared a
+// selecting node and no function wrote the record. Re-registering it would bring
+// the whole candidacy-as-authority apparatus back for a type nothing emits.
 func TestRetiredEngineeringDocumentTypesStayUnregistered(t *testing.T) {
 	registry, err := contracts.NewRegistry()
 	if err != nil {
 		t.Fatalf("NewRegistry(): %v", err)
 	}
-	for _, raw := range []string{"validation-report/v1", "gate-results/v1"} {
+	for _, raw := range []string{"validation-report/v1", "gate-results/v1", "selection/v1"} {
 		ref := snapshot.TypeRef(raw)
 		if _, err := registry.Lookup(ref); err == nil {
 			t.Errorf("Lookup(%q) succeeded; if a live path now emits it, register it deliberately and update this test", raw)

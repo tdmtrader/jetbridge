@@ -94,6 +94,9 @@ type Message
     | AgentWorkflowRunCancelClicked
     | AgentWorkflowRunRetryClicked
     | AgentWaitAnswerChanged String String
+      -- Agent transcripts (run page): plan id, then plan id + entry index
+    | AgentTranscriptToggled String
+    | AgentTranscriptEntryToggled String Int
     | AgentWaitResolveClicked String
     | AgentSnapshotPinClicked
     | AgentSnapshotUnpinClicked

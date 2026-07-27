@@ -23,6 +23,7 @@ import Concourse.BuildStatus exposing (BuildStatus)
 import Concourse.Experiment
 import Concourse.Pagination exposing (Page)
 import Concourse.Snapshot
+import Concourse.Transcript
 import Concourse.WorkflowRun
 import Json.Decode
 import Json.Encode
@@ -262,6 +263,8 @@ type Effect
         }
     | FetchAgentWorkflowRun String String
     | FetchAgentWorkflowRunMetrics String String
+    | FetchAgentWorkflowRunTranscripts String String
+    | FetchAgentWorkflowRunTranscript String String String
     | CancelAgentWorkflowRun String String
     | RetryAgentWorkflowRun String String
     | FetchAgentWorkflowWaits String String
@@ -1043,6 +1046,20 @@ runEffect effect key csrfToken =
                 |> Api.expectJson (Json.Decode.list Concourse.Agent.decodeRunMetric)
                 |> Api.request
                 |> Task.attempt (AgentWorkflowRunMetricsFetched workflowRunId)
+
+        FetchAgentWorkflowRunTranscripts workflowName workflowRunId ->
+            Api.get (Endpoints.AgentWorkflowRunTranscripts workflowName workflowRunId)
+                |> Api.expectJson (Json.Decode.list Concourse.Transcript.decodeRef)
+                |> Api.request
+                |> Task.attempt (AgentWorkflowRunTranscriptsFetched workflowRunId)
+
+        FetchAgentWorkflowRunTranscript workflowName workflowRunId planId ->
+            -- the body is ndjson, not JSON: it is read verbatim and parsed
+            -- line-by-line client-side (Concourse.Transcript.parse)
+            Api.get (Endpoints.AgentWorkflowRunTranscript workflowName workflowRunId planId)
+                |> Api.expectText
+                |> Api.request
+                |> Task.attempt (AgentWorkflowRunTranscriptFetched workflowRunId planId)
 
         CancelAgentWorkflowRun workflowName workflowRunId ->
             Api.post (Endpoints.AgentWorkflowRunCancel workflowName workflowRunId) csrfToken

@@ -479,9 +479,6 @@ mapBuildPlan fn plan =
                 BuildStepAgent _ ->
                     []
 
-                BuildStepRetired _ _ ->
-                    []
-
                 BuildStepUnknown _ ->
                     []
            )
@@ -525,7 +522,6 @@ type BuildStep
     | BuildStepTimeout BuildPlan
     | BuildStepSidecar StepName
     | BuildStepAgent StepName
-    | BuildStepRetired String StepName
     | BuildStepUnknown StepName
 
 
@@ -732,8 +728,6 @@ decodeBuildPlan =
                     lazy (\_ -> decodeBuildStepSidecar)
                 , Json.Decode.field "agent" <|
                     lazy (\_ -> decodeBuildStepAgent)
-                , Json.Decode.field "retired_step" <|
-                    lazy (\_ -> decodeBuildStepRetired)
 
                 -- Durable fallback: any step type this client does not yet
                 -- recognize decodes to an "unknown" leaf instead of failing
@@ -759,13 +753,6 @@ decodeBuildStepSidecar =
 decodeBuildStepAgent : Json.Decode.Decoder BuildStep
 decodeBuildStepAgent =
     Json.Decode.succeed BuildStepAgent
-        |> andMap (Json.Decode.field "name" Json.Decode.string)
-
-
-decodeBuildStepRetired : Json.Decode.Decoder BuildStep
-decodeBuildStepRetired =
-    Json.Decode.succeed BuildStepRetired
-        |> andMap (Json.Decode.field "kind" Json.Decode.string)
         |> andMap (Json.Decode.field "name" Json.Decode.string)
 
 

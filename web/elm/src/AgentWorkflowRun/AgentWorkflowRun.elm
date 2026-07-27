@@ -17,11 +17,12 @@ import Build.AgentReview as AgentReviewView
 import Concourse.Agent as Agent
 import Concourse.AgentReview exposing (BuildReview)
 import Concourse.Snapshot as Snapshot
+import Concourse.Transcript as Transcript
 import Concourse.WorkflowRun as WorkflowRun
 import Dict exposing (Dict)
 import EffectTransformer exposing (ET)
 import Html exposing (Html)
-import Html.Attributes exposing (class, disabled, href, placeholder, style, type_, value)
+import Html.Attributes exposing (attribute, class, disabled, href, placeholder, style, type_, value)
 import Html.Events exposing (onClick, onInput)
 import Login.Login as Login
 import Message.Callback exposing (Callback(..))
@@ -44,6 +45,12 @@ type alias Model =
         , outcomes : List WorkflowRun.Outcome
         , repositoryChanges : Dict String WorkflowRun.RepositoryChange
         , metrics : List Agent.RunMetric
+        , transcripts : List Transcript.Ref
+        , transcriptEntries : Dict String (List Transcript.Entry)
+        , expandedTranscripts : Set String
+        , expandedTranscriptEntries : Set String
+        , transcriptErrors : Set String
+        , transcriptIndexError : Bool
         , answerSnapshots : Dict String String
         , loadError : Bool
         , actionError : Bool
@@ -68,6 +75,12 @@ init { workflowName, id } =
       , outcomes = []
       , repositoryChanges = Dict.empty
       , metrics = []
+      , transcripts = []
+      , transcriptEntries = Dict.empty
+      , expandedTranscripts = Set.empty
+      , expandedTranscriptEntries = Set.empty
+      , transcriptErrors = Set.empty
+      , transcriptIndexError = False
       , answerSnapshots = Dict.empty
       , loadError = False
       , actionError = False
@@ -93,6 +106,7 @@ fetchAll workflowName id =
     , FetchAgentWorkflowOutcomes workflowName id
     , FetchAgentWorkflowReviews workflowName id
     , FetchAgentWorkflowRunMetrics workflowName id
+    , FetchAgentWorkflowRunTranscripts workflowName id
     ]
 
 
@@ -235,6 +249,44 @@ handleCallback callback ( model, effects ) =
             else
                 ( model, effects )
 
+        AgentWorkflowRunTranscriptsFetched runId (Ok refs) ->
+            -- run-qualified for the same reason metrics are: a second open run
+            -- page must not accept this run's transcript index
+            if runId == model.workflowRunId then
+                ( { model | transcripts = refs, transcriptIndexError = False }, effects )
+
+            else
+                ( model, effects )
+
+        AgentWorkflowRunTranscriptsFetched runId (Err _) ->
+            -- supplemental: a failed index must not blank the whole run page,
+            -- but it must not read as "this run captured nothing" either
+            if runId == model.workflowRunId then
+                ( { model | transcriptIndexError = True }, effects )
+
+            else
+                ( model, effects )
+
+        AgentWorkflowRunTranscriptFetched runId planId (Ok ndjson) ->
+            if runId == model.workflowRunId then
+                ( { model
+                    | transcriptEntries =
+                        Dict.insert planId (Transcript.parse ndjson) model.transcriptEntries
+                    , transcriptErrors = Set.remove planId model.transcriptErrors
+                  }
+                , effects
+                )
+
+            else
+                ( model, effects )
+
+        AgentWorkflowRunTranscriptFetched runId planId (Err _) ->
+            if runId == model.workflowRunId then
+                ( { model | transcriptErrors = Set.insert planId model.transcriptErrors }, effects )
+
+            else
+                ( model, effects )
+
         AgentReviewVerdictSubmitted findingId (Ok ()) ->
             ( { model | verdictErrors = Set.remove findingId model.verdictErrors }
             , effects ++ [ FetchAgentWorkflowReviews model.workflowName model.workflowRunId ]
@@ -281,6 +333,30 @@ update message ( model, effects ) =
         AgentWorkflowRunRetryClicked ->
             ( { model | actionError = False }
             , effects ++ [ RetryAgentWorkflowRun model.workflowName model.workflowRunId ]
+            )
+
+        AgentTranscriptToggled planId ->
+            let
+                expanded =
+                    toggleSet planId model.expandedTranscripts
+
+                -- fetch the ndjson body the first time a transcript is opened;
+                -- the index is polled, the (up to 512KiB) bodies never are
+                fetch =
+                    if Set.member planId expanded && not (Dict.member planId model.transcriptEntries) then
+                        [ FetchAgentWorkflowRunTranscript model.workflowName model.workflowRunId planId ]
+
+                    else
+                        []
+            in
+            ( { model | expandedTranscripts = expanded }, effects ++ fetch )
+
+        AgentTranscriptEntryToggled planId index ->
+            ( { model
+                | expandedTranscriptEntries =
+                    toggleSet (transcriptEntryKey planId index) model.expandedTranscriptEntries
+              }
+            , effects
             )
 
         ToggleAgentReviewPanel ->
@@ -464,6 +540,7 @@ runContent session model detail =
         , waitsCard model
         , outcomesCard model
         , telemetryCard model detail.summary
+        , transcriptsCard model
         , if List.isEmpty model.agentReviews && not model.agentReviewLoadError then
             Html.text ""
 
@@ -829,6 +906,201 @@ telemetryCard model run =
                 )
             ]
         ]
+
+
+{-| What the agent actually did, per step: the tool-call transcript the runner
+captured. The index is polled with the rest of the run; a body is fetched only
+when its step is opened.
+-}
+transcriptsCard : Model -> Html Message
+transcriptsCard model =
+    Html.section [ class "agent-run-transcripts", cardStyle ]
+        [ heading "Agent transcripts"
+        , if not (List.isEmpty model.transcripts) then
+            Html.div [] (List.map (transcriptRow model) model.transcripts)
+
+          else if model.transcriptIndexError then
+            errorLine "The transcript index could not be loaded."
+
+          else
+            loading "no agent transcript captured for this run"
+        ]
+
+
+transcriptRow : Model -> Transcript.Ref -> Html Message
+transcriptRow model ref =
+    let
+        expanded =
+            Set.member ref.planId model.expandedTranscripts
+
+        stepLabel =
+            if ref.stepName == "" then
+                ref.planId
+
+            else
+                ref.stepName
+
+        functionLabel =
+            if ref.functionId == "" then
+                ""
+
+            else
+                " · " ++ ref.functionId
+    in
+    Html.div
+        [ class "agent-run-transcript"
+        , style "padding" "8px 0"
+        , style "border-top" "1px solid #302f2f"
+        ]
+        (Html.button
+            (transcriptToggleStyle
+                ++ [ class "agent-transcript-toggle"
+                   , attribute "aria-expanded" (ariaBool expanded)
+                   , onClick (AgentTranscriptToggled ref.planId)
+                   ]
+            )
+            [ Html.text
+                ((if expanded then
+                    "▾ "
+
+                  else
+                    "▸ "
+                 )
+                    ++ stepLabel
+                    ++ functionLabel
+                    ++ " · "
+                    ++ humanBytes ref.byteLen
+                    ++ (if ref.truncated then
+                            " (head-truncated)"
+
+                        else
+                            ""
+                       )
+                )
+            ]
+            :: (if not expanded then
+                    []
+
+                else if Set.member ref.planId model.transcriptErrors then
+                    [ errorLine "The transcript for this step could not be loaded." ]
+
+                else
+                    case Dict.get ref.planId model.transcriptEntries of
+                        Nothing ->
+                            [ loading "loading transcript…" ]
+
+                        Just [] ->
+                            [ loading "transcript is empty" ]
+
+                        Just entries ->
+                            [ Html.div
+                                [ class "agent-transcript"
+                                , style "margin" "8px 0 0"
+                                ]
+                                (List.map (transcriptEntry model ref.planId) entries)
+                            ]
+               )
+        )
+
+
+transcriptEntry : Model -> String -> Transcript.Entry -> Html Message
+transcriptEntry model planId entry =
+    let
+        bodyExpanded =
+            Set.member (transcriptEntryKey planId entry.index) model.expandedTranscriptEntries
+
+        body =
+            Html.pre
+                [ class "agent-transcript-body"
+                , style "margin" "4px 0 0"
+                , style "white-space" "pre-wrap"
+                , style "overflow-x" "auto"
+                , style "font-family" "monospace"
+                , style "font-size" "12px"
+                ]
+                [ Html.text entry.body ]
+    in
+    Html.div
+        [ class ("agent-transcript-entry " ++ Transcript.kindClass entry.kind)
+        , style "padding" "6px 0"
+        , style "border-top" "1px solid #262525"
+        ]
+        (if entry.collapsible then
+            [ Html.button
+                (transcriptToggleStyle
+                    ++ [ class "agent-transcript-entry-toggle"
+                       , attribute "aria-expanded" (ariaBool bodyExpanded)
+                       , onClick (AgentTranscriptEntryToggled planId entry.index)
+                       ]
+                )
+                [ Html.text
+                    ((if bodyExpanded then
+                        "▾ "
+
+                      else
+                        "▸ "
+                     )
+                        ++ entry.label
+                    )
+                ]
+            , if bodyExpanded then
+                body
+
+              else
+                Html.text ""
+            ]
+
+         else
+            [ Html.div
+                [ class "agent-transcript-entry-label"
+                , style "color" "#8a8a8a"
+                , style "font-size" "12px"
+                ]
+                [ Html.text entry.label ]
+            , body
+            ]
+        )
+
+
+{-| The disclosure rows are buttons for keyboard and screen-reader reasons, but
+must read as text: the same reset the review panel's toggles use.
+-}
+transcriptToggleStyle : List (Html.Attribute Message)
+transcriptToggleStyle =
+    [ type_ "button"
+    , style "background" "transparent"
+    , style "border" "none"
+    , style "padding" "0"
+    , style "margin" "0"
+    , style "font-family" "monospace"
+    , style "font-size" "12px"
+    , style "color" "inherit"
+    , style "text-align" "left"
+    , style "cursor" "pointer"
+    ]
+
+
+ariaBool : Bool -> String
+ariaBool value_ =
+    if value_ then
+        "true"
+
+    else
+        "false"
+
+
+transcriptEntryKey : String -> Int -> String
+transcriptEntryKey planId index =
+    planId ++ "/" ++ String.fromInt index
+
+
+humanBytes : Int -> String
+humanBytes bytes =
+    if bytes < 1024 then
+        String.fromInt bytes ++ " B"
+
+    else
+        String.fromInt (bytes // 1024) ++ " KiB"
 
 
 reviewer : Session -> String

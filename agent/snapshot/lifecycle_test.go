@@ -240,15 +240,15 @@ func TestNewLifecycleRejectsMissingDependenciesAndInvalidPageSize(t *testing.T) 
 		func() error { _, err := NewLifecycle(metadata, content, repairer, nil); return err },
 		func() error { _, err := NewLifecycle(metadata, content, repairer, typedNilLocks); return err },
 		func() error {
-			_, err := NewLifecycle(metadata, content, repairer, locks, WithLifecyclePageSize(0))
+			_, err := NewLifecycle(metadata, content, repairer, locks, withLifecyclePageSize(0))
 			return err
 		},
 		func() error {
-			_, err := NewLifecycle(metadata, content, repairer, locks, WithLifecyclePageSize(MaxLifecyclePageSize+1))
+			_, err := NewLifecycle(metadata, content, repairer, locks, withLifecyclePageSize(MaxLifecyclePageSize+1))
 			return err
 		},
 		func() error {
-			_, err := NewLifecycle(metadata, content, repairer, locks, WithLifecycleClock(nil))
+			_, err := NewLifecycle(metadata, content, repairer, locks, withLifecycleClock(nil))
 			return err
 		},
 		func() error { _, err := NewLifecycle(metadata, content, repairer, locks, nil); return err },
@@ -286,8 +286,8 @@ func TestLifecycleUsesOneBoundedPageWithIndependentCursorsAndRescansAfterTermina
 		&lifecycleContent{events: &metadata.events},
 		&lifecycleRepairer{},
 		&lifecycleLocks{},
-		WithLifecycleClock(func() time.Time { return now }),
-		WithLifecyclePageSize(1),
+		withLifecycleClock(func() time.Time { return now }),
+		withLifecyclePageSize(1),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -316,7 +316,7 @@ func TestLifecycleUsesOneBoundedPageWithIndependentCursorsAndRescansAfterTermina
 		}
 	}
 
-	restarted, err := NewLifecycle(metadata, &lifecycleContent{}, &lifecycleRepairer{}, &lifecycleLocks{}, WithLifecyclePageSize(1))
+	restarted, err := NewLifecycle(metadata, &lifecycleContent{}, &lifecycleRepairer{}, &lifecycleLocks{}, withLifecyclePageSize(1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -648,7 +648,7 @@ func TestLifecycleCollectDeletesOrphanBytesBeforeStages(t *testing.T) {
 		}},
 	}
 	content := &lifecycleContent{events: &metadata.events}
-	lifecycle, err := NewLifecycle(metadata, content, &lifecycleRepairer{}, &lifecycleLocks{}, WithLifecycleClock(func() time.Time { return now }))
+	lifecycle, err := NewLifecycle(metadata, content, &lifecycleRepairer{}, &lifecycleLocks{}, withLifecycleClock(func() time.Time { return now }))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -786,7 +786,7 @@ func TestLifecycleCollectExpiresOnlyAfterLocationsAndFinalSweep(t *testing.T) {
 		markResult: true,
 	}
 	content := &lifecycleContent{events: &metadata.events}
-	lifecycle, err := NewLifecycle(metadata, content, &lifecycleRepairer{}, &lifecycleLocks{}, WithLifecycleClock(func() time.Time { return now }))
+	lifecycle, err := NewLifecycle(metadata, content, &lifecycleRepairer{}, &lifecycleLocks{}, withLifecycleClock(func() time.Time { return now }))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1044,7 +1044,7 @@ func TestLifecycleRepairAppliesPartialAdditionsBeforePruningAndReturnsCandidateE
 		Added: []Location{newLocation}, Removed: []Location{oldLocation}, Verified: 1, Desired: 2, LiveCapacity: 2,
 	}, err: repairFailure}
 	content := &lifecycleContent{events: &metadata.events}
-	lifecycle, err := NewLifecycle(metadata, content, repairer, &lifecycleLocks{}, WithLifecycleClock(func() time.Time { return now }))
+	lifecycle, err := NewLifecycle(metadata, content, repairer, &lifecycleLocks{}, withLifecycleClock(func() time.Time { return now }))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1379,7 +1379,7 @@ func mustLifecycle(
 	options ...LifecycleOption,
 ) *Lifecycle {
 	t.Helper()
-	options = append(options, WithLifecycleClock(func() time.Time { return now }))
+	options = append(options, withLifecycleClock(func() time.Time { return now }))
 	lifecycle, err := NewLifecycle(metadata, content, repairer, locks, options...)
 	if err != nil {
 		t.Fatal(err)

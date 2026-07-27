@@ -18,31 +18,10 @@ import (
 type SnapshotInputConfig struct {
 	Type     snapshot.TypeRef `json:"type"`
 	Optional bool             `json:"optional,omitempty"`
-	// Candidate marks this port as one of the alternatives a selecting step is
-	// allowed to choose between. It is a port DECLARATION, authored in the
-	// workflow function source and compiled server-side, so a selection record
-	// cannot manufacture its own candidacy: the executor forwards the declared
-	// candidate ports to the sealer, and the selection validator treats that
-	// declaration — never the record's subject roles — as authority.
-	Candidate bool `json:"candidate,omitempty"`
 }
 
 func (config SnapshotInputConfig) Validate() error {
-	if err := config.Type.Validate(); err != nil {
-		return err
-	}
-	// Candidacy is a STATIC port declaration and the selection validator treats
-	// it as authority. The executor only forwards ports it actually bound, so an
-	// unbound optional candidate would silently leave the candidate set and make
-	// that authority run-dependent — the declared set and the enforced set would
-	// differ, with nothing reporting the difference. The rule lives here so both
-	// gates get it from one place: the workflow-function typechecker calls this
-	// per input (agent/workflow/typecheck.go) and so does StepValidator for
-	// pipelines set directly with fly, as does UnmarshalJSON for compiled plans.
-	if config.Candidate && config.Optional {
-		return fmt.Errorf("a candidate input port cannot be optional")
-	}
-	return nil
+	return config.Type.Validate()
 }
 
 func (config SnapshotInputConfig) MarshalJSON() ([]byte, error) {

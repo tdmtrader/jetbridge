@@ -23,7 +23,6 @@ func TestRecordSchemaDigestsArePinnedForEveryRecordContract(t *testing.T) {
 		"diagnosis/v1":         "sha256:47301b1acc54725bd94804e6a20ca284b85568e4336d5592c64a89bcd2f58c47",
 		"validation/v1":        "sha256:68811d591b6f1f9cac7f2c27f36d96282717298c2420e3e16f521e5cd7351821",
 		"repository-change/v1": "sha256:afdb59e4eb682a09f86fb92165c57d3df215487be5a55e316944eba8bdc1f013",
-		"selection/v1":         "sha256:cc476af24a81b9762d4d38b79a1354279500eecfb2684b2818225cbc63a234a8",
 		"measurements/v1":      "sha256:d2e0b89126ce534c957a8e93166391f517e126aec5aa961f66a4c6c178bc57a0",
 	}
 	for raw, want := range expected {

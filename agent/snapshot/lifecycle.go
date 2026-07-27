@@ -113,11 +113,11 @@ type Lifecycle struct {
 
 type LifecycleOption func(*Lifecycle)
 
-func WithLifecycleClock(now func() time.Time) LifecycleOption {
+func withLifecycleClock(now func() time.Time) LifecycleOption {
 	return func(lifecycle *Lifecycle) { lifecycle.now = now }
 }
 
-func WithLifecyclePageSize(size int) LifecycleOption {
+func withLifecyclePageSize(size int) LifecycleOption {
 	return func(lifecycle *Lifecycle) { lifecycle.pageSize = size }
 }
 

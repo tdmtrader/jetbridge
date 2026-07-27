@@ -32,6 +32,7 @@ func TestOnlyVersionThreeEngineeringSeedsRemain(t *testing.T) {
 		"anonymization-audit-v3",
 		"code-review-v3",
 		"log-diagnosis-v3",
+		"measure-review-v3",
 		"merge-delivery-v3",
 		"small-fix-v3",
 		"version-upgrade-v3",
@@ -88,6 +89,19 @@ func TestVersionThreeEngineeringSeedsCompileAndRender(t *testing.T) {
 			},
 			dispositionOutput: "change",
 			humanWait:         true,
+		},
+		{
+			// The shipped experiment evaluator. It has no agent and no publisher
+			// on purpose: those are exactly the two shapes experiment admission
+			// charges for (a budget slice) and refuses (an outbound effect).
+			directory: "seeds/measure-review-v3",
+			name:      "measure-review",
+			inputs: []workflow.SignaturePort{
+				{Name: "candidate", Type: snapshot.TypeRef("review/v1")},
+			},
+			outputs: []workflow.SignaturePort{
+				{Name: "measurements", Type: snapshot.TypeRef("measurements/v1")},
+			},
 		},
 		{
 			directory: "seeds/merge-delivery-v3",
@@ -193,5 +207,82 @@ func TestVersionThreeEngineeringSeedsCompileAndRender(t *testing.T) {
 				t.Fatal("version-3 seed is coupled to the legacy ticket/workspace model")
 			}
 		})
+	}
+}
+
+// TestMeasureReviewSeedStaysAdmissibleAsAnExperimentEvaluator pins the three
+// properties that make this seed usable where the others are not.
+//
+// An experiment binds an evaluator run per cell, so the evaluator's shape
+// decides what the whole matrix costs and whether it can be admitted at all:
+// agent/experiment/execution_budget.go rejects a publish_snapshot outright and
+// demands a positive dollar envelope the moment any agent leaf exists while the
+// deployment daily cap is on. An evaluator that acquired either would silently
+// turn every repetition into spend or into an external write. The third
+// property — that the task really invokes the deterministic function — is what
+// keeps the first two from being true only because the seed does nothing.
+func TestMeasureReviewSeedStaysAdmissibleAsAnExperimentEvaluator(t *testing.T) {
+	manifest, err := workflow.ManifestFromDir("seeds/measure-review-v3")
+	if err != nil {
+		t.Fatalf("ManifestFromDir: %v", err)
+	}
+	definition, err := workflow.NewMemoryStore().ImportManifest("measure-review", manifest, "seed-test")
+	if err != nil {
+		t.Fatalf("compile/import seed: %v", err)
+	}
+	target, err := workflow.FullFunctionTarget(*definition)
+	if err != nil {
+		t.Fatalf("FullFunctionTarget: %v", err)
+	}
+	rendered, err := workflow.RenderFunction(target)
+	if err != nil {
+		t.Fatalf("RenderFunction: %v", err)
+	}
+
+	var agents, effects int
+	var tasks []*atc.TaskStep
+	// An unset hook is a no-op, so every step kind that could carry an effect
+	// gets an explicit handler: a silently ignored `put` would let this test
+	// certify an evaluator that writes to the outside world on every repetition.
+	unsupported := func(kind string) error {
+		return fmt.Errorf("evaluator seed rendered unsupported visible %s step", kind)
+	}
+	recursor := atc.StepRecursor{
+		OnTask:            func(step *atc.TaskStep) error { tasks = append(tasks, step); return nil },
+		OnAgent:           func(*atc.AgentStep) error { agents++; return nil },
+		OnLoadSnapshot:    func(*atc.LoadSnapshotStep) error { return nil },
+		OnAwaitSnapshot:   func(*atc.AwaitSnapshotStep) error { effects++; return nil },
+		OnPublishSnapshot: func(*atc.PublishSnapshotStep) error { effects++; return nil },
+		OnGet:             func(*atc.GetStep) error { return unsupported("get") },
+		OnPut:             func(*atc.PutStep) error { return unsupported("put") },
+		OnRun:             func(*atc.RunStep) error { return unsupported("run") },
+		OnSetPipeline:     func(*atc.SetPipelineStep) error { return unsupported("set_pipeline") },
+		OnLoadVar:         func(*atc.LoadVarStep) error { return unsupported("load_var") },
+	}
+	for _, step := range rendered.Config.Jobs[0].PlanSequence {
+		if err := step.Config.Visit(recursor); err != nil {
+			t.Fatalf("inspect rendered plan: %v", err)
+		}
+	}
+	if agents != 0 {
+		t.Errorf("evaluator seed renders %d agent step(s); an evaluator with an agent is neither free nor reproducible", agents)
+	}
+	if effects != 0 {
+		t.Errorf("evaluator seed renders %d human-wait/publisher step(s); experiment admission requires an effect-free evaluator", effects)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("evaluator seed renders %d task steps, want exactly the measuring function", len(tasks))
+	}
+
+	run := tasks[0].Config.Run
+	if run.Path != "function-runner" {
+		t.Fatalf("evaluator task runs %q, want the deterministic function-runner", run.Path)
+	}
+	want := []string{"judge", "--candidate=candidate", "--output=measurements"}
+	if !reflect.DeepEqual(run.Args, want) {
+		t.Fatalf("evaluator task args = %q, want %q", run.Args, want)
+	}
+	if tasks[0].SnapshotOutputs["measurements"].Type != snapshot.TypeRef("measurements/v1") {
+		t.Fatalf("evaluator task output declarations = %+v, want a typed measurements/v1 port", tasks[0].SnapshotOutputs)
 	}
 }

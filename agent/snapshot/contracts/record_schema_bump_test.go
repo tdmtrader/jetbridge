@@ -44,7 +44,6 @@ var bumpedRecordTypes = []string{
 	"diagnosis/v1",
 	"validation/v1",
 	"repository-change/v1",
-	"selection/v1",
 	"measurements/v1",
 }
 
@@ -161,9 +160,8 @@ func TestAdmitForSealRejectsTheRevisionOneDigestForEveryType(t *testing.T) {
 	}
 }
 
-// TestAStoredDigestResolvesToItsOwnRevisionForEveryRealType is the same property
-// epistemic_revision_internal_test.go pins on a synthetic three-revision type,
-// asserted for the first time against the real histories.
+// TestAStoredDigestResolvesToItsOwnRevisionForEveryRealType asserts against the
+// real histories that a stored digest maps to the revision it identifies.
 //
 // It could not be asserted before the bump: with one revision per type, every
 // digest resolves to revision 1 whether the mapping is right or inverted. Two
@@ -187,14 +185,6 @@ func TestAStoredDigestResolvesToItsOwnRevisionForEveryRealType(t *testing.T) {
 					t.Fatalf("SchemaRevisionFor(%q, revision %d digest) = %d/%t, want %d",
 						raw, revision, mapped, found, revision)
 				}
-				declaration, found := contracts.EpistemicDeclarationForSchemaDigest(ref, digest)
-				if !found {
-					t.Fatalf("%q revision %d: no epistemic declaration reachable from its stored digest", raw, revision)
-				}
-				if declaration.Revision != revision {
-					t.Fatalf("%q revision %d digest resolved to declaration revision %d",
-						raw, revision, declaration.Revision)
-				}
 			}
 			// Newest-first, so revision 2 is at position 0 and revision 1 at 1 —
 			// which is why position must never be read as revision.
@@ -205,8 +195,8 @@ func TestAStoredDigestResolvesToItsOwnRevisionForEveryRealType(t *testing.T) {
 	}
 }
 
-// TestEveryRecordTypeIsCoveredByTheBumpTests stops a seventh record type from
-// being added without the two assertions above applying to it.
+// TestEveryRecordTypeIsCoveredByTheBumpTests stops a new record type from being
+// added without the two assertions above applying to it.
 func TestEveryRecordTypeIsCoveredByTheBumpTests(t *testing.T) {
 	covered := make(map[string]struct{}, len(bumpedRecordTypes))
 	for _, raw := range bumpedRecordTypes {

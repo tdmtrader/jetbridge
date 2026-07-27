@@ -493,16 +493,6 @@ func (step *TaskStep) imageSpec(ctx context.Context, logger lager.Logger, state 
 type snapshotInputBindings struct {
 	order []string
 	refs  map[string]snapshot.SnapshotRef
-	// candidates are the bound input ports the step's compiled declarations
-	// marked as candidate ports, in binding order.
-	//
-	// Only bound ports appear, and that is safe precisely because a candidate port
-	// can never be optional (atc.SnapshotInputConfig.Validate): an absent one is a
-	// MissingInputsError before worker selection, so this slice is always the full
-	// declared candidate set rather than a run-dependent subset of it. Were the
-	// pair permitted, the set the selection validator treats as authority would
-	// silently narrow with nothing reporting the narrowing.
-	candidates []string
 	// exposures is the mount-time exposure lineage for the bound input ports:
 	// how much of each tree the step was actually shown, and where it was
 	// mounted. The runtime materializes whole artifacts, so every entry is
@@ -561,9 +551,6 @@ func (step *TaskStep) containerInputs(logger lager.Logger, repository *build.Rep
 			bindings.order = append(bindings.order, inputName)
 			bindings.refs[inputName] = ref
 			bindings.recordExposure(inputName, ref, destination)
-			if declaration.Candidate {
-				bindings.candidates = append(bindings.candidates, inputName)
-			}
 			continue
 		}
 
@@ -788,7 +775,6 @@ func (step *TaskStep) sealTypedOutputs(
 		StepKind: "task", StepName: step.plan.Name,
 		WorkflowDefinitionID: workflowDefinitionID, WorkflowRunID: workflowRunID,
 		InputOrder: append([]string(nil), inputs.order...), Inputs: cloneExecSnapshotRefs(inputs.refs),
-		CandidateInputs:    append([]string(nil), inputs.candidates...),
 		InputExposures:     cloneExecInputExposures(inputs.exposures),
 		OutputDeclarations: declarations, Outputs: sources,
 	})

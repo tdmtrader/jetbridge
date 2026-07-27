@@ -47,7 +47,10 @@ v8.0.1:1765921815
 # 1773106131 = drops agent_ticket_comments with the ticket comment surface
 # (no route, no reader; work-item/v1 no longer carries a comments key). The
 # down migration recreates the table empty — rows are not recoverable.
-JETBRIDGE_VERSION=1773106136
+# 1773106137 = drops agent_snapshot_exposure_paths and narrows the exposure
+# materialization mode to 'full'. Nothing ever wrote a static selector, so the
+# table was empty; whole-tree exposure is the only mode the runtime records.
+JETBRIDGE_VERSION=1773106137
 
 # Minimum supported source version (v6.x)
 MIN_SUPPORTED_VERSION=1601993582

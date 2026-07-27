@@ -65,10 +65,8 @@ func (document SchemaDocument) validateDecodedRecord(subjects []Subject, body an
 // validateDeclaredSubjectSet enforces subject_shape: cardinality, the closed role
 // set with its per-role bounds, a pinned subject type, and type uniformity.
 //
-// It deliberately does NOT enforce `ports`. Where the candidate-port set comes
-// from is a Go rule and cannot be a schema rule: at seal time it is the server's
-// compiled port declarations, and at read time the sealed candidate-role subjects
-// that seal-time admission already certified. A reader holds no declarations.
+// It deliberately does NOT enforce `ports`: which exposed input a subject may
+// bind is a Go rule, judged against declarations a reader does not hold.
 func (document SchemaDocument) validateDeclaredSubjectSet(subjects []Subject) error {
 	shape := document.SubjectShape
 	if len(subjects) < shape.Minimum {

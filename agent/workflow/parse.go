@@ -335,16 +335,6 @@ func validateFunctionStepSource(value any, path string) error {
 			return err
 		}
 	}
-	if policy, found := step["gate_policy"]; found {
-		if err := validateGatePolicySource(policy, path+".gate_policy"); err != nil {
-			return err
-		}
-	}
-	if judge, found := step["judge"]; found {
-		if err := validateJudgeSource(judge, path+".judge"); err != nil {
-			return err
-		}
-	}
 
 	return nil
 }
@@ -543,34 +533,6 @@ func validateInlineSidecarSource(value any, path string) error {
 				return err
 			}
 		}
-	}
-	return nil
-}
-
-func validateGatePolicySource(value any, path string) error {
-	policy, ok := value.(map[string]any)
-	if !ok {
-		return nil
-	}
-	if err := rejectObjectKeys(policy, path, []string{"gates", "on_gate_failure"}); err != nil {
-		return err
-	}
-	if gates, found := policy["gates"]; found {
-		return validateObjectListSource(gates, path+".gates", []string{"gate", "scope", "focus", "timeout", "retries"})
-	}
-	return nil
-}
-
-func validateJudgeSource(value any, path string) error {
-	judge, ok := value.(map[string]any)
-	if !ok {
-		return nil
-	}
-	if err := rejectObjectKeys(judge, path, []string{"rubric", "pass_threshold", "model", "budget_usd"}); err != nil {
-		return err
-	}
-	if rubric, found := judge["rubric"]; found {
-		return validateObjectListSource(rubric, path+".rubric", []string{"name", "weight", "guidance"})
 	}
 	return nil
 }

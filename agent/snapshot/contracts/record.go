@@ -24,17 +24,21 @@ const (
 	diagnosisType        = snapshot.TypeRef("diagnosis/v1")
 	validationType       = snapshot.TypeRef("validation/v1")
 	repositoryChangeType = snapshot.TypeRef("repository-change/v1")
-	selectionType        = snapshot.TypeRef("selection/v1")
 	measurementsType     = snapshot.TypeRef("measurements/v1")
 )
 
 type SubjectRole string
 
 const (
-	SubjectRolePrimary   SubjectRole = "primary"
-	SubjectRoleBase      SubjectRole = "base"
-	SubjectRoleEvidence  SubjectRole = "evidence"
-	SubjectRoleContext   SubjectRole = "context"
+	SubjectRolePrimary  SubjectRole = "primary"
+	SubjectRoleBase     SubjectRole = "base"
+	SubjectRoleEvidence SubjectRole = "evidence"
+	SubjectRoleContext  SubjectRole = "context"
+	// SubjectRoleCandidate survives the removal of selection/v1: measurements/v1's
+	// declared schema (schemas/measurements.v1.rev2.json) permits it, and that
+	// document's bytes are inside a frozen canonical descriptor. Dropping the role
+	// would mean editing the document, which is a descriptor-digest bump and a
+	// revalidation break for every measurements record already sealed.
 	SubjectRoleCandidate SubjectRole = "candidate"
 	SubjectRoleReference SubjectRole = "reference"
 )

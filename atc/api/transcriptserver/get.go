@@ -15,6 +15,24 @@ import (
 // rest of the v3 API validates before it reaches a store query.
 var workflowNamePattern = regexp.MustCompile(`^[\p{Ll}\p{Lt}\p{Lm}\p{Lo}\d][\p{Ll}\p{Lt}\p{Lm}\p{Lo}\d\-_.]{0,127}$`)
 
+// runScope is the (workflow name, run id) pair every transcript route is
+// addressed by. The workflow name is not decoration: it scopes the store query
+// alongside the run id (identity + authz), so a run id addressed under the
+// wrong workflow name resolves to nothing.
+func runScope(w http.ResponseWriter, r *http.Request) (string, snapshot.WorkflowRunID, bool) {
+	workflowName := rata.Param(r, "workflow_name")
+	if !workflowNamePattern.MatchString(workflowName) {
+		http.Error(w, "invalid workflow name", http.StatusBadRequest)
+		return "", 0, false
+	}
+	runID, err := snapshot.ParseWorkflowRunID(rata.Param(r, "workflow_run_id"))
+	if err != nil {
+		http.Error(w, "invalid workflow run ID", http.StatusBadRequest)
+		return "", 0, false
+	}
+	return workflowName, runID, true
+}
+
 // GetTranscript serves GET
 // /api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/transcripts/:plan_id
 // — the raw tool-call transcript (ndjson) the runner captured for one agent
@@ -26,14 +44,8 @@ var workflowNamePattern = regexp.MustCompile(`^[\p{Ll}\p{Lt}\p{Lm}\p{Lo}\d][\p{L
 func (s *Server) GetTranscript(w http.ResponseWriter, r *http.Request) {
 	logger := s.logger.Session("get-agent-workflow-run-transcript")
 
-	workflowName := rata.Param(r, "workflow_name")
-	if !workflowNamePattern.MatchString(workflowName) {
-		http.Error(w, "invalid workflow name", http.StatusBadRequest)
-		return
-	}
-	runID, err := snapshot.ParseWorkflowRunID(rata.Param(r, "workflow_run_id"))
-	if err != nil {
-		http.Error(w, "invalid workflow run ID", http.StatusBadRequest)
+	workflowName, runID, ok := runScope(w, r)
+	if !ok {
 		return
 	}
 	planID := rata.Param(r, "plan_id")

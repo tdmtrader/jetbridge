@@ -12,23 +12,16 @@ import (
 // actually shown. It exists so "did the judge look at the diff?" is answerable
 // from persisted lineage rather than inferred from a producer's own record.
 //
-// The set is closed at two values on purpose. Dynamic, agent-driven partial
+// The set is closed at one value on purpose. Dynamic, agent-driven partial
 // mounting is prohibited: its path set is unknown at admission, so no honest
 // lineage row could be written for it. There is deliberately no constant for
 // it, and ParseMaterializationMode fails loudly if one is expressed.
 type MaterializationMode string
 
-const (
-	// MaterializationFull is the default for agentic steps. An agent could
-	// read anything it was given, so lineage records the whole tree — the tree
-	// digest is the record of every path in it. This is honest, not lazy.
-	MaterializationFull MaterializationMode = "full"
-
-	// MaterializationStaticSelector is for deterministic steps: the exact
-	// document set was chosen before the step ran, so every exposed path can
-	// be enumerated with its own digest at admission time.
-	MaterializationStaticSelector MaterializationMode = "static-selector"
-)
+// MaterializationFull is the only mode the runtime can honestly record. A step
+// could read anything it was given, so lineage records the whole tree — the
+// tree digest is the record of every path in it. This is honest, not lazy.
+const MaterializationFull MaterializationMode = "full"
 
 // ErrDynamicMaterializationProhibited is returned whenever a dynamic,
 // agent-driven partial materialization is expressed. Lineage for it cannot be
@@ -61,7 +54,7 @@ func (m MaterializationMode) Validate() error {
 		return err
 	}
 	switch m {
-	case MaterializationFull, MaterializationStaticSelector:
+	case MaterializationFull:
 		return nil
 	case "":
 		return fmt.Errorf("snapshot: materialization mode is required")
@@ -92,52 +85,6 @@ func (m *MaterializationMode) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// ExposedPath is one exact document a static selector materialized, with the
-// digest of the bytes that were exposed. The path is relative to the canonical
-// archive root — the only namespace verifiable at seal time — never to a pod
-// mount path.
-type ExposedPath struct {
-	Path   string `json:"path"`
-	Digest Digest `json:"digest"`
-}
-
-func (p ExposedPath) Validate() error {
-	if err := validateExposedPath(p.Path); err != nil {
-		return err
-	}
-	if err := p.Digest.Validate(); err != nil {
-		return fmt.Errorf("snapshot: exposed path %q digest: %w", p.Path, err)
-	}
-	return nil
-}
-
-func validateExposedPath(raw string) error {
-	if raw == "" {
-		return fmt.Errorf("snapshot: exposed path is required")
-	}
-	if strings.TrimSpace(raw) != raw {
-		return fmt.Errorf("snapshot: exposed path %q must not be padded", raw)
-	}
-	if strings.HasPrefix(raw, "/") {
-		return fmt.Errorf("snapshot: exposed path %q must be archive-relative", raw)
-	}
-	if path.Clean(raw) != raw {
-		return fmt.Errorf("snapshot: exposed path %q must be a clean archive-relative path", raw)
-	}
-	// A pattern is what a dynamic selector would need. Enumerable literal
-	// paths are the structural reason a partial exposure can be recorded at
-	// all, so wildcards are rejected outright rather than expanded later.
-	if strings.ContainsAny(raw, "*?") {
-		return fmt.Errorf("snapshot: exposed path %q must be a literal path, not a pattern", raw)
-	}
-	for _, segment := range strings.Split(raw, "/") {
-		if segment == "" || segment == "." || segment == ".." {
-			return fmt.Errorf("snapshot: exposed path %q has an empty or relative segment", raw)
-		}
-	}
-	return nil
-}
-
 // InputExposure is the mount-time record of what one exposed input actually
 // showed a step. It is production-occurrence data: it never enters sealed
 // bytes, and it is never part of ValidationResult.IntrinsicMetadata, which is
@@ -152,39 +99,12 @@ type InputExposure struct {
 	// when it was materialized at all. It is empty for an input exposed only
 	// by reference to a validator.
 	MountPath string `json:"mount_path,omitempty"`
-	// Paths is the exact exposed document set, sorted by path. It is empty for
-	// full materialization, where the tree digest already records every path.
-	Paths []ExposedPath `json:"paths,omitempty"`
 }
 
 // FullTreeExposure records the whole tree as exposed, which is the default for
 // agentic steps.
 func FullTreeExposure(mountPath string, treeDigest Digest) InputExposure {
 	return InputExposure{Mode: MaterializationFull, TreeDigest: treeDigest, MountPath: mountPath}
-}
-
-// NewStaticSelectorExposure records an enumerated document set as exposed. The
-// path set is sorted here so callers never hand-sort a wire value, and every
-// path must carry its own digest — which is precisely why a dynamic selection
-// cannot be expressed through this constructor.
-func NewStaticSelectorExposure(mountPath string, treeDigest Digest, paths ...ExposedPath) (InputExposure, error) {
-	exposure := InputExposure{
-		Mode: MaterializationStaticSelector, TreeDigest: treeDigest, MountPath: mountPath,
-		Paths: append([]ExposedPath(nil), paths...),
-	}
-	sortExposedPaths(exposure.Paths)
-	if err := exposure.Validate(); err != nil {
-		return InputExposure{}, err
-	}
-	return exposure, nil
-}
-
-func sortExposedPaths(paths []ExposedPath) {
-	for i := 1; i < len(paths); i++ {
-		for j := i; j > 0 && paths[j].Path < paths[j-1].Path; j-- {
-			paths[j], paths[j-1] = paths[j-1], paths[j]
-		}
-	}
 }
 
 func (e InputExposure) Validate() error {
@@ -194,28 +114,7 @@ func (e InputExposure) Validate() error {
 	if err := e.TreeDigest.Validate(); err != nil {
 		return fmt.Errorf("snapshot: exposure tree digest: %w", err)
 	}
-	if err := validateMountPath(e.MountPath); err != nil {
-		return err
-	}
-	switch e.Mode {
-	case MaterializationFull:
-		if len(e.Paths) != 0 {
-			return fmt.Errorf("snapshot: full materialization must not enumerate a partial path set")
-		}
-	case MaterializationStaticSelector:
-		if len(e.Paths) == 0 {
-			return fmt.Errorf("snapshot: static selector materialization must enumerate its exposed paths")
-		}
-	}
-	for index, exposed := range e.Paths {
-		if err := exposed.Validate(); err != nil {
-			return err
-		}
-		if index > 0 && e.Paths[index-1].Path >= exposed.Path {
-			return fmt.Errorf("snapshot: exposed paths must be unique and sorted, got %q after %q", exposed.Path, e.Paths[index-1].Path)
-		}
-	}
-	return nil
+	return validateMountPath(e.MountPath)
 }
 
 func validateMountPath(raw string) error {
@@ -237,10 +136,7 @@ func validateMountPath(raw string) error {
 	return nil
 }
 
-func (e InputExposure) Clone() InputExposure {
-	e.Paths = append([]ExposedPath(nil), e.Paths...)
-	return e
-}
+func (e InputExposure) Clone() InputExposure { return e }
 
 func (e InputExposure) MarshalJSON() ([]byte, error) {
 	if err := e.Validate(); err != nil {

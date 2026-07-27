@@ -694,9 +694,8 @@ func insertOrVerifyLineage(
 }
 
 // insertOrVerifyExposures records what the production was actually shown of
-// each exposed input: the materialization mode, the mount path when there was
-// one, and — for a static selector — the exact exposed path set with per-path
-// digests. It is occurrence data, so it lives next to lineage and never on the
+// each exposed input: the materialization mode and the mount path when there
+// was one. It is occurrence data, so it lives next to lineage and never on the
 // deduplicated agent_snapshots row, whose (type_name, type_version, digest)
 // identity must stay a pure function of the sealed bytes.
 //
@@ -714,37 +713,26 @@ func insertOrVerifyExposures(
 		exposure := exposures[port]
 		ref := commit.Inputs[port]
 		if productionCreated {
-			var insertedID int64
-			err := tx.QueryRowContext(ctx, `
+			_, err := tx.ExecContext(ctx, `
 				INSERT INTO agent_snapshot_exposures
 					(production_id, input_port, input_snapshot_id, materialization_mode, tree_digest, mount_path)
 				VALUES ($1, $2, $3, $4, $5, $6)
-				RETURNING id
 			`, productionID, port, int64(ref.ID), exposure.Mode.String(),
-				exposure.TreeDigest.String(), nullableMountPath(exposure.MountPath)).Scan(&insertedID)
+				exposure.TreeDigest.String(), nullableMountPath(exposure.MountPath))
 			if err != nil {
 				return err
 			}
-			for _, exposed := range exposure.Paths {
-				if _, err := tx.ExecContext(ctx, `
-					INSERT INTO agent_snapshot_exposure_paths (exposure_id, path, digest)
-					VALUES ($1, $2, $3)
-				`, insertedID, exposed.Path, exposed.Digest.String()); err != nil {
-					return err
-				}
-			}
 		}
 		var (
-			exposureID int64
 			mode       string
 			treeDigest string
 			mountPath  sql.NullString
 		)
 		err := tx.QueryRowContext(ctx, `
-			SELECT id, materialization_mode, tree_digest, mount_path
+			SELECT materialization_mode, tree_digest, mount_path
 			FROM agent_snapshot_exposures
 			WHERE production_id = $1 AND input_port = $2 AND input_snapshot_id = $3
-		`, productionID, port, int64(ref.ID)).Scan(&exposureID, &mode, &treeDigest, &mountPath)
+		`, productionID, port, int64(ref.ID)).Scan(&mode, &treeDigest, &mountPath)
 		if errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("db: snapshot exposure lineage is absent for input %q", port)
 		}
@@ -755,9 +743,6 @@ func insertOrVerifyExposures(
 			mountPath.String != exposure.MountPath || mountPath.Valid != (exposure.MountPath != "") {
 			return fmt.Errorf("db: snapshot exposure lineage conflicts with the immutable production exposure for input %q", port)
 		}
-		if err := verifyExposedPathSet(ctx, tx, exposureID, port, exposure); err != nil {
-			return err
-		}
 	}
 	var count int
 	if err := tx.QueryRowContext(ctx, `
@@ -767,72 +752,6 @@ func insertOrVerifyExposures(
 	}
 	if count != len(commit.InputOrder) {
 		return fmt.Errorf("db: snapshot exposure lineage conflicts with immutable production inputs")
-	}
-	return nil
-}
-
-// verifyExposedPathSet checks the persisted exposed path set against the
-// declared one as an unordered set keyed by path, which is what the set
-// actually is: agent_snapshot_exposure_paths is keyed PRIMARY KEY (exposure_id,
-// path), so one path has one digest and no order carries meaning.
-//
-// It is deliberately ordering-free on both sides. The previous implementation
-// compared a Postgres string_agg(path || ' ' || digest ORDER BY path) against a
-// Go sort.Strings of the same lines, and those are two different orders for two
-// independent reasons: ORDER BY path sorts by the column's *collation*, whereas
-// Go compares bytes; and sorting whole "path digest" lines is not sorting by
-// path, because a path that is a prefix of another one followed by a space
-// changes rank once the digest is appended. Either divergence made
-// CommitSealBatch refuse the very row it had just inserted.
-//
-// Set comparison is collation-proof rather than collation-matching: no ORDER BY
-// is issued and no sort is performed, so the result cannot depend on the
-// database's or column's collation, on the deployment's locale, or on the
-// collation-order changes PostgreSQL ships between versions. Reproducing a
-// libc/ICU collation in Go, or pinning ORDER BY ... COLLATE "C", would both
-// leave the answer resting on the two sides agreeing about order; here there is
-// no order to agree about.
-func verifyExposedPathSet(
-	ctx context.Context,
-	tx Tx,
-	exposureID int64,
-	port string,
-	exposure snapshot.InputExposure,
-) error {
-	conflict := fmt.Errorf(
-		"db: snapshot exposure lineage conflicts with the immutable exposed path set for input %q", port)
-
-	rows, err := tx.QueryContext(ctx, `
-		SELECT path, digest FROM agent_snapshot_exposure_paths WHERE exposure_id = $1
-	`, exposureID)
-	if err != nil {
-		return err
-	}
-	defer Close(rows)
-
-	persisted := make(map[string]string, len(exposure.Paths))
-	for rows.Next() {
-		var path, pathDigest string
-		if err := rows.Scan(&path, &pathDigest); err != nil {
-			return err
-		}
-		persisted[path] = pathDigest
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-
-	// Every declared path must be persisted with the same digest, and the
-	// persisted set must hold nothing else. Comparing the distinct-path count
-	// against the declared length also refuses a declaration that repeats a
-	// path, which the primary key makes unrepresentable in the row set.
-	if len(persisted) != len(exposure.Paths) {
-		return conflict
-	}
-	for _, exposed := range exposure.Paths {
-		if persisted[exposed.Path] != exposed.Digest.String() {
-			return conflict
-		}
 	}
 	return nil
 }

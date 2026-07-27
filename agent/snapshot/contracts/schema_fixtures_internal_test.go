@@ -40,7 +40,6 @@ func recordFixtures() []recordFixture {
 		diagnosisFixtures(),
 		validationFixtures(),
 		repositoryChangeFixtures(),
-		selectionFixtures(),
 		measurementsFixtures(),
 	)
 }
@@ -313,51 +312,6 @@ func repositoryChangeFixtures() []recordFixture {
 				Payload:        ContentRef{Path: "content/tree.tar", Digest: fixtureDigest('c'), MediaType: "application/x-tar"},
 				ResultTree:     strings.Repeat("b", 40),
 				ResultCommit:   strings.Repeat("c", 40),
-			},
-		},
-	}
-}
-
-func selectionFixtures() []recordFixture {
-	validate := func(subjects []Subject, body any) error {
-		return body.(SelectionBody).RevalidateSealed(subjects)
-	}
-	subjects := fixtureSubjects(SubjectRoleCandidate, "left", "right")
-	minimum, maximum, target := 0.0, 10.0, 7.0
-	return []recordFixture{
-		{
-			name: "selection/two-candidates", ref: selectionType, subjects: subjects, validate: validate,
-			body: SelectionBody{
-				Selected: "right",
-				Candidates: []CandidateAssessment{
-					{
-						ID: "left", Rank: 2, Summary: "Viable but slower.",
-						Scores: []NamedScore{
-							// Value 0 is the absence witness for a score's value: the absent
-							// image of a float64 IS 0, so no rule can distinguish this from an
-							// omitted value, which is exactly why value is declared optional.
-							{ID: "s-1", Score: Score{Scale: "unit-interval", Direction: "higher-is-better"}},
-							{ID: "s-2", Score: Score{
-								Value: 5, Scale: "bounded", Direction: "target",
-								Minimum: &minimum, Maximum: &maximum, Target: &target,
-							}},
-						},
-					},
-					{ID: "right", Rank: 1, Summary: "Strongest evidence."},
-				},
-				Rationale: "Right wins on every dimension that matters.",
-			},
-		},
-		{
-			// A judge given one surviving candidate still has to say so. This is
-			// the instance that sits exactly on the declared minimum of one, and
-			// without it raising that minimum would fail nothing.
-			name: "selection/one-candidate", ref: selectionType, validate: validate,
-			subjects: fixtureSubjects(SubjectRoleCandidate, "only"),
-			body: SelectionBody{
-				Selected:   "only",
-				Candidates: []CandidateAssessment{{ID: "only", Rank: 1, Summary: "The only survivor."}},
-				Rationale:  "Nothing else reached the judge.",
 			},
 		},
 	}

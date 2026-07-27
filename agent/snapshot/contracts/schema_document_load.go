@@ -32,10 +32,10 @@ import (
 //	reads from.
 //
 //	PHASE 2 (registerSchemaDocuments) cross-checks each document against the rest
-//	of the package: the digest history, the Go record types, and the epistemic
-//	table. It is a blank package-level var, so Go schedules it after everything it
-//	transitively references — including the histories and phase 1 — and any
-//	failure is still a package-initialisation panic and never a read-time report.
+//	of the package: the digest history and the Go record types. It is a blank
+//	package-level var, so Go schedules it after everything it transitively
+//	references — including the histories and phase 1 — and any failure is still a
+//	package-initialisation panic and never a read-time report.
 //
 // recordSchemaDocuments is the newest document per record type;
 // recordSchemaDocumentRevisions holds every embedded revision, because a revision
@@ -48,7 +48,13 @@ var recordSchemaDocuments, recordSchemaDocumentRevisions = mustParseSchemaDocume
 // recordSchemaHistories instead of merely after phase 1.
 var _ = mustRegisterSchemaDocuments()
 
-func mustParseSchemaDocuments() (map[snapshot.TypeRef]SchemaDocument, map[epistemicKey]SchemaDocument) {
+// schemaRevisionKey addresses one exact (record type, schema revision) pair.
+type schemaRevisionKey struct {
+	ref      snapshot.TypeRef
+	revision int
+}
+
+func mustParseSchemaDocuments() (map[snapshot.TypeRef]SchemaDocument, map[schemaRevisionKey]SchemaDocument) {
 	newest, revisions, err := parseSchemaDocuments()
 	if err != nil {
 		panic("snapshot contracts: invalid record schema document: " + err.Error())
@@ -68,13 +74,13 @@ func mustRegisterSchemaDocuments() struct{} {
 // anything derived from them, directly or through a called function — that
 // reference is the initialisation cycle the two phases exist to avoid, and the
 // compiler is what enforces it.
-func parseSchemaDocuments() (map[snapshot.TypeRef]SchemaDocument, map[epistemicKey]SchemaDocument, error) {
+func parseSchemaDocuments() (map[snapshot.TypeRef]SchemaDocument, map[schemaRevisionKey]SchemaDocument, error) {
 	names, err := embeddedSchemaDocumentNames()
 	if err != nil {
 		return nil, nil, err
 	}
 	newest := make(map[snapshot.TypeRef]SchemaDocument, len(names))
-	revisions := make(map[epistemicKey]SchemaDocument, len(names))
+	revisions := make(map[schemaRevisionKey]SchemaDocument, len(names))
 	for _, name := range names {
 		source, err := schemaDocumentSources.ReadFile(schemaDocumentDirectory + "/" + name)
 		if err != nil {
@@ -84,7 +90,7 @@ func parseSchemaDocuments() (map[snapshot.TypeRef]SchemaDocument, map[epistemicK
 		if err != nil {
 			return nil, nil, err
 		}
-		key := epistemicKey{ref: document.Contract, revision: document.Revision}
+		key := schemaRevisionKey{ref: document.Contract, revision: document.Revision}
 		if existing, found := revisions[key]; found {
 			return nil, nil, fmt.Errorf(
 				"%q revision %d is declared by both %s and %s; a revision is one file",
@@ -165,9 +171,6 @@ func parseSchemaDocument(fileName string, source []byte) (SchemaDocument, error)
 	label := fmt.Sprintf("schema document %s", fileName)
 	raw, err := requireExactObjectKeys(label, source, schemaDocumentKeys)
 	if err != nil {
-		return SchemaDocument{}, err
-	}
-	if err := rejectEpistemicKeys(label, source); err != nil {
 		return SchemaDocument{}, err
 	}
 	var document SchemaDocument
@@ -661,10 +664,8 @@ func validateSubjectShape(label string, raw json.RawMessage, shape SubjectShape)
 			return fmt.Errorf("%s: subject_type: %w", shapeLabel, err)
 		}
 	}
-	switch shape.Ports {
-	case PortsAnyExposedInput, PortsCandidatePortsExactly:
-	default:
-		return fmt.Errorf("%s: ports %q must be %q or %q", shapeLabel, shape.Ports, PortsAnyExposedInput, PortsCandidatePortsExactly)
+	if shape.Ports != PortsAnyExposedInput {
+		return fmt.Errorf("%s: ports %q must be %q", shapeLabel, shape.Ports, PortsAnyExposedInput)
 	}
 	return nil
 }
@@ -701,8 +702,8 @@ func isScalarKind(kind SchemaKind) bool {
 }
 
 // isLeafKind separates claims from structure. A container carries no value of its
-// own, which is exactly why the epistemic table declares leaves only while the
-// schema must declare containers: their shape IS the schema.
+// own; the schema must still declare containers, because their shape IS the
+// schema.
 //
 // An array of a scalar kind is itself a leaf, because the grammar cannot address
 // an element of one: scalars have no id and positions are not addresses.
@@ -771,48 +772,6 @@ func decodeStrictJSON(data []byte, target any) error {
 	return nil
 }
 
-// rejectEpistemicKeys is the belt to DisallowUnknownFields' braces. A schema
-// document carries no epistemic field of any kind: status is keyed by (type,
-// revision) outside every canonical digest, precisely so a mislabelled status is a
-// one-line edit rather than a descriptor bump. Only KEYS are checked — a future
-// enum value legitimately named "platform" is data, not a status claim.
-func rejectEpistemicKeys(label string, source []byte) error {
-	value, err := canonicalJSONValueTree(source)
-	if err != nil {
-		return fmt.Errorf("%s: %w", label, err)
-	}
-	return walkCanonicalKeys(value, func(key string) error {
-		if strings.Contains(strings.ToLower(key), "epistemic") {
-			return fmt.Errorf(
-				"%s: contains the key %q; epistemic status is declared by (type, revision) outside every canonical digest and never inside a schema document",
-				label, key,
-			)
-		}
-		return nil
-	})
-}
-
-func walkCanonicalKeys(value any, check func(string) error) error {
-	switch typed := value.(type) {
-	case canonicalObject:
-		for _, member := range typed {
-			if err := check(member.key); err != nil {
-				return err
-			}
-			if err := walkCanonicalKeys(member.value, check); err != nil {
-				return err
-			}
-		}
-	case canonicalArray:
-		for _, element := range typed {
-			if err := walkCanonicalKeys(element, check); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
 // resolveDeclarations expands every composite kind into the leaves it implies,
 // with their presence DERIVED from the declaration. This is where `forbidden`
 // comes from, and the only place it comes from.
@@ -863,8 +822,8 @@ func (document SchemaDocument) resolveDeclarations(label string) (map[string]Fie
 }
 
 // scoreLeaves is §6.10's derivation table. The same Go Score type gets two
-// different declarations across the six documents — pinned in diagnosis/v1, open
-// in selection/v1 — which is the clearest demonstration that a declaration
+// different declarations across the documents — pinned in diagnosis/v1, open in
+// measurements/v1 — which is the clearest demonstration that a declaration
 // describes a SITE and not a Go type.
 func scoreLeaves(declaration FieldDeclaration) map[string]FieldDeclaration {
 	scales := []string{"unit-interval", "bounded", "unbounded"}
@@ -939,8 +898,7 @@ func enumValues(values []string) []EnumValue {
 }
 
 // validateSchemaDocumentRegistration is the half of loading that needs the rest
-// of the package: the digest history, the Go record types, and the epistemic
-// table.
+// of the package: the digest history and the Go record types.
 func validateSchemaDocumentRegistration(document SchemaDocument) error {
 	label := fmt.Sprintf("schema document %s", document.fileName)
 	if !IsRecordType(document.Contract) {
@@ -962,10 +920,7 @@ func validateSchemaDocumentRegistration(document SchemaDocument) error {
 			label, document.Revision, current, document.Contract,
 		)
 	}
-	if err := document.validateAgainstGoType(label); err != nil {
-		return err
-	}
-	return document.validateAgainstEpistemicTable(label)
+	return document.validateAgainstGoType(label)
 }
 
 // validateAgainstGoType is completeness in BOTH directions. A declared field the
@@ -973,7 +928,7 @@ func validateSchemaDocumentRegistration(document SchemaDocument) error {
 // parity gate cannot see, which is worse, because nothing then compares the two
 // descriptions at all.
 func (document SchemaDocument) validateAgainstGoType(label string) error {
-	prototype, found := recordEpistemicPrototypes[document.Contract]
+	prototype, found := recordPrototypes[document.Contract]
 	if !found {
 		return fmt.Errorf("%s: %q has no record prototype, so its fields cannot be enumerated", label, document.Contract)
 	}
@@ -1075,79 +1030,9 @@ func goKindsFor(declaration FieldDeclaration) []reflect.Kind {
 	}
 }
 
-// validateAgainstEpistemicTable is §7: for each (type, revision) the schema's
-// implied leaf set equals the epistemic table's key set exactly. The two tables
-// answer different questions about the same leaves — what shape a value has,
-// versus on whose authority it stands — and this is what stops one from silently
-// growing a field the other does not know about.
-//
-// The revision resolves to the document's own revision when the table has one,
-// and otherwise to the revision it supersedes. Every adopted revision has its own
-// entry — TestEveryRecordTypeDeclaresEpistemicStatusForEveryRevision requires it —
-// so the fallback is reached only by a STAGED document, which is describing the
-// validators its predecessor's entry describes until it is adopted.
-func (document SchemaDocument) validateAgainstEpistemicTable(label string) error {
-	fields, revision, found := epistemicFieldsForRevision(document.Contract, document.Revision, document.Supersedes)
-	if !found {
-		return fmt.Errorf("%s: %q has no epistemic declaration for revision %d or %d",
-			label, document.Contract, document.Revision, document.Supersedes)
-	}
-	leaves := recordEnvelopeEpistemicFields()
-	envelope := make(map[string]struct{}, len(leaves))
-	for path := range leaves {
-		envelope[path] = struct{}{}
-	}
-	declared := make(map[string]struct{}, len(envelope))
-	for path := range envelope {
-		declared[path] = struct{}{}
-	}
-	for _, path := range document.impliedLeafPaths() {
-		declared[path] = struct{}{}
-	}
-	for _, path := range sortedSet(declared) {
-		if _, found := fields[path]; !found {
-			return fmt.Errorf("%s: schema leaf %q has no epistemic status at revision %d", label, path, revision)
-		}
-	}
-	for _, path := range sortedStatuses(fields) {
-		if _, found := declared[path]; !found {
-			return fmt.Errorf("%s: epistemic field %q at revision %d is not a schema leaf", label, path, revision)
-		}
-	}
-	return nil
-}
-
-func epistemicFieldsForRevision(ref snapshot.TypeRef, preferred, fallback int) (map[string]EpistemicStatus, int, bool) {
-	for _, revision := range []int{preferred, fallback} {
-		fields, found := epistemicFieldStatuses[epistemicKey{ref: ref, revision: revision}]
-		if found {
-			return fields, revision, true
-		}
-	}
-	return nil, 0, false
-}
-
 func sortedPaths(leaves map[string]recordLeaf) []string {
 	paths := make([]string, 0, len(leaves))
 	for path := range leaves {
-		paths = append(paths, path)
-	}
-	sort.Strings(paths)
-	return paths
-}
-
-func sortedSet(set map[string]struct{}) []string {
-	paths := make([]string, 0, len(set))
-	for path := range set {
-		paths = append(paths, path)
-	}
-	sort.Strings(paths)
-	return paths
-}
-
-func sortedStatuses(fields map[string]EpistemicStatus) []string {
-	paths := make([]string, 0, len(fields))
-	for path := range fields {
 		paths = append(paths, path)
 	}
 	sort.Strings(paths)

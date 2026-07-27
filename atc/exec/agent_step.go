@@ -365,9 +365,6 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 			// the whole tree. Dynamic, agent-driven partial mounting is
 			// prohibited: its path set is unknown at admission.
 			snapshotInputs.recordExposure(name, ref, destination)
-			if declaration.Candidate {
-				snapshotInputs.candidates = append(snapshotInputs.candidates, name)
-			}
 			continue
 		}
 		entry, found := repository.ArtifactEntryFor(build.ArtifactName(name))
@@ -1031,7 +1028,6 @@ func (step *AgentStep) sealTypedOutputs(
 		StepKind: "agent", StepName: step.plan.Name,
 		WorkflowDefinitionID: workflowDefinitionID, WorkflowRunID: workflowRunID,
 		InputOrder: append([]string(nil), inputs.order...), Inputs: cloneExecSnapshotRefs(inputs.refs),
-		CandidateInputs:    append([]string(nil), inputs.candidates...),
 		InputExposures:     cloneExecInputExposures(inputs.exposures),
 		OutputDeclarations: declarations, Outputs: sources,
 	})

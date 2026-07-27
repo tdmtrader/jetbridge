@@ -123,7 +123,6 @@ func (validator *StepValidator) VisitTask(plan *TaskStep) error {
 
 	validator.validateSnapshotInputs(plan.SnapshotInputs, effectiveTaskInputs(plan), plan.Config != nil, "task")
 	validator.validateSnapshotOutputs(plan.SnapshotOutputs, effectiveTaskOutputs(plan), plan.Config != nil, "task")
-	validator.validateCandidatePortCoherence(plan.SnapshotInputs, plan.SnapshotOutputs)
 	if plan.Config != nil && len(plan.SnapshotOutputs) > 0 {
 		for _, name := range duplicateEffectiveTaskOutputs(plan) {
 			validator.recordErrorf("duplicate effective task output %q", name)
@@ -306,7 +305,6 @@ func (validator *StepValidator) VisitAgent(step *AgentStep) error {
 
 	validator.validateSnapshotInputs(step.SnapshotInputs, stringSet(step.Inputs), true, "agent")
 	validator.validateSnapshotOutputs(step.SnapshotOutputs, stringSet(step.Outputs), true, "agent")
-	validator.validateCandidatePortCoherence(step.SnapshotInputs, step.SnapshotOutputs)
 	if len(step.SnapshotOutputs) > 0 {
 		for _, name := range duplicateStrings(step.Outputs) {
 			validator.recordErrorf("duplicate agent output %q", name)
@@ -412,72 +410,6 @@ func (validator *StepValidator) validateSnapshotInputs(
 			}
 		}
 	}
-}
-
-// selectionSnapshotType is the record type whose seal-time validation resolves a
-// choice among candidate input ports. Candidacy is authority, so the rules below
-// exist to make an incoherent declaration a `fly set-pipeline` failure instead of
-// a seal-time failure inside a running build.
-const selectionSnapshotType snapshot.TypeRef = "selection/v1"
-
-// validateCandidatePortCoherence mirrors agent/workflow's
-// validateCandidatePortDeclarations for pipelines set directly with fly, which
-// never pass through the workflow-function typechecker. The messages are kept
-// identical so an author sees one rule regardless of how the pipeline arrived.
-func (validator *StepValidator) validateCandidatePortCoherence(
-	inputs map[string]SnapshotInputConfig,
-	outputs map[string]SnapshotOutputConfig,
-) {
-	var candidates []string
-	for _, name := range sortedMapKeys(inputs) {
-		if inputs[name].Candidate {
-			candidates = append(candidates, name)
-		}
-	}
-
-	selects := false
-	for _, name := range sortedMapKeys(outputs) {
-		if outputs[name].Type == selectionSnapshotType {
-			selects = true
-			break
-		}
-	}
-
-	if selects && len(candidates) == 0 {
-		validator.recordErrorf(
-			"output_types: a %q output requires at least one candidate input port; mark the alternatives with input_types.<name>.candidate",
-			selectionSnapshotType,
-		)
-		return
-	}
-	if len(candidates) == 0 {
-		return
-	}
-	if !selects {
-		validator.recordErrorf(
-			"input_types: candidate input ports %s require a %q output; only a selecting node may declare candidates",
-			quotedAndJoined(candidates), selectionSnapshotType,
-		)
-		return
-	}
-	common := inputs[candidates[0]].Type
-	for _, name := range candidates[1:] {
-		if inputs[name].Type != common {
-			validator.recordErrorf(
-				"input_types: candidate input ports must share one common snapshot type; %q is %s but %q is %s",
-				candidates[0], common, name, inputs[name].Type,
-			)
-			return
-		}
-	}
-}
-
-func quotedAndJoined(values []string) string {
-	quoted := make([]string, len(values))
-	for i, value := range values {
-		quoted[i] = fmt.Sprintf("%q", value)
-	}
-	return strings.Join(quoted, ", ")
 }
 
 func (validator *StepValidator) validateSnapshotOutputs(

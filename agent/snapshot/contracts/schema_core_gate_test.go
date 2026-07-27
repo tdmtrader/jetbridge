@@ -19,7 +19,6 @@ import (
 // generic validator removed entirely.
 func TestTheDeclaredCoreRunsAtBothGatesForEveryRecordType(t *testing.T) {
 	primary := snapshot.SnapshotRef{ID: 71, Type: mustTypeRef(t, "repository/v1"), Digest: recordDigest('a')}
-	other := snapshot.SnapshotRef{ID: 72, Type: mustTypeRef(t, "repository/v1"), Digest: recordDigest('b')}
 
 	subject := func(id string, role contracts.SubjectRole, input string, ref snapshot.SnapshotRef) contracts.Subject {
 		return contracts.SubjectFromInput(id, role, input, ref)
@@ -36,7 +35,6 @@ func TestTheDeclaredCoreRunsAtBothGatesForEveryRecordType(t *testing.T) {
 		subjects []contracts.Subject
 		body     any
 		inputs   map[string]snapshot.SnapshotRef
-		ports    []string
 		wantPath string
 	}{
 		{
@@ -93,25 +91,6 @@ func TestTheDeclaredCoreRunsAtBothGatesForEveryRecordType(t *testing.T) {
 			wantPath: "body/payload/path",
 		},
 		{
-			rawType: "selection/v1",
-			subjects: []contracts.Subject{
-				subject("left", contracts.SubjectRoleCandidate, "left", primary),
-				subject("right", contracts.SubjectRoleCandidate, "right", other),
-			},
-			inputs: map[string]snapshot.SnapshotRef{"left": primary, "right": other},
-			ports:  []string{"left", "right"},
-			// Candidates out of lexicographic id order.
-			body: contracts.SelectionBody{
-				Selected: "left",
-				Candidates: []contracts.CandidateAssessment{
-					{ID: "right", Rank: 2, Summary: "second"},
-					{ID: "left", Rank: 1, Summary: "first"},
-				},
-				Rationale: "left is closer",
-			},
-			wantPath: "body/candidates",
-		},
-		{
 			rawType:  "measurements/v1",
 			subjects: []contracts.Subject{subject("primary", contracts.SubjectRolePrimary, "primary", primary)},
 			inputs:   map[string]snapshot.SnapshotRef{"primary": primary},
@@ -134,9 +113,6 @@ func TestTheDeclaredCoreRunsAtBothGatesForEveryRecordType(t *testing.T) {
 			}
 			files := map[string][]byte{"record.json": marshalRecord(t, record)}
 			sealContext := validationContextFor(t, testCase.inputs)
-			if len(testCase.ports) > 0 {
-				sealContext = candidateValidationContextFor(t, testCase.inputs, testCase.ports...)
-			}
 
 			_, sealErr := validateFiles(t, testCase.rawType, files, sealContext)
 			assertNamesDeclaredField(t, "seal-time admission", sealErr, testCase.wantPath)

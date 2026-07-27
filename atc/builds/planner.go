@@ -60,6 +60,7 @@ type planVisitor struct {
 func (visitor *planVisitor) VisitTask(step *atc.TaskStep) error {
 	visitor.plan = visitor.planFactory.NewPlan(atc.TaskPlan{
 		Name:              step.Name,
+		FunctionID:        step.FunctionID,
 		Privileged:        step.Privileged,
 		Hermetic:          step.Hermetic,
 		Limits:            step.Limits,

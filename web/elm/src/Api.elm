@@ -2,6 +2,7 @@ module Api exposing
     ( Request
     , delete
     , expectJson
+    , expectText
     , get
     , ignoreResponse
     , paginatedGet
@@ -109,6 +110,21 @@ expectJson decoder r =
     , query = r.query
     , body = r.body
     , expect = Http.expectJson decoder
+    }
+
+
+{-| Read the response body verbatim. Used by endpoints whose payload is not
+JSON — the agent transcript route serves ndjson, which the client parses
+line-by-line so one malformed line cannot lose the whole transcript.
+-}
+expectText : Request a -> Request String
+expectText r =
+    { method = r.method
+    , headers = r.headers
+    , endpoint = r.endpoint
+    , query = r.query
+    , body = r.body
+    , expect = Http.expectString
     }
 
 

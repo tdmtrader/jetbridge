@@ -9,22 +9,6 @@ import (
 )
 
 type FakeAgentRunTranscriptFactory struct {
-	GetByBuildAndPlanStub        func(int, string) (db.AgentRunTranscript, bool, error)
-	getByBuildAndPlanMutex       sync.RWMutex
-	getByBuildAndPlanArgsForCall []struct {
-		arg1 int
-		arg2 string
-	}
-	getByBuildAndPlanReturns struct {
-		result1 db.AgentRunTranscript
-		result2 bool
-		result3 error
-	}
-	getByBuildAndPlanReturnsOnCall map[int]struct {
-		result1 db.AgentRunTranscript
-		result2 bool
-		result3 error
-	}
 	ListByWorkflowRunStub        func(string, snapshot.WorkflowRunID) ([]db.AgentRunTranscript, error)
 	listByWorkflowRunMutex       sync.RWMutex
 	listByWorkflowRunArgsForCall []struct {
@@ -52,74 +36,6 @@ type FakeAgentRunTranscriptFactory struct {
 	}
 	invocations      map[string][][]interface{}
 	invocationsMutex sync.RWMutex
-}
-
-func (fake *FakeAgentRunTranscriptFactory) GetByBuildAndPlan(arg1 int, arg2 string) (db.AgentRunTranscript, bool, error) {
-	fake.getByBuildAndPlanMutex.Lock()
-	ret, specificReturn := fake.getByBuildAndPlanReturnsOnCall[len(fake.getByBuildAndPlanArgsForCall)]
-	fake.getByBuildAndPlanArgsForCall = append(fake.getByBuildAndPlanArgsForCall, struct {
-		arg1 int
-		arg2 string
-	}{arg1, arg2})
-	stub := fake.GetByBuildAndPlanStub
-	fakeReturns := fake.getByBuildAndPlanReturns
-	fake.recordInvocation("GetByBuildAndPlan", []interface{}{arg1, arg2})
-	fake.getByBuildAndPlanMutex.Unlock()
-	if stub != nil {
-		return stub(arg1, arg2)
-	}
-	if specificReturn {
-		return ret.result1, ret.result2, ret.result3
-	}
-	return fakeReturns.result1, fakeReturns.result2, fakeReturns.result3
-}
-
-func (fake *FakeAgentRunTranscriptFactory) GetByBuildAndPlanCallCount() int {
-	fake.getByBuildAndPlanMutex.RLock()
-	defer fake.getByBuildAndPlanMutex.RUnlock()
-	return len(fake.getByBuildAndPlanArgsForCall)
-}
-
-func (fake *FakeAgentRunTranscriptFactory) GetByBuildAndPlanCalls(stub func(int, string) (db.AgentRunTranscript, bool, error)) {
-	fake.getByBuildAndPlanMutex.Lock()
-	defer fake.getByBuildAndPlanMutex.Unlock()
-	fake.GetByBuildAndPlanStub = stub
-}
-
-func (fake *FakeAgentRunTranscriptFactory) GetByBuildAndPlanArgsForCall(i int) (int, string) {
-	fake.getByBuildAndPlanMutex.RLock()
-	defer fake.getByBuildAndPlanMutex.RUnlock()
-	argsForCall := fake.getByBuildAndPlanArgsForCall[i]
-	return argsForCall.arg1, argsForCall.arg2
-}
-
-func (fake *FakeAgentRunTranscriptFactory) GetByBuildAndPlanReturns(result1 db.AgentRunTranscript, result2 bool, result3 error) {
-	fake.getByBuildAndPlanMutex.Lock()
-	defer fake.getByBuildAndPlanMutex.Unlock()
-	fake.GetByBuildAndPlanStub = nil
-	fake.getByBuildAndPlanReturns = struct {
-		result1 db.AgentRunTranscript
-		result2 bool
-		result3 error
-	}{result1, result2, result3}
-}
-
-func (fake *FakeAgentRunTranscriptFactory) GetByBuildAndPlanReturnsOnCall(i int, result1 db.AgentRunTranscript, result2 bool, result3 error) {
-	fake.getByBuildAndPlanMutex.Lock()
-	defer fake.getByBuildAndPlanMutex.Unlock()
-	fake.GetByBuildAndPlanStub = nil
-	if fake.getByBuildAndPlanReturnsOnCall == nil {
-		fake.getByBuildAndPlanReturnsOnCall = make(map[int]struct {
-			result1 db.AgentRunTranscript
-			result2 bool
-			result3 error
-		})
-	}
-	fake.getByBuildAndPlanReturnsOnCall[i] = struct {
-		result1 db.AgentRunTranscript
-		result2 bool
-		result3 error
-	}{result1, result2, result3}
 }
 
 func (fake *FakeAgentRunTranscriptFactory) ListByWorkflowRun(arg1 string, arg2 snapshot.WorkflowRunID) ([]db.AgentRunTranscript, error) {

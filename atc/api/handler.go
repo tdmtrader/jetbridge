@@ -405,6 +405,7 @@ func NewHandler(
 		atc.ListAgentWorkflowRunOutcomes:               http.HandlerFunc(workflowOutcomeHandlers.List),
 		atc.SetAgentWorkflowRunOutputOutcome:           http.HandlerFunc(workflowOutcomeHandlers.Record),
 		atc.ListAgentWorkflowRunMetrics:                http.HandlerFunc(metricsServer.ListByWorkflowRun),
+		atc.ListAgentWorkflowRunTranscripts:            http.HandlerFunc(transcriptServer.ListTranscripts),
 		atc.GetAgentWorkflowRunTranscript:              http.HandlerFunc(transcriptServer.GetTranscript),
 		atc.CreateAgentExperiment:                      http.HandlerFunc(experimentHandlers.Create),
 		atc.ListAgentExperiments:                       http.HandlerFunc(experimentHandlers.List),

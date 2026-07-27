@@ -4,6 +4,8 @@ import AgenticData
 import Application.Application as Application
 import Common
 import Concourse.Agent
+import Concourse.Transcript
+import Data
 import Dict
 import Expect
 import Html.Attributes as Attr
@@ -110,6 +112,8 @@ all =
                             (Effects.FetchAgentWorkflowReviews "review-api" AgenticData.runSummary.id)
                         , Common.contains
                             (Effects.FetchAgentWorkflowRunMetrics "review-api" AgenticData.runSummary.id)
+                        , Common.contains
+                            (Effects.FetchAgentWorkflowRunTranscripts "review-api" AgenticData.runSummary.id)
                         ]
         , test "keeps refreshing a terminal run while an output projection is pending" <|
             \_ ->
@@ -194,6 +198,142 @@ all =
                     |> Tuple.second
                     |> Common.notContains
                         (Effects.FetchAgentWorkflowRun "review-api" AgenticData.runSummary.id)
+        , describe "agent transcripts"
+            [ test "says so when the run captured no transcript" <|
+                \_ ->
+                    initialized
+                        |> Common.queryView
+                        |> Query.find [ class "agent-run-transcripts" ]
+                        |> Query.has [ text "no agent transcript captured for this run" ]
+            , test "lists the steps of the run that are inspectable" <|
+                \_ ->
+                    withTranscriptIndex
+                        |> Common.queryView
+                        |> Query.find [ class "agent-run-transcript" ]
+                        |> Query.has [ text "implement · implement · 2 KiB" ]
+            , test "the run-qualified callback ignores another run's transcripts" <|
+                \_ ->
+                    initialized
+                        |> Application.handleCallback
+                            (Callback.AgentWorkflowRunTranscriptsFetched "9007199254740000"
+                                (Ok [ sampleTranscriptRef ])
+                            )
+                        |> Tuple.first
+                        |> Common.queryView
+                        |> Query.find [ class "agent-run-transcripts" ]
+                        |> Query.hasNot [ class "agent-run-transcript" ]
+            , test "fetches the ndjson body only when a step is opened" <|
+                \_ ->
+                    withTranscriptIndex
+                        |> Application.update
+                            (Msgs.Update <| Message.AgentTranscriptToggled "p1")
+                        |> Tuple.second
+                        |> Common.contains
+                            (Effects.FetchAgentWorkflowRunTranscript
+                                "review-api"
+                                AgenticData.runSummary.id
+                                "p1"
+                            )
+            , test "renders the fetched transcript as a labeled conversation" <|
+                \_ ->
+                    openedTranscript
+                        |> Common.queryView
+                        |> Query.find [ class "agent-transcript" ]
+                        |> Expect.all
+                            [ Query.has [ class "assistant", containing [ text "reading the repo" ] ]
+                            , Query.has [ class "tool-call", containing [ text "tool · Bash" ] ]
+                            ]
+            , test "keeps a tool body collapsed until its row is opened" <|
+                \_ ->
+                    openedTranscript
+                        |> Common.queryView
+                        |> Query.find [ class "agent-transcript" ]
+                        |> Expect.all
+                            [ Query.hasNot [ text "git status" ]
+                            , always
+                                (openedTranscript
+                                    |> Application.update
+                                        (Msgs.Update <| Message.AgentTranscriptEntryToggled "p1" 2)
+                                    |> Tuple.first
+                                    |> Common.queryView
+                                    |> Query.find [ class "agent-transcript" ]
+                                    |> Query.has [ text "git status" ]
+                                )
+                            ]
+            , test "a failed index reads as an error, not as 'nothing captured'" <|
+                \_ ->
+                    initialized
+                        |> Application.handleCallback
+                            (Callback.AgentWorkflowRunTranscriptsFetched
+                                AgenticData.runSummary.id
+                                Data.httpInternalServerError
+                            )
+                        |> Tuple.first
+                        |> Common.queryView
+                        |> Query.find [ class "agent-run-transcripts" ]
+                        |> Expect.all
+                            [ Query.has [ text "index could not be loaded" ]
+                            , Query.hasNot [ text "no agent transcript captured" ]
+                            ]
+            , test "surfaces a transcript that could not be loaded" <|
+                \_ ->
+                    withTranscriptIndex
+                        |> Application.update (Msgs.Update <| Message.AgentTranscriptToggled "p1")
+                        |> Tuple.first
+                        |> Application.handleCallback
+                            (Callback.AgentWorkflowRunTranscriptFetched
+                                AgenticData.runSummary.id
+                                "p1"
+                                Data.httpInternalServerError
+                            )
+                        |> Tuple.first
+                        |> Common.queryView
+                        |> Query.find [ class "agent-run-transcript" ]
+                        |> Query.has [ text "could not be loaded" ]
+            ]
+        ]
+
+
+sampleTranscriptRef : Concourse.Transcript.Ref
+sampleTranscriptRef =
+    { planId = "p1"
+    , functionId = "implement"
+    , stepName = "implement"
+    , buildId = 42
+    , byteLen = 2048
+    , truncated = False
+    }
+
+
+withTranscriptIndex : Application.Model
+withTranscriptIndex =
+    initialized
+        |> Application.handleCallback
+            (Callback.AgentWorkflowRunTranscriptsFetched AgenticData.runSummary.id
+                (Ok [ sampleTranscriptRef ])
+            )
+        |> Tuple.first
+
+
+openedTranscript : Application.Model
+openedTranscript =
+    withTranscriptIndex
+        |> Application.update (Msgs.Update <| Message.AgentTranscriptToggled "p1")
+        |> Tuple.first
+        |> Application.handleCallback
+            (Callback.AgentWorkflowRunTranscriptFetched AgenticData.runSummary.id
+                "p1"
+                (Ok sampleTranscriptNDJSON)
+            )
+        |> Tuple.first
+
+
+sampleTranscriptNDJSON : String
+sampleTranscriptNDJSON =
+    String.join "\n"
+        [ """{"type":"system","subtype":"init","model":"claude"}"""
+        , """{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"reading the repo"},{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"git status"}}]}}"""
+        , """{"type":"result","subtype":"success","result":"done"}"""
         ]
 
 

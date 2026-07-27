@@ -185,9 +185,6 @@ init buildId hl resources plan =
         Concourse.BuildStepAgent _ ->
             step |> initBottom buildId hl resources plan Agent
 
-        Concourse.BuildStepRetired _ _ ->
-            step |> initBottom buildId hl resources plan Retired
-
         Concourse.BuildStepUnknown _ ->
             step |> initBottom buildId hl resources plan Unknown
 
@@ -628,9 +625,6 @@ viewTree session model tree depth =
             viewStep model session depth stepId
 
         Agent stepId ->
-            viewStep model session depth stepId
-
-        Retired stepId ->
             viewStep model session depth stepId
 
         Unknown stepId ->
@@ -1382,9 +1376,6 @@ viewStepHeader step =
         Concourse.BuildStepAgent name ->
             simpleHeader "agent:" Nothing name
 
-        Concourse.BuildStepRetired kind name ->
-            simpleHeader ("retired: " ++ kind) Nothing name
-
         Concourse.BuildStepUnknown name ->
             simpleHeader "step:" Nothing name
 
@@ -1459,9 +1450,6 @@ stepName header =
             Just name
 
         Concourse.BuildStepAgent name ->
-            Just name
-
-        Concourse.BuildStepRetired _ name ->
             Just name
 
         Concourse.BuildStepUnknown name ->

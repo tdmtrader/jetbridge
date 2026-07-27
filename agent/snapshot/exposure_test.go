@@ -48,20 +48,18 @@ func TestMaterializationModeProhibitsDynamicPartialMounting(t *testing.T) {
 	}
 }
 
-func TestMaterializationModeAcceptsOnlyTheTwoDeclaredModes(t *testing.T) {
-	for raw, want := range map[string]snapshot.MaterializationMode{
-		"full":            snapshot.MaterializationFull,
-		"static-selector": snapshot.MaterializationStaticSelector,
-	} {
-		mode, err := snapshot.ParseMaterializationMode(raw)
-		if err != nil || mode != want {
-			t.Fatalf("ParseMaterializationMode(%q) = (%q, %v), want (%q, nil)", raw, mode, err, want)
-		}
-		if err := mode.Validate(); err != nil {
-			t.Fatalf("%q.Validate() = %v, want nil", mode, err)
-		}
+func TestMaterializationModeAcceptsOnlyWholeTreeExposure(t *testing.T) {
+	mode, err := snapshot.ParseMaterializationMode("full")
+	if err != nil || mode != snapshot.MaterializationFull {
+		t.Fatalf("ParseMaterializationMode(full) = (%q, %v), want (full, nil)", mode, err)
 	}
-	for _, raw := range []string{"", " ", "FULL", "static_selector", "selector", "whole-tree"} {
+	if err := mode.Validate(); err != nil {
+		t.Fatalf("%q.Validate() = %v, want nil", mode, err)
+	}
+	// Partial exposure is not merely unused: no path set is knowable at
+	// admission, so no honest lineage row exists for one and the mode is
+	// unrepresentable rather than discouraged.
+	for _, raw := range []string{"", " ", "FULL", "static-selector", "static_selector", "selector", "whole-tree"} {
 		if _, err := snapshot.ParseMaterializationMode(raw); err == nil {
 			t.Fatalf("ParseMaterializationMode(%q) succeeded, want an unknown-mode error", raw)
 		}
@@ -80,9 +78,6 @@ func TestFullTreeExposureIsTheAgenticDefaultShape(t *testing.T) {
 	if exposure.TreeDigest != tree || exposure.MountPath != "/tmp/build/abc/diff" {
 		t.Fatalf("FullTreeExposure() = %+v, want the exact mounted tree", exposure)
 	}
-	if len(exposure.Paths) != 0 {
-		t.Fatalf("FullTreeExposure().Paths = %+v, want none: the tree digest records the whole tree", exposure.Paths)
-	}
 	if err := exposure.Validate(); err != nil {
 		t.Fatalf("FullTreeExposure().Validate() = %v, want nil", err)
 	}
@@ -93,76 +88,17 @@ func TestFullTreeExposureIsTheAgenticDefaultShape(t *testing.T) {
 	}
 }
 
-func TestStaticSelectorExposureSortsAndRejectsUnenumerablePaths(t *testing.T) {
+func TestInputExposureRejectsStructurallyIncompleteMounts(t *testing.T) {
 	tree := exposureDigest(t, "c")
-	exposure, err := snapshot.NewStaticSelectorExposure("/tmp/build/abc/review", tree,
-		snapshot.ExposedPath{Path: "findings/f-001.json", Digest: exposureDigest(t, "e")},
-		snapshot.ExposedPath{Path: "record.json", Digest: exposureDigest(t, "d")},
-	)
-	if err != nil {
-		t.Fatalf("NewStaticSelectorExposure() error = %v", err)
-	}
-	if exposure.Mode != snapshot.MaterializationStaticSelector {
-		t.Fatalf("mode = %q, want static-selector", exposure.Mode)
-	}
-	if got := []string{exposure.Paths[0].Path, exposure.Paths[1].Path}; !reflect.DeepEqual(got, []string{"findings/f-001.json", "record.json"}) {
-		t.Fatalf("paths = %q, want lexicographically sorted", got)
-	}
-	if err := exposure.Validate(); err != nil {
-		t.Fatalf("Validate() = %v, want nil", err)
-	}
-
-	clone := exposure.Clone()
-	clone.Paths[0].Path = "mutated"
-	if exposure.Paths[0].Path != "findings/f-001.json" {
-		t.Fatal("Clone() shares its path slice with the original")
-	}
-
-	for name, paths := range map[string][]snapshot.ExposedPath{
-		"no paths":         nil,
-		"glob":             {{Path: "findings/*.json", Digest: exposureDigest(t, "d")}},
-		"question mark":    {{Path: "finding-?.json", Digest: exposureDigest(t, "d")}},
-		"absolute":         {{Path: "/record.json", Digest: exposureDigest(t, "d")}},
-		"parent traversal": {{Path: "../record.json", Digest: exposureDigest(t, "d")}},
-		"dot segment":      {{Path: "./record.json", Digest: exposureDigest(t, "d")}},
-		"trailing slash":   {{Path: "findings/", Digest: exposureDigest(t, "d")}},
-		"empty":            {{Path: "", Digest: exposureDigest(t, "d")}},
-		"untrimmed":        {{Path: " record.json", Digest: exposureDigest(t, "d")}},
-		"duplicate":        {{Path: "record.json", Digest: exposureDigest(t, "d")}, {Path: "record.json", Digest: exposureDigest(t, "e")}},
-		"missing digest":   {{Path: "record.json"}},
-	} {
-		t.Run(name, func(t *testing.T) {
-			if _, err := snapshot.NewStaticSelectorExposure("", tree, paths...); err == nil {
-				t.Fatalf("NewStaticSelectorExposure(%s) succeeded, want a path declaration error", name)
-			}
-		})
-	}
-}
-
-func TestInputExposureRejectsShapesThatConfuseModeWithPathSet(t *testing.T) {
-	tree := exposureDigest(t, "c")
-	valid := snapshot.ExposedPath{Path: "record.json", Digest: exposureDigest(t, "d")}
 	for name, exposure := range map[string]snapshot.InputExposure{
-		"full with a partial path set": {
-			Mode: snapshot.MaterializationFull, TreeDigest: tree, Paths: []snapshot.ExposedPath{valid},
-		},
-		"static selector with no paths": {
-			Mode: snapshot.MaterializationStaticSelector, TreeDigest: tree,
-		},
-		"unsorted paths": {
-			Mode: snapshot.MaterializationStaticSelector, TreeDigest: tree,
-			Paths: []snapshot.ExposedPath{
-				{Path: "record.json", Digest: exposureDigest(t, "d")},
-				{Path: "findings.json", Digest: exposureDigest(t, "e")},
-			},
-		},
-		"missing tree digest": {Mode: snapshot.MaterializationFull},
-		"invalid tree digest": {Mode: snapshot.MaterializationFull, TreeDigest: snapshot.Digest("sha256:zz")},
-		"missing mode":        {TreeDigest: tree},
-		"padded mount path":   {Mode: snapshot.MaterializationFull, TreeDigest: tree, MountPath: " /tmp/build/diff"},
-		"dot mount path":      {Mode: snapshot.MaterializationFull, TreeDigest: tree, MountPath: "."},
-		"parent mount path":   {Mode: snapshot.MaterializationFull, TreeDigest: tree, MountPath: "../diff"},
-		"unclean mount path":  {Mode: snapshot.MaterializationFull, TreeDigest: tree, MountPath: "/tmp/build//diff"},
+		"partial materialization": {Mode: snapshot.MaterializationMode("static-selector"), TreeDigest: tree},
+		"missing tree digest":     {Mode: snapshot.MaterializationFull},
+		"invalid tree digest":     {Mode: snapshot.MaterializationFull, TreeDigest: snapshot.Digest("sha256:zz")},
+		"missing mode":            {TreeDigest: tree},
+		"padded mount path":       {Mode: snapshot.MaterializationFull, TreeDigest: tree, MountPath: " /tmp/build/diff"},
+		"dot mount path":          {Mode: snapshot.MaterializationFull, TreeDigest: tree, MountPath: "."},
+		"parent mount path":       {Mode: snapshot.MaterializationFull, TreeDigest: tree, MountPath: "../diff"},
+		"unclean mount path":      {Mode: snapshot.MaterializationFull, TreeDigest: tree, MountPath: "/tmp/build//diff"},
 		"trailing slash mount path": {
 			Mode: snapshot.MaterializationFull, TreeDigest: tree, MountPath: "/tmp/build/diff/",
 		},
@@ -206,9 +142,6 @@ func TestSealCommitContextExposureLineageIsTotalAndDefaultsToFullTree(t *testing
 	if base_exposure.Mode != snapshot.MaterializationFull || base_exposure.TreeDigest != base.Digest {
 		t.Fatalf("Exposures()[base] = %+v, want a full-tree default bound to the input digest", base_exposure)
 	}
-	if len(base_exposure.Paths) != 0 {
-		t.Fatalf("Exposures()[base].Paths = %+v, want none", base_exposure.Paths)
-	}
 
 	exposures["diff"] = snapshot.FullTreeExposure("/mutated", diff.Digest)
 	if got := commit.Exposures()["diff"]; got.MountPath != "/tmp/build/plan/diff" {
@@ -240,7 +173,7 @@ func TestSealCommitContextRejectsExposuresThatOutrunTheExposedInputs(t *testing.
 			"base": snapshot.FullTreeExposure("", exposureDigest(t, "f")),
 		},
 		"invalid exposure": {
-			"base": {Mode: snapshot.MaterializationStaticSelector, TreeDigest: base.Digest},
+			"base": {Mode: snapshot.MaterializationMode("static-selector"), TreeDigest: base.Digest},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -277,70 +210,6 @@ func TestSealRequestCarriesExposureLineageIntoTheCommitContext(t *testing.T) {
 	request.InputExposures = map[string]snapshot.InputExposure{"absent": snapshot.FullTreeExposure("", diff.Digest)}
 	if err := request.Validate(); err == nil {
 		t.Fatal("Validate() succeeded for an exposure naming an unexposed port")
-	}
-}
-
-func TestValidationContextAnswersWhatTheStepWasActuallyShown(t *testing.T) {
-	base := exposureRef(t, "repository/v1", 1, "a")
-	diff := exposureRef(t, "repository-change/v1", 2, "b")
-	inputs := map[string]snapshot.SnapshotRef{"base": base, "diff": diff}
-	selector, err := snapshot.NewStaticSelectorExposure("/tmp/build/plan/base", base.Digest,
-		snapshot.ExposedPath{Path: "record.json", Digest: exposureDigest(t, "d")},
-	)
-	if err != nil {
-		t.Fatalf("NewStaticSelectorExposure() error = %v", err)
-	}
-	declarations := map[string]snapshot.InputExposure{"base": selector}
-
-	validationContext, err := snapshot.NewValidationContext(inputs, nil, snapshot.WithInputExposures(declarations))
-	if err != nil {
-		t.Fatalf("NewValidationContext() error = %v", err)
-	}
-
-	declarations["base"] = snapshot.FullTreeExposure("/mutated", base.Digest)
-	got, found := validationContext.Exposure("base")
-	if !found || got.Mode != snapshot.MaterializationStaticSelector || got.MountPath != "/tmp/build/plan/base" {
-		t.Fatalf("Exposure(base) = (%+v, %t), want the immutable declared selector", got, found)
-	}
-	if len(got.Paths) != 1 || got.Paths[0].Path != "record.json" {
-		t.Fatalf("Exposure(base).Paths = %+v, want the exact exposed path set", got.Paths)
-	}
-
-	// The whole point: a judge that was shown the entire diff tree is
-	// distinguishable from one that was shown two files.
-	whole, found := validationContext.Exposure("diff")
-	if !found || whole.Mode != snapshot.MaterializationFull || whole.TreeDigest != diff.Digest {
-		t.Fatalf("Exposure(diff) = (%+v, %t), want a full-tree default", whole, found)
-	}
-	if _, found := validationContext.Exposure("absent"); found {
-		t.Fatal("Exposure(absent) reported an exposure for an unexposed port")
-	}
-
-	all := validationContext.Exposures()
-	if len(all) != 2 {
-		t.Fatalf("Exposures() = %+v, want one entry per exposed input", all)
-	}
-	all["diff"] = snapshot.FullTreeExposure("/mutated", diff.Digest)
-	if got, _ := validationContext.Exposure("diff"); got.MountPath != "" {
-		t.Fatalf("Exposures() returned a mutable view: %+v", got)
-	}
-
-	for name, option := range map[string]snapshot.ValidationContextOption{
-		"unexposed port": snapshot.WithInputExposures(map[string]snapshot.InputExposure{
-			"absent": snapshot.FullTreeExposure("", base.Digest),
-		}),
-		"foreign tree digest": snapshot.WithInputExposures(map[string]snapshot.InputExposure{
-			"base": snapshot.FullTreeExposure("", exposureDigest(t, "f")),
-		}),
-		"invalid exposure": snapshot.WithInputExposures(map[string]snapshot.InputExposure{
-			"base": {Mode: snapshot.MaterializationStaticSelector, TreeDigest: base.Digest},
-		}),
-	} {
-		t.Run(name, func(t *testing.T) {
-			if _, err := snapshot.NewValidationContext(inputs, nil, option); err == nil {
-				t.Fatalf("NewValidationContext() succeeded for %s, want an exposure declaration error", name)
-			}
-		})
 	}
 }
 

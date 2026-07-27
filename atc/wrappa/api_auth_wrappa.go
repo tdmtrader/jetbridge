@@ -225,6 +225,7 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			atc.ListAgentWorkflowRunOutcomes,
 			atc.SetAgentWorkflowRunOutputOutcome,
 			atc.ListAgentWorkflowRunMetrics,
+			atc.ListAgentWorkflowRunTranscripts,
 			atc.GetAgentWorkflowRunTranscript,
 			atc.CreateAgentExperiment,
 			atc.ListAgentExperiments,

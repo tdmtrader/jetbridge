@@ -182,19 +182,6 @@ func ValidatePorts(ports []Port) error {
 // a quoted canonical decimal so browser clients never lose precision.
 type DatabaseID int64
 
-func NewDatabaseID(value int64) (DatabaseID, error) {
-	id := DatabaseID(value)
-	if err := id.Validate(); err != nil {
-		return 0, err
-	}
-	return id, nil
-}
-
-func ParseDatabaseID(raw string) (DatabaseID, error) {
-	value, err := parsePositiveID(raw, "database ID")
-	return DatabaseID(value), err
-}
-
 func (id DatabaseID) Validate() error { return validatePositiveID(int64(id), "database ID") }
 
 func (id DatabaseID) String() string {
@@ -291,14 +278,6 @@ func (id *SnapshotID) UnmarshalJSON(data []byte) error {
 
 // WorkflowRunID is a positive signed 64-bit agent_workflow_runs primary key.
 type WorkflowRunID int64
-
-func NewWorkflowRunID(value int64) (WorkflowRunID, error) {
-	id := WorkflowRunID(value)
-	if err := id.Validate(); err != nil {
-		return 0, err
-	}
-	return id, nil
-}
 
 func ParseWorkflowRunID(raw string) (WorkflowRunID, error) {
 	value, err := parsePositiveID(raw, "workflow run ID")
@@ -533,132 +512,6 @@ func (l *Location) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// Production is one persisted invocation's provenance for a snapshot value.
-type Production struct {
-	ID                   DatabaseID      `json:"id"`
-	SnapshotID           SnapshotID      `json:"snapshot_id"`
-	BuildID              int             `json:"build_id"`
-	TeamID               int             `json:"team_id"`
-	TeamName             string          `json:"team_name"`
-	CreatedBy            string          `json:"created_by"`
-	PlanID               string          `json:"plan_id"`
-	Attempt              string          `json:"attempt"`
-	StepKind             string          `json:"step_kind"`
-	StepName             string          `json:"step_name"`
-	OutputPort           string          `json:"output_port"`
-	WorkflowDefinitionID *int            `json:"workflow_definition_id,omitempty"`
-	WorkflowRunID        *WorkflowRunID  `json:"workflow_run_id,omitempty"`
-	SourceMetadata       json.RawMessage `json:"source_metadata,omitempty"`
-	CreatedAt            time.Time       `json:"created_at"`
-}
-
-func (p Production) Validate() error {
-	if p.ID <= 0 || p.BuildID <= 0 || p.TeamID <= 0 {
-		return fmt.Errorf("snapshot: production, build, and team IDs must be positive")
-	}
-	if err := p.SnapshotID.Validate(); err != nil {
-		return err
-	}
-	for label, value := range map[string]string{
-		"team name": p.TeamName, "creator": p.CreatedBy, "plan ID": p.PlanID,
-		"attempt": p.Attempt, "step kind": p.StepKind, "step name": p.StepName,
-		"output port": p.OutputPort,
-	} {
-		if strings.TrimSpace(value) == "" {
-			return fmt.Errorf("snapshot: production %s is required", label)
-		}
-	}
-	if p.WorkflowDefinitionID != nil && *p.WorkflowDefinitionID <= 0 {
-		return fmt.Errorf("snapshot: workflow definition ID must be positive")
-	}
-	if p.WorkflowRunID != nil {
-		if err := p.WorkflowRunID.Validate(); err != nil {
-			return err
-		}
-	}
-	if err := validateRawMessage(p.SourceMetadata); err != nil {
-		return fmt.Errorf("snapshot: source metadata: %w", err)
-	}
-	if p.CreatedAt.IsZero() {
-		return fmt.Errorf("snapshot: production creation time is required")
-	}
-	return nil
-}
-
-func (p Production) Clone() Production {
-	p.WorkflowDefinitionID = cloneInt(p.WorkflowDefinitionID)
-	p.WorkflowRunID = cloneWorkflowRunID(p.WorkflowRunID)
-	p.SourceMetadata = cloneRaw(p.SourceMetadata)
-	return p
-}
-
-func (p Production) MarshalJSON() ([]byte, error) {
-	if err := p.Validate(); err != nil {
-		return nil, err
-	}
-	type wire Production
-	return json.Marshal(wire(p))
-}
-
-func (p *Production) UnmarshalJSON(data []byte) error {
-	type wire Production
-	var value wire
-	if err := strictUnmarshal(data, &value); err != nil {
-		return err
-	}
-	parsed := Production(value)
-	if err := parsed.Validate(); err != nil {
-		return err
-	}
-	*p = parsed.Clone()
-	return nil
-}
-
-// Grant authorizes a team to read a snapshot. It never retains bytes.
-type Grant struct {
-	ID         int64      `json:"id"`
-	SnapshotID SnapshotID `json:"snapshot_id"`
-	TeamID     int        `json:"team_id"`
-	GrantedBy  string     `json:"granted_by"`
-	Reason     string     `json:"reason"`
-	CreatedAt  time.Time  `json:"created_at"`
-}
-
-func (g Grant) Validate() error {
-	if g.ID <= 0 || g.TeamID <= 0 {
-		return fmt.Errorf("snapshot: grant and team IDs must be positive")
-	}
-	if err := g.SnapshotID.Validate(); err != nil {
-		return err
-	}
-	if strings.TrimSpace(g.GrantedBy) == "" || strings.TrimSpace(g.Reason) == "" || g.CreatedAt.IsZero() {
-		return fmt.Errorf("snapshot: grantor, reason, and creation time are required")
-	}
-	return nil
-}
-
-func (g Grant) MarshalJSON() ([]byte, error) {
-	if err := g.Validate(); err != nil {
-		return nil, err
-	}
-	type wire Grant
-	return json.Marshal(wire(g))
-}
-
-func (g *Grant) UnmarshalJSON(data []byte) error {
-	type wire Grant
-	var value wire
-	if err := strictUnmarshal(data, &value); err != nil {
-		return err
-	}
-	parsed := Grant(value)
-	if err := parsed.Validate(); err != nil {
-		return err
-	}
-	*g = parsed
-	return nil
-}
-
 type RetentionClass string
 
 const (
@@ -786,20 +639,6 @@ func SortRetentionClaims(claims []RetentionClaim) {
 	})
 }
 
-func EffectiveRetentionClaim(claims []RetentionClaim, now time.Time) (RetentionClaim, bool) {
-	active := make([]RetentionClaim, 0, len(claims))
-	for _, claim := range claims {
-		if claim.Active(now) {
-			active = append(active, claim.Clone())
-		}
-	}
-	if len(active) == 0 {
-		return RetentionClaim{}, false
-	}
-	SortRetentionClaims(active)
-	return active[0].Clone(), true
-}
-
 func retentionClassRank(class RetentionClass) int {
 	switch class {
 	case RetentionClassBinding:
@@ -815,46 +654,6 @@ func retentionClassRank(class RetentionClass) int {
 	default:
 		return 5
 	}
-}
-
-// LineageEdge is a persisted ordered production/input relationship.
-type LineageEdge struct {
-	ProductionID    DatabaseID `json:"production_id"`
-	Position        int        `json:"position"`
-	InputPort       string     `json:"input_port"`
-	InputSnapshotID SnapshotID `json:"input_snapshot_id"`
-}
-
-func (e LineageEdge) Validate() error {
-	if e.ProductionID <= 0 || e.Position < 0 {
-		return fmt.Errorf("snapshot: lineage production ID must be positive and position non-negative")
-	}
-	if strings.TrimSpace(e.InputPort) == "" {
-		return fmt.Errorf("snapshot: lineage input port is required")
-	}
-	return e.InputSnapshotID.Validate()
-}
-
-func (e LineageEdge) MarshalJSON() ([]byte, error) {
-	if err := e.Validate(); err != nil {
-		return nil, err
-	}
-	type wire LineageEdge
-	return json.Marshal(wire(e))
-}
-
-func (e *LineageEdge) UnmarshalJSON(data []byte) error {
-	type wire LineageEdge
-	var value wire
-	if err := strictUnmarshal(data, &value); err != nil {
-		return err
-	}
-	parsed := LineageEdge(value)
-	if err := parsed.Validate(); err != nil {
-		return err
-	}
-	*e = parsed
-	return nil
 }
 
 type SnapshotRef struct {
@@ -1095,13 +894,13 @@ func (o UploadOccurrence) Validate() error {
 // context. Exactly one occurrence kind is required, and it deliberately
 // contains no pre-upload CandidateOutput values.
 type SealCommitContext struct {
-	TeamID          int                    `json:"team_id"`
-	TeamName        string                 `json:"team_name"`
-	CreatedBy       string                 `json:"created_by"`
-	Build           *BuildOccurrence       `json:"build,omitempty"`
-	Upload          *UploadOccurrence      `json:"upload,omitempty"`
-	InputOrder      []string               `json:"input_order"`
-	Inputs          map[string]SnapshotRef `json:"inputs"`
+	TeamID     int                    `json:"team_id"`
+	TeamName   string                 `json:"team_name"`
+	CreatedBy  string                 `json:"created_by"`
+	Build      *BuildOccurrence       `json:"build,omitempty"`
+	Upload     *UploadOccurrence      `json:"upload,omitempty"`
+	InputOrder []string               `json:"input_order"`
+	Inputs     map[string]SnapshotRef `json:"inputs"`
 	// InputExposures is the mount-time exposure lineage the executor captured
 	// for the exposed inputs, keyed by input port. It is occurrence data
 	// persisted alongside lineage and outside the sealed bytes, so it never
@@ -1243,15 +1042,9 @@ type SealRequest struct {
 	WorkflowRunID        *WorkflowRunID         `json:"workflow_run_id,omitempty"`
 	InputOrder           []string               `json:"input_order"`
 	Inputs               map[string]SnapshotRef `json:"inputs"`
-	// CandidateInputs are the exposed input ports the step declared as candidate
-	// ports. They come from the compiled workflow function's port declarations,
-	// never from produced content, and are the only authority a selection record
-	// may be judged against.
-	CandidateInputs []string `json:"candidate_inputs,omitempty"`
 	// InputExposures is the exposure lineage the executor captured at mount
-	// time, keyed by input port: the materialization mode plus, for a static
-	// selector, the exact exposed path set with per-path digests. It is
-	// occurrence data — it never enters the sealed bytes and never enters
+	// time, keyed by input port: the materialization mode and the mount path.
+	// It is occurrence data — it never enters the sealed bytes and never enters
 	// ValidationResult.IntrinsicMetadata.
 	InputExposures     map[string]InputExposure `json:"input_exposures,omitempty"`
 	OutputDeclarations []Port                   `json:"output_declarations"`
@@ -1323,16 +1116,6 @@ func (r SealRequest) Validate() error {
 	}
 	if err := ValidatePorts(r.OutputDeclarations); err != nil {
 		return err
-	}
-	candidateInputs := make(map[string]struct{}, len(r.CandidateInputs))
-	for _, name := range r.CandidateInputs {
-		if _, exposed := r.Inputs[name]; !exposed {
-			return fmt.Errorf("snapshot: candidate input %q is not an exposed input", name)
-		}
-		if _, duplicate := candidateInputs[name]; duplicate {
-			return fmt.Errorf("snapshot: candidate input %q is declared more than once", name)
-		}
-		candidateInputs[name] = struct{}{}
 	}
 	declarations := make(map[string]Port, len(r.OutputDeclarations))
 	for _, declaration := range r.OutputDeclarations {
@@ -1407,7 +1190,6 @@ func (r SealRequest) Clone() SealRequest {
 	r.WorkflowRunID = cloneWorkflowRunID(r.WorkflowRunID)
 	r.InputOrder = append([]string(nil), r.InputOrder...)
 	r.Inputs = cloneSnapshotRefs(r.Inputs)
-	r.CandidateInputs = append([]string(nil), r.CandidateInputs...)
 	r.InputExposures = cloneInputExposures(r.InputExposures)
 	r.OutputDeclarations = append([]Port(nil), r.OutputDeclarations...)
 	if r.Outputs != nil {
@@ -1514,17 +1296,6 @@ func cloneSnapshotRefs(values map[string]SnapshotRef) map[string]SnapshotRef {
 	cloned := make(map[string]SnapshotRef, len(values))
 	for key, value := range values {
 		cloned[key] = value
-	}
-	return cloned
-}
-
-func cloneCandidates(values []CandidateOutput) []CandidateOutput {
-	if values == nil {
-		return nil
-	}
-	cloned := make([]CandidateOutput, len(values))
-	for i, value := range values {
-		cloned[i] = value.Clone()
 	}
 	return cloned
 }

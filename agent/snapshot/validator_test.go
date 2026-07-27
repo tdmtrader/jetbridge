@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"io"
 	"os"
-	"reflect"
 	"strings"
 	"testing"
 
@@ -100,56 +99,6 @@ func TestValidationContextRejectsInvalidInputsAndMissingOpener(t *testing.T) {
 	}
 	if _, err := validationContext.OpenInput(context.Background(), "base"); err == nil {
 		t.Fatal("OpenInput(base) succeeded without an opener")
-	}
-}
-
-func TestValidationContextCarriesServerDeclaredCandidatePorts(t *testing.T) {
-	base := validValidationSnapshotRef(t, "repository/v1", 1)
-	left := validValidationSnapshotRef(t, "repository-change/v1", 2)
-	right := validValidationSnapshotRef(t, "repository-change/v1", 3)
-	inputs := map[string]snapshot.SnapshotRef{"base": base, "left": left, "right": right}
-
-	validationContext, err := snapshot.NewValidationContext(
-		inputs, nil, snapshot.WithCandidatePorts("right", "left"),
-	)
-	if err != nil {
-		t.Fatalf("NewValidationContext() error = %v", err)
-	}
-	ports := validationContext.CandidatePorts()
-	if !reflect.DeepEqual(ports, []string{"left", "right"}) {
-		t.Fatalf("CandidatePorts() = %q, want sorted [left right]", ports)
-	}
-	ports[0] = "mutated"
-	if got := validationContext.CandidatePorts(); !reflect.DeepEqual(got, []string{"left", "right"}) {
-		t.Fatalf("CandidatePorts() after mutating the result = %q, want an immutable copy", got)
-	}
-	for name, want := range map[string]bool{"left": true, "right": true, "base": false, "Left": false, "left ": false} {
-		if got := validationContext.IsCandidatePort(name); got != want {
-			t.Fatalf("IsCandidatePort(%q) = %t, want %t", name, got, want)
-		}
-	}
-
-	empty, err := snapshot.NewValidationContext(inputs, nil)
-	if err != nil {
-		t.Fatalf("NewValidationContext() error = %v", err)
-	}
-	if got := empty.CandidatePorts(); len(got) != 0 {
-		t.Fatalf("CandidatePorts() without a declaration = %q, want none", got)
-	}
-}
-
-func TestValidationContextRejectsCandidatePortsThatAreNotExposedInputs(t *testing.T) {
-	inputs := map[string]snapshot.SnapshotRef{"left": validValidationSnapshotRef(t, "repository-change/v1", 1)}
-	for name, option := range map[string]snapshot.ValidationContextOption{
-		"unexposed port": snapshot.WithCandidatePorts("left", "right"),
-		"duplicate port": snapshot.WithCandidatePorts("left", "left"),
-		"blank port":     snapshot.WithCandidatePorts(" "),
-	} {
-		t.Run(name, func(t *testing.T) {
-			if _, err := snapshot.NewValidationContext(inputs, nil, option); err == nil {
-				t.Fatal("NewValidationContext() succeeded, want a candidate port declaration error")
-			}
-		})
 	}
 }
 

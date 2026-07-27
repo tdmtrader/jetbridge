@@ -2,9 +2,7 @@ package db
 
 import (
 	"database/sql"
-	"errors"
 
-	sq "github.com/Masterminds/squirrel"
 	"github.com/concourse/concourse/agent/snapshot"
 )
 
@@ -43,9 +41,6 @@ type AgentRunTranscriptFactory interface {
 	// oldest-first. Both the workflow name and the run id scope the query
 	// (identity + authz).
 	ListByWorkflowRun(workflowName string, runID snapshot.WorkflowRunID) ([]AgentRunTranscript, error)
-	// GetByBuildAndPlan returns the transcript written by one agent step,
-	// addressed by its primary key.
-	GetByBuildAndPlan(buildID int, planID string) (AgentRunTranscript, bool, error)
 }
 
 func NewAgentRunTranscriptFactory(conn DbConn) AgentRunTranscriptFactory {
@@ -107,23 +102,6 @@ func (f *agentRunTranscriptFactory) ListByWorkflowRun(workflowName string, runID
 		results = append(results, t)
 	}
 	return results, rows.Err()
-}
-
-func (f *agentRunTranscriptFactory) GetByBuildAndPlan(buildID int, planID string) (AgentRunTranscript, bool, error) {
-	row := psql.Select(runTranscriptColumns).
-		From("agent_run_transcripts t").
-		Where(sq.Eq{"t.build_id": buildID, "t.plan_id": planID}).
-		RunWith(f.conn).
-		QueryRow()
-
-	t, err := scanRunTranscript(row)
-	if errors.Is(err, sql.ErrNoRows) {
-		return AgentRunTranscript{}, false, nil
-	}
-	if err != nil {
-		return AgentRunTranscript{}, false, err
-	}
-	return t, true, nil
 }
 
 func scanRunTranscript(src scannable) (AgentRunTranscript, error) {

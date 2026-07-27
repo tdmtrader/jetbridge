@@ -96,14 +96,9 @@ const (
 	AbsentImageNull AbsentImage = "null"
 )
 
-// Subject-set port sourcing. Where the candidate-port set comes from is a Go rule
-// and cannot be a schema rule: at seal time it is the server's compiled port
-// declarations, and at read time the sealed candidate-role subjects that
-// seal-time admission already certified.
-const (
-	PortsAnyExposedInput       = "any-exposed-input"
-	PortsCandidatePortsExactly = "candidate-ports-exactly"
-)
+// Subject-set port sourcing. Every subject binds one of the step's exposed input
+// ports; which ports a record may bind is not a schema rule.
+const PortsAnyExposedInput = "any-exposed-input"
 
 // The open value written explicitly for a score's scale and direction. An omitted
 // key meaning "open" would be a second spelling.
@@ -249,7 +244,7 @@ func mustCanonicalSchemaDescriptor(document SchemaDocument) string {
 // the entry hashes and swap which declaration the core validator enforces.
 // Pinning the lookup by revision makes that impossible by construction.
 func mustCanonicalSchemaDescriptorFor(ref snapshot.TypeRef, revision int) string {
-	document, found := recordSchemaDocumentRevisions[epistemicKey{ref: ref, revision: revision}]
+	document, found := recordSchemaDocumentRevisions[schemaRevisionKey{ref: ref, revision: revision}]
 	if !found {
 		panic(fmt.Sprintf("snapshot contracts: no embedded schema document for %q revision %d", ref, revision))
 	}

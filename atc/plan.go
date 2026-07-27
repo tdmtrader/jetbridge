@@ -330,6 +330,11 @@ type TaskPlan struct {
 	// The name of the step.
 	Name string `json:"name"`
 
+	// FunctionID is the stable v3 node identity a typed workflow function
+	// declares for this task. It survives renames of Name and is what the plan
+	// API exposes as the node's identity.
+	FunctionID string `json:"function_id,omitempty"`
+
 	// Run the task in 'privileged' mode. What this means depends on the
 	// platform, but typically you expose your workers to more risk by enabling
 	// this.

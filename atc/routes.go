@@ -164,6 +164,7 @@ const (
 	ListAgentWorkflowRunOutcomes               = "ListAgentWorkflowRunOutcomes"
 	SetAgentWorkflowRunOutputOutcome           = "SetAgentWorkflowRunOutputOutcome"
 	ListAgentWorkflowRunMetrics                = "ListAgentWorkflowRunMetrics"
+	ListAgentWorkflowRunTranscripts            = "ListAgentWorkflowRunTranscripts"
 	GetAgentWorkflowRunTranscript              = "GetAgentWorkflowRunTranscript"
 
 	CreateAgentExperiment       = "CreateAgentExperiment"
@@ -361,6 +362,7 @@ var Routes = rata.Routes([]rata.Route{
 	{Path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/outcomes", Method: "GET", Name: ListAgentWorkflowRunOutcomes},
 	{Path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/outputs/:snapshot_id/outcome", Method: "PUT", Name: SetAgentWorkflowRunOutputOutcome},
 	{Path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/metrics", Method: "GET", Name: ListAgentWorkflowRunMetrics},
+	{Path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/transcripts", Method: "GET", Name: ListAgentWorkflowRunTranscripts},
 	{Path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/transcripts/:plan_id", Method: "GET", Name: GetAgentWorkflowRunTranscript},
 	{Path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/reviews", Method: "GET", Name: ListAgentWorkflowRunReviews},
 

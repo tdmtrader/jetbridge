@@ -250,12 +250,16 @@ func TestRetentionClaimBoundaries(t *testing.T) {
 	}
 	expired := now.Add(-time.Nanosecond)
 	active := now.Add(time.Nanosecond)
-	claims := []RetentionClaim{
-		{ID: 4, SnapshotID: 1, Class: RetentionClassBinding, ExpiresAt: &expired},
-		{ID: 5, SnapshotID: 1, Class: RetentionClassPin, ExpiresAt: &active},
-	}
-	if got, ok := EffectiveRetentionClaim(claims, now); !ok || got.ID != 5 {
-		t.Fatalf("effective claim = %#v, %t, want unexpired claim 5", got, ok)
+	for _, expectation := range []struct {
+		claim  RetentionClaim
+		active bool
+	}{
+		{RetentionClaim{ID: 4, SnapshotID: 1, Class: RetentionClassBinding, ExpiresAt: &expired}, false},
+		{RetentionClaim{ID: 5, SnapshotID: 1, Class: RetentionClassPin, ExpiresAt: &active}, true},
+	} {
+		if got := expectation.claim.Active(now); got != expectation.active {
+			t.Fatalf("claim %d Active(now) = %t, want %t", expectation.claim.ID, got, expectation.active)
+		}
 	}
 }
 
@@ -270,28 +274,5 @@ func TestRetentionClaimsSortDeterministicallyWithoutTreatingGrantsAsRetention(t 
 	SortRetentionClaims(claims)
 	if got, want := []DatabaseID{claims[0].ID, claims[1].ID, claims[2].ID}, []DatabaseID{3, 1, 2}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("claim order = %v, want %v", got, want)
-	}
-	if got, ok := EffectiveRetentionClaim(claims, now); !ok || got.ID != 3 {
-		t.Fatalf("effective retention claim = %#v, %t, want binding claim", got, ok)
-	}
-	if got, ok := EffectiveRetentionClaim(nil, now); ok {
-		t.Fatalf("effective retention claim = %#v, true, want false", got)
-	}
-}
-
-func TestEffectiveRetentionClaimReturnsAnIndependentValue(t *testing.T) {
-	expires := time.Date(2026, time.July, 22, 12, 0, 0, 0, time.UTC)
-	claims := []RetentionClaim{{
-		ID: 1, SnapshotID: 1, Class: RetentionClassPin, ExpiresAt: &expires,
-	}}
-
-	got, ok := EffectiveRetentionClaim(claims, expires.Add(-time.Hour))
-	if !ok {
-		t.Fatal("expected an effective retention claim")
-	}
-	got.ID = 99
-	*got.ExpiresAt = expires.Add(time.Hour)
-	if claims[0].ID != 1 || !claims[0].ExpiresAt.Equal(expires) {
-		t.Fatalf("caller mutation changed original claim: %#v", claims[0])
 	}
 }

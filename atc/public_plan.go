@@ -314,12 +314,14 @@ func (plan CheckPlan) Public() *json.RawMessage {
 func (plan TaskPlan) Public() *json.RawMessage {
 	return enc(struct {
 		Name            string                          `json:"name"`
+		FunctionID      string                          `json:"function_id,omitempty"`
 		Privileged      bool                            `json:"privileged"`
 		Hermetic        bool                            `json:"hermetic"`
 		SnapshotInputs  map[string]SnapshotInputConfig  `json:"input_types,omitempty"`
 		SnapshotOutputs map[string]SnapshotOutputConfig `json:"output_types,omitempty"`
 	}{
 		Name:            plan.Name,
+		FunctionID:      plan.FunctionID,
 		Privileged:      plan.Privileged,
 		Hermetic:        plan.Hermetic,
 		SnapshotInputs:  plan.SnapshotInputs,
@@ -342,6 +344,7 @@ func (plan RunPlan) Public() *json.RawMessage {
 func (plan AgentPlan) Public() *json.RawMessage {
 	return enc(struct {
 		Name            string                          `json:"name"`
+		FunctionID      string                          `json:"function_id,omitempty"`
 		Hermetic        bool                            `json:"hermetic,omitempty"`
 		RuntimeImage    string                          `json:"runtime_image,omitempty"`
 		Model           string                          `json:"model,omitempty"`
@@ -349,6 +352,7 @@ func (plan AgentPlan) Public() *json.RawMessage {
 		SnapshotOutputs map[string]SnapshotOutputConfig `json:"output_types,omitempty"`
 	}{
 		Name:            plan.Name,
+		FunctionID:      plan.FunctionID,
 		Hermetic:        plan.Hermetic,
 		RuntimeImage:    plan.RuntimeImage,
 		Model:           plan.Model,

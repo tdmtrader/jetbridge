@@ -788,10 +788,6 @@ func (checker *snapshotFlowChecker) checkLeaf(
 		}
 	}
 
-	if err := validateCandidatePortDeclarations(typedInputs, typedOutputs); err != nil {
-		return snapshotFlow{}, fmt.Errorf("workflow: %s: %w", identity, err)
-	}
-
 	for _, name := range sortedSnapshotInputKeys(typedInputs) {
 		declaration := typedInputs[name]
 		if err := declaration.Validate(); err != nil {
@@ -863,72 +859,6 @@ func (checker *snapshotFlowChecker) checkLeaf(
 		mayProduced: cloneProduced(produced),
 		allProduced: cloneProduced(produced),
 	}, nil
-}
-
-// selectionTypeRef is the record type whose semantic validation resolves a
-// selection against declared candidate ports.
-const selectionTypeRef snapshot.TypeRef = "selection/v1"
-
-// validateCandidatePortDeclarations keeps a node's candidate-port declarations
-// coherent at authoring time rather than at seal time. Candidate ports are the
-// server-side authority a selection record is judged against
-// (agent/snapshot/contracts/selection.go), so a judge whose candidacy is
-// unstated — or a non-selecting node that declares candidates — is an authoring
-// mistake with no runtime meaning.
-func validateCandidatePortDeclarations(
-	typedInputs map[string]atc.SnapshotInputConfig,
-	typedOutputs map[string]atc.SnapshotOutputConfig,
-) error {
-	candidates := make([]string, 0, len(typedInputs))
-	for _, name := range sortedSnapshotInputKeys(typedInputs) {
-		if typedInputs[name].Candidate {
-			candidates = append(candidates, name)
-		}
-	}
-	selects := false
-	for _, name := range sortedSnapshotOutputKeys(typedOutputs) {
-		if typedOutputs[name].Type == selectionTypeRef {
-			selects = true
-			break
-		}
-	}
-	if selects && len(candidates) == 0 {
-		return fmt.Errorf(
-			"a %s output requires at least one candidate input port; mark the alternatives with input_types.<name>.candidate",
-			selectionTypeRef,
-		)
-	}
-	if len(candidates) > 0 {
-		if !selects {
-			return fmt.Errorf(
-				"candidate input ports %s require a %s output; only a selecting node may declare candidates",
-				strings.Join(candidates, ", "), selectionTypeRef,
-			)
-		}
-		common := typedInputs[candidates[0]].Type
-		for _, name := range candidates[1:] {
-			if typedInputs[name].Type != common {
-				return fmt.Errorf(
-					"candidate input ports must share one common snapshot type; %q is %s but %q is %s",
-					candidates[0], common, name, typedInputs[name].Type,
-				)
-			}
-		}
-	}
-	return nil
-}
-
-func writeUntyped(entry snapshotEnvironment, name, path string) snapshotFlow {
-	env := cloneSnapshotEnvironment(entry)
-	binding := snapshotBinding{presence: snapshotGuaranteed, writePath: path}
-	env[name] = binding
-	writes := map[string]snapshotBinding{name: binding}
-	return snapshotFlow{
-		env:         env,
-		produced:    writes,
-		mayProduced: cloneProduced(writes),
-		allProduced: cloneProduced(writes),
-	}
 }
 
 func emptySnapshotFlow(entry snapshotEnvironment) snapshotFlow {

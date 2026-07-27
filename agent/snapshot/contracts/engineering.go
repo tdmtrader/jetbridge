@@ -3,7 +3,6 @@ package contracts
 import (
 	"context"
 	"fmt"
-	"math"
 	"os"
 	"strings"
 
@@ -65,56 +64,6 @@ func (d UpgradeReportDocument) Validate() error {
 			return fmt.Errorf("changes[%d].component %q is duplicate", i, change.Component)
 		}
 		seen[change.Component] = struct{}{}
-	}
-	return nil
-}
-
-type GateResultsDocument struct {
-	SchemaVersion string        `json:"schema_version"`
-	Gates         []GateOutcome `json:"gates"`
-}
-
-type GateOutcome struct {
-	Gate            string  `json:"gate"`
-	Scope           string  `json:"scope"`
-	Status          string  `json:"status"`
-	Attempt         int     `json:"attempt"`
-	Flaky           bool    `json:"flaky,omitempty"`
-	DurationSeconds float64 `json:"duration_seconds"`
-	Detail          string  `json:"detail,omitempty"`
-}
-
-func (d GateResultsDocument) Validate() error {
-	if err := validateDocumentVersion(d.SchemaVersion); err != nil {
-		return err
-	}
-	if len(d.Gates) == 0 {
-		return fmt.Errorf("gates must contain at least one gate outcome")
-	}
-	seen := make(map[string]struct{}, len(d.Gates))
-	for i, outcome := range d.Gates {
-		if err := requireStrings([]namedString{{"gate", outcome.Gate}, {"scope", outcome.Scope}}); err != nil {
-			return fmt.Errorf("gates[%d]: %w", i, err)
-		}
-		if err := validateResultStatus(outcome.Status); err != nil {
-			return fmt.Errorf("gates[%d].status: %w", i, err)
-		}
-		if outcome.Attempt < 1 {
-			return fmt.Errorf("gates[%d].attempt must be positive", i)
-		}
-		if math.IsNaN(outcome.DurationSeconds) || math.IsInf(outcome.DurationSeconds, 0) || outcome.DurationSeconds < 0 {
-			return fmt.Errorf("gates[%d].duration_seconds must be finite and nonnegative", i)
-		}
-		if outcome.Flaky != (outcome.Status == "ok" && outcome.Attempt > 1) {
-			return fmt.Errorf("gates[%d].flaky must be true exactly for an ok result after a retry", i)
-		}
-		if outcome.Status == "error" && outcome.Attempt != 1 {
-			return fmt.Errorf("gates[%d].attempt must be 1 for an error result", i)
-		}
-		if _, found := seen[outcome.Gate]; found {
-			return fmt.Errorf("gates[%d].gate %q is duplicate", i, outcome.Gate)
-		}
-		seen[outcome.Gate] = struct{}{}
 	}
 	return nil
 }

@@ -127,12 +127,7 @@ func (sealer *BatchSealer) Seal(ctx context.Context, request SealRequest) (resul
 		return map[string]SealedOutput{}, nil
 	}
 
-	validationContext, err := NewValidationContext(
-		request.Inputs,
-		sealer.inputOpener(request.TeamID),
-		WithCandidatePorts(request.CandidateInputs...),
-		WithInputExposures(request.InputExposures),
-	)
+	validationContext, err := NewValidationContext(request.Inputs, sealer.inputOpener(request.TeamID))
 	if err != nil {
 		return nil, err
 	}

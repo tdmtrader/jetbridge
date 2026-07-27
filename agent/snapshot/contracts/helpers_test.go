@@ -99,19 +99,3 @@ func validationContextFor(t *testing.T, inputs map[string]snapshot.SnapshotRef) 
 	}
 	return context
 }
-
-// candidateValidationContextFor exposes inputs and declares which of them are
-// candidate ports. Candidacy is a server-side port declaration, so tests must
-// supply it here rather than inside the record under validation.
-func candidateValidationContextFor(
-	t *testing.T,
-	inputs map[string]snapshot.SnapshotRef,
-	candidatePorts ...string,
-) snapshot.ValidationContext {
-	t.Helper()
-	context, err := snapshot.NewValidationContext(inputs, nil, snapshot.WithCandidatePorts(candidatePorts...))
-	if err != nil {
-		t.Fatalf("NewValidationContext(candidate ports %q): %v", candidatePorts, err)
-	}
-	return context
-}

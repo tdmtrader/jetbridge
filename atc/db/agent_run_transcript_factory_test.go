@@ -46,41 +46,49 @@ var _ = Describe("AgentRunTranscriptFactory", func() {
 		return snapshot.WorkflowRunID(runID)
 	}
 
-	It("upserts on (build_id, plan_id) and reads back by build+plan", func() {
+	It("upserts on (build_id, plan_id): a re-ingest overwrites, never duplicates", func() {
+		build, err := defaultTeam.CreateOneOffBuild()
+		Expect(err).ToNot(HaveOccurred())
+		runID := createWorkflowRun("upsert-workflow", "transcript-upsert-key", build.ID())
+
 		nd := `{"type":"system","subtype":"init"}` + "\n" + `{"type":"result","total_cost_usd":0.4}` + "\n"
 		Expect(factory.Upsert(db.AgentRunTranscript{
-			BuildID: 4242, PlanID: "aa11", FunctionID: "implement", StepName: "implement",
+			BuildID: build.ID(), PlanID: "aa11", WorkflowRunID: &runID,
+			FunctionID: "implement", StepName: "implement",
 			NDJSON: nd, ByteLen: len(nd), Truncated: false,
 		})).To(Succeed())
 
-		got, found, err := factory.GetByBuildAndPlan(4242, "aa11")
+		rows, err := factory.ListByWorkflowRun("upsert-workflow", runID)
 		Expect(err).ToNot(HaveOccurred())
-		Expect(found).To(BeTrue())
-		Expect(got.NDJSON).To(Equal(nd))
-		Expect(got.ByteLen).To(Equal(len(nd)))
-		Expect(got.Truncated).To(BeFalse())
-		Expect(got.FunctionID).To(Equal("implement"))
-		// a pure-CI agent step carries no durable run
-		Expect(got.WorkflowRunID).To(BeNil())
+		Expect(rows).To(HaveLen(1))
+		Expect(rows[0].NDJSON).To(Equal(nd))
+		Expect(rows[0].ByteLen).To(Equal(len(nd)))
+		Expect(rows[0].Truncated).To(BeFalse())
+		Expect(rows[0].FunctionID).To(Equal("implement"))
 
 		// second write of the same key overwrites, does not duplicate
 		nd2 := nd + `{"type":"extra"}` + "\n"
 		Expect(factory.Upsert(db.AgentRunTranscript{
-			BuildID: 4242, PlanID: "aa11", FunctionID: "implement", StepName: "implement",
+			BuildID: build.ID(), PlanID: "aa11", WorkflowRunID: &runID,
+			FunctionID: "implement", StepName: "implement",
 			NDJSON: nd2, ByteLen: len(nd2), Truncated: true,
 		})).To(Succeed())
 
-		got, found, err = factory.GetByBuildAndPlan(4242, "aa11")
+		rows, err = factory.ListByWorkflowRun("upsert-workflow", runID)
 		Expect(err).ToNot(HaveOccurred())
-		Expect(found).To(BeTrue())
-		Expect(got.NDJSON).To(Equal(nd2))
-		Expect(got.Truncated).To(BeTrue())
+		Expect(rows).To(HaveLen(1))
+		Expect(rows[0].NDJSON).To(Equal(nd2))
+		Expect(rows[0].Truncated).To(BeTrue())
 	})
 
-	It("returns found=false when no transcript exists for that build+plan", func() {
-		_, found, err := factory.GetByBuildAndPlan(999999, "nope")
+	It("returns nothing for a run that captured no transcript", func() {
+		build, err := defaultTeam.CreateOneOffBuild()
 		Expect(err).ToNot(HaveOccurred())
-		Expect(found).To(BeFalse())
+		runID := createWorkflowRun("empty-workflow", "transcript-empty-key", build.ID())
+
+		rows, err := factory.ListByWorkflowRun("empty-workflow", runID)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(rows).To(BeEmpty())
 	})
 
 	It("lists transcripts by durable workflow run, surviving its build's deletion", func() {

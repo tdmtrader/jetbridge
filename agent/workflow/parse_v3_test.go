@@ -774,6 +774,11 @@ func TestParseV3StrictErrors(t *testing.T) {
 		"unknown inline sidecar port field":       v3WithPlan("\n  - agent: work\n    prompt: work\n    sidecars: [{name: helper, image: example/helper, ports: [{containerPort: 8080, typo: true}]}]"),
 		"unknown inline sidecar resources field":  v3WithPlan("\n  - agent: work\n    prompt: work\n    sidecars: [{name: helper, image: example/helper, resources: {requests: {cpu: 1}, typo: true}}]"),
 		"unknown inline sidecar quantity field":   v3WithPlan("\n  - agent: work\n    prompt: work\n    sidecars: [{name: helper, image: example/helper, resources: {requests: {cpu: 1, typo: 2}}}]"),
+		// gate_policy and judge were v2 step fields. atc has no such step fields, so
+		// the ordinary strict decode is what rejects them; these cases pin that, which
+		// is why no bespoke source-level validator for either survives in parse.go.
+		"legacy step-level gate policy": v3WithPlan("\n  - agent: work\n    prompt: work\n    gate_policy: {gates: [{gate: build, scope: full}]}"),
+		"legacy step-level judge":       v3WithPlan("\n  - agent: work\n    prompt: work\n    judge: {rubric: [{name: quality, weight: 1}], pass_threshold: 7}"),
 	}
 	for name, doc := range cases {
 		t.Run(name, func(t *testing.T) {

@@ -138,16 +138,6 @@ var recordSchemaHistories = map[snapshot.TypeRef]recordSchemaHistory{
 			descriptor: `{"contract":"repository-change/v1","envelope":"record/v1","revision":1}`,
 		}},
 	},
-	"selection/v1": {
-		current: recordSchemaRevision{
-			revision:   2,
-			descriptor: mustCanonicalSchemaDescriptorFor("selection/v1", 2),
-		},
-		superseded: []recordSchemaRevision{{
-			revision:   1,
-			descriptor: `{"contract":"selection/v1","envelope":"record/v1","revision":1}`,
-		}},
-	},
 	"measurements/v1": {
 		current: recordSchemaRevision{
 			revision:   2,
@@ -260,7 +250,7 @@ func AcceptedSchemaDigests(ref snapshot.TypeRef) ([]snapshot.Digest, bool) {
 // SchemaRevisionFor maps a schema digest a stored record carries to the revision
 // number that digest identifies. It is the only correct way to get from the one
 // contract-identity fact a stored record has to anything keyed by revision, such
-// as EpistemicDeclarationFor.
+// as SchemaDigestForRevision's inverse lookup or a revision-gated read rule.
 //
 // The mapping is deliberately NOT the digest's position in the accepted history.
 // That history is newest-first and revisions are numbered from 1, so a type with

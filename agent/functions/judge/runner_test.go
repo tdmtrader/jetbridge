@@ -1,4 +1,4 @@
-package judge
+package judge_test
 
 import (
 	"context"
@@ -7,110 +7,377 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/concourse/concourse/agent/functions/judge"
+	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/agent/snapshot/contracts"
 )
 
-var testConfig = Config{
-	EvaluatorVersion: "code-review-judge/v3",
-	Rubric: []RubricDimension{
-		{Name: "correctness", Weight: 3, Guidance: "does it work"},
-		{Name: "tests", Weight: 1, Guidance: "are behaviors covered"},
-	},
-	PassThreshold: 6.5,
-	Model:         "test-model",
-}
+const (
+	measurementsType = snapshot.TypeRef("measurements/v1")
+	reviewType       = snapshot.TypeRef("review/v1")
+)
 
-func TestRunScoresDeclaredRubricAndProducesMeasurements(t *testing.T) {
-	envelope := `{"type":"result","result":"{\"dimensions\":[{\"name\":\"correctness\",\"score\":8,\"rationale\":\"solid\",\"issues\":[]},{\"name\":\"tests\",\"score\":4,\"rationale\":\"thin\",\"issues\":[{\"title\":\"missing edge case\",\"description\":\"no nil test\",\"file\":\"x.go\",\"line\":10}]}]}","model":"test-model","total_cost_usd":0.31,"num_turns":1,"is_error":false,"usage":{"input_tokens":900,"output_tokens":120}}`
-	result, err := Run(context.Background(), testConfig, Options{
-		CLIPath: stubCLI(t, envelope), WorkDir: t.TempDir(), Evidence: "diff --git a/x.go b/x.go",
+func TestMeasureDerivesTheClosedMetricSetFromTheCandidateRecord(t *testing.T) {
+	root, ref := candidateMount(t, contracts.ReviewBody{
+		Conclusion: "changes-required",
+		Summary:    "one blocking defect and two notes",
+		Findings: []contracts.Finding{
+			{
+				ID: "F-1", Severity: "critical", Blocking: true, Category: "correctness",
+				Title: "unsynchronized write", Description: "two goroutines write the same map",
+				Evidence: []contracts.Anchor{fileAnchor("main.go", 12)},
+			},
+			{
+				ID: "F-2", Severity: "low", Category: "style",
+				Title: "shadowed variable", Description: "err is shadowed",
+				Evidence: []contracts.Anchor{fileAnchor("main.go", 40)},
+			},
+			{
+				ID: "F-3", Severity: "observation", Category: "docs",
+				Title: "comment is stale", Description: "the comment predates the rename",
+			},
+		},
 	})
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if result.Total != 7 || !result.Pass || result.MaxTotal != 10 {
-		t.Fatalf("score = %+v", result)
-	}
-	if len(result.Issues) != 1 || result.Issues[0].Dimension != "tests" {
-		t.Fatalf("issues = %+v", result.Issues)
-	}
-	if result.Measurements.Conclusion != "measured" {
-		t.Fatalf("measurements = %+v", result.Measurements)
-	}
-	if err := result.Measurements.Validate(nil); err != nil {
-		t.Fatalf("measurements/v1: %v", err)
-	}
-	if got := measurementValue(t, result, "judge.total"); got != 7 {
-		t.Fatalf("judge.total = %v", got)
-	}
-}
 
-func TestRunRequiresPinnedEvaluatorAndExactDimensions(t *testing.T) {
-	config := testConfig
-	config.EvaluatorVersion = ""
-	if _, err := Run(context.Background(), config, Options{CLIPath: "must-not-run", WorkDir: t.TempDir()}); err == nil || !strings.Contains(err.Error(), "evaluator_version") {
-		t.Fatalf("unpinned evaluator error = %v", err)
-	}
+	record := measure(t, root, ref)
 
-	envelope := `{"type":"result","result":"{\"dimensions\":[{\"name\":\"correctness\",\"score\":8,\"rationale\":\"ok\",\"issues\":[]}]}","model":"test-model","is_error":false,"usage":{}}`
-	if _, err := Run(context.Background(), testConfig, Options{CLIPath: stubCLI(t, envelope), WorkDir: t.TempDir()}); err == nil || !strings.Contains(err.Error(), `missing dimension "tests"`) {
-		t.Fatalf("missing dimension error = %v", err)
+	if record.Body.Conclusion != "measured" {
+		t.Fatalf("conclusion = %q, want measured", record.Body.Conclusion)
 	}
-}
-
-func TestRunClampsScoresAndRejectsDuplicateOrUnexpectedDimensions(t *testing.T) {
-	envelope := `{"type":"result","result":"{\"dimensions\":[{\"name\":\"correctness\",\"score\":15,\"rationale\":\"ok\",\"issues\":[]},{\"name\":\"tests\",\"score\":-3,\"rationale\":\"ok\",\"issues\":[]}]}","model":"test-model","is_error":false,"usage":{}}`
-	result, err := Run(context.Background(), testConfig, Options{CLIPath: stubCLI(t, envelope), WorkDir: t.TempDir()})
-	if err != nil {
-		t.Fatal(err)
+	want := map[string]float64{
+		"review.conclusion.accept":             0,
+		"review.conclusion.changes-required":   1,
+		"review.conclusion.inconclusive":       0,
+		"review.findings.blocking":             1,
+		"review.findings.severity.critical":    1,
+		"review.findings.severity.high":        0,
+		"review.findings.severity.low":         1,
+		"review.findings.severity.medium":      0,
+		"review.findings.severity.observation": 1,
+		"review.findings.total":                3,
+		"review.summary.characters":            33,
 	}
-	if result.Total != 7.5 {
-		t.Fatalf("clamped total = %v", result.Total)
+	got := make(map[string]float64, len(record.Body.Metrics))
+	for _, metric := range record.Body.Metrics {
+		got[metric.ID] = metric.Value
 	}
-
-	duplicate := `{"type":"result","result":"{\"dimensions\":[{\"name\":\"correctness\",\"score\":8,\"rationale\":\"ok\",\"issues\":[]},{\"name\":\"correctness\",\"score\":8,\"rationale\":\"again\",\"issues\":[]},{\"name\":\"tests\",\"score\":8,\"rationale\":\"ok\",\"issues\":[]}]}","model":"test-model","is_error":false,"usage":{}}`
-	if _, err := Run(context.Background(), testConfig, Options{CLIPath: stubCLI(t, duplicate), WorkDir: t.TempDir()}); err == nil || !strings.Contains(err.Error(), "duplicate dimension") {
-		t.Fatalf("duplicate error = %v", err)
+	if len(got) != len(want) {
+		t.Fatalf("metric ids = %v, want exactly %d metrics", got, len(want))
 	}
-}
-
-func TestWriteMeasurementsEmitsStrictSnapshotDocument(t *testing.T) {
-	document := successfulMeasurements(testConfig, 7, []ScoreDimension{{Name: "correctness", Score: 7, Max: 10}})
-	root := t.TempDir()
-	if err := WriteMeasurements(context.Background(), root, document); err != nil {
-		t.Fatalf("WriteMeasurements: %v", err)
-	}
-	payload, err := os.ReadFile(filepath.Join(root, "record.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var decoded map[string]any
-	if err := json.Unmarshal(payload, &decoded); err != nil {
-		t.Fatal(err)
-	}
-	body, ok := decoded["body"].(map[string]any)
-	if !ok || body["conclusion"] != "measured" || decoded["type"] != "measurements/v1" {
-		t.Fatalf("payload = %s", payload)
-	}
-}
-
-func measurementValue(t *testing.T, result *Result, name string) float64 {
-	t.Helper()
-	for _, metric := range result.Measurements.Metrics {
-		if metric.ID == name {
-			return metric.Value
+	for id, value := range want {
+		if got[id] != value {
+			t.Errorf("metric %q = %v, want %v", id, got[id], value)
 		}
 	}
-	t.Fatalf("missing measurement %q", name)
-	return 0
+
+	// Every metric must be anchored to the candidate subject, or a scorecard
+	// number cannot be traced back to the field it came from.
+	for _, metric := range record.Body.Metrics {
+		if len(metric.Evidence) != 1 {
+			t.Fatalf("metric %q evidence = %+v, want exactly one anchor", metric.ID, metric.Evidence)
+		}
+		anchor := metric.Evidence[0]
+		if anchor.Subject != "candidate" || anchor.Locator.Kind != "json-pointer" ||
+			!strings.HasPrefix(anchor.Locator.Pointer, "/body/") {
+			t.Errorf("metric %q anchor = %+v, want a json-pointer into the candidate body", metric.ID, anchor)
+		}
+	}
+	if len(record.Subjects) != 1 {
+		t.Fatalf("subjects = %+v, want exactly the candidate", record.Subjects)
+	}
+	subject := record.Subjects[0]
+	if subject.ID != "candidate" || subject.Role != contracts.SubjectRolePrimary ||
+		subject.Input != "candidate" || subject.Type != reviewType || subject.Digest != ref.Digest {
+		t.Fatalf("subject = %+v, want the candidate bound at its declared port", subject)
+	}
 }
 
-func stubCLI(t *testing.T, envelope string) string {
-	t.Helper()
-	directory := t.TempDir()
-	path := filepath.Join(directory, "judge")
-	script := "#!/bin/sh\nprintf '%s\\n' '" + envelope + "'\n"
-	if err := os.WriteFile(path, []byte(script), 0700); err != nil {
+// An accepted review with no findings is the boundary case the contract allows
+// and the scorecard has to be able to read: every metric must still be present,
+// because a metric that appears only sometimes cannot be paired across cells.
+func TestMeasureEmitsEveryMetricForAFindingFreeAcceptance(t *testing.T) {
+	root, ref := candidateMount(t, contracts.ReviewBody{
+		Conclusion: "accept",
+		Summary:    "no defects found",
+	})
+
+	record := measure(t, root, ref)
+
+	if len(record.Body.Metrics) != 11 {
+		t.Fatalf("metrics = %d, want the complete closed set", len(record.Body.Metrics))
+	}
+	for _, metric := range record.Body.Metrics {
+		switch metric.ID {
+		case "review.conclusion.accept":
+			if metric.Value != 1 {
+				t.Errorf("accept indicator = %v", metric.Value)
+			}
+		case "review.summary.characters":
+			if metric.Value != 16 {
+				t.Errorf("summary characters = %v", metric.Value)
+			}
+		default:
+			if metric.Value != 0 {
+				t.Errorf("metric %q = %v, want 0", metric.ID, metric.Value)
+			}
+		}
+		if metric.Unit == "indicator" && (metric.Minimum == nil || metric.Maximum == nil || *metric.Minimum != 0 || *metric.Maximum != 1) {
+			t.Errorf("indicator %q is not bounded to [0,1]: %+v", metric.ID, metric)
+		}
+		if metric.Unit != "indicator" && (metric.Minimum != nil || metric.Maximum != nil) {
+			t.Errorf("metric %q declares bounds it cannot honor: %+v", metric.ID, metric)
+		}
+	}
+}
+
+// Determinism is the property that makes this function usable as an evaluator:
+// the same candidate bytes must produce the same measurements bytes, or every
+// paired comparison inherits the evaluator's own noise.
+func TestMeasureIsDeterministicOverTheSameCandidate(t *testing.T) {
+	body := contracts.ReviewBody{
+		Conclusion: "inconclusive",
+		Summary:    "the diff could not be resolved against the base",
+	}
+	firstRoot, firstRef := candidateMount(t, body)
+	secondRoot, secondRef := candidateMount(t, body)
+
+	first, err := json.Marshal(measure(t, firstRoot, firstRef))
+	if err != nil {
 		t.Fatal(err)
 	}
-	return path
+	second, err := json.Marshal(measure(t, secondRoot, secondRef))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(first) != string(second) {
+		t.Fatalf("measurements differ between runs:\n%s\n%s", first, second)
+	}
+}
+
+// The pod copies the platform's declared identity through instead of stamping
+// its own compiled digest, because the agent-runner image and the web node are
+// released independently.
+func TestMeasureCopiesTheDeclaredRecordIdentityVerbatim(t *testing.T) {
+	root, ref := candidateMount(t, contracts.ReviewBody{Conclusion: "accept", Summary: "clean"})
+	declared := snapshot.Digest("sha256:" + strings.Repeat("b", 64))
+	current, found := contracts.SchemaDigestFor(measurementsType)
+	if !found || declared == current {
+		t.Fatalf("test needs a schema digest that differs from the compiled one (%q)", current)
+	}
+
+	record, err := judge.Measure(context.Background(), judge.Request{
+		Candidate: ref, CandidateInput: "candidate", CandidateRoot: root,
+		MeasurementsAuthority: judge.RecordAuthority{Type: measurementsType, Schema: declared},
+	})
+	if err != nil {
+		t.Fatalf("Measure: %v", err)
+	}
+	if record.Schema != declared {
+		t.Fatalf("schema = %q, want the declared digest %q", record.Schema, declared)
+	}
+}
+
+func TestMeasureRejectsAnythingItCannotHonestlyMeasure(t *testing.T) {
+	root, ref := candidateMount(t, contracts.ReviewBody{Conclusion: "accept", Summary: "clean"})
+	schema, _ := contracts.SchemaDigestFor(measurementsType)
+	valid := judge.Request{
+		Candidate: ref, CandidateInput: "candidate", CandidateRoot: root,
+		MeasurementsAuthority: judge.RecordAuthority{Type: measurementsType, Schema: schema},
+	}
+
+	tests := []struct {
+		name    string
+		mutate  func(*judge.Request)
+		message string
+	}{
+		{
+			name:    "candidate is not a review",
+			mutate:  func(request *judge.Request) { request.Candidate.Type = snapshot.TypeRef("diagnosis/v1") },
+			message: "exact type review/v1",
+		},
+		{
+			name:    "no declared port",
+			mutate:  func(request *judge.Request) { request.CandidateInput = "" },
+			message: "candidate input port is required",
+		},
+		{
+			name:    "no declared measurements identity",
+			mutate:  func(request *judge.Request) { request.MeasurementsAuthority = judge.RecordAuthority{} },
+			message: "measurements type must be exactly",
+		},
+		{
+			name:    "declared measurements schema is malformed",
+			mutate:  func(request *judge.Request) { request.MeasurementsAuthority.Schema = "not-a-digest" },
+			message: "measurements schema",
+		},
+		{
+			name:    "candidate mount holds no record",
+			mutate:  func(request *judge.Request) { request.CandidateRoot = t.TempDir() },
+			message: "not a readable review/v1",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := valid
+			test.mutate(&request)
+			_, err := judge.Measure(context.Background(), request)
+			if err == nil || !strings.Contains(err.Error(), test.message) {
+				t.Fatalf("Measure() error = %v, want one mentioning %q", err, test.message)
+			}
+		})
+	}
+}
+
+// A candidate whose record.json is not a valid review/v1 is a contract failure,
+// not a measurement: the function refuses rather than emitting zeros that a
+// scorecard would read as a real observation.
+func TestMeasureRefusesACandidateThatFailsItsOwnContract(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "record.json"), []byte(`{"record_version":"1.0.0"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	schema, _ := contracts.SchemaDigestFor(measurementsType)
+	_, err := judge.Measure(context.Background(), judge.Request{
+		Candidate:             snapshot.SnapshotRef{ID: 1, Type: reviewType, Digest: digest("c")},
+		CandidateInput:        "candidate",
+		CandidateRoot:         root,
+		MeasurementsAuthority: judge.RecordAuthority{Type: measurementsType, Schema: schema},
+	})
+	if err == nil || !strings.Contains(err.Error(), "not a readable review/v1") {
+		t.Fatalf("Measure() error = %v", err)
+	}
+}
+
+// The bytes this function writes are the bytes the web node re-reads when it
+// builds a scorecard, so they must pass the platform's own read-time gate:
+// envelope, declared schema, and body invariants together.
+func TestWriteMeasurementsEmitsARecordTheReadTimeGateAccepts(t *testing.T) {
+	root, ref := candidateMount(t, contracts.ReviewBody{
+		Conclusion: "changes-required",
+		Summary:    "one blocking defect",
+		Findings: []contracts.Finding{{
+			ID: "F-1", Severity: "high", Blocking: true, Category: "correctness",
+			Title: "nil dereference", Description: "the pointer is never checked",
+			Evidence: []contracts.Anchor{fileAnchor("main.go", 3)},
+		}},
+	})
+	record := measure(t, root, ref)
+
+	output := t.TempDir()
+	if err := judge.WriteMeasurements(context.Background(), output, record); err != nil {
+		t.Fatalf("WriteMeasurements: %v", err)
+	}
+
+	sealed, err := os.OpenRoot(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sealed.Close()
+	stored, err := contracts.ReadSealedMeasurementsRecord(context.Background(), sealed)
+	if err != nil {
+		t.Fatalf("ReadSealedMeasurementsRecord: %v", err)
+	}
+	if stored.Type != measurementsType || len(stored.Body.Metrics) != len(record.Body.Metrics) {
+		t.Fatalf("stored record = %+v", stored)
+	}
+	if err := stored.Body.ValidateDetached(); err != nil {
+		t.Fatalf("detached body: %v", err)
+	}
+}
+
+func TestWriteMeasurementsRefusesAnEnvelopeItIsTheAuthorityOn(t *testing.T) {
+	root, ref := candidateMount(t, contracts.ReviewBody{Conclusion: "accept", Summary: "clean"})
+	valid := measure(t, root, ref)
+
+	tests := []struct {
+		name    string
+		mutate  func(*contracts.Record[contracts.MeasurementsBody])
+		message string
+	}{
+		{
+			name:    "wrong record version",
+			mutate:  func(record *contracts.Record[contracts.MeasurementsBody]) { record.RecordVersion = "9.9.9" },
+			message: "record_version",
+		},
+		{
+			name: "wrong contract type",
+			mutate: func(record *contracts.Record[contracts.MeasurementsBody]) {
+				record.Type = snapshot.TypeRef("review/v1")
+			},
+			message: "record type must be exactly",
+		},
+		{
+			name: "body disagrees with its own conclusion",
+			mutate: func(record *contracts.Record[contracts.MeasurementsBody]) {
+				record.Body.Conclusion = "not-applicable"
+			},
+			message: "not-applicable",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			record := valid
+			record.Body.Metrics = append([]contracts.Measurement(nil), valid.Body.Metrics...)
+			test.mutate(&record)
+			err := judge.WriteMeasurements(context.Background(), t.TempDir(), record)
+			if err == nil || !strings.Contains(err.Error(), test.message) {
+				t.Fatalf("WriteMeasurements() error = %v, want one mentioning %q", err, test.message)
+			}
+		})
+	}
+}
+
+func measure(t *testing.T, root string, ref snapshot.SnapshotRef) contracts.Record[contracts.MeasurementsBody] {
+	t.Helper()
+	schema, found := contracts.SchemaDigestFor(measurementsType)
+	if !found {
+		t.Fatal("measurements/v1 has no compiled schema digest")
+	}
+	record, err := judge.Measure(context.Background(), judge.Request{
+		Candidate: ref, CandidateInput: "candidate", CandidateRoot: root,
+		MeasurementsAuthority: judge.RecordAuthority{Type: measurementsType, Schema: schema},
+	})
+	if err != nil {
+		t.Fatalf("Measure: %v", err)
+	}
+	return record
+}
+
+// candidateMount lays out one sealed review/v1 exactly as a task mount presents
+// it: record.json at the root of its own directory.
+func candidateMount(t *testing.T, body contracts.ReviewBody) (string, snapshot.SnapshotRef) {
+	t.Helper()
+	reviewed := snapshot.SnapshotRef{ID: 7, Type: snapshot.TypeRef("repository/v1"), Digest: digest("a")}
+	record, err := contracts.NewRecord(
+		reviewType,
+		[]contracts.Subject{contracts.SubjectFromInput("primary", contracts.SubjectRolePrimary, "after", reviewed)},
+		body,
+	)
+	if err != nil {
+		t.Fatalf("NewRecord: %v", err)
+	}
+	if err := record.Body.Validate(record.Subjects); err != nil {
+		t.Fatalf("review fixture is invalid: %v", err)
+	}
+	payload, err := json.MarshalIndent(record, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "record.json"), append(payload, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return root, snapshot.SnapshotRef{ID: 11, Type: reviewType, Digest: digest("d")}
+}
+
+func fileAnchor(path string, line int) contracts.Anchor {
+	return contracts.Anchor{
+		Subject: "primary",
+		Locator: contracts.Locator{Kind: "file-lines", Path: path, Start: &line, End: &line},
+	}
+}
+
+func digest(fill string) snapshot.Digest {
+	return snapshot.Digest("sha256:" + strings.Repeat(fill, 64))
 }

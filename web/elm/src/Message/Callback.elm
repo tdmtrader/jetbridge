@@ -9,6 +9,7 @@ import Concourse.AgentTicket
 import Concourse.Experiment
 import Concourse.Pagination exposing (Page, Paginated)
 import Concourse.Snapshot
+import Concourse.Transcript
 import Concourse.WorkflowRun
 import Http
 import Message.Message
@@ -97,6 +98,9 @@ type Callback
     | AgentWorkflowRunOperationalStatusCountsFetched String (Fetched Concourse.WorkflowRun.OperationalStatusCounts)
     | AgentWorkflowRunFetched String (Fetched Concourse.WorkflowRun.Detail)
     | AgentWorkflowRunMetricsFetched String (Fetched (List Concourse.Agent.RunMetric))
+    | AgentWorkflowRunTranscriptsFetched String (Fetched (List Concourse.Transcript.Ref))
+      -- run id, plan id, then the raw ndjson body
+    | AgentWorkflowRunTranscriptFetched String String (Fetched String)
     | AgentWorkflowRunCreated String (Fetched Concourse.WorkflowRun.Detail)
     | AgentWorkflowRunCanceled String (Fetched Concourse.WorkflowRun.Detail)
     | AgentWorkflowRunRetried String (Fetched Concourse.WorkflowRun.Detail)

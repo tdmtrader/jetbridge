@@ -8,6 +8,10 @@
 //
 // Modes:
 //
+//	judge            derive a deterministic measurements/v1 record from one
+//	                 sealed review/v1 candidate. It starts no model and consults
+//	                 no clock, which is what lets an experiment evaluator built
+//	                 on it be effect-free, zero-dollar, and reproducible.
 //	merge-preflight  compute the prospective delivery merge and always emit a
 //	                 sealed validation/v1 record describing it. Exits 0 whether
 //	                 the merge is clean or conflicted, so the report is always
@@ -15,9 +19,6 @@
 //	merge-prepare    compute the same merge and emit the merged
 //	                 repository-change/v1. Exits non-zero on conflict, because a
 //	                 typed output only exists when the step succeeded.
-//
-// Further functions (gates, judge, repository validation) plug in as additional
-// modes beside these.
 package main
 
 import (
@@ -32,6 +33,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/concourse/concourse/agent/functions/judge"
 	"github.com/concourse/concourse/agent/functions/repositorymerge"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/snapshot/contracts"
@@ -42,7 +44,8 @@ const (
 	exitRejects = 1
 	exitUsage   = 2
 
-	validationType snapshot.TypeRef = "validation/v1"
+	validationType   snapshot.TypeRef = "validation/v1"
+	measurementsType snapshot.TypeRef = "measurements/v1"
 )
 
 func main() {
@@ -51,20 +54,147 @@ func main() {
 
 func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "function-runner: a mode is required (merge-preflight, merge-prepare)")
+		fmt.Fprintln(stderr, "function-runner: a mode is required (judge, merge-preflight, merge-prepare)")
 		return exitUsage
 	}
 	mode := args[0]
 	switch mode {
+	case "judge":
+		return runJudgeMode(ctx, args[1:], stdout, stderr)
 	case "merge-preflight", "merge-prepare":
 		return runMergeMode(ctx, mode, args[1:], stdout, stderr)
 	case "-h", "--help", "help":
-		fmt.Fprintln(stdout, "usage: function-runner <merge-preflight|merge-prepare> [flags]")
+		fmt.Fprintln(stdout, "usage: function-runner <judge|merge-preflight|merge-prepare> [flags]")
 		return exitOK
 	default:
 		fmt.Fprintf(stderr, "function-runner: unknown mode %q\n", mode)
 		return exitUsage
 	}
+}
+
+type judgeOptions struct {
+	root      string
+	candidate string
+	output    string
+}
+
+func runJudgeMode(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	options := judgeOptions{}
+	flags := flag.NewFlagSet("function-runner judge", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	flags.StringVar(&options.root, "root", ".", "directory the task mounts are relative to")
+	flags.StringVar(&options.candidate, "candidate", "", "review/v1 input mount to measure, as `name` or name=path")
+	flags.StringVar(&options.output, "output", "", "measurements/v1 output mount to materialize into, as `name` or name=path")
+	if err := flags.Parse(args); err != nil {
+		return exitUsage
+	}
+	if flags.NArg() > 0 {
+		fmt.Fprintf(stderr, "function-runner: unexpected argument %q\n", flags.Arg(0))
+		return exitUsage
+	}
+	if err := executeJudge(ctx, options, stdout); err != nil {
+		fmt.Fprintf(stderr, "function-runner: judge: %v\n", err)
+		return exitUsage
+	}
+	return exitOK
+}
+
+// executeJudge measures one sealed review and seals the measurements. There is
+// no partial outcome to report: unlike a merge, which legitimately concludes
+// "conflicted", a candidate that cannot be measured is one that failed its own
+// declared contract, so the step fails rather than sealing zeros a scorecard
+// would read as a real observation.
+func executeJudge(ctx context.Context, options judgeOptions, stdout io.Writer) error {
+	for name, value := range map[string]string{"candidate": options.candidate, "output": options.output} {
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("-%s is required", name)
+		}
+	}
+	candidatePort, candidatePath, err := parseMount(options.root, options.candidate)
+	if err != nil {
+		return err
+	}
+	outputPort, outputPath, err := parseMount(options.root, options.output)
+	if err != nil {
+		return err
+	}
+	if candidatePort == outputPort {
+		return fmt.Errorf("candidate and output must be distinct mounts")
+	}
+	candidate, err := declaredInput(candidatePort)
+	if err != nil {
+		return err
+	}
+	record, err := judge.Measure(ctx, judge.Request{
+		Candidate:             candidate,
+		CandidateInput:        candidatePort,
+		CandidateRoot:         candidatePath,
+		MeasurementsAuthority: measurementsAuthority(outputPort),
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "%s: %d metrics\n", record.Body.Conclusion, len(record.Body.Metrics))
+	for _, metric := range record.Body.Metrics {
+		fmt.Fprintf(stdout, "  %s = %g %s (%s)\n", metric.ID, metric.Value, metric.Unit, metric.Direction)
+	}
+	return judge.WriteMeasurements(ctx, outputPath, record)
+}
+
+// declaredInput resolves the contract identity the PLATFORM declared for one
+// typed input mount, published as AGENT_INPUT_<PORT>_SNAPSHOT_TYPE and
+// _SNAPSHOT_DIGEST (atc/exec/record_authority_env.go).
+//
+// Those two values are copied verbatim into the produced record's subject, for
+// the same reason the output record authority is copied: the web node re-binds
+// every subject against its own view of the step when it seals the output, so a
+// pod that re-derived either half would be advertising an identity the sealing
+// side never declared. There is deliberately NO fallback — unlike a schema
+// digest, a snapshot digest has no compiled default that could be honest, and a
+// judge run outside a typed workflow step has nothing to bind its measurements
+// to. The snapshot ID below is a local ordinal: a pod is never told the durable
+// identity, and nothing downstream reads it.
+func declaredInput(port string) (snapshot.SnapshotRef, error) {
+	prefix := "AGENT_INPUT_" + authorityEnvPort(port)
+	declaredType := strings.TrimSpace(os.Getenv(prefix + "_SNAPSHOT_TYPE"))
+	declaredDigest := strings.TrimSpace(os.Getenv(prefix + "_SNAPSHOT_DIGEST"))
+	if declaredType == "" || declaredDigest == "" {
+		return snapshot.SnapshotRef{}, fmt.Errorf(
+			"input mount %q has no declared snapshot identity; %s_SNAPSHOT_TYPE and %s_SNAPSHOT_DIGEST are set by the platform for every typed input, so this mode only runs as a workflow task node with input_types declared",
+			port, prefix, prefix,
+		)
+	}
+	id, err := snapshot.NewSnapshotID(1)
+	if err != nil {
+		return snapshot.SnapshotRef{}, err
+	}
+	ref := snapshot.SnapshotRef{
+		ID:     id,
+		Type:   snapshot.TypeRef(declaredType),
+		Digest: snapshot.Digest(declaredDigest),
+	}
+	if err := ref.Validate(); err != nil {
+		return snapshot.SnapshotRef{}, fmt.Errorf("input mount %q declared snapshot identity: %w", port, err)
+	}
+	return ref, nil
+}
+
+// measurementsAuthority resolves the contract identity the measurements record
+// must advertise, with the same precedence rule reportAuthority uses: the
+// platform's declaration wins, and this build's compiled identity is only a
+// hand-run fallback.
+func measurementsAuthority(outputPort string) judge.RecordAuthority {
+	prefix := "AGENT_OUTPUT_" + authorityEnvPort(outputPort)
+	declaredType := strings.TrimSpace(os.Getenv(prefix + "_RECORD_TYPE"))
+	declaredSchema := strings.TrimSpace(os.Getenv(prefix + "_RECORD_SCHEMA"))
+	if declaredType != "" && declaredSchema != "" {
+		return judge.RecordAuthority{
+			Type:   snapshot.TypeRef(declaredType),
+			Schema: snapshot.Digest(declaredSchema),
+		}
+	}
+	schema, _ := contracts.SchemaDigestFor(measurementsType)
+	return judge.RecordAuthority{Type: measurementsType, Schema: schema}
 }
 
 type mergeOptions struct {

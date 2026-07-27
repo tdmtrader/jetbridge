@@ -196,20 +196,6 @@ func (registry *Registry) Reconcile(ctx context.Context, limit int) error {
 	return errors.Join(failures...)
 }
 
-// ReconcileAsync performs a detached best-effort startup/periodic pass.
-func (registry *Registry) ReconcileAsync(parent context.Context, limit int) {
-	if registry == nil {
-		return
-	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), registry.timeout)
-		defer cancel()
-		if err := registry.Reconcile(ctx, limit); err != nil {
-			registry.report(ctx, err)
-		}
-	}()
-}
-
 // ProjectingCreator decorates the canonical snapshot commit boundary. It does
 // not participate in the transaction: only successful delegate results are
 // triggered, asynchronously, after durable seal/upload commit.

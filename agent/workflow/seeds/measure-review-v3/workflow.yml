@@ -1,0 +1,56 @@
+schema_version: 3
+name: measure-review
+signature_version: 1
+description: >-
+  Derive a deterministic measurements/v1 scorecard input from one sealed
+  review/v1 candidate. This is the shipped EXPERIMENT EVALUATOR: it counts what
+  the candidate review already states — its conclusion, its findings by severity,
+  how many of them block, and how much explanation it carries — and emits those
+  numbers as a sealed record.
+
+  Nothing here varies between repetitions. There is no agent, so an evaluator
+  cell costs nothing and needs no budget slice even under the deployment daily
+  cap; there is no publish_snapshot, so it passes effect-free experiment
+  admission; and there is no clock or network, so two repetitions over the same
+  candidate produce identical measurements. An evaluator that varied would put
+  its own noise into every paired comparison on the scorecard.
+
+  Scoring work against authored guidance is a different, stochastic job that
+  needs a model and a budget: that belongs to an agent node in a workflow of its
+  own, not to this function.
+inputs:
+  - name: candidate
+    type: review/v1
+    description: The review being measured, produced by the candidate workflow.
+outputs:
+  - name: measurements
+    type: measurements/v1
+    from: measurements
+    description: >-
+      Counts derived from the candidate review, each anchored by JSON pointer to
+      the field of the candidate's record it came from.
+plan:
+  - task: measure-review
+    function_id: measure-review
+    config:
+      platform: linux
+      image_resource:
+        type: registry-image
+        source:
+          repository: concourse/agent-runner
+        version:
+          digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+      inputs:
+        - name: candidate
+      outputs:
+        - name: measurements
+      run:
+        path: function-runner
+        args:
+          - judge
+          - --candidate=candidate
+          - --output=measurements
+    input_types:
+      candidate: {type: review/v1}
+    output_types:
+      measurements: measurements/v1

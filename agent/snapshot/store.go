@@ -169,8 +169,8 @@ func (s *RetentionSpec) UnmarshalJSON(data []byte) error {
 }
 
 // SealCommitOutput correlates one caller result key and declared output port
-// with durable bytes. The metadata transaction allocates Snapshot, Production,
-// Grant, RetentionClaim, LineageEdge, and workflow-binding IDs.
+// with durable bytes. The metadata transaction allocates the snapshot,
+// production, retention-claim, lineage, and workflow-binding rows.
 type SealCommitOutput struct {
 	ClientKey         string          `json:"client_key"`
 	Port              Port            `json:"port"`

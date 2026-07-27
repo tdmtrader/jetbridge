@@ -227,7 +227,7 @@ examples.
 
 ## Sealed record outputs
 
-Six domain contracts share one canonical output representation:
+Five domain contracts share one canonical output representation:
 
 ```text
 record.json
@@ -235,7 +235,7 @@ content/       optional payloads and large evidence
 ```
 
 They are `review/v1`, `diagnosis/v1`, `validation/v1`,
-`repository-change/v1`, `selection/v1`, and `measurements/v1`.
+`repository-change/v1`, and `measurements/v1`.
 `validation/v1` consolidates deterministic check execution and agent-authored
 validation; every retry is preserved as an attempt, while conclusion,
 flakiness, and total duration are derived.
@@ -279,10 +279,9 @@ the production occurrence.
 
 Repository changes put their patch, Git bundle, or tree payload below
 `content/` and identify the exact `repository/v1` base as a `base` subject.
-Review, diagnosis, and validation use anchored evidence. Selection creates a
-decision record but returns the existing selected snapshot reference rather
-than copying its content. Measurement records contain stable metric
-definitions; evaluator identity/version remains provenance.
+Review, diagnosis, and validation use anchored evidence. Measurement records
+contain stable metric definitions; evaluator identity/version remains
+provenance.
 
 The detailed contract and prototype boundary are specified in
 [Prototype-Informed Sealed Record Contracts](../superpowers/specs/2026-07-24-prototype-sealed-record-contracts-design.md).
@@ -556,6 +555,20 @@ runner; a start can therefore never create durable work that no reconciler
 will claim. Candidate and evaluator targets must also be effect-free:
 `publish_snapshot` is rejected even when the experiment has no budget.
 
+Jetbridge ships one evaluator, `agent/workflow/seeds/measure-review-v3`. It
+takes a `review/v1` candidate and emits `measurements/v1` from a single
+deterministic task, `function-runner judge`, which counts what the review
+already states: its conclusion as bounded indicators, its findings by severity,
+how many of them block, and how much summary it carries. Every number is
+anchored by JSON pointer to the candidate field it came from, and the record's
+single subject is the exact review measured. The seed contains no agent and no
+`publish_snapshot`, so an evaluator cell is effect-free, needs no budget slice
+even while the deployment daily cap is enabled, and measures every repetition
+identically — an evaluator that varied would put its own noise into every
+paired comparison on the scorecard. Scoring work against authored guidance is a
+different, stochastic job that needs a model, a budget and a transcript; that
+belongs to an `agent:` node in a workflow of its own, not to this function.
+
 Candidate and evaluator binding carries an explicit experiment/cell/phase
 gate into ordinary workflow-run allocation. The allocator uses one short
 transaction to lock and verify the still-running parent and cell before it
@@ -634,7 +647,12 @@ Schema-v3 examples live under `agent/workflow/seeds/`:
 - `version-upgrade-v3`: upgrade request to validated change and report;
 - `anonymization-audit-v3`: captured database evidence to findings and an
   optional repository change;
-- `log-diagnosis-v3`: captured logs and deployment state to a diagnosis.
+- `log-diagnosis-v3`: captured logs and deployment state to a diagnosis;
+- `merge-delivery-v3`: an approved change rebased onto the current target tip,
+  producing the landed `repository-change/v1` and a `validation/v1` merge
+  report that is sealed whether or not the merge is clean;
+- `measure-review-v3`: one review to deterministic `measurements/v1` — the
+  shipped experiment evaluator, described under Experiments above.
 
 These definitions contain placeholder destinations and prompts suitable for
 dogfooding, not deployment credentials. Live-system data must be captured as a

@@ -495,14 +495,6 @@ all =
                 given iVisitABuildWithAnAgentStep
                     >> then_ (iSeeText "implement")
             ]
-        , describe "retired step (U1)"
-            [ test "renders a retired harvest node from completed history" <|
-                given iVisitABuildWithARetiredHarvestNode
-                    >> then_ (iSeeText "retired: harvest")
-            , test "shows the retired step name" <|
-                given iVisitABuildWithARetiredHarvestNode
-                    >> then_ (iSeeText "push-branch")
-            ]
         , describe "unknown step fallback (U1 durability)"
             [ test "an unrecognized step type still renders with a step: header instead of blanking the page" <|
                 given iVisitABuildWithAnUnknownStep
@@ -1096,25 +1088,6 @@ thePlanContainsAnAgentStep =
                 Ok
                     ( { id = "agentStepId"
                       , step = Concourse.BuildStepAgent "implement"
-                      }
-                    , { inputs = [], outputs = [] }
-                    )
-            )
-
-
-iVisitABuildWithARetiredHarvestNode =
-    iOpenTheBuildPage
-        >> myBrowserFetchedTheBuild
-        >> thePlanContainsARetiredHarvestNode
-
-
-thePlanContainsARetiredHarvestNode =
-    Tuple.first
-        >> Application.handleCallback
-            (Callback.PlanAndResourcesFetched 1 <|
-                Ok
-                    ( { id = "harvestStepId"
-                      , step = Concourse.BuildStepRetired "harvest" "push-branch"
                       }
                     , { inputs = [], outputs = [] }
                     )

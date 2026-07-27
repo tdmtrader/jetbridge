@@ -118,7 +118,7 @@ func TestSchemaDocumentRevisionLinksToTheDigestHistory(t *testing.T) {
 // parity gate cannot see is worse than drift it can.
 func TestSchemaDocumentsDeclareEveryGoBodyFieldAndNoOthers(t *testing.T) {
 	for ref, document := range recordSchemaDocuments {
-		prototype, found := recordEpistemicPrototypes[ref]
+		prototype, found := recordPrototypes[ref]
 		if !found {
 			t.Fatalf("%q has no record prototype", ref)
 		}
@@ -153,7 +153,7 @@ func TestSchemaDocumentsDeclareEveryGoBodyFieldAndNoOthers(t *testing.T) {
 // value silently changes what presence means and what the parity gate compares.
 func TestSchemaDocumentAbsentImageMatchesGoPointerness(t *testing.T) {
 	for ref, document := range recordSchemaDocuments {
-		leaves, err := recordLeafFields(reflect.TypeOf(recordEpistemicPrototypes[ref]))
+		leaves, err := recordLeafFields(reflect.TypeOf(recordPrototypes[ref]))
 		if err != nil {
 			t.Fatalf("recordLeafFields(%q): %v", ref, err)
 		}
@@ -191,69 +191,6 @@ func goRepresentation(pointer bool) string {
 	return "a value"
 }
 
-// §7 of the dialect, machine-checked in both directions: the two tables answer
-// different questions about the same leaves, and this is what stops one from
-// growing a field the other does not know about.
-func TestSchemaDocumentLeafSetEqualsTheEpistemicTable(t *testing.T) {
-	wantCounts := map[snapshot.TypeRef]int{
-		"review/v1":            24,
-		"diagnosis/v1":         38,
-		"validation/v1":        26,
-		"repository-change/v1": 16,
-		"selection/v1":         20,
-		"measurements/v1":      24,
-	}
-	total := 0
-	for ref, document := range recordSchemaDocuments {
-		declared, revision := epistemicFieldsForDocument(t, document)
-		leaves := make(map[string]struct{})
-		for path := range recordEnvelopeEpistemicFields() {
-			leaves[path] = struct{}{}
-		}
-		for _, path := range document.impliedLeafPaths() {
-			if _, duplicate := leaves[path]; duplicate {
-				t.Errorf("%q implies leaf %q twice", ref, path)
-			}
-			leaves[path] = struct{}{}
-		}
-		for path := range leaves {
-			if _, found := declared[path]; !found {
-				t.Errorf("%q revision %d: schema leaf %q has no epistemic status", ref, revision, path)
-			}
-		}
-		for path := range declared {
-			if _, found := leaves[path]; !found {
-				t.Errorf("%q revision %d: epistemic field %q is not a schema leaf", ref, revision, path)
-			}
-		}
-		if want, pinned := wantCounts[ref]; pinned && len(leaves) != want {
-			t.Errorf("%q implies %d leaves, want %d", ref, len(leaves), want)
-		}
-		total += len(leaves)
-	}
-	if total != 148 {
-		t.Errorf("the six documents imply %d leaves in total, want 148", total)
-	}
-}
-
-// A schema document carries no epistemic field of any kind. Status is keyed by
-// (type, revision) outside every canonical digest, precisely so a mislabelled
-// status is a one-line edit and not a descriptor bump.
-func TestNoSchemaDocumentCarriesAnEpistemicField(t *testing.T) {
-	tokens := []string{"epistemic"}
-	for _, status := range EpistemicStatuses() {
-		tokens = append(tokens, `"`+status.String()+`"`)
-	}
-	for _, name := range schemaDocumentFileNames(t) {
-		lowered := strings.ToLower(string(readSchemaDocumentFile(t, name)))
-		for _, token := range tokens {
-			if strings.Contains(lowered, token) {
-				t.Errorf("%s contains %q; epistemic status lives outside every canonical digest", name, token)
-			}
-		}
-	}
-}
-
 // The dialect version has to be in the FROZEN BYTES, not merely in a Go field:
 // the composite-kind expansions are dialect-fixed subtrees that appear nowhere in
 // a document, so without the marker inside the digest input the descriptor names a
@@ -284,26 +221,31 @@ func TestEverySchemaDocumentDeclaresTheDialectVersionInItsOwnBytes(t *testing.T)
 // mechanically detectable case — its bounds and target are optional only because a
 // sibling value decides them — so a score site that leaves either axis open must
 // name the Go rule that closes it.
+//
+// Every score site in the tree is currently pinned on both axes (diagnosis/v1's
+// confidence is unit-interval and higher-is-better), so the rule guards the next
+// open one rather than an existing violation. The nonzero-site check keeps the
+// walk itself honest: a test that examined no score at all would pass silently.
 func TestAnUnpinnedScoreNamesTheGoRuleThatConstrainsIt(t *testing.T) {
-	sites := 0
+	scoreSites := 0
 	for ref, document := range recordSchemaDocuments {
 		for _, path := range sortedFieldPaths(document.Fields) {
 			declaration := document.Fields[path]
 			if declaration.Kind != KindScore {
 				continue
 			}
+			scoreSites++
 			if declaration.Scale != schemaOpenValue && declaration.Direction != schemaOpenValue {
 				continue
 			}
-			sites++
 			if len(declaration.GoRules) == 0 {
 				t.Errorf("%q field %q leaves scale or direction open, so its bounds and target are conditionally "+
 					"constrained; it must reference the go_only_rules entry that constrains them", ref, path)
 			}
 		}
 	}
-	if sites == 0 {
-		t.Fatal("no unpinned score site was examined; selection/v1 declares one, so this test is not checking what it claims")
+	if scoreSites == 0 {
+		t.Fatal("no score site was examined at all, so this test is not checking what it claims")
 	}
 }
 
@@ -364,7 +306,6 @@ func TestSchemaDocumentCanonicalSerializationIsStable(t *testing.T) {
 		"measurements.v1.rev2.json":      "sha256:d2e0b89126ce534c957a8e93166391f517e126aec5aa961f66a4c6c178bc57a0",
 		"repository-change.v1.rev2.json": "sha256:afdb59e4eb682a09f86fb92165c57d3df215487be5a55e316944eba8bdc1f013",
 		"review.v1.rev2.json":            "sha256:8b460c4d9ea3a6ca6c7d1b8fb1e8dce448df8a2745f3d81a52992cec8e760220",
-		"selection.v1.rev2.json":         "sha256:cc476af24a81b9762d4d38b79a1354279500eecfb2684b2818225cbc63a234a8",
 		"validation.v1.rev2.json":        "sha256:68811d591b6f1f9cac7f2c27f36d96282717298c2420e3e16f521e5cd7351821",
 	}
 	if len(golden) != len(schemaDocumentFileNames(t)) {
@@ -427,26 +368,6 @@ func mustAcceptedDescriptors(t *testing.T, ref snapshot.TypeRef) []string {
 		descriptors = append(descriptors, superseded.descriptor)
 	}
 	return descriptors
-}
-
-// epistemicFieldsForDocument resolves the epistemic entry a document describes.
-// It prefers the document's own revision and falls back to the revision it
-// supersedes. For every ADOPTED revision the preferred key exists, and
-// TestEveryRecordTypeDeclaresEpistemicStatusForEveryRevision requires it; the
-// fallback is what a STAGED document — reviewed and pinned but not yet installed
-// as a descriptor — resolves through, since it describes the same validators its
-// predecessor's entry describes.
-func epistemicFieldsForDocument(t *testing.T, document SchemaDocument) (map[string]EpistemicStatus, int) {
-	t.Helper()
-	for _, revision := range []int{document.Revision, document.Supersedes} {
-		fields, found := epistemicFieldStatuses[epistemicKey{ref: document.Contract, revision: revision}]
-		if found {
-			return fields, revision
-		}
-	}
-	t.Fatalf("%q has no epistemic declaration for revision %d or %d",
-		document.Contract, document.Revision, document.Supersedes)
-	return nil, 0
 }
 
 // The synthetic document below is the base for the malformed-input table. It is

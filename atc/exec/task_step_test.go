@@ -842,28 +842,6 @@ var _ = Describe("TaskStep", func() {
 				Expect(*entry.Snapshot).To(Equal(outputSealer.result["mapped-change"].Snapshot))
 			})
 
-			Context("when an input port is declared a candidate port", func() {
-				BeforeEach(func() {
-					declaration := taskPlan.SnapshotInputs["repository"]
-					declaration.Candidate = true
-					taskPlan.SnapshotInputs["repository"] = declaration
-				})
-
-				It("seals with the declared candidate ports so selection authority is server-side", func() {
-					Expect(stepErr).NotTo(HaveOccurred())
-					Expect(stepOk).To(BeTrue())
-					Expect(outputSealer.calls).To(HaveLen(1))
-					Expect(outputSealer.calls[0].CandidateInputs).To(Equal([]string{"repository"}))
-				})
-			})
-
-			It("seals with no candidate ports when none are declared", func() {
-				Expect(stepErr).NotTo(HaveOccurred())
-				Expect(stepOk).To(BeTrue())
-				Expect(outputSealer.calls).To(HaveLen(1))
-				Expect(outputSealer.calls[0].CandidateInputs).To(BeEmpty())
-			})
-
 			It("captures full-tree exposure lineage at mount time for every typed input", func() {
 				Expect(stepErr).NotTo(HaveOccurred())
 				Expect(stepOk).To(BeTrue())
@@ -1106,25 +1084,6 @@ var _ = Describe("TaskStep", func() {
 
 			Context("when a required input is absent", func() {
 				It("returns MissingInputsError before worker selection", func() {
-					Expect(stepErr).To(BeAssignableToTypeOf(exec.MissingInputsError{}))
-					Expect(stepErr.(exec.MissingInputsError).Inputs).To(Equal([]string{"repository"}))
-					Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(0))
-				})
-			})
-
-			Context("when a candidate input is absent", func() {
-				BeforeEach(func() {
-					declaration := taskPlan.SnapshotInputs["repository"]
-					declaration.Candidate = true
-					taskPlan.SnapshotInputs["repository"] = declaration
-				})
-
-				It("fails rather than silently narrowing the declared candidate set", func() {
-					// Only BOUND candidate ports reach the sealer, so an absent one must
-					// be an error, never a quiet removal from the set the selection
-					// validator treats as authority. What makes that hold is that a
-					// candidate port cannot be declared optional
-					// (atc.SnapshotInputConfig.Validate), so it is always required here.
 					Expect(stepErr).To(BeAssignableToTypeOf(exec.MissingInputsError{}))
 					Expect(stepErr.(exec.MissingInputsError).Inputs).To(Equal([]string{"repository"}))
 					Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(0))

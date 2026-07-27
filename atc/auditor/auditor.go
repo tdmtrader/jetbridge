@@ -178,6 +178,7 @@ func (a *auditor) ValidateAction(action string) bool {
 		atc.ListAgentWorkflowRunOutcomes,
 		atc.SetAgentWorkflowRunOutputOutcome,
 		atc.ListAgentWorkflowRunMetrics,
+		atc.ListAgentWorkflowRunTranscripts,
 		atc.GetAgentWorkflowRunTranscript,
 		atc.CreateAgentExperiment,
 		atc.ListAgentExperiments,

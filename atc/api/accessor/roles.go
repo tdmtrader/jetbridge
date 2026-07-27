@@ -136,6 +136,7 @@ var DefaultRoles = map[string]string{
 	atc.ListAgentWorkflowRunOutcomes:               ViewerRole,
 	atc.SetAgentWorkflowRunOutputOutcome:           MemberRole,
 	atc.ListAgentWorkflowRunMetrics:                ViewerRole,
+	atc.ListAgentWorkflowRunTranscripts:            ViewerRole,
 	atc.GetAgentWorkflowRunTranscript:              ViewerRole,
 	atc.CreateAgentExperiment:                      MemberRole,
 	atc.ListAgentExperiments:                       ViewerRole,
