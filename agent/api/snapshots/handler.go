@@ -2,6 +2,7 @@ package snapshots
 
 import (
 	"bytes"
+	"code.cloudfoundry.org/lager/v3"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -32,6 +33,7 @@ import (
 const maxPinRequestBytes int64 = 4096
 
 type HandlerFactory struct {
+	logger            lager.Logger
 	enabled           bool
 	creator           SnapshotCreator
 	metadata          MetadataStore
@@ -45,8 +47,12 @@ type HandlerFactory struct {
 }
 
 func NewHandlerFactory(config Config) (*HandlerFactory, error) {
+	factoryLogger := config.Logger
+	if factoryLogger == nil {
+		factoryLogger = lager.NewLogger("snapshots")
+	}
 	if !config.Enabled {
-		return &HandlerFactory{enabled: false}, nil
+		return &HandlerFactory{enabled: false, logger: factoryLogger}, nil
 	}
 	for name, dependency := range map[string]any{
 		"creator": config.Creator, "metadata store": config.Metadata,
@@ -75,6 +81,7 @@ func NewHandlerFactory(config Config) (*HandlerFactory, error) {
 	}
 	return &HandlerFactory{
 		enabled: true, creator: config.Creator, metadata: config.Metadata,
+		logger:  factoryLogger,
 		content: config.Content, locks: config.Locks, identity: config.Identity,
 		repositoryChanges: config.RepositoryChanges,
 		reportError:       reporter, transportLimit: transportLimit,
@@ -395,10 +402,21 @@ func (factory *HandlerFactory) contentHandler(w http.ResponseWriter, r *http.Req
 		if !interfaceIsNil(reader) {
 			_ = reader.Close()
 		}
+		// Log the cause: "snapshot content is unavailable" is all the client
+		// gets, and without this the reason existed nowhere. A 503 here is the
+		// behavioural suite's agentic-workflow spec failing intermittently, and
+		// the discarded err is the only thing that distinguishes "content is
+		// genuinely still landing" from a real storage fault.
+		factory.logger.Error("snapshot-content-open-failed", err, lager.Data{
+			"digest": manifest.Digest, "snapshot": manifest.ID.String(),
+		})
 		writeError(w, http.StatusServiceUnavailable, "content_unavailable", "snapshot content is unavailable")
 		return
 	}
 	if interfaceIsNil(reader) {
+		factory.logger.Error("snapshot-content-open-returned-nil-reader", nil, lager.Data{
+			"digest": manifest.Digest, "snapshot": manifest.ID.String(),
+		})
 		writeError(w, http.StatusServiceUnavailable, "content_unavailable", "snapshot content is unavailable")
 		return
 	}

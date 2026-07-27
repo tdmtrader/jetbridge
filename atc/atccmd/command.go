@@ -1927,6 +1927,7 @@ func (cmd *RunCommand) composeAgentSnapshots(connection db.DbConn, logger lager.
 		return fmt.Errorf("compose resource capture finalizer: %w", err)
 	}
 	handlerFactory, err := snapshotsapi.NewHandlerFactory(snapshotsapi.Config{
+		Logger:            logger.Session("snapshots-api"),
 		Enabled:           true,
 		Creator:           creator,
 		Metadata:          metadataStore,

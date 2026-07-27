@@ -1,6 +1,7 @@
 package snapshots
 
 import (
+	"code.cloudfoundry.org/lager/v3"
 	"context"
 	"io"
 	"net/http"
@@ -74,6 +75,9 @@ type ErrorReporter func(context.Context, string)
 
 // Config controls construction of the team-bound snapshot handlers.
 type Config struct {
+	// Logger receives the causes behind content_unavailable and other handler
+	// failures. Optional; NewHandlerFactory substitutes a sink-less logger.
+	Logger            lager.Logger
 	Enabled           bool
 	Creator           SnapshotCreator
 	Metadata          MetadataStore
