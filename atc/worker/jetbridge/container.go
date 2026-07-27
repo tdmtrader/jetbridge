@@ -814,12 +814,17 @@ func applySecretRefs(envList []corev1.EnvVar, secretEnv map[string]vars.SecretRe
 		return envList
 	}
 	refFor := func(ref vars.SecretRef) *corev1.EnvVarSource {
-		return &corev1.EnvVarSource{
-			SecretKeyRef: &corev1.SecretKeySelector{
-				LocalObjectReference: corev1.LocalObjectReference{Name: ref.Name},
-				Key:                  ref.Key,
-			},
+		selector := &corev1.SecretKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: ref.Name},
+			Key:                  ref.Key,
 		}
+		if ref.Optional {
+			// kubelet refuses to start a container whose secretKeyRef names a
+			// missing key; an optional ref leaves the variable unset instead.
+			optional := true
+			selector.Optional = &optional
+		}
+		return &corev1.EnvVarSource{SecretKeyRef: selector}
 	}
 	seen := map[string]bool{}
 	for i := range envList {

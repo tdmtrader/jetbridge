@@ -68,14 +68,11 @@ type RunMetrics struct {
 	WorkflowRunID *WorkflowRunID `json:"workflow_run_id,omitempty"`
 	// FunctionID is the workflow function that produced the step. Empty for a
 	// direct pipeline agent step.
-	FunctionID      string `json:"function_id,omitempty"`
-	BuildID         int    `json:"build_id"`
-	PlanID          string `json:"plan_id"`
-	StepName        string `json:"step_name"`
-	WorkflowName    string `json:"workflow_name,omitempty"`
-	WorkflowVersion *int   `json:"workflow_version,omitempty"`
-	WorkflowHash    string `json:"workflow_hash,omitempty"`
-	Status          string `json:"status"` // ok | failed | error | parked | incomplete — the AGENT STEP exit status
+	FunctionID string `json:"function_id,omitempty"`
+	BuildID    int    `json:"build_id"`
+	PlanID     string `json:"plan_id"`
+	StepName   string `json:"step_name"`
+	Status     string `json:"status"` // ok | failed | error | parked | incomplete — the AGENT STEP exit status
 	// BuildStatus is the status of the pipeline build the step ran in
 	// (pending|started|succeeded|failed|errored|aborted). It is derived
 	// server-side by joining the builds table on read and is never accepted

@@ -134,14 +134,15 @@ type PipelineRunCreator interface {
 	) (WorkflowRunExecution, bool, error)
 }
 
-//counterfeiter:generate -o workflowrunfakes/fake_run_secret_preparer.go . RunSecretPreparer
-type RunSecretPreparer interface {
-	Prepare(context.Context, AdmissionContext, db.AgentWorkflowRun) (PreparedRunSecret, error)
-}
-
-//counterfeiter:generate -o workflowrunfakes/fake_prepared_run_secret.go . PreparedRunSecret
-type PreparedRunSecret interface {
-	Attach(context.Context, int) error
+// ModelCredentialAdmitter proves the web still has a model-credential source
+// for the agent pods this run will start. It is a presence check, not a
+// mounting step: pods read the platform secret directly (§8.2), so admission
+// only has to fail closed before any execution side effect when no credential
+// exists at all.
+//
+//counterfeiter:generate -o workflowrunfakes/fake_model_credential_admitter.go . ModelCredentialAdmitter
+type ModelCredentialAdmitter interface {
+	AdmitModelCredential(context.Context) error
 }
 
 type AllowAllBudgetAdmitter struct{}

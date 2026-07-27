@@ -111,19 +111,9 @@ func TestBindAndCreateAdmitsFromServerDerivedIdentity(t *testing.T) {
 		}
 		return nil
 	}}
-	prepared := &preparedSecretStub{attach: func(_ context.Context, pipelineRunID int) error {
-		order = append(order, "attach")
-		if pipelineRunID != 313 {
-			t.Fatalf("pipeline run id = %d", pipelineRunID)
-		}
+	credential := &credentialStub{admit: func(context.Context) error {
+		order = append(order, "credential")
 		return nil
-	}}
-	secrets := &secretStub{prepare: func(_ context.Context, admission AdmissionContext, run db.AgentWorkflowRun) (PreparedRunSecret, error) {
-		order = append(order, "prepare")
-		if admission.CreatedBy != "alice" || run.ID != largeRunID {
-			t.Fatalf("secret preparation = (%+v, %+v)", admission, run)
-		}
-		return prepared, nil
 	}}
 	saver := &saverStub{save: func(_ context.Context, _ AdmissionContext, spec ImmutableTemplateSpec) (WorkflowRunTemplateRef, error) {
 		order = append(order, "save")
@@ -153,13 +143,13 @@ func TestBindAndCreateAdmitsFromServerDerivedIdentity(t *testing.T) {
 		if !reflect.DeepEqual(params, want) {
 			t.Fatalf("params = %#v, want %#v", params, want)
 		}
-		if err := beforeCommit(ctx, 313); err != nil {
-			return WorkflowRunExecution{}, false, err
+		if beforeCommit != nil {
+			t.Fatal("agent pods read the platform secret themselves; the binder must not need a pre-commit hook")
 		}
 		return WorkflowRunExecution{}, true, nil
 	}}
 
-	binder, err := NewBinder(resolver, renderer, authorizer, store, budget, saver, creator, secrets)
+	binder, err := NewBinder(resolver, renderer, authorizer, store, budget, saver, creator, credential)
 	if err != nil {
 		t.Fatalf("NewBinder: %v", err)
 	}
@@ -175,7 +165,7 @@ func TestBindAndCreateAdmitsFromServerDerivedIdentity(t *testing.T) {
 	if !result.Created || result.Run.Status != db.AgentWorkflowRunStatusRunning || result.Run.ID != largeRunID {
 		t.Fatalf("result = %+v", result)
 	}
-	wantOrder := []string{"find", "resolve", "target", "render", "authorize", "allocate", "budget", "prepare", "save", "execution", "attach", "transition"}
+	wantOrder := []string{"find", "resolve", "target", "render", "authorize", "allocate", "budget", "credential", "save", "execution", "transition"}
 	if !reflect.DeepEqual(order, wantOrder) {
 		t.Fatalf("order = %#v, want %#v", order, wantOrder)
 	}
@@ -196,7 +186,7 @@ func TestBindAndCreateTreatsNonV3DefinitionAsPlatformFailure(t *testing.T) {
 		&budgetStub{},
 		&saverStub{},
 		&creatorStub{},
-		&secretStub{},
+		&credentialStub{},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -264,9 +254,9 @@ func TestBindAndCreateRequiresExperimentGateEvenForExistingIdempotencyKey(t *tes
 			t.Fatal("closed admission must not create an execution")
 			return WorkflowRunExecution{}, false, nil
 		}},
-		&secretStub{prepare: func(context.Context, AdmissionContext, db.AgentWorkflowRun) (PreparedRunSecret, error) {
-			t.Fatal("closed admission must not prepare secrets")
-			return nil, nil
+		&credentialStub{admit: func(context.Context) error {
+			t.Fatal("closed admission must not check the model credential")
+			return nil
 		}},
 	)
 	if err != nil {
@@ -345,7 +335,7 @@ func TestBindAndCreateUsesExplicitResolutionAndExactFunctionSelectionOnce(t *tes
 			return snapshot.Snapshot{}, false, nil
 		}},
 		store,
-		&budgetStub{}, &saverStub{}, &creatorStub{}, &secretStub{},
+		&budgetStub{}, &saverStub{}, &creatorStub{}, &credentialStub{},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -401,9 +391,7 @@ func TestBindAndCreateExistingRunningRunHasNoExternalSideEffects(t *testing.T) {
 		&creatorStub{create: func(context.Context, snapshot.WorkflowRunID, WorkflowRunTemplateRef, map[string]any, string, BeforeWorkflowRunCommit) (WorkflowRunExecution, bool, error) {
 			return WorkflowRunExecution{}, false, unexpected
 		}},
-		&secretStub{prepare: func(context.Context, AdmissionContext, db.AgentWorkflowRun) (PreparedRunSecret, error) {
-			return nil, unexpected
-		}},
+		&credentialStub{admit: func(context.Context) error { return unexpected }},
 	)
 	if err != nil {
 		t.Fatalf("NewBinder: %v", err)
@@ -467,7 +455,6 @@ func TestBindAndCreateResumesCleanAdmittingRunWithoutResolvingOrRendering(t *tes
 		resolverCalled = true
 		return workflow.Definition{}, false, errors.New("must not resolve")
 	}}
-	prepared := &preparedSecretStub{attach: func(context.Context, int) error { return nil }}
 	binder, err := NewBinder(
 		resolver,
 		&rendererStub{},
@@ -489,11 +476,12 @@ func TestBindAndCreateResumesCleanAdmittingRunWithoutResolvingOrRendering(t *tes
 			if params["snapshot_notes"] != "0" || params["snapshot_repo"] != input.ID.String() {
 				t.Fatalf("durable params = %#v", params)
 			}
-			return WorkflowRunExecution{}, true, callback(ctx, 1)
+			if callback != nil {
+				return WorkflowRunExecution{}, true, callback(ctx, 1)
+			}
+			return WorkflowRunExecution{}, true, nil
 		}},
-		&secretStub{prepare: func(context.Context, AdmissionContext, db.AgentWorkflowRun) (PreparedRunSecret, error) {
-			return prepared, nil
-		}},
+		&credentialStub{admit: func(context.Context) error { return nil }},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -566,9 +554,7 @@ func TestBindAndCreateRepairsCompleteAdmittingCrashWindowWithoutExternalSideEffe
 		&creatorStub{create: func(context.Context, snapshot.WorkflowRunID, WorkflowRunTemplateRef, map[string]any, string, BeforeWorkflowRunCommit) (WorkflowRunExecution, bool, error) {
 			return WorkflowRunExecution{}, false, unwanted
 		}},
-		&secretStub{prepare: func(context.Context, AdmissionContext, db.AgentWorkflowRun) (PreparedRunSecret, error) {
-			return nil, unwanted
-		}},
+		&credentialStub{admit: func(context.Context) error { return unwanted }},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -612,8 +598,8 @@ func TestBindAndCreateLeavesPostAllocationPlatformFailureRetryableAndRedacted(t 
 	binder, err := NewBinder(
 		&resolverStub{}, &rendererStub{}, &authorizerStub{}, store,
 		&budgetStub{}, &saverStub{}, &creatorStub{},
-		&secretStub{prepare: func(context.Context, AdmissionContext, db.AgentWorkflowRun) (PreparedRunSecret, error) {
-			return nil, errors.New("credential=super-secret " + strings.Repeat("界", 5000))
+		&credentialStub{admit: func(context.Context) error {
+			return errors.New("credential=super-secret " + strings.Repeat("界", 5000))
 		}},
 	)
 	if err != nil {
@@ -661,15 +647,17 @@ func TestBindAndCreateRetriesSameAdmittingIdentityAfterTransientPlatformFailure(
 			return true, nil
 		},
 	}
-	prepareCalls := 0
+	credentialCalls := 0
 	binder, err := NewBinder(
 		&resolverStub{}, &rendererStub{}, &authorizerStub{}, store, &budgetStub{},
 		&saverStub{save: func(context.Context, AdmissionContext, ImmutableTemplateSpec) (WorkflowRunTemplateRef, error) {
 			return WorkflowRunTemplateRef{PipelineID: 2, TeamID: 7, Name: rendered.TemplateName, ConfigVersion: 1, FullHash: rendered.TargetConfigHash}, nil
 		}},
 		&creatorStub{create: func(ctx context.Context, _ snapshot.WorkflowRunID, _ WorkflowRunTemplateRef, _ map[string]any, _ string, before BeforeWorkflowRunCommit) (WorkflowRunExecution, bool, error) {
-			if err := before(ctx, 73); err != nil {
-				return WorkflowRunExecution{}, false, err
+			if before != nil {
+				if err := before(ctx, 73); err != nil {
+					return WorkflowRunExecution{}, false, err
+				}
 			}
 			pipelineRunID, templateID, instanceID, plannedBuildID := 73, 2, 3, int64(5)
 			instanceHash := strings.Repeat("c", 64)
@@ -678,12 +666,12 @@ func TestBindAndCreateRetriesSameAdmittingIdentityAfterTransientPlatformFailure(
 			run.ConcreteConfig = mustCanonical(t, rendered.Config)
 			return WorkflowRunExecution{}, true, nil
 		}},
-		&secretStub{prepare: func(context.Context, AdmissionContext, db.AgentWorkflowRun) (PreparedRunSecret, error) {
-			prepareCalls++
-			if prepareCalls == 1 {
-				return nil, errors.New("temporary vault outage")
+		&credentialStub{admit: func(context.Context) error {
+			credentialCalls++
+			if credentialCalls == 1 {
+				return errors.New("temporary vault outage")
 			}
-			return &preparedSecretStub{attach: func(context.Context, int) error { return nil }}, nil
+			return nil
 		}},
 	)
 	if err != nil {
@@ -704,8 +692,8 @@ func TestBindAndCreateRetriesSameAdmittingIdentityAfterTransientPlatformFailure(
 	if err != nil {
 		t.Fatalf("retry BindAndCreate: %v", err)
 	}
-	if result.Created || result.Run.ID != run.ID || result.Run.Status != db.AgentWorkflowRunStatusRunning || prepareCalls != 2 {
-		t.Fatalf("retry result=%+v prepare calls=%d", result, prepareCalls)
+	if result.Created || result.Run.ID != run.ID || result.Run.Status != db.AgentWorkflowRunStatusRunning || credentialCalls != 2 {
+		t.Fatalf("retry result=%+v credential calls=%d", result, credentialCalls)
 	}
 }
 
@@ -747,7 +735,6 @@ func TestBindAndCreateCategorizesTemplateAndExecutionFailures(t *testing.T) {
 					return true, nil
 				},
 			}
-			prepared := &preparedSecretStub{attach: func(context.Context, int) error { return nil }}
 			binder, err := NewBinder(
 				&resolverStub{}, &rendererStub{}, &authorizerStub{}, store, &budgetStub{},
 				&saverStub{save: func(context.Context, AdmissionContext, ImmutableTemplateSpec) (WorkflowRunTemplateRef, error) {
@@ -759,9 +746,7 @@ func TestBindAndCreateCategorizesTemplateAndExecutionFailures(t *testing.T) {
 				&creatorStub{create: func(context.Context, snapshot.WorkflowRunID, WorkflowRunTemplateRef, map[string]any, string, BeforeWorkflowRunCommit) (WorkflowRunExecution, bool, error) {
 					return WorkflowRunExecution{}, false, test.executionErr
 				}},
-				&secretStub{prepare: func(context.Context, AdmissionContext, db.AgentWorkflowRun) (PreparedRunSecret, error) {
-					return prepared, nil
-				}},
+				&credentialStub{admit: func(context.Context) error { return nil }},
 			)
 			if err != nil {
 				t.Fatal(err)
@@ -801,7 +786,7 @@ func TestBindAndCreateRejectsPartialAdmittingState(t *testing.T) {
 	}
 	binder, err := NewBinder(
 		&resolverStub{}, &rendererStub{}, &authorizerStub{}, store,
-		&budgetStub{}, &saverStub{}, &creatorStub{}, &secretStub{},
+		&budgetStub{}, &saverStub{}, &creatorStub{}, &credentialStub{},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -893,7 +878,7 @@ func TestBindAndCreateRejectsFrozenTargetConfigDriftBeforeAllocating(t *testing.
 		&storeStub{find: func(context.Context, int, string) (db.AgentWorkflowRun, bool, error) {
 			return db.AgentWorkflowRun{}, false, nil
 		}},
-		&budgetStub{}, &saverStub{}, &creatorStub{}, &secretStub{},
+		&budgetStub{}, &saverStub{}, &creatorStub{}, &credentialStub{},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -924,7 +909,7 @@ func TestBindAndCreateRejectsFrozenDefinitionDriftBeforeRendering(t *testing.T) 
 		&storeStub{find: func(context.Context, int, string) (db.AgentWorkflowRun, bool, error) {
 			return db.AgentWorkflowRun{}, false, nil
 		}},
-		&budgetStub{}, &saverStub{}, &creatorStub{}, &secretStub{},
+		&budgetStub{}, &saverStub{}, &creatorStub{}, &credentialStub{},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -957,7 +942,7 @@ func TestBindAndCreateRejectsExistingRunOutsideFrozenTargetConfig(t *testing.T) 
 		&storeStub{find: func(context.Context, int, string) (db.AgentWorkflowRun, bool, error) {
 			return run, true, nil
 		}},
-		&budgetStub{}, &saverStub{}, &creatorStub{}, &secretStub{},
+		&budgetStub{}, &saverStub{}, &creatorStub{}, &credentialStub{},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -985,7 +970,7 @@ func TestBindAndCreateRejectsExistingRunOutsideFrozenDefinition(t *testing.T) {
 		&storeStub{find: func(context.Context, int, string) (db.AgentWorkflowRun, bool, error) {
 			return run, true, nil
 		}},
-		&budgetStub{}, &saverStub{}, &creatorStub{}, &secretStub{},
+		&budgetStub{}, &saverStub{}, &creatorStub{}, &credentialStub{},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -1060,7 +1045,7 @@ func TestBindAndCreateNilVersionRaceRejectsDifferentResolvedWinner(t *testing.T)
 		}},
 		store,
 		&budgetStub{admit: func(context.Context, BudgetAdmission) error { return nil }},
-		&saverStub{}, &creatorStub{}, &secretStub{},
+		&saverStub{}, &creatorStub{}, &credentialStub{},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -1400,18 +1385,10 @@ func (s *creatorStub) CreateRunForWorkflowRun(ctx context.Context, runID snapsho
 	return s.create(ctx, runID, template, params, createdBy, callback)
 }
 
-type secretStub struct {
-	prepare func(context.Context, AdmissionContext, db.AgentWorkflowRun) (PreparedRunSecret, error)
+type credentialStub struct {
+	admit func(context.Context) error
 }
 
-func (s *secretStub) Prepare(ctx context.Context, admission AdmissionContext, run db.AgentWorkflowRun) (PreparedRunSecret, error) {
-	return s.prepare(ctx, admission, run)
-}
-
-type preparedSecretStub struct {
-	attach func(context.Context, int) error
-}
-
-func (s *preparedSecretStub) Attach(ctx context.Context, pipelineRunID int) error {
-	return s.attach(ctx, pipelineRunID)
+func (s *credentialStub) AdmitModelCredential(ctx context.Context) error {
+	return s.admit(ctx)
 }

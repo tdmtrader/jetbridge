@@ -40,7 +40,11 @@ v8.0.1:1765921815
 # sets; full-tree exposure is re-derivable from agent_snapshot_lineage.
 # 1773106128 = partial index on agent_workflow_runs.template_pipeline_id, for
 # the abandoned workflow-run template collector. Index only; down drops it.
-JETBRIDGE_VERSION=1773106128
+# 1773106129-130 = workflow-run/function identity on agent_cost_ledger (the
+# v2 ticket/pipeline attribution columns are dropped and the source CHECK
+# narrows to agent_step|ci_agent), and the removal of the legacy
+# workflow_name/version/hash tags on agent_run_metrics.
+JETBRIDGE_VERSION=1773106130
 
 # Minimum supported source version (v6.x)
 MIN_SUPPORTED_VERSION=1601993582

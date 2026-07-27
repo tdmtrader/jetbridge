@@ -152,25 +152,14 @@ func workflowRunBudgetUsage(
 	queryer agentExperimentQueryer,
 	runID snapshot.WorkflowRunID,
 ) (float64, error) {
+	// Spend carries the run id the server assigned it, so attribution is a
+	// direct key lookup: no build/pipeline inference, and no anti-join to
+	// keep two runs sharing a build from double-counting the same dollar.
 	var spent float64
 	err := queryer.QueryRowContext(ctx, `
 		SELECT COALESCE(SUM(ledger.cost_usd), 0)::double precision
 		FROM agent_cost_ledger ledger
-		JOIN agent_workflow_runs run ON run.id = $1
-		WHERE (
-			(ledger.pipeline_run_id IS NOT NULL AND ledger.pipeline_run_id = run.pipeline_run_id)
-			OR (ledger.build_id > 0 AND ledger.build_id = run.planned_build_id)
-		  )
-		  AND NOT EXISTS (
-			SELECT 1
-			FROM agent_workflow_budget_reservations other_reservation
-			JOIN agent_workflow_runs other_run ON other_run.id = other_reservation.workflow_run_id
-			WHERE other_run.id <> run.id
-			  AND (
-				(ledger.pipeline_run_id IS NOT NULL AND ledger.pipeline_run_id = other_run.pipeline_run_id)
-				OR (ledger.build_id > 0 AND ledger.build_id = other_run.planned_build_id)
-			  )
-		  )
+		WHERE ledger.workflow_run_id = $1
 	`, int64(runID)).Scan(&spent)
 	return spent, err
 }

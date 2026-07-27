@@ -34,7 +34,7 @@ const v713LastMigration = 1666754000
 const v801LastMigration = 1765921815
 
 // JetBridge HEAD (last migration)
-const jetbridgeHeadMigration = 1773106128
+const jetbridgeHeadMigration = 1773106130
 
 var _ = Describe("Legacy Database Upgrade", func() {
 	var (

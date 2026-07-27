@@ -48,7 +48,7 @@ func (command *AgentRunsCommand) Execute([]string) error {
 
 	table := ui.Table{Headers: ui.TableRow{
 		{Contents: "step", Color: color.New(color.Bold)},
-		{Contents: "workflow", Color: color.New(color.Bold)},
+		{Contents: "function", Color: color.New(color.Bold)},
 		{Contents: "status", Color: color.New(color.Bold)},
 		{Contents: "cost", Color: color.New(color.Bold)},
 		{Contents: "tokens (in/out)", Color: color.New(color.Bold)},
@@ -56,10 +56,6 @@ func (command *AgentRunsCommand) Execute([]string) error {
 		{Contents: "run", Color: color.New(color.Bold)},
 	}}
 	for _, r := range runs {
-		workflow := r.WorkflowName
-		if r.WorkflowVersion != nil {
-			workflow = fmt.Sprintf("%s@%d", r.WorkflowName, *r.WorkflowVersion)
-		}
 		run := runLabel(r)
 		// U3 display truth: render the server-fused outcome, never the raw
 		// step status — a green step inside a failed build must not show
@@ -76,7 +72,7 @@ func (command *AgentRunsCommand) Execute([]string) error {
 		}
 		table.Data = append(table.Data, ui.TableRow{
 			{Contents: r.StepName},
-			{Contents: workflow},
+			{Contents: r.FunctionID},
 			statusCell,
 			{Contents: fmt.Sprintf("$%.2f", r.CostUSD)},
 			{Contents: fmt.Sprintf("%d/%d", r.Usage.InputTokens, r.Usage.OutputTokens)},

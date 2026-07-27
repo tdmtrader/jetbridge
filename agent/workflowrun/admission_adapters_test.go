@@ -3,14 +3,12 @@ package workflowrun
 import (
 	"context"
 	"errors"
-	"reflect"
 	"testing"
 	"time"
 
 	"github.com/concourse/concourse/agent/credentials"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc"
-	"github.com/concourse/concourse/atc/db"
 )
 
 type workflowBudgetReserverStub struct {
@@ -164,14 +162,6 @@ func workflowBudgetConfig(steps ...atc.Step) atc.Config {
 	return atc.Config{Jobs: atc.JobConfigs{{Name: "run", PlanSequence: steps}}}
 }
 
-type creatorUserResolverStub struct {
-	find func(string) (int, bool, error)
-}
-
-func (s *creatorUserResolverStub) FindByUsername(name string) (int, bool, error) {
-	return s.find(name)
-}
-
 type credentialBackendStub struct {
 	resolve   func(int, string) (*credentials.Credential, bool, error)
 	platform  func(string) (int, string, bool, error)
@@ -210,242 +200,6 @@ func (s *credentialBackendStub) SetJiraAccountID(userID int, accountID string) e
 	return s.setJiraID(userID, accountID)
 }
 
-type secretAttacherStub struct {
-	attach  func(context.Context, int, *credentials.Credential) (string, error)
-	cleanup func(context.Context, int) error
-}
-
-func (s *secretAttacherStub) Attach(ctx context.Context, runID int, credential *credentials.Credential) (string, error) {
-	return s.attach(ctx, runID, credential)
-}
-
-func (s *secretAttacherStub) Cleanup(ctx context.Context, runID int) error {
-	return s.cleanup(ctx, runID)
-}
-
-func TestVaultedRunSecretPreparerAttachesOnlyResolvedCredentialAfterAllocation(t *testing.T) {
-	ctx := context.Background()
-	now := time.Unix(1_784_800_000, 0)
-	credential := &credentials.Credential{
-		UserID: 17, UserName: "alice", Kind: credentials.KindAnthropicOAuth,
-		ExpiresAt: now.Add(time.Hour).Unix(), Token: "user-oauth-token",
-	}
-	var order []string
-	users := &creatorUserResolverStub{find: func(name string) (int, bool, error) {
-		order = append(order, "find-user")
-		if name != "alice" {
-			t.Fatalf("creator = %q", name)
-		}
-		return 17, true, nil
-	}}
-	vault := newCredentialBackendStub()
-	vault.resolve = func(userID int, kind string) (*credentials.Credential, bool, error) {
-		order = append(order, "resolve-user")
-		if userID != 17 || kind != credentials.KindAnthropicOAuth {
-			t.Fatalf("Resolve = (%d, %q)", userID, kind)
-		}
-		return credential, true, nil
-	}
-	vault.platform = func(string) (int, string, bool, error) {
-		t.Fatal("usable creator credential must not fall back to platform")
-		return 0, "", false, nil
-	}
-	attacher := &secretAttacherStub{
-		attach: func(got context.Context, pipelineRunID int, gotCredential *credentials.Credential) (string, error) {
-			order = append(order, "attach-secret")
-			if got != ctx || pipelineRunID != 313 || gotCredential == credential ||
-				gotCredential.Token != "user-oauth-token" {
-				t.Fatalf("Attach = (%v, %d, %+v)", got, pipelineRunID, gotCredential)
-			}
-			return credentials.RunSecretName(pipelineRunID), nil
-		},
-		cleanup: func(context.Context, int) error {
-			t.Fatal("successful attach must not clean up")
-			return nil
-		},
-	}
-	preparer, err := NewVaultedRunSecretPreparer(users, vault, attacher)
-	if err != nil {
-		t.Fatal(err)
-	}
-	preparer.now = func() time.Time { return now }
-	run := cancellationRun(snapshot.WorkflowRunID(9007199254740993), 7, db.AgentWorkflowRunStatusAdmitting)
-	run.CreatedBy = "alice"
-	prepared, err := preparer.Prepare(ctx, AdmissionContext{TeamID: 7, TeamName: "main", CreatedBy: "alice"}, run)
-	if err != nil {
-		t.Fatal(err)
-	}
-	credential.Token = "mutated-after-prepare"
-	if err := prepared.Attach(ctx, 313); err != nil {
-		t.Fatal(err)
-	}
-	if want := []string{"find-user", "resolve-user", "attach-secret"}; !reflect.DeepEqual(order, want) {
-		t.Fatalf("order = %#v, want %#v", order, want)
-	}
-	if err := prepared.Attach(ctx, 313); err != nil {
-		t.Fatalf("same-run replay: %v", err)
-	}
-	if err := prepared.Attach(ctx, 314); !errors.Is(err, ErrRunSecretAttachFailure) {
-		t.Fatalf("different run replay error = %v", err)
-	}
-}
-
-func TestVaultedRunSecretPreparerFallsBackFromExpiredCreatorToPlatformAPIKey(t *testing.T) {
-	now := time.Unix(1_784_900_000, 0)
-	var resolutions []string
-	users := &creatorUserResolverStub{find: func(string) (int, bool, error) { return 17, true, nil }}
-	vault := newCredentialBackendStub()
-	vault.resolve = func(userID int, kind string) (*credentials.Credential, bool, error) {
-		resolutions = append(resolutions, string(rune(userID))+":"+kind)
-		switch {
-		case userID == 17 && kind == credentials.KindAnthropicOAuth:
-			return &credentials.Credential{UserID: 17, Kind: kind, Token: "expired", ExpiresAt: now.Unix()}, true, nil
-		case userID == 17 && kind == credentials.KindAnthropicAPIKey:
-			return nil, false, nil
-		case userID == 99 && kind == credentials.KindAnthropicOAuth:
-			return nil, false, nil
-		case userID == 99 && kind == credentials.KindAnthropicAPIKey:
-			return &credentials.Credential{UserID: 99, UserName: "platform", Kind: kind, Token: "platform-key"}, true, nil
-		default:
-			t.Fatalf("unexpected Resolve = (%d, %q)", userID, kind)
-			return nil, false, nil
-		}
-	}
-	vault.platform = func(sub string) (int, string, bool, error) {
-		if sub != credentials.PlatformUserSub {
-			t.Fatalf("platform sub = %q", sub)
-		}
-		return 99, credentials.PlatformUserName, true, nil
-	}
-	var attached *credentials.Credential
-	attacher := &secretAttacherStub{
-		attach: func(_ context.Context, runID int, credential *credentials.Credential) (string, error) {
-			attached = credential
-			return credentials.RunSecretName(runID), nil
-		},
-		cleanup: func(context.Context, int) error { return nil },
-	}
-	preparer, err := NewVaultedRunSecretPreparer(users, vault, attacher)
-	if err != nil {
-		t.Fatal(err)
-	}
-	preparer.now = func() time.Time { return now }
-	run := cancellationRun(151, 7, db.AgentWorkflowRunStatusAdmitting)
-	run.CreatedBy = "alice"
-	prepared, err := preparer.Prepare(context.Background(), AdmissionContext{TeamID: 7, TeamName: "main", CreatedBy: "alice"}, run)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := prepared.Attach(context.Background(), 419); err != nil {
-		t.Fatal(err)
-	}
-	if attached == nil || attached.UserID != 99 || attached.Kind != credentials.KindAnthropicAPIKey || attached.Token != "platform-key" {
-		t.Fatalf("attached credential = %+v", attached)
-	}
-	if len(resolutions) != 4 {
-		t.Fatalf("resolution count = %d", len(resolutions))
-	}
-}
-
-func TestVaultedRunSecretPreparerCleansUpWhenAttachmentFails(t *testing.T) {
-	secret := errors.New("kubernetes bearer token")
-	users := &creatorUserResolverStub{find: func(string) (int, bool, error) { return 17, true, nil }}
-	vault := newCredentialBackendStub()
-	vault.resolve = func(userID int, kind string) (*credentials.Credential, bool, error) {
-		return &credentials.Credential{UserID: userID, Kind: kind, Token: "oauth"}, true, nil
-	}
-	vault.platform = func(string) (int, string, bool, error) { return 0, "", false, nil }
-	cleanupCalls := 0
-	attacher := &secretAttacherStub{
-		attach: func(context.Context, int, *credentials.Credential) (string, error) { return "", secret },
-		cleanup: func(_ context.Context, runID int) error {
-			cleanupCalls++
-			if runID != 521 {
-				t.Fatalf("cleanup run = %d", runID)
-			}
-			return nil
-		},
-	}
-	preparer, err := NewVaultedRunSecretPreparer(users, vault, attacher)
-	if err != nil {
-		t.Fatal(err)
-	}
-	run := cancellationRun(161, 7, db.AgentWorkflowRunStatusAdmitting)
-	run.CreatedBy = "alice"
-	prepared, err := preparer.Prepare(context.Background(), AdmissionContext{TeamID: 7, TeamName: "main", CreatedBy: "alice"}, run)
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = prepared.Attach(context.Background(), 521)
-	if !errors.Is(err, ErrRunSecretAttachFailure) || err.Error() != ErrRunSecretAttachFailure.Error() || errors.Is(err, secret) {
-		t.Fatalf("Attach error = %v", err)
-	}
-	if cleanupCalls != 1 {
-		t.Fatalf("cleanup calls = %d", cleanupCalls)
-	}
-}
-
-func TestVaultedRunSecretPreparerBoundsUnavailableAndStoreFailures(t *testing.T) {
-	users := &creatorUserResolverStub{find: func(string) (int, bool, error) { return 0, false, nil }}
-	vault := newCredentialBackendStub()
-	vault.resolve = func(int, string) (*credentials.Credential, bool, error) { return nil, false, nil }
-	vault.platform = func(string) (int, string, bool, error) { return 0, "", false, nil }
-	attacher := &secretAttacherStub{}
-	preparer, err := NewVaultedRunSecretPreparer(users, vault, attacher)
-	if err != nil {
-		t.Fatal(err)
-	}
-	run := cancellationRun(171, 7, db.AgentWorkflowRunStatusAdmitting)
-	run.CreatedBy = "alice"
-	_, err = preparer.Prepare(context.Background(), AdmissionContext{TeamID: 7, TeamName: "main", CreatedBy: "alice"}, run)
-	if !errors.Is(err, ErrRunCredentialUnavailable) || err.Error() != ErrRunCredentialUnavailable.Error() {
-		t.Fatalf("unavailable error = %v", err)
-	}
-
-	secret := errors.New("users table connection password")
-	users.find = func(string) (int, bool, error) { return 0, false, secret }
-	_, err = preparer.Prepare(context.Background(), AdmissionContext{TeamID: 7, TeamName: "main", CreatedBy: "alice"}, run)
-	if !errors.Is(err, ErrRunSecretPreparationFailure) || errors.Is(err, secret) || err.Error() != ErrRunSecretPreparationFailure.Error() {
-		t.Fatalf("store error = %v", err)
-	}
-}
-
-func TestVaultedRunSecretPreparerIsContextAwareAndRejectsInvalidAllocatedRunID(t *testing.T) {
-	resolveCalls := 0
-	users := &creatorUserResolverStub{find: func(string) (int, bool, error) {
-		resolveCalls++
-		return 17, true, nil
-	}}
-	vault := newCredentialBackendStub()
-	vault.resolve = func(userID int, kind string) (*credentials.Credential, bool, error) {
-		return &credentials.Credential{UserID: userID, Kind: kind, Token: "oauth"}, true, nil
-	}
-	vault.platform = func(string) (int, string, bool, error) { return 0, "", false, nil }
-	attacher := &secretAttacherStub{}
-	preparer, err := NewVaultedRunSecretPreparer(users, vault, attacher)
-	if err != nil {
-		t.Fatal(err)
-	}
-	run := cancellationRun(181, 7, db.AgentWorkflowRunStatusAdmitting)
-	run.CreatedBy = "alice"
-	canceled, cancel := context.WithCancel(context.Background())
-	cancel()
-	if _, err := preparer.Prepare(canceled, AdmissionContext{TeamID: 7, TeamName: "main", CreatedBy: "alice"}, run); !errors.Is(err, context.Canceled) {
-		t.Fatalf("Prepare canceled error = %v", err)
-	}
-	if resolveCalls != 0 {
-		t.Fatal("canceled preparation touched user store")
-	}
-
-	prepared, err := preparer.Prepare(context.Background(), AdmissionContext{TeamID: 7, TeamName: "main", CreatedBy: "alice"}, run)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := prepared.Attach(context.Background(), 0); !errors.Is(err, ErrRunSecretAttachFailure) {
-		t.Fatalf("invalid run ID error = %v", err)
-	}
-}
-
 func newCredentialBackendStub() *credentialBackendStub {
 	return &credentialBackendStub{
 		put:    func(int, string, string, string, time.Time) error { panic("unexpected Put") },
@@ -455,5 +209,131 @@ func newCredentialBackendStub() *credentialBackendStub {
 		},
 		delete:    func(int, string) error { panic("unexpected Delete") },
 		setJiraID: func(int, string) error { panic("unexpected SetJiraAccountID") },
+	}
+}
+
+// platformVault builds a backend stub whose platform user owns the given
+// credentials.
+func platformVault(t *testing.T, platformUserID int, owned ...credentials.Credential) *credentialBackendStub {
+	t.Helper()
+	vault := newCredentialBackendStub()
+	vault.platform = func(sub string) (int, string, bool, error) {
+		if sub != credentials.PlatformUserSub {
+			t.Fatalf("resolved sub = %q, want the platform service user", sub)
+		}
+		return platformUserID, credentials.PlatformUserName, platformUserID > 0, nil
+	}
+	vault.resolve = func(userID int, kind string) (*credentials.Credential, bool, error) {
+		for i := range owned {
+			if owned[i].UserID == userID && owned[i].Kind == kind {
+				credential := owned[i]
+				return &credential, true, nil
+			}
+		}
+		return nil, false, nil
+	}
+	return vault
+}
+
+func mustPlatformCredentialAdmitter(t *testing.T, vault RunCredentialVault, secretName string) *PlatformCredentialAdmitter {
+	t.Helper()
+	admitter, err := NewPlatformCredentialAdmitter(vault, secretName)
+	if err != nil {
+		t.Fatalf("NewPlatformCredentialAdmitter: %v", err)
+	}
+	admitter.now = func() time.Time { return time.Unix(1_784_800_000, 0) }
+	return admitter
+}
+
+func TestPlatformCredentialAdmitterAcceptsAVaultedUnexpiredCredential(t *testing.T) {
+	for _, kind := range []string{credentials.KindAnthropicOAuth, credentials.KindAnthropicAPIKey} {
+		t.Run(kind, func(t *testing.T) {
+			vault := platformVault(t, 99, credentials.Credential{
+				UserID: 99, UserName: "platform", Kind: kind,
+				ExpiresAt: time.Unix(1_784_800_000, 0).Add(time.Hour).Unix(),
+			})
+			admitter := mustPlatformCredentialAdmitter(t, vault, credentials.PlatformSecretName)
+
+			if err := admitter.AdmitModelCredential(context.Background()); err != nil {
+				t.Fatalf("AdmitModelCredential = %v, want admitted", err)
+			}
+		})
+	}
+}
+
+// The syncer deletes the secret when the credential is unvaulted, so admitting
+// a run against the default secret name with an empty (or expired) vault would
+// start agent pods that cannot authenticate.
+func TestPlatformCredentialAdmitterFailsClosedWithoutAUsableCredential(t *testing.T) {
+	expired := credentials.Credential{
+		UserID: 99, UserName: "platform", Kind: credentials.KindAnthropicOAuth,
+		ExpiresAt: time.Unix(1_784_800_000, 0).Add(-time.Hour).Unix(),
+	}
+	tests := []struct {
+		name  string
+		vault *credentialBackendStub
+	}{
+		{name: "no platform user", vault: platformVault(t, 0)},
+		{name: "no credential", vault: platformVault(t, 99)},
+		{name: "expired credential", vault: platformVault(t, 99, expired)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			admitter := mustPlatformCredentialAdmitter(t, test.vault, credentials.PlatformSecretName)
+
+			err := admitter.AdmitModelCredential(context.Background())
+			if !errors.Is(err, ErrRunCredentialUnavailable) {
+				t.Fatalf("AdmitModelCredential = %v, want %v", err, ErrRunCredentialUnavailable)
+			}
+		})
+	}
+}
+
+// An operator-named secret is maintained out of band; the binder never reads
+// Kubernetes, so the vault has nothing to say about it.
+func TestPlatformCredentialAdmitterAcceptsAnOperatorSuppliedSecretWithoutReadingTheVault(t *testing.T) {
+	vault := newCredentialBackendStub()
+	vault.platform = func(string) (int, string, bool, error) {
+		t.Fatal("an out-of-band secret must not be validated against the vault")
+		return 0, "", false, nil
+	}
+	vault.resolve = func(int, string) (*credentials.Credential, bool, error) {
+		t.Fatal("an out-of-band secret must not be validated against the vault")
+		return nil, false, nil
+	}
+	admitter := mustPlatformCredentialAdmitter(t, vault, "operator-managed-token")
+
+	if err := admitter.AdmitModelCredential(context.Background()); err != nil {
+		t.Fatalf("AdmitModelCredential = %v, want admitted", err)
+	}
+}
+
+// --agent-platform-token-secret can be cleared, and then no agent pod has any
+// token path at all.
+func TestPlatformCredentialAdmitterFailsClosedWithoutASecretName(t *testing.T) {
+	admitter := mustPlatformCredentialAdmitter(t, platformVault(t, 99), "")
+
+	if err := admitter.AdmitModelCredential(context.Background()); !errors.Is(err, ErrRunCredentialUnavailable) {
+		t.Fatalf("AdmitModelCredential = %v, want %v", err, ErrRunCredentialUnavailable)
+	}
+}
+
+func TestPlatformCredentialAdmitterIsContextAwareAndBoundsStoreFailures(t *testing.T) {
+	vault := platformVault(t, 99)
+	secret := errors.New("vault said credential=super-secret")
+	vault.platform = func(string) (int, string, bool, error) { return 0, "", false, secret }
+	admitter := mustPlatformCredentialAdmitter(t, vault, credentials.PlatformSecretName)
+
+	err := admitter.AdmitModelCredential(context.Background())
+	if !errors.Is(err, ErrModelCredentialCheckFailure) || errors.Is(err, secret) ||
+		err.Error() != ErrModelCredentialCheckFailure.Error() {
+		t.Fatalf("store failure = %v, want a bounded %v that never carries backend detail", err, ErrModelCredentialCheckFailure)
+	}
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := mustPlatformCredentialAdmitter(t, platformVault(t, 99), credentials.PlatformSecretName).
+		AdmitModelCredential(cancelled); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled context = %v, want context.Canceled", err)
 	}
 }

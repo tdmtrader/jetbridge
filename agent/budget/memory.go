@@ -1,7 +1,6 @@
 package budget
 
 import (
-	"encoding/json"
 	"sort"
 	"strconv"
 	"sync"
@@ -26,19 +25,6 @@ func (m *MemoryLedger) Insert(entry LedgerEntry) error {
 	}
 	m.entries = append(m.entries, entry)
 	return nil
-}
-
-func (m *MemoryLedger) SpentForTicket(ticketID int) (float64, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	var sum float64
-	for _, e := range m.entries {
-		// harvest_judge spend never depletes the ticket budget (§1.13).
-		if e.TicketID != nil && *e.TicketID == ticketID && e.Source != SourceHarvestJudge {
-			sum += e.CostUSD
-		}
-	}
-	return sum, nil
 }
 
 func (m *MemoryLedger) SpentSince(since time.Time) (float64, error) {
@@ -68,18 +54,13 @@ func (m *MemoryLedger) Rollup(groupBy string, since, until time.Time) ([]RollupR
 		switch groupBy {
 		case GroupByUser:
 			key = e.UserName
-		case GroupByTicket:
-			if e.TicketID != nil {
-				key = strconv.Itoa(*e.TicketID)
-			}
 		case GroupByWorkflow:
-			var meta struct {
-				Workflow string `json:"workflow"`
+			// The SQL ledger resolves the run's workflow_name through
+			// agent_workflow_runs; this double models no run table, so the
+			// run id is the finest key it can honestly produce.
+			if e.WorkflowRunID != nil {
+				key = strconv.FormatInt(*e.WorkflowRunID, 10)
 			}
-			if len(e.Metadata) > 0 {
-				_ = json.Unmarshal(e.Metadata, &meta)
-			}
-			key = meta.Workflow
 		case GroupByModel:
 			key = e.Model
 		case GroupByStep:

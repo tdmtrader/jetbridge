@@ -230,13 +230,12 @@ func (cmd *RunCommand) agentExperimentComponents(
 	// that covers its candidate and evaluator runs. Reserving each child again
 	// in the generic workflow binder would double-count the same liability.
 	workflowBudget := workflowrun.AllowAllBudgetAdmitter{}
-	workflowSecrets, err := workflowrun.NewVaultedRunSecretPreparer(
-		db.NewAgentUserLookup(dbConn),
+	workflowCredential, err := workflowrun.NewPlatformCredentialAdmitter(
 		db.NewAgentUserCredentialsFactory(dbConn),
-		cmd.agentRunSecrets(),
+		cmd.AgentPlatformTokenSecret,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("construct experiment secret preparation: %w", err)
+		return nil, fmt.Errorf("construct experiment model credential admission: %w", err)
 	}
 	targetRenderer := workflowrun.WorkflowTargetRenderer{RuntimeImage: cmd.AgentStepImage}
 	binder, err := workflowrun.NewBinder(
@@ -247,7 +246,7 @@ func (cmd *RunCommand) agentExperimentComponents(
 		workflowBudget,
 		templateSaver,
 		pipelineRunFactory,
-		workflowSecrets,
+		workflowCredential,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("construct experiment workflow binder: %w", err)

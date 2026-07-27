@@ -38,8 +38,9 @@ type observedAgentCost struct {
 // which is written INSIDE the agent pod — where claude runs as root with
 // --dangerously-skip-permissions and AGENT_FLIGHT_DIR in its own env. A
 // prompt-injected agent (or any leaked descendant) can truncate/rewrite that
-// file with cost_usd 0 before the pod exits, understating SpentForTicket and
-// loosening StepSlice admission for every subsequent step of the run/ticket.
+// file with cost_usd 0 before the pod exits, understating both the global
+// daily cap (Checker.GlobalDailyRemaining) and the workflow-run budget usage
+// the binder reconstructs from the ledger for every subsequent reservation.
 // The stdout stream, by contrast, passes through THIS writer on the web node
 // as it is produced: bytes already shipped cannot be rewritten at rest. The
 // envelope observed here is the same one agent-runner parses into

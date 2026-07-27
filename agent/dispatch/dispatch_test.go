@@ -10,8 +10,6 @@ import (
 	"testing"
 
 	"github.com/concourse/concourse/agent/api/tickets"
-	"github.com/concourse/concourse/agent/budget"
-	"github.com/concourse/concourse/agent/budget/budgetfakes"
 	"github.com/concourse/concourse/agent/dispatch"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/workflow"
@@ -74,6 +72,9 @@ type fakeWorkflowBinder struct {
 	contexts []workflowrun.AdmissionContext
 	result   workflowrun.BindResult
 	err      error
+	// errOnce makes err apply to the FIRST bind only, so a loop test can
+	// deny one ticket and admit the next.
+	errOnce bool
 }
 
 type fakeWorkflowRunCanceler struct {
@@ -178,7 +179,11 @@ func (fake *fakeWorkflowBinder) BindAndCreate(
 	request.Inputs = cloneSnapshotIDs(request.Inputs)
 	fake.calls = append(fake.calls, request)
 	fake.contexts = append(fake.contexts, admission)
-	return fake.result, fake.err
+	err := fake.err
+	if fake.errOnce {
+		fake.err = nil
+	}
+	return fake.result, err
 }
 
 func (fake *fakeWorkflowBinder) Calls() ([]workflowrun.AdmissionContext, []workflowrun.BindRequest) {
@@ -611,78 +616,5 @@ func TestDispatchOneRefusals(t *testing.T) {
 	unknown := queuedTicket(t, store, "nope")
 	if _, err := dispatch.DispatchOne(context.Background(), deps, unknown, "admin"); !errors.Is(err, dispatch.ErrWorkflowNotFound) {
 		t.Errorf("unknown workflow: got %v, want ErrWorkflowNotFound", err)
-	}
-}
-
-func TestDispatchOneDefersWhenTicketBudgetExhausted(t *testing.T) {
-	deps, store, workItems, binder := v3DispatchDeps(t)
-	checker := new(budgetfakes.FakeChecker)
-	checker.TicketRemainingReturns(budget.Remaining{LimitUSD: 5, SpentUSD: 6, RemainingUSD: -1, Exhausted: true}, nil)
-	deps.Budget = checker
-	id := queuedTicket(t, store, "smoke")
-
-	_, err := dispatch.DispatchOne(context.Background(), deps, id, "loop")
-	if !errors.Is(err, dispatch.ErrBudgetExhausted) {
-		t.Fatalf("want ErrBudgetExhausted, got %v", err)
-	}
-	if workItems.CallCount() != 0 {
-		t.Error("over-cap admission must run before CaptureRevision")
-	}
-	if _, calls := binder.Calls(); len(calls) != 0 {
-		t.Error("over-cap admission must run before BindAndCreate")
-	}
-	got, _, _ := store.Get(id)
-	if got.State != tickets.StateQueued {
-		t.Errorf("over-cap ticket must STAY queued (never failed), state=%s", got.State)
-	}
-}
-
-func TestDispatchOneDefersWhenGlobalDailyCapExhausted(t *testing.T) {
-	deps, store, workItems, binder := v3DispatchDeps(t)
-	checker := new(budgetfakes.FakeChecker)
-	checker.TicketRemainingReturns(budget.Remaining{}, nil) // uncapped ticket
-	checker.GlobalDailyRemainingReturns(budget.Remaining{LimitUSD: 50, SpentUSD: 50, Exhausted: true}, nil)
-	deps.Budget = checker
-	id := queuedTicket(t, store, "smoke")
-
-	_, err := dispatch.DispatchOne(context.Background(), deps, id, "loop")
-	if !errors.Is(err, dispatch.ErrBudgetExhausted) {
-		t.Fatalf("want ErrBudgetExhausted, got %v", err)
-	}
-	if workItems.CallCount() != 0 {
-		t.Error("daily-cap admission must run before CaptureRevision")
-	}
-	if _, calls := binder.Calls(); len(calls) != 0 {
-		t.Error("daily-cap admission must run before BindAndCreate")
-	}
-	got, _, _ := store.Get(id)
-	if got.State != tickets.StateQueued {
-		t.Errorf("daily-capped ticket must stay queued, state=%s", got.State)
-	}
-}
-
-func TestDispatchOneBudgetCheckerErrorIsPlatformFaultNotDeferral(t *testing.T) {
-	deps, store, _, _ := v3DispatchDeps(t)
-	checker := new(budgetfakes.FakeChecker)
-	checker.TicketRemainingReturns(budget.Remaining{}, errors.New("ledger down"))
-	deps.Budget = checker
-	id := queuedTicket(t, store, "smoke")
-
-	_, err := dispatch.DispatchOne(context.Background(), deps, id, "loop")
-	if err == nil || errors.Is(err, dispatch.ErrBudgetExhausted) {
-		t.Fatalf("checker error must surface as a platform fault, got %v", err)
-	}
-	got, _, _ := store.Get(id)
-	if got.State != tickets.StateQueued {
-		t.Errorf("platform fault leaves ticket queued, state=%s", got.State)
-	}
-}
-
-func TestDispatchOneNilBudgetSkipsAdmission(t *testing.T) {
-	deps, store, _, _ := v3DispatchDeps(t) // deps.Budget nil
-	id := queuedTicket(t, store, "smoke")
-	setRepositorySnapshot(t, store, id, 101)
-	if _, err := dispatch.DispatchOne(context.Background(), deps, id, "admin"); err != nil {
-		t.Fatalf("nil Budget must preserve landed behavior: %v", err)
 	}
 }

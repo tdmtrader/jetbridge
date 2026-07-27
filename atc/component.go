@@ -24,7 +24,6 @@ const (
 	ComponentK8sWorkerRegistrar            = "k8s_worker_registrar"
 	ComponentK8sWorkerReaper               = "k8s_worker_reaper"
 	ComponentAgentPlatformCredentialSyncer = "agent_platform_credential_syncer"
-	ComponentAgentRunSecretReaper          = "agent_run_secret_reaper"
 	ComponentAgentDispatcher               = "agent_dispatcher"
 	ComponentAgentSnapshotGC               = "agent_snapshot_gc"
 	ComponentAgentSnapshotRepair           = "agent_snapshot_repair"

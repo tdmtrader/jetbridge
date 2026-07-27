@@ -93,7 +93,6 @@ func (f *agentRunMetricsFactory) UpsertReturningInserted(rm *agentschema.RunMetr
 	err = psql.Insert("agent_run_metrics").
 		Columns(
 			"workflow_run_id", "function_id", "build_id", "plan_id", "step_name",
-			"workflow_name", "workflow_version", "workflow_hash",
 			"status", "summary", "model",
 			"input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens",
 			"turns", "wall_time_seconds", "cost_usd",
@@ -101,7 +100,6 @@ func (f *agentRunMetricsFactory) UpsertReturningInserted(rm *agentschema.RunMetr
 		).
 		Values(
 			workflowRunID, rm.FunctionID, rm.BuildID, rm.PlanID, rm.StepName,
-			rm.WorkflowName, rm.WorkflowVersion, rm.WorkflowHash,
 			rm.Status, rm.Summary, rm.Model,
 			rm.Usage.InputTokens, rm.Usage.OutputTokens, rm.Usage.CacheReadInputTokens, rm.Usage.CacheCreationInputTokens,
 			rm.Turns, rm.WallTimeSeconds, rm.CostUSD,
@@ -121,15 +119,12 @@ func (f *agentRunMetricsFactory) UpsertReturningInserted(rm *agentschema.RunMetr
 		// shrink, never double-count". So: ledger-relevant counters are
 		// monotonic (GREATEST), an incoming 'error' never downgrades a real end
 		// status (and its summary rides with it), and never blank a column that
-		// once held real data. Stable-by-construction columns (identity,
-		// workflow tags) are copied verbatim.
+		// once held real data. Stable-by-construction identity columns are
+		// copied verbatim.
 		Suffix(`ON CONFLICT (build_id, plan_id) DO UPDATE SET
 			workflow_run_id = EXCLUDED.workflow_run_id,
 			function_id = EXCLUDED.function_id,
 			step_name = EXCLUDED.step_name,
-			workflow_name = EXCLUDED.workflow_name,
-			workflow_version = EXCLUDED.workflow_version,
-			workflow_hash = EXCLUDED.workflow_hash,
 			status = CASE WHEN agent_run_metrics.status <> 'error' AND EXCLUDED.status = 'error'
 			              THEN agent_run_metrics.status ELSE EXCLUDED.status END,
 			summary = CASE WHEN agent_run_metrics.status <> 'error' AND EXCLUDED.status = 'error'
@@ -183,7 +178,6 @@ func (f *agentRunMetricsFactory) InsertIfAbsent(rm *agentschema.RunMetrics) (boo
 	err := psql.Insert("agent_run_metrics").
 		Columns(
 			"workflow_run_id", "function_id", "build_id", "plan_id", "step_name",
-			"workflow_name", "workflow_version", "workflow_hash",
 			"status", "summary", "model",
 			"input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens",
 			"turns", "wall_time_seconds", "cost_usd",
@@ -191,7 +185,6 @@ func (f *agentRunMetricsFactory) InsertIfAbsent(rm *agentschema.RunMetrics) (boo
 		).
 		Values(
 			workflowRunID, rm.FunctionID, rm.BuildID, rm.PlanID, rm.StepName,
-			rm.WorkflowName, rm.WorkflowVersion, rm.WorkflowHash,
 			rm.Status, rm.Summary, rm.Model,
 			rm.Usage.InputTokens, rm.Usage.OutputTokens, rm.Usage.CacheReadInputTokens, rm.Usage.CacheCreationInputTokens,
 			rm.Turns, rm.WallTimeSeconds, rm.CostUSD,
@@ -208,7 +201,6 @@ func (f *agentRunMetricsFactory) InsertIfAbsent(rm *agentschema.RunMetrics) (boo
 }
 
 const runMetricsColumns = `m.workflow_run_id, m.function_id, m.build_id, m.plan_id, m.step_name,
-	m.workflow_name, m.workflow_version, m.workflow_hash,
 	m.status, m.summary, m.model,
 	m.input_tokens, m.output_tokens, m.cache_read_tokens, m.cache_creation_tokens,
 	m.turns, m.wall_time_seconds, m.cost_usd,
@@ -285,29 +277,28 @@ func workflowRunIDValue(rm *agentschema.RunMetrics) any {
 	return int64(*rm.WorkflowRunID)
 }
 
-// WorkflowStats aggregates agent_run_metrics per workflow_version for one
-// workflow. The build unit is a distinct build_id; cost/turns are summed across
-// the build's step rows (the LEFT JOIN to builds is 1:1 so there is no
-// fan-out) and success is counted from the joined build's terminal status.
-// The second count is over workflow_run_id, the DURABLE execution identity —
-// migration 1773106124 dropped agent_run_metrics.ticket_id, because a ticket is
-// a work-item adapter and was never an execution identity. NULL
-// workflow_version rows (ad-hoc CI) aggregate into their own bucket and sort
-// last.
+// WorkflowStats aggregates agent_run_metrics per workflow version for one
+// workflow. Workflow identity is the durable run, not a tag copied onto the
+// metric row: the INNER JOIN to agent_workflow_runs both selects the
+// workflow's rows and supplies the version, so a metric with no run (ad-hoc
+// CI) contributes to nothing. The build unit is a distinct build_id;
+// cost/turns are summed across the build's step rows (the LEFT JOIN to builds
+// is 1:1 so there is no fan-out) and success is counted from the joined
+// build's terminal status.
 func (f *agentRunMetricsFactory) WorkflowStats(workflowName string) ([]agentschema.WorkflowVersionStats, error) {
 	rows, err := f.conn.Query(`
 		SELECT
-			m.workflow_version,
-			COUNT(DISTINCT m.build_id)                                                       AS runs,
-			COUNT(DISTINCT m.workflow_run_id) FILTER (WHERE m.workflow_run_id IS NOT NULL)    AS workflow_runs,
-			COUNT(DISTINCT m.build_id) FILTER (WHERE b.status = 'succeeded')                  AS succeeded_runs,
-			COALESCE(SUM(m.cost_usd), 0)                                                      AS total_cost_usd,
-			COALESCE(SUM(m.turns), 0)                                                         AS total_turns
+			run.workflow_version,
+			COUNT(DISTINCT m.build_id)                                       AS runs,
+			COUNT(DISTINCT m.workflow_run_id)                                AS workflow_runs,
+			COUNT(DISTINCT m.build_id) FILTER (WHERE b.status = 'succeeded')  AS succeeded_runs,
+			COALESCE(SUM(m.cost_usd), 0)                                      AS total_cost_usd,
+			COALESCE(SUM(m.turns), 0)                                         AS total_turns
 		FROM agent_run_metrics m
+		JOIN agent_workflow_runs run ON run.id = m.workflow_run_id AND run.workflow_name = $1
 		LEFT JOIN builds b ON b.id = m.build_id
-		WHERE m.workflow_name = $1
-		GROUP BY m.workflow_version
-		ORDER BY m.workflow_version DESC NULLS LAST`, workflowName)
+		GROUP BY run.workflow_version
+		ORDER BY run.workflow_version DESC`, workflowName)
 	if err != nil {
 		return nil, err
 	}
@@ -338,7 +329,6 @@ func scanRunMetricsRows(rows *sql.Rows) ([]agentschema.RunMetrics, error) {
 		var workflowRunID sql.NullInt64
 		err := rows.Scan(
 			&workflowRunID, &rm.FunctionID, &rm.BuildID, &rm.PlanID, &rm.StepName,
-			&rm.WorkflowName, &rm.WorkflowVersion, &rm.WorkflowHash,
 			&rm.Status, &rm.Summary, &rm.Model,
 			&rm.Usage.InputTokens, &rm.Usage.OutputTokens, &rm.Usage.CacheReadInputTokens, &rm.Usage.CacheCreationInputTokens,
 			&rm.Turns, &rm.WallTimeSeconds, &rm.CostUSD,

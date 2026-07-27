@@ -3441,6 +3441,7 @@ var _ = Describe("Run with sidecar containers", func() {
 					ImageSpec: runtime.ImageSpec{ImageURL: "docker:///busybox"},
 					SecretEnv: map[string]vars.SecretRef{
 						"CLAUDE_CODE_OAUTH_TOKEN": {Name: "agent-platform-credential", Key: "anthropic-token"},
+						"AGENT_MODEL_TOKEN_KIND":  {Name: "agent-platform-credential", Key: "kind", Optional: true},
 					},
 				},
 				delegate,
@@ -3470,6 +3471,34 @@ var _ = Describe("Run with sidecar containers", func() {
 			Expect(matches[0].Value).To(BeEmpty())
 			Expect(matches[0].ValueFrom.SecretKeyRef.Name).To(Equal("agent-platform-credential"))
 			Expect(matches[0].ValueFrom.SecretKeyRef.Key).To(Equal("anthropic-token"))
+			Expect(matches[0].ValueFrom.SecretKeyRef.Optional).To(BeNil())
+		})
+
+		// kubelet refuses to start a container whose secretKeyRef names a key
+		// the secret does not have. The platform credential's "kind" key is
+		// absent from operator-created secrets, so its ref must be optional or
+		// every agent pod on such a deployment fails to start.
+		It("marks an optional ref optional so a missing key never blocks pod start", func() {
+			_, err := container.Run(ctx, runtime.ProcessSpec{
+				Path: "/bin/sh",
+				Args: []string{"-c", "echo hello"},
+			}, runtime.ProcessIO{})
+			Expect(err).ToNot(HaveOccurred())
+
+			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			main := containerByName(pods.Items[0], "main")
+
+			var kind *corev1.EnvVar
+			for i := range main.Env {
+				if main.Env[i].Name == "AGENT_MODEL_TOKEN_KIND" {
+					kind = &main.Env[i]
+				}
+			}
+			Expect(kind).ToNot(BeNil())
+			Expect(kind.ValueFrom.SecretKeyRef.Key).To(Equal("kind"))
+			Expect(kind.ValueFrom.SecretKeyRef.Optional).ToNot(BeNil())
+			Expect(*kind.ValueFrom.SecretKeyRef.Optional).To(BeTrue())
 		})
 	})
 

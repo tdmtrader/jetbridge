@@ -117,7 +117,6 @@ func NewHandler(
 	agentStepImage string,
 	costLedger budget.Ledger,
 	agentDailyBudgetUSD float64,
-	ticketBudgets budget.TicketBudgets,
 	// agentRunTranscriptStore backs GetAgentWorkflowRunTranscript: the raw
 	// tool-call transcript the agent step persisted during flight ingestion.
 	agentRunTranscriptStore transcriptserver.Store,
@@ -244,7 +243,7 @@ func NewHandler(
 	// beside the /agent page's credentials/platform section. `version` is
 	// concourse.Version at build time — the web binary the image can lag.
 	platformInfoServer := credentials.PlatformInfoHandler(credentials.NewPlatformInfo(agentStepImage, version))
-	costChecker := budget.NewChecker(costLedger, ticketBudgets, budget.Config{
+	costChecker := budget.NewChecker(costLedger, budget.Config{
 		GlobalDailyCapUSD: agentDailyBudgetUSD,
 	})
 	costsServer := costs.NewHandler(costLedger, costChecker)

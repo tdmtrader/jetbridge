@@ -2,7 +2,9 @@ package db_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
+	"time"
 
 	"github.com/concourse/concourse/agent/api/metrics"
 	schema "github.com/concourse/concourse/agent/schema"
@@ -96,7 +98,7 @@ var _ = Describe("AgentRunMetricsFactory", func() {
 		Expect(factory.Upsert(&schema.RunMetrics{
 			WorkflowRunID: &wfRunID, FunctionID: "review",
 			BuildID: build.ID(), PlanID: "p1", StepName: "review-diff",
-			Status: "ok", Summary: "one finding", WorkflowName: "code-review",
+			Status: "ok", Summary: "one finding",
 		})).To(Succeed())
 
 		rows, err := factory.ListByWorkflowRun("code-review", snapRunID)
@@ -195,7 +197,6 @@ var _ = Describe("AgentRunMetricsFactory", func() {
 		rows, err := factory.GetByBuild(43)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(rows[0].WorkflowRunID).To(BeNil())
-		Expect(rows[0].WorkflowVersion).To(BeNil())
 	})
 
 	// --- review finding 2026-07-12: ParseSubmission accepts every status the
@@ -410,44 +411,99 @@ func createBuildWithStatus(status db.BuildStatus) int {
 	return build.ID()
 }
 
+// createWorkflowRun inserts a real agent_workflow_runs row under the suite's
+// defaultTeam, bound to buildID as its planned build. WorkflowStats INNER
+// JOINs this table for the workflow's identity and version, so the stats
+// fixture needs real runs, not tags on the metric row.
+func createWorkflowRun(name string, version int, buildID int) schema.WorkflowRunID {
+	suffix := time.Now().UnixNano()
+	// the definition row only satisfies the run's FK; its own (name, version)
+	// is unique per call so several runs can share one workflow name+version
+	var definitionID int
+	Expect(dbConn.QueryRow(`
+		INSERT INTO agent_workflow_definitions
+			(name, version, content_hash, definition, created_by, schema_version, signature_version)
+		VALUES ($1, 1, $2, 'schema_version: 3', 'tdm', 3, 1)
+		RETURNING id
+	`, fmt.Sprintf("%s-def-%d", name, suffix), fmt.Sprintf("hash-%d", suffix)).Scan(&definitionID)).To(Succeed())
+	var runID int64
+	Expect(dbConn.QueryRow(`
+		INSERT INTO agent_workflow_runs
+			(team_id, team_name, workflow_definition_id, workflow_name, workflow_version,
+			 schema_version, signature_version, definition_content_hash, idempotency_key,
+			 parameterized_config, parameterized_config_hash, origin_kind, origin_reference,
+			 created_by, status, planned_build_id)
+		VALUES ($1, $2, $3, $4, $5, 3, 1, $6, $7, '{}', $8, 'manual', '', 'tdm', 'running', $9)
+		RETURNING id
+	`, defaultTeam.ID(), defaultTeam.Name(), definitionID, name, version,
+		strings.Repeat("a", 64), fmt.Sprintf("stats-key-%d", suffix), strings.Repeat("b", 64),
+		buildID,
+	).Scan(&runID)).To(Succeed())
+	return schema.WorkflowRunID(runID)
+}
+
 var _ = Describe("AgentRunMetricsFactory WorkflowStats", func() {
 	var factory db.AgentRunMetricsFactory
+	var workflowName string
 
 	BeforeEach(func() {
 		factory = db.NewAgentRunMetricsFactory(dbConn)
+		// the definitions table is unique on (name, version), so each spec
+		// needs its own workflow name
+		workflowName = fmt.Sprintf("wf-stats-%d", time.Now().UnixNano())
 	})
 
-	insert := func(buildID int, plan string, ver int, status string, cost float64, turns int) {
-		v := ver
+	insert := func(runID schema.WorkflowRunID, buildID int, plan, status string, cost float64, turns int) {
 		Expect(factory.Upsert(&schema.RunMetrics{
+			WorkflowRunID: &runID, FunctionID: "work",
 			BuildID: buildID, PlanID: plan, StepName: "s",
-			WorkflowName: "wf-stats", WorkflowVersion: &v,
 			Status: status, CostUSD: cost, Turns: turns,
 		})).To(Succeed())
 	}
 
 	It("aggregates per version by distinct build, joining build status for success", func() {
-		// Two builds on v3: one whose build row is 'succeeded', one 'failed'.
+		// Two v3 runs: one whose planned build is 'succeeded', one 'failed'.
 		b1 := createBuildWithStatus(db.BuildStatusSucceeded)
 		b2 := createBuildWithStatus(db.BuildStatusFailed)
-		insert(b1, "p1", 3, "ok", 1.50, 5)
-		insert(b1, "p2", 3, "ok", 0.50, 3) // 2 steps, same build → 1 run
-		insert(b2, "p1", 3, "failed", 2.00, 8)
+		r1 := createWorkflowRun(workflowName, 3, b1)
+		r2 := createWorkflowRun(workflowName, 3, b2)
+		insert(r1, b1, "p1", "ok", 1.50, 5)
+		insert(r1, b1, "p2", "ok", 0.50, 3) // 2 steps, same build → 1 run
+		insert(r2, b2, "p1", "failed", 2.00, 8)
 
-		stats, err := factory.WorkflowStats("wf-stats")
+		// an ad-hoc CI step with no workflow run contributes to nothing:
+		// workflow identity is the run, never a tag on the metric row
+		Expect(factory.Upsert(&schema.RunMetrics{
+			BuildID: b1, PlanID: "ci", StepName: "s", Status: "ok", CostUSD: 99, Turns: 99,
+		})).To(Succeed())
+
+		stats, err := factory.WorkflowStats(workflowName)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(stats).To(HaveLen(1))
 
 		s := stats[0]
 		Expect(*s.Version).To(Equal(3))
-		Expect(s.Runs).To(Equal(2)) // distinct builds
-		// The second count is over workflow_run_id, the DURABLE execution
-		// identity (migration 1773106124 dropped agent_run_metrics.ticket_id —
-		// a ticket is a work-item adapter, never an execution identity). These
-		// ad-hoc CI rows bind no workflow run, so the filtered count is 0.
-		Expect(s.WorkflowRuns).To(Equal(0))
-		Expect(s.SucceededRuns).To(Equal(1)) // only b1 succeeded
+		Expect(s.Runs).To(Equal(2))         // distinct builds
+		Expect(s.WorkflowRuns).To(Equal(2)) // distinct durable runs
+		Expect(s.SucceededRuns).To(Equal(1))
 		Expect(s.TotalCostUSD).To(BeNumerically("~", 4.00, 1e-6))
 		Expect(s.TotalTurns).To(Equal(16))
+	})
+
+	It("buckets by the run's workflow version, newest first, and ignores other workflows", func() {
+		b1 := createBuildWithStatus(db.BuildStatusSucceeded)
+		b2 := createBuildWithStatus(db.BuildStatusSucceeded)
+		other := createBuildWithStatus(db.BuildStatusSucceeded)
+		insert(createWorkflowRun(workflowName, 1, b1), b1, "p1", "ok", 1.00, 1)
+		insert(createWorkflowRun(workflowName, 2, b2), b2, "p1", "ok", 2.00, 2)
+		insert(createWorkflowRun(workflowName+"-other", 9, other), other, "p1", "ok", 8.00, 8)
+
+		stats, err := factory.WorkflowStats(workflowName)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(stats).To(HaveLen(2))
+		Expect(*stats[0].Version).To(Equal(2))
+		Expect(stats[0].TotalCostUSD).To(BeNumerically("~", 2.00, 1e-6))
+		Expect(*stats[1].Version).To(Equal(1))
+		Expect(stats[1].TotalCostUSD).To(BeNumerically("~", 1.00, 1e-6))
 	})
 })

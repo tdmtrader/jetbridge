@@ -74,28 +74,6 @@ type PipelineRunFactory interface {
 	RunningRuns() ([]PipelineRun, error)
 	CompletedRunsWithNewActivity() ([]PipelineRun, error)
 	RunsToArchive() ([]PipelineRun, error)
-
-	// RunBelongsToPipeline reports whether pipeline_runs row `runID` was
-	// materialized as pipeline instance `pipelineID`. The agent-step exec
-	// gates §8.2 model-credential delivery on this: AGENT_PIPELINE_RUN_ID
-	// arrives via attacker-writable plan env (F30), so a run id may only name
-	// the `agent-run-<id>` secret when its instance pipeline is the very
-	// pipeline this build runs in. The verified model credential is delivered
-	// only to that build's main agent container; sidecar secret env is empty.
-	RunBelongsToPipeline(runID, pipelineID int) (bool, error)
-
-	// TicketBelongsToRun reports whether agent_tickets row `ticketID` is
-	// currently dispatched as pipeline run `runID`
-	// (agent_tickets.pipeline_run_id, contracts §1.7 — the latest attempt).
-	// The agent-step exec gates budget admission and cost/metrics
-	// attribution on this: AGENT_TICKET_ID arrives via attacker-writable
-	// plan env (F30) just like the run id, so a claimed ticket may only be
-	// admitted against — and charged in agent_cost_ledger — when server-side
-	// linkage proves the verified run was dispatched for it. agent_tickets
-	// landed with ticket-core (migration 1773106062); on a DB that has not
-	// migrated (or was downgraded) no ticket claim is verifiable and this
-	// reports false (fail closed — there are no legitimate tickets to claim).
-	TicketBelongsToRun(ticketID, runID int) (bool, error)
 }
 
 // NewPipelineRunFactory constructs the factory. The CheckFactory is
@@ -351,9 +329,6 @@ func (f *pipelineRunFactory) CreateRunForWorkflowRun(
 		templateRef.ConfigVersion <= 0 || templateRef.FullHash == "" {
 		return WorkflowRunExecution{}, false, fmt.Errorf("db: invalid workflow-run template reference")
 	}
-	if beforeCommit == nil {
-		return WorkflowRunExecution{}, false, fmt.Errorf("db: workflow-run before-commit callback is required")
-	}
 
 	tx, err := f.conn.BeginTx(ctx, nil)
 	if err != nil {
@@ -517,11 +492,15 @@ func (f *pipelineRunFactory) CreateRunForWorkflowRun(
 		return WorkflowRunExecution{}, false, err
 	}
 
-	callbackCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	err = beforeCommit(callbackCtx, pipelineRunID)
-	cancel()
-	if err != nil {
-		return WorkflowRunExecution{}, false, err
+	// Optional: a caller with nothing to do between allocating the run id and
+	// committing passes nil.
+	if beforeCommit != nil {
+		callbackCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		err = beforeCommit(callbackCtx, pipelineRunID)
+		cancel()
+		if err != nil {
+			return WorkflowRunExecution{}, false, err
+		}
 	}
 
 	plannedBuildID, err := f.createAndSelectWorkflowEntryBuild(
@@ -1009,58 +988,6 @@ func (f *pipelineRunFactory) RunsToArchive() ([]PipelineRun, error) {
 		return nil, err
 	}
 	return f.scanRuns(runRows)
-}
-
-func (f *pipelineRunFactory) RunBelongsToPipeline(runID, pipelineID int) (bool, error) {
-	if runID <= 0 || pipelineID <= 0 {
-		return false, nil
-	}
-	var exists bool
-	err := f.conn.QueryRow(
-		`SELECT EXISTS (SELECT 1 FROM pipeline_runs WHERE id = $1 AND instance_pipeline_id = $2)`,
-		runID, pipelineID,
-	).Scan(&exists)
-	if err != nil {
-		return false, err
-	}
-	return exists, nil
-}
-
-func (f *pipelineRunFactory) TicketBelongsToRun(ticketID, runID int) (bool, error) {
-	if ticketID <= 0 || runID <= 0 {
-		return false, nil
-	}
-
-	// Absent table ⇒ there are no tickets, so no claim can be legitimate:
-	// fail closed.
-	tableExists, err := f.agentTicketsTableExists()
-	if err != nil {
-		return false, err
-	}
-	if !tableExists {
-		return false, nil
-	}
-
-	var exists bool
-	err = f.conn.QueryRow(
-		`SELECT EXISTS (SELECT 1 FROM agent_tickets WHERE id = $1 AND pipeline_run_id = $2)`,
-		ticketID, runID,
-	).Scan(&exists)
-	if err != nil {
-		return false, err
-	}
-	return exists, nil
-}
-
-// agentTicketsTableExists probes for ticket-core's table (migration
-// 1773106062), which may be absent on a not-yet-migrated or downgraded DB;
-// cross-aggregate refs are plain int columns with no SQL FKs (§1.1). The
-// probe is a separate statement because Postgres resolves every relation
-// named in a query at parse time, even in dead branches.
-func (f *pipelineRunFactory) agentTicketsTableExists() (bool, error) {
-	var tableExists bool
-	err := f.conn.QueryRow(`SELECT to_regclass('agent_tickets') IS NOT NULL`).Scan(&tableExists)
-	return tableExists, err
 }
 
 func (f *pipelineRunFactory) scanRuns(rows *sql.Rows) ([]PipelineRun, error) {

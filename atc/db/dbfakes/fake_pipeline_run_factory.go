@@ -102,20 +102,6 @@ type FakePipelineRunFactory struct {
 		result1 []db.PipelineRun
 		result2 error
 	}
-	RunBelongsToPipelineStub        func(int, int) (bool, error)
-	runBelongsToPipelineMutex       sync.RWMutex
-	runBelongsToPipelineArgsForCall []struct {
-		arg1 int
-		arg2 int
-	}
-	runBelongsToPipelineReturns struct {
-		result1 bool
-		result2 error
-	}
-	runBelongsToPipelineReturnsOnCall map[int]struct {
-		result1 bool
-		result2 error
-	}
 	RunningRunsStub        func() ([]db.PipelineRun, error)
 	runningRunsMutex       sync.RWMutex
 	runningRunsArgsForCall []struct {
@@ -138,20 +124,6 @@ type FakePipelineRunFactory struct {
 	}
 	runsToArchiveReturnsOnCall map[int]struct {
 		result1 []db.PipelineRun
-		result2 error
-	}
-	TicketBelongsToRunStub        func(int, int) (bool, error)
-	ticketBelongsToRunMutex       sync.RWMutex
-	ticketBelongsToRunArgsForCall []struct {
-		arg1 int
-		arg2 int
-	}
-	ticketBelongsToRunReturns struct {
-		result1 bool
-		result2 error
-	}
-	ticketBelongsToRunReturnsOnCall map[int]struct {
-		result1 bool
 		result2 error
 	}
 	invocations      map[string][][]interface{}
@@ -552,71 +524,6 @@ func (fake *FakePipelineRunFactory) ListRunsReturnsOnCall(i int, result1 []db.Pi
 	}{result1, result2}
 }
 
-func (fake *FakePipelineRunFactory) RunBelongsToPipeline(arg1 int, arg2 int) (bool, error) {
-	fake.runBelongsToPipelineMutex.Lock()
-	ret, specificReturn := fake.runBelongsToPipelineReturnsOnCall[len(fake.runBelongsToPipelineArgsForCall)]
-	fake.runBelongsToPipelineArgsForCall = append(fake.runBelongsToPipelineArgsForCall, struct {
-		arg1 int
-		arg2 int
-	}{arg1, arg2})
-	stub := fake.RunBelongsToPipelineStub
-	fakeReturns := fake.runBelongsToPipelineReturns
-	fake.recordInvocation("RunBelongsToPipeline", []interface{}{arg1, arg2})
-	fake.runBelongsToPipelineMutex.Unlock()
-	if stub != nil {
-		return stub(arg1, arg2)
-	}
-	if specificReturn {
-		return ret.result1, ret.result2
-	}
-	return fakeReturns.result1, fakeReturns.result2
-}
-
-func (fake *FakePipelineRunFactory) RunBelongsToPipelineCallCount() int {
-	fake.runBelongsToPipelineMutex.RLock()
-	defer fake.runBelongsToPipelineMutex.RUnlock()
-	return len(fake.runBelongsToPipelineArgsForCall)
-}
-
-func (fake *FakePipelineRunFactory) RunBelongsToPipelineCalls(stub func(int, int) (bool, error)) {
-	fake.runBelongsToPipelineMutex.Lock()
-	defer fake.runBelongsToPipelineMutex.Unlock()
-	fake.RunBelongsToPipelineStub = stub
-}
-
-func (fake *FakePipelineRunFactory) RunBelongsToPipelineArgsForCall(i int) (int, int) {
-	fake.runBelongsToPipelineMutex.RLock()
-	defer fake.runBelongsToPipelineMutex.RUnlock()
-	argsForCall := fake.runBelongsToPipelineArgsForCall[i]
-	return argsForCall.arg1, argsForCall.arg2
-}
-
-func (fake *FakePipelineRunFactory) RunBelongsToPipelineReturns(result1 bool, result2 error) {
-	fake.runBelongsToPipelineMutex.Lock()
-	defer fake.runBelongsToPipelineMutex.Unlock()
-	fake.RunBelongsToPipelineStub = nil
-	fake.runBelongsToPipelineReturns = struct {
-		result1 bool
-		result2 error
-	}{result1, result2}
-}
-
-func (fake *FakePipelineRunFactory) RunBelongsToPipelineReturnsOnCall(i int, result1 bool, result2 error) {
-	fake.runBelongsToPipelineMutex.Lock()
-	defer fake.runBelongsToPipelineMutex.Unlock()
-	fake.RunBelongsToPipelineStub = nil
-	if fake.runBelongsToPipelineReturnsOnCall == nil {
-		fake.runBelongsToPipelineReturnsOnCall = make(map[int]struct {
-			result1 bool
-			result2 error
-		})
-	}
-	fake.runBelongsToPipelineReturnsOnCall[i] = struct {
-		result1 bool
-		result2 error
-	}{result1, result2}
-}
-
 func (fake *FakePipelineRunFactory) RunningRuns() ([]db.PipelineRun, error) {
 	fake.runningRunsMutex.Lock()
 	ret, specificReturn := fake.runningRunsReturnsOnCall[len(fake.runningRunsArgsForCall)]
@@ -725,71 +632,6 @@ func (fake *FakePipelineRunFactory) RunsToArchiveReturnsOnCall(i int, result1 []
 	}
 	fake.runsToArchiveReturnsOnCall[i] = struct {
 		result1 []db.PipelineRun
-		result2 error
-	}{result1, result2}
-}
-
-func (fake *FakePipelineRunFactory) TicketBelongsToRun(arg1 int, arg2 int) (bool, error) {
-	fake.ticketBelongsToRunMutex.Lock()
-	ret, specificReturn := fake.ticketBelongsToRunReturnsOnCall[len(fake.ticketBelongsToRunArgsForCall)]
-	fake.ticketBelongsToRunArgsForCall = append(fake.ticketBelongsToRunArgsForCall, struct {
-		arg1 int
-		arg2 int
-	}{arg1, arg2})
-	stub := fake.TicketBelongsToRunStub
-	fakeReturns := fake.ticketBelongsToRunReturns
-	fake.recordInvocation("TicketBelongsToRun", []interface{}{arg1, arg2})
-	fake.ticketBelongsToRunMutex.Unlock()
-	if stub != nil {
-		return stub(arg1, arg2)
-	}
-	if specificReturn {
-		return ret.result1, ret.result2
-	}
-	return fakeReturns.result1, fakeReturns.result2
-}
-
-func (fake *FakePipelineRunFactory) TicketBelongsToRunCallCount() int {
-	fake.ticketBelongsToRunMutex.RLock()
-	defer fake.ticketBelongsToRunMutex.RUnlock()
-	return len(fake.ticketBelongsToRunArgsForCall)
-}
-
-func (fake *FakePipelineRunFactory) TicketBelongsToRunCalls(stub func(int, int) (bool, error)) {
-	fake.ticketBelongsToRunMutex.Lock()
-	defer fake.ticketBelongsToRunMutex.Unlock()
-	fake.TicketBelongsToRunStub = stub
-}
-
-func (fake *FakePipelineRunFactory) TicketBelongsToRunArgsForCall(i int) (int, int) {
-	fake.ticketBelongsToRunMutex.RLock()
-	defer fake.ticketBelongsToRunMutex.RUnlock()
-	argsForCall := fake.ticketBelongsToRunArgsForCall[i]
-	return argsForCall.arg1, argsForCall.arg2
-}
-
-func (fake *FakePipelineRunFactory) TicketBelongsToRunReturns(result1 bool, result2 error) {
-	fake.ticketBelongsToRunMutex.Lock()
-	defer fake.ticketBelongsToRunMutex.Unlock()
-	fake.TicketBelongsToRunStub = nil
-	fake.ticketBelongsToRunReturns = struct {
-		result1 bool
-		result2 error
-	}{result1, result2}
-}
-
-func (fake *FakePipelineRunFactory) TicketBelongsToRunReturnsOnCall(i int, result1 bool, result2 error) {
-	fake.ticketBelongsToRunMutex.Lock()
-	defer fake.ticketBelongsToRunMutex.Unlock()
-	fake.TicketBelongsToRunStub = nil
-	if fake.ticketBelongsToRunReturnsOnCall == nil {
-		fake.ticketBelongsToRunReturnsOnCall = make(map[int]struct {
-			result1 bool
-			result2 error
-		})
-	}
-	fake.ticketBelongsToRunReturnsOnCall[i] = struct {
-		result1 bool
 		result2 error
 	}{result1, result2}
 }

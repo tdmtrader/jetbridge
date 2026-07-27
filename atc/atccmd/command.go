@@ -221,12 +221,6 @@ type RunCommand struct {
 	artifactResolveCapabilityMu  sync.Mutex
 	artifactResolveCapabilityKey []byte
 
-	// agentRunSecretAttacher bridges dispatch's API handler (constructed
-	// before the K8s clientset exists) to the real attacher bound in the
-	// K8s components block. Unbound, every Attach fails loudly — dispatch
-	// requires the jetbridge runtime.
-	agentRunSecretAttacher *lazySecretAttacher
-
 	BindIP   flag.IP `long:"bind-ip"   default:"0.0.0.0" description:"IP address on which to listen for web traffic."`
 	BindPort uint16  `long:"bind-port" default:"8080"    description:"Port on which to listen for HTTP traffic."`
 
@@ -361,7 +355,7 @@ type RunCommand struct {
 
 	AgentStepImage string `long:"agent-step-image" description:"Container image for the agent: step's main container (must contain the claude CLI and agent-runner). Schema-v3 workflow runs and resource snapshot captures require an exact @sha256 digest; agent steps error at runtime when unset."`
 
-	AgentPlatformTokenSecret string `long:"agent-platform-token-secret" description:"Name of a K8s secret (key 'anthropic-token') providing the Anthropic token for pure-CI agent steps that have no per-run agent-run-<id> secret. The per-run secret always takes precedence. Unset means pure-CI agent steps have no token path."`
+	AgentPlatformTokenSecret string `long:"agent-platform-token-secret" default:"agent-platform-credential" description:"Name of the K8s secret (keys 'anthropic-token' and 'kind') every agent pod mounts its Anthropic token from. The default is the secret the platform-credential syncer maintains from the vaulted platform credential (fly agent auth --platform); point it elsewhere only to supply the secret out of band. Empty means agent steps have no token path."`
 
 	AgentDailyBudgetUSD float64 `long:"agent-daily-budget-usd" default:"0" description:"Global daily agent LLM spend cap in USD across all agent work, enforced by atomic workflow and experiment reservations and reported by the cost rollup API. 0 disables the cap."`
 
@@ -1551,24 +1545,6 @@ func (cmd *RunCommand) backendComponents(
 			Interval: time.Minute,
 		})
 
-		if cmd.agentRunSecretAttacher == nil {
-			cmd.agentRunSecretAttacher = &lazySecretAttacher{}
-		}
-		cmd.agentRunSecretAttacher.bind(credentials.NewK8sSecretAttacher(k8sClientset, cmd.Kubernetes.Namespace))
-
-		components = append(components, RunnableComponent{
-			Component: atc.Component{
-				Name: atc.ComponentAgentRunSecretReaper,
-			},
-			Runnable: credentials.NewRunSecretReaper(
-				logger.Session(atc.ComponentAgentRunSecretReaper),
-				k8sClientset,
-				cmd.Kubernetes.Namespace,
-				db.NewAgentRunChecker(dbConn),
-			),
-			Interval: time.Minute,
-		})
-
 		// The dispatcher component is ALWAYS wired now (runtime-controlled),
 		// not gated on --agent-dispatcher-enabled. The boot flag is instead the
 		// FALLBACK seed for the effective mode: when no agent_settings row
@@ -1634,13 +1610,12 @@ func (cmd *RunCommand) backendComponents(
 				if err != nil {
 					return nil, fmt.Errorf("construct ticket workflow budget admission: %w", err)
 				}
-				workflowSecrets, err := workflowrun.NewVaultedRunSecretPreparer(
-					db.NewAgentUserLookup(dbConn),
+				workflowCredential, err := workflowrun.NewPlatformCredentialAdmitter(
 					db.NewAgentUserCredentialsFactory(dbConn),
-					cmd.agentRunSecrets(),
+					cmd.AgentPlatformTokenSecret,
 				)
 				if err != nil {
-					return nil, fmt.Errorf("construct ticket workflow secret preparation: %w", err)
+					return nil, fmt.Errorf("construct ticket workflow model credential admission: %w", err)
 				}
 				ticketWorkflowBinder, err = workflowrun.NewBinder(
 					workflowrun.WorkflowDefinitionStoreResolver{Store: workflowStore},
@@ -1650,7 +1625,7 @@ func (cmd *RunCommand) backendComponents(
 					workflowBudget,
 					templateSaver,
 					dbPipelineRunFactory,
-					workflowSecrets,
+					workflowCredential,
 				)
 				if err != nil {
 					return nil, fmt.Errorf("construct ticket workflow binder: %w", err)
@@ -1690,11 +1665,6 @@ func (cmd *RunCommand) backendComponents(
 				WorkItems:        ticketWorkItems,
 				WorkflowBinder:   ticketWorkflowBinder,
 				WorkflowCanceler: ticketWorkflowCanceler,
-				Budget: budget.NewChecker(
-					db.NewAgentCostLedgerFactory(dbConn),
-					dispatch.NewTicketBudgets(db.NewAgentTicketsFactory(dbConn)),
-					budget.Config{GlobalDailyCapUSD: cmd.AgentDailyBudgetUSD},
-				),
 			}
 			components = append(components, RunnableComponent{
 				Component: atc.Component{
@@ -3013,13 +2983,12 @@ func (cmd *RunCommand) constructEngine(
 	dbConn db.DbConn,
 	pipelineRunFactory db.PipelineRunFactory,
 ) engine.Engine {
-	// Budget admission + ledger for agent: steps. Same construction as the
-	// costs API handler (atc/api/handler.go): the DB-backed cost ledger,
-	// explicit positive per-ticket budgets (tickets.budget_usd; zero means
-	// uncapped), and the global daily cap from --agent-daily-budget-usd.
+	// Spend ledger for agent: steps. Same construction as the costs API
+	// handler (atc/api/handler.go): the DB-backed cost ledger plus the global
+	// daily cap from --agent-daily-budget-usd. Per-run admission is the
+	// binder's durable reservation, not this checker.
 	agentBudgetChecker := budget.NewChecker(
 		db.NewAgentCostLedgerFactory(dbConn),
-		dispatch.NewTicketBudgets(db.NewAgentTicketsFactory(dbConn)),
 		budget.Config{
 			GlobalDailyCapUSD: cmd.AgentDailyBudgetUSD,
 		},
@@ -3031,7 +3000,6 @@ func (cmd *RunCommand) constructEngine(
 		engine.WithAgentMetricsStore(db.NewAgentRunMetricsFactory(dbConn)),
 		engine.WithAgentTranscriptStore(db.NewAgentRunTranscriptFactory(dbConn)),
 		engine.WithAgentBudgetChecker(agentBudgetChecker),
-		engine.WithAgentRunVerifier(pipelineRunFactory),
 		engine.WithWorkflowWaitStore(db.NewAgentWorkflowWaitsFactory(
 			dbConn, cmd.AgentSnapshots.BindingRetention,
 		)),
@@ -3385,13 +3353,12 @@ func (cmd *RunCommand) constructAPIHandler(
 	if err != nil {
 		return nil, fmt.Errorf("construct workflow-run budget admission: %w", err)
 	}
-	workflowSecrets, err := workflowrun.NewVaultedRunSecretPreparer(
-		db.NewAgentUserLookup(dbConn),
+	workflowCredential, err := workflowrun.NewPlatformCredentialAdmitter(
 		db.NewAgentUserCredentialsFactory(dbConn),
-		cmd.agentRunSecrets(),
+		cmd.AgentPlatformTokenSecret,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("construct workflow-run secret preparation: %w", err)
+		return nil, fmt.Errorf("construct workflow-run model credential admission: %w", err)
 	}
 	workflowBinder, err := workflowrun.NewBinder(
 		workflowrun.WorkflowDefinitionStoreResolver{Store: workflowStore},
@@ -3401,7 +3368,7 @@ func (cmd *RunCommand) constructAPIHandler(
 		workflowBudget,
 		templateSaver,
 		dbPipelineRunFactory,
-		workflowSecrets,
+		workflowCredential,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("construct workflow-run binder: %w", err)
@@ -3545,7 +3512,6 @@ func (cmd *RunCommand) constructAPIHandler(
 		cmd.AgentStepImage,
 		db.NewAgentCostLedgerFactory(dbConn),
 		cmd.AgentDailyBudgetUSD,
-		dispatch.NewTicketBudgets(db.NewAgentTicketsFactory(dbConn)),
 		db.NewAgentRunTranscriptFactory(dbConn),
 		workflowStore,
 		dispatch.NewHTTPHandler(dispatch.Deps{
@@ -3556,11 +3522,6 @@ func (cmd *RunCommand) constructAPIHandler(
 			WorkItems:        ticketWorkItems,
 			WorkflowBinder:   workflowBinder,
 			WorkflowCanceler: workflowCanceler,
-			Budget: budget.NewChecker(
-				db.NewAgentCostLedgerFactory(dbConn),
-				dispatch.NewTicketBudgets(db.NewAgentTicketsFactory(dbConn)),
-				budget.Config{GlobalDailyCapUSD: cmd.AgentDailyBudgetUSD},
-			),
 		}, func(r *http.Request) string {
 			return accessor.GetAccessor(r).Claims().UserName
 		}),
@@ -3580,47 +3541,6 @@ func workflowRunCreatorIdentity(info atc.UserInfo) (string, error) {
 		return "", errors.New("authenticated workflow-run creator is unavailable")
 	}
 	return info.DisplayUserId, nil
-}
-
-// agentRunSecrets lazily initializes the shared attacher bridge (the
-// API handler and the K8s components block race on construction order).
-func (cmd *RunCommand) agentRunSecrets() *lazySecretAttacher {
-	if cmd.agentRunSecretAttacher == nil {
-		cmd.agentRunSecretAttacher = &lazySecretAttacher{}
-	}
-	return cmd.agentRunSecretAttacher
-}
-
-// lazySecretAttacher defers to the K8s-backed attacher once it exists.
-type lazySecretAttacher struct {
-	mu    sync.RWMutex
-	inner credentials.SecretAttacher
-}
-
-func (l *lazySecretAttacher) bind(inner credentials.SecretAttacher) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.inner = inner
-}
-
-func (l *lazySecretAttacher) Attach(ctx context.Context, runID int, cred *credentials.Credential) (string, error) {
-	l.mu.RLock()
-	inner := l.inner
-	l.mu.RUnlock()
-	if inner == nil {
-		return "", errors.New("agent run secrets require the kubernetes runtime (no clientset configured)")
-	}
-	return inner.Attach(ctx, runID, cred)
-}
-
-func (l *lazySecretAttacher) Cleanup(ctx context.Context, runID int) error {
-	l.mu.RLock()
-	inner := l.inner
-	l.mu.RUnlock()
-	if inner == nil {
-		return nil
-	}
-	return inner.Cleanup(ctx, runID)
 }
 
 type tlsRedirectHandler struct {

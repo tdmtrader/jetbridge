@@ -10,26 +10,25 @@ import (
 	"code.cloudfoundry.org/lager/v3/lagertest"
 
 	"github.com/concourse/concourse/agent/api/tickets"
-	"github.com/concourse/concourse/agent/budget"
-	"github.com/concourse/concourse/agent/budget/budgetfakes"
 	"github.com/concourse/concourse/agent/dispatch"
+	"github.com/concourse/concourse/agent/workflowrun"
 )
 
 // loopDeps builds schema-v3 Deps with n queued tickets in the MemoryStore.
-func loopDeps(t *testing.T, n int) (dispatch.Deps, *tickets.MemoryStore, []int) {
+func loopDeps(t *testing.T, n int) (dispatch.Deps, *tickets.MemoryStore, []int, *fakeWorkflowBinder) {
 	t.Helper()
-	deps, store, _, _ := v3DispatchDeps(t)
+	deps, store, _, binder := v3DispatchDeps(t)
 	ids := make([]int, 0, n)
 	for i := 0; i < n; i++ {
 		id := queuedTicket(t, store, "smoke")
 		setRepositorySnapshot(t, store, id, 101)
 		ids = append(ids, id)
 	}
-	return deps, store, ids
+	return deps, store, ids, binder
 }
 
 func TestDispatcherDispatchesEachQueuedTicket(t *testing.T) {
-	deps, store, ids := loopDeps(t, 2)
+	deps, store, ids, _ := loopDeps(t, 2)
 	d := dispatch.NewDispatcher(deps, dispatch.LoopConfig{})
 	if err := d.Run(context.Background()); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -42,33 +41,31 @@ func TestDispatcherDispatchesEachQueuedTicket(t *testing.T) {
 	}
 }
 
-func TestDispatcherOverBudgetTicketStaysQueuedAndPassContinues(t *testing.T) {
-	deps, store, ids := loopDeps(t, 2)
-	checker := new(budgetfakes.FakeChecker)
-	// First ticket exhausted, second admitted.
-	checker.TicketRemainingStub = func(ticketID int) (budget.Remaining, error) {
-		if ticketID == ids[0] {
-			return budget.Remaining{LimitUSD: 1, SpentUSD: 2, Exhausted: true}, nil
-		}
-		return budget.Remaining{}, nil
-	}
-	deps.Budget = checker
+func TestDispatcherBudgetDeniedTicketStaysQueuedAndPassContinues(t *testing.T) {
+	deps, store, ids, binder := loopDeps(t, 2)
+	// The binder's durable reservation is the single budget authority; deny
+	// whichever ticket the pass reaches first and admit the other.
+	binder.err = workflowrun.ErrBudgetDenied
+	binder.errOnce = true
 	d := dispatch.NewDispatcher(deps, dispatch.LoopConfig{})
 	if err := d.Run(context.Background()); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	first, _, _ := store.Get(ids[0])
-	second, _, _ := store.Get(ids[1])
-	if first.State != tickets.StateQueued {
-		t.Errorf("over-cap ticket must stay queued, got %s", first.State)
+	states := map[tickets.State]int{}
+	for _, id := range ids {
+		got, _, _ := store.Get(id)
+		states[got.State]++
 	}
-	if second.State != tickets.StateRunning {
-		t.Errorf("deferral must not starve the pass; second = %s, want running", second.State)
+	if states[tickets.StateQueued] != 1 {
+		t.Errorf("the denied ticket must STAY queued (never failed), states=%v", states)
+	}
+	if states[tickets.StateRunning] != 1 {
+		t.Errorf("a deferral must not starve the pass, states=%v", states)
 	}
 }
 
 func TestDispatcherPlatformFaultIsolatedPerTicket(t *testing.T) {
-	deps, store, ids := loopDeps(t, 2)
+	deps, store, ids, _ := loopDeps(t, 2)
 	// Poison the first ticket: dangling workflow ref → refused, stays queued.
 	bad := "no-such-workflow"
 	if err := store.Update(ids[0], tickets.Update{WorkflowName: &bad}); err != nil {
@@ -89,7 +86,7 @@ func TestDispatcherPlatformFaultIsolatedPerTicket(t *testing.T) {
 }
 
 func TestDispatcherNonV3LogsDispatchRefused(t *testing.T) {
-	deps, store, ids := loopDeps(t, 2)
+	deps, store, ids, _ := loopDeps(t, 2)
 	nonV3 := v3Definition(t, "work-item", "repository")
 	nonV3.SchemaVersion = 2
 	deps.Workflows.(*fakeWorkflows).byName["non-v3"] = nonV3
@@ -133,7 +130,7 @@ func TestDispatcherNonV3LogsDispatchRefused(t *testing.T) {
 }
 
 func TestDispatcherListFailureReturnsError(t *testing.T) {
-	deps, _, _ := loopDeps(t, 0)
+	deps, _, _, _ := loopDeps(t, 0)
 	deps.Tickets = failingListStore{}
 	d := dispatch.NewDispatcher(deps, dispatch.LoopConfig{})
 	if err := d.Run(context.Background()); err == nil {

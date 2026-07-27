@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/agent/api/tickets"
-	"github.com/concourse/concourse/agent/budget"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/agent/workflowrun"
@@ -33,10 +32,10 @@ var (
 	// ticket's exact work-item/v1 and repository/v1 inputs. This is an
 	// inspectable client configuration error, so the route maps it to 422.
 	ErrRenderRefused = errors.New("workflow cannot be dispatched as a ticket")
-	// ErrBudgetExhausted: admission refused — the ticket or the global
-	// daily cap has no headroom (§2.7). The ticket STAYS QUEUED; the
-	// loop logs it as deferred and the route maps it to 409. Never a
-	// ticket-state transition: budgets recover (midnight, raised cap).
+	// ErrBudgetExhausted: the binder's durable budget reservation — the
+	// single admission authority — refused the run. The ticket STAYS
+	// QUEUED; the loop logs it as deferred and the route maps it to 409.
+	// Never a ticket-state transition: budgets recover (midnight, raised cap).
 	ErrBudgetExhausted = errors.New("budget exhausted; dispatch deferred")
 	// ErrInputsPending is a retryable adapter state: the ticket is durably
 	// reserved, but an exact immutable input (normally the repository
@@ -95,11 +94,6 @@ type Deps struct {
 	WorkflowBinder   WorkflowBinder
 	WorkflowCanceler WorkflowRunCanceler
 	TicketPorts      TicketPortResolver
-
-	// Budget, when non-nil, gates admission per §2.7: TicketRemaining +
-	// GlobalDailyRemaining are consulted before definition resolution or any
-	// dispatch side effect. nil skips admission (tests; pre-budget wiring).
-	Budget budget.Checker
 }
 
 type Result struct {
@@ -134,23 +128,6 @@ func DispatchOne(ctx context.Context, deps Deps, ticketID int, dispatchedBy stri
 	}
 	if t.WorkflowName == "" {
 		return Result{}, ErrNoWorkflow
-	}
-
-	if t.State == tickets.StateQueued && deps.Budget != nil {
-		tr, err := deps.Budget.TicketRemaining(ticketID)
-		if err != nil {
-			return Result{}, fmt.Errorf("budget admission for ticket %d: %w", ticketID, err)
-		}
-		if tr.Exhausted {
-			return Result{}, fmt.Errorf("%w: ticket %d spent $%.2f of $%.2f", ErrBudgetExhausted, ticketID, tr.SpentUSD, tr.LimitUSD)
-		}
-		gr, err := deps.Budget.GlobalDailyRemaining()
-		if err != nil {
-			return Result{}, fmt.Errorf("budget admission (global daily): %w", err)
-		}
-		if gr.Exhausted {
-			return Result{}, fmt.Errorf("%w: global daily cap spent $%.2f of $%.2f", ErrBudgetExhausted, gr.SpentUSD, gr.LimitUSD)
-		}
 	}
 
 	var def *workflow.Definition

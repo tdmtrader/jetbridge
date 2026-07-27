@@ -63,8 +63,7 @@ func (s *PlatformSecretSyncer) Run(ctx context.Context) error {
 		// running `fly agent auth --platform` (PutRequest.User = "platform").
 		// Bidirectional sync (§8.2): if the credential was unvaulted (admin ran
 		// `fly agent auth --platform --delete`), the stale K8s secret MUST be
-		// removed so no pod can mount a revoked token. NotFound is tolerated —
-		// same idiom as the run-secret Cleanup path.
+		// removed so no pod can mount a revoked token. NotFound is tolerated.
 		err := s.client.CoreV1().Secrets(s.namespace).Delete(ctx, PlatformSecretName, metav1.DeleteOptions{})
 		if apierrors.IsNotFound(err) {
 			s.logger.Info("platform-credential-not-vaulted")
@@ -78,6 +77,9 @@ func (s *PlatformSecretSyncer) Run(ctx context.Context) error {
 		return nil
 	}
 
+	// "kind" travels with the token: the agent pod's runner needs to know
+	// whether it holds an OAuth token or a raw API key to pick the right
+	// claude CLI credential env var, and only the vault row knows.
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      PlatformSecretName,
@@ -87,6 +89,7 @@ func (s *PlatformSecretSyncer) Run(ctx context.Context) error {
 		Type: corev1.SecretTypeOpaque,
 		StringData: map[string]string{
 			SecretKeyAnthropicToken: cred.Token,
+			SecretKeyModelTokenKind: cred.Kind,
 		},
 	}
 
@@ -105,10 +108,12 @@ func (s *PlatformSecretSyncer) Run(ctx context.Context) error {
 	}
 
 	if string(existing.Data[SecretKeyAnthropicToken]) == cred.Token &&
+		string(existing.Data[SecretKeyModelTokenKind]) == cred.Kind &&
 		existing.StringData[SecretKeyAnthropicToken] == "" {
 		return nil // already in sync (Data is the server-side representation)
 	}
-	if existing.StringData[SecretKeyAnthropicToken] == cred.Token {
+	if existing.StringData[SecretKeyAnthropicToken] == cred.Token &&
+		existing.StringData[SecretKeyModelTokenKind] == cred.Kind {
 		return nil // fake-clientset path: StringData not converted
 	}
 	if _, err := s.client.CoreV1().Secrets(s.namespace).Update(ctx, secret, metav1.UpdateOptions{}); err != nil {

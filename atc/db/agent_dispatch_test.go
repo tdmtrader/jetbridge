@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/concourse/concourse/agent/api/tickets"
-	"github.com/concourse/concourse/agent/budget"
 	"github.com/concourse/concourse/agent/dispatch"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/workflow"
@@ -103,7 +102,7 @@ plan:
 		workflowrun.AllowAllBudgetAdmitter{},
 		templateSaver,
 		pipelineRuns,
-		workflowRunNoopSecretPreparer{},
+		workflowRunAllowAllCredentialAdmitter{},
 	)
 	Expect(err).NotTo(HaveOccurred())
 	canceler, err := workflowrun.NewCanceler(workflowRuns, buildFactory)
@@ -119,11 +118,6 @@ plan:
 			tickets: ticketsFactory, snapshot: workItemSnapshot,
 		},
 		WorkflowBinder: binder, WorkflowCanceler: canceler,
-		Budget: budget.NewChecker(
-			db.NewAgentCostLedgerFactory(dbConn),
-			dispatch.NewTicketBudgets(ticketsFactory),
-			budget.Config{},
-		),
 	}
 	return &agentDispatchFixture{
 		tickets: ticketsFactory, workflows: workflows, workflowRuns: workflowRuns,
@@ -156,12 +150,12 @@ func insertDispatchSnapshot(typeName string, digestByte byte) snapshot.Snapshot 
 	}
 }
 
-func (fixture *agentDispatchFixture) queueTicket(ticketBudget *float64) int {
+func (fixture *agentDispatchFixture) queueTicket() int {
 	id, err := fixture.tickets.Create(&tickets.Ticket{
 		Title: "dispatch me", Body: "prove binder dispatch", Origin: "fly",
 		Repo: "tdmtrader/jetbridge", TargetBranch: "main",
-		WorkflowName: fixture.definition.Name, BudgetUSD: ticketBudget,
-		UserName: "tdm", CreatedBy: "tdm",
+		WorkflowName: fixture.definition.Name,
+		UserName:     "tdm", CreatedBy: "tdm",
 	})
 	Expect(err).NotTo(HaveOccurred())
 	repositoryID := fixture.repositorySnapshot.ID
@@ -196,7 +190,7 @@ func (fixture *agentDispatchFixture) inputBindings(
 var _ = Describe("dispatching a ticket end-to-end", func() {
 	It("binds exact immutable ticket snapshots through a durable workflow run", func() {
 		fixture := newAgentDispatchFixture()
-		ticketID := fixture.queueTicket(nil)
+		ticketID := fixture.queueTicket()
 
 		result, err := dispatch.DispatchOne(context.Background(), fixture.deps, ticketID, "admin")
 		Expect(err).NotTo(HaveOccurred())
@@ -302,7 +296,7 @@ var _ = Describe("dispatching a ticket end-to-end", func() {
 var _ = Describe("the dispatcher loop over real stores", func() {
 	It("dispatches every queued ticket in one pass", func() {
 		fixture := newAgentDispatchFixture()
-		first, second := fixture.queueTicket(nil), fixture.queueTicket(nil)
+		first, second := fixture.queueTicket(), fixture.queueTicket()
 
 		Expect(dispatch.NewDispatcher(fixture.deps, dispatch.LoopConfig{}).
 			Run(context.Background())).To(Succeed())
@@ -317,28 +311,9 @@ var _ = Describe("the dispatcher loop over real stores", func() {
 		}
 	})
 
-	It("defers an over-budget ticket, leaving it queued", func() {
-		fixture := newAgentDispatchFixture()
-		one := 1.0
-		id := fixture.queueTicket(&one)
-		Expect(db.NewAgentCostLedgerFactory(dbConn).Insert(budget.LedgerEntry{
-			TicketID: &id, Source: budget.SourceAgentStep, CostUSD: 2.0,
-		})).To(Succeed())
-
-		Expect(dispatch.NewDispatcher(fixture.deps, dispatch.LoopConfig{}).
-			Run(context.Background())).To(Succeed())
-
-		got, found, err := fixture.tickets.Get(id)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(found).To(BeTrue())
-		Expect(got.State).To(Equal(tickets.StateQueued))
-		Expect(got.WorkflowRunID).To(BeNil())
-		Expect(got.PipelineRunID).To(BeNil())
-	})
-
 	It("reconciles a run that died before harvest to needs_review", func() {
 		fixture := newAgentDispatchFixture()
-		id := fixture.queueTicket(nil)
+		id := fixture.queueTicket()
 		dispatcher := dispatch.NewDispatcher(fixture.deps, dispatch.LoopConfig{
 			RunReader: fixture.pipelineRuns,
 		})

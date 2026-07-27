@@ -56,11 +56,10 @@ rules:
   - apiGroups: [""]
     resources: ["pods/log"]
     verbs: ["get"]
-  # Agent credential secrets (§8.2): the run-secret attacher and platform
-  # syncer create/update agent-run-*/agent-platform-credential secrets, and
-  # the RunSecretReaper safety net (F22) lists by the concourse/agent-run
-  # label and deletes strays. Namespaced — worker namespace only; the
-  # cluster-wide secrets rule above remains get-only.
+  # Agent credential secrets (§8.2): the platform-credential syncer
+  # creates/updates agent-platform-credential from the vaulted platform
+  # credential, and deletes it when that credential is unvaulted. Namespaced —
+  # worker namespace only; the cluster-wide secrets rule above remains get-only.
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get", "list", "create", "update", "delete"]

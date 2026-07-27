@@ -147,7 +147,7 @@ func TestDispatcherModeGating(t *testing.T) {
 }
 
 func TestDispatcherNilModeDefaultsToActive(t *testing.T) {
-	deps, store, ids := loopDeps(t, 1)
+	deps, store, ids, _ := loopDeps(t, 1)
 	d := dispatch.NewDispatcher(deps, dispatch.LoopConfig{}) // Mode nil
 	if err := d.Run(context.Background()); err != nil {
 		t.Fatalf("Run: %v", err)

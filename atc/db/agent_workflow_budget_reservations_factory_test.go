@@ -63,6 +63,39 @@ var _ = Describe("agent workflow budget reservations", func() {
 		Expect(reserved).To(BeTrue())
 	})
 
+	It("retires a reservation's liability against ledger spend keyed on its run id", func() {
+		// The ledger row carries the server-assigned workflow_run_id, so the
+		// reservation's remaining liability shrinks by exactly that run's
+		// spend. Getting this wrong double-counts (reservation + actual) and
+		// starves the next admission.
+		_, err := dbConn.Exec(`DELETE FROM agent_cost_ledger`)
+		Expect(err).NotTo(HaveOccurred())
+
+		first := insertAdmittingBudgetWorkflowRun("usage-first")
+		second := insertAdmittingBudgetWorkflowRun("usage-second")
+
+		reserved, err := factory.ReserveWorkflowBudget(context.Background(), first, 1.5)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(reserved).To(BeTrue())
+
+		By("denying a second admission while the whole reservation is still unspent")
+		reserved, err = factory.ReserveWorkflowBudget(context.Background(), second, 0.75)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(reserved).To(BeFalse())
+
+		_, err = dbConn.Exec(`
+			INSERT INTO agent_cost_ledger
+				(workflow_run_id, function_id, step_name, source, cost_usd)
+			VALUES ($1, 'work', 'implement', 'agent_step', 1.5)
+		`, int64(first))
+		Expect(err).NotTo(HaveOccurred())
+
+		By("admitting once the spend has landed, counted once and not twice")
+		reserved, err = factory.ReserveWorkflowBudget(context.Background(), second, 0.4)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(reserved).To(BeTrue())
+	})
+
 	It("serializes concurrent workflow admissions across web nodes", func() {
 		first := insertAdmittingBudgetWorkflowRun("concurrent-first")
 		second := insertAdmittingBudgetWorkflowRun("concurrent-second")

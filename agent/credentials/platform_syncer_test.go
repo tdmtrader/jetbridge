@@ -39,6 +39,39 @@ func TestSyncerCreatesPlatformSecret(t *testing.T) {
 	if secret.StringData["anthropic-token"] != "sk-platform" {
 		t.Fatalf("token: %q", secret.StringData["anthropic-token"])
 	}
+	if secret.StringData[credentials.SecretKeyModelTokenKind] != credentials.KindAnthropicOAuth {
+		t.Fatalf("kind: %q", secret.StringData[credentials.SecretKeyModelTokenKind])
+	}
+}
+
+// The runner picks the claude CLI credential env var from the "kind" key, so a
+// vault row that switched from OAuth to a raw API key must rewrite it — a
+// token-only comparison would leave the pod exporting the wrong variable.
+func TestSyncerRefreshesChangedKind(t *testing.T) {
+	backend := credentials.NewMemoryBackend()
+	backend.AddUser(credentials.PlatformUserSub, 99, "platform")
+	_ = backend.Put(99, "platform", credentials.KindAnthropicOAuth, "sk-same", time.Now().Add(time.Hour))
+	clientset := fake.NewSimpleClientset()
+	syncer := credentials.NewPlatformSecretSyncer(
+		lagertest.NewTestLogger("syncer"), backend, clientset, "concourse-workers",
+	)
+	if err := syncer.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := backend.Delete(99, credentials.KindAnthropicOAuth); err != nil {
+		t.Fatal(err)
+	}
+	_ = backend.Put(99, "platform", credentials.KindAnthropicAPIKey, "sk-same", time.Now().Add(time.Hour))
+	if err := syncer.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	secret, _ := clientset.CoreV1().Secrets("concourse-workers").
+		Get(context.Background(), credentials.PlatformSecretName, metav1.GetOptions{})
+	if secret.StringData[credentials.SecretKeyModelTokenKind] != credentials.KindAnthropicAPIKey {
+		t.Fatalf("kind not refreshed: %q", secret.StringData[credentials.SecretKeyModelTokenKind])
+	}
 }
 
 func TestSyncerRefreshesChangedToken(t *testing.T) {

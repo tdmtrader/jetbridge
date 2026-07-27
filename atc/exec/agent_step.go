@@ -17,6 +17,7 @@ import (
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"github.com/concourse/concourse/agent/api/metrics"
 	"github.com/concourse/concourse/agent/budget"
+	"github.com/concourse/concourse/agent/credentials"
 	"github.com/concourse/concourse/agent/schema"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc"
@@ -49,27 +50,6 @@ var mcpSidecarPorts = map[string]int{"dev": 7780, "platform": 7781, "gateway": 7
 // agent's live stdout stream (review finding, 2026-07-12).
 var errAgentCostUnderReport = errors.New("flight recorder reported less cost than observed on the live stdout stream")
 
-// AgentRunVerifier proves, server-side, that the ticket/run identity claimed
-// by plan env actually belongs to this build. AGENT_PIPELINE_RUN_ID and
-// AGENT_TICKET_ID arrive via plan env (F30), which is public pipeline YAML:
-// without these checks any team's pipeline could claim another run's
-// `agent-run-<id>` model credential through the main container, or claim
-// another ticket's id to admit against — and misattribute this step's spend
-// into — a budget it does not own. Sidecars never receive run credentials;
-// live reads and writes are capture/publisher boundaries, not name-triggered
-// agent capabilities.
-//
-//counterfeiter:generate . AgentRunVerifier
-type AgentRunVerifier interface {
-	// RunBelongsToPipeline reports whether pipeline_runs row `runID` was
-	// materialized as pipeline instance `pipelineID`.
-	RunBelongsToPipeline(runID, pipelineID int) (bool, error)
-	// TicketBelongsToRun reports whether agent_tickets row `ticketID` is
-	// currently dispatched as pipeline run `runID`
-	// (agent_tickets.pipeline_run_id, contracts §1.7).
-	TicketBelongsToRun(ticketID, runID int) (bool, error)
-}
-
 // AgentStepOption configures optional fields on an AgentStep.
 type AgentStepOption func(*AgentStep)
 
@@ -84,26 +64,20 @@ func WithAgentMetricsStore(m metrics.Store) AgentStepOption {
 	return func(s *AgentStep) { s.metricsStore = m }
 }
 
-// WithAgentBudgetChecker sets the checker used to resolve the step's budget
-// slice against the ticket's remaining budget before the container starts.
+// WithAgentBudgetChecker sets the checker used to append this step's spend to
+// the cost ledger after flight ingestion.
 func WithAgentBudgetChecker(c budget.Checker) AgentStepOption {
 	return func(s *AgentStep) { s.budgetChecker = c }
 }
 
-// WithAgentPlatformTokenSecret sets the name of an operator-configured K8s
-// secret holding a platform-level Anthropic token (key "anthropic-token").
-// It is the pure-CI token path (§8.1): agent steps with no verified
-// pipeline-run id wire CLAUDE_CODE_OAUTH_TOKEN from it as a secretKeyRef.
-// The per-run agent-run-<id> secret always takes precedence.
+// WithAgentPlatformTokenSecret sets the name of the K8s secret holding the
+// platform Anthropic token (key "anthropic-token", plus the optional "kind"
+// key). It is the ONLY model-credential path into an agent pod (§8.1):
+// CLAUDE_CODE_OAUTH_TOKEN and AGENT_MODEL_TOKEN_KIND are wired from it as
+// secretKeyRefs, never as literal env. The web's default is the
+// platform-secret syncer's own secret (credentials.PlatformSecretName).
 func WithAgentPlatformTokenSecret(name string) AgentStepOption {
 	return func(s *AgentStep) { s.platformTokenSecret = name }
-}
-
-// WithAgentRunVerifier sets the verifier consulted before the workflow-run
-// model-secret ref is injected into the main agent container. Without it the
-// step fails closed: no model-secret ref is set, and sidecar secret env is empty.
-func WithAgentRunVerifier(v AgentRunVerifier) AgentStepOption {
-	return func(s *AgentStep) { s.runVerifier = v }
 }
 
 // AgentTranscriptStore persists the agent tool-call transcript
@@ -157,7 +131,6 @@ type AgentStep struct {
 	imageResolver         imageresolver.Resolver
 	metricsStore          metrics.Store
 	budgetChecker         budget.Checker
-	runVerifier           AgentRunVerifier
 	platformTokenSecret   string
 	outputSealer          snapshot.OutputSealer
 	snapshotMetadataStore snapshot.MetadataStore
@@ -281,131 +254,12 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 		planEnv[k] = value
 	}
 
-	// ---- Server-verified ticket/run identity ----
-	//
-	// AGENT_PIPELINE_RUN_ID and AGENT_TICKET_ID are carried by plan env
-	// (F30) — attacker-writable pipeline YAML — so neither is EVER trusted
-	// raw. Dispatch bakes ((run_id)) only into the run's own materialized
-	// instance config, so a claimed run is legitimate exactly when its
-	// pipeline_runs.instance_pipeline_id IS this build's pipeline; a claimed
-	// ticket is legitimate exactly when that verified run was dispatched for
-	// it (agent_tickets.pipeline_run_id, §1.7). Only VERIFIED values reach
-	// budget admission, the agent-run-<id> secret name (§8.2), metrics
-	// tagging and the cost ledger. An unverifiable claim fails the step
-	// closed before any pod exists — otherwise any pipeline could claim
-	// someone else's ticket id to admit against the victim's remaining
-	// budget and misattribute this step's spend into their ledger, or claim
-	// another run's id to mount its credentials.
-	runID, _ := strconv.Atoi(planEnv["AGENT_PIPELINE_RUN_ID"])
-	verifiedRunID := 0
-	if runID > 0 {
-		if step.runVerifier == nil {
-			logger.Info("skipping-run-secret-refs", lager.Data{
-				"reason": "no agent run verifier wired; plan env cannot be trusted to name the run secret",
-				"run-id": runID,
-			})
-		} else {
-			owned, err := step.runVerifier.RunBelongsToPipeline(runID, step.metadata.PipelineID)
-			if err != nil {
-				return false, fmt.Errorf("verify pipeline run %d ownership: %w", runID, err)
-			}
-			if !owned {
-				return false, fmt.Errorf("refusing to attach agent-run-%d credentials: pipeline run %d does not belong to this build's pipeline", runID, runID)
-			}
-			verifiedRunID = runID
-		}
-	}
-
-	ticketID := 0
-	if v := planEnv["AGENT_TICKET_ID"]; v != "" {
-		claimed, err := strconv.Atoi(v)
-		if err != nil || claimed <= 0 {
-			return false, fmt.Errorf("malformed AGENT_TICKET_ID %q: must be a positive integer (or empty for a pure-CI agent step)", v)
-		}
-		switch {
-		case step.runVerifier == nil:
-			// Fail closed like the secret refs above: the claim is dropped —
-			// no ticket admission, NULL ticket attribution — so an unverified
-			// value can never reach someone else's budget or ledger.
-			logger.Info("skipping-ticket-identity", lager.Data{
-				"reason":    "no agent run verifier wired; plan env cannot be trusted to claim a ticket",
-				"ticket-id": claimed,
-			})
-		case verifiedRunID == 0:
-			return false, fmt.Errorf("refusing to admit against ticket %d: AGENT_TICKET_ID requires a verified AGENT_PIPELINE_RUN_ID linking the ticket to this build", claimed)
-		default:
-			linked, err := step.runVerifier.TicketBelongsToRun(claimed, verifiedRunID)
-			if err != nil {
-				return false, fmt.Errorf("verify ticket %d linkage to pipeline run %d: %w", claimed, verifiedRunID, err)
-			}
-			if !linked {
-				return false, fmt.Errorf("refusing to admit against ticket %d: not dispatched as pipeline run %d", claimed, verifiedRunID)
-			}
-			ticketID = claimed
-		}
-	}
-
-	// Resolve the budget slice against the ticket's remaining budget. This
-	// is a resolution (min of slice and ticket remaining), NOT a
-	// reservation, and it runs at the start of EVERY execution of the step
-	// — a continuation build re-resolves naturally and, because any
-	// park-exit partial spend was already ledgered, the re-resolved slice
-	// is automatically tighter (PARK-V2 seam delta §D, decision 32). The
-	// ticket id is the SERVER-VERIFIED one from above, never raw plan env.
-	//
-	// Admission runs for EVERY ticketed step, including slice == 0:
-	// budget_slice_usd 0 means "uncapped within ticket budget" (§2.8), so
-	// the ticket cap still applies — StepSlice(ticket, 0) resolves to the
-	// ticket's own remaining, with Exhausted set when it is spent (review
-	// finding, 2026-07-12). Remaining.LimitUSD == 0 means truly uncapped
-	// (no declared slice AND an uncapped ticket); only then does the step
-	// run with no AGENT_BUDGET_SLICE_USD row.
+	// The plan's declared slice is the step's hard cap. Admission against the
+	// global daily liability happened once, durably, when the workflow run was
+	// bound (agent_workflow_budget_reservations): this exec neither re-resolves
+	// nor re-reserves it. 0 means uncapped — the step then runs with no
+	// AGENT_BUDGET_SLICE_USD row.
 	slice := step.plan.BudgetSliceUSD
-	attachOnly := false
-	if step.budgetChecker != nil && ticketID > 0 {
-		remaining, err := step.budgetChecker.StepSlice(ticketID, slice)
-		if err != nil {
-			logger.Error("failed-to-resolve-budget-slice", err)
-			if slice == 0 {
-				// A sliceless step's only cap is the ticket's resolved
-				// remaining; "keep the configured slice" here would mean
-				// dispatching with NO cap at all against a ticket whose
-				// state is unknown — the sliceless-admission bypass again,
-				// now via a transient checker error (review finding,
-				// 2026-07-16). Fail closed; the scheduler retries the build.
-				delegate.Errored(logger, "failed to resolve ticket budget for uncapped step")
-				delegate.Finished(logger, ExitStatus(1))
-				return false, nil
-			}
-			// keep the configured slice: degraded but still capped
-		} else if remaining.Exhausted {
-			// On a FRESH dispatch this fails closed before any pod exists — no
-			// spend against an exhausted ticket. But budget re-resolution runs
-			// on EVERY execution, including a restart-resume where a supervised
-			// agent may already be running in an existing pod. Early-returning
-			// then would orphan that agent: never attached, never killed, never
-			// ingested — its ongoing spend leaks and its cost never reaches the
-			// ledger. Only fail closed when no container yet exists for this
-			// step owner; otherwise fall through to attach + wait + ingest the
-			// already-running agent (review finding, 2026-07-12).
-			if !step.stepContainerExists(logger) {
-				delegate.Errored(logger, "budget slice exhausted before start")
-				delegate.Finished(logger, ExitStatus(1))
-				return false, nil
-			}
-			// A container row proves only that dispatch got as far as
-			// FindOrCreateContainer — the pod is created lazily in Run(), so
-			// the row can exist with no attachable process (web restarted
-			// before the pod ran, pod reaped/evicted). This execution may
-			// therefore ONLY attach: falling through to attachOrRun's Run()
-			// fallback would start a brand-new agent and spend the full slice
-			// against the exhausted ticket (review finding, 2026-07-16).
-			attachOnly = true
-			logger.Info("budget-exhausted-resuming-existing-agent-container", lager.Data{"ticket-id": ticketID})
-		} else if remaining.LimitUSD > 0 {
-			slice = remaining.RemainingUSD
-		}
-	}
 
 	workdir := step.containerMetadata.WorkingDirectory
 
@@ -602,37 +456,22 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 	common := []string{"BUILD_ID=" + strconv.Itoa(step.metadata.BuildID)}
 	if !step.plan.Hermetic {
 		common = append(common, "ATC_EXTERNAL_URL="+step.metadata.ExternalURL)
-		if v := planEnv["AGENT_TICKET_ID"]; v != "" {
-			common = append(common, "AGENT_TICKET_ID="+v)
-		}
-		if v := planEnv["AGENT_PIPELINE_RUN_ID"]; v != "" {
-			common = append(common, "AGENT_PIPELINE_RUN_ID="+v)
-		}
 	}
 
-	// Main-container secret refs derive from the deterministic
-	// §8.2 secret name. No pipeline-run id ⇒ no run-secret refs at all —
-	// the agent-run-<id> secret is the ONLY token path into an agent pod
-	// (§8.1 routes CLAUDE_CODE_OAUTH_TOKEN exclusively through it; env is
-	// static-only and never carries credentials). secretRunID is the
-	// SERVER-VERIFIED run id from the identity block above: it stays 0 —
-	// and no refs are injected — unless the ownership check passed.
-	secretRunID := verifiedRunID
-	secretName := "agent-run-" + strconv.Itoa(secretRunID)
-
-	// The model credential is intentionally main-container-only. A sidecar name
-	// is workflow-authored data and must never act as a credential grant.
-	// Publisher and capture services cross live-system boundaries server-side.
-	if secretRunID > 0 {
+	// The platform secret is the ONLY model-credential path into an agent pod
+	// (§8.1): CLAUDE_CODE_OAUTH_TOKEN is a secretKeyRef, never a literal, and
+	// the credential is intentionally main-container-only — a sidecar name is
+	// workflow-authored data and must never act as a credential grant.
+	//
+	// AGENT_MODEL_TOKEN_KIND tells the runner which CLI credential the token
+	// is (anthropic_oauth | anthropic_api_key). It is OPTIONAL: the syncer
+	// writes the "kind" key beside the token, but an operator-created secret
+	// predating it has only "anthropic-token", and a non-optional ref would
+	// make every agent pod fail to start. Absent kind means oauth.
+	if step.platformTokenSecret != "" {
 		containerSpec.SecretEnv = map[string]vars.SecretRef{
-			"CLAUDE_CODE_OAUTH_TOKEN": {Name: secretName, Key: "anthropic-token"},
-		}
-	} else if step.platformTokenSecret != "" {
-		// Pure-CI token path (§8.1): no per-run secret exists, so fall back to
-		// the operator-configured platform secret. Same secretKeyRef-only
-		// contract — the token never lands in pipeline YAML or literal env.
-		containerSpec.SecretEnv = map[string]vars.SecretRef{
-			"CLAUDE_CODE_OAUTH_TOKEN": {Name: step.platformTokenSecret, Key: "anthropic-token"},
+			"CLAUDE_CODE_OAUTH_TOKEN": {Name: step.platformTokenSecret, Key: credentials.SecretKeyAnthropicToken},
+			"AGENT_MODEL_TOKEN_KIND":  {Name: step.platformTokenSecret, Key: credentials.SecretKeyModelTokenKind, Optional: true},
 		}
 	}
 
@@ -735,24 +574,9 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 			},
 		},
 	}
-	var process runtime.Process
-	if attachOnly {
-		// Exhausted-ticket resume: attach to the already-running (or already-
-		// exited) agent so it is waited on and ingested — but never start a
-		// new one. An exited pod still attaches (its exit annotation yields
-		// an exited process), so ingestion is preserved on that path.
-		process, err = container.Attach(ctx, agentProcessID, pio)
-		if err != nil {
-			logger.Info("budget-exhausted-prior-agent-not-attachable", lager.Data{"error": err.Error()})
-			delegate.Errored(logger, "budget slice exhausted before start; prior agent process not attachable, refusing to start a new one")
-			delegate.Finished(logger, ExitStatus(1))
-			return false, nil
-		}
-	} else {
-		process, err = attachOrRun(ctx, container, agentSpec, pio)
-		if err != nil {
-			return false, err
-		}
+	process, err := attachOrRun(ctx, container, agentSpec, pio)
+	if err != nil {
+		return false, err
 	}
 
 	result, runErr := process.Wait(ctx)
@@ -765,7 +589,7 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 	// artifact-fabric retention cannot reap the events) until this is done.
 	// ctx here is the timeout-scoped context; ingestFlightRecorder detaches
 	// from it internally (finding F4).
-	step.ingestFlightRecorder(ctx, logger, chosenWorker, volumeMounts, planEnv, ticketID, verifiedRunID, time.Since(processStart), costObserver.Observed())
+	step.ingestFlightRecorder(ctx, logger, chosenWorker, volumeMounts, time.Since(processStart), costObserver.Observed())
 
 	if runErr != nil {
 		if errors.Is(runErr, context.DeadlineExceeded) {
@@ -798,9 +622,6 @@ func (step *AgentStep) ingestFlightRecorder(
 	logger lager.Logger,
 	wkr runtime.Worker,
 	volumeMounts []runtime.VolumeMount,
-	planEnv map[string]string,
-	ticketID int,
-	runID int,
 	wallTime time.Duration,
 	observed observedAgentCost,
 ) {
@@ -838,11 +659,6 @@ func (step *AgentStep) ingestFlightRecorder(
 		rm.WorkflowRunID = &runID
 	}
 	rm.FunctionID = step.plan.FunctionID
-	rm.WorkflowName = planEnv["AGENT_WORKFLOW_NAME"]
-	if v, ok := envInt(planEnv, "AGENT_WORKFLOW_VERSION"); ok {
-		rm.WorkflowVersion = &v
-	}
-	rm.WorkflowHash = planEnv["AGENT_WORKFLOW_HASH"]
 
 	flightPath := ensureTrailingSlash(artifactPath(step.containerMetadata.WorkingDirectory, agentFlightArtifact, ""))
 	var flightArtifact runtime.Artifact
@@ -1009,8 +825,8 @@ func (step *AgentStep) ingestFlightRecorder(
 	// AGENT_FLIGHT_DIR in its own env, so a prompt-injected agent (or a leaked
 	// descendant) can truncate/rewrite events.ndjson with cost_usd 0 before
 	// the pod exits. Trusting it wholesale would let the step under-report its
-	// own spend: SpentForTicket understates, and StepSlice admits every
-	// subsequent step of the run/ticket against a falsified ledger (review
+	// own spend: the global daily cap understates, and the binder reserves
+	// every subsequent workflow run against a falsified ledger (review
 	// finding, 2026-07-12). `observed` is the server-side floor: the same CLI
 	// envelope the runner parses into cost.record, captured by
 	// agentCostObserver as it streamed through the web node LIVE — bytes
@@ -1104,10 +920,10 @@ func (step *AgentStep) ingestFlightRecorder(
 	}
 
 	if step.budgetChecker != nil && ledgerCost > 0 {
-		// The cost ledger keeps the SERVER-VERIFIED ticket/run attribution from
-		// run() (never raw plan env — a forged claim would let any pipeline
-		// drain a victim ticket's budget, review finding 2026-07-11). These are
-		// the ledger's own identity: the metric row no longer carries them.
+		// Spend attribution is the same server-owned identity the metrics row
+		// carries: the durable workflow run off step.metadata and the function
+		// id off the immutable plan. Nothing here is ever read from plan env or
+		// the pod-written flight recorder.
 		entry := budget.LedgerEntry{
 			BuildID:             rm.BuildID,
 			StepName:            rm.StepName,
@@ -1120,71 +936,16 @@ func (step *AgentStep) ingestFlightRecorder(
 			CacheCreationTokens: max(rm.Usage.CacheCreationInputTokens-prevBase.Usage.CacheCreationInputTokens, 0),
 			Turns:               max(rm.Turns-prevBase.Turns, 0),
 			CostUSD:             ledgerCost,
+			FunctionID:          step.plan.FunctionID,
 		}
-		if ticketID > 0 {
-			entry.TicketID = &ticketID
-		}
-		if runID > 0 {
-			entry.PipelineRunID = &runID
-		}
-		// Workflow attribution rides metadata->>'workflow' = "<name>@<version>"
-		// — agent_cost_ledger has no workflow column and group_by=workflow
-		// rollups read this key (shared-contracts §4.2 addendum: writers that
-		// know their workflow MUST set it).
-		if rm.WorkflowName != "" {
-			version := 0
-			if rm.WorkflowVersion != nil {
-				version = *rm.WorkflowVersion
-			}
-			if md, mdErr := json.Marshal(map[string]string{
-				"workflow": fmt.Sprintf("%s@%d", rm.WorkflowName, version),
-			}); mdErr == nil {
-				entry.Metadata = md
-			}
+		if step.metadata.WorkflowRunID != nil {
+			workflowRunID := int64(*step.metadata.WorkflowRunID)
+			entry.WorkflowRunID = &workflowRunID
 		}
 		if err := step.budgetChecker.Record(entry); err != nil {
 			logger.Error("failed-to-record-cost-ledger", err) // fire-and-forget
 		}
 	}
-}
-
-// containerExistenceChecker is the optional worker-pool capability (satisfied
-// by the production worker.Pool) to report whether a container already exists
-// for a step owner WITHOUT creating one. Test doubles that do not implement it
-// make stepContainerExists report "no container", preserving the conservative
-// fail-closed behavior on budget exhaustion.
-type containerExistenceChecker interface {
-	FindWorkerForContainer(lager.Logger, db.ContainerOwner, worker.Spec) (runtime.Worker, bool, error)
-}
-
-// Compile-time pin: the production pool must keep satisfying the optional
-// interface. Without this, a signature drift in worker.Pool would silently
-// flip the type assertion in stepContainerExists to false in production —
-// re-orphaning agents on budget-exhausted resume with no compile or test
-// signal (review finding, 2026-07-16).
-var _ containerExistenceChecker = worker.Pool{}
-
-// stepContainerExists reports whether a container ROW already exists for this
-// step owner — i.e. this execution is a restart-resume, not a fresh dispatch.
-// A row proves only that dispatch reached FindOrCreateContainer, NOT that an
-// agent process is running (the pod is created lazily in Run) — which is why
-// the exhausted-resume caller is attach-only.
-// It is consulted before the budget-exhaustion early-return so a re-resolved
-// Exhausted slice cannot orphan an already-running agent. When the pool cannot
-// answer (test double, or a lookup error) it returns false, keeping the caller
-// on the fail-closed path.
-func (step *AgentStep) stepContainerExists(logger lager.Logger) bool {
-	finder, ok := step.workerPool.(containerExistenceChecker)
-	if !ok {
-		return false
-	}
-	owner := db.NewBuildStepContainerOwner(step.metadata.BuildID, step.planID, step.metadata.TeamID)
-	_, found, err := finder.FindWorkerForContainer(logger, owner, worker.Spec{TeamID: step.metadata.TeamID})
-	if err != nil {
-		logger.Error("failed-to-check-existing-agent-container", err)
-		return false
-	}
-	return found
 }
 
 // maxTranscriptBytes bounds a persisted transcript to its last 512KiB — the
@@ -1208,18 +969,6 @@ func boundTranscriptTail(raw []byte) (string, int, bool) {
 	marker := fmt.Sprintf(`{"type":"transcript_truncated","dropped_bytes":%d,"note":"head-truncated to last 512KiB"}`+"\n", dropped)
 	out := marker + string(tail)
 	return out, len(out), true
-}
-
-func envInt(env map[string]string, key string) (int, bool) {
-	v, ok := env[key]
-	if !ok || v == "" {
-		return 0, false
-	}
-	n, err := strconv.Atoi(v)
-	if err != nil || n <= 0 {
-		return 0, false
-	}
-	return n, true
 }
 
 // outputNames returns the plan's declared outputs plus the implicit "flight"

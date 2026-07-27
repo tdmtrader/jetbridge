@@ -44,21 +44,17 @@ func TestRunWritesFlightRecorder(t *testing.T) {
 		`{"type":"result","subtype":"success","result":"\"done\"","model":"m1","cost_usd":0.42,"num_turns":9,"is_error":false,"usage":{"input_tokens":100,"output_tokens":50}}`)
 
 	cfg := runner.Config{
-		Prompt:          "do it",
-		Model:           "m1",
-		MaxTurns:        9,
-		FlightDir:       flight,
-		WorkDir:         dir,
-		StepName:        "write-spec",
-		ClaudePath:      claude,
-		MCPServers:      map[string]string{"platform": healthz.URL + "/mcp"},
-		BuildID:         1234,
-		PlanID:          "42",
-		TicketID:        7,
-		WorkflowName:    "feature-dev",
-		WorkflowVersion: 3,
-		WorkflowHash:    "abc123",
-		BudgetSliceUSD:  2.5,
+		Prompt:         "do it",
+		Model:          "m1",
+		MaxTurns:       9,
+		FlightDir:      flight,
+		WorkDir:        dir,
+		StepName:       "write-spec",
+		ClaudePath:     claude,
+		MCPServers:     map[string]string{"platform": healthz.URL + "/mcp"},
+		BuildID:        1234,
+		PlanID:         "42",
+		BudgetSliceUSD: 2.5,
 	}
 	exit, err := runner.Run(context.Background(), cfg)
 	if err != nil {
@@ -119,18 +115,6 @@ func TestRunWritesFlightRecorder(t *testing.T) {
 	if start.PlanID != "42" {
 		t.Errorf("step.start plan_id = %q, want %q", start.PlanID, "42")
 	}
-	if start.TicketID == nil || *start.TicketID != 7 {
-		t.Errorf("step.start ticket_id = %v, want 7", start.TicketID)
-	}
-	if start.WorkflowName != "feature-dev" {
-		t.Errorf("step.start workflow_name = %q, want %q", start.WorkflowName, "feature-dev")
-	}
-	if start.WorkflowVersion == nil || *start.WorkflowVersion != 3 {
-		t.Errorf("step.start workflow_version = %v, want 3", start.WorkflowVersion)
-	}
-	if start.WorkflowHash != "abc123" {
-		t.Errorf("step.start workflow_hash = %q, want %q", start.WorkflowHash, "abc123")
-	}
 	if start.BudgetSliceUSD != 2.5 {
 		t.Errorf("step.start budget_slice_usd = %v, want 2.5", start.BudgetSliceUSD)
 	}
@@ -179,10 +163,6 @@ func TestFromEnvReadsStepIdentity(t *testing.T) {
 	t.Setenv("BUILD_ID", "1234")
 	t.Setenv("AGENT_PLAN_ID", "5f2a")
 	t.Setenv("AGENT_STEP_NAME", "write-spec")
-	t.Setenv("AGENT_TICKET_ID", "7")
-	t.Setenv("AGENT_WORKFLOW_NAME", "feature-dev")
-	t.Setenv("AGENT_WORKFLOW_VERSION", "3")
-	t.Setenv("AGENT_WORKFLOW_HASH", "abc123")
 	t.Setenv("AGENT_BUDGET_SLICE_USD", "2.50")
 
 	cfg := runner.FromEnv()
@@ -193,18 +173,6 @@ func TestFromEnvReadsStepIdentity(t *testing.T) {
 	if cfg.PlanID != "5f2a" {
 		t.Errorf("PlanID = %q, want %q", cfg.PlanID, "5f2a")
 	}
-	if cfg.TicketID != 7 {
-		t.Errorf("TicketID = %d, want 7", cfg.TicketID)
-	}
-	if cfg.WorkflowName != "feature-dev" {
-		t.Errorf("WorkflowName = %q, want %q", cfg.WorkflowName, "feature-dev")
-	}
-	if cfg.WorkflowVersion != 3 {
-		t.Errorf("WorkflowVersion = %d, want 3", cfg.WorkflowVersion)
-	}
-	if cfg.WorkflowHash != "abc123" {
-		t.Errorf("WorkflowHash = %q, want %q", cfg.WorkflowHash, "abc123")
-	}
 	if cfg.BudgetSliceUSD != 2.5 {
 		t.Errorf("BudgetSliceUSD = %v, want 2.5", cfg.BudgetSliceUSD)
 	}
@@ -212,15 +180,24 @@ func TestFromEnvReadsStepIdentity(t *testing.T) {
 
 func TestFromEnvTreatsMalformedIdentityAsAbsent(t *testing.T) {
 	t.Setenv("BUILD_ID", "not-a-number")
-	t.Setenv("AGENT_TICKET_ID", "")
-	t.Setenv("AGENT_WORKFLOW_VERSION", "-1")
 	t.Setenv("AGENT_BUDGET_SLICE_USD", "free")
 
 	cfg := runner.FromEnv()
 
-	if cfg.BuildID != 0 || cfg.TicketID != 0 || cfg.WorkflowVersion != 0 || cfg.BudgetSliceUSD != 0 {
-		t.Errorf("malformed identity env should read as absent, got BuildID=%d TicketID=%d WorkflowVersion=%d BudgetSliceUSD=%v",
-			cfg.BuildID, cfg.TicketID, cfg.WorkflowVersion, cfg.BudgetSliceUSD)
+	if cfg.BuildID != 0 || cfg.BudgetSliceUSD != 0 {
+		t.Errorf("malformed identity env should read as absent, got BuildID=%d BudgetSliceUSD=%v",
+			cfg.BuildID, cfg.BudgetSliceUSD)
+	}
+}
+
+// The platform secret is mounted as one token env row; "kind" says what the
+// token actually is. FromEnv must carry it through or the runner cannot pick
+// the right claude credential variable.
+func TestFromEnvReadsModelTokenKind(t *testing.T) {
+	t.Setenv("AGENT_MODEL_TOKEN_KIND", "anthropic_api_key")
+
+	if got := runner.FromEnv().ModelTokenKind; got != "anthropic_api_key" {
+		t.Errorf("ModelTokenKind = %q, want %q", got, "anthropic_api_key")
 	}
 }
 
@@ -514,17 +491,11 @@ func TestFromEnvDiscoversMCPServersAndPromptConfig(t *testing.T) {
 	if cfg.Prompt != "do the thing" {
 		t.Errorf("Prompt = %q", cfg.Prompt)
 	}
-	if cfg.PromptFile != "repo/prompt.txt" {
-		t.Errorf("PromptFile = %q", cfg.PromptFile)
-	}
 	if cfg.Model != "claude-opus-4-8" {
 		t.Errorf("Model = %q", cfg.Model)
 	}
 	if cfg.MaxTurns != 12 {
 		t.Errorf("MaxTurns = %d, want 12", cfg.MaxTurns)
-	}
-	if cfg.OutputSchema != "repo/schemas/spec.json" {
-		t.Errorf("OutputSchema = %q", cfg.OutputSchema)
 	}
 	if cfg.FlightDir != "/work/flight" {
 		t.Errorf("FlightDir = %q", cfg.FlightDir)
@@ -548,64 +519,6 @@ func TestFromEnvMalformedMaxTurnsIsAbsent(t *testing.T) {
 	}
 }
 
-func TestRunResolvesPromptFromFile(t *testing.T) {
-	// When no inline prompt is set, the runner reads AGENT_PROMPT_FILE relative
-	// to the workdir and passes its contents to claude.
-	dir := t.TempDir()
-	flight := filepath.Join(dir, "flight")
-	os.MkdirAll(flight, 0o755)
-
-	promptText := "hello from the prompt file"
-	if err := os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte(promptText), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Stub claude records its argv so the test can prove the file contents were
-	// passed through as the -p prompt.
-	argsFile := filepath.Join(dir, "claude-args")
-	envelope := `{"type":"result","subtype":"success","result":"\"ok\"","model":"m1","is_error":false}`
-	claude := filepath.Join(dir, "claude")
-	script := "#!/bin/sh\nprintf '%s' \"$*\" > '" + argsFile + "'\necho '" + envelope + "'\n"
-	if err := os.WriteFile(claude, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	exit, err := runner.Run(context.Background(), runner.Config{
-		PromptFile: "prompt.txt", FlightDir: flight, WorkDir: dir, StepName: "s", ClaudePath: claude,
-		Stdout: new(bytes.Buffer), Stderr: new(bytes.Buffer),
-	})
-	if err != nil {
-		t.Fatalf("run: %v", err)
-	}
-	if exit != 0 {
-		t.Fatalf("expected exit 0, got %d", exit)
-	}
-	args, err := os.ReadFile(argsFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(args), promptText) {
-		t.Fatalf("claude argv %q did not include the prompt file contents %q", string(args), promptText)
-	}
-}
-
-func TestRunPromptFileMissingIsPlatformError(t *testing.T) {
-	dir := t.TempDir()
-	flight := filepath.Join(dir, "flight")
-	os.MkdirAll(flight, 0o755)
-
-	exit, err := runner.Run(context.Background(), runner.Config{
-		PromptFile: "no-such-file.txt", FlightDir: flight, WorkDir: dir, StepName: "s",
-		Stdout: new(bytes.Buffer), Stderr: new(bytes.Buffer),
-	})
-	if exit != 2 {
-		t.Fatalf("expected exit 2, got %d", exit)
-	}
-	if err == nil || !strings.Contains(err.Error(), "read prompt file") {
-		t.Fatalf("expected a read prompt file error, got %v", err)
-	}
-}
-
 func TestRunNoPromptConfiguredIsPlatformError(t *testing.T) {
 	dir := t.TempDir()
 	flight := filepath.Join(dir, "flight")
@@ -620,32 +533,6 @@ func TestRunNoPromptConfiguredIsPlatformError(t *testing.T) {
 	}
 	if err == nil || !strings.Contains(err.Error(), "no prompt configured") {
 		t.Fatalf("expected a no-prompt error, got %v", err)
-	}
-}
-
-func TestRunWarnsWhenOutputSchemaUnenforced(t *testing.T) {
-	// output_schema is plumbed end-to-end but not yet enforced; declaring it
-	// must produce a visible warning rather than silently no-op (review
-	// finding, 2026-07-12).
-	dir := t.TempDir()
-	flight := filepath.Join(dir, "flight")
-	os.MkdirAll(flight, 0o755)
-	claude := writeStubClaude(t, dir, `{"type":"result","subtype":"success","result":"\"ok\"","model":"m1","is_error":false}`)
-
-	var stderr bytes.Buffer
-	exit, err := runner.Run(context.Background(), runner.Config{
-		Prompt: "p", OutputSchema: "repo/schemas/spec.json",
-		FlightDir: flight, WorkDir: dir, StepName: "s", ClaudePath: claude,
-		Stdout: new(bytes.Buffer), Stderr: &stderr,
-	})
-	if err != nil {
-		t.Fatalf("run: %v", err)
-	}
-	if exit != 0 {
-		t.Fatalf("expected exit 0, got %d", exit)
-	}
-	if !strings.Contains(stderr.String(), "output_schema") || !strings.Contains(stderr.String(), "not yet enforced") {
-		t.Fatalf("expected an output_schema-not-enforced warning on stderr, got %q", stderr.String())
 	}
 }
 
@@ -1175,5 +1062,72 @@ func TestRunFailsOnMissingSkill(t *testing.T) {
 	}
 	if _, err := os.Stat(argsPath); err == nil {
 		t.Fatal("claude must not run when a skill is missing")
+	}
+}
+
+// writeEnvRecordingStubClaude writes a stub claude that dumps its own
+// environment, so a test can prove which credential variable the child saw.
+func writeEnvRecordingStubClaude(t *testing.T, dir, envelope string) (string, string) {
+	t.Helper()
+	envPath := filepath.Join(dir, "claude-env")
+	path := filepath.Join(dir, "claude")
+	script := "#!/bin/sh\nenv > '" + envPath + "'\necho '" + envelope + "'\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path, envPath
+}
+
+func runWithTokenKind(t *testing.T, kind string) string {
+	t.Helper()
+	dir := t.TempDir()
+	flight := filepath.Join(dir, "flight")
+	os.MkdirAll(flight, 0o755)
+	claude, envPath := writeEnvRecordingStubClaude(t, dir, okEnvelope)
+
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-platform")
+
+	exit, err := runner.Run(context.Background(), runner.Config{
+		Prompt: "p", ModelTokenKind: kind,
+		FlightDir: flight, WorkDir: dir, StepName: "s", ClaudePath: claude,
+		Stdout: new(bytes.Buffer), Stderr: new(bytes.Buffer),
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if exit != 0 {
+		t.Fatalf("expected exit 0, got %d", exit)
+	}
+	raw, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
+// An API key mounted as CLAUDE_CODE_OAUTH_TOKEN authenticates nothing: the CLI
+// prefers the OAuth path whenever that variable is set, so the kind mapping
+// must both export ANTHROPIC_API_KEY and drop the OAuth row.
+func TestRunExportsAPIKeyForAPIKeyTokenKind(t *testing.T) {
+	env := runWithTokenKind(t, "anthropic_api_key")
+
+	if !strings.Contains(env, "ANTHROPIC_API_KEY=sk-platform") {
+		t.Errorf("claude env missing ANTHROPIC_API_KEY: %s", env)
+	}
+	if strings.Contains(env, "CLAUDE_CODE_OAUTH_TOKEN=") {
+		t.Errorf("claude env must not keep CLAUDE_CODE_OAUTH_TOKEN for an API key: %s", env)
+	}
+}
+
+// Absent kind is the shape of every secret written before the syncer added the
+// key — and of an operator-created one. It must stay OAuth.
+func TestRunPassesOAuthTokenThroughWhenKindIsAbsent(t *testing.T) {
+	env := runWithTokenKind(t, "")
+
+	if !strings.Contains(env, "CLAUDE_CODE_OAUTH_TOKEN=sk-platform") {
+		t.Errorf("claude env missing CLAUDE_CODE_OAUTH_TOKEN: %s", env)
+	}
+	if strings.Contains(env, "ANTHROPIC_API_KEY=") {
+		t.Errorf("claude env must not invent an API key: %s", env)
 	}
 }

@@ -6,13 +6,11 @@ import (
 	"fmt"
 	"math"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/concourse/concourse/agent/credentials"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc"
-	"github.com/concourse/concourse/atc/db"
 )
 
 // ErrBudgetCheckFailure bounds ledger/backend failures at the admission seam.
@@ -131,17 +129,9 @@ func boundedWorkflowBudgetUSD(config atc.Config) (float64, int, error) {
 var _ BudgetAdmitter = (*GlobalDailyBudgetAdmitter)(nil)
 
 var (
-	ErrRunCredentialUnavailable    = errors.New("workflow run: no usable Anthropic credential")
-	ErrRunSecretPreparationFailure = errors.New("workflow run: secret preparation failed")
-	ErrRunSecretAttachFailure      = errors.New("workflow run: secret attachment failed")
+	ErrRunCredentialUnavailable    = errors.New("workflow run: no usable platform Anthropic credential")
+	ErrModelCredentialCheckFailure = errors.New("workflow run: model credential check failed")
 )
-
-// CreatorUserResolver maps the authenticated creator copied into the durable
-// workflow run to Concourse's current users row. atc/db.AgentUserLookup
-// satisfies this interface.
-type CreatorUserResolver interface {
-	FindByUsername(string) (int, bool, error)
-}
 
 // RunCredentialVault is the read-only credential surface needed at
 // admission. credentials.Backend and atc/db.AgentUserCredentialsFactory both
@@ -151,175 +141,84 @@ type RunCredentialVault interface {
 	UserBySub(string) (int, string, bool, error)
 }
 
-// VaultedRunSecretPreparer resolves and clones a usable credential before any
-// execution allocation. It deliberately defers secret attachment until the
-// pipeline-run transaction supplies its allocated ID.
-type VaultedRunSecretPreparer struct {
-	users    CreatorUserResolver
-	vault    RunCredentialVault
-	attacher credentials.SecretAttacher
-	now      func() time.Time
+// PlatformCredentialAdmitter fails a run closed, before any execution side
+// effect, when this web node has no model credential for the agent pods the
+// run will start. The platform token is the ONLY model-credential path
+// (§8.2): pods mount secretName themselves, so admission never attaches,
+// clones, or even reads a token — it checks that a source exists.
+//
+// Two sources qualify. The default secretName is the syncer's own secret, so
+// the vault's platform credential IS the source and must be present and
+// unexpired. An operator who points --agent-platform-token-secret at a secret
+// they maintain by hand owns its contents out of band; the binder does not
+// read Kubernetes, so that configuration is taken at face value.
+type PlatformCredentialAdmitter struct {
+	vault      RunCredentialVault
+	secretName string
+	now        func() time.Time
 }
 
-func NewVaultedRunSecretPreparer(
-	users CreatorUserResolver,
+func NewPlatformCredentialAdmitter(
 	vault RunCredentialVault,
-	attacher credentials.SecretAttacher,
-) (*VaultedRunSecretPreparer, error) {
-	if nilInterface(users) || nilInterface(vault) || nilInterface(attacher) {
-		return nil, ErrRunSecretPreparationFailure
+	secretName string,
+) (*PlatformCredentialAdmitter, error) {
+	if nilInterface(vault) {
+		return nil, ErrModelCredentialCheckFailure
 	}
-	return &VaultedRunSecretPreparer{
-		users: users, vault: vault, attacher: attacher, now: time.Now,
+	return &PlatformCredentialAdmitter{
+		vault: vault, secretName: strings.TrimSpace(secretName), now: time.Now,
 	}, nil
 }
 
-func (p *VaultedRunSecretPreparer) Prepare(
-	ctx context.Context,
-	admission AdmissionContext,
-	run db.AgentWorkflowRun,
-) (PreparedRunSecret, error) {
+func (a *PlatformCredentialAdmitter) AdmitModelCredential(ctx context.Context) error {
 	if ctx == nil {
-		return nil, ErrRunSecretPreparationFailure
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if admission.TeamID <= 0 || strings.TrimSpace(admission.TeamName) == "" ||
-		strings.TrimSpace(admission.CreatedBy) == "" || run.ID.Validate() != nil ||
-		run.TeamID != admission.TeamID || run.TeamName != admission.TeamName ||
-		run.CreatedBy != admission.CreatedBy || run.Status != db.AgentWorkflowRunStatusAdmitting {
-		return nil, ErrRunSecretPreparationFailure
-	}
-
-	userID, found, err := p.users.FindByUsername(admission.CreatedBy)
-	if err != nil {
-		return nil, ErrRunSecretPreparationFailure
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if found && userID <= 0 {
-		return nil, ErrRunSecretPreparationFailure
-	}
-
-	now := p.now()
-	if found {
-		credential, usable, err := p.resolveOwner(ctx, userID, now)
-		if err != nil {
-			return nil, err
-		}
-		if usable {
-			return p.prepared(credential), nil
-		}
-	}
-
-	platformID, _, platformFound, err := p.vault.UserBySub(credentials.PlatformUserSub)
-	if err != nil {
-		return nil, ErrRunSecretPreparationFailure
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if !platformFound {
-		return nil, ErrRunCredentialUnavailable
-	}
-	if platformID <= 0 {
-		return nil, ErrRunSecretPreparationFailure
-	}
-	credential, usable, err := p.resolveOwner(ctx, platformID, now)
-	if err != nil {
-		return nil, err
-	}
-	if !usable {
-		return nil, ErrRunCredentialUnavailable
-	}
-	return p.prepared(credential), nil
-}
-
-func (p *VaultedRunSecretPreparer) resolveOwner(
-	ctx context.Context,
-	userID int,
-	now time.Time,
-) (*credentials.Credential, bool, error) {
-	for _, kind := range []string{credentials.KindAnthropicOAuth, credentials.KindAnthropicAPIKey} {
-		if err := ctx.Err(); err != nil {
-			return nil, false, err
-		}
-		credential, found, err := p.vault.Resolve(userID, kind)
-		if err != nil {
-			return nil, false, ErrRunSecretPreparationFailure
-		}
-		if err := ctx.Err(); err != nil {
-			return nil, false, err
-		}
-		if !found {
-			continue
-		}
-		if credential == nil || credential.UserID != userID || credential.Kind != kind || credential.Token == "" {
-			return nil, false, ErrRunSecretPreparationFailure
-		}
-		if credential.ExpiresAt > 0 && credential.ExpiresAt <= now.Unix() {
-			continue
-		}
-		cloned := *credential
-		return &cloned, true, nil
-	}
-	return nil, false, nil
-}
-
-func (p *VaultedRunSecretPreparer) prepared(credential *credentials.Credential) *vaultedPreparedRunSecret {
-	return &vaultedPreparedRunSecret{
-		credential: *credential, attacher: p.attacher, now: p.now,
-	}
-}
-
-type vaultedPreparedRunSecret struct {
-	mu            sync.Mutex
-	credential    credentials.Credential
-	attacher      credentials.SecretAttacher
-	now           func() time.Time
-	attached      bool
-	pipelineRunID int
-}
-
-func (p *vaultedPreparedRunSecret) Attach(ctx context.Context, pipelineRunID int) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	if ctx == nil {
-		return ErrRunSecretAttachFailure
+		return ErrModelCredentialCheckFailure
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if pipelineRunID <= 0 {
-		return ErrRunSecretAttachFailure
-	}
-	if p.attached {
-		if p.pipelineRunID == pipelineRunID {
-			return nil
-		}
-		return ErrRunSecretAttachFailure
-	}
-	if p.credential.ExpiresAt > 0 && p.credential.ExpiresAt <= p.now().Unix() {
+	if a.secretName == "" {
 		return ErrRunCredentialUnavailable
 	}
-
-	name, attachErr := p.attacher.Attach(ctx, pipelineRunID, &p.credential)
-	if attachErr != nil || name != credentials.RunSecretName(pipelineRunID) {
-		if ctx.Err() == nil {
-			_ = p.attacher.Cleanup(ctx, pipelineRunID)
-		}
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return ctxErr
-		}
-		return ErrRunSecretAttachFailure
+	if a.secretName != credentials.PlatformSecretName {
+		return nil
 	}
-	p.attached = true
-	p.pipelineRunID = pipelineRunID
-	return nil
+
+	userID, _, found, err := a.vault.UserBySub(credentials.PlatformUserSub)
+	if err != nil {
+		return ErrModelCredentialCheckFailure
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !found {
+		return ErrRunCredentialUnavailable
+	}
+	if userID <= 0 {
+		return ErrModelCredentialCheckFailure
+	}
+
+	now := a.now()
+	for _, kind := range []string{credentials.KindAnthropicOAuth, credentials.KindAnthropicAPIKey} {
+		credential, found, err := a.vault.Resolve(userID, kind)
+		if err != nil {
+			return ErrModelCredentialCheckFailure
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if !found {
+			continue
+		}
+		if credential == nil || credential.UserID != userID || credential.Kind != kind {
+			return ErrModelCredentialCheckFailure
+		}
+		if credential.ExpiresAt > 0 && credential.ExpiresAt <= now.Unix() {
+			continue
+		}
+		return nil
+	}
+	return ErrRunCredentialUnavailable
 }
 
-var _ RunSecretPreparer = (*VaultedRunSecretPreparer)(nil)
-var _ PreparedRunSecret = (*vaultedPreparedRunSecret)(nil)
+var _ ModelCredentialAdmitter = (*PlatformCredentialAdmitter)(nil)

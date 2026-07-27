@@ -16,6 +16,11 @@ type SecretRef struct {
 	Namespace string
 	Name      string
 	Key       string
+	// Optional marks a reference the runtime must tolerate missing: the
+	// container still starts, with the variable simply unset. Used for keys a
+	// secret may legitimately lack (e.g. the platform credential's "kind",
+	// absent from operator-created secrets).
+	Optional bool
 }
 
 // SecretRefResolver is implemented by Variables backends that can provide

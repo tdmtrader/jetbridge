@@ -539,7 +539,7 @@ plan:
 		new(workflowrunfakes.FakeBudgetAdmitter),
 		new(workflowrunfakes.FakeImmutableTemplateSaver),
 		new(workflowrunfakes.FakePipelineRunCreator),
-		new(workflowrunfakes.FakeRunSecretPreparer),
+		new(workflowrunfakes.FakeModelCredentialAdmitter),
 	)
 	if err != nil {
 		t.Fatal(err)

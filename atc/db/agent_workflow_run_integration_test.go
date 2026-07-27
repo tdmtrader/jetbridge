@@ -31,7 +31,7 @@ import (
 var _ = Describe("agent workflow run vertical slice", func() {
 	It("imports, binds, executes, seals, reconciles, and preserves exact history after execution deletion", func() {
 		fixture := newAgentDispatchFixture()
-		ticketID := fixture.queueTicket(nil)
+		ticketID := fixture.queueTicket()
 		dispatched, err := dispatch.DispatchOne(context.Background(), fixture.deps, ticketID, "admin")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(dispatched.WorkflowRunID).NotTo(BeNil())
@@ -303,7 +303,7 @@ func newWorkflowRunVerticalSlice(suffix string) *workflowRunVerticalSlice {
 		renderer, snapshots, runs,
 		workflowrun.AllowAllBudgetAdmitter{}, templates,
 		db.NewPipelineRunFactory(logger, dbConn, lockFactory, checkFactory),
-		workflowRunNoopSecretPreparer{},
+		workflowRunAllowAllCredentialAdmitter{},
 	)
 	Expect(err).NotTo(HaveOccurred())
 	return &workflowRunVerticalSlice{
@@ -387,19 +387,11 @@ func (fixture *workflowRunVerticalSlice) bind(
 	return result
 }
 
-type workflowRunNoopSecretPreparer struct{}
+// Agent pods read the platform secret themselves, so binding needs only the
+// presence check; this double always admits.
+type workflowRunAllowAllCredentialAdmitter struct{}
 
-func (workflowRunNoopSecretPreparer) Prepare(
-	context.Context,
-	workflowrun.AdmissionContext,
-	db.AgentWorkflowRun,
-) (workflowrun.PreparedRunSecret, error) {
-	return workflowRunNoopPreparedSecret{}, nil
-}
-
-type workflowRunNoopPreparedSecret struct{}
-
-func (workflowRunNoopPreparedSecret) Attach(context.Context, int) error { return nil }
+func (workflowRunAllowAllCredentialAdmitter) AdmitModelCredential(context.Context) error { return nil }
 
 type workflowRunMemoryContent struct {
 	mutex   sync.Mutex

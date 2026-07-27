@@ -278,30 +278,21 @@ func cellBudgetUsage(ctx context.Context, queryer agentExperimentQueryer, cellID
 			FROM agent_experiment_evaluations evaluation
 			JOIN cell_identity ON cell_identity.id = evaluation.cell_id
 			WHERE evaluation.evaluator_workflow_run_id IS NOT NULL
-			UNION
-			SELECT run.id
-			FROM agent_workflow_runs run
-			JOIN cell_identity ON run.origin_kind = 'experiment'
-			 AND run.origin_reference IN (
-				'experiment:' || cell_identity.experiment_id::text || ':cell:' || cell_identity.id::text,
-				'experiment:' || cell_identity.experiment_id::text || ':cell:' || cell_identity.id::text || ':evaluator'
-			 )
-		), run_links AS (
-			SELECT run.id, run.planned_build_id, run.pipeline_run_id
-			FROM agent_workflow_runs run JOIN run_ids ON run_ids.id = run.id
-		), build_ids AS (
-			SELECT planned_build_id AS id FROM run_links WHERE planned_build_id IS NOT NULL
-			UNION
-			SELECT anomaly.build_id FROM agent_workflow_run_anomalies anomaly
+		), anomaly_build_ids AS (
+			-- An anomaly build is by definition NOT the run's planned build,
+			-- so its agent steps never receive the run association and their
+			-- ledger rows carry no workflow_run_id: build_id is the only
+			-- handle on that frozen telemetry.
+			SELECT anomaly.build_id AS id
+			FROM agent_workflow_run_anomalies anomaly
 			JOIN run_ids ON run_ids.id = anomaly.workflow_run_id
-		), pipeline_ids AS (
-			SELECT pipeline_run_id AS id FROM run_links WHERE pipeline_run_id IS NOT NULL
 		), totals AS (
 			SELECT COALESCE(SUM(ledger.cost_usd), 0)::double precision AS cost,
 			       COALESCE(SUM(ledger.input_tokens + ledger.output_tokens), 0)::bigint AS tokens
 			FROM agent_cost_ledger ledger
-			WHERE (ledger.build_id > 0 AND ledger.build_id IN (SELECT id FROM build_ids))
-			   OR (ledger.pipeline_run_id IS NOT NULL AND ledger.pipeline_run_id IN (SELECT id FROM pipeline_ids))
+			WHERE ledger.workflow_run_id IN (SELECT id FROM run_ids)
+			   OR (ledger.workflow_run_id IS NULL AND ledger.build_id > 0
+			       AND ledger.build_id IN (SELECT id FROM anomaly_build_ids))
 		)
 		SELECT totals.cost, totals.tokens, EXISTS (SELECT 1 FROM run_ids)
 		FROM totals
@@ -352,27 +343,27 @@ func experimentBudgetLiability(ctx context.Context, queryer agentExperimentQuery
 func experimentActualSpend(ctx context.Context, queryer agentExperimentQueryer, experimentID experiment.ID) (float64, error) {
 	var spent float64
 	err := queryer.QueryRowContext(ctx, `
+		WITH run_ids AS (
+			SELECT cell.candidate_workflow_run_id AS id
+			FROM agent_experiment_cells cell
+			WHERE cell.experiment_id = $1 AND cell.candidate_workflow_run_id IS NOT NULL
+			UNION
+			SELECT evaluation.evaluator_workflow_run_id
+			FROM agent_experiment_evaluations evaluation
+			JOIN agent_experiment_cells cell ON cell.id = evaluation.cell_id
+			WHERE cell.experiment_id = $1 AND evaluation.evaluator_workflow_run_id IS NOT NULL
+		), anomaly_build_ids AS (
+			-- Anomaly builds are not the run's planned build, so their spend
+			-- carries no workflow_run_id; build_id is the only handle on it.
+			SELECT anomaly.build_id AS id
+			FROM agent_workflow_run_anomalies anomaly
+			JOIN run_ids ON run_ids.id = anomaly.workflow_run_id
+		)
 		SELECT COALESCE(SUM(ledger.cost_usd), 0)::double precision
 		FROM agent_cost_ledger ledger
-		WHERE EXISTS (
-			SELECT 1
-			FROM agent_experiment_cells cell
-			JOIN agent_workflow_runs run ON run.origin_kind = 'experiment'
-			 AND run.origin_reference IN (
-				'experiment:' || cell.experiment_id::text || ':cell:' || cell.id::text,
-				'experiment:' || cell.experiment_id::text || ':cell:' || cell.id::text || ':evaluator'
-			 )
-			WHERE cell.experiment_id = $1
-			  AND (
-				(ledger.build_id > 0 AND (
-					ledger.build_id = run.planned_build_id OR EXISTS (
-						SELECT 1 FROM agent_workflow_run_anomalies anomaly
-						WHERE anomaly.workflow_run_id = run.id AND anomaly.build_id = ledger.build_id
-					)
-				))
-				OR (ledger.pipeline_run_id IS NOT NULL AND ledger.pipeline_run_id = run.pipeline_run_id)
-			  )
-		)
+		WHERE ledger.workflow_run_id IN (SELECT id FROM run_ids)
+		   OR (ledger.workflow_run_id IS NULL AND ledger.build_id > 0
+		       AND ledger.build_id IN (SELECT id FROM anomaly_build_ids))
 	`, int64(experimentID)).Scan(&spent)
 	return spent, err
 }

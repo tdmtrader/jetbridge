@@ -43,15 +43,19 @@ func (f *agentCostLedgerFactory) Insert(entry budget.LedgerEntry) error {
 	if len(entry.Metadata) > 0 {
 		metadata = []byte(entry.Metadata)
 	}
+	var workflowRunID any
+	if entry.WorkflowRunID != nil {
+		workflowRunID = *entry.WorkflowRunID
+	}
 	_, err = psql.Insert("agent_cost_ledger").
 		Columns(
-			"occurred_at", "user_id", "user_name", "ticket_id", "pipeline_run_id",
+			"occurred_at", "user_id", "user_name", "workflow_run_id", "function_id",
 			"build_id", "step_name", "source", "provider", "model",
 			"input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens",
 			"turns", "cost_usd", "metadata",
 		).
 		Values(
-			occurred, entry.UserID, entry.UserName, entry.TicketID, entry.PipelineRunID,
+			occurred, entry.UserID, entry.UserName, workflowRunID, entry.FunctionID,
 			entry.BuildID, entry.StepName, entry.Source, provider, entry.Model,
 			entry.InputTokens, entry.OutputTokens, entry.CacheReadTokens, entry.CacheCreationTokens,
 			entry.Turns, entry.CostUSD, metadata,
@@ -62,18 +66,6 @@ func (f *agentCostLedgerFactory) Insert(entry budget.LedgerEntry) error {
 		return err
 	}
 	return tx.Commit()
-}
-
-func (f *agentCostLedgerFactory) SpentForTicket(ticketID int) (float64, error) {
-	// harvest_judge spend never depletes the ticket budget (§1.13); the
-	// judge is capped separately by the workflow's judge_usd.
-	var spent float64
-	err := f.conn.QueryRow(
-		`SELECT COALESCE(SUM(cost_usd), 0)::float8 FROM agent_cost_ledger
-		 WHERE ticket_id = $1 AND source <> 'harvest_judge'`,
-		ticketID,
-	).Scan(&spent)
-	return spent, err
 }
 
 func (f *agentCostLedgerFactory) SpentSince(since time.Time) (float64, error) {
@@ -87,36 +79,38 @@ func (f *agentCostLedgerFactory) SpentSince(since time.Time) (float64, error) {
 
 func (f *agentCostLedgerFactory) Rollup(groupBy string, since, until time.Time) ([]budget.RollupRow, error) {
 	var keyExpr string
+	from := ` FROM agent_cost_ledger ledger`
 	switch groupBy {
 	case budget.GroupByUser:
-		keyExpr = `COALESCE(user_name, '')`
-	case budget.GroupByTicket:
-		keyExpr = `COALESCE(ticket_id::text, '')`
+		keyExpr = `COALESCE(ledger.user_name, '')`
 	case budget.GroupByWorkflow:
-		// Contract addendum: workflow attribution rides metadata->>'workflow'.
-		keyExpr = `COALESCE(metadata->>'workflow', '')`
+		// Workflow attribution is the server-owned run identity, so only
+		// run-bound spend appears in this dimension (INNER JOIN).
+		keyExpr = `run.workflow_name`
+		from += `
+		JOIN agent_workflow_runs run ON run.id = ledger.workflow_run_id`
 	case budget.GroupByModel:
-		keyExpr = `COALESCE(model, '')`
+		keyExpr = `COALESCE(ledger.model, '')`
 	case budget.GroupByStep:
-		keyExpr = `COALESCE(step_name, '')`
+		keyExpr = `COALESCE(ledger.step_name, '')`
 	case budget.GroupByDay:
-		keyExpr = `to_char((occurred_at AT TIME ZONE 'UTC')::date, 'YYYY-MM-DD')`
+		keyExpr = `to_char((ledger.occurred_at AT TIME ZONE 'UTC')::date, 'YYYY-MM-DD')`
 	default:
 		return nil, fmt.Errorf("unsupported group_by %q", groupBy)
 	}
 
 	query := `SELECT ` + keyExpr + ` AS key,
 		COUNT(*)::int,
-		COALESCE(SUM(input_tokens), 0)::bigint,
-		COALESCE(SUM(output_tokens), 0)::bigint,
-		COALESCE(SUM(turns), 0)::bigint,
-		COALESCE(SUM(cost_usd), 0)::float8
-		FROM agent_cost_ledger
-		WHERE occurred_at >= $1`
+		COALESCE(SUM(ledger.input_tokens), 0)::bigint,
+		COALESCE(SUM(ledger.output_tokens), 0)::bigint,
+		COALESCE(SUM(ledger.turns), 0)::bigint,
+		COALESCE(SUM(ledger.cost_usd), 0)::float8` +
+		from + `
+		WHERE ledger.occurred_at >= $1`
 	args := []any{since}
 	if !until.IsZero() {
 		args = append(args, until)
-		query += ` AND occurred_at < $2`
+		query += ` AND ledger.occurred_at < $2`
 	}
 	query += ` GROUP BY 1 ORDER BY 1`
 

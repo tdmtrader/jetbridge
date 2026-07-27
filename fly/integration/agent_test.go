@@ -133,7 +133,6 @@ var _ = Describe("fly agent", func() {
 
 	Describe("agent runs", func() {
 		BeforeEach(func() {
-			three := 3
 			atcServer.AppendHandlers(
 				ghttp.CombineHandlers(
 					ghttp.VerifyRequest("GET", "/api/v1/agent/metrics", "limit=50"),
@@ -142,8 +141,8 @@ var _ = Describe("fly agent", func() {
 							// the U3 truth split: a green step inside a failed
 							// build — the server-fused outcome must win
 							BuildID: 1, PlanID: "p1", StepName: "implement",
-							WorkflowName: "develop", WorkflowVersion: &three,
-							Status: "ok", BuildStatus: "failed", Outcome: "failed",
+							FunctionID: "develop",
+							Status:     "ok", BuildStatus: "failed", Outcome: "failed",
 							Summary: "agent reported ok", CostUSD: 1.25,
 						},
 						{
@@ -173,7 +172,7 @@ var _ = Describe("fly agent", func() {
 			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
 			Expect(err).NotTo(HaveOccurred())
 			Eventually(sess).Should(gexec.Exit(0))
-			Expect(sess.Out).To(gbytes.Say(`implement\s+develop@3\s+failed`))
+			Expect(sess.Out).To(gbytes.Say(`implement\s+develop\s+failed`))
 			Expect(sess.Out).To(gbytes.Say(`harvest\s+failed`))
 			Expect(sess.Out).To(gbytes.Say(`review\s+ok`))
 			Expect(string(sess.Err.Contents())).NotTo(ContainSubstring("lags web"))
@@ -186,7 +185,7 @@ var _ = Describe("fly agent", func() {
 				ghttp.CombineHandlers(
 					ghttp.VerifyRequest("GET", "/api/v1/agent/metrics", "limit=50"),
 					ghttp.RespondWithJSONEncoded(http.StatusOK, []agentschema.RunMetrics{
-						{BuildID: 1, PlanID: "p1", StepName: "implement", WorkflowName: "develop", Status: "ok"},
+						{BuildID: 1, PlanID: "p1", StepName: "implement", FunctionID: "develop", Status: "ok"},
 					}),
 				),
 				ghttp.CombineHandlers(

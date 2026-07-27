@@ -15,7 +15,7 @@ import (
 
 func newHandler() (*costs.Handler, *budget.MemoryLedger) {
 	ledger := budget.NewMemoryLedger()
-	checker := budget.NewChecker(ledger, budget.NoTicketBudgets{}, budget.Config{
+	checker := budget.NewChecker(ledger, budget.Config{
 		GlobalDailyCapUSD: 50,
 		Location:          time.UTC,
 	})

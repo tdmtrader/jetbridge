@@ -1255,14 +1255,12 @@ plan:
 		Expect(err).NotTo(HaveOccurred())
 		Expect(evaluations).To(HaveLen(1))
 		Expect(evaluations[0].Budget).To(Equal(value.Budget))
-		const buildID = 987654
-		_, err = dbConn.Exec(`UPDATE agent_workflow_runs SET planned_build_id = $2 WHERE id = $1`, int64(runID), buildID)
-		Expect(err).NotTo(HaveOccurred())
+		// spend is attributed by the durable run id the server assigned it
 		_, err = dbConn.Exec(`
 			INSERT INTO agent_cost_ledger
-				(build_id, step_name, source, input_tokens, output_tokens, cost_usd)
-			VALUES ($1, 'candidate', 'agent_step', 80, 30, 1.00)
-		`, buildID)
+				(workflow_run_id, function_id, step_name, source, input_tokens, output_tokens, cost_usd)
+			VALUES ($1, 'candidate', 'candidate', 'agent_step', 80, 30, 1.00)
+		`, int64(runID))
 		Expect(err).NotTo(HaveOccurred())
 		usage, err := factory.CheckCellBudget(ctx, cells[0].ID)
 		Expect(err).NotTo(HaveOccurred())
@@ -1271,8 +1269,8 @@ plan:
 		Expect(err).NotTo(HaveOccurred())
 		Expect(evaluatorReservation.CellID).To(Equal(cells[0].ID))
 		_, err = dbConn.Exec(`
-			UPDATE agent_cost_ledger SET cost_usd = 1.01 WHERE build_id = $1
-		`, buildID)
+			UPDATE agent_cost_ledger SET cost_usd = 1.01 WHERE workflow_run_id = $1
+		`, int64(runID))
 		Expect(err).NotTo(HaveOccurred())
 
 		usage, err = factory.CheckCellBudget(ctx, cells[0].ID)

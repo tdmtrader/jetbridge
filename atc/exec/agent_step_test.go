@@ -8,7 +8,6 @@ import (
 	"strconv"
 	"strings"
 
-	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/agent/api/metrics/metricsfakes"
@@ -23,7 +22,6 @@ import (
 	"github.com/concourse/concourse/atc/exec/execfakes"
 	"github.com/concourse/concourse/atc/runtime"
 	"github.com/concourse/concourse/atc/runtime/runtimetest"
-	"github.com/concourse/concourse/atc/worker"
 	"github.com/concourse/concourse/tracing"
 	"github.com/concourse/concourse/vars"
 	"github.com/onsi/gomega/gbytes"
@@ -31,19 +29,6 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
-
-// resumeAwarePool decorates the fake pool with the production worker.Pool's
-// FindWorkerForContainer capability, letting the agent step detect an existing
-// container for the step owner on a restart-resume. containerExists controls
-// what that lookup reports.
-type resumeAwarePool struct {
-	*execfakes.FakePool
-	containerExists bool
-}
-
-func (p *resumeAwarePool) FindWorkerForContainer(lager.Logger, db.ContainerOwner, worker.Spec) (runtime.Worker, bool, error) {
-	return nil, p.containerExists, nil
-}
 
 var _ = Describe("AgentStep", func() {
 	var (
@@ -59,7 +44,6 @@ var _ = Describe("AgentStep", func() {
 		fakeDelegateFactory *execfakes.FakeTaskDelegateFactory
 		fakeChecker         *budgetfakes.FakeChecker
 		fakeMetricsStore    *metricsfakes.FakeStore
-		fakeRunVerifier     *execfakes.FakeAgentRunVerifier
 
 		agentPlan  atc.AgentPlan
 		agentImage string
@@ -122,16 +106,10 @@ var _ = Describe("AgentStep", func() {
 
 		fakeChecker = new(budgetfakes.FakeChecker)
 		fakeMetricsStore = new(metricsfakes.FakeStore)
-		fakeRunVerifier = new(execfakes.FakeAgentRunVerifier)
-		// Default: the claimed run belongs to this build's pipeline and the
-		// claimed ticket is dispatched as that run. Specs that exercise the
-		// cross-run / cross-ticket guards override these.
-		fakeRunVerifier.RunBelongsToPipelineReturns(true, nil)
-		fakeRunVerifier.TicketBelongsToRunReturns(true, nil)
 		agentStepOptions = []exec.AgentStepOption{
 			exec.WithAgentBudgetChecker(fakeChecker),
 			exec.WithAgentMetricsStore(fakeMetricsStore),
-			exec.WithAgentRunVerifier(fakeRunVerifier),
+			exec.WithAgentPlatformTokenSecret("agent-platform-credential"),
 		}
 
 		state = exec.NewRunState(noopStepper, vars.StaticVariables{"branch": "main"})
@@ -146,13 +124,7 @@ var _ = Describe("AgentStep", func() {
 			BudgetSliceUSD: 2.5,
 			Outputs:        []string{"workspace"},
 			Env: map[string]string{
-				// A ticket claim is only honored alongside a run id whose
-				// linkage to the ticket the server can verify (review
-				// finding, 2026-07-11) — renderer-set pipelines always
-				// carry both.
-				"AGENT_TICKET_ID":       "7",
-				"AGENT_PIPELINE_RUN_ID": "42",
-				"BASE_REF":              "main",
+				"BASE_REF": "main",
 			},
 			Sidecars: []atc.SidecarSource{
 				{Config: &atc.SidecarConfig{Name: "platform", Image: "img:v1"}},
@@ -288,7 +260,6 @@ var _ = Describe("AgentStep", func() {
 			"AGENT_PROMPT=do it",
 			"AGENT_MODEL=m1",
 			"AGENT_MAX_TURNS=3",
-			"AGENT_TICKET_ID=7",
 			"BASE_REF=main",
 			"PLATFORM_MCP_URL=http://127.0.0.1:7781/mcp",
 		))
@@ -874,141 +845,10 @@ var _ = Describe("AgentStep", func() {
 		})
 	})
 
-	It("resolves the step slice through the budget checker", func() {
-		fakeChecker.StepSliceReturns(budget.Remaining{
-			LimitUSD:     2.5,
-			SpentUSD:     1.25,
-			RemainingUSD: 1.25,
-		}, nil)
-
-		_, err := step.Run(ctx, state)
-		Expect(err).ToNot(HaveOccurred())
-
-		Expect(fakeChecker.StepSliceCallCount()).To(Equal(1))
-		ticketID, slice := fakeChecker.StepSliceArgsForCall(0)
-		Expect(ticketID).To(Equal(7))
-		Expect(slice).To(Equal(2.5))
-
-		_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
-		Expect(spec.Env).To(ContainElement("AGENT_BUDGET_SLICE_USD=1.25"))
-	})
-
-	It("preserves sub-cent precision so a positive hard cap never becomes uncapped", func() {
-		fakeChecker.StepSliceReturns(budget.Remaining{
-			LimitUSD:     0.004321,
-			RemainingUSD: 0.004321,
-		}, nil)
-
-		_, err := step.Run(ctx, state)
-		Expect(err).ToNot(HaveOccurred())
-		_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
-		Expect(spec.Env).To(ContainElement("AGENT_BUDGET_SLICE_USD=0.004321"))
-	})
-
-	It("fails without starting when the slice is exhausted", func() {
-		fakeChecker.StepSliceReturns(budget.Remaining{Exhausted: true}, nil)
-
-		ok, err := step.Run(ctx, state)
-		Expect(err).ToNot(HaveOccurred())
-		Expect(ok).To(BeFalse())
-		Expect(fakePool.FindOrSelectWorkerCallCount()).To(BeZero())
-
-		Expect(fakeDelegate.ErroredCallCount()).To(Equal(1))
-		_, message := fakeDelegate.ErroredArgsForCall(0)
-		Expect(message).To(ContainSubstring("budget slice exhausted"))
-
-		Expect(fakeDelegate.FinishedCallCount()).To(Equal(1))
-		_, exitStatus := fakeDelegate.FinishedArgsForCall(0)
-		Expect(exitStatus).To(Equal(exec.ExitStatus(1)))
-	})
-
-	// --- review finding (2026-07-12): budget re-resolution runs at the start
-	// of EVERY execution, including a restart-resume. If StepSlice reports
-	// Exhausted on a resume, the pre-fix early-return fired BEFORE
-	// FindOrSelectWorker/attach — orphaning the supervised agent still running
-	// in the existing pod: never attached, never killed, never ingested, its
-	// spend leaking and never ledgered. The exhaustion early-return must be
-	// gated on there being NO existing container for the step owner. ---
-	Context("when the slice is exhausted on a restart-resume with an existing container", func() {
-		var pool *resumeAwarePool
-
-		JustBeforeEach(func() {
-			// The production worker.Pool answers FindWorkerForContainer; the
-			// fake does not, so this decorated pool models a resume where a
-			// container already exists for the step owner.
-			pool = &resumeAwarePool{FakePool: fakePool, containerExists: true}
-			fakeChecker.StepSliceReturns(budget.Remaining{Exhausted: true}, nil)
-			fakeMetricsStore.InsertIfAbsentReturns(true, nil)
-			step = exec.NewAgentStep(
-				planID,
-				agentPlan,
-				atc.ContainerLimits{},
-				atc.ContainerLimits{},
-				stepMetadata,
-				containerMetadata,
-				pool,
-				fakeStreamer,
-				fakeDelegateFactory,
-				0,
-				agentImage,
-				exec.WithAgentBudgetChecker(fakeChecker),
-				exec.WithAgentMetricsStore(fakeMetricsStore),
-				exec.WithAgentRunVerifier(fakeRunVerifier),
-			)
-		})
-
-		It("does not early-return: attaches, waits, and ingests the running agent", func() {
-			// Model the genuinely-running agent of a restart-resume: the
-			// process is already live in the container, so the step ATTACHES
-			// to it (the exhausted-resume path must never Run a new one).
-			_, err := chosenContainer.Run(context.Background(), agentProcessSpec, runtime.ProcessIO{})
-			Expect(err).ToNot(HaveOccurred())
-
-			ok, err := step.Run(ctx, state)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(ok).To(BeTrue()) // the resumed agent completed (exit 0)
-
-			// Fell through to the normal path instead of the exhaustion
-			// early-return: worker selected and the process attached/ran.
-			Expect(pool.FindOrSelectWorkerCallCount()).To(Equal(1))
-			Expect(chosenContainer.RunningProcesses()).To(HaveLen(1))
-
-			// The running agent's flight recorder is ingested rather than left
-			// unrecorded, and the premature Errored/Finished(1) never fires.
-			Expect(fakeMetricsStore.InsertIfAbsentCallCount()).To(Equal(1))
-			Expect(fakeDelegate.ErroredCallCount()).To(BeZero())
-			Expect(fakeDelegate.FinishedCallCount()).To(Equal(1))
-			_, exitStatus := fakeDelegate.FinishedArgsForCall(0)
-			Expect(exitStatus).To(Equal(exec.ExitStatus(0)))
-		})
-
-		It("fails closed when no prior agent process is attachable, instead of starting a new one", func() {
-			// The container DB row exists (stepContainerExists is satisfied by
-			// any row state — the pod is created lazily in Run), but nothing is
-			// attachable: the web node restarted before the pod ran, or the pod
-			// was reaped. Falling through to attachOrRun's Run() fallback here
-			// would launch a BRAND-NEW agent and spend the full configured
-			// slice against a ticket that is already exhausted.
-			ok, err := step.Run(ctx, state)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(ok).To(BeFalse())
-
-			// No new agent process was started against the exhausted ticket.
-			Expect(chosenContainer.RunningProcesses()).To(BeEmpty())
-
-			Expect(fakeDelegate.ErroredCallCount()).To(Equal(1))
-			_, message := fakeDelegate.ErroredArgsForCall(0)
-			Expect(message).To(ContainSubstring("budget slice exhausted"))
-
-			Expect(fakeDelegate.FinishedCallCount()).To(Equal(1))
-			_, exitStatus := fakeDelegate.FinishedArgsForCall(0)
-			Expect(exitStatus).To(Equal(exec.ExitStatus(1)))
-		})
-	})
-
-	It("keeps the configured slice when the budget checker errors", func() {
-		fakeChecker.StepSliceReturns(budget.Remaining{}, context.DeadlineExceeded)
-
+	// The plan's declared slice is a hard cap the renderer resolved; the exec
+	// neither re-resolves nor re-reserves it (the binder's durable reservation
+	// is the single admission authority).
+	It("passes the plan's declared budget slice through as the step cap", func() {
 		ok, err := step.Run(ctx, state)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(ok).To(BeTrue())
@@ -1017,218 +857,32 @@ var _ = Describe("AgentStep", func() {
 		Expect(spec.Env).To(ContainElement("AGENT_BUDGET_SLICE_USD=2.5"))
 	})
 
-	// --- review finding (2026-07-12): steps with no budget_slice_usd bypassed
-	// the ticket-exhaustion admission check. budget_slice_usd 0 means
-	// "uncapped within ticket budget" (§2.8) — the ticket cap still applies —
-	// so admission must run for every ticketed step, not only when slice > 0.
-	// Pre-fix, a step omitting the slice was admitted (and spent) against a
-	// fully exhausted ticket while a sibling WITH a slice was stopped.
+	It("preserves sub-cent precision so a positive hard cap never becomes uncapped", func() {
+		agentPlan.BudgetSliceUSD = 0.004321
+		step = exec.NewAgentStep(
+			planID, agentPlan, atc.ContainerLimits{}, atc.ContainerLimits{},
+			stepMetadata, containerMetadata, fakePool, fakeStreamer, fakeDelegateFactory,
+			0, agentImage, agentStepOptions...,
+		)
+
+		_, err := step.Run(ctx, state)
+		Expect(err).ToNot(HaveOccurred())
+		_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
+		Expect(spec.Env).To(ContainElement("AGENT_BUDGET_SLICE_USD=0.004321"))
+	})
+
 	Context("when the plan declares no budget slice (budget_slice_usd 0)", func() {
 		BeforeEach(func() {
 			agentPlan.BudgetSliceUSD = 0
 		})
 
-		It("still fails without starting when the ticket is exhausted", func() {
-			fakeChecker.StepSliceReturns(budget.Remaining{
-				LimitUSD:     10,
-				SpentUSD:     12,
-				RemainingUSD: -2,
-				Exhausted:    true,
-			}, nil)
-
-			ok, err := step.Run(ctx, state)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(ok).To(BeFalse())
-			Expect(fakePool.FindOrSelectWorkerCallCount()).To(BeZero())
-
-			Expect(fakeChecker.StepSliceCallCount()).To(Equal(1))
-			ticketID, slice := fakeChecker.StepSliceArgsForCall(0)
-			Expect(ticketID).To(Equal(7))
-			Expect(slice).To(BeZero())
-
-			Expect(fakeDelegate.ErroredCallCount()).To(Equal(1))
-			_, message := fakeDelegate.ErroredArgsForCall(0)
-			Expect(message).To(ContainSubstring("budget slice exhausted"))
-			Expect(fakeDelegate.FinishedCallCount()).To(Equal(1))
-			_, exitStatus := fakeDelegate.FinishedArgsForCall(0)
-			Expect(exitStatus).To(Equal(exec.ExitStatus(1)))
-		})
-
-		It("fails closed when the budget checker errors, instead of dispatching uncapped", func() {
-			// A sliceless step's ONLY cap is the ticket's resolved remaining.
-			// A step WITH a configured slice degrades to that slice when the
-			// checker errors (acceptable: still capped) — but degrading a
-			// sliceless step means dispatching with NO cap at all against a
-			// ticket whose state is unknown, the exact bypass the sliceless
-			// admission check exists to prevent.
-			fakeChecker.StepSliceReturns(budget.Remaining{}, context.DeadlineExceeded)
-
-			ok, err := step.Run(ctx, state)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(ok).To(BeFalse())
-			Expect(fakePool.FindOrSelectWorkerCallCount()).To(BeZero())
-
-			Expect(fakeDelegate.ErroredCallCount()).To(Equal(1))
-			_, message := fakeDelegate.ErroredArgsForCall(0)
-			Expect(message).To(ContainSubstring("failed to resolve ticket budget"))
-			Expect(fakeDelegate.FinishedCallCount()).To(Equal(1))
-			_, exitStatus := fakeDelegate.FinishedArgsForCall(0)
-			Expect(exitStatus).To(Equal(exec.ExitStatus(1)))
-		})
-
-		It("caps the step at a capped ticket's remaining", func() {
-			fakeChecker.StepSliceReturns(budget.Remaining{
-				LimitUSD:     10,
-				SpentUSD:     4,
-				RemainingUSD: 6,
-			}, nil)
-
+		It("emits no slice env: 0 means uncapped", func() {
 			ok, err := step.Run(ctx, state)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(ok).To(BeTrue())
-
-			_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
-			Expect(spec.Env).To(ContainElement("AGENT_BUDGET_SLICE_USD=6"))
-		})
-
-		It("emits no slice env when the ticket itself is uncapped", func() {
-			// Remaining.LimitUSD == 0 means truly uncapped: StepSlice(t, 0)
-			// on an uncapped ticket returns only the spend so far.
-			fakeChecker.StepSliceReturns(budget.Remaining{SpentUSD: 4}, nil)
-
-			ok, err := step.Run(ctx, state)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(ok).To(BeTrue())
-
-			Expect(fakeChecker.StepSliceCallCount()).To(Equal(1))
 
 			_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
 			Expect(spec.Env).ToNot(ContainElement(HavePrefix("AGENT_BUDGET_SLICE_USD=")))
-		})
-	})
-
-	// --- review finding (2026-07-11): budget admission gate entirely skippable ---
-	// AGENT_TICKET_ID is the same attacker-writable plan env as everything else
-	// (F30). Pre-fix, the ONLY admission check was StepSlice(env ticket, slice):
-	// omitting or garbling the key skipped admission entirely, and claiming
-	// SOMEONE ELSE'S ticket id both admitted against the victim's remaining
-	// budget and misattributed this step's spend into their ledger at ingestion.
-	// Ticket identity must be server-verified against the verified run's
-	// linkage (agent_tickets.pipeline_run_id) before it reaches admission,
-	// metrics tagging, or the cost ledger.
-	Describe("server-verified ticket identity", func() {
-		It("verifies the claimed ticket against the verified run before admission", func() {
-			fakeChecker.StepSliceReturns(budget.Remaining{LimitUSD: 2.5, RemainingUSD: 2.5}, nil)
-
-			_, err := step.Run(ctx, state)
-			Expect(err).ToNot(HaveOccurred())
-
-			Expect(fakeRunVerifier.TicketBelongsToRunCallCount()).To(Equal(1))
-			gotTicket, gotRun := fakeRunVerifier.TicketBelongsToRunArgsForCall(0)
-			Expect(gotTicket).To(Equal(7))
-			Expect(gotRun).To(Equal(42))
-
-			Expect(fakeChecker.StepSliceCallCount()).To(Equal(1))
-			ticketID, _ := fakeChecker.StepSliceArgsForCall(0)
-			Expect(ticketID).To(Equal(7))
-		})
-
-		Context("when the claimed ticket is not dispatched as the verified run (someone else's ticket)", func() {
-			BeforeEach(func() {
-				fakeRunVerifier.TicketBelongsToRunReturns(false, nil)
-			})
-
-			It("fails closed: never admits against, runs on, or charges the victim ticket", func() {
-				ok, err := step.Run(ctx, state)
-				Expect(ok).To(BeFalse())
-				Expect(err).To(MatchError(ContainSubstring("refusing to admit against ticket 7")))
-
-				Expect(fakeChecker.StepSliceCallCount()).To(BeZero())
-				Expect(fakePool.FindOrSelectWorkerCallCount()).To(BeZero())
-				// nothing ran ⇒ nothing can be misattributed into the
-				// victim's metrics or ledger
-				Expect(fakeMetricsStore.UpsertReturningInsertedCallCount()).To(BeZero())
-				Expect(fakeMetricsStore.InsertIfAbsentCallCount()).To(BeZero())
-				Expect(fakeChecker.RecordCallCount()).To(BeZero())
-			})
-		})
-
-		Context("when the ticket-linkage check errors", func() {
-			BeforeEach(func() {
-				fakeRunVerifier.TicketBelongsToRunReturns(false, errors.New("db down"))
-			})
-
-			It("fails the step rather than proceeding without verification", func() {
-				ok, err := step.Run(ctx, state)
-				Expect(ok).To(BeFalse())
-				Expect(err).To(MatchError(ContainSubstring("verify ticket 7 linkage to pipeline run 42")))
-				Expect(fakeChecker.StepSliceCallCount()).To(BeZero())
-				Expect(fakePool.FindOrSelectWorkerCallCount()).To(BeZero())
-			})
-		})
-
-		Context("when a ticket is claimed without a pipeline-run id", func() {
-			BeforeEach(func() {
-				delete(agentPlan.Env, "AGENT_PIPELINE_RUN_ID")
-			})
-
-			It("fails closed: the claim has no verifiable run linkage", func() {
-				ok, err := step.Run(ctx, state)
-				Expect(ok).To(BeFalse())
-				Expect(err).To(MatchError(ContainSubstring("requires a verified AGENT_PIPELINE_RUN_ID")))
-				Expect(fakeChecker.StepSliceCallCount()).To(BeZero())
-				Expect(fakePool.FindOrSelectWorkerCallCount()).To(BeZero())
-			})
-		})
-
-		Context("when AGENT_TICKET_ID is non-numeric", func() {
-			BeforeEach(func() {
-				agentPlan.Env["AGENT_TICKET_ID"] = "bogus"
-			})
-
-			It("errors instead of silently skipping admission (the pre-fix bypass)", func() {
-				ok, err := step.Run(ctx, state)
-				Expect(ok).To(BeFalse())
-				Expect(err).To(MatchError(ContainSubstring(`malformed AGENT_TICKET_ID "bogus"`)))
-				Expect(fakeChecker.StepSliceCallCount()).To(BeZero())
-				Expect(fakePool.FindOrSelectWorkerCallCount()).To(BeZero())
-			})
-		})
-
-		Context("when no run verifier is wired", func() {
-			JustBeforeEach(func() {
-				step = exec.NewAgentStep(
-					planID,
-					agentPlan,
-					atc.ContainerLimits{},
-					atc.ContainerLimits{},
-					stepMetadata,
-					containerMetadata,
-					fakePool,
-					fakeStreamer,
-					fakeDelegateFactory,
-					0,
-					agentImage,
-					exec.WithAgentBudgetChecker(fakeChecker),
-					exec.WithAgentMetricsStore(fakeMetricsStore),
-				)
-			})
-
-			It("drops the unverifiable claim: no admission, NULL ticket attribution", func() {
-				ok, err := step.Run(ctx, state)
-				Expect(err).ToNot(HaveOccurred())
-				Expect(ok).To(BeTrue())
-
-				Expect(fakeChecker.StepSliceCallCount()).To(BeZero())
-
-				// degraded ingestion path (no flight fixtures) still runs, but
-				// the unverified ticket claim never reaches attribution — the
-				// cost ledger (which now carries the ticket/run identity) stays
-				// empty (the durable workflow-run id on the row is server
-				// metadata, not the attacker's claim).
-				Expect(fakeMetricsStore.InsertIfAbsentCallCount()).To(Equal(1))
-				Expect(fakeChecker.RecordCallCount()).To(BeZero())
-			})
 		})
 	})
 
@@ -1245,30 +899,17 @@ var _ = Describe("AgentStep", func() {
 	})
 
 	Describe("runtime seams (F15/F21)", func() {
-		Context("with auxiliary and gateway sidecars on a workflow run", func() {
+		Context("with auxiliary and gateway sidecars", func() {
 			BeforeEach(func() {
-				agentPlan.Env["AGENT_PIPELINE_RUN_ID"] = "42"
 				agentPlan.Sidecars = []atc.SidecarSource{
 					{Config: &atc.SidecarConfig{Name: "auxiliary", Image: "img:v1"}},
 					{Config: &atc.SidecarConfig{Name: "gateway", Image: "img:v2"}},
 				}
-				fakeChecker.StepSliceReturns(budget.Remaining{
-					LimitUSD:     2.5,
-					SpentUSD:     1.25,
-					RemainingUSD: 1.25,
-				}, nil)
 			})
 
 			It("keeps hermetic sidecars local and never grants credentials by role name", func() {
 				_, err := step.Run(ctx, state)
 				Expect(err).ToNot(HaveOccurred())
-
-				// The run id claimed by plan env is verified against THIS
-				// build's pipeline before any secret ref is injected (§8.2).
-				Expect(fakeRunVerifier.RunBelongsToPipelineCallCount()).To(Equal(1))
-				gotRunID, gotPipelineID := fakeRunVerifier.RunBelongsToPipelineArgsForCall(0)
-				Expect(gotRunID).To(Equal(42))
-				Expect(gotPipelineID).To(Equal(stepMetadata.PipelineID))
 
 				_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
 				Expect(spec.SidecarEnv["auxiliary"]).To(ConsistOf(
@@ -1279,84 +920,77 @@ var _ = Describe("AgentStep", func() {
 				Expect(spec.SidecarSecretEnv).To(BeEmpty())
 			})
 
-			// --- review finding: main container never received the token ---
-			// §8.1 pins CLAUDE_CODE_OAUTH_TOKEN to the main container from the
-			// per-run secret — the ONLY token path into an agent pod (env is
-			// static-only and never carries credentials). Without an explicit
-			// ref the main claude CLI has no token at all on
-			// dispatch-rendered runs and fails at auth.
-			It("wires the main container's CLAUDE_CODE_OAUTH_TOKEN from the per-run secret (§8.1)", func() {
+			// §8.1 pins CLAUDE_CODE_OAUTH_TOKEN to the MAIN container from the
+			// platform secret — the only token path into an agent pod (env is
+			// static-only and never carries credentials). A workflow-authored
+			// sidecar name is never a credential grant, however suggestive.
+			It("wires the main container's model credential and no sidecar's", func() {
 				_, err := step.Run(ctx, state)
 				Expect(err).ToNot(HaveOccurred())
 
 				_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
 				Expect(spec.SecretEnv).To(HaveKeyWithValue(
-					"CLAUDE_CODE_OAUTH_TOKEN", vars.SecretRef{Name: "agent-run-42", Key: "anthropic-token"}))
+					"CLAUDE_CODE_OAUTH_TOKEN",
+					vars.SecretRef{Name: "agent-platform-credential", Key: "anthropic-token"}))
 				Expect(spec.SidecarSecretEnv).To(BeEmpty())
 				// secretKeyRef-only — the token must never appear as a literal.
 				Expect(spec.Env).ToNot(ContainElement(HavePrefix("CLAUDE_CODE_OAUTH_TOKEN=")))
 			})
+		})
 
-			// --- review finding: cross-run model credential exfiltration ---
-			// AGENT_PIPELINE_RUN_ID is attacker-writable plan YAML (F30). A
-			// pipeline that claims a run id it does not own must not receive that
-			// run's model credential in its main agent container. The step fails
-			// closed before any pod exists; sidecar secret env remains empty.
-			Context("when the claimed run id does not belong to this build's pipeline", func() {
-				BeforeEach(func() {
-					fakeRunVerifier.RunBelongsToPipelineReturns(false, nil)
-				})
+		Context("model credential delivery", func() {
+			// The runner picks the claude CLI credential variable from the
+			// kind, so it travels beside the token — but as an OPTIONAL ref:
+			// an operator-created secret has only "anthropic-token", and a
+			// required ref would stop every agent pod from starting.
+			It("injects the token kind as an optional secretKeyRef", func() {
+				_, err := step.Run(ctx, state)
+				Expect(err).ToNot(HaveOccurred())
 
-				It("refuses to run rather than deliver another run's model credential", func() {
-					ok, err := step.Run(ctx, state)
-					Expect(ok).To(BeFalse())
-					Expect(err).To(MatchError(ContainSubstring("does not belong to this build's pipeline")))
-					// Fail closed: never reached worker selection, so no pod
-					// could ever reference agent-run-42.
-					Expect(fakePool.FindOrSelectWorkerCallCount()).To(BeZero())
-				})
+				_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
+				Expect(spec.SecretEnv).To(HaveKeyWithValue(
+					"AGENT_MODEL_TOKEN_KIND",
+					vars.SecretRef{Name: "agent-platform-credential", Key: "kind", Optional: true}))
+				Expect(spec.Env).ToNot(ContainElement(HavePrefix("AGENT_MODEL_TOKEN_KIND=")))
 			})
 
-			Context("when the run-ownership check errors", func() {
-				BeforeEach(func() {
-					fakeRunVerifier.RunBelongsToPipelineReturns(false, errors.New("db down"))
-				})
+			It("honors an operator-configured secret name", func() {
+				operatorStep := exec.NewAgentStep(
+					planID, agentPlan, atc.ContainerLimits{}, atc.ContainerLimits{},
+					stepMetadata, containerMetadata, fakePool, fakeStreamer, fakeDelegateFactory,
+					0, agentImage,
+					exec.WithAgentBudgetChecker(fakeChecker),
+					exec.WithAgentMetricsStore(fakeMetricsStore),
+					exec.WithAgentPlatformTokenSecret("operator-managed-token"),
+				)
+				_, err := operatorStep.Run(ctx, state)
+				Expect(err).ToNot(HaveOccurred())
 
-				It("fails the step rather than proceeding without verification", func() {
-					ok, err := step.Run(ctx, state)
-					Expect(ok).To(BeFalse())
-					Expect(err).To(MatchError(ContainSubstring("verify pipeline run 42 ownership")))
-					Expect(fakePool.FindOrSelectWorkerCallCount()).To(BeZero())
-				})
+				_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
+				Expect(spec.SecretEnv).To(HaveKeyWithValue(
+					"CLAUDE_CODE_OAUTH_TOKEN",
+					vars.SecretRef{Name: "operator-managed-token", Key: "anthropic-token"}))
 			})
 
-			Context("when no run verifier is wired", func() {
-				It("injects no model-secret ref (fails closed)", func() {
-					noVerifierStep := exec.NewAgentStep(
-						planID,
-						agentPlan,
-						atc.ContainerLimits{},
-						atc.ContainerLimits{},
-						stepMetadata,
-						containerMetadata,
-						fakePool,
-						fakeStreamer,
-						fakeDelegateFactory,
-						0,
-						agentImage,
-						exec.WithAgentBudgetChecker(fakeChecker),
-						exec.WithAgentMetricsStore(fakeMetricsStore),
-					)
-					_, err := noVerifierStep.Run(ctx, state)
-					Expect(err).ToNot(HaveOccurred())
+			// An operator can clear --agent-platform-token-secret. The step
+			// must not invent a secret name; the pod simply gets no token.
+			It("emits no model-credential refs when no platform secret is configured", func() {
+				unconfiguredStep := exec.NewAgentStep(
+					planID, agentPlan, atc.ContainerLimits{}, atc.ContainerLimits{},
+					stepMetadata, containerMetadata, fakePool, fakeStreamer, fakeDelegateFactory,
+					0, agentImage,
+					exec.WithAgentBudgetChecker(fakeChecker),
+					exec.WithAgentMetricsStore(fakeMetricsStore),
+				)
+				_, err := unconfiguredStep.Run(ctx, state)
+				Expect(err).ToNot(HaveOccurred())
 
-					_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
-					Expect(spec.SidecarSecretEnv).To(BeEmpty())
-					Expect(spec.SecretEnv).ToNot(HaveKey("CLAUDE_CODE_OAUTH_TOKEN"))
-				})
+				_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
+				Expect(spec.SecretEnv).To(BeEmpty())
+				Expect(spec.SidecarSecretEnv).To(BeEmpty())
 			})
 
-			It("keeps the platform token off the main container", func() {
+			It("keeps the principal token off the main container", func() {
 				_, err := step.Run(ctx, state)
 				Expect(err).ToNot(HaveOccurred())
 
@@ -1366,140 +1000,22 @@ var _ = Describe("AgentStep", func() {
 			})
 		})
 
-		Context("on a platform run with no gateway/platform sidecars", func() {
+		// Sidecars get build correlation only: no run/ticket identity travels
+		// into a pod any more, because none of it exists in plan env.
+		Context("with a non-hermetic plan", func() {
 			BeforeEach(func() {
-				agentPlan.Env["AGENT_PIPELINE_RUN_ID"] = "42"
-				agentPlan.Sidecars = nil
+				agentPlan.Hermetic = false
 			})
 
-			// The main container's model credential must not depend on sidecar
-			// presence. A rendered step with no MCP sidecars still runs claude,
-			// which authenticates through this secret-backed env var.
-			It("still verifies run ownership and wires the main container token", func() {
+			It("adds only the external URL to the sidecar correlation rows", func() {
 				_, err := step.Run(ctx, state)
 				Expect(err).ToNot(HaveOccurred())
 
-				Expect(fakeRunVerifier.RunBelongsToPipelineCallCount()).To(Equal(1))
-
 				_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
-				Expect(spec.SecretEnv).To(HaveKeyWithValue(
-					"CLAUDE_CODE_OAUTH_TOKEN", vars.SecretRef{Name: "agent-run-42", Key: "anthropic-token"}))
-			})
-
-			Context("when the claimed run id does not belong to this build's pipeline", func() {
-				BeforeEach(func() {
-					fakeRunVerifier.RunBelongsToPipelineReturns(false, nil)
-				})
-
-				It("fails closed even though the main container needs the model credential", func() {
-					ok, err := step.Run(ctx, state)
-					Expect(ok).To(BeFalse())
-					Expect(err).To(MatchError(ContainSubstring("does not belong to this build's pipeline")))
-					Expect(fakePool.FindOrSelectWorkerCallCount()).To(BeZero())
-				})
-			})
-		})
-
-		Context("without any ticket/run identity env (pure CI)", func() {
-			BeforeEach(func() {
-				delete(agentPlan.Env, "AGENT_TICKET_ID")
-				delete(agentPlan.Env, "AGENT_PIPELINE_RUN_ID")
-			})
-
-			It("emits no run-secret env and performs no ticket admission", func() {
-				_, err := step.Run(ctx, state)
-				Expect(err).ToNot(HaveOccurred())
-
-				Expect(fakeRunVerifier.RunBelongsToPipelineCallCount()).To(BeZero())
-				Expect(fakeRunVerifier.TicketBelongsToRunCallCount()).To(BeZero())
-				Expect(fakeChecker.StepSliceCallCount()).To(BeZero())
-
-				_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
-				Expect(spec.SidecarSecretEnv).To(BeEmpty())
-				Expect(spec.SecretEnv).ToNot(HaveKey("CLAUDE_CODE_OAUTH_TOKEN"))
-				Expect(spec.SidecarEnv["platform"]).To(ContainElement(HavePrefix("BUILD_ID=")))
-				Expect(spec.SidecarEnv["platform"]).ToNot(ContainElement(HavePrefix("ATC_EXTERNAL_URL=")))
-			})
-
-			// --- pure-CI token path (§8.1) ---
-			// A pure-CI agent step has no agent-run-<id> secret, but §8.1 still
-			// supports it as a first-class concept. When the operator configures
-			// a platform-level agent secret (web flag), the step wires
-			// CLAUDE_CODE_OAUTH_TOKEN to it as a secretKeyRef — the token never
-			// touches pipeline YAML or the pod's literal env.
-			Context("with a platform-level agent secret configured", func() {
-				var platformStep exec.Step
-
-				JustBeforeEach(func() {
-					platformStep = exec.NewAgentStep(
-						planID, agentPlan,
-						atc.ContainerLimits{}, atc.ContainerLimits{},
-						stepMetadata, containerMetadata,
-						fakePool, fakeStreamer, fakeDelegateFactory,
-						0, agentImage,
-						exec.WithAgentBudgetChecker(fakeChecker),
-						exec.WithAgentMetricsStore(fakeMetricsStore),
-						exec.WithAgentRunVerifier(fakeRunVerifier),
-						exec.WithAgentPlatformTokenSecret("platform-agent-token"),
-					)
-				})
-
-				It("wires CLAUDE_CODE_OAUTH_TOKEN from the platform secret as a secretKeyRef", func() {
-					_, err := platformStep.Run(ctx, state)
-					Expect(err).ToNot(HaveOccurred())
-
-					_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
-					Expect(spec.SecretEnv).To(HaveKeyWithValue(
-						"CLAUDE_CODE_OAUTH_TOKEN", vars.SecretRef{Name: "platform-agent-token", Key: "anthropic-token"}))
-					// secretKeyRef-only: never a literal env value.
-					Expect(spec.Env).ToNot(ContainElement(HavePrefix("CLAUDE_CODE_OAUTH_TOKEN=")))
-				})
-
-				// Workflow-authored sidecar names are never credential grants.
-				// Even a sidecar called gateway remains untrusted; only the main
-				// agent process receives the configured model token.
-				Context("with a gateway sidecar declared", func() {
-					BeforeEach(func() {
-						agentPlan.Sidecars = []atc.SidecarSource{
-							{Config: &atc.SidecarConfig{Name: "platform", Image: "img:v1"}},
-							{Config: &atc.SidecarConfig{Name: "gateway", Image: "img:v2"}},
-						}
-					})
-
-					It("does not wire any credential into the gateway-named sidecar", func() {
-						_, err := platformStep.Run(ctx, state)
-						Expect(err).ToNot(HaveOccurred())
-
-						_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
-						Expect(spec.SidecarSecretEnv).To(BeEmpty())
-					})
-				})
-			})
-		})
-
-		Context("on a platform RUN with a platform-level secret also configured", func() {
-			BeforeEach(func() {
-				agentPlan.Env["AGENT_PIPELINE_RUN_ID"] = "42"
-			})
-
-			It("prefers the per-run secret over the platform fallback", func() {
-				runStep := exec.NewAgentStep(
-					planID, agentPlan,
-					atc.ContainerLimits{}, atc.ContainerLimits{},
-					stepMetadata, containerMetadata,
-					fakePool, fakeStreamer, fakeDelegateFactory,
-					0, agentImage,
-					exec.WithAgentBudgetChecker(fakeChecker),
-					exec.WithAgentMetricsStore(fakeMetricsStore),
-					exec.WithAgentRunVerifier(fakeRunVerifier),
-					exec.WithAgentPlatformTokenSecret("platform-agent-token"),
-				)
-				_, err := runStep.Run(ctx, state)
-				Expect(err).ToNot(HaveOccurred())
-
-				_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
-				Expect(spec.SecretEnv).To(HaveKeyWithValue(
-					"CLAUDE_CODE_OAUTH_TOKEN", vars.SecretRef{Name: "agent-run-42", Key: "anthropic-token"}))
+				Expect(spec.SidecarEnv["platform"]).To(ConsistOf(
+					"BUILD_ID="+strconv.Itoa(stepMetadata.BuildID),
+					"ATC_EXTERNAL_URL="+stepMetadata.ExternalURL,
+				))
 			})
 		})
 
@@ -1767,9 +1283,11 @@ var _ = Describe("AgentStep", func() {
 			entry := fakeChecker.RecordArgsForCall(0)
 			Expect(entry.Source).To(Equal(budget.SourceAgentStep))
 			Expect(entry.Provider).To(Equal("anthropic"))
-			// server-verified identity, never raw plan env (review finding)
-			Expect(*entry.TicketID).To(Equal(7))
-			Expect(*entry.PipelineRunID).To(Equal(42))
+			// Spend attribution is server-owned: the durable workflow run off
+			// step metadata and the function id off the immutable plan.
+			Expect(entry.WorkflowRunID).ToNot(BeNil())
+			Expect(*entry.WorkflowRunID).To(Equal(int64(flightRunID)))
+			Expect(entry.FunctionID).To(Equal("review"))
 			Expect(entry.BuildID).To(Equal(stepMetadata.BuildID))
 			Expect(entry.StepName).To(Equal("write-spec"))
 			Expect(entry.Model).To(Equal("m1"))
@@ -1790,26 +1308,23 @@ var _ = Describe("AgentStep", func() {
 			})
 		})
 
-		Context("when workflow identity env is present", func() {
+		// The pod cannot influence attribution: it is never told which workflow
+		// run it belongs to, and the ledger row's identity comes only from
+		// step metadata and the immutable plan.
+		Context("when the step has no durable workflow run", func() {
 			BeforeEach(func() {
-				agentPlan.Env["AGENT_WORKFLOW_NAME"] = "spec-writer"
-				agentPlan.Env["AGENT_WORKFLOW_VERSION"] = "3"
-				agentPlan.Env["AGENT_WORKFLOW_HASH"] = "abc123"
+				stepMetadata.WorkflowDefinitionID = nil
+				stepMetadata.WorkflowRunID = nil
 			})
 
-			It("tags the metrics row and rides workflow attribution on ledger metadata", func() {
-				// contracts addendum: writers that know their workflow MUST set
-				// {"workflow": "<name>@<version>"} in ledger metadata so
-				// group_by=workflow rollups can attribute spend.
+			It("records the spend with no workflow-run attribution", func() {
 				step.Run(ctx, state)
-				rm := fakeMetricsStore.UpsertReturningInsertedArgsForCall(0)
-				Expect(rm.WorkflowName).To(Equal("spec-writer"))
-				Expect(*rm.WorkflowVersion).To(Equal(3))
-				Expect(rm.WorkflowHash).To(Equal("abc123"))
 
 				Expect(fakeChecker.RecordCallCount()).To(Equal(1))
 				entry := fakeChecker.RecordArgsForCall(0)
-				Expect(string(entry.Metadata)).To(MatchJSON(`{"workflow":"spec-writer@3"}`))
+				Expect(entry.WorkflowRunID).To(BeNil())
+				Expect(entry.FunctionID).To(Equal("review"))
+				Expect(entry.Metadata).To(BeEmpty())
 			})
 		})
 
@@ -1995,8 +1510,8 @@ var _ = Describe("AgentStep", func() {
 		// --- review finding (self-reported cost, 2026-07-12): the flight
 		// recorder is written inside the agent pod, where claude runs as root —
 		// a prompt-injected agent can rewrite events.ndjson with cost_usd 0
-		// before exit, understating SpentForTicket and loosening StepSlice
-		// admission for every later step. The exec captures the claude CLI
+		// before exit, understating the global daily cap and every later
+		// workflow-run reservation. The exec captures the claude CLI
 		// envelope from the LIVE stdout stream and floors ingestion at it. ---
 		Context("server-side cost floor (self-reported flight recorder)", func() {
 			envelope := `{"type":"result","subtype":"success","is_error":false,"result":"done","model":"m1","num_turns":9,"total_cost_usd":0.42,"usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":1,"cache_creation_input_tokens":2}}`
@@ -2032,8 +1547,8 @@ var _ = Describe("AgentStep", func() {
 					Expect(rm.Turns).To(Equal(9))
 
 					// The falsified spend still reaches agent_cost_ledger, so
-					// SpentForTicket stays truthful and the next StepSlice
-					// admission is not loosened — the pre-fix code charged $0.
+					// budget reconstruction stays truthful and the next
+					// reservation is not loosened — the pre-fix code charged $0.
 					Expect(fakeChecker.RecordCallCount()).To(Equal(1))
 					entry := fakeChecker.RecordArgsForCall(0)
 					Expect(entry.CostUSD).To(BeNumerically("~", 0.42, 1e-9))

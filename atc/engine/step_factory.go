@@ -39,7 +39,6 @@ type coreStepFactory struct {
 	agentMetricsStore     metrics.Store
 	agentTranscriptStore  exec.AgentTranscriptStore
 	agentBudgetChecker    budget.Checker
-	agentRunVerifier      exec.AgentRunVerifier
 	agentPlatformToken    string
 	outputSealer          snapshot.OutputSealer
 	snapshotMetadataStore snapshot.MetadataStore
@@ -118,21 +117,14 @@ func WithAgentTranscriptStore(s exec.AgentTranscriptStore) CoreStepFactoryOption
 	return func(f *coreStepFactory) { f.agentTranscriptStore = s }
 }
 
-// WithAgentBudgetChecker sets the budget library used for step-slice
-// resolution and fire-and-forget ledger records.
+// WithAgentBudgetChecker sets the budget library the agent step appends its
+// spend to after flight ingestion.
 func WithAgentBudgetChecker(c budget.Checker) CoreStepFactoryOption {
 	return func(f *coreStepFactory) { f.agentBudgetChecker = c }
 }
 
-// WithAgentRunVerifier sets the seam that proves a plan-env-claimed
-// pipeline-run id belongs to this build's pipeline before agent-step
-// sidecar secret refs (§8.2) are injected.
-func WithAgentRunVerifier(v exec.AgentRunVerifier) CoreStepFactoryOption {
-	return func(f *coreStepFactory) { f.agentRunVerifier = v }
-}
-
 // WithAgentPlatformTokenSecret sets the K8s secret name providing the
-// pure-CI Anthropic token (web flag --agent-platform-token-secret).
+// platform Anthropic token (web flag --agent-platform-token-secret).
 func WithAgentPlatformTokenSecret(name string) CoreStepFactoryOption {
 	return func(f *coreStepFactory) { f.agentPlatformToken = name }
 }
@@ -302,9 +294,6 @@ func (factory *coreStepFactory) AgentStep(
 	}
 	if factory.agentBudgetChecker != nil {
 		agentOpts = append(agentOpts, exec.WithAgentBudgetChecker(factory.agentBudgetChecker))
-	}
-	if factory.agentRunVerifier != nil {
-		agentOpts = append(agentOpts, exec.WithAgentRunVerifier(factory.agentRunVerifier))
 	}
 	if factory.agentPlatformToken != "" {
 		agentOpts = append(agentOpts, exec.WithAgentPlatformTokenSecret(factory.agentPlatformToken))

@@ -40,9 +40,10 @@ const (
 )
 
 // runPrincipalName matches the dispatcher's per-run principal naming
-// convention, credentials.RunSecretName: "agent-run-<runID>" (digits
-// only). This is the documented agent-run-<digits> prefix match (ticket
-// #44) used to derive Kind when only the name is available.
+// convention, "agent-run-<runID>" (digits only). This is the documented
+// agent-run-<digits> prefix match (ticket #44) used to derive Kind when only
+// the name is available. Principals are unrelated to model credentials, which
+// have no per-run secret any more.
 var runPrincipalName = regexp.MustCompile(`^agent-run-\d+$`)
 
 // DeriveKind classifies a principal by name: KindRun for the dispatcher's

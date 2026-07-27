@@ -342,7 +342,6 @@ var _ = BeforeEach(func() {
 		"registry.example/agent-runner:v1.2.2",
 		budget.NewMemoryLedger(),
 		0,
-		budget.NoTicketBudgets{},
 		fakeAgentRunTranscriptFactory,
 		workflow.NewMemoryStore(),
 		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

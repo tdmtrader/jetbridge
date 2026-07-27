@@ -499,45 +499,6 @@ var _ = Describe("PipelineRunFactory", func() {
 		Expect(callbackCalls).To(Equal(1))
 	})
 
-	// review finding (2026-07-11): AGENT_PIPELINE_RUN_ID reaches the
-	// agent-step exec via attacker-writable plan env (F30). The exec gates
-	// delivery of a run's `agent-run-<id>` model secret on this ownership
-	// check: a run id may only name its secret from its OWN instance pipeline.
-	// The model token then goes only to the main agent container.
-	Describe("RunBelongsToPipeline", func() {
-		It("is true only for the run's own materialized instance pipeline", func() {
-			run, err := factory.CreateRun(template.ID(), nil, "some-user")
-			Expect(err).ToNot(HaveOccurred())
-
-			instanceID, ok := run.InstancePipelineID()
-			Expect(ok).To(BeTrue())
-
-			owned, err := factory.RunBelongsToPipeline(run.ID(), instanceID)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(owned).To(BeTrue())
-
-			// A different pipeline (here the template itself) does not own the run.
-			owned, err = factory.RunBelongsToPipeline(run.ID(), template.ID())
-			Expect(err).ToNot(HaveOccurred())
-			Expect(owned).To(BeFalse())
-
-			// A cross-run grab: some other run's id against this pipeline.
-			owned, err = factory.RunBelongsToPipeline(run.ID()+9999, instanceID)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(owned).To(BeFalse())
-		})
-
-		It("is false for non-positive ids", func() {
-			owned, err := factory.RunBelongsToPipeline(0, 5)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(owned).To(BeFalse())
-
-			owned, err = factory.RunBelongsToPipeline(5, 0)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(owned).To(BeFalse())
-		})
-	})
-
 	Describe("GetRunByID", func() {
 		It("gets a run by its global id (additive for dispatch's reconciler, 2026-07-09)", func() {
 			run, err := factory.CreateRun(template.ID(), nil, "some-user")
@@ -551,62 +512,6 @@ var _ = Describe("PipelineRunFactory", func() {
 			_, found, err = factory.GetRunByID(999999)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(found).To(BeFalse())
-		})
-	})
-
-	// review finding (2026-07-11): AGENT_TICKET_ID reaches the agent-step exec
-	// via the same attacker-writable plan env as the run id (F30). Before the
-	// exec admits a step against a ticket's budget — or attributes its spend
-	// into agent_cost_ledger under that ticket — it gates on this linkage
-	// check: a claimed ticket counts only when the (already-verified) run was
-	// dispatched for it (agent_tickets.pipeline_run_id, contracts §1.7).
-	Describe("TicketBelongsToRun", func() {
-		It("fails closed when the agent_tickets table is absent (pre-ticket-core DB / downgrade window)", func() {
-			// ticket-core's migrations landed at 1773106062-64, so the table
-			// exists at HEAD; the to_regclass probe still guards DBs that have
-			// not migrated (or were downgraded). Simulate one.
-			_, err := dbConn.Exec(`DROP TABLE agent_tickets CASCADE`)
-			Expect(err).ToNot(HaveOccurred())
-
-			linked, err := factory.TicketBelongsToRun(7, 42)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(linked).To(BeFalse())
-		})
-
-		It("is true only for the run the ticket is currently dispatched as", func() {
-			run, err := factory.CreateRun(template.ID(), nil, "some-user")
-			Expect(err).ToNot(HaveOccurred())
-
-			_, err = dbConn.Exec(`INSERT INTO agent_tickets (id, title, repo, pipeline_run_id) VALUES (7, 't', 'r', $1)`, run.ID())
-			Expect(err).ToNot(HaveOccurred())
-
-			linked, err := factory.TicketBelongsToRun(7, run.ID())
-			Expect(err).ToNot(HaveOccurred())
-			Expect(linked).To(BeTrue())
-
-			// someone else's ticket, dispatched as a different run: a step
-			// claiming it must never admit against its budget
-			_, err = dbConn.Exec(`INSERT INTO agent_tickets (id, title, repo, pipeline_run_id) VALUES (8, 't', 'r', $1)`, run.ID()+9999)
-			Expect(err).ToNot(HaveOccurred())
-
-			linked, err = factory.TicketBelongsToRun(8, run.ID())
-			Expect(err).ToNot(HaveOccurred())
-			Expect(linked).To(BeFalse())
-
-			// a ticket that does not exist at all
-			linked, err = factory.TicketBelongsToRun(999, run.ID())
-			Expect(err).ToNot(HaveOccurred())
-			Expect(linked).To(BeFalse())
-		})
-
-		It("is false for non-positive ids", func() {
-			linked, err := factory.TicketBelongsToRun(0, 5)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(linked).To(BeFalse())
-
-			linked, err = factory.TicketBelongsToRun(5, 0)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(linked).To(BeFalse())
 		})
 	})
 

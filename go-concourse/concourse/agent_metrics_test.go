@@ -19,7 +19,7 @@ var _ = Describe("AgentRunMetrics", func() {
 					{
 						WorkflowRunID: &runID, FunctionID: "implement",
 						BuildID: 9002, PlanID: "p2", StepName: "implement",
-						WorkflowName: "standard-dev", Status: "ok", Turns: 31, CostUSD: 2.87,
+						Status: "ok", Turns: 31, CostUSD: 2.87,
 						Usage: agentschema.Usage{InputTokens: 180000, OutputTokens: 41000},
 					},
 				}),

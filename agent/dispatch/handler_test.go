@@ -11,9 +11,8 @@ import (
 	"testing"
 
 	"github.com/concourse/concourse/agent/api/tickets"
-	"github.com/concourse/concourse/agent/budget"
-	"github.com/concourse/concourse/agent/budget/budgetfakes"
 	"github.com/concourse/concourse/agent/dispatch"
+	"github.com/concourse/concourse/agent/workflowrun"
 )
 
 func dispatchRequest(id string) *http.Request {
@@ -101,11 +100,12 @@ func TestDispatchHandlerErrorMapping(t *testing.T) {
 }
 
 func TestDispatchHandlerBudgetExhaustedMapsTo409(t *testing.T) {
-	deps, store, _, _ := v3DispatchDeps(t)
-	checker := new(budgetfakes.FakeChecker)
-	checker.TicketRemainingReturns(budget.Remaining{LimitUSD: 5, SpentUSD: 6, RemainingUSD: -1, Exhausted: true}, nil)
-	deps.Budget = checker
+	deps, store, _, binder := v3DispatchDeps(t)
+	// The binder's durable reservation is the admission authority; its
+	// denial is what the route must render as a 409 deferral.
+	binder.err = workflowrun.ErrBudgetDenied
 	id := queuedTicket(t, store, "smoke")
+	setRepositorySnapshot(t, store, id, 101)
 	h := dispatch.NewHTTPHandler(deps, func(*http.Request) string { return "tdm" })
 
 	rec := httptest.NewRecorder()

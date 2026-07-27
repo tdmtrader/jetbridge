@@ -35,19 +35,6 @@ type FakeLedger struct {
 		result1 []budget.RollupRow
 		result2 error
 	}
-	SpentForTicketStub        func(int) (float64, error)
-	spentForTicketMutex       sync.RWMutex
-	spentForTicketArgsForCall []struct {
-		arg1 int
-	}
-	spentForTicketReturns struct {
-		result1 float64
-		result2 error
-	}
-	spentForTicketReturnsOnCall map[int]struct {
-		result1 float64
-		result2 error
-	}
 	SpentSinceStub        func(time.Time) (float64, error)
 	spentSinceMutex       sync.RWMutex
 	spentSinceArgsForCall []struct {
@@ -188,70 +175,6 @@ func (fake *FakeLedger) RollupReturnsOnCall(i int, result1 []budget.RollupRow, r
 	}
 	fake.rollupReturnsOnCall[i] = struct {
 		result1 []budget.RollupRow
-		result2 error
-	}{result1, result2}
-}
-
-func (fake *FakeLedger) SpentForTicket(arg1 int) (float64, error) {
-	fake.spentForTicketMutex.Lock()
-	ret, specificReturn := fake.spentForTicketReturnsOnCall[len(fake.spentForTicketArgsForCall)]
-	fake.spentForTicketArgsForCall = append(fake.spentForTicketArgsForCall, struct {
-		arg1 int
-	}{arg1})
-	stub := fake.SpentForTicketStub
-	fakeReturns := fake.spentForTicketReturns
-	fake.recordInvocation("SpentForTicket", []interface{}{arg1})
-	fake.spentForTicketMutex.Unlock()
-	if stub != nil {
-		return stub(arg1)
-	}
-	if specificReturn {
-		return ret.result1, ret.result2
-	}
-	return fakeReturns.result1, fakeReturns.result2
-}
-
-func (fake *FakeLedger) SpentForTicketCallCount() int {
-	fake.spentForTicketMutex.RLock()
-	defer fake.spentForTicketMutex.RUnlock()
-	return len(fake.spentForTicketArgsForCall)
-}
-
-func (fake *FakeLedger) SpentForTicketCalls(stub func(int) (float64, error)) {
-	fake.spentForTicketMutex.Lock()
-	defer fake.spentForTicketMutex.Unlock()
-	fake.SpentForTicketStub = stub
-}
-
-func (fake *FakeLedger) SpentForTicketArgsForCall(i int) int {
-	fake.spentForTicketMutex.RLock()
-	defer fake.spentForTicketMutex.RUnlock()
-	argsForCall := fake.spentForTicketArgsForCall[i]
-	return argsForCall.arg1
-}
-
-func (fake *FakeLedger) SpentForTicketReturns(result1 float64, result2 error) {
-	fake.spentForTicketMutex.Lock()
-	defer fake.spentForTicketMutex.Unlock()
-	fake.SpentForTicketStub = nil
-	fake.spentForTicketReturns = struct {
-		result1 float64
-		result2 error
-	}{result1, result2}
-}
-
-func (fake *FakeLedger) SpentForTicketReturnsOnCall(i int, result1 float64, result2 error) {
-	fake.spentForTicketMutex.Lock()
-	defer fake.spentForTicketMutex.Unlock()
-	fake.SpentForTicketStub = nil
-	if fake.spentForTicketReturnsOnCall == nil {
-		fake.spentForTicketReturnsOnCall = make(map[int]struct {
-			result1 float64
-			result2 error
-		})
-	}
-	fake.spentForTicketReturnsOnCall[i] = struct {
-		result1 float64
 		result2 error
 	}{result1, result2}
 }

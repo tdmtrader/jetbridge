@@ -96,7 +96,7 @@ func TestExperimentBinderPreservesNonV3PlatformFailureClassification(t *testing.
 		&budgetStub{},
 		&saverStub{},
 		&creatorStub{},
-		&secretStub{},
+		&credentialStub{},
 	)
 	if err != nil {
 		t.Fatal(err)

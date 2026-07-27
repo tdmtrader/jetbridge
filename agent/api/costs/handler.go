@@ -84,14 +84,14 @@ func (h *Handler) SubmitRecord(w http.ResponseWriter, r *http.Request) {
 }
 
 // GetRollup handles GET /api/v1/agent/costs
-// (?group_by=user|ticket|day|workflow&since=&until=).
+// (?group_by=user|day|workflow|model|step&since=&until=).
 func (h *Handler) GetRollup(w http.ResponseWriter, r *http.Request) {
 	groupBy := r.URL.Query().Get("group_by")
 	if groupBy == "" {
 		groupBy = budget.GroupByDay
 	}
 	if !budget.ValidGroupBy(groupBy) {
-		http.Error(w, fmt.Sprintf("group_by must be one of user|ticket|day|workflow|model|step, got %q", groupBy), http.StatusBadRequest)
+		http.Error(w, fmt.Sprintf("group_by must be one of user|day|workflow|model|step, got %q", groupBy), http.StatusBadRequest)
 		return
 	}
 

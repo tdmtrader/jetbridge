@@ -47,11 +47,15 @@ const maxSummaryChars = 500
 
 // Config drives one agent-step execution.
 type Config struct {
-	Prompt       string
-	PromptFile   string
-	Model        string
-	MaxTurns     int
-	OutputSchema string
+	Prompt   string
+	Model    string
+	MaxTurns int
+
+	// ModelTokenKind names the credential the mounted platform token is
+	// (schema §8.2 "kind": anthropic_oauth | anthropic_api_key). Empty means
+	// oauth — an operator-created secret predating the key, and the shape old
+	// runner images assumed.
+	ModelTokenKind string
 
 	// Source-format layers (design 2026-07-17 §4).
 	SystemPrompt string   // appended to claude's baseline via --append-system-prompt
@@ -81,15 +85,11 @@ type Config struct {
 	// Step identity for the step.start payload (shared-contracts §5):
 	// build_id and plan_id are the correlation key consumers use to join
 	// the event stream back to its agent_run_metrics row, so they are NOT
-	// optional. The remaining fields are the optional ticket/workflow/budget
-	// tags; zero values mean absent (pure-CI step).
-	BuildID         int
-	PlanID          string
-	TicketID        int
-	WorkflowName    string
-	WorkflowVersion int
-	WorkflowHash    string
-	BudgetSliceUSD  float64
+	// optional. Durable workflow identity is server-side (agent_workflow_runs)
+	// and never travels through pod env.
+	BuildID        int
+	PlanID         string
+	BudgetSliceUSD float64
 }
 
 type SnapshotAuthority struct {
@@ -118,9 +118,8 @@ func FromEnv() Config {
 
 	cfg := Config{
 		Prompt:         os.Getenv("AGENT_PROMPT"),
-		PromptFile:     os.Getenv("AGENT_PROMPT_FILE"),
 		Model:          os.Getenv("AGENT_MODEL"),
-		OutputSchema:   os.Getenv("AGENT_OUTPUT_SCHEMA"),
+		ModelTokenKind: os.Getenv("AGENT_MODEL_TOKEN_KIND"),
 		SystemPrompt:   os.Getenv("AGENT_SYSTEM_PROMPT"),
 		Context:        os.Getenv("AGENT_CONTEXT"),
 		SkillsDir:      os.Getenv("AGENT_SKILLS_DIR"),
@@ -132,16 +131,10 @@ func FromEnv() Config {
 		InputSnapshots: map[string]SnapshotAuthority{},
 		RecordOutputs:  map[string]RecordAuthority{},
 
-		// §5 step.start identity: BUILD_ID is jetbridge/exec-injected;
-		// AGENT_PLAN_ID is set by the agent-step exec (never public YAML);
-		// AGENT_TICKET_ID and AGENT_WORKFLOW_* arrive via renderer-emitted
-		// plan env, empty for pure-CI steps.
-		PlanID:          os.Getenv("AGENT_PLAN_ID"),
-		BuildID:         envInt("BUILD_ID"),
-		TicketID:        envInt("AGENT_TICKET_ID"),
-		WorkflowName:    os.Getenv("AGENT_WORKFLOW_NAME"),
-		WorkflowVersion: envInt("AGENT_WORKFLOW_VERSION"),
-		WorkflowHash:    os.Getenv("AGENT_WORKFLOW_HASH"),
+		// §5 step.start identity: BUILD_ID is jetbridge/exec-injected and
+		// AGENT_PLAN_ID is set by the agent-step exec (never public YAML).
+		PlanID:  os.Getenv("AGENT_PLAN_ID"),
+		BuildID: envInt("BUILD_ID"),
 	}
 
 	if v := os.Getenv("AGENT_BUDGET_SLICE_USD"); v != "" {
@@ -227,24 +220,8 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 		claudePath = "claude"
 	}
 
-	// output_schema is plumbed end-to-end (config -> AgentPlan ->
-	// AGENT_OUTPUT_SCHEMA -> Config.OutputSchema) but the runner does not yet
-	// validate the claude result against it. Warn loudly rather than silently
-	// ignore the field, so a user declaring output_schema is not misled into
-	// believing the result is being enforced (review finding, 2026-07-12).
-	if cfg.OutputSchema != "" {
-		fmt.Fprintf(stderr, "agent-runner: warning: output_schema %q is declared but not yet enforced; the claude result is not validated against it\n", cfg.OutputSchema)
-	}
-
-	// 1. Resolve the prompt: inline wins, else artifact-relative file.
+	// 1. The compiler always inlines the prompt.
 	prompt := cfg.Prompt
-	if prompt == "" && cfg.PromptFile != "" {
-		raw, err := os.ReadFile(filepath.Join(cfg.WorkDir, cfg.PromptFile))
-		if err != nil {
-			return 2, fmt.Errorf("read prompt file: %w", err)
-		}
-		prompt = string(raw)
-	}
 	if prompt == "" {
 		return 2, errors.New("no prompt configured")
 	}
@@ -343,23 +320,12 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	// are the correlation key consumers (scorecards, process-intel drill-down)
 	// use to join this event stream back to its agent_run_metrics row, so
 	// they must never be left zero (review finding, 2026-07-12).
-	startData := schema.StepStartData{
+	writeEvent(events, schema.EventStepStart, schema.StepStartData{
 		StepName:       cfg.StepName,
 		BuildID:        cfg.BuildID,
 		PlanID:         cfg.PlanID,
-		WorkflowName:   cfg.WorkflowName,
-		WorkflowHash:   cfg.WorkflowHash,
 		BudgetSliceUSD: cfg.BudgetSliceUSD,
-	}
-	if cfg.TicketID > 0 {
-		ticketID := cfg.TicketID
-		startData.TicketID = &ticketID
-	}
-	if cfg.WorkflowVersion > 0 {
-		workflowVersion := cfg.WorkflowVersion
-		startData.WorkflowVersion = &workflowVersion
-	}
-	writeEvent(events, schema.EventStepStart, startData)
+	})
 
 	// 2. Wait for every declared MCP sidecar to become healthy. A sidecar
 	// that never comes up is a platform error, not an agent failure.
@@ -439,6 +405,7 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
 	cmd.Dir = cfg.WorkDir
+	cmd.Env = claudeEnv(os.Environ(), cfg.ModelTokenKind)
 	cmd.Stdout = io.MultiWriter(&buf, stdout)
 	cmd.Stderr = stderr
 	cmd.WaitDelay = claudeWaitDelay
@@ -528,6 +495,42 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	})
 
 	return exitCode, nil
+}
+
+// Model-credential kinds, mirroring credentials.KindAnthropic* (duplicated
+// rather than imported: the runner ships inside the agent-runner image and
+// must not drag the web's credential package into the pod binary).
+const (
+	kindAnthropicOAuth  = "anthropic_oauth"
+	kindAnthropicAPIKey = "anthropic_api_key"
+)
+
+// claudeEnv maps the mounted platform token onto the credential variable the
+// claude CLI expects for its kind. The pod always receives the token as
+// CLAUDE_CODE_OAUTH_TOKEN (one secretKeyRef, §8.2); only the vault knows
+// whether it is really an OAuth token or a raw API key. An API key must be
+// exported as ANTHROPIC_API_KEY *and* the OAuth variable dropped — leaving
+// both set makes the CLI prefer the OAuth path and fail to authenticate.
+// Absent/unknown kind is oauth: that is what every secret written before the
+// "kind" key holds.
+func claudeEnv(env []string, kind string) []string {
+	if kind != kindAnthropicAPIKey {
+		return env
+	}
+	out := make([]string, 0, len(env)+1)
+	token := ""
+	for _, kv := range env {
+		name, value, ok := strings.Cut(kv, "=")
+		if ok && name == "CLAUDE_CODE_OAUTH_TOKEN" {
+			token = value
+			continue
+		}
+		if ok && name == "ANTHROPIC_API_KEY" {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return append(out, "ANTHROPIC_API_KEY="+token)
 }
 
 func sortedAuthorityNames[T any](values map[string]T) []string {

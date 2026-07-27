@@ -32,7 +32,7 @@ func TestListByWorkflowRun(t *testing.T) {
 	runID := schema.WorkflowRunID(71)
 	if err := store.Upsert(&schema.RunMetrics{
 		BuildID: 9001, PlanID: "p1", StepName: "review-diff", Status: "ok",
-		WorkflowName: "code-review", WorkflowRunID: &runID, FunctionID: "review",
+		WorkflowRunID: &runID, FunctionID: "review",
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -40,7 +40,7 @@ func TestListByWorkflowRun(t *testing.T) {
 	other := schema.WorkflowRunID(72)
 	if err := store.Upsert(&schema.RunMetrics{
 		BuildID: 9002, PlanID: "p1", StepName: "x", Status: "ok",
-		WorkflowName: "code-review", WorkflowRunID: &other,
+		WorkflowRunID: &other,
 	}); err != nil {
 		t.Fatalf("seed other: %v", err)
 	}

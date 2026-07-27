@@ -16,15 +16,15 @@ const (
 	EventPushDone       EventType = "push.done"
 )
 
+// StepStartData is the pod's view of the step: (build_id, plan_id) is the §5
+// correlation key back to the agent_run_metrics row, which carries the durable
+// workflow identity server-side. The pod is never told which workflow run it
+// belongs to.
 type StepStartData struct {
-	StepName        string  `json:"step_name"`
-	BuildID         int     `json:"build_id"`
-	PlanID          string  `json:"plan_id"`
-	TicketID        *int    `json:"ticket_id,omitempty"`
-	WorkflowName    string  `json:"workflow_name,omitempty"`
-	WorkflowVersion *int    `json:"workflow_version,omitempty"`
-	WorkflowHash    string  `json:"workflow_hash,omitempty"`
-	BudgetSliceUSD  float64 `json:"budget_slice_usd,omitempty"`
+	StepName       string  `json:"step_name"`
+	BuildID        int     `json:"build_id"`
+	PlanID         string  `json:"plan_id"`
+	BudgetSliceUSD float64 `json:"budget_slice_usd,omitempty"`
 }
 
 type StepEndData struct {

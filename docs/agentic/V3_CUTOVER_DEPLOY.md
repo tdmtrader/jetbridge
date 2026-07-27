@@ -16,7 +16,7 @@ historical agent data needs to be preserved.
 | Execution identity | ticket + `agent-ticket-<id>` pipeline | **durable workflow run** |
 | Delivery | `harvest:` step pushed from the pod | `publish_snapshot` → publisher → **gateway** |
 | Merge compute | `merge:` step (pod-side push) | **`agent/functions/repositorymerge`** via `function-runner` |
-| Migration head | `1773106095` | **`1773106128`** |
+| Migration head | `1773106095` | **`1773106130`** |
 
 ## Order of operations
 
@@ -42,7 +42,7 @@ reject a tag. Agent steps error at runtime when it is unset.
 
 ### 3. Reset the database
 
-Migrations `1773106100`–`1773106128` all apply in one boot. Because no history is
+Migrations `1773106100`–`1773106130` all apply in one boot. Because no history is
 being preserved, dropping the database is cleaner than migrating through:
 
 - it skips `1773106124`'s backfill, which would otherwise NULL every historical
@@ -57,10 +57,48 @@ being preserved, dropping the database is cleaner than migrating through:
   dropped database there is nothing to backfill.
 - `1773106128` — partial index on `agent_workflow_runs (template_pipeline_id)`,
   probed by the workflow-run template collector and the resource-capture
-  reads; on a dropped database there is nothing to index.
+  reads; on a dropped database there is nothing to index;
+- `1773106129` moves spend attribution onto `agent_cost_ledger.workflow_run_id`
+  + `function_id`, drops the v2 `ticket_id`/`pipeline_run_id` columns, and
+  narrows the source CHECK to `agent_step|ci_agent` — **deleting any ledger row
+  whose source was `gateway`, `harvest_judge`, `retrospective` or `probe`**;
+- `1773106130` drops `agent_run_metrics.workflow_name/version/hash`; workflow
+  identity is read through `agent_workflow_runs`.
 
 Verify afterwards: `docs/migration/migrate-preflight.sh` expects
-`JETBRIDGE_VERSION=1773106128`.
+`JETBRIDGE_VERSION=1773106130`.
+
+### 3a. Vault the platform credential — the only model-credential path
+
+Per-run `agent-run-<id>` secrets are gone. Every agent pod now mounts
+`CLAUDE_CODE_OAUTH_TOKEN` from **one** secret, and
+`--agent-platform-token-secret` now **defaults to `agent-platform-credential`**
+— the secret the platform-credential syncer maintains from the vaulted platform
+credential:
+
+```bash
+fly -t <target> agent auth --platform      # vault the platform credential
+```
+
+Without a vaulted credential the syncer deletes that secret, and workflow-run
+binding fails closed (`no usable platform Anthropic credential`) before any
+build is created.
+
+A deployment that instead created the secret **by hand under a different name**
+must keep passing `--agent-platform-token-secret <name>`
+(`CONCOURSE_AGENT_PLATFORM_TOKEN_SECRET`). Binding takes an operator-named
+secret at face value — the web never reads Kubernetes to check it — so its
+contents are the operator's responsibility.
+
+The syncer now also writes a second data key, **`kind`**
+(`anthropic_oauth` | `anthropic_api_key`), beside `anthropic-token`, and the
+agent step injects it as `AGENT_MODEL_TOKEN_KIND` via an **optional**
+`secretKeyRef`. An operator-created secret without that key still starts pods
+and is treated as OAuth. This is why the **agent-runner image must be rebuilt
+with this web deploy** (step 1): the runner maps `AGENT_MODEL_TOKEN_KIND ==
+anthropic_api_key` onto `ANTHROPIC_API_KEY` for the claude child process. An
+older runner image keeps working for OAuth tokens, but will not authenticate a
+raw API key.
 
 ### 4. Deploy the web, then import v3 workflow sources
 

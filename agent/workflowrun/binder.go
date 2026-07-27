@@ -34,7 +34,7 @@ type Binder struct {
 	budget      BudgetAdmitter
 	templates   ImmutableTemplateSaver
 	executions  PipelineRunCreator
-	secrets     RunSecretPreparer
+	credential  ModelCredentialAdmitter
 }
 
 func NewBinder(
@@ -45,17 +45,17 @@ func NewBinder(
 	budget BudgetAdmitter,
 	templates ImmutableTemplateSaver,
 	executions PipelineRunCreator,
-	secrets RunSecretPreparer,
+	credential ModelCredentialAdmitter,
 ) (*Binder, error) {
 	for name, dependency := range map[string]any{
-		"definition resolver":  definitions,
-		"target renderer":      renderer,
-		"snapshot authorizer":  snapshots,
-		"workflow-run store":   runs,
-		"budget admitter":      budget,
-		"template saver":       templates,
-		"pipeline-run creator": executions,
-		"secret preparer":      secrets,
+		"definition resolver":       definitions,
+		"target renderer":           renderer,
+		"snapshot authorizer":       snapshots,
+		"workflow-run store":        runs,
+		"budget admitter":           budget,
+		"template saver":            templates,
+		"pipeline-run creator":      executions,
+		"model credential admitter": credential,
 	} {
 		if nilInterface(dependency) {
 			return nil, fmt.Errorf("%w: %s is required", ErrInvalidRequest, name)
@@ -63,7 +63,7 @@ func NewBinder(
 	}
 	return &Binder{
 		definitions: definitions, renderer: renderer, snapshots: snapshots, runs: runs,
-		budget: budget, templates: templates, executions: executions, secrets: secrets,
+		budget: budget, templates: templates, executions: executions, credential: credential,
 	}, nil
 }
 
@@ -340,13 +340,12 @@ func (b *Binder) resume(
 		return b.failAllocated(ctx, admission, request, run, created, err)
 	}
 
-	prepared, err := b.secrets.Prepare(ctx, cloneAdmission(admission), cloneRun(run))
-	if err != nil || nilInterface(prepared) {
-		// Secret resolution is an external/platform dependency and is safe to
+	if err := b.credential.AdmitModelCredential(ctx); err != nil {
+		// The model credential is an external/platform dependency and is safe to
 		// replay against the same admitting run. Keeping the durable identity
 		// admitting avoids poisoning the caller's idempotency key. Never include
 		// backend detail here: it may contain credential material.
-		return BindResult{}, fmt.Errorf("%w: prepare run secret", ErrPlatformFailure)
+		return BindResult{}, fmt.Errorf("%w: admit model credential", ErrPlatformFailure)
 	}
 	templateRef, err := b.templates.SaveOrReuse(ctx, cloneAdmission(admission), ImmutableTemplateSpec{
 		Name: templateName, FullHash: hash, CanonicalJSON: append([]byte(nil), canonical...), Config: cloneConfig(config),
@@ -359,11 +358,11 @@ func (b *Binder) resume(
 		// idempotent by the immutable full hash.
 		return BindResult{}, fmt.Errorf("%w: save immutable template", ErrPlatformFailure)
 	}
+	// No pre-commit callback: agent pods read the platform secret directly, so
+	// nothing has to happen between allocating the pipeline run and committing
+	// it. The seam stays on the store for callers that do need one.
 	_, _, err = b.executions.CreateRunForWorkflowRun(
-		ctx, run.ID, templateRef, cloneParams(params), run.CreatedBy,
-		func(callbackCtx context.Context, pipelineRunID int) error {
-			return prepared.Attach(callbackCtx, pipelineRunID)
-		},
+		ctx, run.ID, templateRef, cloneParams(params), run.CreatedBy, nil,
 	)
 	if err != nil {
 		cause := fmt.Errorf("%w: create workflow execution", ErrPlatformFailure)
