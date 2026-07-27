@@ -381,6 +381,8 @@ type RunCommand struct {
 		CheckRecyclePeriod         time.Duration `long:"check-recycle-period" default:"1m" description:"Period after which to reap checks that are completed."`
 		VarSourceRecyclePeriod     time.Duration `long:"var-source-recycle-period" default:"5m" description:"Period after which to reap var_sources that are not used."`
 		DeprecatedScopeGracePeriod time.Duration `long:"deprecated-scope-grace-period" default:"720h" description:"Period after which deprecated resource config scopes (from resource type/source changes) will be garbage collected. Default 30 days."`
+
+		WorkflowRunTemplateGracePeriod time.Duration `long:"workflow-run-template-grace-period" default:"24h" description:"Period after which a server-owned workflow-run template that never executed will be garbage collected. Must exceed --agent-workflow-run-admission-timeout."`
 	} `group:"Garbage Collection" namespace:"gc"`
 
 	TelemetryOptIn bool `long:"telemetry-opt-in" hidden:"true" description:"Enable anonymous concourse version reporting."`
@@ -2361,6 +2363,20 @@ func (cmd *RunCommand) gcComponents(
 		})
 	}
 
+	// Reclaiming one-shot workflow-run templates is never urgent and the pass
+	// takes the pipelines row lock that workflow admission needs, so it runs on
+	// its own slow cadence instead of the 10s collector default.
+	components = append(components, RunnableComponent{
+		Component: atc.Component{
+			Name: atc.ComponentCollectorWorkflowRunTemplates,
+		},
+		Runnable: gc.NewWorkflowRunTemplateCollector(
+			db.NewWorkflowRunTemplateLifecycle(gcConn),
+			cmd.GC.WorkflowRunTemplateGracePeriod,
+		),
+		Interval: 5 * time.Minute,
+	})
+
 	return components, nil
 }
 
@@ -2719,6 +2735,10 @@ func (cmd *RunCommand) validate() error {
 		errs = multierror.Append(errs, err)
 	}
 
+	if err := cmd.validateGarbageCollection(); err != nil {
+		errs = multierror.Append(errs, err)
+	}
+
 	return errs.ErrorOrNil()
 }
 
@@ -2734,6 +2754,22 @@ func (cmd *RunCommand) validateAgentWorkflowRuns() error {
 		cmd.AgentWorkflowRuns.AdmissionTimeout > 0 &&
 		cmd.AgentWorkflowRuns.ReconcilerInterval > cmd.AgentWorkflowRuns.AdmissionTimeout/2 {
 		errs = multierror.Append(errs, errors.New("--agent-workflow-run-admission-timeout must be at least twice --agent-workflow-run-reconciler-interval"))
+	}
+	return errs.ErrorOrNil()
+}
+
+func (cmd *RunCommand) validateGarbageCollection() error {
+	var errs *multierror.Error
+	if cmd.GC.WorkflowRunTemplateGracePeriod <= 0 {
+		errs = multierror.Append(errs, errors.New("--gc-workflow-run-template-grace-period must be positive"))
+	}
+	// An admission holds a template reference for as long as it may still run,
+	// so reclaiming templates younger than that could delete one out from under
+	// an admission that is about to execute it.
+	if cmd.GC.WorkflowRunTemplateGracePeriod > 0 &&
+		cmd.AgentWorkflowRuns.AdmissionTimeout > 0 &&
+		cmd.GC.WorkflowRunTemplateGracePeriod <= cmd.AgentWorkflowRuns.AdmissionTimeout {
+		errs = multierror.Append(errs, errors.New("--gc-workflow-run-template-grace-period must be greater than --agent-workflow-run-admission-timeout"))
 	}
 	return errs.ErrorOrNil()
 }

@@ -20,6 +20,7 @@ const (
 	ComponentCollectorWorkers              = "collector_workers"
 	ComponentCollectorPipelines            = "collector_pipelines"
 	ComponentCollectorDeprecatedScopes     = "collector_deprecated_scopes"
+	ComponentCollectorWorkflowRunTemplates = "collector_workflow_run_templates"
 	ComponentK8sWorkerRegistrar            = "k8s_worker_registrar"
 	ComponentK8sWorkerReaper               = "k8s_worker_reaper"
 	ComponentAgentPlatformCredentialSyncer = "agent_platform_credential_syncer"

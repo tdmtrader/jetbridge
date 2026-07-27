@@ -3,7 +3,6 @@ package db
 import (
 	"context"
 	"database/sql"
-	"errors"
 
 	sq "github.com/Masterminds/squirrel"
 	"github.com/concourse/concourse/atc"
@@ -13,10 +12,14 @@ import (
 // WorkflowRunTemplateFactory owns the authoritative registry for immutable
 // templates that may only be executed through durable workflow admission.
 // Ordinary Concourse templates never enter this registry.
+//
+// Destruction is deliberately not part of this interface: reclaiming an
+// abandoned template is WorkflowRunTemplateLifecycle's job, which holds the
+// row lock and honours the admission grace period. A second entry point would
+// be a second copy of that predicate to keep in sync.
 type WorkflowRunTemplateFactory interface {
 	SaveWorkflowRunTemplate(context.Context, int, atc.PipelineRef, atc.Config) (Pipeline, bool, error)
 	IsWorkflowRunTemplate(context.Context, int) (bool, error)
-	DestroyUnusedWorkflowRunTemplate(context.Context, int) (bool, error)
 }
 
 func NewWorkflowRunTemplateFactory(conn DbConn, lockFactory lock.LockFactory) WorkflowRunTemplateFactory {
@@ -88,52 +91,4 @@ func (f *workflowRunTemplateFactory) IsWorkflowRunTemplate(ctx context.Context, 
 		)
 	`, pipelineID).Scan(&owned)
 	return owned, err
-}
-
-// DestroyUnusedWorkflowRunTemplate is the explicit server-owned cleanup path.
-// It can remove a template abandoned before execution admission, but it will
-// never erase a template once pipeline-run or durable workflow history points
-// at it. Ordinary Pipeline.Destroy remains guarded for every marked template.
-func (f *workflowRunTemplateFactory) DestroyUnusedWorkflowRunTemplate(ctx context.Context, pipelineID int) (bool, error) {
-	if pipelineID <= 0 {
-		return false, nil
-	}
-	tx, err := f.conn.BeginTx(ctx, nil)
-	if err != nil {
-		return false, err
-	}
-	defer Rollback(tx)
-
-	var destroyedID int
-	err = tx.QueryRowContext(ctx, `
-		DELETE FROM pipelines AS pipeline
-		WHERE pipeline.id = $1
-		  AND EXISTS (
-			SELECT 1
-			FROM agent_workflow_run_templates owned
-			WHERE owned.pipeline_id = pipeline.id
-		  )
-		  AND NOT EXISTS (
-			SELECT 1
-			FROM pipeline_runs execution
-			WHERE execution.template_pipeline_id = pipeline.id
-		  )
-		  AND NOT EXISTS (
-			SELECT 1
-			FROM agent_workflow_runs durable
-			WHERE durable.template_pipeline_id = pipeline.id
-		  )
-		RETURNING pipeline.id
-	`, pipelineID).Scan(&destroyedID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	if err := tx.Commit(); err != nil {
-		return false, err
-	}
-	f.conn.Bus().Notify(atc.ComponentCollectorPipelines)
-	return true, nil
 }

@@ -16,7 +16,7 @@ historical agent data needs to be preserved.
 | Execution identity | ticket + `agent-ticket-<id>` pipeline | **durable workflow run** |
 | Delivery | `harvest:` step pushed from the pod | `publish_snapshot` → publisher → **gateway** |
 | Merge compute | `merge:` step (pod-side push) | **`agent/functions/repositorymerge`** via `function-runner` |
-| Migration head | `1773106095` | **`1773106127`** |
+| Migration head | `1773106095` | **`1773106128`** |
 
 ## Order of operations
 
@@ -42,7 +42,7 @@ reject a tag. Agent steps error at runtime when it is unset.
 
 ### 3. Reset the database
 
-Migrations `1773106100`–`1773106127` all apply in one boot. Because no history is
+Migrations `1773106100`–`1773106128` all apply in one boot. Because no history is
 being preserved, dropping the database is cleaner than migrating through:
 
 - it skips `1773106124`'s backfill, which would otherwise NULL every historical
@@ -55,9 +55,12 @@ being preserved, dropping the database is cleaner than migrating through:
   `agent_snapshot_exposure_paths`) plus a backfill that records every existing
   lineage row as a `full` exposure of its input snapshot's own digest; on a
   dropped database there is nothing to backfill.
+- `1773106128` — partial index on `agent_workflow_runs (template_pipeline_id)`,
+  probed by the workflow-run template collector and the resource-capture
+  reads; on a dropped database there is nothing to index.
 
 Verify afterwards: `docs/migration/migrate-preflight.sh` expects
-`JETBRIDGE_VERSION=1773106127`.
+`JETBRIDGE_VERSION=1773106128`.
 
 ### 4. Deploy the web, then import v3 workflow sources
 

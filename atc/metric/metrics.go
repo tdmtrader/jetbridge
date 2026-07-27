@@ -121,6 +121,21 @@ func (event DeprecatedScopeCollectorDuration) Emit(logger lager.Logger) {
 	RecordGCCollectorDuration(context.Background(), "deprecated-scope", ms(event.Duration))
 }
 
+type WorkflowRunTemplateCollectorDuration struct {
+	Duration time.Duration
+}
+
+func (event WorkflowRunTemplateCollectorDuration) Emit(logger lager.Logger) {
+	Metrics.emit(
+		logger.Session("gc-workflow-run-template-collector-duration"),
+		Event{
+			Name:  "gc: workflow run template collector duration (ms)",
+			Value: ms(event.Duration),
+		},
+	)
+	RecordGCCollectorDuration(context.Background(), "workflow-run-template", ms(event.Duration))
+}
+
 type ResourceCacheCollectorDuration struct {
 	Duration time.Duration
 }

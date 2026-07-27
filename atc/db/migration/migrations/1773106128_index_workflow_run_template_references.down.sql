@@ -1,0 +1,1 @@
+DROP INDEX agent_workflow_runs_template_pipeline;

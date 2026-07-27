@@ -38,7 +38,9 @@ v8.0.1:1765921815
 # 1773106127 = agent_snapshot_exposures/_exposure_paths (exposure and
 # materialization lineage). Its down migration drops static-selector path
 # sets; full-tree exposure is re-derivable from agent_snapshot_lineage.
-JETBRIDGE_VERSION=1773106127
+# 1773106128 = partial index on agent_workflow_runs.template_pipeline_id, for
+# the abandoned workflow-run template collector. Index only; down drops it.
+JETBRIDGE_VERSION=1773106128
 
 # Minimum supported source version (v6.x)
 MIN_SUPPORTED_VERSION=1601993582

@@ -63,48 +63,8 @@ var _ = Describe("WorkflowRunTemplateFactory", func() {
 		Expect(owned).To(BeFalse())
 	})
 
-	It("allows only the workflow owner to clean up a template with no execution history", func() {
-		pipeline, created, err := factory.SaveWorkflowRunTemplate(
-			context.Background(), defaultTeam.ID(), atc.PipelineRef{Name: "unused-owned-workflow-template"}, config,
-		)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(created).To(BeTrue())
-
-		destroyed, err := factory.DestroyUnusedWorkflowRunTemplate(context.Background(), pipeline.ID())
-		Expect(err).NotTo(HaveOccurred())
-		Expect(destroyed).To(BeTrue())
-
-		_, found, err := defaultTeam.Pipeline(atc.PipelineRef{Name: pipeline.Name()})
-		Expect(err).NotTo(HaveOccurred())
-		Expect(found).To(BeFalse())
-		owned, err := factory.IsWorkflowRunTemplate(context.Background(), pipeline.ID())
-		Expect(err).NotTo(HaveOccurred())
-		Expect(owned).To(BeFalse())
-	})
-
-	It("preserves a workflow template once execution history references it", func() {
-		pipeline, created, err := factory.SaveWorkflowRunTemplate(
-			context.Background(), defaultTeam.ID(), atc.PipelineRef{Name: "used-owned-workflow-template"}, config,
-		)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(created).To(BeTrue())
-		_, err = dbConn.Exec(`
-			INSERT INTO pipeline_runs (template_pipeline_id, number, params, created_by)
-			VALUES ($1, 1, '{}', 'workflow-owner')
-		`, pipeline.ID())
-		Expect(err).NotTo(HaveOccurred())
-
-		destroyed, err := factory.DestroyUnusedWorkflowRunTemplate(context.Background(), pipeline.ID())
-		Expect(err).NotTo(HaveOccurred())
-		Expect(destroyed).To(BeFalse())
-
-		_, found, err := defaultTeam.Pipeline(atc.PipelineRef{Name: pipeline.Name()})
-		Expect(err).NotTo(HaveOccurred())
-		Expect(found).To(BeTrue())
-		owned, err := factory.IsWorkflowRunTemplate(context.Background(), pipeline.ID())
-		Expect(err).NotTo(HaveOccurred())
-		Expect(owned).To(BeTrue())
-	})
+	// Destroying an owned template is WorkflowRunTemplateLifecycle's contract,
+	// covered in workflow_run_template_lifecycle_test.go.
 
 	It("refuses to register an instance or non-template pipeline", func() {
 		_, _, err := factory.SaveWorkflowRunTemplate(

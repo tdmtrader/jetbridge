@@ -148,6 +148,46 @@ func (s *CommandSuite) TestAgentWorkflowRunReconcilerDurationsAreValid() {
 	s.NoError(atccmd.ValidateAgentWorkflowRunsForTest(command))
 }
 
+func (s *CommandSuite) TestWorkflowRunTemplateGracePeriodFlagDefault() {
+	cmd := &atccmd.ATCCommand{}
+	parser := flags.NewParser(cmd, flags.Default)
+	parser.NamespaceDelimiter = "-"
+	runCmd := parser.Find("run")
+
+	grace := runCmd.FindOptionByLongName("gc-workflow-run-template-grace-period")
+	s.NotNil(grace)
+	s.Equal([]string{"24h"}, grace.Default)
+}
+
+func (s *CommandSuite) TestWorkflowRunTemplateGracePeriodOutlastsAdmission() {
+	tests := map[string]struct {
+		grace   time.Duration
+		timeout time.Duration
+		want    string
+	}{
+		"zero grace":      {grace: 0, timeout: 15 * time.Minute, want: "must be positive"},
+		"negative grace":  {grace: -time.Second, timeout: 15 * time.Minute, want: "must be positive"},
+		"grace too short": {grace: 10 * time.Minute, timeout: 15 * time.Minute, want: "must be greater than --agent-workflow-run-admission-timeout"},
+		"grace equal": {grace: 15 * time.Minute, timeout: 15 * time.Minute,
+			want: "must be greater than --agent-workflow-run-admission-timeout"},
+	}
+	for name, test := range tests {
+		s.Run(name, func() {
+			command := &atccmd.RunCommand{}
+			command.GC.WorkflowRunTemplateGracePeriod = test.grace
+			command.AgentWorkflowRuns.AdmissionTimeout = test.timeout
+			err := atccmd.ValidateGarbageCollectionForTest(command)
+			s.Error(err)
+			s.Contains(err.Error(), test.want)
+		})
+	}
+
+	command := &atccmd.RunCommand{}
+	command.GC.WorkflowRunTemplateGracePeriod = 24 * time.Hour
+	command.AgentWorkflowRuns.AdmissionTimeout = 15 * time.Minute
+	s.NoError(atccmd.ValidateGarbageCollectionForTest(command))
+}
+
 func (s *CommandSuite) TestAgentSnapshotNumericBoundsAreAlwaysPositive() {
 	for name, mutate := range map[string]func(*atccmd.RunCommand){
 		"replication":       func(command *atccmd.RunCommand) { command.AgentSnapshots.ReplicationFactor = 0 },

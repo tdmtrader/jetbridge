@@ -17,3 +17,7 @@ func ValidateAgentWorkflowRunsForTest(cmd *RunCommand) error {
 func ValidateAgentPublisherGatewayForTest(cmd *RunCommand) error {
 	return cmd.validateAgentPublisherGateway()
 }
+
+func ValidateGarbageCollectionForTest(cmd *RunCommand) error {
+	return cmd.validateGarbageCollection()
+}
