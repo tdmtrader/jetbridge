@@ -16,17 +16,20 @@ import (
 const workflowRunTemplateBatchSize = 100
 
 type workflowRunTemplateCollector struct {
-	lifecycle   db.WorkflowRunTemplateLifecycle
-	gracePeriod time.Duration
+	lifecycle        db.WorkflowRunTemplateLifecycle
+	gracePeriod      time.Duration
+	retirementPeriod time.Duration
 }
 
 func NewWorkflowRunTemplateCollector(
 	lifecycle db.WorkflowRunTemplateLifecycle,
 	gracePeriod time.Duration,
+	retirementPeriod time.Duration,
 ) *workflowRunTemplateCollector {
 	return &workflowRunTemplateCollector{
-		lifecycle:   lifecycle,
-		gracePeriod: gracePeriod,
+		lifecycle:        lifecycle,
+		gracePeriod:      gracePeriod,
+		retirementPeriod: retirementPeriod,
 	}
 }
 
@@ -50,6 +53,17 @@ func (c *workflowRunTemplateCollector) Run(ctx context.Context) error {
 	}
 	if destroyed > 0 {
 		logger.Info("removed-abandoned-workflow-run-templates", lager.Data{"destroyed": destroyed})
+	}
+
+	if c.retirementPeriod > 0 {
+		retired, err := c.lifecycle.RemoveRetiredWorkflowRunTemplates(ctx, c.retirementPeriod, workflowRunTemplateBatchSize)
+		if err != nil {
+			logger.Error("failed-to-remove-retired-workflow-run-templates", err)
+			return err
+		}
+		if retired > 0 {
+			logger.Info("removed-retired-workflow-run-templates", lager.Data{"destroyed": retired})
+		}
 	}
 
 	return nil

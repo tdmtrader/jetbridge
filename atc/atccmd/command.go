@@ -379,6 +379,8 @@ type RunCommand struct {
 		DeprecatedScopeGracePeriod time.Duration `long:"deprecated-scope-grace-period" default:"720h" description:"Period after which deprecated resource config scopes (from resource type/source changes) will be garbage collected. Default 30 days."`
 
 		WorkflowRunTemplateGracePeriod time.Duration `long:"workflow-run-template-grace-period" default:"24h" description:"Period after which a server-owned workflow-run template that never executed will be garbage collected. Must exceed --agent-workflow-run-admission-timeout."`
+
+		WorkflowRunTemplateRetirementPeriod time.Duration `long:"workflow-run-template-retirement-period" default:"720h" description:"Period after which the fully archived execution history of a superseded workflow-run template (its run records, run instance pipelines, and the template itself) is destroyed as one unit. Templates that declare their own run_retention are only destroyed once that policy would discard every run. 0 disables retirement. Default 30 days."`
 	} `group:"Garbage Collection" namespace:"gc"`
 
 	TelemetryOptIn bool `long:"telemetry-opt-in" hidden:"true" description:"Enable anonymous concourse version reporting."`
@@ -1469,7 +1471,7 @@ func (cmd *RunCommand) backendComponents(
 			Component: atc.Component{
 				Name: atc.ComponentPipelineRunLifecycler,
 			},
-			Runnable: runlifecycle.NewLifecycler(dbPipelineRunFactory),
+			Runnable: runlifecycle.NewLifecycler(dbPipelineRunFactory, cmd.GC.WorkflowRunTemplateRetirementPeriod),
 		},
 		{
 			Component: atc.Component{
@@ -2422,6 +2424,7 @@ func (cmd *RunCommand) gcComponents(
 		Runnable: gc.NewWorkflowRunTemplateCollector(
 			db.NewWorkflowRunTemplateLifecycle(gcConn),
 			cmd.GC.WorkflowRunTemplateGracePeriod,
+			cmd.GC.WorkflowRunTemplateRetirementPeriod,
 		),
 		Interval: 5 * time.Minute,
 	})
@@ -2819,6 +2822,11 @@ func (cmd *RunCommand) validateGarbageCollection() error {
 		cmd.AgentWorkflowRuns.AdmissionTimeout > 0 &&
 		cmd.GC.WorkflowRunTemplateGracePeriod <= cmd.AgentWorkflowRuns.AdmissionTimeout {
 		errs = multierror.Append(errs, errors.New("--gc-workflow-run-template-grace-period must be greater than --agent-workflow-run-admission-timeout"))
+	}
+	// Zero disables the retirement pass entirely; only a negative value is a
+	// misconfiguration.
+	if cmd.GC.WorkflowRunTemplateRetirementPeriod < 0 {
+		errs = multierror.Append(errs, errors.New("--gc-workflow-run-template-retirement-period must not be negative"))
 	}
 	return errs.ErrorOrNil()
 }

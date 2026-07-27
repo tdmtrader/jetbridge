@@ -4,6 +4,7 @@ package dbfakes
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc/db"
@@ -111,6 +112,19 @@ type FakePipelineRunFactory struct {
 		result2 error
 	}
 	runningRunsReturnsOnCall map[int]struct {
+		result1 []db.PipelineRun
+		result2 error
+	}
+	RunsOfRetiredTemplatesToArchiveStub        func(time.Duration) ([]db.PipelineRun, error)
+	runsOfRetiredTemplatesToArchiveMutex       sync.RWMutex
+	runsOfRetiredTemplatesToArchiveArgsForCall []struct {
+		arg1 time.Duration
+	}
+	runsOfRetiredTemplatesToArchiveReturns struct {
+		result1 []db.PipelineRun
+		result2 error
+	}
+	runsOfRetiredTemplatesToArchiveReturnsOnCall map[int]struct {
 		result1 []db.PipelineRun
 		result2 error
 	}
@@ -575,6 +589,70 @@ func (fake *FakePipelineRunFactory) RunningRunsReturnsOnCall(i int, result1 []db
 		})
 	}
 	fake.runningRunsReturnsOnCall[i] = struct {
+		result1 []db.PipelineRun
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakePipelineRunFactory) RunsOfRetiredTemplatesToArchive(arg1 time.Duration) ([]db.PipelineRun, error) {
+	fake.runsOfRetiredTemplatesToArchiveMutex.Lock()
+	ret, specificReturn := fake.runsOfRetiredTemplatesToArchiveReturnsOnCall[len(fake.runsOfRetiredTemplatesToArchiveArgsForCall)]
+	fake.runsOfRetiredTemplatesToArchiveArgsForCall = append(fake.runsOfRetiredTemplatesToArchiveArgsForCall, struct {
+		arg1 time.Duration
+	}{arg1})
+	stub := fake.RunsOfRetiredTemplatesToArchiveStub
+	fakeReturns := fake.runsOfRetiredTemplatesToArchiveReturns
+	fake.recordInvocation("RunsOfRetiredTemplatesToArchive", []interface{}{arg1})
+	fake.runsOfRetiredTemplatesToArchiveMutex.Unlock()
+	if stub != nil {
+		return stub(arg1)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakePipelineRunFactory) RunsOfRetiredTemplatesToArchiveCallCount() int {
+	fake.runsOfRetiredTemplatesToArchiveMutex.RLock()
+	defer fake.runsOfRetiredTemplatesToArchiveMutex.RUnlock()
+	return len(fake.runsOfRetiredTemplatesToArchiveArgsForCall)
+}
+
+func (fake *FakePipelineRunFactory) RunsOfRetiredTemplatesToArchiveCalls(stub func(time.Duration) ([]db.PipelineRun, error)) {
+	fake.runsOfRetiredTemplatesToArchiveMutex.Lock()
+	defer fake.runsOfRetiredTemplatesToArchiveMutex.Unlock()
+	fake.RunsOfRetiredTemplatesToArchiveStub = stub
+}
+
+func (fake *FakePipelineRunFactory) RunsOfRetiredTemplatesToArchiveArgsForCall(i int) time.Duration {
+	fake.runsOfRetiredTemplatesToArchiveMutex.RLock()
+	defer fake.runsOfRetiredTemplatesToArchiveMutex.RUnlock()
+	argsForCall := fake.runsOfRetiredTemplatesToArchiveArgsForCall[i]
+	return argsForCall.arg1
+}
+
+func (fake *FakePipelineRunFactory) RunsOfRetiredTemplatesToArchiveReturns(result1 []db.PipelineRun, result2 error) {
+	fake.runsOfRetiredTemplatesToArchiveMutex.Lock()
+	defer fake.runsOfRetiredTemplatesToArchiveMutex.Unlock()
+	fake.RunsOfRetiredTemplatesToArchiveStub = nil
+	fake.runsOfRetiredTemplatesToArchiveReturns = struct {
+		result1 []db.PipelineRun
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakePipelineRunFactory) RunsOfRetiredTemplatesToArchiveReturnsOnCall(i int, result1 []db.PipelineRun, result2 error) {
+	fake.runsOfRetiredTemplatesToArchiveMutex.Lock()
+	defer fake.runsOfRetiredTemplatesToArchiveMutex.Unlock()
+	fake.RunsOfRetiredTemplatesToArchiveStub = nil
+	if fake.runsOfRetiredTemplatesToArchiveReturnsOnCall == nil {
+		fake.runsOfRetiredTemplatesToArchiveReturnsOnCall = make(map[int]struct {
+			result1 []db.PipelineRun
+			result2 error
+		})
+	}
+	fake.runsOfRetiredTemplatesToArchiveReturnsOnCall[i] = struct {
 		result1 []db.PipelineRun
 		result2 error
 	}{result1, result2}

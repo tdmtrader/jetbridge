@@ -74,6 +74,16 @@ type PipelineRunFactory interface {
 	RunningRuns() ([]PipelineRun, error)
 	CompletedRunsWithNewActivity() ([]PipelineRun, error)
 	RunsToArchive() ([]PipelineRun, error)
+
+	// RunsOfRetiredTemplatesToArchive returns unarchived completed runs that
+	// completed more than retirementPeriod ago and belong to a retired
+	// server-owned workflow-run template that declares no run_retention of
+	// its own: every durable workflow run citing the template is terminal and
+	// cites a workflow version with a strictly newer live successor. The
+	// platform retirement window is the default retention for templates that
+	// declare none; archiving these runs is what lets the tier-2 template
+	// collector eventually destroy the whole unit.
+	RunsOfRetiredTemplatesToArchive(retirementPeriod time.Duration) ([]PipelineRun, error)
 }
 
 // NewPipelineRunFactory constructs the factory. The CheckFactory is
@@ -988,6 +998,52 @@ func (f *pipelineRunFactory) RunsToArchive() ([]PipelineRun, error) {
 		return nil, err
 	}
 	return f.scanRuns(runRows)
+}
+
+func (f *pipelineRunFactory) RunsOfRetiredTemplatesToArchive(retirementPeriod time.Duration) ([]PipelineRun, error) {
+	if retirementPeriod <= 0 {
+		return nil, fmt.Errorf("db: workflow-run template retirement period must be positive")
+	}
+
+	// A template that declares run_retention keeps the policy-driven
+	// RunsToArchive path as its only archiver; this pass is only the default
+	// for templates that declare none. The retired-template predicate here is
+	// the archiving half of the tier-2 contract in
+	// WorkflowRunTemplateLifecycle.RemoveRetiredWorkflowRunTemplates: at
+	// least one terminal durable citation, no non-terminal ones, and every
+	// cited workflow version superseded by a strictly newer live definition.
+	rows, err := pipelineRunsQuery.
+		Where(sq.Eq{"r.archived": false}).
+		Where(sq.NotEq{"r.status": string(PipelineRunRunning)}).
+		Where(sq.Expr(`r.completed_at IS NOT NULL AND r.completed_at < now() - ?::interval`, retirementPeriod.String())).
+		Where(sq.Expr(`EXISTS (
+			SELECT 1 FROM agent_workflow_run_templates owned
+			JOIN pipelines template ON template.id = owned.pipeline_id
+			WHERE template.id = r.template_pipeline_id
+			  AND template.run_retention IS NULL
+		)`)).
+		Where(sq.Expr(`EXISTS (
+			SELECT 1 FROM agent_workflow_runs durable
+			WHERE durable.template_pipeline_id = r.template_pipeline_id
+		)`)).
+		Where(sq.Expr(`NOT EXISTS (
+			SELECT 1 FROM agent_workflow_runs durable
+			WHERE durable.template_pipeline_id = r.template_pipeline_id
+			  AND (durable.status NOT IN ('succeeded', 'failed', 'errored', 'aborted')
+			       OR NOT EXISTS (
+				SELECT 1 FROM agent_workflow_definitions successor
+				WHERE successor.name = durable.workflow_name
+				  AND successor.live
+				  AND successor.version > durable.workflow_version
+			  ))
+		)`)).
+		OrderBy("r.id ASC").
+		RunWith(f.conn).
+		Query()
+	if err != nil {
+		return nil, err
+	}
+	return f.scanRuns(rows)
 }
 
 func (f *pipelineRunFactory) scanRuns(rows *sql.Rows) ([]PipelineRun, error) {

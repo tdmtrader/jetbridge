@@ -25,6 +25,21 @@ type FakeWorkflowRunTemplateLifecycle struct {
 		result1 int
 		result2 error
 	}
+	RemoveRetiredWorkflowRunTemplatesStub        func(context.Context, time.Duration, int) (int, error)
+	removeRetiredWorkflowRunTemplatesMutex       sync.RWMutex
+	removeRetiredWorkflowRunTemplatesArgsForCall []struct {
+		arg1 context.Context
+		arg2 time.Duration
+		arg3 int
+	}
+	removeRetiredWorkflowRunTemplatesReturns struct {
+		result1 int
+		result2 error
+	}
+	removeRetiredWorkflowRunTemplatesReturnsOnCall map[int]struct {
+		result1 int
+		result2 error
+	}
 	invocations      map[string][][]interface{}
 	invocationsMutex sync.RWMutex
 }
@@ -90,6 +105,72 @@ func (fake *FakeWorkflowRunTemplateLifecycle) RemoveAbandonedWorkflowRunTemplate
 		})
 	}
 	fake.removeAbandonedWorkflowRunTemplatesReturnsOnCall[i] = struct {
+		result1 int
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeWorkflowRunTemplateLifecycle) RemoveRetiredWorkflowRunTemplates(arg1 context.Context, arg2 time.Duration, arg3 int) (int, error) {
+	fake.removeRetiredWorkflowRunTemplatesMutex.Lock()
+	ret, specificReturn := fake.removeRetiredWorkflowRunTemplatesReturnsOnCall[len(fake.removeRetiredWorkflowRunTemplatesArgsForCall)]
+	fake.removeRetiredWorkflowRunTemplatesArgsForCall = append(fake.removeRetiredWorkflowRunTemplatesArgsForCall, struct {
+		arg1 context.Context
+		arg2 time.Duration
+		arg3 int
+	}{arg1, arg2, arg3})
+	stub := fake.RemoveRetiredWorkflowRunTemplatesStub
+	fakeReturns := fake.removeRetiredWorkflowRunTemplatesReturns
+	fake.recordInvocation("RemoveRetiredWorkflowRunTemplates", []interface{}{arg1, arg2, arg3})
+	fake.removeRetiredWorkflowRunTemplatesMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2, arg3)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeWorkflowRunTemplateLifecycle) RemoveRetiredWorkflowRunTemplatesCallCount() int {
+	fake.removeRetiredWorkflowRunTemplatesMutex.RLock()
+	defer fake.removeRetiredWorkflowRunTemplatesMutex.RUnlock()
+	return len(fake.removeRetiredWorkflowRunTemplatesArgsForCall)
+}
+
+func (fake *FakeWorkflowRunTemplateLifecycle) RemoveRetiredWorkflowRunTemplatesCalls(stub func(context.Context, time.Duration, int) (int, error)) {
+	fake.removeRetiredWorkflowRunTemplatesMutex.Lock()
+	defer fake.removeRetiredWorkflowRunTemplatesMutex.Unlock()
+	fake.RemoveRetiredWorkflowRunTemplatesStub = stub
+}
+
+func (fake *FakeWorkflowRunTemplateLifecycle) RemoveRetiredWorkflowRunTemplatesArgsForCall(i int) (context.Context, time.Duration, int) {
+	fake.removeRetiredWorkflowRunTemplatesMutex.RLock()
+	defer fake.removeRetiredWorkflowRunTemplatesMutex.RUnlock()
+	argsForCall := fake.removeRetiredWorkflowRunTemplatesArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3
+}
+
+func (fake *FakeWorkflowRunTemplateLifecycle) RemoveRetiredWorkflowRunTemplatesReturns(result1 int, result2 error) {
+	fake.removeRetiredWorkflowRunTemplatesMutex.Lock()
+	defer fake.removeRetiredWorkflowRunTemplatesMutex.Unlock()
+	fake.RemoveRetiredWorkflowRunTemplatesStub = nil
+	fake.removeRetiredWorkflowRunTemplatesReturns = struct {
+		result1 int
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeWorkflowRunTemplateLifecycle) RemoveRetiredWorkflowRunTemplatesReturnsOnCall(i int, result1 int, result2 error) {
+	fake.removeRetiredWorkflowRunTemplatesMutex.Lock()
+	defer fake.removeRetiredWorkflowRunTemplatesMutex.Unlock()
+	fake.RemoveRetiredWorkflowRunTemplatesStub = nil
+	if fake.removeRetiredWorkflowRunTemplatesReturnsOnCall == nil {
+		fake.removeRetiredWorkflowRunTemplatesReturnsOnCall = make(map[int]struct {
+			result1 int
+			result2 error
+		})
+	}
+	fake.removeRetiredWorkflowRunTemplatesReturnsOnCall[i] = struct {
 		result1 int
 		result2 error
 	}{result1, result2}

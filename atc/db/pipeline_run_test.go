@@ -1,6 +1,11 @@
 package db_test
 
 import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 
@@ -333,5 +338,215 @@ var _ = Describe("PipelineRun retention", func() {
 		toArchive, err := factory.RunsToArchive()
 		Expect(err).ToNot(HaveOccurred())
 		Expect(toArchive).To(BeEmpty())
+	})
+})
+
+var _ = Describe("PipelineRun retirement archiving", func() {
+	var factory db.PipelineRunFactory
+
+	const retirement = time.Hour
+
+	templateConfig := atc.Config{
+		Template: true,
+		Jobs: atc.JobConfigs{{
+			Name:         "run",
+			PlanSequence: []atc.Step{{Config: &atc.TaskStep{Name: "work", ConfigPath: "task.yml"}}},
+		}},
+	}
+
+	BeforeEach(func() {
+		factory = db.NewPipelineRunFactory(logger, dbConn, lockFactory, checkFactory)
+	})
+
+	ownedTemplate := func(name string) db.Pipeline {
+		template, created, err := db.NewWorkflowRunTemplateFactory(dbConn, lockFactory).SaveWorkflowRunTemplate(
+			context.Background(), defaultTeam.ID(), atc.PipelineRef{Name: name}, templateConfig)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(created).To(BeTrue())
+		return template
+	}
+
+	addRun := func(template db.Pipeline, number int, status string, archived bool, completedAgo time.Duration) (int, db.Pipeline) {
+		instance, _, err := defaultTeam.SavePipeline(
+			atc.PipelineRef{Name: template.Name(), InstanceVars: atc.InstanceVars{"run": number}},
+			atc.Config{Jobs: atc.JobConfigs{{Name: "run"}}}, db.ConfigVersion(0), false,
+		)
+		Expect(err).NotTo(HaveOccurred())
+		var completedAgoParam any
+		if completedAgo > 0 {
+			completedAgoParam = completedAgo.String()
+		}
+		var runID int
+		Expect(dbConn.QueryRow(`
+			INSERT INTO pipeline_runs (template_pipeline_id, instance_pipeline_id, number, status, archived, completed_at)
+			VALUES ($1, $2, $3, $4, $5, CASE WHEN $6::text IS NULL THEN NULL ELSE now() - $6::interval END)
+			RETURNING id
+		`, template.ID(), instance.ID(), number, status, archived, completedAgoParam).Scan(&runID)).To(Succeed())
+		return runID, instance
+	}
+
+	workflowName := func() string {
+		return fmt.Sprintf("retirement-workflow-%d", time.Now().UnixNano())
+	}
+
+	defineVersion := func(name string, version int, live bool) int {
+		var id int
+		Expect(dbConn.QueryRow(`
+			INSERT INTO agent_workflow_definitions
+				(name, version, content_hash, definition, created_by, schema_version, signature_version, live)
+			VALUES ($1, $2, $3, 'schema_version: 3', 'alice', 3, 1, $4)
+			RETURNING id
+		`, name, version, fmt.Sprintf("%064d", version), live).Scan(&id)).To(Succeed())
+		return id
+	}
+
+	cite := func(template db.Pipeline, runID int, instance db.Pipeline, definitionID int, name string, version int, status string) {
+		_, err := dbConn.Exec(`
+			INSERT INTO agent_workflow_runs
+				(team_id, team_name, workflow_definition_id, workflow_name, workflow_version,
+				 schema_version, signature_version, definition_content_hash, idempotency_key,
+				 parameterized_config, parameterized_config_hash, origin_kind, origin_reference,
+				 created_by, status, pipeline_run_id, template_pipeline_id, instance_pipeline_id,
+				 concrete_config, concrete_config_hash)
+			VALUES ($1, $2, $3, $4, $5, 3, 1, $6, $7, '{}'::jsonb, $6,
+			        'ticket', 'GC-3', 'alice', $8, $9, $10, $11, '{}'::jsonb, $6)
+		`, defaultTeam.ID(), defaultTeam.Name(), definitionID, name, version,
+			strings.Repeat("f", 64), fmt.Sprintf("retirement-key-%d", time.Now().UnixNano()),
+			status, runID, template.ID(), instance.ID())
+		Expect(err).NotTo(HaveOccurred())
+	}
+
+	retiredRun := func(templateName string) int {
+		name := workflowName()
+		cited := defineVersion(name, 1, false)
+		defineVersion(name, 2, true)
+		template := ownedTemplate(templateName)
+		runID, instance := addRun(template, 1, "succeeded", false, 24*time.Hour)
+		cite(template, runID, instance, cited, name, 1, "succeeded")
+		return runID
+	}
+
+	It("selects completed runs of retired owned templates past the retirement period", func() {
+		runID := retiredRun("retirement-eligible-template")
+
+		toArchive, err := factory.RunsOfRetiredTemplatesToArchive(retirement)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(toArchive).To(HaveLen(1))
+		Expect(toArchive[0].ID()).To(Equal(runID))
+	})
+
+	It("skips runs completed inside the retirement period", func() {
+		name := workflowName()
+		cited := defineVersion(name, 1, false)
+		defineVersion(name, 2, true)
+		template := ownedTemplate("retirement-fresh-template")
+		runID, instance := addRun(template, 1, "succeeded", false, 5*time.Minute)
+		cite(template, runID, instance, cited, name, 1, "succeeded")
+
+		toArchive, err := factory.RunsOfRetiredTemplatesToArchive(retirement)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(toArchive).To(BeEmpty())
+	})
+
+	It("defers to run_retention on templates that declare their own policy", func() {
+		runID := retiredRun("retirement-owned-policy-template")
+		var templateID int
+		Expect(dbConn.QueryRow(`SELECT template_pipeline_id FROM pipeline_runs WHERE id = $1`, runID).Scan(&templateID)).To(Succeed())
+		_, err := dbConn.Exec(`
+			UPDATE pipelines SET run_retention = '{"keep_last": 5}'::jsonb WHERE id = $1
+		`, templateID)
+		Expect(err).NotTo(HaveOccurred())
+
+		toArchive, err := factory.RunsOfRetiredTemplatesToArchive(retirement)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(toArchive).To(BeEmpty())
+	})
+
+	It("skips templates while any citing durable run is not terminal", func() {
+		name := workflowName()
+		cited := defineVersion(name, 1, false)
+		defineVersion(name, 2, true)
+		template := ownedTemplate("retirement-running-template")
+		firstRun, firstInstance := addRun(template, 1, "succeeded", false, 24*time.Hour)
+		secondRun, secondInstance := addRun(template, 2, "running", false, 0)
+		cite(template, firstRun, firstInstance, cited, name, 1, "succeeded")
+		cite(template, secondRun, secondInstance, cited, name, 1, "running")
+
+		toArchive, err := factory.RunsOfRetiredTemplatesToArchive(retirement)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(toArchive).To(BeEmpty())
+	})
+
+	It("skips templates that no durable run cites", func() {
+		template := ownedTemplate("retirement-capture-template")
+		addRun(template, 1, "succeeded", false, 24*time.Hour)
+
+		toArchive, err := factory.RunsOfRetiredTemplatesToArchive(retirement)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(toArchive).To(BeEmpty())
+	})
+
+	It("skips templates whose cited version has no live successor", func() {
+		name := workflowName()
+		cited := defineVersion(name, 1, true)
+		template := ownedTemplate("retirement-live-template")
+		runID, instance := addRun(template, 1, "succeeded", false, 24*time.Hour)
+		cite(template, runID, instance, cited, name, 1, "succeeded")
+
+		toArchive, err := factory.RunsOfRetiredTemplatesToArchive(retirement)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(toArchive).To(BeEmpty())
+	})
+
+	It("skips archived and running runs of retired templates", func() {
+		name := workflowName()
+		cited := defineVersion(name, 1, false)
+		defineVersion(name, 2, true)
+		template := ownedTemplate("retirement-archived-template")
+		firstRun, firstInstance := addRun(template, 1, "succeeded", true, 24*time.Hour)
+		cite(template, firstRun, firstInstance, cited, name, 1, "succeeded")
+
+		toArchive, err := factory.RunsOfRetiredTemplatesToArchive(retirement)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(toArchive).To(BeEmpty())
+	})
+
+	It("never selects runs of templates the server does not own", func() {
+		name := workflowName()
+		cited := defineVersion(name, 1, false)
+		defineVersion(name, 2, true)
+		template, _, err := defaultTeam.SavePipeline(
+			atc.PipelineRef{Name: "retirement-unowned-template"}, templateConfig, db.ConfigVersion(0), false)
+		Expect(err).NotTo(HaveOccurred())
+		runID, instance := addRun(template, 1, "succeeded", false, 24*time.Hour)
+		cite(template, runID, instance, cited, name, 1, "succeeded")
+
+		toArchive, err := factory.RunsOfRetiredTemplatesToArchive(retirement)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(toArchive).To(BeEmpty())
+	})
+
+	It("rejects a non-positive retirement period", func() {
+		_, err := factory.RunsOfRetiredTemplatesToArchive(0)
+		Expect(err).To(HaveOccurred())
+	})
+
+	It("archiving a retired template's runs makes it destroyable by the tier-2 collector pass", func() {
+		runID := retiredRun("retirement-end-to-end-template")
+
+		toArchive, err := factory.RunsOfRetiredTemplatesToArchive(retirement)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(toArchive).To(HaveLen(1))
+		Expect(toArchive[0].ID()).To(Equal(runID))
+		Expect(toArchive[0].Archive()).To(Succeed())
+
+		lifecycle := db.NewWorkflowRunTemplateLifecycle(dbConn)
+		destroyed, err := lifecycle.RemoveRetiredWorkflowRunTemplates(context.Background(), retirement, 10)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(destroyed).To(Equal(1))
+
+		var remaining int
+		Expect(dbConn.QueryRow(`SELECT COUNT(*) FROM pipeline_runs WHERE id = $1`, runID).Scan(&remaining)).To(Succeed())
+		Expect(remaining).To(Equal(0))
 	})
 })

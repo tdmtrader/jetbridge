@@ -188,6 +188,35 @@ func (s *CommandSuite) TestWorkflowRunTemplateGracePeriodOutlastsAdmission() {
 	s.NoError(atccmd.ValidateGarbageCollectionForTest(command))
 }
 
+func (s *CommandSuite) TestWorkflowRunTemplateRetirementPeriodFlagDefault() {
+	cmd := &atccmd.ATCCommand{}
+	parser := flags.NewParser(cmd, flags.Default)
+	parser.NamespaceDelimiter = "-"
+	runCmd := parser.Find("run")
+
+	retirement := runCmd.FindOptionByLongName("gc-workflow-run-template-retirement-period")
+	s.NotNil(retirement)
+	s.Equal([]string{"720h"}, retirement.Default)
+}
+
+func (s *CommandSuite) TestWorkflowRunTemplateRetirementPeriodValidation() {
+	command := &atccmd.RunCommand{}
+	command.GC.WorkflowRunTemplateGracePeriod = 24 * time.Hour
+	command.AgentWorkflowRuns.AdmissionTimeout = 15 * time.Minute
+
+	command.GC.WorkflowRunTemplateRetirementPeriod = -time.Second
+	err := atccmd.ValidateGarbageCollectionForTest(command)
+	s.Error(err)
+	s.Contains(err.Error(), "--gc-workflow-run-template-retirement-period must not be negative")
+
+	// zero disables retirement rather than misconfiguring it
+	command.GC.WorkflowRunTemplateRetirementPeriod = 0
+	s.NoError(atccmd.ValidateGarbageCollectionForTest(command))
+
+	command.GC.WorkflowRunTemplateRetirementPeriod = 720 * time.Hour
+	s.NoError(atccmd.ValidateGarbageCollectionForTest(command))
+}
+
 func (s *CommandSuite) TestAgentSnapshotNumericBoundsAreAlwaysPositive() {
 	for name, mutate := range map[string]func(*atccmd.RunCommand){
 		"replication":       func(command *atccmd.RunCommand) { command.AgentSnapshots.ReplicationFactor = 0 },

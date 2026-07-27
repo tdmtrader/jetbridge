@@ -3,6 +3,7 @@ package runlifecycle_test
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
@@ -18,9 +19,11 @@ var _ = Describe("Lifecycler", func() {
 		lifecycler *runlifecycle.Lifecycler
 	)
 
+	const retirement = 720 * time.Hour
+
 	BeforeEach(func() {
 		factory = new(dbfakes.FakePipelineRunFactory)
-		lifecycler = runlifecycle.NewLifecycler(factory)
+		lifecycler = runlifecycle.NewLifecycler(factory, retirement)
 	})
 
 	It("finishes complete runs with their aggregate status", func() {
@@ -77,5 +80,34 @@ var _ = Describe("Lifecycler", func() {
 		Expect(lifecycler.Run(context.Background())).To(Succeed())
 		Expect(running.FinishCallCount()).To(Equal(1))
 		Expect(expired.ArchiveCallCount()).To(Equal(1))
+	})
+
+	It("archives runs of retired templates using the configured period", func() {
+		retired := new(dbfakes.FakePipelineRun)
+		factory.RunsOfRetiredTemplatesToArchiveReturns([]db.PipelineRun{retired}, nil)
+
+		Expect(lifecycler.Run(context.Background())).To(Succeed())
+
+		Expect(factory.RunsOfRetiredTemplatesToArchiveCallCount()).To(Equal(1))
+		Expect(factory.RunsOfRetiredTemplatesToArchiveArgsForCall(0)).To(Equal(retirement))
+		Expect(retired.ArchiveCallCount()).To(Equal(1))
+	})
+
+	It("skips the retirement pass entirely when the period is zero", func() {
+		disabled := runlifecycle.NewLifecycler(factory, 0)
+
+		Expect(disabled.Run(context.Background())).To(Succeed())
+
+		Expect(factory.RunsOfRetiredTemplatesToArchiveCallCount()).To(Equal(0))
+	})
+
+	It("continues past per-run errors in the retirement pass", func() {
+		bad := new(dbfakes.FakePipelineRun)
+		bad.ArchiveReturns(errors.New("boom"))
+		good := new(dbfakes.FakePipelineRun)
+		factory.RunsOfRetiredTemplatesToArchiveReturns([]db.PipelineRun{bad, good}, nil)
+
+		Expect(lifecycler.Run(context.Background())).To(Succeed())
+		Expect(good.ArchiveCallCount()).To(Equal(1))
 	})
 })
