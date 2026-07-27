@@ -526,7 +526,7 @@ func copyOpenedTree(ctx context.Context, src, dst *os.File, prefix string) error
 			if err != nil {
 				return fmt.Errorf("read artifact symlink %q: %w", entryPath, err)
 			}
-			if err := validateSafeRelativeSymlink(entryPath, target); err != nil {
+			if err := validateCopyableSymlink(entryPath, target); err != nil {
 				return err
 			}
 			if err := unix.Symlinkat(target, int(dst.Fd()), name); err != nil {
@@ -588,6 +588,38 @@ func readlinkAt(dirfd int, name string) (string, error) {
 func validateSafeRelativeSymlink(name, target string) error {
 	if target == "" || strings.ContainsRune(target, '\x00') || path.IsAbs(target) {
 		return fmt.Errorf("unsafe artifact symlink %q -> %q", name, target)
+	}
+	resolved := path.Clean(path.Join(path.Dir(name), target))
+	if resolved == ".." || strings.HasPrefix(resolved, "../") || path.IsAbs(resolved) {
+		return fmt.Errorf("artifact symlink %q escapes its tree", name)
+	}
+	return nil
+}
+
+// validateCopyableSymlink is the copy-path counterpart to
+// validateSafeRelativeSymlink, and differs from it in one respect: an absolute
+// target is allowed.
+//
+// Container rootfs trees are full of them — /var/spool/mail -> /var/mail ships
+// in every Debian-derived image — so refusing them meant the daemon could
+// accept a rootfs artifact into its store and then fail every resolve of it.
+//
+// Copying cannot be subverted by the target. The entry is recreated with
+// Symlinkat and never dereferenced, so nothing is written through it, and the
+// walk descends only into directories that are real in the *source* tree,
+// which a symlink is not. The target is data being reproduced, not a path this
+// process resolves. Where it points is meaningful only later, inside the
+// consumer's own filesystem, which the consumer already reaches directly.
+//
+// Relative targets that climb out of the tree stay rejected: that guard is
+// unchanged, and extraction keeps the stricter rule, where a later member
+// genuinely could be written through an earlier symlink.
+func validateCopyableSymlink(name, target string) error {
+	if target == "" || strings.ContainsRune(target, '\x00') {
+		return fmt.Errorf("unsafe artifact symlink %q -> %q", name, target)
+	}
+	if path.IsAbs(target) {
+		return nil
 	}
 	resolved := path.Clean(path.Join(path.Dir(name), target))
 	if resolved == ".." || strings.HasPrefix(resolved, "../") || path.IsAbs(resolved) {
