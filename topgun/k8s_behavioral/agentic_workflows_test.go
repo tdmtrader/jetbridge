@@ -59,7 +59,13 @@ var _ = Describe("Agentic workflows", func() {
 		// next step is to make writeInternalError itself record its cause and
 		// caller, then re-run; guessing at another single call site is what
 		// already failed once.
-		Skip("open: workflow run returns an unexplained 500 — see comment above")
+		// Escapable so the defect stays reachable while CI stays green: set
+		// RUN_AGENTIC_WORKFLOW_SPEC=1 to run it against a debug pipeline.
+		// Without that the spec would be dead weight — skipped, unrunnable,
+		// and quietly rotting until someone deletes it.
+		if os.Getenv("RUN_AGENTIC_WORKFLOW_SPEC") == "" {
+			Skip("open: workflow run returns an unexplained 500 — see comment above; set RUN_AGENTIC_WORKFLOW_SPEC=1 to reproduce")
+		}
 
 		inputDir := filepath.Join(tmp, "agentic-input")
 		Expect(os.MkdirAll(inputDir, 0o755)).To(Succeed())

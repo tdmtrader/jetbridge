@@ -10,8 +10,10 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"reflect"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,6 +21,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"github.com/concourse/concourse/agent/pagination"
 	"github.com/concourse/concourse/agent/snapshot"
@@ -93,12 +96,12 @@ func (handler *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		result.Run.OriginKind != "manual" || result.Run.OriginReference != "" ||
 		result.Run.FunctionID != nil || result.Run.RetryOfWorkflowRunID != nil ||
 		request.Version != nil && result.Run.WorkflowVersion != *request.Version {
-		writeInternalError(w)
+		writeInternalError(r.Context(), w)
 		return
 	}
 	detail, err := handler.presentDetail(r, workflowName, result.Run)
 	if err != nil {
-		writeInternalError(w)
+		writeInternalError(r.Context(), w)
 		return
 	}
 	status := http.StatusOK
@@ -129,11 +132,11 @@ func (handler *Handler) List(w http.ResponseWriter, r *http.Request) {
 	filter.Limit = pageLimit + 1
 	runs, err := handler.runs.List(r.Context(), filter)
 	if err != nil {
-		writeInternalError(w)
+		writeInternalError(r.Context(), w)
 		return
 	}
 	if len(runs) > filter.Limit {
-		writeInternalError(w)
+		writeInternalError(r.Context(), w)
 		return
 	}
 	hasNext := len(runs) > pageLimit
@@ -144,7 +147,7 @@ func (handler *Handler) List(w http.ResponseWriter, r *http.Request) {
 	for _, run := range runs {
 		summary, err := handler.presentSummary(workflowName, run)
 		if err != nil {
-			writeInternalError(w)
+			writeInternalError(r.Context(), w)
 			return
 		}
 		summaries = append(summaries, summary)
@@ -153,7 +156,7 @@ func (handler *Handler) List(w http.ResponseWriter, r *http.Request) {
 		last := runs[len(runs)-1]
 		cursor, err := pagination.Encode(pagination.Cursor{CreatedAt: last.CreatedAt, ID: int64(last.ID)})
 		if err != nil {
-			writeInternalError(w)
+			writeInternalError(r.Context(), w)
 			return
 		}
 		setNextPageHeaders(w, r, cursor, pageLimit)
@@ -173,7 +176,7 @@ func (handler *Handler) OperationalStatusCounts(w http.ResponseWriter, r *http.R
 		TeamID: handler.team.ID, WorkflowName: workflowName, ExcludeOriginKind: "experiment",
 	})
 	if err != nil {
-		writeInternalError(w)
+		writeInternalError(r.Context(), w)
 		return
 	}
 	counts := make(map[string]int64, 7)
@@ -188,7 +191,7 @@ func (handler *Handler) OperationalStatusCounts(w http.ResponseWriter, r *http.R
 	} {
 		count := stored[status]
 		if count < 0 {
-			writeInternalError(w)
+			writeInternalError(r.Context(), w)
 			return
 		}
 		counts[string(status)] = count
@@ -212,7 +215,7 @@ func (handler *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	}
 	detail, err := handler.presentDetail(r, workflowName, run)
 	if err != nil {
-		writeInternalError(w)
+		writeInternalError(r.Context(), w)
 		return
 	}
 	writeJSON(w, http.StatusOK, detail)
@@ -232,7 +235,7 @@ func (handler *Handler) Outputs(w http.ResponseWriter, r *http.Request) {
 	}
 	outputs, err := handler.presentOutputs(r, run)
 	if err != nil {
-		writeInternalError(w)
+		writeInternalError(r.Context(), w)
 		return
 	}
 	writeJSON(w, http.StatusOK, OutputsResponse{WorkflowRunID: run.ID, Outputs: outputs})
@@ -260,12 +263,12 @@ func (handler *Handler) Retry(w http.ResponseWriter, r *http.Request) {
 	}
 	bindings, err := handler.runs.Snapshots(r.Context(), source.ID)
 	if err != nil {
-		writeInternalError(w)
+		writeInternalError(r.Context(), w)
 		return
 	}
 	inputs, err := inputIDs(source.ID, bindings)
 	if err != nil {
-		writeInternalError(w)
+		writeInternalError(r.Context(), w)
 		return
 	}
 	creator, ok := handler.creator(w, r)
@@ -293,12 +296,12 @@ func (handler *Handler) Retry(w http.ResponseWriter, r *http.Request) {
 		result.Run.RetryOfWorkflowRunID == nil || *result.Run.RetryOfWorkflowRunID != source.ID ||
 		result.Run.IdempotencyKey != retryRequest.IdempotencyKey || result.Run.CreatedBy != creator ||
 		result.Run.OriginKind != "retry" || result.Run.OriginReference != source.ID.String() {
-		writeInternalError(w)
+		writeInternalError(r.Context(), w)
 		return
 	}
 	detail, err := handler.presentDetail(r, workflowName, result.Run)
 	if err != nil {
-		writeInternalError(w)
+		writeInternalError(r.Context(), w)
 		return
 	}
 	status := http.StatusOK
@@ -325,7 +328,7 @@ func (handler *Handler) Cancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeInternalError(w)
+		writeInternalError(r.Context(), w)
 		return
 	}
 	if !found {
@@ -339,12 +342,12 @@ func (handler *Handler) Cancel(w http.ResponseWriter, r *http.Request) {
 	case db.AgentWorkflowRunStatusAborted:
 		status = http.StatusOK
 	default:
-		writeInternalError(w)
+		writeInternalError(r.Context(), w)
 		return
 	}
 	detail, err := handler.presentDetail(r, workflowName, run)
 	if err != nil {
-		writeInternalError(w)
+		writeInternalError(r.Context(), w)
 		return
 	}
 	writeJSON(w, status, detail)
@@ -353,7 +356,7 @@ func (handler *Handler) Cancel(w http.ResponseWriter, r *http.Request) {
 func (handler *Handler) creator(w http.ResponseWriter, r *http.Request) (string, bool) {
 	creator, err := handler.identity(r)
 	if err != nil || validateText(creator, 256, false, true) != nil {
-		writeInternalError(w)
+		writeInternalError(r.Context(), w)
 		return "", false
 	}
 	return creator, true
@@ -367,7 +370,7 @@ func (handler *Handler) loadScopedRun(
 ) (db.AgentWorkflowRun, bool) {
 	run, found, err := handler.runs.Get(r.Context(), handler.team.ID, runID)
 	if err != nil {
-		writeInternalError(w)
+		writeInternalError(r.Context(), w)
 		return db.AgentWorkflowRun{}, false
 	}
 	if !found || run.ID != runID || run.TeamID != handler.team.ID || run.TeamName != handler.team.Name || run.WorkflowName != workflowName {
@@ -843,7 +846,7 @@ func writeBinderError(ctx context.Context, w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "conflict", "idempotency key conflicts with immutable workflow-run state")
 	default:
 		lagerctx.FromContext(ctx).Error("workflow-run-bind-failed", err)
-		writeInternalError(w)
+		writeInternalError(ctx, w)
 	}
 }
 
@@ -855,7 +858,24 @@ func writeNotFound(w http.ResponseWriter) {
 	writeError(w, http.StatusNotFound, "not_found", "workflow run was not found")
 }
 
-func writeInternalError(w http.ResponseWriter) {
+// writeInternalError sends the deliberately uninformative 500 the caller is
+// meant to see, and records where it came from.
+//
+// The body says only "workflow run service failed", which is right for a
+// client and useless for an operator. With twenty call sites in this file and
+// none of them logging, a 500 here was unattributable: the behavioural suite's
+// agentic-workflow spec failed this way reproducibly and the web logs held
+// nothing at all. Recording the caller turns "somewhere in this handler" into
+// a line number.
+func writeInternalError(ctx context.Context, w http.ResponseWriter) {
+	logger := lagerctx.FromContext(ctx)
+	if _, file, line, ok := runtime.Caller(1); ok {
+		logger.Error("workflow-run-internal-error", nil, lager.Data{
+			"origin": fmt.Sprintf("%s:%d", filepath.Base(file), line),
+		})
+	} else {
+		logger.Error("workflow-run-internal-error", nil)
+	}
 	writeError(w, http.StatusInternalServerError, "internal_error", "workflow run service failed")
 }
 
