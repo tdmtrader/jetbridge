@@ -10,7 +10,6 @@ resources:
     # Deliberately narrow: ci/** and deploy/** still trigger.
     ignore_paths:
     - docs/**
-    - ci/dogfood/FINDINGS.md
     - notes/**
     - forge/**
 jobs:

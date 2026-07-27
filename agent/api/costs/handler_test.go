@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/agent/api/costs"
-	"github.com/concourse/concourse/agent/api/principals"
 	"github.com/concourse/concourse/agent/budget"
 )
 
@@ -20,80 +19,6 @@ func newHandler() (*costs.Handler, *budget.MemoryLedger) {
 		Location:          time.UTC,
 	})
 	return costs.NewHandler(ledger, checker), ledger
-}
-
-func submit(t *testing.T, h *costs.Handler, body string) *httptest.ResponseRecorder {
-	t.Helper()
-	req := httptest.NewRequest("POST", "/api/v1/agent/costs", strings.NewReader(body))
-	rec := httptest.NewRecorder()
-	h.SubmitRecord(rec, req)
-	return rec
-}
-
-func submitWithPrincipal(t *testing.T, h *costs.Handler, body string) *httptest.ResponseRecorder {
-	t.Helper()
-	req := httptest.NewRequest("POST", "/api/v1/agent/costs", strings.NewReader(body))
-	req = req.WithContext(principals.NewContext(req.Context(), principals.Principal{ID: 3, Name: "itest-recorder"}))
-	rec := httptest.NewRecorder()
-	h.SubmitRecord(rec, req)
-	return rec
-}
-
-func TestSubmitRequiresScopedPrincipal(t *testing.T) {
-	h, _ := newHandler()
-	if rec := submit(t, h, `{"source":"ci_agent","cost_usd":1}`); rec.Code != http.StatusForbidden {
-		t.Fatalf("got %d, want 403 without a scoped principal", rec.Code)
-	}
-}
-
-func TestSubmitWithPrincipalContext(t *testing.T) {
-	h, ledger := newHandler()
-
-	req := httptest.NewRequest("POST", "/api/v1/agent/costs",
-		strings.NewReader(`{"source":"ci_agent","cost_usd":0.42}`))
-	// no Authorization header at all — the wrappa already verified the principal
-	req = req.WithContext(principals.NewContext(req.Context(), principals.Principal{
-		ID: 3, Name: "itest-recorder",
-	}))
-	rec := httptest.NewRecorder()
-	h.SubmitRecord(rec, req)
-
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("code = %d body %s, want 201", rec.Code, rec.Body)
-	}
-	spent, _ := ledger.SpentSince(time.Now().Add(-time.Minute))
-	if spent != 0.42 {
-		t.Fatalf("ledger spent = %v", spent)
-	}
-}
-
-func TestSubmitRecordsEntry(t *testing.T) {
-	h, ledger := newHandler()
-	req := httptest.NewRequest("POST", "/api/v1/agent/costs", strings.NewReader(
-		`{"source":"ci_agent","cost_usd":0.42,"user_name":"alice","build_id":1234,"step_name":"review/analyze","model":"claude-sonnet-5","input_tokens":100,"output_tokens":50,"turns":4}`))
-	req = req.WithContext(principals.NewContext(req.Context(), principals.Principal{ID: 3, Name: "itest-recorder"}))
-	rec := httptest.NewRecorder()
-	h.SubmitRecord(rec, req)
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
-	}
-	spent, _ := ledger.SpentSince(time.Now().Add(-time.Minute))
-	if spent != 0.42 {
-		t.Fatalf("ledger spent = %v", spent)
-	}
-}
-
-func TestSubmitRejectsInvalidEntries(t *testing.T) {
-	h, _ := newHandler()
-	if rec := submitWithPrincipal(t, h, `{"source":"slack","cost_usd":1}`); rec.Code != http.StatusBadRequest {
-		t.Fatalf("bad source: got %d", rec.Code)
-	}
-	if rec := submitWithPrincipal(t, h, `{"source":"ci_agent","cost_usd":-1}`); rec.Code != http.StatusBadRequest {
-		t.Fatalf("negative cost: got %d", rec.Code)
-	}
-	if rec := submitWithPrincipal(t, h, `not json`); rec.Code != http.StatusBadRequest {
-		t.Fatalf("bad json: got %d", rec.Code)
-	}
 }
 
 func TestGetRollup(t *testing.T) {

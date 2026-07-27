@@ -253,7 +253,6 @@ type Effect
     | SaveAgentTicket { id : Int, title : String, body : String, budgetUsd : Maybe Float }
     | TransitionAgentTicket { id : Int, from : String, to : String }
     | DispatchAgentTicket Int
-    | UpdateAgentTicketTask { id : Int, ordering : Int, status : String, note : String }
     | FetchAgentTicketCosts
     | FetchAgentWorkflowVersions String
     | PromoteAgentWorkflowVersion String Int
@@ -989,12 +988,6 @@ runEffect effect key csrfToken =
                 |> Api.request
                 |> Task.attempt (AgentTicketDispatched ticketId)
 
-        UpdateAgentTicketTask params ->
-            Api.put (Endpoints.AgentTicketTask params.id params.ordering) csrfToken
-                |> Api.withJsonBody (encodeTaskStatus params)
-                |> Api.request
-                |> Task.attempt (AgentTicketTaskUpdated params.id)
-
         FetchAgentTicketCosts ->
             let
                 base =
@@ -1202,19 +1195,6 @@ encodeTicketUpdate params =
 
                     Nothing ->
                         []
-               )
-        )
-
-
-encodeTaskStatus : { id : Int, ordering : Int, status : String, note : String } -> Json.Encode.Value
-encodeTaskStatus params =
-    Json.Encode.object
-        (( "status", Json.Encode.string params.status )
-            :: (if params.note == "" then
-                    []
-
-                else
-                    [ ( "note", Json.Encode.string params.note ) ]
                )
         )
 

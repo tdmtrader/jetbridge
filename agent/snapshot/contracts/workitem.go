@@ -22,7 +22,6 @@ type WorkItemDocument struct {
 	Workflow      *WorkItemWorkflowSelection `json:"workflow,omitempty"`
 	Spec          *WorkItemRevision          `json:"spec,omitempty"`
 	Plan          *WorkItemRevision          `json:"plan,omitempty"`
-	Comments      []WorkItemCommentRevision  `json:"comments,omitempty"`
 }
 
 type WorkItemWorkflowSelection struct {
@@ -47,12 +46,6 @@ func (selection WorkItemWorkflowSelection) validate() error {
 type WorkItemRevision struct {
 	Revision string `json:"revision"`
 	Content  string `json:"content"`
-}
-
-type WorkItemCommentRevision struct {
-	ExternalID string `json:"external_id"`
-	Revision   string `json:"revision"`
-	Content    string `json:"content"`
 }
 
 func (d WorkItemDocument) Validate() error {
@@ -83,15 +76,6 @@ func (d WorkItemDocument) Validate() error {
 	if d.Plan != nil {
 		if err := d.Plan.validate("plan"); err != nil {
 			return err
-		}
-	}
-	for i, comment := range d.Comments {
-		for name, value := range map[string]string{
-			"external_id": comment.ExternalID, "revision": comment.Revision, "content": comment.Content,
-		} {
-			if strings.TrimSpace(value) == "" {
-				return fmt.Errorf("comments[%d].%s is required", i, name)
-			}
 		}
 	}
 	return nil

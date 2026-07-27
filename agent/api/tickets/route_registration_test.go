@@ -6,8 +6,9 @@ import (
 	"github.com/concourse/concourse/atc"
 )
 
-// TestTicketRoutesRegistered verifies the eight ticket-core routes are
-// in the main ATC route table with the §4.2 methods and paths.
+// TestTicketRoutesRegistered verifies the surviving ticket-core routes are
+// in the main ATC route table with the §4.2 methods and paths, and that the
+// deleted spec/plan/task write routes are gone.
 func TestTicketRoutesRegistered(t *testing.T) {
 	required := []struct {
 		name   string
@@ -19,10 +20,19 @@ func TestTicketRoutesRegistered(t *testing.T) {
 		{atc.GetAgentTicket, "GET", "/api/v1/agent/tickets/:ticket_id"},
 		{atc.UpdateAgentTicket, "PUT", "/api/v1/agent/tickets/:ticket_id"},
 		{atc.TransitionAgentTicket, "PUT", "/api/v1/agent/tickets/:ticket_id/state"},
-		{atc.SubmitAgentTicketSpec, "POST", "/api/v1/agent/tickets/:ticket_id/spec"},
-		{atc.SubmitAgentTicketPlan, "POST", "/api/v1/agent/tickets/:ticket_id/plan"},
-		{atc.UpdateAgentTicketTask, "PUT", "/api/v1/agent/tickets/:ticket_id/tasks/:ordering"},
 		{atc.DispatchAgentTicket, "POST", "/api/v1/agent/tickets/:ticket_id/dispatch"},
+	}
+
+	for _, gone := range []string{
+		"/api/v1/agent/tickets/:ticket_id/spec",
+		"/api/v1/agent/tickets/:ticket_id/plan",
+		"/api/v1/agent/tickets/:ticket_id/tasks/:ordering",
+	} {
+		for _, route := range atc.Routes {
+			if route.Path == gone {
+				t.Errorf("route %q (%s %s) must not be registered", route.Name, route.Method, gone)
+			}
+		}
 	}
 
 	for _, rr := range required {

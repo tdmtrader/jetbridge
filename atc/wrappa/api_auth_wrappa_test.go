@@ -58,11 +58,11 @@ var _ = Describe("APIAuthWrappa", func() {
 			}).NotTo(Panic())
 		})
 
-		// 00-shared-contracts.md §4.1/§4.2: SubmitAgentRunMetrics is the
-		// strict principal(metrics:write) tier (no legacy bypass);
-		// ListAgentWorkflowRunMetrics is authorized-viewer against the main team.
-		// These specs pin the tier each route is wrapped with — the
-		// no-panic loop above only proves the switch is exhaustive.
+		// 00-shared-contracts.md §4.2: ListAgentWorkflowRunMetrics is
+		// authorized-viewer against the main team. These specs pin the tier each
+		// route is wrapped with — the no-panic loop above only proves the switch
+		// is exhaustive. (The strict principal(metrics:write) submit tier is
+		// gone with POST /api/v1/agent/metrics: metrics are written in-process.)
 		Describe("agent run metrics route tiers", func() {
 			var (
 				store        *principals.MemoryStore
@@ -92,7 +92,6 @@ var _ = Describe("APIAuthWrappa", func() {
 					fakeCheckWorkerTeamAccessHandlerFactory,
 					auth.NewCheckAgentPrincipalHandlerFactory(principals.NewVerifier(store)),
 				).Wrap(rata.Handlers{
-					atc.SubmitAgentRunMetrics:       delegate,
 					atc.ListAgentWorkflowRunMetrics: delegate,
 				})
 			})
@@ -117,47 +116,6 @@ var _ = Describe("APIAuthWrappa", func() {
 				Expect(err).NotTo(HaveOccurred())
 				return resp
 			}
-
-			Describe("SubmitAgentRunMetrics", func() {
-				It("admits a principal token carrying metrics:write", func() {
-					_, token, err := store.Create(principals.CreateSpec{
-						Name: "metrics-writer", Scopes: []string{principals.ScopeMetricsWrite},
-					})
-					Expect(err).NotTo(HaveOccurred())
-
-					resp := serve(atc.SubmitAgentRunMetrics, "Bearer "+token)
-					Expect(resp.StatusCode).To(Equal(http.StatusOK))
-					Expect(delegateHit).To(BeTrue())
-				})
-
-				It("401s a principal token lacking metrics:write", func() {
-					_, token, err := store.Create(principals.CreateSpec{
-						Name: "cost-writer", Scopes: []string{principals.ScopeCostsWrite},
-					})
-					Expect(err).NotTo(HaveOccurred())
-
-					resp := serve(atc.SubmitAgentRunMetrics, "Bearer "+token)
-					Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
-					Expect(delegateHit).To(BeFalse())
-				})
-
-				It("401s tokenless unauthenticated requests (no legacy bypass)", func() {
-					fakeaccess.IsAuthenticatedReturns(false)
-
-					resp := serve(atc.SubmitAgentRunMetrics, "")
-					Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
-					Expect(delegateHit).To(BeFalse())
-				})
-
-				It("403s authenticated non-admin users without a principal token", func() {
-					fakeaccess.IsAuthenticatedReturns(true)
-					fakeaccess.IsAdminReturns(false)
-
-					resp := serve(atc.SubmitAgentRunMetrics, "")
-					Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
-					Expect(delegateHit).To(BeFalse())
-				})
-			})
 
 			// GetBuildAgentReviews and ListBuildAgentRunMetrics carry
 			// content-bearing run output (review findings, run
@@ -352,7 +310,12 @@ var _ = Describe("APIAuthWrappa", func() {
 			})
 		})
 
-		Describe("agent review and cost publishing route tiers", func() {
+		// The pure principal(<scope>) publishing tier is gone with POST
+		// /api/v1/agent/{reviews,costs,metrics} — reviews, ledger rows and
+		// metrics are written in-process. What remains of the principal tier is
+		// the COMBINED ticket tier: an agent principal carrying the ticket scope
+		// OR an authorized main-team human.
+		Describe("agent ticket route tiers", func() {
 			var (
 				store        *principals.MemoryStore
 				wrapped      rata.Handlers
@@ -380,8 +343,9 @@ var _ = Describe("APIAuthWrappa", func() {
 					fakeCheckWorkerTeamAccessHandlerFactory,
 					auth.NewCheckAgentPrincipalHandlerFactory(principals.NewVerifier(store)),
 				).Wrap(rata.Handlers{
-					atc.SubmitAgentReview:     delegate,
-					atc.SubmitAgentCostRecord: delegate,
+					atc.CreateAgentTicket:     delegate,
+					atc.TransitionAgentTicket: delegate,
+					atc.GetAgentTicket:        delegate,
 				})
 			})
 
@@ -411,8 +375,9 @@ var _ = Describe("APIAuthWrappa", func() {
 				scope      string
 				otherScope string
 			}{
-				{atc.SubmitAgentReview, principals.ScopeReviewsWrite, principals.ScopeCostsWrite},
-				{atc.SubmitAgentCostRecord, principals.ScopeCostsWrite, principals.ScopeReviewsWrite},
+				{atc.CreateAgentTicket, principals.ScopeTicketsWrite, principals.ScopeTicketsRead},
+				{atc.TransitionAgentTicket, principals.ScopeTicketsWrite, principals.ScopeTicketsRead},
+				{atc.GetAgentTicket, principals.ScopeTicketsRead, principals.ScopeTicketsWrite},
 			} {
 				tc := tc
 				Describe(tc.route, func() {
@@ -433,13 +398,22 @@ var _ = Describe("APIAuthWrappa", func() {
 						Expect(delegateHit).To(BeFalse())
 					})
 
-					It("401s a principal carrying another scope", func() {
+					It("rejects a principal carrying only the other ticket scope", func() {
 						_, token, err := store.Create(principals.CreateSpec{Name: "other-writer", Scopes: []string{tc.otherScope}})
 						Expect(err).NotTo(HaveOccurred())
 
 						resp := serve(tc.route, "Bearer "+token)
-						Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
+						Expect(resp.StatusCode).ToNot(Equal(http.StatusOK))
 						Expect(delegateHit).To(BeFalse())
+					})
+
+					It("admits an authorized main-team human with no principal token", func() {
+						fakeaccess.IsAuthenticatedReturns(true)
+						fakeaccess.IsAuthorizedReturns(true)
+
+						resp := serve(tc.route, "")
+						Expect(resp.StatusCode).To(Equal(http.StatusOK))
+						Expect(delegateHit).To(BeTrue())
 					})
 				})
 			}

@@ -9,20 +9,10 @@ import (
 // EventType identifies the kind of event in an NDJSON event log.
 type EventType string
 
+// EventError is a non-fatal error the agent handled or recovered from.
+// The step.* / cost.record vocabulary lives in event_payloads.go.
 const (
-	EventAgentStart           EventType = "agent.start"
-	EventAgentEnd             EventType = "agent.end"
-	EventSkillStart           EventType = "skill.start"
-	EventSkillEnd             EventType = "skill.end"
-	EventToolCall             EventType = "tool.call"
-	EventToolResult           EventType = "tool.result"
-	EventArtifactWritten      EventType = "artifact.written"
-	EventDecision             EventType = "decision"
-	EventError                EventType = "error"
-	EventPlanInputParsed      EventType = "plan.input_parsed"
-	EventPlanSpecGenerated    EventType = "plan.spec_generated"
-	EventPlanPlanGenerated    EventType = "plan.plan_generated"
-	EventPlanConfidenceScored EventType = "plan.confidence_scored"
+	EventError EventType = "error"
 )
 
 // Event represents a single line in the events.ndjson log.

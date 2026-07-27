@@ -79,26 +79,17 @@ A newline-delimited JSON file written incrementally during execution. Each line 
 
 | Event Type | Description |
 |------------|-------------|
-| `agent.start` | Agent execution begins. |
-| `agent.end` | Agent execution completes. Echoes final status and confidence. |
-| `skill.start` | A logical sub-task begins within the agent. |
-| `skill.end` | A logical sub-task completes. |
-| `tool.call` | An individual tool invocation. |
-| `tool.result` | The result of a tool invocation. |
-| `artifact.written` | An artifact file was produced. |
-| `decision` | Agent reasoning checkpoint. |
+| `step.start` | Agent step execution begins. |
+| `step.end` | Agent step execution completes. Echoes final status and cost. |
+| `cost.record` | A usage/cost ledger entry for the step. |
 | `error` | A non-fatal error the agent handled or recovered from. |
 
 ### Example
 
 ```
-{"ts":"2026-02-09T21:30:00Z","event":"agent.start","data":{"step":"review","model":"claude-sonnet-4-5-20250929"}}
-{"ts":"2026-02-09T21:30:01Z","event":"skill.start","data":{"skill":"code-review","target":"src/main.go"}}
-{"ts":"2026-02-09T21:30:02Z","event":"tool.call","data":{"tool":"grep","args":{"pattern":"TODO","path":"src/"},"duration_ms":42}}
-{"ts":"2026-02-09T21:30:02Z","event":"tool.result","data":{"tool":"grep","status":"ok","lines_matched":7}}
-{"ts":"2026-02-09T21:30:15Z","event":"artifact.written","data":{"name":"review-comments","path":"artifacts/comments.json","bytes":2048}}
-{"ts":"2026-02-09T21:30:15Z","event":"skill.end","data":{"skill":"code-review","status":"pass","duration_ms":15230}}
-{"ts":"2026-02-09T21:30:18Z","event":"agent.end","data":{"status":"pass","confidence":0.92,"duration_ms":18500}}
+{"ts":"2026-02-09T21:30:00Z","event":"step.start","data":{"step_name":"review","build_id":42,"plan_id":"abc"}}
+{"ts":"2026-02-09T21:30:15Z","event":"cost.record","data":{"source":"claude-code","provider":"anthropic","model":"claude-sonnet-4-5-20250929","cost_usd":0.42}}
+{"ts":"2026-02-09T21:30:18Z","event":"step.end","data":{"step_name":"review","status":"ok","summary":"Code review complete.","wall_time_seconds":18,"cost_usd":0.42,"turns":6}}
 ```
 
 ## Extensibility

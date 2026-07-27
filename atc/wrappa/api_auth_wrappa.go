@@ -119,23 +119,6 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			atc.GetSigningKeys:
 			newHandler = auth.CheckAuthenticationIfProvidedHandler(handler, rejector)
 
-		// principal(reviews:write) — 00-shared-contracts.md §4.1.
-		case atc.SubmitAgentReview:
-			newHandler = wrappa.checkAgentPrincipalHandlerFactory.HandlerFor(
-				handler, rejector, principals.ScopeReviewsWrite)
-
-		// principal(costs:write) — 00-shared-contracts.md §4.1.
-		case atc.SubmitAgentCostRecord:
-			newHandler = wrappa.checkAgentPrincipalHandlerFactory.HandlerFor(
-				handler, rejector, principals.ScopeCostsWrite)
-
-		// principal(metrics:write) — 00-shared-contracts.md §4.1/§4.2.
-		// Metrics ingest never had a legacy static token, so this is the
-		// strict tier: cap1 principal token (or admin user) only.
-		case atc.SubmitAgentRunMetrics:
-			newHandler = wrappa.checkAgentPrincipalHandlerFactory.HandlerFor(
-				handler, rejector, principals.ScopeMetricsWrite)
-
 		// admin
 		case atc.GetLogLevel,
 			atc.DestroyTeam,
@@ -217,10 +200,6 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 		// team via their accessor DefaultRoles entries (decision 21 in
 		// docs/superpowers/plans/agentic-platform/00-shared-contracts.md)
 		case atc.SubmitAgentFeedback,
-			atc.GetAgentFeedback,
-			atc.GetAgentFeedbackSummary,
-			atc.ClassifyAgentVerdict,
-			atc.GetAgentReviewFindings,
 			atc.GetAgentSnapshotReview,
 			atc.ListAgentWorkflowRunReviews,
 			atc.ListRecentAgentRunMetrics,
@@ -269,9 +248,7 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 		// combined tier: agent principal (tickets:write) OR authorized
 		// main-team member — 00-shared-contracts.md §4.2 + ticket-core addendum
 		case atc.CreateAgentTicket,
-			atc.TransitionAgentTicket,
-			atc.SubmitAgentTicketSpec,
-			atc.SubmitAgentTicketPlan:
+			atc.TransitionAgentTicket:
 			newHandler = auth.AgentPrincipalOrMainTeamHandler(
 				wrappa.checkAgentPrincipalHandlerFactory.HandlerFor(handler, rejector, principals.ScopeTicketsWrite),
 				auth.CheckAgentAuthorizationHandler(handler, rejector),
@@ -284,10 +261,6 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 				wrappa.checkAgentPrincipalHandlerFactory.HandlerFor(handler, rejector, principals.ScopeTicketsRead),
 				auth.CheckAgentAuthorizationHandler(handler, rejector),
 			)
-
-		// principal-only: task status updates require tickets:write
-		case atc.UpdateAgentTicketTask:
-			newHandler = wrappa.checkAgentPrincipalHandlerFactory.HandlerFor(handler, rejector, principals.ScopeTicketsWrite)
 
 		// think about it!
 		default:

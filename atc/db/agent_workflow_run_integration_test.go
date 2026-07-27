@@ -15,7 +15,6 @@ import (
 
 	"github.com/concourse/concourse/agent/api/tickets"
 	"github.com/concourse/concourse/agent/dispatch"
-	"github.com/concourse/concourse/agent/schema"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/snapshot/contracts"
 	"github.com/concourse/concourse/agent/workflow"
@@ -470,23 +469,6 @@ func workflowRunTar(files map[string][]byte) []byte {
 	}
 	Expect(writer.Close()).To(Succeed())
 	return buffer.Bytes()
-}
-
-func validWorkflowReviewJSON() []byte {
-	review := schema.ReviewOutput{
-		SchemaVersion: "1.0.0",
-		Metadata: schema.Metadata{
-			Repo: "subject", Commit: "immutable", Branch: "main",
-			Timestamp: "2026-07-22T12:00:00Z", DurationSec: 1,
-			AgentCLI: "vertical-slice", AgentModel: "test", FilesReviewed: 1,
-		},
-		Score:        schema.Score{Value: 10, Max: 10, Pass: true, Threshold: 7, Deductions: []schema.ScoreDeduction{}},
-		ProvenIssues: []schema.ProvenIssue{}, Observations: []schema.Observation{},
-		TestSummary: schema.TestSummary{}, Summary: "reviewed",
-	}
-	payload, err := json.Marshal(review)
-	Expect(err).NotTo(HaveOccurred())
-	return payload
 }
 
 func findAgentPlan(plan atc.Plan, name string) *atc.Plan {

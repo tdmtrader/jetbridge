@@ -19,9 +19,9 @@ var _ = Describe("AgentPrincipalsFactory", func() {
 
 	It("mints a principal whose token round-trips through Get", func() {
 		created, token, err := factory.Create(principals.CreateSpec{
-			Name:        "ci-agent-review",
+			Name:        "code-review",
 			Description: "theborg publisher",
-			Scopes:      []string{principals.ScopeReviewsWrite},
+			Scopes:      []string{principals.ScopeTicketsWrite},
 			CreatedBy:   "admin",
 		})
 		Expect(err).NotTo(HaveOccurred())
@@ -34,9 +34,9 @@ var _ = Describe("AgentPrincipalsFactory", func() {
 		got, found, err := factory.Get(created.ID)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue())
-		Expect(got.Name).To(Equal("ci-agent-review"))
+		Expect(got.Name).To(Equal("code-review"))
 		Expect(got.Description).To(Equal("theborg publisher"))
-		Expect(got.Scopes).To(Equal([]string{principals.ScopeReviewsWrite}))
+		Expect(got.Scopes).To(Equal([]string{principals.ScopeTicketsWrite}))
 		Expect(got.TeamName).To(Equal("main"))
 		Expect(got.CreatedBy).To(Equal("admin"))
 		Expect(got.TokenPrefix).To(Equal(token[:12]))
@@ -62,7 +62,7 @@ var _ = Describe("AgentPrincipalsFactory", func() {
 
 	It("lists a normally minted gateway principal without the retired sentinel", func() {
 		_, _, err := factory.Create(principals.CreateSpec{
-			Name: "gateway", Scopes: []string{principals.ScopeCostsWrite},
+			Name: "gateway", Scopes: []string{principals.ScopeTicketsRead},
 		})
 		Expect(err).NotTo(HaveOccurred())
 
@@ -106,7 +106,7 @@ var _ = Describe("AgentPrincipalsFactory", func() {
 
 	It("records usage", func() {
 		created, _, err := factory.Create(principals.CreateSpec{
-			Name: "agent-step", Scopes: []string{principals.ScopeMetricsWrite},
+			Name: "agent-step", Scopes: []string{principals.ScopeTicketsWrite},
 		})
 		Expect(err).NotTo(HaveOccurred())
 

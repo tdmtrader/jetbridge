@@ -7,8 +7,8 @@ import (
 )
 
 func TestHashMatchesPhaseconfigSemantics(t *testing.T) {
-	// hex(sha256("hello")) — fixed vector so the fn provably matches
-	// ci-agent/phaseconfig.Hash (same input → same output).
+	// hex(sha256("hello")) — fixed vector pinning the content-hash semantics
+	// so the function can never silently change what it hashes.
 	got := workflow.Hash([]byte("hello"))
 	want := "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
 	if got != want {

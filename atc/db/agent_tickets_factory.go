@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
-	"strings"
 
 	sq "github.com/Masterminds/squirrel"
 	"github.com/concourse/concourse/agent/api/tickets"
@@ -557,49 +556,6 @@ func bumpTicketRevision(tx Tx, ticketID int) error {
 	return nil
 }
 
-func (f *agentTicketsFactory) SubmitSpec(ticketID int, spec tickets.Spec) (int, error) {
-	criteria, err := json.Marshal(emptyIfNilStrings(spec.AcceptanceCriteria))
-	if err != nil {
-		return 0, err
-	}
-	links, err := json.Marshal(emptyIfNilLinks(spec.Links))
-	if err != nil {
-		return 0, err
-	}
-
-	tx, err := f.conn.Begin()
-	if err != nil {
-		return 0, err
-	}
-	defer Rollback(tx)
-
-	if err := lockTicket(tx, ticketID); err != nil {
-		return 0, err
-	}
-
-	var version int
-	err = tx.QueryRow(
-		`SELECT COALESCE(MAX(version), 0) + 1 FROM agent_ticket_specs WHERE ticket_id = $1`,
-		ticketID).Scan(&version)
-	if err != nil {
-		return 0, err
-	}
-
-	_, err = tx.Exec(
-		`INSERT INTO agent_ticket_specs
-			(ticket_id, version, title, body, acceptance_criteria, links, submitted_by)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		ticketID, version, spec.Title, spec.Body, criteria, links, spec.SubmittedBy)
-	if err != nil {
-		return 0, err
-	}
-	if err := bumpTicketRevision(tx, ticketID); err != nil {
-		return 0, err
-	}
-
-	return version, tx.Commit()
-}
-
 func (f *agentTicketsFactory) LatestSpec(ticketID int) (*tickets.Spec, bool, error) {
 	var s tickets.Spec
 	var criteria, links []byte
@@ -625,49 +581,6 @@ func (f *agentTicketsFactory) LatestSpec(ticketID int) (*tickets.Spec, bool, err
 		return nil, false, err
 	}
 	return &s, true, nil
-}
-
-// SubmitPlan replaces the active plan: new plan_version, orderings 1..N
-// as given (contracts §3.2 submit_plan). Old versions are retained for
-// process intelligence (§1.7).
-func (f *agentTicketsFactory) SubmitPlan(ticketID int, ts []tickets.Task) (int, error) {
-	tx, err := f.conn.Begin()
-	if err != nil {
-		return 0, err
-	}
-	defer Rollback(tx)
-
-	if err := lockTicket(tx, ticketID); err != nil {
-		return 0, err
-	}
-
-	var planVersion int
-	err = tx.QueryRow(
-		`SELECT COALESCE(MAX(plan_version), 0) + 1 FROM agent_ticket_tasks WHERE ticket_id = $1`,
-		ticketID).Scan(&planVersion)
-	if err != nil {
-		return 0, err
-	}
-
-	for i, task := range ts {
-		status := task.Status
-		if status == "" {
-			status = tickets.TaskPending
-		}
-		_, err = tx.Exec(
-			`INSERT INTO agent_ticket_tasks
-				(ticket_id, plan_version, ordering, title, detail, status)
-			 VALUES ($1, $2, $3, $4, $5, $6)`,
-			ticketID, planVersion, i+1, task.Title, task.Detail, string(status))
-		if err != nil {
-			return 0, err
-		}
-	}
-	if err := bumpTicketRevision(tx, ticketID); err != nil {
-		return 0, err
-	}
-
-	return planVersion, tx.Commit()
 }
 
 func (f *agentTicketsFactory) ActivePlan(ticketID int) ([]tickets.Task, error) {
@@ -696,243 +609,6 @@ func (f *agentTicketsFactory) ActivePlan(ticketID int) ([]tickets.Task, error) {
 	return out, rows.Err()
 }
 
-func (f *agentTicketsFactory) UpdateTaskStatus(ticketID int, planVersion, ordering int, status tickets.TaskStatus) error {
-	tx, err := f.conn.Begin()
-	if err != nil {
-		return err
-	}
-	defer Rollback(tx)
-	if err := lockTicket(tx, ticketID); err != nil {
-		return err
-	}
-
-	res, err := tx.Exec(
-		`UPDATE agent_ticket_tasks SET status = $1, updated_at = now()
-		 WHERE ticket_id = $2 AND plan_version = $3 AND ordering = $4`,
-		string(status), ticketID, planVersion, ordering)
-	if err != nil {
-		return err
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n == 0 {
-		return tickets.ErrTaskNotFound
-	}
-	if err := bumpTicketRevision(tx, ticketID); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
-// UpdateActiveTask atomically applies a status update (plus optional
-// note append) to the ACTIVE plan's task. Resolving the active
-// plan_version and writing against it happen inside one transaction
-// holding the ticket's FOR UPDATE row lock — the same lock SubmitPlan
-// takes to allocate versions — so a concurrent plan replacement can
-// never slip between the read and the write (the TOCTOU lost-update
-// found by agent-review-native #7, 2026-07-17).
-func (f *agentTicketsFactory) UpdateActiveTask(ticketID, ordering int, status tickets.TaskStatus, note string) (int, error) {
-	tx, err := f.conn.Begin()
-	if err != nil {
-		return 0, err
-	}
-	defer Rollback(tx)
-
-	if err := lockTicket(tx, ticketID); err != nil {
-		return 0, err
-	}
-
-	var planVersion int
-	err = tx.QueryRow(
-		`SELECT COALESCE(MAX(plan_version), 0) FROM agent_ticket_tasks WHERE ticket_id = $1`,
-		ticketID).Scan(&planVersion)
-	if err != nil {
-		return 0, err
-	}
-	if planVersion == 0 {
-		return 0, tickets.ErrNoActivePlan
-	}
-
-	res, err := tx.Exec(
-		`UPDATE agent_ticket_tasks
-		 SET status = $1,
-		     detail = CASE WHEN $2 = '' THEN detail
-		                   WHEN detail = '' THEN '> ' || $2
-		                   ELSE detail || E'\n\n> ' || $2 END,
-		     updated_at = now()
-		 WHERE ticket_id = $3 AND plan_version = $4 AND ordering = $5`,
-		string(status), note, ticketID, planVersion, ordering)
-	if err != nil {
-		return 0, err
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return 0, err
-	}
-	if n == 0 {
-		return 0, tickets.ErrTaskNotFound
-	}
-	if err := bumpTicketRevision(tx, ticketID); err != nil {
-		return 0, err
-	}
-
-	return planVersion, tx.Commit()
-}
-
-// AppendTaskNote appends the §3.2 update_task_status note as a markdown
-// blockquote on the task's detail (ticket-core contract addendum).
-func (f *agentTicketsFactory) AppendTaskNote(ticketID int, planVersion, ordering int, note string) error {
-	tx, err := f.conn.Begin()
-	if err != nil {
-		return err
-	}
-	defer Rollback(tx)
-	if err := lockTicket(tx, ticketID); err != nil {
-		return err
-	}
-
-	res, err := tx.Exec(
-		`UPDATE agent_ticket_tasks
-		 SET detail = CASE WHEN detail = '' THEN '> ' || $1
-		                   ELSE detail || E'\n\n> ' || $1 END,
-		     updated_at = now()
-		 WHERE ticket_id = $2 AND plan_version = $3 AND ordering = $4`,
-		note, ticketID, planVersion, ordering)
-	if err != nil {
-		return err
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n == 0 {
-		return tickets.ErrTaskNotFound
-	}
-	if err := bumpTicketRevision(tx, ticketID); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
-func (f *agentTicketsFactory) AppendComment(ticketID int, comment tickets.Comment) (int, error) {
-	if strings.TrimSpace(comment.Body) == "" || strings.TrimSpace(comment.CreatedBy) == "" {
-		return 0, tickets.ErrCommentNotFound
-	}
-	tx, err := f.conn.Begin()
-	if err != nil {
-		return 0, err
-	}
-	defer Rollback(tx)
-	if err := lockTicket(tx, ticketID); err != nil {
-		return 0, err
-	}
-
-	var commentID int
-	err = tx.QueryRow(`
-		INSERT INTO agent_ticket_comments (ticket_id, body, created_by)
-		VALUES ($1, $2, $3)
-		RETURNING id
-	`, ticketID, comment.Body, comment.CreatedBy).Scan(&commentID)
-	if err != nil {
-		return 0, err
-	}
-	if err := bumpTicketRevision(tx, ticketID); err != nil {
-		return 0, err
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, err
-	}
-	return commentID, nil
-}
-
-func (f *agentTicketsFactory) AnswerComment(ticketID, commentID int, answer, answeredBy string) error {
-	if strings.TrimSpace(answer) == "" || strings.TrimSpace(answeredBy) == "" {
-		return tickets.ErrCommentNotFound
-	}
-	tx, err := f.conn.Begin()
-	if err != nil {
-		return err
-	}
-	defer Rollback(tx)
-	if err := lockTicket(tx, ticketID); err != nil {
-		return err
-	}
-
-	result, err := tx.Exec(`
-		UPDATE agent_ticket_comments
-		SET answer = $1,
-		    answered_by = $2,
-		    answered_at = now(),
-		    revision = revision + 1
-		WHERE ticket_id = $3 AND id = $4 AND answered_at IS NULL
-	`, answer, answeredBy, ticketID, commentID)
-	if err != nil {
-		return err
-	}
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if rows == 0 {
-		var answered bool
-		err := tx.QueryRow(`
-			SELECT answered_at IS NOT NULL
-			FROM agent_ticket_comments
-			WHERE ticket_id = $1 AND id = $2
-		`, ticketID, commentID).Scan(&answered)
-		if errors.Is(err, sql.ErrNoRows) {
-			return tickets.ErrCommentNotFound
-		}
-		if err != nil {
-			return err
-		}
-		if answered {
-			return tickets.ErrCommentAnswered
-		}
-		return tickets.ErrCommentNotFound
-	}
-	if err := bumpTicketRevision(tx, ticketID); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
-func (f *agentTicketsFactory) Comments(ticketID int) ([]tickets.Comment, error) {
-	if _, found, err := f.Get(ticketID); err != nil {
-		return nil, err
-	} else if !found {
-		return nil, tickets.ErrTicketNotFound
-	}
-
-	rows, err := f.conn.Query(`
-		SELECT id, ticket_id, revision, body, created_by,
-		       EXTRACT(EPOCH FROM created_at)::bigint,
-		       answer, answered_by,
-		       COALESCE(EXTRACT(EPOCH FROM answered_at)::bigint, 0)
-		FROM agent_ticket_comments
-		WHERE ticket_id = $1
-		ORDER BY created_at, id
-	`, ticketID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	comments := []tickets.Comment{}
-	for rows.Next() {
-		var comment tickets.Comment
-		if err := rows.Scan(
-			&comment.ID, &comment.TicketID, &comment.Revision, &comment.Body, &comment.CreatedBy,
-			&comment.CreatedAt, &comment.Answer, &comment.AnsweredBy, &comment.AnsweredAt,
-		); err != nil {
-			return nil, err
-		}
-		comments = append(comments, comment)
-	}
-	return comments, rows.Err()
-}
-
 const captureTicketRevisionSQL = `
 	SELECT t.id,
 	       t.revision,
@@ -946,8 +622,7 @@ const captureTicketRevisionSQL = `
 	       t.workflow_version,
 	       t.workflow_definition_id,
 	       COALESCE(latest_spec.payload, 'null'::jsonb),
-	       COALESCE(active_plan.payload, 'null'::jsonb),
-	       COALESCE(ticket_comments.payload, '[]'::jsonb)
+	       COALESCE(active_plan.payload, 'null'::jsonb)
 	FROM agent_tickets t
 	LEFT JOIN LATERAL (
 		SELECT jsonb_build_object(
@@ -986,22 +661,6 @@ const captureTicketRevisionSQL = `
 		  )
 		GROUP BY task.plan_version
 	) active_plan ON TRUE
-	LEFT JOIN LATERAL (
-		SELECT jsonb_agg(
-			jsonb_build_object(
-				'id', comment.id,
-				'revision', comment.revision,
-				'body', comment.body,
-				'created_by', comment.created_by,
-				'created_at', EXTRACT(EPOCH FROM comment.created_at)::bigint,
-				'answer', comment.answer,
-				'answered_by', comment.answered_by,
-				'answered_at', COALESCE(EXTRACT(EPOCH FROM comment.answered_at)::bigint, 0)
-			) ORDER BY comment.created_at, comment.id
-		) AS payload
-		FROM agent_ticket_comments comment
-		WHERE comment.ticket_id = t.id
-	) ticket_comments ON TRUE
 	WHERE t.id = $1
 `
 
@@ -1019,14 +678,13 @@ func (f *agentTicketsFactory) CaptureRevision(ctx context.Context, ticketID int)
 	defer Rollback(tx)
 
 	var (
-		revision     workitem.Revision
-		origin       string
-		externalRef  string
-		workflowVer  sql.NullInt64
-		workflowDef  sql.NullInt64
-		specJSON     []byte
-		planJSON     []byte
-		commentsJSON []byte
+		revision    workitem.Revision
+		origin      string
+		externalRef string
+		workflowVer sql.NullInt64
+		workflowDef sql.NullInt64
+		specJSON    []byte
+		planJSON    []byte
 	)
 	err = tx.QueryRowContext(ctx, captureTicketRevisionSQL, ticketID).Scan(
 		&revision.TicketID,
@@ -1042,7 +700,6 @@ func (f *agentTicketsFactory) CaptureRevision(ctx context.Context, ticketID int)
 		&workflowDef,
 		&specJSON,
 		&planJSON,
-		&commentsJSON,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return workitem.CapturedRevision{}, false, nil
@@ -1072,9 +729,6 @@ func (f *agentTicketsFactory) CaptureRevision(ctx context.Context, ticketID int)
 		return workitem.CapturedRevision{}, false, err
 	}
 	if err := json.Unmarshal(planJSON, &revision.Plan); err != nil {
-		return workitem.CapturedRevision{}, false, err
-	}
-	if err := json.Unmarshal(commentsJSON, &revision.Comments); err != nil {
 		return workitem.CapturedRevision{}, false, err
 	}
 	captured, err := workitem.MarshalRevision(revision)

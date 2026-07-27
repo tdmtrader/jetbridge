@@ -20,11 +20,6 @@ func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{rows: map[[2]any]schema.RunMetrics{}, ord: map[[2]any]int{}}
 }
 
-func (s *MemoryStore) Upsert(rm *schema.RunMetrics) error {
-	_, _, err := s.UpsertReturningInserted(rm)
-	return err
-}
-
 func (s *MemoryStore) UpsertReturningInserted(rm *schema.RunMetrics) (bool, *schema.RunMetrics, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -21,10 +21,26 @@ func TestFeedbackRoutesRegistered(t *testing.T) {
 		path   string
 	}{
 		{atc.SubmitAgentFeedback, "POST", "/api/v1/agent/feedback"},
-		{atc.GetAgentFeedback, "GET", "/api/v1/agent/feedback"},
-		{atc.GetAgentFeedbackSummary, "GET", "/api/v1/agent/feedback/summary"},
-		{atc.ClassifyAgentVerdict, "POST", "/api/v1/agent/feedback/classify"},
-		{atc.GetAgentReviewFindings, "GET", "/api/v1/agent/reviews/:commit/findings"},
+	}
+
+	// The v1 read/classify surface is gone: verdicts are read back through the
+	// review projection, and the keyword classifier went with ci-agent.
+	for _, path := range []string{
+		"/api/v1/agent/feedback/summary",
+		"/api/v1/agent/feedback/classify",
+		"/api/v1/agent/reviews/:commit/findings",
+	} {
+		for _, route := range atc.Routes {
+			if route.Path == path {
+				t.Errorf("route %q (%s %s) must not be registered", route.Name, route.Method, path)
+			}
+		}
+	}
+
+	for _, route := range atc.Routes {
+		if route.Path == "/api/v1/agent/feedback" && route.Method != "POST" {
+			t.Errorf("only POST /api/v1/agent/feedback survives; found %s", route.Method)
+		}
 	}
 
 	for _, rr := range requiredRoutes {

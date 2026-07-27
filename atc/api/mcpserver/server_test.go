@@ -184,7 +184,7 @@ var _ = Describe("Server", func() {
 	})
 })
 
-var _ = Describe("SSE progress streaming (mirrored from ci-agent/devmcp/server_test.go — 04 Task 4 wire spec)", func() {
+var _ = Describe("SSE progress streaming (04 Task 4 wire spec)", func() {
 	newSSEServer := func(heartbeat time.Duration, handler mcpserver.ToolHandler) *httptest.Server {
 		s := mcpserver.NewServerWithHeartbeat(heartbeat)
 		s.AddTool("echo", "echoes back", json.RawMessage(`{"type":"object"}`), handler)

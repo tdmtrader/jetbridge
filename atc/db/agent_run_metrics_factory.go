@@ -13,8 +13,8 @@ import (
 )
 
 // AgentRunMetricsFactory persists agent run metrics (shared-contracts
-// §1.8/§2.4). It is exactly agent/api/metrics.Store (Upsert,
-// UpsertReturningInserted, InsertIfAbsent, GetByBuild, ListByWorkflowRun) —
+// §1.8/§2.4). It is exactly agent/api/metrics.Store
+// (UpsertReturningInserted, InsertIfAbsent, GetByBuild, ListByWorkflowRun) —
 // embedded now that both packages live on the same branch.
 //
 //counterfeiter:generate . AgentRunMetricsFactory
@@ -28,11 +28,6 @@ func NewAgentRunMetricsFactory(conn DbConn) AgentRunMetricsFactory {
 
 type agentRunMetricsFactory struct {
 	conn DbConn
-}
-
-func (f *agentRunMetricsFactory) Upsert(rm *agentschema.RunMetrics) error {
-	_, _, err := f.UpsertReturningInserted(rm)
-	return err
 }
 
 // UpsertReturningInserted performs the ON CONFLICT (build_id, plan_id) upsert,

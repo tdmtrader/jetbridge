@@ -8,20 +8,20 @@ import (
 	"testing"
 
 	"github.com/concourse/concourse/agent/api/feedback"
+	"github.com/concourse/concourse/agent/snapshot"
 )
 
-// setupServer creates an httptest.Server with a real ServeMux wiring all
-// feedback endpoints. This validates the full HTTP round-trip (routing,
-// serialization, status codes) rather than testing handler methods directly.
+// setupServer creates an httptest.Server with a real ServeMux wiring the one
+// surviving feedback endpoint. This validates the full HTTP round-trip
+// (routing, serialization, status codes) rather than testing handler methods
+// directly. The GET/summary/classify routes were deleted with the rest of the
+// v1 HTTP surface — feedback is read back through the review projection.
 func setupServer() (*httptest.Server, *feedback.MemoryStore) {
 	store := feedback.NewMemoryStore()
-	handler := feedback.NewHandler(store)
+	handler := feedback.NewHandler(store, feedback.WithSnapshotTeam("main"))
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/agent/feedback", handler.SubmitFeedback)
-	mux.HandleFunc("GET /api/v1/agent/feedback", handler.GetFeedback)
-	mux.HandleFunc("GET /api/v1/agent/feedback/summary", handler.GetSummary)
-	mux.HandleFunc("POST /api/v1/agent/feedback/classify", handler.ClassifyVerdict)
 
 	return httptest.NewServer(mux), store
 }
@@ -39,26 +39,16 @@ func submitFeedback(t *testing.T, serverURL string, req feedback.FeedbackRequest
 	return resp
 }
 
-func TestRoundTripSubmitGetSummary(t *testing.T) {
-	server, _ := setupServer()
+func TestRoundTripSubmitStoresEveryFinding(t *testing.T) {
+	server, store := setupServer()
 	defer server.Close()
 
-	// Submit 3 feedback records.
+	reviewID := snapshot.SnapshotID(4242)
 	records := []feedback.FeedbackRequest{
-		{
-			ReviewRef: feedback.ReviewRef{Repo: "repo-a", Commit: "abc"},
-			FindingID: "ISS-001", Verdict: "accurate", Reviewer: "alice",
-		},
-		{
-			ReviewRef: feedback.ReviewRef{Repo: "repo-a", Commit: "abc"},
-			FindingID: "ISS-002", Verdict: "false_positive", Reviewer: "alice",
-		},
-		{
-			ReviewRef: feedback.ReviewRef{Repo: "repo-a", Commit: "abc"},
-			FindingID: "ISS-003", Verdict: "accurate", Reviewer: "bob",
-		},
+		{ReviewSnapshotID: &reviewID, FindingID: "ISS-001", Verdict: "accurate", Reviewer: "alice"},
+		{ReviewSnapshotID: &reviewID, FindingID: "ISS-002", Verdict: "false_positive", Reviewer: "alice"},
+		{ReviewSnapshotID: &reviewID, FindingID: "ISS-003", Verdict: "accurate", Reviewer: "bob"},
 	}
-
 	for _, rec := range records {
 		resp := submitFeedback(t, server.URL, rec)
 		if resp.StatusCode != http.StatusCreated {
@@ -67,160 +57,41 @@ func TestRoundTripSubmitGetSummary(t *testing.T) {
 		resp.Body.Close()
 	}
 
-	// GET all 3 back.
-	resp, err := http.Get(server.URL + "/api/v1/agent/feedback?repo=repo-a&commit=abc")
+	stored, err := store.GetByReviewSnapshot(reviewID, "main")
 	if err != nil {
-		t.Fatalf("GET feedback: %v", err)
+		t.Fatalf("read back: %v", err)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200, got %d", resp.StatusCode)
-	}
-
-	var results []feedback.StoredFeedback
-	if err := json.NewDecoder(resp.Body).Decode(&results); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if len(results) != 3 {
-		t.Fatalf("expected 3 results, got %d", len(results))
-	}
-
-	// GET summary with correct rates.
-	resp2, err := http.Get(server.URL + "/api/v1/agent/feedback/summary")
-	if err != nil {
-		t.Fatalf("GET summary: %v", err)
-	}
-	defer resp2.Body.Close()
-
-	if resp2.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200, got %d", resp2.StatusCode)
-	}
-
-	var summary feedback.SummaryResponse
-	if err := json.NewDecoder(resp2.Body).Decode(&summary); err != nil {
-		t.Fatalf("decode summary: %v", err)
-	}
-	if summary.Total != 3 {
-		t.Fatalf("expected total 3, got %d", summary.Total)
-	}
-	// 2/3 accurate.
-	expectedAccuracy := 2.0 / 3.0
-	if summary.AccuracyRate < expectedAccuracy-0.01 || summary.AccuracyRate > expectedAccuracy+0.01 {
-		t.Fatalf("expected accuracy ~%.2f, got %f", expectedAccuracy, summary.AccuracyRate)
-	}
-	// 1/3 false positive.
-	expectedFP := 1.0 / 3.0
-	if summary.FPRate < expectedFP-0.01 || summary.FPRate > expectedFP+0.01 {
-		t.Fatalf("expected FP rate ~%.2f, got %f", expectedFP, summary.FPRate)
+	if len(stored) != 3 {
+		t.Fatalf("expected 3 stored records, got %d", len(stored))
 	}
 }
 
 func TestRoundTripUpsertBehavior(t *testing.T) {
-	server, _ := setupServer()
+	server, store := setupServer()
 	defer server.Close()
 
-	// Submit same reviewer+finding twice with different verdicts.
-	first := feedback.FeedbackRequest{
-		ReviewRef: feedback.ReviewRef{Repo: "repo-b", Commit: "def"},
-		FindingID: "ISS-010", Verdict: "false_positive", Reviewer: "alice",
-	}
-	resp := submitFeedback(t, server.URL, first)
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("first submit: expected 201, got %d", resp.StatusCode)
-	}
+	reviewID := snapshot.SnapshotID(4343)
 
-	// Update verdict.
-	second := feedback.FeedbackRequest{
-		ReviewRef: feedback.ReviewRef{Repo: "repo-b", Commit: "def"},
-		FindingID: "ISS-010", Verdict: "accurate", Reviewer: "alice",
-	}
-	resp = submitFeedback(t, server.URL, second)
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("second submit: expected 201, got %d", resp.StatusCode)
-	}
-
-	// GET should return only 1 record with the latest verdict.
-	resp2, err := http.Get(server.URL + "/api/v1/agent/feedback?repo=repo-b&commit=def")
-	if err != nil {
-		t.Fatalf("GET: %v", err)
-	}
-	defer resp2.Body.Close()
-
-	var results []feedback.StoredFeedback
-	if err := json.NewDecoder(resp2.Body).Decode(&results); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result (upsert), got %d", len(results))
-	}
-	if results[0].Verdict != "accurate" {
-		t.Fatalf("expected latest verdict 'accurate', got %q", results[0].Verdict)
-	}
-}
-
-func TestRoundTripRepoFilterOnSummary(t *testing.T) {
-	server, _ := setupServer()
-	defer server.Close()
-
-	// Submit records for two different repos.
-	repoARecords := []feedback.FeedbackRequest{
-		{
-			ReviewRef: feedback.ReviewRef{Repo: "repo-alpha", Commit: "a1"},
-			FindingID: "ISS-001", Verdict: "accurate", Reviewer: "alice",
-		},
-		{
-			ReviewRef: feedback.ReviewRef{Repo: "repo-alpha", Commit: "a1"},
-			FindingID: "ISS-002", Verdict: "accurate", Reviewer: "alice",
-		},
-	}
-	repoBRecords := []feedback.FeedbackRequest{
-		{
-			ReviewRef: feedback.ReviewRef{Repo: "repo-beta", Commit: "b1"},
-			FindingID: "ISS-001", Verdict: "false_positive", Reviewer: "bob",
-		},
-	}
-
-	for _, rec := range append(repoARecords, repoBRecords...) {
-		resp := submitFeedback(t, server.URL, rec)
+	// Same reviewer + finding submitted twice with different verdicts.
+	for _, verdict := range []string{"false_positive", "accurate"} {
+		resp := submitFeedback(t, server.URL, feedback.FeedbackRequest{
+			ReviewSnapshotID: &reviewID, FindingID: "ISS-010",
+			Verdict: verdict, Reviewer: "alice",
+		})
 		resp.Body.Close()
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("submit %q: expected 201, got %d", verdict, resp.StatusCode)
+		}
 	}
 
-	// Summary filtered by repo-alpha should only count 2 records.
-	resp, err := http.Get(server.URL + "/api/v1/agent/feedback/summary?repo=repo-alpha")
+	stored, err := store.GetByReviewSnapshot(reviewID, "main")
 	if err != nil {
-		t.Fatalf("GET summary: %v", err)
+		t.Fatalf("read back: %v", err)
 	}
-	defer resp.Body.Close()
-
-	var summary feedback.SummaryResponse
-	if err := json.NewDecoder(resp.Body).Decode(&summary); err != nil {
-		t.Fatalf("decode: %v", err)
+	if len(stored) != 1 {
+		t.Fatalf("expected 1 record (upsert), got %d", len(stored))
 	}
-	if summary.Total != 2 {
-		t.Fatalf("expected 2 for repo-alpha filter, got %d", summary.Total)
-	}
-	if summary.AccuracyRate != 1.0 {
-		t.Fatalf("expected accuracy 1.0 for repo-alpha, got %f", summary.AccuracyRate)
-	}
-
-	// Summary filtered by repo-beta should only count 1 record.
-	resp2, err := http.Get(server.URL + "/api/v1/agent/feedback/summary?repo=repo-beta")
-	if err != nil {
-		t.Fatalf("GET summary: %v", err)
-	}
-	defer resp2.Body.Close()
-
-	var summaryB feedback.SummaryResponse
-	if err := json.NewDecoder(resp2.Body).Decode(&summaryB); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if summaryB.Total != 1 {
-		t.Fatalf("expected 1 for repo-beta filter, got %d", summaryB.Total)
-	}
-	if summaryB.FPRate != 1.0 {
-		t.Fatalf("expected FP rate 1.0 for repo-beta, got %f", summaryB.FPRate)
+	if stored[0].Verdict != "accurate" {
+		t.Fatalf("expected latest verdict 'accurate', got %q", stored[0].Verdict)
 	}
 }

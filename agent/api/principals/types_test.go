@@ -10,7 +10,7 @@ import (
 )
 
 func TestCreateSpecValidate(t *testing.T) {
-	valid := principals.CreateSpec{Name: "ci-agent-review", Scopes: []string{principals.ScopeReviewsWrite}}
+	valid := principals.CreateSpec{Name: "agent-run-482", Scopes: []string{principals.ScopeTicketsWrite}}
 	if err := valid.Validate(); err != nil {
 		t.Errorf("valid spec rejected: %v", err)
 	}
@@ -20,7 +20,7 @@ func TestCreateSpecValidate(t *testing.T) {
 		want string
 	}{
 		"missing name": {
-			spec: principals.CreateSpec{Scopes: []string{principals.ScopeReviewsWrite}},
+			spec: principals.CreateSpec{Scopes: []string{principals.ScopeTicketsWrite}},
 			want: "name is required",
 		},
 		"no scopes": {
@@ -28,8 +28,12 @@ func TestCreateSpecValidate(t *testing.T) {
 			want: "at least one scope is required",
 		},
 		"unknown scope": {
-			spec: principals.CreateSpec{Name: "x", Scopes: []string{"reviews:read"}},
-			want: `unknown scope "reviews:read"`,
+			spec: principals.CreateSpec{Name: "x", Scopes: []string{"tickets:admin"}},
+			want: `unknown scope "tickets:admin"`,
+		},
+		"retired publishing scope": {
+			spec: principals.CreateSpec{Name: "x", Scopes: []string{"reviews:write"}},
+			want: `unknown scope "reviews:write"`,
 		},
 		"retired question authority": {
 			spec: principals.CreateSpec{Name: "x", Scopes: []string{"questions:answer"}},
@@ -49,13 +53,13 @@ func TestCreateSpecValidate(t *testing.T) {
 	}
 }
 
-func TestValidScopesContainsOnlyRetainedPublishingAndTicketScopes(t *testing.T) {
+func TestValidScopesContainsOnlyTicketScopes(t *testing.T) {
+	// reviews:write, metrics:write and costs:write went with the HTTP
+	// publishing routes they guarded; the ticket scopes are the only ones
+	// still gating a live route.
 	want := map[string]bool{
-		"reviews:write": true,
 		"tickets:read":  true,
 		"tickets:write": true,
-		"metrics:write": true,
-		"costs:write":   true,
 	}
 	if !reflect.DeepEqual(principals.ValidScopes, want) {
 		t.Fatalf("ValidScopes = %#v, want %#v", principals.ValidScopes, want)
@@ -67,17 +71,17 @@ func TestPrincipalHasScope(t *testing.T) {
 	if !p.HasScope(principals.ScopeTicketsRead) {
 		t.Error("expected tickets:read")
 	}
-	if p.HasScope(principals.ScopeReviewsWrite) {
+	if p.HasScope("reviews:write") {
 		t.Error("did not expect reviews:write")
 	}
 }
 
 func TestDeriveKind(t *testing.T) {
 	cases := map[string]string{
-		"ci-agent-review": principals.KindOperator,
-		"legacy-publish":  principals.KindOperator,
-		"agent-run-1":     principals.KindRun,
-		"agent-run-482":   principals.KindRun,
+		"code-review":    principals.KindOperator,
+		"legacy-publish": principals.KindOperator,
+		"agent-run-1":    principals.KindRun,
+		"agent-run-482":  principals.KindRun,
 		// non-digit or malformed suffixes are not the dispatcher's
 		// naming convention, so they stay operator rather than being
 		// silently hidden from the operator-managed rows.

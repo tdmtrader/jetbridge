@@ -2,7 +2,6 @@ package metrics
 
 import (
 	"encoding/json"
-	"io"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -16,34 +15,15 @@ import (
 // path segment must be a valid workflow identifier before it reaches the store.
 var workflowNamePattern = regexp.MustCompile(`^[\p{Ll}\p{Lt}\p{Lm}\p{Lo}\d][\p{Ll}\p{Lt}\p{Lm}\p{Lo}\d\-_.]{0,127}$`)
 
-// Handler serves the agent run-metrics routes. Auth is enforced by the
-// wrappa layer (principal(metrics:write) for submit; authorized viewer for
-// list) — the handler trusts the request.
+// Handler serves the agent run-metrics read routes. Auth is enforced by the
+// wrappa layer (authorized viewer) — the handler trusts the request. Metrics
+// are written in-process by the agent step, never over HTTP.
 type Handler struct {
 	store Store
 }
 
 func NewHandler(store Store) *Handler {
 	return &Handler{store: store}
-}
-
-// SubmitMetrics handles POST /api/v1/agent/metrics.
-func (h *Handler) SubmitMetrics(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 5<<20))
-	if err != nil {
-		http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
-		return
-	}
-	rm, err := ParseSubmission(body)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	if err := h.store.Upsert(rm); err != nil {
-		http.Error(w, "failed to store metrics", http.StatusInternalServerError)
-		return
-	}
-	w.WriteHeader(http.StatusCreated)
 }
 
 // ListRecent handles GET /api/v1/agent/metrics?limit=N — the most-recent agent

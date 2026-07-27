@@ -26,11 +26,11 @@ func TestListByWorkflowRun(t *testing.T) {
 	store := metrics.NewMemoryStore()
 	h := metrics.NewHandler(store)
 
-	// Seed the way the exec's direct Upsert materializes durable identity —
-	// the submit API path clears it (server-owned). The metric field is the
-	// schema-local WorkflowRunID; the Store method still takes snapshot's.
+	// Seed the way the exec's in-process ingestion materializes durable
+	// identity. The metric field is the schema-local WorkflowRunID; the Store
+	// method still takes snapshot's.
 	runID := schema.WorkflowRunID(71)
-	if err := store.Upsert(&schema.RunMetrics{
+	if _, _, err := store.UpsertReturningInserted(&schema.RunMetrics{
 		BuildID: 9001, PlanID: "p1", StepName: "review-diff", Status: "ok",
 		WorkflowRunID: &runID, FunctionID: "review",
 	}); err != nil {
@@ -38,7 +38,7 @@ func TestListByWorkflowRun(t *testing.T) {
 	}
 	// a metric from a different run must not leak into this run's list
 	other := schema.WorkflowRunID(72)
-	if err := store.Upsert(&schema.RunMetrics{
+	if _, _, err := store.UpsertReturningInserted(&schema.RunMetrics{
 		BuildID: 9002, PlanID: "p1", StepName: "x", Status: "ok",
 		WorkflowRunID: &other,
 	}); err != nil {
@@ -69,15 +69,13 @@ func TestListByBuild(t *testing.T) {
 	store := metrics.NewMemoryStore()
 	h := metrics.NewHandler(store)
 
-	for _, body := range []string{
-		`{"build_id":9,"plan_id":"abc","step_name":"implement","status":"ok","cost_usd":0.5}`,
-		`{"build_id":9,"plan_id":"def","step_name":"review","status":"ok","cost_usd":0.25}`,
-		`{"build_id":10,"plan_id":"abc","step_name":"implement","status":"ok","cost_usd":1.0}`,
+	for _, rm := range []schema.RunMetrics{
+		{BuildID: 9, PlanID: "abc", StepName: "implement", Status: "ok", CostUSD: 0.5},
+		{BuildID: 9, PlanID: "def", StepName: "review", Status: "ok", CostUSD: 0.25},
+		{BuildID: 10, PlanID: "abc", StepName: "implement", Status: "ok", CostUSD: 1.0},
 	} {
-		rec := httptest.NewRecorder()
-		h.SubmitMetrics(rec, httptest.NewRequest("POST", "/api/v1/agent/metrics", strings.NewReader(body)))
-		if rec.Code != http.StatusCreated {
-			t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+		if _, _, err := store.UpsertReturningInserted(&rm); err != nil {
+			t.Fatalf("seed: %v", err)
 		}
 	}
 
@@ -135,15 +133,6 @@ func TestListByBuildRejectsInvalidBuildID(t *testing.T) {
 	}
 }
 
-func TestSubmitRejectsBadPayload(t *testing.T) {
-	h := metrics.NewHandler(metrics.NewMemoryStore())
-	rec := httptest.NewRecorder()
-	h.SubmitMetrics(rec, httptest.NewRequest("POST", "/api/v1/agent/metrics", strings.NewReader(`{}`)))
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", rec.Code)
-	}
-}
-
 func TestListByWorkflowRunRejectsBadParams(t *testing.T) {
 	h := metrics.NewHandler(metrics.NewMemoryStore())
 	for _, tc := range []struct{ name, workflow, run string }{
@@ -167,13 +156,6 @@ func TestStoreErrorsSurfaceAs500(t *testing.T) {
 	h := metrics.NewHandler(errStore{})
 
 	rec := httptest.NewRecorder()
-	body := `{"build_id":9,"plan_id":"abc","step_name":"implement","status":"ok"}`
-	h.SubmitMetrics(rec, httptest.NewRequest("POST", "/api/v1/agent/metrics", strings.NewReader(body)))
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("submit: expected 500 on store error, got %d", rec.Code)
-	}
-
-	rec = httptest.NewRecorder()
 	h.ListByWorkflowRun(rec, runMetricsRequest("code-review", "7"))
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("list: expected 500 on store error, got %d", rec.Code)
@@ -191,7 +173,6 @@ func TestStoreErrorsSurfaceAs500(t *testing.T) {
 // errStore fails every call, exercising the handler's 500 paths.
 type errStore struct{}
 
-func (errStore) Upsert(*schema.RunMetrics) error { return errors.New("boom") }
 func (errStore) UpsertReturningInserted(*schema.RunMetrics) (bool, *schema.RunMetrics, error) {
 	return false, nil, errors.New("boom")
 }
@@ -210,9 +191,9 @@ func TestListCarriesDerivedOutcome(t *testing.T) {
 	h := metrics.NewHandler(store)
 
 	// The exact truth split U3 kills: a green step inside a failed build.
-	// Ingestion never accepts build_status, so seed the store directly the
-	// way the DB factory materializes a read (builds-join sets BuildStatus).
-	if err := store.Upsert(&schema.RunMetrics{
+	// Seed the store directly the way the DB factory materializes a read
+	// (the builds join sets BuildStatus).
+	if _, _, err := store.UpsertReturningInserted(&schema.RunMetrics{
 		BuildID: 41, PlanID: "p1", StepName: "implement",
 		Status: schema.RunStatusOK, Summary: "agent reported ok",
 		BuildStatus: "failed",

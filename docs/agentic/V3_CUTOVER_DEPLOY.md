@@ -16,7 +16,7 @@ historical agent data needs to be preserved.
 | Execution identity | ticket + `agent-ticket-<id>` pipeline | **durable workflow run** |
 | Delivery | `harvest:` step pushed from the pod | `publish_snapshot` → publisher → **gateway** |
 | Merge compute | `merge:` step (pod-side push) | **`agent/functions/repositorymerge`** via `function-runner` |
-| Migration head | `1773106095` | **`1773106130`** |
+| Migration head | `1773106095` | **`1773106131`** |
 
 ## Order of operations
 
@@ -42,7 +42,7 @@ reject a tag. Agent steps error at runtime when it is unset.
 
 ### 3. Reset the database
 
-Migrations `1773106100`–`1773106130` all apply in one boot. Because no history is
+Migrations `1773106100`–`1773106131` all apply in one boot. Because no history is
 being preserved, dropping the database is cleaner than migrating through:
 
 - it skips `1773106124`'s backfill, which would otherwise NULL every historical
@@ -64,9 +64,12 @@ being preserved, dropping the database is cleaner than migrating through:
   whose source was `gateway`, `harvest_judge`, `retrospective` or `probe`**;
 - `1773106130` drops `agent_run_metrics.workflow_name/version/hash`; workflow
   identity is read through `agent_workflow_runs`.
+- `1773106131` drops `agent_ticket_comments` along with the ticket comment
+  surface (no route, no reader; `work-item/v1` no longer carries a `comments`
+  key). Its down migration recreates the table empty.
 
 Verify afterwards: `docs/migration/migrate-preflight.sh` expects
-`JETBRIDGE_VERSION=1773106130`.
+`JETBRIDGE_VERSION=1773106131`.
 
 ### 3a. Vault the platform credential — the only model-credential path
 

@@ -10,20 +10,20 @@ import (
 func validEvent() schema.Event {
 	return schema.Event{
 		Timestamp: "2026-02-09T21:30:00Z",
-		Type:      schema.EventAgentStart,
-		Data:      json.RawMessage(`{"step":"review","model":"claude-sonnet-4-5-20250929"}`),
+		Type:      schema.EventStepStart,
+		Data:      json.RawMessage(`{"step_name":"review","plan_id":"abc"}`),
 	}
 }
 
 func TestEventValidate(t *testing.T) {
-	t.Run("exposes the merged event-type constants and raw-message data", func(t *testing.T) {
+	t.Run("exposes the event-type constants and raw-message data", func(t *testing.T) {
 		e := schema.Event{
 			Timestamp: "2026-07-08T12:00:00Z",
-			Type:      schema.EventPlanInputParsed,
+			Type:      schema.EventCostRecord,
 			Data:      json.RawMessage(`{"k":"v"}`),
 		}
 		requireNoErr(t, e.Validate())
-		requireEqual(t, string(schema.EventArtifactWritten), "artifact.written")
+		requireEqual(t, string(schema.EventStepEnd), "step.end")
 	})
 
 	t.Run("accepts a valid event with all required fields", func(t *testing.T) {
@@ -88,19 +88,10 @@ func TestEventValidate(t *testing.T) {
 
 	t.Run("accepts all known event types", func(t *testing.T) {
 		for _, et := range []schema.EventType{
-			schema.EventAgentStart,
-			schema.EventAgentEnd,
-			schema.EventSkillStart,
-			schema.EventSkillEnd,
-			schema.EventToolCall,
-			schema.EventToolResult,
-			schema.EventArtifactWritten,
-			schema.EventDecision,
+			schema.EventStepStart,
+			schema.EventStepEnd,
+			schema.EventCostRecord,
 			schema.EventError,
-			schema.EventPlanInputParsed,
-			schema.EventPlanSpecGenerated,
-			schema.EventPlanPlanGenerated,
-			schema.EventPlanConfidenceScored,
 		} {
 			e := validEvent()
 			e.Type = et
@@ -119,8 +110,8 @@ func TestEventJSONRoundTrip(t *testing.T) {
 	t.Run("marshals and unmarshals an Event", func(t *testing.T) {
 		original := schema.Event{
 			Timestamp: "2026-02-09T21:30:00Z",
-			Type:      schema.EventToolCall,
-			Data:      json.RawMessage(`{"tool":"grep","duration_ms":42}`),
+			Type:      schema.EventCostRecord,
+			Data:      json.RawMessage(`{"cost_usd":0.42}`),
 		}
 
 		data, err := json.Marshal(original)
@@ -131,14 +122,14 @@ func TestEventJSONRoundTrip(t *testing.T) {
 
 		requireEqual(t, decoded.Timestamp, original.Timestamp)
 		requireEqual(t, decoded.Type, original.Type)
-		requireJSONEqual(t, decoded.Data, `{"tool":"grep","duration_ms":42}`)
+		requireJSONEqual(t, decoded.Data, `{"cost_usd":0.42}`)
 	})
 
 	t.Run("uses correct JSON field names (ts, event, data)", func(t *testing.T) {
 		e := schema.Event{
 			Timestamp: "2026-02-09T21:30:00Z",
-			Type:      schema.EventAgentStart,
-			Data:      json.RawMessage(`{"step":"review"}`),
+			Type:      schema.EventStepStart,
+			Data:      json.RawMessage(`{"step_name":"review"}`),
 		}
 
 		data, err := json.Marshal(e)
@@ -157,7 +148,7 @@ func TestEventJSONRoundTrip(t *testing.T) {
 	t.Run("serializes nil data as empty object", func(t *testing.T) {
 		e := schema.Event{
 			Timestamp: "2026-02-09T21:30:00Z",
-			Type:      schema.EventDecision,
+			Type:      schema.EventError,
 		}
 
 		data, err := json.Marshal(e)
@@ -174,8 +165,8 @@ func TestEventJSONRoundTrip(t *testing.T) {
 	t.Run("produces a single JSON line (no embedded newlines)", func(t *testing.T) {
 		e := schema.Event{
 			Timestamp: "2026-02-09T21:30:00Z",
-			Type:      schema.EventAgentEnd,
-			Data:      json.RawMessage(`{"status":"pass","confidence":0.92,"duration_ms":18500}`),
+			Type:      schema.EventStepEnd,
+			Data:      json.RawMessage(`{"status":"ok","cost_usd":0.5,"turns":7}`),
 		}
 
 		data, err := json.Marshal(e)

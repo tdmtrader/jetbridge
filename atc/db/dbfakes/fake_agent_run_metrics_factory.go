@@ -63,17 +63,6 @@ type FakeAgentRunMetricsFactory struct {
 		result1 []schema.RunMetrics
 		result2 error
 	}
-	UpsertStub        func(*schema.RunMetrics) error
-	upsertMutex       sync.RWMutex
-	upsertArgsForCall []struct {
-		arg1 *schema.RunMetrics
-	}
-	upsertReturns struct {
-		result1 error
-	}
-	upsertReturnsOnCall map[int]struct {
-		result1 error
-	}
 	UpsertReturningInsertedStub        func(*schema.RunMetrics) (bool, *schema.RunMetrics, error)
 	upsertReturningInsertedMutex       sync.RWMutex
 	upsertReturningInsertedArgsForCall []struct {
@@ -361,67 +350,6 @@ func (fake *FakeAgentRunMetricsFactory) ListRecentReturnsOnCall(i int, result1 [
 		result1 []schema.RunMetrics
 		result2 error
 	}{result1, result2}
-}
-
-func (fake *FakeAgentRunMetricsFactory) Upsert(arg1 *schema.RunMetrics) error {
-	fake.upsertMutex.Lock()
-	ret, specificReturn := fake.upsertReturnsOnCall[len(fake.upsertArgsForCall)]
-	fake.upsertArgsForCall = append(fake.upsertArgsForCall, struct {
-		arg1 *schema.RunMetrics
-	}{arg1})
-	stub := fake.UpsertStub
-	fakeReturns := fake.upsertReturns
-	fake.recordInvocation("Upsert", []interface{}{arg1})
-	fake.upsertMutex.Unlock()
-	if stub != nil {
-		return stub(arg1)
-	}
-	if specificReturn {
-		return ret.result1
-	}
-	return fakeReturns.result1
-}
-
-func (fake *FakeAgentRunMetricsFactory) UpsertCallCount() int {
-	fake.upsertMutex.RLock()
-	defer fake.upsertMutex.RUnlock()
-	return len(fake.upsertArgsForCall)
-}
-
-func (fake *FakeAgentRunMetricsFactory) UpsertCalls(stub func(*schema.RunMetrics) error) {
-	fake.upsertMutex.Lock()
-	defer fake.upsertMutex.Unlock()
-	fake.UpsertStub = stub
-}
-
-func (fake *FakeAgentRunMetricsFactory) UpsertArgsForCall(i int) *schema.RunMetrics {
-	fake.upsertMutex.RLock()
-	defer fake.upsertMutex.RUnlock()
-	argsForCall := fake.upsertArgsForCall[i]
-	return argsForCall.arg1
-}
-
-func (fake *FakeAgentRunMetricsFactory) UpsertReturns(result1 error) {
-	fake.upsertMutex.Lock()
-	defer fake.upsertMutex.Unlock()
-	fake.UpsertStub = nil
-	fake.upsertReturns = struct {
-		result1 error
-	}{result1}
-}
-
-func (fake *FakeAgentRunMetricsFactory) UpsertReturnsOnCall(i int, result1 error) {
-	fake.upsertMutex.Lock()
-	defer fake.upsertMutex.Unlock()
-	fake.UpsertStub = nil
-	if fake.upsertReturnsOnCall == nil {
-		fake.upsertReturnsOnCall = make(map[int]struct {
-			result1 error
-		})
-	}
-	fake.upsertReturnsOnCall[i] = struct {
-		result1 error
-	}{result1}
 }
 
 func (fake *FakeAgentRunMetricsFactory) UpsertReturningInserted(arg1 *schema.RunMetrics) (bool, *schema.RunMetrics, error) {

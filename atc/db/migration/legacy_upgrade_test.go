@@ -34,7 +34,7 @@ const v713LastMigration = 1666754000
 const v801LastMigration = 1765921815
 
 // JetBridge HEAD (last migration)
-const jetbridgeHeadMigration = 1773106130
+const jetbridgeHeadMigration = 1773106131
 
 var _ = Describe("Legacy Database Upgrade", func() {
 	var (
@@ -727,7 +727,7 @@ func verifyJetBridgeSchemaChanges(db *sql.DB) {
 	}
 
 	// Mutable ticket state is revisioned so adapters can capture one immutable
-	// work-item value, including durable comments and first-writer answers.
+	// work-item value.
 	var ticketRevisionNullable string
 	err = db.QueryRow(`
 		SELECT is_nullable FROM information_schema.columns
@@ -735,10 +735,12 @@ func verifyJetBridgeSchemaChanges(db *sql.DB) {
 	`).Scan(&ticketRevisionNullable)
 	Expect(err).NotTo(HaveOccurred())
 	Expect(ticketRevisionNullable).To(Equal("NO"))
+	// The ticket comment surface (and its table) is gone: nothing wrote or read
+	// it, and work-item/v1 no longer carries a comments key.
 	var ticketCommentsExists bool
 	err = db.QueryRow(`SELECT to_regclass('agent_ticket_comments') IS NOT NULL`).Scan(&ticketCommentsExists)
 	Expect(err).NotTo(HaveOccurred())
-	Expect(ticketCommentsExists).To(BeTrue())
+	Expect(ticketCommentsExists).To(BeFalse())
 
 	// Ticket dispatch is an adapter over durable generic workflow runs. All
 	// links stay nullable so legacy v1/v2 attempts round-trip unchanged.

@@ -368,7 +368,84 @@ var _ = Describe("AgentTicketsFactory", func() {
 		})
 	})
 
-	Describe("specs and plans", func() {
+	// seedSpec / seedPlan write the rows the deleted SubmitSpec/SubmitPlan
+	// factory methods used to write. The platform has no ticket spec/plan WRITE
+	// surface any more (POST .../spec, POST .../plan and the Store methods are
+	// gone), but LatestSpec/ActivePlan/CaptureRevision still read rows written
+	// before it was removed — so the read side is exercised over seeded rows.
+	//
+	// Each seed runs in ONE transaction holding the ticket's FOR UPDATE lock,
+	// exactly as the deleted writers did: the row insert and the enclosing
+	// ticket's revision bump must be a single atomic step, or a concurrent
+	// CaptureRevision can observe spec version N under revision N-1.
+	seedInTx := func(ticketID int, write func(tx db.Tx) error) {
+		tx, err := dbConn.Begin()
+		ExpectWithOffset(2, err).ToNot(HaveOccurred())
+		defer tx.Rollback()
+
+		var one int
+		ExpectWithOffset(2, tx.QueryRow(
+			`SELECT 1 FROM agent_tickets WHERE id = $1 FOR UPDATE`, ticketID).Scan(&one)).To(Succeed())
+		ExpectWithOffset(2, write(tx)).To(Succeed())
+		_, err = tx.Exec(
+			`UPDATE agent_tickets SET revision = revision + 1, updated_at = now() WHERE id = $1`, ticketID)
+		ExpectWithOffset(2, err).ToNot(HaveOccurred())
+		ExpectWithOffset(2, tx.Commit()).To(Succeed())
+	}
+
+	seedSpec := func(ticketID int, spec tickets.Spec) int {
+		criteria := spec.AcceptanceCriteria
+		if criteria == nil {
+			criteria = []string{}
+		}
+		links := spec.Links
+		if links == nil {
+			links = []tickets.Link{}
+		}
+		criteriaJSON, err := json.Marshal(criteria)
+		ExpectWithOffset(1, err).ToNot(HaveOccurred())
+		linksJSON, err := json.Marshal(links)
+		ExpectWithOffset(1, err).ToNot(HaveOccurred())
+
+		var version int
+		seedInTx(ticketID, func(tx db.Tx) error {
+			return tx.QueryRow(`
+				INSERT INTO agent_ticket_specs
+					(ticket_id, version, title, body, acceptance_criteria, links, submitted_by)
+				SELECT $1, COALESCE(MAX(version), 0) + 1, $2, $3, $4, $5, $6
+				FROM agent_ticket_specs WHERE ticket_id = $1
+				RETURNING version
+			`, ticketID, spec.Title, spec.Body, criteriaJSON, linksJSON, spec.SubmittedBy).Scan(&version)
+		})
+		return version
+	}
+
+	seedPlan := func(ticketID int, ts []tickets.Task) int {
+		var planVersion int
+		seedInTx(ticketID, func(tx db.Tx) error {
+			if err := tx.QueryRow(
+				`SELECT COALESCE(MAX(plan_version), 0) + 1 FROM agent_ticket_tasks WHERE ticket_id = $1`,
+				ticketID).Scan(&planVersion); err != nil {
+				return err
+			}
+			for i, task := range ts {
+				status := task.Status
+				if status == "" {
+					status = tickets.TaskPending
+				}
+				if _, err := tx.Exec(`
+					INSERT INTO agent_ticket_tasks (ticket_id, plan_version, ordering, title, detail, status)
+					VALUES ($1, $2, $3, $4, $5, $6)
+				`, ticketID, planVersion, i+1, task.Title, task.Detail, string(status)); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		return planVersion
+	}
+
+	Describe("specs and plans (read side)", func() {
 		var id int
 
 		BeforeEach(func() {
@@ -377,19 +454,14 @@ var _ = Describe("AgentTicketsFactory", func() {
 			Expect(err).ToNot(HaveOccurred())
 		})
 
-		It("versions specs, keeps old rows, and returns the latest", func() {
-			v, err := factory.SubmitSpec(id, tickets.Spec{
+		It("keeps old spec rows and returns the latest", func() {
+			Expect(seedSpec(id, tickets.Spec{
 				Title: "spec", Body: "prose",
 				AcceptanceCriteria: []string{"tests pass"},
 				Links:              []tickets.Link{{Title: "design", URL: "https://x"}},
 				SubmittedBy:        "run-42-platform",
-			})
-			Expect(err).ToNot(HaveOccurred())
-			Expect(v).To(Equal(1))
-
-			v, err = factory.SubmitSpec(id, tickets.Spec{Title: "spec2", Body: "prose2"})
-			Expect(err).ToNot(HaveOccurred())
-			Expect(v).To(Equal(2))
+			})).To(Equal(1))
+			Expect(seedSpec(id, tickets.Spec{Title: "spec2", Body: "prose2"})).To(Equal(2))
 
 			latest, found, err := factory.LatestSpec(id)
 			Expect(err).ToNot(HaveOccurred())
@@ -407,12 +479,11 @@ var _ = Describe("AgentTicketsFactory", func() {
 		})
 
 		It("round-trips acceptance criteria and links JSON", func() {
-			_, err := factory.SubmitSpec(id, tickets.Spec{
+			seedSpec(id, tickets.Spec{
 				Title: "spec", Body: "prose",
 				AcceptanceCriteria: []string{"a", "b"},
 				Links:              []tickets.Link{{Title: "l1", URL: "u1"}, {Title: "l2", URL: "u2"}},
 			})
-			Expect(err).ToNot(HaveOccurred())
 
 			latest, _, err := factory.LatestSpec(id)
 			Expect(err).ToNot(HaveOccurred())
@@ -420,23 +491,15 @@ var _ = Describe("AgentTicketsFactory", func() {
 			Expect(latest.Links).To(Equal([]tickets.Link{{Title: "l1", URL: "u1"}, {Title: "l2", URL: "u2"}}))
 		})
 
-		It("LatestSpec is found=false without specs; SubmitSpec 404s a missing ticket", func() {
+		It("LatestSpec is found=false without specs", func() {
 			_, found, err := factory.LatestSpec(id)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(found).To(BeFalse())
-
-			_, err = factory.SubmitSpec(313131, tickets.Spec{Title: "t", Body: "b"})
-			Expect(err).To(MatchError(tickets.ErrTicketNotFound))
 		})
 
-		It("replaces the active plan by bumping plan_version", func() {
-			pv, err := factory.SubmitPlan(id, []tickets.Task{{Title: "one"}, {Title: "two", Detail: "d"}})
-			Expect(err).ToNot(HaveOccurred())
-			Expect(pv).To(Equal(1))
-
-			pv, err = factory.SubmitPlan(id, []tickets.Task{{Title: "redone"}})
-			Expect(err).ToNot(HaveOccurred())
-			Expect(pv).To(Equal(2))
+		It("ActivePlan returns only the newest plan version", func() {
+			Expect(seedPlan(id, []tickets.Task{{Title: "one"}, {Title: "two", Detail: "d"}})).To(Equal(1))
+			Expect(seedPlan(id, []tickets.Task{{Title: "redone"}})).To(Equal(2))
 
 			active, err := factory.ActivePlan(id)
 			Expect(err).ToNot(HaveOccurred())
@@ -450,61 +513,6 @@ var _ = Describe("AgentTicketsFactory", func() {
 			Expect(dbConn.QueryRow(`SELECT COUNT(*) FROM agent_ticket_tasks WHERE ticket_id = $1`, id).
 				Scan(&total)).To(Succeed())
 			Expect(total).To(Equal(3)) // v1's two tasks retained
-
-			_, err = factory.SubmitPlan(313131, []tickets.Task{{Title: "x"}})
-			Expect(err).To(MatchError(tickets.ErrTicketNotFound))
-		})
-
-		It("UpdateActiveTask atomically targets the newest plan and writes status+note together", func() {
-			_, err := factory.UpdateActiveTask(id, 1, tickets.TaskDone, "")
-			Expect(err).To(MatchError(tickets.ErrNoActivePlan))
-
-			_, err = factory.SubmitPlan(id, []tickets.Task{{Title: "old"}})
-			Expect(err).ToNot(HaveOccurred())
-			_, err = factory.SubmitPlan(id, []tickets.Task{{Title: "one", Detail: "d"}, {Title: "two"}})
-			Expect(err).ToNot(HaveOccurred())
-
-			pv, err := factory.UpdateActiveTask(id, 1, tickets.TaskInProgress, "note")
-			Expect(err).ToNot(HaveOccurred())
-			Expect(pv).To(Equal(2)) // the active plan, never a superseded version
-
-			active, err := factory.ActivePlan(id)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(active[0].Status).To(Equal(tickets.TaskInProgress))
-			Expect(active[0].Detail).To(Equal("d\n\n> note")) // status+note in one tx
-
-			// empty note leaves detail untouched
-			pv, err = factory.UpdateActiveTask(id, 1, tickets.TaskDone, "")
-			Expect(err).ToNot(HaveOccurred())
-			Expect(pv).To(Equal(2))
-			active, _ = factory.ActivePlan(id)
-			Expect(active[0].Status).To(Equal(tickets.TaskDone))
-			Expect(active[0].Detail).To(Equal("d\n\n> note"))
-
-			_, err = factory.UpdateActiveTask(id, 99, tickets.TaskDone, "")
-			Expect(err).To(MatchError(tickets.ErrTaskNotFound))
-			_, err = factory.UpdateActiveTask(313131, 1, tickets.TaskDone, "")
-			Expect(err).To(MatchError(tickets.ErrTicketNotFound))
-		})
-
-		It("updates task status and appends notes as blockquotes", func() {
-			_, err := factory.SubmitPlan(id, []tickets.Task{{Title: "one"}})
-			Expect(err).ToNot(HaveOccurred())
-
-			Expect(factory.UpdateTaskStatus(id, 1, 1, tickets.TaskInProgress)).To(Succeed())
-			Expect(factory.AppendTaskNote(id, 1, 1, "halfway")).To(Succeed())
-			Expect(factory.AppendTaskNote(id, 1, 1, "done now")).To(Succeed())
-
-			active, err := factory.ActivePlan(id)
-			Expect(err).ToNot(HaveOccurred())
-			Expect(active[0].Status).To(Equal(tickets.TaskInProgress))
-			Expect(active[0].Detail).To(Equal("> halfway\n\n> done now"))
-			Expect(active[0].UpdatedAt).To(BeNumerically(">", 0))
-
-			Expect(factory.UpdateTaskStatus(id, 1, 99, tickets.TaskDone)).
-				To(MatchError(tickets.ErrTaskNotFound))
-			Expect(factory.AppendTaskNote(id, 9, 1, "x")).
-				To(MatchError(tickets.ErrTaskNotFound))
 		})
 	})
 
@@ -532,41 +540,26 @@ var _ = Describe("AgentTicketsFactory", func() {
 			expectRevision(2)
 			Expect(factory.Transition(id, tickets.StateDraft, tickets.StateQueued, tickets.TransitionMeta{})).To(Succeed())
 			expectRevision(3)
-			_, err = factory.SubmitSpec(id, tickets.Spec{Title: "old", Body: "old", SubmittedBy: "alice"})
-			Expect(err).ToNot(HaveOccurred())
+			seedSpec(id, tickets.Spec{Title: "old", Body: "old", SubmittedBy: "alice"})
 			expectRevision(4)
-			_, err = factory.SubmitSpec(id, tickets.Spec{
+			seedSpec(id, tickets.Spec{
 				Title: "current", Body: "preserve extensions", AcceptanceCriteria: []string{"tests pass"},
 				Links: []tickets.Link{{Title: "release", URL: "https://example.test/release"}}, SubmittedBy: "bob",
 			})
-			Expect(err).ToNot(HaveOccurred())
 			expectRevision(5)
-			_, err = factory.SubmitPlan(id, []tickets.Task{{Title: "old plan"}})
-			Expect(err).ToNot(HaveOccurred())
+			seedPlan(id, []tickets.Task{{Title: "old plan"}})
 			expectRevision(6)
-			planVersion, err := factory.SubmitPlan(id, []tickets.Task{{Title: "bump"}, {Title: "test"}})
-			Expect(err).ToNot(HaveOccurred())
+			planVersion := seedPlan(id, []tickets.Task{
+				{Title: "bump", Detail: "> editing go.mod", Status: tickets.TaskDone},
+				{Title: "test"},
+			})
 			expectRevision(7)
-			Expect(factory.UpdateTaskStatus(id, planVersion, 1, tickets.TaskInProgress)).To(Succeed())
-			expectRevision(8)
-			Expect(factory.AppendTaskNote(id, planVersion, 1, "editing go.mod")).To(Succeed())
-			expectRevision(9)
-			_, err = factory.UpdateActiveTask(id, 1, tickets.TaskDone, "complete")
-			Expect(err).ToNot(HaveOccurred())
-			expectRevision(10)
-			commentID, err := factory.AppendComment(id, tickets.Comment{Body: "May I update extensions?", CreatedBy: "agent"})
-			Expect(err).ToNot(HaveOccurred())
-			expectRevision(11)
-			Expect(factory.AnswerComment(id, commentID, "yes", "carol")).To(Succeed())
-			expectRevision(12)
-			Expect(factory.AnswerComment(id, commentID, "no", "dave")).To(MatchError(tickets.ErrCommentAnswered))
-			expectRevision(12)
 
 			captured, found, err := factory.CaptureRevision(context.Background(), id)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(found).To(BeTrue())
 			Expect(captured.TicketID).To(Equal(id))
-			Expect(captured.Revision).To(Equal(int64(12)))
+			Expect(captured.Revision).To(Equal(int64(7)))
 			var document contracts.WorkItemDocument
 			Expect(json.Unmarshal(captured.Document, &document)).To(Succeed())
 			Expect(document.Validate()).To(Succeed())
@@ -582,7 +575,8 @@ var _ = Describe("AgentTicketsFactory", func() {
 			Expect(document.Spec.Revision).To(Equal("2"))
 			Expect(document.Plan).ToNot(BeNil())
 			Expect(document.Plan.Revision).To(Equal(strconv.Itoa(planVersion)))
-			Expect(document.Comments).To(HaveLen(1))
+			// work-item/v1 carries no comments key any more.
+			Expect(captured.Document).ToNot(ContainSubstring(`"comments"`))
 
 			var spec workitem.SpecRevision
 			Expect(json.Unmarshal([]byte(document.Spec.Content), &spec)).To(Succeed())
@@ -592,12 +586,7 @@ var _ = Describe("AgentTicketsFactory", func() {
 			Expect(json.Unmarshal([]byte(document.Plan.Content), &plan)).To(Succeed())
 			Expect(plan.Tasks).To(HaveLen(2))
 			Expect(plan.Tasks[0].Status).To(Equal("done"))
-			Expect(plan.Tasks[0].Detail).To(Equal("> editing go.mod\n\n> complete"))
-			var comment workitem.CommentRevision
-			Expect(json.Unmarshal([]byte(document.Comments[0].Content), &comment)).To(Succeed())
-			Expect(comment.Revision).To(Equal(int64(2)))
-			Expect(comment.Answer).To(Equal("yes"))
-			Expect(comment.AnsweredBy).To(Equal("carol"))
+			Expect(plan.Tasks[0].Detail).To(Equal("> editing go.mod"))
 		})
 
 		It("returns complete revision N or N+1 while specs are edited concurrently", func() {
@@ -606,15 +595,12 @@ var _ = Describe("AgentTicketsFactory", func() {
 			started := make(chan struct{})
 			finished := make(chan error, 1)
 			go func() {
+				defer GinkgoRecover()
 				<-started
 				for version := 1; version <= 40; version++ {
-					_, err := factory.SubmitSpec(id, tickets.Spec{
+					seedSpec(id, tickets.Spec{
 						Title: fmt.Sprintf("spec-%d", version), Body: fmt.Sprintf("body-%d", version), SubmittedBy: "writer",
 					})
-					if err != nil {
-						finished <- err
-						return
-					}
 					time.Sleep(time.Millisecond)
 				}
 				finished <- nil

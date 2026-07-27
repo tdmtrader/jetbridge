@@ -189,23 +189,7 @@ func NewHandler(
 			return claims.UserName
 		}),
 	)
-	reviewsServer := reviewsapi.NewHandler(
-		reviewsStore,
-		feedbackStore,
-		func(id int) (reviewsapi.BuildContext, bool, error) {
-			build, found, err := dbBuildFactory.Build(id)
-			if err != nil || !found {
-				return reviewsapi.BuildContext{}, found, err
-			}
-			return reviewsapi.BuildContext{
-				BuildName:    build.Name(),
-				TeamName:     build.TeamName(),
-				PipelineName: build.PipelineName(),
-				JobName:      build.JobName(),
-			}, true, nil
-		},
-		atc.DefaultTeamName,
-	)
+	reviewsServer := reviewsapi.NewHandler(reviewsStore, feedbackStore, atc.DefaultTeamName)
 	metricsServer := metricsapi.NewHandler(metricsStore)
 	ticketsServer := ticketsapi.NewHandler(ticketsStore, func(r *http.Request) string {
 		return accessor.GetAccessor(r).Claims().UserName
@@ -380,19 +364,13 @@ func NewHandler(
 		atc.GetOpenIDConfiguration: http.HandlerFunc(idTokenServer.OpenIDConfiguration),
 		atc.GetSigningKeys:         http.HandlerFunc(idTokenServer.SigningKeys),
 
-		atc.SubmitAgentFeedback:     http.HandlerFunc(feedbackServer.SubmitFeedback),
-		atc.GetAgentFeedback:        http.HandlerFunc(feedbackServer.GetFeedback),
-		atc.GetAgentFeedbackSummary: http.HandlerFunc(feedbackServer.GetSummary),
-		atc.ClassifyAgentVerdict:    http.HandlerFunc(feedbackServer.ClassifyVerdict),
-		atc.GetAgentReviewFindings:  http.HandlerFunc(feedbackServer.GetFindings),
+		atc.SubmitAgentFeedback: http.HandlerFunc(feedbackServer.SubmitFeedback),
 
-		atc.SubmitAgentReview:           http.HandlerFunc(reviewsServer.SubmitReview),
 		atc.GetBuildAgentReviews:        http.HandlerFunc(reviewsServer.GetByBuild),
 		atc.ListTeamAgentReviews:        http.HandlerFunc(reviewsServer.ListByTeam),
 		atc.GetAgentSnapshotReview:      http.HandlerFunc(reviewsServer.GetBySnapshot),
 		atc.ListAgentWorkflowRunReviews: http.HandlerFunc(reviewsServer.ListByWorkflowRun),
 
-		atc.SubmitAgentRunMetrics:     http.HandlerFunc(metricsServer.SubmitMetrics),
 		atc.ListRecentAgentRunMetrics: http.HandlerFunc(metricsServer.ListRecent),
 		atc.ListBuildAgentRunMetrics:  http.HandlerFunc(metricsServer.ListByBuild),
 
@@ -401,9 +379,6 @@ func NewHandler(
 		atc.GetAgentTicket:        http.HandlerFunc(ticketsServer.GetTicket),
 		atc.UpdateAgentTicket:     http.HandlerFunc(ticketsServer.UpdateTicket),
 		atc.TransitionAgentTicket: http.HandlerFunc(ticketsServer.TransitionTicket),
-		atc.SubmitAgentTicketSpec: http.HandlerFunc(ticketsServer.SubmitSpec),
-		atc.SubmitAgentTicketPlan: http.HandlerFunc(ticketsServer.SubmitPlan),
-		atc.UpdateAgentTicketTask: http.HandlerFunc(ticketsServer.UpdateTask),
 		atc.DispatchAgentTicket:   agentDispatchHandler,
 
 		atc.SetAgentUserCredential:                     http.HandlerFunc(credentialsServer.Set),
@@ -411,7 +386,6 @@ func NewHandler(
 		atc.DeleteAgentUserCredential:                  http.HandlerFunc(credentialsServer.Delete),
 		atc.GetAgentPlatformInfo:                       platformInfoServer,
 		atc.GetAgentCostRollup:                         http.HandlerFunc(costsServer.GetRollup),
-		atc.SubmitAgentCostRecord:                      http.HandlerFunc(costsServer.SubmitRecord),
 		atc.ListAgentWorkflows:                         http.HandlerFunc(workflowsServer.List),
 		atc.ListAgentWorkflowVersions:                  http.HandlerFunc(workflowsServer.Versions),
 		atc.GetAgentWorkflowVersion:                    http.HandlerFunc(workflowsServer.Get),

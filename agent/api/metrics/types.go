@@ -1,9 +1,6 @@
 package metrics
 
 import (
-	"encoding/json"
-	"fmt"
-
 	schema "github.com/concourse/concourse/agent/schema"
 	"github.com/concourse/concourse/agent/snapshot"
 )
@@ -15,11 +12,9 @@ import (
 //
 //counterfeiter:generate . Store
 type Store interface {
-	// Upsert inserts the row, replacing any existing row with the same
-	// (BuildID, PlanID) key. Ingestion is idempotent across step retries
-	// and web-restart resumes.
-	Upsert(rm *schema.RunMetrics) error
-	// UpsertReturningInserted is Upsert with a ledger-dedup discriminator:
+	// UpsertReturningInserted inserts the row, replacing any existing row with
+	// the same (BuildID, PlanID) key — ingestion is idempotent across step
+	// retries and web-restart resumes — with a ledger-dedup discriminator:
 	// inserted is true only when the row was newly INSERTed (the
 	// ON CONFLICT (build_id, plan_id) clause did NOT fire), and false on a
 	// resume/retry that updated an existing row. On an update, prev carries
@@ -36,8 +31,7 @@ type Store interface {
 	// real spend. inserted=false with prev==nil (a lost concurrent-insert
 	// race, or a failed write) is indeterminate: callers skip the append,
 	// preserving "every dollar enters the ledger exactly once" over "at
-	// least once". Upsert is
-	// Upsert(rm) = { _, _, err := UpsertReturningInserted(rm); return err }.
+	// least once".
 	UpsertReturningInserted(rm *schema.RunMetrics) (inserted bool, prev *schema.RunMetrics, err error)
 	// InsertIfAbsent writes the row only when no (BuildID, PlanID) row exists
 	// yet (ON CONFLICT (build_id, plan_id) DO NOTHING) and reports whether it
@@ -74,37 +68,4 @@ type Store interface {
 	// only the raw counters — callers call
 	// schema.WorkflowVersionStats.WithDerived for the ratios.
 	WorkflowStats(workflowName string) ([]schema.WorkflowVersionStats, error)
-}
-
-// ParseSubmission validates a POST /api/v1/agent/metrics body.
-func ParseSubmission(body []byte) (*schema.RunMetrics, error) {
-	var rm schema.RunMetrics
-	if err := json.Unmarshal(body, &rm); err != nil {
-		return nil, fmt.Errorf("invalid JSON: %w", err)
-	}
-	if rm.BuildID <= 0 {
-		return nil, fmt.Errorf("build_id is required")
-	}
-	if rm.PlanID == "" {
-		return nil, fmt.Errorf("plan_id is required")
-	}
-	if rm.StepName == "" {
-		return nil, fmt.Errorf("step_name is required")
-	}
-	switch rm.Status {
-	case schema.RunStatusOK, schema.RunStatusFailed, schema.RunStatusError, schema.RunStatusParked:
-	default:
-		return nil, fmt.Errorf("status must be one of ok|failed|error|parked")
-	}
-	// BuildStatus and Outcome are server-derived (builds join + U3 fusion,
-	// applied on read); never trust a client-supplied value on the ingest path.
-	rm.BuildStatus = ""
-	rm.Outcome = ""
-	// WorkflowRunID and FunctionID are the metric's execution identity, derived
-	// server-side from the verified build->run association and the planned
-	// workflow function (atc/exec/agent_step.go). An external submitter must
-	// never forge them, so the submit path always clears them.
-	rm.WorkflowRunID = nil
-	rm.FunctionID = ""
-	return &rm, nil
 }

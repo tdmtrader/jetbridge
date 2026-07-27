@@ -136,7 +136,7 @@ samplePrincipal =
     , name = "itest-reviewer"
     , description = "integration"
     , tokenPrefix = "cap1.abcd12"
-    , scopes = [ "reviews:write" ]
+    , scopes = [ "tickets:write" ]
     , teamName = "main"
     , createdBy = "admin"
     , createdAt = Time.millisToPosix 0
@@ -613,7 +613,7 @@ all =
                         (Msgs.Update <| Message.Message.AgentMintNameChanged "reviewer")
                     |> Tuple.first
                     |> Application.update
-                        (Msgs.Update <| Message.Message.AgentMintScopeToggled "reviews:write")
+                        (Msgs.Update <| Message.Message.AgentMintScopeToggled "tickets:write")
                     |> Tuple.first
                     |> Application.update
                         (Msgs.Update Message.Message.AgentMintSubmitted)
@@ -729,7 +729,7 @@ all =
                         (Msgs.Update <| Message.Message.AgentMintNameChanged "reviewer")
                     |> Tuple.first
                     |> Application.update
-                        (Msgs.Update <| Message.Message.AgentMintScopeToggled "reviews:write")
+                        (Msgs.Update <| Message.Message.AgentMintScopeToggled "tickets:write")
                     |> Tuple.first
                     |> Application.update
                         (Msgs.Update <| Message.Message.AgentMintExpiresChanged "soon")

@@ -2,34 +2,25 @@ package reviews
 
 import (
 	"encoding/json"
-	"errors"
-	"io"
 	"net/http"
 	"strconv"
 
 	"github.com/concourse/concourse/agent/api/feedback"
-	"github.com/concourse/concourse/agent/api/principals"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/snapshot/contracts"
 )
-
-// BuildLookupFunc resolves a build ID to its context. found=false when
-// the build does not exist.
-type BuildLookupFunc func(buildID int) (BuildContext, bool, error)
 
 // Handler serves the agent reviews API.
 type Handler struct {
 	store          Store
 	feedbackStore  feedback.Store
-	lookupBuild    BuildLookupFunc
 	projectionTeam string
 }
 
-func NewHandler(store Store, feedbackStore feedback.Store, lookup BuildLookupFunc, projectionTeam string) *Handler {
+func NewHandler(store Store, feedbackStore feedback.Store, projectionTeam string) *Handler {
 	return &Handler{
 		store:          store,
 		feedbackStore:  feedbackStore,
-		lookupBuild:    lookup,
 		projectionTeam: projectionTeam,
 	}
 }
@@ -64,64 +55,6 @@ type BuildReviewResponse struct {
 	Observations []Finding                  `json:"observations"`
 	Feedback     map[string]FindingFeedback `json:"feedback"`
 	FindingCount int                        `json:"finding_count"`
-}
-
-// SubmitReview handles POST /api/v1/agent/reviews.
-//
-// Auth: the wrappa wraps this route in principal(reviews:write). A verified
-// principal must arrive via the request context.
-func (h *Handler) SubmitReview(w http.ResponseWriter, r *http.Request) {
-	p, ok := principals.FromContext(r.Context())
-	if !ok {
-		http.Error(w, "agent review publishing requires a scoped principal", http.StatusForbidden)
-		return
-	}
-	submittedBy, principalTeam := p.Name, p.TeamName
-
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4<<20))
-	if err != nil {
-		var mbe *http.MaxBytesError
-		if errors.As(err, &mbe) {
-			http.Error(w, "request body exceeds 4MB", http.StatusRequestEntityTooLarge)
-			return
-		}
-		http.Error(w, "failed to read request body", http.StatusBadRequest)
-		return
-	}
-	sub, err := ParseSubmission(body)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	buildCtx, found, err := h.lookupBuild(sub.BuildID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if !found {
-		http.Error(w, "build not found", http.StatusNotFound)
-		return
-	}
-	if principalTeam != "" && principalTeam != buildCtx.TeamName {
-		http.Error(w, "principal is not authorized for the build team", http.StatusForbidden)
-		return
-	}
-	if principalTeam == "" {
-		http.Error(w, "principal team is required", http.StatusForbidden)
-		return
-	}
-
-	rec := sub.ToStoredReview(buildCtx)
-	rec.SubmittedBy = submittedBy
-	if err := h.store.Upsert(rec); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]string{"status": "saved"})
 }
 
 // GetByBuild handles GET /api/v1/builds/:build_id/agent-reviews.
@@ -232,21 +165,18 @@ func (h *Handler) detailResponses(recs []StoredReview) []BuildReviewResponse {
 			resp.Observations = []Finding{}
 		}
 
-		var fbs []feedback.StoredFeedback
-		var err error
+		// Feedback is keyed by the review snapshot — the only review identity
+		// the platform still writes. Rows with no snapshot id predate the
+		// projection and can carry no verdicts.
 		if rec.SnapshotID != nil {
 			if store, ok := h.feedbackStore.(feedback.SnapshotStore); ok {
-				fbs, err = store.GetByReviewSnapshot(*rec.SnapshotID, rec.TeamName)
-			} else {
-				fbs, err = h.feedbackStore.GetByReview(rec.Repo, rec.CommitSha)
-			}
-		} else {
-			fbs, err = h.feedbackStore.GetByReview(rec.Repo, rec.CommitSha)
-		}
-		if err == nil {
-			for _, fb := range fbs {
-				resp.Feedback[fb.FindingID] = FindingFeedback{
-					Verdict: fb.Verdict, Notes: fb.Notes, Reviewer: fb.Reviewer,
+				fbs, err := store.GetByReviewSnapshot(*rec.SnapshotID, rec.TeamName)
+				if err == nil {
+					for _, fb := range fbs {
+						resp.Feedback[fb.FindingID] = FindingFeedback{
+							Verdict: fb.Verdict, Notes: fb.Notes, Reviewer: fb.Reviewer,
+						}
+					}
 				}
 			}
 		}

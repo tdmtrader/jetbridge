@@ -30,10 +30,6 @@ func completeRevision() workitem.Revision {
 		Plan: &workitem.PlanRevision{Version: 4, Tasks: []workitem.TaskRevision{{
 			Ordering: 1, Title: "bump", Detail: "edit go.mod", Status: "in_progress", UpdatedAt: 101,
 		}}},
-		Comments: []workitem.CommentRevision{{
-			ID: 7, Revision: 2, Body: "May we update extensions?", CreatedBy: "agent", CreatedAt: 102,
-			Answer: "yes", AnsweredBy: "bob", AnsweredAt: 103,
-		}},
 	}
 }
 
@@ -59,7 +55,7 @@ func TestMarshalRevisionCapturesStrictCompleteWorkItem(t *testing.T) {
 		document.Workflow == nil || document.Workflow.Name != "version-upgrade" || document.Workflow.Version == nil || *document.Workflow.Version != 3 {
 		t.Fatalf("document identity/workflow = %+v", document)
 	}
-	if document.Spec == nil || document.Spec.Revision != "2" || document.Plan == nil || document.Plan.Revision != "4" || len(document.Comments) != 1 {
+	if document.Spec == nil || document.Spec.Revision != "2" || document.Plan == nil || document.Plan.Revision != "4" {
 		t.Fatalf("document revisions = %+v", document)
 	}
 
@@ -71,9 +67,11 @@ func TestMarshalRevisionCapturesStrictCompleteWorkItem(t *testing.T) {
 	if err := json.Unmarshal([]byte(document.Plan.Content), &plan); err != nil || len(plan.Tasks) != 1 || plan.Tasks[0].Status != "in_progress" {
 		t.Fatalf("plan content = %+v, %v", plan, err)
 	}
-	var comment workitem.CommentRevision
-	if err := json.Unmarshal([]byte(document.Comments[0].Content), &comment); err != nil || comment.Answer != "yes" || comment.AnsweredBy != "bob" {
-		t.Fatalf("comment/answer content = %+v, %v", comment, err)
+	// work-item/v1 carries no comments key: the ticket comment surface is gone,
+	// and DisallowUnknownFields above proves the captured bytes do not smuggle
+	// one back in.
+	if bytes.Contains(captured.Document, []byte(`"comments"`)) {
+		t.Fatalf("captured document carries a comments key: %s", captured.Document)
 	}
 }
 

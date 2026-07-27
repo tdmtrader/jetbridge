@@ -14,8 +14,7 @@ const protocolVersion = "2024-11-05"
 
 // DefaultHeartbeat is half the contract's "progress at least every 30s" bound
 // (contracts §3.1), leaving 4x margin under the claude CLI's empirical 60s
-// abandonment of progress-free tools/call requests (F13). Same value and
-// rationale as ci-agent/devmcp.DefaultHeartbeat — mirrored, not imported.
+// abandonment of progress-free tools/call requests (F13).
 const DefaultHeartbeat = 15 * time.Second
 
 // ToolHandler is a function that handles an MCP tool call. progress reports
@@ -26,7 +25,7 @@ type ToolHandler func(ctx context.Context, args json.RawMessage, progress func(s
 // Server is an MCP server that dispatches tool calls over HTTP.
 // It implements http.Handler using the MCP Streamable HTTP transport,
 // answering progress-bearing tools/call requests over SSE with coalescing
-// heartbeat notifications (mirrored from ci-agent/devmcp — 04 Task 4).
+// heartbeat notifications.
 type Server struct {
 	tools     []ToolDef
 	handlers  map[string]ToolHandler
@@ -143,7 +142,7 @@ func (s *Server) handleToolsList(req *jsonRPCRequest) *jsonRPCResponse {
 
 // handleToolsCall answers a tools/call request: buffered JSON by default, SSE
 // with heartbeat progress when the client opts in via Accept: text/event-stream
-// AND params._meta.progressToken (the devmcp wire spec, ported verbatim).
+// AND params._meta.progressToken.
 // Error mapping is UNCHANGED from the buffered-only server: a handler error is
 // an isError=true tool result — never -32602 — in both modes.
 func (s *Server) handleToolsCall(w http.ResponseWriter, r *http.Request, req *jsonRPCRequest) {

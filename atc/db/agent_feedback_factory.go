@@ -104,31 +104,6 @@ func (f *agentFeedbackFactory) Save(rec *feedback.StoredFeedback) error {
 	return err
 }
 
-func (f *agentFeedbackFactory) GetByReview(repo, commit string) ([]feedback.StoredFeedback, error) {
-	query := psql.Select(
-		"review_snapshot_id", "(SELECT name FROM teams WHERE id = review_team_id)", "repo", "commit_sha", "finding_id", "finding_type",
-		"finding_snapshot", "verdict", "confidence", "notes",
-		"reviewer", "source",
-	).From("agent_feedback")
-
-	if repo != "" {
-		query = query.Where(sq.Eq{"repo": repo})
-	}
-	if commit != "" {
-		query = query.Where(sq.Eq{"commit_sha": commit})
-	}
-
-	query = query.OrderBy("created_at ASC")
-
-	rows, err := query.RunWith(f.conn).Query()
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	return scanFeedbackRows(rows)
-}
-
 func (f *agentFeedbackFactory) GetByReviewSnapshot(id snapshot.SnapshotID, teamName string) ([]feedback.StoredFeedback, error) {
 	if err := id.Validate(); err != nil {
 		return nil, err
@@ -145,23 +120,6 @@ func (f *agentFeedbackFactory) GetByReviewSnapshot(id snapshot.SnapshotID, teamN
 		return nil, err
 	}
 	defer rows.Close()
-	return scanFeedbackRows(rows)
-}
-
-func (f *agentFeedbackFactory) GetAll() ([]feedback.StoredFeedback, error) {
-	rows, err := psql.Select(
-		"review_snapshot_id", "(SELECT name FROM teams WHERE id = review_team_id)", "repo", "commit_sha", "finding_id", "finding_type",
-		"finding_snapshot", "verdict", "confidence", "notes",
-		"reviewer", "source",
-	).From("agent_feedback").
-		OrderBy("created_at DESC").
-		RunWith(f.conn).
-		Query()
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
 	return scanFeedbackRows(rows)
 }
 

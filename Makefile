@@ -1,24 +1,18 @@
-.PHONY: test-unit test-ci-agent test-dev-mcp test-fly-integration test-integration test-k8s test-k8s-integration test-k8s-behavioral test-quick test-all
+.PHONY: test-unit test-dev-mcp test-fly-integration test-integration test-k8s test-k8s-integration test-k8s-behavioral test-quick test-all
 
 # Unit tests: all packages except integration/e2e suites (~5 min)
 # Requires: PostgreSQL running locally
 test-unit:
 	@echo "==> Running unit tests..."
 	ginkgo -r -p --keep-going --flake-attempts=1 \
-		--skip-package=./integration,testflight,topgun,./worker/integration,./worker/runtime/integration,./worker/baggageclaim,ci-agent,fly/integration,testhelpers/otel,agent/schema
+		--skip-package=./integration,testflight,topgun,./worker/integration,./worker/runtime/integration,./worker/baggageclaim,fly/integration,testhelpers/otel,agent/schema,ci-agent
 	cd agent/schema && go test ./... -count=1
 
-# CI-agent module tests (~2 min)
-# Requires: nothing (self-contained)
-test-ci-agent:
-	@echo "==> Running ci-agent tests..."
-	cd ci-agent && go test ./... -count=1 -timeout 5m
-
-# dev-mcp contract kit + e2e (plain go tests; ginkgo -r does not pick these up)
-# Requires: nothing (builds ci-agent/cmd/dev-mcp on the fly)
+# Retained dev-mcp server (see ci-agent/RETAINED.md)
+# Requires: nothing
 test-dev-mcp:
-	@echo "==> Running dev-mcp contract/e2e tests..."
-	go test ./agent/devmcp/... -count=1 -timeout 10m
+	@echo "==> Running dev-mcp server tests..."
+	cd ci-agent && go test ./... -count=1
 
 # Fly integration tests (~10 min)
 # Requires: nothing (uses mock HTTP server)
@@ -58,9 +52,9 @@ test-k8s-behavioral:
 # All K8s tests
 test-k8s: test-k8s-integration test-k8s-behavioral
 
-# Quick: unit + ci-agent only (~7 min)
+# Quick: unit tests only (~3 min)
 # Good for local development iteration
-test-quick: test-unit test-ci-agent test-dev-mcp
+test-quick: test-unit
 
 # All tests in order of speed
-test-all: test-unit test-ci-agent test-fly-integration test-integration test-k8s
+test-all: test-unit test-fly-integration test-integration test-k8s

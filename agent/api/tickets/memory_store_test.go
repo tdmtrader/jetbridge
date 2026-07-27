@@ -1,6 +1,7 @@
 package tickets_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -203,50 +204,38 @@ func TestMemoryStoreTransition(t *testing.T) {
 	}
 }
 
+// The spec/plan WRITE surface is gone (no route, no Store method); the read
+// side still serves rows written before it was removed, so this exercises
+// LatestSpec/ActivePlan over seeded rows.
 func TestMemoryStoreSpecsAndPlans(t *testing.T) {
 	s := tickets.NewMemoryStore()
 	id, _ := s.Create(newTicket())
 
-	v, err := s.SubmitSpec(id, tickets.Spec{Title: "spec", Body: "b", SubmittedBy: "run-1-platform"})
+	v, err := s.SeedSpec(id, tickets.Spec{Title: "spec", Body: "b", SubmittedBy: "run-1-platform"})
 	if err != nil || v != 1 {
-		t.Fatalf("SubmitSpec = %d, %v", v, err)
+		t.Fatalf("SeedSpec = %d, %v", v, err)
 	}
-	v, _ = s.SubmitSpec(id, tickets.Spec{Title: "spec2", Body: "b2"})
+	v, _ = s.SeedSpec(id, tickets.Spec{Title: "spec2", Body: "b2"})
 	if v != 2 {
-		t.Fatalf("second SubmitSpec = %d, want 2", v)
+		t.Fatalf("second SeedSpec = %d, want 2", v)
 	}
 	latest, found, _ := s.LatestSpec(id)
 	if !found || latest.Title != "spec2" || latest.Version != 2 {
 		t.Errorf("LatestSpec = %+v, %v", latest, found)
 	}
 
-	pv, err := s.SubmitPlan(id, []tickets.Task{{Title: "one"}, {Title: "two"}})
+	pv, err := s.SeedPlan(id, []tickets.Task{{Title: "one"}, {Title: "two"}})
 	if err != nil || pv != 1 {
-		t.Fatalf("SubmitPlan = %d, %v", pv, err)
+		t.Fatalf("SeedPlan = %d, %v", pv, err)
 	}
-	pv, _ = s.SubmitPlan(id, []tickets.Task{{Title: "redo"}})
+	pv, _ = s.SeedPlan(id, []tickets.Task{{Title: "redo"}})
 	if pv != 2 {
-		t.Fatalf("second SubmitPlan = %d, want 2", pv)
+		t.Fatalf("second SeedPlan = %d, want 2", pv)
 	}
 	active, _ := s.ActivePlan(id)
 	if len(active) != 1 || active[0].Title != "redo" || active[0].Ordering != 1 ||
 		active[0].Status != tickets.TaskPending {
 		t.Errorf("ActivePlan = %+v", active)
-	}
-
-	if err := s.UpdateTaskStatus(id, 2, 1, tickets.TaskDone); err != nil {
-		t.Fatalf("UpdateTaskStatus: %v", err)
-	}
-	if err := s.AppendTaskNote(id, 2, 1, "was easy"); err != nil {
-		t.Fatalf("AppendTaskNote: %v", err)
-	}
-	active, _ = s.ActivePlan(id)
-	if active[0].Status != tickets.TaskDone || active[0].Detail != "> was easy" {
-		t.Errorf("task after update = %+v", active[0])
-	}
-	err = s.UpdateTaskStatus(id, 2, 99, tickets.TaskDone)
-	if !errors.Is(err, tickets.ErrTaskNotFound) {
-		t.Errorf("missing task: got %v, want ErrTaskNotFound", err)
 	}
 }
 
@@ -278,27 +267,16 @@ func TestMemoryStoreIncrementsRevisionForEverySuccessfulMutation(t *testing.T) {
 	title := "updated"
 	mutated("update", s.Update(id, tickets.Update{Title: &title}))
 	mutated("transition", s.Transition(id, tickets.StateDraft, tickets.StateQueued, tickets.TransitionMeta{}))
-	_, err = s.SubmitSpec(id, tickets.Spec{Title: "spec", Body: "body", SubmittedBy: "agent"})
-	mutated("submit spec", err)
-	planVersion, err := s.SubmitPlan(id, []tickets.Task{{Title: "task"}})
-	mutated("submit plan", err)
-	mutated("update task status", s.UpdateTaskStatus(id, planVersion, 1, tickets.TaskInProgress))
-	mutated("append task note", s.AppendTaskNote(id, planVersion, 1, "progress"))
-	_, err = s.UpdateActiveTask(id, 1, tickets.TaskDone, "finished")
-	mutated("update active task", err)
-	commentID, err := s.AppendComment(id, tickets.Comment{Body: "Ship it?", CreatedBy: "agent"})
-	mutated("append comment", err)
-	mutated("answer comment", s.AnswerComment(id, commentID, "yes", "alice"))
 
 	beforeFailure := wantRevision
-	if err := s.AnswerComment(id, commentID, "again", "bob"); !errors.Is(err, tickets.ErrCommentAnswered) {
-		t.Fatalf("second answer = %v, want ErrCommentAnswered", err)
+	if err := s.Update(999, tickets.Update{Title: &title}); !errors.Is(err, tickets.ErrTicketNotFound) {
+		t.Fatalf("update of a missing ticket = %v, want ErrTicketNotFound", err)
 	}
 	wantRevision = beforeFailure
-	assertRevision("failed second answer")
+	assertRevision("failed update")
 }
 
-func TestMemoryStoreCapturesLatestNestedStateAndFirstWriterAnswer(t *testing.T) {
+func TestMemoryStoreCapturesLatestNestedState(t *testing.T) {
 	s := tickets.NewMemoryStore()
 	version := 3
 	id, err := s.Create(&tickets.Ticket{
@@ -308,27 +286,20 @@ func TestMemoryStoreCapturesLatestNestedStateAndFirstWriterAnswer(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.SubmitSpec(id, tickets.Spec{
+	if _, err := s.SeedSpec(id, tickets.Spec{
 		Title: "old", Body: "old", SubmittedBy: "alice",
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.SubmitSpec(id, tickets.Spec{
+	if _, err := s.SeedSpec(id, tickets.Spec{
 		Title: "current", Body: "current spec", AcceptanceCriteria: []string{"tests pass"}, SubmittedBy: "bob",
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.SubmitPlan(id, []tickets.Task{{Title: "old plan"}}); err != nil {
+	if _, err := s.SeedPlan(id, []tickets.Task{{Title: "old plan"}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.SubmitPlan(id, []tickets.Task{{Title: "bump version"}, {Title: "run tests"}}); err != nil {
-		t.Fatal(err)
-	}
-	commentID, err := s.AppendComment(id, tickets.Comment{Body: "May I update the lockfile?", CreatedBy: "agent"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := s.AnswerComment(id, commentID, "yes", "alice"); err != nil {
+	if _, err := s.SeedPlan(id, []tickets.Task{{Title: "bump version"}, {Title: "run tests"}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Transition(id, tickets.StateDraft, tickets.StateQueued, tickets.TransitionMeta{}); err != nil {
@@ -345,17 +316,12 @@ func TestMemoryStoreCapturesLatestNestedStateAndFirstWriterAnswer(t *testing.T) 
 	}
 	if document.Adapter != "jira" || document.ExternalID != "ENG-42" || document.State != "queued" ||
 		document.Workflow == nil || document.Workflow.Name != "version-upgrade" || document.Spec == nil || document.Spec.Revision != "2" ||
-		document.Plan == nil || document.Plan.Revision != "2" || len(document.Comments) != 1 {
+		document.Plan == nil || document.Plan.Revision != "2" {
 		t.Fatalf("captured document = %+v", document)
 	}
-	var comment struct {
-		Answer     string `json:"answer"`
-		AnsweredBy string `json:"answered_by"`
-	}
-	if err := json.Unmarshal([]byte(document.Comments[0].Content), &comment); err != nil {
-		t.Fatal(err)
-	}
-	if comment.Answer != "yes" || comment.AnsweredBy != "alice" {
-		t.Fatalf("captured answer = %+v", comment)
+	// work-item/v1 carries no comments key any more; a strict decode of the
+	// captured bytes must not find one.
+	if bytes.Contains(captured.Document, []byte(`"comments"`)) {
+		t.Fatalf("captured document still carries a comments key: %s", captured.Document)
 	}
 }

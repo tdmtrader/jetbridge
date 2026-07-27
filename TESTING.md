@@ -3,7 +3,7 @@
 ## Quick Start
 
 ```bash
-make test-quick    # Unit + ci-agent tests (~5 min, needs PostgreSQL)
+make test-quick    # Unit tests (~3 min, needs PostgreSQL)
 make test-all      # Everything including K8s tests (hours)
 ```
 
@@ -24,18 +24,7 @@ ginkgo ./atc/exec/
 ginkgo ./fly/commands/
 ```
 
-### 2. CI-Agent Tests (`make test-ci-agent`)
-
-Runs the ci-agent Go module (separate `go.mod`).
-
-- **Time:** ~2 minutes
-- **Prerequisites:** None (fully self-contained)
-
-```bash
-cd ci-agent && go test ./... -count=1
-```
-
-### 3. Fly Integration Tests (`make test-fly-integration`)
+### 2. Fly Integration Tests (`make test-fly-integration`)
 
 Tests the `fly` CLI binary against a mock ATC server.
 
@@ -47,7 +36,7 @@ Tests the `fly` CLI binary against a mock ATC server.
 ginkgo -r ./fly/integration/
 ```
 
-### 4. ATC Integration Tests (`make test-integration`)
+### 3. ATC Integration Tests (`make test-integration`)
 
 Starts a real ATC process and tests API behavior.
 
@@ -59,7 +48,7 @@ Starts a real ATC process and tests API behavior.
 ginkgo -r -p ./atc/integration/
 ```
 
-### 5. K8s Integration Tests (`make test-k8s-integration`)
+### 4. K8s Integration Tests (`make test-k8s-integration`)
 
 Creates a KinD (Kubernetes-in-Docker) cluster and deploys Concourse via Helm.
 
@@ -76,7 +65,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o concourse-linux-arm64 ./cmd/co
 docker build -f Dockerfile.local -t concourse-local:latest .
 ```
 
-### 6. K8s Behavioral Tests (`make test-k8s-behavioral`)
+### 5. K8s Behavioral Tests (`make test-k8s-behavioral`)
 
 Full behavioral test suite with parallel KinD clusters (one per process).
 

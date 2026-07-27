@@ -11,7 +11,7 @@ import (
 	"github.com/concourse/concourse/agent/snapshot"
 )
 
-// Valid verdicts matching the ci-agent schema.
+// Valid human verdicts on a review finding.
 var validVerdicts = map[string]bool{
 	"accurate":          true,
 	"false_positive":    true,
@@ -84,41 +84,16 @@ type StoredFeedback struct {
 	Source           string               `json:"source,omitempty"`
 }
 
-// SummaryResponse is the GET /summary response.
-type SummaryResponse struct {
-	Total        int            `json:"total"`
-	AccuracyRate float64        `json:"accuracy_rate"`
-	FPRate       float64        `json:"false_positive_rate"`
-	ByVerdict    map[string]int `json:"by_verdict"`
-}
-
-// ClassifyRequest is the POST body for verdict classification.
-type ClassifyRequest struct {
-	Text string `json:"text"`
-}
-
-// ClassifyResponse is the response from verdict classification.
-type ClassifyResponse struct {
-	Verdict    string  `json:"verdict"`
-	Confidence float64 `json:"confidence"`
-}
-
 // Store is the interface for feedback persistence.
 type Store interface {
 	Save(rec *StoredFeedback) error
-	GetByReview(repo, commit string) ([]StoredFeedback, error)
-	GetAll() ([]StoredFeedback, error)
 }
 
-// SnapshotStore is the canonical projected-review extension. Legacy stores
-// need only implement Store; handlers fall back to repo/commit reads for old
-// build reviews when this extension is absent.
+// SnapshotStore is the canonical projected-review read extension: feedback is
+// keyed by the review snapshot, the only review identity the platform writes.
 type SnapshotStore interface {
 	GetByReviewSnapshot(snapshot.SnapshotID, string) ([]StoredFeedback, error)
 }
-
-// ClassifyFunc is a function that classifies natural language text into a verdict.
-type ClassifyFunc func(text string) (verdict string, confidence float64)
 
 // HandlerOption configures optional Handler behavior.
 type HandlerOption func(*Handler)
@@ -127,11 +102,6 @@ type HandlerOption func(*Handler)
 // wiring must supply this so caller-controlled JSON cannot impersonate or
 // overwrite another reviewer's feedback.
 type IdentityFunc func(*http.Request) string
-
-// WithClassifier sets a custom classification function.
-func WithClassifier(fn ClassifyFunc) HandlerOption {
-	return func(h *Handler) { h.classifier = fn }
-}
 
 func WithIdentity(fn IdentityFunc) HandlerOption {
 	return func(h *Handler) { h.identity = fn }
@@ -144,74 +114,17 @@ func WithSnapshotTeam(teamName string) HandlerOption {
 // Handler serves the agent feedback API.
 type Handler struct {
 	store        Store
-	classifier   ClassifyFunc
 	identity     IdentityFunc
 	snapshotTeam string
 }
 
 // NewHandler creates a new feedback API handler.
 func NewHandler(store Store, opts ...HandlerOption) *Handler {
-	h := &Handler{store: store, classifier: defaultClassifyText}
+	h := &Handler{store: store}
 	for _, opt := range opts {
 		opt(h)
 	}
 	return h
-}
-
-// Finding represents a review finding matching the Elm frontend's Finding type.
-type Finding struct {
-	ID          string `json:"id"`
-	FindingType string `json:"finding_type"`
-	Severity    string `json:"severity"`
-	Category    string `json:"category"`
-	Title       string `json:"title"`
-	File        string `json:"file"`
-	Line        int    `json:"line"`
-	Description string `json:"description"`
-	TestCode    string `json:"test_code"`
-}
-
-// GetFindings handles GET /api/v1/agent/reviews/:commit/findings.
-func (h *Handler) GetFindings(w http.ResponseWriter, r *http.Request) {
-	commit := r.FormValue(":commit")
-	if commit == "" {
-		http.Error(w, "commit is required", http.StatusBadRequest)
-		return
-	}
-
-	records, err := h.store.GetByReview("", commit)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	// Extract findings from stored feedback snapshots, deduplicate by FindingID.
-	seen := make(map[string]bool)
-	var findings []Finding
-	for _, rec := range records {
-		if rec.FindingID == "" || seen[rec.FindingID] {
-			continue
-		}
-		seen[rec.FindingID] = true
-
-		var f Finding
-		if len(rec.FindingSnapshot) > 0 {
-			json.Unmarshal(rec.FindingSnapshot, &f)
-		}
-		// Ensure the ID matches the record's finding_id.
-		f.ID = rec.FindingID
-		if f.FindingType == "" {
-			f.FindingType = rec.FindingType
-		}
-		findings = append(findings, f)
-	}
-
-	if findings == nil {
-		findings = []Finding{}
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(findings)
 }
 
 // SubmitFeedback handles POST /api/v1/agent/feedback.
@@ -261,153 +174,6 @@ func (h *Handler) SubmitFeedback(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]string{"status": "saved"})
-}
-
-// GetFeedback handles GET /api/v1/agent/feedback?repo=...&commit=...
-func (h *Handler) GetFeedback(w http.ResponseWriter, r *http.Request) {
-	if raw := r.URL.Query().Get("review_snapshot_id"); raw != "" {
-		id, err := snapshot.ParseSnapshotID(raw)
-		if err != nil {
-			http.Error(w, "invalid review_snapshot_id", http.StatusBadRequest)
-			return
-		}
-		store, ok := h.store.(SnapshotStore)
-		if !ok {
-			http.Error(w, "snapshot feedback is unavailable", http.StatusInternalServerError)
-			return
-		}
-		results, err := store.GetByReviewSnapshot(id, h.snapshotTeam)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if results == nil {
-			results = []StoredFeedback{}
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(results)
-		return
-	}
-	repo := r.URL.Query().Get("repo")
-	commit := r.URL.Query().Get("commit")
-
-	results, err := h.store.GetByReview(repo, commit)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	if results == nil {
-		results = []StoredFeedback{}
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(results)
-}
-
-// GetSummary handles GET /api/v1/agent/feedback/summary.
-func (h *Handler) GetSummary(w http.ResponseWriter, r *http.Request) {
-	all, err := h.store.GetAll()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	repo := r.URL.Query().Get("repo")
-
-	summary := SummaryResponse{
-		ByVerdict: make(map[string]int),
-	}
-
-	for _, rec := range all {
-		if repo != "" && rec.ReviewRef.Repo != repo {
-			continue
-		}
-		summary.Total++
-		summary.ByVerdict[rec.Verdict]++
-	}
-
-	if summary.Total > 0 {
-		summary.AccuracyRate = float64(summary.ByVerdict["accurate"]) / float64(summary.Total)
-		summary.FPRate = float64(summary.ByVerdict["false_positive"]) / float64(summary.Total)
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(summary)
-}
-
-// ClassifyVerdict handles POST /api/v1/agent/feedback/classify.
-func (h *Handler) ClassifyVerdict(w http.ResponseWriter, r *http.Request) {
-	var req ClassifyRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
-		return
-	}
-
-	if strings.TrimSpace(req.Text) == "" {
-		http.Error(w, "text is required", http.StatusBadRequest)
-		return
-	}
-
-	verdict, confidence := h.classifier(req.Text)
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(ClassifyResponse{
-		Verdict:    verdict,
-		Confidence: confidence,
-	})
-}
-
-// negationPrefixes are phrases that invert a "false positive" match.
-var negationPrefixes = []string{"not a ", "not ", "isn't a ", "isn't ", "no "}
-
-type classifierPattern struct {
-	keywords   []string
-	verdict    string
-	confidence float64
-}
-
-// classifierPatterns mirrors ci-agent/feedback/classifier.go patterns exactly.
-var classifierPatterns = []classifierPattern{
-	{keywords: []string{"good catch", "real bug", "real issue", "correct", "accurate", "valid finding", "agree"}, verdict: "accurate", confidence: 0.85},
-	{keywords: []string{"false positive", "not a bug", "not an issue", "doesn't apply", "expected behavior", "by design", "intended"}, verdict: "false_positive", confidence: 0.85},
-	{keywords: []string{"noisy", "not important", "too minor", "trivial", "low priority", "don't care", "not worth"}, verdict: "noisy", confidence: 0.80},
-	{keywords: []string{"style issue", "preference", "opinionated", "subjective", "nitpick", "too strict", "overly strict"}, verdict: "overly_strict", confidence: 0.80},
-	{keywords: []string{"partially right", "partially correct", "right area", "wrong diagnosis", "close but", "half right"}, verdict: "partially_correct", confidence: 0.75},
-	{keywords: []string{"missing context", "lacks context", "needs more context", "doesn't know", "not aware", "can't tell"}, verdict: "missed_context", confidence: 0.75},
-}
-
-// defaultClassifyText is the keyword-based classifier matching ci-agent/feedback/classifier.go.
-func defaultClassifyText(text string) (string, float64) {
-	lower := strings.ToLower(text)
-
-	// Check for negation patterns that flip the verdict.
-	for _, prefix := range negationPrefixes {
-		if strings.Contains(lower, prefix+"false positive") {
-			return "accurate", 0.80
-		}
-	}
-
-	// Match against patterns using best-confidence-wins strategy.
-	var bestVerdict string
-	var bestConfidence float64
-
-	for _, p := range classifierPatterns {
-		for _, kw := range p.keywords {
-			if strings.Contains(lower, kw) {
-				if p.confidence > bestConfidence {
-					bestVerdict = p.verdict
-					bestConfidence = p.confidence
-				}
-			}
-		}
-	}
-
-	if bestVerdict != "" {
-		return bestVerdict, bestConfidence
-	}
-
-	return "accurate", 0.3
 }
 
 // MemoryStore is an in-memory Store for testing.
@@ -460,21 +226,6 @@ func (m *MemoryStore) GetByReviewSnapshot(id snapshot.SnapshotID, teamName strin
 	return results, nil
 }
 
-func (m *MemoryStore) GetByReview(repo, commit string) ([]StoredFeedback, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	var results []StoredFeedback
-	for _, rec := range m.records {
-		repoMatch := repo == "" || rec.ReviewRef.Repo == repo
-		commitMatch := commit == "" || rec.ReviewRef.Commit == commit
-		if repoMatch && commitMatch {
-			results = append(results, *rec)
-		}
-	}
-	return results, nil
-}
-
 func cloneFeedback(rec *StoredFeedback) StoredFeedback {
 	cp := *rec
 	if rec.ReviewSnapshotID != nil {
@@ -483,15 +234,4 @@ func cloneFeedback(rec *StoredFeedback) StoredFeedback {
 	}
 	cp.FindingSnapshot = append(json.RawMessage(nil), rec.FindingSnapshot...)
 	return cp
-}
-
-func (m *MemoryStore) GetAll() ([]StoredFeedback, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	var results []StoredFeedback
-	for _, rec := range m.records {
-		results = append(results, *rec)
-	}
-	return results, nil
 }

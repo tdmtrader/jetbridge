@@ -57,9 +57,6 @@ package-lock.json
 /artifact-daemon-linux-arm64
 /fly-assets/
 
-# dev-mcp command logs (workspace-relative, contract §11 addendum)
-.dev-mcp/
-
 # stray step-runner binaries from `go build ./cmd/...` in the repo root
 /merge-runner
 /harvest-runner

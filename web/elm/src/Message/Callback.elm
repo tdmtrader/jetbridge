@@ -91,7 +91,6 @@ type Callback
     | AgentTicketSaved Int (Fetched ())
     | AgentTicketTransitioned Int (Fetched ())
     | AgentTicketDispatched Int (Fetched Concourse.AgentTicket.DispatchResult)
-    | AgentTicketTaskUpdated Int (Fetched ())
     | AgentWorkflowVersionsFetched String (Fetched (List Concourse.Agent.WorkflowVersion))
     | AgentWorkflowVersionPromoted String (Fetched ())
     | AgentWorkflowRunsFetched String (Fetched (List Concourse.WorkflowRun.Summary))

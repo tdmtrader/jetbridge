@@ -10,8 +10,8 @@ import (
 // WorkflowRunID is a positive 64-bit agent_workflow_runs primary key. It
 // mirrors snapshot.WorkflowRunID's WIRE FORMAT byte-for-byte — a quoted decimal
 // string, so a 64-bit id survives a JS client — without coupling this
-// standalone contract module (imported by the lightweight ci-agent CLI) to the
-// whole concourse module. The main module converts to/from
+// standalone contract module to the whole concourse module. The main module
+// converts to/from
 // snapshot.WorkflowRunID with a free int64 cast at its boundary.
 type WorkflowRunID int64
 
@@ -49,7 +49,7 @@ func (id WorkflowRunID) String() string {
 }
 
 // Usage captures token consumption from an LLM call. JSON field names match
-// the claude CLI envelope (and ci-agent/llm.Usage).
+// the claude CLI envelope.
 type Usage struct {
 	InputTokens              int64 `json:"input_tokens"`
 	OutputTokens             int64 `json:"output_tokens"`
@@ -57,8 +57,8 @@ type Usage struct {
 	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
 }
 
-// RunMetrics is one agent step's flight-recorder rollup — both the ingest
-// payload for SubmitAgentRunMetrics and the row shape of agent_run_metrics
+// RunMetrics is one agent step's flight-recorder rollup — the row shape of
+// agent_run_metrics, written in-process by the agent step
 // (shared-contracts §2.4 / §1.8).
 type RunMetrics struct {
 	// WorkflowRunID is the durable schema-v3 workflow run this step ran in —

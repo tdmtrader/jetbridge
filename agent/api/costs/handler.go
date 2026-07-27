@@ -1,17 +1,14 @@
-// Package costs serves the agent cost-ledger API: POST /api/v1/agent/costs
-// (SubmitAgentCostRecord — principal(costs:write) via the wrappa) and
-// GET /api/v1/agent/costs (GetAgentCostRollup).
+// Package costs serves the agent cost-ledger API:
+// GET /api/v1/agent/costs (GetAgentCostRollup). The ledger is written
+// in-process by the agent step, never over HTTP.
 package costs
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"time"
 
-	"github.com/concourse/concourse/agent/api/principals"
 	"github.com/concourse/concourse/agent/budget"
 )
 
@@ -38,49 +35,6 @@ type RollupResponse struct {
 	GroupBy string             `json:"group_by"`
 	Summary DailySummary       `json:"summary"`
 	Rows    []budget.RollupRow `json:"rows"`
-}
-
-// SubmitRecord handles POST /api/v1/agent/costs.
-//
-// Auth: the wrappa wraps this route in principal(costs:write). A verified
-// principal must arrive via the request context. The ledger schema carries no
-// submitter column, so the principal only authorizes — the entry's source
-// field is the CHECK-constrained spend type, not an attribution.
-func (h *Handler) SubmitRecord(w http.ResponseWriter, r *http.Request) {
-	if _, ok := principals.FromContext(r.Context()); !ok {
-		http.Error(w, "agent cost recording requires a scoped principal", http.StatusForbidden)
-		return
-	}
-
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
-	if err != nil {
-		var mbe *http.MaxBytesError
-		if errors.As(err, &mbe) {
-			http.Error(w, "request body exceeds 1MB", http.StatusRequestEntityTooLarge)
-			return
-		}
-		http.Error(w, "failed to read request body", http.StatusBadRequest)
-		return
-	}
-
-	var entry budget.LedgerEntry
-	if err := json.Unmarshal(body, &entry); err != nil {
-		http.Error(w, fmt.Sprintf("invalid JSON: %v", err), http.StatusBadRequest)
-		return
-	}
-
-	if err := h.checker.Record(entry); err != nil {
-		if errors.Is(err, budget.ErrInvalidEntry) {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]string{"status": "recorded"})
 }
 
 // GetRollup handles GET /api/v1/agent/costs

@@ -25,9 +25,6 @@ func TestWorkItemContractValidatesImmutableCapturedDocument(t *testing.T) {
 		},
 		Spec: &contracts.WorkItemRevision{Revision: "spec-2", Content: "requirements"},
 		Plan: &contracts.WorkItemRevision{Revision: "plan-3", Content: "steps"},
-		Comments: []contracts.WorkItemCommentRevision{{
-			ExternalID: "comment-9", Revision: "comment-rev-1", Content: "approved",
-		}},
 	}
 	encoded := marshalDocument(t, valid)
 	if _, err := validateFiles(t, "work-item/v1", map[string][]byte{"work-item.json": encoded}, emptyValidationContext(t)); err != nil {
@@ -45,7 +42,6 @@ func TestWorkItemContractValidatesImmutableCapturedDocument(t *testing.T) {
 		{"blank optional spec content", func(d *contracts.WorkItemDocument) { d.Spec.Content = "" }, "content"},
 		{"workflow version must be positive", func(d *contracts.WorkItemDocument) { zero := 0; d.Workflow.Version = &zero }, "positive"},
 		{"pinned workflow requires name", func(d *contracts.WorkItemDocument) { d.Workflow.Name = "" }, "name"},
-		{"blank comment revision", func(d *contracts.WorkItemDocument) { d.Comments[0].Revision = "" }, "revision"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			document := valid
@@ -53,7 +49,6 @@ func TestWorkItemContractValidatesImmutableCapturedDocument(t *testing.T) {
 			workflow := *valid.Workflow
 			document.Spec, document.Plan = &spec, &plan
 			document.Workflow = &workflow
-			document.Comments = append([]contracts.WorkItemCommentRevision(nil), valid.Comments...)
 			tc.setup(&document)
 			if _, err := validateFiles(t, "work-item/v1", map[string][]byte{"work-item.json": marshalDocument(t, document)}, emptyValidationContext(t)); err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("validation error = %v, want %q", err, tc.want)

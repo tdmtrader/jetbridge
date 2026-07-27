@@ -2,13 +2,12 @@ package reviews
 
 import (
 	"encoding/json"
-	"fmt"
 
 	"github.com/concourse/concourse/agent/snapshot"
 )
 
-// ReviewPayload is the subset of ci-agent's ReviewOutput that ATC
-// needs for denormalized storage. The full raw payload is stored as-is.
+// ReviewPayload is the legacy denormalized review shape. Nothing writes it any
+// more — the read path still decodes it so pre-projection rows keep rendering.
 type ReviewPayload struct {
 	SchemaVersion string `json:"schema_version"`
 	Metadata      struct {
@@ -26,45 +25,6 @@ type ReviewPayload struct {
 	ProvenIssues []json.RawMessage `json:"proven_issues"`
 	Observations []json.RawMessage `json:"observations"`
 	Summary      string            `json:"summary"`
-}
-
-// Submission is a parsed POST /api/v1/agent/reviews body.
-type Submission struct {
-	BuildID int             `json:"build_id"`
-	Review  json.RawMessage `json:"review"`
-	Payload ReviewPayload   `json:"-"`
-}
-
-func ParseSubmission(body []byte) (*Submission, error) {
-	var sub Submission
-	if err := json.Unmarshal(body, &sub); err != nil {
-		return nil, fmt.Errorf("invalid JSON: %w", err)
-	}
-	if sub.BuildID <= 0 {
-		return nil, fmt.Errorf("build_id is required")
-	}
-	if len(sub.Review) == 0 {
-		return nil, fmt.Errorf("review is required")
-	}
-	if err := json.Unmarshal(sub.Review, &sub.Payload); err != nil {
-		return nil, fmt.Errorf("invalid review payload: %w", err)
-	}
-	if sub.Payload.Metadata.Repo == "" {
-		return nil, fmt.Errorf("review.metadata.repo is required")
-	}
-	if sub.Payload.Metadata.Commit == "" {
-		return nil, fmt.Errorf("review.metadata.commit is required")
-	}
-	return &sub, nil
-}
-
-// BuildContext is what ATC derives server-side from the build row —
-// never trusted from the client.
-type BuildContext struct {
-	BuildName    string
-	TeamName     string
-	PipelineName string
-	JobName      string
 }
 
 // StoredReview is the persisted form of a review.
@@ -97,34 +57,10 @@ type StoredReview struct {
 	WorkflowRunID *snapshot.WorkflowRunID `json:"workflow_run_id,omitempty"`
 	ProductionID  *snapshot.DatabaseID    `json:"production_id,omitempty"`
 	CreatedAt     int64                   `json:"created_at"`
-	// EvaluatedCount is filled by the DB store's feedback join, not by
-	// ToStoredReview or MemoryStore.Upsert.
+	// EvaluatedCount is filled by the DB store's feedback join.
 	EvaluatedCount int `json:"evaluated_count"`
-	// SubmittedBy is the verified writing principal's name. Filled by the
-	// handler, never by ToStoredReview.
+	// SubmittedBy is the verified writing principal's name.
 	SubmittedBy string `json:"submitted_by"`
-}
-
-func (s *Submission) ToStoredReview(ctx BuildContext) *StoredReview {
-	return &StoredReview{
-		BuildID:          s.BuildID,
-		BuildName:        ctx.BuildName,
-		TeamName:         ctx.TeamName,
-		PipelineName:     ctx.PipelineName,
-		JobName:          ctx.JobName,
-		Repo:             s.Payload.Metadata.Repo,
-		CommitSha:        s.Payload.Metadata.Commit,
-		Branch:           s.Payload.Metadata.Branch,
-		Score:            s.Payload.Score.Value,
-		MaxScore:         s.Payload.Score.Max,
-		Pass:             s.Payload.Score.Pass,
-		ProvenCount:      len(s.Payload.ProvenIssues),
-		ObservationCount: len(s.Payload.Observations),
-		Summary:          s.Payload.Summary,
-		AgentModel:       s.Payload.Metadata.AgentModel,
-		DurationSeconds:  s.Payload.Metadata.DurationSec,
-		Review:           s.Review,
-	}
 }
 
 // ListFilter narrows ListByTeam results.

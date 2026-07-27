@@ -154,8 +154,8 @@ func TestGetTicketDetail(t *testing.T) {
 		t.Fatalf("empty detail = %d %+v", code, detail)
 	}
 
-	store.SubmitSpec(id, tickets.Spec{Title: "s", Body: "b"})
-	store.SubmitPlan(id, []tickets.Task{{Title: "one"}})
+	store.SeedSpec(id, tickets.Spec{Title: "s", Body: "b"})
+	store.SeedPlan(id, []tickets.Task{{Title: "one"}})
 	code, detail = get()
 	if code != http.StatusOK || detail.Spec == nil || detail.Spec.Version != 1 || len(detail.Tasks) != 1 {
 		t.Fatalf("filled detail = %d %+v", code, detail)
@@ -260,83 +260,5 @@ func TestTransitionRejectsServerOwnedPipelineRunID(t *testing.T) {
 	}
 	if got, _, _ := store.Get(1); got.State != tickets.StateQueued || got.PipelineRunID != nil {
 		t.Errorf("ticket after rejected transition = %+v", got)
-	}
-}
-
-func TestSpecPlanTaskRoutes(t *testing.T) {
-	h, store := newTestHandler("")
-	store.Create(&tickets.Ticket{Title: "t", Repo: "r"})
-
-	req := asPrincipal(withParams(httptest.NewRequest("POST", "/api/v1/agent/tickets/1/spec",
-		strings.NewReader(`{"title":"spec","body":"prose","acceptance_criteria":["a"],"links":[{"title":"l","url":"u"}]}`)),
-		url.Values{":ticket_id": {"1"}}), "run-42-platform")
-	rec := httptest.NewRecorder()
-	h.SubmitSpec(rec, req)
-	if rec.Code != http.StatusCreated || !strings.Contains(rec.Body.String(), `"version":1`) {
-		t.Fatalf("spec = %d %s", rec.Code, rec.Body)
-	}
-	spec, _, _ := store.LatestSpec(1)
-	if spec.SubmittedBy != "run-42-platform" {
-		t.Errorf("spec attribution = %+v", spec)
-	}
-
-	// missing body -> 400
-	req = withParams(httptest.NewRequest("POST", "/api/v1/agent/tickets/1/spec",
-		strings.NewReader(`{"title":"only"}`)), url.Values{":ticket_id": {"1"}})
-	rec = httptest.NewRecorder()
-	h.SubmitSpec(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("spec without body = %d, want 400", rec.Code)
-	}
-
-	req = asPrincipal(withParams(httptest.NewRequest("POST", "/api/v1/agent/tickets/1/plan",
-		strings.NewReader(`{"tasks":[{"title":"one"},{"title":"two","detail":"d"}]}`)),
-		url.Values{":ticket_id": {"1"}}), "run-42-platform")
-	rec = httptest.NewRecorder()
-	h.SubmitPlan(rec, req)
-	if rec.Code != http.StatusCreated || !strings.Contains(rec.Body.String(), `"plan_version":1`) {
-		t.Fatalf("plan = %d %s", rec.Code, rec.Body)
-	}
-
-	// empty plan -> 400
-	req = withParams(httptest.NewRequest("POST", "/api/v1/agent/tickets/1/plan",
-		strings.NewReader(`{"tasks":[]}`)), url.Values{":ticket_id": {"1"}})
-	rec = httptest.NewRecorder()
-	h.SubmitPlan(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("empty plan = %d, want 400", rec.Code)
-	}
-
-	req = asPrincipal(withParams(httptest.NewRequest("PUT", "/api/v1/agent/tickets/1/tasks/2",
-		strings.NewReader(`{"status":"done","note":"trivial"}`)),
-		url.Values{":ticket_id": {"1"}, ":ordering": {"2"}}), "run-42-platform")
-	rec = httptest.NewRecorder()
-	h.UpdateTask(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("task update = %d %s", rec.Code, rec.Body)
-	}
-	tasks, _ := store.ActivePlan(1)
-	if tasks[1].Status != tickets.TaskDone || tasks[1].Detail != "d\n\n> trivial" {
-		t.Errorf("task after update = %+v", tasks[1])
-	}
-
-	// bad status -> 400
-	req = withParams(httptest.NewRequest("PUT", "/api/v1/agent/tickets/1/tasks/2",
-		strings.NewReader(`{"status":"started"}`)),
-		url.Values{":ticket_id": {"1"}, ":ordering": {"2"}})
-	rec = httptest.NewRecorder()
-	h.UpdateTask(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("bad status = %d, want 400", rec.Code)
-	}
-
-	// ordering beyond the plan -> 404
-	req = withParams(httptest.NewRequest("PUT", "/api/v1/agent/tickets/1/tasks/9",
-		strings.NewReader(`{"status":"done"}`)),
-		url.Values{":ticket_id": {"1"}, ":ordering": {"9"}})
-	rec = httptest.NewRecorder()
-	h.UpdateTask(rec, req)
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("missing task = %d, want 404", rec.Code)
 	}
 }

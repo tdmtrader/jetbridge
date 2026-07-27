@@ -12,95 +12,47 @@ import (
 	. "github.com/onsi/gomega"
 )
 
+// The v1 publishing route (POST /api/v1/agent/reviews) is gone: reviews reach
+// the API only as sealed review/v1 snapshot projections written in-process.
+// What is still reachable over HTTP is the read side, and its authorization is
+// what these specs pin.
 var _ = Describe("Agent Reviews API", func() {
-	It("accepts a scoped-principal review, rejects a bad token, and serves it back by build and by team", func() {
+	It("serves an empty per-build review list to an authorized team member", func() {
 		client := login(atcURL, "test", "test")
-		httpClient := client.HTTPClient()
-
-		By("minting a reviews:write principal through the admin API")
-		mintReq, err := http.NewRequest("POST", atcURL+"/api/v1/agent/principals", bytes.NewBufferString(
-			`{"name":"agent-review-writer","scopes":["reviews:write"]}`))
-		Expect(err).NotTo(HaveOccurred())
-		mintReq.Header.Set("Content-Type", "application/json")
-		mintResp, err := httpClient.Do(mintReq)
-		Expect(err).NotTo(HaveOccurred())
-		defer mintResp.Body.Close()
-		Expect(mintResp.StatusCode).To(Equal(http.StatusCreated))
-		var minted map[string]any
-		Expect(json.NewDecoder(mintResp.Body).Decode(&minted)).To(Succeed())
-		principalToken := minted["token"].(string)
-		Expect(principalToken).To(HavePrefix("cap1."))
 
 		build, err := client.Team("main").CreateBuild(atc.Plan{})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(build.ID).To(BeNumerically(">", 0))
 
-		reviewBody := []byte(`{
-			"build_id": ` + strconv.Itoa(build.ID) + `,
-			"review": {
-				"schema_version": "1.0.0",
-				"metadata": {"repo": "itest", "commit": "deadbeef"},
-				"score": {"value": 8, "max": 10, "pass": true},
-				"proven_issues": [],
-				"observations": [],
-				"summary": "clean"
-			}
-		}`)
+		req, err := http.NewRequest("GET", atcURL+"/api/v1/builds/"+strconv.Itoa(build.ID)+"/agent-reviews", nil)
+		Expect(err).NotTo(HaveOccurred())
+		resp, err := client.HTTPClient().Do(req)
+		Expect(err).NotTo(HaveOccurred())
+		defer resp.Body.Close()
+		Expect(resp.StatusCode).To(Equal(http.StatusOK))
 
-		By("rejecting a submission with the wrong bearer token")
-		{
-			resp := postAgentReview(atcURL, "wrong-token", reviewBody)
-			Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
-		}
+		var reviews []map[string]any
+		Expect(json.NewDecoder(resp.Body).Decode(&reviews)).To(Succeed())
+		Expect(reviews).To(BeEmpty())
+	})
 
-		By("accepting a submission with the reviews:write principal token")
-		{
-			resp := postAgentReview(atcURL, principalToken, reviewBody)
-			Expect(resp.StatusCode).To(Equal(http.StatusCreated))
-		}
+	It("refuses to publish a review over HTTP", func() {
+		client := login(atcURL, "test", "test")
+		build, err := client.Team("main").CreateBuild(atc.Plan{})
+		Expect(err).NotTo(HaveOccurred())
 
-		By("returning the review from the per-build endpoint")
-		{
-			httpClient := client.HTTPClient()
-			req, err := http.NewRequest("GET", atcURL+"/api/v1/builds/"+strconv.Itoa(build.ID)+"/agent-reviews", nil)
-			Expect(err).NotTo(HaveOccurred())
+		req, err := http.NewRequest("POST", atcURL+"/api/v1/agent/reviews", bytes.NewBufferString(
+			`{"build_id": `+strconv.Itoa(build.ID)+`, "review": {"schema_version":"1.0.0"}}`))
+		Expect(err).NotTo(HaveOccurred())
+		req.Header.Set("Content-Type", "application/json")
 
-			resp, err := httpClient.Do(req)
-			Expect(err).NotTo(HaveOccurred())
-			defer resp.Body.Close()
-			Expect(resp.StatusCode).To(Equal(http.StatusOK))
-
-			var reviews []map[string]interface{}
-			Expect(json.NewDecoder(resp.Body).Decode(&reviews)).To(Succeed())
-			Expect(reviews).To(HaveLen(1))
-			Expect(reviews[0]["repo"]).To(Equal("itest"))
-			Expect(reviews[0]["commit_sha"]).To(Equal("deadbeef"))
-			Expect(reviews[0]["score"]).To(Equal(8.0))
-		}
-
-		By("returning the review from the per-team endpoint")
-		{
-			httpClient := client.HTTPClient()
-			req, err := http.NewRequest("GET", atcURL+"/api/v1/teams/main/agent-reviews", nil)
-			Expect(err).NotTo(HaveOccurred())
-
-			resp, err := httpClient.Do(req)
-			Expect(err).NotTo(HaveOccurred())
-			defer resp.Body.Close()
-			Expect(resp.StatusCode).To(Equal(http.StatusOK))
-
-			var reviews []map[string]interface{}
-			Expect(json.NewDecoder(resp.Body).Decode(&reviews)).To(Succeed())
-
-			found := false
-			for _, r := range reviews {
-				if r["repo"] == "itest" && r["commit_sha"] == "deadbeef" {
-					found = true
-					Expect(r["score"]).To(Equal(8.0))
-				}
-			}
-			Expect(found).To(BeTrue(), "expected to find the itest/deadbeef review in team listing")
-		}
+		resp, err := client.HTTPClient().Do(req)
+		Expect(err).NotTo(HaveOccurred())
+		defer func() {
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+		}()
+		Expect(resp.StatusCode).To(Equal(http.StatusNotFound))
 	})
 
 	It("rejects a user with no access to the build's team", func() {
@@ -141,29 +93,3 @@ var _ = Describe("Agent Reviews API", func() {
 // it from test code sends requests down an unrelated (and here, broken)
 // path.
 var plainHTTPClient = &http.Client{}
-
-func postAgentReview(atcURL, token string, body []byte) *http.Response {
-	req, err := http.NewRequest("POST", atcURL+"/api/v1/agent/reviews", bytes.NewReader(body))
-	Expect(err).NotTo(HaveOccurred())
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+token)
-
-	resp, err := plainHTTPClient.Do(req)
-	Expect(err).NotTo(HaveOccurred())
-	io.Copy(io.Discard, resp.Body)
-	resp.Body.Close()
-	return resp
-}
-
-func postAgentCost(atcURL, token string, body []byte) *http.Response {
-	req, err := http.NewRequest("POST", atcURL+"/api/v1/agent/costs", bytes.NewReader(body))
-	Expect(err).NotTo(HaveOccurred())
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+token)
-
-	resp, err := plainHTTPClient.Do(req)
-	Expect(err).NotTo(HaveOccurred())
-	io.Copy(io.Discard, resp.Body)
-	resp.Body.Close()
-	return resp
-}

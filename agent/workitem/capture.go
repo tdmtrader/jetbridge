@@ -58,21 +58,6 @@ type PlanRevision struct {
 	Tasks   []TaskRevision `json:"tasks"`
 }
 
-// CommentRevision retains both the mutable comment/question text and its
-// first-writer answer. Revision is local to this comment and increments when
-// the answer is recorded; the enclosing ticket Revision increments in the
-// same mutation transaction.
-type CommentRevision struct {
-	ID         int    `json:"id"`
-	Revision   int64  `json:"revision"`
-	Body       string `json:"body"`
-	CreatedBy  string `json:"created_by"`
-	CreatedAt  int64  `json:"created_at"`
-	Answer     string `json:"answer,omitempty"`
-	AnsweredBy string `json:"answered_by,omitempty"`
-	AnsweredAt int64  `json:"answered_at,omitempty"`
-}
-
 // Revision is all mutable work-item state read from one source snapshot.
 type Revision struct {
 	TicketID   int
@@ -86,7 +71,6 @@ type Revision struct {
 	Workflow   WorkflowSelection
 	Spec       *SpecRevision
 	Plan       *PlanRevision
-	Comments   []CommentRevision
 }
 
 type CapturedRevision struct {
@@ -173,21 +157,6 @@ func MarshalRevision(revision Revision) (CapturedRevision, error) {
 			return CapturedRevision{}, fmt.Errorf("%w: encode plan: %v", ErrInvalidRevision, err)
 		}
 		document.Plan = &contracts.WorkItemRevision{Revision: strconv.Itoa(revision.Plan.Version), Content: string(content)}
-	}
-	if len(revision.Comments) > 0 {
-		document.Comments = make([]contracts.WorkItemCommentRevision, 0, len(revision.Comments))
-		for _, comment := range revision.Comments {
-			if comment.ID <= 0 || comment.Revision <= 0 {
-				return CapturedRevision{}, ErrInvalidRevision
-			}
-			content, err := json.Marshal(comment)
-			if err != nil {
-				return CapturedRevision{}, fmt.Errorf("%w: encode comment: %v", ErrInvalidRevision, err)
-			}
-			document.Comments = append(document.Comments, contracts.WorkItemCommentRevision{
-				ExternalID: strconv.Itoa(comment.ID), Revision: strconv.FormatInt(comment.Revision, 10), Content: string(content),
-			})
-		}
 	}
 	if err := document.Validate(); err != nil {
 		return CapturedRevision{}, fmt.Errorf("%w: %v", ErrInvalidRevision, err)

@@ -17,7 +17,7 @@ import (
 // accessor.GetAccessor(r).Claims().UserName.
 type UserNameFunc func(r *http.Request) string
 
-// Handler serves the eight /api/v1/agent/tickets* routes. Auth is
+// Handler serves the /api/v1/agent/tickets* routes. Auth is
 // enforced by the wrappa tiers (00-shared-contracts.md §4.2); this
 // handler only reads WHO the verified writer is.
 type Handler struct {
@@ -292,118 +292,4 @@ func (h *Handler) TransitionTicket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, updated)
-}
-
-// SubmitSpec handles POST /api/v1/agent/tickets/:ticket_id/spec
-// (body = §3.2 submit_spec tool input).
-func (h *Handler) SubmitSpec(w http.ResponseWriter, r *http.Request) {
-	id, ok := ticketIDParam(w, r)
-	if !ok {
-		return
-	}
-	var req SpecSubmission
-	if !readJSON(w, r, &req) {
-		return
-	}
-	if req.Title == "" || req.Body == "" {
-		http.Error(w, "title and body are required", http.StatusBadRequest)
-		return
-	}
-	name, _ := h.writer(r)
-	version, err := h.store.SubmitSpec(id, Spec{
-		Title:              req.Title,
-		Body:               req.Body,
-		AcceptanceCriteria: req.AcceptanceCriteria,
-		Links:              req.Links,
-		SubmittedBy:        name,
-	})
-	if errors.Is(err, ErrTicketNotFound) {
-		http.Error(w, "ticket not found", http.StatusNotFound)
-		return
-	}
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	writeJSON(w, http.StatusCreated, map[string]int{"version": version})
-}
-
-// SubmitPlan handles POST /api/v1/agent/tickets/:ticket_id/plan
-// (body = §3.2 submit_plan tool input). Replaces the active plan by
-// bumping plan_version; orderings are 1..N as given.
-func (h *Handler) SubmitPlan(w http.ResponseWriter, r *http.Request) {
-	id, ok := ticketIDParam(w, r)
-	if !ok {
-		return
-	}
-	var req PlanSubmission
-	if !readJSON(w, r, &req) {
-		return
-	}
-	if len(req.Tasks) == 0 {
-		http.Error(w, "tasks must contain at least one task", http.StatusBadRequest)
-		return
-	}
-	ts := make([]Task, len(req.Tasks))
-	for i, pt := range req.Tasks {
-		if pt.Title == "" {
-			http.Error(w, "every task needs a title", http.StatusBadRequest)
-			return
-		}
-		ts[i] = Task{Title: pt.Title, Detail: pt.Detail}
-	}
-	planVersion, err := h.store.SubmitPlan(id, ts)
-	if errors.Is(err, ErrTicketNotFound) {
-		http.Error(w, "ticket not found", http.StatusNotFound)
-		return
-	}
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	writeJSON(w, http.StatusCreated, map[string]int{"plan_version": planVersion})
-}
-
-// UpdateTask handles PUT /api/v1/agent/tickets/:ticket_id/tasks/:ordering
-// (body = §3.2 update_task_status tool input). Operates on the ACTIVE
-// plan; a non-empty note is appended to the task's detail as a
-// blockquote (contract addendum).
-func (h *Handler) UpdateTask(w http.ResponseWriter, r *http.Request) {
-	id, ok := ticketIDParam(w, r)
-	if !ok {
-		return
-	}
-	ordering, err := strconv.Atoi(r.FormValue(":ordering"))
-	if err != nil || ordering <= 0 {
-		http.Error(w, "invalid ordering", http.StatusBadRequest)
-		return
-	}
-	var req TaskStatusRequest
-	if !readJSON(w, r, &req) {
-		return
-	}
-	if !ValidTaskStatus(req.Status) {
-		http.Error(w, "invalid status", http.StatusBadRequest)
-		return
-	}
-	// One atomic store operation: resolving the active plan version and
-	// writing against it must not straddle a concurrent SubmitPlan, or
-	// the update silently lands on a superseded version (native review
-	// #7 finding — TOCTOU lost update).
-	_, err = h.store.UpdateActiveTask(id, ordering, req.Status, req.Note)
-	switch {
-	case errors.Is(err, ErrTicketNotFound):
-		http.Error(w, "ticket not found", http.StatusNotFound)
-		return
-	case errors.Is(err, ErrNoActivePlan):
-		http.Error(w, ErrNoActivePlan.Error(), http.StatusNotFound)
-		return
-	case errors.Is(err, ErrTaskNotFound):
-		http.Error(w, "plan task not found", http.StatusNotFound)
-		return
-	case err != nil:
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }

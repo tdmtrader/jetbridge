@@ -14,7 +14,7 @@ the local cluster.
 Requires local PostgreSQL (`pg_isready`).
 
 ```bash
-make test-quick        # 84 Ginkgo suites (~5m20s) + ci-agent module — VERIFIED PASSING
+make test-quick        # Ginkgo unit suites (~5m)
 make test-fly-integration
 make test-integration  # real ATC + Postgres, ~12s
 ```
@@ -217,9 +217,13 @@ colima stop                            # optional
 
 ## Status summary (2026-07-11)
 
+Historical record of a point-in-time run. Note that `make test-quick` no longer
+builds a separate `ci-agent` module — that module was removed with the v1
+agentic surface; the target is now unit suites only.
+
 | Tier | Status |
 |------|--------|
-| 1. `make test-quick` | PASS (84 suites, 5m19s + ci-agent all ok) |
+| 1. `make test-quick` | PASS (84 suites, 5m19s) |
 | 2. Colima + docker | PASS (4 CPU / 8 GiB) |
 | 3. Live tests on KinD | 22/22 PASS (3 need the deployed artifact daemon + 2 env vars) |
 | 4. topgun/k8s/integration probe | FAIL — pod sandbox churn in testcontainers K3s; CI-only |

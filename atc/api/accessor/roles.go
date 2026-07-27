@@ -106,10 +106,6 @@ var DefaultRoles = map[string]string{
 	// needs an entry here: a missing entry resolves to requiredRole ""
 	// and hasRequiredRole's default case, making the route admin-only.
 	atc.SubmitAgentFeedback:         MemberRole,
-	atc.GetAgentFeedback:            ViewerRole,
-	atc.GetAgentFeedbackSummary:     ViewerRole,
-	atc.ClassifyAgentVerdict:        MemberRole,
-	atc.GetAgentReviewFindings:      ViewerRole,
 	atc.ListRecentAgentRunMetrics:   ViewerRole,
 	atc.ListBuildAgentRunMetrics:    ViewerRole,
 	atc.ListTeamAgentReviews:        ViewerRole,
@@ -161,14 +157,11 @@ var DefaultRoles = map[string]string{
 	atc.PinAgentSnapshot:                   MemberRole,
 	atc.UnpinAgentSnapshot:                 MemberRole,
 
-	// Ticket-core routes (00-shared-contracts.md §4.2). UpdateAgentTicketTask
-	// is principal-only in the wrappa and deliberately absent here.
+	// Ticket-core routes (00-shared-contracts.md §4.2).
 	atc.ListAgentTickets:      ViewerRole,
 	atc.CreateAgentTicket:     MemberRole,
 	atc.GetAgentTicket:        ViewerRole,
 	atc.UpdateAgentTicket:     MemberRole,
 	atc.TransitionAgentTicket: MemberRole,
-	atc.SubmitAgentTicketSpec: MemberRole,
-	atc.SubmitAgentTicketPlan: MemberRole,
 	atc.DispatchAgentTicket:   MemberRole,
 }

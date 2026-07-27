@@ -51,11 +51,8 @@ Mirrors agent/api/principals `ValidScopes`; keep the two in lockstep.
 -}
 mintScopeVocabulary : List String
 mintScopeVocabulary =
-    [ "reviews:write"
-    , "tickets:read"
+    [ "tickets:read"
     , "tickets:write"
-    , "metrics:write"
-    , "costs:write"
     ]
 
 

@@ -5,8 +5,7 @@ Kubernetes-native fork of [Concourse CI](https://github.com/concourse/concourse)
 **What's different from upstream Concourse:**
 
 - **JetBridge Runtime** — every pipeline step runs as a Kubernetes pod; no Garden, no containerd, no TSA, no BaggageClaim
-- **CI Agent System** — five standalone AI agent binaries for automated code review, planning, QA, fixing, and implementation
-- **Agent Feedback API** — HTTP endpoints for collecting and summarizing human verdicts on agent findings
+- **Jetbridge Agentic Workflows** — versioned workflow functions over immutable, typed snapshots for AI-assisted pipeline automation; see [`docs/agentic/README.md`](docs/agentic/README.md)
 - **Task Sidecars** — service containers (databases, caches, etc.) that run alongside task steps in a shared pod network
 - **`skip_download`** — get steps can resolve version metadata without downloading artifacts
 - **Configurable base resource types** — override default resource type images via `--kubernetes-base-resource-type name=image`
@@ -27,8 +26,7 @@ fly CLI → ATC (web) → Kubernetes API → Pods (one per step)
 | Component | Location |
 |-----------|----------|
 | JetBridge Runtime | [`atc/worker/jetbridge/`](atc/worker/jetbridge/) |
-| CI Agent System | [`ci-agent/`](ci-agent/) |
-| Agent Feedback API | [`atc/api/agentfeedback/`](atc/api/agentfeedback/) |
+| Jetbridge Agentic Workflows | [`docs/agentic/README.md`](docs/agentic/README.md) |
 | Task Sidecars | [`atc/sidecar.go`](atc/sidecar.go) |
 | Helm Chart | [`deploy/chart/`](deploy/chart/) |
 
@@ -201,103 +199,16 @@ config:
 
 ---
 
-## CI Agent System
+## Jetbridge Agentic Workflows
 
-A unified binary for AI-powered CI automation. The agent system is an independent Go module (`ci-agent/go.mod`) with zero imports from the main Concourse codebase.
+AI-assisted pipeline automation — versioned workflow functions running as
+ordinary visible Concourse DAGs over immutable, typed snapshots. This
+replaced an earlier standalone `ci-agent` module and ticket-centric review
+pipeline, both removed.
 
-### Agent
-
-| Binary | Entry point | Purpose | Key env vars |
-|--------|------------|---------|-------------|
-| `ci-agent` | [`ci-agent/cmd/ci-agent/main.go`](ci-agent/cmd/ci-agent/main.go) | Unified phase runner | `ANTHROPIC_API_KEY`, `AGENT_CLI`, `AGENT_MODEL` |
-
-The `ci-agent` binary is invoked with `--phase <path-to-phase.yaml>`. Available phases:
-
-| Phase | Config | Purpose |
-|-------|--------|---------|
-| review | [`phases/review.yaml`](ci-agent/phases/review.yaml) | Automated code review |
-| fix | [`phases/fix.yaml`](ci-agent/phases/fix.yaml) | Auto-fix review findings |
-| plan | [`phases/plan.yaml`](ci-agent/phases/plan.yaml) | Implementation planning |
-| implement | [`phases/implement.yaml`](ci-agent/phases/implement.yaml) | Code implementation from plans |
-| qa | [`phases/qa.yaml`](ci-agent/phases/qa.yaml) | QA validation of fixes |
-
-### Output schemas
-
-Structured JSON output is defined in [`ci-agent/schema/`](ci-agent/schema/):
-
-| File | Defines |
-|------|---------|
-| `results.go` | Common result envelope |
-| `review.go` | Review findings, categories, severities |
-| `qa.go` | QA validation results |
-| `fix_report.go` | Fix attempt outcomes |
-| `event.go` | Streaming event types |
-| `feedback.go` | Feedback records and verdicts |
-
-### Building
-
-```bash
-# Build all agent binaries
-cd ci-agent && go build ./cmd/...
-
-# Build the agent Docker image
-docker build -f deploy/Dockerfile.ci-agent -t ci-agent:latest .
-```
-
-Docker image: [`deploy/Dockerfile.ci-agent`](deploy/Dockerfile.ci-agent)
-
-### Integration tests
-
-Tests in [`ci-agent/integration/`](ci-agent/integration/):
-
-| File | Covers |
-|------|--------|
-| `review_fix_test.go` | Review → fix pipeline |
-| `review_fix_qa_test.go` | Review → fix → QA pipeline |
-| `qa_test.go` | Standalone QA validation |
-| `plan_implement_test.go` | Plan → implement pipeline |
-| `integration_suite_test.go` | Test suite setup |
-
----
-
-## Agent Feedback API
-
-HTTP endpoints for collecting human feedback on agent findings, built into the ATC web server.
-
-### Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/api/v1/agent/feedback` | Submit a feedback record |
-| `GET` | `/api/v1/agent/feedback` | Get feedback by `?repo=…&commit=…` |
-| `GET` | `/api/v1/agent/feedback/summary` | Aggregated stats by `?repo=…` |
-| `POST` | `/api/v1/agent/feedback/classify` | Classify natural-language text into a verdict |
-
-### Verdicts
-
-`accurate`, `false_positive`, `noisy`, `overly_strict`, `partially_correct`, `missed_context`
-
-### Example
-
-```bash
-curl -X POST https://concourse.example.com/api/v1/agent/feedback \
-  -H "Content-Type: application/json" \
-  -d '{
-    "review_ref": {"repo": "org/repo", "commit": "abc123"},
-    "finding_id": "finding-1",
-    "finding_type": "bug",
-    "finding_snapshot": {"message": "null pointer dereference"},
-    "verdict": "accurate",
-    "confidence": 0.9,
-    "reviewer": "alice"
-  }'
-```
-
-### References
-
-- Route definitions: [`atc/routes.go`](atc/routes.go)
-- Handler implementation: [`atc/api/agentfeedback/handler.go`](atc/api/agentfeedback/handler.go)
-- Tests: `handler_test.go`, `handler_integration_test.go`, `route_registration_test.go`, `feedback_pipeline_test.go`
+See [`docs/agentic/README.md`](docs/agentic/README.md) for the authoritative
+description: runtime prerequisites, snapshot storage, workflow-def format,
+and the agent API surface.
 
 ---
 
@@ -352,12 +263,8 @@ curl -X POST https://concourse.example.com/api/v1/agent/feedback \
 # Concourse binary
 go build -o concourse ./cmd/concourse
 
-# Agent binaries
-cd ci-agent && go build ./cmd/...
-
-# Docker images
+# Docker image
 docker build -f Dockerfile.build -t concourse:latest .
-docker build -f deploy/Dockerfile.ci-agent -t ci-agent:latest .
 ```
 
 ### Test
@@ -368,12 +275,6 @@ go test ./atc/worker/jetbridge/...
 
 # JetBridge live tests (requires K8s cluster)
 go test ./atc/worker/jetbridge/... -run Live -tags live
-
-# Agent unit + integration tests
-cd ci-agent && go test ./...
-
-# Feedback API tests
-go test ./atc/api/agentfeedback/...
 ```
 
 ### Key test files
@@ -382,8 +283,6 @@ go test ./atc/api/agentfeedback/...
 |------|-------|
 | JetBridge unit | `atc/worker/jetbridge/*_test.go` |
 | JetBridge live | `atc/worker/jetbridge/live_*.go` |
-| Agent integration | `ci-agent/integration/*_test.go` |
-| Feedback API | `atc/api/agentfeedback/*_test.go` |
 | Sidecar types | `atc/sidecar_test.go` |
 
 ---
@@ -418,8 +317,6 @@ The Helm chart creates these automatically when `rbac.create=true`.
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the development process, testing strategy, and code style guidelines.
-
-Note: this repository has two Go modules — the main module at the repo root, and the CI agent module at `ci-agent/`. They are intentionally independent; the agent binaries have zero imports from the main Concourse codebase.
 
 ---
 

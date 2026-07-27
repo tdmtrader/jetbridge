@@ -24,46 +24,48 @@ var _ = Describe("AgentFeedbackFactory", func() {
 		factory = db.NewAgentFeedbackFactory(dbConn)
 	})
 
-	Describe("Save and GetByReview", func() {
+	// The legacy repo/commit READ path is gone with GET /api/v1/agent/feedback;
+	// Save still has a legacy branch (a request without review_snapshot_id), so
+	// its write is asserted directly against the row it produces.
+	Describe("Save on the legacy repo/commit branch", func() {
+		readRow := func(findingID string) (string, float64, []byte) {
+			var verdict string
+			var confidence float64
+			var findingSnapshot []byte
+			ExpectWithOffset(1, dbConn.QueryRow(`
+				SELECT verdict, confidence, finding_snapshot
+				FROM agent_feedback
+				WHERE repo = $1 AND commit_sha = $2 AND finding_id = $3 AND reviewer = $4
+			`, "org/repo", "abc123", findingID, "alice").Scan(&verdict, &confidence, &findingSnapshot),
+			).To(Succeed())
+			return verdict, confidence, findingSnapshot
+		}
+
 		It("round-trips a feedback record", func() {
-			snapshot := json.RawMessage(`{"severity":"high","title":"Null deref"}`)
-			rec := &feedback.StoredFeedback{
-				ReviewRef: feedback.ReviewRef{
-					Repo:   "org/repo",
-					Commit: "abc123",
-				},
+			findingSnapshot := json.RawMessage(`{"severity":"high","title":"Null deref"}`)
+			Expect(factory.Save(&feedback.StoredFeedback{
+				ReviewRef:       feedback.ReviewRef{Repo: "org/repo", Commit: "abc123"},
 				FindingID:       "ISS-001",
 				FindingType:     "proven_issue",
-				FindingSnapshot: snapshot,
+				FindingSnapshot: findingSnapshot,
 				Verdict:         "accurate",
 				Confidence:      0.9,
 				Notes:           "real bug",
 				Reviewer:        "alice",
 				Source:          "interactive",
-			}
+			})).To(Succeed())
 
-			err := factory.Save(rec)
-			Expect(err).NotTo(HaveOccurred())
-
-			results, err := factory.GetByReview("org/repo", "abc123")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(results).To(HaveLen(1))
-			Expect(results[0].FindingID).To(Equal("ISS-001"))
-			Expect(results[0].Verdict).To(Equal("accurate"))
-			Expect(results[0].Confidence).To(Equal(0.9))
-			Expect(results[0].Notes).To(Equal("real bug"))
-			Expect(results[0].Reviewer).To(Equal("alice"))
-			Expect(results[0].ReviewRef.Repo).To(Equal("org/repo"))
-			Expect(results[0].ReviewRef.Commit).To(Equal("abc123"))
-
+			verdict, confidence, stored := readRow("ISS-001")
+			Expect(verdict).To(Equal("accurate"))
+			Expect(confidence).To(Equal(0.9))
+			var raw json.RawMessage
+			Expect(json.Unmarshal(stored, &raw)).To(Succeed())
 			var snap map[string]string
-			Expect(json.Unmarshal(results[0].FindingSnapshot, &snap)).To(Succeed())
+			Expect(json.Unmarshal(raw, &snap)).To(Succeed())
 			Expect(snap["severity"]).To(Equal("high"))
 		})
-	})
 
-	Describe("upsert", func() {
-		It("updates existing record on conflict", func() {
+		It("updates the existing record on conflict", func() {
 			rec := &feedback.StoredFeedback{
 				ReviewRef: feedback.ReviewRef{Repo: "org/repo", Commit: "abc123"},
 				FindingID: "ISS-002",
@@ -72,72 +74,20 @@ var _ = Describe("AgentFeedbackFactory", func() {
 			}
 			Expect(factory.Save(rec)).To(Succeed())
 
-			// Save again with different verdict — should upsert.
 			rec.Verdict = "false_positive"
 			rec.Confidence = 0.85
 			Expect(factory.Save(rec)).To(Succeed())
 
-			results, err := factory.GetByReview("org/repo", "abc123")
-			Expect(err).NotTo(HaveOccurred())
+			var rows int
+			Expect(dbConn.QueryRow(`
+				SELECT COUNT(*) FROM agent_feedback
+				WHERE repo = $1 AND commit_sha = $2 AND finding_id = $3 AND reviewer = $4
+			`, "org/repo", "abc123", "ISS-002", "alice").Scan(&rows)).To(Succeed())
+			Expect(rows).To(Equal(1))
 
-			// Filter to ISS-002.
-			var found []feedback.StoredFeedback
-			for _, r := range results {
-				if r.FindingID == "ISS-002" {
-					found = append(found, r)
-				}
-			}
-			Expect(found).To(HaveLen(1))
-			Expect(found[0].Verdict).To(Equal("false_positive"))
-			Expect(found[0].Confidence).To(Equal(0.85))
-		})
-	})
-
-	Describe("GetAll", func() {
-		It("returns all records", func() {
-			for _, id := range []string{"ISS-010", "ISS-011", "ISS-012"} {
-				Expect(factory.Save(&feedback.StoredFeedback{
-					ReviewRef: feedback.ReviewRef{Repo: "r", Commit: "c"},
-					FindingID: id,
-					Verdict:   "accurate",
-					Reviewer:  "bob",
-				})).To(Succeed())
-			}
-
-			results, err := factory.GetAll()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(len(results)).To(BeNumerically(">=", 3))
-		})
-	})
-
-	Describe("GetByReview with no matches", func() {
-		It("returns empty slice", func() {
-			results, err := factory.GetByReview("nonexistent", "nonexistent")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(results).To(HaveLen(0))
-			Expect(results).NotTo(BeNil())
-		})
-	})
-
-	Describe("GetByReview with empty repo", func() {
-		It("filters only by commit_sha", func() {
-			Expect(factory.Save(&feedback.StoredFeedback{
-				ReviewRef: feedback.ReviewRef{Repo: "repo-a", Commit: "shared-commit"},
-				FindingID: "ISS-020",
-				Verdict:   "accurate",
-				Reviewer:  "alice",
-			})).To(Succeed())
-			Expect(factory.Save(&feedback.StoredFeedback{
-				ReviewRef: feedback.ReviewRef{Repo: "repo-b", Commit: "shared-commit"},
-				FindingID: "ISS-021",
-				Verdict:   "noisy",
-				Reviewer:  "bob",
-			})).To(Succeed())
-
-			// Empty repo should return findings from both repos.
-			results, err := factory.GetByReview("", "shared-commit")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(len(results)).To(BeNumerically(">=", 2))
+			verdict, confidence, _ := readRow("ISS-002")
+			Expect(verdict).To(Equal("false_positive"))
+			Expect(confidence).To(Equal(0.85))
 		})
 	})
 })
@@ -182,9 +132,11 @@ var _ = Describe("AgentFeedbackFactory snapshot review identity", func() {
 		Expect(err).ToNot(HaveOccurred())
 		Expect(got).To(HaveLen(1))
 		Expect(got[0].Verdict).To(Equal("noisy"))
-		all, err := feedbackFactory.GetByReview("org/repo", "same-commit")
-		Expect(err).ToNot(HaveOccurred())
-		Expect(all).To(HaveLen(2), "same-commit reviews must not collide")
+		var sameCommitRows int
+		Expect(dbConn.QueryRow(`
+			SELECT COUNT(*) FROM agent_feedback WHERE repo = $1 AND commit_sha = $2
+		`, "org/repo", "same-commit").Scan(&sameCommitRows)).To(Succeed())
+		Expect(sameCommitRows).To(Equal(2), "same-commit reviews must not collide")
 	})
 
 	It("isolates content-addressed review feedback by authorized team", func() {

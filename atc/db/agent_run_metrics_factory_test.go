@@ -6,7 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/concourse/concourse/agent/api/metrics"
 	schema "github.com/concourse/concourse/agent/schema"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc/db"
@@ -25,6 +24,14 @@ var _ = Describe("AgentRunMetricsFactory", func() {
 	BeforeEach(func() {
 		factory = db.NewAgentRunMetricsFactory(dbConn)
 	})
+
+	// upsert seeds a row the way the exec's in-process ingestion does. The
+	// unconditional Upsert shim went with POST /api/v1/agent/metrics; the
+	// discriminating write is the only one left.
+	upsert := func(rm *schema.RunMetrics) error {
+		_, _, err := factory.UpsertReturningInserted(rm)
+		return err
+	}
 
 	It("upserts on (build_id, plan_id), returning replaced ledger counters", func() {
 		rm := &schema.RunMetrics{
@@ -95,7 +102,7 @@ var _ = Describe("AgentRunMetricsFactory", func() {
 		// snapshot's — both are the same int64 id.
 		wfRunID := schema.WorkflowRunID(runID)
 		snapRunID := snapshot.WorkflowRunID(runID)
-		Expect(factory.Upsert(&schema.RunMetrics{
+		Expect(upsert(&schema.RunMetrics{
 			WorkflowRunID: &wfRunID, FunctionID: "review",
 			BuildID: build.ID(), PlanID: "p1", StepName: "review-diff",
 			Status: "ok", Summary: "one finding",
@@ -129,7 +136,7 @@ var _ = Describe("AgentRunMetricsFactory", func() {
 		Expect(err).ToNot(HaveOccurred())
 		Expect(build.Finish(db.BuildStatusFailed)).To(Succeed())
 
-		Expect(factory.Upsert(&schema.RunMetrics{
+		Expect(upsert(&schema.RunMetrics{
 			BuildID: build.ID(), PlanID: "p1", StepName: "implement",
 			Status: "ok", Summary: "agent reported ok",
 		})).To(Succeed())
@@ -144,7 +151,7 @@ var _ = Describe("AgentRunMetricsFactory", func() {
 	})
 
 	It("leaves BuildStatus empty when the metric references no real build", func() {
-		Expect(factory.Upsert(&schema.RunMetrics{
+		Expect(upsert(&schema.RunMetrics{
 			BuildID: 999123, PlanID: "orphan", StepName: "s", Status: "ok", Summary: "x",
 		})).To(Succeed())
 		rows, err := factory.GetByBuild(999123)
@@ -161,12 +168,12 @@ var _ = Describe("AgentRunMetricsFactory", func() {
 		Expect(greenBuild.Finish(db.BuildStatusSucceeded)).To(Succeed())
 
 		// green build, delivered summary → ok
-		Expect(factory.Upsert(&schema.RunMetrics{
+		Expect(upsert(&schema.RunMetrics{
 			BuildID: greenBuild.ID(), PlanID: "p1", StepName: "implement",
 			Status: "ok", Summary: "delivered",
 		})).To(Succeed())
 		// green build, nothing delivered → no_output, never a green verdict
-		Expect(factory.Upsert(&schema.RunMetrics{
+		Expect(upsert(&schema.RunMetrics{
 			BuildID: greenBuild.ID(), PlanID: "p2", StepName: "harvest",
 			Status: "ok",
 		})).To(Succeed())
@@ -180,7 +187,7 @@ var _ = Describe("AgentRunMetricsFactory", func() {
 		// parked under a still-open build → parked (HITL checkpoint visible)
 		openBuild, err := defaultTeam.CreateOneOffBuild()
 		Expect(err).ToNot(HaveOccurred())
-		Expect(factory.Upsert(&schema.RunMetrics{
+		Expect(upsert(&schema.RunMetrics{
 			BuildID: openBuild.ID(), PlanID: "p1", StepName: "implement",
 			Status: "parked",
 		})).To(Succeed())
@@ -191,7 +198,7 @@ var _ = Describe("AgentRunMetricsFactory", func() {
 	})
 
 	It("stores NULL workflow identity for pure-CI steps", func() {
-		Expect(factory.Upsert(&schema.RunMetrics{
+		Expect(upsert(&schema.RunMetrics{
 			BuildID: 43, PlanID: "aa", StepName: "s", Status: "error", Summary: "crashed",
 		})).To(Succeed())
 		rows, err := factory.GetByBuild(43)
@@ -199,21 +206,19 @@ var _ = Describe("AgentRunMetricsFactory", func() {
 		Expect(rows[0].WorkflowRunID).To(BeNil())
 	})
 
-	// --- review finding 2026-07-12: ParseSubmission accepts every status the
-	// contract defines (ok|failed|error|parked), so the real schema must too —
-	// the handler suite runs on MemoryStore, which has no CHECK, so only a
-	// real-DB spec can see a parser/CHECK mismatch. Before migration
-	// 1773106061 a park-exit partial ingestion (PARK-V2 §1.8) violated the
-	// status CHECK here and the row was lost with a 500.
-	It("stores every ParseSubmission-accepted status, including parked (PARK-V2)", func() {
+	// --- review finding 2026-07-12: the schema must accept every status the
+	// contract defines (ok|failed|error|parked). The handler suite runs on
+	// MemoryStore, which has no CHECK, so only a real-DB spec can see a
+	// contract/CHECK mismatch. Before migration 1773106061 a park-exit partial
+	// ingestion (PARK-V2 §1.8) violated the status CHECK here and the row was
+	// lost with a 500.
+	It("stores every contract status, including parked (PARK-V2)", func() {
 		for i, status := range []string{
 			schema.RunStatusOK, schema.RunStatusFailed, schema.RunStatusError, schema.RunStatusParked,
 		} {
-			body := []byte(`{"build_id":50,"plan_id":"plan-` + status + `","step_name":"implement","status":"` + status + `"}`)
-			rm, err := metrics.ParseSubmission(body)
-			Expect(err).ToNot(HaveOccurred(), "status %d: %s", i, status)
-
-			inserted, prev, err := factory.UpsertReturningInserted(rm)
+			inserted, prev, err := factory.UpsertReturningInserted(&schema.RunMetrics{
+				BuildID: 50, PlanID: "plan-" + status, StepName: "implement", Status: status,
+			})
 			Expect(err).ToNot(HaveOccurred(), "status %d: %s", i, status)
 			Expect(inserted).To(BeTrue())
 			Expect(prev).To(BeNil())
@@ -233,7 +238,7 @@ var _ = Describe("AgentRunMetricsFactory", func() {
 	// never client-submittable) round-trips through the CHECK constraint added
 	// by migration 1773106092. ---
 	It("stores and reads back a status=incomplete row (L-1 CHECK constraint)", func() {
-		Expect(factory.Upsert(&schema.RunMetrics{
+		Expect(upsert(&schema.RunMetrics{
 			BuildID: 60, PlanID: "no-flight", StepName: "implement",
 			Status: schema.RunStatusIncomplete, Summary: "no flight output (runner image predates flight recorder?)",
 		})).To(Succeed())
@@ -378,7 +383,7 @@ var _ = Describe("AgentRunMetricsFactory", func() {
 
 	It("ListRecent returns the most-recent rows first, bounded by limit", func() {
 		for i, b := range []int{71, 72, 73} {
-			Expect(factory.Upsert(&schema.RunMetrics{
+			Expect(upsert(&schema.RunMetrics{
 				BuildID: b, PlanID: "z", StepName: "implement",
 				Status: "ok", Summary: "row", CostUSD: 0.1,
 				Model: "m", Turns: i,
@@ -453,8 +458,13 @@ var _ = Describe("AgentRunMetricsFactory WorkflowStats", func() {
 		workflowName = fmt.Sprintf("wf-stats-%d", time.Now().UnixNano())
 	})
 
+	upsert := func(rm *schema.RunMetrics) error {
+		_, _, err := factory.UpsertReturningInserted(rm)
+		return err
+	}
+
 	insert := func(runID schema.WorkflowRunID, buildID int, plan, status string, cost float64, turns int) {
-		Expect(factory.Upsert(&schema.RunMetrics{
+		Expect(upsert(&schema.RunMetrics{
 			WorkflowRunID: &runID, FunctionID: "work",
 			BuildID: buildID, PlanID: plan, StepName: "s",
 			Status: status, CostUSD: cost, Turns: turns,
@@ -473,7 +483,7 @@ var _ = Describe("AgentRunMetricsFactory WorkflowStats", func() {
 
 		// an ad-hoc CI step with no workflow run contributes to nothing:
 		// workflow identity is the run, never a tag on the metric row
-		Expect(factory.Upsert(&schema.RunMetrics{
+		Expect(upsert(&schema.RunMetrics{
 			BuildID: b1, PlanID: "ci", StepName: "s", Status: "ok", CostUSD: 99, Turns: 99,
 		})).To(Succeed())
 

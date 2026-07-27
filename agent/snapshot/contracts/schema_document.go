@@ -14,9 +14,9 @@ import (
 //
 // go:embed cannot escape its own package directory, which is one of the four
 // constraints that put the documents here beside the loader rather than in
-// agent/schema — that module is standalone, shared with ci-agent, and must never
-// import the main module, so dragging the record contracts into it would move the
-// boundary in the wrong direction.
+// agent/schema — that module is standalone and must never import the main
+// module, so dragging the record contracts into it would move the boundary in
+// the wrong direction.
 //
 // A revision is a NEW FILE. The filename carries the revision, so revision 3 is
 // schemas/<name>.<version>.rev3.json and the rev2 file is never edited: editing a

@@ -15,20 +15,17 @@ import (
 // precedent). It mirrors the DB factory's semantics, including the
 // single-writer transition rules.
 type MemoryStore struct {
-	mu         sync.Mutex
-	nextID     int
-	byID       map[int]*Ticket
-	specs      map[int][]Spec // keyed by ticket id, ascending version
-	tasks      map[int][]Task // keyed by ticket id, all plan versions
-	taskSeq    int
-	comments   map[int][]Comment
-	commentSeq int
+	mu      sync.Mutex
+	nextID  int
+	byID    map[int]*Ticket
+	specs   map[int][]Spec // keyed by ticket id, ascending version
+	tasks   map[int][]Task // keyed by ticket id, all plan versions
+	taskSeq int
 }
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
 		byID: map[int]*Ticket{}, specs: map[int][]Spec{}, tasks: map[int][]Task{},
-		comments: map[int][]Comment{},
 	}
 }
 
@@ -317,7 +314,11 @@ func (m *MemoryStore) Transition(id int, from, to State, meta TransitionMeta) er
 	return nil
 }
 
-func (m *MemoryStore) SubmitSpec(ticketID int, spec Spec) (int, error) {
+// SeedSpec plants one agent_ticket_specs row. The platform has no spec write
+// surface any more (the v1 POST .../spec route is gone); the read side
+// (LatestSpec, CaptureRevision) still serves rows written before it was
+// removed, so this double needs a way to stand those rows up.
+func (m *MemoryStore) SeedSpec(ticketID int, spec Spec) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.byID[ticketID]; !ok {
@@ -350,7 +351,9 @@ func (m *MemoryStore) LatestSpec(ticketID int) (*Spec, bool, error) {
 	return &cp, true, nil
 }
 
-func (m *MemoryStore) SubmitPlan(ticketID int, ts []Task) (int, error) {
+// SeedPlan plants one agent_ticket_tasks plan version. Test-double seeding
+// for the surviving read side — see SeedSpec.
+func (m *MemoryStore) SeedPlan(ticketID int, ts []Task) (int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.byID[ticketID]; !ok {
@@ -397,130 +400,6 @@ func (m *MemoryStore) ActivePlan(ticketID int) ([]Task, error) {
 	return out, nil
 }
 
-func (m *MemoryStore) UpdateTaskStatus(ticketID int, planVersion, ordering int, status TaskStatus) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for i, t := range m.tasks[ticketID] {
-		if t.PlanVersion == planVersion && t.Ordering == ordering {
-			m.tasks[ticketID][i].Status = status
-			m.tasks[ticketID][i].UpdatedAt = time.Now().Unix()
-			m.bump(m.byID[ticketID])
-			return nil
-		}
-	}
-	return ErrTaskNotFound
-}
-
-// UpdateActiveTask resolves the active plan version and writes under
-// the same lock — no TOCTOU window with SubmitPlan (see Store docs).
-func (m *MemoryStore) UpdateActiveTask(ticketID, ordering int, status TaskStatus, note string) (int, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if _, ok := m.byID[ticketID]; !ok {
-		return 0, ErrTicketNotFound
-	}
-	maxVersion := 0
-	for _, t := range m.tasks[ticketID] {
-		if t.PlanVersion > maxVersion {
-			maxVersion = t.PlanVersion
-		}
-	}
-	if maxVersion == 0 {
-		return 0, ErrNoActivePlan
-	}
-	for i, t := range m.tasks[ticketID] {
-		if t.PlanVersion == maxVersion && t.Ordering == ordering {
-			m.tasks[ticketID][i].Status = status
-			if note != "" {
-				if t.Detail == "" {
-					m.tasks[ticketID][i].Detail = "> " + note
-				} else {
-					m.tasks[ticketID][i].Detail = t.Detail + "\n\n> " + note
-				}
-			}
-			m.tasks[ticketID][i].UpdatedAt = time.Now().Unix()
-			m.bump(m.byID[ticketID])
-			return maxVersion, nil
-		}
-	}
-	return 0, ErrTaskNotFound
-}
-
-func (m *MemoryStore) AppendTaskNote(ticketID int, planVersion, ordering int, note string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for i, t := range m.tasks[ticketID] {
-		if t.PlanVersion == planVersion && t.Ordering == ordering {
-			if t.Detail == "" {
-				m.tasks[ticketID][i].Detail = "> " + note
-			} else {
-				m.tasks[ticketID][i].Detail = t.Detail + "\n\n> " + note
-			}
-			m.tasks[ticketID][i].UpdatedAt = time.Now().Unix()
-			m.bump(m.byID[ticketID])
-			return nil
-		}
-	}
-	return ErrTaskNotFound
-}
-
-func (m *MemoryStore) AppendComment(ticketID int, comment Comment) (int, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	ticket, found := m.byID[ticketID]
-	if !found {
-		return 0, ErrTicketNotFound
-	}
-	if comment.Body == "" || comment.CreatedBy == "" {
-		return 0, ErrCommentNotFound
-	}
-	m.commentSeq++
-	comment.ID = m.commentSeq
-	comment.TicketID = ticketID
-	comment.Revision = 1
-	comment.CreatedAt = time.Now().Unix()
-	comment.Answer = ""
-	comment.AnsweredBy = ""
-	comment.AnsweredAt = 0
-	m.comments[ticketID] = append(m.comments[ticketID], comment)
-	m.bump(ticket)
-	return comment.ID, nil
-}
-
-func (m *MemoryStore) AnswerComment(ticketID, commentID int, answer, answeredBy string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	ticket, found := m.byID[ticketID]
-	if !found {
-		return ErrTicketNotFound
-	}
-	for index := range m.comments[ticketID] {
-		comment := &m.comments[ticketID][index]
-		if comment.ID != commentID {
-			continue
-		}
-		if comment.AnsweredAt != 0 {
-			return ErrCommentAnswered
-		}
-		comment.Answer = answer
-		comment.AnsweredBy = answeredBy
-		comment.AnsweredAt = time.Now().Unix()
-		comment.Revision++
-		m.bump(ticket)
-		return nil
-	}
-	return ErrCommentNotFound
-}
-
-func (m *MemoryStore) Comments(ticketID int) ([]Comment, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if _, found := m.byID[ticketID]; !found {
-		return nil, ErrTicketNotFound
-	}
-	return append([]Comment(nil), m.comments[ticketID]...), nil
-}
-
 func (m *MemoryStore) CaptureRevision(ctx context.Context, ticketID int) (workitem.CapturedRevision, bool, error) {
 	if ctx == nil {
 		return workitem.CapturedRevision{}, false, context.Canceled
@@ -561,9 +440,6 @@ func (m *MemoryStore) CaptureRevision(ctx context.Context, ticketID int) (workit
 				revision.Plan.Tasks = append(revision.Plan.Tasks, workItemTask(task))
 			}
 		}
-	}
-	for _, comment := range m.comments[ticketID] {
-		revision.Comments = append(revision.Comments, workItemComment(comment))
 	}
 	captured, err := workitem.MarshalRevision(revision)
 	if err != nil {
@@ -635,13 +511,5 @@ func workItemTask(task Task) workitem.TaskRevision {
 	return workitem.TaskRevision{
 		Ordering: task.Ordering, Title: task.Title, Detail: task.Detail,
 		Status: string(task.Status), UpdatedAt: task.UpdatedAt,
-	}
-}
-
-func workItemComment(comment Comment) workitem.CommentRevision {
-	return workitem.CommentRevision{
-		ID: comment.ID, Revision: comment.Revision, Body: comment.Body,
-		CreatedBy: comment.CreatedBy, CreatedAt: comment.CreatedAt,
-		Answer: comment.Answer, AnsweredBy: comment.AnsweredBy, AnsweredAt: comment.AnsweredAt,
 	}
 }

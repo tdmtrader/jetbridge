@@ -8,22 +8,16 @@ import (
 	"testing"
 
 	"github.com/concourse/concourse/agent/api/feedback"
-	"github.com/concourse/concourse/agent/api/principals"
 	"github.com/concourse/concourse/agent/api/reviews"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/snapshot/contracts"
 )
 
 func newHandler(t *testing.T) (*reviews.Handler, *reviews.MemoryStore, *feedback.MemoryStore) {
+	t.Helper()
 	store := reviews.NewMemoryStore()
 	fbStore := feedback.NewMemoryStore()
-	lookup := func(id int) (reviews.BuildContext, bool, error) {
-		if id == 42 {
-			return reviews.BuildContext{BuildName: "3", TeamName: "main", PipelineName: "concourse-self", JobName: "agent-review"}, true, nil
-		}
-		return reviews.BuildContext{}, false, nil
-	}
-	return reviews.NewHandler(store, fbStore, lookup, "main"), store, fbStore
+	return reviews.NewHandler(store, fbStore, "main"), store, fbStore
 }
 
 func TestCanonicalSnapshotAndWorkflowRunReviewReadsUseSnapshotFeedbackIdentity(t *testing.T) {
@@ -212,54 +206,6 @@ func TestCanonicalReviewReadsRejectShadowedRouteIdentity(t *testing.T) {
 	}
 }
 
-func postBody() string {
-	return `{"build_id": 42, "review": ` + validReview + `}`
-}
-
-func TestSubmitRequiresScopedPrincipal(t *testing.T) {
-	h, _, _ := newHandler(t)
-	req := httptest.NewRequest("POST", "/api/v1/agent/reviews", strings.NewReader(postBody()))
-	rec := httptest.NewRecorder()
-	h.SubmitReview(rec, req)
-	if rec.Code != http.StatusForbidden {
-		t.Errorf("code = %d, want 403 without a scoped principal", rec.Code)
-	}
-}
-
-func TestSubmitUnknownBuild(t *testing.T) {
-	h, _, _ := newHandler(t)
-	req := httptest.NewRequest("POST", "/api/v1/agent/reviews", strings.NewReader(`{"build_id": 999, "review": `+validReview+`}`))
-	req = req.WithContext(principals.NewContext(req.Context(), principals.Principal{ID: 1, Name: "reviewer", TeamName: "main"}))
-	rec := httptest.NewRecorder()
-	h.SubmitReview(rec, req)
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("code = %d, want 404", rec.Code)
-	}
-}
-
-func TestSubmitMalformed(t *testing.T) {
-	h, _, _ := newHandler(t)
-	req := httptest.NewRequest("POST", "/api/v1/agent/reviews", strings.NewReader(`{"build_id": 42}`))
-	req = req.WithContext(principals.NewContext(req.Context(), principals.Principal{ID: 1, Name: "reviewer", TeamName: "main"}))
-	rec := httptest.NewRecorder()
-	h.SubmitReview(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("code = %d, want 400", rec.Code)
-	}
-}
-
-func TestSubmitOversizedBody(t *testing.T) {
-	h, _, _ := newHandler(t)
-	req := httptest.NewRequest("POST", "/api/v1/agent/reviews",
-		strings.NewReader(`{"build_id":42,"review":`+strings.Repeat(" ", 5<<20)+`}`))
-	req = req.WithContext(principals.NewContext(req.Context(), principals.Principal{ID: 1, Name: "reviewer", TeamName: "main"}))
-	rec := httptest.NewRecorder()
-	h.SubmitReview(rec, req)
-	if rec.Code != http.StatusRequestEntityTooLarge {
-		t.Errorf("code = %d, want 413", rec.Code)
-	}
-}
-
 func TestGetByBuildToleratesMalformedFinding(t *testing.T) {
 	h, store, _ := newHandler(t)
 	// One well-formed and one malformed proven issue ("line": "ten").
@@ -302,21 +248,16 @@ func TestGetByBuildToleratesMalformedFinding(t *testing.T) {
 	}
 }
 
-func TestSubmitAndGetByBuild(t *testing.T) {
-	h, _, fbStore := newHandler(t)
-	req := httptest.NewRequest("POST", "/api/v1/agent/reviews", strings.NewReader(postBody()))
-	req = req.WithContext(principals.NewContext(req.Context(), principals.Principal{ID: 1, Name: "reviewer", TeamName: "main"}))
-	rec := httptest.NewRecorder()
-	h.SubmitReview(rec, req)
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("code = %d, want 201: %s", rec.Code, rec.Body.String())
+func TestGetByBuildUnpacksLegacyFindings(t *testing.T) {
+	h, store, _ := newHandler(t)
+	if err := store.Upsert(&reviews.StoredReview{
+		BuildID: 42, BuildName: "3", TeamName: "main", PipelineName: "concourse-self",
+		JobName: "agent-review", Repo: "concourse", CommitSha: "abc123",
+		Score: 7.5, MaxScore: 10, ProvenCount: 1, ObservationCount: 1,
+		Review: json.RawMessage(validReview),
+	}); err != nil {
+		t.Fatal(err)
 	}
-
-	// One finding already has feedback.
-	fbStore.Save(&feedback.StoredFeedback{
-		ReviewRef: feedback.ReviewRef{Repo: "concourse", Commit: "abc123"},
-		FindingID: "PI-1", Verdict: "accurate", Reviewer: "tdm",
-	})
 
 	getReq := httptest.NewRequest("GET", "/api/v1/builds/42/agent-reviews", nil)
 	getReq.Form = map[string][]string{":build_id": {"42"}}
@@ -338,29 +279,13 @@ func TestSubmitAndGetByBuild(t *testing.T) {
 	if len(got[0].ProvenIssues) != 1 || len(got[0].Observations) != 1 {
 		t.Errorf("findings not unpacked: %+v", got[0])
 	}
-	fb, ok := got[0].Feedback["PI-1"]
-	if !ok || fb.Verdict != "accurate" || fb.Reviewer != "tdm" {
-		t.Errorf("feedback join missing: %+v", got[0].Feedback)
+	if got[0].FindingCount != 2 {
+		t.Errorf("finding_count = %d, want 2", got[0].FindingCount)
 	}
-	if got[0].EvaluatedCount != 1 || got[0].FindingCount != 2 {
-		t.Errorf("evaluated %d/%d, want 1/2", got[0].EvaluatedCount, got[0].FindingCount)
-	}
-}
-
-func TestSubmitIsIdempotent(t *testing.T) {
-	h, store, _ := newHandler(t)
-	for i := 0; i < 2; i++ {
-		req := httptest.NewRequest("POST", "/api/v1/agent/reviews", strings.NewReader(postBody()))
-		req = req.WithContext(principals.NewContext(req.Context(), principals.Principal{ID: 1, Name: "reviewer", TeamName: "main"}))
-		rec := httptest.NewRecorder()
-		h.SubmitReview(rec, req)
-		if rec.Code != http.StatusCreated {
-			t.Fatalf("attempt %d: code = %d", i, rec.Code)
-		}
-	}
-	got, _ := store.GetByBuild(42)
-	if len(got) != 1 {
-		t.Errorf("got %d rows, want 1 (upsert)", len(got))
+	// A row with no snapshot id predates the projection, so it can carry no
+	// verdicts: feedback is keyed by review snapshot and nothing else.
+	if len(got[0].Feedback) != 0 || got[0].EvaluatedCount != 0 {
+		t.Errorf("legacy row must join no feedback, got %+v", got[0].Feedback)
 	}
 }
 
@@ -384,47 +309,5 @@ func TestListByTeam(t *testing.T) {
 	}
 	if got[0].Review != nil {
 		t.Error("listing must not include the JSONB payload")
-	}
-}
-
-func TestSubmitWithPrincipalContext(t *testing.T) {
-	h, store, _ := newHandler(t)
-
-	req := httptest.NewRequest("POST", "/api/v1/agent/reviews", strings.NewReader(postBody()))
-	// no Authorization header at all — the wrappa already verified the principal
-	req = req.WithContext(principals.NewContext(req.Context(), principals.Principal{
-		ID: 3, Name: "itest-reviewer", TeamName: "main",
-	}))
-	rec := httptest.NewRecorder()
-	h.SubmitReview(rec, req)
-
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("code = %d body %s, want 201", rec.Code, rec.Body)
-	}
-	recs, _ := store.GetByBuild(42)
-	if len(recs) != 1 || recs[0].SubmittedBy != "itest-reviewer" {
-		t.Errorf("submitted_by = %+v, want itest-reviewer", recs)
-	}
-}
-
-func TestSubmitWithPrincipalRejectsBuildFromAnotherTeam(t *testing.T) {
-	h, store, _ := newHandler(t)
-
-	req := httptest.NewRequest("POST", "/api/v1/agent/reviews", strings.NewReader(postBody()))
-	req = req.WithContext(principals.NewContext(req.Context(), principals.Principal{
-		ID: 4, Name: "other-team-reviewer", TeamName: "other",
-	}))
-	rec := httptest.NewRecorder()
-	h.SubmitReview(rec, req)
-
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("code = %d body %s, want 403", rec.Code, rec.Body)
-	}
-	recs, err := store.GetByBuild(42)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(recs) != 0 {
-		t.Fatalf("stored cross-team review = %+v", recs)
 	}
 }

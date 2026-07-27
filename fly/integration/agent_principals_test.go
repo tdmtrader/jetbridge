@@ -16,6 +16,13 @@ import (
 
 func principalTimePtr(v int64) *int64 { return &v }
 
+// NOTE: the list fixtures below deliberately carry retired scopes
+// ("reviews:write", "metrics:write"). Those are no longer in
+// principals.ValidScopes and can no longer be minted, but rows granted before
+// the publishing routes were removed still exist in deployed databases, so the
+// list renderer must keep printing them verbatim. Do not "fix" these to the
+// current vocabulary — the mint path is covered separately and validates
+// against principals.ValidScopes.
 var _ = Describe("fly agent principals", func() {
 	Describe("list", func() {
 		BeforeEach(func() {
@@ -125,14 +132,14 @@ var _ = Describe("fly agent principals", func() {
 					func(w http.ResponseWriter, r *http.Request) {
 						body, _ := io.ReadAll(r.Body)
 						Expect(string(body)).To(ContainSubstring(`"name":"ci-bot"`))
-						Expect(string(body)).To(ContainSubstring(`"scopes":["reviews:write"]`))
+						Expect(string(body)).To(ContainSubstring(`"scopes":["tickets:write"]`))
 						Expect(string(body)).To(ContainSubstring(`"team_name":"main"`))
 					},
 					ghttp.RespondWithJSONEncoded(http.StatusCreated, principals.CreatedResponse{
 						Principal: principals.Principal{
 							ID:        5,
 							Name:      "ci-bot",
-							Scopes:    []string{"reviews:write"},
+							Scopes:    []string{"tickets:write"},
 							TeamName:  "main",
 							CreatedAt: 1704067200,
 						},
@@ -144,7 +151,7 @@ var _ = Describe("fly agent principals", func() {
 
 		It("prints the principal and the one-time token prominently", func() {
 			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "principals", "mint",
-				"--name", "ci-bot", "--scope", "reviews:write")
+				"--name", "ci-bot", "--scope", "tickets:write")
 			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
 			Expect(err).NotTo(HaveOccurred())
 			<-sess.Exited
@@ -159,7 +166,7 @@ var _ = Describe("fly agent principals", func() {
 	Describe("mint with a non-positive expiry", func() {
 		It("rejects an explicit zero expiry client-side, before any API call", func() {
 			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "principals", "mint",
-				"--name", "zero-bot", "--scope", "reviews:write", "--expires-in", "0s")
+				"--name", "zero-bot", "--scope", "tickets:write", "--expires-in", "0s")
 			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
 			Expect(err).NotTo(HaveOccurred())
 			<-sess.Exited
@@ -169,7 +176,7 @@ var _ = Describe("fly agent principals", func() {
 
 		It("rejects a negative expiry client-side, before any API call", func() {
 			flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "principals", "mint",
-				"--name", "negative-bot", "--scope", "reviews:write", "--expires-in", "-1h")
+				"--name", "negative-bot", "--scope", "tickets:write", "--expires-in", "-1h")
 			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
 			Expect(err).NotTo(HaveOccurred())
 			<-sess.Exited

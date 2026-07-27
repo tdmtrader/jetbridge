@@ -58,7 +58,7 @@ var _ = Describe("CheckAgentPrincipalHandler", func() {
 
 		var err error
 		_, token, err = store.Create(principals.CreateSpec{
-			Name: "itest-reviewer", Scopes: []string{principals.ScopeReviewsWrite},
+			Name: "itest-reviewer", Scopes: []string{principals.ScopeTicketsWrite},
 		})
 		Expect(err).NotTo(HaveOccurred())
 	})
@@ -67,7 +67,7 @@ var _ = Describe("CheckAgentPrincipalHandler", func() {
 		fakeAccessor.CreateReturns(fakeaccess, nil)
 
 		factory := auth.NewCheckAgentPrincipalHandlerFactory(verifier)
-		inner := factory.HandlerFor(echoHandler, fakeRejector, principals.ScopeReviewsWrite)
+		inner := factory.HandlerFor(echoHandler, fakeRejector, principals.ScopeTicketsWrite)
 
 		server = httptest.NewServer(accessor.NewHandler(
 			logger,

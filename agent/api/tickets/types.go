@@ -122,10 +122,6 @@ var (
 	ErrInvalidTransition = errors.New("invalid ticket state transition")
 	ErrTicketNotFound    = errors.New("ticket not found")
 	ErrStaleTransition   = errors.New("ticket state changed concurrently")
-	ErrNoActivePlan      = errors.New("ticket has no submitted plan")
-	ErrTaskNotFound      = errors.New("plan task not found")
-	ErrCommentNotFound   = errors.New("ticket comment not found")
-	ErrCommentAnswered   = errors.New("ticket comment already answered")
 	// ErrDispatchConflict means a caller attempted to change or reuse an
 	// immutable dispatch reservation with different identity or inputs.
 	ErrDispatchConflict = errors.New("ticket dispatch reservation conflict")
@@ -160,20 +156,6 @@ type Ticket struct {
 	CreatedAt              int64                   `json:"created_at"`
 	UpdatedAt              int64                   `json:"updated_at"`
 	CompletedAt            int64                   `json:"completed_at,omitempty"`
-}
-
-// Comment is one mutable work-item interaction. An answer is first-writer
-// wins; both creation and answer increment the enclosing ticket revision.
-type Comment struct {
-	ID         int    `json:"id"`
-	TicketID   int    `json:"ticket_id"`
-	Revision   int64  `json:"revision"`
-	Body       string `json:"body"`
-	CreatedBy  string `json:"created_by"`
-	CreatedAt  int64  `json:"created_at"`
-	Answer     string `json:"answer,omitempty"`
-	AnsweredBy string `json:"answered_by,omitempty"`
-	AnsweredAt int64  `json:"answered_at,omitempty"`
 }
 
 type Link struct {
@@ -284,23 +266,8 @@ type Store interface {
 	RecordDispatchWorkItem(context.Context, int, string, int64, snapshot.SnapshotID) error
 	RecordDispatchRun(context.Context, int, string, snapshot.WorkflowRunID, int) error
 
-	SubmitSpec(ticketID int, spec Spec) (version int, err error)
-	SubmitPlan(ticketID int, tasks []Task) (planVersion int, err error)
-	UpdateTaskStatus(ticketID int, planVersion, ordering int, status TaskStatus) error
-	AppendTaskNote(ticketID int, planVersion, ordering int, note string) error
-	// UpdateActiveTask atomically resolves the ACTIVE plan version and
-	// applies the status update (plus optional note append) to it in one
-	// store operation, serialized against SubmitPlan — the fix for the
-	// read-version-then-write TOCTOU that silently lost updates to a
-	// superseded plan (agent-review-native #7 finding, 2026-07-17;
-	// additive contract amendment). Returns the plan version written.
-	UpdateActiveTask(ticketID, ordering int, status TaskStatus, note string) (planVersion int, err error)
 	ActivePlan(ticketID int) ([]Task, error)
 	LatestSpec(ticketID int) (*Spec, bool, error)
-
-	AppendComment(ticketID int, comment Comment) (int, error)
-	AnswerComment(ticketID, commentID int, answer, answeredBy string) error
-	Comments(ticketID int) ([]Comment, error)
 
 	// CaptureRevision returns strict work-item/v1 bytes assembled from one
 	// source snapshot. Implementations must never compose this by calling the
@@ -361,30 +328,6 @@ func (r *TransitionRequest) UnmarshalJSON(data []byte) error {
 	}
 	*r = TransitionRequest(decoded)
 	return nil
-}
-
-// SpecSubmission mirrors the §3.2 submit_spec tool input.
-type SpecSubmission struct {
-	Title              string   `json:"title"`
-	Body               string   `json:"body"`
-	AcceptanceCriteria []string `json:"acceptance_criteria,omitempty"`
-	Links              []Link   `json:"links,omitempty"`
-}
-
-// PlanSubmission mirrors the §3.2 submit_plan tool input.
-type PlanSubmission struct {
-	Tasks []PlanTask `json:"tasks"`
-}
-
-type PlanTask struct {
-	Title  string `json:"title"`
-	Detail string `json:"detail,omitempty"`
-}
-
-// TaskStatusRequest mirrors the §3.2 update_task_status tool input.
-type TaskStatusRequest struct {
-	Status TaskStatus `json:"status"`
-	Note   string     `json:"note,omitempty"`
 }
 
 // DispatchResponse is the DispatchAgentTicket 201 body (manual-dispatch

@@ -18,8 +18,8 @@ func TestEventWriter(t *testing.T) {
 
 		err := w.Write(schema.Event{
 			Timestamp: "2026-02-09T21:30:00Z",
-			Type:      schema.EventAgentStart,
-			Data:      json.RawMessage(`{"step":"review"}`),
+			Type:      schema.EventStepStart,
+			Data:      json.RawMessage(`{"step_name":"review"}`),
 		})
 		requireNoErr(t, err)
 
@@ -34,7 +34,7 @@ func TestEventWriter(t *testing.T) {
 		for i := 0; i < 3; i++ {
 			err := w.Write(schema.Event{
 				Timestamp: "2026-02-09T21:30:00Z",
-				Type:      schema.EventToolCall,
+				Type:      schema.EventCostRecord,
 				Data:      json.RawMessage(`{"index":1}`),
 			})
 			requireNoErr(t, err)
@@ -50,13 +50,13 @@ func TestEventWriter(t *testing.T) {
 
 		err := w.Write(schema.Event{
 			Timestamp: "2026-02-09T21:30:00Z",
-			Type:      schema.EventAgentEnd,
-			Data:      json.RawMessage(`{"status":"pass"}`),
+			Type:      schema.EventStepEnd,
+			Data:      json.RawMessage(`{"status":"ok"}`),
 		})
 		requireNoErr(t, err)
 
 		line := strings.TrimSpace(buf.String())
-		requireJSONEqual(t, []byte(line), `{"ts":"2026-02-09T21:30:00Z","event":"agent.end","data":{"status":"pass"}}`)
+		requireJSONEqual(t, []byte(line), `{"ts":"2026-02-09T21:30:00Z","event":"step.end","data":{"status":"ok"}}`)
 	})
 
 	t.Run("sets a missing timestamp before writing", func(t *testing.T) {
@@ -64,7 +64,7 @@ func TestEventWriter(t *testing.T) {
 		w := schema.NewEventWriter(buf)
 
 		err := w.Write(schema.Event{
-			Type: schema.EventAgentStart,
+			Type: schema.EventStepStart,
 			Data: json.RawMessage(`{}`),
 		})
 		requireNoErr(t, err)
@@ -95,7 +95,7 @@ func TestEventWriter(t *testing.T) {
 
 		err := w.Write(schema.Event{
 			Timestamp: "2026-02-09T21:30:00Z",
-			Type:      schema.EventAgentStart,
+			Type:      schema.EventStepStart,
 			Data:      json.RawMessage(`{}`),
 		})
 		requireNoErr(t, err)
@@ -106,21 +106,21 @@ func TestEventWriter(t *testing.T) {
 
 func TestEventReader(t *testing.T) {
 	t.Run("reads a single event from NDJSON", func(t *testing.T) {
-		input := `{"ts":"2026-02-09T21:30:00Z","event":"agent.start","data":{"step":"review"}}` + "\n"
+		input := `{"ts":"2026-02-09T21:30:00Z","event":"step.start","data":{"step_name":"review"}}` + "\n"
 		r := schema.NewEventReader(strings.NewReader(input))
 
 		event, err := r.Read()
 		requireNoErr(t, err)
 		requireEqual(t, event.Timestamp, "2026-02-09T21:30:00Z")
-		requireEqual(t, event.Type, schema.EventAgentStart)
-		requireJSONEqual(t, event.Data, `{"step":"review"}`)
+		requireEqual(t, event.Type, schema.EventStepStart)
+		requireJSONEqual(t, event.Data, `{"step_name":"review"}`)
 	})
 
 	t.Run("reads multiple events sequentially", func(t *testing.T) {
 		input := strings.Join([]string{
-			`{"ts":"2026-02-09T21:30:00Z","event":"agent.start","data":{"step":"review"}}`,
-			`{"ts":"2026-02-09T21:30:01Z","event":"tool.call","data":{"tool":"grep"}}`,
-			`{"ts":"2026-02-09T21:30:02Z","event":"agent.end","data":{"status":"pass"}}`,
+			`{"ts":"2026-02-09T21:30:00Z","event":"step.start","data":{"step_name":"review"}}`,
+			`{"ts":"2026-02-09T21:30:01Z","event":"cost.record","data":{"cost_usd":0.5}}`,
+			`{"ts":"2026-02-09T21:30:02Z","event":"step.end","data":{"status":"ok"}}`,
 		}, "\n") + "\n"
 
 		r := schema.NewEventReader(strings.NewReader(input))
@@ -136,9 +136,9 @@ func TestEventReader(t *testing.T) {
 		}
 
 		requireLen(t, events, 3)
-		requireEqual(t, events[0].Type, schema.EventAgentStart)
-		requireEqual(t, events[1].Type, schema.EventToolCall)
-		requireEqual(t, events[2].Type, schema.EventAgentEnd)
+		requireEqual(t, events[0].Type, schema.EventStepStart)
+		requireEqual(t, events[1].Type, schema.EventCostRecord)
+		requireEqual(t, events[2].Type, schema.EventStepEnd)
 	})
 
 	t.Run("returns io.EOF when no more events", func(t *testing.T) {
@@ -149,14 +149,14 @@ func TestEventReader(t *testing.T) {
 	})
 
 	t.Run("skips an oversized line and keeps reading later events", func(t *testing.T) {
-		// One >5MiB line (e.g. a tool.call carrying captured output, or a
-		// foreign producer per contract §5) must not kill the stream: the
-		// cost.record and step.end that follow are ledger- and
+		// One >5MiB line (e.g. a step.start carrying an oversized budget
+		// note, or a foreign producer per contract §5) must not kill the
+		// stream: the cost.record and step.end that follow are ledger- and
 		// status-relevant (review finding, 2026-07-16).
-		oversized := `{"ts":"2026-02-09T21:30:01Z","event":"tool.call","data":{"blob":"` +
+		oversized := `{"ts":"2026-02-09T21:30:01Z","event":"step.start","data":{"blob":"` +
 			strings.Repeat("x", 5<<20) + `"}}`
 		input := strings.Join([]string{
-			`{"ts":"2026-02-09T21:30:00Z","event":"agent.start","data":{"step":"review"}}`,
+			`{"ts":"2026-02-09T21:30:00Z","event":"step.start","data":{"step_name":"review"}}`,
 			oversized,
 			`{"ts":"2026-02-09T21:30:02Z","event":"cost.record","data":{"cost_usd":1.5}}`,
 			`{"ts":"2026-02-09T21:30:03Z","event":"step.end","data":{"status":"ok"}}`,
@@ -175,21 +175,21 @@ func TestEventReader(t *testing.T) {
 		}
 
 		requireLen(t, events, 3)
-		requireEqual(t, events[0].Type, schema.EventAgentStart)
+		requireEqual(t, events[0].Type, schema.EventStepStart)
 		requireEqual(t, events[1].Type, schema.EventCostRecord)
 		requireEqual(t, events[2].Type, schema.EventStepEnd)
 		requireEqual(t, r.Skipped(), 1)
 	})
 
 	t.Run("skips an oversized unterminated final line", func(t *testing.T) {
-		input := `{"ts":"2026-02-09T21:30:00Z","event":"agent.start","data":{}}` + "\n" +
+		input := `{"ts":"2026-02-09T21:30:00Z","event":"step.start","data":{}}` + "\n" +
 			strings.Repeat("y", (5<<20)+1) // torn giant tail, no newline
 
 		r := schema.NewEventReader(strings.NewReader(input))
 
 		event, err := r.Read()
 		requireNoErr(t, err)
-		requireEqual(t, event.Type, schema.EventAgentStart)
+		requireEqual(t, event.Type, schema.EventStepStart)
 
 		_, err = r.Read()
 		requireEqual(t, err, io.EOF)
@@ -197,8 +197,8 @@ func TestEventReader(t *testing.T) {
 	})
 
 	t.Run("skips empty lines", func(t *testing.T) {
-		input := `{"ts":"2026-02-09T21:30:00Z","event":"agent.start","data":{}}` + "\n\n\n" +
-			`{"ts":"2026-02-09T21:30:01Z","event":"agent.end","data":{}}` + "\n"
+		input := `{"ts":"2026-02-09T21:30:00Z","event":"step.start","data":{}}` + "\n\n\n" +
+			`{"ts":"2026-02-09T21:30:01Z","event":"step.end","data":{}}` + "\n"
 
 		r := schema.NewEventReader(strings.NewReader(input))
 
@@ -223,8 +223,8 @@ func TestEventReader(t *testing.T) {
 		// step.end event — leaving the step status=error even when a valid
 		// step.end followed (review finding, 2026-07-12).
 		big := strings.Repeat("x", 200*1024) // 200 KiB, well past the 64 KiB default
-		input := `{"ts":"2026-02-09T21:30:00Z","event":"tool.call","data":{"tool":"grep","blob":"` + big + `"}}` + "\n" +
-			`{"ts":"2026-02-09T21:30:01Z","event":"agent.end","data":{"status":"pass"}}` + "\n"
+		input := `{"ts":"2026-02-09T21:30:00Z","event":"step.start","data":{"step_name":"review","blob":"` + big + `"}}` + "\n" +
+			`{"ts":"2026-02-09T21:30:01Z","event":"step.end","data":{"status":"ok"}}` + "\n"
 
 		r := schema.NewEventReader(strings.NewReader(input))
 
@@ -239,8 +239,8 @@ func TestEventReader(t *testing.T) {
 		}
 
 		requireLen(t, events, 2)
-		requireEqual(t, events[0].Type, schema.EventToolCall)
-		requireEqual(t, events[1].Type, schema.EventAgentEnd)
+		requireEqual(t, events[0].Type, schema.EventStepStart)
+		requireEqual(t, events[1].Type, schema.EventStepEnd)
 	})
 
 	t.Run("returns an error for invalid JSON", func(t *testing.T) {
@@ -253,7 +253,7 @@ func TestEventReader(t *testing.T) {
 	})
 
 	t.Run("validates each event after parsing", func(t *testing.T) {
-		input := `{"ts":"","event":"agent.start","data":{}}` + "\n"
+		input := `{"ts":"","event":"step.start","data":{}}` + "\n"
 		r := schema.NewEventReader(strings.NewReader(input))
 
 		_, err := r.Read()
@@ -262,7 +262,7 @@ func TestEventReader(t *testing.T) {
 	})
 
 	t.Run("reports line number on parse error", func(t *testing.T) {
-		input := `{"ts":"2026-02-09T21:30:00Z","event":"agent.start","data":{}}` + "\n" +
+		input := `{"ts":"2026-02-09T21:30:00Z","event":"step.start","data":{}}` + "\n" +
 			"bad json line\n"
 
 		r := schema.NewEventReader(strings.NewReader(input))
@@ -282,18 +282,18 @@ func TestEventReader(t *testing.T) {
 		original := []schema.Event{
 			{
 				Timestamp: "2026-02-09T21:30:00Z",
-				Type:      schema.EventAgentStart,
-				Data:      json.RawMessage(`{"step":"review"}`),
+				Type:      schema.EventStepStart,
+				Data:      json.RawMessage(`{"step_name":"review"}`),
 			},
 			{
 				Timestamp: "2026-02-09T21:30:05Z",
-				Type:      schema.EventToolCall,
-				Data:      json.RawMessage(`{"tool":"grep","duration_ms":42}`),
+				Type:      schema.EventCostRecord,
+				Data:      json.RawMessage(`{"cost_usd":0.5,"turns":3}`),
 			},
 			{
 				Timestamp: "2026-02-09T21:30:10Z",
-				Type:      schema.EventAgentEnd,
-				Data:      json.RawMessage(`{"status":"pass","confidence":0.92}`),
+				Type:      schema.EventStepEnd,
+				Data:      json.RawMessage(`{"status":"ok"}`),
 			},
 		}
 

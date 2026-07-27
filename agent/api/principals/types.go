@@ -11,21 +11,19 @@ import (
 // scope requires agent-identity sign-off; update
 // docs/superpowers/plans/agentic-platform/agent-route-scopes.md in the
 // same change.
+// reviews:write, metrics:write and costs:write were removed with the HTTP
+// publishing routes they guarded (POST /api/v1/agent/{reviews,metrics,costs}):
+// reviews, metrics and ledger rows are written in-process by the agent step,
+// so no scope can authorize a write that no longer has a door.
 const (
-	ScopeReviewsWrite = "reviews:write"
 	ScopeTicketsRead  = "tickets:read"
 	ScopeTicketsWrite = "tickets:write"
-	ScopeMetricsWrite = "metrics:write"
-	ScopeCostsWrite   = "costs:write"
 )
 
 // ValidScopes is the closed scope set.
 var ValidScopes = map[string]bool{
-	ScopeReviewsWrite: true,
 	ScopeTicketsRead:  true,
 	ScopeTicketsWrite: true,
-	ScopeMetricsWrite: true,
-	ScopeCostsWrite:   true,
 }
 
 // Principal kinds (ticket #44) distinguish operator-managed principals

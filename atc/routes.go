@@ -122,26 +122,19 @@ const (
 	GetOpenIDConfiguration = "GetOpenIDConfiguration"
 	GetSigningKeys         = "GetSigningKeys"
 
-	SubmitAgentFeedback     = "SubmitAgentFeedback"
-	GetAgentFeedback        = "GetAgentFeedback"
-	GetAgentFeedbackSummary = "GetAgentFeedbackSummary"
-	ClassifyAgentVerdict    = "ClassifyAgentVerdict"
-	GetAgentReviewFindings  = "GetAgentReviewFindings"
+	SubmitAgentFeedback = "SubmitAgentFeedback"
 
 	SetAgentUserCredential       = "SetAgentUserCredential"
 	GetAgentUserCredentialStatus = "GetAgentUserCredentialStatus"
 	DeleteAgentUserCredential    = "DeleteAgentUserCredential"
 	GetAgentPlatformInfo         = "GetAgentPlatformInfo"
 	GetAgentCostRollup           = "GetAgentCostRollup"
-	SubmitAgentCostRecord        = "SubmitAgentCostRecord"
 
-	SubmitAgentReview           = "SubmitAgentReview"
 	GetBuildAgentReviews        = "GetBuildAgentReviews"
 	ListTeamAgentReviews        = "ListTeamAgentReviews"
 	GetAgentSnapshotReview      = "GetAgentSnapshotReview"
 	ListAgentWorkflowRunReviews = "ListAgentWorkflowRunReviews"
 
-	SubmitAgentRunMetrics     = "SubmitAgentRunMetrics"
 	ListRecentAgentRunMetrics = "ListRecentAgentRunMetrics"
 	ListBuildAgentRunMetrics  = "ListBuildAgentRunMetrics"
 
@@ -150,9 +143,6 @@ const (
 	GetAgentTicket        = "GetAgentTicket"
 	UpdateAgentTicket     = "UpdateAgentTicket"
 	TransitionAgentTicket = "TransitionAgentTicket"
-	SubmitAgentTicketSpec = "SubmitAgentTicketSpec"
-	SubmitAgentTicketPlan = "SubmitAgentTicketPlan"
-	UpdateAgentTicketTask = "UpdateAgentTicketTask"
 	DispatchAgentTicket   = "DispatchAgentTicket"
 
 	ListAgentWorkflows                         = "ListAgentWorkflows"
@@ -330,25 +320,18 @@ var Routes = rata.Routes([]rata.Route{
 	{Path: "/api/v1/wall", Method: "PUT", Name: SetWall},
 	{Path: "/api/v1/wall", Method: "DELETE", Name: ClearWall},
 
-	{Path: "/api/v1/agent/feedback/summary", Method: "GET", Name: GetAgentFeedbackSummary},
-	{Path: "/api/v1/agent/feedback/classify", Method: "POST", Name: ClassifyAgentVerdict},
 	{Path: "/api/v1/agent/feedback", Method: "POST", Name: SubmitAgentFeedback},
-	{Path: "/api/v1/agent/feedback", Method: "GET", Name: GetAgentFeedback},
-	{Path: "/api/v1/agent/reviews/:commit/findings", Method: "GET", Name: GetAgentReviewFindings},
 
 	{Path: "/api/v1/agent/user-credentials", Method: "PUT", Name: SetAgentUserCredential},
 	{Path: "/api/v1/agent/user-credentials", Method: "GET", Name: GetAgentUserCredentialStatus},
 	{Path: "/api/v1/agent/user-credentials/:kind", Method: "DELETE", Name: DeleteAgentUserCredential},
 	{Path: "/api/v1/agent/platform-info", Method: "GET", Name: GetAgentPlatformInfo},
 	{Path: "/api/v1/agent/costs", Method: "GET", Name: GetAgentCostRollup},
-	{Path: "/api/v1/agent/costs", Method: "POST", Name: SubmitAgentCostRecord},
 
-	{Path: "/api/v1/agent/reviews", Method: "POST", Name: SubmitAgentReview},
 	{Path: "/api/v1/builds/:build_id/agent-reviews", Method: "GET", Name: GetBuildAgentReviews},
 	{Path: "/api/v1/teams/:team_name/agent-reviews", Method: "GET", Name: ListTeamAgentReviews},
 	{Path: "/api/v1/agent/snapshots/:snapshot_id/projections/review", Method: "GET", Name: GetAgentSnapshotReview},
 
-	{Path: "/api/v1/agent/metrics", Method: "POST", Name: SubmitAgentRunMetrics},
 	{Path: "/api/v1/agent/metrics", Method: "GET", Name: ListRecentAgentRunMetrics},
 	{Path: "/api/v1/builds/:build_id/agent-metrics", Method: "GET", Name: ListBuildAgentRunMetrics},
 
@@ -357,9 +340,6 @@ var Routes = rata.Routes([]rata.Route{
 	{Path: "/api/v1/agent/tickets/:ticket_id", Method: "GET", Name: GetAgentTicket},
 	{Path: "/api/v1/agent/tickets/:ticket_id", Method: "PUT", Name: UpdateAgentTicket},
 	{Path: "/api/v1/agent/tickets/:ticket_id/state", Method: "PUT", Name: TransitionAgentTicket},
-	{Path: "/api/v1/agent/tickets/:ticket_id/spec", Method: "POST", Name: SubmitAgentTicketSpec},
-	{Path: "/api/v1/agent/tickets/:ticket_id/plan", Method: "POST", Name: SubmitAgentTicketPlan},
-	{Path: "/api/v1/agent/tickets/:ticket_id/tasks/:ordering", Method: "PUT", Name: UpdateAgentTicketTask},
 	{Path: "/api/v1/agent/tickets/:ticket_id/dispatch", Method: "POST", Name: DispatchAgentTicket},
 
 	{Path: "/api/v1/agent/workflows", Method: "GET", Name: ListAgentWorkflows},
