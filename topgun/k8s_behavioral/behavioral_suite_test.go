@@ -221,6 +221,7 @@ var _ = BeforeEach(func() {
 
 var _ = AfterEach(func() {
 	dumpWebLogsOnFailure()
+	dumpArtifactDaemonLogsOnFailure()
 	destroyPipeline()
 	if pipelineName != "" {
 		cleanupPodsWithLabel(fmt.Sprintf(
@@ -260,6 +261,35 @@ func dumpWebLogsOnFailure() {
 		return
 	}
 	log.Printf("=== concourse-web logs (tail 800) for FAILED spec %q ===\n%s=== end concourse-web logs ===",
+		CurrentSpecReport().FullText(), string(out))
+}
+
+// dumpArtifactDaemonLogsOnFailure prints recent artifact-daemon logs when the
+// current spec failed.
+//
+// Without this the daemon's side of a failure is invisible. It answers
+// /resolve-batch with 500 whenever any single item fails and puts the reason
+// per-item in the JSON body — but the fetch-inputs init container runs
+// `wget -qO- ... 2>&1`, which on a non-2xx keeps wget's generic stderr and
+// discards that body. The build log therefore shows only "server returned
+// error: HTTP/1.1 500", with the actual cause reaching neither the pod nor the
+// web logs this hook already captures. The daemon is a separate DaemonSet, so
+// its logs are the only remaining place the reason exists.
+func dumpArtifactDaemonLogsOnFailure() {
+	if !CurrentSpecReport().Failed() || config.Kubeconfig == "" {
+		return
+	}
+	out, err := exec.Command("kubectl",
+		"--kubeconfig", config.Kubeconfig,
+		"-n", config.Namespace,
+		"logs", "-l", "app.kubernetes.io/component=artifact-daemon",
+		"--tail=400", "--prefix",
+	).CombinedOutput()
+	if err != nil {
+		log.Printf("dumpArtifactDaemonLogsOnFailure: kubectl logs failed: %v", err)
+		return
+	}
+	log.Printf("=== artifact-daemon logs (tail 400) for FAILED spec %q ===\n%s=== end artifact-daemon logs ===",
 		CurrentSpecReport().FullText(), string(out))
 }
 
