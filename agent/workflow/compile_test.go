@@ -74,7 +74,7 @@ func TestCompileDefinitionManifestValidationPrecedesSchemaInspection(t *testing.
 		{
 			name:     "missing workflow",
 			manifest: workflow.Manifest{"README.md": "source only"},
-			want:     "workflow: manifest has no workflow.yml",
+			want:     "workflow: manifest has no workflow.yaml (or legacy workflow.yml)",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -106,6 +106,38 @@ plan: []
 	var unsupported workflow.UnsupportedSchemaVersionError
 	if errors.As(err, &unsupported) {
 		t.Fatalf("malformed v3 error = %T %v, must not be UnsupportedSchemaVersionError", err, err)
+	}
+}
+
+func TestCompileDefinitionAcceptsWorkflowYAMLAndLegacyYML(t *testing.T) {
+	source := v3CompileSource(`
+  - agent: literal
+    prompt: hi`, "")
+
+	preferred := workflow.Manifest{workflow.WorkflowFileName: source}
+	if _, err := workflow.CompileDefinition(preferred); err != nil {
+		t.Fatalf("CompileDefinition(%s only): %v", workflow.WorkflowFileName, err)
+	}
+
+	legacy := workflow.Manifest{workflow.LegacyWorkflowFileName: source}
+	if _, err := workflow.CompileDefinition(legacy); err != nil {
+		t.Fatalf("CompileDefinition(%s only): %v", workflow.LegacyWorkflowFileName, err)
+	}
+
+	// workflow.yaml takes precedence when both keys are present.
+	both := workflow.Manifest{
+		workflow.WorkflowFileName: source,
+		workflow.LegacyWorkflowFileName: v3CompileSource(`
+  - agent: literal
+    prompt: ignored`, ""),
+	}
+	definition, err := workflow.CompileDefinition(both)
+	if err != nil {
+		t.Fatalf("CompileDefinition(both keys): %v", err)
+	}
+	agent := definition.Function.Plan[0].Config.(*atc.AgentStep)
+	if agent.Prompt != "hi" {
+		t.Fatalf("%s did not take precedence over legacy %s: prompt = %q", workflow.WorkflowFileName, workflow.LegacyWorkflowFileName, agent.Prompt)
 	}
 }
 

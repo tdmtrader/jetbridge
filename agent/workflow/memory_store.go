@@ -45,9 +45,9 @@ func (m *MemoryStore) ImportManifest(name string, src Manifest, createdBy string
 	if err := src.Validate(); err != nil {
 		return nil, InvalidDefinitionError{Err: err}
 	}
-	raw, ok := src["workflow.yml"]
+	raw, ok := src.DefinitionSource()
 	if !ok {
-		return nil, InvalidDefinitionError{Err: fmt.Errorf("workflow: manifest has no workflow.yml")}
+		return nil, InvalidDefinitionError{Err: fmt.Errorf("workflow: manifest has no %s (or legacy %s)", WorkflowFileName, LegacyWorkflowFileName)}
 	}
 	if err := RequireSchemaVersion3([]byte(raw)); err != nil {
 		return nil, InvalidDefinitionError{Err: err}
@@ -119,7 +119,7 @@ func (m *MemoryStore) ImportManifest(name string, src Manifest, createdBy string
 		CreatedBy:        createdBy,
 		CreatedAt:        time.Now().Unix(),
 		Compiled:         *compiled,
-		RawYAML:          src["workflow.yml"],
+		RawYAML:          raw,
 		SourceManifest:   stored,
 	}
 	m.defs = append(m.defs, def)
@@ -326,7 +326,7 @@ func cloneMemoryDefinition(definition *Definition, includeContent bool) (*Defini
 		return nil, fmt.Errorf("workflow: stored definition %q version %d no longer compiles: %w", definition.Name, definition.Version, err)
 	}
 	clone.Compiled = *compiled
-	clone.RawYAML = source["workflow.yml"]
+	clone.RawYAML, _ = source.DefinitionSource()
 	clone.SourceManifest = source
 	return &clone, nil
 }

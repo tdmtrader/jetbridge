@@ -189,7 +189,7 @@ func TestVersionThreeEngineeringSeedsCompileAndRender(t *testing.T) {
 			if (waits > 0) != test.humanWait || (publishers > 0) != test.publisher {
 				t.Fatalf("visible boundaries: waits=%d publishers=%d, want wait=%t publisher=%t", waits, publishers, test.humanWait, test.publisher)
 			}
-			if strings.Contains(string(manifest["workflow.yml"]), "ticket_id") || strings.Contains(string(manifest["workflow.yml"]), "workspace") {
+			if strings.Contains(string(manifest[workflow.WorkflowFileName]), "ticket_id") || strings.Contains(string(manifest[workflow.WorkflowFileName]), "workspace") {
 				t.Fatal("version-3 seed is coupled to the legacy ticket/workspace model")
 			}
 		})

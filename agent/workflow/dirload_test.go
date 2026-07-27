@@ -3,6 +3,7 @@ package workflow_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/concourse/concourse/agent/workflow"
@@ -98,7 +99,46 @@ func TestDiscoverWorkflowDirs(t *testing.T) {
 		t.Fatalf("single-dir root: got %v, %v", single, err)
 	}
 
-	if _, err := workflow.DiscoverWorkflowDirs(filepath.Join(root, "lib")); err == nil {
-		t.Fatal("expected no-workflow.yml error")
+	_, err = workflow.DiscoverWorkflowDirs(filepath.Join(root, "lib"))
+	if err == nil {
+		t.Fatal("expected no-workflow-file error")
+	}
+	wantErr := "no workflow.yaml (or legacy workflow.yml) in the directory or its immediate subdirectories"
+	if !strings.Contains(err.Error(), wantErr) {
+		t.Fatalf("error = %q, want substring %q", err, wantErr)
+	}
+}
+
+func TestDiscoverWorkflowDirsPrefersWorkflowYAML(t *testing.T) {
+	root := t.TempDir()
+	writeTree(t, root, map[string]string{
+		"workflow.yaml": "name: preferred\n",
+	})
+	dirs, err := workflow.DiscoverWorkflowDirs(root)
+	if err != nil || len(dirs) != 1 || dirs[0] != root {
+		t.Fatalf("workflow.yaml root: got %v, %v", dirs, err)
+	}
+}
+
+func TestDiscoverWorkflowDirsFallsBackToLegacyYML(t *testing.T) {
+	root := t.TempDir()
+	writeTree(t, root, map[string]string{
+		"legacy/workflow.yml": "name: legacy\n",
+	})
+	dirs, err := workflow.DiscoverWorkflowDirs(root)
+	if err != nil || len(dirs) != 1 || filepath.Base(dirs[0]) != "legacy" {
+		t.Fatalf("legacy fallback: got %v, %v", dirs, err)
+	}
+}
+
+func TestDiscoverWorkflowDirsPrefersYAMLOverLegacyWhenBothPresent(t *testing.T) {
+	root := t.TempDir()
+	writeTree(t, root, map[string]string{
+		"workflow.yaml": "name: preferred\n",
+		"workflow.yml":  "name: legacy\n",
+	})
+	dirs, err := workflow.DiscoverWorkflowDirs(root)
+	if err != nil || len(dirs) != 1 || dirs[0] != root {
+		t.Fatalf("both-present root: got %v, %v", dirs, err)
 	}
 }

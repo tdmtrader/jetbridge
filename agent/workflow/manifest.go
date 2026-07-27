@@ -17,6 +17,17 @@ const (
 	MaxManifestBytes = 10 << 20 // 10 MiB
 )
 
+const (
+	// WorkflowFileName is the preferred manifest key/filename for a
+	// workflow's primary definition.
+	WorkflowFileName = "workflow.yaml"
+	// LegacyWorkflowFileName is the original manifest key/filename.
+	// Every manifest reader must keep accepting it: existing DB rows
+	// (source_manifest and pre-manifest raw-YAML columns alike) were
+	// written with this key, and it is never rewritten in place.
+	LegacyWorkflowFileName = "workflow.yml"
+)
+
 // Manifest is a workflow source tree: relative path -> UTF-8 content
 // (design 2026-07-17 §2). Its canonical serialization is the
 // content-hash provenance unit for manifest imports — versions change
@@ -87,6 +98,18 @@ func resolveManifestFile(m Manifest, path string) (string, error) {
 		return "", fmt.Errorf("workflow: manifest file %q is not in the manifest", path)
 	}
 	return content, nil
+}
+
+// DefinitionSource returns the manifest's primary workflow definition,
+// preferring WorkflowFileName and falling back to LegacyWorkflowFileName so
+// manifests imported under either name compile identically. Every manifest
+// reader must go through this instead of indexing a literal key.
+func (m Manifest) DefinitionSource() (string, bool) {
+	if content, ok := m[WorkflowFileName]; ok {
+		return content, true
+	}
+	content, ok := m[LegacyWorkflowFileName]
+	return content, ok
 }
 
 // Canonical is the deterministic serialization hashed for provenance:

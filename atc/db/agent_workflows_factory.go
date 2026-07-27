@@ -55,9 +55,9 @@ func (f *agentWorkflowsFactory) ImportManifest(name string, src workflow.Manifes
 	if err := src.Validate(); err != nil {
 		return nil, workflow.InvalidDefinitionError{Err: err}
 	}
-	raw, ok := src["workflow.yml"]
+	raw, ok := src.DefinitionSource()
 	if !ok {
-		return nil, workflow.InvalidDefinitionError{Err: fmt.Errorf("workflow: manifest has no workflow.yml")}
+		return nil, workflow.InvalidDefinitionError{Err: fmt.Errorf("workflow: manifest has no %s (or legacy %s)", workflow.WorkflowFileName, workflow.LegacyWorkflowFileName)}
 	}
 	if err := workflow.RequireSchemaVersion3([]byte(raw)); err != nil {
 		return nil, workflow.InvalidDefinitionError{Err: err}
@@ -152,7 +152,7 @@ func (f *agentWorkflowsFactory) ImportManifest(name string, src workflow.Manifes
 		SELECT $1, COALESCE(MAX(version), 0) + 1, $2, $3, $4::jsonb, $5, $6, $7, $8
 		FROM agent_workflow_definitions WHERE name = $1
 		RETURNING id, version, EXTRACT(EPOCH FROM created_at)::bigint`,
-		name, hash, src["workflow.yml"], string(src.Canonical()), compiled.Description, createdBy,
+		name, hash, raw, string(src.Canonical()), compiled.Description, createdBy,
 		metadata.SchemaVersion, metadata.SignatureVersion,
 	).Scan(&def.ID, &def.Version, &def.CreatedAt)
 	if err != nil {
@@ -476,13 +476,22 @@ func compileStoredWorkflowSource(
 	rawYAML string,
 	manifestJSON sql.NullString,
 ) (*workflow.CompiledDefinition, workflow.Manifest, error) {
-	compileSource := workflow.Manifest{"workflow.yml": rawYAML}
+	// Rows written before source-manifest tracking existed carry no stored
+	// tree at all, only the single raw-YAML column — always keyed by the
+	// legacy name, since that predates the .yaml rename.
+	compileSource := workflow.Manifest{workflow.LegacyWorkflowFileName: rawYAML}
 	var storedSource workflow.Manifest
 	if manifestJSON.Valid {
-		if err := json.Unmarshal([]byte(manifestJSON.String), &compileSource); err != nil {
+		// Unmarshal into a fresh map rather than reusing compileSource: json
+		// merges into an existing map, so the legacy-keyed fallback above
+		// would otherwise survive as a stray extra key alongside whichever
+		// key the stored manifest actually used.
+		var stored workflow.Manifest
+		if err := json.Unmarshal([]byte(manifestJSON.String), &stored); err != nil {
 			return nil, nil, fmt.Errorf("stored manifest %s/v%d no longer parses: %w", name, version, err)
 		}
-		storedSource = compileSource
+		compileSource = stored
+		storedSource = stored
 	}
 	compiled, err := workflow.CompileDefinition(compileSource)
 	if err != nil {
@@ -501,7 +510,7 @@ func populateCompiledWorkflowDefinition(
 ) {
 	definition.Compiled = *compiled
 	if source != nil {
-		definition.RawYAML = source["workflow.yml"]
+		definition.RawYAML, _ = source.DefinitionSource()
 		definition.SourceManifest = source
 	}
 }

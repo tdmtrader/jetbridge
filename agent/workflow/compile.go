@@ -28,9 +28,9 @@ func CompileDefinition(m Manifest) (*CompiledDefinition, error) {
 	if err := m.Validate(); err != nil {
 		return nil, err
 	}
-	raw, ok := m["workflow.yml"]
+	raw, ok := m.DefinitionSource()
 	if !ok {
-		return nil, fmt.Errorf("workflow: manifest has no workflow.yml")
+		return nil, fmt.Errorf("workflow: manifest has no %s (or legacy %s)", WorkflowFileName, LegacyWorkflowFileName)
 	}
 	if err := RequireSchemaVersion3([]byte(raw)); err != nil {
 		return nil, err

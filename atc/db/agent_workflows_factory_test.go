@@ -164,7 +164,7 @@ steps:
 			want     string
 		}{
 			{name: "empty-manifest", manifest: workflow.Manifest{}, want: "workflow: manifest has no files"},
-			{name: "missing-workflow", manifest: workflow.Manifest{"README.md": "source only"}, want: "workflow: manifest has no workflow.yml"},
+			{name: "missing-workflow", manifest: workflow.Manifest{"README.md": "source only"}, want: "workflow: manifest has no workflow.yaml (or legacy workflow.yml)"},
 		} {
 			_, err := factory.ImportManifest(test.name, test.manifest, "alice")
 			var invalid workflow.InvalidDefinitionError
@@ -522,6 +522,24 @@ plan:
 			Expect(agent.Prompt).To(Equal("Do the work."))
 			Expect(agent.SystemPrompt).To(Equal("base system prompt"))
 			Expect(agent.Context).To(ContainSubstring("conventions"))
+		})
+
+		It("imports and reads back a manifest keyed workflow.yaml", func() {
+			src := manifest("wf-manifest-yaml")
+			src[workflow.WorkflowFileName] = src["workflow.yml"]
+			delete(src, "workflow.yml")
+
+			v1, err := factory.ImportManifest("wf-manifest-yaml", src, "alice")
+			Expect(err).ToNot(HaveOccurred())
+			Expect(v1.ContentHash).To(Equal(src.Hash()))
+
+			got, found, err := factory.Get("wf-manifest-yaml", v1.Version)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(got.RawYAML).To(Equal(src[workflow.WorkflowFileName]))
+			Expect(got.SourceManifest).To(HaveKey(workflow.WorkflowFileName))
+			Expect(got.SourceManifest).NotTo(HaveKey("workflow.yml"))
+			Expect(got.Compiled.Function).NotTo(BeNil())
 		})
 
 		It("returns schema-1 and schema-2 history as exact opaque persisted rows", func() {

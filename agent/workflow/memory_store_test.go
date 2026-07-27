@@ -245,7 +245,7 @@ func TestMemoryStoreImportManifestValidationPrecedesSchemaInspection(t *testing.
 			if !errors.As(err, &invalid) {
 				t.Fatalf("error = %T %v, want InvalidDefinitionError", err, err)
 			}
-			want := "workflow: manifest has no workflow.yml"
+			want := "workflow: manifest has no workflow.yaml (or legacy workflow.yml)"
 			if name == "empty" {
 				want = "workflow: manifest has no files"
 			}
@@ -253,6 +253,28 @@ func TestMemoryStoreImportManifestValidationPrecedesSchemaInspection(t *testing.
 				t.Fatalf("error = %q, want %q", err, want)
 			}
 		})
+	}
+}
+
+func TestMemoryStoreImportManifestAcceptsWorkflowYAMLKey(t *testing.T) {
+	store := workflow.NewMemoryStore()
+	source := functionManifest("yaml-key", 1, nil, "review/v1", "review")["workflow.yml"]
+	m := workflow.Manifest{workflow.WorkflowFileName: source}
+
+	imported, err := store.ImportManifest("yaml-key", m, "alice")
+	if err != nil {
+		t.Fatalf("ImportManifest: %v", err)
+	}
+	if imported.RawYAML != source {
+		t.Fatalf("RawYAML = %q, want %q", imported.RawYAML, source)
+	}
+
+	got, found, err := store.Get("yaml-key", imported.Version)
+	if err != nil || !found {
+		t.Fatalf("Get: found=%v err=%v", found, err)
+	}
+	if got.SourceManifest[workflow.WorkflowFileName] != source {
+		t.Fatalf("SourceManifest round-trip lost the %s key: %+v", workflow.WorkflowFileName, got.SourceManifest)
 	}
 }
 

@@ -74,11 +74,12 @@ func walkInto(dir, rel string, m Manifest, stack map[string]bool) error {
 }
 
 // DiscoverWorkflowDirs returns the workflow source directories under
-// root: root itself when it directly contains workflow.yml, otherwise
+// root: root itself when it directly contains a workflow definition file
+// (WorkflowFileName, falling back to LegacyWorkflowFileName), otherwise
 // every immediate subdirectory that does (a multi-workflow repo).
 // Sorted for deterministic multi-import order.
 func DiscoverWorkflowDirs(root string) ([]string, error) {
-	if _, err := os.Stat(filepath.Join(root, "workflow.yml")); err == nil {
+	if hasWorkflowFile(root) {
 		return []string{root}, nil
 	}
 	entries, err := os.ReadDir(root)
@@ -91,13 +92,24 @@ func DiscoverWorkflowDirs(root string) ([]string, error) {
 			continue
 		}
 		sub := filepath.Join(root, e.Name())
-		if _, err := os.Stat(filepath.Join(sub, "workflow.yml")); err == nil {
+		if hasWorkflowFile(sub) {
 			dirs = append(dirs, sub)
 		}
 	}
 	if len(dirs) == 0 {
-		return nil, fmt.Errorf("%s: no workflow.yml in the directory or its immediate subdirectories", root)
+		return nil, fmt.Errorf("%s: no %s (or legacy %s) in the directory or its immediate subdirectories", root, WorkflowFileName, LegacyWorkflowFileName)
 	}
 	sort.Strings(dirs)
 	return dirs, nil
+}
+
+// hasWorkflowFile reports whether dir directly contains a workflow
+// definition file, preferring WorkflowFileName and falling back to
+// LegacyWorkflowFileName (design 2026-07-26 — the .yaml rename).
+func hasWorkflowFile(dir string) bool {
+	if _, err := os.Stat(filepath.Join(dir, WorkflowFileName)); err == nil {
+		return true
+	}
+	_, err := os.Stat(filepath.Join(dir, LegacyWorkflowFileName))
+	return err == nil
 }

@@ -1,7 +1,8 @@
 # Example: continuous deployment for workflow definitions (design
 # 2026-07-17 §6 — pipelines-that-deploy; this is an EXAMPLE, not a
 # platform component). Point `workflows-repo` at a repo containing one
-# or more workflow source directories (each with a workflow.yml), set
+# or more workflow source directories (each with a workflow.yaml; the
+# legacy workflow.yml name is still accepted), set
 # it with `fly set-pipeline`, and every merge imports new versions.
 # Auto-promotion is the pipeline author's policy: keep --set-live for
 # merge-implies-promote, drop it to promote manually with
