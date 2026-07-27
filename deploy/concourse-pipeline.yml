@@ -48,118 +48,205 @@ jobs:
                  ./skymarshal/token/... ./skymarshal/skyserver/...
           echo "=== Vet passed ==="
 
-# Native agent-review job (Task 19, cut over 2026-07-17): the review phase
-# through the first-class `agent:` step. Replaced the build-from-source
-# ci-agent shell job after the dual-run campaign proved mechanism parity
-# (run/review/publish/metering all green in agent-review-native #6; the
-# retired job's history holds the dual-run record).
-# Token path: pure-CI platform secret (web --agent-platform-token-secret →
-# secretKeyRef agent-platform-token/anthropic-token in the cicd namespace).
-# Agent env is static-only by contract — no credentials ride env.
+# Native agent-review job — v3 durable workflow run (converted 2026-07-26).
+# Replaces the retired v1 path (an untyped `agent: review` step writing
+# review.json plus a curl POST to /api/v1/agent/reviews with a principal
+# bearer token); both the untyped step and that endpoint are being deleted.
+#
+# The job now captures two immutable `repository/v1` snapshots of THIS
+# pipeline's `repo` resource — the commit under review and its nearest
+# ancestor that is itself a known resource version — and runs the
+# `code-review` workflow function (agent/workflow/seeds/code-review-v3) over
+# them. Nothing is published back into the build: the review is durable,
+# typed evidence hanging off the workflow run, reachable from the UI.
+#
+# PREREQUISITES (see docs/agentic/V3_CUTOVER_DEPLOY.md for the runbook):
+#   0. The web node must run with durable snapshots enabled and the agent
+#      runtime pinned by digest (--agent-snapshot-enabled plus
+#      --agent-step-image=...@sha256:...). Schema-v3 workflows and resource
+#      captures fail closed without them.
+#   1. The `code-review` workflow must be imported AND promoted live:
+#        fly -t <target> agent workflows import agent/workflow/seeds/code-review-v3
+#        fly -t <target> agent workflows set-live code-review <version>
+#      This job binds the LIVE version (no --version pin), so promoting a new
+#      version changes what the next build runs.
+#   2. A platform Anthropic credential must be vaulted (admin):
+#        fly -t <target> agent auth --platform
+#      Workflow-run admission resolves the creating user's own credential
+#      first and falls back to the platform credential, so the CI login user
+#      below needs no personal token of its own.
+#   3. Pipeline vars ((concourse-username)) / ((concourse-password)): a LOCAL
+#      basic-auth user on this Concourse that belongs to this pipeline's team.
+#      The v1 ((agent-review-principal-token)) secret is no longer used here.
 - name: agent-review-native
   plan:
   - get: repo
     trigger: false
-    params: {depth: 25}
-  - agent: review
-    prompt: |
-      You are a code review agent. Analyze the repository at repo for real defects (not style issues).
-
-      Only review files changed in diff against base ref: main
-      Use `git diff main...HEAD --name-only` to determine changed files.
-
-      For each concern:
-      1. Write a failing Go test that proves the defect
-      2. Classify severity by what the test demonstrates
-
-      Write a JSON object to the file review.json inside the directory named by the
-      AGENT_OUTPUT_REVIEW environment variable (an absolute path — resolve it with
-      `echo "$AGENT_OUTPUT_REVIEW"` first; do NOT write it under repo/ or any
-      cwd-relative path). The JSON structure:
-      {
-        "schema_version": "1.0.0",
-        "proven_issues": [
-          {
-            "id": "ISS-001",
-            "severity": "critical|high|medium|low",
-            "title": "short description",
-            "description": "detailed explanation",
-            "file": "path/to/file.go",
-            "line": 42,
-            "category": "security|correctness|performance|maintainability|testing",
-            "test_code": "package ...\n\nimport \"testing\"\n\nfunc TestXxx(t *testing.T) { ... }",
-            "test_file": "path/to/file_test.go",
-            "test_name": "TestXxx"
-          }
-        ],
-        "observations": [
-          {
-            "id": "OBS-001",
-            "title": "short description",
-            "file": "path/to/file.go",
-            "line": 42,
-            "category": "security|correctness|performance|maintainability|testing"
-          }
-        ],
-        "score": {
-          "value": 8.5,
-          "max": 10.0,
-          "pass": true,
-          "threshold": 7.0
-        },
-        "metadata": {
-          "repo": "<the clone URL from `git -C repo config --get remote.origin.url`>",
-          "commit": "<the full SHA from `git -C repo rev-parse HEAD`>"
-        }
-      }
-
-      The metadata object is REQUIRED — the publish API rejects a review without
-      metadata.repo and metadata.commit. Fill metadata.commit with the actual
-      HEAD SHA of the repo input. Fill metadata.repo with the full remote URL
-      (not a bare name): the web UI builds clickable file:line links from it.
-
-      If a concern cannot be proven with a test, include it in observations, not proven_issues.
-      Run any generated tests to verify they actually fail against the current code before reporting.
-    # Inline, not ((agent-model)): agent-step fields are plan-static by
-    # contract — ((vars)) resolve at dispatch/materialization time (wave-4),
-    # and a plain CI job has no materializer, so a var ref reaches the API
-    # literally (dual-run #1 failed exactly this way). Model names are not
-    # secrets; keep in lockstep with the agent-model secret used by dispatch.
-    model: claude-sonnet-5
-    # The successful dual-run #2 review needed 141 turns; 50 (the plan
-    # template's guess) hit error_max_turns before review.json was written.
-    # The 30m step timeout and per-run cost visibility are the real bounds.
-    max_turns: 200
-    inputs: [repo]
-    outputs: [review]
-    env:
-      BASE_REF: main
-      REVIEW_DIFF_ONLY: "true"
-    timeout: 30m
-  - task: publish-review
+    # Deep enough to walk back to the previous *resource version*: docs-only
+    # commits are filtered out by the resource's ignore_paths and never become
+    # versions, so the nearest reviewed ancestor can be several commits back.
+    params: {depth: 50}
+  - task: run-code-review-workflow
+    # Retry transient k8s-runtime pod disruptions. The idempotency key below
+    # is stable across attempts, so a retry re-attaches to the SAME durable
+    # workflow run instead of spending a second review.
+    attempts: 2
+    timeout: 45m
     config:
       platform: linux
       rootfs_uri: docker:///registry.home/concourse-test-runner:v5
       inputs:
-      - name: review
+      - name: repo
       params:
-        AGENT_REVIEW_PRINCIPAL_TOKEN: ((agent-review-principal-token))
+        CONCOURSE_USERNAME: ((concourse-username))
+        CONCOURSE_PASSWORD: ((concourse-password))
       run:
         path: sh
         args:
         - -ec
         - |
-          echo "=== Publishing review to ATC ==="
-          # -sS without -f: print the response body on failure instead of
-          # swallowing it (a silent -f hid a 400 for two dual-runs).
-          code=$(curl -sS -o /tmp/publish-resp -w '%{http_code}' -X POST \
-            -H "Authorization: Bearer ${AGENT_REVIEW_PRINCIPAL_TOKEN}" \
-            -H "Content-Type: application/json" \
-            -d "{\"build_id\": ${BUILD_ID}, \"review\": $(cat review/review.json)}" \
-            "http://concourse-web.cicd.svc.cluster.local:8080/api/v1/agent/reviews")
-          cat /tmp/publish-resp; echo
-          [ "$code" -ge 200 ] && [ "$code" -lt 300 ] || { echo "publish failed with HTTP ${code}"; exit 1; }
-          echo "Published for build ${BUILD_ID}"
+          # fly is built from the commit under review rather than downloaded:
+          # it keeps the CLI in lockstep with the API it talks to (workflow
+          # import/run flags are validated client-side), and an unstamped
+          # build reports a dev version, which skips fly's major/minor
+          # target-version gate.
+          echo "=== Building fly from the repo input ==="
+          ( cd repo && go build -o /usr/local/bin/fly ./fly )
+
+          # Same in-cluster address the verify-upgrade job uses.
+          CONCOURSE_URL="http://concourse-web.cicd.svc.cluster.local:8080"
+          WORKFLOW="code-review"
+          # Deterministic, writable fly config dir (HOME is not guaranteed).
+          export FLY_HOME=/tmp/fly-home
+          mkdir -p "$FLY_HOME"
+
+          echo "=== fly login (team ${BUILD_TEAM_NAME}) ==="
+          fly -t self login -c "$CONCOURSE_URL" -n "$BUILD_TEAM_NAME" \
+            -u "$CONCOURSE_USERNAME" -p "$CONCOURSE_PASSWORD" >/dev/null
+
+          HEAD_SHA=$(git -C repo rev-parse HEAD)
+          echo "head: ${HEAD_SHA}"
+
+          echo "=== Resolving the base commit ==="
+          # capture-resource only accepts an already-known resource version,
+          # so the base must be a version the resource actually produced —
+          # not merely HEAD~1. Take the nearest ancestor of HEAD that is one.
+          fly -t self resource-versions -r "${BUILD_PIPELINE_NAME}/repo" \
+            --count 100 --json > /tmp/versions.json
+          jq -r '.[] | select(.enabled) | .version.ref // empty' /tmp/versions.json \
+            | sort -u > /tmp/known-refs
+          git -C repo rev-list --max-count=50 "$HEAD_SHA" | tail -n +2 > /tmp/ancestors
+
+          BASE_SHA=""
+          while read -r candidate; do
+            if grep -qx "$candidate" /tmp/known-refs; then
+              BASE_SHA="$candidate"
+              break
+            fi
+          done < /tmp/ancestors
+
+          if [ -z "$BASE_SHA" ]; then
+            echo "No ancestor of ${HEAD_SHA} is a known version of ${BUILD_PIPELINE_NAME}/repo"
+            echo "(first build, or history older than the retained version window)."
+            echo "Nothing to compare against — skipping the review."
+            exit 0
+          fi
+          echo "base: ${BASE_SHA}"
+
+          # capture-resource is idempotent per (resource, version, type): a
+          # repeat call returns the same durable snapshot, it does not refetch.
+          capture_snapshot() {
+            fly -t self agent snapshots capture-resource \
+              --pipeline="$BUILD_PIPELINE_NAME" \
+              --resource=repo \
+              --version="ref:$1" \
+              --type=repository/v1 \
+              --json > "$2"
+            captured=$(jq -r '.snapshot.id // empty' "$2")
+            if [ -z "$captured" ]; then
+              { echo "capture of $1 returned no snapshot:"; cat "$2"; } >&2
+              return 1
+            fi
+            echo "$captured"
+          }
+
+          echo "=== Capturing repository/v1 snapshots ==="
+          BEFORE_ID=$(capture_snapshot "$BASE_SHA" /tmp/before.json)
+          AFTER_ID=$(capture_snapshot "$HEAD_SHA" /tmp/after.json)
+          echo "before=${BEFORE_ID} after=${AFTER_ID}"
+
+          # One durable run per build. The key is stable across `attempts:`
+          # retries of this task, so a lost pod re-attaches to the existing
+          # run; it changes when a human re-triggers the job.
+          IDEMPOTENCY_KEY="pipeline-review-build-${BUILD_ID}"
+
+          echo "=== Creating the ${WORKFLOW} workflow run ==="
+          fly -t self agent workflows run "$WORKFLOW" \
+            --input=before="$BEFORE_ID" \
+            --input=after="$AFTER_ID" \
+            --idempotency-key="$IDEMPOTENCY_KEY" \
+            --json > /tmp/run.json
+          RUN_ID=$(jq -r '.workflow_run_id // empty' /tmp/run.json)
+          if [ -z "$RUN_ID" ]; then
+            echo "workflow run creation returned no run id:"; cat /tmp/run.json; exit 1
+          fi
+          RUN_URL="${ATC_EXTERNAL_URL}/agent/workflows/${WORKFLOW}/runs/${RUN_ID}"
+          echo "workflow run ${RUN_ID}: ${RUN_URL}"
+
+          # --follow streams status transitions but dies on the first HTTP
+          # error, and a concurrent self-upgrade restarts web mid-wait. Treat
+          # it as best effort; the poll below is the authority on the
+          # terminal state.
+          echo "=== Following run ${RUN_ID} ==="
+          fly -t self agent workflows show-run "$WORKFLOW" "$RUN_ID" --follow \
+            || echo "follow dropped (web restart?) — re-checking the run state"
+
+          STATUS=""
+          for _ in $(seq 1 180); do
+            if fly -t self agent workflows show-run "$WORKFLOW" "$RUN_ID" --json \
+                 > /tmp/detail.json 2>/tmp/detail.err; then
+              STATUS=$(jq -r '.status // empty' /tmp/detail.json)
+              case "$STATUS" in
+                succeeded|failed|errored|aborted) break ;;
+              esac
+            else
+              STATUS=""
+              echo "transient: could not read run ${RUN_ID} — $(tail -1 /tmp/detail.err)"
+            fi
+            sleep 10
+          done
+
+          echo "=== Run ${RUN_ID} status: ${STATUS:-unknown} ==="
+          if [ "$STATUS" != "succeeded" ]; then
+            echo "The ${WORKFLOW} workflow run did not complete successfully."
+            echo "  ${RUN_URL}"
+            exit 1
+          fi
+
+          # Advisory only. The review's own conclusion (accept /
+          # changes-required / inconclusive) NEVER fails this job: the sealed
+          # review snapshot is the record and a human dispositions it. Every
+          # command below is inside a failure-tolerant group.
+          echo "=== Review verdict (advisory) ==="
+          {
+            REVIEW_ID=$(fly -t self agent workflows show-run "$WORKFLOW" "$RUN_ID" \
+              --outputs --json | jq -r '.outputs[] | select(.port == "review") | .snapshot.id')
+            if [ -n "$REVIEW_ID" ]; then
+              echo "review snapshot ${REVIEW_ID}: ${ATC_EXTERNAL_URL}/agent/snapshots/${REVIEW_ID}"
+              fly -t self agent snapshots download "$REVIEW_ID" --to /tmp/review.tar
+              mkdir -p /tmp/review
+              tar xf /tmp/review.tar -C /tmp/review
+              RECORD=$(find /tmp/review -name record.json | head -1)
+              if [ -n "$RECORD" ]; then
+                jq -r '"conclusion: \(.body.conclusion)",
+                       "summary: \(.body.summary)",
+                       "findings: \((.body.findings // []) | length) (\((.body.findings // []) | map(select(.blocking)) | length) blocking)",
+                       ((.body.findings // [])[] | "  [\(.severity)] \(.id): \(.title)")' "$RECORD"
+              fi
+            fi
+          } || echo "(could not render the review body; the durable snapshot is authoritative)"
+
+          echo "=== Review complete: ${RUN_URL} ==="
 
 - name: unit-tests
   serial_groups: [pipeline]
