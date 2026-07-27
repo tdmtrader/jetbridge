@@ -1,6 +1,7 @@
 package workflowruns
 
 import (
+	"code.cloudfoundry.org/lager/v3"
 	"context"
 	"net/http"
 	"time"
@@ -65,6 +66,10 @@ type ManifestStore interface {
 }
 
 type Config struct {
+	// Logger receives handler-side failures, notably the cause behind an
+	// internal_error 500. Optional: NewHandler substitutes a sink-less logger
+	// when it is nil, so tests need not supply one.
+	Logger    lager.Logger
 	Team      TrustedTeam
 	Identity  IdentityFunc
 	Binder    Binder

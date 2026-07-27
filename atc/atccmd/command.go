@@ -3433,7 +3433,8 @@ func (cmd *RunCommand) constructAPIHandler(
 		return nil, fmt.Errorf("construct workflow-run canceler: %w", err)
 	}
 	workflowRunHandlers, err := workflowrunsapi.NewHandler(workflowrunsapi.Config{
-		Team: workflowrunsapi.TrustedTeam{ID: mainTeam.ID(), Name: mainTeam.Name()},
+		Logger: logger.Session("workflow-runs-api"),
+		Team:   workflowrunsapi.TrustedTeam{ID: mainTeam.ID(), Name: mainTeam.Name()},
 		Identity: func(r *http.Request) (string, error) {
 			return workflowRunCreatorIdentity(accessor.GetAccessor(r).UserInfo())
 		},

@@ -2,7 +2,6 @@ package workflowruns
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,7 +21,6 @@ import (
 	"unicode/utf8"
 
 	"code.cloudfoundry.org/lager/v3"
-	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"github.com/concourse/concourse/agent/pagination"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/workflowrun"
@@ -36,6 +34,7 @@ const maxRequestBytes int64 = 64 << 10
 var originKindPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
 
 type Handler struct {
+	logger    lager.Logger
 	team      TrustedTeam
 	identity  IdentityFunc
 	binder    Binder
@@ -59,8 +58,19 @@ func NewHandler(config Config) (*Handler, error) {
 			return nil, fmt.Errorf("workflow runs API: %s is required", name)
 		}
 	}
+	// A nil Logger yields a sink-less logger rather than lager's discardLogger,
+	// so tests stay quiet while production always has somewhere to write. The
+	// distinction is not cosmetic: routing these through lagerctx meant every
+	// message went to a discard logger, because nothing puts a logger in an
+	// HTTP request context — which is why two rounds of instrumenting this
+	// handler produced no output at all.
+	handlerLogger := config.Logger
+	if handlerLogger == nil {
+		handlerLogger = lager.NewLogger("workflow-runs")
+	}
 	return &Handler{
-		team: config.Team, identity: config.Identity, binder: config.Binder,
+		logger: handlerLogger,
+		team:   config.Team, identity: config.Identity, binder: config.Binder,
 		runs: config.Runs, canceler: config.Canceler, manifests: config.Manifests,
 	}, nil
 }
@@ -89,19 +99,19 @@ func (handler *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		Inputs: cloneSnapshotIDs(request.Inputs), IdempotencyKey: request.IdempotencyKey,
 	})
 	if err != nil {
-		writeBinderError(r.Context(), w, err)
+		handler.writeBinderError(w, err)
 		return
 	}
 	if result.Run.IdempotencyKey != request.IdempotencyKey || result.Run.CreatedBy != creator ||
 		result.Run.OriginKind != "manual" || result.Run.OriginReference != "" ||
 		result.Run.FunctionID != nil || result.Run.RetryOfWorkflowRunID != nil ||
 		request.Version != nil && result.Run.WorkflowVersion != *request.Version {
-		writeInternalError(r.Context(), w)
+		handler.writeInternalError(w)
 		return
 	}
 	detail, err := handler.presentDetail(r, workflowName, result.Run)
 	if err != nil {
-		writeInternalError(r.Context(), w)
+		handler.writeInternalError(w)
 		return
 	}
 	status := http.StatusOK
@@ -132,11 +142,11 @@ func (handler *Handler) List(w http.ResponseWriter, r *http.Request) {
 	filter.Limit = pageLimit + 1
 	runs, err := handler.runs.List(r.Context(), filter)
 	if err != nil {
-		writeInternalError(r.Context(), w)
+		handler.writeInternalError(w)
 		return
 	}
 	if len(runs) > filter.Limit {
-		writeInternalError(r.Context(), w)
+		handler.writeInternalError(w)
 		return
 	}
 	hasNext := len(runs) > pageLimit
@@ -147,7 +157,7 @@ func (handler *Handler) List(w http.ResponseWriter, r *http.Request) {
 	for _, run := range runs {
 		summary, err := handler.presentSummary(workflowName, run)
 		if err != nil {
-			writeInternalError(r.Context(), w)
+			handler.writeInternalError(w)
 			return
 		}
 		summaries = append(summaries, summary)
@@ -156,7 +166,7 @@ func (handler *Handler) List(w http.ResponseWriter, r *http.Request) {
 		last := runs[len(runs)-1]
 		cursor, err := pagination.Encode(pagination.Cursor{CreatedAt: last.CreatedAt, ID: int64(last.ID)})
 		if err != nil {
-			writeInternalError(r.Context(), w)
+			handler.writeInternalError(w)
 			return
 		}
 		setNextPageHeaders(w, r, cursor, pageLimit)
@@ -176,7 +186,7 @@ func (handler *Handler) OperationalStatusCounts(w http.ResponseWriter, r *http.R
 		TeamID: handler.team.ID, WorkflowName: workflowName, ExcludeOriginKind: "experiment",
 	})
 	if err != nil {
-		writeInternalError(r.Context(), w)
+		handler.writeInternalError(w)
 		return
 	}
 	counts := make(map[string]int64, 7)
@@ -191,7 +201,7 @@ func (handler *Handler) OperationalStatusCounts(w http.ResponseWriter, r *http.R
 	} {
 		count := stored[status]
 		if count < 0 {
-			writeInternalError(r.Context(), w)
+			handler.writeInternalError(w)
 			return
 		}
 		counts[string(status)] = count
@@ -215,7 +225,7 @@ func (handler *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	}
 	detail, err := handler.presentDetail(r, workflowName, run)
 	if err != nil {
-		writeInternalError(r.Context(), w)
+		handler.writeInternalError(w)
 		return
 	}
 	writeJSON(w, http.StatusOK, detail)
@@ -235,7 +245,7 @@ func (handler *Handler) Outputs(w http.ResponseWriter, r *http.Request) {
 	}
 	outputs, err := handler.presentOutputs(r, run)
 	if err != nil {
-		writeInternalError(r.Context(), w)
+		handler.writeInternalError(w)
 		return
 	}
 	writeJSON(w, http.StatusOK, OutputsResponse{WorkflowRunID: run.ID, Outputs: outputs})
@@ -263,12 +273,12 @@ func (handler *Handler) Retry(w http.ResponseWriter, r *http.Request) {
 	}
 	bindings, err := handler.runs.Snapshots(r.Context(), source.ID)
 	if err != nil {
-		writeInternalError(r.Context(), w)
+		handler.writeInternalError(w)
 		return
 	}
 	inputs, err := inputIDs(source.ID, bindings)
 	if err != nil {
-		writeInternalError(r.Context(), w)
+		handler.writeInternalError(w)
 		return
 	}
 	creator, ok := handler.creator(w, r)
@@ -288,7 +298,7 @@ func (handler *Handler) Retry(w http.ResponseWriter, r *http.Request) {
 		Inputs: inputs, IdempotencyKey: retryRequest.IdempotencyKey, RetryOf: cloneWorkflowRunID(&source.ID),
 	})
 	if err != nil {
-		writeBinderError(r.Context(), w, err)
+		handler.writeBinderError(w, err)
 		return
 	}
 	if result.Run.ID == source.ID || result.Run.WorkflowVersion != source.WorkflowVersion ||
@@ -296,12 +306,12 @@ func (handler *Handler) Retry(w http.ResponseWriter, r *http.Request) {
 		result.Run.RetryOfWorkflowRunID == nil || *result.Run.RetryOfWorkflowRunID != source.ID ||
 		result.Run.IdempotencyKey != retryRequest.IdempotencyKey || result.Run.CreatedBy != creator ||
 		result.Run.OriginKind != "retry" || result.Run.OriginReference != source.ID.String() {
-		writeInternalError(r.Context(), w)
+		handler.writeInternalError(w)
 		return
 	}
 	detail, err := handler.presentDetail(r, workflowName, result.Run)
 	if err != nil {
-		writeInternalError(r.Context(), w)
+		handler.writeInternalError(w)
 		return
 	}
 	status := http.StatusOK
@@ -328,7 +338,7 @@ func (handler *Handler) Cancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeInternalError(r.Context(), w)
+		handler.writeInternalError(w)
 		return
 	}
 	if !found {
@@ -342,12 +352,12 @@ func (handler *Handler) Cancel(w http.ResponseWriter, r *http.Request) {
 	case db.AgentWorkflowRunStatusAborted:
 		status = http.StatusOK
 	default:
-		writeInternalError(r.Context(), w)
+		handler.writeInternalError(w)
 		return
 	}
 	detail, err := handler.presentDetail(r, workflowName, run)
 	if err != nil {
-		writeInternalError(r.Context(), w)
+		handler.writeInternalError(w)
 		return
 	}
 	writeJSON(w, status, detail)
@@ -356,7 +366,7 @@ func (handler *Handler) Cancel(w http.ResponseWriter, r *http.Request) {
 func (handler *Handler) creator(w http.ResponseWriter, r *http.Request) (string, bool) {
 	creator, err := handler.identity(r)
 	if err != nil || validateText(creator, 256, false, true) != nil {
-		writeInternalError(r.Context(), w)
+		handler.writeInternalError(w)
 		return "", false
 	}
 	return creator, true
@@ -370,7 +380,7 @@ func (handler *Handler) loadScopedRun(
 ) (db.AgentWorkflowRun, bool) {
 	run, found, err := handler.runs.Get(r.Context(), handler.team.ID, runID)
 	if err != nil {
-		writeInternalError(r.Context(), w)
+		handler.writeInternalError(w)
 		return db.AgentWorkflowRun{}, false
 	}
 	if !found || run.ID != runID || run.TeamID != handler.team.ID || run.TeamName != handler.team.Name || run.WorkflowName != workflowName {
@@ -832,7 +842,7 @@ func requireNoBody(w http.ResponseWriter, r *http.Request) bool {
 // "workflow run service failed" with no cause anywhere — not in the response,
 // not in the web logs. That is exactly what stalled diagnosis of the behavioral
 // suite's last failing spec: a 500 with no explanation on either side.
-func writeBinderError(ctx context.Context, w http.ResponseWriter, err error) {
+func (handler *Handler) writeBinderError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, workflowrun.ErrInvalidRequest):
 		writeError(w, http.StatusBadRequest, "invalid_request", "workflow run request is invalid")
@@ -845,8 +855,8 @@ func writeBinderError(ctx context.Context, w http.ResponseWriter, err error) {
 	case errors.Is(err, workflowrun.ErrIdempotencyConflict):
 		writeError(w, http.StatusConflict, "conflict", "idempotency key conflicts with immutable workflow-run state")
 	default:
-		lagerctx.FromContext(ctx).Error("workflow-run-bind-failed", err)
-		writeInternalError(ctx, w)
+		handler.logger.Error("workflow-run-bind-failed", err)
+		handler.writeInternalError(w)
 	}
 }
 
@@ -867,14 +877,13 @@ func writeNotFound(w http.ResponseWriter) {
 // agentic-workflow spec failed this way reproducibly and the web logs held
 // nothing at all. Recording the caller turns "somewhere in this handler" into
 // a line number.
-func writeInternalError(ctx context.Context, w http.ResponseWriter) {
-	logger := lagerctx.FromContext(ctx)
+func (handler *Handler) writeInternalError(w http.ResponseWriter) {
 	if _, file, line, ok := runtime.Caller(1); ok {
-		logger.Error("workflow-run-internal-error", nil, lager.Data{
+		handler.logger.Error("workflow-run-internal-error", nil, lager.Data{
 			"origin": fmt.Sprintf("%s:%d", filepath.Base(file), line),
 		})
 	} else {
-		logger.Error("workflow-run-internal-error", nil)
+		handler.logger.Error("workflow-run-internal-error", nil)
 	}
 	writeError(w, http.StatusInternalServerError, "internal_error", "workflow run service failed")
 }
