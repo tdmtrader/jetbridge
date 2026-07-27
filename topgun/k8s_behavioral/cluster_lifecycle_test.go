@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/concourse/concourse/atc"
+	containername "github.com/google/go-containerregistry/pkg/name"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/k3s"
 	corev1 "k8s.io/api/core/v1"
@@ -182,7 +184,7 @@ func resolvedArtifactHelperImage() string {
 		if !exactArtifactHelperImage.MatchString(configured) {
 			log.Fatalf("ARTIFACT_HELPER_IMAGE must be an exact @sha256 reference, got %q", configured)
 		}
-		return configured
+		return qualifyHelperDigest(configured)
 	}
 	output, err := exec.Command(
 		"docker", "image", "inspect", "--format", "{{index .RepoDigests 0}}", artifactHelperSourceImage,
@@ -194,7 +196,34 @@ func resolvedArtifactHelperImage() string {
 	if !exactArtifactHelperImage.MatchString(resolved) {
 		log.Fatalf("docker returned invalid artifact helper digest %q for %s", resolved, artifactHelperSourceImage)
 	}
-	return resolved
+	return qualifyHelperDigest(resolved)
+}
+
+// qualifyHelperDigest expands a digest reference to its fully-qualified form
+// before it reaches Helm.
+//
+// exactArtifactHelperImage (and the chart's identical regex) both accept a
+// reference with no registry, but the web parses this flag with
+// name.StrictValidation, which requires one — so "busybox@sha256:..." renders
+// and deploys happily and then crash-loops the web with "strict validation
+// requires the registry to be explicitly defined". That is precisely what
+// `docker image inspect --format {{index .RepoDigests 0}}` returns for an
+// official image: Docker prints the short form regardless of how the image was
+// pulled, so the fully-qualified constant above does not survive the round trip.
+//
+// Normalizing through the same library the validator uses yields
+// "index.docker.io/library/busybox@sha256:...", and is a no-op for references
+// that already carry a registry.
+func qualifyHelperDigest(reference string) string {
+	digest, err := containername.NewDigest(reference)
+	if err != nil {
+		log.Fatalf("artifact helper reference %q is not a valid digest: %v", reference, err)
+	}
+	qualified := digest.Name()
+	if err := atc.ValidatePinnedOCIImage(qualified); err != nil {
+		log.Fatalf("artifact helper reference %q is not deployable: %v", qualified, err)
+	}
+	return qualified
 }
 
 // buildAndLoadOOMTriggerImage compiles cmd/oom-trigger as a static binary,
