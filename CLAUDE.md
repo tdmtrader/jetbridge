@@ -1,5 +1,12 @@
 # Agent Instructions
 
+## Active Agentic Semantic Rebase
+
+Before doing any work, read
+`docs/superpowers/plans/2026-07-28-agentic-foundations-semantic-rebase-session-context.md`.
+Its scope, model-selection, review-budget, testing, and handoff rules are
+mandatory for this track.
+
 ## Running Tests
 
 PostgreSQL must be running locally for unit and integration tests. Check with `pg_isready`.
