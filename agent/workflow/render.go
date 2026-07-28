@@ -62,9 +62,19 @@ func TargetConfigHash(config atc.Config) (string, error) {
 // renderedTargetConfigHash preserves the historical config-only identity for
 // ordinary functions. Validation-bearing functions use a distinct domain so
 // their frozen authority cannot be separated from the rendered template.
-func renderedTargetConfigHash(config atc.Config, profiles []CompiledDevValidationProfile, provenance string) (string, error) {
+// RenderedTargetConfigHash is the durable template identity. It preserves the
+// legacy config-only vector when no authority exists, and otherwise binds the
+// canonical config to the exact rendered authority without placing that
+// authority in the public ATC plan.
+func RenderedTargetConfigHash(config atc.Config, profiles []CompiledDevValidationProfile, provenance string) (string, error) {
 	if len(profiles) == 0 {
+		if provenance != "" {
+			return "", fmt.Errorf("workflow: validation provenance requires rendered profiles")
+		}
 		return TargetConfigHash(config)
+	}
+	if err := ValidateDevValidationAuthority(profiles, provenance); err != nil {
+		return "", err
 	}
 	canonical, err := config.CanonicalJSON()
 	if err != nil {
@@ -258,7 +268,7 @@ func RenderFunction(target FunctionTarget) (RenderedFunction, error) {
 		return RenderedFunction{}, err
 	}
 
-	configHash, err := renderedTargetConfigHash(config, function.DevValidationProfiles, function.DevValidationProvenanceHash)
+	configHash, err := RenderedTargetConfigHash(config, function.DevValidationProfiles, function.DevValidationProvenanceHash)
 	if err != nil {
 		return RenderedFunction{}, err
 	}

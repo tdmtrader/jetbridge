@@ -3,13 +3,36 @@ package workflowrun
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
+	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
 )
+
+func TestTemplateSaverValidationAuthorityPreventsConfigOnlyReuse(t *testing.T) {
+	first := validationTemplateSpec(t, "one")
+	second := validationTemplateSpec(t, "two")
+	if first.FullHash == second.FullHash || first.Name == second.Name {
+		t.Fatal("different authority converged on one template identity")
+	}
+	second.Name = first.Name // model an attempted collision at the same public ATC config.
+	pipeline := exactTemplatePipeline(first, 81, 7, 13)
+	team := new(dbfakes.FakeTeam)
+	team.IDReturns(7)
+	team.NameReturns("research")
+	team.PipelineReturns(pipeline, true, nil)
+	saver, err := NewTemplateSaver(&teamFinderStub{find: func(string) (db.Team, bool, error) { return team, true, nil }}, alwaysOwnedTemplateStore())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := saver.SaveOrReuse(context.Background(), AdmissionContext{TeamID: 7, TeamName: "research"}, second); !errors.Is(err, ErrImmutableTemplateCollision) {
+		t.Fatalf("error = %v, want collision", err)
+	}
+}
 
 func TestTemplateSaverCreatesWithCreateOnlyVersion(t *testing.T) {
 	spec := templateSaverSpec(t)
@@ -271,6 +294,28 @@ func templateSaverSpec(t *testing.T) ImmutableTemplateSpec {
 		t.Fatal(err)
 	}
 	return ImmutableTemplateSpec{Name: name, FullHash: hash, CanonicalJSON: canonical, Config: config}
+}
+
+func validationTemplateSpec(t *testing.T, value string) ImmutableTemplateSpec {
+	t.Helper()
+	spec := templateSaverSpec(t)
+	profile := []byte("schema_version: 1\nname: check\nchecks: []\n# " + value + "\n")
+	config := []byte("schema_version: 1\ncomponents: []\n# " + value + "\n")
+	profiles := []workflow.CompiledDevValidationProfile{{Name: "check", Candidate: workflow.DevValidationContract{Name: "candidate", Type: "opaque/v1"}, CapabilityImage: "registry.example/dev-mcp@sha256:" + strings.Repeat("a", 64), CapabilityImageDigest: snapshot.Digest("sha256:" + strings.Repeat("a", 64)), Command: []string{"/usr/local/bin/dev-capability", "validate"}, Profile: profile, ProfileDigest: snapshot.Digest("sha256:" + workflow.Hash(profile)), ProtectedConfig: config, ProtectedConfigDigest: snapshot.Digest("sha256:" + workflow.Hash(config))}}
+	provenance, err := workflow.DevValidationProvenanceHash(profiles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash, err := workflow.RenderedTargetConfigHash(spec.Config, profiles, provenance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name, err := workflow.TemplateName(workflow.TargetWorkflow, "review-flow", 3, "", hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec.Name, spec.FullHash, spec.DevValidationProfiles, spec.DevValidationProvenanceHash = name, hash, profiles, provenance
+	return spec
 }
 
 func exactTemplatePipeline(spec ImmutableTemplateSpec, id, teamID, version int) *dbfakes.FakePipeline {

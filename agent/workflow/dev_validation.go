@@ -251,6 +251,9 @@ func rejectDevValidationInterpolation(label string, raw []byte) error {
 	return nil
 }
 func validateDevValidationAssetReference(path string, mutableRoots map[string]struct{}) error {
+	if err := rejectDevValidationInterpolation("manifest asset reference", []byte(path)); err != nil {
+		return err
+	}
 	first := strings.Split(path, "/")[0]
 	if strings.Contains(first, ":") || strings.Contains(path, "://") {
 		return fmt.Errorf("immutable manifest path is required, got %q", path)

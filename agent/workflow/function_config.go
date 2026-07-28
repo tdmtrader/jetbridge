@@ -62,6 +62,15 @@ func (config *FunctionConfig) UnmarshalJSON(data []byte) error {
 			return fmt.Errorf("workflow: compiled function: unknown or source-only field %q", key)
 		}
 	}
+	if rawPlan, found := object["plan"]; found {
+		var plan any
+		if err := json.Unmarshal(rawPlan, &plan); err != nil {
+			return err
+		}
+		if err := validateFunctionPlanSource(plan, "compiled.plan"); err != nil {
+			return err
+		}
+	}
 	type wire FunctionConfig
 	var decoded wire
 	decoder = json.NewDecoder(bytes.NewReader(data))
@@ -203,6 +212,17 @@ func (config FunctionConfig) Validate() error {
 	}
 	if err := validateCompiledDevValidationProfiles(config.DevValidationProfiles, config.DevValidationProvenanceHash); err != nil {
 		return err
+	}
+	remaining := MaxCompiledAssetBytes
+	for _, profile := range config.DevValidationProfiles {
+		if len(profile.Profile) > remaining {
+			return fmt.Errorf("workflow: compiled dev validation assets exceed %d bytes", MaxCompiledAssetBytes)
+		}
+		remaining -= len(profile.Profile)
+		if len(profile.ProtectedConfig) > remaining {
+			return fmt.Errorf("workflow: compiled dev validation assets exceed %d bytes", MaxCompiledAssetBytes)
+		}
+		remaining -= len(profile.ProtectedConfig)
 	}
 	return nil
 }

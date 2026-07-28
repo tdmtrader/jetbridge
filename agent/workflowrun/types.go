@@ -86,6 +86,25 @@ type ImmutableTemplateSpec struct {
 	FullHash      string
 	CanonicalJSON []byte
 	Config        atc.Config
+	// Authority remains in the durable compiled definition, not the ATC plan.
+	// It is carried only while verifying the immutable template identity.
+	DevValidationProfiles       []workflow.CompiledDevValidationProfile
+	DevValidationProvenanceHash string
+}
+
+func cloneDevValidationProfiles(source []workflow.CompiledDevValidationProfile) []workflow.CompiledDevValidationProfile {
+	if source == nil {
+		return nil
+	}
+	cloned := make([]workflow.CompiledDevValidationProfile, len(source))
+	for index, profile := range source {
+		cloned[index] = profile
+		cloned[index].BaseInputs = append([]workflow.DevValidationContract(nil), profile.BaseInputs...)
+		cloned[index].Command = append([]string(nil), profile.Command...)
+		cloned[index].Profile = append([]byte(nil), profile.Profile...)
+		cloned[index].ProtectedConfig = append([]byte(nil), profile.ProtectedConfig...)
+	}
+	return cloned
 }
 
 type WorkflowRunTemplateRef = db.WorkflowRunTemplateRef

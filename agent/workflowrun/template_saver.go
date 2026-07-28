@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/atc"
@@ -49,8 +50,8 @@ func (s *TemplateSaver) SaveOrReuse(
 	if err != nil {
 		return WorkflowRunTemplateRef{}, fmt.Errorf("%w: invalid immutable template config", ErrImmutableTemplateCollision)
 	}
-	hash, err := workflow.TargetConfigHash(spec.Config)
-	if err != nil || hash != spec.FullHash || !bytes.Equal(canonical, spec.CanonicalJSON) {
+	hash, err := workflow.RenderedTargetConfigHash(spec.Config, spec.DevValidationProfiles, spec.DevValidationProvenanceHash)
+	if err != nil || hash != spec.FullHash || len(hash) < 12 || !strings.HasSuffix(spec.Name, "-"+hash[:12]) || !bytes.Equal(canonical, spec.CanonicalJSON) {
 		return WorkflowRunTemplateRef{}, fmt.Errorf("%w: template spec hash or canonical bytes mismatch", ErrImmutableTemplateCollision)
 	}
 
@@ -150,7 +151,7 @@ func (s *TemplateSaver) validateImmutableTemplate(
 	if err != nil {
 		return WorkflowRunTemplateRef{}, false, fmt.Errorf("%w: canonicalize immutable template: %v", ErrPlatformFailure, err)
 	}
-	hash, err := workflow.TargetConfigHash(config)
+	hash, err := workflow.RenderedTargetConfigHash(config, spec.DevValidationProfiles, spec.DevValidationProvenanceHash)
 	if err != nil || hash != spec.FullHash || !bytes.Equal(canonical, spec.CanonicalJSON) {
 		return WorkflowRunTemplateRef{}, false, ErrImmutableTemplateCollision
 	}

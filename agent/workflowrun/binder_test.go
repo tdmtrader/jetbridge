@@ -450,14 +450,21 @@ func TestBindAndCreateResumesCleanAdmittingRunWithoutResolvingOrRendering(t *tes
 			return true, nil
 		},
 	}
+	run.WorkflowDefinitionID = definition.ID
 	resolverCalled := false
-	resolver := &resolverStub{live: func(context.Context, string) (workflow.Definition, bool, error) {
-		resolverCalled = true
-		return workflow.Definition{}, false, errors.New("must not resolve")
-	}}
+	resolver := &resolverStub{
+		live: func(context.Context, string) (workflow.Definition, bool, error) {
+			return workflow.Definition{}, false, errors.New("must not resolve live")
+		},
+		get: func(context.Context, string, int) (workflow.Definition, bool, error) {
+			resolverCalled = true
+			return definition, true, nil
+		},
+	}
+	target := workflow.FunctionTarget{Kind: workflow.TargetWorkflow, WorkflowDefinitionID: definition.ID, WorkflowName: definition.Name, WorkflowVersion: definition.Version, SignatureVersion: definition.SignatureVersion, Signature: rendered.TargetSignature}
 	binder, err := NewBinder(
 		resolver,
-		&rendererStub{},
+		&rendererStub{full: func(workflow.Definition) (workflow.FunctionTarget, error) { return target, nil }, render: func(workflow.FunctionTarget) (workflow.RenderedFunction, error) { return rendered, nil }},
 		&authorizerStub{get: func(context.Context, int, snapshot.SnapshotID) (snapshot.Snapshot, bool, error) {
 			t.Fatal("must not authorize a durable retry")
 			return snapshot.Snapshot{}, false, nil
@@ -495,7 +502,7 @@ func TestBindAndCreateResumesCleanAdmittingRunWithoutResolvingOrRendering(t *tes
 	if err != nil {
 		t.Fatalf("BindAndCreate: %v", err)
 	}
-	if result.Created || result.Run.Status != db.AgentWorkflowRunStatusRunning || resolverCalled {
+	if result.Created || result.Run.Status != db.AgentWorkflowRunStatusRunning || !resolverCalled {
 		t.Fatalf("result = %+v, resolver called = %t", result, resolverCalled)
 	}
 }
@@ -596,7 +603,7 @@ func TestBindAndCreateLeavesPostAllocationPlatformFailureRetryableAndRedacted(t 
 		},
 	}
 	binder, err := NewBinder(
-		&resolverStub{}, &rendererStub{}, &authorizerStub{}, store,
+		resumeResolver(definition), resumeRenderer(definition, rendered), &authorizerStub{}, store,
 		&budgetStub{}, &saverStub{}, &creatorStub{},
 		&credentialStub{admit: func(context.Context) error {
 			return errors.New("credential=super-secret " + strings.Repeat("界", 5000))
@@ -649,7 +656,7 @@ func TestBindAndCreateRetriesSameAdmittingIdentityAfterTransientPlatformFailure(
 	}
 	credentialCalls := 0
 	binder, err := NewBinder(
-		&resolverStub{}, &rendererStub{}, &authorizerStub{}, store, &budgetStub{},
+		resumeResolver(definition), resumeRenderer(definition, rendered), &authorizerStub{}, store, &budgetStub{},
 		&saverStub{save: func(context.Context, AdmissionContext, ImmutableTemplateSpec) (WorkflowRunTemplateRef, error) {
 			return WorkflowRunTemplateRef{PipelineID: 2, TeamID: 7, Name: rendered.TemplateName, ConfigVersion: 1, FullHash: rendered.TargetConfigHash}, nil
 		}},
@@ -736,7 +743,7 @@ func TestBindAndCreateCategorizesTemplateAndExecutionFailures(t *testing.T) {
 				},
 			}
 			binder, err := NewBinder(
-				&resolverStub{}, &rendererStub{}, &authorizerStub{}, store, &budgetStub{},
+				resumeResolver(definition), resumeRenderer(definition, rendered), &authorizerStub{}, store, &budgetStub{},
 				&saverStub{save: func(context.Context, AdmissionContext, ImmutableTemplateSpec) (WorkflowRunTemplateRef, error) {
 					if test.templateErr != nil {
 						return WorkflowRunTemplateRef{}, test.templateErr
@@ -1305,6 +1312,20 @@ func mustCanonical(t *testing.T, config atc.Config) []byte {
 type resolverStub struct {
 	live func(context.Context, string) (workflow.Definition, bool, error)
 	get  func(context.Context, string, int) (workflow.Definition, bool, error)
+}
+
+func resumeResolver(definition workflow.Definition) *resolverStub {
+	return &resolverStub{
+		live: func(context.Context, string) (workflow.Definition, bool, error) {
+			return workflow.Definition{}, false, errors.New("unexpected live lookup")
+		},
+		get: func(context.Context, string, int) (workflow.Definition, bool, error) { return definition, true, nil },
+	}
+}
+
+func resumeRenderer(definition workflow.Definition, rendered workflow.RenderedFunction) *rendererStub {
+	target := workflow.FunctionTarget{Kind: workflow.TargetWorkflow, WorkflowDefinitionID: definition.ID, WorkflowName: definition.Name, WorkflowVersion: definition.Version, SignatureVersion: definition.SignatureVersion, Signature: rendered.TargetSignature}
+	return &rendererStub{full: func(workflow.Definition) (workflow.FunctionTarget, error) { return target, nil }, render: func(workflow.FunctionTarget) (workflow.RenderedFunction, error) { return rendered, nil }}
 }
 
 func (s *resolverStub) Live(ctx context.Context, name string) (workflow.Definition, bool, error) {

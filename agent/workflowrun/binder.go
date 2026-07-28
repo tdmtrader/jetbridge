@@ -193,7 +193,7 @@ func (b *Binder) BindAndCreate(
 	if run.Status != db.AgentWorkflowRunStatusAdmitting || !executionEmpty(run) {
 		return b.failAllocated(ctx, admission, request, run, true, ErrCorruptPartialAdmission)
 	}
-	return b.resume(ctx, admission, request, run, created)
+	return b.resume(ctx, admission, request, run, created, &durableRenderedTarget{target: target, rendered: rendered})
 }
 
 func (b *Binder) resolvedWinner(
@@ -274,7 +274,7 @@ func (b *Binder) handleExisting(
 			return b.advanceAdmission(ctx, admission, request, run, false)
 		}
 		if executionEmpty(run) {
-			return b.resume(ctx, admission, request, run, false)
+			return b.resume(ctx, admission, request, run, false, nil)
 		}
 		return BindResult{}, ErrCorruptPartialAdmission
 	case db.AgentWorkflowRunStatusRunning,
@@ -298,6 +298,7 @@ func (b *Binder) resume(
 	request BindRequest,
 	run db.AgentWorkflowRun,
 	created bool,
+	frozen *durableRenderedTarget,
 ) (BindResult, error) {
 	bindings, err := b.matchBindings(ctx, run.ID, request.Inputs)
 	if err != nil {
@@ -307,10 +308,37 @@ func (b *Binder) resume(
 	if err != nil {
 		return b.failAllocated(ctx, admission, request, run, created, fmt.Errorf("%w: invalid durable parameterized config", ErrCorruptPartialAdmission))
 	}
-	hash, err := workflow.TargetConfigHash(config)
-	if err != nil || hash != run.ParameterizedConfigHash {
+	functionID := ""
+	if run.FunctionID != nil {
+		functionID = *run.FunctionID
+	}
+	var target workflow.FunctionTarget
+	var rendered workflow.RenderedFunction
+	if frozen != nil {
+		target, rendered = frozen.target, frozen.rendered
+	} else {
+		definition, found, getErr := b.definitions.Get(ctx, run.WorkflowName, run.WorkflowVersion)
+		if getErr != nil || !found || definition.ID != run.WorkflowDefinitionID || definition.SchemaVersion != run.SchemaVersion || definition.SignatureVersion != run.SignatureVersion || definition.ContentHash != run.DefinitionContentHash {
+			return b.failAllocated(ctx, admission, request, run, created, fmt.Errorf("%w: durable workflow definition mismatch", ErrCorruptPartialAdmission))
+		}
+		if run.FunctionID == nil {
+			target, err = b.renderer.FullFunctionTarget(definition)
+		} else {
+			target, err = b.renderer.ExtractFunctionTarget(definition, functionID)
+		}
+		if err != nil || validateTargetIdentity(target, definition, functionID) != nil {
+			return b.failAllocated(ctx, admission, request, run, created, fmt.Errorf("%w: durable workflow target mismatch", ErrCorruptPartialAdmission))
+		}
+		rendered, err = b.renderer.RenderFunction(target)
+		if err != nil {
+			return b.failAllocated(ctx, admission, request, run, created, fmt.Errorf("%w: rerender durable workflow target", ErrCorruptPartialAdmission))
+		}
+	}
+	expectedCanonical, err := validateRendered(target, rendered)
+	if err != nil || !bytes.Equal(canonical, expectedCanonical) || rendered.TargetConfigHash != run.ParameterizedConfigHash {
 		return b.failAllocated(ctx, admission, request, run, created, fmt.Errorf("%w: durable parameterized config hash mismatch", ErrCorruptPartialAdmission))
 	}
+	hash := rendered.TargetConfigHash
 	if err := b.budget.Admit(ctx, BudgetAdmission{
 		WorkflowRunID:       run.ID,
 		Config:              cloneConfig(config),
@@ -325,16 +353,7 @@ func (b *Binder) resume(
 		// fault; no external side effect has occurred yet.
 		return BindResult{}, fmt.Errorf("%w: budget admission failed", ErrPlatformFailure)
 	}
-	kind := workflow.TargetWorkflow
-	functionID := ""
-	if run.FunctionID != nil {
-		kind = workflow.TargetFunction
-		functionID = *run.FunctionID
-	}
-	templateName, err := workflow.TemplateName(kind, run.WorkflowName, run.WorkflowVersion, functionID, hash)
-	if err != nil {
-		return b.failAllocated(ctx, admission, request, run, created, fmt.Errorf("%w: invalid durable target identity", ErrCorruptPartialAdmission))
-	}
+	templateName := rendered.TemplateName
 	params, err := durableParams(run.ID, bindings, config)
 	if err != nil {
 		return b.failAllocated(ctx, admission, request, run, created, err)
@@ -349,6 +368,7 @@ func (b *Binder) resume(
 	}
 	templateRef, err := b.templates.SaveOrReuse(ctx, cloneAdmission(admission), ImmutableTemplateSpec{
 		Name: templateName, FullHash: hash, CanonicalJSON: append([]byte(nil), canonical...), Config: cloneConfig(config),
+		DevValidationProfiles: cloneDevValidationProfiles(rendered.DevValidationProfiles), DevValidationProvenanceHash: rendered.DevValidationProvenanceHash,
 	})
 	if err != nil {
 		if errors.Is(err, ErrImmutableTemplateCollision) {
@@ -393,6 +413,11 @@ func (b *Binder) resume(
 		return BindResult{}, cause
 	}
 	return b.advanceAdmission(ctx, admission, request, run, created)
+}
+
+type durableRenderedTarget struct {
+	target   workflow.FunctionTarget
+	rendered workflow.RenderedFunction
 }
 
 func (b *Binder) advanceAdmission(
@@ -739,7 +764,7 @@ func validateRendered(target workflow.FunctionTarget, rendered workflow.Rendered
 	if err != nil {
 		return nil, fmt.Errorf("%w: canonicalize rendered target", ErrPlatformFailure)
 	}
-	hash, err := workflow.TargetConfigHash(rendered.Config)
+	hash, err := workflow.RenderedTargetConfigHash(rendered.Config, rendered.DevValidationProfiles, rendered.DevValidationProvenanceHash)
 	if err != nil || hash != rendered.TargetConfigHash {
 		return nil, fmt.Errorf("%w: rendered target hash mismatch", ErrPlatformFailure)
 	}
@@ -749,6 +774,9 @@ func validateRendered(target workflow.FunctionTarget, rendered workflow.Rendered
 	}
 	if !target.Signature.Equal(rendered.TargetSignature) || len(rendered.InputParamNames) != len(target.Signature.Inputs) {
 		return nil, fmt.Errorf("%w: rendered target signature mismatch", ErrPlatformFailure)
+	}
+	if target.DevValidationProvenanceHash != rendered.DevValidationProvenanceHash || !reflect.DeepEqual(target.Function.DevValidationProfiles, rendered.DevValidationProfiles) {
+		return nil, fmt.Errorf("%w: rendered validation authority mismatch", ErrPlatformFailure)
 	}
 	for _, input := range target.Signature.Inputs {
 		want, err := workflow.InputParamName(input.Name)
@@ -1185,7 +1213,7 @@ func (renderer WorkflowTargetRenderer) RenderFunction(target workflow.FunctionTa
 	if agentCount == 0 {
 		return rendered, nil
 	}
-	hash, err := workflow.TargetConfigHash(rendered.Config)
+	hash, err := workflow.RenderedTargetConfigHash(rendered.Config, rendered.DevValidationProfiles, rendered.DevValidationProvenanceHash)
 	if err != nil {
 		return workflow.RenderedFunction{}, err
 	}
