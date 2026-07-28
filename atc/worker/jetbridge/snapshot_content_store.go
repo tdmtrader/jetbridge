@@ -286,7 +286,18 @@ func (store *SnapshotContentStore) putEndpointRequest(
 	if err != nil {
 		return 0, err
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPut, target.String(), file)
+	// NopCloser keeps ownership of the spool file here. *os.File is an
+	// io.ReadCloser, so handing it over directly makes it the request body, and
+	// the transport closes a request body it is given — "even on errors", per
+	// net/http. The deferred Close above then races it, and when the transport
+	// wins, Close returns os.ErrClosed, which errors.Join folds into the named
+	// return of an upload that in fact succeeded.
+	//
+	// That is the whole of the intermittent snapshot failure: a won race left
+	// zero replicas acknowledged, so the snapshot reported content_unavailable
+	// and every consumer saw a 503. Losing the race looked perfectly healthy,
+	// which is why it presented as flakiness rather than a defect.
+	request, err := http.NewRequestWithContext(ctx, http.MethodPut, target.String(), io.NopCloser(file))
 	if err != nil {
 		return 0, err
 	}
