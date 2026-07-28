@@ -135,6 +135,10 @@ func (b *Binder) BindAndCreate(
 	if request.ExpectedTargetConfigHash != "" && rendered.TargetConfigHash != request.ExpectedTargetConfigHash {
 		return BindResult{}, fmt.Errorf("%w: frozen target config no longer matches the rendered workflow dependencies", ErrInvalidRequest)
 	}
+	if request.ExpectedDevValidationProvenanceHash != nil &&
+		rendered.DevValidationProvenanceHash != *request.ExpectedDevValidationProvenanceHash {
+		return BindResult{}, fmt.Errorf("%w: frozen dev validation authority no longer matches the rendered workflow dependencies", ErrInvalidRequest)
+	}
 	if err := b.authorizeAwaitDefaults(ctx, admission.TeamID, rendered.Config); err != nil {
 		return BindResult{}, err
 	}
@@ -153,8 +157,9 @@ func (b *Binder) BindAndCreate(
 		SchemaVersion: definition.SchemaVersion, SignatureVersion: definition.SignatureVersion,
 		DefinitionContentHash: definition.ContentHash, FunctionID: functionID,
 		IdempotencyKey: request.IdempotencyKey, ParameterizedConfig: cloneRaw(canonical),
-		ParameterizedConfigHash: rendered.TargetConfigHash,
-		OriginKind:              admission.Origin.Kind, OriginReference: admission.Origin.Reference,
+		ParameterizedConfigHash:     rendered.TargetConfigHash,
+		DevValidationProvenanceHash: rendered.DevValidationProvenanceHash,
+		OriginKind:                  admission.Origin.Kind, OriginReference: admission.Origin.Reference,
 		CreatedBy: admission.CreatedBy, Status: db.AgentWorkflowRunStatusAdmitting,
 		RetryOfWorkflowRunID: cloneWorkflowRunID(request.RetryOf), Inputs: cloneRefs(refs),
 		ExperimentAdmission: cloneDBExperimentAdmission(request.ExperimentAdmission),
@@ -653,6 +658,11 @@ func validateAndClone(admission AdmissionContext, request BindRequest) (Admissio
 	if request.ExpectedTargetConfigHash != "" && !targetConfigHashPattern.MatchString(request.ExpectedTargetConfigHash) {
 		return AdmissionContext{}, BindRequest{}, fmt.Errorf("%w: expected target config hash must be lower-case 64-hex", ErrInvalidRequest)
 	}
+	if request.ExpectedDevValidationProvenanceHash != nil &&
+		*request.ExpectedDevValidationProvenanceHash != "" &&
+		!targetConfigHashPattern.MatchString(*request.ExpectedDevValidationProvenanceHash) {
+		return AdmissionContext{}, BindRequest{}, fmt.Errorf("%w: expected dev validation provenance hash must be empty or lower-case 64-hex", ErrInvalidRequest)
+	}
 	if request.ExperimentAdmission != nil {
 		gate := request.ExperimentAdmission
 		if gate.ExperimentID <= 0 || gate.CellID <= 0 ||
@@ -689,6 +699,7 @@ func validateAndClone(admission AdmissionContext, request BindRequest) (Admissio
 	}
 	request.Inputs = inputs
 	request.Version = cloneInt(request.Version)
+	request.ExpectedDevValidationProvenanceHash = cloneString(request.ExpectedDevValidationProvenanceHash)
 	request.RetryOf = cloneWorkflowRunID(request.RetryOf)
 	request.ExperimentAdmission = cloneExperimentAdmission(request.ExperimentAdmission)
 	return cloneAdmission(admission), request, nil
@@ -890,6 +901,10 @@ func compareCallerIntent(run db.AgentWorkflowRun, admission AdmissionContext, re
 	if request.ExpectedTargetConfigHash != "" && run.ParameterizedConfigHash != request.ExpectedTargetConfigHash {
 		return fmt.Errorf("%w: frozen target config does not match the durable workflow run", ErrInvalidRequest)
 	}
+	if request.ExpectedDevValidationProvenanceHash != nil &&
+		run.DevValidationProvenanceHash != *request.ExpectedDevValidationProvenanceHash {
+		return fmt.Errorf("%w: frozen dev validation authority does not match the durable workflow run", ErrInvalidRequest)
+	}
 	wantFunction := optionalFunctionID(request.FunctionID)
 	if run.TeamID != admission.TeamID || run.IdempotencyKey != request.IdempotencyKey ||
 		run.WorkflowName != request.WorkflowName || !equalStringPointer(run.FunctionID, wantFunction) ||
@@ -907,6 +922,7 @@ func compareAllocatedRun(run db.AgentWorkflowRun, request db.AgentWorkflowRunCre
 		run.SchemaVersion != request.SchemaVersion || run.SignatureVersion != request.SignatureVersion ||
 		run.DefinitionContentHash != request.DefinitionContentHash || !equalStringPointer(run.FunctionID, request.FunctionID) ||
 		run.IdempotencyKey != request.IdempotencyKey || run.ParameterizedConfigHash != request.ParameterizedConfigHash ||
+		run.DevValidationProvenanceHash != request.DevValidationProvenanceHash ||
 		!jsonEqual(run.ParameterizedConfig, request.ParameterizedConfig) || run.OriginKind != request.OriginKind ||
 		run.OriginReference != request.OriginReference || run.CreatedBy != request.CreatedBy ||
 		!equalRunIDPointer(run.RetryOfWorkflowRunID, request.RetryOfWorkflowRunID) {

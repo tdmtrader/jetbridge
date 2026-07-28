@@ -30,6 +30,7 @@ func TestExperimentBinderPreservesFrozenTargetIdentity(t *testing.T) {
 	ctx := context.Background()
 	version := 3
 	hash := strings.Repeat("a", 64)
+	devHash := strings.Repeat("b", 64)
 	functionID := "review"
 	inputs := map[string]snapshot.SnapshotID{"repo": 9007199254740993}
 	adapter, err := NewExperimentBinderAdapter(&experimentNativeBinderStub{bind: func(
@@ -47,6 +48,7 @@ func TestExperimentBinderPreservesFrozenTargetIdentity(t *testing.T) {
 		if request.WorkflowName != "review-flow" || request.Version == nil || *request.Version != version ||
 			request.FunctionID != functionID || request.IdempotencyKey != "experiment:11:cell:13:candidate" ||
 			request.ExpectedWorkflowDefinitionID != 41 || request.ExpectedTargetConfigHash != hash ||
+			request.ExpectedDevValidationProvenanceHash == nil || *request.ExpectedDevValidationProvenanceHash != devHash ||
 			request.ExperimentAdmission == nil ||
 			request.ExperimentAdmission.ExperimentID != 11 ||
 			request.ExperimentAdmission.CellID != 13 ||
@@ -56,7 +58,7 @@ func TestExperimentBinderPreservesFrozenTargetIdentity(t *testing.T) {
 		}
 		return BindResult{Run: db.AgentWorkflowRun{
 			ID: 9007199254741001, WorkflowDefinitionID: 41, WorkflowName: "review-flow",
-			WorkflowVersion: version, FunctionID: &functionID, ParameterizedConfigHash: hash,
+			WorkflowVersion: version, FunctionID: &functionID, ParameterizedConfigHash: hash, DevValidationProvenanceHash: devHash,
 		}}, nil
 	}})
 	if err != nil {
@@ -68,7 +70,7 @@ func TestExperimentBinderPreservesFrozenTargetIdentity(t *testing.T) {
 		Origin: experiment.Origin{Kind: "experiment", Reference: "experiment:11:cell:13"},
 	}, experiment.BindRequest{
 		WorkflowName: "review-flow", DefinitionID: 41, Version: &version, FunctionID: functionID,
-		Inputs: inputs, IdempotencyKey: "experiment:11:cell:13:candidate", ExpectedTargetConfigHash: hash,
+		Inputs: inputs, IdempotencyKey: "experiment:11:cell:13:candidate", ExpectedTargetConfigHash: hash, ExpectedDevValidationProvenanceHash: devHash,
 		AdmissionGate: experiment.AdmissionGate{
 			ExperimentID: 11, CellID: 13, Phase: experiment.AdmissionCandidate,
 		},
@@ -78,7 +80,7 @@ func TestExperimentBinderPreservesFrozenTargetIdentity(t *testing.T) {
 	}
 	if result.WorkflowRunID != 9007199254741001 || result.WorkflowDefinitionID != 41 ||
 		result.WorkflowName != "review-flow" || result.WorkflowVersion != version ||
-		result.FunctionID != functionID || result.TargetConfigHash != hash {
+		result.FunctionID != functionID || result.TargetConfigHash != hash || result.DevValidationProvenanceHash != devHash {
 		t.Fatalf("bind result = %+v", result)
 	}
 }

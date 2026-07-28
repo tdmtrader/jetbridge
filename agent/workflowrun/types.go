@@ -43,15 +43,16 @@ type AdmissionContext struct {
 }
 
 type BindRequest struct {
-	WorkflowName                 string
-	Version                      *int
-	FunctionID                   string
-	Inputs                       map[string]snapshot.SnapshotID
-	IdempotencyKey               string
-	ExpectedWorkflowDefinitionID int64
-	ExpectedTargetConfigHash     string
-	ExperimentAdmission          *ExperimentAdmissionGate
-	RetryOf                      *snapshot.WorkflowRunID
+	WorkflowName                        string
+	Version                             *int
+	FunctionID                          string
+	Inputs                              map[string]snapshot.SnapshotID
+	IdempotencyKey                      string
+	ExpectedWorkflowDefinitionID        int64
+	ExpectedTargetConfigHash            string
+	ExpectedDevValidationProvenanceHash *string
+	ExperimentAdmission                 *ExperimentAdmissionGate
+	RetryOf                             *snapshot.WorkflowRunID
 }
 
 type ExperimentAdmissionGate struct {

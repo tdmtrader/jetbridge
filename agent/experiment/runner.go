@@ -46,18 +46,19 @@ func (gate AdmissionGate) Validate() error {
 }
 
 type CandidateCell struct {
-	ID               CellID
-	ExperimentID     ID
-	FixtureID        int64
-	VariantID        int64
-	TeamID           int
-	TeamName         string
-	CreatedBy        string
-	Repetition       int
-	Target           Target
-	TargetConfigHash string
-	Inputs           map[string]snapshot.SnapshotID
-	Budget           Budget
+	ID                          CellID
+	ExperimentID                ID
+	FixtureID                   int64
+	VariantID                   int64
+	TeamID                      int
+	TeamName                    string
+	CreatedBy                   string
+	Repetition                  int
+	Target                      Target
+	TargetConfigHash            string
+	DevValidationProvenanceHash string
+	Inputs                      map[string]snapshot.SnapshotID
+	Budget                      Budget
 }
 
 func (cell CandidateCell) Validate() error {
@@ -81,6 +82,9 @@ func (cell CandidateCell) Validate() error {
 	}
 	if !hashPattern.MatchString(cell.TargetConfigHash) {
 		return fmt.Errorf("experiment runner: frozen target config hash is required")
+	}
+	if cell.DevValidationProvenanceHash != "" && !hashPattern.MatchString(cell.DevValidationProvenanceHash) {
+		return fmt.Errorf("experiment runner: frozen dev validation provenance hash is invalid")
 	}
 	if len(cell.Inputs) == 0 {
 		return fmt.Errorf("experiment runner: fixture inputs are required")
@@ -134,23 +138,25 @@ type AdmissionContext struct {
 }
 
 type BindRequest struct {
-	WorkflowName             string
-	DefinitionID             int64
-	Version                  *int
-	FunctionID               string
-	Inputs                   map[string]snapshot.SnapshotID
-	IdempotencyKey           string
-	ExpectedTargetConfigHash string
-	AdmissionGate            AdmissionGate
+	WorkflowName                        string
+	DefinitionID                        int64
+	Version                             *int
+	FunctionID                          string
+	Inputs                              map[string]snapshot.SnapshotID
+	IdempotencyKey                      string
+	ExpectedTargetConfigHash            string
+	ExpectedDevValidationProvenanceHash string
+	AdmissionGate                       AdmissionGate
 }
 
 type BindResult struct {
-	WorkflowRunID        snapshot.WorkflowRunID
-	WorkflowDefinitionID int64
-	WorkflowName         string
-	WorkflowVersion      int
-	FunctionID           string
-	TargetConfigHash     string
+	WorkflowRunID               snapshot.WorkflowRunID
+	WorkflowDefinitionID        int64
+	WorkflowName                string
+	WorkflowVersion             int
+	FunctionID                  string
+	TargetConfigHash            string
+	DevValidationProvenanceHash string
 }
 
 type WorkflowBinder interface {
@@ -284,12 +290,13 @@ func (runner *Runner) reserveCellBudget(ctx context.Context, cell CandidateCell)
 func (runner *Runner) runCell(ctx context.Context, cell CandidateCell) error {
 	version := cell.Target.Version
 	request := BindRequest{
-		WorkflowName:             cell.Target.WorkflowName,
-		DefinitionID:             cell.Target.DefinitionID,
-		Version:                  &version,
-		FunctionID:               cell.Target.FunctionID,
-		Inputs:                   cloneSnapshotIDs(cell.Inputs),
-		ExpectedTargetConfigHash: cell.TargetConfigHash,
+		WorkflowName:                        cell.Target.WorkflowName,
+		DefinitionID:                        cell.Target.DefinitionID,
+		Version:                             &version,
+		FunctionID:                          cell.Target.FunctionID,
+		Inputs:                              cloneSnapshotIDs(cell.Inputs),
+		ExpectedTargetConfigHash:            cell.TargetConfigHash,
+		ExpectedDevValidationProvenanceHash: cell.DevValidationProvenanceHash,
 		AdmissionGate: AdmissionGate{
 			ExperimentID: cell.ExperimentID,
 			CellID:       cell.ID,
@@ -339,7 +346,7 @@ func (runner *Runner) runCell(ctx context.Context, cell CandidateCell) error {
 		}
 		return nil
 	}
-	if !bindResultMatchesTarget(result, cell.Target, cell.TargetConfigHash) {
+	if !bindResultMatchesTarget(result, cell.Target, cell.TargetConfigHash, cell.DevValidationProvenanceHash) {
 		if recordErr := runner.store.RecordCandidateFailure(ctx, cell.ID, "invalid_admission"); recordErr != nil {
 			return fmt.Errorf("experiment runner: record mismatched target for cell %s: %w", cell.ID.String(), recordErr)
 		}
@@ -351,12 +358,13 @@ func (runner *Runner) runCell(ctx context.Context, cell CandidateCell) error {
 	return nil
 }
 
-func bindResultMatchesTarget(result BindResult, target Target, targetConfigHash string) bool {
+func bindResultMatchesTarget(result BindResult, target Target, targetConfigHash string, devValidationProvenanceHash string) bool {
 	return result.WorkflowDefinitionID == target.DefinitionID &&
 		result.WorkflowName == target.WorkflowName &&
 		result.WorkflowVersion == target.Version &&
 		result.FunctionID == target.FunctionID &&
-		result.TargetConfigHash == targetConfigHash
+		result.TargetConfigHash == targetConfigHash &&
+		result.DevValidationProvenanceHash == devValidationProvenanceHash
 }
 
 func terminalBinderFailureCategory(err error) (string, bool) {

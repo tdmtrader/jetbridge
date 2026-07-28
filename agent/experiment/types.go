@@ -124,11 +124,12 @@ func (target Target) Validate() error {
 }
 
 type Variant struct {
-	Label            string `json:"label"`
-	Control          bool   `json:"control"`
-	Target           Target `json:"target"`
-	SignatureHash    string `json:"signature_hash"`
-	TargetConfigHash string `json:"target_config_hash,omitempty"`
+	Label                       string `json:"label"`
+	Control                     bool   `json:"control"`
+	Target                      Target `json:"target"`
+	SignatureHash               string `json:"signature_hash"`
+	TargetConfigHash            string `json:"target_config_hash,omitempty"`
+	DevValidationProvenanceHash string `json:"dev_validation_provenance_hash,omitempty"`
 }
 
 type FixtureRole string
@@ -222,11 +223,12 @@ type EvaluatorMapping struct {
 }
 
 type Evaluator struct {
-	Target           Target                   `json:"target"`
-	TargetConfigHash string                   `json:"target_config_hash,omitempty"`
-	Signature        workflow.PublicSignature `json:"signature"`
-	Mappings         []EvaluatorMapping       `json:"mappings"`
-	MeasurementsPort string                   `json:"measurements_port"`
+	Target                      Target                   `json:"target"`
+	TargetConfigHash            string                   `json:"target_config_hash,omitempty"`
+	DevValidationProvenanceHash string                   `json:"dev_validation_provenance_hash,omitempty"`
+	Signature                   workflow.PublicSignature `json:"signature"`
+	Mappings                    []EvaluatorMapping       `json:"mappings"`
+	MeasurementsPort            string                   `json:"measurements_port"`
 }
 
 type Budget struct {
@@ -356,8 +358,15 @@ func (definition Definition) Validate() error {
 		if definition.State == StateDraft && variant.TargetConfigHash != "" {
 			return fmt.Errorf("experiment: variant %q target_config_hash is server-derived at start", variant.Label)
 		}
+		if definition.State == StateDraft && variant.DevValidationProvenanceHash != "" {
+			return fmt.Errorf("experiment: variant %q dev_validation_provenance_hash is server-derived at start", variant.Label)
+		}
 		if definition.State != StateDraft && !hashPattern.MatchString(variant.TargetConfigHash) {
 			return fmt.Errorf("experiment: variant %q has invalid frozen target_config_hash", variant.Label)
+		}
+		if definition.State != StateDraft && variant.DevValidationProvenanceHash != "" &&
+			!hashPattern.MatchString(variant.DevValidationProvenanceHash) {
+			return fmt.Errorf("experiment: variant %q has invalid frozen dev_validation_provenance_hash", variant.Label)
 		}
 	}
 	if controls != 1 {
@@ -388,8 +397,15 @@ func (definition Definition) Validate() error {
 	if definition.State == StateDraft && definition.Evaluator.TargetConfigHash != "" {
 		return fmt.Errorf("experiment: evaluator target_config_hash is server-derived at start")
 	}
+	if definition.State == StateDraft && definition.Evaluator.DevValidationProvenanceHash != "" {
+		return fmt.Errorf("experiment: evaluator dev_validation_provenance_hash is server-derived at start")
+	}
 	if definition.State != StateDraft && !hashPattern.MatchString(definition.Evaluator.TargetConfigHash) {
 		return fmt.Errorf("experiment: evaluator has invalid frozen target_config_hash")
+	}
+	if definition.State != StateDraft && definition.Evaluator.DevValidationProvenanceHash != "" &&
+		!hashPattern.MatchString(definition.Evaluator.DevValidationProvenanceHash) {
+		return fmt.Errorf("experiment: evaluator has invalid frozen dev_validation_provenance_hash")
 	}
 	if err := definition.Budget.Validate(); err != nil {
 		return err

@@ -174,6 +174,12 @@ func TestDefinitionRejectsClientSuppliedFrozenTargetIdentity(t *testing.T) {
 		{name: "evaluator", mutate: func(value *experiment.Definition) {
 			value.Evaluator.TargetConfigHash = strings.Repeat("b", 64)
 		}},
+		{name: "variant dev validation provenance", mutate: func(value *experiment.Definition) {
+			value.Variants[0].DevValidationProvenanceHash = strings.Repeat("c", 64)
+		}},
+		{name: "evaluator dev validation provenance", mutate: func(value *experiment.Definition) {
+			value.Evaluator.DevValidationProvenanceHash = strings.Repeat("d", 64)
+		}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

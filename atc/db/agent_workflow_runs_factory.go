@@ -100,15 +100,17 @@ func (factory *agentWorkflowRunsFactory) CreateWithInputs(
 			 workflow_version, schema_version, signature_version,
 			 definition_content_hash, function_id, idempotency_key,
 			 parameterized_config, parameterized_config_hash,
+			 dev_validation_provenance_hash,
 			 origin_kind, origin_reference, created_by, status,
 			 retry_of_workflow_run_id)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-		        $11, $12, $13, $14, $15, $16, $17)
+		        $11, $12, $13, $14, $15, $16, $17, $18)
 		ON CONFLICT (team_id, idempotency_key) DO NOTHING
 	`, request.TeamID, request.TeamName, request.WorkflowDefinitionID, request.WorkflowName,
 		request.WorkflowVersion, request.SchemaVersion, request.SignatureVersion,
 		request.DefinitionContentHash, optionalString(request.FunctionID), request.IdempotencyKey,
 		[]byte(request.ParameterizedConfig), request.ParameterizedConfigHash,
+		request.DevValidationProvenanceHash,
 		request.OriginKind, request.OriginReference, request.CreatedBy, string(request.Status),
 		optionalInt64(request.RetryOfWorkflowRunID))
 	if err != nil {
@@ -167,31 +169,33 @@ func lockOpenExperimentWorkflowRunAdmission(
 	}
 	gate := request.ExperimentAdmission
 	var (
-		state               string
-		cellStatus          string
-		candidateRun        sql.NullInt64
-		evaluatorRun        sql.NullInt64
-		variantDefinition   int
-		variantName         string
-		variantVersion      int
-		variantFunction     sql.NullString
-		variantConfigHash   sql.NullString
-		evalDefinition      int
-		evalName            string
-		evalVersion         int
-		evalFunction        sql.NullString
-		evalConfigHash      sql.NullString
-		requiresReservation bool
-		hasReservation      bool
+		state                              string
+		cellStatus                         string
+		candidateRun                       sql.NullInt64
+		evaluatorRun                       sql.NullInt64
+		variantDefinition                  int
+		variantName                        string
+		variantVersion                     int
+		variantFunction                    sql.NullString
+		variantConfigHash                  sql.NullString
+		variantDevValidationProvenanceHash sql.NullString
+		evalDefinition                     int
+		evalName                           string
+		evalVersion                        int
+		evalFunction                       sql.NullString
+		evalConfigHash                     sql.NullString
+		evalDevValidationProvenanceHash    sql.NullString
+		requiresReservation                bool
+		hasReservation                     bool
 	)
 	err := tx.QueryRowContext(ctx, `
 		SELECT experiment.state, cell.status, cell.candidate_workflow_run_id,
 		       evaluation.evaluator_workflow_run_id,
 		       variant.definition_id, variant.workflow_name, variant.workflow_version,
-		       variant.function_id, variant.target_config_hash,
+		       variant.function_id, variant.target_config_hash, variant.dev_validation_provenance_hash,
 		       experiment.evaluator_definition_id, experiment.evaluator_workflow_name,
 		       experiment.evaluator_workflow_version, experiment.evaluator_function_id,
-		       experiment.evaluator_target_config_hash,
+		       experiment.evaluator_target_config_hash, experiment.evaluator_dev_validation_provenance_hash,
 		       (experiment.per_cell_budget_usd > 0 OR experiment.total_budget_usd > 0
 		        OR experiment.max_tokens_per_cell > 0),
 		       EXISTS (
@@ -206,8 +210,8 @@ func lockOpenExperimentWorkflowRunAdmission(
 		FOR UPDATE OF experiment, cell
 	`, gate.ExperimentID, gate.CellID, request.TeamID).Scan(
 		&state, &cellStatus, &candidateRun, &evaluatorRun,
-		&variantDefinition, &variantName, &variantVersion, &variantFunction, &variantConfigHash,
-		&evalDefinition, &evalName, &evalVersion, &evalFunction, &evalConfigHash,
+		&variantDefinition, &variantName, &variantVersion, &variantFunction, &variantConfigHash, &variantDevValidationProvenanceHash,
+		&evalDefinition, &evalName, &evalVersion, &evalFunction, &evalConfigHash, &evalDevValidationProvenanceHash,
 		&requiresReservation, &hasReservation,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -227,7 +231,7 @@ func lockOpenExperimentWorkflowRunAdmission(
 		if cellStatus != "pending" && cellStatus != "running" || candidateRun.Valid ||
 			!experimentAdmissionTargetMatches(
 				request, variantDefinition, variantName, variantVersion,
-				variantFunction, variantConfigHash,
+				variantFunction, variantConfigHash, variantDevValidationProvenanceHash,
 			) {
 			return ErrAgentWorkflowRunExperimentAdmissionClosed
 		}
@@ -235,7 +239,7 @@ func lockOpenExperimentWorkflowRunAdmission(
 		if cellStatus != "running" || !candidateRun.Valid || evaluatorRun.Valid ||
 			!experimentAdmissionTargetMatches(
 				request, evalDefinition, evalName, evalVersion,
-				evalFunction, evalConfigHash,
+				evalFunction, evalConfigHash, evalDevValidationProvenanceHash,
 			) {
 			return ErrAgentWorkflowRunExperimentAdmissionClosed
 		}
@@ -254,12 +258,15 @@ func experimentAdmissionTargetMatches(
 	workflowVersion int,
 	functionID sql.NullString,
 	targetConfigHash sql.NullString,
+	devValidationProvenanceHash sql.NullString,
 ) bool {
 	if request.WorkflowDefinitionID != definitionID ||
 		request.WorkflowName != workflowName ||
 		request.WorkflowVersion != workflowVersion ||
 		!targetConfigHash.Valid ||
-		request.ParameterizedConfigHash != targetConfigHash.String {
+		request.ParameterizedConfigHash != targetConfigHash.String ||
+		!devValidationProvenanceHash.Valid ||
+		request.DevValidationProvenanceHash != devValidationProvenanceHash.String {
 		return false
 	}
 	if request.FunctionID == nil {
@@ -450,6 +457,7 @@ func validateIdempotentWorkflowRun(run AgentWorkflowRun, request AgentWorkflowRu
 		run.IdempotencyKey != request.IdempotencyKey ||
 		!semanticJSONEqual(run.ParameterizedConfig, request.ParameterizedConfig) ||
 		run.ParameterizedConfigHash != request.ParameterizedConfigHash ||
+		run.DevValidationProvenanceHash != request.DevValidationProvenanceHash ||
 		run.OriginKind != request.OriginKind || run.OriginReference != request.OriginReference ||
 		run.CreatedBy != request.CreatedBy ||
 		!equalWorkflowRunID(run.RetryOfWorkflowRunID, request.RetryOfWorkflowRunID) {

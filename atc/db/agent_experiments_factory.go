@@ -354,9 +354,10 @@ func (factory *agentExperimentsFactory) Start(
 	for index, variant := range stored.Definition.Variants {
 		result, err := tx.ExecContext(ctx, `
 			UPDATE agent_experiment_variants
-			SET target_config_hash = $3
+			SET target_config_hash = $3, dev_validation_provenance_hash = $4
 			WHERE experiment_id = $1 AND label = $2 AND target_config_hash IS NULL
-		`, int64(id), variant.Label, frozenVariants[index])
+			  AND dev_validation_provenance_hash IS NULL
+		`, int64(id), variant.Label, frozenVariants[index].targetConfigHash, frozenVariants[index].devValidationProvenanceHash)
 		if err != nil {
 			return experiment.StoredExperiment{}, err
 		}
@@ -397,9 +398,10 @@ func (factory *agentExperimentsFactory) Start(
 	result, err = tx.ExecContext(ctx, `
 		UPDATE agent_experiments
 		SET state = 'running', evaluator_target_config_hash = $4,
+		    evaluator_dev_validation_provenance_hash = $5,
 		    started_at = now(), updated_at = now(), revision = revision + 1
 		WHERE id = $1 AND team_id = $2 AND state = 'draft' AND revision = $3
-	`, int64(id), teamID, revision, frozenEvaluator)
+	`, int64(id), teamID, revision, frozenEvaluator.targetConfigHash, frozenEvaluator.devValidationProvenanceHash)
 	if err != nil {
 		return experiment.StoredExperiment{}, err
 	}
@@ -463,9 +465,14 @@ func (factory *agentExperimentsFactory) PreflightStart(
 
 type experimentStartPreflight struct {
 	stored          experiment.StoredExperiment
-	frozenVariants  []string
-	frozenEvaluator string
+	frozenVariants  []frozenExperimentTarget
+	frozenEvaluator frozenExperimentTarget
 	expectedCells   int
+}
+
+type frozenExperimentTarget struct {
+	targetConfigHash            string
+	devValidationProvenanceHash string
 }
 
 func (factory *agentExperimentsFactory) preflightStartLocked(
@@ -979,7 +986,8 @@ func (factory *agentExperimentsFactory) CreateAndRecordCandidateRun(
 		result.WorkflowName == cell.Target.WorkflowName &&
 		result.WorkflowVersion == cell.Target.Version &&
 		result.FunctionID == cell.Target.FunctionID &&
-		result.TargetConfigHash == cell.TargetConfigHash {
+		result.TargetConfigHash == cell.TargetConfigHash &&
+		result.DevValidationProvenanceHash == cell.DevValidationProvenanceHash {
 		var err error
 		admission.Recorded, err = recordCandidateRun(ctx, factory.conn, cell.ID, result.WorkflowRunID)
 		if err != nil {
@@ -1014,6 +1022,7 @@ func recordCandidateRun(
 		  AND linked_run.workflow_version = variant.workflow_version
 		  AND linked_run.function_id IS NOT DISTINCT FROM variant.function_id
 		  AND linked_run.parameterized_config_hash = variant.target_config_hash
+		  AND linked_run.dev_validation_provenance_hash = variant.dev_validation_provenance_hash
 		  AND linked_run.origin_kind = 'experiment'
 		  AND linked_run.origin_reference =
 		      'experiment:' || cell.experiment_id::text || ':cell:' || cell.id::text
@@ -1185,7 +1194,8 @@ func (factory *agentExperimentsFactory) CreateAndRecordEvaluatorRun(
 		result.WorkflowName == cell.Evaluator.Target.WorkflowName &&
 		result.WorkflowVersion == cell.Evaluator.Target.Version &&
 		result.FunctionID == cell.Evaluator.Target.FunctionID &&
-		result.TargetConfigHash == cell.Evaluator.TargetConfigHash {
+		result.TargetConfigHash == cell.Evaluator.TargetConfigHash &&
+		result.DevValidationProvenanceHash == cell.Evaluator.DevValidationProvenanceHash {
 		var err error
 		admission.Recorded, err = factory.RecordEvaluatorRun(ctx, cell.ID, result.WorkflowRunID)
 		if err != nil {
@@ -1219,6 +1229,7 @@ func recordEvaluatorRun(
 		  AND linked_run.workflow_version = experiment.evaluator_workflow_version
 		  AND linked_run.function_id IS NOT DISTINCT FROM experiment.evaluator_function_id
 		  AND linked_run.parameterized_config_hash = experiment.evaluator_target_config_hash
+		  AND linked_run.dev_validation_provenance_hash = experiment.evaluator_dev_validation_provenance_hash
 		  AND linked_run.origin_kind = 'experiment'
 		  AND linked_run.origin_reference =
 		      'experiment:' || cell.experiment_id::text || ':cell:' || cell.id::text || ':evaluator'
@@ -1782,7 +1793,7 @@ func loadStoredExperiment(
 	var evaluatorKind, evaluatorWorkflowName string
 	var evaluatorDefinitionID int64
 	var evaluatorVersion int
-	var evaluatorFunctionID, evaluatorTargetConfigHash sql.NullString
+	var evaluatorFunctionID, evaluatorTargetConfigHash, evaluatorDevValidationProvenanceHash sql.NullString
 	var evaluatorMeasurementsPort string
 	var startedAt, completedAt sql.NullTime
 	err := queryer.QueryRowContext(ctx, `
@@ -1790,7 +1801,7 @@ func loadStoredExperiment(
 		       per_cell_budget_usd::double precision, total_budget_usd::double precision,
 		       max_tokens_per_cell, evaluator_target_kind, evaluator_workflow_name,
 		       evaluator_definition_id, evaluator_workflow_version, evaluator_function_id,
-		       evaluator_signature, evaluator_target_config_hash,
+		       evaluator_signature, evaluator_target_config_hash, evaluator_dev_validation_provenance_hash,
 		       evaluator_measurements_port, created_by,
 		       created_at, updated_at, started_at, completed_at
 		FROM agent_experiments
@@ -1800,7 +1811,7 @@ func loadStoredExperiment(
 		&candidateSignature, &stored.Definition.Repetitions, &stored.Definition.Budget.PerCellUSD,
 		&stored.Definition.Budget.TotalUSD, &stored.Definition.Budget.MaxTokensPerCell,
 		&evaluatorKind, &evaluatorWorkflowName, &evaluatorDefinitionID, &evaluatorVersion,
-		&evaluatorFunctionID, &evaluatorSignature, &evaluatorTargetConfigHash,
+		&evaluatorFunctionID, &evaluatorSignature, &evaluatorTargetConfigHash, &evaluatorDevValidationProvenanceHash,
 		&evaluatorMeasurementsPort, &stored.CreatedBy,
 		&stored.CreatedAt, &stored.UpdatedAt, &startedAt, &completedAt,
 	)
@@ -1821,6 +1832,9 @@ func loadStoredExperiment(
 	if evaluatorTargetConfigHash.Valid {
 		stored.Definition.Evaluator.TargetConfigHash = evaluatorTargetConfigHash.String
 	}
+	if evaluatorDevValidationProvenanceHash.Valid {
+		stored.Definition.Evaluator.DevValidationProvenanceHash = evaluatorDevValidationProvenanceHash.String
+	}
 	if err := json.Unmarshal(evaluatorSignature, &stored.Definition.Evaluator.Signature); err != nil {
 		return experiment.StoredExperiment{}, err
 	}
@@ -1834,7 +1848,7 @@ func loadStoredExperiment(
 
 	variantRows, err := queryer.QueryContext(ctx, `
 		SELECT label, is_control, target_kind, workflow_name, definition_id,
-		       workflow_version, function_id, signature_hash, target_config_hash
+		       workflow_version, function_id, signature_hash, target_config_hash, dev_validation_provenance_hash
 		FROM agent_experiment_variants
 		WHERE experiment_id = $1 ORDER BY id
 	`, int64(id))
@@ -1844,10 +1858,10 @@ func loadStoredExperiment(
 	for variantRows.Next() {
 		var variant experiment.Variant
 		var kind string
-		var functionID, targetConfigHash sql.NullString
+		var functionID, targetConfigHash, devValidationProvenanceHash sql.NullString
 		if err := variantRows.Scan(&variant.Label, &variant.Control, &kind, &variant.Target.WorkflowName,
 			&variant.Target.DefinitionID, &variant.Target.Version, &functionID, &variant.SignatureHash,
-			&targetConfigHash); err != nil {
+			&targetConfigHash, &devValidationProvenanceHash); err != nil {
 			_ = variantRows.Close()
 			return experiment.StoredExperiment{}, err
 		}
@@ -1857,6 +1871,9 @@ func loadStoredExperiment(
 		}
 		if targetConfigHash.Valid {
 			variant.TargetConfigHash = targetConfigHash.String
+		}
+		if devValidationProvenanceHash.Valid {
+			variant.DevValidationProvenanceHash = devValidationProvenanceHash.String
 		}
 		stored.Definition.Variants = append(stored.Definition.Variants, variant)
 	}
@@ -1967,13 +1984,13 @@ func loadStoredExperiment(
 func loadCandidateCell(ctx context.Context, queryer agentExperimentQueryer, cellID experiment.CellID) (experiment.CandidateCell, error) {
 	var cell experiment.CandidateCell
 	var kind string
-	var functionID, targetConfigHash sql.NullString
+	var functionID, targetConfigHash, devValidationProvenanceHash sql.NullString
 	err := queryer.QueryRowContext(ctx, `
 		SELECT cell.id, cell.experiment_id, cell.fixture_id, cell.variant_id,
 		       experiment.team_id, experiment.team_name, experiment.created_by,
 		       cell.repetition, variant.target_kind, variant.workflow_name,
 		       variant.definition_id, variant.workflow_version, variant.function_id,
-		       variant.target_config_hash,
+		       variant.target_config_hash, variant.dev_validation_provenance_hash,
 		       experiment.per_cell_budget_usd::double precision,
 		       experiment.total_budget_usd::double precision,
 		       experiment.max_tokens_per_cell
@@ -1984,7 +2001,7 @@ func loadCandidateCell(ctx context.Context, queryer agentExperimentQueryer, cell
 	`, int64(cellID)).Scan(&cell.ID, &cell.ExperimentID, &cell.FixtureID, &cell.VariantID,
 		&cell.TeamID, &cell.TeamName, &cell.CreatedBy, &cell.Repetition, &kind,
 		&cell.Target.WorkflowName, &cell.Target.DefinitionID, &cell.Target.Version, &functionID,
-		&targetConfigHash, &cell.Budget.PerCellUSD, &cell.Budget.TotalUSD,
+		&targetConfigHash, &devValidationProvenanceHash, &cell.Budget.PerCellUSD, &cell.Budget.TotalUSD,
 		&cell.Budget.MaxTokensPerCell)
 	if err != nil {
 		return experiment.CandidateCell{}, err
@@ -1996,6 +2013,9 @@ func loadCandidateCell(ctx context.Context, queryer agentExperimentQueryer, cell
 	if targetConfigHash.Valid {
 		cell.TargetConfigHash = targetConfigHash.String
 	}
+	if devValidationProvenanceHash.Valid {
+		cell.DevValidationProvenanceHash = devValidationProvenanceHash.String
+	}
 	cell.Inputs, err = loadFixtureInputs(ctx, queryer, cell.FixtureID)
 	return cell, err
 }
@@ -2004,7 +2024,7 @@ func loadEvaluationCell(ctx context.Context, queryer agentExperimentQueryer, cel
 	var cell experiment.EvaluationCell
 	var candidateSignature, evaluatorSignature []byte
 	var evaluatorKind string
-	var evaluatorFunctionID, evaluatorTargetConfigHash sql.NullString
+	var evaluatorFunctionID, evaluatorTargetConfigHash, evaluatorDevValidationProvenanceHash sql.NullString
 	var evaluatorRunID sql.NullInt64
 	var role string
 	err := queryer.QueryRowContext(ctx, `
@@ -2014,7 +2034,7 @@ func loadEvaluationCell(ctx context.Context, queryer agentExperimentQueryer, cel
 		       experiment.evaluator_target_kind, experiment.evaluator_workflow_name,
 		       experiment.evaluator_definition_id, experiment.evaluator_workflow_version,
 		       experiment.evaluator_function_id, experiment.evaluator_signature,
-		       experiment.evaluator_target_config_hash,
+		       experiment.evaluator_target_config_hash, experiment.evaluator_dev_validation_provenance_hash,
 		       experiment.evaluator_measurements_port, fixture.id, fixture.role,
 		       experiment.per_cell_budget_usd::double precision,
 		       experiment.total_budget_usd::double precision,
@@ -2028,7 +2048,7 @@ func loadEvaluationCell(ctx context.Context, queryer agentExperimentQueryer, cel
 		&cell.CreatedBy, &cell.CandidateWorkflowRunID, &evaluatorRunID, &candidateSignature,
 		&evaluatorKind, &cell.Evaluator.Target.WorkflowName, &cell.Evaluator.Target.DefinitionID,
 		&cell.Evaluator.Target.Version, &evaluatorFunctionID, &evaluatorSignature,
-		&evaluatorTargetConfigHash,
+		&evaluatorTargetConfigHash, &evaluatorDevValidationProvenanceHash,
 		&cell.Evaluator.MeasurementsPort, new(int64), &role,
 		&cell.Budget.PerCellUSD, &cell.Budget.TotalUSD, &cell.Budget.MaxTokensPerCell)
 	if err != nil {
@@ -2040,6 +2060,9 @@ func loadEvaluationCell(ctx context.Context, queryer agentExperimentQueryer, cel
 	}
 	if evaluatorTargetConfigHash.Valid {
 		cell.Evaluator.TargetConfigHash = evaluatorTargetConfigHash.String
+	}
+	if evaluatorDevValidationProvenanceHash.Valid {
+		cell.Evaluator.DevValidationProvenanceHash = evaluatorDevValidationProvenanceHash.String
 	}
 	if evaluatorRunID.Valid {
 		value := snapshot.WorkflowRunID(evaluatorRunID.Int64)
@@ -2321,43 +2344,48 @@ func freezeAuthoritativeExperimentTargets(
 	definition experiment.Definition,
 	renderer experiment.TargetRenderer,
 	globalCapEnabled bool,
-) ([]string, string, error) {
+) ([]frozenExperimentTarget, frozenExperimentTarget, error) {
 	if renderer == nil {
-		return nil, "", fmt.Errorf("%w: trusted experiment target renderer is unavailable", experiment.ErrInvalidDefinition)
+		return nil, frozenExperimentTarget{}, fmt.Errorf("%w: trusted experiment target renderer is unavailable", experiment.ErrInvalidDefinition)
 	}
-	render := func(label string, requested experiment.Target) (workflow.RenderedFunction, error) {
+	render := func(label string, requested experiment.Target) (workflow.RenderedFunction, frozenExperimentTarget, error) {
 		target, err := loadAuthoritativeExperimentTarget(ctx, queryer, requested)
 		if err != nil {
-			return workflow.RenderedFunction{}, fmt.Errorf("%w: %s target: %v", experiment.ErrInvalidDefinition, label, err)
+			return workflow.RenderedFunction{}, frozenExperimentTarget{}, fmt.Errorf("%w: %s target: %v", experiment.ErrInvalidDefinition, label, err)
 		}
 		rendered, err := renderer.RenderFunction(target)
 		if err != nil {
-			return workflow.RenderedFunction{}, fmt.Errorf("%w: %s target dependencies are not renderable: %v", experiment.ErrInvalidDefinition, label, err)
+			return workflow.RenderedFunction{}, frozenExperimentTarget{}, fmt.Errorf("%w: %s target dependencies are not renderable: %v", experiment.ErrInvalidDefinition, label, err)
 		}
-		hash, err := workflow.TargetConfigHash(rendered.Config)
+		hash, err := workflow.RenderedTargetConfigHash(rendered.Config, rendered.DevValidationProfiles, rendered.DevValidationProvenanceHash)
 		if err != nil || rendered.TargetConfigHash != hash {
-			return workflow.RenderedFunction{}, fmt.Errorf("%w: %s rendered target config identity is invalid", experiment.ErrInvalidDefinition, label)
+			return workflow.RenderedFunction{}, frozenExperimentTarget{}, fmt.Errorf("%w: %s rendered target config identity is invalid", experiment.ErrInvalidDefinition, label)
 		}
 		name, err := workflow.TemplateName(target.Kind, target.WorkflowName, target.WorkflowVersion, target.FunctionID, hash)
 		if err != nil || rendered.TemplateName != name || !target.Signature.Equal(rendered.TargetSignature) {
-			return workflow.RenderedFunction{}, fmt.Errorf("%w: %s rendered target identity is invalid", experiment.ErrInvalidDefinition, label)
+			return workflow.RenderedFunction{}, frozenExperimentTarget{}, fmt.Errorf("%w: %s rendered target identity is invalid", experiment.ErrInvalidDefinition, label)
 		}
-		return rendered, nil
+		if err := workflow.ValidateDevValidationAuthority(rendered.DevValidationProfiles, rendered.DevValidationProvenanceHash); err != nil ||
+			rendered.DevValidationProvenanceHash != target.DevValidationProvenanceHash ||
+			rendered.DevValidationProvenanceHash != target.Function.DevValidationProvenanceHash {
+			return workflow.RenderedFunction{}, frozenExperimentTarget{}, fmt.Errorf("%w: %s rendered dev validation authority is invalid", experiment.ErrInvalidDefinition, label)
+		}
+		return rendered, frozenExperimentTarget{targetConfigHash: rendered.TargetConfigHash, devValidationProvenanceHash: rendered.DevValidationProvenanceHash}, nil
 	}
 
-	variants := make([]string, len(definition.Variants))
+	variants := make([]frozenExperimentTarget, len(definition.Variants))
 	candidateConfigs := make([]atc.Config, len(definition.Variants))
 	for index, variant := range definition.Variants {
-		rendered, err := render("variant "+variant.Label, variant.Target)
+		rendered, frozen, err := render("variant "+variant.Label, variant.Target)
 		if err != nil {
-			return nil, "", err
+			return nil, frozenExperimentTarget{}, err
 		}
-		variants[index] = rendered.TargetConfigHash
+		variants[index] = frozen
 		candidateConfigs[index] = rendered.Config
 	}
-	evaluator, err := render("evaluator", definition.Evaluator.Target)
+	evaluator, frozenEvaluator, err := render("evaluator", definition.Evaluator.Target)
 	if err != nil {
-		return nil, "", err
+		return nil, frozenExperimentTarget{}, err
 	}
 	if err := experiment.ValidateExecutionBudgetsForGlobalCap(
 		definition.Budget,
@@ -2366,9 +2394,9 @@ func freezeAuthoritativeExperimentTargets(
 		evaluator.Config,
 		globalCapEnabled,
 	); err != nil {
-		return nil, "", fmt.Errorf("%w: %v", experiment.ErrInvalidDefinition, err)
+		return nil, frozenExperimentTarget{}, fmt.Errorf("%w: %v", experiment.ErrInvalidDefinition, err)
 	}
-	return variants, evaluator.TargetConfigHash, nil
+	return variants, frozenEvaluator, nil
 }
 
 func loadAuthoritativeExperimentTarget(

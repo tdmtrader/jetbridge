@@ -1125,8 +1125,12 @@ func (r SealRequest) Validate() error {
 		declarations[declaration.Name] = declaration
 	}
 	for output, authority := range r.ValidationAttestationAuthorities {
-		if _, found := declarations[output]; !found {
+		declaration, found := declarations[output]
+		if !found {
 			return fmt.Errorf("snapshot: validation attestation authority names undeclared output %q", output)
+		}
+		if declaration.Type != TypeRef("validation/v1") {
+			return fmt.Errorf("snapshot: validation attestation authority output %q must declare validation/v1", output)
 		}
 		if err := authority.Validate(); err != nil {
 			return fmt.Errorf("snapshot: output %q validation attestation authority: %w", output, err)
@@ -1160,6 +1164,11 @@ func (r SealRequest) Validate() error {
 			return fmt.Errorf("snapshot: duplicate output source port %q", output.Port.Name)
 		}
 		produced[output.Port.Name] = struct{}{}
+		if output.Port.Type == TypeRef("validation/v1") {
+			if _, found := r.ValidationAttestationAuthorities[output.Port.Name]; !found {
+				return fmt.Errorf("snapshot: produced validation/v1 output %q requires validation attestation authority", output.Port.Name)
+			}
+		}
 		if _, duplicate := clientKeys[output.ClientKey]; duplicate {
 			return fmt.Errorf("snapshot: duplicate output source client key %q", output.ClientKey)
 		}

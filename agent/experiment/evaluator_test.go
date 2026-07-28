@@ -42,7 +42,8 @@ func (store *evaluationStore) CreateAndRecordEvaluatorRun(
 		result.WorkflowName != cell.Evaluator.Target.WorkflowName ||
 		result.WorkflowVersion != cell.Evaluator.Target.Version ||
 		result.FunctionID != cell.Evaluator.Target.FunctionID ||
-		result.TargetConfigHash != cell.Evaluator.TargetConfigHash {
+		result.TargetConfigHash != cell.Evaluator.TargetConfigHash ||
+		result.DevValidationProvenanceHash != cell.Evaluator.DevValidationProvenanceHash {
 		return admission, nil
 	}
 	recorded, err := store.RecordEvaluatorRun(ctx, cell.ID, result.WorkflowRunID)
@@ -118,6 +119,7 @@ func (reader *measurementReader) ReadMeasurements(_ context.Context, _ int, id s
 
 func TestEvaluatorBindsPinnedEvaluatorFromFixtureAndCandidateOutputs(t *testing.T) {
 	cell := evaluationCell()
+	cell.Evaluator.DevValidationProvenanceHash = strings.Repeat("d", 64)
 	store := &evaluationStore{claims: []experiment.EvaluationCell{cell}}
 	runs := &evaluationRuns{observations: map[snapshot.WorkflowRunID]experiment.RunObservation{
 		cell.CandidateWorkflowRunID: {Status: experiment.ObservedRunSucceeded, Outputs: map[string]snapshot.SnapshotRef{
@@ -141,6 +143,7 @@ func TestEvaluatorBindsPinnedEvaluatorFromFixtureAndCandidateOutputs(t *testing.
 		gotRequest.Inputs["candidate"] != 201 || gotRequest.Inputs["repo"] != 101 ||
 		gotRequest.IdempotencyKey != "experiment:50:cell:1:evaluator" ||
 		gotRequest.ExpectedTargetConfigHash != cell.Evaluator.TargetConfigHash ||
+		gotRequest.ExpectedDevValidationProvenanceHash != cell.Evaluator.DevValidationProvenanceHash ||
 		gotRequest.AdmissionGate != (experiment.AdmissionGate{
 			ExperimentID: cell.ExperimentID,
 			CellID:       cell.ID,

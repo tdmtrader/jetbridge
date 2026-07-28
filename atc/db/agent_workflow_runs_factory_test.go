@@ -201,6 +201,25 @@ var _ = Describe("AgentWorkflowRunsFactory", func() {
 		Expect(second.ID).To(Equal(first.ID))
 	})
 
+	It("persists validation provenance and treats it as idempotency identity", func() {
+		firstRequest := request("validation-provenance")
+		firstRequest.DevValidationProvenanceHash = strings.Repeat("d", 64)
+		first, created, err := factory.CreateWithInputs(ctx, firstRequest)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(created).To(BeTrue())
+		Expect(first.DevValidationProvenanceHash).To(Equal(strings.Repeat("d", 64)))
+
+		replay, created, err := factory.CreateWithInputs(ctx, firstRequest)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(created).To(BeFalse())
+		Expect(replay.DevValidationProvenanceHash).To(Equal(strings.Repeat("d", 64)))
+
+		conflicting := firstRequest
+		conflicting.DevValidationProvenanceHash = strings.Repeat("e", 64)
+		_, _, err = factory.CreateWithInputs(ctx, conflicting)
+		Expect(err).To(MatchError(ContainSubstring("idempotency")))
+	})
+
 	It("replays durable identity after a team rename and input expiry", func() {
 		first, created, err := factory.CreateWithInputs(ctx, request("historical-replay"))
 		Expect(err).NotTo(HaveOccurred())

@@ -79,6 +79,10 @@ func (cell EvaluationCell) Validate() error {
 	if !hashPattern.MatchString(cell.Evaluator.TargetConfigHash) {
 		return fmt.Errorf("experiment evaluator: frozen target config hash is required")
 	}
+	if cell.Evaluator.DevValidationProvenanceHash != "" &&
+		!hashPattern.MatchString(cell.Evaluator.DevValidationProvenanceHash) {
+		return fmt.Errorf("experiment evaluator: frozen dev validation provenance hash is invalid")
+	}
 	switch cell.Role {
 	case FixtureNormal:
 		if len(cell.Assertions) != 0 {
@@ -255,12 +259,13 @@ func (evaluator *EvaluatorRunner) bind(ctx context.Context, cell EvaluationCell)
 	}
 	version := cell.Evaluator.Target.Version
 	request := BindRequest{
-		WorkflowName:             cell.Evaluator.Target.WorkflowName,
-		DefinitionID:             cell.Evaluator.Target.DefinitionID,
-		Version:                  &version,
-		FunctionID:               cell.Evaluator.Target.FunctionID,
-		Inputs:                   inputs,
-		ExpectedTargetConfigHash: cell.Evaluator.TargetConfigHash,
+		WorkflowName:                        cell.Evaluator.Target.WorkflowName,
+		DefinitionID:                        cell.Evaluator.Target.DefinitionID,
+		Version:                             &version,
+		FunctionID:                          cell.Evaluator.Target.FunctionID,
+		Inputs:                              inputs,
+		ExpectedTargetConfigHash:            cell.Evaluator.TargetConfigHash,
+		ExpectedDevValidationProvenanceHash: cell.Evaluator.DevValidationProvenanceHash,
 		AdmissionGate: AdmissionGate{
 			ExperimentID: cell.ExperimentID,
 			CellID:       cell.ID,
@@ -305,7 +310,7 @@ func (evaluator *EvaluatorRunner) bind(ctx context.Context, cell EvaluationCell)
 	if err := result.WorkflowRunID.Validate(); err != nil {
 		return evaluator.complete(ctx, cell.ID, CellEvaluatorFailure, nil)
 	}
-	if !bindResultMatchesTarget(result, cell.Evaluator.Target, cell.Evaluator.TargetConfigHash) {
+	if !bindResultMatchesTarget(result, cell.Evaluator.Target, cell.Evaluator.TargetConfigHash, cell.Evaluator.DevValidationProvenanceHash) {
 		return evaluator.complete(ctx, cell.ID, CellEvaluatorFailure, nil)
 	}
 	if !created.Recorded {

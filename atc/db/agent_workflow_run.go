@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -11,6 +12,8 @@ import (
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc/db/encryption"
 )
+
+var agentDevValidationProvenancePattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 type AgentWorkflowRunStatus string
 
@@ -100,62 +103,64 @@ func (direction AgentWorkflowRunSnapshotDirection) Validate() error {
 }
 
 type AgentWorkflowRun struct {
-	ID                      snapshot.WorkflowRunID
-	TeamID                  int
-	TeamName                string
-	WorkflowDefinitionID    int
-	WorkflowName            string
-	WorkflowVersion         int
-	SchemaVersion           int
-	SignatureVersion        int
-	DefinitionContentHash   string
-	FunctionID              *string
-	IdempotencyKey          string
-	ParameterizedConfig     json.RawMessage
-	ParameterizedConfigHash string
-	ConcreteConfig          json.RawMessage
-	ConcreteConfigHash      *string
-	ActualPlan              json.RawMessage
-	ActualPlanHash          *string
-	ResolvedDependencies    json.RawMessage
-	OriginKind              string
-	OriginReference         string
-	CreatedBy               string
-	Status                  AgentWorkflowRunStatus
-	ExecutionStatus         *AgentWorkflowRunExecutionStatus
-	ErrorMessage            string
-	RetryOfWorkflowRunID    *snapshot.WorkflowRunID
-	PipelineRunID           *int
-	TemplatePipelineID      *int
-	InstancePipelineID      *int
-	PlannedBuildID          *int64
-	ReconcileAfter          time.Time
-	CreatedAt               time.Time
-	UpdatedAt               time.Time
-	StartedAt               *time.Time
-	CompletedAt             *time.Time
+	ID                          snapshot.WorkflowRunID
+	TeamID                      int
+	TeamName                    string
+	WorkflowDefinitionID        int
+	WorkflowName                string
+	WorkflowVersion             int
+	SchemaVersion               int
+	SignatureVersion            int
+	DefinitionContentHash       string
+	FunctionID                  *string
+	IdempotencyKey              string
+	ParameterizedConfig         json.RawMessage
+	ParameterizedConfigHash     string
+	DevValidationProvenanceHash string
+	ConcreteConfig              json.RawMessage
+	ConcreteConfigHash          *string
+	ActualPlan                  json.RawMessage
+	ActualPlanHash              *string
+	ResolvedDependencies        json.RawMessage
+	OriginKind                  string
+	OriginReference             string
+	CreatedBy                   string
+	Status                      AgentWorkflowRunStatus
+	ExecutionStatus             *AgentWorkflowRunExecutionStatus
+	ErrorMessage                string
+	RetryOfWorkflowRunID        *snapshot.WorkflowRunID
+	PipelineRunID               *int
+	TemplatePipelineID          *int
+	InstancePipelineID          *int
+	PlannedBuildID              *int64
+	ReconcileAfter              time.Time
+	CreatedAt                   time.Time
+	UpdatedAt                   time.Time
+	StartedAt                   *time.Time
+	CompletedAt                 *time.Time
 }
 
 type AgentWorkflowRunCreateRequest struct {
-	TeamID                  int
-	TeamName                string
-	WorkflowDefinitionID    int
-	WorkflowName            string
-	WorkflowVersion         int
-	SchemaVersion           int
-	SignatureVersion        int
-	DefinitionContentHash   string
-	FunctionID              *string
-	IdempotencyKey          string
-	ParameterizedConfig     json.RawMessage
-	ParameterizedConfigHash string
-	OriginKind              string
-	OriginReference         string
-	CreatedBy               string
-	Status                  AgentWorkflowRunStatus
-	RetryOfWorkflowRunID    *snapshot.WorkflowRunID
-	Inputs                  map[string]snapshot.SnapshotRef
-	ExperimentAdmission     *AgentWorkflowRunExperimentAdmission
+	TeamID                      int
+	TeamName                    string
+	WorkflowDefinitionID        int
+	WorkflowName                string
+	WorkflowVersion             int
+	SchemaVersion               int
+	SignatureVersion            int
+	DefinitionContentHash       string
+	FunctionID                  *string
+	IdempotencyKey              string
+	ParameterizedConfig         json.RawMessage
+	ParameterizedConfigHash     string
+	DevValidationProvenanceHash string
+	OriginKind                  string
+	OriginReference             string
+	CreatedBy                   string
+	Status                      AgentWorkflowRunStatus
+	RetryOfWorkflowRunID        *snapshot.WorkflowRunID
+	Inputs                      map[string]snapshot.SnapshotRef
+	ExperimentAdmission         *AgentWorkflowRunExperimentAdmission
 }
 
 type AgentWorkflowRunExperimentAdmission struct {
@@ -210,6 +215,10 @@ func (request AgentWorkflowRunCreateRequest) Validate() error {
 	}
 	if len(request.ParameterizedConfig) == 0 || !json.Valid(request.ParameterizedConfig) {
 		return fmt.Errorf("db: workflow-run parameterized config must be valid JSON")
+	}
+	if request.DevValidationProvenanceHash != "" &&
+		!agentDevValidationProvenancePattern.MatchString(request.DevValidationProvenanceHash) {
+		return fmt.Errorf("db: workflow-run dev validation provenance hash must be empty or lower-case 64-hex")
 	}
 	if request.Status != AgentWorkflowRunStatusAdmitting {
 		return fmt.Errorf("db: workflow-run initial status must be admitting")
@@ -476,6 +485,7 @@ const agentWorkflowRunColumns = `
 	id, team_id, team_name, workflow_definition_id, workflow_name,
 	workflow_version, schema_version, signature_version, definition_content_hash,
 	function_id, idempotency_key, parameterized_config, parameterized_config_hash,
+	dev_validation_provenance_hash,
 	concrete_config, concrete_config_hash, actual_plan, actual_plan_nonce,
 	actual_plan_hash, actual_plan_hash_nonce, resolved_dependencies, resolved_dependencies_nonce,
 	origin_kind, origin_reference, created_by, status,
@@ -511,6 +521,7 @@ func scanAgentWorkflowRun(row scannable, encryptionStrategy encryption.Strategy)
 		&id, &run.TeamID, &run.TeamName, &run.WorkflowDefinitionID, &run.WorkflowName,
 		&run.WorkflowVersion, &run.SchemaVersion, &run.SignatureVersion, &run.DefinitionContentHash,
 		&functionID, &run.IdempotencyKey, &parameterizedConfig, &run.ParameterizedConfigHash,
+		&run.DevValidationProvenanceHash,
 		&concreteConfig, &concreteConfigHash, &actualPlan, &actualPlanNonce,
 		&actualPlanHash, &actualPlanHashNonce, &resolvedDependencies, &resolvedDependenciesNonce,
 		&run.OriginKind, &run.OriginReference, &run.CreatedBy, &status,

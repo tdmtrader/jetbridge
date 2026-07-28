@@ -83,7 +83,8 @@ func TestBindAndCreateAdmitsFromServerDerivedIdentity(t *testing.T) {
 		},
 		create: func(_ context.Context, request db.AgentWorkflowRunCreateRequest) (db.AgentWorkflowRun, bool, error) {
 			order = append(order, "allocate")
-			if request.Status != db.AgentWorkflowRunStatusAdmitting || request.Inputs["repo"].ID != largeSnapshotID {
+			if request.Status != db.AgentWorkflowRunStatusAdmitting || request.Inputs["repo"].ID != largeSnapshotID ||
+				request.DevValidationProvenanceHash != rendered.DevValidationProvenanceHash {
 				t.Fatalf("durable request = %+v", request)
 			}
 			return admitting, true, nil
@@ -168,6 +169,32 @@ func TestBindAndCreateAdmitsFromServerDerivedIdentity(t *testing.T) {
 	wantOrder := []string{"find", "resolve", "target", "render", "authorize", "allocate", "budget", "credential", "save", "execution", "transition"}
 	if !reflect.DeepEqual(order, wantOrder) {
 		t.Fatalf("order = %#v, want %#v", order, wantOrder)
+	}
+}
+
+func TestValidateAndClonePreservesExplicitEmptyValidationProvenancePin(t *testing.T) {
+	empty := ""
+	admission := AdmissionContext{TeamID: 7, TeamName: "research", CreatedBy: "alice", Origin: Origin{Kind: "manual"}}
+	request := BindRequest{WorkflowName: "deploy", IdempotencyKey: "pin-empty", ExpectedDevValidationProvenanceHash: &empty}
+
+	_, cloned, err := validateAndClone(admission, request)
+	if err != nil {
+		t.Fatalf("validateAndClone: %v", err)
+	}
+	if cloned.ExpectedDevValidationProvenanceHash == nil || *cloned.ExpectedDevValidationProvenanceHash != "" {
+		t.Fatalf("explicit empty provenance pin was not preserved: %#v", cloned.ExpectedDevValidationProvenanceHash)
+	}
+	if cloned.ExpectedDevValidationProvenanceHash == request.ExpectedDevValidationProvenanceHash {
+		t.Fatal("provenance pin was not cloned")
+	}
+}
+
+func TestExistingRunRejectsMismatchedValidationProvenancePin(t *testing.T) {
+	want := strings.Repeat("a", 64)
+	run := db.AgentWorkflowRun{DevValidationProvenanceHash: strings.Repeat("b", 64)}
+	request := BindRequest{ExpectedDevValidationProvenanceHash: &want}
+	if err := compareCallerIntent(run, AdmissionContext{}, request); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("compareCallerIntent error = %v, want invalid request", err)
 	}
 }
 

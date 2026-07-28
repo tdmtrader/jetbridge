@@ -93,6 +93,9 @@ func (binder *experimentBinder) BindAndCreate(ctx context.Context, admission exp
 
 func TestRunnerBindsClaimedCellsThroughOrdinaryWorkflowRuns(t *testing.T) {
 	cells := []experiment.CandidateCell{candidateCell(3), candidateCell(1), candidateCell(2)}
+	for index := range cells {
+		cells[index].DevValidationProvenanceHash = strings.Repeat(string(rune('a'+index)), 64)
+	}
 	store := &experimentRunnerStore{claim: func(_ context.Context, limit int) ([]experiment.CandidateCell, error) {
 		if limit != 3 {
 			t.Fatalf("claim limit = %d, want 3", limit)
@@ -124,6 +127,7 @@ func TestRunnerBindsClaimedCellsThroughOrdinaryWorkflowRuns(t *testing.T) {
 			request.FunctionID != cell.Target.FunctionID || request.IdempotencyKey != wantKey ||
 			request.Inputs["repo"] != cell.Inputs["repo"] ||
 			request.ExpectedTargetConfigHash != cell.TargetConfigHash ||
+			request.ExpectedDevValidationProvenanceHash != cell.DevValidationProvenanceHash ||
 			request.AdmissionGate != (experiment.AdmissionGate{
 				ExperimentID: cell.ExperimentID,
 				CellID:       cell.ID,
@@ -512,6 +516,7 @@ func successfulBind(request experiment.BindRequest, id snapshot.WorkflowRunID) e
 	return experiment.BindResult{
 		WorkflowRunID: id, WorkflowDefinitionID: request.DefinitionID,
 		WorkflowName: request.WorkflowName, WorkflowVersion: version, FunctionID: request.FunctionID,
-		TargetConfigHash: request.ExpectedTargetConfigHash,
+		TargetConfigHash:            request.ExpectedTargetConfigHash,
+		DevValidationProvenanceHash: request.ExpectedDevValidationProvenanceHash,
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"unicode"
@@ -13,6 +14,9 @@ import (
 
 	containername "github.com/google/go-containerregistry/pkg/name"
 )
+
+var canonicalSnapshotPortName = regexp.MustCompile(`^[\p{Ll}\p{Lt}\p{Lm}\p{Lo}\d][\p{Ll}\p{Lt}\p{Lm}\p{Lo}\d\-_.]*$`)
+var numericSnapshotPortName = regexp.MustCompile(`^\d+$`)
 
 // ValidationResult contains metadata derived only from the validated snapshot
 // bytes. Callers persist it on the deduplicated snapshot value, so validators
@@ -109,8 +113,9 @@ func (authority ValidationAttestationAuthority) Validate() error {
 }
 
 func validateValidationInputName(label, input string) error {
-	if input == "" || input != strings.TrimSpace(input) {
-		return fmt.Errorf("%s must be canonical and non-empty", label)
+	if input == "" || input != strings.TrimSpace(input) ||
+		!canonicalSnapshotPortName.MatchString(input) || numericSnapshotPortName.MatchString(input) {
+		return fmt.Errorf("%s must use the canonical snapshot port-name grammar", label)
 	}
 	return nil
 }

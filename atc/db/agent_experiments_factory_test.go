@@ -138,17 +138,18 @@ var _ = Describe("AgentExperimentsFactory", func() {
 		}
 		return db.AgentWorkflowRunCreateRequest{
 			TeamID: cell.TeamID, TeamName: cell.TeamName,
-			WorkflowDefinitionID:    int(cell.Target.DefinitionID),
-			WorkflowName:            cell.Target.WorkflowName,
-			WorkflowVersion:         cell.Target.Version,
-			SchemaVersion:           candidateDefinition.SchemaVersion,
-			SignatureVersion:        candidateDefinition.SignatureVersion,
-			DefinitionContentHash:   candidateDefinition.ContentHash,
-			FunctionID:              functionID,
-			IdempotencyKey:          key,
-			ParameterizedConfig:     json.RawMessage(`{}`),
-			ParameterizedConfigHash: cell.TargetConfigHash,
-			OriginKind:              "experiment",
+			WorkflowDefinitionID:        int(cell.Target.DefinitionID),
+			WorkflowName:                cell.Target.WorkflowName,
+			WorkflowVersion:             cell.Target.Version,
+			SchemaVersion:               candidateDefinition.SchemaVersion,
+			SignatureVersion:            candidateDefinition.SignatureVersion,
+			DefinitionContentHash:       candidateDefinition.ContentHash,
+			FunctionID:                  functionID,
+			IdempotencyKey:              key,
+			ParameterizedConfig:         json.RawMessage(`{}`),
+			ParameterizedConfigHash:     cell.TargetConfigHash,
+			DevValidationProvenanceHash: cell.DevValidationProvenanceHash,
+			OriginKind:                  "experiment",
 			OriginReference: fmt.Sprintf(
 				"experiment:%s:cell:%s", cell.ExperimentID.String(), cell.ID.String(),
 			),
@@ -190,17 +191,18 @@ var _ = Describe("AgentExperimentsFactory", func() {
 		}
 		return db.AgentWorkflowRunCreateRequest{
 			TeamID: cell.TeamID, TeamName: cell.TeamName,
-			WorkflowDefinitionID:    int(cell.Evaluator.Target.DefinitionID),
-			WorkflowName:            cell.Evaluator.Target.WorkflowName,
-			WorkflowVersion:         cell.Evaluator.Target.Version,
-			SchemaVersion:           evaluatorDefinition.SchemaVersion,
-			SignatureVersion:        evaluatorDefinition.SignatureVersion,
-			DefinitionContentHash:   evaluatorDefinition.ContentHash,
-			FunctionID:              functionID,
-			IdempotencyKey:          key,
-			ParameterizedConfig:     json.RawMessage(`{}`),
-			ParameterizedConfigHash: cell.Evaluator.TargetConfigHash,
-			OriginKind:              "experiment",
+			WorkflowDefinitionID:        int(cell.Evaluator.Target.DefinitionID),
+			WorkflowName:                cell.Evaluator.Target.WorkflowName,
+			WorkflowVersion:             cell.Evaluator.Target.Version,
+			SchemaVersion:               evaluatorDefinition.SchemaVersion,
+			SignatureVersion:            evaluatorDefinition.SignatureVersion,
+			DefinitionContentHash:       evaluatorDefinition.ContentHash,
+			FunctionID:                  functionID,
+			IdempotencyKey:              key,
+			ParameterizedConfig:         json.RawMessage(`{}`),
+			ParameterizedConfigHash:     cell.Evaluator.TargetConfigHash,
+			DevValidationProvenanceHash: cell.Evaluator.DevValidationProvenanceHash,
+			OriginKind:                  "experiment",
 			OriginReference: fmt.Sprintf(
 				"experiment:%s:cell:%s:evaluator", cell.ExperimentID.String(), cell.ID.String(),
 			),
@@ -402,6 +404,9 @@ plan:
 		Expect(started.Definition.Variants[0].TargetConfigHash).To(Equal(fullRendered.TargetConfigHash))
 		Expect(started.Definition.Variants[1].TargetConfigHash).To(Equal(selectedRendered.TargetConfigHash))
 		Expect(started.Definition.Evaluator.TargetConfigHash).To(Equal(evaluatorRendered.TargetConfigHash))
+		Expect(started.Definition.Variants[0].DevValidationProvenanceHash).To(Equal(fullRendered.DevValidationProvenanceHash))
+		Expect(started.Definition.Variants[1].DevValidationProvenanceHash).To(Equal(selectedRendered.DevValidationProvenanceHash))
+		Expect(started.Definition.Evaluator.DevValidationProvenanceHash).To(Equal(evaluatorRendered.DevValidationProvenanceHash))
 
 		rolledRenderer := workflowrun.WorkflowTargetRenderer{
 			RuntimeImage: "registry.example/agent-runner@sha256:" + strings.Repeat("b", 64),
@@ -413,8 +418,10 @@ plan:
 		for _, cell := range claimed {
 			if cell.Target.FunctionID == "" {
 				Expect(cell.TargetConfigHash).To(Equal(fullRendered.TargetConfigHash))
+				Expect(cell.DevValidationProvenanceHash).To(Equal(fullRendered.DevValidationProvenanceHash))
 			} else {
 				Expect(cell.TargetConfigHash).To(Equal(selectedRendered.TargetConfigHash))
+				Expect(cell.DevValidationProvenanceHash).To(Equal(selectedRendered.DevValidationProvenanceHash))
 			}
 		}
 		candidateOrigin := fmt.Sprintf("experiment:%s:cell:%s", started.ID.String(), claimed[0].ID.String())
@@ -426,6 +433,7 @@ plan:
 		Expect(err).NotTo(HaveOccurred())
 		Expect(evaluations).To(HaveLen(1))
 		Expect(evaluations[0].Evaluator.TargetConfigHash).To(Equal(evaluatorRendered.TargetConfigHash))
+		Expect(evaluations[0].Evaluator.DevValidationProvenanceHash).To(Equal(evaluatorRendered.DevValidationProvenanceHash))
 		rolledFull, err := rolledRenderer.RenderFunction(fullCandidate)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(rolledFull.TargetConfigHash).NotTo(Equal(fullRendered.TargetConfigHash))
@@ -642,10 +650,14 @@ plan:
 		wrongTeamCandidateRun := insertRun(reclaimed[0].Target, defaultTeam.ID()+1000, "other-team", candidateOrigin, reclaimed[0].TargetConfigHash)
 		wrongTargetCandidateRun := insertRun(definition(fixtureSnapshot).Evaluator.Target, defaultTeam.ID(), defaultTeam.Name(), candidateOrigin, reclaimed[0].TargetConfigHash)
 		driftedCandidateRun := insertRun(reclaimed[0].Target, defaultTeam.ID(), defaultTeam.Name(), candidateOrigin, strings.Repeat("f", 64))
+		driftedProvenanceRun := insertRun(reclaimed[0].Target, defaultTeam.ID(), defaultTeam.Name(), candidateOrigin, reclaimed[0].TargetConfigHash)
+		_, err = dbConn.Exec(`UPDATE agent_workflow_runs SET dev_validation_provenance_hash = $2 WHERE id = $1`, int64(driftedProvenanceRun), strings.Repeat("f", 64))
+		Expect(err).NotTo(HaveOccurred())
 		Expect(factory.RecordCandidateRun(ctx, reclaimed[0].ID, snapshot.WorkflowRunID(9_999_999))).To(BeFalse())
 		Expect(factory.RecordCandidateRun(ctx, reclaimed[0].ID, wrongTeamCandidateRun)).To(BeFalse())
 		Expect(factory.RecordCandidateRun(ctx, reclaimed[0].ID, wrongTargetCandidateRun)).To(BeFalse())
 		Expect(factory.RecordCandidateRun(ctx, reclaimed[0].ID, driftedCandidateRun)).To(BeFalse())
+		Expect(factory.RecordCandidateRun(ctx, reclaimed[0].ID, driftedProvenanceRun)).To(BeFalse())
 		Expect(factory.RecordCandidateRun(ctx, reclaimed[0].ID, candidateRun)).To(BeTrue())
 		Expect(factory.RecordCandidateRun(ctx, reclaimed[0].ID, candidateRun)).To(BeTrue())
 		Expect(factory.RecordCandidateRun(ctx, reclaimed[0].ID, conflictingCandidateRun)).To(BeFalse())
