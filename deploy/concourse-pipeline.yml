@@ -378,9 +378,10 @@ jobs:
   # the two in sync. Dockerfile.build is not reused wholesale here because its
   # Go stage stamps only concourse.Version — this chain also stamps
   # JetBridgeVersion (the jetbridge_version in /api/v1/info and `concourse
-  # --version`) — cross-compiles fly for five platforms (deliberately deferred
-  # to `release`), and would re-download the module graph that the
-  # concourse-test-runner image already has warm.
+  # --version`) — and would re-download the module graph that the
+  # concourse-test-runner image already has warm. It does match its fly
+  # cross-compile set (minus windows), since `fly sync` needs those archives
+  # present in whatever image is actually deployed.
   - task: build-frontend
     attempts: 2
     config:
@@ -488,19 +489,32 @@ jobs:
           cp -a ../web-public/. web/public/
           sha256sum web/public/elm.min.js
 
-          echo "=== Building concourse binary (linux/amd64 only — fly cross-compiles deferred to release) ==="
+          echo "=== Building concourse binary (linux/amd64 — the only platform this image runs on) ==="
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o concourse-linux-amd64 ./cmd/concourse
           ls -lh concourse-linux-amd64
           echo "=== Building artifact-daemon binary ==="
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o artifact-daemon-linux-amd64 ./cmd/artifact-daemon
           ls -lh artifact-daemon-linux-amd64
 
-          echo "=== Building fly CLI (linux/amd64 only for local deploy) ==="
+          # Cross-compile fly for every platform an operator might run, matching
+          # the `release` job and Dockerfile.build. The web serves these at
+          # /api/v1/cli, which is what `fly sync` fetches; shipping only
+          # linux/amd64 made sync fail on a mac with "failed to open tgz
+          # archive: .../fly-darwin-arm64.tgz: no such file or directory", and
+          # since the cluster tracks rc images that break was permanent rather
+          # than deferred to the next release.
+          echo "=== Building fly CLI for all platforms ==="
           FLY_LDFLAGS="-s -w -X github.com/concourse/concourse.Version=${NEXT_VERSION}-rc"
-          mkdir -p fly-assets
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "${FLY_LDFLAGS}" -o /tmp/fly ./fly
-          tar czf fly-assets/fly-linux-amd64.tgz -C /tmp fly
-          rm -f /tmp/fly
+          mkdir -p fly-assets fly-bin
+          for pair in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            OS="${pair%%/*}"
+            ARCH="${pair##*/}"
+            echo "  fly-${OS}-${ARCH}"
+            CGO_ENABLED=0 GOOS=${OS} GOARCH=${ARCH} go build -ldflags "${FLY_LDFLAGS}" -o fly-bin/fly ./fly
+            tar czf fly-assets/fly-${OS}-${ARCH}.tgz -C fly-bin fly
+            rm -f fly-bin/fly
+          done
+          rm -rf fly-bin
           ls -lh fly-assets/
 
           REGISTRY="registry-docker-registry.cicd.svc.cluster.local:5000"
