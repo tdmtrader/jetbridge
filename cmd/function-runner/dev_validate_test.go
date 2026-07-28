@@ -3,6 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -16,6 +19,32 @@ import (
 	"github.com/concourse/concourse/agent/snapshot/contracts"
 	"github.com/concourse/concourse/agent/workflow"
 )
+
+func gitForValidation(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	command := exec.Command("git", args...)
+	command.Dir = dir
+	command.Env = append(os.Environ(), "GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@example.invalid", "GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@example.invalid")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, output)
+	}
+	return strings.TrimSpace(string(output))
+}
+
+func captureForValidation(t *testing.T, dir string) ([]byte, snapshot.Digest) {
+	t.Helper()
+	tree, err := repositorymerge.CaptureDirectory(context.Background(), snapshot.Canonicalizer{}, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tree.Close()
+	raw, err := os.ReadFile(tree.ArchivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw, tree.Digest
+}
 
 // imageBakedDevCapabilityRunner executes a real temporary dev-capability
 // binary, while accepting the compiled image path as its input. Production
@@ -177,4 +206,121 @@ func TestDevValidateRealFunctionRunnerAndImageBakedCapabilitySealsRev3(t *testin
 	if _, err := os.Stat(filepath.Join(output, "content", "logs", "attempt-0001.log")); err != nil {
 		t.Fatalf("complete real CLI log missing: %v", err)
 	}
+}
+
+func TestDevValidateRepositoryChangeUsesExactBaseAndRenamePaths(t *testing.T) {
+	root := t.TempDir()
+	base := filepath.Join(root, "baseline")
+	candidateRepo := filepath.Join(root, "work")
+	candidateName := "candidate-change"
+	if err := os.Mkdir(base, 0700); err != nil {
+		t.Fatal(err)
+	}
+	gitForValidation(t, base, "init", "--initial-branch=main")
+	if err := os.Mkdir(filepath.Join(base, "app"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "app", "before.txt"), []byte("base\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	gitForValidation(t, base, "add", ".")
+	gitForValidation(t, base, "commit", "-m", "base")
+	baseSHA := gitForValidation(t, base, "rev-parse", "HEAD")
+	gitForValidation(t, root, "clone", "--no-hardlinks", base, candidateRepo)
+	gitForValidation(t, candidateRepo, "mv", "app/before.txt", "app/current.txt")
+	gitForValidation(t, candidateRepo, "commit", "-m", "rename")
+	baseArchive, baseDigest := captureForValidation(t, base)
+	payload, _ := captureForValidation(t, candidateRepo)
+	payloadSum := sha256.Sum256(payload)
+	payloadDigest := snapshot.Digest("sha256:" + hex.EncodeToString(payloadSum[:]))
+	registry, err := contracts.NewRegistry(contracts.WithCanonicalizer(snapshot.Canonicalizer{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repositoryValidator, err := registry.Lookup("repository/v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseRoot, err := os.OpenRoot(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := repositoryValidator.RevalidateSealed(context.Background(), baseRoot, snapshot.ValidationContext{})
+	_ = baseRoot.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var repository contracts.RepositoryMetadata
+	if err := json.Unmarshal(metadata.IntrinsicMetadata, &repository); err != nil {
+		t.Fatal(err)
+	}
+	baseRef := snapshot.SnapshotRef{ID: 80, Type: "repository/v1", Digest: baseDigest}
+	body := contracts.RepositoryChangeBody{RepositoryID: repository.RepositoryID, BaseSHA: baseSHA, Representation: "git-tree", Payload: contracts.ContentRef{Path: "content/payload.tar", Digest: payloadDigest, MediaType: "application/octet-stream"}, ResultTree: gitForValidation(t, candidateRepo, "rev-parse", "HEAD^{tree}"), ResultCommit: gitForValidation(t, candidateRepo, "rev-parse", "HEAD")}
+	record, err := contracts.NewRecord(snapshot.TypeRef("repository-change/v1"), []contracts.Subject{contracts.SubjectFromInput("base", contracts.SubjectRoleBase, "baseline", baseRef)}, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := filepath.Join(root, candidateName)
+	if err := os.MkdirAll(filepath.Join(candidate, "content"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(candidate, "record.json"), encoded, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(candidate, "content", "payload.tar"), payload, 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, candidateDigest := captureForValidation(t, candidate)
+	workspace, output := filepath.Join(root, "workspace"), filepath.Join(root, "validation")
+	if err := os.Mkdir(workspace, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(output, 0700); err != nil {
+		t.Fatal(err)
+	}
+	protected := t.TempDir()
+	profile := []byte("schema_version: 1\nname: exact\nchecks:\n  - id: test\n    operation: test\n    scope: full\n    timeout: 1m\n    retries: 0\n")
+	config := []byte("schema_version: 1\nrepo:\n  test: {cmd: [sh, -c, 'test -f app/current.txt && test ! -f app/before.txt']}\ncomponents:\n  - id: app\n    description: app\n    paths: [app/]\n    kind: service\n")
+	profilePath, configPath := filepath.Join(protected, "profile.yml"), filepath.Join(protected, "config.yml")
+	_ = os.WriteFile(profilePath, profile, 0600)
+	_ = os.WriteFile(configPath, config, 0600)
+	image := "example.test/dev-capability@sha256:" + strings.Repeat("a", 64)
+	previous := newDevValidationRunner
+	binary := buildRealDevCapability(t)
+	newDevValidationRunner = func() devValidationRunner { return devvalidate.NewRunner(imageBakedDevCapabilityRunner{binary}) }
+	t.Cleanup(func() { newDevValidationRunner = previous })
+	args := []string{"--root", root, "--candidate", candidateName, "--workspace", "workspace", "--output", "validation", "--candidate-type", "repository-change/v1", "--candidate-id", "71", "--candidate-digest", candidateDigest.String(), "--profile-name", "exact", "--profile", profilePath, "--config", configPath, "--capability-image", image, "--workflow-definition-id", "72", "--workflow-version", "73", "--base", "baseline", "--base-ref", fmt.Sprintf("baseline=%s,%s,%s", baseRef.ID, baseRef.Type, baseRef.Digest)}
+	var stdout, stderr bytes.Buffer
+	if status := runDevValidate(context.Background(), args, &stdout, &stderr); status != exitOK {
+		t.Fatalf("repository dev-validate = %d: %s", status, stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "app", "current.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "app", "before.txt")); !os.IsNotExist(err) {
+		t.Fatalf("rename PreviousPath was not materialized: %v", err)
+	}
+	sealedRoot, err := os.OpenRoot(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	imageDigest := snapshot.Digest("sha256:" + strings.Repeat("a", 64))
+	declarations, err := snapshot.NewValidationContext(map[string]snapshot.SnapshotRef{candidateName: {ID: 71, Type: "repository-change/v1", Digest: candidateDigest}, "baseline": baseRef}, nil, snapshot.WithValidationAttestationAuthority(snapshot.ValidationAttestationAuthority{CandidateInput: candidateName, Candidate: snapshot.SnapshotRef{ID: 71, Type: "repository-change/v1", Digest: candidateDigest}, BaseInputs: []snapshot.ValidationAuthorityInput{{Input: "baseline", Ref: baseRef}}, ProfileDigest: contentDigest(profile), ProtectedConfigDigest: contentDigest(config), CapabilityImage: image, CapabilityImageDigest: imageDigest, WorkflowDefinitionID: 72, WorkflowVersion: 73, Toolchain: "dev-capability/" + imageDigest.String()}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	validationValidator, err := registry.Lookup("validation/v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := validationValidator.AdmitForSeal(context.Background(), sealedRoot, declarations); err != nil {
+		_ = sealedRoot.Close()
+		t.Fatalf("Task5 seal rejected exact candidate/base: %v", err)
+	}
+	_ = sealedRoot.Close()
+	_ = baseArchive
 }

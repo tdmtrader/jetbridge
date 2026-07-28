@@ -409,6 +409,10 @@ func makeRecord(request Request, result cliResult, logs []retainedLog) (contract
 		subjects = append(subjects, contracts.SubjectFromInput(b.Input, contracts.SubjectRoleBase, b.Input, b.Ref))
 		attBases[i] = contracts.ValidationBaseInput{Input: b.Input, Type: b.Ref.Type, Digest: b.Ref.Digest}
 	}
+	// Record identity requires subjects in canonical ID order. The validation
+	// candidate is always primary semantically, but its generated entity ID is
+	// not guaranteed to sort before every exact base subject.
+	sort.Slice(subjects, func(i, j int) bool { return subjects[i].ID < subjects[j].ID })
 	body := contracts.ValidationBody{Conclusion: contracts.DeriveValidationConclusion(checks), Summary: "authoritative development capability validation", Checks: checks, Attestation: contracts.ValidationAttestation{CandidateDigest: request.Candidate.Digest, BaseInputs: attBases, ProfileDigest: request.Profile.ProfileDigest, ProtectedConfigDigest: request.Profile.ProtectedConfigDigest, CapabilityImage: request.Profile.CapabilityImage, CapabilityImageDigest: request.Profile.CapabilityImageDigest, WorkflowDefinitionID: request.WorkflowDefinitionID, WorkflowVersion: request.WorkflowVersion, Toolchain: "dev-capability/" + request.Profile.CapabilityImageDigest.String()}}
 	if body.Conclusion != result.Status {
 		return contracts.Record[contracts.ValidationBody]{}, fmt.Errorf("dev validation: CLI status %q does not match its attempts (%q)", result.Status, body.Conclusion)
