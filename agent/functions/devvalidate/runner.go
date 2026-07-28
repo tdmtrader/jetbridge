@@ -41,6 +41,7 @@ type Request struct {
 	Profile              workflow.CompiledDevValidationProfile
 	WorkflowDefinitionID int
 	WorkflowVersion      int
+	ChangedPaths         []string
 }
 
 type CommandRunner interface {
@@ -155,7 +156,7 @@ func (runner *Runner) Run(ctx context.Context, request Request) (contracts.Recor
 	for _, file := range []struct {
 		path string
 		data []byte
-	}{{profilePath, request.Profile.Profile}, {configPath, request.Profile.ProtectedConfig}, {changedPath, []byte("[\".concourse-authoritative-full-scope\"]\n")}} {
+	}{{profilePath, request.Profile.Profile}, {configPath, request.Profile.ProtectedConfig}, {changedPath, changedPathsJSON(request.ChangedPaths)}} {
 		if err := os.WriteFile(file.path, file.data, 0600); err != nil {
 			return contracts.Record[contracts.ValidationBody]{}, err
 		}
@@ -199,6 +200,10 @@ func (runner *Runner) Run(ctx context.Context, request Request) (contracts.Recor
 		return contracts.Record[contracts.ValidationBody]{}, err
 	}
 	return record, nil
+}
+func changedPathsJSON(paths []string) []byte {
+	raw, _ := json.Marshal(paths)
+	return append(raw, '\n')
 }
 
 func validateProfile(profile workflow.CompiledDevValidationProfile) error {

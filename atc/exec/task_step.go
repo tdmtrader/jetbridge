@@ -982,6 +982,10 @@ func (step *TaskStep) bindDevValidationCandidate(config *atc.TaskConfig, inputs 
 		return fmt.Errorf("task %q validation candidate: %w", step.plan.Name, err)
 	}
 	config.Run.Args = append(append([]string(nil), config.Run.Args...), "--candidate-id", candidate.ID.String(), "--candidate-digest", candidate.Digest.String())
+	for _, base := range a.BaseInputs {
+		ref := inputs.refs[base.Name]
+		config.Run.Args = append(config.Run.Args, "--base-ref", fmt.Sprintf("%s=%s,%s,%s", base.Name, ref.ID, ref.Type, ref.Digest))
+	}
 	return nil
 }
 

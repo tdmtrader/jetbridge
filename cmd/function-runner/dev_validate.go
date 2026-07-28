@@ -16,7 +16,14 @@ import (
 	"github.com/concourse/concourse/agent/workflow"
 )
 
-type devValidateOptions struct{ root, candidate, workspace, output, candidateType, candidateID, candidateDigest, profileName, profilePath, configPath, image, definitionID, version string }
+type devValidateOptions struct {
+	root, candidate, workspace, output, candidateType, candidateID, candidateDigest, profileName, profilePath, configPath, image, definitionID, version string
+	bases, baseRefs                                                                                                                                     stringList
+}
+type stringList []string
+
+func (v *stringList) String() string       { return strings.Join(*v, ",") }
+func (v *stringList) Set(raw string) error { *v = append(*v, raw); return nil }
 
 func runDevValidate(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	var o devValidateOptions
@@ -35,6 +42,8 @@ func runDevValidate(ctx context.Context, args []string, stdout, stderr io.Writer
 	f.StringVar(&o.image, "capability-image", "", "pinned image")
 	f.StringVar(&o.definitionID, "workflow-definition-id", "", "workflow definition")
 	f.StringVar(&o.version, "workflow-version", "", "workflow version")
+	f.Var(&o.bases, "base", "declared base mount")
+	f.Var(&o.baseRefs, "base-ref", "bound base snapshot reference")
 	if err := f.Parse(args); err != nil || f.NArg() != 0 {
 		return exitUsage
 	}
@@ -52,7 +61,7 @@ func executeDevValidate(ctx context.Context, o devValidateOptions) error {
 			return fmt.Errorf("-%s is required", name)
 		}
 	}
-	_, source, err := parseMount(o.root, o.candidate)
+	candidateName, source, err := parseMount(o.root, o.candidate)
 	if err != nil {
 		return err
 	}
@@ -76,6 +85,10 @@ func executeDevValidate(ctx context.Context, o devValidateOptions) error {
 	if err != nil {
 		return err
 	}
+	boundBases, err := boundBaseRefs(o, o.root)
+	if err != nil {
+		return err
+	}
 	canonicalizer := snapshot.Canonicalizer{}
 	candidateTree, err := repositorymerge.CaptureDirectory(ctx, canonicalizer, source)
 	if err != nil {
@@ -85,16 +98,29 @@ func executeDevValidate(ctx context.Context, o devValidateOptions) error {
 	if candidateTree.Digest != digest {
 		return fmt.Errorf("mounted candidate does not match server digest")
 	}
-	if err := copyCandidate(ctx, source, workspace); err != nil {
+	changedPaths := []string(nil)
+	if typeRef == snapshot.TypeRef("repository-change/v1") {
+		baseName, basePath, baseRef, err := exactRepositoryBase(o, o.root)
+		if err != nil {
+			return err
+		}
+		materialized, err := repositorymerge.MaterializeForValidation(ctx, snapshot.Canonicalizer{}, source, snapshot.SnapshotRef{ID: id, Type: typeRef, Digest: digest}, baseName, basePath, baseRef, workspace)
+		changedPaths = materialized.ChangedPaths
+		if err != nil {
+			return err
+		}
+	} else if err := copyCandidate(ctx, source, workspace); err != nil {
 		return err
 	}
-	workspaceTree, err := repositorymerge.CaptureDirectory(ctx, canonicalizer, workspace)
-	if err != nil {
-		return fmt.Errorf("capture copied candidate: %w", err)
-	}
-	defer workspaceTree.Close()
-	if workspaceTree.Digest != digest {
-		return fmt.Errorf("fresh scratch is not the exact candidate")
+	if typeRef != snapshot.TypeRef("repository-change/v1") {
+		workspaceTree, err := repositorymerge.CaptureDirectory(ctx, canonicalizer, workspace)
+		if err != nil {
+			return fmt.Errorf("capture copied candidate: %w", err)
+		}
+		defer workspaceTree.Close()
+		if workspaceTree.Digest != digest {
+			return fmt.Errorf("fresh scratch is not the exact candidate")
+		}
 	}
 	definition, err := positive(o.definitionID)
 	if err != nil {
@@ -116,9 +142,106 @@ func executeDevValidate(ctx context.Context, o devValidateOptions) error {
 	if err != nil {
 		return err
 	}
-	profile := workflow.CompiledDevValidationProfile{Name: o.profileName, Candidate: workflow.DevValidationContract{Name: "candidate", Type: typeRef}, CapabilityImage: o.image, CapabilityImageDigest: imageDigest, Command: []string{workflow.DevValidationCLIPath, workflow.DevValidationCLIValidateCommand}, Profile: profileBytes, ProfileDigest: contentDigest(profileBytes), ProtectedConfig: configBytes, ProtectedConfigDigest: contentDigest(configBytes)}
-	_, err = devvalidate.NewRunner(nil).Run(ctx, devvalidate.Request{Candidate: snapshot.SnapshotRef{ID: id, Type: typeRef, Digest: digest}, CandidateInput: "candidate", WorkspaceRoot: workspace, OutputRoot: output, Profile: profile, WorkflowDefinitionID: definition, WorkflowVersion: version})
+	baseContracts := make([]workflow.DevValidationContract, 0, len(o.bases))
+	requestBases := make([]snapshot.ValidationAuthorityInput, 0, len(o.bases))
+	for _, name := range o.bases {
+		ref, found := boundBases[name]
+		if !found {
+			return fmt.Errorf("declared base %q is not bound", name)
+		}
+		baseContracts = append(baseContracts, workflow.DevValidationContract{Name: name, Type: ref.Type})
+		requestBases = append(requestBases, snapshot.ValidationAuthorityInput{Input: name, Ref: ref})
+	}
+	profile := workflow.CompiledDevValidationProfile{Name: o.profileName, Candidate: workflow.DevValidationContract{Name: candidateName, Type: typeRef}, BaseInputs: baseContracts, CapabilityImage: o.image, CapabilityImageDigest: imageDigest, Command: []string{workflow.DevValidationCLIPath, workflow.DevValidationCLIValidateCommand}, Profile: profileBytes, ProfileDigest: contentDigest(profileBytes), ProtectedConfig: configBytes, ProtectedConfigDigest: contentDigest(configBytes)}
+	_, err = devvalidate.NewRunner(nil).Run(ctx, devvalidate.Request{Candidate: snapshot.SnapshotRef{ID: id, Type: typeRef, Digest: digest}, Bases: requestBases, CandidateInput: candidateName, WorkspaceRoot: workspace, OutputRoot: output, Profile: profile, WorkflowDefinitionID: definition, WorkflowVersion: version, ChangedPaths: changedPaths})
 	return err
+}
+
+func exactRepositoryBase(o devValidateOptions, root string) (string, string, snapshot.SnapshotRef, error) {
+	if len(o.bases) == 0 || len(o.baseRefs) != len(o.bases) {
+		return "", "", snapshot.SnapshotRef{}, fmt.Errorf("repository-change validation requires exactly bound declared bases")
+	}
+	var foundName, foundPath string
+	var foundRef snapshot.SnapshotRef
+	for _, raw := range o.baseRefs {
+		parts := strings.Split(raw, "=")
+		if len(parts) != 2 {
+			return "", "", snapshot.SnapshotRef{}, fmt.Errorf("invalid base reference")
+		}
+		fields := strings.Split(parts[1], ",")
+		if len(fields) != 3 {
+			return "", "", snapshot.SnapshotRef{}, fmt.Errorf("invalid base reference")
+		}
+		id, err := snapshot.ParseSnapshotID(fields[0])
+		if err != nil {
+			return "", "", snapshot.SnapshotRef{}, err
+		}
+		typ, err := snapshot.ParseTypeRef(fields[1])
+		if err != nil {
+			return "", "", snapshot.SnapshotRef{}, err
+		}
+		digest, err := snapshot.ParseDigest(fields[2])
+		if err != nil {
+			return "", "", snapshot.SnapshotRef{}, err
+		}
+		if typ != snapshot.TypeRef("repository/v1") {
+			continue
+		}
+		if foundName != "" {
+			return "", "", snapshot.SnapshotRef{}, fmt.Errorf("repository-change validation has ambiguous repository/v1 bases")
+		}
+		_, path, err := parseMount(root, parts[0])
+		if err != nil {
+			return "", "", snapshot.SnapshotRef{}, err
+		}
+		foundName, foundPath, foundRef = parts[0], path, snapshot.SnapshotRef{ID: id, Type: typ, Digest: digest}
+	}
+	if foundName == "" {
+		return "", "", snapshot.SnapshotRef{}, fmt.Errorf("repository-change validation lacks repository/v1 base")
+	}
+	return foundName, foundPath, foundRef, nil
+}
+
+func boundBaseRefs(o devValidateOptions, root string) (map[string]snapshot.SnapshotRef, error) {
+	if len(o.bases) != len(o.baseRefs) {
+		return nil, fmt.Errorf("declared bases and bound base references differ")
+	}
+	bound := make(map[string]snapshot.SnapshotRef, len(o.bases))
+	for _, raw := range o.baseRefs {
+		parts := strings.Split(raw, "=")
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid base reference")
+		}
+		if _, _, err := parseMount(root, parts[0]); err != nil {
+			return nil, err
+		}
+		fields := strings.Split(parts[1], ",")
+		if len(fields) != 3 {
+			return nil, fmt.Errorf("invalid base reference")
+		}
+		id, err := snapshot.ParseSnapshotID(fields[0])
+		if err != nil {
+			return nil, err
+		}
+		typ, err := snapshot.ParseTypeRef(fields[1])
+		if err != nil {
+			return nil, err
+		}
+		digest, err := snapshot.ParseDigest(fields[2])
+		if err != nil {
+			return nil, err
+		}
+		if _, duplicate := bound[parts[0]]; duplicate {
+			return nil, fmt.Errorf("duplicate base reference %q", parts[0])
+		}
+		bound[parts[0]] = snapshot.SnapshotRef{ID: id, Type: typ, Digest: digest}
+	}
+	for _, name := range o.bases {
+		if _, found := bound[name]; !found {
+			return nil, fmt.Errorf("declared base %q is not bound", name)
+		}
+	}
+	return bound, nil
 }
 
 func copyCandidate(ctx context.Context, source, dest string) error {
