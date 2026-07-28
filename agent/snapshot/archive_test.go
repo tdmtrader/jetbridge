@@ -680,10 +680,22 @@ func TestCanonicalCaptureRejectsDirectoryReplacement(t *testing.T) {
 
 	canonicalizer := Canonicalizer{
 		beforePreEmitVerify: func(root *os.Root) error {
+			// The replacement must occupy a different inode, since that is the
+			// only thing distinguishing it from the captured directory. Allocate
+			// it while the original still exists, then swap: removing first lets
+			// filesystems that recycle inode numbers (ext4, overlayfs) hand the
+			// same one straight back, which would make the swap undetectable and
+			// this assertion pass or fail by filesystem rather than by behaviour.
+			if err := root.Mkdir("empty.replacement", 0755); err != nil {
+				return err
+			}
 			if err := root.Remove("empty"); err != nil {
 				return err
 			}
-			return root.Mkdir("empty", 0755)
+			return os.Rename(
+				filepath.Join(root.Name(), "empty.replacement"),
+				filepath.Join(root.Name(), "empty"),
+			)
 		},
 	}
 	_, err := canonicalizer.Capture(context.Background(), bytes.NewReader(makeTar(t, []tarEntry{
@@ -708,10 +720,19 @@ func TestCanonicalCaptureRejectsReplacedSymlinkTargets(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			canonicalizer := Canonicalizer{
 				beforePreEmitVerify: func(root *os.Root) error {
+					// Same inode-recycling hazard as the directory case above:
+					// allocate the replacement link before removing the original
+					// so the swap is detectable on every filesystem.
+					if err := root.Symlink(tt.target, "nested/link.replacement"); err != nil {
+						return err
+					}
 					if err := root.Remove("nested/link"); err != nil {
 						return err
 					}
-					return root.Symlink(tt.target, "nested/link")
+					return os.Rename(
+						filepath.Join(root.Name(), "nested/link.replacement"),
+						filepath.Join(root.Name(), "nested/link"),
+					)
 				},
 			}
 			_, err := canonicalizer.Capture(context.Background(), bytes.NewReader(makeTar(t, []tarEntry{
