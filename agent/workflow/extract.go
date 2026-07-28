@@ -167,6 +167,18 @@ func validateImmutableTaskDependencies(task *atc.TaskStep, resourceTypes atc.Res
 	if len(task.Config.Caches) > 0 {
 		return nil, fmt.Errorf("task caches are mutable build state")
 	}
+	if authority := task.DevValidationAuthority; authority != nil {
+		// The compiler creates this narrow fixed task before a durable workflow
+		// identity exists. RenderFunction replaces its two owned tokens and
+		// performs full authority validation before it can become a plan.
+		if task.Config.ImageResource != nil || task.Config.RootfsURI != authority.CapabilityImage {
+			return nil, fmt.Errorf("authoritative dev validation task must use its pinned capability image")
+		}
+		if err := atc.ValidatePinnedOCIImage(authority.CapabilityImage); err != nil {
+			return nil, fmt.Errorf("authoritative dev validation image: %w", err)
+		}
+		return nil, nil
+	}
 	if task.Config.RootfsURI != "" {
 		return nil, fmt.Errorf("task rootfs_uri is not an immutable image")
 	}

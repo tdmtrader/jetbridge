@@ -329,6 +329,13 @@ type Input struct {
 	// If an artifact is found from cache, then if it should not be considered
 	// by volume-locality strategy.
 	FromCache bool
+	// ReadOnly prevents the task from changing a platform-selected immutable
+	// input. Providers must apply this to the actual container mount.
+	ReadOnly bool
+	// Private makes an input platform-owned: it is mounted into the main
+	// container only and is never inherited by task sidecars. It is intended
+	// for worker-local authority material, not user artifacts.
+	Private bool
 }
 
 // OutputPaths is a mapping from output name to its path in the container.

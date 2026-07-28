@@ -2,6 +2,7 @@ package atc
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +11,89 @@ import (
 	"github.com/concourse/concourse/agent/snapshot"
 	"sigs.k8s.io/yaml"
 )
+
+const (
+	DevValidationFunctionRunnerPath = "/usr/local/bin/function-runner"
+	DevValidationProtectedRoot      = "/run/concourse/dev-validation"
+	DevValidationCandidateInput     = "candidate"
+	DevValidationWorkspacePath      = "workspace"
+	DevValidationOutput             = "validation"
+)
+
+// DevValidationStaticArgs are the plan-static arguments for the fixed
+// validation runner. The executor appends the authenticated candidate ID and
+// digest only after it resolves the actual typed input.
+func DevValidationStaticArgs(authority DevValidationAuthority, candidate snapshot.TypeRef) []string {
+	return []string{"dev-validate", "--root", ".", "--candidate", authority.CandidateInput, "--workspace", DevValidationWorkspacePath, "--output", DevValidationOutput, "--candidate-type", candidate.String(), "--profile-name", authority.ProfileName, "--profile", DevValidationProtectedRoot + "/profile.yml", "--config", DevValidationProtectedRoot + "/config.yml", "--capability-image", authority.CapabilityImage, "--workflow-definition-id", fmt.Sprint(authority.WorkflowDefinitionID), "--workflow-version", fmt.Sprint(authority.WorkflowVersion)}
+}
+
+// DevValidationAuthority is server-produced execution authority. It is not a
+// task parameter or record field; profile/config bytes are copied into a fresh
+// worker volume after selection and are never supplied by an input artifact.
+type DevValidationAuthority struct {
+	ProfileName           string                   `json:"profile_name"`
+	Profile               []byte                   `json:"profile"`
+	ProfileDigest         snapshot.Digest          `json:"profile_digest"`
+	ProtectedConfig       []byte                   `json:"protected_config"`
+	ProtectedConfigDigest snapshot.Digest          `json:"protected_config_digest"`
+	CapabilityImage       string                   `json:"capability_image"`
+	CapabilityImageDigest snapshot.Digest          `json:"capability_image_digest"`
+	WorkflowDefinitionID  int                      `json:"workflow_definition_id"`
+	WorkflowVersion       int                      `json:"workflow_version"`
+	CandidateInput        string                   `json:"candidate_input"`
+	BaseInputs            []DevValidationBaseInput `json:"base_inputs"`
+}
+type DevValidationBaseInput struct {
+	Name string           `json:"name"`
+	Type snapshot.TypeRef `json:"type"`
+}
+
+func (a *DevValidationAuthority) Clone() *DevValidationAuthority {
+	if a == nil {
+		return nil
+	}
+	c := *a
+	c.Profile = append([]byte(nil), a.Profile...)
+	c.ProtectedConfig = append([]byte(nil), a.ProtectedConfig...)
+	c.BaseInputs = append([]DevValidationBaseInput(nil), a.BaseInputs...)
+	return &c
+}
+func (a DevValidationAuthority) Validate() error {
+	if a.ProfileName == "" || a.CandidateInput == "" || a.WorkflowDefinitionID <= 0 || a.WorkflowVersion <= 0 {
+		return fmt.Errorf("dev validation authority is incomplete")
+	}
+	if len(a.Profile) == 0 || len(a.ProtectedConfig) == 0 {
+		return fmt.Errorf("dev validation authority bytes are required")
+	}
+	for _, f := range []struct {
+		raw    []byte
+		digest snapshot.Digest
+	}{{a.Profile, a.ProfileDigest}, {a.ProtectedConfig, a.ProtectedConfigDigest}} {
+		sum := sha256.Sum256(f.raw)
+		if f.digest != snapshot.Digest(fmt.Sprintf("sha256:%x", sum[:])) {
+			return fmt.Errorf("dev validation authority digest does not match bytes")
+		}
+	}
+	if err := ValidatePinnedOCIImage(a.CapabilityImage); err != nil {
+		return err
+	}
+	if a.CapabilityImageDigest == "" {
+		return fmt.Errorf("dev validation image digest is required")
+	}
+	return nil
+}
+
+func NewDevValidationTaskConfig(authority DevValidationAuthority, candidate snapshot.TypeRef) (*TaskConfig, error) {
+	if err := authority.Validate(); err != nil {
+		return nil, err
+	}
+	inputs := []TaskInputConfig{{Name: authority.CandidateInput}}
+	for _, base := range authority.BaseInputs {
+		inputs = append(inputs, TaskInputConfig{Name: base.Name})
+	}
+	args := DevValidationStaticArgs(authority, candidate)
+	return &TaskConfig{Platform: "linux", RootfsURI: authority.CapabilityImage, Run: TaskRunConfig{Path: DevValidationFunctionRunnerPath, Args: args}, Inputs: inputs, Outputs: []TaskOutputConfig{{Name: DevValidationOutput}}, ScratchPaths: []TaskScratchConfig{{Path: DevValidationWorkspacePath}}}, nil
+}
 
 // SnapshotInputConfig declares the semantic type required at one effective
 // build-artifact input name. It is intentionally separate from TaskInputConfig:

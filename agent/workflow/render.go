@@ -184,6 +184,26 @@ func RenderFunction(target FunctionTarget) (RenderedFunction, error) {
 	if err := validateFunctionTarget(target, function, signature); err != nil {
 		return RenderedFunction{}, err
 	}
+	if err := walkFunctionSteps(function.Plan, func(step atc.Step, _ string, _ bool) error {
+		task, ok := step.Config.(*atc.TaskStep)
+		if !ok || task.DevValidationAuthority == nil {
+			return nil
+		}
+		authority := task.DevValidationAuthority.Clone()
+		authority.WorkflowDefinitionID = target.WorkflowDefinitionID
+		authority.WorkflowVersion = target.WorkflowVersion
+		candidate := task.SnapshotInputs[authority.CandidateInput]
+		config, err := atc.NewDevValidationTaskConfig(*authority, candidate.Type)
+		if err != nil {
+			return err
+		}
+		task.DevValidationAuthority = authority
+		task.Config = config
+		task.Hermetic = true
+		return nil
+	}); err != nil {
+		return RenderedFunction{}, fmt.Errorf("workflow: render validation task: %w", err)
+	}
 	if err := validateRenderableFunction(function, signature, target.WorkflowDefinitionID); err != nil {
 		return RenderedFunction{}, err
 	}

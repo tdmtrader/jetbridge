@@ -77,6 +77,28 @@ func taskMetadata() db.ContainerMetadata {
 	}
 }
 
+func TestPrivateInputMountIsMainContainerOnly(t *testing.T) {
+	c := makeContainer("private-input", taskMetadata(), runtime.ContainerSpec{
+		Dir: "/work",
+		Inputs: []runtime.Input{
+			{Artifact: &permStubArtifact{handle: "ordinary"}, DestinationPath: "/work/input"},
+			{Artifact: &permStubArtifact{handle: "private"}, DestinationPath: "/run/concourse/dev-validation", ReadOnly: true, Private: true},
+		},
+	}, permEmptyDirConfig(), nil, false)
+	_, mainMounts := c.buildVolumeMounts()
+	sidecarMounts := c.sidecarVolumeMounts(mainMounts)
+	for _, mount := range mainMounts {
+		if mount.MountPath == "/run/concourse/dev-validation" && !mount.ReadOnly {
+			t.Fatal("private authority mount must be read-only in main container")
+		}
+	}
+	for _, mount := range sidecarMounts {
+		if mount.MountPath == "/run/concourse/dev-validation" {
+			t.Fatal("private authority mount leaked to sidecar")
+		}
+	}
+}
+
 // assertVolumeCount is a test helper for volume count assertions.
 func assertVolumeCount(t *testing.T, volumes []corev1.Volume, expected int) {
 	t.Helper()

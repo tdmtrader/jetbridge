@@ -251,6 +251,38 @@ func TestCompileDefinitionRejectsInvalidDevValidationAuthoritySource(t *testing.
 	}
 }
 
+func TestValidationSelectorBindsPersistedWorkflowIdentityOnlyAtRender(t *testing.T) {
+	manifest := devValidationManifest("schema_version: 1\ncomponents: []\n")
+	manifest[workflow.WorkflowFileName] = strings.Replace(manifest[workflow.WorkflowFileName], "inputs: []", "inputs:\n  - {name: candidate, type: opaque/v1}\n  - {name: base, type: opaque/v1}", 1)
+	manifest[workflow.WorkflowFileName] = strings.Replace(manifest[workflow.WorkflowFileName], "  - agent: work\n    function_id: work\n    prompt: do work", `  - task: validate
+    dev_validation_profile: check
+    input_types:
+      candidate: {type: opaque/v1}
+      base: {type: opaque/v1}
+    output_types:
+      validation: {type: validation/v1}`, 1)
+	compiled, err := workflow.CompileDefinition(manifest)
+	if err != nil {
+		t.Fatalf("compile selector: %v", err)
+	}
+	definition := workflow.Definition{ID: 47, Name: "validate", Version: 9, SchemaVersion: 3, SignatureVersion: 1, ContentHash: strings.Repeat("a", 64), Compiled: *compiled}
+	target, err := workflow.FullFunctionTarget(definition)
+	if err != nil {
+		t.Fatalf("full target: %v", err)
+	}
+	rendered, err := workflow.RenderFunction(target)
+	if err != nil {
+		t.Fatalf("render selector: %v", err)
+	}
+	task := rendered.Config.Jobs[0].PlanSequence[2].Config.(*atc.TaskStep)
+	if task.DevValidationAuthority == nil || task.DevValidationAuthority.WorkflowDefinitionID != 47 || task.DevValidationAuthority.WorkflowVersion != 9 {
+		t.Fatalf("rendered authority did not bind persisted identity: %#v", task.DevValidationAuthority)
+	}
+	if task.Config == nil || task.Config.Run.Path != atc.DevValidationFunctionRunnerPath || len(task.Sidecars) != 0 || task.ImageArtifactName != "" {
+		t.Fatalf("selector did not become fixed task: %#v", task)
+	}
+}
+
 func TestParseCompiledRejectsUnknownNestedSidecarField(t *testing.T) {
 	manifest := devValidationManifest("schema_version: 1\ncomponents: []\n")
 	manifest[workflow.WorkflowFileName] = strings.Replace(manifest[workflow.WorkflowFileName], "    prompt: do work", "    prompt: do work\n    capabilities: [validator]", 1)

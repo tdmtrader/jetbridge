@@ -54,7 +54,7 @@ func main() {
 
 func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "function-runner: a mode is required (judge, merge-preflight, merge-prepare)")
+		fmt.Fprintln(stderr, "function-runner: a mode is required (judge, merge-preflight, merge-prepare, dev-validate)")
 		return exitUsage
 	}
 	mode := args[0]
@@ -63,8 +63,10 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return runJudgeMode(ctx, args[1:], stdout, stderr)
 	case "merge-preflight", "merge-prepare":
 		return runMergeMode(ctx, mode, args[1:], stdout, stderr)
+	case "dev-validate":
+		return runDevValidate(ctx, args[1:], stdout, stderr)
 	case "-h", "--help", "help":
-		fmt.Fprintln(stdout, "usage: function-runner <judge|merge-preflight|merge-prepare> [flags]")
+		fmt.Fprintln(stdout, "usage: function-runner <judge|merge-preflight|merge-prepare|dev-validate> [flags]")
 		return exitOK
 	default:
 		fmt.Fprintf(stderr, "function-runner: unknown mode %q\n", mode)

@@ -16,6 +16,15 @@ COPY ci-agent/ .
 RUN CGO_ENABLED=0 go build -o /dev-mcp ./cmd/dev-mcp && \
     CGO_ENABLED=0 go build -o /dev-capability ./cmd/dev-capability
 
+# Authoritative validation is an ordinary non-agent task. Its adapter lives in
+# the server module, while the deterministic CLI above lives in ci-agent, so
+# build the fixed function runner from the repository root into the same
+# digest-pinned validator image.
+FROM golang:1.25-bookworm AS function-runner
+WORKDIR /src
+COPY . .
+RUN CGO_ENABLED=0 go build -o /function-runner ./cmd/function-runner
+
 FROM golang:1.25-bookworm
 
 # Toolchain required by this repo's dev-mcp.yml commands:
@@ -30,6 +39,7 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
 RUN useradd --uid 1000 --create-home devmcp
 COPY --from=builder /dev-mcp /usr/local/bin/dev-mcp
 COPY --from=builder /dev-capability /usr/local/bin/dev-capability
+COPY --from=function-runner /function-runner /usr/local/bin/function-runner
 
 USER devmcp
 ENV MCP_LISTEN_ADDR=:7780

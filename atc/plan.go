@@ -376,6 +376,17 @@ type TaskPlan struct {
 	// Snapshot declarations constrain the effective mapped artifact names.
 	SnapshotInputs  map[string]SnapshotInputConfig  `json:"input_types,omitempty"`
 	SnapshotOutputs map[string]SnapshotOutputConfig `json:"output_types,omitempty"`
+	// ReadOnlyInputs is server-only task authority. It is never decoded from a
+	// task config: only the workflow renderer may mark an exact validation input
+	// immutable before task execution.
+	// It is persisted with the server-built execution plan for retries, but the
+	// public plan projection deliberately omits it. TaskStep (the user-facing
+	// configuration type) has no corresponding field.
+	ReadOnlyInputs map[string]struct{} `json:"read_only_inputs,omitempty"`
+	// DevValidationAuthority is emitted only by the trusted schema-v3 renderer.
+	// It is retained in the private execution plan for retries but omitted by
+	// TaskPlan.Public.
+	DevValidationAuthority *DevValidationAuthority `json:"dev_validation_authority,omitempty"`
 
 	// A timeout to enforce on the task's process. Note that fetching the task's
 	// image does not count towards the timeout.

@@ -531,6 +531,26 @@ var _ = Describe("TaskStep", func() {
 			})
 		})
 
+		Context("when an input is platform-declared read-only", func() {
+			var input *runtimetest.Volume
+
+			BeforeEach(func() {
+				input = runtimetest.NewVolume("read-only-input")
+				repo.RegisterArtifact("candidate", input, false)
+				taskPlan.Config.Inputs = []atc.TaskInputConfig{{
+					Name: "candidate",
+				}}
+				taskPlan.ReadOnlyInputs = map[string]struct{}{"candidate": {}}
+			})
+
+			It("propagates the platform mount boundary to the runtime", func() {
+				Expect(stepErr).NotTo(HaveOccurred())
+				Expect(chosenContainer.Spec.Inputs).To(ConsistOf(runtime.Input{
+					Artifact: input, DestinationPath: "some-artifact-root/candidate", ReadOnly: true,
+				}))
+			})
+		})
+
 		Context("when some inputs are optional", func() {
 			var (
 				optionalInputArtifact, optionalInput2Artifact, requiredInputArtifact *runtimetest.Volume

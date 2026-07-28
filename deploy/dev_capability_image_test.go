@@ -20,6 +20,8 @@ func TestDevCapabilityImageShipsBothFacades(t *testing.T) {
 		"go build -o /dev-capability ./cmd/dev-capability",
 		"COPY --from=builder /dev-mcp /usr/local/bin/dev-mcp",
 		"COPY --from=builder /dev-capability /usr/local/bin/dev-capability",
+		"go build -o /function-runner ./cmd/function-runner",
+		"COPY --from=function-runner /function-runner /usr/local/bin/function-runner",
 		"ENTRYPOINT [\"/usr/local/bin/dev-mcp\"]",
 	} {
 		if !strings.Contains(source, want) {

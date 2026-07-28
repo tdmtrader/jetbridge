@@ -513,7 +513,7 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 	}
 
 	containers = append(containers, buildSidecarContainers(
-		c.containerSpec.Sidecars, volumeMounts, dir,
+		c.containerSpec.Sidecars, c.sidecarVolumeMounts(volumeMounts), dir,
 		c.containerSpec.SidecarEnv,
 		c.containerSpec.Hermetic)...)
 
@@ -1059,6 +1059,7 @@ func (c *Container) buildVolumeMounts() ([]corev1.Volume, []corev1.VolumeMount) 
 		mounts = append(mounts, corev1.VolumeMount{
 			Name:      name,
 			MountPath: input.DestinationPath,
+			ReadOnly:  input.ReadOnly,
 		})
 		inputMountPaths[filepath.Clean(input.DestinationPath)] = true
 	}
@@ -1187,4 +1188,22 @@ func (c *Container) buildVolumeMounts() ([]corev1.Volume, []corev1.VolumeMount) 
 	}
 
 	return volumes, mounts
+}
+
+// sidecarVolumeMounts preserves the legacy shared task filesystem while
+// withholding only platform-created private input mounts from sidecars.
+func (c *Container) sidecarVolumeMounts(mounts []corev1.VolumeMount) []corev1.VolumeMount {
+	private := make(map[string]struct{})
+	for _, input := range c.containerSpec.Inputs {
+		if input.Private {
+			private[filepath.Clean(input.DestinationPath)] = struct{}{}
+		}
+	}
+	filtered := make([]corev1.VolumeMount, 0, len(mounts))
+	for _, mount := range mounts {
+		if _, found := private[filepath.Clean(mount.MountPath)]; !found {
+			filtered = append(filtered, mount)
+		}
+	}
+	return filtered
 }

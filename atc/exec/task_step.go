@@ -1,6 +1,9 @@
 package exec
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,6 +18,7 @@ import (
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/exec/build"
 	"github.com/concourse/concourse/atc/imageresolver"
@@ -270,6 +274,9 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 	if err := step.validateSnapshotDeclarations(config); err != nil {
 		return false, err
 	}
+	if err := step.validateDevValidationTask(config); err != nil {
+		return false, err
+	}
 	if (len(step.plan.SnapshotInputs) > 0 || len(step.plan.SnapshotOutputs) > 0) && step.outputSealer == nil {
 		return false, fmt.Errorf("task %q has typed snapshot declarations but no output sealer is configured", step.plan.Name)
 	}
@@ -329,12 +336,14 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 	if err != nil {
 		return false, err
 	}
+	if err := step.bindDevValidationCandidate(&config, snapshotInputs); err != nil {
+		return false, err
+	}
 
 	containerSpec.Sidecars, err = loadSidecarConfigs(ctx, logger, state.ArtifactRepository(), step.streamer, step.plan.Sidecars)
 	if err != nil {
 		return false, err
 	}
-
 	err = resolveSidecarImages(ctx, logger, state, step.imageResolver, containerSpec.Sidecars)
 	if err != nil {
 		return false, err
@@ -361,6 +370,9 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 		step.workerSpec(config),
 	)
 	if err != nil {
+		return false, err
+	}
+	if err := step.addDevValidationAuthorityInput(ctx, worker, &containerSpec); err != nil {
 		return false, err
 	}
 
@@ -546,7 +558,7 @@ func (step *TaskStep) containerInputs(logger lager.Logger, repository *build.Rep
 			destination := artifactPath(metadata.WorkingDirectory, input.Name, input.Path)
 			inputs = append(inputs, runtime.Input{
 				Artifact: entry.Artifact, DestinationPath: destination,
-				FromCache: entry.FromCache,
+				FromCache: entry.FromCache, ReadOnly: step.readOnlyInput(inputName),
 			})
 			bindings.order = append(bindings.order, inputName)
 			bindings.refs[inputName] = ref
@@ -568,6 +580,7 @@ func (step *TaskStep) containerInputs(logger lager.Logger, repository *build.Rep
 			Artifact:        entry.Artifact,
 			DestinationPath: artifactPath(metadata.WorkingDirectory, input.Name, input.Path),
 			FromCache:       entry.FromCache,
+			ReadOnly:        step.readOnlyInput(inputName),
 		})
 	}
 
@@ -576,6 +589,24 @@ func (step *TaskStep) containerInputs(logger lager.Logger, repository *build.Rep
 	}
 
 	return inputs, bindings, nil
+}
+
+func (step *TaskStep) readOnlyInput(name string) bool {
+	_, found := step.plan.ReadOnlyInputs[name]
+	if found {
+		return true
+	}
+	if authority := step.plan.DevValidationAuthority; authority != nil {
+		if name == authority.CandidateInput {
+			return true
+		}
+		for _, base := range authority.BaseInputs {
+			if name == base.Name {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (step *TaskStep) containerSpec(logger lager.Logger, state RunState, imageSpec runtime.ImageSpec, config atc.TaskConfig, metadata db.ContainerMetadata) (runtime.ContainerSpec, snapshotInputBindings, error) {
@@ -601,6 +632,17 @@ func (step *TaskStep) containerSpec(logger lager.Logger, state RunState, imageSp
 	containerSpec.Inputs, bindings, err = step.containerInputs(logger, state.ArtifactRepository(), config, metadata)
 	if err != nil {
 		return runtime.ContainerSpec{}, snapshotInputBindings{}, err
+	}
+	for _, input := range containerSpec.Inputs {
+		if !input.ReadOnly {
+			continue
+		}
+		for _, output := range config.Outputs {
+			outputPath := ensureTrailingSlash(artifactPath(metadata.WorkingDirectory, output.Name, output.Path))
+			if taskPathsOverlap(input.DestinationPath, outputPath) {
+				return runtime.ContainerSpec{}, snapshotInputBindings{}, fmt.Errorf("task %q read-only input %q overlaps output %q", step.plan.Name, input.DestinationPath, output.Name)
+			}
+		}
 	}
 
 	outputTypes := make(map[string]snapshot.TypeRef, len(step.plan.SnapshotOutputs))
@@ -664,6 +706,17 @@ func (step *TaskStep) containerSpec(logger lager.Logger, state RunState, imageSp
 	containerSpec.SecretEnv = BuildSecretEnv(config.Params, state)
 
 	return containerSpec, bindings, nil
+}
+
+func taskPathsOverlap(left, right string) bool {
+	left, right = filepath.Clean(left), filepath.Clean(right)
+	for _, pair := range [][2]string{{left, right}, {right, left}} {
+		relative, err := filepath.Rel(pair[0], pair[1])
+		if err == nil && (relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)))) {
+			return true
+		}
+	}
+	return false
 }
 
 // BuildSecretEnv cross-references resolved param values against tracked
@@ -769,14 +822,19 @@ func (step *TaskStep) sealTypedOutputs(
 	for i, output := range outputs {
 		sources[i] = output.source
 	}
+	authorities, err := step.validationAuthorities(inputs, declarations)
+	if err != nil {
+		return err
+	}
 	sealed, err := step.outputSealer.Seal(ctx, snapshot.SealRequest{
 		BuildID: step.metadata.BuildID, TeamID: step.metadata.TeamID, TeamName: step.metadata.TeamName,
 		CreatedBy: step.metadata.SnapshotCreatedBy, PlanID: string(step.planID), Attempt: step.containerMetadata.Attempt,
 		StepKind: "task", StepName: step.plan.Name,
 		WorkflowDefinitionID: workflowDefinitionID, WorkflowRunID: workflowRunID,
 		InputOrder: append([]string(nil), inputs.order...), Inputs: cloneExecSnapshotRefs(inputs.refs),
-		InputExposures:     cloneExecInputExposures(inputs.exposures),
-		OutputDeclarations: declarations, Outputs: sources,
+		InputExposures:                   cloneExecInputExposures(inputs.exposures),
+		ValidationAttestationAuthorities: authorities,
+		OutputDeclarations:               declarations, Outputs: sources,
 	})
 	if err != nil {
 		return err
@@ -809,6 +867,187 @@ func (step *TaskStep) sealTypedOutputs(
 		return fmt.Errorf("publish typed task outputs: %w", err)
 	}
 	return nil
+}
+
+func (step *TaskStep) validationAuthorities(inputs snapshotInputBindings, declarations []snapshot.Port) (map[string]snapshot.ValidationAttestationAuthority, error) {
+	a := step.plan.DevValidationAuthority
+	for _, declaration := range declarations {
+		if declaration.Type == snapshot.TypeRef("validation/v1") && a == nil {
+			return nil, fmt.Errorf("task %q validation output lacks server authority", step.plan.Name)
+		}
+	}
+	if a == nil {
+		return nil, nil
+	}
+	if step.metadata.WorkflowDefinitionID == nil || *step.metadata.WorkflowDefinitionID != a.WorkflowDefinitionID {
+		return nil, fmt.Errorf("task %q validation authority does not match workflow", step.plan.Name)
+	}
+	candidate, ok := inputs.refs[a.CandidateInput]
+	if !ok {
+		return nil, fmt.Errorf("task %q validation candidate is not bound", step.plan.Name)
+	}
+	if declaration, found := step.plan.SnapshotInputs[a.CandidateInput]; !found || candidate.Type != declaration.Type {
+		return nil, fmt.Errorf("task %q validation candidate type is not bound exactly", step.plan.Name)
+	}
+	bases := make([]snapshot.ValidationAuthorityInput, 0, len(a.BaseInputs))
+	for _, base := range a.BaseInputs {
+		ref, ok := inputs.refs[base.Name]
+		if !ok || ref.Type != base.Type {
+			return nil, fmt.Errorf("task %q validation base %q is not bound", step.plan.Name, base.Name)
+		}
+		bases = append(bases, snapshot.ValidationAuthorityInput{Input: base.Name, Ref: ref})
+	}
+	sort.Slice(bases, func(i, j int) bool { return bases[i].Input < bases[j].Input })
+	authority := snapshot.ValidationAttestationAuthority{CandidateInput: a.CandidateInput, Candidate: candidate, BaseInputs: bases, ProfileDigest: a.ProfileDigest, ProtectedConfigDigest: a.ProtectedConfigDigest, CapabilityImage: a.CapabilityImage, CapabilityImageDigest: a.CapabilityImageDigest, WorkflowDefinitionID: a.WorkflowDefinitionID, WorkflowVersion: a.WorkflowVersion, Toolchain: "dev-capability/" + a.CapabilityImageDigest.String()}
+	if err := authority.Validate(); err != nil {
+		return nil, err
+	}
+	return map[string]snapshot.ValidationAttestationAuthority{atc.DevValidationOutput: authority}, nil
+}
+
+// validateDevValidationTask accepts only the renderer-owned task shape. It is
+// intentionally repeated at execution: private plans can be resumed and must
+// not gain authority merely by having once passed source compilation.
+func (step *TaskStep) validateDevValidationTask(config atc.TaskConfig) error {
+	a := step.plan.DevValidationAuthority
+	for name, output := range step.plan.SnapshotOutputs {
+		if output.Type == snapshot.TypeRef("validation/v1") && a == nil {
+			return fmt.Errorf("task %q validation output %q lacks server authority", step.plan.Name, name)
+		}
+	}
+	if a == nil {
+		return nil
+	}
+	if err := a.Validate(); err != nil {
+		return fmt.Errorf("task %q validation authority: %w", step.plan.Name, err)
+	}
+	if step.metadata.WorkflowDefinitionID == nil || step.metadata.WorkflowRunID == nil || *step.metadata.WorkflowDefinitionID != a.WorkflowDefinitionID {
+		return fmt.Errorf("task %q validation authority does not match authenticated workflow", step.plan.Name)
+	}
+	if step.plan.FunctionID != "dev-validation-"+a.ProfileName || step.plan.Privileged || !step.plan.Hermetic || step.plan.ConfigPath != "" || step.plan.ImageArtifactName != "" || step.plan.Timeout != "" || len(step.plan.Params) != 0 || len(step.plan.Vars) != 0 || len(step.plan.Tags) != 0 || len(step.plan.Sidecars) != 0 || len(step.plan.InputMapping) != 0 || len(step.plan.OutputMapping) != 0 || step.plan.Limits != nil || step.plan.Requests != nil {
+		return fmt.Errorf("task %q authoritative validation has authored controls", step.plan.Name)
+	}
+	if config.ImageResource != nil || config.RootfsURI != a.CapabilityImage || config.Platform != "linux" || len(config.Params) != 0 || len(config.Caches) != 0 || len(config.Inputs) != 1+len(a.BaseInputs) || len(config.Outputs) != 1 || len(config.ScratchPaths) != 1 || config.ScratchPaths[0].Path != atc.DevValidationWorkspacePath || config.Run.Path != atc.DevValidationFunctionRunnerPath || config.Run.Dir != "" || config.Run.User != "" {
+		return fmt.Errorf("task %q authoritative validation is not the fixed task shape", step.plan.Name)
+	}
+	candidate, found := step.plan.SnapshotInputs[a.CandidateInput]
+	if !found || candidate.Optional || len(step.plan.SnapshotInputs) != 1+len(a.BaseInputs) || len(step.plan.SnapshotOutputs) != 1 {
+		return fmt.Errorf("task %q authoritative validation has invalid typed ports", step.plan.Name)
+	}
+	if output, found := step.plan.SnapshotOutputs[atc.DevValidationOutput]; !found || output.Optional || output.Type != snapshot.TypeRef("validation/v1") {
+		return fmt.Errorf("task %q authoritative validation must emit validation/v1", step.plan.Name)
+	}
+	if config.Outputs[0].Name != atc.DevValidationOutput || config.Outputs[0].Path != "" {
+		return fmt.Errorf("task %q authoritative validation has invalid output mount", step.plan.Name)
+	}
+	if !equalTaskStrings(config.Run.Args, atc.DevValidationStaticArgs(*a, candidate.Type)) {
+		return fmt.Errorf("task %q authoritative validation arguments are not fixed", step.plan.Name)
+	}
+	for index, input := range config.Inputs {
+		if input.Optional || input.Path != "" || (index == 0 && input.Name != a.CandidateInput) {
+			return fmt.Errorf("task %q authoritative validation has invalid input mounts", step.plan.Name)
+		}
+	}
+	for _, base := range a.BaseInputs {
+		input, found := step.plan.SnapshotInputs[base.Name]
+		if !found || input.Optional || input.Type != base.Type {
+			return fmt.Errorf("task %q authoritative validation has invalid base %q", step.plan.Name, base.Name)
+		}
+	}
+	return nil
+}
+
+func equalTaskStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func (step *TaskStep) bindDevValidationCandidate(config *atc.TaskConfig, inputs snapshotInputBindings) error {
+	a := step.plan.DevValidationAuthority
+	if a == nil {
+		return nil
+	}
+	candidate, found := inputs.refs[a.CandidateInput]
+	if !found {
+		return fmt.Errorf("task %q validation candidate is not bound", step.plan.Name)
+	}
+	if err := candidate.Validate(); err != nil {
+		return fmt.Errorf("task %q validation candidate: %w", step.plan.Name, err)
+	}
+	config.Run.Args = append(append([]string(nil), config.Run.Args...), "--candidate-id", candidate.ID.String(), "--candidate-digest", candidate.Digest.String())
+	return nil
+}
+
+func (step *TaskStep) addDevValidationAuthorityInput(ctx context.Context, worker runtime.Worker, spec *runtime.ContainerSpec) error {
+	a := step.plan.DevValidationAuthority
+	if a == nil {
+		return nil
+	}
+	archive, err := devValidationAuthorityArchive(ctx, *a)
+	if err != nil {
+		return fmt.Errorf("task %q build protected validation assets: %w", step.plan.Name, err)
+	}
+	volume, _, err := worker.CreateVolumeForArtifact(ctx, step.metadata.TeamID)
+	if err != nil {
+		return fmt.Errorf("task %q create protected validation volume: %w", step.plan.Name, err)
+	}
+	if volume == nil {
+		return fmt.Errorf("task %q create protected validation volume returned nil", step.plan.Name)
+	}
+	if err := volume.StreamIn(ctx, ".", compression.NewGzipCompression(), 3, bytes.NewReader(archive)); err != nil {
+		return fmt.Errorf("task %q populate protected validation volume: %w", step.plan.Name, err)
+	}
+	spec.Inputs = append(spec.Inputs, runtime.Input{Artifact: volume, DestinationPath: atc.DevValidationProtectedRoot, ReadOnly: true, Private: true})
+	return nil
+}
+
+func devValidationAuthorityArchive(ctx context.Context, authority atc.DevValidationAuthority) ([]byte, error) {
+	if err := authority.Validate(); err != nil {
+		return nil, err
+	}
+	var archive bytes.Buffer
+	gzipWriter, err := gzip.NewWriterLevel(&archive, gzip.BestCompression)
+	if err != nil {
+		return nil, err
+	}
+	gzipWriter.Header.ModTime = time.Unix(0, 0).UTC()
+	gzipWriter.Header.OS = 255
+	tarWriter := tar.NewWriter(gzipWriter)
+	for _, file := range []struct {
+		name string
+		raw  []byte
+	}{{"config.yml", authority.ProtectedConfig}, {"profile.yml", authority.Profile}} {
+		if err := ctx.Err(); err != nil {
+			_ = tarWriter.Close()
+			_ = gzipWriter.Close()
+			return nil, err
+		}
+		if err := tarWriter.WriteHeader(&tar.Header{Name: file.name, Mode: 0440, Size: int64(len(file.raw)), Typeflag: tar.TypeReg, Format: tar.FormatUSTAR, ModTime: time.Unix(0, 0).UTC()}); err != nil {
+			_ = tarWriter.Close()
+			_ = gzipWriter.Close()
+			return nil, err
+		}
+		if _, err := tarWriter.Write(file.raw); err != nil {
+			_ = tarWriter.Close()
+			_ = gzipWriter.Close()
+			return nil, err
+		}
+	}
+	if err := tarWriter.Close(); err != nil {
+		_ = gzipWriter.Close()
+		return nil, err
+	}
+	if err := gzipWriter.Close(); err != nil {
+		return nil, err
+	}
+	return append([]byte(nil), archive.Bytes()...), nil
 }
 
 func (step *TaskStep) collectTypedOutputs(
