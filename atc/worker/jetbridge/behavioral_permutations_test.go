@@ -13,6 +13,7 @@ import (
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 )
 
@@ -79,12 +80,14 @@ func taskMetadata() db.ContainerMetadata {
 
 func TestPrivateInputMountIsMainContainerOnly(t *testing.T) {
 	c := makeContainer("private-input", taskMetadata(), runtime.ContainerSpec{
-		Dir: "/work",
+		Hermetic:  true,
+		ImageSpec: runtime.ImageSpec{ImageURL: "busybox:latest"},
+		Dir:       "/work",
 		Inputs: []runtime.Input{
 			{Artifact: &permStubArtifact{handle: "ordinary"}, DestinationPath: "/work/input"},
 			{Artifact: &permStubArtifact{handle: "private"}, DestinationPath: "/run/concourse/dev-validation", ReadOnly: true, Private: true},
 		},
-	}, permEmptyDirConfig(), nil, false)
+	}, permDaemonSetConfig(), nil, false)
 	_, mainMounts := c.buildVolumeMounts()
 	sidecarMounts := c.sidecarVolumeMounts(mainMounts)
 	for _, mount := range mainMounts {
@@ -96,6 +99,90 @@ func TestPrivateInputMountIsMainContainerOnly(t *testing.T) {
 		if mount.MountPath == "/run/concourse/dev-validation" {
 			t.Fatal("private authority mount leaked to sidecar")
 		}
+	}
+	pod, err := c.buildPod(runtime.ProcessSpec{Path: "/bin/sh"}, []string{"/bin/sh"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, init := range pod.Spec.InitContainers {
+		for _, mount := range init.VolumeMounts {
+			if mount.MountPath == "/run/concourse/dev-validation" {
+				t.Fatalf("legacy private input leaked to generic init %q", init.Name)
+			}
+		}
+	}
+}
+
+// Protected validation authority must not travel through an artifact volume:
+// fetch-inputs and the hermetic root preparer can both read every mount they
+// receive. PrivateFileMounts use a task-scoped Secret attached only to main.
+func TestPrivateFileMountIsAbsentFromEveryInitAndSidecar(t *testing.T) {
+	c := makeContainer("private-files", taskMetadata(), runtime.ContainerSpec{
+		Dir:       "/work",
+		Hermetic:  true,
+		ImageSpec: runtime.ImageSpec{ImageURL: "busybox:latest"},
+		Inputs:    []runtime.Input{{Artifact: &permStubArtifact{handle: "ordinary"}, DestinationPath: "/work/input"}},
+		Sidecars:  []atc.SidecarConfig{{Name: "observer", Image: "busybox:latest"}},
+		PrivateFileMounts: []runtime.PrivateFileMount{{
+			MountPath: "/run/concourse/dev-validation",
+			Files:     map[string][]byte{"profile.yml": []byte("trusted"), "config.yml": []byte("trusted")},
+		}},
+	}, permDaemonSetConfig(), nil, false)
+	pod, err := c.buildPod(runtime.ProcessSpec{Path: "/bin/sh"}, []string{"/bin/sh"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, init := range pod.Spec.InitContainers {
+		for _, mount := range init.VolumeMounts {
+			if mount.MountPath == "/run/concourse/dev-validation" {
+				t.Fatalf("private validation authority leaked to init container %q", init.Name)
+			}
+		}
+	}
+	for _, sidecar := range pod.Spec.Containers[1:] {
+		for _, mount := range sidecar.VolumeMounts {
+			if mount.MountPath == "/run/concourse/dev-validation" {
+				t.Fatalf("private validation authority leaked to sidecar %q", sidecar.Name)
+			}
+		}
+	}
+	main := pod.Spec.Containers[0]
+	mount := findMountByPath(t, main.VolumeMounts, "/run/concourse/dev-validation")
+	if !mount.ReadOnly {
+		t.Fatal("private validation authority must be read-only in main")
+	}
+	volume := findVolumeByName(t, pod.Spec.Volumes, mount.Name)
+	if volume.Secret == nil || volume.Secret.SecretName == "" {
+		t.Fatal("private validation authority must be a Secret reference, not artifact data")
+	}
+}
+
+func TestPrivateFileMountSecretIsTaskScopedAndCleaned(t *testing.T) {
+	c := makeContainer("private-files-cleanup", taskMetadata(), runtime.ContainerSpec{
+		ImageSpec: runtime.ImageSpec{ImageURL: "busybox:latest"},
+		PrivateFileMounts: []runtime.PrivateFileMount{{
+			MountPath: "/run/concourse/dev-validation",
+			Files:     map[string][]byte{"profile.yml": []byte("trusted")},
+		}},
+	}, permEmptyDirConfig(), nil, false)
+	pod, err := c.createPod(context.Background(), runtime.ProcessSpec{Path: "/bin/sh"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pod.Spec.Containers) != 1 {
+		t.Fatal("expected main-only pod")
+	}
+	secretName := pod.Spec.Volumes[0].Secret.SecretName
+	secret, err := c.clientset.CoreV1().Secrets("test-ns").Get(context.Background(), secretName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("private Secret was not created: %v", err)
+	}
+	if string(secret.Data["profile.yml"]) != "trusted" || len(secret.OwnerReferences) != 1 || secret.OwnerReferences[0].Name != pod.Name {
+		t.Fatal("private Secret is not scoped to the created task pod")
+	}
+	c.deletePrivateMountSecrets(context.Background())
+	if _, err := c.clientset.CoreV1().Secrets("test-ns").Get(context.Background(), secretName, metav1.GetOptions{}); err == nil {
+		t.Fatal("private Secret leaked after task cleanup")
 	}
 }
 

@@ -163,12 +163,31 @@ func (r *Reaper) Run(ctx context.Context) error {
 			logger.Error("failed-to-delete-pod", err, lager.Data{"handle": handle, "pod": podName})
 			return fmt.Errorf("deleting pod %s: %w", podName, err)
 		}
+		r.deletePrivateMountSecrets(ctx, handle)
 	}
 
 	// Clean up artifact store entries for destroyed containers.
 	r.cleanupArtifactStoreEntries(ctx, logger, destroying)
 
 	return nil
+}
+
+// deletePrivateMountSecrets is a backstop for Kubernetes garbage collection.
+// Normal task completion deletes the task-scoped Secret directly; this covers
+// crash recovery and clusters whose owner-reference GC is delayed.
+func (r *Reaper) deletePrivateMountSecrets(ctx context.Context, handle string) {
+	secrets, err := r.clientset.CoreV1().Secrets(r.cfg.Namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("%s=%s", privateMountSecretLabelKey, handle),
+	})
+	if err != nil {
+		r.logger.Error("failed-to-list-private-task-mounts", err, lager.Data{"handle": handle})
+		return
+	}
+	for _, secret := range secrets.Items {
+		if err := r.clientset.CoreV1().Secrets(r.cfg.Namespace).Delete(ctx, secret.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+			r.logger.Error("failed-to-delete-private-task-mount", err, lager.Data{"handle": handle, "secret": secret.Name})
+		}
+	}
 }
 
 // cleanupArtifactStoreEntries removes artifacts from the DaemonSet for

@@ -146,6 +146,12 @@ type ContainerSpec struct {
 	// the MAIN container only — sidecars never receive them (§8.3, the
 	// git-credential contract).
 	SecretMounts []SecretMount
+	// PrivateFileMounts are server-owned bytes materialized by runtimes which
+	// can provide main-container-only files. Unlike Inputs these files must
+	// never be streamed through a task artifact volume or mounted into an init
+	// container: they are for task-scoped authority such as an authoritative
+	// validation profile. Callers must not derive these from task configuration.
+	PrivateFileMounts []PrivateFileMount
 	// Type is the type of step the Container is for (e.g. task, get, etc.).
 	Type db.ContainerType
 
@@ -313,6 +319,15 @@ type ProcessResult struct {
 type SecretMount struct {
 	SecretName string
 	MountPath  string
+}
+
+// PrivateFileMount describes an immutable, task-scoped collection of files.
+// Runtime implementations must expose it read-only to the main container only.
+// It intentionally is not an Artifact: artifact transport is visible to init
+// containers and therefore unsuitable for protected task authority.
+type PrivateFileMount struct {
+	MountPath string
+	Files     map[string][]byte
 }
 
 // Input represents a Volume (typically from a build artifact) to mount to the

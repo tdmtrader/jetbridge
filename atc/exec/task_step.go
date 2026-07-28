@@ -1,9 +1,6 @@
 package exec
 
 import (
-	"archive/tar"
-	"bytes"
-	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -18,7 +15,6 @@ import (
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc"
-	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/exec/build"
 	"github.com/concourse/concourse/atc/imageresolver"
@@ -372,7 +368,7 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 	if err != nil {
 		return false, err
 	}
-	if err := step.addDevValidationAuthorityInput(ctx, worker, &containerSpec); err != nil {
+	if err := step.addDevValidationAuthorityInput(&containerSpec); err != nil {
 		return false, err
 	}
 
@@ -989,69 +985,26 @@ func (step *TaskStep) bindDevValidationCandidate(config *atc.TaskConfig, inputs 
 	return nil
 }
 
-func (step *TaskStep) addDevValidationAuthorityInput(ctx context.Context, worker runtime.Worker, spec *runtime.ContainerSpec) error {
+func (step *TaskStep) addDevValidationAuthorityInput(spec *runtime.ContainerSpec) error {
 	a := step.plan.DevValidationAuthority
 	if a == nil {
 		return nil
 	}
-	archive, err := devValidationAuthorityArchive(ctx, *a)
-	if err != nil {
-		return fmt.Errorf("task %q build protected validation assets: %w", step.plan.Name, err)
+	if err := a.Validate(); err != nil {
+		return fmt.Errorf("task %q validation authority: %w", step.plan.Name, err)
 	}
-	volume, _, err := worker.CreateVolumeForArtifact(ctx, step.metadata.TeamID)
-	if err != nil {
-		return fmt.Errorf("task %q create protected validation volume: %w", step.plan.Name, err)
-	}
-	if volume == nil {
-		return fmt.Errorf("task %q create protected validation volume returned nil", step.plan.Name)
-	}
-	if err := volume.StreamIn(ctx, ".", compression.NewGzipCompression(), 3, bytes.NewReader(archive)); err != nil {
-		return fmt.Errorf("task %q populate protected validation volume: %w", step.plan.Name, err)
-	}
-	spec.Inputs = append(spec.Inputs, runtime.Input{Artifact: volume, DestinationPath: atc.DevValidationProtectedRoot, ReadOnly: true, Private: true})
+	// An artifact volume would have to be hydrated by a privileged init
+	// container. Keep the profile/config out of the artifact transport
+	// altogether; Jetbridge materializes this server-owned mount as a
+	// main-container-only Kubernetes Secret.
+	spec.PrivateFileMounts = append(spec.PrivateFileMounts, runtime.PrivateFileMount{
+		MountPath: atc.DevValidationProtectedRoot,
+		Files: map[string][]byte{
+			"config.yml":  append([]byte(nil), a.ProtectedConfig...),
+			"profile.yml": append([]byte(nil), a.Profile...),
+		},
+	})
 	return nil
-}
-
-func devValidationAuthorityArchive(ctx context.Context, authority atc.DevValidationAuthority) ([]byte, error) {
-	if err := authority.Validate(); err != nil {
-		return nil, err
-	}
-	var archive bytes.Buffer
-	gzipWriter, err := gzip.NewWriterLevel(&archive, gzip.BestCompression)
-	if err != nil {
-		return nil, err
-	}
-	gzipWriter.Header.ModTime = time.Unix(0, 0).UTC()
-	gzipWriter.Header.OS = 255
-	tarWriter := tar.NewWriter(gzipWriter)
-	for _, file := range []struct {
-		name string
-		raw  []byte
-	}{{"config.yml", authority.ProtectedConfig}, {"profile.yml", authority.Profile}} {
-		if err := ctx.Err(); err != nil {
-			_ = tarWriter.Close()
-			_ = gzipWriter.Close()
-			return nil, err
-		}
-		if err := tarWriter.WriteHeader(&tar.Header{Name: file.name, Mode: 0440, Size: int64(len(file.raw)), Typeflag: tar.TypeReg, Format: tar.FormatUSTAR, ModTime: time.Unix(0, 0).UTC()}); err != nil {
-			_ = tarWriter.Close()
-			_ = gzipWriter.Close()
-			return nil, err
-		}
-		if _, err := tarWriter.Write(file.raw); err != nil {
-			_ = tarWriter.Close()
-			_ = gzipWriter.Close()
-			return nil, err
-		}
-	}
-	if err := tarWriter.Close(); err != nil {
-		_ = gzipWriter.Close()
-		return nil, err
-	}
-	if err := gzipWriter.Close(); err != nil {
-		return nil, err
-	}
-	return append([]byte(nil), archive.Bytes()...), nil
 }
 
 func (step *TaskStep) collectTypedOutputs(
