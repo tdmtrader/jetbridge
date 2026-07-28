@@ -831,6 +831,11 @@ jobs:
       rootfs_uri: docker:///registry.home/concourse-test-runner:v5
       inputs:
       - name: repo
+      params:
+        # The deployed artifact daemon's resolve key, so the init containers
+        # these tests create sign capabilities the daemon will actually accept.
+        # Mirrors the cicd Secret the chart mounts into web and the DaemonSet.
+        ARTIFACT_RESOLVE_CAPABILITY_KEY_B64: ((artifact-resolve-capability-key))
       run:
         path: sh
         args:
