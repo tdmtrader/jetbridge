@@ -13,6 +13,30 @@ resources:
     - notes/**
     - forge/**
 jobs:
+# Apply this file to the live pipeline whenever it changes.
+#
+# Without this, deploy/concourse-pipeline.yml is inert until someone remembers
+# `fly set-pipeline`, and the gap is silent: a job conversion sat committed and
+# unapplied for a day while the old definition kept running, and pipeline-side
+# edits (params, env) took effect immediately while the repo-side code they
+# paired with waited on `passed:` gates, so half-applied fixes looked like
+# partial progress.
+#
+# Deliberately outside serial_groups: [pipeline] and free of `passed:`
+# constraints, so a definition change lands even while the release chain is
+# busy or red — which is exactly when a fix to it is most likely.
+#
+# Note this does not make the chain use new code any sooner: jobs gated on
+# `passed:` still only see repo versions that cleared those gates. It removes
+# the manual step, not the gating.
+- name: set-self
+  plan:
+  - get: repo
+    trigger: true
+    params: {depth: 1}
+  - set_pipeline: self
+    file: repo/deploy/concourse-pipeline.yml
+
 - name: build-and-vet
   serial_groups: [pipeline]
   plan:
