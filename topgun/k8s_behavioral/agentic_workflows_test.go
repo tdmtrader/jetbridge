@@ -59,12 +59,13 @@ var _ = Describe("Agentic workflows", func() {
 		// next step is to make writeInternalError itself record its cause and
 		// caller, then re-run; guessing at another single call site is what
 		// already failed once.
-		// Escapable so the defect stays reachable while CI stays green: set
-		// RUN_AGENTIC_WORKFLOW_SPEC=1 to run it against a debug pipeline.
-		// Without that the spec would be dead weight — skipped, unrunnable,
-		// and quietly rotting until someone deletes it.
+		// Still escapable while the intermittent 503 below is open. The
+		// deterministic half — a 500 from the missing platform credential — is
+		// fixed: the suite now vaults one (vaultPlatformCredential). What
+		// remains is a snapshot-content availability race that preempts this
+		// spec in roughly half of runs, so it is not yet trustworthy in CI.
 		if os.Getenv("RUN_AGENTIC_WORKFLOW_SPEC") == "" {
-			Skip("open: workflow run returns an unexplained 500 — see comment above; set RUN_AGENTIC_WORKFLOW_SPEC=1 to reproduce")
+			Skip("open: intermittent 503 content_unavailable races this spec; set RUN_AGENTIC_WORKFLOW_SPEC=1 to run it")
 		}
 
 		inputDir := filepath.Join(tmp, "agentic-input")

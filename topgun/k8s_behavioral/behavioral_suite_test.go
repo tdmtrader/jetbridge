@@ -174,8 +174,40 @@ var _ = SynchronizedBeforeSuite(
 		Expect(err).ToNot(HaveOccurred())
 		suiteFly := FlyCli{Bin: config.FlyBin, Target: flyTarget, Home: suiteFlyHome}
 		suiteFly.Login(config.ATCUsername, config.ATCPassword, config.ATCURL)
+		vaultPlatformCredential(suiteFly)
 	},
 )
+
+// vaultPlatformCredential stores a placeholder platform credential so workflow
+// runs can be admitted.
+//
+// Admitting a workflow run checks for a usable platform credential
+// (PlatformCredentialAdmitter.AdmitModelCredential). Unvaulted, it returns
+// ErrRunCredentialUnavailable, the binder folds that into ErrPlatformFailure,
+// and the API reports a bare 500 — the deterministic half of the agentic
+// workflow spec's failure, and invisible until the handler was given a real
+// logger.
+//
+// anthropic_api_key is one of the two kinds the admitter accepts, and the
+// default expiry keeps it usable. (This check was VaultedRunSecretPreparer
+// when the failure was diagnosed; standardizing on the platform token replaced
+// it, narrowing the resolution to platform-only. Vaulting one is still exactly
+// what admission wants, and now the only thing that satisfies it.)
+//
+// The value is deliberately fake. Admission needs a credential to exist, not a
+// working one: the workflow under test runs `cp -R`, so nothing ever presents
+// this token to Anthropic. Only non-emptiness is enforced
+// (credentials.PutRequest.Validate), and vaulting is enough on its own — the
+// admitter reads the vault, not the Kubernetes secret the platform syncer
+// mirrors it into.
+func vaultPlatformCredential(fly FlyCli) {
+	session := fly.Start(
+		"agent", "auth", "--platform",
+		"--kind=anthropic_api_key",
+		"--token=behavioral-suite-placeholder-not-a-real-key",
+	)
+	Eventually(session).Should(gexec.Exit(0))
+}
 
 var _ = SynchronizedAfterSuite(
 	// All processes: stop port-forward, delete per-process KinD cluster.
