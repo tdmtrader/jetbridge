@@ -24,7 +24,7 @@ const (
 // validation runner. The executor appends the authenticated candidate ID and
 // digest only after it resolves the actual typed input.
 func DevValidationStaticArgs(authority DevValidationAuthority, candidate snapshot.TypeRef) []string {
-	args := []string{"dev-validate", "--root", ".", "--candidate", authority.CandidateInput, "--workspace", DevValidationWorkspacePath, "--output", DevValidationOutput, "--candidate-type", candidate.String(), "--profile-name", authority.ProfileName, "--profile", DevValidationProtectedRoot + "/profile.yml", "--config", DevValidationProtectedRoot + "/config.yml", "--capability-image", authority.CapabilityImage, "--workflow-definition-id", fmt.Sprint(authority.WorkflowDefinitionID), "--workflow-version", fmt.Sprint(authority.WorkflowVersion)}
+	args := []string{"dev-validate", "--root", ".", "--candidate", authority.CandidateInput, "--workspace", DevValidationWorkspacePath, "--output", DevValidationOutput, "--candidate-type", candidate.String(), "--profile-name", authority.ProfileName, "--profile", DevValidationProtectedRoot + "/profile.yml", "--profile-digest", authority.ProfileDigest.String(), "--config", DevValidationProtectedRoot + "/config.yml", "--config-digest", authority.ProtectedConfigDigest.String(), "--capability-image", authority.CapabilityImage, "--workflow-definition-id", fmt.Sprint(authority.WorkflowDefinitionID), "--workflow-version", fmt.Sprint(authority.WorkflowVersion)}
 	for _, base := range authority.BaseInputs {
 		args = append(args, "--base", base.Name)
 	}

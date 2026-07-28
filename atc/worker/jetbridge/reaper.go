@@ -10,10 +10,13 @@ import (
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/gc"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
+
+const privateMountPrePodSecretGracePeriod = time.Minute
 
 // Reaper implements the GC sweep loop for K8s-backed containers and volumes.
 // It reports active pods to the DB, deletes pods that the DB has marked as
@@ -188,8 +191,24 @@ func (r *Reaper) reapOrphanPrivateMountSecrets(ctx context.Context) {
 		r.logger.Error("failed-to-list-private-task-mounts", err)
 		return
 	}
+	// Ownerless immutable Secrets are the short pre-Pod state. List pods once
+	// so a crash after Pod Create but before the binding CAS can never cause a
+	// mounted Secret to be removed. We do not adopt ownerless metadata: after a
+	// grace period, only the absence of every live reference permits deletion.
+	pods, err := r.clientset.CoreV1().Pods(r.cfg.Namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		r.logger.Error("failed-to-list-pods-for-private-task-mounts", err)
+		return
+	}
 	for _, secret := range secrets.Items {
-		if secret.Immutable == nil || !*secret.Immutable || len(secret.OwnerReferences) != 1 {
+		if secret.Immutable == nil || !*secret.Immutable {
+			continue
+		}
+		if len(secret.OwnerReferences) == 0 {
+			r.reapOwnerlessPrivateMountSecret(ctx, &secret, pods.Items)
+			continue
+		}
+		if len(secret.OwnerReferences) != 1 {
 			continue
 		}
 		owner := secret.OwnerReferences[0]
@@ -216,6 +235,40 @@ func (r *Reaper) reapOrphanPrivateMountSecrets(ctx context.Context) {
 			r.logger.Error("failed-to-delete-orphaned-private-task-mount", err, lager.Data{"secret": secret.Name, "pod": owner.Name})
 		}
 	}
+}
+
+func (r *Reaper) reapOwnerlessPrivateMountSecret(ctx context.Context, secret *corev1.Secret, pods []corev1.Pod) {
+	if secret == nil || secret.Labels[privateMountSecretLabelKey] == "" || secret.Labels[privateMountPodNameLabelKey] == "" ||
+		secret.Labels[privateMountPodUIDLabelKey] != "" || secret.Annotations[privateMountDataDigestKey] == "" {
+		return
+	}
+	if !secret.CreationTimestamp.IsZero() && time.Since(secret.CreationTimestamp.Time) < privateMountPrePodSecretGracePeriod {
+		return
+	}
+	for _, pod := range pods {
+		if podReferencesSecret(&pod, secret.Name) {
+			return
+		}
+	}
+	options := metav1.DeleteOptions{}
+	if secret.UID != "" {
+		options.Preconditions = &metav1.Preconditions{UID: &secret.UID}
+	}
+	if err := r.clientset.CoreV1().Secrets(r.cfg.Namespace).Delete(ctx, secret.Name, options); err != nil && !apierrors.IsNotFound(err) {
+		r.logger.Error("failed-to-delete-ownerless-private-task-mount", err, lager.Data{"secret": secret.Name})
+	}
+}
+
+func podReferencesSecret(pod *corev1.Pod, name string) bool {
+	if pod == nil || name == "" {
+		return false
+	}
+	for _, volume := range pod.Spec.Volumes {
+		if volume.Secret != nil && volume.Secret.SecretName == name {
+			return true
+		}
+	}
+	return false
 }
 
 // cleanupArtifactStoreEntries removes artifacts from the DaemonSet for

@@ -18,8 +18,8 @@ import (
 )
 
 type devValidateOptions struct {
-	root, candidate, workspace, output, candidateType, candidateID, candidateDigest, profileName, profilePath, configPath, image, definitionID, version string
-	bases, baseRefs                                                                                                                                     stringList
+	root, candidate, workspace, output, candidateType, candidateID, candidateDigest, profileName, profilePath, profileDigest, configPath, configDigest, image, definitionID, version string
+	bases, baseRefs                                                                                                                                                                  stringList
 }
 type stringList []string
 
@@ -50,7 +50,9 @@ func runDevValidate(ctx context.Context, args []string, stdout, stderr io.Writer
 	f.StringVar(&o.candidateDigest, "candidate-digest", "", "server candidate digest")
 	f.StringVar(&o.profileName, "profile-name", "", "server profile name")
 	f.StringVar(&o.profilePath, "profile", "", "protected profile")
+	f.StringVar(&o.profileDigest, "profile-digest", "", "server protected profile digest")
 	f.StringVar(&o.configPath, "config", "", "protected config")
+	f.StringVar(&o.configDigest, "config-digest", "", "server protected config digest")
 	f.StringVar(&o.image, "capability-image", "", "pinned image")
 	f.StringVar(&o.definitionID, "workflow-definition-id", "", "workflow definition")
 	f.StringVar(&o.version, "workflow-version", "", "workflow version")
@@ -75,7 +77,7 @@ func executeDevValidateWithRunner(ctx context.Context, o devValidateOptions, run
 	if runner == nil {
 		return fmt.Errorf("validation runner is required")
 	}
-	for name, value := range map[string]string{"candidate": o.candidate, "workspace": o.workspace, "output": o.output, "candidate-type": o.candidateType, "candidate-id": o.candidateID, "candidate-digest": o.candidateDigest, "profile-name": o.profileName, "profile": o.profilePath, "config": o.configPath, "capability-image": o.image, "workflow-definition-id": o.definitionID, "workflow-version": o.version} {
+	for name, value := range map[string]string{"candidate": o.candidate, "workspace": o.workspace, "output": o.output, "candidate-type": o.candidateType, "candidate-id": o.candidateID, "candidate-digest": o.candidateDigest, "profile-name": o.profileName, "profile": o.profilePath, "profile-digest": o.profileDigest, "config": o.configPath, "config-digest": o.configDigest, "capability-image": o.image, "workflow-definition-id": o.definitionID, "workflow-version": o.version} {
 		if strings.TrimSpace(value) == "" {
 			return fmt.Errorf("-%s is required", name)
 		}
@@ -156,6 +158,20 @@ func executeDevValidateWithRunner(ctx context.Context, o devValidateOptions, run
 	configBytes, err := protected(o.configPath, source, workspace, output)
 	if err != nil {
 		return err
+	}
+	expectedProfileDigest, err := snapshot.ParseDigest(o.profileDigest)
+	if err != nil {
+		return fmt.Errorf("invalid protected profile digest: %w", err)
+	}
+	if contentDigest(profileBytes) != expectedProfileDigest {
+		return fmt.Errorf("mounted protected profile does not match server digest")
+	}
+	expectedConfigDigest, err := snapshot.ParseDigest(o.configDigest)
+	if err != nil {
+		return fmt.Errorf("invalid protected config digest: %w", err)
+	}
+	if contentDigest(configBytes) != expectedConfigDigest {
+		return fmt.Errorf("mounted protected config does not match server digest")
 	}
 	imageDigest, err := pinnedImageDigest(o.image)
 	if err != nil {

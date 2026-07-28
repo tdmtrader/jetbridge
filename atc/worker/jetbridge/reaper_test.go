@@ -3,6 +3,7 @@ package jetbridge_test
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/atc/db/dbfakes"
@@ -172,6 +173,46 @@ var _ = Describe("Reaper", func() {
 	})
 
 	Describe("private authority Secret lifecycle", func() {
+		createOwnerlessPrivateMountSecret := func(name, handle, intendedPod string) {
+			immutable := true
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: name, Namespace: "test-namespace", CreationTimestamp: metav1.NewTime(time.Now().Add(-2 * time.Minute)),
+					Labels: map[string]string{
+						"concourse.ci/private-mount-for":      handle,
+						"concourse.ci/private-mount-pod-name": intendedPod,
+					},
+					Annotations: map[string]string{"concourse.ci/private-mount-data-digest": "sha256:test"},
+				},
+				Immutable: &immutable,
+				Data:      map[string][]byte{"profile.yml": []byte("trusted")},
+			}
+			_, err := fakeClientset.CoreV1().Secrets("test-namespace").Create(ctx, secret, metav1.CreateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+		}
+
+		It("keeps an ownerless pre-bind Secret while a live Pod references it", func() {
+			createLabelledPod("private-pod")
+			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, "private-pod", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			pod.Spec.Volumes = []corev1.Volume{{Name: "authority", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: "private-secret"}}}}
+			_, err = fakeClientset.CoreV1().Pods("test-namespace").Update(ctx, pod, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			createOwnerlessPrivateMountSecret("private-secret", "private-handle", "private-pod")
+
+			Expect(reaper.Run(ctx)).To(Succeed())
+			_, err = fakeClientset.CoreV1().Secrets("test-namespace").Get(ctx, "private-secret", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("grace-cleans an ownerless pre-Pod Secret after no Pod references it", func() {
+			createOwnerlessPrivateMountSecret("private-secret", "private-handle", "never-created")
+
+			Expect(reaper.Run(ctx)).To(Succeed())
+			_, err := fakeClientset.CoreV1().Secrets("test-namespace").Get(ctx, "private-secret", metav1.GetOptions{})
+			Expect(err).To(HaveOccurred())
+		})
+
 		It("does not remove an owner-bound Secret when pod deletion fails", func() {
 			const handle = "private-handle"
 			const podName = "private-pod"

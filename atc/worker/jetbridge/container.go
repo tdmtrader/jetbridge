@@ -38,6 +38,8 @@ const (
 	resourceResultAnnotationKey = "concourse.ci/resource-result"
 	privateMountSecretLabelKey  = "concourse.ci/private-mount-for"
 	privateMountPodUIDLabelKey  = "concourse.ci/private-mount-pod-uid"
+	privateMountPodNameLabelKey = "concourse.ci/private-mount-pod-name"
+	privateMountDataDigestKey   = "concourse.ci/private-mount-data-digest"
 	privateMountRoot            = "/run/concourse"
 	maxPrivateMountSecretBytes  = 1 << 20
 )
@@ -76,7 +78,8 @@ type Container struct {
 	reused bool
 	// privateMountSecretNames are allocated afresh for each new Pod. They are
 	// deliberately retained only long enough to put the exact names in that
-	// Pod's spec and create owner-bound Secrets after the API assigns its UID.
+	// Pod's spec. Trusted, immutable Secrets are created before that Pod is
+	// exposed to Kubernetes, then bound to its UID with a CAS update.
 	privateMountSecretNames   []string
 	privateMountNameGenerator func() (string, error)
 }
@@ -401,14 +404,19 @@ func (c *Container) createPod(ctx context.Context, processSpec runtime.ProcessSp
 	if err != nil {
 		return nil, err
 	}
-	created, err := c.clientset.CoreV1().Pods(c.config.Namespace).Create(ctx, pod, metav1.CreateOptions{})
+	secrets, err := c.createPrivateMountSecrets(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if err := c.createPrivateMountSecrets(ctx, created); err != nil {
-		cleanupErr := c.deletePrivateMountPodAfterSecretFailure(ctx, created)
+	created, err := c.clientset.CoreV1().Pods(c.config.Namespace).Create(ctx, pod, metav1.CreateOptions{})
+	if err != nil {
+		c.deleteExactPrivateMountSecrets(ctx, secrets)
+		return nil, fmt.Errorf("create pod after private task mount: %w", err)
+	}
+	if err := c.bindPrivateMountSecrets(ctx, created, secrets); err != nil {
+		cleanupErr := c.deletePrivateMountPodAfterSecretFailure(ctx, created, secrets)
 		if cleanupErr != nil {
-			return nil, fmt.Errorf("create private task mount: %w (pod cleanup: %v)", err, cleanupErr)
+			return nil, fmt.Errorf("bind private task mount: %w (pod cleanup: %v)", err, cleanupErr)
 		}
 		return nil, err
 	}
@@ -433,14 +441,19 @@ func (c *Container) createPausePod(ctx context.Context, processSpec runtime.Proc
 	if err != nil {
 		return nil, err
 	}
-	created, err := c.clientset.CoreV1().Pods(c.config.Namespace).Create(ctx, pod, metav1.CreateOptions{})
+	secrets, err := c.createPrivateMountSecrets(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if err := c.createPrivateMountSecrets(ctx, created); err != nil {
-		cleanupErr := c.deletePrivateMountPodAfterSecretFailure(ctx, created)
+	created, err := c.clientset.CoreV1().Pods(c.config.Namespace).Create(ctx, pod, metav1.CreateOptions{})
+	if err != nil {
+		c.deleteExactPrivateMountSecrets(ctx, secrets)
+		return nil, fmt.Errorf("create pause pod after private task mount: %w", err)
+	}
+	if err := c.bindPrivateMountSecrets(ctx, created, secrets); err != nil {
+		cleanupErr := c.deletePrivateMountPodAfterSecretFailure(ctx, created, secrets)
 		if cleanupErr != nil {
-			return nil, fmt.Errorf("create private task mount: %w (pod cleanup: %v)", err, cleanupErr)
+			return nil, fmt.Errorf("bind private task mount: %w (pod cleanup: %v)", err, cleanupErr)
 		}
 		return nil, err
 	}
@@ -715,31 +728,31 @@ func (c *Container) nextPrivateMountSecretName() (string, error) {
 	return "concourse-private-" + hex.EncodeToString(bytes), nil
 }
 
-func (c *Container) createPrivateMountSecrets(ctx context.Context, pod *corev1.Pod) error {
+// createPrivateMountSecrets creates the trusted immutable data before any Pod
+// can reference its random name. It deliberately has no owner reference: the
+// Pod UID does not exist yet. The subsequent bind is a compare-and-swap update
+// of exactly these returned objects, never an adoption of an existing Secret.
+func (c *Container) createPrivateMountSecrets(ctx context.Context) ([]*corev1.Secret, error) {
 	if len(c.containerSpec.PrivateFileMounts) == 0 {
-		return nil
+		return nil, nil
 	}
-	if pod.UID == "" {
-		return fmt.Errorf("created task pod has no UID")
-	}
-	controller := true
 	immutable := true
+	created := make([]*corev1.Secret, 0, len(c.containerSpec.PrivateFileMounts))
 	for index, mount := range c.containerSpec.PrivateFileMounts {
 		name := c.privateMountSecretName(index)
 		if name == "" {
-			return fmt.Errorf("private task mount has no allocated Secret name")
+			c.deleteExactPrivateMountSecrets(ctx, created)
+			return nil, fmt.Errorf("private task mount has no allocated Secret name")
 		}
 		secret := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      name,
 				Namespace: c.config.Namespace,
 				Labels: map[string]string{
-					privateMountSecretLabelKey: c.handle,
-					privateMountPodUIDLabelKey: string(pod.UID),
+					privateMountSecretLabelKey:  c.handle,
+					privateMountPodNameLabelKey: c.podName,
 				},
-				OwnerReferences: []metav1.OwnerReference{{
-					APIVersion: "v1", Kind: "Pod", Name: pod.Name, UID: pod.UID, Controller: &controller,
-				}},
+				Annotations: map[string]string{privateMountDataDigestKey: privateMountDataDigest(mount.Files)},
 			},
 			Type:      corev1.SecretTypeOpaque,
 			Immutable: &immutable,
@@ -748,18 +761,56 @@ func (c *Container) createPrivateMountSecrets(ctx context.Context, pod *corev1.P
 		// Create is intentionally the only operation. AlreadyExists is an
 		// authority-substitution attempt (or a vanishingly unlikely collision),
 		// never a reason to read, update, or adopt someone else's Secret.
-		if _, err := c.clientset.CoreV1().Secrets(c.config.Namespace).Create(ctx, secret, metav1.CreateOptions{}); err != nil {
-			return fmt.Errorf("create private task mount %q: %w", name, err)
+		actual, err := c.clientset.CoreV1().Secrets(c.config.Namespace).Create(ctx, secret, metav1.CreateOptions{})
+		if err != nil {
+			c.deleteExactPrivateMountSecrets(ctx, created)
+			return nil, fmt.Errorf("create private task mount %q: %w", name, err)
+		}
+		if !privateMountSecretTrusted(actual, mount, c.handle, c.podName) {
+			c.deleteExactPrivateMountSecrets(ctx, append(created, actual))
+			return nil, fmt.Errorf("created private task mount %q did not preserve trusted immutable data", name)
+		}
+		created = append(created, actual.DeepCopy())
+	}
+	return created, nil
+}
+
+// bindPrivateMountSecrets adds the exact created Pod UID as owner metadata.
+// Update carries the Create response's resourceVersion and UID, so a stale or
+// replaced object fails closed instead of being silently adopted.
+func (c *Container) bindPrivateMountSecrets(ctx context.Context, pod *corev1.Pod, created []*corev1.Secret) error {
+	if len(created) != len(c.containerSpec.PrivateFileMounts) || pod == nil || pod.UID == "" {
+		return fmt.Errorf("cannot bind incomplete private task mounts to pod")
+	}
+	controller := true
+	for index, original := range created {
+		if original == nil {
+			return fmt.Errorf("private task mount %d was not created", index)
+		}
+		mount := c.containerSpec.PrivateFileMounts[index]
+		if !privateMountSecretTrusted(original, mount, c.handle, pod.Name) {
+			return fmt.Errorf("private task mount %q is not the created trusted Secret", original.Name)
+		}
+		bound := original.DeepCopy()
+		bound.Labels[privateMountPodUIDLabelKey] = string(pod.UID)
+		bound.OwnerReferences = []metav1.OwnerReference{{
+			APIVersion: "v1", Kind: "Pod", Name: pod.Name, UID: pod.UID, Controller: &controller,
+		}}
+		actual, err := c.clientset.CoreV1().Secrets(c.config.Namespace).Update(ctx, bound, metav1.UpdateOptions{})
+		if err != nil {
+			return fmt.Errorf("bind private task mount %q: %w", original.Name, err)
+		}
+		if actual.UID != original.UID || !privateMountSecretOwnedBy(actual, c.handle, pod) || !privateMountSecretTrusted(actual, mount, c.handle, pod.Name) {
+			return fmt.Errorf("bound private task mount %q changed identity or trusted data", original.Name)
 		}
 	}
 	return nil
 }
 
-// deletePrivateMountPodAfterSecretFailure requests Pod deletion after a
-// partial Secret creation failure. It removes owner-bound Secrets only once
-// the API confirms the Pod is absent; a successful Delete request alone does
-// not prove that kubelet has stopped using the mounted data.
-func (c *Container) deletePrivateMountPodAfterSecretFailure(ctx context.Context, pod *corev1.Pod) error {
+// deletePrivateMountPodAfterSecretFailure requests Pod deletion after a bind
+// failure. It removes Secrets only once the API confirms the Pod is absent; a
+// successful Delete request alone does not prove kubelet stopped using them.
+func (c *Container) deletePrivateMountPodAfterSecretFailure(ctx context.Context, pod *corev1.Pod, created []*corev1.Secret) error {
 	if err := c.clientset.CoreV1().Pods(c.config.Namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
 		return fmt.Errorf("delete pod after private task mount failure: %w", err)
 	}
@@ -770,8 +821,24 @@ func (c *Container) deletePrivateMountPodAfterSecretFailure(ctx context.Context,
 	if !apierrors.IsNotFound(err) {
 		return fmt.Errorf("confirm pod deletion after private task mount failure: %w", err)
 	}
-	c.deleteOwnerBoundPrivateMountSecrets(ctx, pod)
+	c.deleteExactPrivateMountSecrets(ctx, created)
 	return nil
+}
+
+// deleteExactPrivateMountSecrets may only be used before Pod creation fails,
+// or after Pod absence has been confirmed. UID preconditions ensure it cannot
+// delete a replacement created by another actor.
+func (c *Container) deleteExactPrivateMountSecrets(ctx context.Context, secrets []*corev1.Secret) {
+	for _, secret := range secrets {
+		if secret == nil || secret.Name == "" {
+			continue
+		}
+		options := metav1.DeleteOptions{}
+		if secret.UID != "" {
+			options.Preconditions = &metav1.Preconditions{UID: &secret.UID}
+		}
+		_ = c.clientset.CoreV1().Secrets(c.config.Namespace).Delete(ctx, secret.Name, options)
+	}
 }
 
 func (c *Container) deleteOwnerBoundPrivateMountSecrets(ctx context.Context, pod *corev1.Pod) {
@@ -781,7 +848,7 @@ func (c *Container) deleteOwnerBoundPrivateMountSecrets(ctx context.Context, pod
 		if err != nil || !privateMountSecretOwnedBy(secret, c.handle, pod) {
 			continue
 		}
-		_ = c.clientset.CoreV1().Secrets(c.config.Namespace).Delete(ctx, name, metav1.DeleteOptions{})
+		c.deleteExactPrivateMountSecrets(ctx, []*corev1.Secret{secret})
 	}
 }
 
@@ -869,6 +936,33 @@ func privateMountSecretOwnedBy(secret *corev1.Secret, handle string, pod *corev1
 	owner := secret.OwnerReferences[0]
 	return owner.APIVersion == "v1" && owner.Kind == "Pod" && owner.Name == pod.Name && owner.UID == pod.UID &&
 		owner.Controller != nil && *owner.Controller
+}
+
+// privateMountSecretTrusted checks the immutable payload and the metadata
+// that identifies a freshly-created, pre-Pod authority Secret. It is used both
+// before the binding CAS and after it so neither a raced replacement nor a
+// metadata-only mutation can become execution authority.
+func privateMountSecretTrusted(secret *corev1.Secret, mount runtime.PrivateFileMount, handle, podName string) bool {
+	if secret == nil || secret.Name == "" || secret.Immutable == nil || !*secret.Immutable ||
+		secret.Type != corev1.SecretTypeOpaque || secret.Labels[privateMountSecretLabelKey] != handle ||
+		secret.Labels[privateMountPodNameLabelKey] != podName ||
+		secret.Annotations[privateMountDataDigestKey] != privateMountDataDigest(mount.Files) ||
+		privateMountDataDigest(secret.Data) != privateMountDataDigest(mount.Files) {
+		return false
+	}
+	return true
+}
+
+func privateMountDataDigest(files map[string][]byte) string {
+	// encoding/json sorts string map keys. The digest therefore covers both
+	// exact filenames and bytes deterministically without relying on Go map
+	// iteration order.
+	encoded, err := json.Marshal(files)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(encoded)
+	return fmt.Sprintf("sha256:%x", sum[:])
 }
 
 // buildCleanupInitContainer creates an init container that removes stale data

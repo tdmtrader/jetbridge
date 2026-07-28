@@ -55,6 +55,13 @@ func captureForValidation(t *testing.T, dir string) ([]byte, snapshot.Digest) {
 // an image.
 type imageBakedDevCapabilityRunner struct{ binary string }
 
+type observingDevValidationRunner struct{ called bool }
+
+func (r *observingDevValidationRunner) Run(context.Context, devvalidate.Request) (contracts.Record[contracts.ValidationBody], error) {
+	r.called = true
+	return contracts.Record[contracts.ValidationBody]{}, nil
+}
+
 func (r imageBakedDevCapabilityRunner) Run(ctx context.Context, args []string, dir string, env []string) (int, error) {
 	if len(args) < 2 || args[0] != workflow.DevValidationCLIPath || args[1] != workflow.DevValidationCLIValidateCommand {
 		return 0, fmt.Errorf("unexpected compiled validation command %q", args)
@@ -118,6 +125,46 @@ func TestCopyCandidatePreservesContainedSymlinkAndRejectsEscapingOne(t *testing.
 	}
 }
 
+func TestDevValidateRejectsSubstitutedProtectedBytesBeforeRunnerLaunch(t *testing.T) {
+	root := t.TempDir()
+	candidate, workspace, output := filepath.Join(root, "candidate"), filepath.Join(root, "workspace"), filepath.Join(root, "validation")
+	for _, path := range []string{candidate, workspace, output} {
+		if err := os.Mkdir(path, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(candidate, "input.txt"), []byte("exact candidate"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, candidateDigest := captureForValidation(t, candidate)
+	protected := t.TempDir()
+	profilePath, configPath := filepath.Join(protected, "profile.yml"), filepath.Join(protected, "config.yml")
+	if err := os.WriteFile(profilePath, []byte("substituted profile"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte("substituted config"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	runner := &observingDevValidationRunner{}
+	o := devValidateOptions{
+		root: root, candidate: "candidate", workspace: "workspace", output: "validation", candidateType: "opaque/v1", candidateID: "1", candidateDigest: candidateDigest.String(), profileName: "exact", profilePath: profilePath,
+		profileDigest: "sha256:" + strings.Repeat("a", 64), configPath: configPath, configDigest: contentDigest([]byte("substituted config")).String(), image: "example.test/dev-capability@sha256:" + strings.Repeat("b", 64), definitionID: "2", version: "3",
+	}
+	if err := executeDevValidateWithRunner(context.Background(), o, runner); err == nil {
+		t.Fatal("substituted protected profile was accepted")
+	}
+	if runner.called {
+		t.Fatal("validation runner/process launch occurred after protected digest mismatch")
+	}
+	entries, err := os.ReadDir(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("output was sealed before protected digest validation: %v", entries)
+	}
+}
+
 func TestExactRepositoryBaseRejectsMissingAndAmbiguousRepositoryBases(t *testing.T) {
 	root := t.TempDir()
 	for _, name := range []string{"base-a", "base-b"} {
@@ -176,7 +223,7 @@ func TestDevValidateRealFunctionRunnerAndImageBakedCapabilitySealsRev3(t *testin
 		return devvalidate.NewRunner(imageBakedDevCapabilityRunner{binary: buildRealDevCapability(t)})
 	}
 	t.Cleanup(func() { newDevValidationRunner = previous })
-	args := []string{"--root", root, "--candidate", candidateName, "--workspace", "workspace", "--output", "validation", "--candidate-type", "opaque/v1", "--candidate-id", "71", "--candidate-digest", candidateDigest.String(), "--profile-name", "exact", "--profile", profilePath, "--config", configPath, "--capability-image", image, "--workflow-definition-id", "72", "--workflow-version", "73"}
+	args := []string{"--root", root, "--candidate", candidateName, "--workspace", "workspace", "--output", "validation", "--candidate-type", "opaque/v1", "--candidate-id", "71", "--candidate-digest", candidateDigest.String(), "--profile-name", "exact", "--profile", profilePath, "--profile-digest", contentDigest(profile).String(), "--config", configPath, "--config-digest", contentDigest(config).String(), "--capability-image", image, "--workflow-definition-id", "72", "--workflow-version", "73"}
 	var stdout, stderr bytes.Buffer
 	if status := runDevValidate(context.Background(), args, &stdout, &stderr); status != exitOK {
 		t.Fatalf("real function-runner dev-validate exit = %d, stderr = %s", status, stderr.String())
@@ -293,7 +340,7 @@ func TestDevValidateRepositoryChangeUsesExactBaseAndRenamePaths(t *testing.T) {
 	binary := buildRealDevCapability(t)
 	newDevValidationRunner = func() devValidationRunner { return devvalidate.NewRunner(imageBakedDevCapabilityRunner{binary}) }
 	t.Cleanup(func() { newDevValidationRunner = previous })
-	args := []string{"--root", root, "--candidate", candidateName, "--workspace", "workspace", "--output", "validation", "--candidate-type", "repository-change/v1", "--candidate-id", "71", "--candidate-digest", candidateDigest.String(), "--profile-name", "exact", "--profile", profilePath, "--config", configPath, "--capability-image", image, "--workflow-definition-id", "72", "--workflow-version", "73", "--base", "baseline", "--base-ref", fmt.Sprintf("baseline=%s,%s,%s", baseRef.ID, baseRef.Type, baseRef.Digest)}
+	args := []string{"--root", root, "--candidate", candidateName, "--workspace", "workspace", "--output", "validation", "--candidate-type", "repository-change/v1", "--candidate-id", "71", "--candidate-digest", candidateDigest.String(), "--profile-name", "exact", "--profile", profilePath, "--profile-digest", contentDigest(profile).String(), "--config", configPath, "--config-digest", contentDigest(config).String(), "--capability-image", image, "--workflow-definition-id", "72", "--workflow-version", "73", "--base", "baseline", "--base-ref", fmt.Sprintf("baseline=%s,%s,%s", baseRef.ID, baseRef.Type, baseRef.Digest)}
 	var stdout, stderr bytes.Buffer
 	if status := runDevValidate(context.Background(), args, &stdout, &stderr); status != exitOK {
 		t.Fatalf("repository dev-validate = %d: %s", status, stderr.String())

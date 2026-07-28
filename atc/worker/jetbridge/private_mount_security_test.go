@@ -77,7 +77,49 @@ func TestPrivateMountCollisionIsFailClosedAndDoesNotOverwrite(t *testing.T) {
 	}
 }
 
-func TestPrivateMountSecretIsImmutableAndOwnedAtCreate(t *testing.T) {
+func TestPrivateMountTrustedSecretAlreadyExistsWhenPodBecomesVisible(t *testing.T) {
+	ctx := context.Background()
+	clientset := fake.NewSimpleClientset()
+	c := newPrivateMountTestContainer(clientset, privateMountTestSpec("/run/concourse/dev-validation"))
+	c.privateMountNameGenerator = func() (string, error) { return "concourse-private-race", nil }
+	var exposedSecretName string
+	clientset.PrependReactor("create", "pods", func(action ktesting.Action) (bool, kruntime.Object, error) {
+		pod := action.(ktesting.CreateAction).GetObject().(*corev1.Pod)
+		for _, volume := range pod.Spec.Volumes {
+			if volume.Secret == nil || volume.Secret.SecretName != "concourse-private-race" {
+				continue
+			}
+			exposedSecretName = volume.Secret.SecretName
+		}
+		return false, nil, nil
+	})
+	pod, err := c.createPod(ctx, runtime.ProcessSpec{Path: "/bin/sh"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exposedSecretName == "" {
+		t.Fatal("Pod did not expose the expected private Secret name")
+	}
+	// The fake reactor above is the adversarial observer that sees the Pod's
+	// volume reference. Once that Pod is visible, its competing Create cannot
+	// win because this implementation already created the immutable Secret.
+	_, attackerErr := clientset.CoreV1().Secrets("test-ns").Create(ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: exposedSecretName, Namespace: "test-ns"},
+		Data:       map[string][]byte{"profile.yml": []byte("attacker")},
+	}, metav1.CreateOptions{})
+	if !apierrors.IsAlreadyExists(attackerErr) {
+		t.Fatalf("attacker Create after Pod visibility = %v, want AlreadyExists", attackerErr)
+	}
+	secret, err := clientset.CoreV1().Secrets("test-ns").Get(ctx, privateSecretName(t, pod), metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(secret.Data["profile.yml"]) != "trusted" || secret.Immutable == nil || !*secret.Immutable {
+		t.Fatalf("Pod did not retain trusted immutable Secret: %#v", secret)
+	}
+}
+
+func TestPrivateMountSecretIsImmutableBeforePodAndCASBoundAfterCreate(t *testing.T) {
 	ctx := context.Background()
 	clientset := fake.NewSimpleClientset()
 	clientset.PrependReactor("create", "pods", func(action ktesting.Action) (bool, kruntime.Object, error) {
@@ -92,7 +134,8 @@ func TestPrivateMountSecretIsImmutableAndOwnedAtCreate(t *testing.T) {
 	})
 	c := newPrivateMountTestContainer(clientset, privateMountTestSpec("/run/concourse/dev-validation"))
 
-	if _, err := c.createPod(ctx, runtime.ProcessSpec{Path: "/bin/sh"}); err != nil {
+	pod, err := c.createPod(ctx, runtime.ProcessSpec{Path: "/bin/sh"})
+	if err != nil {
 		t.Fatal(err)
 	}
 	if created == nil {
@@ -101,12 +144,20 @@ func TestPrivateMountSecretIsImmutableAndOwnedAtCreate(t *testing.T) {
 	if created.Immutable == nil || !*created.Immutable {
 		t.Fatal("private Secret must be immutable at Create")
 	}
-	if len(created.OwnerReferences) != 1 || created.OwnerReferences[0].UID != "pod-uid" {
-		t.Fatalf("private Secret must have the pod owner at Create: %#v", created.OwnerReferences)
+	if len(created.OwnerReferences) != 0 || created.Labels[privateMountPodNameLabelKey] != c.podName {
+		t.Fatalf("private Secret must be an ownerless pre-Pod object: %#v", created.ObjectMeta)
+	}
+	secretName := privateSecretName(t, pod)
+	bound, err := clientset.CoreV1().Secrets("test-ns").Get(ctx, secretName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bound.OwnerReferences) != 1 || bound.OwnerReferences[0].UID != "pod-uid" || bound.Labels[privateMountPodUIDLabelKey] != "pod-uid" {
+		t.Fatalf("private Secret was not CAS-bound to exact pod: %#v", bound.ObjectMeta)
 	}
 }
 
-func TestPrivateMountCreatesPodBeforeSecretsAndRequestsOnlyPodCleanupOnPartialFailure(t *testing.T) {
+func TestPrivateMountCreatesSecretsBeforePodAndCleansPartialPrePodFailure(t *testing.T) {
 	ctx := context.Background()
 	clientset := fake.NewSimpleClientset()
 	var order []string
@@ -118,7 +169,7 @@ func TestPrivateMountCreatesPodBeforeSecretsAndRequestsOnlyPodCleanupOnPartialFa
 	})
 	clientset.PrependReactor("create", "secrets", func(action ktesting.Action) (bool, kruntime.Object, error) {
 		order = append(order, "secret")
-		if len(order) == 3 {
+		if len(order) == 2 {
 			return true, nil, apierrors.NewInternalError(fmt.Errorf("second Secret failed"))
 		}
 		return false, nil, nil
@@ -134,8 +185,8 @@ func TestPrivateMountCreatesPodBeforeSecretsAndRequestsOnlyPodCleanupOnPartialFa
 	if _, err := c.createPod(ctx, runtime.ProcessSpec{Path: "/bin/sh"}); err == nil {
 		t.Fatal("expected partial Secret creation failure")
 	}
-	if len(order) < 2 || order[0] != "pod" || order[1] != "secret" {
-		t.Fatalf("Pod must be created before private Secrets: %v", order)
+	if len(order) != 2 || order[0] != "secret" || order[1] != "secret" {
+		t.Fatalf("trusted Secrets must be created before Pod visibility: %v", order)
 	}
 	// A fake client deletes a Pod immediately. Real clusters normally retain it
 	// during termination; the implementation must not independently delete the
@@ -149,7 +200,7 @@ func TestPrivateMountCreatesPodBeforeSecretsAndRequestsOnlyPodCleanupOnPartialFa
 	}
 }
 
-func TestPrivateMountPartialFailureKeepsOwnerBoundSecretWhenPodDeleteFails(t *testing.T) {
+func TestPrivateMountPrePodPartialFailureCleansOnlyCreatedSecrets(t *testing.T) {
 	ctx := context.Background()
 	clientset := fake.NewSimpleClientset()
 	clientset.PrependReactor("create", "secrets", func(action ktesting.Action) (bool, kruntime.Object, error) {
@@ -157,9 +208,6 @@ func TestPrivateMountPartialFailureKeepsOwnerBoundSecretWhenPodDeleteFails(t *te
 			return true, nil, apierrors.NewInternalError(fmt.Errorf("second Secret failed"))
 		}
 		return false, nil, nil
-	})
-	clientset.PrependReactor("delete", "pods", func(ktesting.Action) (bool, kruntime.Object, error) {
-		return true, nil, apierrors.NewInternalError(fmt.Errorf("pod delete failed"))
 	})
 	c := newPrivateMountTestContainer(clientset, runtime.ContainerSpec{
 		ImageSpec: runtime.ImageSpec{ImageURL: "busybox:latest"},
@@ -179,12 +227,31 @@ func TestPrivateMountPartialFailureKeepsOwnerBoundSecretWhenPodDeleteFails(t *te
 	if _, err := c.createPod(ctx, runtime.ProcessSpec{Path: "/bin/sh"}); err == nil {
 		t.Fatal("expected partial Secret creation failure")
 	}
-	secret, err := clientset.CoreV1().Secrets("test-ns").Get(ctx, "concourse-private-first", metav1.GetOptions{})
-	if err != nil {
-		t.Fatalf("owner-bound Secret was removed before Pod absence was confirmed: %v", err)
+	if _, err := clientset.CoreV1().Secrets("test-ns").Get(ctx, "concourse-private-first", metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("pre-Pod partial failure leaked or replaced Secret: %v", err)
 	}
-	if secret.Immutable == nil || !*secret.Immutable || len(secret.OwnerReferences) != 1 {
-		t.Fatal("partial private Secret lost its immutable pod ownership")
+}
+
+func TestPrivateMountBindFailureNeverDeletesSecretWhilePodMayBeLive(t *testing.T) {
+	ctx := context.Background()
+	clientset := fake.NewSimpleClientset()
+	c := newPrivateMountTestContainer(clientset, privateMountTestSpec("/run/concourse/dev-validation"))
+	c.privateMountNameGenerator = func() (string, error) { return "concourse-private-bind-failure", nil }
+	clientset.PrependReactor("update", "secrets", func(ktesting.Action) (bool, kruntime.Object, error) {
+		return true, nil, apierrors.NewInternalError(fmt.Errorf("bind failed"))
+	})
+	clientset.PrependReactor("delete", "pods", func(ktesting.Action) (bool, kruntime.Object, error) {
+		return true, nil, apierrors.NewInternalError(fmt.Errorf("pod delete failed"))
+	})
+	if _, err := c.createPod(ctx, runtime.ProcessSpec{Path: "/bin/sh"}); err == nil {
+		t.Fatal("expected bind failure")
+	}
+	secret, err := clientset.CoreV1().Secrets("test-ns").Get(ctx, "concourse-private-bind-failure", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("Secret deleted although pod cleanup failed: %v", err)
+	}
+	if secret.Immutable == nil || !*secret.Immutable || string(secret.Data["profile.yml"]) != "trusted" || len(secret.OwnerReferences) != 0 {
+		t.Fatalf("bind failure Secret is not the original ownerless trusted object: %#v", secret)
 	}
 }
 
