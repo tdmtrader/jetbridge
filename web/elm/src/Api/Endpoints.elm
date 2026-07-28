@@ -43,8 +43,6 @@ type Endpoint
     | AgentCostRollup
     | AgentDispatcher
     | AgentCredentialsStatus
-    | AgentPrincipalsList
-    | AgentPrincipal Int
     | AgentTicketsList
     | AgentTicket Int
     | AgentTicketState Int
@@ -262,12 +260,6 @@ builder endpoint =
 
         AgentCredentialsStatus ->
             base |> appendPath [ "agent", "user-credentials" ]
-
-        AgentPrincipalsList ->
-            base |> appendPath [ "agent", "principals" ]
-
-        AgentPrincipal principalId ->
-            base |> appendPath [ "agent", "principals", String.fromInt principalId ]
 
         AgentTicketsList ->
             base |> appendPath [ "agent", "tickets" ]

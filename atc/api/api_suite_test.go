@@ -18,8 +18,6 @@ import (
 	experimentsapi "github.com/concourse/concourse/agent/api/experiments"
 	"github.com/concourse/concourse/agent/api/feedback"
 	"github.com/concourse/concourse/agent/api/metrics/metricstest"
-	"github.com/concourse/concourse/agent/api/principals"
-	"github.com/concourse/concourse/agent/api/principals/principalstest"
 	"github.com/concourse/concourse/agent/api/reviews/reviewstest"
 	snapshotsapi "github.com/concourse/concourse/agent/api/snapshots"
 	"github.com/concourse/concourse/agent/api/tickets/ticketstest"
@@ -243,9 +241,6 @@ var _ = BeforeEach(func() {
 	fakePolicyChecker = new(policycheckerfakes.FakePolicyChecker)
 	fakePolicyChecker.CheckReturns(policy.PassedPolicyCheck(), nil)
 
-	principalsStore := principalstest.NewMemoryStore()
-	checkAgentPrincipalHandlerFactory := auth.NewCheckAgentPrincipalHandlerFactory(principals.NewVerifier(principalsStore))
-
 	apiWrapper := wrappa.MultiWrappa{
 		wrappa.NewPolicyCheckWrappa(logger, fakePolicyChecker),
 		wrappa.NewAPIAuthWrappa(
@@ -253,7 +248,6 @@ var _ = BeforeEach(func() {
 			checkBuildReadAccessHandlerFactory,
 			checkBuildWriteAccessHandlerFactory,
 			checkWorkerTeamAccessHandlerFactory,
-			checkAgentPrincipalHandlerFactory,
 		),
 	}
 
@@ -336,7 +330,6 @@ var _ = BeforeEach(func() {
 		reviewstest.NewMemoryStore(),
 		metricstest.NewMemoryStore(),
 		ticketstest.NewMemoryStore(),
-		principalsStore,
 		credentialstest.NewMemoryBackend(),
 		budgettest.NewMemoryLedger(),
 		0,

@@ -25,7 +25,6 @@ import (
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"github.com/concourse/concourse"
 	experimentsapi "github.com/concourse/concourse/agent/api/experiments"
-	"github.com/concourse/concourse/agent/api/principals"
 	snapshotsapi "github.com/concourse/concourse/agent/api/snapshots"
 	workflowoutcomesapi "github.com/concourse/concourse/agent/api/workflowoutcomes"
 	workflowrunsapi "github.com/concourse/concourse/agent/api/workflowruns"
@@ -3322,9 +3321,7 @@ func (cmd *RunCommand) constructAPIHandler(
 	checkPipelineAccessHandlerFactory := auth.NewCheckPipelineAccessHandlerFactory(teamFactory)
 	checkBuildReadAccessHandlerFactory := auth.NewCheckBuildReadAccessHandlerFactory(dbBuildFactory)
 	checkBuildWriteAccessHandlerFactory := auth.NewCheckBuildWriteAccessHandlerFactory(dbBuildFactory)
-	agentPrincipalsFactory := db.NewAgentPrincipalsFactory(dbConn)
 	checkWorkerTeamAccessHandlerFactory := auth.NewCheckWorkerTeamAccessHandlerFactory(dbWorkerFactory)
-	checkAgentPrincipalHandlerFactory := auth.NewCheckAgentPrincipalHandlerFactory(principals.NewVerifier(agentPrincipalsFactory))
 
 	rejectArchivedHandlerFactory := pipelineserver.NewRejectArchivedHandlerFactory(teamFactory)
 
@@ -3358,7 +3355,6 @@ func (cmd *RunCommand) constructAPIHandler(
 			checkBuildReadAccessHandlerFactory,
 			checkBuildWriteAccessHandlerFactory,
 			checkWorkerTeamAccessHandlerFactory,
-			checkAgentPrincipalHandlerFactory,
 		),
 		wrappa.NewRejectArchivedWrappa(rejectArchivedHandlerFactory),
 		wrappa.NewConcourseVersionWrappa(concourse.Version),
@@ -3532,7 +3528,6 @@ func (cmd *RunCommand) constructAPIHandler(
 		db.NewAgentReviewsFactory(dbConn),
 		db.NewAgentRunMetricsFactory(dbConn),
 		dispatchGraph.tickets,
-		agentPrincipalsFactory,
 		db.NewAgentUserCredentialsFactory(dbConn),
 		db.NewAgentCostLedgerFactory(dbConn),
 		cmd.AgentDailyBudgetUSD,

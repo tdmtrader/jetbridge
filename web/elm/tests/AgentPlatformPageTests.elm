@@ -114,60 +114,6 @@ sampleCredential =
     }
 
 
-samplePrincipal :
-    { id : Int
-    , name : String
-    , description : String
-    , tokenPrefix : String
-    , scopes : List String
-    , teamName : String
-    , createdBy : String
-    , createdAt : Time.Posix
-    , expiresAt : Maybe Time.Posix
-    , revokedAt : Maybe Time.Posix
-    , lastUsedAt : Maybe Time.Posix
-    }
-samplePrincipal =
-    { id = 7
-    , name = "itest-reviewer"
-    , description = "integration"
-    , tokenPrefix = "cap1.abcd12"
-    , scopes = [ "tickets:write" ]
-    , teamName = "main"
-    , createdBy = "admin"
-    , createdAt = Time.millisToPosix 0
-    , expiresAt = Nothing
-    , revokedAt = Nothing
-    , lastUsedAt = Nothing
-    }
-
-
-samplePrincipalCreated :
-    { principal :
-        { id : Int
-        , name : String
-        , description : String
-        , tokenPrefix : String
-        , scopes : List String
-        , teamName : String
-        , createdBy : String
-        , createdAt : Time.Posix
-        , expiresAt : Maybe Time.Posix
-        , revokedAt : Maybe Time.Posix
-        , lastUsedAt : Maybe Time.Posix
-        }
-    , token : String
-    }
-samplePrincipalCreated =
-    { principal = samplePrincipal
-    , token = "cap1.xxx"
-    }
-
-
-ephemeralPrincipal =
-    { samplePrincipal | id = 8, name = "run-123" }
-
-
 sampleRun :
     { workflowRunId : Maybe String
     , functionId : String
@@ -521,93 +467,6 @@ all =
                     |> Common.queryView
                     |> Query.find [ class "agent-credential-row" ]
                     |> Query.has [ text "anthropic_oauth" ]
-        , test "renders a principal with its name and a revoke control" <|
-            \_ ->
-                Common.init "/agent"
-                    |> Application.handleCallback
-                        (Callback.AgentPrincipalsFetched (Ok [ samplePrincipal ]))
-                    |> Tuple.first
-                    |> Common.queryView
-                    |> Query.find [ class "agent-principal-row" ]
-                    |> Query.has
-                        [ containing [ text "itest-reviewer" ]
-                        , containing [ class "agent-principal-revoke", text "revoke" ]
-                        ]
-        , test "renders the one-time token box after minting" <|
-            \_ ->
-                Common.init "/agent"
-                    |> Application.handleCallback
-                        (Callback.AgentPrincipalCreated (Ok samplePrincipalCreated))
-                    |> Tuple.first
-                    |> Common.queryView
-                    |> Query.find [ class "agent-minted-token" ]
-                    |> Query.has [ text "cap1.xxx" ]
-        , test "folds ephemeral run principals behind a toggle, keeping durable ones visible" <|
-            \_ ->
-                Common.init "/agent"
-                    |> Application.handleCallback
-                        (Callback.AgentPrincipalsFetched (Ok [ samplePrincipal, ephemeralPrincipal ]))
-                    |> Tuple.first
-                    |> Common.queryView
-                    |> Expect.all
-                        [ Query.has [ class "agent-principal-row", containing [ text "itest-reviewer" ] ]
-                        , Query.hasNot [ containing [ text "run-123" ] ]
-                        , Query.has [ class "agent-ephemeral-toggle", containing [ text "1 ephemeral run principal" ] ]
-                        ]
-        , test "expanding the toggle reveals the ephemeral run principals" <|
-            \_ ->
-                Common.init "/agent"
-                    |> Application.handleCallback
-                        (Callback.AgentPrincipalsFetched (Ok [ samplePrincipal, ephemeralPrincipal ]))
-                    |> Tuple.first
-                    |> Application.update
-                        (Msgs.Update Message.Message.AgentPrincipalsShowEphemeralToggled)
-                    |> Tuple.first
-                    |> Common.queryView
-                    |> Query.has [ class "agent-principal-row", containing [ text "run-123" ] ]
-        , test "shows an admin-only message when principals fetch is forbidden" <|
-            \_ ->
-                Common.init "/agent"
-                    |> Application.handleCallback
-                        (Callback.AgentPrincipalsFetched Data.httpForbidden)
-                    |> Tuple.first
-                    |> Common.queryView
-                    |> Query.has
-                        [ text "not authorized — the agent principals API is admin-only" ]
-        , test "the mint button shows a disabled minting state after submit" <|
-            \_ ->
-                Common.init "/agent"
-                    |> Application.update
-                        (Msgs.Update <| Message.Message.AgentMintNameChanged "reviewer")
-                    |> Tuple.first
-                    |> Application.update
-                        (Msgs.Update <| Message.Message.AgentMintScopeToggled "tickets:write")
-                    |> Tuple.first
-                    |> Application.update
-                        (Msgs.Update Message.Message.AgentMintSubmitted)
-                    |> Tuple.first
-                    |> Common.queryView
-                    |> Query.find [ class "agent-mint-button" ]
-                    |> Expect.all
-                        [ Query.has [ text "minting…" ]
-                        , Query.has [ style "cursor" "not-allowed" ]
-                        ]
-        , test "a revoke failure surfaces in the principals section, not the mint form" <|
-            \_ ->
-                Common.init "/agent"
-                    |> Application.handleCallback
-                        (Callback.AgentPrincipalsFetched (Ok [ samplePrincipal ]))
-                    |> Tuple.first
-                    |> Application.handleCallback
-                        (Callback.AgentPrincipalRevoked Data.httpForbidden)
-                    |> Tuple.first
-                    |> Common.queryView
-                    |> Expect.all
-                        [ Query.find [ class "agent-revoke-error" ]
-                            >> Query.has [ text "not authorized — principals are admin-only" ]
-                        , Query.find [ class "agent-mint-form" ]
-                            >> Query.hasNot [ text "not authorized — principals are admin-only" ]
-                        ]
         , test "a workflows poll failure after a load shows a stale-data warning and keeps the data" <|
             \_ ->
                 Common.init "/agent"
@@ -659,23 +518,6 @@ all =
                             ]
                         , Query.has [ class "agent-credential-row", containing [ text "anthropic_oauth" ] ]
                         ]
-        , test "a principals poll failure after a load shows a stale-data warning and keeps the data" <|
-            \_ ->
-                Common.init "/agent"
-                    |> Application.handleCallback
-                        (Callback.AgentPrincipalsFetched (Ok [ samplePrincipal ]))
-                    |> Tuple.first
-                    |> Application.handleCallback
-                        (Callback.AgentPrincipalsFetched (Err Http.NetworkError))
-                    |> Tuple.first
-                    |> Common.queryView
-                    |> Expect.all
-                        [ Query.has
-                            [ class "agent-section-stale"
-                            , text "refresh failed — showing stale data: couldn't load principals"
-                            ]
-                        , Query.has [ class "agent-principal-row", containing [ text "itest-reviewer" ] ]
-                        ]
         , test "a successful refetch clears the stale-data warning" <|
             \_ ->
                 Common.init "/agent"
@@ -690,33 +532,12 @@ all =
                     |> Tuple.first
                     |> Common.queryView
                     |> Query.hasNot [ class "agent-section-stale" ]
-        , test "a non-numeric expiry shows a hint and disables minting" <|
-            \_ ->
-                Common.init "/agent"
-                    |> Application.update
-                        (Msgs.Update <| Message.Message.AgentMintNameChanged "reviewer")
-                    |> Tuple.first
-                    |> Application.update
-                        (Msgs.Update <| Message.Message.AgentMintScopeToggled "tickets:write")
-                    |> Tuple.first
-                    |> Application.update
-                        (Msgs.Update <| Message.Message.AgentMintExpiresChanged "soon")
-                    |> Tuple.first
-                    |> Common.queryView
-                    |> Expect.all
-                        [ Query.has
-                            [ class "agent-mint-expires-hint"
-                            , text "must be a positive number of days; leave blank for no expiry"
-                            ]
-                        , Query.find [ class "agent-mint-button" ]
-                            >> Query.has [ style "cursor" "not-allowed" ]
-                        ]
         , test "subscribes to the one minute clock" <|
             \_ ->
                 Common.init "/agent"
                     |> Application.subscriptions
                     |> Common.contains (Subscription.OnClockTick OneMinute)
-        , test "on one minute timer, refetches workflows, costs, credentials, and principals" <|
+        , test "on one minute timer, refetches workflows, costs, and credentials" <|
             \_ ->
                 Common.init "/agent"
                     |> Application.update
@@ -729,7 +550,6 @@ all =
                         , Common.contains Effects.FetchAgentWorkflows
                         , Common.contains Effects.FetchAgentCostRollup
                         , Common.contains Effects.FetchAgentCredentials
-                        , Common.contains Effects.FetchAgentPrincipals
                         ]
         , test "on five second timer, does not refetch agent data" <|
             \_ ->
@@ -744,6 +564,10 @@ all =
                         , Common.notContains Effects.FetchAgentWorkflows
                         , Common.notContains Effects.FetchAgentCostRollup
                         , Common.notContains Effects.FetchAgentCredentials
-                        , Common.notContains Effects.FetchAgentPrincipals
                         ]
+        , test "does not render retired principal credential controls" <|
+            \_ ->
+                Common.init "/agent"
+                    |> Common.queryView
+                    |> Query.hasNot [ class "agent-mint-form" ]
         ]

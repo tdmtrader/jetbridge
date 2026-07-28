@@ -232,14 +232,6 @@ type Effect
     | SetAgentDispatcher Concourse.AgentDispatcher.Mode
     | FetchAgentCredentials
     | FetchAgentPlatformCredentials
-    | FetchAgentPrincipals
-    | CreateAgentPrincipal
-        { name : String
-        , description : String
-        , scopes : List String
-        , expiresInDays : Maybe Int
-        }
-    | RevokeAgentPrincipal Int
     | SubmitAgentReviewVerdict
         { reviewSnapshotId : String
         , findingId : String
@@ -901,31 +893,6 @@ runEffect effect key csrfToken =
                 |> Api.request
                 |> Task.attempt AgentPlatformCredentialsFetched
 
-        FetchAgentPrincipals ->
-            Api.get Endpoints.AgentPrincipalsList
-                |> Api.expectJson Concourse.Agent.decodePrincipals
-                |> Api.request
-                |> Task.attempt AgentPrincipalsFetched
-
-        CreateAgentPrincipal params ->
-            -- expiresInDays is a relative "N days" from the mint form; resolve
-            -- it against the current time so the wire `expires_at` is the
-            -- absolute epoch-seconds the API stores.
-            Time.now
-                |> Task.andThen
-                    (\now ->
-                        Api.post Endpoints.AgentPrincipalsList csrfToken
-                            |> Api.withJsonBody (encodeCreatePrincipal now params)
-                            |> Api.expectJson Concourse.Agent.decodePrincipalCreated
-                            |> Api.request
-                    )
-                |> Task.attempt AgentPrincipalCreated
-
-        RevokeAgentPrincipal principalId ->
-            Api.delete (Endpoints.AgentPrincipal principalId) csrfToken
-                |> Api.request
-                |> Task.attempt AgentPrincipalRevoked
-
         SubmitAgentReviewVerdict params ->
             -- Feedback is keyed by the review snapshot and nothing else. There
             -- is no repo/commit review_ref to send: the platform stopped
@@ -1186,44 +1153,6 @@ encodeTicketUpdate params =
         [ ( "title", Json.Encode.string params.title )
         , ( "body", Json.Encode.string params.body )
         ]
-
-
-encodeCreatePrincipal :
-    Time.Posix
-    ->
-        { name : String
-        , description : String
-        , scopes : List String
-        , expiresInDays : Maybe Int
-        }
-    -> Json.Encode.Value
-encodeCreatePrincipal now params =
-    let
-        nowSeconds =
-            Time.posixToMillis now // 1000
-
-        expiry =
-            case params.expiresInDays of
-                Just days ->
-                    if days > 0 then
-                        [ ( "expires_at"
-                          , Json.Encode.int (nowSeconds + days * 86400)
-                          )
-                        ]
-
-                    else
-                        []
-
-                Nothing ->
-                    []
-    in
-    Json.Encode.object
-        ([ ( "name", Json.Encode.string params.name )
-         , ( "description", Json.Encode.string params.description )
-         , ( "scopes", Json.Encode.list Json.Encode.string params.scopes )
-         ]
-            ++ expiry
-        )
 
 
 pipelinesSectionName : PipelinesSection -> String

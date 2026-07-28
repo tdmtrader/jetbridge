@@ -3,8 +3,6 @@ module Concourse.Agent exposing
     , CostRow
     , CostSummary
     , CredentialStatus
-    , Principal
-    , PrincipalCreated
     , RunMetric
     , Usage
     , WorkflowPort
@@ -13,8 +11,6 @@ module Concourse.Agent exposing
     , WorkflowVersion
     , decodeCostRollup
     , decodeCredentialStatuses
-    , decodePrincipalCreated
-    , decodePrincipals
     , decodeRunMetric
     , decodeWorkflowSummary
     , decodeWorkflowVersion
@@ -101,34 +97,6 @@ Nothing) when unknown.
 type alias CredentialStatus =
     { kind : String
     , expiresAt : Maybe Time.Posix
-    }
-
-
-{-| One agent\_principals row. `expires_at` / `revoked_at` / `last_used_at`
-are omitempty epoch-seconds on the wire, so they decode to Nothing when
-absent. The token material is never included in the list/GET shape.
--}
-type alias Principal =
-    { id : Int
-    , name : String
-    , description : String
-    , tokenPrefix : String
-    , scopes : List String
-    , teamName : String
-    , createdBy : String
-    , createdAt : Time.Posix
-    , expiresAt : Maybe Time.Posix
-    , revokedAt : Maybe Time.Posix
-    , lastUsedAt : Maybe Time.Posix
-    }
-
-
-{-| The POST /agent/principals response: a Principal (its fields inlined at
-the top level) plus the one-time `token` secret, surfaced exactly once.
--}
-type alias PrincipalCreated =
-    { principal : Principal
-    , token : String
     }
 
 
@@ -339,38 +307,3 @@ decodeCredentialStatuses : Json.Decode.Decoder (List CredentialStatus)
 decodeCredentialStatuses =
     Json.Decode.nullable (Json.Decode.list decodeCredentialStatus)
         |> Json.Decode.map (Maybe.withDefault [])
-
-
-decodePrincipal : Json.Decode.Decoder Principal
-decodePrincipal =
-    Json.Decode.succeed Principal
-        |> andMap (defaultTo 0 <| Json.Decode.field "id" Json.Decode.int)
-        |> andMap (defaultTo "" <| Json.Decode.field "name" Json.Decode.string)
-        |> andMap (defaultTo "" <| Json.Decode.field "description" Json.Decode.string)
-        |> andMap (defaultTo "" <| Json.Decode.field "token_prefix" Json.Decode.string)
-        |> andMap (defaultTo [] <| Json.Decode.field "scopes" (Json.Decode.list Json.Decode.string))
-        |> andMap (defaultTo "" <| Json.Decode.field "team_name" Json.Decode.string)
-        |> andMap (defaultTo "" <| Json.Decode.field "created_by" Json.Decode.string)
-        |> andMap (defaultTo (dateFromSeconds 0) <| Json.Decode.field "created_at" (Json.Decode.map dateFromSeconds Json.Decode.int))
-        |> andMap (optionalPosix "expires_at")
-        |> andMap (optionalPosix "revoked_at")
-        |> andMap (optionalPosix "last_used_at")
-
-
-{-| Decode the principals list. Tolerates a null top-level array (handler
-encodes nil for the empty case) by defaulting to [].
--}
-decodePrincipals : Json.Decode.Decoder (List Principal)
-decodePrincipals =
-    Json.Decode.nullable (Json.Decode.list decodePrincipal)
-        |> Json.Decode.map (Maybe.withDefault [])
-
-
-{-| The POST response inlines the Principal fields and adds `token`, so
-decode the Principal from the same object plus the one-time token.
--}
-decodePrincipalCreated : Json.Decode.Decoder PrincipalCreated
-decodePrincipalCreated =
-    Json.Decode.map2 PrincipalCreated
-        decodePrincipal
-        (defaultTo "" <| Json.Decode.field "token" Json.Decode.string)

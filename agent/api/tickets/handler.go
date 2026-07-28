@@ -6,8 +6,6 @@ import (
 	"io"
 	"net/http"
 	"strconv"
-
-	"github.com/concourse/concourse/agent/api/principals"
 )
 
 // UserNameFunc resolves the authenticated human username for a request
@@ -27,16 +25,6 @@ type Handler struct {
 
 func NewHandler(store Store, userName UserNameFunc) *Handler {
 	return &Handler{store: store, userName: userName}
-}
-
-// writer returns (name, isPrincipal): the verified agent principal's
-// name when the principal(<scope>) tier authenticated the request
-// (audit-attribution convention), else the human username.
-func (h *Handler) writer(r *http.Request) (string, bool) {
-	if p, ok := principals.FromContext(r.Context()); ok {
-		return p.Name, true
-	}
-	return h.userName(r), false
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -69,9 +57,8 @@ func ticketIDParam(w http.ResponseWriter, r *http.Request) (int, bool) {
 
 // CreateTicket handles POST /api/v1/agent/tickets.
 //
-// Origin rules (contract addendum): principal-authenticated writes may
-// ONLY create origin 'retrospective'; human writes may create 'web' or
-// 'fly'.
+// Ticket creation is an ordinary human main-team action. Human-created tickets
+// use web or fly attribution only.
 func (h *Handler) CreateTicket(w http.ResponseWriter, r *http.Request) {
 	var req CreateRequest
 	if !readJSON(w, r, &req) {
@@ -93,15 +80,7 @@ func (h *Handler) CreateTicket(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid origin", http.StatusBadRequest)
 		return
 	}
-	name, isPrincipal := h.writer(r)
-	if isPrincipal && origin != "retrospective" {
-		http.Error(w, "agent principals may only create retrospective tickets", http.StatusForbidden)
-		return
-	}
-	if !isPrincipal && origin == "retrospective" {
-		http.Error(w, "retrospective tickets are created by agent principals", http.StatusForbidden)
-		return
-	}
+	name := h.userName(r)
 
 	t := &Ticket{
 		Title:                req.Title,
@@ -115,11 +94,9 @@ func (h *Handler) CreateTicket(w http.ResponseWriter, r *http.Request) {
 		CreatedBy:            name,
 		ExternalRef:          req.ExternalRef,
 	}
-	if !isPrincipal {
-		// triggering user: credential attachment + cost attribution
-		// (dispatch resolves user_id from users.username in wave 4)
-		t.UserName = name
-	}
+	// Triggering user: credential attachment + cost attribution (dispatch
+	// resolves user_id from users.username in wave 4).
+	t.UserName = name
 
 	id, err := h.store.Create(t)
 	if err != nil {

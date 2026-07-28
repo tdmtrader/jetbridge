@@ -6,8 +6,6 @@ import (
 	"testing"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
-	"github.com/concourse/concourse/agent/api/principals"
-	"github.com/concourse/concourse/agent/api/principals/principalstest"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/api/accessor/accessorfakes"
@@ -23,14 +21,6 @@ func TestAgentWorkflowWaitRoutesUseHumanMainTeamAuthorization(t *testing.T) {
 	teamFactory := new(dbfakes.FakeTeamFactory)
 	workerFactory := new(dbfakes.FakeWorkerFactory)
 	buildFactory := new(dbfakes.FakeBuildFactory)
-	principalStore := principalstest.NewMemoryStore()
-	_, principalToken, err := principalStore.Create(principals.CreateSpec{
-		Name: "ticket-writer", Scopes: []string{principals.ScopeTicketsWrite},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	for _, route := range routes {
 		t.Run(route, func(t *testing.T) {
 			delegateHit := false
@@ -43,7 +33,6 @@ func TestAgentWorkflowWaitRoutesUseHumanMainTeamAuthorization(t *testing.T) {
 				auth.NewCheckBuildReadAccessHandlerFactory(buildFactory),
 				auth.NewCheckBuildWriteAccessHandlerFactory(buildFactory),
 				auth.NewCheckWorkerTeamAccessHandlerFactory(workerFactory),
-				auth.NewCheckAgentPrincipalHandlerFactory(principals.NewVerifier(principalStore)),
 			).Wrap(rata.Handlers{route: delegate})[route]
 
 			serve := func(authenticated, authorized bool, authorization string) int {
@@ -76,8 +65,8 @@ func TestAgentWorkflowWaitRoutesUseHumanMainTeamAuthorization(t *testing.T) {
 			if status := serve(true, false, ""); status != http.StatusForbidden || delegateHit {
 				t.Fatalf("unauthorized human status = %d, delegateHit = %t", status, delegateHit)
 			}
-			if status := serve(false, false, "Bearer "+principalToken); status != http.StatusUnauthorized || delegateHit {
-				t.Fatalf("bare principal status = %d, delegateHit = %t", status, delegateHit)
+			if status := serve(false, false, "Bearer cap1.7.s3cret"); status != http.StatusUnauthorized || delegateHit {
+				t.Fatalf("retired bearer status = %d, delegateHit = %t", status, delegateHit)
 			}
 			if status := serve(true, true, ""); status != http.StatusOK || !delegateHit {
 				t.Fatalf("authorized human status = %d, delegateHit = %t", status, delegateHit)

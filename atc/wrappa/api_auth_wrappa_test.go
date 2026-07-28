@@ -5,8 +5,6 @@ import (
 	"net/http/httptest"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
-	"github.com/concourse/concourse/agent/api/principals"
-	"github.com/concourse/concourse/agent/api/principals/principalstest"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/api/accessor/accessorfakes"
@@ -54,7 +52,6 @@ var _ = Describe("APIAuthWrappa", func() {
 					fakeCheckBuildReadAccessHandlerFactory,
 					fakeCheckBuildWriteAccessHandlerFactory,
 					fakeCheckWorkerTeamAccessHandlerFactory,
-					auth.NewCheckAgentPrincipalHandlerFactory(principals.NewVerifier(principalstest.NewMemoryStore())),
 				).Wrap(inputHandlers)
 			}).NotTo(Panic())
 		})
@@ -66,7 +63,6 @@ var _ = Describe("APIAuthWrappa", func() {
 		// gone with POST /api/v1/agent/metrics: metrics are written in-process.)
 		Describe("agent run metrics route tiers", func() {
 			var (
-				store        *principalstest.MemoryStore
 				wrapped      rata.Handlers
 				delegateHit  bool
 				fakeAccessor *accessorfakes.FakeAccessFactory
@@ -79,8 +75,6 @@ var _ = Describe("APIAuthWrappa", func() {
 				fakeaccess = new(accessorfakes.FakeAccess)
 				fakeAccessor.CreateReturns(fakeaccess, nil)
 
-				store = principalstest.NewMemoryStore()
-
 				delegate := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					delegateHit = true
 					w.WriteHeader(http.StatusOK)
@@ -91,7 +85,6 @@ var _ = Describe("APIAuthWrappa", func() {
 					fakeCheckBuildReadAccessHandlerFactory,
 					fakeCheckBuildWriteAccessHandlerFactory,
 					fakeCheckWorkerTeamAccessHandlerFactory,
-					auth.NewCheckAgentPrincipalHandlerFactory(principals.NewVerifier(store)),
 				).Wrap(rata.Handlers{
 					atc.ListAgentWorkflowRunMetrics: delegate,
 				})
@@ -152,7 +145,6 @@ var _ = Describe("APIAuthWrappa", func() {
 						fakeCheckBuildReadAccessHandlerFactory,
 						fakeCheckBuildWriteAccessHandlerFactory,
 						fakeCheckWorkerTeamAccessHandlerFactory,
-						auth.NewCheckAgentPrincipalHandlerFactory(principals.NewVerifier(store)),
 					).Wrap(rata.Handlers{
 						atc.GetBuildAgentReviews:     delegate,
 						atc.ListBuildAgentRunMetrics: delegate,
@@ -229,7 +221,6 @@ var _ = Describe("APIAuthWrappa", func() {
 						fakeCheckBuildReadAccessHandlerFactory,
 						fakeCheckBuildWriteAccessHandlerFactory,
 						fakeCheckWorkerTeamAccessHandlerFactory,
-						auth.NewCheckAgentPrincipalHandlerFactory(principals.NewVerifier(store)),
 					).Wrap(rata.Handlers{
 						atc.GetAgentWorkflowStats: delegate,
 						atc.UpdateAgentWorkflow:   delegate,
@@ -237,14 +228,10 @@ var _ = Describe("APIAuthWrappa", func() {
 				})
 
 				Describe("UpdateAgentWorkflow", func() {
-					It("REJECTS a bare tickets:read agent-principal token (human-only, no principal path)", func() {
-						_, token, err := store.Create(principals.CreateSpec{
-							Name: "ticket-reader", Scopes: []string{principals.ScopeTicketsRead},
-						})
-						Expect(err).NotTo(HaveOccurred())
+					It("rejects a syntactically plausible retired bearer token", func() {
 						fakeaccess.IsAuthenticatedReturns(false)
 
-						resp := serve(atc.UpdateAgentWorkflow, "Bearer "+token)
+						resp := serve(atc.UpdateAgentWorkflow, "Bearer cap1.7.s3cret")
 						Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
 						Expect(delegateHit).To(BeFalse())
 					})
@@ -311,14 +298,8 @@ var _ = Describe("APIAuthWrappa", func() {
 			})
 		})
 
-		// The pure principal(<scope>) publishing tier is gone with POST
-		// /api/v1/agent/{reviews,costs,metrics} — reviews, ledger rows and
-		// metrics are written in-process. What remains of the principal tier is
-		// the COMBINED ticket tier: an agent principal carrying the ticket scope
-		// OR an authorized main-team human.
-		Describe("agent ticket route tiers", func() {
+		Describe("human agent routes", func() {
 			var (
-				store        *principalstest.MemoryStore
 				wrapped      rata.Handlers
 				delegateHit  bool
 				fakeAccessor *accessorfakes.FakeAccessFactory
@@ -330,8 +311,6 @@ var _ = Describe("APIAuthWrappa", func() {
 				fakeAccessor = new(accessorfakes.FakeAccessFactory)
 				fakeaccess = new(accessorfakes.FakeAccess)
 				fakeAccessor.CreateReturns(fakeaccess, nil)
-				store = principalstest.NewMemoryStore()
-
 				delegate := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					delegateHit = true
 					w.WriteHeader(http.StatusOK)
@@ -342,11 +321,11 @@ var _ = Describe("APIAuthWrappa", func() {
 					fakeCheckBuildReadAccessHandlerFactory,
 					fakeCheckBuildWriteAccessHandlerFactory,
 					fakeCheckWorkerTeamAccessHandlerFactory,
-					auth.NewCheckAgentPrincipalHandlerFactory(principals.NewVerifier(store)),
 				).Wrap(rata.Handlers{
 					atc.CreateAgentTicket:     delegate,
 					atc.TransitionAgentTicket: delegate,
 					atc.GetAgentTicket:        delegate,
+					atc.SubmitAgentFeedback:   delegate,
 				})
 			})
 
@@ -371,48 +350,39 @@ var _ = Describe("APIAuthWrappa", func() {
 				return resp
 			}
 
-			for _, tc := range []struct {
-				route      string
-				scope      string
-				otherScope string
-			}{
-				{atc.CreateAgentTicket, principals.ScopeTicketsWrite, principals.ScopeTicketsRead},
-				{atc.TransitionAgentTicket, principals.ScopeTicketsWrite, principals.ScopeTicketsRead},
-				{atc.GetAgentTicket, principals.ScopeTicketsRead, principals.ScopeTicketsWrite},
-			} {
-				tc := tc
-				Describe(tc.route, func() {
-					It("admits a principal carrying the required scope", func() {
-						_, token, err := store.Create(principals.CreateSpec{Name: "writer", Scopes: []string{tc.scope}})
-						Expect(err).NotTo(HaveOccurred())
-
-						resp := serve(tc.route, "Bearer "+token)
-						Expect(resp.StatusCode).To(Equal(http.StatusOK))
-						Expect(delegateHit).To(BeTrue())
-					})
-
-					It("401s anonymous requests without a principal token", func() {
+			for _, route := range []string{atc.CreateAgentTicket, atc.TransitionAgentTicket, atc.GetAgentTicket, atc.SubmitAgentFeedback} {
+				route := route
+				Describe(route, func() {
+					It("401s anonymous requests", func() {
 						fakeaccess.IsAuthenticatedReturns(false)
 
-						resp := serve(tc.route, "")
+						resp := serve(route, "")
 						Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
 						Expect(delegateHit).To(BeFalse())
 					})
 
-					It("rejects a principal carrying only the other ticket scope", func() {
-						_, token, err := store.Create(principals.CreateSpec{Name: "other-writer", Scopes: []string{tc.otherScope}})
-						Expect(err).NotTo(HaveOccurred())
+					It("does not grant authority to a cap1-looking bearer", func() {
+						fakeaccess.IsAuthenticatedReturns(false)
 
-						resp := serve(tc.route, "Bearer "+token)
-						Expect(resp.StatusCode).ToNot(Equal(http.StatusOK))
+						resp := serve(route, "Bearer cap1.7.s3cret")
+						Expect(resp.StatusCode).To(Equal(http.StatusUnauthorized))
 						Expect(delegateHit).To(BeFalse())
 					})
 
-					It("admits an authorized main-team human with no principal token", func() {
+					It("403s an authenticated user outside main", func() {
+						fakeaccess.IsAuthenticatedReturns(true)
+						fakeaccess.IsAuthorizedReturns(false)
+
+						resp := serve(route, "")
+						Expect(resp.StatusCode).To(Equal(http.StatusForbidden))
+						Expect(delegateHit).To(BeFalse())
+					})
+
+					It("admits an authorized main-team human", func() {
 						fakeaccess.IsAuthenticatedReturns(true)
 						fakeaccess.IsAuthorizedReturns(true)
 
-						resp := serve(tc.route, "")
+						resp := serve(route, "")
 						Expect(resp.StatusCode).To(Equal(http.StatusOK))
 						Expect(delegateHit).To(BeTrue())
 					})
@@ -423,9 +393,8 @@ var _ = Describe("APIAuthWrappa", func() {
 		// Dispatcher runtime-control tier pinning (dispatcher-runtime-control
 		// wire contract): GetAgentDispatcher is merely authenticated (ANY
 		// signed-in user may READ status); SetAgentDispatcher is admin-only
-		// (same CheckAdminHandler tier as CreateAgentPrincipal). The no-panic
-		// loop only proves the switch is exhaustive — these specs pin the tier,
-		// including the REJECTS-non-admin-PUT case.
+		// The no-panic loop only proves the switch is exhaustive — these specs
+		// pin the tier, including the REJECTS-non-admin-PUT case.
 		Describe("dispatcher route tiers", func() {
 			var (
 				wrapped      rata.Handlers
@@ -450,7 +419,6 @@ var _ = Describe("APIAuthWrappa", func() {
 					fakeCheckBuildReadAccessHandlerFactory,
 					fakeCheckBuildWriteAccessHandlerFactory,
 					fakeCheckWorkerTeamAccessHandlerFactory,
-					auth.NewCheckAgentPrincipalHandlerFactory(principals.NewVerifier(principalstest.NewMemoryStore())),
 				).Wrap(rata.Handlers{
 					atc.GetAgentDispatcher: delegate,
 					atc.SetAgentDispatcher: delegate,

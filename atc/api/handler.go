@@ -13,7 +13,6 @@ import (
 	experimentsapi "github.com/concourse/concourse/agent/api/experiments"
 	"github.com/concourse/concourse/agent/api/feedback"
 	metricsapi "github.com/concourse/concourse/agent/api/metrics"
-	principalsapi "github.com/concourse/concourse/agent/api/principals"
 	reviewsapi "github.com/concourse/concourse/agent/api/reviews"
 	snapshotsapi "github.com/concourse/concourse/agent/api/snapshots"
 	ticketsapi "github.com/concourse/concourse/agent/api/tickets"
@@ -110,7 +109,6 @@ func NewHandler(
 	reviewsStore reviewsapi.Store,
 	metricsStore metricsapi.Store,
 	ticketsStore ticketsapi.Store,
-	principalsStore principalsapi.Store,
 	credentialsBackend credentials.Backend,
 	costLedger budget.Ledger,
 	agentDailyBudgetUSD float64,
@@ -191,12 +189,6 @@ func NewHandler(
 	})
 	transcriptServer := transcriptserver.NewServer(logger, agentRunTranscriptStore)
 	workflowsServer := workflowsapi.NewHandler(workflowStore, metricsStore)
-	principalsServer := principalsapi.NewHandler(
-		principalsStore,
-		func(r *http.Request) string {
-			return accessor.GetAccessor(r).Claims().UserName
-		},
-	)
 	dispatcherServer := dispatcherapi.NewHandler(
 		agentSettingsStore,
 		func(r *http.Request) string {
@@ -406,10 +398,6 @@ func NewHandler(
 		atc.ListAgentExperimentCells:                   http.HandlerFunc(experimentHandlers.ListCells),
 		atc.GetAgentExperimentCell:                     http.HandlerFunc(experimentHandlers.GetCell),
 		atc.GetAgentExperimentScorecard:                http.HandlerFunc(experimentHandlers.Scorecard),
-
-		atc.CreateAgentPrincipal: http.HandlerFunc(principalsServer.CreatePrincipal),
-		atc.ListAgentPrincipals:  http.HandlerFunc(principalsServer.ListPrincipals),
-		atc.RevokeAgentPrincipal: http.HandlerFunc(principalsServer.RevokePrincipal),
 
 		atc.GetAgentDispatcher: http.HandlerFunc(dispatcherServer.Get),
 		atc.SetAgentDispatcher: http.HandlerFunc(dispatcherServer.Set),

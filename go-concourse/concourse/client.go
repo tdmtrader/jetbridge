@@ -52,10 +52,6 @@ type Client interface {
 	TransitionAgentTicket(id int, req tickets.TransitionRequest) (tickets.Ticket, error)
 	UpdateAgentTicket(id int, req tickets.UpdateRequest) (tickets.Ticket, error)
 	DispatchAgentTicket(id int) (tickets.DispatchResponse, error)
-	// Agent principals are admin-only: minted, listed, and revoked by admins.
-	ListAgentPrincipals() ([]atc.AgentPrincipal, error)
-	CreateAgentPrincipal(spec atc.AgentPrincipalCreateSpec) (atc.AgentPrincipalCreated, error)
-	RevokeAgentPrincipal(id int) error
 }
 
 type client struct {

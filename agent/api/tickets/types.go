@@ -95,13 +95,10 @@ func ValidState(s State) bool {
 	return IsTerminal(s)
 }
 
-// ValidOrigin gates who filed the work item. There is no 'jira': the create
-// handler rejected that origin with a 400 from the day it was written ("arrives
-// with the phase-2 sync component"), so no row has ever carried it and no
-// adapter branch keyed off it was ever taken.
+// ValidOrigin gates the two remaining human ticket entry points.
 func ValidOrigin(o string) bool {
 	switch o {
-	case "web", "fly", "retrospective":
+	case "web", "fly":
 		return true
 	}
 	return false

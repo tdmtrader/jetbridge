@@ -57,15 +57,6 @@ type Message
     | AgentReviewNoteChanged String String
     | AgentReviewsUnevaluatedToggled Bool
     | AgentReviewsPipelineFilterChanged String
-      -- Agent operator page (principal mint form)
-    | AgentMintNameChanged String
-    | AgentMintDescriptionChanged String
-    | AgentMintScopeToggled String
-    | AgentMintExpiresChanged String
-    | AgentMintSubmitted
-    | AgentMintedTokenDismissed
-    | AgentPrincipalRevokeClicked Int
-    | AgentPrincipalsShowEphemeralToggled
     | AgentRunExpandToggled String
     | AgentSectionNavClicked String
       -- Agent Ticket page (edit + disposition)

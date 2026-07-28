@@ -186,10 +186,6 @@ const (
 	PinAgentSnapshot                   = "PinAgentSnapshot"
 	UnpinAgentSnapshot                 = "UnpinAgentSnapshot"
 
-	CreateAgentPrincipal = "CreateAgentPrincipal"
-	ListAgentPrincipals  = "ListAgentPrincipals"
-	RevokeAgentPrincipal = "RevokeAgentPrincipal"
-
 	GetAgentDispatcher = "GetAgentDispatcher"
 	SetAgentDispatcher = "SetAgentDispatcher"
 
@@ -383,10 +379,6 @@ var Routes = rata.Routes([]rata.Route{
 	{Path: "/api/v1/teams/:team_name/agent/snapshots/:snapshot_id/content", Method: "GET", Name: DownloadAgentSnapshot},
 	{Path: "/api/v1/teams/:team_name/agent/snapshots/:snapshot_id/pin", Method: "PUT", Name: PinAgentSnapshot},
 	{Path: "/api/v1/teams/:team_name/agent/snapshots/:snapshot_id/pin", Method: "DELETE", Name: UnpinAgentSnapshot},
-
-	{Path: "/api/v1/agent/principals", Method: "POST", Name: CreateAgentPrincipal},
-	{Path: "/api/v1/agent/principals", Method: "GET", Name: ListAgentPrincipals},
-	{Path: "/api/v1/agent/principals/:principal_id", Method: "DELETE", Name: RevokeAgentPrincipal},
 
 	{Path: "/api/v1/agent/dispatcher", Method: "GET", Name: GetAgentDispatcher},
 	{Path: "/api/v1/agent/dispatcher", Method: "PUT", Name: SetAgentDispatcher},

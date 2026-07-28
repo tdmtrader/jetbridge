@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/concourse/concourse/agent/api/principals"
 	"github.com/concourse/concourse/agent/api/tickets"
 	"github.com/concourse/concourse/agent/api/tickets/ticketstest"
 )
@@ -17,10 +16,6 @@ func newTestHandler(username string) (*tickets.Handler, *ticketstest.MemoryStore
 	store := ticketstest.NewMemoryStore()
 	h := tickets.NewHandler(store, func(*http.Request) string { return username })
 	return h, store
-}
-
-func asPrincipal(r *http.Request, name string) *http.Request {
-	return r.WithContext(principals.NewContext(r.Context(), principals.Principal{ID: 3, Name: name}))
 }
 
 func withParams(r *http.Request, params url.Values) *http.Request {
@@ -66,49 +61,23 @@ func TestCreateTicketValidation(t *testing.T) {
 	}
 }
 
-func TestCreateTicketOriginRules(t *testing.T) {
+func TestCreateTicketRejectsRetiredRetrospectiveOrigin(t *testing.T) {
 	h, _ := newTestHandler("tdm")
 
-	// human + retrospective -> 403
 	req := httptest.NewRequest("POST", "/api/v1/agent/tickets",
 		strings.NewReader(`{"title":"t","repo":"r","origin":"retrospective"}`))
 	rec := httptest.NewRecorder()
 	h.CreateTicket(rec, req)
-	if rec.Code != http.StatusForbidden {
-		t.Errorf("human retrospective = %d, want 403", rec.Code)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("retrospective = %d, want 400", rec.Code)
 	}
 
-	// 'jira' is not an origin; it fails the same invalid-origin check as any
-	// other unknown token.
 	req = httptest.NewRequest("POST", "/api/v1/agent/tickets",
 		strings.NewReader(`{"title":"t","repo":"r","origin":"jira"}`))
 	rec = httptest.NewRecorder()
 	h.CreateTicket(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("jira = %d, want 400", rec.Code)
-	}
-
-	// principal + retrospective -> 201 attributed to the principal, no triggering user
-	req = asPrincipal(httptest.NewRequest("POST", "/api/v1/agent/tickets",
-		strings.NewReader(`{"title":"add lint rule","repo":"r","origin":"retrospective"}`)), "retro-agent")
-	rec = httptest.NewRecorder()
-	h.CreateTicket(rec, req)
-	if rec.Code != http.StatusCreated {
-		t.Fatalf("principal retrospective = %d body %s, want 201", rec.Code, rec.Body)
-	}
-	var created tickets.Ticket
-	json.Unmarshal(rec.Body.Bytes(), &created)
-	if created.CreatedBy != "retro-agent" || created.UserName != "" {
-		t.Errorf("attribution = %+v", created)
-	}
-
-	// principal + web -> 403
-	req = asPrincipal(httptest.NewRequest("POST", "/api/v1/agent/tickets",
-		strings.NewReader(`{"title":"t","repo":"r","origin":"web"}`)), "retro-agent")
-	rec = httptest.NewRecorder()
-	h.CreateTicket(rec, req)
-	if rec.Code != http.StatusForbidden {
-		t.Errorf("principal web = %d, want 403", rec.Code)
 	}
 }
 

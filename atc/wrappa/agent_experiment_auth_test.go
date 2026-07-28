@@ -6,8 +6,6 @@ import (
 	"testing"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
-	"github.com/concourse/concourse/agent/api/principals"
-	"github.com/concourse/concourse/agent/api/principals/principalstest"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/accessor"
 	"github.com/concourse/concourse/atc/api/accessor/accessorfakes"
@@ -37,7 +35,6 @@ func TestAgentExperimentRoutesUseHumanMainTeamAuthorization(t *testing.T) {
 				auth.NewCheckBuildReadAccessHandlerFactory(new(dbfakes.FakeBuildFactory)),
 				auth.NewCheckBuildWriteAccessHandlerFactory(new(dbfakes.FakeBuildFactory)),
 				auth.NewCheckWorkerTeamAccessHandlerFactory(new(dbfakes.FakeWorkerFactory)),
-				auth.NewCheckAgentPrincipalHandlerFactory(principals.NewVerifier(principalstest.NewMemoryStore())),
 			).Wrap(rata.Handlers{route: delegate})[route]
 
 			accessFactory := new(accessorfakes.FakeAccessFactory)

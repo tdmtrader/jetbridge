@@ -34,7 +34,7 @@ const v713LastMigration = 1666754000
 const v801LastMigration = 1765921815
 
 // JetBridge HEAD (last migration)
-const jetbridgeHeadMigration = 1773106139
+const jetbridgeHeadMigration = 1773106140
 
 var _ = Describe("Legacy Database Upgrade", func() {
 	var (
@@ -683,21 +683,10 @@ func verifyBuildStatuses(db *sql.DB, expected map[string]int) {
 }
 
 func verifyJetBridgeSchemaChanges(db *sql.DB) {
-	var retiredScopeCount int
-	err := db.QueryRow(`
-		SELECT count(*) FROM agent_principals
-		WHERE 'questions:answer' = ANY(scopes)
-	`).Scan(&retiredScopeCount)
+	var principalsTableExists bool
+	err := db.QueryRow(`SELECT to_regclass('agent_principals') IS NOT NULL`).Scan(&principalsTableExists)
 	Expect(err).NotTo(HaveOccurred())
-	Expect(retiredScopeCount).To(Equal(0), "HEAD must strip the retired question authority")
-
-	var sentinelCount int
-	err = db.QueryRow(`
-		SELECT count(*) FROM agent_principals
-		WHERE name = 'legacy-publish' AND token_hash = ''
-	`).Scan(&sentinelCount)
-	Expect(err).NotTo(HaveOccurred())
-	Expect(sentinelCount).To(Equal(0), "HEAD must remove the inert legacy publishing sentinel")
+	Expect(principalsTableExists).To(BeFalse(), "HEAD must remove the retired principal authority table")
 
 	var repositoryProjectionStatusCheck string
 	err = db.QueryRow(`

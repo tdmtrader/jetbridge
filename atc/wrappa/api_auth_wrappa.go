@@ -3,7 +3,6 @@ package wrappa
 import (
 	"fmt"
 
-	"github.com/concourse/concourse/agent/api/principals"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/auth"
 	"github.com/tedsuo/rata"
@@ -14,7 +13,6 @@ type APIAuthWrappa struct {
 	checkBuildReadAccessHandlerFactory  auth.CheckBuildReadAccessHandlerFactory
 	checkBuildWriteAccessHandlerFactory auth.CheckBuildWriteAccessHandlerFactory
 	checkWorkerTeamAccessHandlerFactory auth.CheckWorkerTeamAccessHandlerFactory
-	checkAgentPrincipalHandlerFactory   auth.CheckAgentPrincipalHandlerFactory
 }
 
 func NewAPIAuthWrappa(
@@ -22,14 +20,12 @@ func NewAPIAuthWrappa(
 	checkBuildReadAccessHandlerFactory auth.CheckBuildReadAccessHandlerFactory,
 	checkBuildWriteAccessHandlerFactory auth.CheckBuildWriteAccessHandlerFactory,
 	checkWorkerTeamAccessHandlerFactory auth.CheckWorkerTeamAccessHandlerFactory,
-	checkAgentPrincipalHandlerFactory auth.CheckAgentPrincipalHandlerFactory,
 ) *APIAuthWrappa {
 	return &APIAuthWrappa{
 		checkPipelineAccessHandlerFactory:   checkPipelineAccessHandlerFactory,
 		checkBuildReadAccessHandlerFactory:  checkBuildReadAccessHandlerFactory,
 		checkBuildWriteAccessHandlerFactory: checkBuildWriteAccessHandlerFactory,
 		checkWorkerTeamAccessHandlerFactory: checkWorkerTeamAccessHandlerFactory,
-		checkAgentPrincipalHandlerFactory:   checkAgentPrincipalHandlerFactory,
 	}
 }
 
@@ -130,12 +126,8 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			atc.ClearResourceTypeVersions,
 			atc.ListSharedForResource,
 			atc.ListSharedForResourceType,
-			atc.CreateAgentPrincipal,
-			atc.ListAgentPrincipals,
-			atc.RevokeAgentPrincipal,
-			// SetAgentDispatcher changes cluster-wide autonomous behavior — same
-			// admin tier as minting principals. Reads (GetAgentDispatcher) are
-			// merely authenticated (block above).
+			// SetAgentDispatcher changes cluster-wide autonomous behavior. Reads
+			// (GetAgentDispatcher) are merely authenticated (block above).
 			atc.SetAgentDispatcher:
 			newHandler = auth.CheckAdminHandler(handler, rejector)
 
@@ -208,9 +200,8 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			atc.CreateAgentWorkflowVersion,
 			atc.PromoteAgentWorkflowVersion,
 			atc.GetAgentWorkflowStats,
-			// UpdateAgentWorkflow (annotate/deprecate) is deliberately
-			// human-only (no principal tier): deprecating a workflow is an
-			// operator decision, not something an agent principal may do.
+			// UpdateAgentWorkflow (annotate/deprecate) is deliberately human-only:
+			// deprecating a workflow is an operator decision.
 			atc.UpdateAgentWorkflow,
 			atc.CreateAgentWorkflowRun,
 			atc.ListAgentWorkflowRuns,
@@ -239,28 +230,13 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			atc.GetAgentCostRollup,
 			atc.ListAgentTickets,
 			atc.UpdateAgentTicket,
-			// DispatchAgentTicket is deliberately human-only (no principal
-			// tier): the manual trigger IS the budget gate while budget
-			// admission is deferred (manual-dispatch slice, 2026-07-17).
-			atc.DispatchAgentTicket:
+			// DispatchAgentTicket is deliberately human-only: the manual trigger
+			// is the budget gate while budget admission is deferred.
+			atc.DispatchAgentTicket,
+			atc.CreateAgentTicket,
+			atc.TransitionAgentTicket,
+			atc.GetAgentTicket:
 			newHandler = auth.CheckAgentAuthorizationHandler(handler, rejector)
-
-		// combined tier: agent principal (tickets:write) OR authorized
-		// main-team member — 00-shared-contracts.md §4.2 + ticket-core addendum
-		case atc.CreateAgentTicket,
-			atc.TransitionAgentTicket:
-			newHandler = auth.AgentPrincipalOrMainTeamHandler(
-				wrappa.checkAgentPrincipalHandlerFactory.HandlerFor(handler, rejector, principals.ScopeTicketsWrite),
-				auth.CheckAgentAuthorizationHandler(handler, rejector),
-			)
-
-		// combined tier: agent principal (tickets:read) OR authorized
-		// main-team viewer
-		case atc.GetAgentTicket:
-			newHandler = auth.AgentPrincipalOrMainTeamHandler(
-				wrappa.checkAgentPrincipalHandlerFactory.HandlerFor(handler, rejector, principals.ScopeTicketsRead),
-				auth.CheckAgentAuthorizationHandler(handler, rejector),
-			)
 
 		// think about it!
 		default:

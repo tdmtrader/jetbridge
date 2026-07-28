@@ -11,8 +11,7 @@ module AgentPlatform.AgentPlatform exposing
     )
 
 {-| The agent-platform OPERATIONS console at `/agent`: the workflow catalogue,
-the execution ledger, and the operations/admin drawer (costs, credentials,
-principals).
+the execution ledger, and the operations/admin drawer (costs and credentials).
 
 It used to live in `Agent.Agent`, where the module name claimed the whole agent
 domain for one page — every other agent page (tickets, reviews, runs,
@@ -32,8 +31,8 @@ import DateFormat
 import Dict exposing (Dict)
 import EffectTransformer exposing (ET)
 import Html exposing (Html)
-import Html.Attributes exposing (checked, class, disabled, href, id, placeholder, style, title, type_, value)
-import Html.Events exposing (onClick, onInput)
+import Html.Attributes exposing (class, disabled, href, id, style, title, type_)
+import Html.Events exposing (onClick)
 import Html.Lazy
 import Http
 import Login.Login as Login
@@ -55,16 +54,6 @@ import Tooltip
 import Views.Prose
 
 
-{-| The closed scope vocabulary an admin may grant when minting a principal.
-Mirrors agent/api/principals `ValidScopes`; keep the two in lockstep.
--}
-mintScopeVocabulary : List String
-mintScopeVocabulary =
-    [ "tickets:read"
-    , "tickets:write"
-    ]
-
-
 type alias Model =
     Login.Model
         { runs : Maybe (List Agent.RunMetric)
@@ -82,17 +71,6 @@ type alias Model =
         , credentials : Maybe (List Agent.CredentialStatus)
         , credentialsError : Maybe String
         , platformCredentials : Maybe (List Agent.CredentialStatus)
-        , principals : Maybe (List Agent.Principal)
-        , principalsError : Maybe String
-        , mintName : String
-        , mintDescription : String
-        , mintScopes : Set String
-        , mintExpiresDays : String
-        , mintedToken : Maybe String
-        , mintError : Maybe String
-        , minting : Bool
-        , revokeError : Maybe String
-        , showEphemeralPrincipals : Bool
         , expandedRuns : Set String
         }
 
@@ -114,17 +92,6 @@ init =
       , credentials = Nothing
       , credentialsError = Nothing
       , platformCredentials = Nothing
-      , principals = Nothing
-      , principalsError = Nothing
-      , mintName = ""
-      , mintDescription = ""
-      , mintScopes = Set.empty
-      , mintExpiresDays = ""
-      , mintedToken = Nothing
-      , mintError = Nothing
-      , minting = False
-      , revokeError = Nothing
-      , showEphemeralPrincipals = False
       , expandedRuns = Set.empty
       , isUserMenuExpanded = False
       }
@@ -135,7 +102,6 @@ init =
       , FetchAgentExperiments
       , FetchAgentCredentials
       , FetchAgentPlatformCredentials
-      , FetchAgentPrincipals
       ]
     )
 
@@ -247,43 +213,6 @@ handleCallback callback ( model, effects ) =
             -- Non-admins get a 403 here; the platform row is simply omitted.
             ( { model | platformCredentials = Nothing }, effects )
 
-        AgentPrincipalsFetched (Ok principals) ->
-            ( { model | principals = Just principals, principalsError = Nothing }, effects )
-
-        AgentPrincipalsFetched (Err err) ->
-            ( { model | principalsError = Just (errorMessage "principals" err) }, effects )
-
-        AgentPrincipalCreated (Ok created) ->
-            -- Surface the one-time token, clear the form, and refetch so the
-            -- new principal appears in the table. The refetch does not touch
-            -- mintedToken, so the token box survives the next 5s tick.
-            -- Clearing `minting` re-enables the form for the next mint.
-            ( { model
-                | mintedToken = Just created.token
-                , mintName = ""
-                , mintDescription = ""
-                , mintScopes = Set.empty
-                , mintExpiresDays = ""
-                , mintError = Nothing
-                , minting = False
-              }
-            , effects ++ [ FetchAgentPrincipals ]
-            )
-
-        AgentPrincipalCreated (Err err) ->
-            -- Re-enable the form so the admin can retry after a failed mint.
-            ( { model | mintError = Just (mutationError "mint" err), minting = False }
-            , effects
-            )
-
-        AgentPrincipalRevoked (Ok ()) ->
-            ( { model | revokeError = Nothing }, effects ++ [ FetchAgentPrincipals ] )
-
-        AgentPrincipalRevoked (Err err) ->
-            -- Revoke failures surface next to the principals table (via
-            -- revokeError), not inside the mint form.
-            ( { model | revokeError = Just (mutationError "revoke" err) }, effects )
-
         _ ->
             ( model, effects )
 
@@ -306,112 +235,9 @@ errorMessage what err =
             "couldn't load " ++ what
 
 
-{-| Short message for a failed principal mutation (mint/revoke). A 403 is the
-admin-only case; anything else is a generic couldn't-verb message.
--}
-mutationError : String -> Http.Error -> String
-mutationError verb err =
-    case err of
-        Http.BadStatus { status } ->
-            if status.code == 403 then
-                "not authorized — principals are admin-only"
-
-            else
-                "couldn't " ++ verb ++ " principal"
-
-        _ ->
-            "couldn't " ++ verb ++ " principal"
-
-
-{-| The mint button is enabled only with a non-empty name, at least one scope
-selected, and a valid expiry field — the same required-field rule the API
-enforces. A blank expiry is valid (= no expiry); any non-blank value must
-parse to a positive integer number of days.
--}
-canMint : Model -> Bool
-canMint model =
-    (String.trim model.mintName /= "")
-        && not (Set.isEmpty model.mintScopes)
-        && expiresIsValid model.mintExpiresDays
-
-
-{-| The "expires in N days" field is valid when it is blank (no expiry) or
-parses to a positive integer. Blank, zero, negative, and non-numeric input
-that would silently mean "never expires" are surfaced as invalid instead.
--}
-expiresIsValid : String -> Bool
-expiresIsValid raw =
-    case String.trim raw of
-        "" ->
-            True
-
-        trimmed ->
-            case String.toInt trimmed of
-                Just days ->
-                    days > 0
-
-                Nothing ->
-                    False
-
-
 update : Message -> ET Model
 update msg ( model, effects ) =
     case msg of
-        AgentMintNameChanged name ->
-            ( { model | mintName = name }, effects )
-
-        AgentMintDescriptionChanged description ->
-            ( { model | mintDescription = description }, effects )
-
-        AgentMintScopeToggled scope ->
-            let
-                scopes =
-                    if Set.member scope model.mintScopes then
-                        Set.remove scope model.mintScopes
-
-                    else
-                        Set.insert scope model.mintScopes
-            in
-            ( { model | mintScopes = scopes }, effects )
-
-        AgentMintExpiresChanged days ->
-            ( { model | mintExpiresDays = days }, effects )
-
-        AgentMintSubmitted ->
-            -- Guard on `minting` as well so a fast double-click can't dispatch
-            -- two CreateAgentPrincipal effects (which would orphan the first
-            -- one's one-time token). `minting` is cleared in the
-            -- AgentPrincipalCreated Ok/Err handlers.
-            if canMint model && not model.minting then
-                ( { model | minting = True }
-                , effects
-                    ++ [ CreateAgentPrincipal
-                            { name = String.trim model.mintName
-                            , description = String.trim model.mintDescription
-                            , scopes = Set.toList model.mintScopes
-                            , expiresInDays =
-                                model.mintExpiresDays
-                                    |> String.trim
-                                    |> String.toInt
-                            }
-                       ]
-                )
-
-            else
-                ( model, effects )
-
-        AgentMintedTokenDismissed ->
-            ( { model | mintedToken = Nothing }, effects )
-
-        AgentPrincipalRevokeClicked principalId ->
-            -- Clear any stale revoke error before the new attempt.
-            ( { model | revokeError = Nothing }
-            , effects ++ [ RevokeAgentPrincipal principalId ]
-            )
-
-        AgentPrincipalsShowEphemeralToggled ->
-            ( { model | showEphemeralPrincipals = not model.showEphemeralPrincipals }, effects )
-
         AgentSectionNavClicked anchorId ->
             ( model, effects ++ [ Scroll (ScrollDirection.ToId anchorId) agentContentId ] )
 
@@ -458,7 +284,6 @@ polls =
                 , FetchAgentExperiments
                 , FetchAgentCredentials
                 , FetchAgentPlatformCredentials
-                , FetchAgentPrincipals
                 ]
       }
     ]
@@ -655,7 +480,6 @@ sectionNav =
             , ( "agent-operations", "operations / admin" )
             , ( "agent-costs", "costs" )
             , ( "agent-credentials", "credentials" )
-            , ( "agent-principals", "principals" )
             ]
         )
 
@@ -1133,10 +957,9 @@ operationsAdminSection zone model =
             [ Html.text "Operations / admin" ]
         , Html.p
             [ style "color" subtleColor, style "font-size" "12px" ]
-            [ Html.text "Platform spend, credentials, and machine principals." ]
+            [ Html.text "Platform spend and credentials." ]
         , costsSection model
         , credentialsSection zone model
-        , principalsSection zone model
         ]
 
 
@@ -1456,449 +1279,4 @@ credentialRow zone c =
     Html.tr [ class "agent-credential-row" ]
         [ tableCell "left" c.kind
         , tableCell "left" (formatPosix zone c.expiresAt)
-        ]
-
-
-
--- PRINCIPALS SECTION (admin: mint / list / revoke)
-
-
-principalsSection : Time.Zone -> Model -> Html Message
-principalsSection zone model =
-    sectionBlock "agent-principals"
-        "Principals"
-        (mintFence model
-            :: revokeErrorLine model
-            :: principalsBody zone model
-        )
-
-
-{-| Fence the privileged mint form inside its own bordered, labelled box so it
-is unmistakably a credential-issuing control and does not read as just another
-read-only panel sitting under the spend tables (U15).
--}
-mintFence : Model -> Html Message
-mintFence model =
-    Html.div
-        [ class "agent-mint-fence"
-        , style "border" ("1px solid " ++ amberColor)
-        , style "border-radius" "4px"
-        , style "padding" "10px 12px"
-        , style "margin" "4px 0 12px 0"
-        ]
-        (Html.div
-            [ style "color" amberColor
-            , style "font-family" "monospace"
-            , style "font-size" "12px"
-            , style "font-weight" "700"
-            , style "margin-bottom" "8px"
-            ]
-            [ Html.text "Mint a principal — issues a privileged API credential" ]
-            :: mintForm model
-            :: mintedTokenBox model
-        )
-
-
-{-| Revoke failures render here, in the principals section next to the table —
-not inside the mint form, where a revoke error would be far from the row that
-triggered it and would only be cleared by a successful mint.
--}
-revokeErrorLine : Model -> Html Message
-revokeErrorLine model =
-    case model.revokeError of
-        Just message ->
-            Html.div [ class "agent-revoke-error" ] [ errorLine message ]
-
-        Nothing ->
-            Html.text ""
-
-
-mintForm : Model -> Html Message
-mintForm model =
-    Html.div
-        [ class "agent-mint-form"
-        , style "margin" "0 0 12px 0"
-        , style "font-family" "monospace"
-        , style "font-size" "12px"
-        , style "color" Colors.text
-        ]
-        [ Html.div [ style "margin-bottom" "6px" ]
-            [ mintTextField "name" model.mintName AgentMintNameChanged
-            , mintTextField "description (optional)" model.mintDescription AgentMintDescriptionChanged
-            ]
-        , Html.div
-            [ class "agent-mint-scopes"
-            , style "display" "flex"
-            , style "flex-wrap" "wrap"
-            , style "gap" "12px"
-            , style "margin-bottom" "6px"
-            ]
-            (List.map (scopeCheckbox model) mintScopeVocabulary)
-        , Html.div
-            [ style "display" "flex"
-            , style "align-items" "center"
-            , style "gap" "10px"
-            ]
-            [ expiresField model.mintExpiresDays
-            , mintButton model
-            ]
-        , mintErrorLine model
-        ]
-
-
-mintTextField : String -> String -> (String -> Message) -> Html Message
-mintTextField ph val toMsg =
-    Html.input
-        [ type_ "text"
-        , placeholder ph
-        , value val
-        , onInput toMsg
-        , style "margin-right" "8px"
-        , style "padding" "3px 6px"
-        , style "font-family" "monospace"
-        , style "font-size" "12px"
-        , style "background" Colors.background
-        , style "color" Colors.text
-        , style "border" ("1px solid " ++ subtleColor)
-        ]
-        []
-
-
-scopeCheckbox : Model -> String -> Html Message
-scopeCheckbox model scope =
-    Html.label
-        [ class "agent-mint-scope"
-        , style "display" "inline-flex"
-        , style "align-items" "center"
-        , style "gap" "4px"
-        , style "cursor" "pointer"
-        ]
-        [ Html.input
-            [ type_ "checkbox"
-            , checked (Set.member scope model.mintScopes)
-            , onClick (AgentMintScopeToggled scope)
-            ]
-            []
-        , Html.text scope
-        ]
-
-
-expiresField : String -> Html Message
-expiresField val =
-    Html.label
-        [ style "display" "inline-flex"
-        , style "align-items" "center"
-        , style "gap" "4px"
-        , style "color" mutedColor
-        ]
-        ([ Html.text "expires in"
-         , Html.input
-            [ type_ "text"
-            , placeholder "N"
-            , value val
-            , onInput AgentMintExpiresChanged
-            , style "width" "48px"
-            , style "padding" "3px 6px"
-            , style "font-family" "monospace"
-            , style "font-size" "12px"
-            , style "background" Colors.background
-            , style "color" Colors.text
-            , style "border"
-                ("1px solid "
-                    ++ (if expiresIsValid val then
-                            subtleColor
-
-                        else
-                            amberColor
-                       )
-                )
-            ]
-            []
-         , Html.text "days (optional)"
-         ]
-            ++ expiresHint val
-        )
-
-
-{-| Inline hint shown only when the expires field has non-blank input that does
-not parse to a positive integer. Without this the field would silently mean
-"never expires", which is a surprising, easy-to-miss failure.
--}
-expiresHint : String -> List (Html Message)
-expiresHint val =
-    if expiresIsValid val then
-        []
-
-    else
-        [ Html.span
-            [ class "agent-mint-expires-hint"
-            , style "color" amberColor
-            , style "font-size" "11px"
-            ]
-            [ Html.text "must be a positive number of days; leave blank for no expiry" ]
-        ]
-
-
-mintButton : Model -> Html Message
-mintButton model =
-    let
-        enabled =
-            canMint model && not model.minting
-
-        label =
-            if model.minting then
-                "minting…"
-
-            else
-                "mint"
-    in
-    Html.button
-        [ class "agent-mint-button"
-        , onClick AgentMintSubmitted
-        , disabled (not enabled)
-        , style "padding" "4px 12px"
-        , style "font-family" "monospace"
-        , style "font-size" "12px"
-        , style "font-weight" "700"
-        , style "border" "none"
-        , style "border-radius" "3px"
-        , style "cursor"
-            (if enabled then
-                "pointer"
-
-             else
-                "not-allowed"
-            )
-        , style "background"
-            (if enabled then
-                "#2e4f2e"
-
-             else
-                Colors.background
-            )
-        , style "color"
-            (if enabled then
-                "#9fdf9f"
-
-             else
-                subtleColor
-            )
-        ]
-        [ Html.text label ]
-
-
-mintErrorLine : Model -> Html Message
-mintErrorLine model =
-    case model.mintError of
-        Just message ->
-            errorLine message
-
-        Nothing ->
-            Html.text ""
-
-
-mintedTokenBox : Model -> List (Html Message)
-mintedTokenBox model =
-    case model.mintedToken of
-        Nothing ->
-            []
-
-        Just token ->
-            [ Html.div
-                [ class "agent-minted-token"
-                , style "margin" "0 0 12px 0"
-                , style "padding" "8px 12px"
-                , style "border" ("1px solid " ++ amberColor)
-                , style "border-radius" "3px"
-                , style "background" "#3a3320"
-                , style "font-family" "monospace"
-                , style "font-size" "12px"
-                , style "color" Colors.text
-                ]
-                [ Html.div
-                    [ style "color" amberColor
-                    , style "font-weight" "700"
-                    , style "margin-bottom" "4px"
-                    ]
-                    [ Html.text "token (shown once — copy it now):" ]
-                , Html.div
-                    [ class "agent-minted-token-value"
-                    , style "word-break" "break-all"
-                    ]
-                    [ Html.text token ]
-                , Html.button
-                    [ class "agent-minted-token-dismiss"
-                    , onClick AgentMintedTokenDismissed
-                    , style "margin-top" "6px"
-                    , style "padding" "2px 8px"
-                    , style "font-family" "monospace"
-                    , style "font-size" "11px"
-                    , style "cursor" "pointer"
-                    , style "background" Colors.background
-                    , style "color" mutedColor
-                    , style "border" ("1px solid " ++ subtleColor)
-                    , style "border-radius" "3px"
-                    ]
-                    [ Html.text "dismiss" ]
-                ]
-            ]
-
-
-principalsBody : Time.Zone -> Model -> List (Html Message)
-principalsBody zone model =
-    case model.principals of
-        Nothing ->
-            case model.principalsError of
-                Just message ->
-                    [ errorLine message ]
-
-                Nothing ->
-                    [ mutedLine "loading…" ]
-
-        Just [] ->
-            staleDataWarning model.principalsError
-                ++ [ mutedLine "no principals yet — mint one above" ]
-
-        Just principals ->
-            let
-                ( ephemeral, durable ) =
-                    List.partition isEphemeralPrincipal principals
-            in
-            staleDataWarning model.principalsError
-                ++ (if List.isEmpty durable then
-                        [ mutedLine "no durable principals — mint one above" ]
-
-                    else
-                        [ principalsTable zone durable ]
-                   )
-                ++ ephemeralPrincipals zone model ephemeral
-
-
-{-| Per-run agent tokens are named `run-<id>` and are minted/revoked
-automatically for every dispatch, so they flood the principals table. Fold them
-behind a collapsed toggle, leaving the durable (human/service) principals in the
-main table.
--}
-isEphemeralPrincipal : Agent.Principal -> Bool
-isEphemeralPrincipal p =
-    case String.split "-" p.name of
-        [ "run", n ] ->
-            String.toInt n /= Nothing
-
-        _ ->
-            False
-
-
-ephemeralPrincipals : Time.Zone -> Model -> List Agent.Principal -> List (Html Message)
-ephemeralPrincipals zone model ephemeral =
-    if List.isEmpty ephemeral then
-        []
-
-    else
-        Html.button
-            [ class "agent-ephemeral-toggle"
-            , onClick AgentPrincipalsShowEphemeralToggled
-            , style "background" "transparent"
-            , style "border" "none"
-            , style "color" subtleColor
-            , style "font-family" "monospace"
-            , style "font-size" "12px"
-            , style "cursor" "pointer"
-            , style "padding" "8px 0"
-            , style "text-align" "left"
-            ]
-            [ Html.text
-                ((if model.showEphemeralPrincipals then
-                    "▾ hide "
-
-                  else
-                    "▸ show "
-                 )
-                    ++ String.fromInt (List.length ephemeral)
-                    ++ " ephemeral run "
-                    ++ (if List.length ephemeral == 1 then
-                            "principal"
-
-                        else
-                            "principals"
-                       )
-                )
-            ]
-            :: (if model.showEphemeralPrincipals then
-                    [ principalsTable zone ephemeral ]
-
-                else
-                    []
-               )
-
-
-principalsTable : Time.Zone -> List Agent.Principal -> Html Message
-principalsTable zone principals =
-    Html.table
-        [ class "agent-principals-table"
-        , style "border-collapse" "collapse"
-        , style "font-family" "monospace"
-        , style "font-size" "12px"
-        , style "color" Colors.text
-        ]
-        (Html.tr []
-            [ tableHeaderCell "left" "name"
-            , tableHeaderCell "left" "scopes"
-            , tableHeaderCell "left" "team"
-            , tableHeaderCell "left" "created"
-            , tableHeaderCell "left" "expires"
-            , tableHeaderCell "left" "last used"
-            , tableHeaderCell "left" ""
-            ]
-            :: List.map (principalRow zone) principals
-        )
-
-
-principalRow : Time.Zone -> Agent.Principal -> Html Message
-principalRow zone p =
-    let
-        dim =
-            case p.revokedAt of
-                Just _ ->
-                    [ style "opacity" "0.5" ]
-
-                Nothing ->
-                    []
-
-        action =
-            case p.revokedAt of
-                Just revokedAt ->
-                    Html.span
-                        [ class "agent-principal-revoked"
-                        , style "color" subtleColor
-                        ]
-                        [ Html.text ("revoked " ++ formatPosix zone (Just revokedAt)) ]
-
-                Nothing ->
-                    Html.button
-                        [ class "agent-principal-revoke"
-                        , onClick (AgentPrincipalRevokeClicked p.id)
-                        , style "padding" "2px 8px"
-                        , style "font-family" "monospace"
-                        , style "font-size" "11px"
-                        , style "cursor" "pointer"
-                        , style "background" "#5c2626"
-                        , style "color" "#f0a0a0"
-                        , style "border" "none"
-                        , style "border-radius" "3px"
-                        ]
-                        [ Html.text "revoke" ]
-    in
-    Html.tr (class "agent-principal-row" :: dim)
-        [ tableCell "left" p.name
-        , tableCell "left" (String.join ", " p.scopes)
-        , tableCell "left" p.teamName
-        , tableCell "left" (formatPosix zone (Just p.createdAt))
-        , tableCell "left" (formatPosix zone p.expiresAt)
-        , tableCell "left" (formatPosix zone p.lastUsedAt)
-        , Html.td
-            [ style "padding" "4px 16px 4px 0"
-            , style "border-bottom" rowBorder
-            ]
-            [ action ]
         ]

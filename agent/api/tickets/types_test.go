@@ -118,14 +118,14 @@ func TestValidStateAndOrigin(t *testing.T) {
 		t.Error("ValidState accepted an unknown state")
 	}
 
-	for _, o := range []string{"web", "fly", "retrospective"} {
+	for _, o := range []string{"web", "fly"} {
 		if !tickets.ValidOrigin(o) {
 			t.Errorf("ValidOrigin(%q) = false, want true", o)
 		}
 	}
 	// 'jira' was a seam the create handler rejected with a 400 from the day it
 	// was written. It is not a valid origin, and no adapter branches on it.
-	if tickets.ValidOrigin("jira") || tickets.ValidOrigin("email") || tickets.ValidOrigin("") {
+	if tickets.ValidOrigin("retrospective") || tickets.ValidOrigin("jira") || tickets.ValidOrigin("email") || tickets.ValidOrigin("") {
 		t.Error("ValidOrigin accepted an unknown origin")
 	}
 }
