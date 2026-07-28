@@ -34,10 +34,23 @@ const MaxRetiredWorkflowRunTemplateBatch = 500
 // weight — workflow version superseded by a newer live definition, every
 // citing durable run terminal, every run archived and past retention — and
 // destroys the run instance pipelines, the pipeline_runs rows, and the
-// template as one unit. By contrast the durable record in agent_workflow_runs
-// carries no foreign key to any of them (dropped deliberately in migration
-// 1773106103) — its execution provenance is immutable scalars, so a durable
-// run ID stays citable whether or not the plumbing it names still exists.
+// template as one unit.
+//
+// The reclaimed unit is wider than those three tables: builds_pipeline_id_fkey
+// is ON DELETE CASCADE, so each instance pipeline takes its builds with it
+// (and, through the deleted_pipelines trigger, its pipeline_build_events
+// table). Rows that reference those builds by plain integer — agent_run_metrics,
+// agent_cost_ledger, agent_run_transcripts, agent_snapshot_productions — carry
+// no foreign key and survive; readers join builds LEFT, so a reclaimed build
+// reads as absent rather than as an error. Anything that needs a *fact* about
+// a reclaimed build must read it from the durable record instead: that is why
+// AgentRunMetricsFactory.WorkflowStats counts success from
+// agent_workflow_runs.execution_status once the build is gone.
+//
+// By contrast the durable record in agent_workflow_runs carries no foreign key
+// to any of them (dropped deliberately in migration 1773106103) — its execution
+// provenance is immutable scalars, so a durable run ID stays citable whether or
+// not the plumbing it names still exists.
 //
 //counterfeiter:generate . WorkflowRunTemplateLifecycle
 type WorkflowRunTemplateLifecycle interface {

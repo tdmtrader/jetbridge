@@ -280,13 +280,30 @@ func workflowRunIDValue(rm *agentschema.RunMetrics) any {
 // cost/turns are summed across the build's step rows (the LEFT JOIN to builds
 // is 1:1 so there is no fan-out) and success is counted from the joined
 // build's terminal status.
+//
+// A reclaimed build falls back to the durable record. Workflow-run template
+// retirement destroys the run instance pipeline, and builds_pipeline_id_fkey
+// is ON DELETE CASCADE, so a retired version's builds are gone while its
+// metrics rows (build_id carries no foreign key) remain — counting success
+// from b.status alone would keep the runs and the cost but silently deflate a
+// retired version's success rate to zero. agent_workflow_runs.execution_status
+// is the immutable copy of that same build's terminal status (migration
+// 1773106103), so it answers for the build once the build cannot. The fallback
+// is deliberately scoped to b.id IS NULL AND m.build_id = run.planned_build_id:
+// a live build always answers for itself, and a metric row from any other
+// build never inherits the planned build's outcome.
 func (f *agentRunMetricsFactory) WorkflowStats(workflowName string) ([]agentschema.WorkflowVersionStats, error) {
 	rows, err := f.conn.Query(`
 		SELECT
 			run.workflow_version,
 			COUNT(DISTINCT m.build_id)                                       AS runs,
 			COUNT(DISTINCT m.workflow_run_id)                                AS workflow_runs,
-			COUNT(DISTINCT m.build_id) FILTER (WHERE b.status = 'succeeded')  AS succeeded_runs,
+			COUNT(DISTINCT m.build_id) FILTER (
+				WHERE b.status = 'succeeded'
+				   OR (b.id IS NULL
+				       AND m.build_id = run.planned_build_id
+				       AND run.execution_status = 'succeeded')
+			)                                                                 AS succeeded_runs,
 			COALESCE(SUM(m.cost_usd), 0)                                      AS total_cost_usd,
 			COALESCE(SUM(m.turns), 0)                                         AS total_turns
 		FROM agent_run_metrics m

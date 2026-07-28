@@ -517,4 +517,62 @@ var _ = Describe("AgentRunMetricsFactory WorkflowStats", func() {
 		Expect(*stats[1].Version).To(Equal(1))
 		Expect(stats[1].TotalCostUSD).To(BeNumerically("~", 1.00, 1e-6))
 	})
+
+	// Workflow-run template retirement destroys the run instance pipeline, and
+	// builds_pipeline_id_fkey is ON DELETE CASCADE — so a retired version's
+	// builds are gone while its metrics rows (build_id carries no foreign key)
+	// remain. Success must then be read from the durable execution_status,
+	// which migration 1773106103 defines as the immutable copy of that very
+	// build's terminal status; otherwise a retired version keeps its runs and
+	// cost but silently reports a zero success rate.
+	It("keeps counting success after the planned build is reclaimed", func() {
+		buildID := createBuildWithStatus(db.BuildStatusSucceeded)
+		runID := createWorkflowRun(workflowName, 4, buildID)
+		Expect(dbConn.Exec(`
+			UPDATE agent_workflow_runs
+			SET status = 'succeeded', execution_status = 'succeeded'
+			WHERE id = $1
+		`, int64(runID))).ToNot(BeNil())
+		insert(runID, buildID, "p1", "ok", 1.00, 2)
+
+		before, err := factory.WorkflowStats(workflowName)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(before).To(HaveLen(1))
+		Expect(before[0].SucceededRuns).To(Equal(1))
+
+		// exactly what the instance pipeline's deletion cascades
+		_, err = dbConn.Exec(`DELETE FROM builds WHERE id = $1`, buildID)
+		Expect(err).NotTo(HaveOccurred())
+
+		after, err := factory.WorkflowStats(workflowName)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(after).To(HaveLen(1))
+		Expect(after[0].Runs).To(Equal(1))
+		Expect(after[0].TotalCostUSD).To(BeNumerically("~", 1.00, 1e-6))
+		Expect(after[0].SucceededRuns).To(Equal(1))
+	})
+
+	// The durable fallback is scoped to the run's own planned build: a metric
+	// row from some other build must never inherit the planned build's
+	// outcome.
+	It("does not lend the planned build's outcome to another build's metrics", func() {
+		plannedBuild := createBuildWithStatus(db.BuildStatusSucceeded)
+		otherBuild := createBuildWithStatus(db.BuildStatusFailed)
+		runID := createWorkflowRun(workflowName, 5, plannedBuild)
+		Expect(dbConn.Exec(`
+			UPDATE agent_workflow_runs
+			SET status = 'succeeded', execution_status = 'succeeded'
+			WHERE id = $1
+		`, int64(runID))).ToNot(BeNil())
+		insert(runID, otherBuild, "p1", "ok", 1.00, 2)
+
+		_, err := dbConn.Exec(`DELETE FROM builds WHERE id IN ($1, $2)`, plannedBuild, otherBuild)
+		Expect(err).NotTo(HaveOccurred())
+
+		stats, err := factory.WorkflowStats(workflowName)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(stats).To(HaveLen(1))
+		Expect(stats[0].Runs).To(Equal(1))
+		Expect(stats[0].SucceededRuns).To(Equal(0))
+	})
 })
