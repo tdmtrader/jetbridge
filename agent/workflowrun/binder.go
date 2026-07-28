@@ -1206,6 +1206,7 @@ func (renderer WorkflowTargetRenderer) RenderFunction(target workflow.FunctionTa
 		return workflow.RenderedFunction{}, err
 	}
 	agentCount := 0
+	mergePreflightCount := 0
 	for jobIndex := range rendered.Config.Jobs {
 		for stepIndex := range rendered.Config.Jobs[jobIndex].PlanSequence {
 			err := rendered.Config.Jobs[jobIndex].PlanSequence[stepIndex].Config.Visit(atc.StepRecursor{
@@ -1220,13 +1221,35 @@ func (renderer WorkflowTargetRenderer) RenderFunction(target workflow.FunctionTa
 					step.RuntimeImage = renderer.RuntimeImage
 					return nil
 				},
+				OnTask: func(step *atc.TaskStep) error {
+					if step.MergePreflightAuthority == nil {
+						return nil
+					}
+					mergePreflightCount++
+					if err := atc.ValidatePinnedOCIImage(renderer.RuntimeImage); err != nil {
+						return fmt.Errorf("workflow merge preflight runtime image: %w", err)
+					}
+					a := step.MergePreflightAuthority.Clone()
+					a.CapabilityImage = renderer.RuntimeImage
+					at := strings.LastIndexByte(renderer.RuntimeImage, '@')
+					if at < 0 {
+						return fmt.Errorf("workflow merge preflight runtime image is not pinned")
+					}
+					a.CapabilityImageDigest = snapshot.Digest(renderer.RuntimeImage[at+1:])
+					config, err := atc.NewMergePreflightTaskConfig(*a)
+					if err != nil {
+						return err
+					}
+					step.MergePreflightAuthority, step.Config = a, config
+					return nil
+				},
 			})
 			if err != nil {
 				return workflow.RenderedFunction{}, err
 			}
 		}
 	}
-	if agentCount == 0 {
+	if agentCount == 0 && mergePreflightCount == 0 {
 		return rendered, nil
 	}
 	hash, err := workflow.RenderedTargetConfigHash(rendered.Config, rendered.DevValidationProfiles, rendered.DevValidationProvenanceHash)

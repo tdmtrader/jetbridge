@@ -200,13 +200,19 @@ func measurementsAuthority(outputPort string) judge.RecordAuthority {
 }
 
 type mergeOptions struct {
-	root      string
-	candidate string
-	target    string
-	base      string
-	output    string
-	method    string
-	message   string
+	root                 string
+	candidate            string
+	target               string
+	base                 string
+	output               string
+	method               string
+	message              string
+	profileDigest        string
+	configDigest         string
+	capabilityImage      string
+	workflowDefinitionID int
+	workflowVersion      int
+	toolchain            string
 }
 
 func runMergeMode(ctx context.Context, mode string, args []string, stdout, stderr io.Writer) int {
@@ -220,6 +226,12 @@ func runMergeMode(ctx context.Context, mode string, args []string, stdout, stder
 	flags.StringVar(&options.output, "output", "", "output mount to materialize into, as `name` or name=path")
 	flags.StringVar(&options.method, "method", string(repositorymerge.MethodMerge), "merge or squash")
 	flags.StringVar(&options.message, "message", "Merge delivered change", "commit message for the merge commit")
+	flags.StringVar(&options.profileDigest, "profile-digest", "", "server-owned fixed merge policy digest")
+	flags.StringVar(&options.configDigest, "config-digest", "", "server-owned fixed merge configuration digest")
+	flags.StringVar(&options.capabilityImage, "capability-image", "", "server-owned pinned runner image")
+	flags.IntVar(&options.workflowDefinitionID, "workflow-definition-id", 0, "authenticated workflow definition identity")
+	flags.IntVar(&options.workflowVersion, "workflow-version", 0, "authenticated workflow version")
+	flags.StringVar(&options.toolchain, "toolchain", "", "server-owned fixed merge toolchain")
 	if err := flags.Parse(args); err != nil {
 		return exitUsage
 	}
@@ -301,6 +313,8 @@ func executeMerge(ctx context.Context, mode string, options mergeOptions, stdout
 		Candidate:       bindings.refs[candidatePort],
 		CandidateRoot:   candidatePath,
 		CandidateInput:  candidatePort,
+		Base:            bindings.refs[basePort],
+		BaseInput:       basePort,
 		Target:          bindings.refs[targetPort],
 		TargetInput:     targetPort,
 		TargetRoot:      targetPath,
@@ -308,7 +322,7 @@ func executeMerge(ctx context.Context, mode string, options mergeOptions, stdout
 		OpenInput:       bindings.Open,
 		Method:          repositorymerge.Method(options.method),
 		Message:         options.message,
-		ReportAuthority: reportAuthority(mode, outputPort),
+		ReportAuthority: reportAuthority(mode, outputPort, options),
 	})
 	if err != nil {
 		return "", err
@@ -345,20 +359,39 @@ func executeMerge(ctx context.Context, mode string, options mergeOptions, stdout
 // change, whose identity is a different type entirely — so there is nothing to
 // copy and the in-memory report, which that mode only reads a conclusion from,
 // carries this build's own identity. The same fallback covers a hand-run CLI.
-func reportAuthority(mode, outputPort string) repositorymerge.RecordAuthority {
+func reportAuthority(mode, outputPort string, options mergeOptions) repositorymerge.RecordAuthority {
+	image := "registry.example/agent-runner@sha256:" + strings.Repeat("a", 64)
+	profile := snapshot.Digest("sha256:" + strings.Repeat("b", 64))
+	config := snapshot.Digest("sha256:" + strings.Repeat("c", 64))
+	imageDigest := snapshot.Digest("sha256:" + strings.Repeat("a", 64))
+	authority := repositorymerge.RecordAuthority{
+		ProfileDigest: profile, ProtectedConfigDigest: config,
+		CapabilityImage: image, CapabilityImageDigest: imageDigest,
+		WorkflowDefinitionID: 1, WorkflowVersion: 1,
+		Toolchain: "function-runner/merge-preflight/v1",
+	}
+	if mode == "merge-preflight" && options.profileDigest != "" {
+		authority.ProfileDigest = snapshot.Digest(options.profileDigest)
+		authority.ProtectedConfigDigest = snapshot.Digest(options.configDigest)
+		authority.CapabilityImage = options.capabilityImage
+		if at := strings.LastIndexByte(options.capabilityImage, '@'); at >= 0 {
+			authority.CapabilityImageDigest = snapshot.Digest(options.capabilityImage[at+1:])
+		}
+		authority.WorkflowDefinitionID, authority.WorkflowVersion, authority.Toolchain = options.workflowDefinitionID, options.workflowVersion, options.toolchain
+	}
 	if mode == "merge-preflight" {
 		prefix := "AGENT_OUTPUT_" + authorityEnvPort(outputPort)
 		declaredType := strings.TrimSpace(os.Getenv(prefix + "_RECORD_TYPE"))
 		declaredSchema := strings.TrimSpace(os.Getenv(prefix + "_RECORD_SCHEMA"))
 		if declaredType != "" && declaredSchema != "" {
-			return repositorymerge.RecordAuthority{
-				Type:   snapshot.TypeRef(declaredType),
-				Schema: snapshot.Digest(declaredSchema),
-			}
+			authority.Type = snapshot.TypeRef(declaredType)
+			authority.Schema = snapshot.Digest(declaredSchema)
+			return authority
 		}
 	}
 	schema, _ := contracts.SchemaDigestFor(validationType)
-	return repositorymerge.RecordAuthority{Type: validationType, Schema: schema}
+	authority.Type, authority.Schema = validationType, schema
+	return authority
 }
 
 // authorityEnvPort mangles a port name into the environment-variable spelling the

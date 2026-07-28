@@ -379,24 +379,27 @@ type TaskStep struct {
 	// DevValidationProfile is the only source-level selector for an
 	// authoritative validation task. Compilation replaces it with the fixed
 	// task shape and server-owned authority below.
-	DevValidationProfile   string                          `json:"dev_validation_profile,omitempty"`
-	DevValidationAuthority *DevValidationAuthority         `json:"dev_validation_authority,omitempty"`
-	Privileged             bool                            `json:"privileged,omitempty"`
-	Hermetic               bool                            `json:"hermetic,omitempty"`
-	ConfigPath             string                          `json:"file,omitempty"`
-	Limits                 *ContainerLimits                `json:"container_limits,omitempty"`
-	Requests               *ContainerLimits                `json:"container_requests,omitempty"`
-	Config                 *TaskConfig                     `json:"config,omitempty"`
-	Params                 TaskEnv                         `json:"params,omitempty"`
-	Vars                   Params                          `json:"vars,omitempty"`
-	Tags                   Tags                            `json:"tags,omitempty"`
-	InputMapping           map[string]string               `json:"input_mapping,omitempty"`
-	OutputMapping          map[string]string               `json:"output_mapping,omitempty"`
-	SnapshotInputs         map[string]SnapshotInputConfig  `json:"input_types,omitempty"`
-	SnapshotOutputs        map[string]SnapshotOutputConfig `json:"output_types,omitempty"`
-	ImageArtifactName      string                          `json:"image,omitempty"`
-	Timeout                string                          `json:"timeout,omitempty"`
-	Sidecars               []SidecarSource                 `json:"sidecars,omitempty"`
+	DevValidationProfile   string                  `json:"dev_validation_profile,omitempty"`
+	DevValidationAuthority *DevValidationAuthority `json:"dev_validation_authority,omitempty"`
+	// MergePreflightAuthority is renderer-only authority for the fixed delivery
+	// merge report task. function_id is the sole source selector.
+	MergePreflightAuthority *MergePreflightAuthority        `json:"merge_preflight_authority,omitempty"`
+	Privileged              bool                            `json:"privileged,omitempty"`
+	Hermetic                bool                            `json:"hermetic,omitempty"`
+	ConfigPath              string                          `json:"file,omitempty"`
+	Limits                  *ContainerLimits                `json:"container_limits,omitempty"`
+	Requests                *ContainerLimits                `json:"container_requests,omitempty"`
+	Config                  *TaskConfig                     `json:"config,omitempty"`
+	Params                  TaskEnv                         `json:"params,omitempty"`
+	Vars                    Params                          `json:"vars,omitempty"`
+	Tags                    Tags                            `json:"tags,omitempty"`
+	InputMapping            map[string]string               `json:"input_mapping,omitempty"`
+	OutputMapping           map[string]string               `json:"output_mapping,omitempty"`
+	SnapshotInputs          map[string]SnapshotInputConfig  `json:"input_types,omitempty"`
+	SnapshotOutputs         map[string]SnapshotOutputConfig `json:"output_types,omitempty"`
+	ImageArtifactName       string                          `json:"image,omitempty"`
+	Timeout                 string                          `json:"timeout,omitempty"`
+	Sidecars                []SidecarSource                 `json:"sidecars,omitempty"`
 }
 
 func (step *TaskStep) Visit(v StepVisitor) error {

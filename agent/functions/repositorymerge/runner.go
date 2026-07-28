@@ -17,6 +17,8 @@ package repositorymerge
 import (
 	"archive/tar"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -75,11 +77,13 @@ const (
 	mergeCheckKind = "policy"
 	mergeCheckName = "delivery merge"
 
-	// The report's subjects: the candidate is what is being judged, and the
-	// target is the context the judgement was made against. Subject ids are
-	// declared in lexicographic order because record envelopes require it.
-	candidateSubjectID = "candidate"
-	targetSubjectID    = "target"
+	// The report's candidate is primary; its sealed base and delivery target are
+	// rev3 base subjects in canonical lexical input order.
+	baseReportSubjectID = "base"
+	candidateSubjectID  = "candidate"
+	targetSubjectID     = "target"
+	mergeLogPath        = "content/logs/repository-merge-attempt-1.log"
+	mergeLogMediaType   = "text/plain; charset=utf-8"
 
 	// candidateRef holds the candidate's result commit after its objects have
 	// been copied into the target repository. It lives outside refs/heads so it
@@ -294,8 +298,15 @@ func appendTrailer(message, trailer string) string {
 // and a pod that stamped its own compiled digest would advertise an identity the
 // side that seals the output never declared.
 type RecordAuthority struct {
-	Type   snapshot.TypeRef
-	Schema snapshot.Digest
+	Type                  snapshot.TypeRef
+	Schema                snapshot.Digest
+	ProfileDigest         snapshot.Digest
+	ProtectedConfigDigest snapshot.Digest
+	CapabilityImage       string
+	CapabilityImageDigest snapshot.Digest
+	WorkflowDefinitionID  int
+	WorkflowVersion       int
+	Toolchain             string
 }
 
 // Request identifies the exact immutable candidate, the exact repository tip it
@@ -309,6 +320,8 @@ type Request struct {
 	// becomes the input of the report's PRIMARY subject: the report is a
 	// judgement about that exact snapshot, bound at that exact port.
 	CandidateInput string
+	Base           snapshot.SnapshotRef
+	BaseInput      string
 	// Target is the repository/v1 value the candidate is rebased onto. It is
 	// the current tip of the delivery target.
 	Target snapshot.SnapshotRef
@@ -376,6 +389,9 @@ func (merged *Merged) Conclusion() string {
 
 func (merged *Merged) Close() error {
 	if merged == nil {
+		return nil
+	}
+	if merged.payload == nil {
 		return nil
 	}
 	return merged.payload.Close()
@@ -528,6 +544,12 @@ func (request Request) validate() error {
 			repositoryType, request.Target.Type,
 		)
 	}
+	if err := request.Base.Validate(); err != nil {
+		return fmt.Errorf("repository merge: base: %w", err)
+	}
+	if request.Base.Type != repositoryType {
+		return fmt.Errorf("repository merge: base must have exact type %s, got %s", repositoryType, request.Base.Type)
+	}
 	if strings.TrimSpace(request.CandidateRoot) == "" {
 		return fmt.Errorf("repository merge: candidate root is required")
 	}
@@ -539,6 +561,12 @@ func (request Request) validate() error {
 	}
 	if bound, found := request.Inputs[request.CandidateInput]; !found || bound != request.Candidate {
 		return fmt.Errorf("repository merge: candidate input %q is not bound to the exact candidate snapshot", request.CandidateInput)
+	}
+	if strings.TrimSpace(request.BaseInput) == "" {
+		return fmt.Errorf("repository merge: base input port is required")
+	}
+	if bound, found := request.Inputs[request.BaseInput]; !found || bound != request.Base {
+		return fmt.Errorf("repository merge: base input %q is not bound to the exact base snapshot", request.BaseInput)
 	}
 	if strings.TrimSpace(request.TargetInput) == "" {
 		return fmt.Errorf("repository merge: target input port is required")
@@ -557,6 +585,21 @@ func (request Request) validate() error {
 	}
 	if err := request.ReportAuthority.Schema.Validate(); err != nil {
 		return fmt.Errorf("repository merge: merge report schema: %w", err)
+	}
+	for _, field := range []struct {
+		name  string
+		value snapshot.Digest
+	}{
+		{"merge report profile", request.ReportAuthority.ProfileDigest},
+		{"merge report protected config", request.ReportAuthority.ProtectedConfigDigest},
+		{"merge report image", request.ReportAuthority.CapabilityImageDigest},
+	} {
+		if err := field.value.Validate(); err != nil {
+			return fmt.Errorf("repository merge: %s: %w", field.name, err)
+		}
+	}
+	if strings.TrimSpace(request.ReportAuthority.CapabilityImage) == "" || request.ReportAuthority.WorkflowDefinitionID <= 0 || request.ReportAuthority.WorkflowVersion <= 0 || strings.TrimSpace(request.ReportAuthority.Toolchain) == "" {
+		return fmt.Errorf("repository merge: merge report attestation authority is incomplete")
 	}
 	if request.Method != MethodMerge && request.Method != MethodSquash {
 		return fmt.Errorf("repository merge: unknown merge method %q", request.Method)
@@ -915,6 +958,7 @@ func (attempt mergeAttempt) conflicted(paths []string) *Merged {
 // verbatim and the conclusion is derived from the checks, so neither is a claim
 // this function gets to make up.
 func (attempt mergeAttempt) report(status, summary, detail string, evidence []contracts.Anchor) contracts.Record[contracts.ValidationBody] {
+	log := mergeAttemptLog(status, summary, detail)
 	checks := []contracts.ValidationCheck{{
 		ID:     mergeCheckID,
 		Kind:   mergeCheckKind,
@@ -925,6 +969,7 @@ func (attempt mergeAttempt) report(status, summary, detail string, evidence []co
 			Number:   1,
 			Status:   status,
 			Duration: time.Since(attempt.started).String(),
+			Log:      validationLog(log),
 			Evidence: evidence,
 			Detail:   detail,
 		}},
@@ -935,9 +980,10 @@ func (attempt mergeAttempt) report(status, summary, detail string, evidence []co
 		Schema:        attempt.request.ReportAuthority.Schema,
 		Subjects:      attempt.request.reportSubjects(),
 		Body: contracts.ValidationBody{
-			Conclusion: contracts.DeriveValidationConclusion(checks),
-			Summary:    summary,
-			Checks:     checks,
+			Conclusion:  contracts.DeriveValidationConclusion(checks),
+			Summary:     summary,
+			Attestation: attempt.request.reportAttestation(),
+			Checks:      checks,
 		},
 	}
 }
@@ -947,13 +993,38 @@ func (attempt mergeAttempt) report(status, summary, detail string, evidence []co
 // of the step when it seals the output.
 func (request Request) reportSubjects() []contracts.Subject {
 	return []contracts.Subject{
+		contracts.SubjectFromInput(baseReportSubjectID, contracts.SubjectRoleBase, request.BaseInput, request.Base),
 		contracts.SubjectFromInput(
 			candidateSubjectID, contracts.SubjectRolePrimary, request.CandidateInput, request.Candidate,
 		),
-		contracts.SubjectFromInput(
-			targetSubjectID, contracts.SubjectRoleContext, request.TargetInput, request.Target,
-		),
+		contracts.SubjectFromInput(targetSubjectID, contracts.SubjectRoleBase, request.TargetInput, request.Target),
 	}
+}
+
+func (request Request) reportAttestation() contracts.ValidationAttestation {
+	return contracts.ValidationAttestation{
+		CandidateDigest: request.Candidate.Digest,
+		BaseInputs: []contracts.ValidationBaseInput{
+			{Input: request.BaseInput, Type: request.Base.Type, Digest: request.Base.Digest},
+			{Input: request.TargetInput, Type: request.Target.Type, Digest: request.Target.Digest},
+		},
+		ProfileDigest:         request.ReportAuthority.ProfileDigest,
+		ProtectedConfigDigest: request.ReportAuthority.ProtectedConfigDigest,
+		CapabilityImage:       request.ReportAuthority.CapabilityImage,
+		CapabilityImageDigest: request.ReportAuthority.CapabilityImageDigest,
+		WorkflowDefinitionID:  request.ReportAuthority.WorkflowDefinitionID,
+		WorkflowVersion:       request.ReportAuthority.WorkflowVersion,
+		Toolchain:             request.ReportAuthority.Toolchain,
+	}
+}
+
+func mergeAttemptLog(status, summary, detail string) []byte {
+	return []byte(fmt.Sprintf("repository merge: %s\nsummary: %s\ndetail: %s\n", status, summary, detail))
+}
+
+func validationLog(content []byte) contracts.ValidationLog {
+	sum := sha256.Sum256(content)
+	return contracts.ValidationLog{Path: mergeLogPath, Digest: snapshot.Digest("sha256:" + hex.EncodeToString(sum[:])), Size: int64(len(content)), MediaType: mergeLogMediaType}
 }
 
 func isInfrastructureFailure(err error) bool {
@@ -980,6 +1051,14 @@ func WriteReport(ctx context.Context, outputRoot string, report contracts.Record
 	if err := report.Body.Validate(report.Subjects); err != nil {
 		return fmt.Errorf("repository merge: invalid %s: %w", validationType, err)
 	}
+	if len(report.Body.Checks) != 1 || len(report.Body.Checks[0].Attempts) != 1 {
+		return fmt.Errorf("repository merge: invalid %s: expected one merge attempt", validationType)
+	}
+	attempt := report.Body.Checks[0].Attempts[0]
+	log := mergeAttemptLog(attempt.Status, report.Body.Summary, attempt.Detail)
+	if validationLog(log) != attempt.Log {
+		return fmt.Errorf("repository merge: invalid %s: attempt log does not match retained bytes", validationType)
+	}
 	payload, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
 		return fmt.Errorf("repository merge: marshal %s: %w", validationType, err)
@@ -988,6 +1067,19 @@ func WriteReport(ctx context.Context, outputRoot string, report contracts.Record
 	root, err := os.OpenRoot(outputRoot)
 	if err != nil {
 		return fmt.Errorf("repository merge: open output root: %w", err)
+	}
+	if err := root.MkdirAll(path.Dir(attempt.Log.Path), 0700); err != nil {
+		_ = root.Close()
+		return fmt.Errorf("repository merge: create report log directory: %w", err)
+	}
+	if err := root.WriteFile(attempt.Log.Path, log, 0600); err != nil {
+		_ = root.Close()
+		return fmt.Errorf("repository merge: write report log: %w", err)
+	}
+	written, err := root.ReadFile(attempt.Log.Path)
+	if err != nil || validationLog(written) != attempt.Log {
+		_ = root.Close()
+		return fmt.Errorf("repository merge: report log changed while writing")
 	}
 	writeErr := root.WriteFile(recordFileName, payload, 0600)
 	closeErr := root.Close()

@@ -20,6 +20,63 @@ const (
 	DevValidationOutput             = "validation"
 )
 
+const (
+	MergePreflightFunctionID   = "merge-preflight"
+	MergePreflightOutput       = "merge-report"
+	MergePreflightRunnerPath   = "/usr/local/bin/function-runner"
+	MergePreflightPolicyDigest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	MergePreflightConfigDigest = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+	MergePreflightToolchain    = "function-runner/merge-preflight/v1"
+)
+
+// MergePreflightAuthority is server-produced authority for the single fixed
+// delivery preflight. Unlike dev validation it contains no protected bytes:
+// merge policy is fixed, public platform data. The trusted runtime image is
+// injected by WorkflowTargetRenderer and sealed in rendered identity.
+type MergePreflightAuthority struct {
+	ProfileDigest         snapshot.Digest `json:"profile_digest"`
+	ProtectedConfigDigest snapshot.Digest `json:"protected_config_digest"`
+	CapabilityImage       string          `json:"capability_image"`
+	CapabilityImageDigest snapshot.Digest `json:"capability_image_digest"`
+	WorkflowDefinitionID  int             `json:"workflow_definition_id"`
+	WorkflowVersion       int             `json:"workflow_version"`
+	CandidateInput        string          `json:"candidate_input"`
+	BaseInput             string          `json:"base_input"`
+	TargetInput           string          `json:"target_input"`
+}
+
+func (a *MergePreflightAuthority) Clone() *MergePreflightAuthority {
+	if a == nil {
+		return nil
+	}
+	c := *a
+	return &c
+}
+
+func (a MergePreflightAuthority) Validate() error {
+	if a.ProfileDigest != snapshot.Digest(MergePreflightPolicyDigest) || a.ProtectedConfigDigest != snapshot.Digest(MergePreflightConfigDigest) || a.CandidateInput != "candidate" || a.BaseInput != "base" || a.TargetInput != "target" || a.WorkflowDefinitionID <= 0 || a.WorkflowVersion <= 0 {
+		return fmt.Errorf("merge preflight authority is incomplete or not fixed platform policy")
+	}
+	if err := ValidatePinnedOCIImage(a.CapabilityImage); err != nil {
+		return err
+	}
+	if a.CapabilityImageDigest == "" || !strings.HasSuffix(a.CapabilityImage, "@"+a.CapabilityImageDigest.String()) {
+		return fmt.Errorf("merge preflight authority image digest is invalid")
+	}
+	return nil
+}
+
+func MergePreflightStaticArgs(a MergePreflightAuthority) []string {
+	return []string{MergePreflightFunctionID, "--candidate=" + a.CandidateInput, "--base=" + a.BaseInput, "--target=" + a.TargetInput, "--output=" + MergePreflightOutput, "--method=merge", "--message=Merge delivered change", "--profile-digest=" + a.ProfileDigest.String(), "--config-digest=" + a.ProtectedConfigDigest.String(), "--capability-image=" + a.CapabilityImage, "--workflow-definition-id=" + fmt.Sprint(a.WorkflowDefinitionID), "--workflow-version=" + fmt.Sprint(a.WorkflowVersion), "--toolchain=" + MergePreflightToolchain}
+}
+
+func NewMergePreflightTaskConfig(a MergePreflightAuthority) (*TaskConfig, error) {
+	if err := a.Validate(); err != nil {
+		return nil, err
+	}
+	return &TaskConfig{Platform: "linux", RootfsURI: a.CapabilityImage, Run: TaskRunConfig{Path: MergePreflightRunnerPath, Args: MergePreflightStaticArgs(a)}, Inputs: []TaskInputConfig{{Name: a.CandidateInput}, {Name: a.BaseInput}, {Name: a.TargetInput}}, Outputs: []TaskOutputConfig{{Name: MergePreflightOutput}}}, nil
+}
+
 // DevValidationStaticArgs are the plan-static arguments for the fixed
 // validation runner. The executor appends the authenticated candidate ID and
 // digest only after it resolves the actual typed input.

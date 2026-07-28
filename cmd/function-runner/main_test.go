@@ -200,11 +200,12 @@ func TestMergePreflightCopiesTheDeclaredRecordIdentity(t *testing.T) {
 	if report.Type != snapshot.TypeRef("validation/v1") || report.Schema != declared {
 		t.Fatalf("envelope identity = %q/%q, want the declared %q/%q", report.Type, report.Schema, "validation/v1", declared)
 	}
-	// The report judges the candidate at the port it was declared on, with the
-	// target as context; the platform rebinds both when it seals the output.
-	if len(report.Subjects) != 2 ||
-		report.Subjects[0].ID != "candidate" || report.Subjects[0].Input != "candidate" ||
-		report.Subjects[1].ID != "target" || report.Subjects[1].Input != "target" {
+	// Rev3 binds the exact candidate plus its immutable candidate base and
+	// delivery target as canonical base subjects.
+	if len(report.Subjects) != 3 ||
+		report.Subjects[0].ID != "base" || report.Subjects[0].Input != "base" ||
+		report.Subjects[1].ID != "candidate" || report.Subjects[1].Input != "candidate" ||
+		report.Subjects[2].ID != "target" || report.Subjects[2].Input != "target" {
 		t.Fatalf("report subjects = %+v", report.Subjects)
 	}
 }

@@ -273,6 +273,9 @@ func (step *TaskStep) run(ctx context.Context, state RunState, delegate TaskDele
 	if err := step.validateDevValidationTask(config); err != nil {
 		return false, err
 	}
+	if err := step.validateMergePreflightTask(config); err != nil {
+		return false, err
+	}
 	if (len(step.plan.SnapshotInputs) > 0 || len(step.plan.SnapshotOutputs) > 0) && step.outputSealer == nil {
 		return false, fmt.Errorf("task %q has typed snapshot declarations but no output sealer is configured", step.plan.Name)
 	}
@@ -867,10 +870,37 @@ func (step *TaskStep) sealTypedOutputs(
 
 func (step *TaskStep) validationAuthorities(inputs snapshotInputBindings, declarations []snapshot.Port) (map[string]snapshot.ValidationAttestationAuthority, error) {
 	a := step.plan.DevValidationAuthority
+	m := step.plan.MergePreflightAuthority
 	for _, declaration := range declarations {
-		if declaration.Type == snapshot.TypeRef("validation/v1") && a == nil {
+		if declaration.Type == snapshot.TypeRef("validation/v1") && a == nil && m == nil {
 			return nil, fmt.Errorf("task %q validation output lacks server authority", step.plan.Name)
 		}
+	}
+	if a != nil && m != nil {
+		return nil, fmt.Errorf("task %q has multiple validation authorities", step.plan.Name)
+	}
+	if m != nil {
+		if step.metadata.WorkflowDefinitionID == nil || *step.metadata.WorkflowDefinitionID != m.WorkflowDefinitionID {
+			return nil, fmt.Errorf("task %q merge preflight authority does not match workflow", step.plan.Name)
+		}
+		candidate, ok := inputs.refs[m.CandidateInput]
+		if !ok || candidate.Type != snapshot.TypeRef("repository-change/v1") {
+			return nil, fmt.Errorf("task %q merge preflight candidate is not bound exactly", step.plan.Name)
+		}
+		bases := make([]snapshot.ValidationAuthorityInput, 0, 2)
+		for _, name := range []string{m.BaseInput, m.TargetInput} {
+			ref, ok := inputs.refs[name]
+			if !ok || ref.Type != snapshot.TypeRef("repository/v1") {
+				return nil, fmt.Errorf("task %q merge preflight base %q is not bound exactly", step.plan.Name, name)
+			}
+			bases = append(bases, snapshot.ValidationAuthorityInput{Input: name, Ref: ref})
+		}
+		sort.Slice(bases, func(i, j int) bool { return bases[i].Input < bases[j].Input })
+		authority := snapshot.ValidationAttestationAuthority{CandidateInput: m.CandidateInput, Candidate: candidate, BaseInputs: bases, ProfileDigest: m.ProfileDigest, ProtectedConfigDigest: m.ProtectedConfigDigest, CapabilityImage: m.CapabilityImage, CapabilityImageDigest: m.CapabilityImageDigest, WorkflowDefinitionID: m.WorkflowDefinitionID, WorkflowVersion: m.WorkflowVersion, Toolchain: atc.MergePreflightToolchain}
+		if err := authority.Validate(); err != nil {
+			return nil, err
+		}
+		return map[string]snapshot.ValidationAttestationAuthority{atc.MergePreflightOutput: authority}, nil
 	}
 	if a == nil {
 		return nil, nil
@@ -907,7 +937,7 @@ func (step *TaskStep) validationAuthorities(inputs snapshotInputBindings, declar
 func (step *TaskStep) validateDevValidationTask(config atc.TaskConfig) error {
 	a := step.plan.DevValidationAuthority
 	for name, output := range step.plan.SnapshotOutputs {
-		if output.Type == snapshot.TypeRef("validation/v1") && a == nil {
+		if output.Type == snapshot.TypeRef("validation/v1") && a == nil && step.plan.MergePreflightAuthority == nil {
 			return fmt.Errorf("task %q validation output %q lacks server authority", step.plan.Name, name)
 		}
 	}
@@ -948,6 +978,47 @@ func (step *TaskStep) validateDevValidationTask(config atc.TaskConfig) error {
 		input, found := step.plan.SnapshotInputs[base.Name]
 		if !found || input.Optional || input.Type != base.Type {
 			return fmt.Errorf("task %q authoritative validation has invalid base %q", step.plan.Name, base.Name)
+		}
+	}
+	return nil
+}
+
+// validateMergePreflightTask repeats the selector boundary on every execution
+// and resume. It deliberately has no private mount: fixed merge policy is
+// public platform data and only the renderer/sealer owns the authority.
+func (step *TaskStep) validateMergePreflightTask(config atc.TaskConfig) error {
+	a := step.plan.MergePreflightAuthority
+	if a == nil {
+		return nil
+	}
+	if step.plan.DevValidationAuthority != nil || a.Validate() != nil || step.metadata.WorkflowDefinitionID == nil || step.metadata.WorkflowRunID == nil || *step.metadata.WorkflowDefinitionID != a.WorkflowDefinitionID {
+		return fmt.Errorf("task %q merge preflight authority does not match authenticated workflow", step.plan.Name)
+	}
+	if step.plan.FunctionID != atc.MergePreflightFunctionID || step.plan.Privileged || !step.plan.Hermetic || step.plan.ConfigPath != "" || step.plan.ImageArtifactName != "" || step.plan.Timeout != "" || len(step.plan.Params) != 0 || len(step.plan.Vars) != 0 || len(step.plan.Tags) != 0 || len(step.plan.Sidecars) != 0 || len(step.plan.InputMapping) != 0 || len(step.plan.OutputMapping) != 0 || step.plan.Limits != nil || step.plan.Requests != nil {
+		return fmt.Errorf("task %q authoritative merge preflight has authored controls", step.plan.Name)
+	}
+	if config.ImageResource != nil || config.RootfsURI != a.CapabilityImage || config.Platform != "linux" || len(config.Params) != 0 || len(config.Caches) != 0 || len(config.Inputs) != 3 || len(config.Outputs) != 1 || len(config.ScratchPaths) != 0 || config.Run.Path != atc.MergePreflightRunnerPath || config.Run.Dir != "" || config.Run.User != "" {
+		return fmt.Errorf("task %q authoritative merge preflight is not the fixed task shape", step.plan.Name)
+	}
+	if len(step.plan.SnapshotInputs) != 3 || len(step.plan.SnapshotOutputs) != 1 {
+		return fmt.Errorf("task %q authoritative merge preflight has invalid typed ports", step.plan.Name)
+	}
+	for name, typ := range map[string]snapshot.TypeRef{a.BaseInput: "repository/v1", a.CandidateInput: "repository-change/v1", a.TargetInput: "repository/v1"} {
+		input, ok := step.plan.SnapshotInputs[name]
+		if !ok || input.Optional || input.Type != typ {
+			return fmt.Errorf("task %q authoritative merge preflight has invalid input %q", step.plan.Name, name)
+		}
+	}
+	if output, ok := step.plan.SnapshotOutputs[atc.MergePreflightOutput]; !ok || output.Optional || output.Type != snapshot.TypeRef("validation/v1") || config.Outputs[0].Name != atc.MergePreflightOutput || config.Outputs[0].Path != "" {
+		return fmt.Errorf("task %q authoritative merge preflight has invalid output", step.plan.Name)
+	}
+	if !equalTaskStrings(config.Run.Args, atc.MergePreflightStaticArgs(*a)) {
+		return fmt.Errorf("task %q authoritative merge preflight arguments are not fixed", step.plan.Name)
+	}
+	for i, input := range config.Inputs {
+		want := []string{a.CandidateInput, a.BaseInput, a.TargetInput}[i]
+		if input.Optional || input.Path != "" || input.Name != want {
+			return fmt.Errorf("task %q authoritative merge preflight has invalid input mounts", step.plan.Name)
 		}
 	}
 	return nil

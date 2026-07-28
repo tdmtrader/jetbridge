@@ -29,6 +29,11 @@ func TestTaskPlanKeepsValidationAuthorityForResumeButNeverPublicizesIt(t *testin
 			CapabilityImage: "example.test/dev@sha256:" + strings.Repeat("a", 64), CapabilityImageDigest: snapshot.Digest("sha256:" + strings.Repeat("a", 64)),
 			WorkflowDefinitionID: 12, WorkflowVersion: 3, CandidateInput: "candidate",
 		},
+		MergePreflightAuthority: &atc.MergePreflightAuthority{
+			ProfileDigest: snapshot.Digest(atc.MergePreflightPolicyDigest), ProtectedConfigDigest: snapshot.Digest(atc.MergePreflightConfigDigest),
+			CapabilityImage: "example.test/agent-runner@sha256:" + strings.Repeat("a", 64), CapabilityImageDigest: snapshot.Digest("sha256:" + strings.Repeat("a", 64)),
+			WorkflowDefinitionID: 12, WorkflowVersion: 3, CandidateInput: "candidate", BaseInput: "base", TargetInput: "target",
+		},
 	}
 	encoded, err := json.Marshal(plan)
 	if err != nil {
@@ -41,11 +46,14 @@ func TestTaskPlanKeepsValidationAuthorityForResumeButNeverPublicizesIt(t *testin
 	if reloaded.DevValidationAuthority == nil || string(reloaded.DevValidationAuthority.Profile) != string(profile) || string(reloaded.DevValidationAuthority.ProtectedConfig) != string(config) {
 		t.Fatal("private validation authority was not retained for a resumed task")
 	}
+	if reloaded.MergePreflightAuthority == nil || reloaded.MergePreflightAuthority.CapabilityImage != plan.MergePreflightAuthority.CapabilityImage {
+		t.Fatal("private merge preflight authority was not retained for a resumed task")
+	}
 	if _, found := reloaded.ReadOnlyInputs["candidate"]; !found {
 		t.Fatal("read-only boundary was not retained for a resumed task")
 	}
 	public := string(*plan.Public())
-	for _, secret := range []string{"dev_validation_authority", "protected_config", "schema_version", "read_only_inputs"} {
+	for _, secret := range []string{"dev_validation_authority", "merge_preflight_authority", "protected_config", "schema_version", "read_only_inputs"} {
 		if strings.Contains(public, secret) {
 			t.Fatalf("public task plan leaked private validation material %q: %s", secret, public)
 		}

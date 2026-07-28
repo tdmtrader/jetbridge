@@ -31,30 +31,6 @@ plan:
   # the prepare step below fails the run, and a failed step seals no output.
   - task: merge-preflight
     function_id: merge-preflight
-    config:
-      platform: linux
-      image_resource:
-        type: registry-image
-        source:
-          repository: concourse/agent-runner
-        version:
-          digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
-      inputs:
-        - name: base
-        - name: candidate
-        - name: target
-      outputs:
-        - name: merge-report
-      run:
-        path: function-runner
-        args:
-          - merge-preflight
-          - --candidate=candidate
-          - --target=target
-          - --base=base
-          - --output=merge-report
-          - --method=merge
-          - --message=Merge delivered change
     input_types:
       base: {type: repository/v1}
       candidate: {type: repository-change/v1}

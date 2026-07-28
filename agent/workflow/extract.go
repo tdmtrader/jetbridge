@@ -179,6 +179,14 @@ func validateImmutableTaskDependencies(task *atc.TaskStep, resourceTypes atc.Res
 		}
 		return nil, nil
 	}
+	if authority := task.MergePreflightAuthority; authority != nil {
+		// RuntimeImage is injected only by WorkflowTargetRenderer. Before that
+		// trusted rendering pass this selector deliberately has no image.
+		if task.Config.ImageResource != nil || task.Config.RootfsURI != "" || authority.CandidateInput != "candidate" || authority.BaseInput != "base" || authority.TargetInput != "target" {
+			return nil, fmt.Errorf("authoritative merge preflight task is not renderer-owned")
+		}
+		return nil, nil
+	}
 	if task.Config.RootfsURI != "" {
 		return nil, fmt.Errorf("task rootfs_uri is not an immutable image")
 	}

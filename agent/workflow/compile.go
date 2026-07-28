@@ -201,6 +201,9 @@ func (compiler *functionAssetCompiler) preflightTask(step *atc.TaskStep) error {
 	if step.DevValidationAuthority != nil {
 		return fmt.Errorf("workflow: task %q: dev_validation_authority is server-owned", step.Name)
 	}
+	if step.MergePreflightAuthority != nil {
+		return fmt.Errorf("workflow: task %q: merge_preflight_authority is server-owned", step.Name)
+	}
 	if step.Privileged {
 		return fmt.Errorf("workflow: task %q: privileged execution is not allowed for a transformation node", step.Name)
 	}
@@ -398,6 +401,9 @@ func (compiler *functionAssetCompiler) compile() error {
 		err := compiler.function.Plan[index].Config.Visit(atc.StepRecursor{
 			OnTask: func(step *atc.TaskStep) error {
 				if err := renderDevValidationSelector(step, compiler.function.DevValidationProfiles); err != nil {
+					return err
+				}
+				if err := renderMergePreflightSelector(step); err != nil {
 					return err
 				}
 				step.Hermetic = true

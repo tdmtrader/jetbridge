@@ -386,7 +386,8 @@ type TaskPlan struct {
 	// DevValidationAuthority is emitted only by the trusted schema-v3 renderer.
 	// It is retained in the private execution plan for retries but omitted by
 	// TaskPlan.Public.
-	DevValidationAuthority *DevValidationAuthority `json:"dev_validation_authority,omitempty"`
+	DevValidationAuthority  *DevValidationAuthority  `json:"dev_validation_authority,omitempty"`
+	MergePreflightAuthority *MergePreflightAuthority `json:"merge_preflight_authority,omitempty"`
 
 	// A timeout to enforce on the task's process. Note that fetching the task's
 	// image does not count towards the timeout.

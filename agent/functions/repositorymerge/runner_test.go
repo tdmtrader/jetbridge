@@ -234,6 +234,8 @@ func (f fixture) request() Request {
 		Candidate:       f.inputs["candidate"],
 		CandidateRoot:   f.changeRoot,
 		CandidateInput:  "candidate",
+		Base:            f.inputs["base"],
+		BaseInput:       "base",
 		Target:          f.inputs["target"],
 		TargetInput:     "target",
 		TargetRoot:      f.targetRoot,
@@ -250,7 +252,14 @@ func (f fixture) request() Request {
 // values are this build's own, which is what a lockstep deployment declares.
 func declaredReportAuthority() RecordAuthority {
 	schema, _ := contracts.SchemaDigestFor(validationType)
-	return RecordAuthority{Type: validationType, Schema: schema}
+	return RecordAuthority{
+		Type: validationType, Schema: schema,
+		ProfileDigest:         snapshot.Digest("sha256:" + strings.Repeat("b", 64)),
+		ProtectedConfigDigest: snapshot.Digest("sha256:" + strings.Repeat("c", 64)),
+		CapabilityImage:       "registry.example/agent-runner@sha256:" + strings.Repeat("a", 64),
+		CapabilityImageDigest: snapshot.Digest("sha256:" + strings.Repeat("a", 64)),
+		WorkflowDefinitionID:  1, WorkflowVersion: 1, Toolchain: "function-runner/merge-preflight/v1",
+	}
 }
 
 // sealReport writes the report to a fresh output mount and drives it through the
@@ -268,7 +277,14 @@ func (f fixture) sealReport(t *testing.T, report contracts.Record[contracts.Vali
 	if err != nil {
 		t.Fatal(err)
 	}
-	validationContext, err := snapshot.NewValidationContext(f.inputs, f.opener())
+	authority := f.request().ReportAuthority
+	validationContext, err := snapshot.NewValidationContext(f.inputs, f.opener(), snapshot.WithValidationAttestationAuthority(snapshot.ValidationAttestationAuthority{
+		CandidateInput: "candidate", Candidate: f.inputs["candidate"],
+		BaseInputs:    []snapshot.ValidationAuthorityInput{{Input: "base", Ref: f.inputs["base"]}, {Input: "target", Ref: f.inputs["target"]}},
+		ProfileDigest: authority.ProfileDigest, ProtectedConfigDigest: authority.ProtectedConfigDigest,
+		CapabilityImage: authority.CapabilityImage, CapabilityImageDigest: authority.CapabilityImageDigest,
+		WorkflowDefinitionID: authority.WorkflowDefinitionID, WorkflowVersion: authority.WorkflowVersion, Toolchain: authority.Toolchain,
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -458,16 +474,19 @@ func TestRunnerMergesOntoTheAdvancedTargetAndSealsAValidChange(t *testing.T) {
 	}
 	// The report is a sealed validation/v1 record whose PRIMARY subject is the
 	// exact candidate snapshot it judged, bound at the port it was declared on.
-	if len(merged.Report.Subjects) != 2 {
-		t.Fatalf("report subjects = %+v, want the candidate and the target", merged.Report.Subjects)
+	if len(merged.Report.Subjects) != 3 {
+		t.Fatalf("report subjects = %+v, want the base, candidate, and target", merged.Report.Subjects)
 	}
-	primary := merged.Report.Subjects[0]
+	if base := merged.Report.Subjects[0]; base.Role != contracts.SubjectRoleBase || base.Input != "base" || base.Digest != f.inputs["base"].Digest {
+		t.Fatalf("report base subject = %+v", base)
+	}
+	primary := merged.Report.Subjects[1]
 	if primary.Role != contracts.SubjectRolePrimary || primary.Input != "candidate" ||
 		primary.Digest != f.inputs["candidate"].Digest {
 		t.Fatalf("report primary subject = %+v, want the exact candidate bound at its port", primary)
 	}
-	if context := merged.Report.Subjects[1]; context.Role != contracts.SubjectRoleContext || context.Input != "target" {
-		t.Fatalf("report context subject = %+v, want the target port", context)
+	if target := merged.Report.Subjects[2]; target.Role != contracts.SubjectRoleBase || target.Input != "target" || target.Digest != f.inputs["target"].Digest {
+		t.Fatalf("report target base subject = %+v", target)
 	}
 	f.sealReport(t, merged.Report)
 	// The merged change's base lineage is now a SUBJECT: the target repository,
@@ -673,7 +692,8 @@ func TestReportCopiesTheDeclaredContractIdentityVerbatim(t *testing.T) {
 		t.Fatal("the fixture digest must differ from this build's own, or the test proves nothing")
 	}
 	request := f.request()
-	request.ReportAuthority = RecordAuthority{Type: validationType, Schema: declared}
+	request.ReportAuthority = declaredReportAuthority()
+	request.ReportAuthority.Schema = declared
 
 	report, err := runner.Run(context.Background(), request)
 	if err != nil {
