@@ -67,9 +67,10 @@ func TestTheDeclaredCoreRunsAtBothGatesForEveryRecordType(t *testing.T) {
 			// A check kind outside the declared enum.
 			body: contracts.ValidationBody{
 				Conclusion: "passed", Summary: "one check",
+				Attestation: contracts.ValidationAttestation{CandidateDigest: primary.Digest, BaseInputs: []contracts.ValidationBaseInput{}, ProfileDigest: recordDigest('b'), ProtectedConfigDigest: recordDigest('c'), CapabilityImage: "example.invalid/validator@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", CapabilityImageDigest: recordDigest('d'), WorkflowDefinitionID: 1, WorkflowVersion: 1, Toolchain: "dev-capability/v1"},
 				Checks: []contracts.ValidationCheck{{
 					ID: "c-1", Kind: "smoke", Name: "smoke", Status: "passed",
-					Attempts: []contracts.ValidationAttempt{{Number: 1, Status: "passed", Duration: "1s"}},
+					Attempts: []contracts.ValidationAttempt{{Number: 1, Status: "passed", Duration: "1s", Log: contracts.ValidationLog{Path: "content/logs/smoke.log", Digest: recordDigest('e'), Size: 1, MediaType: "text/plain"}}},
 				}},
 			},
 			wantPath: "body/checks/*/kind",

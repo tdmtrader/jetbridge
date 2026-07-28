@@ -1,0 +1,5 @@
+ALTER TABLE agent_experiments DROP CONSTRAINT agent_experiments_evaluator_validation_provenance_parity,
+    DROP COLUMN evaluator_dev_validation_provenance_hash;
+ALTER TABLE agent_experiment_variants DROP CONSTRAINT agent_experiment_variants_validation_provenance_parity,
+    DROP COLUMN dev_validation_provenance_hash;
+ALTER TABLE agent_workflow_runs DROP COLUMN dev_validation_provenance_hash;

@@ -6,7 +6,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
+
+	containername "github.com/google/go-containerregistry/pkg/name"
 )
 
 // ValidationResult contains metadata derived only from the validated snapshot
@@ -33,14 +38,136 @@ func (r ValidationResult) Clone() ValidationResult {
 // can authorize and audit the same binding that the validator requested.
 type InputOpener func(context.Context, string, SnapshotRef) (io.ReadCloser, error)
 
+// ValidationAuthorityInput binds an attested immutable base to the exact
+// exposed snapshot reference. It deliberately retains the port name as well as
+// type and digest: the port is part of the frozen workflow provenance.
+type ValidationAuthorityInput struct {
+	Input string
+	Ref   SnapshotRef
+}
+
+// ValidationAttestationAuthority is process-only, per-output authority for a
+// validation/v1 rev3 record. It is compiled by the server; no archive, source
+// metadata, or validation result can manufacture it.
+type ValidationAttestationAuthority struct {
+	CandidateInput        string
+	Candidate             SnapshotRef
+	BaseInputs            []ValidationAuthorityInput
+	ProfileDigest         Digest
+	ProtectedConfigDigest Digest
+	CapabilityImage       string
+	CapabilityImageDigest Digest
+	WorkflowDefinitionID  int
+	WorkflowVersion       int
+	Toolchain             string
+}
+
+const maxValidationToolchainBytes = 256
+
+func (authority ValidationAttestationAuthority) Validate() error {
+	if err := validateValidationInputName("candidate input", authority.CandidateInput); err != nil {
+		return err
+	}
+	if err := authority.Candidate.Validate(); err != nil {
+		return fmt.Errorf("candidate: %w", err)
+	}
+	previous := ""
+	for index, base := range authority.BaseInputs {
+		if err := validateValidationInputName("base input", base.Input); err != nil {
+			return fmt.Errorf("base_inputs[%d]: %w", index, err)
+		}
+		if base.Input == authority.CandidateInput {
+			return fmt.Errorf("base_inputs[%d] must not name the candidate input", index)
+		}
+		if previous != "" && base.Input <= previous {
+			return fmt.Errorf("base_inputs must be in canonical lexical input-name order without duplicates")
+		}
+		previous = base.Input
+		if err := base.Ref.Validate(); err != nil {
+			return fmt.Errorf("base_inputs[%d]: %w", index, err)
+		}
+	}
+	for _, digest := range []struct {
+		name  string
+		value Digest
+	}{
+		{"profile_digest", authority.ProfileDigest},
+		{"protected_config_digest", authority.ProtectedConfigDigest},
+		{"capability_image_digest", authority.CapabilityImageDigest},
+	} {
+		if err := digest.value.Validate(); err != nil {
+			return fmt.Errorf("%s: %w", digest.name, err)
+		}
+	}
+	if err := validateValidationCapabilityImage(authority.CapabilityImage, authority.CapabilityImageDigest); err != nil {
+		return err
+	}
+	if authority.WorkflowDefinitionID <= 0 || authority.WorkflowVersion <= 0 {
+		return fmt.Errorf("workflow definition ID and workflow version must be positive")
+	}
+	return validateValidationToolchain(authority.Toolchain)
+}
+
+func validateValidationInputName(label, input string) error {
+	if input == "" || input != strings.TrimSpace(input) {
+		return fmt.Errorf("%s must be canonical and non-empty", label)
+	}
+	return nil
+}
+
+func validateValidationCapabilityImage(image string, expected Digest) error {
+	if image == "" || image != strings.TrimSpace(image) {
+		return fmt.Errorf("capability_image must be a canonical OCI digest reference")
+	}
+	parsed, err := containername.NewDigest(image, containername.StrictValidation)
+	if err != nil {
+		return fmt.Errorf("capability_image is not a valid OCI digest reference: %w", err)
+	}
+	actual, err := ParseDigest(parsed.DigestStr())
+	if err != nil {
+		return fmt.Errorf("capability_image digest: %w", err)
+	}
+	if actual != expected {
+		return fmt.Errorf("capability_image_digest must equal the capability_image pin")
+	}
+	return nil
+}
+
+func validateValidationToolchain(toolchain string) error {
+	if toolchain == "" || toolchain != strings.TrimSpace(toolchain) || len(toolchain) > maxValidationToolchainBytes || !utf8.ValidString(toolchain) {
+		return fmt.Errorf("toolchain must be canonical non-empty UTF-8 text no longer than %d bytes", maxValidationToolchainBytes)
+	}
+	for _, character := range toolchain {
+		if unicode.IsControl(character) {
+			return fmt.Errorf("toolchain must not contain control characters")
+		}
+	}
+	return nil
+}
+
 // ValidationContext is an immutable view of the input bindings available to a
 // validator. It deliberately provides no storage or network client.
 type ValidationContext struct {
-	inputs map[string]SnapshotRef
-	opener InputOpener
+	inputs                            map[string]SnapshotRef
+	opener                            InputOpener
+	validationAttestationAuthority    ValidationAttestationAuthority
+	hasValidationAttestationAuthority bool
 }
 
-func NewValidationContext(inputs map[string]SnapshotRef, opener InputOpener) (ValidationContext, error) {
+type ValidationContextOption func(*validationContextDeclarations)
+
+type validationContextDeclarations struct {
+	validationAttestationAuthorities []ValidationAttestationAuthority
+}
+
+func WithValidationAttestationAuthority(authority ValidationAttestationAuthority) ValidationContextOption {
+	cloned := cloneValidationAttestationAuthority(authority)
+	return func(declarations *validationContextDeclarations) {
+		declarations.validationAttestationAuthorities = append(declarations.validationAttestationAuthorities, cloneValidationAttestationAuthority(cloned))
+	}
+}
+
+func NewValidationContext(inputs map[string]SnapshotRef, opener InputOpener, options ...ValidationContextOption) (ValidationContext, error) {
 	cloned := cloneSnapshotRefs(inputs)
 	for name, ref := range cloned {
 		if strings.TrimSpace(name) == "" {
@@ -50,7 +177,33 @@ func NewValidationContext(inputs map[string]SnapshotRef, opener InputOpener) (Va
 			return ValidationContext{}, fmt.Errorf("snapshot: validation input %q: %w", name, err)
 		}
 	}
-	return ValidationContext{inputs: cloned, opener: opener}, nil
+	var declarations validationContextDeclarations
+	for _, option := range options {
+		if option == nil {
+			return ValidationContext{}, fmt.Errorf("snapshot: validation context option is required")
+		}
+		option(&declarations)
+	}
+	if len(declarations.validationAttestationAuthorities) > 1 {
+		return ValidationContext{}, fmt.Errorf("snapshot: validation attestation authority is declared more than once")
+	}
+	var authority ValidationAttestationAuthority
+	hasAuthority := len(declarations.validationAttestationAuthorities) == 1
+	if hasAuthority {
+		authority = cloneValidationAttestationAuthority(declarations.validationAttestationAuthorities[0])
+		if err := authority.Validate(); err != nil {
+			return ValidationContext{}, fmt.Errorf("snapshot: validation attestation authority: %w", err)
+		}
+		if candidate, found := cloned[authority.CandidateInput]; !found || candidate != authority.Candidate {
+			return ValidationContext{}, fmt.Errorf("snapshot: validation attestation candidate is not an exact exposed input")
+		}
+		for _, base := range authority.BaseInputs {
+			if exposed, found := cloned[base.Input]; !found || exposed != base.Ref {
+				return ValidationContext{}, fmt.Errorf("snapshot: validation attestation base input %q is not an exact exposed input", base.Input)
+			}
+		}
+	}
+	return ValidationContext{inputs: cloned, opener: opener, validationAttestationAuthority: authority, hasValidationAttestationAuthority: hasAuthority}, nil
 }
 
 func (c ValidationContext) Inputs() map[string]SnapshotRef {
@@ -60,6 +213,13 @@ func (c ValidationContext) Inputs() map[string]SnapshotRef {
 func (c ValidationContext) Input(name string) (SnapshotRef, bool) {
 	ref, found := c.inputs[name]
 	return ref, found
+}
+
+func (c ValidationContext) ValidationAttestationAuthority() (ValidationAttestationAuthority, bool) {
+	if !c.hasValidationAttestationAuthority {
+		return ValidationAttestationAuthority{}, false
+	}
+	return cloneValidationAttestationAuthority(c.validationAttestationAuthority), true
 }
 
 func (c ValidationContext) OpenInput(ctx context.Context, name string) (io.ReadCloser, error) {
@@ -81,6 +241,21 @@ func (c ValidationContext) OpenInput(ctx context.Context, name string) (io.ReadC
 		return nil, fmt.Errorf("snapshot: open validation input %q returned no content", name)
 	}
 	return reader, nil
+}
+
+func cloneValidationAttestationAuthority(authority ValidationAttestationAuthority) ValidationAttestationAuthority {
+	authority.BaseInputs = append([]ValidationAuthorityInput(nil), authority.BaseInputs...)
+	return authority
+}
+
+// ValidationAuthorityInputNames returns a copy in canonical authority order.
+func (authority ValidationAttestationAuthority) ValidationAuthorityInputNames() []string {
+	names := make([]string, 0, len(authority.BaseInputs))
+	for _, base := range authority.BaseInputs {
+		names = append(names, base.Input)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // Validator validates one already-canonicalized snapshot tree at one of two

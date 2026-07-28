@@ -334,7 +334,10 @@ func ValidateEntityIDs(label string, ids []string) error {
 
 type subjectShape int
 
-const onePrimaryWithSupportingSubjects subjectShape = 1
+const (
+	onePrimaryWithSupportingSubjects subjectShape = 1
+	onePrimaryWithBaseSubjects       subjectShape = 2
+)
 
 func validateRecordSubjects(subjects []Subject, shape subjectShape) (map[string]struct{}, error) {
 	if len(subjects) == 0 {
@@ -345,17 +348,21 @@ func validateRecordSubjects(subjects []Subject, shape subjectShape) (map[string]
 	for _, subject := range subjects {
 		ids[subject.ID] = struct{}{}
 		switch shape {
-		case onePrimaryWithSupportingSubjects:
+		case onePrimaryWithSupportingSubjects, onePrimaryWithBaseSubjects:
 			switch subject.Role {
 			case SubjectRolePrimary:
 				primaryCount++
 			case SubjectRoleEvidence, SubjectRoleContext, SubjectRoleReference:
+			case SubjectRoleBase:
+				if shape != onePrimaryWithBaseSubjects {
+					return nil, fmt.Errorf("subject %q role %q is not valid for this record", subject.ID, subject.Role)
+				}
 			default:
 				return nil, fmt.Errorf("subject %q role %q is not valid for this record", subject.ID, subject.Role)
 			}
 		}
 	}
-	if shape == onePrimaryWithSupportingSubjects && primaryCount != 1 {
+	if (shape == onePrimaryWithSupportingSubjects || shape == onePrimaryWithBaseSubjects) && primaryCount != 1 {
 		return nil, fmt.Errorf("record requires exactly one primary subject")
 	}
 	return ids, nil

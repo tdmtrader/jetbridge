@@ -914,12 +914,19 @@ func validateSchemaDocumentRegistration(document SchemaDocument) error {
 	// is one ahead of the newest descriptor for as long as that review lasts — that
 	// is how the six revision-2 documents landed. Anything else is a lost or
 	// skipped revision.
+	if document.Revision < current {
+		return nil
+	}
 	if document.Revision != current && document.Revision != current+1 {
 		return fmt.Errorf(
 			"%s: revision %d is neither the current revision %d of %q nor the next one; revisions are append-only and contiguous",
 			label, document.Revision, current, document.Contract,
 		)
 	}
+	// Superseded documents are retained as frozen bytes for read-time schema
+	// identity. Their wire shapes may intentionally predate newly added fields,
+	// so only the current/staged revision is checked against the current Go
+	// prototype.
 	return document.validateAgainstGoType(label)
 }
 

@@ -34,6 +34,16 @@ type recordFixture struct {
 	validate func(subjects []Subject, body any) error
 }
 
+// The rev3 validation wire projection makes an explicit zero log size
+// distinguishable from an omitted member. Schema fixtures must validate that
+// projection just as the seal/read gate does.
+func validateFixtureDeclared(document SchemaDocument, ref snapshot.TypeRef, subjects []Subject, body any) error {
+	if ref == validationType {
+		return document.validateDecodedRecord(subjects, validationDeclaredBody(body.(ValidationBody), 3))
+	}
+	return document.validateDecodedRecord(subjects, body)
+}
+
 func recordFixtures() []recordFixture {
 	return concatFixtures(
 		reviewFixtures(),
@@ -250,23 +260,43 @@ func validationFixtures() []recordFixture {
 	validate := func(subjects []Subject, body any) error {
 		return body.(ValidationBody).Validate(subjects)
 	}
-	supporting := supportingSubjectSet()
+	supporting := fixtureSubjectSet(
+		fixtureRoleCount{SubjectRolePrimary, 1}, fixtureRoleCount{SubjectRoleBase, 2},
+		fixtureRoleCount{SubjectRoleEvidence, 2}, fixtureRoleCount{SubjectRoleContext, 2}, fixtureRoleCount{SubjectRoleReference, 2},
+	)
 	primaryOnly := fixtureSubjects(SubjectRolePrimary, "primary")
+	attestation := func(subjects []Subject) ValidationAttestation {
+		var primary Subject
+		var bases []ValidationBaseInput
+		for _, subject := range subjects {
+			if subject.Role == SubjectRolePrimary {
+				primary = subject
+			}
+			if subject.Role == SubjectRoleBase {
+				bases = append(bases, ValidationBaseInput{Input: subject.Input, Type: subject.Type, Digest: subject.Digest})
+			}
+		}
+		return ValidationAttestation{CandidateDigest: primary.Digest, BaseInputs: bases, ProfileDigest: fixtureDigest('a'), ProtectedConfigDigest: fixtureDigest('b'), CapabilityImage: "example.invalid/validator@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", CapabilityImageDigest: fixtureDigest('c'), WorkflowDefinitionID: 1, WorkflowVersion: 1, Toolchain: "dev-capability/v1"}
+	}
+	log := func(path string) ValidationLog {
+		return ValidationLog{Path: path, Digest: fixtureDigest('d'), Size: 1, MediaType: "text/plain"}
+	}
 	return []recordFixture{
 		{
 			name: "validation/failed", ref: validationType, subjects: supporting, validate: validate,
 			body: ValidationBody{
-				Conclusion: "failed",
-				Summary:    "One suite fails, one check was skipped.",
+				Conclusion:  "failed",
+				Summary:     "One suite fails, one check was skipped.",
+				Attestation: attestation(supporting),
 				Checks: []ValidationCheck{
 					{
 						ID: "c-1", Kind: "test", Name: "go test ./...", Status: "failed",
 						Attempts: []ValidationAttempt{
-							{Number: 1, Status: "failed", Duration: "1s"},
+							{Number: 1, Status: "failed", Duration: "1s", Log: ValidationLog{Path: "content/logs/c-1-1.log", Digest: fixtureDigest('d'), Size: 0, MediaType: "text/plain"}},
 							{
 								Number: 2, Status: "failed", Duration: "2s",
-								Evidence: []Anchor{fileLinesAnchor("primary-1"), opaqueAnchor("evidence-1"), jsonPointerAnchor("primary-1")},
-								Detail:   "same failure on retry",
+								Log: log("content/logs/c-1-2.log"), Evidence: []Anchor{fileLinesAnchor("primary-1"), opaqueAnchor("evidence-1"), jsonPointerAnchor("primary-1")},
+								Detail: "same failure on retry",
 							},
 						},
 						Detail: "flaky suspected, retried once",
@@ -277,7 +307,7 @@ func validationFixtures() []recordFixture {
 		},
 		{
 			name: "validation/incomplete-with-no-checks", ref: validationType, subjects: primaryOnly, validate: validate,
-			body: ValidationBody{Conclusion: "incomplete", Summary: "Nothing ran."},
+			body: ValidationBody{Conclusion: "incomplete", Summary: "Nothing ran.", Attestation: attestation(primaryOnly)},
 		},
 	}
 }
@@ -389,7 +419,7 @@ func TestEveryFixtureIsAcceptedByBothDescriptions(t *testing.T) {
 			if !found {
 				t.Fatalf("%q has no schema document", fixture.ref)
 			}
-			if err := document.validateDecodedRecord(fixture.subjects, fixture.body); err != nil {
+			if err := validateFixtureDeclared(document, fixture.ref, fixture.subjects, fixture.body); err != nil {
 				t.Errorf("the declared schema rejected a valid instance: %v", err)
 			}
 			if err := fixture.validate(fixture.subjects, fixture.body); err != nil {

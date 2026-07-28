@@ -172,10 +172,14 @@ func TestAStoredDigestResolvesToItsOwnRevisionForEveryRealType(t *testing.T) {
 		t.Run(raw, func(t *testing.T) {
 			ref := mustTypeRef(t, raw)
 			accepted, found := contracts.AcceptedSchemaDigests(ref)
-			if !found || len(accepted) != 2 {
-				t.Fatalf("AcceptedSchemaDigests(%q) = %v, want exactly two revisions after the bump", raw, accepted)
+			wantRevisions := 2
+			if raw == "validation/v1" {
+				wantRevisions = 3
 			}
-			for revision := 1; revision <= 2; revision++ {
+			if !found || len(accepted) != wantRevisions {
+				t.Fatalf("AcceptedSchemaDigests(%q) = %v, want exactly %d revisions", raw, accepted, wantRevisions)
+			}
+			for revision := 1; revision <= wantRevisions; revision++ {
 				digest, found := contracts.SchemaDigestForRevision(ref, revision)
 				if !found {
 					t.Fatalf("SchemaDigestForRevision(%q, %d) not found", raw, revision)

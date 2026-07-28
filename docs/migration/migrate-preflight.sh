@@ -59,7 +59,9 @@ v8.0.1:1765921815
 # multiple teams without authorizing cross-team reads.
 # 1773106140 = removes the retired agent-principal bearer-token authority.
 # Human agent routes use their ordinary team authorization instead.
-JETBRIDGE_VERSION=1773106140
+# 1773106141 freezes authoritative validation provenance; an empty hash records
+# historical absence and is never recomputed from a mutable workflow definition.
+JETBRIDGE_VERSION=1773106141
 
 # Minimum supported source version (v6.x)
 MIN_SUPPORTED_VERSION=1601993582

@@ -35,6 +35,7 @@ var frozenAcceptedSchemaDigests = map[string][]string{
 		"sha256:7c7060b4d663d4546836898640f71bb576749d6aee7fee1df2b5616eea21064e",
 	},
 	"validation/v1": {
+		"sha256:4d03fc7af7796a7add4d72d08a286c64ecfa7e9486fb06f136600aacc3f1b0e7",
 		"sha256:68811d591b6f1f9cac7f2c27f36d96282717298c2420e3e16f521e5cd7351821",
 		"sha256:b5a08c5bf14754800b4bd02eeb7fae8bf3ed1aa08e2f4905d1cfda15a96c0363",
 	},

@@ -1,6 +1,7 @@
 package contracts_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -8,6 +9,8 @@ import (
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/snapshot/contracts"
 )
+
+const emptyLogDigest = "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 func TestValidationRecordPreservesAttemptsAndDerivesConclusion(t *testing.T) {
 	subject := snapshot.SnapshotRef{ID: 61, Type: "repository-change/v1", Digest: recordDigest('c')}
@@ -88,6 +91,27 @@ func validateValidationBody(
 	want string,
 ) {
 	t.Helper()
+	body.Attestation = contracts.ValidationAttestation{
+		CandidateDigest: subject.Digest, BaseInputs: []contracts.ValidationBaseInput{}, ProfileDigest: recordDigest('a'), ProtectedConfigDigest: recordDigest('b'),
+		CapabilityImage:       "example.invalid/validator@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+		CapabilityImageDigest: recordDigest('d'), WorkflowDefinitionID: 1, WorkflowVersion: 1, Toolchain: "dev-capability/v1",
+	}
+	files := map[string][]byte{}
+	for checkIndex := range body.Checks {
+		for attemptIndex := range body.Checks[checkIndex].Attempts {
+			path := fmt.Sprintf("content/logs/check-%d-attempt-%d.log", checkIndex, attemptIndex)
+			body.Checks[checkIndex].Attempts[attemptIndex].Log = contracts.ValidationLog{Path: path, Digest: snapshot.Digest(emptyLogDigest), Size: 0, MediaType: "text/plain"}
+			files[path] = []byte{}
+		}
+	}
+	var err error
+	context, err = snapshot.NewValidationContext(context.Inputs(), nil, snapshot.WithValidationAttestationAuthority(snapshot.ValidationAttestationAuthority{
+		CandidateInput: "change", Candidate: subject, ProfileDigest: body.Attestation.ProfileDigest, ProtectedConfigDigest: body.Attestation.ProtectedConfigDigest,
+		CapabilityImage: body.Attestation.CapabilityImage, CapabilityImageDigest: body.Attestation.CapabilityImageDigest, WorkflowDefinitionID: 1, WorkflowVersion: 1, Toolchain: body.Attestation.Toolchain,
+	}))
+	if err != nil {
+		t.Fatalf("NewValidationContext(): %v", err)
+	}
 	record, err := contracts.NewRecord(
 		mustTypeRef(t, "validation/v1"),
 		[]contracts.Subject{contracts.SubjectFromInput(
@@ -98,9 +122,8 @@ func validateValidationBody(
 	if err != nil {
 		t.Fatalf("NewRecord(): %v", err)
 	}
-	_, err = validateFiles(t, "validation/v1", map[string][]byte{
-		"record.json": marshalRecord(t, record),
-	}, context)
+	files["record.json"] = marshalRecord(t, record)
+	_, err = validateFiles(t, "validation/v1", files, context)
 	if !wantError && err != nil {
 		t.Fatalf("valid validation error = %v", err)
 	}

@@ -168,7 +168,7 @@ func TestGenericCoreValidatorEnforcesTheCoreAndNamesTheFieldPath(t *testing.T) {
 			document := recordSchemaDocuments[fixture.ref]
 			body := deepCopyBody(t, fixture.body)
 			testCase.mutate(body)
-			err := document.validateDecodedRecord(fixture.subjects, body.Interface())
+			err := validateFixtureDeclared(document, fixture.ref, fixture.subjects, body.Interface())
 			if err == nil {
 				t.Fatalf("the declared schema accepted %s", testCase.name)
 			}
@@ -277,7 +277,7 @@ func TestDeclaredIntAndDurationBoundsAreInclusiveAtTheBoundary(t *testing.T) {
 	}
 	body := deepCopyBody(t, duration.body)
 	setLocated(body, "body/checks/*/attempts/*/duration", func(value reflect.Value) { value.SetString("0s") })
-	if err := document.validateDecodedRecord(duration.subjects, body.Interface()); err != nil {
+	if err := validateFixtureDeclared(document, duration.ref, duration.subjects, body.Interface()); err != nil {
 		t.Errorf("a duration exactly at the declared minimum must be accepted; the bound is inclusive: %v", err)
 	}
 	if err := duration.validate(duration.subjects, body.Interface()); err != nil {

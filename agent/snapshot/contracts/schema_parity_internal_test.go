@@ -155,7 +155,7 @@ func assertParity(
 	body any,
 ) {
 	t.Helper()
-	declared := document.validateDecodedRecord(subjects, body)
+	declared := validateFixtureDeclared(document, fixture.ref, subjects, body)
 	semantic := fixture.validate(subjects, body)
 	switch {
 	case declared != nil && semantic == nil:

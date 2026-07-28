@@ -53,14 +53,6 @@ func TestEveryEmbeddedDocumentLoadsForExactlyOneRecordType(t *testing.T) {
 	if len(recordSchemaDocumentRevisions) != len(names) {
 		t.Fatalf("loaded %d schema document revisions from %d embedded files", len(recordSchemaDocumentRevisions), len(names))
 	}
-	// The generic validator resolves a document BY TYPE rather than by the
-	// record's schema revision, which is only sound while each type has exactly
-	// one document. The day a second revision is added, that resolution has to
-	// become revision-aware, and this is the assertion that forces the question.
-	if len(recordSchemaDocuments) != len(recordSchemaDocumentRevisions) {
-		t.Fatalf("%d record types have %d document revisions between them; document resolution is by type and assumes one each",
-			len(recordSchemaDocuments), len(recordSchemaDocumentRevisions))
-	}
 	for ref, document := range recordSchemaDocuments {
 		if !IsRecordType(ref) {
 			t.Errorf("schema document %q names no record type", ref)
@@ -75,6 +67,11 @@ func TestEveryEmbeddedDocumentLoadsForExactlyOneRecordType(t *testing.T) {
 	for ref := range recordSchemaHistories {
 		if _, found := recordSchemaDocuments[ref]; !found {
 			t.Errorf("record type %q has no schema document", ref)
+		}
+	}
+	for key, document := range recordSchemaDocumentRevisions {
+		if key.ref != document.Contract || key.revision != document.Revision {
+			t.Errorf("revision index %q/%d does not match %q/%d", key.ref, key.revision, document.Contract, document.Revision)
 		}
 	}
 }
@@ -307,6 +304,7 @@ func TestSchemaDocumentCanonicalSerializationIsStable(t *testing.T) {
 		"repository-change.v1.rev2.json": "sha256:afdb59e4eb682a09f86fb92165c57d3df215487be5a55e316944eba8bdc1f013",
 		"review.v1.rev2.json":            "sha256:8b460c4d9ea3a6ca6c7d1b8fb1e8dce448df8a2745f3d81a52992cec8e760220",
 		"validation.v1.rev2.json":        "sha256:68811d591b6f1f9cac7f2c27f36d96282717298c2420e3e16f521e5cd7351821",
+		"validation.v1.rev3.json":        "sha256:4d03fc7af7796a7add4d72d08a286c64ecfa7e9486fb06f136600aacc3f1b0e7",
 	}
 	if len(golden) != len(schemaDocumentFileNames(t)) {
 		t.Fatalf("%d pinned digests for %d embedded documents", len(golden), len(schemaDocumentFileNames(t)))

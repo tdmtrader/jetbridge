@@ -120,13 +120,13 @@ var recordSchemaHistories = map[snapshot.TypeRef]recordSchemaHistory{
 	},
 	"validation/v1": {
 		current: recordSchemaRevision{
-			revision:   2,
-			descriptor: mustCanonicalSchemaDescriptorFor("validation/v1", 2),
+			revision:   3,
+			descriptor: mustCanonicalSchemaDescriptorFor("validation/v1", 3),
 		},
-		superseded: []recordSchemaRevision{{
-			revision:   1,
-			descriptor: `{"contract":"validation/v1","envelope":"record/v1","revision":1}`,
-		}},
+		superseded: []recordSchemaRevision{
+			{revision: 2, descriptor: mustCanonicalSchemaDescriptorFor("validation/v1", 2)},
+			{revision: 1, descriptor: `{"contract":"validation/v1","envelope":"record/v1","revision":1}`},
+		},
 	},
 	"repository-change/v1": {
 		current: recordSchemaRevision{

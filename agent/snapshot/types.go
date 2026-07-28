@@ -1046,9 +1046,12 @@ type SealRequest struct {
 	// time, keyed by input port: the materialization mode and the mount path.
 	// It is occurrence data — it never enters the sealed bytes and never enters
 	// ValidationResult.IntrinsicMetadata.
-	InputExposures     map[string]InputExposure `json:"input_exposures,omitempty"`
-	OutputDeclarations []Port                   `json:"output_declarations"`
-	Outputs            []OutputSource           `json:"-"`
+	InputExposures map[string]InputExposure `json:"input_exposures,omitempty"`
+	// ValidationAttestationAuthorities is process-only, server-derived authority
+	// keyed by output port. It is intentionally absent from every wire format.
+	ValidationAttestationAuthorities map[string]ValidationAttestationAuthority `json:"-"`
+	OutputDeclarations               []Port                                    `json:"output_declarations"`
+	Outputs                          []OutputSource                            `json:"-"`
 }
 
 // UploadRequest is the process-local description of one authenticated manual
@@ -1121,6 +1124,24 @@ func (r SealRequest) Validate() error {
 	for _, declaration := range r.OutputDeclarations {
 		declarations[declaration.Name] = declaration
 	}
+	for output, authority := range r.ValidationAttestationAuthorities {
+		if _, found := declarations[output]; !found {
+			return fmt.Errorf("snapshot: validation attestation authority names undeclared output %q", output)
+		}
+		if err := authority.Validate(); err != nil {
+			return fmt.Errorf("snapshot: output %q validation attestation authority: %w", output, err)
+		}
+		candidate, found := r.Inputs[authority.CandidateInput]
+		if !found || candidate != authority.Candidate {
+			return fmt.Errorf("snapshot: output %q validation attestation candidate is not an exact exposed input", output)
+		}
+		for _, base := range authority.BaseInputs {
+			exposed, found := r.Inputs[base.Input]
+			if !found || exposed != base.Ref {
+				return fmt.Errorf("snapshot: output %q validation attestation base input %q is not an exact exposed input", output, base.Input)
+			}
+		}
+	}
 	produced := make(map[string]struct{}, len(r.Outputs))
 	clientKeys := make(map[string]struct{}, len(r.Outputs))
 	workflowPorts := make(map[string]struct{}, len(r.Outputs))
@@ -1191,6 +1212,13 @@ func (r SealRequest) Clone() SealRequest {
 	r.InputOrder = append([]string(nil), r.InputOrder...)
 	r.Inputs = cloneSnapshotRefs(r.Inputs)
 	r.InputExposures = cloneInputExposures(r.InputExposures)
+	if r.ValidationAttestationAuthorities != nil {
+		authorities := make(map[string]ValidationAttestationAuthority, len(r.ValidationAttestationAuthorities))
+		for output, authority := range r.ValidationAttestationAuthorities {
+			authorities[output] = cloneValidationAttestationAuthority(authority)
+		}
+		r.ValidationAttestationAuthorities = authorities
+	}
 	r.OutputDeclarations = append([]Port(nil), r.OutputDeclarations...)
 	if r.Outputs != nil {
 		outputs := make([]OutputSource, len(r.Outputs))

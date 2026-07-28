@@ -1,0 +1,29 @@
+{
+  "dialect":"record-schema-dialect/1", "contract":"validation/v1", "envelope":"record/v1", "revision":3, "supersedes":2,
+  "description":"Server-attested validation over one candidate and canonical immutable base inputs, with complete verified logs.",
+  "subject_shape":{"minimum":1,"maximum":null,"roles":{"primary":{"minimum":1,"maximum":1},"base":{"minimum":0,"maximum":null},"evidence":{"minimum":0,"maximum":null},"context":{"minimum":0,"maximum":null},"reference":{"minimum":0,"maximum":null}},"subject_type":null,"uniform_subject_type":false,"ports":"any-exposed-input"},
+  "fields":{
+    "body":{"kind":"object","presence":"required"},
+    "body/conclusion":{"kind":"enum","presence":"required","values":[{"value":"passed"},{"value":"failed"},{"value":"error"},{"value":"incomplete"}]},
+    "body/summary":{"kind":"markdown","presence":"required"},
+    "body/attestation":{"kind":"object","presence":"required"},
+    "body/attestation/candidate_digest":{"kind":"identifier","presence":"required"},
+    "body/attestation/base_inputs":{"kind":"array","presence":"optional","element":"object"},
+    "body/attestation/base_inputs/*/input":{"kind":"string","presence":"required"},
+    "body/attestation/base_inputs/*/type":{"kind":"string","presence":"required"},
+    "body/attestation/base_inputs/*/digest":{"kind":"identifier","presence":"required"},
+    "body/attestation/profile_digest":{"kind":"identifier","presence":"required"},
+    "body/attestation/protected_config_digest":{"kind":"identifier","presence":"required"},
+    "body/attestation/capability_image":{"kind":"string","presence":"required"},
+    "body/attestation/capability_image_digest":{"kind":"identifier","presence":"required"},
+    "body/attestation/workflow_definition_id":{"kind":"int","presence":"required","absent_image":"zero","minimum":1},
+    "body/attestation/workflow_version":{"kind":"int","presence":"required","absent_image":"zero","minimum":1},
+    "body/attestation/toolchain":{"kind":"string","presence":"required"},
+    "body/checks":{"kind":"entity-set","presence":"optional","id_field":"id"},
+    "body/checks/*/id":{"kind":"identifier","presence":"required"}, "body/checks/*/kind":{"kind":"enum","presence":"required","values":[{"value":"build"},{"value":"test"},{"value":"lint"},{"value":"security"},{"value":"policy"},{"value":"custom"}]},
+    "body/checks/*/name":{"kind":"string","presence":"required"}, "body/checks/*/status":{"kind":"enum","presence":"required","values":[{"value":"passed"},{"value":"failed"},{"value":"error"},{"value":"skipped"}]},
+    "body/checks/*/attempts":{"kind":"array","presence":"optional","element":"object"}, "body/checks/*/attempts/*/number":{"kind":"int","presence":"required","absent_image":"zero","minimum":1}, "body/checks/*/attempts/*/status":{"kind":"enum","presence":"required","values":[{"value":"passed"},{"value":"failed"},{"value":"error"}]}, "body/checks/*/attempts/*/duration":{"kind":"duration","presence":"required","minimum":"0s"},
+    "body/checks/*/attempts/*/log":{"kind":"object","presence":"required"}, "body/checks/*/attempts/*/log/path":{"kind":"string","presence":"required"}, "body/checks/*/attempts/*/log/digest":{"kind":"identifier","presence":"required"}, "body/checks/*/attempts/*/log/size":{"kind":"int","presence":"required","absent_image":"null","minimum":0}, "body/checks/*/attempts/*/log/media_type":{"kind":"string","presence":"required"},
+    "body/checks/*/attempts/*/evidence":{"kind":"array","presence":"optional","element":"anchor"}, "body/checks/*/attempts/*/detail":{"kind":"markdown","presence":"optional"}, "body/checks/*/detail":{"kind":"markdown","presence":"optional"}
+  }, "go_only_rules":[]
+}

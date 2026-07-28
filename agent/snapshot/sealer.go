@@ -127,9 +127,14 @@ func (sealer *BatchSealer) Seal(ctx context.Context, request SealRequest) (resul
 		return map[string]SealedOutput{}, nil
 	}
 
-	validationContext, err := NewValidationContext(request.Inputs, sealer.inputOpener(request.TeamID))
-	if err != nil {
-		return nil, err
+	// Validate every server-owned authority before opening a producer stream. A
+	// malformed authority must never permit archive capture, staging, or metadata
+	// effects. Per-output contexts below ensure no authority can bleed across
+	// sibling outputs.
+	for output := range request.ValidationAttestationAuthorities {
+		if _, err := sealer.validationContext(request, output); err != nil {
+			return nil, err
+		}
 	}
 	sourcesByPort := make(map[string]OutputSource, len(request.Outputs))
 	for _, source := range request.Outputs {
@@ -186,6 +191,11 @@ func (sealer *BatchSealer) Seal(ctx context.Context, request SealRequest) (resul
 			err = root.Close()
 			return nil, errors.Join(fmt.Errorf("snapshot: resolve output %q validator returned nil", source.ClientKey), err)
 		}
+		validationContext, contextErr := sealer.validationContext(request, source.Port.Name)
+		if contextErr != nil {
+			err = root.Close()
+			return nil, errors.Join(fmt.Errorf("snapshot: build validation context for output %q: %w", source.ClientKey, contextErr), err)
+		}
 		// The sealer is the seal-time gate by definition: this tree is what the
 		// step just wrote and nothing about it has been certified yet.
 		validation, validationErr := validator.AdmitForSeal(ctx, root, validationContext)
@@ -218,6 +228,14 @@ func (sealer *BatchSealer) Seal(ctx context.Context, request SealRequest) (resul
 		return nil, err
 	}
 	return sealer.commitCaptured(ctx, commitContext, captured)
+}
+
+func (sealer *BatchSealer) validationContext(request SealRequest, output string) (ValidationContext, error) {
+	options := make([]ValidationContextOption, 0, 1)
+	if authority, found := request.ValidationAttestationAuthorities[output]; found {
+		options = append(options, WithValidationAttestationAuthority(authority))
+	}
+	return NewValidationContext(request.Inputs, sealer.inputOpener(request.TeamID), options...)
 }
 
 // Upload captures and validates one raw tar before sharing the same durable
