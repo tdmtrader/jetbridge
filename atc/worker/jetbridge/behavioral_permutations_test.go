@@ -14,7 +14,9 @@ import (
 	"github.com/concourse/concourse/atc/runtime"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	kruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
+	ktesting "k8s.io/client-go/testing"
 )
 
 // ---------------------------------------------------------------------------
@@ -166,6 +168,11 @@ func TestPrivateFileMountSecretIsTaskScopedAndCleaned(t *testing.T) {
 		}},
 	}
 	c := makeContainer("private-files-cleanup", taskMetadata(), spec, permEmptyDirConfig(), nil, false)
+	c.clientset.(*fake.Clientset).PrependReactor("create", "pods", func(action ktesting.Action) (bool, kruntime.Object, error) {
+		pod := action.(ktesting.CreateAction).GetObject().(*corev1.Pod)
+		pod.UID = "private-files-cleanup-uid"
+		return false, nil, nil
+	})
 	pod, err := c.createPod(context.Background(), runtime.ProcessSpec{Path: "/bin/sh"})
 	if err != nil {
 		t.Fatal(err)
@@ -191,7 +198,14 @@ func TestPrivateFileMountSecretIsTaskScopedAndCleaned(t *testing.T) {
 	if err != nil || len(secrets.Items) != 1 || secrets.Items[0].Name != secretName {
 		t.Fatalf("attach created or lost private authority secret: %#v, %v", secrets.Items, err)
 	}
-	c.deletePrivateMountSecrets(context.Background())
+	// Completion only requests Pod deletion. The authority Secret remains
+	// available until Kubernetes confirms the Pod is absent, at which point
+	// owner-reference GC (or this explicit reaper-equivalent backstop) may
+	// remove it.
+	if err := c.clientset.CoreV1().Pods("test-ns").Delete(context.Background(), pod.Name, metav1.DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	c.deleteOwnerBoundPrivateMountSecrets(context.Background(), pod)
 	if _, err := c.clientset.CoreV1().Secrets("test-ns").Get(context.Background(), secretName, metav1.GetOptions{}); err == nil {
 		t.Fatal("private Secret leaked after task cleanup")
 	}

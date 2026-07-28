@@ -163,8 +163,12 @@ func (r *Reaper) Run(ctx context.Context) error {
 			logger.Error("failed-to-delete-pod", err, lager.Data{"handle": handle, "pod": podName})
 			return fmt.Errorf("deleting pod %s: %w", podName, err)
 		}
-		r.deletePrivateMountSecrets(ctx, handle)
 	}
+
+	// Owner-reference garbage collection is the normal path. This scan is only
+	// a backstop for clusters that delay it: it refuses to touch a Secret until
+	// the Pod identity recorded in both the label and owner reference is absent.
+	r.reapOrphanPrivateMountSecrets(ctx)
 
 	// Clean up artifact store entries for destroyed containers.
 	r.cleanupArtifactStoreEntries(ctx, logger, destroying)
@@ -172,20 +176,44 @@ func (r *Reaper) Run(ctx context.Context) error {
 	return nil
 }
 
-// deletePrivateMountSecrets is a backstop for Kubernetes garbage collection.
-// Normal task completion deletes the task-scoped Secret directly; this covers
-// crash recovery and clusters whose owner-reference GC is delayed.
-func (r *Reaper) deletePrivateMountSecrets(ctx context.Context, handle string) {
+// reapOrphanPrivateMountSecrets removes only immutable private-mount Secrets
+// whose exact owning Pod is confirmed absent. In particular, it never treats a
+// successful Pod Delete request as completion: a terminating Pod may still be
+// using the mounted Secret.
+func (r *Reaper) reapOrphanPrivateMountSecrets(ctx context.Context) {
 	secrets, err := r.clientset.CoreV1().Secrets(r.cfg.Namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: fmt.Sprintf("%s=%s", privateMountSecretLabelKey, handle),
+		LabelSelector: privateMountSecretLabelKey,
 	})
 	if err != nil {
-		r.logger.Error("failed-to-list-private-task-mounts", err, lager.Data{"handle": handle})
+		r.logger.Error("failed-to-list-private-task-mounts", err)
 		return
 	}
 	for _, secret := range secrets.Items {
+		if secret.Immutable == nil || !*secret.Immutable || len(secret.OwnerReferences) != 1 {
+			continue
+		}
+		owner := secret.OwnerReferences[0]
+		handle := secret.Labels[privateMountSecretLabelKey]
+		if handle == "" || owner.APIVersion != "v1" || owner.Kind != "Pod" || owner.Name == "" || owner.UID == "" ||
+			owner.Controller == nil || !*owner.Controller || secret.Labels[privateMountPodUIDLabelKey] != string(owner.UID) {
+			continue
+		}
+		pod, err := r.clientset.CoreV1().Pods(r.cfg.Namespace).Get(ctx, owner.Name, metav1.GetOptions{})
+		if err == nil {
+			// A name may have been reused. Keep the Secret unless the live Pod
+			// proves it is the exact trusted owner; an identity mismatch is
+			// fail-closed rather than an excuse to delete it.
+			if pod.UID != owner.UID || pod.Labels[handleLabelKey] != handle {
+				continue
+			}
+			continue
+		}
+		if !apierrors.IsNotFound(err) {
+			r.logger.Error("failed-to-confirm-private-task-pod", err, lager.Data{"secret": secret.Name, "pod": owner.Name})
+			continue
+		}
 		if err := r.clientset.CoreV1().Secrets(r.cfg.Namespace).Delete(ctx, secret.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
-			r.logger.Error("failed-to-delete-private-task-mount", err, lager.Data{"handle": handle, "secret": secret.Name})
+			r.logger.Error("failed-to-delete-orphaned-private-task-mount", err, lager.Data{"secret": secret.Name, "pod": owner.Name})
 		}
 	}
 }

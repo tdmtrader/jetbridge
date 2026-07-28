@@ -12,7 +12,10 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
+	ktesting "k8s.io/client-go/testing"
 )
 
 var _ = Describe("Reaper", func() {
@@ -48,6 +51,26 @@ var _ = Describe("Reaper", func() {
 			Status: corev1.PodStatus{Phase: corev1.PodRunning},
 		}
 		_, err := fakeClientset.CoreV1().Pods("test-namespace").Create(ctx, pod, metav1.CreateOptions{})
+		Expect(err).ToNot(HaveOccurred())
+	}
+
+	createPrivateMountSecret := func(name, handle, podName string, uid types.UID) {
+		controller := true
+		immutable := true
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: "test-namespace",
+				Labels: map[string]string{
+					"concourse.ci/private-mount-for":     handle,
+					"concourse.ci/private-mount-pod-uid": string(uid),
+				},
+				OwnerReferences: []metav1.OwnerReference{{APIVersion: "v1", Kind: "Pod", Name: podName, UID: uid, Controller: &controller}},
+			},
+			Immutable: &immutable,
+			Data:      map[string][]byte{"profile.yml": []byte("trusted")},
+		}
+		_, err := fakeClientset.CoreV1().Secrets("test-namespace").Create(ctx, secret, metav1.CreateOptions{})
 		Expect(err).ToNot(HaveOccurred())
 	}
 
@@ -145,6 +168,58 @@ var _ = Describe("Reaper", func() {
 			pods, err := fakeClientset.CoreV1().Pods("test-namespace").List(ctx, metav1.ListOptions{})
 			Expect(err).ToNot(HaveOccurred())
 			Expect(pods.Items).To(HaveLen(1))
+		})
+	})
+
+	Describe("private authority Secret lifecycle", func() {
+		It("does not remove an owner-bound Secret when pod deletion fails", func() {
+			const handle = "private-handle"
+			const podName = "private-pod"
+			uid := types.UID("private-pod-uid")
+			createLabelledPod(podName)
+			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, podName, metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			pod.UID = uid
+			_, err = fakeClientset.CoreV1().Pods("test-namespace").Update(ctx, pod, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			createPrivateMountSecret("private-secret", handle, podName, uid)
+			fakeContainerRepository.FindDestroyingContainersReturns([]string{podName}, nil)
+			fakeClientset.PrependReactor("delete", "pods", func(ktesting.Action) (bool, runtime.Object, error) {
+				return true, nil, fmt.Errorf("pod delete failed")
+			})
+
+			err = reaper.Run(ctx)
+			Expect(err).To(HaveOccurred())
+			_, err = fakeClientset.CoreV1().Secrets("test-namespace").Get(ctx, "private-secret", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("keeps a Secret while its exact owner Pod still exists", func() {
+			const handle = "private-handle"
+			const podName = "private-pod"
+			uid := types.UID("private-pod-uid")
+			createLabelledPod(podName)
+			pod, err := fakeClientset.CoreV1().Pods("test-namespace").Get(ctx, podName, metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			pod.UID = uid
+			pod.Labels["concourse.ci/handle"] = handle
+			_, err = fakeClientset.CoreV1().Pods("test-namespace").Update(ctx, pod, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			createPrivateMountSecret("private-secret", handle, podName, uid)
+
+			err = reaper.Run(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			_, err = fakeClientset.CoreV1().Secrets("test-namespace").Get(ctx, "private-secret", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("removes only an exact owner-bound orphan after Pod absence is confirmed", func() {
+			createPrivateMountSecret("private-secret", "private-handle", "gone-pod", types.UID("gone-uid"))
+
+			err := reaper.Run(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			_, err = fakeClientset.CoreV1().Secrets("test-namespace").Get(ctx, "private-secret", metav1.GetOptions{})
+			Expect(err).To(HaveOccurred())
 		})
 	})
 

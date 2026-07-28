@@ -104,9 +104,6 @@ func (p *Process) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 		); err != nil {
 			logger.Error("failed-to-cleanup-pod-on-cancel", err)
 		}
-		if p.container != nil {
-			p.container.deletePrivateMountSecrets(cleanupCtx)
-		}
 		spanErr = ctx.Err()
 		return runtime.ProcessResult{}, ctx.Err()
 
@@ -135,9 +132,6 @@ func (p *Process) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 				cleanupCtx, p.podName, metav1.DeleteOptions{},
 			); delErr != nil {
 				logger.Error("failed-to-cleanup-pod", delErr)
-			}
-			if p.container != nil {
-				p.container.deletePrivateMountSecrets(cleanupCtx)
 			}
 		}
 

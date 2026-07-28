@@ -2,6 +2,7 @@ package jetbridge
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -36,6 +37,9 @@ const (
 	exitStatusAnnotationKey     = "concourse.ci/exit-status"
 	resourceResultAnnotationKey = "concourse.ci/resource-result"
 	privateMountSecretLabelKey  = "concourse.ci/private-mount-for"
+	privateMountPodUIDLabelKey  = "concourse.ci/private-mount-pod-uid"
+	privateMountRoot            = "/run/concourse"
+	maxPrivateMountSecretBytes  = 1 << 20
 )
 
 // persistableAnnotations maps container property keys to pod annotation keys
@@ -70,6 +74,11 @@ type Container struct {
 	// in the DB (crash-recovery path). In DaemonSet mode this means the
 	// hostPath directory may contain stale data and needs cleanup.
 	reused bool
+	// privateMountSecretNames are allocated afresh for each new Pod. They are
+	// deliberately retained only long enough to put the exact names in that
+	// Pod's spec and create owner-bound Secrets after the API assigns its UID.
+	privateMountSecretNames   []string
+	privateMountNameGenerator func() (string, error)
 }
 
 func newContainer(
@@ -385,22 +394,22 @@ func (c *Container) DBContainer() db.CreatedContainer {
 }
 
 func (c *Container) createPod(ctx context.Context, processSpec runtime.ProcessSpec) (*corev1.Pod, error) {
-	if err := c.ensurePrivateMountSecrets(ctx); err != nil {
+	if err := c.allocatePrivateMountSecretNames(processSpec.Dir); err != nil {
 		return nil, err
 	}
 	pod, err := c.buildPod(processSpec, []string{processSpec.Path}, processSpec.Args)
 	if err != nil {
-		c.deletePrivateMountSecrets(ctx)
 		return nil, err
 	}
 	created, err := c.clientset.CoreV1().Pods(c.config.Namespace).Create(ctx, pod, metav1.CreateOptions{})
 	if err != nil {
-		c.deletePrivateMountSecrets(ctx)
 		return nil, err
 	}
-	if err := c.adoptPrivateMountSecrets(ctx, created); err != nil {
-		_ = c.clientset.CoreV1().Pods(c.config.Namespace).Delete(ctx, created.Name, metav1.DeleteOptions{})
-		c.deletePrivateMountSecrets(ctx)
+	if err := c.createPrivateMountSecrets(ctx, created); err != nil {
+		cleanupErr := c.deletePrivateMountPodAfterSecretFailure(ctx, created)
+		if cleanupErr != nil {
+			return nil, fmt.Errorf("create private task mount: %w (pod cleanup: %v)", err, cleanupErr)
+		}
 		return nil, err
 	}
 	return created, nil
@@ -417,22 +426,22 @@ const pauseCommand = "trap 'exit 0' TERM; while :; do sleep 86400 & wait $!; don
 // Process.Wait can exec the real command via the PodExecutor with full
 // stdin/stdout/stderr support.
 func (c *Container) createPausePod(ctx context.Context, processSpec runtime.ProcessSpec) (*corev1.Pod, error) {
-	if err := c.ensurePrivateMountSecrets(ctx); err != nil {
+	if err := c.allocatePrivateMountSecretNames(processSpec.Dir); err != nil {
 		return nil, err
 	}
 	pod, err := c.buildPod(processSpec, []string{"sh", "-c", pauseCommand}, nil)
 	if err != nil {
-		c.deletePrivateMountSecrets(ctx)
 		return nil, err
 	}
 	created, err := c.clientset.CoreV1().Pods(c.config.Namespace).Create(ctx, pod, metav1.CreateOptions{})
 	if err != nil {
-		c.deletePrivateMountSecrets(ctx)
 		return nil, err
 	}
-	if err := c.adoptPrivateMountSecrets(ctx, created); err != nil {
-		_ = c.clientset.CoreV1().Pods(c.config.Namespace).Delete(ctx, created.Name, metav1.DeleteOptions{})
-		c.deletePrivateMountSecrets(ctx)
+	if err := c.createPrivateMountSecrets(ctx, created); err != nil {
+		cleanupErr := c.deletePrivateMountPodAfterSecretFailure(ctx, created)
+		if cleanupErr != nil {
+			return nil, fmt.Errorf("create private task mount: %w (pod cleanup: %v)", err, cleanupErr)
+		}
 		return nil, err
 	}
 	return created, nil
@@ -442,6 +451,9 @@ func (c *Container) createPausePod(ctx context.Context, processSpec runtime.Proc
 // fields (image, env, volumes, security, etc.) are derived from the
 // Container's spec and config.
 func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, args []string) (*corev1.Pod, error) {
+	if err := c.ensurePrivateMountSecretNames(processSpec.Dir); err != nil {
+		return nil, err
+	}
 	image := resolveImage(c.containerSpec.ImageSpec, c.config.ResourceTypeImages)
 	if image == "" {
 		typeName := c.containerSpec.ImageSpec.ResourceType
@@ -528,6 +540,9 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 	}
 	for index, mount := range c.containerSpec.PrivateFileMounts {
 		name := c.privateMountSecretName(index)
+		if name == "" {
+			return nil, fmt.Errorf("private task mount has no allocated Secret name")
+		}
 		mode := int32(0440)
 		volumes = append(volumes, corev1.Volume{
 			Name: name,
@@ -650,71 +665,210 @@ func (c *Container) nonPrivateInputMounts(mounts []corev1.VolumeMount) []corev1.
 }
 
 func (c *Container) privateMountSecretName(index int) string {
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d", c.handle, index)))
-	return fmt.Sprintf("concourse-private-%s", hex.EncodeToString(sum[:])[:20])
+	if index < 0 || index >= len(c.privateMountSecretNames) {
+		return ""
+	}
+	return c.privateMountSecretNames[index]
 }
 
-func (c *Container) ensurePrivateMountSecrets(ctx context.Context) error {
+// allocatePrivateMountSecretNames starts a new private-mount epoch for a new
+// Pod. Names are random rather than handle-derived so a concurrent caller can
+// never predict, substitute, or reuse a prior task's authority Secret.
+func (c *Container) allocatePrivateMountSecretNames(processDir string) error {
+	if err := c.validatePrivateFileMounts(processDir); err != nil {
+		return err
+	}
+	names := make([]string, len(c.containerSpec.PrivateFileMounts))
+	seen := make(map[string]struct{}, len(names))
+	for i := range names {
+		name, err := c.nextPrivateMountSecretName()
+		if err != nil {
+			return fmt.Errorf("allocate private task mount name: %w", err)
+		}
+		if _, found := seen[name]; found {
+			return fmt.Errorf("duplicate private task mount name")
+		}
+		seen[name] = struct{}{}
+		names[i] = name
+	}
+	c.privateMountSecretNames = names
+	return nil
+}
+
+func (c *Container) ensurePrivateMountSecretNames(processDir string) error {
+	if len(c.privateMountSecretNames) == len(c.containerSpec.PrivateFileMounts) {
+		return c.validatePrivateFileMounts(processDir)
+	}
+	return c.allocatePrivateMountSecretNames(processDir)
+}
+
+func (c *Container) nextPrivateMountSecretName() (string, error) {
+	if c.privateMountNameGenerator != nil {
+		return c.privateMountNameGenerator()
+	}
+	bytes := make([]byte, 16)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", err
+	}
+	// The fixed prefix plus lowercase hex stays comfortably below the DNS-1123
+	// label limit and starts/ends with an alphanumeric character.
+	return "concourse-private-" + hex.EncodeToString(bytes), nil
+}
+
+func (c *Container) createPrivateMountSecrets(ctx context.Context, pod *corev1.Pod) error {
+	if len(c.containerSpec.PrivateFileMounts) == 0 {
+		return nil
+	}
+	if pod.UID == "" {
+		return fmt.Errorf("created task pod has no UID")
+	}
+	controller := true
+	immutable := true
+	for index, mount := range c.containerSpec.PrivateFileMounts {
+		name := c.privateMountSecretName(index)
+		if name == "" {
+			return fmt.Errorf("private task mount has no allocated Secret name")
+		}
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: c.config.Namespace,
+				Labels: map[string]string{
+					privateMountSecretLabelKey: c.handle,
+					privateMountPodUIDLabelKey: string(pod.UID),
+				},
+				OwnerReferences: []metav1.OwnerReference{{
+					APIVersion: "v1", Kind: "Pod", Name: pod.Name, UID: pod.UID, Controller: &controller,
+				}},
+			},
+			Type:      corev1.SecretTypeOpaque,
+			Immutable: &immutable,
+			Data:      mount.Files,
+		}
+		// Create is intentionally the only operation. AlreadyExists is an
+		// authority-substitution attempt (or a vanishingly unlikely collision),
+		// never a reason to read, update, or adopt someone else's Secret.
+		if _, err := c.clientset.CoreV1().Secrets(c.config.Namespace).Create(ctx, secret, metav1.CreateOptions{}); err != nil {
+			return fmt.Errorf("create private task mount %q: %w", name, err)
+		}
+	}
+	return nil
+}
+
+// deletePrivateMountPodAfterSecretFailure requests Pod deletion after a
+// partial Secret creation failure. It removes owner-bound Secrets only once
+// the API confirms the Pod is absent; a successful Delete request alone does
+// not prove that kubelet has stopped using the mounted data.
+func (c *Container) deletePrivateMountPodAfterSecretFailure(ctx context.Context, pod *corev1.Pod) error {
+	if err := c.clientset.CoreV1().Pods(c.config.Namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("delete pod after private task mount failure: %w", err)
+	}
+	_, err := c.clientset.CoreV1().Pods(c.config.Namespace).Get(ctx, pod.Name, metav1.GetOptions{})
+	if err == nil {
+		return nil
+	}
+	if !apierrors.IsNotFound(err) {
+		return fmt.Errorf("confirm pod deletion after private task mount failure: %w", err)
+	}
+	c.deleteOwnerBoundPrivateMountSecrets(ctx, pod)
+	return nil
+}
+
+func (c *Container) deleteOwnerBoundPrivateMountSecrets(ctx context.Context, pod *corev1.Pod) {
+	for index := range c.containerSpec.PrivateFileMounts {
+		name := c.privateMountSecretName(index)
+		secret, err := c.clientset.CoreV1().Secrets(c.config.Namespace).Get(ctx, name, metav1.GetOptions{})
+		if err != nil || !privateMountSecretOwnedBy(secret, c.handle, pod) {
+			continue
+		}
+		_ = c.clientset.CoreV1().Secrets(c.config.Namespace).Delete(ctx, name, metav1.DeleteOptions{})
+	}
+}
+
+func (c *Container) validatePrivateFileMounts(processDir string) error {
+	if len(c.containerSpec.PrivateFileMounts) == 0 {
+		return nil
+	}
+	_, volumeMounts := c.buildVolumeMounts()
+	occupied := make([]string, 0, len(volumeMounts)+len(c.containerSpec.SecretMounts)+1)
+	for _, mount := range volumeMounts {
+		occupied = append(occupied, resolvePrivateMountPath(mount.MountPath, c.containerSpec.Dir))
+	}
+	for _, mount := range c.containerSpec.SecretMounts {
+		occupied = append(occupied, resolvePrivateMountPath(mount.MountPath, c.containerSpec.Dir))
+	}
+	if processDir != "" {
+		occupied = append(occupied, resolvePrivateMountPath(processDir, c.containerSpec.Dir))
+	}
+
+	privatePaths := make([]string, len(c.containerSpec.PrivateFileMounts))
 	for index, mount := range c.containerSpec.PrivateFileMounts {
 		if err := validatePrivateFileMount(mount); err != nil {
 			return err
 		}
-		secret := &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: c.privateMountSecretName(index), Namespace: c.config.Namespace, Labels: map[string]string{privateMountSecretLabelKey: c.handle}},
-			Type:       corev1.SecretTypeOpaque,
-			Data:       mount.Files,
-		}
-		secrets := c.clientset.CoreV1().Secrets(c.config.Namespace)
-		if _, err := secrets.Create(ctx, secret, metav1.CreateOptions{}); err != nil {
-			if !apierrors.IsAlreadyExists(err) {
-				return fmt.Errorf("create private task mount: %w", err)
-			}
-			current, getErr := secrets.Get(ctx, secret.Name, metav1.GetOptions{})
-			if getErr != nil {
-				return fmt.Errorf("get existing private task mount: %w", getErr)
-			}
-			current.Data = secret.Data
-			current.Labels = secret.Labels
-			current.OwnerReferences = nil
-			if _, updateErr := secrets.Update(ctx, current, metav1.UpdateOptions{}); updateErr != nil {
-				return fmt.Errorf("replace private task mount: %w", updateErr)
+		path := mount.MountPath
+		for _, other := range occupied {
+			if pathsOverlap(path, other) {
+				return fmt.Errorf("private task mount %q overlaps mounted path %q", path, other)
 			}
 		}
+		for prior := 0; prior < index; prior++ {
+			if pathsOverlap(path, privatePaths[prior]) {
+				return fmt.Errorf("private task mount %q overlaps private mount %q", path, privatePaths[prior])
+			}
+		}
+		privatePaths[index] = path
 	}
 	return nil
 }
 
 func validatePrivateFileMount(mount runtime.PrivateFileMount) error {
-	if !filepath.IsAbs(mount.MountPath) || len(mount.Files) == 0 {
-		return fmt.Errorf("invalid private task mount")
+	if !filepath.IsAbs(mount.MountPath) || filepath.Clean(mount.MountPath) != mount.MountPath ||
+		mount.MountPath == "/" || mount.MountPath == privateMountRoot ||
+		!strings.HasPrefix(mount.MountPath, privateMountRoot+"/") || len(mount.Files) == 0 {
+		return fmt.Errorf("invalid private task mount %q", mount.MountPath)
 	}
+	total := 0
 	for name, data := range mount.Files {
-		if name == "" || filepath.Base(name) != name || len(data) == 0 {
+		if name == "" || name == "." || name == ".." || filepath.Base(name) != name ||
+			strings.ContainsAny(name, "/\\\x00") || len(name) > 253 || len(data) == 0 {
 			return fmt.Errorf("invalid private task mount file %q", name)
 		}
-	}
-	return nil
-}
-
-func (c *Container) adoptPrivateMountSecrets(ctx context.Context, pod *corev1.Pod) error {
-	for index := range c.containerSpec.PrivateFileMounts {
-		secret, err := c.clientset.CoreV1().Secrets(c.config.Namespace).Get(ctx, c.privateMountSecretName(index), metav1.GetOptions{})
-		if err != nil {
-			return fmt.Errorf("get private task mount for ownership: %w", err)
-		}
-		controller := true
-		secret.OwnerReferences = []metav1.OwnerReference{{APIVersion: "v1", Kind: "Pod", Name: pod.Name, UID: pod.UID, Controller: &controller}}
-		if _, err := c.clientset.CoreV1().Secrets(c.config.Namespace).Update(ctx, secret, metav1.UpdateOptions{}); err != nil {
-			return fmt.Errorf("adopt private task mount: %w", err)
+		total += len(data)
+		if total > maxPrivateMountSecretBytes {
+			return fmt.Errorf("private task mount exceeds Kubernetes Secret size limit")
 		}
 	}
 	return nil
 }
 
-func (c *Container) deletePrivateMountSecrets(ctx context.Context) {
-	for index := range c.containerSpec.PrivateFileMounts {
-		_ = c.clientset.CoreV1().Secrets(c.config.Namespace).Delete(ctx, c.privateMountSecretName(index), metav1.DeleteOptions{})
+func resolvePrivateMountPath(path, dir string) string {
+	if path == "" {
+		return ""
 	}
+	if !filepath.IsAbs(path) && dir != "" {
+		path = filepath.Join(dir, path)
+	}
+	return filepath.Clean(path)
+}
+
+func pathsOverlap(left, right string) bool {
+	if left == "" || right == "" {
+		return false
+	}
+	left, right = filepath.Clean(left), filepath.Clean(right)
+	return left == right || strings.HasPrefix(left, right+"/") || strings.HasPrefix(right, left+"/")
+}
+
+func privateMountSecretOwnedBy(secret *corev1.Secret, handle string, pod *corev1.Pod) bool {
+	if secret == nil || pod == nil || pod.UID == "" ||
+		secret.Labels[privateMountSecretLabelKey] != handle ||
+		secret.Labels[privateMountPodUIDLabelKey] != string(pod.UID) || len(secret.OwnerReferences) != 1 {
+		return false
+	}
+	owner := secret.OwnerReferences[0]
+	return owner.APIVersion == "v1" && owner.Kind == "Pod" && owner.Name == pod.Name && owner.UID == pod.UID &&
+		owner.Controller != nil && *owner.Controller
 }
 
 // buildCleanupInitContainer creates an init container that removes stale data
