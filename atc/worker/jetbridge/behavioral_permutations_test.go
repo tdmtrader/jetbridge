@@ -158,13 +158,14 @@ func TestPrivateFileMountIsAbsentFromEveryInitAndSidecar(t *testing.T) {
 }
 
 func TestPrivateFileMountSecretIsTaskScopedAndCleaned(t *testing.T) {
-	c := makeContainer("private-files-cleanup", taskMetadata(), runtime.ContainerSpec{
+	spec := runtime.ContainerSpec{
 		ImageSpec: runtime.ImageSpec{ImageURL: "busybox:latest"},
 		PrivateFileMounts: []runtime.PrivateFileMount{{
 			MountPath: "/run/concourse/dev-validation",
 			Files:     map[string][]byte{"profile.yml": []byte("trusted")},
 		}},
-	}, permEmptyDirConfig(), nil, false)
+	}
+	c := makeContainer("private-files-cleanup", taskMetadata(), spec, permEmptyDirConfig(), nil, false)
 	pod, err := c.createPod(context.Background(), runtime.ProcessSpec{Path: "/bin/sh"})
 	if err != nil {
 		t.Fatal(err)
@@ -179,6 +180,16 @@ func TestPrivateFileMountSecretIsTaskScopedAndCleaned(t *testing.T) {
 	}
 	if string(secret.Data["profile.yml"]) != "trusted" || len(secret.OwnerReferences) != 1 || secret.OwnerReferences[0].Name != pod.Name {
 		t.Fatal("private Secret is not scoped to the created task pod")
+	}
+	// A resumed task attaches to the already-created Pod. It must use the
+	// same Secret and never allocate a replacement volume/Secret per retry.
+	reloaded := newContainer(c.handle, taskMetadata(), spec, nil, c.clientset, c.config, c.workerName, nil, nil, c.storageBackend, true)
+	if _, err := reloaded.Attach(context.Background(), "task", runtime.ProcessIO{}); err != nil {
+		t.Fatalf("reloaded task did not attach to its existing pod: %v", err)
+	}
+	secrets, err := c.clientset.CoreV1().Secrets("test-ns").List(context.Background(), metav1.ListOptions{})
+	if err != nil || len(secrets.Items) != 1 || secrets.Items[0].Name != secretName {
+		t.Fatalf("attach created or lost private authority secret: %#v, %v", secrets.Items, err)
 	}
 	c.deletePrivateMountSecrets(context.Background())
 	if _, err := c.clientset.CoreV1().Secrets("test-ns").Get(context.Background(), secretName, metav1.GetOptions{}); err == nil {

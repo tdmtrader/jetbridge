@@ -132,7 +132,7 @@ func (runner *Runner) Run(ctx context.Context, request Request) (contracts.Recor
 	if err := validateProfile(request.Profile); err != nil {
 		return contracts.Record[contracts.ValidationBody]{}, err
 	}
-	workspace, err := plainEmptyDir(request.WorkspaceRoot)
+	workspace, err := plainDir(request.WorkspaceRoot)
 	if err != nil {
 		return contracts.Record[contracts.ValidationBody]{}, fmt.Errorf("dev validation: workspace: %w", err)
 	}
@@ -202,6 +202,9 @@ func (runner *Runner) Run(ctx context.Context, request Request) (contracts.Recor
 	return record, nil
 }
 func changedPathsJSON(paths []string) []byte {
+	if paths == nil {
+		paths = []string{}
+	}
 	raw, _ := json.Marshal(paths)
 	return append(raw, '\n')
 }
@@ -218,6 +221,17 @@ func validateProfile(profile workflow.CompiledDevValidationProfile) error {
 }
 func finite(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) && v >= 0 }
 func plainEmptyDir(path string) (string, error) {
+	a, err := plainDir(path)
+	if err != nil {
+		return "", err
+	}
+	entries, err := os.ReadDir(a)
+	if err != nil || len(entries) != 0 {
+		return "", fmt.Errorf("must start empty")
+	}
+	return a, nil
+}
+func plainDir(path string) (string, error) {
 	a, err := filepath.Abs(path)
 	if err != nil {
 		return "", err
@@ -225,10 +239,6 @@ func plainEmptyDir(path string) (string, error) {
 	info, err := os.Lstat(a)
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return "", fmt.Errorf("must be a non-symlink directory")
-	}
-	entries, err := os.ReadDir(a)
-	if err != nil || len(entries) != 0 {
-		return "", fmt.Errorf("must start empty")
 	}
 	return a, nil
 }
@@ -379,7 +389,10 @@ func makeRecord(request Request, result cliResult, logs []retainedLog) (contract
 		if !found {
 			pos = len(checks)
 			index[a.CheckID] = pos
-			checks = append(checks, contracts.ValidationCheck{ID: a.CheckID, Kind: "dev-capability", Name: a.CheckID})
+			// The deterministic CLI result carries a check ID but not a schema
+			// check kind. Keep it within the sealed validation/v1 vocabulary;
+			// profile-specific operation names remain in the trusted profile.
+			checks = append(checks, contracts.ValidationCheck{ID: a.CheckID, Kind: "custom", Name: a.CheckID})
 		}
 		status := a.Status
 		if status == "ok" {

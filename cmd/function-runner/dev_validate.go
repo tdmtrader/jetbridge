@@ -13,6 +13,7 @@ import (
 	"github.com/concourse/concourse/agent/functions/devvalidate"
 	"github.com/concourse/concourse/agent/functions/repositorymerge"
 	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/agent/snapshot/contracts"
 	"github.com/concourse/concourse/agent/workflow"
 )
 
@@ -24,6 +25,17 @@ type stringList []string
 
 func (v *stringList) String() string       { return strings.Join(*v, ",") }
 func (v *stringList) Set(raw string) error { *v = append(*v, raw); return nil }
+
+// newDevValidationRunner is fixed to the image-baked absolute CLI path in
+// production. Tests may replace only the process-launch adapter in order to
+// execute a freshly built real dev-capability binary on hosts that do not have
+// the validator image mounted at /usr/local/bin; the compiled profile and its
+// fixed absolute command remain unchanged.
+var newDevValidationRunner = func() devValidationRunner { return devvalidate.NewRunner(nil) }
+
+type devValidationRunner interface {
+	Run(context.Context, devvalidate.Request) (contracts.Record[contracts.ValidationBody], error)
+}
 
 func runDevValidate(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	var o devValidateOptions
@@ -56,6 +68,13 @@ func runDevValidate(ctx context.Context, args []string, stdout, stderr io.Writer
 }
 
 func executeDevValidate(ctx context.Context, o devValidateOptions) error {
+	return executeDevValidateWithRunner(ctx, o, newDevValidationRunner())
+}
+
+func executeDevValidateWithRunner(ctx context.Context, o devValidateOptions, runner devValidationRunner) error {
+	if runner == nil {
+		return fmt.Errorf("validation runner is required")
+	}
 	for name, value := range map[string]string{"candidate": o.candidate, "workspace": o.workspace, "output": o.output, "candidate-type": o.candidateType, "candidate-id": o.candidateID, "candidate-digest": o.candidateDigest, "profile-name": o.profileName, "profile": o.profilePath, "config": o.configPath, "capability-image": o.image, "workflow-definition-id": o.definitionID, "workflow-version": o.version} {
 		if strings.TrimSpace(value) == "" {
 			return fmt.Errorf("-%s is required", name)
@@ -153,7 +172,7 @@ func executeDevValidate(ctx context.Context, o devValidateOptions) error {
 		requestBases = append(requestBases, snapshot.ValidationAuthorityInput{Input: name, Ref: ref})
 	}
 	profile := workflow.CompiledDevValidationProfile{Name: o.profileName, Candidate: workflow.DevValidationContract{Name: candidateName, Type: typeRef}, BaseInputs: baseContracts, CapabilityImage: o.image, CapabilityImageDigest: imageDigest, Command: []string{workflow.DevValidationCLIPath, workflow.DevValidationCLIValidateCommand}, Profile: profileBytes, ProfileDigest: contentDigest(profileBytes), ProtectedConfig: configBytes, ProtectedConfigDigest: contentDigest(configBytes)}
-	_, err = devvalidate.NewRunner(nil).Run(ctx, devvalidate.Request{Candidate: snapshot.SnapshotRef{ID: id, Type: typeRef, Digest: digest}, Bases: requestBases, CandidateInput: candidateName, WorkspaceRoot: workspace, OutputRoot: output, Profile: profile, WorkflowDefinitionID: definition, WorkflowVersion: version, ChangedPaths: changedPaths})
+	_, err = runner.Run(ctx, devvalidate.Request{Candidate: snapshot.SnapshotRef{ID: id, Type: typeRef, Digest: digest}, Bases: requestBases, CandidateInput: candidateName, WorkspaceRoot: workspace, OutputRoot: output, Profile: profile, WorkflowDefinitionID: definition, WorkflowVersion: version, ChangedPaths: changedPaths})
 	return err
 }
 
