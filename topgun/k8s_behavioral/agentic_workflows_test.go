@@ -41,33 +41,6 @@ var _ = Describe("Agentic workflows", func() {
 	}
 
 	It("runs a versioned task function over an immutable snapshot and seals its output", func() {
-		// SKIPPED — open defect, not a flaky or obsolete spec. Remove this the
-		// moment the 500 below is understood; it is the only behavioural
-		// coverage of a v3 workflow actually executing over a sealed snapshot,
-		// so while it is skipped that path is unverified.
-		//
-		// `fly agent workflows run --wait` answers
-		//   500: {"error":"internal_error","message":"workflow run service failed"}
-		// reproducibly (2 of 3 focused runs; the third failed earlier at
-		// snapshot create with a 503, which did not reproduce).
-		//
-		// The cause is not yet known, and the reason it is not known is that
-		// agent/api/workflowruns/handler.go has 20 writeInternalError(w) call
-		// sites, none of which log the error they are discarding. Instrumenting
-		// writeBinderError's default branch (076e41bba2) did not catch it — that
-		// branch never fired, so the 500 comes from one of the other 19. The
-		// next step is to make writeInternalError itself record its cause and
-		// caller, then re-run; guessing at another single call site is what
-		// already failed once.
-		// Still escapable while the intermittent 503 below is open. The
-		// deterministic half — a 500 from the missing platform credential — is
-		// fixed: the suite now vaults one (vaultPlatformCredential). What
-		// remains is a snapshot-content availability race that preempts this
-		// spec in roughly half of runs, so it is not yet trustworthy in CI.
-		if os.Getenv("RUN_AGENTIC_WORKFLOW_SPEC") == "" {
-			Skip("open: intermittent 503 content_unavailable races this spec; set RUN_AGENTIC_WORKFLOW_SPEC=1 to run it")
-		}
-
 		inputDir := filepath.Join(tmp, "agentic-input")
 		Expect(os.MkdirAll(inputDir, 0o755)).To(Succeed())
 		Expect(os.WriteFile(filepath.Join(inputDir, "payload.txt"), []byte("immutable input\n"), 0o644)).To(Succeed())
