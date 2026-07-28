@@ -63,37 +63,44 @@ func Parse(raw []byte) (Config, error) {
 	if err := yaml.UnmarshalWithOptions(raw, &cfg, yaml.Strict()); err != nil {
 		return Config{}, fmt.Errorf("parse dev-mcp.yml: %w", err)
 	}
+	if err := validateConfig(cfg); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
+func validateConfig(cfg Config) error {
 	if cfg.SchemaVersion != 1 {
-		return Config{}, fmt.Errorf("unsupported schema_version %d (want 1)", cfg.SchemaVersion)
+		return fmt.Errorf("unsupported schema_version %d (want 1)", cfg.SchemaVersion)
 	}
 	if len(cfg.Components) == 0 {
-		return Config{}, fmt.Errorf("at least one component is required")
+		return fmt.Errorf("at least one component is required")
 	}
 	seen := map[string]bool{}
 	for i, comp := range cfg.Components {
 		if comp.ID == "" {
-			return Config{}, fmt.Errorf("components[%d]: id is required", i)
+			return fmt.Errorf("components[%d]: id is required", i)
 		}
 		if seen[comp.ID] {
-			return Config{}, fmt.Errorf("components[%d]: duplicate id %q", i, comp.ID)
+			return fmt.Errorf("components[%d]: duplicate id %q", i, comp.ID)
 		}
 		seen[comp.ID] = true
 		if !validKinds[comp.Kind] {
-			return Config{}, fmt.Errorf("component %q: invalid kind %q", comp.ID, comp.Kind)
+			return fmt.Errorf("component %q: invalid kind %q", comp.ID, comp.Kind)
 		}
 		if len(comp.Paths) == 0 {
-			return Config{}, fmt.Errorf("component %q: paths is required", comp.ID)
+			return fmt.Errorf("component %q: paths is required", comp.ID)
 		}
 		if err := validateSpecs(comp.ID, comp.Build, comp.Test, comp.Lint); err != nil {
-			return Config{}, err
+			return err
 		}
 	}
 	if cfg.Repo != nil {
 		if err := validateSpecs("repo", cfg.Repo.Build, cfg.Repo.Test, cfg.Repo.Lint); err != nil {
-			return Config{}, err
+			return err
 		}
 	}
-	return cfg, nil
+	return nil
 }
 
 func validateSpecs(owner string, specs ...*CommandSpec) error {

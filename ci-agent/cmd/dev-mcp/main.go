@@ -44,7 +44,11 @@ func main() {
 	}
 
 	server := devmcp.NewServer(heartbeat)
-	devmcp.RegisterTools(server, cfg, *workdir)
+	core, err := devmcp.NewCore(cfg, *workdir)
+	if err != nil {
+		log.Fatalf("dev-mcp: %s", err)
+	}
+	devmcp.RegisterTools(server, core)
 
 	addr := os.Getenv("MCP_LISTEN_ADDR")
 	if addr == "" {

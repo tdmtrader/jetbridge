@@ -35,7 +35,9 @@ var _ = Describe("RegisterTools", func() {
 			},
 		}
 		s := devmcp.NewServer(0)
-		devmcp.RegisterTools(s, cfg, workdir)
+		core, err := devmcp.NewCore(cfg, workdir)
+		Expect(err).NotTo(HaveOccurred())
+		devmcp.RegisterTools(s, core)
 		ts = httptest.NewServer(s)
 		DeferCleanup(ts.Close)
 	})

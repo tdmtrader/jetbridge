@@ -13,7 +13,8 @@
 FROM golang:1.25-bookworm AS builder
 WORKDIR /src
 COPY ci-agent/ .
-RUN CGO_ENABLED=0 go build -o /dev-mcp ./cmd/dev-mcp
+RUN CGO_ENABLED=0 go build -o /dev-mcp ./cmd/dev-mcp && \
+    CGO_ENABLED=0 go build -o /dev-capability ./cmd/dev-capability
 
 FROM golang:1.25-bookworm
 
@@ -28,6 +29,7 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
 
 RUN useradd --uid 1000 --create-home devmcp
 COPY --from=builder /dev-mcp /usr/local/bin/dev-mcp
+COPY --from=builder /dev-capability /usr/local/bin/dev-capability
 
 USER devmcp
 ENV MCP_LISTEN_ADDR=:7780
