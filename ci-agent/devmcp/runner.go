@@ -54,14 +54,37 @@ type lineTail struct {
 	lines    []string
 	partial  strings.Builder
 	progress ProgressFunc
+	writeErr error
 }
 
 func (t *lineTail) Write(p []byte) (int, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.mirror != nil {
-		t.mirror.Write(p)
+		written, err := t.mirror.Write(p)
+		if written < 0 || written > len(p) {
+			err = fmt.Errorf("invalid mirror write count %d", written)
+			written = 0
+		}
+		if written > 0 {
+			t.consume(p[:written])
+		}
+		if err == nil && written != len(p) {
+			err = io.ErrShortWrite
+		}
+		if err != nil {
+			if t.writeErr == nil {
+				t.writeErr = err
+			}
+			return written, err
+		}
+		return len(p), nil
 	}
+	t.consume(p)
+	return len(p), nil
+}
+
+func (t *lineTail) consume(p []byte) {
 	for _, b := range p {
 		if b == '\n' {
 			line := t.partial.String()
@@ -77,7 +100,6 @@ func (t *lineTail) Write(p []byte) (int, error) {
 			t.partial.WriteByte(b)
 		}
 	}
-	return len(p), nil
 }
 
 func (t *lineTail) Tail() string {
@@ -91,6 +113,19 @@ func (t *lineTail) Tail() string {
 // (default [1]) → failed; anything else — other exit codes, spawn failure,
 // context cancellation — → error.
 func runCommand(ctx context.Context, workdir, label string, spec CommandSpec, extraArgs []string, progress ProgressFunc) ToolResult {
+	return runCommandWithLogFactory(ctx, workdir, label, spec, extraArgs, progress, func(path string) (io.WriteCloser, error) {
+		return os.Create(path)
+	})
+}
+
+func runCommandWithLogFactory(
+	ctx context.Context,
+	workdir, label string,
+	spec CommandSpec,
+	extraArgs []string,
+	progress ProgressFunc,
+	createLog func(string) (io.WriteCloser, error),
+) ToolResult {
 	start := time.Now()
 
 	relLog := filepath.Join(".dev-mcp", "logs", fmt.Sprintf("%s-%d.log", label, start.UnixNano()))
@@ -98,11 +133,10 @@ func runCommand(ctx context.Context, workdir, label string, spec CommandSpec, ex
 	if err := os.MkdirAll(filepath.Dir(absLog), 0o755); err != nil {
 		return errorResult(label, start, "", fmt.Sprintf("create log dir: %s", err))
 	}
-	logFile, err := os.Create(absLog)
+	logFile, err := createLog(absLog)
 	if err != nil {
 		return errorResult(label, start, "", fmt.Sprintf("create log file: %s", err))
 	}
-	defer logFile.Close()
 
 	tail := &lineTail{mirror: logFile, progress: progress}
 
@@ -113,6 +147,7 @@ func runCommand(ctx context.Context, workdir, label string, spec CommandSpec, ex
 	cmd.Stderr = tail
 
 	runErr := cmd.Run()
+	closeErr := logFile.Close()
 	duration := time.Since(start).Seconds()
 
 	status := StatusOK
@@ -131,6 +166,17 @@ func runCommand(ctx context.Context, workdir, label string, spec CommandSpec, ex
 				}
 			}
 		}
+	}
+	if tail.writeErr != nil || closeErr != nil {
+		status = StatusError
+		var logErrors []error
+		if tail.writeErr != nil {
+			logErrors = append(logErrors, fmt.Errorf("write log file: %w", tail.writeErr))
+		}
+		if closeErr != nil {
+			logErrors = append(logErrors, fmt.Errorf("close log file: %w", closeErr))
+		}
+		detail = errors.Join(logErrors...).Error()
 	}
 
 	return ToolResult{

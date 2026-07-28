@@ -111,6 +111,32 @@ func TestValidateRejectsAuthoritySymlinkedIntoCandidateWorkspace(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsOutputParentSymlinkedIntoCandidateWorkspace(t *testing.T) {
+	fixture := newValidationFixture(t, "true")
+	linkedOutput := filepath.Join(fixture.root, "output-link")
+	if err := os.Symlink(fixture.workspace, linkedOutput); err != nil {
+		t.Fatal(err)
+	}
+	args := fixture.args()
+	for index, argument := range args {
+		switch argument {
+		case "--result":
+			args[index+1] = filepath.Join(linkedOutput, "result.json")
+		case "--logs":
+			args[index+1] = filepath.Join(linkedOutput, "logs")
+		}
+	}
+	var stderr bytes.Buffer
+	if exitCode := runCommand(args, &stderr); exitCode != 2 {
+		t.Fatalf("exit = %d, want output-binding failure; stderr=%s", exitCode, stderr.String())
+	}
+	for _, candidateOutput := range []string{"result.json", "logs"} {
+		if _, err := os.Lstat(filepath.Join(fixture.workspace, candidateOutput)); !os.IsNotExist(err) {
+			t.Fatalf("candidate workspace received protected output %q: %v", candidateOutput, err)
+		}
+	}
+}
+
 type validationFixture struct {
 	root        string
 	workspace   string

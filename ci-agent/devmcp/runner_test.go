@@ -2,7 +2,9 @@ package devmcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -90,4 +92,52 @@ var _ = Describe("runCommand", func() {
 		res := run(CommandSpec{Cmd: []string{"pwd"}, Dir: "sub"}, nil, nil)
 		Expect(res.OutputTail).To(HaveSuffix(fmt.Sprintf("%c%s", filepath.Separator, "sub")))
 	})
+
+	It("turns a log close failure into an infrastructure error", func() {
+		result := runCommandWithLogFactory(
+			context.Background(),
+			workdir,
+			"test-app",
+			CommandSpec{Cmd: []string{"sh", "-c", "printf 'complete output\\n'"}},
+			nil,
+			func(string) {},
+			func(string) (io.WriteCloser, error) {
+				return failingLogWriter{closeErr: errors.New("log filesystem full")}, nil
+			},
+		)
+		Expect(result.Status).To(Equal(StatusError))
+		Expect(result.Summary).To(ContainSubstring("close log file"))
+	})
+
+	It("turns a log write failure into an infrastructure error", func() {
+		result := runCommandWithLogFactory(
+			context.Background(),
+			workdir,
+			"test-app",
+			CommandSpec{Cmd: []string{"sh", "-c", "printf 'complete output\\n'"}},
+			nil,
+			func(string) {},
+			func(string) (io.WriteCloser, error) {
+				return failingLogWriter{writeErr: errors.New("log filesystem full")}, nil
+			},
+		)
+		Expect(result.Status).To(Equal(StatusError))
+		Expect(result.Summary).To(ContainSubstring("write log file"))
+	})
 })
+
+type failingLogWriter struct {
+	writeErr error
+	closeErr error
+}
+
+func (writer failingLogWriter) Write(bytes []byte) (int, error) {
+	if writer.writeErr != nil {
+		return 0, writer.writeErr
+	}
+	return len(bytes), nil
+}
+
+func (writer failingLogWriter) Close() error {
+	return writer.closeErr
+}

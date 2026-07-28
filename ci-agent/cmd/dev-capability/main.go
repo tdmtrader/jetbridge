@@ -7,6 +7,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -20,6 +22,7 @@ import (
 	"time"
 
 	"github.com/concourse/ci-agent/devmcp"
+	"golang.org/x/sys/unix"
 )
 
 const maxInputBytes = 4 << 20
@@ -75,9 +78,15 @@ func runCommandContext(ctx context.Context, args []string, stderr io.Writer) int
 	if err := requireProtectedPaths(options); err != nil {
 		return commandError(stderr, err)
 	}
-	if err := preflightOutputs(options.resultPath, options.logsPath); err != nil {
-		return commandError(stderr, err)
+	workspace, err := resolveExistingPath(options.workspacePath)
+	if err != nil {
+		return commandError(stderr, fmt.Errorf("resolve candidate workspace: %w", err))
 	}
+	outputs, err := bindOutputRoots(options.resultPath, options.logsPath, workspace)
+	if err != nil {
+		return commandError(stderr, fmt.Errorf("bind outputs: %w", err))
+	}
+	defer outputs.Close()
 
 	configBytes, err := readBoundedInput(options.configPath, "config")
 	if err != nil {
@@ -115,14 +124,14 @@ func runCommandContext(ctx context.Context, args []string, stderr io.Writer) int
 		validation.Status = devmcp.ValidationStatusError
 	}
 	output := buildValidationOutput(identity, validation, duration, validationErr)
-	if err := copyCompleteLogs(options.workspacePath, options.logsPath, validation.Attempts, output.Attempts); err != nil {
+	if err := copyCompleteLogs(options.workspacePath, outputs, validation.Attempts, output.Attempts); err != nil {
 		return commandError(stderr, fmt.Errorf("retain complete logs: %w", err))
 	}
 	encoded, err := marshalValidationOutput(output)
 	if err != nil {
 		return commandError(stderr, fmt.Errorf("encode result: %w", err))
 	}
-	if err := atomicWrite(options.resultPath, encoded); err != nil {
+	if err := atomicWrite(outputs.result, encoded); err != nil {
 		return commandError(stderr, fmt.Errorf("write result: %w", err))
 	}
 
@@ -237,40 +246,6 @@ func pathWithin(parent, candidate string) (bool, error) {
 	return relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))), nil
 }
 
-func preflightOutputs(resultPath, logsPath string) error {
-	result, err := filepath.Abs(resultPath)
-	if err != nil {
-		return fmt.Errorf("resolve result path: %w", err)
-	}
-	logs, err := filepath.Abs(logsPath)
-	if err != nil {
-		return fmt.Errorf("resolve logs path: %w", err)
-	}
-	if pathsContainOneAnother(result, logs) {
-		return fmt.Errorf("result and logs paths must not contain one another")
-	}
-	if info, err := os.Lstat(result); err == nil && info.IsDir() {
-		return fmt.Errorf("result path is a directory: %s", resultPath)
-	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("inspect result path: %w", err)
-	}
-	if _, err := os.Lstat(logs); err == nil {
-		return fmt.Errorf("logs path already exists: %s", logsPath)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("inspect logs path: %w", err)
-	}
-	return nil
-}
-
-func pathsContainOneAnother(first, second string) bool {
-	firstContainsSecond, err := pathWithin(first, second)
-	if err != nil {
-		return false
-	}
-	secondContainsFirst, err := pathWithin(second, first)
-	return firstContainsSecond || (err == nil && secondContainsFirst)
-}
-
 func readBoundedInput(path, label string) ([]byte, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -335,13 +310,24 @@ func buildValidationOutput(identity devmcp.ProfileIdentity, result devmcp.Valida
 	return output
 }
 
-func copyCompleteLogs(workspace, logsPath string, attempts []devmcp.CheckAttempt, outputAttempts []validationAttempt) error {
+func copyCompleteLogs(workspace string, outputs *boundOutputRoots, attempts []devmcp.CheckAttempt, outputAttempts []validationAttempt) error {
 	if len(attempts) != len(outputAttempts) {
 		return fmt.Errorf("attempt/log projection length mismatch")
 	}
-	if err := os.Mkdir(logsPath, 0o755); err != nil {
-		return err
+	if outputs == nil {
+		return fmt.Errorf("bound output roots are required")
 	}
+	stageName, stage, err := randomDirectoryAt(outputs.logs.parent, "."+outputs.logs.name+".tmp-")
+	if err != nil {
+		return fmt.Errorf("create staged logs: %w", err)
+	}
+	committed := false
+	defer func() {
+		stage.Close()
+		if !committed {
+			_ = unix.Unlinkat(int(outputs.logs.parent.Fd()), stageName, unix.AT_REMOVEDIR)
+		}
+	}()
 	for index, attempt := range attempts {
 		if attempt.FullLogPath == "" {
 			return fmt.Errorf("attempt %d has no complete log", index+1)
@@ -354,21 +340,29 @@ func copyCompleteLogs(workspace, logsPath string, attempts []devmcp.CheckAttempt
 		if err != nil {
 			return fmt.Errorf("read attempt %d complete log: %w", index+1, err)
 		}
-		destination := filepath.Join(logsPath, outputAttempts[index].FullLogPath)
-		output, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
-		if err == nil {
-			_, copyErr := io.Copy(output, input)
-			closeErr := output.Close()
-			if copyErr != nil {
-				err = copyErr
-			} else {
-				err = closeErr
-			}
+		outputName := outputAttempts[index].FullLogPath
+		output, createErr := createExclusiveFileAt(stage, outputName, 0o644)
+		if createErr != nil {
+			input.Close()
+			return fmt.Errorf("create attempt %d complete log: %w", index+1, createErr)
 		}
-		input.Close()
-		if err != nil {
-			return fmt.Errorf("copy attempt %d complete log: %w", index+1, err)
+		_, copyErr := io.Copy(output, input)
+		syncErr := output.Sync()
+		closeErr := output.Close()
+		inputCloseErr := input.Close()
+		if copyErr != nil || syncErr != nil || closeErr != nil || inputCloseErr != nil {
+			return fmt.Errorf("copy attempt %d complete log: %w", index+1, errors.Join(copyErr, syncErr, closeErr, inputCloseErr))
 		}
+	}
+	if err := stage.Sync(); err != nil {
+		return fmt.Errorf("sync staged complete logs: %w", err)
+	}
+	if err := unix.Renameat(int(outputs.logs.parent.Fd()), stageName, int(outputs.logs.parent.Fd()), outputs.logs.name); err != nil {
+		return fmt.Errorf("publish complete logs: %w", err)
+	}
+	committed = true
+	if err := outputs.logs.parent.Sync(); err != nil {
+		return fmt.Errorf("sync complete logs parent: %w", err)
 	}
 	return nil
 }
@@ -396,23 +390,238 @@ func marshalValidationOutput(output validationOutput) ([]byte, error) {
 	return append(encoded, '\n'), nil
 }
 
-func atomicWrite(path string, contents []byte) error {
-	parent := filepath.Dir(path)
-	if err := os.MkdirAll(parent, 0o755); err != nil {
-		return err
-	}
-	temporary, err := os.CreateTemp(parent, ".dev-capability-result-*")
+func atomicWrite(target boundOutputTarget, contents []byte) error {
+	temporaryName, temporary, err := randomFileAt(target.parent, "."+target.name+".tmp-", 0o644)
 	if err != nil {
 		return err
 	}
-	temporaryPath := temporary.Name()
-	defer os.Remove(temporaryPath)
+	temporaryPresent := true
+	defer func() {
+		if temporaryPresent {
+			_ = unix.Unlinkat(int(target.parent.Fd()), temporaryName, 0)
+		}
+	}()
 	if _, err := temporary.Write(contents); err != nil {
+		temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
 		temporary.Close()
 		return err
 	}
 	if err := temporary.Close(); err != nil {
 		return err
 	}
-	return os.Rename(temporaryPath, path)
+	if err := unix.Renameat(int(target.parent.Fd()), temporaryName, int(target.parent.Fd()), target.name); err != nil {
+		return err
+	}
+	temporaryPresent = false
+	return target.parent.Sync()
+}
+
+type boundOutputTarget struct {
+	parent *os.File
+	name   string
+}
+
+type boundOutputRoots struct {
+	result boundOutputTarget
+	logs   boundOutputTarget
+}
+
+func bindOutputRoots(resultPath, logsPath, workspace string) (*boundOutputRoots, error) {
+	result, err := bindOutputTarget(resultPath, true, workspace)
+	if err != nil {
+		return nil, fmt.Errorf("bind result: %w", err)
+	}
+	logs, err := bindOutputTarget(logsPath, false, workspace)
+	if err != nil {
+		result.parent.Close()
+		return nil, fmt.Errorf("bind logs: %w", err)
+	}
+	return &boundOutputRoots{result: result, logs: logs}, nil
+}
+
+func (roots *boundOutputRoots) Close() error {
+	if roots == nil {
+		return nil
+	}
+	return errors.Join(roots.result.parent.Close(), roots.logs.parent.Close())
+}
+
+func bindOutputTarget(path string, allowExistingRegular bool, workspace string) (boundOutputTarget, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return boundOutputTarget{}, err
+	}
+	name := filepath.Base(absolute)
+	if name == "." || name == string(filepath.Separator) || strings.ContainsRune(name, '\x00') {
+		return boundOutputTarget{}, fmt.Errorf("output target must be one path component")
+	}
+	parentPath, err := resolveDirectoryPath(filepath.Dir(absolute))
+	if err != nil {
+		return boundOutputTarget{}, err
+	}
+	insideWorkspace, err := pathWithin(workspace, parentPath)
+	if err != nil {
+		return boundOutputTarget{}, err
+	}
+	if insideWorkspace {
+		return boundOutputTarget{}, fmt.Errorf("output parent resolves inside candidate workspace")
+	}
+	parent, err := openAbsoluteDirectoryNoFollow(parentPath, true)
+	if err != nil {
+		return boundOutputTarget{}, fmt.Errorf("output ancestor is a symlink, dangling link, or non-directory: %w", err)
+	}
+	var stat unix.Stat_t
+	err = unix.Fstatat(int(parent.Fd()), name, &stat, unix.AT_SYMLINK_NOFOLLOW)
+	switch {
+	case errors.Is(err, unix.ENOENT):
+		return boundOutputTarget{parent: parent, name: name}, nil
+	case err != nil:
+		parent.Close()
+		return boundOutputTarget{}, err
+	case !allowExistingRegular:
+		parent.Close()
+		return boundOutputTarget{}, fmt.Errorf("output path already exists: %s", path)
+	case stat.Mode&unix.S_IFMT != unix.S_IFREG:
+		parent.Close()
+		return boundOutputTarget{}, fmt.Errorf("result path is not a regular file: %s", path)
+	default:
+		return boundOutputTarget{parent: parent, name: name}, nil
+	}
+}
+
+// resolveDirectoryPath canonicalizes the existing ancestor chain, including
+// system aliases such as macOS /var, while retaining any missing suffix for
+// no-follow creation. bindOutputTarget then opens that canonical chain one
+// component at a time and rejects a resolved candidate-workspace parent.
+func resolveDirectoryPath(path string) (string, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	missing := make([]string, 0)
+	current := absolute
+	for {
+		resolved, err := filepath.EvalSymlinks(current)
+		if err == nil {
+			for index := len(missing) - 1; index >= 0; index-- {
+				resolved = filepath.Join(resolved, missing[index])
+			}
+			return resolved, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", err
+		}
+		missing = append(missing, filepath.Base(current))
+		current = parent
+	}
+}
+
+func openAbsoluteDirectoryNoFollow(absolute string, create bool) (*os.File, error) {
+	clean, err := filepath.Abs(absolute)
+	if err != nil {
+		return nil, err
+	}
+	if filepath.VolumeName(clean) != "" {
+		return nil, fmt.Errorf("volume-qualified output paths are unsupported")
+	}
+	root, err := openDirectoryNoFollow(string(filepath.Separator))
+	if err != nil {
+		return nil, err
+	}
+	if clean == string(filepath.Separator) {
+		return root, nil
+	}
+	current := root
+	for _, segment := range strings.Split(strings.TrimPrefix(clean, string(filepath.Separator)), string(filepath.Separator)) {
+		nextFD, openErr := unix.Openat(int(current.Fd()), segment, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
+		if openErr != nil && create && errors.Is(openErr, unix.ENOENT) {
+			if mkdirErr := unix.Mkdirat(int(current.Fd()), segment, 0o755); mkdirErr != nil && !errors.Is(mkdirErr, unix.EEXIST) {
+				current.Close()
+				return nil, mkdirErr
+			}
+			nextFD, openErr = unix.Openat(int(current.Fd()), segment, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
+		}
+		if openErr != nil {
+			current.Close()
+			return nil, openErr
+		}
+		next := os.NewFile(uintptr(nextFD), segment)
+		current.Close()
+		current = next
+	}
+	return current, nil
+}
+
+func openDirectoryNoFollow(path string) (*os.File, error) {
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	return os.NewFile(uintptr(fd), path), nil
+}
+
+func randomDirectoryAt(parent *os.File, prefix string) (string, *os.File, error) {
+	for range 128 {
+		name, err := randomEntryName(prefix)
+		if err != nil {
+			return "", nil, err
+		}
+		if err := unix.Mkdirat(int(parent.Fd()), name, 0o700); err != nil {
+			if errors.Is(err, unix.EEXIST) {
+				continue
+			}
+			return "", nil, err
+		}
+		fd, err := unix.Openat(int(parent.Fd()), name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
+		if err != nil {
+			_ = unix.Unlinkat(int(parent.Fd()), name, unix.AT_REMOVEDIR)
+			return "", nil, err
+		}
+		return name, os.NewFile(uintptr(fd), name), nil
+	}
+	return "", nil, fmt.Errorf("could not allocate a unique staged log directory")
+}
+
+func randomFileAt(parent *os.File, prefix string, mode uint32) (string, *os.File, error) {
+	for range 128 {
+		name, err := randomEntryName(prefix)
+		if err != nil {
+			return "", nil, err
+		}
+		file, err := createExclusiveFileAt(parent, name, mode)
+		if errors.Is(err, unix.EEXIST) {
+			continue
+		}
+		if err != nil {
+			return "", nil, err
+		}
+		return name, file, nil
+	}
+	return "", nil, fmt.Errorf("could not allocate a unique staged result")
+}
+
+func randomEntryName(prefix string) (string, error) {
+	var entropy [16]byte
+	if _, err := rand.Read(entropy[:]); err != nil {
+		return "", err
+	}
+	return prefix + hex.EncodeToString(entropy[:]), nil
+}
+
+func createExclusiveFileAt(parent *os.File, name string, mode uint32) (*os.File, error) {
+	if name == "" || name == "." || name == ".." || filepath.Base(name) != name || strings.ContainsRune(name, '\x00') {
+		return nil, fmt.Errorf("file name is not one safe path component")
+	}
+	fd, err := unix.Openat(int(parent.Fd()), name, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, mode)
+	if err != nil {
+		return nil, err
+	}
+	return os.NewFile(uintptr(fd), name), nil
 }
