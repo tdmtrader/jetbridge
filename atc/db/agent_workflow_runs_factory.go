@@ -362,27 +362,28 @@ func validateWorkflowRunTarget(ctx context.Context, tx Tx, request AgentWorkflow
 
 	if request.RetryOfWorkflowRunID != nil {
 		var (
-			teamID                int
-			workflowDefinitionID  int
-			workflowName          string
-			workflowVersion       int
-			schemaVersion         int
-			signatureVersion      int
-			definitionContentHash string
-			functionID            sql.NullString
-			status                AgentWorkflowRunStatus
+			teamID                      int
+			workflowDefinitionID        int
+			workflowName                string
+			workflowVersion             int
+			schemaVersion               int
+			signatureVersion            int
+			definitionContentHash       string
+			functionID                  sql.NullString
+			devValidationProvenanceHash string
+			status                      AgentWorkflowRunStatus
 		)
 		err := tx.QueryRowContext(ctx, `
 			SELECT team_id, workflow_definition_id, workflow_name, workflow_version,
 			       schema_version, signature_version, definition_content_hash,
-			       function_id, status
+			       function_id, dev_validation_provenance_hash, status
 			FROM agent_workflow_runs
 			WHERE id = $1
 			FOR KEY SHARE
 		`, int64(*request.RetryOfWorkflowRunID)).Scan(
 			&teamID, &workflowDefinitionID, &workflowName, &workflowVersion,
 			&schemaVersion, &signatureVersion, &definitionContentHash,
-			&functionID, &status,
+			&functionID, &devValidationProvenanceHash, &status,
 		)
 		if errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("db: workflow-run retry target is absent or belongs to another team")
@@ -403,7 +404,8 @@ func validateWorkflowRunTarget(ctx context.Context, tx Tx, request AgentWorkflow
 			schemaVersion != request.SchemaVersion ||
 			signatureVersion != request.SignatureVersion ||
 			definitionContentHash != request.DefinitionContentHash ||
-			!equalOptionalString(sourceFunctionID, request.FunctionID) {
+			!equalOptionalString(sourceFunctionID, request.FunctionID) ||
+			devValidationProvenanceHash != request.DevValidationProvenanceHash {
 			return fmt.Errorf("db: workflow-run retry target is incompatible with the requested workflow target")
 		}
 		if !isTerminalWorkflowRunStatus(status) {

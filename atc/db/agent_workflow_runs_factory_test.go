@@ -560,6 +560,42 @@ var _ = Describe("AgentWorkflowRunsFactory", func() {
 		Expect(err).To(MatchError(ContainSubstring("idempotency")))
 	})
 
+	It("requires retries to preserve the source validation provenance identity", func() {
+		nonemptySourceRequest := request("retry-provenance-source")
+		nonemptySourceRequest.DevValidationProvenanceHash = strings.Repeat("a", 64)
+		nonemptySource, _, err := factory.CreateWithInputs(ctx, nonemptySourceRequest)
+		Expect(err).NotTo(HaveOccurred())
+		terminalize(nonemptySource)
+
+		sameHash := retryRequest("retry-provenance-same", nonemptySource)
+		sameHash.DevValidationProvenanceHash = nonemptySourceRequest.DevValidationProvenanceHash
+		_, created, err := factory.CreateWithInputs(ctx, sameHash)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(created).To(BeTrue())
+
+		differentHash := retryRequest("retry-provenance-different", nonemptySource)
+		differentHash.DevValidationProvenanceHash = strings.Repeat("b", 64)
+		_, _, err = factory.CreateWithInputs(ctx, differentHash)
+		Expect(err).To(MatchError(ContainSubstring("retry target is incompatible")))
+
+		nonemptyToLegacy := retryRequest("retry-provenance-to-legacy", nonemptySource)
+		_, _, err = factory.CreateWithInputs(ctx, nonemptyToLegacy)
+		Expect(err).To(MatchError(ContainSubstring("retry target is incompatible")))
+
+		legacySource, _, err := factory.CreateWithInputs(ctx, request("retry-provenance-legacy-source"))
+		Expect(err).NotTo(HaveOccurred())
+		terminalize(legacySource)
+		legacyRetry := retryRequest("retry-provenance-legacy", legacySource)
+		_, created, err = factory.CreateWithInputs(ctx, legacyRetry)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(created).To(BeTrue())
+
+		legacyToNonempty := retryRequest("retry-provenance-from-legacy", legacySource)
+		legacyToNonempty.DevValidationProvenanceHash = strings.Repeat("c", 64)
+		_, _, err = factory.CreateWithInputs(ctx, legacyToNonempty)
+		Expect(err).To(MatchError(ContainSubstring("retry target is incompatible")))
+	})
+
 	It("requires retries to reference an exact terminal run and its input bindings", func() {
 		active, _, err := factory.CreateWithInputs(ctx, request("retry-active-source"))
 		Expect(err).NotTo(HaveOccurred())
