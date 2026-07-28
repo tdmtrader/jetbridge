@@ -51,6 +51,66 @@ var _ = Describe("workflow schema signature migration", func() {
 		return count
 	}
 
+	// A definition row that predates the metadata columns, as every pre-v3
+	// deployment carries. `source` is the standalone definition text; `manifest`
+	// is the stored source manifest (nil when the row predates manifests).
+	insertLegacyDefinition := func(name, source string, manifest *string) {
+		_, err := database.Exec(`
+			INSERT INTO agent_workflow_definitions
+				(name, version, content_hash, definition, live, created_by, source_manifest)
+			VALUES ($1, 1, md5($2), $2, false, 'tester', $3)`,
+			name, source, manifest)
+		Expect(err).NotTo(HaveOccurred())
+	}
+
+	schemaOf := func(name string) (int, int) {
+		var schemaVersion, signatureVersion int
+		Expect(database.QueryRow(`
+			SELECT schema_version, signature_version
+			FROM agent_workflow_definitions WHERE name = $1`, name).
+			Scan(&schemaVersion, &signatureVersion)).To(Succeed())
+		return schemaVersion, signatureVersion
+	}
+
+	// Regression: the columns land NOT NULL, so pre-existing rows must be
+	// backfilled first. Without this the migration fails on every deployment
+	// that already holds workflow definitions, while passing on a fresh one.
+	It("backfills definitions that predate the metadata columns", func() {
+		insertLegacyDefinition("declared-two", "schema_version: 2\nname: declared-two\n", nil)
+		insertLegacyDefinition("declared-one", "schema_version: 1\nname: declared-one\n", nil)
+		// schema_version was optional originally and defaulted to 1.
+		insertLegacyDefinition("undeclared", "name: undeclared\nsteps: []\n", nil)
+		// A manifest-backed row keeps its schema in the entry-point file.
+		manifest := `{"workflow.yml": "schema_version: 2\nname: manifested\n", "prompts/work.md": "hi"}`
+		insertLegacyDefinition("manifested", "", &manifest)
+
+		Expect(migrator.Migrate(nil, nil, targetVersion)).To(Succeed())
+
+		schema, signature := schemaOf("declared-two")
+		Expect(schema).To(Equal(2))
+		Expect(signature).To(BeZero())
+
+		schema, _ = schemaOf("declared-one")
+		Expect(schema).To(Equal(1))
+
+		schema, _ = schemaOf("undeclared")
+		Expect(schema).To(Equal(1))
+
+		schema, signature = schemaOf("manifested")
+		Expect(schema).To(Equal(2))
+		Expect(signature).To(BeZero())
+	})
+
+	It("refuses a pre-existing definition whose signature it cannot derive", func() {
+		// Schema 3 arrives later in the chain, so such a row cannot legitimately
+		// exist here; inventing a signature would be worse than failing.
+		insertLegacyDefinition("premature-v3", "schema_version: 3\nname: premature-v3\n", nil)
+
+		err := migrator.Migrate(nil, nil, targetVersion)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("schema_version >= 3"))
+	})
+
 	It("adds the metadata columns, their constraints, and the ordered indexes", func() {
 		Expect(migrator.Migrate(nil, nil, targetVersion)).To(Succeed())
 

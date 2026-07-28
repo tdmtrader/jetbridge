@@ -15,6 +15,47 @@ func (m *migrations) Up_1773106101() error {
 		return fmt.Errorf("workflow metadata migration: add columns: %w", err)
 	}
 
+	// Backfill rows that predate these columns. A pre-v3 definition declares its
+	// schema textually, so reading the `schema_version:` key out of the stored
+	// source is enough here: schema 1/2 definitions are inert metadata in v3 —
+	// never compiled, rendered, or run — so nothing downstream needs the full
+	// manifest semantics the retired legacy decoder used to compute.
+	// The source is the manifest's entry-point file when one is stored, and the
+	// standalone definition otherwise; an absent key means the original default, 1.
+	if _, err := m.Exec(`
+		UPDATE agent_workflow_definitions
+		SET schema_version = COALESCE(
+				NULLIF(substring(
+					COALESCE(
+						source_manifest ->> 'workflow.yml',
+						source_manifest ->> 'workflow.yaml',
+						definition
+					) from 'schema_version:[[:space:]]*([0-9]+)'
+				), '')::integer,
+				1
+			),
+			signature_version = 0
+		WHERE schema_version IS NULL
+	`); err != nil {
+		return fmt.Errorf("workflow metadata migration: backfill existing rows: %w", err)
+	}
+
+	// A signature is derived by compiling a schema-3 definition, which this
+	// migration cannot do. No such row can legitimately exist yet — schema 3
+	// arrives later in the chain — so refuse rather than invent one.
+	var unsupported int
+	if err := m.QueryRow(`
+		SELECT count(*) FROM agent_workflow_definitions WHERE schema_version >= 3
+	`).Scan(&unsupported); err != nil {
+		return fmt.Errorf("workflow metadata migration: inspect backfilled rows: %w", err)
+	}
+	if unsupported > 0 {
+		return fmt.Errorf(
+			"workflow metadata migration: %d definition(s) declare schema_version >= 3 before the v3 columns exist; their signature cannot be derived here",
+			unsupported,
+		)
+	}
+
 	if _, err := m.Exec(`
 		ALTER TABLE agent_workflow_definitions
 			ADD CONSTRAINT agent_workflow_definitions_schema_version_check
