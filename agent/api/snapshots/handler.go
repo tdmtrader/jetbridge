@@ -194,7 +194,7 @@ func (factory *HandlerFactory) create(w http.ResponseWriter, r *http.Request, te
 		OpenTar: openTar, SourceMetadata: sourceMetadata,
 	})
 	if err != nil {
-		writeSnapshotError(w, err)
+		factory.writeSnapshotError(w, err)
 		return
 	}
 	if err := manifest.Validate(); err != nil {
@@ -528,7 +528,7 @@ func (factory *HandlerFactory) pin(w http.ResponseWriter, r *http.Request, team 
 		return pinErr
 	})
 	if err != nil {
-		writeSnapshotError(w, err)
+		factory.writeSnapshotError(w, err)
 		return
 	}
 	if err := claim.Validate(); err != nil || claim.SnapshotID != manifest.ID || claim.Class != snapshot.RetentionClassPin || claim.Actor != identity.Actor {
@@ -571,7 +571,7 @@ func (factory *HandlerFactory) unpin(w http.ResponseWriter, r *http.Request, tea
 		return factory.metadata.Unpin(r.Context(), lease, team.ID, identity.Actor, ref)
 	})
 	if err != nil {
-		writeSnapshotError(w, err)
+		factory.writeSnapshotError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -915,7 +915,18 @@ func validateAuthorityString(value string, maxBytes int) error {
 	return nil
 }
 
-func writeSnapshotError(w http.ResponseWriter, err error) {
+// writeSnapshotError maps a snapshot-service error onto a response, and logs
+// the error it is mapping.
+//
+// Every branch here deliberately replaces the cause with a fixed message, so
+// without this the wrapped detail died at the mapping. That is how the
+// behavioural suite's intermittent 503 stayed unexplained: it reaches the
+// client as "snapshot content is unavailable", which cannot distinguish
+// content still landing from a genuine fault — and instrumenting the two
+// content-serving sites missed it, because the failure is on the create path
+// and arrives here as ErrContentUnavailable.
+func (factory *HandlerFactory) writeSnapshotError(w http.ResponseWriter, err error) {
+	factory.logger.Error("snapshot-request-failed", err)
 	var maxBytesError *http.MaxBytesError
 	switch {
 	case errors.As(err, &maxBytesError), errors.Is(err, snapshot.ErrLimitExceeded):
