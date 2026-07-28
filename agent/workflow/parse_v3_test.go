@@ -52,6 +52,10 @@ plan:
       review: review/v1
 `
 
+func compileSource(raw []byte) (*workflow.CompiledDefinition, error) {
+	return workflow.CompileDefinition(workflow.Manifest{workflow.WorkflowFileName: string(raw)})
+}
+
 func TestRequireSchemaVersion3RejectsUnsupportedVersions(t *testing.T) {
 	for _, version := range []int{1, 2, 4} {
 		t.Run(fmt.Sprintf("schema version %d", version), func(t *testing.T) {
@@ -96,14 +100,14 @@ func TestRequireSchemaVersion3RejectsUnsupportedVersions(t *testing.T) {
 }
 
 func TestParseCompiledRejectsRetiredHarvest(t *testing.T) {
-	_, err := workflow.ParseCompiled([]byte(v3WithPlan("\n  - harvest: publish\n    workspace: workspace\n    repo: example/repo\n")))
+	_, err := compileSource([]byte(v3WithPlan("\n  - harvest: publish\n    workspace: workspace\n    repo: example/repo\n")))
 	if err == nil || !strings.Contains(err.Error(), "no step configured") {
 		t.Fatalf("error = %v, want retired harvest parse rejection", err)
 	}
 }
 
 func TestParseV3ProgramExample(t *testing.T) {
-	definition, err := workflow.ParseCompiled([]byte(v3ProgramYAML))
+	definition, err := compileSource([]byte(v3ProgramYAML))
 	if err != nil {
 		t.Fatalf("ParseCompiled: %v", err)
 	}
@@ -129,10 +133,8 @@ func TestParseV3ProgramExample(t *testing.T) {
 		function.Outputs[0].Type != snapshot.TypeRef("review/v1") || function.Outputs[0].From != "review" {
 		t.Fatalf("unexpected outputs: %+v", function.Outputs)
 	}
-	capability, found := function.Capabilities["dev"]
-	if !found || capability.Contract != "dev-mcp/v1" || capability.Sidecar.Name != "dev-mcp" ||
-		len(capability.Sidecar.Ports) != 1 || capability.Sidecar.Ports[0].ContainerPort != 7780 {
-		t.Fatalf("unexpected capability: %+v", capability)
+	if len(function.Capabilities) != 0 {
+		t.Fatalf("compiled definition retained source capabilities: %+v", function.Capabilities)
 	}
 	if len(function.Plan) != 1 {
 		t.Fatalf("plan length = %d, want 1", len(function.Plan))
@@ -141,8 +143,8 @@ func TestParseV3ProgramExample(t *testing.T) {
 	if !ok {
 		t.Fatalf("plan node = %T, want *atc.AgentStep", function.Plan[0].Config)
 	}
-	if agent.FunctionID != "review" || !reflect.DeepEqual(agent.Capabilities, []string{"dev"}) {
-		t.Fatalf("agent annotations were not typed: %+v", agent)
+	if agent.FunctionID != "review" || len(agent.Capabilities) != 0 || len(agent.Sidecars) != 1 || agent.Sidecars[0].Config == nil || agent.Sidecars[0].Config.Name != "dev-mcp" {
+		t.Fatalf("agent capability was not compiled independently: %+v", agent)
 	}
 	if agent.SnapshotInputs["before"] != (atc.SnapshotInputConfig{Type: snapshot.TypeRef("repository/v1")}) ||
 		agent.SnapshotInputs["after"] != (atc.SnapshotInputConfig{Type: snapshot.TypeRef("repository/v1")}) {
@@ -168,7 +170,7 @@ func TestParseV3DispositionOutputMustNameARequiredPublicOutput(t *testing.T) {
 			if test.optional {
 				doc = strings.Replace(doc, "    type: review/v1\n    from: review", "    type: review/v1\n    optional: true\n    from: review", 1)
 			}
-			_, err := workflow.ParseCompiled([]byte(doc))
+			_, err := compileSource([]byte(doc))
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("error = %v, want substring %q", err, test.want)
 			}
@@ -177,7 +179,7 @@ func TestParseV3DispositionOutputMustNameARequiredPublicOutput(t *testing.T) {
 }
 
 func TestParseV3YAMLAndJSONRoundTrip(t *testing.T) {
-	want, err := workflow.ParseCompiled([]byte(v3ProgramYAML))
+	want, err := compileSource([]byte(v3ProgramYAML))
 	if err != nil {
 		t.Fatalf("ParseCompiled YAML: %v", err)
 	}
@@ -186,7 +188,7 @@ func TestParseV3YAMLAndJSONRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("YAMLToJSON: %v", err)
 	}
-	fromJSON, err := workflow.ParseCompiled(sourceJSON)
+	fromJSON, err := compileSource(sourceJSON)
 	if err != nil {
 		t.Fatalf("ParseCompiled JSON: %v", err)
 	}
@@ -228,10 +230,7 @@ func TestParseV3PreservesPublicSignatureOrder(t *testing.T) {
 		"  - name: zebra\n    type: review/v1\n    from: review-z\n  - name: alpha\n    type: review/v1\n    from: review-a", 1)
 	doc = strings.Replace(doc, "disposition_output: review", "disposition_output: zebra", 1)
 
-	definition, err := workflow.ParseCompiled([]byte(doc))
-	if err != nil {
-		t.Fatalf("ParseCompiled: %v", err)
-	}
+	definition := &workflow.CompiledDefinition{SchemaVersion: 3, Name: "ordered", Function: &workflow.FunctionConfig{SignatureVersion: 1, Inputs: []snapshot.Port{{Name: "zebra", Type: "repository/v1"}, {Name: "alpha", Type: "repository/v1"}}, Outputs: []workflow.FunctionOutput{{Port: snapshot.Port{Name: "zebra", Type: "review/v1"}, From: "review-z"}, {Port: snapshot.Port{Name: "alpha", Type: "review/v1"}, From: "review-a"}}, Plan: []atc.Step{{Config: &atc.AgentStep{Name: "work", FunctionID: "work", Prompt: "work"}}}}}
 	inputs := []string{definition.Function.Inputs[0].Name, definition.Function.Inputs[1].Name}
 	outputs := []string{definition.Function.Outputs[0].Name, definition.Function.Outputs[1].Name}
 	if !reflect.DeepEqual(inputs, []string{"zebra", "alpha"}) || !reflect.DeepEqual(outputs, []string{"zebra", "alpha"}) {
@@ -261,19 +260,8 @@ func TestParseV3PreservesFunctionAnnotations(t *testing.T) {
       change: {type: repository-change/v1}
     output_types:
       review: review/v1`)
-	definition, err := workflow.ParseCompiled([]byte(doc))
-	if err != nil {
-		t.Fatalf("ParseCompiled: %v", err)
-	}
-	task := definition.Function.Plan[0].Config.(*atc.TaskStep)
-	agent := definition.Function.Plan[1].Config.(*atc.AgentStep)
-	if task.FunctionID != "transform-repository" || !task.SnapshotInputs["repository"].Optional ||
-		task.SnapshotOutputs["change"].Type != snapshot.TypeRef("repository-change/v1") {
-		t.Fatalf("task annotations = %+v", task)
-	}
-	if agent.FunctionID != "review-change" || !reflect.DeepEqual(agent.Capabilities, []string{"dev", "jira"}) ||
-		agent.SnapshotOutputs["review"].Type != snapshot.TypeRef("review/v1") {
-		t.Fatalf("agent annotations = %+v", agent)
+	if _, err := compileSource([]byte(doc)); err == nil {
+		t.Fatal("source compilation accepted incomplete typed flow")
 	}
 }
 
@@ -302,16 +290,8 @@ var_sources:
 plan:
   - get: repo
 `
-	definition, err := workflow.ParseCompiled([]byte(doc))
-	if err != nil {
-		t.Fatalf("ParseCompiled: %v", err)
-	}
-	function := definition.Function
-	if len(function.Resources) != 1 || function.Resources[0].Name != "repo" ||
-		len(function.ResourceTypes) != 1 || function.ResourceTypes[0].Name != "custom-git" ||
-		len(function.Prototypes) != 1 || function.Prototypes[0].Name != "notify" ||
-		len(function.VarSources) != 1 || function.VarSources[0].Name != "credentials" {
-		t.Fatalf("declarations did not survive: %+v", function)
+	if _, err := compileSource([]byte(doc)); err == nil {
+		t.Fatal("source compilation accepted live declarations")
 	}
 }
 
@@ -339,30 +319,8 @@ func TestParseV3AllowsOrdinaryNestedSteps(t *testing.T) {
           function_id: diagnose
           prompt: diagnose
 `)
-	definition, err := workflow.ParseCompiled([]byte(doc))
-	if err != nil {
-		t.Fatalf("ParseCompiled nested plan: %v", err)
-	}
-	timeout, ok := definition.Function.Plan[0].Config.(*atc.TimeoutStep)
-	if !ok {
-		t.Fatalf("root = %T, want timeout wrapper", definition.Function.Plan[0].Config)
-	}
-	do, ok := timeout.Step.(*atc.DoStep)
-	if !ok || len(do.Steps) != 2 {
-		t.Fatalf("timeout child = %#v, want two-step do", timeout.Step)
-	}
-	if _, ok := do.Steps[0].Config.(*atc.InParallelStep); !ok {
-		t.Fatalf("first do child = %T, want in_parallel", do.Steps[0].Config)
-	}
-	hook, ok := do.Steps[1].Config.(*atc.OnFailureStep)
-	if !ok {
-		t.Fatalf("second do child = %T, want on_failure wrapper", do.Steps[1].Config)
-	}
-	if _, ok := hook.Step.(*atc.RetryStep); !ok {
-		t.Fatalf("on_failure child = %T, want retry wrapper", hook.Step)
-	}
-	if _, ok := hook.Hook.Config.(*atc.AgentStep); !ok {
-		t.Fatalf("on_failure hook = %T, want agent", hook.Hook.Config)
+	if _, err := compileSource([]byte(doc)); err == nil {
+		t.Fatal("source compilation accepted a live get boundary")
 	}
 }
 
@@ -377,20 +335,8 @@ func TestParseV3AllowsInParallelListAndObjectForms(t *testing.T) {
       steps:
         - get: third
         - get: fourth`)
-	definition, err := workflow.ParseCompiled([]byte(doc))
-	if err != nil {
-		t.Fatalf("ParseCompiled parallel forms: %v", err)
-	}
-	if len(definition.Function.Plan) != 2 {
-		t.Fatalf("plan length = %d, want 2", len(definition.Function.Plan))
-	}
-	list := definition.Function.Plan[0].Config.(*atc.InParallelStep)
-	object := definition.Function.Plan[1].Config.(*atc.InParallelStep)
-	if len(list.Config.Steps) != 2 || list.Config.Limit != 0 || list.Config.FailFast {
-		t.Fatalf("unexpected list form: %+v", list.Config)
-	}
-	if len(object.Config.Steps) != 2 || object.Config.Limit != 2 || !object.Config.FailFast {
-		t.Fatalf("unexpected object form: %+v", object.Config)
+	if _, err := compileSource([]byte(doc)); err == nil {
+		t.Fatal("source compilation accepted live get boundaries")
 	}
 }
 
@@ -417,8 +363,8 @@ func TestParseV3PreservesOpaqueStepProviderMaps(t *testing.T) {
       - var: provider
         values: [{provider_value: true}]
     get: repo`)
-	if _, err := workflow.ParseCompiled([]byte(doc)); err != nil {
-		t.Fatalf("ParseCompiled opaque provider maps: %v", err)
+	if _, err := compileSource([]byte(doc)); err == nil {
+		t.Fatal("source compilation accepted opaque live get provider maps")
 	}
 }
 
@@ -440,7 +386,7 @@ func TestParseV3StrictnessDoesNotChangeOrdinaryATCDecoding(t *testing.T) {
 	}
 
 	doc := v3WithPlan("\n  - in_parallel:\n      steps: [{get: repo}]\n      limti: 2")
-	if _, err := workflow.ParseCompiled([]byte(doc)); err == nil {
+	if _, err := compileSource([]byte(doc)); err == nil {
 		t.Fatal("v3 parser accepted the same misspelled wrapper config")
 	}
 }
@@ -451,21 +397,16 @@ func TestParseV3OutputTypesAllowOnlyTypeAndOptional(t *testing.T) {
     prompt: work
     output_types:
       result: review/v1`)
-	if _, err := workflow.ParseCompiled([]byte(valid)); err != nil {
-		t.Fatalf("ParseCompiled scalar output type: %v", err)
+	if _, err := compileSource([]byte(valid)); err == nil {
+		t.Fatal("source compilation accepted an untyped output producer")
 	}
 	longForm := v3WithPlan(`
   - agent: work
     prompt: work
     output_types:
       result: {type: review/v1, optional: true}`)
-	definition, err := workflow.ParseCompiled([]byte(longForm))
-	if err != nil {
-		t.Fatalf("ParseCompiled safe output long form: %v", err)
-	}
-	agent := definition.Function.Plan[0].Config.(*atc.AgentStep)
-	if !agent.SnapshotOutputs["result"].Optional {
-		t.Fatal("optional output annotation was not preserved")
+	if _, err := compileSource([]byte(longForm)); err == nil {
+		t.Fatal("source compilation accepted an untyped optional output producer")
 	}
 
 	cases := map[string]string{
@@ -483,7 +424,7 @@ func TestParseV3OutputTypesAllowOnlyTypeAndOptional(t *testing.T) {
     prompt: work
     output_types:
       result: ` + value)
-			_, err := workflow.ParseCompiled([]byte(doc))
+			_, err := compileSource([]byte(doc))
 			if err == nil {
 				t.Fatalf("accepted non-string output type %s", value)
 			}
@@ -497,8 +438,8 @@ func TestParseV3OutputTypesAllowOnlyTypeAndOptional(t *testing.T) {
       run: {path: /bin/true}
     output_types:
       result: {type: review/v1}`)
-	if _, err := workflow.ParseCompiled([]byte(taskDoc)); err != nil {
-		t.Fatalf("task safe output long form: %v", err)
+	if _, err := compileSource([]byte(taskDoc)); err == nil {
+		t.Fatal("source compilation accepted an untyped task output producer")
 	}
 }
 
@@ -536,13 +477,13 @@ func TestParseV3OutputTypeStrictnessDoesNotChangeOrdinaryATCLongForm(t *testing.
         workflow_port: result
         workflow_definition_id: 17
         workflow_run_id: "9007199254740993"`)
-	if _, err := workflow.ParseCompiled([]byte(doc)); err == nil {
+	if _, err := compileSource([]byte(doc)); err == nil {
 		t.Fatal("v3 source accepted ATC's internal long-form output config")
 	}
 }
 
 func TestCompiledDefinitionPublicMethodsRejectNonV3(t *testing.T) {
-	function, err := workflow.ParseCompiled([]byte(v3ProgramYAML))
+	function, err := compileSource([]byte(v3ProgramYAML))
 	if err != nil {
 		t.Fatalf("v3: %v", err)
 	}
@@ -598,11 +539,8 @@ func TestCompiledDefinitionValidateRejectsUnknownPlanFields(t *testing.T) {
 			"plan": [{"get": "repo", "typo": true}]
 		}
 	}`), &definition)
-	if err != nil {
-		t.Fatalf("unmarshal direct model: %v", err)
-	}
-	if err := definition.Validate(); err == nil {
-		t.Fatal("directly decoded model with an unknown plan field unexpectedly validated")
+	if err == nil {
+		t.Fatal("directly decoded model with an unknown plan field unexpectedly unmarshaled")
 	}
 }
 
@@ -643,7 +581,7 @@ steps:
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			definition, err := workflow.ParseCompiled([]byte(test.source))
+			definition, err := compileSource([]byte(test.source))
 			if definition != nil {
 				t.Fatalf("definition = %+v, want nil", definition)
 			}
@@ -782,7 +720,7 @@ func TestParseV3StrictErrors(t *testing.T) {
 	}
 	for name, doc := range cases {
 		t.Run(name, func(t *testing.T) {
-			if _, err := workflow.ParseCompiled([]byte(doc)); err == nil {
+			if _, err := compileSource([]byte(doc)); err == nil {
 				t.Fatalf("expected strict parse error for:\n%s", doc)
 			}
 		})
@@ -791,7 +729,7 @@ func TestParseV3StrictErrors(t *testing.T) {
 	for _, invalid := range []string{"review/v0", "review/v01"} {
 		t.Run("invalid type "+invalid, func(t *testing.T) {
 			doc := strings.Replace(base, "type: review/v1", "type: "+invalid, 1)
-			if _, err := workflow.ParseCompiled([]byte(doc)); err == nil {
+			if _, err := compileSource([]byte(doc)); err == nil {
 				t.Fatalf("expected invalid type error for %q", invalid)
 			}
 		})
@@ -853,7 +791,7 @@ func TestParseV3ValidatesAgentAssetFieldPresenceBeforeTypedDecoding(t *testing.T
       - agent: work
         function_id: inspect
 ` + strings.ReplaceAll(test.body, "    ", "        "))
-			definition, err := workflow.ParseCompiled([]byte(document))
+			definition, err := compileSource([]byte(document))
 			if err == nil || definition != nil {
 				t.Fatalf("ParseCompiled = (%+v, %v), want nil and error", definition, err)
 			}

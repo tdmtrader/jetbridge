@@ -71,11 +71,13 @@ func ExtractFunctionTarget(definition Definition, functionID string) (FunctionTa
 	}
 	signature := PublicSignature{Inputs: inputs, Outputs: outputs}
 	extracted := &FunctionConfig{
-		SignatureVersion: definition.SignatureVersion,
-		Inputs:           portsFromSignature(inputs),
-		Outputs:          outputsFromSignature(outputs),
-		ResourceTypes:    resourceTypes,
-		Plan:             []atc.Step{found.step},
+		SignatureVersion:            definition.SignatureVersion,
+		Inputs:                      portsFromSignature(inputs),
+		Outputs:                     outputsFromSignature(outputs),
+		ResourceTypes:               resourceTypes,
+		Plan:                        []atc.Step{found.step},
+		DevValidationProfiles:       cloneCompiledDevValidationProfiles(function.DevValidationProfiles),
+		DevValidationProvenanceHash: function.DevValidationProvenanceHash,
 	}
 	if err := validateRenderableFunction(extracted, signature, definition.ID); err != nil {
 		return FunctionTarget{}, err
@@ -85,14 +87,15 @@ func ExtractFunctionTarget(definition Definition, functionID string) (FunctionTa
 	}
 
 	return FunctionTarget{
-		Kind:                 TargetFunction,
-		WorkflowDefinitionID: definition.ID,
-		WorkflowName:         definition.Name,
-		WorkflowVersion:      definition.Version,
-		SignatureVersion:     definition.SignatureVersion,
-		FunctionID:           functionID,
-		Signature:            clonePublicSignature(signature),
-		Function:             *extracted,
+		Kind:                        TargetFunction,
+		WorkflowDefinitionID:        definition.ID,
+		WorkflowName:                definition.Name,
+		WorkflowVersion:             definition.Version,
+		SignatureVersion:            definition.SignatureVersion,
+		FunctionID:                  functionID,
+		Signature:                   clonePublicSignature(signature),
+		Function:                    *extracted,
+		DevValidationProvenanceHash: extracted.DevValidationProvenanceHash,
 	}, nil
 }
 

@@ -12,12 +12,27 @@ import (
 	"github.com/goccy/go-yaml"
 )
 
-// ParseCompiled parses a schema-version-3 workflow function.
+// ParseCompiled accepts only the durable compiled JSON model. Human source
+// manifests must enter through CompileDefinition so referenced authority is
+// resolved and frozen before any consumer can observe it.
 func ParseCompiled(raw []byte) (*CompiledDefinition, error) {
-	if err := RequireSchemaVersion3(raw); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var definition CompiledDefinition
+	if err := decoder.Decode(&definition); err != nil {
+		return nil, fmt.Errorf("parse compiled workflow definition: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("parse compiled workflow definition: exactly one JSON value is required")
+		}
+		return nil, fmt.Errorf("parse compiled workflow definition trailing JSON: %w", err)
+	}
+	if err := definition.Validate(); err != nil {
 		return nil, err
 	}
-	return parseFunctionDefinition(raw)
+	return &definition, nil
 }
 
 func RequireSchemaVersion3(source []byte) error {
@@ -56,19 +71,20 @@ func parseSchemaVersion(raw []byte) (int, error) {
 }
 
 type functionSource struct {
-	SchemaVersion     int                   `json:"schema_version"`
-	Name              string                `json:"name"`
-	SignatureVersion  int                   `json:"signature_version"`
-	DispositionOutput string                `json:"disposition_output,omitempty"`
-	Description       string                `json:"description,omitempty"`
-	Inputs            []snapshot.Port       `json:"inputs"`
-	Outputs           []FunctionOutput      `json:"outputs"`
-	Capabilities      map[string]Capability `json:"capabilities,omitempty"`
-	Resources         any                   `json:"resources,omitempty"`
-	ResourceTypes     any                   `json:"resource_types,omitempty"`
-	Prototypes        any                   `json:"prototypes,omitempty"`
-	VarSources        any                   `json:"var_sources,omitempty"`
-	Plan              any                   `json:"plan"`
+	SchemaVersion         int                    `json:"schema_version"`
+	Name                  string                 `json:"name"`
+	SignatureVersion      int                    `json:"signature_version"`
+	DispositionOutput     string                 `json:"disposition_output,omitempty"`
+	Description           string                 `json:"description,omitempty"`
+	Inputs                []snapshot.Port        `json:"inputs"`
+	Outputs               []FunctionOutput       `json:"outputs"`
+	Capabilities          map[string]Capability  `json:"capabilities,omitempty"`
+	DevValidationProfiles []DevValidationProfile `json:"dev_validation_profiles,omitempty"`
+	Resources             any                    `json:"resources,omitempty"`
+	ResourceTypes         any                    `json:"resource_types,omitempty"`
+	Prototypes            any                    `json:"prototypes,omitempty"`
+	VarSources            any                    `json:"var_sources,omitempty"`
+	Plan                  any                    `json:"plan"`
 }
 
 type syntheticFunctionConfig struct {
@@ -84,40 +100,40 @@ type syntheticFunctionJob struct {
 	Plan any    `yaml:"plan"`
 }
 
-func parseFunctionDefinition(raw []byte) (*CompiledDefinition, error) {
+func parseFunctionDefinitionSource(raw []byte) (*CompiledDefinition, []DevValidationProfile, error) {
 	decoder := yaml.NewDecoder(bytes.NewReader(raw))
 	var document any
 	if err := decoder.Decode(&document); err != nil {
-		return nil, fmt.Errorf("parse workflow function: %w", err)
+		return nil, nil, fmt.Errorf("parse workflow function: %w", err)
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		if err == nil {
-			return nil, fmt.Errorf("parse workflow function: exactly one YAML or JSON document is required")
+			return nil, nil, fmt.Errorf("parse workflow function: exactly one YAML or JSON document is required")
 		}
-		return nil, fmt.Errorf("parse workflow function trailing document: %w", err)
+		return nil, nil, fmt.Errorf("parse workflow function trailing document: %w", err)
 	}
 	if err := validateFunctionSourceKeys(document); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	documentJSON, err := json.Marshal(document)
 	if err != nil {
-		return nil, fmt.Errorf("parse workflow function document: %w", err)
+		return nil, nil, fmt.Errorf("parse workflow function document: %w", err)
 	}
 	jsonDecoder := json.NewDecoder(bytes.NewReader(documentJSON))
 	jsonDecoder.DisallowUnknownFields()
 	var source functionSource
 	if err := jsonDecoder.Decode(&source); err != nil {
-		return nil, fmt.Errorf("parse workflow function: %w", err)
+		return nil, nil, fmt.Errorf("parse workflow function: %w", err)
 	}
 	if err := jsonDecoder.Decode(&trailing); err != io.EOF {
 		if err == nil {
-			return nil, fmt.Errorf("parse workflow function: unexpected trailing JSON value")
+			return nil, nil, fmt.Errorf("parse workflow function: unexpected trailing JSON value")
 		}
-		return nil, fmt.Errorf("parse workflow function trailing JSON: %w", err)
+		return nil, nil, fmt.Errorf("parse workflow function trailing JSON: %w", err)
 	}
 	if source.SchemaVersion != 3 {
-		return nil, fmt.Errorf("workflow: function parser requires schema_version 3, got %d", source.SchemaVersion)
+		return nil, nil, fmt.Errorf("workflow: function parser requires schema_version 3, got %d", source.SchemaVersion)
 	}
 
 	synthetic := syntheticFunctionConfig{
@@ -132,14 +148,14 @@ func parseFunctionDefinition(raw []byte) (*CompiledDefinition, error) {
 	}
 	payload, err := yaml.Marshal(synthetic)
 	if err != nil {
-		return nil, fmt.Errorf("workflow: encode ordinary Concourse plan: %w", err)
+		return nil, nil, fmt.Errorf("workflow: encode ordinary Concourse plan: %w", err)
 	}
 	var ordinary atc.Config
 	if err := atc.UnmarshalConfig(payload, &ordinary); err != nil {
-		return nil, fmt.Errorf("workflow: decode ordinary Concourse declarations and plan: %w", err)
+		return nil, nil, fmt.Errorf("workflow: decode ordinary Concourse declarations and plan: %w", err)
 	}
 	if len(ordinary.Jobs) != 1 {
-		return nil, fmt.Errorf("workflow: internal function plan must decode as exactly one job")
+		return nil, nil, fmt.Errorf("workflow: internal function plan must decode as exactly one job")
 	}
 
 	definition := &CompiledDefinition{
@@ -160,9 +176,9 @@ func parseFunctionDefinition(raw []byte) (*CompiledDefinition, error) {
 		},
 	}
 	if err := definition.Validate(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return definition, nil
+	return definition, source.DevValidationProfiles, nil
 }
 
 func validateFunctionSourceKeys(document any) error {
@@ -172,9 +188,33 @@ func validateFunctionSourceKeys(document any) error {
 	}
 	if err := rejectObjectKeys(root, "workflow", []string{
 		"schema_version", "name", "signature_version", "disposition_output", "description", "inputs", "outputs",
-		"capabilities", "resources", "resource_types", "prototypes", "var_sources", "plan",
+		"capabilities", "resources", "resource_types", "prototypes", "var_sources", "plan", "dev_validation_profiles",
 	}); err != nil {
 		return err
+	}
+	if profiles, ok := root["dev_validation_profiles"].([]any); ok {
+		for index, profile := range profiles {
+			if object, ok := profile.(map[string]any); ok {
+				path := fmt.Sprintf("workflow.dev_validation_profiles[%d]", index)
+				if err := rejectObjectKeys(object, path, []string{"name", "capability", "profile_file", "config_file", "candidate", "base_inputs"}); err != nil {
+					return err
+				}
+				if candidate, ok := object["candidate"].(map[string]any); ok {
+					if err := rejectObjectKeys(candidate, path+".candidate", []string{"name", "type"}); err != nil {
+						return err
+					}
+				}
+				if bases, ok := object["base_inputs"].([]any); ok {
+					for baseIndex, base := range bases {
+						if object, ok := base.(map[string]any); ok {
+							if err := rejectObjectKeys(object, fmt.Sprintf("%s.base_inputs[%d]", path, baseIndex), []string{"name", "type"}); err != nil {
+								return err
+							}
+						}
+					}
+				}
+			}
+		}
 	}
 	if inputs, ok := root["inputs"].([]any); ok {
 		for index, input := range inputs {

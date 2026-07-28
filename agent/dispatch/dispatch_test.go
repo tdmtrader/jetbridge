@@ -233,7 +233,7 @@ plan:
 %s    output_types:
       report: opaque/v1
 `, declared.String(), strings.Join(names, ", "), types.String())
-	compiled, err := workflow.ParseCompiled([]byte(raw))
+	compiled, err := workflow.CompileDefinition(workflow.Manifest{workflow.WorkflowFileName: raw})
 	if err != nil {
 		t.Fatalf("parse v3 definition: %v", err)
 	}

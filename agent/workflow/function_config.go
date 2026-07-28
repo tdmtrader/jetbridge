@@ -29,6 +29,10 @@ type FunctionConfig struct {
 	Prototypes        atc.Prototypes        `json:"prototypes,omitempty" yaml:"prototypes,omitempty"`
 	VarSources        atc.VarSourceConfigs  `json:"var_sources,omitempty" yaml:"var_sources,omitempty"`
 	Plan              []atc.Step            `json:"plan" yaml:"plan"`
+	// DevValidationProfiles is compiled-only authority. Source manifests use
+	// file references that are intentionally erased during compilation.
+	DevValidationProfiles       []CompiledDevValidationProfile `json:"dev_validation_profiles,omitempty" yaml:"dev_validation_profiles,omitempty"`
+	DevValidationProvenanceHash string                         `json:"dev_validation_provenance_hash,omitempty" yaml:"dev_validation_provenance_hash,omitempty"`
 	// SkillFiles is compiled-only content. Version-3 source selects skill
 	// names on agent nodes; compilation copies the selected trees here.
 	SkillFiles map[string]string `json:"skill_files,omitempty" yaml:"skill_files,omitempty"`
@@ -39,6 +43,45 @@ type FunctionConfig struct {
 type Capability struct {
 	Contract string            `json:"contract" yaml:"contract"`
 	Sidecar  atc.SidecarConfig `json:"sidecar" yaml:"sidecar"`
+}
+
+// UnmarshalJSON is intentionally stricter than the source parser. A compiled
+// definition cannot retain source-only named capabilities: their permitted
+// runtime material was expanded during compilation, while validation retained
+// only its image and digest in the dedicated authority catalog.
+func (config *FunctionConfig) UnmarshalJSON(data []byte) error {
+	var object map[string]json.RawMessage
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	if err := decoder.Decode(&object); err != nil {
+		return err
+	}
+	for key := range object {
+		switch key {
+		case "signature_version", "disposition_output", "inputs", "outputs", "resources", "resource_sources", "resource_types", "prototypes", "var_sources", "plan", "dev_validation_profiles", "dev_validation_provenance_hash", "skill_files":
+		default:
+			return fmt.Errorf("workflow: compiled function: unknown or source-only field %q", key)
+		}
+	}
+	type wire FunctionConfig
+	var decoded wire
+	decoder = json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("workflow: compiled function has trailing JSON value")
+		}
+		return err
+	}
+	parsed := FunctionConfig(decoded)
+	if err := parsed.Validate(); err != nil {
+		return err
+	}
+	*config = parsed
+	return nil
 }
 
 // FunctionOutput maps one public output port to the internal artifact that is
@@ -156,6 +199,9 @@ func (config FunctionConfig) Validate() error {
 		return fmt.Errorf("workflow: plan must contain at least one step")
 	}
 	if err := rejectUnknownPlanFields(config.Plan); err != nil {
+		return err
+	}
+	if err := validateCompiledDevValidationProfiles(config.DevValidationProfiles, config.DevValidationProvenanceHash); err != nil {
 		return err
 	}
 	return nil

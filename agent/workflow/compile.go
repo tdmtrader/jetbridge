@@ -35,11 +35,11 @@ func CompileDefinition(m Manifest) (*CompiledDefinition, error) {
 	if err := RequireSchemaVersion3([]byte(raw)); err != nil {
 		return nil, err
 	}
-	definition, err := parseFunctionDefinition([]byte(raw))
+	definition, validationProfiles, err := parseFunctionDefinitionSource([]byte(raw))
 	if err != nil {
 		return nil, err
 	}
-	if err := compileFunctionAssets(m, definition); err != nil {
+	if err := compileFunctionAssets(m, definition, validationProfiles); err != nil {
 		return nil, err
 	}
 	// Source compilation is intentionally independent of the durable workflow
@@ -52,8 +52,8 @@ func CompileDefinition(m Manifest) (*CompiledDefinition, error) {
 	return definition, nil
 }
 
-func compileFunctionAssets(m Manifest, definition *CompiledDefinition) error {
-	compiler, err := newFunctionAssetCompiler(m, definition.Function)
+func compileFunctionAssets(m Manifest, definition *CompiledDefinition, validationProfiles []DevValidationProfile) error {
+	compiler, err := newFunctionAssetCompiler(m, definition.Function, validationProfiles)
 	if err != nil {
 		return err
 	}
@@ -78,30 +78,33 @@ type preparedAgentAssets struct {
 }
 
 type functionAssetCompiler struct {
-	manifest           Manifest
-	function           *FunctionConfig
-	manifestPaths      []string
-	skillTrees         map[string][]manifestAsset
-	capabilityBytes    map[string]int
-	preparedAgents     map[*atc.AgentStep]preparedAgentAssets
-	selectedSkillPaths map[string]struct{}
-	selectedSkillFiles []manifestAsset
-	compiledAssetBytes int
-	compiledSkillBytes int
+	manifest                      Manifest
+	function                      *FunctionConfig
+	manifestPaths                 []string
+	skillTrees                    map[string][]manifestAsset
+	capabilityBytes               map[string]int
+	preparedAgents                map[*atc.AgentStep]preparedAgentAssets
+	selectedSkillPaths            map[string]struct{}
+	selectedSkillFiles            []manifestAsset
+	sourceDevValidationProfiles   []DevValidationProfile
+	compiledDevValidationProfiles []CompiledDevValidationProfile
+	compiledAssetBytes            int
+	compiledSkillBytes            int
 }
 
-func newFunctionAssetCompiler(m Manifest, function *FunctionConfig) (*functionAssetCompiler, error) {
+func newFunctionAssetCompiler(m Manifest, function *FunctionConfig, validationProfiles []DevValidationProfile) (*functionAssetCompiler, error) {
 	if err := validateCapabilityCatalog(function.Capabilities); err != nil {
 		return nil, err
 	}
 	compiler := &functionAssetCompiler{
-		manifest:           m,
-		function:           function,
-		manifestPaths:      m.Paths(),
-		skillTrees:         make(map[string][]manifestAsset),
-		capabilityBytes:    make(map[string]int, len(function.Capabilities)),
-		preparedAgents:     make(map[*atc.AgentStep]preparedAgentAssets),
-		selectedSkillPaths: make(map[string]struct{}),
+		manifest:                    m,
+		function:                    function,
+		manifestPaths:               m.Paths(),
+		skillTrees:                  make(map[string][]manifestAsset),
+		capabilityBytes:             make(map[string]int, len(function.Capabilities)),
+		preparedAgents:              make(map[*atc.AgentStep]preparedAgentAssets),
+		selectedSkillPaths:          make(map[string]struct{}),
+		sourceDevValidationProfiles: append([]DevValidationProfile(nil), validationProfiles...),
 	}
 	for _, name := range sortedCapabilityNames(function.Capabilities) {
 		canonical, err := json.Marshal(function.Capabilities[name].Sidecar)
@@ -114,6 +117,9 @@ func newFunctionAssetCompiler(m Manifest, function *FunctionConfig) (*functionAs
 }
 
 func (compiler *functionAssetCompiler) preflight() error {
+	if err := compiler.preflightDevValidationProfiles(); err != nil {
+		return err
+	}
 	for index := range compiler.function.Plan {
 		err := compiler.function.Plan[index].Config.Visit(atc.StepRecursor{
 			OnTask:  compiler.preflightTask,
@@ -122,6 +128,71 @@ func (compiler *functionAssetCompiler) preflight() error {
 		if err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func (compiler *functionAssetCompiler) preflightDevValidationProfiles() error {
+	if len(compiler.sourceDevValidationProfiles) == 0 {
+		return nil
+	}
+	mutableRoots := devValidationMutableRoots(compiler.function)
+	seen := map[string]struct{}{}
+	compiler.compiledDevValidationProfiles = make([]CompiledDevValidationProfile, 0, len(compiler.sourceDevValidationProfiles))
+	for index, source := range compiler.sourceDevValidationProfiles {
+		identity := fmt.Sprintf("dev validation profile %d (%q)", index, source.Name)
+		if err := validateDevValidationProfileName(source.Name); err != nil {
+			return fmt.Errorf("workflow: %s: %w", identity, err)
+		}
+		if _, duplicate := seen[source.Name]; duplicate {
+			return fmt.Errorf("workflow: duplicate dev validation profile %q", source.Name)
+		}
+		seen[source.Name] = struct{}{}
+		if err := validateDevValidationContracts(source.Candidate, source.BaseInputs); err != nil {
+			return fmt.Errorf("workflow: %s: %w", identity, err)
+		}
+		if err := rejectDevValidationInterpolation("capability reference", []byte(source.Capability)); err != nil {
+			return fmt.Errorf("workflow: %s: %w", identity, err)
+		}
+		capability, found := compiler.function.Capabilities[source.Capability]
+		if !found {
+			return fmt.Errorf("workflow: %s: unknown capability %q", identity, source.Capability)
+		}
+		if capability.Contract != DevValidationCapabilityContract {
+			return fmt.Errorf("workflow: %s: capability %q must implement %s, got %s", identity, source.Capability, DevValidationCapabilityContract, capability.Contract)
+		}
+		if err := validateDevValidationAssetReference(source.ProfileFile, mutableRoots); err != nil {
+			return fmt.Errorf("workflow: %s: profile_file: %w", identity, err)
+		}
+		if err := validateDevValidationAssetReference(source.ConfigFile, mutableRoots); err != nil {
+			return fmt.Errorf("workflow: %s: config_file: %w", identity, err)
+		}
+		profile, err := resolveManifestFile(compiler.manifest, source.ProfileFile)
+		if err != nil {
+			return fmt.Errorf("workflow: %s: profile_file %q: %w", identity, source.ProfileFile, err)
+		}
+		config, err := resolveManifestFile(compiler.manifest, source.ConfigFile)
+		if err != nil {
+			return fmt.Errorf("workflow: %s: config_file %q: %w", identity, source.ConfigFile, err)
+		}
+		profileBytes, configBytes := []byte(profile), []byte(config)
+		if err := rejectDevValidationInterpolation("profile bytes", profileBytes); err != nil {
+			return fmt.Errorf("workflow: %s: %w", identity, err)
+		}
+		if err := rejectDevValidationInterpolation("protected config bytes", configBytes); err != nil {
+			return fmt.Errorf("workflow: %s: %w", identity, err)
+		}
+		if err := compiler.addCompiledAssetBytes(len(profileBytes), identity, "profile"); err != nil {
+			return err
+		}
+		if err := compiler.addCompiledAssetBytes(len(configBytes), identity, "protected config"); err != nil {
+			return err
+		}
+		imageDigest, err := devValidationImageDigest(capability.Sidecar.Image)
+		if err != nil {
+			return fmt.Errorf("workflow: %s: capability %q: %w", identity, source.Capability, err)
+		}
+		compiler.compiledDevValidationProfiles = append(compiler.compiledDevValidationProfiles, CompiledDevValidationProfile{Name: source.Name, Candidate: source.Candidate, BaseInputs: append([]DevValidationContract(nil), source.BaseInputs...), CapabilityImage: capability.Sidecar.Image, CapabilityImageDigest: imageDigest, Command: devValidationCommand(), Profile: append([]byte(nil), profileBytes...), ProfileDigest: digestDevValidationBytes(profileBytes), ProtectedConfig: append([]byte(nil), configBytes...), ProtectedConfigDigest: digestDevValidationBytes(configBytes)})
 	}
 	return nil
 }
@@ -306,6 +377,14 @@ func (compiler *functionAssetCompiler) addCompiledSkillBytes(amount int, identit
 }
 
 func (compiler *functionAssetCompiler) compile() error {
+	if len(compiler.compiledDevValidationProfiles) > 0 {
+		compiler.function.DevValidationProfiles = cloneCompiledDevValidationProfiles(compiler.compiledDevValidationProfiles)
+		provenance, err := DevValidationProvenanceHash(compiler.function.DevValidationProfiles)
+		if err != nil {
+			return err
+		}
+		compiler.function.DevValidationProvenanceHash = provenance
+	}
 	if len(compiler.selectedSkillFiles) > 0 {
 		compiler.function.SkillFiles = make(map[string]string, len(compiler.selectedSkillFiles))
 		for _, asset := range compiler.selectedSkillFiles {
@@ -324,6 +403,10 @@ func (compiler *functionAssetCompiler) compile() error {
 			return err
 		}
 	}
+	// Named capabilities are authoring indirection. The compiled model contains
+	// only the expanded interactive sidecars and the minimal validation image
+	// authority, never the source capability catalog.
+	compiler.function.Capabilities = nil
 	return nil
 }
 

@@ -330,9 +330,8 @@ plan:
 		second.Sidecars[0].Config.Resources.Requests.CPU != "100m" {
 		t.Fatalf("expanded sidecars alias each other: %+v", second.Sidecars[0].Config)
 	}
-	catalog := definition.Function.Capabilities["files"].Sidecar
-	if catalog.Command[0] != "serve" || catalog.Resources.Requests.CPU != "100m" {
-		t.Fatalf("expanded sidecar aliases catalog: %+v", catalog)
+	if len(definition.Function.Capabilities) != 0 {
+		t.Fatalf("compiled function retained source capability catalog: %+v", definition.Function.Capabilities)
 	}
 }
 

@@ -28,8 +28,8 @@ func TestHashUnaffectedByCompiledModel(t *testing.T) {
 
 	raw := []byte(v3ProgramYAML)
 	wantRawHash := workflow.Hash(raw)
-	if _, err := workflow.ParseCompiled(raw); err != nil {
-		t.Fatalf("ParseCompiled: %v", err)
+	if _, err := workflow.CompileDefinition(workflow.Manifest{workflow.WorkflowFileName: string(raw)}); err != nil {
+		t.Fatalf("CompileDefinition: %v", err)
 	}
 	if got := workflow.Hash(raw); got != wantRawHash {
 		t.Fatalf("parsing changed raw-byte identity: got %s want %s", got, wantRawHash)

@@ -800,7 +800,7 @@ func TestBindAndCreateRejectsPartialAdmittingState(t *testing.T) {
 }
 
 func TestWorkflowTargetRendererPinsTrustedAgentRuntimeIntoImmutableConfig(t *testing.T) {
-	compiled, err := workflow.ParseCompiled([]byte(`schema_version: 3
+	compiled, err := workflow.CompileDefinition(workflow.Manifest{workflow.WorkflowFileName: `schema_version: 3
 name: runtime-test
 signature_version: 1
 inputs:
@@ -820,7 +820,7 @@ plan:
       repo: {type: repository/v1}
     output_types:
       report: opaque/v1
-`))
+`})
 	if err != nil {
 		t.Fatal(err)
 	}

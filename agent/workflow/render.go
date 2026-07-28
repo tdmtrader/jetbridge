@@ -25,22 +25,25 @@ const (
 )
 
 type FunctionTarget struct {
-	Kind                 TargetKind
-	WorkflowDefinitionID int
-	WorkflowName         string
-	WorkflowVersion      int
-	SignatureVersion     int
-	FunctionID           string
-	Signature            PublicSignature
-	Function             FunctionConfig
+	Kind                        TargetKind
+	WorkflowDefinitionID        int
+	WorkflowName                string
+	WorkflowVersion             int
+	SignatureVersion            int
+	FunctionID                  string
+	Signature                   PublicSignature
+	Function                    FunctionConfig
+	DevValidationProvenanceHash string
 }
 
 type RenderedFunction struct {
-	TemplateName     string
-	TargetSignature  PublicSignature
-	Config           atc.Config
-	TargetConfigHash string
-	InputParamNames  map[string]string
+	TemplateName                string
+	TargetSignature             PublicSignature
+	Config                      atc.Config
+	TargetConfigHash            string
+	InputParamNames             map[string]string
+	DevValidationProfiles       []CompiledDevValidationProfile
+	DevValidationProvenanceHash string
 }
 
 // TargetConfigHash returns the canonical, domain-separated hash used to bind
@@ -53,6 +56,31 @@ func TargetConfigHash(config atc.Config) (string, error) {
 	hasher := sha256.New()
 	_, _ = hasher.Write([]byte(targetConfigHashDomain))
 	_, _ = hasher.Write(canonical)
+	return hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
+// renderedTargetConfigHash preserves the historical config-only identity for
+// ordinary functions. Validation-bearing functions use a distinct domain so
+// their frozen authority cannot be separated from the rendered template.
+func renderedTargetConfigHash(config atc.Config, profiles []CompiledDevValidationProfile, provenance string) (string, error) {
+	if len(profiles) == 0 {
+		return TargetConfigHash(config)
+	}
+	canonical, err := config.CanonicalJSON()
+	if err != nil {
+		return "", fmt.Errorf("workflow: canonicalize target config: %w", err)
+	}
+	authority, err := json.Marshal(struct {
+		Profiles   []CompiledDevValidationProfile `json:"profiles"`
+		Provenance string                         `json:"provenance"`
+	}{profiles, provenance})
+	if err != nil {
+		return "", fmt.Errorf("workflow: canonicalize validation target authority: %w", err)
+	}
+	hasher := sha256.New()
+	_, _ = hasher.Write([]byte("workflow-target-config-with-dev-validation/v1\x00"))
+	_, _ = hasher.Write(canonical)
+	_, _ = hasher.Write(authority)
 	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
@@ -122,13 +150,14 @@ func FullFunctionTarget(definition Definition) (FunctionTarget, error) {
 		return FunctionTarget{}, fmt.Errorf("workflow: prepare full target: %w", err)
 	}
 	return FunctionTarget{
-		Kind:                 TargetWorkflow,
-		WorkflowDefinitionID: definition.ID,
-		WorkflowName:         definition.Name,
-		WorkflowVersion:      definition.Version,
-		SignatureVersion:     definition.SignatureVersion,
-		Signature:            clonePublicSignature(signature),
-		Function:             *function,
+		Kind:                        TargetWorkflow,
+		WorkflowDefinitionID:        definition.ID,
+		WorkflowName:                definition.Name,
+		WorkflowVersion:             definition.Version,
+		SignatureVersion:            definition.SignatureVersion,
+		Signature:                   clonePublicSignature(signature),
+		Function:                    *function,
+		DevValidationProvenanceHash: function.DevValidationProvenanceHash,
 	}, nil
 }
 
@@ -229,7 +258,7 @@ func RenderFunction(target FunctionTarget) (RenderedFunction, error) {
 		return RenderedFunction{}, err
 	}
 
-	configHash, err := TargetConfigHash(config)
+	configHash, err := renderedTargetConfigHash(config, function.DevValidationProfiles, function.DevValidationProvenanceHash)
 	if err != nil {
 		return RenderedFunction{}, err
 	}
@@ -239,11 +268,13 @@ func RenderFunction(target FunctionTarget) (RenderedFunction, error) {
 	}
 
 	return RenderedFunction{
-		TemplateName:     templateName,
-		TargetSignature:  clonePublicSignature(signature),
-		Config:           config,
-		TargetConfigHash: configHash,
-		InputParamNames:  paramNames,
+		TemplateName:                templateName,
+		TargetSignature:             clonePublicSignature(signature),
+		Config:                      config,
+		TargetConfigHash:            configHash,
+		InputParamNames:             paramNames,
+		DevValidationProfiles:       cloneCompiledDevValidationProfiles(function.DevValidationProfiles),
+		DevValidationProvenanceHash: function.DevValidationProvenanceHash,
 	}, nil
 }
 
@@ -311,6 +342,9 @@ func validateFunctionTarget(target FunctionTarget, function *FunctionConfig, sig
 	if err := validatePublicSignature(signature); err != nil {
 		return err
 	}
+	if target.DevValidationProvenanceHash != function.DevValidationProvenanceHash {
+		return fmt.Errorf("workflow: target dev validation provenance does not match its function")
+	}
 
 	switch target.Kind {
 	case TargetWorkflow:
@@ -342,6 +376,9 @@ func validateFunctionTarget(target FunctionTarget, function *FunctionConfig, sig
 func validateRenderableFunction(function *FunctionConfig, signature PublicSignature, workflowDefinitionID int) error {
 	if function == nil {
 		return fmt.Errorf("workflow: function is required")
+	}
+	if err := validateCompiledDevValidationProfiles(function.DevValidationProfiles, function.DevValidationProvenanceHash); err != nil {
+		return err
 	}
 	if len(function.SkillFiles) > 0 {
 		return fmt.Errorf("workflow: compiled skills are not supported by immutable function templates")
