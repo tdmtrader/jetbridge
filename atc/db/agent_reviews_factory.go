@@ -160,8 +160,8 @@ func (f *agentReviewsFactory) GetBySnapshot(teamName string, id snapshot.Snapsho
 		`SELECT `+reviewProjectionColumns+`, r.review
 		 FROM agent_reviews r
 		 JOIN teams authorized_team ON authorized_team.name = $1
-		 JOIN agent_snapshot_grants grant_row
-		   ON grant_row.snapshot_id = r.snapshot_id AND grant_row.team_id = authorized_team.id
+		 JOIN agent_snapshots snapshot
+		   ON snapshot.id = r.snapshot_id AND snapshot.team_id = authorized_team.id
 		 LEFT JOIN LATERAL (
 		   SELECT production.*
 		   FROM agent_snapshot_productions production
@@ -197,8 +197,8 @@ func (f *agentReviewsFactory) ListByWorkflowRun(teamName, workflowName string, i
 		 JOIN teams authorized_team ON authorized_team.id = wr.team_id AND authorized_team.name = $1
 		 JOIN agent_snapshot_productions p ON p.workflow_run_id = wr.id
 		 JOIN agent_reviews r ON r.snapshot_id = p.snapshot_id
-		 JOIN agent_snapshot_grants grant_row
-		   ON grant_row.snapshot_id = r.snapshot_id AND grant_row.team_id = wr.team_id
+		 JOIN agent_snapshots snapshot
+		   ON snapshot.id = r.snapshot_id AND snapshot.team_id = wr.team_id
 		 LEFT JOIN builds b ON b.id = p.build_id
 		 LEFT JOIN pipelines pipe ON pipe.id = b.pipeline_id
 		 LEFT JOIN jobs j ON j.id = b.job_id

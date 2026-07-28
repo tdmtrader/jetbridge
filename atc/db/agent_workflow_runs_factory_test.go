@@ -86,15 +86,10 @@ var _ = Describe("AgentWorkflowRunsFactory", func() {
 		digest := "sha256:" + strings.Repeat("b", 64)
 		err = dbConn.QueryRow(`
 			INSERT INTO agent_snapshots
-				(type_name, type_version, digest, byte_size, file_count, representation)
-			VALUES ('repository', 1, $1, 10, 1, 'application/vnd.jetbridge.snapshot.tar.v1')
+				(team_id, type_name, type_version, digest, byte_size, file_count, representation)
+			VALUES ($1, 'repository', 1, $2, 10, 1, 'application/vnd.jetbridge.snapshot.tar.v1')
 			RETURNING id
-		`, digest).Scan(&snapshotID)
-		Expect(err).NotTo(HaveOccurred())
-		_, err = dbConn.Exec(`
-			INSERT INTO agent_snapshot_grants (snapshot_id, team_id, granted_by, reason)
-			VALUES ($1, $2, 'alice', 'workflow input')
-		`, snapshotID, defaultTeam.ID())
+		`, defaultTeam.ID(), digest).Scan(&snapshotID)
 		Expect(err).NotTo(HaveOccurred())
 		input = snapshot.SnapshotRef{
 			ID: snapshot.SnapshotID(snapshotID), Type: "repository/v1", Digest: snapshot.Digest(digest),

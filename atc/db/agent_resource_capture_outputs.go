@@ -51,9 +51,7 @@ func (factory *agentSnapshotsFactory) ListPendingResourceCaptureOutputs(
 		  ON production.build_id = build.id
 		 AND production.occurrence_kind = 'build'
 		 AND production.team_id = template.team_id
-		JOIN agent_snapshots s ON s.id = production.snapshot_id
-		JOIN agent_snapshot_grants grant_row
-		  ON grant_row.snapshot_id = s.id AND grant_row.team_id = template.team_id
+		JOIN agent_snapshots s ON s.id = production.snapshot_id AND s.team_id = template.team_id
 		WHERE run.status = 'succeeded'
 		  AND template.template = true
 		  AND template.instance_vars IS NULL

@@ -1680,10 +1680,9 @@ func insertExperimentDefinition(
 			err := tx.QueryRowContext(ctx, `
 				INSERT INTO agent_snapshot_retention_claims
 					(snapshot_id, team_id, class, actor, reason)
-				SELECT snapshot_grant.snapshot_id, snapshot_grant.team_id, 'fixture', $4, 'experiment fixture binding'
-				FROM agent_snapshot_grants snapshot_grant
-				JOIN agent_snapshots snapshot ON snapshot.id = snapshot_grant.snapshot_id
-				WHERE snapshot_grant.snapshot_id = $1 AND snapshot_grant.team_id = $2
+				SELECT snapshot.id, snapshot.team_id, 'fixture', $4, 'experiment fixture binding'
+				FROM agent_snapshots snapshot
+				WHERE snapshot.id = $1 AND snapshot.team_id = $2
 				  AND snapshot.type_name || '/v' || snapshot.type_version::text = $3
 				  AND snapshot.content_state = 'available'
 				RETURNING id

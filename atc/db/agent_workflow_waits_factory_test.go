@@ -37,15 +37,10 @@ var _ = Describe("AgentWorkflowWaitsFactory", func() {
 		digest := "sha256:" + strings.Repeat(digit, 64)
 		Expect(dbConn.QueryRow(`
 			INSERT INTO agent_snapshots
-				(type_name, type_version, digest, byte_size, file_count, representation)
-			VALUES ($1, $2, $3, 1, 1, 'application/x-tar')
+				(team_id, type_name, type_version, digest, byte_size, file_count, representation)
+			VALUES ($1, $2, $3, $4, 1, 1, 'application/x-tar')
 			RETURNING id
-		`, typeName, typeVersion, digest).Scan(&id)).To(Succeed())
-		_, err := dbConn.Exec(`
-			INSERT INTO agent_snapshot_grants (snapshot_id, team_id, granted_by, reason)
-			VALUES ($1, $2, 'alice', 'workflow wait test')
-		`, id, defaultTeam.ID())
-		Expect(err).NotTo(HaveOccurred())
+		`, defaultTeam.ID(), typeName, typeVersion, digest).Scan(&id)).To(Succeed())
 		typeRef, err := snapshot.ParseTypeRef(fmt.Sprintf("%s/v%d", typeName, typeVersion))
 		Expect(err).NotTo(HaveOccurred())
 		return snapshot.SnapshotRef{ID: snapshot.SnapshotID(id), Type: typeRef, Digest: snapshot.Digest(digest)}

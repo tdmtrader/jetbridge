@@ -54,7 +54,10 @@ v8.0.1:1765921815
 # 'off'. The --agent-dispatcher-enabled boot flag is gone, so the row is the
 # only authority; a cluster that was auto-dispatching must be resumed with
 # `fly agent dispatcher resume` after the upgrade.
-JETBRIDGE_VERSION=1773106138
+# 1773106139 = snapshots carry one direct team owner. The old grant relation
+# is removed, and equal content identities may be independently owned by
+# multiple teams without authorizing cross-team reads.
+JETBRIDGE_VERSION=1773106139
 
 # Minimum supported source version (v6.x)
 MIN_SUPPORTED_VERSION=1601993582

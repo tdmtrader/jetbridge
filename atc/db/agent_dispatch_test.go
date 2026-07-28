@@ -133,15 +133,10 @@ func insertDispatchSnapshot(typeName string, digestByte byte) snapshot.Snapshot 
 	var id int64
 	err := dbConn.QueryRow(`
 		INSERT INTO agent_snapshots
-			(type_name, type_version, digest, byte_size, file_count, representation)
-		VALUES ($1, 1, $2, 10, 1, 'application/vnd.jetbridge.snapshot.tar.v1')
+			(team_id, type_name, type_version, digest, byte_size, file_count, representation)
+		VALUES ($1, $2, 1, $3, 10, 1, 'application/vnd.jetbridge.snapshot.tar.v1')
 		RETURNING id
-	`, typeName, digest.String()).Scan(&id)
-	Expect(err).NotTo(HaveOccurred())
-	_, err = dbConn.Exec(`
-		INSERT INTO agent_snapshot_grants (snapshot_id, team_id, granted_by, reason)
-		VALUES ($1, $2, 'alice', 'ticket dispatch input')
-	`, id, defaultTeam.ID())
+	`, defaultTeam.ID(), typeName, digest.String()).Scan(&id)
 	Expect(err).NotTo(HaveOccurred())
 	return snapshot.Snapshot{
 		ID: snapshot.SnapshotID(id), Type: snapshot.TypeRef(typeName + "/v1"),

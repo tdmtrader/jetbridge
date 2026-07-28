@@ -55,15 +55,11 @@ var _ = Describe("AgentPublicationsFactory", func() {
 		digest := "sha256:" + strings.Repeat("a", 64)
 		Expect(dbConn.QueryRow(`
 			INSERT INTO agent_snapshots
-				(type_name, type_version, digest, byte_size, file_count, representation, content_state)
-			VALUES ('repository-change', 1, $1, 1, 1, 'application/x-tar', 'available')
+				(team_id, type_name, type_version, digest, byte_size, file_count, representation, content_state)
+			VALUES ($1, 'repository-change', 1, $2, 1, 1, 'application/x-tar', 'available')
 			RETURNING id
-		`, digest).Scan(&id)).To(Succeed())
-		_, err := dbConn.Exec(`
-			INSERT INTO agent_snapshot_grants (snapshot_id, team_id, granted_by, reason)
-			VALUES ($1, $2, 'alice', 'publication test')
-		`, id, defaultTeam.ID())
-		Expect(err).NotTo(HaveOccurred())
+		`, defaultTeam.ID(), digest).Scan(&id)).To(Succeed())
+		var err error
 		_, err = dbConn.Exec(`
 			INSERT INTO agent_workflow_run_snapshots
 				(workflow_run_id, direction, port_name, snapshot_id, promoted_at)
@@ -78,22 +74,16 @@ var _ = Describe("AgentPublicationsFactory", func() {
 			answerDigest := "sha256:" + strings.Repeat(answerDigestCharacter, 64)
 			Expect(dbConn.QueryRow(`
 				INSERT INTO agent_snapshots
-					(type_name, type_version, digest, byte_size, file_count, representation, content_state)
-				VALUES ('question', 1, $1, 1, 1, 'application/x-tar', 'available')
+					(team_id, type_name, type_version, digest, byte_size, file_count, representation, content_state)
+				VALUES ($1, 'question', 1, $2, 1, 1, 'application/x-tar', 'available')
 				RETURNING id
-			`, questionDigest).Scan(&questionID)).To(Succeed())
+			`, defaultTeam.ID(), questionDigest).Scan(&questionID)).To(Succeed())
 			Expect(dbConn.QueryRow(`
 				INSERT INTO agent_snapshots
-					(type_name, type_version, digest, byte_size, file_count, representation, content_state)
-				VALUES ('human-answer', 1, $1, 1, 1, 'application/x-tar', 'available')
+					(team_id, type_name, type_version, digest, byte_size, file_count, representation, content_state)
+				VALUES ($1, 'human-answer', 1, $2, 1, 1, 'application/x-tar', 'available')
 				RETURNING id
-			`, answerDigest).Scan(&answerID)).To(Succeed())
-			_, err := dbConn.Exec(`
-				INSERT INTO agent_snapshot_grants (snapshot_id, team_id, granted_by, reason)
-				VALUES ($1, $3, $4, 'publication approval test'),
-				       ($2, $3, $4, 'publication approval test')
-			`, questionID, answerID, defaultTeam.ID(), actor)
-			Expect(err).NotTo(HaveOccurred())
+			`, defaultTeam.ID(), answerDigest).Scan(&answerID)).To(Succeed())
 			Expect(dbConn.QueryRow(`
 				INSERT INTO agent_workflow_waits
 					(team_id, workflow_run_id, build_id, build_id_evidence,
@@ -423,15 +413,11 @@ var _ = Describe("AgentPublicationsFactory", func() {
 		digest := "sha256:" + strings.Repeat("f", 64)
 		Expect(dbConn.QueryRow(`
 			INSERT INTO agent_snapshots
-				(type_name, type_version, digest, byte_size, file_count, representation, content_state)
-			VALUES ('repository-change', 1, $1, 1, 1, 'application/x-tar', 'available')
+				(team_id, type_name, type_version, digest, byte_size, file_count, representation, content_state)
+			VALUES ($1, 'repository-change', 1, $2, 1, 1, 'application/x-tar', 'available')
 			RETURNING id
-		`, digest).Scan(&id)).To(Succeed())
-		_, err := dbConn.Exec(`
-			INSERT INTO agent_snapshot_grants (snapshot_id, team_id, granted_by, reason)
-			VALUES ($1, $2, 'alice', 'publication test')
-		`, id, defaultTeam.ID())
-		Expect(err).NotTo(HaveOccurred())
+		`, defaultTeam.ID(), digest).Scan(&id)).To(Succeed())
+		var err error
 		value := request()
 		value.Input = snapshot.SnapshotRef{ID: snapshot.SnapshotID(id), Type: "repository-change/v1", Digest: snapshot.Digest(digest)}
 		_, _, err = factory.Acquire(context.Background(), value, time.Minute)
@@ -443,15 +429,11 @@ var _ = Describe("AgentPublicationsFactory", func() {
 		digest := "sha256:" + strings.Repeat("9", 64)
 		Expect(dbConn.QueryRow(`
 			INSERT INTO agent_snapshots
-				(type_name, type_version, digest, byte_size, file_count, representation, content_state)
-			VALUES ('repository-change', 1, $1, 1, 1, 'application/x-tar', 'available')
+				(team_id, type_name, type_version, digest, byte_size, file_count, representation, content_state)
+			VALUES ($1, 'repository-change', 1, $2, 1, 1, 'application/x-tar', 'available')
 			RETURNING id
-		`, digest).Scan(&id)).To(Succeed())
-		_, err := dbConn.Exec(`
-			INSERT INTO agent_snapshot_grants (snapshot_id, team_id, granted_by, reason)
-			VALUES ($1, $2, 'alice', 'publication test')
-		`, id, defaultTeam.ID())
-		Expect(err).NotTo(HaveOccurred())
+		`, defaultTeam.ID(), digest).Scan(&id)).To(Succeed())
+		var err error
 		_, err = dbConn.Exec(`
 			INSERT INTO agent_snapshot_productions
 				(snapshot_id, occurrence_kind, build_id, team_id, team_name, created_by,

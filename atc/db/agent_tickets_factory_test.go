@@ -145,10 +145,10 @@ var _ = Describe("AgentTicketsFactory", func() {
 			var id snapshot.SnapshotID
 			Expect(dbConn.QueryRow(`
 				INSERT INTO agent_snapshots
-					(type_name, type_version, digest, byte_size, file_count, representation)
-				VALUES ($1, 1, $2, 1, 1, 'filesystem-tree-v1')
+					(team_id, type_name, type_version, digest, byte_size, file_count, representation)
+				VALUES ($1, $2, 1, $3, 1, 1, 'filesystem-tree-v1')
 				RETURNING id
-			`, typeName, "sha256:"+strings.Repeat(digestDigit, 64)).Scan(&id)).To(Succeed())
+			`, defaultTeam.ID(), typeName, "sha256:"+strings.Repeat(digestDigit, 64)).Scan(&id)).To(Succeed())
 			return id
 		}
 		repositoryID := insertSnapshot("repository", "b")

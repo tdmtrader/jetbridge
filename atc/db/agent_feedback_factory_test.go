@@ -24,8 +24,8 @@ var _ = Describe("AgentFeedbackFactory", func() {
 	})
 
 	// The review snapshot is the only identity, so Save resolves it through the
-	// review projection and the team's grant on it. A record naming a review the
-	// team cannot see is a 404, not a stored row.
+	// review projection and the team's direct ownership of its snapshot. A
+	// record naming a review the team cannot see is a 404, not a stored row.
 	Describe("Save", func() {
 		It("round-trips a feedback record and updates it on conflict", func() {
 			reviewsFactory := db.NewAgentReviewsFactory(dbConn)
@@ -142,16 +142,11 @@ var _ = Describe("AgentFeedbackFactory snapshot review identity", func() {
 			FindingID: "ISS-1", Verdict: "noisy", Reviewer: "alice",
 		}
 		Expect(feedbackFactory.Save(unauthorized)).To(MatchError(MatchRegexp("review projection not found.*")))
-		_, err = dbConn.Exec(`
-			INSERT INTO agent_snapshot_grants (snapshot_id, team_id, granted_by, reason)
-			VALUES ($1, $2, 'projection-test', 'shared review')
-		`, int64(id), otherTeam.ID())
-		Expect(err).ToNot(HaveOccurred())
 		Expect(feedbackFactory.Save(&feedback.StoredFeedback{
 			ReviewSnapshotID: id, ReviewTeamName: defaultTeam.Name(),
 			FindingID: "ISS-1", Verdict: "accurate", Reviewer: "alice",
 		})).To(Succeed())
-		Expect(feedbackFactory.Save(unauthorized)).To(Succeed())
+		Expect(feedbackFactory.Save(unauthorized)).To(MatchError(MatchRegexp("review projection not found.*")))
 
 		mainRows, err := feedbackFactory.GetByReviewSnapshot(id, defaultTeam.Name())
 		Expect(err).ToNot(HaveOccurred())
@@ -159,7 +154,6 @@ var _ = Describe("AgentFeedbackFactory snapshot review identity", func() {
 		Expect(mainRows[0].Verdict).To(Equal("accurate"))
 		otherRows, err := feedbackFactory.GetByReviewSnapshot(id, otherTeam.Name())
 		Expect(err).ToNot(HaveOccurred())
-		Expect(otherRows).To(HaveLen(1))
-		Expect(otherRows[0].Verdict).To(Equal("noisy"))
+		Expect(otherRows).To(BeEmpty())
 	})
 })

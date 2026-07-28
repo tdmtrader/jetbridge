@@ -114,15 +114,10 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 			var id int64
 			Expect(dbConn.QueryRow(`
 				INSERT INTO agent_snapshots
-					(type_name, type_version, digest, byte_size, file_count, representation, created_at)
-				VALUES ($1, 1, $2, 1, 1, 'application/x-tar', $3)
+					(team_id, type_name, type_version, digest, byte_size, file_count, representation, created_at)
+				VALUES ($1, $2, 1, $3, 1, 1, 'application/x-tar', $4)
 				RETURNING id
-			`, typeName, "sha256:"+strings.Repeat(character, 64), rowCreatedAt).Scan(&id)).To(Succeed())
-			_, err := dbConn.Exec(`
-				INSERT INTO agent_snapshot_grants (snapshot_id, team_id, granted_by, reason)
-				VALUES ($1, $2, 'alice', 'pagination test')
-			`, id, defaultTeam.ID())
-			Expect(err).NotTo(HaveOccurred())
+			`, defaultTeam.ID(), typeName, "sha256:"+strings.Repeat(character, 64), rowCreatedAt).Scan(&id)).To(Succeed())
 			if index < 3 {
 				want = append(want, snapshot.SnapshotID(id))
 			}
@@ -280,7 +275,6 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 			"agent_workflow_runs",
 			"agent_snapshot_productions",
 			"agent_snapshot_lineage",
-			"agent_snapshot_grants",
 			"agent_snapshot_retention_claims",
 			"agent_workflow_run_snapshots",
 		}
@@ -406,7 +400,7 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 		Expect(stages).To(Equal(0))
 	})
 
-	It("atomically seals manifests, occurrences, locations, grants, claims, and ordered lineage", func() {
+	It("atomically seals team-owned manifests, occurrences, locations, claims, and ordered lineage", func() {
 		baseDigest := digest("2")
 		baseStage := stage(baseDigest, defaultTeam.ID(), "base")
 		base := seal(newBuild(defaultTeam.ID()), "base", nil, nil, []snapshot.SealCommitOutput{
@@ -682,10 +676,10 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 		Expect(buildID.Valid).To(BeFalse())
 		Expect(key).To(Equal("manual-1"))
 
-		var grants, pins int
-		Expect(dbConn.QueryRow(`SELECT count(*) FROM agent_snapshot_grants WHERE snapshot_id = $1 AND team_id = $2`, int64(manifest.ID), defaultTeam.ID()).Scan(&grants)).To(Succeed())
+		var owner, pins int
+		Expect(dbConn.QueryRow(`SELECT team_id FROM agent_snapshots WHERE id = $1`, int64(manifest.ID)).Scan(&owner)).To(Succeed())
 		Expect(dbConn.QueryRow(`SELECT count(*) FROM agent_snapshot_retention_claims WHERE snapshot_id = $1 AND team_id = $2 AND class = 'pin' AND actor = 'github:subject-1'`, int64(manifest.ID), defaultTeam.ID()).Scan(&pins)).To(Succeed())
-		Expect(grants).To(Equal(1))
+		Expect(owner).To(Equal(defaultTeam.ID()))
 		Expect(pins).To(Equal(1))
 
 		retryStage := stage(value, defaultTeam.ID(), "upload:manual-1")
@@ -1440,14 +1434,14 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(expired).To(BeTrue())
 
-		var manifestCount, expiredCount, occurrenceCount, grantCount int
+		var manifestCount, expiredCount, occurrenceCount, ownerCount int
 		Expect(dbConn.QueryRow(`SELECT count(*), count(*) FILTER (WHERE content_state = 'expired') FROM agent_snapshots WHERE digest = $1`, value).Scan(&manifestCount, &expiredCount)).To(Succeed())
 		Expect(dbConn.QueryRow(`SELECT count(*) FROM agent_snapshot_productions p JOIN agent_snapshots s ON s.id = p.snapshot_id WHERE s.digest = $1`, value).Scan(&occurrenceCount)).To(Succeed())
-		Expect(dbConn.QueryRow(`SELECT count(*) FROM agent_snapshot_grants g JOIN agent_snapshots s ON s.id = g.snapshot_id WHERE s.digest = $1`, value).Scan(&grantCount)).To(Succeed())
+		Expect(dbConn.QueryRow(`SELECT count(*) FROM agent_snapshots WHERE digest = $1 AND team_id = $2`, value, defaultTeam.ID()).Scan(&ownerCount)).To(Succeed())
 		Expect(manifestCount).To(Equal(2))
 		Expect(expiredCount).To(Equal(2))
 		Expect(occurrenceCount).To(Equal(2))
-		Expect(grantCount).To(Equal(2))
+		Expect(ownerCount).To(Equal(2))
 
 		reupload := stage(value, defaultTeam.ID(), "revive")
 		seal(newBuild(defaultTeam.ID()), "revive", nil, nil, []snapshot.SealCommitOutput{
@@ -1457,7 +1451,7 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 		Expect(manifestCount).To(Equal(2))
 	})
 
-	It("enforces team grants and actor-scoped independent pins", func() {
+	It("enforces direct team ownership while allowing independently owned equal digests", func() {
 		value := digest("a")
 		staged := stage(value, defaultTeam.ID(), "grant")
 		ref := seal(newBuild(defaultTeam.ID()), "grant", nil, nil, []snapshot.SealCommitOutput{
@@ -1466,36 +1460,52 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 
 		other, err := teamFactory.CreateTeam(structTeam("other-snapshot-team"))
 		Expect(err).NotTo(HaveOccurred())
+		otherStage := stage(value, other.ID(), "other-owner")
+		otherOutput := output("other", "value", "opaque/v1", value, otherStage)
+		otherSealed, err := factory.CommitSealBatch(ctx, lease, snapshot.SealCommit{
+			Context: snapshot.SealCommitContext{
+				TeamID: other.ID(), TeamName: other.Name(), CreatedBy: "alice",
+				Build: &snapshot.BuildOccurrence{
+					BuildID: newBuild(other.ID()), PlanID: "plan-other", Attempt: "other-owner",
+					StepKind: "task", StepName: "produce",
+				},
+				Inputs: map[string]snapshot.SnapshotRef{}, InputOrder: []string{},
+				ExpectedOutputs: []snapshot.Port{otherOutput.Port},
+			},
+			Outputs: []snapshot.SealCommitOutput{otherOutput},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		otherRef := otherSealed["other"].Snapshot
+		Expect(otherRef.ID).NotTo(Equal(ref.ID))
+		Expect(otherRef.Digest).To(Equal(ref.Digest))
+
 		_, found, err := factory.GetAuthorized(ctx, other.ID(), ref.ID)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeFalse())
-
-		_, err = dbConn.Exec(`
-			INSERT INTO agent_snapshot_grants (snapshot_id, team_id, granted_by, reason)
-			VALUES ($1, $2, 'test', 'shared for test')
-		`, int64(ref.ID), other.ID())
+		_, found, err = factory.GetAuthorized(ctx, other.ID(), otherRef.ID)
 		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
 
-		alice, err := factory.Pin(ctx, lease, other.ID(), "alice", ref, "investigation")
+		alice, err := factory.Pin(ctx, lease, other.ID(), "alice", otherRef, "investigation")
 		Expect(err).NotTo(HaveOccurred())
-		bob, err := factory.Pin(ctx, lease, other.ID(), "bob", ref, "audit")
+		bob, err := factory.Pin(ctx, lease, other.ID(), "bob", otherRef, "audit")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(alice.ID).NotTo(Equal(bob.ID))
-		retriedBob, err := factory.Pin(ctx, lease, other.ID(), "bob", ref, "audit")
+		retriedBob, err := factory.Pin(ctx, lease, other.ID(), "bob", otherRef, "audit")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(retriedBob.ID).To(Equal(bob.ID))
-		_, err = factory.Pin(ctx, lease, other.ID(), "bob", ref, "different immutable reason")
+		_, err = factory.Pin(ctx, lease, other.ID(), "bob", otherRef, "different immutable reason")
 		Expect(err).To(MatchError(ContainSubstring("pin conflicts")))
 		defaultAlice, err := factory.Pin(ctx, lease, defaultTeam.ID(), "alice", ref, "local investigation")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(defaultAlice.ID).NotTo(Equal(alice.ID))
 
-		Expect(factory.Unpin(ctx, lease, other.ID(), "alice", ref)).To(Succeed())
+		Expect(factory.Unpin(ctx, lease, other.ID(), "alice", otherRef)).To(Succeed())
 		var claims int
 		Expect(dbConn.QueryRow(`
 			SELECT count(*) FROM agent_snapshot_retention_claims
 			WHERE snapshot_id = $1 AND team_id = $2 AND class = 'pin'
-		`, int64(ref.ID), other.ID()).Scan(&claims)).To(Succeed())
+		`, int64(otherRef.ID), other.ID()).Scan(&claims)).To(Succeed())
 		Expect(claims).To(Equal(1))
 		Expect(dbConn.QueryRow(`
 			SELECT count(*) FROM agent_snapshot_retention_claims
@@ -1535,23 +1545,25 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 
 		other, err := teamFactory.CreateTeam(structTeam(fmt.Sprintf("other-snapshot-detail-%d", time.Now().UnixNano())))
 		Expect(err).NotTo(HaveOccurred())
-		_, err = dbConn.Exec(`
-			INSERT INTO agent_snapshot_grants (snapshot_id, team_id, granted_by, reason)
-			VALUES ($1, $2, 'bob', 'shared for detail test')
-		`, int64(ref.ID), other.ID())
-		Expect(err).NotTo(HaveOccurred())
+		var otherID int64
+		Expect(dbConn.QueryRow(`
+			INSERT INTO agent_snapshots
+				(team_id, type_name, type_version, digest, byte_size, file_count, representation, intrinsic_metadata)
+			VALUES ($1, 'opaque', 1, $2, 128, 2, 'application/vnd.jetbridge.snapshot.tar.v1', '{"tree":"abc"}')
+			RETURNING id
+		`, other.ID(), value.String()).Scan(&otherID)).To(Succeed())
 		_, err = dbConn.Exec(`
 			INSERT INTO agent_snapshot_retention_claims
 				(snapshot_id, team_id, class, actor, reason)
 			VALUES ($1, $2, 'pin', 'other-secret-actor', 'other secret reason')
-		`, int64(ref.ID), other.ID())
+		`, otherID, other.ID())
 		Expect(err).NotTo(HaveOccurred())
 		_, err = dbConn.Exec(`
 			INSERT INTO agent_snapshot_productions
 				(snapshot_id, occurrence_kind, team_id, team_name, created_by,
 				 upload_idempotency_key, source_metadata)
 			VALUES ($1, 'upload', $2, $3, 'bob', 'other-secret-key', '{"adapter":"other-secret"}')
-		`, int64(ref.ID), other.ID(), other.Name())
+		`, otherID, other.ID(), other.Name())
 		Expect(err).NotTo(HaveOccurred())
 
 		detail, found, err := factory.GetAuthorizedDetail(ctx, defaultTeam.ID(), ref.ID)
@@ -1566,7 +1578,10 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 		Expect(detail.Productions[0].CreatedBy).To(Equal("alice"))
 		Expect(detail.Downstream).To(BeEmpty())
 
-		otherDetail, found, err := factory.GetAuthorizedDetail(ctx, other.ID(), ref.ID)
+		_, found, err = factory.GetAuthorizedDetail(ctx, other.ID(), ref.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeFalse())
+		otherDetail, found, err := factory.GetAuthorizedDetail(ctx, other.ID(), snapshot.SnapshotID(otherID))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue())
 		Expect(otherDetail.RetentionClaims).To(HaveLen(1))

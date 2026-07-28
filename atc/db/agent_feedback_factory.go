@@ -27,7 +27,7 @@ type agentFeedbackFactory struct {
 // Save writes one human verdict on one finding of one sealed review snapshot.
 //
 // The INSERT ... SELECT is also the authorization check: it produces a row only
-// when the review projection exists AND the named team holds a grant on its
+// when the review projection exists AND the named team owns its
 // snapshot, so a caller cannot record feedback against a review it cannot see.
 // Zero rows affected therefore means "no such review for this team", never a
 // silent no-op.
@@ -46,7 +46,7 @@ func (f *agentFeedbackFactory) Save(rec *feedback.StoredFeedback) error {
 		SELECT r.snapshot_id, t.id, $3, $4, $5, $6, $7, $8, $9, $10
 		FROM agent_reviews r
 		JOIN teams t ON t.name = $2
-		JOIN agent_snapshot_grants g ON g.snapshot_id = r.snapshot_id AND g.team_id = t.id
+		JOIN agent_snapshots snapshot ON snapshot.id = r.snapshot_id AND snapshot.team_id = t.id
 		WHERE r.snapshot_id = $1
 		ON CONFLICT (review_snapshot_id, review_team_id, finding_id, reviewer)
 		DO UPDATE SET

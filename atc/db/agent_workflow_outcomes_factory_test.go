@@ -58,39 +58,31 @@ func insertWorkflowOutcomeFixture(suffix string) workflowOutcomeFixture {
 	`, defaultTeam.ID(), defaultTeam.Name(), definitionID, definitionName, definitionHash,
 		definitionName+"-run", configHash).Scan(&fixture.runID)).To(Succeed())
 
-	insertSnapshot := func(label, typeName string) snapshot.SnapshotID {
+	insertSnapshot := func(label, typeName string, teamID int) snapshot.SnapshotID {
 		digest := fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(definitionName+"-"+label)))
 		var id snapshot.SnapshotID
 		Expect(dbConn.QueryRow(`
 			INSERT INTO agent_snapshots
-				(type_name, type_version, digest, byte_size, file_count, representation)
-			VALUES ($1, 1, $2, 1, 1, 'filesystem-tree-v1')
+				(team_id, type_name, type_version, digest, byte_size, file_count, representation)
+			VALUES ($1, $2, 1, $3, 1, 1, 'filesystem-tree-v1')
 			RETURNING id
-		`, typeName, digest).Scan(&id)).To(Succeed())
+		`, teamID, typeName, digest).Scan(&id)).To(Succeed())
 		return id
 	}
-	fixture.firstOutput = insertSnapshot("first", "review")
-	fixture.secondOutput = insertSnapshot("second", "measurements")
-	fixture.modification = insertSnapshot("modification", "review")
-	fixture.wrongTypeModification = insertSnapshot("wrong-type-modification", "repository-change")
-	fixture.unrelatedModification = insertSnapshot("unrelated-modification", "review")
-	fixture.otherTeamModification = insertSnapshot("other-team-modification", "review")
-	fixture.unboundOutput = insertSnapshot("unbound", "review")
-	_, err := dbConn.Exec(`
+	fixture.firstOutput = insertSnapshot("first", "review", defaultTeam.ID())
+	fixture.secondOutput = insertSnapshot("second", "measurements", defaultTeam.ID())
+	fixture.modification = insertSnapshot("modification", "review", defaultTeam.ID())
+	fixture.wrongTypeModification = insertSnapshot("wrong-type-modification", "repository-change", defaultTeam.ID())
+	fixture.unrelatedModification = insertSnapshot("unrelated-modification", "review", defaultTeam.ID())
+	otherTeam, err := teamFactory.CreateTeam(structTeam(fmt.Sprintf("outcome-other-%d", time.Now().UnixNano())))
+	Expect(err).NotTo(HaveOccurred())
+	fixture.otherTeamModification = insertSnapshot("other-team-modification", "review", otherTeam.ID())
+	fixture.unboundOutput = insertSnapshot("unbound", "review", defaultTeam.ID())
+	_, err = dbConn.Exec(`
 		INSERT INTO agent_workflow_run_snapshots
 			(workflow_run_id, direction, port_name, snapshot_id, promoted_at)
 		VALUES ($1, 'output', 'review', $2, now()), ($1, 'output', 'measurements', $3, now())
 	`, int64(fixture.runID), int64(fixture.firstOutput), int64(fixture.secondOutput))
-	Expect(err).NotTo(HaveOccurred())
-	_, err = dbConn.Exec(`
-		INSERT INTO agent_snapshot_grants (snapshot_id, team_id, granted_by, reason)
-		VALUES
-			($1, $5, 'fixture', 'human modification'),
-			($2, $5, 'fixture', 'wrong type modification'),
-			($3, $5, 'fixture', 'unrelated modification'),
-			($4, $5, 'fixture', 'other team modification')
-	`, int64(fixture.modification), int64(fixture.wrongTypeModification),
-		int64(fixture.unrelatedModification), int64(fixture.otherTeamModification), defaultTeam.ID())
 	Expect(err).NotTo(HaveOccurred())
 
 	insertProduction := func(output snapshot.SnapshotID, teamID int, teamName, label string, input *snapshot.SnapshotID) {
@@ -116,7 +108,7 @@ func insertWorkflowOutcomeFixture(suffix string) workflowOutcomeFixture {
 	insertProduction(fixture.modification, defaultTeam.ID(), defaultTeam.Name(), "valid", &fixture.firstOutput)
 	insertProduction(fixture.wrongTypeModification, defaultTeam.ID(), defaultTeam.Name(), "wrong-type", &fixture.firstOutput)
 	insertProduction(fixture.unrelatedModification, defaultTeam.ID(), defaultTeam.Name(), "unrelated", &fixture.secondOutput)
-	insertProduction(fixture.otherTeamModification, defaultTeam.ID()+1000, "other-team", "other-team", &fixture.firstOutput)
+	insertProduction(fixture.otherTeamModification, otherTeam.ID(), otherTeam.Name(), "other-team", &fixture.firstOutput)
 	return fixture
 }
 
@@ -362,20 +354,16 @@ var _ = Describe("AgentWorkflowOutcomesFactory", func() {
 	It("fails closed when modification lineage exceeds the hard depth bound", func() {
 		previous := fixture.firstOutput
 		var deepest snapshot.SnapshotID
+		var err error
 		for depth := 0; depth < 65; depth++ {
 			label := fmt.Sprintf("deep-lineage-%d-%d", depth, time.Now().UnixNano())
 			digest := fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(label)))
 			Expect(dbConn.QueryRow(`
 				INSERT INTO agent_snapshots
-					(type_name, type_version, digest, byte_size, file_count, representation)
-				VALUES ('review', 1, $1, 1, 1, 'filesystem-tree-v1')
+					(team_id, type_name, type_version, digest, byte_size, file_count, representation)
+				VALUES ($1, 'review', 1, $2, 1, 1, 'filesystem-tree-v1')
 				RETURNING id
-			`, digest).Scan(&deepest)).To(Succeed())
-			_, err := dbConn.Exec(`
-				INSERT INTO agent_snapshot_grants (snapshot_id, team_id, granted_by, reason)
-				VALUES ($1, $2, 'fixture', 'depth bound test')
-			`, int64(deepest), defaultTeam.ID())
-			Expect(err).NotTo(HaveOccurred())
+			`, defaultTeam.ID(), digest).Scan(&deepest)).To(Succeed())
 			var productionID int64
 			Expect(dbConn.QueryRow(`
 				INSERT INTO agent_snapshot_productions
@@ -394,7 +382,7 @@ var _ = Describe("AgentWorkflowOutcomesFactory", func() {
 			previous = deepest
 		}
 
-		_, _, err := factory.Modify(context.Background(), defaultTeam.ID(), workflowoutcomes.ModifyRequest{
+		_, _, err = factory.Modify(context.Background(), defaultTeam.ID(), workflowoutcomes.ModifyRequest{
 			WorkflowRunID: fixture.runID, OutputSnapshotID: fixture.firstOutput,
 			Disposition: workflowoutcomes.DispositionAccepted, HumanModified: true,
 			ModificationSnapshotID: &deepest, Actor: "alice",
@@ -406,17 +394,13 @@ var _ = Describe("AgentWorkflowOutcomesFactory", func() {
 		label := fmt.Sprintf("wide-lineage-%d", time.Now().UnixNano())
 		digest := fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(label)))
 		var modification snapshot.SnapshotID
+		var err error
 		Expect(dbConn.QueryRow(`
 			INSERT INTO agent_snapshots
-				(type_name, type_version, digest, byte_size, file_count, representation)
-			VALUES ('review', 1, $1, 1, 1, 'filesystem-tree-v1')
+				(team_id, type_name, type_version, digest, byte_size, file_count, representation)
+			VALUES ($1, 'review', 1, $2, 1, 1, 'filesystem-tree-v1')
 			RETURNING id
-		`, digest).Scan(&modification)).To(Succeed())
-		_, err := dbConn.Exec(`
-			INSERT INTO agent_snapshot_grants (snapshot_id, team_id, granted_by, reason)
-			VALUES ($1, $2, 'fixture', 'node bound test')
-		`, int64(modification), defaultTeam.ID())
-		Expect(err).NotTo(HaveOccurred())
+		`, defaultTeam.ID(), digest).Scan(&modification)).To(Succeed())
 		var productionID int64
 		Expect(dbConn.QueryRow(`
 			INSERT INTO agent_snapshot_productions
@@ -437,10 +421,10 @@ var _ = Describe("AgentWorkflowOutcomesFactory", func() {
 			var filler snapshot.SnapshotID
 			Expect(dbConn.QueryRow(`
 				INSERT INTO agent_snapshots
-					(type_name, type_version, digest, byte_size, file_count, representation)
-				VALUES ('review', 1, $1, 1, 1, 'filesystem-tree-v1')
+					(team_id, type_name, type_version, digest, byte_size, file_count, representation)
+				VALUES ($1, 'review', 1, $2, 1, 1, 'filesystem-tree-v1')
 				RETURNING id
-			`, fillerDigest).Scan(&filler)).To(Succeed())
+			`, defaultTeam.ID(), fillerDigest).Scan(&filler)).To(Succeed())
 			_, err = dbConn.Exec(`
 				INSERT INTO agent_snapshot_lineage (production_id, position, input_port, input_snapshot_id)
 				VALUES ($1, $2, $3, $4)

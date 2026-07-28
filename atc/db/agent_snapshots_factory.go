@@ -208,7 +208,7 @@ func (factory *agentSnapshotsFactory) CommitSealBatch(
 
 	manifestByClientKey := make(map[string]snapshot.Snapshot, len(commit.Outputs))
 	for _, output := range commit.Outputs {
-		manifest, err := insertOrVerifySnapshot(ctx, tx, output)
+		manifest, err := insertOrVerifySnapshot(ctx, tx, commit.Context.TeamID, output)
 		if err != nil {
 			return nil, err
 		}
@@ -243,9 +243,6 @@ func (factory *agentSnapshotsFactory) CommitSealBatch(
 			return nil, err
 		}
 		if productionCreated {
-			if err := insertGrant(ctx, tx, commit.Context, manifest.ID); err != nil {
-				return nil, err
-			}
 			for _, retention := range output.Retention {
 				if err := insertOrVerifyRetention(ctx, tx, commit.Context.TeamID, manifest.ID, retention); err != nil {
 					return nil, err
@@ -475,6 +472,7 @@ func validateSealStages(ctx context.Context, tx Tx, commit snapshot.SealCommit, 
 func insertOrVerifySnapshot(
 	ctx context.Context,
 	tx Tx,
+	teamID int,
 	output snapshot.SealCommitOutput,
 ) (snapshot.Snapshot, error) {
 	typeName, typeVersion, err := splitSnapshotType(output.Port.Type)
@@ -483,10 +481,10 @@ func insertOrVerifySnapshot(
 	}
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO agent_snapshots
-			(type_name, type_version, digest, byte_size, file_count, representation, intrinsic_metadata)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		ON CONFLICT (type_name, type_version, digest) DO NOTHING
-	`, typeName, typeVersion, output.Digest.String(), output.ByteSize, output.FileCount,
+			(team_id, type_name, type_version, digest, byte_size, file_count, representation, intrinsic_metadata)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		ON CONFLICT (team_id, type_name, type_version, digest) DO NOTHING
+	`, teamID, typeName, typeVersion, output.Digest.String(), output.ByteSize, output.FileCount,
 		output.Representation, nullableJSON(output.IntrinsicMetadata))
 	if err != nil {
 		return snapshot.Snapshot{}, err
@@ -494,9 +492,9 @@ func insertOrVerifySnapshot(
 	persisted, err := scanAgentSnapshot(tx.QueryRowContext(ctx, `
 		SELECT `+agentSnapshotColumns+`
 		FROM agent_snapshots
-		WHERE type_name = $1 AND type_version = $2 AND digest = $3
+		WHERE team_id = $1 AND type_name = $2 AND type_version = $3 AND digest = $4
 		FOR UPDATE
-	`, typeName, typeVersion, output.Digest.String()))
+	`, teamID, typeName, typeVersion, output.Digest.String()))
 	if err != nil {
 		return snapshot.Snapshot{}, err
 	}
@@ -597,19 +595,6 @@ func insertOrVerifyUploadProduction(
 		return 0, false, fmt.Errorf("%w: snapshot upload idempotency key conflicts with immutable provenance", snapshot.ErrConflict)
 	}
 	return id, rowsAffected == 1, err
-}
-
-func insertGrant(ctx context.Context, tx Tx, commit snapshot.SealCommitContext, snapshotID snapshot.SnapshotID) error {
-	reason := "produced by workflow step"
-	if commit.Upload != nil {
-		reason = "manual upload"
-	}
-	_, err := tx.ExecContext(ctx, `
-		INSERT INTO agent_snapshot_grants (snapshot_id, team_id, granted_by, reason)
-		VALUES ($1, $2, $3, $4)
-		ON CONFLICT (snapshot_id, team_id) DO NOTHING
-	`, int64(snapshotID), commit.TeamID, commit.CreatedBy, reason)
-	return err
 }
 
 func insertOrVerifyRetention(
@@ -838,8 +823,7 @@ func authorizedSnapshotByRef(
 		       s.file_count, s.representation, s.intrinsic_metadata,
 		       s.content_state, s.created_at
 		FROM agent_snapshots s
-		JOIN agent_snapshot_grants g ON g.snapshot_id = s.id AND g.team_id = $2
-		WHERE s.id = $1`
+		WHERE s.id = $1 AND s.team_id = $2`
 	if available {
 		query += ` AND s.content_state = 'available'`
 	}
@@ -862,8 +846,7 @@ func (factory *agentSnapshotsFactory) GetAuthorized(
 		       s.file_count, s.representation, s.intrinsic_metadata,
 		       s.content_state, s.created_at
 		FROM agent_snapshots s
-		JOIN agent_snapshot_grants g ON g.snapshot_id = s.id
-		WHERE s.id = $1 AND g.team_id = $2
+		WHERE s.id = $1 AND s.team_id = $2
 	`, int64(id), teamID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return snapshot.Snapshot{}, false, nil
@@ -912,8 +895,7 @@ func (factory *agentSnapshotsFactory) FindResourceCaptureOutput(
 		  ON production.build_id = build.id
 		 AND production.occurrence_kind = 'build'
 		 AND production.team_id = $1
-		JOIN agent_snapshots s ON s.id = production.snapshot_id
-		JOIN agent_snapshot_grants grant_row ON grant_row.snapshot_id = s.id AND grant_row.team_id = $1
+		JOIN agent_snapshots s ON s.id = production.snapshot_id AND s.team_id = $1
 		WHERE run.id = $2
 		  AND run.status = 'succeeded'
 		  AND template.team_id = $1
@@ -1037,9 +1019,7 @@ func (factory *agentSnapshotsFactory) GetAuthorizedDetail(
 			SELECT l.position, l.input_port,
 			       s.id, s.type_name, s.type_version, s.digest
 			FROM agent_snapshot_lineage l
-			JOIN agent_snapshots s ON s.id = l.input_snapshot_id
-			JOIN agent_snapshot_grants g
-			  ON g.snapshot_id = s.id AND g.team_id = $2
+			JOIN agent_snapshots s ON s.id = l.input_snapshot_id AND s.team_id = $2
 			WHERE l.production_id = $1
 			ORDER BY l.position
 		`, production.ID, teamID)
@@ -1082,9 +1062,7 @@ func (factory *agentSnapshotsFactory) GetAuthorizedDetail(
 		       output.id, output.type_name, output.type_version, output.digest
 		FROM agent_snapshot_productions p
 		LEFT JOIN agent_workflow_runs r ON r.id = p.workflow_run_id AND r.team_id = p.team_id
-		JOIN agent_snapshots output ON output.id = p.snapshot_id
-		JOIN agent_snapshot_grants output_grant
-		  ON output_grant.snapshot_id = output.id AND output_grant.team_id = $2
+		JOIN agent_snapshots output ON output.id = p.snapshot_id AND output.team_id = $2
 		WHERE p.team_id = $2
 		  AND EXISTS (
 		      SELECT 1 FROM agent_snapshot_lineage l
@@ -1130,8 +1108,7 @@ func (factory *agentSnapshotsFactory) ListAuthorized(
 		       s.file_count, s.representation, s.intrinsic_metadata,
 		       s.content_state, s.created_at
 		FROM agent_snapshots s
-		JOIN agent_snapshot_grants g ON g.snapshot_id = s.id
-		WHERE g.team_id = $1`
+		WHERE s.team_id = $1`
 	args := []any{teamID}
 	if filter.Type != "" {
 		name, version, err := splitSnapshotType(filter.Type)

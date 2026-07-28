@@ -408,10 +408,7 @@ func authorizeWorkflowOutcomeModification(
 			 AND binding.snapshot_id = $3
 			 AND binding.promoted_at IS NOT NULL
 			JOIN agent_snapshots original ON original.id = binding.snapshot_id
-			JOIN agent_snapshots modification ON modification.id = $4
-			JOIN agent_snapshot_grants grant_row
-			  ON grant_row.snapshot_id = modification.id
-			 AND grant_row.team_id = run.team_id
+			JOIN agent_snapshots modification ON modification.id = $4 AND modification.team_id = run.team_id
 			WHERE run.id = $2
 			  AND run.team_id = $1
 			  AND ancestry_stats.node_count < $6

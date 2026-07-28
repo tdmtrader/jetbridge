@@ -20,16 +20,10 @@ func insertReviewSnapshot(hexDigit string) snapshot.SnapshotID {
 	var snapshotID snapshot.SnapshotID
 	err := dbConn.QueryRow(`
 		INSERT INTO agent_snapshots
-			(type_name, type_version, digest, byte_size, file_count, representation, content_state)
-		VALUES ('review', 1, $1, 1024, 1, 'filesystem-tree-v1', 'available')
+			(team_id, type_name, type_version, digest, byte_size, file_count, representation, content_state)
+		VALUES ($1, 'review', 1, $2, 1024, 1, 'filesystem-tree-v1', 'available')
 		RETURNING id
-	`, "sha256:"+strings.Repeat(hexDigit, 64)).Scan(&snapshotID)
-	Expect(err).ToNot(HaveOccurred())
-	_, err = dbConn.Exec(`
-		INSERT INTO agent_snapshot_grants (snapshot_id, team_id, granted_by, reason)
-		VALUES ($1, $2, 'projection-test', 'review projection test')
-		ON CONFLICT (snapshot_id, team_id) DO NOTHING
-	`, int64(snapshotID), defaultTeam.ID())
+	`, defaultTeam.ID(), "sha256:"+strings.Repeat(hexDigit, 64)).Scan(&snapshotID)
 	Expect(err).ToNot(HaveOccurred())
 	return snapshotID
 }
@@ -309,7 +303,7 @@ var _ = Describe("AgentReviewsFactory snapshot projections", func() {
 		Expect(projectionCount).To(Equal(1))
 	})
 
-	It("authorizes canonical review reads by the exact snapshot grant", func() {
+	It("does not authorize canonical review reads across snapshot owners", func() {
 		id, productionID := insertReviewSnapshotProjectionInput("6")
 		Expect(factory.UpsertReviewProjection(context.Background(), projectedReview(
 			id, productionID, "accept", map[string]int{}))).To(Succeed())
@@ -319,15 +313,8 @@ var _ = Describe("AgentReviewsFactory snapshot projections", func() {
 		_, found, err := factory.GetBySnapshot(otherTeam.Name(), id)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(found).To(BeFalse())
-		_, err = dbConn.Exec(`
-			INSERT INTO agent_snapshot_grants (snapshot_id, team_id, granted_by, reason)
-			VALUES ($1, $2, 'projection-test', 'shared review')
-		`, int64(id), otherTeam.ID())
+		_, found, err = factory.GetBySnapshot(otherTeam.Name(), id)
 		Expect(err).ToNot(HaveOccurred())
-		got, found, err := factory.GetBySnapshot(otherTeam.Name(), id)
-		Expect(err).ToNot(HaveOccurred())
-		Expect(found).To(BeTrue())
-		Expect(got.TeamName).To(Equal(otherTeam.Name()))
-		Expect(got.ProductionID).To(BeNil(), "a shared value has no invented production occurrence")
+		Expect(found).To(BeFalse())
 	})
 })

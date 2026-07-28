@@ -1775,17 +1775,17 @@ func validateAgentWorkflowRunOutputEvidence(
 		if binding.contentState != snapshot.ContentStateAvailable {
 			return AgentWorkflowRunStatusErrored, fmt.Sprintf("workflow output %q content is not available", output.Port), nil
 		}
-		var granted bool
+		var owned bool
 		if err := tx.QueryRowContext(ctx, `
 			SELECT EXISTS (
-				SELECT 1 FROM agent_snapshot_grants
-				WHERE snapshot_id = $1 AND team_id = $2
+				SELECT 1 FROM agent_snapshots
+				WHERE id = $1 AND team_id = $2
 			)
-		`, int64(binding.snapshotID), run.TeamID).Scan(&granted); err != nil {
+		`, int64(binding.snapshotID), run.TeamID).Scan(&owned); err != nil {
 			return "", "", err
 		}
-		if !granted {
-			return AgentWorkflowRunStatusErrored, fmt.Sprintf("workflow output %q has no durable team grant", output.Port), nil
+		if !owned {
+			return AgentWorkflowRunStatusErrored, fmt.Sprintf("workflow output %q is not owned by the workflow team", output.Port), nil
 		}
 		actor := fmt.Sprintf("workflow-run:%d:output:%s", int64(run.ID), output.Port)
 		var retained bool

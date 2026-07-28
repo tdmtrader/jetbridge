@@ -47,15 +47,10 @@ var _ = Describe("AgentExperimentsFactory", func() {
 		var id int64
 		Expect(dbConn.QueryRow(`
 			INSERT INTO agent_snapshots
-				(type_name, type_version, digest, byte_size, file_count, representation)
-			VALUES ($1, 1, $2, 1, 1, 'filesystem-tree-v1')
+				(team_id, type_name, type_version, digest, byte_size, file_count, representation)
+			VALUES ($1, $2, 1, $3, 1, 1, 'filesystem-tree-v1')
 			RETURNING id
-		`, kind, "sha256:"+strings.Repeat(digestDigit, 64)).Scan(&id)).To(Succeed())
-		_, err := dbConn.Exec(`
-			INSERT INTO agent_snapshot_grants (snapshot_id, team_id, granted_by, reason)
-			VALUES ($1, $2, 'alice', 'experiment fixture')
-		`, id, defaultTeam.ID())
-		Expect(err).NotTo(HaveOccurred())
+		`, defaultTeam.ID(), kind, "sha256:"+strings.Repeat(digestDigit, 64)).Scan(&id)).To(Succeed())
 		return snapshot.SnapshotID(id)
 	}
 
@@ -1025,9 +1020,11 @@ plan:
 		Expect(errors.Is(err, db.ErrAgentWorkflowRunExperimentAdmissionClosed)).To(BeTrue())
 	})
 
-	It("rejects fixtures that are not granted to the owning team", func() {
+	It("rejects fixtures owned by another team", func() {
 		definition := definition(fixtureSnapshot)
-		_, err := dbConn.Exec(`DELETE FROM agent_snapshot_grants WHERE snapshot_id = $1 AND team_id = $2`, int64(fixtureSnapshot), defaultTeam.ID())
+		other, err := teamFactory.CreateTeam(structTeam(fmt.Sprintf("experiment-other-%d", time.Now().UnixNano())))
+		Expect(err).NotTo(HaveOccurred())
+		_, err = dbConn.Exec(`UPDATE agent_snapshots SET team_id = $2 WHERE id = $1`, int64(fixtureSnapshot), other.ID())
 		Expect(err).NotTo(HaveOccurred())
 		_, err = factory.Create(ctx, defaultTeam.ID(), defaultTeam.Name(), "alice", definition)
 		Expect(errors.Is(err, experimentsapi.ErrInvalidDefinition)).To(BeTrue())

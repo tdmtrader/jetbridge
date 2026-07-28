@@ -30,18 +30,18 @@ func insertRepositoryChangeProjectionInput(suffix string) (snapshot.SnapshotID, 
 	var baseID snapshot.SnapshotID
 	Expect(dbConn.QueryRow(`
 		INSERT INTO agent_snapshots
-			(type_name, type_version, digest, byte_size, file_count, representation, intrinsic_metadata, content_state)
-		VALUES ('repository', 1, $1, 2048, 4, 'filesystem-tree-v1', $2, 'available')
+			(team_id, type_name, type_version, digest, byte_size, file_count, representation, intrinsic_metadata, content_state)
+		VALUES ($1, 'repository', 1, $2, 2048, 4, 'filesystem-tree-v1', $3, 'available')
 		RETURNING id
-	`, "sha256:"+strings.Repeat("e", 63)+suffix, baseMetadata).Scan(&baseID)).To(Succeed())
+	`, defaultTeam.ID(), "sha256:"+strings.Repeat("e", 63)+suffix, baseMetadata).Scan(&baseID)).To(Succeed())
 
 	var changeID snapshot.SnapshotID
 	Expect(dbConn.QueryRow(`
 		INSERT INTO agent_snapshots
-			(type_name, type_version, digest, byte_size, file_count, representation, intrinsic_metadata, content_state)
-		VALUES ('repository-change', 1, $1, 1024, 2, 'filesystem-tree-v1', $2, 'available')
+			(team_id, type_name, type_version, digest, byte_size, file_count, representation, intrinsic_metadata, content_state)
+		VALUES ($1, 'repository-change', 1, $2, 1024, 2, 'filesystem-tree-v1', $3, 'available')
 		RETURNING id
-	`, "sha256:"+strings.Repeat("f", 63)+suffix, changeMetadata).Scan(&changeID)).To(Succeed())
+	`, defaultTeam.ID(), "sha256:"+strings.Repeat("f", 63)+suffix, changeMetadata).Scan(&changeID)).To(Succeed())
 
 	var productionID int64
 	Expect(dbConn.QueryRow(`
@@ -97,9 +97,9 @@ var _ = Describe("AgentRepositoryChangesFactory", func() {
 		var secondBaseID snapshot.SnapshotID
 		Expect(dbConn.QueryRow(`
 			INSERT INTO agent_snapshots
-				(type_name, type_version, digest, byte_size, file_count, representation,
+				(team_id, type_name, type_version, digest, byte_size, file_count, representation,
 				 intrinsic_metadata, content_state)
-			SELECT type_name, type_version, $2, byte_size, file_count, representation,
+			SELECT team_id, type_name, type_version, $2, byte_size, file_count, representation,
 			       intrinsic_metadata, content_state
 			FROM agent_snapshots WHERE id = $1
 			RETURNING id

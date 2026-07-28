@@ -497,10 +497,7 @@ func authorizePublicationSnapshot(
 		JOIN builds build
 		  ON build.id = workflow_run.planned_build_id
 		 AND build.team_id = workflow_run.team_id
-		JOIN agent_snapshots input ON input.id = $1
-		JOIN agent_snapshot_grants snapshot_grant
-		  ON snapshot_grant.snapshot_id = input.id
-		 AND snapshot_grant.team_id = workflow_run.team_id
+		JOIN agent_snapshots input ON input.id = $1 AND input.team_id = workflow_run.team_id
 		WHERE workflow_run.team_id = $2
 		  AND workflow_run.team_name = $3
 		  AND workflow_run.planned_build_id = $4
@@ -522,7 +519,7 @@ func authorizePublicationSnapshot(
 				  AND production.snapshot_id = input.id
 			)
 		  )
-		FOR SHARE OF workflow_run, build, input, snapshot_grant
+		FOR SHARE OF workflow_run, build, input
 	`, int64(request.Input.ID), request.Authority.TeamID, request.Authority.TeamName,
 		request.Authority.BuildID, request.Authority.Actor,
 	).Scan(&workflowRunID, &typeName, &typeVersion, &digest, &contentState)
@@ -560,12 +557,8 @@ func authorizePublicationApproval(ctx context.Context, tx Tx, request publisher.
 		SELECT question.type_name, question.type_version, question.digest,
 		       answer.type_name, answer.type_version, answer.digest
 		FROM agent_workflow_waits wait
-		JOIN agent_snapshots question ON question.id = wait.question_snapshot_id
-		JOIN agent_snapshots answer ON answer.id = wait.answer_snapshot_id
-		JOIN agent_snapshot_grants question_grant
-		  ON question_grant.snapshot_id = question.id AND question_grant.team_id = wait.team_id
-		JOIN agent_snapshot_grants answer_grant
-		  ON answer_grant.snapshot_id = answer.id AND answer_grant.team_id = wait.team_id
+		JOIN agent_snapshots question ON question.id = wait.question_snapshot_id AND question.team_id = wait.team_id
+		JOIN agent_snapshots answer ON answer.id = wait.answer_snapshot_id AND answer.team_id = wait.team_id
 		WHERE wait.id = $1
 		  AND wait.team_id = $2
 		  AND wait.workflow_run_id = $3
@@ -578,7 +571,7 @@ func authorizePublicationApproval(ctx context.Context, tx Tx, request publisher.
 		  AND wait.answer_snapshot_id = $8
 		  AND question.content_state = 'available'
 		  AND answer.content_state = 'available'
-		FOR SHARE OF wait, question, answer, question_grant, answer_grant
+		FOR SHARE OF wait, question, answer
 	`, int64(evidence.WaitID), request.Authority.TeamID, int64(request.Authority.WorkflowRunID),
 		request.Authority.BuildID, evidence.ResolvedBy, evidence.ResolvedAt.UTC(),
 		int64(evidence.Question.ID), int64(evidence.Answer.ID),
