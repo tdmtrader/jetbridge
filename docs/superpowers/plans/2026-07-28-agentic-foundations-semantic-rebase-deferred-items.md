@@ -20,6 +20,30 @@ to evaluate independently.
 
 ## Open items
 
+### HUMAN-REVIEW-001 — Task 6 private Secret lifecycle races
+
+- Task/area: Task 6, Jetbridge protected validation mounts
+- Classification: Blocking; Human Review Required
+- Status: Automatic iteration stopped after the configured review budget
+- Evidence:
+  1. If `Pods.Create` commits server-side but returns a client timeout or
+     transport error, the current error path immediately deletes the exact
+     pre-created Secret even though the committed Pod may already reference it.
+  2. Owner-bound orphan reaping reads a Secret, confirms the old Pod is absent,
+     and then deletes only by name. A replacement Secret with the same name can
+     be deleted between those operations.
+- Why it is cataloged: These are blocking rather than ordinary deferred
+  improvements, but Task 6 has exhausted its two-round review budget and must
+  not enter another automatic correction loop.
+- Suggested human-approved follow-up:
+  1. On ambiguous Pod-create errors, reconcile the exact Pod name, UID, and
+     Secret volume reference before deleting; retain/reap conservatively when
+     the outcome cannot be proven.
+  2. Give the owner-bound reaper deletion the observed Secret UID precondition,
+     matching the existing ownerless cleanup path.
+  3. Add focused regressions for a committed-Pod/failed-response fake and a
+     read/delete replacement race.
+
 ### DEFERRED-001 — Clean unpublished dev-capability log staging directories
 
 - Task/area: Task 3, retained dev-capability core

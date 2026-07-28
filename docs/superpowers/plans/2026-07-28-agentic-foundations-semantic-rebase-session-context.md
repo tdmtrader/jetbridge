@@ -101,31 +101,32 @@ Known branch-wide compatibility issue:
 
 Task 6:
 
-- Substantially implemented through commit `b935d1b27e`.
-- The last review found one Critical post-Pod Secret-substitution race.
-- An interrupted, uncommitted correction currently modifies:
-  - `atc/task.go`
-  - `atc/worker/jetbridge/container.go`
-  - `cmd/function-runner/dev_validate.go`
-- The partial correction pre-creates immutable Secrets before Pod creation,
-  CAS-binds exact Secret identity to the created Pod, and adds fixed
-  profile/config digest arguments checked before launching dev-capability.
-- Treat those edits as unverified work: finish targeted tests, inspect failure
-  cleanup/reaping, and commit only when focused verification passes.
+- Substantially implemented through commit `a57a04f027`.
+- Status: **Human Review Required** after exhausting its review budget.
+- The known post-Pod Secret-substitution race was fixed: trusted immutable
+  Secrets are created before Pod visibility, exact identity is CAS-bound to the
+  Pod, and mounted profile/config digests are checked before dev-capability
+  launches.
+- The final bounded review found two remaining blockers:
+  1. An ambiguous `Pods.Create` transport error can occur after the API commits
+     the Pod; the current error path can delete a Secret already referenced by
+     that Pod.
+  2. Owner-bound orphan cleanup deletes by name without a UID precondition,
+     allowing a replacement Secret to be deleted after the reaper's read.
+- Do not iterate on Task 6 automatically. Exact evidence and proposed fixes are
+  recorded in the deferred/human-review catalog.
 
 Tasks 7–19 have not started.
 
 ## Near-term sequence
 
-1. Finish the known Task 6 Critical fix.
-2. Run focused Task 6 tests and one final blocking-only review.
-3. If accepted, mark Task 6 complete. If rejected, mark Human Review Required
-   and stop iterating.
-4. Repair the known merge-preflight validation-revision compatibility issue as
+1. Leave Task 6 at **Human Review Required**; do not start another automatic
+   correction/review cycle.
+2. Repair the known merge-preflight validation-revision compatibility issue as
    a bounded prerequisite.
-5. Establish a clean integration checkpoint and run one consolidated
+3. Establish a clean integration checkpoint and run one consolidated
    acceptance suite.
-6. Treat the remaining feature groups as separate bounded tracks rather than
+4. Treat the remaining feature groups as separate bounded tracks rather than
    one continuous "rebase."
 
 ## Session handoff requirement
