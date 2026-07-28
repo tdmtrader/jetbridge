@@ -50,6 +50,13 @@ func setupLiveWorkerWithLocator(t *testing.T, handle string, locator *jetbridge.
 	if svc := os.Getenv("ARTIFACT_DAEMON_SERVICE"); svc != "" {
 		cfg.ArtifactDaemonService = svc
 	}
+	// Default rather than leave it empty. The helper image used to fall back
+	// inside the config, so these tests never had to set it; 02468ce81b made it
+	// strictly caller-supplied, and an empty value reaches the API server as
+	// `spec.initContainers[0].image: Required value` — every test that fetches
+	// an input fails on pod creation. The documented default above is the
+	// contract, so honour it here.
+	cfg.ArtifactHelperImage = "alpine:latest"
 	if img := os.Getenv("ARTIFACT_HELPER_IMAGE"); img != "" {
 		cfg.ArtifactHelperImage = img
 	}

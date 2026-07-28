@@ -859,6 +859,10 @@ jobs:
           export ARTIFACT_DAEMON_HOST_PATH=/var/concourse/artifacts
           export ARTIFACT_DAEMON_PORT=7780
           export ARTIFACT_DAEMON_SERVICE=artifact-daemon
+          # Exercise the helper this cluster actually deploys. The suite defaults
+          # to alpine:latest on its own, so this is about testing what ships
+          # rather than about making the tests pass.
+          export ARTIFACT_HELPER_IMAGE=index.docker.io/library/alpine@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
 
           cd repo
           echo "=== Running jetbridge live integration tests ==="
