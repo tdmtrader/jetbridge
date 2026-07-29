@@ -73,6 +73,12 @@ var _ = Describe("AgentRunAttemptsFactory", func() {
 				'committed', '{}'::jsonb, clock_timestamp() + INTERVAL '1 hour', clock_timestamp())
 			RETURNING id
 		`, headID, generation).Scan(&checkpointID)).To(Succeed())
+		_, err := dbConn.Exec(`
+			UPDATE agent_run_checkpoint_heads
+			SET latest_checkpoint_id = $1
+			WHERE id = $2
+		`, checkpointID, headID)
+		Expect(err).NotTo(HaveOccurred())
 		return checkpointID
 	}
 
@@ -455,6 +461,48 @@ var _ = Describe("AgentRunAttemptsFactory", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue())
 		Expect(current.ExecutionAttempt).To(Equal(3))
+	})
+
+	It("requires a nonzero recovery source to remain the latest committed checkpoint", func() {
+		allocate(2)
+		checkpointID := committedSource(identity, 1)
+		_, err := dbConn.Exec(`
+			UPDATE agent_run_checkpoint_heads
+			SET latest_checkpoint_id = NULL
+			WHERE build_id = $1 AND plan_id = $2 AND function_id = $3
+		`, identity.BuildID, identity.PlanID, identity.FunctionID)
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = factory.MarkInterrupted(ctx, checkpoint.MarkAttemptInterruptedRequest{
+			Identity: identity, ExecutionAttempt: 1, Reason: checkpoint.InterruptionPreempted,
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = factory.BeginRecovery(ctx, checkpoint.BeginRecoveryRequest{
+			Identity: identity, SourceExecutionAttempt: 1,
+			SourceCheckpointID: &checkpointID, SourceCheckpointGeneration: 1,
+			Mode: checkpoint.FallbackWorkspaceOnly, Reason: checkpoint.InterruptionPreempted,
+			MaterializationID: "missing-head-source",
+		})
+		Expect(errors.Is(err, checkpoint.ErrConflict)).To(BeTrue(),
+			"a committed source cannot allocate recovery when the head does not select it")
+		_, err = dbConn.Exec(`
+			UPDATE agent_run_checkpoint_heads
+			SET latest_checkpoint_id = $1
+			WHERE build_id = $2 AND plan_id = $3 AND function_id = $4
+		`, checkpointID, identity.BuildID, identity.PlanID, identity.FunctionID)
+		Expect(err).NotTo(HaveOccurred())
+
+		recovery, err := factory.BeginRecovery(ctx, checkpoint.BeginRecoveryRequest{
+			Identity: identity, SourceExecutionAttempt: 1,
+			SourceCheckpointID: &checkpointID, SourceCheckpointGeneration: 1,
+			Mode: checkpoint.FallbackWorkspaceOnly, Reason: checkpoint.InterruptionPreempted,
+			MaterializationID: "selected-source",
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(recovery.ExecutionAttempt).To(Equal(2))
+		Expect(recovery.SourceCheckpointID).To(Equal(&checkpointID))
+		Expect(recovery.SourceCheckpointGeneration).To(Equal(1))
 	})
 
 	It("keeps manual-review terminal authority queryable after interruption", func() {

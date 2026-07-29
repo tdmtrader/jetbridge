@@ -548,7 +548,7 @@ func (factory *agentRunAttemptsFactory) BeginRecovery(
 	if err := requireActiveCheckpointHead(head); err != nil {
 		return checkpoint.Attempt{}, err
 	}
-	if err := requireRecoveryCheckpointSource(ctx, tx, head.id, request); err != nil {
+	if err := requireRecoveryCheckpointSource(ctx, tx, head, request); err != nil {
 		return checkpoint.Attempt{}, err
 	}
 	source, err := agentRunCurrentAttemptForUpdate(ctx, tx, head.id)
@@ -870,16 +870,19 @@ func sameRecoveryRequest(attempt checkpoint.Attempt, request checkpoint.BeginRec
 	return *attempt.SourceCheckpointID == *request.SourceCheckpointID
 }
 
-func requireRecoveryCheckpointSource(ctx context.Context, tx Tx, headID int64, request checkpoint.BeginRecoveryRequest) error {
+func requireRecoveryCheckpointSource(ctx context.Context, tx Tx, head checkpointHeadRow, request checkpoint.BeginRecoveryRequest) error {
 	if request.SourceCheckpointID == nil {
 		return nil
+	}
+	if !head.latestCheckpointID.Valid || head.latestCheckpointID.Int64 != *request.SourceCheckpointID {
+		return fmt.Errorf("%w: recovery source checkpoint is not the latest committed checkpoint", checkpoint.ErrConflict)
 	}
 	var status checkpoint.CheckpointStatus
 	err := tx.QueryRowContext(ctx, `
 		SELECT status FROM agent_run_checkpoints
 		WHERE id = $1 AND head_id = $2 AND generation = $3
 		FOR KEY SHARE
-	`, *request.SourceCheckpointID, headID, request.SourceCheckpointGeneration).Scan(&status)
+	`, *request.SourceCheckpointID, head.id, request.SourceCheckpointGeneration).Scan(&status)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("%w: recovery source checkpoint is missing or belongs to another head", checkpoint.ErrConflict)
 	}
