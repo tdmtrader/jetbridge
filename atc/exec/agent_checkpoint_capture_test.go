@@ -213,6 +213,25 @@ func TestAgentCheckpointCaptureRecordsBoundedPhaseOutcomeAndLostWorkMetrics(t *t
 	}
 }
 
+func TestAgentCheckpointCaptureRecordsArchiveDurationWhenPreparationFails(t *testing.T) {
+	events := []string{}
+	fence := checkpoint.FenceClaim{ExecutionAttempt: 3, Token: "11111111-1111-1111-1111-111111111111"}
+	store, daemon := captureStoreAndDaemon(t, &events, fence)
+	daemon.prepareErr = errors.New("archive unavailable")
+	attempts := &captureAttemptStore{events: &events, fence: checkpoint.AttemptFence{FenceClaim: fence, ExpiresAt: time.Now().Add(time.Minute)}}
+	metrics := &captureMetrics{}
+	request := captureRequest(fence, &captureBoundary{events: &events}, &captureQuiescence{events: &events, target: captureTarget()})
+	if _, err := NewAgentCheckpointCapture(store, attempts, daemon, WithAgentCheckpointCaptureMetrics(metrics)).Capture(context.Background(), request); err == nil {
+		t.Fatal("capture succeeded despite archive preparation failure")
+	}
+	if !metrics.hasDuration("archive", CheckpointCaptureTriggerElapsed) || !metrics.hasDuration("total", CheckpointCaptureTriggerElapsed) {
+		t.Fatalf("duration metrics = %#v", metrics.metrics)
+	}
+	if !metrics.hasOutcome("failed", CheckpointCaptureTriggerElapsed) {
+		t.Fatalf("outcome metrics = %#v", metrics.metrics)
+	}
+}
+
 func TestAgentCheckpointCaptureRejectsInvalidFenceBeforeAuthorityAndMismatchedTargetBeforeStage(t *testing.T) {
 	t.Run("invalid fence", func(t *testing.T) {
 		events := []string{}
@@ -427,7 +446,7 @@ type captureDaemon struct {
 
 type captureMetrics struct{ metrics []CheckpointCaptureMetric }
 
-func (metrics *captureMetrics) RecordCheckpointCapture(metric CheckpointCaptureMetric) {
+func (metrics *captureMetrics) RecordCheckpointCapture(_ context.Context, metric CheckpointCaptureMetric) {
 	metrics.metrics = append(metrics.metrics, metric)
 }
 

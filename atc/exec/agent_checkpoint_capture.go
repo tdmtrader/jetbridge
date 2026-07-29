@@ -116,16 +116,16 @@ func (coordinator *AgentCheckpointCapture) Capture(ctx context.Context, request 
 	}
 	requestedAt := time.Now()
 	defer func() {
-		coordinator.recordDuration("total", request.Trigger, time.Since(requestedAt))
+		coordinator.recordDuration(ctx, "total", request.Trigger, time.Since(requestedAt))
 		switch {
 		case err != nil:
-			coordinator.recordOutcome("failed", request.Trigger, 0)
+			coordinator.recordOutcome(ctx, "failed", request.Trigger, 0)
 		case result.Status == CheckpointCaptureSkipped:
-			coordinator.recordOutcome("skipped", request.Trigger, 0)
+			coordinator.recordOutcome(ctx, "skipped", request.Trigger, 0)
 		case result.Status == CheckpointCaptureCommitted:
-			coordinator.recordOutcome("committed", request.Trigger, 0)
+			coordinator.recordOutcome(ctx, "committed", request.Trigger, 0)
 			if !request.Provenance.PreviousSafeAt.IsZero() && result.Manifest.SafeAt.After(request.Provenance.PreviousSafeAt) {
-				coordinator.recordOutcome("lost_work", request.Trigger, result.Manifest.SafeAt.Sub(request.Provenance.PreviousSafeAt))
+				coordinator.recordOutcome(ctx, "lost_work", request.Trigger, result.Manifest.SafeAt.Sub(request.Provenance.PreviousSafeAt))
 			}
 		}
 	}()
@@ -180,7 +180,7 @@ func (coordinator *AgentCheckpointCapture) Capture(ctx context.Context, request 
 		return result, errors.New("checkpoint capture acquired nil quiescence lease")
 	}
 	defer func() { err = errors.Join(err, releaseCheckpointCapture(quiescence)) }()
-	coordinator.recordDuration("requested_to_quiesced", request.Trigger, time.Since(requestedAt))
+	coordinator.recordDuration(ctx, "requested_to_quiesced", request.Trigger, time.Since(requestedAt))
 	target := quiescence.CaptureTarget()
 	if err := target.Validate(); err != nil {
 		return result, err
@@ -208,10 +208,10 @@ func (coordinator *AgentCheckpointCapture) Capture(ctx context.Context, request 
 
 	archiveStarted := time.Now()
 	prepared, prepareErr := coordinator.daemon.PrepareCheckpoint(ctx, target.NodeName, target.Archive)
+	coordinator.recordDuration(ctx, "archive", request.Trigger, time.Since(archiveStarted))
 	if prepareErr != nil {
 		return result, prepareErr
 	}
-	coordinator.recordDuration("archive", request.Trigger, time.Since(archiveStarted))
 	if err := prepared.Validate(); err != nil {
 		return result, err
 	}
@@ -221,6 +221,7 @@ func (coordinator *AgentCheckpointCapture) Capture(ctx context.Context, request 
 	}
 	uploadStarted := time.Now()
 	uploaded, uploadErr := coordinator.daemon.UploadCheckpoint(ctx, target.NodeName, prepared, ticket)
+	coordinator.recordDuration(ctx, "upload", request.Trigger, time.Since(uploadStarted))
 	if uploadErr != nil {
 		return result, uploadErr
 	}
@@ -234,7 +235,6 @@ func (coordinator *AgentCheckpointCapture) Capture(ctx context.Context, request 
 	if object != uploaded.Object.Ref {
 		return result, errors.New("checkpoint capture completed object differs from daemon upload")
 	}
-	coordinator.recordDuration("upload", request.Trigger, time.Since(uploadStarted))
 	manifest := checkpoint.Manifest{
 		Version: 1, CheckpointID: staged.ID, Generation: staged.Generation, ExecutionAttempt: request.Provenance.ExecutionAttempt,
 		WorkflowRunID: request.Provenance.Identity.Clone().WorkflowRunID, BuildID: request.Provenance.Identity.BuildID, PlanID: request.Provenance.Identity.PlanID, FunctionID: request.Provenance.Identity.FunctionID,
