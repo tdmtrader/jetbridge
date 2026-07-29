@@ -1230,6 +1230,8 @@ func (renderer WorkflowTargetRenderer) RenderFunction(target workflow.FunctionTa
 						return fmt.Errorf("workflow merge preflight runtime image: %w", err)
 					}
 					a := step.MergePreflightAuthority.Clone()
+					a.WorkflowDefinitionID = target.WorkflowDefinitionID
+					a.WorkflowVersion = target.WorkflowVersion
 					a.CapabilityImage = renderer.RuntimeImage
 					at := strings.LastIndexByte(renderer.RuntimeImage, '@')
 					if at < 0 {

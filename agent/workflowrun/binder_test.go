@@ -172,6 +172,55 @@ func TestBindAndCreateAdmitsFromServerDerivedIdentity(t *testing.T) {
 	}
 }
 
+func TestWorkflowTargetRendererBindsMergePreflightToPersistedIdentity(t *testing.T) {
+	compiled, err := workflow.CompileDefinition(workflow.Manifest{workflow.WorkflowFileName: `schema_version: 3
+name: merge-preflight-render
+signature_version: 1
+inputs:
+  - {name: base, type: repository/v1}
+  - {name: candidate, type: repository-change/v1}
+  - {name: target, type: repository/v1}
+outputs:
+  - {name: merge-report, type: validation/v1, from: merge-report}
+plan:
+  - task: merge-preflight
+    function_id: merge-preflight
+    input_types:
+      base: {type: repository/v1}
+      candidate: {type: repository-change/v1}
+      target: {type: repository/v1}
+    output_types:
+      merge-report: validation/v1
+`})
+	if err != nil {
+		t.Fatalf("compile selector: %v", err)
+	}
+	definition := workflow.Definition{ID: 47, Name: "merge-preflight-render", Version: 9, SchemaVersion: 3, SignatureVersion: 1, ContentHash: strings.Repeat("a", 64), Compiled: *compiled}
+	target, err := workflow.FullFunctionTarget(definition)
+	if err != nil {
+		t.Fatalf("full target: %v", err)
+	}
+	image := "registry.example/agent-runner@sha256:" + strings.Repeat("b", 64)
+	rendered, err := (WorkflowTargetRenderer{RuntimeImage: image}).RenderFunction(target)
+	if err != nil {
+		t.Fatalf("render selector: %v", err)
+	}
+	var task *atc.TaskStep
+	for _, step := range rendered.Config.Jobs[0].PlanSequence {
+		_ = step.Config.Visit(atc.StepRecursor{OnTask: func(value *atc.TaskStep) error { task = value; return nil }})
+	}
+	if task == nil || task.MergePreflightAuthority == nil {
+		t.Fatalf("merge preflight authority = %#v", task)
+	}
+	a := task.MergePreflightAuthority
+	if a.WorkflowDefinitionID != definition.ID || a.WorkflowVersion != definition.Version || a.CapabilityImage != image {
+		t.Fatalf("rendered authority = %#v", a)
+	}
+	if task.Config == nil || !reflect.DeepEqual(task.Config.Run.Args, atc.MergePreflightStaticArgs(*a)) {
+		t.Fatalf("fixed merge preflight args = %#v", task.Config)
+	}
+}
+
 func TestValidateAndClonePreservesExplicitEmptyValidationProvenancePin(t *testing.T) {
 	empty := ""
 	admission := AdmissionContext{TeamID: 7, TeamName: "research", CreatedBy: "alice", Origin: Origin{Kind: "manual"}}
