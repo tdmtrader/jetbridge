@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,8 @@ import (
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"code.cloudfoundry.org/lager/v3/lagertest"
+	"github.com/concourse/concourse/agent/checkpoint"
+	"github.com/concourse/concourse/agent/provider"
 	"github.com/concourse/concourse/agent/publisher"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/snapshot/snapshotfakes"
@@ -78,6 +81,45 @@ func TestCoreStepFactoryLeavesOutputSealerDisabledByDefault(t *testing.T) {
 	factory := &coreStepFactory{}
 	if factory.outputSealer != nil {
 		t.Fatalf("factory output sealer = %#v, want nil", factory.outputSealer)
+	}
+}
+
+func TestWithAgentCheckpointCaptureKeepsOneServerOwnedConfig(t *testing.T) {
+	var gotIdentity checkpoint.Identity
+	wantErr := errors.New("factory invoked")
+	config := exec.AgentCheckpointStepConfig{
+		Factory: exec.AgentCheckpointExecutionFactoryFunc(func(identity checkpoint.Identity) (exec.AgentCheckpointController, error) {
+			gotIdentity = identity
+			return nil, wantErr
+		}),
+		Provider:        "anthropic",
+		Adapter:         provider.Identity{Name: "claude-cli", Version: "legacy-stream-json"},
+		ElapsedInterval: 5 * time.Minute,
+		MaxArchiveBytes: 1024,
+	}
+
+	factory := &coreStepFactory{}
+	WithAgentCheckpointCapture(config)(factory)
+	if factory.agentCheckpointCapture == nil {
+		t.Fatal("checkpoint config was not retained")
+	}
+	if factory.agentCheckpointCapture.Provider != config.Provider ||
+		factory.agentCheckpointCapture.Adapter != config.Adapter ||
+		factory.agentCheckpointCapture.ElapsedInterval != config.ElapsedInterval ||
+		factory.agentCheckpointCapture.MaxArchiveBytes != config.MaxArchiveBytes {
+		t.Fatalf("checkpoint config = %#v, want retained server-owned policy", factory.agentCheckpointCapture)
+	}
+
+	identity := checkpoint.Identity{BuildID: 1, PlanID: "plan", FunctionID: "function"}
+	_, err := factory.agentCheckpointCapture.Factory.NewAgentCheckpointExecution(identity)
+	if !errors.Is(err, wantErr) || gotIdentity != identity {
+		t.Fatalf("retained factory = (%#v, %v), want exact server-owned factory", gotIdentity, err)
+	}
+}
+
+func TestCoreStepFactoryLeavesAgentCheckpointCaptureDisabledByDefault(t *testing.T) {
+	if (&coreStepFactory{}).agentCheckpointCapture != nil {
+		t.Fatal("checkpoint capture should be disabled by default")
 	}
 }
 

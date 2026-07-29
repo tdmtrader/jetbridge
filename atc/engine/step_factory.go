@@ -21,32 +21,33 @@ import (
 )
 
 type coreStepFactory struct {
-	pool                  worker.Pool
-	streamer              worker.Streamer
-	lockFactory           lock.LockFactory
-	teamFactory           db.TeamFactory
-	buildFactory          db.BuildFactory
-	resourceCacheFactory  db.ResourceCacheFactory
-	resourceConfigFactory db.ResourceConfigFactory
-	defaultLimits         atc.ContainerLimits
-	defaultRequests       atc.ContainerLimits
-	defaultCheckTimeout   time.Duration
-	defaultGetTimeout     time.Duration
-	defaultPutTimeout     time.Duration
-	defaultTaskTimeout    time.Duration
-	imageResolver         imageresolver.Resolver
-	agentStepImage        string
-	agentMetricsStore     metrics.Store
-	agentTranscriptStore  exec.AgentTranscriptStore
-	agentBudgetChecker    budget.Checker
-	agentPlatformToken    string
-	outputSealer          snapshot.OutputSealer
-	snapshotMetadataStore snapshot.MetadataStore
-	snapshotContentStore  snapshot.ContentStore
-	snapshotInputBindings exec.WorkflowInputBindingVerifier
-	snapshotCanonicalizer snapshot.Canonicalizer
-	workflowWaits         workflowwait.Store
-	snapshotPublisher     publisher.Executor
+	pool                   worker.Pool
+	streamer               worker.Streamer
+	lockFactory            lock.LockFactory
+	teamFactory            db.TeamFactory
+	buildFactory           db.BuildFactory
+	resourceCacheFactory   db.ResourceCacheFactory
+	resourceConfigFactory  db.ResourceConfigFactory
+	defaultLimits          atc.ContainerLimits
+	defaultRequests        atc.ContainerLimits
+	defaultCheckTimeout    time.Duration
+	defaultGetTimeout      time.Duration
+	defaultPutTimeout      time.Duration
+	defaultTaskTimeout     time.Duration
+	imageResolver          imageresolver.Resolver
+	agentStepImage         string
+	agentMetricsStore      metrics.Store
+	agentTranscriptStore   exec.AgentTranscriptStore
+	agentBudgetChecker     budget.Checker
+	agentPlatformToken     string
+	agentCheckpointCapture *exec.AgentCheckpointStepConfig
+	outputSealer           snapshot.OutputSealer
+	snapshotMetadataStore  snapshot.MetadataStore
+	snapshotContentStore   snapshot.ContentStore
+	snapshotInputBindings  exec.WorkflowInputBindingVerifier
+	snapshotCanonicalizer  snapshot.Canonicalizer
+	workflowWaits          workflowwait.Store
+	snapshotPublisher      publisher.Executor
 }
 
 // CoreStepFactoryOption configures optional fields on coreStepFactory.
@@ -127,6 +128,16 @@ func WithAgentBudgetChecker(c budget.Checker) CoreStepFactoryOption {
 // platform Anthropic token (web flag --agent-platform-token-secret).
 func WithAgentPlatformTokenSecret(name string) CoreStepFactoryOption {
 	return func(f *coreStepFactory) { f.agentPlatformToken = name }
+}
+
+// WithAgentCheckpointCapture supplies one command-scoped, server-owned
+// checkpoint policy to AgentStep. The policy is not derived from an AgentPlan;
+// the step applies it only after its own authenticated v3 admission checks.
+func WithAgentCheckpointCapture(config exec.AgentCheckpointStepConfig) CoreStepFactoryOption {
+	return func(f *coreStepFactory) {
+		configCopy := config
+		f.agentCheckpointCapture = &configCopy
+	}
 }
 
 func NewCoreStepFactory(
@@ -303,6 +314,9 @@ func (factory *coreStepFactory) AgentStep(
 	}
 	if factory.snapshotMetadataStore != nil && factory.snapshotContentStore != nil {
 		agentOpts = append(agentOpts, exec.WithAgentSnapshotStores(factory.snapshotMetadataStore, factory.snapshotContentStore))
+	}
+	if factory.agentCheckpointCapture != nil {
+		agentOpts = append(agentOpts, exec.WithAgentCheckpointCapture(*factory.agentCheckpointCapture))
 	}
 
 	agentStep := exec.NewAgentStep(

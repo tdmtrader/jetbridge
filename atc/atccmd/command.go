@@ -31,9 +31,11 @@ import (
 	workflowwaitsapi "github.com/concourse/concourse/agent/api/workflowwaits"
 	"github.com/concourse/concourse/agent/artifactcap"
 	"github.com/concourse/concourse/agent/budget"
+	"github.com/concourse/concourse/agent/checkpoint"
 	"github.com/concourse/concourse/agent/credentials"
 	"github.com/concourse/concourse/agent/dispatch"
 	"github.com/concourse/concourse/agent/projection"
+	"github.com/concourse/concourse/agent/provider"
 	"github.com/concourse/concourse/agent/publisher"
 	"github.com/concourse/concourse/agent/resourcecapture"
 	"github.com/concourse/concourse/agent/snapshot"
@@ -60,6 +62,7 @@ import (
 	"github.com/concourse/concourse/atc/db/lock"
 	"github.com/concourse/concourse/atc/db/migration"
 	"github.com/concourse/concourse/atc/engine"
+	"github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/gc"
 	"github.com/concourse/concourse/atc/imageresolver"
 	"github.com/concourse/concourse/atc/lidar"
@@ -216,6 +219,11 @@ type RunCommand struct {
 	agentSnapshotLifecycleComposer  snapshotLifecycleComposer
 	agentSnapshotPublisherComposer  snapshotPublisherComposer
 	agentSnapshotPublisher          publisher.Executor
+
+	// Checkpoint capture is composed after snapshots and owns no additional
+	// daemon transport. It reuses the one command-scoped checked-mTLS client.
+	agentCheckpointMu         sync.Mutex
+	agentCheckpointStepConfig *exec.AgentCheckpointStepConfig
 
 	// The ticket/workflow admission graph is composed ONCE and shared by the
 	// dispatcher component and the dispatch API route. See agentDispatchGraph.
@@ -937,6 +945,9 @@ func (cmd *RunCommand) constructMembers(
 	// deliberately, compose once, and inject the exact daemon client into both
 	// API/backend pools below.
 	if err := cmd.composeAgentSnapshots(backendConn, logger); err != nil {
+		return nil, err
+	}
+	if err := cmd.composeAgentCheckpoints(backendConn); err != nil {
 		return nil, err
 	}
 	checkBuildsChan := make(chan db.Build, 2000)
@@ -2024,6 +2035,71 @@ func (cmd *RunCommand) composeAgentSnapshots(connection db.DbConn, logger lager.
 	return nil
 }
 
+// composeAgentCheckpoints builds the durable capture graph exactly once at
+// command scope. It deliberately shares the already-checked mTLS daemon
+// client created by snapshot composition: checkpoint capture must never build
+// a second transport with different credentials or trust roots.
+func (cmd *RunCommand) composeAgentCheckpoints(connection db.DbConn) error {
+	cmd.agentCheckpointMu.Lock()
+	defer cmd.agentCheckpointMu.Unlock()
+
+	if !cmd.AgentCheckpoints.Enabled {
+		return nil
+	}
+	if cmd.agentCheckpointStepConfig != nil {
+		return nil
+	}
+	if !cmd.AgentSnapshots.Enabled {
+		return errors.New("agent checkpoints require agent snapshots to be enabled")
+	}
+	if connection == nil {
+		return errors.New("agent checkpoint database connection is required")
+	}
+
+	cmd.agentSnapshotMu.Lock()
+	sharedDaemon := cmd.agentSnapshotDaemonClient
+	cmd.agentSnapshotMu.Unlock()
+	if sharedDaemon == nil {
+		return errors.New("agent checkpoints require the composed snapshot daemon client")
+	}
+
+	attempts := db.NewAgentRunAttemptsFactory(connection)
+	checkpoints := db.NewAgentRunCheckpointsFactory(connection)
+	capture := exec.NewAgentCheckpointCapture(
+		checkpoints,
+		attempts,
+		sharedDaemon,
+		exec.WithAgentCheckpointCaptureMetrics(exec.NewOTelCheckpointCaptureMetrics()),
+	)
+	maxAttempts := cmd.AgentCheckpoints.MaxAttempts
+	fenceTTL := cmd.AgentCheckpoints.FenceTTL
+	captureTimeout := cmd.AgentCheckpoints.CaptureTimeout
+	config := &exec.AgentCheckpointStepConfig{
+		Factory: exec.AgentCheckpointExecutionFactoryFunc(func(identity checkpoint.Identity) (exec.AgentCheckpointController, error) {
+			return exec.NewAgentCheckpointExecution(
+				exec.AgentCheckpointExecutionConfig{
+					Identity:         identity,
+					MaxTotalAttempts: maxAttempts,
+					FenceTTL:         fenceTTL,
+					CaptureTimeout:   captureTimeout,
+				},
+				attempts,
+				checkpoints,
+				capture,
+			)
+		}),
+		Provider:        "anthropic",
+		Adapter:         provider.Identity{Name: "claude-cli", Version: "legacy-stream-json"},
+		ElapsedInterval: cmd.AgentCheckpoints.ElapsedInterval,
+		MaxArchiveBytes: cmd.AgentCheckpoints.MaxBytes,
+	}
+
+	// Publish only the fully assembled policy. Errors above therefore leave no
+	// half-configured path that an AgentStep could accidentally observe.
+	cmd.agentCheckpointStepConfig = config
+	return nil
+}
+
 func agentSnapshotStreamErrorReporter(logger lager.Logger) snapshotsapi.ErrorReporter {
 	apiLogger := logger.Session("agent-snapshot-api")
 	return func(_ context.Context, category string) {
@@ -2253,6 +2329,16 @@ func (cmd *RunCommand) agentSnapshotCoreStepFactoryOptions() ([]engine.CoreStepF
 		options = append(options, engine.WithSnapshotPublisher(cmd.agentSnapshotPublisher))
 	}
 	return options, true
+}
+
+func (cmd *RunCommand) agentCheckpointCoreStepFactoryOptions() ([]engine.CoreStepFactoryOption, bool) {
+	cmd.agentCheckpointMu.Lock()
+	defer cmd.agentCheckpointMu.Unlock()
+	if !cmd.AgentCheckpoints.Enabled || cmd.agentCheckpointStepConfig == nil {
+		return nil, false
+	}
+	config := *cmd.agentCheckpointStepConfig
+	return []engine.CoreStepFactoryOption{engine.WithAgentCheckpointCapture(config)}, true
 }
 
 func (cmd *RunCommand) constructPool(dbConn db.DbConn, lockFactory lock.LockFactory, workerCache *db.WorkerCache) (worker.Pool, error) {
@@ -3146,6 +3232,9 @@ func (cmd *RunCommand) constructEngine(
 	}
 	if snapshotOptions, ok := cmd.agentSnapshotCoreStepFactoryOptions(); ok {
 		coreStepFactoryOptions = append(coreStepFactoryOptions, snapshotOptions...)
+	}
+	if checkpointOptions, ok := cmd.agentCheckpointCoreStepFactoryOptions(); ok {
+		coreStepFactoryOptions = append(coreStepFactoryOptions, checkpointOptions...)
 	}
 
 	return engine.NewEngine(
