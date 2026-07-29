@@ -44,6 +44,29 @@ type RenderedFunction struct {
 	InputParamNames             map[string]string
 	DevValidationProfiles       []CompiledDevValidationProfile
 	DevValidationProvenanceHash string
+	boundSourceRefs             map[string]snapshot.SnapshotRef
+}
+
+// BindExecutionParams is the only source-aware execution envelope. It owns
+// every rendered resource-source parameter and refuses caller substitution;
+// selected IDs therefore survive rendering as server-derived execution state.
+func (rendered RenderedFunction) BindExecutionParams(params map[string]any) (map[string]any, error) {
+	bound := make(map[string]any, len(params)+len(rendered.boundSourceRefs))
+	for name, value := range params {
+		bound[name] = value
+	}
+	for source, ref := range rendered.boundSourceRefs {
+		name, err := InputParamName(source)
+		if err != nil {
+			return nil, err
+		}
+		value := ref.ID.String()
+		if supplied, found := bound[name]; found && supplied != value {
+			return nil, fmt.Errorf("workflow: bound resource source %q was substituted", source)
+		}
+		bound[name] = value
+	}
+	return bound, nil
 }
 
 // TargetConfigHash returns the canonical, domain-separated hash used to bind
@@ -351,7 +374,19 @@ func renderFunction(target FunctionTarget, sourceRefs map[string]snapshot.Snapsh
 		InputParamNames:             paramNames,
 		DevValidationProfiles:       cloneCompiledDevValidationProfiles(function.DevValidationProfiles),
 		DevValidationProvenanceHash: function.DevValidationProvenanceHash,
+		boundSourceRefs:             cloneBoundSourceRefs(sourceRefs),
 	}, nil
+}
+
+func cloneBoundSourceRefs(refs map[string]snapshot.SnapshotRef) map[string]snapshot.SnapshotRef {
+	if len(refs) == 0 {
+		return nil
+	}
+	cloned := make(map[string]snapshot.SnapshotRef, len(refs))
+	for name, ref := range refs {
+		cloned[name] = ref
+	}
+	return cloned
 }
 
 func validateBoundResourceSourceRefs(sources []ResourceSource, refs map[string]snapshot.SnapshotRef) error {

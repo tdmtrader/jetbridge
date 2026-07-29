@@ -6,6 +6,7 @@ CREATE TABLE agent_workflow_resource_source_pipelines (
     workflow_version INTEGER NOT NULL CHECK (workflow_version > 0),
     pipeline_config_version INTEGER NOT NULL CHECK (pipeline_config_version > 0),
     config_hash TEXT NOT NULL CHECK (config_hash ~ '^[0-9a-f]{64}$'),
+    source_declarations JSONB NOT NULL CHECK (jsonb_typeof(source_declarations) = 'array'),
     state TEXT NOT NULL CHECK (state IN ('active', 'draining', 'archived')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),

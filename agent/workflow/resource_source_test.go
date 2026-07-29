@@ -98,4 +98,12 @@ func TestRenderFunctionWithBoundSourcesRemovesLiveResourceReads(t *testing.T) {
 	if !ok || load.Name != "repository-source" || load.ID != "((snapshot_repository-source))" {
 		t.Fatalf("bound source load = %#v", load)
 	}
+	params, err := rendered.BindExecutionParams(map[string]any{"workflow_run_id": "9"})
+	if err != nil || params["snapshot_repository-source"] != "41" {
+		t.Fatalf("bound params = %#v, %v", params, err)
+	}
+	_, err = rendered.BindExecutionParams(map[string]any{"workflow_run_id": "9", "snapshot_repository-source": "42"})
+	if err == nil || !strings.Contains(err.Error(), "substituted") {
+		t.Fatalf("substitution error = %v", err)
+	}
 }
