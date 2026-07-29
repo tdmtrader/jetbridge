@@ -120,16 +120,15 @@ to evaluate independently.
 
 - Task/area: Task 10, emulator-backed GCS integration verification
 - Classification: Environmental verification gap
-- Status: Deferred
+- Status: Resolved on 2026-07-28
 - Evidence: `make test-hangar-integration` was attempted once in the sandbox
   and once with approved host access on 2026-07-28. Both stopped at the target
-  prerequisite with `ERROR: a running Docker daemon is required`; no
-  `CONCOURSE_HANGAR_TEST_GCS_ENDPOINT` was configured.
-- Why it is nonblocking: Unit coverage and tagged harness compilation passed;
-  the target supports the intended in-cluster mode through the explicit
-  emulator endpoint environment variable. The missing daemon is external to
-  the implementation and no production behavior was bypassed.
-- Suggested follow-up: In CI or a cluster environment, set
-  `CONCOURSE_HANGAR_TEST_GCS_ENDPOINT` to the compatible emulator endpoint, or
-  run the target with a working Docker daemon, and retain the test output with
-  the Task 10 acceptance evidence.
+  prerequisite with `ERROR: a running Docker daemon is required`. The exact
+  target was then run against a temporary fake-gcs-server deployment on Borg:
+  `CONCOURSE_HANGAR_TEST_GCS_ENDPOINT=http://127.0.0.1:54443/storage/v1/
+  make test-hangar-integration`. The production adapter suite passed all
+  immutable/idempotent, concurrent-writer, corruption, truncation, and
+  complete-local-loss recovery cases.
+- Resolution: The temporary namespace `codex-hangar-it-019fa137` and its
+  deployment/service were deleted after the run; a follow-up namespace lookup
+  returned no object.

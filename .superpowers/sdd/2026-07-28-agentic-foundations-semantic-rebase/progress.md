@@ -148,12 +148,14 @@
     handling; and a concurrency-safe test fake.
   - Verification: `go test ./agent/hangar -count=1` and
     `go test ./agent/hangar/hangarfakes -count=1` passed. The tagged emulator
-    harness cleanup contract compiled and passed. `make test-hangar-integration`
-    was attempted once in the sandbox and once with host access; both stopped
-    before tests because Docker has no running daemon and no external emulator
-    endpoint was configured. See `DEFERRED-004`.
-  - Review: focused self-review round 1 found no blocking Task-10 issue.
-  - Status: Done with environmental verification concern.
+    harness cleanup contract compiled and passed. The exact
+    `make test-hangar-integration` target then passed against a temporary
+    fake-gcs-server deployment on Borg, including concurrent writers,
+    truncated zstd, and complete local-scratch loss. The temporary namespace
+    was deleted and its absence verified. `DEFERRED-004` is resolved.
+  - Review: independent blocking-only review round 1 pending. The implementer
+    self-review does not consume the two-round review budget.
+  - Status: Implemented; independent review pending.
 - [ ] Task 11 — Hangar daemon/deployment integration
 - [ ] Task 12 — resource-source grammar and persistence
 - [ ] Task 13 — source capture/reuse runtime

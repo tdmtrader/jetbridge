@@ -2,10 +2,10 @@
 
 ## Status
 
-**DONE_WITH_CONCERNS** — the Task 10 implementation and focused unit
-verification are complete. The required full emulator target could not run in
-this environment because no Docker daemon or external emulator endpoint was
-available. This boundary is cataloged as `DEFERRED-004`.
+**IMPLEMENTED; INDEPENDENT REVIEW PENDING** — the Task 10 implementation,
+focused unit verification, and required emulator-backed target are complete.
+`DEFERRED-004` was resolved by running the target against a temporary
+fake-gcs-server deployment on Borg.
 
 ## Files and behavior
 
@@ -51,14 +51,21 @@ build cache; the evidence commands were rerun with approved host-cache access.
 - Passed: `go test -tags=integration ./agent/hangar -run
   '^TestFakeGCSContainerRegistersCleanupBeforeReturningStartError$' -count=1
   -v`
+- Passed against a temporary Borg emulator:
+  `CONCOURSE_HANGAR_TEST_GCS_ENDPOINT=http://127.0.0.1:54443/storage/v1/
+  make test-hangar-integration`
+  - immutable/idempotent write;
+  - different-object conflict;
+  - concurrent-writer convergence;
+  - truncated-zstd rejection;
+  - recovery after complete node-local scratch loss.
 - Passed: `git diff --check` before the implementation commit.
-- Not runnable here: `make test-hangar-integration`. It was attempted once in
-  the sandbox and once with approved host access; both ended at `ERROR: a
-  running Docker daemon is required`. No external emulator endpoint was set.
+- Cleanup verified: the temporary namespace
+  `codex-hangar-it-019fa137` no longer exists on Borg.
 
-## Self-review
+## Implementer self-review
 
-Review round 1 focused on canonical identity, create-only semantics,
+The implementer self-review focused on canonical identity, create-only semantics,
 generation-pinned verification, metadata exactness, compressed and
 uncompressed bounds, cancellation behavior, and the no-cache recovery path.
 No correctness, security, corruption, or acceptance blocker was found. The
@@ -67,10 +74,11 @@ dependencies introduced.
 
 ## Deferred observations
 
-- `DEFERRED-004`: execute the full emulator scenario where Docker is running
-  or the in-cluster emulator endpoint is supplied. No code workaround was
-  added for the absent external service.
+- None. `DEFERRED-004` is resolved by the Borg-backed target evidence above.
 
 ## Commits
 
 - `29e5215b13404b301f8dcdc1e98ae78c80c3341a`
+  (`feat(hangar): add immutable GCS object storage`)
+- `705dcf1d375f9209a6a086b64ea9b5a01cb04f33`
+  (`docs(hangar): record Task 10 verification`)
