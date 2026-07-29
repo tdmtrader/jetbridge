@@ -2,6 +2,8 @@ package db
 
 import (
 	"database/sql"
+	"errors"
+	"fmt"
 
 	"github.com/concourse/concourse/agent/snapshot"
 )
@@ -30,6 +32,30 @@ type AgentRunTranscript struct {
 	Truncated  bool
 }
 
+// AgentRunAttemptTranscript is the durable raw transcript for one server
+// assigned execution attempt. AttemptID, together with the copied identity,
+// is verified against agent_run_attempts and its immutable checkpoint head
+// before any bytes are persisted.
+type AgentRunAttemptTranscript struct {
+	AttemptID         int64
+	BuildID           int
+	PlanID            string
+	ExecutionAttempt  int
+	WorkflowRunID     *snapshot.WorkflowRunID
+	FunctionID        string
+	StepName          string
+	NDJSON            string
+	ByteLen           int
+	Truncated         bool
+	FinalPresentation bool
+}
+
+var (
+	ErrAgentRunAttemptTranscriptInvalid   = errors.New("agent run attempt transcript is invalid")
+	ErrAgentRunAttemptTranscriptIdentity  = errors.New("agent run attempt transcript identity conflicts")
+	ErrAgentRunAttemptTranscriptFinalized = errors.New("agent run attempt transcript presentation is already finalized")
+)
+
 // AgentRunTranscriptFactory persists and reads agent transcripts. Modeled on
 // AgentRunMetricsFactory: an ON CONFLICT (build_id, plan_id) upsert so a
 // web-restart resume re-ingesting the same flight volume overwrites cleanly.
@@ -37,6 +63,7 @@ type AgentRunTranscript struct {
 //counterfeiter:generate . AgentRunTranscriptFactory
 type AgentRunTranscriptFactory interface {
 	Upsert(t AgentRunTranscript) error
+	UpsertExecutionAttempt(t AgentRunAttemptTranscript) error
 	// ListByWorkflowRun returns every transcript of one durable workflow run,
 	// oldest-first. Both the workflow name and the run id scope the query
 	// (identity + authz).
@@ -71,6 +98,246 @@ func (f *agentRunTranscriptFactory) Upsert(t AgentRunTranscript) error {
 		RunWith(f.conn).
 		Exec()
 	return err
+}
+
+// UpsertExecutionAttempt keeps a restarted runner's bytes under its own
+// durable attempt ID. The selected attempt and its legacy build/plan
+// presentation are written in one transaction; no later attempt can replace a
+// selected presentation.
+func (f *agentRunTranscriptFactory) UpsertExecutionAttempt(t AgentRunAttemptTranscript) error {
+	if t.AttemptID <= 0 || t.BuildID <= 0 || t.PlanID == "" || t.ExecutionAttempt <= 0 ||
+		t.ByteLen < 0 || t.ByteLen != len(t.NDJSON) {
+		return fmt.Errorf("%w: attempt ID, build ID, plan ID, execution attempt, and byte length are required", ErrAgentRunAttemptTranscriptInvalid)
+	}
+
+	tx, err := f.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer Rollback(tx)
+
+	if _, err := tx.Exec(`SELECT pg_advisory_xact_lock(hashtextextended($1, 1773106147))`, fmt.Sprintf("%d:%s", t.BuildID, t.PlanID)); err != nil {
+		return err
+	}
+	if err := verifyAgentRunAttemptTranscriptAuthority(tx, t); err != nil {
+		return err
+	}
+
+	existing, found, err := readAgentRunAttemptTranscript(tx, t.AttemptID)
+	if err != nil {
+		return err
+	}
+	if found && !sameAgentRunAttemptTranscriptIdentity(existing, t) {
+		return fmt.Errorf("%w: attempt_id=%d", ErrAgentRunAttemptTranscriptIdentity, t.AttemptID)
+	}
+
+	// A selected attempt remains presentation authority during byte refreshes,
+	// even if a resume path replays the request without this flag.
+	t.FinalPresentation = t.FinalPresentation || (found && existing.FinalPresentation)
+	if t.FinalPresentation {
+		finalAttemptID, hasFinal, err := finalizedAgentRunAttemptTranscript(tx, t.BuildID, t.PlanID)
+		if err != nil {
+			return err
+		}
+		if hasFinal && finalAttemptID != t.AttemptID {
+			return fmt.Errorf("%w: build_id=%d plan_id=%q", ErrAgentRunAttemptTranscriptFinalized, t.BuildID, t.PlanID)
+		}
+	}
+
+	if err := upsertAgentRunAttemptTranscript(tx, t); err != nil {
+		return err
+	}
+	if t.FinalPresentation {
+		aggregate, aggregateFound, err := readAgentRunTranscriptForUpdate(tx, t.BuildID, t.PlanID)
+		if err != nil {
+			return err
+		}
+		if aggregateFound && !sameAgentRunTranscriptIdentity(aggregate, t) {
+			return fmt.Errorf("%w: legacy aggregate build_id=%d plan_id=%q", ErrAgentRunAttemptTranscriptIdentity, t.BuildID, t.PlanID)
+		}
+		if err := upsertLegacyAgentRunTranscript(tx, t); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
+func verifyAgentRunAttemptTranscriptAuthority(tx Tx, t AgentRunAttemptTranscript) error {
+	var (
+		attemptID        int64
+		buildID          int
+		planID           string
+		executionAttempt int
+		workflowRunID    sql.NullInt64
+		functionID       string
+	)
+	err := tx.QueryRow(`
+		SELECT a.id, h.build_id, h.plan_id, a.attempt_number,
+			h.workflow_run_provenance_id, h.function_id
+		FROM agent_run_attempts AS a
+		JOIN agent_run_checkpoint_heads AS h ON h.id = a.head_id
+		WHERE a.id = $1
+		FOR SHARE OF a, h
+	`, t.AttemptID).Scan(&attemptID, &buildID, &planID, &executionAttempt, &workflowRunID, &functionID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("%w: attempt_id=%d does not exist", ErrAgentRunAttemptTranscriptInvalid, t.AttemptID)
+	}
+	if err != nil {
+		return err
+	}
+	if attemptID != t.AttemptID || buildID != t.BuildID || planID != t.PlanID ||
+		executionAttempt != t.ExecutionAttempt || functionID != t.FunctionID ||
+		!sameAgentTranscriptWorkflowRunIDValue(workflowRunID, t.WorkflowRunID) {
+		return fmt.Errorf("%w: attempt_id=%d does not match build/plan/execution identity", ErrAgentRunAttemptTranscriptIdentity, t.AttemptID)
+	}
+	return nil
+}
+
+func upsertAgentRunAttemptTranscript(tx Tx, t AgentRunAttemptTranscript) error {
+	_, err := tx.Exec(`
+		INSERT INTO agent_run_attempt_transcripts
+			(attempt_id, build_id, plan_id, execution_attempt, workflow_run_id,
+			 function_id, step_name, ndjson, byte_len, truncated, display_finalized)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		ON CONFLICT (attempt_id) DO UPDATE SET
+			ndjson = EXCLUDED.ndjson,
+			byte_len = EXCLUDED.byte_len,
+			truncated = EXCLUDED.truncated,
+			display_finalized = agent_run_attempt_transcripts.display_finalized OR EXCLUDED.display_finalized,
+			updated_at = clock_timestamp()
+	`, t.AttemptID, t.BuildID, t.PlanID, t.ExecutionAttempt,
+		agentRunTranscriptWorkflowRunIDValue(t.WorkflowRunID), t.FunctionID,
+		nullableAgentTranscriptStepName(t.StepName), t.NDJSON, t.ByteLen,
+		t.Truncated, t.FinalPresentation)
+	return err
+}
+
+func upsertLegacyAgentRunTranscript(tx Tx, t AgentRunAttemptTranscript) error {
+	_, err := tx.Exec(`
+		INSERT INTO agent_run_transcripts
+			(build_id, plan_id, workflow_run_id, function_id, step_name, ndjson, byte_len, truncated)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		ON CONFLICT (build_id, plan_id) DO UPDATE SET
+			workflow_run_id = EXCLUDED.workflow_run_id,
+			function_id = EXCLUDED.function_id,
+			step_name = EXCLUDED.step_name,
+			ndjson = EXCLUDED.ndjson,
+			byte_len = EXCLUDED.byte_len,
+			truncated = EXCLUDED.truncated
+	`, t.BuildID, t.PlanID, agentRunTranscriptWorkflowRunIDValue(t.WorkflowRunID),
+		t.FunctionID, nullableAgentTranscriptStepName(t.StepName), t.NDJSON,
+		t.ByteLen, t.Truncated)
+	return err
+}
+
+func readAgentRunAttemptTranscript(tx Tx, attemptID int64) (AgentRunAttemptTranscript, bool, error) {
+	transcript, err := scanAgentRunAttemptTranscript(tx.QueryRow(`
+		SELECT attempt_id, build_id, plan_id, execution_attempt, workflow_run_id,
+			function_id, step_name, ndjson, byte_len, truncated, display_finalized
+		FROM agent_run_attempt_transcripts
+		WHERE attempt_id = $1
+	`, attemptID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return AgentRunAttemptTranscript{}, false, nil
+	}
+	if err != nil {
+		return AgentRunAttemptTranscript{}, false, err
+	}
+	return transcript, true, nil
+}
+
+func finalizedAgentRunAttemptTranscript(tx Tx, buildID int, planID string) (int64, bool, error) {
+	var attemptID int64
+	err := tx.QueryRow(`
+		SELECT attempt_id FROM agent_run_attempt_transcripts
+		WHERE build_id = $1 AND plan_id = $2 AND display_finalized
+	`, buildID, planID).Scan(&attemptID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return attemptID, true, nil
+}
+
+func readAgentRunTranscriptForUpdate(tx Tx, buildID int, planID string) (AgentRunTranscript, bool, error) {
+	transcript, err := scanRunTranscript(tx.QueryRow(`
+		SELECT `+runTranscriptColumns+`
+		FROM agent_run_transcripts AS t
+		WHERE t.build_id = $1 AND t.plan_id = $2
+		FOR UPDATE
+	`, buildID, planID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return AgentRunTranscript{}, false, nil
+	}
+	if err != nil {
+		return AgentRunTranscript{}, false, err
+	}
+	return transcript, true, nil
+}
+
+func scanAgentRunAttemptTranscript(src scannable) (AgentRunAttemptTranscript, error) {
+	var transcript AgentRunAttemptTranscript
+	var workflowRunID sql.NullInt64
+	var stepName sql.NullString
+	err := src.Scan(
+		&transcript.AttemptID, &transcript.BuildID, &transcript.PlanID,
+		&transcript.ExecutionAttempt, &workflowRunID, &transcript.FunctionID,
+		&stepName, &transcript.NDJSON, &transcript.ByteLen, &transcript.Truncated,
+		&transcript.FinalPresentation,
+	)
+	if err != nil {
+		return AgentRunAttemptTranscript{}, err
+	}
+	if workflowRunID.Valid {
+		id := snapshot.WorkflowRunID(workflowRunID.Int64)
+		transcript.WorkflowRunID = &id
+	}
+	transcript.StepName = stepName.String
+	return transcript, nil
+}
+
+func sameAgentRunAttemptTranscriptIdentity(existing, incoming AgentRunAttemptTranscript) bool {
+	return existing.AttemptID == incoming.AttemptID && existing.BuildID == incoming.BuildID &&
+		existing.PlanID == incoming.PlanID && existing.ExecutionAttempt == incoming.ExecutionAttempt &&
+		existing.FunctionID == incoming.FunctionID && existing.StepName == incoming.StepName &&
+		sameAgentTranscriptWorkflowRunID(existing.WorkflowRunID, incoming.WorkflowRunID)
+}
+
+func sameAgentRunTranscriptIdentity(existing AgentRunTranscript, incoming AgentRunAttemptTranscript) bool {
+	return existing.BuildID == incoming.BuildID && existing.PlanID == incoming.PlanID &&
+		existing.FunctionID == incoming.FunctionID && existing.StepName == incoming.StepName &&
+		sameAgentTranscriptWorkflowRunID(existing.WorkflowRunID, incoming.WorkflowRunID)
+}
+
+func sameAgentTranscriptWorkflowRunID(left, right *snapshot.WorkflowRunID) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
+}
+
+func sameAgentTranscriptWorkflowRunIDValue(left sql.NullInt64, right *snapshot.WorkflowRunID) bool {
+	if !left.Valid || right == nil {
+		return !left.Valid && right == nil
+	}
+	return left.Int64 == int64(*right)
+}
+
+func agentRunTranscriptWorkflowRunIDValue(id *snapshot.WorkflowRunID) any {
+	if id == nil {
+		return nil
+	}
+	return int64(*id)
+}
+
+func nullableAgentTranscriptStepName(stepName string) any {
+	if stepName == "" {
+		return nil
+	}
+	return stepName
 }
 
 const runTranscriptColumns = `t.build_id, t.plan_id, t.workflow_run_id, t.function_id,

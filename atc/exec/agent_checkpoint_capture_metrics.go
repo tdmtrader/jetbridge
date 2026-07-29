@@ -16,13 +16,15 @@ type CheckpointCaptureMetric struct {
 	Outcome  string
 	Trigger  CheckpointCaptureTrigger
 	Duration time.Duration
+	Bytes    int64
 }
 
 type CheckpointCaptureMetricKind string
 
 const (
-	CheckpointCaptureMetricDuration CheckpointCaptureMetricKind = "duration"
-	CheckpointCaptureMetricOutcome  CheckpointCaptureMetricKind = "outcome"
+	CheckpointCaptureMetricDuration      CheckpointCaptureMetricKind = "duration"
+	CheckpointCaptureMetricOutcome       CheckpointCaptureMetricKind = "outcome"
+	CheckpointCaptureMetricRetainedBytes CheckpointCaptureMetricKind = "retained_bytes"
 )
 
 type CheckpointCaptureMetrics interface {
@@ -60,6 +62,8 @@ func (otelCheckpointCaptureMetrics) RecordCheckpointCapture(ctx context.Context,
 			return
 		}
 		metric.RecordAgentCheckpointOutcome(ctx, outcome, trigger)
+	case CheckpointCaptureMetricRetainedBytes:
+		metric.RecordAgentCheckpointRetainedBytes(ctx, trigger, observed.Bytes)
 	}
 }
 
@@ -121,5 +125,11 @@ func (coordinator *AgentCheckpointCapture) recordDuration(ctx context.Context, p
 func (coordinator *AgentCheckpointCapture) recordOutcome(ctx context.Context, outcome string, trigger CheckpointCaptureTrigger, duration time.Duration) {
 	if coordinator.metrics != nil {
 		coordinator.metrics.RecordCheckpointCapture(ctx, CheckpointCaptureMetric{Kind: CheckpointCaptureMetricOutcome, Outcome: outcome, Trigger: trigger, Duration: duration})
+	}
+}
+
+func (coordinator *AgentCheckpointCapture) recordRetainedBytes(ctx context.Context, trigger CheckpointCaptureTrigger, bytes int64) {
+	if coordinator.metrics != nil {
+		coordinator.metrics.RecordCheckpointCapture(ctx, CheckpointCaptureMetric{Kind: CheckpointCaptureMetricRetainedBytes, Trigger: trigger, Bytes: bytes})
 	}
 }

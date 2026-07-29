@@ -10,6 +10,7 @@ import (
 	"github.com/concourse/concourse/agent/checkpoint"
 	"github.com/concourse/concourse/agent/hangar"
 	"github.com/concourse/concourse/agent/provider"
+	"github.com/concourse/concourse/atc/runtime"
 )
 
 func TestRecoveryNoHeadUnsafeJournalManualizesBeforeAllocation(t *testing.T) {
@@ -28,6 +29,53 @@ func TestRecoveryNoHeadUnsafeJournalManualizesBeforeAllocation(t *testing.T) {
 	}
 	if !launch.ManualReview || attempts.beginCalls != 0 || len(attempts.manual) != 1 {
 		t.Fatalf("unsafe no-head recovery = %#v, begin=%d manual=%#v", launch, attempts.beginCalls, attempts.manual)
+	}
+}
+
+func TestRecoveryCountsEachAmbiguousEffectWithoutUnboundedLabels(t *testing.T) {
+	provenance := recoveryTestProvenance(t)
+	attempts := recoveryInterruptedAttempt(provenance)
+	metrics := &recoveryMetricsFake{}
+	authority := AgentCheckpointRecoveryAuthority{
+		Provider: provenance.Provider, Adapter: provenance.Adapter,
+		RuntimeImage: provenance.RuntimeImage, CompleteEffectJournal: true,
+		Capabilities: checkpoint.Capabilities{
+			SafeBoundary: true, EffectJournal: true,
+			Version: provenance.Adapter.Version,
+		},
+	}
+	controller, err := NewAgentCheckpointRecoveryController(
+		AgentCheckpointRecoveryConfig{
+			Provenance: provenance, MaxArchiveBytes: 1024,
+			MaxArchiveEntries: 16,
+			Authorities:       []AgentCheckpointRecoveryAuthority{authority},
+			Metrics:           metrics,
+		},
+		attempts,
+		recoverySourceFake{},
+		recoveryJournalFake{effects: []checkpoint.Effect{
+			{
+				ToolCallID: "begun", ToolName: "write",
+				Provider: provenance.Provider, AdapterVersion: provenance.Adapter.Version,
+				State: checkpoint.EffectBegun,
+			},
+			{
+				ToolCallID: "committed-write", ToolName: "write",
+				Provider: provenance.Provider, AdapterVersion: provenance.Adapter.Version,
+				State: checkpoint.EffectCommitted,
+			},
+		}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	launch, err := controller.PrepareLaunch(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !launch.ManualReview || metrics.ambiguousEffects != 2 {
+		t.Fatalf("launch = %#v, ambiguous effects = %d", launch, metrics.ambiguousEffects)
 	}
 }
 
@@ -275,6 +323,22 @@ func (fake recoverySourceFake) LoadRetainedRecoverySource(context.Context, check
 type recoveryJournalFake struct {
 	effects []checkpoint.Effect
 	err     error
+}
+
+type recoveryMetricsFake struct {
+	ambiguousEffects int64
+}
+
+func (*recoveryMetricsFake) RecordInterruption(context.Context, runtime.InterruptionReason) {}
+
+func (*recoveryMetricsFake) RecordRecovery(context.Context, checkpoint.FallbackMode, AgentCheckpointRecoveryOutcome) {
+}
+
+func (*recoveryMetricsFake) RecordRestore(context.Context, AgentCheckpointRestoreOutcome, time.Duration) {
+}
+
+func (fake *recoveryMetricsFake) RecordAmbiguousEffects(_ context.Context, count int64) {
+	fake.ambiguousEffects += count
 }
 
 func (fake recoveryJournalFake) ListEffects(context.Context, checkpoint.Identity, int) ([]checkpoint.Effect, error) {

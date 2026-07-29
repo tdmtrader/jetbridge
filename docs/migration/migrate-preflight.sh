@@ -65,7 +65,9 @@ v8.0.1:1765921815
 # pipeline config revision captured for their selecting build.
 # 1773106144-45 add immutable Hangar-backed checkpoint generations and fresh
 # durable execution attempts without restoring a legacy runner.
-JETBRIDGE_VERSION=1773106145
+# 1773106146-47 attribute metrics and transcripts to those exact attempts
+# while preserving the legacy build/plan projections.
+JETBRIDGE_VERSION=1773106147
 
 # Minimum supported source version (v6.x)
 MIN_SUPPORTED_VERSION=1601993582

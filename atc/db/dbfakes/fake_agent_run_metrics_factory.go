@@ -4,6 +4,7 @@ package dbfakes
 import (
 	"sync"
 
+	"github.com/concourse/concourse/agent/api/metrics"
 	"github.com/concourse/concourse/agent/schema"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc/db"
@@ -61,6 +62,19 @@ type FakeAgentRunMetricsFactory struct {
 	}
 	listRecentReturnsOnCall map[int]struct {
 		result1 []schema.RunMetrics
+		result2 error
+	}
+	UpsertExecutionAttemptStub        func(metrics.ExecutionAttemptRequest) (metrics.ExecutionAttemptUpdate, error)
+	upsertExecutionAttemptMutex       sync.RWMutex
+	upsertExecutionAttemptArgsForCall []struct {
+		arg1 metrics.ExecutionAttemptRequest
+	}
+	upsertExecutionAttemptReturns struct {
+		result1 metrics.ExecutionAttemptUpdate
+		result2 error
+	}
+	upsertExecutionAttemptReturnsOnCall map[int]struct {
+		result1 metrics.ExecutionAttemptUpdate
 		result2 error
 	}
 	UpsertReturningInsertedStub        func(*schema.RunMetrics) (bool, *schema.RunMetrics, error)
@@ -348,6 +362,69 @@ func (fake *FakeAgentRunMetricsFactory) ListRecentReturnsOnCall(i int, result1 [
 	}
 	fake.listRecentReturnsOnCall[i] = struct {
 		result1 []schema.RunMetrics
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeAgentRunMetricsFactory) UpsertExecutionAttempt(arg1 metrics.ExecutionAttemptRequest) (metrics.ExecutionAttemptUpdate, error) {
+	fake.upsertExecutionAttemptMutex.Lock()
+	ret, specificReturn := fake.upsertExecutionAttemptReturnsOnCall[len(fake.upsertExecutionAttemptArgsForCall)]
+	fake.upsertExecutionAttemptArgsForCall = append(fake.upsertExecutionAttemptArgsForCall, struct {
+		arg1 metrics.ExecutionAttemptRequest
+	}{arg1})
+	stub := fake.UpsertExecutionAttemptStub
+	fakeReturns := fake.upsertExecutionAttemptReturns
+	fake.recordInvocation("UpsertExecutionAttempt", []interface{}{arg1})
+	fake.upsertExecutionAttemptMutex.Unlock()
+	if stub != nil {
+		return stub(arg1)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeAgentRunMetricsFactory) UpsertExecutionAttemptCallCount() int {
+	fake.upsertExecutionAttemptMutex.RLock()
+	defer fake.upsertExecutionAttemptMutex.RUnlock()
+	return len(fake.upsertExecutionAttemptArgsForCall)
+}
+
+func (fake *FakeAgentRunMetricsFactory) UpsertExecutionAttemptCalls(stub func(metrics.ExecutionAttemptRequest) (metrics.ExecutionAttemptUpdate, error)) {
+	fake.upsertExecutionAttemptMutex.Lock()
+	defer fake.upsertExecutionAttemptMutex.Unlock()
+	fake.UpsertExecutionAttemptStub = stub
+}
+
+func (fake *FakeAgentRunMetricsFactory) UpsertExecutionAttemptArgsForCall(i int) metrics.ExecutionAttemptRequest {
+	fake.upsertExecutionAttemptMutex.RLock()
+	defer fake.upsertExecutionAttemptMutex.RUnlock()
+	return fake.upsertExecutionAttemptArgsForCall[i].arg1
+}
+
+func (fake *FakeAgentRunMetricsFactory) UpsertExecutionAttemptReturns(result1 metrics.ExecutionAttemptUpdate, result2 error) {
+	fake.upsertExecutionAttemptMutex.Lock()
+	defer fake.upsertExecutionAttemptMutex.Unlock()
+	fake.UpsertExecutionAttemptStub = nil
+	fake.upsertExecutionAttemptReturns = struct {
+		result1 metrics.ExecutionAttemptUpdate
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeAgentRunMetricsFactory) UpsertExecutionAttemptReturnsOnCall(i int, result1 metrics.ExecutionAttemptUpdate, result2 error) {
+	fake.upsertExecutionAttemptMutex.Lock()
+	defer fake.upsertExecutionAttemptMutex.Unlock()
+	fake.UpsertExecutionAttemptStub = nil
+	if fake.upsertExecutionAttemptReturnsOnCall == nil {
+		fake.upsertExecutionAttemptReturnsOnCall = make(map[int]struct {
+			result1 metrics.ExecutionAttemptUpdate
+			result2 error
+		})
+	}
+	fake.upsertExecutionAttemptReturnsOnCall[i] = struct {
+		result1 metrics.ExecutionAttemptUpdate
 		result2 error
 	}{result1, result2}
 }

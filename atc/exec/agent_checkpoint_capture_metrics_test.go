@@ -27,6 +27,9 @@ func TestOTelCheckpointCaptureMetricsMapOnlyClosedCoordinatorValues(t *testing.T
 	recorder.RecordCheckpointCapture(ctx, CheckpointCaptureMetric{
 		Kind: CheckpointCaptureMetricOutcome, Outcome: "lost_work", Trigger: CheckpointCaptureTriggerPreemption, Duration: 2 * time.Second,
 	})
+	recorder.RecordCheckpointCapture(ctx, CheckpointCaptureMetric{
+		Kind: CheckpointCaptureMetricRetainedBytes, Trigger: CheckpointCaptureTriggerElapsed, Bytes: 4096,
+	})
 	// The coordinator must never turn opaque strings into OTel label values.
 	recorder.RecordCheckpointCapture(ctx, CheckpointCaptureMetric{
 		Kind: CheckpointCaptureMetricDuration, Phase: "pod-uid", Trigger: CheckpointCaptureTriggerElapsed, Duration: time.Second,
@@ -45,6 +48,9 @@ func TestOTelCheckpointCaptureMetricsMapOnlyClosedCoordinatorValues(t *testing.T
 	if got := checkpointMetricPoints(t, collected, "concourse.agent.checkpoint.lost_work"); got != 1 {
 		t.Fatalf("lost-work points = %d, want 1", got)
 	}
+	if got := checkpointMetricPoints(t, collected, "concourse.agent.checkpoint.retained_bytes"); got != 1 {
+		t.Fatalf("retained-byte points = %d, want 1", got)
+	}
 }
 
 func checkpointMetricPoints(t *testing.T, collected metricdata.ResourceMetrics, name string) int {
@@ -56,6 +62,8 @@ func checkpointMetricPoints(t *testing.T, collected metricdata.ResourceMetrics, 
 			}
 			switch data := measurement.Data.(type) {
 			case metricdata.Histogram[float64]:
+				return len(data.DataPoints)
+			case metricdata.Histogram[int64]:
 				return len(data.DataPoints)
 			case metricdata.Sum[int64]:
 				return len(data.DataPoints)

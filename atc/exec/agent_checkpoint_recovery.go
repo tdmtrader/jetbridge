@@ -30,6 +30,7 @@ type AgentCheckpointRecoveryConfig struct {
 	Authorities       []AgentCheckpointRecoveryAuthority
 	MaxArchiveBytes   int64
 	MaxArchiveEntries int64
+	Metrics           AgentCheckpointRecoveryMetrics
 }
 
 type agentCheckpointRecoveryAttempts interface {
@@ -260,10 +261,21 @@ func (controller *AgentCheckpointRecoveryController) cleanJournal(ctx context.Co
 	if err != nil {
 		return nil, err
 	}
+	ambiguous := 0
 	for _, effect := range effects {
-		if err := effect.Validate(); err != nil || effect.State != checkpoint.EffectCommitted || !effect.ReadOnly || effect.Provider != authority.Provider || effect.AdapterVersion != authority.Adapter.Version {
-			return nil, errors.New("interrupted effect journal is incomplete or unsafe")
+		if err := effect.Validate(); err != nil ||
+			effect.State != checkpoint.EffectCommitted ||
+			!effect.ReadOnly ||
+			effect.Provider != authority.Provider ||
+			effect.AdapterVersion != authority.Adapter.Version {
+			ambiguous++
 		}
+	}
+	if ambiguous > 0 {
+		if controller.config.Metrics != nil {
+			controller.config.Metrics.RecordAmbiguousEffects(ctx, int64(ambiguous))
+		}
+		return nil, errors.New("interrupted effect journal is incomplete or unsafe")
 	}
 	return effects, nil
 }

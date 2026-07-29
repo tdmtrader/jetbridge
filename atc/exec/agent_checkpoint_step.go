@@ -87,6 +87,7 @@ type AgentCheckpointStepConfig struct {
 	MaxArchiveBytes      int64
 	MaxArchiveEntries    int64
 	ExplicitIntentSource AgentCheckpointExplicitIntentSource
+	RecoveryMetrics      AgentCheckpointRecoveryMetrics
 }
 
 const agentCheckpointInterruptionTimeout = 5 * time.Second

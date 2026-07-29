@@ -1,9 +1,95 @@
 package metrics
 
 import (
+	"errors"
+	"strings"
+
+	"github.com/concourse/concourse/agent/budget"
 	schema "github.com/concourse/concourse/agent/schema"
 	"github.com/concourse/concourse/agent/snapshot"
 )
+
+// ErrExecutionAttemptInvalid means a server-side caller did not provide an
+// exact, durable attempt identity. Agent-authored metrics must never select an
+// attempt: the scheduler derives it from the recovery authority.
+var ErrExecutionAttemptInvalid = errors.New("invalid agent execution attempt")
+
+// ErrExecutionAttemptIdentityDrift means a retry tried to change the durable
+// identity or server-owned attribution recorded for an execution attempt.
+var ErrExecutionAttemptIdentityDrift = errors.New("agent execution attempt identity drift")
+
+// ErrExecutionAttemptAggregateAmbiguous prevents a legacy aggregate-only row
+// from being silently mixed with recovery-aware attempt accounting.
+var ErrExecutionAttemptAggregateAmbiguous = errors.New("agent execution attempt aggregate is ambiguous")
+
+// ErrExecutionAttemptPresentationFinalized means another execution attempt is
+// already the server-selected terminal presentation for this aggregate.
+var ErrExecutionAttemptPresentationFinalized = errors.New("agent execution attempt presentation already finalized")
+
+// ExecutionAttemptKey is the exact server-derived identity of one provider
+// process. AttemptID binds it to the durable recovery record; the remaining
+// fields are verified against that record before metrics are written.
+type ExecutionAttemptKey struct {
+	AttemptID        int64
+	BuildID          int
+	PlanID           string
+	ExecutionAttempt int
+}
+
+// ExecutionAttemptAttribution is resolved by the scheduler/harness. Provider
+// telemetry may report counters but must never choose durable accounting
+// dimensions such as provider or model.
+type ExecutionAttemptAttribution struct {
+	UserID   *int
+	UserName string
+	Source   string
+	Provider string
+	Model    string
+}
+
+// ExecutionAttemptRequest is the server-only recovery-aware ingestion
+// boundary. FinalPresentation is selected only after the executor determines
+// that this exact durable attempt owns the terminal display result.
+type ExecutionAttemptRequest struct {
+	Key               ExecutionAttemptKey
+	Metrics           *schema.RunMetrics
+	FinalPresentation bool
+	Attribution       ExecutionAttemptAttribution
+}
+
+// CounterDelta is the non-negative cumulative-counter change made by one
+// execution attempt ingestion.
+type CounterDelta struct {
+	Usage           schema.Usage
+	Turns           int
+	WallTimeSeconds int
+	CostUSD         float64
+	EventCounts     map[string]int
+}
+
+// ExecutionAttemptUpdate reports the durable per-attempt delta. Metrics,
+// aggregate, and ledger changes commit atomically.
+type ExecutionAttemptUpdate struct {
+	Inserted bool
+	Previous *schema.RunMetrics
+	Delta    CounterDelta
+}
+
+// AttemptStore is the recovery-aware, server-only extension of Store. Legacy
+// callers retain Store's aggregate-only semantics.
+type AttemptStore interface {
+	UpsertExecutionAttempt(request ExecutionAttemptRequest) (ExecutionAttemptUpdate, error)
+}
+
+// ValidExecutionAttemptAttribution requires canonical server-selected ledger
+// dimensions. Rejecting aliases prevents split provider/model rollups.
+func ValidExecutionAttemptAttribution(a ExecutionAttemptAttribution) bool {
+	return budget.ValidSource(a.Source) && canonicalExecutionAttemptDimension(a.Provider) && canonicalExecutionAttemptDimension(a.Model)
+}
+
+func canonicalExecutionAttemptDimension(value string) bool {
+	return value != "" && strings.TrimSpace(value) == value && strings.ToLower(value) == value
+}
 
 //go:generate go run github.com/maxbrunsfeld/counterfeiter/v6 -generate
 

@@ -211,6 +211,9 @@ func TestAgentCheckpointCaptureRecordsBoundedPhaseOutcomeAndLostWorkMetrics(t *t
 	if !metrics.hasOutcome("committed", CheckpointCaptureTriggerElapsed) || !metrics.hasOutcome("lost_work", CheckpointCaptureTriggerElapsed) {
 		t.Fatalf("outcome metrics = %#v", metrics.metrics)
 	}
+	if !metrics.hasRetainedBytes(256, CheckpointCaptureTriggerElapsed) {
+		t.Fatalf("retained-byte metrics = %#v", metrics.metrics)
+	}
 }
 
 func TestAgentCheckpointCaptureRecordsArchiveDurationWhenPreparationFails(t *testing.T) {
@@ -462,6 +465,17 @@ func (metrics *captureMetrics) hasDuration(phase string, trigger CheckpointCaptu
 func (metrics *captureMetrics) hasOutcome(outcome string, trigger CheckpointCaptureTrigger) bool {
 	for _, metric := range metrics.metrics {
 		if metric.Kind == CheckpointCaptureMetricOutcome && metric.Outcome == outcome && metric.Trigger == trigger {
+			return true
+		}
+	}
+	return false
+}
+
+func (metrics *captureMetrics) hasRetainedBytes(bytes int64, trigger CheckpointCaptureTrigger) bool {
+	for _, metric := range metrics.metrics {
+		if metric.Kind == CheckpointCaptureMetricRetainedBytes &&
+			metric.Bytes == bytes &&
+			metric.Trigger == trigger {
 			return true
 		}
 	}

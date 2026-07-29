@@ -2074,6 +2074,7 @@ func (cmd *RunCommand) composeAgentCheckpoints(connection db.DbConn) error {
 	maxAttempts := cmd.AgentCheckpoints.MaxAttempts
 	fenceTTL := cmd.AgentCheckpoints.FenceTTL
 	captureTimeout := cmd.AgentCheckpoints.CaptureTimeout
+	recoveryMetrics := exec.NewOTelAgentCheckpointRecoveryMetrics()
 	config := &exec.AgentCheckpointStepConfig{
 		Factory: exec.AgentCheckpointExecutionFactoryFunc(func(identity checkpoint.Identity) (exec.AgentCheckpointController, error) {
 			return exec.NewAgentCheckpointExecution(
@@ -2091,6 +2092,7 @@ func (cmd *RunCommand) composeAgentCheckpoints(connection db.DbConn) error {
 		RecoveryFactory: exec.AgentCheckpointRecoveryFactoryFunc(func(provenance exec.AgentCheckpointImmutableProvenance) (exec.AgentCheckpointRecoveryStepController, error) {
 			return exec.NewAgentCheckpointRecoveryController(exec.AgentCheckpointRecoveryConfig{
 				Provenance: provenance, MaxArchiveBytes: cmd.AgentCheckpoints.MaxBytes, MaxArchiveEntries: cmd.AgentSnapshots.MaxFiles,
+				Metrics: recoveryMetrics,
 				// Production legacy adapters intentionally have no complete journal
 				// or recovery proof, so every interrupted source fails closed.
 				Authorities: nil,
@@ -2101,6 +2103,7 @@ func (cmd *RunCommand) composeAgentCheckpoints(connection db.DbConn) error {
 		ElapsedInterval:   cmd.AgentCheckpoints.ElapsedInterval,
 		MaxArchiveBytes:   cmd.AgentCheckpoints.MaxBytes,
 		MaxArchiveEntries: cmd.AgentSnapshots.MaxFiles,
+		RecoveryMetrics:   recoveryMetrics,
 	}
 
 	// Publish only the fully assembled policy. Errors above therefore leave no

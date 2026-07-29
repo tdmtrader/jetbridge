@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"sigs.k8s.io/yaml"
 )
 
 func TestAgentSnapshotsAreDisabledByDefault(t *testing.T) {
@@ -180,6 +182,62 @@ func TestHangarSnapshotFailureAlertUsesDaemonMetrics(t *testing.T) {
 		if !strings.Contains(manifests, want) {
 			t.Errorf("Hangar alert is missing %q", want)
 		}
+	}
+}
+
+// TestAgentCheckpointAlertsUseOnlyClosedFailureOutcomes ensures an operator
+// gets a concrete signal for the three recovery paths which require action:
+// failed captures, recoveries stopped for manual review, and failed restores.
+// The outcome matchers are intentionally exact rather than regexes so each
+// alert remains bounded to the dimensions the OTel instruments expose.
+func TestAgentCheckpointAlertsUseOnlyClosedFailureOutcomes(t *testing.T) {
+	rule := findPrometheusRule(t, renderChart(t, "alertingRules.enabled=true"))
+	for _, want := range []struct {
+		name        string
+		expr        string
+		severity    string
+		description string
+	}{
+		{
+			name:        "ConcourseAgentCheckpointCaptureFailures",
+			expr:        `increase(concourse_agent_checkpoint_captures_total{outcome="failed"}[5m]) > 0`,
+			severity:    "warning",
+			description: "Inspect agent checkpoint capture errors and durable snapshot storage before retrying the affected run.",
+		},
+		{
+			name:        "ConcourseAgentRecoveryManualReviewRequired",
+			expr:        `increase(concourse_agent_recovery_attempts_total{outcome="manual_review_required"}[5m]) > 0`,
+			severity:    "critical",
+			description: "Review the interrupted agent run for ambiguous effects or an unusable checkpoint before resuming it.",
+		},
+		{
+			name:        "ConcourseAgentCheckpointRestoreFailures",
+			expr:        `increase(concourse_agent_recovery_restore_duration_count{outcome="failed"}[5m]) > 0`,
+			severity:    "warning",
+			description: "Inspect the checkpoint object and recovery logs before retrying restore for the affected run.",
+		},
+	} {
+		t.Run(want.name, func(t *testing.T) {
+			alert, found := rule.alert(want.name)
+			if !found {
+				t.Fatalf("PrometheusRule does not contain %q", want.name)
+			}
+			if alert.Expr != want.expr {
+				t.Errorf("%s expression = %q, want exact bounded selector %q", want.name, alert.Expr, want.expr)
+			}
+			if alert.For != "5m" {
+				t.Errorf("%s for = %q, want 5m", want.name, alert.For)
+			}
+			if alert.Labels["severity"] != want.severity {
+				t.Errorf("%s severity = %q, want %q", want.name, alert.Labels["severity"], want.severity)
+			}
+			if len(alert.Labels) != 1 {
+				t.Errorf("%s alert labels = %#v, want only bounded severity", want.name, alert.Labels)
+			}
+			if alert.Annotations["description"] != want.description {
+				t.Errorf("%s description = %q, want actionable guidance %q", want.name, alert.Annotations["description"], want.description)
+			}
+		})
 	}
 }
 
@@ -517,4 +575,47 @@ func renderChartFailure(t *testing.T, sets ...string) string {
 		t.Fatalf("helm template unexpectedly accepted invalid agentic configuration")
 	}
 	return string(output)
+}
+
+type prometheusRuleDoc struct {
+	Kind string `json:"kind"`
+	Spec struct {
+		Groups []struct {
+			Rules []prometheusAlertRule `json:"rules"`
+		} `json:"groups"`
+	} `json:"spec"`
+}
+
+type prometheusAlertRule struct {
+	Alert       string            `json:"alert"`
+	Expr        string            `json:"expr"`
+	For         string            `json:"for"`
+	Labels      map[string]string `json:"labels"`
+	Annotations map[string]string `json:"annotations"`
+}
+
+func (rule prometheusRuleDoc) alert(name string) (prometheusAlertRule, bool) {
+	for _, group := range rule.Spec.Groups {
+		for _, candidate := range group.Rules {
+			if candidate.Alert == name {
+				return candidate, true
+			}
+		}
+	}
+	return prometheusAlertRule{}, false
+}
+
+func findPrometheusRule(t *testing.T, manifests string) prometheusRuleDoc {
+	t.Helper()
+	for _, doc := range strings.Split(manifests, "\n---") {
+		var rule prometheusRuleDoc
+		if err := yaml.Unmarshal([]byte(doc), &rule); err != nil {
+			continue
+		}
+		if rule.Kind == "PrometheusRule" {
+			return rule
+		}
+	}
+	t.Fatal("no PrometheusRule found in rendered chart")
+	return prometheusRuleDoc{}
 }

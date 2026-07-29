@@ -1,0 +1,5 @@
+DROP TRIGGER IF EXISTS agent_run_attempt_transcripts_immutable_identity ON agent_run_attempt_transcripts;
+DROP FUNCTION IF EXISTS enforce_agent_run_attempt_transcript_identity();
+DROP INDEX IF EXISTS agent_run_attempt_transcripts_one_final_presentation;
+DROP INDEX IF EXISTS agent_run_attempt_transcripts_workflow_run;
+DROP TABLE IF EXISTS agent_run_attempt_transcripts;

@@ -115,6 +115,7 @@ func (coordinator *AgentCheckpointCapture) Capture(ctx context.Context, request 
 		return result, err
 	}
 	requestedAt := time.Now()
+	var retainedBytes int64
 	defer func() {
 		coordinator.recordDuration(ctx, "total", request.Trigger, time.Since(requestedAt))
 		switch {
@@ -124,6 +125,7 @@ func (coordinator *AgentCheckpointCapture) Capture(ctx context.Context, request 
 			coordinator.recordOutcome(ctx, "skipped", request.Trigger, 0)
 		case result.Status == CheckpointCaptureCommitted:
 			coordinator.recordOutcome(ctx, "committed", request.Trigger, 0)
+			coordinator.recordRetainedBytes(ctx, request.Trigger, retainedBytes)
 			if !request.Provenance.PreviousSafeAt.IsZero() && result.Manifest.SafeAt.After(request.Provenance.PreviousSafeAt) {
 				coordinator.recordOutcome(ctx, "lost_work", request.Trigger, result.Manifest.SafeAt.Sub(request.Provenance.PreviousSafeAt))
 			}
@@ -228,6 +230,7 @@ func (coordinator *AgentCheckpointCapture) Capture(ctx context.Context, request 
 	if err := validateCoordinatorArchive(uploaded, prepared, ticket); err != nil {
 		return result, err
 	}
+	retainedBytes = uploaded.Bytes
 	object, completeErr := coordinator.store.CompleteObjectUpload(ctx, checkpoint.CompleteObjectUploadRequest{Ticket: ticket, Object: uploaded.Object.Ref, Fence: fence.FenceClaim})
 	if completeErr != nil {
 		return result, completeErr

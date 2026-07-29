@@ -610,6 +610,8 @@ func (factory *agentRunCheckpointsFactory) ClaimCheckpointExpirations(ctx contex
 			WHERE a.head_id = c.head_id
 			  AND a.source_checkpoint_id = c.id
 			  AND a.source_checkpoint_generation = c.generation
+			  AND a.is_current
+			  AND a.state IN ('scheduling', 'materializing', 'running')
 		  )
 		ORDER BY c.id
 		FOR UPDATE OF c, h SKIP LOCKED
@@ -724,6 +726,8 @@ func (factory *agentRunCheckpointsFactory) ClaimUnreferencedObjects(ctx context.
 				  ON a.head_id = c.head_id
 				 AND a.source_checkpoint_id = c.id
 				 AND a.source_checkpoint_generation = c.generation
+				 AND a.is_current
+				 AND a.state IN ('scheduling', 'materializing', 'running')
 				WHERE c.archive_object_id = o.id
 			  )
 		ORDER BY o.id
@@ -773,6 +777,8 @@ func (factory *agentRunCheckpointsFactory) ClaimUnreferencedObjects(ctx context.
 					  ON a.head_id = c.head_id
 					 AND a.source_checkpoint_id = c.id
 					 AND a.source_checkpoint_generation = c.generation
+					 AND a.is_current
+					 AND a.state IN ('scheduling', 'materializing', 'running')
 					WHERE c.archive_object_id = o.id
 				  )
 			ORDER BY o.id
@@ -926,6 +932,8 @@ func (factory *agentRunCheckpointsFactory) FinalizeObjectDeletion(ctx context.Co
 				WHERE a.head_id = c.head_id
 				  AND a.source_checkpoint_id = c.id
 				  AND a.source_checkpoint_generation = c.generation
+				  AND a.is_current
+				  AND a.state IN ('scheduling', 'materializing', 'running')
 		  ))
 	`, object.id).Scan(&references)
 	if err != nil {
@@ -990,6 +998,34 @@ func (factory *agentRunCheckpointsFactory) CleanupTerminalMetadata(ctx context.C
 			return 0, err
 		}
 		_, err = tx.ExecContext(ctx, `DELETE FROM agent_run_effects WHERE head_id = $1`, headID)
+		if err != nil {
+			return 0, err
+		}
+		// Recovery source identity remains immutable for the full diagnostic
+		// window. Attempt-scoped metrics and transcripts intentionally RESTRICT
+		// attempt deletion, so remove those diagnostic children first. The
+		// backwards-compatible build/plan projections remain independently
+		// retained. Attempts must then be removed before checkpoints because
+		// their exact same-head source FK is also RESTRICT.
+		_, err = tx.ExecContext(ctx, `
+			DELETE FROM agent_run_attempt_metrics
+			WHERE attempt_id IN (
+				SELECT id FROM agent_run_attempts WHERE head_id = $1
+			)
+		`, headID)
+		if err != nil {
+			return 0, err
+		}
+		_, err = tx.ExecContext(ctx, `
+			DELETE FROM agent_run_attempt_transcripts
+			WHERE attempt_id IN (
+				SELECT id FROM agent_run_attempts WHERE head_id = $1
+			)
+		`, headID)
+		if err != nil {
+			return 0, err
+		}
+		_, err = tx.ExecContext(ctx, `DELETE FROM agent_run_attempts WHERE head_id = $1`, headID)
 		if err != nil {
 			return 0, err
 		}

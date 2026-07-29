@@ -53,4 +53,28 @@ spec:
           annotations:
             summary: "Hangar-backed snapshot operation failures"
             description: "Artifact daemons are unable to commit or restore durable agent snapshots."
+        - alert: ConcourseAgentCheckpointCaptureFailures
+          expr: increase(concourse_agent_checkpoint_captures_total{outcome="failed"}[5m]) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Agent checkpoint capture failures"
+            description: "Inspect agent checkpoint capture errors and durable snapshot storage before retrying the affected run."
+        - alert: ConcourseAgentRecoveryManualReviewRequired
+          expr: increase(concourse_agent_recovery_attempts_total{outcome="manual_review_required"}[5m]) > 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Agent recovery requires manual review"
+            description: "Review the interrupted agent run for ambiguous effects or an unusable checkpoint before resuming it."
+        - alert: ConcourseAgentCheckpointRestoreFailures
+          expr: increase(concourse_agent_recovery_restore_duration_count{outcome="failed"}[5m]) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Agent checkpoint restore failures"
+            description: "Inspect the checkpoint object and recovery logs before retrying restore for the affected run."
 {{- end }}

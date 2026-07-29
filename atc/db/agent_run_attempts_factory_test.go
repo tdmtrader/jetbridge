@@ -3,6 +3,7 @@ package db_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/concourse/concourse/agent/checkpoint"
@@ -581,15 +582,16 @@ var _ = Describe("AgentRunAttemptsFactory", func() {
 		Expect(errors.Is(err, checkpoint.ErrConflict)).To(BeTrue())
 	})
 
-	It("pins a retained recovery source checkpoint and archive against expiry", func() {
+	It("pins a retained recovery source only while the replacement can launch", func() {
 		allocate(2)
 		sourceID := committedSource(identity, 1)
 		var objectID int64
+		digestHex := strings.Repeat("a", 64)
 		Expect(dbConn.QueryRow(`
 			INSERT INTO agent_checkpoint_objects (kind, digest, object_key, generation, status)
-			VALUES ('checkpoints', 'sha256:pinned', 'hangar/v1/checkpoints/sha256/pinned.tar.zst', 1, 'available')
+			VALUES ('checkpoints', $1, $2, 1, 'available')
 			RETURNING id
-		`).Scan(&objectID)).To(Succeed())
+		`, "sha256:"+digestHex, "hangar/v1/checkpoints/sha256/"+digestHex+".tar.zst").Scan(&objectID)).To(Succeed())
 		_, err := dbConn.Exec(`
 			UPDATE agent_run_checkpoints SET archive_object_id = $2 WHERE id = $1
 		`, sourceID, objectID)
@@ -598,12 +600,13 @@ var _ = Describe("AgentRunAttemptsFactory", func() {
 			Identity: identity, ExecutionAttempt: 1, Reason: checkpoint.InterruptionPreempted,
 		})
 		Expect(err).NotTo(HaveOccurred())
-		_, err = factory.BeginRecovery(ctx, checkpoint.BeginRecoveryRequest{
+		recovery, err := factory.BeginRecovery(ctx, checkpoint.BeginRecoveryRequest{
 			Identity: identity, SourceExecutionAttempt: 1, SourceCheckpointID: &sourceID,
 			SourceCheckpointGeneration: 1, Mode: checkpoint.FallbackWorkspaceOnly,
 			Reason: checkpoint.InterruptionPreempted, MaterializationID: "pinned-recovery",
 		})
 		Expect(err).NotTo(HaveOccurred())
+		Expect(recovery.State).To(Equal(checkpoint.AttemptScheduling))
 		_, err = dbConn.Exec(`
 			UPDATE agent_run_checkpoints SET status = 'superseded', superseded_at = clock_timestamp() - INTERVAL '2 hours'
 			WHERE id = $1
@@ -611,12 +614,35 @@ var _ = Describe("AgentRunAttemptsFactory", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		checkpoints := db.NewAgentRunCheckpointsFactory(dbConn)
+		expectPinned := func(state checkpoint.AttemptState) {
+			expirations, err := checkpoints.ClaimCheckpointExpirations(ctx, 10)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(expirations).To(BeEmpty(), "a %s replacement pins its exact source generation", state)
+			deletions, err := checkpoints.ClaimUnreferencedObjects(ctx, 10)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(deletions).To(BeEmpty(), "a %s replacement pins its source archive", state)
+		}
+		expectPinned(checkpoint.AttemptScheduling)
+
+		acquire(2, secondToken)
+		transition(2, secondToken, checkpoint.AttemptScheduling, checkpoint.AttemptMaterializing)
+		expectPinned(checkpoint.AttemptMaterializing)
+		transition(2, secondToken, checkpoint.AttemptMaterializing, checkpoint.AttemptRunning)
+		expectPinned(checkpoint.AttemptRunning)
+
+		_, err = factory.MarkInterrupted(ctx, checkpoint.MarkAttemptInterruptedRequest{
+			Identity: identity, ExecutionAttempt: 2, Reason: checkpoint.InterruptionNodeLost,
+		})
+		Expect(err).NotTo(HaveOccurred())
 		expirations, err := checkpoints.ClaimCheckpointExpirations(ctx, 10)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(expirations).To(BeEmpty(), "a retained attempt pins its exact source generation")
+		Expect(expirations).To(HaveLen(1), "an interrupted replacement selects a new latest source and releases its old physical pin")
+		Expect(expirations[0].CheckpointID).To(Equal(sourceID))
+		Expect(checkpoints.FinalizeCheckpointExpiration(ctx, expirations[0])).To(Succeed())
 		deletions, err := checkpoints.ClaimUnreferencedObjects(ctx, 10)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(deletions).To(BeEmpty(), "the source archive remains unavailable for deletion while recovery retains it")
+		Expect(deletions).To(HaveLen(1), "the old source archive becomes reclaimable after its checkpoint expires")
+		Expect(deletions[0].ObjectID).To(Equal(objectID))
 	})
 
 	It("does not terminalize an interrupted attempt under an already-terminal head", func() {

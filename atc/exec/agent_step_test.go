@@ -11,6 +11,7 @@ import (
 
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"code.cloudfoundry.org/lager/v3/lagertest"
+	"github.com/concourse/concourse/agent/api/metrics"
 	"github.com/concourse/concourse/agent/api/metrics/metricsfakes"
 	"github.com/concourse/concourse/agent/budget"
 	"github.com/concourse/concourse/agent/budget/budgetfakes"
@@ -253,6 +254,9 @@ var _ = Describe("AgentStep", func() {
 		var (
 			checkpointController *checkpointStepController
 			checkpointFactory    *checkpointStepFactory
+			recoveryMetrics      *checkpointRecoveryMetrics
+			attemptMetrics       *checkpointAttemptMetricsStore
+			attemptTranscripts   *checkpointAttemptTranscriptStore
 		)
 
 		BeforeEach(func() {
@@ -265,22 +269,39 @@ var _ = Describe("AgentStep", func() {
 			agentPlan.FunctionID = "review-code"
 			agentPlan.Sidecars = nil
 			checkpointController = &checkpointStepController{
-				attempt: checkpoint.Attempt{ExecutionAttempt: 1, State: checkpoint.AttemptMaterializing},
+				attempt: checkpoint.Attempt{ID: 101, ExecutionAttempt: 1, State: checkpoint.AttemptMaterializing},
 			}
 			checkpointFactory = &checkpointStepFactory{controller: checkpointController}
+			recoveryMetrics = &checkpointRecoveryMetrics{}
+			attemptMetrics = &checkpointAttemptMetricsStore{FakeStore: fakeMetricsStore}
+			attemptTranscripts = &checkpointAttemptTranscriptStore{}
+			agentStepOptions = append(
+				agentStepOptions,
+				exec.WithAgentMetricsStore(attemptMetrics),
+				exec.WithAgentStepTranscriptStore(attemptTranscripts),
+			)
 			agentStepOptions = append(agentStepOptions, exec.WithAgentCheckpointCapture(exec.AgentCheckpointStepConfig{
 				Factory:         checkpointFactory,
 				Provider:        "anthropic",
 				Adapter:         provider.Identity{Name: "claude-cli", Version: "legacy-stream-json"},
 				ElapsedInterval: time.Hour,
 				MaxArchiveBytes: 4096,
+				RecoveryMetrics: recoveryMetrics,
 			}))
 			chosenContainer.DBContainer_.HandleReturns("agent-container-1")
 			chosenContainer.ProcessDefs[0].Spec.Dir = "/work"
+			for index := range chosenContainer.Mounts {
+				chosenContainer.Mounts[index].MountPath = strings.Replace(
+					chosenContainer.Mounts[index].MountPath,
+					"some-artifact-root",
+					"/work",
+					1,
+				)
+			}
 			chosenWorker.AddContainer(
 				db.NewAgentAttemptContainerOwner(stepMetadata.BuildID, planID, stepMetadata.TeamID, 1),
 				chosenContainer.Container,
-				chosenWorker.Containers[0].Mounts,
+				chosenContainer.Mounts,
 			)
 		})
 
@@ -305,6 +326,41 @@ var _ = Describe("AgentStep", func() {
 			Expect(owner).To(Equal(db.NewAgentAttemptContainerOwner(stepMetadata.BuildID, planID, stepMetadata.TeamID, 1)))
 			Expect(spec.CheckpointCapture).To(BeTrue())
 			Expect(spec.Env).To(ContainElement("AGENT_SESSION_DIR=/work/.concourse/session"))
+			Expect(attemptMetrics.requests).To(HaveLen(1))
+			Expect(attemptMetrics.requests[0].Key).To(Equal(metrics.ExecutionAttemptKey{
+				AttemptID: 101, BuildID: stepMetadata.BuildID,
+				PlanID: string(planID), ExecutionAttempt: 1,
+			}))
+			Expect(attemptMetrics.requests[0].FinalPresentation).To(BeTrue())
+			Expect(attemptMetrics.requests[0].Attribution).To(Equal(metrics.ExecutionAttemptAttribution{
+				Source: budget.SourceAgentStep, Provider: "anthropic", Model: agentPlan.Model,
+			}))
+			Expect(fakeChecker.RecordCallCount()).To(BeZero())
+		})
+
+		It("binds the transcript to the exact durable attempt", func() {
+			fakeStreamer.StreamFileStub = func(_ context.Context, _ runtime.Artifact, path string) (io.ReadCloser, error) {
+				if path == "transcript.ndjson" {
+					return io.NopCloser(strings.NewReader("{\"type\":\"assistant\"}\n")), nil
+				}
+				return nil, errors.New("flight result unavailable")
+			}
+
+			ok, err := step.Run(ctx, state)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(ok).To(BeTrue())
+			Expect(attemptTranscripts.attempts).To(HaveLen(1))
+			Expect(attemptTranscripts.attempts[0]).To(Equal(db.AgentRunAttemptTranscript{
+				AttemptID: 101, BuildID: stepMetadata.BuildID,
+				PlanID: string(planID), ExecutionAttempt: 1,
+				WorkflowRunID:     stepMetadata.WorkflowRunID,
+				FunctionID:        agentPlan.FunctionID,
+				StepName:          agentPlan.Name,
+				NDJSON:            "{\"type\":\"assistant\"}\n",
+				ByteLen:           len("{\"type\":\"assistant\"}\n"),
+				FinalPresentation: true,
+			}))
+			Expect(attemptTranscripts.legacy).To(BeEmpty())
 		})
 
 		It("fails before process launch when post-container provenance is incomplete", func() {
@@ -335,6 +391,7 @@ var _ = Describe("AgentStep", func() {
 
 		It("rejects a running transition for a different durable attempt", func() {
 			checkpointController.runningAttempt = &checkpoint.Attempt{
+				ID:               102,
 				Identity:         checkpointController.attempt.Identity,
 				ExecutionAttempt: 2,
 				State:            checkpoint.AttemptRunning,
@@ -357,6 +414,12 @@ var _ = Describe("AgentStep", func() {
 			Expect(checkpointController.calls).To(Equal([]string{"prepare", "running", "interrupted"}))
 			Expect(checkpointController.interruption.ExecutionAttempt).To(Equal(1))
 			Expect(checkpointController.interruption.Reason).To(Equal(runtime.InterruptionPreempted))
+			Expect(recoveryMetrics.interruptions).To(Equal([]runtime.InterruptionReason{
+				runtime.InterruptionPreempted,
+			}))
+			Expect(recoveryMetrics.recoveries).To(Equal([]checkpointRecoveryMetricEvent{{
+				mode: checkpoint.FallbackManualReview, outcome: exec.AgentCheckpointRecoveryManualReviewRequired,
+			}}))
 		})
 
 		It("continues a typed interruption in a fresh server-authored attempt", func() {
@@ -368,6 +431,7 @@ var _ = Describe("AgentStep", func() {
 				execution: checkpointController,
 				launch: exec.AgentCheckpointRecoveryLaunch{
 					Attempt: checkpoint.Attempt{
+						ID:                     102,
 						ExecutionAttempt:       2,
 						SourceExecutionAttempt: 1,
 						Mode:                   checkpoint.FallbackCheckpointZero,
@@ -385,6 +449,7 @@ var _ = Describe("AgentStep", func() {
 				ElapsedInterval:   time.Hour,
 				MaxArchiveBytes:   4096,
 				MaxArchiveEntries: 16,
+				RecoveryMetrics:   recoveryMetrics,
 			}))
 			step = exec.NewAgentStep(
 				planID,
@@ -431,6 +496,17 @@ var _ = Describe("AgentStep", func() {
 			}))
 			Expect(recoveryController.prepareCalls).To(Equal(2))
 			Expect(recoveryFactory.provenance.Identity).To(Equal(checkpointController.attempt.Identity))
+			Expect(recoveryMetrics.interruptions).To(Equal([]runtime.InterruptionReason{
+				runtime.InterruptionPreempted,
+			}))
+			Expect(recoveryMetrics.recoveries).To(Equal([]checkpointRecoveryMetricEvent{{
+				mode: checkpoint.FallbackCheckpointZero, outcome: exec.AgentCheckpointRecoverySucceeded,
+			}}))
+			Expect(attemptMetrics.requests).To(HaveLen(2))
+			Expect(attemptMetrics.requests[0].Key.AttemptID).To(Equal(int64(101)))
+			Expect(attemptMetrics.requests[0].FinalPresentation).To(BeFalse())
+			Expect(attemptMetrics.requests[1].Key.AttemptID).To(Equal(int64(102)))
+			Expect(attemptMetrics.requests[1].FinalPresentation).To(BeTrue())
 
 			firstDeadline, firstHasDeadline := chosenContainer.Container.ContextOfRun().Deadline()
 			secondDeadline, secondHasDeadline := secondContainer.ContextOfRun().Deadline()
@@ -442,7 +518,7 @@ var _ = Describe("AgentStep", func() {
 
 		It("launches nothing when durable recovery requires manual review", func() {
 			manual := exec.AgentCheckpointRecoveryLaunch{
-				Attempt:      checkpoint.Attempt{ExecutionAttempt: 1, State: checkpoint.AttemptManualReview},
+				Attempt:      checkpoint.Attempt{ID: 101, ExecutionAttempt: 1, State: checkpoint.AttemptManualReview},
 				ManualReview: true,
 			}
 			recoveryController := &checkpointRecoveryStepController{
@@ -457,6 +533,7 @@ var _ = Describe("AgentStep", func() {
 				ElapsedInterval:   time.Hour,
 				MaxArchiveBytes:   4096,
 				MaxArchiveEntries: 16,
+				RecoveryMetrics:   recoveryMetrics,
 			}))
 			step = exec.NewAgentStep(
 				planID,
@@ -479,6 +556,9 @@ var _ = Describe("AgentStep", func() {
 			Expect(fakePool.FindOrSelectWorkerCallCount()).To(BeZero())
 			Expect(checkpointController.calls).To(BeEmpty())
 			Expect(fakeDelegate.ErroredCallCount()).To(Equal(1))
+			Expect(recoveryMetrics.recoveries).To(Equal([]checkpointRecoveryMetricEvent{{
+				mode: checkpoint.FallbackManualReview, outcome: exec.AgentCheckpointRecoveryManualReviewRequired,
+			}}))
 		})
 
 		It("terminalizes the exact replacement when restore fails before launch", func() {
@@ -489,6 +569,7 @@ var _ = Describe("AgentStep", func() {
 				execution: checkpointController,
 				launch: exec.AgentCheckpointRecoveryLaunch{
 					Attempt: checkpoint.Attempt{
+						ID:                     102,
 						ExecutionAttempt:       2,
 						SourceExecutionAttempt: 1,
 						Mode:                   checkpoint.FallbackWorkspaceOnly,
@@ -506,6 +587,7 @@ var _ = Describe("AgentStep", func() {
 				ElapsedInterval:   time.Hour,
 				MaxArchiveBytes:   4096,
 				MaxArchiveEntries: 16,
+				RecoveryMetrics:   recoveryMetrics,
 			}))
 
 			events := []string{}
@@ -551,6 +633,15 @@ var _ = Describe("AgentStep", func() {
 			Expect(checkpointController.calls).To(Equal([]string{
 				"prepare", "running", "interrupted", "prepare",
 			}))
+			Expect(recoveryMetrics.interruptions).To(Equal([]runtime.InterruptionReason{
+				runtime.InterruptionNodeLost,
+			}))
+			Expect(recoveryMetrics.recoveries).To(Equal([]checkpointRecoveryMetricEvent{{
+				mode: checkpoint.FallbackWorkspaceOnly, outcome: exec.AgentCheckpointRecoveryFailed,
+			}}))
+			Expect(recoveryMetrics.restores).To(HaveLen(1))
+			Expect(recoveryMetrics.restores[0].outcome).To(Equal(exec.AgentCheckpointRestoreFailed))
+			Expect(recoveryMetrics.restores[0].duration).To(BeNumerically(">=", 0))
 		})
 
 		It("fails closed rather than terminalizing a non-zero process", func() {
@@ -934,7 +1025,7 @@ var _ = Describe("AgentStep", func() {
 				for index := range chosenContainer.Mounts {
 					chosenContainer.Mounts[index].MountPath = strings.Replace(chosenContainer.Mounts[index].MountPath, "some-artifact-root", "/work", 1)
 				}
-				checkpointController = &checkpointStepController{attempt: checkpoint.Attempt{ExecutionAttempt: 1, State: checkpoint.AttemptMaterializing}}
+				checkpointController = &checkpointStepController{attempt: checkpoint.Attempt{ID: 201, ExecutionAttempt: 1, State: checkpoint.AttemptMaterializing}}
 				agentStepOptions = append(agentStepOptions, exec.WithAgentCheckpointCapture(exec.AgentCheckpointStepConfig{
 					Factory:         &checkpointStepFactory{controller: checkpointController},
 					Provider:        "anthropic",
@@ -2307,6 +2398,88 @@ func (factory *checkpointRecoveryStepFactory) NewAgentCheckpointRecovery(provena
 	factory.provenance = provenance
 	factory.controller.launch.Attempt.Identity = provenance.Identity
 	return factory.controller, nil
+}
+
+type checkpointRecoveryMetricEvent struct {
+	mode    checkpoint.FallbackMode
+	outcome exec.AgentCheckpointRecoveryOutcome
+}
+
+type checkpointRestoreMetricEvent struct {
+	outcome  exec.AgentCheckpointRestoreOutcome
+	duration time.Duration
+}
+
+type checkpointRecoveryMetrics struct {
+	interruptions    []runtime.InterruptionReason
+	recoveries       []checkpointRecoveryMetricEvent
+	restores         []checkpointRestoreMetricEvent
+	ambiguousEffects int64
+}
+
+func (metrics *checkpointRecoveryMetrics) RecordInterruption(
+	_ context.Context,
+	reason runtime.InterruptionReason,
+) {
+	metrics.interruptions = append(metrics.interruptions, reason)
+}
+
+func (metrics *checkpointRecoveryMetrics) RecordRecovery(
+	_ context.Context,
+	mode checkpoint.FallbackMode,
+	outcome exec.AgentCheckpointRecoveryOutcome,
+) {
+	metrics.recoveries = append(metrics.recoveries, checkpointRecoveryMetricEvent{
+		mode: mode, outcome: outcome,
+	})
+}
+
+func (metrics *checkpointRecoveryMetrics) RecordRestore(
+	_ context.Context,
+	outcome exec.AgentCheckpointRestoreOutcome,
+	duration time.Duration,
+) {
+	metrics.restores = append(metrics.restores, checkpointRestoreMetricEvent{
+		outcome: outcome, duration: duration,
+	})
+}
+
+func (metrics *checkpointRecoveryMetrics) RecordAmbiguousEffects(
+	_ context.Context,
+	count int64,
+) {
+	metrics.ambiguousEffects += count
+}
+
+type checkpointAttemptMetricsStore struct {
+	*metricsfakes.FakeStore
+	requests []metrics.ExecutionAttemptRequest
+	err      error
+}
+
+func (store *checkpointAttemptMetricsStore) UpsertExecutionAttempt(
+	request metrics.ExecutionAttemptRequest,
+) (metrics.ExecutionAttemptUpdate, error) {
+	store.requests = append(store.requests, request)
+	return metrics.ExecutionAttemptUpdate{}, store.err
+}
+
+type checkpointAttemptTranscriptStore struct {
+	legacy   []db.AgentRunTranscript
+	attempts []db.AgentRunAttemptTranscript
+	err      error
+}
+
+func (store *checkpointAttemptTranscriptStore) Upsert(transcript db.AgentRunTranscript) error {
+	store.legacy = append(store.legacy, transcript)
+	return store.err
+}
+
+func (store *checkpointAttemptTranscriptStore) UpsertExecutionAttempt(
+	transcript db.AgentRunAttemptTranscript,
+) error {
+	store.attempts = append(store.attempts, transcript)
+	return store.err
 }
 
 type checkpointRecoveryStepController struct {

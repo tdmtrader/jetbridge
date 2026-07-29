@@ -877,7 +877,7 @@ var _ = Describe("AgentRunCheckpointsFactory", func() {
 		Expect(claims).To(BeEmpty())
 	})
 
-	It("cleans terminal metadata only after checkpoint expiry and object deletion have made restore impossible", func() {
+	It("cleans recovered attempt metadata only after checkpoint expiry and object deletion make restore impossible", func() {
 		staged := stage(1)
 		ticket := prepareAndComplete(staged, "a")
 		_, err := factory.Commit(ctx, checkpoint.CommitRequest{
@@ -892,7 +892,44 @@ var _ = Describe("AgentRunCheckpointsFactory", func() {
 		Expect(db.NewAgentRunEventsFactory(dbConn).Record(ctx, checkpoint.RunEvent{
 			Identity: identity, ExecutionAttempt: 1, Type: checkpoint.EventSessionCompleted,
 		})).To(Succeed())
-		Expect(factory.MarkTerminal(ctx, identity, time.Now().Add(-31*24*time.Hour))).To(Succeed())
+		_, err = attempts.MarkInterrupted(ctx, checkpoint.MarkAttemptInterruptedRequest{
+			Identity: identity, ExecutionAttempt: 1, Reason: checkpoint.InterruptionPreempted,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		recovery, err := attempts.BeginRecovery(ctx, checkpoint.BeginRecoveryRequest{
+			Identity: identity, SourceExecutionAttempt: 1,
+			SourceCheckpointID: &staged.ID, SourceCheckpointGeneration: staged.Generation,
+			Mode: checkpoint.FallbackWorkspaceOnly, Reason: checkpoint.InterruptionPreempted,
+			MaterializationID: "metadata-cleanup-recovery",
+		})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = attempts.MarkManualReview(ctx, checkpoint.MarkAttemptManualReviewRequest{
+			Identity: identity, ExecutionAttempt: recovery.ExecutionAttempt,
+			ExpectedState: checkpoint.AttemptScheduling, MaterializationID: recovery.MaterializationID,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = dbConn.Exec(`
+			INSERT INTO agent_run_attempt_metrics
+				(attempt_id, build_id, plan_id, execution_attempt, function_id,
+				 step_name, source, provider, model, status)
+			VALUES ($1, $2, $3, $4, $5, $5, 'agent_step', 'anthropic', 'test', 'error')
+		`, recovery.ID, identity.BuildID, identity.PlanID,
+			recovery.ExecutionAttempt, identity.FunctionID)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = dbConn.Exec(`
+			INSERT INTO agent_run_attempt_transcripts
+				(attempt_id, build_id, plan_id, execution_attempt, function_id,
+				 step_name, ndjson, byte_len)
+			VALUES ($1, $2, $3, $4, $5, $5, 'x', 1)
+		`, recovery.ID, identity.BuildID, identity.PlanID,
+			recovery.ExecutionAttempt, identity.FunctionID)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = dbConn.Exec(`
+			UPDATE agent_run_checkpoint_heads
+			SET terminal_at = clock_timestamp() - INTERVAL '31 days'
+			WHERE build_id = $1 AND plan_id = $2 AND function_id = $3
+		`, identity.BuildID, identity.PlanID, identity.FunctionID)
+		Expect(err).NotTo(HaveOccurred())
 		expirations, err := factory.ClaimCheckpointExpirations(ctx, 10)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(expirations).To(HaveLen(1))
@@ -909,6 +946,16 @@ var _ = Describe("AgentRunCheckpointsFactory", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeFalse())
 		Expect(latest).To(Equal(checkpoint.Manifest{}))
+		_, found, err = attempts.Current(ctx, identity)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeFalse(), "attempt rows must be removed before their RESTRICT-referenced source checkpoints")
+		var retainedAttemptRecords int
+		Expect(dbConn.QueryRow(`
+			SELECT
+				(SELECT count(*) FROM agent_run_attempt_metrics WHERE attempt_id = $1) +
+				(SELECT count(*) FROM agent_run_attempt_transcripts WHERE attempt_id = $1)
+		`, recovery.ID).Scan(&retainedAttemptRecords)).To(Succeed())
+		Expect(retainedAttemptRecords).To(BeZero())
 	})
 })
 
