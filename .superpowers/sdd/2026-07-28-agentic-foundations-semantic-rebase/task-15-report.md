@@ -25,18 +25,18 @@ retention orchestration, telemetry, or workflow-run terminalization is added.
   coverage to migrations 6144/6145 and the v3 workflow-run identity.
 - Passed: `GOCACHE=/private/tmp/concourse-task15-gocache go test ./agent/checkpoint -count=1`.
 - Passed: `GOCACHE=/private/tmp/concourse-task15-gocache go test ./agent/checkpoint ./atc/db -run '^$' -count=1`.
-- Attempted once: focused serial `ginkgo --focus='AgentRun(Checkpoints|Attempts|Events)Factory|agent run (checkpoints|attempts)' ./atc/db ./atc/db/migration`.
-  It ran zero specs because postgresrunner failed during initdb with sandbox-denied
-  SysV shared memory (`shmget: Operation not permitted`).
+- The initial sandboxed serial PostgreSQL focus was blocked during initdb by
+  denied SysV shared memory. The identical host-access rerun later passed all
+  selected behavior: 26/26 DB specs and 2/2 migration specs.
 
 ## Self-review and concerns
 
-The models intentionally retain copied v3 workflow-run identity without a
-foreign-key delete action and do not call workflow-run finalization. Runtime
-exact-node interruption plumbing and owner metadata are not expanded here to
-avoid touching the already Human-Review-Required private-mount/Jetbridge seam;
-the model accepts only the bounded interruption reasons. No external review
-round has been performed. Implementation commit: `add954b863`.
+Checkpoint heads retain immutable copied v3 workflow-run provenance alongside
+a nullable live foreign key, and never call workflow-run finalization. The
+runtime/owner acceptance area is implemented independently of the already
+Human-Review-Required private-mount seam and fails closed rather than
+authorizing replay. No external review round has been performed yet. Initial
+implementation commit: `add954b863`.
 
 ## Pre-review verification fix
 
@@ -73,10 +73,9 @@ round has been performed. Implementation commit: `add954b863`.
 - Verification: `GOCACHE=/private/tmp/concourse-task15-gocache go test
   ./agent/checkpoint ./atc/db ./atc/db/migration -run '^$' -count=1` and
   `GOCACHE=/private/tmp/concourse-task15-gocache go test ./agent/checkpoint
-  -count=1` passed; `git diff --check` passed. The serial PostgreSQL focus was
-  not rerun locally because its prior exact attempt is sandbox-blocked at
-  postgresrunner SysV shared-memory initialization; parent host verification is
-  required.
+  -count=1` passed; `git diff --check` passed. Parent host verification passed
+  the exact provenance migration spec 1/1 and the complete Task 15 focus
+  (26/26 DB specs and 2/2 migration specs).
 - Correction commit: `d5d591b88b fix(agent): preserve checkpoint workflow provenance`.
 
 ## Runtime interruption classification and attempt container ownership
