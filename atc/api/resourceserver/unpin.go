@@ -29,6 +29,9 @@ func (s *Server) UnpinResource(pipeline db.Pipeline) http.Handler {
 
 		err = resource.UnpinVersion()
 		if err != nil {
+			if writeWorkflowResourceSourceConflict(w, err) {
+				return
+			}
 			logger.Error("failed-to-unpin-resource-version", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return

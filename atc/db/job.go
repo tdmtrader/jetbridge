@@ -442,29 +442,46 @@ func (j *job) Reload() (bool, error) {
 }
 
 func (j *job) Pause(pausedBy string) error {
+	tx, err := j.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer Rollback(tx)
+	if err := rejectWorkflowResourceSourceMutation(context.Background(), tx, j.PipelineID()); err != nil {
+		return err
+	}
 
-	_, err := psql.Update("jobs").
+	_, err = psql.Update("jobs").
 		Set("paused", true).
 		Set("paused_at", sq.Expr("now()")).
 		Set("paused_by", pausedBy).
 		Where(sq.Eq{"id": j.id, "paused": false}).
-		RunWith(j.conn).
+		RunWith(tx).
 		Exec()
 
 	if err != nil {
 		return err
 	}
 
-	return nil
+	return tx.Commit()
 }
 
 func (j *job) Unpause() error {
+	tx, err := j.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer Rollback(tx)
+	if err := rejectWorkflowResourceSourceMutation(context.Background(), tx, j.PipelineID()); err != nil {
+		return err
+	}
+
 	result, err := psql.Update("jobs").
 		Set("paused", false).
 		Set("paused_by", nil).
 		Set("paused_at", nil).
 		Where(sq.Eq{"id": j.id, "paused": true}).
-		RunWith(j.conn).
+		RunWith(tx).
 		Exec()
 	if err != nil {
 		return err
@@ -476,13 +493,13 @@ func (j *job) Unpause() error {
 	}
 
 	if rowsAffected == 1 {
-		err = j.RequestSchedule()
+		err = requestSchedule(tx, j.id)
 		if err != nil {
 			return err
 		}
 	}
 
-	return nil
+	return tx.Commit()
 }
 
 func (j *job) FinishedAndNextBuild() (Build, Build, error) {

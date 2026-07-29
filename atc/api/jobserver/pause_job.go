@@ -30,6 +30,9 @@ func (s *Server) PauseJob(pipeline db.Pipeline) http.Handler {
 
 		err = job.Pause(user)
 		if err != nil {
+			if writeWorkflowResourceSourceConflict(w, err) {
+				return
+			}
 			logger.Error("failed-to-pause-job", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return

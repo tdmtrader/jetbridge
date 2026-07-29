@@ -32,6 +32,9 @@ func (s *Server) DisableResourceVersion(pipeline db.Pipeline) http.Handler {
 
 		err = resource.DisableVersion(resourceConfigVersionID)
 		if err != nil {
+			if writeWorkflowResourceSourceConflict(w, err) {
+				return
+			}
 			logger.Error("failed-to-disable-resource-version", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return

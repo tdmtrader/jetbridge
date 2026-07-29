@@ -11,6 +11,28 @@ var ErrWorkflowRunOwnedPipeline = errors.New("pipeline is owned by a durable wor
 // surfaces for a server-owned durable workflow template.
 var ErrWorkflowRunTemplateImmutable = errors.New("durable workflow-run template is immutable")
 
+// rejectWorkflowResourceSourceMutation is the authority gate for public
+// scheduler-selection mutations. It is deliberately source-only: resource
+// comments, caches, and ordinary workflow-run template behavior retain their
+// existing ownership rules.
+func rejectWorkflowResourceSourceMutation(ctx context.Context, tx Tx, pipelineID int) error {
+	if pipelineID <= 0 {
+		return nil
+	}
+	var sourceOwned bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM agent_workflow_resource_source_pipelines WHERE pipeline_id = $1
+		)
+	`, pipelineID).Scan(&sourceOwned); err != nil {
+		return err
+	}
+	if sourceOwned {
+		return ErrAgentWorkflowResourceSourceImmutable
+	}
+	return nil
+}
+
 // rejectWorkflowRunConfigMutation protects server-owned base templates,
 // standing source pipelines, and materialized workflow-run instances from
 // ordinary config writes.

@@ -284,6 +284,35 @@ var _ = Describe("Job", func() {
 			})
 		})
 
+		Context("when the pipeline is a server-owned source-selection pipeline", func() {
+			BeforeEach(func() {
+				Expect(markPipelineWorkflowResourceSourceOwned(pipeline.ID(), team.ID(), team.Name())).To(Succeed())
+			})
+
+			It("rejects pausing the admit job without changing its paused state", func() {
+				err := job.Pause("operator")
+				Expect(errors.Is(err, db.ErrAgentWorkflowResourceSourceImmutable)).To(BeTrue())
+
+				found, reloadErr := job.Reload()
+				Expect(reloadErr).NotTo(HaveOccurred())
+				Expect(found).To(BeTrue())
+				Expect(job.Paused()).To(BeFalse())
+			})
+
+			It("rejects unpausing the admit job without changing its paused state", func() {
+				_, err := dbConn.Exec("UPDATE jobs SET paused = true WHERE id = $1", job.ID())
+				Expect(err).NotTo(HaveOccurred())
+
+				err = job.Unpause()
+				Expect(errors.Is(err, db.ErrAgentWorkflowResourceSourceImmutable)).To(BeTrue())
+
+				found, reloadErr := job.Reload()
+				Expect(reloadErr).NotTo(HaveOccurred())
+				Expect(found).To(BeTrue())
+				Expect(job.Paused()).To(BeTrue())
+			})
+		})
+
 	})
 
 	Describe("FinishedAndNextBuild", func() {

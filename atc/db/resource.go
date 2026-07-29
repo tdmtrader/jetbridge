@@ -559,11 +559,19 @@ func (r *resource) CopyVersionsFromScope(fromScopeID int) (int, error) {
 }
 
 func (r *resource) ClearVersions() (int64, error) {
+	tx, err := r.conn.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer Rollback(tx)
+	if err := rejectWorkflowResourceSourceMutation(context.Background(), tx, r.PipelineID()); err != nil {
+		return 0, err
+	}
 	results, err := psql.Delete("resource_config_versions").
 		Where(sq.Eq{
 			"resource_config_scope_id": r.resourceConfigScopeID,
 		}).
-		RunWith(r.conn).
+		RunWith(tx).
 		Exec()
 	if err != nil {
 		return 0, err
@@ -573,7 +581,10 @@ func (r *resource) ClearVersions() (int64, error) {
 		return 0, err
 	}
 
-	return rowsDeleted, err
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return rowsDeleted, nil
 }
 
 func (r *resource) Versions(page Page, versionFilter atc.Version) ([]atc.ResourceVersion, Pagination, bool, error) {
@@ -754,6 +765,9 @@ func (r *resource) PinVersion(rcvID int) (bool, error) {
 		return false, err
 	}
 	defer Rollback(tx)
+	if err := rejectWorkflowResourceSourceMutation(context.Background(), tx, r.PipelineID()); err != nil {
+		return false, err
+	}
 	var pinnedThroughConfig bool
 	err = tx.QueryRow(`
 		SELECT EXISTS (
@@ -816,6 +830,9 @@ func (r *resource) UnpinVersion() error {
 	}
 
 	defer Rollback(tx)
+	if err := rejectWorkflowResourceSourceMutation(context.Background(), tx, r.PipelineID()); err != nil {
+		return err
+	}
 
 	results, err := psql.Delete("resource_pins").
 		Where(sq.Eq{"resource_pins.resource_id": r.id}).
@@ -856,6 +873,9 @@ func (r *resource) toggleVersion(rcvID int, enable bool) error {
 	}
 
 	defer Rollback(tx)
+	if err := rejectWorkflowResourceSourceMutation(context.Background(), tx, r.PipelineID()); err != nil {
+		return err
+	}
 
 	var results sql.Result
 	if enable {

@@ -531,6 +531,16 @@ var _ = Describe("Versions API", func() {
 							Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
 						})
 					})
+
+					Context("when the resource belongs to a server-owned source-selection pipeline", func() {
+						BeforeEach(func() {
+							fakeResource.EnableVersionReturns(db.ErrAgentWorkflowResourceSourceImmutable)
+						})
+
+						It("returns 409", func() {
+							Expect(response.StatusCode).To(Equal(http.StatusConflict))
+						})
+					})
 				})
 
 				Context("when it fails to find the resource", func() {
@@ -633,6 +643,16 @@ var _ = Describe("Versions API", func() {
 
 						It("returns 500", func() {
 							Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+						})
+					})
+
+					Context("when the resource belongs to a server-owned source-selection pipeline", func() {
+						BeforeEach(func() {
+							fakeResource.DisableVersionReturns(db.ErrAgentWorkflowResourceSourceImmutable)
+						})
+
+						It("returns 409", func() {
+							Expect(response.StatusCode).To(Equal(http.StatusConflict))
 						})
 					})
 				})
@@ -746,6 +766,16 @@ var _ = Describe("Versions API", func() {
 
 						It("returns 500", func() {
 							Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+						})
+					})
+
+					Context("when the resource belongs to a server-owned source-selection pipeline", func() {
+						BeforeEach(func() {
+							fakeResource.PinVersionReturns(false, db.ErrAgentWorkflowResourceSourceImmutable)
+						})
+
+						It("returns 409", func() {
+							Expect(response.StatusCode).To(Equal(http.StatusConflict))
 						})
 					})
 				})
@@ -1276,6 +1306,16 @@ var _ = Describe("Versions API", func() {
 						It("returns 500", func() {
 							Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
 							Expect(io.ReadAll(response.Body)).To(Equal([]byte("failed")))
+						})
+					})
+
+					Context("when the resource belongs to a server-owned source-selection pipeline", func() {
+						BeforeEach(func() {
+							fakeResource.ClearVersionsReturns(0, db.ErrAgentWorkflowResourceSourceImmutable)
+						})
+
+						It("returns 409", func() {
+							Expect(response.StatusCode).To(Equal(http.StatusConflict))
 						})
 					})
 				})

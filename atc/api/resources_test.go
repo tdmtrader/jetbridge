@@ -451,6 +451,16 @@ var _ = Describe("Resources API", func() {
 							Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
 						})
 					})
+
+					Context("when the resource belongs to a server-owned source-selection pipeline", func() {
+						BeforeEach(func() {
+							fakeResource.UnpinVersionReturns(db.ErrAgentWorkflowResourceSourceImmutable)
+						})
+
+						It("returns 409", func() {
+							Expect(response.StatusCode).To(Equal(http.StatusConflict))
+						})
+					})
 				})
 
 				Context("when it fails to find the resource", func() {

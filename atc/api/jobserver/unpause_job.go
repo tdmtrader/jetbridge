@@ -26,6 +26,9 @@ func (s *Server) UnpauseJob(pipeline db.Pipeline) http.Handler {
 
 		err = job.Unpause()
 		if err != nil {
+			if writeWorkflowResourceSourceConflict(w, err) {
+				return
+			}
 			logger.Error("failed-to-unpause-job", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return

@@ -3,6 +3,7 @@ package db_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"time"
 
@@ -235,6 +236,44 @@ var _ = Describe("Resource", func() {
 				Expect(found).To(BeFalse())
 				Expect(resource).To(BeNil())
 			})
+		})
+	})
+
+	Describe("source-owned resource mutation guard", func() {
+		var resource db.Resource
+
+		BeforeEach(func() {
+			var found bool
+			var err error
+			resource, found, err = pipeline.Resource("some-resource")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(markPipelineWorkflowResourceSourceOwned(pipeline.ID(), defaultTeam.ID(), defaultTeam.Name())).To(Succeed())
+		})
+
+		It("rejects pinning a source resource", func() {
+			_, err := resource.PinVersion(-1)
+			Expect(errors.Is(err, db.ErrAgentWorkflowResourceSourceImmutable)).To(BeTrue())
+		})
+
+		It("rejects unpinning a source resource", func() {
+			err := resource.UnpinVersion()
+			Expect(errors.Is(err, db.ErrAgentWorkflowResourceSourceImmutable)).To(BeTrue())
+		})
+
+		It("rejects enabling a source resource version", func() {
+			err := resource.EnableVersion(-1)
+			Expect(errors.Is(err, db.ErrAgentWorkflowResourceSourceImmutable)).To(BeTrue())
+		})
+
+		It("rejects disabling a source resource version", func() {
+			err := resource.DisableVersion(-1)
+			Expect(errors.Is(err, db.ErrAgentWorkflowResourceSourceImmutable)).To(BeTrue())
+		})
+
+		It("rejects clearing source resource versions", func() {
+			_, err := resource.ClearVersions()
+			Expect(errors.Is(err, db.ErrAgentWorkflowResourceSourceImmutable)).To(BeTrue())
 		})
 	})
 

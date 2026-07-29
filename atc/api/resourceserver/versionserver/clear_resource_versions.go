@@ -30,6 +30,9 @@ func (s *Server) ClearResourceVersions(pipeline db.Pipeline) http.Handler {
 
 		versionsDeleted, err := resource.ClearVersions()
 		if err != nil {
+			if writeWorkflowResourceSourceConflict(w, err) {
+				return
+			}
 			logger.Error("failed-to-clear-versions", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			w.Write([]byte(err.Error()))

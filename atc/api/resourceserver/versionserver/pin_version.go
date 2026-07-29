@@ -32,6 +32,9 @@ func (s *Server) PinResourceVersion(pipeline db.Pipeline) http.Handler {
 
 		found, err = resource.PinVersion(resourceConfigVersionID)
 		if err != nil {
+			if writeWorkflowResourceSourceConflict(w, err) {
+				return
+			}
 			logger.Error("failed-to-pin-resource-version", err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return

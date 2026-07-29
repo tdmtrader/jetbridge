@@ -106,3 +106,29 @@ by no listener on port 25433. The temporary replacement and overlay were then
 removed. Tracked production code and the external PostgreSQL process on port
 5434 (PID 36839) were not touched. No further infrastructure retries were
 performed.
+
+## Review round 1 correction
+
+- Added the source-only transactional ownership guard for public job
+  pause/unpause and resource pin/unpin, enable/disable, and `ClearVersions`
+  mutations. It checks the durable
+  `agent_workflow_resource_source_pipelines` registration inside the mutation
+  transaction and returns `ErrAgentWorkflowResourceSourceImmutable` before
+  changing scheduler-selection state. Comments, caches, reads, and other
+  unrelated resource operations remain outside this correction.
+- Added HTTP conflict mapping for each corresponding job/resource mutation
+  handler. Public callers now receive 409 rather than 500 for this durable
+  ownership conflict.
+- Added focused DB regressions for pausing/unpausing an owned admit job and
+  all five source-resource mutations, plus API regressions for the seven 409
+  surfaces. The DB tests compile but were not executed: this correction did
+  not retry the known occupied-port/high-port database infrastructure.
+
+Passed for this correction:
+
+- `go test ./atc/api -run '^TestAPI$' -ginkgo.focus='server-owned source-selection pipeline' -count=1` (7 specs)
+- `go test ./atc/db -run '^$' -count=1`
+- `go test ./atc/api -run '^TestAPI$' -count=1`
+- `go test ./atc/atccmd -run '^$' -count=1`
+- `go test ./agent/workflowrun ./agent/experiment -count=1`
+- `git diff --check`

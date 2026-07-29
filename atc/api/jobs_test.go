@@ -2210,6 +2210,16 @@ var _ = Describe("Jobs API", func() {
 						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
 					})
 				})
+
+				Context("when the job belongs to a server-owned source-selection pipeline", func() {
+					BeforeEach(func() {
+						fakeJob.PauseReturns(db.ErrAgentWorkflowResourceSourceImmutable)
+					})
+
+					It("returns a 409", func() {
+						Expect(response.StatusCode).To(Equal(http.StatusConflict))
+					})
+				})
 			})
 		})
 
@@ -2286,6 +2296,16 @@ var _ = Describe("Jobs API", func() {
 
 					It("returns a 500", func() {
 						Expect(response.StatusCode).To(Equal(http.StatusInternalServerError))
+					})
+				})
+
+				Context("when the job belongs to a server-owned source-selection pipeline", func() {
+					BeforeEach(func() {
+						fakeJob.UnpauseReturns(db.ErrAgentWorkflowResourceSourceImmutable)
+					})
+
+					It("returns a 409", func() {
+						Expect(response.StatusCode).To(Equal(http.StatusConflict))
 					})
 				})
 			})
