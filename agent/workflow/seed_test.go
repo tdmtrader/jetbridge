@@ -287,3 +287,57 @@ func TestMeasureReviewSeedStaysAdmissibleAsAnExperimentEvaluator(t *testing.T) {
 		t.Fatalf("evaluator task output declarations = %+v, want a typed measurements/v1 port", tasks[0].SnapshotOutputs)
 	}
 }
+
+func TestGovernedSeedsRenderPrivateExactValidationRequirements(t *testing.T) {
+	for directory, name := range map[string]string{"seeds/small-fix-v3": "small-fix", "seeds/version-upgrade-v3": "version-upgrade", "seeds/merge-delivery-v3": "merge-delivery"} {
+		t.Run(directory, func(t *testing.T) {
+			manifest, err := workflow.ManifestFromDir(directory)
+			if err != nil {
+				t.Fatal(err)
+			}
+			definition, err := workflowtest.NewMemoryStore().ImportManifest(name, manifest, "seed-test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(definition.Compiled.Function.DevValidationProfiles) == 0 || len(definition.Compiled.Function.DevValidationProfiles[0].Profile) == 0 || !strings.Contains(string(definition.Compiled.Function.DevValidationProfiles[0].Profile), "- id: tests") {
+				t.Fatalf("governed seed must compile a nonempty executable validation profile: %#v", definition.Compiled.Function.DevValidationProfiles)
+			}
+			target, err := workflow.FullFunctionTarget(*definition)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rendered, err := workflow.RenderFunction(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var review, await, publish int
+			for _, step := range rendered.Config.Jobs[0].PlanSequence {
+				if err := step.Config.Visit(atc.StepRecursor{OnAgent: func(s *atc.AgentStep) error {
+					if s.ReviewValidation != nil {
+						review++
+					}
+					return nil
+				}, OnAwaitSnapshot: func(s *atc.AwaitSnapshotStep) error {
+					if s.MergeApprovalValidation != nil {
+						await++
+					}
+					return nil
+				}, OnPublishSnapshot: func(s *atc.PublishSnapshotStep) error {
+					if s.PublishValidation != nil {
+						publish++
+					}
+					return nil
+				}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if directory == "seeds/merge-delivery-v3" {
+				if await != 1 || publish != 1 {
+					t.Fatalf("merge requirements = await %d publish %d", await, publish)
+				}
+			} else if review != 1 {
+				t.Fatalf("review requirements = %d", review)
+			}
+		})
+	}
+}

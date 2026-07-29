@@ -1,14 +1,21 @@
 package exec_test
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/concourse/concourse/agent/publisher"
 	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/agent/snapshot/contracts"
 	"github.com/concourse/concourse/agent/snapshot/snapshotfakes"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/exec"
@@ -35,6 +42,7 @@ func TestPublishSnapshotStepAuthorizesExactSealedInputAndPublishes(t *testing.T)
 	repository, state, delegates, delegate := loadSnapshotHarness()
 	registerPublishArtifact(t, repository, manifest)
 	plan := publishSnapshotPlan()
+	content := configurePassingPublishValidation(t, repository, metadata, manifest, &plan)
 
 	var captured publisher.Request
 	executor := publisherExecutorFunc(func(_ context.Context, request publisher.Request) (publisher.Publication, error) {
@@ -49,7 +57,7 @@ func TestPublishSnapshotStepAuthorizesExactSealedInputAndPublishes(t *testing.T)
 		}, nil
 	})
 	step := exec.NewPublishSnapshotStep("publish", plan,
-		exec.StepMetadata{TeamID: 17, TeamName: "main", BuildID: 42, CreatedBy: "build-starter", SnapshotCreatedBy: "alice"}, delegates, metadata, executor, nil)
+		publishStepMetadata("alice"), delegates, metadata, executor, nil, exec.WithPublishSnapshotContentStore(content))
 
 	ok, err := step.Run(context.Background(), state)
 	require.NoError(t, err)
@@ -63,14 +71,31 @@ func TestPublishSnapshotStepAuthorizesExactSealedInputAndPublishes(t *testing.T)
 			TeamID: 17, TeamName: "main", BuildID: 42, Actor: "alice",
 		},
 	}, captured)
-	require.Equal(t, 1, metadata.GetAuthorizedCallCount())
-	_, teamID, snapshotID := metadata.GetAuthorizedArgsForCall(0)
-	require.Equal(t, 17, teamID)
-	require.Equal(t, manifest.ID, snapshotID)
+	require.GreaterOrEqual(t, metadata.GetAuthorizedCallCount(), 3)
 	require.Equal(t, 1, delegate.FinishedCallCount())
 
 	plan.Parameters["target_branch"] = "mutated"
 	require.Equal(t, "main", captured.Parameters["target_branch"])
+}
+
+func TestPublishSnapshotValidationRequirementRejectsBeforeExecutor(t *testing.T) {
+	manifest := publishSnapshotManifest()
+	metadata := new(snapshotfakes.FakeMetadataStore)
+	metadata.GetAuthorizedReturns(manifest, true, nil)
+	repository, state, delegates, _ := loadSnapshotHarness()
+	registerPublishArtifact(t, repository, manifest)
+	plan := publishSnapshotPlan()
+	plan.Validation = "validation"
+	plan.PublishValidation = &atc.PublishValidationRequirement{}
+	called := false
+	step := exec.NewPublishSnapshotStep("publish", plan, exec.StepMetadata{TeamID: 17, TeamName: "main", BuildID: 42, SnapshotCreatedBy: "alice"}, delegates, metadata, publisherExecutorFunc(func(context.Context, publisher.Request) (publisher.Publication, error) {
+		called = true
+		return publisher.Publication{}, nil
+	}), nil)
+	ok, err := step.Run(context.Background(), state)
+	require.False(t, ok)
+	require.ErrorContains(t, err, "authoritative validation plan is unavailable")
+	require.False(t, called)
 }
 
 func TestPublishSnapshotStepRejectsPublicationWithoutStoreVerifiedWorkflowRun(t *testing.T) {
@@ -79,8 +104,10 @@ func TestPublishSnapshotStepRejectsPublicationWithoutStoreVerifiedWorkflowRun(t 
 	metadata.GetAuthorizedReturns(manifest, true, nil)
 	_, state, delegates, _ := loadSnapshotHarness()
 	registerPublishArtifact(t, state.ArtifactRepository(), manifest)
-	step := exec.NewPublishSnapshotStep("publish", publishSnapshotPlan(),
-		exec.StepMetadata{TeamID: 17, TeamName: "main", BuildID: 42, SnapshotCreatedBy: "alice"}, delegates, metadata,
+	plan := publishSnapshotPlan()
+	content := configurePassingPublishValidation(t, state.ArtifactRepository(), metadata, manifest, &plan)
+	step := exec.NewPublishSnapshotStep("publish", plan,
+		publishStepMetadata("alice"), delegates, metadata,
 		publisherExecutorFunc(func(_ context.Context, request publisher.Request) (publisher.Publication, error) {
 			key, err := request.OperationKey()
 			require.NoError(t, err)
@@ -88,7 +115,7 @@ func TestPublishSnapshotStepRejectsPublicationWithoutStoreVerifiedWorkflowRun(t 
 				OperationKey: key, Request: request, Status: publisher.StatusSucceeded, Attempt: 1,
 				Result: publisher.Result{Status: publisher.StatusSucceeded},
 			}, nil
-		}), nil)
+		}), nil, exec.WithPublishSnapshotContentStore(content))
 
 	ok, err := step.Run(context.Background(), state)
 	require.False(t, ok)
@@ -101,8 +128,10 @@ func TestPublishSnapshotStepRejectsSucceededResponseWithoutDurablePublicationIde
 	metadata.GetAuthorizedReturns(manifest, true, nil)
 	_, state, delegates, _ := loadSnapshotHarness()
 	registerPublishArtifact(t, state.ArtifactRepository(), manifest)
-	step := exec.NewPublishSnapshotStep("publish", publishSnapshotPlan(),
-		exec.StepMetadata{TeamID: 17, TeamName: "main", BuildID: 42, SnapshotCreatedBy: "alice"}, delegates, metadata,
+	plan := publishSnapshotPlan()
+	content := configurePassingPublishValidation(t, state.ArtifactRepository(), metadata, manifest, &plan)
+	step := exec.NewPublishSnapshotStep("publish", plan,
+		publishStepMetadata("alice"), delegates, metadata,
 		publisherExecutorFunc(func(_ context.Context, request publisher.Request) (publisher.Publication, error) {
 			request.Authority.WorkflowRunID = 91
 			key, err := request.OperationKey()
@@ -113,7 +142,7 @@ func TestPublishSnapshotStepRejectsSucceededResponseWithoutDurablePublicationIde
 				Result:    publisher.Result{Status: publisher.StatusSucceeded},
 				CreatedAt: now, UpdatedAt: now,
 			}, nil
-		}), nil)
+		}), nil, exec.WithPublishSnapshotContentStore(content))
 
 	ok, err := step.Run(context.Background(), state)
 	require.False(t, ok)
@@ -126,8 +155,10 @@ func TestPublishSnapshotStepRejectsDurableResponseForDifferentSnapshotEvidence(t
 	metadata.GetAuthorizedReturns(manifest, true, nil)
 	_, state, delegates, _ := loadSnapshotHarness()
 	registerPublishArtifact(t, state.ArtifactRepository(), manifest)
-	step := exec.NewPublishSnapshotStep("publish", publishSnapshotPlan(),
-		exec.StepMetadata{TeamID: 17, TeamName: "main", BuildID: 42, SnapshotCreatedBy: "alice"}, delegates, metadata,
+	plan := publishSnapshotPlan()
+	content := configurePassingPublishValidation(t, state.ArtifactRepository(), metadata, manifest, &plan)
+	step := exec.NewPublishSnapshotStep("publish", plan,
+		publishStepMetadata("alice"), delegates, metadata,
 		publisherExecutorFunc(func(_ context.Context, request publisher.Request) (publisher.Publication, error) {
 			request.Authority.WorkflowRunID = 91
 			key, err := request.OperationKey()
@@ -139,7 +170,7 @@ func TestPublishSnapshotStepRejectsDurableResponseForDifferentSnapshotEvidence(t
 				Result:    publisher.Result{Status: publisher.StatusSucceeded},
 				CreatedAt: now, UpdatedAt: now,
 			}, nil
-		}), nil)
+		}), nil, exec.WithPublishSnapshotContentStore(content))
 
 	ok, err := step.Run(context.Background(), state)
 	require.False(t, ok)
@@ -158,13 +189,14 @@ func TestPublishSnapshotStepMergeFailsClosedWithoutDurableWaitApprovalVerifier(t
 
 	_, state, delegates, _ := loadSnapshotHarness()
 	registerPublishArtifact(t, state.ArtifactRepository(), manifest)
+	content := configurePassingPublishValidation(t, state.ArtifactRepository(), metadata, manifest, &plan)
 	called := false
 	step := exec.NewPublishSnapshotStep("publish", plan,
-		exec.StepMetadata{TeamID: 17, TeamName: "main", BuildID: 42, SnapshotCreatedBy: "alice"}, delegates, metadata,
+		publishStepMetadata("alice"), delegates, metadata,
 		publisherExecutorFunc(func(context.Context, publisher.Request) (publisher.Publication, error) {
 			called = true
 			return publisher.Publication{}, nil
-		}), nil)
+		}), nil, exec.WithPublishSnapshotContentStore(content))
 	ok, err := step.Run(context.Background(), state)
 	require.False(t, ok)
 	require.EqualError(t, err, "publish_snapshot: durable merge approval verification is unavailable")
@@ -201,6 +233,7 @@ func TestPublishSnapshotStepBindsMergeToExactDurableApproval(t *testing.T) {
 	plan.Approval = "approval"
 	plan.WorkflowRunID = "91"
 	plan.Parameters = map[string]string{"target_branch": "main"}
+	content := configurePassingPublishValidation(t, state.ArtifactRepository(), metadata, change, &plan, answer)
 	resolvedAt := time.Now().UTC()
 	question := snapshot.SnapshotRef{
 		ID: 79, Type: snapshot.TypeRef("question/v1"),
@@ -227,8 +260,7 @@ func TestPublishSnapshotStepBindsMergeToExactDurableApproval(t *testing.T) {
 		}, nil
 	})
 	step := exec.NewPublishSnapshotStep("publish", plan,
-		exec.StepMetadata{TeamID: 17, TeamName: "main", BuildID: 42, SnapshotCreatedBy: "alice"},
-		delegates, metadata, executor, verifier)
+		publishStepMetadata("alice"), delegates, metadata, executor, verifier, exec.WithPublishSnapshotContentStore(content))
 
 	ok, err := step.Run(context.Background(), state)
 	require.NoError(t, err)
@@ -269,10 +301,11 @@ func TestPublishSnapshotStepRefusesAuthoredMergeBase(t *testing.T) {
 	plan.Parameters = map[string]string{
 		"target_branch": "main", "expected_base_sha": strings.Repeat("b", 40),
 	}
+	content := configurePassingPublishValidation(t, state.ArtifactRepository(), metadata, change, &plan)
 	verified := false
 	published := false
 	step := exec.NewPublishSnapshotStep("publish", plan,
-		exec.StepMetadata{TeamID: 17, TeamName: "main", BuildID: 42, SnapshotCreatedBy: "alice"}, delegates, metadata,
+		publishStepMetadata("alice"), delegates, metadata,
 		publisherExecutorFunc(func(context.Context, publisher.Request) (publisher.Publication, error) {
 			published = true
 			return publisher.Publication{}, nil
@@ -280,7 +313,7 @@ func TestPublishSnapshotStepRefusesAuthoredMergeBase(t *testing.T) {
 		mergeApprovalVerifierFunc(func(context.Context, publisher.MergeApprovalRequest) (publisher.ApprovalEvidence, error) {
 			verified = true
 			return publisher.ApprovalEvidence{}, nil
-		}))
+		}), exec.WithPublishSnapshotContentStore(content))
 
 	ok, err := step.Run(context.Background(), state)
 	require.False(t, ok)
@@ -303,16 +336,17 @@ func TestPublishSnapshotStepFailsClosedWithoutSealedMergeBase(t *testing.T) {
 	plan.Approval = "approval"
 	plan.WorkflowRunID = "91"
 	plan.Parameters = map[string]string{"target_branch": "main"}
+	content := configurePassingPublishValidation(t, state.ArtifactRepository(), metadata, change, &plan)
 	published := false
 	step := exec.NewPublishSnapshotStep("publish", plan,
-		exec.StepMetadata{TeamID: 17, TeamName: "main", BuildID: 42, SnapshotCreatedBy: "alice"}, delegates, metadata,
+		publishStepMetadata("alice"), delegates, metadata,
 		publisherExecutorFunc(func(context.Context, publisher.Request) (publisher.Publication, error) {
 			published = true
 			return publisher.Publication{}, nil
 		}),
 		mergeApprovalVerifierFunc(func(context.Context, publisher.MergeApprovalRequest) (publisher.ApprovalEvidence, error) {
 			return publisher.ApprovalEvidence{}, nil
-		}))
+		}), exec.WithPublishSnapshotContentStore(content))
 
 	ok, err := step.Run(context.Background(), state)
 	require.False(t, ok)
@@ -390,8 +424,10 @@ func TestPublishSnapshotStepReturnsSafeTerminalAndDependencyErrors(t *testing.T)
 		t.Run(test.name, func(t *testing.T) {
 			_, state, delegates, _ := loadSnapshotHarness()
 			registerPublishArtifact(t, state.ArtifactRepository(), manifest)
-			step := exec.NewPublishSnapshotStep("publish", publishSnapshotPlan(),
-				exec.StepMetadata{TeamID: 17, TeamName: "main", BuildID: 42, SnapshotCreatedBy: "concourse"}, delegates, metadata,
+			plan := publishSnapshotPlan()
+			content := configurePassingPublishValidation(t, state.ArtifactRepository(), metadata, manifest, &plan)
+			step := exec.NewPublishSnapshotStep("publish", plan,
+				publishStepMetadata("concourse"), delegates, metadata,
 				publisherExecutorFunc(func(_ context.Context, request publisher.Request) (publisher.Publication, error) {
 					response := test.response
 					if test.err == nil {
@@ -406,7 +442,7 @@ func TestPublishSnapshotStepReturnsSafeTerminalAndDependencyErrors(t *testing.T)
 						}
 					}
 					return response, test.err
-				}), nil)
+				}), nil, exec.WithPublishSnapshotContentStore(content))
 			ok, err := step.Run(context.Background(), state)
 			require.False(t, ok)
 			require.EqualError(t, err, test.want)
@@ -451,4 +487,81 @@ func registerPublishArtifact(t *testing.T, repository *build.Repository, manifes
 	require.NoError(t, repository.RegisterArtifacts(map[build.ArtifactName]build.ArtifactEntry{
 		"change": {Artifact: &loadArtifact{handle: "sealed-change"}, Snapshot: publishSnapshotRef(manifest)},
 	}))
+}
+
+// configurePassingPublishValidation adds the same sealed, exact validation
+// evidence production plans supply before a repository change can publish.
+// Keeping legacy publisher assertions behind real evidence prevents test-only
+// execution paths from weakening the fail-closed gate.
+func configurePassingPublishValidation(t *testing.T, repository *build.Repository, metadata *snapshotfakes.FakeMetadataStore, candidate snapshot.Snapshot, plan *atc.PublishSnapshotPlan, extra ...snapshot.Snapshot) *snapshotfakes.FakeContentStore {
+	t.Helper()
+	authority := publishValidationAuthority(t, plan.Input)
+	plan.Validation = "validation"
+	plan.PublishValidation = &atc.PublishValidationRequirement{Candidate: plan.Input, Validation: "validation", Authority: &authority}
+	validation, archive := publishValidationManifest(t, *publishSnapshotRef(candidate), publishValidationBody(*publishSnapshotRef(candidate), authority))
+	validationRef := snapshot.SnapshotRef{ID: validation.ID, Type: validation.Type, Digest: validation.Digest}
+	require.NoError(t, repository.RegisterArtifacts(map[build.ArtifactName]build.ArtifactEntry{
+		"validation": {Artifact: &loadArtifact{handle: "sealed-validation"}, Snapshot: &validationRef},
+	}))
+	manifests := map[snapshot.SnapshotID]snapshot.Snapshot{candidate.ID: candidate, validation.ID: validation}
+	for _, manifest := range extra {
+		manifests[manifest.ID] = manifest
+	}
+	metadata.GetAuthorizedCalls(func(_ context.Context, _ int, id snapshot.SnapshotID) (snapshot.Snapshot, bool, error) {
+		manifest, found := manifests[id]
+		return manifest, found, nil
+	})
+	content := new(snapshotfakes.FakeContentStore)
+	content.OpenCalls(func(_ context.Context, manifest snapshot.Snapshot) (io.ReadCloser, error) {
+		if manifest.ID != validation.ID {
+			return nil, fmt.Errorf("unexpected validation content snapshot")
+		}
+		return io.NopCloser(bytes.NewReader(archive)), nil
+	})
+	return content
+}
+
+func publishValidationAuthority(t *testing.T, candidate string) atc.DevValidationAuthority {
+	t.Helper()
+	profile := []byte("schema_version: 1\nname: exact-gates\nchecks:\n  - id: tests\n    operation: test\n    scope: full\n    timeout: 20m\n    retries: 0\n")
+	config := []byte("schema_version: 1\nrepo:\n  test: {cmd: [\"go\", \"test\", \"./...\"]}\ncomponents:\n  - id: repository\n    description: repository\n    paths: [\"src/\"]\n    kind: other\n")
+	imageDigest := publishValidationDigest([]byte("image"))
+	authority := atc.DevValidationAuthority{CandidateInput: candidate, ProfileName: "exact-gates", Profile: profile, ProfileDigest: publishValidationDigest(profile), ProtectedConfig: config, ProtectedConfigDigest: publishValidationDigest(config), CapabilityImage: "registry.example/dev-capability@" + imageDigest.String(), CapabilityImageDigest: imageDigest, WorkflowDefinitionID: 73, WorkflowVersion: 5}
+	require.NoError(t, authority.Validate())
+	return authority
+}
+
+func publishValidationBody(candidate snapshot.SnapshotRef, authority atc.DevValidationAuthority) contracts.ValidationBody {
+	return contracts.ValidationBody{Conclusion: "passed", Summary: "authoritative validation", Attestation: contracts.ValidationAttestation{CandidateDigest: candidate.Digest, ProfileDigest: authority.ProfileDigest, ProtectedConfigDigest: authority.ProtectedConfigDigest, CapabilityImage: authority.CapabilityImage, CapabilityImageDigest: authority.CapabilityImageDigest, WorkflowDefinitionID: authority.WorkflowDefinitionID, WorkflowVersion: authority.WorkflowVersion, Toolchain: "dev-capability/" + authority.CapabilityImageDigest.String()}, Checks: []contracts.ValidationCheck{{ID: "tests", Kind: "test", Name: "tests", Status: "passed", Attempts: []contracts.ValidationAttempt{{Number: 1, Status: "passed", Duration: "1s", Log: contracts.ValidationLog{Path: "content/logs/tests/attempt-1.log", Digest: publishValidationDigest(nil), MediaType: "text/plain"}}}}}}
+}
+
+func publishValidationManifest(t *testing.T, candidate snapshot.SnapshotRef, body contracts.ValidationBody) (snapshot.Snapshot, []byte) {
+	t.Helper()
+	record, err := contracts.NewRecord(snapshot.TypeRef("validation/v1"), []contracts.Subject{contracts.SubjectFromInput("primary", contracts.SubjectRolePrimary, "change", candidate)}, body)
+	require.NoError(t, err)
+	document, err := json.Marshal(record)
+	require.NoError(t, err)
+	var archive bytes.Buffer
+	writer := tar.NewWriter(&archive)
+	for _, file := range []struct {
+		name string
+		data []byte
+	}{{"content/logs/tests/attempt-1.log", nil}, {"record.json", document}} {
+		require.NoError(t, writer.WriteHeader(&tar.Header{Name: file.name, Mode: 0o600, Size: int64(len(file.data)), Typeflag: tar.TypeReg}))
+		_, err := writer.Write(file.data)
+		require.NoError(t, err)
+	}
+	require.NoError(t, writer.Close())
+	raw := archive.Bytes()
+	return snapshot.Snapshot{ID: 88, Type: snapshot.TypeRef("validation/v1"), Digest: publishValidationDigest(raw), ByteSize: int64(len(raw)), FileCount: 2, Representation: "application/x-tar", ContentState: snapshot.ContentStateAvailable, CreatedAt: time.Now().UTC()}, append([]byte(nil), raw...)
+}
+
+func publishValidationDigest(raw []byte) snapshot.Digest {
+	sum := sha256.Sum256(raw)
+	return snapshot.Digest(fmt.Sprintf("sha256:%x", sum))
+}
+
+func publishStepMetadata(actor string) exec.StepMetadata {
+	definitionID, version := 73, 5
+	return exec.StepMetadata{TeamID: 17, TeamName: "main", BuildID: 42, SnapshotCreatedBy: actor, WorkflowDefinitionID: &definitionID, WorkflowVersion: &version}
 }

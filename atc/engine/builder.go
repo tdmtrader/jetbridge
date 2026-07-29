@@ -75,6 +75,7 @@ type stepperFactory struct {
 	resourceCacheFactory  db.ResourceCacheFactory
 	imageResolver         imageresolver.Resolver
 	workflowDefinitionID  *int
+	workflowVersion       *int
 	workflowRunID         *snapshot.WorkflowRunID
 }
 
@@ -93,8 +94,10 @@ func (factory *stepperFactory) StepperForBuild(build db.Build) (exec.Stepper, er
 			return nil, fmt.Errorf("load build workflow-run association: %w", err)
 		}
 		definitionID := association.WorkflowDefinitionID
+		version := association.WorkflowVersion
 		runID := association.WorkflowRunID
 		scopedFactory.workflowDefinitionID = &definitionID
+		scopedFactory.workflowVersion = &version
 		scopedFactory.workflowRunID = &runID
 	}
 	return func(plan atc.Plan) exec.Step {
@@ -601,6 +604,10 @@ func (factory *stepperFactory) stepMetadata(
 	if factory.workflowDefinitionID != nil {
 		value := *factory.workflowDefinitionID
 		meta.WorkflowDefinitionID = &value
+	}
+	if factory.workflowVersion != nil {
+		value := *factory.workflowVersion
+		meta.WorkflowVersion = &value
 	}
 	if factory.workflowRunID != nil {
 		value := *factory.workflowRunID

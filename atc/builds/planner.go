@@ -114,26 +114,28 @@ func (visitor *planVisitor) VisitAgent(step *atc.AgentStep) error {
 		return fmt.Errorf("agent step %s has unresolved capabilities; compile them before planning", step.Name)
 	}
 	visitor.plan = visitor.planFactory.NewPlan(atc.AgentPlan{
-		Name:            step.Name,
-		FunctionID:      step.FunctionID,
-		Hermetic:        step.Hermetic,
-		RuntimeImage:    step.RuntimeImage,
-		Prompt:          step.Prompt,
-		Model:           step.Model,
-		MaxTurns:        step.MaxTurns,
-		BudgetSliceUSD:  step.BudgetSliceUSD,
-		SystemPrompt:    step.SystemPrompt,
-		Context:         step.Context,
-		Skills:          step.Skills,
-		Sidecars:        step.Sidecars,
-		Inputs:          step.Inputs,
-		Outputs:         step.Outputs,
-		SnapshotInputs:  maps.Clone(step.SnapshotInputs),
-		SnapshotOutputs: maps.Clone(step.SnapshotOutputs),
-		Env:             step.Env,
-		Timeout:         step.Timeout,
-		Limits:          step.Limits,
-		Requests:        step.Requests,
+		Name:             step.Name,
+		FunctionID:       step.FunctionID,
+		Hermetic:         step.Hermetic,
+		RuntimeImage:     step.RuntimeImage,
+		Prompt:           step.Prompt,
+		Model:            step.Model,
+		MaxTurns:         step.MaxTurns,
+		BudgetSliceUSD:   step.BudgetSliceUSD,
+		SystemPrompt:     step.SystemPrompt,
+		Context:          step.Context,
+		Skills:           step.Skills,
+		Sidecars:         step.Sidecars,
+		Inputs:           step.Inputs,
+		Outputs:          step.Outputs,
+		SnapshotInputs:   maps.Clone(step.SnapshotInputs),
+		SnapshotOutputs:  maps.Clone(step.SnapshotOutputs),
+		Validation:       step.Validation,
+		ReviewValidation: step.ReviewValidation.Clone(),
+		Env:              step.Env,
+		Timeout:          step.Timeout,
+		Limits:           step.Limits,
+		Requests:         step.Requests,
 	})
 
 	return nil
@@ -348,7 +350,7 @@ func (visitor *planVisitor) VisitAwaitSnapshot(step *atc.AwaitSnapshotStep) erro
 		mergeApproval = &copy
 	}
 	visitor.plan = visitor.planFactory.NewPlan(atc.AwaitSnapshotPlan{
-		Name: step.Name, Question: step.Question, MergeApproval: mergeApproval, Type: step.Type, OnTimeout: step.OnTimeout,
+		Name: step.Name, Question: step.Question, MergeApproval: mergeApproval, Validation: step.Validation, MergeApprovalValidation: step.MergeApprovalValidation.Clone(), Type: step.Type, OnTimeout: step.OnTimeout,
 		DefaultSnapshotID: step.DefaultSnapshotID, WorkflowPort: step.WorkflowPort,
 		WorkflowDefinitionID: step.WorkflowDefinitionID, WorkflowRunID: step.WorkflowRunID,
 	})
@@ -361,6 +363,7 @@ func (visitor *planVisitor) VisitPublishSnapshot(step *atc.PublishSnapshotStep) 
 		Destination: step.Destination, Mode: step.Mode, Parameters: maps.Clone(step.Parameters),
 		ApprovalPolicyVersion: step.ApprovalPolicyVersion,
 		Approval:              step.Approval, WorkflowRunID: step.WorkflowRunID,
+		Validation: step.Validation, PublishValidation: step.PublishValidation.Clone(),
 	})
 	return nil
 }

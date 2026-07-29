@@ -22,8 +22,15 @@ type PublishSnapshotStep struct {
 	metadata         StepMetadata
 	delegateFactory  BuildStepDelegateFactory
 	metadataStore    snapshot.MetadataStore
+	contentStore     snapshot.ContentStore
 	executor         publisher.Executor
 	approvalVerifier publisher.MergeApprovalVerifier
+}
+
+type PublishSnapshotStepOption func(*PublishSnapshotStep)
+
+func WithPublishSnapshotContentStore(store snapshot.ContentStore) PublishSnapshotStepOption {
+	return func(step *PublishSnapshotStep) { step.contentStore = store }
 }
 
 func NewPublishSnapshotStep(
@@ -34,13 +41,18 @@ func NewPublishSnapshotStep(
 	metadataStore snapshot.MetadataStore,
 	executor publisher.Executor,
 	approvalVerifier publisher.MergeApprovalVerifier,
+	opts ...PublishSnapshotStepOption,
 ) Step {
 	plan.Parameters = clonePublishParameters(plan.Parameters)
-	return &PublishSnapshotStep{
+	step := &PublishSnapshotStep{
 		planID: planID, plan: plan, metadata: metadata, delegateFactory: delegateFactory,
 		metadataStore: metadataStore, executor: executor,
 		approvalVerifier: approvalVerifier,
 	}
+	for _, option := range opts {
+		option(step)
+	}
+	return step
 }
 
 func (step *PublishSnapshotStep) Run(ctx context.Context, state RunState) (bool, error) {
@@ -79,6 +91,14 @@ func (step *PublishSnapshotStep) run(ctx context.Context, state RunState, delega
 	ref, manifest, err := step.authorizedInput(ctx, state.ArtifactRepository())
 	if err != nil {
 		return false, err
+	}
+	if step.plan.InputType == snapshot.TypeRef("repository-change/v1") {
+		if step.plan.PublishValidation == nil {
+			return false, fmt.Errorf("publish_snapshot: authoritative validation plan is unavailable")
+		}
+		if err := requireValidationRequirement(ctx, "publish_snapshot", state.ArtifactRepository(), step.metadata, step.metadataStore, step.contentStore, publishRequirement(*step.plan.PublishValidation), step.plan.Input); err != nil {
+			return false, err
+		}
 	}
 	parameters := clonePublishParameters(step.plan.Parameters)
 	if step.plan.Mode == publisher.ModeMerge {

@@ -1,6 +1,8 @@
 package workflow
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -10,6 +12,48 @@ import (
 )
 
 const repositoryChangeV1 snapshot.TypeRef = "repository-change/v1"
+
+func exactValidationStep(candidate string) atc.Step {
+	authority := &atc.DevValidationAuthority{ProfileName: "exact", CandidateInput: candidate}
+	return atc.Step{Config: &atc.TaskStep{Name: "validate", FunctionID: "validate", Config: &atc.TaskConfig{Inputs: []atc.TaskInputConfig{{Name: candidate}}, Outputs: []atc.TaskOutputConfig{{Name: "validation"}}}, SnapshotInputs: map[string]atc.SnapshotInputConfig{candidate: {Type: repositoryChangeV1}}, SnapshotOutputs: map[string]atc.SnapshotOutputConfig{"validation": {Type: snapshot.TypeRef("validation/v1")}}, DevValidationAuthority: authority}}
+}
+
+func validationProfiles() []CompiledDevValidationProfile {
+	return validationProfilesFor("change")
+}
+
+func validationProfilesFor(candidate string) []CompiledDevValidationProfile {
+	profile := []byte("schema_version: 1\nname: exact\nchecks:\n  - id: tests\n    operation: test\n    scope: full\n    timeout: 20m\n    retries: 0\n")
+	config := []byte("schema_version: 1\nrepo:\n  test: {cmd: [\"go\", \"test\", \"./...\"]}\ncomponents:\n  - id: repository\n    description: repository\n    paths: [\"src/\"]\n    kind: other\n")
+	image := snapshot.Digest("sha256:" + strings.Repeat("a", 64))
+	return []CompiledDevValidationProfile{{Name: "exact", Candidate: DevValidationContract{Name: candidate, Type: repositoryChangeV1}, CapabilityImage: "registry.example/validator@" + image.String(), CapabilityImageDigest: image, Command: devValidationCommand(), Profile: profile, ProfileDigest: validationDigest(profile), ProtectedConfig: config, ProtectedConfigDigest: validationDigest(config)}}
+}
+
+func validationDigest(raw []byte) snapshot.Digest {
+	sum := sha256.Sum256(raw)
+	return snapshot.Digest(fmt.Sprintf("sha256:%x", sum))
+}
+func validationProvenance() string {
+	value, err := DevValidationProvenanceHash(validationProfiles())
+	if err != nil {
+		panic(err)
+	}
+	return value
+}
+
+func validationProvenanceFor(candidate string) string {
+	value, err := DevValidationProvenanceHash(validationProfilesFor(candidate))
+	if err != nil {
+		panic(err)
+	}
+	return value
+}
+
+func renderValidationStep(candidate string) atc.Step {
+	profile := validationProfilesFor(candidate)[0]
+	authority := &atc.DevValidationAuthority{ProfileName: profile.Name, Profile: profile.Profile, ProfileDigest: profile.ProfileDigest, ProtectedConfig: profile.ProtectedConfig, ProtectedConfigDigest: profile.ProtectedConfigDigest, CapabilityImage: profile.CapabilityImage, CapabilityImageDigest: profile.CapabilityImageDigest, CandidateInput: candidate}
+	return atc.Step{Config: &atc.TaskStep{Name: "validate", FunctionID: "validate", Config: &atc.TaskConfig{Platform: "linux", RootfsURI: profile.CapabilityImage, Run: atc.TaskRunConfig{Path: "/bin/true"}, Inputs: []atc.TaskInputConfig{{Name: candidate}}, Outputs: []atc.TaskOutputConfig{{Name: "validation"}}}, SnapshotInputs: map[string]atc.SnapshotInputConfig{candidate: {Type: repositoryChangeV1}}, SnapshotOutputs: map[string]atc.SnapshotOutputConfig{"validation": {Type: snapshot.TypeRef("validation/v1")}}, DevValidationAuthority: authority}}
+}
 
 func TestTypeCheckPublishSnapshotConsumesExactRequiredTypedInput(t *testing.T) {
 	step := func(inputType snapshot.TypeRef) atc.Step {
@@ -22,14 +66,17 @@ func TestTypeCheckPublishSnapshotConsumesExactRequiredTypedInput(t *testing.T) {
 			Mode:                  publisher.ModePullRequest,
 			Parameters:            map[string]string{"source_branch": "agent/change", "target_branch": "main"},
 			ApprovalPolicyVersion: "engineering/v2",
+			Validation:            "validation",
 		}}
 	}
 
 	t.Run("exact required typed input is accepted without changing the environment", func(t *testing.T) {
 		function := &FunctionConfig{
-			SignatureVersion: 1,
-			Inputs:           []snapshot.Port{{Name: "change", Type: repositoryChangeV1}},
-			Plan:             []atc.Step{step(repositoryChangeV1), step(repositoryChangeV1)},
+			SignatureVersion:            1,
+			Inputs:                      []snapshot.Port{{Name: "change", Type: repositoryChangeV1}},
+			Plan:                        []atc.Step{exactValidationStep("change"), step(repositoryChangeV1), step(repositoryChangeV1)},
+			DevValidationProfiles:       validationProfiles(),
+			DevValidationProvenanceHash: validationProvenance(),
 		}
 
 		if err := TypeCheckFunction(function); err != nil {
@@ -107,6 +154,7 @@ func TestTypeCheckMergePublisherRequiresExactGuaranteedHumanAnswer(t *testing.T)
 			Destination: "github.example/team/repo", Mode: publisher.ModeMerge,
 			Parameters:            map[string]string{"target_branch": "main"},
 			ApprovalPolicyVersion: "engineering/v2",
+			Validation:            "validation",
 		}
 	}
 	validInputs := []snapshot.Port{{Name: "change", Type: repositoryChangeV1}}
@@ -119,11 +167,12 @@ func TestTypeCheckMergePublisherRequiresExactGuaranteedHumanAnswer(t *testing.T)
 				Parameters:            map[string]string{"target_branch": "main"},
 				ApprovalPolicyVersion: "engineering/v2", Prompt: "Merge this exact change?",
 			},
-			OnTimeout: atc.AwaitSnapshotOnTimeoutFail,
+			OnTimeout:  atc.AwaitSnapshotOnTimeoutFail,
+			Validation: "validation",
 		}}}
 	}
 	if err := TypeCheckFunction(&FunctionConfig{
-		SignatureVersion: 1, Inputs: validInputs, Plan: []atc.Step{wait(), {Config: merge()}},
+		SignatureVersion: 1, Inputs: validInputs, Plan: []atc.Step{exactValidationStep("change"), wait(), {Config: merge()}}, DevValidationProfiles: validationProfiles(), DevValidationProvenanceHash: validationProvenance(),
 	}); err != nil {
 		t.Fatalf("valid merge flow: %v", err)
 	}
@@ -138,7 +187,7 @@ func TestTypeCheckMergePublisherRequiresExactGuaranteedHumanAnswer(t *testing.T)
 			intent := waitStep.Config.(*atc.TimeoutStep).Step.(*atc.AwaitSnapshotStep).MergeApproval
 			mutate(intent)
 			err := TypeCheckFunction(&FunctionConfig{
-				SignatureVersion: 1, Inputs: validInputs, Plan: []atc.Step{waitStep, {Config: merge()}},
+				SignatureVersion: 1, Inputs: validInputs, Plan: []atc.Step{exactValidationStep("change"), waitStep, {Config: merge()}}, DevValidationProfiles: validationProfiles(), DevValidationProvenanceHash: validationProvenance(),
 			})
 			if err == nil || !strings.Contains(err.Error(), "does not bind this exact merge publication") {
 				t.Fatalf("error = %v, want exact intent mismatch", err)
@@ -169,7 +218,7 @@ func TestTypeCheckMergePublisherRequiresExactGuaranteedHumanAnswer(t *testing.T)
 			publish := merge()
 			mutate(waitStep, publish)
 			err := TypeCheckFunction(&FunctionConfig{
-				SignatureVersion: 1, Inputs: validInputs, Plan: []atc.Step{waitStep, {Config: publish}},
+				SignatureVersion: 1, Inputs: validInputs, Plan: []atc.Step{exactValidationStep("change"), waitStep, {Config: publish}}, DevValidationProfiles: validationProfiles(), DevValidationProvenanceHash: validationProvenance(),
 			})
 			if err == nil || !strings.Contains(err.Error(), "expected_base_sha is server-derived") {
 				t.Fatalf("error = %v, want server-derived merge base refusal", err)
@@ -183,9 +232,10 @@ func TestTypeCheckMergePublisherRequiresExactGuaranteedHumanAnswer(t *testing.T)
 			OnTimeout: atc.AwaitSnapshotOnTimeoutFail,
 		}}}
 		err := TypeCheckFunction(&FunctionConfig{
-			SignatureVersion: 1,
-			Inputs:           append(append([]snapshot.Port(nil), validInputs...), snapshot.Port{Name: "question", Type: "question/v1"}),
-			Plan:             []atc.Step{ordinary, {Config: merge()}},
+			SignatureVersion:      1,
+			Inputs:                append(append([]snapshot.Port(nil), validInputs...), snapshot.Port{Name: "question", Type: "question/v1"}),
+			Plan:                  []atc.Step{exactValidationStep("change"), ordinary, {Config: merge()}},
+			DevValidationProfiles: validationProfiles(), DevValidationProvenanceHash: validationProvenance(),
 		})
 		if err == nil || !strings.Contains(err.Error(), "server-bound merge_approval") {
 			t.Fatalf("error = %v, want server-bound approval refusal", err)
@@ -205,7 +255,7 @@ func TestTypeCheckMergePublisherRequiresExactGuaranteedHumanAnswer(t *testing.T)
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			err := TypeCheckFunction(&FunctionConfig{
-				SignatureVersion: 1, Inputs: test.inputs, Plan: test.plan,
+				SignatureVersion: 1, Inputs: test.inputs, Plan: append([]atc.Step{exactValidationStep("change")}, test.plan...), DevValidationProfiles: validationProfiles(), DevValidationProvenanceHash: validationProvenance(),
 			})
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("error = %v, want %q", err, test.want)
@@ -218,6 +268,8 @@ func TestRenderMergePublisherInjectsUnforgeableWorkflowRunIdentity(t *testing.T)
 	definition := renderTestDefinition()
 	definition.Compiled.Function.Inputs[0].Type = repositoryChangeV1
 	definition.Compiled.Function.Plan[0].Config.(*atc.AgentStep).SnapshotInputs["repo"] = atc.SnapshotInputConfig{Type: repositoryChangeV1}
+	definition.Compiled.Function.DevValidationProfiles = validationProfilesFor("repo")
+	definition.Compiled.Function.DevValidationProvenanceHash = validationProvenanceFor("repo")
 	wait := &atc.TimeoutStep{Duration: "1h", Step: &atc.AwaitSnapshotStep{
 		Name: "approval", Type: snapshot.TypeRef("human-answer/v1"),
 		MergeApproval: &atc.MergeApprovalIntent{
@@ -226,7 +278,8 @@ func TestRenderMergePublisherInjectsUnforgeableWorkflowRunIdentity(t *testing.T)
 			Parameters:            map[string]string{"target_branch": "main"},
 			ApprovalPolicyVersion: "engineering/v2", Prompt: "Merge this exact change?",
 		},
-		OnTimeout: atc.AwaitSnapshotOnTimeoutFail,
+		OnTimeout:  atc.AwaitSnapshotOnTimeoutFail,
+		Validation: "validation",
 	}}
 	merge := &atc.PublishSnapshotStep{
 		Name: "merge-change", Publisher: publisher.GitPublisher,
@@ -234,7 +287,9 @@ func TestRenderMergePublisherInjectsUnforgeableWorkflowRunIdentity(t *testing.T)
 		Destination: "github.example/team/repo", Mode: publisher.ModeMerge,
 		Parameters:            map[string]string{"target_branch": "main"},
 		ApprovalPolicyVersion: "engineering/v2",
+		Validation:            "validation",
 	}
+	definition.Compiled.Function.Plan = append([]atc.Step{renderValidationStep("repo")}, definition.Compiled.Function.Plan...)
 	definition.Compiled.Function.Plan = append(definition.Compiled.Function.Plan,
 		atc.Step{Config: wait}, atc.Step{Config: merge})
 	target, err := FullFunctionTarget(definition)

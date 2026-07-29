@@ -433,6 +433,7 @@ func (b *build) AgentWorkflowRunAssociation() (AgentWorkflowRunBuildAssociation,
 	result := AgentWorkflowRunBuildAssociation{
 		WorkflowRunID:        association.runID,
 		WorkflowDefinitionID: association.workflowDefinitionID,
+		WorkflowVersion:      association.workflowVersion,
 	}
 	if err := result.Validate(); err != nil {
 		return AgentWorkflowRunBuildAssociation{}, false, err

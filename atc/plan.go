@@ -439,26 +439,28 @@ type RunPlan struct {
 // All fields are literal values resolved at plan time; the exec never reads
 // workflow definition tables.
 type AgentPlan struct {
-	Name            string                          `json:"name"`
-	FunctionID      string                          `json:"function_id,omitempty"`
-	Hermetic        bool                            `json:"hermetic,omitempty"`
-	RuntimeImage    string                          `json:"runtime_image,omitempty"`
-	Prompt          string                          `json:"prompt,omitempty"`
-	Model           string                          `json:"model,omitempty"`
-	MaxTurns        int                             `json:"max_turns,omitempty"`
-	BudgetSliceUSD  float64                         `json:"budget_slice_usd,omitempty"`
-	SystemPrompt    string                          `json:"system_prompt,omitempty"`
-	Context         string                          `json:"context,omitempty"`
-	Skills          []string                        `json:"skills,omitempty"`
-	Sidecars        []SidecarSource                 `json:"sidecars,omitempty"`
-	Inputs          []string                        `json:"inputs,omitempty"`
-	Outputs         []string                        `json:"outputs,omitempty"`
-	SnapshotInputs  map[string]SnapshotInputConfig  `json:"input_types,omitempty"`
-	SnapshotOutputs map[string]SnapshotOutputConfig `json:"output_types,omitempty"`
-	Env             map[string]string               `json:"env,omitempty"`
-	Timeout         string                          `json:"timeout,omitempty"`
-	Limits          *ContainerLimits                `json:"container_limits,omitempty"`
-	Requests        *ContainerLimits                `json:"container_requests,omitempty"`
+	Name             string                          `json:"name"`
+	FunctionID       string                          `json:"function_id,omitempty"`
+	Hermetic         bool                            `json:"hermetic,omitempty"`
+	RuntimeImage     string                          `json:"runtime_image,omitempty"`
+	Prompt           string                          `json:"prompt,omitempty"`
+	Model            string                          `json:"model,omitempty"`
+	MaxTurns         int                             `json:"max_turns,omitempty"`
+	BudgetSliceUSD   float64                         `json:"budget_slice_usd,omitempty"`
+	SystemPrompt     string                          `json:"system_prompt,omitempty"`
+	Context          string                          `json:"context,omitempty"`
+	Skills           []string                        `json:"skills,omitempty"`
+	Sidecars         []SidecarSource                 `json:"sidecars,omitempty"`
+	Inputs           []string                        `json:"inputs,omitempty"`
+	Outputs          []string                        `json:"outputs,omitempty"`
+	SnapshotInputs   map[string]SnapshotInputConfig  `json:"input_types,omitempty"`
+	SnapshotOutputs  map[string]SnapshotOutputConfig `json:"output_types,omitempty"`
+	Validation       string                          `json:"validation,omitempty"`
+	ReviewValidation *ReviewValidationRequirement    `json:"review_validation,omitempty"`
+	Env              map[string]string               `json:"env,omitempty"`
+	Timeout          string                          `json:"timeout,omitempty"`
+	Limits           *ContainerLimits                `json:"container_limits,omitempty"`
+	Requests         *ContainerLimits                `json:"container_requests,omitempty"`
 }
 
 type SetPipelinePlan struct {
@@ -486,31 +488,35 @@ type LoadSnapshotPlan struct {
 }
 
 type AwaitSnapshotPlan struct {
-	Name                 string                 `json:"name"`
-	Question             string                 `json:"question,omitempty"`
-	MergeApproval        *MergeApprovalIntent   `json:"merge_approval,omitempty"`
-	Type                 snapshot.TypeRef       `json:"type"`
-	OnTimeout            AwaitSnapshotOnTimeout `json:"on_timeout"`
-	DefaultSnapshotID    string                 `json:"default_snapshot_id,omitempty"`
-	WorkflowPort         string                 `json:"workflow_port,omitempty"`
-	WorkflowDefinitionID int                    `json:"workflow_definition_id,omitempty"`
-	WorkflowRunID        string                 `json:"workflow_run_id,omitempty"`
+	Name                    string                              `json:"name"`
+	Question                string                              `json:"question,omitempty"`
+	MergeApproval           *MergeApprovalIntent                `json:"merge_approval,omitempty"`
+	Validation              string                              `json:"validation,omitempty"`
+	MergeApprovalValidation *MergeApprovalValidationRequirement `json:"merge_approval_validation,omitempty"`
+	Type                    snapshot.TypeRef                    `json:"type"`
+	OnTimeout               AwaitSnapshotOnTimeout              `json:"on_timeout"`
+	DefaultSnapshotID       string                              `json:"default_snapshot_id,omitempty"`
+	WorkflowPort            string                              `json:"workflow_port,omitempty"`
+	WorkflowDefinitionID    int                                 `json:"workflow_definition_id,omitempty"`
+	WorkflowRunID           string                              `json:"workflow_run_id,omitempty"`
 }
 
 // PublishSnapshotPlan is the complete, literal publication request planned by
 // a visible publish_snapshot node. Destination and parameters are execution
 // data and are deliberately redacted by Public.
 type PublishSnapshotPlan struct {
-	Name                  string            `json:"name"`
-	Publisher             snapshot.TypeRef  `json:"publisher"`
-	Input                 string            `json:"input"`
-	InputType             snapshot.TypeRef  `json:"input_type"`
-	Destination           string            `json:"destination"`
-	Mode                  publisher.Mode    `json:"mode"`
-	Parameters            map[string]string `json:"parameters,omitempty"`
-	ApprovalPolicyVersion string            `json:"approval_policy_version"`
-	Approval              string            `json:"approval,omitempty"`
-	WorkflowRunID         string            `json:"workflow_run_id,omitempty"`
+	Name                  string                        `json:"name"`
+	Publisher             snapshot.TypeRef              `json:"publisher"`
+	Input                 string                        `json:"input"`
+	InputType             snapshot.TypeRef              `json:"input_type"`
+	Destination           string                        `json:"destination"`
+	Mode                  publisher.Mode                `json:"mode"`
+	Parameters            map[string]string             `json:"parameters,omitempty"`
+	ApprovalPolicyVersion string                        `json:"approval_policy_version"`
+	Approval              string                        `json:"approval,omitempty"`
+	WorkflowRunID         string                        `json:"workflow_run_id,omitempty"`
+	Validation            string                        `json:"validation,omitempty"`
+	PublishValidation     *PublishValidationRequirement `json:"publish_validation,omitempty"`
 }
 
 type RetryPlan []Plan

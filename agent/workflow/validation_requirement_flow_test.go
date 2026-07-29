@@ -1,0 +1,51 @@
+package workflow
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/concourse/concourse/agent/publisher"
+	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/atc"
+)
+
+func TestAuthoritativeValidationFlowRejectsOrdinaryAndStaleBindings(t *testing.T) {
+	publish := func() atc.Step {
+		return atc.Step{Config: &atc.PublishSnapshotStep{Name: "publish", Publisher: publisher.GitPublisher, Input: "change", InputType: repositoryChangeV1, Validation: "validation", Destination: "git.example/acme/widget", Mode: publisher.ModePullRequest, Parameters: map[string]string{"target_branch": "main"}, ApprovalPolicyVersion: "engineering/v1"}}
+	}
+	overwrite := func(name string) atc.Step {
+		return atc.Step{Config: &atc.AgentStep{Name: name, FunctionID: name, Prompt: "replace", Outputs: []string{name}, SnapshotOutputs: map[string]atc.SnapshotOutputConfig{name: {Type: repositoryChangeV1}}}}
+	}
+	ordinaryValidation := atc.Step{Config: &atc.AgentStep{Name: "ordinary-validation", FunctionID: "ordinary-validation", Prompt: "forge", Inputs: []string{"change"}, Outputs: []string{"validation"}, SnapshotInputs: map[string]atc.SnapshotInputConfig{"change": {Type: repositoryChangeV1}}, SnapshotOutputs: map[string]atc.SnapshotOutputConfig{"validation": {Type: snapshot.TypeRef("validation/v1")}}}}
+	withBase := func() atc.Step {
+		authority := &atc.DevValidationAuthority{ProfileName: "exact", CandidateInput: "change", BaseInputs: []atc.DevValidationBaseInput{{Name: "base", Type: snapshot.TypeRef("repository/v1")}}}
+		return atc.Step{Config: &atc.TaskStep{Name: "validate", FunctionID: "validate", Config: &atc.TaskConfig{Inputs: []atc.TaskInputConfig{{Name: "change"}, {Name: "base"}}, Outputs: []atc.TaskOutputConfig{{Name: "validation"}}}, SnapshotInputs: map[string]atc.SnapshotInputConfig{"change": {Type: repositoryChangeV1}, "base": {Type: snapshot.TypeRef("repository/v1")}}, SnapshotOutputs: map[string]atc.SnapshotOutputConfig{"validation": {Type: snapshot.TypeRef("validation/v1")}}, DevValidationAuthority: authority}}
+	}
+
+	base := []snapshot.Port{{Name: "change", Type: repositoryChangeV1}, {Name: "base", Type: snapshot.TypeRef("repository/v1")}}
+	tests := []struct {
+		name string
+		plan []atc.Step
+		want string
+	}{
+		{"exact authoritative validation passes", []atc.Step{withBase(), publish()}, ""},
+		{"ordinary agent validation is rejected", []atc.Step{ordinaryValidation, publish()}, "not authoritative dev validation"},
+		{"candidate overwritten after validation is rejected", []atc.Step{withBase(), overwrite("change"), publish()}, "does not dominate the current candidate"},
+		{"base overwritten after validation is rejected", []atc.Step{withBase(), atc.Step{Config: &atc.AgentStep{Name: "replace-base", FunctionID: "replace-base", Prompt: "replace", Outputs: []string{"base"}, SnapshotOutputs: map[string]atc.SnapshotOutputConfig{"base": {Type: snapshot.TypeRef("repository/v1")}}}}, publish()}, "does not bind current base"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			function := &FunctionConfig{SignatureVersion: 1, Inputs: base, Plan: test.plan, DevValidationProfiles: validationProfiles(), DevValidationProvenanceHash: validationProvenance()}
+			err := TypeCheckFunction(function)
+			if test.want == "" {
+				if err != nil {
+					t.Fatalf("TypeCheckFunction: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}

@@ -120,6 +120,9 @@ func (compiler *functionAssetCompiler) preflight() error {
 	if err := compiler.preflightDevValidationProfiles(); err != nil {
 		return err
 	}
+	if err := rejectAuthoredValidationRequirements(compiler.function); err != nil {
+		return err
+	}
 	for index := range compiler.function.Plan {
 		err := compiler.function.Plan[index].Config.Visit(atc.StepRecursor{
 			OnTask:  compiler.preflightTask,

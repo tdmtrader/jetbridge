@@ -27,6 +27,7 @@ type StepMetadata struct {
 	// WorkflowDefinitionID and WorkflowRunID are the server-authenticated
 	// selected-build association. They are never exported to step env.
 	WorkflowDefinitionID *int
+	WorkflowVersion      *int
 	WorkflowRunID        *snapshot.WorkflowRunID
 }
 

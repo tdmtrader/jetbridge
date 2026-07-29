@@ -131,6 +131,14 @@ func (step *AwaitSnapshotStep) run(ctx context.Context, state RunState, delegate
 	if !hasDeadline {
 		return false, fmt.Errorf("await_snapshot: an ordinary timeout wrapper is required")
 	}
+	if step.plan.MergeApproval != nil {
+		if step.plan.MergeApprovalValidation == nil {
+			return false, fmt.Errorf("await_snapshot: authoritative validation plan is unavailable")
+		}
+		if err := requireValidationRequirement(ctx, "await_snapshot", state.ArtifactRepository(), step.metadata, step.metadataStore, step.contentStore, mergeRequirement(*step.plan.MergeApprovalValidation), step.plan.MergeApproval.Input); err != nil {
+			return false, err
+		}
+	}
 	questionName, question, err := step.questionRef(ctx, state.ArtifactRepository(), runID)
 	if err != nil {
 		return false, err

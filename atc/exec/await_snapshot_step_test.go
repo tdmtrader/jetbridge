@@ -141,6 +141,7 @@ func TestAwaitSnapshotStepSynthesizesExactServerBoundMergeQuestion(t *testing.T)
 		},
 		WorkflowDefinitionID: 7, WorkflowRunID: "19",
 	}
+	configurePassingMergeValidation(t, repository, metadata, content, subject, &plan, answer)
 	var sealedRequest snapshot.SealRequest
 	sealer := &recordingOutputSealer{stub: func(_ context.Context, request snapshot.SealRequest) (map[string]snapshot.SealedOutput, error) {
 		sealedRequest = request.Clone()
@@ -161,7 +162,7 @@ func TestAwaitSnapshotStepSynthesizesExactServerBoundMergeQuestion(t *testing.T)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
 	defer cancel()
 	step := exec.NewAwaitSnapshotStep("plan-1", []int{2}, plan, exec.StepMetadata{
-		TeamID: 17, TeamName: "main", BuildID: 29, SnapshotCreatedBy: "build:29",
+		TeamID: 17, TeamName: "main", BuildID: 29, SnapshotCreatedBy: "build:29", WorkflowDefinitionID: intPointer(73), WorkflowVersion: intPointer(5),
 	}, delegates, store, sealer, metadata, content, time.Millisecond)
 	ok, err := step.Run(ctx, state)
 	require.NoError(t, err)
@@ -206,6 +207,62 @@ func TestAwaitSnapshotStepSynthesizesExactServerBoundMergeQuestion(t *testing.T)
 	require.NotContains(t, parameters, "expected_base_sha", "the authored intent must not be mutated")
 }
 
+func configurePassingMergeValidation(t *testing.T, repository *build.Repository, metadata *snapshotfakes.FakeMetadataStore, content *snapshotfakes.FakeContentStore, candidate snapshot.Snapshot, plan *atc.AwaitSnapshotPlan, extra ...snapshot.Snapshot) {
+	t.Helper()
+	authority := publishValidationAuthority(t, plan.MergeApproval.Input)
+	plan.Validation = "validation"
+	plan.MergeApprovalValidation = &atc.MergeApprovalValidationRequirement{Candidate: plan.MergeApproval.Input, Validation: "validation", Authority: &authority}
+	validation, archive := publishValidationManifest(t, awaitRef(candidate), publishValidationBody(awaitRef(candidate), authority))
+	validationRef := awaitRef(validation)
+	require.NoError(t, repository.RegisterArtifacts(map[build.ArtifactName]build.ArtifactEntry{
+		"validation": {Artifact: &loadArtifact{handle: "sealed-validation"}, Snapshot: &validationRef},
+	}))
+	manifests := map[snapshot.SnapshotID]snapshot.Snapshot{candidate.ID: candidate, validation.ID: validation}
+	for _, manifest := range extra {
+		manifests[manifest.ID] = manifest
+	}
+	metadata.GetAuthorizedCalls(func(_ context.Context, _ int, id snapshot.SnapshotID) (snapshot.Snapshot, bool, error) {
+		manifest, found := manifests[id]
+		return manifest, found, nil
+	})
+	content.OpenCalls(func(_ context.Context, manifest snapshot.Snapshot) (io.ReadCloser, error) {
+		if manifest.ID != validation.ID {
+			return nil, errors.New("unexpected validation content")
+		}
+		return io.NopCloser(strings.NewReader(string(archive))), nil
+	})
+}
+
+func intPointer(value int) *int { return &value }
+
+func TestAwaitSnapshotValidationRequirementRejectsBeforeQuestionAndWait(t *testing.T) {
+	subject := awaitManifest(21, "repository-change/v1", 'a')
+	metadata := new(snapshotfakes.FakeMetadataStore)
+	metadata.GetAuthorizedReturns(subject, true, nil)
+	content := new(snapshotfakes.FakeContentStore)
+	repository, state, delegates := awaitHarness(t, subject, content)
+	ref := awaitRef(subject)
+	artifact, err := runtime.NewSnapshotArtifact(subject, content)
+	require.NoError(t, err)
+	require.NoError(t, repository.RegisterArtifacts(map[build.ArtifactName]build.ArtifactEntry{"change": {Artifact: artifact, Snapshot: &ref}}))
+	plan := atc.AwaitSnapshotPlan{Name: "approval", Type: "human-answer/v1", OnTimeout: atc.AwaitSnapshotOnTimeoutFail, Validation: "validation", MergeApprovalValidation: &atc.MergeApprovalValidationRequirement{}, MergeApproval: &atc.MergeApprovalIntent{Input: "change", Publisher: publisher.GitPublisher, Destination: "git.example/acme/widget", Parameters: map[string]string{"target_branch": "main"}, ApprovalPolicyVersion: "engineering/v1", Prompt: "approve?"}, WorkflowDefinitionID: 7, WorkflowRunID: "19"}
+	sealer := new(recordingOutputSealer)
+	store := &waitStoreStub{create: func(context.Context, workflowwait.CreateRequest) (workflowwait.Wait, bool, error) {
+		t.Fatal("wait created")
+		return workflowwait.Wait{}, false, nil
+	}, expire: func(context.Context, workflowwait.ExecutionKey, time.Time) (workflowwait.Wait, bool, error) {
+		return workflowwait.Wait{}, false, nil
+	}}
+	step := exec.NewAwaitSnapshotStep("plan", nil, plan, exec.StepMetadata{TeamID: 17, BuildID: 29, TeamName: "main", SnapshotCreatedBy: "alice"}, delegates, store, sealer, metadata, content, time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	ok, err := step.Run(ctx, state)
+	require.False(t, ok)
+	require.ErrorContains(t, err, "authoritative validation plan is unavailable")
+	require.Zero(t, store.createCall)
+	require.Empty(t, sealer.calls)
+}
+
 // The merge base is server-owned: a plan that authors one is refused rather
 // than silently overwritten, so the value a human approved can never differ
 // from the value the publication asserts.
@@ -233,6 +290,7 @@ func TestAwaitSnapshotStepRefusesAuthoredMergeBase(t *testing.T) {
 		},
 		WorkflowDefinitionID: 7, WorkflowRunID: "19",
 	}
+	configurePassingMergeValidation(t, repository, metadata, content, subject, &plan)
 	sealer := &recordingOutputSealer{stub: func(context.Context, snapshot.SealRequest) (map[string]snapshot.SealedOutput, error) {
 		return nil, errors.New("no question may be sealed for an authored merge base")
 	}}
@@ -243,7 +301,7 @@ func TestAwaitSnapshotStepRefusesAuthoredMergeBase(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
 	defer cancel()
 	step := exec.NewAwaitSnapshotStep("plan-1", []int{2}, plan, exec.StepMetadata{
-		TeamID: 17, TeamName: "main", BuildID: 29, SnapshotCreatedBy: "build:29",
+		TeamID: 17, TeamName: "main", BuildID: 29, SnapshotCreatedBy: "build:29", WorkflowDefinitionID: intPointer(73), WorkflowVersion: intPointer(5),
 	}, delegates, store, sealer, metadata, content, time.Millisecond)
 	ok, err := step.Run(ctx, state)
 	require.False(t, ok)
@@ -276,6 +334,7 @@ func TestAwaitSnapshotStepFailsClosedWithoutSealedMergeBase(t *testing.T) {
 		},
 		WorkflowDefinitionID: 7, WorkflowRunID: "19",
 	}
+	configurePassingMergeValidation(t, repository, metadata, content, subject, &plan)
 	store := &waitStoreStub{}
 	store.create = func(context.Context, workflowwait.CreateRequest) (workflowwait.Wait, bool, error) {
 		return workflowwait.Wait{}, false, errors.New("no wait may be created without a sealed merge base")
@@ -283,7 +342,7 @@ func TestAwaitSnapshotStepFailsClosedWithoutSealedMergeBase(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
 	defer cancel()
 	step := exec.NewAwaitSnapshotStep("plan-1", []int{2}, plan, exec.StepMetadata{
-		TeamID: 17, TeamName: "main", BuildID: 29, SnapshotCreatedBy: "build:29",
+		TeamID: 17, TeamName: "main", BuildID: 29, SnapshotCreatedBy: "build:29", WorkflowDefinitionID: intPointer(73), WorkflowVersion: intPointer(5),
 	}, delegates, store, &recordingOutputSealer{}, metadata, content, time.Millisecond)
 	ok, err := step.Run(ctx, state)
 	require.False(t, ok)

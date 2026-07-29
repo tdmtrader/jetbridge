@@ -250,6 +250,33 @@ var _ = Describe("AgentStep", func() {
 		Expect(fakePool.FindOrSelectWorkerCallCount()).To(BeZero())
 	})
 
+	It("rejects an unverified human-review validation before selecting a worker", func() {
+		agentPlan.RuntimeImage = "registry.example/agent@sha256:" + strings.Repeat("e", 64)
+		agentPlan.Inputs = []string{"change", "validation"}
+		agentPlan.Outputs = []string{"question"}
+		agentPlan.SnapshotInputs = map[string]atc.SnapshotInputConfig{
+			"change":     {Type: snapshot.TypeRef("repository-change/v1")},
+			"validation": {Type: snapshot.TypeRef("validation/v1")},
+		}
+		agentPlan.SnapshotOutputs = map[string]atc.SnapshotOutputConfig{
+			"question": {Type: snapshot.TypeRef("question/v1")},
+		}
+		agentPlan.Validation = "validation"
+		agentPlan.ReviewValidation = &atc.ReviewValidationRequirement{
+			Candidate: "change", Validation: "validation",
+		}
+
+		testStep := exec.NewAgentStep(
+			planID, agentPlan, atc.ContainerLimits{}, atc.ContainerLimits{}, stepMetadata,
+			containerMetadata, fakePool, fakeStreamer, fakeDelegateFactory, 0, agentImage,
+			agentStepOptions...,
+		)
+		ok, err := testStep.Run(ctx, state)
+		Expect(ok).To(BeFalse())
+		Expect(err).To(MatchError(ContainSubstring("authoritative validation plan is unavailable")))
+		Expect(fakePool.FindOrSelectWorkerCallCount()).To(BeZero())
+	})
+
 	Context("with server-owned checkpoint capture configured", func() {
 		var (
 			checkpointController *checkpointStepController

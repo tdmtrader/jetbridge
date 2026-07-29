@@ -1,0 +1,8 @@
+schema_version: 1
+repo:
+  test: {cmd: ["go", "test", "./..."]}
+components:
+  - id: repository
+    description: repository
+    paths: ["src/"]
+    kind: other

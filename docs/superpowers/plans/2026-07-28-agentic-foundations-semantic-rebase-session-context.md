@@ -118,6 +118,18 @@ Task 6:
   do not require a fake Pod UID.
 - The unmasked typed-interruption assertions now check
   `runtime.InterruptionError`/`runtime.InterruptionEvicted`.
+
+Task 7:
+
+- Implemented: governed review, merge-approval await, and repository-change
+  publish consumers require an exact authoritative validation/v1 rev3 record.
+- Exact candidate/base provenance, profile/config/image/toolchain/workflow
+  identity, and passing conclusion are verified before the worker, wait, or
+  publisher side effect. Selected-build metadata now propagates workflow
+  version from the durable run association.
+- A full DB suite rerun remains environment-blocked because port 5434 was
+  already occupied before its BeforeSuite; source-level suites and DB
+  compile-only verification passed.
 - Focused regressions and a fresh host-access full Jetbridge package passed
   381/381. Two blocking-only reviews passed. `HUMAN-REVIEW-001` and
   `DEPENDENCY-001` are resolved.
@@ -136,7 +148,15 @@ Task 8:
 - `DEFERRED-003` records durable fsynced crash-recovery journaling; it is
   nonblocking for the current authoring/preflight boundary.
 
-Task 7 remains unstarted but is no longer blocked by Task 6.
+Task 7:
+
+- Implemented; pending independent bounded review.
+- Governed review, merge approval, and repository-change publication now use
+  private per-consumer exact validation requirements derived from frozen
+  `DevValidationAuthority`, with structural candidate/base dominance and
+  runtime revision-3 archive revalidation before side effects.
+- Focused workflow/executor suites and affected planner/engine compilation
+  passed. See `2026-07-29-agentic-foundations-task-7-report.md`.
 
 Task 9:
 
@@ -268,7 +288,7 @@ completed and the broad suites are rerun.
 1. Treat Task 6 as accepted; do not reopen it without new blocking evidence.
 2. Treat Task 12 as accepted through `875d604026`; do not reopen it without
    new blocking evidence.
-3. Tasks 7, 9, and 13 are unblocked but remain unstarted.
+3. Task 7 is implemented; Tasks 9 and 13 remain unstarted.
 4. Leave Task 14 at its documented Task 7 dependency boundary.
 5. Treat Task 15 as **Accepted**; its user-authorized final review found no
    blocking issue.

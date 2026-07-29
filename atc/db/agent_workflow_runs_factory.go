@@ -840,6 +840,7 @@ func (factory *agentWorkflowRunsFactory) RecordPlan(
 type agentWorkflowRunBuildAssociation struct {
 	runID                snapshot.WorkflowRunID
 	workflowDefinitionID int
+	workflowVersion      int
 	concreteConfig       json.RawMessage
 	status               AgentWorkflowRunStatus
 	executionStatus      *AgentWorkflowRunExecutionStatus
@@ -872,7 +873,7 @@ func lockAgentWorkflowRunForBuild(
 		buildPipelineID  sql.NullInt64
 	)
 	err := tx.QueryRowContext(ctx, `
-		SELECT r.id, r.workflow_definition_id, r.concrete_config, r.status,
+		SELECT r.id, r.workflow_definition_id, r.workflow_version, r.concrete_config, r.status,
 		       r.execution_status, r.planned_build_id, r.team_id,
 		       r.pipeline_run_id, r.template_pipeline_id, r.instance_pipeline_id,
 		       b.status, b.team_id, b.pipeline_id,
@@ -884,7 +885,7 @@ func lockAgentWorkflowRunForBuild(
 		WHERE b.id = $1
 		FOR UPDATE OF r, b
 	`, buildID).Scan(
-		&runID, &association.workflowDefinitionID, &concreteConfig, &status,
+		&runID, &association.workflowDefinitionID, &association.workflowVersion, &concreteConfig, &status,
 		&executionStatus, &plannedBuildID, &runTeamID,
 		&pipelineRunID, &templatePipeline, &instancePipeline,
 		&buildStatus, &buildTeamID, &buildPipelineID, &association.planCaptured,

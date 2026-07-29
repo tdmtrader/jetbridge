@@ -229,6 +229,16 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 	if err := step.validateSnapshotDeclarations(); err != nil {
 		return false, err
 	}
+	if candidate, governed, err := agentValidationRequirement(step.plan); err != nil {
+		return false, fmt.Errorf("agent %q: authoritative validation plan is unavailable", step.plan.Name)
+	} else if governed {
+		if step.plan.ReviewValidation == nil {
+			return false, fmt.Errorf("agent %q: authoritative validation plan is unavailable", step.plan.Name)
+		}
+		if err := requireValidationRequirement(ctx, fmt.Sprintf("agent %q", step.plan.Name), state.ArtifactRepository(), step.metadata, step.snapshotMetadataStore, step.snapshotContentStore, reviewRequirement(*step.plan.ReviewValidation), candidate); err != nil {
+			return false, err
+		}
+	}
 	if (len(step.plan.SnapshotInputs) > 0 || len(step.plan.SnapshotOutputs) > 0) && step.outputSealer == nil {
 		return false, fmt.Errorf("agent %q has typed snapshot declarations but no output sealer is configured", step.plan.Name)
 	}
@@ -861,6 +871,32 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 	oteltrace.SpanFromContext(ctx).AddEvent("step.finished")
 	delegate.Finished(logger, ExitStatus(result.ExitStatus))
 	return result.ExitStatus == 0, nil
+}
+
+func agentValidationRequirement(plan atc.AgentPlan) (string, bool, error) {
+	question := false
+	for _, output := range plan.SnapshotOutputs {
+		if output.Type == snapshot.TypeRef("question/v1") {
+			question = true
+			break
+		}
+	}
+	if !question {
+		return "", false, nil
+	}
+	var candidates []string
+	for _, name := range sortedSnapshotKeys(plan.SnapshotInputs) {
+		if plan.SnapshotInputs[name].Type == snapshot.TypeRef("repository-change/v1") {
+			candidates = append(candidates, name)
+		}
+	}
+	if len(candidates) == 0 {
+		return "", false, nil
+	}
+	if len(candidates) != 1 {
+		return "", false, fmt.Errorf("multiple review candidates")
+	}
+	return candidates[0], true, nil
 }
 
 func attachOrRunAgentAttempt(

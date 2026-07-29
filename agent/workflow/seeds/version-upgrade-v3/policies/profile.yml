@@ -1,0 +1,8 @@
+schema_version: 1
+name: repository-gates
+checks:
+  - id: tests
+    operation: test
+    scope: full
+    timeout: 20m
+    retries: 1

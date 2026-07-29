@@ -42,6 +42,13 @@ type snapshotBinding struct {
 	producer       *snapshotProducer
 	writePath      string
 	resourceSource string
+	validation     *validationBindingProvenance
+}
+
+type validationBindingProvenance struct {
+	candidate string
+	bases     map[string]string
+	profile   string
 }
 
 type snapshotEnvironment map[string]snapshotBinding
@@ -62,10 +69,11 @@ type publicOutputTarget struct {
 }
 
 type snapshotFlowChecker struct {
-	functionIDs  map[string]string
-	prototypes   map[string]struct{}
-	timeoutDepth int
-	retryDepth   int
+	functionIDs           map[string]string
+	prototypes            map[string]struct{}
+	devValidationProfiles map[string]CompiledDevValidationProfile
+	timeoutDepth          int
+	retryDepth            int
 }
 
 // TypeCheckFunction proves the typed snapshot flow of a compiled version-3
@@ -230,7 +238,11 @@ func analyzeFunctionFlow(function *FunctionConfig) ([]publicOutputTarget, error)
 	for _, prototype := range function.Prototypes {
 		prototypes[prototype.Name] = struct{}{}
 	}
-	checker := &snapshotFlowChecker{functionIDs: make(map[string]string), prototypes: prototypes}
+	profiles := make(map[string]CompiledDevValidationProfile, len(function.DevValidationProfiles))
+	for _, profile := range function.DevValidationProfiles {
+		profiles[profile.Name] = profile
+	}
+	checker := &snapshotFlowChecker{functionIDs: make(map[string]string), prototypes: prototypes, devValidationProfiles: profiles}
 	result, err := checker.checkSequence(function.Plan, env, "plan")
 	if err != nil {
 		return nil, err
@@ -406,6 +418,13 @@ func (checker *snapshotFlowChecker) checkPublishSnapshot(step *atc.PublishSnapsh
 	if binding.presence == snapshotConditional {
 		return snapshotFlow{}, fmt.Errorf("workflow: %s: input %q cannot use a conditional binding", identity, step.Input)
 	}
+	if step.InputType == snapshot.TypeRef("repository-change/v1") {
+		if err := checker.requireValidation(entry, step.Validation, step.Input, nil, identity); err != nil {
+			return snapshotFlow{}, err
+		}
+	} else if step.Validation != "" || step.PublishValidation != nil {
+		return snapshotFlow{}, fmt.Errorf("workflow: %s: validation is only valid for repository-change/v1 publication", identity)
+	}
 	if step.Mode == publisher.ModeMerge {
 		// expected_base_sha is server-derived at execution time, exactly like
 		// workflow_run_id is renderer-owned. A workflow cannot know the target
@@ -490,7 +509,13 @@ func (checker *snapshotFlowChecker) checkAwaitSnapshot(step *atc.AwaitSnapshotSt
 		if subject.presence == snapshotConditional {
 			return snapshotFlow{}, fmt.Errorf("workflow: %s: merge approval input %q cannot use a conditional binding", identity, step.MergeApproval.Input)
 		}
+		if err := checker.requireValidation(entry, step.Validation, step.MergeApproval.Input, nil, identity); err != nil {
+			return snapshotFlow{}, err
+		}
 	} else {
+		if step.Validation != "" || step.MergeApprovalValidation != nil {
+			return snapshotFlow{}, fmt.Errorf("workflow: %s: validation is only valid for merge approval", identity)
+		}
 		question, found := entry[step.Question]
 		if !found {
 			return snapshotFlow{}, fmt.Errorf("workflow: %s: question %q is unavailable (use before produce)", identity, step.Question)
@@ -766,7 +791,99 @@ func effectiveTaskArtifactNames(step *atc.TaskStep) ([]string, []string) {
 }
 
 func (checker *snapshotFlowChecker) checkAgent(step *atc.AgentStep, entry snapshotEnvironment, path string) (snapshotFlow, error) {
-	return checker.checkLeaf("agent", step.Name, step.FunctionID, step.Inputs, step.SnapshotInputs, step.Outputs, step.SnapshotOutputs, nil, step, entry, path)
+	flow, err := checker.checkLeaf("agent", step.Name, step.FunctionID, step.Inputs, step.SnapshotInputs, step.Outputs, step.SnapshotOutputs, nil, step, entry, path)
+	if err != nil {
+		return snapshotFlow{}, err
+	}
+	identity := fmt.Sprintf("%s.agent(%q)", path, step.Name)
+	if candidate, governed, err := humanReviewCandidate(step); err != nil {
+		return snapshotFlow{}, fmt.Errorf("workflow: %s: %w", identity, err)
+	} else if governed {
+		if err := checker.requireValidation(entry, step.Validation, candidate, step.SnapshotInputs, identity); err != nil {
+			return snapshotFlow{}, err
+		}
+	} else if step.Validation != "" || step.ReviewValidation != nil {
+		return snapshotFlow{}, fmt.Errorf("workflow: %s: validation is only valid for a human review", identity)
+	}
+	return flow, nil
+}
+
+func humanReviewCandidate(step *atc.AgentStep) (string, bool, error) {
+	if step == nil {
+		return "", false, nil
+	}
+	question := false
+	for _, output := range step.SnapshotOutputs {
+		if output.Type == snapshot.TypeRef("question/v1") {
+			question = true
+			break
+		}
+	}
+	if !question {
+		return "", false, nil
+	}
+	var candidates []string
+	for _, name := range sortedSnapshotInputKeys(step.SnapshotInputs) {
+		if step.SnapshotInputs[name].Type == snapshot.TypeRef("repository-change/v1") {
+			candidates = append(candidates, name)
+		}
+	}
+	if len(candidates) == 0 {
+		return "", false, nil
+	}
+	if len(candidates) != 1 {
+		return "", false, fmt.Errorf("human review requires exactly one repository-change/v1 input")
+	}
+	return candidates[0], true, nil
+}
+
+func bindingIdentity(binding snapshotBinding) (string, bool) {
+	if binding.ambiguous || binding.presence == snapshotConditional {
+		return "", false
+	}
+	if binding.producer != nil {
+		return binding.producer.key(), true
+	}
+	return binding.writePath, binding.writePath != ""
+}
+
+func (checker *snapshotFlowChecker) requireValidation(entry snapshotEnvironment, validationName, candidateName string, inputs map[string]atc.SnapshotInputConfig, identity string) error {
+	if validationName == "" {
+		return fmt.Errorf("workflow: %s: authoritative validation is required", identity)
+	}
+	for _, name := range []string{candidateName, validationName} {
+		if inputs != nil {
+			if declaration, ok := inputs[name]; !ok || declaration.Optional {
+				return fmt.Errorf("workflow: %s: validation binding %q must be a required typed input", identity, name)
+			}
+		}
+	}
+	candidate, ok := entry[candidateName]
+	if !ok || !candidate.typed || candidate.typ != snapshot.TypeRef("repository-change/v1") {
+		return fmt.Errorf("workflow: %s: validation candidate is unavailable", identity)
+	}
+	candidateIdentity, exact := bindingIdentity(candidate)
+	if !exact {
+		return fmt.Errorf("workflow: %s: validation candidate is ambiguous", identity)
+	}
+	validation, ok := entry[validationName]
+	if !ok || !validation.typed || validation.typ != snapshot.TypeRef("validation/v1") || validation.validation == nil {
+		return fmt.Errorf("workflow: %s: validation is not authoritative dev validation", identity)
+	}
+	if validation.validation.candidate != candidateIdentity {
+		return fmt.Errorf("workflow: %s: validation does not dominate the current candidate", identity)
+	}
+	for name, expected := range validation.validation.bases {
+		base, found := entry[name]
+		actual, exact := bindingIdentity(base)
+		if !found || !exact || actual != expected {
+			return fmt.Errorf("workflow: %s: validation does not bind current base %q", identity, name)
+		}
+	}
+	if _, found := checker.devValidationProfiles[validation.validation.profile]; !found {
+		return fmt.Errorf("workflow: %s: validation profile is not frozen authority", identity)
+	}
+	return nil
 }
 
 func (checker *snapshotFlowChecker) checkLeaf(
@@ -880,6 +997,23 @@ func (checker *snapshotFlowChecker) checkLeaf(
 			typed:     true,
 			producer:  producer,
 			writePath: identity,
+		}
+		if task != nil && declaration.Type == snapshot.TypeRef("validation/v1") && task.DevValidationAuthority != nil && name == atc.DevValidationOutput {
+			candidate, found := entry[task.DevValidationAuthority.CandidateInput]
+			candidateID, exact := bindingIdentity(candidate)
+			if !found || !exact {
+				return snapshotFlow{}, fmt.Errorf("workflow: %s: authoritative validation candidate is not exact", identity)
+			}
+			bases := make(map[string]string, len(task.DevValidationAuthority.BaseInputs))
+			for _, base := range task.DevValidationAuthority.BaseInputs {
+				value, found := entry[base.Name]
+				baseID, exact := bindingIdentity(value)
+				if !found || !exact {
+					return snapshotFlow{}, fmt.Errorf("workflow: %s: authoritative validation base %q is not exact", identity, base.Name)
+				}
+				bases[base.Name] = baseID
+			}
+			binding.validation = &validationBindingProvenance{candidate: candidateID, bases: bases, profile: task.DevValidationAuthority.ProfileName}
 		}
 		env[name] = binding
 		produced[name] = binding

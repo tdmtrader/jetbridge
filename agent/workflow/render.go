@@ -416,6 +416,9 @@ func renderFunction(target FunctionTarget, sourceRefs map[string]snapshot.Snapsh
 	}); err != nil {
 		return RenderedFunction{}, fmt.Errorf("workflow: render validation task: %w", err)
 	}
+	if err := renderValidationRequirements(function); err != nil {
+		return RenderedFunction{}, err
+	}
 	if err := validateRenderableFunction(function, signature, target.WorkflowDefinitionID); err != nil {
 		return RenderedFunction{}, err
 	}

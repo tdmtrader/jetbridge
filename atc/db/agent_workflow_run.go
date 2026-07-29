@@ -428,6 +428,7 @@ type AgentWorkflowRunBuildCaptureResult struct {
 type AgentWorkflowRunBuildAssociation struct {
 	WorkflowRunID        snapshot.WorkflowRunID
 	WorkflowDefinitionID int
+	WorkflowVersion      int
 }
 
 func (association AgentWorkflowRunBuildAssociation) Validate() error {
@@ -436,6 +437,9 @@ func (association AgentWorkflowRunBuildAssociation) Validate() error {
 	}
 	if association.WorkflowDefinitionID <= 0 {
 		return fmt.Errorf("db: workflow-run build association requires a positive workflow definition ID")
+	}
+	if association.WorkflowVersion <= 0 {
+		return fmt.Errorf("db: workflow-run build association requires a positive workflow version")
 	}
 	return nil
 }

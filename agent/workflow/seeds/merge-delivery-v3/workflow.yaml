@@ -25,6 +25,20 @@ outputs:
     type: validation/v1
     from: merge-report
     description: Whether the delivery merge is clean, and which paths conflict.
+capabilities:
+  validator:
+    contract: dev-mcp/v1
+    sidecar:
+      name: validator
+      image: registry.example/dev-capability@sha256:0000000000000000000000000000000000000000000000000000000000000000
+      ports: [{containerPort: 7780, protocol: TCP}]
+dev_validation_profiles:
+  - name: merged-change-gates
+    capability: validator
+    profile_file: policies/profile.yml
+    config_file: policies/config.yml
+    candidate: {name: merged-change, type: repository-change/v1}
+    base_inputs: [{name: target, type: repository/v1}]
 plan:
   # Preflight always exits 0, so the report is sealed whether or not the merge
   # is clean. It is the only durable evidence a conflicted delivery produces:
@@ -72,6 +86,13 @@ plan:
       target: {type: repository/v1}
     output_types:
       merged-change: repository-change/v1
+  - task: validate-merged-change
+    dev_validation_profile: merged-change-gates
+    input_types:
+      merged-change: {type: repository-change/v1}
+      target: {type: repository/v1}
+    output_types:
+      validation: validation/v1
   # A human approves the exact merged value that will be landed, not the
   # candidate that was written before the rebase. The approval intent below and
   # the publication that follows must describe the same operation byte for byte.
@@ -91,6 +112,7 @@ plan:
       approval_policy_version: engineering/v1
       prompt: Land this rebased change on main?
     type: human-answer/v1
+    validation: validation
     on_timeout: fail
     timeout: 72h
   - publish_snapshot: land-merge
@@ -103,3 +125,4 @@ plan:
       target_branch: main
     approval_policy_version: engineering/v1
     approval: merge-approval
+    validation: validation

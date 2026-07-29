@@ -489,6 +489,7 @@ func (factory *coreStepFactory) PublishSnapshotStep(
 		factory.snapshotMetadataStore,
 		factory.snapshotPublisher,
 		approvalVerifier,
+		exec.WithPublishSnapshotContentStore(factory.snapshotContentStore),
 	)
 	return exec.LogError(publishStep, delegateFactory)
 }

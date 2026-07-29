@@ -2,99 +2,62 @@ schema_version: 3
 name: version-upgrade
 signature_version: 1
 disposition_output: change
-description: Upgrade a declared component, validate it, and return an approved durable change.
 inputs:
-  - name: repository
-    type: repository/v1
-    description: Clean immutable base repository.
-  - name: request
-    type: upgrade-request/v1
-    description: Exact component and target version request.
+  - {name: repository, type: repository/v1}
+  - {name: request, type: upgrade-request/v1}
 outputs:
-  - name: change
-    type: repository-change/v1
-    from: approved-change
-    description: Tested repository change relative to the repository input.
-  - name: report
-    type: upgrade-report/v1
-    from: report
-    description: Structured upgrade summary and version transition.
+  - {name: change, type: repository-change/v1, from: approved-change}
+  - {name: report, type: upgrade-report/v1, from: report}
+capabilities:
+  validator:
+    contract: dev-mcp/v1
+    sidecar:
+      name: validator
+      image: registry.example/dev-capability@sha256:0000000000000000000000000000000000000000000000000000000000000000
+      ports: [{containerPort: 7780, protocol: TCP}]
+dev_validation_profiles:
+  - name: repository-gates
+    capability: validator
+    profile_file: policies/profile.yml
+    config_file: policies/config.yml
+    candidate: {name: candidate, type: repository-change/v1}
+    base_inputs: [{name: repository, type: repository/v1}]
 plan:
   - agent: upgrade
-    budget_slice_usd: 10
     function_id: upgrade
     prompt_file: prompts/upgrade.md
     inputs: [repository, request]
-    outputs: [candidate-change, report]
-    input_types:
-      repository: {type: repository/v1}
-      request: {type: upgrade-request/v1}
-    output_types:
-      candidate-change: repository-change/v1
-      report: upgrade-report/v1
+    outputs: [draft, report]
+    input_types: {repository: {type: repository/v1}, request: {type: upgrade-request/v1}}
+    output_types: {draft: repository-change/v1, report: upgrade-report/v1}
   - agent: review
-    budget_slice_usd: 3
     function_id: review
-    prompt: >-
-      Review candidate-change against the immutable repository and exact upgrade
-      request. Inspect breaking API and migration risks and fix only defects
-      required for this upgrade. Write repository-change/v1 to
-      $AGENT_OUTPUT_REVIEWED_CHANGE/record.json with repository as its exact base
-      subject and its payload beneath content/. Copy all platform authority
-      values exactly. Do not contact any live system.
-    inputs: [repository, request, candidate-change, report]
-    outputs: [reviewed-change]
-    input_types:
-      repository: {type: repository/v1}
-      request: {type: upgrade-request/v1}
-      candidate-change: {type: repository-change/v1}
-      report: {type: upgrade-report/v1}
-    output_types:
-      reviewed-change: repository-change/v1
-  - agent: validate-and-ask
-    budget_slice_usd: 2
-    function_id: validate-and-ask
-    prompt: >-
-      Validate the exact sealed reviewed-change, run the relevant focused and
-      broader tests, and write validation/v1 to
-      $AGENT_OUTPUT_VALIDATION/record.json. The subjects array is sorted
-      lexicographically by id, never by role, so declare them in exactly this
-      order: report with role context, repository with role context, request
-      with role context, then reviewed-change with role primary. Sort the checks
-      array lexicographically by check id as well; unsorted or duplicate ids are
-      rejected when the output is sealed. Preserve all retry
-      attempts and platform authority values. Write a question/v1 value beneath
-      $AGENT_OUTPUT_APPROVAL_QUESTION asking whether this exact sealed change may
-      be opened as a pull request. Do not contact any live system.
-    inputs: [repository, request, report, reviewed-change]
-    outputs: [validation, approval-question]
-    input_types:
-      repository: {type: repository/v1}
-      request: {type: upgrade-request/v1}
-      report: {type: upgrade-report/v1}
-      reviewed-change: {type: repository-change/v1}
-    output_types:
-      validation: validation/v1
-      approval-question: question/v1
+    prompt: Review and correct draft; write candidate only.
+    inputs: [repository, request, draft, report]
+    outputs: [candidate]
+    input_types: {repository: {type: repository/v1}, request: {type: upgrade-request/v1}, draft: {type: repository-change/v1}, report: {type: upgrade-report/v1}}
+    output_types: {candidate: repository-change/v1}
+  - task: validate
+    dev_validation_profile: repository-gates
+    input_types: {candidate: {type: repository-change/v1}, repository: {type: repository/v1}}
+    output_types: {validation: validation/v1}
+  - agent: prepare-question
+    function_id: prepare-question
+    prompt: Prepare a question only; do not modify candidate.
+    inputs: [candidate, validation]
+    outputs: [approval-question]
+    input_types: {candidate: {type: repository-change/v1}, validation: {type: validation/v1}}
+    output_types: {approval-question: question/v1}
+    validation: validation
   - await_snapshot: approval
     question: approval-question
     type: human-answer/v1
     on_timeout: fail
     timeout: 72h
   - agent: enforce-approval
-    budget_slice_usd: 1
     function_id: enforce-approval
-    prompt: >-
-      Read the sealed human-answer/v1 input. Only when it explicitly approves
-      release of this exact upgrade for external delivery, copy reviewed-change into a fresh
-      repository-change/v1 value at $AGENT_OUTPUT_APPROVED_CHANGE. Preserve its
-      base and content exactly. If it rejects or changes the request, submit no
-      output so Jetbridge fails closed. Do not contact a live system.
-    inputs: [repository, reviewed-change, approval]
+    prompt: On approval, copy candidate unchanged to approved-change.
+    inputs: [repository, candidate, approval]
     outputs: [approved-change]
-    input_types:
-      repository: {type: repository/v1}
-      reviewed-change: {type: repository-change/v1}
-      approval: {type: human-answer/v1}
-    output_types:
-      approved-change: repository-change/v1
+    input_types: {repository: {type: repository/v1}, candidate: {type: repository-change/v1}, approval: {type: human-answer/v1}}
+    output_types: {approved-change: repository-change/v1}

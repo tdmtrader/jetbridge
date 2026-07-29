@@ -463,12 +463,14 @@ type AgentStep struct {
 	Context      string   `json:"context,omitempty"`
 	Skills       []string `json:"skills,omitempty"`
 
-	Sidecars        []SidecarSource                 `json:"sidecars,omitempty"`
-	Inputs          []string                        `json:"inputs,omitempty"`
-	Outputs         []string                        `json:"outputs,omitempty"`
-	Capabilities    []string                        `json:"capabilities,omitempty"`
-	SnapshotInputs  map[string]SnapshotInputConfig  `json:"input_types,omitempty"`
-	SnapshotOutputs map[string]SnapshotOutputConfig `json:"output_types,omitempty"`
+	Sidecars         []SidecarSource                 `json:"sidecars,omitempty"`
+	Inputs           []string                        `json:"inputs,omitempty"`
+	Outputs          []string                        `json:"outputs,omitempty"`
+	Capabilities     []string                        `json:"capabilities,omitempty"`
+	SnapshotInputs   map[string]SnapshotInputConfig  `json:"input_types,omitempty"`
+	SnapshotOutputs  map[string]SnapshotOutputConfig `json:"output_types,omitempty"`
+	Validation       string                          `json:"validation,omitempty"`
+	ReviewValidation *ReviewValidationRequirement    `json:"review_validation,omitempty"`
 	// Env is TaskEnv (underlying map[string]string) so numeric values —
 	// e.g. the ((run_id)) reserved var interpolated into
 	// AGENT_PIPELINE_RUN_ID by CreateRun materialization (F30) — coerce
@@ -634,15 +636,17 @@ func (intent MergeApprovalIntent) validateWire() error {
 }
 
 type AwaitSnapshotStep struct {
-	Name                 string                 `json:"await_snapshot"`
-	Question             string                 `json:"question,omitempty"`
-	MergeApproval        *MergeApprovalIntent   `json:"merge_approval,omitempty"`
-	Type                 snapshot.TypeRef       `json:"type"`
-	OnTimeout            AwaitSnapshotOnTimeout `json:"on_timeout"`
-	DefaultSnapshotID    string                 `json:"default_snapshot_id,omitempty"`
-	WorkflowPort         string                 `json:"workflow_port,omitempty"`
-	WorkflowDefinitionID int                    `json:"workflow_definition_id,omitempty"`
-	WorkflowRunID        string                 `json:"workflow_run_id,omitempty"`
+	Name                    string                              `json:"await_snapshot"`
+	Question                string                              `json:"question,omitempty"`
+	MergeApproval           *MergeApprovalIntent                `json:"merge_approval,omitempty"`
+	Validation              string                              `json:"validation,omitempty"`
+	MergeApprovalValidation *MergeApprovalValidationRequirement `json:"merge_approval_validation,omitempty"`
+	Type                    snapshot.TypeRef                    `json:"type"`
+	OnTimeout               AwaitSnapshotOnTimeout              `json:"on_timeout"`
+	DefaultSnapshotID       string                              `json:"default_snapshot_id,omitempty"`
+	WorkflowPort            string                              `json:"workflow_port,omitempty"`
+	WorkflowDefinitionID    int                                 `json:"workflow_definition_id,omitempty"`
+	WorkflowRunID           string                              `json:"workflow_run_id,omitempty"`
 }
 
 func (step AwaitSnapshotStep) validateWire() error {
@@ -738,16 +742,18 @@ func (step *AwaitSnapshotStep) Visit(v StepVisitor) error {
 // exact typed snapshot. Credentials and verified approval actors are never
 // authored in this wire shape; the web node supplies them at execution.
 type PublishSnapshotStep struct {
-	Name                  string            `json:"publish_snapshot"`
-	Publisher             snapshot.TypeRef  `json:"publisher"`
-	Input                 string            `json:"input"`
-	InputType             snapshot.TypeRef  `json:"input_type"`
-	Destination           string            `json:"destination"`
-	Mode                  publisher.Mode    `json:"mode"`
-	Parameters            map[string]string `json:"parameters,omitempty"`
-	ApprovalPolicyVersion string            `json:"approval_policy_version"`
-	Approval              string            `json:"approval,omitempty"`
-	WorkflowRunID         string            `json:"workflow_run_id,omitempty"`
+	Name                  string                        `json:"publish_snapshot"`
+	Publisher             snapshot.TypeRef              `json:"publisher"`
+	Input                 string                        `json:"input"`
+	InputType             snapshot.TypeRef              `json:"input_type"`
+	Destination           string                        `json:"destination"`
+	Mode                  publisher.Mode                `json:"mode"`
+	Parameters            map[string]string             `json:"parameters,omitempty"`
+	ApprovalPolicyVersion string                        `json:"approval_policy_version"`
+	Approval              string                        `json:"approval,omitempty"`
+	WorkflowRunID         string                        `json:"workflow_run_id,omitempty"`
+	Validation            string                        `json:"validation,omitempty"`
+	PublishValidation     *PublishValidationRequirement `json:"publish_validation,omitempty"`
 }
 
 func (step PublishSnapshotStep) validateWire() error {

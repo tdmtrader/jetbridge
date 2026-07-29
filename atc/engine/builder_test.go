@@ -199,6 +199,7 @@ var _ = Describe("Builder", func() {
 					BeforeEach(func() {
 						association := db.AgentWorkflowRunBuildAssociation{
 							WorkflowDefinitionID: 77,
+							WorkflowVersion:      3,
 							WorkflowRunID:        snapshot.WorkflowRunID(9007199254740993),
 						}
 						fakeBuild.AgentWorkflowRunAssociationReturns(association, true, nil)
@@ -215,6 +216,8 @@ var _ = Describe("Builder", func() {
 						_, taskMetadata, _, _ := fakeCoreStepFactory.TaskStepArgsForCall(0)
 						Expect(taskMetadata.WorkflowDefinitionID).NotTo(BeNil())
 						Expect(*taskMetadata.WorkflowDefinitionID).To(Equal(77))
+						Expect(taskMetadata.WorkflowVersion).NotTo(BeNil())
+						Expect(*taskMetadata.WorkflowVersion).To(Equal(3))
 						Expect(taskMetadata.WorkflowRunID).NotTo(BeNil())
 						Expect(*taskMetadata.WorkflowRunID).To(Equal(snapshot.WorkflowRunID(9007199254740993)))
 
@@ -222,6 +225,8 @@ var _ = Describe("Builder", func() {
 						_, agentMetadata, _, _ := fakeCoreStepFactory.AgentStepArgsForCall(0)
 						Expect(agentMetadata.WorkflowDefinitionID).NotTo(BeNil())
 						Expect(*agentMetadata.WorkflowDefinitionID).To(Equal(77))
+						Expect(agentMetadata.WorkflowVersion).NotTo(BeNil())
+						Expect(*agentMetadata.WorkflowVersion).To(Equal(3))
 						Expect(agentMetadata.WorkflowRunID).NotTo(BeNil())
 						Expect(*agentMetadata.WorkflowRunID).To(Equal(snapshot.WorkflowRunID(9007199254740993)))
 					})
