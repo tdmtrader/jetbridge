@@ -223,7 +223,18 @@
 - [ ] Task 14 — direct in-ATC publication
   - Status: dependency-deferred under `DEPENDENCY-003`; exact validation gates
     from Tasks 6–7 must be accepted before replacing the publisher gateway.
-- [ ] Task 15 — checkpoint and attempt data models
+- [x] Task 15 — checkpoint and attempt data models
+  - Commit: pending local checkpoint commit.
+  - Behavior: immutable Hangar checkpoint object identities; staged/committed,
+    monotonic checkpoint generations; append-only events; begun-to-committed
+    effect records; and fresh durable execution attempts with lease fences.
+    Checkpoint heads copy the existing v3 workflow-run ID but do not own or
+    terminalize workflow runs.
+  - Verification: `go test ./agent/checkpoint -count=1` passed; compile-only
+    `go test ./agent/checkpoint ./atc/db -run '^$' -count=1` passed. The one
+    focused serial DB/migration Ginkgo attempt was sandbox-blocked before any
+    spec ran because postgresrunner's SysV `shmget` was denied.
+  - Review: self-review only; no external review round has been run.
 - [ ] Task 16 — safe-boundary checkpoint capture
 - [ ] Task 17 — fresh-attempt restore/provider resume
 - [ ] Task 18 — recovery telemetry/retention

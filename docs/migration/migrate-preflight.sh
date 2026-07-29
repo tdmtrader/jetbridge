@@ -63,7 +63,9 @@ v8.0.1:1765921815
 # historical absence and is never recomputed from a mutable workflow definition.
 # 1773106142-43 persist exact resource-source admission selections and the
 # pipeline config revision captured for their selecting build.
-JETBRIDGE_VERSION=1773106143
+# 1773106144-45 add immutable Hangar-backed checkpoint generations and fresh
+# durable execution attempts without restoring a legacy runner.
+JETBRIDGE_VERSION=1773106145
 
 # Minimum supported source version (v6.x)
 MIN_SUPPORTED_VERSION=1601993582
