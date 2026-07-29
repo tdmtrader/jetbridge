@@ -150,7 +150,7 @@ func (p *execProcess) AcquireCheckpointCapture(ctx context.Context, maxBytes int
 	if err := target.Validate(); err != nil {
 		return fail(err)
 	}
-	lease := &checkpointCaptureLease{target: target.Clone(), helpers: helpers, releaseReservation: releaseReservation, done: make(chan struct{})}
+	lease := &checkpointCaptureLease{target: target.Clone(), helpers: helpers, releaseReservation: releaseReservation, done: make(chan struct{}), releaseTimeout: checkpointLeaseReleaseTimeout}
 	go lease.releaseOnDeadline(ctx)
 	return lease, nil
 }
@@ -179,6 +179,9 @@ func (e checkpointPodEvidence) equal(other checkpointPodEvidence) bool {
 func checkpointPodIdentity(pod *corev1.Pod, handle, expectedName string) (checkpointPodEvidence, []string, error) {
 	if pod == nil || pod.Name == "" || pod.Name != expectedName || pod.UID == "" || pod.DeletionTimestamp != nil || pod.Status.Phase != corev1.PodRunning || strings.TrimSpace(pod.Spec.NodeName) == "" || pod.Labels[handleLabelKey] != handle || pod.Labels[typeLabelKey] != string(db.ContainerTypeAgent) || pod.Labels[hermeticLabelKey] != "true" {
 		return checkpointPodEvidence{}, nil, errors.New("checkpoint pod is not the exact live hermetic agent pod")
+	}
+	if pod.Spec.ShareProcessNamespace != nil && *pod.Spec.ShareProcessNamespace {
+		return checkpointPodEvidence{}, nil, errors.New("checkpoint pod shares a process namespace")
 	}
 	if len(pod.Spec.EphemeralContainers) != 0 || len(pod.Status.EphemeralContainerStatuses) != 0 {
 		return checkpointPodEvidence{}, nil, errors.New("checkpoint pod has ephemeral containers")
@@ -333,6 +336,7 @@ type checkpointCaptureLease struct {
 	release            sync.Once
 	releaseErr         error
 	done               chan struct{}
+	releaseTimeout     time.Duration
 }
 
 func (lease *checkpointCaptureLease) CaptureTarget() runtime.CheckpointCaptureTarget {
@@ -347,8 +351,10 @@ func (lease *checkpointCaptureLease) Release(ctx context.Context) error {
 	}
 	lease.release.Do(func() {
 		defer close(lease.done)
+		releaseCtx, cancel := lease.releaseContext(ctx)
+		defer cancel()
 		var complete bool
-		lease.releaseErr, complete = releaseCheckpointHelpers(ctx, lease.helpers)
+		lease.releaseErr, complete = releaseCheckpointHelpers(releaseCtx, lease.helpers)
 		if complete {
 			lease.releaseReservation()
 		} else {
@@ -357,13 +363,27 @@ func (lease *checkpointCaptureLease) Release(ctx context.Context) error {
 	})
 	return lease.releaseErr
 }
+
+// releaseContext bounds the sync.Once body even for a caller that supplies an
+// unbounded context. If the caller did supply a deadline, retain the earlier
+// of that deadline and the platform release timeout.
+func (lease *checkpointCaptureLease) releaseContext(caller context.Context) (context.Context, context.CancelFunc) {
+	timeout := lease.releaseTimeout
+	if timeout <= 0 {
+		timeout = checkpointLeaseReleaseTimeout
+	}
+	deadline := time.Now().Add(timeout)
+	if callerDeadline, hasDeadline := caller.Deadline(); hasDeadline && callerDeadline.Before(deadline) {
+		deadline = callerDeadline
+	}
+	return context.WithDeadline(context.Background(), deadline)
+}
+
 func (lease *checkpointCaptureLease) releaseOnDeadline(ctx context.Context) {
 	select {
 	case <-lease.done:
 	case <-ctx.Done():
-		releaseCtx, cancel := context.WithTimeout(context.Background(), checkpointLeaseReleaseTimeout)
-		defer cancel()
-		_ = lease.Release(releaseCtx)
+		_ = lease.Release(ctx)
 	}
 }
 
