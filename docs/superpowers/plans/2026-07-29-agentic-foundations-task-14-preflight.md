@@ -82,6 +82,53 @@ produce the final sealed candidate upstream; Task 7 validation and any human
 approval then bind that rebased value. The publisher only performs the atomic
 trunk update.
 
+## Exact current-head transplant boundary
+
+Use the final historical forms from `c9432728a3` for the publisher policy,
+mounted-file/credential handling, Git runner, and hardened direct backend.
+Apply the atomic recovery behavior from `1e785a501b`. Preserve only the
+publisher-specific portions of `8fe849329a` and `b25a57f4a8`; current ATC,
+Hangar, checkpoint, and Helm composition is authoritative.
+
+The historical direct backend depends on snapshot APIs that current HEAD
+deliberately does not expose: `CapturedTree.OpenRoot`,
+`Canonicalizer.TempRoot`, and `Canonicalizer.CaptureRoot`. Do not restore the
+historical `agent/snapshot/archive.go`; that would collide with the accepted
+snapshot and output-builder boundaries. Instead:
+
+- add only a narrow, closed-state-aware `CapturedTree.OpenRoot` accessor backed
+  by the tree's retained anchored root;
+- canonicalize the direct backend's payload under its verified private scratch
+  directory with the current `Canonicalizer.TempDir`; and
+- keep the backend's scratch verification before and after subprocesses.
+
+Adapt the current gateway-shaped publisher credential into the historical
+opaque resolved authorization: adapter kind, server-owned remote URL, copied
+secret bytes, and redacted formatting. Direct Git must use only these resolved
+values and must never derive a remote from the authored destination.
+
+Preserve the current `snapshotPublisherComposer` seam and the Task 13
+command-scoped snapshot/source composition. Port only publisher-specific Helm
+blocks; do not replace the current web deployment template wholesale. Other
+publisher types fail closed through an unavailable executor until a deliberate
+in-process backend exists.
+
+`ModeMerge` may remain as the existing name for an already approved
+direct-to-trunk publication, but it performs no merge or rebase. It atomically
+updates the target ref to the precomputed sealed result commit. Rebase remains
+an upstream workflow operation before validation and approval.
+
+Implement in this order:
+
+1. restore/adapt policy, mounted credentials, neutral snapshot inspection, and
+   the direct authorization/race contract;
+2. restore the isolated Git runner and direct backend with the narrow current
+   snapshot adapter;
+3. compose the direct executor in ATC, then remove gateway transport and
+   command wiring;
+4. port publisher-only web image and dedicated web-only Secret mounts; and
+5. run focused tests and residue searches before broad verification.
+
 ## Required focused proof
 
 - Direct-backend unit coverage: marker lookup, atomic-capability refusal,
