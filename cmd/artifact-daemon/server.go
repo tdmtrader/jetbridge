@@ -54,6 +54,16 @@ type Server struct {
 	copyHooks             anchoredCopyHooks
 	serveHooks            anchoredServeHooks
 	mutationHooks         anchoredMutationHooks
+
+	checkpointMu            sync.Mutex
+	checkpointPrepared      map[string]*preparedCheckpointCapture
+	checkpointPreparedBytes int64
+	checkpointMaxBytes      int64
+	checkpointMaxEntries    int64
+	checkpointMaxPrepared   int
+	checkpointMaxStaged     int64
+	checkpointPreparedTTL   time.Duration
+	checkpointExclusions    []string
 }
 
 type anchoredCopyHooks struct {
@@ -198,6 +208,12 @@ func NewServer(logger lager.Logger, storagePath, nodeName string) *Server {
 		resolveSlots:          make(chan struct{}, defaultResolveMaxConcurrent),
 		resolveTimeout:        defaultResolveTimeout,
 		syncSnapshotDirectory: syncRootDirectory,
+		checkpointPrepared:    map[string]*preparedCheckpointCapture{},
+		checkpointMaxBytes:    10 << 30,
+		checkpointMaxEntries:  100000,
+		checkpointMaxPrepared: 16,
+		checkpointMaxStaged:   20 << 30,
+		checkpointPreparedTTL: 5 * time.Minute,
 	}
 }
 
@@ -313,6 +329,8 @@ func (s *Server) Handler(opts ...HandlerOption) http.Handler {
 	mux.HandleFunc("PUT /stream-in/", protect(s.handleStreamIn))
 	mux.HandleFunc("HEAD /resource-caches/", protect(s.handleHeadResourceCache))
 	mux.HandleFunc("GET /resource-caches/", protect(s.handleGetResourceCache))
+	mux.HandleFunc("POST /checkpoints/v1/prepare", protect(s.handleCheckpointPrepare))
+	mux.HandleFunc("POST /checkpoints/v1/upload/{preparedHandle}", protect(s.handleCheckpointUpload))
 
 	// net/http's ServeMux canonicalizes traversal-looking paths before route
 	// selection. Validate artifact paths first so malformed paths receive the
