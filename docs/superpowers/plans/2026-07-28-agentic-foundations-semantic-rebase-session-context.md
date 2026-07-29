@@ -94,10 +94,11 @@ Completed and independently approved:
 - Task 4 — compiled validation authority
 - Task 5 — validation/v1 revision 3 provenance
 
-Known branch-wide compatibility issue:
+Completed branch-wide compatibility repair:
 
-- Existing merge-preflight still emits validation data incompatible with
-  revision 3. Repair it as a bounded integration prerequisite after Task 6.
+- Merge-preflight revision-3 provenance and server seal authority were repaired
+  in `a2d5b939a4` and its workflow-identity correction `cd85882823`.
+- The bounded review accepted the repair in round 2 with no remaining findings.
 
 Task 6:
 
@@ -122,11 +123,9 @@ Tasks 7–19 have not started.
 
 1. Leave Task 6 at **Human Review Required**; do not start another automatic
    correction/review cycle.
-2. Repair the known merge-preflight validation-revision compatibility issue as
-   a bounded prerequisite.
-3. Establish a clean integration checkpoint and run one consolidated
+2. Establish a clean integration checkpoint and run one consolidated
    acceptance suite.
-4. Treat the remaining feature groups as separate bounded tracks rather than
+3. Treat the remaining feature groups as separate bounded tracks rather than
    one continuous "rebase."
 
 ## Session handoff requirement
