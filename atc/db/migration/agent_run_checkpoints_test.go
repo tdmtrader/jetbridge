@@ -110,8 +110,8 @@ var _ = Describe("agent run checkpoints migration", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(tx.QueryRow(`
 			INSERT INTO agent_run_checkpoints
-				(head_id, archive_object_id, generation, expected_previous_generation, execution_attempt, status, manifest, stage_expires_at, committed_at)
-			VALUES ($1, $2, 1, 0, 1, 'committed', '{}', now() + interval '1 hour', now()) RETURNING id
+				(head_id, archive_object_id, generation, expected_previous_generation, execution_attempt, fence_token, status, manifest, stage_expires_at, committed_at)
+			VALUES ($1, $2, 1, 0, 1, '11111111-1111-1111-1111-111111111111', 'committed', '{}', now() + interval '1 hour', now()) RETURNING id
 		`, ciHeadID, objectID).Scan(&firstCheckpointID)).To(Succeed())
 		_, err = tx.Exec(`UPDATE agent_run_checkpoint_heads SET latest_checkpoint_id = $2 WHERE id = $1`, ciHeadID, firstCheckpointID)
 		Expect(err).NotTo(HaveOccurred())
@@ -119,8 +119,8 @@ var _ = Describe("agent run checkpoints migration", func() {
 
 		_, err = database.Exec(`
 			INSERT INTO agent_run_checkpoints
-				(head_id, archive_object_id, generation, expected_previous_generation, execution_attempt, status, manifest, stage_expires_at, committed_at)
-			VALUES ($1, $2, 2, 1, 2, 'committed', '{}', now() + interval '1 hour', now())
+				(head_id, archive_object_id, generation, expected_previous_generation, execution_attempt, fence_token, status, manifest, stage_expires_at, committed_at)
+			VALUES ($1, $2, 2, 1, 2, '22222222-2222-2222-2222-222222222222', 'committed', '{}', now() + interval '1 hour', now())
 		`, ciHeadID, objectID)
 		Expect(err).To(HaveOccurred(), "only one checkpoint may be committed for a head")
 
@@ -128,22 +128,22 @@ var _ = Describe("agent run checkpoints migration", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(database.QueryRow(`
 			INSERT INTO agent_run_checkpoints
-				(head_id, archive_object_id, generation, expected_previous_generation, execution_attempt, status, manifest, stage_expires_at, committed_at)
-			VALUES ($1, $2, 2, 1, 2, 'committed', '{}', now() + interval '1 hour', now()) RETURNING id
+				(head_id, archive_object_id, generation, expected_previous_generation, execution_attempt, fence_token, status, manifest, stage_expires_at, committed_at)
+			VALUES ($1, $2, 2, 1, 2, '22222222-2222-2222-2222-222222222222', 'committed', '{}', now() + interval '1 hour', now()) RETURNING id
 		`, ciHeadID, objectID).Scan(&secondCheckpointID)).To(Succeed())
 		Expect(secondCheckpointID).To(BeNumerically(">", firstCheckpointID))
 
 		_, err = database.Exec(`
 			INSERT INTO agent_run_checkpoints
-				(head_id, generation, expected_previous_generation, execution_attempt, status, manifest, stage_expires_at)
-			VALUES ($1, 1, 0, 3, 'staged', '{}', now() + interval '1 hour')
+				(head_id, generation, expected_previous_generation, execution_attempt, fence_token, status, manifest, stage_expires_at)
+			VALUES ($1, 1, 0, 3, '33333333-3333-3333-3333-333333333333', 'staged', '{}', now() + interval '1 hour')
 		`, ciHeadID)
 		Expect(err).To(HaveOccurred(), "generation reservations are never reusable")
 
 		_, err = database.Exec(`
 			INSERT INTO agent_run_effects
-				(head_id, execution_attempt, tool_call_id, tool_name, provider, adapter_version, read_only, state)
-			VALUES ($1, 1, 'write-1', 'write_file', 'claude', 'v1', false, 'begun')
+				(head_id, execution_attempt, tool_call_id, tool_name, provider, adapter_version, fence_token, read_only, state)
+			VALUES ($1, 1, 'write-1', 'write_file', 'claude', 'v1', '11111111-1111-1111-1111-111111111111', false, 'begun')
 		`, ciHeadID)
 		Expect(err).NotTo(HaveOccurred())
 		_, err = database.Exec(`UPDATE agent_run_effects SET state = 'committed', committed_at = now() WHERE head_id = $1 AND tool_call_id = 'write-1'`, ciHeadID)
@@ -177,8 +177,8 @@ var _ = Describe("agent run checkpoints migration", func() {
 		`).Scan(&cleanupHeadID)).To(Succeed())
 		_, err = database.Exec(`
 			INSERT INTO agent_run_effects
-				(head_id, execution_attempt, tool_call_id, tool_name, provider, adapter_version, read_only, state)
-			VALUES ($1, 1, 'cleanup-read', 'read_file', 'claude', 'v1', TRUE, 'begun')
+				(head_id, execution_attempt, tool_call_id, tool_name, provider, adapter_version, fence_token, read_only, state)
+			VALUES ($1, 1, 'cleanup-read', 'read_file', 'claude', 'v1', '11111111-1111-1111-1111-111111111111', TRUE, 'begun')
 		`, cleanupHeadID)
 		Expect(err).NotTo(HaveOccurred())
 		_, err = database.Exec(`

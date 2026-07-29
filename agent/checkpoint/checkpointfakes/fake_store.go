@@ -3,6 +3,7 @@ package checkpointfakes
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/concourse/concourse/agent/checkpoint"
 	"github.com/concourse/concourse/agent/hangar"
@@ -20,7 +21,7 @@ type FakeStore struct {
 	CompleteObjectUploadStub         func(context.Context, checkpoint.CompleteObjectUploadRequest) (hangar.ObjectRef, error)
 	CommitStub                       func(context.Context, checkpoint.CommitRequest) (checkpoint.Manifest, error)
 	LatestStub                       func(context.Context, checkpoint.Identity) (checkpoint.Manifest, bool, error)
-	MarkTerminalStub                 func(context.Context, checkpoint.MarkTerminalRequest) error
+	MarkTerminalStub                 func(context.Context, checkpoint.Identity, time.Time) error
 	ClaimCheckpointExpirationsStub   func(context.Context, int) ([]checkpoint.ExpirationClaim, error)
 	FinalizeCheckpointExpirationStub func(context.Context, checkpoint.ExpirationClaim) error
 	ClaimUnreferencedObjectsStub     func(context.Context, int) ([]checkpoint.ObjectDeleteClaim, error)
@@ -112,8 +113,9 @@ type LatestCall struct {
 }
 
 type MarkTerminalCall struct {
-	Context context.Context
-	Request checkpoint.MarkTerminalRequest
+	Context    context.Context
+	Identity   checkpoint.Identity
+	TerminalAt time.Time
 }
 
 type ClaimCheckpointExpirationsCall struct {
@@ -210,13 +212,13 @@ func (fake *FakeStore) Latest(ctx context.Context, identity checkpoint.Identity)
 	return result.manifest.Clone(), result.found, result.err
 }
 
-func (fake *FakeStore) MarkTerminal(ctx context.Context, request checkpoint.MarkTerminalRequest) error {
+func (fake *FakeStore) MarkTerminal(ctx context.Context, identity checkpoint.Identity, terminalAt time.Time) error {
 	fake.mutex.Lock()
-	fake.markTerminalCalls = append(fake.markTerminalCalls, MarkTerminalCall{Context: ctx, Request: request.Clone()})
+	fake.markTerminalCalls = append(fake.markTerminalCalls, MarkTerminalCall{Context: ctx, Identity: identity.Clone(), TerminalAt: terminalAt})
 	stub, result := fake.MarkTerminalStub, fake.markTerminalResult
 	fake.mutex.Unlock()
 	if stub != nil {
-		return stub(ctx, request.Clone())
+		return stub(ctx, identity.Clone(), terminalAt)
 	}
 	return result
 }
@@ -335,7 +337,7 @@ func (fake *FakeStore) MarkTerminalCalls() []MarkTerminalCall {
 	defer fake.mutex.Unlock()
 	calls := make([]MarkTerminalCall, len(fake.markTerminalCalls))
 	for index, call := range fake.markTerminalCalls {
-		calls[index] = MarkTerminalCall{Context: call.Context, Request: call.Request.Clone()}
+		calls[index] = MarkTerminalCall{Context: call.Context, Identity: call.Identity.Clone(), TerminalAt: call.TerminalAt}
 	}
 	return calls
 }

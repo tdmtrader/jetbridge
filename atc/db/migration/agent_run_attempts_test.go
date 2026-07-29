@@ -139,6 +139,14 @@ var _ = Describe("agent run attempts migration", func() {
 		`, firstID)
 		Expect(err).NotTo(HaveOccurred())
 
+		var sourceCheckpointID int64
+		Expect(database.QueryRow(`
+			INSERT INTO agent_run_checkpoints
+				(head_id, generation, expected_previous_generation, execution_attempt, fence_token, status, manifest, stage_expires_at, committed_at)
+			VALUES ($1, 7, 0, 1, '22222222-2222-2222-2222-222222222222', 'committed', '{}', now() + INTERVAL '1 hour', now())
+			RETURNING id
+		`, headID).Scan(&sourceCheckpointID)).To(Succeed())
+
 		var secondID int64
 		Expect(database.QueryRow(`
 			INSERT INTO agent_run_attempts
@@ -146,9 +154,9 @@ var _ = Describe("agent run attempts migration", func() {
 				 materialization_id, source_attempt_number, source_checkpoint_id,
 				 source_checkpoint_generation, recovery_mode, source_interruption_reason)
 			VALUES ($1, 2, 3, 'scheduling', TRUE,
-				'materialization-2', 1, 99, 7, 'workspace_only', 'preempted')
+				'materialization-2', 1, $2, 7, 'workspace_only', 'preempted')
 			RETURNING id
-		`, headID).Scan(&secondID)).To(Succeed())
+		`, headID, sourceCheckpointID).Scan(&secondID)).To(Succeed())
 		Expect(secondID).To(BeNumerically(">", firstID))
 
 		_, err = database.Exec(`
@@ -157,8 +165,8 @@ var _ = Describe("agent run attempts migration", func() {
 				 materialization_id, source_attempt_number, source_checkpoint_id,
 				 source_checkpoint_generation, recovery_mode, source_interruption_reason)
 			VALUES ($1, 3, 3, 'scheduling', FALSE,
-				'materialization-duplicate', 1, 99, 7, 'workspace_only', 'preempted')
-		`, headID)
+				'materialization-duplicate', 1, $2, 7, 'workspace_only', 'preempted')
+		`, headID, sourceCheckpointID)
 		Expect(err).To(HaveOccurred(), "one interrupted source cannot allocate two replacements")
 
 		_, err = database.Exec(`

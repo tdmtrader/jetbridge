@@ -149,21 +149,27 @@ func (manifest Manifest) Identity() Identity {
 	}
 }
 
+func (manifest Manifest) Clone() Manifest {
+	cloned := manifest
+	cloned.WorkflowRunID = manifest.Identity().Clone().WorkflowRunID
+	cloned.CompletedToolCallIDs = append([]string(nil), manifest.CompletedToolCallIDs...)
+	cloned.Effects = append([]Effect(nil), manifest.Effects...)
+	if manifest.Archive != nil {
+		archive := *manifest.Archive
+		cloned.Archive = &archive
+	}
+	return cloned
+}
+
 // Canonicalized returns a deep-enough copy for stable JSON persistence. It
 // orders all effect-related collections by tool-call ID, while Validate
 // rejects duplicate IDs instead of silently discarding evidence.
 func (manifest Manifest) Canonicalized() Manifest {
-	canonical := manifest
-	canonical.CompletedToolCallIDs = append([]string(nil), manifest.CompletedToolCallIDs...)
-	canonical.Effects = append([]Effect(nil), manifest.Effects...)
+	canonical := manifest.Clone()
 	sort.Strings(canonical.CompletedToolCallIDs)
 	sort.SliceStable(canonical.Effects, func(left, right int) bool {
 		return canonical.Effects[left].ToolCallID < canonical.Effects[right].ToolCallID
 	})
-	if manifest.Archive != nil {
-		archive := *manifest.Archive
-		canonical.Archive = &archive
-	}
 	return canonical
 }
 
@@ -315,16 +321,27 @@ const (
 )
 
 type BeginRequest struct {
-	Identity         Identity
+	Identity Identity
+	Fence    FenceClaim
+	// ExecutionAttempt is retained only for source compatibility; Fence is the
+	// sole mutation authority.
 	ExecutionAttempt int
+}
+
+func (request BeginRequest) Clone() BeginRequest {
+	request.Identity = request.Identity.Clone()
+	return request
 }
 
 func (request BeginRequest) Validate() error {
 	if err := request.Identity.Validate(); err != nil {
 		return err
 	}
-	if request.ExecutionAttempt <= 0 {
-		return fmt.Errorf("checkpoint: execution attempt must be positive")
+	if err := request.Fence.Validate(); err != nil {
+		return err
+	}
+	if request.ExecutionAttempt != 0 && request.ExecutionAttempt != request.Fence.ExecutionAttempt {
+		return fmt.Errorf("checkpoint: execution attempt does not match fence")
 	}
 	return nil
 }
@@ -336,24 +353,32 @@ type StagedCheckpoint struct {
 	Generation                 int
 	ExpectedPreviousGeneration int
 	ExecutionAttempt           int
+	Fence                      FenceClaim
 	StageExpiresAt             time.Time
+}
+
+func (staged StagedCheckpoint) Clone() StagedCheckpoint {
+	staged.Identity = staged.Identity.Clone()
+	return staged
 }
 
 type AbortRequest struct {
 	StagedCheckpointID int64
+	Fence              FenceClaim
 }
 
 func (request AbortRequest) Validate() error {
 	if request.StagedCheckpointID <= 0 {
 		return fmt.Errorf("checkpoint: staged checkpoint ID must be positive")
 	}
-	return nil
+	return request.Fence.Validate()
 }
 
 type PrepareObjectUploadRequest struct {
 	StagedCheckpointID int64
 	Digest             hangar.Digest
 	Key                string
+	Fence              FenceClaim
 }
 
 func (request PrepareObjectUploadRequest) Validate() error {
@@ -367,7 +392,7 @@ func (request PrepareObjectUploadRequest) Validate() error {
 	if request.Key != key {
 		return fmt.Errorf("checkpoint: upload key does not match its content identity")
 	}
-	return nil
+	return request.Fence.Validate()
 }
 
 type ObjectUploadTicket struct {
@@ -382,10 +407,15 @@ type ObjectUploadTicket struct {
 	AvailableGeneration int64
 }
 
+func (ticket ObjectUploadTicket) Clone() ObjectUploadTicket { return ticket }
+
 type CompleteObjectUploadRequest struct {
 	Ticket ObjectUploadTicket
 	Object hangar.ObjectRef
+	Fence  FenceClaim
 }
+
+func (request CompleteObjectUploadRequest) Clone() CompleteObjectUploadRequest { return request }
 
 func (request CompleteObjectUploadRequest) Validate() error {
 	if request.Ticket.ObjectID <= 0 || request.Ticket.StagedCheckpointID <= 0 {
@@ -400,13 +430,19 @@ func (request CompleteObjectUploadRequest) Validate() error {
 	if request.Object.Kind != request.Ticket.Kind || request.Object.Digest != request.Ticket.Digest || request.Object.Key != request.Ticket.Key {
 		return fmt.Errorf("checkpoint: uploaded object does not match upload ticket")
 	}
-	return nil
+	return request.Fence.Validate()
 }
 
 type CommitRequest struct {
 	StagedCheckpointID         int64
 	ExpectedPreviousGeneration int
 	Manifest                   Manifest
+	Fence                      FenceClaim
+}
+
+func (request CommitRequest) Clone() CommitRequest {
+	request.Manifest = request.Manifest.Clone()
+	return request
 }
 
 func (request CommitRequest) Validate() error {
@@ -416,7 +452,16 @@ func (request CommitRequest) Validate() error {
 	if request.ExpectedPreviousGeneration < 0 {
 		return fmt.Errorf("checkpoint: expected previous generation cannot be negative")
 	}
-	return request.Manifest.Validate()
+	if err := request.Fence.Validate(); err != nil {
+		return err
+	}
+	if err := request.Manifest.Validate(); err != nil {
+		return err
+	}
+	if request.Manifest.ExecutionAttempt != request.Fence.ExecutionAttempt {
+		return fmt.Errorf("checkpoint: manifest execution attempt does not match fence")
+	}
+	return nil
 }
 
 type ExpirationClaim struct {
@@ -427,12 +472,25 @@ type ExpirationClaim struct {
 	Token           string
 }
 
+func (claim ExpirationClaim) Clone() ExpirationClaim {
+	if claim.ArchiveObjectID != nil {
+		value := *claim.ArchiveObjectID
+		claim.ArchiveObjectID = &value
+	}
+	return claim
+}
+
 type ObjectDeleteClaim struct {
 	ObjectID              int64
 	Object                hangar.ObjectRef
 	Token                 string
 	NeedsUploadInspection bool
 	UploadTicket          ObjectUploadTicket
+}
+
+func (claim ObjectDeleteClaim) Clone() ObjectDeleteClaim {
+	claim.UploadTicket = claim.UploadTicket.Clone()
+	return claim
 }
 
 // Store is PostgreSQL's durable checkpoint authority. The caller performs
@@ -455,16 +513,25 @@ type Store interface {
 
 type BeginEffectRequest struct {
 	Identity         Identity
+	Fence            FenceClaim
 	ExecutionAttempt int
 	Effect           Effect
+}
+
+func (request BeginEffectRequest) Clone() BeginEffectRequest {
+	request.Identity = request.Identity.Clone()
+	return request
 }
 
 func (request BeginEffectRequest) Validate() error {
 	if err := request.Identity.Validate(); err != nil {
 		return err
 	}
-	if request.ExecutionAttempt <= 0 {
-		return fmt.Errorf("checkpoint: effect execution attempt must be positive")
+	if err := request.Fence.Validate(); err != nil {
+		return err
+	}
+	if request.ExecutionAttempt != 0 && request.ExecutionAttempt != request.Fence.ExecutionAttempt {
+		return fmt.Errorf("checkpoint: effect execution attempt does not match fence")
 	}
 	if request.Effect.State != EffectBegun {
 		return fmt.Errorf("checkpoint: effect journal must begin in begun state")
@@ -474,15 +541,27 @@ func (request BeginEffectRequest) Validate() error {
 
 type CommitEffectRequest struct {
 	Identity         Identity
+	Fence            FenceClaim
 	ExecutionAttempt int
 	ToolCallID       string
+}
+
+func (request CommitEffectRequest) Clone() CommitEffectRequest {
+	request.Identity = request.Identity.Clone()
+	return request
 }
 
 func (request CommitEffectRequest) Validate() error {
 	if err := request.Identity.Validate(); err != nil {
 		return err
 	}
-	if request.ExecutionAttempt <= 0 || strings.TrimSpace(request.ToolCallID) == "" {
+	if err := request.Fence.Validate(); err != nil {
+		return err
+	}
+	if request.ExecutionAttempt != 0 && request.ExecutionAttempt != request.Fence.ExecutionAttempt {
+		return fmt.Errorf("checkpoint: effect execution attempt does not match fence")
+	}
+	if strings.TrimSpace(request.ToolCallID) == "" {
 		return fmt.Errorf("checkpoint: effect commit identity is invalid")
 	}
 	return nil

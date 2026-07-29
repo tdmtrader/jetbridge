@@ -112,6 +112,19 @@ CREATE UNIQUE INDEX agent_run_attempts_one_current
     ON agent_run_attempts (head_id)
     WHERE is_current;
 
+-- A recovery source is pinned to the exact checkpoint generation under the
+-- same durable head. The factory still requires committed status for recovery;
+-- this key prevents a retained attempt from ever drifting cross-head or losing
+-- its referenced row during expiry/cleanup.
+CREATE UNIQUE INDEX agent_run_checkpoints_head_id_generation
+    ON agent_run_checkpoints (head_id, id, generation);
+
+ALTER TABLE agent_run_attempts
+    ADD CONSTRAINT agent_run_attempts_source_checkpoint_same_head
+    FOREIGN KEY (head_id, source_checkpoint_id, source_checkpoint_generation)
+    REFERENCES agent_run_checkpoints (head_id, id, generation)
+    ON DELETE RESTRICT;
+
 CREATE UNIQUE INDEX agent_run_attempts_one_replacement
     ON agent_run_attempts (head_id, source_attempt_number)
     WHERE source_attempt_number IS NOT NULL;

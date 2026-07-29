@@ -68,6 +68,7 @@ type checkpointStageRow struct {
 	generation                 int
 	expectedPreviousGeneration int
 	executionAttempt           int
+	fenceToken                 string
 	status                     checkpoint.CheckpointStatus
 	stageExpiresAt             time.Time
 }
@@ -89,6 +90,7 @@ type checkpointObjectRow struct {
 }
 
 func (factory *agentRunCheckpointsFactory) Begin(ctx context.Context, request checkpoint.BeginRequest) (checkpoint.StagedCheckpoint, error) {
+	request = request.Clone()
 	if err := request.Validate(); err != nil {
 		return checkpoint.StagedCheckpoint{}, err
 	}
@@ -107,6 +109,9 @@ func (factory *agentRunCheckpointsFactory) Begin(ctx context.Context, request ch
 		return checkpoint.StagedCheckpoint{}, err
 	}
 	if err := requireActiveCheckpointHead(head); err != nil {
+		return checkpoint.StagedCheckpoint{}, err
+	}
+	if _, err := requireCurrentCheckpointFence(ctx, tx, head.id, request.Fence); err != nil {
 		return checkpoint.StagedCheckpoint{}, err
 	}
 	stageExpiresAt := now.Add(checkpointStageTTL)
@@ -147,10 +152,10 @@ func (factory *agentRunCheckpointsFactory) Begin(ctx context.Context, request ch
 	var stageID int64
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO agent_run_checkpoints
-			(head_id, generation, expected_previous_generation, execution_attempt, status, manifest, stage_expires_at)
-		VALUES ($1, $2, $3, $4, 'staged', '{}'::jsonb, $5)
+			(head_id, generation, expected_previous_generation, execution_attempt, fence_token, status, manifest, stage_expires_at)
+		VALUES ($1, $2, $3, $4, $5::uuid, 'staged', '{}'::jsonb, $6)
 		RETURNING id
-	`, head.id, generation, previousGeneration, request.ExecutionAttempt, stageExpiresAt).Scan(&stageID)
+	`, head.id, generation, previousGeneration, request.Fence.ExecutionAttempt, request.Fence.Token, stageExpiresAt).Scan(&stageID)
 	if err != nil {
 		return checkpoint.StagedCheckpoint{}, err
 	}
@@ -159,7 +164,7 @@ func (factory *agentRunCheckpointsFactory) Begin(ctx context.Context, request ch
 	}
 	return checkpoint.StagedCheckpoint{
 		ID: stageID, HeadID: head.id, Identity: request.Identity, Generation: generation,
-		ExpectedPreviousGeneration: previousGeneration, ExecutionAttempt: request.ExecutionAttempt,
+		ExpectedPreviousGeneration: previousGeneration, ExecutionAttempt: request.Fence.ExecutionAttempt, Fence: request.Fence,
 		StageExpiresAt: stageExpiresAt,
 	}, nil
 }
@@ -175,6 +180,9 @@ func (factory *agentRunCheckpointsFactory) Abort(ctx context.Context, request ch
 	defer Rollback(tx)
 	stage, err := checkpointStageForUpdate(ctx, tx, request.StagedCheckpointID)
 	if err != nil {
+		return err
+	}
+	if err := requireStageFence(ctx, tx, stage, request.Fence); err != nil {
 		return err
 	}
 	switch stage.status {
@@ -210,6 +218,9 @@ func (factory *agentRunCheckpointsFactory) PrepareObjectUpload(ctx context.Conte
 	defer Rollback(tx)
 	stage, err := checkpointStageForUpdate(ctx, tx, request.StagedCheckpointID)
 	if err != nil {
+		return checkpoint.ObjectUploadTicket{}, err
+	}
+	if err := requireStageFence(ctx, tx, stage, request.Fence); err != nil {
 		return checkpoint.ObjectUploadTicket{}, err
 	}
 	now, err := checkpointDatabaseNow(ctx, tx)
@@ -271,6 +282,7 @@ func (factory *agentRunCheckpointsFactory) PrepareObjectUpload(ctx context.Conte
 }
 
 func (factory *agentRunCheckpointsFactory) CompleteObjectUpload(ctx context.Context, request checkpoint.CompleteObjectUploadRequest) (hangar.ObjectRef, error) {
+	request = request.Clone()
 	if err := request.Validate(); err != nil {
 		return hangar.ObjectRef{}, err
 	}
@@ -281,6 +293,9 @@ func (factory *agentRunCheckpointsFactory) CompleteObjectUpload(ctx context.Cont
 	defer Rollback(tx)
 	stage, err := checkpointStageForUpdate(ctx, tx, request.Ticket.StagedCheckpointID)
 	if err != nil {
+		return hangar.ObjectRef{}, err
+	}
+	if err := requireStageFence(ctx, tx, stage, request.Fence); err != nil {
 		return hangar.ObjectRef{}, err
 	}
 	now, err := checkpointDatabaseNow(ctx, tx)
@@ -330,6 +345,7 @@ func (factory *agentRunCheckpointsFactory) CompleteObjectUpload(ctx context.Cont
 }
 
 func (factory *agentRunCheckpointsFactory) Commit(ctx context.Context, request checkpoint.CommitRequest) (checkpoint.Manifest, error) {
+	request = request.Clone()
 	if err := request.Validate(); err != nil {
 		return checkpoint.Manifest{}, err
 	}
@@ -340,6 +356,9 @@ func (factory *agentRunCheckpointsFactory) Commit(ctx context.Context, request c
 	defer Rollback(tx)
 	stage, err := checkpointStageForUpdate(ctx, tx, request.StagedCheckpointID)
 	if err != nil {
+		return checkpoint.Manifest{}, err
+	}
+	if err := requireStageFence(ctx, tx, stage, request.Fence); err != nil {
 		return checkpoint.Manifest{}, err
 	}
 	now, err := checkpointDatabaseNow(ctx, tx)
@@ -547,9 +566,17 @@ func (factory *agentRunCheckpointsFactory) ClaimCheckpointExpirations(ctx contex
 		SELECT c.id, c.head_id, c.archive_object_id, c.generation, c.status
 		FROM agent_run_checkpoints c
 		JOIN agent_run_checkpoint_heads h ON h.id = c.head_id
-		WHERE (c.status = 'superseded' AND c.superseded_at <= $1)
-		   OR (c.status = 'committed' AND h.active = FALSE AND h.latest_checkpoint_id = c.id
-		       AND h.terminal_at <= $2)
+		WHERE (
+			(c.status = 'superseded' AND c.superseded_at <= $1)
+			OR (c.status = 'committed' AND h.active = FALSE AND h.latest_checkpoint_id = c.id
+			    AND h.terminal_at <= $2)
+		  )
+		  AND NOT EXISTS (
+			SELECT 1 FROM agent_run_attempts a
+			WHERE a.head_id = c.head_id
+			  AND a.source_checkpoint_id = c.id
+			  AND a.source_checkpoint_generation = c.generation
+		  )
 		ORDER BY c.id
 		FOR UPDATE OF c, h SKIP LOCKED
 		LIMIT $3
@@ -656,7 +683,15 @@ func (factory *agentRunCheckpointsFactory) ClaimUnreferencedObjects(ctx context.
 		  AND NOT EXISTS (
 				SELECT 1 FROM agent_run_checkpoints c
 				WHERE c.archive_object_id = o.id AND c.status IN ('staged', 'committed', 'superseded')
-		  )
+			  )
+		  AND NOT EXISTS (
+				SELECT 1 FROM agent_run_checkpoints c
+				JOIN agent_run_attempts a
+				  ON a.head_id = c.head_id
+				 AND a.source_checkpoint_id = c.id
+				 AND a.source_checkpoint_generation = c.generation
+				WHERE c.archive_object_id = o.id
+			  )
 		ORDER BY o.id
 		FOR UPDATE OF o SKIP LOCKED
 		LIMIT $2
@@ -697,7 +732,15 @@ func (factory *agentRunCheckpointsFactory) ClaimUnreferencedObjects(ctx context.
 			  AND NOT EXISTS (
 					SELECT 1 FROM agent_run_checkpoints c
 					WHERE c.archive_object_id = o.id AND c.status IN ('staged', 'committed', 'superseded')
-			  )
+				  )
+			  AND NOT EXISTS (
+					SELECT 1 FROM agent_run_checkpoints c
+					JOIN agent_run_attempts a
+					  ON a.head_id = c.head_id
+					 AND a.source_checkpoint_id = c.id
+					 AND a.source_checkpoint_generation = c.generation
+					WHERE c.archive_object_id = o.id
+				  )
 			ORDER BY o.id
 			FOR UPDATE OF o SKIP LOCKED
 			LIMIT $3
@@ -842,8 +885,14 @@ func (factory *agentRunCheckpointsFactory) FinalizeObjectDeletion(ctx context.Co
 	}
 	var references int
 	err = tx.QueryRowContext(ctx, `
-		SELECT count(*) FROM agent_run_checkpoints
-		WHERE archive_object_id = $1 AND status IN ('staged', 'committed', 'superseded')
+		SELECT count(*) FROM agent_run_checkpoints c
+		WHERE c.archive_object_id = $1
+		  AND (c.status IN ('staged', 'committed', 'superseded') OR EXISTS (
+				SELECT 1 FROM agent_run_attempts a
+				WHERE a.head_id = c.head_id
+				  AND a.source_checkpoint_id = c.id
+				  AND a.source_checkpoint_generation = c.generation
+		  ))
 	`, object.id).Scan(&references)
 	if err != nil {
 		return err
@@ -926,6 +975,7 @@ func (factory *agentRunCheckpointsFactory) CleanupTerminalMetadata(ctx context.C
 }
 
 func (factory *agentRunCheckpointsFactory) BeginEffect(ctx context.Context, request checkpoint.BeginEffectRequest) (checkpoint.Effect, error) {
+	request = request.Clone()
 	if err := request.Validate(); err != nil {
 		return checkpoint.Effect{}, err
 	}
@@ -938,43 +988,40 @@ func (factory *agentRunCheckpointsFactory) BeginEffect(ctx context.Context, requ
 	if err != nil {
 		return checkpoint.Effect{}, err
 	}
-	effect := request.Effect
-	if !head.active || head.terminalAt.Valid {
-		stored, err := effectForUpdate(ctx, tx, head.id, request.ExecutionAttempt, effect.ToolCallID)
-		if errors.Is(err, sql.ErrNoRows) {
-			return checkpoint.Effect{}, fmt.Errorf("%w: checkpoint head is terminal", checkpoint.ErrConflict)
-		}
-		if err != nil {
-			return checkpoint.Effect{}, err
-		}
-		if !sameEffectIdentity(stored, effect) {
-			return checkpoint.Effect{}, fmt.Errorf("%w: effect %q was begun with a different identity", checkpoint.ErrConflict, effect.ToolCallID)
-		}
-		if err := tx.Commit(); err != nil {
-			return checkpoint.Effect{}, err
-		}
-		return stored, nil
+	if err := requireActiveCheckpointHead(head); err != nil {
+		return checkpoint.Effect{}, err
 	}
+	if _, err := requireCurrentCheckpointFence(ctx, tx, head.id, request.Fence); err != nil {
+		return checkpoint.Effect{}, err
+	}
+	effect := request.Effect
 	var stored checkpoint.Effect
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO agent_run_effects
 			(head_id, execution_attempt, tool_call_id, tool_name, provider, adapter_version, read_only,
-			 idempotency_key, idempotency_contract, state)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'begun')
+			 fence_token, idempotency_key, idempotency_contract, state)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8::uuid, $9, $10, 'begun')
 		ON CONFLICT (head_id, execution_attempt, tool_call_id) DO NOTHING
 		RETURNING tool_call_id, tool_name, provider, adapter_version, idempotency_key, idempotency_contract, read_only, state
-	`, head.id, request.ExecutionAttempt, effect.ToolCallID, effect.ToolName, effect.Provider, effect.AdapterVersion,
-		effect.ReadOnly, effect.IdempotencyKey, effect.IdempotencyContract).Scan(
+	`, head.id, request.Fence.ExecutionAttempt, effect.ToolCallID, effect.ToolName, effect.Provider, effect.AdapterVersion,
+		effect.ReadOnly, request.Fence.Token, effect.IdempotencyKey, effect.IdempotencyContract).Scan(
 		&stored.ToolCallID, &stored.ToolName, &stored.Provider, &stored.AdapterVersion,
 		&stored.IdempotencyKey, &stored.IdempotencyContract, &stored.ReadOnly, &stored.State,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
-		stored, err = effectForUpdate(ctx, tx, head.id, request.ExecutionAttempt, effect.ToolCallID)
+		stored, err = effectForUpdate(ctx, tx, head.id, request.Fence.ExecutionAttempt, effect.ToolCallID)
 		if err != nil {
 			return checkpoint.Effect{}, err
 		}
 		if !sameEffectIdentity(stored, effect) {
 			return checkpoint.Effect{}, fmt.Errorf("%w: effect %q was begun with a different identity", checkpoint.ErrConflict, effect.ToolCallID)
+		}
+		token, err := effectFenceTokenForUpdate(ctx, tx, head.id, request.Fence.ExecutionAttempt, effect.ToolCallID)
+		if err != nil {
+			return checkpoint.Effect{}, err
+		}
+		if token != request.Fence.Token {
+			return checkpoint.Effect{}, staleFenceError("effect was authorized by another fence")
 		}
 	}
 	if err != nil {
@@ -987,6 +1034,7 @@ func (factory *agentRunCheckpointsFactory) BeginEffect(ctx context.Context, requ
 }
 
 func (factory *agentRunCheckpointsFactory) CommitEffect(ctx context.Context, request checkpoint.CommitEffectRequest) (checkpoint.Effect, error) {
+	request = request.Clone()
 	if err := request.Validate(); err != nil {
 		return checkpoint.Effect{}, err
 	}
@@ -1006,14 +1054,14 @@ func (factory *agentRunCheckpointsFactory) CommitEffect(ctx context.Context, req
 	err = tx.QueryRowContext(ctx, `
 		UPDATE agent_run_effects
 		SET state = 'committed', committed_at = now()
-		WHERE head_id = $1 AND execution_attempt = $2 AND tool_call_id = $3 AND state = 'begun'
+		WHERE head_id = $1 AND execution_attempt = $2 AND tool_call_id = $3 AND fence_token = $4::uuid AND state = 'begun'
 		RETURNING tool_call_id, tool_name, provider, adapter_version, idempotency_key, idempotency_contract, read_only, state
-	`, head.id, request.ExecutionAttempt, request.ToolCallID).Scan(
+	`, head.id, request.Fence.ExecutionAttempt, request.ToolCallID, request.Fence.Token).Scan(
 		&effect.ToolCallID, &effect.ToolName, &effect.Provider, &effect.AdapterVersion,
 		&effect.IdempotencyKey, &effect.IdempotencyContract, &effect.ReadOnly, &effect.State,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
-		effect, err = effectForUpdate(ctx, tx, head.id, request.ExecutionAttempt, request.ToolCallID)
+		effect, err = effectForUpdate(ctx, tx, head.id, request.Fence.ExecutionAttempt, request.ToolCallID)
 		if errors.Is(err, sql.ErrNoRows) {
 			return checkpoint.Effect{}, fmt.Errorf("%w: effect %q", checkpoint.ErrNotFound, request.ToolCallID)
 		}
@@ -1022,6 +1070,13 @@ func (factory *agentRunCheckpointsFactory) CommitEffect(ctx context.Context, req
 		}
 		if effect.State != checkpoint.EffectCommitted {
 			return checkpoint.Effect{}, fmt.Errorf("%w: effect %q did not commit", checkpoint.ErrConflict, request.ToolCallID)
+		}
+		token, err := effectFenceTokenForUpdate(ctx, tx, head.id, request.Fence.ExecutionAttempt, request.ToolCallID)
+		if err != nil {
+			return checkpoint.Effect{}, err
+		}
+		if token != request.Fence.Token {
+			return checkpoint.Effect{}, staleFenceError("effect was authorized by another fence")
 		}
 	}
 	if err != nil {
@@ -1118,7 +1173,7 @@ func checkpointHead(ctx context.Context, queryer checkpointQueryer, identity che
 func checkpointStageForUpdate(ctx context.Context, tx Tx, stageID int64) (checkpointStageRow, error) {
 	var stage checkpointStageRow
 	err := tx.QueryRowContext(ctx, `
-		SELECT c.id, c.archive_object_id, c.generation, c.expected_previous_generation, c.execution_attempt,
+		SELECT c.id, c.archive_object_id, c.generation, c.expected_previous_generation, c.execution_attempt, c.fence_token::text,
 			c.status, c.stage_expires_at,
 			h.id, h.workflow_run_provenance_id, h.workflow_run_id, h.build_id, h.plan_id, h.function_id, h.latest_checkpoint_id,
 			h.next_generation, h.active, h.terminal_at
@@ -1128,7 +1183,7 @@ func checkpointStageForUpdate(ctx context.Context, tx Tx, stageID int64) (checkp
 		FOR UPDATE OF c, h
 	`, stageID).Scan(
 		&stage.id, &stage.archiveObjectID, &stage.generation, &stage.expectedPreviousGeneration,
-		&stage.executionAttempt, &stage.status, &stage.stageExpiresAt,
+		&stage.executionAttempt, &stage.fenceToken, &stage.status, &stage.stageExpiresAt,
 		&stage.head.id, &stage.head.workflowRunProvenanceID, &stage.head.workflowRunID, &stage.head.buildID, &stage.head.planID, &stage.head.functionID,
 		&stage.head.latestCheckpointID, &stage.head.nextGeneration, &stage.head.active, &stage.head.terminalAt,
 	)
@@ -1252,6 +1307,31 @@ func requireLiveStagedCheckpoint(ctx context.Context, tx Tx, stage checkpointSta
 	return fmt.Errorf("%w: staged checkpoint %d expired", checkpoint.ErrExpired, stage.id)
 }
 
+func requireStageFence(ctx context.Context, tx Tx, stage checkpointStageRow, claim checkpoint.FenceClaim) error {
+	if stage.executionAttempt != claim.ExecutionAttempt || stage.fenceToken != claim.Token {
+		return staleFenceError("checkpoint reservation does not match attempt fence")
+	}
+	_, err := requireCurrentCheckpointFence(ctx, tx, stage.head.id, claim)
+	return err
+}
+
+func requireCurrentCheckpointFence(ctx context.Context, tx Tx, headID int64, claim checkpoint.FenceClaim) (checkpoint.Attempt, error) {
+	attempt, err := agentRunCurrentAttemptForUpdate(ctx, tx, headID)
+	if err != nil {
+		return checkpoint.Attempt{}, currentAttemptError(err)
+	}
+	if attempt.ExecutionAttempt != claim.ExecutionAttempt {
+		return checkpoint.Attempt{}, staleFenceError("execution attempt is no longer current")
+	}
+	if attempt.State != checkpoint.AttemptRunning && attempt.State != checkpoint.AttemptFinalizing {
+		return checkpoint.Attempt{}, staleFenceError(fmt.Sprintf("execution attempt is not runnable or finalizing: %s", attempt.State))
+	}
+	if err := requireAttemptFence(ctx, tx, attempt, claim); err != nil {
+		return checkpoint.Attempt{}, err
+	}
+	return attempt, nil
+}
+
 func abortStagedCheckpoint(ctx context.Context, tx Tx, stageID int64, at time.Time) error {
 	_, err := tx.ExecContext(ctx, `
 		UPDATE agent_run_checkpoints
@@ -1296,6 +1376,16 @@ func effectForUpdate(ctx context.Context, tx Tx, headID int64, attempt int, tool
 		&effect.IdempotencyKey, &effect.IdempotencyContract, &effect.ReadOnly, &effect.State,
 	)
 	return effect, err
+}
+
+func effectFenceTokenForUpdate(ctx context.Context, tx Tx, headID int64, attempt int, toolCallID string) (string, error) {
+	var token string
+	err := tx.QueryRowContext(ctx, `
+		SELECT fence_token::text FROM agent_run_effects
+		WHERE head_id = $1 AND execution_attempt = $2 AND tool_call_id = $3
+		FOR UPDATE
+	`, headID, attempt, toolCallID).Scan(&token)
+	return token, err
 }
 
 func checkpointDatabaseNow(ctx context.Context, tx Tx) (time.Time, error) {
