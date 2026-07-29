@@ -753,3 +753,54 @@ func TestWriteReportRejectsAReportItIsTheAuthorityOn(t *testing.T) {
 		})
 	}
 }
+
+func TestPrepareRebaseReplaysEveryCandidateCommitOntoTheTarget(t *testing.T) {
+	ws := scenario(t, "agent.txt", "first\n", "target moved\n")
+	base := git(t, ws, "rev-parse", "origin/main~1")
+	git(t, ws, "checkout", "-B", "agent/rebase", "origin/agent/change-1")
+	write(t, ws, "second.txt", "second\n")
+	git(t, ws, "add", "second.txt")
+	git(t, ws, "commit", "-m", "second candidate commit")
+
+	res, err := Prepare(ws, Plan{
+		Branch: "agent/rebase", Base: base, Target: "origin/main",
+		Method: MethodRebase, Message: "rebase delivered change",
+	})
+	if err != nil || !res.Ok || res.Conflict {
+		t.Fatalf("rebase result = %+v, %v", res, err)
+	}
+	if parent := git(t, ws, "rev-parse", res.ResultSha+"^"); parent == base {
+		t.Fatalf("rebased result parent = %s, want target history", parent)
+	}
+	if count := git(t, ws, "rev-list", "--count", "origin/main.."+res.ResultSha); count != "2" {
+		t.Fatalf("rebased commits = %s, want 2", count)
+	}
+	if ancestor := git(t, ws, "merge-base", "--is-ancestor", "origin/main", res.ResultSha); ancestor != "" {
+		t.Fatalf("target is not an ancestor of rebased result: %q", ancestor)
+	}
+}
+
+func TestPrepareRebaseReportsConflictAndCleansTheRepository(t *testing.T) {
+	ws := scenario(t, "base.txt", "candidate version\n", "")
+	base := git(t, ws, "rev-parse", "origin/main")
+	git(t, ws, "checkout", "main")
+	write(t, ws, "base.txt", "target version\n")
+	git(t, ws, "add", ".")
+	git(t, ws, "commit", "-m", "target conflicts")
+	git(t, ws, "push", "origin", "HEAD:main")
+	git(t, ws, "fetch", "origin")
+
+	res, err := Prepare(ws, Plan{
+		Branch: "origin/agent/change-1", Base: base, Target: "origin/main",
+		Method: MethodRebase, Message: "rebase delivered change",
+	})
+	if err != nil || res.Ok || !res.Conflict || !strings.Contains("\n"+strings.Join(res.ConflictPaths, "\n")+"\n", "\nbase.txt\n") {
+		t.Fatalf("rebase conflict = %+v, %v", res, err)
+	}
+	if _, err := os.Stat(filepath.Join(ws, ".git", "REBASE_HEAD")); !os.IsNotExist(err) {
+		t.Fatal("a conflicting rebase must abort")
+	}
+	if status := git(t, ws, "status", "--porcelain=v1", "--untracked-files=all"); status != "" {
+		t.Fatalf("a conflicting rebase must leave a clean work tree, got:\n%s", status)
+	}
+}

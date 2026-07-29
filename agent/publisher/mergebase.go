@@ -28,7 +28,7 @@ import (
 // This is an assertion, not the safety property. Stale-base protection lives
 // in GitService.Execute: it reads the destination's CURRENT base from the
 // backend and refuses to publish when it differs from the change's base_sha
-// (StatusStaleBase for merges, StatusRebaseRequired otherwise). Do not
+// (StatusRebaseRequired for every direct publication). Do not
 // re-introduce an authored placeholder in the belief that it is the gate.
 const MergeBaseParameter = "expected_base_sha"
 

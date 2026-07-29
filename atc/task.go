@@ -67,7 +67,7 @@ func (a MergePreflightAuthority) Validate() error {
 }
 
 func MergePreflightStaticArgs(a MergePreflightAuthority) []string {
-	return []string{MergePreflightFunctionID, "--candidate=" + a.CandidateInput, "--base=" + a.BaseInput, "--target=" + a.TargetInput, "--output=" + MergePreflightOutput, "--method=merge", "--message=Merge delivered change", "--profile-digest=" + a.ProfileDigest.String(), "--config-digest=" + a.ProtectedConfigDigest.String(), "--capability-image=" + a.CapabilityImage, "--workflow-definition-id=" + fmt.Sprint(a.WorkflowDefinitionID), "--workflow-version=" + fmt.Sprint(a.WorkflowVersion), "--toolchain=" + MergePreflightToolchain}
+	return []string{MergePreflightFunctionID, "--candidate=" + a.CandidateInput, "--base=" + a.BaseInput, "--target=" + a.TargetInput, "--output=" + MergePreflightOutput, "--method=rebase", "--message=Merge delivered change", "--profile-digest=" + a.ProfileDigest.String(), "--config-digest=" + a.ProtectedConfigDigest.String(), "--capability-image=" + a.CapabilityImage, "--workflow-definition-id=" + fmt.Sprint(a.WorkflowDefinitionID), "--workflow-version=" + fmt.Sprint(a.WorkflowVersion), "--toolchain=" + MergePreflightToolchain}
 }
 
 func NewMergePreflightTaskConfig(a MergePreflightAuthority) (*TaskConfig, error) {

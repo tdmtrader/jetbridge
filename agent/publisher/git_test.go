@@ -200,7 +200,7 @@ func TestGitServiceWaitsForConcurrentSemanticOperationAndReturnsCurrentOccurrenc
 	}
 }
 
-func TestGitServiceRejectsStaleBaseBeforeSideEffect(t *testing.T) {
+func TestGitServiceReturnsRebaseRequiredBeforeSideEffect(t *testing.T) {
 	store := publishertest.NewMemoryStore(time.Now)
 	backend := &gitBackendStub{base: "new-base"}
 	service, err := publisher.NewGitService(store, &credentialsStub{credential: publisher.Credential{Reference: "secret/git"}}, changeInspectorStub{change: publisher.RepositoryChange{
@@ -212,7 +212,7 @@ func TestGitServiceRejectsStaleBaseBeforeSideEffect(t *testing.T) {
 	request := branchRequest()
 	publication, err := service.Execute(context.Background(), request)
 	if err != nil || publication.Status != publisher.StatusRebaseRequired || len(backend.operations) != 0 {
-		t.Fatalf("branch stale base = (%+v, %v), operations=%d", publication, err, len(backend.operations))
+		t.Fatalf("branch rebase required = (%+v, %v), operations=%d", publication, err, len(backend.operations))
 	}
 
 	merge := request
@@ -221,8 +221,8 @@ func TestGitServiceRejectsStaleBaseBeforeSideEffect(t *testing.T) {
 	merge.Approval = approvalEvidence("alice", 11)
 	merge.Parameters = map[string]string{"target_branch": "main", "expected_base_sha": "old-base"}
 	publication, err = service.Execute(context.Background(), merge)
-	if err != nil || publication.Status != publisher.StatusStaleBase || len(backend.operations) != 0 {
-		t.Fatalf("merge stale base = (%+v, %v), operations=%d", publication, err, len(backend.operations))
+	if err != nil || publication.Status != publisher.StatusRebaseRequired || len(backend.operations) != 0 {
+		t.Fatalf("merge rebase required = (%+v, %v), operations=%d", publication, err, len(backend.operations))
 	}
 }
 

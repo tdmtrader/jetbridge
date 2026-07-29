@@ -242,10 +242,6 @@ func (service *GitService) Execute(ctx context.Context, request Request) (Public
 	if currentBase != change.BaseSHA {
 		status := StatusRebaseRequired
 		detail := fmt.Sprintf("destination base changed from %s to %s; rebase the repository change before publication", change.BaseSHA, currentBase)
-		if authorizedRequest.Mode == ModeMerge {
-			status = StatusStaleBase
-			detail = fmt.Sprintf("merge approval was for base %s but destination is now %s", change.BaseSHA, currentBase)
-		}
 		return service.store.Complete(ctx, publication.OperationKey, publication.Attempt, Result{
 			Status: status, BaseSHA: currentBase, HeadSHA: change.ResultSHA, Detail: detail,
 		})
@@ -266,13 +262,6 @@ func (service *GitService) Execute(ctx context.Context, request Request) (Public
 				"destination changed during publication from base %s; no publication refs were committed; rebase before retrying",
 				change.BaseSHA,
 			)
-			if authorizedRequest.Mode == ModeMerge {
-				status = StatusStaleBase
-				detail = fmt.Sprintf(
-					"destination changed during publication after approval for base %s; no publication refs were committed; rebase and re-evaluate approval",
-					change.BaseSHA,
-				)
-			}
 			return service.store.Complete(ctx, publication.OperationKey, publication.Attempt, Result{
 				Status: status, HeadSHA: change.ResultSHA, Detail: detail,
 			})

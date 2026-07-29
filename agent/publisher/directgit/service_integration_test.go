@@ -126,7 +126,7 @@ func TestGitServiceReconcilesARealAtomicRemoteAfterCrashWithoutASecondPush(t *te
 	}
 }
 
-func TestGitServiceTurnsARealTargetHeadRaceIntoTerminalStaleBase(t *testing.T) {
+func TestGitServiceTurnsARealTargetHeadRaceIntoTerminalRebaseRequired(t *testing.T) {
 	fixture := newServiceGitFixture(t)
 	commandRunner, err := NewCommandRunner(fixture.tempDir)
 	if err != nil {
@@ -171,7 +171,7 @@ func TestGitServiceTurnsARealTargetHeadRaceIntoTerminalStaleBase(t *testing.T) {
 	marker := publicationMarkerPrefix + strings.TrimPrefix(operationKey, "sha256:")
 
 	publication, err := service.Execute(context.Background(), request)
-	if err != nil || publication.Status != publisher.StatusStaleBase ||
+	if err != nil || publication.Status != publisher.StatusRebaseRequired ||
 		publication.Result.HeadSHA != fixture.result ||
 		!strings.Contains(publication.Result.Detail, "no publication refs were committed") {
 		t.Fatalf("target race = (%+v, %v)", publication, err)
@@ -184,8 +184,8 @@ func TestGitServiceTurnsARealTargetHeadRaceIntoTerminalStaleBase(t *testing.T) {
 	}
 
 	replayed, err := service.Execute(context.Background(), request)
-	if err != nil || replayed.Status != publisher.StatusStaleBase {
-		t.Fatalf("terminal stale replay = (%+v, %v)", replayed, err)
+	if err != nil || replayed.Status != publisher.StatusRebaseRequired {
+		t.Fatalf("terminal rebase replay = (%+v, %v)", replayed, err)
 	}
 }
 

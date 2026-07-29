@@ -99,6 +99,8 @@ const (
 	MethodMerge Method = "merge"
 	// MethodSquash collapses the change into a single commit on the target.
 	MethodSquash Method = "squash"
+	// MethodRebase replays the candidate commits onto the exact target without creating a merge commit.
+	MethodRebase Method = "rebase"
 )
 
 // scratchBranch is where the prospective merge is computed. Using a scratch
@@ -122,6 +124,7 @@ const TrailerKey = "Agent-Change"
 type Plan struct {
 	Branch  string // delivered commit-ish, e.g. refs/concourse/candidate
 	Target  string // target commit-ish, e.g. the resolved target HEAD
+	Base    string // original candidate base commit required by rebase
 	Method  Method
 	Message string // commit message for the merge/squash commit
 }
@@ -138,7 +141,7 @@ type Result struct {
 // not an error — errors are reserved for tooling faults. On conflict the merge
 // is aborted so the working tree stays clean, which repository/v1 requires.
 func Prepare(dir string, plan Plan) (Result, error) {
-	if plan.Method != MethodMerge && plan.Method != MethodSquash {
+	if plan.Method != MethodMerge && plan.Method != MethodSquash && plan.Method != MethodRebase {
 		return Result{}, fmt.Errorf("unknown merge method %q", plan.Method)
 	}
 
@@ -154,6 +157,13 @@ func Prepare(dir string, plan Plan) (Result, error) {
 		_, mergeErr = run(dir, "merge", "--no-ff", "--no-commit", plan.Branch)
 	case MethodSquash:
 		_, mergeErr = run(dir, "merge", "--squash", plan.Branch)
+	case MethodRebase:
+		if strings.TrimSpace(plan.Base) == "" {
+			return Result{}, fmt.Errorf("rebase requires the candidate base")
+		}
+		if _, mergeErr = run(dir, "checkout", "-B", scratchBranch, plan.Branch); mergeErr == nil {
+			_, mergeErr = run(dir, "rebase", "--onto", plan.Target, plan.Base)
+		}
 	}
 
 	if mergeErr != nil {
@@ -167,10 +177,12 @@ func Prepare(dir string, plan Plan) (Result, error) {
 	}
 
 	// A squash leaves changes staged; a --no-commit merge leaves them staged
-	// with MERGE_HEAD set. Both need an explicit commit.
-	if _, err := run(dir, "commit", "-m", plan.Message); err != nil {
-		abort(dir, plan.Method)
-		return Result{}, err
+	// with MERGE_HEAD set. Rebase has already created its replayed commits.
+	if plan.Method != MethodRebase {
+		if _, err := run(dir, "commit", "-m", plan.Message); err != nil {
+			abort(dir, plan.Method)
+			return Result{}, err
+		}
 	}
 
 	sha, err := run(dir, "rev-parse", "HEAD")
@@ -204,6 +216,11 @@ func conflictPaths(dir string) []string {
 func abort(dir string, method Method) {
 	if method == MethodMerge {
 		if _, err := run(dir, "merge", "--abort"); err == nil {
+			return
+		}
+	}
+	if method == MethodRebase {
+		if _, err := run(dir, "rebase", "--abort"); err == nil {
 			return
 		}
 	}
@@ -504,7 +521,7 @@ func (runner *Runner) Merge(ctx context.Context, request Request) (*Merged, erro
 	// 4. The merge itself.
 	message := appendTrailer(request.Message, TrailerKey+": "+document.ResultCommit)
 	result, err := Prepare(request.TargetRoot, Plan{
-		Branch: candidateRef, Target: targetMetadata.HeadSHA, Method: request.Method, Message: message,
+		Branch: candidateRef, Base: document.BaseSHA, Target: targetMetadata.HeadSHA, Method: request.Method, Message: message,
 	})
 	if err != nil {
 		return attempt.errored(fmt.Errorf("compute merge: %w", err)), nil
@@ -601,7 +618,7 @@ func (request Request) validate() error {
 	if strings.TrimSpace(request.ReportAuthority.CapabilityImage) == "" || request.ReportAuthority.WorkflowDefinitionID <= 0 || request.ReportAuthority.WorkflowVersion <= 0 || strings.TrimSpace(request.ReportAuthority.Toolchain) == "" {
 		return fmt.Errorf("repository merge: merge report attestation authority is incomplete")
 	}
-	if request.Method != MethodMerge && request.Method != MethodSquash {
+	if request.Method != MethodMerge && request.Method != MethodSquash && request.Method != MethodRebase {
 		return fmt.Errorf("repository merge: unknown merge method %q", request.Method)
 	}
 	if strings.TrimSpace(request.Message) == "" {

@@ -78,7 +78,7 @@ plan:
           - --target=target
           - --base=base
           - --output=merged-change
-          - --method=merge
+          - --method=rebase
           - --message=Merge delivered change
     input_types:
       base: {type: repository/v1}

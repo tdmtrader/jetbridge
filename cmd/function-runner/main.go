@@ -224,7 +224,7 @@ func runMergeMode(ctx context.Context, mode string, args []string, stdout, stder
 	flags.StringVar(&options.target, "target", "", "repository/v1 delivery-target input mount, as `name` or name=path")
 	flags.StringVar(&options.base, "base", "", "repository/v1 mount holding the candidate's own base, as `name` or name=path")
 	flags.StringVar(&options.output, "output", "", "output mount to materialize into, as `name` or name=path")
-	flags.StringVar(&options.method, "method", string(repositorymerge.MethodMerge), "merge or squash")
+	flags.StringVar(&options.method, "method", string(repositorymerge.MethodRebase), "merge, squash, or rebase")
 	flags.StringVar(&options.message, "message", "Merge delivered change", "commit message for the merge commit")
 	flags.StringVar(&options.profileDigest, "profile-digest", "", "server-owned fixed merge policy digest")
 	flags.StringVar(&options.configDigest, "config-digest", "", "server-owned fixed merge configuration digest")

@@ -232,11 +232,11 @@ func TestServerDerivedBaseDoesNotBypassTheCurrentBaseGate(t *testing.T) {
 		t.Fatal(err)
 	}
 	publication, err := service.Execute(context.Background(), merge)
-	if err != nil || publication.Status != publisher.StatusStaleBase {
-		t.Fatalf("merge with a matching assertion onto a moved target = (%+v, %v), want stale_base", publication, err)
+	if err != nil || publication.Status != publisher.StatusRebaseRequired {
+		t.Fatalf("merge with a matching assertion onto a moved target = (%+v, %v), want rebase_required", publication, err)
 	}
 	if len(backend.operations) != 0 {
-		t.Fatalf("stale base reached the provider: %+v", backend.operations)
+		t.Fatalf("rebase required reached the provider: %+v", backend.operations)
 	}
 	if publication.Result.BaseSHA != backend.base {
 		t.Fatalf("result base = %q, want the destination's current tip %q", publication.Result.BaseSHA, backend.base)
