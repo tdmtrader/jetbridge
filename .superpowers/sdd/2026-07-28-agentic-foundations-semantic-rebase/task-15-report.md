@@ -208,3 +208,11 @@ cross-token caller cannot mutate a stage or begin a new effect, while the exact
 pre-authorized effect may close; retained recovery sources pin their checkpoint
 and archive against reclamation. Non-DB compile check passed again; the serial
 PostgreSQL focus remains the required host evidence.
+
+The first host rerun passed 26/27 focused specs. The remaining failure was
+test-only: the expiry assertion tried to rewrite `fence_expires_at`, which the
+intentional immutable/nonrenewable fence trigger rejects. The fixture now
+acquires a normal 100ms lease, transitions while it is live, waits against
+PostgreSQL `clock_timestamp()`, and asserts the expired-fence mutation
+rejection. Production trigger semantics are unchanged; this requires one final
+host rerun before review.
