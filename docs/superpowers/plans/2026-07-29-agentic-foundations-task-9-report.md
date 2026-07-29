@@ -27,3 +27,27 @@
 - `git diff --check`
 
 All commands above passed at the Task 9 checkpoint.
+
+## Review round 1 correction
+
+- Tightened the runtime trust boundary: only an Agent container with a pinned
+  admitted image can carry the builder; its strictly decoded authority must
+  describe the canonical direct-child typed input/output layout, use built-in
+  record output types, and exactly match the builder projections and sidecar
+  image. Task 8's in-sidecar filesystem validation remains unchanged.
+- The layout check rejects work-root and mismatched projections, input/output
+  cross-root and untyped overlaps, ordinary-secret, cache, and scratch
+  overlaps, mutable images, Task specs, non-record ports, and malformed
+  authority layouts. Jetbridge additionally
+  rejects an otherwise typed projection when its Kubernetes volume is aliased
+  to any other main-container mount path.
+- Focused negative coverage includes the explicit work-root projection case;
+  the builder's own typed-input projection remains read-only without changing
+  the main agent container's input mount behavior.
+
+Verification for this correction:
+
+- `go test ./atc/exec ./atc/worker/jetbridge ./agent/runner ./cmd/agent-output -count=1`
+- `go test ./atc/runtime ./atc/worker/jetbridge ./agent/runner ./cmd/agent-output -count=1`
+- `go test ./deploy -count=1`
+- `git diff --check`

@@ -1324,6 +1324,14 @@ func managedOutputBuilderMounts(builder runtime.ManagedOutputBuilder, mounts []c
 			if filepath.Clean(mount.MountPath) != path {
 				continue
 			}
+			if mount.Name == "" {
+				return fmt.Errorf("managed output builder projection %q has no runtime volume", path)
+			}
+			for _, other := range mounts {
+				if other.Name == mount.Name && filepath.Clean(other.MountPath) != path {
+					return fmt.Errorf("managed output builder projection %q shares runtime volume %q with %q", path, mount.Name, other.MountPath)
+				}
+			}
 			matches++
 			projection := mount
 			projection.ReadOnly = readOnly

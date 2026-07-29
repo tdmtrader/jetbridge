@@ -2,12 +2,16 @@ package jetbridge
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/concourse/concourse/agent/outputbuilder"
+	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/runtime"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -78,19 +82,31 @@ func TestCreatePodWithoutPrivateMountsDoesNotRequirePodUIDOrCreateSecrets(t *tes
 }
 
 func TestManagedOutputBuilderMountsOnePrivateAuthorityFileOnlyInBuilder(t *testing.T) {
+	pinnedImage := "registry.example.test/agent@sha256:" + strings.Repeat("a", 64)
+	digest := snapshot.Digest("sha256:" + strings.Repeat("b", 64))
+	authorityBytes, err := json.Marshal(outputbuilder.NodeAuthority{
+		WorkRoot: "/work",
+		Inputs: map[string]outputbuilder.InputAuthority{"change": {
+			Ref: snapshot.SnapshotRef{ID: 1, Type: "repository-change/v1", Digest: digest}, MountRoot: "/work/change", Exposure: snapshot.FullTreeExposure("/work/change", digest),
+		}},
+		Outputs: map[string]outputbuilder.OutputAuthority{"review": {Port: snapshot.Port{Name: "review", Type: "review/v1"}, MountRoot: "/work/review"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	spec := runtime.ContainerSpec{
-		ImageSpec: runtime.ImageSpec{ImageURL: "busybox:latest"}, Dir: "/work",
-		Inputs:       []runtime.Input{{DestinationPath: "/work/change", ReadOnly: true}},
+		Type: db.ContainerTypeAgent, ImageSpec: runtime.ImageSpec{ImageURL: pinnedImage}, Dir: "/work",
+		Inputs:       []runtime.Input{{DestinationPath: "/work/change"}},
 		Outputs:      runtime.OutputPaths{"review": "/work/review", "flight": "/work/flight"},
 		Caches:       []string{"/work/cache"},
 		ScratchPaths: []string{"/work/scratch"},
 		SecretMounts: []runtime.SecretMount{{SecretName: "ordinary", MountPath: "/work/ordinary-secret"}},
 		Sidecars: []atc.SidecarConfig{
 			{Name: "observer", Image: "busybox:latest"},
-			{Name: runtime.ManagedOutputBuilderName, Image: "busybox:latest", Command: []string{"/usr/local/bin/agent-output", "serve"}, Ports: []atc.SidecarPort{{ContainerPort: 7783, Protocol: "TCP"}}, WorkingDir: "/"},
+			{Name: runtime.ManagedOutputBuilderName, Image: pinnedImage, Command: []string{"/usr/local/bin/agent-output", "serve"}, Ports: []atc.SidecarPort{{ContainerPort: 7783, Protocol: "TCP"}}, WorkingDir: "/"},
 		},
 		ManagedOutputBuilder: &runtime.ManagedOutputBuilder{
-			Authority:       runtime.PrivateFileMount{MountPath: runtime.ManagedOutputBuilderAuthorityMountRoot, Files: map[string][]byte{runtime.ManagedOutputBuilderAuthorityFile: []byte("trusted")}},
+			Authority:       runtime.PrivateFileMount{MountPath: runtime.ManagedOutputBuilderAuthorityMountRoot, Files: map[string][]byte{runtime.ManagedOutputBuilderAuthorityFile: authorityBytes}},
 			InputMountPaths: []string{"/work/change"}, OutputMountPaths: []string{"/work/review"},
 		},
 	}
@@ -124,6 +140,18 @@ func TestManagedOutputBuilderMountsOnePrivateAuthorityFileOnlyInBuilder(t *testi
 	}
 	if len(got) != 3 || !got["/work/change"].ReadOnly || got["/work/review"].ReadOnly || got["/work/flight"].Name != "" || got["/work/cache"].Name != "" || got["/work/scratch"].Name != "" || got["/work/ordinary-secret"].Name != "" || got["/work"].Name != "" {
 		t.Fatalf("managed builder mounts = %#v; want only typed input, typed output, and authority", builder.VolumeMounts)
+	}
+}
+
+func TestManagedOutputBuilderMountsRejectAliasedTypedVolume(t *testing.T) {
+	_, err := managedOutputBuilderMounts(runtime.ManagedOutputBuilder{
+		InputMountPaths: []string{"/work/change"},
+	}, []corev1.VolumeMount{
+		{Name: "typed-input", MountPath: "/work/change"},
+		{Name: "typed-input", MountPath: "/work/ordinary-secret"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "shares runtime volume") {
+		t.Fatalf("aliased typed volume error = %v, want fail-closed alias rejection", err)
 	}
 }
 
