@@ -207,9 +207,9 @@
     capture derives bindings from the successful selecting build and frozen
     declaration; archive/create serialize on the source-pipeline owner row;
     and focused DB coverage now checks lifecycle ownership, derivation, and
-    idempotency. The serial PostgreSQL run was sandbox-blocked by denied System
-    V shared memory before executing specs; workflow and DB/migration compile
-    checks passed.
+    idempotency. The sandbox PostgreSQL run was blocked by denied System V
+    shared memory; the identical host-access rerun passed 2/2 focused specs.
+    Workflow and DB/migration compile checks also passed.
   - Concern: source capture/reuse orchestration remains Task 13.
 - [ ] Task 13 — source capture/reuse runtime
 - [ ] Task 14 — direct in-ATC publication

@@ -105,10 +105,10 @@ Implementation commit: `f9de627f40 fix(workflow): harden source admission bindin
    against a new capture admission.
 4. Added serial DB behavioral coverage for team-scoped lifecycle ownership,
    drain/archive rejecting later create, selecting-build-derived binding/type,
-   and idempotent replay/conflict. The narrow suite was attempted once but its
-   PostgreSQL BeforeSuite could not create System V shared memory in this
-   sandbox (`shmget: Operation not permitted`), so it ran zero specs. Package
-   compilation passed, as did workflow tests and migration-package compilation.
+   and idempotent replay/conflict. The sandbox attempt could not create System
+   V shared memory, but the identical host-access rerun executed and passed
+   both focused specs. Package compilation, workflow tests, and
+   migration-package compilation also passed.
 
 Verification for this correction:
 
@@ -116,5 +116,6 @@ Verification for this correction:
 - `go test ./atc/db -run '^$' -count=1` — passed.
 - `go test ./atc/db/migration -run '^$' -count=1` — passed.
 - `ginkgo --procs=1 --focus='workflow resource-source admission persistence' ./atc/db`
-  — blocked before specs by the sandbox PostgreSQL shared-memory restriction.
+  — host-access rerun passed 2/2 focused specs after the sandbox
+  shared-memory restriction.
 - `git diff --check` — passed.
