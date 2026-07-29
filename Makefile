@@ -1,4 +1,4 @@
-.PHONY: test-unit test-dev-mcp test-fly-integration test-integration test-k8s test-k8s-integration test-k8s-behavioral test-quick test-all
+.PHONY: test-unit test-dev-mcp test-fly-integration test-integration test-hangar-integration test-k8s test-k8s-integration test-k8s-behavioral test-quick test-all
 
 # Unit tests: all packages except integration/e2e suites (~5 min)
 # Requires: PostgreSQL running locally
@@ -31,6 +31,15 @@ test-fly-integration:
 test-integration:
 	@echo "==> Running ATC integration tests..."
 	ginkgo -r --keep-going -p ./atc/integration/
+
+# Hangar durable GCS contract (~2 min)
+# Requires: a running Docker daemon, or CONCOURSE_HANGAR_TEST_GCS_ENDPOINT
+# pointed at the in-cluster-compatible emulator endpoint.
+test-hangar-integration:
+	@echo "==> Running Hangar integration contracts..."
+	@command -v docker >/dev/null 2>&1 || { test -n "$$CONCOURSE_HANGAR_TEST_GCS_ENDPOINT" || { echo "ERROR: docker is required unless CONCOURSE_HANGAR_TEST_GCS_ENDPOINT is set"; exit 1; }; }
+	@if test -z "$$CONCOURSE_HANGAR_TEST_GCS_ENDPOINT"; then docker info >/dev/null 2>&1 || { echo "ERROR: a running Docker daemon is required"; exit 1; }; fi
+	go test -tags=integration ./agent/hangar -run '^Test(FakeGCSContainerRegistersCleanupBeforeReturningStartError|GCSStoreFakeServer)$$' -count=1 -v
 
 # K8s integration tests (~30 min)
 # Requires: Docker, KinD, Helm, kubectl
