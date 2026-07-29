@@ -14,6 +14,97 @@ import (
 	"code.cloudfoundry.org/lager/v3/lagertest"
 )
 
+func TestPreemptionNoticeEndpointLatchesOneNoticeAndHonorsItsBoundedWait(t *testing.T) {
+	server := NewServer(lagertest.NewTestLogger("preemption-notice"), t.TempDir(), "node-a")
+	observed := time.Date(2026, time.July, 29, 12, 0, 0, 0, time.UTC)
+	if !server.RecordPreemptionNotice(observed) {
+		t.Fatal("first preemption notice was not recorded")
+	}
+	if server.RecordPreemptionNotice(observed.Add(time.Second)) {
+		t.Fatal("second preemption notice replaced the latched notice")
+	}
+
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/checkpoints/v1/preemption-notice?after=0&wait=0s", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("notice status = %d, want %d", response.Code, http.StatusOK)
+	}
+	if got, want := response.Body.String(), `{"sequence":1,"observed_at":"2026-07-29T12:00:00Z"}`+"\n"; got != want {
+		t.Fatalf("notice body = %q, want %q", got, want)
+	}
+
+	response = httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/checkpoints/v1/preemption-notice?after=1&wait=0s", nil))
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("acknowledged notice status = %d, want %d", response.Code, http.StatusNoContent)
+	}
+}
+
+func TestPreemptionNoticeEndpointRequiresMTLSAndRejectsInvalidBounds(t *testing.T) {
+	server := NewServer(lagertest.NewTestLogger("preemption-notice"), t.TempDir(), "node-a")
+	handler := server.Handler(WithTLS())
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/checkpoints/v1/preemption-notice?wait=0s", nil))
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("uncredentialed notice status = %d, want %d", response.Code, http.StatusUnauthorized)
+	}
+
+	response = httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/checkpoints/v1/preemption-notice?wait=26s", nil))
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("unbounded notice wait status = %d, want %d", response.Code, http.StatusBadRequest)
+	}
+}
+
+func TestPreemptionWatcherCanRecordOneInjectedNodeNotice(t *testing.T) {
+	server := NewServer(lagertest.NewTestLogger("preemption-notice"), t.TempDir(), "node-a")
+	metadata := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("TRUE"))
+	}))
+	defer metadata.Close()
+
+	watcher := NewPreemptionWatcher(lagertest.NewTestLogger("preemption-watcher"), metadata.URL, func(context.Context) {
+		server.RecordPreemptionNotice(time.Time{})
+	})
+	watcher.Run(context.Background())
+
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/checkpoints/v1/preemption-notice?wait=0s", nil))
+	if response.Code != http.StatusOK || response.Body.String() == "" {
+		t.Fatalf("latched watcher notice = status %d body %q", response.Code, response.Body.String())
+	}
+}
+
+func TestStartPreemptionWatcherLatchesNoticeWithoutMirror(t *testing.T) {
+	server := NewServer(lagertest.NewTestLogger("preemption-notice"), t.TempDir(), "node-a")
+	metadata := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("TRUE"))
+	}))
+	defer metadata.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	startPreemptionWatcher(ctx, lagertest.NewTestLogger("preemption-watcher"), server, nil, time.Second, metadata.URL)
+	eventuallyPreemptionNotice(t, server)
+}
+
+func eventuallyPreemptionNotice(t *testing.T, server *Server) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/checkpoints/v1/preemption-notice?wait=0s", nil))
+		if response.Code == http.StatusOK {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("watcher did not latch the injected preemption notice")
+}
+
 // ---------------------------------------------------------------------------
 // preemption.Watcher — long-poll GCP metadata for spot preemption notice.
 // ---------------------------------------------------------------------------

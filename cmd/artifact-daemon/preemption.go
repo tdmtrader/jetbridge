@@ -2,9 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
@@ -17,6 +21,151 @@ import (
 // connection open until the value transitions, providing efficient
 // long-polling without a busy loop.
 const DefaultPreemptionMetadataURL = "http://metadata.google.internal/computeMetadata/v1/instance/preempted"
+
+// maxPreemptionNoticeWait bounds one daemon notice long-poll below the GCE
+// preemption warning window. Callers may reissue a request after a 204.
+const maxPreemptionNoticeWait = 25 * time.Second
+
+// preemptionNotice is node-local: it deliberately contains no attempt,
+// checkpoint, or principal identity.
+type preemptionNotice struct {
+	Sequence   uint64    `json:"sequence"`
+	ObservedAt time.Time `json:"observed_at"`
+}
+
+// preemptionNoticeLatch coalesces a real node warning into a single immutable
+// notice. It neither initiates process shutdown nor fabricates notices.
+type preemptionNoticeLatch struct {
+	mu      sync.Mutex
+	notice  preemptionNotice
+	changed chan struct{}
+}
+
+func newPreemptionNoticeLatch() *preemptionNoticeLatch {
+	return &preemptionNoticeLatch{changed: make(chan struct{})}
+}
+
+func (l *preemptionNoticeLatch) record(observedAt time.Time) bool {
+	if l == nil {
+		return false
+	}
+	if observedAt.IsZero() {
+		observedAt = time.Now().UTC()
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.notice.Sequence != 0 {
+		return false
+	}
+	l.notice = preemptionNotice{Sequence: 1, ObservedAt: observedAt.UTC()}
+	close(l.changed)
+	return true
+}
+
+func (l *preemptionNoticeLatch) wait(ctx context.Context, after uint64) (preemptionNotice, bool) {
+	if l == nil {
+		return preemptionNotice{}, false
+	}
+	for {
+		l.mu.Lock()
+		notice := l.notice
+		changed := l.changed
+		l.mu.Unlock()
+		if notice.Sequence > after {
+			return notice, true
+		}
+		if notice.Sequence != 0 {
+			<-ctx.Done()
+			return preemptionNotice{}, false
+		}
+		select {
+		case <-ctx.Done():
+			return preemptionNotice{}, false
+		case <-changed:
+		}
+	}
+}
+
+// RecordPreemptionNotice records an externally observed node notice once. The
+// watcher and metadata source remain explicitly injected by daemon startup.
+func (s *Server) RecordPreemptionNotice(observedAt time.Time) bool {
+	if s == nil {
+		return false
+	}
+	return s.preemptionNotices.record(observedAt)
+}
+
+func (s *Server) handlePreemptionNotice(w http.ResponseWriter, r *http.Request) {
+	after, err := parsePreemptionNoticeAfter(r.URL.Query().Get("after"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	wait, err := parsePreemptionNoticeWait(r.URL.Query().Get("wait"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), wait)
+	defer cancel()
+	notice, ok := s.preemptionNotices.wait(ctx, after)
+	if !ok {
+		if r.Context().Err() != nil {
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(notice); err != nil {
+		s.logger.Debug("write-preemption-notice-failed", lager.Data{"error": err.Error()})
+	}
+}
+
+func parsePreemptionNoticeAfter(raw string) (uint64, error) {
+	if raw == "" {
+		return 0, nil
+	}
+	after, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid preemption notice cursor")
+	}
+	return after, nil
+}
+
+func parsePreemptionNoticeWait(raw string) (time.Duration, error) {
+	if raw == "" {
+		return maxPreemptionNoticeWait, nil
+	}
+	wait, err := time.ParseDuration(raw)
+	if err != nil || wait < 0 || wait > maxPreemptionNoticeWait {
+		return 0, fmt.Errorf("preemption notice wait must be between 0s and %s", maxPreemptionNoticeWait)
+	}
+	return wait, nil
+}
+
+// startPreemptionWatcher connects the explicitly enabled metadata source to
+// the daemon's node-local latch. Mirroring remains optional and is never the
+// authority for publishing a preemption notice.
+func startPreemptionWatcher(
+	ctx context.Context,
+	logger lager.Logger,
+	server *Server,
+	mirror *Mirror,
+	budget time.Duration,
+	metadataURL string,
+) {
+	watcher := NewPreemptionWatcher(logger.Session("preempt"), metadataURL, func(ctx context.Context) {
+		latched := server.RecordPreemptionNotice(time.Now().UTC())
+		logger.Info("preemption-notice-latched", lager.Data{"recorded": latched})
+		if mirror == nil {
+			return
+		}
+		logger.Info("evacuating-on-preemption", lager.Data{"budget": budget.String()})
+		mirror.Evacuate(ctx, budget)
+	})
+	go watcher.Run(ctx)
+}
 
 // PreemptionWatcher long-polls the GCP metadata server's `preempted`
 // endpoint and fires a callback exactly once when the value transitions

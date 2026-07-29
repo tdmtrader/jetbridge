@@ -214,26 +214,21 @@ func main() {
 
 	httpServer := newArtifactHTTPServer(*port, server.Handler(handlerOpts...))
 
-	// Wire preemption watcher if enabled. The watcher long-polls GCP
-	// metadata in its own goroutine and fires Mirror.Evacuate when the
-	// preempted endpoint transitions to TRUE.
+	// Wire preemption watcher if enabled. The watcher always latches a real
+	// node-local metadata notice; mirroring is optional follow-up work.
 	preemptCtx, preemptCancel := context.WithCancel(context.Background())
 	defer preemptCancel()
-	if *preemptionWatch && mirror != nil {
-		watcher := NewPreemptionWatcher(logger.Session("preempt"), DefaultPreemptionMetadataURL,
-			func(ctx context.Context) {
-				logger.Info("evacuating-on-preemption", lager.Data{
-					"budget": preemptionBudget.String(),
-				})
-				mirror.Evacuate(ctx, *preemptionBudget)
-			})
-		go watcher.Run(preemptCtx)
+	if *preemptionWatch {
+		startPreemptionWatcher(
+			preemptCtx,
+			logger,
+			server,
+			mirror,
+			*preemptionBudget,
+			DefaultPreemptionMetadataURL,
+		)
 		logger.Info("preemption-watcher-started", lager.Data{
 			"budget": preemptionBudget.String(),
-		})
-	} else if *preemptionWatch {
-		logger.Info("preemption-watch-disabled", lager.Data{
-			"reason": "mirror not configured (--mirror-replicas=0 or no node-name)",
 		})
 	}
 
