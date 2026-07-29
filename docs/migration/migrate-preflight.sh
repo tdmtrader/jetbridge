@@ -67,7 +67,9 @@ v8.0.1:1765921815
 # durable execution attempts without restoring a legacy runner.
 # 1773106146-47 attribute metrics and transcripts to those exact attempts
 # while preserving the legacy build/plan projections.
-JETBRIDGE_VERSION=1773106147
+# 1773106148 associates a started experiment with each ready, immutable
+# workflow resource-source admission it reuses across cells and retries.
+JETBRIDGE_VERSION=1773106148
 
 # Minimum supported source version (v6.x)
 MIN_SUPPORTED_VERSION=1601993582

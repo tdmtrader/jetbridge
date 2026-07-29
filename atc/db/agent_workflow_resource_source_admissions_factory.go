@@ -26,7 +26,7 @@ type WorkflowResourceSourcePipeline struct {
 	PipelineConfigVersion int
 	ConfigHash            string
 	SourceDeclarations    []ResourceSourceDeclaration
-	State                 string
+	State                 AgentWorkflowResourceSourcePipelineState
 }
 
 // ResourceSourceDeclaration is frozen alongside the pipeline registration so
@@ -302,7 +302,34 @@ func deriveSourceBindings(ctx context.Context, tx Tx, request CreateWorkflowReso
 }
 
 func derivedCaptureOperationKey(request CreateWorkflowResourceSourceAdmissionRequest, configVersion int, binding derivedResourceSourceBinding) string {
-	payload, _ := atc.CanonicalJSON(struct {
+	key, _ := WorkflowResourceSourceCaptureOperationKey(
+		request.TeamID,
+		request.WorkflowDefinitionID,
+		request.SourcePipelineID,
+		configVersion,
+		binding.SourceName,
+		binding.ResourceName,
+		binding.VersionDigest,
+		binding.SnapshotType,
+	)
+	return key
+}
+
+// WorkflowResourceSourceCaptureOperationKey derives the immutable capture
+// identity from the same durable selecting-build evidence used by Task 12.
+// Runtime capture reuses this function so it cannot revive the historical
+// admission-ID string key or substitute another source selection.
+func WorkflowResourceSourceCaptureOperationKey(
+	teamID, definitionID, pipelineID, pipelineConfigVersion int,
+	sourceName, resourceName, versionDigest string,
+	snapshotType snapshot.TypeRef,
+) (string, error) {
+	if teamID <= 0 || definitionID <= 0 || pipelineID <= 0 || pipelineConfigVersion <= 0 ||
+		strings.TrimSpace(sourceName) == "" || strings.TrimSpace(resourceName) == "" ||
+		!validResourceSourceVersionDigest(versionDigest) || snapshotType.Validate() != nil {
+		return "", fmt.Errorf("db: invalid workflow resource source capture identity")
+	}
+	payload, err := atc.CanonicalJSON(struct {
 		TeamID                int              `json:"team_id"`
 		DefinitionID          int              `json:"definition_id"`
 		PipelineID            int              `json:"pipeline_id"`
@@ -311,9 +338,16 @@ func derivedCaptureOperationKey(request CreateWorkflowResourceSourceAdmissionReq
 		Resource              string           `json:"resource"`
 		VersionDigest         string           `json:"version_digest"`
 		SnapshotType          snapshot.TypeRef `json:"snapshot_type"`
-	}{request.TeamID, request.WorkflowDefinitionID, request.SourcePipelineID, configVersion, binding.SourceName, binding.ResourceName, binding.VersionDigest, binding.SnapshotType})
+	}{teamID, definitionID, pipelineID, pipelineConfigVersion, sourceName, resourceName, versionDigest, snapshotType})
+	if err != nil {
+		return "", fmt.Errorf("db: canonicalize workflow resource source capture identity: %w", err)
+	}
 	sum := sha256.Sum256(append([]byte("workflow-resource-source-capture/v1\x00"), payload...))
-	return fmt.Sprintf("%x", sum[:])
+	return fmt.Sprintf("%x", sum[:]), nil
+}
+
+func validResourceSourceVersionDigest(value string) bool {
+	return (len(value) == 32 || len(value) == 64) && regexp.MustCompile(`^[0-9a-f]+$`).MatchString(value)
 }
 
 var lowerHex64 = regexp.MustCompile(`^[0-9a-f]{64}$`)

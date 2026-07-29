@@ -84,8 +84,9 @@ func (resolver *ATCResolver) Resolve(ctx context.Context, request ResolveRequest
 	}
 	return ResolvedResource{
 		TeamID: request.TeamID, TeamName: request.TeamName,
+		PipelineID:            pipeline.ID(),
 		Pipeline:              atc.PipelineRef{Name: pipeline.Name(), InstanceVars: cloneInstanceVars(pipeline.InstanceVars())},
-		PipelineConfigVersion: int(pipeline.ConfigVersion()), Resource: resourceConfig,
+		PipelineConfigVersion: int(pipeline.ConfigVersion()), ResourceID: resource.ID(), Resource: resourceConfig,
 		ResourceTypes: resourceTypes.Deserialize(), ResourceConfigVersionID: version.ID(), ResourceVersionID: version.ID(),
 		Version: cloneVersion(publicVersion.Version), Enabled: publicVersion.Enabled, CapturedAt: resolver.now().UTC(),
 	}, true, nil

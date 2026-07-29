@@ -5,13 +5,16 @@
 package resourcecapture
 
 import (
+	"bytes"
 	"context"
+	"crypto/md5" // #nosec G501 -- validates legacy persisted Concourse version digests.
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
+	"regexp"
 	"strings"
 	"time"
 
@@ -34,6 +37,10 @@ var (
 	ErrTypeRequired      = errors.New("snapshot type is required for this resource type")
 	ErrUnavailable       = errors.New("resource capture is unavailable")
 	ErrOutputUnavailable = errors.New("resource capture output is unavailable or unauthorized")
+	// ErrPersistedSelectionDrift rejects a capture before it can create a
+	// template when current ATC state no longer proves the exact scheduler
+	// selection persisted by a source admission.
+	ErrPersistedSelectionDrift = errors.New("resource capture persisted selection drifted")
 )
 
 type Request struct {
@@ -103,8 +110,10 @@ func (request ResolveRequest) Clone() ResolveRequest {
 type ResolvedResource struct {
 	TeamID                  int
 	TeamName                string
+	PipelineID              int
 	Pipeline                atc.PipelineRef
 	PipelineConfigVersion   int
+	ResourceID              int
 	Resource                atc.ResourceConfig
 	ResourceTypes           atc.ResourceTypes
 	ResourceConfigVersionID int
@@ -112,6 +121,71 @@ type ResolvedResource struct {
 	Version                 atc.Version
 	Enabled                 bool
 	CapturedAt              time.Time
+}
+
+// PersistedSelection is server-derived source-admission evidence. It is used
+// only by the composition adapter after the admission store has already
+// verified the selecting build; public Capture requests cannot provide it.
+type PersistedSelection struct {
+	AdmissionID             int64
+	WorkflowDefinitionID    int
+	SourceName              string
+	TeamID                  int
+	TeamName                string
+	SourcePipelineID        int
+	PipelineID              int
+	Pipeline                atc.PipelineRef
+	PipelineConfigVersion   int
+	ResourceID              int
+	Resource                atc.ResourceConfig
+	ResourceTypes           atc.ResourceTypes
+	ResourceConfigVersionID int
+	ResourceVersionID       int
+	VersionDigest           string
+	Version                 atc.Version
+	SnapshotType            snapshot.TypeRef
+	CaptureOperationKey     string
+}
+
+func (selection PersistedSelection) Clone() PersistedSelection {
+	selection.Pipeline.InstanceVars = cloneInstanceVars(selection.Pipeline.InstanceVars)
+	selection.Version = cloneVersion(selection.Version)
+	if copied, err := copystructure.Copy(selection.Resource); err == nil {
+		selection.Resource = copied.(atc.ResourceConfig)
+	}
+	if copied, err := copystructure.Copy(selection.ResourceTypes); err == nil {
+		selection.ResourceTypes = copied.(atc.ResourceTypes)
+	}
+	return selection
+}
+
+func (selection PersistedSelection) validate() error {
+	if selection.AdmissionID <= 0 || selection.WorkflowDefinitionID <= 0 || strings.TrimSpace(selection.SourceName) == "" ||
+		selection.TeamID <= 0 || strings.TrimSpace(selection.TeamName) == "" ||
+		selection.SourcePipelineID <= 0 || selection.PipelineID <= 0 ||
+		selection.SourcePipelineID != selection.PipelineID ||
+		strings.TrimSpace(selection.Pipeline.Name) == "" ||
+		selection.PipelineConfigVersion <= 0 || selection.ResourceID <= 0 ||
+		strings.TrimSpace(selection.Resource.Name) == "" ||
+		strings.TrimSpace(selection.Resource.Type) == "" ||
+		selection.ResourceConfigVersionID <= 0 || selection.ResourceVersionID <= 0 ||
+		len(selection.Version) == 0 || strings.TrimSpace(selection.CaptureOperationKey) == "" {
+		return fmt.Errorf("%w: invalid durable selection identity", ErrPersistedSelectionDrift)
+	}
+	if err := selection.SnapshotType.Validate(); err != nil {
+		return fmt.Errorf("%w: invalid declared snapshot type: %v", ErrPersistedSelectionDrift, err)
+	}
+	if err := validateVersionDigest(selection.VersionDigest, selection.Version); err != nil {
+		return fmt.Errorf("%w: %v", ErrPersistedSelectionDrift, err)
+	}
+	expected, err := db.WorkflowResourceSourceCaptureOperationKey(
+		selection.TeamID, selection.WorkflowDefinitionID, selection.SourcePipelineID, selection.PipelineConfigVersion,
+		selection.SourceName, selection.Resource.Name, selection.VersionDigest, selection.SnapshotType,
+	)
+	if err != nil || !sourceCaptureOperationKeyPattern.MatchString(selection.CaptureOperationKey) || selection.CaptureOperationKey != expected {
+		return fmt.Errorf("%w: capture operation key is invalid", ErrPersistedSelectionDrift)
+	}
+	return nil
 }
 
 func (resolved ResolvedResource) validate() error {
@@ -374,6 +448,173 @@ func (capturer *Capturer) Capture(ctx context.Context, request Request) (Capture
 	}
 	return CaptureResult{}, fmt.Errorf("resource capture: retry generations did not converge")
 }
+
+// CapturePersistedSelection seals only an exact selection that has already
+// been derived from a durable standing-pipeline build. It re-resolves that
+// exact version and fails closed if any ownership/configuration/version field
+// has changed before a capture template or build can be created.
+func (capturer *Capturer) CapturePersistedSelection(ctx context.Context, selection PersistedSelection) (CaptureResult, error) {
+	if err := contextError(ctx); err != nil {
+		return CaptureResult{}, err
+	}
+	selection = selection.Clone()
+	if err := selection.validate(); err != nil {
+		return CaptureResult{}, err
+	}
+	resolved, found, err := capturer.resolver.Resolve(ctx, ResolveRequest{
+		TeamID: selection.TeamID, TeamName: selection.TeamName, Pipeline: selection.Pipeline,
+		Resource: selection.Resource.Name, Version: cloneVersion(selection.Version),
+	})
+	if err != nil {
+		return CaptureResult{}, fmt.Errorf("resource capture: resolve persisted exact version: %w", err)
+	}
+	if !found {
+		return CaptureResult{}, fmt.Errorf("%w: exact resource version is unavailable", ErrPersistedSelectionDrift)
+	}
+	if err := resolved.validate(); err != nil {
+		return CaptureResult{}, fmt.Errorf("%w: resolver returned invalid evidence: %v", ErrPersistedSelectionDrift, err)
+	}
+	if err := verifyPersistedSelection(selection, resolved); err != nil {
+		return CaptureResult{}, err
+	}
+	if !resolved.Enabled {
+		return CaptureResult{}, ErrDisabled
+	}
+	if capturer.taskImage == "" {
+		return CaptureResult{}, fmt.Errorf("%w: agent step image is not configured", ErrUnavailable)
+	}
+	if err := atc.ValidatePinnedOCIImage(capturer.taskImage); err != nil {
+		return CaptureResult{}, fmt.Errorf("%w: agent step image must be immutable: %v", ErrUnavailable, err)
+	}
+	_, resourceHash, err := captureIdentity(resolved, selection.SnapshotType, capturer.taskImage)
+	if err != nil {
+		return CaptureResult{}, err
+	}
+	metadata, err := json.Marshal(SourceMetadata{
+		Adapter: AdapterResourceVersion, OperationKey: selection.CaptureOperationKey, Team: resolved.TeamName,
+		Pipeline: resolved.Pipeline.Name, PipelineInstanceVars: cloneInstanceVars(resolved.Pipeline.InstanceVars),
+		PipelineConfigVersion: resolved.PipelineConfigVersion, Resource: resolved.Resource.Name,
+		ResourceType: resolved.Resource.Type, ResourceConfigVersionID: resolved.ResourceConfigVersionID,
+		ResourceVersionID: resolved.ResourceVersionID, ResourceConfigHash: resourceHash,
+		Version: cloneVersion(resolved.Version), SnapshotType: selection.SnapshotType,
+	})
+	if err != nil {
+		return CaptureResult{}, fmt.Errorf("resource capture: encode persisted source metadata: %w", err)
+	}
+	config, err := captureConfig(resolved, selection.SnapshotType, metadata, capturer.taskImage)
+	if err != nil {
+		return CaptureResult{}, err
+	}
+	canonical, err := config.CanonicalJSON()
+	if err != nil {
+		return CaptureResult{}, fmt.Errorf("resource capture: canonicalize persisted template: %w", err)
+	}
+	configDigest := sha256.Sum256(canonical)
+	spec := TemplateSpec{
+		TeamID: resolved.TeamID, TeamName: resolved.TeamName,
+		Name: templateNamePrefix + selection.CaptureOperationKey[:24], OperationKey: selection.CaptureOperationKey,
+		FullHash: hex.EncodeToString(configDigest[:]), CanonicalJSON: canonical, Config: config,
+	}
+	template, err := capturer.templates.SaveOrReuse(ctx, spec)
+	if err != nil {
+		return CaptureResult{}, fmt.Errorf("resource capture: save persisted immutable template: %w", err)
+	}
+	if template.ID <= 0 || template.Name != spec.Name {
+		return CaptureResult{}, fmt.Errorf("resource capture: persisted selection template identity mismatch")
+	}
+	executionRequest := ExecutionRequest{
+		TeamID: resolved.TeamID, TeamName: resolved.TeamName, OperationKey: selection.CaptureOperationKey,
+		Template: template, CreatedBy: "system:workflow-resource-source",
+	}
+	for handoffs := 0; handoffs < 4; handoffs++ {
+		execution, created, err := capturer.executions.StartOrGet(ctx, executionRequest)
+		if err != nil {
+			return CaptureResult{}, fmt.Errorf("resource capture: start persisted execution: %w", err)
+		}
+		if err := execution.validate(); err != nil || execution.TemplatePipelineID != template.ID {
+			return CaptureResult{}, fmt.Errorf("%w: persisted capture execution drifted", ErrPersistedSelectionDrift)
+		}
+		result := CaptureResult{OperationKey: selection.CaptureOperationKey, Created: created, Execution: execution}
+		if execution.Status == db.PipelineRunFailed || execution.Status == db.PipelineRunErrored || execution.Status == db.PipelineRunAborted {
+			if executionRequest.RetryPipelineRunID == 0 {
+				executionRequest.RetryPipelineRunID = execution.PipelineRunID
+				continue
+			}
+			return result, nil
+		}
+		if execution.Status != db.PipelineRunSucceeded {
+			return result, nil
+		}
+		manifest, _, err := capturer.outputs.Finalize(ctx, OutputRequest{
+			TeamID: resolved.TeamID, TeamName: resolved.TeamName, PipelineRunID: execution.PipelineRunID,
+			OperationKey: selection.CaptureOperationKey, OutputPort: outputPort,
+			ExpectedType: selection.SnapshotType, Actor: "system:workflow-resource-source",
+		})
+		if errors.Is(err, ErrOutputUnavailable) {
+			executionRequest.RetryPipelineRunID = execution.PipelineRunID
+			continue
+		}
+		if err != nil {
+			return CaptureResult{}, fmt.Errorf("resource capture: finalize persisted output: %w", err)
+		}
+		if manifest.Type != selection.SnapshotType {
+			return CaptureResult{}, fmt.Errorf("%w: persisted output type changed", ErrPersistedSelectionDrift)
+		}
+		result.Snapshot = &manifest
+		return result, nil
+	}
+	return CaptureResult{}, fmt.Errorf("resource capture: persisted retry generations did not converge")
+}
+
+func verifyPersistedSelection(selection PersistedSelection, resolved ResolvedResource) error {
+	if selection.TeamID != resolved.TeamID || selection.TeamName != resolved.TeamName ||
+		selection.SourcePipelineID != resolved.PipelineID || selection.PipelineID != resolved.PipelineID ||
+		!reflect.DeepEqual(selection.Pipeline, resolved.Pipeline) ||
+		selection.PipelineConfigVersion != resolved.PipelineConfigVersion ||
+		selection.ResourceID != resolved.ResourceID ||
+		selection.ResourceConfigVersionID != resolved.ResourceConfigVersionID ||
+		selection.ResourceVersionID != resolved.ResourceVersionID ||
+		!reflect.DeepEqual(selection.Version, resolved.Version) {
+		return ErrPersistedSelectionDrift
+	}
+	if err := validateVersionDigest(selection.VersionDigest, resolved.Version); err != nil {
+		return fmt.Errorf("%w: %v", ErrPersistedSelectionDrift, err)
+	}
+	for _, value := range []struct{ expected, actual any }{
+		{selection.Resource, resolved.Resource}, {selection.ResourceTypes, resolved.ResourceTypes},
+	} {
+		expected, expectedErr := atc.CanonicalJSON(value.expected)
+		actual, actualErr := atc.CanonicalJSON(value.actual)
+		if expectedErr != nil || actualErr != nil || !bytes.Equal(expected, actual) {
+			return ErrPersistedSelectionDrift
+		}
+	}
+	return nil
+}
+
+func validateVersionDigest(digest string, version atc.Version) error {
+	encoded, err := json.Marshal(version)
+	if err != nil {
+		return err
+	}
+	switch len(digest) {
+	case md5.Size * 2:
+		sum := md5.Sum(encoded) // #nosec G401 -- validates legacy persisted Concourse digests.
+		if digest == hex.EncodeToString(sum[:]) {
+			return nil
+		}
+	case sha256.Size * 2:
+		sum := sha256.Sum256(encoded)
+		if digest == hex.EncodeToString(sum[:]) {
+			return nil
+		}
+	default:
+		return fmt.Errorf("version digest is malformed")
+	}
+	return fmt.Errorf("version JSON does not match its persisted digest")
+}
+
+var sourceCaptureOperationKeyPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 func captureIdentity(resolved ResolvedResource, snapshotType snapshot.TypeRef, taskImage string) (string, string, error) {
 	resourceJSON, err := atc.CanonicalJSON(resolved.Resource)

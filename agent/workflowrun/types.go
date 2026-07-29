@@ -66,6 +66,26 @@ type BindResult struct {
 	Created bool
 }
 
+// ReadySourceAdmission is a server-derived immutable set of sealed source
+// inputs. It is constructed only by the admission runtime; it is not decoded
+// from workflow-run request payloads.
+type ReadySourceAdmission struct {
+	AdmissionID          int64
+	TeamID               int
+	WorkflowDefinitionID int
+	WorkflowName         string
+	WorkflowVersion      int
+	SourceConfigHash     string
+	Inputs               map[string]snapshot.SnapshotRef
+}
+
+// ResourceSourceAdmitter is the trusted boundary between ordinary Concourse
+// source selection and an executable workflow run.
+type ResourceSourceAdmitter interface {
+	AdmitManual(context.Context, AdmissionContext, workflow.ResourceSourcePipelineTarget, string) (ReadySourceAdmission, error)
+	LoadReady(context.Context, int, int64, workflow.ResourceSourcePipelineTarget) (ReadySourceAdmission, error)
+}
+
 type BudgetAdmission struct {
 	WorkflowRunID snapshot.WorkflowRunID
 	Config        atc.Config

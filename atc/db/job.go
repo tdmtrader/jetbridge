@@ -892,6 +892,16 @@ func (j *job) createBuild(tx Tx, createdBy string) (Build, error) {
 	return build, nil
 }
 
+// createWorkflowResourceSourceAdmissionBuild is intentionally narrower than
+// CreateBuild: only the server-owned standing source pipeline's admit job can
+// create a manual source-selection build inside the admission transaction.
+func (j *job) createWorkflowResourceSourceAdmissionBuild(tx Tx) (Build, error) {
+	if j.name != "admit" {
+		return nil, fmt.Errorf("db: workflow resource source build requires admit job")
+	}
+	return j.createBuild(tx, "workflow-resource-source-admission")
+}
+
 func (j *job) RerunBuild(buildToRerun Build, createdBy string) (Build, error) {
 	for {
 		rerunBuild, err := j.tryRerunBuild(buildToRerun, createdBy)

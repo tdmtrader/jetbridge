@@ -14,6 +14,7 @@ import (
 
 type resolverResource struct {
 	db.Resource
+	id      int
 	config  atc.ResourceConfig
 	version db.ResourceConfigVersion
 	found   bool
@@ -21,6 +22,7 @@ type resolverResource struct {
 	queries []atc.Version
 }
 
+func (resource *resolverResource) ID() int                    { return resource.id }
 func (resource *resolverResource) Config() atc.ResourceConfig { return resource.config }
 func (resource *resolverResource) FindVersion(version atc.Version) (db.ResourceConfigVersion, bool, error) {
 	resource.queries = append(resource.queries, version)
@@ -51,6 +53,7 @@ func TestATCResolverScopesExactVersionAndPreservesEnabledState(t *testing.T) {
 	pipeline.ArchivedReturns(false)
 	version := &resolverVersion{id: 31, version: db.Version{"ref": "abc123"}}
 	resource := &resolverResource{
+		id:      23,
 		config:  atc.ResourceConfig{Name: "repository", Type: "git", Source: atc.Source{"private_key": "secret"}},
 		version: version, found: true,
 	}
@@ -72,7 +75,7 @@ func TestATCResolverScopesExactVersionAndPreservesEnabledState(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("Resolve() = %#v, %v, %v", resolved, found, err)
 	}
-	if resolved.TeamID != 7 || resolved.PipelineConfigVersion != 11 || resolved.ResourceConfigVersionID != 31 || resolved.Enabled ||
+	if resolved.TeamID != 7 || resolved.PipelineConfigVersion != 11 || resolved.ResourceID != 23 || resolved.ResourceConfigVersionID != 31 || resolved.Enabled ||
 		!reflect.DeepEqual(resolved.Version, requestedVersion) || resolved.Resource.Source["private_key"] != "secret" {
 		t.Fatalf("resolved = %#v", resolved)
 	}
