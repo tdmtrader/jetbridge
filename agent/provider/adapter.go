@@ -34,6 +34,39 @@ type Capabilities struct {
 	SafeBoundary  bool
 	SessionExport bool
 	NativeResume  bool
+	EffectJournal bool
+}
+
+// RecoveryProof is a server-owned, exact compatibility contract for native
+// recovery. An adapter must not infer these facts from a package version,
+// stream output, or a session ID.
+type RecoveryProof struct {
+	Adapter       Identity
+	Executable    string
+	SessionFormat string
+	SafeBoundary  bool
+	EffectJournal bool
+	SessionExport bool
+	NativeResume  bool
+}
+
+func (proof RecoveryProof) ValidateFor(identity Identity) error {
+	if err := proof.Adapter.Validate(); err != nil {
+		return fmt.Errorf("invalid recovery-proof adapter: %w", err)
+	}
+	if proof.Adapter != identity {
+		return errors.New("recovery proof adapter does not match runner adapter")
+	}
+	if strings.TrimSpace(proof.Executable) == "" || strings.TrimSpace(proof.Executable) != proof.Executable {
+		return errors.New("recovery proof executable is required")
+	}
+	if strings.TrimSpace(proof.SessionFormat) == "" || strings.TrimSpace(proof.SessionFormat) != proof.SessionFormat {
+		return errors.New("recovery proof session format is required")
+	}
+	if !proof.SafeBoundary || !proof.EffectJournal || !proof.SessionExport || !proof.NativeResume {
+		return errors.New("recovery proof does not establish native resume safety")
+	}
+	return nil
 }
 
 // Boundary is provider evidence observed only after a completed tool batch and
@@ -81,10 +114,28 @@ type BoundaryControl interface {
 // reserved server path; adapters must not substitute HOME or derive paths from
 // provider output.
 type StartRequest struct {
-	Prompt     string
-	WorkDir    string
-	SessionDir string
-	Stdout     io.Writer
+	Prompt       string
+	SystemPrompt string
+	WorkDir      string
+	SessionDir   string
+	Stdout       io.Writer
+}
+
+// ResumeRequest is only constructed by the runner from its strictly decoded,
+// server-authored recovery spec. It is deliberately separate from Start.
+type ResumeRequest struct {
+	StartRequest
+	SessionID            string
+	ExecutionAttempt     int
+	CheckpointGeneration int
+	TranscriptCursor     int64
+	CompletedToolCallIDs []string
+}
+
+func (request ResumeRequest) Clone() ResumeRequest {
+	cloned := request
+	cloned.CompletedToolCallIDs = append([]string(nil), request.CompletedToolCallIDs...)
+	return cloned
 }
 
 // Result is the observed provider stream. SessionID is optional for adapters
@@ -112,4 +163,12 @@ type Adapter interface {
 	Identity() Identity
 	Capabilities() Capabilities
 	Start(context.Context, StartRequest, BoundaryControl) (RunningSession, error)
+}
+
+// RecoveryAdapter is an explicit native-resume seam. Generic and legacy
+// adapters intentionally do not implement it.
+type RecoveryAdapter interface {
+	Adapter
+	RecoveryProof() RecoveryProof
+	Resume(context.Context, ResumeRequest, BoundaryControl) (RunningSession, error)
 }
