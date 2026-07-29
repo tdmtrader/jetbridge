@@ -7,12 +7,15 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"time"
 
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"code.cloudfoundry.org/lager/v3/lagertest"
 	"github.com/concourse/concourse/agent/api/metrics/metricsfakes"
 	"github.com/concourse/concourse/agent/budget"
 	"github.com/concourse/concourse/agent/budget/budgetfakes"
+	"github.com/concourse/concourse/agent/checkpoint"
+	"github.com/concourse/concourse/agent/provider"
 	"github.com/concourse/concourse/agent/schema"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc"
@@ -90,6 +93,10 @@ var _ = Describe("AgentStep", func() {
 
 	BeforeEach(func() {
 		ctx, cancel = context.WithCancel(context.Background())
+		stepMetadata.WorkflowDefinitionID = nil
+		stepMetadata.WorkflowRunID = nil
+		containerMetadata.WorkingDirectory = "some-artifact-root"
+		containerMetadata.Attempt = ""
 
 		stdoutBuf = gbytes.NewBuffer()
 		stderrBuf = gbytes.NewBuffer()
@@ -240,6 +247,156 @@ var _ = Describe("AgentStep", func() {
 		_, err := invalidStep.Run(ctx, state)
 		Expect(err).To(MatchError(ContainSubstring("invalid admitted runtime image")))
 		Expect(fakePool.FindOrSelectWorkerCallCount()).To(BeZero())
+	})
+
+	Context("with server-owned checkpoint capture configured", func() {
+		var (
+			checkpointController *checkpointStepController
+			checkpointFactory    *checkpointStepFactory
+		)
+
+		BeforeEach(func() {
+			workflowDefinitionID := 9
+			runID := snapshot.WorkflowRunID(77)
+			stepMetadata.WorkflowDefinitionID = &workflowDefinitionID
+			stepMetadata.WorkflowRunID = &runID
+			containerMetadata.WorkingDirectory = "/work"
+			agentPlan.RuntimeImage = "registry.example/agent@sha256:" + strings.Repeat("a", 64)
+			agentPlan.FunctionID = "review-code"
+			agentPlan.Sidecars = nil
+			checkpointController = &checkpointStepController{
+				attempt: checkpoint.Attempt{ExecutionAttempt: 1, State: checkpoint.AttemptMaterializing},
+			}
+			checkpointFactory = &checkpointStepFactory{controller: checkpointController}
+			agentStepOptions = append(agentStepOptions, exec.WithAgentCheckpointCapture(exec.AgentCheckpointStepConfig{
+				Factory:         checkpointFactory,
+				Provider:        "anthropic",
+				Adapter:         provider.Identity{Name: "claude-cli", Version: "legacy-stream-json"},
+				ElapsedInterval: time.Hour,
+				MaxArchiveBytes: 4096,
+			}))
+			chosenContainer.DBContainer_.HandleReturns("agent-container-1")
+			chosenContainer.ProcessDefs[0].Spec.Dir = "/work"
+			chosenWorker.AddContainer(
+				db.NewAgentAttemptContainerOwner(stepMetadata.BuildID, planID, stepMetadata.TeamID, 1),
+				chosenContainer.Container,
+				chosenWorker.Containers[0].Mounts,
+			)
+		})
+
+		It("uses an attempt-owned container and finalizes after a terminal capture request", func() {
+			ok, err := step.Run(ctx, state)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(ok).To(BeTrue())
+
+			Expect(checkpointFactory.identities).To(Equal([]checkpoint.Identity{{
+				WorkflowRunID: stepMetadata.WorkflowRunID,
+				BuildID:       int64(stepMetadata.BuildID),
+				PlanID:        string(planID),
+				FunctionID:    "review-code",
+			}}))
+			Expect(checkpointController.calls).To(Equal([]string{"prepare", "running", "finalize"}))
+			Expect(checkpointController.finalize.Provenance.ContainerHandle).To(Equal("agent-container-1"))
+			Expect(checkpointController.finalize.Provenance.RuntimeImage).To(Equal(agentPlan.RuntimeImage))
+			Expect(checkpointController.finalize.Provenance.Provider).To(Equal("anthropic"))
+			Expect(checkpointController.finalize.MaxArchiveBytes).To(Equal(int64(4096)))
+
+			_, owner, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
+			Expect(owner).To(Equal(db.NewAgentAttemptContainerOwner(stepMetadata.BuildID, planID, stepMetadata.TeamID, 1)))
+			Expect(spec.CheckpointCapture).To(BeTrue())
+			Expect(spec.Env).To(ContainElement("AGENT_SESSION_DIR=/work/.concourse/session"))
+		})
+
+		It("fails before process launch when post-container provenance is incomplete", func() {
+			chosenContainer.DBContainer_.HandleReturns("")
+
+			ok, err := step.Run(ctx, state)
+			Expect(ok).To(BeFalse())
+			Expect(err).To(MatchError(ContainSubstring("checkpoint provenance")))
+			Expect(chosenContainer.RunningProcesses()).To(BeEmpty())
+			Expect(checkpointController.calls).To(Equal([]string{"prepare"}))
+		})
+
+		It("rejects a preparation result for a different durable identity", func() {
+			checkpointFactory.preserveAttemptIdentity = true
+			checkpointController.attempt.Identity = checkpoint.Identity{
+				WorkflowRunID: stepMetadata.WorkflowRunID,
+				BuildID:       int64(stepMetadata.BuildID),
+				PlanID:        "other-plan",
+				FunctionID:    "review-code",
+			}
+
+			ok, err := step.Run(ctx, state)
+			Expect(ok).To(BeFalse())
+			Expect(err).To(MatchError(ContainSubstring("preparation returned an unlaunchable attempt")))
+			Expect(fakePool.FindOrSelectWorkerCallCount()).To(BeZero())
+			Expect(checkpointController.calls).To(Equal([]string{"prepare"}))
+		})
+
+		It("rejects a running transition for a different durable attempt", func() {
+			checkpointController.runningAttempt = &checkpoint.Attempt{
+				Identity:         checkpointController.attempt.Identity,
+				ExecutionAttempt: 2,
+				State:            checkpoint.AttemptRunning,
+			}
+
+			ok, err := step.Run(ctx, state)
+			Expect(ok).To(BeFalse())
+			Expect(err).To(MatchError(ContainSubstring("running transition returned a different attempt")))
+			Expect(checkpointController.calls).To(Equal([]string{"prepare", "running"}))
+		})
+
+		It("persists a typed runtime interruption before reporting manual review", func() {
+			chosenContainer.ProcessDefs[0].Stub.Call = func(context.Context, *runtimetest.Process) (runtime.ProcessResult, error) {
+				return runtime.ProcessResult{}, runtime.NewInterruptionError(runtime.InterruptionPreempted, errors.New("pod preempted"))
+			}
+
+			ok, err := step.Run(ctx, state)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(ok).To(BeFalse())
+			Expect(checkpointController.calls).To(Equal([]string{"prepare", "running", "interrupted"}))
+			Expect(checkpointController.interruption.ExecutionAttempt).To(Equal(1))
+			Expect(checkpointController.interruption.Reason).To(Equal(runtime.InterruptionPreempted))
+		})
+
+		It("fails closed rather than terminalizing a non-zero process", func() {
+			chosenContainer.ProcessDefs[0].Stub.ExitStatus = 2
+
+			ok, err := step.Run(ctx, state)
+			Expect(ok).To(BeFalse())
+			Expect(err).To(MatchError(ContainSubstring("cannot safely terminalize a non-zero process exit (2)")))
+			Expect(checkpointController.calls).To(Equal([]string{"prepare", "running"}))
+		})
+
+		It("rejects a plan-supplied checkpoint session path before preparation", func() {
+			agentPlan.Env["AGENT_SESSION_DIR"] = "/agent-controlled"
+
+			ok, err := step.Run(ctx, state)
+			Expect(ok).To(BeFalse())
+			Expect(err).To(MatchError(ContainSubstring("AGENT_SESSION_DIR is platform-owned")))
+			Expect(fakePool.FindOrSelectWorkerCallCount()).To(BeZero())
+			Expect(checkpointController.calls).To(BeEmpty())
+		})
+	})
+
+	It("leaves an unqualified legacy agent step unchanged when checkpoint composition is present", func() {
+		controller := &checkpointStepController{}
+		factory := &checkpointStepFactory{controller: controller}
+		agentStepOptions = append(agentStepOptions, exec.WithAgentCheckpointCapture(exec.AgentCheckpointStepConfig{
+			Factory:         factory,
+			Provider:        "anthropic",
+			Adapter:         provider.Identity{Name: "claude-cli", Version: "legacy-stream-json"},
+			ElapsedInterval: time.Hour,
+			MaxArchiveBytes: 4096,
+		}))
+
+		ok, err := step.Run(ctx, state)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(ok).To(BeTrue())
+		Expect(factory.identities).To(BeEmpty())
+		_, _, spec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
+		Expect(spec.CheckpointCapture).To(BeFalse())
+		Expect(spec.Env).ToNot(ContainElement(ContainSubstring("AGENT_SESSION_DIR=")))
 	})
 
 	It("builds the container spec per the s8.1 env contract", func() {
@@ -559,6 +716,44 @@ var _ = Describe("AgentStep", func() {
 				entry, found := repo.ArtifactEntryFor("workspace")
 				Expect(found).To(BeFalse())
 				Expect(entry.Snapshot).To(BeNil())
+			})
+		})
+
+		Context("with checkpoint capture", func() {
+			var checkpointController *checkpointStepController
+
+			BeforeEach(func() {
+				agentPlan.RuntimeImage = "registry.example/agent@sha256:" + strings.Repeat("a", 64)
+				agentPlan.FunctionID = "review-code"
+				agentPlan.Sidecars = nil
+				containerMetadata.WorkingDirectory = "/work"
+				chosenContainer.ProcessDefs[0].Spec.Dir = "/work"
+				for index := range chosenContainer.Mounts {
+					chosenContainer.Mounts[index].MountPath = strings.Replace(chosenContainer.Mounts[index].MountPath, "some-artifact-root", "/work", 1)
+				}
+				checkpointController = &checkpointStepController{attempt: checkpoint.Attempt{ExecutionAttempt: 1, State: checkpoint.AttemptMaterializing}}
+				agentStepOptions = append(agentStepOptions, exec.WithAgentCheckpointCapture(exec.AgentCheckpointStepConfig{
+					Factory:         &checkpointStepFactory{controller: checkpointController},
+					Provider:        "anthropic",
+					Adapter:         provider.Identity{Name: "claude-cli", Version: "legacy-stream-json"},
+					ElapsedInterval: time.Hour,
+					MaxArchiveBytes: 4096,
+				}))
+				chosenContainer.DBContainer_.HandleReturns("agent-container-typed")
+				chosenWorker.AddContainer(
+					db.NewAgentAttemptContainerOwner(stepMetadata.BuildID, planID, stepMetadata.TeamID, 1),
+					chosenContainer.Container,
+					chosenContainer.Mounts,
+				)
+			})
+
+			It("does not finalize the durable attempt when sealing rejects a successful process", func() {
+				outputSealer.err = errors.New("semantic validation failed")
+
+				ok, err := step.Run(ctx, state)
+				Expect(ok).To(BeFalse())
+				Expect(err).To(MatchError(ContainSubstring("semantic validation failed")))
+				Expect(checkpointController.calls).To(Equal([]string{"prepare", "running"}))
 			})
 		})
 
@@ -1826,4 +2021,76 @@ type stubTranscriptStore struct {
 func (s *stubTranscriptStore) Upsert(t db.AgentRunTranscript) error {
 	s.upserted = append(s.upserted, t)
 	return s.err
+}
+
+type checkpointStepFactory struct {
+	controller              *checkpointStepController
+	identities              []checkpoint.Identity
+	err                     error
+	preserveAttemptIdentity bool
+}
+
+func (factory *checkpointStepFactory) NewAgentCheckpointExecution(identity checkpoint.Identity) (exec.AgentCheckpointController, error) {
+	factory.identities = append(factory.identities, identity)
+	if factory.err != nil {
+		return nil, factory.err
+	}
+	if !factory.preserveAttemptIdentity {
+		factory.controller.attempt.Identity = identity
+	}
+	return factory.controller, nil
+}
+
+type checkpointStepController struct {
+	attempt      checkpoint.Attempt
+	calls        []string
+	finalize     exec.AgentCheckpointCaptureRequest
+	interruption struct {
+		ExecutionAttempt int
+		Reason           runtime.InterruptionReason
+	}
+	prepareErr     error
+	runningErr     error
+	runningAttempt *checkpoint.Attempt
+	finalizeErr    error
+}
+
+func (controller *checkpointStepController) Prepare(context.Context) (checkpoint.Attempt, error) {
+	controller.calls = append(controller.calls, "prepare")
+	return controller.attempt, controller.prepareErr
+}
+
+func (controller *checkpointStepController) MarkRunning(context.Context) (checkpoint.Attempt, error) {
+	controller.calls = append(controller.calls, "running")
+	if controller.runningErr != nil {
+		return checkpoint.Attempt{}, controller.runningErr
+	}
+	if controller.runningAttempt != nil {
+		return *controller.runningAttempt, nil
+	}
+	controller.attempt.State = checkpoint.AttemptRunning
+	return controller.attempt, nil
+}
+
+func (controller *checkpointStepController) MarkInterrupted(_ context.Context, attempt checkpoint.Attempt, reason runtime.InterruptionReason) (checkpoint.Attempt, error) {
+	controller.calls = append(controller.calls, "interrupted")
+	controller.interruption.ExecutionAttempt = attempt.ExecutionAttempt
+	controller.interruption.Reason = reason
+	controller.attempt.State = checkpoint.AttemptInterrupted
+	return controller.attempt, nil
+}
+
+func (controller *checkpointStepController) CaptureLive(context.Context, exec.CheckpointCaptureTrigger, exec.AgentCheckpointCaptureRequest) (exec.AgentCheckpointCaptureResult, error) {
+	controller.calls = append(controller.calls, "live")
+	return exec.AgentCheckpointCaptureResult{Status: exec.CheckpointCaptureSkipped}, nil
+}
+
+func (controller *checkpointStepController) FinalizeSucceeded(_ context.Context, request exec.AgentCheckpointCaptureRequest) (exec.AgentCheckpointFinalizeResult, error) {
+	controller.calls = append(controller.calls, "finalize")
+	controller.finalize = request
+	if controller.finalizeErr != nil {
+		return exec.AgentCheckpointFinalizeResult{}, controller.finalizeErr
+	}
+	controller.attempt.State = checkpoint.AttemptSucceeded
+	return exec.AgentCheckpointFinalizeResult{Attempt: controller.attempt}, nil
 }

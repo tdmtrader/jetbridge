@@ -91,7 +91,7 @@ func (controller *AgentCheckpointExecution) Prepare(ctx context.Context) (checkp
 		}
 	}
 	switch attempt.State {
-	case checkpoint.AttemptMaterializing, checkpoint.AttemptRunning, checkpoint.AttemptFinalizing, checkpoint.AttemptSucceeded:
+	case checkpoint.AttemptMaterializing, checkpoint.AttemptRunning:
 		return attempt, nil
 	default:
 		return checkpoint.Attempt{}, fmt.Errorf("agent checkpoint attempt is not preparable: %s", attempt.State)

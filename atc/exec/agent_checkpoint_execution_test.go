@@ -37,18 +37,37 @@ func TestAgentCheckpointExecutionPreparesThenMarksRunningWithFreshFences(t *test
 	}
 }
 
-func TestAgentCheckpointExecutionPrepareReentersWithoutRecoveryAllocation(t *testing.T) {
-	store := &executionTestAttempts{hasCurrent: true, current: checkpoint.Attempt{Identity: captureIdentity(), ExecutionAttempt: 2, State: checkpoint.AttemptFinalizing}}
-	controller, err := NewAgentCheckpointExecution(AgentCheckpointExecutionConfig{Identity: captureIdentity(), FenceTTL: time.Minute}, store, nil, nil)
-	if err != nil {
-		t.Fatal(err)
+func TestAgentCheckpointExecutionPrepareReentersOnlyMaterializingOrRunningAttempts(t *testing.T) {
+	for _, state := range []checkpoint.AttemptState{checkpoint.AttemptMaterializing, checkpoint.AttemptRunning} {
+		t.Run(string(state), func(t *testing.T) {
+			store := &executionTestAttempts{hasCurrent: true, current: checkpoint.Attempt{Identity: captureIdentity(), ExecutionAttempt: 2, State: state}}
+			controller, err := NewAgentCheckpointExecution(AgentCheckpointExecutionConfig{Identity: captureIdentity(), FenceTTL: time.Minute}, store, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			attempt, err := controller.Prepare(context.Background())
+			if err != nil || attempt.ExecutionAttempt != 2 || attempt.State != state {
+				t.Fatalf("prepare = %#v, %v", attempt, err)
+			}
+			if store.allocateCount != 0 || len(store.transitions) != 0 {
+				t.Fatalf("re-entry allocated or transitioned: %d %#v", store.allocateCount, store.transitions)
+			}
+		})
 	}
-	attempt, err := controller.Prepare(context.Background())
-	if err != nil || attempt.ExecutionAttempt != 2 || attempt.State != checkpoint.AttemptFinalizing {
-		t.Fatalf("prepare = %#v, %v", attempt, err)
-	}
-	if store.allocateCount != 0 || len(store.transitions) != 0 {
-		t.Fatalf("re-entry allocated or transitioned: %d %#v", store.allocateCount, store.transitions)
+}
+
+func TestAgentCheckpointExecutionPrepareRejectsTerminalReentry(t *testing.T) {
+	for _, state := range []checkpoint.AttemptState{checkpoint.AttemptFinalizing, checkpoint.AttemptSucceeded} {
+		t.Run(string(state), func(t *testing.T) {
+			store := &executionTestAttempts{hasCurrent: true, current: checkpoint.Attempt{Identity: captureIdentity(), ExecutionAttempt: 2, State: state}}
+			controller, _ := NewAgentCheckpointExecution(AgentCheckpointExecutionConfig{Identity: captureIdentity(), FenceTTL: time.Minute}, store, nil, nil)
+			if _, err := controller.Prepare(context.Background()); err == nil {
+				t.Fatalf("accepted terminal re-entry from %s", state)
+			}
+			if store.allocateCount != 0 || len(store.transitions) != 0 {
+				t.Fatalf("terminal re-entry allocated or transitioned: %d %#v", store.allocateCount, store.transitions)
+			}
+		})
 	}
 }
 
