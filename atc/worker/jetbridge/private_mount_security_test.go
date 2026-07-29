@@ -149,9 +149,50 @@ func TestManagedOutputBuilderMountsRejectAliasedTypedVolume(t *testing.T) {
 	}, []corev1.VolumeMount{
 		{Name: "typed-input", MountPath: "/work/change"},
 		{Name: "typed-input", MountPath: "/work/ordinary-secret"},
-	})
+	}, []corev1.Volume{{Name: "typed-input", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}})
 	if err == nil || !strings.Contains(err.Error(), "shares runtime volume") {
 		t.Fatalf("aliased typed volume error = %v, want fail-closed alias rejection", err)
+	}
+}
+
+func TestManagedOutputBuilderMountsRejectDaemonSetVolumeSourceAliases(t *testing.T) {
+	for _, outputName := range []string{"dir", "input-1"} {
+		t.Run(outputName, func(t *testing.T) {
+			spec := managedOutputBuilderAliasSpec(t, outputName)
+			c := newPrivateMountTestContainer(fake.NewSimpleClientset(), spec)
+			c.config = testDaemonConfig()
+			c.storageBackend = NewDaemonSetBackend(c.config, nil, nil)
+
+			_, err := c.buildPod(runtime.ProcessSpec{Path: "/bin/sh"}, []string{"/bin/sh"}, nil)
+			if err == nil || !strings.Contains(err.Error(), "aliases pod volume") {
+				t.Fatalf("DaemonSet output %q alias error = %v, want fail-closed pod-volume rejection", outputName, err)
+			}
+		})
+	}
+}
+
+func managedOutputBuilderAliasSpec(t *testing.T, outputName string) runtime.ContainerSpec {
+	t.Helper()
+	pinnedImage := "registry.example.test/agent@sha256:" + strings.Repeat("a", 64)
+	digest := snapshot.Digest("sha256:" + strings.Repeat("b", 64))
+	authorityBytes, err := json.Marshal(outputbuilder.NodeAuthority{
+		WorkRoot: "/work",
+		Inputs: map[string]outputbuilder.InputAuthority{"change": {
+			Ref: snapshot.SnapshotRef{ID: 1, Type: "repository-change/v1", Digest: digest}, MountRoot: "/work/change", Exposure: snapshot.FullTreeExposure("/work/change", digest),
+		}},
+		Outputs: map[string]outputbuilder.OutputAuthority{outputName: {Port: snapshot.Port{Name: outputName, Type: "review/v1"}, MountRoot: "/work/" + outputName}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return runtime.ContainerSpec{
+		Type: db.ContainerTypeAgent, ImageSpec: runtime.ImageSpec{ImageURL: pinnedImage}, Dir: "/work",
+		Inputs: []runtime.Input{{DestinationPath: "/work/change"}}, Outputs: runtime.OutputPaths{outputName: "/work/" + outputName},
+		Sidecars: []atc.SidecarConfig{{Name: runtime.ManagedOutputBuilderName, Image: pinnedImage, Command: []string{"/usr/local/bin/agent-output", "serve"}, Ports: []atc.SidecarPort{{ContainerPort: 7783, Protocol: "TCP"}}, WorkingDir: "/"}},
+		ManagedOutputBuilder: &runtime.ManagedOutputBuilder{
+			Authority:       runtime.PrivateFileMount{MountPath: runtime.ManagedOutputBuilderAuthorityMountRoot, Files: map[string][]byte{runtime.ManagedOutputBuilderAuthorityFile: authorityBytes}},
+			InputMountPaths: []string{"/work/change"}, OutputMountPaths: []string{"/work/" + outputName},
+		},
 	}
 }
 

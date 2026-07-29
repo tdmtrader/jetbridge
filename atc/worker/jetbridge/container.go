@@ -679,7 +679,7 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 
 	sidecarContainers, err := buildManagedSidecarContainers(
 		c.containerSpec.Sidecars, c.sidecarVolumeMounts(volumeMounts), dir,
-		c.containerSpec.SidecarEnv, c.containerSpec.ManagedOutputBuilder,
+		c.containerSpec.SidecarEnv, c.containerSpec.ManagedOutputBuilder, volumes,
 		c.containerSpec.Hermetic)
 	if err != nil {
 		return nil, fmt.Errorf("build sidecar containers: %w", err)
@@ -1236,7 +1236,7 @@ func buildSidecarContainers(
 	sidecarEnv map[string][]string,
 	hermetic bool,
 ) []corev1.Container {
-	containers, err := buildManagedSidecarContainers(sidecars, mainMounts, defaultDir, sidecarEnv, nil, hermetic)
+	containers, err := buildManagedSidecarContainers(sidecars, mainMounts, defaultDir, sidecarEnv, nil, nil, hermetic)
 	if err != nil {
 		return nil
 	}
@@ -1249,6 +1249,7 @@ func buildManagedSidecarContainers(
 	defaultDir string,
 	sidecarEnv map[string][]string,
 	managedBuilder *runtime.ManagedOutputBuilder,
+	podVolumes []corev1.Volume,
 	hermetic bool,
 ) ([]corev1.Container, error) {
 	if len(sidecars) == 0 {
@@ -1261,7 +1262,7 @@ func buildManagedSidecarContainers(
 		var mounts []corev1.VolumeMount
 		if sc.Name == runtime.ManagedOutputBuilderName && managedBuilder != nil {
 			var err error
-			mounts, err = managedOutputBuilderMounts(*managedBuilder, mainMounts)
+			mounts, err = managedOutputBuilderMounts(*managedBuilder, mainMounts, podVolumes)
 			if err != nil {
 				return nil, err
 			}
@@ -1316,7 +1317,7 @@ func buildManagedSidecarContainers(
 // managedOutputBuilderMounts selects only the exact typed input/output
 // volumes. The normal work-root, flight, cache, scratch, ordinary secret, and
 // other sidecar mounts are intentionally absent.
-func managedOutputBuilderMounts(builder runtime.ManagedOutputBuilder, mounts []corev1.VolumeMount) ([]corev1.VolumeMount, error) {
+func managedOutputBuilderMounts(builder runtime.ManagedOutputBuilder, mounts []corev1.VolumeMount, podVolumes []corev1.Volume) ([]corev1.VolumeMount, error) {
 	selected := make([]corev1.VolumeMount, 0, len(builder.InputMountPaths)+len(builder.OutputMountPaths))
 	add := func(path string, readOnly bool) error {
 		matches := 0
@@ -1327,9 +1328,18 @@ func managedOutputBuilderMounts(builder runtime.ManagedOutputBuilder, mounts []c
 			if mount.Name == "" {
 				return fmt.Errorf("managed output builder projection %q has no runtime volume", path)
 			}
+			volume, err := managedOutputBuilderPodVolume(mount.Name, podVolumes)
+			if err != nil {
+				return fmt.Errorf("managed output builder projection %q: %w", path, err)
+			}
 			for _, other := range mounts {
 				if other.Name == mount.Name && filepath.Clean(other.MountPath) != path {
 					return fmt.Errorf("managed output builder projection %q shares runtime volume %q with %q", path, mount.Name, other.MountPath)
+				}
+			}
+			for _, other := range podVolumes {
+				if other.Name != volume.Name && managedOutputBuilderVolumeSourcesAlias(volume, other) {
+					return fmt.Errorf("managed output builder projection %q aliases pod volume %q", path, other.Name)
 				}
 			}
 			matches++
@@ -1353,6 +1363,31 @@ func managedOutputBuilderMounts(builder runtime.ManagedOutputBuilder, mounts []c
 		}
 	}
 	return selected, nil
+}
+
+func managedOutputBuilderPodVolume(name string, volumes []corev1.Volume) (corev1.Volume, error) {
+	var match *corev1.Volume
+	for index := range volumes {
+		if volumes[index].Name != name {
+			continue
+		}
+		if match != nil {
+			return corev1.Volume{}, fmt.Errorf("runtime volume %q is duplicated", name)
+		}
+		match = &volumes[index]
+	}
+	if match == nil {
+		return corev1.Volume{}, fmt.Errorf("runtime volume %q is missing", name)
+	}
+	return *match, nil
+}
+
+func managedOutputBuilderVolumeSourcesAlias(left, right corev1.Volume) bool {
+	if left.HostPath != nil && right.HostPath != nil {
+		return filepath.Clean(left.HostPath.Path) == filepath.Clean(right.HostPath.Path)
+	}
+	return left.PersistentVolumeClaim != nil && right.PersistentVolumeClaim != nil &&
+		left.PersistentVolumeClaim.ClaimName == right.PersistentVolumeClaim.ClaimName
 }
 
 // buildSidecarResourceRequirements converts SidecarResources to K8s

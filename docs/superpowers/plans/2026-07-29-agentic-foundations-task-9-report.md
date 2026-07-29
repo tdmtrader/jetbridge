@@ -51,3 +51,19 @@ Verification for this correction:
 - `go test ./atc/runtime ./atc/worker/jetbridge ./agent/runner ./cmd/agent-output -count=1`
 - `go test ./deploy -count=1`
 - `git diff --check`
+
+## Review round 2 correction
+
+- Jetbridge now resolves every managed-builder projection to exactly one Pod
+  volume and compares its physical source against every other Pod volume. It
+  rejects aliases with the same cleaned `hostPath` or PVC claim identity while
+  retaining distinct `emptyDir` volumes as distinct backing.
+- DaemonSet-backed negative tests cover record outputs named `dir` (the main
+  work-root backing) and `input-1` (the typed-input backing), alongside the
+  existing same-volume-name rejection.
+
+Verification for this correction:
+
+- `go test ./atc/runtime ./atc/worker/jetbridge ./atc/exec ./agent/runner ./cmd/agent-output -count=1`
+- `go test ./deploy -count=1`
+- `git diff --check`
