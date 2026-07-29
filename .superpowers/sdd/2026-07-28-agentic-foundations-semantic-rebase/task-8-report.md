@@ -67,3 +67,66 @@ DONE_WITH_CONCERNS
 ## Commits
 
 - `bb567a16c5 feat(agent): add managed output builder core`
+
+## Fix round 1
+
+### Status
+
+All five round-1 High findings were corrected in scope. The final scoped
+review remains the required adjudication point.
+
+### RED evidence and focused regressions
+
+- `TestBuilderUsesSnapshotDefaultsWhenLimitsAreUnset` failed with `(0, 0)`
+  limits rather than the snapshot defaults.
+- `TestBuilderRemovesStaleContentWhenStageHasNone` failed because `content/`
+  survived a successful zero-content candidate write.
+- `TestLoadAuthorityRejectsWritableAuthorityFile` failed because a `0600`
+  caller-writable authority file loaded successfully.
+- `TestRunCLIRejectsAuthorityOverride` failed because `--authority` was
+  accepted and then attempted to load the caller-selected path.
+- Added focused regressions `TestValidationContextOpensTheExactMountedInputArchive`
+  and `TestBuilderKeepsWritingThroughItsBoundOutputRootAfterPathReplacement`.
+
+### Files and behavior
+
+- `cmd/agent-output/main.go` now uses only the fixed
+  `PlatformAuthorityPath`; `--authority` and serve arguments are rejected.
+- `authority.go` requires a read-only authority file and rechecks its identity
+  after bounded reading.
+- `builder.go` supplies snapshot default limits, streams copied content with a
+  pre-copy byte bound, opens each declared input/output through retained
+  `os.Root` descriptors, and supplies a canonicalized, exact-digest input
+  opener to validators.
+- Publication now moves any previous record/content to anchored backups,
+  installs staged content, and renames `record.json` last; ordinary failures
+  roll back the previous candidate and zero-content writes remove stale
+  `content/` deterministically.
+
+### Verification
+
+- Focused: `go test ./agent/outputbuilder ./cmd/agent-output -count=1` —
+  passed.
+- Focused image contract: `go test ./deploy -run TestAgentRunnerDockerfile
+  -count=1` — passed.
+- Checkpoint: `go test ./agent/outputbuilder ./cmd/agent-output
+  ./agent/snapshot/... -count=1` — passed.
+- `git diff --check` — passed.
+
+### Self-review
+
+- No CLI/MCP request can select authority, ports, mount roots, or snapshot
+  references. The command only consumes its fixed read-only authority mount.
+- Bounded defaults match final snapshot capture and content copying does not
+  allocate whole source files before enforcing the byte cap.
+- Retained roots—not post-check path strings—serve staging, content reads,
+  input archive construction, validation, and publication. The replacement
+  regression proves writes remain in the originally bound root.
+- Repository-change validation receives a canonical archive only after the
+  retained declared input matches its exact reference digest.
+
+### Residual deferred observation
+
+- `DEFERRED-003` remains for abrupt-host-crash durability only. Ordinary
+  publication errors now restore the prior candidate; no additional Task 9
+  runtime wiring was added.

@@ -86,9 +86,9 @@ to evaluate independently.
 - Task/area: Task 8, managed output-builder content payload commits
 - Classification: Medium hardening
 - Status: Deferred
-- Evidence: `record.json` is atomically renamed after preflight. A write with
-  copied `content/` uses a staged directory and replacement sequence, but does
-  not yet persist/fsync a recovery journal across an abrupt host crash between
+- Evidence: The Task 8 correction now backs up and rolls back record/content
+  on ordinary publication errors, then installs `record.json` last. It still
+  does not persist/fsync a recovery journal across an abrupt host crash between
   individual directory operations.
 - Why it is nonblocking: Normal successful and rejected writes are covered by
   focused tests; the final sealer always independently reopens the resulting

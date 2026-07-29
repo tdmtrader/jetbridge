@@ -1,6 +1,8 @@
 package outputbuilder
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -145,6 +147,125 @@ func TestBuilderPreflightEnforcesConfiguredContentLimit(t *testing.T) {
 	}
 }
 
+// This catches a regression where a zero-value builder silently disables the
+// final snapshot service's default limits.
+func TestBuilderUsesSnapshotDefaultsWhenLimitsAreUnset(t *testing.T) {
+	authority := validAuthority(t)
+	registry, err := contracts.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	builder, err := New(authority, registry, snapshot.Canonicalizer{TempDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if builder.canonicalizer.MaxEntries != snapshot.DefaultMaxSnapshotEntries || builder.canonicalizer.MaxContentBytes != snapshot.DefaultMaxSnapshotContentBytes {
+		t.Fatalf("builder limits = (%d, %d), want final-capture defaults", builder.canonicalizer.MaxEntries, builder.canonicalizer.MaxContentBytes)
+	}
+}
+
+// This catches a regression where a new candidate that has no content retains
+// stale, previously authored content outside the validated stage.
+func TestBuilderRemovesStaleContentWhenStageHasNone(t *testing.T) {
+	authority := validAuthority(t)
+	registry, err := contracts.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	builder, err := New(authority, registry, snapshot.Canonicalizer{TempDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := filepath.Join(authority.Outputs["review"].MountRoot, "content", "stale.txt")
+	if err := os.MkdirAll(filepath.Dir(stale), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stale, []byte("stale"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if report, err := builder.WriteOutput(context.Background(), validReviewWrite()); err != nil || !report.Valid {
+		t.Fatalf("WriteOutput() = %+v, %v", report, err)
+	}
+	if _, err := os.Stat(filepath.Join(authority.Outputs["review"].MountRoot, "content")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale content remains after zero-content write: %v", err)
+	}
+}
+
+// This catches a regression where the mounted authority file is writable by
+// the agent that is meant to be constrained by it.
+func TestLoadAuthorityRejectsWritableAuthorityFile(t *testing.T) {
+	authority := validAuthority(t)
+	encoded, err := json.Marshal(authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := filepath.Join(t.TempDir(), "authority.json")
+	if err := os.WriteFile(name, encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadAuthority(name); err == nil || !strings.Contains(err.Error(), "read-only") {
+		t.Fatalf("LoadAuthority(writable) error = %v, want read-only rejection", err)
+	}
+}
+
+// This catches a regression where repository-change preflight receives only
+// declarations but no server-bound archive reader for its exact base input.
+func TestValidationContextOpensTheExactMountedInputArchive(t *testing.T) {
+	authority := validAuthority(t)
+	registry, err := contracts.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	builder, err := New(authority, registry, snapshot.Canonicalizer{TempDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err := builder.validationContext().OpenInput(context.Background(), "base")
+	if err != nil {
+		t.Fatalf("OpenInput(base) error = %v", err)
+	}
+	tree, captureErr := (snapshot.Canonicalizer{TempDir: t.TempDir()}).Capture(context.Background(), reader)
+	closeErr := reader.Close()
+	if err := errors.Join(captureErr, closeErr); err != nil {
+		t.Fatal(err)
+	}
+	defer tree.Close()
+	if tree.Digest != authority.Inputs["base"].Ref.Digest {
+		t.Fatalf("opened digest = %s, want exact authority digest %s", tree.Digest, authority.Inputs["base"].Ref.Digest)
+	}
+}
+
+// This catches a replacement race where a path check succeeds but a later
+// write is redirected through the attacker-controlled replacement directory.
+func TestBuilderKeepsWritingThroughItsBoundOutputRootAfterPathReplacement(t *testing.T) {
+	authority := validAuthority(t)
+	registry, err := contracts.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	builder, err := New(authority, registry, snapshot.Canonicalizer{TempDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	moved := filepath.Join(authority.WorkRoot, "review-bound")
+	if err := os.Rename(authority.Outputs["review"].MountRoot, moved); err != nil {
+		t.Fatal(err)
+	}
+	forged := t.TempDir()
+	if err := os.Symlink(forged, authority.Outputs["review"].MountRoot); err != nil {
+		t.Fatal(err)
+	}
+	if report, err := builder.WriteOutput(context.Background(), validReviewWrite()); err != nil || !report.Valid {
+		t.Fatalf("WriteOutput() = %+v, %v", report, err)
+	}
+	if _, err := os.Stat(filepath.Join(moved, "record.json")); err != nil {
+		t.Fatalf("bound root was not written: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(forged, "record.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("replacement root received output: %v", err)
+	}
+}
+
 // This catches a regression where author preflight becomes sealing authority:
 // the final validator must reopen and reject bytes changed after the builder
 // returns a successful preflight report.
@@ -189,7 +310,7 @@ func validAuthority(t *testing.T) NodeAuthority {
 	if err := os.Mkdir(output, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	digest := snapshot.Digest("sha256:" + strings.Repeat("a", 64))
+	digest := canonicalEmptyDigest(t)
 	return NodeAuthority{
 		WorkRoot: work,
 		Inputs: map[string]InputAuthority{"base": {
@@ -200,6 +321,21 @@ func validAuthority(t *testing.T) NodeAuthority {
 			Port: snapshot.Port{Name: "review", Type: "review/v1"}, MountRoot: output,
 		}},
 	}
+}
+
+func canonicalEmptyDigest(t *testing.T) snapshot.Digest {
+	t.Helper()
+	var archive bytes.Buffer
+	writer := tar.NewWriter(&archive)
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	tree, err := (snapshot.Canonicalizer{TempDir: t.TempDir()}).Capture(context.Background(), bytes.NewReader(archive.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tree.Close()
+	return tree.Digest
 }
 
 func validReviewWrite() WriteRequest {

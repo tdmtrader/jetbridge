@@ -11,7 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/concourse/concourse/agent/outputbuilder"
@@ -25,6 +25,11 @@ const (
 	exitUsage   = 2
 )
 
+// PlatformAuthorityPath is mounted read-only by the task runtime. It is not a
+// command-line option: choosing an authority document would let the agent mint
+// its own input bindings and output ports.
+const PlatformAuthorityPath = "/concourse/agent-output/authority.json"
+
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -37,11 +42,11 @@ func runCLI(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 		return exitUsage
 	}
 	if args[0] == "serve" {
-		authority, ok := parseAuthority(args[1:], stderr)
-		if !ok {
+		if len(args) != 1 {
+			fmt.Fprintln(stderr, "agent-output: serve accepts no authority or endpoint override")
 			return exitUsage
 		}
-		builder, err := build(authority)
+		builder, err := build()
 		if err != nil {
 			fmt.Fprintf(stderr, "agent-output: load authority: %v\n", err)
 			return exitFailure
@@ -64,52 +69,32 @@ func runCLI(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 		fmt.Fprintf(stderr, "agent-output: unknown command %q\n", args[0])
 		return exitUsage
 	}
-	authority, remaining, ok := parseCommand(args[1:], stderr)
-	if !ok {
+	if hasAuthorityOverride(args[1:]) {
+		fmt.Fprintln(stderr, "agent-output: authority is platform-owned and cannot be overridden")
 		return exitUsage
 	}
-	builder, err := build(authority)
+	builder, err := build()
 	if err != nil {
 		fmt.Fprintf(stderr, "agent-output: load authority: %v\n", err)
 		return exitFailure
 	}
-	return outputbuilder.NewCLI(builder, stdin, stdout, stderr).Run(ctx, append([]string{args[0]}, remaining...))
+	return outputbuilder.NewCLI(builder, stdin, stdout, stderr).Run(ctx, args)
 }
 
-func parseCommand(args []string, stderr io.Writer) (string, []string, bool) {
-	var authority string
-	remaining := make([]string, 0, len(args))
-	for index := 0; index < len(args); index++ {
-		if args[index] != "--authority" {
-			remaining = append(remaining, args[index])
-			continue
+func hasAuthorityOverride(args []string) bool {
+	for _, arg := range args {
+		if arg == "--authority" || strings.HasPrefix(arg, "--authority=") {
+			return true
 		}
-		if authority != "" || index+1 == len(args) {
-			fmt.Fprintln(stderr, "agent-output: --authority must be supplied exactly once")
-			return "", nil, false
-		}
-		index++
-		authority = args[index]
 	}
-	if !validAuthorityPath(authority) {
-		fmt.Fprintln(stderr, "agent-output: --authority must be one absolute clean path")
-		return "", nil, false
-	}
-	return authority, remaining, true
+	return false
 }
-func parseAuthority(args []string, stderr io.Writer) (string, bool) {
-	authority, rest, ok := parseCommand(args, stderr)
-	return authority, ok && len(rest) == 0
-}
-func validAuthorityPath(name string) bool {
-	return name != "" && filepath.IsAbs(name) && filepath.Clean(name) == name
-}
-func build(name string) (*outputbuilder.Builder, error) {
-	authority, err := outputbuilder.LoadAuthority(name)
+func build() (*outputbuilder.Builder, error) {
+	authority, err := outputbuilder.LoadAuthority(PlatformAuthorityPath)
 	if err != nil {
 		return nil, err
 	}
-	canonicalizer := snapshot.Canonicalizer{}
+	canonicalizer := snapshot.Canonicalizer{MaxEntries: snapshot.DefaultMaxSnapshotEntries, MaxContentBytes: snapshot.DefaultMaxSnapshotContentBytes}
 	registry, err := contracts.NewRegistry(contracts.WithCanonicalizer(canonicalizer))
 	if err != nil {
 		return nil, err

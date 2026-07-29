@@ -119,6 +119,10 @@
   - Review: bounded self-review completed. The builder is a closed-over
     authoring/preflight facility: it accepts only mounted authority, exposes
     only declared output ports, and has no sealing or authority-minting path.
+  - Fix round 1: addressed all five scoped High findings with fixed read-only
+    authority loading, default snapshot limits, exact mounted-input reopening,
+    descriptor-anchored output operations, and transactional record/content
+    publication. Required checkpoint passed; pending final scoped review.
 - [ ] Task 9 — output-builder execution wiring
 - [ ] Task 10 — Hangar core
 - [ ] Task 11 — Hangar daemon/deployment integration

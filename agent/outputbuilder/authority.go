@@ -49,6 +49,9 @@ func LoadAuthority(name string) (NodeAuthority, error) {
 	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() > maxAuthorityFileBytes {
 		return NodeAuthority{}, fmt.Errorf("output builder authority: file must be a bounded regular file")
 	}
+	if info.Mode().Perm()&0o222 != 0 {
+		return NodeAuthority{}, fmt.Errorf("output builder authority: file must be read-only")
+	}
 	file, err := os.Open(name)
 	if err != nil {
 		return NodeAuthority{}, err
@@ -60,6 +63,10 @@ func LoadAuthority(name string) (NodeAuthority, error) {
 	}
 	if len(contents) > maxAuthorityFileBytes {
 		return NodeAuthority{}, fmt.Errorf("output builder authority: file is too large")
+	}
+	after, err := os.Lstat(name)
+	if err != nil || !os.SameFile(info, after) || after.Size() != info.Size() || after.ModTime() != info.ModTime() {
+		return NodeAuthority{}, fmt.Errorf("output builder authority: file changed while reading")
 	}
 	var authority NodeAuthority
 	decoder := json.NewDecoder(bytes.NewReader(contents))
