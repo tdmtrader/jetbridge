@@ -24,7 +24,7 @@ to evaluate independently.
 
 - Task/area: Task 6, Jetbridge protected validation mounts
 - Classification: Blocking; Human Review Required
-- Status: Automatic iteration stopped after the configured review budget
+- Status: Resolved on 2026-07-29 in `5f87d2671c`; independently accepted
 - Evidence:
   1. If `Pods.Create` commits server-side but returns a client timeout or
      transport error, the current error path immediately deletes the exact
@@ -41,20 +41,22 @@ to evaluate independently.
      created Secret list and `PrivateFileMounts` are empty. Kubernetes fake
      clients used by the ordinary, non-private-mount runtime tests do not
      synthesize that UID, so unrelated Pod behavior cannot run.
-- Why it is cataloged: These are blocking rather than ordinary deferred
-  improvements, but Task 6 has exhausted its two-round review budget and must
-  not enter another automatic correction loop.
-- Suggested human-approved follow-up:
-  1. On ambiguous Pod-create errors, reconcile the exact Pod name, UID, and
-     Secret volume reference before deleting; retain/reap conservatively when
-     the outcome cannot be proven.
-  2. Give the owner-bound reaper deletion the observed Secret UID precondition,
-     matching the existing ownerless cleanup path.
-  3. Make private-mount binding a no-op when no private mounts were requested,
-     before requiring a Pod UID; retain the UID requirement whenever at least
-     one private mount exists. Add a focused zero-mount fake-client regression.
-  4. Add focused regressions for a committed-Pod/failed-response fake and a
-     read/delete replacement race.
+- Resolution:
+  1. Ambiguous Pod-create errors now use a fresh exact-name read and delete
+     authority only when it proves the Pod absent. A found or inconclusive
+     result is retained for conservative ownerless reaping; the code does not
+     adopt the Pod or need a positive UID/reference match to authorize deletion.
+  2. Owner-bound reaper deletion now carries the observed Secret UID
+     precondition, matching the existing ownerless cleanup path.
+  3. Private-mount binding is a no-op when no private mounts were requested,
+     before the Pod UID check; every nonempty mount set retains the UID and
+     exact-count requirements.
+  4. Focused committed-Pod/failed-response, zero-mount, and replacement-race
+     regressions cover the three corrections.
+  The restored ordinary path then exposed three
+  stale typed-interruption assertions, corrected in `477c4d554a`. Focused
+  regressions and a fresh host-access full Jetbridge package passed 381/381;
+  two independent blocking-only reviews reported no remaining finding.
 
 ### DEFERRED-001 — Clean unpublished dev-capability log staging directories
 
@@ -101,7 +103,7 @@ to evaluate independently.
 
 - Task/area: Task 9, output-builder execution wiring
 - Classification: Blocking dependency; task not started
-- Status: Deferred until `HUMAN-REVIEW-001` is resolved
+- Status: Resolved on 2026-07-29; Task 9 is unblocked but not started
 - Evidence: The current runtime has no independent server-owned file seam for
   a managed sidecar. `runtime.PrivateFileMount` is the protected mechanism,
   but Jetbridge projects it only into the main container. Task 9 must extend
@@ -112,9 +114,10 @@ to evaluate independently.
 - Why it is blocking: Building Task 9 on the unresolved primitive would make
   a new security boundary depend on code already marked Human Review Required,
   and would add a second consumer before the primitive's lifecycle is trusted.
-- Suggested follow-up: Resolve `HUMAN-REVIEW-001`, rerun the full Jetbridge
-  suite, then implement Task 9 using a narrowly selected private mount for the
-  managed builder sidecar. Do not expose private mounts to arbitrary sidecars.
+- Resolution/follow-up: `HUMAN-REVIEW-001` is resolved and the full Jetbridge
+  suite passed. Implement Task 9 using a narrowly selected private mount for
+  the managed builder sidecar. Do not expose private mounts to arbitrary
+  sidecars.
 
 ### DEFERRED-004 — Run the Hangar emulator target in an emulator-capable environment
 

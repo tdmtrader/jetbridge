@@ -66,10 +66,10 @@ unlimited hardening or adjacent platform design.
 
 ### Task 6 exception at this checkpoint
 
-Task 6 already exceeded the review budget before these rules were adopted.
-Finish the currently known Critical Secret-substitution/TOCTOU fix and perform
-exactly one final blocking-only review. If that review finds another blocker,
-mark Task 6 **Human Review Required** and stop iterating on it.
+Superseded by explicit user approval on 2026-07-29 to reopen Task 6 for at
+most three additional iterations. Task 6 was accepted after two: the lifecycle
+fix and one test-only compatibility correction. Do not reopen it again without
+new blocking evidence.
 
 ## Test budget
 
@@ -111,26 +111,16 @@ Completed branch-wide compatibility repair:
 
 Task 6:
 
-- Substantially implemented through commit `a57a04f027`.
-- Status: **Human Review Required** after exhausting its review budget.
-- The known post-Pod Secret-substitution race was fixed: trusted immutable
-  Secrets are created before Pod visibility, exact identity is CAS-bound to the
-  Pod, and mounted profile/config digests are checked before dev-capability
-  launches.
-- The final bounded review found two remaining blockers:
-  1. An ambiguous `Pods.Create` transport error can occur after the API commits
-     the Pod; the current error path can delete a Secret already referenced by
-     that Pod.
-  2. Owner-bound orphan cleanup deletes by name without a UID precondition,
-     allowing a replacement Secret to be deleted after the reaper's read.
-  3. The milestone unit suite exposed a zero-private-mount regression:
-     `bindPrivateMountSecrets` requires a Pod UID even when no private mounts
-     exist. The Jetbridge fake client does not synthesize a UID, so 179 of 380
-     Jetbridge specs fail before exercising their intended behavior. Every
-     focused failure has the same `cannot bind incomplete private task mounts`
-     cause.
-- Do not iterate on Task 6 automatically. Exact evidence and proposed fixes are
-  recorded in the deferred/human-review catalog.
+- Accepted through `a57a04f027`, lifecycle correction `5f87d2671c`, and
+  test-only compatibility correction `477c4d554a`.
+- Ambiguous Pod Create outcomes retain authority unless a fresh exact-name read
+  proves absence; owner-bound reaping uses the observed Secret UID; zero mounts
+  do not require a fake Pod UID.
+- The unmasked typed-interruption assertions now check
+  `runtime.InterruptionError`/`runtime.InterruptionEvicted`.
+- Focused regressions and a fresh host-access full Jetbridge package passed
+  381/381. Two blocking-only reviews passed. `HUMAN-REVIEW-001` and
+  `DEPENDENCY-001` are resolved.
 
 Task 8:
 
@@ -146,17 +136,15 @@ Task 8:
 - `DEFERRED-003` records durable fsynced crash-recovery journaling; it is
   nonblocking for the current authoring/preflight boundary.
 
-Task 7 remains unstarted because it depends on Task 6.
+Task 7 remains unstarted but is no longer blocked by Task 6.
 
 Task 9:
 
-- Not started; dependency-deferred under `DEPENDENCY-001`.
+- Not started; `DEPENDENCY-001` is resolved.
 - The current runtime has no safe independent server-owned file seam for a
   managed sidecar. Task 9 must extend Task 6's protected private-Secret mount,
-  so its authority availability/integrity inherits all three
-  `HUMAN-REVIEW-001` blockers.
-- Resume Task 9 only after human review resolves Task 6 and the full Jetbridge
-  suite is green.
+  now accepted and green, without exposing the authority to arbitrary
+  sidecars.
 
 Task 10:
 
@@ -262,23 +250,22 @@ Fresh verification at the current checkpoint:
 - `helm lint deploy/chart`: passed with informational image-value and icon
   messages only.
 - Focused merge-preflight revision-3 suites passed.
-- `make test-unit`: failed after running all 121 suites; Jetbridge was the only
-  failed suite. A focused rerun confirmed 201/380 Jetbridge specs pass and
-  179/380 fail for the single Task 6 zero-mount cause documented above.
+- The earlier `make test-unit` failure was isolated to the Task 6 zero-mount
+  regression. After correction, a fresh host-access
+  `go test ./atc/worker/jetbridge -count=1` passed all 381 specs. The complete
+  repository-wide `make test-unit` target has not yet been rerun.
 
-The recovery track is therefore verified but the branch is not merge-ready.
-Do not report the branch as green until Tasks 6 and 12 receive human review,
-their dependent tasks are implemented, and the broad suites are rerun.
+The recovery track is verified, but the branch is not merge-ready. Do not
+report it as green until Task 12 and the remaining dependent tasks are
+implemented and the broad suites are rerun.
 
 ## Near-term sequence
 
-1. Leave Task 6 at **Human Review Required**; do not start another automatic
-   correction/review cycle.
-2. Treat Task 7 as dependent on Task 6 and do not wire exact validation gates
-   against a runtime that is still Human Review Required.
-3. Leave Task 9 dependency-deferred; do not build a new security boundary on
-   Task 6's unresolved protected-mount primitive.
-4. Leave Tasks 12–14 at their documented human-review/dependency boundaries.
+1. Treat Task 6 as accepted; do not reopen it without new blocking evidence.
+2. Tasks 7 and 9 are unblocked but remain unstarted.
+3. Resolve Task 12's mandatory source-binding launch boundary next.
+4. Leave Tasks 13–14 at their documented dependency boundaries until their
+   prerequisites are accepted.
 5. Treat Task 15 as **Accepted**; its user-authorized final review found no
    blocking issue.
 6. Treat Tasks 16, 17, and 18 as accepted; do not reopen their review cycles

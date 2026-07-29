@@ -78,38 +78,24 @@
     not replace compile-time zero workflow definition/version values. The fix
     now binds the exact persisted identity before fixed config/attestation/hash
     generation. Round 2 reported no blocking or nonblocking findings.
-- [ ] Task 6 — hermetic non-agent validation
-  - Current blocking-fix commit: `a57a04f027 fix(validation): close private secret substitution race`.
-  - Focused verification passed: private-mount lifecycle and adversarial Create
-    tests; ownerless pre-bind reaper focus; real `dev-validate` opaque and
-    repository-change chains; `agent/functions/devvalidate`; and `atc/exec`.
-    `git diff --check` passed.
-  - Full Jetbridge package remains sandbox-blocked by the pre-existing
-    `httptest` IPv6 listener permission panic in
-    `TestVT06_DaemonSetVolume_StreamOut_RetrySucceeds`; focused relevant tests
-    pass.
-  - Status: **Human Review Required**. Task 6 exhausted its review budget.
-  - The single final blocking-only review confirmed that trusted immutable
-    Secrets now exist before Pod visibility and mounted profile/config digests
-    are checked before the validation runner launches, but found two remaining
-    blocking lifecycle races:
-    1. An ambiguous `Pods.Create` error may mean the API committed the Pod even
-       though the client saw a timeout. The current error path immediately
-       deletes its pre-created Secret and could therefore delete a Secret
-       already mounted by the committed Pod. A human-approved fix should
-       reconcile the exact Pod name/identity before deleting anything.
-    2. Owner-bound orphan reaping deletes by Secret name without the observed
-       Secret UID as a delete precondition. A replacement object can therefore
-       be removed between the reaper's read and delete. The proposed fix is the
-       same UID-preconditioned delete already used by the ownerless path.
-  - Per the bounded-review policy, do not iterate further automatically.
-  - Milestone verification exposed a third blocking issue:
-    `make test-unit` ran all 121 suites and failed only Jetbridge. A focused
-    host-network rerun of `go test -json ./atc/worker/jetbridge -count=1`
-    reported 201/380 passed and 179/380 failed. All 179 failures terminate in
-    `cannot bind incomplete private task mounts to pod`: the zero-mount path
-    still requires a Pod UID, but the ordinary fake-client tests do not assign
-    one. This is recorded under `HUMAN-REVIEW-001`; no automatic fix was made.
+- [x] Task 6 — hermetic non-agent validation
+  - Commits:
+    - `a57a04f027 fix(validation): close private secret substitution race`
+    - `5f87d2671c fix(jetbridge): preserve private mounts after ambiguous pod create`
+    - `477c4d554a test(jetbridge): assert typed eviction interruptions`
+  - Status: **Accepted** after two user-authorized reopened iterations.
+  - The lifecycle correction makes zero-private-mount binding a no-op before
+    Pod UID validation, retains precreated authority after an ambiguous Pod
+    Create unless a fresh exact-name read proves absence, and gives
+    owner-bound reaper deletion the observed Secret UID precondition.
+  - The restored zero-mount path exposed three stale uppercase `Evicted`
+    assertions from the already-accepted typed interruption change. The
+    test-only compatibility commit now asserts
+    `runtime.InterruptionError`/`runtime.InterruptionEvicted`.
+  - Focused lifecycle and replacement-race regressions passed. A fresh
+    host-access `go test ./atc/worker/jetbridge -count=1` passed all 381 specs.
+  - Independent blocking-only review passed after each reopened iteration with
+    no Critical, High, or blocking findings. `HUMAN-REVIEW-001` is resolved.
 - [ ] Task 7 — exact validation gates
 - [x] Task 8 — output-builder core
   - Commits:
@@ -132,13 +118,12 @@
     publication. Commit: `fc31f229d8`. Required checkpoint passed; pending
     final scoped review.
 - [ ] Task 9 — output-builder execution wiring
-  - Status: dependency-deferred; not started.
+  - Status: unblocked by Task 6; not started.
   - A bounded codebase audit found no safe independent server-owned authority
-    file seam for a sidecar. Task 9 must extend Task 6's
-    `runtime.PrivateFileMount`/Secret lifecycle, whose three current blockers
-    directly affect output-builder authority availability and integrity.
-  - Resume only after `HUMAN-REVIEW-001` is resolved and the full Jetbridge
-    suite is green. See `DEPENDENCY-001`.
+  file seam for a sidecar. Task 9 must extend Task 6's
+    now-accepted `runtime.PrivateFileMount`/Secret lifecycle.
+  - `DEPENDENCY-001` is resolved; implementation may proceed with a narrowly
+    selected private mount for the managed builder sidecar.
 - [x] Task 10 — Hangar core
   - Commit: `29e5215b13 feat(hangar): add immutable GCS object storage`
   - Behavior: provider-neutral immutable object contract with canonical
