@@ -334,7 +334,9 @@ var _ = Describe("Process", func() {
 
 				_, err = process.Wait(ctx)
 				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("Evicted"))
+				var interruption runtime.InterruptionError
+				Expect(errors.As(err, &interruption)).To(BeTrue())
+				Expect(interruption.InterruptionReason()).To(Equal(runtime.InterruptionEvicted))
 			})
 
 			It("detects external pod deletion as a terminal failure", func() {
@@ -1097,7 +1099,9 @@ var _ = Describe("Process", func() {
 
 			_, err = process.Wait(ctx)
 			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("Evicted"))
+			var interruption runtime.InterruptionError
+			Expect(errors.As(err, &interruption)).To(BeTrue())
+			Expect(interruption.InterruptionReason()).To(Equal(runtime.InterruptionEvicted))
 			Expect(stderrBuf.String()).To(ContainSubstring("ephemeral-storage"))
 		})
 
