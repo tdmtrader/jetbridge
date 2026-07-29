@@ -2,8 +2,12 @@
 
 ## Status
 
-Implemented in `2d160f6c89` and pending independent review. Source-capture
-and retry/reuse orchestration is deliberately not included; it is Task 13.
+**HUMAN REVIEW REQUIRED** after exhausting the two-round review budget.
+Three of four round-1 High findings were addressed. The remaining
+load-bearing issue is that `RenderedFunction.Config` remains a public bare
+configuration and `BindExecutionParams` is opt-in, so the execution path does
+not yet guarantee use of the exact validated source refs. Source-capture and
+retry/reuse orchestration remains Task 13 and is dependency-deferred.
 
 ## Behavior
 
@@ -119,3 +123,18 @@ Verification for this correction:
   — host-access rerun passed 2/2 focused specs after the sandbox
   shared-memory restriction.
 - `git diff --check` — passed.
+
+## Independent review
+
+- Round 1 found four High blockers: optional exact execution binding,
+  caller-asserted admission provenance, archive/create race, and absent DB
+  lifecycle/provenance coverage.
+- The single correction pass addressed provenance derivation, row-lock
+  serialization, and DB acceptance coverage.
+- Round 2 found those three items addressed, with no new High breakage.
+- Residual High: `RenderedFunction.Config` is still directly available while
+  `BindExecutionParams` is optional. The test proves the binder rejects
+  substitution only when a caller chooses to invoke it; no launch seam
+  requires it.
+- Status: **HUMAN REVIEW REQUIRED** under `HUMAN-REVIEW-002`. Task 13 must not
+  build on this execution boundary until the launch contract is chosen.

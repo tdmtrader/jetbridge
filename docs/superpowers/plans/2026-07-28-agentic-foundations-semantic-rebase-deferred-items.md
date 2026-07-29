@@ -164,3 +164,54 @@ to evaluate independently.
 - Suggested follow-up: Evaluate mandatory egress enforcement for a hardened
   chart profile, including DNS and emulator endpoint requirements, before
   changing the default.
+
+### HUMAN-REVIEW-002 — Make exact resource-source bindings mandatory at launch
+
+- Task/area: Task 12, source-bearing workflow execution contract
+- Classification: High; load-bearing correctness boundary
+- Status: Human Review Required after review round 2
+- Evidence: The correction added a private exact-reference envelope and
+  `BindExecutionParams`, which injects snapshot IDs and rejects substitutions.
+  However, `RenderedFunction.Config` remains publicly available and no current
+  launch path is required to call the binder. A caller can therefore submit
+  the bare parameterized config with a different `snapshot_*` value.
+- Addressed in the correction: admission rows are now derived from selecting
+  build inputs and frozen declarations; archive/create serialize on the owner
+  row; focused lifecycle/provenance DB specs pass.
+- Why human review is required: Making the binder mandatory changes the
+  cross-component render/launch contract. The bounded task has exhausted its
+  one correction pass, and Task 13 would make this interface operational.
+- Proposed choices:
+  1. Make the exact bound envelope the only exported launch artifact for
+     source-bearing workflows and hide bare `Config`.
+  2. Keep the current render type but change the sole execution seam to accept
+     `RenderedFunction` and always call `BindExecutionParams`, rejecting raw
+     config submission.
+  3. Split declarative rendering from an explicit server-owned launch type,
+     with construction possible only after exact source admission.
+- Required verification: prove every current launch entry point rejects a
+  substituted snapshot ID and that source-free workflows retain their current
+  behavior.
+
+### DEPENDENCY-002 — Task 13 waits for mandatory exact-source launch binding
+
+- Task/area: Task 13, workflow source capture/retry/reuse runtime
+- Classification: Blocking dependency; task not started
+- Status: Deferred until `HUMAN-REVIEW-002` is resolved
+- Evidence: Task 13 must bind captured snapshots into workflow execution and
+  reuse them across retry/replay. The only binder is currently optional, so
+  wiring runtime orchestration now would institutionalize the bypass.
+- Suggested follow-up: Resolve `HUMAN-REVIEW-002`, add launch-seam substitution
+  coverage, then implement capture/reuse against the mandatory envelope.
+
+### DEPENDENCY-003 — Task 14 waits for exact validation gates
+
+- Task/area: Task 14, direct in-ATC publication
+- Classification: Blocking dependency; task not started
+- Status: Deferred until Tasks 6–7 are accepted
+- Evidence: The approved dependency order requires exact validation gates
+  before removing the publisher gateway. Task 6 remains Human Review Required,
+  Task 7 is consequently unstarted, and publication must not consume an
+  untrusted or stale validation boundary.
+- Suggested follow-up: Resolve Task 6, complete and accept Task 7, then
+  implement Task 14 without restoring the external gateway.

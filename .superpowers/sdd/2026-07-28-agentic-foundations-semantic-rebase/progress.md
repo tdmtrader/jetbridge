@@ -202,7 +202,9 @@
     task-local Go cache). The serial migration/legacy-upgrade focus initially
     hit sandbox-denied System V shared memory; the identical host-access rerun
     passed 17/17 specs.
-  - Review: self-review only; no independent review round yet.
+  - Review: round 1 found four High blockers: optional exact execution
+    binding, caller-asserted admission provenance, archive/create race, and
+    absent DB lifecycle/provenance coverage.
   - Fix round 1: execution parameters hard-bind validated snapshot IDs;
     capture derives bindings from the successful selecting build and frozen
     declaration; archive/create serialize on the source-pipeline owner row;
@@ -210,9 +212,17 @@
     idempotency. The sandbox PostgreSQL run was blocked by denied System V
     shared memory; the identical host-access rerun passed 2/2 focused specs.
     Workflow and DB/migration compile checks also passed.
-  - Concern: source capture/reuse orchestration remains Task 13.
+  - Round 2: provenance derivation, row-lock serialization, and DB coverage
+    were addressed. One High remains: bare `RenderedFunction.Config` is still
+    launchable and the exact-source binder remains opt-in. No further
+    automatic correction is allowed.
+  - Status: **Human Review Required** (`HUMAN-REVIEW-002`).
 - [ ] Task 13 — source capture/reuse runtime
+  - Status: dependency-deferred under `DEPENDENCY-002`; do not start until
+    `HUMAN-REVIEW-002` selects and verifies the mandatory launch boundary.
 - [ ] Task 14 — direct in-ATC publication
+  - Status: dependency-deferred under `DEPENDENCY-003`; exact validation gates
+    from Tasks 6–7 must be accepted before replacing the publisher gateway.
 - [ ] Task 15 — checkpoint and attempt data models
 - [ ] Task 16 — safe-boundary checkpoint capture
 - [ ] Task 17 — fresh-attempt restore/provider resume

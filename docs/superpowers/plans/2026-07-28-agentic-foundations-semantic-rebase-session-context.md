@@ -188,7 +188,31 @@ Task 11:
   Hangar egress is enforced only when the optional daemon egress policy is
   enabled.
 
-Tasks 12–19 have not started.
+Task 12:
+
+- Implemented in `2d160f6c89` with the single correction
+  `f9de627f40`.
+- Status: **Human Review Required** after review round 2.
+- Admission provenance is now derived from selecting-build inputs, archive and
+  create serialize on the owner row, and focused DB lifecycle/provenance specs
+  pass.
+- Residual High: `RenderedFunction.Config` remains directly available and
+  `BindExecutionParams` is optional, so no launch seam requires the exact
+  validated source-reference envelope. See `HUMAN-REVIEW-002`.
+
+Task 13:
+
+- Not started; dependency-deferred under `DEPENDENCY-002` because its runtime
+  capture/reuse path would build directly on Task 12's unresolved launch
+  boundary.
+
+Task 14:
+
+- Not started; dependency-deferred under `DEPENDENCY-003` because the design
+  requires accepted exact validation gates before replacing the publisher
+  gateway, while Tasks 6–7 remain Human Review Required/dependent.
+
+Tasks 15–19 have not started.
 
 ## Milestone verification
 
@@ -215,9 +239,10 @@ branch as green until Task 6 receives human review and the unit suite is rerun.
    against a runtime that is still Human Review Required.
 3. Leave Task 9 dependency-deferred; do not build a new security boundary on
    Task 6's unresolved protected-mount primitive.
-4. Continue Task 12 workflow resource-source grammar and persistence as the
-   next safe bounded task.
-5. Treat all remaining feature groups as separate bounded tracks rather than
+4. Leave Tasks 12–14 at their documented human-review/dependency boundaries.
+5. Continue Task 15 checkpoint and execution-attempt data models as the next
+   safe bounded task.
+6. Treat all remaining feature groups as separate bounded tracks rather than
    one continuous "rebase."
 
 ## Session handoff requirement
