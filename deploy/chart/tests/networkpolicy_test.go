@@ -286,6 +286,34 @@ func TestArtifactDaemonEgressRendersExplicitDNSAndKubernetesAPIDestinations(t *t
 	}
 }
 
+func TestAgentSnapshotHangarEgressIsNarrowAndRequired(t *testing.T) {
+	missing := renderChartFailure(t,
+		"artifactDaemon.networkPolicy.enabled=true",
+		"artifactDaemon.tls.enabled=true",
+		"agentSnapshots.enabled=true",
+		"artifactDaemon.hangar.bucket=agent-snapshots",
+	)
+	if !strings.Contains(missing, "hangarEgressTo is required") {
+		t.Fatalf("missing narrow Hangar egress failure: %s", missing)
+	}
+
+	policy := findNetworkPolicy(t, renderChart(t,
+		"artifactDaemon.networkPolicy.enabled=true",
+		"artifactDaemon.tls.enabled=true",
+		"agentSnapshots.enabled=true",
+		"artifactDaemon.hangar.bucket=agent-snapshots",
+		"artifactDaemon.networkPolicy.hangarEgressTo[0].ipBlock.cidr=10.42.0.19/32",
+	), "-artifact-daemon")
+	for _, rule := range policy.Spec.Egress {
+		if len(rule.Ports) != 1 || rule.Ports[0].Port != 443 || len(rule.To) != 1 ||
+			rule.To[0].IPBlock == nil || rule.To[0].IPBlock.CIDR != "10.42.0.19/32" {
+			continue
+		}
+		return
+	}
+	t.Fatalf("Hangar egress was not rendered as one explicit TCP/443 destination: %+v", policy.Spec.Egress)
+}
+
 func TestArtifactDaemonEgressRejectsInvalidOrAnyDestinationPeers(t *testing.T) {
 	for name, sets := range map[string][]string{
 		"dns peer without selector": {

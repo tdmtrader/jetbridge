@@ -20,6 +20,8 @@ import (
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
 
+	"github.com/concourse/concourse/agent/hangar"
+	"github.com/concourse/concourse/agent/hangar/hangarfakes"
 	agentsnapshot "github.com/concourse/concourse/agent/snapshot"
 	daemon "github.com/concourse/concourse/cmd/artifact-daemon"
 )
@@ -139,6 +141,81 @@ func TestSnapshotArtifactHeadersAndRestartDurability(t *testing.T) {
 	}
 	if got := head.Header.Get("Content-Length"); got != fmt.Sprint(len(content)) {
 		t.Fatalf("HEAD Content-Length = %q", got)
+	}
+}
+
+func TestSnapshotArtifactPUTCommitsHangarBeforeSuccessAndGETRestoresLostLocalCache(t *testing.T) {
+	storagePath := t.TempDir()
+	content := []byte("durable snapshot cache-loss recovery")
+	digest := snapshotDigest(content)
+	artifactURL := "/artifacts/snapshots/sha256/" + digest + ".tar"
+
+	durable := &hangarfakes.FakeStore{}
+	var committed []byte
+	ref, err := hangar.NewObjectRef(hangar.KindSnapshot, hangar.Digest("sha256:"+digest), 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	durable.SetEnsureStub(func(_ context.Context, kind hangar.Kind, gotDigest hangar.Digest, source io.Reader, maxBytes int64) (hangar.Attributes, error) {
+		if kind != hangar.KindSnapshot || gotDigest != hangar.Digest("sha256:"+digest) || maxBytes < int64(len(content)) {
+			t.Fatalf("unexpected durable ensure request: kind=%s digest=%s max=%d", kind, gotDigest, maxBytes)
+		}
+		var readErr error
+		committed, readErr = io.ReadAll(source)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		return hangar.Attributes{Ref: ref, UncompressedBytes: int64(len(committed))}, nil
+	})
+	durable.SetInspectStub(func(_ context.Context, kind hangar.Kind, gotDigest hangar.Digest, maxBytes int64) (hangar.Attributes, error) {
+		if kind != hangar.KindSnapshot || gotDigest != hangar.Digest("sha256:"+digest) || maxBytes < int64(len(content)) {
+			t.Fatalf("unexpected durable inspect request: kind=%s digest=%s max=%d", kind, gotDigest, maxBytes)
+		}
+		if committed == nil {
+			return hangar.Attributes{}, hangar.ErrNotFound
+		}
+		return hangar.Attributes{Ref: ref, UncompressedBytes: int64(len(content))}, nil
+	})
+	durable.SetOpenStub(func(_ context.Context, gotRef hangar.ObjectRef, maxBytes int64) (io.ReadCloser, hangar.Attributes, error) {
+		if gotRef != ref || maxBytes < int64(len(content)) {
+			t.Fatalf("unexpected durable open request: ref=%+v max=%d", gotRef, maxBytes)
+		}
+		return io.NopCloser(bytes.NewReader(committed)), hangar.Attributes{Ref: ref, UncompressedBytes: int64(len(committed))}, nil
+	})
+
+	server := daemon.NewServer(lagertest.NewTestLogger("hangar-cache-loss"), storagePath, "node-a")
+	server.SetHangarStore(durable)
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	if got := putArtifact(t, ts.Client(), ts.URL+artifactURL, bytes.NewReader(content)).StatusCode; got != http.StatusCreated {
+		t.Fatalf("PUT status = %d, want 201", got)
+	}
+	if !bytes.Equal(committed, content) {
+		t.Fatalf("successful PUT did not commit durable bytes: got %q, want %q", committed, content)
+	}
+	if err := os.RemoveAll(filepath.Join(storagePath, "snapshots")); err != nil {
+		t.Fatal(err)
+	}
+
+	response, err := ts.Client().Get(ts.URL + artifactURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, readErr := io.ReadAll(response.Body)
+	response.Body.Close()
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if response.StatusCode != http.StatusOK || !bytes.Equal(body, content) {
+		t.Fatalf("GET after cache loss = %d/%q, want 200/%q", response.StatusCode, body, content)
+	}
+	restored, err := os.ReadFile(filepath.Join(storagePath, "snapshots", "sha256", digest+".tar"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(restored, content) {
+		t.Fatalf("restored cache bytes = %q, want %q", restored, content)
 	}
 }
 

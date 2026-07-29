@@ -7,11 +7,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/agent/artifactcap"
+	"github.com/concourse/concourse/agent/hangar"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 )
@@ -35,6 +37,11 @@ func main() {
 	resolveCapabilityKeyFile := flag.String("resolve-capability-key", "", "Path to the raw 32-byte key required to authorize resolve operations")
 	resolveMaxConcurrent := flag.Int("resolve-max-concurrent", defaultResolveMaxConcurrent, "Daemon-wide maximum number of concurrent artifact resolve operations")
 	resolveTimeout := flag.Duration("resolve-timeout", defaultResolveTimeout, "Maximum lifetime of one local or peer artifact resolve operation")
+	hangarGCSBucket := flag.String("hangar-gcs-bucket", "", "GCS bucket for durable immutable agent snapshots; empty retains legacy local-only snapshot reads")
+	hangarGCSEndpoint := flag.String("hangar-gcs-endpoint", "", "Explicit GCS-compatible JSON endpoint for a long-lived emulator; empty uses production application-default credentials")
+	hangarScratchDir := flag.String("hangar-scratch-dir", "", "Absolute daemon-local scratch directory for Hangar compression and verified reads; defaults under storage-path")
+	hangarReadTimeout := flag.Duration("hangar-read-timeout", 5*time.Minute, "Maximum time to read and verify one durable Hangar object")
+	hangarWriteTimeout := flag.Duration("hangar-write-timeout", 5*time.Minute, "Maximum time to compress and commit one durable Hangar object")
 
 	flag.Parse()
 
@@ -70,6 +77,39 @@ func main() {
 	}
 
 	server := NewServer(logger, *storagePath, *nodeName)
+	if *hangarGCSBucket != "" {
+		scratchDir := *hangarScratchDir
+		if scratchDir == "" {
+			scratchDir = filepath.Join(*storagePath, ".hangar-scratch")
+		}
+		if !filepath.IsAbs(scratchDir) {
+			logger.Error("invalid-hangar-scratch-dir", fmt.Errorf("hangar scratch directory must be absolute"))
+			os.Exit(1)
+		}
+		if err := os.MkdirAll(scratchDir, 0700); err != nil {
+			logger.Error("create-hangar-scratch-dir", err)
+			os.Exit(1)
+		}
+		client, err := hangar.NewStorageClient(context.Background(), *hangarGCSEndpoint)
+		if err != nil {
+			logger.Error("create-hangar-gcs-client", err)
+			os.Exit(1)
+		}
+		store, err := hangar.NewGCSStore(client, hangar.GCSConfig{
+			Bucket:       *hangarGCSBucket,
+			ScratchDir:   scratchDir,
+			ReadTimeout:  *hangarReadTimeout,
+			WriteTimeout: *hangarWriteTimeout,
+		})
+		if err != nil {
+			_ = client.Close()
+			logger.Error("configure-hangar-gcs-store", err)
+			os.Exit(1)
+		}
+		defer client.Close()
+		server.SetHangarStore(store)
+		logger.Info("hangar-configured", lager.Data{"bucket": *hangarGCSBucket, "emulator": *hangarGCSEndpoint != ""})
+	}
 	if err := server.ConfigureResolveLimits(*resolveMaxConcurrent, *resolveTimeout); err != nil {
 		logger.Error("invalid-resolve-limits", err)
 		os.Exit(1)

@@ -45,6 +45,7 @@ func TestAgentSnapshotValuesRenderExactWebArguments(t *testing.T) {
 		"artifactDaemon.enabled=true",
 		"artifactDaemon.tls.enabled=true",
 		"agentSnapshots.enabled=true",
+		"artifactDaemon.hangar.bucket=test-hangar",
 		"agentSnapshots.replicationFactor=3",
 		"agentSnapshots.maxBytes=1048576",
 		"agentSnapshots.maxFiles=1234",
@@ -128,11 +129,66 @@ func TestAgentSnapshotValuesRenderExactWebArguments(t *testing.T) {
 	}
 }
 
+func TestAgentSnapshotsRequireHangarBucketAndWireDaemonGCSArguments(t *testing.T) {
+	output := renderChartFailure(t,
+		"artifactDaemon.enabled=true",
+		"artifactDaemon.tls.enabled=true",
+		"agentSnapshots.enabled=true",
+	)
+	if !strings.Contains(output, "artifactDaemon.hangar.bucket is required") {
+		t.Fatalf("missing Hangar bucket failure: %s", output)
+	}
+
+	daemon := findDaemonSet(t, renderChart(t,
+		"artifactDaemon.enabled=true",
+		"artifactDaemon.tls.enabled=true",
+		"agentSnapshots.enabled=true",
+		"artifactDaemon.hangar.bucket=agent-snapshots",
+		"artifactDaemon.hangar.endpoint=https://fake-gcs.ci.example/storage/v1/",
+		"artifactDaemon.hangar.scratchPath=/var/concourse/hangar-scratch",
+		"artifactDaemon.hangar.readTimeout=3m",
+		"artifactDaemon.hangar.writeTimeout=4m",
+		"artifactDaemon.serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=hangar@project.iam.gserviceaccount.com",
+	), "-artifact-daemon")
+	args := daemon.Spec.Template.Spec.Containers[0].Command
+	for _, want := range []string{
+		"--hangar-gcs-bucket=agent-snapshots",
+		"--hangar-gcs-endpoint=https://fake-gcs.ci.example/storage/v1/",
+		"--hangar-scratch-dir=/var/concourse/hangar-scratch",
+		"--hangar-read-timeout=3m",
+		"--hangar-write-timeout=4m",
+	} {
+		if !slices.Contains(args, want) {
+			t.Errorf("artifact daemon command does not contain %q: %v", want, args)
+		}
+	}
+	if !strings.Contains(renderChart(t,
+		"artifactDaemon.enabled=true",
+		"artifactDaemon.serviceAccount.annotations.iam\\.gke\\.io/gcp-service-account=hangar@project.iam.gserviceaccount.com",
+	), "iam.gke.io/gcp-service-account: hangar@project.iam.gserviceaccount.com") {
+		t.Fatal("daemon workload-identity annotation was not rendered")
+	}
+}
+
+func TestHangarSnapshotFailureAlertUsesDaemonMetrics(t *testing.T) {
+	manifests := renderChart(t, "alertingRules.enabled=true")
+	for _, want := range []string{
+		"alert: ConcourseHangarSnapshotFailures",
+		"artifact_daemon_snapshot_operations_total",
+		"Hangar-backed snapshot operation failures",
+	} {
+		if !strings.Contains(manifests, want) {
+			t.Errorf("Hangar alert is missing %q", want)
+		}
+	}
+}
+
 func TestAgentSnapshotScratchSupportsExistingPVC(t *testing.T) {
 	manifests := renderChart(t,
 		"artifactDaemon.enabled=true",
 		"artifactDaemon.tls.enabled=true",
 		"agentSnapshots.enabled=true",
+		"artifactDaemon.hangar.bucket=test-hangar",
 		"agentSnapshots.scratch.existingClaim=snapshot-scratch-pvc",
 	)
 	web := findDeployment(t, manifests, "-web")
@@ -156,6 +212,7 @@ func TestAgentExperimentRunnerValuesRenderExactWebArguments(t *testing.T) {
 		"artifactDaemon.enabled=true",
 		"artifactDaemon.tls.enabled=true",
 		"agentSnapshots.enabled=true",
+		"artifactDaemon.hangar.bucket=test-hangar",
 		"agentExperiments.runnerEnabled=true",
 		"agentExperiments.runnerInterval=17s",
 		"agentExperiments.runnerMaxConcurrency=7",
@@ -202,6 +259,7 @@ func TestAgentPublisherGatewayRendersMountedFileConfiguration(t *testing.T) {
 		"artifactDaemon.enabled=true",
 		"artifactDaemon.tls.enabled=true",
 		"agentSnapshots.enabled=true",
+		"artifactDaemon.hangar.bucket=test-hangar",
 		"agentPublisherGateway.enabled=true",
 		"agentPublisherGateway.endpoint=https://publisher-gateway.platform.svc",
 		"agentPublisherGateway.policyFile=/etc/concourse/publisher/policy.json",
@@ -267,7 +325,7 @@ func TestAgentSnapshotAndExperimentDependenciesFailAtChartRender(t *testing.T) {
 		want string
 	}{
 		"snapshots require authenticated storage": {
-			sets: []string{"artifactDaemon.enabled=true", "artifactDaemon.tls.enabled=false", "agentSnapshots.enabled=true"},
+			sets: []string{"artifactDaemon.enabled=true", "artifactDaemon.tls.enabled=false", "agentSnapshots.enabled=true", "artifactDaemon.hangar.bucket=test-hangar"},
 			want: "agentSnapshots.enabled requires artifactDaemon.tls.enabled",
 		},
 		"experiments require snapshots": {
@@ -285,7 +343,7 @@ func TestAgentSnapshotAndExperimentDependenciesFailAtChartRender(t *testing.T) {
 		},
 		"publisher gateway requires HTTPS": {
 			sets: []string{
-				"artifactDaemon.enabled=true", "artifactDaemon.tls.enabled=true", "agentSnapshots.enabled=true",
+				"artifactDaemon.enabled=true", "artifactDaemon.tls.enabled=true", "agentSnapshots.enabled=true", "artifactDaemon.hangar.bucket=test-hangar",
 				"agentPublisherGateway.enabled=true", "agentPublisherGateway.endpoint=http://gateway.example",
 				"agentPublisherGateway.policyFile=/policy.json", "agentPublisherGateway.tokenFile=/token",
 			},
@@ -293,14 +351,14 @@ func TestAgentSnapshotAndExperimentDependenciesFailAtChartRender(t *testing.T) {
 		},
 		"publisher gateway requires mounted file paths": {
 			sets: []string{
-				"artifactDaemon.enabled=true", "artifactDaemon.tls.enabled=true", "agentSnapshots.enabled=true",
+				"artifactDaemon.enabled=true", "artifactDaemon.tls.enabled=true", "agentSnapshots.enabled=true", "artifactDaemon.hangar.bucket=test-hangar",
 				"agentPublisherGateway.enabled=true", "agentPublisherGateway.endpoint=https://gateway.example",
 			},
 			want: "agentPublisherGateway.policyFile and tokenFile are required",
 		},
 		"publisher gateway requires dedicated web-only mounts": {
 			sets: []string{
-				"artifactDaemon.enabled=true", "artifactDaemon.tls.enabled=true", "agentSnapshots.enabled=true",
+				"artifactDaemon.enabled=true", "artifactDaemon.tls.enabled=true", "agentSnapshots.enabled=true", "artifactDaemon.hangar.bucket=test-hangar",
 				"agentPublisherGateway.enabled=true", "agentPublisherGateway.endpoint=https://gateway.example",
 				"agentPublisherGateway.policyFile=/policy.json", "agentPublisherGateway.tokenFile=/token",
 			},
@@ -346,7 +404,7 @@ func TestAgentSnapshotAndExperimentDependenciesFailAtChartRender(t *testing.T) {
 		"snapshot scratch requires bounded disk capacity": {
 			sets: []string{
 				"artifactDaemon.enabled=true", "artifactDaemon.tls.enabled=true",
-				"agentSnapshots.enabled=true", "agentSnapshots.scratch.sizeLimit=",
+				"agentSnapshots.enabled=true", "artifactDaemon.hangar.bucket=test-hangar", "agentSnapshots.scratch.sizeLimit=",
 			},
 			want: "agentSnapshots.scratch.sizeLimit is required",
 		},
@@ -387,7 +445,7 @@ func TestAgentSnapshotAndExperimentDependenciesFailAtChartRender(t *testing.T) {
 		"snapshot temp argument cannot override disk scratch": {
 			sets: []string{
 				"artifactDaemon.enabled=true", "artifactDaemon.tls.enabled=true",
-				"agentSnapshots.enabled=true",
+				"agentSnapshots.enabled=true", "artifactDaemon.hangar.bucket=test-hangar",
 				"web.extraArgs[0]=--agent-snapshot-temp-dir=/tmp",
 			},
 			want: "web.extraArgs may not override the chart-managed agent snapshot temp directory",
@@ -395,7 +453,7 @@ func TestAgentSnapshotAndExperimentDependenciesFailAtChartRender(t *testing.T) {
 		"snapshot TMPDIR cannot override private scratch": {
 			sets: []string{
 				"artifactDaemon.enabled=true", "artifactDaemon.tls.enabled=true",
-				"agentSnapshots.enabled=true",
+				"agentSnapshots.enabled=true", "artifactDaemon.hangar.bucket=test-hangar",
 				"web.env[0].name=TMPDIR", "web.env[0].value=/tmp",
 			},
 			want: "web.env may not override TMPDIR while agentSnapshots.enabled is true",
@@ -415,6 +473,7 @@ func validPublisherSettings(overrides ...string) []string {
 		"artifactDaemon.enabled=true",
 		"artifactDaemon.tls.enabled=true",
 		"agentSnapshots.enabled=true",
+		"artifactDaemon.hangar.bucket=test-hangar",
 		"agentPublisherGateway.enabled=true",
 		"agentPublisherGateway.endpoint=https://gateway.example",
 		"agentPublisherGateway.policyFile=/etc/concourse/publisher/policy.json",

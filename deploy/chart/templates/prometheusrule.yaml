@@ -45,4 +45,12 @@ spec:
           annotations:
             summary: "Worker heartbeat stale (>60s)"
             description: "A worker has not re-registered in over 60 seconds (heartbeat TTL is 30s); it may be unhealthy or partitioned."
+        - alert: ConcourseHangarSnapshotFailures
+          expr: increase(artifact_daemon_snapshot_operations_total{operation=~"put|get",status="error"}[5m]) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Hangar-backed snapshot operation failures"
+            description: "Artifact daemons are unable to commit or restore durable agent snapshots."
 {{- end }}

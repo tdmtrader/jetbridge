@@ -14,10 +14,15 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/concourse/concourse/agent/hangar"
 	"github.com/concourse/concourse/agent/snapshot"
 )
 
-const SnapshotDaemonDriver = "jetbridge-daemon-v1"
+const (
+	SnapshotDaemonDriver          = "jetbridge-daemon-v1"
+	SnapshotHangarDriver          = "hangar-v1"
+	snapshotDurableLocationHeader = "X-Concourse-Snapshot-Durable-Location"
+)
 
 type SnapshotLocationResolver interface {
 	LocationsForDigest(context.Context, snapshot.Digest) ([]snapshot.Location, error)
@@ -139,32 +144,18 @@ func (store *SnapshotContentStore) Put(ctx context.Context, digest snapshot.Dige
 		endpoints = endpoints[:store.replicationFactor]
 	}
 
-	type uploadResult struct {
-		location snapshot.Location
-		err      error
-	}
-	results := make(chan uploadResult, len(endpoints))
-	var wait sync.WaitGroup
-	for _, endpoint := range endpoints {
-		endpoint := endpoint
-		wait.Add(1)
-		go func() {
-			defer wait.Done()
-			location, err := store.putEndpoint(ctx, endpoint, digest, spoolName, size)
-			results <- uploadResult{location: location, err: err}
-		}()
-	}
-	wait.Wait()
-	close(results)
-
 	locations := make([]snapshot.Location, 0, len(endpoints))
 	errorsByNode := make([]error, 0, len(endpoints))
-	for result := range results {
-		if result.err != nil {
-			errorsByNode = append(errorsByNode, result.err)
+	for _, endpoint := range endpoints {
+		location, hangarBacked, putErr := store.putEndpointWithStorage(ctx, endpoint, digest, spoolName, size)
+		if putErr != nil {
+			errorsByNode = append(errorsByNode, putErr)
 			continue
 		}
-		locations = append(locations, result.location)
+		if hangarBacked {
+			return []snapshot.Location{hangarSnapshotLocation(digest)}, nil
+		}
+		locations = append(locations, location)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -233,17 +224,28 @@ func (store *SnapshotContentStore) putEndpoint(
 	spoolName string,
 	size int64,
 ) (snapshot.Location, error) {
+	location, _, err := store.putEndpointWithStorage(ctx, endpoint, digest, spoolName, size)
+	return location, err
+}
+
+func (store *SnapshotContentStore) putEndpointWithStorage(
+	ctx context.Context,
+	endpoint DaemonEndpoint,
+	digest snapshot.Digest,
+	spoolName string,
+	size int64,
+) (snapshot.Location, bool, error) {
 	key := snapshotKeyForDigest(digest)
 	location := snapshot.Location{Digest: digest, Driver: SnapshotDaemonDriver, Key: key, Node: endpoint.NodeName}
-	status, err := store.putEndpointRequest(ctx, endpoint, key, spoolName, size)
+	status, hangarBacked, err := store.putEndpointRequest(ctx, endpoint, key, spoolName, size)
 	if err != nil {
-		return snapshot.Location{}, fmt.Errorf("upload snapshot to %s: %w", endpoint.NodeName, err)
+		return snapshot.Location{}, false, fmt.Errorf("upload snapshot to %s: %w", endpoint.NodeName, err)
 	}
 	if status == http.StatusCreated || status == http.StatusOK {
-		return location, nil
+		return location, hangarBacked, nil
 	}
 	if status != http.StatusConflict {
-		return snapshot.Location{}, fmt.Errorf("upload snapshot to %s: daemon status %d", endpoint.NodeName, status)
+		return snapshot.Location{}, false, fmt.Errorf("upload snapshot to %s: daemon status %d", endpoint.NodeName, status)
 	}
 
 	// The namespace is immutable, so a conflict is normally an already-present
@@ -252,22 +254,22 @@ func (store *SnapshotContentStore) putEndpoint(
 	// which makes delete-and-rewrite safe even when this is the only replica.
 	verified, err := store.Exists(ctx, location)
 	if err != nil {
-		return snapshot.Location{}, fmt.Errorf("verify conflicting snapshot on %s: %w", endpoint.NodeName, err)
+		return snapshot.Location{}, false, fmt.Errorf("verify conflicting snapshot on %s: %w", endpoint.NodeName, err)
 	}
 	if verified {
-		return location, nil
+		return location, false, nil
 	}
 	if err := store.DeleteLocation(ctx, location); err != nil {
-		return snapshot.Location{}, fmt.Errorf("replace corrupt snapshot on %s: %w", endpoint.NodeName, err)
+		return snapshot.Location{}, false, fmt.Errorf("replace corrupt snapshot on %s: %w", endpoint.NodeName, err)
 	}
-	status, err = store.putEndpointRequest(ctx, endpoint, key, spoolName, size)
+	status, hangarBacked, err = store.putEndpointRequest(ctx, endpoint, key, spoolName, size)
 	if err != nil {
-		return snapshot.Location{}, fmt.Errorf("rewrite snapshot on %s: %w", endpoint.NodeName, err)
+		return snapshot.Location{}, false, fmt.Errorf("rewrite snapshot on %s: %w", endpoint.NodeName, err)
 	}
 	if status != http.StatusCreated && status != http.StatusOK {
-		return snapshot.Location{}, fmt.Errorf("rewrite snapshot on %s: daemon status %d", endpoint.NodeName, status)
+		return snapshot.Location{}, false, fmt.Errorf("rewrite snapshot on %s: daemon status %d", endpoint.NodeName, status)
 	}
-	return location, nil
+	return location, hangarBacked, nil
 }
 
 func (store *SnapshotContentStore) putEndpointRequest(
@@ -276,15 +278,15 @@ func (store *SnapshotContentStore) putEndpointRequest(
 	key string,
 	spoolName string,
 	size int64,
-) (status int, err error) {
+) (status int, hangarBacked bool, err error) {
 	file, err := os.Open(spoolName)
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	defer func() { err = errors.Join(err, file.Close()) }()
 	target, err := store.daemon.snapshotURL(endpoint, key)
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	// NopCloser keeps ownership of the spool file here. *os.File is an
 	// io.ReadCloser, so handing it over directly makes it the request body, and
@@ -299,24 +301,32 @@ func (store *SnapshotContentStore) putEndpointRequest(
 	// which is why it presented as flakiness rather than a defect.
 	request, err := http.NewRequestWithContext(ctx, http.MethodPut, target.String(), io.NopCloser(file))
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	request.ContentLength = size
 	request.Header.Set("Content-Type", "application/x-tar")
 	client, err := store.daemon.snapshotHTTPClient()
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	_, drainErr := io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
 	closeErr := response.Body.Close()
 	if drainErr != nil || closeErr != nil {
-		return 0, errors.Join(drainErr, closeErr)
+		return 0, false, errors.Join(drainErr, closeErr)
 	}
-	return response.StatusCode, nil
+	return response.StatusCode, response.Header.Get(snapshotDurableLocationHeader) == SnapshotHangarDriver, nil
+}
+
+func hangarSnapshotLocation(digest snapshot.Digest) snapshot.Location {
+	key, err := hangar.Key(hangar.KindSnapshot, hangar.Digest(digest))
+	if err != nil {
+		panic(fmt.Sprintf("validated snapshot digest produced invalid Hangar key: %v", err))
+	}
+	return snapshot.Location{Digest: digest, Driver: SnapshotHangarDriver, Key: key}
 }
 
 func (store *SnapshotContentStore) Open(ctx context.Context, value snapshot.Snapshot) (io.ReadCloser, error) {
@@ -364,6 +374,15 @@ func (store *SnapshotContentStore) RepairReplicas(
 	}
 	if value.ContentState != snapshot.ContentStateAvailable {
 		return result, snapshot.ErrExpired
+	}
+	for _, location := range recorded {
+		if location.Driver != SnapshotHangarDriver {
+			continue
+		}
+		if err := validateSnapshotLocation(location, value.Digest); err != nil {
+			return result, err
+		}
+		return store.repairHangarSnapshot(ctx, value, location)
 	}
 
 	recordedByNode := make(map[string]snapshot.Location, len(recorded))
@@ -552,6 +571,26 @@ func (store *SnapshotContentStore) RepairReplicas(
 		copyErrors = nil
 	}
 	return sortedReplicaRepairResult(result), errors.Join(errors.Join(copyErrors...), errors.Join(cleanupErrors...))
+}
+
+// repairHangarSnapshot deliberately treats the durable object as one
+// authority, not a daemon replica. Any live daemon can restore its on-use
+// cache, so repair verifies one read and never reintroduces peer locations.
+func (store *SnapshotContentStore) repairHangarSnapshot(
+	ctx context.Context,
+	value snapshot.Snapshot,
+	location snapshot.Location,
+) (snapshot.ReplicaRepairResult, error) {
+	result := snapshot.ReplicaRepairResult{Desired: 1, LiveCapacity: 1}
+	exists, err := store.Exists(ctx, location)
+	if err != nil {
+		return result, err
+	}
+	if !exists {
+		return result, snapshot.ErrNoReadableReplica
+	}
+	result.Verified = 1
+	return result, nil
 }
 
 // verifyRepairEndpoint reaches verified EOF. When spool is true it returns a
@@ -751,7 +790,11 @@ func (store *SnapshotContentStore) Exists(ctx context.Context, location snapshot
 	if err != nil {
 		return false, err
 	}
-	target, err := store.daemon.snapshotURL(endpoint, location.Key)
+	key := location.Key
+	if location.Driver == SnapshotHangarDriver {
+		key = snapshotKeyForDigest(location.Digest)
+	}
+	target, err := store.daemon.snapshotURL(endpoint, key)
 	if err != nil {
 		return false, err
 	}
@@ -857,6 +900,13 @@ func (store *SnapshotContentStore) endpointForLocation(ctx context.Context, loca
 	if err != nil {
 		return DaemonEndpoint{}, err
 	}
+	if location.Driver == SnapshotHangarDriver {
+		if len(endpoints) == 0 {
+			return DaemonEndpoint{}, fmt.Errorf("no live artifact daemon endpoints for Hangar snapshot")
+		}
+		sort.Slice(endpoints, func(i, j int) bool { return endpoints[i].NodeName < endpoints[j].NodeName })
+		return endpoints[0], nil
+	}
 	for _, endpoint := range endpoints {
 		if endpoint.NodeName == location.Node {
 			return endpoint, nil
@@ -869,7 +919,16 @@ func validateSnapshotLocation(location snapshot.Location, digest snapshot.Digest
 	if err := location.Validate(); err != nil {
 		return err
 	}
-	if location.Digest != digest || location.Driver != SnapshotDaemonDriver || location.Key != snapshotKeyForDigest(digest) {
+	if location.Digest != digest {
+		return fmt.Errorf("invalid jetbridge snapshot location")
+	}
+	if location.Driver == SnapshotHangarDriver {
+		if location != hangarSnapshotLocation(digest) {
+			return fmt.Errorf("invalid Hangar snapshot location")
+		}
+		return nil
+	}
+	if location.Driver != SnapshotDaemonDriver || location.Key != snapshotKeyForDigest(digest) {
 		return fmt.Errorf("invalid jetbridge snapshot location")
 	}
 	if strings.TrimSpace(location.Node) == "" || location.Node != strings.TrimSpace(location.Node) {
@@ -882,13 +941,20 @@ func (store *SnapshotContentStore) locationRequest(ctx context.Context, method s
 	if err := validateSnapshotLocation(location, location.Digest); err != nil {
 		return 0, err
 	}
-	target, err := store.daemon.snapshotURL(endpoint, location.Key)
+	key := location.Key
+	if location.Driver == SnapshotHangarDriver {
+		key = snapshotKeyForDigest(location.Digest)
+	}
+	target, err := store.daemon.snapshotURL(endpoint, key)
 	if err != nil {
 		return 0, err
 	}
 	request, err := http.NewRequestWithContext(ctx, method, target.String(), nil)
 	if err != nil {
 		return 0, err
+	}
+	if method == http.MethodDelete && location.Driver == SnapshotDaemonDriver {
+		request.Header.Set("X-Concourse-Snapshot-Delete-Cache-Only", "true")
 	}
 	if store.daemon.initializationErr != nil {
 		return 0, store.daemon.initializationErr

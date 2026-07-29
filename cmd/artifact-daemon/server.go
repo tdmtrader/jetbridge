@@ -25,6 +25,7 @@ import (
 
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/agent/artifactcap"
+	"github.com/concourse/concourse/agent/hangar"
 	"github.com/concourse/concourse/agent/snapshot"
 	"golang.org/x/sys/unix"
 )
@@ -43,6 +44,8 @@ type Server struct {
 	snapshotMaxBytes int64
 	resolveSlots     chan struct{}
 	resolveTimeout   time.Duration
+	hangar           hangar.Store
+	snapshotCacheMu  sync.Mutex
 
 	// Injected only by package-internal durability tests. Production always
 	// uses syncRootDirectory so a successful convergence response means the
@@ -164,6 +167,11 @@ func (s *Server) openRegistryAliasForRequestWithReadGuard(ctx context.Context, r
 
 const snapshotKeyPrefix = "snapshots/sha256/"
 
+// snapshotCacheOnlyDeleteHeader lets the ATC clean a corrupted legacy daemon
+// cache entry without deleting the authoritative Hangar object. Only the
+// canonical hangar-v1 location may request a durable deletion.
+const snapshotCacheOnlyDeleteHeader = "X-Concourse-Snapshot-Delete-Cache-Only"
+
 var defaultSnapshotMaxBytes = func() int64 {
 	limit, err := snapshot.CanonicalArchiveByteLimit(snapshot.DefaultMaxSnapshotContentBytes, snapshot.DefaultMaxSnapshotEntries)
 	if err != nil {
@@ -250,6 +258,13 @@ func (s *Server) SetPeerResolver(peers *PeerResolver) {
 // settles. Pass nil (or skip the call) to disable mirroring.
 func (s *Server) SetMirrorTrigger(trigger func(ctx context.Context, key string)) {
 	s.mirrorTrigger = trigger
+}
+
+// SetHangarStore makes Hangar the durable authority for immutable snapshots.
+// The hostPath remains an on-use cache; callers only receive a successful PUT
+// after the canonical bytes have been committed to Hangar.
+func (s *Server) SetHangarStore(store hangar.Store) {
+	s.hangar = store
 }
 
 // Handler returns the HTTP handler for the server. When tlsEnabled is true,
@@ -488,7 +503,12 @@ func (s *Server) handlePutSnapshot(w http.ResponseWriter, r *http.Request, expec
 				http.Error(w, "internal error", http.StatusInternalServerError)
 				return
 			}
+			if err := s.ensureSnapshotInHangar(r.Context(), root, expectedDigest); err != nil {
+				http.Error(w, "durable snapshot upload failed", http.StatusBadGateway)
+				return
+			}
 			status = "identical"
+			s.setHangarSnapshotLocationHeader(w)
 			w.WriteHeader(http.StatusOK)
 		} else {
 			status = "conflict"
@@ -508,7 +528,12 @@ func (s *Server) handlePutSnapshot(w http.ResponseWriter, r *http.Request, expec
 					http.Error(w, "internal error", http.StatusInternalServerError)
 					return
 				}
+				if err := s.ensureSnapshotInHangar(r.Context(), root, expectedDigest); err != nil {
+					http.Error(w, "durable snapshot upload failed", http.StatusBadGateway)
+					return
+				}
 				status = "identical"
+				s.setHangarSnapshotLocationHeader(w)
 				w.WriteHeader(http.StatusOK)
 				return
 			}
@@ -530,8 +555,19 @@ func (s *Server) handlePutSnapshot(w http.ResponseWriter, r *http.Request, expec
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	if err := s.ensureSnapshotInHangar(r.Context(), root, expectedDigest); err != nil {
+		http.Error(w, "durable snapshot upload failed", http.StatusBadGateway)
+		return
+	}
 	status = "created"
+	s.setHangarSnapshotLocationHeader(w)
 	w.WriteHeader(http.StatusCreated)
+}
+
+func (s *Server) setHangarSnapshotLocationHeader(w http.ResponseWriter) {
+	if s.hangar != nil {
+		w.Header().Set("X-Concourse-Snapshot-Durable-Location", "hangar-v1")
+	}
 }
 
 func (s *Server) ensureSnapshotNamespace(root *os.Root) error {
@@ -666,6 +702,121 @@ func syncRootDirectory(root *os.Root, name string) error {
 	return directory.Sync()
 }
 
+func (s *Server) ensureSnapshotInHangar(ctx context.Context, root *os.Root, digest string) error {
+	if s.hangar == nil {
+		return nil
+	}
+	_, err := s.hangar.Inspect(ctx, hangar.KindSnapshot, hangar.Digest("sha256:"+digest), s.snapshotMaxBytes)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, hangar.ErrNotFound) {
+		return fmt.Errorf("inspect snapshot in hangar: %w", err)
+	}
+	archive, err := root.Open(snapshotKey(digest))
+	if err != nil {
+		return fmt.Errorf("open local snapshot cache: %w", err)
+	}
+	defer archive.Close()
+	_, err = s.hangar.Ensure(
+		ctx,
+		hangar.KindSnapshot,
+		hangar.Digest("sha256:"+digest),
+		archive,
+		s.snapshotMaxBytes,
+	)
+	if err != nil {
+		return fmt.Errorf("ensure snapshot in hangar: %w", err)
+	}
+	return nil
+}
+
+// restoreSnapshotFromHangar fills an empty local cache from the verified,
+// generation-pinned Hangar reader. The durable store verifies the complete
+// compressed representation before it returns a reader; this function then
+// independently verifies the canonical digest before publishing a local link.
+func (s *Server) restoreSnapshotFromHangar(ctx context.Context, digest string) error {
+	if s.hangar == nil {
+		return hangar.ErrNotFound
+	}
+	s.snapshotCacheMu.Lock()
+	defer s.snapshotCacheMu.Unlock()
+
+	if err := os.MkdirAll(s.storagePath, 0755); err != nil {
+		return err
+	}
+	root, err := os.OpenRoot(s.storagePath)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	key := snapshotKey(digest)
+	if info, statErr := root.Lstat(key); statErr == nil && info.Mode().IsRegular() {
+		return nil
+	} else if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+		return statErr
+	}
+	if err := s.ensureSnapshotNamespace(root); err != nil {
+		return err
+	}
+	attrs, err := s.hangar.Inspect(ctx, hangar.KindSnapshot, hangar.Digest("sha256:"+digest), s.snapshotMaxBytes)
+	if err != nil {
+		return err
+	}
+	reader, _, err := s.hangar.Open(ctx, attrs.Ref, s.snapshotMaxBytes)
+	if err != nil {
+		return err
+	}
+	defer reader.Close()
+
+	parent := path.Dir(key)
+	tmpKey, temporary, err := createSnapshotTemp(root, parent)
+	if err != nil {
+		return err
+	}
+	tmpExists := true
+	defer func() {
+		_ = temporary.Close()
+		if tmpExists {
+			_ = root.Remove(tmpKey)
+		}
+	}()
+	hash := sha256.New()
+	if _, err := copySnapshotContext(ctx, io.MultiWriter(temporary, hash), reader, s.snapshotMaxBytes); err != nil {
+		return err
+	}
+	if actual := hex.EncodeToString(hash.Sum(nil)); actual != digest {
+		return fmt.Errorf("restored snapshot digest mismatch: got %s, want %s", actual, digest)
+	}
+	if err := temporary.Chmod(0644); err != nil {
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	exists, identical, err := compareSnapshot(ctx, root, key, tmpKey)
+	if err != nil {
+		return err
+	}
+	if exists {
+		if !identical {
+			return fmt.Errorf("local snapshot cache conflicts with durable snapshot")
+		}
+		return nil
+	}
+	if err := root.Link(tmpKey, key); err != nil && !errors.Is(err, os.ErrExist) {
+		return err
+	}
+	if err := root.Remove(tmpKey); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	tmpExists = false
+	return s.syncSnapshotDirectory(root, parent)
+}
+
 func (s *Server) handleGetSnapshot(w http.ResponseWriter, r *http.Request, digest string) {
 	start := time.Now()
 	status := "error"
@@ -673,7 +824,7 @@ func (s *Server) handleGetSnapshot(w http.ResponseWriter, r *http.Request, diges
 	defer func() { s.metrics.recordSnapshot("get", status, copied, time.Since(start)) }()
 	release := s.guard.BeginRead(snapshotKey(digest))
 	defer release()
-	root, file, info, ok := s.openSnapshotForRead(w, digest)
+	root, file, info, ok := s.openSnapshotForRead(r.Context(), w, digest)
 	if !ok {
 		return
 	}
@@ -688,13 +839,13 @@ func (s *Server) handleGetSnapshot(w http.ResponseWriter, r *http.Request, diges
 	status = "ok"
 }
 
-func (s *Server) handleHeadSnapshot(w http.ResponseWriter, _ *http.Request, digest string) {
+func (s *Server) handleHeadSnapshot(w http.ResponseWriter, r *http.Request, digest string) {
 	start := time.Now()
 	status := "error"
 	defer func() { s.metrics.recordSnapshot("head", status, 0, time.Since(start)) }()
 	release := s.guard.BeginRead(snapshotKey(digest))
 	defer release()
-	root, file, info, ok := s.openSnapshotForRead(w, digest)
+	root, file, info, ok := s.openSnapshotForRead(r.Context(), w, digest)
 	if !ok {
 		return
 	}
@@ -705,7 +856,7 @@ func (s *Server) handleHeadSnapshot(w http.ResponseWriter, _ *http.Request, dige
 	w.WriteHeader(http.StatusOK)
 }
 
-func (s *Server) openSnapshotForRead(w http.ResponseWriter, digest string) (*os.Root, *os.File, os.FileInfo, bool) {
+func (s *Server) openSnapshotForRead(ctx context.Context, w http.ResponseWriter, digest string) (*os.Root, *os.File, os.FileInfo, bool) {
 	root, err := os.OpenRoot(s.storagePath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -720,6 +871,17 @@ func (s *Server) openSnapshotForRead(w http.ResponseWriter, digest string) (*os.
 	if err != nil {
 		root.Close()
 		if errors.Is(err, os.ErrNotExist) {
+			if s.hangar != nil {
+				if restoreErr := s.restoreSnapshotFromHangar(ctx, digest); restoreErr == nil {
+					return s.openSnapshotForRead(ctx, w, digest)
+				} else if errors.Is(restoreErr, hangar.ErrNotFound) {
+					http.Error(w, "not found", http.StatusNotFound)
+				} else {
+					s.logger.Error("restore-snapshot-from-hangar-failed", restoreErr)
+					http.Error(w, "durable snapshot restore failed", http.StatusBadGateway)
+				}
+				return nil, nil, nil, false
+			}
 			http.Error(w, "not found", http.StatusNotFound)
 		} else {
 			http.Error(w, "internal error", http.StatusInternalServerError)
@@ -737,6 +899,13 @@ func (s *Server) openSnapshotForRead(w http.ResponseWriter, digest string) (*os.
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return nil, nil, nil, false
 	}
+	if err := s.ensureSnapshotInHangar(ctx, root, digest); err != nil {
+		file.Close()
+		root.Close()
+		s.logger.Error("adopt-snapshot-into-hangar-failed", err)
+		http.Error(w, "durable snapshot upload failed", http.StatusBadGateway)
+		return nil, nil, nil, false
+	}
 	return root, file, info, true
 }
 
@@ -746,7 +915,7 @@ func setSnapshotHeaders(w http.ResponseWriter, digest string, size int64) {
 	w.Header().Set("ETag", `"sha256:`+digest+`"`)
 }
 
-func (s *Server) handleDeleteSnapshot(w http.ResponseWriter, _ *http.Request, digest string) {
+func (s *Server) handleDeleteSnapshot(w http.ResponseWriter, r *http.Request, digest string) {
 	start := time.Now()
 	status := "error"
 	defer func() { s.metrics.recordSnapshot("delete", status, 0, time.Since(start)) }()
@@ -762,6 +931,7 @@ func (s *Server) handleDeleteSnapshot(w http.ResponseWriter, _ *http.Request, di
 	defer root.Close()
 	key := snapshotKey(digest)
 	parent := path.Dir(key)
+	cacheOnly := r.Header.Get(snapshotCacheOnlyDeleteHeader) == "true"
 	if err := s.ensureSnapshotNamespace(root); err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -770,6 +940,13 @@ func (s *Server) handleDeleteSnapshot(w http.ResponseWriter, _ *http.Request, di
 	defer release()
 	info, err := root.Lstat(key)
 	if errors.Is(err, os.ErrNotExist) {
+		if !cacheOnly {
+			if err := s.deleteSnapshotFromHangar(r.Context(), digest); err != nil {
+				s.logger.Error("delete-snapshot-from-hangar-failed", err)
+				http.Error(w, "durable snapshot deletion failed", http.StatusBadGateway)
+				return
+			}
+		}
 		if err := s.syncSnapshotDirectory(root, parent); err != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
@@ -787,6 +964,13 @@ func (s *Server) handleDeleteSnapshot(w http.ResponseWriter, _ *http.Request, di
 		http.Error(w, "snapshot content conflict", http.StatusConflict)
 		return
 	}
+	if !cacheOnly {
+		if err := s.deleteSnapshotFromHangar(r.Context(), digest); err != nil {
+			s.logger.Error("delete-snapshot-from-hangar-failed", err)
+			http.Error(w, "durable snapshot deletion failed", http.StatusBadGateway)
+			return
+		}
+	}
 	if err := root.Remove(key); err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -797,6 +981,20 @@ func (s *Server) handleDeleteSnapshot(w http.ResponseWriter, _ *http.Request, di
 	}
 	status = "ok"
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) deleteSnapshotFromHangar(ctx context.Context, digest string) error {
+	if s.hangar == nil {
+		return nil
+	}
+	attrs, err := s.hangar.Inspect(ctx, hangar.KindSnapshot, hangar.Digest("sha256:"+digest), s.snapshotMaxBytes)
+	if errors.Is(err, hangar.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return s.hangar.Delete(ctx, attrs.Ref)
 }
 
 func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {

@@ -1,6 +1,6 @@
 {{- if and .Values.artifactDaemon.enabled (or .Values.networkPolicy.enabled (.Values.artifactDaemon.networkPolicy.enabled | default false)) }}
 {{- if .Values.artifactDaemon.networkPolicy.enabled }}
-{{- range $destinationName := list "dnsEgressTo" "kubernetesAPIEgressTo" }}
+{{- range $destinationName := list "dnsEgressTo" "kubernetesAPIEgressTo" "hangarEgressTo" }}
 {{- $destinations := index $.Values.artifactDaemon.networkPolicy $destinationName | default (list) }}
 {{- range $index, $destination := $destinations }}
 {{- $valid := false }}
@@ -42,6 +42,9 @@
 {{- end }}
 {{- end }}
 {{- end }}
+{{- end }}
+{{- if and .Values.agentSnapshots.enabled .Values.artifactDaemon.networkPolicy.enabled (empty .Values.artifactDaemon.networkPolicy.hangarEgressTo) }}
+{{- fail "artifactDaemon.networkPolicy.hangarEgressTo is required when agentSnapshots.enabled is true and daemon egress policy is enabled" }}
 {{- end }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -132,6 +135,14 @@ spec:
     # Kubernetes API server through operator-selected destinations only.
     - to:
         {{- toYaml . | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: 443
+    {{- end }}
+    {{- if .Values.agentSnapshots.enabled }}
+    # Durable snapshot authority: only operator-selected GCS/emulator peers.
+    - to:
+        {{- toYaml .Values.artifactDaemon.networkPolicy.hangarEgressTo | nindent 8 }}
       ports:
         - protocol: TCP
           port: 443

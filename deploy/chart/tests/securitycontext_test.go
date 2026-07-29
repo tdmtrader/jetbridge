@@ -74,7 +74,8 @@ type daemonSet struct {
 					RunAsUser    *int64 `json:"runAsUser"`
 				} `json:"securityContext"`
 				Containers []struct {
-					Name            string `json:"name"`
+					Name            string   `json:"name"`
+					Command         []string `json:"command"`
 					SecurityContext struct {
 						RunAsNonRoot             *bool  `json:"runAsNonRoot"`
 						RunAsUser                *int64 `json:"runAsUser"`

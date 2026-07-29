@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"code.cloudfoundry.org/lager/v3/lagertest"
+	"github.com/concourse/concourse/agent/hangar"
 	"github.com/concourse/concourse/agent/snapshot"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -330,6 +331,38 @@ func TestSnapshotContentStorePutUsesDeterministicFactorAndAllowsDegradedSuccess(
 	}
 }
 
+func TestSnapshotContentStorePutUsesOneHangarLocationAndDoesNotMirrorToPeers(t *testing.T) {
+	content := testSnapshotArchive(t, "hangar authority")
+	digest := digestFor(content)
+	var hosts []string
+	client := snapshotDaemonClient(t, []string{"node-c", "node-b", "node-a"}, roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		hosts = append(hosts, request.URL.Hostname())
+		result := response(http.StatusCreated, nil)
+		result.Header.Set(snapshotDurableLocationHeader, SnapshotHangarDriver)
+		return result, nil
+	}))
+	store, err := NewSnapshotContentStore(client, &locationResolverStub{}, 2, testSnapshotArchiveLimits)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	locations, err := store.Put(context.Background(), digest, bytes.NewReader(content))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := hangar.Key(hangar.KindSnapshot, hangar.Digest(digest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []snapshot.Location{{Digest: digest, Driver: SnapshotHangarDriver, Key: key}}
+	if !equalSnapshotLocations(locations, want) {
+		t.Fatalf("locations = %#v, want %#v", locations, want)
+	}
+	if strings.Join(hosts, ",") != "node-a.test" {
+		t.Fatalf("Hangar PUT mirrored to peers: %v", hosts)
+	}
+}
+
 func TestSnapshotContentStorePutReturnsAggregateFailureWhenNoReplicaAcknowledges(t *testing.T) {
 	content := testSnapshotArchive(t, "archive")
 	client := snapshotDaemonClient(t, []string{"node-a", "node-b"}, roundTripFunc(func(request *http.Request) (*http.Response, error) {
@@ -505,6 +538,9 @@ func TestSnapshotContentStoreExistsCryptographicallyVerifiesAndDeletesUseStrictS
 		if request.Method == http.MethodGet {
 			return response(http.StatusOK, content), nil
 		}
+		if request.Header.Get("X-Concourse-Snapshot-Delete-Cache-Only") != "true" {
+			t.Fatal("legacy daemon cache deletion must not delete the durable Hangar object")
+		}
 		return response(http.StatusNoContent, nil), nil
 	}))
 	store, _ := NewSnapshotContentStore(client, &locationResolverStub{}, 1, testSnapshotArchiveLimits)
@@ -615,6 +651,33 @@ func TestSnapshotContentStoreRepairRejectsUntrustedLocationsBeforeNetwork(t *tes
 	}
 	if requests.Load() != 0 {
 		t.Fatalf("HTTP requests = %d, want zero", requests.Load())
+	}
+}
+
+func TestSnapshotContentStoreRepairTreatsHangarAsOneDurableLocation(t *testing.T) {
+	content := []byte("canonical Hangar archive")
+	value := snapshotFor(content)
+	location := hangarSnapshotLocation(value.Digest)
+	var hosts []string
+	client := snapshotDaemonClient(t, []string{"node-c", "node-b", "node-a"}, roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		hosts = append(hosts, request.URL.Hostname())
+		if request.Method != http.MethodGet {
+			return nil, fmt.Errorf("Hangar repair must not mirror: %s", request.Method)
+		}
+		return response(http.StatusOK, content), nil
+	}))
+	store, _ := NewSnapshotContentStore(client, &locationResolverStub{}, 3, testSnapshotArchiveLimits)
+
+	result, err := store.RepairReplicas(context.Background(), value, []snapshot.Location{location})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Verified != 1 || result.Desired != 1 || result.LiveCapacity != 1 ||
+		len(result.Added) != 0 || len(result.Removed) != 0 {
+		t.Fatalf("Hangar repair result = %#v", result)
+	}
+	if strings.Join(hosts, ",") != "node-a.test" {
+		t.Fatalf("Hangar repair reached peers instead of one cache endpoint: %v", hosts)
 	}
 }
 

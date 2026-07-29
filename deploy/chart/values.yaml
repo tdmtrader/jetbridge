@@ -533,6 +533,11 @@ artifactDaemon:
   affinity: {}
   # -- Tolerations for scheduling on tainted nodes (spot, GPU, etc.)
   tolerations: []
+  # -- Workload-identity annotations for the daemon ServiceAccount. Use these
+  # to grant only the configured Hangar bucket permissions without mounting a
+  # static cloud credential into the pod.
+  serviceAccount:
+    annotations: {}
   # -- Spot preemption watcher (GCP only). When enabled, the daemon long-
   # polls metadata.google.internal/computeMetadata/v1/instance/preempted
   # and synchronously evacuates any unmirrored step outputs to live peers
@@ -563,6 +568,15 @@ artifactDaemon:
     concurrency: 4
     # -- Per-peer per-job mirror PUT timeout.
     timeout: "5m"
+  # -- Durable Hangar storage for agentic snapshots. Production uses the
+  # daemon pod's workload identity / application-default credentials; endpoint
+  # is reserved for an operator-managed long-lived GCS-compatible emulator.
+  hangar:
+    bucket: ""
+    endpoint: ""
+    scratchPath: ""
+    readTimeout: "5m"
+    writeTimeout: "5m"
   # -- TLS/mTLS configuration for encrypted and authenticated daemon communication
   tls:
     # -- Enable TLS (HTTPS + mTLS) for the artifact daemon.
@@ -599,6 +613,9 @@ artifactDaemon:
     # Example API service ClusterIP:
     #   - ipBlock:
     #       cidr: 10.96.0.1/32
+    # -- GCS or emulator destinations for Hangar. When daemon egress policy
+    # is enabled with agentSnapshots, this must list narrow destinations.
+    hangarEgressTo: []
 
 # -- Durable typed snapshots used by Jetbridge Agentic workflow functions.
 # Snapshot storage is opt-in because it adds durable content lifecycle and

@@ -297,9 +297,9 @@ type RunCommand struct {
 	} `group:"Kubernetes Runtime"`
 
 	AgentSnapshots struct {
-		Enabled           bool          `long:"agent-snapshot-enabled" description:"Enable durable typed snapshot content storage through the Kubernetes artifact daemon."`
+		Enabled           bool          `long:"agent-snapshot-enabled" description:"Enable durable typed snapshot content storage through the Hangar-backed Kubernetes artifact daemon."`
 		TempDir           string        `long:"agent-snapshot-temp-dir" description:"Dedicated disk-backed scratch directory for snapshot canonicalization, upload, repair, and validation."`
-		ReplicationFactor int           `long:"agent-snapshot-replication-factor" default:"2" description:"Number of stable artifact-daemon nodes selected for each snapshot upload."`
+		ReplicationFactor int           `long:"agent-snapshot-replication-factor" default:"2" description:"Legacy daemon replica factor while adopting pre-Hangar snapshots; Hangar-backed uploads record one durable location."`
 		MaxBytes          int64         `long:"agent-snapshot-max-bytes" default:"10737418240" description:"Maximum regular-file content bytes admitted by snapshot canonicalization; may only lower the built-in limit."`
 		MaxFiles          int64         `long:"agent-snapshot-max-files" default:"100000" description:"Maximum entries admitted by snapshot canonicalization; may only lower the built-in limit."`
 		BindingRetention  time.Duration `long:"agent-snapshot-binding-retention" default:"168h" description:"Retention period for ordinary workflow input and output bindings."`
