@@ -37,3 +37,22 @@ exact-node interruption plumbing and owner metadata are not expanded here to
 avoid touching the already Human-Review-Required private-mount/Jetbridge seam;
 the model accepts only the bounded interruption reasons. No external review
 round has been performed. Implementation commit: `add954b863`.
+
+## Pre-review verification fix
+
+- Failure: a host-focused `AgentRunAttemptsFactory` run executed 26 specs and
+  failed the typed-interruption replacement case at line 241 with `sql:
+  expected 23 destination arguments in Scan, not 22`.
+- Root cause hypothesis confirmed by complete column comparison: the
+  replacement-attempt `INSERT ... RETURNING` list emitted its copied
+  `workflow_run_id` placeholder twice, while `scanAgentRunAttempt` and the
+  working initial/current-attempt SELECT paths have exactly one workflow-run
+  column. That made the replacement row return 23 columns for 22 scan targets.
+- Change: removed only the duplicate `$10::bigint` expression from the
+  replacement `RETURNING` list.
+- Commands: the exact `ginkgo --focus='allocates exactly one replacement per
+  typed interruption without consuming retries' ./atc/db` rerun was attempted,
+  but postgresrunner was sandbox-blocked before its one selected spec by SysV
+  `shmget: Operation not permitted`. Non-PostgreSQL verification follows in
+  the correction commit evidence.
+- Correction commit: `a7e9eec0bc fix(agent): align recovery attempt scan columns`.
