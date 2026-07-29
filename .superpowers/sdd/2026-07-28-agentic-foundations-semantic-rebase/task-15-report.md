@@ -36,4 +36,4 @@ foreign-key delete action and do not call workflow-run finalization. Runtime
 exact-node interruption plumbing and owner metadata are not expanded here to
 avoid touching the already Human-Review-Required private-mount/Jetbridge seam;
 the model accepts only the bounded interruption reasons. No external review
-round has been performed. Commit: pending.
+round has been performed. Implementation commit: `add954b863`.

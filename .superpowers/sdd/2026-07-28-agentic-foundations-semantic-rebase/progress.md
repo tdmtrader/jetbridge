@@ -224,7 +224,7 @@
   - Status: dependency-deferred under `DEPENDENCY-003`; exact validation gates
     from Tasks 6–7 must be accepted before replacing the publisher gateway.
 - [x] Task 15 — checkpoint and attempt data models
-  - Commit: pending local checkpoint commit.
+  - Commit: `add954b863 feat(agent): add durable checkpoint attempt models`.
   - Behavior: immutable Hangar checkpoint object identities; staged/committed,
     monotonic checkpoint generations; append-only events; begun-to-committed
     effect records; and fresh durable execution attempts with lease fences.
