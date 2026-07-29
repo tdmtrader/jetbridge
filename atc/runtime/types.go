@@ -192,6 +192,11 @@ type ContainerSpec struct {
 	// container: they are for task-scoped authority such as an authoritative
 	// validation profile. Callers must not derive these from task configuration.
 	PrivateFileMounts []PrivateFileMount
+	// CheckpointCapture enables the platform-owned, main-container-only
+	// checkpoint session volume for an agent step. It is intentionally a
+	// server-set bit: neither task configuration nor a provider may choose a
+	// capture path or add a host mount through this field.
+	CheckpointCapture bool
 	// Type is the type of step the Container is for (e.g. task, get, etc.).
 	Type db.ContainerType
 

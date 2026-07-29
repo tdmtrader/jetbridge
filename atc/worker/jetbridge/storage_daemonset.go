@@ -80,6 +80,23 @@ func (b *DaemonSetBackend) StepVolume(name, handle, subdir string) corev1.Volume
 	}
 }
 
+// CheckpointSessionVolume is the single platform-owned writable session root
+// for a checkpoint-enabled agent. It is deliberately not an artifact volume:
+// callers mount it only into the main container and never hand it to an init
+// container, sidecar, or artifact registration path.
+func (b *DaemonSetBackend) CheckpointSessionVolume(name, handle string) corev1.Volume {
+	dirType := corev1.HostPathDirectoryOrCreate
+	return corev1.Volume{
+		Name: name,
+		VolumeSource: corev1.VolumeSource{
+			HostPath: &corev1.HostPathVolumeSource{
+				Path: filepath.Join(b.config.ArtifactDaemonHostPath, "steps", handle, "session"),
+				Type: &dirType,
+			},
+		},
+	}
+}
+
 func (b *DaemonSetBackend) CacheVolume(name string, jobID int, stepName, cachePath string) corev1.Volume {
 	basePath := b.config.CacheHostPath
 	if basePath == "" {

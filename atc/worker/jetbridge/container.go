@@ -58,20 +58,22 @@ var _ runtime.Container = (*Container)(nil)
 // The Pod is created lazily when Run() is called, since the command
 // (ProcessSpec) isn't known at FindOrCreateContainer time.
 type Container struct {
-	handle          string
-	podName         string
-	metadata        db.ContainerMetadata
-	containerSpec   runtime.ContainerSpec
-	dbContainer     db.CreatedContainer
-	clientset       kubernetes.Interface
-	config          Config
-	workerName      string
-	mu              sync.RWMutex
-	properties      map[string]string
-	loadAnnotations sync.Once
-	executor        PodExecutor
-	volumes         []*Volume
-	storageBackend  StorageBackend
+	handle           string
+	podName          string
+	metadata         db.ContainerMetadata
+	containerSpec    runtime.ContainerSpec
+	dbContainer      db.CreatedContainer
+	clientset        kubernetes.Interface
+	config           Config
+	workerName       string
+	mu               sync.RWMutex
+	checkpointMu     sync.Mutex
+	checkpointActive bool
+	properties       map[string]string
+	loadAnnotations  sync.Once
+	executor         PodExecutor
+	volumes          []*Volume
+	storageBackend   StorageBackend
 	// reused is true when FindOrCreateContainer found an existing container
 	// in the DB (crash-recovery path). In DaemonSet mode this means the
 	// hostPath directory may contain stale data and needs cleanup.
@@ -489,6 +491,13 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 	env = applySecretRefs(env, c.containerSpec.SecretEnv)
 
 	volumes, volumeMounts := c.buildVolumeMounts()
+	checkpointVolume, checkpointMount, err := c.checkpointSessionVolume()
+	if err != nil {
+		return nil, err
+	}
+	if checkpointVolume != nil {
+		volumes = append(volumes, *checkpointVolume)
+	}
 	resources := buildResourceRequirements(c.containerSpec.Limits)
 	privileged := c.containerSpec.ImageSpec.Privileged
 	if c.containerSpec.Hermetic && privileged {
@@ -525,8 +534,12 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 	// containers below receive the original volumeMounts slice and can
 	// never see the mounted secret.
 	mainMounts := volumeMounts
+	if checkpointMount != nil {
+		mainMounts = append([]corev1.VolumeMount{}, mainMounts...)
+		mainMounts = append(mainMounts, *checkpointMount)
+	}
 	if len(c.containerSpec.SecretMounts) > 0 {
-		mainMounts = append([]corev1.VolumeMount{}, volumeMounts...)
+		mainMounts = append([]corev1.VolumeMount{}, mainMounts...)
 		mode := int32(0400)
 		if c.containerSpec.Hermetic {
 			// Hermetic pods use a server-owned shared supplemental group so
@@ -631,6 +644,44 @@ func (c *Container) buildArtifactStoreVolume() *corev1.Volume {
 		return nil
 	}
 	return c.storageBackend.ArtifactStoreVolume(c.containerSpec.Type)
+}
+
+const checkpointSessionVolumeName = "checkpoint-session"
+
+// checkpointSessionVolume creates the only persistent provider-session mount
+// eligible for capture. This path is intentionally separate from private file
+// mounts: it neither reads nor changes their Secret lifecycle or filtering.
+func (c *Container) checkpointSessionVolume() (*corev1.Volume, *corev1.VolumeMount, error) {
+	if !c.containerSpec.CheckpointCapture {
+		return nil, nil, nil
+	}
+	if c.containerSpec.Type != db.ContainerTypeAgent {
+		return nil, nil, fmt.Errorf("checkpoint capture is only supported for agent containers")
+	}
+	if c.handle == "" || strings.TrimSpace(c.handle) != c.handle || strings.ContainsAny(c.handle, "/\\\x00") {
+		return nil, nil, fmt.Errorf("checkpoint capture requires a canonical container handle")
+	}
+	topology, err := runtime.CheckpointCaptureTopologyForSpec(c.containerSpec)
+	if err != nil {
+		return nil, nil, err
+	}
+	backend, ok := c.storageBackend.(*DaemonSetBackend)
+	if !ok || backend == nil {
+		return nil, nil, fmt.Errorf("checkpoint capture requires DaemonSet hostPath storage")
+	}
+	storageRoot := filepath.Clean(backend.config.ArtifactDaemonHostPath)
+	if backend.config.ArtifactDaemonHostPath == "" || !filepath.IsAbs(storageRoot) || storageRoot != backend.config.ArtifactDaemonHostPath {
+		return nil, nil, fmt.Errorf("checkpoint capture requires a canonical daemon hostPath")
+	}
+	// Topology validation rejects logical session-root collisions before the
+	// host path is built. This guards `steps/<handle>/session` from being
+	// aliased by a declared ordinary output.
+	if err := topology.Validate(); err != nil {
+		return nil, nil, err
+	}
+	volume := backend.CheckpointSessionVolume(checkpointSessionVolumeName, c.handle)
+	mount := corev1.VolumeMount{Name: checkpointSessionVolumeName, MountPath: topology.SessionMountPath}
+	return &volume, &mount, nil
 }
 
 // artifactVolumeName returns the volume name for the artifact store via the
