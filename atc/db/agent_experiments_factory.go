@@ -43,6 +43,14 @@ func WithAgentExperimentBudgetConfig(config AgentExperimentBudgetConfig) AgentEx
 	return func(factory *agentExperimentsFactory) { factory.budgetConfig = config }
 }
 
+func WithAgentExperimentResourceSourcePreparer(
+	preparer experiment.ResourceSourcePreparer,
+) AgentExperimentsFactoryOption {
+	return func(factory *agentExperimentsFactory) {
+		factory.resourceSourcePreparer = preparer
+	}
+}
+
 func NewAgentExperimentsFactory(
 	conn DbConn,
 	targetRenderer experiment.TargetRenderer,
@@ -67,9 +75,10 @@ func NewAgentExperimentsFactory(
 }
 
 type agentExperimentsFactory struct {
-	conn           DbConn
-	targetRenderer experiment.TargetRenderer
-	budgetConfig   AgentExperimentBudgetConfig
+	conn                   DbConn
+	targetRenderer         experiment.TargetRenderer
+	resourceSourcePreparer experiment.ResourceSourcePreparer
+	budgetConfig           AgentExperimentBudgetConfig
 }
 
 var (
@@ -338,6 +347,23 @@ func (factory *agentExperimentsFactory) Start(
 	if ctx == nil || teamID <= 0 || id.Validate() != nil || revision <= 0 || !validExperimentActor(actor) {
 		return experiment.StoredExperiment{}, experiment.ErrInvalidDefinition
 	}
+	initial, err := factory.PreflightStart(ctx, teamID, id, revision)
+	if err != nil {
+		return experiment.StoredExperiment{}, err
+	}
+	var preparedSources []experiment.PreparedResourceSourceAdmission
+	if factory.resourceSourcePreparer != nil {
+		preparedSources, err = factory.resourceSourcePreparer.PrepareResourceSources(
+			ctx,
+			experiment.ResourceSourcePreparation{
+				TeamID: teamID, TeamName: initial.TeamName, Actor: actor,
+				ExperimentID: id, Definition: initial.Definition,
+			},
+		)
+		if err != nil {
+			return experiment.StoredExperiment{}, err
+		}
+	}
 	tx, err := factory.conn.BeginTx(ctx, nil)
 	if err != nil {
 		return experiment.StoredExperiment{}, err
@@ -351,6 +377,11 @@ func (factory *agentExperimentsFactory) Start(
 	frozenVariants := preflight.frozenVariants
 	frozenEvaluator := preflight.frozenEvaluator
 	expectedCells := preflight.expectedCells
+	if err := bindExperimentResourceSourceAdmissions(
+		ctx, tx, teamID, id, preparedSources,
+	); err != nil {
+		return experiment.StoredExperiment{}, err
+	}
 	for index, variant := range stored.Definition.Variants {
 		result, err := tx.ExecContext(ctx, `
 			UPDATE agent_experiment_variants
@@ -473,6 +504,113 @@ type experimentStartPreflight struct {
 type frozenExperimentTarget struct {
 	targetConfigHash            string
 	devValidationProvenanceHash string
+}
+
+type experimentResourceSourceIdentity struct {
+	definitionID int64
+	configHash   string
+}
+
+// bindExperimentResourceSourceAdmissions requires Start-time preparation to
+// exactly cover the source-pipeline identities currently registered for this
+// experiment's immutable definitions. This runs after the locked preflight
+// and before any child cells or live state are persisted, so a preparation
+// race cannot leave a partially started experiment.
+func bindExperimentResourceSourceAdmissions(
+	ctx context.Context,
+	tx Tx,
+	teamID int,
+	id experiment.ID,
+	prepared []experiment.PreparedResourceSourceAdmission,
+) error {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT DISTINCT registered.workflow_definition_id, registered.config_hash
+		FROM agent_workflow_resource_source_pipelines registered
+		WHERE registered.team_id = $2
+		  AND registered.workflow_definition_id IN (
+		    SELECT variant.definition_id
+		    FROM agent_experiment_variants variant
+		    WHERE variant.experiment_id = $1
+		    UNION
+		    SELECT parent.evaluator_definition_id
+		    FROM agent_experiments parent
+		    WHERE parent.id = $1 AND parent.team_id = $2
+		  )
+		ORDER BY registered.workflow_definition_id, registered.config_hash
+	`, int64(id), teamID)
+	if err != nil {
+		return err
+	}
+	expected := make([]experimentResourceSourceIdentity, 0)
+	for rows.Next() {
+		var identity experimentResourceSourceIdentity
+		if err := rows.Scan(&identity.definitionID, &identity.configHash); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		expected = append(expected, identity)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+
+	provided := make(map[experimentResourceSourceIdentity]int64, len(prepared))
+	for _, value := range prepared {
+		identity := experimentResourceSourceIdentity{
+			definitionID: value.WorkflowDefinitionID,
+			configHash:   value.SourceConfigHash,
+		}
+		if identity.definitionID <= 0 ||
+			!lowerHex64.MatchString(identity.configHash) ||
+			value.AdmissionID <= 0 {
+			return fmt.Errorf("%w: prepared experiment resource source identity is invalid", experiment.ErrInvalidDefinition)
+		}
+		if _, duplicate := provided[identity]; duplicate {
+			return fmt.Errorf("%w: duplicate prepared experiment resource source identity", experiment.ErrInvalidDefinition)
+		}
+		provided[identity] = value.AdmissionID
+	}
+	if len(provided) != len(expected) {
+		return fmt.Errorf("%w: experiment resource source preparations do not cover its immutable targets", experiment.ErrInvalidDefinition)
+	}
+	for _, identity := range expected {
+		admissionID, found := provided[identity]
+		if !found {
+			return fmt.Errorf("%w: experiment resource source definition or hash changed during start", experiment.ErrInvalidDefinition)
+		}
+		result, err := tx.ExecContext(ctx, `
+			INSERT INTO agent_experiment_resource_source_admissions
+				(experiment_id, team_id, workflow_definition_id,
+				 source_config_hash, resource_source_admission_id)
+			SELECT parent.id, parent.team_id, admission.workflow_definition_id,
+			       admission.source_config_hash, admission.id
+			FROM agent_experiments parent
+			JOIN agent_workflow_resource_source_admissions admission
+			  ON admission.id = $5
+			 AND admission.team_id = parent.team_id
+			 AND admission.workflow_definition_id = $3
+			 AND admission.source_config_hash = $4
+			 AND admission.status = 'ready'
+			WHERE parent.id = $1 AND parent.team_id = $2
+			  AND parent.state = 'draft'
+			ON CONFLICT (experiment_id, workflow_definition_id, source_config_hash)
+			DO UPDATE SET resource_source_admission_id =
+				agent_experiment_resource_source_admissions.resource_source_admission_id
+			WHERE agent_experiment_resource_source_admissions.resource_source_admission_id =
+				EXCLUDED.resource_source_admission_id
+		`, int64(id), teamID, identity.definitionID, identity.configHash, admissionID)
+		if err != nil {
+			return err
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if affected != 1 {
+			return fmt.Errorf("%w: prepared experiment resource source admission is unavailable or drifted", experiment.ErrInvalidDefinition)
+		}
+	}
+	return nil
 }
 
 func (factory *agentExperimentsFactory) preflightStartLocked(
@@ -1011,7 +1149,15 @@ func recordCandidateRun(
 		    updated_at = now()
 		FROM agent_experiments experiment,
 		     agent_experiment_variants variant,
-		     agent_workflow_runs linked_run
+		     agent_workflow_runs linked_run,
+		     LATERAL (
+				SELECT count(*)::integer AS association_count,
+				       min(resource_source_admission_id) AS resource_source_admission_id
+				FROM agent_experiment_resource_source_admissions source
+				WHERE source.experiment_id = cell.experiment_id
+				  AND source.team_id = experiment.team_id
+				  AND source.workflow_definition_id = variant.definition_id
+		     ) source
 		WHERE cell.id = $1 AND experiment.id = cell.experiment_id
 		  AND variant.id = cell.variant_id AND linked_run.id = $2
 		  AND experiment.state IN ('running', 'canceling', 'canceled')
@@ -1026,6 +1172,9 @@ func recordCandidateRun(
 		  AND linked_run.origin_kind = 'experiment'
 		  AND linked_run.origin_reference =
 		      'experiment:' || cell.experiment_id::text || ':cell:' || cell.id::text
+		  AND source.association_count <= 1
+		  AND linked_run.resource_source_admission_id IS NOT DISTINCT FROM
+		      source.resource_source_admission_id
 		  AND (cell.candidate_workflow_run_id IS NULL OR cell.candidate_workflow_run_id = $2)
 		RETURNING cell.candidate_workflow_run_id
 	`, int64(cellID), int64(runID)).Scan(&recorded)
@@ -1037,8 +1186,24 @@ func recordCandidateRun(
 	}
 	var existing sql.NullInt64
 	err = queryer.QueryRowContext(ctx, `
-		SELECT candidate_workflow_run_id FROM agent_experiment_cells WHERE id = $1
-	`, int64(cellID)).Scan(&existing)
+		SELECT cell.candidate_workflow_run_id
+		FROM agent_experiment_cells cell
+		JOIN agent_experiments experiment ON experiment.id = cell.experiment_id
+		JOIN agent_experiment_variants variant ON variant.id = cell.variant_id
+		JOIN agent_workflow_runs linked_run ON linked_run.id = $2
+		CROSS JOIN LATERAL (
+			SELECT count(*)::integer AS association_count,
+			       min(resource_source_admission_id) AS resource_source_admission_id
+			FROM agent_experiment_resource_source_admissions source
+			WHERE source.experiment_id = cell.experiment_id
+			  AND source.team_id = experiment.team_id
+			  AND source.workflow_definition_id = variant.definition_id
+		) source
+		WHERE cell.id = $1
+		  AND source.association_count <= 1
+		  AND linked_run.resource_source_admission_id IS NOT DISTINCT FROM
+		      source.resource_source_admission_id
+	`, int64(cellID), int64(runID)).Scan(&existing)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -1221,6 +1386,14 @@ func recordEvaluatorRun(
 		FROM agent_experiment_cells cell
 		JOIN agent_experiments experiment ON experiment.id = cell.experiment_id
 		JOIN agent_workflow_runs linked_run ON linked_run.id = $2
+		CROSS JOIN LATERAL (
+			SELECT count(*)::integer AS association_count,
+			       min(resource_source_admission_id) AS resource_source_admission_id
+			FROM agent_experiment_resource_source_admissions source
+			WHERE source.experiment_id = cell.experiment_id
+			  AND source.team_id = experiment.team_id
+			  AND source.workflow_definition_id = experiment.evaluator_definition_id
+		) source
 		WHERE cell.id = $1 AND cell.status IN ('running', 'canceled')
 		  AND experiment.state IN ('running', 'canceling', 'canceled')
 		  AND linked_run.team_id = experiment.team_id
@@ -1233,6 +1406,9 @@ func recordEvaluatorRun(
 		  AND linked_run.origin_kind = 'experiment'
 		  AND linked_run.origin_reference =
 		      'experiment:' || cell.experiment_id::text || ':cell:' || cell.id::text || ':evaluator'
+		  AND source.association_count <= 1
+		  AND linked_run.resource_source_admission_id IS NOT DISTINCT FROM
+		      source.resource_source_admission_id
 		ON CONFLICT (cell_id) DO UPDATE
 		SET evaluator_workflow_run_id = EXCLUDED.evaluator_workflow_run_id,
 		    status = COALESCE(agent_experiment_evaluations.status, EXCLUDED.status),
@@ -1985,8 +2161,11 @@ func loadCandidateCell(ctx context.Context, queryer agentExperimentQueryer, cell
 	var cell experiment.CandidateCell
 	var kind string
 	var functionID, targetConfigHash, devValidationProvenanceHash sql.NullString
+	var resourceSourceAdmissionID sql.NullInt64
+	var resourceSourceAssociationCount int
 	err := queryer.QueryRowContext(ctx, `
 		SELECT cell.id, cell.experiment_id, cell.fixture_id, cell.variant_id,
+		       source.resource_source_admission_id, source.association_count,
 		       experiment.team_id, experiment.team_name, experiment.created_by,
 		       cell.repetition, variant.target_kind, variant.workflow_name,
 		       variant.definition_id, variant.workflow_version, variant.function_id,
@@ -1997,14 +2176,37 @@ func loadCandidateCell(ctx context.Context, queryer agentExperimentQueryer, cell
 		FROM agent_experiment_cells cell
 		JOIN agent_experiments experiment ON experiment.id = cell.experiment_id
 		JOIN agent_experiment_variants variant ON variant.id = cell.variant_id
+		LEFT JOIN LATERAL (
+			SELECT count(*)::integer AS association_count,
+			       min(resource_source_admission_id) AS resource_source_admission_id
+			FROM agent_experiment_resource_source_admissions source
+			WHERE source.experiment_id = cell.experiment_id
+			  AND source.team_id = experiment.team_id
+			  AND source.workflow_definition_id = variant.definition_id
+		) source ON true
 		WHERE cell.id = $1
 	`, int64(cellID)).Scan(&cell.ID, &cell.ExperimentID, &cell.FixtureID, &cell.VariantID,
+		&resourceSourceAdmissionID, &resourceSourceAssociationCount,
 		&cell.TeamID, &cell.TeamName, &cell.CreatedBy, &cell.Repetition, &kind,
 		&cell.Target.WorkflowName, &cell.Target.DefinitionID, &cell.Target.Version, &functionID,
 		&targetConfigHash, &devValidationProvenanceHash, &cell.Budget.PerCellUSD, &cell.Budget.TotalUSD,
 		&cell.Budget.MaxTokensPerCell)
 	if err != nil {
 		return experiment.CandidateCell{}, err
+	}
+	if resourceSourceAssociationCount > 1 {
+		return experiment.CandidateCell{}, fmt.Errorf(
+			"db: experiment candidate cell has ambiguous resource source admissions",
+		)
+	}
+	if resourceSourceAssociationCount == 1 {
+		if !resourceSourceAdmissionID.Valid || resourceSourceAdmissionID.Int64 <= 0 {
+			return experiment.CandidateCell{}, fmt.Errorf(
+				"db: experiment candidate source admission is invalid",
+			)
+		}
+		value := resourceSourceAdmissionID.Int64
+		cell.ResourceSourceAdmissionID = &value
 	}
 	cell.Target.Kind = experiment.TargetKind(kind)
 	if functionID.Valid {
@@ -2025,11 +2227,13 @@ func loadEvaluationCell(ctx context.Context, queryer agentExperimentQueryer, cel
 	var candidateSignature, evaluatorSignature []byte
 	var evaluatorKind string
 	var evaluatorFunctionID, evaluatorTargetConfigHash, evaluatorDevValidationProvenanceHash sql.NullString
-	var evaluatorRunID sql.NullInt64
+	var evaluatorRunID, resourceSourceAdmissionID sql.NullInt64
+	var resourceSourceAssociationCount int
 	var role string
 	err := queryer.QueryRowContext(ctx, `
 		SELECT cell.id, cell.experiment_id, experiment.team_id, experiment.team_name,
 		       experiment.created_by, cell.candidate_workflow_run_id,
+		       source.resource_source_admission_id, source.association_count,
 		       evaluation.evaluator_workflow_run_id, experiment.candidate_signature,
 		       experiment.evaluator_target_kind, experiment.evaluator_workflow_name,
 		       experiment.evaluator_definition_id, experiment.evaluator_workflow_version,
@@ -2042,10 +2246,19 @@ func loadEvaluationCell(ctx context.Context, queryer agentExperimentQueryer, cel
 		FROM agent_experiment_cells cell
 		JOIN agent_experiments experiment ON experiment.id = cell.experiment_id
 		JOIN agent_experiment_fixtures fixture ON fixture.id = cell.fixture_id
+		LEFT JOIN LATERAL (
+			SELECT count(*)::integer AS association_count,
+			       min(resource_source_admission_id) AS resource_source_admission_id
+			FROM agent_experiment_resource_source_admissions source
+			WHERE source.experiment_id = cell.experiment_id
+			  AND source.team_id = experiment.team_id
+			  AND source.workflow_definition_id = experiment.evaluator_definition_id
+		) source ON true
 		LEFT JOIN agent_experiment_evaluations evaluation ON evaluation.cell_id = cell.id
 		WHERE cell.id = $1
 	`, int64(cellID)).Scan(&cell.ID, &cell.ExperimentID, &cell.TeamID, &cell.TeamName,
-		&cell.CreatedBy, &cell.CandidateWorkflowRunID, &evaluatorRunID, &candidateSignature,
+		&cell.CreatedBy, &cell.CandidateWorkflowRunID, &resourceSourceAdmissionID,
+		&resourceSourceAssociationCount, &evaluatorRunID, &candidateSignature,
 		&evaluatorKind, &cell.Evaluator.Target.WorkflowName, &cell.Evaluator.Target.DefinitionID,
 		&cell.Evaluator.Target.Version, &evaluatorFunctionID, &evaluatorSignature,
 		&evaluatorTargetConfigHash, &evaluatorDevValidationProvenanceHash,
@@ -2053,6 +2266,20 @@ func loadEvaluationCell(ctx context.Context, queryer agentExperimentQueryer, cel
 		&cell.Budget.PerCellUSD, &cell.Budget.TotalUSD, &cell.Budget.MaxTokensPerCell)
 	if err != nil {
 		return experiment.EvaluationCell{}, err
+	}
+	if resourceSourceAssociationCount > 1 {
+		return experiment.EvaluationCell{}, fmt.Errorf(
+			"db: experiment evaluator cell has ambiguous resource source admissions",
+		)
+	}
+	if resourceSourceAssociationCount == 1 {
+		if !resourceSourceAdmissionID.Valid || resourceSourceAdmissionID.Int64 <= 0 {
+			return experiment.EvaluationCell{}, fmt.Errorf(
+				"db: experiment evaluator source admission is invalid",
+			)
+		}
+		value := resourceSourceAdmissionID.Int64
+		cell.ResourceSourceAdmissionID = &value
 	}
 	cell.Evaluator.Target.Kind = experiment.TargetKind(evaluatorKind)
 	if evaluatorFunctionID.Valid {

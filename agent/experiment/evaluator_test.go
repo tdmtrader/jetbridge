@@ -120,6 +120,8 @@ func (reader *measurementReader) ReadMeasurements(_ context.Context, _ int, id s
 func TestEvaluatorBindsPinnedEvaluatorFromFixtureAndCandidateOutputs(t *testing.T) {
 	cell := evaluationCell()
 	cell.Evaluator.DevValidationProvenanceHash = strings.Repeat("d", 64)
+	sourceAdmissionID := int64(71)
+	cell.ResourceSourceAdmissionID = &sourceAdmissionID
 	store := &evaluationStore{claims: []experiment.EvaluationCell{cell}}
 	runs := &evaluationRuns{observations: map[snapshot.WorkflowRunID]experiment.RunObservation{
 		cell.CandidateWorkflowRunID: {Status: experiment.ObservedRunSucceeded, Outputs: map[string]snapshot.SnapshotRef{
@@ -150,6 +152,9 @@ func TestEvaluatorBindsPinnedEvaluatorFromFixtureAndCandidateOutputs(t *testing.
 			Phase:        experiment.AdmissionEvaluator,
 		}) {
 		t.Fatalf("evaluator request = %+v", gotRequest)
+	}
+	if gotRequest.ResourceSourceAdmissionID == nil || *gotRequest.ResourceSourceAdmissionID != sourceAdmissionID {
+		t.Fatalf("evaluator source admission = %#v, want %d", gotRequest.ResourceSourceAdmissionID, sourceAdmissionID)
 	}
 	if gotAdmission.Origin.Kind != "experiment" || gotAdmission.Origin.Reference != "experiment:50:cell:1:evaluator" || gotAdmission.TeamID != 7 {
 		t.Fatalf("evaluator admission = %+v", gotAdmission)

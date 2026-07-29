@@ -9,7 +9,12 @@ import (
 )
 
 type experimentNativeBinder interface {
-	BindAndCreate(context.Context, AdmissionContext, BindRequest) (BindResult, error)
+	BindExperimentWithReadySourceAdmission(
+		context.Context,
+		AdmissionContext,
+		BindRequest,
+		*int64,
+	) (BindResult, error)
 }
 
 // ExperimentBinderAdapter is the composition seam between the persistence-
@@ -34,7 +39,7 @@ func (adapter *ExperimentBinderAdapter) BindAndCreate(
 		return experiment.BindResult{}, fmt.Errorf("%w: %v", experiment.ErrBindInvalidRequest, err)
 	}
 	expectedDevValidationProvenanceHash := request.ExpectedDevValidationProvenanceHash
-	result, err := adapter.binder.BindAndCreate(ctx, AdmissionContext{
+	result, err := adapter.binder.BindExperimentWithReadySourceAdmission(ctx, AdmissionContext{
 		TeamID: admission.TeamID, TeamName: admission.TeamName, CreatedBy: admission.CreatedBy,
 		Origin: Origin{Kind: admission.Origin.Kind, Reference: admission.Origin.Reference},
 	}, BindRequest{
@@ -48,7 +53,7 @@ func (adapter *ExperimentBinderAdapter) BindAndCreate(
 			CellID:       int64(request.AdmissionGate.CellID),
 			Phase:        string(request.AdmissionGate.Phase),
 		},
-	})
+	}, request.ResourceSourceAdmissionID)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrExperimentAdmissionClosed):

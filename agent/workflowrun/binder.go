@@ -104,6 +104,27 @@ func (b *Binder) BindAndCreate(
 	return b.bindAndCreate(ctx, admission, request, nil)
 }
 
+// BindExperimentWithReadySourceAdmission is the only experiment-child entry
+// point. The source admission ID comes from the server-owned, Start-time
+// experiment association; it is deliberately absent from public BindRequest.
+// A nil ID is valid only for a source-free target and makes a source-bearing
+// child fail closed rather than opening a new manual source admission.
+func (b *Binder) BindExperimentWithReadySourceAdmission(
+	ctx context.Context,
+	admission AdmissionContext,
+	request BindRequest,
+	resourceSourceAdmissionID *int64,
+) (BindResult, error) {
+	if request.ExperimentAdmission == nil ||
+		(resourceSourceAdmissionID != nil && *resourceSourceAdmissionID <= 0) {
+		return BindResult{}, fmt.Errorf("%w: experiment ready source admission is invalid", ErrInvalidRequest)
+	}
+	return b.bindAndCreate(ctx, admission, request, &trustedSourceAdmission{
+		experiment:                true,
+		resourceSourceAdmissionID: cloneInt64(resourceSourceAdmissionID),
+	})
+}
+
 // BindReadySourceAdmission is the server-only automatic source-build handoff.
 // The ready object is produced by the capture/reconciler runtime rather than a
 // public workflow-run request.
@@ -120,19 +141,36 @@ func (b *Binder) BindReadySourceAdmission(
 		return BindResult{}, fmt.Errorf("%w: automatic ready source admission is invalid", ErrInvalidRequest)
 	}
 	version := ready.WorkflowVersion
+	clonedReady := cloneReadySourceAdmission(ready)
 	return b.bindAndCreate(ctx, admission, BindRequest{
 		WorkflowName:                 ready.WorkflowName,
 		Version:                      &version,
 		IdempotencyKey:               idempotencyKey,
 		ExpectedWorkflowDefinitionID: int64(ready.WorkflowDefinitionID),
-	}, &ready)
+	}, &trustedSourceAdmission{ready: &clonedReady})
+}
+
+type trustedSourceAdmission struct {
+	ready                     *ReadySourceAdmission
+	experiment                bool
+	resourceSourceAdmissionID *int64
+}
+
+func (trusted *trustedSourceAdmission) admissionID() *int64 {
+	if trusted == nil {
+		return nil
+	}
+	if trusted.ready != nil {
+		return &trusted.ready.AdmissionID
+	}
+	return trusted.resourceSourceAdmissionID
 }
 
 func (b *Binder) bindAndCreate(
 	ctx context.Context,
 	admission AdmissionContext,
 	request BindRequest,
-	trustedReady *ReadySourceAdmission,
+	trusted *trustedSourceAdmission,
 ) (BindResult, error) {
 	admission, request, err := validateAndClone(admission, request)
 	if err != nil {
@@ -146,7 +184,8 @@ func (b *Binder) bindAndCreate(
 		if existing, found, err := b.existing(ctx, admission, request); err != nil {
 			return BindResult{}, err
 		} else if found {
-			if trustedReady != nil && !equalInt64Pointer(existing.ResourceSourceAdmissionID, &trustedReady.AdmissionID) {
+			if trustedID := trusted.admissionID(); trustedID != nil &&
+				!equalInt64Pointer(existing.ResourceSourceAdmissionID, trustedID) {
 				return BindResult{}, ErrIdempotencyConflict
 			}
 			return b.handleExisting(ctx, admission, request, existing)
@@ -204,16 +243,27 @@ func (b *Binder) bindAndCreate(
 			return BindResult{}, fmt.Errorf("%w: derive resource source target: %v", ErrPlatformFailure, sourceErr)
 		}
 		var value ReadySourceAdmission
-		if trustedReady != nil {
-			if trustedReady.AdmissionID <= 0 {
+		if trusted != nil && trusted.ready != nil {
+			if trusted.ready.AdmissionID <= 0 {
 				return BindResult{}, fmt.Errorf("%w: automatic ready source admission is invalid", ErrInvalidRequest)
 			}
-			verified, loadErr := b.sources.LoadReady(ctx, admission.TeamID, trustedReady.AdmissionID, sourceTarget)
+			verified, loadErr := b.sources.LoadReady(ctx, admission.TeamID, trusted.ready.AdmissionID, sourceTarget)
 			if loadErr != nil {
 				return BindResult{}, sourceAdmissionError(loadErr)
 			}
-			if !sameReadySourceAdmission(verified, *trustedReady) {
+			if !sameReadySourceAdmission(verified, *trusted.ready) {
 				return BindResult{}, fmt.Errorf("%w: automatic ready source admission drifted", ErrInvalidRequest)
+			}
+			value = verified
+		} else if trusted != nil && trusted.experiment {
+			if trusted.resourceSourceAdmissionID == nil {
+				return BindResult{}, fmt.Errorf("%w: source-bearing experiment target has no prepared ready admission", ErrInvalidRequest)
+			}
+			verified, loadErr := b.sources.LoadReady(
+				ctx, admission.TeamID, *trusted.resourceSourceAdmissionID, sourceTarget,
+			)
+			if loadErr != nil {
+				return BindResult{}, sourceAdmissionError(loadErr)
 			}
 			value = verified
 		} else {
@@ -229,7 +279,7 @@ func (b *Binder) bindAndCreate(
 		}
 		readyValue := cloneReadySourceAdmission(value)
 		ready = &readyValue
-	} else if trustedReady != nil {
+	} else if trusted != nil && (trusted.ready != nil || trusted.resourceSourceAdmissionID != nil) {
 		return BindResult{}, fmt.Errorf("%w: source-free workflow cannot use a ready source admission", ErrInvalidRequest)
 	}
 

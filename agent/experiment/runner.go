@@ -50,6 +50,7 @@ type CandidateCell struct {
 	ExperimentID                ID
 	FixtureID                   int64
 	VariantID                   int64
+	ResourceSourceAdmissionID   *int64
 	TeamID                      int
 	TeamName                    string
 	CreatedBy                   string
@@ -70,6 +71,9 @@ func (cell CandidateCell) Validate() error {
 	}
 	if cell.FixtureID <= 0 || cell.VariantID <= 0 {
 		return fmt.Errorf("experiment runner: fixture and variant IDs must be positive")
+	}
+	if cell.ResourceSourceAdmissionID != nil && *cell.ResourceSourceAdmissionID <= 0 {
+		return fmt.Errorf("experiment runner: resource source admission ID must be positive when present")
 	}
 	if cell.TeamID <= 0 || cell.TeamName == "" || cell.CreatedBy == "" {
 		return fmt.Errorf("experiment runner: durable team and creator identity are required")
@@ -146,6 +150,7 @@ type BindRequest struct {
 	IdempotencyKey                      string
 	ExpectedTargetConfigHash            string
 	ExpectedDevValidationProvenanceHash string
+	ResourceSourceAdmissionID           *int64
 	AdmissionGate                       AdmissionGate
 }
 
@@ -297,6 +302,7 @@ func (runner *Runner) runCell(ctx context.Context, cell CandidateCell) error {
 		Inputs:                              cloneSnapshotIDs(cell.Inputs),
 		ExpectedTargetConfigHash:            cell.TargetConfigHash,
 		ExpectedDevValidationProvenanceHash: cell.DevValidationProvenanceHash,
+		ResourceSourceAdmissionID:           cloneOptionalInt64(cell.ResourceSourceAdmissionID),
 		AdmissionGate: AdmissionGate{
 			ExperimentID: cell.ExperimentID,
 			CellID:       cell.ID,
@@ -380,7 +386,16 @@ func terminalBinderFailureCategory(err error) (string, bool) {
 
 func cloneCandidateCell(cell CandidateCell) CandidateCell {
 	cell.Inputs = cloneSnapshotIDs(cell.Inputs)
+	cell.ResourceSourceAdmissionID = cloneOptionalInt64(cell.ResourceSourceAdmissionID)
 	return cell
+}
+
+func cloneOptionalInt64(value *int64) *int64 {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 func cloneSnapshotIDs(values map[string]snapshot.SnapshotID) map[string]snapshot.SnapshotID {

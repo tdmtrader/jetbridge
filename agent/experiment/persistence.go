@@ -66,6 +66,31 @@ type StoredCell struct {
 	CompletedAt              *time.Time              `json:"completed_at,omitempty"`
 }
 
+// ResourceSourcePreparation is the server-only Start-time request used to
+// prepare one durable source admission for every distinct immutable
+// definition/source hash referenced by an experiment. It is never decoded
+// from the experiment API payload.
+type ResourceSourcePreparation struct {
+	TeamID       int
+	TeamName     string
+	Actor        string
+	ExperimentID ID
+	Definition   Definition
+}
+
+type PreparedResourceSourceAdmission struct {
+	WorkflowDefinitionID int64
+	SourceConfigHash     string
+	AdmissionID          int64
+}
+
+type ResourceSourcePreparer interface {
+	PrepareResourceSources(
+		context.Context,
+		ResourceSourcePreparation,
+	) ([]PreparedResourceSourceAdmission, error)
+}
+
 // ListFilter is the bounded keyset request used by durable experiment-history
 // APIs. Before is exclusive under the exact (created_at DESC, id DESC) order.
 type ListFilter struct {

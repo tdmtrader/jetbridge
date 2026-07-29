@@ -95,6 +95,8 @@ func TestRunnerBindsClaimedCellsThroughOrdinaryWorkflowRuns(t *testing.T) {
 	cells := []experiment.CandidateCell{candidateCell(3), candidateCell(1), candidateCell(2)}
 	for index := range cells {
 		cells[index].DevValidationProvenanceHash = strings.Repeat(string(rune('a'+index)), 64)
+		sourceAdmissionID := int64(700 + cells[index].ID)
+		cells[index].ResourceSourceAdmissionID = &sourceAdmissionID
 	}
 	store := &experimentRunnerStore{claim: func(_ context.Context, limit int) ([]experiment.CandidateCell, error) {
 		if limit != 3 {
@@ -134,6 +136,10 @@ func TestRunnerBindsClaimedCellsThroughOrdinaryWorkflowRuns(t *testing.T) {
 				Phase:        experiment.AdmissionCandidate,
 			}) {
 			t.Fatalf("cell %s request = %+v", cell.ID.String(), request)
+		}
+		if request.ResourceSourceAdmissionID == nil || cell.ResourceSourceAdmissionID == nil ||
+			*request.ResourceSourceAdmissionID != *cell.ResourceSourceAdmissionID {
+			t.Fatalf("cell %s source admission = %#v, want %#v", cell.ID.String(), request.ResourceSourceAdmissionID, cell.ResourceSourceAdmissionID)
 		}
 		admission := admissions[cell.ID]
 		if admission.TeamID != cell.TeamID || admission.TeamName != cell.TeamName || admission.CreatedBy != cell.CreatedBy ||

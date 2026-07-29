@@ -15,15 +15,16 @@ import (
 )
 
 type experimentNativeBinderStub struct {
-	bind func(context.Context, AdmissionContext, BindRequest) (BindResult, error)
+	bind func(context.Context, AdmissionContext, BindRequest, *int64) (BindResult, error)
 }
 
-func (stub *experimentNativeBinderStub) BindAndCreate(
+func (stub *experimentNativeBinderStub) BindExperimentWithReadySourceAdmission(
 	ctx context.Context,
 	admission AdmissionContext,
 	request BindRequest,
+	resourceSourceAdmissionID *int64,
 ) (BindResult, error) {
-	return stub.bind(ctx, admission, request)
+	return stub.bind(ctx, admission, request, resourceSourceAdmissionID)
 }
 
 func TestExperimentBinderPreservesFrozenTargetIdentity(t *testing.T) {
@@ -37,6 +38,7 @@ func TestExperimentBinderPreservesFrozenTargetIdentity(t *testing.T) {
 		gotContext context.Context,
 		admission AdmissionContext,
 		request BindRequest,
+		resourceSourceAdmissionID *int64,
 	) (BindResult, error) {
 		if gotContext != ctx {
 			t.Fatal("context was not preserved")
@@ -55,6 +57,9 @@ func TestExperimentBinderPreservesFrozenTargetIdentity(t *testing.T) {
 			request.ExperimentAdmission.Phase != "candidate" ||
 			!reflect.DeepEqual(request.Inputs, inputs) {
 			t.Fatalf("bind request = %+v", request)
+		}
+		if resourceSourceAdmissionID != nil {
+			t.Fatalf("source admission = %#v, want nil for source-free target", resourceSourceAdmissionID)
 		}
 		return BindResult{Run: db.AgentWorkflowRun{
 			ID: 9007199254741001, WorkflowDefinitionID: 41, WorkflowName: "review-flow",
@@ -82,6 +87,40 @@ func TestExperimentBinderPreservesFrozenTargetIdentity(t *testing.T) {
 		result.WorkflowName != "review-flow" || result.WorkflowVersion != version ||
 		result.FunctionID != functionID || result.TargetConfigHash != hash || result.DevValidationProvenanceHash != devHash {
 		t.Fatalf("bind result = %+v", result)
+	}
+}
+
+func TestExperimentBinderPassesServerDerivedReadySourceAdmissionPrivately(t *testing.T) {
+	sourceAdmissionID := int64(71)
+	adapter, err := NewExperimentBinderAdapter(&experimentNativeBinderStub{bind: func(
+		_ context.Context,
+		_ AdmissionContext,
+		request BindRequest,
+		gotSourceAdmissionID *int64,
+	) (BindResult, error) {
+		if gotSourceAdmissionID == nil || *gotSourceAdmissionID != sourceAdmissionID {
+			t.Fatalf("resource source admission = %#v, want %d", gotSourceAdmissionID, sourceAdmissionID)
+		}
+		if request.ExperimentAdmission == nil || request.ExperimentAdmission.ExperimentID != 11 {
+			t.Fatalf("experiment gate = %#v", request.ExperimentAdmission)
+		}
+		return BindResult{Run: db.AgentWorkflowRun{ID: 101}}, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = adapter.BindAndCreate(context.Background(), experiment.AdmissionContext{
+		TeamID: 7, TeamName: "research", CreatedBy: "alice",
+		Origin: experiment.Origin{Kind: "experiment", Reference: "experiment:11:cell:13"},
+	}, experiment.BindRequest{
+		ResourceSourceAdmissionID: &sourceAdmissionID,
+		AdmissionGate: experiment.AdmissionGate{
+			ExperimentID: 11, CellID: 13, Phase: experiment.AdmissionCandidate,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -131,6 +170,7 @@ func TestExperimentBinderClassifiesClosedAdmission(t *testing.T) {
 		context.Context,
 		AdmissionContext,
 		BindRequest,
+		*int64,
 	) (BindResult, error) {
 		return BindResult{}, ErrExperimentAdmissionClosed
 	}})
@@ -152,6 +192,7 @@ func TestExperimentBinderClassifiesFrozenAdmissionDrift(t *testing.T) {
 		context.Context,
 		AdmissionContext,
 		BindRequest,
+		*int64,
 	) (BindResult, error) {
 		return BindResult{}, fmt.Errorf("%w: frozen workflow definition changed", ErrInvalidRequest)
 	}})

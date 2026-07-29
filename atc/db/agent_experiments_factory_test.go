@@ -30,6 +30,18 @@ func (render experimentTargetRendererFunc) RenderFunction(target workflow.Functi
 	return render(target)
 }
 
+type experimentResourceSourcePreparerFunc func(
+	context.Context,
+	experiment.ResourceSourcePreparation,
+) ([]experiment.PreparedResourceSourceAdmission, error)
+
+func (prepare experimentResourceSourcePreparerFunc) PrepareResourceSources(
+	ctx context.Context,
+	request experiment.ResourceSourcePreparation,
+) ([]experiment.PreparedResourceSourceAdmission, error) {
+	return prepare(ctx, request)
+}
+
 var _ = Describe("AgentExperimentsFactory", func() {
 	var (
 		ctx                 context.Context
@@ -52,6 +64,83 @@ var _ = Describe("AgentExperimentsFactory", func() {
 			RETURNING id
 		`, defaultTeam.ID(), kind, "sha256:"+strings.Repeat(digestDigit, 64)).Scan(&id)).To(Succeed())
 		return snapshot.SnapshotID(id)
+	}
+	registerReadySourceAdmission := func(
+		teamID int,
+		definition *workflow.Definition,
+		configHash string,
+		key string,
+	) int64 {
+		var sourcePipelineID int
+		Expect(dbConn.QueryRow(`
+			INSERT INTO pipelines
+				(name, team_id, version, template, secondary_ordering)
+			VALUES ($1, $2, 1, false, 1)
+			RETURNING id
+		`, fmt.Sprintf("experiment-source-%s-%d", key, time.Now().UnixNano()),
+			teamID).Scan(&sourcePipelineID)).To(Succeed())
+		_, err := dbConn.Exec(`
+			INSERT INTO agent_workflow_resource_source_pipelines
+				(pipeline_id, team_id, workflow_definition_id,
+				 workflow_name, workflow_version, pipeline_config_version,
+				 config_hash, source_declarations, state)
+			VALUES ($1, $2, $3, $4, $5, 1, $6, '[]'::jsonb, 'active')
+		`, sourcePipelineID, teamID, definition.ID, definition.Name,
+			definition.Version, configHash)
+		Expect(err).NotTo(HaveOccurred())
+		var selectingBuildID int64
+		Expect(dbConn.QueryRow(`
+			INSERT INTO builds (name, status, team_id, pipeline_id)
+			VALUES ($1, 'succeeded', $2, $3)
+			RETURNING id
+		`, fmt.Sprintf("experiment-source-build-%s", key),
+			teamID, sourcePipelineID).Scan(&selectingBuildID)).To(Succeed())
+		var admissionID int64
+		Expect(dbConn.QueryRow(`
+			INSERT INTO agent_workflow_resource_source_admissions
+				(team_id, workflow_definition_id, source_pipeline_id,
+				 source_config_hash, idempotency_key, mode,
+				 selecting_build_id, status)
+			VALUES ($1, $2, $3, $4, $5, 'manual', $6, 'ready')
+			RETURNING id
+		`, teamID, definition.ID, sourcePipelineID, configHash,
+			fmt.Sprintf("experiment-source-%s", key), selectingBuildID).Scan(
+			&admissionID,
+		)).To(Succeed())
+		return admissionID
+	}
+	registerAlternativeReadySourceAdmission := func(
+		teamID int,
+		definition *workflow.Definition,
+		configHash string,
+		key string,
+	) int64 {
+		var sourcePipelineID int
+		Expect(dbConn.QueryRow(`
+			SELECT pipeline_id
+			FROM agent_workflow_resource_source_pipelines
+			WHERE team_id = $1 AND workflow_definition_id = $2
+		`, teamID, definition.ID).Scan(&sourcePipelineID)).To(Succeed())
+		var selectingBuildID int64
+		Expect(dbConn.QueryRow(`
+			INSERT INTO builds (name, status, team_id, pipeline_id)
+			VALUES ($1, 'succeeded', $2, $3)
+			RETURNING id
+		`, fmt.Sprintf("experiment-source-alternative-build-%s", key),
+			teamID, sourcePipelineID).Scan(&selectingBuildID)).To(Succeed())
+		var admissionID int64
+		Expect(dbConn.QueryRow(`
+			INSERT INTO agent_workflow_resource_source_admissions
+				(team_id, workflow_definition_id, source_pipeline_id,
+				 source_config_hash, idempotency_key, mode,
+				 selecting_build_id, status)
+			VALUES ($1, $2, $3, $4, $5, 'manual', $6, 'ready')
+			RETURNING id
+		`, teamID, definition.ID, sourcePipelineID, configHash,
+			fmt.Sprintf("experiment-source-alternative-%s", key), selectingBuildID).Scan(
+			&admissionID,
+		)).To(Succeed())
+		return admissionID
 	}
 
 	definition := func(input snapshot.SnapshotID) experiment.Definition {
@@ -440,6 +529,175 @@ plan:
 		rolledEvaluator, err := rolledRenderer.RenderFunction(fullEvaluator)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(rolledEvaluator.TargetConfigHash).NotTo(Equal(evaluatorRendered.TargetConfigHash))
+	})
+
+	It("persists one prepared source admission per definition and binds every claimed child to it", func() {
+		candidateHash := strings.Repeat("e", 64)
+		evaluatorHash := strings.Repeat("f", 64)
+		candidateAdmissionID := registerReadySourceAdmission(
+			defaultTeam.ID(), candidateDefinition, candidateHash, "candidate",
+		)
+		evaluatorAdmissionID := registerReadySourceAdmission(
+			defaultTeam.ID(), evaluatorDefinition, evaluatorHash, "evaluator",
+		)
+		wrongCandidateAdmissionID := registerAlternativeReadySourceAdmission(
+			defaultTeam.ID(), candidateDefinition, strings.Repeat("a", 64), "candidate-wrong",
+		)
+		wrongEvaluatorAdmissionID := registerAlternativeReadySourceAdmission(
+			defaultTeam.ID(), evaluatorDefinition, strings.Repeat("b", 64), "evaluator-wrong",
+		)
+		preparerCalls := 0
+		sourceFactory := db.NewAgentExperimentsFactory(
+			dbConn,
+			targetRenderer,
+			db.WithAgentExperimentResourceSourcePreparer(
+				experimentResourceSourcePreparerFunc(func(
+					_ context.Context,
+					request experiment.ResourceSourcePreparation,
+				) ([]experiment.PreparedResourceSourceAdmission, error) {
+					preparerCalls++
+					Expect(request.TeamID).To(Equal(defaultTeam.ID()))
+					Expect(request.TeamName).To(Equal(defaultTeam.Name()))
+					Expect(request.Actor).To(Equal("alice"))
+					return []experiment.PreparedResourceSourceAdmission{
+						{
+							WorkflowDefinitionID: int64(candidateDefinition.ID),
+							SourceConfigHash:     candidateHash,
+							AdmissionID:          candidateAdmissionID,
+						},
+						{
+							WorkflowDefinitionID: int64(evaluatorDefinition.ID),
+							SourceConfigHash:     evaluatorHash,
+							AdmissionID:          evaluatorAdmissionID,
+						},
+					}, nil
+				}),
+			),
+		)
+		created, err := sourceFactory.Create(
+			ctx, defaultTeam.ID(), defaultTeam.Name(), "alice", definition(fixtureSnapshot),
+		)
+		Expect(err).NotTo(HaveOccurred())
+		started, err := sourceFactory.Start(
+			ctx, defaultTeam.ID(), created.ID, created.Revision, "alice",
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(preparerCalls).To(Equal(1))
+
+		var storedCount int
+		Expect(dbConn.QueryRow(`
+			SELECT count(*)
+			FROM agent_experiment_resource_source_admissions
+			WHERE experiment_id = $1 AND team_id = $2
+		`, int64(started.ID), defaultTeam.ID()).Scan(&storedCount)).To(Succeed())
+		Expect(storedCount).To(Equal(2))
+
+		cells, err := sourceFactory.ClaimCandidateCells(ctx, 10)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cells).To(HaveLen(4))
+		for _, cell := range cells {
+			Expect(cell.ResourceSourceAdmissionID).NotTo(BeNil())
+			Expect(*cell.ResourceSourceAdmissionID).To(Equal(candidateAdmissionID))
+		}
+		candidateRun := insertRun(
+			cells[0].Target,
+			defaultTeam.ID(),
+			defaultTeam.Name(),
+			fmt.Sprintf("experiment:%s:cell:%s", started.ID.String(), cells[0].ID.String()),
+			cells[0].TargetConfigHash,
+		)
+		recorded, err := sourceFactory.RecordCandidateRun(ctx, cells[0].ID, candidateRun)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(recorded).To(BeFalse())
+		_, err = dbConn.Exec(
+			`UPDATE agent_workflow_runs
+			  SET resource_source_admission_id = $2
+			  WHERE id = $1`,
+			int64(candidateRun), wrongCandidateAdmissionID,
+		)
+		Expect(err).NotTo(HaveOccurred())
+		recorded, err = sourceFactory.RecordCandidateRun(ctx, cells[0].ID, candidateRun)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(recorded).To(BeFalse())
+		_, err = dbConn.Exec(
+			`UPDATE agent_workflow_runs
+			  SET resource_source_admission_id = $2
+			  WHERE id = $1`,
+			int64(candidateRun), candidateAdmissionID,
+		)
+		Expect(err).NotTo(HaveOccurred())
+		recorded, err = sourceFactory.RecordCandidateRun(ctx, cells[0].ID, candidateRun)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(recorded).To(BeTrue())
+
+		evaluations, err := sourceFactory.ClaimEvaluationCells(ctx, 1)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(evaluations).To(HaveLen(1))
+		Expect(evaluations[0].ResourceSourceAdmissionID).NotTo(BeNil())
+		Expect(*evaluations[0].ResourceSourceAdmissionID).To(Equal(evaluatorAdmissionID))
+		evaluatorRun := insertRun(
+			evaluations[0].Evaluator.Target,
+			defaultTeam.ID(),
+			defaultTeam.Name(),
+			fmt.Sprintf("experiment:%s:cell:%s:evaluator", started.ID.String(), evaluations[0].ID.String()),
+			evaluations[0].Evaluator.TargetConfigHash,
+		)
+		recorded, err = sourceFactory.RecordEvaluatorRun(ctx, evaluations[0].ID, evaluatorRun)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(recorded).To(BeFalse())
+		_, err = dbConn.Exec(
+			`UPDATE agent_workflow_runs
+			  SET resource_source_admission_id = $2
+			  WHERE id = $1`,
+			int64(evaluatorRun), wrongEvaluatorAdmissionID,
+		)
+		Expect(err).NotTo(HaveOccurred())
+		recorded, err = sourceFactory.RecordEvaluatorRun(ctx, evaluations[0].ID, evaluatorRun)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(recorded).To(BeFalse())
+		_, err = dbConn.Exec(
+			`UPDATE agent_workflow_runs
+			  SET resource_source_admission_id = $2
+			  WHERE id = $1`,
+			int64(evaluatorRun), evaluatorAdmissionID,
+		)
+		Expect(err).NotTo(HaveOccurred())
+		recorded, err = sourceFactory.RecordEvaluatorRun(ctx, evaluations[0].ID, evaluatorRun)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(recorded).To(BeTrue())
+	})
+
+	It("keeps a draft unchanged when prepared source admissions do not cover the locked registry", func() {
+		candidateHash := strings.Repeat("e", 64)
+		candidateAdmissionID := registerReadySourceAdmission(
+			defaultTeam.ID(), candidateDefinition, candidateHash, "missing-evaluator",
+		)
+		sourceFactory := db.NewAgentExperimentsFactory(
+			dbConn,
+			targetRenderer,
+			db.WithAgentExperimentResourceSourcePreparer(
+				experimentResourceSourcePreparerFunc(func(
+					context.Context,
+					experiment.ResourceSourcePreparation,
+				) ([]experiment.PreparedResourceSourceAdmission, error) {
+					return []experiment.PreparedResourceSourceAdmission{{
+						WorkflowDefinitionID: int64(candidateDefinition.ID),
+						SourceConfigHash:     candidateHash,
+						AdmissionID:          candidateAdmissionID,
+					}}, nil
+				}),
+			),
+		)
+		created, err := sourceFactory.Create(
+			ctx, defaultTeam.ID(), defaultTeam.Name(), "alice", definition(fixtureSnapshot),
+		)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = sourceFactory.Start(ctx, defaultTeam.ID(), created.ID, created.Revision, "alice")
+		Expect(errors.Is(err, experiment.ErrInvalidDefinition)).To(BeTrue())
+		unchanged, found, getErr := sourceFactory.Get(ctx, defaultTeam.ID(), created.ID)
+		Expect(getErr).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(unchanged.Definition.State).To(Equal(experiment.StateDraft))
 	})
 
 	It("round-trips mutable drafts, retention claims, atomic cells, and optimistic revisions", func() {

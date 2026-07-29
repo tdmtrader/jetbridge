@@ -34,19 +34,20 @@ type RunObservation struct {
 }
 
 type EvaluationCell struct {
-	ID                     CellID
-	ExperimentID           ID
-	TeamID                 int
-	TeamName               string
-	CreatedBy              string
-	CandidateWorkflowRunID snapshot.WorkflowRunID
-	EvaluatorWorkflowRunID *snapshot.WorkflowRunID
-	CandidateSignature     workflow.PublicSignature
-	FixtureInputs          map[string]snapshot.SnapshotID
-	Evaluator              Evaluator
-	Role                   FixtureRole
-	Assertions             []Assertion
-	Budget                 Budget
+	ID                        CellID
+	ExperimentID              ID
+	ResourceSourceAdmissionID *int64
+	TeamID                    int
+	TeamName                  string
+	CreatedBy                 string
+	CandidateWorkflowRunID    snapshot.WorkflowRunID
+	EvaluatorWorkflowRunID    *snapshot.WorkflowRunID
+	CandidateSignature        workflow.PublicSignature
+	FixtureInputs             map[string]snapshot.SnapshotID
+	Evaluator                 Evaluator
+	Role                      FixtureRole
+	Assertions                []Assertion
+	Budget                    Budget
 }
 
 func (cell EvaluationCell) Validate() error {
@@ -55,6 +56,9 @@ func (cell EvaluationCell) Validate() error {
 	}
 	if err := cell.ExperimentID.Validate(); err != nil {
 		return err
+	}
+	if cell.ResourceSourceAdmissionID != nil && *cell.ResourceSourceAdmissionID <= 0 {
+		return fmt.Errorf("experiment evaluator: resource source admission ID must be positive when present")
 	}
 	if cell.TeamID <= 0 || strings.TrimSpace(cell.TeamName) == "" || strings.TrimSpace(cell.CreatedBy) == "" {
 		return fmt.Errorf("experiment evaluator: durable team and creator identity are required")
@@ -266,6 +270,7 @@ func (evaluator *EvaluatorRunner) bind(ctx context.Context, cell EvaluationCell)
 		Inputs:                              inputs,
 		ExpectedTargetConfigHash:            cell.Evaluator.TargetConfigHash,
 		ExpectedDevValidationProvenanceHash: cell.Evaluator.DevValidationProvenanceHash,
+		ResourceSourceAdmissionID:           cloneOptionalInt64(cell.ResourceSourceAdmissionID),
 		AdmissionGate: AdmissionGate{
 			ExperimentID: cell.ExperimentID,
 			CellID:       cell.ID,
