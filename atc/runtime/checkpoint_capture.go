@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/concourse/concourse/agent/checkpoint"
 )
@@ -30,6 +31,13 @@ type CheckpointProcess interface {
 // exited. Callers must provide a deadline.
 type TerminalCheckpointProcess interface {
 	AcquireTerminalCheckpointCapture(context.Context, int64) (CheckpointCaptureLease, error)
+}
+
+// CheckpointPreemptionProcess is an optional exact-node intent source. A
+// notice is advisory only: callers still need a provider-declared live safe
+// boundary before capturing.
+type CheckpointPreemptionProcess interface {
+	WaitForCheckpointPreemption(context.Context) (time.Time, error)
 }
 
 // CheckpointCaptureLease is opaque process/workspace quiescence. Release is
