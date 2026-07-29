@@ -54,13 +54,14 @@ type CheckpointCaptureProvenance struct {
 }
 
 type AgentCheckpointCaptureRequest struct {
-	Trigger         CheckpointCaptureTrigger
-	Provenance      CheckpointCaptureProvenance
-	FenceToken      string
-	FenceTTL        time.Duration
-	MaxArchiveBytes int64
-	Boundary        runtime.SafeBoundaryProcess
-	Quiescence      runtime.CheckpointProcess
+	Trigger            CheckpointCaptureTrigger
+	Provenance         CheckpointCaptureProvenance
+	FenceToken         string
+	FenceTTL           time.Duration
+	MaxArchiveBytes    int64
+	Boundary           runtime.SafeBoundaryProcess
+	Quiescence         runtime.CheckpointProcess
+	TerminalQuiescence runtime.TerminalCheckpointProcess
 }
 
 type AgentCheckpointCaptureResult struct {
@@ -144,6 +145,7 @@ func (coordinator *AgentCheckpointCapture) Capture(ctx context.Context, request 
 		err = errors.Join(err, releaseErr)
 	}()
 
+	var quiescence runtime.CheckpointCaptureLease
 	if request.Trigger != CheckpointCaptureTriggerCompletion {
 		if request.Boundary == nil {
 			return AgentCheckpointCaptureResult{Status: CheckpointCaptureSkipped}, nil
@@ -156,13 +158,23 @@ func (coordinator *AgentCheckpointCapture) Capture(ctx context.Context, request 
 			return result, errors.New("checkpoint capture acquired nil safe boundary lease")
 		}
 		defer func() { err = errors.Join(err, releaseSafeBoundary(boundary)) }()
-	}
-	if request.Quiescence == nil {
-		return AgentCheckpointCaptureResult{Status: CheckpointCaptureSkipped}, nil
-	}
-	quiescence, quiescenceErr := request.Quiescence.AcquireCheckpointCapture(ctx, request.MaxArchiveBytes)
-	if quiescenceErr != nil {
-		return result, quiescenceErr
+		if request.Quiescence == nil {
+			return AgentCheckpointCaptureResult{Status: CheckpointCaptureSkipped}, nil
+		}
+		var quiescenceErr error
+		quiescence, quiescenceErr = request.Quiescence.AcquireCheckpointCapture(ctx, request.MaxArchiveBytes)
+		if quiescenceErr != nil {
+			return result, quiescenceErr
+		}
+	} else {
+		if request.TerminalQuiescence == nil {
+			return AgentCheckpointCaptureResult{Status: CheckpointCaptureSkipped}, nil
+		}
+		var quiescenceErr error
+		quiescence, quiescenceErr = request.TerminalQuiescence.AcquireTerminalCheckpointCapture(ctx, request.MaxArchiveBytes)
+		if quiescenceErr != nil {
+			return result, quiescenceErr
+		}
 	}
 	if quiescence == nil {
 		return result, errors.New("checkpoint capture acquired nil quiescence lease")

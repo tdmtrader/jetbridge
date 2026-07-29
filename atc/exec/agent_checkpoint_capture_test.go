@@ -170,9 +170,12 @@ func TestAgentCheckpointCaptureCompletionSkipsBoundaryAndRejectsUnknownTriggerBe
 			t.Fatal(err)
 		}
 		for _, event := range events {
-			if event == "boundary" || event == "boundary-release" {
-				t.Fatalf("completion used a live boundary: %v", events)
+			if event == "boundary" || event == "boundary-release" || event == "quiesce" {
+				t.Fatalf("completion used a live capture authority: %v", events)
 			}
+		}
+		if !containsCaptureEvent(events, "terminal-quiesce") {
+			t.Fatalf("completion did not use terminal quiescence: %v", events)
 		}
 	})
 	t.Run("unknown trigger", func(t *testing.T) {
@@ -316,7 +319,8 @@ func captureProvenance() CheckpointCaptureProvenance {
 }
 
 func captureRequest(fence checkpoint.FenceClaim, boundary runtime.SafeBoundaryProcess, quiescence runtime.CheckpointProcess) AgentCheckpointCaptureRequest {
-	return AgentCheckpointCaptureRequest{Trigger: CheckpointCaptureTriggerElapsed, Provenance: captureProvenance(), FenceToken: fence.Token, FenceTTL: time.Minute, MaxArchiveBytes: 1024, Boundary: boundary, Quiescence: quiescence}
+	terminal, _ := quiescence.(runtime.TerminalCheckpointProcess)
+	return AgentCheckpointCaptureRequest{Trigger: CheckpointCaptureTriggerElapsed, Provenance: captureProvenance(), FenceToken: fence.Token, FenceTTL: time.Minute, MaxArchiveBytes: 1024, Boundary: boundary, Quiescence: quiescence, TerminalQuiescence: terminal}
 }
 
 func captureStoreAndDaemon(t *testing.T, events *[]string, fence checkpoint.FenceClaim) (*checkpointfakes.FakeStore, *captureDaemon) {
@@ -378,6 +382,23 @@ func (quiescence *captureQuiescence) AcquireCheckpointCapture(_ context.Context,
 		return nil, errors.New("wrong capture max bytes")
 	}
 	return captureLease{captureRelease: captureRelease{events: quiescence.events, event: "quiesce-release"}, target: quiescence.target}, nil
+}
+
+func (quiescence *captureQuiescence) AcquireTerminalCheckpointCapture(ctx context.Context, maxBytes int64) (runtime.CheckpointCaptureLease, error) {
+	*quiescence.events = append(*quiescence.events, "terminal-quiesce")
+	if maxBytes != quiescence.target.Archive.MaxBytes {
+		return nil, errors.New("wrong terminal capture max bytes")
+	}
+	return captureLease{captureRelease: captureRelease{events: quiescence.events, event: "terminal-quiesce-release"}, target: quiescence.target}, nil
+}
+
+func containsCaptureEvent(events []string, want string) bool {
+	for _, event := range events {
+		if event == want {
+			return true
+		}
+	}
+	return false
 }
 
 type captureRelease struct {
