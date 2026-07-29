@@ -115,3 +115,21 @@ to evaluate independently.
 - Suggested follow-up: Resolve `HUMAN-REVIEW-001`, rerun the full Jetbridge
   suite, then implement Task 9 using a narrowly selected private mount for the
   managed builder sidecar. Do not expose private mounts to arbitrary sidecars.
+
+### DEFERRED-004 — Run the Hangar emulator target in an emulator-capable environment
+
+- Task/area: Task 10, emulator-backed GCS integration verification
+- Classification: Environmental verification gap
+- Status: Deferred
+- Evidence: `make test-hangar-integration` was attempted once in the sandbox
+  and once with approved host access on 2026-07-28. Both stopped at the target
+  prerequisite with `ERROR: a running Docker daemon is required`; no
+  `CONCOURSE_HANGAR_TEST_GCS_ENDPOINT` was configured.
+- Why it is nonblocking: Unit coverage and tagged harness compilation passed;
+  the target supports the intended in-cluster mode through the explicit
+  emulator endpoint environment variable. The missing daemon is external to
+  the implementation and no production behavior was bypassed.
+- Suggested follow-up: In CI or a cluster environment, set
+  `CONCOURSE_HANGAR_TEST_GCS_ENDPOINT` to the compatible emulator endpoint, or
+  run the target with a working Docker daemon, and retain the test output with
+  the Task 10 acceptance evidence.

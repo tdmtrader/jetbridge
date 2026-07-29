@@ -139,7 +139,21 @@
     directly affect output-builder authority availability and integrity.
   - Resume only after `HUMAN-REVIEW-001` is resolved and the full Jetbridge
     suite is green. See `DEPENDENCY-001`.
-- [ ] Task 10 — Hangar core
+- [x] Task 10 — Hangar core
+  - Commit: `29e5215b13 feat(hangar): add immutable GCS object storage`
+  - Behavior: provider-neutral immutable object contract with canonical
+    SHA-256 keys; bounded zstd streaming into generation-pinned, verified GCS
+    objects; immutable create/idempotent identical puts; collision, truncation,
+    metadata, digest, and byte-limit rejection; cancellation-safe scratch
+    handling; and a concurrency-safe test fake.
+  - Verification: `go test ./agent/hangar -count=1` and
+    `go test ./agent/hangar/hangarfakes -count=1` passed. The tagged emulator
+    harness cleanup contract compiled and passed. `make test-hangar-integration`
+    was attempted once in the sandbox and once with host access; both stopped
+    before tests because Docker has no running daemon and no external emulator
+    endpoint was configured. See `DEFERRED-004`.
+  - Review: focused self-review round 1 found no blocking Task-10 issue.
+  - Status: Done with environmental verification concern.
 - [ ] Task 11 — Hangar daemon/deployment integration
 - [ ] Task 12 — resource-source grammar and persistence
 - [ ] Task 13 — source capture/reuse runtime
