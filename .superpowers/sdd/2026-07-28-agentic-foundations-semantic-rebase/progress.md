@@ -137,13 +137,30 @@
     descriptor-anchored output operations, and transactional record/content
     publication. Commit: `fc31f229d8`. Required checkpoint passed; pending
     final scoped review.
-- [ ] Task 9 — output-builder execution wiring
-  - Status: unblocked by Task 6; not started.
-  - A bounded codebase audit found no safe independent server-owned authority
-  file seam for a sidecar. Task 9 must extend Task 6's
-    now-accepted `runtime.PrivateFileMount`/Secret lifecycle.
-  - `DEPENDENCY-001` is resolved; implementation may proceed with a narrowly
-    selected private mount for the managed builder sidecar.
+- [x] Task 9 — output-builder execution wiring
+  - Commits:
+    - `fb107b1db1 feat(agent): wire managed output builder authority`
+    - `210eafcebf fix(agent): bind output builder runtime authority`
+    - `9375fae0b8 fix(agent): reject aliased builder volume sources`
+  - Behavior: ATC derives one private canonical authority document from frozen
+    typed bindings and built-in record outputs. The pinned Agent runtime gets a
+    fixed loopback builder sidecar with only exact typed input read mounts and
+    record-output write mounts; prompts, environment, ordinary sidecars,
+    credentials, incidental mounts, and service-account tokens receive no
+    authority.
+  - Runtime admission binds the strict authority to the exact Agent
+    `ContainerSpec`, rejects workroot/untyped/secret/cache/scratch and
+    input/output overlaps, and fails closed when a selected Kubernetes mount
+    aliases another mount by name, cleaned HostPath, or PVC claim.
+  - Verification: controller
+    `go test ./atc/runtime ./atc/exec ./atc/worker/jetbridge ./agent/runner
+    ./cmd/agent-output ./deploy -count=1` passed; after the final correction,
+    `go test ./atc/worker/jetbridge ./atc/runtime -count=1` passed.
+  - Review: round 1 found malformed-spec projection authority; round 2 found
+    DaemonSet output names `dir`/`input-1` could alias forbidden backing under
+    different volume names. Both corrections are pinned by negative tests.
+    Round 3 found no Critical, High, or acceptance-blocking issue.
+  - Status: **Accepted in review round 3.** `DEPENDENCY-001` remains resolved.
 - [x] Task 10 — Hangar core
   - Commit: `29e5215b13 feat(hangar): add immutable GCS object storage`
   - Behavior: provider-neutral immutable object contract with canonical
@@ -352,8 +369,7 @@
   - Status: **Accepted**.
 - [ ] Task 19 — full verification and residue audit
   - Status: dependency-deferred under `DEPENDENCY-005`; final proof cannot pass
-    while Tasks 9, 13, and 14 are unstarted and the branch is knowingly
-    incomplete.
+    while Tasks 13 and 14 are unstarted and the branch is knowingly incomplete.
 
 ## Current milestone acceptance
 
@@ -364,6 +380,6 @@
 - Merge-preflight revision-3 focused suites: passed.
 - `make test-unit`: failed only in Jetbridge as described under Task 6; the
   other 120 Ginkgo suites completed without a reported failure.
-- Status: recovery evidence and Tasks 6, 7, and 12 are accepted, but the branch
-  is not merge-ready while Tasks 9, 13, and 14 remain unimplemented and Task
-  19 has not run.
+- Status: recovery evidence and Tasks 6, 7, 9, and 12 are accepted, but the
+  branch is not merge-ready while Tasks 13 and 14 remain unimplemented and
+  Task 19 has not run.

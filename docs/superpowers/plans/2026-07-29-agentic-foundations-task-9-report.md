@@ -67,3 +67,18 @@ Verification for this correction:
 - `go test ./atc/runtime ./atc/worker/jetbridge ./atc/exec ./agent/runner ./cmd/agent-output -count=1`
 - `go test ./deploy -count=1`
 - `git diff --check`
+
+## Final status
+
+- Implementation: `fb107b1db1`.
+- Runtime-authority correction: `210eafcebf`.
+- Physical-volume-alias correction: `9375fae0b8`.
+- Controller verification passed:
+  `go test ./atc/runtime ./atc/exec ./atc/worker/jetbridge ./agent/runner
+  ./cmd/agent-output ./deploy -count=1`, followed after the final correction by
+  `go test ./atc/worker/jetbridge ./atc/runtime -count=1`.
+- Review round 1 found the malformed-spec projection boundary; round 2 found
+  the DaemonSet backing-volume alias; round 3 found both blockers resolved and
+  no new Critical, High, or acceptance-blocking issue.
+
+Status: **Accepted in review round 3.**

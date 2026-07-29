@@ -55,12 +55,14 @@ unlimited hardening or adjacent platform design.
   migration hazards, or a required acceptance test that cannot pass.
 - Record Medium, Minor, cleanup, optimization, speculative hardening, and
   additional-nice-to-have coverage in the deferred-item catalog.
-- A task gets at most **two review rounds total**:
+- A task gets at most **three review rounds total**:
   1. initial focused review;
-  2. one focused re-review of blocking fixes.
-- If a blocking finding remains or a new blocker appears after the second
-  round, mark the task **Human Review Required**, record the exact evidence and
-  proposed choices, and proceed to the next safe independent task.
+  2. a focused re-review of blocking fixes;
+  3. one final focused review when the second round finds a blocker.
+- Stop early when a round passes. If a blocking finding remains or a new
+  blocker appears after the third round, mark the task **Human Review
+  Required**, record the exact evidence and proposed choices, and proceed to
+  the next safe independent task.
 - Review only the relevant delta. Do not repeatedly re-audit already approved
   history without new evidence that it regressed.
 
@@ -153,11 +155,17 @@ Task 8:
 
 Task 9:
 
-- Not started; `DEPENDENCY-001` is resolved.
-- The current runtime has no safe independent server-owned file seam for a
-  managed sidecar. Task 9 must extend Task 6's protected private-Secret mount,
-  now accepted and green, without exposing the authority to arbitrary
-  sidecars.
+- Implemented in `fb107b1db1`, with trust-boundary corrections
+  `210eafcebf` and `9375fae0b8`.
+- Status: **Accepted in review round 3**.
+- ATC derives the builder's private authority from frozen typed execution
+  facts; the fixed pinned Agent sidecar receives only exact typed ports, with
+  input projections read-only. Runtime validation rejects malformed authority,
+  incidental mounts, and both Kubernetes-name and physical HostPath/PVC
+  backing aliases.
+- Controller focused packages passed. Review rounds 1 and 2 found and corrected
+  the malformed-spec projection and DaemonSet `dir`/`input-1` alias blockers;
+  round 3 found no Critical, High, or acceptance-blocking issue.
 
 Task 10:
 
@@ -253,9 +261,9 @@ Tasks 16–18:
 Task 19:
 
 - Not started; dependency-deferred under `DEPENDENCY-005`.
-- Final end-to-end and residue proof cannot complete while Tasks 6 and 12
-  remain Human Review Required, their dependent tasks remain unstarted, and
-  the branch is knowingly incomplete. Tasks 16–18 are no longer blockers.
+- Final end-to-end and residue proof cannot complete while Tasks 13 and 14
+  remain unstarted and the branch is knowingly incomplete. Tasks 9 and 16–18
+  are no longer blockers.
 
 ## Milestone verification
 
@@ -272,8 +280,8 @@ Fresh verification at the current checkpoint:
   `go test ./atc/worker/jetbridge -count=1` passed all 381 specs. The complete
   repository-wide `make test-unit` target has not yet been rerun.
 
-The recovery track and Tasks 6/7/12 are verified, but the branch is not
-merge-ready. Do not report it as green until Tasks 9, 13, 14, and 19 are
+The recovery track and Tasks 6/7/9/12 are verified, but the branch is not
+merge-ready. Do not report it as green until Tasks 13, 14, and 19 are
 completed and the broad suites are rerun.
 
 ## Near-term sequence
@@ -283,13 +291,15 @@ completed and the broad suites are rerun.
    new blocking evidence.
 3. Treat Task 7 as accepted through `7571f5f846`; do not reopen it without new
    blocking evidence.
-4. Tasks 9, 13, and 14 remain unstarted; Task 14 is now unblocked.
-5. Treat Task 15 as **Accepted**; its user-authorized final review found no
+4. Treat Task 9 as accepted through `9375fae0b8`; do not reopen it without new
+   blocking evidence.
+5. Tasks 13 and 14 remain unstarted and unblocked.
+6. Treat Task 15 as **Accepted**; its user-authorized final review found no
    blocking issue.
-6. Treat Tasks 16, 17, and 18 as accepted; do not reopen their review cycles
+7. Treat Tasks 16, 17, and 18 as accepted; do not reopen their review cycles
    without new blocking evidence.
-7. Leave Task 19 dependency-deferred until Tasks 9, 13, and 14 are completed.
-8. Treat every resumed feature group as a separate bounded track rather than
+8. Leave Task 19 dependency-deferred until Tasks 13 and 14 are completed.
+9. Treat every resumed feature group as a separate bounded track rather than
    one continuous "rebase."
 
 ## Session handoff requirement

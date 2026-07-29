@@ -103,7 +103,7 @@ to evaluate independently.
 
 - Task/area: Task 9, output-builder execution wiring
 - Classification: Blocking dependency; task not started
-- Status: Resolved on 2026-07-29; Task 9 is unblocked but not started
+- Status: Resolved on 2026-07-29; Task 9 is accepted through `9375fae0b8`
 - Evidence: The current runtime has no independent server-owned file seam for
   a managed sidecar. `runtime.PrivateFileMount` is the protected mechanism,
   but Jetbridge projects it only into the main container. Task 9 must extend
@@ -114,10 +114,11 @@ to evaluate independently.
 - Why it is blocking: Building Task 9 on the unresolved primitive would make
   a new security boundary depend on code already marked Human Review Required,
   and would add a second consumer before the primitive's lifecycle is trusted.
-- Resolution/follow-up: `HUMAN-REVIEW-001` is resolved and the full Jetbridge
-  suite passed. Implement Task 9 using a narrowly selected private mount for
-  the managed builder sidecar. Do not expose private mounts to arbitrary
-  sidecars.
+- Resolution/follow-up: `HUMAN-REVIEW-001` is resolved. Task 9 reuses the
+  private Secret lifecycle only for its fixed managed builder, binds exact
+  typed projections to canonical authority and physical volume sources, and
+  passed the full focused Jetbridge/runtime checkpoint plus final round-3
+  blocking review.
 
 ### DEFERRED-004 — Run the Hangar emulator target in an emulator-capable environment
 
@@ -286,10 +287,10 @@ to evaluate independently.
 - Task/area: Task 19, final upgrade/end-to-end/residue proof
 - Classification: Blocking dependency; task not started
 - Status: Deferred
-- Evidence: Tasks 6, 7, and 12 are now accepted, but Tasks 9, 13, and 14 remain
-  unstarted. Tasks 16–18 are also accepted. Task 19 still cannot truthfully
-  prove output-builder wiring, source capture, publication, or
-  repository-wide acceptance while those implementations are absent.
-- Suggested follow-up: Complete Tasks 9, 13, and 14, then run Task 19 once
-  as the final milestone rather than repeatedly running broad suites against a
+- Evidence: Tasks 6, 7, 9, 12, and 16–18 are accepted, but Tasks 13 and 14
+  remain unstarted. Task 19 still cannot truthfully prove source capture,
+  publication, or repository-wide acceptance while those implementations are
+  absent.
+- Suggested follow-up: Complete Tasks 13 and 14, then run Task 19 once as the
+  final milestone rather than repeatedly running broad suites against a
   knowingly incomplete branch.
