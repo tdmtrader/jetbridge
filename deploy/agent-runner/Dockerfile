@@ -26,7 +26,7 @@ COPY --from=build /out/agent-runner /usr/local/bin/agent-runner
 # image: they run as ordinary task steps beside agent steps, and share the git
 # and Go toolchain already installed above.
 COPY --from=build /out/function-runner /usr/local/bin/function-runner
-COPY --from=build /out/agent-output /usr/local/bin/agent-output
+COPY --from=build --chmod=0555 /out/agent-output /usr/local/bin/agent-output
 COPY --from=build /usr/local/go /usr/local/go
 # Root, like every other step image: jetbridge hostPath step volumes are
 # kubelet-created root:root 0755 and fsGroup is ignored for hostPath, so a

@@ -27,7 +27,7 @@ func TestAgentRunnerDockerfile(t *testing.T) {
 	if !strings.Contains(string(dockerfile), "go build -o /out/agent-output ./cmd/agent-output") {
 		t.Fatal("agent runner image no longer builds the managed agent-output tool")
 	}
-	if !strings.Contains(string(dockerfile), "COPY --from=build /out/agent-output /usr/local/bin/agent-output") {
-		t.Fatal("agent runner image builds agent-output but does not ship it")
+	if !strings.Contains(string(dockerfile), "COPY --from=build --chmod=0555 /out/agent-output /usr/local/bin/agent-output") {
+		t.Fatal("agent runner image must ship a non-writable managed agent-output tool")
 	}
 }

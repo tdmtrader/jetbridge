@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/runtime"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -72,6 +74,56 @@ func TestCreatePodWithoutPrivateMountsDoesNotRequirePodUIDOrCreateSecrets(t *tes
 	}
 	if len(secrets.Items) != 0 {
 		t.Fatalf("zero private mounts created Secrets: %#v", secrets.Items)
+	}
+}
+
+func TestManagedOutputBuilderMountsOnePrivateAuthorityFileOnlyInBuilder(t *testing.T) {
+	spec := runtime.ContainerSpec{
+		ImageSpec: runtime.ImageSpec{ImageURL: "busybox:latest"}, Dir: "/work",
+		Inputs:       []runtime.Input{{DestinationPath: "/work/change", ReadOnly: true}},
+		Outputs:      runtime.OutputPaths{"review": "/work/review", "flight": "/work/flight"},
+		Caches:       []string{"/work/cache"},
+		ScratchPaths: []string{"/work/scratch"},
+		SecretMounts: []runtime.SecretMount{{SecretName: "ordinary", MountPath: "/work/ordinary-secret"}},
+		Sidecars: []atc.SidecarConfig{
+			{Name: "observer", Image: "busybox:latest"},
+			{Name: runtime.ManagedOutputBuilderName, Image: "busybox:latest", Command: []string{"/usr/local/bin/agent-output", "serve"}, Ports: []atc.SidecarPort{{ContainerPort: 7783, Protocol: "TCP"}}, WorkingDir: "/"},
+		},
+		ManagedOutputBuilder: &runtime.ManagedOutputBuilder{
+			Authority:       runtime.PrivateFileMount{MountPath: runtime.ManagedOutputBuilderAuthorityMountRoot, Files: map[string][]byte{runtime.ManagedOutputBuilderAuthorityFile: []byte("trusted")}},
+			InputMountPaths: []string{"/work/change"}, OutputMountPaths: []string{"/work/review"},
+		},
+	}
+	c := newPrivateMountTestContainer(fake.NewSimpleClientset(), spec)
+	pod, err := c.buildPod(runtime.ProcessSpec{Path: "/bin/sh"}, []string{"/bin/sh"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pod.Spec.AutomountServiceAccountToken == nil || *pod.Spec.AutomountServiceAccountToken {
+		t.Fatal("managed builder pod must disable service-account token")
+	}
+	for _, mount := range pod.Spec.Containers[0].VolumeMounts {
+		if mount.MountPath == runtime.ManagedOutputBuilderAuthorityMountRoot || strings.Contains(mount.MountPath, "output-builder/authority.json") {
+			t.Fatal("managed authority leaked to main")
+		}
+	}
+	observer := pod.Spec.Containers[1]
+	for _, mount := range observer.VolumeMounts {
+		if strings.Contains(mount.MountPath, "output-builder") {
+			t.Fatalf("ordinary sidecar received managed authority %q", mount.MountPath)
+		}
+	}
+	builder := pod.Spec.Containers[2]
+	authority := findMountByPath(t, builder.VolumeMounts, runtime.ManagedOutputBuilderAuthorityMountRoot+"/"+runtime.ManagedOutputBuilderAuthorityFile)
+	if authority.SubPath != runtime.ManagedOutputBuilderAuthorityFile || !authority.ReadOnly {
+		t.Fatalf("authority mount = %#v, want readonly authority.json subPath", authority)
+	}
+	got := map[string]corev1.VolumeMount{}
+	for _, mount := range builder.VolumeMounts {
+		got[mount.MountPath] = mount
+	}
+	if len(got) != 3 || !got["/work/change"].ReadOnly || got["/work/review"].ReadOnly || got["/work/flight"].Name != "" || got["/work/cache"].Name != "" || got["/work/scratch"].Name != "" || got["/work/ordinary-secret"].Name != "" || got["/work"].Name != "" {
+		t.Fatalf("managed builder mounts = %#v; want only typed input, typed output, and authority", builder.VolumeMounts)
 	}
 }
 

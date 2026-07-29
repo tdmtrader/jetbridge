@@ -251,6 +251,12 @@ type ContainerSpec struct {
 	// exec implementation (the agent step) per
 	// shared-contracts §8.1 — never from public pipeline YAML.
 	SidecarEnv map[string][]string
+
+	// ManagedOutputBuilder is the one server-owned sidecar contract. It is
+	// deliberately narrower than a generic platform-sidecar facility: the
+	// runtime projects only its authority file and exact typed port mounts.
+	// Callers must derive it from frozen agent execution facts.
+	ManagedOutputBuilder *ManagedOutputBuilder
 }
 
 // CheckpointRestoreDescriptor binds a fresh hermetic agent container to one
@@ -394,6 +400,23 @@ type SecretMount struct {
 type PrivateFileMount struct {
 	MountPath string
 	Files     map[string][]byte
+}
+
+const (
+	ManagedOutputBuilderName               = "output-builder"
+	ManagedOutputBuilderAuthorityMountRoot = "/run/concourse/output-builder"
+	ManagedOutputBuilderAuthorityFile      = "authority.json"
+)
+
+// ManagedOutputBuilder describes the fixed platform output-builder sidecar.
+// Authority is materialized through the existing private Secret lifecycle but
+// is mounted only in that sidecar. InputMountPaths and OutputMountPaths are
+// exact, absolute typed-port mounts; no work-root or incidental mount may be
+// projected.
+type ManagedOutputBuilder struct {
+	Authority        PrivateFileMount
+	InputMountPaths  []string
+	OutputMountPaths []string
 }
 
 // Input represents a Volume (typically from a build artifact) to mount to the

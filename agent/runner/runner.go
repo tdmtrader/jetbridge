@@ -44,6 +44,12 @@ var claudeWaitDelay = 5 * time.Second
 
 const maxSummaryChars = 500
 
+const (
+	outputBuilderMarkerEnv = "CONCOURSE_OUTPUT_BUILDER_MCP"
+	outputBuilderMCPName   = "output-builder"
+	outputBuilderMCPURL    = "http://127.0.0.1:7783/mcp"
+)
+
 // Config drives one agent-step execution.
 type Config struct {
 	Prompt   string
@@ -74,8 +80,11 @@ type Config struct {
 	StepName     string
 	ClaudePath   string
 	MCPServers   map[string]string
-	Stdout       io.Writer
-	Stderr       io.Writer
+	// OutputBuilderMarker is a server-created activation bit. The runner owns
+	// the managed name and endpoint; neither is accepted from authored MCP env.
+	OutputBuilderMarker string
+	Stdout              io.Writer
+	Stderr              io.Writer
 
 	// OutputPaths maps each §8.1 AGENT_OUTPUT_<NAME> env var (its full
 	// name, AGENT_OUTPUT_SCHEMA excluded — that row is the schema path,
@@ -129,21 +138,22 @@ func FromEnv() Config {
 	wd, _ := os.Getwd()
 
 	cfg := Config{
-		Prompt:         os.Getenv("AGENT_PROMPT"),
-		Model:          os.Getenv("AGENT_MODEL"),
-		ModelTokenKind: os.Getenv("AGENT_MODEL_TOKEN_KIND"),
-		SystemPrompt:   os.Getenv("AGENT_SYSTEM_PROMPT"),
-		Context:        os.Getenv("AGENT_CONTEXT"),
-		SkillsDir:      os.Getenv("AGENT_SKILLS_DIR"),
-		FlightDir:      os.Getenv("AGENT_FLIGHT_DIR"),
-		SessionDir:     os.Getenv("AGENT_SESSION_DIR"),
-		RecoverySpec:   os.Getenv(recoveryTransportEnv),
-		StepName:       os.Getenv("AGENT_STEP_NAME"),
-		WorkDir:        wd,
-		MCPServers:     map[string]string{},
-		OutputPaths:    map[string]string{},
-		InputSnapshots: map[string]SnapshotAuthority{},
-		RecordOutputs:  map[string]RecordAuthority{},
+		Prompt:              os.Getenv("AGENT_PROMPT"),
+		Model:               os.Getenv("AGENT_MODEL"),
+		ModelTokenKind:      os.Getenv("AGENT_MODEL_TOKEN_KIND"),
+		SystemPrompt:        os.Getenv("AGENT_SYSTEM_PROMPT"),
+		Context:             os.Getenv("AGENT_CONTEXT"),
+		SkillsDir:           os.Getenv("AGENT_SKILLS_DIR"),
+		FlightDir:           os.Getenv("AGENT_FLIGHT_DIR"),
+		SessionDir:          os.Getenv("AGENT_SESSION_DIR"),
+		RecoverySpec:        os.Getenv(recoveryTransportEnv),
+		StepName:            os.Getenv("AGENT_STEP_NAME"),
+		WorkDir:             wd,
+		MCPServers:          map[string]string{},
+		OutputBuilderMarker: os.Getenv(outputBuilderMarkerEnv),
+		OutputPaths:         map[string]string{},
+		InputSnapshots:      map[string]SnapshotAuthority{},
+		RecordOutputs:       map[string]RecordAuthority{},
 
 		// §5 step.start identity: BUILD_ID is jetbridge/exec-injected and
 		// AGENT_PLAN_ID is set by the agent-step exec (never public YAML).
@@ -203,6 +213,28 @@ func FromEnv() Config {
 	return cfg
 }
 
+func admittedMCPServers(marker string, authored map[string]string) (map[string]string, bool, error) {
+	servers := make(map[string]string, len(authored)+1)
+	for name, endpoint := range authored {
+		if name == outputBuilderMCPName {
+			return nil, false, fmt.Errorf("managed MCP name %q is reserved", outputBuilderMCPName)
+		}
+		if endpoint == outputBuilderMCPURL {
+			return nil, false, fmt.Errorf("managed MCP endpoint %q is reserved", outputBuilderMCPURL)
+		}
+		servers[name] = endpoint
+	}
+	switch marker {
+	case "":
+		return servers, false, nil
+	case "1":
+		servers[outputBuilderMCPName] = outputBuilderMCPURL
+		return servers, true, nil
+	default:
+		return nil, false, fmt.Errorf("%s must be exactly 1 when present", outputBuilderMarkerEnv)
+	}
+}
+
 // envInt parses name as a positive integer; anything else (unset, empty,
 // malformed, non-positive) means absent and returns 0.
 func envInt(name string) int {
@@ -246,6 +278,10 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	stderr := cfg.Stderr
 	if stderr == nil {
 		stderr = os.Stderr
+	}
+	mcpServers, outputBuilderEnabled, err := admittedMCPServers(cfg.OutputBuilderMarker, cfg.MCPServers)
+	if err != nil {
+		return 2, fmt.Errorf("admit MCP configuration: %w", err)
 	}
 	// 1. The compiler always inlines the prompt.
 	prompt := cfg.Prompt
@@ -311,7 +347,9 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 		prompt = b.String() + "\n---\n\n" + prompt
 	}
 
-	if len(cfg.InputSnapshots) > 0 || len(cfg.RecordOutputs) > 0 {
+	if outputBuilderEnabled {
+		prompt = "# Structured output builder (platform-managed MCP)\n\nUse describe_output, write_output, and validate_output to author declared records. Builder validation is preflight only; Concourse independently captures, validates, and seals every output after this step.\n\n---\n\n" + prompt
+	} else if len(cfg.InputSnapshots) > 0 || len(cfg.RecordOutputs) > 0 {
 		var b strings.Builder
 		b.WriteString("# Sealed record authority (platform-resolved)\n\n")
 		inputs := sortedAuthorityNames(cfg.InputSnapshots)
@@ -368,7 +406,7 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 
 	// 2. Wait for every declared MCP sidecar to become healthy. A sidecar
 	// that never comes up is a platform error, not an agent failure.
-	if err := waitForSidecars(ctx, cfg.MCPServers); err != nil {
+	if err := waitForSidecars(ctx, mcpServers); err != nil {
 		summary := truncate(err.Error(), maxSummaryChars)
 		writeEvent(events, schema.EventError, map[string]string{"message": err.Error()})
 		// Persist results.json too. Server-side ingestion reads step.end only
@@ -413,11 +451,15 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	// and make it strict. Without --strict-mcp-config Claude may discover a
 	// repository-provided project MCP file and silently regain an undeclared
 	// live-system tool despite the workflow capability boundary.
-	mcpConfigPath, err := writeMCPConfig(cfg.MCPServers)
+	mcpConfigPath, cleanupMCPConfig, err := writeMCPConfig(mcpServers)
 	if err != nil {
 		return 2, fmt.Errorf("write mcp config: %w", err)
 	}
-	defer os.Remove(mcpConfigPath)
+	defer func() {
+		if err := cleanupMCPConfig(); err != nil {
+			fmt.Fprintf(stderr, "agent-runner: remove private mcp config: %v\n", err)
+		}
+	}()
 	args = append(args, "--mcp-config", mcpConfigPath, "--strict-mcp-config")
 
 	adapter := cfg.Adapter
@@ -660,7 +702,7 @@ func waitHealthy(ctx context.Context, client *http.Client, name, url string) err
 
 // writeMCPConfig writes the claude CLI --mcp-config file mapping each
 // declared sidecar to its HTTP MCP endpoint.
-func writeMCPConfig(servers map[string]string) (string, error) {
+func writeMCPConfig(servers map[string]string) (string, func() error, error) {
 	type serverEntry struct {
 		Type string `json:"type"`
 		URL  string `json:"url"`
@@ -671,23 +713,29 @@ func writeMCPConfig(servers map[string]string) (string, error) {
 	}
 	payload, err := json.Marshal(map[string]any{"mcpServers": entries})
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 
-	f, err := os.CreateTemp("", "agent-runner-mcp-*.json")
+	dir, err := os.MkdirTemp("", "agent-runner-mcp-*")
 	if err != nil {
-		return "", err
+		return "", nil, err
+	}
+	cleanup := func() error { return os.RemoveAll(dir) }
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return "", nil, errors.Join(err, cleanup())
+	}
+	f, err := os.OpenFile(filepath.Join(dir, "mcp.json"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return "", nil, errors.Join(err, cleanup())
 	}
 	if _, err := f.Write(payload); err != nil {
 		f.Close()
-		os.Remove(f.Name())
-		return "", err
+		return "", nil, errors.Join(err, cleanup())
 	}
 	if err := f.Close(); err != nil {
-		os.Remove(f.Name())
-		return "", err
+		return "", nil, errors.Join(err, cleanup())
 	}
-	return f.Name(), nil
+	return f.Name(), cleanup, nil
 }
 
 // parseEnvelope finds the last non-empty line of the CLI's stdout and

@@ -405,15 +405,27 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 		return false, MissingInputsError{missingInputs}
 	}
 
-	outputTypes := make(map[string]snapshot.TypeRef, len(step.plan.SnapshotOutputs))
-	for name, declaration := range step.plan.SnapshotOutputs {
-		outputTypes[name] = declaration.Type
+	var (
+		managedOutputBuilder *runtime.ManagedOutputBuilder
+		err                  error
+	)
+	if step.plan.RuntimeImage != "" {
+		managedOutputBuilder, err = outputBuilderAuthority(workdir, snapshotInputs, step.plan.SnapshotInputs, step.plan.SnapshotOutputs)
+		if err != nil {
+			return false, fmt.Errorf("agent %q: %w", step.plan.Name, err)
+		}
 	}
-	authorityEnv, err := recordAuthorityEnv(snapshotInputs, outputTypes, containerSpec.Env)
-	if err != nil {
-		return false, fmt.Errorf("agent %q: %w", step.plan.Name, err)
+	if managedOutputBuilder == nil {
+		outputTypes := make(map[string]snapshot.TypeRef, len(step.plan.SnapshotOutputs))
+		for name, declaration := range step.plan.SnapshotOutputs {
+			outputTypes[name] = declaration.Type
+		}
+		authorityEnv, err := recordAuthorityEnv(snapshotInputs, outputTypes, containerSpec.Env)
+		if err != nil {
+			return false, fmt.Errorf("agent %q: %w", step.plan.Name, err)
+		}
+		containerSpec.Env = append(containerSpec.Env, authorityEnv...)
 	}
-	containerSpec.Env = append(containerSpec.Env, authorityEnv...)
 
 	// Declared outputs plus the implicit flight recorder output.
 	outputNames := step.outputNames()
@@ -444,6 +456,9 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 	sidecars, err := loadSidecarConfigs(ctx, logger, repository, step.streamer, step.plan.Sidecars)
 	if err != nil {
 		return false, err
+	}
+	if err := reserveOutputBuilder(sidecars, containerSpec.Env); err != nil {
+		return false, fmt.Errorf("agent %q: %w", step.plan.Name, err)
 	}
 
 	err = resolveSidecarImages(ctx, logger, state, step.imageResolver, sidecars)
@@ -507,6 +522,9 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 	}
 
 	containerSpec.Sidecars = sidecars
+	if err := injectManagedOutputBuilder(&containerSpec, runtimeImage, managedOutputBuilder); err != nil {
+		return false, fmt.Errorf("agent %q: %w", step.plan.Name, err)
+	}
 
 	tracing.Inject(ctx, &containerSpec)
 

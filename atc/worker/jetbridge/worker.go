@@ -101,6 +101,9 @@ func (w *Worker) FindOrCreateContainer(
 	containerSpec runtime.ContainerSpec,
 	delegate runtime.BuildStepDelegate,
 ) (runtime.Container, []runtime.VolumeMount, error) {
+	if err := runtime.ValidateManagedOutputBuilder(containerSpec); err != nil {
+		return nil, nil, err
+	}
 	logger := lagerctx.FromContext(ctx).Session("find-or-create-container", lager.Data{
 		"worker": w.Name(),
 	})

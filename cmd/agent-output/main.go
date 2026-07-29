@@ -28,7 +28,7 @@ const (
 // PlatformAuthorityPath is mounted read-only by the task runtime. It is not a
 // command-line option: choosing an authority document would let the agent mint
 // its own input bindings and output ports.
-const PlatformAuthorityPath = "/concourse/agent-output/authority.json"
+const PlatformAuthorityPath = "/run/concourse/output-builder/authority.json"
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

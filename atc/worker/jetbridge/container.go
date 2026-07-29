@@ -108,6 +108,16 @@ func newContainer(
 	storageBackend StorageBackend,
 	reused bool,
 ) *Container {
+	if containerSpec.ManagedOutputBuilder != nil {
+		builder := *containerSpec.ManagedOutputBuilder
+		builder.Authority.Files = make(map[string][]byte, len(builder.Authority.Files))
+		for name, contents := range containerSpec.ManagedOutputBuilder.Authority.Files {
+			builder.Authority.Files[name] = append([]byte(nil), contents...)
+		}
+		builder.InputMountPaths = append([]string(nil), builder.InputMountPaths...)
+		builder.OutputMountPaths = append([]string(nil), builder.OutputMountPaths...)
+		containerSpec.ManagedOutputBuilder = &builder
+	}
 	return &Container{
 		handle:         handle,
 		podName:        GeneratePodName(metadata, handle),
@@ -631,7 +641,8 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 			})
 		}
 	}
-	for index, mount := range c.containerSpec.PrivateFileMounts {
+	var managedAuthorityMount *corev1.VolumeMount
+	for index, mount := range c.privateFileMounts() {
 		name := c.privateMountSecretName(index)
 		if name == "" {
 			return nil, fmt.Errorf("private task mount has no allocated Secret name")
@@ -644,6 +655,10 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 				DefaultMode: &mode,
 			}},
 		})
+		if c.managedOutputBuilderAuthorityIndex() == index {
+			managedAuthorityMount = &corev1.VolumeMount{Name: name, MountPath: filepath.Join(mount.MountPath, runtime.ManagedOutputBuilderAuthorityFile), SubPath: runtime.ManagedOutputBuilderAuthorityFile, ReadOnly: true}
+			continue
+		}
 		mainMounts = append(mainMounts, corev1.VolumeMount{Name: name, MountPath: mount.MountPath, ReadOnly: true})
 	}
 
@@ -662,10 +677,21 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 		},
 	}
 
-	containers = append(containers, buildSidecarContainers(
+	sidecarContainers, err := buildManagedSidecarContainers(
 		c.containerSpec.Sidecars, c.sidecarVolumeMounts(volumeMounts), dir,
-		c.containerSpec.SidecarEnv,
-		c.containerSpec.Hermetic)...)
+		c.containerSpec.SidecarEnv, c.containerSpec.ManagedOutputBuilder,
+		c.containerSpec.Hermetic)
+	if err != nil {
+		return nil, fmt.Errorf("build sidecar containers: %w", err)
+	}
+	containers = append(containers, sidecarContainers...)
+	if managedAuthorityMount != nil {
+		for index := range containers {
+			if containers[index].Name == runtime.ManagedOutputBuilderName {
+				containers[index].VolumeMounts = append(containers[index].VolumeMounts, *managedAuthorityMount)
+			}
+		}
+	}
 
 	// Pause pods trap SIGTERM and exit immediately; 10s is more than
 	// enough grace and avoids the default 30s delay during pod teardown.
@@ -673,7 +699,7 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 
 	affinity := c.buildAffinity()
 	var automountServiceAccountToken *bool
-	if c.containerSpec.Hermetic {
+	if c.containerSpec.Hermetic || c.containerSpec.ManagedOutputBuilder != nil {
 		disabled := false
 		automountServiceAccountToken = &disabled
 	}
@@ -856,6 +882,24 @@ func (c *Container) privateMountSecretName(index int) string {
 	return c.privateMountSecretNames[index]
 }
 
+// privateFileMounts intentionally reuses the Task 6 Secret lifecycle for the
+// managed builder authority. The final entry is never mounted into main;
+// buildPod projects it only into the fixed managed sidecar.
+func (c *Container) privateFileMounts() []runtime.PrivateFileMount {
+	mounts := append([]runtime.PrivateFileMount(nil), c.containerSpec.PrivateFileMounts...)
+	if builder := c.containerSpec.ManagedOutputBuilder; builder != nil {
+		mounts = append(mounts, builder.Authority)
+	}
+	return mounts
+}
+
+func (c *Container) managedOutputBuilderAuthorityIndex() int {
+	if c.containerSpec.ManagedOutputBuilder == nil {
+		return -1
+	}
+	return len(c.containerSpec.PrivateFileMounts)
+}
+
 // allocatePrivateMountSecretNames starts a new private-mount epoch for a new
 // Pod. Names are random rather than handle-derived so a concurrent caller can
 // never predict, substitute, or reuse a prior task's authority Secret.
@@ -863,7 +907,7 @@ func (c *Container) allocatePrivateMountSecretNames(processDir string) error {
 	if err := c.validatePrivateFileMounts(processDir); err != nil {
 		return err
 	}
-	names := make([]string, len(c.containerSpec.PrivateFileMounts))
+	names := make([]string, len(c.privateFileMounts()))
 	seen := make(map[string]struct{}, len(names))
 	for i := range names {
 		name, err := c.nextPrivateMountSecretName()
@@ -881,7 +925,7 @@ func (c *Container) allocatePrivateMountSecretNames(processDir string) error {
 }
 
 func (c *Container) ensurePrivateMountSecretNames(processDir string) error {
-	if len(c.privateMountSecretNames) == len(c.containerSpec.PrivateFileMounts) {
+	if len(c.privateMountSecretNames) == len(c.privateFileMounts()) {
 		return c.validatePrivateFileMounts(processDir)
 	}
 	return c.allocatePrivateMountSecretNames(processDir)
@@ -905,12 +949,12 @@ func (c *Container) nextPrivateMountSecretName() (string, error) {
 // Pod UID does not exist yet. The subsequent bind is a compare-and-swap update
 // of exactly these returned objects, never an adoption of an existing Secret.
 func (c *Container) createPrivateMountSecrets(ctx context.Context) ([]*corev1.Secret, error) {
-	if len(c.containerSpec.PrivateFileMounts) == 0 {
+	if len(c.privateFileMounts()) == 0 {
 		return nil, nil
 	}
 	immutable := true
-	created := make([]*corev1.Secret, 0, len(c.containerSpec.PrivateFileMounts))
-	for index, mount := range c.containerSpec.PrivateFileMounts {
+	created := make([]*corev1.Secret, 0, len(c.privateFileMounts()))
+	for index, mount := range c.privateFileMounts() {
 		name := c.privateMountSecretName(index)
 		if name == "" {
 			c.deleteExactPrivateMountSecrets(ctx, created)
@@ -951,10 +995,10 @@ func (c *Container) createPrivateMountSecrets(ctx context.Context) ([]*corev1.Se
 // Update carries the Create response's resourceVersion and UID, so a stale or
 // replaced object fails closed instead of being silently adopted.
 func (c *Container) bindPrivateMountSecrets(ctx context.Context, pod *corev1.Pod, created []*corev1.Secret) error {
-	if len(c.containerSpec.PrivateFileMounts) == 0 {
+	if len(c.privateFileMounts()) == 0 {
 		return nil
 	}
-	if len(created) != len(c.containerSpec.PrivateFileMounts) || pod == nil || pod.UID == "" {
+	if len(created) != len(c.privateFileMounts()) || pod == nil || pod.UID == "" {
 		return fmt.Errorf("cannot bind incomplete private task mounts to pod")
 	}
 	controller := true
@@ -962,7 +1006,7 @@ func (c *Container) bindPrivateMountSecrets(ctx context.Context, pod *corev1.Pod
 		if original == nil {
 			return fmt.Errorf("private task mount %d was not created", index)
 		}
-		mount := c.containerSpec.PrivateFileMounts[index]
+		mount := c.privateFileMounts()[index]
 		if !privateMountSecretTrusted(original, mount, c.handle, pod.Name) {
 			return fmt.Errorf("private task mount %q is not the created trusted Secret", original.Name)
 		}
@@ -1036,7 +1080,7 @@ func (c *Container) deleteExactPrivateMountSecrets(ctx context.Context, secrets 
 }
 
 func (c *Container) deleteOwnerBoundPrivateMountSecrets(ctx context.Context, pod *corev1.Pod) {
-	for index := range c.containerSpec.PrivateFileMounts {
+	for index := range c.privateFileMounts() {
 		name := c.privateMountSecretName(index)
 		secret, err := c.clientset.CoreV1().Secrets(c.config.Namespace).Get(ctx, name, metav1.GetOptions{})
 		if err != nil || !privateMountSecretOwnedBy(secret, c.handle, pod) {
@@ -1047,7 +1091,11 @@ func (c *Container) deleteOwnerBoundPrivateMountSecrets(ctx context.Context, pod
 }
 
 func (c *Container) validatePrivateFileMounts(processDir string) error {
-	if len(c.containerSpec.PrivateFileMounts) == 0 {
+	if err := runtime.ValidateManagedOutputBuilder(c.containerSpec); err != nil {
+		return err
+	}
+	privateMounts := c.privateFileMounts()
+	if len(privateMounts) == 0 {
 		return nil
 	}
 	_, volumeMounts := c.buildVolumeMounts()
@@ -1062,8 +1110,8 @@ func (c *Container) validatePrivateFileMounts(processDir string) error {
 		occupied = append(occupied, resolvePrivateMountPath(processDir, c.containerSpec.Dir))
 	}
 
-	privatePaths := make([]string, len(c.containerSpec.PrivateFileMounts))
-	for index, mount := range c.containerSpec.PrivateFileMounts {
+	privatePaths := make([]string, len(privateMounts))
+	for index, mount := range privateMounts {
 		if err := validatePrivateFileMount(mount); err != nil {
 			return err
 		}
@@ -1188,15 +1236,36 @@ func buildSidecarContainers(
 	sidecarEnv map[string][]string,
 	hermetic bool,
 ) []corev1.Container {
-	if len(sidecars) == 0 {
+	containers, err := buildManagedSidecarContainers(sidecars, mainMounts, defaultDir, sidecarEnv, nil, hermetic)
+	if err != nil {
 		return nil
+	}
+	return containers
+}
+
+func buildManagedSidecarContainers(
+	sidecars []atc.SidecarConfig,
+	mainMounts []corev1.VolumeMount,
+	defaultDir string,
+	sidecarEnv map[string][]string,
+	managedBuilder *runtime.ManagedOutputBuilder,
+	hermetic bool,
+) ([]corev1.Container, error) {
+	if len(sidecars) == 0 {
+		return nil, nil
 	}
 
 	var containers []corev1.Container
 
 	for _, sc := range sidecars {
 		var mounts []corev1.VolumeMount
-		if len(mainMounts) > 0 {
+		if sc.Name == runtime.ManagedOutputBuilderName && managedBuilder != nil {
+			var err error
+			mounts, err = managedOutputBuilderMounts(*managedBuilder, mainMounts)
+			if err != nil {
+				return nil, err
+			}
+		} else if len(mainMounts) > 0 {
 			mounts = append([]corev1.VolumeMount{}, mainMounts...)
 		}
 
@@ -1241,7 +1310,41 @@ func buildSidecarContainers(
 		containers = append(containers, c)
 	}
 
-	return containers
+	return containers, nil
+}
+
+// managedOutputBuilderMounts selects only the exact typed input/output
+// volumes. The normal work-root, flight, cache, scratch, ordinary secret, and
+// other sidecar mounts are intentionally absent.
+func managedOutputBuilderMounts(builder runtime.ManagedOutputBuilder, mounts []corev1.VolumeMount) ([]corev1.VolumeMount, error) {
+	selected := make([]corev1.VolumeMount, 0, len(builder.InputMountPaths)+len(builder.OutputMountPaths))
+	add := func(path string, readOnly bool) error {
+		matches := 0
+		for _, mount := range mounts {
+			if filepath.Clean(mount.MountPath) != path {
+				continue
+			}
+			matches++
+			projection := mount
+			projection.ReadOnly = readOnly
+			selected = append(selected, projection)
+		}
+		if matches != 1 {
+			return fmt.Errorf("managed output builder projection %q has %d runtime mounts", path, matches)
+		}
+		return nil
+	}
+	for _, path := range builder.InputMountPaths {
+		if err := add(path, true); err != nil {
+			return nil, err
+		}
+	}
+	for _, path := range builder.OutputMountPaths {
+		if err := add(path, false); err != nil {
+			return nil, err
+		}
+	}
+	return selected, nil
 }
 
 // buildSidecarResourceRequirements converts SidecarResources to K8s
