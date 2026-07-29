@@ -32,6 +32,15 @@ to evaluate independently.
   2. Owner-bound orphan reaping reads a Secret, confirms the old Pod is absent,
      and then deletes only by name. A replacement Secret with the same name can
      be deleted between those operations.
+  3. Milestone verification found a zero-mount regression:
+     `make test-unit` ran all 121 suites but failed only Jetbridge. A focused
+     `go test -json ./atc/worker/jetbridge -count=1` reproduced 179 failures
+     out of 380 specs, and every failure had the same terminal cause:
+     `create [pause ]pod: cannot bind incomplete private task mounts to pod`.
+     `bindPrivateMountSecrets` requires a nonempty Pod UID even when both the
+     created Secret list and `PrivateFileMounts` are empty. Kubernetes fake
+     clients used by the ordinary, non-private-mount runtime tests do not
+     synthesize that UID, so unrelated Pod behavior cannot run.
 - Why it is cataloged: These are blocking rather than ordinary deferred
   improvements, but Task 6 has exhausted its two-round review budget and must
   not enter another automatic correction loop.
@@ -41,7 +50,10 @@ to evaluate independently.
      the outcome cannot be proven.
   2. Give the owner-bound reaper deletion the observed Secret UID precondition,
      matching the existing ownerless cleanup path.
-  3. Add focused regressions for a committed-Pod/failed-response fake and a
+  3. Make private-mount binding a no-op when no private mounts were requested,
+     before requiring a Pod UID; retain the UID requirement whenever at least
+     one private mount exists. Add a focused zero-mount fake-client regression.
+  4. Add focused regressions for a committed-Pod/failed-response fake and a
      read/delete replacement race.
 
 ### DEFERRED-001 — Clean unpublished dev-capability log staging directories

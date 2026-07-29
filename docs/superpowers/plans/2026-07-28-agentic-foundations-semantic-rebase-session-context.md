@@ -114,18 +114,43 @@ Task 6:
      that Pod.
   2. Owner-bound orphan cleanup deletes by name without a UID precondition,
      allowing a replacement Secret to be deleted after the reaper's read.
+  3. The milestone unit suite exposed a zero-private-mount regression:
+     `bindPrivateMountSecrets` requires a Pod UID even when no private mounts
+     exist. The Jetbridge fake client does not synthesize a UID, so 179 of 380
+     Jetbridge specs fail before exercising their intended behavior. Every
+     focused failure has the same `cannot bind incomplete private task mounts`
+     cause.
 - Do not iterate on Task 6 automatically. Exact evidence and proposed fixes are
   recorded in the deferred/human-review catalog.
 
 Tasks 7–19 have not started.
 
+## Milestone verification
+
+Fresh verification at the current checkpoint:
+
+- `make test-dev-mcp`: passed.
+- `make test-fly-integration`: 666/666 passed.
+- `make test-integration`: 24/24 passed.
+- `helm lint deploy/chart`: passed with informational image-value and icon
+  messages only.
+- Focused merge-preflight revision-3 suites passed.
+- `make test-unit`: failed after running all 121 suites; Jetbridge was the only
+  failed suite. A focused rerun confirmed 201/380 Jetbridge specs pass and
+  179/380 fail for the single Task 6 zero-mount cause documented above.
+
+The checkpoint is therefore verified but not merge-ready. Do not report the
+branch as green until Task 6 receives human review and the unit suite is rerun.
+
 ## Near-term sequence
 
 1. Leave Task 6 at **Human Review Required**; do not start another automatic
    correction/review cycle.
-2. Establish a clean integration checkpoint and run one consolidated
-   acceptance suite.
-3. Treat the remaining feature groups as separate bounded tracks rather than
+2. Treat Task 7 as dependent on Task 6 and do not wire exact validation gates
+   against a runtime that is still Human Review Required.
+3. Continue with the next safe independent feature group as a separate bounded
+   track.
+4. Treat all remaining feature groups as separate bounded tracks rather than
    one continuous "rebase."
 
 ## Session handoff requirement
