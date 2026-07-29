@@ -8,9 +8,28 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/concourse/concourse/agent/checkpoint"
 	"github.com/concourse/concourse/agent/provider"
 	"github.com/concourse/concourse/agent/runner"
 )
+
+func TestEncodeRecoverySpecUsesStrictLowercaseTransport(t *testing.T) {
+	raw, err := runner.EncodeRecoverySpec(runner.RecoverySpec{
+		Mode: checkpoint.FallbackWorkspaceOnly, Adapter: provider.Identity{Name: "test", Version: "v1"},
+		ExecutionAttempt: 2, CheckpointGeneration: 1, TranscriptCursor: 3,
+		CompletedToolCallIDs: []string{"tool-a", "tool-b"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(raw, `"adapter":{"name":"test","version":"v1"}`) {
+		t.Fatalf("encoded adapter is not strict lowercase JSON: %s", raw)
+	}
+	exit, err := runner.Run(context.Background(), recoveryTestConfig(t.TempDir(), &recoveryTestAdapter{}, raw))
+	if err != nil || exit != 0 {
+		t.Fatalf("strictly encoded recovery spec was rejected: %d, %v", exit, err)
+	}
+}
 
 func TestRunRecoveryWorkspaceAndZeroStartFreshSessionsOnly(t *testing.T) {
 	for _, mode := range []string{"checkpoint_zero", "workspace_only"} {

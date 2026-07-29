@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/concourse/concourse/agent/checkpoint"
+	"github.com/concourse/concourse/agent/hangar"
 	"github.com/concourse/concourse/agent/provider"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc"
@@ -33,6 +34,19 @@ type agentCheckpointProvenanceRequest struct {
 	Sidecars         []atc.SidecarConfig
 }
 
+// agentCheckpointImmutableProvenanceRequest omits all fresh allocation facts.
+// It is the admission-time input to recovery policy.
+type agentCheckpointImmutableProvenanceRequest struct {
+	PlanID       atc.PlanID
+	Plan         atc.AgentPlan
+	Metadata     StepMetadata
+	RuntimeImage string
+	Provider     string
+	Adapter      provider.Identity
+	Inputs       map[string]snapshot.SnapshotRef
+	Sidecars     []atc.SidecarConfig
+}
+
 type agentCheckpointConfigIdentity struct {
 	Schema   string
 	Provider string
@@ -51,6 +65,88 @@ type agentCheckpointSkillIdentity struct {
 	Selected []string              `json:"selected"`
 	Mode     string                `json:"mode"`
 	Ref      *snapshot.SnapshotRef `json:"ref,omitempty"`
+}
+
+// AgentCheckpointImmutableProvenance is the admitted, server-owned portion of
+// checkpoint provenance. Recovery compares it verbatim with the frozen source
+// manifest; an attempt or a newly allocated container cannot change it.
+type AgentCheckpointImmutableProvenance struct {
+	Identity     checkpoint.Identity
+	Provider     string
+	Adapter      provider.Identity
+	RuntimeImage string
+	Model        string
+	ConfigDigest string
+	InputDigest  string
+	MCPDigest    string
+	SkillDigest  string
+}
+
+func deriveAgentCheckpointImmutableProvenance(request agentCheckpointImmutableProvenanceRequest) (AgentCheckpointImmutableProvenance, error) {
+	// Existing derivation is retained as the single canonical digest algorithm;
+	// these inert binding values are discarded before the immutable value is
+	// returned and do not represent a real allocation.
+	capture, err := deriveAgentCheckpointProvenance(agentCheckpointProvenanceRequest{
+		PlanID: request.PlanID, Plan: request.Plan, Metadata: request.Metadata,
+		RuntimeImage: request.RuntimeImage, Provider: request.Provider, Adapter: request.Adapter,
+		ExecutionAttempt: 1, ContainerHandle: "immutable-provenance", Inputs: request.Inputs, Sidecars: request.Sidecars,
+	})
+	if err != nil {
+		return AgentCheckpointImmutableProvenance{}, err
+	}
+	return AgentCheckpointImmutableProvenance{
+		Identity: capture.Identity.Clone(), Provider: capture.Provider, Adapter: request.Adapter,
+		RuntimeImage: capture.RuntimeImage, Model: capture.Model, ConfigDigest: capture.ConfigDigest,
+		InputDigest: capture.InputDigest, MCPDigest: capture.MCPDigest, SkillDigest: capture.SkillDigest,
+	}, nil
+}
+
+func (provenance AgentCheckpointImmutableProvenance) Validate() error {
+	if err := provenance.Identity.Validate(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(provenance.Provider) == "" || strings.TrimSpace(provenance.Provider) != provenance.Provider {
+		return errors.New("agent checkpoint provenance requires a canonical provider")
+	}
+	if err := provenance.Adapter.Validate(); err != nil {
+		return err
+	}
+	if err := atc.ValidatePinnedOCIImage(provenance.RuntimeImage); err != nil {
+		return fmt.Errorf("agent checkpoint runtime image is not immutable: %w", err)
+	}
+	if strings.TrimSpace(provenance.Model) == "" || strings.TrimSpace(provenance.Model) != provenance.Model {
+		return errors.New("agent checkpoint provenance requires a canonical model pin")
+	}
+	for name, digest := range map[string]string{
+		"config": provenance.ConfigDigest, "input": provenance.InputDigest,
+		"MCP": provenance.MCPDigest, "skill": provenance.SkillDigest,
+	} {
+		if err := hangar.Digest(digest).Validate(); err != nil {
+			return fmt.Errorf("agent checkpoint %s digest: %w", name, err)
+		}
+	}
+	return nil
+}
+
+// BindCheckpointCaptureProvenance adds only per-attempt allocation facts to
+// immutable admitted provenance. Callers cannot substitute recovery identity
+// data through capture plumbing.
+func (provenance AgentCheckpointImmutableProvenance) BindCheckpointCaptureProvenance(executionAttempt int, containerHandle string) (CheckpointCaptureProvenance, error) {
+	if err := provenance.Validate(); err != nil {
+		return CheckpointCaptureProvenance{}, err
+	}
+	if executionAttempt <= 0 {
+		return CheckpointCaptureProvenance{}, errors.New("agent checkpoint execution attempt must be positive")
+	}
+	if strings.TrimSpace(containerHandle) == "" || strings.TrimSpace(containerHandle) != containerHandle {
+		return CheckpointCaptureProvenance{}, errors.New("agent checkpoint container handle is required")
+	}
+	return CheckpointCaptureProvenance{
+		Identity: provenance.Identity.Clone(), ExecutionAttempt: executionAttempt, ContainerHandle: containerHandle,
+		Provider: provenance.Provider, RuntimeImage: provenance.RuntimeImage, Model: provenance.Model,
+		ConfigDigest: provenance.ConfigDigest, InputDigest: provenance.InputDigest,
+		MCPDigest: provenance.MCPDigest, SkillDigest: provenance.SkillDigest,
+	}, nil
 }
 
 func deriveAgentCheckpointProvenance(request agentCheckpointProvenanceRequest) (CheckpointCaptureProvenance, error) {
@@ -150,17 +246,18 @@ func deriveAgentCheckpointProvenance(request agentCheckpointProvenanceRequest) (
 		return CheckpointCaptureProvenance{}, err
 	}
 
-	return CheckpointCaptureProvenance{
-		Identity:         identity,
-		ExecutionAttempt: request.ExecutionAttempt,
-		ContainerHandle:  request.ContainerHandle,
-		Provider:         request.Provider,
-		RuntimeImage:     request.RuntimeImage,
-		Model:            request.Plan.Model,
-		ConfigDigest:     configDigest,
-		InputDigest:      inputDigest,
-		MCPDigest:        mcpDigest,
-		SkillDigest:      skillDigest,
+	provenance, err := (AgentCheckpointImmutableProvenance{
+		Identity: identity, Provider: request.Provider, Adapter: request.Adapter,
+		RuntimeImage: request.RuntimeImage, Model: request.Plan.Model,
+		ConfigDigest: configDigest, InputDigest: inputDigest, MCPDigest: mcpDigest, SkillDigest: skillDigest,
+	}).BindCheckpointCaptureProvenance(request.ExecutionAttempt, request.ContainerHandle)
+	if err != nil {
+		return CheckpointCaptureProvenance{}, err
+	}
+	provenance = CheckpointCaptureProvenance{
+		Identity: provenance.Identity, ExecutionAttempt: provenance.ExecutionAttempt, ContainerHandle: provenance.ContainerHandle,
+		Provider: provenance.Provider, RuntimeImage: provenance.RuntimeImage, Model: provenance.Model,
+		ConfigDigest: provenance.ConfigDigest, InputDigest: provenance.InputDigest, MCPDigest: provenance.MCPDigest, SkillDigest: provenance.SkillDigest,
 		// The current production legacy adapter cannot authenticate live
 		// session/effect evidence to ATC. Empty values explicitly describe a
 		// workspace-only capture; Task 17 decides recovery policy.
@@ -168,7 +265,8 @@ func deriveAgentCheckpointProvenance(request agentCheckpointProvenanceRequest) (
 		TranscriptCursor:     0,
 		CompletedToolCallIDs: nil,
 		Effects:              nil,
-	}, nil
+	}
+	return provenance, nil
 }
 
 func checkpointIdentityForAgent(request agentCheckpointProvenanceRequest) checkpoint.Identity {

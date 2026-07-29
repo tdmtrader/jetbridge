@@ -7,6 +7,7 @@ import (
 
 	"github.com/concourse/concourse/agent/checkpoint"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/google/uuid"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -503,6 +504,48 @@ var _ = Describe("AgentRunAttemptsFactory", func() {
 		Expect(recovery.ExecutionAttempt).To(Equal(2))
 		Expect(recovery.SourceCheckpointID).To(Equal(&checkpointID))
 		Expect(recovery.SourceCheckpointGeneration).To(Equal(1))
+	})
+
+	It("rejects checkpoint-zero recovery when the locked head has a committed checkpoint", func() {
+		allocate(2)
+		committedSource(identity, 1)
+		_, err := factory.MarkInterrupted(ctx, checkpoint.MarkAttemptInterruptedRequest{Identity: identity, ExecutionAttempt: 1, Reason: checkpoint.InterruptionPreempted})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = factory.BeginRecovery(ctx, checkpoint.BeginRecoveryRequest{Identity: identity, SourceExecutionAttempt: 1, Mode: checkpoint.FallbackCheckpointZero, Reason: checkpoint.InterruptionPreempted, MaterializationID: "zero-with-head"})
+		Expect(errors.Is(err, checkpoint.ErrConflict)).To(BeTrue())
+		current, found, err := factory.Current(ctx, identity)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(current.State).To(Equal(checkpoint.AttemptInterrupted))
+	})
+
+	It("terminalizes only the exact scheduling or materializing recovery replacement", func() {
+		for index, state := range []checkpoint.AttemptState{checkpoint.AttemptScheduling, checkpoint.AttemptMaterializing} {
+			subject := identity
+			subject.BuildID += int64(index + 100)
+			initial, err := factory.AllocateInitial(ctx, checkpoint.AllocateInitialAttemptRequest{Identity: subject, MaxTotalAttempts: 2, MaterializationID: "initial"})
+			Expect(err).NotTo(HaveOccurred())
+			sourceID := committedSource(subject, 1)
+			_, err = factory.MarkInterrupted(ctx, checkpoint.MarkAttemptInterruptedRequest{Identity: subject, ExecutionAttempt: initial.ExecutionAttempt, Reason: checkpoint.InterruptionPreempted})
+			Expect(err).NotTo(HaveOccurred())
+			recovery, err := factory.BeginRecovery(ctx, checkpoint.BeginRecoveryRequest{Identity: subject, SourceExecutionAttempt: 1, SourceCheckpointID: &sourceID, SourceCheckpointGeneration: 1, Mode: checkpoint.FallbackWorkspaceOnly, Reason: checkpoint.InterruptionPreempted, MaterializationID: "exact-recovery"})
+			Expect(err).NotTo(HaveOccurred())
+			if state == checkpoint.AttemptMaterializing {
+				fence, fenceErr := factory.AcquireFence(ctx, checkpoint.AcquireAttemptFenceRequest{Identity: subject, ExecutionAttempt: recovery.ExecutionAttempt, Token: uuid.NewString(), TTL: time.Minute})
+				Expect(fenceErr).NotTo(HaveOccurred())
+				recovery, err = factory.Transition(ctx, checkpoint.TransitionAttemptRequest{Identity: subject, ExecutionAttempt: recovery.ExecutionAttempt, ExpectedState: checkpoint.AttemptScheduling, State: checkpoint.AttemptMaterializing, Fence: fence.FenceClaim})
+				Expect(err).NotTo(HaveOccurred())
+			}
+			_, err = factory.MarkManualReview(ctx, checkpoint.MarkAttemptManualReviewRequest{Identity: subject, ExecutionAttempt: recovery.ExecutionAttempt, ExpectedState: state, MaterializationID: "wrong"})
+			Expect(errors.Is(err, checkpoint.ErrConflict)).To(BeTrue())
+			manual, err := factory.MarkManualReview(ctx, checkpoint.MarkAttemptManualReviewRequest{Identity: subject, ExecutionAttempt: recovery.ExecutionAttempt, ExpectedState: state, MaterializationID: "exact-recovery"})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(manual.State).To(Equal(checkpoint.AttemptManualReview))
+			Expect(manual.TerminalAt).NotTo(BeNil())
+			var active bool
+			Expect(dbConn.QueryRow(`SELECT active FROM agent_run_checkpoint_heads WHERE build_id = $1 AND plan_id = $2 AND function_id = $3`, subject.BuildID, subject.PlanID, subject.FunctionID).Scan(&active)).To(Succeed())
+			Expect(active).To(BeFalse())
+		}
 	})
 
 	It("keeps manual-review terminal authority queryable after interruption", func() {

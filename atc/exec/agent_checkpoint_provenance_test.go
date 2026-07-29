@@ -33,7 +33,7 @@ func TestDeriveAgentCheckpointProvenanceUsesOnlyPinnedServerInputs(t *testing.T)
 		t.Fatal(err)
 	}
 
-	if first.Identity != second.Identity ||
+	if !sameAgentCheckpointIdentity(first.Identity, second.Identity) ||
 		first.ConfigDigest != second.ConfigDigest ||
 		first.InputDigest != second.InputDigest ||
 		first.MCPDigest != second.MCPDigest ||
@@ -49,6 +49,11 @@ func TestDeriveAgentCheckpointProvenanceUsesOnlyPinnedServerInputs(t *testing.T)
 	if first.SessionID != "" || first.TranscriptCursor != 0 ||
 		len(first.CompletedToolCallIDs) != 0 || len(first.Effects) != 0 {
 		t.Fatalf("workspace-only capture invented provider evidence: %#v", first)
+	}
+	workflowRunID := *request.Metadata.WorkflowRunID
+	*request.Metadata.WorkflowRunID = workflowRunID + 1
+	if first.Identity.WorkflowRunID == nil || *first.Identity.WorkflowRunID != workflowRunID {
+		t.Fatalf("derived provenance retained mutable workflow identity: %#v", first.Identity)
 	}
 }
 

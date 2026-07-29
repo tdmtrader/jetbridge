@@ -34,6 +34,7 @@ const (
 type AgentRunCheckpointsFactory interface {
 	checkpoint.Store
 	checkpoint.EffectJournal
+	checkpoint.RetainedSourceStore
 	ReconcileUnreferencedUploadingObject(context.Context, checkpoint.ObjectDeleteClaim, *hangar.ObjectRef) (bool, error)
 }
 
@@ -47,6 +48,7 @@ type agentRunCheckpointsFactory struct {
 
 var _ checkpoint.Store = (*agentRunCheckpointsFactory)(nil)
 var _ checkpoint.EffectJournal = (*agentRunCheckpointsFactory)(nil)
+var _ checkpoint.RetainedSourceStore = (*agentRunCheckpointsFactory)(nil)
 
 type checkpointHeadRow struct {
 	id                      int64
@@ -503,6 +505,38 @@ func (factory *agentRunCheckpointsFactory) Latest(ctx context.Context, identity 
 		return checkpoint.Manifest{}, false, fmt.Errorf("checkpoint: persisted manifest identity does not match its head")
 	}
 	return manifest, true, nil
+}
+
+func (factory *agentRunCheckpointsFactory) LoadRetainedRecoverySource(ctx context.Context, identity checkpoint.Identity, checkpointID int64, generation int) (checkpoint.Manifest, error) {
+	if err := identity.Validate(); err != nil {
+		return checkpoint.Manifest{}, err
+	}
+	if checkpointID <= 0 || generation <= 0 {
+		return checkpoint.Manifest{}, fmt.Errorf("checkpoint: retained recovery source is invalid")
+	}
+	head, err := checkpointHead(ctx, factory.conn, identity)
+	if err != nil {
+		return checkpoint.Manifest{}, err
+	}
+	var raw []byte
+	err = factory.conn.QueryRowContext(ctx, `
+		SELECT manifest FROM agent_run_checkpoints
+		WHERE id = $1 AND head_id = $2 AND generation = $3 AND status IN ('committed', 'superseded')
+	`, checkpointID, head.id, generation).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return checkpoint.Manifest{}, fmt.Errorf("%w: retained recovery source is unavailable", checkpoint.ErrNotFound)
+	}
+	if err != nil {
+		return checkpoint.Manifest{}, err
+	}
+	manifest, err := manifestFromJSON(raw)
+	if err != nil {
+		return checkpoint.Manifest{}, err
+	}
+	if manifest.CheckpointID != checkpointID || manifest.Generation != generation || !sameCheckpointIdentity(manifest.Identity(), identity) {
+		return checkpoint.Manifest{}, fmt.Errorf("checkpoint: retained recovery source identity does not match")
+	}
+	return manifest, nil
 }
 
 func (factory *agentRunCheckpointsFactory) MarkTerminal(ctx context.Context, identity checkpoint.Identity, terminalAt time.Time) error {

@@ -511,6 +511,13 @@ type Store interface {
 	CleanupTerminalMetadata(context.Context, int) (int, error)
 }
 
+// RetainedSourceStore loads only a recovery attempt's already-frozen source.
+// Unlike Latest it never selects a new checkpoint head and accepts a retained
+// superseded source so a re-entered fresh attempt cannot silently upgrade.
+type RetainedSourceStore interface {
+	LoadRetainedRecoverySource(context.Context, Identity, int64, int) (Manifest, error)
+}
+
 type BeginEffectRequest struct {
 	Identity         Identity
 	Fence            FenceClaim

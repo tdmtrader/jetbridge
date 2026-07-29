@@ -284,6 +284,10 @@ type MarkAttemptManualReviewRequest struct {
 	Identity         Identity
 	ExecutionAttempt int
 	ExpectedState    AttemptState
+	// MaterializationID fences post-allocation recovery failure handling. It
+	// is required for scheduling/materializing replacements and absent for the
+	// original interrupted-source manual-review path.
+	MaterializationID string
 }
 
 func (request MarkAttemptManualReviewRequest) Clone() MarkAttemptManualReviewRequest {
@@ -301,13 +305,19 @@ func (request MarkAttemptManualReviewRequest) Validate() error {
 	if err := request.ExpectedState.Validate(); err != nil {
 		return err
 	}
-	if request.ExpectedState != AttemptInterrupted {
+	if request.ExpectedState == AttemptInterrupted {
+		if request.MaterializationID != "" {
+			return fmt.Errorf("checkpoint: interrupted manual review cannot name materialization")
+		}
+		return nil
+	}
+	if request.ExpectedState != AttemptScheduling && request.ExpectedState != AttemptMaterializing {
 		return fmt.Errorf(
-			"checkpoint: unfenced manual review requires an interrupted attempt, not %q",
+			"checkpoint: manual review state %q is not terminalizable",
 			request.ExpectedState,
 		)
 	}
-	return nil
+	return validateMaterializationID(request.MaterializationID)
 }
 
 func (request TransitionAttemptRequest) Clone() TransitionAttemptRequest {

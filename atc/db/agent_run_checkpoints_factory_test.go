@@ -282,6 +282,25 @@ var _ = Describe("AgentRunCheckpointsFactory", func() {
 		Expect(latest.Generation).To(Equal(1))
 	})
 
+	It("loads only an exact committed or retained superseded recovery source", func() {
+		staged := stage(1)
+		ticket := prepareAndComplete(staged, "a")
+		committed, err := factory.Commit(ctx, checkpoint.CommitRequest{StagedCheckpointID: staged.ID, ExpectedPreviousGeneration: 0, Manifest: manifestFor(staged, ticket), Fence: staged.Fence})
+		Expect(err).NotTo(HaveOccurred())
+		loaded, err := factory.LoadRetainedRecoverySource(ctx, identity, committed.CheckpointID, committed.Generation)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(loaded.CheckpointID).To(Equal(committed.CheckpointID))
+		_, err = factory.LoadRetainedRecoverySource(ctx, identity, committed.CheckpointID+1, committed.Generation)
+		Expect(errors.Is(err, checkpoint.ErrNotFound)).To(BeTrue())
+		_, err = factory.LoadRetainedRecoverySource(ctx, identity, committed.CheckpointID, committed.Generation+1)
+		Expect(errors.Is(err, checkpoint.ErrNotFound)).To(BeTrue())
+		_, err = dbConn.Exec(`UPDATE agent_run_checkpoints SET status = 'superseded', superseded_at = clock_timestamp() WHERE id = $1`, committed.CheckpointID)
+		Expect(err).NotTo(HaveOccurred())
+		loaded, err = factory.LoadRetainedRecoverySource(ctx, identity, committed.CheckpointID, committed.Generation)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(loaded.CheckpointID).To(Equal(committed.CheckpointID))
+	})
+
 	It("fences terminal heads from new reservations and delayed commits", func() {
 		first := stage(1)
 		firstTicket := prepareAndComplete(first, "a")

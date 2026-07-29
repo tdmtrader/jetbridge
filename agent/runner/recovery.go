@@ -8,6 +8,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/concourse/concourse/agent/checkpoint"
 	"github.com/concourse/concourse/agent/provider"
 )
 
@@ -36,6 +37,61 @@ type recoverySpec struct {
 	TranscriptCursor     int64
 	CompletedToolCallIDs []string
 	SessionID            string
+}
+
+// RecoverySpec is the server-authored recovery transport. EncodeRecoverySpec
+// round-trips it through the runner's strict decoder so producer and consumer
+// share one closed vocabulary and one set of limits.
+type RecoverySpec struct {
+	Mode                 checkpoint.FallbackMode
+	Adapter              provider.Identity
+	ExecutionAttempt     int
+	CheckpointGeneration int
+	TranscriptCursor     int64
+	CompletedToolCallIDs []string
+	SessionID            string
+}
+
+func EncodeRecoverySpec(spec RecoverySpec) (string, error) {
+	internal := recoverySpec{
+		Mode:                 recoveryMode(spec.Mode),
+		Adapter:              spec.Adapter,
+		ExecutionAttempt:     spec.ExecutionAttempt,
+		CheckpointGeneration: spec.CheckpointGeneration,
+		TranscriptCursor:     spec.TranscriptCursor,
+		CompletedToolCallIDs: append([]string{}, spec.CompletedToolCallIDs...),
+		SessionID:            spec.SessionID,
+	}
+	if err := internal.validate(); err != nil {
+		return "", fmt.Errorf("invalid recovery spec: %w", err)
+	}
+	raw, err := json.Marshal(struct {
+		Mode    recoveryMode `json:"mode"`
+		Adapter struct {
+			Name    string `json:"name"`
+			Version string `json:"version"`
+		} `json:"adapter"`
+		ExecutionAttempt     int      `json:"attempt"`
+		CheckpointGeneration int      `json:"generation"`
+		TranscriptCursor     int64    `json:"cursor"`
+		CompletedToolCallIDs []string `json:"completed_tool_ids"`
+		SessionID            string   `json:"session_id,omitempty"`
+	}{
+		Mode: internal.Mode, Adapter: struct {
+			Name    string `json:"name"`
+			Version string `json:"version"`
+		}{Name: internal.Adapter.Name, Version: internal.Adapter.Version}, ExecutionAttempt: internal.ExecutionAttempt,
+		CheckpointGeneration: internal.CheckpointGeneration, TranscriptCursor: internal.TranscriptCursor,
+		CompletedToolCallIDs: internal.CompletedToolCallIDs, SessionID: internal.SessionID,
+	})
+	if err != nil {
+		return "", err
+	}
+	encoded := string(raw)
+	if _, found, err := decodeRecoverySpec(encoded); err != nil || !found {
+		return "", fmt.Errorf("invalid encoded recovery spec: %w", err)
+	}
+	return encoded, nil
 }
 
 func decodeRecoverySpec(raw string) (recoverySpec, bool, error) {

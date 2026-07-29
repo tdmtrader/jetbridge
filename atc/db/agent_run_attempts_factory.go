@@ -663,6 +663,9 @@ func (factory *agentRunAttemptsFactory) MarkManualReview(
 			checkpoint.ErrConflict,
 		)
 	}
+	if request.MaterializationID != "" && attempt.MaterializationID != request.MaterializationID {
+		return checkpoint.Attempt{}, fmt.Errorf("%w: manual-review materialization does not match current attempt", checkpoint.ErrConflict)
+	}
 	if attempt.State == checkpoint.AttemptManualReview {
 		if err := tx.Commit(); err != nil {
 			return checkpoint.Attempt{}, err
@@ -872,6 +875,9 @@ func sameRecoveryRequest(attempt checkpoint.Attempt, request checkpoint.BeginRec
 
 func requireRecoveryCheckpointSource(ctx context.Context, tx Tx, head checkpointHeadRow, request checkpoint.BeginRecoveryRequest) error {
 	if request.SourceCheckpointID == nil {
+		if head.latestCheckpointID.Valid {
+			return fmt.Errorf("%w: checkpoint-zero recovery requires no latest committed checkpoint", checkpoint.ErrConflict)
+		}
 		return nil
 	}
 	if !head.latestCheckpointID.Valid || head.latestCheckpointID.Int64 != *request.SourceCheckpointID {
