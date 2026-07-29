@@ -308,6 +308,15 @@ type RunCommand struct {
 		RepairInterval    time.Duration `long:"agent-snapshot-repair-interval" default:"10m" description:"Interval between bounded snapshot replica-repair passes."`
 	} `group:"Agent Snapshots"`
 
+	AgentCheckpoints struct {
+		Enabled         bool          `long:"agent-checkpoint-enabled" description:"Enable durable safe-boundary workspace checkpoint capture for authenticated agent workflow runs."`
+		ElapsedInterval time.Duration `long:"agent-checkpoint-elapsed-interval" default:"5m" description:"Interval at which a running agent receives a pending checkpoint intent; capture still waits for a provider-declared safe boundary."`
+		CaptureTimeout  time.Duration `long:"agent-checkpoint-capture-timeout" default:"10m" description:"End-to-end timeout for one bounded checkpoint capture, including archive and Hangar upload."`
+		FenceTTL        time.Duration `long:"agent-checkpoint-fence-ttl" default:"15m" description:"Database authority lease for one checkpoint capture; must outlast the capture timeout."`
+		MaxBytes        int64         `long:"agent-checkpoint-max-bytes" default:"10737418240" description:"Maximum regular-file content bytes admitted by one checkpoint archive."`
+		MaxAttempts     int           `long:"agent-checkpoint-max-attempts" default:"3" description:"Maximum durable execution attempts retained for one agent workflow function."`
+	} `group:"Agent Checkpoints"`
+
 	AgentWorkflowRuns struct {
 		ReconcilerInterval time.Duration `long:"agent-workflow-run-reconciler-interval" default:"10s" description:"Interval between bounded durable workflow-run reconciliation passes."`
 		AdmissionTimeout   time.Duration `long:"agent-workflow-run-admission-timeout" default:"15m" description:"Maximum age of an incomplete durable workflow-run admission before it is terminalized as interrupted."`
@@ -775,6 +784,7 @@ func (cmd *RunCommand) Runner(positionalArguments []string) (ifrit.Runner, error
 	metric.InitOTelDBChecks()
 	metric.InitOTelArtifactUpload()
 	metric.InitOTelWorkflowRunReconciler()
+	metric.InitOTelAgentCheckpoint()
 
 	// Connection tracker is off by default. Can be turned on/ff at runtime.
 	http.HandleFunc("/debug/connections", func(w http.ResponseWriter, r *http.Request) {
@@ -2774,6 +2784,10 @@ func (cmd *RunCommand) validate() error {
 		errs = multierror.Append(errs, err)
 	}
 
+	if err := cmd.validateAgentCheckpoints(); err != nil {
+		errs = multierror.Append(errs, err)
+	}
+
 	if err := cmd.validateAgentWorkflowRuns(); err != nil {
 		errs = multierror.Append(errs, err)
 	}
@@ -2899,6 +2913,47 @@ func (cmd *RunCommand) validateAgentSnapshots() error {
 		cmd.Kubernetes.ArtifactDaemonTLSKey == "" ||
 		cmd.Kubernetes.ArtifactDaemonTLSCACert == "" {
 		errs = multierror.Append(errs, errors.New("artifact daemon mTLS certificate, key, and CA certificate are required when --agent-snapshot-enabled is set"))
+	}
+	return errs.ErrorOrNil()
+}
+
+func (cmd *RunCommand) validateAgentCheckpoints() error {
+	var errs *multierror.Error
+	if cmd.AgentCheckpoints.ElapsedInterval <= 0 {
+		errs = multierror.Append(errs, errors.New("--agent-checkpoint-elapsed-interval must be positive"))
+	}
+	if cmd.AgentCheckpoints.CaptureTimeout <= 0 {
+		errs = multierror.Append(errs, errors.New("--agent-checkpoint-capture-timeout must be positive"))
+	}
+	if cmd.AgentCheckpoints.FenceTTL <= 0 {
+		errs = multierror.Append(errs, errors.New("--agent-checkpoint-fence-ttl must be positive"))
+	}
+	if cmd.AgentCheckpoints.MaxBytes <= 0 {
+		errs = multierror.Append(errs, errors.New("--agent-checkpoint-max-bytes must be positive"))
+	}
+	if cmd.AgentCheckpoints.MaxAttempts <= 0 {
+		errs = multierror.Append(errs, errors.New("--agent-checkpoint-max-attempts must be positive"))
+	}
+	if cmd.AgentCheckpoints.CaptureTimeout > 0 &&
+		cmd.AgentCheckpoints.FenceTTL > 0 &&
+		cmd.AgentCheckpoints.FenceTTL <= cmd.AgentCheckpoints.CaptureTimeout {
+		errs = multierror.Append(
+			errs,
+			errors.New("--agent-checkpoint-fence-ttl must be greater than --agent-checkpoint-capture-timeout"),
+		)
+	}
+	if !cmd.AgentCheckpoints.Enabled {
+		return errs.ErrorOrNil()
+	}
+	if !cmd.AgentSnapshots.Enabled {
+		errs = multierror.Append(errs, errors.New("--agent-snapshot-enabled is required when --agent-checkpoint-enabled is set"))
+	}
+	if cmd.AgentSnapshots.MaxBytes > 0 &&
+		cmd.AgentCheckpoints.MaxBytes > cmd.AgentSnapshots.MaxBytes {
+		errs = multierror.Append(
+			errs,
+			errors.New("--agent-checkpoint-max-bytes must not exceed --agent-snapshot-max-bytes"),
+		)
 	}
 	return errs.ErrorOrNil()
 }

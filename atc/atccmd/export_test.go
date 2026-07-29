@@ -10,6 +10,10 @@ func ValidateAgentSnapshotsForTest(cmd *RunCommand) error {
 	return cmd.validateAgentSnapshots()
 }
 
+func ValidateAgentCheckpointsForTest(cmd *RunCommand) error {
+	return cmd.validateAgentCheckpoints()
+}
+
 func ValidateAgentWorkflowRunsForTest(cmd *RunCommand) error {
 	return cmd.validateAgentWorkflowRuns()
 }
