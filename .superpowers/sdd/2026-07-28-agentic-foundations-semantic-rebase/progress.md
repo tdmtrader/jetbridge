@@ -223,7 +223,7 @@
 - [ ] Task 14 — direct in-ATC publication
   - Status: dependency-deferred under `DEPENDENCY-003`; exact validation gates
     from Tasks 6–7 must be accepted before replacing the publisher gateway.
-- [ ] Task 15 — checkpoint and attempt data models
+- [x] Task 15 — checkpoint and attempt data models
   - Implementation and correction commits:
     - `add954b863 feat(agent): add durable checkpoint attempt models`
     - `d5d591b88b fix(agent): preserve checkpoint workflow provenance`
@@ -232,38 +232,38 @@
     - `c6aebd0b94 fix(agent): fence checkpoint recovery mutations`
     - `43c6d2965d test(agent): exercise fenced checkpoint authority`
     - `5054e0c6b1 test(agent): expire checkpoint fences through db time`
+    - `aafd924521 fix(agent): fence mutations against wall-clock expiry`
   - Behavior: immutable Hangar checkpoint identities; staged/committed
     monotonic generations; append-only events; fenced effect records; exact
     same-head recovery-source pins; fresh durable attempts; structured
     Kubernetes interruption classification; and fail-closed manual review.
     Checkpoint heads preserve immutable v3 workflow-run provenance but do not
     own or terminalize workflow runs.
-  - Verification: host serial checkpoint/attempt DB focus passed 27/27;
+  - Verification: host serial checkpoint/attempt DB focus passed 28/28;
     migration focus passed 2/2; recursive checkpoint/fake tests passed;
     runtime/Jetbridge interruption tests passed; AgentStep interruption focus
     passed 4/4; affected packages compile.
   - Review round 1 found three Important blockers. The single correction pass
     addressed the recovery-source pin and broken fake and added fence
     authorization to checkpoint/effect mutations.
-  - Review round 2 found one Important blocker remains: fence expiry compares
+  - Review round 2 found one Important blocker: fence expiry compared
     against transaction-start `now()`, allowing a transaction that waited on a
     lock beyond real lease expiry to mutate under stale time.
-  - Status: **Human Review Required** (`HUMAN-REVIEW-003`); review budget
-    exhausted.
+  - The user-authorized correction changed the post-lock authority sample to
+    `clock_timestamp()` and added a PID-observed lock-wait regression. That
+    regression failed against the old implementation and passed after the fix.
+  - Status: **Accepted**. The single authorized final Terra review found no
+    remaining blocking issue; `HUMAN-REVIEW-003` is resolved.
 - [ ] Task 16 — safe-boundary checkpoint capture
-  - Status: dependency-deferred under `DEPENDENCY-004`; do not build capture
-    commits on Task 15's unresolved fence authority.
+  - Status: unblocked; next safe task.
 - [ ] Task 17 — fresh-attempt restore/provider resume
-  - Status: dependency-deferred under `DEPENDENCY-004`; transitively requires
-    accepted Task 15 authority and Task 16 committed capture.
+  - Status: ordered after Task 16's committed capture.
 - [ ] Task 18 — recovery telemetry/retention
-  - Status: dependency-deferred under `DEPENDENCY-004`; its attempt attribution,
-    resume metrics, and source-release retention depend on accepted Tasks
-    15–17.
+  - Status: ordered after Tasks 16–17.
 - [ ] Task 19 — full verification and residue audit
   - Status: dependency-deferred under `DEPENDENCY-005`; final proof cannot pass
-    while Tasks 6, 12, and 15 remain Human Review Required and their dependent
-    tasks are unstarted.
+    while Tasks 6 and 12 remain Human Review Required, their dependent tasks
+    are unstarted, and Tasks 16–18 are unfinished.
 
 ## Current milestone acceptance
 

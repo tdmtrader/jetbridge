@@ -248,3 +248,29 @@ acquires a normal 100ms lease, transitions while it is live, waits against
 PostgreSQL `clock_timestamp()`, and asserts the expired-fence mutation
 rejection. Production trigger semantics are unchanged; this requires one final
 host rerun before review.
+
+## Human-approved stale-time correction and final review
+
+The user authorized one narrow correction and one final review cycle for
+`HUMAN-REVIEW-003`.
+
+- Commit `aafd924521 fix(agent): fence mutations against wall-clock expiry`
+  changes `checkpointDatabaseNow` from transaction-stable `now()` to advancing
+  `clock_timestamp()`. Fence expiry is sampled only after the current-attempt
+  `FOR UPDATE` lock returns.
+- The new integration spec records the mutation transaction's PostgreSQL
+  backend PID, proves that its transaction began while the fence was live,
+  observes its ungranted transaction lock, waits for database wall time to
+  cross expiry, then releases the current-attempt row.
+- RED: against `SELECT now()`, the exact spec failed because `Begin` returned
+  success rather than `ErrStaleFence`.
+- GREEN: after the correction, the exact spec passed and the complete
+  `AgentRun(Checkpoints|Attempts)Factory` focus passed 28/28.
+- The two agent-run checkpoint/attempt migration specs passed 2/2. Recursive
+  checkpoint/fake tests, affected-package compile checks, and
+  `git diff --check` also passed.
+- The single authorized scoped Terra review found no Critical, High, or other
+  blocking issue in the correction or its authorizing call chain.
+
+Status: **Accepted**. `HUMAN-REVIEW-003` and `DEPENDENCY-004` are resolved;
+Task 16 may proceed.

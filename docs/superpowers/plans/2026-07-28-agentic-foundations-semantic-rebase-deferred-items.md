@@ -220,7 +220,8 @@ to evaluate independently.
 
 - Task/area: Task 15, checkpoint/effect attempt-fence authority
 - Classification: High; stale-writer correctness boundary
-- Status: Human Review Required after review round 2
+- Status: **Resolved** by the user-authorized correction and final scoped
+  review
 - Evidence: `requireAttemptFence` calls `checkpointDatabaseNow`, which executes
   `SELECT now()`. PostgreSQL fixes `now()` at transaction start. A transaction
   can therefore begin while its fence is live, block on the checkpoint
@@ -232,44 +233,47 @@ to evaluate independently.
   attempt/token/state checks are serialized in the mutation transaction;
   `CommitEffect` can close only the exact already-authorized effect. Exact
   same-head recovery-source validation/pinning and recursive fake compilation
-  are also complete. Host DB behavior passed 27/27 and migrations passed 2/2.
-- Why human review is required: Task 15 exhausted its two-round review budget.
-  The remaining code change is narrow, but the agreed policy prohibits another
-  automatic correction/review cycle.
-- Proposed human-approved repair:
-  1. Evaluate lease expiry with `clock_timestamp()` rather than transaction
-     `now()`, preferably inside the final authorizing mutation predicate.
-  2. Add a concurrency regression that starts while the lease is valid, waits
-     on the locked head/attempt row until wall-clock expiry, and proves the
-     mutation returns `ErrStaleFence`.
-  3. Rerun the 27-spec checkpoint/attempt DB focus, 2 migration specs,
-     recursive checkpoint packages, and one final scoped review.
+  are also complete.
+- Resolution: commit `aafd924521` changes the database-authoritative time
+  helper to `clock_timestamp()`. Because `requireCurrentCheckpointFence`
+  acquires the current-attempt row lock before calling `requireAttemptFence`,
+  the expiry sample now occurs after any lock wait.
+- Regression: the new PostgreSQL spec records the mutation transaction's
+  backend PID, observes its ungranted transaction lock while the fence is live,
+  waits until database wall time crosses expiry, releases the attempt row, and
+  requires `ErrStaleFence`. It failed against `SELECT now()` because `Begin`
+  succeeded, then passed after the correction.
+- Final evidence: checkpoint/attempt DB focus passed 28/28, migration focus
+  passed 2/2, recursive checkpoint/fake tests and affected-package compile
+  checks passed, and the single authorized Terra review reported no blocking
+  findings.
 
 ### DEPENDENCY-004 — Tasks 16–18 wait for accepted checkpoint fence authority
 
 - Task/area: Tasks 16–18, capture, restore/provider resume, telemetry, and
   retention
 - Classification: Blocking dependency; tasks not started
-- Status: Deferred until `HUMAN-REVIEW-003` is resolved
+- Status: **Resolved**; Task 16 is unblocked
 - Evidence: Task 16 commits captured workspace generations and journals
   effects through Task 15's mutation fence. Task 17 restores those committed
   generations into fresh attempts. Task 18 attributes recovery metrics and
   releases retained sources. Building any of these on a fence that can remain
   valid under stale transaction time would institutionalize a stale-writer
   race at the recovery boundary.
-- Suggested follow-up: Resolve and accept Task 15, then implement Tasks 16, 17,
-  and 18 in dependency order with their existing bounded review budgets.
+- Suggested follow-up: Implement Tasks 16, 17, and 18 in dependency order with
+  their existing bounded review budgets.
 
 ### DEPENDENCY-005 — Task 19 waits for unresolved Human Review Required tracks
 
 - Task/area: Task 19, final upgrade/end-to-end/residue proof
 - Classification: Blocking dependency; task not started
 - Status: Deferred
-- Evidence: Tasks 6, 12, and 15 remain Human Review Required. Tasks 7, 9,
-  13–14, and 16–18 are consequently unstarted or dependency-deferred. Task 19
-  cannot truthfully prove complete upgrade, recovery, publication, or
-  repository-wide acceptance while those boundaries remain unresolved.
-- Suggested follow-up: Resolve the three Human Review Required entries,
+- Evidence: Tasks 6 and 12 remain Human Review Required. Tasks 7, 9, and 13–14
+  are consequently unstarted or dependency-deferred, while newly unblocked
+  Tasks 16–18 remain unfinished. Task 19 cannot truthfully prove complete
+  upgrade, recovery, publication, or repository-wide acceptance while those
+  boundaries and implementations remain unresolved.
+- Suggested follow-up: Resolve the two Human Review Required entries,
   complete their dependent tasks, then run Task 19 once as the final milestone
   rather than repeatedly running broad suites against a knowingly incomplete
   branch.

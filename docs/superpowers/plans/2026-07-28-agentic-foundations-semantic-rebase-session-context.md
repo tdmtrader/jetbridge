@@ -214,35 +214,34 @@ Task 14:
 
 Task 15:
 
-- Implemented through `ecfd296db4`.
-- Status: **Human Review Required** after review round 2.
-- Host serial verification passed 27/27 checkpoint/attempt DB specs and 2/2
+- Implemented through `aafd924521`.
+- Status: **Accepted** after the user-authorized stale-time correction and one
+  final scoped Terra review.
+- Host serial verification passed 28/28 checkpoint/attempt DB specs and 2/2
   migration specs. Recursive checkpoint/fake packages, runtime interruption
   checks, AgentStep interruption behavior, and affected-package compilation
   also passed.
 - The correction durably binds staged checkpoints/effects to exact fence
   tokens, verifies and relationally pins same-head recovery checkpoints, and
   repairs the checkpoint fake.
-- Residual High: `requireAttemptFence` compares lease expiry to
-  `checkpointDatabaseNow`, whose `SELECT now()` is fixed at transaction start.
-  A transaction can begin while a fence is live, wait on a lock past real
-  expiry, then pass the stale timestamp and mutate. See `HUMAN-REVIEW-003`.
-- Do not iterate automatically. The proposed human-approved repair is a
-  `clock_timestamp()`/mutation-predicate check plus a lock-wait expiry
-  regression.
+- `HUMAN-REVIEW-003` is resolved. Fence authority now samples PostgreSQL
+  `clock_timestamp()` after the current-attempt row lock is acquired. A
+  PID-observed concurrency regression proved the old code incorrectly
+  authorized a transaction that waited past expiry and that the corrected code
+  returns `ErrStaleFence`.
 
 Tasks 16–18:
 
-- Not started; dependency-deferred under `DEPENDENCY-004`.
-- Safe-boundary capture, restore/provider resume, telemetry, and retention all
-  consume Task 15's checkpoint mutation authority. Do not build them on the
-  unresolved stale-time fence.
+- Task 16 is the next safe task now that `DEPENDENCY-004` is resolved.
+- Task 17 remains ordered after Task 16, and Task 18 remains ordered after
+  Tasks 16–17.
 
 Task 19:
 
 - Not started; dependency-deferred under `DEPENDENCY-005`.
-- Final end-to-end and residue proof cannot complete while Tasks 6, 12, and 15
-  remain Human Review Required and their dependent tasks remain unstarted.
+- Final end-to-end and residue proof cannot complete while Tasks 6 and 12
+  remain Human Review Required, their dependent tasks remain unstarted, and
+  Tasks 16–18 are unfinished.
 
 ## Milestone verification
 
@@ -270,10 +269,10 @@ branch as green until Task 6 receives human review and the unit suite is rerun.
 3. Leave Task 9 dependency-deferred; do not build a new security boundary on
    Task 6's unresolved protected-mount primitive.
 4. Leave Tasks 12–14 at their documented human-review/dependency boundaries.
-5. Leave Task 15 at **Human Review Required**; do not start another automatic
-   correction/review cycle.
-6. Leave Tasks 16–18 dependency-deferred until `HUMAN-REVIEW-003` is resolved
-   and Task 15's fence authority is accepted.
+5. Treat Task 15 as **Accepted**; its user-authorized final review found no
+   blocking issue.
+6. Implement Tasks 16, 17, and 18 in dependency order with their existing
+   bounded review budgets.
 7. Leave Task 19 dependency-deferred until the Human Review Required boundaries
    and dependent tasks are resolved.
 8. Treat every resumed feature group as a separate bounded track rather than
