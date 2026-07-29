@@ -21,6 +21,7 @@ type AgentWorkflowResourceSourcePipelineState string
 var (
 	ErrAgentWorkflowResourceSourceConflict = errors.New("db: workflow resource source conflict")
 	ErrAgentWorkflowResourceSourceInactive = errors.New("db: workflow resource source pipeline is not active")
+	ErrAgentWorkflowResourceSourceNotReady = errors.New("db: workflow resource source admission is not ready")
 )
 
 const (

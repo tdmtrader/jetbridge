@@ -117,6 +117,7 @@ type AgentWorkflowRun struct {
 	ParameterizedConfig         json.RawMessage
 	ParameterizedConfigHash     string
 	DevValidationProvenanceHash string
+	ResourceSourceAdmissionID   *int64
 	ConcreteConfig              json.RawMessage
 	ConcreteConfigHash          *string
 	ActualPlan                  json.RawMessage
@@ -154,6 +155,7 @@ type AgentWorkflowRunCreateRequest struct {
 	ParameterizedConfig         json.RawMessage
 	ParameterizedConfigHash     string
 	DevValidationProvenanceHash string
+	ResourceSourceAdmissionID   *int64
 	OriginKind                  string
 	OriginReference             string
 	CreatedBy                   string
@@ -219,6 +221,9 @@ func (request AgentWorkflowRunCreateRequest) Validate() error {
 	if request.DevValidationProvenanceHash != "" &&
 		!agentDevValidationProvenancePattern.MatchString(request.DevValidationProvenanceHash) {
 		return fmt.Errorf("db: workflow-run dev validation provenance hash must be empty or lower-case 64-hex")
+	}
+	if request.ResourceSourceAdmissionID != nil && *request.ResourceSourceAdmissionID <= 0 {
+		return fmt.Errorf("db: workflow-run resource source admission ID must be positive when present")
 	}
 	if request.Status != AgentWorkflowRunStatusAdmitting {
 		return fmt.Errorf("db: workflow-run initial status must be admitting")
@@ -490,6 +495,7 @@ const agentWorkflowRunColumns = `
 	workflow_version, schema_version, signature_version, definition_content_hash,
 	function_id, idempotency_key, parameterized_config, parameterized_config_hash,
 	dev_validation_provenance_hash,
+	resource_source_admission_id,
 	concrete_config, concrete_config_hash, actual_plan, actual_plan_nonce,
 	actual_plan_hash, actual_plan_hash_nonce, resolved_dependencies, resolved_dependencies_nonce,
 	origin_kind, origin_reference, created_by, status,
@@ -514,6 +520,7 @@ func scanAgentWorkflowRun(row scannable, encryptionStrategy encryption.Strategy)
 		status                    string
 		executionStatus           sql.NullString
 		retryID                   sql.NullInt64
+		resourceSourceAdmissionID sql.NullInt64
 		pipelineRunID             sql.NullInt64
 		templatePipelineID        sql.NullInt64
 		instancePipelineID        sql.NullInt64
@@ -526,6 +533,7 @@ func scanAgentWorkflowRun(row scannable, encryptionStrategy encryption.Strategy)
 		&run.WorkflowVersion, &run.SchemaVersion, &run.SignatureVersion, &run.DefinitionContentHash,
 		&functionID, &run.IdempotencyKey, &parameterizedConfig, &run.ParameterizedConfigHash,
 		&run.DevValidationProvenanceHash,
+		&resourceSourceAdmissionID,
 		&concreteConfig, &concreteConfigHash, &actualPlan, &actualPlanNonce,
 		&actualPlanHash, &actualPlanHashNonce, &resolvedDependencies, &resolvedDependenciesNonce,
 		&run.OriginKind, &run.OriginReference, &run.CreatedBy, &status,
@@ -602,6 +610,10 @@ func scanAgentWorkflowRun(row scannable, encryptionStrategy encryption.Strategy)
 	if retryID.Valid {
 		value := snapshot.WorkflowRunID(retryID.Int64)
 		run.RetryOfWorkflowRunID = &value
+	}
+	if resourceSourceAdmissionID.Valid {
+		value := resourceSourceAdmissionID.Int64
+		run.ResourceSourceAdmissionID = &value
 	}
 	run.PipelineRunID = nullIntToInt(pipelineRunID)
 	run.TemplatePipelineID = nullIntToInt(templatePipelineID)

@@ -74,12 +74,22 @@ var _ = Describe("AgentWorkflowRunsFactory", func() {
 		factory = db.NewAgentWorkflowRunsFactory(dbConn)
 
 		definitionName = fmt.Sprintf("durable-run-%d", time.Now().UnixNano())
+		definitionSource := fmt.Sprintf(`schema_version: 3
+name: %s
+signature_version: 1
+inputs: []
+outputs: []
+plan:
+  - agent: work
+    function_id: work
+    prompt: test
+`, definitionName)
 		err := dbConn.QueryRow(`
 			INSERT INTO agent_workflow_definitions
 				(name, version, content_hash, definition, created_by, schema_version, signature_version)
-			VALUES ($1, 1, $2, 'schema_version: 3', 'alice', 3, 1)
+			VALUES ($1, 1, $2, $3, 'alice', 3, 1)
 			RETURNING id
-		`, definitionName, strings.Repeat("a", 64)).Scan(&definitionID)
+		`, definitionName, strings.Repeat("a", 64), definitionSource).Scan(&definitionID)
 		Expect(err).NotTo(HaveOccurred())
 
 		var snapshotID int64

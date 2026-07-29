@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/atc/db/encryption"
 )
 
@@ -90,6 +91,9 @@ func (factory *agentWorkflowRunsFactory) CreateWithInputs(
 	if err := validateWorkflowRunTarget(ctx, tx, request); err != nil {
 		return AgentWorkflowRun{}, false, err
 	}
+	if err := validateWorkflowRunResourceSourceAdmission(ctx, tx, request); err != nil {
+		return AgentWorkflowRun{}, false, err
+	}
 	if err := validateWorkflowRunInputs(ctx, tx, request); err != nil {
 		return AgentWorkflowRun{}, false, err
 	}
@@ -101,16 +105,18 @@ func (factory *agentWorkflowRunsFactory) CreateWithInputs(
 			 definition_content_hash, function_id, idempotency_key,
 			 parameterized_config, parameterized_config_hash,
 			 dev_validation_provenance_hash,
+			 resource_source_admission_id,
 			 origin_kind, origin_reference, created_by, status,
 			 retry_of_workflow_run_id)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-		        $11, $12, $13, $14, $15, $16, $17, $18)
+		        $11, $12, $13, $14, $15, $16, $17, $18, $19)
 		ON CONFLICT (team_id, idempotency_key) DO NOTHING
 	`, request.TeamID, request.TeamName, request.WorkflowDefinitionID, request.WorkflowName,
 		request.WorkflowVersion, request.SchemaVersion, request.SignatureVersion,
 		request.DefinitionContentHash, optionalString(request.FunctionID), request.IdempotencyKey,
 		[]byte(request.ParameterizedConfig), request.ParameterizedConfigHash,
 		request.DevValidationProvenanceHash,
+		nullableWorkflowRunResourceSourceAdmissionID(request.ResourceSourceAdmissionID),
 		request.OriginKind, request.OriginReference, request.CreatedBy, string(request.Status),
 		optionalInt64(request.RetryOfWorkflowRunID))
 	if err != nil {
@@ -371,19 +377,22 @@ func validateWorkflowRunTarget(ctx context.Context, tx Tx, request AgentWorkflow
 			definitionContentHash       string
 			functionID                  sql.NullString
 			devValidationProvenanceHash string
+			resourceSourceAdmissionID   sql.NullInt64
 			status                      AgentWorkflowRunStatus
 		)
 		err := tx.QueryRowContext(ctx, `
 			SELECT team_id, workflow_definition_id, workflow_name, workflow_version,
 			       schema_version, signature_version, definition_content_hash,
-			       function_id, dev_validation_provenance_hash, status
+			       function_id, dev_validation_provenance_hash,
+			       resource_source_admission_id, status
 			FROM agent_workflow_runs
 			WHERE id = $1
 			FOR KEY SHARE
 		`, int64(*request.RetryOfWorkflowRunID)).Scan(
 			&teamID, &workflowDefinitionID, &workflowName, &workflowVersion,
 			&schemaVersion, &signatureVersion, &definitionContentHash,
-			&functionID, &devValidationProvenanceHash, &status,
+			&functionID, &devValidationProvenanceHash,
+			&resourceSourceAdmissionID, &status,
 		)
 		if errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("db: workflow-run retry target is absent or belongs to another team")
@@ -408,6 +417,14 @@ func validateWorkflowRunTarget(ctx context.Context, tx Tx, request AgentWorkflow
 			devValidationProvenanceHash != request.DevValidationProvenanceHash {
 			return fmt.Errorf("db: workflow-run retry target is incompatible with the requested workflow target")
 		}
+		var retrySourceAdmissionID *int64
+		if resourceSourceAdmissionID.Valid {
+			value := resourceSourceAdmissionID.Int64
+			retrySourceAdmissionID = &value
+		}
+		if !equalOptionalWorkflowRunSourceAdmissionID(retrySourceAdmissionID, request.ResourceSourceAdmissionID) {
+			return fmt.Errorf("db: workflow-run retry target does not reuse its resource source admission")
+		}
 		if !isTerminalWorkflowRunStatus(status) {
 			return fmt.Errorf("db: workflow-run retry target is not terminal")
 		}
@@ -416,6 +433,305 @@ func validateWorkflowRunTarget(ctx context.Context, tx Tx, request AgentWorkflow
 		}
 		if err := validateWorkflowRunBindings(ctx, tx, *request.RetryOfWorkflowRunID, request.Inputs); err != nil {
 			return fmt.Errorf("db: workflow-run retry input bindings do not match the retry target: %w", err)
+		}
+	}
+	return nil
+}
+
+func validateWorkflowRunResourceSourceAdmission(
+	ctx context.Context,
+	tx Tx,
+	request AgentWorkflowRunCreateRequest,
+) error {
+	if request.ResourceSourceAdmissionID == nil {
+		declaresSources, err := workflowRunTargetDeclaresResourceSources(ctx, tx, request.WorkflowDefinitionID)
+		if err != nil {
+			return err
+		}
+		if declaresSources {
+			return fmt.Errorf(
+				"%w: source-bearing workflow runs require a ready resource source admission",
+				ErrAgentWorkflowResourceSourceConflict,
+			)
+		}
+		return nil
+	}
+	var status AgentWorkflowResourceSourceAdmissionStatus
+	err := tx.QueryRowContext(ctx, `
+		SELECT status
+		FROM agent_workflow_resource_source_admissions
+		WHERE id = $1 AND team_id = $2 AND workflow_definition_id = $3
+		FOR SHARE
+	`, *request.ResourceSourceAdmissionID, request.TeamID,
+		request.WorkflowDefinitionID).Scan(&status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf(
+			"%w: workflow-run resource source admission is not owned by its team and definition",
+			ErrAgentWorkflowResourceSourceConflict,
+		)
+	}
+	if err != nil {
+		return err
+	}
+	if status != AgentWorkflowResourceSourceAdmissionReady {
+		return ErrAgentWorkflowResourceSourceNotReady
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT source_name, snapshot_id
+		FROM agent_workflow_resource_source_bindings
+		WHERE admission_id = $1
+		ORDER BY source_name
+	`, *request.ResourceSourceAdmissionID)
+	if err != nil {
+		return err
+	}
+	defer Close(rows)
+	bindings := make(map[string]snapshot.SnapshotID)
+	for rows.Next() {
+		var (
+			port string
+			id   sql.NullInt64
+		)
+		if err := rows.Scan(&port, &id); err != nil {
+			return err
+		}
+		if !id.Valid || id.Int64 <= 0 {
+			return fmt.Errorf(
+				"%w: ready workflow-run source admission has an incomplete binding",
+				ErrAgentWorkflowResourceSourceConflict,
+			)
+		}
+		if _, found := bindings[port]; found {
+			return fmt.Errorf(
+				"%w: ready workflow-run source admission has duplicate bindings",
+				ErrAgentWorkflowResourceSourceConflict,
+			)
+		}
+		bindings[port] = snapshot.SnapshotID(id.Int64)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(bindings) == 0 {
+		return fmt.Errorf(
+			"%w: ready workflow-run source admission has no bindings",
+			ErrAgentWorkflowResourceSourceConflict,
+		)
+	}
+
+	target, err := loadWorkflowRunResourceSourceTarget(ctx, tx, request)
+	if err != nil {
+		return err
+	}
+	return validateWorkflowRunResourceSourceInputSet(
+		request.Inputs,
+		target.Signature.Inputs,
+		target.Function.ResourceSources,
+		bindings,
+	)
+}
+
+func workflowRunTargetDeclaresResourceSources(
+	ctx context.Context,
+	queryer snapshotQueryer,
+	workflowDefinitionID int,
+) (bool, error) {
+	var (
+		definition   workflow.Definition
+		rawYAML      string
+		manifestJSON sql.NullString
+	)
+	err := queryer.QueryRowContext(ctx, `
+		SELECT id, name, version, content_hash, schema_version,
+		       signature_version, definition, source_manifest
+		FROM agent_workflow_definitions
+		WHERE id = $1
+	`, workflowDefinitionID).Scan(
+		&definition.ID,
+		&definition.Name,
+		&definition.Version,
+		&definition.ContentHash,
+		&definition.SchemaVersion,
+		&definition.SignatureVersion,
+		&rawYAML,
+		&manifestJSON,
+	)
+	if err != nil {
+		return false, err
+	}
+
+	compiled, _, err := compileStoredWorkflowSource(
+		definition.Name,
+		definition.Version,
+		rawYAML,
+		manifestJSON,
+	)
+	if err != nil {
+		return false, fmt.Errorf(
+			"%w: workflow source definition no longer compiles: %v",
+			ErrAgentWorkflowResourceSourceConflict,
+			err,
+		)
+	}
+	return len(compiled.Function.ResourceSources) > 0, nil
+}
+
+func loadWorkflowRunResourceSourceTarget(
+	ctx context.Context,
+	queryer snapshotQueryer,
+	request AgentWorkflowRunCreateRequest,
+) (workflow.FunctionTarget, error) {
+	var (
+		definition   workflow.Definition
+		rawYAML      string
+		manifestJSON sql.NullString
+	)
+	err := queryer.QueryRowContext(ctx, `
+		SELECT id, name, version, content_hash, schema_version,
+		       signature_version, definition, source_manifest
+		FROM agent_workflow_definitions
+		WHERE id = $1
+	`, request.WorkflowDefinitionID).Scan(
+		&definition.ID,
+		&definition.Name,
+		&definition.Version,
+		&definition.ContentHash,
+		&definition.SchemaVersion,
+		&definition.SignatureVersion,
+		&rawYAML,
+		&manifestJSON,
+	)
+	if err != nil {
+		return workflow.FunctionTarget{}, err
+	}
+	compiled, source, err := compileStoredWorkflowSource(
+		definition.Name,
+		definition.Version,
+		rawYAML,
+		manifestJSON,
+	)
+	if err != nil {
+		return workflow.FunctionTarget{}, fmt.Errorf(
+			"%w: ready workflow-run source definition no longer compiles: %v",
+			ErrAgentWorkflowResourceSourceConflict,
+			err,
+		)
+	}
+	metadata, err := compiled.VersionMetadata()
+	if err != nil ||
+		metadata.SchemaVersion != definition.SchemaVersion ||
+		metadata.SignatureVersion != definition.SignatureVersion {
+		return workflow.FunctionTarget{}, fmt.Errorf(
+			"%w: ready workflow-run source definition metadata drifted",
+			ErrAgentWorkflowResourceSourceConflict,
+		)
+	}
+	populateCompiledWorkflowDefinition(&definition, compiled, source)
+
+	var target workflow.FunctionTarget
+	if request.FunctionID == nil {
+		target, err = workflow.FullFunctionTarget(definition)
+	} else {
+		target, err = workflow.ExtractFunctionTarget(definition, *request.FunctionID)
+	}
+	if err != nil {
+		return workflow.FunctionTarget{}, fmt.Errorf(
+			"%w: ready workflow-run source target is invalid: %v",
+			ErrAgentWorkflowResourceSourceConflict,
+			err,
+		)
+	}
+	if target.WorkflowDefinitionID != request.WorkflowDefinitionID ||
+		target.WorkflowName != request.WorkflowName ||
+		target.WorkflowVersion != request.WorkflowVersion ||
+		target.SignatureVersion != request.SignatureVersion {
+		return workflow.FunctionTarget{}, fmt.Errorf(
+			"%w: ready workflow-run source target identity drifted",
+			ErrAgentWorkflowResourceSourceConflict,
+		)
+	}
+	return target, nil
+}
+
+func validateWorkflowRunResourceSourceInputSet(
+	inputs map[string]snapshot.SnapshotRef,
+	publicPorts []workflow.SignaturePort,
+	sourcePorts []workflow.ResourceSource,
+	bindings map[string]snapshot.SnapshotID,
+) error {
+	if len(sourcePorts) == 0 || len(bindings) == 0 {
+		return fmt.Errorf(
+			"%w: ready workflow-run source admission has no bindings",
+			ErrAgentWorkflowResourceSourceConflict,
+		)
+	}
+
+	sources := make(map[string]workflow.ResourceSource, len(sourcePorts))
+	for _, source := range sourcePorts {
+		sources[source.Name] = source
+	}
+	if len(bindings) != len(sources) {
+		return fmt.Errorf(
+			"%w: ready admission bindings differ from workflow source declarations",
+			ErrAgentWorkflowResourceSourceConflict,
+		)
+	}
+	for port, id := range bindings {
+		if _, declared := sources[port]; !declared || id <= 0 {
+			return fmt.Errorf(
+				"%w: ready admission bindings differ from workflow source declarations",
+				ErrAgentWorkflowResourceSourceConflict,
+			)
+		}
+	}
+
+	public := make(map[string]workflow.SignaturePort, len(publicPorts))
+	for _, port := range publicPorts {
+		public[port.Name] = port
+	}
+	for port, input := range inputs {
+		if source, bound := sources[port]; bound {
+			if input.ID != bindings[port] || input.Type != source.Type {
+				return fmt.Errorf(
+					"%w: workflow-run source inputs differ from ready admission bindings",
+					ErrAgentWorkflowResourceSourceConflict,
+				)
+			}
+			continue
+		}
+		publicPort, declared := public[port]
+		if !declared {
+			return fmt.Errorf(
+				"%w: workflow-run input %q is neither a public input nor a source binding",
+				ErrAgentWorkflowResourceSourceConflict,
+				port,
+			)
+		}
+		if input.Type != publicPort.Type {
+			return fmt.Errorf(
+				"%w: workflow-run public input %q differs from its signature",
+				ErrAgentWorkflowResourceSourceConflict,
+				port,
+			)
+		}
+	}
+	for port, binding := range bindings {
+		input, found := inputs[port]
+		if !found || input.ID != binding {
+			return fmt.Errorf(
+				"%w: workflow-run source inputs differ from ready admission bindings",
+				ErrAgentWorkflowResourceSourceConflict,
+			)
+		}
+	}
+	for _, port := range publicPorts {
+		if _, found := inputs[port.Name]; !found && !port.Optional {
+			return fmt.Errorf(
+				"%w: workflow-run required public input %q is missing",
+				ErrAgentWorkflowResourceSourceConflict,
+				port.Name,
+			)
 		}
 	}
 	return nil
@@ -460,6 +776,10 @@ func validateIdempotentWorkflowRun(run AgentWorkflowRun, request AgentWorkflowRu
 		!semanticJSONEqual(run.ParameterizedConfig, request.ParameterizedConfig) ||
 		run.ParameterizedConfigHash != request.ParameterizedConfigHash ||
 		run.DevValidationProvenanceHash != request.DevValidationProvenanceHash ||
+		!equalOptionalWorkflowRunSourceAdmissionID(
+			run.ResourceSourceAdmissionID,
+			request.ResourceSourceAdmissionID,
+		) ||
 		run.OriginKind != request.OriginKind || run.OriginReference != request.OriginReference ||
 		run.CreatedBy != request.CreatedBy ||
 		!equalWorkflowRunID(run.RetryOfWorkflowRunID, request.RetryOfWorkflowRunID) {
@@ -531,6 +851,20 @@ func optionalString(value *string) any {
 }
 
 func equalOptionalString(left, right *string) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
+}
+
+func nullableWorkflowRunResourceSourceAdmissionID(value *int64) any {
+	if value == nil {
+		return nil
+	}
+	return *value
+}
+
+func equalOptionalWorkflowRunSourceAdmissionID(left, right *int64) bool {
 	if left == nil || right == nil {
 		return left == nil && right == nil
 	}
