@@ -192,6 +192,37 @@ func TestAutomaticRecoveryModeRequiresProvenEffectsAndCapabilities(t *testing.T)
 	}
 }
 
+func TestFinalizeSucceededRequestRequiresMatchingFenceAuthority(t *testing.T) {
+	t.Parallel()
+
+	valid := checkpoint.FinalizeSucceededRequest{
+		Identity:         checkpoint.Identity{BuildID: 42, PlanID: "plan", FunctionID: "function"},
+		ExecutionAttempt: 2,
+		Fence: checkpoint.FenceClaim{
+			ExecutionAttempt: 2,
+			Token:            "11111111-1111-1111-1111-111111111111",
+		},
+	}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("valid success finalization request rejected: %v", err)
+	}
+
+	for name, mutate := range map[string]func(*checkpoint.FinalizeSucceededRequest){
+		"missing identity":         func(request *checkpoint.FinalizeSucceededRequest) { request.Identity.PlanID = "" },
+		"nonpositive attempt":      func(request *checkpoint.FinalizeSucceededRequest) { request.ExecutionAttempt = 0 },
+		"mismatched fence attempt": func(request *checkpoint.FinalizeSucceededRequest) { request.Fence.ExecutionAttempt = 1 },
+		"noncanonical fence token": func(request *checkpoint.FinalizeSucceededRequest) { request.Fence.Token = "not-a-uuid" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			request := valid
+			mutate(&request)
+			if err := request.Validate(); err == nil {
+				t.Fatal("Validate accepted an invalid terminal-success authority")
+			}
+		})
+	}
+}
+
 type safetyRegistry struct{ safeContract string }
 
 func (r safetyRegistry) ReplaySafe(effect checkpoint.Effect) bool {

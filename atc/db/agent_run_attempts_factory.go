@@ -349,6 +349,100 @@ func (factory *agentRunAttemptsFactory) Transition(
 	return updated, nil
 }
 
+func (factory *agentRunAttemptsFactory) FinalizeSucceeded(
+	ctx context.Context,
+	request checkpoint.FinalizeSucceededRequest,
+) (checkpoint.Attempt, error) {
+	request = request.Clone()
+	if err := request.Validate(); err != nil {
+		return checkpoint.Attempt{}, err
+	}
+	tx, err := factory.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return checkpoint.Attempt{}, err
+	}
+	defer Rollback(tx)
+
+	head, err := checkpointHeadForUpdate(ctx, tx, request.Identity)
+	if err != nil {
+		return checkpoint.Attempt{}, err
+	}
+	attempt, err := agentRunCurrentAttemptForUpdate(ctx, tx, head.id)
+	if err != nil {
+		return checkpoint.Attempt{}, currentAttemptError(err)
+	}
+	if attempt.ExecutionAttempt != request.ExecutionAttempt {
+		return checkpoint.Attempt{}, staleFenceError("execution attempt is no longer current")
+	}
+	if attempt.State == checkpoint.AttemptSucceeded {
+		if attempt.Fence == nil || attempt.Fence.Token != request.Fence.Token {
+			return checkpoint.Attempt{}, staleFenceError("attempt fence token does not match current authority")
+		}
+		if err := tx.Commit(); err != nil {
+			return checkpoint.Attempt{}, err
+		}
+		return attempt, nil
+	}
+	if err := requireActiveCheckpointHead(head); err != nil {
+		return checkpoint.Attempt{}, err
+	}
+	if err := requireAttemptFence(ctx, tx, attempt, request.Fence); err != nil {
+		return checkpoint.Attempt{}, err
+	}
+	if attempt.State != checkpoint.AttemptFinalizing {
+		return checkpoint.Attempt{}, fmt.Errorf(
+			"%w: execution attempt state is %q, expected %q",
+			checkpoint.ErrConflict, attempt.State, checkpoint.AttemptFinalizing,
+		)
+	}
+
+	succeeded, err := scanAgentRunAttempt(tx.QueryRowContext(ctx, `
+		UPDATE agent_run_attempts AS a
+		SET state = 'succeeded',
+			terminal_at = clock_timestamp(),
+			fence_expires_at = NULL
+		FROM agent_run_checkpoint_heads AS h
+		WHERE a.id = $1
+		  AND a.state = 'finalizing'
+		  AND a.is_current
+		  AND a.fence_token = $2::uuid
+		  AND a.fence_expires_at > clock_timestamp()
+		  AND h.id = a.head_id
+		RETURNING `+agentRunAttemptColumns,
+		attempt.ID, request.Fence.Token,
+	))
+	if errors.Is(err, sql.ErrNoRows) {
+		return checkpoint.Attempt{}, staleFenceError(
+			"attempt fence expired before terminal success",
+		)
+	}
+	if err != nil {
+		return checkpoint.Attempt{}, err
+	}
+	result, err := tx.ExecContext(ctx, `
+		UPDATE agent_run_checkpoint_heads
+		SET active = FALSE, terminal_at = $2
+		WHERE id = $1 AND active AND terminal_at IS NULL
+	`, head.id, succeeded.TerminalAt)
+	if err != nil {
+		return checkpoint.Attempt{}, err
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return checkpoint.Attempt{}, err
+	}
+	if updated != 1 {
+		return checkpoint.Attempt{}, fmt.Errorf(
+			"%w: checkpoint head lost terminal authority",
+			checkpoint.ErrConflict,
+		)
+	}
+	if err := tx.Commit(); err != nil {
+		return checkpoint.Attempt{}, err
+	}
+	return succeeded, nil
+}
+
 func (factory *agentRunAttemptsFactory) MarkInterrupted(
 	ctx context.Context,
 	request checkpoint.MarkAttemptInterruptedRequest,

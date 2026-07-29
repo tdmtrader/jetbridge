@@ -235,6 +235,121 @@ var _ = Describe("AgentRunAttemptsFactory", func() {
 			"the interrupted owner must lose mutation authority immediately")
 	})
 
+	It("finalizes only the fenced current finalizing attempt as succeeded", func() {
+		allocate(1)
+		acquire(1, firstToken)
+		transition(1, firstToken, checkpoint.AttemptScheduling, checkpoint.AttemptRunning)
+		transition(1, firstToken, checkpoint.AttemptRunning, checkpoint.AttemptFinalizing)
+
+		succeeded, err := factory.FinalizeSucceeded(ctx, checkpoint.FinalizeSucceededRequest{
+			Identity: identity, ExecutionAttempt: 1,
+			Fence: checkpoint.FenceClaim{ExecutionAttempt: 1, Token: firstToken},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(succeeded.State).To(Equal(checkpoint.AttemptSucceeded))
+		Expect(succeeded.TerminalAt).NotTo(BeNil())
+		Expect(succeeded.Fence).NotTo(BeNil())
+		Expect(succeeded.Fence.Token).To(Equal(firstToken))
+		Expect(succeeded.Fence.ExpiresAt.IsZero()).To(BeTrue())
+
+		retried, err := factory.FinalizeSucceeded(ctx, checkpoint.FinalizeSucceededRequest{
+			Identity: identity, ExecutionAttempt: 1,
+			Fence: checkpoint.FenceClaim{ExecutionAttempt: 1, Token: firstToken},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(retried).To(Equal(succeeded))
+
+		var active bool
+		Expect(dbConn.QueryRow(`
+			SELECT active FROM agent_run_checkpoint_heads
+			WHERE build_id = $1 AND plan_id = $2 AND function_id = $3
+		`, identity.BuildID, identity.PlanID, identity.FunctionID).Scan(&active)).To(Succeed())
+		Expect(active).To(BeFalse())
+	})
+
+	It("rejects terminal success without the exact unexpired finalizing fence", func() {
+		allocate(1)
+		request := checkpoint.FinalizeSucceededRequest{
+			Identity: identity, ExecutionAttempt: 1,
+			Fence: checkpoint.FenceClaim{ExecutionAttempt: 1, Token: firstToken},
+		}
+		_, err := factory.FinalizeSucceeded(ctx, request)
+		Expect(errors.Is(err, checkpoint.ErrStaleFence)).To(BeTrue(),
+			"scheduling cannot be directly marked succeeded")
+
+		acquire(1, firstToken)
+		_, err = factory.FinalizeSucceeded(ctx, request)
+		Expect(errors.Is(err, checkpoint.ErrConflict)).To(BeTrue(),
+			"a valid fence cannot bypass finalizing")
+
+		transition(1, firstToken, checkpoint.AttemptScheduling, checkpoint.AttemptRunning)
+		transition(1, firstToken, checkpoint.AttemptRunning, checkpoint.AttemptFinalizing)
+
+		wrongToken := request
+		wrongToken.Fence.Token = secondToken
+		_, err = factory.FinalizeSucceeded(ctx, wrongToken)
+		Expect(errors.Is(err, checkpoint.ErrStaleFence)).To(BeTrue())
+
+		wrongAttempt := request
+		wrongAttempt.ExecutionAttempt = 2
+		wrongAttempt.Fence.ExecutionAttempt = 2
+		_, err = factory.FinalizeSucceeded(ctx, wrongAttempt)
+		Expect(errors.Is(err, checkpoint.ErrStaleFence)).To(BeTrue())
+
+	})
+
+	It("cannot directly mark nonfinalizing lifecycle states succeeded", func() {
+		allocate(1)
+		acquire(1, firstToken)
+		request := checkpoint.FinalizeSucceededRequest{
+			Identity: identity, ExecutionAttempt: 1,
+			Fence: checkpoint.FenceClaim{ExecutionAttempt: 1, Token: firstToken},
+		}
+
+		transition(1, firstToken, checkpoint.AttemptScheduling, checkpoint.AttemptMaterializing)
+		_, err := factory.FinalizeSucceeded(ctx, request)
+		Expect(errors.Is(err, checkpoint.ErrConflict)).To(BeTrue())
+
+		transition(1, firstToken, checkpoint.AttemptMaterializing, checkpoint.AttemptRunning)
+		_, err = factory.FinalizeSucceeded(ctx, request)
+		Expect(errors.Is(err, checkpoint.ErrConflict)).To(BeTrue())
+
+		_, err = factory.MarkInterrupted(ctx, checkpoint.MarkAttemptInterruptedRequest{
+			Identity: identity, ExecutionAttempt: 1, Reason: checkpoint.InterruptionNodeLost,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = factory.FinalizeSucceeded(ctx, request)
+		Expect(errors.Is(err, checkpoint.ErrStaleFence)).To(BeTrue())
+
+		_, err = factory.MarkManualReview(ctx, checkpoint.MarkAttemptManualReviewRequest{
+			Identity: identity, ExecutionAttempt: 1, ExpectedState: checkpoint.AttemptInterrupted,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = factory.FinalizeSucceeded(ctx, request)
+		Expect(errors.Is(err, checkpoint.ErrConflict)).To(BeTrue())
+	})
+
+	It("rejects terminal success after the finalizing fence expires", func() {
+		allocate(1)
+		fence, err := factory.AcquireFence(ctx, checkpoint.AcquireAttemptFenceRequest{
+			Identity: identity, ExecutionAttempt: 1, Token: firstToken, TTL: time.Second,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		transition(1, firstToken, checkpoint.AttemptScheduling, checkpoint.AttemptRunning)
+		transition(1, firstToken, checkpoint.AttemptRunning, checkpoint.AttemptFinalizing)
+		Eventually(func() bool {
+			var now time.Time
+			Expect(dbConn.QueryRow(`SELECT clock_timestamp()`).Scan(&now)).To(Succeed())
+			return !now.Before(fence.ExpiresAt)
+		}, 2*time.Second, time.Millisecond).Should(BeTrue())
+
+		_, err = factory.FinalizeSucceeded(ctx, checkpoint.FinalizeSucceededRequest{
+			Identity: identity, ExecutionAttempt: 1,
+			Fence: checkpoint.FenceClaim{ExecutionAttempt: 1, Token: firstToken},
+		})
+		Expect(errors.Is(err, checkpoint.ErrStaleFence)).To(BeTrue())
+	})
+
 	It("allocates exactly one replacement per typed interruption without consuming retries", func() {
 		allocate(3)
 		_, err := factory.BeginRecovery(ctx, checkpoint.BeginRecoveryRequest{

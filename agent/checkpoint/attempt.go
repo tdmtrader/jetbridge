@@ -257,6 +257,29 @@ type TransitionAttemptRequest struct {
 	Fence            FenceClaim
 }
 
+// FinalizeSucceededRequest is the fenced authority required to durably
+// terminalize the current finalizing attempt.
+type FinalizeSucceededRequest struct {
+	Identity         Identity
+	ExecutionAttempt int
+	Fence            FenceClaim
+}
+
+func (request FinalizeSucceededRequest) Clone() FinalizeSucceededRequest {
+	request.Identity = request.Identity.Clone()
+	return request
+}
+
+func (request FinalizeSucceededRequest) Validate() error {
+	if err := request.Identity.Validate(); err != nil {
+		return err
+	}
+	if request.ExecutionAttempt <= 0 || request.ExecutionAttempt != request.Fence.ExecutionAttempt {
+		return fmt.Errorf("checkpoint: succeeded attempt does not match fence")
+	}
+	return request.Fence.Validate()
+}
+
 type MarkAttemptManualReviewRequest struct {
 	Identity         Identity
 	ExecutionAttempt int
@@ -369,6 +392,7 @@ type AttemptStore interface {
 	MarkManualReview(context.Context, MarkAttemptManualReviewRequest) (Attempt, error)
 	BeginRecovery(context.Context, BeginRecoveryRequest) (Attempt, error)
 	Transition(context.Context, TransitionAttemptRequest) (Attempt, error)
+	FinalizeSucceeded(context.Context, FinalizeSucceededRequest) (Attempt, error)
 	AcquireFence(context.Context, AcquireAttemptFenceRequest) (AttemptFence, error)
 	ReleaseFence(context.Context, ReleaseAttemptFenceRequest) error
 }
