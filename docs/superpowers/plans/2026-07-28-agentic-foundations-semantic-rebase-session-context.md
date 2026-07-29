@@ -130,6 +130,10 @@ Task 7:
 - A full DB suite rerun remains environment-blocked because port 5434 was
   already occupied before its BeforeSuite; source-level suites and DB
   compile-only verification passed.
+- Review round 1 blocking fixes remove post-validation repository-change
+  mutation from small-fix/version-upgrade and fail closed malformed nil
+  validation authorities before base traversal. Task 7 awaits re-review and
+  is not yet accepted.
 - Focused regressions and a fresh host-access full Jetbridge package passed
   381/381. Two blocking-only reviews passed. `HUMAN-REVIEW-001` and
   `DEPENDENCY-001` are resolved.

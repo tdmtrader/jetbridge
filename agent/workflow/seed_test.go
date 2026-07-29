@@ -302,6 +302,39 @@ func TestGovernedSeedsRenderPrivateExactValidationRequirements(t *testing.T) {
 			if len(definition.Compiled.Function.DevValidationProfiles) == 0 || len(definition.Compiled.Function.DevValidationProfiles[0].Profile) == 0 || !strings.Contains(string(definition.Compiled.Function.DevValidationProfiles[0].Profile), "- id: tests") {
 				t.Fatalf("governed seed must compile a nonempty executable validation profile: %#v", definition.Compiled.Function.DevValidationProfiles)
 			}
+			if directory != "seeds/merge-delivery-v3" {
+				var changeFrom string
+				for _, output := range definition.Compiled.Function.Outputs {
+					if output.Port.Name == "change" {
+						changeFrom = output.From
+					}
+				}
+				if changeFrom != "candidate" {
+					t.Fatalf("public change must be the exact validated candidate, got %q", changeFrom)
+				}
+				validated := false
+				for index, step := range definition.Compiled.Function.Plan {
+					if task, ok := step.Config.(*atc.TaskStep); ok && task.DevValidationAuthority != nil && task.DevValidationAuthority.CandidateInput == "candidate" {
+						validated = true
+					}
+					if !validated {
+						continue
+					}
+					if err := step.Config.Visit(atc.StepRecursor{OnAgent: func(agent *atc.AgentStep) error {
+						for _, declaration := range agent.SnapshotOutputs {
+							if declaration.Type == snapshot.TypeRef("repository-change/v1") {
+								return fmt.Errorf("plan step %d has a repository-change producer after validation", index)
+							}
+						}
+						return nil
+					}}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if !validated {
+					t.Fatal("candidate validation task was not found")
+				}
+			}
 			target, err := workflow.FullFunctionTarget(*definition)
 			if err != nil {
 				t.Fatal(err)

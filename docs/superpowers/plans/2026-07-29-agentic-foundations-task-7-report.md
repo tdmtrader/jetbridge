@@ -20,6 +20,19 @@ creating/sealing a merge-approval question, or calling the publisher executor.
 The three v3 seeds now validate after their final mutation/rebase and before
 their governed consumer. Existing merge-preflight behavior remains separate.
 
+## Review round 1 blocking fixes
+
+- Small-fix and version-upgrade now expose the already validated `candidate`
+  as their public/disposition `change`; the former post-validation
+  `enforce-approval` repository-change producer was removed. Seed coverage
+  proves there is no later repository-change producer.
+- Runtime validation now validates a private consumer requirement before it
+  reads base declarations, so a direct malformed plan with a nil authority
+  fails closed instead of panicking the controller.
+
+These round-1 fixes are implemented and awaiting the bounded re-review; Task
+7 is not accepted yet.
+
 ## Verification
 
 - `go test ./agent/workflow ./atc/exec ./atc/engine -count=1` — passed.

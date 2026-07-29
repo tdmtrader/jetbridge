@@ -49,7 +49,7 @@ func requireValidationRequirement(ctx context.Context, component string, reposit
 		return fmt.Errorf("%s: authoritative validation plan is unavailable", component)
 	}
 	candidateName, validationName := requirement.requirementNames()
-	if candidateName != expectedCandidate {
+	if candidateName != expectedCandidate || validateRequirementPlan(requirement) != nil {
 		return fmt.Errorf("%s: authoritative validation plan is unavailable", component)
 	}
 	candidate, _, err := authorizedRequirementArtifact(ctx, repository, metadata.TeamID, candidateName, snapshot.TypeRef("repository-change/v1"), metadataStore)
@@ -88,6 +88,19 @@ func requireValidationRequirement(ctx context.Context, component string, reposit
 		return fmt.Errorf("%s: authoritative validation was rejected", component)
 	}
 	return nil
+}
+
+func validateRequirementPlan(requirement validationRequirement) error {
+	switch r := requirement.(type) {
+	case reviewRequirement:
+		return atc.ReviewValidationRequirement(r).Validate()
+	case mergeRequirement:
+		return atc.MergeApprovalValidationRequirement(r).Validate()
+	case publishRequirement:
+		return atc.PublishValidationRequirement(r).Validate()
+	default:
+		return errors.New("unknown requirement")
+	}
 }
 
 func validationRequirementBases(ctx context.Context, repository *build.Repository, teamID int, requirement validationRequirement, metadata snapshot.MetadataStore) ([]snapshot.ValidationAuthorityInput, error) {

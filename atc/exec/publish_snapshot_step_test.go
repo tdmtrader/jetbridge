@@ -80,19 +80,35 @@ func TestPublishSnapshotStepAuthorizesExactSealedInputAndPublishes(t *testing.T)
 
 func TestPublishSnapshotValidationRequirementRejectsBeforeExecutor(t *testing.T) {
 	manifest := publishSnapshotManifest()
+	authority := publishValidationAuthority(t, "change")
+	validation, _ := publishValidationManifest(t, *publishSnapshotRef(manifest), publishValidationBody(*publishSnapshotRef(manifest), authority))
 	metadata := new(snapshotfakes.FakeMetadataStore)
-	metadata.GetAuthorizedReturns(manifest, true, nil)
+	metadata.GetAuthorizedCalls(func(_ context.Context, _ int, id snapshot.SnapshotID) (snapshot.Snapshot, bool, error) {
+		if id == manifest.ID {
+			return manifest, true, nil
+		}
+		if id == validation.ID {
+			return validation, true, nil
+		}
+		return snapshot.Snapshot{}, false, nil
+	})
 	repository, state, delegates, _ := loadSnapshotHarness()
 	registerPublishArtifact(t, repository, manifest)
+	validationRef := snapshot.SnapshotRef{ID: validation.ID, Type: validation.Type, Digest: validation.Digest}
+	require.NoError(t, repository.RegisterArtifacts(map[build.ArtifactName]build.ArtifactEntry{
+		"validation": {Artifact: &loadArtifact{handle: "sealed-validation"}, Snapshot: &validationRef},
+	}))
 	plan := publishSnapshotPlan()
 	plan.Validation = "validation"
-	plan.PublishValidation = &atc.PublishValidationRequirement{}
+	plan.PublishValidation = &atc.PublishValidationRequirement{Candidate: "change", Validation: "validation"}
 	called := false
-	step := exec.NewPublishSnapshotStep("publish", plan, exec.StepMetadata{TeamID: 17, TeamName: "main", BuildID: 42, SnapshotCreatedBy: "alice"}, delegates, metadata, publisherExecutorFunc(func(context.Context, publisher.Request) (publisher.Publication, error) {
+	step := exec.NewPublishSnapshotStep("publish", plan, publishStepMetadata("alice"), delegates, metadata, publisherExecutorFunc(func(context.Context, publisher.Request) (publisher.Publication, error) {
 		called = true
 		return publisher.Publication{}, nil
-	}), nil)
-	ok, err := step.Run(context.Background(), state)
+	}), nil, exec.WithPublishSnapshotContentStore(new(snapshotfakes.FakeContentStore)))
+	var ok bool
+	var err error
+	require.NotPanics(t, func() { ok, err = step.Run(context.Background(), state) })
 	require.False(t, ok)
 	require.ErrorContains(t, err, "authoritative validation plan is unavailable")
 	require.False(t, called)

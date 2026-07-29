@@ -6,7 +6,7 @@ inputs:
   - {name: repository, type: repository/v1}
   - {name: work-item, type: work-item/v1}
 outputs:
-  - {name: change, type: repository-change/v1, from: approved-change}
+  - {name: change, type: repository-change/v1, from: candidate}
   - {name: report, type: opaque/v1, from: report}
 capabilities:
   validator:
@@ -54,10 +54,3 @@ plan:
     type: human-answer/v1
     on_timeout: fail
     timeout: 72h
-  - agent: enforce-approval
-    function_id: enforce-approval
-    prompt: On approval, copy candidate unchanged to approved-change.
-    inputs: [repository, candidate, approval]
-    outputs: [approved-change]
-    input_types: {repository: {type: repository/v1}, candidate: {type: repository-change/v1}, approval: {type: human-answer/v1}}
-    output_types: {approved-change: repository-change/v1}
