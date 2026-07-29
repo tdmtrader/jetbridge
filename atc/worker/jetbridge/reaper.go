@@ -231,7 +231,11 @@ func (r *Reaper) reapOrphanPrivateMountSecrets(ctx context.Context) {
 			r.logger.Error("failed-to-confirm-private-task-pod", err, lager.Data{"secret": secret.Name, "pod": owner.Name})
 			continue
 		}
-		if err := r.clientset.CoreV1().Secrets(r.cfg.Namespace).Delete(ctx, secret.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+		options := metav1.DeleteOptions{}
+		if secret.UID != "" {
+			options.Preconditions = &metav1.Preconditions{UID: &secret.UID}
+		}
+		if err := r.clientset.CoreV1().Secrets(r.cfg.Namespace).Delete(ctx, secret.Name, options); err != nil && !apierrors.IsNotFound(err) {
 			r.logger.Error("failed-to-delete-orphaned-private-task-mount", err, lager.Data{"secret": secret.Name, "pod": owner.Name})
 		}
 	}

@@ -262,6 +262,42 @@ var _ = Describe("Reaper", func() {
 			_, err = fakeClientset.CoreV1().Secrets("test-namespace").Get(ctx, "private-secret", metav1.GetOptions{})
 			Expect(err).To(HaveOccurred())
 		})
+
+		It("does not delete a replacement Secret after owner-bound orphan observation", func() {
+			oldUID := types.UID("old-private-secret")
+			replacementUID := types.UID("replacement-private-secret")
+			createPrivateMountSecret("private-secret", "private-handle", "gone-pod", types.UID("gone-uid"))
+			observed, err := fakeClientset.CoreV1().Secrets("test-namespace").Get(ctx, "private-secret", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			observed.UID = oldUID
+			_, err = fakeClientset.CoreV1().Secrets("test-namespace").Update(ctx, observed, metav1.UpdateOptions{})
+			Expect(err).ToNot(HaveOccurred())
+
+			var deletedUID *types.UID
+			fakeClientset.PrependReactor("delete", "secrets", func(action ktesting.Action) (bool, runtime.Object, error) {
+				deleteAction := action.(ktesting.DeleteAction)
+				if deleteAction.GetName() != "private-secret" {
+					return false, nil, nil
+				}
+				if deleteAction.GetDeleteOptions().Preconditions != nil {
+					deletedUID = deleteAction.GetDeleteOptions().Preconditions.UID
+				}
+				replacement := observed.DeepCopy()
+				replacement.UID = replacementUID
+				if err := fakeClientset.Tracker().Update(corev1.SchemeGroupVersion.WithResource("secrets"), replacement, "test-namespace"); err != nil {
+					return true, nil, err
+				}
+				return true, nil, nil
+			})
+
+			err = reaper.Run(ctx)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(deletedUID).ToNot(BeNil())
+			Expect(*deletedUID).To(Equal(oldUID))
+			replacement, err := fakeClientset.CoreV1().Secrets("test-namespace").Get(ctx, "private-secret", metav1.GetOptions{})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(replacement.UID).To(Equal(replacementUID))
+		})
 	})
 
 	Describe("reaper idempotency", func() {

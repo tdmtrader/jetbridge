@@ -44,6 +44,7 @@ const (
 	privateMountDataDigestKey    = "concourse.ci/private-mount-data-digest"
 	privateMountRoot             = "/run/concourse"
 	maxPrivateMountSecretBytes   = 1 << 20
+	privateMountCreateCleanupTTL = 5 * time.Second
 )
 
 // persistableAnnotations maps container property keys to pod annotation keys
@@ -472,8 +473,8 @@ func (c *Container) createPod(ctx context.Context, processSpec runtime.ProcessSp
 	}
 	created, err := c.clientset.CoreV1().Pods(c.config.Namespace).Create(ctx, pod, metav1.CreateOptions{})
 	if err != nil {
-		c.deleteExactPrivateMountSecrets(ctx, secrets)
-		return nil, fmt.Errorf("create pod after private task mount: %w", err)
+		c.cleanupPrivateMountSecretsAfterCreateError(pod, secrets)
+		return nil, err
 	}
 	if err := c.bindPrivateMountSecrets(ctx, created, secrets); err != nil {
 		cleanupErr := c.deletePrivateMountPodAfterSecretFailure(ctx, created, secrets)
@@ -509,8 +510,8 @@ func (c *Container) createPausePod(ctx context.Context, processSpec runtime.Proc
 	}
 	created, err := c.clientset.CoreV1().Pods(c.config.Namespace).Create(ctx, pod, metav1.CreateOptions{})
 	if err != nil {
-		c.deleteExactPrivateMountSecrets(ctx, secrets)
-		return nil, fmt.Errorf("create pause pod after private task mount: %w", err)
+		c.cleanupPrivateMountSecretsAfterCreateError(pod, secrets)
+		return nil, err
 	}
 	if err := c.bindPrivateMountSecrets(ctx, created, secrets); err != nil {
 		cleanupErr := c.deletePrivateMountPodAfterSecretFailure(ctx, created, secrets)
@@ -950,6 +951,9 @@ func (c *Container) createPrivateMountSecrets(ctx context.Context) ([]*corev1.Se
 // Update carries the Create response's resourceVersion and UID, so a stale or
 // replaced object fails closed instead of being silently adopted.
 func (c *Container) bindPrivateMountSecrets(ctx context.Context, pod *corev1.Pod, created []*corev1.Secret) error {
+	if len(c.containerSpec.PrivateFileMounts) == 0 {
+		return nil
+	}
 	if len(created) != len(c.containerSpec.PrivateFileMounts) || pod == nil || pod.UID == "" {
 		return fmt.Errorf("cannot bind incomplete private task mounts to pod")
 	}
@@ -976,6 +980,25 @@ func (c *Container) bindPrivateMountSecrets(ctx context.Context, pod *corev1.Pod
 		}
 	}
 	return nil
+}
+
+// cleanupPrivateMountSecretsAfterCreateError removes precreated Secrets only
+// after a fresh lookup proves the attempted Pod was not created. A Create
+// transport error may still have committed the Pod, in which case the
+// ownerless reaper will handle the Secrets later.
+func (c *Container) cleanupPrivateMountSecretsAfterCreateError(pod *corev1.Pod, secrets []*corev1.Secret) {
+	if pod == nil || pod.Name == "" {
+		return
+	}
+
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), privateMountCreateCleanupTTL)
+	defer cancel()
+
+	_, err := c.clientset.CoreV1().Pods(c.config.Namespace).Get(cleanupCtx, pod.Name, metav1.GetOptions{})
+	if !apierrors.IsNotFound(err) {
+		return
+	}
+	c.deleteExactPrivateMountSecrets(cleanupCtx, secrets)
 }
 
 // deletePrivateMountPodAfterSecretFailure requests Pod deletion after a bind

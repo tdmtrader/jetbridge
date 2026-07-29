@@ -2,6 +2,7 @@ package jetbridge
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -10,6 +11,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	kruntime "k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
 	ktesting "k8s.io/client-go/testing"
 )
@@ -46,6 +48,72 @@ func newPrivateMountTestContainer(clientset *fake.Clientset, spec runtime.Contai
 		nil,
 		false,
 	)
+}
+
+func TestCreatePodWithoutPrivateMountsDoesNotRequirePodUIDOrCreateSecrets(t *testing.T) {
+	ctx := context.Background()
+	clientset := fake.NewSimpleClientset()
+	c := newContainer(
+		"zero-private-mounts", taskMetadata(),
+		runtime.ContainerSpec{ImageSpec: runtime.ImageSpec{ImageURL: "busybox:latest"}},
+		nil, clientset, permEmptyDirConfig(), "worker-1", nil, nil, nil, false,
+	)
+
+	pod, err := c.createPod(ctx, runtime.ProcessSpec{Path: "/bin/sh"})
+	if err != nil {
+		t.Fatalf("createPod without private mounts: %v", err)
+	}
+	if pod.UID != "" {
+		t.Fatalf("fake client unexpectedly assigned UID %q", pod.UID)
+	}
+	secrets, err := clientset.CoreV1().Secrets("test-ns").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(secrets.Items) != 0 {
+		t.Fatalf("zero private mounts created Secrets: %#v", secrets.Items)
+	}
+}
+
+func TestAmbiguousPodCreateErrorRetainsTrustedSecretUntilReaperConfirmsAbsence(t *testing.T) {
+	for _, mode := range []struct {
+		name   string
+		create func(*Container, context.Context, runtime.ProcessSpec) (*corev1.Pod, error)
+	}{
+		{name: "ordinary", create: (*Container).createPod},
+		{name: "pause", create: (*Container).createPausePod},
+	} {
+		t.Run(mode.name, func(t *testing.T) {
+			ctx := context.Background()
+			clientset := fake.NewSimpleClientset()
+			c := newPrivateMountTestContainer(clientset, privateMountTestSpec("/run/concourse/dev-validation"))
+			c.privateMountNameGenerator = func() (string, error) { return "concourse-private-ambiguous-" + mode.name, nil }
+			createErr := errors.New("ambiguous pod create transport error")
+			clientset.PrependReactor("create", "pods", func(action ktesting.Action) (bool, kruntime.Object, error) {
+				requested := action.(ktesting.CreateAction).GetObject().(*corev1.Pod).DeepCopy()
+				requested.UID = types.UID("persisted-" + mode.name)
+				if err := clientset.Tracker().Create(corev1.SchemeGroupVersion.WithResource("pods"), requested, "test-ns"); err != nil {
+					t.Fatalf("persist attempted pod: %v", err)
+				}
+				return true, nil, createErr
+			})
+
+			_, err := mode.create(c, ctx, runtime.ProcessSpec{Path: "/bin/sh"})
+			if !errors.Is(err, createErr) {
+				t.Fatalf("create error = %v, want original %v", err, createErr)
+			}
+			if _, err := clientset.CoreV1().Pods("test-ns").Get(ctx, c.podName, metav1.GetOptions{}); err != nil {
+				t.Fatalf("ambiguous create did not retain attempted Pod: %v", err)
+			}
+			secret, err := clientset.CoreV1().Secrets("test-ns").Get(ctx, c.privateMountSecretName(0), metav1.GetOptions{})
+			if err != nil {
+				t.Fatalf("ambiguous create deleted trusted Secret: %v", err)
+			}
+			if secret.Immutable == nil || !*secret.Immutable || string(secret.Data["profile.yml"]) != "trusted" {
+				t.Fatalf("ambiguous create retained wrong Secret: %#v", secret)
+			}
+		})
+	}
 }
 
 func TestPrivateMountCollisionIsFailClosedAndDoesNotOverwrite(t *testing.T) {
