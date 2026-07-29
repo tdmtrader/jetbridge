@@ -215,3 +215,61 @@ to evaluate independently.
   untrusted or stale validation boundary.
 - Suggested follow-up: Resolve Task 6, complete and accept Task 7, then
   implement Task 14 without restoring the external gateway.
+
+### HUMAN-REVIEW-003 — Use real database time for checkpoint mutation fences
+
+- Task/area: Task 15, checkpoint/effect attempt-fence authority
+- Classification: High; stale-writer correctness boundary
+- Status: Human Review Required after review round 2
+- Evidence: `requireAttemptFence` calls `checkpointDatabaseNow`, which executes
+  `SELECT now()`. PostgreSQL fixes `now()` at transaction start. A transaction
+  can therefore begin while its fence is live, block on the checkpoint
+  head/current-attempt lock until after real lease expiry, and still pass the
+  stale transaction timestamp before committing a checkpoint mutation or
+  beginning an effect.
+- Addressed in the correction: every public staged mutation and effect begin
+  now carries an exact `FenceClaim`; staged/effect rows persist the token;
+  attempt/token/state checks are serialized in the mutation transaction;
+  `CommitEffect` can close only the exact already-authorized effect. Exact
+  same-head recovery-source validation/pinning and recursive fake compilation
+  are also complete. Host DB behavior passed 27/27 and migrations passed 2/2.
+- Why human review is required: Task 15 exhausted its two-round review budget.
+  The remaining code change is narrow, but the agreed policy prohibits another
+  automatic correction/review cycle.
+- Proposed human-approved repair:
+  1. Evaluate lease expiry with `clock_timestamp()` rather than transaction
+     `now()`, preferably inside the final authorizing mutation predicate.
+  2. Add a concurrency regression that starts while the lease is valid, waits
+     on the locked head/attempt row until wall-clock expiry, and proves the
+     mutation returns `ErrStaleFence`.
+  3. Rerun the 27-spec checkpoint/attempt DB focus, 2 migration specs,
+     recursive checkpoint packages, and one final scoped review.
+
+### DEPENDENCY-004 — Tasks 16–18 wait for accepted checkpoint fence authority
+
+- Task/area: Tasks 16–18, capture, restore/provider resume, telemetry, and
+  retention
+- Classification: Blocking dependency; tasks not started
+- Status: Deferred until `HUMAN-REVIEW-003` is resolved
+- Evidence: Task 16 commits captured workspace generations and journals
+  effects through Task 15's mutation fence. Task 17 restores those committed
+  generations into fresh attempts. Task 18 attributes recovery metrics and
+  releases retained sources. Building any of these on a fence that can remain
+  valid under stale transaction time would institutionalize a stale-writer
+  race at the recovery boundary.
+- Suggested follow-up: Resolve and accept Task 15, then implement Tasks 16, 17,
+  and 18 in dependency order with their existing bounded review budgets.
+
+### DEPENDENCY-005 — Task 19 waits for unresolved Human Review Required tracks
+
+- Task/area: Task 19, final upgrade/end-to-end/residue proof
+- Classification: Blocking dependency; task not started
+- Status: Deferred
+- Evidence: Tasks 6, 12, and 15 remain Human Review Required. Tasks 7, 9,
+  13–14, and 16–18 are consequently unstarted or dependency-deferred. Task 19
+  cannot truthfully prove complete upgrade, recovery, publication, or
+  repository-wide acceptance while those boundaries remain unresolved.
+- Suggested follow-up: Resolve the three Human Review Required entries,
+  complete their dependent tasks, then run Task 19 once as the final milestone
+  rather than repeatedly running broad suites against a knowingly incomplete
+  branch.

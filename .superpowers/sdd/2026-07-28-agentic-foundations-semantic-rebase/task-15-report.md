@@ -195,6 +195,38 @@ types/copy helpers, so recursive package compilation failed.
   and `GOCACHE=/private/tmp/concourse-task15-gocache ginkgo --procs=1
   --focus='agent run (checkpoints|attempts) migration' ./atc/db/migration`.
 
+## Final checkpoint and review round 2
+
+The host-access verification completed after the fenced fixtures were adapted:
+
+- `GOCACHE=/private/tmp/concourse-task15-gocache ginkgo --procs=1
+  --focus='AgentRun(Checkpoints|Attempts)Factory' ./atc/db`: 27/27 passed.
+- `GOCACHE=/private/tmp/concourse-task15-gocache ginkgo --procs=1
+  --focus='agent run (checkpoints|attempts) migration'
+  ./atc/db/migration`: 2/2 passed.
+- `GOCACHE=/private/tmp/concourse-task15-gocache go test
+  ./agent/checkpoint/... -count=1`: checkpoint and checkpointfakes passed.
+- Compile-only checkpoint, DB, migration, exec, runtime, and Jetbridge packages
+  passed. The focused runtime/Jetbridge interruption tests passed, and the
+  AgentStep interruption focus passed 4/4.
+
+Review round 2 found the recovery-source pin and checkpoint fake findings
+addressed, with no new Critical or Important breakage. One Important finding
+remains:
+
+- `requireAttemptFence` obtains its comparison time through
+  `checkpointDatabaseNow`, which executes `SELECT now()`. PostgreSQL `now()` is
+  fixed at transaction start. A transaction that begins while a fence is live,
+  then waits on the head/attempt lock until after its real expiry, can still
+  pass the stale transaction timestamp and mutate a checkpoint or begin an
+  effect.
+
+Status: **Human Review Required**. Task 15 has exhausted its two-round review
+budget, so no further automatic correction is permitted. The narrow proposed
+repair is to evaluate fence expiry with `clock_timestamp()` (ideally in the
+authorizing mutation predicate), then add a lock-wait regression proving a
+transaction cannot mutate after wall-clock lease expiry.
+
 ### Fixture correction
 
 The initial host focus exposed only stale Task 15 fixtures: seventeen

@@ -212,7 +212,37 @@ Task 14:
   requires accepted exact validation gates before replacing the publisher
   gateway, while Tasks 6–7 remain Human Review Required/dependent.
 
-Tasks 15–19 have not started.
+Task 15:
+
+- Implemented through `ecfd296db4`.
+- Status: **Human Review Required** after review round 2.
+- Host serial verification passed 27/27 checkpoint/attempt DB specs and 2/2
+  migration specs. Recursive checkpoint/fake packages, runtime interruption
+  checks, AgentStep interruption behavior, and affected-package compilation
+  also passed.
+- The correction durably binds staged checkpoints/effects to exact fence
+  tokens, verifies and relationally pins same-head recovery checkpoints, and
+  repairs the checkpoint fake.
+- Residual High: `requireAttemptFence` compares lease expiry to
+  `checkpointDatabaseNow`, whose `SELECT now()` is fixed at transaction start.
+  A transaction can begin while a fence is live, wait on a lock past real
+  expiry, then pass the stale timestamp and mutate. See `HUMAN-REVIEW-003`.
+- Do not iterate automatically. The proposed human-approved repair is a
+  `clock_timestamp()`/mutation-predicate check plus a lock-wait expiry
+  regression.
+
+Tasks 16–18:
+
+- Not started; dependency-deferred under `DEPENDENCY-004`.
+- Safe-boundary capture, restore/provider resume, telemetry, and retention all
+  consume Task 15's checkpoint mutation authority. Do not build them on the
+  unresolved stale-time fence.
+
+Task 19:
+
+- Not started; dependency-deferred under `DEPENDENCY-005`.
+- Final end-to-end and residue proof cannot complete while Tasks 6, 12, and 15
+  remain Human Review Required and their dependent tasks remain unstarted.
 
 ## Milestone verification
 
@@ -240,9 +270,13 @@ branch as green until Task 6 receives human review and the unit suite is rerun.
 3. Leave Task 9 dependency-deferred; do not build a new security boundary on
    Task 6's unresolved protected-mount primitive.
 4. Leave Tasks 12–14 at their documented human-review/dependency boundaries.
-5. Continue Task 15 checkpoint and execution-attempt data models as the next
-   safe bounded task.
-6. Treat all remaining feature groups as separate bounded tracks rather than
+5. Leave Task 15 at **Human Review Required**; do not start another automatic
+   correction/review cycle.
+6. Leave Tasks 16–18 dependency-deferred until `HUMAN-REVIEW-003` is resolved
+   and Task 15's fence authority is accepted.
+7. Leave Task 19 dependency-deferred until the Human Review Required boundaries
+   and dependent tasks are resolved.
+8. Treat every resumed feature group as a separate bounded track rather than
    one continuous "rebase."
 
 ## Session handoff requirement
