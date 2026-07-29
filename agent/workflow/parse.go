@@ -81,6 +81,7 @@ type functionSource struct {
 	Capabilities          map[string]Capability  `json:"capabilities,omitempty"`
 	DevValidationProfiles []DevValidationProfile `json:"dev_validation_profiles,omitempty"`
 	Resources             any                    `json:"resources,omitempty"`
+	ResourceSources       []ResourceSource       `json:"resource_sources,omitempty"`
 	ResourceTypes         any                    `json:"resource_types,omitempty"`
 	Prototypes            any                    `json:"prototypes,omitempty"`
 	VarSources            any                    `json:"var_sources,omitempty"`
@@ -169,6 +170,7 @@ func parseFunctionDefinitionSource(raw []byte) (*CompiledDefinition, []DevValida
 			Outputs:           source.Outputs,
 			Capabilities:      source.Capabilities,
 			Resources:         ordinary.Resources,
+			ResourceSources:   source.ResourceSources,
 			ResourceTypes:     ordinary.ResourceTypes,
 			Prototypes:        ordinary.Prototypes,
 			VarSources:        ordinary.VarSources,
@@ -188,9 +190,23 @@ func validateFunctionSourceKeys(document any) error {
 	}
 	if err := rejectObjectKeys(root, "workflow", []string{
 		"schema_version", "name", "signature_version", "disposition_output", "description", "inputs", "outputs",
-		"capabilities", "resources", "resource_types", "prototypes", "var_sources", "plan", "dev_validation_profiles",
+		"capabilities", "resources", "resource_sources", "resource_types", "prototypes", "var_sources", "plan", "dev_validation_profiles",
 	}); err != nil {
 		return err
+	}
+	if resourceSources, ok := root["resource_sources"].([]any); ok {
+		for index, resourceSource := range resourceSources {
+			object, ok := resourceSource.(map[string]any)
+			if !ok {
+				continue
+			}
+			if _, found := object["passed"]; found {
+				return fmt.Errorf("workflow: resource sources do not support passed constraints")
+			}
+			if err := rejectObjectKeys(object, fmt.Sprintf("workflow.resource_sources[%d]", index), []string{"name", "resource", "type", "trigger", "version"}); err != nil {
+				return err
+			}
+		}
 	}
 	if profiles, ok := root["dev_validation_profiles"].([]any); ok {
 		for index, profile := range profiles {

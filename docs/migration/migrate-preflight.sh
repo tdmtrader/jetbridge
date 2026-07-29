@@ -61,7 +61,9 @@ v8.0.1:1765921815
 # Human agent routes use their ordinary team authorization instead.
 # 1773106141 freezes authoritative validation provenance; an empty hash records
 # historical absence and is never recomputed from a mutable workflow definition.
-JETBRIDGE_VERSION=1773106141
+# 1773106142-43 persist exact resource-source admission selections and the
+# pipeline config revision captured for their selecting build.
+JETBRIDGE_VERSION=1773106143
 
 # Minimum supported source version (v6.x)
 MIN_SUPPORTED_VERSION=1601993582

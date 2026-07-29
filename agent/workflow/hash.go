@@ -12,3 +12,10 @@ func Hash(raw []byte) string {
 	h := sha256.Sum256(raw)
 	return fmt.Sprintf("%x", h)
 }
+
+func hashDomainSeparated(domain string, payload []byte) string {
+	hasher := sha256.New()
+	_, _ = hasher.Write([]byte(domain))
+	_, _ = hasher.Write(payload)
+	return fmt.Sprintf("%x", hasher.Sum(nil))
+}

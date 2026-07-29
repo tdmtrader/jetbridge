@@ -25,6 +25,7 @@ type FunctionConfig struct {
 	Outputs           []FunctionOutput      `json:"outputs" yaml:"outputs"`
 	Capabilities      map[string]Capability `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
 	Resources         atc.ResourceConfigs   `json:"resources,omitempty" yaml:"resources,omitempty"`
+	ResourceSources   []ResourceSource      `json:"resource_sources,omitempty" yaml:"resource_sources,omitempty"`
 	ResourceTypes     atc.ResourceTypes     `json:"resource_types,omitempty" yaml:"resource_types,omitempty"`
 	Prototypes        atc.Prototypes        `json:"prototypes,omitempty" yaml:"prototypes,omitempty"`
 	VarSources        atc.VarSourceConfigs  `json:"var_sources,omitempty" yaml:"var_sources,omitempty"`
@@ -173,6 +174,20 @@ func (config FunctionConfig) Validate() error {
 	if err := snapshot.ValidatePorts(config.Inputs); err != nil {
 		return fmt.Errorf("workflow: inputs: %w", err)
 	}
+	if len(config.ResourceSources) > 0 {
+		if err := ValidateResourceSources(config.ResourceSources, config.Resources, config.ResourceTypes); err != nil {
+			return err
+		}
+		inputNames := make(map[string]struct{}, len(config.Inputs))
+		for _, input := range config.Inputs {
+			inputNames[input.Name] = struct{}{}
+		}
+		for _, source := range config.ResourceSources {
+			if _, found := inputNames[source.Name]; found {
+				return fmt.Errorf("workflow: resource source %q conflicts with workflow input", source.Name)
+			}
+		}
+	}
 
 	seenOutputs := make(map[string]struct{}, len(config.Outputs))
 	var dispositionOutput *FunctionOutput
@@ -190,6 +205,11 @@ func (config FunctionConfig) Validate() error {
 		}
 		if strings.TrimSpace(output.From) == "" {
 			return fmt.Errorf("workflow: output %q: from is required", output.Name)
+		}
+	}
+	for _, source := range config.ResourceSources {
+		if _, found := seenOutputs[source.Name]; found {
+			return fmt.Errorf("workflow: resource source %q conflicts with public output", source.Name)
 		}
 	}
 	if config.DispositionOutput != "" {

@@ -35,12 +35,13 @@ func (producer *snapshotProducer) key() string {
 }
 
 type snapshotBinding struct {
-	typ       snapshot.TypeRef
-	presence  snapshotPresence
-	typed     bool
-	ambiguous bool
-	producer  *snapshotProducer
-	writePath string
+	typ            snapshot.TypeRef
+	presence       snapshotPresence
+	typed          bool
+	ambiguous      bool
+	producer       *snapshotProducer
+	writePath      string
+	resourceSource string
 }
 
 type snapshotEnvironment map[string]snapshotBinding
@@ -155,6 +156,14 @@ func (producer *snapshotProducer) setOutputConfig(config atc.SnapshotOutputConfi
 // FunctionATCConfig assembles the exact ordinary one-job template config used
 // for version-3 validation and, later, rendering.
 func FunctionATCConfig(function *FunctionConfig) atc.Config {
+	plan := function.Plan
+	if len(function.ResourceSources) > 0 {
+		plan = make([]atc.Step, 0, len(function.ResourceSources)+len(function.Plan))
+		for _, source := range function.ResourceSources {
+			plan = append(plan, atc.Step{Config: &atc.GetStep{Name: source.Name, Resource: source.Resource, Version: source.Version, Trigger: source.Trigger}})
+		}
+		plan = append(plan, function.Plan...)
+	}
 	return atc.Config{
 		Template:      true,
 		Resources:     function.Resources,
@@ -163,7 +172,7 @@ func FunctionATCConfig(function *FunctionConfig) atc.Config {
 		VarSources:    function.VarSources,
 		Jobs: atc.JobConfigs{{
 			Name:         "entry",
-			PlanSequence: function.Plan,
+			PlanSequence: plan,
 		}},
 	}
 }
@@ -193,14 +202,14 @@ func analyzeFunctionFlow(function *FunctionConfig) ([]publicOutputTarget, error)
 	if err := function.Validate(); err != nil {
 		return nil, err
 	}
-	if len(function.Resources) > 0 {
+	if len(function.Resources) > 0 && len(function.ResourceSources) == 0 {
 		return nil, fmt.Errorf("workflow: resources are live-read boundaries and are not permitted in schema-version-3 workflow functions; capture resource versions into snapshots before invocation")
 	}
 	if len(function.VarSources) > 0 {
 		return nil, fmt.Errorf("workflow: var_sources are live-read boundaries and are not permitted in schema-version-3 workflow functions; capture their values into snapshots before invocation")
 	}
 
-	env := make(snapshotEnvironment, len(function.Inputs))
+	env := make(snapshotEnvironment, len(function.Inputs)+len(function.ResourceSources))
 	for index, input := range function.Inputs {
 		presence := snapshotGuaranteed
 		if input.Optional {
@@ -212,6 +221,9 @@ func analyzeFunctionFlow(function *FunctionConfig) ([]publicOutputTarget, error)
 			typed:     true,
 			writePath: fmt.Sprintf("inputs[%d]", index),
 		}
+	}
+	for index, source := range function.ResourceSources {
+		env[source.Name] = snapshotBinding{typ: source.Type, presence: snapshotGuaranteed, typed: true, writePath: fmt.Sprintf("resource_sources[%d]", index), resourceSource: source.Name}
 	}
 
 	prototypes := make(map[string]struct{}, len(function.Prototypes))
@@ -426,6 +438,9 @@ func (checker *snapshotFlowChecker) checkPublishSnapshot(step *atc.PublishSnapsh
 
 func (checker *snapshotFlowChecker) checkLoadSnapshot(step *atc.LoadSnapshotStep, entry snapshotEnvironment, path string) (snapshotFlow, error) {
 	identity := fmt.Sprintf("%s.load_snapshot(%q)", path, step.Name)
+	if err := rejectResourceSourceShadow(entry, step.Name, identity); err != nil {
+		return snapshotFlow{}, err
+	}
 	if step.Optional {
 		if _, found := entry[step.Name]; found {
 			return snapshotFlow{}, fmt.Errorf("workflow: %s: optional load shadows an existing artifact; its value would be path-dependent", identity)
@@ -455,6 +470,9 @@ func (checker *snapshotFlowChecker) checkLoadSnapshot(step *atc.LoadSnapshotStep
 
 func (checker *snapshotFlowChecker) checkAwaitSnapshot(step *atc.AwaitSnapshotStep, entry snapshotEnvironment, path string) (snapshotFlow, error) {
 	identity := fmt.Sprintf("%s.await_snapshot(%q)", path, step.Name)
+	if err := rejectResourceSourceShadow(entry, step.Name, identity); err != nil {
+		return snapshotFlow{}, err
+	}
 	if checker.timeoutDepth == 0 {
 		return snapshotFlow{}, fmt.Errorf("workflow: %s: an ordinary timeout wrapper is required", identity)
 	}
@@ -706,6 +724,13 @@ func collectUntypedArtifactReads(step atc.Step, path string) map[string]string {
 }
 
 func (checker *snapshotFlowChecker) checkTask(step *atc.TaskStep, entry snapshotEnvironment, path string) (snapshotFlow, error) {
+	if step.Config == nil && len(step.SnapshotInputs) == 0 && len(step.SnapshotOutputs) == 0 {
+		for _, binding := range entry {
+			if binding.resourceSource != "" {
+				return snapshotFlow{}, fmt.Errorf("workflow: %s.task(%q): cannot prove that a file-backed task preserves resource sources without explicit input_types or output_types", path, step.Name)
+			}
+		}
+	}
 	inputs, outputs := effectiveTaskArtifactNames(step)
 	// A file-backed task's legacy input/output membership is unknowable until
 	// runtime. Its explicit input_types/output_types are still checked here;
@@ -814,6 +839,9 @@ func (checker *snapshotFlowChecker) checkLeaf(
 	env := cloneSnapshotEnvironment(entry)
 	produced := make(map[string]snapshotBinding)
 	for _, name := range sortedUniqueStrings(ordinaryOutputs) {
+		if err := rejectResourceSourceShadow(entry, name, identity); err != nil {
+			return snapshotFlow{}, err
+		}
 		if _, typed := typedOutputs[name]; typed {
 			continue
 		}
@@ -823,6 +851,9 @@ func (checker *snapshotFlowChecker) checkLeaf(
 	}
 
 	for _, name := range sortedSnapshotOutputKeys(typedOutputs) {
+		if err := rejectResourceSourceShadow(entry, name, identity); err != nil {
+			return snapshotFlow{}, err
+		}
 		declaration := typedOutputs[name]
 		if err := declaration.Validate(); err != nil {
 			return snapshotFlow{}, fmt.Errorf("workflow: %s: output %q: %w", identity, name, err)
@@ -859,6 +890,14 @@ func (checker *snapshotFlowChecker) checkLeaf(
 		mayProduced: cloneProduced(produced),
 		allProduced: cloneProduced(produced),
 	}, nil
+}
+
+func rejectResourceSourceShadow(entry snapshotEnvironment, name, path string) error {
+	binding, found := entry[name]
+	if !found || binding.resourceSource == "" {
+		return nil
+	}
+	return fmt.Errorf("workflow: %s: resource source %q cannot be shadowed", path, binding.resourceSource)
 }
 
 func emptySnapshotFlow(entry snapshotEnvironment) snapshotFlow {

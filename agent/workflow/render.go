@@ -172,6 +172,17 @@ func FullFunctionTarget(definition Definition) (FunctionTarget, error) {
 }
 
 func RenderFunction(target FunctionTarget) (RenderedFunction, error) {
+	return renderFunction(target, nil, false)
+}
+
+// RenderFunctionWithBoundSources renders a source-bearing workflow only after
+// the standing admission pipeline has persisted exact sealed snapshots. The
+// snapshot IDs are parameters, never template identity or resource lookups.
+func RenderFunctionWithBoundSources(target FunctionTarget, sourceRefs map[string]snapshot.SnapshotRef) (RenderedFunction, error) {
+	return renderFunction(target, sourceRefs, true)
+}
+
+func renderFunction(target FunctionTarget, sourceRefs map[string]snapshot.SnapshotRef, bindSources bool) (RenderedFunction, error) {
 	function, err := cloneFunctionConfig(&target.Function)
 	if err != nil {
 		return RenderedFunction{}, fmt.Errorf("workflow: clone target: %w", err)
@@ -183,6 +194,15 @@ func RenderFunction(target FunctionTarget) (RenderedFunction, error) {
 	signature := clonePublicSignature(target.Signature)
 	if err := validateFunctionTarget(target, function, signature); err != nil {
 		return RenderedFunction{}, err
+	}
+	hasSources := len(function.ResourceSources) > 0
+	if hasSources && !bindSources {
+		return RenderedFunction{}, fmt.Errorf("workflow: resource-source function requires exact bound source refs")
+	}
+	if bindSources {
+		if err := validateBoundResourceSourceRefs(function.ResourceSources, sourceRefs); err != nil {
+			return RenderedFunction{}, err
+		}
 	}
 	if err := walkFunctionSteps(function.Plan, func(step atc.Step, _ string, _ bool) error {
 		task, ok := step.Config.(*atc.TaskStep)
@@ -223,8 +243,8 @@ func RenderFunction(target FunctionTarget) (RenderedFunction, error) {
 		Format:   atc.ParamFormatPositiveDecimalInt64,
 		Required: true,
 	}}
-	loads := make([]atc.Step, 0, len(signature.Inputs))
-	paramNames := make(map[string]string, len(signature.Inputs))
+	loads := make([]atc.Step, 0, len(signature.Inputs)+len(function.ResourceSources))
+	paramNames := make(map[string]string, len(signature.Inputs)+len(function.ResourceSources))
 	for _, input := range signature.Inputs {
 		paramName, err := InputParamName(input.Name)
 		if err != nil {
@@ -254,6 +274,20 @@ func RenderFunction(target FunctionTarget) (RenderedFunction, error) {
 			WorkflowRunID: "((workflow_run_id))",
 		}})
 	}
+	if bindSources {
+		for _, source := range function.ResourceSources {
+			paramName, err := InputParamName(source.Name)
+			if err != nil {
+				return RenderedFunction{}, err
+			}
+			if _, found := paramNames[source.Name]; found {
+				return RenderedFunction{}, fmt.Errorf("workflow: duplicate rendered snapshot input %q", source.Name)
+			}
+			paramNames[source.Name] = paramName
+			params = append(params, atc.ParamSchema{Name: paramName, Type: "string", Format: atc.ParamFormatPositiveDecimalInt64, Required: true})
+			loads = append(loads, atc.Step{Config: &atc.LoadSnapshotStep{Name: source.Name, ID: "((" + paramName + "))", Type: source.Type, WorkflowRunID: "((workflow_run_id))"}})
+		}
+	}
 
 	plan := make([]atc.Step, 0, len(loads)+len(function.Plan))
 	plan = append(plan, loads...)
@@ -264,6 +298,18 @@ func RenderFunction(target FunctionTarget) (RenderedFunction, error) {
 	}
 	flowFunction.Inputs = nil
 	flowFunction.Plan = plan
+	renderResources := function.Resources
+	renderResourceTypes := function.ResourceTypes
+	if hasSources {
+		renderResourceTypes, err = finalFunctionResourceTypes(function)
+		if err != nil {
+			return RenderedFunction{}, err
+		}
+		renderResources = nil
+		flowFunction.Resources = nil
+		flowFunction.ResourceSources = nil
+		flowFunction.ResourceTypes = renderResourceTypes
+	}
 	if err := TypeCheckFunction(flowFunction); err != nil {
 		return RenderedFunction{}, fmt.Errorf("workflow: rendered snapshot flow: %w", err)
 	}
@@ -271,8 +317,8 @@ func RenderFunction(target FunctionTarget) (RenderedFunction, error) {
 	config := atc.Config{
 		Template:      true,
 		Params:        params,
-		Resources:     function.Resources,
-		ResourceTypes: function.ResourceTypes,
+		Resources:     renderResources,
+		ResourceTypes: renderResourceTypes,
 		Prototypes:    function.Prototypes,
 		VarSources:    function.VarSources,
 		Jobs: atc.JobConfigs{{
@@ -306,6 +352,63 @@ func RenderFunction(target FunctionTarget) (RenderedFunction, error) {
 		DevValidationProfiles:       cloneCompiledDevValidationProfiles(function.DevValidationProfiles),
 		DevValidationProvenanceHash: function.DevValidationProvenanceHash,
 	}, nil
+}
+
+func validateBoundResourceSourceRefs(sources []ResourceSource, refs map[string]snapshot.SnapshotRef) error {
+	names := make(map[string]struct{}, len(sources))
+	for _, source := range sources {
+		names[source.Name] = struct{}{}
+	}
+	for name := range refs {
+		if _, found := names[name]; !found {
+			return fmt.Errorf("workflow: extra bound resource source ref %q", name)
+		}
+	}
+	used := make(map[snapshot.SnapshotID]string, len(sources))
+	for _, source := range sources {
+		ref, found := refs[source.Name]
+		if !found {
+			return fmt.Errorf("workflow: missing bound resource source ref %q", source.Name)
+		}
+		if err := ref.Validate(); err != nil {
+			return fmt.Errorf("workflow: resource source %q is not a sealed snapshot ref: %w", source.Name, err)
+		}
+		if ref.Type != source.Type {
+			return fmt.Errorf("workflow: resource source %q snapshot type mismatch: have %s, require %s", source.Name, ref.Type, source.Type)
+		}
+		if previous, found := used[ref.ID]; found {
+			return fmt.Errorf("workflow: duplicate bound resource source snapshot ref %s for %q and %q", ref.ID, previous, source.Name)
+		}
+		used[ref.ID] = source.Name
+	}
+	return nil
+}
+
+func finalFunctionResourceTypes(function *FunctionConfig) (atc.ResourceTypes, error) {
+	required := map[string]struct{}{}
+	if err := walkFunctionSteps(function.Plan, func(step atc.Step, path string, _ bool) error {
+		task, ok := step.Config.(*atc.TaskStep)
+		if !ok {
+			return nil
+		}
+		closure, err := validateImmutableTaskDependencies(task, function.ResourceTypes)
+		if err != nil {
+			return fmt.Errorf("workflow: %s: %w", path, err)
+		}
+		for _, resourceType := range closure {
+			required[resourceType.Name] = struct{}{}
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	types := make(atc.ResourceTypes, 0, len(required))
+	for _, resourceType := range function.ResourceTypes {
+		if _, found := required[resourceType.Name]; found {
+			types = append(types, resourceType)
+		}
+	}
+	return types, nil
 }
 
 func cloneValidatedDefinitionFunction(definition Definition) (*FunctionConfig, PublicSignature, error) {

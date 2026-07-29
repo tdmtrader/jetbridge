@@ -1,0 +1,7 @@
+DROP INDEX agent_workflow_runs_resource_source_admission;
+ALTER TABLE agent_workflow_runs DROP CONSTRAINT agent_workflow_runs_resource_source_admission_fkey;
+ALTER TABLE agent_workflow_runs DROP COLUMN resource_source_admission_id;
+DROP TABLE agent_workflow_resource_source_bindings;
+DROP TABLE agent_workflow_resource_source_admissions;
+DROP INDEX agent_workflow_resource_source_pipelines_active;
+DROP TABLE agent_workflow_resource_source_pipelines;

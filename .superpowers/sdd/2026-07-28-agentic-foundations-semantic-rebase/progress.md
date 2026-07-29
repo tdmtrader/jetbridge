@@ -184,7 +184,28 @@
     narrow post-Hangar/pre-location failure window; `DEFERRED-006` tracks
     enforcement when operators disable the optional daemon egress policy.
   - Status: Accepted.
-- [ ] Task 12 — resource-source grammar and persistence
+- [x] Task 12 — resource-source grammar and persistence
+  - Commit: pending local commit (`feat(workflow): persist resource-source admissions`).
+  - Behavior: schema-v3 workflows declare a one-to-one ordinary Concourse
+    resource source with standard `trigger`/`version` selection semantics;
+    the rendered standing pipeline has one `admit` job, and executable
+    rendering accepts source-bearing workflows only with exact sealed snapshot
+    bindings. Migrations 1773106142-43 persist the team/workflow/revision
+    pipeline owner, exact selecting build/version/type/capture provenance, and
+    copied pipeline configuration version. The DB factory atomically activates
+    (and drains prior), drains, and archives owned source pipelines and accepts
+    only completed successful `admit` builds at the registered config version.
+  - Verification: `go test ./agent/workflow -count=1` passed; compile-only
+    `go test ./agent/workflow ./atc/db -run '^$' -count=1` passed (with a
+    task-local Go cache). The serial normal migration harness was attempted
+    with `ginkgo --procs=1 --focus='workflow resource source|build pipeline
+    config|Legacy Database Upgrade' ./atc/db/migration`, but its BeforeSuite
+    could not initialize the temporary PostgreSQL cluster: `shmget ...
+    Operation not permitted`; no specs ran.
+  - Review: self-review only; no independent review round yet.
+  - Concern: source capture/reuse orchestration remains Task 13. PostgreSQL
+    migration/factory behavior needs a host or Borg environment allowing the
+    repository postgresrunner shared-memory setup.
 - [ ] Task 13 — source capture/reuse runtime
 - [ ] Task 14 — direct in-ATC publication
 - [ ] Task 15 — checkpoint and attempt data models
