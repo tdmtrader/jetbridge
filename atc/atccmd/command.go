@@ -336,16 +336,15 @@ type RunCommand struct {
 		MaxConcurrency int           `long:"agent-experiment-runner-max-concurrency" default:"4" description:"Maximum number of experiment cells claimed or reconciled per pass."`
 	} `group:"Agent Experiments"`
 
-	AgentPublisherGateway struct {
-		Enabled           bool          `long:"agent-publisher-gateway-enabled" description:"Enable provider-neutral outbound publication through a policy-controlled HTTPS gateway."`
-		Endpoint          string        `long:"agent-publisher-gateway-endpoint" description:"HTTPS origin for the provider-neutral publisher gateway; paths, credentials, queries, and fragments are rejected."`
-		PolicyFile        string        `long:"agent-publisher-gateway-policy-file" description:"Absolute path to a mounted team and destination allow policy JSON file."`
-		TokenFile         string        `long:"agent-publisher-gateway-token-file" description:"Absolute path to a mounted bearer token file; token literals are never accepted."`
-		CACertificateFile string        `long:"agent-publisher-gateway-ca-certificate-file" description:"Optional absolute path to a mounted PEM CA bundle for the gateway."`
-		RequestTimeout    time.Duration `long:"agent-publisher-gateway-request-timeout" default:"30s" description:"End-to-end timeout for one publisher gateway reconciliation or write."`
-		LeaseDuration     time.Duration `long:"agent-publisher-gateway-lease-duration" default:"5m" description:"Durable publication lease before lookup-based retry reconciliation."`
-		MaxResponseBytes  int64         `long:"agent-publisher-gateway-max-response-bytes" default:"1048576" description:"Maximum accepted publisher gateway JSON response size."`
-	} `group:"Agent Publisher Gateway"`
+	AgentPublisher struct {
+		Enabled          bool                          `long:"agent-publisher-enabled" description:"Enable policy-controlled outbound publication inside ATC."`
+		CredentialRoot   string                        `long:"agent-publisher-credential-root" default:"/run/concourse-publisher" description:"Trusted absolute non-root directory containing destination-scoped publisher credentials."`
+		PolicyFile       string                        `long:"agent-publisher-policy-file" description:"Absolute path to the mounted exact-destination publisher policy JSON file."`
+		CredentialFiles  agentPublisherCredentialFiles `long:"agent-publisher-credential-file" description:"Map one policy credential reference to one mounted absolute file path. May be specified multiple times." value-name:"REFERENCE:ABSOLUTE-PATH"`
+		DirectGitEnabled bool                          `long:"agent-publisher-direct-git-enabled" description:"Enable the in-process direct Git branch and trunk publication adapter."`
+		RequestTimeout   time.Duration                 `long:"agent-publisher-request-timeout" default:"30s" description:"End-to-end timeout for one provider reconciliation or publication."`
+		LeaseDuration    time.Duration                 `long:"agent-publisher-lease-duration" default:"5m" description:"Durable publication lease before lookup-based retry reconciliation."`
+	} `group:"Agent Publisher"`
 
 	CLIArtifactsDir flag.Dir `long:"cli-artifacts-dir" description:"Directory containing downloadable CLI binaries."`
 	WebPublicDir    flag.Dir `long:"web-public-dir" description:"Web public/ directory to serve live for local development."`
@@ -1969,8 +1968,8 @@ func (cmd *RunCommand) composeAgentSnapshots(connection db.DbConn, logger lager.
 	}
 	var snapshotPublisher publisher.Executor
 	publisherComposer := cmd.agentSnapshotPublisherComposer
-	if publisherComposer == nil && cmd.AgentPublisherGateway.Enabled {
-		publisherComposer = cmd.buildAgentPublisherGateway
+	if publisherComposer == nil && cmd.AgentPublisher.Enabled {
+		publisherComposer = cmd.buildAgentPublisher
 	}
 	if publisherComposer != nil {
 		snapshotPublisher, err = publisherComposer(
@@ -2959,7 +2958,7 @@ func (cmd *RunCommand) validate() error {
 		errs = multierror.Append(errs, err)
 	}
 
-	if err := cmd.validateAgentPublisherGateway(); err != nil {
+	if err := cmd.validateAgentPublisher(); err != nil {
 		errs = multierror.Append(errs, err)
 	}
 
