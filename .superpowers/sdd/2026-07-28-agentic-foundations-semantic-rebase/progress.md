@@ -186,6 +186,8 @@
   - Status: Accepted.
 - [x] Task 12 — resource-source grammar and persistence
   - Commit: `2d160f6c89 feat(workflow): persist resource-source admissions`.
+
+  - Fix commit: `f9de627f40 fix(workflow): harden source admission bindings`.
   - Behavior: schema-v3 workflows declare a one-to-one ordinary Concourse
     resource source with standard `trigger`/`version` selection semantics;
     the rendered standing pipeline has one `admit` job, and executable
@@ -201,9 +203,14 @@
     hit sandbox-denied System V shared memory; the identical host-access rerun
     passed 17/17 specs.
   - Review: self-review only; no independent review round yet.
-  - Concern: source capture/reuse orchestration remains Task 13. The new DB
-    factory compiles but has no dedicated behavioral test; independent review
-    must assess that Task 12 coverage gap.
+  - Fix round 1: execution parameters hard-bind validated snapshot IDs;
+    capture derives bindings from the successful selecting build and frozen
+    declaration; archive/create serialize on the source-pipeline owner row;
+    and focused DB coverage now checks lifecycle ownership, derivation, and
+    idempotency. The serial PostgreSQL run was sandbox-blocked by denied System
+    V shared memory before executing specs; workflow and DB/migration compile
+    checks passed.
+  - Concern: source capture/reuse orchestration remains Task 13.
 - [ ] Task 13 — source capture/reuse runtime
 - [ ] Task 14 — direct in-ATC publication
 - [ ] Task 15 — checkpoint and attempt data models

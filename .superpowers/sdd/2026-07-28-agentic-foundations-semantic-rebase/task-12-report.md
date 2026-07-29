@@ -81,3 +81,40 @@ None beyond the already planned Task 13 runtime composition.
 ## Commits
 
 `2d160f6c89 feat(workflow): persist resource-source admissions`
+
+## Fix round 1
+
+This is the sole correction pass for the four High review findings.
+Implementation commit: `f9de627f40 fix(workflow): harden source admission bindings`.
+
+1. `RenderedFunction` now retains the exact validated source references in a
+   private execution envelope. `BindExecutionParams` injects their snapshot
+   IDs and rejects any supplied value that differs, so no caller can replace a
+   validated source after rendering. The focused workflow regression first
+   failed because the envelope method did not exist, then passed with both
+   injection and substitution-rejection assertions.
+2. `CreateCaptured` no longer accepts caller-supplied binding values. It locks
+   and reads frozen source declarations, verifies the selecting build is a
+   successful `admit` build for the captured config version, and derives each
+   source/resource/version/type from that build's recorded inputs. It rejects
+   missing, extra, ambiguous, or declaration-mismatched inputs. Idempotency
+   now also rejects a reused key whose immutable admission identity differs.
+3. Archive locks its scoped source-pipeline owner row before it rechecks
+   in-flight admissions and changes state. Create locks that same row before
+   verifying active authority and deriving bindings, serializing an archive
+   against a new capture admission.
+4. Added serial DB behavioral coverage for team-scoped lifecycle ownership,
+   drain/archive rejecting later create, selecting-build-derived binding/type,
+   and idempotent replay/conflict. The narrow suite was attempted once but its
+   PostgreSQL BeforeSuite could not create System V shared memory in this
+   sandbox (`shmget: Operation not permitted`), so it ran zero specs. Package
+   compilation passed, as did workflow tests and migration-package compilation.
+
+Verification for this correction:
+
+- `go test ./agent/workflow -count=1` — passed.
+- `go test ./atc/db -run '^$' -count=1` — passed.
+- `go test ./atc/db/migration -run '^$' -count=1` — passed.
+- `ginkgo --procs=1 --focus='workflow resource-source admission persistence' ./atc/db`
+  — blocked before specs by the sandbox PostgreSQL shared-memory restriction.
+- `git diff --check` — passed.
