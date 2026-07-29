@@ -148,5 +148,6 @@ The remaining Task 15 runtime/owner acceptance area is now implemented in
 - Not run: full Jetbridge Ginkgo suite remains intentionally out of scope
   because the known Task 6 zero-private-mount regression fails unrelated specs.
   The new DB lifecycle/GC focus could not run locally because `pg_isready`
-  returned `/tmp:5432 - no response`; host PostgreSQL evidence is required for
-  `ginkgo --focus='AgentAttemptContainerOwner' ./atc/db`.
+  returned `/tmp:5432 - no response`. Parent host verification subsequently
+  passed: `ginkgo --procs=1 --focus='AgentAttemptContainerOwner' ./atc/db`
+  ran 2/2 focused specs green.
