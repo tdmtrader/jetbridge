@@ -96,3 +96,22 @@ to evaluate independently.
 - Suggested follow-up: Adopt a durable, fsynced output-tree transaction and
   recovery marker before adding producer workloads that rely on multi-file
   output updates surviving abrupt node loss.
+
+### DEPENDENCY-001 — Task 9 waits for the protected-mount trust boundary
+
+- Task/area: Task 9, output-builder execution wiring
+- Classification: Blocking dependency; task not started
+- Status: Deferred until `HUMAN-REVIEW-001` is resolved
+- Evidence: The current runtime has no independent server-owned file seam for
+  a managed sidecar. `runtime.PrivateFileMount` is the protected mechanism,
+  but Jetbridge projects it only into the main container. Task 9 must extend
+  that same Secret lifecycle to the output-builder sidecar. The ambiguous
+  Pod-create cleanup and replacement-reaper races can remove live authority,
+  while the zero-mount Pod-UID regression prevents ordinary agent execution
+  and its package-wide verification.
+- Why it is blocking: Building Task 9 on the unresolved primitive would make
+  a new security boundary depend on code already marked Human Review Required,
+  and would add a second consumer before the primitive's lifecycle is trusted.
+- Suggested follow-up: Resolve `HUMAN-REVIEW-001`, rerun the full Jetbridge
+  suite, then implement Task 9 using a narrowly selected private mount for the
+  managed builder sidecar. Do not expose private mounts to arbitrary sidecars.

@@ -137,8 +137,19 @@ Task 8:
 - `DEFERRED-003` records durable fsynced crash-recovery journaling; it is
   nonblocking for the current authoring/preflight boundary.
 
-Task 7 remains unstarted because it depends on Task 6. Tasks 9–19 have not
-started.
+Task 7 remains unstarted because it depends on Task 6.
+
+Task 9:
+
+- Not started; dependency-deferred under `DEPENDENCY-001`.
+- The current runtime has no safe independent server-owned file seam for a
+  managed sidecar. Task 9 must extend Task 6's protected private-Secret mount,
+  so its authority availability/integrity inherits all three
+  `HUMAN-REVIEW-001` blockers.
+- Resume Task 9 only after human review resolves Task 6 and the full Jetbridge
+  suite is green.
+
+Tasks 10–19 have not started.
 
 ## Milestone verification
 
@@ -163,8 +174,10 @@ branch as green until Task 6 receives human review and the unit suite is rerun.
    correction/review cycle.
 2. Treat Task 7 as dependent on Task 6 and do not wire exact validation gates
    against a runtime that is still Human Review Required.
-3. Continue Task 9 output-builder execution wiring as the next bounded task.
-4. Treat all remaining feature groups as separate bounded tracks rather than
+3. Leave Task 9 dependency-deferred; do not build a new security boundary on
+   Task 6's unresolved protected-mount primitive.
+4. Continue Task 10 Hangar core as the next safe independent bounded task.
+5. Treat all remaining feature groups as separate bounded tracks rather than
    one continuous "rebase."
 
 ## Session handoff requirement

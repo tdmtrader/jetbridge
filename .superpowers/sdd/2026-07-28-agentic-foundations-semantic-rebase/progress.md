@@ -132,6 +132,13 @@
     publication. Commit: `fc31f229d8`. Required checkpoint passed; pending
     final scoped review.
 - [ ] Task 9 — output-builder execution wiring
+  - Status: dependency-deferred; not started.
+  - A bounded codebase audit found no safe independent server-owned authority
+    file seam for a sidecar. Task 9 must extend Task 6's
+    `runtime.PrivateFileMount`/Secret lifecycle, whose three current blockers
+    directly affect output-builder authority availability and integrity.
+  - Resume only after `HUMAN-REVIEW-001` is resolved and the full Jetbridge
+    suite is green. See `DEPENDENCY-001`.
 - [ ] Task 10 — Hangar core
 - [ ] Task 11 — Hangar daemon/deployment integration
 - [ ] Task 12 — resource-source grammar and persistence
