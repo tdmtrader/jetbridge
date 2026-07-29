@@ -76,6 +76,13 @@ func TestCheckpointCaptureClientUploadValidatesExactObjectAndAccounting(t *testi
 	if _, err := client.UploadCheckpoint(context.Background(), "node-a", prepared, ticket); err == nil {
 		t.Fatal("mismatched accounting succeeded")
 	}
+
+	available := checkpoint.ObjectUploadTicket{ObjectID: 3, StagedCheckpointID: 4, Kind: hangar.KindCheckpoint, Digest: prepared.Digest, Key: key, AlreadyAvailable: true, AvailableGeneration: 11}
+	availableResult := checkpoint.ArchiveResult{Object: hangar.Attributes{Ref: hangar.ObjectRef{Kind: hangar.KindCheckpoint, Digest: prepared.Digest, Key: key, Generation: 11}}, Files: prepared.Files, Bytes: prepared.Bytes}
+	client = checkpointCaptureDaemonClient([]DaemonEndpoint{{NodeName: "node-a", Address: "10.0.0.1"}}, func(*http.Request) *http.Response { return checkpointJSONResponse(http.StatusOK, availableResult) })
+	if got, err := client.UploadCheckpoint(context.Background(), "node-a", prepared, available); err != nil || got != availableResult {
+		t.Fatalf("AlreadyAvailable upload = %#v, %v", got, err)
+	}
 }
 
 func TestCheckpointCaptureClientRejectsHTTPAndTrailingResponsesAndClosesBodies(t *testing.T) {
@@ -101,6 +108,16 @@ func TestCheckpointCaptureClientRejectsHTTPAndTrailingResponsesAndClosesBodies(t
 	}
 	if !body.closed {
 		t.Fatal("response body was not closed")
+	}
+}
+
+func TestCheckpointCaptureClientDoesNotRequestAfterContextCancellation(t *testing.T) {
+	request := checkpoint.ArchiveRequest{ContainerHandle: "agent-42", WorkspaceRoots: []string{"dir"}, SessionRoots: []string{"session"}, MaxBytes: 1024}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	client := checkpointCaptureDaemonClient([]DaemonEndpoint{{NodeName: "node-a", Address: "10.0.0.1"}}, func(*http.Request) *http.Response { t.Fatal("cancelled request reached transport"); return nil })
+	if _, err := client.PrepareCheckpoint(ctx, "node-a", request); err == nil {
+		t.Fatal("cancelled request succeeded")
 	}
 }
 

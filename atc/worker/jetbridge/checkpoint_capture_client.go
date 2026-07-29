@@ -98,6 +98,9 @@ func (d *DaemonClient) checkpointEndpoint(ctx context.Context, nodeName string) 
 }
 
 func (d *DaemonClient) checkpointJSON(ctx context.Context, endpoint DaemonEndpoint, route string, input any, expectedStatus int, output any) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	client, err := d.snapshotHTTPClient()
 	if err != nil {
 		return err
@@ -167,11 +170,17 @@ func validateCheckpointUploadTicket(ticket checkpoint.ObjectUploadTicket, prepar
 
 func validateCheckpointArchiveResult(result checkpoint.ArchiveResult, prepared checkpoint.PreparedArchive, ticket checkpoint.ObjectUploadTicket) error {
 	ref := result.Object.Ref
-	if ref.Kind != hangar.KindCheckpoint || ref.Digest != ticket.Digest || ref.Key != ticket.Key || ref.Generation <= 0 || result.Object.UncompressedBytes != prepared.Bytes || result.Object.CompressedBytes <= 0 || result.Files != prepared.Files || result.Bytes != prepared.Bytes {
+	if ref.Kind != hangar.KindCheckpoint || ref.Digest != ticket.Digest || ref.Key != ticket.Key || ref.Generation <= 0 || result.Files != prepared.Files || result.Bytes != prepared.Bytes {
 		return errors.New("checkpoint daemon upload response does not match prepared archive")
 	}
-	if ticket.AlreadyAvailable && ref.Generation != ticket.AvailableGeneration {
-		return errors.New("checkpoint daemon available generation differs from ticket")
+	if ticket.AlreadyAvailable {
+		if ref.Generation != ticket.AvailableGeneration || result.Object.UncompressedBytes != 0 || result.Object.CompressedBytes != 0 {
+			return errors.New("checkpoint daemon available response does not match ticket")
+		}
+		return nil
+	}
+	if result.Object.UncompressedBytes != prepared.Bytes || result.Object.CompressedBytes <= 0 {
+		return errors.New("checkpoint daemon upload accounting does not match prepared archive")
 	}
 	return nil
 }
