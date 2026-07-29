@@ -150,3 +150,47 @@ The remaining Task 15 runtime/owner acceptance area is now implemented in
   returned `/tmp:5432 - no response`. Parent host verification subsequently
   passed: `ginkgo --procs=1 --focus='AgentAttemptContainerOwner' ./atc/db`
   ran 2/2 focused specs green.
+
+## Review round 1 blocking correction
+
+### Root cause
+
+Checkpoint and effect mutations carried only an execution-attempt number. They
+therefore never proved that the caller still held the exact current,
+unexpired PostgreSQL fence, and staged/effect rows did not retain the fence
+that authorized them. `BeginRecovery` accepted caller-supplied checkpoint
+IDs/generations without proving that the exact source was a same-head committed
+checkpoint, and attempts retained no relational generation pin. Finally, the
+checkpoint fake had been copied from a later API and referenced removed request
+types/copy helpers, so recursive package compilation failed.
+
+### Correction
+
+- Added `FenceClaim` to checkpoint begin/abort/upload/complete/commit and
+  effect begin/commit contracts. Staged checkpoints and begun effects persist
+  the exact UUID token. Every public staged mutation and `BeginEffect` locks
+  the head/current attempt and verifies execution attempt, token, runnable
+  state, and `clock_timestamp()` lease expiry in the same transaction.
+  `CommitEffect` matches its stored authorization token but deliberately does
+  not demand a still-live/current lease, preserving only the explicit ability
+  for an already-begun effect to close after terminalization.
+- Added a `(head_id, id, generation)` key and composite recovery-source FK in
+  migration 6145. `BeginRecovery` locks and requires the exact source to be a
+  committed checkpoint of the same head before allocating the replacement.
+  Expiration and object-claim/finalize queries now preserve any checkpoint or
+  archive object referenced by retained attempts.
+- Repaired `checkpointfakes.FakeStore` to the current `Store` signature and
+  added defensive-copy coverage.
+
+### Evidence and remaining environment constraint
+
+- Passed: `GOCACHE=/private/tmp/concourse-task15-gocache go test
+  ./agent/checkpoint/... -count=1`.
+- Passed compile/API check: `GOCACHE=/private/tmp/concourse-task15-gocache go
+  test ./agent/checkpoint/... ./atc/db ./atc/db/migration -run '^$' -count=1`.
+- Passed: `git diff --check`.
+- Local PostgreSQL remains unavailable: `pg_isready` returned `/tmp:5432 - no
+  response`. Run the host serial verification with
+  `GOCACHE=/private/tmp/concourse-task15-gocache ginkgo --procs=1 --focus='AgentRun(Checkpoints|Attempts)Factory' ./atc/db`
+  and `GOCACHE=/private/tmp/concourse-task15-gocache ginkgo --procs=1
+  --focus='agent run (checkpoints|attempts) migration' ./atc/db/migration`.
