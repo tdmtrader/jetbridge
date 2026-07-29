@@ -2,7 +2,7 @@
 
 ## Status
 
-Implemented and committed locally pending independent review. Source-capture
+Implemented in `2d160f6c89` and pending independent review. Source-capture
 and retry/reuse orchestration is deliberately not included; it is Task 13.
 
 ## Behavior
@@ -79,4 +79,4 @@ None beyond the already planned Task 13 runtime composition.
 
 ## Commits
 
-Pending local commit at report creation.
+`2d160f6c89 feat(workflow): persist resource-source admissions`

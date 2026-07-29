@@ -185,7 +185,7 @@
     enforcement when operators disable the optional daemon egress policy.
   - Status: Accepted.
 - [x] Task 12 — resource-source grammar and persistence
-  - Commit: pending local commit (`feat(workflow): persist resource-source admissions`).
+  - Commit: `2d160f6c89 feat(workflow): persist resource-source admissions`.
   - Behavior: schema-v3 workflows declare a one-to-one ordinary Concourse
     resource source with standard `trigger`/`version` selection semantics;
     the rendered standing pipeline has one `admit` job, and executable
