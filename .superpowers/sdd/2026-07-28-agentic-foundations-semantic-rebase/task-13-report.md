@@ -77,3 +77,32 @@ The Ginkgo `BeforeSuite` failed before running specs with `could not bind IPv4
 address "127.0.0.1": Address already in use`; no source, Git, or cluster data
 was changed to clear that external contention. This command remains a Task 13
 checkpoint rerun once port 5434 is free.
+
+## Focused DB high-port attempt
+
+On 2026-07-29, one serial rerun of all six Task 13 source-pipeline and
+experiment-association specs was attempted on verified-free loopback port
+25433. It used a temporary Go `-overlay` replacement of
+`atc/postgresrunner/ginkgo.go`; the replacement changed only the test runner
+port expression from `5433 + GinkgoParallelProcess()` to
+`25432 + GinkgoParallelProcess()`.
+
+```
+go test -overlay=.superpowers/sdd/2026-07-28-agentic-foundations-semantic-rebase/task-13-postgresrunner-overlay.json ./atc/db -count=1 -ginkgo.focus='(atomically owns source pipelines and preserves frozen declarations on exact promotion repeats|unpauses active source pipelines and physically archives drained pipelines only after a pause pass|does not make a workflow live when source-pipeline activation fails|rejects a public manual build for a source-owned pipeline without scheduling it|persists one prepared source admission per definition and binds every claimed child to it|keeps a draft unchanged when prepared source admissions do not cover the locked registry)'
+```
+
+The attempt did not complete within its bounded completion window and produced
+no spec output. Exact process evidence after more than two minutes was:
+
+```
+47171 ... go test -overlay=... ./atc/db -count=1 -ginkgo.focus=(...)
+47215 47171 ... /var/folders/.../go-build.../db.test -test.timeout=10m0s ...
+47226 47215 ... postgres -k /tmp -D /var/folders/.../concourse-pg-runner/postgres1397346673 -h 127.0.0.1 -p 25433
+```
+
+The isolated `go test` and `db.test` PIDs (47171 and 47215) were interrupted
+after this single attempt; their temporary postgres child exited, as confirmed
+by no listener on port 25433. The temporary replacement and overlay were then
+removed. Tracked production code and the external PostgreSQL process on port
+5434 (PID 36839) were not touched. No further infrastructure retries were
+performed.
