@@ -194,3 +194,17 @@ types/copy helpers, so recursive package compilation failed.
   `GOCACHE=/private/tmp/concourse-task15-gocache ginkgo --procs=1 --focus='AgentRun(Checkpoints|Attempts)Factory' ./atc/db`
   and `GOCACHE=/private/tmp/concourse-task15-gocache ginkgo --procs=1
   --focus='agent run (checkpoints|attempts) migration' ./atc/db/migration`.
+
+### Fixture correction
+
+The initial host focus exposed only stale Task 15 fixtures: seventeen
+checkpoint specs still supplied the pre-fence API, and one attempt spec used a
+fabricated source ID. The DB tests now allocate/transition real durable
+attempts, acquire a UUID fence, and propagate the resulting claim through each
+checkpoint/effect operation. Recovery coverage creates actual committed
+same-head source rows and directly covers missing, foreign, noncommitted, and
+wrong-generation sources. Focused coverage also proves a replaced/expired or
+cross-token caller cannot mutate a stage or begin a new effect, while the exact
+pre-authorized effect may close; retained recovery sources pin their checkpoint
+and archive against reclamation. Non-DB compile check passed again; the serial
+PostgreSQL focus remains the required host evidence.
