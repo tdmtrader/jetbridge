@@ -2,10 +2,10 @@
 
 ## Status
 
-**IMPLEMENTED; INDEPENDENT REVIEW PENDING** — the Task 10 implementation,
-focused unit verification, and required emulator-backed target are complete.
-`DEFERRED-004` was resolved by running the target against a temporary
-fake-gcs-server deployment on Borg.
+**ACCEPTED** — the Task 10 implementation, focused unit verification, and
+required emulator-backed target are complete. Independent blocking-only review
+round 1 found no blocking findings. `DEFERRED-004` was resolved by running the
+target against a temporary fake-gcs-server deployment on Borg.
 
 ## Files and behavior
 
@@ -71,6 +71,14 @@ uncompressed bounds, cancellation behavior, and the no-cache recovery path.
 No correctness, security, corruption, or acceptance blocker was found. The
 GCS SDK and existing `klauspost/compress` zstd dependency are the only storage
 dependencies introduced.
+
+## Independent review
+
+- Round 1 reviewer: Terra, read-only review of
+  `27e26dd8fae3989932c8a919c10177b67c252312..3e1e2c6cfc8a3c01c02b43e6a7e843fe3873c935`.
+- Blocking findings: none.
+- Deferred observations: none material.
+- Verdict: **ACCEPTED**. No correction or round-2 review was required.
 
 ## Deferred observations
 

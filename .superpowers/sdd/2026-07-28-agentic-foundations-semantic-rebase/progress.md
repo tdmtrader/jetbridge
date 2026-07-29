@@ -153,9 +153,10 @@
     fake-gcs-server deployment on Borg, including concurrent writers,
     truncated zstd, and complete local-scratch loss. The temporary namespace
     was deleted and its absence verified. `DEFERRED-004` is resolved.
-  - Review: independent blocking-only review round 1 pending. The implementer
-    self-review does not consume the two-round review budget.
-  - Status: Implemented; independent review pending.
+  - Review: independent Terra blocking-only review round 1 found no blocking
+    findings and accepted the task. No correction or round-2 review was
+    required.
+  - Status: Accepted.
 - [ ] Task 11 — Hangar daemon/deployment integration
 - [ ] Task 12 — resource-source grammar and persistence
 - [ ] Task 13 — source capture/reuse runtime

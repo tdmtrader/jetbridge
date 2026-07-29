@@ -149,7 +149,21 @@ Task 9:
 - Resume Task 9 only after human review resolves Task 6 and the full Jetbridge
   suite is green.
 
-Tasks 10–19 have not started.
+Task 10:
+
+- Completed in `29e5215b13` with evidence commits `705dcf1d37` and
+  `3e1e2c6cfc`.
+- Status: **Accepted** in independent blocking-only review round 1.
+- Focused package tests passed, and the exact
+  `make test-hangar-integration` target passed against a temporary Borg
+  fake-gcs-server deployment. The namespace was deleted and its absence
+  verified.
+- The core provides provider-neutral immutable storage, canonical SHA-256
+  identity over uncompressed bytes, bounded zstd representation, GCS
+  create-only/idempotent semantics, and generation-pinned verification.
+- `DEFERRED-004` is resolved.
+
+Tasks 11–19 have not started.
 
 ## Milestone verification
 
@@ -176,7 +190,8 @@ branch as green until Task 6 receives human review and the unit suite is rerun.
    against a runtime that is still Human Review Required.
 3. Leave Task 9 dependency-deferred; do not build a new security boundary on
    Task 6's unresolved protected-mount primitive.
-4. Continue Task 10 Hangar core as the next safe independent bounded task.
+4. Continue Task 11 artifact-daemon/Hangar integration as the next safe
+   bounded task.
 5. Treat all remaining feature groups as separate bounded tracks rather than
    one continuous "rebase."
 
