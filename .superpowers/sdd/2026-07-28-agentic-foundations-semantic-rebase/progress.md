@@ -122,7 +122,8 @@
   - Fix round 1: addressed all five scoped High findings with fixed read-only
     authority loading, default snapshot limits, exact mounted-input reopening,
     descriptor-anchored output operations, and transactional record/content
-    publication. Required checkpoint passed; pending final scoped review.
+    publication. Commit: `fc31f229d8`. Required checkpoint passed; pending
+    final scoped review.
 - [ ] Task 9 — output-builder execution wiring
 - [ ] Task 10 — Hangar core
 - [ ] Task 11 — Hangar daemon/deployment integration

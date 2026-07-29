@@ -75,6 +75,8 @@ DONE_WITH_CONCERNS
 All five round-1 High findings were corrected in scope. The final scoped
 review remains the required adjudication point.
 
+Commit: `fc31f229d8 fix(agent): harden managed output builder boundaries`
+
 ### RED evidence and focused regressions
 
 - `TestBuilderUsesSnapshotDefaultsWhenLimitsAreUnset` failed with `(0, 0)`
