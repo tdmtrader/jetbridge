@@ -21,6 +21,34 @@ type countingDBPromotionValidator struct {
 	delegate workflow.PromotionValidator
 }
 
+type promotionFailureRegistry struct{ err error }
+
+func (registry promotionFailureRegistry) SaveAndActivateForPromotion(
+	ctx context.Context,
+	tx db.Tx,
+	teamID int,
+	definition workflow.Definition,
+	_ workflow.RenderedResourceSourcePipeline,
+) (db.WorkflowResourceSourcePipeline, error) {
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO agent_workflow_lifecycle (name, annotation, updated_by, updated_at)
+		VALUES ($1, 'must roll back', 'test', now())
+	`, definition.Name)
+	if err != nil {
+		return db.WorkflowResourceSourcePipeline{}, err
+	}
+	return db.WorkflowResourceSourcePipeline{}, registry.err
+}
+
+func (registry promotionFailureRegistry) DrainActiveForPromotion(
+	_ context.Context,
+	_ db.Tx,
+	_ int,
+	_ string,
+) (bool, error) {
+	return false, registry.err
+}
+
 func (validator *countingDBPromotionValidator) ValidatePromotion(definition workflow.Definition) error {
 	validator.calls++
 	return validator.delegate.ValidatePromotion(definition)
@@ -56,6 +84,30 @@ plan:
 %s    output_types:
       result: %s
 `, name, signatureVersion, inputYAML, outputType, prompt, inputNames, inputTypes, outputType)}
+}
+
+func dbResourceSourceManifest(name, prompt string) workflow.Manifest {
+	return workflow.Manifest{workflow.WorkflowFileName: fmt.Sprintf(`schema_version: 3
+name: %s
+signature_version: 1
+inputs: []
+outputs: []
+resources:
+  - name: repository
+    type: git
+    source: {uri: https://example.invalid/repository.git}
+resource_sources:
+  - name: repository-source
+    resource: repository
+    type: repository/v1
+plan:
+  - agent: inspect
+    function_id: inspect
+    prompt: %s
+    inputs: [repository-source]
+    input_types:
+      repository-source: {type: repository/v1}
+`, name, prompt)}
 }
 
 var _ = Describe("AgentWorkflowsFactory", func() {
@@ -330,6 +382,151 @@ plan: []
 		Expect(err).To(MatchError(workflow.ErrVersionNotFound))
 		_, err = factory.Promote("wf-nonexistent", 1, "alice")
 		Expect(err).To(MatchError(workflow.ErrVersionNotFound))
+	})
+
+	It("atomically owns source pipelines and preserves frozen declarations on exact promotion repeats", func() {
+		registry := db.NewWorkflowResourceSourcePipelinesFactory(dbConn)
+		sourceFactory := db.NewAgentWorkflowsFactoryWithResourceSources(
+			dbConn,
+			workflowrun.WorkflowTargetRenderer{RuntimeImage: "registry.example/agent-runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+			db.AgentWorkflowResourceSourcePromotion{
+				TeamID: defaultTeam.ID(), Registry: registry,
+				Renderer: db.DefaultWorkflowResourceSourcePipelineRenderer{},
+			},
+		)
+		name := fmt.Sprintf("wf-source-promotion-%d", GinkgoRandomSeed())
+		first, err := sourceFactory.ImportManifest(name, dbResourceSourceManifest(name, "first"), "alice")
+		Expect(err).NotTo(HaveOccurred())
+		_, err = sourceFactory.Promote(name, first.Version, "alice")
+		Expect(err).NotTo(HaveOccurred())
+
+		registered, found, err := registry.FindActive(context.Background(), defaultTeam.ID(), name)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(registered.WorkflowDefinitionID).To(Equal(first.ID))
+		Expect(registered.SourceDeclarations).To(Equal([]db.ResourceSourceDeclaration{{
+			SourceName: "repository-source", ResourceName: "repository", SnapshotType: "repository/v1",
+		}}))
+		firstPipelineID := registered.PipelineID
+		firstPipeline, found, err := defaultTeam.Pipeline(atc.PipelineRef{Name: "agent-workflow-source-" + name + "-v1-" + registered.ConfigHash[:12]})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		config, err := firstPipeline.Config()
+		Expect(err).NotTo(HaveOccurred())
+		_, _, err = defaultTeam.SavePipeline(
+			atc.PipelineRef{Name: firstPipeline.Name()}, config, firstPipeline.ConfigVersion(), false,
+		)
+		Expect(errors.Is(err, db.ErrAgentWorkflowResourceSourceImmutable)).To(BeTrue())
+
+		_, err = sourceFactory.Promote(name, first.Version, "alice")
+		Expect(err).NotTo(HaveOccurred())
+		repeated, found, err := registry.FindActive(context.Background(), defaultTeam.ID(), name)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(repeated).To(Equal(registered))
+
+		alteredDeclarations, err := json.Marshal([]db.ResourceSourceDeclaration{{
+			SourceName: "repository-source", ResourceName: "substituted", SnapshotType: "repository/v1",
+		}})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = dbConn.Exec(`UPDATE agent_workflow_resource_source_pipelines SET source_declarations=$1 WHERE pipeline_id=$2`, alteredDeclarations, firstPipelineID)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = sourceFactory.Promote(name, first.Version, "alice")
+		var invalid workflow.InvalidPromotionError
+		Expect(errors.As(err, &invalid)).To(BeTrue())
+		Expect(err).To(MatchError(ContainSubstring("registered source revision cannot be reactivated")))
+		originalDeclarations, err := json.Marshal(registered.SourceDeclarations)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = dbConn.Exec(`UPDATE agent_workflow_resource_source_pipelines SET source_declarations=$1 WHERE pipeline_id=$2`, originalDeclarations, firstPipelineID)
+		Expect(err).NotTo(HaveOccurred())
+
+		second, err := sourceFactory.ImportManifest(name, dbResourceSourceManifest(name, "second"), "bob")
+		Expect(err).NotTo(HaveOccurred())
+		_, err = sourceFactory.Promote(name, second.Version, "bob")
+		Expect(err).NotTo(HaveOccurred())
+		active, found, err := registry.FindActive(context.Background(), defaultTeam.ID(), name)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(active.WorkflowDefinitionID).To(Equal(second.ID))
+		Expect(active.PipelineID).NotTo(Equal(firstPipelineID))
+		drained, found, err := registry.Find(context.Background(), defaultTeam.ID(), firstPipelineID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(drained.State).To(Equal(db.AgentWorkflowResourceSourcePipelineDraining))
+	})
+
+	It("unpauses active source pipelines and physically archives drained pipelines only after a pause pass", func() {
+		registry := db.NewWorkflowResourceSourcePipelinesFactory(dbConn)
+		sourceFactory := db.NewAgentWorkflowsFactoryWithResourceSources(
+			dbConn,
+			workflowrun.WorkflowTargetRenderer{RuntimeImage: "registry.example/agent-runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+			db.AgentWorkflowResourceSourcePromotion{
+				TeamID: defaultTeam.ID(), Registry: registry,
+				Renderer: db.DefaultWorkflowResourceSourcePipelineRenderer{},
+			},
+		)
+		name := fmt.Sprintf("wf-source-lifecycle-%d", GinkgoRandomSeed())
+		first, err := sourceFactory.ImportManifest(name, dbResourceSourceManifest(name, "first"), "alice")
+		Expect(err).NotTo(HaveOccurred())
+		_, err = sourceFactory.Promote(name, first.Version, "alice")
+		Expect(err).NotTo(HaveOccurred())
+		active, found, err := registry.FindActive(context.Background(), defaultTeam.ID(), name)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		firstPipeline, found, err := defaultTeam.Pipeline(atc.PipelineRef{Name: "agent-workflow-source-" + name + "-v1-" + active.ConfigHash[:12]})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(firstPipeline.Paused()).To(BeTrue())
+
+		lifecycle, err := workflowrun.NewSourcePipelineLifecycle(defaultTeam.ID(), registry)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(lifecycle.Reconcile(context.Background())).To(Succeed())
+		Expect(firstPipeline.Reload()).To(BeTrue())
+		Expect(firstPipeline.Paused()).To(BeFalse())
+
+		second, err := sourceFactory.ImportManifest(name, dbResourceSourceManifest(name, "second"), "bob")
+		Expect(err).NotTo(HaveOccurred())
+		_, err = sourceFactory.Promote(name, second.Version, "bob")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(lifecycle.Reconcile(context.Background())).To(Succeed())
+		Expect(firstPipeline.Reload()).To(BeTrue())
+		Expect(firstPipeline.Paused()).To(BeTrue())
+		Expect(firstPipeline.Archived()).To(BeFalse())
+
+		Expect(lifecycle.Reconcile(context.Background())).To(Succeed())
+		Expect(firstPipeline.Reload()).To(BeTrue())
+		Expect(firstPipeline.Archived()).To(BeTrue())
+		archived, found, err := registry.Find(context.Background(), defaultTeam.ID(), active.PipelineID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(archived.State).To(Equal(db.AgentWorkflowResourceSourcePipelineArchived))
+	})
+
+	It("does not make a workflow live when source-pipeline activation fails", func() {
+		activationFailure := errors.New("source registry unavailable")
+		factory := db.NewAgentWorkflowsFactoryWithResourceSources(
+			dbConn,
+			workflowrun.WorkflowTargetRenderer{RuntimeImage: "registry.example/agent-runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+			db.AgentWorkflowResourceSourcePromotion{
+				TeamID: defaultTeam.ID(), Registry: promotionFailureRegistry{err: activationFailure},
+				Renderer: db.DefaultWorkflowResourceSourcePipelineRenderer{},
+			},
+		)
+		name := fmt.Sprintf("wf-source-activation-failure-%d", GinkgoRandomSeed())
+		definition, err := factory.ImportManifest(name, dbResourceSourceManifest(name, "failed activation"), "alice")
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = factory.Promote(name, definition.Version, "alice")
+		var invalid workflow.InvalidPromotionError
+		Expect(errors.As(err, &invalid)).To(BeTrue())
+		Expect(errors.Is(err, activationFailure)).To(BeTrue())
+		live, found, err := factory.Live(name)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeFalse())
+		Expect(live).To(Equal(workflow.Definition{}))
+		var lifecycleRows int
+		Expect(dbConn.QueryRow(`SELECT count(*) FROM agent_workflow_lifecycle WHERE name=$1`, name).Scan(&lifecycleRows)).To(Succeed())
+		Expect(lifecycleRows).To(BeZero())
 	})
 
 	It("rejects Promote of an Unsupported historical schema before decoding or validator mutation", func() {

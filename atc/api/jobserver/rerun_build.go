@@ -52,7 +52,8 @@ func (s *Server) RerunJobBuild(pipeline db.Pipeline) http.Handler {
 		acc := accessor.GetAccessor(r)
 		build, err := job.RerunBuild(buildToRerun, acc.UserInfo().DisplayUserId)
 		if err != nil {
-			if errors.Is(err, db.ErrWorkflowRunOwnedPipeline) {
+			if errors.Is(err, db.ErrWorkflowRunOwnedPipeline) ||
+				errors.Is(err, db.ErrAgentWorkflowResourceSourceImmutable) {
 				w.WriteHeader(http.StatusConflict)
 				fmt.Fprint(w, "manual reruns are disabled for durable workflow-run execution pipelines; retry the workflow run instead")
 				return

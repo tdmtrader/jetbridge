@@ -146,6 +146,23 @@ var _ = Describe("Job", func() {
 			Expect(found).To(BeTrue())
 			Expect(job.ScheduleRequestedTime()).To(BeTemporally("==", requestedAt))
 		})
+
+		It("rejects a public manual build for a source-owned pipeline without scheduling it", func() {
+			Expect(markPipelineWorkflowResourceSourceOwned(pipeline.ID(), team.ID(), team.Name())).To(Succeed())
+			requestedAt := job.ScheduleRequestedTime()
+
+			created, err := job.CreateBuild("manual")
+			Expect(created).To(BeNil())
+			Expect(errors.Is(err, db.ErrAgentWorkflowResourceSourceImmutable)).To(BeTrue())
+
+			pending, queryErr := job.GetPendingBuilds()
+			Expect(queryErr).NotTo(HaveOccurred())
+			Expect(pending).To(BeEmpty())
+			found, reloadErr := job.Reload()
+			Expect(reloadErr).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(job.ScheduleRequestedTime()).To(BeTemporally("==", requestedAt))
+		})
 	})
 
 	Describe("Public", func() {

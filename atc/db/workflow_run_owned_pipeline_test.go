@@ -54,6 +54,39 @@ func markPipelineWorkflowRunOwned(pipelineID, teamID int, teamName string) error
 	return err
 }
 
+// markPipelineWorkflowResourceSourceOwned installs the registry authority used
+// by public config and build guards. It intentionally does not rely on a
+// lifecycle reconciler: the tests verify that ordinary entry points reject the
+// row before they alter scheduler or pipeline state.
+func markPipelineWorkflowResourceSourceOwned(pipelineID, teamID int, teamName string) error {
+	suffix := time.Now().UnixNano()
+	var definitionID, configVersion int
+	if err := dbConn.QueryRow(`
+		INSERT INTO agent_workflow_definitions
+			(name, version, content_hash, definition, created_by, schema_version, signature_version)
+		VALUES ($1, 1, $2, 'schema_version: 3', 'test', 3, 1)
+		RETURNING id
+	`, fmt.Sprintf("source-build-guard-%d", suffix), fmt.Sprintf("hash-%d", suffix)).Scan(&definitionID); err != nil {
+		return err
+	}
+	if err := dbConn.QueryRow(`SELECT version FROM pipelines WHERE id=$1 AND team_id=$2`, pipelineID, teamID).Scan(&configVersion); err != nil {
+		return err
+	}
+	declarations, err := json.Marshal([]db.ResourceSourceDeclaration{{
+		SourceName: "repository-source", ResourceName: "repository", SnapshotType: "repository/v1",
+	}})
+	if err != nil {
+		return err
+	}
+	_, err = dbConn.Exec(`
+		INSERT INTO agent_workflow_resource_source_pipelines
+			(pipeline_id,team_id,workflow_definition_id,workflow_name,workflow_version,pipeline_config_version,config_hash,source_declarations,state)
+		VALUES ($1,$2,$3,$4,1,$5,$6,$7,'active')
+	`, pipelineID, teamID, definitionID, fmt.Sprintf("source-build-guard-%d", suffix), configVersion,
+		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", declarations)
+	return err
+}
+
 func attachSelectedWorkflowRun(build db.Build, team db.Team, concrete atc.Config) (snapshot.WorkflowRunID, error) {
 	suffix := time.Now().UnixNano()
 	canonical, err := concrete.CanonicalJSON()

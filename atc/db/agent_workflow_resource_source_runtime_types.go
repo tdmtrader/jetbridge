@@ -19,9 +19,10 @@ type AgentWorkflowResourceSourceAdmissionMode string
 type AgentWorkflowResourceSourcePipelineState string
 
 var (
-	ErrAgentWorkflowResourceSourceConflict = errors.New("db: workflow resource source conflict")
-	ErrAgentWorkflowResourceSourceInactive = errors.New("db: workflow resource source pipeline is not active")
-	ErrAgentWorkflowResourceSourceNotReady = errors.New("db: workflow resource source admission is not ready")
+	ErrAgentWorkflowResourceSourceConflict  = errors.New("db: workflow resource source conflict")
+	ErrAgentWorkflowResourceSourceInactive  = errors.New("db: workflow resource source pipeline is not active")
+	ErrAgentWorkflowResourceSourceNotReady  = errors.New("db: workflow resource source admission is not ready")
+	ErrAgentWorkflowResourceSourceImmutable = errors.New("db: workflow resource source pipeline is server-owned and immutable")
 )
 
 const (

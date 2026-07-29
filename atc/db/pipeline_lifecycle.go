@@ -46,6 +46,13 @@ func (pl *pipelineLifecycle) ArchiveAbandonedPipelines() error {
 				FROM agent_workflow_run_templates wrt
 				WHERE wrt.pipeline_id = p.id
 			)`),
+			// Standing source pipelines retain their selection history and are
+			// archived only by their registry lifecycle after drain conditions.
+			sq.Expr(`NOT EXISTS (
+				SELECT 1
+				FROM agent_workflow_resource_source_pipelines source
+				WHERE source.pipeline_id = p.id
+			)`),
 			// pipeline was set by some build
 			sq.NotEq{"p.parent_job_id": nil},
 			// pipeline is not already archived

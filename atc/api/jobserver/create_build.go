@@ -55,7 +55,8 @@ func (s *Server) CreateJobBuild(pipeline db.Pipeline) http.Handler {
 		acc := accessor.GetAccessor(r)
 		build, err := job.CreateBuild(acc.UserInfo().DisplayUserId)
 		if err != nil {
-			if errors.Is(err, db.ErrWorkflowRunOwnedPipeline) {
+			if errors.Is(err, db.ErrWorkflowRunOwnedPipeline) ||
+				errors.Is(err, db.ErrAgentWorkflowResourceSourceImmutable) {
 				w.WriteHeader(http.StatusConflict)
 				fmt.Fprint(w, "manual builds are disabled for durable workflow-run execution pipelines; create a workflow run instead")
 				return

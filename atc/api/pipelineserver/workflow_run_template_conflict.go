@@ -8,7 +8,8 @@ import (
 )
 
 func writeWorkflowRunTemplateConflict(w http.ResponseWriter, err error) bool {
-	if !errors.Is(err, db.ErrWorkflowRunTemplateImmutable) {
+	if !errors.Is(err, db.ErrWorkflowRunTemplateImmutable) &&
+		!errors.Is(err, db.ErrAgentWorkflowResourceSourceImmutable) {
 		return false
 	}
 	http.Error(w, err.Error(), http.StatusConflict)

@@ -40,6 +40,13 @@ func (p *pipelinePauser) PausePipelines(ctx context.Context, daysSinceLastBuild 
 			FROM agent_workflow_run_templates wrt
 			WHERE wrt.pipeline_id = p.id
 		)`),
+		// Standing source pipelines are reconciled from their active/draining
+		// registry state, never idle time.
+		sq.Expr(`NOT EXISTS (
+			SELECT 1
+			FROM agent_workflow_resource_source_pipelines source
+			WHERE source.pipeline_id = p.id
+		)`),
 		// subquery returns a list of pipelines who jobs ran WITHIN the range.
 		// These are the pipelines that SHOULD NOT be paused which we use to
 		// build our list of pipelines that SHOULD be paused

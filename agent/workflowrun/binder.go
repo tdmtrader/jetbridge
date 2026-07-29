@@ -3,6 +3,7 @@ package workflowrun
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1592,7 +1593,18 @@ func (renderer WorkflowTargetRenderer) ValidatePromotion(definition workflow.Def
 	if err != nil {
 		return fmt.Errorf("select workflow target: %w", err)
 	}
-	rendered, err := renderer.RenderFunction(target)
+	var rendered workflow.RenderedFunction
+	if len(target.Function.ResourceSources) == 0 {
+		rendered, err = renderer.RenderFunction(target)
+	} else {
+		// Promotion only proves that this persisted definition can render. The
+		// synthetic refs are never persisted, scheduled, or exposed as runtime
+		// authority; live runs still require a sealed source admission.
+		rendered, err = renderer.RenderFunctionWithBoundSources(
+			target,
+			promotionSourceRefs(target.Function.ResourceSources),
+		)
+	}
 	if err != nil {
 		return fmt.Errorf("render workflow target: %w", err)
 	}
@@ -1600,6 +1612,20 @@ func (renderer WorkflowTargetRenderer) ValidatePromotion(definition workflow.Def
 		return fmt.Errorf("validate rendered workflow target: %w", err)
 	}
 	return nil
+}
+
+func promotionSourceRefs(sources []workflow.ResourceSource) map[string]snapshot.SnapshotRef {
+	refs := make(map[string]snapshot.SnapshotRef, len(sources))
+	for index, source := range sources {
+		payload := []byte("workflow-promotion-source-ref/v1\x00" + source.Name + "\x00" + string(source.Type))
+		digest := sha256.Sum256(payload)
+		refs[source.Name] = snapshot.SnapshotRef{
+			ID:     snapshot.SnapshotID(index + 1),
+			Type:   source.Type,
+			Digest: snapshot.Digest(fmt.Sprintf("sha256:%x", digest)),
+		}
+	}
+	return refs
 }
 
 func (WorkflowTargetRenderer) FullFunctionTarget(definition workflow.Definition) (workflow.FunctionTarget, error) {

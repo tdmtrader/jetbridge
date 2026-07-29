@@ -10,6 +10,19 @@ import (
 	"github.com/concourse/concourse/agent/workflow"
 )
 
+var ErrAgentWorkflowResourceSourcePromotionRequired = errors.New(
+	"db: workflow resource source promotion requires trusted source-pipeline composition",
+)
+
+// AgentWorkflowResourceSourcePromotion is the trusted server composition for
+// source-bearing workflow promotion. Both rendering and registry mutation are
+// derived from the persisted definition, never a public promotion payload.
+type AgentWorkflowResourceSourcePromotion struct {
+	TeamID   int
+	Registry WorkflowResourceSourcePipelineRegistry
+	Renderer WorkflowResourceSourcePipelineRenderer
+}
+
 //counterfeiter:generate . AgentWorkflowsFactory
 type AgentWorkflowsFactory interface {
 	workflow.Store
@@ -26,9 +39,26 @@ func NewAgentWorkflowsFactory(conn DbConn, promotionValidators ...workflow.Promo
 	return factory
 }
 
+func NewAgentWorkflowsFactoryWithResourceSources(
+	conn DbConn,
+	promotionValidator workflow.PromotionValidator,
+	resourceSourcePromotion AgentWorkflowResourceSourcePromotion,
+) AgentWorkflowsFactory {
+	if promotionValidator == nil {
+		panic("db: resource-source workflow factory requires a promotion validator")
+	}
+	if resourceSourcePromotion.TeamID <= 0 || resourceSourcePromotion.Registry == nil || resourceSourcePromotion.Renderer == nil {
+		panic("db: invalid resource-source workflow promotion composition")
+	}
+	return &agentWorkflowsFactory{
+		conn: conn, promotionValidator: promotionValidator, resourceSourcePromotion: &resourceSourcePromotion,
+	}
+}
+
 type agentWorkflowsFactory struct {
-	conn               DbConn
-	promotionValidator workflow.PromotionValidator
+	conn                    DbConn
+	promotionValidator      workflow.PromotionValidator
+	resourceSourcePromotion *AgentWorkflowResourceSourcePromotion
 }
 
 // workflowMetaColumns is d.-qualified because every metadata read goes through
@@ -380,6 +410,23 @@ func (f *agentWorkflowsFactory) Promote(name string, version int, promotedBy str
 			return workflow.PromotionResult{}, workflow.InvalidPromotionError{Err: err}
 		}
 	}
+	var (
+		renderedSourcePipeline workflow.RenderedResourceSourcePipeline
+		hasResourceSources     bool
+	)
+	if f.resourceSourcePromotion != nil {
+		renderedSourcePipeline, hasResourceSources, err = f.resourceSourcePromotion.Renderer.
+			RenderResourceSourcePipelineForPromotion(targetDefinition, f.resourceSourcePromotion.TeamID)
+		if err != nil {
+			return workflow.PromotionResult{}, workflow.InvalidPromotionError{
+				Err: fmt.Errorf("render workflow resource source pipeline: %w", err),
+			}
+		}
+	} else if targetDefinition.Compiled.Function != nil && len(targetDefinition.Compiled.Function.ResourceSources) > 0 {
+		return workflow.PromotionResult{}, workflow.InvalidPromotionError{
+			Err: ErrAgentWorkflowResourceSourcePromotionRequired,
+		}
+	}
 	target := targetDefinition.VersionMetadata()
 
 	result := workflow.PromotionResult{Target: target}
@@ -395,6 +442,26 @@ func (f *agentWorkflowsFactory) Promote(name string, version int, promotedBy str
 		result.SignatureChanged = previous.SignatureVersion != target.SignatureVersion
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return workflow.PromotionResult{}, err
+	}
+
+	// Activate the next source pipeline (or drain the old one) before the live
+	// bit changes, in this same transaction. No selecting build can observe a
+	// registry authority whose definition is not yet live.
+	if f.resourceSourcePromotion != nil {
+		if hasResourceSources {
+			_, err = f.resourceSourcePromotion.Registry.SaveAndActivateForPromotion(
+				context.Background(), tx, f.resourceSourcePromotion.TeamID, targetDefinition, renderedSourcePipeline,
+			)
+		} else {
+			_, err = f.resourceSourcePromotion.Registry.DrainActiveForPromotion(
+				context.Background(), tx, f.resourceSourcePromotion.TeamID, targetDefinition.Name,
+			)
+		}
+		if err != nil {
+			return workflow.PromotionResult{}, workflow.InvalidPromotionError{
+				Err: fmt.Errorf("activate workflow resource source pipeline: %w", err),
+			}
+		}
 	}
 
 	// Clear-then-set inside one tx: the partial unique index

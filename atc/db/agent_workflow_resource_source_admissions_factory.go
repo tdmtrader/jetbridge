@@ -1,9 +1,12 @@
 package db
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"regexp"
@@ -11,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/atc"
 )
 
@@ -37,10 +41,53 @@ type ResourceSourceDeclaration struct {
 	SnapshotType snapshot.TypeRef `json:"snapshot_type"`
 }
 
+// WorkflowResourceSourcePipelineRenderer derives an immutable source
+// selection pipeline from the exact persisted workflow revision being
+// promoted. It deliberately has no caller supplied config input.
+type WorkflowResourceSourcePipelineRenderer interface {
+	RenderResourceSourcePipelineForPromotion(workflow.Definition, int) (workflow.RenderedResourceSourcePipeline, bool, error)
+}
+
+type DefaultWorkflowResourceSourcePipelineRenderer struct{}
+
+func (DefaultWorkflowResourceSourcePipelineRenderer) RenderResourceSourcePipelineForPromotion(
+	definition workflow.Definition,
+	teamID int,
+) (workflow.RenderedResourceSourcePipeline, bool, error) {
+	if definition.Compiled.Function == nil || len(definition.Compiled.Function.ResourceSources) == 0 {
+		return workflow.RenderedResourceSourcePipeline{}, false, nil
+	}
+	target, err := workflow.ResourceSourcePipelineTargetFor(definition, teamID)
+	if err != nil {
+		return workflow.RenderedResourceSourcePipeline{}, false, err
+	}
+	rendered, err := workflow.RenderResourceSourcePipeline(target)
+	if err != nil {
+		return workflow.RenderedResourceSourcePipeline{}, false, err
+	}
+	return rendered, true, nil
+}
+
+// WorkflowResourceSourcePipelineRegistry shares the workflow-promotion
+// transaction. The source pipeline registry and live revision therefore
+// become visible together, rather than admitting a build from an orphaned
+// physical pipeline.
+type WorkflowResourceSourcePipelineRegistry interface {
+	SaveAndActivateForPromotion(context.Context, Tx, int, workflow.Definition, workflow.RenderedResourceSourcePipeline) (WorkflowResourceSourcePipeline, error)
+	DrainActiveForPromotion(context.Context, Tx, int, string) (bool, error)
+}
+
 type WorkflowResourceSourcePipelinesFactory interface {
+	WorkflowResourceSourcePipelineRegistry
 	Activate(context.Context, WorkflowResourceSourcePipeline) error
 	Drain(context.Context, int, int) error
 	Archive(context.Context, int, int) error
+	Find(context.Context, int, int) (WorkflowResourceSourcePipeline, bool, error)
+	FindActive(context.Context, int, string) (WorkflowResourceSourcePipeline, bool, error)
+	ResourceSourcePipelineLifecycle(context.Context, int) ([]AgentWorkflowResourceSourcePipelineLifecycle, error)
+	UnpauseActiveResourceSourcePipeline(context.Context, int, WorkflowResourceSourcePipeline) (bool, error)
+	PauseDrainedResourceSourcePipeline(context.Context, int, WorkflowResourceSourcePipeline) (bool, error)
+	ArchiveDrainedResourceSourcePipeline(context.Context, int, WorkflowResourceSourcePipeline) (bool, error)
 }
 
 type workflowResourceSourcePipelinesFactory struct{ conn DbConn }
@@ -50,6 +97,9 @@ func NewWorkflowResourceSourcePipelinesFactory(conn DbConn) WorkflowResourceSour
 }
 
 func (factory *workflowResourceSourcePipelinesFactory) Activate(ctx context.Context, pipeline WorkflowResourceSourcePipeline) error {
+	if pipeline.State != "" && pipeline.State != AgentWorkflowResourceSourcePipelineActive {
+		return fmt.Errorf("db: invalid workflow resource source pipeline activation state")
+	}
 	if err := validateWorkflowResourceSourcePipeline(pipeline); err != nil {
 		return err
 	}
@@ -98,6 +148,200 @@ func (factory *workflowResourceSourcePipelinesFactory) Activate(ctx context.Cont
 		}
 	}
 	return tx.Commit()
+}
+
+// SaveAndActivateForPromotion creates the ordinary paused selection pipeline
+// and registers it as active inside the caller's live-revision transaction.
+// A repeated promotion of the same definition is accepted only when every
+// persisted authority, including the frozen source declarations, is exact.
+func (factory *workflowResourceSourcePipelinesFactory) SaveAndActivateForPromotion(
+	ctx context.Context,
+	tx Tx,
+	trustedTeamID int,
+	definition workflow.Definition,
+	rendered workflow.RenderedResourceSourcePipeline,
+) (WorkflowResourceSourcePipeline, error) {
+	if ctx == nil || tx == nil || trustedTeamID <= 0 {
+		return WorkflowResourceSourcePipeline{}, fmt.Errorf("db: source pipeline promotion requires context, transaction, and trusted team")
+	}
+	declarations, err := sourceDeclarationsForDefinition(definition)
+	if err != nil {
+		return WorkflowResourceSourcePipeline{}, err
+	}
+	if err := validateRenderedResourceSourcePromotion(definition, trustedTeamID, rendered); err != nil {
+		return WorkflowResourceSourcePipeline{}, err
+	}
+	if err := lockWorkflowResourceSourcePipeline(ctx, tx, trustedTeamID, definition.Name); err != nil {
+		return WorkflowResourceSourcePipeline{}, err
+	}
+
+	registered, found, err := findWorkflowResourceSourcePipelineByDefinition(ctx, tx, trustedTeamID, definition.ID, true)
+	if err != nil {
+		return WorkflowResourceSourcePipeline{}, err
+	}
+	if found {
+		if registered.State != AgentWorkflowResourceSourcePipelineActive ||
+			registered.WorkflowName != definition.Name ||
+			registered.WorkflowVersion != definition.Version ||
+			registered.ConfigHash != rendered.ConfigHash ||
+			!reflect.DeepEqual(registered.SourceDeclarations, declarations) {
+			return WorkflowResourceSourcePipeline{}, fmt.Errorf("db: registered source revision cannot be reactivated")
+		}
+		if err := validateWorkflowResourceSourcePipelineAuthority(ctx, tx, registered); err != nil {
+			return WorkflowResourceSourcePipeline{}, err
+		}
+		return registered, nil
+	}
+
+	previous, hadPrevious, err := findActiveWorkflowResourceSourcePipeline(ctx, tx, trustedTeamID, definition.Name, true)
+	if err != nil {
+		return WorkflowResourceSourcePipeline{}, err
+	}
+	nullID := sql.NullInt64{Valid: false}
+	pipelineID, created, err := savePipeline(
+		tx,
+		atc.PipelineRef{Name: rendered.PipelineName},
+		rendered.Config,
+		ConfigVersion(0),
+		true,
+		trustedTeamID,
+		nullID,
+		nullID,
+	)
+	if err != nil {
+		return WorkflowResourceSourcePipeline{}, err
+	}
+	if !created {
+		return WorkflowResourceSourcePipeline{}, fmt.Errorf("db: generated source pipeline name already exists")
+	}
+	var (
+		pipelineTeamID int
+		configVersion  int
+		pipelineName   string
+		template       bool
+		paused         bool
+		archived       bool
+	)
+	err = tx.QueryRowContext(ctx, `
+		SELECT team_id, version, name, template, paused, archived
+		FROM pipelines WHERE id = $1 FOR UPDATE
+	`, pipelineID).Scan(&pipelineTeamID, &configVersion, &pipelineName, &template, &paused, &archived)
+	if err != nil {
+		return WorkflowResourceSourcePipeline{}, err
+	}
+	if pipelineTeamID != trustedTeamID || pipelineName != rendered.PipelineName || configVersion <= 0 || template || !paused || archived {
+		return WorkflowResourceSourcePipeline{}, fmt.Errorf("db: saved source pipeline identity drifted")
+	}
+	if hadPrevious {
+		result, err := tx.ExecContext(ctx, `
+			UPDATE agent_workflow_resource_source_pipelines
+			SET state='draining', updated_at=now()
+			WHERE team_id=$1 AND pipeline_id=$2 AND state='active'
+		`, trustedTeamID, previous.PipelineID)
+		if err != nil {
+			return WorkflowResourceSourcePipeline{}, err
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return WorkflowResourceSourcePipeline{}, err
+		}
+		if affected != 1 {
+			return WorkflowResourceSourcePipeline{}, fmt.Errorf("db: active source revision changed during promotion")
+		}
+	}
+	encodedDeclarations, err := json.Marshal(declarations)
+	if err != nil {
+		return WorkflowResourceSourcePipeline{}, err
+	}
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO agent_workflow_resource_source_pipelines
+			(pipeline_id,team_id,workflow_definition_id,workflow_name,workflow_version,pipeline_config_version,config_hash,source_declarations,state)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'active')
+	`, pipelineID, trustedTeamID, definition.ID, definition.Name, definition.Version, configVersion, rendered.ConfigHash, encodedDeclarations)
+	if err != nil {
+		return WorkflowResourceSourcePipeline{}, err
+	}
+	stored, found, err := findWorkflowResourceSourcePipeline(ctx, tx, trustedTeamID, pipelineID, true)
+	if err != nil {
+		return WorkflowResourceSourcePipeline{}, err
+	}
+	if !found || !sameSourcePipeline(stored, WorkflowResourceSourcePipeline{
+		PipelineID: pipelineID, TeamID: trustedTeamID, WorkflowDefinitionID: definition.ID,
+		WorkflowName: definition.Name, WorkflowVersion: definition.Version,
+		PipelineConfigVersion: configVersion, ConfigHash: rendered.ConfigHash,
+		SourceDeclarations: declarations, State: AgentWorkflowResourceSourcePipelineActive,
+	}) {
+		return WorkflowResourceSourcePipeline{}, fmt.Errorf("db: persisted source pipeline registration drifted")
+	}
+	return stored, nil
+}
+
+func (factory *workflowResourceSourcePipelinesFactory) DrainActiveForPromotion(
+	ctx context.Context,
+	tx Tx,
+	trustedTeamID int,
+	workflowName string,
+) (bool, error) {
+	if ctx == nil || tx == nil || trustedTeamID <= 0 || strings.TrimSpace(workflowName) == "" {
+		return false, fmt.Errorf("db: source pipeline drain requires context, transaction, team, and workflow")
+	}
+	if err := lockWorkflowResourceSourcePipeline(ctx, tx, trustedTeamID, workflowName); err != nil {
+		return false, err
+	}
+	result, err := tx.ExecContext(ctx, `
+		UPDATE agent_workflow_resource_source_pipelines
+		SET state='draining', updated_at=now()
+		WHERE team_id=$1 AND workflow_name=$2 AND state='active'
+	`, trustedTeamID, workflowName)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	return affected == 1, err
+}
+
+func sourceDeclarationsForDefinition(definition workflow.Definition) ([]ResourceSourceDeclaration, error) {
+	if definition.Compiled.Function == nil {
+		return nil, fmt.Errorf("db: source pipeline requires a compiled function")
+	}
+	declarations := make([]ResourceSourceDeclaration, len(definition.Compiled.Function.ResourceSources))
+	for index, source := range definition.Compiled.Function.ResourceSources {
+		declarations[index] = ResourceSourceDeclaration{
+			SourceName: source.Name, ResourceName: source.Resource, SnapshotType: source.Type,
+		}
+	}
+	if err := validateSourceDeclarations(declarations); err != nil {
+		return nil, err
+	}
+	return declarations, nil
+}
+
+func validateRenderedResourceSourcePromotion(
+	definition workflow.Definition,
+	trustedTeamID int,
+	rendered workflow.RenderedResourceSourcePipeline,
+) error {
+	expected, hasSources, err := (DefaultWorkflowResourceSourcePipelineRenderer{}).RenderResourceSourcePipelineForPromotion(definition, trustedTeamID)
+	if err != nil {
+		return err
+	}
+	if !hasSources {
+		return fmt.Errorf("db: source pipeline promotion requires resource sources")
+	}
+	canonical, err := rendered.Config.CanonicalJSON()
+	if err != nil {
+		return err
+	}
+	if rendered.Config.Template || rendered.PipelineName != expected.PipelineName || rendered.ConfigHash != expected.ConfigHash ||
+		!bytes.Equal(rendered.CanonicalJSON, canonical) || !bytes.Equal(rendered.CanonicalJSON, expected.CanonicalJSON) {
+		return fmt.Errorf("db: rendered source pipeline is not the exact compiled target")
+	}
+	return nil
+}
+
+func lockWorkflowResourceSourcePipeline(ctx context.Context, tx Tx, teamID int, workflowName string) error {
+	_, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext('agent_workflow_resource_source_pipelines:' || $1 || ':' || $2))`, strconv.Itoa(teamID), workflowName)
+	return err
 }
 
 func (factory *workflowResourceSourcePipelinesFactory) Drain(ctx context.Context, teamID, pipelineID int) error {
@@ -153,6 +397,270 @@ func (factory *workflowResourceSourcePipelinesFactory) Archive(ctx context.Conte
 		return fmt.Errorf("db: source pipeline archive changed concurrently")
 	}
 	return tx.Commit()
+}
+
+func (factory *workflowResourceSourcePipelinesFactory) Find(
+	ctx context.Context,
+	teamID, pipelineID int,
+) (WorkflowResourceSourcePipeline, bool, error) {
+	if ctx == nil || teamID <= 0 || pipelineID <= 0 {
+		return WorkflowResourceSourcePipeline{}, false, fmt.Errorf("db: source pipeline lookup requires context, team, and pipeline")
+	}
+	return findWorkflowResourceSourcePipeline(ctx, factory.conn, teamID, pipelineID, false)
+}
+
+func (factory *workflowResourceSourcePipelinesFactory) FindActive(
+	ctx context.Context,
+	teamID int,
+	workflowName string,
+) (WorkflowResourceSourcePipeline, bool, error) {
+	if ctx == nil || teamID <= 0 || strings.TrimSpace(workflowName) == "" {
+		return WorkflowResourceSourcePipeline{}, false, fmt.Errorf("db: active source pipeline lookup requires context, team, and workflow")
+	}
+	return findActiveWorkflowResourceSourcePipeline(ctx, factory.conn, teamID, workflowName, false)
+}
+
+func (factory *workflowResourceSourcePipelinesFactory) ResourceSourcePipelineLifecycle(
+	ctx context.Context,
+	trustedTeamID int,
+) ([]AgentWorkflowResourceSourcePipelineLifecycle, error) {
+	if ctx == nil || trustedTeamID <= 0 {
+		return nil, fmt.Errorf("db: source pipeline lifecycle lookup requires context and trusted team")
+	}
+	rows, err := factory.conn.QueryContext(ctx, `
+		SELECT source.pipeline_id,source.team_id,source.workflow_definition_id,
+		       source.workflow_name,source.workflow_version,source.pipeline_config_version,
+		       source.config_hash,source.source_declarations,source.state,
+		       pipeline.paused,pipeline.archived,
+		       (SELECT count(*) FROM builds build JOIN jobs job ON job.id=build.job_id
+		        WHERE job.pipeline_id=source.pipeline_id AND build.status IN ('pending','started')),
+		       (SELECT count(*) FROM agent_workflow_resource_source_admissions admission
+		        WHERE admission.team_id=source.team_id AND admission.source_pipeline_id=source.pipeline_id
+		          AND admission.status IN ('selecting','capturing'))
+		FROM agent_workflow_resource_source_pipelines source
+		JOIN pipelines pipeline ON pipeline.id=source.pipeline_id
+		WHERE source.team_id=$1
+		ORDER BY source.pipeline_id
+	`, trustedTeamID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	candidates := []AgentWorkflowResourceSourcePipelineLifecycle{}
+	for rows.Next() {
+		var candidate AgentWorkflowResourceSourcePipelineLifecycle
+		var declarations []byte
+		if err := rows.Scan(
+			&candidate.PipelineID, &candidate.TeamID, &candidate.WorkflowDefinitionID,
+			&candidate.WorkflowName, &candidate.WorkflowVersion, &candidate.PipelineConfigVersion,
+			&candidate.ConfigHash, &declarations, &candidate.State,
+			&candidate.Paused, &candidate.Archived, &candidate.InFlightBuilds, &candidate.NonterminalAdmissions,
+		); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(declarations, &candidate.SourceDeclarations); err != nil {
+			return nil, fmt.Errorf("db: decode source pipeline lifecycle declarations: %w", err)
+		}
+		if err := validateWorkflowResourceSourcePipeline(candidate.AgentWorkflowResourceSourcePipeline); err != nil {
+			return nil, err
+		}
+		if candidate.State != AgentWorkflowResourceSourcePipelineArchived {
+			if err := validateWorkflowResourceSourcePipelineAuthority(ctx, factory.conn, candidate.AgentWorkflowResourceSourcePipeline); err != nil {
+				return nil, err
+			}
+		}
+		candidates = append(candidates, candidate)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return candidates, nil
+}
+
+func (factory *workflowResourceSourcePipelinesFactory) UnpauseActiveResourceSourcePipeline(
+	ctx context.Context,
+	trustedTeamID int,
+	expected WorkflowResourceSourcePipeline,
+) (bool, error) {
+	if ctx == nil || trustedTeamID <= 0 {
+		return false, fmt.Errorf("db: source pipeline unpause requires context and trusted team")
+	}
+	tx, err := factory.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer Rollback(tx)
+	stored, found, err := findWorkflowResourceSourcePipeline(ctx, tx, trustedTeamID, expected.PipelineID, true)
+	if err != nil {
+		return false, err
+	}
+	if !found || expected.State != AgentWorkflowResourceSourcePipelineActive || !sameSourcePipeline(stored, expected) {
+		return false, fmt.Errorf("db: active source pipeline changed")
+	}
+	if err := validateWorkflowResourceSourcePipelineAuthority(ctx, tx, stored); err != nil {
+		return false, err
+	}
+	result, err := tx.ExecContext(ctx, `
+		UPDATE pipelines SET paused=false, paused_by=NULL, paused_at=NULL
+		WHERE id=$1 AND team_id=$2 AND version=$3 AND paused AND NOT archived AND NOT template
+	`, stored.PipelineID, trustedTeamID, stored.PipelineConfigVersion)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if affected == 1 {
+		if err := requestScheduleForJobsInPipeline(tx, stored.PipelineID); err != nil {
+			return false, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return affected == 1, nil
+}
+
+func (factory *workflowResourceSourcePipelinesFactory) PauseDrainedResourceSourcePipeline(
+	ctx context.Context,
+	trustedTeamID int,
+	expected WorkflowResourceSourcePipeline,
+) (bool, error) {
+	if ctx == nil || trustedTeamID <= 0 {
+		return false, fmt.Errorf("db: source pipeline pause requires context and trusted team")
+	}
+	tx, err := factory.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer Rollback(tx)
+	stored, found, err := findWorkflowResourceSourcePipeline(ctx, tx, trustedTeamID, expected.PipelineID, true)
+	if err != nil {
+		return false, err
+	}
+	if !found || expected.State != AgentWorkflowResourceSourcePipelineDraining || !sameSourcePipeline(stored, expected) {
+		return false, fmt.Errorf("db: draining source pipeline changed")
+	}
+	if err := validateWorkflowResourceSourcePipelineAuthority(ctx, tx, stored); err != nil {
+		return false, err
+	}
+	inFlight, err := workflowResourceSourcePipelineInFlightBuilds(ctx, tx, stored.PipelineID)
+	if err != nil {
+		return false, err
+	}
+	if inFlight != 0 {
+		if err := tx.Commit(); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+	result, err := tx.ExecContext(ctx, `
+		UPDATE pipelines SET paused=true,paused_by='agent-workflow-resource-source-lifecycle',paused_at=now()
+		WHERE id=$1 AND team_id=$2 AND version=$3 AND NOT paused AND NOT archived AND NOT template
+	`, stored.PipelineID, trustedTeamID, stored.PipelineConfigVersion)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return affected == 1, nil
+}
+
+func (factory *workflowResourceSourcePipelinesFactory) ArchiveDrainedResourceSourcePipeline(
+	ctx context.Context,
+	trustedTeamID int,
+	expected WorkflowResourceSourcePipeline,
+) (bool, error) {
+	if ctx == nil || trustedTeamID <= 0 {
+		return false, fmt.Errorf("db: source pipeline archive requires context and trusted team")
+	}
+	tx, err := factory.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer Rollback(tx)
+	stored, found, err := findWorkflowResourceSourcePipeline(ctx, tx, trustedTeamID, expected.PipelineID, true)
+	if err != nil {
+		return false, err
+	}
+	if !found || expected.State != AgentWorkflowResourceSourcePipelineDraining || !sameSourcePipeline(stored, expected) {
+		return false, fmt.Errorf("db: draining source pipeline changed")
+	}
+	if err := validateWorkflowResourceSourcePipelineAuthority(ctx, tx, stored); err != nil {
+		return false, err
+	}
+	inFlight, err := workflowResourceSourcePipelineInFlightBuilds(ctx, tx, stored.PipelineID)
+	if err != nil {
+		return false, err
+	}
+	if inFlight != 0 {
+		if err := tx.Commit(); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+	var nonterminal int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM agent_workflow_resource_source_admissions WHERE team_id=$1 AND source_pipeline_id=$2 AND status IN ('selecting','capturing')`, trustedTeamID, stored.PipelineID).Scan(&nonterminal); err != nil {
+		return false, err
+	}
+	if nonterminal != 0 {
+		if err := tx.Commit(); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+	result, err := tx.ExecContext(ctx, `
+		UPDATE pipelines SET archived=true,last_updated=now(),paused=true,
+		paused_by='agent-workflow-resource-source-lifecycle',paused_at=COALESCE(paused_at,now()),version=0
+		WHERE id=$1 AND team_id=$2 AND version=$3 AND paused AND NOT archived AND NOT template
+	`, stored.PipelineID, trustedTeamID, stored.PipelineConfigVersion)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if affected == 0 {
+		if err := tx.Commit(); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+	for _, table := range pipelineObjectTables {
+		if err := clearConfigForPipelineObject(tx, stored.PipelineID, table); err != nil {
+			return false, err
+		}
+	}
+	result, err = tx.ExecContext(ctx, `UPDATE agent_workflow_resource_source_pipelines SET state='archived',updated_at=now() WHERE team_id=$1 AND pipeline_id=$2 AND state='draining'`, trustedTeamID, stored.PipelineID)
+	if err != nil {
+		return false, err
+	}
+	registryAffected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if registryAffected != 1 {
+		return false, fmt.Errorf("db: draining source registry changed during archive")
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	factory.conn.Bus().Notify(atc.ComponentCollectorPipelines)
+	factory.conn.Bus().Notify(atc.ComponentCollectorTaskCaches)
+	return true, nil
+}
+
+func workflowResourceSourcePipelineInFlightBuilds(ctx context.Context, queryer snapshotQueryer, pipelineID int) (int, error) {
+	var count int
+	err := queryer.QueryRowContext(ctx, `SELECT count(*) FROM builds build JOIN jobs job ON job.id=build.job_id WHERE job.pipeline_id=$1 AND build.status IN ('pending','started')`, pipelineID).Scan(&count)
+	return count, err
 }
 
 type CreateWorkflowResourceSourceAdmissionRequest struct {
@@ -353,7 +861,7 @@ func validResourceSourceVersionDigest(value string) bool {
 var lowerHex64 = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 func validateWorkflowResourceSourcePipeline(p WorkflowResourceSourcePipeline) error {
-	if p.TeamID <= 0 || p.PipelineID <= 0 || p.WorkflowDefinitionID <= 0 || p.WorkflowVersion <= 0 || p.PipelineConfigVersion <= 0 || strings.TrimSpace(p.WorkflowName) == "" || !lowerHex64.MatchString(p.ConfigHash) || (p.State != "" && p.State != "active") || validateSourceDeclarations(p.SourceDeclarations) != nil {
+	if p.TeamID <= 0 || p.PipelineID <= 0 || p.WorkflowDefinitionID <= 0 || p.WorkflowVersion <= 0 || p.PipelineConfigVersion <= 0 || strings.TrimSpace(p.WorkflowName) == "" || !lowerHex64.MatchString(p.ConfigHash) || (p.State != "" && p.State.Validate() != nil) || validateSourceDeclarations(p.SourceDeclarations) != nil {
 		return fmt.Errorf("db: invalid workflow resource source pipeline")
 	}
 	return nil
@@ -389,6 +897,57 @@ func sameSourcePipeline(left, right WorkflowResourceSourcePipeline) bool {
 func sameAdmissionRequest(left, right CreateWorkflowResourceSourceAdmissionRequest) bool {
 	return left.TeamID == right.TeamID && left.WorkflowDefinitionID == right.WorkflowDefinitionID && left.SourcePipelineID == right.SourcePipelineID && left.SourceConfigHash == right.SourceConfigHash && left.IdempotencyKey == right.IdempotencyKey && left.Mode == right.Mode && left.SelectingBuildID == right.SelectingBuildID
 }
+
+func findWorkflowResourceSourcePipelineByDefinition(
+	ctx context.Context,
+	queryer snapshotQueryer,
+	teamID, definitionID int,
+	lock bool,
+) (WorkflowResourceSourcePipeline, bool, error) {
+	query := `SELECT pipeline_id,team_id,workflow_definition_id,workflow_name,workflow_version,pipeline_config_version,config_hash,source_declarations,state FROM agent_workflow_resource_source_pipelines WHERE team_id=$1 AND workflow_definition_id=$2`
+	if lock {
+		query += ` FOR UPDATE`
+	}
+	return scanWorkflowResourceSourcePipeline(queryer.QueryRowContext(ctx, query, teamID, definitionID))
+}
+
+func findActiveWorkflowResourceSourcePipeline(
+	ctx context.Context,
+	queryer snapshotQueryer,
+	teamID int,
+	workflowName string,
+	lock bool,
+) (WorkflowResourceSourcePipeline, bool, error) {
+	query := `SELECT pipeline_id,team_id,workflow_definition_id,workflow_name,workflow_version,pipeline_config_version,config_hash,source_declarations,state FROM agent_workflow_resource_source_pipelines WHERE team_id=$1 AND workflow_name=$2 AND state='active'`
+	if lock {
+		query += ` FOR UPDATE`
+	}
+	return scanWorkflowResourceSourcePipeline(queryer.QueryRowContext(ctx, query, teamID, workflowName))
+}
+
+func scanWorkflowResourceSourcePipeline(row interface{ Scan(...any) error }) (WorkflowResourceSourcePipeline, bool, error) {
+	var pipeline WorkflowResourceSourcePipeline
+	var declarations []byte
+	err := row.Scan(
+		&pipeline.PipelineID, &pipeline.TeamID, &pipeline.WorkflowDefinitionID,
+		&pipeline.WorkflowName, &pipeline.WorkflowVersion, &pipeline.PipelineConfigVersion,
+		&pipeline.ConfigHash, &declarations, &pipeline.State,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return WorkflowResourceSourcePipeline{}, false, nil
+	}
+	if err != nil {
+		return WorkflowResourceSourcePipeline{}, false, err
+	}
+	if err := json.Unmarshal(declarations, &pipeline.SourceDeclarations); err != nil {
+		return WorkflowResourceSourcePipeline{}, false, fmt.Errorf("db: decode source pipeline declarations: %w", err)
+	}
+	if err := validateWorkflowResourceSourcePipeline(pipeline); err != nil {
+		return WorkflowResourceSourcePipeline{}, false, err
+	}
+	return pipeline, true, nil
+}
+
 func snapshotTypeName(t snapshot.TypeRef) string { return strings.Split(string(t), "/v")[0] }
 func snapshotTypeVersion(t snapshot.TypeRef) int {
 	index := strings.LastIndex(string(t), "/v")
