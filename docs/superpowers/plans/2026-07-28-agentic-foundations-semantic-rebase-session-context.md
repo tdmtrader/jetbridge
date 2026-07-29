@@ -178,27 +178,31 @@ Task 11:
 
 Task 12:
 
-- Implemented in `2d160f6c89` with the single correction
-  `f9de627f40`.
-- Status: **Human Review Required** after review round 2.
+- Implemented in `2d160f6c89`, corrected in `f9de627f40`, and accepted after
+  the user-authorized opaque-boundary commit `875d604026`.
+- Status: **Accepted** after reopened iteration 1 of at most 3.
 - Admission provenance is now derived from selecting-build inputs, archive and
   create serialize on the owner row, and focused DB lifecycle/provenance specs
   pass.
-- Residual High: `RenderedFunction.Config` remains directly available and
-  `BindExecutionParams` is optional, so no launch seam requires the exact
-  validated source-reference envelope. See `HUMAN-REVIEW-002`.
+- Binder-to-DB durable workflow launch now requires an opaque
+  `workflow.ExecutionEnvelope`. Trusted private canonical/hash/source
+  authority survives cloning; public config/hash mutation cannot mint or alter
+  it; substitutions and zero/mismatched envelopes fail closed.
+- Workflow/workflow-run suites, DB compile, and host PostgreSQL valid/rejection
+  specs passed. Independent blocking-only review found no Critical, High, or
+  blocking issue. `HUMAN-REVIEW-002` and `DEPENDENCY-002` are resolved.
 
 Task 13:
 
-- Not started; dependency-deferred under `DEPENDENCY-002` because its runtime
-  capture/reuse path would build directly on Task 12's unresolved launch
-  boundary.
+- Not started; unblocked by Task 12. Its runtime capture/reuse path must use
+  the mandatory opaque launch envelope and must not add a second execution
+  API.
 
 Task 14:
 
 - Not started; dependency-deferred under `DEPENDENCY-003` because the design
   requires accepted exact validation gates before replacing the publisher
-  gateway, while Tasks 6–7 remain Human Review Required/dependent.
+  gateway. Task 6 is accepted; Task 7 remains unstarted.
 
 Task 15:
 
@@ -255,23 +259,23 @@ Fresh verification at the current checkpoint:
   `go test ./atc/worker/jetbridge -count=1` passed all 381 specs. The complete
   repository-wide `make test-unit` target has not yet been rerun.
 
-The recovery track is verified, but the branch is not merge-ready. Do not
-report it as green until Task 12 and the remaining dependent tasks are
-implemented and the broad suites are rerun.
+The recovery track and Tasks 6/12 are verified, but the branch is not
+merge-ready. Do not report it as green until Tasks 7, 9, 13, 14, and 19 are
+completed and the broad suites are rerun.
 
 ## Near-term sequence
 
 1. Treat Task 6 as accepted; do not reopen it without new blocking evidence.
-2. Tasks 7 and 9 are unblocked but remain unstarted.
-3. Resolve Task 12's mandatory source-binding launch boundary next.
-4. Leave Tasks 13–14 at their documented dependency boundaries until their
-   prerequisites are accepted.
+2. Treat Task 12 as accepted through `875d604026`; do not reopen it without
+   new blocking evidence.
+3. Tasks 7, 9, and 13 are unblocked but remain unstarted.
+4. Leave Task 14 at its documented Task 7 dependency boundary.
 5. Treat Task 15 as **Accepted**; its user-authorized final review found no
    blocking issue.
 6. Treat Tasks 16, 17, and 18 as accepted; do not reopen their review cycles
    without new blocking evidence.
-7. Leave Task 19 dependency-deferred until the Human Review Required boundaries
-   and dependent tasks are resolved.
+7. Leave Task 19 dependency-deferred until Tasks 7, 9, 13, and 14 are
+   completed.
 8. Treat every resumed feature group as a separate bounded track rather than
    one continuous "rebase."
 

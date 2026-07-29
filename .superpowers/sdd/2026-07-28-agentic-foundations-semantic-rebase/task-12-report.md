@@ -2,12 +2,10 @@
 
 ## Status
 
-**HUMAN REVIEW REQUIRED** after exhausting the two-round review budget.
-Three of four round-1 High findings were addressed. The remaining
-load-bearing issue is that `RenderedFunction.Config` remains a public bare
-configuration and `BindExecutionParams` is opt-in, so the execution path does
-not yet guarantee use of the exact validated source refs. Source-capture and
-retry/reuse orchestration remains Task 13 and is dependency-deferred.
+**ACCEPTED** after reopened iteration 1 of the three user-authorized
+iterations. The mandatory opaque launch envelope resolves the remaining
+round-2 High finding. Source-capture and retry/reuse orchestration remains
+Task 13, which is now unblocked.
 
 ## Behavior
 
@@ -177,6 +175,17 @@ opaque type rather than a raw parameter map.
 - GREEN: `GOCACHE=/private/tmp/concourse-task12-envelope-gocache go test
   ./atc/db -run '^$' -count=1` passed. Focused DB coverage now includes valid
   source-free envelope execution and forged/canonical-mismatch rejection.
-- PostgreSQL focus not run locally: `pg_isready` returned `/tmp:5432 - no
-  response`. The required host command is `ginkgo --procs=1 --focus='PipelineRunFactory'
-  ./atc/db` (or the narrower envelope spec).
+- GREEN: host PostgreSQL runs passed the exact
+  `rejects forged and durable-mismatched workflow execution envelopes` and
+  `creates and links a workflow-owned run and its entry builds in one
+  transaction` specs.
+
+### Reopened independent review
+
+The Terra blocking-only review of `9257d117ba..875d604026` reported no
+Critical, High, or blocking findings. It independently reran workflow and
+workflow-run tests, DB compilation, and the exact diff check. The reviewer
+confirmed that only renderer-created private authority can mint an envelope,
+source refs inject before validation, cloning preserves authority, raw maps
+cannot bypass durable workflow launch, and source-free behavior remains
+viable. `HUMAN-REVIEW-002` and `DEPENDENCY-002` are resolved.

@@ -172,7 +172,7 @@ to evaluate independently.
 
 - Task/area: Task 12, source-bearing workflow execution contract
 - Classification: High; load-bearing correctness boundary
-- Status: Human Review Required after review round 2
+- Status: Resolved on 2026-07-29 in `875d604026`; independently accepted
 - Evidence: The correction added a private exact-reference envelope and
   `BindExecutionParams`, which injects snapshot IDs and rejects substitutions.
   However, `RenderedFunction.Config` remains publicly available and no current
@@ -195,17 +195,30 @@ to evaluate independently.
 - Required verification: prove every current launch entry point rejects a
   substituted snapshot ID and that source-free workflows retain their current
   behavior.
+- Resolution: The user selected option 3. Declarative `RenderedFunction`
+  remains available for preflight, while the sole production Binder-to-DB
+  workflow launch path now requires an opaque `workflow.ExecutionEnvelope`.
+  Trusted rendering privately retains the exact canonical config, rendered
+  authority hash, and selected source refs; envelope construction injects
+  those refs and rejects substitutions. Public config/hash mutation and bare
+  structs cannot mint authority, cloning explicitly preserves private
+  authority, and the DB opens parameters only after locking and matching the
+  durable canonical config and template hash. Source-free workflow and compile
+  suites passed; host PostgreSQL specs passed for both valid creation and
+  zero/canonical-mismatched rejection. Independent blocking-only review found
+  no remaining issue.
 
 ### DEPENDENCY-002 — Task 13 waits for mandatory exact-source launch binding
 
 - Task/area: Task 13, workflow source capture/retry/reuse runtime
 - Classification: Blocking dependency; task not started
-- Status: Deferred until `HUMAN-REVIEW-002` is resolved
+- Status: Resolved on 2026-07-29; Task 13 is unblocked but not started
 - Evidence: Task 13 must bind captured snapshots into workflow execution and
   reuse them across retry/replay. The only binder is currently optional, so
   wiring runtime orchestration now would institutionalize the bypass.
-- Suggested follow-up: Resolve `HUMAN-REVIEW-002`, add launch-seam substitution
-  coverage, then implement capture/reuse against the mandatory envelope.
+- Resolution/follow-up: `HUMAN-REVIEW-002` is resolved by the mandatory opaque
+  launch envelope and substitution coverage in `875d604026`. Implement
+  capture/reuse against that boundary without adding a second launch API.
 
 ### DEPENDENCY-003 — Task 14 waits for exact validation gates
 
@@ -213,11 +226,11 @@ to evaluate independently.
 - Classification: Blocking dependency; task not started
 - Status: Deferred until Tasks 6–7 are accepted
 - Evidence: The approved dependency order requires exact validation gates
-  before removing the publisher gateway. Task 6 remains Human Review Required,
-  Task 7 is consequently unstarted, and publication must not consume an
-  untrusted or stale validation boundary.
-- Suggested follow-up: Resolve Task 6, complete and accept Task 7, then
-  implement Task 14 without restoring the external gateway.
+  before removing the publisher gateway. Task 6 is accepted, but Task 7
+  remains unstarted, and publication must not consume an untrusted or stale
+  validation boundary.
+- Suggested follow-up: Complete and accept Task 7, then implement Task 14
+  without restoring the external gateway.
 
 ### HUMAN-REVIEW-003 — Use real database time for checkpoint mutation fences
 
@@ -273,12 +286,11 @@ to evaluate independently.
 - Task/area: Task 19, final upgrade/end-to-end/residue proof
 - Classification: Blocking dependency; task not started
 - Status: Deferred
-- Evidence: Tasks 6 and 12 remain Human Review Required. Tasks 7, 9, and 13–14
-  are consequently unstarted or dependency-deferred. Tasks 16–18 are accepted,
-  but Task 19 still cannot truthfully prove complete upgrade, validation,
-  source capture, publication, or repository-wide acceptance while the Task
-  6/12 boundaries and their dependent implementations remain unresolved.
-- Suggested follow-up: Resolve the two Human Review Required entries,
-  complete their dependent tasks, then run Task 19 once as the final milestone
-  rather than repeatedly running broad suites against a knowingly incomplete
-  branch.
+- Evidence: Tasks 6 and 12 are now accepted, but Tasks 7, 9, 13, and 14 remain
+  unstarted. Tasks 16–18 are also accepted. Task 19 still cannot truthfully
+  prove complete validation, output-builder wiring, source capture,
+  publication, or repository-wide acceptance while those implementations are
+  absent.
+- Suggested follow-up: Complete Tasks 7, 9, 13, and 14, then run Task 19 once
+  as the final milestone rather than repeatedly running broad suites against a
+  knowingly incomplete branch.

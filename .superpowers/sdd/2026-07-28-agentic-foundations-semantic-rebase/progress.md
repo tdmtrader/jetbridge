@@ -173,6 +173,8 @@
   - Commit: `2d160f6c89 feat(workflow): persist resource-source admissions`.
 
   - Fix commit: `f9de627f40 fix(workflow): harden source admission bindings`.
+  - Reopened boundary commit:
+    `875d604026 fix(workflow): require opaque execution envelopes`.
   - Behavior: schema-v3 workflows declare a one-to-one ordinary Concourse
     resource source with standard `trigger`/`version` selection semantics;
     the rendered standing pipeline has one `admit` job, and executable
@@ -197,17 +199,27 @@
     idempotency. The sandbox PostgreSQL run was blocked by denied System V
     shared memory; the identical host-access rerun passed 2/2 focused specs.
     Workflow and DB/migration compile checks also passed.
-  - Round 2: provenance derivation, row-lock serialization, and DB coverage
-    were addressed. One High remains: bare `RenderedFunction.Config` is still
-    launchable and the exact-source binder remains opt-in. No further
-    automatic correction is allowed.
-  - Status: **Human Review Required** (`HUMAN-REVIEW-002`).
+  - Round 2 originally left one High: bare `RenderedFunction.Config` was
+    launchable and exact-source binding remained opt-in.
+  - Reopened iteration 1 implemented the user-selected declarative-render /
+    opaque-launch split. Binder and the durable DB factory now require
+    `workflow.ExecutionEnvelope`; trusted private canonical/hash/source
+    authority survives cloning, source substitutions fail before validation,
+    and zero or mismatched envelopes fail closed after the durable row lock.
+  - Verification: workflow and workflow-run suites passed; DB compiled; host
+    PostgreSQL specs passed for valid workflow-owned execution and for
+    forged/canonical-mismatched envelope rejection.
+  - Independent blocking-only review reported no Critical, High, or blocking
+    findings.
+  - Status: **Accepted** after one of three user-authorized reopened
+    iterations. `HUMAN-REVIEW-002` is resolved.
 - [ ] Task 13 — source capture/reuse runtime
-  - Status: dependency-deferred under `DEPENDENCY-002`; do not start until
-    `HUMAN-REVIEW-002` selects and verifies the mandatory launch boundary.
+  - Status: unblocked by Task 12; not started. Build capture/reuse on the
+    mandatory opaque launch envelope without introducing a second execution
+    API.
 - [ ] Task 14 — direct in-ATC publication
   - Status: dependency-deferred under `DEPENDENCY-003`; exact validation gates
-    from Tasks 6–7 must be accepted before replacing the publisher gateway.
+    from Task 7 must be accepted before replacing the publisher gateway.
 - [x] Task 15 — checkpoint and attempt data models
   - Implementation and correction commits:
     - `add954b863 feat(agent): add durable checkpoint attempt models`
