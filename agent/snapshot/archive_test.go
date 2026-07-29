@@ -1668,3 +1668,24 @@ func (r *trackingReadCloser) Close() error {
 	r.closeCalls++
 	return nil
 }
+
+func TestCapturedTreeOpenRootUsesRetainedAnchorAndFailsAfterClose(t *testing.T) {
+	tree := capture(t, Canonicalizer{}, bytes.NewReader(makeTar(t, []tarEntry{{
+		name: "result.txt", typeflag: tar.TypeReg, mode: 0600, content: "sealed",
+	}})))
+	root, err := tree.OpenRoot()
+	if err != nil {
+		t.Fatalf("OpenRoot before Close: %v", err)
+	}
+	info, err := root.Lstat("result.txt")
+	closeErr := root.Close()
+	if err != nil || closeErr != nil || !info.Mode().IsRegular() {
+		t.Fatalf("opened root did not expose sealed tree: %v / %v / %+v", err, closeErr, info)
+	}
+	if err := tree.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tree.OpenRoot(); err == nil {
+		t.Fatal("OpenRoot after Close succeeded")
+	}
+}

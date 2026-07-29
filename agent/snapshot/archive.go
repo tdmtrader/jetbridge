@@ -213,6 +213,24 @@ type CapturedTree struct {
 	removeAll   func(string) error
 }
 
+// OpenRoot returns a fresh descriptor anchored at the retained extracted tree.
+// It is unavailable after Close begins, so consumers cannot reopen cleaned state.
+func (t *CapturedTree) OpenRoot() (*os.Root, error) {
+	if t == nil {
+		return nil, fmt.Errorf("snapshot: captured tree is required")
+	}
+	t.closeMu.Lock()
+	defer t.closeMu.Unlock()
+	if t.closed || t.captureRoot == nil {
+		return nil, fmt.Errorf("snapshot: captured tree is closed")
+	}
+	root, err := t.captureRoot.OpenRoot("root")
+	if err != nil {
+		return nil, fmt.Errorf("snapshot: open captured root: %w", err)
+	}
+	return root, nil
+}
+
 func (t *CapturedTree) Close() error {
 	if t == nil {
 		return nil
