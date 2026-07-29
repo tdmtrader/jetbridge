@@ -23,6 +23,26 @@
   revisions wait for scheduler work, pause in one pass, and physically archive
   only in a later pass after no selecting/capturing admissions remain. Physical
   archive precedes registry archival.
+- Experiment `Start` performs a durable, idempotent manual source admission
+  once for every distinct immutable definition/source-config identity. Its
+  locked transaction then verifies that every admission is ready and exact,
+  stores the association before it creates any cells, and refuses missing,
+  duplicate, wrong-team, wrong-definition, wrong-hash, or changed
+  associations. Candidate/evaluator claims fail closed unless the linked
+  source admission exactly matches the workflow run they allocate.
+- The experiment runner and evaluator pass that private association through
+  the experiment adapter only. The ordinary public `workflowrun.BindRequest`
+  remains source-admission-free; a private binder entry point allows an
+  experiment child to load an already-ready admission but cannot create a
+  manual source build. Source-free experiment children preserve their normal
+  behavior.
+- ATC command composition now creates exactly one `resourcecapture.Capturer`.
+  The resource-capture API and workflow source-capture coordinator share it;
+  the normal workflow binder receives the manual-capable source admitter, and
+  experiment execution receives a ready-only admitter. The experiment API's
+  `Start` store receives the manual source preparer, while the backend runs
+  both the source-pipeline lifecycle and automatic successful-build
+  reconciler.
 - Public pipeline config, rename, pause/unpause/archive/destroy, manual job
   builds/reruns, one-off started builds, and pipeline-run creation all reject
   registered source pipelines. API handlers return conflict responses. The
@@ -33,12 +53,17 @@
 Passed:
 
 - `go test ./agent/workflowrun -run '^(TestSourcePipelineLifecycle|TestWorkflowTargetRendererValidatesSourceWorkflowForPromotionWithoutRuntimeAdmission)' -count=1`
+- `go test ./agent/workflowrun ./agent/experiment -count=1`
+- `go test ./atc/atccmd -count=1`
+- `go test ./atc/db -run '^$' -count=1`
 - `go test ./atc/api/configserver ./atc/api/jobserver ./atc/api/pipelineserver ./atc/api/runserver -run '^$' -count=1`
 - `git diff --check`
 
 Added focused DB coverage for atomic source-pipeline promotion, frozen
 declaration repeat checks, lifecycle unpause/pause/archive, promotion rollback
-when registry activation fails, and public manual-build/config guards.
+when registry activation fails, public manual-build/config guards, and the
+source-admission association proof for candidate and evaluator allocation
+(nil/wrong identity rejected; exact ready identity retained).
 
 The serial DB command below could not execute any spec because fixed port 5434
 was already occupied by external PostgreSQL PID 36839 (cwd

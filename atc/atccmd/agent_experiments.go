@@ -38,11 +38,21 @@ func (cmd *RunCommand) agentExperimentBudgetConfig() db.AgentExperimentBudgetCon
 func (cmd *RunCommand) newAgentExperimentsFactory(
 	dbConn db.DbConn,
 	targetRenderer workflowrun.WorkflowTargetRenderer,
+	resourceSourcePreparers ...experiment.ResourceSourcePreparer,
 ) db.AgentExperimentsFactory {
+	options := []db.AgentExperimentsFactoryOption{
+		db.WithAgentExperimentBudgetConfig(cmd.agentExperimentBudgetConfig()),
+	}
+	for _, preparer := range resourceSourcePreparers {
+		if isNilDependency(preparer) {
+			continue
+		}
+		options = append(options, db.WithAgentExperimentResourceSourcePreparer(preparer))
+	}
 	return db.NewAgentExperimentsFactory(
 		dbConn,
 		targetRenderer,
-		db.WithAgentExperimentBudgetConfig(cmd.agentExperimentBudgetConfig()),
+		options...,
 	)
 }
 
@@ -224,7 +234,12 @@ func (cmd *RunCommand) agentExperimentComponents(
 	// divergence from the dispatch graph, even though today the experiment
 	// runtime only READS definitions through this store.
 	targetRenderer := workflowrun.WorkflowTargetRenderer{RuntimeImage: cmd.AgentStepImage}
-	workflowStore := db.NewAgentWorkflowsFactory(dbConn, targetRenderer)
+	workflowStore, _, err := newWorkflowResourceSourceComposition(
+		dbConn, mainTeam.ID(), targetRenderer,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("construct experiment workflow resource source composition: %w", err)
+	}
 	runStore := db.NewAgentWorkflowRunsFactory(dbConn)
 	templateSaver, err := workflowrun.NewTemplateSaver(
 		teamFactory,
@@ -244,6 +259,14 @@ func (cmd *RunCommand) agentExperimentComponents(
 	if err != nil {
 		return nil, fmt.Errorf("construct experiment model credential admission: %w", err)
 	}
+	readySources, err := workflowrun.NewReadyResourceSourceAdmitter(
+		mainTeam.ID(),
+		db.NewWorkflowResourceSourceAdmissionStore(dbConn),
+		metadata,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("construct experiment ready workflow resource source admitter: %w", err)
+	}
 	binder, err := workflowrun.NewBinder(
 		workflowrun.WorkflowDefinitionStoreResolver{Store: workflowStore},
 		targetRenderer,
@@ -253,6 +276,7 @@ func (cmd *RunCommand) agentExperimentComponents(
 		templateSaver,
 		pipelineRunFactory,
 		workflowCredential,
+		workflowrun.WithResourceSourceAdmitter(readySources),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("construct experiment workflow binder: %w", err)

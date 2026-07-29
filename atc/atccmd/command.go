@@ -1298,7 +1298,7 @@ func (cmd *RunCommand) backendComponents(
 	// identical graph, so the dispatcher component, the dispatch route and the
 	// terminalizer below all share one binder, canceler and workflow store.
 	dispatchGraph, err := cmd.composeAgentDispatch(
-		dbConn, lockFactory, teamFactory, dbBuildFactory, dbPipelineRunFactory,
+		logger, dbConn, lockFactory, teamFactory, dbBuildFactory, dbCheckFactory, dbPipelineRunFactory,
 	)
 	if err != nil {
 		return nil, err
@@ -1335,6 +1335,23 @@ func (cmd *RunCommand) backendComponents(
 	)
 	if err != nil {
 		return nil, err
+	}
+	var sourceBuildReconciler *workflowrun.SourceBuildReconciler
+	if dispatchGraph.sourceRuntime.captures != nil && dispatchGraph.sourceRuntime.admitter != nil {
+		sourceBuildReconciler, err = newAutomaticSourceBuildReconciler(
+			dispatchGraph.teamID,
+			dispatchGraph.teamName,
+			db.NewWorkflowResourceSourcePipelinesFactory(dbConn),
+			db.NewWorkflowResourceSourceBuildStore(dbConn, lockFactory, dbCheckFactory),
+			db.NewWorkflowResourceSourceAdmissionStore(dbConn),
+			dispatchGraph.workflows,
+			dispatchGraph.sourceRuntime.captures,
+			dispatchGraph.sourceRuntime.admitter,
+			dispatchGraph.binder,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("construct automatic workflow resource source build reconciler: %w", err)
+		}
 	}
 
 	dbWorkerFactory := db.NewWorkerFactory(dbConn, workerCache)
@@ -1500,6 +1517,20 @@ func (cmd *RunCommand) backendComponents(
 			Runnable: agentWorkflowRunReconciler,
 			Interval: cmd.AgentWorkflowRuns.ReconcilerInterval,
 		},
+	}
+	if dispatchGraph.sourceLifecycle != nil {
+		components = append(components, RunnableComponent{
+			Component: atc.Component{Name: atc.ComponentAgentWorkflowResourceSourceLifecycle},
+			Runnable:  dispatchGraph.sourceLifecycle,
+			Interval:  cmd.AgentWorkflowRuns.ReconcilerInterval,
+		})
+	}
+	if sourceBuildReconciler != nil {
+		components = append(components, RunnableComponent{
+			Component: atc.Component{Name: atc.ComponentAgentWorkflowResourceSourceBuildReconciler},
+			Runnable:  component.RunFunc(sourceBuildReconciler.Reconcile),
+			Interval:  cmd.AgentWorkflowRuns.ReconcilerInterval,
+		})
 	}
 
 	idtoken.UpdateGlobalManagerFactory(func(f *idtoken.ManagerFactory) {
@@ -1673,16 +1704,18 @@ type agentDispatchGraph struct {
 	teamID   int
 	teamName string
 
-	targetRenderer workflowrun.WorkflowTargetRenderer
-	workflows      db.AgentWorkflowsFactory
-	runs           db.AgentWorkflowRunsFactory
-	snapshots      db.AgentSnapshotsFactory
-	waits          db.AgentWorkflowWaitsFactory
-	templates      *workflowrun.TemplateSaver
-	binder         *workflowrun.Binder
-	canceler       *workflowrun.Canceler
-	tickets        db.AgentTicketsFactory
-	projector      *dispatch.TicketProjector
+	targetRenderer  workflowrun.WorkflowTargetRenderer
+	workflows       db.AgentWorkflowsFactory
+	runs            db.AgentWorkflowRunsFactory
+	snapshots       db.AgentSnapshotsFactory
+	waits           db.AgentWorkflowWaitsFactory
+	templates       *workflowrun.TemplateSaver
+	binder          *workflowrun.Binder
+	canceler        *workflowrun.Canceler
+	tickets         db.AgentTicketsFactory
+	projector       *dispatch.TicketProjector
+	sourceRuntime   workflowResourceSourceRuntime
+	sourceLifecycle component.Runnable
 
 	// deps is what both dispatch entry points pass to DispatchOne. It is a
 	// value, but every field in it is one of the shared singletons above.
@@ -1702,10 +1735,12 @@ type agentDispatchGraph struct {
 // same connection, trading the divergence this graph exists to remove for a
 // different one.
 func (cmd *RunCommand) composeAgentDispatch(
+	logger lager.Logger,
 	conn db.DbConn,
 	lockFactory lock.LockFactory,
 	teamFactory db.TeamFactory,
 	buildFactory db.BuildFactory,
+	checkFactory db.CheckFactory,
 	pipelineRunFactory db.PipelineRunFactory,
 ) (*agentDispatchGraph, error) {
 	cmd.agentDispatchMu.Lock()
@@ -1713,7 +1748,8 @@ func (cmd *RunCommand) composeAgentDispatch(
 	if cmd.agentDispatchGraph != nil {
 		return cmd.agentDispatchGraph, nil
 	}
-	if conn == nil || lockFactory == nil || teamFactory == nil || buildFactory == nil || pipelineRunFactory == nil {
+	if logger == nil || conn == nil || lockFactory == nil || teamFactory == nil ||
+		buildFactory == nil || checkFactory == nil || pipelineRunFactory == nil {
 		return nil, errors.New("compose ticket dispatch: incomplete dependencies")
 	}
 
@@ -1725,17 +1761,23 @@ func (cmd *RunCommand) composeAgentDispatch(
 		return nil, errors.New("resolve main team for ticket dispatch: main team is unavailable")
 	}
 
-	// ONE promotion validator for every workflow-store read in the graph.
 	targetRenderer := workflowrun.WorkflowTargetRenderer{RuntimeImage: cmd.AgentStepImage}
+	workflowStore, sourceLifecycle, err := newWorkflowResourceSourceComposition(
+		conn, mainTeam.ID(), targetRenderer,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("construct workflow resource source composition: %w", err)
+	}
 	graph := &agentDispatchGraph{
-		teamID:         mainTeam.ID(),
-		teamName:       mainTeam.Name(),
-		targetRenderer: targetRenderer,
-		workflows:      db.NewAgentWorkflowsFactory(conn, targetRenderer),
-		runs:           db.NewAgentWorkflowRunsFactory(conn),
-		snapshots:      db.NewAgentSnapshotsFactory(conn),
-		waits:          db.NewAgentWorkflowWaitsFactory(conn, cmd.AgentSnapshots.BindingRetention),
-		tickets:        db.NewAgentTicketsFactory(conn),
+		teamID:          mainTeam.ID(),
+		teamName:        mainTeam.Name(),
+		targetRenderer:  targetRenderer,
+		workflows:       workflowStore,
+		runs:            db.NewAgentWorkflowRunsFactory(conn),
+		snapshots:       db.NewAgentSnapshotsFactory(conn),
+		waits:           db.NewAgentWorkflowWaitsFactory(conn, cmd.AgentSnapshots.BindingRetention),
+		tickets:         db.NewAgentTicketsFactory(conn),
+		sourceLifecycle: sourceLifecycle,
 	}
 
 	graph.templates, err = workflowrun.NewTemplateSaver(
@@ -1744,6 +1786,21 @@ func (cmd *RunCommand) composeAgentDispatch(
 	)
 	if err != nil {
 		return nil, fmt.Errorf("construct workflow-run template saver: %w", err)
+	}
+	graph.sourceRuntime, err = cmd.newWorkflowResourceSourceRuntime(
+		logger,
+		conn,
+		lockFactory,
+		teamFactory,
+		mainTeam,
+		checkFactory,
+		pipelineRunFactory,
+		graph.workflows,
+		graph.snapshots,
+		graph.templates,
+	)
+	if err != nil {
+		return nil, err
 	}
 	budget, err := workflowrun.NewGlobalDailyBudgetAdmitter(
 		db.NewAgentWorkflowBudgetReservationsFactory(conn, db.AgentWorkflowBudgetConfig{
@@ -1763,6 +1820,13 @@ func (cmd *RunCommand) composeAgentDispatch(
 	if err != nil {
 		return nil, fmt.Errorf("construct workflow-run model credential admission: %w", err)
 	}
+	binderOptions := []workflowrun.BinderOption{}
+	if graph.sourceRuntime.admitter != nil {
+		binderOptions = append(
+			binderOptions,
+			workflowrun.WithResourceSourceAdmitter(graph.sourceRuntime.admitter),
+		)
+	}
 	graph.binder, err = workflowrun.NewBinder(
 		workflowrun.WorkflowDefinitionStoreResolver{Store: graph.workflows},
 		targetRenderer,
@@ -1772,6 +1836,7 @@ func (cmd *RunCommand) composeAgentDispatch(
 		graph.templates,
 		pipelineRunFactory,
 		credential,
+		binderOptions...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("construct workflow-run binder: %w", err)
@@ -3527,7 +3592,7 @@ func (cmd *RunCommand) constructAPIHandler(
 	// backendComponents, and the default team it needs exists by now. The
 	// dispatcher component reuses this exact graph.
 	dispatchGraph, err := cmd.composeAgentDispatch(
-		dbConn, lockFactory, teamFactory, dbBuildFactory, dbPipelineRunFactory,
+		logger, dbConn, lockFactory, teamFactory, dbBuildFactory, dbCheckFactory, dbPipelineRunFactory,
 	)
 	if err != nil {
 		return nil, err
@@ -3536,45 +3601,9 @@ func (cmd *RunCommand) constructAPIHandler(
 	workflowStore := dispatchGraph.workflows
 	workflowRunStore := dispatchGraph.runs
 	snapshotStore := dispatchGraph.snapshots
-	templateSaver := dispatchGraph.templates
 	var resourceCapturer snapshotsapi.ResourceCapturer
-	if cmd.AgentSnapshots.Enabled {
-		resolver, err := resourcecapture.NewATCResolver(teamFactory)
-		if err != nil {
-			return nil, fmt.Errorf("construct resource-capture resolver: %w", err)
-		}
-		captureTemplates, err := resourcecapture.NewTemplateStore(templateSaver)
-		if err != nil {
-			return nil, fmt.Errorf("construct resource-capture template store: %w", err)
-		}
-		captureRuns, ok := dbPipelineRunFactory.(resourcecapture.PipelineRunStore)
-		if !ok {
-			return nil, errors.New("construct resource-capture execution store: pipeline run factory lacks server-template execution")
-		}
-		captureLocker, err := resourcecapture.NewDBOperationLocker(logger.Session("resource-capture"), lockFactory)
-		if err != nil {
-			return nil, fmt.Errorf("construct resource-capture operation locker: %w", err)
-		}
-		captureExecutions, err := resourcecapture.NewExecutionStore(captureRuns, captureLocker)
-		if err != nil {
-			return nil, fmt.Errorf("construct resource-capture execution store: %w", err)
-		}
-		captureFinder, ok := snapshotStore.(resourcecapture.CaptureOutputFinder)
-		if !ok {
-			return nil, errors.New("construct resource-capture output store: snapshot store lacks capture lookup")
-		}
-		captureOutputs, err := resourcecapture.NewOutputStore(
-			captureFinder, snapshotStore, db.NewAgentSnapshotDigestLocker(dbConn),
-		)
-		if err != nil {
-			return nil, fmt.Errorf("construct resource-capture output store: %w", err)
-		}
-		resourceCapturer, err = resourcecapture.NewCapturer(
-			resolver, captureTemplates, captureExecutions, captureOutputs, cmd.AgentStepImage,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("construct resource capturer: %w", err)
-		}
+	if dispatchGraph.sourceRuntime.resourceCapturer != nil {
+		resourceCapturer = dispatchGraph.sourceRuntime.resourceCapturer
 	}
 	workflowWaitStore := dispatchGraph.waits
 	workflowRunHandlers, err := workflowrunsapi.NewHandler(workflowrunsapi.Config{
@@ -3624,7 +3653,19 @@ func (cmd *RunCommand) constructAPIHandler(
 	if err != nil {
 		return nil, fmt.Errorf("construct workflow-outcome API: %w", err)
 	}
-	experimentStore := cmd.newAgentExperimentsFactory(dbConn, targetRenderer)
+	var experimentSourcePreparer *workflowrun.ExperimentResourceSourcePreparer
+	if dispatchGraph.sourceRuntime.admitter != nil {
+		experimentSourcePreparer, err = workflowrun.NewExperimentResourceSourcePreparer(
+			workflowrun.WorkflowDefinitionStoreResolver{Store: workflowStore},
+			dispatchGraph.sourceRuntime.admitter,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("construct experiment workflow resource source preparer: %w", err)
+		}
+	}
+	experimentStore := cmd.newAgentExperimentsFactory(
+		dbConn, targetRenderer, experimentSourcePreparer,
+	)
 	experimentHandlers, err := experimentsapi.NewHandler(experimentsapi.Config{
 		TeamID:   dispatchGraph.teamID,
 		TeamName: dispatchGraph.teamName,

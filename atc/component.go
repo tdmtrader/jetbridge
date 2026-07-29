@@ -38,6 +38,11 @@ const (
 	ComponentPipelineRunLifecycler         = "pipeline_run_lifecycler"
 )
 
+const (
+	ComponentAgentWorkflowResourceSourceLifecycle       = "agent_workflow_resource_source_lifecycle"
+	ComponentAgentWorkflowResourceSourceBuildReconciler = "agent_workflow_resource_source_build_reconciler"
+)
+
 type Component struct {
 	Name string
 }
