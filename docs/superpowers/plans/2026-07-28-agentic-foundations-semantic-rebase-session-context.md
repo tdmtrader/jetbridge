@@ -232,16 +232,25 @@ Task 15:
 
 Tasks 16–18:
 
-- Task 16 is the next safe task now that `DEPENDENCY-004` is resolved.
-- Task 17 remains ordered after Task 16, and Task 18 remains ordered after
-  Tasks 16–17.
+- Task 16 is accepted through `91d8e47fb0`: bounded safe-boundary capture,
+  exact-node daemon/Hangar commit, lifecycle integration, and completion
+  capture passed focused verification and two bounded reviews.
+- Task 17 is accepted through `1f6e9f67d0`: exact retained source restore into
+  a fresh durable attempt, capability-gated native resume, workspace-only and
+  checkpoint-zero fallback, reconstruction guidance, and fail-closed manual
+  review passed focused verification and one Terra blocking-only review.
+- Task 18 is accepted at `986f1e591d`: exact-attempt metrics/transcripts,
+  atomic aggregate/ledger deltas, active-source retention, terminal cleanup,
+  bounded recovery telemetry/alerts, migrations 1773106146-47, and the
+  recovery operations guide passed affected DB/migration/package/chart
+  verification and one Terra blocking-only review.
 
 Task 19:
 
 - Not started; dependency-deferred under `DEPENDENCY-005`.
 - Final end-to-end and residue proof cannot complete while Tasks 6 and 12
   remain Human Review Required, their dependent tasks remain unstarted, and
-  Tasks 16–18 are unfinished.
+  the branch is knowingly incomplete. Tasks 16–18 are no longer blockers.
 
 ## Milestone verification
 
@@ -257,8 +266,9 @@ Fresh verification at the current checkpoint:
   failed suite. A focused rerun confirmed 201/380 Jetbridge specs pass and
   179/380 fail for the single Task 6 zero-mount cause documented above.
 
-The checkpoint is therefore verified but not merge-ready. Do not report the
-branch as green until Task 6 receives human review and the unit suite is rerun.
+The recovery track is therefore verified but the branch is not merge-ready.
+Do not report the branch as green until Tasks 6 and 12 receive human review,
+their dependent tasks are implemented, and the broad suites are rerun.
 
 ## Near-term sequence
 
@@ -271,8 +281,8 @@ branch as green until Task 6 receives human review and the unit suite is rerun.
 4. Leave Tasks 12–14 at their documented human-review/dependency boundaries.
 5. Treat Task 15 as **Accepted**; its user-authorized final review found no
    blocking issue.
-6. Implement Tasks 16, 17, and 18 in dependency order with their existing
-   bounded review budgets.
+6. Treat Tasks 16, 17, and 18 as accepted; do not reopen their review cycles
+   without new blocking evidence.
 7. Leave Task 19 dependency-deferred until the Human Review Required boundaries
    and dependent tasks are resolved.
 8. Treat every resumed feature group as a separate bounded track rather than

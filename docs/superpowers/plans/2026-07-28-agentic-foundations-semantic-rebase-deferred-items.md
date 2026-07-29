@@ -252,16 +252,18 @@ to evaluate independently.
 
 - Task/area: Tasks 16–18, capture, restore/provider resume, telemetry, and
   retention
-- Classification: Blocking dependency; tasks not started
-- Status: **Resolved**; Task 16 is unblocked
+- Classification: Resolved ordering dependency
+- Status: **Resolved**; Tasks 16–18 are accepted
 - Evidence: Task 16 commits captured workspace generations and journals
   effects through Task 15's mutation fence. Task 17 restores those committed
   generations into fresh attempts. Task 18 attributes recovery metrics and
   releases retained sources. Building any of these on a fence that can remain
   valid under stale transaction time would institutionalize a stale-writer
   race at the recovery boundary.
-- Suggested follow-up: Implement Tasks 16, 17, and 18 in dependency order with
-  their existing bounded review budgets.
+- Resolution: Task 16 accepted bounded committed capture; Task 17 accepted
+  fresh-attempt restore and capability-gated resume; Task 18 accepted
+  exact-attempt telemetry, retention, alerts, and operations guidance. Their
+  final commits are `91d8e47fb0`, `1f6e9f67d0`, and `986f1e591d`.
 
 ### DEPENDENCY-005 — Task 19 waits for unresolved Human Review Required tracks
 
@@ -269,10 +271,10 @@ to evaluate independently.
 - Classification: Blocking dependency; task not started
 - Status: Deferred
 - Evidence: Tasks 6 and 12 remain Human Review Required. Tasks 7, 9, and 13–14
-  are consequently unstarted or dependency-deferred, while newly unblocked
-  Tasks 16–18 remain unfinished. Task 19 cannot truthfully prove complete
-  upgrade, recovery, publication, or repository-wide acceptance while those
-  boundaries and implementations remain unresolved.
+  are consequently unstarted or dependency-deferred. Tasks 16–18 are accepted,
+  but Task 19 still cannot truthfully prove complete upgrade, validation,
+  source capture, publication, or repository-wide acceptance while the Task
+  6/12 boundaries and their dependent implementations remain unresolved.
 - Suggested follow-up: Resolve the two Human Review Required entries,
   complete their dependent tasks, then run Task 19 once as the final milestone
   rather than repeatedly running broad suites against a knowingly incomplete

@@ -296,14 +296,47 @@
     work. Round 2 found it addressed, no new blocking breakage, spec PASS, and
     code quality APPROVED. No lower finding was deferred.
   - Status: **Accepted**.
-- [ ] Task 17 — fresh-attempt restore/provider resume
-  - Status: ordered after Task 16's committed capture.
-- [ ] Task 18 — recovery telemetry/retention
-  - Status: ordered after Tasks 16–17.
+- [x] Task 17 — fresh-attempt restore/provider resume
+  - Commits:
+    - `000f8ce295 fix(checkpoint): pin recovery to latest head`
+    - `c0dfce8f03 feat(agent): gate checkpoint recovery by provider proof`
+    - `11abba6da3 feat(checkpoint): restore exact snapshots through daemon`
+    - `9cf73ef12d feat(checkpoint): gate fresh attempt restore`
+    - `3777aebcdd feat(checkpoint): prepare durable recovery attempts`
+    - `1f6e9f67d0 feat(agent): resume interrupted attempts safely`
+  - Behavior: recovery freezes and verifies one exact retained committed
+    generation; materializes it through the node-local daemon before launch;
+    always uses a fresh durable attempt/process; permits native resume only
+    under static compatible provider proof and a complete server-owned effect
+    journal; otherwise uses workspace-only, checkpoint-zero, or durable manual
+    review. The recovery prompt explicitly requires reconstruction of
+    ephemeral process, socket, credential, and mount state.
+  - Verification: focused recovery, provider, runner, runtime, daemon,
+    Jetbridge, AgentStep, and ATC composition suites passed. No repository
+    source or source-derived image was uploaded to Borg.
+  - Review: formal Terra blocking-only round 1 found no Critical, High, or
+    acceptance-blocking issue. No correction round was required.
+  - Status: **Accepted**.
+- [x] Task 18 — recovery telemetry/retention
+  - Commit: `986f1e591d feat(agent): attribute recovery data to attempts`
+  - Behavior: migrations 1773106146-47 persist exact-attempt metrics and
+    transcripts while preserving legacy projections; per-attempt cumulative
+    deltas, aggregate projection, and append-only cost ledger commit atomically
+    under server-owned attribution; one terminal transcript owns the legacy
+    view; active replacement attempts pin exact source archives; terminal
+    cleanup observes FK order; bounded telemetry, alerts, and the recovery
+    operations guide cover interruption through restore/manual review.
+  - Verification: focused DB specifications passed 28/28; new migration and
+    legacy-upgrade focuses passed; API, exec, metric, ATC command,
+    artifact-daemon, generated-fake, and chart-alert suites passed; Helm lint
+    and diff hygiene passed.
+  - Review: formal Terra blocking-only round 1 found no Critical, High, or
+    acceptance-blocking issue. No correction round was required.
+  - Status: **Accepted**.
 - [ ] Task 19 — full verification and residue audit
   - Status: dependency-deferred under `DEPENDENCY-005`; final proof cannot pass
     while Tasks 6 and 12 remain Human Review Required, their dependent tasks
-    are unstarted, and Tasks 16–18 are unfinished.
+    are unstarted, and the branch is knowingly incomplete.
 
 ## Current milestone acceptance
 
@@ -314,5 +347,6 @@
 - Merge-preflight revision-3 focused suites: passed.
 - `make test-unit`: failed only in Jetbridge as described under Task 6; the
   other 120 Ginkgo suites completed without a reported failure.
-- Status: checkpoint evidence is complete, but the branch is not merge-ready
-  while Task 6 remains **Human Review Required**.
+- Status: recovery evidence is complete, but the branch is not merge-ready
+  while Tasks 6 and 12 remain **Human Review Required** and their dependent
+  tasks remain unimplemented.
