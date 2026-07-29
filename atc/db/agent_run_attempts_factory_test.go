@@ -58,6 +58,24 @@ var _ = Describe("AgentRunAttemptsFactory", func() {
 		return updated
 	}
 
+	committedSource := func(subject checkpoint.Identity, generation int) int64 {
+		var headID int64
+		Expect(dbConn.QueryRow(`
+			SELECT id FROM agent_run_checkpoint_heads
+			WHERE build_id = $1 AND plan_id = $2 AND function_id = $3
+		`, subject.BuildID, subject.PlanID, subject.FunctionID).Scan(&headID)).To(Succeed())
+		var checkpointID int64
+		Expect(dbConn.QueryRow(`
+			INSERT INTO agent_run_checkpoints
+				(head_id, generation, expected_previous_generation, execution_attempt, fence_token,
+				 status, manifest, stage_expires_at, committed_at)
+			VALUES ($1, $2, 0, 1, '11111111-1111-1111-1111-111111111111',
+				'committed', '{}'::jsonb, clock_timestamp() + INTERVAL '1 hour', clock_timestamp())
+			RETURNING id
+		`, headID, generation).Scan(&checkpointID)).To(Succeed())
+		return checkpointID
+	}
+
 	It("allocates attempt one idempotently with the durable default maximum", func() {
 		request := checkpoint.AllocateInitialAttemptRequest{
 			Identity: identity, MaterializationID: "materialization-1",
@@ -230,7 +248,49 @@ var _ = Describe("AgentRunAttemptsFactory", func() {
 			Identity: identity, ExecutionAttempt: 1, Reason: checkpoint.InterruptionPreempted,
 		})
 		Expect(err).NotTo(HaveOccurred())
-		checkpointID := int64(91)
+		checkpointID := committedSource(identity, 7)
+		for _, source := range []struct {
+			id         int64
+			generation int
+		}{
+			{id: checkpointID + 999, generation: 7},
+			{id: checkpointID, generation: 8},
+		} {
+			_, err = factory.BeginRecovery(ctx, checkpoint.BeginRecoveryRequest{
+				Identity: identity, SourceExecutionAttempt: 1,
+				SourceCheckpointID: &source.id, SourceCheckpointGeneration: source.generation,
+				Mode: checkpoint.FallbackWorkspaceOnly, Reason: checkpoint.InterruptionPreempted,
+				MaterializationID: "invalid-source",
+			})
+			Expect(errors.Is(err, checkpoint.ErrConflict)).To(BeTrue(), "source must be the exact committed generation of this head")
+		}
+		foreignIdentity := checkpoint.Identity{BuildID: identity.BuildID + 1, PlanID: identity.PlanID, FunctionID: identity.FunctionID}
+		foreign, err := factory.AllocateInitial(ctx, checkpoint.AllocateInitialAttemptRequest{Identity: foreignIdentity, MaterializationID: "foreign"})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(foreign.ExecutionAttempt).To(Equal(1))
+		foreignCheckpointID := committedSource(foreignIdentity, 1)
+		_, err = factory.BeginRecovery(ctx, checkpoint.BeginRecoveryRequest{
+			Identity: identity, SourceExecutionAttempt: 1,
+			SourceCheckpointID: &foreignCheckpointID, SourceCheckpointGeneration: 1,
+			Mode: checkpoint.FallbackWorkspaceOnly, Reason: checkpoint.InterruptionPreempted,
+			MaterializationID: "foreign-source",
+		})
+		Expect(errors.Is(err, checkpoint.ErrConflict)).To(BeTrue(), "foreign checkpoint IDs cannot cross heads")
+		var nonCommittedID int64
+		Expect(dbConn.QueryRow(`
+			INSERT INTO agent_run_checkpoints
+				(head_id, generation, expected_previous_generation, execution_attempt, fence_token, status, manifest, stage_expires_at, superseded_at)
+			SELECT id, 8, 7, 1, '22222222-2222-2222-2222-222222222222', 'superseded', '{}'::jsonb, clock_timestamp(), clock_timestamp()
+			FROM agent_run_checkpoint_heads WHERE build_id = $1 AND plan_id = $2 AND function_id = $3
+			RETURNING id
+		`, identity.BuildID, identity.PlanID, identity.FunctionID).Scan(&nonCommittedID)).To(Succeed())
+		_, err = factory.BeginRecovery(ctx, checkpoint.BeginRecoveryRequest{
+			Identity: identity, SourceExecutionAttempt: 1,
+			SourceCheckpointID: &nonCommittedID, SourceCheckpointGeneration: 8,
+			Mode: checkpoint.FallbackWorkspaceOnly, Reason: checkpoint.InterruptionPreempted,
+			MaterializationID: "noncommitted-source",
+		})
+		Expect(errors.Is(err, checkpoint.ErrConflict)).To(BeTrue(), "a source must be committed")
 		firstRecovery := checkpoint.BeginRecoveryRequest{
 			Identity: identity, SourceExecutionAttempt: 1,
 			SourceCheckpointID: &checkpointID, SourceCheckpointGeneration: 7,
@@ -309,6 +369,44 @@ var _ = Describe("AgentRunAttemptsFactory", func() {
 			Reason: checkpoint.InterruptionPodDeleted, MaterializationID: "materialization-2",
 		})
 		Expect(errors.Is(err, checkpoint.ErrConflict)).To(BeTrue())
+	})
+
+	It("pins a retained recovery source checkpoint and archive against expiry", func() {
+		allocate(2)
+		sourceID := committedSource(identity, 1)
+		var objectID int64
+		Expect(dbConn.QueryRow(`
+			INSERT INTO agent_checkpoint_objects (kind, digest, object_key, generation, status)
+			VALUES ('checkpoints', 'sha256:pinned', 'hangar/v1/checkpoints/sha256/pinned.tar.zst', 1, 'available')
+			RETURNING id
+		`).Scan(&objectID)).To(Succeed())
+		_, err := dbConn.Exec(`
+			UPDATE agent_run_checkpoints SET archive_object_id = $2 WHERE id = $1
+		`, sourceID, objectID)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = factory.MarkInterrupted(ctx, checkpoint.MarkAttemptInterruptedRequest{
+			Identity: identity, ExecutionAttempt: 1, Reason: checkpoint.InterruptionPreempted,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = factory.BeginRecovery(ctx, checkpoint.BeginRecoveryRequest{
+			Identity: identity, SourceExecutionAttempt: 1, SourceCheckpointID: &sourceID,
+			SourceCheckpointGeneration: 1, Mode: checkpoint.FallbackWorkspaceOnly,
+			Reason: checkpoint.InterruptionPreempted, MaterializationID: "pinned-recovery",
+		})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = dbConn.Exec(`
+			UPDATE agent_run_checkpoints SET status = 'superseded', superseded_at = clock_timestamp() - INTERVAL '2 hours'
+			WHERE id = $1
+		`, sourceID)
+		Expect(err).NotTo(HaveOccurred())
+
+		checkpoints := db.NewAgentRunCheckpointsFactory(dbConn)
+		expirations, err := checkpoints.ClaimCheckpointExpirations(ctx, 10)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(expirations).To(BeEmpty(), "a retained attempt pins its exact source generation")
+		deletions, err := checkpoints.ClaimUnreferencedObjects(ctx, 10)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(deletions).To(BeEmpty(), "the source archive remains unavailable for deletion while recovery retains it")
 	})
 
 	It("does not terminalize an interrupted attempt under an already-terminal head", func() {

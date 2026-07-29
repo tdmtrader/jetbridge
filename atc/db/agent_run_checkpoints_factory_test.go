@@ -12,6 +12,7 @@ import (
 	"github.com/concourse/concourse/agent/hangar"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc/db"
+	"github.com/google/uuid"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -21,19 +22,60 @@ var _ = Describe("AgentRunCheckpointsFactory", func() {
 	var (
 		ctx      context.Context
 		factory  db.AgentRunCheckpointsFactory
+		attempts db.AgentRunAttemptsFactory
 		identity checkpoint.Identity
 	)
 
 	BeforeEach(func() {
 		ctx = context.Background()
 		factory = db.NewAgentRunCheckpointsFactory(dbConn)
+		attempts = db.NewAgentRunAttemptsFactory(dbConn)
 		identity = checkpoint.Identity{BuildID: 7123, PlanID: "checkpoint-plan", FunctionID: "implement"}
 	})
 
+	authorize := func(subject checkpoint.Identity, target int) checkpoint.FenceClaim {
+		current, found, err := attempts.Current(ctx, subject)
+		Expect(err).NotTo(HaveOccurred())
+		if !found {
+			current, err = attempts.AllocateInitial(ctx, checkpoint.AllocateInitialAttemptRequest{
+				Identity: subject, MaxTotalAttempts: 3, MaterializationID: "checkpoint-test-1",
+			})
+			Expect(err).NotTo(HaveOccurred())
+		}
+		for current.ExecutionAttempt < target {
+			if current.State != checkpoint.AttemptInterrupted {
+				current, err = attempts.MarkInterrupted(ctx, checkpoint.MarkAttemptInterruptedRequest{
+					Identity: subject, ExecutionAttempt: current.ExecutionAttempt, Reason: checkpoint.InterruptionPreempted,
+				})
+				Expect(err).NotTo(HaveOccurred())
+			}
+			current, err = attempts.BeginRecovery(ctx, checkpoint.BeginRecoveryRequest{
+				Identity: subject, SourceExecutionAttempt: current.ExecutionAttempt,
+				Mode: checkpoint.FallbackCheckpointZero, Reason: checkpoint.InterruptionPreempted,
+				MaterializationID: fmt.Sprintf("checkpoint-test-%d", current.ExecutionAttempt+1),
+			})
+			Expect(err).NotTo(HaveOccurred())
+		}
+		Expect(current.ExecutionAttempt).To(Equal(target))
+		if current.State == checkpoint.AttemptScheduling {
+			fence, err := attempts.AcquireFence(ctx, checkpoint.AcquireAttemptFenceRequest{
+				Identity: subject, ExecutionAttempt: target, Token: uuid.NewString(), TTL: time.Hour,
+			})
+			Expect(err).NotTo(HaveOccurred())
+			current, err = attempts.Transition(ctx, checkpoint.TransitionAttemptRequest{
+				Identity: subject, ExecutionAttempt: target, ExpectedState: checkpoint.AttemptScheduling,
+				State: checkpoint.AttemptRunning, Fence: fence.FenceClaim,
+			})
+			Expect(err).NotTo(HaveOccurred())
+		}
+		Expect(current.Fence).NotTo(BeNil())
+		return current.Fence.FenceClaim
+	}
+
 	stage := func(attempt int) checkpoint.StagedCheckpoint {
+		fence := authorize(identity, attempt)
 		staged, err := factory.Begin(ctx, checkpoint.BeginRequest{
-			Identity:         identity,
-			ExecutionAttempt: attempt,
+			Identity: identity, Fence: fence, ExecutionAttempt: attempt,
 		})
 		Expect(err).NotTo(HaveOccurred())
 		return staged
@@ -47,11 +89,13 @@ var _ = Describe("AgentRunCheckpointsFactory", func() {
 			StagedCheckpointID: staged.ID,
 			Digest:             digest,
 			Key:                key,
+			Fence:              staged.Fence,
 		})
 		Expect(err).NotTo(HaveOccurred())
 		_, err = factory.CompleteObjectUpload(ctx, checkpoint.CompleteObjectUploadRequest{
 			Ticket: ticket,
 			Object: hangar.ObjectRef{Kind: hangar.KindCheckpoint, Digest: digest, Key: key, Generation: 7},
+			Fence:  staged.Fence,
 		})
 		Expect(err).NotTo(HaveOccurred())
 		return ticket
@@ -100,11 +144,12 @@ var _ = Describe("AgentRunCheckpointsFactory", func() {
 		withRun := identity
 		withRun.WorkflowRunID = &runID
 
-		staged, err := factory.Begin(ctx, checkpoint.BeginRequest{Identity: withoutRun, ExecutionAttempt: 1})
+		withoutRunFence := authorize(withoutRun, 1)
+		staged, err := factory.Begin(ctx, checkpoint.BeginRequest{Identity: withoutRun, Fence: withoutRunFence, ExecutionAttempt: 1})
 		Expect(err).NotTo(HaveOccurred())
-		Expect(factory.Abort(ctx, checkpoint.AbortRequest{StagedCheckpointID: staged.ID})).To(Succeed())
+		Expect(factory.Abort(ctx, checkpoint.AbortRequest{StagedCheckpointID: staged.ID, Fence: staged.Fence})).To(Succeed())
 
-		_, err = factory.Begin(ctx, checkpoint.BeginRequest{Identity: withRun, ExecutionAttempt: 2})
+		_, err = factory.Begin(ctx, checkpoint.BeginRequest{Identity: withRun, Fence: checkpoint.FenceClaim{ExecutionAttempt: 2, Token: uuid.NewString()}, ExecutionAttempt: 2})
 		Expect(errors.Is(err, checkpoint.ErrConflict)).To(BeTrue(),
 			"a caller cannot attach workflow provenance to a head created without it")
 		_, _, err = factory.Latest(ctx, withRun)
@@ -113,11 +158,12 @@ var _ = Describe("AgentRunCheckpointsFactory", func() {
 
 		withoutRun.BuildID++
 		withRun.BuildID++
-		staged, err = factory.Begin(ctx, checkpoint.BeginRequest{Identity: withRun, ExecutionAttempt: 1})
+		withRunFence := authorize(withRun, 1)
+		staged, err = factory.Begin(ctx, checkpoint.BeginRequest{Identity: withRun, Fence: withRunFence, ExecutionAttempt: 1})
 		Expect(err).NotTo(HaveOccurred())
-		Expect(factory.Abort(ctx, checkpoint.AbortRequest{StagedCheckpointID: staged.ID})).To(Succeed())
+		Expect(factory.Abort(ctx, checkpoint.AbortRequest{StagedCheckpointID: staged.ID, Fence: staged.Fence})).To(Succeed())
 
-		_, err = factory.Begin(ctx, checkpoint.BeginRequest{Identity: withoutRun, ExecutionAttempt: 2})
+		_, err = factory.Begin(ctx, checkpoint.BeginRequest{Identity: withoutRun, Fence: checkpoint.FenceClaim{ExecutionAttempt: 2, Token: uuid.NewString()}, ExecutionAttempt: 2})
 		Expect(errors.Is(err, checkpoint.ErrConflict)).To(BeTrue(),
 			"a caller cannot omit workflow provenance from a head created with it")
 		Expect(errors.Is(factory.MarkTerminal(ctx, withoutRun, time.Now()), checkpoint.ErrConflict)).To(BeTrue(),
@@ -130,7 +176,7 @@ var _ = Describe("AgentRunCheckpointsFactory", func() {
 		key, err := hangar.Key(hangar.KindCheckpoint, digest)
 		Expect(err).NotTo(HaveOccurred())
 		ticket, err := factory.PrepareObjectUpload(ctx, checkpoint.PrepareObjectUploadRequest{
-			StagedCheckpointID: staged.ID, Digest: digest, Key: key,
+			StagedCheckpointID: staged.ID, Digest: digest, Key: key, Fence: staged.Fence,
 		})
 		Expect(err).NotTo(HaveOccurred())
 
@@ -178,7 +224,7 @@ var _ = Describe("AgentRunCheckpointsFactory", func() {
 		Expect(stageTTLSeconds).To(BeNumerically("~", time.Hour.Seconds(), 0.001),
 			"the database authority must assign the one-hour stage deadline")
 		_, err := factory.Begin(ctx, checkpoint.BeginRequest{
-			Identity: identity, ExecutionAttempt: 2,
+			Identity: identity, Fence: checkpoint.FenceClaim{ExecutionAttempt: 2, Token: uuid.NewString()}, ExecutionAttempt: 2,
 		})
 		Expect(err).To(HaveOccurred(), "only one active staged generation may hold a head")
 
@@ -187,17 +233,19 @@ var _ = Describe("AgentRunCheckpointsFactory", func() {
 			StagedCheckpointID: first.ID,
 			Digest:             hangar.Digest("sha256:" + strings.Repeat("a", 64)),
 			Key:                "hangar/v1/checkpoints/sha256/" + strings.Repeat("a", 64) + ".tar.zst",
+			Fence:              first.Fence,
 		})
 		Expect(err).NotTo(HaveOccurred())
-		_, err = factory.Commit(ctx, checkpoint.CommitRequest{StagedCheckpointID: first.ID, ExpectedPreviousGeneration: 0, Manifest: manifestFor(first, ticket)})
+		_, err = factory.Commit(ctx, checkpoint.CommitRequest{StagedCheckpointID: first.ID, ExpectedPreviousGeneration: 0, Manifest: manifestFor(first, ticket), Fence: first.Fence})
 		Expect(err).To(HaveOccurred())
 
 		_, err = factory.CompleteObjectUpload(ctx, checkpoint.CompleteObjectUploadRequest{
 			Ticket: ticket,
 			Object: hangar.ObjectRef{Kind: ticket.Kind, Digest: ticket.Digest, Key: ticket.Key, Generation: 7},
+			Fence:  first.Fence,
 		})
 		Expect(err).NotTo(HaveOccurred())
-		committed, err := factory.Commit(ctx, checkpoint.CommitRequest{StagedCheckpointID: first.ID, ExpectedPreviousGeneration: 0, Manifest: manifestFor(first, ticket)})
+		committed, err := factory.Commit(ctx, checkpoint.CommitRequest{StagedCheckpointID: first.ID, ExpectedPreviousGeneration: 0, Manifest: manifestFor(first, ticket), Fence: first.Fence})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(committed.Generation).To(Equal(1))
 
@@ -209,8 +257,8 @@ var _ = Describe("AgentRunCheckpointsFactory", func() {
 		second := stage(2)
 		Expect(second.Generation).To(Equal(2))
 		Expect(second.ExpectedPreviousGeneration).To(Equal(1))
-		Expect(factory.Abort(ctx, checkpoint.AbortRequest{StagedCheckpointID: second.ID})).To(Succeed())
-		Expect(factory.Abort(ctx, checkpoint.AbortRequest{StagedCheckpointID: second.ID})).To(Succeed())
+		Expect(factory.Abort(ctx, checkpoint.AbortRequest{StagedCheckpointID: second.ID, Fence: second.Fence})).To(Succeed())
+		Expect(factory.Abort(ctx, checkpoint.AbortRequest{StagedCheckpointID: second.ID, Fence: second.Fence})).To(Succeed())
 
 		third := stage(3)
 		Expect(third.Generation).To(Equal(3), "aborting a generation must never make it reusable")
@@ -219,12 +267,12 @@ var _ = Describe("AgentRunCheckpointsFactory", func() {
 	It("rejects stale and out-of-order staged candidates without moving the committed head backwards", func() {
 		first := stage(1)
 		firstTicket := prepareAndComplete(first, "a")
-		_, err := factory.Commit(ctx, checkpoint.CommitRequest{StagedCheckpointID: first.ID, ExpectedPreviousGeneration: 0, Manifest: manifestFor(first, firstTicket)})
+		_, err := factory.Commit(ctx, checkpoint.CommitRequest{StagedCheckpointID: first.ID, ExpectedPreviousGeneration: 0, Manifest: manifestFor(first, firstTicket), Fence: first.Fence})
 		Expect(err).NotTo(HaveOccurred())
 
 		candidate := stage(2)
 		candidateTicket := prepareAndComplete(candidate, "b")
-		_, err = factory.Commit(ctx, checkpoint.CommitRequest{StagedCheckpointID: candidate.ID, ExpectedPreviousGeneration: 0, Manifest: manifestFor(candidate, candidateTicket)})
+		_, err = factory.Commit(ctx, checkpoint.CommitRequest{StagedCheckpointID: candidate.ID, ExpectedPreviousGeneration: 0, Manifest: manifestFor(candidate, candidateTicket), Fence: candidate.Fence})
 		Expect(err).To(HaveOccurred())
 
 		latest, found, err := factory.Latest(ctx, identity)
@@ -237,12 +285,12 @@ var _ = Describe("AgentRunCheckpointsFactory", func() {
 		first := stage(1)
 		firstTicket := prepareAndComplete(first, "a")
 		_, err := factory.Commit(ctx, checkpoint.CommitRequest{
-			StagedCheckpointID: first.ID, ExpectedPreviousGeneration: 0, Manifest: manifestFor(first, firstTicket),
+			StagedCheckpointID: first.ID, ExpectedPreviousGeneration: 0, Manifest: manifestFor(first, firstTicket), Fence: first.Fence,
 		})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(factory.MarkTerminal(ctx, identity, time.Now())).To(Succeed())
 
-		_, err = factory.Begin(ctx, checkpoint.BeginRequest{Identity: identity, ExecutionAttempt: 2})
+		_, err = factory.Begin(ctx, checkpoint.BeginRequest{Identity: identity, Fence: checkpoint.FenceClaim{ExecutionAttempt: 2, Token: uuid.NewString()}, ExecutionAttempt: 2})
 		Expect(errors.Is(err, checkpoint.ErrConflict)).To(BeTrue(), "an inactive head cannot reserve another generation")
 
 		delayedIdentity := checkpoint.Identity{
@@ -253,7 +301,7 @@ var _ = Describe("AgentRunCheckpointsFactory", func() {
 		delayedTicket := prepareAndComplete(delayed, "b")
 		Expect(factory.MarkTerminal(ctx, delayedIdentity, time.Now())).To(Succeed())
 		_, err = factory.Commit(ctx, checkpoint.CommitRequest{
-			StagedCheckpointID: delayed.ID, ExpectedPreviousGeneration: 0, Manifest: manifestFor(delayed, delayedTicket),
+			StagedCheckpointID: delayed.ID, ExpectedPreviousGeneration: 0, Manifest: manifestFor(delayed, delayedTicket), Fence: delayed.Fence,
 		})
 		Expect(errors.Is(err, checkpoint.ErrConflict)).To(BeTrue(), "a delayed commit cannot replace a terminal head")
 
@@ -273,7 +321,7 @@ var _ = Describe("AgentRunCheckpointsFactory", func() {
 				PlanID:     fmt.Sprintf("concurrent-upload-%d", index),
 				FunctionID: "implement",
 			}
-			stages = append(stages, stage(index+1))
+			stages = append(stages, stage(1))
 		}
 
 		digest := hangar.Digest("sha256:" + strings.Repeat("9", 64))
@@ -295,6 +343,7 @@ var _ = Describe("AgentRunCheckpointsFactory", func() {
 					StagedCheckpointID: staged.ID,
 					Digest:             digest,
 					Key:                key,
+					Fence:              staged.Fence,
 				})
 				results <- struct {
 					ticket checkpoint.ObjectUploadTicket
@@ -325,16 +374,16 @@ var _ = Describe("AgentRunCheckpointsFactory", func() {
 	It("shares a normalized archive object and retains the terminal latest checkpoint only through its diagnostic TTL", func() {
 		first := stage(1)
 		ticket := prepareAndComplete(first, "a")
-		_, err := factory.Commit(ctx, checkpoint.CommitRequest{StagedCheckpointID: first.ID, ExpectedPreviousGeneration: 0, Manifest: manifestFor(first, ticket)})
+		_, err := factory.Commit(ctx, checkpoint.CommitRequest{StagedCheckpointID: first.ID, ExpectedPreviousGeneration: 0, Manifest: manifestFor(first, ticket), Fence: first.Fence})
 		Expect(err).NotTo(HaveOccurred())
 
 		second := stage(2)
 		shared, err := factory.PrepareObjectUpload(ctx, checkpoint.PrepareObjectUploadRequest{
-			StagedCheckpointID: second.ID, Digest: ticket.Digest, Key: ticket.Key,
+			StagedCheckpointID: second.ID, Digest: ticket.Digest, Key: ticket.Key, Fence: second.Fence,
 		})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(shared.AlreadyAvailable).To(BeTrue())
-		_, err = factory.Commit(ctx, checkpoint.CommitRequest{StagedCheckpointID: second.ID, ExpectedPreviousGeneration: 1, Manifest: manifestFor(second, shared)})
+		_, err = factory.Commit(ctx, checkpoint.CommitRequest{StagedCheckpointID: second.ID, ExpectedPreviousGeneration: 1, Manifest: manifestFor(second, shared), Fence: second.Fence})
 		Expect(err).NotTo(HaveOccurred())
 
 		_, err = dbConn.Exec(`
@@ -356,17 +405,18 @@ var _ = Describe("AgentRunCheckpointsFactory", func() {
 	})
 
 	It("journals effects monotonically and preserves their server-validated identity", func() {
+		fence := authorize(identity, 1)
 		begun, err := factory.BeginEffect(ctx, checkpoint.BeginEffectRequest{
-			Identity: identity, ExecutionAttempt: 1,
+			Identity: identity, Fence: fence, ExecutionAttempt: 1,
 			Effect: checkpoint.Effect{ToolCallID: "call-1", ToolName: "write_file", Provider: "claude", AdapterVersion: "v1", IdempotencyKey: "key-1", IdempotencyContract: "contract-v1", State: checkpoint.EffectBegun},
 		})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(begun.State).To(Equal(checkpoint.EffectBegun))
 
-		committed, err := factory.CommitEffect(ctx, checkpoint.CommitEffectRequest{Identity: identity, ExecutionAttempt: 1, ToolCallID: "call-1"})
+		committed, err := factory.CommitEffect(ctx, checkpoint.CommitEffectRequest{Identity: identity, Fence: fence, ExecutionAttempt: 1, ToolCallID: "call-1"})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(committed.State).To(Equal(checkpoint.EffectCommitted))
-		_, err = factory.CommitEffect(ctx, checkpoint.CommitEffectRequest{Identity: identity, ExecutionAttempt: 1, ToolCallID: "call-1"})
+		_, err = factory.CommitEffect(ctx, checkpoint.CommitEffectRequest{Identity: identity, Fence: fence, ExecutionAttempt: 1, ToolCallID: "call-1"})
 		Expect(err).NotTo(HaveOccurred(), "committing an acknowledged effect is idempotent")
 
 		effects, err := factory.ListEffects(ctx, identity, 1)
@@ -376,8 +426,9 @@ var _ = Describe("AgentRunCheckpointsFactory", func() {
 	})
 
 	It("fences new effects after terminal while allowing an already-begun effect to close", func() {
+		fence := authorize(identity, 1)
 		begunRequest := checkpoint.BeginEffectRequest{
-			Identity: identity, ExecutionAttempt: 1,
+			Identity: identity, Fence: fence, ExecutionAttempt: 1,
 			Effect: checkpoint.Effect{
 				ToolCallID: "call-before-terminal", ToolName: "write_file", Provider: "claude",
 				AdapterVersion: "v1", IdempotencyKey: "key-before-terminal",
@@ -389,12 +440,11 @@ var _ = Describe("AgentRunCheckpointsFactory", func() {
 		Expect(begun.State).To(Equal(checkpoint.EffectBegun))
 		Expect(factory.MarkTerminal(ctx, identity, time.Now())).To(Succeed())
 
-		duplicate, err := factory.BeginEffect(ctx, begunRequest)
-		Expect(err).NotTo(HaveOccurred(), "retrying the exact pre-terminal begin remains idempotent")
-		Expect(duplicate).To(Equal(begun))
+		_, err = factory.BeginEffect(ctx, begunRequest)
+		Expect(errors.Is(err, checkpoint.ErrConflict)).To(BeTrue(), "terminalization must reject every effect begin")
 
 		_, err = factory.BeginEffect(ctx, checkpoint.BeginEffectRequest{
-			Identity: identity, ExecutionAttempt: 1,
+			Identity: identity, Fence: fence, ExecutionAttempt: 1,
 			Effect: checkpoint.Effect{
 				ToolCallID: "call-after-terminal", ToolName: "write_file", Provider: "claude",
 				AdapterVersion: "v1", IdempotencyKey: "key-after-terminal",
@@ -405,22 +455,92 @@ var _ = Describe("AgentRunCheckpointsFactory", func() {
 			"a terminal head cannot authorize a new side effect")
 
 		committed, err := factory.CommitEffect(ctx, checkpoint.CommitEffectRequest{
-			Identity: identity, ExecutionAttempt: 1, ToolCallID: begun.ToolCallID,
+			Identity: identity, Fence: fence, ExecutionAttempt: 1, ToolCallID: begun.ToolCallID,
 		})
 		Expect(err).NotTo(HaveOccurred(),
 			"an effect already authorized before terminal may durably close after its provider returns")
 		Expect(committed.State).To(Equal(checkpoint.EffectCommitted))
 		_, err = factory.CommitEffect(ctx, checkpoint.CommitEffectRequest{
-			Identity: identity, ExecutionAttempt: 1, ToolCallID: begun.ToolCallID,
+			Identity: identity, Fence: fence, ExecutionAttempt: 1, ToolCallID: begun.ToolCallID,
 		})
 		Expect(err).NotTo(HaveOccurred(), "closing an acknowledged terminal-race effect remains idempotent")
+	})
+
+	It("rejects stale checkpoint mutations while allowing only the exact begun effect to close", func() {
+		staged := stage(1)
+		ticket := prepareAndComplete(staged, "c")
+		oldFence := staged.Fence
+		begun, err := factory.BeginEffect(ctx, checkpoint.BeginEffectRequest{
+			Identity: identity, Fence: oldFence, ExecutionAttempt: 1,
+			Effect: checkpoint.Effect{ToolCallID: "fenced-effect", ToolName: "write_file", Provider: "claude", AdapterVersion: "v1", State: checkpoint.EffectBegun},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		wrongToken := checkpoint.FenceClaim{ExecutionAttempt: 1, Token: uuid.NewString()}
+		_, err = factory.BeginEffect(ctx, checkpoint.BeginEffectRequest{
+			Identity: identity, Fence: wrongToken, ExecutionAttempt: 1,
+			Effect: checkpoint.Effect{ToolCallID: "cross-token", ToolName: "write_file", Provider: "claude", AdapterVersion: "v1", State: checkpoint.EffectBegun},
+		})
+		Expect(errors.Is(err, checkpoint.ErrStaleFence)).To(BeTrue())
+
+		_, err = attempts.MarkInterrupted(ctx, checkpoint.MarkAttemptInterruptedRequest{
+			Identity: identity, ExecutionAttempt: 1, Reason: checkpoint.InterruptionPreempted,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = attempts.BeginRecovery(ctx, checkpoint.BeginRecoveryRequest{
+			Identity: identity, SourceExecutionAttempt: 1, Mode: checkpoint.FallbackCheckpointZero,
+			Reason: checkpoint.InterruptionPreempted, MaterializationID: "replacement",
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		mutations := []func() error{
+			func() error {
+				_, err := factory.Begin(ctx, checkpoint.BeginRequest{Identity: identity, Fence: oldFence, ExecutionAttempt: 1})
+				return err
+			},
+			func() error {
+				return factory.Abort(ctx, checkpoint.AbortRequest{StagedCheckpointID: staged.ID, Fence: oldFence})
+			},
+			func() error {
+				_, err := factory.PrepareObjectUpload(ctx, checkpoint.PrepareObjectUploadRequest{StagedCheckpointID: staged.ID, Digest: ticket.Digest, Key: ticket.Key, Fence: oldFence})
+				return err
+			},
+			func() error {
+				_, err := factory.CompleteObjectUpload(ctx, checkpoint.CompleteObjectUploadRequest{Ticket: ticket, Object: hangar.ObjectRef{Kind: ticket.Kind, Digest: ticket.Digest, Key: ticket.Key, Generation: 7}, Fence: oldFence})
+				return err
+			},
+			func() error {
+				_, err := factory.Commit(ctx, checkpoint.CommitRequest{StagedCheckpointID: staged.ID, ExpectedPreviousGeneration: 0, Manifest: manifestFor(staged, ticket), Fence: oldFence})
+				return err
+			},
+			func() error {
+				_, err := factory.BeginEffect(ctx, checkpoint.BeginEffectRequest{Identity: identity, Fence: oldFence, ExecutionAttempt: 1, Effect: checkpoint.Effect{ToolCallID: "after-replacement", ToolName: "write_file", Provider: "claude", AdapterVersion: "v1", State: checkpoint.EffectBegun}})
+				return err
+			},
+		}
+		for _, mutate := range mutations {
+			Expect(errors.Is(mutate(), checkpoint.ErrStaleFence)).To(BeTrue())
+		}
+
+		closed, err := factory.CommitEffect(ctx, checkpoint.CommitEffectRequest{Identity: identity, Fence: oldFence, ExecutionAttempt: 1, ToolCallID: begun.ToolCallID})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(closed.State).To(Equal(checkpoint.EffectCommitted))
+		_, err = factory.CommitEffect(ctx, checkpoint.CommitEffectRequest{Identity: identity, Fence: wrongToken, ExecutionAttempt: 1, ToolCallID: begun.ToolCallID})
+		Expect(errors.Is(err, checkpoint.ErrStaleFence)).To(BeTrue())
+
+		expiring := checkpoint.Identity{BuildID: identity.BuildID + 100, PlanID: identity.PlanID, FunctionID: identity.FunctionID}
+		identity = expiring
+		expiredStage := stage(1)
+		_, err = dbConn.Exec(`UPDATE agent_run_attempts SET fence_expires_at = clock_timestamp() - INTERVAL '1 second' WHERE head_id = $1`, expiredStage.HeadID)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = factory.Begin(ctx, checkpoint.BeginRequest{Identity: expiring, Fence: expiredStage.Fence, ExecutionAttempt: 1})
+		Expect(errors.Is(err, checkpoint.ErrStaleFence)).To(BeTrue())
 	})
 
 	It("does not claim a referenced restore object, then deletes it only after expiration releases the final durable reference", func() {
 		staged := stage(1)
 		ticket := prepareAndComplete(staged, "a")
 		_, err := factory.Commit(ctx, checkpoint.CommitRequest{
-			StagedCheckpointID: staged.ID, ExpectedPreviousGeneration: 0, Manifest: manifestFor(staged, ticket),
+			StagedCheckpointID: staged.ID, ExpectedPreviousGeneration: 0, Manifest: manifestFor(staged, ticket), Fence: staged.Fence,
 		})
 		Expect(err).NotTo(HaveOccurred())
 
@@ -449,7 +569,7 @@ var _ = Describe("AgentRunCheckpointsFactory", func() {
 			By(fmt.Sprintf("recovering crash scenario after_hangar_delete=%t", crashAfterHangarDelete))
 			staged := stage(index + 1)
 			ticket := prepareAndComplete(staged, fmt.Sprintf("%x", index+1))
-			Expect(factory.Abort(ctx, checkpoint.AbortRequest{StagedCheckpointID: staged.ID})).To(Succeed())
+			Expect(factory.Abort(ctx, checkpoint.AbortRequest{StagedCheckpointID: staged.ID, Fence: staged.Fence})).To(Succeed())
 
 			claims, err := factory.ClaimUnreferencedObjects(ctx, 10)
 			Expect(err).NotTo(HaveOccurred())
@@ -491,10 +611,10 @@ var _ = Describe("AgentRunCheckpointsFactory", func() {
 		key, err := hangar.Key(hangar.KindCheckpoint, digest)
 		Expect(err).NotTo(HaveOccurred())
 		ticket, err := factory.PrepareObjectUpload(ctx, checkpoint.PrepareObjectUploadRequest{
-			StagedCheckpointID: staged.ID, Digest: digest, Key: key,
+			StagedCheckpointID: staged.ID, Digest: digest, Key: key, Fence: staged.Fence,
 		})
 		Expect(err).NotTo(HaveOccurred())
-		Expect(factory.Abort(ctx, checkpoint.AbortRequest{StagedCheckpointID: staged.ID})).To(Succeed())
+		Expect(factory.Abort(ctx, checkpoint.AbortRequest{StagedCheckpointID: staged.ID, Fence: staged.Fence})).To(Succeed())
 		_, err = dbConn.Exec(`
 			UPDATE agent_checkpoint_objects
 			SET upload_expires_at = now() - INTERVAL '6 minutes'
@@ -537,10 +657,10 @@ var _ = Describe("AgentRunCheckpointsFactory", func() {
 		key, err := hangar.Key(hangar.KindCheckpoint, digest)
 		Expect(err).NotTo(HaveOccurred())
 		ticket, err := factory.PrepareObjectUpload(ctx, checkpoint.PrepareObjectUploadRequest{
-			StagedCheckpointID: staged.ID, Digest: digest, Key: key,
+			StagedCheckpointID: staged.ID, Digest: digest, Key: key, Fence: staged.Fence,
 		})
 		Expect(err).NotTo(HaveOccurred())
-		Expect(factory.Abort(ctx, checkpoint.AbortRequest{StagedCheckpointID: staged.ID})).To(Succeed())
+		Expect(factory.Abort(ctx, checkpoint.AbortRequest{StagedCheckpointID: staged.ID, Fence: staged.Fence})).To(Succeed())
 		_, err = dbConn.Exec(`
 			UPDATE agent_checkpoint_objects
 			SET upload_expires_at = now() - INTERVAL '6 minutes'
@@ -590,10 +710,10 @@ var _ = Describe("AgentRunCheckpointsFactory", func() {
 		key, err := hangar.Key(hangar.KindCheckpoint, digest)
 		Expect(err).NotTo(HaveOccurred())
 		ticket, err := factory.PrepareObjectUpload(ctx, checkpoint.PrepareObjectUploadRequest{
-			StagedCheckpointID: staged.ID, Digest: digest, Key: key,
+			StagedCheckpointID: staged.ID, Digest: digest, Key: key, Fence: staged.Fence,
 		})
 		Expect(err).NotTo(HaveOccurred())
-		Expect(factory.Abort(ctx, checkpoint.AbortRequest{StagedCheckpointID: staged.ID})).To(Succeed())
+		Expect(factory.Abort(ctx, checkpoint.AbortRequest{StagedCheckpointID: staged.ID, Fence: staged.Fence})).To(Succeed())
 		_, err = dbConn.Exec(`
 			UPDATE agent_checkpoint_objects
 			SET upload_expires_at = now() - INTERVAL '6 minutes'
@@ -629,10 +749,10 @@ var _ = Describe("AgentRunCheckpointsFactory", func() {
 		key, err := hangar.Key(hangar.KindCheckpoint, digest)
 		Expect(err).NotTo(HaveOccurred())
 		_, err = factory.PrepareObjectUpload(ctx, checkpoint.PrepareObjectUploadRequest{
-			StagedCheckpointID: staged.ID, Digest: digest, Key: key,
+			StagedCheckpointID: staged.ID, Digest: digest, Key: key, Fence: staged.Fence,
 		})
 		Expect(err).NotTo(HaveOccurred())
-		Expect(factory.Abort(ctx, checkpoint.AbortRequest{StagedCheckpointID: staged.ID})).To(Succeed())
+		Expect(factory.Abort(ctx, checkpoint.AbortRequest{StagedCheckpointID: staged.ID, Fence: staged.Fence})).To(Succeed())
 
 		claims, err := factory.ClaimUnreferencedObjects(ctx, 10)
 		Expect(err).NotTo(HaveOccurred())
@@ -643,11 +763,11 @@ var _ = Describe("AgentRunCheckpointsFactory", func() {
 		staged := stage(1)
 		ticket := prepareAndComplete(staged, "a")
 		_, err := factory.Commit(ctx, checkpoint.CommitRequest{
-			StagedCheckpointID: staged.ID, ExpectedPreviousGeneration: 0, Manifest: manifestFor(staged, ticket),
+			StagedCheckpointID: staged.ID, ExpectedPreviousGeneration: 0, Manifest: manifestFor(staged, ticket), Fence: staged.Fence,
 		})
 		Expect(err).NotTo(HaveOccurred())
 		_, err = factory.BeginEffect(ctx, checkpoint.BeginEffectRequest{
-			Identity: identity, ExecutionAttempt: 1,
+			Identity: identity, Fence: staged.Fence, ExecutionAttempt: 1,
 			Effect: checkpoint.Effect{ToolCallID: "read", ToolName: "read_file", Provider: "claude", AdapterVersion: "v1", ReadOnly: true, State: checkpoint.EffectBegun},
 		})
 		Expect(err).NotTo(HaveOccurred())
