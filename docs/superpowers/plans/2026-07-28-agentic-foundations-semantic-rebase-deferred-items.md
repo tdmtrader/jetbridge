@@ -132,3 +132,35 @@ to evaluate independently.
 - Resolution: The temporary namespace `codex-hangar-it-019fa137` and its
   deployment/service were deleted after the run; a follow-up namespace lookup
   returned no object.
+
+### DEFERRED-005 — Reclaim unreachable Hangar objects after split persistence failure
+
+- Task/area: Task 11, artifact-daemon durable PUT and location persistence
+- Classification: Retention/cost hardening
+- Status: Deferred
+- Evidence: The daemon can successfully commit an immutable Hangar object and
+  then fail before ATC durably records the corresponding canonical location.
+  Legacy cleanup is intentionally cache-only, so this narrow failure window
+  can leave an unreachable object.
+- Why it is nonblocking: The published snapshot is not acknowledged as
+  durable and no reachable content is lost or corrupted. Immutable orphan
+  bytes consume storage but do not violate the Task 11 read/write authority
+  boundary.
+- Suggested follow-up: Add an inventory/reconciliation job that compares
+  Hangar objects with durable snapshot locations and removes only objects that
+  remain unreferenced beyond a conservative grace period.
+
+### DEFERRED-006 — Decide whether Hangar egress policy is mandatory
+
+- Task/area: Task 11, artifact-daemon NetworkPolicy
+- Classification: Deployment hardening
+- Status: Deferred
+- Evidence: Selected TCP/443 peers constrain Hangar egress when the optional
+  artifact-daemon egress policy is enabled. Operators can disable that policy,
+  in which case this chart does not enforce narrow Hangar egress.
+- Why it is nonblocking: This follows the chart's existing opt-in egress
+  policy posture and does not weaken clusters that enable it. Making it
+  mandatory would be a broader deployment-compatibility decision.
+- Suggested follow-up: Evaluate mandatory egress enforcement for a hardened
+  chart profile, including DNS and emulator endpoint requirements, before
+  changing the default.

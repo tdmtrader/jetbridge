@@ -73,6 +73,15 @@ mark Task 6 **Human Review Required** and stop iterating on it.
 
 ## Test budget
 
+- Treat this as a semantic rebase/integration, not greenfield construction.
+  Existing or ported behavioral tests that fail because approved behavior is
+  absent are sufficient implementation guidance; do not add a second
+  artificial failing test merely to demonstrate RED.
+- Reuse and adapt behavioral coverage from the foundations reference when it
+  still expresses the approved contract on the current architecture.
+- Add a new test only for a clear load-bearing behavioral gap that existing
+  coverage does not exercise. Record nonblocking coverage gaps rather than
+  expanding the current task.
 - Use focused unit/integration tests while implementing.
 - Run broad package suites once at the task checkpoint, not after every edit.
 - Run the repository-wide acceptance suite only at a milestone or before a
@@ -163,7 +172,23 @@ Task 10:
   create-only/idempotent semantics, and generation-pinned verification.
 - `DEFERRED-004` is resolved.
 
-Tasks 11–19 have not started.
+Task 11:
+
+- Completed in `685d09104e` with cache-root recovery correction
+  `979ca6490a`.
+- Status: **Accepted** in blocking-only review round 2.
+- The daemon durably commits verified bytes before successful PUT, restores
+  from generation-pinned Hangar content after complete cache-root loss, keeps
+  one canonical `hangar-v1` location, safely handles legacy cache locations,
+  and does not proactively peer-mirror agentic snapshots.
+- Focused daemon/Jetbridge/ATC/chart suites and Helm lint passed. Task 10's
+  accepted Borg emulator run remains the production GCS-adapter evidence.
+- `DEFERRED-005` records unreachable-object retention after a narrow
+  post-Hangar/pre-location failure window. `DEFERRED-006` records that narrow
+  Hangar egress is enforced only when the optional daemon egress policy is
+  enabled.
+
+Tasks 12–19 have not started.
 
 ## Milestone verification
 
@@ -190,8 +215,8 @@ branch as green until Task 6 receives human review and the unit suite is rerun.
    against a runtime that is still Human Review Required.
 3. Leave Task 9 dependency-deferred; do not build a new security boundary on
    Task 6's unresolved protected-mount primitive.
-4. Continue Task 11 artifact-daemon/Hangar integration as the next safe
-   bounded task.
+4. Continue Task 12 workflow resource-source grammar and persistence as the
+   next safe bounded task.
 5. Treat all remaining feature groups as separate bounded tracks rather than
    one continuous "rebase."
 

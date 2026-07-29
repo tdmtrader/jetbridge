@@ -159,19 +159,31 @@
   - Status: Accepted.
 - [x] Task 11 — Hangar daemon/deployment integration
   - Commit: `685d09104e feat(hangar): mirror agent snapshots through daemon`
+  - Fix commit: `979ca6490a fix(hangar): restore snapshots after cache-root
+    loss`
   - Behavior: artifact-daemon commits immutable snapshot bytes to Hangar before
     acknowledging PUT; restores a complete local cache from a generation-pinned
     Hangar read after cache loss; records a single `hangar-v1` durable location;
     keeps legacy node locations readable/adoptable; and never peer-mirrors
     agentic snapshots. Legacy cache cleanup is explicitly unable to delete the
     Hangar authority.
-  - Verification: focused daemon cache-loss, Jetbridge canonical-location and
-    repair tests, full daemon/Jetbridge packages, ATC command package, full
-    chart suite, and Helm lint passed. `make test-hangar-integration` was not
-    runnable locally because Docker was unavailable; the accepted Task 10 Borg
-    fake-GCS evidence remains the provider-store coverage.
-  - Review: implementation self-review complete; external blocking-only review
-    has not yet run.
+  - Verification: focused daemon cache-loss and Jetbridge
+    canonical-location/repair tests, the full daemon and ATC command packages,
+    full chart suite, and Helm lint passed. The full Jetbridge package still
+    fails 179/380 specs for the single already cataloged Task 6
+    zero-private-mount cause; all Task 11-focused tests pass.
+    `make test-hangar-integration` was not runnable locally because Docker was
+    unavailable; the accepted Task 10 Borg fake-GCS evidence remains the
+    provider-store coverage.
+  - Review: round 1 found one High blocker: full cache-root absence returned
+    404 before the Hangar fallback. The single correction pass routed missing
+    roots through verified restoration and strengthened the behavioral
+    regression to delete the entire storage root. Round 2 found the blocker
+    addressed with no new blocking breakage and accepted the task.
+  - Deferred: `DEFERRED-005` tracks unreachable immutable objects after the
+    narrow post-Hangar/pre-location failure window; `DEFERRED-006` tracks
+    enforcement when operators disable the optional daemon egress policy.
+  - Status: Accepted.
 - [ ] Task 12 — resource-source grammar and persistence
 - [ ] Task 13 — source capture/reuse runtime
 - [ ] Task 14 — direct in-ATC publication
