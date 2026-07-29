@@ -50,11 +50,20 @@ var _ = Describe("AgentRunCheckpointsFactory", func() {
 				})
 				Expect(err).NotTo(HaveOccurred())
 			}
-			current, err = attempts.BeginRecovery(ctx, checkpoint.BeginRecoveryRequest{
+			request := checkpoint.BeginRecoveryRequest{
 				Identity: subject, SourceExecutionAttempt: current.ExecutionAttempt,
 				Mode: checkpoint.FallbackCheckpointZero, Reason: checkpoint.InterruptionPreempted,
 				MaterializationID: fmt.Sprintf("checkpoint-test-%d", current.ExecutionAttempt+1),
-			})
+			}
+			if latest, found, latestErr := factory.Latest(ctx, subject); latestErr != nil {
+				Expect(latestErr).NotTo(HaveOccurred())
+			} else if found {
+				checkpointID := latest.CheckpointID
+				request.SourceCheckpointID = &checkpointID
+				request.SourceCheckpointGeneration = latest.Generation
+				request.Mode = checkpoint.FallbackWorkspaceOnly
+			}
+			current, err = attempts.BeginRecovery(ctx, request)
 			Expect(err).NotTo(HaveOccurred())
 		}
 		Expect(current.ExecutionAttempt).To(Equal(target))
@@ -397,7 +406,7 @@ var _ = Describe("AgentRunCheckpointsFactory", func() {
 		_, err := factory.Commit(ctx, checkpoint.CommitRequest{StagedCheckpointID: first.ID, ExpectedPreviousGeneration: 0, Manifest: manifestFor(first, ticket), Fence: first.Fence})
 		Expect(err).NotTo(HaveOccurred())
 
-		second := stage(2)
+		second := stage(1)
 		shared, err := factory.PrepareObjectUpload(ctx, checkpoint.PrepareObjectUploadRequest{
 			StagedCheckpointID: second.ID, Digest: ticket.Digest, Key: ticket.Key, Fence: second.Fence,
 		})

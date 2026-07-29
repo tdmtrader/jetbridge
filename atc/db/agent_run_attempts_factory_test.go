@@ -441,7 +441,9 @@ var _ = Describe("AgentRunAttemptsFactory", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 		thirdRequest := checkpoint.BeginRecoveryRequest{
-			Identity: identity, SourceExecutionAttempt: 2, Mode: checkpoint.FallbackCheckpointZero,
+			Identity: identity, SourceExecutionAttempt: 2,
+			SourceCheckpointID: &checkpointID, SourceCheckpointGeneration: 7,
+			Mode:   checkpoint.FallbackWorkspaceOnly,
 			Reason: checkpoint.InterruptionEvicted, MaterializationID: "materialization-3",
 		}
 		third, err := factory.BeginRecovery(ctx, thirdRequest)
@@ -453,7 +455,9 @@ var _ = Describe("AgentRunAttemptsFactory", func() {
 		})
 		Expect(err).NotTo(HaveOccurred())
 		_, err = factory.BeginRecovery(ctx, checkpoint.BeginRecoveryRequest{
-			Identity: identity, SourceExecutionAttempt: 3, Mode: checkpoint.FallbackCheckpointZero,
+			Identity: identity, SourceExecutionAttempt: 3,
+			SourceCheckpointID: &checkpointID, SourceCheckpointGeneration: 7,
+			Mode:   checkpoint.FallbackWorkspaceOnly,
 			Reason: checkpoint.InterruptionPodDeleted, MaterializationID: "materialization-4",
 		})
 		Expect(errors.Is(err, checkpoint.ErrAttemptLimit)).To(BeTrue())

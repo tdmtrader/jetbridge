@@ -2088,10 +2088,19 @@ func (cmd *RunCommand) composeAgentCheckpoints(connection db.DbConn) error {
 				capture,
 			)
 		}),
-		Provider:        "anthropic",
-		Adapter:         provider.Identity{Name: "claude-cli", Version: "legacy-stream-json"},
-		ElapsedInterval: cmd.AgentCheckpoints.ElapsedInterval,
-		MaxArchiveBytes: cmd.AgentCheckpoints.MaxBytes,
+		RecoveryFactory: exec.AgentCheckpointRecoveryFactoryFunc(func(provenance exec.AgentCheckpointImmutableProvenance) (exec.AgentCheckpointRecoveryStepController, error) {
+			return exec.NewAgentCheckpointRecoveryController(exec.AgentCheckpointRecoveryConfig{
+				Provenance: provenance, MaxArchiveBytes: cmd.AgentCheckpoints.MaxBytes, MaxArchiveEntries: cmd.AgentSnapshots.MaxFiles,
+				// Production legacy adapters intentionally have no complete journal
+				// or recovery proof, so every interrupted source fails closed.
+				Authorities: nil,
+			}, attempts, checkpoints, checkpoints)
+		}),
+		Provider:          "anthropic",
+		Adapter:           provider.Identity{Name: "claude-cli", Version: "legacy-stream-json"},
+		ElapsedInterval:   cmd.AgentCheckpoints.ElapsedInterval,
+		MaxArchiveBytes:   cmd.AgentCheckpoints.MaxBytes,
+		MaxArchiveEntries: cmd.AgentSnapshots.MaxFiles,
 	}
 
 	// Publish only the fully assembled policy. Errors above therefore leave no

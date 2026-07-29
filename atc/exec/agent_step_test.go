@@ -359,6 +359,200 @@ var _ = Describe("AgentStep", func() {
 			Expect(checkpointController.interruption.Reason).To(Equal(runtime.InterruptionPreempted))
 		})
 
+		It("continues a typed interruption in a fresh server-authored attempt", func() {
+			agentPlan.Timeout = "10m"
+			chosenContainer.ProcessDefs[0].Stub.Call = func(context.Context, *runtimetest.Process) (runtime.ProcessResult, error) {
+				return runtime.ProcessResult{}, runtime.NewInterruptionError(runtime.InterruptionPreempted, errors.New("pod preempted"))
+			}
+			recoveryController := &checkpointRecoveryStepController{
+				execution: checkpointController,
+				launch: exec.AgentCheckpointRecoveryLaunch{
+					Attempt: checkpoint.Attempt{
+						ExecutionAttempt:       2,
+						SourceExecutionAttempt: 1,
+						Mode:                   checkpoint.FallbackCheckpointZero,
+						State:                  checkpoint.AttemptMaterializing,
+					},
+					RecoverySpec: `{"mode":"checkpoint_zero","attempt":2}`,
+				},
+			}
+			recoveryFactory := &checkpointRecoveryStepFactory{controller: recoveryController}
+			agentStepOptions = append(agentStepOptions, exec.WithAgentCheckpointCapture(exec.AgentCheckpointStepConfig{
+				Factory:           checkpointFactory,
+				RecoveryFactory:   recoveryFactory,
+				Provider:          "anthropic",
+				Adapter:           provider.Identity{Name: "claude-cli", Version: "legacy-stream-json"},
+				ElapsedInterval:   time.Hour,
+				MaxArchiveBytes:   4096,
+				MaxArchiveEntries: 16,
+			}))
+			step = exec.NewAgentStep(
+				planID,
+				agentPlan,
+				atc.ContainerLimits{},
+				atc.ContainerLimits{},
+				stepMetadata,
+				containerMetadata,
+				fakePool,
+				fakeStreamer,
+				fakeDelegateFactory,
+				0,
+				agentImage,
+				agentStepOptions...,
+			)
+
+			secondContainer := runtimetest.NewContainer().WithProcess(
+				agentProcessSpec,
+				runtimetest.ProcessStub{Attachable: true},
+			)
+			secondContainer.ProcessDefs[0].Spec.Dir = "/work"
+			secondContainer.DBContainer_.HandleReturns("agent-container-2")
+			chosenWorker.AddContainer(
+				db.NewAgentAttemptContainerOwner(stepMetadata.BuildID, planID, stepMetadata.TeamID, 2),
+				secondContainer,
+				chosenContainer.Mounts,
+			)
+
+			ok, err := step.Run(ctx, state)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(ok).To(BeTrue(), "calls=%v recovery=%d workers=%d delegate-errors=%d", checkpointController.calls, recoveryController.prepareCalls, fakePool.FindOrSelectWorkerCallCount(), fakeDelegate.ErroredCallCount())
+			Expect(fakePool.FindOrSelectWorkerCallCount()).To(Equal(2))
+
+			_, firstOwner, firstSpec, _ := fakePool.FindOrSelectWorkerArgsForCall(0)
+			_, secondOwner, secondSpec, _ := fakePool.FindOrSelectWorkerArgsForCall(1)
+			Expect(firstOwner).To(Equal(db.NewAgentAttemptContainerOwner(stepMetadata.BuildID, planID, stepMetadata.TeamID, 1)))
+			Expect(secondOwner).To(Equal(db.NewAgentAttemptContainerOwner(stepMetadata.BuildID, planID, stepMetadata.TeamID, 2)))
+			Expect(firstSpec.Env).ToNot(ContainElement(ContainSubstring("CONCOURSE_AGENT_RECOVERY=")))
+			Expect(secondSpec.Env).To(ContainElement(`CONCOURSE_AGENT_RECOVERY={"mode":"checkpoint_zero","attempt":2}`))
+			Expect(secondSpec.CheckpointRestore).To(BeNil())
+			Expect(checkpointController.calls).To(Equal([]string{
+				"prepare", "running", "interrupted",
+				"prepare", "running", "finalize",
+			}))
+			Expect(recoveryController.prepareCalls).To(Equal(2))
+			Expect(recoveryFactory.provenance.Identity).To(Equal(checkpointController.attempt.Identity))
+
+			firstDeadline, firstHasDeadline := chosenContainer.Container.ContextOfRun().Deadline()
+			secondDeadline, secondHasDeadline := secondContainer.ContextOfRun().Deadline()
+			Expect(firstHasDeadline).To(Equal(secondHasDeadline))
+			if firstHasDeadline {
+				Expect(firstDeadline).To(Equal(secondDeadline))
+			}
+		})
+
+		It("launches nothing when durable recovery requires manual review", func() {
+			manual := exec.AgentCheckpointRecoveryLaunch{
+				Attempt:      checkpoint.Attempt{ExecutionAttempt: 1, State: checkpoint.AttemptManualReview},
+				ManualReview: true,
+			}
+			recoveryController := &checkpointRecoveryStepController{
+				execution:   checkpointController,
+				firstLaunch: &manual,
+			}
+			agentStepOptions = append(agentStepOptions, exec.WithAgentCheckpointCapture(exec.AgentCheckpointStepConfig{
+				Factory:           checkpointFactory,
+				RecoveryFactory:   &checkpointRecoveryStepFactory{controller: recoveryController},
+				Provider:          "anthropic",
+				Adapter:           provider.Identity{Name: "claude-cli", Version: "legacy-stream-json"},
+				ElapsedInterval:   time.Hour,
+				MaxArchiveBytes:   4096,
+				MaxArchiveEntries: 16,
+			}))
+			step = exec.NewAgentStep(
+				planID,
+				agentPlan,
+				atc.ContainerLimits{},
+				atc.ContainerLimits{},
+				stepMetadata,
+				containerMetadata,
+				fakePool,
+				fakeStreamer,
+				fakeDelegateFactory,
+				0,
+				agentImage,
+				agentStepOptions...,
+			)
+
+			ok, err := step.Run(ctx, state)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(ok).To(BeFalse())
+			Expect(fakePool.FindOrSelectWorkerCallCount()).To(BeZero())
+			Expect(checkpointController.calls).To(BeEmpty())
+			Expect(fakeDelegate.ErroredCallCount()).To(Equal(1))
+		})
+
+		It("terminalizes the exact replacement when restore fails before launch", func() {
+			chosenContainer.ProcessDefs[0].Stub.Call = func(context.Context, *runtimetest.Process) (runtime.ProcessResult, error) {
+				return runtime.ProcessResult{}, runtime.NewInterruptionError(runtime.InterruptionNodeLost, errors.New("node lost"))
+			}
+			recoveryController := &checkpointRecoveryStepController{
+				execution: checkpointController,
+				launch: exec.AgentCheckpointRecoveryLaunch{
+					Attempt: checkpoint.Attempt{
+						ExecutionAttempt:       2,
+						SourceExecutionAttempt: 1,
+						Mode:                   checkpoint.FallbackWorkspaceOnly,
+						State:                  checkpoint.AttemptMaterializing,
+					},
+					RecoverySpec: `{"mode":"workspace_only","attempt":2}`,
+					Restore:      &runtime.CheckpointRestoreDescriptor{},
+				},
+			}
+			agentStepOptions = append(agentStepOptions, exec.WithAgentCheckpointCapture(exec.AgentCheckpointStepConfig{
+				Factory:           checkpointFactory,
+				RecoveryFactory:   &checkpointRecoveryStepFactory{controller: recoveryController},
+				Provider:          "anthropic",
+				Adapter:           provider.Identity{Name: "claude-cli", Version: "legacy-stream-json"},
+				ElapsedInterval:   time.Hour,
+				MaxArchiveBytes:   4096,
+				MaxArchiveEntries: 16,
+			}))
+
+			events := []string{}
+			recoveryBase := runtimetest.NewContainer().WithProcess(
+				agentProcessSpec,
+				runtimetest.ProcessStub{Attachable: true},
+			)
+			recoveryBase.ProcessDefs[0].Spec.Dir = "/work"
+			recoveryBase.DBContainer_.HandleReturns("agent-container-2")
+			recoveryContainer := &checkpointMaterializingContainer{
+				Container: recoveryBase,
+				events:    &events,
+				err:       errors.New("restore failed"),
+			}
+			recoveryWorker := &checkpointRecoveryWorker{
+				Worker:            chosenWorker,
+				recoveryContainer: recoveryContainer,
+				recoveryMounts:    chosenContainer.Mounts,
+			}
+			fakePool.FindOrSelectWorkerReturns(recoveryWorker, nil)
+			step = exec.NewAgentStep(
+				planID,
+				agentPlan,
+				atc.ContainerLimits{},
+				atc.ContainerLimits{},
+				stepMetadata,
+				containerMetadata,
+				fakePool,
+				fakeStreamer,
+				fakeDelegateFactory,
+				0,
+				agentImage,
+				agentStepOptions...,
+			)
+
+			ok, err := step.Run(ctx, state)
+			Expect(ok).To(BeFalse())
+			Expect(err).To(MatchError(ContainSubstring("checkpoint materialization: restore failed")))
+			Expect(events).To(Equal([]string{"materialize"}))
+			Expect(recoveryContainer.RunningProcesses()).To(BeEmpty())
+			Expect(recoveryController.failures).To(HaveLen(1))
+			Expect(recoveryController.failures[0].Attempt.ExecutionAttempt).To(Equal(2))
+			Expect(checkpointController.calls).To(Equal([]string{
+				"prepare", "running", "interrupted", "prepare",
+			}))
+		})
+
 		It("fails closed rather than terminalizing a non-zero process", func() {
 			chosenContainer.ProcessDefs[0].Stub.ExitStatus = 2
 
@@ -377,6 +571,15 @@ var _ = Describe("AgentStep", func() {
 			Expect(fakePool.FindOrSelectWorkerCallCount()).To(BeZero())
 			Expect(checkpointController.calls).To(BeEmpty())
 		})
+	})
+
+	It("rejects workflow-authored recovery transport even without checkpoint composition", func() {
+		agentPlan.Env["CONCOURSE_AGENT_RECOVERY"] = `{"mode":"native_resume"}`
+
+		ok, err := step.Run(ctx, state)
+		Expect(ok).To(BeFalse())
+		Expect(err).To(MatchError("agent recovery transport is platform-owned"))
+		Expect(fakePool.FindOrSelectWorkerCallCount()).To(BeZero())
 	})
 
 	It("leaves an unqualified legacy agent step unchanged when checkpoint composition is present", func() {
@@ -2093,4 +2296,76 @@ func (controller *checkpointStepController) FinalizeSucceeded(_ context.Context,
 	}
 	controller.attempt.State = checkpoint.AttemptSucceeded
 	return exec.AgentCheckpointFinalizeResult{Attempt: controller.attempt}, nil
+}
+
+type checkpointRecoveryStepFactory struct {
+	controller *checkpointRecoveryStepController
+	provenance exec.AgentCheckpointImmutableProvenance
+}
+
+func (factory *checkpointRecoveryStepFactory) NewAgentCheckpointRecovery(provenance exec.AgentCheckpointImmutableProvenance) (exec.AgentCheckpointRecoveryStepController, error) {
+	factory.provenance = provenance
+	factory.controller.launch.Attempt.Identity = provenance.Identity
+	return factory.controller, nil
+}
+
+type checkpointRecoveryStepController struct {
+	execution    *checkpointStepController
+	launch       exec.AgentCheckpointRecoveryLaunch
+	firstLaunch  *exec.AgentCheckpointRecoveryLaunch
+	prepareCalls int
+	failures     []exec.AgentCheckpointRecoveryLaunch
+}
+
+func (controller *checkpointRecoveryStepController) PrepareLaunch(context.Context) (exec.AgentCheckpointRecoveryLaunch, error) {
+	controller.prepareCalls++
+	if controller.prepareCalls == 1 {
+		if controller.firstLaunch != nil {
+			return *controller.firstLaunch, nil
+		}
+		return exec.AgentCheckpointRecoveryLaunch{}, exec.ErrAgentCheckpointNotRecovery
+	}
+	controller.execution.attempt = controller.launch.Attempt
+	return controller.launch, nil
+}
+
+func (controller *checkpointRecoveryStepController) MarkMaterializationFailed(_ context.Context, launch exec.AgentCheckpointRecoveryLaunch) (checkpoint.Attempt, error) {
+	controller.failures = append(controller.failures, launch)
+	return launch.Attempt, nil
+}
+
+type checkpointRecoveryWorker struct {
+	runtime.Worker
+	findCalls         int
+	recoveryContainer runtime.Container
+	recoveryMounts    []runtime.VolumeMount
+}
+
+func (worker *checkpointRecoveryWorker) FindOrCreateContainer(ctx context.Context, owner db.ContainerOwner, metadata db.ContainerMetadata, spec runtime.ContainerSpec, delegate runtime.BuildStepDelegate) (runtime.Container, []runtime.VolumeMount, error) {
+	worker.findCalls++
+	if worker.findCalls == 2 {
+		return worker.recoveryContainer, worker.recoveryMounts, nil
+	}
+	return worker.Worker.FindOrCreateContainer(ctx, owner, metadata, spec, delegate)
+}
+
+type checkpointMaterializingContainer struct {
+	*runtimetest.Container
+	events *[]string
+	err    error
+}
+
+func (container *checkpointMaterializingContainer) MaterializeBeforeLaunch(context.Context, runtime.ProcessSpec) error {
+	*container.events = append(*container.events, "materialize")
+	return container.err
+}
+
+func (container *checkpointMaterializingContainer) Attach(ctx context.Context, id string, processIO runtime.ProcessIO) (runtime.Process, error) {
+	*container.events = append(*container.events, "attach")
+	return container.Container.Attach(ctx, id, processIO)
+}
+
+func (container *checkpointMaterializingContainer) Run(ctx context.Context, spec runtime.ProcessSpec, processIO runtime.ProcessIO) (runtime.Process, error) {
+	*container.events = append(*container.events, "run")
+	return container.Container.Run(ctx, spec, processIO)
 }

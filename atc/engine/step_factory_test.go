@@ -86,16 +86,23 @@ func TestCoreStepFactoryLeavesOutputSealerDisabledByDefault(t *testing.T) {
 
 func TestWithAgentCheckpointCaptureKeepsOneServerOwnedConfig(t *testing.T) {
 	var gotIdentity checkpoint.Identity
+	var gotProvenance exec.AgentCheckpointImmutableProvenance
 	wantErr := errors.New("factory invoked")
+	wantRecoveryErr := errors.New("recovery factory invoked")
 	config := exec.AgentCheckpointStepConfig{
 		Factory: exec.AgentCheckpointExecutionFactoryFunc(func(identity checkpoint.Identity) (exec.AgentCheckpointController, error) {
 			gotIdentity = identity
 			return nil, wantErr
 		}),
-		Provider:        "anthropic",
-		Adapter:         provider.Identity{Name: "claude-cli", Version: "legacy-stream-json"},
-		ElapsedInterval: 5 * time.Minute,
-		MaxArchiveBytes: 1024,
+		RecoveryFactory: exec.AgentCheckpointRecoveryFactoryFunc(func(provenance exec.AgentCheckpointImmutableProvenance) (exec.AgentCheckpointRecoveryStepController, error) {
+			gotProvenance = provenance
+			return nil, wantRecoveryErr
+		}),
+		Provider:          "anthropic",
+		Adapter:           provider.Identity{Name: "claude-cli", Version: "legacy-stream-json"},
+		ElapsedInterval:   5 * time.Minute,
+		MaxArchiveBytes:   1024,
+		MaxArchiveEntries: 32,
 	}
 
 	factory := &coreStepFactory{}
@@ -106,7 +113,8 @@ func TestWithAgentCheckpointCaptureKeepsOneServerOwnedConfig(t *testing.T) {
 	if factory.agentCheckpointCapture.Provider != config.Provider ||
 		factory.agentCheckpointCapture.Adapter != config.Adapter ||
 		factory.agentCheckpointCapture.ElapsedInterval != config.ElapsedInterval ||
-		factory.agentCheckpointCapture.MaxArchiveBytes != config.MaxArchiveBytes {
+		factory.agentCheckpointCapture.MaxArchiveBytes != config.MaxArchiveBytes ||
+		factory.agentCheckpointCapture.MaxArchiveEntries != config.MaxArchiveEntries {
 		t.Fatalf("checkpoint config = %#v, want retained server-owned policy", factory.agentCheckpointCapture)
 	}
 
@@ -114,6 +122,11 @@ func TestWithAgentCheckpointCaptureKeepsOneServerOwnedConfig(t *testing.T) {
 	_, err := factory.agentCheckpointCapture.Factory.NewAgentCheckpointExecution(identity)
 	if !errors.Is(err, wantErr) || gotIdentity != identity {
 		t.Fatalf("retained factory = (%#v, %v), want exact server-owned factory", gotIdentity, err)
+	}
+	provenance := exec.AgentCheckpointImmutableProvenance{Identity: identity}
+	_, err = factory.agentCheckpointCapture.RecoveryFactory.NewAgentCheckpointRecovery(provenance)
+	if !errors.Is(err, wantRecoveryErr) || gotProvenance.Identity != identity {
+		t.Fatalf("retained recovery factory = (%#v, %v), want exact server-owned factory", gotProvenance, err)
 	}
 }
 

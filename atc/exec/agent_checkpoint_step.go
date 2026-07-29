@@ -43,6 +43,27 @@ func (factory AgentCheckpointExecutionFactoryFunc) NewAgentCheckpointExecution(i
 	return factory(identity)
 }
 
+// AgentCheckpointRecoveryStepController is the pre-launch recovery boundary.
+// It exposes only durable launch preparation and exact materialization
+// terminalization; AgentStep never selects a source or a mode itself.
+type AgentCheckpointRecoveryStepController interface {
+	PrepareLaunch(context.Context) (AgentCheckpointRecoveryLaunch, error)
+	MarkMaterializationFailed(context.Context, AgentCheckpointRecoveryLaunch) (checkpoint.Attempt, error)
+}
+
+type AgentCheckpointRecoveryFactory interface {
+	NewAgentCheckpointRecovery(AgentCheckpointImmutableProvenance) (AgentCheckpointRecoveryStepController, error)
+}
+
+type AgentCheckpointRecoveryFactoryFunc func(AgentCheckpointImmutableProvenance) (AgentCheckpointRecoveryStepController, error)
+
+func (factory AgentCheckpointRecoveryFactoryFunc) NewAgentCheckpointRecovery(provenance AgentCheckpointImmutableProvenance) (AgentCheckpointRecoveryStepController, error) {
+	if factory == nil {
+		return nil, errors.New("agent checkpoint recovery factory is not configured")
+	}
+	return factory(provenance)
+}
+
 // AgentCheckpointExplicitIntentSource is an optional, trusted ATC-owned
 // source of one explicit capture intent. Implementations must return promptly
 // when ctx is cancelled: AgentStep joins this wait before terminal capture so
@@ -59,10 +80,12 @@ type AgentCheckpointExplicitIntentSource interface {
 // through container environment.
 type AgentCheckpointStepConfig struct {
 	Factory              AgentCheckpointExecutionFactory
+	RecoveryFactory      AgentCheckpointRecoveryFactory
 	Provider             string
 	Adapter              provider.Identity
 	ElapsedInterval      time.Duration
 	MaxArchiveBytes      int64
+	MaxArchiveEntries    int64
 	ExplicitIntentSource AgentCheckpointExplicitIntentSource
 }
 
@@ -83,6 +106,9 @@ func (config AgentCheckpointStepConfig) validate() error {
 	}
 	if config.MaxArchiveBytes <= 0 {
 		return errors.New("agent checkpoint max archive bytes must be positive")
+	}
+	if config.RecoveryFactory != nil && config.MaxArchiveEntries <= 0 {
+		return errors.New("agent checkpoint max archive entries must be positive")
 	}
 	return nil
 }

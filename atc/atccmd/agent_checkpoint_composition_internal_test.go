@@ -1,6 +1,7 @@
 package atccmd
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
+	"github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/worker/jetbridge"
 )
 
@@ -57,19 +59,31 @@ func TestAgentCheckpointCompositionRetainsStaticPolicyAndIsIdempotent(t *testing
 		t.Fatal(err)
 	}
 	first := command.agentCheckpointStepConfig
-	if first == nil || first.Factory == nil {
-		t.Fatal("checkpoint composition did not retain one factory/config")
+	if first == nil || first.Factory == nil || first.RecoveryFactory == nil {
+		t.Fatal("checkpoint composition did not retain execution and recovery factories")
 	}
 	if first.Provider != "anthropic" || first.Adapter != (provider.Identity{Name: "claude-cli", Version: "legacy-stream-json"}) {
 		t.Fatalf("provider identity = %q/%#v, want static server-owned anthropic claude-cli", first.Provider, first.Adapter)
 	}
-	if first.ElapsedInterval != command.AgentCheckpoints.ElapsedInterval || first.MaxArchiveBytes != command.AgentCheckpoints.MaxBytes {
-		t.Fatalf("step policy = interval:%s bytes:%d, want command bounds", first.ElapsedInterval, first.MaxArchiveBytes)
+	if first.ElapsedInterval != command.AgentCheckpoints.ElapsedInterval ||
+		first.MaxArchiveBytes != command.AgentCheckpoints.MaxBytes ||
+		first.MaxArchiveEntries != command.AgentSnapshots.MaxFiles {
+		t.Fatalf("step policy = interval:%s bytes:%d entries:%d, want command bounds", first.ElapsedInterval, first.MaxArchiveBytes, first.MaxArchiveEntries)
 	}
 	runID := snapshot.WorkflowRunID(456)
 	controller, err := first.Factory.NewAgentCheckpointExecution(checkpoint.Identity{WorkflowRunID: &runID, BuildID: 123, PlanID: "plan", FunctionID: "function"})
 	if err != nil || controller == nil {
 		t.Fatalf("retained factory = (%T, %v), want configured controller", controller, err)
+	}
+	digest := "sha256:" + strings.Repeat("a", 64)
+	recovery, err := first.RecoveryFactory.NewAgentCheckpointRecovery(exec.AgentCheckpointImmutableProvenance{
+		Identity: checkpoint.Identity{WorkflowRunID: &runID, BuildID: 123, PlanID: "plan", FunctionID: "function"},
+		Provider: "anthropic", Adapter: first.Adapter,
+		RuntimeImage: "registry.example/agent@sha256:" + strings.Repeat("b", 64), Model: "model",
+		ConfigDigest: digest, InputDigest: digest, MCPDigest: digest, SkillDigest: digest,
+	})
+	if err != nil || recovery == nil {
+		t.Fatalf("retained recovery factory = (%T, %v), want configured fail-closed controller", recovery, err)
 	}
 
 	if err := command.composeAgentCheckpoints(nil); err != nil {
@@ -93,5 +107,6 @@ func configuredCheckpointCommand() *RunCommand {
 	command.AgentCheckpoints.FenceTTL = 9 * time.Minute
 	command.AgentCheckpoints.MaxBytes = 12345
 	command.AgentCheckpoints.MaxAttempts = 4
+	command.AgentSnapshots.MaxFiles = 321
 	return command
 }

@@ -74,11 +74,11 @@ func NewAgentCheckpointRecoveryController(config AgentCheckpointRecoveryConfig, 
 // source, mode, archive path, or provider-selected recovery data.
 func (controller *AgentCheckpointRecoveryController) PrepareLaunch(ctx context.Context) (AgentCheckpointRecoveryLaunch, error) {
 	attempt, found, err := controller.attempts.Current(ctx, controller.config.Provenance.Identity)
-	if err != nil || !found {
-		if err != nil {
-			return AgentCheckpointRecoveryLaunch{}, err
-		}
-		return AgentCheckpointRecoveryLaunch{}, errors.New("agent checkpoint recovery requires a current attempt")
+	if err != nil {
+		return AgentCheckpointRecoveryLaunch{}, err
+	}
+	if !found {
+		return AgentCheckpointRecoveryLaunch{}, ErrAgentCheckpointNotRecovery
 	}
 	switch attempt.State {
 	case checkpoint.AttemptInterrupted:

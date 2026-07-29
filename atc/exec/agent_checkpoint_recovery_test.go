@@ -167,6 +167,17 @@ func TestRecoveryOrdinaryAttemptIsNotTreatedAsRecovery(t *testing.T) {
 	}
 }
 
+func TestRecoveryMissingInitialAttemptIsNotTreatedAsRecovery(t *testing.T) {
+	provenance := recoveryTestProvenance(t)
+	attempts := &recoveryAttemptFake{notFound: true}
+	controller := recoveryTestController(t, provenance, attempts, recoverySourceFake{}, recoveryJournalFake{})
+
+	_, err := controller.PrepareLaunch(context.Background())
+	if !errors.Is(err, ErrAgentCheckpointNotRecovery) {
+		t.Fatalf("missing initial attempt error = %v, want %v", err, ErrAgentCheckpointNotRecovery)
+	}
+}
+
 func TestRecoveryMaterializationFailureUsesCurrentPreLaunchState(t *testing.T) {
 	provenance := recoveryTestProvenance(t)
 	id := int64(19)
@@ -221,12 +232,16 @@ func recoveryTestControllerWithAuthority(t *testing.T, provenance AgentCheckpoin
 
 type recoveryAttemptFake struct {
 	current    checkpoint.Attempt
+	notFound   bool
 	beginCalls int
 	beginErr   error
 	manual     []checkpoint.MarkAttemptManualReviewRequest
 }
 
 func (fake *recoveryAttemptFake) Current(context.Context, checkpoint.Identity) (checkpoint.Attempt, bool, error) {
+	if fake.notFound {
+		return checkpoint.Attempt{}, false, nil
+	}
 	return fake.current, true, nil
 }
 func (fake *recoveryAttemptFake) BeginRecovery(_ context.Context, request checkpoint.BeginRecoveryRequest) (checkpoint.Attempt, error) {
