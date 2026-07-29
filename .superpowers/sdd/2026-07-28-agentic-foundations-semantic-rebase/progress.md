@@ -254,8 +254,48 @@
     regression failed against the old implementation and passed after the fix.
   - Status: **Accepted**. The single authorized final Terra review found no
     remaining blocking issue; `HUMAN-REVIEW-003` is resolved.
-- [ ] Task 16 — safe-boundary checkpoint capture
-  - Status: unblocked; next safe task.
+- [x] Task 16 — safe-boundary checkpoint capture
+  - Implementation commits:
+    - `bd97a94099 feat(checkpoint): add bounded capture archive`
+    - `98d0b06c99 feat(daemon): capture checkpoints through Hangar`
+    - `b74fee3cd9 feat(jetbridge): add exact-node checkpoint capture client`
+    - `d71410465b fix(jetbridge): accept available checkpoint objects`
+    - `dac9e57c9e feat(jetbridge): add checkpoint capture quiescence seam`
+    - `e7a86a4739 fix(jetbridge): bound checkpoint lease release`
+    - `10c71dc81b feat(agent): add provider boundary runner seam`
+    - `c865270f37 feat(jetbridge): add exact provider boundary lease`
+    - `9f8944f649 feat(agent): finalize successful checkpoint attempts`
+    - `fa5aa28972 feat(checkpoint): surface node preemption notices`
+    - `eba81810b1 feat(exec): coordinate checkpoint capture commits`
+    - `b276bd1533 feat(agent): derive checkpoint capture provenance`
+    - `0ac58199d4 feat(jetbridge): capture completed agent workspaces`
+    - `0f515a2d97 feat(jetbridge): bind checkpoint preemption intent`
+    - `4af4960bdf feat(metric): instrument agent checkpoint capture`
+    - `406b260f57 feat(exec): add checkpoint execution lifecycle`
+    - `10c39c7476 feat(exec): adapt checkpoint metrics to otel`
+    - `e3c31bb77f feat(atc): configure agent checkpoint capture`
+    - `296b782541 feat(atc): compose agent checkpoint capture`
+    - `c0e118374e feat(exec): integrate agent checkpoint capture lifecycle`
+    - `91d8e47fb0 fix(jetbridge): preserve terminal checkpoint reattach`
+  - Behavior: authenticated v3 AgentSteps derive server-owned attempt and
+    workspace provenance; elapsed, explicit, and exact-node preemption sources
+    enqueue intent that can capture only at a provider-declared safe boundary;
+    clean completion uses trusted terminal process evidence. Jetbridge binds
+    and quiesces the exact pod/process, the node-local daemon packages a
+    bounded descriptor-anchored workspace/session archive and writes it to
+    Hangar, and ATC completes the exact object upload before its fenced
+    generation/head CAS. Failures preserve the prior committed head.
+  - Verification: normal-vet exec/engine/ATC command suites passed; checkpoint,
+    provider, runner, runtime, artifact-daemon, exact-node Jetbridge capture,
+    safe-boundary, terminal, preemption, and metric suites passed. Existing
+    loopback-listener tests were rerun with host access. No source or
+    source-derived image was uploaded to Borg.
+  - Review: round 1 found one reattachment reliability gap. The correction
+    preserved exact terminal evidence for same-process/property-preloaded
+    reattachment without allowing missing evidence to re-execute completed
+    work. Round 2 found it addressed, no new blocking breakage, spec PASS, and
+    code quality APPROVED. No lower finding was deferred.
+  - Status: **Accepted**.
 - [ ] Task 17 — fresh-attempt restore/provider resume
   - Status: ordered after Task 16's committed capture.
 - [ ] Task 18 — recovery telemetry/retention
