@@ -303,6 +303,26 @@ func RenderFunctionWithRuntimeImage(target FunctionTarget, runtimeImage string) 
 	if err != nil {
 		return RenderedFunction{}, err
 	}
+	return injectRuntimeImage(target, rendered, runtimeImage)
+}
+
+// RenderFunctionWithBoundSourcesAndRuntimeImage applies the same trusted
+// runtime injection as ordinary executable rendering after exact sealed source
+// refs have been bound. Source rendering must not bypass merge-preflight or
+// agent runtime authority merely because its input IDs are supplied later.
+func RenderFunctionWithBoundSourcesAndRuntimeImage(
+	target FunctionTarget,
+	sourceRefs map[string]snapshot.SnapshotRef,
+	runtimeImage string,
+) (RenderedFunction, error) {
+	rendered, err := RenderFunctionWithBoundSources(target, sourceRefs)
+	if err != nil {
+		return RenderedFunction{}, err
+	}
+	return injectRuntimeImage(target, rendered, runtimeImage)
+}
+
+func injectRuntimeImage(target FunctionTarget, rendered RenderedFunction, runtimeImage string) (RenderedFunction, error) {
 	agentCount := 0
 	mergePreflightCount := 0
 	for jobIndex := range rendered.Config.Jobs {

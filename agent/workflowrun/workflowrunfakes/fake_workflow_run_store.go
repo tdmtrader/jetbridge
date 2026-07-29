@@ -44,6 +44,23 @@ type FakeWorkflowRunStore struct {
 		result2 bool
 		result3 error
 	}
+	GetStub        func(context.Context, int, snapshot.WorkflowRunID) (db.AgentWorkflowRun, bool, error)
+	getMutex       sync.RWMutex
+	getArgsForCall []struct {
+		arg1 context.Context
+		arg2 int
+		arg3 snapshot.WorkflowRunID
+	}
+	getReturns struct {
+		result1 db.AgentWorkflowRun
+		result2 bool
+		result3 error
+	}
+	getReturnsOnCall map[int]struct {
+		result1 db.AgentWorkflowRun
+		result2 bool
+		result3 error
+	}
 	SnapshotsStub        func(context.Context, snapshot.WorkflowRunID) ([]db.AgentWorkflowRunSnapshotBinding, error)
 	snapshotsMutex       sync.RWMutex
 	snapshotsArgsForCall []struct {
@@ -210,6 +227,75 @@ func (fake *FakeWorkflowRunStore) FindByIdempotencyKeyReturnsOnCall(i int, resul
 		})
 	}
 	fake.findByIdempotencyKeyReturnsOnCall[i] = struct {
+		result1 db.AgentWorkflowRun
+		result2 bool
+		result3 error
+	}{result1, result2, result3}
+}
+
+func (fake *FakeWorkflowRunStore) Get(arg1 context.Context, arg2 int, arg3 snapshot.WorkflowRunID) (db.AgentWorkflowRun, bool, error) {
+	fake.getMutex.Lock()
+	ret, specificReturn := fake.getReturnsOnCall[len(fake.getArgsForCall)]
+	fake.getArgsForCall = append(fake.getArgsForCall, struct {
+		arg1 context.Context
+		arg2 int
+		arg3 snapshot.WorkflowRunID
+	}{arg1, arg2, arg3})
+	stub := fake.GetStub
+	fakeReturns := fake.getReturns
+	fake.recordInvocation("Get", []interface{}{arg1, arg2, arg3})
+	fake.getMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2, arg3)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2, ret.result3
+	}
+	return fakeReturns.result1, fakeReturns.result2, fakeReturns.result3
+}
+
+func (fake *FakeWorkflowRunStore) GetCallCount() int {
+	fake.getMutex.RLock()
+	defer fake.getMutex.RUnlock()
+	return len(fake.getArgsForCall)
+}
+
+func (fake *FakeWorkflowRunStore) GetCalls(stub func(context.Context, int, snapshot.WorkflowRunID) (db.AgentWorkflowRun, bool, error)) {
+	fake.getMutex.Lock()
+	defer fake.getMutex.Unlock()
+	fake.GetStub = stub
+}
+
+func (fake *FakeWorkflowRunStore) GetArgsForCall(i int) (context.Context, int, snapshot.WorkflowRunID) {
+	fake.getMutex.RLock()
+	defer fake.getMutex.RUnlock()
+	argsForCall := fake.getArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3
+}
+
+func (fake *FakeWorkflowRunStore) GetReturns(result1 db.AgentWorkflowRun, result2 bool, result3 error) {
+	fake.getMutex.Lock()
+	defer fake.getMutex.Unlock()
+	fake.GetStub = nil
+	fake.getReturns = struct {
+		result1 db.AgentWorkflowRun
+		result2 bool
+		result3 error
+	}{result1, result2, result3}
+}
+
+func (fake *FakeWorkflowRunStore) GetReturnsOnCall(i int, result1 db.AgentWorkflowRun, result2 bool, result3 error) {
+	fake.getMutex.Lock()
+	defer fake.getMutex.Unlock()
+	fake.GetStub = nil
+	if fake.getReturnsOnCall == nil {
+		fake.getReturnsOnCall = make(map[int]struct {
+			result1 db.AgentWorkflowRun
+			result2 bool
+			result3 error
+		})
+	}
+	fake.getReturnsOnCall[i] = struct {
 		result1 db.AgentWorkflowRun
 		result2 bool
 		result3 error

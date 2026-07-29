@@ -4,6 +4,7 @@ package workflowrunfakes
 import (
 	"sync"
 
+	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/agent/workflowrun"
 )
@@ -46,6 +47,20 @@ type FakeTargetRenderer struct {
 		result2 error
 	}
 	renderFunctionReturnsOnCall map[int]struct {
+		result1 workflow.RenderedFunction
+		result2 error
+	}
+	RenderFunctionWithBoundSourcesStub        func(workflow.FunctionTarget, map[string]snapshot.SnapshotRef) (workflow.RenderedFunction, error)
+	renderFunctionWithBoundSourcesMutex       sync.RWMutex
+	renderFunctionWithBoundSourcesArgsForCall []struct {
+		arg1 workflow.FunctionTarget
+		arg2 map[string]snapshot.SnapshotRef
+	}
+	renderFunctionWithBoundSourcesReturns struct {
+		result1 workflow.RenderedFunction
+		result2 error
+	}
+	renderFunctionWithBoundSourcesReturnsOnCall map[int]struct {
 		result1 workflow.RenderedFunction
 		result2 error
 	}
@@ -241,6 +256,71 @@ func (fake *FakeTargetRenderer) RenderFunctionReturnsOnCall(i int, result1 workf
 		})
 	}
 	fake.renderFunctionReturnsOnCall[i] = struct {
+		result1 workflow.RenderedFunction
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeTargetRenderer) RenderFunctionWithBoundSources(arg1 workflow.FunctionTarget, arg2 map[string]snapshot.SnapshotRef) (workflow.RenderedFunction, error) {
+	fake.renderFunctionWithBoundSourcesMutex.Lock()
+	ret, specificReturn := fake.renderFunctionWithBoundSourcesReturnsOnCall[len(fake.renderFunctionWithBoundSourcesArgsForCall)]
+	fake.renderFunctionWithBoundSourcesArgsForCall = append(fake.renderFunctionWithBoundSourcesArgsForCall, struct {
+		arg1 workflow.FunctionTarget
+		arg2 map[string]snapshot.SnapshotRef
+	}{arg1, arg2})
+	stub := fake.RenderFunctionWithBoundSourcesStub
+	fakeReturns := fake.renderFunctionWithBoundSourcesReturns
+	fake.recordInvocation("RenderFunctionWithBoundSources", []interface{}{arg1, arg2})
+	fake.renderFunctionWithBoundSourcesMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeTargetRenderer) RenderFunctionWithBoundSourcesCallCount() int {
+	fake.renderFunctionWithBoundSourcesMutex.RLock()
+	defer fake.renderFunctionWithBoundSourcesMutex.RUnlock()
+	return len(fake.renderFunctionWithBoundSourcesArgsForCall)
+}
+
+func (fake *FakeTargetRenderer) RenderFunctionWithBoundSourcesCalls(stub func(workflow.FunctionTarget, map[string]snapshot.SnapshotRef) (workflow.RenderedFunction, error)) {
+	fake.renderFunctionWithBoundSourcesMutex.Lock()
+	defer fake.renderFunctionWithBoundSourcesMutex.Unlock()
+	fake.RenderFunctionWithBoundSourcesStub = stub
+}
+
+func (fake *FakeTargetRenderer) RenderFunctionWithBoundSourcesArgsForCall(i int) (workflow.FunctionTarget, map[string]snapshot.SnapshotRef) {
+	fake.renderFunctionWithBoundSourcesMutex.RLock()
+	defer fake.renderFunctionWithBoundSourcesMutex.RUnlock()
+	argsForCall := fake.renderFunctionWithBoundSourcesArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2
+}
+
+func (fake *FakeTargetRenderer) RenderFunctionWithBoundSourcesReturns(result1 workflow.RenderedFunction, result2 error) {
+	fake.renderFunctionWithBoundSourcesMutex.Lock()
+	defer fake.renderFunctionWithBoundSourcesMutex.Unlock()
+	fake.RenderFunctionWithBoundSourcesStub = nil
+	fake.renderFunctionWithBoundSourcesReturns = struct {
+		result1 workflow.RenderedFunction
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeTargetRenderer) RenderFunctionWithBoundSourcesReturnsOnCall(i int, result1 workflow.RenderedFunction, result2 error) {
+	fake.renderFunctionWithBoundSourcesMutex.Lock()
+	defer fake.renderFunctionWithBoundSourcesMutex.Unlock()
+	fake.RenderFunctionWithBoundSourcesStub = nil
+	if fake.renderFunctionWithBoundSourcesReturnsOnCall == nil {
+		fake.renderFunctionWithBoundSourcesReturnsOnCall = make(map[int]struct {
+			result1 workflow.RenderedFunction
+			result2 error
+		})
+	}
+	fake.renderFunctionWithBoundSourcesReturnsOnCall[i] = struct {
 		result1 workflow.RenderedFunction
 		result2 error
 	}{result1, result2}

@@ -143,6 +143,7 @@ type TargetRenderer interface {
 	FullFunctionTarget(workflow.Definition) (workflow.FunctionTarget, error)
 	ExtractFunctionTarget(workflow.Definition, string) (workflow.FunctionTarget, error)
 	RenderFunction(workflow.FunctionTarget) (workflow.RenderedFunction, error)
+	RenderFunctionWithBoundSources(workflow.FunctionTarget, map[string]snapshot.SnapshotRef) (workflow.RenderedFunction, error)
 }
 
 //counterfeiter:generate -o workflowrunfakes/fake_snapshot_authorizer.go . SnapshotAuthorizer
@@ -153,6 +154,7 @@ type SnapshotAuthorizer interface {
 //counterfeiter:generate -o workflowrunfakes/fake_workflow_run_store.go . WorkflowRunStore
 type WorkflowRunStore interface {
 	FindByIdempotencyKey(context.Context, int, string) (db.AgentWorkflowRun, bool, error)
+	Get(context.Context, int, snapshot.WorkflowRunID) (db.AgentWorkflowRun, bool, error)
 	CreateWithInputs(context.Context, db.AgentWorkflowRunCreateRequest) (db.AgentWorkflowRun, bool, error)
 	Snapshots(context.Context, snapshot.WorkflowRunID) ([]db.AgentWorkflowRunSnapshotBinding, error)
 	Transition(context.Context, snapshot.WorkflowRunID, db.AgentWorkflowRunStatus, db.AgentWorkflowRunStatus, string) (bool, error)

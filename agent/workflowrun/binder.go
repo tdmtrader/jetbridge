@@ -35,6 +35,24 @@ type Binder struct {
 	templates   ImmutableTemplateSaver
 	executions  PipelineRunCreator
 	credential  ModelCredentialAdmitter
+	sources     ResourceSourceAdmitter
+}
+
+// BinderOption configures a server-owned source-admission hand-off. A binder
+// without this dependency continues to serve source-free workflows.
+type BinderOption func(*Binder) error
+
+// WithResourceSourceAdmitter enables trusted source admissions. It is wired
+// only by server composition; public BindRequest payloads carry no admission
+// identity or caller-supplied source binding.
+func WithResourceSourceAdmitter(admitter ResourceSourceAdmitter) BinderOption {
+	return func(binder *Binder) error {
+		if nilInterface(admitter) {
+			return fmt.Errorf("%w: resource source admitter is required", ErrInvalidRequest)
+		}
+		binder.sources = admitter
+		return nil
+	}
 }
 
 func NewBinder(
@@ -46,6 +64,7 @@ func NewBinder(
 	templates ImmutableTemplateSaver,
 	executions PipelineRunCreator,
 	credential ModelCredentialAdmitter,
+	options ...BinderOption,
 ) (*Binder, error) {
 	for name, dependency := range map[string]any{
 		"definition resolver":       definitions,
@@ -61,16 +80,58 @@ func NewBinder(
 			return nil, fmt.Errorf("%w: %s is required", ErrInvalidRequest, name)
 		}
 	}
-	return &Binder{
+	binder := &Binder{
 		definitions: definitions, renderer: renderer, snapshots: snapshots, runs: runs,
 		budget: budget, templates: templates, executions: executions, credential: credential,
-	}, nil
+	}
+	for _, option := range options {
+		if option == nil {
+			return nil, fmt.Errorf("%w: binder option is required", ErrInvalidRequest)
+		}
+		if err := option(binder); err != nil {
+			return nil, err
+		}
+	}
+	return binder, nil
 }
 
 func (b *Binder) BindAndCreate(
 	ctx context.Context,
 	admission AdmissionContext,
 	request BindRequest,
+) (BindResult, error) {
+	return b.bindAndCreate(ctx, admission, request, nil)
+}
+
+// BindReadySourceAdmission is the server-only automatic source-build handoff.
+// The ready object is produced by the capture/reconciler runtime rather than a
+// public workflow-run request.
+func (b *Binder) BindReadySourceAdmission(
+	ctx context.Context,
+	admission AdmissionContext,
+	ready ReadySourceAdmission,
+	idempotencyKey string,
+) (BindResult, error) {
+	if ready.AdmissionID <= 0 || ready.TeamID != admission.TeamID ||
+		ready.WorkflowDefinitionID <= 0 || ready.WorkflowVersion <= 0 ||
+		strings.TrimSpace(ready.WorkflowName) == "" || strings.TrimSpace(idempotencyKey) == "" ||
+		admission.Origin.Kind == "manual" || strings.TrimSpace(admission.Origin.Reference) == "" {
+		return BindResult{}, fmt.Errorf("%w: automatic ready source admission is invalid", ErrInvalidRequest)
+	}
+	version := ready.WorkflowVersion
+	return b.bindAndCreate(ctx, admission, BindRequest{
+		WorkflowName:                 ready.WorkflowName,
+		Version:                      &version,
+		IdempotencyKey:               idempotencyKey,
+		ExpectedWorkflowDefinitionID: int64(ready.WorkflowDefinitionID),
+	}, &ready)
+}
+
+func (b *Binder) bindAndCreate(
+	ctx context.Context,
+	admission AdmissionContext,
+	request BindRequest,
+	trustedReady *ReadySourceAdmission,
 ) (BindResult, error) {
 	admission, request, err := validateAndClone(admission, request)
 	if err != nil {
@@ -84,10 +145,17 @@ func (b *Binder) BindAndCreate(
 		if existing, found, err := b.existing(ctx, admission, request); err != nil {
 			return BindResult{}, err
 		} else if found {
+			if trustedReady != nil && !equalInt64Pointer(existing.ResourceSourceAdmissionID, &trustedReady.AdmissionID) {
+				return BindResult{}, ErrIdempotencyConflict
+			}
 			return b.handleExisting(ctx, admission, request, existing)
 		}
 	}
-
+	if request.RetryOf != nil {
+		if result, handled, err := b.bindSourceReplay(ctx, admission, request); handled {
+			return result, err
+		}
+	}
 	definition, found, err := b.resolve(ctx, request)
 	if err != nil {
 		return BindResult{}, err
@@ -119,8 +187,57 @@ func (b *Binder) BindAndCreate(
 	if err := validateTargetIdentity(target, definition, request.FunctionID); err != nil {
 		return BindResult{}, err
 	}
+	if len(target.Function.ResourceSources) != 0 && request.RetryOf != nil {
+		if result, handled, err := b.bindSourceReplay(ctx, admission, request); handled {
+			return result, err
+		}
+	}
 
-	rendered, err := b.renderer.RenderFunction(target)
+	var ready *ReadySourceAdmission
+	if len(target.Function.ResourceSources) != 0 {
+		if nilInterface(b.sources) {
+			return BindResult{}, fmt.Errorf("%w: resource source admission is unavailable", ErrPlatformFailure)
+		}
+		sourceTarget, sourceErr := workflow.ResourceSourcePipelineTargetFor(definition, admission.TeamID)
+		if sourceErr != nil {
+			return BindResult{}, fmt.Errorf("%w: derive resource source target: %v", ErrPlatformFailure, sourceErr)
+		}
+		var value ReadySourceAdmission
+		if trustedReady != nil {
+			if trustedReady.AdmissionID <= 0 {
+				return BindResult{}, fmt.Errorf("%w: automatic ready source admission is invalid", ErrInvalidRequest)
+			}
+			verified, loadErr := b.sources.LoadReady(ctx, admission.TeamID, trustedReady.AdmissionID, sourceTarget)
+			if loadErr != nil {
+				return BindResult{}, sourceAdmissionError(loadErr)
+			}
+			if !sameReadySourceAdmission(verified, *trustedReady) {
+				return BindResult{}, fmt.Errorf("%w: automatic ready source admission drifted", ErrInvalidRequest)
+			}
+			value = verified
+		} else {
+			value, sourceErr = b.sources.AdmitManual(
+				ctx, admission, sourceTarget, "workflow-run-source:"+request.IdempotencyKey,
+			)
+			if sourceErr != nil {
+				return BindResult{}, sourceAdmissionError(sourceErr)
+			}
+		}
+		if sourceErr = validateReadySourceAdmission(value, admission.TeamID, sourceTarget); sourceErr != nil {
+			return BindResult{}, sourceErr
+		}
+		readyValue := cloneReadySourceAdmission(value)
+		ready = &readyValue
+	} else if trustedReady != nil {
+		return BindResult{}, fmt.Errorf("%w: source-free workflow cannot use a ready source admission", ErrInvalidRequest)
+	}
+
+	var rendered workflow.RenderedFunction
+	if ready == nil {
+		rendered, err = b.renderer.RenderFunction(target)
+	} else {
+		rendered, err = b.renderer.RenderFunctionWithBoundSources(target, ready.Inputs)
+	}
 	if err != nil {
 		return BindResult{}, fmt.Errorf("%w: render workflow target: %v", ErrPlatformFailure, err)
 	}
@@ -150,6 +267,13 @@ func (b *Binder) BindAndCreate(
 	if err != nil {
 		return BindResult{}, err
 	}
+	if ready != nil {
+		refs, err = mergeSourceInputRefs(refs, ready.Inputs)
+		if err != nil {
+			return BindResult{}, err
+		}
+	}
+	effectiveInputs := snapshotIDs(refs)
 	functionID := optionalFunctionID(request.FunctionID)
 	createRequest := db.AgentWorkflowRunCreateRequest{
 		TeamID: admission.TeamID, TeamName: admission.TeamName,
@@ -164,6 +288,9 @@ func (b *Binder) BindAndCreate(
 		RetryOfWorkflowRunID: cloneWorkflowRunID(request.RetryOf), Inputs: cloneRefs(refs),
 		ExperimentAdmission: cloneDBExperimentAdmission(request.ExperimentAdmission),
 	}
+	if ready != nil {
+		createRequest.ResourceSourceAdmissionID = cloneInt64(&ready.AdmissionID)
+	}
 	run, created, err := b.runs.CreateWithInputs(ctx, createRequest)
 	if err != nil {
 		if errors.Is(err, db.ErrAgentWorkflowRunExperimentAdmissionClosed) {
@@ -172,7 +299,7 @@ func (b *Binder) BindAndCreate(
 		if request.ExperimentAdmission != nil {
 			return BindResult{}, fmt.Errorf("%w: allocate durable experiment workflow run", ErrPlatformFailure)
 		}
-		if winner, found, readErr := b.resolvedWinner(ctx, createRequest, request.Inputs); readErr == nil && found {
+		if winner, found, readErr := b.resolvedWinner(ctx, createRequest, effectiveInputs); readErr == nil && found {
 			return b.handleExisting(ctx, admission, request, winner)
 		} else if readErr != nil && errors.Is(readErr, ErrIdempotencyConflict) {
 			return BindResult{}, readErr
@@ -186,18 +313,20 @@ func (b *Binder) BindAndCreate(
 		}
 		return BindResult{}, err
 	}
-	if _, err := b.matchBindings(ctx, run.ID, request.Inputs); err != nil {
+	if _, err := b.matchBindings(ctx, run.ID, effectiveInputs); err != nil {
 		if created && !errors.Is(err, ErrIdempotencyConflict) {
 			return b.failAllocated(ctx, admission, request, run, true, err)
 		}
 		return BindResult{}, err
 	}
 	if !created {
+		request.Inputs = effectiveInputs
 		return b.handleExisting(ctx, admission, request, run)
 	}
 	if run.Status != db.AgentWorkflowRunStatusAdmitting || !executionEmpty(run) {
 		return b.failAllocated(ctx, admission, request, run, true, ErrCorruptPartialAdmission)
 	}
+	request.Inputs = effectiveInputs
 	return b.resume(ctx, admission, request, run, created, &durableRenderedTarget{target: target, rendered: rendered})
 }
 
@@ -221,6 +350,113 @@ func (b *Binder) resolvedWinner(
 		return db.AgentWorkflowRun{}, false, err
 	}
 	return run, true, nil
+}
+
+// bindSourceReplay copies an exact prior source-aware run without reopening a
+// source pipeline. The sealed ready admission and every immutable input remain
+// part of the retry identity; resume re-renders against those same bindings.
+func (b *Binder) bindSourceReplay(
+	ctx context.Context,
+	admission AdmissionContext,
+	request BindRequest,
+) (BindResult, bool, error) {
+	source, found, err := b.runs.Get(ctx, admission.TeamID, *request.RetryOf)
+	if err != nil {
+		return BindResult{}, true, fmt.Errorf("%w: load replay source workflow run", ErrPlatformFailure)
+	}
+	if !found {
+		// Source-free retries retain the ordinary bind path. The durable DB
+		// retry validation remains authoritative if a source row disappears
+		// between this read and allocation.
+		return BindResult{}, false, nil
+	}
+	source = cloneRun(source)
+	if source.ResourceSourceAdmissionID == nil {
+		return BindResult{}, false, nil
+	}
+	if source.TeamID != admission.TeamID || source.ID != *request.RetryOf ||
+		source.WorkflowName != request.WorkflowName ||
+		(request.Version != nil && source.WorkflowVersion != *request.Version) ||
+		!equalStringPointer(source.FunctionID, optionalFunctionID(request.FunctionID)) {
+		return BindResult{}, true, ErrInvalidRequest
+	}
+	if request.ExpectedWorkflowDefinitionID != 0 &&
+		int64(source.WorkflowDefinitionID) != request.ExpectedWorkflowDefinitionID {
+		return BindResult{}, true, ErrInvalidRequest
+	}
+	if request.ExpectedTargetConfigHash != "" && source.ParameterizedConfigHash != request.ExpectedTargetConfigHash {
+		return BindResult{}, true, ErrInvalidRequest
+	}
+	if request.ExpectedDevValidationProvenanceHash != nil &&
+		source.DevValidationProvenanceHash != *request.ExpectedDevValidationProvenanceHash {
+		return BindResult{}, true, ErrInvalidRequest
+	}
+	if err := b.mergeStoredSourceInputs(ctx, admission, &request, source); err != nil {
+		return BindResult{}, true, err
+	}
+	bindings, err := b.matchBindings(ctx, source.ID, request.Inputs)
+	if err != nil {
+		return BindResult{}, true, err
+	}
+	inputs := make(map[string]snapshot.SnapshotRef, len(bindings))
+	for _, binding := range bindings {
+		inputs[binding.PortName] = binding.Snapshot
+	}
+	createRequest := db.AgentWorkflowRunCreateRequest{
+		TeamID: admission.TeamID, TeamName: admission.TeamName,
+		WorkflowDefinitionID: source.WorkflowDefinitionID, WorkflowName: source.WorkflowName,
+		WorkflowVersion: source.WorkflowVersion, SchemaVersion: source.SchemaVersion,
+		SignatureVersion: source.SignatureVersion, DefinitionContentHash: source.DefinitionContentHash,
+		FunctionID: cloneString(source.FunctionID), IdempotencyKey: request.IdempotencyKey,
+		ParameterizedConfig: cloneRaw(source.ParameterizedConfig), ParameterizedConfigHash: source.ParameterizedConfigHash,
+		DevValidationProvenanceHash: source.DevValidationProvenanceHash,
+		ResourceSourceAdmissionID:   cloneInt64(source.ResourceSourceAdmissionID),
+		OriginKind:                  admission.Origin.Kind, OriginReference: admission.Origin.Reference,
+		CreatedBy: admission.CreatedBy, Status: db.AgentWorkflowRunStatusAdmitting,
+		RetryOfWorkflowRunID: cloneWorkflowRunID(request.RetryOf), Inputs: cloneRefs(inputs),
+		ExperimentAdmission: cloneDBExperimentAdmission(request.ExperimentAdmission),
+	}
+	run, created, err := b.runs.CreateWithInputs(ctx, createRequest)
+	if err != nil {
+		if errors.Is(err, db.ErrAgentWorkflowRunExperimentAdmissionClosed) {
+			return BindResult{}, true, ErrExperimentAdmissionClosed
+		}
+		if request.ExperimentAdmission != nil {
+			return BindResult{}, true, fmt.Errorf("%w: allocate durable experiment workflow run", ErrPlatformFailure)
+		}
+		if winner, found, readErr := b.resolvedWinner(ctx, createRequest, request.Inputs); readErr == nil && found {
+			result, existingErr := b.handleExisting(ctx, admission, request, winner)
+			return result, true, existingErr
+		} else if readErr != nil && errors.Is(readErr, ErrIdempotencyConflict) {
+			return BindResult{}, true, readErr
+		}
+		return BindResult{}, true, fmt.Errorf("%w: allocate replay workflow run", ErrPlatformFailure)
+	}
+	run = cloneRun(run)
+	if err := compareAllocatedRun(run, createRequest); err != nil {
+		if created && run.ID.Validate() == nil {
+			result, failure := b.failAllocated(ctx, admission, request, run, true, fmt.Errorf("%w: allocated replay workflow-run identity mismatch", ErrCorruptPartialAdmission))
+			return result, true, failure
+		}
+		return BindResult{}, true, err
+	}
+	if _, err := b.matchBindings(ctx, run.ID, request.Inputs); err != nil {
+		if created && !errors.Is(err, ErrIdempotencyConflict) {
+			result, failure := b.failAllocated(ctx, admission, request, run, true, err)
+			return result, true, failure
+		}
+		return BindResult{}, true, err
+	}
+	if !created {
+		result, existingErr := b.handleExisting(ctx, admission, request, run)
+		return result, true, existingErr
+	}
+	if run.Status != db.AgentWorkflowRunStatusAdmitting || !executionEmpty(run) {
+		result, failure := b.failAllocated(ctx, admission, request, run, true, ErrCorruptPartialAdmission)
+		return result, true, failure
+	}
+	result, err := b.resume(ctx, admission, request, run, true, nil)
+	return result, true, err
 }
 
 func (b *Binder) resolve(ctx context.Context, request BindRequest) (workflow.Definition, bool, error) {
@@ -261,10 +497,57 @@ func (b *Binder) existing(
 	if err := compareCallerIntent(run, admission, request); err != nil {
 		return db.AgentWorkflowRun{}, false, err
 	}
+	if err := b.mergeStoredSourceInputs(ctx, admission, &request, run); err != nil {
+		return db.AgentWorkflowRun{}, false, err
+	}
 	if _, err := b.matchBindings(ctx, run.ID, request.Inputs); err != nil {
 		return db.AgentWorkflowRun{}, false, err
 	}
 	return run, true, nil
+}
+
+// mergeStoredSourceInputs makes a durable ready admission part of an
+// idempotent run's expected bindings. It intentionally only loads a ready
+// admission: retries and resumes must not reopen a standing source pipeline.
+func (b *Binder) mergeStoredSourceInputs(
+	ctx context.Context,
+	admission AdmissionContext,
+	request *BindRequest,
+	run db.AgentWorkflowRun,
+) error {
+	if run.ResourceSourceAdmissionID == nil {
+		return nil
+	}
+	if *run.ResourceSourceAdmissionID <= 0 || nilInterface(b.sources) {
+		return fmt.Errorf("%w: durable resource source admission is unavailable", ErrCorruptPartialAdmission)
+	}
+	definition, found, err := b.definitions.Get(ctx, run.WorkflowName, run.WorkflowVersion)
+	if err != nil {
+		return fmt.Errorf("%w: resolve durable resource source definition", ErrPlatformFailure)
+	}
+	if !found || definition.ID != run.WorkflowDefinitionID || definition.Name != run.WorkflowName ||
+		definition.Version != run.WorkflowVersion || definition.ContentHash != run.DefinitionContentHash ||
+		definition.SignatureVersion != run.SignatureVersion {
+		return fmt.Errorf("%w: durable resource source definition changed", ErrInvalidRequest)
+	}
+	target, err := workflow.ResourceSourcePipelineTargetFor(definition, admission.TeamID)
+	if err != nil {
+		return fmt.Errorf("%w: derive durable resource source target", ErrInvalidRequest)
+	}
+	ready, err := b.sources.LoadReady(ctx, admission.TeamID, *run.ResourceSourceAdmissionID, target)
+	if err != nil {
+		return sourceAdmissionError(err)
+	}
+	if err := validateReadySourceAdmission(ready, admission.TeamID, target); err != nil {
+		return err
+	}
+	for port, ref := range ready.Inputs {
+		if got, found := request.Inputs[port]; found && got != ref.ID {
+			return ErrIdempotencyConflict
+		}
+		request.Inputs[port] = ref.ID
+	}
+	return nil
 }
 
 func (b *Binder) handleExisting(
@@ -334,7 +617,15 @@ func (b *Binder) resume(
 		if err != nil || validateTargetIdentity(target, definition, functionID) != nil {
 			return b.failAllocated(ctx, admission, request, run, created, fmt.Errorf("%w: durable workflow target mismatch", ErrCorruptPartialAdmission))
 		}
-		rendered, err = b.renderer.RenderFunction(target)
+		if len(target.Function.ResourceSources) == 0 {
+			rendered, err = b.renderer.RenderFunction(target)
+		} else {
+			boundSources, sourceErr := sourceRefsForTarget(target, bindings)
+			if sourceErr != nil {
+				return b.failAllocated(ctx, admission, request, run, created, sourceErr)
+			}
+			rendered, err = b.renderer.RenderFunctionWithBoundSources(target, boundSources)
+		}
 		if err != nil {
 			return b.failAllocated(ctx, admission, request, run, created, fmt.Errorf("%w: rerender durable workflow target", ErrCorruptPartialAdmission))
 		}
@@ -881,6 +1172,98 @@ func validateInputCoverage(signature workflow.PublicSignature, inputs map[string
 	return nil
 }
 
+func sourceAdmissionError(err error) error {
+	if errors.Is(err, ErrSourceCapturePending) || errors.Is(err, ErrInvalidRequest) ||
+		errors.Is(err, ErrSnapshotUnavailable) || errors.Is(err, ErrSnapshotTypeMismatch) {
+		return err
+	}
+	return fmt.Errorf("%w: load ready resource source admission", ErrPlatformFailure)
+}
+
+func validateReadySourceAdmission(
+	ready ReadySourceAdmission,
+	teamID int,
+	target workflow.ResourceSourcePipelineTarget,
+) error {
+	if ready.AdmissionID <= 0 || ready.TeamID != teamID ||
+		ready.WorkflowDefinitionID != target.WorkflowDefinitionID ||
+		ready.WorkflowName != target.WorkflowName ||
+		ready.WorkflowVersion != target.WorkflowVersion {
+		return fmt.Errorf("%w: ready resource source admission identity drifted", ErrInvalidRequest)
+	}
+	rendered, err := workflow.RenderResourceSourcePipeline(target)
+	if err != nil {
+		return fmt.Errorf("%w: ready resource source target is invalid", ErrInvalidRequest)
+	}
+	if ready.SourceConfigHash != rendered.ConfigHash {
+		return fmt.Errorf("%w: ready resource source configuration changed", ErrInvalidRequest)
+	}
+	if len(ready.Inputs) != len(target.Sources) {
+		return fmt.Errorf("%w: ready resource source inputs do not cover target", ErrInvalidRequest)
+	}
+	for _, source := range target.Sources {
+		ref, found := ready.Inputs[source.Name]
+		if !found || ref.Type != source.Type || ref.Validate() != nil {
+			return fmt.Errorf("%w: ready resource source input drifted", ErrInvalidRequest)
+		}
+	}
+	return nil
+}
+
+func sameReadySourceAdmission(left, right ReadySourceAdmission) bool {
+	return left.AdmissionID == right.AdmissionID && left.TeamID == right.TeamID &&
+		left.WorkflowDefinitionID == right.WorkflowDefinitionID &&
+		left.WorkflowName == right.WorkflowName && left.WorkflowVersion == right.WorkflowVersion &&
+		left.SourceConfigHash == right.SourceConfigHash && reflect.DeepEqual(left.Inputs, right.Inputs)
+}
+
+func mergeSourceInputRefs(
+	caller map[string]snapshot.SnapshotRef,
+	sources map[string]snapshot.SnapshotRef,
+) (map[string]snapshot.SnapshotRef, error) {
+	merged := cloneRefs(caller)
+	for port, ref := range sources {
+		if _, found := merged[port]; found {
+			return nil, fmt.Errorf("%w: resource source conflicts with caller input %q", ErrInvalidRequest, port)
+		}
+		merged[port] = ref
+	}
+	return merged, nil
+}
+
+func snapshotIDs(refs map[string]snapshot.SnapshotRef) map[string]snapshot.SnapshotID {
+	ids := make(map[string]snapshot.SnapshotID, len(refs))
+	for port, ref := range refs {
+		ids[port] = ref.ID
+	}
+	return ids
+}
+
+func sourceRefsForTarget(
+	target workflow.FunctionTarget,
+	bindings []db.AgentWorkflowRunSnapshotBinding,
+) (map[string]snapshot.SnapshotRef, error) {
+	byPort := make(map[string]snapshot.SnapshotRef, len(bindings))
+	for _, binding := range bindings {
+		if binding.Direction != db.AgentWorkflowRunSnapshotInput {
+			continue
+		}
+		byPort[binding.PortName] = binding.Snapshot
+	}
+	refs := make(map[string]snapshot.SnapshotRef, len(target.Function.ResourceSources))
+	for _, source := range target.Function.ResourceSources {
+		if _, duplicate := refs[source.Name]; duplicate {
+			return nil, fmt.Errorf("%w: durable resource source declaration is duplicated", ErrCorruptPartialAdmission)
+		}
+		ref, found := byPort[source.Name]
+		if !found || ref.Type != source.Type || ref.Validate() != nil {
+			return nil, fmt.Errorf("%w: durable resource source binding drifted", ErrCorruptPartialAdmission)
+		}
+		refs[source.Name] = ref
+	}
+	return refs, nil
+}
+
 func durableExecutionEnvelope(
 	runID snapshot.WorkflowRunID,
 	bindings []db.AgentWorkflowRunSnapshotBinding,
@@ -948,6 +1331,7 @@ func compareAllocatedRun(run db.AgentWorkflowRun, request db.AgentWorkflowRunCre
 		run.DefinitionContentHash != request.DefinitionContentHash || !equalStringPointer(run.FunctionID, request.FunctionID) ||
 		run.IdempotencyKey != request.IdempotencyKey || run.ParameterizedConfigHash != request.ParameterizedConfigHash ||
 		run.DevValidationProvenanceHash != request.DevValidationProvenanceHash ||
+		!equalInt64Pointer(run.ResourceSourceAdmissionID, request.ResourceSourceAdmissionID) ||
 		!jsonEqual(run.ParameterizedConfig, request.ParameterizedConfig) || run.OriginKind != request.OriginKind ||
 		run.OriginReference != request.OriginReference || run.CreatedBy != request.CreatedBy ||
 		!equalRunIDPointer(run.RetryOfWorkflowRunID, request.RetryOfWorkflowRunID) {
@@ -1098,6 +1482,7 @@ func cloneRun(run db.AgentWorkflowRun) db.AgentWorkflowRun {
 	run.ActualPlanHash = cloneString(run.ActualPlanHash)
 	run.ResolvedDependencies = cloneRaw(run.ResolvedDependencies)
 	run.RetryOfWorkflowRunID = cloneWorkflowRunID(run.RetryOfWorkflowRunID)
+	run.ResourceSourceAdmissionID = cloneInt64(run.ResourceSourceAdmissionID)
 	run.PipelineRunID = cloneInt(run.PipelineRunID)
 	run.TemplatePipelineID = cloneInt(run.TemplatePipelineID)
 	run.InstancePipelineID = cloneInt(run.InstancePipelineID)
@@ -1149,6 +1534,10 @@ func equalStringPointer(left, right *string) bool {
 }
 
 func equalRunIDPointer(left, right *snapshot.WorkflowRunID) bool {
+	return left == nil && right == nil || left != nil && right != nil && *left == *right
+}
+
+func equalInt64Pointer(left, right *int64) bool {
 	return left == nil && right == nil || left != nil && right != nil && *left == *right
 }
 
@@ -1223,4 +1612,15 @@ func (WorkflowTargetRenderer) ExtractFunctionTarget(definition workflow.Definiti
 
 func (renderer WorkflowTargetRenderer) RenderFunction(target workflow.FunctionTarget) (workflow.RenderedFunction, error) {
 	return workflow.RenderFunctionWithRuntimeImage(target, renderer.RuntimeImage)
+}
+
+func (renderer WorkflowTargetRenderer) RenderFunctionWithBoundSources(
+	target workflow.FunctionTarget,
+	sources map[string]snapshot.SnapshotRef,
+) (workflow.RenderedFunction, error) {
+	return workflow.RenderFunctionWithBoundSourcesAndRuntimeImage(
+		target,
+		sources,
+		renderer.RuntimeImage,
+	)
 }

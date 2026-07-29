@@ -1400,6 +1400,7 @@ type rendererStub struct {
 	full    func(workflow.Definition) (workflow.FunctionTarget, error)
 	extract func(workflow.Definition, string) (workflow.FunctionTarget, error)
 	render  func(workflow.FunctionTarget) (workflow.RenderedFunction, error)
+	bound   func(workflow.FunctionTarget, map[string]snapshot.SnapshotRef) (workflow.RenderedFunction, error)
 }
 
 func (s *rendererStub) FullFunctionTarget(def workflow.Definition) (workflow.FunctionTarget, error) {
@@ -1409,6 +1410,12 @@ func (s *rendererStub) ExtractFunctionTarget(def workflow.Definition, id string)
 	return s.extract(def, id)
 }
 func (s *rendererStub) RenderFunction(target workflow.FunctionTarget) (workflow.RenderedFunction, error) {
+	return s.render(target)
+}
+func (s *rendererStub) RenderFunctionWithBoundSources(target workflow.FunctionTarget, sources map[string]snapshot.SnapshotRef) (workflow.RenderedFunction, error) {
+	if s.bound != nil {
+		return s.bound(target, sources)
+	}
 	return s.render(target)
 }
 
@@ -1422,6 +1429,7 @@ func (s *authorizerStub) GetAuthorized(ctx context.Context, teamID int, id snaps
 
 type storeStub struct {
 	find       func(context.Context, int, string) (db.AgentWorkflowRun, bool, error)
+	get        func(context.Context, int, snapshot.WorkflowRunID) (db.AgentWorkflowRun, bool, error)
 	create     func(context.Context, db.AgentWorkflowRunCreateRequest) (db.AgentWorkflowRun, bool, error)
 	snapshots  func(context.Context, snapshot.WorkflowRunID) ([]db.AgentWorkflowRunSnapshotBinding, error)
 	transition func(context.Context, snapshot.WorkflowRunID, db.AgentWorkflowRunStatus, db.AgentWorkflowRunStatus, string) (bool, error)
@@ -1429,6 +1437,12 @@ type storeStub struct {
 
 func (s *storeStub) FindByIdempotencyKey(ctx context.Context, teamID int, key string) (db.AgentWorkflowRun, bool, error) {
 	return s.find(ctx, teamID, key)
+}
+func (s *storeStub) Get(ctx context.Context, teamID int, id snapshot.WorkflowRunID) (db.AgentWorkflowRun, bool, error) {
+	if s.get == nil {
+		return db.AgentWorkflowRun{}, false, nil
+	}
+	return s.get(ctx, teamID, id)
 }
 func (s *storeStub) CreateWithInputs(ctx context.Context, request db.AgentWorkflowRunCreateRequest) (db.AgentWorkflowRun, bool, error) {
 	return s.create(ctx, request)

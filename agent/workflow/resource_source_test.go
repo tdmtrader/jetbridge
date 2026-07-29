@@ -129,3 +129,46 @@ func TestRenderFunctionWithBoundSourcesRemovesLiveResourceReads(t *testing.T) {
 		t.Fatalf("envelope after Config mutation = %#v, %v", launchParams, err)
 	}
 }
+
+func TestRenderFunctionWithBoundSourcesAppliesTrustedRuntimeImage(t *testing.T) {
+	function := FunctionConfig{
+		SignatureVersion: 1,
+		Resources:        atc.ResourceConfigs{{Name: "repository", Type: "git", Source: atc.Source{"uri": "https://example.invalid/repository.git"}}},
+		ResourceSources:  []ResourceSource{{Name: "repository-source", Resource: "repository", Type: snapshot.TypeRef("repository/v1")}},
+		Plan: []atc.Step{{Config: &atc.AgentStep{
+			Name: "inspect", FunctionID: "inspect", Prompt: "inspect",
+			Inputs: []string{"repository-source"},
+			SnapshotInputs: map[string]atc.SnapshotInputConfig{
+				"repository-source": {Type: snapshot.TypeRef("repository/v1")},
+			},
+		}}},
+	}
+	target := FunctionTarget{Kind: TargetWorkflow, WorkflowDefinitionID: 11, WorkflowName: "selected-repository", WorkflowVersion: 2, SignatureVersion: 1, Signature: PublicSignature{}, Function: function}
+	ref := snapshot.SnapshotRef{ID: 41, Type: snapshot.TypeRef("repository/v1"), Digest: snapshot.Digest("sha256:" + strings.Repeat("a", 64))}
+	image := "registry.example/agent-runner@sha256:" + strings.Repeat("b", 64)
+	rendered, err := RenderFunctionWithBoundSourcesAndRuntimeImage(
+		target,
+		map[string]snapshot.SnapshotRef{"repository-source": ref},
+		image,
+	)
+	if err != nil {
+		t.Fatalf("RenderFunctionWithBoundSourcesAndRuntimeImage: %v", err)
+	}
+	runtimeImage := ""
+	for _, job := range rendered.Config.Jobs {
+		for _, step := range job.PlanSequence {
+			if err := step.Config.Visit(atc.StepRecursor{OnAgent: func(agent *atc.AgentStep) error {
+				runtimeImage = agent.RuntimeImage
+				return nil
+			}}); err != nil {
+				t.Fatalf("inspect rendered source-bound plan: %v", err)
+			}
+		}
+	}
+	if runtimeImage != image {
+		t.Fatalf("source-bound runtime image = %q, want %q", runtimeImage, image)
+	}
+	if len(rendered.Config.Resources) != 0 {
+		t.Fatalf("source-bound runtime render kept live resources: %#v", rendered.Config.Resources)
+	}
+}
