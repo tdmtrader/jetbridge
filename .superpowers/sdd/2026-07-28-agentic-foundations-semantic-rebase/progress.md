@@ -112,7 +112,7 @@
     one. This is recorded under `HUMAN-REVIEW-001`; no automatic fix was made.
 - [ ] Task 7 — exact validation gates
 - [x] Task 8 — output-builder core
-  - Commit: pending (Task 8 implementation commit).
+  - Commit: `bb567a16c5 feat(agent): add managed output builder core`.
   - Verification: `go test ./agent/outputbuilder ./cmd/agent-output
     ./agent/snapshot/... -count=1` passed. Focused raw-codec, CLI/MCP, command,
     and agent-runner Dockerfile suites also passed.
