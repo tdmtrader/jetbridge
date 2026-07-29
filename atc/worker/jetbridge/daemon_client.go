@@ -22,15 +22,16 @@ import (
 // them for resource cache existence. It mirrors the PeerResolver discovery
 // pattern in cmd/artifact-daemon/peers.go but runs on the ATC side.
 type DaemonClient struct {
-	logger            lager.Logger
-	clientset         kubernetes.Interface
-	namespace         string
-	service           string
-	port              int
-	client            *http.Client
-	streamingClient   *http.Client
-	scheme            string // "http" or "https"
-	initializationErr error
+	logger              lager.Logger
+	clientset           kubernetes.Interface
+	namespace           string
+	service             string
+	port                int
+	client              *http.Client
+	streamingClient     *http.Client
+	scheme              string // "http" or "https"
+	initializationErr   error
+	checkpointEndpoints func(context.Context) ([]DaemonEndpoint, error)
 }
 
 // DaemonEndpoint pairs a daemon's stable Kubernetes node identity with its
