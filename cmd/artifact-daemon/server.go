@@ -859,10 +859,12 @@ func (s *Server) handleHeadSnapshot(w http.ResponseWriter, r *http.Request, dige
 func (s *Server) openSnapshotForRead(ctx context.Context, w http.ResponseWriter, digest string) (*os.Root, *os.File, os.FileInfo, bool) {
 	root, err := os.OpenRoot(s.storagePath)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			http.Error(w, "not found", http.StatusNotFound)
-		} else {
+		if !errors.Is(err, os.ErrNotExist) {
 			http.Error(w, "internal error", http.StatusInternalServerError)
+			return nil, nil, nil, false
+		}
+		if s.restoreSnapshotForRead(ctx, w, digest) {
+			return s.openSnapshotForRead(ctx, w, digest)
 		}
 		return nil, nil, nil, false
 	}
@@ -871,18 +873,10 @@ func (s *Server) openSnapshotForRead(ctx context.Context, w http.ResponseWriter,
 	if err != nil {
 		root.Close()
 		if errors.Is(err, os.ErrNotExist) {
-			if s.hangar != nil {
-				if restoreErr := s.restoreSnapshotFromHangar(ctx, digest); restoreErr == nil {
-					return s.openSnapshotForRead(ctx, w, digest)
-				} else if errors.Is(restoreErr, hangar.ErrNotFound) {
-					http.Error(w, "not found", http.StatusNotFound)
-				} else {
-					s.logger.Error("restore-snapshot-from-hangar-failed", restoreErr)
-					http.Error(w, "durable snapshot restore failed", http.StatusBadGateway)
-				}
-				return nil, nil, nil, false
+			if s.restoreSnapshotForRead(ctx, w, digest) {
+				return s.openSnapshotForRead(ctx, w, digest)
 			}
-			http.Error(w, "not found", http.StatusNotFound)
+			return nil, nil, nil, false
 		} else {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 		}
@@ -907,6 +901,22 @@ func (s *Server) openSnapshotForRead(ctx context.Context, w http.ResponseWriter,
 		return nil, nil, nil, false
 	}
 	return root, file, info, true
+}
+
+func (s *Server) restoreSnapshotForRead(ctx context.Context, w http.ResponseWriter, digest string) bool {
+	if s.hangar == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return false
+	}
+	if err := s.restoreSnapshotFromHangar(ctx, digest); err == nil {
+		return true
+	} else if errors.Is(err, hangar.ErrNotFound) {
+		http.Error(w, "not found", http.StatusNotFound)
+	} else {
+		s.logger.Error("restore-snapshot-from-hangar-failed", err)
+		http.Error(w, "durable snapshot restore failed", http.StatusBadGateway)
+	}
+	return false
 }
 
 func setSnapshotHeaders(w http.ResponseWriter, digest string, size int64) {

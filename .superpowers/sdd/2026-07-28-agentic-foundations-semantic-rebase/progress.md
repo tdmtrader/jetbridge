@@ -157,7 +157,21 @@
     findings and accepted the task. No correction or round-2 review was
     required.
   - Status: Accepted.
-- [ ] Task 11 — Hangar daemon/deployment integration
+- [x] Task 11 — Hangar daemon/deployment integration
+  - Commit: `685d09104e feat(hangar): mirror agent snapshots through daemon`
+  - Behavior: artifact-daemon commits immutable snapshot bytes to Hangar before
+    acknowledging PUT; restores a complete local cache from a generation-pinned
+    Hangar read after cache loss; records a single `hangar-v1` durable location;
+    keeps legacy node locations readable/adoptable; and never peer-mirrors
+    agentic snapshots. Legacy cache cleanup is explicitly unable to delete the
+    Hangar authority.
+  - Verification: focused daemon cache-loss, Jetbridge canonical-location and
+    repair tests, full daemon/Jetbridge packages, ATC command package, full
+    chart suite, and Helm lint passed. `make test-hangar-integration` was not
+    runnable locally because Docker was unavailable; the accepted Task 10 Borg
+    fake-GCS evidence remains the provider-store coverage.
+  - Review: implementation self-review complete; external blocking-only review
+    has not yet run.
 - [ ] Task 12 — resource-source grammar and persistence
 - [ ] Task 13 — source capture/reuse runtime
 - [ ] Task 14 — direct in-ATC publication

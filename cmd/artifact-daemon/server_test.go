@@ -194,7 +194,7 @@ func TestSnapshotArtifactPUTCommitsHangarBeforeSuccessAndGETRestoresLostLocalCac
 	if !bytes.Equal(committed, content) {
 		t.Fatalf("successful PUT did not commit durable bytes: got %q, want %q", committed, content)
 	}
-	if err := os.RemoveAll(filepath.Join(storagePath, "snapshots")); err != nil {
+	if err := os.RemoveAll(storagePath); err != nil {
 		t.Fatal(err)
 	}
 
