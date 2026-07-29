@@ -112,13 +112,20 @@
     one. This is recorded under `HUMAN-REVIEW-001`; no automatic fix was made.
 - [ ] Task 7 — exact validation gates
 - [x] Task 8 — output-builder core
-  - Commit: `bb567a16c5 feat(agent): add managed output builder core`.
+  - Commits:
+    - `bb567a16c5 feat(agent): add managed output builder core`
+    - `fc31f229d8 fix(agent): harden managed output builder boundaries`
   - Verification: `go test ./agent/outputbuilder ./cmd/agent-output
     ./agent/snapshot/... -count=1` passed. Focused raw-codec, CLI/MCP, command,
     and agent-runner Dockerfile suites also passed.
-  - Review: bounded self-review completed. The builder is a closed-over
-    authoring/preflight facility: it accepts only mounted authority, exposes
-    only declared output ports, and has no sealing or authority-minting path.
+  - Review: accepted in round 2. Round 1 found five High blockers in protected
+    authority loading, production limits, repository-change input reopening,
+    mount TOCTOU, and staged publication. The single correction pass added
+    fixed read-only authority, bounded streaming, exact canonical input
+    opening, retained `os.Root` handles, and record-last rollback publication.
+    Round 2 found all five addressed with no new blocker.
+  - Deferred: `DEFERRED-003` tracks fsynced crash-recovery journaling for
+    abrupt host loss; ordinary operation failures restore the prior candidate.
   - Fix round 1: addressed all five scoped High findings with fixed read-only
     authority loading, default snapshot limits, exact mounted-input reopening,
     descriptor-anchored output operations, and transactional record/content

@@ -123,7 +123,22 @@ Task 6:
 - Do not iterate on Task 6 automatically. Exact evidence and proposed fixes are
   recorded in the deferred/human-review catalog.
 
-Tasks 7–19 have not started.
+Task 8:
+
+- Completed in `bb567a16c5` with the blocking correction
+  `fc31f229d8`.
+- Status: **Accepted** in review round 2.
+- Fresh checkpoint passed:
+  `go test ./agent/outputbuilder ./cmd/agent-output ./agent/snapshot/...
+  -count=1`, plus the agent-runner Dockerfile contract.
+- The builder consumes only fixed read-only authority, uses bounded streaming
+  and retained filesystem roots, reopens exact canonical inputs, publishes
+  `record.json` last with ordinary-error rollback, and never seals.
+- `DEFERRED-003` records durable fsynced crash-recovery journaling; it is
+  nonblocking for the current authoring/preflight boundary.
+
+Task 7 remains unstarted because it depends on Task 6. Tasks 9–19 have not
+started.
 
 ## Milestone verification
 
@@ -148,8 +163,7 @@ branch as green until Task 6 receives human review and the unit suite is rerun.
    correction/review cycle.
 2. Treat Task 7 as dependent on Task 6 and do not wire exact validation gates
    against a runtime that is still Human Review Required.
-3. Continue with the next safe independent feature group as a separate bounded
-   track.
+3. Continue Task 9 output-builder execution wiring as the next bounded task.
 4. Treat all remaining feature groups as separate bounded tracks rather than
    one continuous "rebase."
 

@@ -132,3 +132,13 @@ Commit: `fc31f229d8 fix(agent): harden managed output builder boundaries`
 - `DEFERRED-003` remains for abrupt-host-crash durability only. Ordinary
   publication errors now restore the prior candidate; no additional Task 9
   runtime wiring was added.
+
+## Independent review
+
+- Round 1: five High/blocking findings covering caller-minted authority,
+  unbounded production defaults, missing repository-change input reopening,
+  mount check/use races, and non-atomic/stale-content publication.
+- Fix: `fc31f229d8 fix(agent): harden managed output builder boundaries`.
+- Round 2: all five findings **ADDRESSED**; no new Critical/High/blocking
+  breakage.
+- Final verdict: **ACCEPTED**.
