@@ -56,3 +56,25 @@ round has been performed. Implementation commit: `add954b863`.
   `shmget: Operation not permitted`. Non-PostgreSQL verification follows in
   the correction commit evidence.
 - Correction commit: `a7e9eec0bc fix(agent): align recovery attempt scan columns`.
+
+## Pre-review integration correction — workflow-run dual identity
+
+- Failure/root cause: the rebase collapsed immutable
+  `workflow_run_provenance_id` and nullable live `workflow_run_id` into one
+  unfenced scalar. This broke the existing migration behavior: workflow-run
+  deletion must null only the live FK while retaining recovery attribution.
+- Change: restored the immutable copied provenance column, nullable live FK
+  with `ON DELETE SET NULL`, equality constraint while live, and trigger that
+  freezes provenance/build/plan/function but permits the FK nulling update.
+  Factory head/attempt inserts, SELECT/RETURNING lists, and scanners now carry
+  both values and construct public checkpoint identity from provenance only.
+  The existing migration coverage again proves immutable attribution survives
+  workflow-run deletion while the live link becomes null.
+- Verification: `GOCACHE=/private/tmp/concourse-task15-gocache go test
+  ./agent/checkpoint ./atc/db ./atc/db/migration -run '^$' -count=1` and
+  `GOCACHE=/private/tmp/concourse-task15-gocache go test ./agent/checkpoint
+  -count=1` passed; `git diff --check` passed. The serial PostgreSQL focus was
+  not rerun locally because its prior exact attempt is sandbox-blocked at
+  postgresrunner SysV shared-memory initialization; parent host verification is
+  required.
+- Correction commit: `d5d591b88b fix(agent): preserve checkpoint workflow provenance`.
