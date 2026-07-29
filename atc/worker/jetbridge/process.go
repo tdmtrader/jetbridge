@@ -19,6 +19,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	oteltrace "go.opentelemetry.io/otel/trace"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
@@ -113,6 +114,7 @@ func (p *Process) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 		<-logDone
 
 		if r.err != nil {
+			r.err = preferContextCancellation(ctx, r.err)
 			logger.Error("failed-to-wait-for-pod", r.err)
 			spanErr = r.err
 			return runtime.ProcessResult{}, wrapIfTransient(r.err)
@@ -171,12 +173,20 @@ func (p *Process) pollUntilDone(ctx context.Context) (runtime.ProcessResult, err
 		pod, err := watcher.Next(ctx)
 		if err != nil {
 			if errors.Is(err, ErrPodDeleted) && pod != nil {
+				interruption := interruptionErrorForPod(pod, true, fmt.Errorf("pod deleted externally: %w", err))
 				// Pod was deleted externally (eviction, node failure,
 				// spot preemption, etc.). Write pod and node diagnostics
 				// to surface the root cause.
 				writePodDiagnostics(pod, p.processIO.Stderr)
 				writeNodeDiagnostics(ctx, p.clientset, pod, p.processIO.Stderr)
-				return runtime.ProcessResult{}, fmt.Errorf("pod deleted externally: %s", pod.Status.Phase)
+				return runtime.ProcessResult{}, preferContextCancellation(ctx, interruption)
+			}
+			if ctx.Err() == nil && apierrors.IsNotFound(err) {
+				interruption := runtime.NewInterruptionError(
+					runtime.InterruptionPodDeleted,
+					fmt.Errorf("pod deleted before or during process watch: %w", err),
+				)
+				return runtime.ProcessResult{}, preferContextCancellation(ctx, interruption)
 			}
 			return runtime.ProcessResult{}, err
 		}
@@ -207,11 +217,11 @@ func (p *Process) pollUntilDone(ctx context.Context) (runtime.ProcessResult, err
 			writePodDiagnostics(pod, p.processIO.Stderr)
 			return runtime.ProcessResult{}, fmt.Errorf("pod failed: %s: %s", reason, message)
 		}
-		if isPodEvicted(pod) {
-			metric.RecordK8sPodFailure(ctx, "Evicted")
+		if interruption := interruptionErrorForPod(pod, false, nil); interruption != nil {
+			metric.RecordK8sPodFailure(ctx, string(interruption.InterruptionReason()))
 			writePodDiagnostics(pod, p.processIO.Stderr)
 			writeNodeDiagnostics(ctx, p.clientset, pod, p.processIO.Stderr)
-			return runtime.ProcessResult{}, fmt.Errorf("pod failed: Evicted: %s", pod.Status.Message)
+			return runtime.ProcessResult{}, preferContextCancellation(ctx, interruption)
 		}
 		if message, unschedulable := isPodUnschedulable(pod); unschedulable {
 			if unschedulableFirstSeen.IsZero() {
@@ -379,9 +389,78 @@ func isPodFailedFast(pod *corev1.Pod) (reason, message string, failed bool) {
 	return "", "", false
 }
 
-// isPodEvicted checks whether the pod has been evicted by the kubelet.
-func isPodEvicted(pod *corev1.Pod) bool {
-	return pod.Status.Phase == corev1.PodFailed && pod.Status.Reason == "Evicted"
+const PreemptionAnnotation = "concourse-ci.org/preemption-notice"
+
+// interruptionReasonForPod uses structured Kubernetes lifecycle state only.
+// Status messages are diagnostic text, never recovery evidence.
+func interruptionReasonForPod(pod *corev1.Pod, deleted bool) (runtime.InterruptionReason, bool) {
+	if pod == nil {
+		return "", false
+	}
+
+	if pod.Status.Phase == corev1.PodFailed || deleted {
+		if deleted && pod.Annotations[PreemptionAnnotation] == "true" {
+			return runtime.InterruptionPreempted, true
+		}
+		for _, condition := range pod.Status.Conditions {
+			if condition.Type != corev1.DisruptionTarget || condition.Status != corev1.ConditionTrue {
+				continue
+			}
+			switch condition.Reason {
+			case "PreemptionByScheduler":
+				return runtime.InterruptionPreempted, true
+			case "DeletionByPodGC":
+				return runtime.InterruptionNodeLost, true
+			case "DeletionByTaintManager", "EvictionByEvictionAPI", "TerminationByKubelet":
+				return runtime.InterruptionEvicted, true
+			}
+		}
+	}
+
+	if pod.Status.Phase == corev1.PodFailed {
+		switch pod.Status.Reason {
+		case "Evicted":
+			return runtime.InterruptionEvicted, true
+		case "NodeLost", "Shutdown":
+			return runtime.InterruptionNodeLost, true
+		}
+	}
+	if deleted {
+		return runtime.InterruptionPodDeleted, true
+	}
+	return "", false
+}
+
+func interruptionErrorForPod(pod *corev1.Pod, deleted bool, cause error) runtime.InterruptionError {
+	reason, ok := interruptionReasonForPod(pod, deleted)
+	if !ok {
+		return nil
+	}
+	if cause == nil {
+		cause = fmt.Errorf("pod interrupted: %s", reason)
+	}
+	return runtime.NewInterruptionError(reason, cause)
+}
+
+func interruptionErrorForPodFailure(pod *corev1.Pod, fetchErr, cause error) runtime.InterruptionError {
+	if interruption := interruptionErrorForPod(pod, false, cause); interruption != nil {
+		return interruption
+	}
+	if apierrors.IsNotFound(fetchErr) {
+		return runtime.NewInterruptionError(
+			runtime.InterruptionPodDeleted,
+			fmt.Errorf("pod deleted while the process transport was active: %v: %w", fetchErr, cause),
+		)
+	}
+	return nil
+}
+
+func preferContextCancellation(ctx context.Context, err error) error {
+	var interruption runtime.InterruptionError
+	if errors.As(err, &interruption) && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return err
 }
 
 // isPodOOMKilled checks whether any container in the pod was terminated due
@@ -500,25 +579,26 @@ func writeNodeDiagnostics(ctx context.Context, clientset kubernetes.Interface, p
 	}
 }
 
-// fetchPodFailureContext is a best-effort diagnostic helper for exec-mode
-// operations. When an exec/upload/stream operation fails, this function
-// fetches the pod's current status and writes diagnostics (pod + node) to
-// stderr so the build log shows why the pod vanished.
-func fetchPodFailureContext(ctx context.Context, clientset kubernetes.Interface, namespace, podName string, w io.Writer) {
-	if w == nil {
-		return
-	}
+// fetchPodFailureContext returns the authoritative pod state observed after
+// an exec-mode transport failure. Diagnostics remain best effort, while the
+// returned pod/fetch error distinguishes pod loss from transport failure.
+func fetchPodFailureContext(ctx context.Context, clientset kubernetes.Interface, namespace, podName string, w io.Writer) (*corev1.Pod, error) {
 	fetchCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
 	pod, err := clientset.CoreV1().Pods(namespace).Get(fetchCtx, podName, metav1.GetOptions{})
 	if err != nil {
-		fmt.Fprintf(w, "\n--- Pod Failure Context ---\n")
-		fmt.Fprintf(w, "Pod %s/%s: pod no longer exists (likely deleted by kubelet or GC): %v\n", namespace, podName, err)
-		return
+		if w != nil {
+			fmt.Fprintf(w, "\n--- Pod Failure Context ---\n")
+			fmt.Fprintf(w, "Pod %s/%s: pod no longer exists (likely deleted by kubelet or GC): %v\n", namespace, podName, err)
+		}
+		return nil, err
 	}
-	writePodDiagnostics(pod, w)
-	writeNodeDiagnostics(ctx, clientset, pod, w)
+	if w != nil {
+		writePodDiagnostics(pod, w)
+		writeNodeDiagnostics(ctx, clientset, pod, w)
+	}
+	return pod, nil
 }
 
 // podSchedulingTimeout returns the configured scheduling timeout, falling
@@ -779,8 +859,14 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 	if err := p.streamInputs(streamCtx); err != nil {
 		tracing.End(streamSpan, err)
 		logger.Error("failed-to-stream-inputs", err)
-		fetchPodFailureContext(ctx, p.clientset, p.config.Namespace, p.podName, p.processIO.Stderr)
+		pod, fetchErr := fetchPodFailureContext(ctx, p.clientset, p.config.Namespace, p.podName, p.processIO.Stderr)
 		spanErr = err
+		if ctx.Err() == nil {
+			cause := fmt.Errorf("streaming inputs: %w", err)
+			if interruption := interruptionErrorForPodFailure(pod, fetchErr, cause); interruption != nil {
+				return runtime.ProcessResult{}, preferContextCancellation(ctx, interruption)
+			}
+		}
 		return runtime.ProcessResult{}, wrapIfTransient(fmt.Errorf("streaming inputs: %w", err))
 	}
 	tracing.End(streamSpan, nil)
@@ -891,7 +977,13 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 			// Upload outputs even on non-zero exit (some steps produce
 			// useful artifacts on failure).
 			if uploadErr := p.uploadOutputsToArtifactStore(ctx); uploadErr != nil {
-				fetchPodFailureContext(ctx, p.clientset, p.config.Namespace, p.podName, p.processIO.Stderr)
+				pod, fetchErr := fetchPodFailureContext(ctx, p.clientset, p.config.Namespace, p.podName, p.processIO.Stderr)
+				if ctx.Err() == nil {
+					cause := fmt.Errorf("uploading artifacts: %w", uploadErr)
+					if interruption := interruptionErrorForPodFailure(pod, fetchErr, cause); interruption != nil {
+						return runtime.ProcessResult{}, preferContextCancellation(ctx, interruption)
+					}
+				}
 				return runtime.ProcessResult{}, fmt.Errorf("uploading artifacts: %w", uploadErr)
 			}
 
@@ -903,7 +995,7 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 			return runtime.ProcessResult{ExitStatus: exitCode}, nil
 		}
 		logger.Error("failed-to-exec-in-pod", err)
-		fetchPodFailureContext(ctx, p.clientset, p.config.Namespace, p.podName, p.processIO.Stderr)
+		pod, fetchErr := fetchPodFailureContext(ctx, p.clientset, p.config.Namespace, p.podName, p.processIO.Stderr)
 
 		// Terminal-end agent kill (review finding 2026-07-12): a cancelled or
 		// expired ctx at exec-failure time means a step timeout, build abort,
@@ -946,12 +1038,24 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 		}
 
 		spanErr = err
-		return runtime.ProcessResult{}, wrapIfTransient(fmt.Errorf("exec in pod: %w", err))
+		cause := fmt.Errorf("exec in pod: %w", err)
+		if ctx.Err() == nil {
+			if interruption := interruptionErrorForPodFailure(pod, fetchErr, cause); interruption != nil {
+				return runtime.ProcessResult{}, preferContextCancellation(ctx, interruption)
+			}
+		}
+		return runtime.ProcessResult{}, wrapIfTransient(cause)
 	}
 
 	// Upload step outputs to the artifact store PVC for cross-node access.
 	if err := p.uploadOutputsToArtifactStore(ctx); err != nil {
-		fetchPodFailureContext(ctx, p.clientset, p.config.Namespace, p.podName, p.processIO.Stderr)
+		pod, fetchErr := fetchPodFailureContext(ctx, p.clientset, p.config.Namespace, p.podName, p.processIO.Stderr)
+		if ctx.Err() == nil {
+			cause := fmt.Errorf("uploading artifacts: %w", err)
+			if interruption := interruptionErrorForPodFailure(pod, fetchErr, cause); interruption != nil {
+				return runtime.ProcessResult{}, preferContextCancellation(ctx, interruption)
+			}
+		}
 		return runtime.ProcessResult{}, fmt.Errorf("uploading artifacts: %w", err)
 	}
 
@@ -1172,9 +1276,17 @@ func (p *execProcess) waitForRunning(ctx context.Context) error {
 		pod, err := watcher.Next(timeoutCtx)
 		if err != nil {
 			if errors.Is(err, ErrPodDeleted) && pod != nil {
+				interruption := interruptionErrorForPod(pod, true, fmt.Errorf("pod deleted externally before reaching Running: %w", err))
 				writePodDiagnostics(pod, p.processIO.Stderr)
 				writeNodeDiagnostics(ctx, p.clientset, pod, p.processIO.Stderr)
-				return fmt.Errorf("pod deleted externally before reaching Running: %s", pod.Status.Phase)
+				return preferContextCancellation(timeoutCtx, interruption)
+			}
+			if timeoutCtx.Err() == nil && ctx.Err() == nil && apierrors.IsNotFound(err) {
+				interruption := runtime.NewInterruptionError(
+					runtime.InterruptionPodDeleted,
+					fmt.Errorf("pod deleted before reaching Running: %w", err),
+				)
+				return preferContextCancellation(timeoutCtx, interruption)
 			}
 			// Check if this was a timeout vs other error.
 			if timeoutCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
@@ -1231,11 +1343,11 @@ func (p *execProcess) waitForRunning(ctx context.Context) error {
 			writePodDiagnostics(pod, p.processIO.Stderr)
 			return fmt.Errorf("pod failed: %s: %s", reason, message)
 		}
-		if isPodEvicted(pod) {
-			metric.RecordK8sPodFailure(ctx, "Evicted")
+		if interruption := interruptionErrorForPod(pod, false, nil); interruption != nil {
+			metric.RecordK8sPodFailure(ctx, string(interruption.InterruptionReason()))
 			writePodDiagnostics(pod, p.processIO.Stderr)
 			writeNodeDiagnostics(ctx, p.clientset, pod, p.processIO.Stderr)
-			return fmt.Errorf("pod failed: Evicted: %s", pod.Status.Message)
+			return preferContextCancellation(timeoutCtx, interruption)
 		}
 		if message, unschedulable := isPodUnschedulable(pod); unschedulable {
 			if unschedulableFirstSeen.IsZero() {

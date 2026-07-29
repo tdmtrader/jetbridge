@@ -12,6 +12,67 @@ import (
 )
 
 var _ = Describe("ContainerOwner", func() {
+	Describe("AgentAttemptContainerOwner", func() {
+		It("preserves attempt one while isolating later deterministic attempts", func() {
+			buildID := 42
+			planID := atc.PlanID("agent-review")
+			teamID := 7
+
+			legacyColumns, _, err := db.NewBuildStepContainerOwner(buildID, planID, teamID).Find(nil)
+			Expect(err).NotTo(HaveOccurred())
+
+			firstColumns, _, err := db.NewAgentAttemptContainerOwner(buildID, planID, teamID, 1).Find(nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(firstColumns).To(Equal(legacyColumns))
+			Expect(firstColumns).NotTo(HaveKey("handle"))
+
+			secondColumns, _, err := db.NewAgentAttemptContainerOwner(buildID, planID, teamID, 2).Find(nil)
+			Expect(err).NotTo(HaveOccurred())
+			secondAgainColumns, _, err := db.NewAgentAttemptContainerOwner(buildID, planID, teamID, 2).Find(nil)
+			Expect(err).NotTo(HaveOccurred())
+			thirdColumns, _, err := db.NewAgentAttemptContainerOwner(buildID, planID, teamID, 3).Find(nil)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(secondColumns).To(Equal(secondAgainColumns))
+			Expect(secondColumns).NotTo(Equal(firstColumns))
+			Expect(secondColumns).NotTo(Equal(thirdColumns))
+			Expect(secondColumns["handle"]).To(HavePrefix("agent-attempt-"))
+			Expect(secondColumns["build_id"]).To(Equal(buildID))
+			Expect(secondColumns["plan_id"]).To(Equal(planID))
+			Expect(secondColumns["team_id"]).To(Equal(teamID))
+		})
+
+		It("isolates attempts for lookup while retaining normal build garbage collection", func() {
+			build, err := defaultJob.CreateBuild(defaultBuildCreatedBy)
+			Expect(err).NotTo(HaveOccurred())
+
+			planID := atc.PlanID("agent-review")
+			firstOwner := db.NewAgentAttemptContainerOwner(build.ID(), planID, defaultTeam.ID(), 1)
+			secondOwner := db.NewAgentAttemptContainerOwner(build.ID(), planID, defaultTeam.ID(), 2)
+
+			second, err := defaultWorker.CreateContainer(secondOwner, db.ContainerMetadata{Type: db.ContainerTypeAgent})
+			Expect(err).NotTo(HaveOccurred())
+			first, err := defaultWorker.CreateContainer(firstOwner, db.ContainerMetadata{Type: db.ContainerTypeAgent})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(first.ID()).NotTo(Equal(second.ID()))
+
+			foundFirst, _, err := defaultWorker.FindContainer(firstOwner)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(foundFirst.ID()).To(Equal(first.ID()))
+			foundSecond, _, err := defaultWorker.FindContainer(secondOwner)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(foundSecond.ID()).To(Equal(second.ID()))
+
+			Expect(build.SetInterceptible(false)).To(Succeed())
+			creating, created, destroying, err := containerRepository.FindOrphanedContainers()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(creating).To(HaveLen(2))
+			Expect([]string{creating[0].Handle(), creating[1].Handle()}).To(ConsistOf(first.Handle(), second.Handle()))
+			Expect(created).To(BeEmpty())
+			Expect(destroying).To(BeEmpty())
+		})
+	})
+
 	Describe("ResourceConfigCheckSessionContainerOwner", func() {
 		var (
 			worker db.Worker

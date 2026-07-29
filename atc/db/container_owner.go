@@ -1,6 +1,7 @@
 package db
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"time"
 
@@ -30,6 +31,87 @@ func NewBuildStepContainerOwner(
 		PlanID:  planID,
 		TeamID:  teamID,
 	}
+}
+
+// NewAgentAttemptContainerOwner identifies an execution attempt while
+// retaining the historical build/plan/team owner relationship. Attempt one is
+// deliberately byte-for-byte compatible with the build-step owner; later
+// attempts use a deterministic handle to avoid reattaching an earlier pod.
+func NewAgentAttemptContainerOwner(
+	buildID int,
+	planID atc.PlanID,
+	teamID int,
+	attempt int,
+) ContainerOwner {
+	owner := agentAttemptContainerOwner{
+		buildStepContainerOwner: buildStepContainerOwner{
+			BuildID: buildID,
+			PlanID:  planID,
+			TeamID:  teamID,
+		},
+	}
+	if attempt <= 1 {
+		return owner
+	}
+
+	identity := fmt.Sprintf("%d\x00%s\x00%d\x00%d", buildID, planID, teamID, attempt)
+	digest := sha256.Sum256([]byte(identity))
+	owner.Handle = fmt.Sprintf("%s%x", agentAttemptHandlePrefix, digest[:16])
+	return owner
+}
+
+const agentAttemptHandlePrefix = "agent-attempt-"
+
+type agentAttemptContainerOwner struct {
+	buildStepContainerOwner
+	Handle string
+}
+
+func (c agentAttemptContainerOwner) Find(conn DbConn) (sq.Eq, bool, error) {
+	columns := c.sqlMap()
+	if c.Handle != "" || conn == nil {
+		return sq.Eq(columns), true, nil
+	}
+
+	// Attempt one retains its legacy owner fields, so its lookup must exclude
+	// deterministic recovery-attempt handles that share those fields.
+	rows, err := psql.Select("handle").
+		From("containers").
+		Where(sq.Eq(columns)).
+		Where(sq.NotLike{"handle": agentAttemptHandlePrefix + "%"}).
+		RunWith(conn).
+		Query()
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+
+	var handles []string
+	for rows.Next() {
+		var handle string
+		if err := rows.Scan(&handle); err != nil {
+			return nil, false, err
+		}
+		handles = append(handles, handle)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+
+	columns["handle"] = handles
+	return sq.Eq(columns), true, nil
+}
+
+func (c agentAttemptContainerOwner) Create(Tx, string) (map[string]any, error) {
+	return c.sqlMap(), nil
+}
+
+func (c agentAttemptContainerOwner) sqlMap() map[string]any {
+	columns := c.buildStepContainerOwner.sqlMap()
+	if c.Handle != "" {
+		columns["handle"] = c.Handle
+	}
+	return columns
 }
 
 type buildStepContainerOwner struct {
