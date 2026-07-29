@@ -78,3 +78,75 @@ round has been performed. Implementation commit: `add954b863`.
   postgresrunner SysV shared-memory initialization; parent host verification is
   required.
 - Correction commit: `d5d591b88b fix(agent): preserve checkpoint workflow provenance`.
+
+## Runtime interruption classification and attempt container ownership
+
+The remaining Task 15 runtime/owner acceptance area is now implemented in
+`0b37ddd6a4 feat(agent): classify runtime pod interruptions`.
+
+### Scope
+
+- `runtime.InterruptionError` carries one bounded reason
+  (`pod_deleted`, `evicted`, `node_lost`, or `preempted`), preserves its cause,
+  and remains runtime-retryable without authorizing agent replay.
+- Jetbridge classifies only authoritative Kubernetes state: a Deleted event or
+  API NotFound; terminal `PodFailed` reasons `Evicted`, `NodeLost`, or
+  `Shutdown`; and terminal `DisruptionTarget` condition reasons. The explicit
+  `concourse-ci.org/preemption-notice=true` annotation is preemption evidence
+  only when the pod was actually deleted. Free-form messages, a mere notice,
+  API timeouts, SPDY/transport errors, command exits, cancellation, and step
+  timeouts do not become interruption classifications. Active exec transport,
+  stream-input, and output-upload failures re-fetch pod state and classify
+  only a terminal structured status or API NotFound; caller cancellation wins
+  over a concurrent typed interruption.
+- `db.NewAgentAttemptContainerOwner` preserves the legacy build/plan/team
+  owner columns for attempt one. Later attempts retain those columns and use a
+  deterministic SHA-256-derived `agent-attempt-` handle; attempt-one lookup
+  excludes those later deterministic handles, so lifecycle GC still follows
+  build ownership.
+- No automatic retry/restart, checkpoint capture/restore, provider resume,
+  protected-mount change, or log-stream refactor was added. The sole
+  `atc/exec/agent_step.go` exception is required fail-closed translation:
+  after normal flight-recorder ingestion, a typed interruption emits the
+  bounded `manual_review_required` delegate event and returns `(false, nil)`
+  so `RetryErrorStep` cannot convert the runtime-retryable error into an
+  unsafe replacement run. The four-reason regression proves it.
+
+### RED / GREEN evidence
+
+- RED: `GOCACHE=/private/tmp/concourse-task15-runtime-gocache go test
+  ./atc/runtime -run TestInterruptionErrorPreservesCauseAndIsRetryable
+  -count=1` failed because `NewInterruptionError` and
+  `InterruptionNodeLost` were undefined.
+- RED: `GOCACHE=/private/tmp/concourse-task15-runtime-gocache go test
+  ./atc/worker/jetbridge -run
+  'TestInterruptionReasonForPodUsesOnlyTerminalStructuredKubernetesState|TestPreferContextCancellationOverInterruption'
+  -count=1` failed because the interruption types and classifier/cancellation
+  helpers were undefined.
+- RED: `GOCACHE=/private/tmp/concourse-task15-runtime-gocache go test
+  ./atc/db -run '^$' -count=1` failed because
+  `db.NewAgentAttemptContainerOwner` was undefined.
+- RED: `GOCACHE=/private/tmp/concourse-task15-runtime-gocache go test
+  ./atc/worker/jetbridge -run
+  TestInterruptionErrorForPodFailureRequiresAuthoritativePodLoss -count=1`
+  failed because `interruptionErrorForPodFailure` was undefined.
+- GREEN: `GOCACHE=/private/tmp/concourse-task15-runtime-gocache go test
+  ./atc/worker/jetbridge -run
+  'TestInterruptionReasonForPodUsesOnlyTerminalStructuredKubernetesState|TestPreferContextCancellationOverInterruption|TestInterruptionErrorForPodFailureRequiresAuthoritativePodLoss'
+  -count=1` passed.
+- GREEN: `GOCACHE=/private/tmp/concourse-task15-runtime-gocache go test
+  ./atc/runtime ./atc/db ./atc/worker/jetbridge -run '^$' -count=1` passed.
+- RED: `GOCACHE=/private/tmp/concourse-task15-runtime-gocache ginkgo
+  --focus='when process.Wait reports an interruption' ./atc/exec` ran four
+  specs and failed all four because each typed interruption escaped as the
+  retryable runtime error.
+- GREEN: the same focused `ginkgo` command passed all four
+  (`pod_deleted`, `evicted`, `node_lost`, and `preempted`); the fail-closed
+  translation runs after flight-recorder ingestion and before the retry
+  wrapper can observe a retryable error.
+- GREEN: `git diff --check` passed.
+- Not run: full Jetbridge Ginkgo suite remains intentionally out of scope
+  because the known Task 6 zero-private-mount regression fails unrelated specs.
+  The new DB lifecycle/GC focus could not run locally because `pg_isready`
+  returned `/tmp:5432 - no response`; host PostgreSQL evidence is required for
+  `ginkgo --focus='AgentAttemptContainerOwner' ./atc/db`.
