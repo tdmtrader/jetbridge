@@ -461,20 +461,6 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	// tolerating leading non-JSON output.
 	env, parseErr := parseEnvelope(stream)
 
-	// Legacy Claude never receives live boundary control, but its terminal
-	// stream is a truthful completion boundary. A pending elapsed request can
-	// therefore resolve no earlier than provider completion.
-	sessionID := providerResult.SessionID
-	if sessionID == "" {
-		sessionID = streamSessionID(stream)
-	}
-	if sessionID != "" {
-		boundary := provider.Boundary{SessionID: sessionID, TranscriptCursor: int64(len(stream))}
-		if boundaryErr := control.AtSafeBoundary(ctx, boundary); boundaryErr != nil {
-			fmt.Fprintf(stderr, "agent-runner: terminal boundary: %v\n", boundaryErr)
-		}
-	}
-
 	writeEvent(events, schema.EventCostRecord, schema.CostRecordData{
 		Source:              "agent_step",
 		Provider:            "anthropic",
@@ -682,28 +668,6 @@ func parseEnvelope(out []byte) (schema.CLIEnvelope, error) {
 		return env, nil
 	}
 	return schema.CLIEnvelope{}, errors.New("no CLI output to parse")
-}
-
-// streamSessionID reads the stable session identifier from a provider stream
-// without treating generic stream events as a live safe boundary.
-func streamSessionID(stream []byte) string {
-	var sessionID string
-	for _, line := range strings.Split(string(stream), "\n") {
-		var event struct {
-			SessionID string `json:"session_id"`
-		}
-		if err := json.Unmarshal([]byte(line), &event); err != nil || strings.TrimSpace(event.SessionID) == "" || strings.TrimSpace(event.SessionID) != event.SessionID {
-			continue
-		}
-		if sessionID == "" {
-			sessionID = event.SessionID
-			continue
-		}
-		if sessionID != event.SessionID {
-			return ""
-		}
-	}
-	return sessionID
 }
 
 // summaryFromResult extracts a human-readable summary from the envelope's

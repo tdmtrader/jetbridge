@@ -30,6 +30,23 @@ type CheckpointCaptureLease interface {
 	Release(context.Context) error
 }
 
+// SafeBoundaryProcess is an optional extension for an agent provider that can
+// cooperatively pause its exact live child at a provider-declared boundary.
+// It is deliberately separate from CheckpointProcess: acquiring this lease
+// neither captures data nor coordinates an ATC checkpoint.
+//
+// Callers must provide a deadline. Release is idempotent and resumes the
+// exact process identity held by the lease.
+type SafeBoundaryProcess interface {
+	AcquireSafeBoundary(context.Context) (SafeBoundaryLease, error)
+}
+
+// SafeBoundaryLease is opaque, runtime-owned cooperative provider quiescence.
+// Implementations must fail closed when the process identity changes.
+type SafeBoundaryLease interface {
+	Release(context.Context) error
+}
+
 // CheckpointCaptureTarget is immutable runtime evidence identifying the only
 // pod/node and daemon-relative roots which may be captured for a lease.
 type CheckpointCaptureTarget struct {

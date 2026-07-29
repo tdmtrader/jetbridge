@@ -41,7 +41,27 @@ alive() {
 mkdir -p "$S"
 : >>"$S/log"
 if [ ! -f "$S/exit" ] && ! alive; then
-  ( trap '' HUP; __COMMAND__ >>"$S/log" 2>&1; echo $? >"$S/exit.tmp" && mv "$S/exit.tmp" "$S/exit" ) &
+  rm -f "$S/child"
+  ( trap '' HUP
+    __COMMAND__ >>"$S/log" 2>&1 &
+    child=$!
+    # The wrapper PID below is only for re-exec liveness. Boundary control
+    # must target this exact child and bind it to Linux's non-reusable
+    # process starttime. A missing /proc record fails closed later.
+    if [ -r "/proc/$child/stat" ]; then
+      stat="$(cat "/proc/$child/stat" 2>/dev/null)"
+      rest="${stat##*) }"
+      set -- $rest
+      start="${20}"
+      case "$child:$start" in
+        *[!0-9:]*|:*|*:) ;;
+        *) printf '%s %s\n' "$child" "$start" >"$S/child.tmp" && mv "$S/child.tmp" "$S/child" ;;
+      esac
+    fi
+    wait "$child"
+    code=$?
+    echo "$code" >"$S/exit.tmp" && mv "$S/exit.tmp" "$S/exit"
+  ) &
   echo $! >"$S/pid"
 fi
 tail -n +1 -f "$S/log" 2>/dev/null &

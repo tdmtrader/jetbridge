@@ -6,10 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sync"
-	"syscall"
 	"testing"
-	"time"
 
 	"github.com/concourse/concourse/agent/provider"
 	"github.com/concourse/concourse/agent/runner"
@@ -65,37 +62,6 @@ func TestRunValidatesReservedSessionDirectoryWithoutRedirectingClaudeConfig(t *t
 	}
 	if _, err := runner.Run(context.Background(), runner.Config{Prompt: "p", FlightDir: flight, WorkDir: dir, SessionDir: filepath.Join(dir, "other"), ClaudePath: claude}); err == nil {
 		t.Fatal("accepted non-reserved session directory")
-	}
-}
-
-func TestRunUsesTerminalBoundaryForUnsafeProviderCompletion(t *testing.T) {
-	var mu sync.Mutex
-	stops := 0
-	adapter := &provider.FakeAdapter{
-		IdentityValue: provider.Identity{Name: "unsafe", Version: "v1"},
-		StartFunc: func(_ context.Context, _ provider.StartRequest, control provider.BoundaryControl) (provider.RunningSession, error) {
-			if control != nil {
-				t.Fatal("unsafe adapter received boundary control")
-			}
-			if err := syscall.Kill(os.Getpid(), syscall.SIGUSR1); err != nil {
-				t.Fatal(err)
-			}
-			return providerSessionFunc(func(context.Context) (provider.Result, error) {
-				time.Sleep(20 * time.Millisecond)
-				return provider.Result{Stream: []byte(`{"type":"system","subtype":"init","session_id":"terminal-session"}` + "\n" + `{"type":"result","subtype":"success","result":"\"done\"","is_error":false}` + "\n")}, nil
-			}), nil
-		},
-	}
-	dir := t.TempDir()
-	exit, err := runner.Run(context.Background(), runner.Config{Prompt: "p", FlightDir: filepath.Join(dir, "flight"), WorkDir: dir, Adapter: adapter, Stdout: io.Discard, Stderr: io.Discard, BoundaryStop: func() error { mu.Lock(); stops++; mu.Unlock(); return nil }})
-	if err != nil || exit != 0 {
-		t.Fatalf("Run() = %d, %v", exit, err)
-	}
-	mu.Lock()
-	got := stops
-	mu.Unlock()
-	if got != 1 {
-		t.Fatalf("terminal boundary stop count = %d", got)
 	}
 }
 

@@ -69,6 +69,8 @@ type Container struct {
 	mu               sync.RWMutex
 	checkpointMu     sync.Mutex
 	checkpointActive bool
+	boundaryMu       sync.Mutex
+	boundaryActive   bool
 	properties       map[string]string
 	loadAnnotations  sync.Once
 	executor         PodExecutor
