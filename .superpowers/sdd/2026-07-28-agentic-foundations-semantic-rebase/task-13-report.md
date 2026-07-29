@@ -132,3 +132,15 @@ Passed for this correction:
 - `go test ./atc/atccmd -run '^$' -count=1`
 - `go test ./agent/workflowrun ./agent/experiment -count=1`
 - `git diff --check`
+
+## Review outcome
+
+- Review round 1 found one valid Important authority hole in the lower-level
+  scheduler-selection mutations. Its second migration observation was
+  dismissed as a false positive: the reviewed `1773106148` down migration
+  already drops `agent_experiments_id_team_key`.
+- Commit `d84dbaeb93` corrected the confirmed authority hole.
+- Fresh scoped Terra review round 2 found the issue addressed, found no new
+  Critical, High, Important, or acceptance-blocking issue, and returned
+  **PASS**.
+- Status: **Accepted in review round 2 of at most 3**.

@@ -215,9 +215,23 @@ Task 12:
 
 Task 13:
 
-- Not started; unblocked by Task 12. Its runtime capture/reuse path must use
-  the mandatory opaque launch envelope and must not add a second execution
-  API.
+- Implemented through `e08f37bc4a` with the scheduler-selection authority
+  correction `d84dbaeb93`.
+- Status: **Accepted in review round 2 of at most 3**.
+- Promotion owns one revision-frozen standing Concourse admission pipeline;
+  automatic and manual selections persist the exact build/version facts,
+  capture them once into sealed Hangar-backed snapshots, and bind ready
+  admissions through the mandatory opaque launch envelope. Runs, retries,
+  replays, and experiment children reuse the exact admission.
+- Public pipeline/job/build/resource-selection mutations fail closed.
+  Workflow-run, experiment, ATC, full API, compile-only DB, and focused
+  authority checks passed. Focused DB behavior remains unexecuted because of
+  the documented external fixed-port collision; no infrastructure retry was
+  made during the correction.
+- Review round 1's valid lower-level mutation finding was corrected. Its
+  migration observation was a false positive: `1773106148` already had the
+  required down-migration constraint drop. Fresh round 2 returned PASS with no
+  new blocking or deferred finding.
 
 Task 14:
 
@@ -261,9 +275,8 @@ Tasks 16–18:
 Task 19:
 
 - Not started; dependency-deferred under `DEPENDENCY-005`.
-- Final end-to-end and residue proof cannot complete while Tasks 13 and 14
-  remain unstarted and the branch is knowingly incomplete. Tasks 9 and 16–18
-  are no longer blockers.
+- Final end-to-end and residue proof cannot complete while Task 14 remains
+  incomplete. Task 13 and Tasks 9 and 16–18 are no longer blockers.
 
 ## Milestone verification
 
@@ -293,12 +306,13 @@ completed and the broad suites are rerun.
    blocking evidence.
 4. Treat Task 9 as accepted through `9375fae0b8`; do not reopen it without new
    blocking evidence.
-5. Tasks 13 and 14 remain unstarted and unblocked.
+5. Treat Task 13 as accepted through `d84dbaeb93`; do not reopen it without
+   new blocking evidence. Task 14 is the active unblocked implementation.
 6. Treat Task 15 as **Accepted**; its user-authorized final review found no
    blocking issue.
 7. Treat Tasks 16, 17, and 18 as accepted; do not reopen their review cycles
    without new blocking evidence.
-8. Leave Task 19 dependency-deferred until Tasks 13 and 14 are completed.
+8. Leave Task 19 dependency-deferred until Task 14 is completed.
 9. Treat every resumed feature group as a separate bounded track rather than
    one continuous "rebase."
 

@@ -250,10 +250,37 @@
     findings.
   - Status: **Accepted** after one of three user-authorized reopened
     iterations. `HUMAN-REVIEW-002` is resolved.
-- [ ] Task 13 — source capture/reuse runtime
-  - Status: unblocked by Task 12; not started. Build capture/reuse on the
-    mandatory opaque launch envelope without introducing a second execution
-    API.
+- [x] Task 13 — source capture/reuse runtime
+  - Implementation and correction commits:
+    - `467950f5f1 feat: persist workflow resource source admissions`
+    - `18d14b989a feat: bind workflow runs to sealed source admissions`
+    - `95e87f6e5f feat: bind workflow runs to sealed sources`
+    - `1a551711b6 feat: manage standing workflow source pipelines`
+    - `d5ef8284c6 feat: bind experiment runs to prepared sources`
+    - `e08f37bc4a feat: compose workflow source runtime`
+    - `d84dbaeb93 fix: protect source selection mutations`
+  - Behavior: promotion atomically creates a revision-owned standing
+    Concourse admission pipeline; automatic and manual admissions persist the
+    exact selecting build and versions, capture them once into sealed
+    Hangar-backed snapshots, and expose only a ready admission through the
+    opaque execution envelope. Runs, retries, replays, and experiment children
+    reuse that exact durable admission. Active/draining/archived lifecycle and
+    successful-build reconciliation are composed in ATC.
+  - Public pipeline, job, build, and source-version mutations fail closed for
+    the server-owned admission pipeline. The round-1 correction added
+    transactional guards and HTTP 409 mapping for job pause/unpause and
+    resource pin/unpin, enable/disable, and clear-versions.
+  - Verification: workflow-run, experiment, ATC, and full API suites passed;
+    DB and affected API packages compile; seven focused authority API specs
+    passed; `git diff --check` passed. Focused DB behavioral specs compile but
+    were not executed because fixed port 5434 is owned by an external
+    PostgreSQL process; the one previously documented alternate-port attempt
+    was not repeated.
+  - Review: round 1 found the lower-level mutation authority hole and one
+    migration false positive. Round 2 verified the authority correction,
+    confirmed the down migration was already correct, and found no new
+    blocking issue.
+  - Status: **Accepted in review round 2 of at most 3**.
 - [ ] Task 14 — direct in-ATC publication
   - Status: unblocked by accepted Tasks 6 and 7; not started. Preserve Task
     7's exact validation gate while replacing the publisher gateway.
