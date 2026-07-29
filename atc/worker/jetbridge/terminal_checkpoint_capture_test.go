@@ -54,6 +54,124 @@ func TestTerminalCheckpointCaptureAcceptsCompletedAgentAndReattachedExit(t *test
 	}
 }
 
+func TestTerminalCheckpointCaptureReattachesInMemoryExitWithPersistedEvidence(t *testing.T) {
+	executor := &terminalCheckpointExecutor{}
+	process, _ := terminalCheckpointTestProcess(executor)
+	if err := process.container.SetProperty(exitStatusPropertyName, "0"); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	attached, err := process.container.Attach(ctx, "agent", runtime.ProcessIO{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := attached.Wait(ctx)
+	if err != nil || result.ExitStatus != 0 {
+		t.Fatalf("reattached result = %#v, %v", result, err)
+	}
+	terminal, ok := attached.(runtime.TerminalCheckpointProcess)
+	if !ok {
+		t.Fatalf("reattached process lacks terminal checkpoint capability: %T", attached)
+	}
+	lease, err := terminal.AcquireTerminalCheckpointCapture(ctx, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.Release(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if executor.calls("checkpoint-terminal-evidence") != 1 || executor.calls("checkpoint-process-quiescence") != 1 || executor.released() != 1 {
+		t.Fatalf("terminal calls evidence=%d quiescence=%d releases=%d", executor.calls("checkpoint-terminal-evidence"), executor.calls("checkpoint-process-quiescence"), executor.released())
+	}
+}
+
+func TestTerminalCheckpointCaptureReportsAcquisitionErrorForInMemoryReattachmentWithoutPersistedEvidence(t *testing.T) {
+	for _, mutate := range []struct {
+		name   string
+		mutate func(*corev1.Pod)
+	}{
+		{"missing exit status", func(pod *corev1.Pod) { delete(pod.Annotations, exitStatusAnnotationKey) }},
+		{"invalid exit status", func(pod *corev1.Pod) { pod.Annotations[exitStatusAnnotationKey] = "00" }},
+		{"missing supervisor state", func(pod *corev1.Pod) { delete(pod.Annotations, supervisorStateAnnotationKey) }},
+		{"invalid supervisor state", func(pod *corev1.Pod) { pod.Annotations[supervisorStateAnnotationKey] = "not-a-supervisor-state" }},
+	} {
+		t.Run(mutate.name, func(t *testing.T) {
+			executor := &terminalCheckpointExecutor{}
+			process, _ := terminalCheckpointTestProcess(executor)
+			if err := process.container.SetProperty(exitStatusPropertyName, "0"); err != nil {
+				t.Fatal(err)
+			}
+			pod, err := process.clientset.CoreV1().Pods(process.config.Namespace).Get(context.Background(), process.podName, metav1.GetOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			mutate.mutate(pod)
+			if _, err := process.clientset.CoreV1().Pods(process.config.Namespace).Update(context.Background(), pod, metav1.UpdateOptions{}); err != nil {
+				t.Fatal(err)
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			attached, err := process.container.Attach(ctx, "agent", runtime.ProcessIO{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := attached.Wait(ctx)
+			if err != nil || result.ExitStatus != 0 {
+				t.Fatalf("reattached result = %#v, %v", result, err)
+			}
+			terminal, ok := attached.(runtime.TerminalCheckpointProcess)
+			if !ok {
+				t.Fatalf("reattached process lacks terminal checkpoint capability: %T", attached)
+			}
+			// The checkpoint coordinator records this failed acquisition as a
+			// CaptureError. It must not quiesce without exact terminal evidence.
+			if _, err := terminal.AcquireTerminalCheckpointCapture(ctx, 1024); err == nil {
+				t.Fatal("accepted terminal capture without persisted evidence")
+			}
+			if executor.calls("checkpoint-process-quiescence") != 0 {
+				t.Fatal("terminal capture without evidence quiesced residual processes")
+			}
+		})
+	}
+}
+
+func TestTerminalCheckpointCaptureReportsAcquisitionErrorForInMemoryReattachmentWithoutPod(t *testing.T) {
+	executor := &terminalCheckpointExecutor{}
+	process, _ := terminalCheckpointTestProcess(executor)
+	if err := process.container.SetProperty(exitStatusPropertyName, "0"); err != nil {
+		t.Fatal(err)
+	}
+	if err := process.clientset.CoreV1().Pods(process.config.Namespace).Delete(context.Background(), process.podName, metav1.DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	attached, err := process.container.Attach(ctx, "agent", runtime.ProcessIO{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := attached.Wait(ctx)
+	if err != nil || result.ExitStatus != 0 {
+		t.Fatalf("reattached result = %#v, %v", result, err)
+	}
+	terminal, ok := attached.(runtime.TerminalCheckpointProcess)
+	if !ok {
+		t.Fatalf("reattached process lacks terminal checkpoint capability: %T", attached)
+	}
+	// The missing pod becomes a CaptureError at the coordinator and cannot
+	// grant a process-quiescence lease.
+	if _, err := terminal.AcquireTerminalCheckpointCapture(ctx, 1024); err == nil {
+		t.Fatal("accepted terminal capture without a pod")
+	}
+	if executor.calls("checkpoint-process-quiescence") != 0 {
+		t.Fatal("terminal capture without a pod quiesced residual processes")
+	}
+}
+
 func TestTerminalCheckpointCaptureRejectsUntrustedCompletionEvidence(t *testing.T) {
 	tests := []struct {
 		name   string

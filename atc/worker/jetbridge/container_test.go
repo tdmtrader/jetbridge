@@ -2400,9 +2400,10 @@ var _ = Describe("Container", func() {
 					db.NewFixedHandleContainerOwner("restart-attach-handle"),
 					db.ContainerMetadata{Type: db.ContainerTypeAgent},
 					runtime.ContainerSpec{
-						Type:      db.ContainerTypeAgent,
-						Dir:       "/workdir",
-						ImageSpec: runtime.ImageSpec{ImageURL: "docker:///agent-runner"},
+						Type:              db.ContainerTypeAgent,
+						CheckpointCapture: true,
+						Dir:               "/workdir",
+						ImageSpec:         runtime.ImageSpec{ImageURL: "docker:///agent-runner"},
 						Outputs: runtime.OutputPaths{
 							"flight":    "/workdir/flight/",
 							"workspace": "/workdir/workspace/",
@@ -2419,7 +2420,8 @@ var _ = Describe("Container", func() {
 						Name:      "restart-attach-handle",
 						Namespace: "test-namespace",
 						Annotations: map[string]string{
-							"concourse.ci/exit-status": "0",
+							"concourse.ci/exit-status":          "0",
+							"concourse.ci/supervisor-state-dir": "/tmp/concourse-task-agent-deadbeef",
 						},
 					},
 					Spec: corev1.PodSpec{
@@ -2434,6 +2436,12 @@ var _ = Describe("Container", func() {
 			})
 
 			It("re-records output locations so post-restart reads can reach the producer node's daemon", func() {
+				// Properties can preload a persisted exit status before Attach. That
+				// must still take the terminal-evidence path and republish locations.
+				properties, err := execContainer.Properties()
+				Expect(err).ToNot(HaveOccurred())
+				Expect(properties).To(HaveKeyWithValue("concourse:exit-status", "0"))
+
 				process, err := execContainer.Attach(ctx, "agent", runtime.ProcessIO{})
 				Expect(err).ToNot(HaveOccurred())
 

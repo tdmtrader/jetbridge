@@ -261,6 +261,23 @@ func (c *Container) Attach(ctx context.Context, processID string, io runtime.Pro
 	if hasExit {
 		status, err := strconv.Atoi(statusStr)
 		if err == nil {
+			// Preserve the historical fast path except for checkpoint-enabled agent
+			// exec containers. They recover persisted terminal evidence so a
+			// same-web retry can take its completion checkpoint. If that evidence
+			// is unavailable, still return the observed result: Attach must not make
+			// attachOrRun execute an already completed command again.
+			if c.executor == nil || c.metadata.Type != db.ContainerTypeAgent || !c.containerSpec.CheckpointCapture {
+				return &exitedProcess{id: processID, result: runtime.ProcessResult{ExitStatus: status}}, nil
+			}
+			pod, err := c.clientset.CoreV1().Pods(c.config.Namespace).Get(ctx, c.podName, metav1.GetOptions{})
+			if err != nil {
+				logger.Error("failed-to-get-pod-for-in-memory-exit", err)
+				return &exitedProcess{id: processID, result: runtime.ProcessResult{ExitStatus: status}}, nil
+			}
+			if exited, ok := c.exitedProcessWithTerminalEvidence(processID, status, pod); ok {
+				c.republishOutputLocations(ctx, logger, pod.Spec.NodeName)
+				return exited, nil
+			}
 			return &exitedProcess{id: processID, result: runtime.ProcessResult{ExitStatus: status}}, nil
 		}
 	}
@@ -293,7 +310,7 @@ func (c *Container) Attach(ctx context.Context, processID string, io runtime.Pro
 				// output locations (locator entry + daemon alias, idempotent)
 				// before handing back the exited result.
 				c.republishOutputLocations(ctx, logger, pod.Spec.NodeName)
-				return &exitedProcess{id: processID, result: runtime.ProcessResult{ExitStatus: status}, container: c, podName: pod.Name, stateDir: pod.Annotations[supervisorStateAnnotationKey], persistedExit: status}, nil
+				return c.newExitedProcess(processID, status, pod), nil
 			}
 		}
 		// Exec hasn't completed yet (no annotation). Return an error so
@@ -304,6 +321,24 @@ func (c *Container) Attach(ctx context.Context, processID string, io runtime.Pro
 	}
 
 	return newProcess(processID, c.podName, c.clientset, c.config, c, io), nil
+}
+
+func (c *Container) newExitedProcess(processID string, status int, pod *corev1.Pod) *exitedProcess {
+	return &exitedProcess{
+		id:            processID,
+		result:        runtime.ProcessResult{ExitStatus: status},
+		container:     c,
+		podName:       pod.Name,
+		stateDir:      pod.Annotations[supervisorStateAnnotationKey],
+		persistedExit: status,
+	}
+}
+
+func (c *Container) exitedProcessWithTerminalEvidence(processID string, status int, pod *corev1.Pod) (*exitedProcess, bool) {
+	if pod == nil || pod.Name != c.podName || pod.Annotations[exitStatusAnnotationKey] != strconv.Itoa(status) || !terminalSupervisorStateDirValid(pod.Annotations[supervisorStateAnnotationKey]) {
+		return nil, false
+	}
+	return c.newExitedProcess(processID, status, pod), true
 }
 
 // republishOutputLocations re-records this container's output artifact
