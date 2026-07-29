@@ -31,17 +31,18 @@ import (
 )
 
 const (
-	exitStatusPropertyName      = "concourse:exit-status"
-	resourceResultPropertyName  = "concourse:resource-result"
-	mainContainerName           = "main"
-	exitStatusAnnotationKey     = "concourse.ci/exit-status"
-	resourceResultAnnotationKey = "concourse.ci/resource-result"
-	privateMountSecretLabelKey  = "concourse.ci/private-mount-for"
-	privateMountPodUIDLabelKey  = "concourse.ci/private-mount-pod-uid"
-	privateMountPodNameLabelKey = "concourse.ci/private-mount-pod-name"
-	privateMountDataDigestKey   = "concourse.ci/private-mount-data-digest"
-	privateMountRoot            = "/run/concourse"
-	maxPrivateMountSecretBytes  = 1 << 20
+	exitStatusPropertyName       = "concourse:exit-status"
+	resourceResultPropertyName   = "concourse:resource-result"
+	mainContainerName            = "main"
+	exitStatusAnnotationKey      = "concourse.ci/exit-status"
+	supervisorStateAnnotationKey = "concourse.ci/supervisor-state-dir"
+	resourceResultAnnotationKey  = "concourse.ci/resource-result"
+	privateMountSecretLabelKey   = "concourse.ci/private-mount-for"
+	privateMountPodUIDLabelKey   = "concourse.ci/private-mount-pod-uid"
+	privateMountPodNameLabelKey  = "concourse.ci/private-mount-pod-name"
+	privateMountDataDigestKey    = "concourse.ci/private-mount-data-digest"
+	privateMountRoot             = "/run/concourse"
+	maxPrivateMountSecretBytes   = 1 << 20
 )
 
 // persistableAnnotations maps container property keys to pod annotation keys
@@ -292,7 +293,7 @@ func (c *Container) Attach(ctx context.Context, processID string, io runtime.Pro
 				// output locations (locator entry + daemon alias, idempotent)
 				// before handing back the exited result.
 				c.republishOutputLocations(ctx, logger, pod.Spec.NodeName)
-				return &exitedProcess{id: processID, result: runtime.ProcessResult{ExitStatus: status}}, nil
+				return &exitedProcess{id: processID, result: runtime.ProcessResult{ExitStatus: status}, container: c, podName: pod.Name, stateDir: pod.Annotations[supervisorStateAnnotationKey], persistedExit: status}, nil
 			}
 		}
 		// Exec hasn't completed yet (no annotation). Return an error so

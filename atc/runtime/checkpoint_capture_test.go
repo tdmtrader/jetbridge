@@ -1,11 +1,22 @@
 package runtime
 
 import (
+	"context"
 	"reflect"
 	"testing"
 
 	"github.com/concourse/concourse/atc/db"
 )
+
+func TestTerminalCheckpointProcessIsOptionalRuntimeExtension(t *testing.T) {
+	var _ TerminalCheckpointProcess = terminalCheckpointProcessTest{}
+}
+
+type terminalCheckpointProcessTest struct{}
+
+func (terminalCheckpointProcessTest) AcquireTerminalCheckpointCapture(context.Context, int64) (CheckpointCaptureLease, error) {
+	return nil, nil
+}
 
 func TestCheckpointCaptureTopologyUsesOnlyOrdinaryAgentStepRoots(t *testing.T) {
 	spec := ContainerSpec{

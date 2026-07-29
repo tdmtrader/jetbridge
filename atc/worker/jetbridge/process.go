@@ -905,6 +905,10 @@ func (p *execProcess) Wait(ctx context.Context) (runtime.ProcessResult, error) {
 	const maxExecRetries = 2
 	var err error
 	for attempt := 0; attempt <= maxExecRetries; attempt++ {
+		if p.supervised() && p.container != nil && p.container.metadata.Type == db.ContainerTypeAgent {
+			stateDir, _ := supervisorState(p.id, p.processSpec)
+			p.annotateSupervisorState(ctx, stateDir)
+		}
 		execCtx, execSpan := tracing.StartSpan(ctx, "k8s.exec-process.exec", tracing.Attrs{
 			"pod-name": p.podName,
 			"attempt":  fmt.Sprintf("%d", attempt),
@@ -1107,6 +1111,16 @@ func (p *execProcess) annotateExitStatus(ctx context.Context, exitCode int) {
 			"pod":       p.podName,
 			"exit-code": exitCode,
 		})
+	}
+}
+
+func (p *execProcess) annotateSupervisorState(ctx context.Context, stateDir string) {
+	if stateDir == "" {
+		return
+	}
+	patch := fmt.Sprintf(`{"metadata":{"annotations":{"%s":%q}}}`, supervisorStateAnnotationKey, stateDir)
+	if _, err := p.clientset.CoreV1().Pods(p.config.Namespace).Patch(ctx, p.podName, types.MergePatchType, []byte(patch), metav1.PatchOptions{}); err != nil {
+		lagerctx.FromContext(ctx).Session("annotate-supervisor-state").Error("failed-to-annotate-supervisor-state", err)
 	}
 }
 
@@ -1429,8 +1443,12 @@ func (p *execProcess) waitForRunning(ctx context.Context) error {
 
 // exitedProcess is returned by Attach when the process has already completed.
 type exitedProcess struct {
-	id     string
-	result runtime.ProcessResult
+	id            string
+	result        runtime.ProcessResult
+	container     *Container
+	podName       string
+	stateDir      string
+	persistedExit int
 }
 
 func (p *exitedProcess) ID() string {

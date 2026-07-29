@@ -24,6 +24,101 @@ const (
 )
 
 var _ runtime.CheckpointProcess = (*execProcess)(nil)
+var _ runtime.TerminalCheckpointProcess = (*execProcess)(nil)
+var _ runtime.TerminalCheckpointProcess = (*exitedProcess)(nil)
+
+// AcquireTerminalCheckpointCapture proves a completed agent supervisor before
+// reusing the ordinary bounded residual-process quiescence lease. It never
+// sends a provider boundary signal.
+func (p *execProcess) AcquireTerminalCheckpointCapture(ctx context.Context, maxBytes int64) (runtime.CheckpointCaptureLease, error) {
+	if p == nil || p.id != "agent" || p.processSpec.Path == "" {
+		return nil, errors.New("terminal checkpoint capture requires the exact agent process")
+	}
+	stateDir, _ := supervisorState(p.id, p.processSpec)
+	if err := p.verifyTerminalCheckpointEvidence(ctx, stateDir, -1); err != nil {
+		return nil, err
+	}
+	return p.AcquireCheckpointCapture(ctx, maxBytes)
+}
+
+func (p *exitedProcess) AcquireTerminalCheckpointCapture(ctx context.Context, maxBytes int64) (runtime.CheckpointCaptureLease, error) {
+	if p == nil || p.id != "agent" || p.container == nil || p.podName == "" || !terminalSupervisorStateDirValid(p.stateDir) {
+		return nil, errors.New("terminal checkpoint capture requires persisted exact agent identity")
+	}
+	exec := &execProcess{id: p.id, podName: p.podName, clientset: p.container.clientset, config: p.container.config, container: p.container, executor: p.container.executor}
+	if err := exec.verifyTerminalCheckpointEvidence(ctx, p.stateDir, p.persistedExit); err != nil {
+		return nil, err
+	}
+	return exec.AcquireCheckpointCapture(ctx, maxBytes)
+}
+
+func (p *execProcess) verifyTerminalCheckpointEvidence(ctx context.Context, stateDir string, expectedExit int) error {
+	if ctx == nil || p == nil || p.container == nil || p.clientset == nil || nilPodExecutor(p.executor) || p.container.metadata.Type != db.ContainerTypeAgent || !p.container.containerSpec.CheckpointCapture || !terminalSupervisorStateDirValid(stateDir) {
+		return errors.New("terminal checkpoint evidence is not configured")
+	}
+	pod, err := p.exactCheckpointPod(ctx)
+	if err != nil {
+		return err
+	}
+	if _, _, err := checkpointPodIdentity(pod, p.container.handle, p.podName); err != nil {
+		return err
+	}
+	status, ok := pod.Annotations[exitStatusAnnotationKey]
+	if !ok {
+		return errors.New("terminal checkpoint capture requires persisted exit status")
+	}
+	exitCode, err := strconv.Atoi(status)
+	if err != nil || strconv.Itoa(exitCode) != status || exitCode < 0 || (expectedExit >= 0 && exitCode != expectedExit) {
+		return errors.New("terminal checkpoint capture exit status is invalid")
+	}
+	script := strings.ReplaceAll(terminalCheckpointEvidenceShell, "__STATE_DIR__", shellQuote(stateDir))
+	script = strings.ReplaceAll(script, "__EXIT_CODE__", strconv.Itoa(exitCode))
+	stdout := &checkpointBoundedBuffer{limit: checkpointQuiescenceProtocolMaxBytes}
+	stderr := &checkpointBoundedBuffer{limit: checkpointQuiescenceStderrMaxBytes}
+	if err := p.executor.ExecInPod(ctx, p.config.Namespace, pod.Name, mainContainerName, []string{"/bin/sh", "-ceu", script}, nil, stdout, stderr, false, ExecAttrs{Purpose: "checkpoint-terminal-evidence"}); err != nil {
+		return checkpointHelperError("verify terminal checkpoint evidence", err, stderr)
+	}
+	if stdout.String() != "TERMINAL\n" {
+		return errors.New("terminal checkpoint evidence protocol is invalid")
+	}
+	return nil
+}
+
+func terminalSupervisorStateDirValid(stateDir string) bool {
+	prefix := taskStateDirPrefix + "agent-"
+	if !strings.HasPrefix(stateDir, prefix) || strings.TrimSpace(stateDir) != stateDir || strings.ContainsAny(stateDir, "\\\x00") {
+		return false
+	}
+	suffix := strings.TrimPrefix(stateDir, prefix)
+	if len(suffix) != 8 {
+		return false
+	}
+	for _, character := range suffix {
+		if !((character >= '0' && character <= '9') || (character >= 'a' && character <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
+const terminalCheckpointEvidenceShell = `
+S=__STATE_DIR__
+code="$(cat "$S/exit" 2>/dev/null)"
+[ "$code" = "__EXIT_CODE__" ] || exit 1
+case "$code" in *[!0-9]*|"") exit 1;; esac
+record="$(cat "$S/child" 2>/dev/null)"
+set -- $record
+[ "$#" -eq 2 ] || exit 1
+pid="$1"
+start="$2"
+case "$pid:$start" in *[!0-9:]*|:*|*:) exit 1;; esac
+if [ -r "/proc/$pid/stat" ]; then
+  stat="$(cat "/proc/$pid/stat" 2>/dev/null)"
+  rest="${stat##*) }"
+  set -- $rest
+  [ "$#" -ge 20 ] && [ "${20}" = "$start" ] && exit 1
+fi
+printf 'TERMINAL\n'`
 
 // AcquireCheckpointCapture stops every running container in the exact agent
 // pod. It is intentionally attached to execProcess rather than runtime.Process

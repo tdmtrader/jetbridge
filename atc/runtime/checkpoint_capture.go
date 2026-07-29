@@ -23,6 +23,15 @@ type CheckpointProcess interface {
 	AcquireCheckpointCapture(context.Context, int64) (CheckpointCaptureLease, error)
 }
 
+// TerminalCheckpointProcess is an optional extension for a process with
+// durable, runtime-verified completion evidence. Unlike CheckpointProcess it
+// never asks a live provider for a safe boundary; implementations may only
+// quiesce residual pause/sidecar processes after proving the agent child has
+// exited. Callers must provide a deadline.
+type TerminalCheckpointProcess interface {
+	AcquireTerminalCheckpointCapture(context.Context, int64) (CheckpointCaptureLease, error)
+}
+
 // CheckpointCaptureLease is opaque process/workspace quiescence. Release is
 // idempotent and resumes the process when possible.
 type CheckpointCaptureLease interface {
