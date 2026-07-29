@@ -71,9 +71,14 @@ var _ = Describe("agent run checkpoints migration", func() {
 			VALUES (12345, 'ci-plan', 'implement') RETURNING id
 		`).Scan(&ciHeadID)).To(Succeed())
 		Expect(database.QueryRow(`
-			INSERT INTO agent_run_checkpoint_heads (workflow_run_id, build_id, plan_id, function_id)
-			VALUES ($1, 12346, 'workflow-plan', 'review') RETURNING id
+			INSERT INTO agent_run_checkpoint_heads
+				(workflow_run_provenance_id, workflow_run_id, build_id, plan_id, function_id)
+			VALUES ($1, $1, 12346, 'workflow-plan', 'review') RETURNING id
 		`, workflowRunID).Scan(&workflowHeadID)).To(Succeed())
+		_, err := database.Exec(`
+			UPDATE agent_run_checkpoint_heads SET workflow_run_provenance_id = NULL WHERE id = $1
+		`, workflowHeadID)
+		Expect(err).To(HaveOccurred(), "workflow-run provenance must remain immutable")
 		Expect(database.QueryRow(`
 			INSERT INTO agent_checkpoint_objects
 				(kind, digest, object_key, generation, status)
@@ -191,9 +196,14 @@ var _ = Describe("agent run checkpoints migration", func() {
 		By("retaining checkpoint/effect/event rows after workflow and build provenance are removed")
 		_, err = database.Exec(`DELETE FROM agent_workflow_runs WHERE id = $1`, workflowRunID)
 		Expect(err).NotTo(HaveOccurred())
-		var workflowProvenance sql.NullInt64
-		Expect(database.QueryRow(`SELECT workflow_run_id FROM agent_run_checkpoint_heads WHERE id = $1`, workflowHeadID).Scan(&workflowProvenance)).To(Succeed())
-		Expect(workflowProvenance.Valid).To(BeFalse())
+		var immutableWorkflowProvenance, liveWorkflowRunID sql.NullInt64
+		Expect(database.QueryRow(`
+			SELECT workflow_run_provenance_id, workflow_run_id
+			FROM agent_run_checkpoint_heads WHERE id = $1
+		`, workflowHeadID).Scan(&immutableWorkflowProvenance, &liveWorkflowRunID)).To(Succeed())
+		Expect(immutableWorkflowProvenance.Valid).To(BeTrue())
+		Expect(immutableWorkflowProvenance.Int64).To(Equal(workflowRunID))
+		Expect(liveWorkflowRunID.Valid).To(BeFalse())
 		var retained int
 		Expect(database.QueryRow(`SELECT count(*) FROM agent_run_checkpoints WHERE head_id = $1`, ciHeadID).Scan(&retained)).To(Succeed())
 		Expect(retained).To(Equal(2))

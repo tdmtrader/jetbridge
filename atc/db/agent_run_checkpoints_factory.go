@@ -49,15 +49,16 @@ var _ checkpoint.Store = (*agentRunCheckpointsFactory)(nil)
 var _ checkpoint.EffectJournal = (*agentRunCheckpointsFactory)(nil)
 
 type checkpointHeadRow struct {
-	id                 int64
-	workflowRunID      sql.NullInt64
-	buildID            int64
-	planID             string
-	functionID         string
-	latestCheckpointID sql.NullInt64
-	nextGeneration     int
-	active             bool
-	terminalAt         sql.NullTime
+	id                      int64
+	workflowRunProvenanceID sql.NullInt64
+	workflowRunID           sql.NullInt64
+	buildID                 int64
+	planID                  string
+	functionID              string
+	latestCheckpointID      sql.NullInt64
+	nextGeneration          int
+	active                  bool
+	terminalAt              sql.NullTime
 }
 
 type checkpointStageRow struct {
@@ -1071,8 +1072,9 @@ func (factory *agentRunCheckpointsFactory) ListEffects(ctx context.Context, iden
 func getOrCreateCheckpointHead(ctx context.Context, tx Tx, identity checkpoint.Identity) (checkpointHeadRow, error) {
 	workflowRunID := checkpointWorkflowRunIDValue(identity.WorkflowRunID)
 	_, err := tx.ExecContext(ctx, `
-		INSERT INTO agent_run_checkpoint_heads (workflow_run_id, build_id, plan_id, function_id)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO agent_run_checkpoint_heads
+			(workflow_run_provenance_id, workflow_run_id, build_id, plan_id, function_id)
+		VALUES ($1, (SELECT id FROM agent_workflow_runs WHERE id = $1), $2, $3, $4)
 		ON CONFLICT (build_id, plan_id, function_id) DO NOTHING
 	`, workflowRunID, identity.BuildID, identity.PlanID, identity.FunctionID)
 	if err != nil {
@@ -1100,11 +1102,11 @@ func checkpointHead(ctx context.Context, queryer checkpointQueryer, identity che
 	}
 	var head checkpointHeadRow
 	err := queryer.QueryRowContext(ctx, `
-		SELECT id, workflow_run_id, build_id, plan_id, function_id, latest_checkpoint_id, next_generation, active, terminal_at
+		SELECT id, workflow_run_provenance_id, workflow_run_id, build_id, plan_id, function_id, latest_checkpoint_id, next_generation, active, terminal_at
 		FROM agent_run_checkpoint_heads
 		WHERE build_id = $1 AND plan_id = $2 AND function_id = $3`+locking,
 		identity.BuildID, identity.PlanID, identity.FunctionID).Scan(
-		&head.id, &head.workflowRunID, &head.buildID, &head.planID, &head.functionID,
+		&head.id, &head.workflowRunProvenanceID, &head.workflowRunID, &head.buildID, &head.planID, &head.functionID,
 		&head.latestCheckpointID, &head.nextGeneration, &head.active, &head.terminalAt,
 	)
 	if err == nil && !sameCheckpointIdentity(headIdentity(head), identity) {
@@ -1118,7 +1120,7 @@ func checkpointStageForUpdate(ctx context.Context, tx Tx, stageID int64) (checkp
 	err := tx.QueryRowContext(ctx, `
 		SELECT c.id, c.archive_object_id, c.generation, c.expected_previous_generation, c.execution_attempt,
 			c.status, c.stage_expires_at,
-			h.id, h.workflow_run_id, h.build_id, h.plan_id, h.function_id, h.latest_checkpoint_id,
+			h.id, h.workflow_run_provenance_id, h.workflow_run_id, h.build_id, h.plan_id, h.function_id, h.latest_checkpoint_id,
 			h.next_generation, h.active, h.terminal_at
 		FROM agent_run_checkpoints c
 		JOIN agent_run_checkpoint_heads h ON h.id = c.head_id
@@ -1127,7 +1129,7 @@ func checkpointStageForUpdate(ctx context.Context, tx Tx, stageID int64) (checkp
 	`, stageID).Scan(
 		&stage.id, &stage.archiveObjectID, &stage.generation, &stage.expectedPreviousGeneration,
 		&stage.executionAttempt, &stage.status, &stage.stageExpiresAt,
-		&stage.head.id, &stage.head.workflowRunID, &stage.head.buildID, &stage.head.planID, &stage.head.functionID,
+		&stage.head.id, &stage.head.workflowRunProvenanceID, &stage.head.workflowRunID, &stage.head.buildID, &stage.head.planID, &stage.head.functionID,
 		&stage.head.latestCheckpointID, &stage.head.nextGeneration, &stage.head.active, &stage.head.terminalAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -1322,8 +1324,8 @@ func checkpointWorkflowRunIDValue(id *snapshot.WorkflowRunID) any {
 
 func headIdentity(head checkpointHeadRow) checkpoint.Identity {
 	identity := checkpoint.Identity{BuildID: head.buildID, PlanID: head.planID, FunctionID: head.functionID}
-	if head.workflowRunID.Valid {
-		workflowRunID := snapshot.WorkflowRunID(head.workflowRunID.Int64)
+	if head.workflowRunProvenanceID.Valid {
+		workflowRunID := snapshot.WorkflowRunID(head.workflowRunProvenanceID.Int64)
 		identity.WorkflowRunID = &workflowRunID
 	}
 	return identity

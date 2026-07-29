@@ -30,7 +30,7 @@ var _ checkpoint.AttemptStore = (*agentRunAttemptsFactory)(nil)
 
 const agentRunAttemptColumns = `
 	a.id,
-	h.workflow_run_id,
+	h.workflow_run_provenance_id, h.workflow_run_id,
 	h.build_id, h.plan_id, h.function_id,
 	a.attempt_number, a.max_total_attempts, a.state, a.is_current,
 	a.materialization_id, a.source_attempt_number, a.source_checkpoint_id,
@@ -86,7 +86,7 @@ func (factory *agentRunAttemptsFactory) AllocateInitial(
 		VALUES ($1, 1, $2, 'scheduling', TRUE, $3)
 		RETURNING
 			id,
-			$4::bigint,
+			$4::bigint, $4::bigint,
 			$5::bigint, $6::text, $7::text,
 			attempt_number, max_total_attempts, state, is_current,
 			materialization_id, source_attempt_number, source_checkpoint_id,
@@ -518,7 +518,7 @@ func (factory *agentRunAttemptsFactory) BeginRecovery(
 		VALUES ($1, $2, $3, 'scheduling', TRUE, $4, $5, $6, $7, $8, $9)
 		RETURNING
 			id,
-			$10::bigint,
+			$10::bigint, $10::bigint,
 			$11::bigint, $12::text, $13::text,
 			attempt_number, max_total_attempts, state, is_current,
 			materialization_id, source_attempt_number, source_checkpoint_id,
@@ -663,6 +663,7 @@ func agentRunReplacementForUpdate(
 func scanAgentRunAttempt(scanner scannable) (checkpoint.Attempt, error) {
 	var (
 		attempt                  checkpoint.Attempt
+		workflowRunProvenanceID  sql.NullInt64
 		workflowRunID            sql.NullInt64
 		sourceAttempt            sql.NullInt64
 		sourceCheckpointID       sql.NullInt64
@@ -676,7 +677,7 @@ func scanAgentRunAttempt(scanner scannable) (checkpoint.Attempt, error) {
 	)
 	err := scanner.Scan(
 		&attempt.ID,
-		&workflowRunID,
+		&workflowRunProvenanceID, &workflowRunID,
 		&attempt.Identity.BuildID, &attempt.Identity.PlanID, &attempt.Identity.FunctionID,
 		&attempt.ExecutionAttempt, &attempt.MaxTotalAttempts, &attempt.State, &attempt.Current,
 		&attempt.MaterializationID, &sourceAttempt, &sourceCheckpointID,
@@ -687,8 +688,8 @@ func scanAgentRunAttempt(scanner scannable) (checkpoint.Attempt, error) {
 	if err != nil {
 		return checkpoint.Attempt{}, err
 	}
-	if workflowRunID.Valid {
-		value := snapshot.WorkflowRunID(workflowRunID.Int64)
+	if workflowRunProvenanceID.Valid {
+		value := snapshot.WorkflowRunID(workflowRunProvenanceID.Int64)
 		attempt.Identity.WorkflowRunID = &value
 	}
 	if sourceAttempt.Valid {

@@ -3,10 +3,11 @@
 -- it names remain Hangar's authority.
 CREATE TABLE agent_run_checkpoint_heads (
     id BIGSERIAL PRIMARY KEY,
-    -- This is copied v3 workflow-run identity, not a lifecycle owner. A
-    -- checkpoint must retain its attribution even after operational rows age
-    -- out, and may never terminalize the workflow run.
-    workflow_run_id BIGINT,
+    -- Provenance is immutable copied v3 identity. The live FK is convenient
+    -- while the workflow run exists, but must null on its deletion without
+    -- erasing recovery attribution or involving checkpoint terminalization.
+    workflow_run_provenance_id BIGINT,
+    workflow_run_id BIGINT REFERENCES agent_workflow_runs(id) ON DELETE SET NULL,
     build_id BIGINT NOT NULL,
     plan_id TEXT NOT NULL,
     function_id TEXT NOT NULL,
@@ -15,13 +16,14 @@ CREATE TABLE agent_run_checkpoint_heads (
     active BOOLEAN NOT NULL DEFAULT TRUE,
     terminal_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (build_id, plan_id, function_id)
+    UNIQUE (build_id, plan_id, function_id),
+    CHECK (workflow_run_id IS NULL OR workflow_run_id = workflow_run_provenance_id)
 );
 
 CREATE OR REPLACE FUNCTION enforce_agent_run_checkpoint_head_identity()
 RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-    IF NEW.workflow_run_id IS DISTINCT FROM OLD.workflow_run_id
+    IF NEW.workflow_run_provenance_id IS DISTINCT FROM OLD.workflow_run_provenance_id
        OR NEW.build_id <> OLD.build_id
        OR NEW.plan_id <> OLD.plan_id
        OR NEW.function_id <> OLD.function_id THEN
