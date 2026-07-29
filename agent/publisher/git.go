@@ -11,21 +11,66 @@ import (
 	"github.com/concourse/concourse/agent/snapshot"
 )
 
+// AdapterDirectGit selects the in-process generic Git ref publisher. It is
+// distinct from the retired gateway adapter so an opaque credential resolved
+// for one execution path cannot be replayed through the other.
+const AdapterDirectGit AdapterKind = "direct-git"
+
+// ErrDestinationChanged is returned by a backend only when its atomic
+// conditional write lost a destination race and committed none of the
+// publication refs. The service records a terminal stale/rebase result so a
+// lease reclaim cannot blindly retry the same obsolete change.
+var ErrDestinationChanged = errors.New("publisher: destination changed during publication")
+
 // Credential is an opaque, destination-scoped authorization handle. Concrete
 // backends may resolve it to an in-memory token or mounted secret; it is never
 // part of the publication request or operation key.
 type Credential struct {
 	Reference string
 
-	// bearerToken is process-local gateway state. It is deliberately
-	// unexported so it cannot be authored, serialized, or audited with a
-	// publication request.
+	adapterKind AdapterKind
+	remoteURL   string
+	secret      []byte
+
+	// bearerToken preserves the retired gateway transport only until the
+	// direct executor replaces it. Direct backends never accept this field.
 	bearerToken string
+}
+
+// AdapterKind and RemoteURL are immutable outputs of policy resolution.
+// Backends must never reconstruct either value from an authored request.
+func (credential Credential) AdapterKind() AdapterKind {
+	return credential.adapterKind
+}
+
+func (credential Credential) RemoteURL() string {
+	return credential.remoteURL
+}
+
+// Secret returns a disposable copy of the destination-scoped secret. The
+// credential retains no caller-owned byte slice.
+func (credential Credential) Secret() []byte {
+	return append([]byte(nil), credential.secret...)
+}
+
+func (credential Credential) String() string {
+	return fmt.Sprintf("publisher credential %q (%s, %s, secret redacted)",
+		credential.Reference, credential.adapterKind, credential.remoteURL)
+}
+
+func (credential Credential) GoString() string {
+	return credential.String()
 }
 
 func (credential Credential) Validate() error {
 	if !boundedText(credential.Reference, 4096, false) {
 		return fmt.Errorf("publisher: destination credential is unavailable")
+	}
+	if credential.adapterKind != "" || credential.remoteURL != "" || credential.secret != nil {
+		if !boundedText(string(credential.adapterKind), 128, false) ||
+			credential.adapterKind != "" && (validatePolicyRemoteURL(credential.remoteURL) != nil || len(credential.secret) == 0) {
+			return fmt.Errorf("publisher: resolved destination authorization is invalid")
+		}
 	}
 	return nil
 }
@@ -215,6 +260,23 @@ func (service *GitService) Execute(ctx context.Context, request Request) (Public
 		Authority: authorizedRequest.Authority,
 	})
 	if err != nil {
+		if errors.Is(err, ErrDestinationChanged) {
+			status := StatusRebaseRequired
+			detail := fmt.Sprintf(
+				"destination changed during publication from base %s; no publication refs were committed; rebase before retrying",
+				change.BaseSHA,
+			)
+			if authorizedRequest.Mode == ModeMerge {
+				status = StatusStaleBase
+				detail = fmt.Sprintf(
+					"destination changed during publication after approval for base %s; no publication refs were committed; rebase and re-evaluate approval",
+					change.BaseSHA,
+				)
+			}
+			return service.store.Complete(ctx, publication.OperationKey, publication.Attempt, Result{
+				Status: status, HeadSHA: change.ResultSHA, Detail: detail,
+			})
+		}
 		return Publication{}, preserveExternalError(externalContext, "publish repository change", err)
 	}
 	if gitResult.HeadSHA != change.ResultSHA {
