@@ -1390,7 +1390,9 @@ func effectFenceTokenForUpdate(ctx context.Context, tx Tx, headID int64, attempt
 
 func checkpointDatabaseNow(ctx context.Context, tx Tx) (time.Time, error) {
 	var now time.Time
-	err := tx.QueryRowContext(ctx, `SELECT now()`).Scan(&now)
+	// Unlike now(), clock_timestamp() advances while this transaction waits on
+	// a lock, so an expired lease cannot be authorized by transaction-start time.
+	err := tx.QueryRowContext(ctx, `SELECT clock_timestamp()`).Scan(&now)
 	return now, err
 }
 

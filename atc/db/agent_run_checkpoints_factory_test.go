@@ -2,6 +2,7 @@ package db_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -548,6 +549,83 @@ var _ = Describe("AgentRunCheckpointsFactory", func() {
 		Expect(errors.Is(err, checkpoint.ErrStaleFence)).To(BeTrue())
 	})
 
+	It("rejects a checkpoint reservation whose live fence expires while waiting on the current attempt", func() {
+		waitingIdentity := checkpoint.Identity{
+			BuildID: identity.BuildID + 101, PlanID: identity.PlanID, FunctionID: identity.FunctionID,
+		}
+		_, err := attempts.AllocateInitial(ctx, checkpoint.AllocateInitialAttemptRequest{
+			Identity: waitingIdentity, MaterializationID: "attempt-lock-expiry",
+		})
+		Expect(err).NotTo(HaveOccurred())
+		fence, err := attempts.AcquireFence(ctx, checkpoint.AcquireAttemptFenceRequest{
+			Identity: waitingIdentity, ExecutionAttempt: 1, Token: uuid.NewString(), TTL: 3 * time.Second,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = attempts.Transition(ctx, checkpoint.TransitionAttemptRequest{
+			Identity: waitingIdentity, ExecutionAttempt: 1, ExpectedState: checkpoint.AttemptScheduling,
+			State: checkpoint.AttemptRunning, Fence: fence.FenceClaim,
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		dbConn.SetMaxOpenConns(8)
+		blocker, err := dbConn.BeginTx(ctx, nil)
+		Expect(err).NotTo(HaveOccurred())
+		defer db.Rollback(blocker)
+		var attemptID int64
+		Expect(blocker.QueryRowContext(ctx, `
+			SELECT a.id
+			FROM agent_run_attempts AS a
+			JOIN agent_run_checkpoint_heads AS h ON h.id = a.head_id
+			WHERE h.build_id = $1 AND h.plan_id = $2 AND h.function_id = $3 AND a.is_current
+			FOR UPDATE OF a
+		`, waitingIdentity.BuildID, waitingIdentity.PlanID, waitingIdentity.FunctionID).Scan(&attemptID)).To(Succeed())
+
+		backendPIDs := make(chan int, 1)
+		waitingFactory := db.NewAgentRunCheckpointsFactory(checkpointMutationObservedConn{
+			DbConn: dbConn, backendPIDs: backendPIDs,
+		})
+		mutationResult := make(chan error, 1)
+		go func() {
+			_, err := waitingFactory.Begin(ctx, checkpoint.BeginRequest{
+				Identity: waitingIdentity, Fence: fence.FenceClaim, ExecutionAttempt: 1,
+			})
+			mutationResult <- err
+		}()
+
+		var mutationPID int
+		Eventually(backendPIDs).WithTimeout(5 * time.Second).Should(Receive(&mutationPID))
+		Eventually(func() (bool, error) {
+			var waiting bool
+			err := dbConn.QueryRow(`
+				SELECT EXISTS (
+					SELECT 1 FROM pg_locks
+					WHERE pid = $1 AND locktype = 'transactionid' AND NOT granted
+				)
+			`, mutationPID).Scan(&waiting)
+			return waiting, err
+		}).WithTimeout(5*time.Second).Should(BeTrue(),
+			"the checkpoint reservation must be waiting on the locked current attempt before its fence expires")
+		var beganBeforeFenceExpiry bool
+		Expect(dbConn.QueryRow(`
+			SELECT xact_start < $2
+			FROM pg_stat_activity
+			WHERE pid = $1
+		`, mutationPID, fence.ExpiresAt).Scan(&beganBeforeFenceExpiry)).To(Succeed())
+		Expect(beganBeforeFenceExpiry).To(BeTrue(), "the mutation transaction began while the fence was live")
+
+		Eventually(func() (bool, error) {
+			var expired bool
+			err := dbConn.QueryRow(`SELECT clock_timestamp() >= $1`, fence.ExpiresAt).Scan(&expired)
+			return expired, err
+		}).WithTimeout(5 * time.Second).Should(BeTrue())
+		Expect(blocker.Commit()).To(Succeed())
+
+		var mutationErr error
+		Eventually(mutationResult).WithTimeout(5 * time.Second).Should(Receive(&mutationErr))
+		Expect(errors.Is(mutationErr, checkpoint.ErrStaleFence)).To(BeTrue(),
+			"a reservation released after wall-clock expiry must not use the transaction-start timestamp")
+	})
+
 	It("does not claim a referenced restore object, then deletes it only after expiration releases the final durable reference", func() {
 		staged := stage(1)
 		ticket := prepareAndComplete(staged, "a")
@@ -805,3 +883,22 @@ var _ = Describe("AgentRunCheckpointsFactory", func() {
 		Expect(latest).To(Equal(checkpoint.Manifest{}))
 	})
 })
+
+type checkpointMutationObservedConn struct {
+	db.DbConn
+	backendPIDs chan<- int
+}
+
+func (conn checkpointMutationObservedConn) BeginTx(ctx context.Context, opts *sql.TxOptions) (db.Tx, error) {
+	tx, err := conn.DbConn.BeginTx(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+	var pid int
+	if err := tx.QueryRowContext(ctx, `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+		_ = tx.Rollback()
+		return nil, err
+	}
+	conn.backendPIDs <- pid
+	return tx, nil
+}
