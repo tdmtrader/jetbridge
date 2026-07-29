@@ -1,6 +1,8 @@
 package checkpoint
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
@@ -67,6 +69,20 @@ func validRestoreIdentifier(value string) bool {
 		}
 	}
 	return true
+}
+
+// RestoreGateLeafName is the opaque, deterministic materialization leaf used
+// by both Pod construction and the daemon's descriptor-anchored marker store.
+// It intentionally exposes no source path or pod identity.
+func RestoreGateLeafName(materializationID string) string {
+	sum := sha256.Sum256([]byte(materializationID))
+	return hex.EncodeToString(sum[:])
+}
+
+// ValidRestoreMaterializationID exposes the narrow identifier validation used
+// by server-owned recovery descriptors without exposing filesystem authority.
+func ValidRestoreMaterializationID(value string) bool {
+	return validRestoreIdentifier(value)
 }
 
 // RestoreResult is the daemon's bounded acknowledgement. The client verifies

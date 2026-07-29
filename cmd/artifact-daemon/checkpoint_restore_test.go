@@ -138,6 +138,31 @@ func TestCheckpointRestoreRequiresPrecreatedGateBeforeOpeningHangar(t *testing.T
 	}
 }
 
+func TestCheckpointRestoreVerificationReadsOnlyAnExactExistingMarker(t *testing.T) {
+	server, durable, request, storage, _ := checkpointRestoreFixture(t)
+	precreateCheckpointGate(t, storage, request)
+	if _, err := server.verifyCheckpointRestore(request); err == nil {
+		t.Fatal("missing marker verified")
+	}
+	if calls := durable.OpenCalls(); len(calls) != 0 {
+		t.Fatalf("verification opened Hangar without marker: %#v", calls)
+	}
+	hash, err := checkpointRestoreRequestHash(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := checkpointRestoreMarker{MaterializationID: request.MaterializationID, RequestHash: hash, PodUID: request.PodUID, Object: hangar.Attributes{Ref: request.Archive.Ref, CompressedBytes: 1, UncompressedBytes: 1024}}
+	if err := server.writeCheckpointRestoreMarker(request.ContainerHandle, request.MaterializationID, marker); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.verifyCheckpointRestore(request); err != nil {
+		t.Fatalf("exact marker verification: %v", err)
+	}
+	if calls := durable.OpenCalls(); len(calls) != 0 {
+		t.Fatalf("verification opened Hangar: %#v", calls)
+	}
+}
+
 func TestCheckpointRestoreCopiesExactCanonicalArchivePreservingRootsAndReplaysMarker(t *testing.T) {
 	server, durable, request, storage, _ := checkpointRestoreFixture(t)
 	precreateCheckpointGate(t, storage, request)

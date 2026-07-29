@@ -28,6 +28,7 @@ type DaemonSetBackend struct {
 	artifactLocator *ArtifactLocator
 	nodeIPResolver  *NodeIPResolver
 	daemonClient    *DaemonClient
+	restoreClient   CheckpointRestoreClient
 	resolveSigner   *artifactcap.Signer
 	resolveConfigOK bool
 }
@@ -65,6 +66,7 @@ func (b *DaemonSetBackend) resolveCapabilityExpiry() time.Time {
 // is available.
 func (b *DaemonSetBackend) SetDaemonClient(client *DaemonClient) {
 	b.daemonClient = client
+	b.restoreClient = client
 }
 
 func (b *DaemonSetBackend) StepVolume(name, handle, subdir string) corev1.Volume {

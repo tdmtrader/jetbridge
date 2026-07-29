@@ -16,6 +16,7 @@ import (
 
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
+	"github.com/concourse/concourse/agent/checkpoint"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/metric"
@@ -70,6 +71,10 @@ type Container struct {
 	mu               sync.RWMutex
 	checkpointMu     sync.Mutex
 	checkpointActive bool
+	recoveryMu       sync.Mutex
+	recoveryPodUID   types.UID
+	recoveryNodeName string
+	recoveryReady    bool
 	boundaryMu       sync.Mutex
 	boundaryActive   bool
 	properties       map[string]string
@@ -149,11 +154,22 @@ func (c *Container) Run(ctx context.Context, spec runtime.ProcessSpec, io runtim
 	// the pause pod's sleep expired or it was evicted), delete it and
 	// create a fresh one. Otherwise create a new pause pod.
 	if execMode {
+		if c.containerSpec.CheckpointRestore != nil {
+			if err := c.requireMaterializedRecoveryPod(ctx); err != nil {
+				return nil, err
+			}
+			metric.Metrics.ContainersCreated.Inc()
+			c.bindVolumesToPod(c.podName)
+			return newExecProcess(processID, c.podName, c.clientset, c.config, c, c.executor, spec, io, c.storageBackend), nil
+		}
 		podName := c.podName
 		existingPod, getErr := c.clientset.CoreV1().Pods(c.config.Namespace).Get(ctx, c.podName, metav1.GetOptions{})
 		needsCreate := getErr != nil // pod doesn't exist
 
 		if getErr == nil && (existingPod.Status.Phase == corev1.PodSucceeded || existingPod.Status.Phase == corev1.PodFailed) {
+			if c.containerSpec.CheckpointRestore != nil {
+				return nil, fmt.Errorf("checkpoint recovery Pod %q is terminal and cannot be recreated", c.podName)
+			}
 			// Pod exists but is terminal — delete it so we can create a fresh one.
 			logger.Info("deleting-terminal-pod", lager.Data{
 				"pod":   c.podName,
@@ -253,6 +269,12 @@ func (c *Container) Attach(ctx context.Context, processID string, io runtime.Pro
 	})
 	var spanErr error
 	defer func() { tracing.End(span, spanErr) }()
+	if c.containerSpec.CheckpointRestore != nil {
+		if err := c.requireMaterializedRecoveryPod(ctx); err != nil {
+			spanErr = err
+			return nil, err
+		}
+	}
 
 	// Check if the process has already exited (stored in properties).
 	c.mu.RLock()
@@ -560,6 +582,12 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 		return nil, fmt.Errorf("build artifact init containers: %w", err)
 	}
 	initContainers = append(initContainers, artifactInits...)
+	if gateVolume, gate, err := c.checkpointRestoreGate(); err != nil {
+		return nil, err
+	} else if gateVolume != nil {
+		volumes = append(volumes, *gateVolume)
+		initContainers = append(initContainers, *gate)
+	}
 	if c.containerSpec.Hermetic {
 		if preparer, ok := c.storageBackend.(HermeticWorkspacePreparer); ok {
 			if prepare := preparer.BuildHermeticWorkspaceInitContainer(c.nonPrivateInputMounts(volumeMounts)); prepare != nil {
@@ -685,6 +713,60 @@ func (c *Container) buildArtifactStoreVolume() *corev1.Volume {
 }
 
 const checkpointSessionVolumeName = "checkpoint-session"
+
+const (
+	checkpointRestoreGateVolumeName     = "checkpoint-restore-gate"
+	checkpointRestoreGateInitName       = "checkpoint-restore-gate"
+	checkpointRestoreGatesDirectoryName = ".checkpoint-restore-gates"
+)
+
+// checkpointRestoreGate is the only Pod-side release mechanism for fresh
+// recovery. Kubelet creates its exact leaf; the daemon independently requires
+// that proof before any durable read or restore copy.
+func (c *Container) checkpointRestoreGate() (*corev1.Volume, *corev1.Container, error) {
+	descriptor := c.containerSpec.CheckpointRestore
+	if descriptor == nil {
+		return nil, nil, nil
+	}
+	if c.executor == nil {
+		return nil, nil, fmt.Errorf("checkpoint restore requires exec mode")
+	}
+	if err := descriptor.ValidateForSpec(c.containerSpec); err != nil {
+		return nil, nil, err
+	}
+	backend, ok := c.storageBackend.(*DaemonSetBackend)
+	if !ok || backend == nil || backend.daemonClient == nil || backend.daemonClient.scheme != "https" || backend.daemonClient.initializationErr != nil || strings.TrimSpace(backend.helperImage()) == "" {
+		return nil, nil, fmt.Errorf("checkpoint restore requires checked DaemonSet daemon storage and helper image")
+	}
+	if !checkpointCaptureHandle(c.handle) {
+		return nil, nil, fmt.Errorf("checkpoint restore requires a fresh canonical container handle")
+	}
+	dirType := corev1.HostPathDirectoryOrCreate
+	volume := corev1.Volume{Name: checkpointRestoreGateVolumeName, VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{
+		Path: filepath.Join(backend.config.ArtifactDaemonHostPath, checkpointRestoreGatesDirectoryName, c.handle, checkpoint.RestoreGateLeafName(descriptor.MaterializationID)), Type: &dirType,
+	}}}
+	root, allowEscalation := int64(0), false
+	gate := corev1.Container{
+		Name: checkpointRestoreGateInitName, Image: backend.helperImage(), ImagePullPolicy: corev1.PullIfNotPresent,
+		Command:         []string{"sh", "-ceu", checkpointRestoreGateShell},
+		Env:             []corev1.EnvVar{{Name: "CHECKPOINT_MATERIALIZATION_ID", Value: descriptor.MaterializationID}, {Name: "CHECKPOINT_POD_UID", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.uid"}}}},
+		VolumeMounts:    []corev1.VolumeMount{{Name: checkpointRestoreGateVolumeName, MountPath: "/checkpoint-restore-gate", ReadOnly: true}},
+		SecurityContext: &corev1.SecurityContext{RunAsUser: &root, AllowPrivilegeEscalation: &allowEscalation, Capabilities: &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}}},
+	}
+	return &volume, &gate, nil
+}
+
+const checkpointRestoreGateShell = `
+while :; do
+  if [ -f /checkpoint-restore-gate/ready ]; then
+    marker="$(tr -d '\n' </checkpoint-restore-gate/ready)"
+    case "$marker" in
+      *'"materialization_id":"'"$CHECKPOINT_MATERIALIZATION_ID"'"'*'"pod_uid":"'"$CHECKPOINT_POD_UID"'"'*) exit 0 ;;
+    esac
+  fi
+  sleep 1
+done
+`
 
 // checkpointSessionVolume creates the only persistent provider-session mount
 // eligible for capture. This path is intentionally separate from private file
@@ -1058,7 +1140,7 @@ func privateMountDataDigest(files map[string][]byte) string {
 // from the hostPath steps directory for this container handle. Delegates to
 // the storage backend. Returns nil when no backend is configured.
 func (c *Container) buildCleanupInitContainer() *corev1.Container {
-	if c.storageBackend == nil {
+	if c.storageBackend == nil || c.containerSpec.CheckpointRestore != nil {
 		return nil
 	}
 	return c.storageBackend.BuildCleanupInitContainer(c.handle, c.containerSpec.Type, c.reused)
@@ -1234,7 +1316,11 @@ func (c *Container) buildPodLabels() map[string]string {
 
 // buildPodAnnotations returns annotations for the pod.
 func (c *Container) buildPodAnnotations() map[string]string {
-	return map[string]string{}
+	annotations := map[string]string{}
+	if c.containerSpec.CheckpointRestore != nil {
+		annotations[checkpointRestoreAnnotationKey] = checkpointRestoreAnnotation(c.handle, *c.containerSpec.CheckpointRestore)
+	}
+	return annotations
 }
 
 // resolveImage extracts a Kubernetes-compatible image reference from the

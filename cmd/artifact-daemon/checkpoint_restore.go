@@ -46,6 +46,50 @@ func (s *Server) handleCheckpointRestore(w http.ResponseWriter, r *http.Request)
 	writeCheckpointCaptureJSON(w, http.StatusOK, result)
 }
 
+// handleCheckpointRestoreVerify is the crash-window replay seam. It reads an
+// already-published exact marker only; it never opens Hangar or copies data.
+func (s *Server) handleCheckpointRestoreVerify(w http.ResponseWriter, r *http.Request) {
+	var request checkpoint.RestoreRequest
+	if err := decodeCheckpointCaptureJSON(w, r, &request); err != nil || request.Validate() != nil {
+		http.Error(w, "invalid checkpoint restore request", http.StatusBadRequest)
+		return
+	}
+	result, err := s.verifyCheckpointRestore(request)
+	if err != nil {
+		http.Error(w, "checkpoint restore marker is unavailable", http.StatusUnprocessableEntity)
+		return
+	}
+	writeCheckpointCaptureJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) verifyCheckpointRestore(request checkpoint.RestoreRequest) (checkpoint.RestoreResult, error) {
+	s.checkpointMu.Lock()
+	maxBytes, maxEntries := minCheckpointCapture(request.MaxBytes, s.checkpointMaxBytes), minCheckpointCapture(request.MaxEntries, s.checkpointMaxEntries)
+	s.checkpointMu.Unlock()
+	if maxBytes <= 0 || maxEntries <= 0 {
+		return checkpoint.RestoreResult{}, errors.New("checkpoint restore limits are unavailable")
+	}
+	request.MaxBytes, request.MaxEntries = maxBytes, maxEntries
+	requestHash, err := checkpointRestoreRequestHash(request)
+	if err != nil {
+		return checkpoint.RestoreResult{}, err
+	}
+	s.checkpointRestoreMu.Lock()
+	defer s.checkpointRestoreMu.Unlock()
+	if err := s.requireCheckpointRestoreGateLeaf(request.ContainerHandle, request.MaterializationID); err != nil {
+		return checkpoint.RestoreResult{}, err
+	}
+	marker, found, err := s.readCheckpointRestoreMarker(request.ContainerHandle, request.MaterializationID)
+	if err != nil || !found {
+		return checkpoint.RestoreResult{}, errors.Join(err, errors.New("checkpoint restore marker is absent"))
+	}
+	if marker.MaterializationID != request.MaterializationID || marker.RequestHash != requestHash || marker.PodUID != request.PodUID || marker.Object.Ref != request.Archive.Ref {
+		return checkpoint.RestoreResult{}, errors.New("checkpoint restore marker does not match request")
+	}
+	result := checkpoint.RestoreResult{Object: marker.Object, MaterializationID: request.MaterializationID, PodUID: request.PodUID}
+	return result, result.ValidateFor(request)
+}
+
 func (s *Server) restoreCheckpoint(ctx context.Context, request checkpoint.RestoreRequest) (checkpoint.RestoreResult, error) {
 	if s.hangar == nil {
 		return checkpoint.RestoreResult{}, errors.New("durable checkpoint storage unavailable")
@@ -408,8 +452,7 @@ func (s *Server) requireCheckpointRestoreGateLeaf(containerHandle, materializati
 }
 
 func checkpointRestoreMarkerName(materializationID string) string {
-	sum := sha256.Sum256([]byte(materializationID))
-	return hex.EncodeToString(sum[:])
+	return checkpoint.RestoreGateLeafName(materializationID)
 }
 
 func checkpointRestoreMarkerDirectory(gates *os.File, containerHandle, materializationID string) (*os.File, error) {
