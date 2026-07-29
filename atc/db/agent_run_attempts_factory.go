@@ -518,7 +518,7 @@ func (factory *agentRunAttemptsFactory) BeginRecovery(
 		VALUES ($1, $2, $3, 'scheduling', TRUE, $4, $5, $6, $7, $8, $9)
 		RETURNING
 			id,
-			$10::bigint, $10::bigint,
+			$10::bigint,
 			$11::bigint, $12::text, $13::text,
 			attempt_number, max_total_attempts, state, is_current,
 			materialization_id, source_attempt_number, source_checkpoint_id,
