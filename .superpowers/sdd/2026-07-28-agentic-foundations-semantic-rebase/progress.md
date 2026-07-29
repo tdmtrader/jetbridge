@@ -197,15 +197,13 @@
     only completed successful `admit` builds at the registered config version.
   - Verification: `go test ./agent/workflow -count=1` passed; compile-only
     `go test ./agent/workflow ./atc/db -run '^$' -count=1` passed (with a
-    task-local Go cache). The serial normal migration harness was attempted
-    with `ginkgo --procs=1 --focus='workflow resource source|build pipeline
-    config|Legacy Database Upgrade' ./atc/db/migration`, but its BeforeSuite
-    could not initialize the temporary PostgreSQL cluster: `shmget ...
-    Operation not permitted`; no specs ran.
+    task-local Go cache). The serial migration/legacy-upgrade focus initially
+    hit sandbox-denied System V shared memory; the identical host-access rerun
+    passed 17/17 specs.
   - Review: self-review only; no independent review round yet.
-  - Concern: source capture/reuse orchestration remains Task 13. PostgreSQL
-    migration/factory behavior needs a host or Borg environment allowing the
-    repository postgresrunner shared-memory setup.
+  - Concern: source capture/reuse orchestration remains Task 13. The new DB
+    factory compiles but has no dedicated behavioral test; independent review
+    must assess that Task 12 coverage gap.
 - [ ] Task 13 — source capture/reuse runtime
 - [ ] Task 14 — direct in-ATC publication
 - [ ] Task 15 — checkpoint and attempt data models

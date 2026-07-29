@@ -49,9 +49,9 @@ blocked before any test executes.
 - `GOCACHE=/private/tmp/task12-go-cache go test ./agent/workflow ./atc/db -run '^$' -count=1`
   — passed.
 - `GOCACHE=/private/tmp/task12-go-cache ginkgo --procs=1 --focus='workflow resource source|build pipeline config|Legacy Database Upgrade' ./atc/db/migration`
-  — blocked in the normal repository postgresrunner BeforeSuite: `initdb`
-  failed with `could not create shared memory segment: Operation not permitted`;
-  zero specs ran.
+  — the sandbox attempt was blocked in postgresrunner BeforeSuite by denied
+  System V shared memory. The identical host-access rerun passed 17/17 focused
+  migration and legacy-upgrade specs.
 
 ## Migration paths
 
@@ -69,9 +69,10 @@ no foundations migration file was copied verbatim.
 - Runtime source capture/finalization/retry/reuse is intentionally deferred to
   Task 13. The factory therefore persists capture operation keys and snapshot
   slots but does not create snapshots itself.
-- PostgreSQL-backed migration and factory checks require an environment where
-  the repository postgresrunner can allocate System V shared memory. This is a
-  verification prerequisite, not a code workaround.
+- The host-access migration checkpoint resolved the PostgreSQL shared-memory
+  prerequisite. The new DB factory compiles, but no dedicated factory
+  behavioral test was added; independent review must decide whether the
+  existing integration boundary is sufficient for Task 12.
 
 ## Deferred observations
 
