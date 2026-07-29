@@ -12,15 +12,14 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
+	"github.com/concourse/concourse/agent/provider"
 	schema "github.com/concourse/concourse/agent/schema"
 )
 
@@ -63,8 +62,12 @@ type Config struct {
 	Skills       []string // skill names to materialize from SkillsDir
 	SkillsDir    string   // mount path of the "skills" input artifact
 
-	FlightDir  string
-	WorkDir    string
+	FlightDir string
+	WorkDir   string
+	// SessionDir is the reserved server-supplied provider session directory.
+	// Current legacy Claude execution validates it but intentionally does not
+	// redirect CLAUDE_CONFIG_DIR until credential persistence is proven safe.
+	SessionDir string
 	StepName   string
 	ClaudePath string
 	MCPServers map[string]string
@@ -90,6 +93,12 @@ type Config struct {
 	BuildID        int
 	PlanID         string
 	BudgetSliceUSD float64
+
+	// Adapter is test/integration injection for a trusted provider. Nil keeps
+	// the existing Claude CLI behavior through the legacy adapter.
+	Adapter provider.Adapter
+	// BoundaryStop overrides self-SIGSTOP in tests. It has no stdin transport.
+	BoundaryStop func() error
 }
 
 type SnapshotAuthority struct {
@@ -124,6 +133,7 @@ func FromEnv() Config {
 		Context:        os.Getenv("AGENT_CONTEXT"),
 		SkillsDir:      os.Getenv("AGENT_SKILLS_DIR"),
 		FlightDir:      os.Getenv("AGENT_FLIGHT_DIR"),
+		SessionDir:     os.Getenv("AGENT_SESSION_DIR"),
 		StepName:       os.Getenv("AGENT_STEP_NAME"),
 		WorkDir:        wd,
 		MCPServers:     map[string]string{},
@@ -199,6 +209,24 @@ func envInt(name string) int {
 	return n
 }
 
+// validateSessionDir accepts only the server-reserved location under this
+// agent's workdir. The legacy adapter intentionally does not set
+// CLAUDE_CONFIG_DIR: Claude may persist credentials there and this slice has
+// not established a credential-free export contract. HOME is never changed.
+func validateSessionDir(workdir, supplied string) (string, error) {
+	if supplied == "" {
+		return "", nil
+	}
+	if workdir == "" || !filepath.IsAbs(workdir) || filepath.Clean(workdir) != workdir {
+		return "", errors.New("agent session directory requires a canonical workdir")
+	}
+	expected := filepath.Join(workdir, ".concourse", "session")
+	if !filepath.IsAbs(supplied) || filepath.Clean(supplied) != supplied || supplied != expected {
+		return "", fmt.Errorf("agent session directory must be %q", expected)
+	}
+	return supplied, nil
+}
+
 // Run executes one agent step: resolve the prompt, wait for sidecars,
 // invoke claude, and write the flight recorder. The returned exit code
 // follows the step contract: 0 = pass, 2 = platform error (including
@@ -215,15 +243,14 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	if stderr == nil {
 		stderr = os.Stderr
 	}
-	claudePath := cfg.ClaudePath
-	if claudePath == "" {
-		claudePath = "claude"
-	}
-
 	// 1. The compiler always inlines the prompt.
 	prompt := cfg.Prompt
 	if prompt == "" {
 		return 2, errors.New("no prompt configured")
+	}
+	sessionDir, err := validateSessionDir(cfg.WorkDir, cfg.SessionDir)
+	if err != nil {
+		return 2, err
 	}
 
 	// Materialize the step's selected skills from the mounted "skills"
@@ -381,57 +408,72 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	defer os.Remove(mcpConfigPath)
 	args = append(args, "--mcp-config", mcpConfigPath, "--strict-mcp-config")
 
-	var buf bytes.Buffer
-	cmd := exec.CommandContext(ctx, claudePath, args...)
-	// Own process group: a severed exec session tears down the pod's pty and
-	// the kernel HUPs the pty's FOREGROUND group. The supervisor's
-	// `trap '' HUP` shield only protects processes that keep the inherited
-	// ignore — claude (Node) installs its own SIGHUP handling and dies with
-	// the pty, killing the run a web restart should have resumed. Outside
-	// the foreground group the HUP never reaches it. Terminal-end teardown
-	// still works: the group TERM reaches agent-runner, whose cancelled
-	// context kills claude directly by pid (and the pod GC reaper bounds the
-	// escape window if agent-runner itself is SIGKILLed first).
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	// Cancellation tears down claude's WHOLE detached group, not just its
-	// pid: claude routinely leaks tool subprocesses, and with Setpgid the
-	// supervisor's terminal-end group kill can no longer reach them — the
-	// shared pgid this replaced used to be the safety net (native review
-	// finding, agent-review-native #3).
-	cmd.Cancel = func() error {
-		if cmd.Process == nil {
-			return nil
+	adapter := cfg.Adapter
+	if adapter == nil {
+		claudePath := cfg.ClaudePath
+		if claudePath == "" {
+			claudePath = "claude"
 		}
-		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		adapter = legacyClaudeAdapter{
+			path: claudePath, args: args,
+			env:    claudeEnv(os.Environ(), cfg.ModelTokenKind),
+			stderr: stderr, waitDelay: claudeWaitDelay,
+		}
 	}
-	cmd.Dir = cfg.WorkDir
-	cmd.Env = claudeEnv(os.Environ(), cfg.ModelTokenKind)
-	cmd.Stdout = io.MultiWriter(&buf, stdout)
-	cmd.Stderr = stderr
-	cmd.WaitDelay = claudeWaitDelay
-	runErr := cmd.Run()
-	if errors.Is(runErr, exec.ErrWaitDelay) {
-		// ErrWaitDelay is only returned when Wait would otherwise return
-		// nil: claude exited 0 and its envelope (if any) is already in buf —
-		// the error just says a leaked descendant held the stdout pipe past
-		// the drain bound. The envelope is the authoritative outcome; a
-		// missing/garbled one still degrades to status error via parseErr.
-		runErr = nil
+	if err := adapter.Identity().Validate(); err != nil {
+		return 2, fmt.Errorf("invalid provider adapter: %w", err)
 	}
+	control := newSignalBoundaryControl(cfg.BoundaryStop)
+	defer control.Close()
+	var adapterControl provider.BoundaryControl
+	if adapter.Capabilities().SafeBoundary {
+		adapterControl = control
+	}
+	running, startErr := adapter.Start(ctx, provider.StartRequest{
+		Prompt: prompt, WorkDir: cfg.WorkDir, SessionDir: sessionDir, Stdout: stdout,
+	}, adapterControl)
+	var providerResult provider.Result
+	runErr := startErr
+	if startErr == nil {
+		if running == nil {
+			runErr = errors.New("provider adapter returned no running session")
+		} else {
+			providerResult, runErr = running.Wait(ctx)
+		}
+	}
+	stream := providerResult.Stream
 	if runErr != nil {
-		fmt.Fprintf(stderr, "agent-runner: claude: %v\n", runErr)
+		label := "provider"
+		if _, legacy := adapter.(legacyClaudeAdapter); legacy {
+			label = "claude"
+		}
+		fmt.Fprintf(stderr, "agent-runner: %s: %v\n", label, runErr)
 	}
 
 	// Persist the captured stream-json stdout as the tool-call transcript.
 	// Best-effort observability: a write error must never fail the run, so
 	// log it and continue.
-	if err := writeTranscript(cfg.FlightDir, buf.Bytes()); err != nil {
+	if err := writeTranscript(cfg.FlightDir, stream); err != nil {
 		fmt.Fprintf(stderr, "agent-runner: write transcript: %v\n", err)
 	}
 
 	// 5. Parse the last non-empty stdout line as the CLI envelope,
 	// tolerating leading non-JSON output.
-	env, parseErr := parseEnvelope(buf.Bytes())
+	env, parseErr := parseEnvelope(stream)
+
+	// Legacy Claude never receives live boundary control, but its terminal
+	// stream is a truthful completion boundary. A pending elapsed request can
+	// therefore resolve no earlier than provider completion.
+	sessionID := providerResult.SessionID
+	if sessionID == "" {
+		sessionID = streamSessionID(stream)
+	}
+	if sessionID != "" {
+		boundary := provider.Boundary{SessionID: sessionID, TranscriptCursor: int64(len(stream))}
+		if boundaryErr := control.AtSafeBoundary(ctx, boundary); boundaryErr != nil {
+			fmt.Fprintf(stderr, "agent-runner: terminal boundary: %v\n", boundaryErr)
+		}
+	}
 
 	writeEvent(events, schema.EventCostRecord, schema.CostRecordData{
 		Source:              "agent_step",
@@ -640,6 +682,28 @@ func parseEnvelope(out []byte) (schema.CLIEnvelope, error) {
 		return env, nil
 	}
 	return schema.CLIEnvelope{}, errors.New("no CLI output to parse")
+}
+
+// streamSessionID reads the stable session identifier from a provider stream
+// without treating generic stream events as a live safe boundary.
+func streamSessionID(stream []byte) string {
+	var sessionID string
+	for _, line := range strings.Split(string(stream), "\n") {
+		var event struct {
+			SessionID string `json:"session_id"`
+		}
+		if err := json.Unmarshal([]byte(line), &event); err != nil || strings.TrimSpace(event.SessionID) == "" || strings.TrimSpace(event.SessionID) != event.SessionID {
+			continue
+		}
+		if sessionID == "" {
+			sessionID = event.SessionID
+			continue
+		}
+		if sessionID != event.SessionID {
+			return ""
+		}
+	}
+	return sessionID
 }
 
 // summaryFromResult extracts a human-readable summary from the envelope's
