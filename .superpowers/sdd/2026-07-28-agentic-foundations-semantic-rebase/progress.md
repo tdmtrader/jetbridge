@@ -96,7 +96,27 @@
     host-access `go test ./atc/worker/jetbridge -count=1` passed all 381 specs.
   - Independent blocking-only review passed after each reopened iteration with
     no Critical, High, or blocking findings. `HUMAN-REVIEW-001` is resolved.
-- [ ] Task 7 — exact validation gates
+- [x] Task 7 — exact validation gates
+  - Commits:
+    - `2946f9f9af Add exact validation gates for governed workflows`
+    - `7571f5f846 Fix validation gate review blockers`
+  - Behavior: governed review, merge-approval await, and
+    repository-change publication reopen an exact authoritative
+    validation/v1 rev3 record and match its candidate, bases, profile,
+    protected config, image, toolchain, workflow definition, and workflow
+    version before their first side effect.
+  - Verification:
+    `go test ./agent/workflow ./atc/exec ./atc/engine -count=1` and
+    compile-only `go test ./atc/db ./atc/builds -run '^$' -count=1` passed.
+    The focused DB spec ran zero specs because PostgreSQL shared memory was
+    unavailable in the sandbox and the one host retry found port 5434 in use;
+    it was not repeated.
+  - Review: round 1 found a post-validation repository-change producer and a
+    malformed-private-plan nil-authority panic. The correction makes the
+    public change the exact validated candidate and validates the private
+    requirement before base traversal. Round 2 found no remaining Critical,
+    High, or acceptance-blocking issue.
+  - Status: **Accepted** in review round 2. `DEPENDENCY-003` is resolved.
 - [x] Task 8 — output-builder core
   - Commits:
     - `bb567a16c5 feat(agent): add managed output builder core`
@@ -218,8 +238,8 @@
     mandatory opaque launch envelope without introducing a second execution
     API.
 - [ ] Task 14 — direct in-ATC publication
-  - Status: dependency-deferred under `DEPENDENCY-003`; exact validation gates
-    from Task 7 must be accepted before replacing the publisher gateway.
+  - Status: unblocked by accepted Tasks 6 and 7; not started. Preserve Task
+    7's exact validation gate while replacing the publisher gateway.
 - [x] Task 15 — checkpoint and attempt data models
   - Implementation and correction commits:
     - `add954b863 feat(agent): add durable checkpoint attempt models`
@@ -332,8 +352,8 @@
   - Status: **Accepted**.
 - [ ] Task 19 — full verification and residue audit
   - Status: dependency-deferred under `DEPENDENCY-005`; final proof cannot pass
-    while Tasks 6 and 12 remain Human Review Required, their dependent tasks
-    are unstarted, and the branch is knowingly incomplete.
+    while Tasks 9, 13, and 14 are unstarted and the branch is knowingly
+    incomplete.
 
 ## Current milestone acceptance
 
@@ -344,6 +364,6 @@
 - Merge-preflight revision-3 focused suites: passed.
 - `make test-unit`: failed only in Jetbridge as described under Task 6; the
   other 120 Ginkgo suites completed without a reported failure.
-- Status: recovery evidence is complete, but the branch is not merge-ready
-  while Tasks 6 and 12 remain **Human Review Required** and their dependent
-  tasks remain unimplemented.
+- Status: recovery evidence and Tasks 6, 7, and 12 are accepted, but the branch
+  is not merge-ready while Tasks 9, 13, and 14 remain unimplemented and Task
+  19 has not run.

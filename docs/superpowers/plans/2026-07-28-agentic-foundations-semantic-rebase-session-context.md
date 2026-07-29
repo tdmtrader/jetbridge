@@ -132,11 +132,10 @@ Task 7:
   compile-only verification passed.
 - Review round 1 blocking fixes remove post-validation repository-change
   mutation from small-fix/version-upgrade and fail closed malformed nil
-  validation authorities before base traversal. Task 7 awaits re-review and
-  is not yet accepted.
-- Focused regressions and a fresh host-access full Jetbridge package passed
-  381/381. Two blocking-only reviews passed. `HUMAN-REVIEW-001` and
-  `DEPENDENCY-001` are resolved.
+  validation authorities before base traversal.
+- Status: **Accepted** in bounded review round 2. The re-review found no
+  Critical, High, or acceptance-blocking issue. `DEPENDENCY-003` is resolved
+  and Task 14 is unblocked.
 
 Task 8:
 
@@ -151,16 +150,6 @@ Task 8:
   `record.json` last with ordinary-error rollback, and never seals.
 - `DEFERRED-003` records durable fsynced crash-recovery journaling; it is
   nonblocking for the current authoring/preflight boundary.
-
-Task 7:
-
-- Implemented; pending independent bounded review.
-- Governed review, merge approval, and repository-change publication now use
-  private per-consumer exact validation requirements derived from frozen
-  `DevValidationAuthority`, with structural candidate/base dominance and
-  runtime revision-3 archive revalidation before side effects.
-- Focused workflow/executor suites and affected planner/engine compilation
-  passed. See `2026-07-29-agentic-foundations-task-7-report.md`.
 
 Task 9:
 
@@ -224,9 +213,9 @@ Task 13:
 
 Task 14:
 
-- Not started; dependency-deferred under `DEPENDENCY-003` because the design
-  requires accepted exact validation gates before replacing the publisher
-  gateway. Task 6 is accepted; Task 7 remains unstarted.
+- Not started; unblocked by accepted Tasks 6 and 7. Its direct publication path
+  must preserve Task 7's exact validation gate while replacing the publisher
+  gateway.
 
 Task 15:
 
@@ -283,8 +272,8 @@ Fresh verification at the current checkpoint:
   `go test ./atc/worker/jetbridge -count=1` passed all 381 specs. The complete
   repository-wide `make test-unit` target has not yet been rerun.
 
-The recovery track and Tasks 6/12 are verified, but the branch is not
-merge-ready. Do not report it as green until Tasks 7, 9, 13, 14, and 19 are
+The recovery track and Tasks 6/7/12 are verified, but the branch is not
+merge-ready. Do not report it as green until Tasks 9, 13, 14, and 19 are
 completed and the broad suites are rerun.
 
 ## Near-term sequence
@@ -292,14 +281,14 @@ completed and the broad suites are rerun.
 1. Treat Task 6 as accepted; do not reopen it without new blocking evidence.
 2. Treat Task 12 as accepted through `875d604026`; do not reopen it without
    new blocking evidence.
-3. Task 7 is implemented; Tasks 9 and 13 remain unstarted.
-4. Leave Task 14 at its documented Task 7 dependency boundary.
+3. Treat Task 7 as accepted through `7571f5f846`; do not reopen it without new
+   blocking evidence.
+4. Tasks 9, 13, and 14 remain unstarted; Task 14 is now unblocked.
 5. Treat Task 15 as **Accepted**; its user-authorized final review found no
    blocking issue.
 6. Treat Tasks 16, 17, and 18 as accepted; do not reopen their review cycles
    without new blocking evidence.
-7. Leave Task 19 dependency-deferred until Tasks 7, 9, 13, and 14 are
-   completed.
+7. Leave Task 19 dependency-deferred until Tasks 9, 13, and 14 are completed.
 8. Treat every resumed feature group as a separate bounded track rather than
    one continuous "rebase."
 

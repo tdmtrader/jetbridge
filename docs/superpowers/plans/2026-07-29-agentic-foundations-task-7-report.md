@@ -30,18 +30,33 @@ their governed consumer. Existing merge-preflight behavior remains separate.
   reads base declarations, so a direct malformed plan with a nil authority
   fails closed instead of panicking the controller.
 
-These round-1 fixes are implemented and awaiting the bounded re-review; Task
-7 is not accepted yet.
+The bounded round-2 review confirmed both blockers are closed and found no new
+Critical, High, or acceptance-blocking issue. Task 7 is **Accepted**.
 
 ## Verification
 
-- `go test ./agent/workflow ./atc/exec ./atc/engine -count=1` — passed.
-- `go test ./atc/db -run '^$' -count=1` — passed (compile-only).
+- `go test ./agent/workflow ./atc/exec ./atc/engine -count=1` — passed after
+  the round-1 fixes.
+- `go test ./atc/db ./atc/builds -run '^$' -count=1` — passed
+  (compile-only).
 - `git diff --check` — passed.
 
-The full `./atc/db` suite could not start because another local PostgreSQL
-runner already held port 5434; its BeforeSuite failed before any spec ran.
-This is an environment conflict, not a Task 7 assertion failure.
+The focused selected-build DB specification ran zero specs: the sandboxed
+attempt could not allocate PostgreSQL shared memory, and the one authorized
+host retry found port 5434 already occupied before its BeforeSuite. Per the
+bounded-infrastructure policy it was not repeated. The query path was reviewed
+directly and both affected DB packages compiled.
+
+## Review
+
+- Round 1 found one High issue: small-fix and version-upgrade could publish a
+  repository-change produced after the validated candidate. It also confirmed
+  the controller's independently found malformed-private-plan nil-authority
+  panic.
+- The correction commit makes the public change the exact validated candidate,
+  removes the later repository-change producer, and validates the private
+  requirement before traversing its bases.
+- Round 2 passed with no Critical, High, or acceptance-blocking finding.
 
 ## Deferred
 

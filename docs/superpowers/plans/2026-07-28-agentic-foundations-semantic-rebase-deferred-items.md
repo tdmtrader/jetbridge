@@ -223,13 +223,13 @@ to evaluate independently.
 ### DEPENDENCY-003 — Task 14 waits for exact validation gates
 
 - Task/area: Task 14, direct in-ATC publication
-- Classification: Blocking dependency; task not started
-- Status: Deferred until Tasks 6–7 are accepted
+- Classification: Resolved ordering dependency; task not started
+- Status: **Resolved** on 2026-07-29; Task 14 is unblocked
 - Evidence: The approved dependency order requires exact validation gates
-  before removing the publisher gateway. Task 6 is accepted, but Task 7
-  remains unstarted, and publication must not consume an untrusted or stale
-  validation boundary.
-- Suggested follow-up: Complete and accept Task 7, then implement Task 14
+  before removing the publisher gateway. Tasks 6 and 7 are accepted; Task 7's
+  runtime gate reopens and verifies the exact current authoritative
+  validation/v1 record before any publisher side effect.
+- Resolution/follow-up: Implement Task 14 against the accepted Task 7 boundary
   without restoring the external gateway.
 
 ### HUMAN-REVIEW-003 — Use real database time for checkpoint mutation fences
@@ -286,11 +286,10 @@ to evaluate independently.
 - Task/area: Task 19, final upgrade/end-to-end/residue proof
 - Classification: Blocking dependency; task not started
 - Status: Deferred
-- Evidence: Tasks 6 and 12 are now accepted, but Tasks 7, 9, 13, and 14 remain
+- Evidence: Tasks 6, 7, and 12 are now accepted, but Tasks 9, 13, and 14 remain
   unstarted. Tasks 16–18 are also accepted. Task 19 still cannot truthfully
-  prove complete validation, output-builder wiring, source capture,
-  publication, or repository-wide acceptance while those implementations are
-  absent.
-- Suggested follow-up: Complete Tasks 7, 9, 13, and 14, then run Task 19 once
+  prove output-builder wiring, source capture, publication, or
+  repository-wide acceptance while those implementations are absent.
+- Suggested follow-up: Complete Tasks 9, 13, and 14, then run Task 19 once
   as the final milestone rather than repeatedly running broad suites against a
   knowingly incomplete branch.
