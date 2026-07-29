@@ -106,4 +106,26 @@ func TestRenderFunctionWithBoundSourcesRemovesLiveResourceReads(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "substituted") {
 		t.Fatalf("substitution error = %v", err)
 	}
+
+	canonical, err := rendered.Config.CanonicalJSON()
+	if err != nil {
+		t.Fatalf("canonical rendered config: %v", err)
+	}
+	originalHash := rendered.TargetConfigHash
+	if _, err := rendered.ExecutionEnvelope(map[string]any{"workflow_run_id": "9", "snapshot_repository-source": "42"}); err == nil || !strings.Contains(err.Error(), "substituted") {
+		t.Fatalf("envelope substitution error = %v", err)
+	}
+
+	// The public declarative view remains mutable for preflight callers, but a
+	// post-render mutation cannot alter the privately retained launch authority.
+	rendered.Config.Params = nil
+	rendered.TargetConfigHash = strings.Repeat("0", 64)
+	envelope, err := rendered.ExecutionEnvelope(map[string]any{"workflow_run_id": "9"})
+	if err != nil {
+		t.Fatalf("ExecutionEnvelope after Config mutation: %v", err)
+	}
+	launchParams, err := envelope.ParamsFor(canonical, originalHash)
+	if err != nil || launchParams["snapshot_repository-source"] != "41" {
+		t.Fatalf("envelope after Config mutation = %#v, %v", launchParams, err)
+	}
 }

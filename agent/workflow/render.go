@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -45,6 +46,17 @@ type RenderedFunction struct {
 	DevValidationProfiles       []CompiledDevValidationProfile
 	DevValidationProvenanceHash string
 	boundSourceRefs             map[string]snapshot.SnapshotRef
+	executionCanonicalConfig    []byte
+	executionTargetConfigHash   string
+}
+
+// ExecutionEnvelope is the opaque launch artifact produced by a trusted
+// render. Its private canonical configuration and bound source references are
+// intentionally unavailable to callers submitting a workflow run.
+type ExecutionEnvelope struct {
+	canonicalConfig  []byte
+	targetConfigHash string
+	params           map[string]any
 }
 
 // BindExecutionParams is the only source-aware execution envelope. It owns
@@ -67,6 +79,91 @@ func (rendered RenderedFunction) BindExecutionParams(params map[string]any) (map
 		bound[name] = value
 	}
 	return bound, nil
+}
+
+// ExecutionEnvelope binds caller parameters to this exact render. It refuses
+// zero or manually constructed RenderedFunctions so a source-bearing launch
+// cannot replace the trusted render with a bare config and params map.
+func (rendered RenderedFunction) ExecutionEnvelope(params map[string]any) (ExecutionEnvelope, error) {
+	if len(rendered.executionCanonicalConfig) == 0 || rendered.executionTargetConfigHash == "" {
+		return ExecutionEnvelope{}, fmt.Errorf("workflow: rendered function has no trusted execution authority")
+	}
+	bound, err := rendered.BindExecutionParams(params)
+	if err != nil {
+		return ExecutionEnvelope{}, err
+	}
+	cloned, err := cloneExecutionParams(bound)
+	if err != nil {
+		return ExecutionEnvelope{}, err
+	}
+	return ExecutionEnvelope{
+		canonicalConfig:  append([]byte(nil), rendered.executionCanonicalConfig...),
+		targetConfigHash: rendered.executionTargetConfigHash,
+		params:           cloned,
+	}, nil
+}
+
+// ParamsFor opens a trusted launch envelope only when the locked durable
+// workflow config and its immutable template identity are exactly the render
+// that created it. The returned params are always a defensive copy.
+func (envelope ExecutionEnvelope) ParamsFor(canonicalConfig []byte, targetConfigHash string) (map[string]any, error) {
+	if len(envelope.canonicalConfig) == 0 || envelope.targetConfigHash == "" || envelope.params == nil ||
+		!bytes.Equal(envelope.canonicalConfig, canonicalConfig) || envelope.targetConfigHash != targetConfigHash {
+		return nil, fmt.Errorf("workflow: execution envelope does not match durable workflow authority")
+	}
+	return cloneExecutionParams(envelope.params)
+}
+
+// Params returns a defensive parameter copy for adapters that observe a
+// launch request. It cannot authorize a durable launch; that requires
+// ParamsFor's canonical config and immutable hash check at the DB seam.
+func (envelope ExecutionEnvelope) Params() (map[string]any, error) {
+	if len(envelope.canonicalConfig) == 0 || envelope.targetConfigHash == "" || envelope.params == nil {
+		return nil, fmt.Errorf("workflow: invalid execution envelope")
+	}
+	return cloneExecutionParams(envelope.params)
+}
+
+func cloneExecutionParams(params map[string]any) (map[string]any, error) {
+	cloned, err := copystructure.Copy(params)
+	if err != nil {
+		return nil, fmt.Errorf("workflow: clone execution params: %w", err)
+	}
+	if cloned == nil {
+		return nil, nil
+	}
+	return cloned.(map[string]any), nil
+}
+
+// Clone preserves private execution authority that reflection-based cloning
+// drops, while retaining the public declarative render for preflight callers.
+func (rendered RenderedFunction) Clone() (RenderedFunction, error) {
+	cloned, err := copystructure.Copy(rendered)
+	if err != nil {
+		return RenderedFunction{}, err
+	}
+	value := cloned.(RenderedFunction)
+	value.boundSourceRefs = cloneBoundSourceRefs(rendered.boundSourceRefs)
+	value.executionCanonicalConfig = append([]byte(nil), rendered.executionCanonicalConfig...)
+	value.executionTargetConfigHash = rendered.executionTargetConfigHash
+	return value, nil
+}
+
+func (rendered *RenderedFunction) refreshExecutionAuthority() error {
+	hash, err := RenderedTargetConfigHash(rendered.Config, rendered.DevValidationProfiles, rendered.DevValidationProvenanceHash)
+	if err != nil {
+		return err
+	}
+	if hash != rendered.TargetConfigHash {
+		return fmt.Errorf("workflow: rendered target hash does not match execution config")
+	}
+	canonical, err := rendered.Config.CanonicalJSON()
+	if err != nil {
+		return fmt.Errorf("workflow: canonicalize execution config: %w", err)
+	}
+	rendered.executionCanonicalConfig = append([]byte(nil), canonical...)
+	rendered.executionTargetConfigHash = hash
+	return nil
 }
 
 // TargetConfigHash returns the canonical, domain-separated hash used to bind
@@ -196,6 +293,78 @@ func FullFunctionTarget(definition Definition) (FunctionTarget, error) {
 
 func RenderFunction(target FunctionTarget) (RenderedFunction, error) {
 	return renderFunction(target, nil, false)
+}
+
+// RenderFunctionWithRuntimeImage is the workflow-owned trusted rendering path
+// for executable targets. Callers cannot re-finalize a public Config after it
+// returns, so private launch authority remains bound to this exact render.
+func RenderFunctionWithRuntimeImage(target FunctionTarget, runtimeImage string) (RenderedFunction, error) {
+	rendered, err := RenderFunction(target)
+	if err != nil {
+		return RenderedFunction{}, err
+	}
+	agentCount := 0
+	mergePreflightCount := 0
+	for jobIndex := range rendered.Config.Jobs {
+		for stepIndex := range rendered.Config.Jobs[jobIndex].PlanSequence {
+			err := rendered.Config.Jobs[jobIndex].PlanSequence[stepIndex].Config.Visit(atc.StepRecursor{
+				OnAgent: func(step *atc.AgentStep) error {
+					agentCount++
+					if step.RuntimeImage != "" {
+						return fmt.Errorf("workflow runtime image was already populated")
+					}
+					if err := atc.ValidatePinnedOCIImage(runtimeImage); err != nil {
+						return fmt.Errorf("workflow agent runtime image: %w", err)
+					}
+					step.RuntimeImage = runtimeImage
+					return nil
+				},
+				OnTask: func(step *atc.TaskStep) error {
+					if step.MergePreflightAuthority == nil {
+						return nil
+					}
+					mergePreflightCount++
+					if err := atc.ValidatePinnedOCIImage(runtimeImage); err != nil {
+						return fmt.Errorf("workflow merge preflight runtime image: %w", err)
+					}
+					a := step.MergePreflightAuthority.Clone()
+					a.WorkflowDefinitionID = target.WorkflowDefinitionID
+					a.WorkflowVersion = target.WorkflowVersion
+					a.CapabilityImage = runtimeImage
+					at := strings.LastIndexByte(runtimeImage, '@')
+					if at < 0 {
+						return fmt.Errorf("workflow merge preflight runtime image is not pinned")
+					}
+					a.CapabilityImageDigest = snapshot.Digest(runtimeImage[at+1:])
+					config, err := atc.NewMergePreflightTaskConfig(*a)
+					if err != nil {
+						return err
+					}
+					step.MergePreflightAuthority, step.Config = a, config
+					return nil
+				},
+			})
+			if err != nil {
+				return RenderedFunction{}, err
+			}
+		}
+	}
+	if agentCount == 0 && mergePreflightCount == 0 {
+		return rendered, nil
+	}
+	hash, err := RenderedTargetConfigHash(rendered.Config, rendered.DevValidationProfiles, rendered.DevValidationProvenanceHash)
+	if err != nil {
+		return RenderedFunction{}, err
+	}
+	name, err := TemplateName(target.Kind, target.WorkflowName, target.WorkflowVersion, target.FunctionID, hash)
+	if err != nil {
+		return RenderedFunction{}, err
+	}
+	rendered.TargetConfigHash, rendered.TemplateName = hash, name
+	if err := rendered.refreshExecutionAuthority(); err != nil {
+		return RenderedFunction{}, err
+	}
+	return rendered, nil
 }
 
 // RenderFunctionWithBoundSources renders a source-bearing workflow only after
@@ -357,6 +526,10 @@ func renderFunction(target FunctionTarget, sourceRefs map[string]snapshot.Snapsh
 		return RenderedFunction{}, err
 	}
 
+	canonicalConfig, err := config.CanonicalJSON()
+	if err != nil {
+		return RenderedFunction{}, fmt.Errorf("workflow: canonicalize rendered config: %w", err)
+	}
 	configHash, err := RenderedTargetConfigHash(config, function.DevValidationProfiles, function.DevValidationProvenanceHash)
 	if err != nil {
 		return RenderedFunction{}, err
@@ -375,6 +548,8 @@ func renderFunction(target FunctionTarget, sourceRefs map[string]snapshot.Snapsh
 		DevValidationProfiles:       cloneCompiledDevValidationProfiles(function.DevValidationProfiles),
 		DevValidationProvenanceHash: function.DevValidationProvenanceHash,
 		boundSourceRefs:             cloneBoundSourceRefs(sourceRefs),
+		executionCanonicalConfig:    append([]byte(nil), canonicalConfig...),
+		executionTargetConfigHash:   configHash,
 	}, nil
 }
 
@@ -387,6 +562,19 @@ func cloneBoundSourceRefs(refs map[string]snapshot.SnapshotRef) map[string]snaps
 		cloned[name] = ref
 	}
 	return cloned
+}
+
+// BoundSourceParamNames reports only the parameter names that trusted source
+// binding owns. The snapshot identities remain private in ExecutionEnvelope.
+func (rendered RenderedFunction) BoundSourceParamNames() map[string]struct{} {
+	names := make(map[string]struct{}, len(rendered.boundSourceRefs))
+	for source := range rendered.boundSourceRefs {
+		name, err := InputParamName(source)
+		if err == nil {
+			names[name] = struct{}{}
+		}
+	}
+	return names
 }
 
 func validateBoundResourceSourceRefs(sources []ResourceSource, refs map[string]snapshot.SnapshotRef) error {

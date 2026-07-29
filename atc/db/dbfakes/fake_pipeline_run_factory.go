@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/atc/db"
 )
 
@@ -38,13 +39,13 @@ type FakePipelineRunFactory struct {
 		result1 db.PipelineRun
 		result2 error
 	}
-	CreateRunForWorkflowRunStub        func(context.Context, snapshot.WorkflowRunID, db.WorkflowRunTemplateRef, map[string]any, string, db.BeforeWorkflowRunCommit) (db.WorkflowRunExecution, bool, error)
+	CreateRunForWorkflowRunStub        func(context.Context, snapshot.WorkflowRunID, db.WorkflowRunTemplateRef, workflow.ExecutionEnvelope, string, db.BeforeWorkflowRunCommit) (db.WorkflowRunExecution, bool, error)
 	createRunForWorkflowRunMutex       sync.RWMutex
 	createRunForWorkflowRunArgsForCall []struct {
 		arg1 context.Context
 		arg2 snapshot.WorkflowRunID
 		arg3 db.WorkflowRunTemplateRef
-		arg4 map[string]any
+		arg4 workflow.ExecutionEnvelope
 		arg5 string
 		arg6 db.BeforeWorkflowRunCommit
 	}
@@ -266,14 +267,14 @@ func (fake *FakePipelineRunFactory) CreateRunReturnsOnCall(i int, result1 db.Pip
 	}{result1, result2}
 }
 
-func (fake *FakePipelineRunFactory) CreateRunForWorkflowRun(arg1 context.Context, arg2 snapshot.WorkflowRunID, arg3 db.WorkflowRunTemplateRef, arg4 map[string]any, arg5 string, arg6 db.BeforeWorkflowRunCommit) (db.WorkflowRunExecution, bool, error) {
+func (fake *FakePipelineRunFactory) CreateRunForWorkflowRun(arg1 context.Context, arg2 snapshot.WorkflowRunID, arg3 db.WorkflowRunTemplateRef, arg4 workflow.ExecutionEnvelope, arg5 string, arg6 db.BeforeWorkflowRunCommit) (db.WorkflowRunExecution, bool, error) {
 	fake.createRunForWorkflowRunMutex.Lock()
 	ret, specificReturn := fake.createRunForWorkflowRunReturnsOnCall[len(fake.createRunForWorkflowRunArgsForCall)]
 	fake.createRunForWorkflowRunArgsForCall = append(fake.createRunForWorkflowRunArgsForCall, struct {
 		arg1 context.Context
 		arg2 snapshot.WorkflowRunID
 		arg3 db.WorkflowRunTemplateRef
-		arg4 map[string]any
+		arg4 workflow.ExecutionEnvelope
 		arg5 string
 		arg6 db.BeforeWorkflowRunCommit
 	}{arg1, arg2, arg3, arg4, arg5, arg6})
@@ -296,13 +297,13 @@ func (fake *FakePipelineRunFactory) CreateRunForWorkflowRunCallCount() int {
 	return len(fake.createRunForWorkflowRunArgsForCall)
 }
 
-func (fake *FakePipelineRunFactory) CreateRunForWorkflowRunCalls(stub func(context.Context, snapshot.WorkflowRunID, db.WorkflowRunTemplateRef, map[string]any, string, db.BeforeWorkflowRunCommit) (db.WorkflowRunExecution, bool, error)) {
+func (fake *FakePipelineRunFactory) CreateRunForWorkflowRunCalls(stub func(context.Context, snapshot.WorkflowRunID, db.WorkflowRunTemplateRef, workflow.ExecutionEnvelope, string, db.BeforeWorkflowRunCommit) (db.WorkflowRunExecution, bool, error)) {
 	fake.createRunForWorkflowRunMutex.Lock()
 	defer fake.createRunForWorkflowRunMutex.Unlock()
 	fake.CreateRunForWorkflowRunStub = stub
 }
 
-func (fake *FakePipelineRunFactory) CreateRunForWorkflowRunArgsForCall(i int) (context.Context, snapshot.WorkflowRunID, db.WorkflowRunTemplateRef, map[string]any, string, db.BeforeWorkflowRunCommit) {
+func (fake *FakePipelineRunFactory) CreateRunForWorkflowRunArgsForCall(i int) (context.Context, snapshot.WorkflowRunID, db.WorkflowRunTemplateRef, workflow.ExecutionEnvelope, string, db.BeforeWorkflowRunCommit) {
 	fake.createRunForWorkflowRunMutex.RLock()
 	defer fake.createRunForWorkflowRunMutex.RUnlock()
 	argsForCall := fake.createRunForWorkflowRunArgsForCall[i]

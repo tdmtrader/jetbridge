@@ -359,9 +359,16 @@ func (b *Binder) resume(
 		return BindResult{}, fmt.Errorf("%w: budget admission failed", ErrPlatformFailure)
 	}
 	templateName := rendered.TemplateName
-	params, err := durableParams(run.ID, bindings, config)
+	envelope, err := durableExecutionEnvelope(run.ID, bindings, config, rendered)
 	if err != nil {
 		return b.failAllocated(ctx, admission, request, run, created, err)
+	}
+	params, err := envelope.ParamsFor(canonical, rendered.TargetConfigHash)
+	if err != nil {
+		return b.failAllocated(ctx, admission, request, run, created, fmt.Errorf("%w: open workflow execution envelope", ErrCorruptPartialAdmission))
+	}
+	if _, err := atc.ValidateRunParams(config.Params, cloneParams(params)); err != nil {
+		return b.failAllocated(ctx, admission, request, run, created, fmt.Errorf("%w: invalid durable parameters", ErrCorruptPartialAdmission))
 	}
 
 	if err := b.credential.AdmitModelCredential(ctx); err != nil {
@@ -387,7 +394,7 @@ func (b *Binder) resume(
 	// nothing has to happen between allocating the pipeline run and committing
 	// it. The seam stays on the store for callers that do need one.
 	_, _, err = b.executions.CreateRunForWorkflowRun(
-		ctx, run.ID, templateRef, cloneParams(params), run.CreatedBy, nil,
+		ctx, run.ID, templateRef, envelope, run.CreatedBy, nil,
 	)
 	if err != nil {
 		cause := fmt.Errorf("%w: create workflow execution", ErrPlatformFailure)
@@ -768,7 +775,7 @@ func validateTargetIdentity(target workflow.FunctionTarget, definition workflow.
 }
 
 func validateRendered(target workflow.FunctionTarget, rendered workflow.RenderedFunction) ([]byte, error) {
-	if err := validateRenderedParams(target.Signature, rendered.Config); err != nil {
+	if err := validateRenderedParams(target.Signature, rendered); err != nil {
 		return nil, err
 	}
 	canonical, err := rendered.Config.CanonicalJSON()
@@ -783,7 +790,8 @@ func validateRendered(target workflow.FunctionTarget, rendered workflow.Rendered
 	if err != nil || wantName != rendered.TemplateName {
 		return nil, fmt.Errorf("%w: rendered template name mismatch", ErrPlatformFailure)
 	}
-	if !target.Signature.Equal(rendered.TargetSignature) || len(rendered.InputParamNames) != len(target.Signature.Inputs) {
+	boundSources := rendered.BoundSourceParamNames()
+	if !target.Signature.Equal(rendered.TargetSignature) || len(rendered.InputParamNames) != len(target.Signature.Inputs)+len(boundSources) {
 		return nil, fmt.Errorf("%w: rendered target signature mismatch", ErrPlatformFailure)
 	}
 	if target.DevValidationProvenanceHash != rendered.DevValidationProvenanceHash || !reflect.DeepEqual(target.Function.DevValidationProfiles, rendered.DevValidationProfiles) {
@@ -795,11 +803,22 @@ func validateRendered(target workflow.FunctionTarget, rendered workflow.Rendered
 			return nil, fmt.Errorf("%w: rendered input parameter mismatch", ErrPlatformFailure)
 		}
 	}
+	for _, source := range target.Function.ResourceSources {
+		name, err := workflow.InputParamName(source.Name)
+		if err != nil {
+			return nil, fmt.Errorf("%w: rendered resource-source parameter mismatch", ErrPlatformFailure)
+		}
+		if _, bound := boundSources[name]; !bound || rendered.InputParamNames[source.Name] != name {
+			return nil, fmt.Errorf("%w: rendered resource-source parameter mismatch", ErrPlatformFailure)
+		}
+	}
 	return canonical, nil
 }
 
-func validateRenderedParams(signature workflow.PublicSignature, config atc.Config) error {
-	if !config.Template || len(config.Params) != len(signature.Inputs)+1 {
+func validateRenderedParams(signature workflow.PublicSignature, rendered workflow.RenderedFunction) error {
+	config := rendered.Config
+	boundSources := rendered.BoundSourceParamNames()
+	if !config.Template || len(config.Params) != len(signature.Inputs)+1+len(boundSources) {
 		return fmt.Errorf("%w: rendered parameter schema mismatch", ErrPlatformFailure)
 	}
 	params := make(map[string]atc.ParamSchema, len(config.Params))
@@ -832,6 +851,12 @@ func validateRenderedParams(signature workflow.PublicSignature, config atc.Confi
 			return fmt.Errorf("%w: rendered required input parameter mismatch", ErrPlatformFailure)
 		}
 	}
+	for name := range boundSources {
+		param, found := params[name]
+		if !found || param.Type != "string" || !param.Required || param.Format != atc.ParamFormatPositiveDecimalInt64 || param.Default != nil {
+			return fmt.Errorf("%w: rendered resource-source parameter mismatch", ErrPlatformFailure)
+		}
+	}
 	return nil
 }
 
@@ -856,17 +881,19 @@ func validateInputCoverage(signature workflow.PublicSignature, inputs map[string
 	return nil
 }
 
-func durableParams(
+func durableExecutionEnvelope(
 	runID snapshot.WorkflowRunID,
 	bindings []db.AgentWorkflowRunSnapshotBinding,
 	config atc.Config,
-) (map[string]any, error) {
+	rendered workflow.RenderedFunction,
+) (workflow.ExecutionEnvelope, error) {
 	params := map[string]any{"workflow_run_id": runID.String()}
 	generated := map[string]struct{}{"workflow_run_id": {}}
+	boundSources := rendered.BoundSourceParamNames()
 	for _, binding := range bindings {
 		name, err := workflow.InputParamName(binding.PortName)
 		if err != nil {
-			return nil, fmt.Errorf("%w: invalid durable input port", ErrCorruptPartialAdmission)
+			return workflow.ExecutionEnvelope{}, fmt.Errorf("%w: invalid durable input port", ErrCorruptPartialAdmission)
 		}
 		params[name] = binding.Snapshot.ID.String()
 		generated[name] = struct{}{}
@@ -875,23 +902,21 @@ func durableParams(
 		if _, found := generated[schema.Name]; found {
 			continue
 		}
+		if _, bound := boundSources[schema.Name]; bound {
+			continue
+		}
 		defaultValue, ok := schema.Default.(string)
 		if !ok || defaultValue != "0" {
-			return nil, fmt.Errorf("%w: unexpected durable parameter schema", ErrCorruptPartialAdmission)
+			return workflow.ExecutionEnvelope{}, fmt.Errorf("%w: unexpected durable parameter schema", ErrCorruptPartialAdmission)
 		}
 		params[schema.Name] = "0"
 		generated[schema.Name] = struct{}{}
 	}
-	validated, err := atc.ValidateRunParams(config.Params, params)
+	envelope, err := rendered.ExecutionEnvelope(params)
 	if err != nil {
-		return nil, fmt.Errorf("%w: invalid durable parameters", ErrCorruptPartialAdmission)
+		return workflow.ExecutionEnvelope{}, fmt.Errorf("%w: bind durable execution envelope", ErrCorruptPartialAdmission)
 	}
-	for _, value := range validated {
-		if _, ok := value.(string); !ok {
-			return nil, fmt.Errorf("%w: non-string durable parameter", ErrCorruptPartialAdmission)
-		}
-	}
-	return validated, nil
+	return envelope, nil
 }
 
 func compareCallerIntent(run db.AgentWorkflowRun, admission AdmissionContext, request BindRequest) error {
@@ -1031,11 +1056,7 @@ func cloneTarget(value workflow.FunctionTarget) (workflow.FunctionTarget, error)
 }
 
 func cloneRendered(value workflow.RenderedFunction) (workflow.RenderedFunction, error) {
-	cloned, err := copystructure.Copy(value)
-	if err != nil {
-		return workflow.RenderedFunction{}, err
-	}
-	return cloned.(workflow.RenderedFunction), nil
+	return value.Clone()
 }
 
 func cloneConfig(value atc.Config) atc.Config {
@@ -1201,68 +1222,5 @@ func (WorkflowTargetRenderer) ExtractFunctionTarget(definition workflow.Definiti
 }
 
 func (renderer WorkflowTargetRenderer) RenderFunction(target workflow.FunctionTarget) (workflow.RenderedFunction, error) {
-	rendered, err := workflow.RenderFunction(target)
-	if err != nil {
-		return workflow.RenderedFunction{}, err
-	}
-	agentCount := 0
-	mergePreflightCount := 0
-	for jobIndex := range rendered.Config.Jobs {
-		for stepIndex := range rendered.Config.Jobs[jobIndex].PlanSequence {
-			err := rendered.Config.Jobs[jobIndex].PlanSequence[stepIndex].Config.Visit(atc.StepRecursor{
-				OnAgent: func(step *atc.AgentStep) error {
-					agentCount++
-					if step.RuntimeImage != "" {
-						return fmt.Errorf("workflow runtime image was already populated")
-					}
-					if err := atc.ValidatePinnedOCIImage(renderer.RuntimeImage); err != nil {
-						return fmt.Errorf("workflow agent runtime image: %w", err)
-					}
-					step.RuntimeImage = renderer.RuntimeImage
-					return nil
-				},
-				OnTask: func(step *atc.TaskStep) error {
-					if step.MergePreflightAuthority == nil {
-						return nil
-					}
-					mergePreflightCount++
-					if err := atc.ValidatePinnedOCIImage(renderer.RuntimeImage); err != nil {
-						return fmt.Errorf("workflow merge preflight runtime image: %w", err)
-					}
-					a := step.MergePreflightAuthority.Clone()
-					a.WorkflowDefinitionID = target.WorkflowDefinitionID
-					a.WorkflowVersion = target.WorkflowVersion
-					a.CapabilityImage = renderer.RuntimeImage
-					at := strings.LastIndexByte(renderer.RuntimeImage, '@')
-					if at < 0 {
-						return fmt.Errorf("workflow merge preflight runtime image is not pinned")
-					}
-					a.CapabilityImageDigest = snapshot.Digest(renderer.RuntimeImage[at+1:])
-					config, err := atc.NewMergePreflightTaskConfig(*a)
-					if err != nil {
-						return err
-					}
-					step.MergePreflightAuthority, step.Config = a, config
-					return nil
-				},
-			})
-			if err != nil {
-				return workflow.RenderedFunction{}, err
-			}
-		}
-	}
-	if agentCount == 0 && mergePreflightCount == 0 {
-		return rendered, nil
-	}
-	hash, err := workflow.RenderedTargetConfigHash(rendered.Config, rendered.DevValidationProfiles, rendered.DevValidationProvenanceHash)
-	if err != nil {
-		return workflow.RenderedFunction{}, err
-	}
-	name, err := workflow.TemplateName(target.Kind, target.WorkflowName, target.WorkflowVersion, target.FunctionID, hash)
-	if err != nil {
-		return workflow.RenderedFunction{}, err
-	}
-	rendered.TargetConfigHash = hash
-	rendered.TemplateName = name
-	return rendered, nil
+	return workflow.RenderFunctionWithRuntimeImage(target, renderer.RuntimeImage)
 }

@@ -6,17 +6,18 @@ import (
 	"sync"
 
 	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/agent/workflowrun"
 )
 
 type FakePipelineRunCreator struct {
-	CreateRunForWorkflowRunStub        func(context.Context, snapshot.WorkflowRunID, workflowrun.WorkflowRunTemplateRef, map[string]any, string, workflowrun.BeforeWorkflowRunCommit) (workflowrun.WorkflowRunExecution, bool, error)
+	CreateRunForWorkflowRunStub        func(context.Context, snapshot.WorkflowRunID, workflowrun.WorkflowRunTemplateRef, workflow.ExecutionEnvelope, string, workflowrun.BeforeWorkflowRunCommit) (workflowrun.WorkflowRunExecution, bool, error)
 	createRunForWorkflowRunMutex       sync.RWMutex
 	createRunForWorkflowRunArgsForCall []struct {
 		arg1 context.Context
 		arg2 snapshot.WorkflowRunID
 		arg3 workflowrun.WorkflowRunTemplateRef
-		arg4 map[string]any
+		arg4 workflow.ExecutionEnvelope
 		arg5 string
 		arg6 workflowrun.BeforeWorkflowRunCommit
 	}
@@ -34,14 +35,14 @@ type FakePipelineRunCreator struct {
 	invocationsMutex sync.RWMutex
 }
 
-func (fake *FakePipelineRunCreator) CreateRunForWorkflowRun(arg1 context.Context, arg2 snapshot.WorkflowRunID, arg3 workflowrun.WorkflowRunTemplateRef, arg4 map[string]any, arg5 string, arg6 workflowrun.BeforeWorkflowRunCommit) (workflowrun.WorkflowRunExecution, bool, error) {
+func (fake *FakePipelineRunCreator) CreateRunForWorkflowRun(arg1 context.Context, arg2 snapshot.WorkflowRunID, arg3 workflowrun.WorkflowRunTemplateRef, arg4 workflow.ExecutionEnvelope, arg5 string, arg6 workflowrun.BeforeWorkflowRunCommit) (workflowrun.WorkflowRunExecution, bool, error) {
 	fake.createRunForWorkflowRunMutex.Lock()
 	ret, specificReturn := fake.createRunForWorkflowRunReturnsOnCall[len(fake.createRunForWorkflowRunArgsForCall)]
 	fake.createRunForWorkflowRunArgsForCall = append(fake.createRunForWorkflowRunArgsForCall, struct {
 		arg1 context.Context
 		arg2 snapshot.WorkflowRunID
 		arg3 workflowrun.WorkflowRunTemplateRef
-		arg4 map[string]any
+		arg4 workflow.ExecutionEnvelope
 		arg5 string
 		arg6 workflowrun.BeforeWorkflowRunCommit
 	}{arg1, arg2, arg3, arg4, arg5, arg6})
@@ -64,13 +65,13 @@ func (fake *FakePipelineRunCreator) CreateRunForWorkflowRunCallCount() int {
 	return len(fake.createRunForWorkflowRunArgsForCall)
 }
 
-func (fake *FakePipelineRunCreator) CreateRunForWorkflowRunCalls(stub func(context.Context, snapshot.WorkflowRunID, workflowrun.WorkflowRunTemplateRef, map[string]any, string, workflowrun.BeforeWorkflowRunCommit) (workflowrun.WorkflowRunExecution, bool, error)) {
+func (fake *FakePipelineRunCreator) CreateRunForWorkflowRunCalls(stub func(context.Context, snapshot.WorkflowRunID, workflowrun.WorkflowRunTemplateRef, workflow.ExecutionEnvelope, string, workflowrun.BeforeWorkflowRunCommit) (workflowrun.WorkflowRunExecution, bool, error)) {
 	fake.createRunForWorkflowRunMutex.Lock()
 	defer fake.createRunForWorkflowRunMutex.Unlock()
 	fake.CreateRunForWorkflowRunStub = stub
 }
 
-func (fake *FakePipelineRunCreator) CreateRunForWorkflowRunArgsForCall(i int) (context.Context, snapshot.WorkflowRunID, workflowrun.WorkflowRunTemplateRef, map[string]any, string, workflowrun.BeforeWorkflowRunCommit) {
+func (fake *FakePipelineRunCreator) CreateRunForWorkflowRunArgsForCall(i int) (context.Context, snapshot.WorkflowRunID, workflowrun.WorkflowRunTemplateRef, workflow.ExecutionEnvelope, string, workflowrun.BeforeWorkflowRunCommit) {
 	fake.createRunForWorkflowRunMutex.RLock()
 	defer fake.createRunForWorkflowRunMutex.RUnlock()
 	argsForCall := fake.createRunForWorkflowRunArgsForCall[i]

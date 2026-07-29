@@ -154,7 +154,7 @@ type PipelineRunCreator interface {
 		context.Context,
 		snapshot.WorkflowRunID,
 		WorkflowRunTemplateRef,
-		map[string]any,
+		workflow.ExecutionEnvelope,
 		string,
 		BeforeWorkflowRunCommit,
 	) (WorkflowRunExecution, bool, error)

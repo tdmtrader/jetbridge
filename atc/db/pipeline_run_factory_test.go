@@ -24,6 +24,8 @@ var _ = Describe("PipelineRunFactory", func() {
 		factory          db.PipelineRunFactory
 		template         db.Pipeline
 		workflowTemplate db.Pipeline
+		workflowRendered workflow.RenderedFunction
+		envelopeFor      func(snapshot.WorkflowRunID) workflow.ExecutionEnvelope
 		createDurable    func() (db.AgentWorkflowRun, db.WorkflowRunTemplateRef, db.AgentWorkflowRunsFactory)
 	)
 
@@ -73,8 +75,24 @@ var _ = Describe("PipelineRunFactory", func() {
 		// the CheckFactory is injected so CreateRun itself enqueues the frozen
 		// check set (F27, 2026-07-09)
 		factory = db.NewPipelineRunFactory(logger, dbConn, lockFactory, checkFactory)
-
 		var err error
+		workflowRendered, err = workflow.RenderFunction(workflow.FunctionTarget{
+			Kind: workflow.TargetWorkflow, WorkflowDefinitionID: 1, WorkflowName: "pipeline-run-workflow", WorkflowVersion: 1, SignatureVersion: 1,
+			Function: workflow.FunctionConfig{SignatureVersion: 1, Plan: []atc.Step{{Config: &atc.TaskStep{
+				Name: "run", FunctionID: "run", Config: &atc.TaskConfig{Platform: "linux",
+					ImageResource: &atc.ImageResource{Type: "registry-image", Source: atc.Source{"repository": "example/task"}, Version: atc.Version{"digest": "sha256:immutable"}},
+					Run:           atc.TaskRunConfig{Path: "/bin/true"},
+				},
+			}}}},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		workflowTemplateConfig = workflowRendered.Config
+		envelopeFor = func(runID snapshot.WorkflowRunID) workflow.ExecutionEnvelope {
+			envelope, err := workflowRendered.ExecutionEnvelope(map[string]any{"workflow_run_id": runID.String()})
+			Expect(err).NotTo(HaveOccurred())
+			return envelope
+		}
+
 		template, _, err = defaultTeam.SavePipeline(
 			atc.PipelineRef{Name: "run-template"}, templateConfig, db.ConfigVersion(0), false)
 		Expect(err).ToNot(HaveOccurred())
@@ -236,7 +254,7 @@ var _ = Describe("PipelineRunFactory", func() {
 				PipelineID: unowned.ID(), TeamID: unowned.TeamID(), Name: unowned.Name(),
 				ConfigVersion: int(unowned.ConfigVersion()), FullHash: targetHash,
 			},
-			nil, "alice", func(context.Context, int) error { return nil },
+			envelopeFor(durable.ID), "alice", func(context.Context, int) error { return nil },
 		)
 		Expect(err).To(MatchError("db: workflow-run template reference drifted or collided"))
 		Expect(created).To(BeFalse())
@@ -248,7 +266,7 @@ var _ = Describe("PipelineRunFactory", func() {
 		execution, created, err := factory.CreateRunForWorkflowRun(
 			context.Background(), durable.ID,
 			templateRef,
-			nil, "alice", func(context.Context, int) error { return nil },
+			envelopeFor(durable.ID), "alice", func(context.Context, int) error { return nil },
 		)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(created).To(BeTrue())
@@ -269,10 +287,39 @@ var _ = Describe("PipelineRunFactory", func() {
 		Expect(execution.InstanceConfigHash).To(Equal(fmt.Sprintf("%x", instanceSum[:])))
 	})
 
+	It("rejects forged and durable-mismatched workflow execution envelopes", func() {
+		durable, templateRef, _ := createDurable()
+		_, created, err := factory.CreateRunForWorkflowRun(
+			context.Background(), durable.ID, templateRef, workflow.ExecutionEnvelope{}, "alice",
+			func(context.Context, int) error { return nil },
+		)
+		Expect(err).To(MatchError(ContainSubstring("invalid workflow execution envelope")))
+		Expect(created).To(BeFalse())
+
+		mismatched, err := workflow.RenderFunction(workflow.FunctionTarget{
+			Kind: workflow.TargetWorkflow, WorkflowDefinitionID: 1, WorkflowName: "other-workflow", WorkflowVersion: 1, SignatureVersion: 1,
+			Function: workflow.FunctionConfig{SignatureVersion: 1, Plan: []atc.Step{{Config: &atc.TaskStep{
+				Name: "other", FunctionID: "other", Config: &atc.TaskConfig{Platform: "linux",
+					ImageResource: &atc.ImageResource{Type: "registry-image", Source: atc.Source{"repository": "example/other"}, Version: atc.Version{"digest": "sha256:immutable"}},
+					Run:           atc.TaskRunConfig{Path: "/bin/true"},
+				},
+			}}}},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		envelope, err := mismatched.ExecutionEnvelope(map[string]any{"workflow_run_id": durable.ID.String()})
+		Expect(err).NotTo(HaveOccurred())
+		_, created, err = factory.CreateRunForWorkflowRun(
+			context.Background(), durable.ID, templateRef, envelope, "alice",
+			func(context.Context, int) error { return nil },
+		)
+		Expect(err).To(MatchError(ContainSubstring("invalid workflow execution envelope")))
+		Expect(created).To(BeFalse())
+	})
+
 	It("keeps the workflow-owned instance cleanup path available", func() {
 		durable, templateRef, _ := createDurable()
 		execution, created, err := factory.CreateRunForWorkflowRun(
-			context.Background(), durable.ID, templateRef, nil, "alice",
+			context.Background(), durable.ID, templateRef, envelopeFor(durable.ID), "alice",
 			func(context.Context, int) error { return nil },
 		)
 		Expect(err).NotTo(HaveOccurred())
@@ -293,7 +340,7 @@ var _ = Describe("PipelineRunFactory", func() {
 		durable, templateRef, runStore := createDurable()
 		callbackErr := errors.New("secret attachment failed")
 		_, created, err := factory.CreateRunForWorkflowRun(
-			context.Background(), durable.ID, templateRef, nil, "alice",
+			context.Background(), durable.ID, templateRef, envelopeFor(durable.ID), "alice",
 			func(context.Context, int) error { return callbackErr },
 		)
 		Expect(err).To(MatchError(callbackErr))
@@ -323,7 +370,7 @@ var _ = Describe("PipelineRunFactory", func() {
 		Expect(builds).To(BeZero())
 
 		execution, created, err := factory.CreateRunForWorkflowRun(
-			context.Background(), durable.ID, templateRef, nil, "alice",
+			context.Background(), durable.ID, templateRef, envelopeFor(durable.ID), "alice",
 			func(context.Context, int) error { return nil },
 		)
 		Expect(err).NotTo(HaveOccurred())
@@ -338,10 +385,10 @@ var _ = Describe("PipelineRunFactory", func() {
 			callbackCalls++
 			return nil
 		}
-		first, created, err := factory.CreateRunForWorkflowRun(context.Background(), durable.ID, templateRef, nil, "alice", callback)
+		first, created, err := factory.CreateRunForWorkflowRun(context.Background(), durable.ID, templateRef, envelopeFor(durable.ID), "alice", callback)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(created).To(BeTrue())
-		second, created, err := factory.CreateRunForWorkflowRun(context.Background(), durable.ID, templateRef, nil, "alice", callback)
+		second, created, err := factory.CreateRunForWorkflowRun(context.Background(), durable.ID, templateRef, envelopeFor(durable.ID), "alice", callback)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(created).To(BeFalse())
 		Expect(second.PipelineRun.ID()).To(Equal(first.PipelineRun.ID()))
@@ -355,7 +402,7 @@ var _ = Describe("PipelineRunFactory", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		execution, created, err := factory.CreateRunForWorkflowRun(
-			context.Background(), durable.ID, templateRef, nil, "alice",
+			context.Background(), durable.ID, templateRef, envelopeFor(durable.ID), "alice",
 			func(context.Context, int) error { return nil },
 		)
 		Expect(err).NotTo(HaveOccurred())
@@ -384,7 +431,7 @@ var _ = Describe("PipelineRunFactory", func() {
 		go func() {
 			defer GinkgoRecover()
 			execution, created, err := factory.CreateRunForWorkflowRun(
-				context.Background(), durable.ID, templateRef, nil, "alice",
+				context.Background(), durable.ID, templateRef, envelopeFor(durable.ID), "alice",
 				func(_ context.Context, pipelineRunID int) error {
 					entered <- pipelineRunID
 					<-release
@@ -430,7 +477,7 @@ var _ = Describe("PipelineRunFactory", func() {
 		Expect(stored.PlannedBuildID).To(Equal(&expectedPlannedBuildID))
 	})
 
-	It("fails closed unless the durable Task 5 config has exactly one run entry job", func() {
+	It("fails closed before a mutated durable config can bypass its execution envelope", func() {
 		durable, templateRef, _ := createDurable()
 		invalid := workflowTemplateConfig
 		invalid.Jobs = append(atc.JobConfigs(nil), workflowTemplateConfig.Jobs...)
@@ -448,10 +495,10 @@ var _ = Describe("PipelineRunFactory", func() {
 		templateRef.FullHash = hash
 
 		_, created, err := factory.CreateRunForWorkflowRun(
-			context.Background(), durable.ID, templateRef, nil, "alice",
+			context.Background(), durable.ID, templateRef, envelopeFor(durable.ID), "alice",
 			func(context.Context, int) error { return nil },
 		)
-		Expect(err).To(MatchError(ContainSubstring("exactly one entry job named run")))
+		Expect(err).To(MatchError(ContainSubstring("invalid workflow execution envelope")))
 		Expect(created).To(BeFalse())
 	})
 
@@ -472,7 +519,7 @@ var _ = Describe("PipelineRunFactory", func() {
 				defer GinkgoRecover()
 				defer wg.Done()
 				execution, created, err := factory.CreateRunForWorkflowRun(
-					context.Background(), durable.ID, templateRef, nil, "alice",
+					context.Background(), durable.ID, templateRef, envelopeFor(durable.ID), "alice",
 					func(context.Context, int) error {
 						callbackMu.Lock()
 						callbackCalls++

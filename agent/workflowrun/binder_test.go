@@ -1327,7 +1327,10 @@ func binderTestDefinition() workflow.Definition {
 			{Name: "notes", Type: "review/v1", Optional: true},
 		},
 		Plan: []atc.Step{{Config: &atc.TaskStep{
-			Name: "noop", Config: &atc.TaskConfig{Platform: "linux", Run: atc.TaskRunConfig{Path: "/bin/true"}},
+			Name: "noop", FunctionID: "noop", Config: &atc.TaskConfig{Platform: "linux",
+				ImageResource: &atc.ImageResource{Type: "registry-image", Source: atc.Source{"repository": "example/task"}, Version: atc.Version{"digest": "sha256:immutable"}},
+				Run:           atc.TaskRunConfig{Path: "/bin/true"},
+			},
 		}}},
 	}
 	return workflow.Definition{
@@ -1339,33 +1342,15 @@ func binderTestDefinition() workflow.Definition {
 
 func binderTestRendered(t *testing.T, definition workflow.Definition) workflow.RenderedFunction {
 	t.Helper()
-	config := atc.Config{
-		Template: true,
-		Params: []atc.ParamSchema{
-			{Name: "workflow_run_id", Type: "string", Format: atc.ParamFormatPositiveDecimalInt64, Required: true},
-			{Name: "snapshot_repo", Type: "string", Format: atc.ParamFormatPositiveDecimalInt64, Required: true},
-			{Name: "snapshot_notes", Type: "string", Format: atc.ParamFormatZeroOrPositiveDecimalInt64, Default: "0"},
-		},
-		Jobs: atc.JobConfigs{{Name: "run", PlanSequence: []atc.Step{{Config: &atc.TaskStep{
-			Name: "noop", Config: &atc.TaskConfig{Platform: "linux", Run: atc.TaskRunConfig{Path: "/bin/true"}},
-		}}}}},
-	}
-	hash, err := workflow.TargetConfigHash(config)
+	target, err := workflow.FullFunctionTarget(definition)
 	if err != nil {
 		t.Fatal(err)
 	}
-	name, err := workflow.TemplateName(workflow.TargetWorkflow, definition.Name, definition.Version, "", hash)
+	rendered, err := workflow.RenderFunction(target)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return workflow.RenderedFunction{
-		TemplateName: name,
-		TargetSignature: workflow.PublicSignature{Inputs: []workflow.SignaturePort{
-			{Name: "repo", Type: "repository/v1"}, {Name: "notes", Type: "review/v1", Optional: true},
-		}},
-		Config: config, TargetConfigHash: hash,
-		InputParamNames: map[string]string{"repo": "snapshot_repo", "notes": "snapshot_notes"},
-	}
+	return rendered
 }
 
 func binderTestSnapshot(id snapshot.SnapshotID, typ snapshot.TypeRef) snapshot.Snapshot {
@@ -1478,7 +1463,11 @@ type creatorStub struct {
 	create func(context.Context, snapshot.WorkflowRunID, WorkflowRunTemplateRef, map[string]any, string, BeforeWorkflowRunCommit) (WorkflowRunExecution, bool, error)
 }
 
-func (s *creatorStub) CreateRunForWorkflowRun(ctx context.Context, runID snapshot.WorkflowRunID, template WorkflowRunTemplateRef, params map[string]any, createdBy string, callback BeforeWorkflowRunCommit) (WorkflowRunExecution, bool, error) {
+func (s *creatorStub) CreateRunForWorkflowRun(ctx context.Context, runID snapshot.WorkflowRunID, template WorkflowRunTemplateRef, envelope workflow.ExecutionEnvelope, createdBy string, callback BeforeWorkflowRunCommit) (WorkflowRunExecution, bool, error) {
+	params, err := envelope.Params()
+	if err != nil {
+		return WorkflowRunExecution{}, false, err
+	}
 	return s.create(ctx, runID, template, params, createdBy, callback)
 }
 

@@ -60,7 +60,7 @@ type PipelineRunFactory interface {
 		context.Context,
 		snapshot.WorkflowRunID,
 		WorkflowRunTemplateRef,
-		map[string]any,
+		workflow.ExecutionEnvelope,
 		string,
 		BeforeWorkflowRunCommit,
 	) (WorkflowRunExecution, bool, error)
@@ -328,7 +328,7 @@ func (f *pipelineRunFactory) CreateRunForWorkflowRun(
 	ctx context.Context,
 	workflowRunID snapshot.WorkflowRunID,
 	templateRef WorkflowRunTemplateRef,
-	params map[string]any,
+	envelope workflow.ExecutionEnvelope,
 	createdBy string,
 	beforeCommit BeforeWorkflowRunCommit,
 ) (WorkflowRunExecution, bool, error) {
@@ -377,16 +377,16 @@ func (f *pipelineRunFactory) CreateRunForWorkflowRun(
 	if err := validateLockedWorkflowTemplate(ctx, tx, durable.TeamID, templateRef); err != nil {
 		return WorkflowRunExecution{}, false, err
 	}
-	parameterizedConfig, _, err := canonicalWorkflowRunConfig(durable.ParameterizedConfig)
+	parameterizedConfig, canonicalConfig, err := canonicalWorkflowRunConfig(durable.ParameterizedConfig)
 	if err != nil {
 		return WorkflowRunExecution{}, false, err
 	}
-	targetHash, err := workflow.TargetConfigHash(parameterizedConfig)
-	if err != nil {
-		return WorkflowRunExecution{}, false, err
-	}
-	if targetHash != durable.ParameterizedConfigHash || targetHash != templateRef.FullHash {
+	if durable.ParameterizedConfigHash != templateRef.FullHash {
 		return WorkflowRunExecution{}, false, fmt.Errorf("db: workflow-run durable template hash mismatch")
+	}
+	params, err := envelope.ParamsFor(canonicalConfig, durable.ParameterizedConfigHash)
+	if err != nil {
+		return WorkflowRunExecution{}, false, fmt.Errorf("db: invalid workflow execution envelope: %w", err)
 	}
 	validatedParams, err := atc.ValidateRunParams(parameterizedConfig.Params, cloneRunParams(params))
 	if err != nil {

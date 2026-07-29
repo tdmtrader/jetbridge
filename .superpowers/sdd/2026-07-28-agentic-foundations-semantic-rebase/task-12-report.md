@@ -138,3 +138,45 @@ Verification for this correction:
   requires it.
 - Status: **HUMAN REVIEW REQUIRED** under `HUMAN-REVIEW-002`. Task 13 must not
   build on this execution boundary until the launch contract is chosen.
+
+## Reopened iteration 1 — mandatory opaque launch envelope
+
+The user-approved choice (c) is implemented: `RenderedFunction.Config` remains
+the declarative/preflight view, but the Binder is now the sole production
+constructor/caller of `workflow.ExecutionEnvelope`, and both
+`workflowrun.PipelineRunCreator` and `db.PipelineRunFactory` require that
+opaque type rather than a raw parameter map.
+
+- Trusted rendering retains private canonical config bytes, target hash, and
+  exact bound source refs. Envelope construction injects the selected snapshot
+  IDs, rejects substitutions, and copies params defensively. The DB opens it
+  only after it locks the durable workflow run and verifies the canonical
+  durable config plus template hash; zero and mismatched envelopes fail closed.
+- The public `Config` and `TargetConfigHash` can no longer alter an already
+  created envelope. `RenderedFunction.Clone` now preserves private authority
+  explicitly because `copystructure` drops unexported fields. The trusted
+  runtime-image renderer refreshes that private authority after its config/hash
+  mutation.
+- Source-bearing params are treated as envelope-owned during Binder parameter
+  preparation, then injected before schema validation. Render validation now
+  accepts and verifies those exact bound source parameter names. Task 13 still
+  owns obtaining/capturing those refs and making source-bearing flows
+  operational.
+
+### RED / GREEN evidence
+
+- RED: `GOCACHE=/private/tmp/concourse-task12-envelope-gocache go test
+  ./agent/workflow -run TestRenderFunctionWithBoundSourcesRemovesLiveResourceReads
+  -count=1` failed with `rendered.ExecutionEnvelope undefined` before the
+  envelope existed.
+- GREEN: the same focused workflow test passed after implementation; it proves
+  exact source-ID injection, substituted-ID rejection, and immunity to later
+  public Config/hash mutation.
+- GREEN: `GOCACHE=/private/tmp/concourse-task12-envelope-gocache go test
+  ./agent/workflow ./agent/workflowrun -count=1` passed.
+- GREEN: `GOCACHE=/private/tmp/concourse-task12-envelope-gocache go test
+  ./atc/db -run '^$' -count=1` passed. Focused DB coverage now includes valid
+  source-free envelope execution and forged/canonical-mismatch rejection.
+- PostgreSQL focus not run locally: `pg_isready` returned `/tmp:5432 - no
+  response`. The required host command is `ginkgo --procs=1 --focus='PipelineRunFactory'
+  ./atc/db` (or the narrower envelope spec).
