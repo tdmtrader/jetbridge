@@ -528,11 +528,23 @@ var _ = Describe("AgentRunCheckpointsFactory", func() {
 		Expect(errors.Is(err, checkpoint.ErrStaleFence)).To(BeTrue())
 
 		expiring := checkpoint.Identity{BuildID: identity.BuildID + 100, PlanID: identity.PlanID, FunctionID: identity.FunctionID}
-		identity = expiring
-		expiredStage := stage(1)
-		_, err = dbConn.Exec(`UPDATE agent_run_attempts SET fence_expires_at = clock_timestamp() - INTERVAL '1 second' WHERE head_id = $1`, expiredStage.HeadID)
+		_, err = attempts.AllocateInitial(ctx, checkpoint.AllocateInitialAttemptRequest{Identity: expiring, MaterializationID: "expiring"})
 		Expect(err).NotTo(HaveOccurred())
-		_, err = factory.Begin(ctx, checkpoint.BeginRequest{Identity: expiring, Fence: expiredStage.Fence, ExecutionAttempt: 1})
+		expiredFence, err := attempts.AcquireFence(ctx, checkpoint.AcquireAttemptFenceRequest{
+			Identity: expiring, ExecutionAttempt: 1, Token: uuid.NewString(), TTL: 100 * time.Millisecond,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		_, err = attempts.Transition(ctx, checkpoint.TransitionAttemptRequest{
+			Identity: expiring, ExecutionAttempt: 1, ExpectedState: checkpoint.AttemptScheduling,
+			State: checkpoint.AttemptRunning, Fence: expiredFence.FenceClaim,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Eventually(func() bool {
+			var now time.Time
+			Expect(dbConn.QueryRow(`SELECT clock_timestamp()`).Scan(&now)).To(Succeed())
+			return !now.Before(expiredFence.ExpiresAt)
+		}, time.Second, time.Millisecond).Should(BeTrue())
+		_, err = factory.Begin(ctx, checkpoint.BeginRequest{Identity: expiring, Fence: expiredFence.FenceClaim, ExecutionAttempt: 1})
 		Expect(errors.Is(err, checkpoint.ErrStaleFence)).To(BeTrue())
 	})
 
