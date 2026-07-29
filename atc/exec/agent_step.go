@@ -555,6 +555,14 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 	step.ingestFlightRecorder(ctx, logger, chosenWorker, volumeMounts, time.Since(processStart), costObserver.Observed())
 
 	if runErr != nil {
+		var interruption runtime.InterruptionError
+		if errors.As(runErr, &interruption) {
+			delegate.Errored(logger, fmt.Sprintf(
+				"manual_review_required: agent execution interrupted (%s); automatic replay is disabled until durable recovery proves safety",
+				interruption.InterruptionReason(),
+			))
+			return false, nil
+		}
 		if errors.Is(runErr, context.DeadlineExceeded) {
 			oteltrace.SpanFromContext(ctx).AddEvent("step.errored")
 			delegate.Errored(logger, TimeoutLogMessage)
