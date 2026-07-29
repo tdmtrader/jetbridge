@@ -3,6 +3,7 @@ WORKDIR /src
 COPY . .
 RUN CGO_ENABLED=0 go build -o /out/agent-runner ./cmd/agent-runner
 RUN CGO_ENABLED=0 go build -o /out/function-runner ./cmd/function-runner
+RUN CGO_ENABLED=0 go build -o /out/agent-output ./cmd/agent-output
 
 FROM node:20-bookworm-slim
 # Pin to the claude-code version the live theborg review job currently runs
@@ -25,6 +26,7 @@ COPY --from=build /out/agent-runner /usr/local/bin/agent-runner
 # image: they run as ordinary task steps beside agent steps, and share the git
 # and Go toolchain already installed above.
 COPY --from=build /out/function-runner /usr/local/bin/function-runner
+COPY --from=build /out/agent-output /usr/local/bin/agent-output
 COPY --from=build /usr/local/go /usr/local/go
 # Root, like every other step image: jetbridge hostPath step volumes are
 # kubelet-created root:root 0755 and fsGroup is ignored for hostPath, so a
