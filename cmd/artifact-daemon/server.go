@@ -64,6 +64,9 @@ type Server struct {
 	checkpointMaxStaged     int64
 	checkpointPreparedTTL   time.Duration
 	checkpointExclusions    []string
+	checkpointRestoreMu     sync.Mutex
+	// Test-only injection; production always uses normalizeCheckpointSessionTree.
+	normalizeCheckpointSession func(*os.File) error
 	preemptionNotices       *preemptionNoticeLatch
 }
 
@@ -215,6 +218,7 @@ func NewServer(logger lager.Logger, storagePath, nodeName string) *Server {
 		checkpointMaxPrepared: 16,
 		checkpointMaxStaged:   20 << 30,
 		checkpointPreparedTTL: 5 * time.Minute,
+		normalizeCheckpointSession: normalizeCheckpointSessionTree,
 		preemptionNotices:     newPreemptionNoticeLatch(),
 	}
 }
@@ -333,6 +337,7 @@ func (s *Server) Handler(opts ...HandlerOption) http.Handler {
 	mux.HandleFunc("GET /resource-caches/", protect(s.handleGetResourceCache))
 	mux.HandleFunc("POST /checkpoints/v1/prepare", protect(s.handleCheckpointPrepare))
 	mux.HandleFunc("POST /checkpoints/v1/upload/{preparedHandle}", protect(s.handleCheckpointUpload))
+	mux.HandleFunc("POST /checkpoints/v1/restore", protect(s.handleCheckpointRestore))
 	mux.HandleFunc("GET /checkpoints/v1/preemption-notice", protect(s.handlePreemptionNotice))
 
 	// net/http's ServeMux canonicalizes traversal-looking paths before route

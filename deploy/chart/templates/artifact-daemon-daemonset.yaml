@@ -51,8 +51,8 @@ spec:
       # NOTE: Daemon runs as root — it manages a shared hostPath volume where task
       # containers (running as arbitrary UIDs) write artifacts with varying permissions.
       # K8s does not apply fsGroup to hostPath, so non-root cannot reliably read/clean
-      # task-created files. CAP_DAC_OVERRIDE is the sole capability added back (out of
-      # ~40) to bypass permission checks on those files. Everything else is dropped.
+      # task-created files. CAP_DAC_OVERRIDE bypasses permission checks and CAP_CHOWN
+      # assigns restored private session state to gid 65534. Everything else is dropped.
       securityContext:
         runAsUser: 0
         runAsNonRoot: false
@@ -136,6 +136,7 @@ spec:
                 - ALL
               add:
                 - DAC_OVERRIDE
+                - CHOWN
             seccompProfile:
               type: RuntimeDefault
           resources:

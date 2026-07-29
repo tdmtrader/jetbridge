@@ -297,8 +297,8 @@ func TestArtifactDaemonRunsExplicitlyAsCapabilityBoundedRoot(t *testing.T) {
 	if sc.RunAsUser == nil || *sc.RunAsUser != 0 || sc.RunAsNonRoot == nil || *sc.RunAsNonRoot {
 		t.Fatalf("daemon container root identity is not explicit: uid=%v nonRoot=%v", sc.RunAsUser, sc.RunAsNonRoot)
 	}
-	if boolVal(sc.AllowPrivilegeEscalation) || !containsStr(sc.Capabilities.Drop, "ALL") ||
-		!containsStr(sc.Capabilities.Add, "DAC_OVERRIDE") {
+	if boolVal(sc.AllowPrivilegeEscalation) || len(sc.Capabilities.Drop) != 1 || !containsStr(sc.Capabilities.Drop, "ALL") ||
+		len(sc.Capabilities.Add) != 2 || !containsStr(sc.Capabilities.Add, "DAC_OVERRIDE") || !containsStr(sc.Capabilities.Add, "CHOWN") {
 		t.Fatalf("daemon capabilities are not fail-closed: drop=%v add=%v escalation=%v",
 			sc.Capabilities.Drop, sc.Capabilities.Add, sc.AllowPrivilegeEscalation)
 	}
