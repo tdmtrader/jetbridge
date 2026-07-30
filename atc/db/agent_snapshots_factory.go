@@ -338,7 +338,8 @@ func validateSealInvocation(ctx context.Context, tx Tx, commit snapshot.SealComm
 	if build.WorkflowDefinitionID != nil {
 		var id int
 		if err := tx.QueryRowContext(ctx, `
-			SELECT id FROM agent_workflow_definitions WHERE id = $1
+			SELECT id FROM agent_workflow_definitions
+			WHERE id = $1 AND definition_kind = 'workflow'
 		`, *build.WorkflowDefinitionID).Scan(&id); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return fmt.Errorf("db: snapshot workflow definition %d does not exist", *build.WorkflowDefinitionID)

@@ -58,19 +58,47 @@ ALTER TABLE agent_workflow_runs
     ADD COLUMN definition_kind TEXT NOT NULL DEFAULT 'workflow';
 
 ALTER TABLE agent_workflow_runs
-    DROP CONSTRAINT agent_workflow_runs_team_id_idempotency_key_key,
-    DROP CONSTRAINT agent_workflow_runs_retry_of_workflow_run_id_fkey;
+    DROP CONSTRAINT agent_workflow_runs_team_id_idempotency_key_key;
 
 ALTER TABLE agent_workflow_runs
     ADD CONSTRAINT agent_workflow_runs_definition_kind_check
         CHECK (definition_kind IN ('workflow', 'node')),
     ADD CONSTRAINT agent_workflow_runs_team_kind_idempotency_key
-        UNIQUE (team_id, definition_kind, idempotency_key),
-    ADD CONSTRAINT agent_workflow_runs_id_definition_kind_key
-        UNIQUE (id, definition_kind),
-    ADD CONSTRAINT agent_workflow_runs_retry_kind_fkey
-        FOREIGN KEY (retry_of_workflow_run_id, definition_kind)
-        REFERENCES agent_workflow_runs (id, definition_kind);
+        UNIQUE (team_id, definition_kind, idempotency_key);
+
+CREATE FUNCTION agent_workflow_runs_enforce_retry_definition_kind()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    retry_definition_kind TEXT;
+BEGIN
+    IF TG_OP = 'UPDATE' AND NEW.definition_kind <> OLD.definition_kind THEN
+        RAISE EXCEPTION 'workflow run definition kind is immutable'
+            USING ERRCODE = '23514';
+    END IF;
+
+    IF NEW.retry_of_workflow_run_id IS NOT NULL THEN
+        SELECT definition_kind
+        INTO retry_definition_kind
+        FROM agent_workflow_runs
+        WHERE id = NEW.retry_of_workflow_run_id;
+
+        IF FOUND AND retry_definition_kind <> NEW.definition_kind THEN
+            RAISE EXCEPTION 'workflow run retry target must have the same definition kind'
+                USING ERRCODE = '23514';
+        END IF;
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER agent_workflow_runs_retry_definition_kind
+    BEFORE INSERT OR UPDATE OF retry_of_workflow_run_id, definition_kind
+    ON agent_workflow_runs
+    FOR EACH ROW
+    EXECUTE FUNCTION agent_workflow_runs_enforce_retry_definition_kind();
 
 CREATE INDEX agent_workflow_runs_team_kind_workflow_created
     ON agent_workflow_runs (team_id, definition_kind, workflow_name, created_at DESC, id DESC);

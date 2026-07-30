@@ -1033,6 +1033,7 @@ func (f *pipelineRunFactory) RunsOfRetiredTemplatesToArchive(retirementPeriod ti
 			       OR NOT EXISTS (
 				SELECT 1 FROM agent_workflow_definitions successor
 				WHERE successor.name = durable.workflow_name
+				  AND successor.definition_kind = 'workflow'
 				  AND successor.live
 				  AND successor.version > durable.workflow_version
 			  ))

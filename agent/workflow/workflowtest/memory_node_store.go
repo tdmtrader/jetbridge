@@ -85,7 +85,7 @@ func (s *MemoryNodeStore) List() ([]workflow.NodeDefinition, error) {
 	}
 	out := make([]workflow.NodeDefinition, 0, len(latest))
 	for _, d := range latest {
-		c, e := cloneMemoryNode(d, false)
+		c, e := cloneMemoryNode(d, true)
 		if e != nil {
 			return nil, e
 		}
@@ -108,7 +108,7 @@ func (s *MemoryNodeStore) Versions(ctx context.Context, n string, r workflow.Ver
 		if d.Name == n {
 			p.Found = true
 			if r.Cursor == 0 || d.Version < r.Cursor {
-				c, e := cloneMemoryNode(d, false)
+				c, e := cloneMemoryNode(d, true)
 				if e != nil {
 					return p, e
 				}
@@ -154,7 +154,7 @@ func (s *MemoryNodeStore) Release(n string, v int, c workflow.ReleaseCompatibili
 	if t.Release.ReleasedAt != 0 {
 		return t.Release, nil
 	}
-	if c == workflow.ReleaseCompatible && prior != nil && !memoryNodeCompatible(prior.Compiled, t.Compiled) {
+	if c == workflow.ReleaseCompatible && prior != nil && !workflow.NodeDefinitionsStructurallyCompatible(prior.Compiled, t.Compiled) {
 		return workflow.NodeRelease{}, workflow.ErrInvalidCompatibility
 	}
 	t.Release = workflow.NodeRelease{ReleasedAt: time.Now().Unix(), ReleasedBy: by, Compatibility: c}
@@ -201,62 +201,4 @@ func cloneMemoryNode(d *workflow.NodeDefinition, content bool) (*workflow.NodeDe
 	}
 	x.Compiled = *c
 	return &x, nil
-}
-func memoryNodeCompatible(a, b workflow.CompiledNodeDefinition) bool { // retain the same observable contract as the DB store
-	for _, p := range a.Function.Inputs {
-		found := false
-		for _, q := range b.Function.Inputs {
-			if p.Name == q.Name && p.Type == q.Type && p.Optional == q.Optional {
-				found = true
-			}
-		}
-		if !found {
-			return false
-		}
-	}
-	for _, p := range b.Function.Inputs {
-		found := false
-		for _, q := range a.Function.Inputs {
-			if p.Name == q.Name {
-				found = true
-			}
-		}
-		if !found && !p.Optional {
-			return false
-		}
-	}
-	for _, p := range a.Function.Outputs {
-		found := false
-		for _, q := range b.Function.Outputs {
-			if p.Name == q.Name && p.Type == q.Type {
-				found = true
-			}
-		}
-		if !found {
-			return false
-		}
-	}
-	for _, p := range a.Parameters {
-		found := false
-		for _, q := range b.Parameters {
-			if p.Name == q.Name {
-				found = true
-			}
-		}
-		if !found {
-			return false
-		}
-	}
-	for _, p := range b.Parameters {
-		found := false
-		for _, q := range a.Parameters {
-			if p.Name == q.Name {
-				found = true
-			}
-		}
-		if !found && p.Default == nil {
-			return false
-		}
-	}
-	return true
 }

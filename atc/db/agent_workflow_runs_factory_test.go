@@ -211,6 +211,78 @@ plan:
 		Expect(second.ID).To(Equal(first.ID))
 	})
 
+	It("scopes workflow idempotency and retry targets away from node runs", func() {
+		nodeName := definitionName + "-node"
+		nodeHash := strings.Repeat("d", 64)
+		var nodeDefinitionID int
+		Expect(dbConn.QueryRow(`
+			INSERT INTO agent_workflow_definitions
+				(definition_kind, name, version, content_hash, definition,
+				 created_by, schema_version, signature_version)
+			VALUES ('node', $1, 1, $2, 'schema_version: 1', 'alice', 3, 1)
+			RETURNING id
+		`, nodeName, nodeHash).Scan(&nodeDefinitionID)).To(Succeed())
+
+		var nodeRunID int64
+		Expect(dbConn.QueryRow(`
+			INSERT INTO agent_workflow_runs
+				(definition_kind, team_id, team_name, workflow_definition_id,
+				 workflow_name, workflow_version, schema_version, signature_version,
+				 definition_content_hash, idempotency_key, parameterized_config,
+				 parameterized_config_hash, origin_kind, origin_reference, created_by, status,
+				 completed_at)
+			VALUES
+				('node', $1, $2, $3, $4, 1, 3, 1, $5, 'kind-shared', '{}',
+				 $6, 'direct-node-test', '', 'alice', 'failed', now())
+			RETURNING id
+		`, defaultTeam.ID(), defaultTeam.Name(), nodeDefinitionID, nodeName, nodeHash,
+			strings.Repeat("e", 64)).Scan(&nodeRunID)).To(Succeed())
+
+		workflowRun, created, err := factory.CreateWithInputs(ctx, request("kind-shared"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(created).To(BeTrue())
+		Expect(int64(workflowRun.ID)).NotTo(Equal(nodeRunID))
+		foundRun, found, err := factory.FindByIdempotencyKey(ctx, defaultTeam.ID(), "kind-shared")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(foundRun.ID).To(Equal(workflowRun.ID))
+		_, found, err = factory.Get(ctx, defaultTeam.ID(), snapshot.WorkflowRunID(nodeRunID))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeFalse())
+		listed, err := factory.List(ctx, db.AgentWorkflowRunListFilter{
+			TeamID: defaultTeam.ID(),
+			Limit:  100,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(listed).NotTo(ContainElement(HaveField("ID", snapshot.WorkflowRunID(nodeRunID))))
+		counts, err := factory.CountByStatus(ctx, db.AgentWorkflowRunCountFilter{
+			TeamID:       defaultTeam.ID(),
+			WorkflowName: nodeName,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(counts).To(BeEmpty())
+
+		nodeRetryID := snapshot.WorkflowRunID(nodeRunID)
+		retry := request("cross-kind-retry")
+		retry.RetryOfWorkflowRunID = &nodeRetryID
+		retry.OriginKind = "retry"
+		retry.OriginReference = nodeRetryID.String()
+		_, _, err = factory.CreateWithInputs(ctx, retry)
+		Expect(err).To(MatchError(ContainSubstring("retry target is absent")))
+
+		nodeTarget := request("node-definition-target")
+		nodeTarget.WorkflowDefinitionID = nodeDefinitionID
+		nodeTarget.WorkflowName = nodeName
+		nodeTarget.WorkflowVersion = 1
+		nodeTarget.SchemaVersion = 3
+		nodeTarget.SignatureVersion = 1
+		nodeTarget.DefinitionContentHash = nodeHash
+		_, _, err = factory.CreateWithInputs(ctx, nodeTarget)
+		Expect(err).To(MatchError(ContainSubstring(
+			fmt.Sprintf("workflow-run definition %d does not exist", nodeDefinitionID),
+		)))
+	})
+
 	It("persists validation provenance and treats it as idempotency identity", func() {
 		firstRequest := request("validation-provenance")
 		firstRequest.DevValidationProvenanceHash = strings.Repeat("d", 64)
@@ -1533,6 +1605,12 @@ plan:
 			case strings.Contains(query, "SELECT name FROM teams"):
 				return rowScannerFunc(func(destinations ...any) error {
 					*destinations[0].(*string) = defaultTeam.Name()
+					return nil
+				})
+			case strings.Contains(query, "SELECT EXISTS") &&
+				strings.Contains(query, "FROM agent_workflow_definitions"):
+				return rowScannerFunc(func(destinations ...any) error {
+					*destinations[0].(*bool) = true
 					return nil
 				})
 			case strings.Contains(query, "FROM agent_workflow_definitions"):

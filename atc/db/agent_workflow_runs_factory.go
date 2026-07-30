@@ -63,6 +63,9 @@ func (factory *agentWorkflowRunsFactory) CreateWithInputs(
 	if err := lockWorkflowRunIdempotency(ctx, tx, request.TeamID, request.IdempotencyKey); err != nil {
 		return AgentWorkflowRun{}, false, err
 	}
+	if err := validateWorkflowRunDefinitionKind(ctx, tx, request.WorkflowDefinitionID); err != nil {
+		return AgentWorkflowRun{}, false, err
+	}
 	if err := lockOpenExperimentWorkflowRunAdmission(ctx, tx, request); err != nil {
 		return AgentWorkflowRun{}, false, err
 	}
@@ -100,7 +103,7 @@ func (factory *agentWorkflowRunsFactory) CreateWithInputs(
 
 	result, err := tx.ExecContext(ctx, `
 		INSERT INTO agent_workflow_runs
-			(team_id, team_name, workflow_definition_id, workflow_name,
+			(definition_kind, team_id, team_name, workflow_definition_id, workflow_name,
 			 workflow_version, schema_version, signature_version,
 			 definition_content_hash, function_id, idempotency_key,
 			 parameterized_config, parameterized_config_hash,
@@ -108,9 +111,9 @@ func (factory *agentWorkflowRunsFactory) CreateWithInputs(
 			 resource_source_admission_id,
 			 origin_kind, origin_reference, created_by, status,
 			 retry_of_workflow_run_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+		VALUES ('workflow', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
 		        $11, $12, $13, $14, $15, $16, $17, $18, $19)
-		ON CONFLICT (team_id, idempotency_key) DO NOTHING
+		ON CONFLICT (team_id, definition_kind, idempotency_key) DO NOTHING
 	`, request.TeamID, request.TeamName, request.WorkflowDefinitionID, request.WorkflowName,
 		request.WorkflowVersion, request.SchemaVersion, request.SignatureVersion,
 		request.DefinitionContentHash, optionalString(request.FunctionID), request.IdempotencyKey,
@@ -134,7 +137,7 @@ func (factory *agentWorkflowRunsFactory) CreateWithInputs(
 	run, err := scanAgentWorkflowRun(tx.QueryRowContext(ctx, `
 		SELECT `+agentWorkflowRunColumns+`
 		FROM agent_workflow_runs
-		WHERE team_id = $1 AND idempotency_key = $2
+		WHERE team_id = $1 AND definition_kind = 'workflow' AND idempotency_key = $2
 		FOR UPDATE
 	`, request.TeamID, request.IdempotencyKey), tx.EncryptionStrategy())
 	if err != nil {
@@ -284,9 +287,29 @@ func experimentAdmissionTargetMatches(
 const workflowRunIdempotencyLockDomain = "agent-workflow-run-idempotency/v1\x00"
 
 func lockWorkflowRunIdempotency(ctx context.Context, tx Tx, teamID int, key string) error {
-	lockKey := snapshotAdvisoryLockKey(workflowRunIdempotencyLockDomain, fmt.Sprintf("%d\x00%s", teamID, key))
+	lockKey := snapshotAdvisoryLockKey(
+		workflowRunIdempotencyLockDomain,
+		fmt.Sprintf("%d\x00workflow\x00%s", teamID, key),
+	)
 	_, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, lockKey)
 	return err
+}
+
+func validateWorkflowRunDefinitionKind(ctx context.Context, tx Tx, definitionID int) error {
+	var found bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM agent_workflow_definitions
+			WHERE id = $1 AND definition_kind = 'workflow'
+		)
+	`, definitionID).Scan(&found); err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("db: workflow-run definition %d does not exist", definitionID)
+	}
+	return nil
 }
 
 func lockWorkflowRunInputDigests(
@@ -321,7 +344,7 @@ func findWorkflowRunByIdempotencyKey(
 ) (AgentWorkflowRun, bool, error) {
 	query := `SELECT ` + agentWorkflowRunColumns + `
 		FROM agent_workflow_runs
-		WHERE team_id = $1 AND idempotency_key = $2`
+		WHERE team_id = $1 AND definition_kind = 'workflow' AND idempotency_key = $2`
 	if lock {
 		query += ` FOR UPDATE`
 	}
@@ -352,7 +375,7 @@ func validateWorkflowRunTarget(ctx context.Context, tx Tx, request AgentWorkflow
 	err := tx.QueryRowContext(ctx, `
 		SELECT name, version, schema_version, signature_version, content_hash
 		FROM agent_workflow_definitions
-		WHERE id = $1
+		WHERE id = $1 AND definition_kind = 'workflow'
 	`, request.WorkflowDefinitionID).Scan(&name, &version, &schemaVersion, &signatureVersion, &hash)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("db: workflow-run definition %d does not exist", request.WorkflowDefinitionID)
@@ -386,7 +409,7 @@ func validateWorkflowRunTarget(ctx context.Context, tx Tx, request AgentWorkflow
 			       function_id, dev_validation_provenance_hash,
 			       resource_source_admission_id, status
 			FROM agent_workflow_runs
-			WHERE id = $1
+			WHERE id = $1 AND definition_kind = 'workflow'
 			FOR KEY SHARE
 		`, int64(*request.RetryOfWorkflowRunID)).Scan(
 			&teamID, &workflowDefinitionID, &workflowName, &workflowVersion,
@@ -546,7 +569,7 @@ func workflowRunTargetDeclaresResourceSources(
 		SELECT id, name, version, content_hash, schema_version,
 		       signature_version, definition, source_manifest
 		FROM agent_workflow_definitions
-		WHERE id = $1
+		WHERE id = $1 AND definition_kind = 'workflow'
 	`, workflowDefinitionID).Scan(
 		&definition.ID,
 		&definition.Name,
@@ -591,7 +614,7 @@ func loadWorkflowRunResourceSourceTarget(
 		SELECT id, name, version, content_hash, schema_version,
 		       signature_version, definition, source_manifest
 		FROM agent_workflow_definitions
-		WHERE id = $1
+		WHERE id = $1 AND definition_kind = 'workflow'
 	`, request.WorkflowDefinitionID).Scan(
 		&definition.ID,
 		&definition.Name,
@@ -905,7 +928,7 @@ func (factory *agentWorkflowRunsFactory) Get(
 	run, err := scanAgentWorkflowRun(factory.conn.QueryRowContext(ctx, `
 		SELECT `+agentWorkflowRunColumns+`
 		FROM agent_workflow_runs
-		WHERE id = $1 AND team_id = $2
+		WHERE id = $1 AND team_id = $2 AND definition_kind = 'workflow'
 	`, int64(id), teamID), factory.conn.EncryptionStrategy())
 	if errors.Is(err, sql.ErrNoRows) {
 		return AgentWorkflowRun{}, false, nil
@@ -978,7 +1001,9 @@ func (factory *agentWorkflowRunsFactory) List(
 			return nil, err
 		}
 	}
-	query := `SELECT ` + agentWorkflowRunColumns + ` FROM agent_workflow_runs WHERE team_id = $1`
+	query := `SELECT ` + agentWorkflowRunColumns + `
+		FROM agent_workflow_runs
+		WHERE team_id = $1 AND definition_kind = 'workflow'`
 	args := []any{filter.TeamID}
 	appendFilter := func(column string, value any) {
 		args = append(args, value)
@@ -1020,7 +1045,7 @@ func (factory *agentWorkflowRunsFactory) CountByStatus(
 	query := `
 		SELECT status, count(*)
 		FROM agent_workflow_runs
-		WHERE team_id = $1 AND workflow_name = $2
+		WHERE team_id = $1 AND definition_kind = 'workflow' AND workflow_name = $2
 	`
 	args := []any{filter.TeamID, filter.WorkflowName}
 	if filter.ExcludeOriginKind != "" {

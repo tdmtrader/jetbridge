@@ -2638,7 +2638,7 @@ func loadAuthoritativeExperimentTarget(
 		SELECT id, name, version, content_hash, schema_version, signature_version,
 		       definition, source_manifest
 		FROM agent_workflow_definitions
-		WHERE id = $1
+		WHERE id = $1 AND definition_kind = 'workflow'
 	`, target.DefinitionID).Scan(&definition.ID, &definition.Name, &definition.Version,
 		&definition.ContentHash, &definition.SchemaVersion, &definition.SignatureVersion,
 		&rawYAML, &manifestJSON)

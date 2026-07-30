@@ -8,19 +8,17 @@ END $$;
 
 DROP INDEX agent_workflow_runs_team_kind_workflow_created;
 
+DROP TRIGGER agent_workflow_runs_retry_definition_kind ON agent_workflow_runs;
+DROP FUNCTION agent_workflow_runs_enforce_retry_definition_kind();
+
 ALTER TABLE agent_workflow_runs
-    DROP CONSTRAINT agent_workflow_runs_retry_kind_fkey,
-    DROP CONSTRAINT agent_workflow_runs_id_definition_kind_key,
     DROP CONSTRAINT agent_workflow_runs_team_kind_idempotency_key,
     DROP CONSTRAINT agent_workflow_runs_definition_kind_check,
     DROP COLUMN definition_kind;
 
 ALTER TABLE agent_workflow_runs
     ADD CONSTRAINT agent_workflow_runs_team_id_idempotency_key_key
-        UNIQUE (team_id, idempotency_key),
-    ADD CONSTRAINT agent_workflow_runs_retry_of_workflow_run_id_fkey
-        FOREIGN KEY (retry_of_workflow_run_id)
-        REFERENCES agent_workflow_runs (id) ON DELETE SET NULL;
+        UNIQUE (team_id, idempotency_key);
 
 DROP INDEX agent_workflow_definitions_released_nodes;
 DROP INDEX agent_workflow_definitions_live;

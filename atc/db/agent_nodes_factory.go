@@ -22,6 +22,17 @@ const nodeMetaColumns = `id, name, version, content_hash, description, created_b
 	released_by, COALESCE(release_predecessor_version, 0), COALESCE(release_compatibility, ''),
 	COALESCE(EXTRACT(EPOCH FROM deprecated_at)::bigint, 0), deprecated_by`
 
+const nodeStoredColumns = nodeMetaColumns + `, schema_version, signature_version, source_manifest`
+
+const nodeRuntimeSchemaVersion = 3
+
+type storedNodeDefinition struct {
+	definition       workflow.NodeDefinition
+	schemaVersion    int
+	signatureVersion int
+	sourceManifest   sql.NullString
+}
+
 func (f *agentNodesFactory) ImportManifest(name string, source workflow.Manifest, createdBy string) (*workflow.NodeDefinition, error) {
 	if err := source.Validate(); err != nil {
 		return nil, workflow.InvalidDefinitionError{Err: err}
@@ -42,16 +53,18 @@ func (f *agentNodesFactory) ImportManifest(name string, source workflow.Manifest
 	if _, err = tx.Exec(`SELECT pg_advisory_xact_lock(hashtext('agent_node_definitions:' || $1))`, name); err != nil {
 		return nil, err
 	}
-	var d workflow.NodeDefinition
-	err = tx.QueryRow(`SELECT `+nodeMetaColumns+` FROM agent_workflow_definitions WHERE definition_kind = 'node' AND name=$1 AND content_hash=$2`, name, hash).Scan(nodeMetaScan(&d)...)
+	var stored storedNodeDefinition
+	err = tx.QueryRow(`SELECT `+nodeStoredColumns+` FROM agent_workflow_definitions WHERE definition_kind = 'node' AND name=$1 AND content_hash=$2`, name, hash).Scan(nodeStoredScan(&stored)...)
 	if err == nil {
-		d.Compiled = *compiled
-		d.SourceManifest = source
-		return &d, tx.Commit()
+		if err = populateStoredNode(&stored); err != nil {
+			return nil, err
+		}
+		return &stored.definition, tx.Commit()
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
 	}
+	var d workflow.NodeDefinition
 	var raw string
 	err = tx.QueryRow(`INSERT INTO agent_workflow_definitions
 		(definition_kind,name,version,content_hash,definition,source_manifest,description,created_by,schema_version,signature_version)
@@ -67,42 +80,40 @@ func (f *agentNodesFactory) ImportManifest(name string, source workflow.Manifest
 }
 
 func (f *agentNodesFactory) Get(name string, version int) (*workflow.NodeDefinition, bool, error) {
-	var d workflow.NodeDefinition
-	var manifest sql.NullString
-	err := f.conn.QueryRow(`SELECT `+nodeMetaColumns+`,source_manifest FROM agent_workflow_definitions WHERE definition_kind='node' AND name=$1 AND version=$2`, name, version).Scan(append(nodeMetaScan(&d), &manifest)...)
+	var stored storedNodeDefinition
+	err := f.conn.QueryRow(`SELECT `+nodeStoredColumns+` FROM agent_workflow_definitions WHERE definition_kind='node' AND name=$1 AND version=$2`, name, version).Scan(nodeStoredScan(&stored)...)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil
 	}
 	if err != nil {
 		return nil, false, err
 	}
-	if err := populateNode(&d, manifest); err != nil {
+	if err := populateStoredNode(&stored); err != nil {
 		return nil, false, err
 	}
-	return &d, true, nil
+	return &stored.definition, true, nil
 }
 func (f *agentNodesFactory) Latest(name string) (*workflow.NodeDefinition, bool, error) {
-	var d workflow.NodeDefinition
-	var m sql.NullString
-	err := f.conn.QueryRow(`SELECT `+nodeMetaColumns+`,source_manifest FROM agent_workflow_definitions WHERE definition_kind='node' AND name=$1 ORDER BY version DESC LIMIT 1`, name).Scan(append(nodeMetaScan(&d), &m)...)
+	var stored storedNodeDefinition
+	err := f.conn.QueryRow(`SELECT `+nodeStoredColumns+` FROM agent_workflow_definitions WHERE definition_kind='node' AND name=$1 ORDER BY version DESC LIMIT 1`, name).Scan(nodeStoredScan(&stored)...)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil
 	}
 	if err != nil {
 		return nil, false, err
 	}
-	if err = populateNode(&d, m); err != nil {
+	if err = populateStoredNode(&stored); err != nil {
 		return nil, false, err
 	}
-	return &d, true, nil
+	return &stored.definition, true, nil
 }
 func (f *agentNodesFactory) List() ([]workflow.NodeDefinition, error) {
-	rows, err := f.conn.Query(`SELECT DISTINCT ON (name) ` + nodeMetaColumns + ` FROM agent_workflow_definitions WHERE definition_kind='node' ORDER BY name,version DESC`)
+	rows, err := f.conn.Query(`SELECT DISTINCT ON (name) ` + nodeStoredColumns + ` FROM agent_workflow_definitions WHERE definition_kind='node' ORDER BY name,version DESC`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	return scanNodeMeta(rows)
+	return scanStoredNodes(rows)
 }
 func (f *agentNodesFactory) Versions(ctx context.Context, name string, r workflow.VersionPageRequest) (workflow.NodeVersionPage, error) {
 	if ctx == nil {
@@ -119,12 +130,12 @@ func (f *agentNodesFactory) Versions(ctx context.Context, name string, r workflo
 	if !found {
 		return p, nil
 	}
-	rows, err := f.conn.QueryContext(ctx, `SELECT `+nodeMetaColumns+` FROM agent_workflow_definitions WHERE definition_kind='node' AND name=$1 AND ($2=0 OR version<$2) ORDER BY version DESC LIMIT $3`, name, r.Cursor, r.Limit+1)
+	rows, err := f.conn.QueryContext(ctx, `SELECT `+nodeStoredColumns+` FROM agent_workflow_definitions WHERE definition_kind='node' AND name=$1 AND ($2=0 OR version<$2) ORDER BY version DESC LIMIT $3`, name, r.Cursor, r.Limit+1)
 	if err != nil {
 		return p, err
 	}
 	defer rows.Close()
-	defs, err := scanNodeMeta(rows)
+	defs, err := scanStoredNodes(rows)
 	if err != nil {
 		return p, err
 	}
@@ -157,29 +168,29 @@ func (f *agentNodesFactory) Release(name string, version int, c workflow.Release
 	if _, err = tx.Exec(`SELECT pg_advisory_xact_lock(hashtext('agent_node_definitions:' || $1))`, name); err != nil {
 		return workflow.NodeRelease{}, err
 	}
-	var target workflow.NodeDefinition
-	var m sql.NullString
-	err = tx.QueryRow(`SELECT `+nodeMetaColumns+`,source_manifest FROM agent_workflow_definitions WHERE definition_kind='node' AND name=$1 AND version=$2 FOR UPDATE`, name, version).Scan(append(nodeMetaScan(&target), &m)...)
+	var storedTarget storedNodeDefinition
+	err = tx.QueryRow(`SELECT `+nodeStoredColumns+` FROM agent_workflow_definitions WHERE definition_kind='node' AND name=$1 AND version=$2 FOR UPDATE`, name, version).Scan(nodeStoredScan(&storedTarget)...)
 	if errors.Is(err, sql.ErrNoRows) {
 		return workflow.NodeRelease{}, workflow.ErrVersionNotFound
 	}
 	if err != nil {
 		return workflow.NodeRelease{}, err
 	}
-	if target.Release.ReleasedAt != 0 {
-		return target.Release, tx.Commit()
+	if storedTarget.definition.Release.ReleasedAt != 0 {
+		return storedTarget.definition.Release, tx.Commit()
 	}
-	if err = populateNode(&target, m); err != nil {
+	if err = populateStoredNode(&storedTarget); err != nil {
 		return workflow.NodeRelease{}, err
 	}
-	var prior workflow.NodeDefinition
-	var pm sql.NullString
-	err = tx.QueryRow(`SELECT `+nodeMetaColumns+`,source_manifest FROM agent_workflow_definitions WHERE definition_kind='node' AND name=$1 AND released_at IS NOT NULL ORDER BY version DESC LIMIT 1 FOR UPDATE`, name).Scan(append(nodeMetaScan(&prior), &pm)...)
+	target := &storedTarget.definition
+	var storedPrior storedNodeDefinition
+	err = tx.QueryRow(`SELECT `+nodeStoredColumns+` FROM agent_workflow_definitions WHERE definition_kind='node' AND name=$1 AND released_at IS NOT NULL ORDER BY version DESC LIMIT 1 FOR UPDATE`, name).Scan(nodeStoredScan(&storedPrior)...)
 	if err == nil {
-		if err = populateNode(&prior, pm); err != nil {
+		if err = populateStoredNode(&storedPrior); err != nil {
 			return workflow.NodeRelease{}, err
 		}
-		if c == workflow.ReleaseCompatible && !nodeCompatible(prior.Compiled, target.Compiled) {
+		prior := &storedPrior.definition
+		if c == workflow.ReleaseCompatible && !workflow.NodeDefinitionsStructurallyCompatible(prior.Compiled, target.Compiled) {
 			return workflow.NodeRelease{}, workflow.ErrInvalidCompatibility
 		}
 		target.Release.PredecessorVersion = prior.Version
@@ -214,30 +225,45 @@ func (f *agentNodesFactory) Deprecate(name string, version int, deprecated bool,
 func nodeMetaScan(d *workflow.NodeDefinition) []any {
 	return []any{&d.ID, &d.Name, &d.Version, &d.ContentHash, &d.Description, &d.CreatedBy, &d.CreatedAt, &d.Release.ReleasedAt, &d.Release.ReleasedBy, &d.Release.PredecessorVersion, &d.Release.Compatibility, &d.DeprecatedAt, &d.DeprecatedBy}
 }
-func scanNodeMeta(rows *sql.Rows) ([]workflow.NodeDefinition, error) {
+func nodeStoredScan(stored *storedNodeDefinition) []any {
+	return append(
+		nodeMetaScan(&stored.definition),
+		&stored.schemaVersion,
+		&stored.signatureVersion,
+		&stored.sourceManifest,
+	)
+}
+func scanStoredNodes(rows *sql.Rows) ([]workflow.NodeDefinition, error) {
 	out := []workflow.NodeDefinition{}
 	for rows.Next() {
-		var d workflow.NodeDefinition
-		if err := rows.Scan(nodeMetaScan(&d)...); err != nil {
+		var stored storedNodeDefinition
+		if err := rows.Scan(nodeStoredScan(&stored)...); err != nil {
 			return nil, err
 		}
-		out = append(out, d)
+		if err := populateStoredNode(&stored); err != nil {
+			return nil, err
+		}
+		out = append(out, stored.definition)
 	}
 	return out, rows.Err()
 }
-func populateNode(d *workflow.NodeDefinition, m sql.NullString) error {
-	if !m.Valid {
+func populateStoredNode(stored *storedNodeDefinition) error {
+	d := &stored.definition
+	if !stored.sourceManifest.Valid {
 		return fmt.Errorf("stored node %s/v%d has no source manifest", d.Name, d.Version)
 	}
 	var source workflow.Manifest
-	if err := json.Unmarshal([]byte(m.String), &source); err != nil {
+	if err := json.Unmarshal([]byte(stored.sourceManifest.String), &source); err != nil {
 		return err
 	}
 	compiled, err := workflow.CompileNodeDefinition(source)
 	if err != nil {
 		return fmt.Errorf("stored node %s/v%d no longer compiles: %w", d.Name, d.Version, err)
 	}
-	if compiled.Name != d.Name || compiled.Function.SignatureVersion <= 0 {
+	if stored.schemaVersion != nodeRuntimeSchemaVersion ||
+		stored.signatureVersion != compiled.Function.SignatureVersion ||
+		compiled.Name != d.Name ||
+		source.Hash() != d.ContentHash {
 		return fmt.Errorf("stored metadata for node %q version %d does not match compiled source", d.Name, d.Version)
 	}
 	d.Compiled = *compiled
@@ -249,63 +275,4 @@ func nullableNodePredecessor(v int) any {
 		return nil
 	}
 	return v
-}
-func nodeCompatible(previous, candidate workflow.CompiledNodeDefinition) bool {
-	in := map[string]struct {
-		typ      interface{}
-		optional bool
-	}{}
-	for _, p := range candidate.Function.Inputs {
-		in[p.Name] = struct {
-			typ      interface{}
-			optional bool
-		}{p.Type, p.Optional}
-	}
-	for _, p := range previous.Function.Inputs {
-		q, ok := in[p.Name]
-		if !ok || q.typ != p.Type || q.optional != p.Optional {
-			return false
-		}
-	}
-	for _, p := range candidate.Function.Inputs {
-		seen := false
-		for _, old := range previous.Function.Inputs {
-			if old.Name == p.Name {
-				seen = true
-			}
-		}
-		if !seen && !p.Optional {
-			return false
-		}
-	}
-	out := map[string]interface{}{}
-	for _, p := range candidate.Function.Outputs {
-		out[p.Name] = p.Type
-	}
-	for _, p := range previous.Function.Outputs {
-		if q, ok := out[p.Name]; !ok || q != p.Type {
-			return false
-		}
-	}
-	params := map[string]*string{}
-	for _, p := range candidate.Parameters {
-		params[p.Name] = p.Default
-	}
-	for _, p := range previous.Parameters {
-		if _, ok := params[p.Name]; !ok {
-			return false
-		}
-	}
-	for _, p := range candidate.Parameters {
-		old := false
-		for _, q := range previous.Parameters {
-			if p.Name == q.Name {
-				old = true
-			}
-		}
-		if !old && p.Default == nil {
-			return false
-		}
-	}
-	return true
 }
