@@ -61,6 +61,7 @@
     { "id": "observation-state-shape", "rule": "Missing observations require an explicit expected source and omit provider PR identity; observed active and terminal states require exact external identity and heads and forbid an expected source." },
     { "id": "expected-head-shape", "rule": "An absent expected source has an empty SHA, while an existing expected source has a full object ID." },
     { "id": "trigger-state-pairing", "rule": "initial_publish is valid only for missing observations; all other trigger tokens require their matching observed lifecycle." },
-    { "id": "stable-provider-identities", "rule": "Object IDs, refs, provider iteration, batch/review/thread/comment identities, reviewer readiness, bounded markdown, anchors, and batch thread references are semantically validated and canonically ordered." }
+    { "id": "stable-provider-identities", "rule": "Object IDs, refs, provider iteration, batch/review/thread/comment identities, reviewer readiness, bounded markdown, anchors, and batch thread references are semantically validated and canonically ordered." },
+    { "id": "bounded-provider-observation", "rule": "Provider is at most 64 bytes; repository 512; URL 2048; refs 512; identifiers and iteration 256; paths 1024; review batches 128; threads 512; comments per thread 256; and batch thread IDs 512." }
   ]
 }

@@ -54,6 +54,9 @@ func (body PublishImpactBody) Validate(_ []Subject) error {
 	if body.ChangedLines < 0 {
 		return fmt.Errorf("changed lines must not be negative")
 	}
+	if err := validateMaxItems("changed files", len(body.ChangedFiles), maxPublishImpactChangedFiles); err != nil {
+		return err
+	}
 	filePaths := make([]string, len(body.ChangedFiles))
 	calculatedLines := 0
 	for index, file := range body.ChangedFiles {
@@ -69,7 +72,13 @@ func (body PublishImpactBody) Validate(_ []Subject) error {
 	if body.ChangedLines != calculatedLines {
 		return fmt.Errorf("changed lines must equal the total added and removed lines")
 	}
+	if err := validateMaxItems("validation changes", len(body.ValidationChanges), maxPublishImpactValidationChanges); err != nil {
+		return err
+	}
 	if err := validateSortedNonblankStrings("validation changes", body.ValidationChanges); err != nil {
+		return err
+	}
+	if err := validateMaxItems("rule results", len(body.RuleResults), maxPublishImpactRules); err != nil {
 		return err
 	}
 	ruleIDs := make([]string, len(body.RuleResults))
@@ -98,11 +107,14 @@ func (body PublishImpactBody) Validate(_ []Subject) error {
 	if body.ReapprovalRequired && len(body.Reasons) == 0 {
 		return fmt.Errorf("reapproval requires at least one reason")
 	}
+	if err := validateMaxItems("reasons", len(body.Reasons), maxPublishImpactReasons); err != nil {
+		return err
+	}
 	return validateSortedNonblankStrings("reasons", body.Reasons)
 }
 
 func (file PublishChangedFile) Validate() error {
-	if err := validatePOSIXPath("changed file path", file.Path); err != nil {
+	if err := validatePullRequestPath("changed file path", file.Path); err != nil {
 		return err
 	}
 	if file.AddedLines < 0 || file.RemovedLines < 0 {
@@ -112,7 +124,7 @@ func (file PublishChangedFile) Validate() error {
 }
 
 func (rule PublishImpactRule) Validate() error {
-	if err := ValidateIdentifier("rule id", rule.ID); err != nil {
+	if err := validatePullRequestIdentifier("rule id", rule.ID); err != nil {
 		return err
 	}
 	return validateBoundedMarkdown("rule reason", rule.Reason)
@@ -124,7 +136,7 @@ func (assessment AgentImpactAssessment) Validate() error {
 
 func validateSortedUniquePaths(label string, values []string) error {
 	for index, value := range values {
-		if err := validatePOSIXPath(fmt.Sprintf("%s[%d]", label, index), value); err != nil {
+		if err := validatePullRequestPath(fmt.Sprintf("%s[%d]", label, index), value); err != nil {
 			return err
 		}
 		if index == 0 {

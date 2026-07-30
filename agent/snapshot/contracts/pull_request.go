@@ -96,14 +96,31 @@ type PullRequestComment struct {
 	CommitSHA string `json:"commit_sha"`
 }
 
-const maxPullRequestMarkdownBytes = 32 * 1024
+const (
+	maxPullRequestMarkdownBytes       = 32 * 1024
+	maxPullRequestProviderBytes       = 64
+	maxPullRequestRepositoryBytes     = 512
+	maxPullRequestURLBytes            = 2048
+	maxPullRequestRefBytes            = 512
+	maxPullRequestIdentifierBytes     = 256
+	maxPullRequestPathBytes           = 1024
+	maxPullRequestReviewBatches       = 128
+	maxPullRequestThreads             = 512
+	maxPullRequestComments            = 256
+	maxPullRequestThreadIDs           = 512
+	maxPullRequestReplies             = 512
+	maxPublishImpactChangedFiles      = 1024
+	maxPublishImpactRules             = 512
+	maxPublishImpactValidationChanges = 512
+	maxPublishImpactReasons           = 512
+)
 
 func (body PullRequestBody) Validate(_ []Subject) error {
-	if strings.TrimSpace(body.Provider) == "" {
-		return fmt.Errorf("provider is required")
+	if err := validateRequiredBoundedText("provider", body.Provider, maxPullRequestProviderBytes); err != nil {
+		return err
 	}
-	if strings.TrimSpace(body.Repository) == "" {
-		return fmt.Errorf("repository is required")
+	if err := validateRequiredBoundedText("repository", body.Repository, maxPullRequestRepositoryBytes); err != nil {
+		return err
 	}
 	if err := validatePullRequestRef("source ref", body.SourceRef); err != nil {
 		return err
@@ -114,7 +131,7 @@ func (body PullRequestBody) Validate(_ []Subject) error {
 	if err := validateGitObjectID("target sha", body.TargetSHA); err != nil {
 		return err
 	}
-	if err := ValidateIdentifier("iteration", body.Iteration); err != nil {
+	if err := validatePullRequestIdentifier("iteration", body.Iteration); err != nil {
 		return err
 	}
 	if err := body.validateState(); err != nil {
@@ -124,6 +141,9 @@ func (body PullRequestBody) Validate(_ []Subject) error {
 		return err
 	}
 
+	if err := validateMaxItems("threads", len(body.Threads), maxPullRequestThreads); err != nil {
+		return err
+	}
 	threadIDs := make([]string, len(body.Threads))
 	for index, thread := range body.Threads {
 		threadIDs[index] = thread.ID
@@ -137,6 +157,9 @@ func (body PullRequestBody) Validate(_ []Subject) error {
 	knownThreads := make(map[string]struct{}, len(threadIDs))
 	for _, id := range threadIDs {
 		knownThreads[id] = struct{}{}
+	}
+	if err := validateMaxItems("review batches", len(body.ReviewBatches), maxPullRequestReviewBatches); err != nil {
+		return err
 	}
 	batchIDs := make([]string, len(body.ReviewBatches))
 	for index, batch := range body.ReviewBatches {
@@ -161,7 +184,7 @@ func (body PullRequestBody) validateState() error {
 			return fmt.Errorf("expected source: %w", err)
 		}
 	case PullRequestActive, PullRequestCompleted, PullRequestAbandoned:
-		if err := ValidateIdentifier("external id", body.ExternalID); err != nil {
+		if err := validatePullRequestIdentifier("external id", body.ExternalID); err != nil {
 			return err
 		}
 		if err := validatePullRequestURL(body.URL); err != nil {
@@ -224,20 +247,23 @@ func (expectation PullRequestHeadExpectation) Validate() error {
 }
 
 func (batch PullRequestReviewBatch) Validate(knownThreads map[string]struct{}) error {
-	if err := ValidateIdentifier("batch id", batch.ID); err != nil {
+	if err := validatePullRequestIdentifier("batch id", batch.ID); err != nil {
 		return err
 	}
-	if err := ValidateIdentifier("review id", batch.ReviewID); err != nil {
+	if err := validatePullRequestIdentifier("review id", batch.ReviewID); err != nil {
 		return err
 	}
 	if err := validateGitObjectID("review commit sha", batch.CommitSHA); err != nil {
 		return err
 	}
-	if err := ValidateIdentifier("reviewer", batch.Reviewer); err != nil {
+	if err := validatePullRequestIdentifier("reviewer", batch.Reviewer); err != nil {
 		return err
 	}
 	if !batch.Ready {
 		return fmt.Errorf("review batch must be ready")
+	}
+	if err := validateMaxItems("thread ids", len(batch.ThreadIDs), maxPullRequestThreadIDs); err != nil {
+		return err
 	}
 	if err := validateSortedIdentifiers("thread ids", batch.ThreadIDs); err != nil {
 		return err
@@ -251,16 +277,19 @@ func (batch PullRequestReviewBatch) Validate(knownThreads map[string]struct{}) e
 }
 
 func (thread PullRequestThread) Validate() error {
-	if err := ValidateIdentifier("thread id", thread.ID); err != nil {
+	if err := validatePullRequestIdentifier("thread id", thread.ID); err != nil {
 		return err
 	}
-	if err := ValidateIdentifier("thread iteration", thread.Iteration); err != nil {
+	if err := validatePullRequestIdentifier("thread iteration", thread.Iteration); err != nil {
 		return err
 	}
 	if thread.Anchor != nil {
 		if err := thread.Anchor.Validate(); err != nil {
 			return fmt.Errorf("anchor: %w", err)
 		}
+	}
+	if err := validateMaxItems("comments", len(thread.Comments), maxPullRequestComments); err != nil {
+		return err
 	}
 	commentIDs := make([]string, len(thread.Comments))
 	for index, comment := range thread.Comments {
@@ -273,7 +302,7 @@ func (thread PullRequestThread) Validate() error {
 }
 
 func (anchor PullRequestAnchor) Validate() error {
-	if err := validatePOSIXPath("thread anchor path", anchor.Path); err != nil {
+	if err := validatePullRequestPath("thread anchor path", anchor.Path); err != nil {
 		return err
 	}
 	if anchor.StartLine < 1 || anchor.EndLine < anchor.StartLine {
@@ -283,10 +312,10 @@ func (anchor PullRequestAnchor) Validate() error {
 }
 
 func (comment PullRequestComment) Validate() error {
-	if err := ValidateIdentifier("comment id", comment.ID); err != nil {
+	if err := validatePullRequestIdentifier("comment id", comment.ID); err != nil {
 		return err
 	}
-	if err := ValidateIdentifier("comment author", comment.Author); err != nil {
+	if err := validatePullRequestIdentifier("comment author", comment.Author); err != nil {
 		return err
 	}
 	if err := validateBoundedMarkdown("comment body", comment.Body); err != nil {
@@ -299,10 +328,16 @@ func validatePullRequestRef(label, value string) error {
 	if strings.TrimSpace(value) == "" || strings.ContainsAny(value, "\x00\r\n \t") {
 		return fmt.Errorf("%s is required and must not contain whitespace", label)
 	}
+	if len(value) > maxPullRequestRefBytes {
+		return fmt.Errorf("%s must be at most %d bytes", label, maxPullRequestRefBytes)
+	}
 	return nil
 }
 
 func validatePullRequestURL(value string) error {
+	if len(value) > maxPullRequestURLBytes {
+		return fmt.Errorf("url must be at most %d bytes", maxPullRequestURLBytes)
+	}
 	parsed, err := url.Parse(value)
 	if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" {
 		return fmt.Errorf("url must be an absolute http or https URL")
@@ -324,7 +359,7 @@ func validateGitObjectID(label, value string) error {
 
 func validateSortedIdentifiers(label string, values []string) error {
 	for index, value := range values {
-		if err := ValidateIdentifier(fmt.Sprintf("%s[%d]", label, index), value); err != nil {
+		if err := validatePullRequestIdentifier(fmt.Sprintf("%s[%d]", label, index), value); err != nil {
 			return err
 		}
 		if index == 0 {
@@ -336,6 +371,43 @@ func validateSortedIdentifiers(label string, values []string) error {
 		case 1:
 			return fmt.Errorf("%s must be lexicographically sorted", label)
 		}
+	}
+	return nil
+}
+
+func validatePullRequestIdentifier(label, value string) error {
+	if err := ValidateIdentifier(label, value); err != nil {
+		return err
+	}
+	if len(value) > maxPullRequestIdentifierBytes {
+		return fmt.Errorf("%s must be at most %d bytes", label, maxPullRequestIdentifierBytes)
+	}
+	return nil
+}
+
+func validatePullRequestPath(label, value string) error {
+	if err := validatePOSIXPath(label, value); err != nil {
+		return err
+	}
+	if len(value) > maxPullRequestPathBytes {
+		return fmt.Errorf("%s must be at most %d bytes", label, maxPullRequestPathBytes)
+	}
+	return nil
+}
+
+func validateRequiredBoundedText(label, value string, maximum int) error {
+	if strings.TrimSpace(value) == "" {
+		return fmt.Errorf("%s is required", label)
+	}
+	if !utf8.ValidString(value) || len(value) > maximum {
+		return fmt.Errorf("%s must be valid UTF-8 and at most %d bytes", label, maximum)
+	}
+	return nil
+}
+
+func validateMaxItems(label string, count, maximum int) error {
+	if count > maximum {
+		return fmt.Errorf("%s allows at most %d items", label, maximum)
 	}
 	return nil
 }

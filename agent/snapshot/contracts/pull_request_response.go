@@ -27,10 +27,13 @@ func (body PullRequestResponseBody) Validate(_ []Subject) error {
 }
 
 func (body PullRequestResponseBody) validateIntrinsic() error {
-	if err := ValidateIdentifier("batch id", body.BatchID); err != nil {
+	if err := validatePullRequestIdentifier("batch id", body.BatchID); err != nil {
 		return err
 	}
 	if err := validateBoundedMarkdown("summary", body.Summary); err != nil {
+		return err
+	}
+	if err := validateMaxItems("replies", len(body.Replies), maxPullRequestReplies); err != nil {
 		return err
 	}
 	threadIDs := make([]string, len(body.Replies))
@@ -44,7 +47,7 @@ func (body PullRequestResponseBody) validateIntrinsic() error {
 }
 
 func (response PullRequestThreadResponse) Validate() error {
-	if err := ValidateIdentifier("thread id", response.ThreadID); err != nil {
+	if err := validatePullRequestIdentifier("thread id", response.ThreadID); err != nil {
 		return err
 	}
 	return validateBoundedMarkdown("reply body", response.Body)

@@ -1,6 +1,7 @@
 package contracts_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -73,5 +74,53 @@ func TestPullRequestMissingObservationRequiresExplicitExpectedSource(t *testing.
 	body.ExpectedSource = nil
 	if err := body.Validate(nil); err == nil || !strings.Contains(err.Error(), "expected source") {
 		t.Fatalf("missing observation without expectation error = %v", err)
+	}
+}
+
+func TestPullRequestBodyRejectsOversizedCollectionsAndText(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(*contracts.PullRequestBody)
+		want  string
+	}{
+		{"review batches", func(body *contracts.PullRequestBody) {
+			body.ReviewBatches = nil
+			for index := 0; index < 129; index++ {
+				id := fmt.Sprintf("batch-%03d", index)
+				body.ReviewBatches = append(body.ReviewBatches, contracts.PullRequestReviewBatch{ID: id, ReviewID: "review-" + id, CommitSHA: strings.Repeat("a", 40), Reviewer: "reviewer-1", Ready: true})
+			}
+		}, "review batches"},
+		{"threads", func(body *contracts.PullRequestBody) {
+			body.ReviewBatches = nil
+			body.Threads = nil
+			for index := 0; index < 513; index++ {
+				body.Threads = append(body.Threads, contracts.PullRequestThread{ID: fmt.Sprintf("thread-%03d", index), Iteration: "iteration-1"})
+			}
+		}, "threads"},
+		{"comments", func(body *contracts.PullRequestBody) {
+			body.ReviewBatches = nil
+			body.Threads[0].Comments = nil
+			for index := 0; index < 257; index++ {
+				body.Threads[0].Comments = append(body.Threads[0].Comments, contracts.PullRequestComment{ID: fmt.Sprintf("comment-%03d", index), Author: "reviewer-1", Body: "Please revise this.", CommitSHA: strings.Repeat("a", 40)})
+			}
+		}, "comments"},
+		{"provider", func(body *contracts.PullRequestBody) { body.Provider = strings.Repeat("a", 65) }, "provider"},
+		{"repository", func(body *contracts.PullRequestBody) { body.Repository = strings.Repeat("a", 513) }, "repository"},
+		{"external id", func(body *contracts.PullRequestBody) { body.ExternalID = strings.Repeat("a", 257) }, "external id"},
+		{"source ref", func(body *contracts.PullRequestBody) { body.SourceRef = strings.Repeat("a", 513) }, "source ref"},
+		{"url", func(body *contracts.PullRequestBody) {
+			body.URL = "https://example.invalid/" + strings.Repeat("a", 2025)
+		}, "url"},
+		{"anchor path", func(body *contracts.PullRequestBody) {
+			body.Threads[0].Anchor = &contracts.PullRequestAnchor{Path: strings.Repeat("a", 1025), StartLine: 1, EndLine: 1}
+		}, "anchor path"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := validPullRequestBody()
+			tc.setup(&body)
+			if err := body.Validate(nil); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Validate() error = %v, want %q", err, tc.want)
+			}
+		})
 	}
 }

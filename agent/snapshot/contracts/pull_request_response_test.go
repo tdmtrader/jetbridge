@@ -1,6 +1,7 @@
 package contracts_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -47,5 +48,21 @@ func TestPullRequestResponseRejectsDuplicateReplies(t *testing.T) {
 	body.Replies = append(body.Replies, body.Replies[0])
 	if err := body.Validate(nil); err == nil || !strings.Contains(err.Error(), "duplicate") {
 		t.Fatalf("Validate() error = %v, want duplicate", err)
+	}
+}
+
+func TestPullRequestResponseRejectsOversizedRepliesAndIdentifiers(t *testing.T) {
+	body := validPullRequestResponseBody()
+	body.Replies = nil
+	for index := 0; index < 513; index++ {
+		body.Replies = append(body.Replies, contracts.PullRequestThreadResponse{ThreadID: fmt.Sprintf("thread-%03d", index), Body: "Updated in the latest revision."})
+	}
+	if err := body.Validate(nil); err == nil || !strings.Contains(err.Error(), "replies") {
+		t.Fatalf("oversized replies validation error = %v", err)
+	}
+	body = validPullRequestResponseBody()
+	body.BatchID = strings.Repeat("a", 257)
+	if err := body.Validate(nil); err == nil || !strings.Contains(err.Error(), "batch id") {
+		t.Fatalf("oversized batch id validation error = %v", err)
 	}
 }
