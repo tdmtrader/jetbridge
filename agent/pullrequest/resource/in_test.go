@@ -309,6 +309,92 @@ func TestForgePRInPublishesRecordWithoutReplacingACollision(t *testing.T) {
 	}
 }
 
+func TestForgePRInRejectsUnexpectedFinalDestinationMember(t *testing.T) {
+	now, source, observation, version := currentInFixture(t)
+	destination := filepath.Join(t.TempDir(), "out")
+	if err := os.Mkdir(destination, 0700); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	runner := runnerFunc(func(_ context.Context, command resource.GitCommand) error {
+		calls++
+		if err := os.MkdirAll(filepath.Join(command.Directory, ".git"), 0700); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(command.Directory, ".git", "HEAD"), []byte(command.SHA+"\n"), 0600); err != nil {
+			return err
+		}
+		if calls == 2 {
+			return os.WriteFile(filepath.Join(destination, "belongs-to-another-writer"), []byte("keep"), 0600)
+		}
+		return nil
+	})
+	err := resource.In(context.Background(), destination, bytes.NewReader(checkInput(t, source, &version)), &bytes.Buffer{}, &bytes.Buffer{}, resource.Dependencies{
+		ObserverFactory: fixedObserver(observerFunc(func(context.Context, pullrequest.Locator, pullrequest.Cursor) (pullrequest.Observation, error) {
+			return observation, nil
+		})),
+		Clock:     func() time.Time { return now },
+		GitRunner: runner,
+	})
+	if err == nil {
+		t.Fatal("unexpected top-level destination member was accepted")
+	}
+	raw, readErr := os.ReadFile(filepath.Join(destination, "belongs-to-another-writer"))
+	if readErr != nil || string(raw) != "keep" {
+		t.Fatalf("foreign destination member was altered: %q, %v", raw, readErr)
+	}
+	entries, readErr := os.ReadDir(destination)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if len(entries) != 1 || entries[0].Name() != "belongs-to-another-writer" {
+		t.Fatalf("owned output was not rolled back around foreign member: %v", entries)
+	}
+}
+
+func TestForgePRInRechecksPublishedRecordAfterProtocolWrite(t *testing.T) {
+	now, source, observation, version := currentInFixture(t)
+	destination := filepath.Join(t.TempDir(), "out")
+	if err := os.Mkdir(destination, 0700); err != nil {
+		t.Fatal(err)
+	}
+	recordPath := filepath.Join(destination, "record.json")
+	runner := runnerFunc(func(_ context.Context, command resource.GitCommand) error {
+		if err := os.MkdirAll(filepath.Join(command.Directory, ".git"), 0700); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(command.Directory, ".git", "HEAD"), []byte(command.SHA+"\n"), 0600)
+	})
+	stdout := writerFunc(func(payload []byte) (int, error) {
+		if err := os.Remove(recordPath); err != nil {
+			return 0, err
+		}
+		if err := os.WriteFile(recordPath, []byte("belongs-to-another-writer"), 0600); err != nil {
+			return 0, err
+		}
+		return len(payload), nil
+	})
+	err := resource.In(context.Background(), destination, bytes.NewReader(checkInput(t, source, &version)), stdout, &bytes.Buffer{}, resource.Dependencies{
+		ObserverFactory: fixedObserver(observerFunc(func(context.Context, pullrequest.Locator, pullrequest.Cursor) (pullrequest.Observation, error) {
+			return observation, nil
+		})),
+		Clock:     func() time.Time { return now },
+		GitRunner: runner,
+	})
+	if err == nil {
+		t.Fatal("record replacement across the protocol boundary was accepted")
+	}
+	raw, readErr := os.ReadFile(recordPath)
+	if readErr != nil || string(raw) != "belongs-to-another-writer" {
+		t.Fatalf("replacement record was altered: %q, %v", raw, readErr)
+	}
+	for _, name := range []string{"source-repository", "target-repository"} {
+		if _, statErr := os.Lstat(filepath.Join(destination, name)); !os.IsNotExist(statErr) {
+			t.Fatalf("owned %s was not rolled back: %v", name, statErr)
+		}
+	}
+}
+
 func TestForgePRInUsesExactObjectFetchForTerminalObservation(t *testing.T) {
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
 	source := testSource(now)
@@ -499,6 +585,12 @@ func (fn runnerFunc) Run(ctx context.Context, command resource.GitCommand) error
 type errorWriter struct{}
 
 func (errorWriter) Write([]byte) (int, error) { return 0, fmt.Errorf("write failed") }
+
+type writerFunc func([]byte) (int, error)
+
+func (function writerFunc) Write(value []byte) (int, error) {
+	return function(value)
+}
 
 func currentInFixture(t *testing.T) (time.Time, resource.Source, pullrequest.Observation, resource.Version) {
 	t.Helper()

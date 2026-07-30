@@ -179,12 +179,13 @@ func In(ctx context.Context, destination string, stdin io.Reader, stdout, _ io.W
 	if err := publishRecord(destinationRoot, destination, destinationInfo, ownership, raw); err != nil {
 		return err
 	}
-	for _, output := range ownership.directories {
-		if err := verifyOwnedDirectory(destinationRoot, destination, destinationInfo, output); err != nil {
-			return err
-		}
+	if err := verifyCompletedDestination(destinationRoot, destination, destinationInfo, ownership); err != nil {
+		return err
 	}
 	if err := writeJSON(stdout, InResult{Version: *request.Version}); err != nil {
+		return err
+	}
+	if err := verifyCompletedDestination(destinationRoot, destination, destinationInfo, ownership); err != nil {
 		return err
 	}
 	completed = true
@@ -293,6 +294,53 @@ func verifyOwnedDirectory(destinationRoot *os.Root, destination string, destinat
 		!realDirectory(relativeInfo) || !realDirectory(retainedInfo) || !realDirectory(pathInfo) ||
 		!os.SameFile(output.info, relativeInfo) || !os.SameFile(output.info, retainedInfo) || !os.SameFile(output.info, pathInfo) {
 		return fmt.Errorf("forge-pr: repository output identity changed")
+	}
+	return nil
+}
+
+func verifyCompletedDestination(root *os.Root, destination string, destinationInfo os.FileInfo, ownership *destinationOwnership) error {
+	if err := verifyDestination(root, destination, destinationInfo); err != nil {
+		return err
+	}
+
+	expectedNames := map[string]struct{}{
+		"record.json":       {},
+		"source-repository": {},
+		"target-repository": {},
+	}
+	entries, err := fs.ReadDir(root.FS(), ".")
+	if err != nil || len(entries) != len(expectedNames) {
+		return fmt.Errorf("forge-pr: completed destination membership changed")
+	}
+	for _, entry := range entries {
+		if _, expected := expectedNames[entry.Name()]; !expected {
+			return fmt.Errorf("forge-pr: completed destination membership changed")
+		}
+		delete(expectedNames, entry.Name())
+	}
+	if len(expectedNames) != 0 {
+		return fmt.Errorf("forge-pr: completed destination membership changed")
+	}
+
+	for _, output := range ownership.directories {
+		if err := verifyOwnedDirectory(root, destination, destinationInfo, output); err != nil {
+			return err
+		}
+	}
+
+	var record *ownedFile
+	for _, file := range ownership.files {
+		if file != nil && file.name == "record.json" && file.present {
+			record = file
+			break
+		}
+	}
+	if record == nil || record.info == nil {
+		return fmt.Errorf("forge-pr: record identity is unavailable")
+	}
+	recordInfo, err := root.Lstat(record.name)
+	if err != nil || !recordInfo.Mode().IsRegular() || !os.SameFile(record.info, recordInfo) {
+		return fmt.Errorf("forge-pr: record identity changed")
 	}
 	return nil
 }
