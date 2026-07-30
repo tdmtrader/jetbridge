@@ -18,6 +18,7 @@ import (
 type AgentChildExecutionsFactory interface {
 	Create(context.Context, string, broker.ExecutionIdentity) (AgentChildExecution, error)
 	Advance(context.Context, AdvanceAgentChildExecution) (AgentChildExecution, error)
+	ReconcileExpiredLeases(context.Context, int) ([]AgentChildExecution, error)
 	Find(context.Context, int, string) (AgentChildExecution, bool, error)
 }
 
@@ -245,6 +246,86 @@ func (factory *agentChildExecutionsFactory) Advance(
 		return AgentChildExecution{}, err
 	}
 	return updated, nil
+}
+
+// ReconcileExpiredLeases marks up to limit expired, nonterminal broker leases
+// as retryable broker_lost errors. The claim and terminal transition share one
+// transaction so concurrent reconcilers do not contend for the same execution.
+func (factory *agentChildExecutionsFactory) ReconcileExpiredLeases(
+	ctx context.Context,
+	limit int,
+) ([]AgentChildExecution, error) {
+	if factory == nil || factory.conn == nil {
+		return nil, fmt.Errorf("db: agent child execution connection is required")
+	}
+	if limit <= 0 {
+		return nil, fmt.Errorf("db: positive child execution reconciliation limit is required")
+	}
+
+	tx, err := factory.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer Rollback(tx)
+
+	rows, err := tx.QueryContext(ctx, `
+		WITH claimed AS (
+			SELECT id AS execution_id, sequence AS expected_sequence
+			FROM agent_child_executions
+			WHERE state NOT IN ('succeeded', 'errored', 'cancelled', 'timed_out')
+			  AND lease_expires_at IS NOT NULL
+			  AND lease_expires_at <= clock_timestamp()
+			ORDER BY lease_expires_at, id
+			FOR UPDATE SKIP LOCKED
+			LIMIT $1
+		)
+		UPDATE agent_child_executions execution
+		SET state = $2,
+		    sequence = execution.sequence + 1,
+		    lease_expires_at = NULL,
+		    error_code = 'broker_lost',
+		    error_retryable = TRUE,
+		    error_summary = 'broker lease expired before a terminal result was recorded'
+		FROM claimed
+		WHERE execution.id = claimed.execution_id
+		  AND execution.sequence = claimed.expected_sequence
+		  AND execution.state NOT IN ('succeeded', 'errored', 'cancelled', 'timed_out')
+		  AND execution.lease_expires_at IS NOT NULL
+		  AND execution.lease_expires_at <= clock_timestamp()
+		RETURNING `+agentChildExecutionColumns,
+		limit, broker.ExecutionErrored,
+	)
+	if err != nil {
+		return nil, err
+	}
+	reconciled := []AgentChildExecution{}
+	for rows.Next() {
+		execution, err := scanAgentChildExecution(rows)
+		if err != nil {
+			return nil, err
+		}
+		reconciled = append(reconciled, execution)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+
+	for _, execution := range reconciled {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO agent_child_execution_events
+				(execution_id, sequence, state, phase)
+			VALUES ($1::uuid, $2, $3, 'broker_lost')
+		`, execution.ID, execution.Sequence, execution.State); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return reconciled, nil
 }
 
 func (factory *agentChildExecutionsFactory) Find(
