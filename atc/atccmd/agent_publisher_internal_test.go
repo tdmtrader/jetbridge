@@ -114,6 +114,79 @@ func TestAgentPublisherCompositionRejectsUnsupportedConfiguredModesAndAdapters(t
 	}
 }
 
+func TestAgentPublisherPolicyValidationSelectsOnlyEnabledAdapterLanes(t *testing.T) {
+	direct := publisher.PolicyRule{
+		Team: "engineering", Publisher: publisher.GitPublisher,
+		Mode: publisher.ModeBranch, ApprovalPolicyVersion: "engineering/v1",
+		TargetBranch: "main", Destination: "git.example/acme/widget",
+		Adapter: publisher.AdapterDirectGit, CredentialReference: "widget-git",
+		RemoteURL: "https://git.example/acme/widget.git",
+	}
+	github := publisher.PolicyRule{
+		Team: "engineering", Publisher: publisher.GitPublisher,
+		Mode: publisher.ModePullRequest, ApprovalPolicyVersion: "engineering/v1",
+		TargetBranch: "refs/heads/main", Destination: "github.com/acme/widget",
+		Adapter: publisher.AdapterGitHub, Provider: publisher.PRProviderGitHub,
+		Repository: "acme/widget", APIBaseURL: "https://api.github.com",
+		RepositoryURL:           "https://github.com/acme/widget.git",
+		ReadCredentialReference: "widget-read", WriteCredentialReference: "widget-write",
+	}
+	azure := publisher.PolicyRule{
+		Team: "engineering", Publisher: publisher.GitPublisher,
+		Mode: publisher.ModePullRequest, ApprovalPolicyVersion: "engineering/v1",
+		TargetBranch: "refs/heads/main", Destination: "dev.azure.com/acme/project/repository-id",
+		Adapter: publisher.AdapterAzureDevOps, Provider: publisher.PRProviderAzureDevOps,
+		Repository: "project/repository-id", APIBaseURL: "https://dev.azure.com/acme",
+		RepositoryURL:           "https://dev.azure.com/acme/project/_git/repository-id",
+		ReadCredentialReference: "widget-read", WriteCredentialReference: "widget-write",
+	}
+	for name, test := range map[string]struct {
+		directEnabled bool
+		prEnabled     bool
+		rules         []publisher.PolicyRule
+		wantError     string
+	}{
+		"PR only GitHub": {
+			prEnabled: true, rules: []publisher.PolicyRule{github},
+		},
+		"PR only Azure": {
+			prEnabled: true, rules: []publisher.PolicyRule{azure},
+		},
+		"mixed lanes": {
+			directEnabled: true, prEnabled: true,
+			rules: []publisher.PolicyRule{direct, github, azure},
+		},
+		"PR rule while disabled": {
+			directEnabled: true, rules: []publisher.PolicyRule{github},
+			wantError: "pull request adapter is disabled",
+		},
+		"direct rule while disabled": {
+			prEnabled: true, rules: []publisher.PolicyRule{direct},
+			wantError: "direct Git adapter is disabled",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			policy := publisher.Policy{SchemaVersion: 1, Rules: test.rules}
+			if err := policy.Validate(); err != nil {
+				t.Fatalf("test policy is invalid: %v", err)
+			}
+			command := &RunCommand{}
+			command.AgentPublisher.DirectGitEnabled = test.directEnabled
+			command.AgentPublisher.PullRequestsEnabled = test.prEnabled
+			err := command.validateAgentPublisherPolicy(policy)
+			if test.wantError == "" {
+				if err != nil {
+					t.Fatalf("validateAgentPublisherPolicy() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("validateAgentPublisherPolicy() error = %v, want %q", err, test.wantError)
+			}
+		})
+	}
+}
+
 func TestAgentPublisherCompositionUsesMountedCredentialProvider(t *testing.T) {
 	command := configuredAgentPublisherCommand(t, `{
 		"schema_version":1,
@@ -143,6 +216,25 @@ func TestAgentPublisherBuilderFailsClosedWhenDisabled(t *testing.T) {
 	)
 	if err == nil || !strings.Contains(err.Error(), "disabled") {
 		t.Fatalf("disabled builder error = %v", err)
+	}
+}
+
+func TestAgentPublisherBuilderFailsClosedWhenPRAuthoritySpineIsIncomplete(t *testing.T) {
+	command := configuredAgentPublisherCommand(t, `{
+		"schema_version":1,
+		"rules":[{"team":"engineering","publisher":"git-publisher/v1","mode":"branch","approval_policy_version":"engineering/v1","target_branch":"main","destination":"git.example/acme/widget","adapter":"direct-git","credential_reference":"widget-git","remote_url":"https://git.example/acme/widget.git"}]
+	}`)
+	command.AgentPublisher.PullRequestsEnabled = true
+
+	_, err := command.buildAgentPublisher(
+		publishertest.NewMemoryStore(time.Now),
+		&dbfakes.FakeAgentSnapshotsFactory{},
+		&compositionContentStore{},
+	)
+	if err == nil || !strings.Contains(
+		err.Error(), "production authority spine is incomplete",
+	) {
+		t.Fatalf("incomplete PR builder error = %v", err)
 	}
 }
 
