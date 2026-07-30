@@ -1,0 +1,208 @@
+package workflow
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"sort"
+	"strings"
+
+	"github.com/concourse/concourse/agent/broker"
+	"github.com/concourse/concourse/atc"
+)
+
+const brokerProfileProvenanceHashDomain = "workflow-broker-profile-provenance/v1\x00"
+
+// BrokerProfileSelector is the provider-neutral source declaration attached
+// to one agent node. It deliberately cannot name a provider, model, harness,
+// credential, or control.
+type BrokerProfileSelector struct {
+	Tool   broker.Tool   `json:"tool" yaml:"tool"`
+	Tier   broker.Tier   `json:"tier" yaml:"tier"`
+	Effort broker.Effort `json:"effort" yaml:"effort"`
+}
+
+// CompiledBrokerProfile is the exact operator profile frozen for one agent
+// node and one neutral tool/selector combination.
+type CompiledBrokerProfile struct {
+	FunctionID string          `json:"function_id" yaml:"function_id"`
+	Tool       broker.Tool     `json:"tool" yaml:"tool"`
+	Selector   broker.Selector `json:"selector" yaml:"selector"`
+	Profile    broker.Profile  `json:"profile" yaml:"profile"`
+}
+
+func (profile *CompiledBrokerProfile) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		FunctionID string          `json:"function_id"`
+		Tool       broker.Tool     `json:"tool"`
+		Selector   broker.Selector `json:"selector"`
+		Profile    json.RawMessage `json:"profile"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&wire); err != nil {
+		return fmt.Errorf("workflow: parse compiled broker profile: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("workflow: compiled broker profile has a trailing JSON value")
+		}
+		return fmt.Errorf("workflow: compiled broker profile trailing JSON: %w", err)
+	}
+	profileDecoder := json.NewDecoder(bytes.NewReader(wire.Profile))
+	profileDecoder.DisallowUnknownFields()
+	var resolved broker.Profile
+	if err := profileDecoder.Decode(&resolved); err != nil {
+		return fmt.Errorf("workflow: parse compiled broker profile authority: %w", err)
+	}
+	if err := profileDecoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("workflow: compiled broker profile authority has a trailing JSON value")
+		}
+		return fmt.Errorf("workflow: compiled broker profile authority trailing JSON: %w", err)
+	}
+	parsed := CompiledBrokerProfile{FunctionID: wire.FunctionID, Tool: wire.Tool, Selector: wire.Selector, Profile: resolved}
+	if err := validateCompiledBrokerProfile(parsed); err != nil {
+		return fmt.Errorf("workflow: compiled broker profile: %w", err)
+	}
+	*profile = parsed
+	return nil
+}
+
+func BrokerProfileProvenanceHash(profiles []CompiledBrokerProfile) (string, error) {
+	if len(profiles) == 0 {
+		return "", nil
+	}
+	canonical, err := json.Marshal(profiles)
+	if err != nil {
+		return "", fmt.Errorf("workflow: canonicalize broker profile provenance: %w", err)
+	}
+	return hashDomainSeparated(brokerProfileProvenanceHashDomain, canonical), nil
+}
+
+func validateCompiledBrokerProfiles(profiles []CompiledBrokerProfile, provenance string) error {
+	if len(profiles) == 0 {
+		if provenance != "" {
+			return fmt.Errorf("workflow: broker profile provenance hash requires compiled profiles")
+		}
+		return nil
+	}
+	if provenance == "" {
+		return fmt.Errorf("workflow: compiled broker profiles require a provenance hash")
+	}
+	seen := make(map[brokerProfileKey]struct{}, len(profiles))
+	for index, profile := range profiles {
+		if err := validateCompiledBrokerProfile(profile); err != nil {
+			return fmt.Errorf("workflow: compiled broker profile %d: %w", index, err)
+		}
+		key := brokerProfileKey{functionID: profile.FunctionID, tool: profile.Tool, tier: profile.Selector.Tier, effort: profile.Selector.Effort}
+		if _, duplicate := seen[key]; duplicate {
+			return fmt.Errorf("workflow: duplicate compiled broker profile for node %q tool %q selector %s/%s", profile.FunctionID, profile.Tool, profile.Selector.Tier, profile.Selector.Effort)
+		}
+		seen[key] = struct{}{}
+	}
+	actual, err := BrokerProfileProvenanceHash(profiles)
+	if err != nil {
+		return err
+	}
+	if actual != provenance {
+		return fmt.Errorf("workflow: broker profile provenance hash does not match exact authority bytes")
+	}
+	return nil
+}
+
+func validateCompiledBrokerProfileNodes(plan []atc.Step, profiles []CompiledBrokerProfile) error {
+	if len(profiles) == 0 {
+		return nil
+	}
+	nodes := make(map[string]struct{})
+	for index := range plan {
+		if err := plan[index].Config.Visit(atc.StepRecursor{OnAgent: func(step *atc.AgentStep) error {
+			nodes[step.FunctionID] = struct{}{}
+			return nil
+		}}); err != nil {
+			return err
+		}
+	}
+	for _, profile := range profiles {
+		if _, found := nodes[profile.FunctionID]; !found {
+			return fmt.Errorf("workflow: compiled broker profile node %q is not an agent function", profile.FunctionID)
+		}
+	}
+	return nil
+}
+
+func validateCompiledBrokerProfile(profile CompiledBrokerProfile) error {
+	if strings.TrimSpace(profile.FunctionID) == "" {
+		return fmt.Errorf("function_id is required")
+	}
+	if err := broker.ValidateResolvedProfile(profile.Profile); err != nil {
+		return err
+	}
+	if profile.Profile.Selector != profile.Selector {
+		return fmt.Errorf("selector does not match exact resolved profile")
+	}
+	found := false
+	for _, tool := range profile.Profile.Tools {
+		if tool == profile.Tool {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("tool %q is not supported by exact resolved profile", profile.Tool)
+	}
+	return nil
+}
+
+type brokerProfileKey struct {
+	functionID string
+	tool       broker.Tool
+	tier       broker.Tier
+	effort     broker.Effort
+}
+
+// ResolveBrokerProfile admits only calls that were selected by this exact
+// agent node at compile time; it never consults a mutable deployment catalog.
+func (config *FunctionConfig) ResolveBrokerProfile(functionID string, tool broker.Tool, selector broker.Selector) (broker.Profile, error) {
+	if config == nil {
+		return broker.Profile{}, fmt.Errorf("workflow: function is required")
+	}
+	for _, candidate := range config.BrokerProfiles {
+		if candidate.FunctionID == functionID && candidate.Tool == tool && candidate.Selector == selector {
+			copy := candidate.Profile
+			copy.Tools = append([]broker.Tool(nil), candidate.Profile.Tools...)
+			return copy, nil
+		}
+	}
+	return broker.Profile{}, fmt.Errorf("workflow: broker tool %q selector %s/%s is not frozen for node %q", tool, selector.Tier, selector.Effort, functionID)
+}
+
+func cloneCompiledBrokerProfiles(source []CompiledBrokerProfile) []CompiledBrokerProfile {
+	if len(source) == 0 {
+		return nil
+	}
+	result := make([]CompiledBrokerProfile, len(source))
+	for index, profile := range source {
+		result[index] = profile
+		result[index].Profile.Tools = append([]broker.Tool(nil), profile.Profile.Tools...)
+	}
+	return result
+}
+
+func sortCompiledBrokerProfiles(profiles []CompiledBrokerProfile) {
+	sort.Slice(profiles, func(i, j int) bool {
+		if profiles[i].FunctionID != profiles[j].FunctionID {
+			return profiles[i].FunctionID < profiles[j].FunctionID
+		}
+		if profiles[i].Tool != profiles[j].Tool {
+			return profiles[i].Tool < profiles[j].Tool
+		}
+		if profiles[i].Selector.Tier != profiles[j].Selector.Tier {
+			return profiles[i].Selector.Tier < profiles[j].Selector.Tier
+		}
+		return profiles[i].Selector.Effort < profiles[j].Selector.Effort
+	})
+}

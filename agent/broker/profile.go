@@ -183,6 +183,29 @@ func (catalog *Catalog) Resolve(tool Tool, selector Selector) (Profile, error) {
 	return cloneProfile(profile), nil
 }
 
+// ValidateResolvedProfile verifies an exact profile copied from a trusted
+// catalog into another immutable authority boundary. Unlike NewCatalog, the
+// supplied digest is required and must match the complete resolved profile.
+func ValidateResolvedProfile(profile Profile) error {
+	actual := profile.Digest
+	if !digestPattern.MatchString(actual) {
+		return fmt.Errorf("broker profile: digest must be an exact sha256 digest")
+	}
+	profile.Digest = ""
+	if err := profile.validate(); err != nil {
+		return err
+	}
+	sort.Slice(profile.Tools, func(i, j int) bool { return profile.Tools[i] < profile.Tools[j] })
+	expected, err := profileDigest(profile)
+	if err != nil {
+		return fmt.Errorf("broker profile: calculate digest: %w", err)
+	}
+	if actual != expected {
+		return fmt.Errorf("broker profile: digest does not match exact resolved profile")
+	}
+	return nil
+}
+
 func (catalog *Catalog) Visible() []VisibleProfile {
 	if catalog == nil {
 		return nil

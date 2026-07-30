@@ -75,14 +75,14 @@ func CompileDefinitionWithNodes(m Manifest, resolver NodeResolver) (*CompiledDef
 	if err != nil {
 		return nil, nil, fmt.Errorf("workflow: encode expanded node references: %w", err)
 	}
-	definition, profiles, err := parseFunctionDefinitionSource(expanded)
+	definition, profiles, brokerSelectors, err := parseFunctionDefinitionSource(expanded)
 	if err != nil {
 		return nil, nil, err
 	}
 	if err := mergeFrozenSkillFiles(definition.Function, expander.frozen); err != nil {
 		return nil, nil, err
 	}
-	if err := compileFunctionAssetsWithFrozenNodes(m, definition, profiles, expander.frozen); err != nil {
+	if err := compileFunctionAssetsWithFrozenNodes(m, definition, profiles, brokerSelectors, nil, expander.frozen); err != nil {
 		return nil, nil, err
 	}
 	if err := mergeFrozenDevValidationProfiles(definition.Function, expander.frozen); err != nil {

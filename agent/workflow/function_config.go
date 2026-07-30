@@ -34,6 +34,11 @@ type FunctionConfig struct {
 	// file references that are intentionally erased during compilation.
 	DevValidationProfiles       []CompiledDevValidationProfile `json:"dev_validation_profiles,omitempty" yaml:"dev_validation_profiles,omitempty"`
 	DevValidationProvenanceHash string                         `json:"dev_validation_provenance_hash,omitempty" yaml:"dev_validation_provenance_hash,omitempty"`
+	// BrokerProfiles is compiled-only node-scoped authority. Source manifests
+	// attach neutral broker selectors to agent nodes; admission resolves them
+	// through an operator catalog and stores only the selected exact profiles.
+	BrokerProfiles              []CompiledBrokerProfile `json:"broker_profiles,omitempty" yaml:"broker_profiles,omitempty"`
+	BrokerProfileProvenanceHash string                  `json:"broker_profile_provenance_hash,omitempty" yaml:"broker_profile_provenance_hash,omitempty"`
 	// SkillFiles is compiled-only content. Version-3 source selects skill
 	// names on agent nodes; compilation copies the selected trees here.
 	SkillFiles map[string]string `json:"skill_files,omitempty" yaml:"skill_files,omitempty"`
@@ -58,7 +63,7 @@ func (config *FunctionConfig) UnmarshalJSON(data []byte) error {
 	}
 	for key := range object {
 		switch key {
-		case "signature_version", "disposition_output", "inputs", "outputs", "resources", "resource_sources", "resource_types", "prototypes", "var_sources", "plan", "dev_validation_profiles", "dev_validation_provenance_hash", "skill_files":
+		case "signature_version", "disposition_output", "inputs", "outputs", "resources", "resource_sources", "resource_types", "prototypes", "var_sources", "plan", "dev_validation_profiles", "dev_validation_provenance_hash", "broker_profiles", "broker_profile_provenance_hash", "skill_files":
 		default:
 			return fmt.Errorf("workflow: compiled function: unknown or source-only field %q", key)
 		}
@@ -231,6 +236,12 @@ func (config FunctionConfig) Validate() error {
 		return err
 	}
 	if err := validateCompiledDevValidationProfiles(config.DevValidationProfiles, config.DevValidationProvenanceHash); err != nil {
+		return err
+	}
+	if err := validateCompiledBrokerProfiles(config.BrokerProfiles, config.BrokerProfileProvenanceHash); err != nil {
+		return err
+	}
+	if err := validateCompiledBrokerProfileNodes(config.Plan, config.BrokerProfiles); err != nil {
 		return err
 	}
 	remaining := MaxCompiledAssetBytes

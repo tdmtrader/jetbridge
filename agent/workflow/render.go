@@ -69,6 +69,8 @@ type RenderedFunction struct {
 	InputParamNames             map[string]string
 	DevValidationProfiles       []CompiledDevValidationProfile
 	DevValidationProvenanceHash string
+	BrokerProfiles              []CompiledBrokerProfile
+	BrokerProfileProvenanceHash string
 	boundSourceRefs             map[string]snapshot.SnapshotRef
 	executionCanonicalConfig    []byte
 	executionTargetConfigHash   string
@@ -376,7 +378,7 @@ func validPRMonitorAuthorityRef(value string) bool {
 }
 
 func (rendered *RenderedFunction) refreshExecutionAuthority() error {
-	hash, err := RenderedTargetConfigHash(rendered.Config, rendered.DevValidationProfiles, rendered.DevValidationProvenanceHash)
+	hash, err := RenderedTargetConfigHashWithBrokerProfiles(rendered.Config, rendered.DevValidationProfiles, rendered.DevValidationProvenanceHash, rendered.BrokerProfiles, rendered.BrokerProfileProvenanceHash)
 	if err != nil {
 		return err
 	}
@@ -413,23 +415,37 @@ func TargetConfigHash(config atc.Config) (string, error) {
 // canonical config to the exact rendered authority without placing that
 // authority in the public ATC plan.
 func RenderedTargetConfigHash(config atc.Config, profiles []CompiledDevValidationProfile, provenance string) (string, error) {
+	return RenderedTargetConfigHashWithBrokerProfiles(config, profiles, provenance, nil, "")
+}
+
+// RenderedTargetConfigHashWithBrokerProfiles binds a rendered Concourse
+// template to both kinds of compiled-only authority. Broker profiles are not
+// public plan fields, so they must be included explicitly rather than relying
+// on the ATC config canonicalization alone.
+func RenderedTargetConfigHashWithBrokerProfiles(config atc.Config, profiles []CompiledDevValidationProfile, provenance string, brokerProfiles []CompiledBrokerProfile, brokerProvenance string) (string, error) {
 	if len(profiles) == 0 {
 		if provenance != "" {
 			return "", fmt.Errorf("workflow: validation provenance requires rendered profiles")
 		}
-		return TargetConfigHash(config)
-	}
-	if err := ValidateDevValidationAuthority(profiles, provenance); err != nil {
+	} else if err := ValidateDevValidationAuthority(profiles, provenance); err != nil {
 		return "", err
+	}
+	if err := validateCompiledBrokerProfiles(brokerProfiles, brokerProvenance); err != nil {
+		return "", err
+	}
+	if len(profiles) == 0 && len(brokerProfiles) == 0 {
+		return TargetConfigHash(config)
 	}
 	canonical, err := config.CanonicalJSON()
 	if err != nil {
 		return "", fmt.Errorf("workflow: canonicalize target config: %w", err)
 	}
 	authority, err := json.Marshal(struct {
-		Profiles   []CompiledDevValidationProfile `json:"profiles"`
-		Provenance string                         `json:"provenance"`
-	}{profiles, provenance})
+		Profiles         []CompiledDevValidationProfile `json:"profiles"`
+		Provenance       string                         `json:"provenance"`
+		BrokerProfiles   []CompiledBrokerProfile        `json:"broker_profiles"`
+		BrokerProvenance string                         `json:"broker_provenance"`
+	}{profiles, provenance, brokerProfiles, brokerProvenance})
 	if err != nil {
 		return "", fmt.Errorf("workflow: canonicalize validation target authority: %w", err)
 	}
@@ -598,7 +614,7 @@ func injectRuntimeImage(target FunctionTarget, rendered RenderedFunction, runtim
 	if agentCount == 0 && mergePreflightCount == 0 {
 		return rendered, nil
 	}
-	hash, err := RenderedTargetConfigHash(rendered.Config, rendered.DevValidationProfiles, rendered.DevValidationProvenanceHash)
+	hash, err := RenderedTargetConfigHashWithBrokerProfiles(rendered.Config, rendered.DevValidationProfiles, rendered.DevValidationProvenanceHash, rendered.BrokerProfiles, rendered.BrokerProfileProvenanceHash)
 	if err != nil {
 		return RenderedFunction{}, err
 	}
@@ -780,7 +796,7 @@ func renderFunction(target FunctionTarget, sourceRefs map[string]snapshot.Snapsh
 	if err != nil {
 		return RenderedFunction{}, fmt.Errorf("workflow: canonicalize rendered config: %w", err)
 	}
-	configHash, err := RenderedTargetConfigHash(config, function.DevValidationProfiles, function.DevValidationProvenanceHash)
+	configHash, err := RenderedTargetConfigHashWithBrokerProfiles(config, function.DevValidationProfiles, function.DevValidationProvenanceHash, function.BrokerProfiles, function.BrokerProfileProvenanceHash)
 	if err != nil {
 		return RenderedFunction{}, err
 	}
@@ -797,6 +813,8 @@ func renderFunction(target FunctionTarget, sourceRefs map[string]snapshot.Snapsh
 		InputParamNames:             paramNames,
 		DevValidationProfiles:       cloneCompiledDevValidationProfiles(function.DevValidationProfiles),
 		DevValidationProvenanceHash: function.DevValidationProvenanceHash,
+		BrokerProfiles:              cloneCompiledBrokerProfiles(function.BrokerProfiles),
+		BrokerProfileProvenanceHash: function.BrokerProfileProvenanceHash,
 		boundSourceRefs:             cloneBoundSourceRefs(sourceRefs),
 		executionCanonicalConfig:    append([]byte(nil), canonicalConfig...),
 		executionTargetConfigHash:   configHash,

@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 
+	"github.com/concourse/concourse/agent/broker"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc"
 	"github.com/goccy/go-yaml"
@@ -103,44 +105,48 @@ type syntheticFunctionJob struct {
 
 const prApprovalWorkflowRunDecodeSentinel = "9223372036854775807"
 
-func parseFunctionDefinitionSource(raw []byte) (*CompiledDefinition, []DevValidationProfile, error) {
+func parseFunctionDefinitionSource(raw []byte) (*CompiledDefinition, []DevValidationProfile, []sourceBrokerProfile, error) {
 	decoder := yaml.NewDecoder(bytes.NewReader(raw))
 	var document any
 	if err := decoder.Decode(&document); err != nil {
-		return nil, nil, fmt.Errorf("parse workflow function: %w", err)
+		return nil, nil, nil, fmt.Errorf("parse workflow function: %w", err)
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		if err == nil {
-			return nil, nil, fmt.Errorf("parse workflow function: exactly one YAML or JSON document is required")
+			return nil, nil, nil, fmt.Errorf("parse workflow function: exactly one YAML or JSON document is required")
 		}
-		return nil, nil, fmt.Errorf("parse workflow function trailing document: %w", err)
+		return nil, nil, nil, fmt.Errorf("parse workflow function trailing document: %w", err)
 	}
 	if err := validateFunctionSourceKeys(document); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	documentJSON, err := json.Marshal(document)
 	if err != nil {
-		return nil, nil, fmt.Errorf("parse workflow function document: %w", err)
+		return nil, nil, nil, fmt.Errorf("parse workflow function document: %w", err)
 	}
 	jsonDecoder := json.NewDecoder(bytes.NewReader(documentJSON))
 	jsonDecoder.DisallowUnknownFields()
 	var source functionSource
 	if err := jsonDecoder.Decode(&source); err != nil {
-		return nil, nil, fmt.Errorf("parse workflow function: %w", err)
+		return nil, nil, nil, fmt.Errorf("parse workflow function: %w", err)
 	}
 	if err := jsonDecoder.Decode(&trailing); err != io.EOF {
 		if err == nil {
-			return nil, nil, fmt.Errorf("parse workflow function: unexpected trailing JSON value")
+			return nil, nil, nil, fmt.Errorf("parse workflow function: unexpected trailing JSON value")
 		}
-		return nil, nil, fmt.Errorf("parse workflow function trailing JSON: %w", err)
+		return nil, nil, nil, fmt.Errorf("parse workflow function trailing JSON: %w", err)
 	}
 	if source.SchemaVersion != 3 {
-		return nil, nil, fmt.Errorf("workflow: function parser requires schema_version 3, got %d", source.SchemaVersion)
+		return nil, nil, nil, fmt.Errorf("workflow: function parser requires schema_version 3, got %d", source.SchemaVersion)
+	}
+	brokerProfiles, err := extractSourceBrokerProfiles(source.Plan, "workflow.plan")
+	if err != nil {
+		return nil, nil, nil, err
 	}
 	injectedPRApprovalWorkflowRuns, err := preparePRApprovalWorkflowRunDecode(source.Plan)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	synthetic := syntheticFunctionConfig{
@@ -155,23 +161,23 @@ func parseFunctionDefinitionSource(raw []byte) (*CompiledDefinition, []DevValida
 	}
 	payload, err := yaml.Marshal(synthetic)
 	if err != nil {
-		return nil, nil, fmt.Errorf("workflow: encode ordinary Concourse plan: %w", err)
+		return nil, nil, nil, fmt.Errorf("workflow: encode ordinary Concourse plan: %w", err)
 	}
 	var ordinary atc.Config
 	if err := atc.UnmarshalConfig(payload, &ordinary); err != nil {
-		return nil, nil, fmt.Errorf("workflow: decode ordinary Concourse declarations and plan: %w", err)
+		return nil, nil, nil, fmt.Errorf("workflow: decode ordinary Concourse declarations and plan: %w", err)
 	}
 	if len(ordinary.Jobs) != 1 {
-		return nil, nil, fmt.Errorf("workflow: internal function plan must decode as exactly one job")
+		return nil, nil, nil, fmt.Errorf("workflow: internal function plan must decode as exactly one job")
 	}
 	clearedPRApprovalWorkflowRuns, err := clearPRApprovalWorkflowRunDecodeSentinels(
 		ordinary.Jobs[0].PlanSequence,
 	)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if clearedPRApprovalWorkflowRuns != injectedPRApprovalWorkflowRuns {
-		return nil, nil, fmt.Errorf(
+		return nil, nil, nil, fmt.Errorf(
 			"workflow: internal PR approval workflow-run decode authority mismatch",
 		)
 	}
@@ -195,9 +201,9 @@ func parseFunctionDefinitionSource(raw []byte) (*CompiledDefinition, []DevValida
 		},
 	}
 	if err := definition.Validate(); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return definition, source.DevValidationProfiles, nil
+	return definition, source.DevValidationProfiles, brokerProfiles, nil
 }
 
 // preparePRApprovalWorkflowRunDecode supplies the value required by the
@@ -455,6 +461,11 @@ func validateFunctionStepSource(value any, path string) error {
 		if err := validateAgentAssetSourcePresence(step, path); err != nil {
 			return err
 		}
+		if profiles, found := step["broker_profiles"]; found {
+			if _, err := parseSourceBrokerProfiles(profiles, rawAgentFunctionID(step), path+".broker_profiles"); err != nil {
+				return err
+			}
+		}
 	}
 
 	if nested, found := step["try"]; found {
@@ -537,6 +548,116 @@ func validateFunctionStepSource(value any, path string) error {
 	}
 
 	return nil
+}
+
+type sourceBrokerProfile struct {
+	FunctionID string
+	Tool       broker.Tool
+	Selector   broker.Selector
+}
+
+func extractSourceBrokerProfiles(value any, path string) ([]sourceBrokerProfile, error) {
+	var profiles []sourceBrokerProfile
+	if err := visitSourceBrokerProfiles(value, path, &profiles); err != nil {
+		return nil, err
+	}
+	return profiles, nil
+}
+
+func visitSourceBrokerProfiles(value any, path string, profiles *[]sourceBrokerProfile) error {
+	switch typed := value.(type) {
+	case []any:
+		for index, child := range typed {
+			if err := visitSourceBrokerProfiles(child, fmt.Sprintf("%s[%d]", path, index), profiles); err != nil {
+				return err
+			}
+		}
+		return nil
+	case map[string]any:
+		if _, isAgent := typed["agent"]; isAgent {
+			if raw, found := typed["broker_profiles"]; found {
+				selected, err := parseSourceBrokerProfiles(raw, rawAgentFunctionID(typed), path+".broker_profiles")
+				if err != nil {
+					return err
+				}
+				*profiles = append(*profiles, selected...)
+				delete(typed, "broker_profiles")
+			}
+		}
+		if nested, found := typed["try"]; found {
+			if err := visitSourceBrokerProfiles(nested, path+".try", profiles); err != nil {
+				return err
+			}
+		}
+		if nested, found := typed["do"]; found {
+			if err := visitSourceBrokerProfiles(nested, path+".do", profiles); err != nil {
+				return err
+			}
+		}
+		if nested, found := typed["in_parallel"]; found {
+			switch parallel := nested.(type) {
+			case []any:
+				if err := visitSourceBrokerProfiles(parallel, path+".in_parallel", profiles); err != nil {
+					return err
+				}
+			case map[string]any:
+				if steps, found := parallel["steps"]; found {
+					if err := visitSourceBrokerProfiles(steps, path+".in_parallel.steps", profiles); err != nil {
+						return err
+					}
+				}
+			}
+		}
+		for _, hook := range []string{"on_success", "on_failure", "on_abort", "on_error", "ensure"} {
+			if nested, found := typed[hook]; found {
+				if err := visitSourceBrokerProfiles(nested, path+"."+hook, profiles); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func parseSourceBrokerProfiles(value any, functionID, path string) ([]sourceBrokerProfile, error) {
+	if strings.TrimSpace(functionID) == "" {
+		return nil, fmt.Errorf("workflow: %s: broker_profiles requires a nonblank function_id", path)
+	}
+	entries, ok := value.([]any)
+	if !ok || len(entries) == 0 {
+		return nil, fmt.Errorf("workflow: %s must be a nonempty list", path)
+	}
+	profiles := make([]sourceBrokerProfile, 0, len(entries))
+	for index, entry := range entries {
+		object, ok := entry.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("workflow: %s[%d] must be an object", path, index)
+		}
+		entryPath := fmt.Sprintf("%s[%d]", path, index)
+		if err := rejectObjectKeys(object, entryPath, []string{"tool", "tier", "effort"}); err != nil {
+			return nil, err
+		}
+		encoded, err := json.Marshal(object)
+		if err != nil {
+			return nil, fmt.Errorf("workflow: %s: encode broker selector: %w", entryPath, err)
+		}
+		var selector BrokerProfileSelector
+		decoder := json.NewDecoder(bytes.NewReader(encoded))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&selector); err != nil {
+			return nil, fmt.Errorf("workflow: %s: parse broker selector: %w", entryPath, err)
+		}
+		profiles = append(profiles, sourceBrokerProfile{FunctionID: functionID, Tool: selector.Tool, Selector: broker.Selector{Tier: selector.Tier, Effort: selector.Effort}})
+	}
+	return profiles, nil
+}
+
+func rawAgentFunctionID(step map[string]any) string {
+	functionID, ok := step["function_id"].(string)
+	if !ok || strings.TrimSpace(functionID) == "" {
+		return ""
+	}
+	return functionID
 }
 
 func validateAgentAssetSourcePresence(step map[string]any, path string) error {

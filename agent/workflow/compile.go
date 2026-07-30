@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/concourse/concourse/agent/broker"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc"
 )
@@ -25,6 +26,20 @@ const (
 // CompileDefinition compiles a schema-version-3 source manifest into a
 // self-contained function definition.
 func CompileDefinition(m Manifest) (*CompiledDefinition, error) {
+	return compileDefinition(m, nil)
+}
+
+// CompileDefinitionWithBrokerCatalog resolves source-local neutral broker
+// selectors through the deployment catalog before returning a self-contained
+// schema-version-3 definition.
+func CompileDefinitionWithBrokerCatalog(m Manifest, catalog *broker.Catalog) (*CompiledDefinition, error) {
+	if catalog == nil {
+		return nil, fmt.Errorf("workflow: broker catalog is required")
+	}
+	return compileDefinition(m, catalog)
+}
+
+func compileDefinition(m Manifest, catalog *broker.Catalog) (*CompiledDefinition, error) {
 	if err := m.Validate(); err != nil {
 		return nil, err
 	}
@@ -35,11 +50,11 @@ func CompileDefinition(m Manifest) (*CompiledDefinition, error) {
 	if err := RequireSchemaVersion3([]byte(raw)); err != nil {
 		return nil, err
 	}
-	definition, validationProfiles, err := parseFunctionDefinitionSource([]byte(raw))
+	definition, validationProfiles, brokerSelectors, err := parseFunctionDefinitionSource([]byte(raw))
 	if err != nil {
 		return nil, err
 	}
-	if err := compileFunctionAssets(m, definition, validationProfiles); err != nil {
+	if err := compileFunctionAssets(m, definition, validationProfiles, brokerSelectors, catalog); err != nil {
 		return nil, err
 	}
 	// Source compilation is intentionally independent of the durable workflow
@@ -52,15 +67,15 @@ func CompileDefinition(m Manifest) (*CompiledDefinition, error) {
 	return definition, nil
 }
 
-func compileFunctionAssets(m Manifest, definition *CompiledDefinition, validationProfiles []DevValidationProfile) error {
-	return compileFunctionAssetsWithFrozenNodes(m, definition, validationProfiles, nil)
+func compileFunctionAssets(m Manifest, definition *CompiledDefinition, validationProfiles []DevValidationProfile, brokerSelectors []sourceBrokerProfile, brokerCatalog *broker.Catalog) error {
+	return compileFunctionAssetsWithFrozenNodes(m, definition, validationProfiles, brokerSelectors, brokerCatalog, nil)
 }
 
-func compileFunctionAssetsWithFrozenNodes(m Manifest, definition *CompiledDefinition, validationProfiles []DevValidationProfile, frozen map[string]frozenNodeAssets) error {
+func compileFunctionAssetsWithFrozenNodes(m Manifest, definition *CompiledDefinition, validationProfiles []DevValidationProfile, brokerSelectors []sourceBrokerProfile, brokerCatalog *broker.Catalog, frozen map[string]frozenNodeAssets) error {
 	if err := validatePreexistingCompiledSkillFiles(definition.Function.SkillFiles, frozen); err != nil {
 		return err
 	}
-	compiler, err := newFunctionAssetCompiler(m, definition.Function, validationProfiles)
+	compiler, err := newFunctionAssetCompiler(m, definition.Function, validationProfiles, brokerSelectors, brokerCatalog)
 	if err != nil {
 		return err
 	}
@@ -146,12 +161,15 @@ type functionAssetCompiler struct {
 	selectedSkillFiles            []manifestAsset
 	sourceDevValidationProfiles   []DevValidationProfile
 	compiledDevValidationProfiles []CompiledDevValidationProfile
+	sourceBrokerProfiles          []sourceBrokerProfile
+	brokerCatalog                 *broker.Catalog
+	compiledBrokerProfiles        []CompiledBrokerProfile
 	compiledAssetBytes            int
 	compiledSkillBytes            int
 	frozenNodeAssets              map[string]frozenNodeAssets
 }
 
-func newFunctionAssetCompiler(m Manifest, function *FunctionConfig, validationProfiles []DevValidationProfile) (*functionAssetCompiler, error) {
+func newFunctionAssetCompiler(m Manifest, function *FunctionConfig, validationProfiles []DevValidationProfile, brokerProfiles []sourceBrokerProfile, brokerCatalog *broker.Catalog) (*functionAssetCompiler, error) {
 	if err := validateCapabilityCatalog(function.Capabilities); err != nil {
 		return nil, err
 	}
@@ -164,6 +182,8 @@ func newFunctionAssetCompiler(m Manifest, function *FunctionConfig, validationPr
 		preparedAgents:              make(map[*atc.AgentStep]preparedAgentAssets),
 		selectedSkillPaths:          make(map[string]struct{}),
 		sourceDevValidationProfiles: append([]DevValidationProfile(nil), validationProfiles...),
+		sourceBrokerProfiles:        append([]sourceBrokerProfile(nil), brokerProfiles...),
+		brokerCatalog:               brokerCatalog,
 	}
 	for _, name := range sortedCapabilityNames(function.Capabilities) {
 		canonical, err := json.Marshal(function.Capabilities[name].Sidecar)
@@ -176,6 +196,9 @@ func newFunctionAssetCompiler(m Manifest, function *FunctionConfig, validationPr
 }
 
 func (compiler *functionAssetCompiler) preflight() error {
+	if err := compiler.preflightBrokerProfiles(); err != nil {
+		return err
+	}
 	if err := compiler.preflightDevValidationProfiles(); err != nil {
 		return err
 	}
@@ -191,6 +214,31 @@ func (compiler *functionAssetCompiler) preflight() error {
 			return err
 		}
 	}
+	return nil
+}
+
+func (compiler *functionAssetCompiler) preflightBrokerProfiles() error {
+	if len(compiler.sourceBrokerProfiles) == 0 {
+		return nil
+	}
+	if compiler.brokerCatalog == nil {
+		return fmt.Errorf("workflow: broker catalog is required for source broker profiles")
+	}
+	compiler.compiledBrokerProfiles = make([]CompiledBrokerProfile, 0, len(compiler.sourceBrokerProfiles))
+	seen := make(map[brokerProfileKey]struct{}, len(compiler.sourceBrokerProfiles))
+	for _, source := range compiler.sourceBrokerProfiles {
+		resolved, err := compiler.brokerCatalog.Resolve(source.Tool, source.Selector)
+		if err != nil {
+			return fmt.Errorf("workflow: agent function_id %q broker selector: %w", source.FunctionID, err)
+		}
+		key := brokerProfileKey{functionID: source.FunctionID, tool: source.Tool, tier: source.Selector.Tier, effort: source.Selector.Effort}
+		if _, duplicate := seen[key]; duplicate {
+			return fmt.Errorf("workflow: duplicate broker selector for node %q tool %q selector %s/%s", source.FunctionID, source.Tool, source.Selector.Tier, source.Selector.Effort)
+		}
+		seen[key] = struct{}{}
+		compiler.compiledBrokerProfiles = append(compiler.compiledBrokerProfiles, CompiledBrokerProfile{FunctionID: source.FunctionID, Tool: source.Tool, Selector: source.Selector, Profile: resolved})
+	}
+	sortCompiledBrokerProfiles(compiler.compiledBrokerProfiles)
 	return nil
 }
 
@@ -465,6 +513,14 @@ func (compiler *functionAssetCompiler) addCompiledSkillBytes(amount int, identit
 }
 
 func (compiler *functionAssetCompiler) compile() error {
+	if len(compiler.compiledBrokerProfiles) > 0 {
+		compiler.function.BrokerProfiles = cloneCompiledBrokerProfiles(compiler.compiledBrokerProfiles)
+		provenance, err := BrokerProfileProvenanceHash(compiler.function.BrokerProfiles)
+		if err != nil {
+			return err
+		}
+		compiler.function.BrokerProfileProvenanceHash = provenance
+	}
 	if len(compiler.compiledDevValidationProfiles) > 0 {
 		compiler.function.DevValidationProfiles = cloneCompiledDevValidationProfiles(compiler.compiledDevValidationProfiles)
 		provenance, err := DevValidationProvenanceHash(compiler.function.DevValidationProfiles)

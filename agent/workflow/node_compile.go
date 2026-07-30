@@ -17,7 +17,7 @@ func CompileNodeDefinition(m Manifest) (*CompiledNodeDefinition, error) {
 		return nil, err
 	}
 	compilerDefinition := &CompiledDefinition{SchemaVersion: 3, Name: definition.Name, Function: &definition.Function}
-	if err := compileFunctionAssets(m, compilerDefinition, nil); err != nil {
+	if err := compileFunctionAssets(m, compilerDefinition, nil, nil, nil); err != nil {
 		return nil, err
 	}
 	if _, err := ValidateFunction(&definition.Function); err != nil {
