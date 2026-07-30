@@ -2,10 +2,20 @@ package publisher
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/concourse/concourse/agent/snapshot/contracts"
+)
+
+var (
+	// ErrPRSourceStale is returned by the provider adapter bridge when the
+	// source ref no longer matches the exact caller-sealed head expectation.
+	ErrPRSourceStale = errors.New("publisher: pull request source head is stale")
+	// ErrPRTargetStale is returned by the provider adapter bridge when the
+	// target ref no longer matches the exact caller-sealed target head.
+	ErrPRTargetStale = errors.New("publisher: pull request target head is stale")
 )
 
 type BranchMutation struct {
@@ -46,6 +56,7 @@ type ExternalPullRequest struct {
 
 type StatusMutation struct {
 	Locator      PRLocator
+	TargetRef    string
 	SourceSHA    string
 	State        string
 	Description  string
@@ -55,6 +66,7 @@ type StatusMutation struct {
 
 type ResponseMutation struct {
 	Locator      PRLocator
+	TargetRef    string
 	Batch        PRReviewBatch
 	Response     contracts.PullRequestResponseBody
 	OperationKey string
@@ -169,6 +181,23 @@ func (service *providerPRService) execute(ctx context.Context, action PRAction) 
 			NewSourceSHA: request.NewSourceSHA, OperationKey: publication.OperationKey,
 		})
 		if err != nil {
+			if externalContext.Err() == nil {
+				detail := ""
+				switch {
+				case errors.Is(err, ErrPRSourceStale):
+					detail = "pull request source changed before publication; fresh reconciliation is required"
+				case errors.Is(err, ErrPRTargetStale):
+					detail = "pull request target changed before publication; fresh reconciliation is required"
+				}
+				if detail != "" {
+					return service.store.CompletePR(ctx, publication.OperationKey, publication.Attempt, Result{
+						Status:  StatusRebaseRequired,
+						HeadSHA: request.NewSourceSHA,
+						BaseSHA: request.ExpectedTargetSHA,
+						Detail:  detail,
+					})
+				}
+			}
 			return Publication{}, preserveExternalError(externalContext, "publish PR branch", err)
 		}
 		if result.HeadSHA != request.NewSourceSHA {
@@ -198,7 +227,8 @@ func (service *providerPRService) execute(ctx context.Context, action PRAction) 
 	case OperationPublishPRStatus:
 		request := authorized.Status
 		result, err := mutator.PublishValidationStatus(externalContext, StatusMutation{
-			Locator: request.Locator, SourceSHA: request.SourceSHA, State: request.State,
+			Locator: request.Locator, TargetRef: request.TargetRef,
+			SourceSHA: request.SourceSHA, State: request.State,
 			Description: request.Description, TargetURL: request.TargetURL,
 			OperationKey: publication.OperationKey,
 		})
@@ -215,7 +245,8 @@ func (service *providerPRService) execute(ctx context.Context, action PRAction) 
 	case OperationRespondToReview:
 		request := authorized.Response
 		result, err := mutator.PublishReviewResponse(externalContext, ResponseMutation{
-			Locator: request.Locator, Batch: request.Batch, Response: request.Response,
+			Locator: request.Locator, TargetRef: request.TargetRef,
+			Batch: request.Batch, Response: request.Response,
 			OperationKey: publication.OperationKey,
 		})
 		if err != nil {

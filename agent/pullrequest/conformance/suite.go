@@ -81,14 +81,16 @@ func RunMutationSuite(t *testing.T, subject MutationSubject) {
 		mustReject(t, func() error {
 			_, err := subject.Mutator.PublishValidationStatus(
 				context.Background(),
-				statusRequest(wrongLocator, sourceSHA, validKey),
+				statusRequest(wrongLocator, targetRef, sourceSHA, validKey),
 			)
 			return err
 		})
 		mustReject(t, func() error {
 			_, err := subject.Mutator.PublishReviewResponse(
 				context.Background(),
-				responseRequest(wrongLocator, sourceSHA, validKey, "thread-1"),
+				responseRequest(
+					wrongLocator, targetRef, sourceSHA, validKey, "thread-1",
+				),
 			)
 			return err
 		})
@@ -119,24 +121,76 @@ func RunMutationSuite(t *testing.T, subject MutationSubject) {
 		mustReject(t, func() error {
 			_, err := subject.Mutator.PublishValidationStatus(
 				context.Background(),
-				statusRequest(validLocator, sourceSHA, malformed),
+				statusRequest(validLocator, targetRef, sourceSHA, malformed),
 			)
 			return err
 		})
 		mustReject(t, func() error {
 			_, err := subject.Mutator.PublishReviewResponse(
 				context.Background(),
-				responseRequest(validLocator, sourceSHA, malformed, "thread-1"),
+				responseRequest(
+					validLocator, targetRef, sourceSHA, malformed, "thread-1",
+				),
 			)
 			return err
 		})
+	})
+
+	t.Run("missing target ref is rejected", func(t *testing.T) {
+		mustReject(t, func() error {
+			_, err := subject.Mutator.PublishValidationStatus(
+				context.Background(),
+				statusRequest(validLocator, "", sourceSHA, validKey),
+			)
+			return err
+		})
+		mustReject(t, func() error {
+			_, err := subject.Mutator.PublishReviewResponse(
+				context.Background(),
+				responseRequest(
+					validLocator, "", sourceSHA, validKey, "thread-1",
+				),
+			)
+			return err
+		})
+	})
+
+	t.Run("non-head target ref is rejected", func(t *testing.T) {
+		for _, malformed := range []string{
+			"main",
+			"refs/tags/main",
+			"refs/heads/../main",
+			"refs/heads/main.lock",
+		} {
+			mustReject(t, func() error {
+				_, err := subject.Mutator.PublishValidationStatus(
+					context.Background(),
+					statusRequest(
+						validLocator, malformed, sourceSHA, validKey,
+					),
+				)
+				return err
+			})
+			mustReject(t, func() error {
+				_, err := subject.Mutator.PublishReviewResponse(
+					context.Background(),
+					responseRequest(
+						validLocator, malformed, sourceSHA, validKey,
+						"thread-1",
+					),
+				)
+				return err
+			})
+		}
 	})
 
 	t.Run("reply outside sealed batch is rejected", func(t *testing.T) {
 		mustReject(t, func() error {
 			_, err := subject.Mutator.PublishReviewResponse(
 				context.Background(),
-				responseRequest(validLocator, sourceSHA, validKey, "thread-2"),
+				responseRequest(
+					validLocator, targetRef, sourceSHA, validKey, "thread-2",
+				),
 			)
 			return err
 		})
@@ -180,11 +234,13 @@ func createRequest(
 
 func statusRequest(
 	locator pullrequest.Locator,
+	targetRef string,
 	sourceSHA string,
 	operationKey string,
 ) pullrequest.StatusRequest {
 	return pullrequest.StatusRequest{
-		Locator: locator, SourceSHA: sourceSHA, State: "success",
+		Locator: locator, TargetRef: targetRef,
+		SourceSHA: sourceSHA, State: "success",
 		Description:  "Validation passed",
 		TargetURL:    "https://ci.example/runs/91",
 		OperationKey: operationKey,
@@ -193,12 +249,13 @@ func statusRequest(
 
 func responseRequest(
 	locator pullrequest.Locator,
+	targetRef string,
 	sourceSHA string,
 	operationKey string,
 	replyThread string,
 ) pullrequest.ResponseRequest {
 	return pullrequest.ResponseRequest{
-		Locator: locator,
+		Locator: locator, TargetRef: targetRef,
 		Batch: pullrequest.ReviewBatch{
 			ID: "review-1", ReviewID: "1", CommitSHA: sourceSHA,
 			Reviewer: "reviewer-1", Ready: true,

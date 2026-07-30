@@ -189,6 +189,9 @@ func (mutator *Mutator) PublishValidationStatus(
 	if err != nil {
 		return pullrequest.ExternalResult{}, err
 	}
+	if err := requireProviderTarget(request.TargetRef, providerPull); err != nil {
+		return pullrequest.ExternalResult{}, err
+	}
 	if providerPull.Head.SHA != request.SourceSHA {
 		return pullrequest.ExternalResult{}, fmt.Errorf("github status source head is stale")
 	}
@@ -225,10 +228,6 @@ func (mutator *Mutator) PublishReviewResponse(
 	if err != nil {
 		return pullrequest.ExternalResult{}, err
 	}
-	providerPull, err := mutator.getPull(ctx, request.Locator)
-	if err != nil {
-		return pullrequest.ExternalResult{}, err
-	}
 	issueComments, err := mutator.issueComments(ctx, request.Locator)
 	if err != nil {
 		return pullrequest.ExternalResult{}, err
@@ -239,13 +238,50 @@ func (mutator *Mutator) PublishReviewResponse(
 	}
 
 	summaryMarker := operationMarker("respond_to_review", request.OperationKey, "summary")
-	found, err := recoverCommentMarker(
+	summaryRecovered, err := recoverCommentMarker(
 		issueComments, summaryMarker, request.OperationKey, nil,
 	)
 	if err != nil {
 		return pullrequest.ExternalResult{}, err
 	}
-	if !found {
+
+	allRecovered := summaryRecovered
+	recoveredReplies := make(map[string]bool, len(request.Response.Replies))
+	for _, reply := range request.Response.Replies {
+		marker := operationMarker(
+			"respond_to_review", request.OperationKey, "thread "+reply.ThreadID,
+		)
+		root := threadRoots[reply.ThreadID]
+		found, err := recoverCommentMarker(
+			reviewComments, marker, request.OperationKey, &root,
+		)
+		if err != nil {
+			return pullrequest.ExternalResult{}, err
+		}
+		recoveredReplies[reply.ThreadID] = found
+		allRecovered = allRecovered && found
+	}
+	if allRecovered {
+		rawURL, err := canonicalPullRequestURL(mutator.observer, request.Locator)
+		if err != nil {
+			return pullrequest.ExternalResult{}, err
+		}
+		return pullrequest.ExternalResult{
+			OperationKey: request.OperationKey,
+			ExternalID:   request.Batch.ID,
+			URL:          rawURL,
+		}, nil
+	}
+
+	providerPull, err := mutator.getPull(ctx, request.Locator)
+	if err != nil {
+		return pullrequest.ExternalResult{}, err
+	}
+	if err := requireProviderTarget(request.TargetRef, providerPull); err != nil {
+		return pullrequest.ExternalResult{}, err
+	}
+
+	if !summaryRecovered {
 		target := mutator.observer.endpoint(
 			"/repos/" + request.Locator.Repository + "/issues/" +
 				request.Locator.ExternalID + "/comments",
@@ -258,19 +294,12 @@ func (mutator *Mutator) PublishReviewResponse(
 	}
 
 	for _, reply := range request.Response.Replies {
+		if recoveredReplies[reply.ThreadID] {
+			continue
+		}
 		marker := operationMarker(
 			"respond_to_review", request.OperationKey, "thread "+reply.ThreadID,
 		)
-		root := threadRoots[reply.ThreadID]
-		found, err := recoverCommentMarker(
-			reviewComments, marker, request.OperationKey, &root,
-		)
-		if err != nil {
-			return pullrequest.ExternalResult{}, err
-		}
-		if found {
-			continue
-		}
 		target := mutator.observer.endpoint(
 			"/repos/" + request.Locator.Repository + "/pulls/" +
 				request.Locator.ExternalID + "/comments/" +
@@ -287,6 +316,31 @@ func (mutator *Mutator) PublishReviewResponse(
 		ExternalID:   request.Batch.ID,
 		URL:          providerPull.HTMLURL,
 	}, nil
+}
+
+func canonicalPullRequestURL(
+	observer *Observer,
+	locator pullrequest.Locator,
+) (string, error) {
+	number, err := strconv.ParseInt(locator.ExternalID, 10, 64)
+	if err != nil {
+		return "", fmt.Errorf("github pull request number is invalid")
+	}
+	target := *observer.baseURL
+	if strings.EqualFold(target.Hostname(), "api.github.com") {
+		target.Host = "github.com"
+	}
+	target.Path = "/" + locator.Repository + "/pull/" + locator.ExternalID
+	target.RawPath = ""
+	target.RawQuery = ""
+	target.ForceQuery = false
+	target.Fragment = ""
+	target.User = nil
+	raw := target.String()
+	if err := observer.validateHTMLURL(locator, number, raw); err != nil {
+		return "", err
+	}
+	return raw, nil
 }
 
 type mutationPull struct {
@@ -647,6 +701,9 @@ func validateStatusRequest(request pullrequest.StatusRequest) error {
 	if err := validateMutationLocator(request.Locator, true); err != nil {
 		return err
 	}
+	if !validHeadRef(request.TargetRef) {
+		return fmt.Errorf("github status target ref is invalid")
+	}
 	if !validObjectIDExact(request.SourceSHA) ||
 		!operationKeyPattern.MatchString(request.OperationKey) {
 		return fmt.Errorf("github status operation identity is invalid")
@@ -668,6 +725,9 @@ func validateResponseRequest(
 ) (map[string]int64, error) {
 	if err := validateMutationLocator(request.Locator, true); err != nil {
 		return nil, err
+	}
+	if !validHeadRef(request.TargetRef) {
+		return nil, fmt.Errorf("github response target ref is invalid")
 	}
 	if !operationKeyPattern.MatchString(request.OperationKey) {
 		return nil, fmt.Errorf("github response operation key is invalid")
@@ -751,6 +811,14 @@ func validateProviderPull(
 		return fmt.Errorf("github pull request state is invalid")
 	}
 	return observer.validateHTMLURL(locator, number, value.HTMLURL)
+}
+
+func requireProviderTarget(targetRef string, value mutationPull) error {
+	providerTarget, err := normalizeBranchRef(value.Base.Ref)
+	if err != nil || providerTarget != targetRef {
+		return fmt.Errorf("github pull request target ref does not match the operation")
+	}
+	return nil
 }
 
 func validateCreatedPull(

@@ -286,6 +286,11 @@ func (mutator *Mutator) PublishValidationStatus(
 	if err != nil {
 		return pullrequest.ExternalResult{}, err
 	}
+	if providerPull.TargetRefName != request.TargetRef {
+		return pullrequest.ExternalResult{}, fmt.Errorf(
+			"azure devops status target ref does not match the operation",
+		)
+	}
 	if providerPull.LastMergeSourceCommit.CommitID != request.SourceSHA {
 		return pullrequest.ExternalResult{}, fmt.Errorf(
 			"azure devops status source head is stale",
@@ -345,11 +350,6 @@ func (mutator *Mutator) PublishReviewResponse(
 	if err != nil {
 		return pullrequest.ExternalResult{}, err
 	}
-	if _, err := mutator.getPullRequest(
-		ctx, request.Locator.ExternalID,
-	); err != nil {
-		return pullrequest.ExternalResult{}, err
-	}
 	threads, err := readMutationCollection[azureThread](
 		ctx,
 		mutator,
@@ -378,7 +378,7 @@ func (mutator *Mutator) PublishReviewResponse(
 		authorizedProviderThreads[threadID] = struct{}{}
 	}
 	rootCommentID := int64(0)
-	found, err := recoverAzureMarker(
+	summaryRecovered, err := recoverAzureMarker(
 		threads,
 		summaryMarker,
 		request.OperationKey,
@@ -389,7 +389,53 @@ func (mutator *Mutator) PublishReviewResponse(
 	if err != nil {
 		return pullrequest.ExternalResult{}, err
 	}
-	if !found {
+
+	allRecovered := summaryRecovered
+	recoveredReplies := make(map[string]bool, len(request.Response.Replies))
+	for _, reply := range request.Response.Replies {
+		threadID := threadIDs[reply.ThreadID]
+		threadRoot := threadRoots[reply.ThreadID]
+		marker := operationMarker(
+			"respond_to_review",
+			request.OperationKey,
+			"thread "+reply.ThreadID,
+		)
+		found, err := recoverAzureMarker(
+			threads,
+			marker,
+			request.OperationKey,
+			&threadID,
+			&threadRoot,
+			nil,
+		)
+		if err != nil {
+			return pullrequest.ExternalResult{}, err
+		}
+		recoveredReplies[reply.ThreadID] = found
+		allRecovered = allRecovered && found
+	}
+	result := pullrequest.ExternalResult{
+		OperationKey: request.OperationKey,
+		ExternalID:   request.Batch.ID,
+		URL:          mutator.observer.webURL(request.Locator.ExternalID),
+	}
+	if allRecovered {
+		return result, nil
+	}
+
+	providerPull, err := mutator.getPullRequest(
+		ctx, request.Locator.ExternalID,
+	)
+	if err != nil {
+		return pullrequest.ExternalResult{}, err
+	}
+	if providerPull.TargetRefName != request.TargetRef {
+		return pullrequest.ExternalResult{}, fmt.Errorf(
+			"azure devops response target ref does not match the operation",
+		)
+	}
+
+	if !summaryRecovered {
 		content := appendOperationMarker(
 			request.Response.Summary, summaryMarker,
 		)
@@ -427,6 +473,9 @@ func (mutator *Mutator) PublishReviewResponse(
 	}
 
 	for _, reply := range request.Response.Replies {
+		if recoveredReplies[reply.ThreadID] {
+			continue
+		}
 		threadID := threadIDs[reply.ThreadID]
 		threadRoot := threadRoots[reply.ThreadID]
 		marker := operationMarker(
@@ -434,20 +483,6 @@ func (mutator *Mutator) PublishReviewResponse(
 			request.OperationKey,
 			"thread "+reply.ThreadID,
 		)
-		found, err := recoverAzureMarker(
-			threads,
-			marker,
-			request.OperationKey,
-			&threadID,
-			&threadRoot,
-			nil,
-		)
-		if err != nil {
-			return pullrequest.ExternalResult{}, err
-		}
-		if found {
-			continue
-		}
 		content := appendOperationMarker(reply.Body, marker)
 		target := mutator.endpoint(
 			"/pullRequests/"+request.Locator.ExternalID+
@@ -478,11 +513,7 @@ func (mutator *Mutator) PublishReviewResponse(
 		}
 	}
 
-	return pullrequest.ExternalResult{
-		OperationKey: request.OperationKey,
-		ExternalID:   request.Batch.ID,
-		URL:          mutator.observer.webURL(request.Locator.ExternalID),
-	}, nil
+	return result, nil
 }
 
 type azureCommentMutation struct {
@@ -496,6 +527,9 @@ func (mutator *Mutator) validateResponseRequest(
 ) (map[string]int64, error) {
 	if err := mutator.validateMutationLocator(request.Locator, true); err != nil {
 		return nil, err
+	}
+	if validateBranchRef(request.TargetRef) != nil {
+		return nil, fmt.Errorf("azure devops response target ref is invalid")
 	}
 	if !mutationOperationKeyPattern.MatchString(request.OperationKey) {
 		return nil, fmt.Errorf("azure devops response operation key is invalid")
@@ -782,6 +816,9 @@ func (mutator *Mutator) validateStatusRequest(
 ) (string, error) {
 	if err := mutator.validateMutationLocator(request.Locator, true); err != nil {
 		return "", err
+	}
+	if validateBranchRef(request.TargetRef) != nil {
+		return "", fmt.Errorf("azure devops status target ref is invalid")
 	}
 	if validateObjectID(request.SourceSHA) != nil ||
 		!mutationOperationKeyPattern.MatchString(request.OperationKey) ||

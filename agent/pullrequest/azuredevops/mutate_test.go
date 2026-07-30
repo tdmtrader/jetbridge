@@ -306,6 +306,7 @@ func TestMutatorPublishesValidationStatusForExactIterationAndHead(t *testing.T) 
 				Repository: testProject + "/" + testRepositoryID,
 				ExternalID: "42",
 			},
+			TargetRef:    "refs/heads/main",
 			SourceSHA:    sha('c'),
 			State:        "success",
 			Description:  "Jetbridge validation passed",
@@ -448,6 +449,7 @@ func TestMutatorPublishesSummaryAndRepliesOnlyToAuthorizedThreads(t *testing.T) 
 				Repository: testProject + "/" + testRepositoryID,
 				ExternalID: "42",
 			},
+			TargetRef: "refs/heads/main",
 			Batch: pullrequest.ReviewBatch{
 				ID:        "vote-144",
 				ReviewID:  "144",
@@ -637,6 +639,7 @@ func TestMutatorRejectsSummaryRecoveryInsideAuthorizedReviewThread(t *testing.T)
 				Repository: testProject + "/" + testRepositoryID,
 				ExternalID: "42",
 			},
+			TargetRef: "refs/heads/main",
 			Batch: pullrequest.ReviewBatch{
 				ID: "vote-144", ReviewID: "144", CommitSHA: sha('c'),
 				Reviewer:  "azure-user:reviewer-id",
@@ -777,6 +780,7 @@ func TestMutatorRejectsStatusWhenLatestIterationTargetIsNotCurrent(t *testing.T)
 				Repository: testProject + "/" + testRepositoryID,
 				ExternalID: "42",
 			},
+			TargetRef: "refs/heads/main",
 			SourceSHA: sha('c'), State: "success",
 			Description:  "Jetbridge validation passed",
 			TargetURL:    "https://ci.example/runs/91",
@@ -856,6 +860,7 @@ func TestMutatorRecoversExactStatusBeforeReadingAdvancedCurrentHead(t *testing.T
 				Repository: testProject + "/" + testRepositoryID,
 				ExternalID: "42",
 			},
+			TargetRef: "refs/heads/main",
 			SourceSHA: sha('c'), State: "success",
 			Description:  "Jetbridge validation passed",
 			TargetURL:    "https://ci.example/runs/91",
@@ -869,6 +874,282 @@ func TestMutatorRecoversExactStatusBeforeReadingAdvancedCurrentHead(t *testing.T
 		t.Fatalf(
 			"recovered status = %+v, pull reads/posts = %d/%d",
 			result, pullReads, statusPosts,
+		)
+	}
+}
+
+func TestMutatorRejectsStatusWhenProviderPullTargetsAnotherBranch(t *testing.T) {
+	key := mutationOperationKey('b')
+	var server *httptest.Server
+	var statusPosts int
+	server = httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		assertMutationRequest(t, request)
+		switch {
+		case request.Method == http.MethodGet &&
+			request.URL.Path == mutationRepositoryPath()+"/pullRequests/42/iterations":
+			writeMutationJSON(t, response, map[string]any{
+				"count": 1,
+				"value": []any{map[string]any{
+					"id":              2,
+					"sourceRefCommit": map[string]any{"commitId": sha('c')},
+					"targetRefCommit": map[string]any{"commitId": sha('b')},
+				}},
+			})
+		case request.Method == http.MethodGet &&
+			request.URL.Path == mutationRepositoryPath()+"/pullRequests/42/statuses":
+			writeMutationJSON(t, response, map[string]any{
+				"count": 0, "value": []any{},
+			})
+		case request.Method == http.MethodGet &&
+			request.URL.Path == mutationRepositoryPath()+"/pullRequests/42":
+			writeMutationJSON(t, response, azureMutationPull(
+				42,
+				"refs/heads/agent/upgrade", sha('c'),
+				"refs/heads/main", sha('b'),
+				"Validated.",
+			))
+		case request.Method == http.MethodPost:
+			statusPosts++
+			http.Error(response, "unexpected status post", http.StatusConflict)
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+
+	adapter, err := New(
+		server.URL,
+		testProject,
+		testRepositoryID,
+		tokenFunc(func(context.Context) (string, error) { return "mutation-secret", nil }),
+		server.Client(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = adapter.PublishValidationStatus(
+		context.Background(),
+		pullrequest.StatusRequest{
+			Locator: pullrequest.Locator{
+				Provider:   pullrequest.ProviderAzureDevOps,
+				Repository: testProject + "/" + testRepositoryID,
+				ExternalID: "42",
+			},
+			TargetRef: "refs/heads/release",
+			SourceSHA: sha('c'), State: "success",
+			Description:  "Jetbridge validation passed",
+			TargetURL:    "https://ci.example/runs/91",
+			OperationKey: key,
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "target") {
+		t.Fatalf("mismatched target error = %v", err)
+	}
+	if statusPosts != 0 {
+		t.Fatalf("status posts = %d, want none", statusPosts)
+	}
+}
+
+func TestMutatorRejectsResponseWhenProviderPullTargetsAnotherBranch(t *testing.T) {
+	key := mutationOperationKey('c')
+	summaryMarker := "<!-- Jetbridge-Operation: respond_to_review " + key + " summary -->"
+	var server *httptest.Server
+	var threadReads, responsePosts int
+	server = httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		assertMutationRequest(t, request)
+		switch {
+		case request.Method == http.MethodGet &&
+			request.URL.Path == mutationRepositoryPath()+"/pullRequests/42":
+			writeMutationJSON(t, response, azureMutationPull(
+				42,
+				"refs/heads/agent/upgrade", sha('c'),
+				"refs/heads/main", sha('b'),
+				"Validated.",
+			))
+		case request.Method == http.MethodGet &&
+			request.URL.Path == mutationRepositoryPath()+"/pullRequests/42/threads":
+			threadReads++
+			writeMutationJSON(t, response, map[string]any{
+				"count": 2,
+				"value": []any{
+					map[string]any{
+						"id": 148,
+						"comments": []any{map[string]any{
+							"id": 1, "parentCommentId": 0,
+							"content": "Please update.", "commentType": "text",
+							"isDeleted": false,
+						}},
+						"properties": map[string]any{}, "isDeleted": false,
+					},
+					map[string]any{
+						"id": 200,
+						"comments": []any{map[string]any{
+							"id": 1, "parentCommentId": 0,
+							"content":     "Addressed.\n\n" + summaryMarker,
+							"commentType": "text", "isDeleted": false,
+						}},
+						"properties": map[string]any{}, "isDeleted": false,
+					},
+				},
+			})
+		case request.Method == http.MethodPost:
+			responsePosts++
+			http.Error(response, "unexpected response post", http.StatusConflict)
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+
+	adapter, err := New(
+		server.URL,
+		testProject,
+		testRepositoryID,
+		tokenFunc(func(context.Context) (string, error) { return "mutation-secret", nil }),
+		server.Client(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = adapter.PublishReviewResponse(
+		context.Background(),
+		pullrequest.ResponseRequest{
+			Locator: pullrequest.Locator{
+				Provider:   pullrequest.ProviderAzureDevOps,
+				Repository: testProject + "/" + testRepositoryID,
+				ExternalID: "42",
+			},
+			TargetRef: "refs/heads/release",
+			Batch: pullrequest.ReviewBatch{
+				ID: "vote-144", ReviewID: "144", CommitSHA: sha('c'),
+				Reviewer:  "azure-user:reviewer-id",
+				Ready:     true,
+				ThreadIDs: []string{"thread-148"},
+			},
+			Response: contracts.PullRequestResponseBody{
+				BatchID: "vote-144", Summary: "Addressed.",
+				Replies: []contracts.PullRequestThreadResponse{{
+					ThreadID: "thread-148", Body: "Updated.",
+				}},
+			},
+			OperationKey: key,
+		},
+	)
+	if err == nil || !strings.Contains(err.Error(), "target") {
+		t.Fatalf("mismatched target error = %v", err)
+	}
+	if responsePosts != 0 {
+		t.Fatalf("response posts = %d, want none", responsePosts)
+	}
+	if threadReads != 1 {
+		t.Fatalf("response recovery reads = %d, want 1", threadReads)
+	}
+}
+
+func TestMutatorRecoversCompleteResponseAfterProviderPullIsRetargeted(t *testing.T) {
+	key := mutationOperationKey('d')
+	summaryMarker := "<!-- Jetbridge-Operation: respond_to_review " + key + " summary -->"
+	replyMarker := "<!-- Jetbridge-Operation: respond_to_review " + key + " thread thread-148 -->"
+	var server *httptest.Server
+	var pullReads, responsePosts int
+	server = httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		assertMutationRequest(t, request)
+		switch {
+		case request.Method == http.MethodGet &&
+			request.URL.Path == mutationRepositoryPath()+"/pullRequests/42/threads":
+			writeMutationJSON(t, response, map[string]any{
+				"count": 2,
+				"value": []any{
+					map[string]any{
+						"id": 148,
+						"comments": []any{
+							map[string]any{
+								"id": 1, "parentCommentId": 0,
+								"content": "Please update.", "commentType": "text",
+								"isDeleted": false,
+							},
+							map[string]any{
+								"id": 2, "parentCommentId": 1,
+								"content":     "Updated.\n\n" + replyMarker,
+								"commentType": "text", "isDeleted": false,
+							},
+						},
+						"properties": map[string]any{}, "isDeleted": false,
+					},
+					map[string]any{
+						"id": 200,
+						"comments": []any{map[string]any{
+							"id": 1, "parentCommentId": 0,
+							"content":     "Addressed.\n\n" + summaryMarker,
+							"commentType": "text", "isDeleted": false,
+						}},
+						"properties": map[string]any{}, "isDeleted": false,
+					},
+				},
+			})
+		case request.Method == http.MethodGet &&
+			request.URL.Path == mutationRepositoryPath()+"/pullRequests/42":
+			pullReads++
+			writeMutationJSON(t, response, azureMutationPull(
+				42,
+				"refs/heads/agent/upgrade", sha('c'),
+				"refs/heads/release", sha('b'),
+				"Validated.",
+			))
+		default:
+			if request.Method == http.MethodPost {
+				responsePosts++
+			}
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+
+	adapter, err := New(
+		server.URL,
+		testProject,
+		testRepositoryID,
+		tokenFunc(func(context.Context) (string, error) { return "mutation-secret", nil }),
+		server.Client(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := adapter.PublishReviewResponse(
+		context.Background(),
+		pullrequest.ResponseRequest{
+			Locator: pullrequest.Locator{
+				Provider:   pullrequest.ProviderAzureDevOps,
+				Repository: testProject + "/" + testRepositoryID,
+				ExternalID: "42",
+			},
+			TargetRef: "refs/heads/main",
+			Batch: pullrequest.ReviewBatch{
+				ID: "vote-144", ReviewID: "144", CommitSHA: sha('c'),
+				Reviewer:  "azure-user:reviewer-id",
+				Ready:     true,
+				ThreadIDs: []string{"thread-148"},
+			},
+			Response: contracts.PullRequestResponseBody{
+				BatchID: "vote-144", Summary: "Addressed.",
+				Replies: []contracts.PullRequestThreadResponse{{
+					ThreadID: "thread-148", Body: "Updated.",
+				}},
+			},
+			OperationKey: key,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.OperationKey != key || result.ExternalID != "vote-144" ||
+		result.URL != server.URL+"/project/_git/repo-id/pullrequest/42" {
+		t.Fatalf("recovered response result = %+v", result)
+	}
+	if pullReads != 0 || responsePosts != 0 {
+		t.Fatalf(
+			"provider pull reads/posts = %d/%d, want 0/0",
+			pullReads, responsePosts,
 		)
 	}
 }

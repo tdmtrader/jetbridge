@@ -321,6 +321,7 @@ type ExternalPullRequest struct {
 
 type StatusRequest struct {
 	Locator      Locator
+	TargetRef    string
 	SourceSHA    string
 	State        string
 	Description  string
@@ -330,6 +331,7 @@ type StatusRequest struct {
 
 type ResponseRequest struct {
 	Locator      Locator
+	TargetRef    string
 	Batch        ReviewBatch
 	Response     contracts.PullRequestResponseBody
 	OperationKey string

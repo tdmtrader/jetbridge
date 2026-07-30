@@ -81,6 +81,7 @@ type StatusPublicationRequest struct {
 	Destination           string               `json:"destination"`
 	ApprovalPolicyVersion string               `json:"approval_policy_version"`
 	Locator               PRLocator            `json:"locator"`
+	TargetRef             string               `json:"target_ref"`
 	SourceSHA             string               `json:"source_sha"`
 	State                 string               `json:"state"`
 	Description           string               `json:"description"`
@@ -95,6 +96,7 @@ type ResponsePublicationRequest struct {
 	Destination           string                            `json:"destination"`
 	ApprovalPolicyVersion string                            `json:"approval_policy_version"`
 	Locator               PRLocator                         `json:"locator"`
+	TargetRef             string                            `json:"target_ref"`
 	Batch                 PRReviewBatch                     `json:"batch"`
 	Response              contracts.PullRequestResponseBody `json:"response"`
 }
@@ -284,6 +286,9 @@ func (request StatusPublicationRequest) Validate() error {
 	if err := validatePRLocator(request.Locator, true, false); err != nil {
 		return err
 	}
+	if !safePRRef(request.TargetRef) {
+		return fmt.Errorf("%w: status target ref is invalid", ErrInvalidRequest)
+	}
 	if !validObjectID(request.SourceSHA) {
 		return fmt.Errorf("%w: status source sha is invalid", ErrInvalidRequest)
 	}
@@ -310,6 +315,9 @@ func (request ResponsePublicationRequest) Validate() error {
 	}
 	if err := validatePRLocator(request.Locator, true, false); err != nil {
 		return err
+	}
+	if !safePRRef(request.TargetRef) {
+		return fmt.Errorf("%w: response target ref is invalid", ErrInvalidRequest)
 	}
 	knownThreads := make(map[string]struct{}, len(request.Batch.ThreadIDs))
 	for _, threadID := range request.Batch.ThreadIDs {

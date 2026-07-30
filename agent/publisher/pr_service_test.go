@@ -204,12 +204,290 @@ func TestPRServiceKeepsBranchSuccessSeparateFromRecoverablePRCreation(t *testing
 	}
 }
 
+func TestPRServicePropagatesExactTargetAuthorityToStatusAndResponse(t *testing.T) {
+	store := newPRMemoryStore(func() time.Time {
+		return time.Date(2026, 7, 29, 13, 0, 0, 0, time.UTC)
+	})
+	mutator := &targetCapturingPRMutator{}
+	service, err := publisher.NewPRService(
+		store,
+		staticPRMutatorResolver{mutator: mutator},
+		time.Second,
+		time.Minute,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	status := validStatusPublicationRequest()
+	if _, err := service.PublishStatus(context.Background(), status); err != nil {
+		t.Fatalf("PublishStatus: %v", err)
+	}
+	if mutator.status == nil || mutator.status.TargetRef != status.TargetRef {
+		t.Fatalf("status mutation = %+v, want target %q", mutator.status, status.TargetRef)
+	}
+
+	response := validResponsePublicationRequest()
+	if _, err := service.PublishResponse(context.Background(), response); err != nil {
+		t.Fatalf("PublishResponse: %v", err)
+	}
+	if mutator.response == nil || mutator.response.TargetRef != response.TargetRef {
+		t.Fatalf(
+			"response mutation = %+v, want target %q",
+			mutator.response,
+			response.TargetRef,
+		)
+	}
+}
+
+func TestPRServiceTerminalizesStaleBranchCASWithoutReclaimingItAgain(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		staleError error
+		wantDetail string
+	}{
+		{
+			name:       "source",
+			staleError: publisher.ErrPRSourceStale,
+			wantDetail: "pull request source changed before publication; fresh reconciliation is required",
+		},
+		{
+			name:       "target",
+			staleError: publisher.ErrPRTargetStale,
+			wantDetail: "pull request target changed before publication; fresh reconciliation is required",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			now := time.Date(2026, 7, 29, 13, 0, 0, 0, time.UTC)
+			store := newPRMemoryStore(func() time.Time { return now })
+			request := validBranchPublicationRequest()
+			action := publisher.PRAction{Kind: publisher.OperationPublishPRBranch, Branch: &request}
+
+			acquired, execute, err := store.AcquirePR(context.Background(), action, time.Minute)
+			if err != nil || !execute || acquired.Attempt != 1 {
+				t.Fatalf("seed AcquirePR = (%+v, %t, %v)", acquired, execute, err)
+			}
+			_, err = store.CompletePR(context.Background(), acquired.OperationKey, acquired.Attempt+1, publisher.Result{
+				Status: publisher.StatusRebaseRequired,
+				Detail: "must not complete the wrong attempt",
+			})
+			if !errors.Is(err, publisher.ErrOperationConflict) {
+				t.Fatalf("wrong-attempt CompletePR error = %v, want operation conflict", err)
+			}
+
+			now = now.Add(2 * time.Minute)
+			mutator := &branchOnlyPRMutator{
+				compare: func(context.Context, publisher.BranchMutation) (publisher.BranchResult, error) {
+					return publisher.BranchResult{}, fmt.Errorf(
+						"adapter bridge rejected credential top-secret-token: %w",
+						test.staleError,
+					)
+				},
+			}
+			service, err := publisher.NewPRService(
+				store,
+				staticPRMutatorResolver{mutator: mutator},
+				time.Second,
+				time.Minute,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			completed, err := service.PublishBranch(context.Background(), request)
+			if err != nil {
+				t.Fatalf("PublishBranch: %v", err)
+			}
+			if completed.Status != publisher.StatusRebaseRequired ||
+				completed.Result.Status != publisher.StatusRebaseRequired ||
+				completed.Result.HeadSHA != request.NewSourceSHA ||
+				completed.Result.BaseSHA != request.ExpectedTargetSHA ||
+				completed.Result.Detail != test.wantDetail ||
+				completed.Attempt != 2 ||
+				!completed.LeaseUntil.IsZero() {
+				t.Fatalf("stale PublishBranch = %+v", completed)
+			}
+			if strings.Contains(completed.Result.Detail, "top-secret-token") {
+				t.Fatalf("stale detail leaked provider error: %q", completed.Result.Detail)
+			}
+			if err := completed.Result.Validate(); err != nil {
+				t.Fatalf("completed result is invalid: %v", err)
+			}
+
+			now = now.Add(2 * time.Minute)
+			replayed, err := service.PublishBranch(context.Background(), request)
+			if err != nil {
+				t.Fatalf("replay PublishBranch: %v", err)
+			}
+			if replayed.Status != publisher.StatusRebaseRequired ||
+				replayed.OperationKey != completed.OperationKey ||
+				replayed.Attempt != completed.Attempt ||
+				replayed.Result != completed.Result {
+				t.Fatalf("replayed stale publication = %+v, want %+v", replayed, completed)
+			}
+			if mutator.compareCalls != 1 {
+				t.Fatalf("branch CAS calls = %d, want 1", mutator.compareCalls)
+			}
+		})
+	}
+}
+
+func TestPRServiceDoesNotTerminalizeStaleSentinelsAfterContextEnds(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		timeout time.Duration
+		call    func(context.Context, context.CancelFunc) error
+		want    error
+	}{
+		{
+			name:    "caller cancellation",
+			timeout: time.Second,
+			call: func(_ context.Context, cancel context.CancelFunc) error {
+				cancel()
+				return publisher.ErrPRSourceStale
+			},
+			want: context.Canceled,
+		},
+		{
+			name:    "provider timeout",
+			timeout: 10 * time.Millisecond,
+			call: func(ctx context.Context, _ context.CancelFunc) error {
+				<-ctx.Done()
+				return errors.Join(publisher.ErrPRTargetStale, ctx.Err())
+			},
+			want: context.DeadlineExceeded,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			now := time.Date(2026, 7, 29, 13, 0, 0, 0, time.UTC)
+			store := newPRMemoryStore(func() time.Time { return now })
+			request := validBranchPublicationRequest()
+			requestContext, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			mutator := &branchOnlyPRMutator{}
+			mutator.compare = func(ctx context.Context, mutation publisher.BranchMutation) (publisher.BranchResult, error) {
+				err := test.call(ctx, cancel)
+				return publisher.BranchResult{}, fmt.Errorf("provider returned %w", err)
+			}
+			service, err := publisher.NewPRService(
+				store,
+				staticPRMutatorResolver{mutator: mutator},
+				test.timeout,
+				time.Minute,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if _, err := service.PublishBranch(requestContext, request); !errors.Is(err, test.want) {
+				t.Fatalf("PublishBranch error = %v, want %v", err, test.want)
+			}
+			key, err := request.OperationKey()
+			if err != nil {
+				t.Fatal(err)
+			}
+			pending := store.operations[key]
+			if pending == nil || pending.status != publisher.StatusPending || pending.attempt != 1 {
+				t.Fatalf("publication after context end = %+v, want pending attempt 1", pending)
+			}
+		})
+	}
+}
+
+func TestPRServiceLeavesOtherBranchErrorsRecoverable(t *testing.T) {
+	now := time.Date(2026, 7, 29, 13, 0, 0, 0, time.UTC)
+	store := newPRMemoryStore(func() time.Time { return now })
+	request := validBranchPublicationRequest()
+	transient := errors.New("temporary provider failure")
+	mutator := &branchOnlyPRMutator{}
+	mutator.compare = func(_ context.Context, mutation publisher.BranchMutation) (publisher.BranchResult, error) {
+		if mutator.compareCalls == 1 {
+			return publisher.BranchResult{}, transient
+		}
+		return publisher.BranchResult{HeadSHA: mutation.NewSourceSHA, Applied: true}, nil
+	}
+	service, err := publisher.NewPRService(
+		store,
+		staticPRMutatorResolver{mutator: mutator},
+		time.Second,
+		time.Minute,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := service.PublishBranch(context.Background(), request); !errors.Is(err, transient) {
+		t.Fatalf("first PublishBranch error = %v, want transient provider failure", err)
+	}
+	now = now.Add(2 * time.Minute)
+	retried, err := service.PublishBranch(context.Background(), request)
+	if err != nil || retried.Status != publisher.StatusSucceeded || retried.Attempt != 2 {
+		t.Fatalf("retried PublishBranch = (%+v, %v)", retried, err)
+	}
+	if mutator.compareCalls != 2 {
+		t.Fatalf("branch CAS calls = %d, want 2", mutator.compareCalls)
+	}
+}
+
 type staticPRMutatorResolver struct {
 	mutator publisher.PRMutator
 }
 
 func (resolver staticPRMutatorResolver) ResolvePRMutator(context.Context, publisher.PRAction) (publisher.PRMutator, error) {
 	return resolver.mutator, nil
+}
+
+type targetCapturingPRMutator struct {
+	status   *publisher.StatusMutation
+	response *publisher.ResponseMutation
+}
+
+func (*targetCapturingPRMutator) CompareAndSwapBranch(context.Context, publisher.BranchMutation) (publisher.BranchResult, error) {
+	return publisher.BranchResult{}, fmt.Errorf("unexpected branch publication")
+}
+
+func (*targetCapturingPRMutator) FindOrCreatePullRequest(context.Context, publisher.CreatePRMutation) (publisher.ExternalPullRequest, error) {
+	return publisher.ExternalPullRequest{}, fmt.Errorf("unexpected pull request creation")
+}
+
+func (mutator *targetCapturingPRMutator) PublishValidationStatus(_ context.Context, mutation publisher.StatusMutation) (publisher.ExternalResult, error) {
+	mutator.status = &mutation
+	return publisher.ExternalResult{
+		OperationKey: mutation.OperationKey,
+		ExternalID:   "status-77",
+		URL:          "https://github.example/acme/widget/status/77",
+	}, nil
+}
+
+func (mutator *targetCapturingPRMutator) PublishReviewResponse(_ context.Context, mutation publisher.ResponseMutation) (publisher.ExternalResult, error) {
+	mutator.response = &mutation
+	return publisher.ExternalResult{
+		OperationKey: mutation.OperationKey,
+		ExternalID:   "review-17",
+		URL:          "https://github.example/acme/widget/pull/42",
+	}, nil
+}
+
+type branchOnlyPRMutator struct {
+	compare      func(context.Context, publisher.BranchMutation) (publisher.BranchResult, error)
+	compareCalls int
+}
+
+func (mutator *branchOnlyPRMutator) CompareAndSwapBranch(ctx context.Context, mutation publisher.BranchMutation) (publisher.BranchResult, error) {
+	mutator.compareCalls++
+	return mutator.compare(ctx, mutation)
+}
+
+func (*branchOnlyPRMutator) FindOrCreatePullRequest(context.Context, publisher.CreatePRMutation) (publisher.ExternalPullRequest, error) {
+	return publisher.ExternalPullRequest{}, fmt.Errorf("unexpected pull request creation")
+}
+
+func (*branchOnlyPRMutator) PublishValidationStatus(context.Context, publisher.StatusMutation) (publisher.ExternalResult, error) {
+	return publisher.ExternalResult{}, fmt.Errorf("unexpected status publication")
+}
+
+func (*branchOnlyPRMutator) PublishReviewResponse(context.Context, publisher.ResponseMutation) (publisher.ExternalResult, error) {
+	return publisher.ExternalResult{}, fmt.Errorf("unexpected response publication")
 }
 
 type recoveringPRMutator struct {
@@ -376,6 +654,7 @@ func validStatusPublicationRequest() publisher.StatusPublicationRequest {
 		Evidence:              create.Evidence,
 		Destination:           create.Destination,
 		ApprovalPolicyVersion: create.ApprovalPolicyVersion,
+		TargetRef:             create.TargetRef,
 		Locator: publisher.PRLocator{
 			Provider: publisher.PRProviderGitHub, Repository: "acme/widget", ExternalID: "42",
 		},
@@ -395,6 +674,7 @@ func validResponsePublicationRequest() publisher.ResponsePublicationRequest {
 		Evidence:              status.Evidence,
 		Destination:           status.Destination,
 		ApprovalPolicyVersion: status.ApprovalPolicyVersion,
+		TargetRef:             status.TargetRef,
 		Locator:               status.Locator,
 		Batch: publisher.PRReviewBatch{
 			ID: "review-17", ReviewID: "17", CommitSHA: status.SourceSHA,
