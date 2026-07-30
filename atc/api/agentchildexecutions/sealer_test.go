@@ -50,6 +50,7 @@ func TestOrdinaryResultSealerRejectsSidecarResultTypeAndMissingAuthorityInput(t 
 	_, err = sealer.Seal(context.Background(), agentchildexecutions.Scope{
 		TeamID: 1, TeamName: "main", BuildID: 2, SnapshotCreatedBy: "atc",
 		WorkflowRunID: 3, NodePlanID: "node", ParentAttempt: 1, BrokerInstance: "broker", LeaseDuration: time.Minute,
+		Inputs: map[string]snapshot.SnapshotRef{"workspace": {ID: 1, Type: "repository-change/v1", Digest: snapshot.Digest("sha256:" + strings.Repeat("a", 64))}},
 	}, broker.ExecutionIdentity{Tool: broker.ToolConsultAgent, Attachments: []string{"design"}}, agentchildexecutions.CandidateResult{
 		Body: json.RawMessage(`{"answer":"answer","claims":[],"assumptions":[],"uncertainties":[],"recommendations":[]}`),
 	})

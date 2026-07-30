@@ -63,6 +63,12 @@ func (service *Service) Admit(
 	ctx context.Context,
 	request broker.AdmissionRequest,
 ) (broker.Admission, error) {
+	for _, attachment := range request.Attachments {
+		ref, found := service.config.Scope.Inputs[attachment]
+		if !found || ref.Validate() != nil {
+			return broker.Admission{}, fmt.Errorf("agent child authority: immutable input authority %q is unavailable", attachment)
+		}
+	}
 	if err := broker.ValidateAttachments(request.Tool, request.Attachments); err != nil {
 		return broker.Admission{}, fmt.Errorf("agent child authority: invalid attachments: %w", err)
 	}

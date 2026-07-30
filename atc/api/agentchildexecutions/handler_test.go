@@ -26,7 +26,7 @@ func TestHandlerRejectsUnauthorizedAndStrictlyMalformedAdmission(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	scope := agentchildexecutions.Scope{TeamID: 1, WorkflowRunID: 2, NodePlanID: "node", ParentAttempt: 1, BrokerInstance: "broker-1", LeaseDuration: time.Minute}
+	scope := completeScope()
 	bootstrap, err := signer.MintBootstrap(scope, []broker.Profile{profile}, now.Add(-time.Second), now.Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
@@ -129,7 +129,7 @@ func TestHandlerRefusesAdmissionWhenProfileOutlivesExecutionCapability(t *testin
 	key := []byte(strings.Repeat("k", 32))
 	signer, _ := agentchildexecutions.NewCapabilitySigner("key-1", key)
 	verifier, _ := agentchildexecutions.NewCapabilityVerifier("key-1", key)
-	scope := agentchildexecutions.Scope{TeamID: 1, WorkflowRunID: 2, NodePlanID: "node", ParentAttempt: 1, BrokerInstance: "broker-1", LeaseDuration: time.Minute}
+	scope := completeScope()
 	bootstrap, _ := signer.MintBootstrap(scope, []broker.Profile{profile}, now.Add(-time.Second), now.Add(time.Minute))
 	store := &fakeStore{}
 	handler, err := agentchildexecutions.NewHandler(agentchildexecutions.HandlerConfig{Signer: signer, Verifier: verifier, Store: store, Sealer: &fakeSealer{}, ExecutionCapabilityTTL: agentchildexecutions.MaxExecutionCapabilityTTL, Now: func() time.Time { return now }})
@@ -156,7 +156,7 @@ func TestHandlerMintsExecutionCapabilityAndEnforcesExactURLScope(t *testing.T) {
 	key := []byte(strings.Repeat("k", 32))
 	signer, _ := agentchildexecutions.NewCapabilitySigner("key-1", key)
 	verifier, _ := agentchildexecutions.NewCapabilityVerifier("key-1", key)
-	scope := agentchildexecutions.Scope{TeamID: 1, WorkflowRunID: 2, NodePlanID: "node", ParentAttempt: 1, BrokerInstance: "broker-1", LeaseDuration: time.Minute}
+	scope := completeScope()
 	bootstrap, _ := signer.MintBootstrap(scope, []broker.Profile{profile}, now.Add(-time.Second), now.Add(time.Minute))
 	store := &fakeStore{}
 	handler, err := agentchildexecutions.NewHandler(agentchildexecutions.HandlerConfig{Signer: signer, Verifier: verifier, Store: store, Sealer: &fakeSealer{}, ExecutionCapabilityTTL: time.Minute, Now: func() time.Time { return now }})

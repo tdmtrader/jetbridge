@@ -20,7 +20,7 @@ func TestExecutionCapabilityRequiresExactScopeActionAndTimeWindow(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	scope := agentchildexecutions.Scope{TeamID: 1, WorkflowRunID: 2, NodePlanID: "node", ParentAttempt: 1, BrokerInstance: "broker-1", LeaseDuration: time.Minute}
+	scope := completeScope()
 	catalog, err := broker.NewCatalog([]broker.Profile{authorityProfile()})
 	if err != nil {
 		t.Fatal(err)
