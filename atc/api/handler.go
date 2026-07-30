@@ -15,6 +15,7 @@ import (
 	metricsapi "github.com/concourse/concourse/agent/api/metrics"
 	noderunsapi "github.com/concourse/concourse/agent/api/noderuns"
 	nodesapi "github.com/concourse/concourse/agent/api/nodes"
+	nodeupgradesapi "github.com/concourse/concourse/agent/api/nodeupgrades"
 	reviewsapi "github.com/concourse/concourse/agent/api/reviews"
 	snapshotsapi "github.com/concourse/concourse/agent/api/snapshots"
 	ticketsapi "github.com/concourse/concourse/agent/api/tickets"
@@ -130,6 +131,7 @@ func NewHandler(
 	resourceCapturer snapshotsapi.ResourceCapturer,
 	workflowRunHandlers *workflowrunsapi.Handler,
 	nodeRunHandlers *noderunsapi.Handler,
+	nodeUpgradeHandlers *nodeupgradesapi.Handler,
 	workflowWaitHandlers *workflowwaitsapi.Handler,
 	workflowOutcomeHandlers *workflowoutcomesapi.Handler,
 	experimentHandlers *experimentsapi.Handler,
@@ -139,6 +141,9 @@ func NewHandler(
 	}
 	if nodeRunHandlers == nil {
 		return nil, fmt.Errorf("node-run API handlers are required")
+	}
+	if nodeUpgradeHandlers == nil {
+		return nil, fmt.Errorf("node-upgrade API handlers are required")
 	}
 	if workflowOutcomeHandlers == nil {
 		return nil, fmt.Errorf("workflow-outcome API handlers are required")
@@ -405,6 +410,8 @@ func NewHandler(
 		atc.CreateAgentNodeRun:                         http.HandlerFunc(nodeRunHandlers.Create),
 		atc.ListAgentNodeRuns:                          http.HandlerFunc(nodeRunHandlers.List),
 		atc.GetAgentNodeRun:                            http.HandlerFunc(nodeRunHandlers.Get),
+		atc.ListAgentNodeConsumers:                     http.HandlerFunc(nodeUpgradeHandlers.Consumers),
+		atc.UpgradeAgentNodeConsumers:                  http.HandlerFunc(nodeUpgradeHandlers.Upgrade),
 		atc.CreateAgentExperiment:                      http.HandlerFunc(experimentHandlers.Create),
 		atc.ListAgentExperiments:                       http.HandlerFunc(experimentHandlers.List),
 		atc.GetAgentExperiment:                         http.HandlerFunc(experimentHandlers.Get),

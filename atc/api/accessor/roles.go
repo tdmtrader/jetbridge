@@ -147,6 +147,8 @@ var DefaultRoles = map[string]string{
 	atc.CreateAgentNodeRun:                         MemberRole,
 	atc.ListAgentNodeRuns:                          ViewerRole,
 	atc.GetAgentNodeRun:                            ViewerRole,
+	atc.ListAgentNodeConsumers:                     ViewerRole,
+	atc.UpgradeAgentNodeConsumers:                  MemberRole,
 	atc.CreateAgentExperiment:                      MemberRole,
 	atc.ListAgentExperiments:                       ViewerRole,
 	atc.GetAgentExperiment:                         ViewerRole,

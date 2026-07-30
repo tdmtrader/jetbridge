@@ -117,6 +117,64 @@ func TestAgentNodesRunUsesExactVersionAndOnlyPublicBodyFields(t *testing.T) {
 	}
 }
 
+func TestAgentNodeConsumersUsesExactVersionAndOpaqueCursor(t *testing.T) {
+	cursor := "eyJ3b3JrZmxvd19kZWZpbml0aW9uX2lkIjo5MDA3MTk5MjU0NzQwOTkzLCJpbnN0YW5jZV9uYW1lIjoicmV2aWV3In0"
+	target := nodeTarget(t, func(request *http.Request) (*http.Response, error) {
+		if request.Method != http.MethodGet || request.URL.Path != "/api/v1/agent/nodes/code-review/versions/5/consumers" ||
+			request.URL.Query().Get("limit") != "25" || request.URL.Query().Get("cursor") != cursor {
+			t.Fatalf("request = %s %s", request.Method, request.URL.String())
+		}
+		response := nodeResponse(http.StatusOK, `[{"workflow_definition_id":"9007199254740993","workflow_name":"small-fix","workflow_version":7,"live":true,"binding":{"instance_name":"review","node_definition_id":"9007199254740995","node_name":"code-review","node_version":5,"node_content_hash":"hash","input_mapping":{},"output_mapping":{},"parameters":{}}}]`)
+		response.Header.Set("X-Next-Cursor", cursor)
+		return response, nil
+	})
+	consumers, next, err := listNodeConsumers(target, "code-review", 5, 25, cursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(consumers) != 1 ||
+		consumers[0].WorkflowDefinitionID != 9007199254740993 ||
+		consumers[0].Binding.NodeDefinitionID != 9007199254740995 ||
+		next != cursor {
+		t.Fatalf("consumers/next = %#v/%q", consumers, next)
+	}
+}
+
+func TestAgentNodeUpgradeSendsOnlyDistinctSelectedWorkflows(t *testing.T) {
+	target := nodeTarget(t, func(request *http.Request) (*http.Response, error) {
+		if request.Method != http.MethodPost || request.URL.Path != "/api/v1/agent/nodes/code-review/versions/5/upgrades" ||
+			request.Header.Get("Content-Type") != "application/json" {
+			t.Fatalf("request = %s %s content-type=%q", request.Method, request.URL.Path, request.Header.Get("Content-Type"))
+		}
+		body, _ := io.ReadAll(request.Body)
+		if string(body) != `{"workflows":["small-fix","version-upgrade"]}` {
+			t.Fatalf("payload = %s", body)
+		}
+		return nodeResponse(http.StatusOK, `{"node_name":"code-review","version":5,"workflows":[{"workflow":"small-fix","old_version":7,"new_version":8,"status":"created"},{"workflow":"version-upgrade","old_version":3,"new_version":0,"status":"recomposition_required","obligations":{"inputs":{"added":[],"removed":[],"changed":[]},"outputs":{"added":[],"removed":[],"changed":[]},"parameters":{"added":[],"removed":[],"changed":[]}}}]}`), nil
+	})
+	result, err := upgradeNodeConsumers(target, "code-review", 5, []string{"small-fix", "version-upgrade"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Workflows) != 2 || result.Workflows[0].Workflow != "small-fix" {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestAgentNodeUpgradeRejectsDuplicateSelectionBeforeRequest(t *testing.T) {
+	calls := 0
+	target := nodeTarget(t, func(request *http.Request) (*http.Response, error) {
+		calls++
+		return nodeResponse(http.StatusInternalServerError, `{}`), nil
+	})
+	if _, err := upgradeNodeConsumers(target, "code-review", 5, []string{"small-fix", "small-fix"}); err == nil {
+		t.Fatal("duplicate workflow selection was accepted")
+	}
+	if calls != 0 {
+		t.Fatalf("HTTP calls = %d, want 0", calls)
+	}
+}
+
 func nodeTarget(t *testing.T, handler func(*http.Request) (*http.Response, error)) rc.Target {
 	t.Helper()
 	client := new(concoursefakes.FakeClient)

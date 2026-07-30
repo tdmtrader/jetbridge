@@ -26,6 +26,7 @@ import (
 	"github.com/concourse/concourse"
 	experimentsapi "github.com/concourse/concourse/agent/api/experiments"
 	noderunsapi "github.com/concourse/concourse/agent/api/noderuns"
+	nodeupgradesapi "github.com/concourse/concourse/agent/api/nodeupgrades"
 	snapshotsapi "github.com/concourse/concourse/agent/api/snapshots"
 	workflowoutcomesapi "github.com/concourse/concourse/agent/api/workflowoutcomes"
 	workflowrunsapi "github.com/concourse/concourse/agent/api/workflowruns"
@@ -41,6 +42,7 @@ import (
 	"github.com/concourse/concourse/agent/resourcecapture"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/snapshot/contracts"
+	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/agent/workflowrun"
 	"github.com/concourse/concourse/agent/workflowwait"
 	"github.com/concourse/concourse/agent/workitem"
@@ -3632,6 +3634,16 @@ func (cmd *RunCommand) constructAPIHandler(
 	if err != nil {
 		return nil, fmt.Errorf("construct node-run API: %w", err)
 	}
+	nodeUpgradeHandlers, err := nodeupgradesapi.NewHandler(nodeupgradesapi.Config{
+		TeamID: dispatchGraph.teamID, TeamName: dispatchGraph.teamName,
+		Store: nodeStore, Upgrader: workflow.NewNodeUpgradeService(nodeStore, workflowStore),
+		Identity: func(r *http.Request) (string, error) {
+			return workflowRunCreatorIdentity(accessor.GetAccessor(r).UserInfo())
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("construct node-upgrade API: %w", err)
+	}
 	cmd.agentSnapshotMu.Lock()
 	workflowWaitContent := cmd.agentSnapshotContentStore
 	workflowWaitCreator := cmd.agentSnapshotCreator
@@ -3754,6 +3766,7 @@ func (cmd *RunCommand) constructAPIHandler(
 		resourceCapturer,
 		workflowRunHandlers,
 		nodeRunHandlers,
+		nodeUpgradeHandlers,
 		workflowWaitHandlers,
 		workflowOutcomeHandlers,
 		experimentHandlers,

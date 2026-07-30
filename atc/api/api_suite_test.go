@@ -19,6 +19,7 @@ import (
 	"github.com/concourse/concourse/agent/api/feedback"
 	"github.com/concourse/concourse/agent/api/metrics/metricstest"
 	noderunsapi "github.com/concourse/concourse/agent/api/noderuns"
+	nodeupgradesapi "github.com/concourse/concourse/agent/api/nodeupgrades"
 	"github.com/concourse/concourse/agent/api/reviews/reviewstest"
 	snapshotsapi "github.com/concourse/concourse/agent/api/snapshots"
 	"github.com/concourse/concourse/agent/api/tickets/ticketstest"
@@ -167,6 +168,10 @@ func (unavailableWorkflowRunBackend) GetAuthorized(context.Context, int, snapsho
 	return snapshot.Snapshot{}, false, nil
 }
 
+func (unavailableWorkflowRunBackend) Upgrade(context.Context, workflow.NodeUpgradeRequest) (workflow.NodeUpgradeResult, error) {
+	return workflow.NodeUpgradeResult{}, errors.New("node-upgrade backend is unavailable in the API suite")
+}
+
 func (f *fakeEventHandlerFactory) Construct(
 	logger lager.Logger,
 	build db.BuildForAPI,
@@ -264,11 +269,18 @@ var _ = BeforeEach(func() {
 	snapshotHandlers, err := snapshotsapi.NewHandlerFactory(snapshotsapi.Config{Enabled: false})
 	Expect(err).NotTo(HaveOccurred())
 	workflowRunBackend := unavailableWorkflowRunBackend{}
+	apiWorkflowStore := workflowtest.NewMemoryStore()
+	apiNodeStore := workflowtest.NewMemoryNodeStore()
 	workflowRunHandlers, err := workflowrunsapi.NewHandler(workflowrunsapi.Config{
 		Team:     workflowrunsapi.TrustedTeam{ID: 1, Name: atc.DefaultTeamName},
 		Identity: func(*http.Request) (string, error) { return "api-suite", nil },
 		Binder:   workflowRunBackend, Runs: workflowRunBackend,
 		Canceler: workflowRunBackend, Manifests: workflowRunBackend,
+	})
+	Expect(err).NotTo(HaveOccurred())
+	nodeUpgradeHandlers, err := nodeupgradesapi.NewHandler(nodeupgradesapi.Config{
+		TeamID: 1, TeamName: atc.DefaultTeamName, Store: apiNodeStore, Upgrader: workflowRunBackend,
+		Identity: func(*http.Request) (string, error) { return "api-suite", nil },
 	})
 	Expect(err).NotTo(HaveOccurred())
 	nodeRunHandlers, err := noderunsapi.NewHandler(noderunsapi.Config{
@@ -350,8 +362,8 @@ var _ = BeforeEach(func() {
 		budgettest.NewMemoryLedger(),
 		0,
 		fakeAgentRunTranscriptFactory,
-		workflowtest.NewMemoryStore(),
-		workflowtest.NewMemoryNodeStore(),
+		apiWorkflowStore,
+		apiNodeStore,
 		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusNotImplemented) // dispatch handler stub
 		}),
@@ -360,6 +372,7 @@ var _ = BeforeEach(func() {
 		nil, // resource capture disabled with the snapshot service in this suite
 		workflowRunHandlers,
 		nodeRunHandlers,
+		nodeUpgradeHandlers,
 		workflowWaitHandlers,
 		workflowOutcomeHandlers,
 		experimentHandlers,

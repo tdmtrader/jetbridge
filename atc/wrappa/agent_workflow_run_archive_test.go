@@ -21,6 +21,8 @@ func TestAgentNodeAndWorkflowRunRoutesAreNotRejectedForArchivedPipelines(t *test
 		atc.CreateAgentNodeRun,
 		atc.ListAgentNodeRuns,
 		atc.GetAgentNodeRun,
+		atc.ListAgentNodeConsumers,
+		atc.UpgradeAgentNodeConsumers,
 		atc.CreateAgentWorkflowRun,
 		atc.ListAgentWorkflowRuns,
 		atc.GetAgentWorkflowRunOperationalStatusCounts,

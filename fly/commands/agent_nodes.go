@@ -2,8 +2,10 @@ package commands
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -12,6 +14,7 @@ import (
 	"strings"
 
 	noderunsapi "github.com/concourse/concourse/agent/api/noderuns"
+	nodeupgradesapi "github.com/concourse/concourse/agent/api/nodeupgrades"
 	workflowrunsapi "github.com/concourse/concourse/agent/api/workflowruns"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/workflow"
@@ -32,6 +35,8 @@ type AgentNodesCommand struct {
 	Run       NodesRunCommand       `command:"run" description:"Run an exact reusable node version"`
 	Runs      NodesRunsCommand      `command:"runs" description:"List runs for an exact reusable node version"`
 	ShowRun   NodesShowRunCommand   `command:"show-run" description:"Show one reusable node run"`
+	Consumers NodesConsumersCommand `command:"consumers" description:"List consumers of an exact node version"`
+	Upgrade   NodesUpgradeCommand   `command:"upgrade" description:"Upgrade selected workflows to an exact node version"`
 }
 
 type nodeSummary struct {
@@ -429,4 +434,188 @@ func nodeVersionRunsPath(name string, version int) string {
 
 func nodeRunPath(name string, runID snapshot.WorkflowRunID) string {
 	return "/api/v1/agent/nodes/" + url.PathEscape(name) + "/runs/" + url.PathEscape(runID.String())
+}
+
+type NodesConsumersCommand struct {
+	Args struct {
+		Name    string `positional-arg-name:"NAME" required:"true" description:"Node definition name"`
+		Version int    `positional-arg-name:"VERSION" required:"true" description:"Exact node version"`
+	} `positional-args:"yes"`
+	Cursor string `long:"cursor" description:"Continue after an opaque cursor returned by an earlier page"`
+	Limit  int    `long:"limit" default:"100" description:"Maximum consumers to return (1-1000)"`
+	Json   bool   `long:"json" description:"Print command result as JSON"`
+}
+
+func (command *NodesConsumersCommand) Execute([]string) error {
+	target, err := loadAgentTarget()
+	if err != nil {
+		return err
+	}
+	consumers, next, err := listNodeConsumers(target, command.Args.Name, command.Args.Version, command.Limit, command.Cursor)
+	if err != nil {
+		return err
+	}
+	if next != "" {
+		fmt.Fprintf(os.Stderr, "# next cursor: %s\n", next)
+	}
+	if command.Json {
+		return displayhelpers.JsonPrint(consumers)
+	}
+	table := ui.Table{Headers: ui.TableRow{
+		{Contents: "workflow", Color: color.New(color.Bold)},
+		{Contents: "version", Color: color.New(color.Bold)},
+		{Contents: "live", Color: color.New(color.Bold)},
+		{Contents: "instance", Color: color.New(color.Bold)},
+	}}
+	for _, consumer := range consumers {
+		table.Data = append(table.Data, ui.TableRow{
+			{Contents: consumer.WorkflowName},
+			{Contents: strconv.Itoa(consumer.WorkflowVersion)},
+			{Contents: strconv.FormatBool(consumer.Live)},
+			{Contents: consumer.Binding.InstanceName},
+		})
+	}
+	return table.Render(os.Stdout, Fly.PrintTableHeaders)
+}
+
+func listNodeConsumers(target rc.Target, name string, version, limit int, cursor string) ([]nodeupgradesapi.Consumer, string, error) {
+	if version <= 0 {
+		return nil, "", fmt.Errorf("agent node consumers: version must be positive")
+	}
+	if limit <= 0 || limit > workflow.MaxVersionPageSize {
+		return nil, "", fmt.Errorf("agent node consumers: limit must be between 1 and %d", workflow.MaxVersionPageSize)
+	}
+	if cursor != "" {
+		if err := validateNodeConsumerCursor(cursor); err != nil {
+			return nil, "", fmt.Errorf("agent node consumers: invalid cursor")
+		}
+	}
+	query := url.Values{"limit": {strconv.Itoa(limit)}}
+	if cursor != "" {
+		query.Set("cursor", cursor)
+	}
+	response, err := agentAPIRequest(target, http.MethodGet, nodeVersionPath(name, version)+"/consumers?"+query.Encode(), nil)
+	if err != nil {
+		return nil, "", err
+	}
+	next := response.Header.Get("X-Next-Cursor")
+	var consumers []nodeupgradesapi.Consumer
+	if err := decodeOrError(response, &consumers); err != nil {
+		return nil, "", err
+	}
+	if next != "" {
+		if err := validateNodeConsumerCursor(next); err != nil {
+			return nil, "", fmt.Errorf("server returned invalid node consumer cursor %q", next)
+		}
+	}
+	return consumers, next, nil
+}
+
+func validateNodeConsumerCursor(raw string) error {
+	if raw == "" || len(raw) > 2048 {
+		return fmt.Errorf("invalid cursor")
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(raw)
+	if err != nil || base64.RawURLEncoding.EncodeToString(payload) != raw {
+		return fmt.Errorf("invalid cursor")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.DisallowUnknownFields()
+	var cursor workflow.NodeConsumerCursor
+	if err := decoder.Decode(&cursor); err != nil || cursor.WorkflowDefinitionID <= 0 || strings.TrimSpace(cursor.InstanceName) == "" || cursor.InstanceName != strings.TrimSpace(cursor.InstanceName) {
+		return fmt.Errorf("invalid cursor")
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return fmt.Errorf("invalid cursor")
+	}
+	canonical, err := json.Marshal(cursor)
+	if err != nil || !bytes.Equal(canonical, payload) {
+		return fmt.Errorf("invalid cursor")
+	}
+	return nil
+}
+
+type NodesUpgradeCommand struct {
+	Args struct {
+		Name    string `positional-arg-name:"NAME" required:"true" description:"Node definition name"`
+		Version int    `positional-arg-name:"VERSION" required:"true" description:"Exact successor node version"`
+	} `positional-args:"yes"`
+	Workflow []string `long:"workflow" required:"true" description:"Workflow to upgrade (repeatable)"`
+	Json     bool     `long:"json" description:"Print command result as JSON"`
+}
+
+func (command *NodesUpgradeCommand) Execute([]string) error {
+	target, err := loadAgentTarget()
+	if err != nil {
+		return err
+	}
+	result, err := upgradeNodeConsumers(target, command.Args.Name, command.Args.Version, command.Workflow)
+	if err != nil {
+		return err
+	}
+	if command.Json {
+		return displayhelpers.JsonPrint(result)
+	}
+	table := ui.Table{Headers: ui.TableRow{
+		{Contents: "workflow", Color: color.New(color.Bold)},
+		{Contents: "old", Color: color.New(color.Bold)},
+		{Contents: "new", Color: color.New(color.Bold)},
+		{Contents: "status", Color: color.New(color.Bold)},
+		{Contents: "detail", Color: color.New(color.Bold)},
+	}}
+	for _, item := range result.Workflows {
+		detail := item.Error
+		if item.Obligations != nil {
+			payload, err := json.Marshal(item.Obligations)
+			if err != nil {
+				return err
+			}
+			detail = string(payload)
+		}
+		table.Data = append(table.Data, ui.TableRow{
+			{Contents: item.Workflow},
+			{Contents: strconv.Itoa(item.OldVersion)},
+			{Contents: strconv.Itoa(item.NewVersion)},
+			{Contents: string(item.Status)},
+			{Contents: detail},
+		})
+	}
+	sort.Sort(table.Data)
+	return table.Render(os.Stdout, Fly.PrintTableHeaders)
+}
+
+func upgradeNodeConsumers(target rc.Target, name string, version int, workflows []string) (workflow.NodeUpgradeResult, error) {
+	if version <= 0 || len(workflows) == 0 {
+		return workflow.NodeUpgradeResult{}, fmt.Errorf("agent node upgrade: positive version and at least one workflow are required")
+	}
+	seen := make(map[string]struct{}, len(workflows))
+	for _, selected := range workflows {
+		if strings.TrimSpace(selected) == "" || selected != strings.TrimSpace(selected) {
+			return workflow.NodeUpgradeResult{}, fmt.Errorf("agent node upgrade: invalid workflow selection")
+		}
+		if _, duplicate := seen[selected]; duplicate {
+			return workflow.NodeUpgradeResult{}, fmt.Errorf("agent node upgrade: duplicate workflow %q", selected)
+		}
+		seen[selected] = struct{}{}
+	}
+	payload, err := json.Marshal(struct {
+		Workflows []string `json:"workflows"`
+	}{Workflows: workflows})
+	if err != nil {
+		return workflow.NodeUpgradeResult{}, err
+	}
+	response, err := agentAPIRequestWithType(target, http.MethodPost, nodeVersionPath(name, version)+"/upgrades", "application/json", bytes.NewReader(payload))
+	if err != nil {
+		return workflow.NodeUpgradeResult{}, err
+	}
+	var result workflow.NodeUpgradeResult
+	if err := decodeOrError(response, &result); err != nil {
+		return workflow.NodeUpgradeResult{}, err
+	}
+	return result, nil
+}
+
+func nodeVersionPath(name string, version int) string {
+	return "/api/v1/agent/nodes/" + url.PathEscape(name) + "/versions/" + strconv.Itoa(version)
 }
