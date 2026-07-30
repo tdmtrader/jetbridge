@@ -25,6 +25,40 @@ unlimited hardening or adjacent platform design.
 - Preserve unrelated/user changes. Never discard a dirty worktree to obtain a
   clean state.
 
+## Latest origin/jetbridge rebase — 2026-07-29
+
+- Fetched target: `origin/jetbridge` at
+  `2223511f8f193d37439b2bf074ca8a29628ed32c`.
+- Accepted pre-rebase tip:
+  `5f01268a858a613523d8e1dcf6ed25e5e4340a5c`.
+- Safety ref:
+  `codex/agentic-platform-rebase-pre-jetbridge-2223511`.
+- The 129 linear feature commits rebased without conflicts onto
+  `origin/jetbridge`; the rebased feature tip before this handoff update is
+  `2b573f5fbc1fa27b0efa34be9b55a2c2d389960a`.
+- `origin/jetbridge` is now an ancestor, the feature range still contains 129
+  commits and zero merges, and `git diff --check` passes.
+- Range-diff found 127 patch-identical commits and two expected context-only
+  changes: the Hangar mirror commit retains upstream `io.NopCloser` spool
+  ownership, and the execution-envelope fake retains upstream tier-2
+  lifecycle's `time` import.
+- All six upstream behaviors survive: Topgun credential setup/unskip, snapshot
+  cause logging, upload-spool ownership and regressions, tier-2 executed
+  workflow-template retirement, and reclaimed-build success metrics.
+- Focused snapshot API, Jetbridge spool, cross-node symlink, ATC flag, Topgun
+  compile, and 20 tier-2/metrics DB specs passed. Post-rebase dev-MCP, ATC
+  integration (24/24), and Helm lint passed.
+- `make test-unit` and Fly integration were each invoked once and exited, but
+  their external output sessions disconnected before exposing final status
+  (Fly selected 666/666). They were not rerun. Independent Terra review round
+  1 found no Critical, High, Important, or acceptance-blocking regression and
+  accepted this observability gap given the green pre-rebase baseline plus the
+  affected focused evidence.
+
+Historical task commit IDs below are pre-rebase identities. Their patch
+equivalents are in the current linear range; the safety ref preserves the
+original identities and `git range-diff` is the authoritative mapping.
+
 ## Model and agent policy
 
 - Prefer `gpt-5.6-terra` for implementation, investigation, and review agents.

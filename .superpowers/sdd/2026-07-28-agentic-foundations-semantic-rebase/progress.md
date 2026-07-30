@@ -447,6 +447,28 @@
     fail-closed Helm `agentPublisherGateway` tombstone stanza.
   - Status: **Accepted in independent whole-branch review iteration 2.**
 
+## Post-acceptance origin/jetbridge rebase
+
+- [x] Rebased the 129-commit linear feature range from base `296ef5dd866` onto
+  `origin/jetbridge` at `2223511f8f`; pre-rebase accepted tip `5f01268a85` is
+  retained at safety branch
+  `codex/agentic-platform-rebase-pre-jetbridge-2223511`.
+- Rebase completed with zero conflicts. `origin/jetbridge` is an ancestor of
+  rebased tip `2b573f5fbc`, which has 129 feature commits and zero merges.
+- Range-diff: 127 patch-identical replays and two context-only changes that
+  preserve upstream spool ownership and the tier-2 lifecycle fake import.
+- All six upstream semantics were verified in the final tree. Focused snapshot
+  API, Jetbridge spool, cross-node symlink, Topgun compile, ATC retirement
+  flags, and 20 tier-2/metrics DB specs passed.
+- Post-rebase broad checkpoint: dev-MCP passed all three packages, ATC
+  integration passed 24/24, and Helm lint passed. Unit and Fly each ran and
+  exited, but their tool sessions disconnected before returning final status;
+  Fly reported 666/666 selected. They were not rerun.
+- Independent Terra review round 1 found no Critical, High, Important, or
+  acceptance-blocking regression, including no tier-2 deletion conflict with
+  agentic foreign keys or retention.
+- Status: **Accepted after rebase review round 1 of at most 3.**
+
 ## Current milestone acceptance
 
 - `make test-unit`: passed.
@@ -463,4 +485,8 @@
   defect. Review round 2 confirmed the recovered broad-suite evidence resolves
   the disk blockers and that Docker/Borg live proofs are properly
   prerequisite-gated and environment-pending.
+- The subsequent `origin/jetbridge` rebase preserves all upstream and feature
+  semantics and passed its scoped post-rebase review. The unit/Fly final-status
+  output loss is recorded as a harness-observability limitation, not a test
+  pass.
 - Status: **All scoped implementation tracks and Task 19 are accepted.**
