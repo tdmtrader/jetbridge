@@ -309,6 +309,7 @@ type Cursor string
 
 type Observation struct {
 	Locator
+	Cursor        Cursor
 	URL           string
 	State         contracts.PullRequestState
 	Mergeability  contracts.PullRequestMergeability

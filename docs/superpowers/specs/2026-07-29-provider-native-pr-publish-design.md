@@ -95,6 +95,10 @@ direct publication.
     batches remain queued and run later against freshly observed state.
 12. **GitHub proves the contract live.** Azure DevOps must pass the same
     conformance suite but is labeled `contract-tested, not live-validated`.
+13. **The provider cursor is first-class opaque evidence.** Each normalized
+    observation carries the exact bounded cursor returned by its adapter. Core
+    scheduling and digest logic preserves those bytes but never decodes
+    provider-specific cursor structure.
 
 ## Invariants
 
@@ -291,6 +295,7 @@ succeeds before PR creation or a response succeeds after the branch update.
 
 The normalized observation contains:
 
+- the exact opaque provider cursor used to acknowledge polling progress;
 - active, completed, or abandoned lifecycle;
 - exact source and target refs and heads;
 - mergeability: `mergeable`, `conflicted`, `policy_blocked`, or `unknown`;
