@@ -21,7 +21,15 @@ func TestCompiledNodeDefinitionInstantiate(t *testing.T) {
 			SignatureVersion: 1,
 			Inputs:           []snapshot.Port{{Name: "repository", Type: "repository/v1"}},
 			Outputs:          []workflow.FunctionOutput{{Port: snapshot.Port{Name: "review", Type: "review/v1"}, From: "review"}},
-			Plan:             []atc.Step{{Config: &atc.AgentStep{Name: "review", Prompt: "review"}}},
+			Plan: []atc.Step{{Config: &atc.AgentStep{
+				Name:            "review",
+				FunctionID:      "review",
+				Prompt:          "review",
+				Inputs:          []string{"repository"},
+				Outputs:         []string{"review"},
+				SnapshotInputs:  map[string]atc.SnapshotInputConfig{"repository": {Type: "repository/v1"}},
+				SnapshotOutputs: map[string]atc.SnapshotOutputConfig{"review": {Type: "review/v1"}},
+			}}},
 		},
 	}
 
@@ -46,9 +54,10 @@ func TestCompiledNodeDefinitionInstantiateAppliesDefaultsToTaskParams(t *testing
 		Name:          "task",
 		Parameters:    []workflow.NodeParameter{{Name: "MODE", Default: &defaultValue}},
 		Function: workflow.FunctionConfig{SignatureVersion: 1, Plan: []atc.Step{{Config: &atc.TaskStep{
-			Name:   "task",
-			Params: atc.TaskEnv{"EXISTING": "preserved"},
-			Config: &atc.TaskConfig{Platform: "linux", Run: atc.TaskRunConfig{Path: "/bin/true"}},
+			Name:       "task",
+			FunctionID: "task",
+			Params:     atc.TaskEnv{"EXISTING": "preserved"},
+			Config:     &atc.TaskConfig{Platform: "linux", Run: atc.TaskRunConfig{Path: "/bin/true"}},
 		}}}},
 	}
 
@@ -65,7 +74,7 @@ func TestCompiledNodeDefinitionInstantiateAppliesDefaultsToTaskParams(t *testing
 func TestCompiledNodeDefinitionRejectsInvalidParameters(t *testing.T) {
 	required := workflow.NodeParameter{Name: "REQUIRED"}
 	defaultValue := "default"
-	validFunction := workflow.FunctionConfig{SignatureVersion: 1, Plan: []atc.Step{{Config: &atc.AgentStep{Name: "agent", Prompt: "work"}}}}
+	validFunction := workflow.FunctionConfig{SignatureVersion: 1, Plan: []atc.Step{{Config: &atc.AgentStep{Name: "agent", FunctionID: "agent", Prompt: "work"}}}}
 
 	for name, test := range map[string]struct {
 		node   workflow.CompiledNodeDefinition
@@ -104,14 +113,14 @@ func TestCompiledNodeDefinitionRejectsPublishSnapshotParameters(t *testing.T) {
 		SchemaVersion: 1,
 		Name:          "publish",
 		Parameters:    []workflow.NodeParameter{{Name: "TARGET"}},
-		Function: workflow.FunctionConfig{SignatureVersion: 1, Plan: []atc.Step{{Config: &atc.PublishSnapshotStep{
+		Function: workflow.FunctionConfig{SignatureVersion: 1, Inputs: []snapshot.Port{{Name: "change", Type: "review/v1"}}, Plan: []atc.Step{{Config: &atc.PublishSnapshotStep{
 			Name:                  "publish",
-			Publisher:             "git-publisher/v1",
+			Publisher:             "work-item-publisher/v1",
 			Input:                 "change",
-			InputType:             "repository-change/v1",
-			Destination:           "github.com/acme/project",
-			Mode:                  "pull-request",
-			Parameters:            map[string]string{"source_branch": "codex/node", "target_branch": "main"},
+			InputType:             "review/v1",
+			Destination:           "work-items/acme/project",
+			Mode:                  "comment",
+			Parameters:            map[string]string{"body": "review complete"},
 			ApprovalPolicyVersion: "engineering/v1",
 		}}}},
 	}
@@ -124,14 +133,14 @@ func TestCompiledNodeDefinitionInstantiatePreservesPublishSnapshotParameters(t *
 	node := workflow.CompiledNodeDefinition{
 		SchemaVersion: 1,
 		Name:          "publish",
-		Function: workflow.FunctionConfig{SignatureVersion: 1, Plan: []atc.Step{{Config: &atc.PublishSnapshotStep{
+		Function: workflow.FunctionConfig{SignatureVersion: 1, Inputs: []snapshot.Port{{Name: "change", Type: "review/v1"}}, Plan: []atc.Step{{Config: &atc.PublishSnapshotStep{
 			Name:                  "publish",
-			Publisher:             "git-publisher/v1",
+			Publisher:             "work-item-publisher/v1",
 			Input:                 "change",
-			InputType:             "repository-change/v1",
-			Destination:           "github.com/acme/project",
-			Mode:                  "pull-request",
-			Parameters:            map[string]string{"source_branch": "codex/node", "target_branch": "main"},
+			InputType:             "review/v1",
+			Destination:           "work-items/acme/project",
+			Mode:                  "comment",
+			Parameters:            map[string]string{"body": "review complete"},
 			ApprovalPolicyVersion: "engineering/v1",
 		}}}},
 	}
@@ -141,9 +150,48 @@ func TestCompiledNodeDefinitionInstantiatePreservesPublishSnapshotParameters(t *
 		t.Fatal(err)
 	}
 	publish := function.Plan[0].Config.(*atc.PublishSnapshotStep)
-	publish.Parameters["target_branch"] = "changed"
+	publish.Parameters["body"] = "changed"
 	original := node.Function.Plan[0].Config.(*atc.PublishSnapshotStep)
-	if original.Parameters["target_branch"] != "main" {
+	if original.Parameters["body"] != "review complete" {
 		t.Fatalf("source publication parameters mutated: %#v", original.Parameters)
+	}
+}
+
+func TestCompiledNodeDefinitionRejectsFunctionLevelResourceSources(t *testing.T) {
+	node := workflow.CompiledNodeDefinition{
+		SchemaVersion: 1,
+		Name:          "resource-reader",
+		Function: workflow.FunctionConfig{
+			SignatureVersion: 1,
+			Resources: atc.ResourceConfigs{{
+				Name:   "repository",
+				Type:   "git",
+				Source: atc.Source{"uri": "https://example.invalid/repository"},
+			}},
+			ResourceSources: []workflow.ResourceSource{{
+				Name:     "repository",
+				Resource: "repository",
+				Type:     "repository/v1",
+			}},
+			Plan: []atc.Step{{Config: &atc.AgentStep{
+				Name:       "review",
+				FunctionID: "review",
+				Prompt:     "review",
+			}}},
+		},
+	}
+
+	for name, validate := range map[string]func() error{
+		"validate": node.Validate,
+		"instantiate": func() error {
+			_, err := node.Instantiate(nil)
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := validate(); err == nil || !strings.Contains(err.Error(), "atomic nodes cannot declare resources") {
+				t.Fatalf("error = %v, want function-level resource rejection", err)
+			}
+		})
 	}
 }

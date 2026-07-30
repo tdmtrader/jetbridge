@@ -47,6 +47,11 @@ func (definition CompiledNodeDefinition) validate(allowSourceCapabilities bool) 
 	if !allowSourceCapabilities && len(definition.Function.Capabilities) != 0 {
 		return fmt.Errorf("workflow: compiled node retains source capabilities")
 	}
+	if !allowSourceCapabilities {
+		if err := rejectNodeFunctionLiveSurfaces(definition.Function); err != nil {
+			return err
+		}
+	}
 	if err := definition.Function.Validate(); err != nil {
 		return err
 	}
@@ -66,6 +71,24 @@ func (definition CompiledNodeDefinition) validate(allowSourceCapabilities bool) 
 		if output.From != output.Name {
 			return fmt.Errorf("workflow: node output %d must map from its logical name", index)
 		}
+	}
+	if !allowSourceCapabilities {
+		if _, err := ValidateFunction(&definition.Function); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func rejectNodeFunctionLiveSurfaces(function FunctionConfig) error {
+	if len(function.Resources) != 0 || len(function.ResourceSources) != 0 || len(function.ResourceTypes) != 0 {
+		return fmt.Errorf("workflow: atomic nodes cannot declare resources, resource_sources, or resource_types")
+	}
+	if len(function.VarSources) != 0 {
+		return fmt.Errorf("workflow: atomic nodes cannot declare var_sources")
+	}
+	if len(function.Prototypes) != 0 {
+		return fmt.Errorf("workflow: atomic nodes cannot declare prototypes")
 	}
 	return nil
 }
