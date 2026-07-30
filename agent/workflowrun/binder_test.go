@@ -293,14 +293,14 @@ step:
 		t.Fatalf("durable node parameters = %#v, %v", values, err)
 	}
 
-	// A repeated node request may omit its parameter: the durable admitting
-	// config is the authority on resume, never the node's current default.
+	// Resume reconstructs the executable node from the durable admitting
+	// config after the repeated request has proven the same effective intent.
 	rendered = workflow.RenderedFunction{}
 	resumed, err := binder.resume(ctx, AdmissionContext{
 		TeamID: 7, TeamName: "research", CreatedBy: "alice", Origin: Origin{Kind: "manual"},
 	}, BindRequest{
 		DefinitionKind: workflow.DefinitionKindNode, WorkflowName: node.Name, Version: &version,
-		IdempotencyKey: "node-test-1",
+		NodeParameters: map[string]string{"MINIMUM_SEVERITY": "high"}, IdempotencyKey: "node-test-1",
 	}, admitting, false, nil)
 	if err != nil || resumed.Run.ID != runID {
 		t.Fatalf("resume direct node = %+v, %v", resumed, err)
@@ -308,6 +308,114 @@ step:
 	values, err = nodeParametersFromConfig(*node, rendered.Config)
 	if err != nil || values["MINIMUM_SEVERITY"] != "high" {
 		t.Fatalf("resumed node parameters = %#v, %v", values, err)
+	}
+}
+
+func TestBindAndCreateNodeIdempotencyComparesEffectiveParameters(t *testing.T) {
+	nodes := workflowtest.NewMemoryNodeStore()
+	node, err := nodes.ImportManifest("code-review", workflow.Manifest{workflow.NodeFileName: `schema_version: 1
+name: code-review
+parameters:
+  - {name: MINIMUM_SEVERITY, default: medium}
+inputs: []
+outputs: []
+step:
+  agent: review
+  prompt: review
+`}, "alice")
+	if err != nil {
+		t.Fatalf("import node: %v", err)
+	}
+	version := node.Version
+	renderedWith := func(parameters map[string]string) workflow.RenderedFunction {
+		t.Helper()
+		definition, found, err := executableNodeDefinition(*node, parameters)
+		if err != nil || !found {
+			t.Fatalf("instantiate node: found=%v err=%v", found, err)
+		}
+		target, err := workflow.FullFunctionTarget(definition)
+		if err != nil {
+			t.Fatalf("target node: %v", err)
+		}
+		rendered, err := workflow.RenderFunction(target)
+		if err != nil {
+			t.Fatalf("render node: %v", err)
+		}
+		return rendered
+	}
+	admission := AdmissionContext{
+		TeamID: 7, TeamName: "research", CreatedBy: "alice", Origin: Origin{Kind: "manual"},
+	}
+	for _, test := range []struct {
+		name    string
+		durable map[string]string
+		replay  map[string]string
+		wantErr error
+	}{
+		{
+			name:    "identical explicit value",
+			durable: map[string]string{"MINIMUM_SEVERITY": "high"},
+			replay:  map[string]string{"MINIMUM_SEVERITY": "high"},
+		},
+		{
+			name:    "changed explicit value",
+			durable: map[string]string{"MINIMUM_SEVERITY": "high"},
+			replay:  map[string]string{"MINIMUM_SEVERITY": "low"},
+			wantErr: ErrIdempotencyConflict,
+		},
+		{
+			name:    "omission equals durable default",
+			durable: map[string]string{"MINIMUM_SEVERITY": "medium"},
+			replay:  nil,
+		},
+		{
+			name:    "omission differs from durable non-default",
+			durable: map[string]string{"MINIMUM_SEVERITY": "high"},
+			replay:  nil,
+			wantErr: ErrIdempotencyConflict,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			rendered := renderedWith(test.durable)
+			run := db.AgentWorkflowRun{
+				ID: 91, DefinitionKind: workflow.DefinitionKindNode,
+				TeamID: 7, TeamName: "research", WorkflowDefinitionID: node.ID,
+				WorkflowName: node.Name, WorkflowVersion: node.Version,
+				SchemaVersion: 3, SignatureVersion: node.Compiled.Function.SignatureVersion,
+				DefinitionContentHash: node.ContentHash, IdempotencyKey: "node-parameter-key",
+				ParameterizedConfig:     mustCanonical(t, rendered.Config),
+				ParameterizedConfigHash: rendered.TargetConfigHash,
+				OriginKind:              "manual", CreatedBy: "alice", Status: db.AgentWorkflowRunStatusSucceeded,
+			}
+			store := &storeStub{
+				find: func(context.Context, int, string) (db.AgentWorkflowRun, bool, error) {
+					return run, true, nil
+				},
+				snapshots: func(context.Context, snapshot.WorkflowRunID) ([]db.AgentWorkflowRunSnapshotBinding, error) {
+					return nil, nil
+				},
+			}
+			binder, err := NewBinder(
+				resumeResolver(binderTestDefinition()), &rendererStub{}, &authorizerStub{}, store,
+				&budgetStub{}, &saverStub{}, &creatorStub{}, &credentialStub{}, WithNodeStore(nodes),
+			)
+			if err != nil {
+				t.Fatalf("NewBinder: %v", err)
+			}
+			result, err := binder.BindAndCreate(context.Background(), admission, BindRequest{
+				DefinitionKind: workflow.DefinitionKindNode, WorkflowName: node.Name, Version: &version,
+				NodeParameters: test.replay, IdempotencyKey: "node-parameter-key",
+			})
+			if test.wantErr != nil {
+				if !errors.Is(err, test.wantErr) {
+					t.Fatalf("BindAndCreate error = %v, want %v", err, test.wantErr)
+				}
+				return
+			}
+			if err != nil || result.Created || result.Run.ID != run.ID {
+				t.Fatalf("BindAndCreate result = %+v, err = %v", result, err)
+			}
+		})
 	}
 }
 

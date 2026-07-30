@@ -632,6 +632,9 @@ func (b *Binder) existing(
 	if err := compareCallerIntent(run, admission, request); err != nil {
 		return db.AgentWorkflowRun{}, false, err
 	}
+	if err := b.compareNodeParameterIntent(run, request); err != nil {
+		return db.AgentWorkflowRun{}, false, err
+	}
 	if err := b.mergeStoredSourceInputs(ctx, admission, &request, run); err != nil {
 		return db.AgentWorkflowRun{}, false, err
 	}
@@ -639,6 +642,40 @@ func (b *Binder) existing(
 		return db.AgentWorkflowRun{}, false, err
 	}
 	return run, true, nil
+}
+
+func (b *Binder) compareNodeParameterIntent(run db.AgentWorkflowRun, request BindRequest) error {
+	if request.DefinitionKind != workflow.DefinitionKindNode {
+		return nil
+	}
+	if nilInterface(b.nodes) {
+		return fmt.Errorf("%w: node store is unavailable", ErrPlatformFailure)
+	}
+	node, found, err := b.nodes.Get(run.WorkflowName, run.WorkflowVersion)
+	if err != nil {
+		return fmt.Errorf("%w: resolve durable node definition", ErrPlatformFailure)
+	}
+	if !found || node.ID != run.WorkflowDefinitionID || node.Name != run.WorkflowName ||
+		node.Version != run.WorkflowVersion || node.ContentHash != run.DefinitionContentHash ||
+		node.Compiled.Function.SignatureVersion != run.SignatureVersion {
+		return fmt.Errorf("%w: durable node definition mismatch", ErrCorruptPartialAdmission)
+	}
+	config, _, err := canonicalConfig(run.ParameterizedConfig)
+	if err != nil {
+		return fmt.Errorf("%w: invalid durable node parameterized config", ErrCorruptPartialAdmission)
+	}
+	durable, err := nodeParametersFromConfig(*node, config)
+	if err != nil {
+		return fmt.Errorf("%w: durable node parameters mismatch", ErrCorruptPartialAdmission)
+	}
+	requested, err := resolvedNodeParameters(*node, request.NodeParameters)
+	if err != nil {
+		return fmt.Errorf("%w: instantiate node: %v", ErrInvalidRequest, err)
+	}
+	if !equalNodeParameters(durable, requested) {
+		return ErrIdempotencyConflict
+	}
+	return nil
 }
 
 // mergeStoredSourceInputs makes a durable ready admission part of an
@@ -901,6 +938,46 @@ func nodeParametersFromConfig(node workflow.NodeDefinition, config atc.Config) (
 		values[parameter.Name] = value
 	}
 	return values, nil
+}
+
+func resolvedNodeParameters(node workflow.NodeDefinition, supplied map[string]string) (map[string]string, error) {
+	function, err := node.Compiled.Instantiate(supplied)
+	if err != nil {
+		return nil, err
+	}
+	values := make(map[string]string, len(node.Compiled.Parameters))
+	if len(node.Compiled.Parameters) == 0 {
+		return values, nil
+	}
+	var environment atc.TaskEnv
+	switch leaf := function.Plan[0].Config.(type) {
+	case *atc.TaskStep:
+		environment = leaf.Params
+	case *atc.AgentStep:
+		environment = leaf.Env
+	default:
+		return nil, fmt.Errorf("node parameters require a task or agent leaf")
+	}
+	for _, parameter := range node.Compiled.Parameters {
+		value, found := environment[parameter.Name]
+		if !found {
+			return nil, fmt.Errorf("node parameter %q is absent", parameter.Name)
+		}
+		values[parameter.Name] = value
+	}
+	return values, nil
+}
+
+func equalNodeParameters(left, right map[string]string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for name, value := range left {
+		if other, found := right[name]; !found || other != value {
+			return false
+		}
+	}
+	return true
 }
 
 type durableRenderedTarget struct {
