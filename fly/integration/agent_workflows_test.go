@@ -84,11 +84,13 @@ var _ = Describe("fly agent nodes", func() {
 				}}),
 				ghttp.RespondWithJSONEncoded(http.StatusOK, map[string]any{"name": "code-review", "version": 1, "content_hash": "abcdef0123456789"}),
 			),
+			infoHandler(),
 			ghttp.CombineHandlers(
 				ghttp.VerifyRequest("PUT", "/api/v1/agent/nodes/code-review/versions/1/release"),
 				ghttp.VerifyJSONRepresenting(map[string]any{"compatibility": "breaking"}),
 				ghttp.RespondWithJSONEncoded(http.StatusOK, map[string]any{"released_at": 1, "compatibility": "breaking"}),
 			),
+			infoHandler(),
 			ghttp.CombineHandlers(
 				ghttp.VerifyRequest("PUT", "/api/v1/agent/nodes/code-review/versions/1/deprecation"),
 				ghttp.VerifyJSONRepresenting(map[string]any{"deprecated": true}),
