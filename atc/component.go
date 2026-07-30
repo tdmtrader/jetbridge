@@ -30,6 +30,7 @@ const (
 	ComponentAgentSnapshotProjection       = "agent_snapshot_projection"
 	ComponentAgentResourceCaptureFinalizer = "agent_resource_capture_finalizer"
 	ComponentAgentWorkflowRunReconciler    = "agent_workflow_run_reconciler"
+	ComponentAgentChildExecutionReconciler = "agent_child_execution_reconciler"
 	ComponentAgentExperimentRunner         = "agent_experiment_runner"
 	ComponentAgentExperimentEvaluator      = "agent_experiment_evaluator"
 	ComponentAgentExperimentCancellation   = "agent_experiment_cancellation_reconciler"

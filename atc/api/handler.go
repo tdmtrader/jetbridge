@@ -28,6 +28,7 @@ import (
 	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api/accessor"
+	"github.com/concourse/concourse/atc/api/agentchildexecutions"
 	"github.com/concourse/concourse/atc/api/artifactserver"
 	"github.com/concourse/concourse/atc/api/buildserver"
 	"github.com/concourse/concourse/atc/api/ccserver"
@@ -62,6 +63,15 @@ import (
 type Pool interface {
 	artifactserver.Pool
 	containerserver.Pool
+}
+
+// AgentChildExecutionHandlers is optional while the broker is disabled. When
+// supplied, authority endpoints remain execution-capability authenticated by
+// their own handler and inspection is scoped through ATC's ordinary team
+// wrapper.
+type AgentChildExecutionHandlers struct {
+	Authority http.Handler
+	Store     agentchildexecutions.ExecutionStore
 }
 
 func NewHandler(
@@ -135,6 +145,7 @@ func NewHandler(
 	workflowWaitHandlers *workflowwaitsapi.Handler,
 	workflowOutcomeHandlers *workflowoutcomesapi.Handler,
 	experimentHandlers *experimentsapi.Handler,
+	agentChildHandlers ...AgentChildExecutionHandlers,
 ) (http.Handler, error) {
 	if workflowRunHandlers == nil {
 		return nil, fmt.Errorf("workflow-run API handlers are required")
@@ -153,6 +164,9 @@ func NewHandler(
 	}
 	if experimentHandlers == nil {
 		return nil, fmt.Errorf("experiment API handlers are required")
+	}
+	if len(agentChildHandlers) > 1 {
+		return nil, fmt.Errorf("at most one agent child execution handler set is allowed")
 	}
 
 	absCLIDownloadsDir, err := filepath.Abs(cliDownloadsDir)
@@ -233,6 +247,15 @@ func NewHandler(
 
 	mcpServer := mcpserver.NewServer()
 	mcpserver.RegisterTools(mcpServer, dbTeamFactory, dbBuildFactory, workflowStore, costLedger, dbPipelineRunFactory, externalURL, version)
+	authorityHandler := http.NotFoundHandler()
+	inspectionHandler := http.NotFoundHandler()
+	if len(agentChildHandlers) == 1 {
+		configured := agentChildHandlers[0]
+		if configured.Authority != nil && configured.Store != nil {
+			authorityHandler = configured.Authority
+			inspectionHandler = teamHandlerFactory.HandlerFor(agentchildexecutions.NewTeamInspectionHandlerFactory(configured.Store))
+		}
+	}
 
 	handlers := map[string]http.Handler{
 		atc.GetConfig:  http.HandlerFunc(configServer.GetConfig),
@@ -436,6 +459,12 @@ func NewHandler(
 		atc.DownloadAgentSnapshot:              teamHandlerFactory.HandlerFor(snapshotTeamHandler(snapshotHandlers.Content)),
 		atc.PinAgentSnapshot:                   teamHandlerFactory.HandlerFor(snapshotTeamHandler(snapshotHandlers.Pin)),
 		atc.UnpinAgentSnapshot:                 teamHandlerFactory.HandlerFor(snapshotTeamHandler(snapshotHandlers.Unpin)),
+		atc.AdmitAgentChildExecution:           authorityHandler,
+		atc.PhaseAgentChildExecution:           authorityHandler,
+		atc.UpdateAgentChildExecution:          authorityHandler,
+		atc.TerminalAgentChildExecution:        authorityHandler,
+		atc.SealAgentChildExecution:            authorityHandler,
+		atc.GetAgentChildExecution:             inspectionHandler,
 	}
 
 	return rata.NewRouter(atc.Routes, wrapper.Wrap(handlers))

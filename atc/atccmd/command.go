@@ -49,6 +49,7 @@ import (
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/api"
 	"github.com/concourse/concourse/atc/api/accessor"
+	"github.com/concourse/concourse/atc/api/agentchildexecutions"
 	"github.com/concourse/concourse/atc/api/auth"
 	"github.com/concourse/concourse/atc/api/buildserver"
 	"github.com/concourse/concourse/atc/api/containerserver"
@@ -332,6 +333,16 @@ type RunCommand struct {
 		ReconcilerInterval time.Duration `long:"agent-workflow-run-reconciler-interval" default:"10s" description:"Interval between bounded durable workflow-run reconciliation passes."`
 		AdmissionTimeout   time.Duration `long:"agent-workflow-run-admission-timeout" default:"15m" description:"Maximum age of an incomplete durable workflow-run admission before it is terminalized as interrupted."`
 	} `group:"Agent Workflow Runs"`
+
+	AgentChildExecutions struct {
+		Enabled             bool          `long:"agent-child-executions-enabled" description:"Enable ATC authority, inspection, and bounded lease reconciliation for managed broker child executions."`
+		CapabilityKey       flag.File     `long:"agent-child-executions-capability-key" description:"File containing the raw 32-byte HMAC key for execution-scoped broker capabilities."`
+		CapabilityKeyID     string        `long:"agent-child-executions-capability-key-id" default:"agent-child-v1" description:"Stable key identifier embedded in broker execution capabilities."`
+		CapabilityTTL       time.Duration `long:"agent-child-executions-capability-ttl" default:"1h" description:"Bounded lifetime for an execution-scoped broker capability."`
+		LeaseDuration       time.Duration `long:"agent-child-executions-lease-duration" default:"5m" description:"ATC-owned lease duration renewed by managed broker lifecycle updates."`
+		ReconcilerInterval  time.Duration `long:"agent-child-executions-reconciler-interval" default:"30s" description:"Interval between bounded expired broker lease reconciliation passes."`
+		ReconcilerBatchSize int           `long:"agent-child-executions-reconciler-batch-size" default:"100" description:"Maximum expired broker leases terminalized in one reconciliation pass."`
+	} `group:"Agent Child Executions"`
 
 	AgentExperiments struct {
 		Enabled        bool          `long:"agent-experiment-runner-enabled" description:"Enable durable experiment candidate, evaluator, and cancellation reconciliation."`
@@ -1296,6 +1307,7 @@ func (cmd *RunCommand) backendComponents(
 	dbPipelinePauser := db.NewPipelinePauser(dbConn, lockFactory)
 	dbSigningKeyFactory := db.NewSigningKeyFactory(dbConn)
 	dbAgentWorkflowRunsFactory := db.NewAgentWorkflowRunsFactory(dbConn)
+	dbAgentChildExecutionsFactory := db.NewAgentChildExecutionsFactory(dbConn)
 	dbAgentWorkflowWaitsFactory := db.NewAgentWorkflowWaitsFactory(
 		dbConn, cmd.AgentSnapshots.BindingRetention,
 	)
@@ -1536,6 +1548,16 @@ func (cmd *RunCommand) backendComponents(
 			Component: atc.Component{Name: atc.ComponentAgentWorkflowResourceSourceBuildReconciler},
 			Runnable:  component.RunFunc(sourceBuildReconciler.Reconcile),
 			Interval:  cmd.AgentWorkflowRuns.ReconcilerInterval,
+		})
+	}
+	if cmd.AgentChildExecutions.Enabled {
+		components = append(components, RunnableComponent{
+			Component: atc.Component{Name: atc.ComponentAgentChildExecutionReconciler},
+			Runnable: component.RunFunc(func(ctx context.Context) error {
+				_, err := dbAgentChildExecutionsFactory.ReconcileExpiredLeases(ctx, cmd.AgentChildExecutions.ReconcilerBatchSize)
+				return err
+			}),
+			Interval: cmd.AgentChildExecutions.ReconcilerInterval,
 		})
 	}
 
@@ -2962,6 +2984,9 @@ func (cmd *RunCommand) validate() error {
 	if err := cmd.validateAgentWorkflowRuns(); err != nil {
 		errs = multierror.Append(errs, err)
 	}
+	if err := cmd.validateAgentChildExecutions(); err != nil {
+		errs = multierror.Append(errs, err)
+	}
 
 	if err := cmd.validateAgentExperiments(); err != nil {
 		errs = multierror.Append(errs, err)
@@ -2990,6 +3015,29 @@ func (cmd *RunCommand) validateAgentWorkflowRuns() error {
 		cmd.AgentWorkflowRuns.AdmissionTimeout > 0 &&
 		cmd.AgentWorkflowRuns.ReconcilerInterval > cmd.AgentWorkflowRuns.AdmissionTimeout/2 {
 		errs = multierror.Append(errs, errors.New("--agent-workflow-run-admission-timeout must be at least twice --agent-workflow-run-reconciler-interval"))
+	}
+	return errs.ErrorOrNil()
+}
+
+func (cmd *RunCommand) validateAgentChildExecutions() error {
+	if !cmd.AgentChildExecutions.Enabled {
+		return nil
+	}
+	var errs *multierror.Error
+	if !cmd.AgentSnapshots.Enabled {
+		errs = multierror.Append(errs, errors.New("agent child executions require --agent-snapshot-enabled"))
+	}
+	if cmd.AgentChildExecutions.CapabilityKey.Path() == "" {
+		errs = multierror.Append(errs, errors.New("--agent-child-executions-capability-key is required when enabled"))
+	}
+	if strings.TrimSpace(cmd.AgentChildExecutions.CapabilityKeyID) == "" {
+		errs = multierror.Append(errs, errors.New("--agent-child-executions-capability-key-id is required when enabled"))
+	}
+	if cmd.AgentChildExecutions.CapabilityTTL <= 0 || cmd.AgentChildExecutions.CapabilityTTL > agentchildexecutions.MaxExecutionCapabilityTTL {
+		errs = multierror.Append(errs, errors.New("--agent-child-executions-capability-ttl must be positive and at most one hour"))
+	}
+	if cmd.AgentChildExecutions.LeaseDuration <= 0 || cmd.AgentChildExecutions.ReconcilerInterval <= 0 || cmd.AgentChildExecutions.ReconcilerBatchSize <= 0 {
+		errs = multierror.Append(errs, errors.New("agent child execution lease, reconciler interval, and batch size must be positive"))
 	}
 	return errs.ErrorOrNil()
 }
@@ -3708,6 +3756,14 @@ func (cmd *RunCommand) constructAPIHandler(
 	if err != nil {
 		return nil, fmt.Errorf("construct experiment API: %w", err)
 	}
+	var agentChildHandlerOptions []api.AgentChildExecutionHandlers
+	if cmd.AgentChildExecutions.Enabled {
+		handlers, err := cmd.agentChildExecutionHandlers(dbConn)
+		if err != nil {
+			return nil, err
+		}
+		agentChildHandlerOptions = append(agentChildHandlerOptions, *handlers)
+	}
 
 	return api.NewHandler(
 		logger,
@@ -3774,7 +3830,39 @@ func (cmd *RunCommand) constructAPIHandler(
 		workflowWaitHandlers,
 		workflowOutcomeHandlers,
 		experimentHandlers,
+		agentChildHandlerOptions...,
 	)
+}
+
+func (cmd *RunCommand) agentChildExecutionHandlers(connection db.DbConn) (*api.AgentChildExecutionHandlers, error) {
+	key, err := os.ReadFile(cmd.AgentChildExecutions.CapabilityKey.Path())
+	if err != nil {
+		return nil, fmt.Errorf("read agent child execution capability key: %w", err)
+	}
+	signer, err := agentchildexecutions.NewCapabilitySigner(cmd.AgentChildExecutions.CapabilityKeyID, key)
+	if err != nil {
+		return nil, err
+	}
+	verifier, err := agentchildexecutions.NewCapabilityVerifier(cmd.AgentChildExecutions.CapabilityKeyID, key)
+	if err != nil {
+		return nil, err
+	}
+	cmd.agentSnapshotMu.Lock()
+	creator := cmd.agentSnapshotCreator
+	cmd.agentSnapshotMu.Unlock()
+	sealer, err := agentchildexecutions.NewOrdinaryResultSealer(creator)
+	if err != nil {
+		return nil, err
+	}
+	store := db.NewAgentChildExecutionsFactory(connection)
+	authority, err := agentchildexecutions.NewHandler(agentchildexecutions.HandlerConfig{
+		Signer: signer, Verifier: verifier, Store: store, Sealer: sealer,
+		ExecutionCapabilityTTL: cmd.AgentChildExecutions.CapabilityTTL,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &api.AgentChildExecutionHandlers{Authority: authority, Store: store}, nil
 }
 
 func workflowRunCreatorIdentity(info atc.UserInfo) (string, error) {

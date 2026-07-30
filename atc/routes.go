@@ -197,6 +197,13 @@ const (
 	PinAgentSnapshot                   = "PinAgentSnapshot"
 	UnpinAgentSnapshot                 = "UnpinAgentSnapshot"
 
+	AdmitAgentChildExecution    = "AdmitAgentChildExecution"
+	PhaseAgentChildExecution    = "PhaseAgentChildExecution"
+	UpdateAgentChildExecution   = "UpdateAgentChildExecution"
+	TerminalAgentChildExecution = "TerminalAgentChildExecution"
+	SealAgentChildExecution     = "SealAgentChildExecution"
+	GetAgentChildExecution      = "GetAgentChildExecution"
+
 	GetAgentDispatcher = "GetAgentDispatcher"
 	SetAgentDispatcher = "SetAgentDispatcher"
 
@@ -401,6 +408,13 @@ var Routes = rata.Routes([]rata.Route{
 	{Path: "/api/v1/teams/:team_name/agent/snapshots/:snapshot_id/content", Method: "GET", Name: DownloadAgentSnapshot},
 	{Path: "/api/v1/teams/:team_name/agent/snapshots/:snapshot_id/pin", Method: "PUT", Name: PinAgentSnapshot},
 	{Path: "/api/v1/teams/:team_name/agent/snapshots/:snapshot_id/pin", Method: "DELETE", Name: UnpinAgentSnapshot},
+
+	{Path: "/api/v1/internal/agent-child-executions/admit", Method: "POST", Name: AdmitAgentChildExecution},
+	{Path: "/api/v1/internal/agent-child-executions/:execution_id/phase", Method: "POST", Name: PhaseAgentChildExecution},
+	{Path: "/api/v1/internal/agent-child-executions/:execution_id/update", Method: "POST", Name: UpdateAgentChildExecution},
+	{Path: "/api/v1/internal/agent-child-executions/:execution_id/terminal", Method: "POST", Name: TerminalAgentChildExecution},
+	{Path: "/api/v1/internal/agent-child-executions/:execution_id/seal", Method: "POST", Name: SealAgentChildExecution},
+	{Path: "/api/v1/teams/:team_name/agent-child-executions/:execution_id", Method: "GET", Name: GetAgentChildExecution},
 
 	{Path: "/api/v1/agent/dispatcher", Method: "GET", Name: GetAgentDispatcher},
 	{Path: "/api/v1/agent/dispatcher", Method: "PUT", Name: SetAgentDispatcher},

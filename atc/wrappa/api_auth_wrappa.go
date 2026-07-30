@@ -114,6 +114,15 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			atc.GetSigningKeys:
 			newHandler = auth.CheckAuthenticationIfProvidedHandler(handler, rejector)
 
+		// Managed broker workers carry an exact execution-scoped HMAC
+		// capability. The authority handler verifies it itself; browser/session
+		// authorization must not be required for this narrow internal surface.
+		case atc.AdmitAgentChildExecution,
+			atc.PhaseAgentChildExecution,
+			atc.UpdateAgentChildExecution,
+			atc.TerminalAgentChildExecution,
+			atc.SealAgentChildExecution:
+
 		// admin
 		case atc.GetLogLevel,
 			atc.DestroyTeam,
@@ -180,6 +189,7 @@ func (wrappa *APIAuthWrappa) Wrap(handlers rata.Handlers) rata.Handlers {
 			atc.DownloadAgentSnapshot,
 			atc.PinAgentSnapshot,
 			atc.UnpinAgentSnapshot,
+			atc.GetAgentChildExecution,
 			atc.CopyResourceVersions,
 			atc.CreatePipelineRun,
 			atc.ListPipelineRuns,

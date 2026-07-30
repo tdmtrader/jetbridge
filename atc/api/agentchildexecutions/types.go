@@ -3,8 +3,6 @@ package agentchildexecutions
 import (
 	"fmt"
 	"strings"
-
-	"github.com/concourse/concourse/agent/snapshot"
 )
 
 func (scope Scope) Validate() error {
@@ -18,5 +16,3 @@ func (scope Scope) Validate() error {
 	}
 	return nil
 }
-
-var _ snapshot.SnapshotRef
