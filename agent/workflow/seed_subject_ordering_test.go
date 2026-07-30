@@ -82,6 +82,15 @@ func seedPromptsUnderTest(t *testing.T) []seedUnderTest {
 		if err != nil {
 			t.Fatalf("ManifestFromDir(%q): %v", directory, err)
 		}
+		if _, isNodePackage := manifest[workflow.NodeFileName]; isNodePackage {
+			if _, alsoWorkflow := manifest[workflow.WorkflowFileName]; alsoWorkflow {
+				t.Fatalf("%q mixes %s and %s; shipped seed packages must have exactly one manifest kind",
+					directory, workflow.NodeFileName, workflow.WorkflowFileName)
+			}
+			// This enumerator inspects workflow prompts. Reusable-node packages
+			// are compiled and checked by their dedicated seed contract test.
+			continue
+		}
 		compiled, err := workflow.CompileDefinition(manifest)
 		if err != nil {
 			t.Fatalf("CompileDefinition(%q): %v", directory, err)

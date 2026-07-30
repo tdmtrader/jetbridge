@@ -9,12 +9,13 @@ import (
 	"testing"
 
 	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/agent/snapshot/contracts"
 	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/agent/workflow/workflowtest"
 	"github.com/concourse/concourse/atc"
 )
 
-func TestOnlyVersionThreeEngineeringSeedsRemain(t *testing.T) {
+func TestOnlySupportedEngineeringSeedsRemain(t *testing.T) {
 	entries, err := os.ReadDir("seeds")
 	if err != nil {
 		t.Fatalf("read seeds: %v", err)
@@ -31,6 +32,7 @@ func TestOnlyVersionThreeEngineeringSeedsRemain(t *testing.T) {
 
 	want := []string{
 		"anonymization-audit-v3",
+		"code-review-node-v1",
 		"code-review-v3",
 		"log-diagnosis-v3",
 		"measure-review-v3",
@@ -40,6 +42,87 @@ func TestOnlyVersionThreeEngineeringSeedsRemain(t *testing.T) {
 	}
 	if !reflect.DeepEqual(names, want) {
 		t.Fatalf("seed root entries = %q, want %q", names, want)
+	}
+}
+
+func TestCodeReviewReusableNodeSeedFreezesItsAtomicImplementation(t *testing.T) {
+	manifest, err := workflow.ManifestFromDir("seeds/code-review-node-v1")
+	if err != nil {
+		t.Fatalf("ManifestFromDir: %v", err)
+	}
+	definition, err := workflow.CompileNodeDefinition(manifest)
+	if err != nil {
+		t.Fatalf("CompileNodeDefinition: %v", err)
+	}
+	if definition.SchemaVersion != 1 || definition.Name != "code-review" {
+		t.Fatalf("node identity = schema %d name %q", definition.SchemaVersion, definition.Name)
+	}
+	if len(definition.Parameters) != 1 ||
+		definition.Parameters[0].Name != "MINIMUM_SEVERITY" ||
+		definition.Parameters[0].Default == nil ||
+		*definition.Parameters[0].Default != "medium" {
+		t.Fatalf("node parameter contract = %#v", definition.Parameters)
+	}
+	if len(definition.Function.Inputs) != 2 ||
+		definition.Function.Inputs[0].Name != "before" ||
+		definition.Function.Inputs[0].Type != snapshot.TypeRef("repository/v1") ||
+		definition.Function.Inputs[1].Name != "after" ||
+		definition.Function.Inputs[1].Type != snapshot.TypeRef("repository/v1") ||
+		len(definition.Function.Outputs) != 1 ||
+		definition.Function.Outputs[0].Name != "review" ||
+		definition.Function.Outputs[0].Type != snapshot.TypeRef("review/v1") ||
+		definition.Function.Outputs[0].From != "review" {
+		t.Fatalf("node port contract = inputs %#v outputs %#v", definition.Function.Inputs, definition.Function.Outputs)
+	}
+	registry, err := contracts.NewRegistry()
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	for _, input := range definition.Function.Inputs {
+		if _, err := registry.Lookup(input.Type); err != nil {
+			t.Fatalf("node input %q has no built-in validator: %v", input.Name, err)
+		}
+	}
+	for _, output := range definition.Function.Outputs {
+		if _, err := registry.Lookup(output.Type); err != nil {
+			t.Fatalf("node output %q has no built-in validator: %v", output.Name, err)
+		}
+	}
+	if len(definition.Function.Plan) != 1 {
+		t.Fatalf("node plan has %d steps, want one visible leaf", len(definition.Function.Plan))
+	}
+	agent, ok := definition.Function.Plan[0].Config.(*atc.AgentStep)
+	if !ok {
+		t.Fatalf("node leaf = %T, want *atc.AgentStep", definition.Function.Plan[0].Config)
+	}
+	if agent.Model != "claude-sonnet" ||
+		agent.BudgetSliceUSD != 5 ||
+		!strings.Contains(agent.Prompt, "Compare the immutable repositories mounted at `before` and `after`.") ||
+		!strings.Contains(agent.Prompt, "The `subjects` array must be sorted lexicographically by id") ||
+		!reflect.DeepEqual(agent.Skills, []string{"review"}) {
+		t.Fatalf("frozen agent implementation = model %q budget %v prompt %q skills %q", agent.Model, agent.BudgetSliceUSD, agent.Prompt, agent.Skills)
+	}
+	if definition.Function.SkillFiles["skills/review/SKILL.md"] == "" {
+		t.Fatalf("compiled skill tree = %#v", definition.Function.SkillFiles)
+	}
+	defaultInstance, err := definition.Instantiate(nil)
+	if err != nil {
+		t.Fatalf("instantiate node with declared defaults: %v", err)
+	}
+	if got := defaultInstance.Plan[0].Config.(*atc.AgentStep).Env["MINIMUM_SEVERITY"]; got != "medium" {
+		t.Fatalf("instantiated default MINIMUM_SEVERITY = %q, want medium", got)
+	}
+	if len(agent.Sidecars) != 1 || agent.Sidecars[0].Config == nil {
+		t.Fatalf("compiled capability sidecars = %#v", agent.Sidecars)
+	}
+	sidecar := agent.Sidecars[0].Config
+	if sidecar.Image != "registry.example/dev-mcp@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" ||
+		!reflect.DeepEqual(sidecar.Command, []string{"/usr/local/bin/dev-mcp"}) ||
+		len(sidecar.Ports) != 1 || sidecar.Ports[0].ContainerPort != 8080 {
+		t.Fatalf("frozen dev-mcp authority = %+v", sidecar)
+	}
+	if agent.Capabilities != nil || definition.Function.Capabilities != nil {
+		t.Fatalf("mutable capability names escaped compilation: agent=%#v catalog=%#v", agent.Capabilities, definition.Function.Capabilities)
 	}
 }
 

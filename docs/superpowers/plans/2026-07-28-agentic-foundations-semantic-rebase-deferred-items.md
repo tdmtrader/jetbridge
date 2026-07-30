@@ -169,6 +169,55 @@ to evaluate independently.
   chart profile, including DNS and emulator endpoint requirements, before
   changing the default.
 
+### DEFERRED-007 — Add reusable-node catalog and selected-upgrade UI
+
+- Task/area: Reusable node definitions, first-class product UI
+- Classification: Product follow-up
+- Status: Deferred
+- Evidence: The first slice exposes complete HTTP and Fly catalog, version,
+  run, consumer, release, deprecation, and selected-upgrade surfaces, but it
+  adds no Elm catalog, version-diff, run-comparison, consumer-selection, or
+  promotion-review screens.
+- Why it is nonblocking: Operators can perform every first-slice lifecycle
+  action through exact HTTP/Fly operations, and omitting UI does not weaken
+  immutable identities, validation, or promotion separation.
+- Suggested follow-up: Build node definition/version pages, resolved-content
+  diffs, direct-run comparison, paged consumer selection, upgrade results, and
+  links to each generated unpromoted workflow revision.
+
+### DEFERRED-008 — Generalize experiments to exact reusable node versions
+
+- Task/area: Reusable node definitions and experiment orchestration
+- Classification: Product/runtime follow-up
+- Status: Deferred
+- Evidence: Any imported node version can already be invoked directly against
+  exact snapshot fixtures before or after release, but the experiment matrix
+  APIs still select workflow/evaluator definitions rather than a node version
+  as a first-class candidate.
+- Why it is nonblocking: Direct node runs use the ordinary durable run,
+  snapshot, provenance, metrics, cancellation, and retry machinery, so authors
+  can test versions without a second execution engine. Generalized experiment
+  scheduling is additional orchestration, not a correctness prerequisite.
+- Suggested follow-up: Allow experiment cells to select exact node versions
+  while retaining the same budget, source-admission, output-sealing, and
+  provenance constraints as workflow-backed cells.
+
+### DEFERRED-009 — Design source-owning reusable nodes
+
+- Task/area: Reusable node definitions and native workflow resource sources
+- Classification: Architecture follow-up
+- Status: Deferred
+- Evidence: Schema-1 nodes intentionally reject resources, resource sources,
+  `get`, and every live-read construct. A workflow owns source selection and
+  maps exact captured snapshots into an atomic node.
+- Why it is nonblocking: The first-slice reuse boundary is repository-neutral
+  precisely because invocation data enters through typed ports. Adding live
+  source ownership would change scheduling, admission, sealing, and upgrade
+  obligations rather than merely extend the current grammar.
+- Suggested follow-up: Start a separate design track only when a concrete
+  source-owning leaf use case cannot be expressed as a workflow-owned resource
+  source plus an exact node input mapping.
+
 ### HUMAN-REVIEW-002 — Make exact resource-source bindings mandatory at launch
 
 - Task/area: Task 12, source-bearing workflow execution contract

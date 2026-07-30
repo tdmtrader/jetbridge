@@ -46,6 +46,16 @@ func TestEverySeedPortTypeHasABuiltInValidator(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ManifestFromDir(%q): %v", directory, err)
 			}
+			if _, isNodePackage := manifest[workflow.NodeFileName]; isNodePackage {
+				if _, alsoWorkflow := manifest[workflow.WorkflowFileName]; alsoWorkflow {
+					t.Fatalf("%q mixes %s and %s; shipped seed packages must have exactly one manifest kind",
+						directory, workflow.NodeFileName, workflow.WorkflowFileName)
+				}
+				// This enumerator proves workflow ports are backed by the
+				// validator registry. Reusable-node packages have their own
+				// authoritative compile-and-freeze contract in seed_test.go.
+				return
+			}
 			compiled, err := workflow.CompileDefinition(manifest)
 			if err != nil {
 				t.Fatalf("CompileDefinition(%q): %v", directory, err)

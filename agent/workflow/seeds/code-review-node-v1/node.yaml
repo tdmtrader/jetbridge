@@ -1,0 +1,34 @@
+schema_version: 1
+name: code-review
+description: Review one immutable repository state relative to another.
+inputs:
+  - name: before
+    type: repository/v1
+    description: Repository state used as the comparison base.
+  - name: after
+    type: repository/v1
+    description: Repository state to review.
+outputs:
+  - name: review
+    type: review/v1
+    description: Structured findings and an overall disposition.
+parameters:
+  - name: MINIMUM_SEVERITY
+    default: medium
+capabilities:
+  dev-mcp:
+    contract: dev-mcp/v1
+    sidecar:
+      name: dev-mcp
+      image: registry.example/dev-mcp@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      command: [/usr/local/bin/dev-mcp]
+      ports:
+        - {containerPort: 8080, protocol: TCP}
+step:
+  agent: review
+  function_id: review
+  budget_slice_usd: 5
+  prompt_file: prompts/review.md
+  model: claude-sonnet
+  skills: [review]
+  capabilities: [dev-mcp]

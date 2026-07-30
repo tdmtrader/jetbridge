@@ -180,6 +180,56 @@ composite nodes, source-owning nodes, and cross-definition semantic categories
 are follow-on work. Their absence does not justify a parallel runner or
 weakening any accepted authority boundary.
 
+### Initial implementation checkpoint
+
+The first server and Fly slice was completed against this alignment on
+2026-07-30. The checked-in `code-review` node package demonstrates the intended
+atomic boundary: its model, prompt, selected skill tree, parameter contract,
+logical ports, and dev-MCP sidecar image, command, port, and contract are
+captured in one immutable node version. The source capability aliases are
+erased during compilation, leaving the resolved sidecar authority on the
+visible agent leaf.
+
+One implementation detail is intentionally narrower than the conceptual list
+above. The common agent-runner image remains server-selected admission
+authority, as it is for ordinary agent workflow steps; node authors cannot
+select or replace that execution harness image. Images and commands owned by a
+node's declared capabilities are digest-pinned and frozen in the node. Changing
+the model, prompt, skill tree, parameter contract, or a capability sidecar
+still creates a distinct node version.
+
+The existing multi-step `code-review-v3` workflow remains a compatibility seed.
+The reusable `code-review` node is a separate schema-1 seed and does not cause a
+seed migration or automatic consumer upgrade.
+
+Compatible successor additions preserve the consumer's authored boundary.
+An optional input that the workflow does not map and a new output that the
+workflow does not expose remain outside that workflow's artifact namespace.
+A newly declared parameter with a default is resolved on the instantiated leaf
+without adding an authored binding. Existing mappings and binding provenance
+therefore remain exact, while a direct invocation of the successor still sees
+its complete contract.
+
+One selected-upgrade response is bounded to 4 MiB of encoded JSON. A breaking
+upgrade computes one immutable obligation graph, shares it across per-workflow
+results, and conservatively preflights the aggregate response before reading
+live workflows, loading their bindings, or importing a revision. The HTTP
+handler independently budgets any result returned by the service. An
+oversized selection receives HTTP 422 with code `response_limit_exceeded` and
+the direction to select fewer workflows; operators apply large selections in
+idempotent batches. This makes the external bound explicit while preventing a
+large contract diff from being duplicated in process for every consumer.
+
+The end-to-end acceptance proof uses semantic in-memory stores only for process
+local persistence and external execution effects. It exercises the production
+compiler, binder, renderer, release compatibility check, promotion validator,
+and upgrade service, and indexes exact bindings by immutable workflow
+definition ID. PostgreSQL durability, kind fencing, binding foreign keys, and
+historical run identity are established separately by the focused
+`AgentNodesFactory`, `AgentWorkflowsFactory`, workflow-node-binding, and
+node-definition-run database specifications; the pure-Go proof does not
+substitute for that evidence.
+
 ## Reusable Node Definition
 
 A reusable node definition has a stable identity, such as `code-review`, and a
@@ -292,6 +342,7 @@ earlier version remains valid without changing its workflow composition:
 - existing input ports retain their type and required/optional status;
 - new input ports are optional;
 - existing output ports remain available with the same types;
+- new output ports need not be mapped into an existing workflow;
 - existing parameter values remain valid;
 - new parameters have defaults; and
 - no new workflow-supplied authority or binding is required.
@@ -300,6 +351,13 @@ The platform verifies structural compatibility. It does not claim to prove
 behavioral equivalence. A model, prompt, skill, or implementation change can be
 structurally compatible even though behavior changes materially. Adoption
 remains explicit regardless of compatibility.
+
+A compatible upgrade does not manufacture mappings for these additions. An
+omitted new optional input and an unmapped new output are filtered from that
+workflow's composed leaf, so they do not silently enter its artifact namespace.
+A new defaulted parameter is applied by the node instantiation without
+rewriting the workflow's authored parameter binding. Direct invocation remains
+against the successor's full public contract.
 
 A node author may deliberately release a breaking successor. A breaking
 version can change ports, parameter contracts, or external obligations, but
