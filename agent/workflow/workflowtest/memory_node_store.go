@@ -180,6 +180,16 @@ func (s *MemoryNodeStore) Deprecate(n string, v int, deprecated bool, by string)
 	}
 	return workflow.ErrVersionNotFound
 }
+
+// Consumers and Bindings are intentionally empty for this node-only test
+// double. Durable workflow bindings are exercised by the database store.
+func (s *MemoryNodeStore) Consumers(context.Context, string, int, workflow.NodeConsumerRequest) (workflow.NodeConsumerPage, error) {
+	return workflow.NodeConsumerPage{Consumers: []workflow.NodeConsumer{}}, nil
+}
+
+func (s *MemoryNodeStore) Bindings(int) ([]workflow.ResolvedNodeBinding, error) {
+	return []workflow.ResolvedNodeBinding{}, nil
+}
 func cloneNodeManifest(m workflow.Manifest) workflow.Manifest {
 	out := workflow.Manifest{}
 	for p, c := range m {

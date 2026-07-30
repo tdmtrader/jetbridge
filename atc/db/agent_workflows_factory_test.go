@@ -21,6 +21,15 @@ type countingDBPromotionValidator struct {
 	delegate workflow.PromotionValidator
 }
 
+type staticDBNodeResolver struct{ node workflow.NodeDefinition }
+
+func (resolver staticDBNodeResolver) Released(name string, version int) (workflow.NodeDefinition, bool, error) {
+	if name != resolver.node.Name || version != resolver.node.Version {
+		return workflow.NodeDefinition{}, false, nil
+	}
+	return resolver.node, true, nil
+}
+
 type promotionFailureRegistry struct{ err error }
 
 func (registry promotionFailureRegistry) SaveAndActivateForPromotion(
@@ -542,6 +551,53 @@ plan:
 		definition, err := factory.ImportManifest(name, manifest, "alice")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(definition.Compiled.Function.Plan).To(HaveLen(1))
+		bindings, err := nodes.Bindings(definition.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(bindings).To(ConsistOf(workflow.ResolvedNodeBinding{
+			InstanceName: "review-change", NodeDefinitionID: node.ID, NodeName: node.Name,
+			NodeVersion: node.Version, NodeContentHash: node.ContentHash,
+			InputMapping: map[string]string{}, OutputMapping: map[string]string{},
+		}))
+		replayed, err := factory.ImportManifest(name, manifest, "mallory")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(replayed.ID).To(Equal(definition.ID))
+		replayedBindings, err := nodes.Bindings(replayed.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(replayedBindings).To(Equal(bindings))
+		_, err = dbConn.Exec(`UPDATE agent_workflow_node_bindings SET parameters = '{"tampered":"true"}' WHERE workflow_definition_id = $1`, definition.ID)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = factory.ImportManifest(name, manifest, "mallory")
+		Expect(err).To(HaveOccurred(), "idempotent imports must fail closed when durable bindings differ")
+	})
+
+	It("rolls back a workflow revision when durable node binding insertion fails", func() {
+		compiledNode, err := workflow.CompileNodeDefinition(workflow.Manifest{workflow.NodeFileName: `schema_version: 1
+name: missing-node
+inputs: []
+outputs: []
+step: {agent: review, prompt: review}`})
+		Expect(err).NotTo(HaveOccurred())
+		name := fmt.Sprintf("binding-rollback-%d", GinkgoRandomSeed())
+		manifest := workflow.Manifest{workflow.WorkflowFileName: fmt.Sprintf(`schema_version: 3
+name: %s
+signature_version: 1
+inputs: []
+outputs: []
+plan:
+  - node: missing
+    uses: missing-node@1
+    input_mapping: {}
+    output_mapping: {}
+`, name)}
+		factory := db.NewAgentWorkflowsFactoryWithNodeResolver(dbConn, staticDBNodeResolver{node: workflow.NodeDefinition{
+			ID: 987654, Name: "missing-node", Version: 1, ContentHash: "missing-node-hash", Compiled: *compiledNode,
+		}})
+		_, err = factory.ImportManifest(name, manifest, "alice")
+		Expect(err).To(HaveOccurred())
+		stored, found, err := db.NewAgentWorkflowsFactory(dbConn).Get(name, 1)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeFalse())
+		Expect(stored).To(BeNil())
 	})
 
 	It("does not make a workflow live when source-pipeline activation fails", func() {

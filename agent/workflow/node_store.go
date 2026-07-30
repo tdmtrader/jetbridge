@@ -13,6 +13,7 @@ const (
 )
 
 var ErrInvalidCompatibility = errors.New("workflow: node release is not structurally compatible")
+var ErrInvalidNodeConsumerPage = errors.New("workflow: invalid node consumer page")
 
 type NodeRelease struct {
 	ReleasedAt         int64                `json:"released_at,omitempty"`
@@ -40,6 +41,33 @@ type NodeVersionPage struct {
 	Definitions []NodeDefinition
 	NextCursor  int
 	Found       bool
+}
+
+type NodeConsumerRequest struct {
+	Limit        int
+	Cursor       NodeConsumerCursor
+	PromotedOnly bool
+}
+
+// NodeConsumerCursor is an exclusive stable keyset over immutable workflow
+// definition IDs and binding instance names. A workflow may use one node more
+// than once, so the instance is part of the cursor rather than an offset.
+type NodeConsumerCursor struct {
+	WorkflowDefinitionID int    `json:"workflow_definition_id,omitempty"`
+	InstanceName         string `json:"instance_name,omitempty"`
+}
+
+type NodeConsumer struct {
+	WorkflowDefinitionID int                 `json:"workflow_definition_id"`
+	WorkflowName         string              `json:"workflow_name"`
+	WorkflowVersion      int                 `json:"workflow_version"`
+	Live                 bool                `json:"live"`
+	Binding              ResolvedNodeBinding `json:"binding"`
+}
+
+type NodeConsumerPage struct {
+	Consumers  []NodeConsumer     `json:"consumers"`
+	NextCursor NodeConsumerCursor `json:"next_cursor,omitempty"`
 }
 
 // NodeDefinitionsStructurallyCompatible reports whether every invocation and
@@ -116,4 +144,6 @@ type NodeStore interface {
 	Released(name string, version int) (NodeDefinition, bool, error)
 	Release(name string, version int, compatibility ReleaseCompatibility, releasedBy string) (NodeRelease, error)
 	Deprecate(name string, version int, deprecated bool, deprecatedBy string) error
+	Consumers(context.Context, string, int, NodeConsumerRequest) (NodeConsumerPage, error)
+	Bindings(int) ([]ResolvedNodeBinding, error)
 }

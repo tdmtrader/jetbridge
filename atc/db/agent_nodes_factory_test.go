@@ -34,6 +34,42 @@ description: durable node
 `, name, outputs, parameters, prompt)}
 }
 
+func dbNodeConsumerWorkflowManifest(name string, instances ...string) workflow.Manifest {
+	plan := ""
+	for _, instance := range instances {
+		plan += fmt.Sprintf(`  - node: %s
+    uses: consumer-node@1
+    input_mapping: {repository: repository}
+    output_mapping: {result: review}
+    params: {MODE: strict}
+`, instance)
+	}
+	return workflow.Manifest{workflow.WorkflowFileName: fmt.Sprintf(`schema_version: 3
+name: %s
+signature_version: 1
+inputs:
+  - {name: repository, type: repository/v1}
+outputs:
+  - {name: review, type: review/v1, from: review}
+plan:
+%s`, name, plan)}
+}
+
+func dbConsumerNodeManifest() workflow.Manifest {
+	return workflow.Manifest{workflow.NodeFileName: `schema_version: 1
+name: consumer-node
+inputs:
+  - {name: repository, type: repository/v1}
+outputs:
+  - {name: result, type: review/v1}
+parameters:
+  - {name: MODE, default: standard}
+step:
+  agent: review
+  prompt: review
+`}
+}
+
 var _ = Describe("AgentNodesFactory", func() {
 	var (
 		factory db.AgentNodesFactory
@@ -146,6 +182,72 @@ var _ = Describe("AgentNodesFactory", func() {
 		Expect(found).To(BeTrue())
 		Expect(restored.DeprecatedAt).To(BeZero())
 		Expect(restored.DeprecatedBy).To(BeEmpty())
+	})
+
+	It("discovers durable workflow node consumers with a stable bounded cursor", func() {
+		node, err := factory.ImportManifest(
+			"consumer-node",
+			dbConsumerNodeManifest(),
+			"alice",
+		)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = factory.Release(node.Name, node.Version, workflow.ReleaseCompatible, "alice")
+		Expect(err).NotTo(HaveOccurred())
+
+		workflows := db.NewAgentWorkflowsFactoryWithNodeResolver(dbConn, factory)
+		live, err := workflows.ImportManifest("consumer-live", dbNodeConsumerWorkflowManifest("consumer-live", "live-review"), "alice")
+		Expect(err).NotTo(HaveOccurred())
+		_, err = workflows.Promote(live.Name, live.Version, "alice")
+		Expect(err).NotTo(HaveOccurred())
+		historical, err := workflows.ImportManifest("consumer-history", dbNodeConsumerWorkflowManifest("consumer-history", "history-a", "history-b"), "bob")
+		Expect(err).NotTo(HaveOccurred())
+
+		first, err := factory.Consumers(ctx, node.Name, node.Version, workflow.NodeConsumerRequest{Limit: 1})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(first.Consumers).To(HaveLen(1))
+		Expect(first.NextCursor.WorkflowDefinitionID).To(BeNumerically(">", 0))
+		Expect(first.Consumers[0].Binding.NodeDefinitionID).To(Equal(node.ID))
+		Expect(first.Consumers[0].Binding.NodeContentHash).To(Equal(node.ContentHash))
+		Expect(first.Consumers[0].Binding.InputMapping).To(Equal(map[string]string{"repository": "repository"}))
+		Expect(first.Consumers[0].Binding.OutputMapping).To(Equal(map[string]string{"result": "review"}))
+		Expect(first.Consumers[0].Binding.Parameters).To(Equal(map[string]string{"MODE": "strict"}))
+
+		second, err := factory.Consumers(ctx, node.Name, node.Version, workflow.NodeConsumerRequest{Limit: 1, Cursor: first.NextCursor})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(second.Consumers).To(HaveLen(1))
+		Expect(second.Consumers[0].WorkflowDefinitionID).To(Equal(first.Consumers[0].WorkflowDefinitionID))
+		Expect(second.Consumers[0].Binding.InstanceName).NotTo(Equal(first.Consumers[0].Binding.InstanceName))
+		third, err := factory.Consumers(ctx, node.Name, node.Version, workflow.NodeConsumerRequest{Limit: 1, Cursor: second.NextCursor})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(third.Consumers).To(HaveLen(1))
+		Expect(third.Consumers[0].WorkflowDefinitionID).To(Equal(live.ID))
+
+		promoted, err := factory.Consumers(ctx, node.Name, node.Version, workflow.NodeConsumerRequest{Limit: 10, PromotedOnly: true})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(promoted.Consumers).To(HaveLen(1))
+		Expect(promoted.Consumers[0].WorkflowDefinitionID).To(Equal(live.ID))
+		Expect(promoted.Consumers[0].Live).To(BeTrue())
+
+		bindings, err := factory.Bindings(historical.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(bindings).To(ConsistOf(workflow.ResolvedNodeBinding{
+			InstanceName: "history-a", NodeDefinitionID: node.ID, NodeName: node.Name,
+			NodeVersion: node.Version, NodeContentHash: node.ContentHash,
+			InputMapping:  map[string]string{"repository": "repository"},
+			OutputMapping: map[string]string{"result": "review"}, Parameters: map[string]string{"MODE": "strict"},
+		}, workflow.ResolvedNodeBinding{
+			InstanceName: "history-b", NodeDefinitionID: node.ID, NodeName: node.Name,
+			NodeVersion: node.Version, NodeContentHash: node.ContentHash,
+			InputMapping:  map[string]string{"repository": "repository"},
+			OutputMapping: map[string]string{"result": "review"}, Parameters: map[string]string{"MODE": "strict"},
+		}))
+
+		_, err = factory.Consumers(ctx, node.Name, node.Version, workflow.NodeConsumerRequest{Limit: 0})
+		Expect(err).To(MatchError(workflow.ErrInvalidNodeConsumerPage))
+		_, err = factory.Consumers(ctx, node.Name, node.Version, workflow.NodeConsumerRequest{
+			Limit: 1, Cursor: workflow.NodeConsumerCursor{InstanceName: "not-a-cursor"},
+		})
+		Expect(err).To(MatchError(workflow.ErrInvalidNodeConsumerPage))
 	})
 
 	It("serializes concurrent imports and releases per node name", func() {

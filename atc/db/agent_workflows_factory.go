@@ -135,7 +135,7 @@ func (f *agentWorkflowsFactory) ImportManifest(name string, src workflow.Manifes
 	if err := workflow.RequireSchemaVersion3([]byte(raw)); err != nil {
 		return nil, workflow.InvalidDefinitionError{Err: err}
 	}
-	compiled, err := f.compileDefinition(src)
+	compiled, bindings, err := f.compileDefinitionWithBindings(src)
 	if err != nil {
 		return nil, workflow.InvalidDefinitionError{Err: err}
 	}
@@ -176,6 +176,9 @@ func (f *agentWorkflowsFactory) ImportManifest(name string, src workflow.Manifes
 			return nil, fmt.Errorf("workflow: stored metadata for %q version %d does not match compiled source", name, def.Version)
 		}
 		populateCompiledWorkflowDefinition(&def, compiled, src)
+		if err := compareWorkflowNodeBindings(tx, def.ID, bindings); err != nil {
+			return nil, err
+		}
 		return &def, tx.Commit()
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
@@ -231,6 +234,9 @@ func (f *agentWorkflowsFactory) ImportManifest(name string, src workflow.Manifes
 	if err != nil {
 		return nil, err
 	}
+	if err := insertWorkflowNodeBindings(tx, def.ID, bindings); err != nil {
+		return nil, err
+	}
 
 	def.Name = name
 	def.SchemaVersion = metadata.SchemaVersion
@@ -240,6 +246,72 @@ func (f *agentWorkflowsFactory) ImportManifest(name string, src workflow.Manifes
 	def.CreatedBy = createdBy
 	populateCompiledWorkflowDefinition(&def, compiled, src)
 	return &def, tx.Commit()
+}
+
+func (f *agentWorkflowsFactory) compileDefinitionWithBindings(source workflow.Manifest) (*workflow.CompiledDefinition, []workflow.ResolvedNodeBinding, error) {
+	if f.nodeResolver == nil {
+		compiled, err := workflow.CompileDefinition(source)
+		return compiled, nil, err
+	}
+	return workflow.CompileDefinitionWithNodes(source, f.nodeResolver)
+}
+
+func insertWorkflowNodeBindings(tx Tx, workflowDefinitionID int, bindings []workflow.ResolvedNodeBinding) error {
+	for _, binding := range bindings {
+		input, err := json.Marshal(binding.InputMapping)
+		if err != nil {
+			return err
+		}
+		output, err := json.Marshal(binding.OutputMapping)
+		if err != nil {
+			return err
+		}
+		params, err := json.Marshal(binding.Parameters)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`INSERT INTO agent_workflow_node_bindings
+            (workflow_definition_id, instance_name, node_definition_id, node_name, node_version, node_content_hash, input_mapping, output_mapping, parameters)
+            VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9::jsonb)`, workflowDefinitionID, binding.InstanceName, binding.NodeDefinitionID, binding.NodeName, binding.NodeVersion, binding.NodeContentHash, string(input), string(output), string(params)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func compareWorkflowNodeBindings(tx Tx, workflowDefinitionID int, bindings []workflow.ResolvedNodeBinding) error {
+	var count int
+	if err := tx.QueryRow(`SELECT count(*) FROM agent_workflow_node_bindings WHERE workflow_definition_id=$1`, workflowDefinitionID).Scan(&count); err != nil {
+		return err
+	}
+	if count != len(bindings) {
+		return fmt.Errorf("workflow: stored node bindings for definition %d differ from fresh resolution", workflowDefinitionID)
+	}
+	for _, binding := range bindings {
+		input, err := json.Marshal(binding.InputMapping)
+		if err != nil {
+			return err
+		}
+		output, err := json.Marshal(binding.OutputMapping)
+		if err != nil {
+			return err
+		}
+		params, err := json.Marshal(binding.Parameters)
+		if err != nil {
+			return err
+		}
+		var exact bool
+		err = tx.QueryRow(`SELECT EXISTS (
+			SELECT 1 FROM agent_workflow_node_bindings
+			WHERE workflow_definition_id=$1 AND instance_name=$2 AND node_definition_id=$3
+			  AND node_name=$4 AND node_version=$5 AND node_content_hash=$6
+			  AND input_mapping=$7::jsonb AND output_mapping=$8::jsonb AND parameters=$9::jsonb
+		)`, workflowDefinitionID, binding.InstanceName, binding.NodeDefinitionID, binding.NodeName, binding.NodeVersion, binding.NodeContentHash, string(input), string(output), string(params)).Scan(&exact)
+		if err != nil || !exact {
+			return fmt.Errorf("workflow: stored node bindings for definition %d differ from fresh resolution", workflowDefinitionID)
+		}
+	}
+	return nil
 }
 
 func (f *agentWorkflowsFactory) Get(name string, version int) (*workflow.Definition, bool, error) {
