@@ -28,9 +28,13 @@
 - PASS: `go test ./agent/workflowrun -run 'TestBindAndCreateRunsExactUnreleasedNodeVersion|TestBindAndCreateRejectsNodeDefaultResolution' -count=1`
 - PASS: `go test ./agent/workflowrun -count=1`
 - PASS: `go test ./agent/workflowrun ./atc/atccmd ./atc/db -run '^$' -count=1`
+- PASS (outside the filesystem/process sandbox so PostgreSQL could allocate
+  shared memory): `ginkgo --focus='creates and reads exact node runs in a
+  separate kind-scoped identity|selects completed node runs only after a newer
+  node version is released' ./atc/db/` — 2/2 specs passed.
 - PASS: `git diff --check`
 
-Focused Ginkgo DB regressions for the factory and lifecycle are compiled but
-not executed in this subtask: the suite cannot start while PostgreSQL is
-already listening on fixed port `5434` (PID `82186`). No process was stopped;
-the parent task owns the final serialized DB retry.
+The first executable DB retry found that the new retirement test fixture set
+only `released_at`, violating the real node-release metadata constraint.
+Commit `237578358c` made the fixture supply the required release actor and
+compatibility classification; the exact two-spec rerun then passed.
