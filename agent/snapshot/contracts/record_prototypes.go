@@ -16,6 +16,7 @@ import (
 var recordPrototypes = map[snapshot.TypeRef]any{
 	"review/v1":                Record[ReviewBody]{},
 	"diagnosis/v1":             Record[DiagnosisBody]{},
+	"consultation/v1":          Record[ConsultationBody]{},
 	"validation/v1":            Record[validationBodyRevision3Declared]{},
 	"repository-change/v1":     Record[RepositoryChangeBody]{},
 	"measurements/v1":          Record[MeasurementsBody]{},

@@ -64,6 +64,9 @@ var builtinRawRecordCodecs = map[snapshot.TypeRef]RawRecordCodec{
 	diagnosisType: rawRecordCodec[DiagnosisBody]{ref: diagnosisType, validate: func(subjects []Subject, body DiagnosisBody) error {
 		return diagnosisBody(Record[DiagnosisBody]{Subjects: subjects, Body: body})
 	}},
+	consultationType: rawRecordCodec[ConsultationBody]{ref: consultationType, validate: func(subjects []Subject, body ConsultationBody) error {
+		return consultationBody(Record[ConsultationBody]{Subjects: subjects, Body: body})
+	}},
 	validationType: rawRecordCodec[ValidationBody]{ref: validationType, validate: func(subjects []Subject, body ValidationBody) error {
 		return validationBody(Record[ValidationBody]{Subjects: subjects, Body: body})
 	}},
@@ -89,7 +92,7 @@ func BuiltinRawRecordCodec(ref snapshot.TypeRef) (RawRecordCodec, bool) {
 	return codec, found
 }
 func BuiltinRawRecordTypes() []snapshot.TypeRef {
-	return []snapshot.TypeRef{diagnosisType, measurementsType, publishImpactType, pullRequestResponseType, pullRequestType, repositoryChangeType, reviewType, validationType}
+	return []snapshot.TypeRef{consultationType, diagnosisType, measurementsType, publishImpactType, pullRequestResponseType, pullRequestType, repositoryChangeType, reviewType, validationType}
 }
 func NormalizeRawRecordBody(ref snapshot.TypeRef, subjects []Subject, raw json.RawMessage) (any, json.RawMessage, error) {
 	codec, found := BuiltinRawRecordCodec(ref)

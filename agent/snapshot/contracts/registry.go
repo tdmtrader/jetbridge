@@ -116,6 +116,8 @@ func builtinValidator(ref snapshot.TypeRef, config registryConfig) (snapshot.Val
 		return gateInvariant{auditValidator{kind: "findings"}.Validate}, nil
 	case "diagnosis/v1":
 		return diagnosisValidator{}, nil
+	case "consultation/v1":
+		return consultationValidator{}, nil
 	case "question/v1":
 		return gateInvariant{documentValidator[*QuestionDocument]{fileName: "question.json"}.Validate}, nil
 	case "human-answer/v1":
@@ -185,6 +187,7 @@ func builtinTypeNames() []string {
 		"deployment-snapshot/v1",
 		"audit-findings/v1",
 		"diagnosis/v1",
+		"consultation/v1",
 		"question/v1",
 		"human-answer/v1",
 		"pull-request/v1",

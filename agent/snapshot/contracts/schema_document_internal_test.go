@@ -299,6 +299,7 @@ func TestForbiddenPresenceIsDerivedAndNeverAuthored(t *testing.T) {
 // rather than a silent re-digest.
 func TestSchemaDocumentCanonicalSerializationIsStable(t *testing.T) {
 	golden := map[string]string{
+		"consultation.v1.rev2.json":          "sha256:fd3041236910e1f7bd9ead12b6db9b57ddf661db578867cfa312fdc13e0932de",
 		"diagnosis.v1.rev2.json":             "sha256:47301b1acc54725bd94804e6a20ca284b85568e4336d5592c64a89bcd2f58c47",
 		"measurements.v1.rev2.json":          "sha256:d2e0b89126ce534c957a8e93166391f517e126aec5aa961f66a4c6c178bc57a0",
 		"repository-change.v1.rev2.json":     "sha256:afdb59e4eb682a09f86fb92165c57d3df215487be5a55e316944eba8bdc1f013",

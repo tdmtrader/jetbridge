@@ -42,6 +42,7 @@ import (
 var bumpedRecordTypes = []string{
 	"review/v1",
 	"diagnosis/v1",
+	"consultation/v1",
 	"validation/v1",
 	"repository-change/v1",
 	"measurements/v1",

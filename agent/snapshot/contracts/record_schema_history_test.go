@@ -26,6 +26,10 @@ import (
 // pre-dialect one-line stamps and are what a record sealed before the dialect
 // landed still carries.
 var frozenAcceptedSchemaDigests = map[string][]string{
+	"consultation/v1": {
+		"sha256:fd3041236910e1f7bd9ead12b6db9b57ddf661db578867cfa312fdc13e0932de",
+		"sha256:39b84429626d4ad5a9fe9ae1ad4c66bfdc545e15374ea1efad650cbdc4ddabd2",
+	},
 	"review/v1": {
 		"sha256:8b460c4d9ea3a6ca6c7d1b8fb1e8dce448df8a2745f3d81a52992cec8e760220",
 		"sha256:01d9f0644151274e8577875373f110b11f0ec34ff29ba12b143379744416fdb5",

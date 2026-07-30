@@ -48,6 +48,7 @@ func recordFixtures() []recordFixture {
 	return concatFixtures(
 		reviewFixtures(),
 		diagnosisFixtures(),
+		consultationFixtures(),
 		validationFixtures(),
 		repositoryChangeFixtures(),
 		measurementsFixtures(),
@@ -204,6 +205,53 @@ func reviewFixtures() []recordFixture {
 				Findings: []Finding{{
 					ID: "f-1", Severity: "observation",
 					Category: "style", Title: "naming", Description: "Prefer a fuller name.",
+				}},
+			},
+		},
+	}
+}
+
+func consultationFixtures() []recordFixture {
+	validate := func(subjects []Subject, body any) error {
+		return body.(ConsultationBody).Validate(subjects)
+	}
+	return []recordFixture{
+		{
+			name: "consultation/grounded", ref: consultationType,
+			subjects: supportingSubjectSet(), validate: validate,
+			body: ConsultationBody{
+				Answer: "Retain the compatibility endpoint for one release.",
+				Claims: []ConsultationClaim{
+					{
+						ID: "compatibility-risk", Statement: "Existing callers may still depend on it.",
+						Evidence: []Anchor{
+							fileLinesAnchor("primary-1"),
+							opaqueAnchor("reference-1"),
+							jsonPointerAnchor("evidence-2"),
+						},
+					},
+					{ID: "rollout-cost", Statement: "One compatibility release has bounded operational cost."},
+				},
+				Assumptions:     []string{"Some callers have not migrated."},
+				Uncertainties:   []string{"Current traffic is unknown."},
+				Recommendations: []string{"Measure usage before removal."},
+			},
+		},
+		{
+			name: "consultation/answer-only", ref: consultationType,
+			subjects: fixtureSubjects(SubjectRolePrimary, "primary"), validate: validate,
+			body: ConsultationBody{
+				Answer:          "There is not enough evidence for a stronger recommendation.",
+				Recommendations: []string{"Collect more evidence."},
+			},
+		},
+		{
+			name: "consultation/claim-only", ref: consultationType,
+			subjects: fixtureSubjects(SubjectRolePrimary, "primary"), validate: validate,
+			body: ConsultationBody{
+				Answer: "The answer is tentative.",
+				Claims: []ConsultationClaim{{
+					ID: "tentative", Statement: "No supplied evidence confirms the conclusion.",
 				}},
 			},
 		},

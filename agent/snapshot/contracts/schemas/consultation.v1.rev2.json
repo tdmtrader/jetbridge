@@ -1,0 +1,74 @@
+{
+  "dialect": "record-schema-dialect/1",
+  "contract": "consultation/v1",
+  "envelope": "record/v1",
+  "revision": 2,
+  "supersedes": 1,
+  "description": "A structured answer whose claims may be anchored into one primary subject and its explicitly supplied supporting context.",
+  "subject_shape": {
+    "minimum": 1,
+    "maximum": null,
+    "roles": {
+      "primary": { "minimum": 1, "maximum": 1 },
+      "evidence": { "minimum": 0, "maximum": null },
+      "context": { "minimum": 0, "maximum": null },
+      "reference": { "minimum": 0, "maximum": null }
+    },
+    "subject_type": null,
+    "uniform_subject_type": false,
+    "ports": "any-exposed-input"
+  },
+  "fields": {
+    "body": { "kind": "object", "presence": "required" },
+    "body/answer": { "kind": "markdown", "presence": "required", "label": "Answer" },
+    "body/claims": {
+      "kind": "entity-set",
+      "presence": "optional",
+      "id_field": "id",
+      "label": "Key claims"
+    },
+    "body/claims/*/id": { "kind": "identifier", "presence": "required" },
+    "body/claims/*/statement": { "kind": "markdown", "presence": "required" },
+    "body/claims/*/evidence": {
+      "kind": "array",
+      "presence": "optional",
+      "element": "anchor",
+      "go_rules": [
+        "anchor-subject-must-be-a-declared-subject",
+        "anchor-locator-kind-selects-which-fields-appear"
+      ]
+    },
+    "body/assumptions": {
+      "kind": "array",
+      "presence": "optional",
+      "element": "markdown",
+      "label": "Assumptions"
+    },
+    "body/uncertainties": {
+      "kind": "array",
+      "presence": "optional",
+      "element": "markdown",
+      "label": "Uncertainties"
+    },
+    "body/recommendations": {
+      "kind": "array",
+      "presence": "optional",
+      "element": "markdown",
+      "label": "Recommendations"
+    }
+  },
+  "go_only_rules": [
+    {
+      "id": "anchor-subject-must-be-a-declared-subject",
+      "rule": "An anchor's subject must name a subject this record declares."
+    },
+    {
+      "id": "anchor-locator-kind-selects-which-fields-appear",
+      "rule": "The locator kind decides which locator fields must be present and forbids the rest."
+    },
+    {
+      "id": "anchor-locators-are-unverified",
+      "rule": "Nothing verifies that an anchor points at anything."
+    }
+  ]
+}

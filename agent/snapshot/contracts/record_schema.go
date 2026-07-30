@@ -98,6 +98,16 @@ type recordSchemaHistory struct {
 // A semantic validator change must append a new revision here, as a new document
 // FILE, and, after external release, introduce a new TypeRef version.
 var recordSchemaHistories = map[snapshot.TypeRef]recordSchemaHistory{
+	"consultation/v1": {
+		current: recordSchemaRevision{
+			revision:   2,
+			descriptor: mustCanonicalSchemaDescriptorFor("consultation/v1", 2),
+		},
+		superseded: []recordSchemaRevision{{
+			revision:   1,
+			descriptor: `{"contract":"consultation/v1","envelope":"record/v1","revision":1}`,
+		}},
+	},
 	"review/v1": {
 		current: recordSchemaRevision{
 			revision:   2,

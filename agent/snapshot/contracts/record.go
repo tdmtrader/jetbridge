@@ -22,6 +22,7 @@ const RecordVersion = "1.0.0"
 const (
 	reviewType              = snapshot.TypeRef("review/v1")
 	diagnosisType           = snapshot.TypeRef("diagnosis/v1")
+	consultationType        = snapshot.TypeRef("consultation/v1")
 	validationType          = snapshot.TypeRef("validation/v1")
 	repositoryChangeType    = snapshot.TypeRef("repository-change/v1")
 	measurementsType        = snapshot.TypeRef("measurements/v1")

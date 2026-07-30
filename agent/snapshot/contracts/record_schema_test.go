@@ -19,6 +19,7 @@ import (
 // today.
 func TestRecordSchemaDigestsArePinnedForEveryRecordContract(t *testing.T) {
 	expected := map[string]string{
+		"consultation/v1":      "sha256:fd3041236910e1f7bd9ead12b6db9b57ddf661db578867cfa312fdc13e0932de",
 		"review/v1":            "sha256:8b460c4d9ea3a6ca6c7d1b8fb1e8dce448df8a2745f3d81a52992cec8e760220",
 		"diagnosis/v1":         "sha256:47301b1acc54725bd94804e6a20ca284b85568e4336d5592c64a89bcd2f58c47",
 		"validation/v1":        "sha256:4d03fc7af7796a7add4d72d08a286c64ecfa7e9486fb06f136600aacc3f1b0e7",

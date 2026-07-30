@@ -27,6 +27,7 @@ import (
 var declaredSubjectPorts = map[snapshot.TypeRef]string{
 	reviewType:              PortsAnyExposedInput,
 	diagnosisType:           PortsAnyExposedInput,
+	consultationType:        PortsAnyExposedInput,
 	validationType:          PortsAnyExposedInput,
 	repositoryChangeType:    PortsAnyExposedInput,
 	measurementsType:        PortsAnyExposedInput,
@@ -49,6 +50,9 @@ var recordBodySealGates = map[snapshot.TypeRef]func([]Subject, any) error{
 	},
 	diagnosisType: func(subjects []Subject, body any) error {
 		return body.(DiagnosisBody).Validate(subjects)
+	},
+	consultationType: func(subjects []Subject, body any) error {
+		return body.(ConsultationBody).Validate(subjects)
 	},
 	validationType: func(subjects []Subject, body any) error {
 		return body.(ValidationBody).Validate(subjects)
