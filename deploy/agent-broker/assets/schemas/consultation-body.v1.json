@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["answer", "claims", "assumptions", "uncertainties", "recommendations"],
+  "properties": {
+    "answer": {"type": "string", "minLength": 1},
+    "claims": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "statement", "evidence"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "statement": {"type": "string", "minLength": 1},
+          "evidence": {
+            "type": "array",
+            "items": {"$ref": "#/$defs/anchor"}
+          }
+        }
+      }
+    },
+    "assumptions": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "uncertainties": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "recommendations": {"type": "array", "items": {"type": "string", "minLength": 1}}
+  },
+  "$defs": {
+    "anchor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["subject", "locator"],
+      "properties": {
+        "subject": {"type": "string", "minLength": 1},
+        "locator": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": ["file-lines", "log-lines", "json-pointer", "byte-range", "opaque"]
+            },
+            "path": {"type": "string"},
+            "start": {"type": "integer"},
+            "end": {"type": "integer"},
+            "pointer": {"type": "string"},
+            "value": {"type": "string"}
+          }
+        }
+      }
+    }
+  }
+}

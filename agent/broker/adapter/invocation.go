@@ -6,6 +6,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -62,6 +64,8 @@ type Codex struct{}
 type Claude struct{}
 type Cursor struct{}
 
+const maxInlineOutputSchemaBytes = 1 << 20
+
 // Prepare runs local binary/version preflight before constructing an
 // invocation that contains a provider credential. Its returned opaque value is
 // the only input Execute accepts.
@@ -109,16 +113,19 @@ func (Codex) Build(profile broker.Profile, paths Paths, credential string) (Invo
 		Binary: "codex",
 		Args: []string{
 			"exec",
+			"--strict-config",
 			"--ephemeral",
 			"--ignore-user-config",
 			"--ignore-rules",
 			"--sandbox", "read-only",
-			"--ask-for-approval", "never",
+			"--model", profile.Provider.Model,
+			"-c", `approval_policy="never"`,
+			"-c", fmt.Sprintf("model_reasoning_effort=%q", profile.NativeEffort),
+			"-c", "project_doc_max_bytes=0",
+			"-c", "project_doc_fallback_filenames=[]",
 			"--json",
 			"--output-schema", paths.OutputSchema,
 			"--output-last-message", filepath.Join(paths.ScratchDir, "result.json"),
-			"--model", profile.Provider.Model,
-			"-c", fmt.Sprintf("model_reasoning_effort=%q", profile.NativeEffort),
 			"-",
 		},
 		Env: map[string]string{
@@ -135,6 +142,10 @@ func (Claude) Build(profile broker.Profile, paths Paths, credential string) (Inv
 	if err != nil {
 		return Invocation{}, err
 	}
+	schema, err := loadInlineOutputSchema(paths.OutputSchema)
+	if err != nil {
+		return Invocation{}, err
+	}
 	args := []string{
 		"-p",
 		"--output-format", "stream-json",
@@ -147,18 +158,46 @@ func (Claude) Build(profile broker.Profile, paths Paths, credential string) (Inv
 		"--max-turns", "32",
 	}
 	if capabilities.NativeOutputSchema && profile.Controls.NativeOutputSchema {
-		args = append(args, "--json-schema", paths.OutputSchema)
+		args = append(args, "--json-schema", string(schema))
 	}
 	return Invocation{
 		Binary: "claude",
 		Args:   args,
 		Env: map[string]string{
-			"ANTHROPIC_API_KEY": credential,
-			"HOME":              paths.ScratchDir,
-			"XDG_CONFIG_HOME":   filepath.Join(paths.ScratchDir, "config"),
+			"ANTHROPIC_API_KEY":   credential,
+			"HOME":                paths.ScratchDir,
+			"XDG_CONFIG_HOME":     filepath.Join(paths.ScratchDir, "config"),
+			"DISABLE_UPDATES":     "1",
+			"DISABLE_AUTOUPDATER": "1",
 		},
 		WorkDir: paths.WorkDir,
 	}, nil
+}
+
+func loadInlineOutputSchema(path string) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, fmt.Errorf("broker adapter: inspect output schema: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("broker adapter: output schema must be a regular file")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("broker adapter: open output schema: %w", err)
+	}
+	defer file.Close()
+	raw, err := io.ReadAll(io.LimitReader(file, maxInlineOutputSchemaBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("broker adapter: read output schema: %w", err)
+	}
+	if len(raw) > maxInlineOutputSchemaBytes {
+		return nil, fmt.Errorf("broker adapter: output schema exceeds %d bytes", maxInlineOutputSchemaBytes)
+	}
+	if !json.Valid(raw) {
+		return nil, fmt.Errorf("broker adapter: output schema is not valid JSON")
+	}
+	return raw, nil
 }
 
 func (Cursor) Build(profile broker.Profile, paths Paths, credential string) (Invocation, error) {

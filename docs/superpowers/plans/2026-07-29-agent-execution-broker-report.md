@@ -1,9 +1,9 @@
 # Agent Execution Broker Implementation Report
 
-**Date:** 2026-07-29  
-**Branch:** `jetbridge`  
+**Date:** 2026-07-29
+**Branch:** `jetbridge`
 **Base:** rebased onto `origin/jetbridge` at
-`fabf9b83e56cba10f97e743875920b538b3a1a2c`
+`9872d6445dfb2faf92fe284d128f6358b5396db1`
 
 ## Outcome
 
@@ -325,3 +325,120 @@ the sidecar cgroup and can still cause resource contention up to existing
 container limits; per-child cgroups and hostile multi-tenant availability
 isolation are not claimed. The amd64 filter's live helper test and real pinned
 CLI smoke are Linux CI/deployment gates.
+
+## 2026-07-30 Task 10 Packaging and Operator Handoff
+
+The managed companion now has a reproducible `linux/amd64` package and an
+optional, disabled-by-default Helm surface:
+
+- the multi-stage image pins both base images by digest and fetches Codex
+  `0.146.0`, Claude Code `2.1.212`, and Cursor CLI
+  `2026.07.23-e383d2b` from exact vendor URLs with literal SHA-256 checks;
+- fixed review/consult instructions and output schemas are copied read-only,
+  and their instruction digests are recomputed by packaging tests;
+- the runtime contains only the broker, native harnesses, certificates, Git,
+  ripgrep, and shell support, runs as `65532:65534`, and has no update or
+  package-install channel;
+- the adapter compatibility table now admits only the three packaged
+  versions. Real `--version` fixtures cover each native output form;
+- Codex exact argv uses `--strict-config`, `--ignore-user-config`, and
+  `--ignore-rules`. These were verified directly in the official
+  `rust-v0.146.0` `codex-rs/exec/src/cli.rs` command definition (the three
+  global args are declared at lines 17-36), and the adapter test pins them;
+- Claude receives a validated, non-symlink, at-most-1-MiB JSON schema inline,
+  matching its current `--json-schema` contract, and both documented updater
+  controls are disabled;
+- the manual pipeline job pushes a commit-addressed image and extracts the
+  registry-reported digest rather than trusting local `RepoDigests`;
+- Helm validates exact image authority, HTTPS authority, a distinct capability
+  Secret, nonempty static profiles/credentials, worker-image equality, and
+  unique credential slots. Duplicate slots fail before the ConfigMap can
+  silently overwrite one;
+- `agentBroker.scratch.sizeBytes` is the single authoritative scratch bound;
+  Jetbridge converts it to the companion EmptyDir limit. There is no duplicate
+  no-op Helm setting;
+- NetworkPolicy documentation is explicitly whole-pod and records Kubernetes'
+  additive allow-rule semantics; it does not claim sidecar-only enforcement;
+  and
+- `CONCOURSE_AGENT_BROKER_SMOKE=1 make test-agent-broker-smoke` provides an
+  explicit credential-free fake-harness/authority gate across adapters,
+  review/consult engine paths, and the synchronous MCP surface.
+
+Fresh focused verification:
+
+```text
+go test -ldflags='-s -w' ./deploy/chart/tests -run AgentBroker -count=1
+ok github.com/concourse/concourse/deploy/chart/tests 3.902s
+
+CONCOURSE_AGENT_BROKER_SMOKE=1 make test-agent-broker-smoke
+ok github.com/concourse/concourse/agent/broker/adapter 0.249s
+ok github.com/concourse/concourse/agent/broker 0.162s
+ok github.com/concourse/concourse/agent/broker/mcp 0.735s
+
+go test ./deploy -run AgentBroker -count=1
+ok github.com/concourse/concourse/deploy 0.274s
+
+go test ./agent/broker/adapter -count=1
+ok github.com/concourse/concourse/agent/broker/adapter 0.316s
+
+go test -race ./agent/broker/adapter -count=1
+ok github.com/concourse/concourse/agent/broker/adapter 1.389s
+
+helm lint deploy/chart
+1 chart(s) linted, 0 chart(s) failed
+
+git diff --check
+PASS
+```
+
+The chart test used stripped linker symbols only to stay within the local
+machine's nearly exhausted disk; it does not alter compiled behavior. An
+earlier combined run passed `./deploy` and `./agent/broker/adapter`, then the
+chart linker failed with `errno=28` before any chart tests ran. Removing only
+the task-specific Go cache restored enough space for the focused chart suite
+above.
+
+The image was intentionally not built locally because the remaining disk
+budget was too small for its base images and three harness downloads. The
+known PostgreSQL shared-memory sandbox failure was not retried. Real
+PostgreSQL ledger, Kind/K3s on the managed Linux kernel/CNI, live amd64 BPF
+helper, real packaged harness preflight, image build/push, and live-provider
+calls remain external promotion gates.
+
+### Hard promotion blocker
+
+Task 9b automated review round 3 found an unresolved same-UID signal boundary:
+a child can attempt to join the broker's process group and signal it through
+`kill(0)`, while async-I/O ownership provides another possible signal route.
+That security/runtime code is outside Task 10 ownership and was not changed.
+The review budget requires human review rather than another automated fix
+round. Therefore this image and Helm surface are **not promotion-ready** until
+a human-approved boundary correction lands and a live Linux regression proves
+both routes closed. This is a medium-hardening package for a handful of
+carefully managed clusters, not a hostile-multitenant or fleet-scale claim.
+
+### Final rebase verification
+
+The 46 broker commits were rebased without conflicts onto the current
+`origin/jetbridge` tip `9872d6445d`. Range-diff reports the first 45 patches
+as identical; Task 10 differs only by this final handoff update and report
+whitespace cleanup. The upstream tip is an ancestor and the worktree is clean.
+
+Post-rebase passes:
+
+```text
+go test -ldflags='-s -w' ./agent/broker/adapter -count=1
+go test -race -ldflags='-s -w' ./agent/broker/adapter -count=1
+go test -ldflags='-s -w' ./agent/broker/sandbox \
+  ./agent/broker/runtime ./cmd/agent-broker -count=1
+go test -ldflags='-s -w' ./deploy -count=1
+go test -ldflags='-s -w' ./deploy/chart/tests -run AgentBroker -count=1
+helm lint deploy/chart
+git diff --check origin/jetbridge...HEAD
+```
+
+The post-rebase fake smoke passed its adapter and broker-engine stages. Its MCP
+stage and the focused ATC/Jetbridge build exhausted the host disk while
+compiling dependencies (`no space left on device`) before tests ran. They were
+not retried. The same exact MCP and managed-companion tests passed before the
+conflict-free rebase, and the range-diff shows those patches unchanged.

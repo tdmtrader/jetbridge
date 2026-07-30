@@ -146,3 +146,29 @@ spec:
     {{- end }}
 {{- end }}
 {{- end }}
+{{- if .Values.agentBroker.enabled }}
+---
+# This selector applies to the complete managed task pod. Kubernetes
+# NetworkPolicy cannot isolate one sidecar inside a shared network namespace;
+# operators must include every destination required by both the parent agent
+# and broker. Same-pod loopback remains outside NetworkPolicy enforcement.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "concourse.fullname" . }}-agent-broker-egress
+  namespace: {{ include "concourse.kubernetesNamespace" . }}
+  labels:
+    {{- include "concourse.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      concourse.ci/agent-broker: "true"
+  policyTypes:
+    - Egress
+  {{- with .Values.agentBroker.networkPolicy.egress }}
+  egress:
+    {{- toYaml . | nindent 4 }}
+  {{- else }}
+  egress: []
+  {{- end }}
+{{- end }}

@@ -25,7 +25,7 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":2,"output_tokens
 	}
 	prepared, err := adapter.Prepare(context.Background(), profile(broker.AdapterCodex), adapter.Paths{
 		WorkDir: t.TempDir(), ScratchDir: t.TempDir(), OutputSchema: "/schema/result.json",
-	}, "secret", &fakeVersionProbe{path: script, version: "codex 1.2.3\n"})
+	}, "secret", &fakeVersionProbe{path: script, version: "codex-cli 0.146.0\n"})
 	if err != nil {
 		t.Fatalf("Prepare(): %v", err)
 	}
@@ -53,9 +53,13 @@ func TestExecuteCancelsTheProcessGroup(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	start := time.Now()
+	schema := filepath.Join(t.TempDir(), "result.schema.json")
+	if err := os.WriteFile(schema, []byte(`{"type":"object"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	prepared, err := adapter.Prepare(context.Background(), profile(broker.AdapterClaude), adapter.Paths{
-		WorkDir: t.TempDir(), ScratchDir: t.TempDir(), OutputSchema: "/schema/result.json",
-	}, "secret", &fakeVersionProbe{path: script, version: "claude 1.2.3\n"})
+		WorkDir: t.TempDir(), ScratchDir: t.TempDir(), OutputSchema: schema,
+	}, "secret", &fakeVersionProbe{path: script, version: "claude 2.1.212\n"})
 	if err != nil {
 		t.Fatalf("Prepare(): %v", err)
 	}

@@ -10,6 +10,29 @@ Kubernetes pods directly for every pipeline step.
 - Artifact passing goes through a per-node artifact DaemonSet over node-local storage (no shared RWX volume, no SPDY streaming between workers).
 - The web node needs RBAC permissions to create pods and exec into containers in its namespace.
 
+## Managed agent execution broker
+
+`agentBroker.enabled` optionally enables synchronous `request_review` and
+`consult_agent` MCP calls for schema-v3 agent nodes. ATC owns a static exact
+profile catalog and injects a broker as a managed pod companion; the chart
+does not create a broker Deployment or Service. The feature requires durable
+agent snapshots, an exact digest-pinned broker image, an existing capability
+key Secret, and provider credential Secret coordinates.
+
+The companion uses non-root/read-only-root/drop-all security settings and a
+fail-closed Landlock process boundary. Managed nodes require Linux 6.2+ with
+Landlock ABI 3+ and a compatible RuntimeDefault seccomp profile. Reviews are
+static and always record that tests were not run.
+
+`agentBroker.networkPolicy.egress` selects the complete managed task pod,
+including the parent agent; Kubernetes cannot apply NetworkPolicy to one
+container. Loopback remains available, and egress allow rules are the union of
+all policies selecting the pod. Operators must audit that complete union and
+include ATC, DNS when needed, provider APIs, and parent-agent destinations.
+
+See [Agent execution broker](../../docs/agent-execution-broker.md) for image
+pins, profile examples, credential handling, inspection, and rollout gates.
+
 ## Quickstart (k3s)
 
 ### 1. Build the image

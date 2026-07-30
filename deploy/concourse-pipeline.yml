@@ -733,6 +733,70 @@ jobs:
 
           echo "=== agent-runner image built and pushed: v${NEXT_VERSION} (${SHORT_SHA}) ==="
 
+# Builds the pinned multi-harness broker companion for linux/amd64 and prints
+# the registry-reported immutable digest. This remains manual because updating
+# the operator profile catalog is a separate reviewed deployment decision.
+- name: build-agent-broker-image
+  serial_groups: [pipeline]
+  plan:
+  - get: repo
+    trigger: false
+    params: {depth: 1}
+    passed: [unit-tests]
+  - task: build-and-push-agent-broker
+    privileged: true
+    config:
+      platform: linux
+      rootfs_uri: docker:///registry.home/concourse-test-runner:v5
+      inputs:
+      - name: repo
+      run:
+        path: sh
+        args:
+        - -exc
+        - |
+          cd repo
+          SHORT_SHA=$(git rev-parse --short=12 HEAD)
+          REGISTRY="registry-docker-registry.cicd.svc.cluster.local:5000"
+          IMAGE="${REGISTRY}/agent-broker:${SHORT_SHA}"
+          BUILDER_POD="agent-broker-builder-$$"
+
+          cleanup_builder() { kubectl delete pod -n cicd "${BUILDER_POD}" --grace-period=0 --force 2>/dev/null || true; }
+          trap cleanup_builder EXIT
+
+          kubectl run -n cicd "${BUILDER_POD}" \
+            --image=docker:26-dind \
+            --restart=Never \
+            --overrides='{"spec":{"containers":[{"name":"'"${BUILDER_POD}"'","image":"docker:26-dind","securityContext":{"privileged":true},"env":[{"name":"DOCKER_TLS_CERTDIR","value":""}],"args":["--host=unix:///var/run/docker.sock","--insecure-registry='"${REGISTRY}"'"]}]}}'
+          kubectl wait --for=condition=ready pod/"${BUILDER_POD}" -n cicd --timeout=120s
+          for i in $(seq 1 30); do
+            if kubectl exec -n cicd "${BUILDER_POD}" -- docker info >/dev/null 2>&1; then
+              break
+            fi
+            sleep 2
+          done
+          kubectl exec -n cicd "${BUILDER_POD}" -- docker info >/dev/null
+
+          tar czf /tmp/agent-broker-src.tgz --exclude=.git .
+          kubectl exec -n cicd "${BUILDER_POD}" -- mkdir -p /tmp/src
+          kubectl cp /tmp/agent-broker-src.tgz "cicd/${BUILDER_POD}:/tmp/agent-broker-src.tgz"
+          kubectl exec -n cicd "${BUILDER_POD}" -- tar xzf /tmp/agent-broker-src.tgz -C /tmp/src
+          kubectl exec -n cicd "${BUILDER_POD}" -- \
+            docker build --platform linux/amd64 \
+              -t "${IMAGE}" \
+              -f /tmp/src/deploy/agent-broker/Dockerfile /tmp/src
+          PUSH_OUTPUT=$(kubectl exec -n cicd "${BUILDER_POD}" -- docker push "${IMAGE}")
+          printf '%s\n' "${PUSH_OUTPUT}"
+          DIGEST=$(printf '%s\n' "${PUSH_OUTPUT}" | sed -n 's/.*digest: \(sha256:[a-f0-9]\{64\}\).*/\1/p' | tail -1)
+          if ! printf '%s\n' "${DIGEST}" | grep -Eq '^sha256:[a-f0-9]{64}$'; then
+            echo "FATAL: registry push returned no exact lowercase sha256 digest"
+            exit 1
+          fi
+          IMAGE_REPOSITORY=${IMAGE%:*}
+          AGENT_BROKER_IMAGE=${IMAGE_REPOSITORY}@${DIGEST}
+          echo "Use this exact worker_image in agentBroker.image and every profile:"
+          echo "${AGENT_BROKER_IMAGE}"
+
 # Builds the provider-neutral forge-pr polling resource and prints the exact
 # digest reference operators must place in
 # agentPublisher.pullRequests.resourceImage. This is manual because changing

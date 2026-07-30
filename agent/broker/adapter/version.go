@@ -64,23 +64,19 @@ type Capabilities struct {
 
 var supportedCapabilities = map[broker.AdapterName]map[string]Capabilities{
 	broker.AdapterCodex: {
-		"1.2.3": {
+		"0.146.0": {
 			ReadOnlyWorkspace: true, NoBrokerRecursion: true, TestsUnavailable: true,
 			NativeReadOnlyWorkspace: true, NativeOutputSchema: true, IgnoresUserConfig: true,
 		},
 	},
 	broker.AdapterClaude: {
-		"1.2.2": {
-			ReadOnlyWorkspace: true, NoBrokerRecursion: true, TestsUnavailable: true,
-			NativeReadOnlyWorkspace: true, NativeTerminalToolDeny: true,
-		},
-		"1.2.3": {
+		"2.1.212": {
 			ReadOnlyWorkspace: true, NoBrokerRecursion: true, TestsUnavailable: true,
 			NativeReadOnlyWorkspace: true, NativeTerminalToolDeny: true, NativeOutputSchema: true,
 		},
 	},
 	broker.AdapterCursor: {
-		"1.2.3": {
+		"2026.07.23-e383d2b": {
 			ReadOnlyWorkspace: true, NoBrokerRecursion: true, TestsUnavailable: true,
 		},
 	},

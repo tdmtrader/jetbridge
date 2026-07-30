@@ -1,4 +1,26 @@
-.PHONY: test-unit test-dev-mcp test-fly-integration test-integration test-hangar-integration test-k8s test-k8s-integration test-k8s-behavioral test-quick test-all
+.PHONY: test-unit test-dev-mcp test-fly-integration test-integration test-hangar-integration test-k8s test-k8s-integration test-k8s-behavioral test-quick test-all build-agent-broker-image test-agent-broker-smoke
+
+AGENT_BROKER_IMAGE ?= concourse-agent-broker:dev
+
+# Build the linux/amd64 managed broker companion. This packages the reviewed
+# inputs but does not waive the promotion blocker recorded in the operator
+# guide. Published profiles must use the registry-reported @sha256 digest,
+# never this local tag.
+build-agent-broker-image:
+	docker build --platform linux/amd64 \
+		--file deploy/agent-broker/Dockerfile \
+		--tag "$(AGENT_BROKER_IMAGE)" \
+		.
+
+# Explicit local/CI smoke gate. It uses fake native harness processes and a
+# fake durable authority, so it needs no provider credential or PostgreSQL.
+# The real PostgreSQL and Kubernetes gates are tracked separately in the
+# implementation report.
+test-agent-broker-smoke:
+	@test "$$CONCOURSE_AGENT_BROKER_SMOKE" = "1" || { echo "ERROR: set CONCOURSE_AGENT_BROKER_SMOKE=1 to run the broker smoke gate"; exit 1; }
+	go test ./agent/broker/adapter -run 'Test(ExecuteRunsWithoutShellAndDecodesTheNativeStream|NativeAdaptersBuildControlledInvocations|PreflightAcceptsOnlyThePackagedReleaseVersionFixtures)$$' -count=1
+	go test ./agent/broker -run 'TestEngine(RunsConsultationThroughDurablePhases|CapturesReviewWorkspaceAfterAdmissionAndRunsExactCapture)$$' -count=1
+	go test ./agent/broker/mcp -run 'TestServer(ExposesOnlyTheTwoNeutralTools|CallsConsultAgentSynchronously)$$' -count=1
 
 # Unit tests: all packages except integration/e2e suites (~5 min)
 # Requires: PostgreSQL running locally

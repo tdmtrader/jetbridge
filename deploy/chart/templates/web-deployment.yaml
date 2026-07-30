@@ -17,6 +17,51 @@
 {{- if and .Values.agentExperiments.runnerEnabled (not .Values.agentSnapshots.enabled) }}
 {{- fail "agentExperiments.runnerEnabled requires agentSnapshots.enabled" }}
 {{- end }}
+{{- if .Values.agentBroker.enabled }}
+{{- if not .Values.agentSnapshots.enabled }}
+{{- fail "agentBroker.enabled requires agentSnapshots.enabled" }}
+{{- end }}
+{{- if not (regexMatch "^[^@[:space:]]+@sha256:[a-f0-9]{64}$" .Values.agentBroker.image) }}
+{{- fail "agentBroker.image must be an exact lowercase @sha256 image reference" }}
+{{- end }}
+{{- if not (regexMatch "^https://[^/?#[:space:]]+[^?#[:space:]]*$" .Values.agentBroker.authorityEndpoint) }}
+{{- fail "agentBroker.authorityEndpoint must be an absolute HTTPS URL without query or fragment" }}
+{{- end }}
+{{- if or (empty .Values.agentBroker.capabilitySecret.name) (empty .Values.agentBroker.capabilitySecret.key) }}
+{{- fail "agentBroker.capabilitySecret name and key are required" }}
+{{- end }}
+{{- if or (not (kindIs "slice" .Values.agentBroker.profiles)) (empty .Values.agentBroker.profiles) }}
+{{- fail "agentBroker.profiles must contain at least one static profile" }}
+{{- end }}
+{{- if or (not (kindIs "slice" .Values.agentBroker.credentials)) (empty .Values.agentBroker.credentials) }}
+{{- fail "agentBroker.credentials must contain at least one Secret mapping" }}
+{{- end }}
+{{- range $profile := .Values.agentBroker.profiles }}
+{{- if not (kindIs "map" $profile) }}
+{{- fail "agentBroker.profiles must contain well-formed profile mappings" }}
+{{- end }}
+{{- if ne (get $profile "worker_image") $.Values.agentBroker.image }}
+{{- fail "every agentBroker profile worker_image must equal agentBroker.image" }}
+{{- end }}
+{{- end }}
+{{- $agentBrokerCredentialSlots := dict }}
+{{- range $credential := .Values.agentBroker.credentials }}
+{{- if not (kindIs "map" $credential) }}
+{{- fail "agentBroker.credentials must contain well-formed Secret mappings" }}
+{{- end }}
+{{- if or (empty (get $credential "slot")) (empty (get $credential "secretName")) (empty (get $credential "key")) }}
+{{- fail "agentBroker credential slot, secretName, and key are required" }}
+{{- end }}
+{{- $credentialSlot := get $credential "slot" }}
+{{- if hasKey $agentBrokerCredentialSlots $credentialSlot }}
+{{- fail "agentBroker credential slots must be unique" }}
+{{- end }}
+{{- $_ := set $agentBrokerCredentialSlots $credentialSlot true }}
+{{- if eq (get $credential "secretName") $.Values.agentBroker.capabilitySecret.name }}
+{{- fail "agentBroker capability Secret must be distinct from provider credential Secrets" }}
+{{- end }}
+{{- end }}
+{{- end }}
 {{- $publisherConfigurationError := "agentPublisher configuration must be well-formed" }}
 {{- $publisherAuxiliaryConfigurationError := "agentPublisher auxiliary chart values must be well-formed" }}
 {{- if hasKey .Values "agentPublisherGateway" }}
@@ -385,6 +430,9 @@
 {{- if hasPrefix "--agent-publisher-" $argument }}
 {{- fail "web.extraArgs may not override chart-managed publisher configuration" }}
 {{- end }}
+{{- if and $.Values.agentBroker.enabled (hasPrefix "--agent-child-executions-" $argument) }}
+{{- fail "web.extraArgs may not override chart-managed agent broker configuration" }}
+{{- end }}
 {{- if and $.Values.agentSnapshots.enabled (hasPrefix "--agent-snapshot-temp-dir" $argument) }}
 {{- fail "web.extraArgs may not override the chart-managed agent snapshot temp directory" }}
 {{- end }}
@@ -426,6 +474,10 @@ spec:
     metadata:
       labels:
         {{- include "concourse.selectorLabels" . | nindent 8 }}
+      {{- if .Values.agentBroker.enabled }}
+      annotations:
+        checksum/agent-broker-config: {{ toJson .Values.agentBroker | sha256sum | quote }}
+      {{- end }}
     spec:
       serviceAccountName: {{ include "concourse.serviceAccountName" . }}
       automountServiceAccountToken: false
@@ -618,6 +670,16 @@ spec:
             - --agent-experiment-runner-interval={{ .Values.agentExperiments.runnerInterval }}
             - --agent-experiment-runner-max-concurrency={{ .Values.agentExperiments.runnerMaxConcurrency }}
             {{- end }}
+            {{- if .Values.agentBroker.enabled }}
+            - --agent-child-executions-enabled
+            - --agent-child-executions-broker-catalog=/run/concourse-agent-broker-config/catalog.json
+            - --agent-child-executions-broker-runtime=/run/concourse-agent-broker-config/runtime.json
+            - --agent-child-executions-capability-key=/run/concourse-agent-broker-capability/capability.key
+            - --agent-child-executions-lease-duration={{ .Values.agentBroker.leaseDuration }}
+            - --agent-child-executions-capability-ttl={{ .Values.agentBroker.capabilityTTL }}
+            - --agent-child-executions-reconciler-interval={{ .Values.agentBroker.reconcilerInterval }}
+            - --agent-child-executions-reconciler-batch-size={{ .Values.agentBroker.reconcilerBatchSize }}
+            {{- end }}
             {{- if .Values.agentPublisher.enabled }}
             - --agent-publisher-enabled
             - --agent-publisher-policy-file=/run/concourse-publisher/policy/policy.json
@@ -763,6 +825,14 @@ spec:
               mountPath: /run/concourse-publisher/credentials
               readOnly: true
             {{- end }}
+            {{- if .Values.agentBroker.enabled }}
+            - name: agent-broker-config
+              mountPath: /run/concourse-agent-broker-config
+              readOnly: true
+            - name: agent-broker-capability
+              mountPath: /run/concourse-agent-broker-capability
+              readOnly: true
+            {{- end }}
       terminationGracePeriodSeconds: {{ .Values.web.terminationGracePeriodSeconds | default 120 }}
       volumes:
         - name: tmp
@@ -840,6 +910,19 @@ spec:
               - key: {{ get $credential "key" | quote }}
                 path: {{ get $credential "path" | quote }}
               {{- end }}
+        {{- end }}
+        {{- if .Values.agentBroker.enabled }}
+        - name: agent-broker-config
+          configMap:
+            name: {{ include "concourse.fullname" . }}-agent-broker-config
+            defaultMode: 292
+        - name: agent-broker-capability
+          secret:
+            secretName: {{ .Values.agentBroker.capabilitySecret.name | quote }}
+            defaultMode: 288
+            items:
+              - key: {{ .Values.agentBroker.capabilitySecret.key | quote }}
+                path: capability.key
         {{- end }}
       {{- with .Values.web.nodeSelector }}
       nodeSelector:

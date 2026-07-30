@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["conclusion", "summary", "findings"],
+  "properties": {
+    "conclusion": {
+      "type": "string",
+      "enum": ["accept", "changes-required", "inconclusive"]
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "severity", "blocking", "category", "title", "description", "evidence"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "severity": {
+            "type": "string",
+            "enum": ["observation", "low", "medium", "high", "critical"]
+          },
+          "blocking": {"type": "boolean"},
+          "category": {"type": "string", "minLength": 1},
+          "title": {"type": "string", "minLength": 1},
+          "description": {"type": "string", "minLength": 1},
+          "evidence": {
+            "type": "array",
+            "items": {"$ref": "#/$defs/anchor"}
+          },
+          "recommendation": {"type": "string"}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "anchor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["subject", "locator"],
+      "properties": {
+        "subject": {"type": "string", "minLength": 1},
+        "locator": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": ["file-lines", "log-lines", "json-pointer", "byte-range", "opaque"]
+            },
+            "path": {"type": "string"},
+            "start": {"type": "integer"},
+            "end": {"type": "integer"},
+            "pointer": {"type": "string"},
+            "value": {"type": "string"}
+          }
+        }
+      }
+    }
+  }
+}

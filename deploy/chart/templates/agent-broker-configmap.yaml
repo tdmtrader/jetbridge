@@ -1,0 +1,32 @@
+{{- if .Values.agentBroker.enabled }}
+{{- $credentialSlots := dict }}
+{{- range $credential := .Values.agentBroker.credentials }}
+{{- $_ := set $credentialSlots $credential.slot (dict "secret_name" $credential.secretName "key" $credential.key) }}
+{{- end }}
+{{- $runtime := dict
+  "authority_endpoint" .Values.agentBroker.authorityEndpoint
+  "adapter_binaries" (dict "codex" "/usr/local/bin/codex" "claude" "/usr/local/bin/claude" "cursor-agent" "/usr/local/bin/cursor-agent")
+  "output_schemas" (dict "request_review" "/opt/concourse/agent-broker/schemas/review-body.v1.json" "consult_agent" "/opt/concourse/agent-broker/schemas/consultation-body.v1.json")
+  "sandbox_read_paths" .Values.agentBroker.sandboxReadPaths
+  "instructions" (dict
+    "request_review" (dict "path" "/opt/concourse/agent-broker/instructions/request-review.txt" "digest" "sha256:9982a935820d5177131cf16e285ab137b0774a0d4701181aaf180358a3a6f669")
+    "consult_agent" (dict "path" "/opt/concourse/agent-broker/instructions/consult-agent.txt" "digest" "sha256:e79f4aa92d601d27222d53fb07fbba5e306856006c260c0a8019220153e23dbe"))
+  "credential_slots" $credentialSlots
+  "capture_limits" (dict
+    "max_patch_bytes" (int64 .Values.agentBroker.capture.maxPatchBytes)
+    "max_entries" (int64 .Values.agentBroker.capture.maxEntries)
+    "stability_attempts" (int .Values.agentBroker.capture.stabilityAttempts))
+  "scratch_size_bytes" (int64 .Values.agentBroker.scratch.sizeBytes)
+  "resources" .Values.agentBroker.resources
+}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "concourse.fullname" . }}-agent-broker-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "concourse.labels" . | nindent 4 }}
+data:
+  catalog.json: {{ toJson (dict "profiles" .Values.agentBroker.profiles) | quote }}
+  runtime.json: {{ toJson $runtime | quote }}
+{{- end }}

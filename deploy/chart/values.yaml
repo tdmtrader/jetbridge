@@ -652,6 +652,80 @@ agentExperiments:
   runnerInterval: 10s
   runnerMaxConcurrency: 4
 
+# -- Synchronous request_review and consult_agent execution through the
+# server-managed broker companion. This is disabled by default. Enabling it
+# requires durable snapshots plus a reviewed digest-pinned broker image,
+# static profiles, an existing capability-key Secret, and provider credential
+# Secret coordinates. Provider secrets are mounted only into selected broker
+# companions; their values are never rendered into this chart.
+agentBroker:
+  enabled: false
+  # -- Exact broker image shared by every configured profile.
+  image: ""
+  # -- HTTPS URL the broker companions use for ATC's internal child-execution
+  # authority routes. It must be reachable under the whole-pod egress policy.
+  authorityEndpoint: ""
+  # -- Existing Secret containing at least 32 random bytes used by ATC to sign
+  # execution-scoped capabilities. The root key is mounted only into web.
+  capabilitySecret:
+    name: ""
+    key: capability.key
+  # -- Static operator-only exact profile catalog. Profiles are copied only
+  # into workflow/node revisions that reference their neutral selector.
+  profiles: []
+  # -- Credential slot to existing Kubernetes Secret/key coordinates. A
+  # selected companion receives only slots referenced by its frozen profiles.
+  credentials: []
+  # - slot: shared
+  #   secretName: provider-credentials
+  #   key: api-key
+  capture:
+    maxPatchBytes: 2883584
+    maxEntries: 100000
+    stabilityAttempts: 2
+  scratch:
+    # Single authoritative bounded-scratch value. Jetbridge converts this
+    # strict runtime byte count into the companion emptyDir size limit.
+    sizeBytes: "4294967296"
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+  # -- Immutable image paths visible to the Landlocked harness. Do not add
+  # workspace, scratch-parent, authority, credential, or /proc paths.
+  sandboxReadPaths:
+    - /usr/local/bin/codex
+    - /usr/local/bin/claude
+    - /opt/cursor-agent/2026.07.23-e383d2b
+    - /usr/bin
+    - /usr/lib
+    - /lib
+    - /lib64
+    - /etc/ssl
+    - /etc/ca-certificates
+    - /etc/hosts
+    - /etc/resolv.conf
+    - /etc/nsswitch.conf
+    - /etc/passwd
+    - /etc/group
+    - /etc/ld.so.cache
+    - /dev/null
+    - /dev/urandom
+  leaseDuration: 5m
+  capabilityTTL: 15m
+  reconcilerInterval: 30s
+  reconcilerBatchSize: 100
+  networkPolicy:
+    # -- Complete egress rules for the entire managed task pod, not just the
+    # broker container. Include ATC, DNS where needed, provider APIs, and any
+    # parent-agent destinations the node requires. Kubernetes unions every
+    # policy selecting the pod, so audit other matching policies too; an empty
+    # list here does not revoke egress allowed by another policy.
+    egress: []
+
 # -- Outbound publication executed inside the ATC trust boundary. Policy and
 # credentials are mounted from distinct, dedicated Secrets into concourse-web
 # only. If the Kubernetes credential manager is enabled, keep this release

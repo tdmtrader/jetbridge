@@ -186,3 +186,24 @@ gate on this arm64 macOS host. The focused adapter preflight/process tests pass
 with concurrent Task 10 compatibility changes present but excluded from this
 commit. Residual same-cgroup resource exhaustion is accepted within the
 medium-hardening, carefully managed cluster scope.
+
+Task 9b review round 3: **Human Review Required / promotion blocked**. The
+same-UID child process boundary still admits a process-group/async-I/O signal
+escape: a child can attempt to join the broker PGID and use `kill(0)`, while
+async-I/O ownership supplies another potential signal route. Per the exhausted
+automated review budget this is not changed in Task 10. The broker image must
+not be promoted until a human-approved boundary fix and live Linux regression
+cover both routes.
+
+Task 10: packaging/documentation implementation complete pending final
+verification and commit. The image uses digest-pinned base images, exact
+versioned and SHA-verified Codex 0.146.0, Claude Code 2.1.212, and Cursor
+2026.07.23-e383d2b downloads, fixed read-only instruction/schema assets, and
+an unprivileged runtime. Helm remains disabled by default and supplies static
+profiles, exact image authority, Secret coordinates, resources, one
+authoritative scratch byte count, and whole-pod NetworkPolicy guidance.
+Duplicate credential slots fail chart rendering. The manual pipeline publishes
+the registry-reported digest, and an explicit credential-free fake-harness
+smoke target covers all three adapters plus broker/MCP paths. Operator docs
+scope the result to medium hardening and mark the Task 9b process-boundary
+finding as a hard promotion blocker.
