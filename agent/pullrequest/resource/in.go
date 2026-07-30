@@ -3,8 +3,10 @@ package resource
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,7 +17,26 @@ import (
 	"github.com/concourse/concourse/agent/snapshot/contracts"
 )
 
-func In(ctx context.Context, destination string, stdin io.Reader, stdout, _ io.Writer, dependencies Dependencies) error {
+const privateRecordName = ".forge-pr-record"
+
+type ownedDirectory struct {
+	name string
+	info os.FileInfo
+	root *os.Root
+}
+
+type ownedFile struct {
+	name    string
+	info    os.FileInfo
+	present bool
+}
+
+type destinationOwnership struct {
+	directories []*ownedDirectory
+	files       []*ownedFile
+}
+
+func In(ctx context.Context, destination string, stdin io.Reader, stdout, _ io.Writer, dependencies Dependencies) (resultErr error) {
 	request, err := decodeRequest(stdin)
 	if err != nil {
 		return err
@@ -36,9 +57,21 @@ func In(ctx context.Context, destination string, stdin io.Reader, stdout, _ io.W
 	if request.Version.BindingRevision != bindingRevision(request.Source) {
 		return fmt.Errorf("forge-pr: selected version binding revision is stale")
 	}
-	if err := safeDestination(destination); err != nil {
+	destinationRoot, destinationInfo, err := openDestination(destination)
+	if err != nil {
 		return err
 	}
+	defer destinationRoot.Close()
+
+	ownership := &destinationOwnership{}
+	completed := false
+	defer func() {
+		if !completed {
+			resultErr = errors.Join(resultErr, ownership.cleanup(destinationRoot))
+		}
+		ownership.close()
+	}()
+
 	observer, err := observerFor(request.Source, dependencies)
 	if err != nil {
 		return err
@@ -59,25 +92,30 @@ func In(ctx context.Context, destination string, stdin io.Reader, stdout, _ io.W
 	if !equalVersion(expected, *request.Version) {
 		return fmt.Errorf("forge-pr: selected version does not match current pull request")
 	}
-	destinationRoot, err := os.OpenRoot(destination)
-	if err != nil {
-		return fmt.Errorf("forge-pr: open destination")
+	if err := verifyDestination(destinationRoot, destination, destinationInfo); err != nil {
+		return err
 	}
-	defer destinationRoot.Close()
-	stage, err := os.MkdirTemp(destination, ".forge-pr-")
-	if err != nil {
-		return fmt.Errorf("forge-pr: create staging output")
+	if err := requireEmptyRoot(destinationRoot); err != nil {
+		return err
 	}
-	stageName := filepath.Base(stage)
-	installed := false
-	defer func() {
-		_ = destinationRoot.RemoveAll(stageName)
-		if !installed {
-			_ = destinationRoot.RemoveAll("source-repository")
-			_ = destinationRoot.RemoveAll("target-repository")
-			_ = destinationRoot.RemoveAll("record.json")
+	if dependencies.BeforeMaterialize != nil {
+		if err := dependencies.BeforeMaterialize(); err != nil {
+			return fmt.Errorf("forge-pr: prepare materialization")
 		}
-	}()
+	}
+	if err := verifyDestination(destinationRoot, destination, destinationInfo); err != nil {
+		return err
+	}
+	for _, name := range []string{"source-repository", "target-repository"} {
+		output, claimErr := claimDirectory(destinationRoot, name)
+		if output != nil {
+			ownership.directories = append(ownership.directories, output)
+		}
+		if claimErr != nil {
+			return claimErr
+		}
+	}
+
 	git := dependencies.GitRunner
 	if git == nil {
 		git, err = defaultGitRunner()
@@ -87,15 +125,34 @@ func In(ctx context.Context, destination string, stdin io.Reader, stdout, _ io.W
 	}
 	credential := []byte(request.Source.ReadToken)
 	defer wipe(credential)
-	for _, checkout := range []struct{ name, ref, sha string }{{"source-repository", observation.SourceRef, observation.SourceSHA}, {"target-repository", observation.TargetRef, observation.TargetSHA}} {
+	for index, checkout := range []struct{ name, ref, sha string }{{"source-repository", observation.SourceRef, observation.SourceSHA}, {"target-repository", observation.TargetRef, observation.TargetSHA}} {
 		mode, ref := GitFetchNamedRef, checkout.ref
 		if action.Kind == pullrequest.ActionCompleted || action.Kind == pullrequest.ActionAbandoned {
 			mode, ref = GitFetchExactObject, ""
 		}
-		if err := git.Run(ctx, GitCommand{Operation: "checkout", FetchMode: mode, Directory: filepath.Join(stage, checkout.name), RemoteURL: request.Source.RepositoryURL, Ref: ref, SHA: checkout.sha, Credential: credential}); err != nil {
+		output := ownership.directories[index]
+		command := GitCommand{Operation: "checkout", FetchMode: mode, Directory: filepath.Join(destination, checkout.name), RemoteURL: request.Source.RepositoryURL, Ref: ref, SHA: checkout.sha, Credential: credential}
+		command.verifyDirectory = func() error {
+			return verifyOwnedDirectory(destinationRoot, destination, destinationInfo, output)
+		}
+		if dependencies.BeforeGit != nil {
+			if err := dependencies.BeforeGit(command); err != nil {
+				return fmt.Errorf("forge-pr: prepare git materialization")
+			}
+		}
+		if err := command.verifyDirectory(); err != nil {
+			return err
+		}
+		if err := git.Run(ctx, command); err != nil {
 			return fmt.Errorf("forge-pr: materialize repository")
 		}
-		if err := validateMaterializationBounds(ctx, filepath.Join(stage, checkout.name), snapshot.DefaultMaxSnapshotEntries, snapshot.DefaultMaxSnapshotContentBytes, snapshot.MaxSnapshotSymlinkTargetBytes); err != nil {
+		if err := command.verifyDirectory(); err != nil {
+			return err
+		}
+		if err := validateMaterializationRoot(ctx, output.root, snapshot.DefaultMaxSnapshotEntries, snapshot.DefaultMaxSnapshotContentBytes, snapshot.MaxSnapshotSymlinkTargetBytes); err != nil {
+			return err
+		}
+		if err := command.verifyDirectory(); err != nil {
 			return err
 		}
 	}
@@ -114,23 +171,23 @@ func In(ctx context.Context, destination string, stdin io.Reader, stdout, _ io.W
 	if strings.Contains(string(raw), request.Source.ReadToken) {
 		return fmt.Errorf("forge-pr: refused credential-bearing record")
 	}
-	if err := os.WriteFile(filepath.Join(stage, "record.json"), raw, 0600); err != nil {
-		return fmt.Errorf("forge-pr: write record")
-	}
-	for _, name := range []string{"source-repository", "target-repository"} {
-		if err := destinationRoot.Rename(stageName+"/"+name, name); err != nil {
-			return fmt.Errorf("forge-pr: install repository output")
+	for _, output := range ownership.directories {
+		if err := verifyOwnedDirectory(destinationRoot, destination, destinationInfo, output); err != nil {
+			return err
 		}
 	}
-	// record.json is the authoritative marker and is intentionally published
-	// only after both repository trees are fully installed.
-	if err := destinationRoot.Rename(stageName+"/record.json", "record.json"); err != nil {
-		return fmt.Errorf("forge-pr: install record output")
+	if err := publishRecord(destinationRoot, destination, destinationInfo, ownership, raw); err != nil {
+		return err
+	}
+	for _, output := range ownership.directories {
+		if err := verifyOwnedDirectory(destinationRoot, destination, destinationInfo, output); err != nil {
+			return err
+		}
 	}
 	if err := writeJSON(stdout, InResult{Version: *request.Version}); err != nil {
 		return err
 	}
-	installed = true
+	completed = true
 	return nil
 }
 
@@ -143,28 +200,226 @@ func pullRequestBody(observation pullrequest.Observation, kind pullrequest.Actio
 	return body, nil
 }
 
-func safeDestination(destination string) error {
+func openDestination(destination string) (*os.Root, os.FileInfo, error) {
 	if destination == "" || !filepath.IsAbs(destination) || filepath.Clean(destination) != destination {
-		return fmt.Errorf("forge-pr: destination is invalid")
+		return nil, nil, fmt.Errorf("forge-pr: destination is invalid")
 	}
 	parent := filepath.Dir(destination)
 	parentInfo, parentErr := os.Lstat(parent)
 	if parentErr != nil || !parentInfo.IsDir() || parentInfo.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("forge-pr: destination parent is unsafe")
+		return nil, nil, fmt.Errorf("forge-pr: destination parent is unsafe")
 	}
 	if _, resolveErr := filepath.EvalSymlinks(parent); resolveErr != nil {
-		return fmt.Errorf("forge-pr: destination parent is unsafe")
+		return nil, nil, fmt.Errorf("forge-pr: destination parent is unsafe")
 	}
-	info, err := os.Lstat(destination)
-	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-		return fmt.Errorf("forge-pr: destination must be an existing real directory")
+	pathInfo, err := os.Lstat(destination)
+	if err != nil || !realDirectory(pathInfo) {
+		return nil, nil, fmt.Errorf("forge-pr: destination must be an existing real directory")
 	}
-	entries, readErr := os.ReadDir(destination)
-	if readErr != nil || len(entries) != 0 {
+	root, err := os.OpenRoot(destination)
+	if err != nil {
+		return nil, nil, fmt.Errorf("forge-pr: open destination")
+	}
+	rootInfo, err := root.Stat(".")
+	if err != nil || !realDirectory(rootInfo) || !os.SameFile(pathInfo, rootInfo) {
+		_ = root.Close()
+		return nil, nil, fmt.Errorf("forge-pr: destination identity changed")
+	}
+	afterInfo, err := os.Lstat(destination)
+	if err != nil || !realDirectory(afterInfo) || !os.SameFile(rootInfo, afterInfo) {
+		_ = root.Close()
+		return nil, nil, fmt.Errorf("forge-pr: destination identity changed")
+	}
+	if err := requireEmptyRoot(root); err != nil {
+		_ = root.Close()
+		return nil, nil, err
+	}
+	return root, rootInfo, nil
+}
+
+func requireEmptyRoot(root *os.Root) error {
+	entries, err := fs.ReadDir(root.FS(), ".")
+	if err != nil || len(entries) != 0 {
 		return fmt.Errorf("forge-pr: destination is not empty")
 	}
 	return nil
 }
+
+func realDirectory(info os.FileInfo) bool {
+	return info != nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0
+}
+
+func verifyDestination(root *os.Root, destination string, expected os.FileInfo) error {
+	rootInfo, rootErr := root.Stat(".")
+	pathInfo, pathErr := os.Lstat(destination)
+	if rootErr != nil || pathErr != nil || !realDirectory(rootInfo) || !realDirectory(pathInfo) || !os.SameFile(expected, rootInfo) || !os.SameFile(expected, pathInfo) {
+		return fmt.Errorf("forge-pr: destination identity changed")
+	}
+	return nil
+}
+
+func claimDirectory(root *os.Root, name string) (*ownedDirectory, error) {
+	if err := root.Mkdir(name, 0700); err != nil {
+		return nil, fmt.Errorf("forge-pr: claim repository output")
+	}
+	output := &ownedDirectory{name: name}
+	pathInfo, err := root.Lstat(name)
+	if err != nil || !realDirectory(pathInfo) {
+		return output, fmt.Errorf("forge-pr: verify claimed repository output")
+	}
+	output.info = pathInfo
+	output.root, err = root.OpenRoot(name)
+	if err != nil {
+		return output, fmt.Errorf("forge-pr: retain repository output")
+	}
+	rootInfo, err := output.root.Stat(".")
+	if err != nil || !realDirectory(rootInfo) || !os.SameFile(output.info, rootInfo) {
+		return output, fmt.Errorf("forge-pr: repository output identity changed")
+	}
+	return output, nil
+}
+
+func verifyOwnedDirectory(destinationRoot *os.Root, destination string, destinationInfo os.FileInfo, output *ownedDirectory) error {
+	if output == nil || output.root == nil || output.info == nil {
+		return fmt.Errorf("forge-pr: repository output identity is unavailable")
+	}
+	if err := verifyDestination(destinationRoot, destination, destinationInfo); err != nil {
+		return err
+	}
+	relativeInfo, relativeErr := destinationRoot.Lstat(output.name)
+	retainedInfo, retainedErr := output.root.Stat(".")
+	pathInfo, pathErr := os.Lstat(filepath.Join(destination, output.name))
+	if relativeErr != nil || retainedErr != nil || pathErr != nil ||
+		!realDirectory(relativeInfo) || !realDirectory(retainedInfo) || !realDirectory(pathInfo) ||
+		!os.SameFile(output.info, relativeInfo) || !os.SameFile(output.info, retainedInfo) || !os.SameFile(output.info, pathInfo) {
+		return fmt.Errorf("forge-pr: repository output identity changed")
+	}
+	return nil
+}
+
+func publishRecord(root *os.Root, destination string, destinationInfo os.FileInfo, ownership *destinationOwnership, raw []byte) error {
+	if err := verifyDestination(root, destination, destinationInfo); err != nil {
+		return err
+	}
+	file, err := root.OpenFile(privateRecordName, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		return fmt.Errorf("forge-pr: claim private record")
+	}
+	private := &ownedFile{name: privateRecordName, present: true}
+	ownership.files = append(ownership.files, private)
+	private.info, err = file.Stat()
+	if err == nil {
+		var written int
+		written, err = file.Write(raw)
+		if err == nil && written != len(raw) {
+			err = io.ErrShortWrite
+		}
+	}
+	if err == nil {
+		err = file.Sync()
+	}
+	if closeErr := file.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return fmt.Errorf("forge-pr: write private record")
+	}
+	if err := verifyDestination(root, destination, destinationInfo); err != nil {
+		return err
+	}
+	if err := root.Link(privateRecordName, "record.json"); err != nil {
+		return fmt.Errorf("forge-pr: publish record")
+	}
+	record := &ownedFile{name: "record.json", info: private.info, present: true}
+	ownership.files = append(ownership.files, record)
+	recordInfo, err := root.Lstat(record.name)
+	if err != nil || record.info == nil || !recordInfo.Mode().IsRegular() || !os.SameFile(record.info, recordInfo) {
+		return fmt.Errorf("forge-pr: record identity changed")
+	}
+	if err := cleanupOwnedFile(root, private); err != nil {
+		return fmt.Errorf("forge-pr: remove private record")
+	}
+	if err := verifyDestination(root, destination, destinationInfo); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (ownership *destinationOwnership) cleanup(root *os.Root) error {
+	var cleanupErrors []error
+	for index := len(ownership.files) - 1; index >= 0; index-- {
+		if err := cleanupOwnedFile(root, ownership.files[index]); err != nil {
+			cleanupErrors = append(cleanupErrors, err)
+		}
+	}
+	for index := len(ownership.directories) - 1; index >= 0; index-- {
+		if err := cleanupOwnedDirectory(root, ownership.directories[index]); err != nil {
+			cleanupErrors = append(cleanupErrors, err)
+		}
+	}
+	return errors.Join(cleanupErrors...)
+}
+
+func (ownership *destinationOwnership) close() {
+	for _, output := range ownership.directories {
+		if output.root != nil {
+			_ = output.root.Close()
+		}
+	}
+}
+
+func cleanupOwnedFile(root *os.Root, file *ownedFile) error {
+	if file == nil || !file.present {
+		return nil
+	}
+	current, err := root.Lstat(file.name)
+	if os.IsNotExist(err) {
+		file.present = false
+		return nil
+	}
+	if err != nil || file.info == nil || !current.Mode().IsRegular() || !os.SameFile(file.info, current) {
+		return fmt.Errorf("forge-pr: refused to remove changed owned file")
+	}
+	if err := root.Remove(file.name); err != nil {
+		return fmt.Errorf("forge-pr: remove owned file")
+	}
+	file.present = false
+	return nil
+}
+
+func cleanupOwnedDirectory(root *os.Root, output *ownedDirectory) error {
+	if output == nil {
+		return nil
+	}
+	var cleanupErrors []error
+	if output.root != nil {
+		entries, err := fs.ReadDir(output.root.FS(), ".")
+		if err != nil {
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("forge-pr: inspect owned repository output"))
+		} else {
+			for _, entry := range entries {
+				if err := output.root.RemoveAll(entry.Name()); err != nil {
+					cleanupErrors = append(cleanupErrors, fmt.Errorf("forge-pr: clean owned repository output"))
+				}
+			}
+		}
+	}
+	current, err := root.Lstat(output.name)
+	switch {
+	case os.IsNotExist(err):
+		return errors.Join(cleanupErrors...)
+	case err != nil:
+		cleanupErrors = append(cleanupErrors, fmt.Errorf("forge-pr: inspect owned repository output"))
+	case output.info == nil || !realDirectory(current) || !os.SameFile(output.info, current):
+		cleanupErrors = append(cleanupErrors, fmt.Errorf("forge-pr: refused to remove changed repository output"))
+	default:
+		if err := root.Remove(output.name); err != nil {
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("forge-pr: remove owned repository output"))
+		}
+	}
+	return errors.Join(cleanupErrors...)
+}
+
 func wipe(value []byte) {
 	for i := range value {
 		value[i] = 0

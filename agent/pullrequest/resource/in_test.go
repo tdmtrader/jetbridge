@@ -162,6 +162,153 @@ func TestForgePRInPreservesDestinationMountAndRollsBackMidInstall(t *testing.T) 
 	}
 }
 
+func TestForgePRInRejectsDestinationSwapBeforeGitWithoutOutsideWrites(t *testing.T) {
+	now, source, observation, version := currentInFixture(t)
+	parent := t.TempDir()
+	destination := filepath.Join(parent, "out")
+	movedDestination := filepath.Join(parent, "moved-out")
+	outside := filepath.Join(parent, "outside")
+	for _, directory := range []string{destination, outside} {
+		if err := os.Mkdir(directory, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	outsideSource := filepath.Join(outside, "source-repository")
+	if err := os.Mkdir(outsideSource, 0700); err != nil {
+		t.Fatal(err)
+	}
+	outsideMarker := filepath.Join(outsideSource, "belongs-to-outside")
+	if err := os.WriteFile(outsideMarker, []byte("keep"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	gitCalled := false
+	dependencies := resource.Dependencies{
+		ObserverFactory: fixedObserver(observerFunc(func(context.Context, pullrequest.Locator, pullrequest.Cursor) (pullrequest.Observation, error) {
+			return observation, nil
+		})),
+		Clock: func() time.Time { return now },
+		BeforeGit: func(resource.GitCommand) error {
+			if err := os.Rename(destination, movedDestination); err != nil {
+				return err
+			}
+			return os.Symlink(outside, destination)
+		},
+		GitRunner: runnerFunc(func(_ context.Context, command resource.GitCommand) error {
+			gitCalled = true
+			if err := os.MkdirAll(command.Directory, 0700); err != nil {
+				return err
+			}
+			return os.WriteFile(filepath.Join(command.Directory, "outside-write"), []byte("unsafe"), 0600)
+		}),
+	}
+
+	err := resource.In(context.Background(), destination, bytes.NewReader(checkInput(t, source, &version)), &bytes.Buffer{}, &bytes.Buffer{}, dependencies)
+	if err == nil {
+		t.Fatal("expected destination identity error")
+	}
+	if gitCalled {
+		t.Fatal("git ran after the destination path stopped naming the retained directory")
+	}
+	raw, err := os.ReadFile(outsideMarker)
+	if err != nil || string(raw) != "keep" {
+		t.Fatalf("destination swap deleted outside data: %q, %v", raw, err)
+	}
+	if _, err := os.Lstat(filepath.Join(outsideSource, "outside-write")); !os.IsNotExist(err) {
+		t.Fatalf("destination swap wrote outside retained destination: %v", err)
+	}
+	movedEntries, err := os.ReadDir(movedDestination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(movedEntries) != 0 {
+		t.Fatalf("destination swap left owned output behind: %v", movedEntries)
+	}
+}
+
+func TestForgePRInDoesNotDeleteCollidingOutputItDidNotCreate(t *testing.T) {
+	now, source, observation, version := currentInFixture(t)
+	destination := filepath.Join(t.TempDir(), "out")
+	if err := os.Mkdir(destination, 0700); err != nil {
+		t.Fatal(err)
+	}
+	blocker := filepath.Join(destination, "target-repository")
+	dependencies := resource.Dependencies{
+		ObserverFactory: fixedObserver(observerFunc(func(context.Context, pullrequest.Locator, pullrequest.Cursor) (pullrequest.Observation, error) {
+			return observation, nil
+		})),
+		Clock: func() time.Time { return now },
+		BeforeMaterialize: func() error {
+			if err := os.Mkdir(blocker, 0700); err != nil {
+				return err
+			}
+			return os.WriteFile(filepath.Join(blocker, "belongs-to-another-writer"), []byte("keep"), 0600)
+		},
+		GitRunner: runnerFunc(func(context.Context, resource.GitCommand) error {
+			t.Fatal("git must not run after an output-name collision")
+			return nil
+		}),
+	}
+
+	err := resource.In(context.Background(), destination, bytes.NewReader(checkInput(t, source, &version)), &bytes.Buffer{}, &bytes.Buffer{}, dependencies)
+	if err == nil {
+		t.Fatal("expected output-name collision")
+	}
+	raw, readErr := os.ReadFile(filepath.Join(blocker, "belongs-to-another-writer"))
+	if readErr != nil {
+		t.Fatalf("colliding output was deleted: %v", readErr)
+	}
+	if string(raw) != "keep" {
+		t.Fatalf("colliding output changed: %q", raw)
+	}
+	if _, statErr := os.Lstat(filepath.Join(destination, "source-repository")); !os.IsNotExist(statErr) {
+		t.Fatalf("owned source output was not rolled back: %v", statErr)
+	}
+}
+
+func TestForgePRInPublishesRecordWithoutReplacingACollision(t *testing.T) {
+	now, source, observation, version := currentInFixture(t)
+	destination := filepath.Join(t.TempDir(), "out")
+	if err := os.Mkdir(destination, 0700); err != nil {
+		t.Fatal(err)
+	}
+	recordPath := filepath.Join(destination, "record.json")
+	dependencies := resource.Dependencies{
+		ObserverFactory: fixedObserver(observerFunc(func(context.Context, pullrequest.Locator, pullrequest.Cursor) (pullrequest.Observation, error) {
+			return observation, nil
+		})),
+		Clock: func() time.Time { return now },
+		BeforeMaterialize: func() error {
+			return os.WriteFile(recordPath, []byte("belongs-to-another-writer"), 0600)
+		},
+		GitRunner: runnerFunc(func(_ context.Context, command resource.GitCommand) error {
+			if err := os.MkdirAll(filepath.Join(command.Directory, ".git"), 0700); err != nil {
+				return err
+			}
+			return os.WriteFile(filepath.Join(command.Directory, ".git", "HEAD"), []byte(command.SHA+"\n"), 0600)
+		}),
+	}
+
+	err := resource.In(context.Background(), destination, bytes.NewReader(checkInput(t, source, &version)), &bytes.Buffer{}, &bytes.Buffer{}, dependencies)
+	if err == nil {
+		t.Fatal("expected record-name collision")
+	}
+	raw, readErr := os.ReadFile(recordPath)
+	if readErr != nil {
+		t.Fatalf("colliding record was deleted: %v", readErr)
+	}
+	if string(raw) != "belongs-to-another-writer" {
+		t.Fatalf("colliding record changed: %q", raw)
+	}
+	entries, readErr := os.ReadDir(destination)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if len(entries) != 1 || entries[0].Name() != "record.json" {
+		t.Fatalf("owned output was not rolled back around record collision: %v", entries)
+	}
+}
+
 func TestForgePRInUsesExactObjectFetchForTerminalObservation(t *testing.T) {
 	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
 	source := testSource(now)
@@ -352,3 +499,34 @@ func (fn runnerFunc) Run(ctx context.Context, command resource.GitCommand) error
 type errorWriter struct{}
 
 func (errorWriter) Write([]byte) (int, error) { return 0, fmt.Errorf("write failed") }
+
+func currentInFixture(t *testing.T) (time.Time, resource.Source, pullrequest.Observation, resource.Version) {
+	t.Helper()
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	source := testSource(now)
+	observation := activeObservation(pullrequest.Locator{
+		Provider:   pullrequest.ProviderGitHub,
+		Repository: source.Repository,
+		ExternalID: source.ExternalID,
+	}, "cursor")
+	action, ok, err := pullrequest.ActionFor(observation, pullrequest.TriggerPolicy{
+		Now:               now,
+		PollInterval:      5 * time.Minute,
+		FreshnessInterval: 6 * time.Hour,
+		LastReconciledAt:  source.Monitor.LastReconciledAt,
+	})
+	if err != nil || !ok {
+		t.Fatalf("failed to create test action: %#v, %t, %v", action, ok, err)
+	}
+	version := resource.Version{
+		Provider:        source.Provider,
+		ExternalID:      source.ExternalID,
+		SourceSHA:       observation.SourceSHA,
+		TargetSHA:       observation.TargetSHA,
+		ActionKind:      string(action.Kind),
+		ActionDigest:    action.Digest,
+		Cursor:          string(action.Cursor),
+		BindingRevision: "7",
+	}
+	return now, source, observation, version
+}

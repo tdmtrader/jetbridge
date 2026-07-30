@@ -16,17 +16,20 @@ import (
 // Git object database. WalkDir and Root.Readlink never follow repository
 // symlinks, so an attacker cannot shift accounting outside the checkout.
 func validateMaterializationBounds(ctx context.Context, directory string, maxEntries, maxContentBytes, maxSymlinkTargetBytes int64) error {
-	if ctx == nil || maxEntries <= 0 || maxContentBytes <= 0 || maxSymlinkTargetBytes <= 0 {
-		return fmt.Errorf("forge-pr: materialization bounds are invalid")
-	}
 	root, err := os.OpenRoot(directory)
 	if err != nil {
 		return fmt.Errorf("forge-pr: open materialized repository")
 	}
 	defer root.Close()
+	return validateMaterializationRoot(ctx, root, maxEntries, maxContentBytes, maxSymlinkTargetBytes)
+}
 
+func validateMaterializationRoot(ctx context.Context, root *os.Root, maxEntries, maxContentBytes, maxSymlinkTargetBytes int64) error {
+	if ctx == nil || root == nil || maxEntries <= 0 || maxContentBytes <= 0 || maxSymlinkTargetBytes <= 0 {
+		return fmt.Errorf("forge-pr: materialization bounds are invalid")
+	}
 	var entries, contentBytes int64
-	err = fs.WalkDir(root.FS(), ".", func(name string, entry fs.DirEntry, walkErr error) error {
+	err := fs.WalkDir(root.FS(), ".", func(name string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}

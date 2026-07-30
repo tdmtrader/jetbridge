@@ -57,16 +57,23 @@ func (git controlledGit) Run(ctx context.Context, command GitCommand) error {
 	if command.Operation != "checkout" || !validFetchAuthority(command) || !objectID(command.SHA) || safeURL(command.RemoteURL) != nil || command.Directory == "" || !filepath.IsAbs(command.Directory) || filepath.Clean(command.Directory) != command.Directory {
 		return fmt.Errorf("forge-pr: invalid git materialization command")
 	}
-	parent := filepath.Dir(command.Directory)
-	if err := os.MkdirAll(parent, 0700); err != nil {
-		return fmt.Errorf("forge-pr: create checkout parent")
+	if err := verifyGitDirectory(command); err != nil {
+		return err
 	}
-	if _, err := os.Lstat(command.Directory); !os.IsNotExist(err) {
-		return fmt.Errorf("forge-pr: checkout destination already exists")
+	if info, err := os.Lstat(command.Directory); err == nil {
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("forge-pr: checkout destination is unsafe")
+		}
+		entries, readErr := os.ReadDir(command.Directory)
+		if readErr != nil || len(entries) != 0 {
+			return fmt.Errorf("forge-pr: checkout destination is not empty")
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("forge-pr: inspect checkout destination")
 	}
 	// Every command uses the controlled Runner, which supplies a private askpass
 	// secret and disables ambient/repository Git configuration.
-	if err := git.run(ctx, directgit.Command{Args: []string{"init", "--quiet", "--initial-branch=concourse-materialized", command.Directory}, NoRepository: true}, "initialize checkout"); err != nil {
+	if err := git.run(ctx, command, directgit.Command{Args: []string{"init", "--quiet", "--initial-branch=concourse-materialized", command.Directory}, NoRepository: true}, "initialize checkout"); err != nil {
 		return err
 	}
 	internal := "refs/concourse/materialized/head"
@@ -74,25 +81,25 @@ func (git controlledGit) Run(ctx context.Context, command GitCommand) error {
 	if command.FetchMode == GitFetchExactObject {
 		fetchAuthority = command.SHA
 	}
-	if err := git.run(ctx, directgit.Command{Dir: command.Directory, Args: []string{"fetch", "--no-tags", "--no-recurse-submodules", command.RemoteURL, "+" + fetchAuthority + ":" + internal}, Credential: command.Credential}, "fetch checkout"); err != nil {
+	if err := git.run(ctx, command, directgit.Command{Dir: command.Directory, Args: []string{"fetch", "--no-tags", "--no-recurse-submodules", command.RemoteURL, "+" + fetchAuthority + ":" + internal}, Credential: command.Credential}, "fetch checkout"); err != nil {
 		return err
 	}
-	if err := git.expect(ctx, command.Directory, []string{"rev-parse", internal}, command.SHA); err != nil {
+	if err := git.expect(ctx, command, []string{"rev-parse", internal}, command.SHA); err != nil {
 		return fmt.Errorf("forge-pr: fetched ref no longer matches observation")
 	}
-	if err := git.run(ctx, directgit.Command{Dir: command.Directory, Args: []string{"checkout", "--quiet", "--detach", command.SHA}}, "checkout exact commit"); err != nil {
+	if err := git.run(ctx, command, directgit.Command{Dir: command.Directory, Args: []string{"checkout", "--quiet", "--detach", command.SHA}}, "checkout exact commit"); err != nil {
 		return err
 	}
-	if err := git.expect(ctx, command.Directory, []string{"rev-parse", "HEAD"}, command.SHA); err != nil {
+	if err := git.expect(ctx, command, []string{"rev-parse", "HEAD"}, command.SHA); err != nil {
 		return err
 	}
-	if err := git.expect(ctx, command.Directory, []string{"status", "--porcelain=v1", "--untracked-files=no"}, ""); err != nil {
+	if err := git.expect(ctx, command, []string{"status", "--porcelain=v1", "--untracked-files=no"}, ""); err != nil {
 		return err
 	}
 	// A fetch by URL must not persist a remote. Refuse any saved remote, shallow
 	// boundary, alternate object database, worktree indirection, or gitlink.
 	for _, args := range [][]string{{"config", "--get-regexp", "^remote\\."}, {"rev-parse", "--is-shallow-repository"}, {"config", "--get", "core.worktree"}} {
-		result, err := git.runner.Run(ctx, directgit.Command{Dir: command.Directory, Args: args})
+		result, err := git.execute(ctx, command, directgit.Command{Dir: command.Directory, Args: args})
 		if err != nil {
 			return fmt.Errorf("forge-pr: inspect checkout")
 		}
@@ -103,15 +110,69 @@ func (git controlledGit) Run(ctx context.Context, command GitCommand) error {
 			return fmt.Errorf("forge-pr: inspect checkout")
 		}
 	}
+	if err := verifyGitDirectory(command); err != nil {
+		return err
+	}
 	for _, forbidden := range []string{filepath.Join(command.Directory, ".git", "shallow"), filepath.Join(command.Directory, ".git", "objects", "info", "alternates"), filepath.Join(command.Directory, ".git", "info", "sparse-checkout"), filepath.Join(command.Directory, ".git", "gitdir")} {
 		if _, err := os.Lstat(forbidden); err == nil {
 			return fmt.Errorf("forge-pr: checkout has forbidden git state")
 		}
 	}
-	if err := validateMaterializationBounds(ctx, command.Directory, snapshot.DefaultMaxSnapshotEntries, snapshot.DefaultMaxSnapshotContentBytes, snapshot.MaxSnapshotSymlinkTargetBytes); err != nil {
+	if err := verifyGitDirectory(command); err != nil {
 		return err
 	}
-	return validateRepositoryEvidence(ctx, command.Directory)
+	boundsErr := validateMaterializationBounds(ctx, command.Directory, snapshot.DefaultMaxSnapshotEntries, snapshot.DefaultMaxSnapshotContentBytes, snapshot.MaxSnapshotSymlinkTargetBytes)
+	if err := verifyGitDirectory(command); err != nil {
+		return err
+	}
+	if boundsErr != nil {
+		return boundsErr
+	}
+	evidenceErr := validateRepositoryEvidence(ctx, command.Directory)
+	if err := verifyGitDirectory(command); err != nil {
+		return err
+	}
+	if evidenceErr != nil {
+		return evidenceErr
+	}
+	return nil
+}
+
+func verifyGitDirectory(command GitCommand) error {
+	if command.verifyDirectory == nil {
+		return nil
+	}
+	if err := command.verifyDirectory(); err != nil {
+		return fmt.Errorf("forge-pr: checkout destination identity changed")
+	}
+	return nil
+}
+
+func (git controlledGit) execute(ctx context.Context, command GitCommand, process directgit.Command) (directgit.CommandResult, error) {
+	if err := verifyGitDirectory(command); err != nil {
+		return directgit.CommandResult{}, err
+	}
+	result, runErr := git.runner.Run(ctx, process)
+	if err := verifyGitDirectory(command); err != nil {
+		return directgit.CommandResult{}, err
+	}
+	return result, runErr
+}
+
+func (git controlledGit) run(ctx context.Context, command GitCommand, process directgit.Command, operation string) error {
+	result, err := git.execute(ctx, command, process)
+	if err != nil || result.ExitCode != 0 {
+		return fmt.Errorf("forge-pr: %s", operation)
+	}
+	return nil
+}
+
+func (git controlledGit) expect(ctx context.Context, command GitCommand, args []string, expected string) error {
+	result, err := git.execute(ctx, command, directgit.Command{Dir: command.Directory, Args: args})
+	if err != nil || result.ExitCode != 0 || strings.TrimSpace(result.Stdout) != expected {
+		return fmt.Errorf("forge-pr: verify checkout")
+	}
+	return nil
 }
 
 func validFetchAuthority(command GitCommand) bool {
@@ -123,21 +184,6 @@ func validFetchAuthority(command GitCommand) bool {
 	default:
 		return false
 	}
-}
-
-func (git controlledGit) run(ctx context.Context, command directgit.Command, operation string) error {
-	result, err := git.runner.Run(ctx, command)
-	if err != nil || result.ExitCode != 0 {
-		return fmt.Errorf("forge-pr: %s", operation)
-	}
-	return nil
-}
-func (git controlledGit) expect(ctx context.Context, dir string, args []string, expected string) error {
-	result, err := git.runner.Run(ctx, directgit.Command{Dir: dir, Args: args})
-	if err != nil || result.ExitCode != 0 || strings.TrimSpace(result.Stdout) != expected {
-		return fmt.Errorf("forge-pr: verify checkout")
-	}
-	return nil
 }
 
 func safeGitRef(ref string) bool {

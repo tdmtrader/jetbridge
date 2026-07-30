@@ -135,6 +135,11 @@ type GitCommand struct {
 	Ref        string
 	SHA        string
 	Credential []byte
+
+	// verifyDirectory is installed by In when Directory is backed by a
+	// retained os.Root. The production runner calls it around each pathname-
+	// based Git process so a moved or replaced destination fails closed.
+	verifyDirectory func() error
 }
 
 type GitRunner interface {
@@ -142,9 +147,11 @@ type GitRunner interface {
 }
 
 type Dependencies struct {
-	ObserverFactory ObserverFactory
-	GitRunner       GitRunner
-	Clock           func() time.Time
+	ObserverFactory   ObserverFactory
+	GitRunner         GitRunner
+	Clock             func() time.Time
+	BeforeMaterialize func() error
+	BeforeGit         func(GitCommand) error
 }
 
 func decodeRequest(reader io.Reader) (Request, error) {
