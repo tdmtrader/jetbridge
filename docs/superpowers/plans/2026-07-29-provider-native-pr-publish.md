@@ -91,7 +91,10 @@ Helm, GitHub REST API, Azure DevOps Git REST API 7.1.
   plus distinct protected read and trusted write credential references.
   Direct-Git rules retain their current fields and cannot route PR actions.
 - Materialize the verified nested Git payload of the exact change snapshot for
-  one GitHub ref-lease call; never pass the outer snapshot root as a worktree.
+  one provider-neutral Git smart-HTTP ref-lease call; never pass the outer
+  snapshot root as a worktree. Use that object-upload-plus-CAS path for both
+  GitHub and Azure DevOps. Azure REST ref updates remain a contract-tested
+  pre-existing-object seam and are not selected for a new local commit.
   Complete stale source/target leases as safe terminal reconciliation results
   rather than repeatedly reclaiming an obsolete pending operation.
 - Treat the impact assessor as required authority in every policy mode. A
@@ -888,7 +891,7 @@ go test ./agent/publisher ./agent/pullrequest/github \
 
 - [ ] **Step 3: Implement operation kinds and GitHub mutations**
 
-GitHub branch mutation uses `git push
+GitHub and Azure DevOps branch mutation use `git push
 --force-with-lease=<ref>:<caller-expected-head>` (or exact expected absence)
 through a new caller-sealed Git transport. It must not use the current
 direct-Git backend's observe-then-lease behavior or GitHub's unconditional ref
@@ -904,7 +907,9 @@ Policy resolution binds PR actions to an exact provider, repository, target
 branch, API base URL, credential-free repository URL, read credential
 reference, and write credential reference. The GitHub branch mutator reopens
 and verifies the nested Git payload from the exact candidate snapshot into
-bounded scratch storage before invoking the ref lease. Provider-neutral stale
+bounded scratch storage before invoking the ref lease; Azure production
+composition uses the same transport because REST ref update does not upload a
+locally produced Git object. Provider-neutral stale
 source/target errors complete the operation as requiring fresh reconciliation;
 they are not left pending for lease reclaim.
 

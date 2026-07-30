@@ -124,6 +124,13 @@ direct publication.
     final `repository-change/v1`, its post-rebase `validation/v1`, and its
     `publish-impact/v1`; all three participate in operation identity and
     durable publication inputs.
+20. **Branch publication must transport the exact Git object.** A ref-update
+    API can move a ref only to an object the forge already has; it cannot
+    publish Jetbridge's locally produced commit bytes. Day 1 therefore uses
+    the same verified Git smart-HTTP `--force-with-lease` object upload and
+    ref CAS for GitHub and Azure DevOps. Azure's REST 7.1 ref-update adapter
+    remains a contract-tested pre-existing-object seam, but production
+    composition does not select it for a new `repository-change/v1`.
 
 ## Invariants
 
@@ -402,8 +409,17 @@ Azure DevOps is pinned to REST API `7.1`. The adapter maps:
 - threaded comments and iteration contexts;
 - reviewer votes, including `-5` waiting-for-author;
 - PR/iteration statuses;
-- ref updates with explicit `oldObjectId` and `newObjectId`;
+- ref updates with explicit `oldObjectId` and `newObjectId` when the exact
+  object already exists in Azure Repos;
 - active, completed, abandoned, conflict, and policy states.
+
+The REST ref-update contract does not transport a locally produced Git object.
+Initial and revised branch publication therefore materializes the exact sealed
+Git payload and uses the policy-authorized, credential-free Azure repository
+URL with smart HTTP `--force-with-lease`. That one Git operation uploads the
+object and applies the caller-sealed source lease atomically. The Azure REST
+adapter remains covered for pre-existing-object ref updates, while the Day-1
+production bridge selects the verified Git transport for branch publication.
 
 Ready-for-author review batches are derived from Azure's durable system
 `VoteUpdate` threads, ordered by published time and thread ID, rather than
@@ -440,6 +456,7 @@ Relevant normative documentation:
 
 - [Azure DevOps pull requests REST 7.1](https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-requests?view=azure-devops-rest-7.1)
 - [Azure DevOps conditional ref updates](https://learn.microsoft.com/en-us/rest/api/azure/devops/git/refs/update-refs?view=azure-devops-rest-7.1)
+- [Azure DevOps Git pushes](https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pushes/create?view=azure-devops-rest-7.1)
 - [Azure DevOps PR iterations](https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-iterations/list?view=azure-devops-rest-7.1)
 - [Azure DevOps PR threads](https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-threads/list?view=azure-devops-rest-7.1)
 - [Azure DevOps PR statuses](https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-statuses?view=azure-devops-rest-7.1)
