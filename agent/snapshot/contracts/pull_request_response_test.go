@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/snapshot/contracts"
 )
 
@@ -64,5 +65,27 @@ func TestPullRequestResponseRejectsOversizedRepliesAndIdentifiers(t *testing.T) 
 	body.BatchID = strings.Repeat("a", 257)
 	if err := body.Validate(nil); err == nil || !strings.Contains(err.Error(), "batch id") {
 		t.Fatalf("oversized batch id validation error = %v", err)
+	}
+}
+
+func TestPullRequestResponseRev2RetainsPreBoundRepliesWhileCurrentRejectsThem(t *testing.T) {
+	body := validPullRequestResponseBody()
+	body.Replies = nil
+	for index := 0; index < 513; index++ {
+		body.Replies = append(body.Replies, contracts.PullRequestThreadResponse{ThreadID: fmt.Sprintf("thread-%03d", index), Body: "Updated in the latest revision."})
+	}
+	if err := body.Validate(nil); err == nil {
+		t.Fatal("current validation accepted over-cap replies")
+	}
+	ref := snapshot.TypeRef("pull-request-response/v1")
+	record, err := contracts.NewRecord(ref, []contracts.Subject{{ID: "primary", Role: contracts.SubjectRolePrimary, Input: "pr", Type: "pull-request/v1", Digest: snapshot.Digest("sha256:" + strings.Repeat("a", 64))}}, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rev2, _ := contracts.SchemaDigestForRevision(ref, 2)
+	record.Schema = rev2
+	context := validationContextFor(t, map[string]snapshot.SnapshotRef{"pr": {ID: 1, Type: "pull-request/v1", Digest: snapshot.Digest("sha256:" + strings.Repeat("a", 64))}})
+	if _, err := revalidateSealedFiles(t, "pull-request-response/v1", map[string][]byte{"record.json": marshalRecord(t, record)}, context); err != nil {
+		t.Fatalf("rev2 read rejected legacy replies: %v", err)
 	}
 }

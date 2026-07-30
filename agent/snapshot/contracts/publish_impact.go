@@ -42,6 +42,10 @@ type AgentImpactAssessment struct {
 }
 
 func (body PublishImpactBody) Validate(_ []Subject) error {
+	return body.validateForRevision(3)
+}
+
+func (body PublishImpactBody) validateForRevision(revision int) error {
 	if err := snapshot.Digest(body.BaselineDigest).Validate(); err != nil {
 		return fmt.Errorf("baseline digest: %w", err)
 	}
@@ -78,8 +82,10 @@ func (body PublishImpactBody) Validate(_ []Subject) error {
 	if err := validateSortedNonblankStrings("validation changes", body.ValidationChanges); err != nil {
 		return err
 	}
-	if err := validateMaxItems("rule results", len(body.RuleResults), maxPublishImpactRules); err != nil {
-		return err
+	if revision >= 3 {
+		if err := validateMaxItems("rule results", len(body.RuleResults), maxPublishImpactRules); err != nil {
+			return err
+		}
 	}
 	ruleIDs := make([]string, len(body.RuleResults))
 	failedDeterministicRule := false
@@ -197,7 +203,8 @@ func publishImpactBody(record Record[PublishImpactBody]) error {
 	if err := validateDeclaredBody(publishImpactType, record.Subjects, record.Body); err != nil {
 		return err
 	}
-	if err := record.Body.Validate(record.Subjects); err != nil {
+	revision, _ := SchemaRevisionFor(publishImpactType, record.Schema)
+	if err := record.Body.validateForRevision(revision); err != nil {
 		return fmt.Errorf("snapshot contracts: publish impact record: %w", err)
 	}
 	return nil

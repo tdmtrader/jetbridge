@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/snapshot/contracts"
 )
 
@@ -78,5 +79,26 @@ func TestPublishImpactRejectsOversizedCollectionsAndPaths(t *testing.T) {
 				t.Fatalf("Validate() error = %v, want %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestPublishImpactRev2RetainsPreBoundRulesWhileCurrentRejectsThem(t *testing.T) {
+	body := validPublishImpactBody()
+	body.RuleResults = nil
+	for index := 0; index < 513; index++ {
+		body.RuleResults = append(body.RuleResults, contracts.PublishImpactRule{ID: fmt.Sprintf("rule-%03d", index), Passed: true, Reason: "No deterministic policy matched."})
+	}
+	if err := body.Validate(nil); err == nil {
+		t.Fatal("current validation accepted over-cap rules")
+	}
+	ref := snapshot.TypeRef("publish-impact/v1")
+	record, err := contracts.NewRecord(ref, nil, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rev2, _ := contracts.SchemaDigestForRevision(ref, 2)
+	record.Schema = rev2
+	if _, err := revalidateSealedFiles(t, "publish-impact/v1", map[string][]byte{"record.json": marshalRecord(t, record)}, emptyValidationContext(t)); err != nil {
+		t.Fatalf("rev2 read rejected legacy rules: %v", err)
 	}
 }

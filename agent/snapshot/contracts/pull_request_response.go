@@ -23,18 +23,28 @@ type PullRequestThreadResponse struct {
 // thread belongs to the reopened pull-request/v1 observation and is deliberately
 // checked by ValidatePullRequestResponseAgainst.
 func (body PullRequestResponseBody) Validate(_ []Subject) error {
-	return body.validateIntrinsic()
+	return body.validateForRevision(3)
+}
+
+func (body PullRequestResponseBody) validateForRevision(revision int) error {
+	return body.validateIntrinsicForRevision(revision)
 }
 
 func (body PullRequestResponseBody) validateIntrinsic() error {
+	return body.validateIntrinsicForRevision(3)
+}
+
+func (body PullRequestResponseBody) validateIntrinsicForRevision(revision int) error {
 	if err := validatePullRequestIdentifier("batch id", body.BatchID); err != nil {
 		return err
 	}
 	if err := validateBoundedMarkdown("summary", body.Summary); err != nil {
 		return err
 	}
-	if err := validateMaxItems("replies", len(body.Replies), maxPullRequestReplies); err != nil {
-		return err
+	if revision >= 3 {
+		if err := validateMaxItems("replies", len(body.Replies), maxPullRequestReplies); err != nil {
+			return err
+		}
 	}
 	threadIDs := make([]string, len(body.Replies))
 	for index, reply := range body.Replies {
@@ -114,7 +124,8 @@ func pullRequestResponseBody(record Record[PullRequestResponseBody]) error {
 	if err := validatePullRequestResponseSubjects(record.Subjects); err != nil {
 		return fmt.Errorf("snapshot contracts: pull request response record: %w", err)
 	}
-	if err := record.Body.validateIntrinsic(); err != nil {
+	revision, _ := SchemaRevisionFor(pullRequestResponseType, record.Schema)
+	if err := record.Body.validateForRevision(revision); err != nil {
 		return fmt.Errorf("snapshot contracts: pull request response record: %w", err)
 	}
 	return nil
