@@ -26,6 +26,17 @@ const (
 	// (source_manifest and pre-manifest raw-YAML columns alike) were
 	// written with this key, and it is never rewritten in place.
 	LegacyWorkflowFileName = "workflow.yml"
+	// NodeFileName is the primary source definition for a reusable atomic node.
+	NodeFileName = "node.yaml"
+)
+
+// DefinitionKind identifies the independently-versioned executable source
+// object stored by the workflow subsystem.
+type DefinitionKind string
+
+const (
+	DefinitionKindWorkflow DefinitionKind = "workflow"
+	DefinitionKindNode     DefinitionKind = "node"
 )
 
 // Manifest is a workflow source tree: relative path -> UTF-8 content
