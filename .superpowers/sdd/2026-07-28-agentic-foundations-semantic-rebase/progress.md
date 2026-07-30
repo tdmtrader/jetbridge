@@ -428,10 +428,15 @@
     `1773106148`, with `CurrentVersion()`, `SupportedVersion()`, and
     `JETBRIDGE_VERSION` pinned together.
   - Verification: serial migration package and migrate-preflight direction
-    suite passed; `make test-unit` and Helm lint passed. `make test-dev-mcp`,
-    Fly integration, and ATC integration each ran exactly once and were
-    environment-blocked by host volume exhaustion before meaningful assertion
-    evaluation. No retry or shared-cache cleanup was performed by this task.
+    suite passed; `make test-unit` and Helm lint passed. The first
+    `make test-dev-mcp`, Fly integration, and ATC integration attempts were
+    environment-blocked by host volume exhaustion. The independent review found
+    no Critical, High, or Important issue but treated those results as
+    acceptance blockers. After the parent coordinator removed only the obsolete
+    accepted-Task-6 cache and confirmed 2.2 GiB free, iteration 2 reran exactly
+    those three targets once, serially: dev-MCP passed all three packages, Fly
+    integration passed 666/666, and ATC integration passed 24/24. No space
+    error recurred; no unrelated target or gate was rerun.
   - Docker was unavailable, so local Hangar/Kubernetes targets were correctly
     prerequisite-gated. One read-only Borg inventory found only a mutable
     `registry.home/jetbridge:latest` daemon image, not an approved digest or
@@ -440,8 +445,7 @@
   - Frozen migration diff, checksums, `git diff --check`, and direct-publisher
     residue gates passed. The sole retired publisher trace is the one
     fail-closed Helm `agentPublisherGateway` tombstone stanza.
-  - Status: **Implemented; independent whole-branch review pending parent
-    coordinator verdict.**
+  - Status: **Accepted in independent whole-branch review iteration 2.**
 
 ## Current milestone acceptance
 
