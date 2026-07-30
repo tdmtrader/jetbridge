@@ -104,6 +104,7 @@ exit 9
 		"credential.helper=",
 		"fetch.recurseSubmodules=false",
 		"submodule.recurse=false",
+		"http.followRedirects=false",
 		"protocol.ext.allow=never",
 	} {
 		if !strings.Contains(values["args"], config) {
@@ -127,6 +128,125 @@ exit 9
 	}
 	if string(secret) != "credential-that-must-not-leak" {
 		t.Fatal("runner mutated caller-owned credential bytes")
+	}
+}
+
+func TestCommandRunnerUsesExplicitPrivateBearerHeaderWithoutTokenInference(t *testing.T) {
+	tempRoot := t.TempDir()
+	recordPath := filepath.Join(t.TempDir(), "record")
+	environmentPath := filepath.Join(t.TempDir(), "environment")
+	script := writeExecutable(t, `#!/bin/sh
+{
+	printf 'args=%s\n' "$*"
+	printf 'global=%s\n' "$GIT_CONFIG_GLOBAL"
+	printf 'credential=%s\n' "${CONCOURSE_GIT_CREDENTIAL_FILE-unset}"
+	printf 'askpass=%s\n' "${GIT_ASKPASS-unset}"
+	mode=$(stat -f '%Lp' "$GIT_CONFIG_GLOBAL" 2>/dev/null || stat -c '%a' "$GIT_CONFIG_GLOBAL")
+	printf 'mode=%s\n' "$mode"
+	printf '%s\n' 'config-start'
+	cat "$GIT_CONFIG_GLOBAL"
+	printf '%s\n' 'config-end'
+} > "$DIRECTGIT_TEST_RECORD"
+env > "$DIRECTGIT_TEST_ENVIRONMENT"
+header=$(sed -n 's/^[[:space:]]*extraHeader = "\(.*\)"/\1/p' "$GIT_CONFIG_GLOBAL")
+printf 'stdout contains %s\n' "$header"
+printf 'stderr contains %s\n' "$header" >&2
+exit 7
+`)
+	t.Setenv("DIRECTGIT_TEST_RECORD", recordPath)
+	t.Setenv("DIRECTGIT_TEST_ENVIRONMENT", environmentPath)
+	runner, err := newCommandRunner(script, tempRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret := []byte("ghp_text-must-not-select-askpass")
+
+	result, err := runner.Run(context.Background(), Command{
+		Args:           []string{"ls-remote", "https://dev.azure.example/project/_git/widget"},
+		Credential:     secret,
+		Authentication: AuthenticationBearer,
+		NoRepository:   true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ExitCode != 7 ||
+		strings.Contains(result.Stdout+result.Stderr, string(secret)) ||
+		!strings.Contains(result.Stdout+result.Stderr, "[REDACTED]") {
+		t.Fatalf("bearer command result = %+v", result)
+	}
+
+	record, err := os.ReadFile(recordPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := parseRecord(string(record))
+	if values["credential"] != "unset" || values["askpass"] != "unset" {
+		t.Fatalf("bearer command created askpass material: %s", record)
+	}
+	if values["mode"] != "600" {
+		t.Fatalf("bearer config mode = %q, want 600", values["mode"])
+	}
+	if !strings.Contains(string(record), `extraHeader = "Authorization: Bearer ghp_text-must-not-select-askpass"`) ||
+		!strings.Contains(string(record), "followRedirects = false") {
+		t.Fatalf("bearer config = %s", record)
+	}
+	if strings.Contains(values["args"], string(secret)) {
+		t.Fatalf("bearer token appeared in argv: %s", values["args"])
+	}
+	environment, err := os.ReadFile(environmentPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(environment), string(secret)) {
+		t.Fatalf("bearer token appeared in process environment: %s", environment)
+	}
+	configPath := values["global"]
+	if configPath == "" || configPath == os.DevNull {
+		t.Fatalf("bearer config path = %q", configPath)
+	}
+	if _, err := os.Lstat(configPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("bearer config still exists at %q: %v", configPath, err)
+	}
+	entries, err := os.ReadDir(tempRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("bearer credential temp root not empty: %#v", entries)
+	}
+	if string(secret) != "ghp_text-must-not-select-askpass" {
+		t.Fatal("runner mutated caller-owned bearer token")
+	}
+}
+
+func TestScrubCredentialFileOverwritesBearerConfiguration(t *testing.T) {
+	directory := t.TempDir()
+	configPath := filepath.Join(directory, "git-config")
+	body := []byte("[http]\n\textraHeader = \"Authorization: Bearer scrub-me\"\n")
+	if err := os.WriteFile(configPath, body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+
+	if err := scrubCredentialFile(root, "git-config"); err != nil {
+		t.Fatal(err)
+	}
+	scrubbed, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scrubbed) != len(body) {
+		t.Fatalf("scrubbed size = %d, want %d", len(scrubbed), len(body))
+	}
+	for index, value := range scrubbed {
+		if value != 0 {
+			t.Fatalf("scrubbed byte %d = %d, want zero", index, value)
+		}
 	}
 }
 

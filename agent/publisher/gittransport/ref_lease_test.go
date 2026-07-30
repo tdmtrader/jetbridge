@@ -283,6 +283,139 @@ func TestRefLeaseDoesNotExposeCredentialFromRunnerFailures(t *testing.T) {
 	}
 }
 
+func TestRefLeaseAuthenticationModeIsExplicitAndNeverInferredFromTokenText(t *testing.T) {
+	const (
+		remote = "https://dev.azure.example/project/_git/widget"
+		source = "refs/heads/agent/upgrade"
+		target = "refs/heads/main"
+	)
+	for _, test := range []struct {
+		name      string
+		token     string
+		construct func(directgit.Runner, pullrequest.TokenSource, string) (*gittransport.RefLease, error)
+		want      directgit.AuthenticationMode
+	}{
+		{
+			name:  "default askpass compatibility with Azure-looking token",
+			token: "azure-oauth-looking-token",
+			construct: func(runner directgit.Runner, token pullrequest.TokenSource, repository string) (*gittransport.RefLease, error) {
+				return gittransport.NewRefLease(runner, remote, repository, token, time.Second)
+			},
+			want: directgit.AuthenticationDefault,
+		},
+		{
+			name:  "explicit askpass with Azure-looking token",
+			token: "azure-oauth-looking-token",
+			construct: func(runner directgit.Runner, token pullrequest.TokenSource, repository string) (*gittransport.RefLease, error) {
+				return gittransport.NewRefLeaseWithAuthentication(
+					runner, remote, repository, token,
+					gittransport.AuthenticationAskpass, time.Second,
+				)
+			},
+			want: directgit.AuthenticationAskpass,
+		},
+		{
+			name:  "explicit bearer with GitHub-looking token",
+			token: "ghp_github-looking-token",
+			construct: func(runner directgit.Runner, token pullrequest.TokenSource, repository string) (*gittransport.RefLease, error) {
+				return gittransport.NewRefLeaseWithAuthentication(
+					runner, remote, repository, token,
+					gittransport.AuthenticationBearer, time.Second,
+				)
+			},
+			want: directgit.AuthenticationBearer,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var authenticated []directgit.Command
+			runner := &recordingRunner{run: func(command directgit.Command) directgit.CommandResult {
+				switch command.Args[0] {
+				case "cat-file":
+					return directgit.CommandResult{}
+				case "ls-remote":
+					if len(command.Credential) > 0 {
+						authenticated = append(authenticated, command)
+					}
+					return directgit.CommandResult{
+						Stdout: objectID('a') + "\t" + source + "\n" +
+							objectID('d') + "\t" + target + "\n",
+					}
+				default:
+					t.Fatalf("unexpected command: %#v", command)
+					return directgit.CommandResult{}
+				}
+			}}
+			transport, err := test.construct(runner, staticToken(test.token), t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = transport.CompareAndSwapBranch(
+				context.Background(),
+				pullrequest.BranchMutation{
+					Locator: pullrequest.Locator{
+						Provider:   pullrequest.ProviderAzureDevOps,
+						Repository: "project/widget",
+					},
+					Ref: source, TargetRef: target,
+					ExpectedSource: contracts.PullRequestHeadExpectation{
+						Exists: true, SHA: objectID('a'),
+					},
+					ExpectedTargetSHA: objectID('b'),
+					NewSourceSHA:      objectID('c'),
+					OperationKey:      operationKey('8'),
+				},
+			)
+			if !errors.Is(err, gittransport.ErrStaleTarget) {
+				t.Fatalf("CompareAndSwapBranch error = %v, want stale target", err)
+			}
+			if len(authenticated) != 1 ||
+				authenticated[0].Authentication != test.want ||
+				string(authenticated[0].Credential) != test.token {
+				t.Fatalf("authenticated commands = %#v, want mode %q", authenticated, test.want)
+			}
+		})
+	}
+}
+
+func TestRefLeasePreservesCredentialResolutionDeadline(t *testing.T) {
+	runner := &recordingRunner{run: func(command directgit.Command) directgit.CommandResult {
+		if len(command.Args) == 0 || command.Args[0] != "cat-file" {
+			t.Fatalf("unexpected Git command: %#v", command.Args)
+		}
+		return directgit.CommandResult{}
+	}}
+	transport, err := gittransport.NewRefLease(
+		runner,
+		"https://github.example/acme/widget.git",
+		t.TempDir(),
+		deadlineToken{},
+		5*time.Millisecond,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = transport.CompareAndSwapBranch(
+		context.Background(),
+		pullrequest.BranchMutation{
+			Locator: pullrequest.Locator{
+				Provider: pullrequest.ProviderGitHub, Repository: "acme/widget",
+			},
+			Ref:               "refs/heads/agent/upgrade",
+			TargetRef:         "refs/heads/main",
+			ExpectedSource:    contracts.PullRequestHeadExpectation{},
+			ExpectedTargetSHA: objectID('b'),
+			NewSourceSHA:      objectID('c'),
+			OperationKey:      operationKey('9'),
+		},
+	)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf(
+			"CompareAndSwapBranch error = %v, want context deadline exceeded",
+			err,
+		)
+	}
+}
+
 type recordingRunner struct {
 	mu    sync.Mutex
 	calls []directgit.Command
@@ -324,6 +457,13 @@ type staticToken string
 
 func (token staticToken) Token(context.Context) (string, error) {
 	return string(token), nil
+}
+
+type deadlineToken struct{}
+
+func (deadlineToken) Token(ctx context.Context) (string, error) {
+	<-ctx.Done()
+	return "", ctx.Err()
 }
 
 func newRefLease(t *testing.T, runner directgit.Runner, remote string) *gittransport.RefLease {

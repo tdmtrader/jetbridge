@@ -129,7 +129,43 @@ func (inspector *SnapshotChangeInspector) Inspect(ctx context.Context, request R
 	if request.Publisher != GitPublisher || request.Input.Type != snapshot.TypeRef("repository-change/v1") {
 		return RepositoryChange{}, fmt.Errorf("%w: snapshot change inspector requires repository-change/v1", ErrInvalidRequest)
 	}
-	manifest, found, err := inspector.metadata.GetAuthorized(ctx, request.Authority.TeamID, request.Input.ID)
+	return inspector.inspectExactRepositoryChange(ctx, request.Authority.TeamID, request.Input)
+}
+
+// InspectPRCandidate reopens the exact repository-change/v1 candidate named by
+// a persisted branch-publication action. It deliberately validates that action
+// directly instead of synthesizing a legacy publisher Request, so every
+// authority and semantic input remains bound to its durable form.
+func (inspector *SnapshotChangeInspector) InspectPRCandidate(
+	ctx context.Context,
+	request BranchPublicationRequest,
+) (RepositoryChange, error) {
+	if ctx == nil {
+		return RepositoryChange{}, fmt.Errorf("%w: context is required", ErrInvalidRequest)
+	}
+	if err := ctx.Err(); err != nil {
+		return RepositoryChange{}, err
+	}
+	action := PRAction{Kind: OperationPublishPRBranch, Branch: &request}
+	if err := action.ValidatePersisted(); err != nil {
+		return RepositoryChange{}, err
+	}
+	return inspector.inspectExactRepositoryChange(
+		ctx,
+		request.Authority.TeamID,
+		request.Candidate,
+	)
+}
+
+func (inspector *SnapshotChangeInspector) inspectExactRepositoryChange(
+	ctx context.Context,
+	teamID int,
+	reference snapshot.SnapshotRef,
+) (RepositoryChange, error) {
+	if reference.Type != snapshot.TypeRef("repository-change/v1") {
+		return RepositoryChange{}, fmt.Errorf("%w: snapshot change inspector requires repository-change/v1", ErrInvalidRequest)
+	}
+	manifest, found, err := inspector.metadata.GetAuthorized(ctx, teamID, reference.ID)
 	if err != nil {
 		return RepositoryChange{}, fmt.Errorf("publisher snapshot inspector: authorize repository change: %w", err)
 	}
@@ -139,7 +175,7 @@ func (inspector *SnapshotChangeInspector) Inspect(ctx context.Context, request R
 	if err := manifest.Validate(); err != nil {
 		return RepositoryChange{}, fmt.Errorf("publisher snapshot inspector: invalid persisted repository change: %w", err)
 	}
-	if manifest.ID != request.Input.ID || manifest.Type != request.Input.Type || manifest.Digest != request.Input.Digest {
+	if manifest.ID != reference.ID || manifest.Type != reference.Type || manifest.Digest != reference.Digest {
 		return RepositoryChange{}, fmt.Errorf("publisher snapshot inspector: authorized snapshot does not match the exact requested reference")
 	}
 	if manifest.ContentState != snapshot.ContentStateAvailable {

@@ -25,15 +25,24 @@ var (
 	operationKeyPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 )
 
+type AuthenticationMode = directgit.AuthenticationMode
+
+const (
+	AuthenticationDefault = directgit.AuthenticationDefault
+	AuthenticationAskpass = directgit.AuthenticationAskpass
+	AuthenticationBearer  = directgit.AuthenticationBearer
+)
+
 // RefLease binds the exact policy-authorized remote, materialized candidate
 // repository, and credential source. Unlike the direct-Git branch publisher,
 // it never derives a lease from an observation made inside the transport.
 type RefLease struct {
-	runner     directgit.Runner
-	remoteURL  string
-	repository string
-	token      pullrequest.TokenSource
-	timeout    time.Duration
+	runner         directgit.Runner
+	remoteURL      string
+	repository     string
+	token          pullrequest.TokenSource
+	authentication AuthenticationMode
+	timeout        time.Duration
 }
 
 func NewRefLease(
@@ -43,28 +52,90 @@ func NewRefLease(
 	token pullrequest.TokenSource,
 	timeout time.Duration,
 ) (*RefLease, error) {
+	return newRefLease(
+		runner,
+		remoteURL,
+		repository,
+		token,
+		AuthenticationDefault,
+		timeout,
+	)
+}
+
+func NewRefLeaseWithAuthentication(
+	runner directgit.Runner,
+	remoteURL string,
+	repository string,
+	token pullrequest.TokenSource,
+	authentication AuthenticationMode,
+	timeout time.Duration,
+) (*RefLease, error) {
+	return newRefLease(
+		runner,
+		remoteURL,
+		repository,
+		token,
+		authentication,
+		timeout,
+	)
+}
+
+func newRefLease(
+	runner directgit.Runner,
+	remoteURL string,
+	repository string,
+	token pullrequest.TokenSource,
+	authentication AuthenticationMode,
+	timeout time.Duration,
+) (*RefLease, error) {
 	if nilInterface(runner) || nilInterface(token) {
 		return nil, fmt.Errorf("git transport: runner and credential source are required")
 	}
+	switch authentication {
+	case AuthenticationDefault, AuthenticationAskpass, AuthenticationBearer:
+	default:
+		return nil, fmt.Errorf("git transport: authentication mode is invalid")
+	}
+	if err := validateRemoteURL(remoteURL); err != nil {
+		return nil, err
+	}
+	if err := validateRepositoryPath(repository); err != nil {
+		return nil, err
+	}
+	if err := validateTimeout(timeout); err != nil {
+		return nil, err
+	}
+	return &RefLease{
+		runner: runner, remoteURL: remoteURL, repository: repository,
+		token: token, authentication: authentication, timeout: timeout,
+	}, nil
+}
+
+func validateRemoteURL(remoteURL string) error {
 	parsed, err := url.Parse(remoteURL)
 	if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") ||
 		parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" ||
 		parsed.ForceQuery || parsed.Fragment != "" ||
 		parsed.Path == "" || parsed.Path == "/" {
-		return nil, fmt.Errorf("git transport: remote must be an absolute http or https URL without credentials, query, or fragment")
+		return fmt.Errorf("git transport: remote must be an absolute http or https URL without credentials, query, or fragment")
 	}
+	return nil
+}
+
+func validateRepositoryPath(repository string) error {
 	if repository == "" || !filepath.IsAbs(repository) ||
 		filepath.Clean(repository) != repository ||
 		repository == string(filepath.Separator) {
-		return nil, fmt.Errorf("git transport: materialized repository must be an absolute clean non-root path")
+		return fmt.Errorf("git transport: materialized repository must be an absolute clean non-root path")
 	}
+	return nil
+}
+
+func validateTimeout(timeout time.Duration) error {
 	if timeout <= 0 || timeout > 5*time.Minute {
-		return nil, fmt.Errorf("git transport: timeout is invalid")
+		return fmt.Errorf("git transport: timeout is invalid")
 	}
-	return &RefLease{
-		runner: runner, remoteURL: remoteURL, repository: repository,
-		token: token, timeout: timeout,
-	}, nil
+	return nil
 }
 
 func (transport *RefLease) CompareAndSwapBranch(
@@ -100,7 +171,13 @@ func (transport *RefLease) CompareAndSwapBranch(
 	}
 
 	rawToken, err := transport.token.Token(bounded)
-	if err != nil || !validCredential(rawToken) {
+	if err != nil {
+		if contextErr := bounded.Err(); contextErr != nil {
+			return pullrequest.BranchResult{}, contextErr
+		}
+		return pullrequest.BranchResult{}, fmt.Errorf("git transport: credential unavailable")
+	}
+	if !validCredential(rawToken) {
 		return pullrequest.BranchResult{}, fmt.Errorf("git transport: credential unavailable")
 	}
 	credential := []byte(rawToken)
@@ -126,8 +203,9 @@ func (transport *RefLease) CompareAndSwapBranch(
 
 	expectedSource := mutation.ExpectedSource.SHA
 	pushed, err := transport.runner.Run(bounded, directgit.Command{
-		Dir:        transport.repository,
-		Credential: credential,
+		Dir:            transport.repository,
+		Credential:     credential,
+		Authentication: transport.authentication,
 		Args: []string{
 			"push",
 			"--porcelain",
@@ -178,9 +256,10 @@ func (transport *RefLease) observeHeads(
 	mutation pullrequest.BranchMutation,
 ) (string, string, error) {
 	result, err := transport.runner.Run(ctx, directgit.Command{
-		Args:         []string{"ls-remote", "--refs", transport.remoteURL, mutation.Ref, mutation.TargetRef},
-		Credential:   credential,
-		NoRepository: true,
+		Args:           []string{"ls-remote", "--refs", transport.remoteURL, mutation.Ref, mutation.TargetRef},
+		Credential:     credential,
+		Authentication: transport.authentication,
+		NoRepository:   true,
 	})
 	if err != nil {
 		if contextErr := ctx.Err(); contextErr != nil {
