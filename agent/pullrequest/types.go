@@ -20,6 +20,8 @@ const (
 	maxRefBytes                = 512
 	maxIterationBytes          = 256
 	maxCursorBytes             = 4096
+	maxReviewBatches           = 128
+	maxThreads                 = 512
 )
 
 // Provider is deliberately closed for Day 1. Adapters normalize their native
@@ -49,9 +51,16 @@ type Cursor string
 type ReviewBatch = contracts.PullRequestReviewBatch
 type Thread = contracts.PullRequestThread
 
-// Observation is one normalized provider observation. It is not a sealed
-// pull-request/v1 record yet: ActionFor selects the platform-authored trigger
-// without asking a provider adapter to fabricate that trigger.
+// Observation is one normalized provider observation. ReviewBatches is a
+// strict delta: it contains only ready batches not acknowledged by the Cursor
+// passed to Observer.Observe. The core cannot infer this by decoding Cursor,
+// because Cursor is deliberately opaque. GitHub and Azure adapter conformance
+// suites (plan Tasks 5 and 13) must prove that acknowledged batches are not
+// replayed and that each new batch advances the cursor.
+//
+// Observation is not a sealed pull-request/v1 record yet: ActionFor selects
+// the platform-authored trigger without asking a provider adapter to fabricate
+// that trigger.
 type Observation struct {
 	Locator
 	Cursor         Cursor                                `json:"cursor"`
@@ -103,6 +112,9 @@ func (observation Observation) Validate() error {
 	if err := observation.Cursor.Validate(); err != nil {
 		return err
 	}
+	if observation.State != contracts.PullRequestMissing && observation.Cursor == "" {
+		return fmt.Errorf("%s pull request requires a non-empty cursor", observation.State)
+	}
 	if err := validateRef("source ref", observation.SourceRef); err != nil {
 		return err
 	}
@@ -118,6 +130,12 @@ func (observation Observation) Validate() error {
 	if err := validateState(observation); err != nil {
 		return err
 	}
+	if len(observation.Threads) > maxThreads {
+		return fmt.Errorf("threads allows at most %d items", maxThreads)
+	}
+	if len(observation.ReviewBatches) > maxReviewBatches {
+		return fmt.Errorf("review batches allows at most %d items", maxReviewBatches)
+	}
 	threadIDs := make(map[string]struct{}, len(observation.Threads))
 	previousThreadID := ""
 	for index, thread := range observation.Threads {
@@ -131,6 +149,7 @@ func (observation Observation) Validate() error {
 		previousThreadID = thread.ID
 	}
 	previousBatchID := ""
+	reviewIDs := make(map[string]struct{}, len(observation.ReviewBatches))
 	for index, batch := range observation.ReviewBatches {
 		if index > 0 && previousBatchID >= batch.ID {
 			return fmt.Errorf("review batches must be lexicographically sorted by id")
@@ -138,6 +157,10 @@ func (observation Observation) Validate() error {
 		if err := batch.Validate(threadIDs); err != nil {
 			return fmt.Errorf("review_batches[%d]: %w", index, err)
 		}
+		if _, found := reviewIDs[batch.ReviewID]; found {
+			return fmt.Errorf("review_batches[%d] review id %q is duplicate", index, batch.ReviewID)
+		}
+		reviewIDs[batch.ReviewID] = struct{}{}
 		previousBatchID = batch.ID
 	}
 	return nil
@@ -251,6 +274,9 @@ func validateURL(value string) error {
 }
 
 // Observer is the read-only provider seam used by the PR resource checker.
+// Implementations may decode the supplied provider cursor internally, but the
+// returned cursor remains opaque to callers and ReviewBatches must contain
+// only the strictly newer, unacknowledged delta.
 type Observer interface {
 	Observe(context.Context, Locator, Cursor) (Observation, error)
 }

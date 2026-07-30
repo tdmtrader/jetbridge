@@ -1,6 +1,7 @@
 package pullrequest_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -9,8 +10,7 @@ import (
 )
 
 func TestObservationValidateAcceptsOpaqueCursorAndCopiesOwnedData(t *testing.T) {
-	observation := baseObservation()
-	observation.Cursor = pullrequest.Cursor(`{not-json-and-intentionally-opaque`)
+	observation := reviewObservation(`{not-json-and-intentionally-opaque`, "batch-2", "review-2")
 
 	if err := observation.Validate(); err != nil {
 		t.Fatalf("validate opaque cursor: %v", err)
@@ -37,6 +37,7 @@ func TestObservationValidateRejectsInvalidProviderContextAndOrdering(t *testing.
 			observation.Mergeability = contracts.PullRequestUnknown
 			observation.ExternalID, observation.URL, observation.SourceSHA = "", "", ""
 			observation.ExpectedSource = &contracts.PullRequestHeadExpectation{Exists: true, SHA: sha('a')}
+			observation.Cursor = ""
 			observation.ReviewBatches, observation.Threads = nil, nil
 		}},
 		{"missing rejects external id", func(observation *pullrequest.Observation) {
@@ -49,8 +50,33 @@ func TestObservationValidateRejectsInvalidProviderContextAndOrdering(t *testing.
 		{"oversized cursor", func(observation *pullrequest.Observation) {
 			observation.Cursor = pullrequest.Cursor(strings.Repeat("x", 4097))
 		}},
+		{"active empty cursor", func(observation *pullrequest.Observation) { observation.Cursor = "" }},
+		{"completed empty cursor", func(observation *pullrequest.Observation) {
+			*observation = terminalObservation(contracts.PullRequestCompleted, "")
+		}},
+		{"abandoned empty cursor", func(observation *pullrequest.Observation) {
+			*observation = terminalObservation(contracts.PullRequestAbandoned, "")
+		}},
 		{"unsorted batches", func(observation *pullrequest.Observation) {
+			*observation = reviewObservation("cursor-2", "batch-1", "review-1")
 			observation.ReviewBatches = append(observation.ReviewBatches, contracts.PullRequestReviewBatch{ID: "batch-0", ReviewID: "review-0", CommitSHA: sha('a'), Reviewer: "reviewer", Ready: true, ThreadIDs: []string{"thread-1"}})
+		}},
+		{"duplicate review identity", func(observation *pullrequest.Observation) {
+			*observation = reviewObservation("cursor-2", "batch-1", "review-1")
+			observation.ReviewBatches = append(observation.ReviewBatches, contracts.PullRequestReviewBatch{ID: "batch-2", ReviewID: "review-1", CommitSHA: sha('a'), Reviewer: "reviewer", Ready: true, ThreadIDs: []string{"thread-1"}})
+		}},
+		{"too many review batches", func(observation *pullrequest.Observation) {
+			observation.ReviewBatches = make([]contracts.PullRequestReviewBatch, 129)
+			for index := range observation.ReviewBatches {
+				id := fmt.Sprintf("batch-%03d", index)
+				observation.ReviewBatches[index] = contracts.PullRequestReviewBatch{ID: id, ReviewID: "review-" + id, CommitSHA: sha('a'), Reviewer: "reviewer", Ready: true}
+			}
+		}},
+		{"too many threads", func(observation *pullrequest.Observation) {
+			observation.Threads = make([]contracts.PullRequestThread, 513)
+			for index := range observation.Threads {
+				observation.Threads[index] = contracts.PullRequestThread{ID: fmt.Sprintf("thread-%03d", index), Iteration: "1"}
+			}
 		}},
 	}
 

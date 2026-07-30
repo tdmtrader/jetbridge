@@ -17,16 +17,17 @@ func TestActionForTriggerPrecedenceAndAcknowledgedState(t *testing.T) {
 		actionable  bool
 	}{
 		{"unchanged", baseObservation(), basePolicy(), "", false},
-		{"github submitted review", observationWithCursor("github-review-2"), basePolicy(), pullrequest.ActionReviewBatch, true},
-		{"azure ready vote", observationWithCursor(`azure:{"vote":-5,"reviewer":"alice"}`), basePolicy(), pullrequest.ActionReviewBatch, true},
+		{"github submitted review", reviewObservation("github-review-2", "batch-2", "review-2"), basePolicy(), pullrequest.ActionReviewBatch, true},
+		{"azure ready vote", reviewObservation(`azure:{"vote":-5,"reviewer":"alice"}`, "batch-2", "vote-alice-2"), basePolicy(), pullrequest.ActionReviewBatch, true},
 		{"unchanged conflict", conflictedObservation("cursor-1"), basePolicy(), "", false},
 		{"changed conflict signature", conflictedObservation("cursor-2"), basePolicy(), pullrequest.ActionConflict, true},
 		{"target movement before freshness", observationWithTarget(sha('c')), policyWithAge(5*time.Hour + 59*time.Minute), "", false},
 		{"target movement at freshness", observationWithTarget(sha('c')), policyWithAge(6 * time.Hour), pullrequest.ActionFreshness, true},
 		{"target movement after freshness", observationWithTarget(sha('c')), policyWithAge(7 * time.Hour), pullrequest.ActionFreshness, true},
-		{"equivalent active action", observationWithCursor("github-review-2"), policyWithActiveReview(), "", false},
+		{"equivalent active action", reviewObservation("github-review-2", "batch-2", "review-2"), policyWithActiveReview(), "", false},
 		{"completed", terminalObservation(contracts.PullRequestCompleted, "completed-2"), basePolicy(), pullrequest.ActionCompleted, true},
 		{"abandoned", terminalObservation(contracts.PullRequestAbandoned, "abandoned-2"), basePolicy(), pullrequest.ActionAbandoned, true},
+		{"first terminal observation with empty acknowledged cursor", terminalObservation(contracts.PullRequestCompleted, "completed-1"), policyWithLastCursor(""), pullrequest.ActionCompleted, true},
 		{"terminal wins over review", terminalObservation(contracts.PullRequestCompleted, "completed-2"), policyWithReadyReview(), pullrequest.ActionCompleted, true},
 		{"review wins over conflict and freshness", conflictedReviewObservation("cursor-2"), policyWithAge(6 * time.Hour), pullrequest.ActionReviewBatch, true},
 		{"missing is never actionable", missingObservation(), basePolicy(), "", false},
@@ -49,7 +50,7 @@ func TestActionForTriggerPrecedenceAndAcknowledgedState(t *testing.T) {
 }
 
 func TestActionForDigestIsDeterministicOpaqueAndDetached(t *testing.T) {
-	observation := observationWithCursor(`azure:{"opaque":"cursor"}`)
+	observation := reviewObservation(`azure:{"opaque":"cursor"}`, "batch-2", "review-2")
 	policy := basePolicy()
 	first, actionable, err := pullrequest.ActionFor(observation, policy)
 	if err != nil || !actionable {
@@ -70,19 +71,40 @@ func TestActionForDigestIsDeterministicOpaqueAndDetached(t *testing.T) {
 		t.Fatal("invalid mutated observation must be rejected rather than normalized")
 	}
 
-	changedObservation := observationWithCursor(`azure:{"opaque":"different"}`)
+	changedObservation := reviewObservation(`azure:{"opaque":"different"}`, "batch-3", "review-3")
 	changed, actionable, err = pullrequest.ActionFor(changedObservation, policy)
 	if err != nil || !actionable || changed.Digest == first.Digest {
 		t.Fatalf("cursor mutation did not produce an exact distinct digest: %#v %v %v", changed, actionable, err)
 	}
 
-	headChanged := observationWithCursor(`azure:{"opaque":"cursor"}`)
+	headChanged := reviewObservation(`azure:{"opaque":"cursor"}`, "batch-2", "review-2")
 	headChanged.SourceSHA = sha('d')
 	headChanged.ReviewBatches[0].CommitSHA = sha('d')
 	headChanged.Threads[0].Comments[0].CommitSHA = sha('d')
 	changed, actionable, err = pullrequest.ActionFor(headChanged, policy)
 	if err != nil || !actionable || changed.Digest == first.Digest {
 		t.Fatalf("source-head mutation did not produce an exact distinct digest: %#v %v %v", changed, actionable, err)
+	}
+}
+
+func TestActionForFreshnessDigestUsesAcknowledgedDeadlineBucket(t *testing.T) {
+	observation := observationWithTarget(sha('c'))
+	policy := basePolicy()
+	policy.Now = policy.LastReconciledAt.Add(6 * time.Hour)
+
+	first, actionable, err := pullrequest.ActionFor(observation, policy)
+	if err != nil || !actionable || first.Kind != pullrequest.ActionFreshness {
+		t.Fatalf("hour-six freshness = %#v, %v, %v", first, actionable, err)
+	}
+	policy.Now = policy.LastReconciledAt.Add(12 * time.Hour)
+	later, actionable, err := pullrequest.ActionFor(observation, policy)
+	if err != nil || !actionable || later.Digest != first.Digest {
+		t.Fatalf("hour-twelve freshness digest changed: %q != %q (%v, %v)", later.Digest, first.Digest, actionable, err)
+	}
+	policy.ActiveActionDigest = first.Digest
+	_, actionable, err = pullrequest.ActionFor(observation, policy)
+	if err != nil || actionable {
+		t.Fatalf("equivalent active freshness action was not suppressed: %v, %v", actionable, err)
 	}
 }
 
@@ -105,8 +127,6 @@ func baseObservation() pullrequest.Observation {
 		Cursor:  "cursor-1", URL: "https://github.example/acme/widget/pull/42",
 		State: contracts.PullRequestActive, Mergeability: contracts.PullRequestMergeable,
 		SourceRef: "refs/heads/agent/change", SourceSHA: sha('a'), TargetRef: "refs/heads/main", TargetSHA: sha('b'), Iteration: "1",
-		ReviewBatches: []contracts.PullRequestReviewBatch{{ID: "batch-1", ReviewID: "review-1", CommitSHA: sha('a'), Reviewer: "reviewer", Ready: true, ThreadIDs: []string{"thread-1"}}},
-		Threads:       []contracts.PullRequestThread{{ID: "thread-1", Iteration: "1", Comments: []contracts.PullRequestComment{{ID: "comment-1", Author: "author", Body: "body", CommitSHA: sha('a')}}}},
 	}
 }
 
@@ -114,9 +134,11 @@ func basePolicy() pullrequest.TriggerPolicy {
 	return pullrequest.TriggerPolicy{Now: time.Date(2026, time.July, 29, 12, 0, 0, 0, time.UTC), PollInterval: 5 * time.Minute, FreshnessInterval: 6 * time.Hour, LastCursor: "cursor-1", LastTargetSHA: sha('b'), LastReconciledAt: time.Date(2026, time.July, 29, 6, 0, 0, 0, time.UTC)}
 }
 
-func observationWithCursor(cursor pullrequest.Cursor) pullrequest.Observation {
+func reviewObservation(cursor pullrequest.Cursor, batchID, reviewID string) pullrequest.Observation {
 	observation := baseObservation()
 	observation.Cursor = cursor
+	observation.ReviewBatches = []contracts.PullRequestReviewBatch{{ID: batchID, ReviewID: reviewID, CommitSHA: sha('a'), Reviewer: "reviewer", Ready: true, ThreadIDs: []string{"thread-1"}}}
+	observation.Threads = []contracts.PullRequestThread{{ID: "thread-1", Iteration: "1", Comments: []contracts.PullRequestComment{{ID: "comment-1", Author: "author", Body: "body", CommitSHA: sha('a')}}}}
 	return observation
 }
 func observationWithTarget(target string) pullrequest.Observation {
@@ -134,8 +156,7 @@ func conflictedObservation(cursor pullrequest.Cursor) pullrequest.Observation {
 	return observation
 }
 func conflictedReviewObservation(cursor pullrequest.Cursor) pullrequest.Observation {
-	observation := baseObservation()
-	observation.Cursor = cursor
+	observation := reviewObservation(cursor, "batch-2", "review-2")
 	observation.Mergeability = contracts.PullRequestConflicted
 	return observation
 }
@@ -163,11 +184,16 @@ func policyWithAge(age time.Duration) pullrequest.TriggerPolicy {
 }
 func policyWithActiveReview() pullrequest.TriggerPolicy {
 	policy := basePolicy()
-	action, actionable, err := pullrequest.ActionFor(observationWithCursor("github-review-2"), policy)
+	action, actionable, err := pullrequest.ActionFor(reviewObservation("github-review-2", "batch-2", "review-2"), policy)
 	if err != nil || !actionable {
 		panic("invalid review fixture")
 	}
 	policy.ActiveActionDigest = action.Digest
+	return policy
+}
+func policyWithLastCursor(cursor pullrequest.Cursor) pullrequest.TriggerPolicy {
+	policy := basePolicy()
+	policy.LastCursor = cursor
 	return policy
 }
 func policyWithReadyReview() pullrequest.TriggerPolicy { return policyWithAge(6 * time.Hour) }

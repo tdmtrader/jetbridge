@@ -75,6 +75,9 @@ func ActionFor(observation Observation, policy TriggerPolicy) (Action, bool, err
 	case contracts.PullRequestActive:
 		switch {
 		case observation.Cursor != policy.LastCursor && len(observation.ReviewBatches) > 0:
+			// ReviewBatches is an adapter-enforced unacknowledged delta. Cursor
+			// equality is the only core-level fact available because provider
+			// cursor structure is intentionally opaque.
 			kind = ActionReviewBatch
 		case observation.Mergeability == contracts.PullRequestConflicted && observation.Cursor != policy.LastCursor:
 			// The adapter's opaque cursor is the canonical conflict signature.
@@ -131,7 +134,11 @@ func freshnessDue(observation Observation, policy TriggerPolicy) bool {
 }
 
 func freshnessBucketFor(policy TriggerPolicy) int64 {
-	return int64(policy.Now.Sub(policy.LastReconciledAt) / policy.FreshnessInterval)
+	// Use the first due deadline anchored in acknowledged binding state. Now
+	// determines only whether the action is due; it cannot continuously mint a
+	// new identity while source, target, cursor, and acknowledgement are
+	// unchanged.
+	return policy.LastReconciledAt.UTC().Add(policy.FreshnessInterval).UnixNano()
 }
 
 func actionDigest(action Action) (string, error) {
