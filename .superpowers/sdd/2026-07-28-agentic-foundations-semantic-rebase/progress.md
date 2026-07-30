@@ -420,7 +420,8 @@
     acceptance-blocking issue. No correction round was required.
   - Status: **Accepted**.
 - [x] Task 19 — full verification and residue audit
-  - Commit: `aaee74e847 test(agent): prove final migration and residue contract`;
+  - Implementation commit: `4f49252ce9 test(agent): prove final migration and
+    residue contract`;
     the ignored implementer evidence is in `task-19-report.md`.
   - Added one serial migration-package regression that proves both fresh
     installation and exact `1773106138` upgrade reach embedded head
