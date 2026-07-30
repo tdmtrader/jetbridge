@@ -117,7 +117,8 @@ direct publication.
 
 ## Architecture
 
-The feature has two workflows and one small coordination record.
+The feature has two workflows, one small coordination record, and three
+focused sealed record types.
 
 ### `publish-pr-v3`
 
@@ -190,6 +191,19 @@ results remain immutable workflow snapshots and publication occurrences.
 Monitor workflow runs use an explicit PR-monitor origin whose reference is the
 binding ID, so the audit timeline is reconstructable without a second mutable
 history table.
+
+The three new record types are:
+
+- `pull-request/v1`: platform-authored normalized provider observation and
+  actionable trigger;
+- `publish-impact/v1`: deterministic and agent impact evidence plus the
+  server-derived reapproval decision;
+- `pull-request-response/v1`: agent-authored overall summary and thread replies
+  whose thread IDs must be a subset of its `pull-request/v1` subject.
+
+The response record is intentionally typed. Dynamic response text cannot be
+smuggled through static workflow parameters, and an untyped blob would not let
+ATC enforce thread authority before an external side effect.
 
 ## Polling and trigger semantics
 
