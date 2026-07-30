@@ -159,11 +159,6 @@ func (f *pipelineRunFactory) createRun(
 		return nil, ErrNotATemplate
 	}
 
-	validated, err := atc.ValidateRunParams(template.ParamsSchema(), params)
-	if err != nil {
-		return nil, err
-	}
-
 	// Relies on Task 7's Config() carrying Template/Params/RunRetention
 	// (F19, 2026-07-09): the returned config is re-saved as the instance, so
 	// a Config() that dropped Template would save instances with
@@ -188,6 +183,11 @@ func (f *pipelineRunFactory) createRun(
 		if err := validateLockedServerTemplate(ctx, tx, *serverTemplate, config); err != nil {
 			return nil, err
 		}
+	}
+
+	validated, err := atc.ValidateRunParams(template.ParamsSchema(), params)
+	if err != nil {
+		return nil, err
 	}
 
 	// A pipeline instance {name, {"run": N}} may already exist (e.g. a user

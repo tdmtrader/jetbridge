@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -106,19 +105,32 @@ var _ = Describe("PipelineRunFactory", func() {
 			targetHash, err := workflow.TargetConfigHash(workflowTemplateConfig)
 			Expect(err).NotTo(HaveOccurred())
 			definitionName := fmt.Sprintf("pipeline-run-workflow-%d", time.Now().UnixNano())
+			definitionSource := fmt.Sprintf(`schema_version: 3
+name: %s
+signature_version: 1
+inputs: []
+outputs: []
+plan:
+  - agent: work
+    function_id: work
+    prompt: test
+`, definitionName)
+			definitionHash := workflow.Manifest{
+				workflow.LegacyWorkflowFileName: definitionSource,
+			}.Hash()
 			var definitionID int
 			Expect(dbConn.QueryRow(`
 				INSERT INTO agent_workflow_definitions
 					(name, version, content_hash, definition, created_by, schema_version, signature_version)
-				VALUES ($1, 1, $2, 'schema_version: 3', 'alice', 3, 1)
+				VALUES ($1, 1, $2, $3, 'alice', 3, 1)
 				RETURNING id
-			`, definitionName, strings.Repeat("a", 64)).Scan(&definitionID)).To(Succeed())
+			`, definitionName, definitionHash, definitionSource).Scan(&definitionID)).To(Succeed())
 
 			runStore := db.NewAgentWorkflowRunsFactory(dbConn)
 			durable, created, err := runStore.CreateWithInputs(context.Background(), db.AgentWorkflowRunCreateRequest{
 				TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(),
 				WorkflowDefinitionID: definitionID, WorkflowName: definitionName, WorkflowVersion: 1,
-				SchemaVersion: 3, SignatureVersion: 1, DefinitionContentHash: strings.Repeat("a", 64),
+				SchemaVersion: 3, SignatureVersion: 1, DefinitionContentHash: definitionHash,
 				IdempotencyKey:      fmt.Sprintf("pipeline-run-workflow-%d", time.Now().UnixNano()),
 				ParameterizedConfig: json.RawMessage(canonical), ParameterizedConfigHash: targetHash,
 				OriginKind: "manual", CreatedBy: "alice", Status: db.AgentWorkflowRunStatusAdmitting,
