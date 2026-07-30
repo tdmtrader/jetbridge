@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/concourse/concourse/agent/broker"
@@ -31,6 +32,7 @@ func (invocation Invocation) Provenance() string {
 	for key := range invocation.Env {
 		keys = append(keys, key)
 	}
+	sort.Strings(keys)
 	encoded, _ := json.Marshal(struct {
 		Binary  string   `json:"binary"`
 		Args    []string `json:"args"`

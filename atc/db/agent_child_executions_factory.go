@@ -131,6 +131,8 @@ func (factory *agentChildExecutionsFactory) Create(
 			 idempotency_key, identity_digest, tool, tier, effort, profile_id,
 			 profile_digest, input_digest, attachments)
 		VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+		ON CONFLICT (workflow_run_id, node_plan_id, parent_attempt, idempotency_key)
+		DO NOTHING
 		RETURNING `+agentChildExecutionColumns,
 		id, identity.TeamID, identity.WorkflowRunID, identity.NodePlanID,
 		identity.ParentAttempt, identity.IdempotencyKey, fingerprint,
@@ -138,6 +140,20 @@ func (factory *agentChildExecutionsFactory) Create(
 		identity.ProfileID, identity.ProfileDigest, identity.InputDigest,
 		encodedAttachments,
 	))
+	if errors.Is(err, sql.ErrNoRows) {
+		created, err = scanAgentChildExecution(tx.QueryRowContext(ctx, `
+			SELECT `+agentChildExecutionColumns+`
+			FROM agent_child_executions
+			WHERE workflow_run_id = $1 AND node_plan_id = $2
+			  AND parent_attempt = $3 AND idempotency_key = $4
+			FOR UPDATE
+		`, identity.WorkflowRunID, identity.NodePlanID,
+			identity.ParentAttempt, identity.IdempotencyKey))
+		if err == nil && created.IdentityDigest != fingerprint {
+			return AgentChildExecution{}, fmt.Errorf(
+				"db: agent child execution identity conflicts with idempotency key")
+		}
+	}
 	if err != nil {
 		return AgentChildExecution{}, err
 	}

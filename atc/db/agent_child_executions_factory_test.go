@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/concourse/concourse/agent/broker"
@@ -81,5 +82,47 @@ var _ = Describe("AgentChildExecutionsFactory", func() {
 			State: broker.ExecutionRunning, Phase: "running",
 		})
 		Expect(err).To(MatchError(ContainSubstring("sequence")))
+	})
+
+	It("converges concurrent creates on one durable execution", func() {
+		identity := broker.ExecutionIdentity{
+			TeamID: defaultTeam.ID(), WorkflowRunID: runID, NodePlanID: "consult",
+			ParentAttempt: 1, IdempotencyKey: "concurrent-call", Tool: broker.ToolConsultAgent,
+			Selector:  broker.Selector{Tier: broker.TierBalanced, Effort: broker.EffortHigh},
+			ProfileID: "profile", ProfileDigest: "sha256:" + strings.Repeat("c", 64),
+			InputDigest: "sha256:" + strings.Repeat("d", 64), Attachments: []string{"design"},
+		}
+		ids := []string{
+			"209a3552-4055-4cdf-aed1-c3f49c15de4c",
+			"ee3ca478-7b5b-40ef-9566-cc9be0935295",
+		}
+		start := make(chan struct{})
+		results := make(chan db.AgentChildExecution, 2)
+		failures := make(chan error, 2)
+		var wait sync.WaitGroup
+		for _, id := range ids {
+			wait.Add(1)
+			go func() {
+				defer wait.Done()
+				<-start
+				execution, err := factory.Create(context.Background(), id, identity)
+				results <- execution
+				failures <- err
+			}()
+		}
+		close(start)
+		wait.Wait()
+		close(results)
+		close(failures)
+		for err := range failures {
+			Expect(err).NotTo(HaveOccurred())
+		}
+		var durableID string
+		for execution := range results {
+			if durableID == "" {
+				durableID = execution.ID
+			}
+			Expect(execution.ID).To(Equal(durableID))
+		}
 	})
 })
