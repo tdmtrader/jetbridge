@@ -48,6 +48,59 @@ func TestSnapshotChangeInspectorRevalidatesManifestMetadataDocumentAndPayload(t 
 	}
 }
 
+func TestSnapshotChangeInspectorReopensExactTeamAuthorizedPRCandidate(t *testing.T) {
+	fixture := newPublisherSnapshotFixture(t)
+	inspector, err := publisher.NewSnapshotChangeInspector(fixture.metadata, fixture.content, snapshot.Canonicalizer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	change, err := inspector.InspectExactPRCandidate(context.Background(), 9, fixture.ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if change.BaseSHA != testBaseSHA || change.ResultSHA != testResultSHA {
+		t.Fatalf("change = %+v, want base %q result %q", change, testBaseSHA, testResultSHA)
+	}
+	if err := change.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, gotTeam, gotID := fixture.metadata.GetAuthorizedArgsForCall(0)
+	if gotTeam != 9 || gotID != fixture.ref.ID {
+		t.Fatalf("snapshot authorization = (team %d, snapshot %d), want (9, %d)", gotTeam, gotID, fixture.ref.ID)
+	}
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	for name, testCase := range map[string]struct {
+		ctx       context.Context
+		teamID    int
+		reference snapshot.SnapshotRef
+	}{
+		"nil context":       {ctx: nil, teamID: 9, reference: fixture.ref},
+		"cancelled context": {ctx: cancelled, teamID: 9, reference: fixture.ref},
+		"missing team":      {ctx: context.Background(), teamID: 0, reference: fixture.ref},
+		"wrong type": {
+			ctx: context.Background(), teamID: 9,
+			reference: snapshot.SnapshotRef{ID: fixture.ref.ID, Type: "repository/v1", Digest: fixture.ref.Digest},
+		},
+		"invalid reference": {
+			ctx: context.Background(), teamID: 9,
+			reference: snapshot.SnapshotRef{ID: fixture.ref.ID, Type: fixture.ref.Type},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if change, err := inspector.InspectExactPRCandidate(testCase.ctx, testCase.teamID, testCase.reference); err == nil {
+				_ = change.Close()
+				t.Fatal("invalid exact candidate inspection succeeded")
+			}
+		})
+	}
+	if calls := fixture.metadata.GetAuthorizedCallCount(); calls != 1 {
+		t.Fatalf("metadata authorization calls = %d, want only the valid inspection", calls)
+	}
+}
+
 // preUpgradeIntrinsicMetadata is the EXACT intrinsic-metadata shape written by
 // the currently deployed web (origin/jetbridge, 08f6d98950,
 // agent/snapshot/contracts/repository_change.go). Sealed snapshots keep the

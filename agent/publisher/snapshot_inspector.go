@@ -157,6 +157,33 @@ func (inspector *SnapshotChangeInspector) InspectPRCandidate(
 	)
 }
 
+// InspectExactPRCandidate reopens one exact repository-change/v1 value using
+// the team authority already carried by a durable PR workflow run. It is the
+// read-only precursor to constructing an action-bound BranchPublicationRequest;
+// mutation paths must still use InspectPRCandidate before writing.
+func (inspector *SnapshotChangeInspector) InspectExactPRCandidate(
+	ctx context.Context,
+	teamID int,
+	reference snapshot.SnapshotRef,
+) (RepositoryChange, error) {
+	if ctx == nil {
+		return RepositoryChange{}, fmt.Errorf("%w: context is required", ErrInvalidRequest)
+	}
+	if err := ctx.Err(); err != nil {
+		return RepositoryChange{}, err
+	}
+	if teamID <= 0 {
+		return RepositoryChange{}, fmt.Errorf("%w: team is required", ErrInvalidRequest)
+	}
+	if err := reference.Validate(); err != nil {
+		return RepositoryChange{}, fmt.Errorf("%w: candidate snapshot: %v", ErrInvalidRequest, err)
+	}
+	if reference.Type != snapshot.TypeRef("repository-change/v1") {
+		return RepositoryChange{}, fmt.Errorf("%w: snapshot change inspector requires repository-change/v1", ErrInvalidRequest)
+	}
+	return inspector.inspectExactRepositoryChange(ctx, teamID, reference)
+}
+
 func (inspector *SnapshotChangeInspector) inspectExactRepositoryChange(
 	ctx context.Context,
 	teamID int,
