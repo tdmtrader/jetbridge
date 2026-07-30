@@ -211,6 +211,29 @@ func (request AttachRun) Validate() error {
 	return nil
 }
 
+// ReleaseLaunch clears one exact reservation after launch failed before
+// attachment, or after its attached run ended unsuccessfully. A nil
+// WorkflowRunID selects only an unattached reservation.
+type ReleaseLaunch struct {
+	TeamID           int
+	BindingID        int64
+	ExpectedRevision int64
+	ActionDigest     string
+	ReservationToken string
+	WorkflowRunID    *snapshot.WorkflowRunID
+}
+
+func (request ReleaseLaunch) Validate() error {
+	if request.TeamID <= 0 || request.BindingID <= 0 || request.ExpectedRevision <= 0 ||
+		!isDigest(request.ActionDigest) ||
+		strings.TrimSpace(request.ReservationToken) != request.ReservationToken ||
+		request.ReservationToken == "" || len(request.ReservationToken) > 128 ||
+		(request.WorkflowRunID != nil && *request.WorkflowRunID <= 0) {
+		return fmt.Errorf("pullrequest: invalid launch release")
+	}
+	return nil
+}
+
 type AcknowledgeAction struct {
 	TeamID                int
 	BindingID             int64
@@ -314,6 +337,7 @@ type BindingStore interface {
 	GetByExternal(context.Context, int, Locator) (Binding, bool, error)
 	ReserveLaunch(context.Context, ReserveLaunch) (LaunchReservation, bool, error)
 	AttachRun(context.Context, AttachRun) (Binding, error)
+	ReleaseLaunch(context.Context, ReleaseLaunch) (Binding, error)
 	AcknowledgeAction(context.Context, AcknowledgeAction) (Binding, error)
 	MarkAttention(context.Context, int, int64, string) (Binding, error)
 	MarkTerminal(context.Context, TerminalBinding) (Binding, error)

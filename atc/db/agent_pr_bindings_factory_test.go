@@ -119,6 +119,56 @@ var _ = Describe("AgentPRBindingsFactory", func() {
 		Expect(err).To(HaveOccurred(), "sealed observation evidence must be immutable")
 	})
 
+	It("canonicalizes caller timestamps and reservation expiry to PostgreSQL precision", func() {
+		nonCanonical := time.Date(
+			2026, time.July, 29, 18, 17, 16, 987654321,
+			time.FixedZone("test-offset", -7*60*60),
+		)
+		canonical := nonCanonical.UTC().Truncate(time.Microsecond)
+		request := createRequest
+		request.Locator.ExternalID = "timestamp-precision"
+		request.LastReconciledAt = nonCanonical
+
+		createdBinding, created, err := factory.Create(ctx, request)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(created).To(BeTrue())
+		Expect(createdBinding.LastReconciledAt).To(Equal(canonical))
+		Expect(createdBinding.LastReconciledAt.Location()).To(Equal(time.UTC))
+
+		replayedBinding, created, err := factory.Create(ctx, request)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(created).To(BeFalse())
+		Expect(replayedBinding.ID).To(Equal(createdBinding.ID))
+		Expect(replayedBinding.LastReconciledAt).To(Equal(canonical))
+
+		reservationRequest := pullrequest.ReserveLaunch{
+			TeamID: createdBinding.TeamID, BindingID: createdBinding.ID,
+			ExpectedRevision:      createdBinding.Revision,
+			ActionDigest:          "sha256:" + strings.Repeat("7", 64),
+			ObservationSnapshotID: request.LastObservationSnapshotID,
+			Cursor:                pullrequest.Cursor(`{"batch":"precision"}`),
+			SourceSHA:             strings.Repeat("7", 40),
+			TargetSHA:             strings.Repeat("8", 40),
+			ExpiresIn:             5*time.Minute + 321*time.Nanosecond,
+		}
+		reservation, reserved, err := factory.ReserveLaunch(ctx, reservationRequest)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(reserved).To(BeTrue())
+		Expect(reservation.ExpiresAt.Location()).To(Equal(time.UTC))
+		Expect(reservation.ExpiresAt.Nanosecond() % int(time.Microsecond)).To(BeZero())
+
+		stored, found, err := factory.Get(ctx, createdBinding.TeamID, createdBinding.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(stored.Active).NotTo(BeNil())
+		Expect(stored.Active.ExpiresAt).To(Equal(reservation.ExpiresAt))
+
+		replayed, reserved, err := factory.ReserveLaunch(ctx, reservationRequest)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(reserved).To(BeTrue())
+		Expect(replayed.ExpiresAt).To(Equal(reservation.ExpiresAt))
+	})
+
 	It("serializes reservations, replays exactly, recovers expiry, and rejects stale revisions", func() {
 		base := pullrequest.ReserveLaunch{
 			TeamID: binding.TeamID, BindingID: binding.ID,
@@ -186,6 +236,205 @@ var _ = Describe("AgentPRBindingsFactory", func() {
 			ExpectedRevision: current.Revision,
 		})
 		Expect(errors.Is(err, pullrequest.ErrStaleBindingRevision)).To(BeTrue())
+	})
+
+	It("releases only the exact unattached reservation and permits a fresh recovery", func() {
+		reservationRequest := pullrequest.ReserveLaunch{
+			TeamID: binding.TeamID, BindingID: binding.ID,
+			ExpectedRevision:      binding.Revision,
+			ActionDigest:          "sha256:" + strings.Repeat("5", 64),
+			ObservationSnapshotID: createRequest.LastObservationSnapshotID,
+			Cursor:                pullrequest.Cursor(`{"batch":"unattached-release"}`),
+			SourceSHA:             strings.Repeat("5", 40),
+			TargetSHA:             strings.Repeat("6", 40),
+			ExpiresIn:             5 * time.Minute,
+		}
+		reservation, reserved, err := factory.ReserveLaunch(ctx, reservationRequest)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(reserved).To(BeTrue())
+
+		release := pullrequest.ReleaseLaunch{
+			TeamID: binding.TeamID, BindingID: binding.ID,
+			ExpectedRevision: reservation.BindingRevision,
+			ActionDigest:     reservation.ActionDigest,
+			ReservationToken: reservation.Token,
+		}
+		wrongToken := release
+		wrongToken.ReservationToken = "wrong-token"
+		_, err = factory.ReleaseLaunch(ctx, wrongToken)
+		Expect(errors.Is(err, pullrequest.ErrReservationMismatch)).To(BeTrue())
+
+		wrongRunID := snapshot.WorkflowRunID(99118)
+		wrongRun := release
+		wrongRun.WorkflowRunID = &wrongRunID
+		_, err = factory.ReleaseLaunch(ctx, wrongRun)
+		Expect(errors.Is(err, pullrequest.ErrReservationMismatch)).To(BeTrue())
+
+		stale := release
+		stale.ExpectedRevision = reservation.BaseRevision
+		_, err = factory.ReleaseLaunch(ctx, stale)
+		Expect(errors.Is(err, pullrequest.ErrStaleBindingRevision)).To(BeTrue())
+
+		released, err := factory.ReleaseLaunch(ctx, release)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(released.Active).To(BeNil())
+		Expect(released.Revision).To(Equal(reservation.BindingRevision + 1))
+
+		_, err = factory.ReleaseLaunch(ctx, release)
+		Expect(errors.Is(err, pullrequest.ErrStaleBindingRevision)).To(BeTrue())
+		current, found, err := factory.Get(ctx, binding.TeamID, binding.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(current.Active).To(BeNil())
+
+		recoveryRequest := reservationRequest
+		recoveryRequest.ExpectedRevision = released.Revision
+		recoveryRequest.ActionDigest = "sha256:" + strings.Repeat("6", 64)
+		recovered, reserved, err := factory.ReserveLaunch(ctx, recoveryRequest)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(reserved).To(BeTrue())
+		Expect(recovered.Token).NotTo(Equal(reservation.Token))
+	})
+
+	It("releases failed, errored, and aborted attached runs without erasing audit history", func() {
+		for index, status := range []string{"failed", "errored", "aborted"} {
+			testBinding := binding
+			if index > 0 {
+				request := createRequest
+				request.Locator.ExternalID = "release-" + status
+				var created bool
+				var err error
+				testBinding, created, err = factory.Create(ctx, request)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(created).To(BeTrue())
+			}
+			reservation := reserveAgentPRBinding(
+				factory, testBinding, createRequest.LastObservationSnapshotID,
+			)
+			runID := insertAgentPRMonitorRun(
+				defaultTeam.ID(), defaultTeam.Name(), definitionID,
+				testBinding.ID, "admitting", "release-"+status,
+			)
+			attached, err := factory.AttachRun(ctx, pullrequest.AttachRun{
+				TeamID: testBinding.TeamID, BindingID: testBinding.ID,
+				ExpectedRevision: reservation.BindingRevision,
+				ActionDigest:     reservation.ActionDigest,
+				ReservationToken: reservation.Token,
+				WorkflowRunID:    snapshot.WorkflowRunID(runID),
+			})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = dbConn.Exec(`
+				UPDATE agent_workflow_runs
+				SET status=$2, completed_at=clock_timestamp(), updated_at=clock_timestamp()
+				WHERE id=$1
+			`, runID, status)
+			Expect(err).NotTo(HaveOccurred())
+
+			run := snapshot.WorkflowRunID(runID)
+			release := pullrequest.ReleaseLaunch{
+				TeamID: testBinding.TeamID, BindingID: testBinding.ID,
+				ExpectedRevision: attached.Revision,
+				ActionDigest:     reservation.ActionDigest,
+				ReservationToken: reservation.Token,
+				WorkflowRunID:    &run,
+			}
+			if index == 0 {
+				wrongToken := release
+				wrongToken.ReservationToken = "wrong-attached-token"
+				_, err = factory.ReleaseLaunch(ctx, wrongToken)
+				Expect(errors.Is(err, pullrequest.ErrReservationMismatch)).To(BeTrue())
+
+				wrongRunID := snapshot.WorkflowRunID(insertAgentPRMonitorRun(
+					defaultTeam.ID(), defaultTeam.Name(), definitionID,
+					testBinding.ID, "failed", "wrong-release-run",
+				))
+				wrongRun := release
+				wrongRun.WorkflowRunID = &wrongRunID
+				_, err = factory.ReleaseLaunch(ctx, wrongRun)
+				Expect(errors.Is(err, pullrequest.ErrReservationMismatch)).To(BeTrue())
+			}
+
+			released, err := factory.ReleaseLaunch(ctx, release)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(released.Active).To(BeNil())
+
+			audit, err := factory.ListAudit(
+				ctx, testBinding.TeamID, testBinding.ID, pullrequest.AuditFilter{},
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(audit).To(ContainElement(SatisfyAll(
+				HaveField("WorkflowRunID", run),
+				HaveField("Status", status),
+			)))
+		}
+	})
+
+	It("refuses wrong, live, canceling, and succeeded attached runs and stale projected reservations", func() {
+		for index, status := range []string{"admitting", "running", "canceling", "succeeded"} {
+			request := createRequest
+			request.Locator.ExternalID = "refuse-release-" + status
+			testBinding, created, err := factory.Create(ctx, request)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(created).To(BeTrue())
+
+			reservationRequest := pullrequest.ReserveLaunch{
+				TeamID: testBinding.TeamID, BindingID: testBinding.ID,
+				ExpectedRevision:      testBinding.Revision,
+				ActionDigest:          fmt.Sprintf("sha256:%064x", index+11),
+				ObservationSnapshotID: request.LastObservationSnapshotID,
+				Cursor:                pullrequest.Cursor(`{"batch":"refuse-release"}`),
+				SourceSHA:             strings.Repeat("7", 40),
+				TargetSHA:             strings.Repeat("8", 40),
+				ExpiresIn:             5 * time.Minute,
+			}
+			reservation, reserved, err := factory.ReserveLaunch(ctx, reservationRequest)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(reserved).To(BeTrue())
+			runID := insertAgentPRMonitorRun(
+				defaultTeam.ID(), defaultTeam.Name(), definitionID,
+				testBinding.ID, "admitting", "refuse-"+status,
+			)
+			attached, err := factory.AttachRun(ctx, pullrequest.AttachRun{
+				TeamID: testBinding.TeamID, BindingID: testBinding.ID,
+				ExpectedRevision: reservation.BindingRevision,
+				ActionDigest:     reservation.ActionDigest,
+				ReservationToken: reservation.Token,
+				WorkflowRunID:    snapshot.WorkflowRunID(runID),
+			})
+			Expect(err).NotTo(HaveOccurred())
+			if status != "admitting" {
+				_, err = dbConn.Exec(`
+					UPDATE agent_workflow_runs
+					SET status=$2,
+					    completed_at=CASE WHEN $2 IN ('failed','errored','aborted','succeeded')
+					                      THEN clock_timestamp() ELSE NULL END,
+					    updated_at=clock_timestamp()
+					WHERE id=$1
+				`, runID, status)
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			_, reserved, err = factory.ReserveLaunch(ctx, reservationRequest)
+			Expect(reserved).To(BeFalse())
+			Expect(errors.Is(err, pullrequest.ErrStaleBindingRevision)).To(BeTrue())
+
+			run := snapshot.WorkflowRunID(runID)
+			_, err = factory.ReleaseLaunch(ctx, pullrequest.ReleaseLaunch{
+				TeamID: testBinding.TeamID, BindingID: testBinding.ID,
+				ExpectedRevision: attached.Revision,
+				ActionDigest:     reservation.ActionDigest,
+				ReservationToken: reservation.Token,
+				WorkflowRunID:    &run,
+			})
+			Expect(errors.Is(err, pullrequest.ErrReservationMismatch)).To(BeTrue())
+
+			stored, found, err := factory.Get(ctx, testBinding.TeamID, testBinding.ID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue())
+			Expect(stored.Revision).To(Equal(attached.Revision))
+			Expect(stored.Active).NotTo(BeNil())
+			Expect(stored.Active.WorkflowRunID).To(Equal(&run))
+		}
 	})
 
 	It("attaches and acknowledges only the exact same-team monitor run and action", func() {

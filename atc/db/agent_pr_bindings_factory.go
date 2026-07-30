@@ -74,6 +74,7 @@ func (factory *agentPRBindingsFactory) Create(
 	if err != nil {
 		return pullrequest.Binding{}, false, err
 	}
+	lastReconciledAt := normalizeAgentPRBindingTime(request.LastReconciledAt)
 	var insertedID int64
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO agent_pr_bindings
@@ -92,7 +93,7 @@ func (factory *agentPRBindingsFactory) Create(
 		request.MonitorWorkflowDefinitionID, request.MonitorWorkflowVersion, cursor,
 		nullablePositiveInt64(int64(request.LastObservationSnapshotID)),
 		request.LastReconciledSourceSHA, request.LastReconciledTargetSHA,
-		request.LastReconciledAt,
+		lastReconciledAt,
 	).Scan(&insertedID)
 	created := err == nil
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -188,9 +189,17 @@ func (factory *agentPRBindingsFactory) ReserveLaunch(
 		return pullrequest.LaunchReservation{}, false, pullrequest.ErrBindingBusy
 	}
 	if binding.Active != nil {
-		if sameAgentPRReservationRequest(*binding.Active, request) &&
-			binding.Active.BaseRevision == request.ExpectedRevision &&
-			(binding.Active.WorkflowRunID != nil || binding.Active.ExpiresAt.After(now)) {
+		exactReplay := sameAgentPRReservationRequest(*binding.Active, request) &&
+			binding.Active.BaseRevision == request.ExpectedRevision
+		// Only the original, still-unattached claim may replay from its base
+		// projection. Attachment or any intervening binding update makes that
+		// projected source version stale.
+		if exactReplay &&
+			(binding.Active.WorkflowRunID != nil ||
+				binding.Revision != binding.Active.BaseRevision+1) {
+			return pullrequest.LaunchReservation{}, false, pullrequest.ErrStaleBindingRevision
+		}
+		if exactReplay && binding.Active.ExpiresAt.After(now) {
 			if err := tx.Commit(); err != nil {
 				return pullrequest.LaunchReservation{}, false, err
 			}
@@ -219,7 +228,7 @@ func (factory *agentPRBindingsFactory) ReserveLaunch(
 	if err != nil {
 		return pullrequest.LaunchReservation{}, false, err
 	}
-	expiresAt := now.Add(request.ExpiresIn)
+	expiresAt := normalizeAgentPRBindingTime(now.Add(request.ExpiresIn))
 	result, err := tx.ExecContext(ctx, `
 		UPDATE agent_pr_bindings
 		SET active_base_revision=$4, active_action_digest=$5,
@@ -361,6 +370,87 @@ func attachAgentPRBindingRun(
 	}
 	if !found {
 		return pullrequest.Binding{}, pullrequest.ErrBindingNotFound
+	}
+	return updated, nil
+}
+
+func (factory *agentPRBindingsFactory) ReleaseLaunch(
+	ctx context.Context,
+	request pullrequest.ReleaseLaunch,
+) (pullrequest.Binding, error) {
+	if ctx == nil {
+		return pullrequest.Binding{}, fmt.Errorf("db: PR launch release requires context")
+	}
+	if err := request.Validate(); err != nil {
+		return pullrequest.Binding{}, err
+	}
+	tx, err := factory.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return pullrequest.Binding{}, err
+	}
+	defer Rollback(tx)
+	binding, found, err := lockAgentPRBindingForUpdate(
+		ctx, tx, request.TeamID, request.BindingID,
+	)
+	if err != nil {
+		return pullrequest.Binding{}, err
+	}
+	if !found {
+		return pullrequest.Binding{}, pullrequest.ErrBindingNotFound
+	}
+	if binding.Revision != request.ExpectedRevision {
+		return pullrequest.Binding{}, pullrequest.ErrStaleBindingRevision
+	}
+	if binding.State.Terminal() {
+		return pullrequest.Binding{}, pullrequest.ErrBindingImmutable
+	}
+	if !sameAgentPRReleaseIdentity(binding.Active, request) {
+		return pullrequest.Binding{}, pullrequest.ErrReservationMismatch
+	}
+	if request.WorkflowRunID != nil {
+		if err := validateAgentPRRunUnsuccessfulTerminal(
+			ctx, tx, request.TeamID, request.BindingID,
+			binding.MonitorWorkflowDefinitionID, *request.WorkflowRunID,
+		); err != nil {
+			return pullrequest.Binding{}, err
+		}
+	}
+	now, err := agentPRBindingDatabaseTime(ctx, tx)
+	if err != nil {
+		return pullrequest.Binding{}, err
+	}
+	result, err := tx.ExecContext(ctx, `
+		UPDATE agent_pr_bindings
+		SET active_base_revision=NULL, active_action_digest=NULL,
+		    active_observation_snapshot_id=NULL, active_cursor=NULL,
+		    active_source_sha=NULL, active_target_sha=NULL,
+		    active_reservation_token=NULL, active_reservation_expires_at=NULL,
+		    active_workflow_run_id=NULL,
+		    revision=revision+1, updated_at=$7
+		WHERE team_id=$1 AND id=$2 AND revision=$3
+		  AND active_action_digest=$4
+		  AND active_reservation_token=$5
+		  AND active_workflow_run_id IS NOT DISTINCT FROM $6::bigint
+	`, request.TeamID, request.BindingID, request.ExpectedRevision,
+		request.ActionDigest, request.ReservationToken,
+		nullableAgentPRWorkflowRunID(request.WorkflowRunID), now)
+	if err != nil {
+		return pullrequest.Binding{}, err
+	}
+	if err := requireAgentPRBindingCAS(result); err != nil {
+		return pullrequest.Binding{}, err
+	}
+	updated, found, err := findAgentPRBinding(
+		ctx, tx, request.TeamID, request.BindingID, false,
+	)
+	if err != nil {
+		return pullrequest.Binding{}, err
+	}
+	if !found {
+		return pullrequest.Binding{}, pullrequest.ErrBindingNotFound
+	}
+	if err := tx.Commit(); err != nil {
+		return pullrequest.Binding{}, err
 	}
 	return updated, nil
 }
@@ -952,7 +1042,7 @@ func scanAgentPRBinding(row interface{ Scan(...any) error }) (pullrequest.Bindin
 		binding.LastAcknowledgedWorkflowRunID = &value
 	}
 	if observationRequestedAt.Valid {
-		value := observationRequestedAt.Time
+		value := normalizeAgentPRBindingTime(observationRequestedAt.Time)
 		binding.ObservationRequestedAt = &value
 	}
 	if activeAction.Valid {
@@ -965,7 +1055,7 @@ func scanAgentPRBinding(row interface{ Scan(...any) error }) (pullrequest.Bindin
 			BaseRevision: activeBaseRevision.Int64, ActionDigest: activeAction.String,
 			ObservationSnapshotID: snapshot.SnapshotID(activeObservation.Int64),
 			Cursor:                cursor, SourceSHA: activeSource.String, TargetSHA: activeTarget.String,
-			Token: activeToken.String, ExpiresAt: activeExpiresAt.Time,
+			Token: activeToken.String, ExpiresAt: normalizeAgentPRBindingTime(activeExpiresAt.Time),
 		}
 		if activeRun.Valid {
 			value := snapshot.WorkflowRunID(activeRun.Int64)
@@ -978,9 +1068,12 @@ func scanAgentPRBinding(row interface{ Scan(...any) error }) (pullrequest.Bindin
 		binding.TerminalObservationSnapshotID = &value
 	}
 	if terminalAt.Valid {
-		value := terminalAt.Time
+		value := normalizeAgentPRBindingTime(terminalAt.Time)
 		binding.TerminalAt = &value
 	}
+	binding.LastReconciledAt = normalizeAgentPRBindingTime(binding.LastReconciledAt)
+	binding.CreatedAt = normalizeAgentPRBindingTime(binding.CreatedAt)
+	binding.UpdatedAt = normalizeAgentPRBindingTime(binding.UpdatedAt)
 	return binding, nil
 }
 
@@ -1077,6 +1170,57 @@ func validateExactAgentPRAttachedAction(
 	return nil
 }
 
+func sameAgentPRReleaseIdentity(
+	active *pullrequest.LaunchReservation,
+	request pullrequest.ReleaseLaunch,
+) bool {
+	if active == nil ||
+		active.ActionDigest != request.ActionDigest ||
+		active.Token != request.ReservationToken {
+		return false
+	}
+	if request.WorkflowRunID == nil {
+		return active.WorkflowRunID == nil
+	}
+	return active.WorkflowRunID != nil &&
+		*active.WorkflowRunID == *request.WorkflowRunID
+}
+
+func validateAgentPRRunUnsuccessfulTerminal(
+	ctx context.Context,
+	queryer snapshotQueryer,
+	teamID int,
+	bindingID int64,
+	definitionID int,
+	runID snapshot.WorkflowRunID,
+) error {
+	var status AgentWorkflowRunStatus
+	err := queryer.QueryRowContext(ctx, `
+		SELECT status FROM agent_workflow_runs
+		WHERE id=$1 AND team_id=$2 AND definition_kind='workflow'
+		  AND workflow_definition_id=$3
+		  AND origin_kind='pr-monitor' AND origin_reference=$4
+		FOR UPDATE
+	`, int64(runID), teamID, definitionID, strconv.FormatInt(bindingID, 10)).Scan(&status)
+	if err != nil {
+		return fmt.Errorf(
+			"%w: attached workflow run is not exact",
+			pullrequest.ErrReservationMismatch,
+		)
+	}
+	switch status {
+	case AgentWorkflowRunStatusFailed,
+		AgentWorkflowRunStatusErrored,
+		AgentWorkflowRunStatusAborted:
+		return nil
+	default:
+		return fmt.Errorf(
+			"%w: attached workflow run is not unsuccessfully terminal",
+			pullrequest.ErrReservationMismatch,
+		)
+	}
+}
+
 func validateAgentPRRunSucceeded(
 	ctx context.Context,
 	queryer snapshotQueryer,
@@ -1114,7 +1258,7 @@ func sameAgentPRBindingCreate(
 		binding.AcknowledgedCursor != request.AcknowledgedCursor ||
 		binding.LastReconciledSourceSHA != request.LastReconciledSourceSHA ||
 		binding.LastReconciledTargetSHA != request.LastReconciledTargetSHA ||
-		!binding.LastReconciledAt.Equal(request.LastReconciledAt) {
+		!binding.LastReconciledAt.Equal(normalizeAgentPRBindingTime(request.LastReconciledAt)) {
 		return false
 	}
 	if request.OriginatingWorkflowRunID == 0 {
@@ -1211,7 +1355,11 @@ func newAgentPRReservationToken() (string, error) {
 func agentPRBindingDatabaseTime(ctx context.Context, queryer snapshotQueryer) (time.Time, error) {
 	var now time.Time
 	err := queryer.QueryRowContext(ctx, `SELECT clock_timestamp()`).Scan(&now)
-	return now, err
+	return normalizeAgentPRBindingTime(now), err
+}
+
+func normalizeAgentPRBindingTime(value time.Time) time.Time {
+	return value.UTC().Truncate(time.Microsecond)
 }
 
 func requireAgentPRBindingCAS(result sql.Result) error {
@@ -1230,4 +1378,11 @@ func nullablePositiveInt64(value int64) any {
 		return nil
 	}
 	return value
+}
+
+func nullableAgentPRWorkflowRunID(value *snapshot.WorkflowRunID) any {
+	if value == nil {
+		return nil
+	}
+	return int64(*value)
 }
