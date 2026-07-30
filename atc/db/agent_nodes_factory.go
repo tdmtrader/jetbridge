@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/Masterminds/squirrel"
 	"github.com/concourse/concourse/agent/workflow"
 )
 
@@ -16,6 +17,22 @@ type AgentNodesFactory interface{ workflow.NodeStore }
 func NewAgentNodesFactory(conn DbConn) AgentNodesFactory { return &agentNodesFactory{conn: conn} }
 
 type agentNodesFactory struct{ conn DbConn }
+
+type agentNodeRowQuerier interface {
+	QueryRow(string, ...any) squirrel.RowScanner
+}
+
+type transactionAgentNodeResolver struct {
+	querier agentNodeRowQuerier
+}
+
+func (f *agentNodesFactory) nodeResolverForTransaction(tx Tx) workflow.NodeResolver {
+	return transactionAgentNodeResolver{querier: tx}
+}
+
+func (resolver transactionAgentNodeResolver) Released(name string, version int) (workflow.NodeDefinition, bool, error) {
+	return releasedAgentNode(resolver.querier, name, version)
+}
 
 const nodeMetaColumns = `id, name, version, content_hash, description, created_by,
 	EXTRACT(EPOCH FROM created_at)::bigint, COALESCE(EXTRACT(EPOCH FROM released_at)::bigint, 0),
@@ -80,8 +97,12 @@ func (f *agentNodesFactory) ImportManifest(name string, source workflow.Manifest
 }
 
 func (f *agentNodesFactory) Get(name string, version int) (*workflow.NodeDefinition, bool, error) {
+	return getAgentNode(f.conn, name, version)
+}
+
+func getAgentNode(querier agentNodeRowQuerier, name string, version int) (*workflow.NodeDefinition, bool, error) {
 	var stored storedNodeDefinition
-	err := f.conn.QueryRow(`SELECT `+nodeStoredColumns+` FROM agent_workflow_definitions WHERE definition_kind='node' AND name=$1 AND version=$2`, name, version).Scan(nodeStoredScan(&stored)...)
+	err := querier.QueryRow(`SELECT `+nodeStoredColumns+` FROM agent_workflow_definitions WHERE definition_kind='node' AND name=$1 AND version=$2`, name, version).Scan(nodeStoredScan(&stored)...)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil
 	}
@@ -150,7 +171,11 @@ func (f *agentNodesFactory) Versions(ctx context.Context, name string, r workflo
 	return p, nil
 }
 func (f *agentNodesFactory) Released(name string, version int) (workflow.NodeDefinition, bool, error) {
-	d, ok, err := f.Get(name, version)
+	return releasedAgentNode(f.conn, name, version)
+}
+
+func releasedAgentNode(querier agentNodeRowQuerier, name string, version int) (workflow.NodeDefinition, bool, error) {
+	d, ok, err := getAgentNode(querier, name, version)
 	if err != nil || !ok || d.Release.ReleasedAt == 0 {
 		return workflow.NodeDefinition{}, false, err
 	}

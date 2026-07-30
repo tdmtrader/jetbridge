@@ -1155,7 +1155,7 @@ func recordCandidateRun(
 				SELECT count(*)::integer AS association_count,
 				       min(resource_source_admission_id) AS resource_source_admission_id
 				FROM agent_experiment_resource_source_admissions source
-				WHERE source.experiment_id = cell.experiment_id
+				WHERE source.experiment_id = experiment.id
 				  AND source.team_id = experiment.team_id
 				  AND source.workflow_definition_id = variant.definition_id
 		     ) source

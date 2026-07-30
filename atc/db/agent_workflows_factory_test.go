@@ -674,7 +674,7 @@ plan:
 		live, found, err := factory.Live(name)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeFalse())
-		Expect(live).To(Equal(workflow.Definition{}))
+		Expect(live).To(BeNil())
 		var lifecycleRows int
 		Expect(dbConn.QueryRow(`SELECT count(*) FROM agent_workflow_lifecycle WHERE name=$1`, name).Scan(&lifecycleRows)).To(Succeed())
 		Expect(lifecycleRows).To(BeZero())

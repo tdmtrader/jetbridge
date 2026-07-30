@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/concourse/concourse/agent/workflow"
+	"github.com/concourse/concourse/agent/workflowrun"
 	"github.com/concourse/concourse/atc/db"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -194,7 +195,13 @@ var _ = Describe("AgentNodesFactory", func() {
 		_, err = factory.Release(node.Name, node.Version, workflow.ReleaseCompatible, "alice")
 		Expect(err).NotTo(HaveOccurred())
 
-		workflows := db.NewAgentWorkflowsFactoryWithNodeResolver(dbConn, factory)
+		workflows := db.NewAgentWorkflowsFactoryWithNodeResolver(
+			dbConn,
+			factory,
+			workflowrun.WorkflowTargetRenderer{
+				RuntimeImage: "registry.example/agent-runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			},
+		)
 		live, err := workflows.ImportManifest("consumer-live", dbNodeConsumerWorkflowManifest("consumer-live", "live-review"), "alice")
 		Expect(err).NotTo(HaveOccurred())
 		_, err = workflows.Promote(live.Name, live.Version, "alice")
@@ -248,6 +255,43 @@ var _ = Describe("AgentNodesFactory", func() {
 			Limit: 1, Cursor: workflow.NodeConsumerCursor{InstanceName: "not-a-cursor"},
 		})
 		Expect(err).To(MatchError(workflow.ErrInvalidNodeConsumerPage))
+	})
+
+	It("resolves reusable nodes while importing and promoting with a one-connection pool", func() {
+		Expect(dbConn.Stats().MaxOpenConnections).To(Equal(1))
+
+		node, err := factory.ImportManifest(
+			"consumer-node",
+			dbConsumerNodeManifest(),
+			"alice",
+		)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = factory.Release(node.Name, node.Version, workflow.ReleaseCompatible, "alice")
+		Expect(err).NotTo(HaveOccurred())
+
+		workflows := db.NewAgentWorkflowsFactoryWithNodeResolver(
+			dbConn,
+			factory,
+			workflowrun.WorkflowTargetRenderer{
+				RuntimeImage: "registry.example/agent-runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			},
+		)
+		first, err := workflows.ImportManifest(
+			"transactional-consumer",
+			dbNodeConsumerWorkflowManifest("transactional-consumer", "review-first"),
+			"alice",
+		)
+		Expect(err).NotTo(HaveOccurred())
+		second, err := workflows.ImportManifest(
+			"transactional-consumer",
+			dbNodeConsumerWorkflowManifest("transactional-consumer", "review-second"),
+			"bob",
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(second.Version).To(Equal(first.Version + 1))
+
+		_, err = workflows.Promote(second.Name, second.Version, "bob")
+		Expect(err).NotTo(HaveOccurred())
 	})
 
 	It("serializes concurrent imports and releases per node name", func() {

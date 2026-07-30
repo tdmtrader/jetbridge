@@ -163,7 +163,7 @@ func newWorkflowResourceSourceComposition(
 	if err != nil {
 		return nil, nil, err
 	}
-	var monitor *pullrequest.MonitorPipelineReconciler
+	var monitor workflowResourceSourceReconciler
 	if len(monitorPolicyResolvers) == 1 {
 		monitor, err = pullrequest.NewMonitorPipelineReconciler(
 			trustedMainTeamID,

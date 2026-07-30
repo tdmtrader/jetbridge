@@ -51,13 +51,23 @@ var _ = Describe("AgentWorkflowWaitsFactory", func() {
 		factory = db.NewAgentWorkflowWaitsFactory(dbConn, 36*time.Hour)
 		runs = db.NewAgentWorkflowRunsFactory(dbConn)
 		definitionName := fmt.Sprintf("workflow-wait-%d", time.Now().UnixNano())
+		definitionSource := fmt.Sprintf(`schema_version: 3
+name: %s
+signature_version: 1
+inputs: []
+outputs: []
+plan:
+  - agent: work
+    function_id: work
+    prompt: test
+`, definitionName)
 		var definitionID int
 		Expect(dbConn.QueryRow(`
 			INSERT INTO agent_workflow_definitions
 				(name, version, content_hash, definition, created_by, schema_version, signature_version)
-			VALUES ($1, 1, $2, 'schema_version: 3', 'alice', 3, 1)
+			VALUES ($1, 1, $2, $3, 'alice', 3, 1)
 			RETURNING id
-		`, definitionName, strings.Repeat("a", 64)).Scan(&definitionID)).To(Succeed())
+		`, definitionName, strings.Repeat("a", 64), definitionSource).Scan(&definitionID)).To(Succeed())
 		var created bool
 		var err error
 		run, created, err = runs.CreateWithInputs(ctx, db.AgentWorkflowRunCreateRequest{

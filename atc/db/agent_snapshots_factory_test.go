@@ -101,6 +101,27 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 		}
 	}
 
+	importWorkflowDefinition := func(name string) (int, string) {
+		definition, err := db.NewAgentWorkflowsFactory(dbConn).Import(name, []byte(fmt.Sprintf(`
+schema_version: 3
+name: %s
+signature_version: 1
+inputs:
+  - name: source
+    type: repository/v1
+outputs: []
+plan:
+  - agent: work
+    function_id: work
+    prompt: Exercise snapshot provenance.
+    inputs: [source]
+    input_types:
+      source: {type: repository/v1}
+`, name)), "alice")
+		Expect(err).NotTo(HaveOccurred())
+		return definition.ID, definition.ContentHash
+	}
+
 	It("keyset-pages equal-timestamp authorized history and composes with created_after", func() {
 		typeName := fmt.Sprintf("pagination-%d", time.Now().UnixNano())
 		createdAt := time.Date(2026, time.July, 22, 12, 34, 56, 123456000, time.UTC)
@@ -165,14 +186,7 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 
 		suffix := time.Now().UnixNano()
 		definitionName := fmt.Sprintf("snapshot-input-provenance-%d", suffix)
-		definitionHash := strings.Repeat("a", 64)
-		var definitionID int
-		Expect(dbConn.QueryRow(`
-			INSERT INTO agent_workflow_definitions
-				(name, version, content_hash, definition, created_by, schema_version, signature_version)
-			VALUES ($1, 1, $2, 'schema_version: 3', 'alice', 3, 1)
-			RETURNING id
-		`, definitionName, definitionHash).Scan(&definitionID)).To(Succeed())
+		definitionID, definitionHash := importWorkflowDefinition(definitionName)
 
 		runFactory := db.NewAgentWorkflowRunsFactory(dbConn)
 		createRun := func(label string) db.AgentWorkflowRun {
@@ -994,14 +1008,7 @@ var _ = Describe("AgentSnapshotsFactory", func() {
 		Expect(lease.Close()).To(Succeed())
 
 		definitionName := fmt.Sprintf("snapshot-output-binding-%d", time.Now().UnixNano())
-		definitionHash := strings.Repeat("a", 64)
-		var definitionID int
-		Expect(dbConn.QueryRow(`
-			INSERT INTO agent_workflow_definitions
-				(name, version, content_hash, definition, created_by, schema_version, signature_version)
-			VALUES ($1, 1, $2, 'schema_version: 3', 'alice', 3, 1)
-			RETURNING id
-		`, definitionName, definitionHash).Scan(&definitionID)).To(Succeed())
+		definitionID, definitionHash := importWorkflowDefinition(definitionName)
 		runFactory := db.NewAgentWorkflowRunsFactory(dbConn)
 		run, created, err := runFactory.CreateWithInputs(ctx, db.AgentWorkflowRunCreateRequest{
 			TeamID: defaultTeam.ID(), TeamName: defaultTeam.Name(),

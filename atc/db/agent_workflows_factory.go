@@ -103,6 +103,18 @@ type agentWorkflowsFactory struct {
 	nodeResolver            workflow.NodeResolver
 }
 
+func nodeResolverForTransaction(resolver workflow.NodeResolver, tx Tx) workflow.NodeResolver {
+	if resolver == nil {
+		return nil
+	}
+	if transactional, ok := resolver.(interface {
+		nodeResolverForTransaction(Tx) workflow.NodeResolver
+	}); ok {
+		return transactional.nodeResolverForTransaction(tx)
+	}
+	return resolver
+}
+
 // workflowMetaColumns is d.-qualified because every metadata read goes through
 // workflowMetaFrom, which aliases agent_workflow_definitions as d.
 const workflowMetaColumns = `d.id, d.name, d.version, d.content_hash, d.live, d.description, d.created_by,
@@ -212,7 +224,13 @@ func (f *agentWorkflowsFactory) ImportManifestWithOutcome(
 			LIMIT 1`, name, metadata.SignatureVersion,
 		).Scan(&prior.Version, &prior.SchemaVersion, &prior.SignatureVersion, &priorRaw, &priorManifest)
 		if err == nil {
-			priorCompiled, _, compileErr := compileStoredWorkflowSourceWithResolver(name, prior.Version, priorRaw, priorManifest, f.nodeResolver)
+			priorCompiled, _, compileErr := compileStoredWorkflowSourceWithResolver(
+				name,
+				prior.Version,
+				priorRaw,
+				priorManifest,
+				nodeResolverForTransaction(f.nodeResolver, tx),
+			)
 			if compileErr != nil {
 				return workflow.ImportOutcome{}, compileErr
 			}
@@ -515,7 +533,7 @@ func (f *agentWorkflowsFactory) Promote(name string, version int, promotedBy str
 		targetDefinition.Version,
 		targetDefinition.RawYAML,
 		targetManifest,
-		f.nodeResolver,
+		nodeResolverForTransaction(f.nodeResolver, tx),
 	)
 	if err != nil {
 		return workflow.PromotionResult{}, workflow.InvalidPromotionError{Err: err}
@@ -561,6 +579,7 @@ func (f *agentWorkflowsFactory) Promote(name string, version int, promotedBy str
 			Err: ErrAgentWorkflowResourceSourcePromotionRequired,
 		}
 	}
+
 	target := targetDefinition.VersionMetadata()
 
 	result := workflow.PromotionResult{Target: target}

@@ -789,6 +789,9 @@ plan:
 		candidateAdmissionID := registerReadySourceAdmission(
 			defaultTeam.ID(), candidateDefinition, candidateHash, "missing-evaluator",
 		)
+		registerReadySourceAdmission(
+			defaultTeam.ID(), evaluatorDefinition, strings.Repeat("f", 64), "missing-evaluator-evaluator",
+		)
 		sourceFactory := db.NewAgentExperimentsFactory(
 			dbConn,
 			targetRenderer,

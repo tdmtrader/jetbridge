@@ -924,15 +924,20 @@ func (factory *workflowResourceSourcePipelinesFactory) ResourceSourcePipelineLif
 		if err := validateWorkflowResourceSourcePipeline(candidate.AgentWorkflowResourceSourcePipeline); err != nil {
 			return nil, err
 		}
+		candidates = append(candidates, candidate)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	for _, candidate := range candidates {
 		if candidate.State != AgentWorkflowResourceSourcePipelineArchived {
 			if err := validateWorkflowResourceSourcePipelineAuthority(ctx, factory.conn, candidate.AgentWorkflowResourceSourcePipeline); err != nil {
 				return nil, err
 			}
 		}
-		candidates = append(candidates, candidate)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
 	}
 	return candidates, nil
 }

@@ -1125,7 +1125,7 @@ func publishPRObservationFixture(t *testing.T, id snapshot.SnapshotID) (snapshot
 func publishPRResponseFixture(t *testing.T, id snapshot.SnapshotID, observation snapshot.Snapshot) (snapshot.Snapshot, []byte) {
 	t.Helper()
 	body := contracts.PullRequestResponseBody{
-		BatchID: "batch-1", Summary: "Applied the completed review.", Replies: []contracts.PullRequestThreadResponse{},
+		Kind: contracts.PullRequestResponseNoResponse,
 	}
 	subject := contracts.SubjectFromInput(
 		"pull-request", contracts.SubjectRolePrimary, "pull-request",
