@@ -47,7 +47,7 @@ func TestServiceVerifiesFrozenResolutionAndOwnsTerminalBinding(t *testing.T) {
 	store.execution.State = broker.ExecutionSealing
 	store.execution.Sequence = 3
 	sealed, err := service.Seal(context.Background(), broker.SealRequest{
-		ExecutionID: executionID, ResultType: "consultation/v1", Profile: resolved,
+		ExecutionID: executionID, Body: []byte(`{"answer":"answer","claims":[],"assumptions":[],"uncertainties":[],"recommendations":[]}`),
 	})
 	if err != nil {
 		t.Fatalf("Seal(): %v", err)
@@ -213,7 +213,7 @@ func (store *fakeStore) Find(_ context.Context, teamID int, id string) (db.Agent
 
 type fakeSealer struct{}
 
-func (*fakeSealer) Seal(context.Context, agentchildexecutions.Scope, broker.SealRequest) (snapshot.SnapshotRef, error) {
+func (*fakeSealer) Seal(context.Context, agentchildexecutions.Scope, broker.ExecutionIdentity, agentchildexecutions.CandidateResult) (snapshot.SnapshotRef, error) {
 	return snapshot.SnapshotRef{
 		ID: 99, Type: "consultation/v1",
 		Digest: snapshot.Digest("sha256:" + strings.Repeat("e", 64)),

@@ -15,12 +15,16 @@ import (
 )
 
 type Scope struct {
-	TeamID         int           `json:"team_id"`
-	WorkflowRunID  int64         `json:"workflow_run_id"`
-	NodePlanID     string        `json:"node_plan_id"`
-	ParentAttempt  int           `json:"parent_attempt"`
-	BrokerInstance string        `json:"broker_instance"`
-	LeaseDuration  time.Duration `json:"lease_duration"`
+	TeamID            int                             `json:"team_id"`
+	TeamName          string                          `json:"team_name"`
+	BuildID           int                             `json:"build_id"`
+	SnapshotCreatedBy string                          `json:"snapshot_created_by"`
+	WorkflowRunID     int64                           `json:"workflow_run_id"`
+	NodePlanID        string                          `json:"node_plan_id"`
+	ParentAttempt     int                             `json:"parent_attempt"`
+	BrokerInstance    string                          `json:"broker_instance"`
+	LeaseDuration     time.Duration                   `json:"lease_duration"`
+	Inputs            map[string]snapshot.SnapshotRef `json:"inputs"`
 }
 
 type ExecutionStore interface {
@@ -30,7 +34,7 @@ type ExecutionStore interface {
 }
 
 type ResultSealer interface {
-	Seal(context.Context, Scope, broker.SealRequest) (snapshot.SnapshotRef, error)
+	Seal(context.Context, Scope, broker.ExecutionIdentity, CandidateResult) (snapshot.SnapshotRef, error)
 }
 
 type Config struct {
@@ -204,15 +208,15 @@ func (service *Service) Seal(
 		return snapshot.SnapshotRef{}, fmt.Errorf(
 			"agent child authority: execution state is %q, expected sealing", execution.State)
 	}
-	if execution.ProfileID != request.Profile.ID ||
-		execution.ProfileDigest != request.Profile.Digest {
-		return snapshot.SnapshotRef{}, fmt.Errorf("agent child authority: result profile mismatch")
-	}
-	sealed, err := service.config.Sealer.Seal(ctx, service.config.Scope, request)
+	sealed, err := service.config.Sealer.Seal(ctx, service.config.Scope, execution.ExecutionIdentity, CandidateResult{Body: append([]byte(nil), request.Body...)})
 	if err != nil {
 		return snapshot.SnapshotRef{}, err
 	}
-	if sealed.ID <= 0 || sealed.Type != request.ResultType {
+	resultType, err := resultTypeForTool(execution.Tool)
+	if err != nil {
+		return snapshot.SnapshotRef{}, err
+	}
+	if sealed.ID <= 0 || sealed.Type != resultType {
 		return snapshot.SnapshotRef{}, fmt.Errorf("agent child authority: sealer returned invalid result identity")
 	}
 	_, err = service.config.Store.Advance(ctx, db.AdvanceAgentChildExecution{

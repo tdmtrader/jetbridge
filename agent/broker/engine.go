@@ -42,13 +42,8 @@ type AdmissionRequest struct {
 }
 
 type SealRequest struct {
-	ExecutionID  string
-	ResultType   snapshot.TypeRef
-	Subjects     []contracts.Subject
-	Body         any
-	Profile      Profile
-	StaticReview bool
-	TestsRun     bool
+	ExecutionID string
+	Body        json.RawMessage
 }
 
 type Attachment struct {
@@ -296,13 +291,12 @@ func (engine *Engine) execute(ctx context.Context, request executeRequest) (Resu
 		}
 		return Result{}, fmt.Errorf("broker: mark execution sealing: %w", err)
 	}
-	resultType := snapshot.TypeRef("consultation/v1")
-	if request.tool == ToolRequestReview {
-		resultType = "review/v1"
+	candidate, err := json.Marshal(body)
+	if err != nil {
+		return Result{}, engine.fail(authorityContext(ctx), executionID, failureOutputInvalid)
 	}
 	sealed, err := engine.config.Authority.Seal(executionCtx, SealRequest{
-		ExecutionID: executionID, ResultType: resultType, Subjects: subjects,
-		Body: body, Profile: profile, StaticReview: request.staticReview, TestsRun: false,
+		ExecutionID: executionID, Body: candidate,
 	})
 	if err != nil {
 		if executionCtx.Err() != nil {

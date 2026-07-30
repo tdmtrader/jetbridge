@@ -58,7 +58,7 @@ func TestEngineRunsConsultationThroughDurablePhases(t *testing.T) {
 	if len(runner.lastRequest().Attachments) != 1 || runner.lastRequest().Attachments[0].Name != "design" {
 		t.Fatalf("runner attachments = %#v", runner.lastRequest().Attachments)
 	}
-	if authority.admission.ProfileDigest == "" || authority.seal.StaticReview {
+	if authority.admission.ProfileDigest == "" || !json.Valid(authority.seal.Body) {
 		t.Fatalf("authority requests = %#v %#v", authority.admission, authority.seal)
 	}
 }
@@ -336,7 +336,7 @@ func (authority *fakeAuthority) Seal(_ context.Context, request broker.SealReque
 	defer authority.mu.Unlock()
 	authority.seal = request
 	return snapshot.SnapshotRef{
-		ID: 101, Type: request.ResultType, Digest: snapshot.Digest("sha256:" + strings.Repeat("c", 64)),
+		ID: 101, Type: "consultation/v1", Digest: snapshot.Digest("sha256:" + strings.Repeat("c", 64)),
 	}, nil
 }
 
