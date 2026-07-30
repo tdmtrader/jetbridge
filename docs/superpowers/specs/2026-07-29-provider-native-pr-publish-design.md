@@ -131,6 +131,68 @@ direct publication.
     ref CAS for GitHub and Azure DevOps. Azure's REST 7.1 ref-update adapter
     remains a contract-tested pre-existing-object seam, but production
     composition does not select it for a new `repository-change/v1`.
+21. **PR creation, original review, and the approved baseline are separate
+    authorities.** The creation occurrence proves which exact provider PR was
+    created. The original accepted review explains why initial publication was
+    allowed. The mutable approved baseline names the latest exact human-approved
+    repository and validation plus the publication occurrence that authorized
+    it. One occurrence field may not stand in for all three.
+22. **Initial publication is a distinct coordinator.** It starts without a PR
+    binding, publishes the exact source branch, finds or creates the PR,
+    reobserves that PR through the provider adapter to obtain authoritative
+    state and cursor, seals that observation, and only then creates a binding.
+    A create response is not allowed to fabricate monitor cursor authority.
+23. **Monitor effects are trigger-specific.** `review_batch` requires an exact
+    authorized response. Conflict and freshness runs carry an explicit semantic
+    absence and can never enter response publication. Completed and abandoned
+    observations record terminal state without launching a mutation workflow.
+24. **Production enablement remains fail-closed until the authority spine is
+    complete.** Exposing configuration, adapters, contracts, or a reusable
+    workflow is not sufficient. Startup refuses PR enablement until
+    deployment-owned impact evaluation, action-bound initial publication
+    composition, final baseline materialization and atomic approved-baseline
+    advancement, and the owned monitor lifecycle are all composed.
+25. **Legacy binding rows are not upgraded into authority.** The pre-authority
+    binding projection cannot prove an accepted review, the exact succeeded
+    `create_pr`, or a human-approved repository baseline. The forward migration
+    therefore takes an exclusive binding lock and refuses any preexisting row;
+    it never infers security facts from partial historical operation JSON.
+26. **Initial retry recovery precedes mutable provider observation.** A retry
+    first resolves an already-created exact binding and its immutable
+    publication occurrences. Only a genuinely incomplete initial operation may
+    reobserve mutable forge state and continue creation.
+27. **The successful initial branch publication is the binding origin.** It
+    carries the accepted evidence that authorized the published content. The
+    PR-creation occurrence remains a separate immutable fact, and a
+    pre-supplied accepted-review occurrence is only pre-mutation authority.
+28. **Original accepted review and current approved baseline are verified
+    separately.** Revision execution always reopens the immutable original
+    review, then resolves the binding-scoped current repository and validation
+    triple. A later baseline must be human-wait-authorized; a same-team baseline
+    from another binding is not substitutable.
+29. **Forge terminal state bypasses mutation workflows.** Completed and
+    abandoned observations are reopened as exact sealed evidence and applied
+    through a row-locked direct binding transition. They do not reserve or
+    launch a revision run, invoke a forge mutator, or invent publication
+    evidence. Owned-pipeline disposal is a later lifecycle consequence.
+
+## Implementation checkpoint
+
+As of 2026-07-29, the durable authority split, exact initial coordinator,
+monitor target authority, exact revision executor, exact monitor-run
+inspection, binding-scoped approved-baseline contract, and direct
+completed/abandoned transition are implemented and independently reviewed.
+
+Production enablement remains intentionally blocked. The remaining authority
+work is a concrete deployment-owned impact resolver/evaluator, action-bound
+composition of the initial observer/sealer/handoff, an immutable relation from
+the authorizing publication to its materialized final `repository/v1`, a
+database resolver for later approved baselines, atomic cursor/head/baseline
+advancement, and complete monitor-pipeline lifecycle wiring.
+
+GitHub live proof was not run because its explicit environment prerequisites
+were unavailable. Azure DevOps adapter: contract-tested against REST 7.1; not
+live-validated.
 
 ## Invariants
 
@@ -442,6 +504,13 @@ until the credential contract carries an explicit authentication mode. Human
 PR URLs are derived from the configured organization, project, repository,
 and PR identity; REST `url` and `remoteUrl` fields are not trusted as browser
 destinations.
+
+Azure policy has one strict decomposition: `api_base_url` is the organization
+URL, and the provider repository locator is exactly
+`project/repositoryID`. The credential-free Git repository URL must name that
+same organization, project, and repository. Production composition verifies
+all three before constructing either the REST adapter or the smart-HTTP object
+transport; it never guesses a project by trimming an arbitrary URL.
 
 Azure response recovery uses exact, bounded, machine-authored operation
 markers because the comment API has no documented idempotency key. A reply

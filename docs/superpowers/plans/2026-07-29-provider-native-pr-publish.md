@@ -30,10 +30,10 @@ Helm, GitHub REST API, Azure DevOps Git REST API 7.1.
 - Preserve the accepted direct-Git branch/trunk implementation; do not widen
   its mutation-time head observation into PR authority.
 - The reusable-node plan owns migrations `1773106149`–`1773106150`. This
-  plan owns `1773106151`–`1773106153`, and no migration task may land until
+  plan owns `1773106151`–`1773106154`, and no migration task may land until
   `1773106149` and `1773106150` exist in the same branch. Re-check the actual
   tail immediately before each migration; if the reservations changed,
-  renumber this entire unpublished three-migration series atomically.
+  renumber this entire unpublished four-migration series atomically.
 - Never edit migrations `1773106128`–`1773106148`.
 - Agents never receive mutation-capable forge credentials.
 - Read and write forge credentials are distinct destination-policy references.
@@ -123,6 +123,11 @@ Helm, GitHub REST API, Azure DevOps Git REST API 7.1.
 - Treat `Observation.ReviewBatches` as a strict delta after the acknowledged
   input cursor. The core preserves but never decodes cursor structure; each
   provider conformance suite proves that acknowledged batches are not replayed.
+- Give Azure DevOps one unambiguous policy decomposition:
+  `api_base_url` is the organization URL, while the provider repository
+  locator is exactly `project/repositoryID`. Production composition verifies
+  that the credential-free Git URL names that same organization, project, and
+  repository before constructing either REST or smart-HTTP transport.
 - Require a nonempty cursor on active and terminal observations. The empty
   cursor is an input/pre-create sentinel, not a valid terminal progression.
 - Derive the freshness action's canonical time bucket from its first due
@@ -139,6 +144,26 @@ Helm, GitHub REST API, Azure DevOps Git REST API 7.1.
   `agent/pullrequest/resource`; use `cmd/forge-pr-resource` only as the thin
   executable dispatcher. This preserves reuse by pipeline rendering and avoids
   mixing `package main` with the provider-neutral resource contract.
+- Persist PR creation occurrence, original accepted-review authority, and the
+  current approved baseline as three distinct facts. The approved baseline is
+  mutable only through an atomic cursor/head/baseline acknowledgement after an
+  exact successful human-authorized revision publication.
+- Refuse to migrate any pre-authority PR binding row. The legacy coordination
+  projection cannot prove accepted-review, exact `create_pr`, or approved
+  baseline authority, so migration `1773106154` locks the table and fails
+  instead of backfilling from partial publication JSON.
+- Build initial PR publication as a separate binding-free coordinator. After
+  find/create it must reobserve the provider PR, seal the active observation,
+  and use that observation's opaque nonempty cursor when creating the binding.
+- Model monitor effects by trigger: review batches require response authority;
+  conflict and freshness carry typed semantic absence that provider response
+  publication rejects; completed and abandoned observations bypass mutation
+  workflows and advance terminal binding state from exact observation evidence.
+- Keep `--agent-publisher-pull-requests-enabled` fail-closed until every
+  production dependency is concrete: initial coordinator and created-PR
+  observer, exact target renderer, revision executor, monitor-run inspector,
+  impact resolver/evaluator, final repository baseline materializer, and atomic
+  approved-baseline advancement. Partial composition must refuse startup.
 
 ---
 
@@ -1846,6 +1871,118 @@ git commit -m "test(agent): prove provider-native PR publish"
 
 ---
 
+### Task 17: Complete and compose the production authority spine
+
+This task is an integration correction discovered while composing Tasks
+10–16. It is not optional cleanup: PR enablement must remain fail-closed until
+every step below is complete.
+
+**Files:**
+
+- Modify: `agent/pullrequest/store.go`
+- Modify: `atc/db/agent_pr_bindings_factory.go`
+- Create: next forward-only PR binding authority migration and migration tests
+- Create: `agent/pullrequest/initial_coordinator.go`
+- Create: `agent/pullrequest/revision_executor.go`
+- Create: `agent/pullrequest/monitor_run_inspector.go`
+- Create: exact provider-created PR observer and approved-baseline
+  materializer/advancer units
+- Modify: `agent/pullrequest/monitor.go`
+- Modify: `agent/workflow/render.go`
+- Modify: `agent/workflowrun/binder.go`
+- Modify: `agent/workflow/seeds/pr-monitor-v3/workflow.yaml`
+- Modify: `atc/atccmd/agent_publisher.go`
+- Modify: `atc/atccmd/command.go`
+- Test: focused unit, DB migration/factory, workflow rendering, execution,
+  provider recovery, and composition suites
+
+- [x] **Step 1: Split and persist durable authorities**
+
+Persist immutable PR-creation occurrence, immutable original accepted-review
+authority, and mutable approved baseline (repository snapshot, validation
+snapshot, and authorizing publication occurrence) as distinct same-team
+foreign-keyed facts. Binding creation must reopen and match the exact
+successful `create_pr` occurrence and its exact result, action, observation,
+heads, refs, destination, and policy.
+
+- [x] **Step 2: Implement initial publication and provider reobservation**
+
+Use a binding-free coordinator for the accepted initial review. Publish the
+exact branch and PR idempotently, then reobserve the created PR through the
+provider adapter. Seal its active `pull-request/v1` observation and nonempty
+opaque cursor before creating the binding. Never fabricate an observation or
+cursor from the create response.
+
+- [x] **Step 3: Inject exact monitor publication target authority**
+
+Extend the protected monitor launch/render envelope with destination,
+approval-policy version, source ref, and target ref resolved from the exact
+creation action plus current deployment policy. Replace only explicit reusable
+workflow sentinels and include the result in the canonical render identity.
+
+- [x] **Step 4: Implement exact revision execution**
+
+Reopen the binding, active reservation, observation, candidate, validation,
+impact, and trigger-required response. Reopen the exact team-authorized
+`repository-change/v1` to obtain its result commit before constructing the
+branch operation. Execute durable branch and status operations, and response
+only for `review_batch`. A `rebase_required` branch result is a safe stale
+outcome; terminal observations never enter this executor.
+
+- [x] **Step 5: Implement exact monitor-run inspection**
+
+Project one team/run's immutable publication occurrences and classify only
+complete matching evidence. Runtime success alone is insufficient. Missing,
+extra, mismatched, or conflicting proof is `ambiguous`; exact branch
+`rebase_required` is `stale`; exact terminal observation is completed or
+abandoned; exact branch/status/required-response evidence is published or
+validated-noop.
+
+- [ ] **Step 6: Materialize and atomically advance the approved baseline**
+
+Materialize the final published revision as an exact sealed `repository/v1`.
+After a successful human-authorized publication, advance cursor, heads, and
+the approved baseline in one binding transaction. Rejection, stale authority,
+failure, ambiguous evidence, or a no-reapproval run cannot advance the human
+baseline.
+
+The provider-neutral approved-baseline authority is implemented and now binds
+the exact binding, publication occurrence, repository, and validation. The
+remaining work is the immutable publication-to-materialization relation, the
+database-backed resolver for later human-wait baselines, and same-transaction
+cursor/head/baseline advancement.
+
+- [ ] **Step 7: Compose trusted impact policy and trigger-specific paths**
+
+Install a deployment-owned impact-policy resolver and authoritative evaluator;
+no permissive fallback is allowed. `review_batch` requires response authority,
+conflict/freshness carry non-publishable semantic absence, and
+completed/abandoned observations take the terminal coordinator path without a
+mutation workflow.
+
+The direct completed/abandoned coordinator and its row-locked, idempotent
+binding transition are implemented. Concrete deployment-owned impact
+resolution/evaluation and the terminal pipeline lifecycle hook remain
+uncomposed.
+
+- [ ] **Step 8: Wire production and remove the intentional startup refusal**
+
+Compose the initial coordinator, created-PR observer, target renderer, revision
+executor, evidence verifier, impact verifier, monitor inspector/coordinator,
+standing-pipeline reconciler, and lifecycle hooks. Only after focused and
+migration verification passes may
+`--agent-publisher-pull-requests-enabled` stop returning the explicit
+incomplete-authority error.
+
+**Implementation checkpoint (2026-07-29):** Steps 1–5 are implemented and
+reviewed. Step 7's direct terminal subpath is implemented and reviewed. The
+production startup refusal remains intentional for the open work recorded in
+Steps 6–8. GitHub live proof was not run because the required environment was
+not available, and Azure DevOps remains contract-tested against REST 7.1 but
+not live-validated.
+
+---
+
 ## Execution order and safe parallelism
 
 The dependency spine is:
@@ -1858,7 +1995,7 @@ Task 6 + Task 12 → Task 7
 Task 3 + Task 8 → Task 9 → Task 10 → Task 11
 Task 11 requires Task 12
 Task 5 + Task 6 → Task 13
-Tasks 3–13 → Task 14 → Task 15 → Task 16
+Tasks 3–13 → Task 14 → Task 15 → Task 17 → Task 16
 ```
 
 Tasks 3, 4, and 6 are migration-bearing and start only after reusable-node

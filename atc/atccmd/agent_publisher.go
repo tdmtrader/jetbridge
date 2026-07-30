@@ -17,7 +17,7 @@ import (
 
 const (
 	defaultAgentPublisherCredentialRoot = "/run/concourse-publisher"
-	incompletePRAuthoritySpineError     = "provider-native pull request production authority spine is incomplete; initial publication, approved-baseline advancement, and exact monitor-run inspection must be composed before enablement"
+	incompletePRAuthoritySpineError     = "provider-native pull request production authority spine is incomplete; authoritative impact evaluation, action-bound initial publication composition, approved-baseline materialization and advancement, and lifecycle wiring must be composed before enablement"
 )
 
 type agentPublisherCredentialFiles map[string]string
