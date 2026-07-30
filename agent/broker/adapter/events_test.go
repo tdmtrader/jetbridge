@@ -1,6 +1,7 @@
 package adapter_test
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -55,6 +56,38 @@ func TestDecodeNativeStreamsNormalizesTerminalOutput(t *testing.T) {
 				t.Fatalf("cost presence = %t, want %t", result.Usage.CostUSD != nil, tc.cost)
 			}
 		})
+	}
+}
+
+func TestDecodeNativeStreamsDoesNotExposeNativePayloadsInBrokerEvents(t *testing.T) {
+	result, err := adapter.DecodeStream(broker.AdapterClaude, strings.NewReader(
+		`{"type":"system","session_id":"session-1","env":"TOKEN=super-secret"}
+{"type":"result","subtype":"success","result":"{\"answer\":\"ok\"}"}
+`,
+	), 4096)
+	if err != nil {
+		t.Fatalf("DecodeStream(): %v", err)
+	}
+	encoded, err := json.Marshal(result.Events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "super-secret") || strings.Contains(string(encoded), "session-1") {
+		t.Fatalf("broker events expose native payload: %s", encoded)
+	}
+}
+
+func TestDecodeNativeStreamsReturnsNormalizedPartialEventsOnFailure(t *testing.T) {
+	result, err := adapter.DecodeStream(broker.AdapterClaude, strings.NewReader(
+		`{"type":"system","session_id":"session-1"}
+{"type":"result","subtype":"error","error":"provider body must not escape"}
+`,
+	), 4096)
+	if err == nil || !strings.Contains(err.Error(), "failed") {
+		t.Fatalf("DecodeStream() error = %v, want failed native execution", err)
+	}
+	if got := result.Events; len(got) != 2 || got[0].Kind != broker.EventProgress || got[1].Kind != broker.EventFailed {
+		t.Fatalf("partial events = %#v", got)
 	}
 }
 

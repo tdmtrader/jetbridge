@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -66,10 +67,42 @@ type RunRequest struct {
 
 type RunResult struct {
 	Output       json.RawMessage
+	Events       []Event
 	Duration     time.Duration
 	InputTokens  *int64
 	OutputTokens *int64
 	CostUSD      *float64
+}
+
+// Event is the only event shape that crosses from the broker data plane into
+// the execution authority. It deliberately has no provider-supplied text,
+// session IDs, environment values, or native payloads.
+type Event struct {
+	Kind EventKind `json:"kind"`
+}
+
+type EventKind string
+
+const (
+	EventProgress  EventKind = "progress"
+	EventCompleted EventKind = "completed"
+	EventFailed    EventKind = "failed"
+	maxRunEvents             = 128
+)
+
+type RunUpdate struct {
+	Events       []Event
+	Duration     time.Duration
+	InputTokens  *int64
+	OutputTokens *int64
+	CostUSD      *float64
+}
+
+type Terminal struct {
+	State     ExecutionState
+	Code      string
+	Retryable bool
+	Summary   string
 }
 
 type Result struct {
@@ -89,6 +122,8 @@ type Result struct {
 type Authority interface {
 	Admit(context.Context, AdmissionRequest) (string, error)
 	Phase(context.Context, string, string) error
+	Update(context.Context, string, RunUpdate) error
+	Terminal(context.Context, string, Terminal) error
 	Seal(context.Context, SealRequest) (snapshot.SnapshotRef, error)
 }
 
@@ -129,7 +164,7 @@ func (engine *Engine) RequestReview(ctx context.Context, request ReviewRequest) 
 	if !containsString(request.Attachments, "workspace") {
 		return Result{}, fmt.Errorf("broker request_review: workspace attachment is required")
 	}
-	if err := validateAttachments(request.Attachments); err != nil {
+	if err := validateAttachments(ToolRequestReview, request.Attachments); err != nil {
 		return Result{}, fmt.Errorf("broker request_review: %w", err)
 	}
 	caller := strings.TrimSpace(request.Instructions)
@@ -147,7 +182,7 @@ func (engine *Engine) ConsultAgent(ctx context.Context, request ConsultRequest) 
 	if strings.TrimSpace(request.Question) == "" {
 		return Result{}, fmt.Errorf("broker consult_agent: question is required")
 	}
-	if err := validateAttachments(request.Attachments); err != nil {
+	if err := validateAttachments(ToolConsultAgent, request.Attachments); err != nil {
 		return Result{}, fmt.Errorf("broker consult_agent: %w", err)
 	}
 	caller := "Question:\n" + strings.TrimSpace(request.Question)
@@ -177,70 +212,97 @@ func (engine *Engine) execute(ctx context.Context, request executeRequest) (Resu
 	if err != nil {
 		return Result{}, err
 	}
+	executionCtx, cancel := context.WithTimeout(ctx, profile.Limits.Timeout)
+	defer cancel()
 	admission := AdmissionRequest{
 		IdempotencyKey: request.idempotencyKey, Tool: request.tool,
 		Selector: request.selector, ProfileID: profile.ID, ProfileDigest: profile.Digest,
 		InputDigest: digestInput(request.callerText, request.attachments),
 		Attachments: append([]string(nil), request.attachments...),
 	}
-	executionID, err := engine.config.Authority.Admit(ctx, admission)
+	executionID, err := engine.config.Authority.Admit(executionCtx, admission)
 	if err != nil {
 		return Result{}, fmt.Errorf("broker: admit child execution: %w", err)
 	}
-	attachments, err := engine.config.Attachments.Resolve(ctx, request.attachments)
+	attachments, err := engine.config.Attachments.Resolve(executionCtx, request.attachments)
 	if err != nil {
-		return Result{}, engine.fail(ctx, executionID, "attachment_unknown", err)
+		return Result{}, engine.fail(authorityContext(ctx), executionID,
+			failureForContext(executionCtx, failureAttachmentUnknown))
+	}
+	if err := verifyAttachments(request.attachments, attachments); err != nil {
+		return Result{}, engine.fail(authorityContext(ctx), executionID,
+			failureForContext(executionCtx, failureAttachmentUnknown))
 	}
 	subjects := make([]contracts.Subject, len(attachments))
 	for index, attachment := range attachments {
 		if attachment.Name == "" || strings.TrimSpace(attachment.Prompt) == "" {
-			return Result{}, engine.fail(ctx, executionID, "attachment_unknown",
-				fmt.Errorf("attachment %d is incomplete", index))
+			return Result{}, engine.fail(authorityContext(ctx), executionID,
+				failureForContext(executionCtx, failureAttachmentUnknown))
 		}
 		if err := attachment.Subject.Validate(); err != nil {
-			return Result{}, engine.fail(ctx, executionID, "attachment_unknown", err)
+			return Result{}, engine.fail(authorityContext(ctx), executionID,
+				failureForContext(executionCtx, failureAttachmentUnknown))
 		}
 		subjects[index] = attachment.Subject
 	}
-	if len(subjects) == 0 {
-		return Result{}, engine.fail(ctx, executionID, "attachment_unknown",
-			fmt.Errorf("authority supplied no primary subject"))
-	}
-	credential, err := engine.config.Credentials.Resolve(ctx, profile.CredentialSlot)
+	credential, err := engine.config.Credentials.Resolve(executionCtx, profile.CredentialSlot)
 	if err != nil {
-		return Result{}, engine.fail(ctx, executionID, "credential_unavailable", err)
+		return Result{}, engine.fail(authorityContext(ctx), executionID,
+			failureForContext(executionCtx, failureCredentialUnavailable))
 	}
 	prompt := buildPrompt(engine.config.Instructions[request.tool], request.callerText, attachments)
-	if err := engine.config.Authority.Phase(ctx, executionID, "running"); err != nil {
+	if err := engine.config.Authority.Phase(executionCtx, executionID, "running"); err != nil {
+		if executionCtx.Err() != nil {
+			return Result{}, engine.fail(authorityContext(ctx), executionID, classifyRunFailure(executionCtx))
+		}
 		return Result{}, fmt.Errorf("broker: mark execution running: %w", err)
 	}
-	run, err := engine.config.Runner.Run(ctx, RunRequest{
+	run, err := engine.config.Runner.Run(executionCtx, RunRequest{
 		ExecutionID: executionID, Tool: request.tool, Profile: profile,
 		Prompt: prompt, Credential: credential,
 	})
-	if err != nil {
-		return Result{}, engine.fail(ctx, executionID, "provider_rejected", err)
+	events, eventErr := NormalizeEvents(run.Events)
+	if eventErr != nil {
+		return Result{}, engine.fail(authorityContext(ctx), executionID, failureProviderRejected)
 	}
-	if err := engine.config.Authority.Phase(ctx, executionID, "validating"); err != nil {
+	if updateErr := engine.config.Authority.Update(authorityContext(ctx), executionID, RunUpdate{
+		Events: events, Duration: run.Duration, InputTokens: run.InputTokens,
+		OutputTokens: run.OutputTokens, CostUSD: run.CostUSD,
+	}); updateErr != nil {
+		return Result{}, fmt.Errorf("broker: persist execution update: %w", updateErr)
+	}
+	if err != nil {
+		return Result{}, engine.fail(authorityContext(ctx), executionID, classifyRunFailure(executionCtx))
+	}
+	if err := engine.config.Authority.Phase(executionCtx, executionID, "validating"); err != nil {
+		if executionCtx.Err() != nil {
+			return Result{}, engine.fail(authorityContext(ctx), executionID, classifyRunFailure(executionCtx))
+		}
 		return Result{}, fmt.Errorf("broker: mark execution validating: %w", err)
 	}
 	body, err := output.Decode(string(request.tool), run.Output, subjects, int(profile.Limits.MaxOutputBytes))
 	if err != nil {
-		return Result{}, engine.fail(ctx, executionID, "output_invalid", err)
+		return Result{}, engine.fail(authorityContext(ctx), executionID, failureOutputInvalid)
 	}
-	if err := engine.config.Authority.Phase(ctx, executionID, "sealing"); err != nil {
+	if err := engine.config.Authority.Phase(executionCtx, executionID, "sealing"); err != nil {
+		if executionCtx.Err() != nil {
+			return Result{}, engine.fail(authorityContext(ctx), executionID, classifyRunFailure(executionCtx))
+		}
 		return Result{}, fmt.Errorf("broker: mark execution sealing: %w", err)
 	}
 	resultType := snapshot.TypeRef("consultation/v1")
 	if request.tool == ToolRequestReview {
 		resultType = "review/v1"
 	}
-	sealed, err := engine.config.Authority.Seal(ctx, SealRequest{
+	sealed, err := engine.config.Authority.Seal(executionCtx, SealRequest{
 		ExecutionID: executionID, ResultType: resultType, Subjects: subjects,
 		Body: body, Profile: profile, StaticReview: request.staticReview, TestsRun: false,
 	})
 	if err != nil {
-		return Result{}, engine.fail(ctx, executionID, "sealing_failed", err)
+		if executionCtx.Err() != nil {
+			return Result{}, engine.fail(authorityContext(ctx), executionID, classifyRunFailure(executionCtx))
+		}
+		return Result{}, engine.fail(authorityContext(ctx), executionID, failureSealingFailed)
 	}
 	return Result{
 		ExecutionID: executionID, Selector: request.selector, Profile: profile,
@@ -262,26 +324,53 @@ func (engine *Engine) validateConfig(tool Tool) error {
 	return nil
 }
 
-func (engine *Engine) fail(ctx context.Context, executionID, code string, cause error) error {
-	_ = engine.config.Authority.Phase(ctx, executionID, "errored")
-	return &ExecutionError{ExecutionID: executionID, Code: code, Cause: cause}
+type failure struct {
+	state     ExecutionState
+	code      string
+	retryable bool
+	summary   string
+}
+
+var (
+	failureAttachmentUnknown     = failure{ExecutionErrored, "attachment_unknown", false, "declared attachments could not be resolved"}
+	failureCredentialUnavailable = failure{ExecutionErrored, "credential_unavailable", true, "broker credential is unavailable"}
+	failureProviderRejected      = failure{ExecutionErrored, "provider_rejected", true, "provider rejected the child execution"}
+	failureDeadlineExceeded      = failure{ExecutionTimedOut, "deadline_exceeded", true, "child execution exceeded its deadline"}
+	failureCancelled             = failure{ExecutionCancelled, "cancelled", true, "child execution was cancelled"}
+	failureOutputInvalid         = failure{ExecutionErrored, "output_invalid", false, "child execution returned invalid typed output"}
+	failureSealingFailed         = failure{ExecutionErrored, "sealing_failed", true, "child result could not be sealed"}
+)
+
+func (engine *Engine) fail(ctx context.Context, executionID string, terminal failure) error {
+	_ = engine.config.Authority.Terminal(ctx, executionID, Terminal{
+		State: terminal.state, Code: terminal.code, Retryable: terminal.retryable, Summary: terminal.summary,
+	})
+	return &ExecutionError{ExecutionID: executionID, Code: terminal.code, Retryable: terminal.retryable, Summary: terminal.summary}
 }
 
 type ExecutionError struct {
 	ExecutionID string
 	Code        string
-	Cause       error
+	Retryable   bool
+	Summary     string
 }
 
 func (failure *ExecutionError) Error() string {
-	return fmt.Sprintf("broker child %s: %s: %v", failure.ExecutionID, failure.Code, failure.Cause)
+	return fmt.Sprintf("broker child %s: %s: %s", failure.ExecutionID, failure.Code, failure.Summary)
 }
-
-func (failure *ExecutionError) Unwrap() error { return failure.Cause }
 
 var attachmentNamePattern = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 
-func validateAttachments(names []string) error {
+var allowedAttachments = map[Tool]map[string]struct{}{
+	ToolRequestReview: {"workspace": {}, "validation": {}},
+	ToolConsultAgent:  {"design": {}, "api-contract": {}},
+}
+
+func validateAttachments(tool Tool, names []string) error {
+	allowed, found := allowedAttachments[tool]
+	if !found {
+		return fmt.Errorf("unsupported tool %q", tool)
+	}
 	seen := make(map[string]struct{}, len(names))
 	for _, name := range names {
 		if !attachmentNamePattern.MatchString(name) {
@@ -290,9 +379,65 @@ func validateAttachments(names []string) error {
 		if _, found := seen[name]; found {
 			return fmt.Errorf("attachment %q is duplicate", name)
 		}
+		if _, found := allowed[name]; !found {
+			return fmt.Errorf("attachment %q is not allowed for %s", name, tool)
+		}
 		seen[name] = struct{}{}
 	}
 	return nil
+}
+
+func verifyAttachments(requested []string, resolved []Attachment) error {
+	if len(requested) != len(resolved) {
+		return fmt.Errorf("resolved attachment count does not match request")
+	}
+	for index, name := range requested {
+		if resolved[index].Name != name {
+			return fmt.Errorf("resolved attachment %d does not match request", index)
+		}
+	}
+	return nil
+}
+
+func classifyRunFailure(ctx context.Context) failure {
+	switch {
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+		return failureDeadlineExceeded
+	case errors.Is(ctx.Err(), context.Canceled):
+		return failureCancelled
+	default:
+		return failureProviderRejected
+	}
+}
+
+func failureForContext(ctx context.Context, fallback failure) failure {
+	if ctx.Err() == nil {
+		return fallback
+	}
+	return classifyRunFailure(ctx)
+}
+
+// NormalizeEvents accepts only the bounded, content-free event DTO that may
+// be persisted by the authority. Callers must retain native detail separately
+// in a protected local transcript.
+func NormalizeEvents(events []Event) ([]Event, error) {
+	if len(events) > maxRunEvents {
+		events = events[:maxRunEvents]
+	}
+	result := make([]Event, len(events))
+	for index, event := range events {
+		switch event.Kind {
+		case EventProgress, EventCompleted, EventFailed:
+			result[index] = event
+		default:
+			return nil, fmt.Errorf("broker runner returned an invalid event kind")
+		}
+	}
+	return result, nil
+}
+
+func authorityContext(ctx context.Context) context.Context {
+	return context.WithoutCancel(ctx)
 }
 
 func buildPrompt(fixed, caller string, attachments []Attachment) string {

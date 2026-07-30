@@ -12,10 +12,11 @@ import (
 	"github.com/concourse/concourse/agent/broker"
 )
 
-type Event struct {
-	Type      string
-	SessionID string
-	Raw       json.RawMessage
+// LocalTranscript is a protected sidecar-only sink for native detail. It is
+// deliberately separate from StreamResult so callers cannot persist provider
+// payloads through the authority event DTO.
+type LocalTranscript interface {
+	AppendNative([]byte) error
 }
 
 type Usage struct {
@@ -27,14 +28,19 @@ type Usage struct {
 
 type StreamResult struct {
 	Output []byte
-	Events []Event
+	Events []broker.Event
 	Usage  Usage
 }
 
 // DecodeStream converts the evolving native JSONL envelopes into the small set
 // of facts the broker owns. Unknown event fields and event types remain in the
 // protected raw event stream and do not change terminal semantics.
-func DecodeStream(name broker.AdapterName, input io.Reader, maxBytes int) (StreamResult, error) {
+func DecodeStream(
+	name broker.AdapterName,
+	input io.Reader,
+	maxBytes int,
+	transcripts ...LocalTranscript,
+) (StreamResult, error) {
 	if maxBytes <= 0 {
 		return StreamResult{}, fmt.Errorf("broker adapter: stream byte limit must be positive")
 	}
@@ -57,15 +63,19 @@ func DecodeStream(name broker.AdapterName, input io.Reader, maxBytes int) (Strea
 		}
 		var envelope nativeEnvelope
 		if err := json.Unmarshal(line, &envelope); err != nil {
-			return StreamResult{}, fmt.Errorf("broker adapter: invalid native JSON event: %w", err)
+			return result, fmt.Errorf("broker adapter: invalid native JSON event: %w", err)
 		}
 		if strings.TrimSpace(envelope.Type) == "" {
-			return StreamResult{}, fmt.Errorf("broker adapter: native JSON event type is required")
+			return result, fmt.Errorf("broker adapter: native JSON event type is required")
 		}
-		result.Events = append(result.Events, Event{
-			Type: envelope.Type, SessionID: sessionID(envelope),
-			Raw: append(json.RawMessage(nil), line...),
-		})
+		for _, transcript := range transcripts {
+			if transcript != nil {
+				if err := transcript.AppendNative(append([]byte(nil), line...)); err != nil {
+					return result, fmt.Errorf("broker adapter: append protected transcript: %w", err)
+				}
+			}
+		}
+		result.Events = appendNormalizedEvent(result.Events, envelope)
 		switch name {
 		case broker.AdapterCodex:
 			if envelope.Type == "item.completed" && envelope.Item.Type == "agent_message" {
@@ -73,21 +83,21 @@ func DecodeStream(name broker.AdapterName, input io.Reader, maxBytes int) (Strea
 			}
 			if envelope.Type == "turn.completed" {
 				if len(candidate) == 0 {
-					return StreamResult{}, fmt.Errorf("broker adapter: terminal Codex turn has no agent message")
+					return result, fmt.Errorf("broker adapter: terminal Codex turn has no agent message")
 				}
 				terminal = true
 				setTokenUsage(&result.Usage, envelope.Usage)
 			}
 			if envelope.Type == "error" {
-				return StreamResult{}, fmt.Errorf("broker adapter: native execution failed")
+				return result, fmt.Errorf("broker adapter: native execution failed")
 			}
 		case broker.AdapterClaude, broker.AdapterCursor:
 			if envelope.Type == "result" {
 				if terminal {
-					return StreamResult{}, fmt.Errorf("broker adapter: conflicting terminal native results")
+					return result, fmt.Errorf("broker adapter: conflicting terminal native results")
 				}
 				if envelope.Subtype != "success" {
-					return StreamResult{}, fmt.Errorf("broker adapter: native execution failed")
+					return result, fmt.Errorf("broker adapter: native execution failed")
 				}
 				candidate = []byte(envelope.Result)
 				terminal = true
@@ -102,17 +112,17 @@ func DecodeStream(name broker.AdapterName, input io.Reader, maxBytes int) (Strea
 				}
 			}
 		default:
-			return StreamResult{}, fmt.Errorf("broker adapter: unsupported adapter %q", name)
+			return result, fmt.Errorf("broker adapter: unsupported adapter %q", name)
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return StreamResult{}, fmt.Errorf("broker adapter: native stream limit or read failure: %w", err)
+		return result, fmt.Errorf("broker adapter: native stream limit or read failure: %w", err)
 	}
 	if !terminal {
-		return StreamResult{}, fmt.Errorf("broker adapter: native stream ended without a terminal result")
+		return result, fmt.Errorf("broker adapter: native stream ended without a terminal result")
 	}
 	if len(candidate) == 0 {
-		return StreamResult{}, fmt.Errorf("broker adapter: terminal result output is empty")
+		return result, fmt.Errorf("broker adapter: terminal result output is empty")
 	}
 	result.Output = append([]byte(nil), candidate...)
 	return result, nil
@@ -145,11 +155,17 @@ type nativeMessage struct {
 	ID string `json:"id"`
 }
 
-func sessionID(envelope nativeEnvelope) string {
-	if envelope.SessionID != "" {
-		return envelope.SessionID
+func appendNormalizedEvent(events []broker.Event, envelope nativeEnvelope) []broker.Event {
+	if len(events) == 128 {
+		return events
 	}
-	return envelope.ThreadID
+	kind := broker.EventProgress
+	if envelope.Type == "error" || (envelope.Type == "result" && envelope.Subtype != "success") {
+		kind = broker.EventFailed
+	} else if envelope.Type == "turn.completed" || (envelope.Type == "result" && envelope.Subtype == "success") {
+		kind = broker.EventCompleted
+	}
+	return append(events, broker.Event{Kind: kind})
 }
 
 func setTokenUsage(target *Usage, source nativeUsage) {

@@ -4,6 +4,7 @@ package agentchildexecutions
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -110,21 +111,79 @@ func (service *Service) Phase(ctx context.Context, executionID, phase string) er
 		ExpectedSequence: execution.Sequence, State: state, Phase: phase,
 		BrokerInstance: service.config.Scope.BrokerInstance,
 	}
-	switch state {
-	case broker.ExecutionErrored:
-		retryable := false
-		update.ErrorCode = "broker_error"
-		update.ErrorRetryable = &retryable
-		update.ErrorSummary = "broker execution failed; inspect protected transcript"
-	case broker.ExecutionCancelled, broker.ExecutionTimedOut:
-		retryable := true
-		update.ErrorCode = string(state)
-		update.ErrorRetryable = &retryable
-		update.ErrorSummary = "broker execution did not reach a typed result"
-	default:
+	if state != broker.ExecutionErrored && state != broker.ExecutionCancelled && state != broker.ExecutionTimedOut {
 		update.LeaseExpiresAt = time.Now().Add(service.config.Scope.LeaseDuration)
 	}
 	_, err = service.config.Store.Advance(ctx, update)
+	return err
+}
+
+// Update persists only the bounded broker event DTO and observed accounting.
+// Native harness payloads remain in the sidecar's protected local transcript.
+func (service *Service) Update(ctx context.Context, executionID string, update broker.RunUpdate) error {
+	eventsToPersist, err := broker.NormalizeEvents(update.Events)
+	if err != nil {
+		return fmt.Errorf("agent child authority: validate normalized events: %w", err)
+	}
+	execution, found, err := service.config.Store.Find(ctx, service.config.Scope.TeamID, executionID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("agent child authority: execution not found")
+	}
+	if execution.State != broker.ExecutionRunning {
+		return fmt.Errorf("agent child authority: execution state is %q, expected running", execution.State)
+	}
+	events, err := json.Marshal(eventsToPersist)
+	if err != nil {
+		return fmt.Errorf("agent child authority: encode normalized events: %w", err)
+	}
+	usage, err := json.Marshal(struct {
+		InputTokens  *int64   `json:"input_tokens,omitempty"`
+		OutputTokens *int64   `json:"output_tokens,omitempty"`
+		CostUSD      *float64 `json:"cost_usd,omitempty"`
+	}{update.InputTokens, update.OutputTokens, update.CostUSD})
+	if err != nil {
+		return fmt.Errorf("agent child authority: encode observed usage: %w", err)
+	}
+	var duration *int64
+	if update.Duration > 0 {
+		milliseconds := update.Duration.Milliseconds()
+		duration = &milliseconds
+	}
+	_, err = service.config.Store.Advance(ctx, db.AdvanceAgentChildExecution{
+		ID: execution.ID, TeamID: service.config.Scope.TeamID,
+		ExpectedSequence: execution.Sequence, State: execution.State, Phase: "observed",
+		BrokerInstance: service.config.Scope.BrokerInstance,
+		LeaseExpiresAt: time.Now().Add(service.config.Scope.LeaseDuration),
+		ObservedUsage:  usage, DurationMS: duration, Detail: events,
+	})
+	return err
+}
+
+func (service *Service) Terminal(ctx context.Context, executionID string, terminal broker.Terminal) error {
+	if terminal.State != broker.ExecutionErrored && terminal.State != broker.ExecutionCancelled &&
+		terminal.State != broker.ExecutionTimedOut {
+		return fmt.Errorf("agent child authority: terminal state %q is invalid", terminal.State)
+	}
+	if terminal.Code == "" || terminal.Summary == "" {
+		return fmt.Errorf("agent child authority: terminal code and summary are required")
+	}
+	execution, found, err := service.config.Store.Find(ctx, service.config.Scope.TeamID, executionID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("agent child authority: execution not found")
+	}
+	retryable := terminal.Retryable
+	_, err = service.config.Store.Advance(ctx, db.AdvanceAgentChildExecution{
+		ID: execution.ID, TeamID: service.config.Scope.TeamID,
+		ExpectedSequence: execution.Sequence, State: terminal.State, Phase: string(terminal.State),
+		BrokerInstance: service.config.Scope.BrokerInstance,
+		ErrorCode:      terminal.Code, ErrorRetryable: &retryable, ErrorSummary: terminal.Summary,
+	})
 	return err
 }
 

@@ -64,6 +64,49 @@ func TestServiceVerifiesFrozenResolutionAndOwnsTerminalBinding(t *testing.T) {
 	}
 }
 
+func TestServiceRejectsUnsafeEventsAndPersistsExactTerminalFailure(t *testing.T) {
+	catalog, _ := broker.NewCatalog([]broker.Profile{authorityProfile()})
+	store := &fakeStore{}
+	service, err := agentchildexecutions.NewService(agentchildexecutions.Config{
+		Scope: agentchildexecutions.Scope{
+			TeamID: 1, WorkflowRunID: 2, NodePlanID: "node", ParentAttempt: 1,
+			BrokerInstance: "pod-1", LeaseDuration: time.Minute,
+		},
+		Catalog: catalog, Store: store, Sealer: &fakeSealer{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, _ := catalog.Resolve(broker.ToolConsultAgent, authorityProfile().Selector)
+	executionID, err := service.Admit(context.Background(), broker.AdmissionRequest{
+		IdempotencyKey: "terminal", Tool: broker.ToolConsultAgent,
+		Selector: resolved.Selector, ProfileID: resolved.ID, ProfileDigest: resolved.Digest,
+		InputDigest: "sha256:" + strings.Repeat("c", 64),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Phase(context.Background(), executionID, "running"); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Update(context.Background(), executionID, broker.RunUpdate{
+		Events: []broker.Event{{Kind: "native TOKEN=super-secret"}},
+	}); err == nil || !strings.Contains(err.Error(), "event") {
+		t.Fatalf("Update() error = %v, want unsafe event rejection", err)
+	}
+	if err := service.Terminal(context.Background(), executionID, broker.Terminal{
+		State: broker.ExecutionTimedOut, Code: "deadline_exceeded", Retryable: true,
+		Summary: "child execution exceeded its deadline",
+	}); err != nil {
+		t.Fatalf("Terminal(): %v", err)
+	}
+	last := store.advances[len(store.advances)-1]
+	if last.State != broker.ExecutionTimedOut || last.ErrorCode != "deadline_exceeded" ||
+		last.ErrorSummary != "child execution exceeded its deadline" || last.ErrorRetryable == nil || !*last.ErrorRetryable {
+		t.Fatalf("terminal advance = %#v", last)
+	}
+}
+
 type fakeStore struct {
 	identity  broker.ExecutionIdentity
 	execution db.AgentChildExecution
