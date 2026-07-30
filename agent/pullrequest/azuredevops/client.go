@@ -63,7 +63,7 @@ func NewObserver(organizationURL, projectName, repositoryID string, token pullre
 	cloned.CheckRedirect = func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
 	}
-	if cloned.Timeout == 0 || cloned.Timeout > defaultHTTPTimeout {
+	if cloned.Timeout <= 0 || cloned.Timeout > defaultHTTPTimeout {
 		cloned.Timeout = defaultHTTPTimeout
 	}
 	parsed.Path = strings.TrimRight(parsed.Path, "/")

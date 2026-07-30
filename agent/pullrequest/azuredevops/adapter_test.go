@@ -277,6 +277,34 @@ func TestReadyBatchExcludesFeedbackPublishedAfterVoteTransition(t *testing.T) {
 	}
 }
 
+func TestReadyBatchExcludesCommentContentEditedAfterVoteTransition(t *testing.T) {
+	service := newFixtureService(t)
+	page := decodeObject(t, service.snapshotBody("/threads"))
+	thread := page["value"].([]any)[2].(map[string]any)
+	comment := thread["comments"].([]any)[0].(map[string]any)
+	comment["content"] = "content injected after the completed review"
+	comment["lastContentUpdatedDate"] = "2026-07-29T09:21:00Z"
+	service.setBody("/threads", encodeJSON(t, page))
+	server := httptest.NewServer(service)
+	defer server.Close()
+	observer, err := NewObserver(server.URL, testProject, testRepositoryID, &rotatingToken{}, server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := observer.Observe(context.Background(), testLocator(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, normalized := range got.Threads {
+		for _, normalizedComment := range normalized.Comments {
+			if normalizedComment.Body == comment["content"] {
+				t.Fatal("post-transition comment edit entered the completed review batch")
+			}
+		}
+	}
+}
+
 func TestCursorBindsCanonicalPullRequestHeads(t *testing.T) {
 	service := newFixtureService(t)
 	server := httptest.NewServer(service)
@@ -608,6 +636,8 @@ func TestObserveValidatesRepositoryPullRequestRefsAndHighestIteration(t *testing
 		{"repository fork", mutatePull("repository.isFork", true)},
 		{"pull request fork", mutatePull("forkSource", map[string]any{"repository": map[string]any{"id": "fork"}})},
 		{"source ref", mutatePull("sourceRefName", "refs/tags/not-a-branch")},
+		{"source ref control", mutatePull("sourceRefName", "refs/heads/feature/\x1bescape")},
+		{"target ref delete", mutatePull("targetRefName", "refs/heads/main\x7f")},
 		{"unsafe target ref", mutatePull("targetRefName", "refs/heads/main..bad")},
 		{"source head", mutatePull("lastMergeSourceCommit.commitId", sha('f'))},
 		{"target head", mutatePull("lastMergeTargetCommit.commitId", "short")},
@@ -647,6 +677,12 @@ func TestObserveValidatesFeedbackThreadsAndIterationContexts(t *testing.T) {
 		}},
 		{"inverted iteration", func(thread map[string]any) {
 			thread["pullRequestThreadContext"].(map[string]any)["iterationContext"].(map[string]any)["firstComparingIteration"] = float64(3)
+		}},
+		{"anchored without iteration context", func(thread map[string]any) {
+			delete(thread, "pullRequestThreadContext")
+		}},
+		{"anchored without change tracking id", func(thread map[string]any) {
+			thread["pullRequestThreadContext"].(map[string]any)["changeTrackingId"] = float64(0)
 		}},
 		{"incomplete anchor", func(thread map[string]any) {
 			delete(thread["threadContext"].(map[string]any), "rightFileEnd")
@@ -917,6 +953,19 @@ func TestObserverRedactsCredentialsAndBoundsTimeout(t *testing.T) {
 	}
 	if observer.client.Timeout != short {
 		t.Fatalf("short timeout = %s", observer.client.Timeout)
+	}
+	observer, err = NewObserver(
+		"https://dev.azure.com/acme",
+		testProject,
+		testRepositoryID,
+		&rotatingToken{},
+		&http.Client{Timeout: -time.Second},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observer.client.Timeout != 30*time.Second {
+		t.Fatalf("negative timeout bypassed the ceiling: %s", observer.client.Timeout)
 	}
 	for _, source := range []pullrequest.TokenSource{
 		tokenFunc(func(context.Context) (string, error) { return "", nil }),

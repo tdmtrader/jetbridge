@@ -229,6 +229,11 @@ func validateBranchRef(value string) error {
 	if !strings.HasPrefix(value, "refs/heads/") || len(value) > 512 || strings.ContainsAny(value, " \t\r\n\x00\\~^:?*[") || strings.Contains(value, "..") || strings.Contains(value, "@{") || strings.HasSuffix(value, ".") || strings.HasSuffix(value, ".lock") {
 		return fmt.Errorf("invalid branch ref")
 	}
+	for index := 0; index < len(value); index++ {
+		if value[index] < 0x20 || value[index] == 0x7f {
+			return fmt.Errorf("invalid branch ref")
+		}
+	}
 	for _, component := range strings.Split(value, "/") {
 		if component == "" || component == "." || component == "@" || strings.HasPrefix(component, ".") || strings.HasSuffix(component, ".lock") {
 			return fmt.Errorf("invalid branch ref")
@@ -570,11 +575,11 @@ func normalizeFeedbackThreads(providerThreads []azureThread, latestIteration int
 		if len(providerThread.Comments) == 0 || len(providerThread.Comments) > maxThreadComments {
 			return nil, nil, fmt.Errorf("azure devops user feedback comments exceed bounds")
 		}
-		iterationID, commit, err := threadIteration(providerThread, latestIteration, iterationCommits)
+		anchor, err := normalizeAnchor(providerThread.ThreadContext)
 		if err != nil {
 			return nil, nil, err
 		}
-		anchor, err := normalizeAnchor(providerThread.ThreadContext)
+		iterationID, commit, err := threadIteration(providerThread, latestIteration, iterationCommits, anchor != nil)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -601,11 +606,16 @@ func normalizeFeedbackThreads(providerThreads []azureThread, latestIteration int
 	return output, authority, nil
 }
 
-func threadIteration(thread azureThread, latest int64, commits map[int64]azureCommit) (int64, azureCommit, error) {
+func threadIteration(thread azureThread, latest int64, commits map[int64]azureCommit, anchored bool) (int64, azureCommit, error) {
 	iterationID := latest
+	if anchored && thread.PullRequestThreadContext == nil {
+		return 0, azureCommit{}, fmt.Errorf("azure devops anchored feedback has no iteration authority")
+	}
 	if thread.PullRequestThreadContext != nil {
 		context := thread.PullRequestThreadContext.IterationContext
-		if context == nil || context.FirstComparingIteration <= 0 || context.SecondComparingIteration <= 0 || context.FirstComparingIteration > context.SecondComparingIteration {
+		if context == nil || thread.PullRequestThreadContext.ChangeTrackingID <= 0 ||
+			context.FirstComparingIteration <= 0 || context.SecondComparingIteration <= 0 ||
+			context.FirstComparingIteration > context.SecondComparingIteration {
 			return 0, azureCommit{}, fmt.Errorf("azure devops feedback iteration context is invalid")
 		}
 		if _, found := commits[context.FirstComparingIteration]; !found {
@@ -690,6 +700,17 @@ func normalizeComments(threadID int64, values []azureComment, commit string, com
 			return nil, fmt.Errorf("azure devops feedback comment publication time is invalid")
 		}
 		if published.After(completedAt) {
+			continue
+		}
+		contentUpdatedRaw := value.LastContentUpdatedDate
+		if contentUpdatedRaw == "" {
+			contentUpdatedRaw = value.LastUpdatedDate
+		}
+		contentUpdated, err := parseProviderTime(contentUpdatedRaw)
+		if err != nil || contentUpdated.Before(published) {
+			return nil, fmt.Errorf("azure devops feedback comment content update time is invalid")
+		}
+		if contentUpdated.After(completedAt) {
 			continue
 		}
 		if err := validateIdentity(value.Author.ID); err != nil {

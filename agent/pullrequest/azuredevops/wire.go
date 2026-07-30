@@ -65,14 +65,15 @@ type azureThread struct {
 }
 
 type azureComment struct {
-	ID              int64         `json:"id"`
-	ParentCommentID int64         `json:"parentCommentId"`
-	Author          azureIdentity `json:"author"`
-	Content         string        `json:"content"`
-	PublishedDate   string        `json:"publishedDate"`
-	LastUpdatedDate string        `json:"lastUpdatedDate"`
-	CommentType     string        `json:"commentType"`
-	IsDeleted       bool          `json:"isDeleted"`
+	ID                     int64         `json:"id"`
+	ParentCommentID        int64         `json:"parentCommentId"`
+	Author                 azureIdentity `json:"author"`
+	Content                string        `json:"content"`
+	PublishedDate          string        `json:"publishedDate"`
+	LastUpdatedDate        string        `json:"lastUpdatedDate"`
+	LastContentUpdatedDate string        `json:"lastContentUpdatedDate"`
+	CommentType            string        `json:"commentType"`
+	IsDeleted              bool          `json:"isDeleted"`
 }
 
 type azureIdentity struct {
