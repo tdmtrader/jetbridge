@@ -169,7 +169,7 @@ func (source Source) validate() (pullrequest.Locator, time.Duration, time.Durati
 		return pullrequest.Locator{}, 0, 0, fmt.Errorf("forge-pr: unsupported provider")
 	}
 	// Validate through the observation boundary without permitting a fake state.
-	if !safeText(source.Repository, 512) || !safeText(source.ExternalID, 256) {
+	if !safeText(source.Repository, 512) || !safeText(source.ExternalID, 256) || strings.ContainsAny(source.Repository, " \t\r\n") || strings.ContainsAny(source.ExternalID, " \t\r\n") {
 		return pullrequest.Locator{}, 0, 0, fmt.Errorf("forge-pr: source locator is invalid")
 	}
 	if err := safeURL(source.APIBaseURL); err != nil {
@@ -197,6 +197,9 @@ func (source Source) validate() (pullrequest.Locator, time.Duration, time.Durati
 	}
 	if source.Monitor.LastReconciledTarget != "" && !objectID(source.Monitor.LastReconciledTarget) {
 		return pullrequest.Locator{}, 0, 0, fmt.Errorf("forge-pr: reconciled target is invalid")
+	}
+	if source.Monitor.ActiveActionDigest != "" && !digest(source.Monitor.ActiveActionDigest) {
+		return pullrequest.Locator{}, 0, 0, fmt.Errorf("forge-pr: active action digest is invalid")
 	}
 	if !source.Monitor.LastReconciledAt.IsZero() && (source.Monitor.LastReconciledAt.Location() != time.UTC || source.Monitor.LastReconciledAt.Format(time.RFC3339Nano) != source.Monitor.LastReconciledAt.UTC().Format(time.RFC3339Nano)) {
 		return pullrequest.Locator{}, 0, 0, fmt.Errorf("forge-pr: reconciled time is not canonical UTC")

@@ -129,6 +129,13 @@ func TestForgePRInSanitizesGitFailureAndRefusesUnsafeDestination(t *testing.T) {
 	if err := resource.In(context.Background(), unsafe, bytes.NewReader(checkInput(t, source, &version)), &bytes.Buffer{}, &bytes.Buffer{}, deps); err == nil {
 		t.Fatal("expected nonempty destination rejection")
 	}
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(filepath.Dir(unsafe), link); err != nil {
+		t.Fatal(err)
+	}
+	if err := resource.In(context.Background(), filepath.Join(link, "out"), bytes.NewReader(checkInput(t, source, &version)), &bytes.Buffer{}, &bytes.Buffer{}, deps); err == nil {
+		t.Fatal("expected symlink parent rejection")
+	}
 }
 
 type runnerFunc func(context.Context, resource.GitCommand) error

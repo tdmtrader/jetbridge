@@ -72,6 +72,11 @@ func TestForgePRCheckRejectsUnsafeSourceAndBindingRevision(t *testing.T) {
 	if err := resource.Check(context.Background(), bytes.NewReader(checkInput(t, source, nil)), &bytes.Buffer{}, &bytes.Buffer{}, resource.Dependencies{}); err == nil {
 		t.Fatal("expected binding revision error")
 	}
+	source = testSource(time.Now().UTC())
+	source.Monitor.ActiveActionDigest = "not-a-digest"
+	if err := resource.Check(context.Background(), bytes.NewReader(checkInput(t, source, nil)), &bytes.Buffer{}, &bytes.Buffer{}, resource.Dependencies{}); err == nil {
+		t.Fatal("expected active digest error")
+	}
 }
 
 func TestForgePRCheckPendingAndFreshnessSemantics(t *testing.T) {

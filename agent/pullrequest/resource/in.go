@@ -115,6 +115,14 @@ func safeDestination(destination string) error {
 	if destination == "" || !filepath.IsAbs(destination) || filepath.Clean(destination) != destination {
 		return fmt.Errorf("forge-pr: destination is invalid")
 	}
+	parent := filepath.Dir(destination)
+	parentInfo, parentErr := os.Lstat(parent)
+	if parentErr != nil || !parentInfo.IsDir() || parentInfo.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("forge-pr: destination parent is unsafe")
+	}
+	if _, resolveErr := filepath.EvalSymlinks(parent); resolveErr != nil {
+		return fmt.Errorf("forge-pr: destination parent is unsafe")
+	}
 	info, err := os.Lstat(destination)
 	if err == nil {
 		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
