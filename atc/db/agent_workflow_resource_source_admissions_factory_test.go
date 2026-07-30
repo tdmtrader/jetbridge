@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/concourse/concourse/agent/pullrequest"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
@@ -39,6 +40,78 @@ var _ = Describe("workflow resource-source admission persistence", func() {
 		Expect(factory.Archive(context.Background(), pipeline.TeamID, pipeline.PipelineID)).To(Succeed())
 		_, err := db.NewWorkflowResourceSourceAdmissionsFactory(dbConn).CreateCaptured(context.Background(), db.CreateWorkflowResourceSourceAdmissionRequest{TeamID: pipeline.TeamID, WorkflowDefinitionID: definitionID, SourcePipelineID: pipeline.PipelineID, SourceConfigHash: pipeline.ConfigHash, IdempotencyKey: "archived", Mode: "automatic", SelectingBuildID: 1})
 		Expect(err).To(MatchError(ContainSubstring("pipeline authority")))
+	})
+
+	It("keeps definition-owned runtime queries isolated from exact binding-owned instances", func() {
+		originRunID, occurrenceID, observationID := insertAgentPRBindingEvidence(
+			pipeline.TeamID, scenario.Team.Name(), definitionID,
+			fmt.Sprintf("source-binding-%d", time.Now().UnixNano()),
+		)
+		binding, created, err := db.NewAgentPRBindingsFactory(dbConn).Create(
+			context.Background(),
+			pullrequest.CreateBinding{
+				TeamID: pipeline.TeamID,
+				Locator: pullrequest.Locator{
+					Provider: pullrequest.ProviderGitHub, Repository: "example/source-binding",
+					ExternalID: fmt.Sprint(time.Now().UnixNano()),
+				},
+				URL:       "https://github.example/example/source-binding/pull/1",
+				SourceRef: "refs/heads/source", TargetRef: "refs/heads/main",
+				OriginatingWorkflowRunID:         snapshot.WorkflowRunID(originRunID),
+				OriginatingPublicationOccurrence: occurrenceID,
+				MonitorWorkflowDefinitionID:      definitionID,
+				MonitorWorkflowVersion:           1,
+				AcknowledgedCursor:               pullrequest.Cursor("opaque-binding-cursor"),
+				LastObservationSnapshotID:        snapshot.SnapshotID(observationID),
+				LastReconciledSourceSHA:          strings.Repeat("c", 40),
+				LastReconciledTargetSHA:          strings.Repeat("d", 40),
+				LastReconciledAt:                 time.Now().UTC(),
+			},
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(created).To(BeTrue())
+
+		var bindingPipelineID int
+		Expect(dbConn.QueryRow(`
+			INSERT INTO pipelines (name, team_id, secondary_ordering, paused, version)
+			VALUES ($1, $2, 1, true, 1) RETURNING id
+		`, fmt.Sprintf("binding-source-%d", binding.ID), pipeline.TeamID).Scan(&bindingPipelineID)).To(Succeed())
+		declarations, err := json.Marshal(pipeline.SourceDeclarations)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = dbConn.Exec(`
+			INSERT INTO agent_workflow_resource_source_pipelines
+				(pipeline_id, team_id, workflow_definition_id, workflow_name,
+				 workflow_version, pipeline_config_version, config_hash,
+				 source_declarations, state, pr_binding_id)
+			VALUES ($1,$2,$3,$4,1,1,$5,$6,'active',$7)
+		`, bindingPipelineID, pipeline.TeamID, definitionID, pipeline.WorkflowName,
+			strings.Repeat("e", 64), declarations, binding.ID)
+		Expect(err).NotTo(HaveOccurred())
+
+		registry := db.NewWorkflowResourceSourcePipelinesFactory(dbConn)
+		_, found, err := registry.Find(context.Background(), pipeline.TeamID, bindingPipelineID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeFalse(), "legacy pipeline-ID lookup must not cross the instance seam")
+		owned, found, err := registry.FindByBinding(context.Background(), pipeline.TeamID, binding.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(owned.PipelineID).To(Equal(bindingPipelineID))
+		Expect(owned.PRBindingID).NotTo(BeNil())
+		Expect(*owned.PRBindingID).To(Equal(binding.ID))
+		_, found, err = registry.FindByBinding(context.Background(), defaultTeam.ID(), binding.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeFalse())
+
+		active, found, err := registry.FindActive(context.Background(), pipeline.TeamID, pipeline.WorkflowName)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(active.PipelineID).To(Equal(pipeline.PipelineID))
+		dbConn.SetMaxOpenConns(2)
+		lifecycle, err := registry.ResourceSourcePipelineLifecycle(context.Background(), pipeline.TeamID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(lifecycle).To(HaveLen(1))
+		Expect(lifecycle[0].PipelineID).To(Equal(pipeline.PipelineID))
+		Expect(registry.Drain(context.Background(), pipeline.TeamID, bindingPipelineID)).To(HaveOccurred())
 	})
 
 	It("derives persisted version and type only from the selecting build", func() {

@@ -70,8 +70,10 @@ v8.0.1:1765921815
 # 1773106148 associates a started experiment with each ready, immutable
 # workflow resource-source admission it reuses across cells and retries.
 # 1773106149 adds kind-scoped reusable node definitions and run idempotency;
-# 1773106150 adds durable workflow-to-node consumer bindings.
-JETBRIDGE_VERSION=1773106150
+# 1773106150 adds durable workflow-to-node consumer bindings;
+# 1773106151 adds provider-native PR monitor bindings and binding-keyed
+# resource-source pipeline ownership.
+JETBRIDGE_VERSION=1773106151
 
 # Minimum supported source version (v6.x)
 MIN_SUPPORTED_VERSION=1601993582
