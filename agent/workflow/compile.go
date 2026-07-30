@@ -334,6 +334,9 @@ func (compiler *functionAssetCompiler) preflightAgent(step *atc.AgentStep) error
 	if len(step.BrokerAuthority) > 0 {
 		return fmt.Errorf("workflow: %s: broker_authority is compiler-owned", identity)
 	}
+	if _, authored := step.Env["CONCOURSE_AGENT_BROKER_MCP"]; authored {
+		return fmt.Errorf("workflow: %s: CONCOURSE_AGENT_BROKER_MCP is reserved for the managed broker", identity)
+	}
 	if len(step.Skills) > 0 {
 		for _, name := range append(append([]string(nil), step.Inputs...), step.Outputs...) {
 			if name == "skills" {

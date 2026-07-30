@@ -58,3 +58,30 @@ cannot bind IPv6 loopback (`listen tcp6 [::1]:0: operation not permitted`).
 Task 9b remains responsible for projecting this already-frozen authority into
 the managed sidecar, including its volume, secret, and pod-security boundary.
 No dynamic catalog lookup or pod construction changed here.
+
+## Review fix round 1
+
+The initial review found that the `broker_authority` JSON field was shape
+validated but not distinguished from authored pipeline input. The fix adds an
+in-memory, non-serializing server-derived discriminator set only by
+`AgentStep.SetBrokerAuthority`; ordinary step validation rejects any authored
+authority before planning. Persisted workflow-run templates retain the exact
+authority JSON after their server-side validation, while direct user JSON can
+never carry the discriminator.
+
+The workflow hash path now strict-decodes the authority profile with unknown
+fields rejected, requires canonical JSON, recomputes the resolved-profile
+digest, and compares every outer identity field (function, tool, selector,
+ID, revision, digest, and worker image) to that decoded profile. It also
+requires the rendered per-agent authority to exactly equal the matching frozen
+compiled profile set. Authored `CONCOURSE_AGENT_BROKER_MCP` is rejected by both
+ordinary step validation and schema-v3 compilation.
+
+Focused fix verification passed:
+
+```text
+GOCACHE=/private/tmp/codex-go-cache go test ./agent/workflow ./agent/workflowrun ./atc ./atc/builds ./cmd/agent-broker -count=1
+GOCACHE=/private/tmp/codex-go-cache go test ./agent/runner -run 'Test(AdmittedMCPServersAddsOnlyServerOwnedOutputBuilder|AdmitBrokerMCPRejectsImpersonationAndInjectsOnlyServerMarker)' -count=1
+GOCACHE=/private/tmp/codex-go-cache go test ./atc/exec -run '^$' -count=1
+git diff --check
+```

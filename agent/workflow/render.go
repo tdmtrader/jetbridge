@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -433,6 +434,25 @@ func RenderedTargetConfigHashWithBrokerProfiles(config atc.Config, profiles []Co
 	if err := validateCompiledBrokerProfiles(brokerProfiles, brokerProvenance); err != nil {
 		return "", err
 	}
+	for jobIndex := range config.Jobs {
+		for stepIndex := range config.Jobs[jobIndex].PlanSequence {
+			if err := config.Jobs[jobIndex].PlanSequence[stepIndex].Config.Visit(atc.StepRecursor{OnAgent: func(step *atc.AgentStep) error {
+				if err := validateRenderedBrokerAuthority(step.FunctionID, step.BrokerAuthority); err != nil {
+					return err
+				}
+				expected, err := renderBrokerAuthority(step.FunctionID, brokerProfiles)
+				if err != nil {
+					return err
+				}
+				if !reflect.DeepEqual(step.BrokerAuthority, expected) {
+					return fmt.Errorf("workflow: agent %q broker authority does not match compiled profile authority", step.Name)
+				}
+				return nil
+			}}); err != nil {
+				return "", err
+			}
+		}
+	}
 	if len(profiles) == 0 && len(brokerProfiles) == 0 {
 		return TargetConfigHash(config)
 	}
@@ -777,7 +797,7 @@ func renderFunction(target FunctionTarget, sourceRefs map[string]snapshot.Snapsh
 			if err != nil {
 				return err
 			}
-			step.BrokerAuthority = authority
+			step.SetBrokerAuthority(authority)
 			return nil
 		}}); err != nil {
 			return RenderedFunction{}, err

@@ -244,9 +244,51 @@ func renderBrokerAuthority(functionID string, profiles []CompiledBrokerProfile) 
 		}
 		return selected[i].Effort < selected[j].Effort
 	})
+	if err := validateRenderedBrokerAuthority(functionID, selected); err != nil {
+		return nil, err
+	}
 	step := &atc.AgentStep{FunctionID: functionID, BrokerAuthority: selected}
 	if err := step.ValidateBrokerAuthority(); err != nil {
 		return nil, fmt.Errorf("workflow: rendered broker authority: %w", err)
 	}
 	return selected, nil
+}
+
+func validateRenderedBrokerAuthority(functionID string, authority []atc.AgentBrokerProfile) error {
+	for index, entry := range authority {
+		decoder := json.NewDecoder(bytes.NewReader(entry.Profile))
+		decoder.DisallowUnknownFields()
+		var profile broker.Profile
+		if err := decoder.Decode(&profile); err != nil {
+			return fmt.Errorf("workflow: broker authority %d has invalid profile: %w", index, err)
+		}
+		var trailing any
+		if err := decoder.Decode(&trailing); err != io.EOF {
+			if err == nil {
+				return fmt.Errorf("workflow: broker authority %d has trailing profile JSON", index)
+			}
+			return fmt.Errorf("workflow: broker authority %d trailing profile JSON: %w", index, err)
+		}
+		canonical, err := json.Marshal(profile)
+		if err != nil || !bytes.Equal(canonical, entry.Profile) {
+			return fmt.Errorf("workflow: broker authority %d profile is noncanonical", index)
+		}
+		if err := broker.ValidateResolvedProfile(profile); err != nil {
+			return fmt.Errorf("workflow: broker authority %d profile: %w", index, err)
+		}
+		if entry.FunctionID != functionID || entry.ProfileID != profile.ID || entry.ProfileRevision != profile.Revision || entry.ProfileDigest != profile.Digest || entry.WorkerImage != profile.WorkerImage || entry.Tier != string(profile.Selector.Tier) || entry.Effort != string(profile.Selector.Effort) {
+			return fmt.Errorf("workflow: broker authority %d outer identity does not match frozen profile", index)
+		}
+		matchedTool := false
+		for _, tool := range profile.Tools {
+			if entry.Tool == string(tool) {
+				matchedTool = true
+				break
+			}
+		}
+		if !matchedTool {
+			return fmt.Errorf("workflow: broker authority %d tool does not match frozen profile", index)
+		}
+	}
+	return nil
 }

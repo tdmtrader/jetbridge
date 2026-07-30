@@ -66,3 +66,11 @@ reserves `agent-broker`. Focused workflow/workflowrun/builds/command tests and
 ATC compile checks pass. Broker transport network tests remain sandbox-blocked
 at IPv6 loopback bind; see `task-9a-report.md`. Task 9b pod injection remains
 intentionally untouched.
+
+Task 9a: review fix round 1 complete pending independent review/commit —
+ordinary StepValidator rejects authored broker authority and the reserved
+broker runner marker; only the renderer's non-serializing discriminator
+permits authority through server template validation. Render/template hashing
+now strict-decodes canonical broker profiles and compares every outer field to
+the recomputed exact authority. Focused workflow/workflowrun/ATC/builds/
+command tests pass; see `task-9a-report.md`.

@@ -488,6 +488,33 @@ type AgentStep struct {
 	// BrokerAuthority is renderer-owned compiled authority. Source selectors
 	// live under broker_profiles and are erased before this field is injected.
 	BrokerAuthority []AgentBrokerProfile `json:"broker_authority,omitempty"`
+	// BrokerAuthorityTrusted is an in-memory server-derived discriminator. It
+	// never serializes, so authored YAML/JSON cannot set it; it is retained on
+	// the rendered config only long enough for ordinary config validation.
+	BrokerAuthorityTrusted bool `json:"-"`
+}
+
+// SetBrokerAuthority is the only renderer-facing path that marks broker
+// authority as server-derived. JSON decoding deliberately cannot set its trust
+// discriminator, so ordinary authored pipeline steps are rejected before
+// planning even if they reproduce a syntactically valid profile.
+func (step *AgentStep) SetBrokerAuthority(profiles []AgentBrokerProfile) {
+	step.BrokerAuthority = cloneAgentBrokerProfiles(profiles)
+	step.BrokerAuthorityTrusted = len(profiles) > 0
+}
+
+func (step *AgentStep) brokerAuthorityIsTrusted() bool { return step.BrokerAuthorityTrusted }
+
+func cloneAgentBrokerProfiles(source []AgentBrokerProfile) []AgentBrokerProfile {
+	if source == nil {
+		return nil
+	}
+	cloned := make([]AgentBrokerProfile, len(source))
+	for index, profile := range source {
+		cloned[index] = profile
+		cloned[index].Profile = append([]byte(nil), profile.Profile...)
+	}
+	return cloned
 }
 
 // ValidateBrokerAuthority ensures runtime broker authority is complete,

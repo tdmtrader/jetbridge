@@ -262,6 +262,87 @@ plan:
 	}
 }
 
+func TestRenderedBrokerAuthorityRejectsOuterProfileDrift(t *testing.T) {
+	catalog, err := broker.NewCatalog([]broker.Profile{brokerProfile("consult-balanced", broker.ToolConsultAgent, broker.TierBalanced, broker.EffortHigh, "gpt-5.6")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiled, err := workflow.CompileDefinitionWithBrokerCatalog(workflow.Manifest{workflow.WorkflowFileName: `schema_version: 3
+name: brokered
+signature_version: 1
+inputs: []
+outputs: []
+plan:
+  - agent: consult
+    function_id: consult
+    prompt: consult
+    broker_profiles:
+      - tool: consult_agent
+        tier: balanced
+        effort: high
+`}, catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := workflow.FullFunctionTarget(workflow.Definition{ID: 52, Name: compiled.Name, Version: 1, SchemaVersion: 3, SignatureVersion: 1, Compiled: *compiled})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered, err := workflow.RenderFunction(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered.Config.Jobs[0].PlanSequence[0].Config.(*atc.AgentStep).BrokerAuthority[0].WorkerImage = "registry.example/broker@sha256:" + strings.Repeat("c", 64)
+	if _, err := workflow.RenderedTargetConfigHashWithBrokerProfiles(rendered.Config, rendered.DevValidationProfiles, rendered.DevValidationProvenanceHash, rendered.BrokerProfiles, rendered.BrokerProfileProvenanceHash); err == nil || !strings.Contains(err.Error(), "broker authority") {
+		t.Fatalf("drifted rendered broker authority error = %v", err)
+	}
+}
+
+func TestRenderedBrokerAuthorityRejectsUnknownOrNoncanonicalProfileJSON(t *testing.T) {
+	catalog, err := broker.NewCatalog([]broker.Profile{brokerProfile("consult-balanced", broker.ToolConsultAgent, broker.TierBalanced, broker.EffortHigh, "gpt-5.6")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiled, err := workflow.CompileDefinitionWithBrokerCatalog(workflow.Manifest{workflow.WorkflowFileName: `schema_version: 3
+name: brokered
+signature_version: 1
+inputs: []
+outputs: []
+plan:
+  - agent: consult
+    function_id: consult
+    prompt: consult
+    broker_profiles:
+      - tool: consult_agent
+        tier: balanced
+        effort: high
+`}, catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := workflow.FullFunctionTarget(workflow.Definition{ID: 53, Name: compiled.Name, Version: 1, SchemaVersion: 3, SignatureVersion: 1, Compiled: *compiled})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered, err := workflow.RenderFunction(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority := &rendered.Config.Jobs[0].PlanSequence[0].Config.(*atc.AgentStep).BrokerAuthority[0]
+	var decoded map[string]any
+	if err := json.Unmarshal(authority.Profile, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	decoded["unknown"] = true
+	authority.Profile, err = json.Marshal(decoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := workflow.RenderedTargetConfigHashWithBrokerProfiles(rendered.Config, rendered.DevValidationProfiles, rendered.DevValidationProvenanceHash, rendered.BrokerProfiles, rendered.BrokerProfileProvenanceHash); err == nil || !strings.Contains(err.Error(), "invalid profile") {
+		t.Fatalf("unknown broker profile field error = %v", err)
+	}
+}
+
 func brokerProfile(id string, tool broker.Tool, tier broker.Tier, effort broker.Effort, model string) broker.Profile {
 	return broker.Profile{
 		ID: id, Revision: 1, Selector: broker.Selector{Tier: tier, Effort: effort}, Tools: []broker.Tool{tool},

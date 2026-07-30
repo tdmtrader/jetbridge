@@ -308,6 +308,12 @@ func (validator *StepValidator) VisitAgent(step *AgentStep) error {
 	if len(step.Capabilities) > 0 {
 		validator.recordError("capabilities must be expanded before execution")
 	}
+	if len(step.BrokerAuthority) > 0 && !step.brokerAuthorityIsTrusted() {
+		validator.recordError("broker_authority is server-derived and cannot be authored")
+	}
+	if _, found := step.Env["CONCOURSE_AGENT_BROKER_MCP"]; found {
+		validator.recordError("CONCOURSE_AGENT_BROKER_MCP is reserved for the managed broker")
+	}
 
 	validator.validateSnapshotInputs(step.SnapshotInputs, stringSet(step.Inputs), true, "agent")
 	validator.validateSnapshotOutputs(step.SnapshotOutputs, stringSet(step.Outputs), true, "agent")
