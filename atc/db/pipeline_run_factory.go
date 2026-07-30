@@ -1011,7 +1011,7 @@ func (f *pipelineRunFactory) RunsOfRetiredTemplatesToArchive(retirementPeriod ti
 	// the archiving half of the tier-2 contract in
 	// WorkflowRunTemplateLifecycle.RemoveRetiredWorkflowRunTemplates: at
 	// least one terminal durable citation, no non-terminal ones, and every
-	// cited workflow version superseded by a strictly newer live definition.
+	// cited definition superseded by a strictly newer live workflow or released node.
 	rows, err := pipelineRunsQuery.
 		Where(sq.Eq{"r.archived": false}).
 		Where(sq.NotEq{"r.status": string(PipelineRunRunning)}).
@@ -1030,12 +1030,21 @@ func (f *pipelineRunFactory) RunsOfRetiredTemplatesToArchive(retirementPeriod ti
 			SELECT 1 FROM agent_workflow_runs durable
 			WHERE durable.template_pipeline_id = r.template_pipeline_id
 			  AND (durable.status NOT IN ('succeeded', 'failed', 'errored', 'aborted')
-			       OR NOT EXISTS (
-				SELECT 1 FROM agent_workflow_definitions successor
-				WHERE successor.name = durable.workflow_name
-				  AND successor.definition_kind = 'workflow'
-				  AND successor.live
-				  AND successor.version > durable.workflow_version
+			       OR NOT (
+				(durable.definition_kind = 'workflow' AND EXISTS (
+					SELECT 1 FROM agent_workflow_definitions successor
+					WHERE successor.name = durable.workflow_name
+					  AND successor.definition_kind = 'workflow'
+					  AND successor.live
+					  AND successor.version > durable.workflow_version
+				))
+				OR (durable.definition_kind = 'node' AND EXISTS (
+					SELECT 1 FROM agent_workflow_definitions successor
+					WHERE successor.name = durable.workflow_name
+					  AND successor.definition_kind = 'node'
+					  AND successor.released_at IS NOT NULL
+					  AND successor.version > durable.workflow_version
+				))
 			  ))
 		)`)).
 		OrderBy("r.id ASC").

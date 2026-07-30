@@ -14,6 +14,7 @@ import (
 
 	"github.com/Masterminds/squirrel"
 	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/atc/db/encryption"
 )
 
@@ -336,25 +337,29 @@ func validateSealInvocation(ctx context.Context, tx Tx, commit snapshot.SealComm
 	}
 
 	if build.WorkflowDefinitionID != nil {
-		var id int
+		var definitionKind workflow.DefinitionKind
 		if err := tx.QueryRowContext(ctx, `
-			SELECT id FROM agent_workflow_definitions
-			WHERE id = $1 AND definition_kind = 'workflow'
-		`, *build.WorkflowDefinitionID).Scan(&id); err != nil {
+			SELECT definition_kind FROM agent_workflow_definitions
+			WHERE id = $1
+		`, *build.WorkflowDefinitionID).Scan(&definitionKind); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return fmt.Errorf("db: snapshot workflow definition %d does not exist", *build.WorkflowDefinitionID)
 			}
 			return err
 		}
+		if definitionKind != workflow.DefinitionKindWorkflow && definitionKind != workflow.DefinitionKindNode {
+			return fmt.Errorf("db: snapshot workflow definition %d has an invalid kind", *build.WorkflowDefinitionID)
+		}
 	}
 
 	if build.WorkflowRunID != nil {
 		var definitionID int
+		var definitionKind workflow.DefinitionKind
 		var plannedBuildID, instancePipelineID sql.NullInt64
 		var status AgentWorkflowRunStatus
 		var actualPlanCaptured bool
 		err := tx.QueryRowContext(ctx, `
-			SELECT workflow_definition_id, planned_build_id, instance_pipeline_id,
+			SELECT workflow_definition_id, definition_kind, planned_build_id, instance_pipeline_id,
 			       status,
 			       actual_plan IS NOT NULL
 			         AND actual_plan_hash IS NOT NULL
@@ -363,7 +368,7 @@ func validateSealInvocation(ctx context.Context, tx Tx, commit snapshot.SealComm
 			WHERE id = $1 AND team_id = $2
 			FOR UPDATE
 		`, int64(*build.WorkflowRunID), commit.TeamID).Scan(
-			&definitionID, &plannedBuildID, &instancePipelineID, &status, &actualPlanCaptured,
+			&definitionID, &definitionKind, &plannedBuildID, &instancePipelineID, &status, &actualPlanCaptured,
 		)
 		if errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("db: snapshot workflow run is not owned by the producer team")
@@ -373,6 +378,18 @@ func validateSealInvocation(ctx context.Context, tx Tx, commit snapshot.SealComm
 		}
 		if build.WorkflowDefinitionID == nil || definitionID != *build.WorkflowDefinitionID {
 			return fmt.Errorf("db: snapshot workflow run and definition do not match")
+		}
+		var persistedDefinitionKind workflow.DefinitionKind
+		if err := tx.QueryRowContext(ctx, `
+			SELECT definition_kind FROM agent_workflow_definitions WHERE id = $1
+		`, definitionID).Scan(&persistedDefinitionKind); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("db: snapshot workflow definition %d does not exist", definitionID)
+			}
+			return err
+		}
+		if definitionKind != persistedDefinitionKind {
+			return fmt.Errorf("db: snapshot workflow run and definition kinds do not match")
 		}
 		if status != AgentWorkflowRunStatusAdmitting && status != AgentWorkflowRunStatusRunning && status != AgentWorkflowRunStatusCanceling {
 			return fmt.Errorf("db: snapshot workflow output requires an active workflow run")

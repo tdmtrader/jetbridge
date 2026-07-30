@@ -353,7 +353,7 @@ func (f *agentRunTranscriptFactory) ListByWorkflowRun(workflowName string, runID
 	rows, err := f.conn.Query(
 		`SELECT `+runTranscriptColumns+`
 		 FROM agent_run_transcripts t
-		 JOIN agent_workflow_runs run ON run.id = t.workflow_run_id AND run.workflow_name = $1
+		 JOIN agent_workflow_runs run ON run.id = t.workflow_run_id AND run.workflow_name = $1 AND run.definition_kind = 'workflow'
 		 WHERE t.workflow_run_id = $2 ORDER BY t.created_at ASC, t.build_id ASC`, workflowName, int64(runID))
 	if err != nil {
 		return nil, err

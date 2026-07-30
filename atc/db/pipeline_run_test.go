@@ -400,6 +400,19 @@ var _ = Describe("PipelineRun retirement archiving", func() {
 		return id
 	}
 
+	defineNodeVersion := func(name string, version int, released bool) int {
+		var id int
+		Expect(dbConn.QueryRow(`
+			INSERT INTO agent_workflow_definitions
+				(definition_kind, name, version, content_hash, definition, created_by,
+				 schema_version, signature_version, released_at)
+			VALUES ('node', $1, $2, $3, 'schema_version: 1', 'alice', 3, 1,
+				 CASE WHEN $4 THEN now() ELSE NULL END)
+			RETURNING id
+		`, name, version, fmt.Sprintf("%064d", version), released).Scan(&id)).To(Succeed())
+		return id
+	}
+
 	cite := func(template db.Pipeline, runID int, instance db.Pipeline, definitionID int, name string, version int, status string) {
 		_, err := dbConn.Exec(`
 			INSERT INTO agent_workflow_runs
@@ -416,6 +429,22 @@ var _ = Describe("PipelineRun retirement archiving", func() {
 		Expect(err).NotTo(HaveOccurred())
 	}
 
+	citeNode := func(template db.Pipeline, runID int, instance db.Pipeline, definitionID int, name string, version int, status string) {
+		_, err := dbConn.Exec(`
+			INSERT INTO agent_workflow_runs
+				(definition_kind, team_id, team_name, workflow_definition_id, workflow_name, workflow_version,
+				 schema_version, signature_version, definition_content_hash, idempotency_key,
+				 parameterized_config, parameterized_config_hash, origin_kind, origin_reference,
+				 created_by, status, pipeline_run_id, template_pipeline_id, instance_pipeline_id,
+				 concrete_config, concrete_config_hash)
+			VALUES ('node', $1, $2, $3, $4, $5, 3, 1, $6, $7, '{}'::jsonb, $6,
+				        'ticket', 'GC-node', 'alice', $8, $9, $10, $11, '{}'::jsonb, $6)
+		`, defaultTeam.ID(), defaultTeam.Name(), definitionID, name, version,
+			strings.Repeat("e", 64), fmt.Sprintf("node-retirement-key-%d", time.Now().UnixNano()),
+			status, runID, template.ID(), instance.ID())
+		Expect(err).NotTo(HaveOccurred())
+	}
+
 	retiredRun := func(templateName string) int {
 		name := workflowName()
 		cited := defineVersion(name, 1, false)
@@ -428,6 +457,20 @@ var _ = Describe("PipelineRun retirement archiving", func() {
 
 	It("selects completed runs of retired owned templates past the retirement period", func() {
 		runID := retiredRun("retirement-eligible-template")
+
+		toArchive, err := factory.RunsOfRetiredTemplatesToArchive(retirement)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(toArchive).To(HaveLen(1))
+		Expect(toArchive[0].ID()).To(Equal(runID))
+	})
+
+	It("selects completed node runs only after a newer node version is released", func() {
+		name := workflowName()
+		cited := defineNodeVersion(name, 1, false)
+		defineNodeVersion(name, 2, true)
+		template := ownedTemplate("retirement-released-node-template")
+		runID, instance := addRun(template, 1, "succeeded", false, 24*time.Hour)
+		citeNode(template, runID, instance, cited, name, 1, "succeeded")
 
 		toArchive, err := factory.RunsOfRetiredTemplatesToArchive(retirement)
 		Expect(err).NotTo(HaveOccurred())

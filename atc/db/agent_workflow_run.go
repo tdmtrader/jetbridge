@@ -10,6 +10,7 @@ import (
 
 	"github.com/concourse/concourse/agent/pagination"
 	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/atc/db/encryption"
 )
 
@@ -104,6 +105,7 @@ func (direction AgentWorkflowRunSnapshotDirection) Validate() error {
 
 type AgentWorkflowRun struct {
 	ID                          snapshot.WorkflowRunID
+	DefinitionKind              workflow.DefinitionKind
 	TeamID                      int
 	TeamName                    string
 	WorkflowDefinitionID        int
@@ -142,6 +144,7 @@ type AgentWorkflowRun struct {
 }
 
 type AgentWorkflowRunCreateRequest struct {
+	DefinitionKind              workflow.DefinitionKind
 	TeamID                      int
 	TeamName                    string
 	WorkflowDefinitionID        int
@@ -197,6 +200,9 @@ func (admission AgentWorkflowRunExperimentAdmission) Validate(
 }
 
 func (request AgentWorkflowRunCreateRequest) Validate() error {
+	if request.DefinitionKind != workflow.DefinitionKindWorkflow && request.DefinitionKind != workflow.DefinitionKindNode {
+		return fmt.Errorf("db: workflow-run definition kind is required")
+	}
 	if request.TeamID <= 0 || request.WorkflowDefinitionID <= 0 || request.WorkflowVersion <= 0 ||
 		request.SchemaVersion <= 0 || request.SignatureVersion <= 0 {
 		return fmt.Errorf("db: workflow-run identity and versions must be positive")
@@ -474,6 +480,7 @@ type AgentWorkflowRunSnapshotBinding struct {
 type AgentWorkflowRunListFilter struct {
 	TeamID          int
 	WorkflowName    string
+	WorkflowVersion *int
 	Status          AgentWorkflowRunStatus
 	OriginKind      string
 	OriginReference string
@@ -491,7 +498,7 @@ type AgentWorkflowRunCountFilter struct {
 }
 
 const agentWorkflowRunColumns = `
-	id, team_id, team_name, workflow_definition_id, workflow_name,
+	id, definition_kind, team_id, team_name, workflow_definition_id, workflow_name,
 	workflow_version, schema_version, signature_version, definition_content_hash,
 	function_id, idempotency_key, parameterized_config, parameterized_config_hash,
 	dev_validation_provenance_hash,
@@ -529,7 +536,7 @@ func scanAgentWorkflowRun(row scannable, encryptionStrategy encryption.Strategy)
 		completedAt               sql.NullTime
 	)
 	err := row.Scan(
-		&id, &run.TeamID, &run.TeamName, &run.WorkflowDefinitionID, &run.WorkflowName,
+		&id, &run.DefinitionKind, &run.TeamID, &run.TeamName, &run.WorkflowDefinitionID, &run.WorkflowName,
 		&run.WorkflowVersion, &run.SchemaVersion, &run.SignatureVersion, &run.DefinitionContentHash,
 		&functionID, &run.IdempotencyKey, &parameterizedConfig, &run.ParameterizedConfigHash,
 		&run.DevValidationProvenanceHash,
@@ -630,6 +637,9 @@ func scanAgentWorkflowRun(row scannable, encryptionStrategy encryption.Strategy)
 	}
 	if err := run.ID.Validate(); err != nil {
 		return AgentWorkflowRun{}, fmt.Errorf("db: invalid persisted workflow run: %w", err)
+	}
+	if run.DefinitionKind != workflow.DefinitionKindWorkflow && run.DefinitionKind != workflow.DefinitionKindNode {
+		return AgentWorkflowRun{}, fmt.Errorf("db: invalid persisted workflow run: definition kind is invalid")
 	}
 	if err := run.Status.Validate(); err != nil {
 		return AgentWorkflowRun{}, fmt.Errorf("db: invalid persisted workflow run: %w", err)

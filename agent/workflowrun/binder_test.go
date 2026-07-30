@@ -12,6 +12,7 @@ import (
 
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/workflow"
+	"github.com/concourse/concourse/agent/workflow/workflowtest"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 )
@@ -169,6 +170,144 @@ func TestBindAndCreateAdmitsFromServerDerivedIdentity(t *testing.T) {
 	wantOrder := []string{"find", "resolve", "target", "render", "authorize", "allocate", "budget", "credential", "save", "execution", "transition"}
 	if !reflect.DeepEqual(order, wantOrder) {
 		t.Fatalf("order = %#v, want %#v", order, wantOrder)
+	}
+}
+
+func TestBindAndCreateRejectsNodeDefaultResolution(t *testing.T) {
+	definition := binderTestDefinition()
+	binder, err := NewBinder(
+		resumeResolver(definition), resumeRenderer(definition, binderTestRendered(t, definition)),
+		&authorizerStub{}, &storeStub{}, &budgetStub{}, &saverStub{}, &creatorStub{}, &credentialStub{},
+		WithNodeStore(workflowtest.NewMemoryNodeStore()),
+	)
+	if err != nil {
+		t.Fatalf("NewBinder: %v", err)
+	}
+	_, err = binder.BindAndCreate(context.Background(), AdmissionContext{
+		TeamID: 1, TeamName: "main", CreatedBy: "alice", Origin: Origin{Kind: "manual"},
+	}, BindRequest{DefinitionKind: workflow.DefinitionKindNode, WorkflowName: "code-review", IdempotencyKey: "node-default"})
+	if !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("BindAndCreate error = %v, want invalid node default resolution", err)
+	}
+	_, err = binder.BindAndCreate(context.Background(), AdmissionContext{
+		TeamID: 1, TeamName: "main", CreatedBy: "alice", Origin: Origin{Kind: "manual"},
+	}, BindRequest{WorkflowName: "review-flow", NodeParameters: map[string]string{"MODE": "strict"}, IdempotencyKey: "workflow-node-params"})
+	if !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("workflow node parameter error = %v, want invalid request", err)
+	}
+}
+
+func TestBindAndCreateRunsExactUnreleasedNodeVersion(t *testing.T) {
+	ctx := context.Background()
+	nodes := workflowtest.NewMemoryNodeStore()
+	node, err := nodes.ImportManifest("code-review", workflow.Manifest{workflow.NodeFileName: `schema_version: 1
+name: code-review
+parameters:
+  - {name: MINIMUM_SEVERITY, default: medium}
+inputs: []
+outputs: []
+step:
+  agent: review
+  prompt: review
+`}, "alice")
+	if err != nil {
+		t.Fatalf("import node: %v", err)
+	}
+	version := node.Version
+	var rendered workflow.RenderedFunction
+	renderer := &rendererStub{
+		full: workflow.FullFunctionTarget,
+		render: func(target workflow.FunctionTarget) (workflow.RenderedFunction, error) {
+			value, err := workflow.RenderFunction(target)
+			rendered = value
+			return value, err
+		},
+	}
+	runID := snapshot.WorkflowRunID(99)
+	admitting := db.AgentWorkflowRun{
+		ID: runID, DefinitionKind: workflow.DefinitionKindNode, TeamID: 7, TeamName: "research",
+		WorkflowDefinitionID: node.ID, WorkflowName: node.Name, WorkflowVersion: node.Version,
+		SchemaVersion: 3, SignatureVersion: node.Compiled.Function.SignatureVersion,
+		DefinitionContentHash: node.ContentHash, IdempotencyKey: "node-test-1",
+		OriginKind: "manual", CreatedBy: "alice", Status: db.AgentWorkflowRunStatusAdmitting,
+	}
+	running := admitting
+	running.Status = db.AgentWorkflowRunStatusSucceeded
+	finds := 0
+	store := &storeStub{
+		find: func(context.Context, int, string) (db.AgentWorkflowRun, bool, error) {
+			finds++
+			if finds == 1 {
+				return db.AgentWorkflowRun{}, false, nil
+			}
+			return running, true, nil
+		},
+		create: func(_ context.Context, request db.AgentWorkflowRunCreateRequest) (db.AgentWorkflowRun, bool, error) {
+			if request.DefinitionKind != workflow.DefinitionKindNode || request.FunctionID != nil ||
+				request.WorkflowDefinitionID != node.ID || request.ResourceSourceAdmissionID != nil {
+				t.Fatalf("node durable request = %+v", request)
+			}
+			admitting.ParameterizedConfig = append(json.RawMessage(nil), request.ParameterizedConfig...)
+			admitting.ParameterizedConfigHash = request.ParameterizedConfigHash
+			running.ParameterizedConfig = append(json.RawMessage(nil), request.ParameterizedConfig...)
+			running.ParameterizedConfigHash = request.ParameterizedConfigHash
+			return running, false, nil
+		},
+		snapshots: func(context.Context, snapshot.WorkflowRunID) ([]db.AgentWorkflowRunSnapshotBinding, error) {
+			return nil, nil
+		},
+		transition: func(context.Context, snapshot.WorkflowRunID, db.AgentWorkflowRunStatus, db.AgentWorkflowRunStatus, string) (bool, error) {
+			return true, nil
+		},
+	}
+	binder, err := NewBinder(
+		resumeResolver(binderTestDefinition()), renderer, &authorizerStub{}, store, &budgetStub{},
+		&saverStub{save: func(_ context.Context, _ AdmissionContext, spec ImmutableTemplateSpec) (WorkflowRunTemplateRef, error) {
+			if !strings.HasPrefix(spec.Name, "agent-node-code-review-v1-") {
+				t.Fatalf("node template name = %q", spec.Name)
+			}
+			return WorkflowRunTemplateRef{PipelineID: 1, TeamID: 7, Name: spec.Name, FullHash: spec.FullHash}, nil
+		}},
+		&creatorStub{create: func(context.Context, snapshot.WorkflowRunID, WorkflowRunTemplateRef, map[string]any, string, BeforeWorkflowRunCommit) (WorkflowRunExecution, bool, error) {
+			return WorkflowRunExecution{}, true, nil
+		}},
+		&credentialStub{admit: func(context.Context) error { return nil }}, WithNodeStore(nodes),
+	)
+	if err != nil {
+		t.Fatalf("NewBinder: %v", err)
+	}
+	result, err := binder.BindAndCreate(ctx, AdmissionContext{
+		TeamID: 7, TeamName: "research", CreatedBy: "alice", Origin: Origin{Kind: "manual"},
+	}, BindRequest{
+		DefinitionKind: workflow.DefinitionKindNode, WorkflowName: node.Name, Version: &version,
+		NodeParameters: map[string]string{"MINIMUM_SEVERITY": "high"}, IdempotencyKey: "node-test-1",
+	})
+	if err != nil {
+		t.Fatalf("BindAndCreate: %v", err)
+	}
+	if result.Created || result.Run.DefinitionKind != workflow.DefinitionKindNode || rendered.TemplateName == "" {
+		t.Fatalf("node bind result = %+v", result)
+	}
+	values, err := nodeParametersFromConfig(*node, rendered.Config)
+	if err != nil || values["MINIMUM_SEVERITY"] != "high" {
+		t.Fatalf("durable node parameters = %#v, %v", values, err)
+	}
+
+	// A repeated node request may omit its parameter: the durable admitting
+	// config is the authority on resume, never the node's current default.
+	rendered = workflow.RenderedFunction{}
+	resumed, err := binder.resume(ctx, AdmissionContext{
+		TeamID: 7, TeamName: "research", CreatedBy: "alice", Origin: Origin{Kind: "manual"},
+	}, BindRequest{
+		DefinitionKind: workflow.DefinitionKindNode, WorkflowName: node.Name, Version: &version,
+		IdempotencyKey: "node-test-1",
+	}, admitting, false, nil)
+	if err != nil || resumed.Run.ID != runID {
+		t.Fatalf("resume direct node = %+v, %v", resumed, err)
+	}
+	values, err = nodeParametersFromConfig(*node, rendered.Config)
+	if err != nil || values["MINIMUM_SEVERITY"] != "high" {
+		t.Fatalf("resumed node parameters = %#v, %v", values, err)
 	}
 }
 
@@ -1438,11 +1577,17 @@ type storeStub struct {
 func (s *storeStub) FindByIdempotencyKey(ctx context.Context, teamID int, key string) (db.AgentWorkflowRun, bool, error) {
 	return s.find(ctx, teamID, key)
 }
+func (s *storeStub) FindByIdempotencyKeyKind(ctx context.Context, teamID int, _ workflow.DefinitionKind, key string) (db.AgentWorkflowRun, bool, error) {
+	return s.FindByIdempotencyKey(ctx, teamID, key)
+}
 func (s *storeStub) Get(ctx context.Context, teamID int, id snapshot.WorkflowRunID) (db.AgentWorkflowRun, bool, error) {
 	if s.get == nil {
 		return db.AgentWorkflowRun{}, false, nil
 	}
 	return s.get(ctx, teamID, id)
+}
+func (s *storeStub) GetKind(ctx context.Context, teamID int, _ workflow.DefinitionKind, id snapshot.WorkflowRunID) (db.AgentWorkflowRun, bool, error) {
+	return s.Get(ctx, teamID, id)
 }
 func (s *storeStub) CreateWithInputs(ctx context.Context, request db.AgentWorkflowRunCreateRequest) (db.AgentWorkflowRun, bool, error) {
 	return s.create(ctx, request)

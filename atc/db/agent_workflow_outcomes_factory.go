@@ -41,7 +41,7 @@ func (factory *agentWorkflowOutcomesFactory) AuthorizeRun(
 	err := factory.conn.QueryRowContext(ctx, `
 		SELECT EXISTS (
 			SELECT 1 FROM agent_workflow_runs
-			WHERE id = $1 AND team_id = $2 AND workflow_name = $3
+			WHERE id = $1 AND team_id = $2 AND workflow_name = $3 AND definition_kind = 'workflow'
 		)
 	`, int64(runID), teamID, workflowName).Scan(&authorized)
 	return authorized, err
@@ -66,7 +66,7 @@ func (factory *agentWorkflowOutcomesFactory) AuthorizeOutput(
 			 AND binding.direction = 'output'
 			 AND binding.snapshot_id = $3
 			 AND binding.promoted_at IS NOT NULL
-			WHERE run.id = $2 AND run.team_id = $1
+			WHERE run.id = $2 AND run.team_id = $1 AND run.definition_kind = 'workflow'
 		)
 	`, teamID, int64(runID), int64(outputID)).Scan(&authorized)
 	return authorized, err

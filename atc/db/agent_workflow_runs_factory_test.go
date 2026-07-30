@@ -17,6 +17,7 @@ import (
 	"github.com/Masterminds/squirrel"
 	"github.com/concourse/concourse/agent/pagination"
 	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/agent/workflowrun"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
@@ -281,6 +282,57 @@ plan:
 		Expect(err).To(MatchError(ContainSubstring(
 			fmt.Sprintf("workflow-run definition %d does not exist", nodeDefinitionID),
 		)))
+	})
+
+	It("creates and reads exact node runs in a separate kind-scoped identity", func() {
+		nodeName := definitionName + "-direct-node"
+		nodeHash := strings.Repeat("d", 64)
+		var nodeDefinitionID int
+		Expect(dbConn.QueryRow(`
+			INSERT INTO agent_workflow_definitions
+				(definition_kind, name, version, content_hash, definition, created_by, schema_version, signature_version)
+			VALUES ('node', $1, 1, $2, 'schema_version: 1', 'alice', 3, 1)
+			RETURNING id
+		`, nodeName, nodeHash).Scan(&nodeDefinitionID)).To(Succeed())
+
+		nodeRequest := request("kind-shared-direct")
+		nodeRequest.DefinitionKind = workflow.DefinitionKindNode
+		nodeRequest.WorkflowDefinitionID = nodeDefinitionID
+		nodeRequest.WorkflowName = nodeName
+		nodeRequest.DefinitionContentHash = nodeHash
+		nodeRequest.Inputs = map[string]snapshot.SnapshotRef{}
+		node, created, err := factory.CreateWithInputs(ctx, nodeRequest)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(created).To(BeTrue())
+		Expect(node.DefinitionKind).To(Equal(workflow.DefinitionKindNode))
+
+		workflowRequest := request("kind-shared-direct")
+		workflowRun, created, err := factory.CreateWithInputs(ctx, workflowRequest)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(created).To(BeTrue())
+		Expect(workflowRun.ID).NotTo(Equal(node.ID))
+
+		_, found, err := factory.Get(ctx, defaultTeam.ID(), node.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeFalse())
+		stored, found, err := factory.GetKind(ctx, defaultTeam.ID(), workflow.DefinitionKindNode, node.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(stored.WorkflowDefinitionID).To(Equal(nodeDefinitionID))
+
+		resourceAdmissionID := int64(1)
+		withSourceAdmission := nodeRequest
+		withSourceAdmission.IdempotencyKey = "node-cannot-use-sources"
+		withSourceAdmission.ResourceSourceAdmissionID = &resourceAdmissionID
+		_, _, err = factory.CreateWithInputs(ctx, withSourceAdmission)
+		Expect(err).To(MatchError(ContainSubstring("reusable node runs cannot use a resource source admission")))
+
+		version := 1
+		listed, err := factory.ListKind(ctx, workflow.DefinitionKindNode, db.AgentWorkflowRunListFilter{
+			TeamID: defaultTeam.ID(), WorkflowName: nodeName, WorkflowVersion: &version, Limit: 10,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(listed).To(ConsistOf(node))
 	})
 
 	It("persists validation provenance and treats it as idempotency identity", func() {

@@ -23,8 +23,11 @@ var ErrAgentWorkflowRunExperimentAdmissionClosed = errors.New("db: experiment wo
 type AgentWorkflowRunsFactory interface {
 	CreateWithInputs(context.Context, AgentWorkflowRunCreateRequest) (AgentWorkflowRun, bool, error)
 	FindByIdempotencyKey(context.Context, int, string) (AgentWorkflowRun, bool, error)
+	FindByIdempotencyKeyKind(context.Context, int, workflow.DefinitionKind, string) (AgentWorkflowRun, bool, error)
 	Get(context.Context, int, snapshot.WorkflowRunID) (AgentWorkflowRun, bool, error)
+	GetKind(context.Context, int, workflow.DefinitionKind, snapshot.WorkflowRunID) (AgentWorkflowRun, bool, error)
 	List(context.Context, AgentWorkflowRunListFilter) ([]AgentWorkflowRun, error)
+	ListKind(context.Context, workflow.DefinitionKind, AgentWorkflowRunListFilter) ([]AgentWorkflowRun, error)
 	CountByStatus(context.Context, AgentWorkflowRunCountFilter) (map[AgentWorkflowRunStatus]int64, error)
 	LinkExecution(context.Context, snapshot.WorkflowRunID, AgentWorkflowRunExecutionLink) error
 	RecordPlan(context.Context, snapshot.WorkflowRunID, AgentWorkflowRunPlan) error
@@ -51,6 +54,9 @@ func (factory *agentWorkflowRunsFactory) CreateWithInputs(
 	ctx context.Context,
 	request AgentWorkflowRunCreateRequest,
 ) (AgentWorkflowRun, bool, error) {
+	if request.DefinitionKind == "" {
+		request.DefinitionKind = workflow.DefinitionKindWorkflow
+	}
 	if err := request.Validate(); err != nil {
 		return AgentWorkflowRun{}, false, err
 	}
@@ -60,17 +66,17 @@ func (factory *agentWorkflowRunsFactory) CreateWithInputs(
 	}
 	defer Rollback(tx)
 
-	if err := lockWorkflowRunIdempotency(ctx, tx, request.TeamID, request.IdempotencyKey); err != nil {
+	if err := lockWorkflowRunIdempotency(ctx, tx, request.TeamID, request.DefinitionKind, request.IdempotencyKey); err != nil {
 		return AgentWorkflowRun{}, false, err
 	}
-	if err := validateWorkflowRunDefinitionKind(ctx, tx, request.WorkflowDefinitionID); err != nil {
+	if err := validateWorkflowRunDefinitionKind(ctx, tx, request.WorkflowDefinitionID, request.DefinitionKind); err != nil {
 		return AgentWorkflowRun{}, false, err
 	}
 	if err := lockOpenExperimentWorkflowRunAdmission(ctx, tx, request); err != nil {
 		return AgentWorkflowRun{}, false, err
 	}
 	existing, found, err := findWorkflowRunByIdempotencyKey(
-		ctx, tx, tx.EncryptionStrategy(), request.TeamID, request.IdempotencyKey, true,
+		ctx, tx, tx.EncryptionStrategy(), request.TeamID, request.DefinitionKind, request.IdempotencyKey, true,
 	)
 	if err != nil {
 		return AgentWorkflowRun{}, false, err
@@ -111,10 +117,10 @@ func (factory *agentWorkflowRunsFactory) CreateWithInputs(
 			 resource_source_admission_id,
 			 origin_kind, origin_reference, created_by, status,
 			 retry_of_workflow_run_id)
-		VALUES ('workflow', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-		        $11, $12, $13, $14, $15, $16, $17, $18, $19)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+		        $12, $13, $14, $15, $16, $17, $18, $19, $20)
 		ON CONFLICT (team_id, definition_kind, idempotency_key) DO NOTHING
-	`, request.TeamID, request.TeamName, request.WorkflowDefinitionID, request.WorkflowName,
+	`, string(request.DefinitionKind), request.TeamID, request.TeamName, request.WorkflowDefinitionID, request.WorkflowName,
 		request.WorkflowVersion, request.SchemaVersion, request.SignatureVersion,
 		request.DefinitionContentHash, optionalString(request.FunctionID), request.IdempotencyKey,
 		[]byte(request.ParameterizedConfig), request.ParameterizedConfigHash,
@@ -137,9 +143,9 @@ func (factory *agentWorkflowRunsFactory) CreateWithInputs(
 	run, err := scanAgentWorkflowRun(tx.QueryRowContext(ctx, `
 		SELECT `+agentWorkflowRunColumns+`
 		FROM agent_workflow_runs
-		WHERE team_id = $1 AND definition_kind = 'workflow' AND idempotency_key = $2
+		WHERE team_id = $1 AND definition_kind = $2 AND idempotency_key = $3
 		FOR UPDATE
-	`, request.TeamID, request.IdempotencyKey), tx.EncryptionStrategy())
+	`, request.TeamID, string(request.DefinitionKind), request.IdempotencyKey), tx.EncryptionStrategy())
 	if err != nil {
 		return AgentWorkflowRun{}, false, err
 	}
@@ -286,24 +292,24 @@ func experimentAdmissionTargetMatches(
 
 const workflowRunIdempotencyLockDomain = "agent-workflow-run-idempotency/v1\x00"
 
-func lockWorkflowRunIdempotency(ctx context.Context, tx Tx, teamID int, key string) error {
+func lockWorkflowRunIdempotency(ctx context.Context, tx Tx, teamID int, kind workflow.DefinitionKind, key string) error {
 	lockKey := snapshotAdvisoryLockKey(
 		workflowRunIdempotencyLockDomain,
-		fmt.Sprintf("%d\x00workflow\x00%s", teamID, key),
+		fmt.Sprintf("%d\x00%s\x00%s", teamID, kind, key),
 	)
 	_, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock($1)`, lockKey)
 	return err
 }
 
-func validateWorkflowRunDefinitionKind(ctx context.Context, tx Tx, definitionID int) error {
+func validateWorkflowRunDefinitionKind(ctx context.Context, tx Tx, definitionID int, kind workflow.DefinitionKind) error {
 	var found bool
 	if err := tx.QueryRowContext(ctx, `
 		SELECT EXISTS (
 			SELECT 1
 			FROM agent_workflow_definitions
-			WHERE id = $1 AND definition_kind = 'workflow'
+			WHERE id = $1 AND definition_kind = $2
 		)
-	`, definitionID).Scan(&found); err != nil {
+	`, definitionID, string(kind)).Scan(&found); err != nil {
 		return err
 	}
 	if !found {
@@ -339,16 +345,17 @@ func findWorkflowRunByIdempotencyKey(
 	queryer snapshotQueryer,
 	encryptionStrategy encryption.Strategy,
 	teamID int,
+	kind workflow.DefinitionKind,
 	key string,
 	lock bool,
 ) (AgentWorkflowRun, bool, error) {
 	query := `SELECT ` + agentWorkflowRunColumns + `
 		FROM agent_workflow_runs
-		WHERE team_id = $1 AND definition_kind = 'workflow' AND idempotency_key = $2`
+		WHERE team_id = $1 AND definition_kind = $2 AND idempotency_key = $3`
 	if lock {
 		query += ` FOR UPDATE`
 	}
-	run, err := scanAgentWorkflowRun(queryer.QueryRowContext(ctx, query, teamID, key), encryptionStrategy)
+	run, err := scanAgentWorkflowRun(queryer.QueryRowContext(ctx, query, teamID, string(kind), key), encryptionStrategy)
 	if errors.Is(err, sql.ErrNoRows) {
 		return AgentWorkflowRun{}, false, nil
 	}
@@ -375,8 +382,8 @@ func validateWorkflowRunTarget(ctx context.Context, tx Tx, request AgentWorkflow
 	err := tx.QueryRowContext(ctx, `
 		SELECT name, version, schema_version, signature_version, content_hash
 		FROM agent_workflow_definitions
-		WHERE id = $1 AND definition_kind = 'workflow'
-	`, request.WorkflowDefinitionID).Scan(&name, &version, &schemaVersion, &signatureVersion, &hash)
+		WHERE id = $1 AND definition_kind = $2
+	`, request.WorkflowDefinitionID, string(request.DefinitionKind)).Scan(&name, &version, &schemaVersion, &signatureVersion, &hash)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("db: workflow-run definition %d does not exist", request.WorkflowDefinitionID)
 	}
@@ -409,9 +416,9 @@ func validateWorkflowRunTarget(ctx context.Context, tx Tx, request AgentWorkflow
 			       function_id, dev_validation_provenance_hash,
 			       resource_source_admission_id, status
 			FROM agent_workflow_runs
-			WHERE id = $1 AND definition_kind = 'workflow'
+			WHERE id = $1 AND definition_kind = $2
 			FOR KEY SHARE
-		`, int64(*request.RetryOfWorkflowRunID)).Scan(
+		`, int64(*request.RetryOfWorkflowRunID), string(request.DefinitionKind)).Scan(
 			&teamID, &workflowDefinitionID, &workflowName, &workflowVersion,
 			&schemaVersion, &signatureVersion, &definitionContentHash,
 			&functionID, &devValidationProvenanceHash,
@@ -466,6 +473,38 @@ func validateWorkflowRunResourceSourceAdmission(
 	tx Tx,
 	request AgentWorkflowRunCreateRequest,
 ) error {
+	if request.DefinitionKind == workflow.DefinitionKindNode {
+		if request.ResourceSourceAdmissionID != nil {
+			return fmt.Errorf(
+				"%w: reusable node runs cannot use a resource source admission",
+				ErrAgentWorkflowResourceSourceConflict,
+			)
+		}
+		var durableKind workflow.DefinitionKind
+		err := tx.QueryRowContext(ctx, `
+			SELECT definition_kind
+			FROM agent_workflow_definitions
+			WHERE id = $1
+		`, request.WorkflowDefinitionID).Scan(&durableKind)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf(
+				"%w: reusable node definition is absent or has the wrong kind",
+				ErrAgentWorkflowResourceSourceConflict,
+			)
+		}
+		if err != nil {
+			return err
+		}
+		if durableKind != workflow.DefinitionKindNode {
+			return fmt.Errorf(
+				"%w: reusable node definition is absent or has the wrong kind",
+				ErrAgentWorkflowResourceSourceConflict,
+			)
+		}
+		// Node imports reject resource and resource-source capabilities, so the
+		// durable node kind proves this target is source-free.
+		return nil
+	}
 	if request.ResourceSourceAdmissionID == nil {
 		declaresSources, err := workflowRunTargetDeclaresResourceSources(ctx, tx, request.WorkflowDefinitionID)
 		if err != nil {
@@ -789,7 +828,7 @@ func validateWorkflowRunInputs(ctx context.Context, tx Tx, request AgentWorkflow
 }
 
 func validateIdempotentWorkflowRun(run AgentWorkflowRun, request AgentWorkflowRunCreateRequest) error {
-	if run.TeamID != request.TeamID ||
+	if run.DefinitionKind != request.DefinitionKind || run.TeamID != request.TeamID ||
 		run.WorkflowDefinitionID != request.WorkflowDefinitionID ||
 		run.WorkflowName != request.WorkflowName || run.WorkflowVersion != request.WorkflowVersion ||
 		run.SchemaVersion != request.SchemaVersion || run.SignatureVersion != request.SignatureVersion ||
@@ -909,8 +948,21 @@ func (factory *agentWorkflowRunsFactory) FindByIdempotencyKey(
 	if teamID <= 0 || strings.TrimSpace(key) == "" {
 		return AgentWorkflowRun{}, false, fmt.Errorf("db: workflow-run team and idempotency key are required")
 	}
+	return factory.FindByIdempotencyKeyKind(ctx, teamID, workflow.DefinitionKindWorkflow, key)
+}
+
+func (factory *agentWorkflowRunsFactory) FindByIdempotencyKeyKind(
+	ctx context.Context,
+	teamID int,
+	kind workflow.DefinitionKind,
+	key string,
+) (AgentWorkflowRun, bool, error) {
+	if teamID <= 0 || strings.TrimSpace(key) == "" ||
+		kind != workflow.DefinitionKindWorkflow && kind != workflow.DefinitionKindNode {
+		return AgentWorkflowRun{}, false, fmt.Errorf("db: workflow-run kind, team, and idempotency key are required")
+	}
 	return findWorkflowRunByIdempotencyKey(
-		ctx, factory.conn, factory.conn.EncryptionStrategy(), teamID, key, false,
+		ctx, factory.conn, factory.conn.EncryptionStrategy(), teamID, kind, key, false,
 	)
 }
 
@@ -919,7 +971,16 @@ func (factory *agentWorkflowRunsFactory) Get(
 	teamID int,
 	id snapshot.WorkflowRunID,
 ) (AgentWorkflowRun, bool, error) {
-	if teamID <= 0 {
+	return factory.GetKind(ctx, teamID, workflow.DefinitionKindWorkflow, id)
+}
+
+func (factory *agentWorkflowRunsFactory) GetKind(
+	ctx context.Context,
+	teamID int,
+	kind workflow.DefinitionKind,
+	id snapshot.WorkflowRunID,
+) (AgentWorkflowRun, bool, error) {
+	if teamID <= 0 || kind != workflow.DefinitionKindWorkflow && kind != workflow.DefinitionKindNode {
 		return AgentWorkflowRun{}, false, fmt.Errorf("db: workflow-run team ID must be positive")
 	}
 	if err := id.Validate(); err != nil {
@@ -928,8 +989,8 @@ func (factory *agentWorkflowRunsFactory) Get(
 	run, err := scanAgentWorkflowRun(factory.conn.QueryRowContext(ctx, `
 		SELECT `+agentWorkflowRunColumns+`
 		FROM agent_workflow_runs
-		WHERE id = $1 AND team_id = $2 AND definition_kind = 'workflow'
-	`, int64(id), teamID), factory.conn.EncryptionStrategy())
+		WHERE id = $1 AND team_id = $2 AND definition_kind = $3
+	`, int64(id), teamID, string(kind)), factory.conn.EncryptionStrategy())
 	if errors.Is(err, sql.ErrNoRows) {
 		return AgentWorkflowRun{}, false, nil
 	}
@@ -988,6 +1049,17 @@ func (factory *agentWorkflowRunsFactory) List(
 	ctx context.Context,
 	filter AgentWorkflowRunListFilter,
 ) ([]AgentWorkflowRun, error) {
+	return factory.ListKind(ctx, workflow.DefinitionKindWorkflow, filter)
+}
+
+func (factory *agentWorkflowRunsFactory) ListKind(
+	ctx context.Context,
+	kind workflow.DefinitionKind,
+	filter AgentWorkflowRunListFilter,
+) ([]AgentWorkflowRun, error) {
+	if kind != workflow.DefinitionKindWorkflow && kind != workflow.DefinitionKindNode {
+		return nil, fmt.Errorf("db: workflow-run list requires a definition kind")
+	}
 	if filter.TeamID <= 0 || filter.Limit < 0 || filter.Limit > 1001 {
 		return nil, fmt.Errorf("db: workflow-run list requires a team and a fetch limit from 0 to 1001")
 	}
@@ -1001,16 +1073,22 @@ func (factory *agentWorkflowRunsFactory) List(
 			return nil, err
 		}
 	}
+	if filter.WorkflowVersion != nil && *filter.WorkflowVersion <= 0 {
+		return nil, fmt.Errorf("db: workflow-run list workflow version must be positive")
+	}
 	query := `SELECT ` + agentWorkflowRunColumns + `
 		FROM agent_workflow_runs
-		WHERE team_id = $1 AND definition_kind = 'workflow'`
-	args := []any{filter.TeamID}
+		WHERE team_id = $1 AND definition_kind = $2`
+	args := []any{filter.TeamID, string(kind)}
 	appendFilter := func(column string, value any) {
 		args = append(args, value)
 		query += ` AND ` + column + ` = $` + strconv.Itoa(len(args))
 	}
 	if filter.WorkflowName != "" {
 		appendFilter("workflow_name", filter.WorkflowName)
+	}
+	if filter.WorkflowVersion != nil {
+		appendFilter("workflow_version", *filter.WorkflowVersion)
 	}
 	if filter.Status != "" {
 		appendFilter("status", string(filter.Status))

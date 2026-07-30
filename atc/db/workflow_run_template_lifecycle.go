@@ -279,8 +279,8 @@ func (l *workflowRunTemplateLifecycle) RemoveRetiredWorkflowRunTemplates(
 //     association, workflow-wait authorization) join through
 //     template_pipeline_id;
 //   - superseded: every cited workflow version has a strictly newer live
-//     definition of the same name. A draft successor or a rolled-back live
-//     version does not retire the history it may still need;
+//     workflow definition, while every cited node version has a strictly newer
+//     released node definition of the same name.
 //   - past the template's own run_retention, evaluated exactly as
 //     PipelineRunFactory.RunsToArchive does — keep_last therefore keeps the
 //     template alive for as long as it keeps any run, since some run always
@@ -316,13 +316,23 @@ const retiredWorkflowRunTemplateGuards = `
 			FROM agent_workflow_runs durable
 			WHERE durable.template_pipeline_id = template.id
 			  AND (durable.status NOT IN ('succeeded', 'failed', 'errored', 'aborted')
-			       OR NOT EXISTS (
-				SELECT 1
-				FROM agent_workflow_definitions successor
-				WHERE successor.name = durable.workflow_name
-				  AND successor.definition_kind = 'workflow'
-				  AND successor.live
-				  AND successor.version > durable.workflow_version
+			       OR NOT (
+				(durable.definition_kind = 'workflow' AND EXISTS (
+					SELECT 1
+					FROM agent_workflow_definitions successor
+					WHERE successor.name = durable.workflow_name
+					  AND successor.definition_kind = 'workflow'
+					  AND successor.live
+					  AND successor.version > durable.workflow_version
+				))
+				OR (durable.definition_kind = 'node' AND EXISTS (
+					SELECT 1
+					FROM agent_workflow_definitions successor
+					WHERE successor.name = durable.workflow_name
+					  AND successor.definition_kind = 'node'
+					  AND successor.released_at IS NOT NULL
+					  AND successor.version > durable.workflow_version
+				))
 			  ))
 		  )
 		  AND NOT (template.run_retention IS NOT NULL AND EXISTS (

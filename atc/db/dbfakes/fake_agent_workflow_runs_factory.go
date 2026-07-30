@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/atc/db"
 )
 
@@ -119,6 +120,24 @@ type FakeAgentWorkflowRunsFactory struct {
 		result2 bool
 		result3 error
 	}
+	FindByIdempotencyKeyKindStub        func(context.Context, int, workflow.DefinitionKind, string) (db.AgentWorkflowRun, bool, error)
+	findByIdempotencyKeyKindMutex       sync.RWMutex
+	findByIdempotencyKeyKindArgsForCall []struct {
+		arg1 context.Context
+		arg2 int
+		arg3 workflow.DefinitionKind
+		arg4 string
+	}
+	findByIdempotencyKeyKindReturns struct {
+		result1 db.AgentWorkflowRun
+		result2 bool
+		result3 error
+	}
+	findByIdempotencyKeyKindReturnsOnCall map[int]struct {
+		result1 db.AgentWorkflowRun
+		result2 bool
+		result3 error
+	}
 	GetStub        func(context.Context, int, snapshot.WorkflowRunID) (db.AgentWorkflowRun, bool, error)
 	getMutex       sync.RWMutex
 	getArgsForCall []struct {
@@ -132,6 +151,24 @@ type FakeAgentWorkflowRunsFactory struct {
 		result3 error
 	}
 	getReturnsOnCall map[int]struct {
+		result1 db.AgentWorkflowRun
+		result2 bool
+		result3 error
+	}
+	GetKindStub        func(context.Context, int, workflow.DefinitionKind, snapshot.WorkflowRunID) (db.AgentWorkflowRun, bool, error)
+	getKindMutex       sync.RWMutex
+	getKindArgsForCall []struct {
+		arg1 context.Context
+		arg2 int
+		arg3 workflow.DefinitionKind
+		arg4 snapshot.WorkflowRunID
+	}
+	getKindReturns struct {
+		result1 db.AgentWorkflowRun
+		result2 bool
+		result3 error
+	}
+	getKindReturnsOnCall map[int]struct {
 		result1 db.AgentWorkflowRun
 		result2 bool
 		result3 error
@@ -194,6 +231,21 @@ type FakeAgentWorkflowRunsFactory struct {
 		result2 error
 	}
 	listReturnsOnCall map[int]struct {
+		result1 []db.AgentWorkflowRun
+		result2 error
+	}
+	ListKindStub        func(context.Context, workflow.DefinitionKind, db.AgentWorkflowRunListFilter) ([]db.AgentWorkflowRun, error)
+	listKindMutex       sync.RWMutex
+	listKindArgsForCall []struct {
+		arg1 context.Context
+		arg2 workflow.DefinitionKind
+		arg3 db.AgentWorkflowRunListFilter
+	}
+	listKindReturns struct {
+		result1 []db.AgentWorkflowRun
+		result2 error
+	}
+	listKindReturnsOnCall map[int]struct {
 		result1 []db.AgentWorkflowRun
 		result2 error
 	}
@@ -729,6 +781,76 @@ func (fake *FakeAgentWorkflowRunsFactory) FindByIdempotencyKeyReturnsOnCall(i in
 	}{result1, result2, result3}
 }
 
+func (fake *FakeAgentWorkflowRunsFactory) FindByIdempotencyKeyKind(arg1 context.Context, arg2 int, arg3 workflow.DefinitionKind, arg4 string) (db.AgentWorkflowRun, bool, error) {
+	fake.findByIdempotencyKeyKindMutex.Lock()
+	ret, specificReturn := fake.findByIdempotencyKeyKindReturnsOnCall[len(fake.findByIdempotencyKeyKindArgsForCall)]
+	fake.findByIdempotencyKeyKindArgsForCall = append(fake.findByIdempotencyKeyKindArgsForCall, struct {
+		arg1 context.Context
+		arg2 int
+		arg3 workflow.DefinitionKind
+		arg4 string
+	}{arg1, arg2, arg3, arg4})
+	stub := fake.FindByIdempotencyKeyKindStub
+	fakeReturns := fake.findByIdempotencyKeyKindReturns
+	fake.recordInvocation("FindByIdempotencyKeyKind", []interface{}{arg1, arg2, arg3, arg4})
+	fake.findByIdempotencyKeyKindMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2, arg3, arg4)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2, ret.result3
+	}
+	return fakeReturns.result1, fakeReturns.result2, fakeReturns.result3
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) FindByIdempotencyKeyKindCallCount() int {
+	fake.findByIdempotencyKeyKindMutex.RLock()
+	defer fake.findByIdempotencyKeyKindMutex.RUnlock()
+	return len(fake.findByIdempotencyKeyKindArgsForCall)
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) FindByIdempotencyKeyKindCalls(stub func(context.Context, int, workflow.DefinitionKind, string) (db.AgentWorkflowRun, bool, error)) {
+	fake.findByIdempotencyKeyKindMutex.Lock()
+	defer fake.findByIdempotencyKeyKindMutex.Unlock()
+	fake.FindByIdempotencyKeyKindStub = stub
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) FindByIdempotencyKeyKindArgsForCall(i int) (context.Context, int, workflow.DefinitionKind, string) {
+	fake.findByIdempotencyKeyKindMutex.RLock()
+	defer fake.findByIdempotencyKeyKindMutex.RUnlock()
+	argsForCall := fake.findByIdempotencyKeyKindArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3, argsForCall.arg4
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) FindByIdempotencyKeyKindReturns(result1 db.AgentWorkflowRun, result2 bool, result3 error) {
+	fake.findByIdempotencyKeyKindMutex.Lock()
+	defer fake.findByIdempotencyKeyKindMutex.Unlock()
+	fake.FindByIdempotencyKeyKindStub = nil
+	fake.findByIdempotencyKeyKindReturns = struct {
+		result1 db.AgentWorkflowRun
+		result2 bool
+		result3 error
+	}{result1, result2, result3}
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) FindByIdempotencyKeyKindReturnsOnCall(i int, result1 db.AgentWorkflowRun, result2 bool, result3 error) {
+	fake.findByIdempotencyKeyKindMutex.Lock()
+	defer fake.findByIdempotencyKeyKindMutex.Unlock()
+	fake.FindByIdempotencyKeyKindStub = nil
+	if fake.findByIdempotencyKeyKindReturnsOnCall == nil {
+		fake.findByIdempotencyKeyKindReturnsOnCall = make(map[int]struct {
+			result1 db.AgentWorkflowRun
+			result2 bool
+			result3 error
+		})
+	}
+	fake.findByIdempotencyKeyKindReturnsOnCall[i] = struct {
+		result1 db.AgentWorkflowRun
+		result2 bool
+		result3 error
+	}{result1, result2, result3}
+}
+
 func (fake *FakeAgentWorkflowRunsFactory) Get(arg1 context.Context, arg2 int, arg3 snapshot.WorkflowRunID) (db.AgentWorkflowRun, bool, error) {
 	fake.getMutex.Lock()
 	ret, specificReturn := fake.getReturnsOnCall[len(fake.getArgsForCall)]
@@ -792,6 +914,76 @@ func (fake *FakeAgentWorkflowRunsFactory) GetReturnsOnCall(i int, result1 db.Age
 		})
 	}
 	fake.getReturnsOnCall[i] = struct {
+		result1 db.AgentWorkflowRun
+		result2 bool
+		result3 error
+	}{result1, result2, result3}
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) GetKind(arg1 context.Context, arg2 int, arg3 workflow.DefinitionKind, arg4 snapshot.WorkflowRunID) (db.AgentWorkflowRun, bool, error) {
+	fake.getKindMutex.Lock()
+	ret, specificReturn := fake.getKindReturnsOnCall[len(fake.getKindArgsForCall)]
+	fake.getKindArgsForCall = append(fake.getKindArgsForCall, struct {
+		arg1 context.Context
+		arg2 int
+		arg3 workflow.DefinitionKind
+		arg4 snapshot.WorkflowRunID
+	}{arg1, arg2, arg3, arg4})
+	stub := fake.GetKindStub
+	fakeReturns := fake.getKindReturns
+	fake.recordInvocation("GetKind", []interface{}{arg1, arg2, arg3, arg4})
+	fake.getKindMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2, arg3, arg4)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2, ret.result3
+	}
+	return fakeReturns.result1, fakeReturns.result2, fakeReturns.result3
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) GetKindCallCount() int {
+	fake.getKindMutex.RLock()
+	defer fake.getKindMutex.RUnlock()
+	return len(fake.getKindArgsForCall)
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) GetKindCalls(stub func(context.Context, int, workflow.DefinitionKind, snapshot.WorkflowRunID) (db.AgentWorkflowRun, bool, error)) {
+	fake.getKindMutex.Lock()
+	defer fake.getKindMutex.Unlock()
+	fake.GetKindStub = stub
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) GetKindArgsForCall(i int) (context.Context, int, workflow.DefinitionKind, snapshot.WorkflowRunID) {
+	fake.getKindMutex.RLock()
+	defer fake.getKindMutex.RUnlock()
+	argsForCall := fake.getKindArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3, argsForCall.arg4
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) GetKindReturns(result1 db.AgentWorkflowRun, result2 bool, result3 error) {
+	fake.getKindMutex.Lock()
+	defer fake.getKindMutex.Unlock()
+	fake.GetKindStub = nil
+	fake.getKindReturns = struct {
+		result1 db.AgentWorkflowRun
+		result2 bool
+		result3 error
+	}{result1, result2, result3}
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) GetKindReturnsOnCall(i int, result1 db.AgentWorkflowRun, result2 bool, result3 error) {
+	fake.getKindMutex.Lock()
+	defer fake.getKindMutex.Unlock()
+	fake.GetKindStub = nil
+	if fake.getKindReturnsOnCall == nil {
+		fake.getKindReturnsOnCall = make(map[int]struct {
+			result1 db.AgentWorkflowRun
+			result2 bool
+			result3 error
+		})
+	}
+	fake.getKindReturnsOnCall[i] = struct {
 		result1 db.AgentWorkflowRun
 		result2 bool
 		result3 error
@@ -1058,6 +1250,72 @@ func (fake *FakeAgentWorkflowRunsFactory) ListReturnsOnCall(i int, result1 []db.
 		})
 	}
 	fake.listReturnsOnCall[i] = struct {
+		result1 []db.AgentWorkflowRun
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) ListKind(arg1 context.Context, arg2 workflow.DefinitionKind, arg3 db.AgentWorkflowRunListFilter) ([]db.AgentWorkflowRun, error) {
+	fake.listKindMutex.Lock()
+	ret, specificReturn := fake.listKindReturnsOnCall[len(fake.listKindArgsForCall)]
+	fake.listKindArgsForCall = append(fake.listKindArgsForCall, struct {
+		arg1 context.Context
+		arg2 workflow.DefinitionKind
+		arg3 db.AgentWorkflowRunListFilter
+	}{arg1, arg2, arg3})
+	stub := fake.ListKindStub
+	fakeReturns := fake.listKindReturns
+	fake.recordInvocation("ListKind", []interface{}{arg1, arg2, arg3})
+	fake.listKindMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2, arg3)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) ListKindCallCount() int {
+	fake.listKindMutex.RLock()
+	defer fake.listKindMutex.RUnlock()
+	return len(fake.listKindArgsForCall)
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) ListKindCalls(stub func(context.Context, workflow.DefinitionKind, db.AgentWorkflowRunListFilter) ([]db.AgentWorkflowRun, error)) {
+	fake.listKindMutex.Lock()
+	defer fake.listKindMutex.Unlock()
+	fake.ListKindStub = stub
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) ListKindArgsForCall(i int) (context.Context, workflow.DefinitionKind, db.AgentWorkflowRunListFilter) {
+	fake.listKindMutex.RLock()
+	defer fake.listKindMutex.RUnlock()
+	argsForCall := fake.listKindArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) ListKindReturns(result1 []db.AgentWorkflowRun, result2 error) {
+	fake.listKindMutex.Lock()
+	defer fake.listKindMutex.Unlock()
+	fake.ListKindStub = nil
+	fake.listKindReturns = struct {
+		result1 []db.AgentWorkflowRun
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeAgentWorkflowRunsFactory) ListKindReturnsOnCall(i int, result1 []db.AgentWorkflowRun, result2 error) {
+	fake.listKindMutex.Lock()
+	defer fake.listKindMutex.Unlock()
+	fake.ListKindStub = nil
+	if fake.listKindReturnsOnCall == nil {
+		fake.listKindReturnsOnCall = make(map[int]struct {
+			result1 []db.AgentWorkflowRun
+			result2 error
+		})
+	}
+	fake.listKindReturnsOnCall[i] = struct {
 		result1 []db.AgentWorkflowRun
 		result2 error
 	}{result1, result2}

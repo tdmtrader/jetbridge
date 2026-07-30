@@ -1820,7 +1820,9 @@ func (cmd *RunCommand) composeAgentDispatch(
 	if err != nil {
 		return nil, fmt.Errorf("construct workflow-run model credential admission: %w", err)
 	}
-	binderOptions := []workflowrun.BinderOption{}
+	binderOptions := []workflowrun.BinderOption{
+		workflowrun.WithNodeStore(db.NewAgentNodesFactory(conn)),
+	}
 	if graph.sourceRuntime.admitter != nil {
 		binderOptions = append(
 			binderOptions,

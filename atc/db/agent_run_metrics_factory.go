@@ -643,7 +643,7 @@ func (f *agentRunMetricsFactory) ListByWorkflowRun(workflowName string, runID sn
 	rows, err := f.conn.Query(
 		`SELECT `+runMetricsColumns+`
 		 FROM agent_run_metrics m
-		 JOIN agent_workflow_runs run ON run.id = m.workflow_run_id AND run.workflow_name = $1
+		 JOIN agent_workflow_runs run ON run.id = m.workflow_run_id AND run.workflow_name = $1 AND run.definition_kind = 'workflow'
 		 LEFT JOIN builds b ON b.id = m.build_id
 		 WHERE m.workflow_run_id = $2 ORDER BY m.created_at ASC, m.id ASC`, workflowName, int64(runID))
 	if err != nil {

@@ -43,9 +43,11 @@ type AdmissionContext struct {
 }
 
 type BindRequest struct {
+	DefinitionKind                      workflow.DefinitionKind
 	WorkflowName                        string
 	Version                             *int
 	FunctionID                          string
+	NodeParameters                      map[string]string
 	Inputs                              map[string]snapshot.SnapshotID
 	IdempotencyKey                      string
 	ExpectedWorkflowDefinitionID        int64
@@ -158,6 +160,13 @@ type WorkflowRunStore interface {
 	CreateWithInputs(context.Context, db.AgentWorkflowRunCreateRequest) (db.AgentWorkflowRun, bool, error)
 	Snapshots(context.Context, snapshot.WorkflowRunID) ([]db.AgentWorkflowRunSnapshotBinding, error)
 	Transition(context.Context, snapshot.WorkflowRunID, db.AgentWorkflowRunStatus, db.AgentWorkflowRunStatus, string) (bool, error)
+}
+
+// KindAwareWorkflowRunStore is the trusted extension for direct node runs.
+// The established methods remain workflow-scoped for existing public callers.
+type KindAwareWorkflowRunStore interface {
+	FindByIdempotencyKeyKind(context.Context, int, workflow.DefinitionKind, string) (db.AgentWorkflowRun, bool, error)
+	GetKind(context.Context, int, workflow.DefinitionKind, snapshot.WorkflowRunID) (db.AgentWorkflowRun, bool, error)
 }
 
 //counterfeiter:generate -o workflowrunfakes/fake_budget_admitter.go . BudgetAdmitter

@@ -29,6 +29,7 @@ var (
 
 type Binder struct {
 	definitions DefinitionResolver
+	nodes       workflow.NodeStore
 	renderer    TargetRenderer
 	snapshots   SnapshotAuthorizer
 	runs        WorkflowRunStore
@@ -52,6 +53,18 @@ func WithResourceSourceAdmitter(admitter ResourceSourceAdmitter) BinderOption {
 			return fmt.Errorf("%w: resource source admitter is required", ErrInvalidRequest)
 		}
 		binder.sources = admitter
+		return nil
+	}
+}
+
+// WithNodeStore enables trusted direct execution of exact reusable node
+// versions. It is server composition, not request-provided authority.
+func WithNodeStore(nodes workflow.NodeStore) BinderOption {
+	return func(binder *Binder) error {
+		if nilInterface(nodes) {
+			return fmt.Errorf("%w: node store is required", ErrInvalidRequest)
+		}
+		binder.nodes = nodes
 		return nil
 	}
 }
@@ -300,6 +313,11 @@ func (b *Binder) bindAndCreate(
 	if err != nil {
 		return BindResult{}, err
 	}
+	if request.DefinitionKind == workflow.DefinitionKindNode {
+		rendered.TemplateName = fmt.Sprintf(
+			"agent-node-%s-v%d-%s", definition.Name, definition.Version, rendered.TargetConfigHash[:12],
+		)
+	}
 	if request.ExpectedTargetConfigHash != "" && rendered.TargetConfigHash != request.ExpectedTargetConfigHash {
 		return BindResult{}, fmt.Errorf("%w: frozen target config no longer matches the rendered workflow dependencies", ErrInvalidRequest)
 	}
@@ -327,7 +345,8 @@ func (b *Binder) bindAndCreate(
 	effectiveInputs := snapshotIDs(refs)
 	functionID := optionalFunctionID(request.FunctionID)
 	createRequest := db.AgentWorkflowRunCreateRequest{
-		TeamID: admission.TeamID, TeamName: admission.TeamName,
+		DefinitionKind: request.DefinitionKind,
+		TeamID:         admission.TeamID, TeamName: admission.TeamName,
 		WorkflowDefinitionID: definition.ID, WorkflowName: definition.Name, WorkflowVersion: definition.Version,
 		SchemaVersion: definition.SchemaVersion, SignatureVersion: definition.SignatureVersion,
 		DefinitionContentHash: definition.ContentHash, FunctionID: functionID,
@@ -386,7 +405,7 @@ func (b *Binder) resolvedWinner(
 	request db.AgentWorkflowRunCreateRequest,
 	inputs map[string]snapshot.SnapshotID,
 ) (db.AgentWorkflowRun, bool, error) {
-	run, found, err := b.runs.FindByIdempotencyKey(ctx, request.TeamID, request.IdempotencyKey)
+	run, found, err := b.findByIdempotencyKey(ctx, request.TeamID, request.DefinitionKind, request.IdempotencyKey)
 	if err != nil {
 		return db.AgentWorkflowRun{}, false, fmt.Errorf("%w: read concurrent workflow-run winner", ErrPlatformFailure)
 	}
@@ -411,7 +430,7 @@ func (b *Binder) bindSourceReplay(
 	admission AdmissionContext,
 	request BindRequest,
 ) (BindResult, bool, error) {
-	source, found, err := b.runs.Get(ctx, admission.TeamID, *request.RetryOf)
+	source, found, err := b.get(ctx, admission.TeamID, request.DefinitionKind, *request.RetryOf)
 	if err != nil {
 		return BindResult{}, true, fmt.Errorf("%w: load replay source workflow run", ErrPlatformFailure)
 	}
@@ -454,7 +473,8 @@ func (b *Binder) bindSourceReplay(
 		inputs[binding.PortName] = binding.Snapshot
 	}
 	createRequest := db.AgentWorkflowRunCreateRequest{
-		TeamID: admission.TeamID, TeamName: admission.TeamName,
+		DefinitionKind: request.DefinitionKind,
+		TeamID:         admission.TeamID, TeamName: admission.TeamName,
 		WorkflowDefinitionID: source.WorkflowDefinitionID, WorkflowName: source.WorkflowName,
 		WorkflowVersion: source.WorkflowVersion, SchemaVersion: source.SchemaVersion,
 		SignatureVersion: source.SignatureVersion, DefinitionContentHash: source.DefinitionContentHash,
@@ -511,6 +531,19 @@ func (b *Binder) bindSourceReplay(
 }
 
 func (b *Binder) resolve(ctx context.Context, request BindRequest) (workflow.Definition, bool, error) {
+	if request.DefinitionKind == workflow.DefinitionKindNode {
+		if nilInterface(b.nodes) {
+			return workflow.Definition{}, false, fmt.Errorf("%w: node store is unavailable", ErrPlatformFailure)
+		}
+		node, found, err := b.nodes.Get(request.WorkflowName, *request.Version)
+		if err != nil {
+			return workflow.Definition{}, false, fmt.Errorf("%w: resolve node definition: %v", ErrPlatformFailure, err)
+		}
+		if !found {
+			return workflow.Definition{}, false, nil
+		}
+		return executableNodeDefinition(*node, request.NodeParameters)
+	}
 	var definition workflow.Definition
 	var found bool
 	var err error
@@ -532,12 +565,63 @@ func (b *Binder) resolve(ctx context.Context, request BindRequest) (workflow.Def
 	return definition, true, nil
 }
 
+func executableNodeDefinition(node workflow.NodeDefinition, parameters map[string]string) (workflow.Definition, bool, error) {
+	if node.ID <= 0 || node.Version <= 0 || strings.TrimSpace(node.Name) == "" || strings.TrimSpace(node.ContentHash) == "" {
+		return workflow.Definition{}, false, fmt.Errorf("%w: inconsistent durable node identity", ErrPlatformFailure)
+	}
+	function, err := node.Compiled.Instantiate(parameters)
+	if err != nil {
+		return workflow.Definition{}, false, fmt.Errorf("%w: instantiate node: %v", ErrInvalidRequest, err)
+	}
+	if function.SignatureVersion <= 0 {
+		return workflow.Definition{}, false, fmt.Errorf("%w: inconsistent compiled node metadata", ErrPlatformFailure)
+	}
+	definition := workflow.Definition{
+		ID: node.ID, Name: node.Name, Version: node.Version, ContentHash: node.ContentHash,
+		SchemaVersion: 3, SignatureVersion: function.SignatureVersion,
+		Compiled: workflow.CompiledDefinition{SchemaVersion: 3, Name: node.Name, Function: function},
+	}
+	return definition, true, nil
+}
+
+func (b *Binder) findByIdempotencyKey(
+	ctx context.Context,
+	teamID int,
+	kind workflow.DefinitionKind,
+	key string,
+) (db.AgentWorkflowRun, bool, error) {
+	if kind == workflow.DefinitionKindWorkflow {
+		return b.runs.FindByIdempotencyKey(ctx, teamID, key)
+	}
+	store, ok := b.runs.(KindAwareWorkflowRunStore)
+	if !ok {
+		return db.AgentWorkflowRun{}, false, fmt.Errorf("workflow run: kind-aware store is required")
+	}
+	return store.FindByIdempotencyKeyKind(ctx, teamID, kind, key)
+}
+
+func (b *Binder) get(
+	ctx context.Context,
+	teamID int,
+	kind workflow.DefinitionKind,
+	id snapshot.WorkflowRunID,
+) (db.AgentWorkflowRun, bool, error) {
+	if kind == workflow.DefinitionKindWorkflow {
+		return b.runs.Get(ctx, teamID, id)
+	}
+	store, ok := b.runs.(KindAwareWorkflowRunStore)
+	if !ok {
+		return db.AgentWorkflowRun{}, false, fmt.Errorf("workflow run: kind-aware store is required")
+	}
+	return store.GetKind(ctx, teamID, kind, id)
+}
+
 func (b *Binder) existing(
 	ctx context.Context,
 	admission AdmissionContext,
 	request BindRequest,
 ) (db.AgentWorkflowRun, bool, error) {
-	run, found, err := b.runs.FindByIdempotencyKey(ctx, admission.TeamID, request.IdempotencyKey)
+	run, found, err := b.findByIdempotencyKey(ctx, admission.TeamID, request.DefinitionKind, request.IdempotencyKey)
 	if err != nil {
 		return db.AgentWorkflowRun{}, false, fmt.Errorf("%w: read idempotency key: %v", ErrPlatformFailure, err)
 	}
@@ -656,7 +740,22 @@ func (b *Binder) resume(
 	if frozen != nil {
 		target, rendered = frozen.target, frozen.rendered
 	} else {
-		definition, found, getErr := b.definitions.Get(ctx, run.WorkflowName, run.WorkflowVersion)
+		resolveRequest := request
+		version := run.WorkflowVersion
+		resolveRequest.WorkflowName = run.WorkflowName
+		resolveRequest.Version = &version
+		if request.DefinitionKind == workflow.DefinitionKindNode {
+			node, nodeFound, nodeErr := b.nodes.Get(run.WorkflowName, run.WorkflowVersion)
+			if nodeErr != nil || !nodeFound || node.ID != run.WorkflowDefinitionID || node.ContentHash != run.DefinitionContentHash {
+				return b.failAllocated(ctx, admission, request, run, created, fmt.Errorf("%w: durable node definition mismatch", ErrCorruptPartialAdmission))
+			}
+			values, valuesErr := nodeParametersFromConfig(*node, config)
+			if valuesErr != nil {
+				return b.failAllocated(ctx, admission, request, run, created, fmt.Errorf("%w: durable node parameters mismatch", ErrCorruptPartialAdmission))
+			}
+			resolveRequest.NodeParameters = values
+		}
+		definition, found, getErr := b.resolve(ctx, resolveRequest)
 		if getErr != nil || !found || definition.ID != run.WorkflowDefinitionID || definition.SchemaVersion != run.SchemaVersion || definition.SignatureVersion != run.SignatureVersion || definition.ContentHash != run.DefinitionContentHash {
 			return b.failAllocated(ctx, admission, request, run, created, fmt.Errorf("%w: durable workflow definition mismatch", ErrCorruptPartialAdmission))
 		}
@@ -684,6 +783,11 @@ func (b *Binder) resume(
 	expectedCanonical, err := validateRendered(target, rendered)
 	if err != nil || !bytes.Equal(canonical, expectedCanonical) || rendered.TargetConfigHash != run.ParameterizedConfigHash {
 		return b.failAllocated(ctx, admission, request, run, created, fmt.Errorf("%w: durable parameterized config hash mismatch", ErrCorruptPartialAdmission))
+	}
+	if request.DefinitionKind == workflow.DefinitionKindNode {
+		rendered.TemplateName = fmt.Sprintf(
+			"agent-node-%s-v%d-%s", run.WorkflowName, run.WorkflowVersion, rendered.TargetConfigHash[:12],
+		)
 	}
 	hash := rendered.TargetConfigHash
 	if err := b.budget.Admit(ctx, BudgetAdmission{
@@ -767,6 +871,36 @@ func (b *Binder) resume(
 		return BindResult{}, cause
 	}
 	return b.advanceAdmission(ctx, admission, request, run, created)
+}
+
+func nodeParametersFromConfig(node workflow.NodeDefinition, config atc.Config) (map[string]string, error) {
+	values := make(map[string]string, len(node.Compiled.Parameters))
+	if len(node.Compiled.Parameters) == 0 {
+		return values, nil
+	}
+	var environment atc.TaskEnv
+	leaves := 0
+	for _, job := range config.Jobs {
+		for _, step := range job.PlanSequence {
+			if err := step.Config.Visit(atc.StepRecursor{
+				OnTask:  func(value *atc.TaskStep) error { leaves++; environment = value.Params; return nil },
+				OnAgent: func(value *atc.AgentStep) error { leaves++; environment = value.Env; return nil },
+			}); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if leaves != 1 {
+		return nil, fmt.Errorf("node rendered %d leaves", leaves)
+	}
+	for _, parameter := range node.Compiled.Parameters {
+		value, found := environment[parameter.Name]
+		if !found {
+			return nil, fmt.Errorf("node parameter %q is absent", parameter.Name)
+		}
+		values[parameter.Name] = value
+	}
+	return values, nil
 }
 
 type durableRenderedTarget struct {
@@ -971,6 +1105,15 @@ func (b *Binder) matchBindings(
 }
 
 func validateAndClone(admission AdmissionContext, request BindRequest) (AdmissionContext, BindRequest, error) {
+	if request.DefinitionKind == "" {
+		request.DefinitionKind = workflow.DefinitionKindWorkflow
+	}
+	if request.DefinitionKind != workflow.DefinitionKindWorkflow && request.DefinitionKind != workflow.DefinitionKindNode {
+		return AdmissionContext{}, BindRequest{}, fmt.Errorf("%w: unknown definition kind", ErrInvalidRequest)
+	}
+	if request.DefinitionKind == workflow.DefinitionKindWorkflow && len(request.NodeParameters) != 0 {
+		return AdmissionContext{}, BindRequest{}, fmt.Errorf("%w: workflow requests cannot include node parameters", ErrInvalidRequest)
+	}
 	if admission.TeamID <= 0 {
 		return AdmissionContext{}, BindRequest{}, fmt.Errorf("%w: team ID must be positive", ErrInvalidRequest)
 	}
@@ -995,6 +1138,16 @@ func validateAndClone(admission AdmissionContext, request BindRequest) (Admissio
 	}
 	if request.Version != nil && *request.Version <= 0 {
 		return AdmissionContext{}, BindRequest{}, fmt.Errorf("%w: version must be positive", ErrInvalidRequest)
+	}
+	if request.DefinitionKind == workflow.DefinitionKindNode {
+		if request.Version == nil {
+			return AdmissionContext{}, BindRequest{}, fmt.Errorf("%w: node version must be explicit", ErrInvalidRequest)
+		}
+		if request.FunctionID != "" || request.ExpectedWorkflowDefinitionID != 0 ||
+			request.ExpectedTargetConfigHash != "" || request.ExpectedDevValidationProvenanceHash != nil ||
+			request.ExperimentAdmission != nil {
+			return AdmissionContext{}, BindRequest{}, fmt.Errorf("%w: node requests cannot select workflow implementation", ErrInvalidRequest)
+		}
 	}
 	if request.ExpectedWorkflowDefinitionID < 0 {
 		return AdmissionContext{}, BindRequest{}, fmt.Errorf("%w: expected workflow definition ID must be positive", ErrInvalidRequest)
@@ -1047,11 +1200,23 @@ func validateAndClone(admission AdmissionContext, request BindRequest) (Admissio
 		inputs[port] = id
 	}
 	request.Inputs = inputs
+	request.NodeParameters = cloneNodeParameters(request.NodeParameters)
 	request.Version = cloneInt(request.Version)
 	request.ExpectedDevValidationProvenanceHash = cloneString(request.ExpectedDevValidationProvenanceHash)
 	request.RetryOf = cloneWorkflowRunID(request.RetryOf)
 	request.ExperimentAdmission = cloneExperimentAdmission(request.ExperimentAdmission)
 	return cloneAdmission(admission), request, nil
+}
+
+func cloneNodeParameters(values map[string]string) map[string]string {
+	if values == nil {
+		return nil
+	}
+	cloned := make(map[string]string, len(values))
+	for name, value := range values {
+		cloned[name] = value
+	}
+	return cloned
 }
 
 func cloneExperimentAdmission(value *ExperimentAdmissionGate) *ExperimentAdmissionGate {
@@ -1365,7 +1530,7 @@ func compareCallerIntent(run db.AgentWorkflowRun, admission AdmissionContext, re
 		return fmt.Errorf("%w: frozen dev validation authority does not match the durable workflow run", ErrInvalidRequest)
 	}
 	wantFunction := optionalFunctionID(request.FunctionID)
-	if run.TeamID != admission.TeamID || run.IdempotencyKey != request.IdempotencyKey ||
+	if normalizedRunDefinitionKind(run.DefinitionKind) != request.DefinitionKind || run.TeamID != admission.TeamID || run.IdempotencyKey != request.IdempotencyKey ||
 		run.WorkflowName != request.WorkflowName || !equalStringPointer(run.FunctionID, wantFunction) ||
 		run.OriginKind != admission.Origin.Kind || run.OriginReference != admission.Origin.Reference ||
 		run.CreatedBy != admission.CreatedBy || !equalRunIDPointer(run.RetryOfWorkflowRunID, request.RetryOf) ||
@@ -1376,7 +1541,7 @@ func compareCallerIntent(run db.AgentWorkflowRun, admission AdmissionContext, re
 }
 
 func compareAllocatedRun(run db.AgentWorkflowRun, request db.AgentWorkflowRunCreateRequest) error {
-	if run.TeamID != request.TeamID || run.WorkflowDefinitionID != request.WorkflowDefinitionID ||
+	if normalizedRunDefinitionKind(run.DefinitionKind) != request.DefinitionKind || run.TeamID != request.TeamID || run.WorkflowDefinitionID != request.WorkflowDefinitionID ||
 		run.WorkflowName != request.WorkflowName || run.WorkflowVersion != request.WorkflowVersion ||
 		run.SchemaVersion != request.SchemaVersion || run.SignatureVersion != request.SignatureVersion ||
 		run.DefinitionContentHash != request.DefinitionContentHash || !equalStringPointer(run.FunctionID, request.FunctionID) ||
@@ -1389,6 +1554,13 @@ func compareAllocatedRun(run db.AgentWorkflowRun, request db.AgentWorkflowRunCre
 		return ErrIdempotencyConflict
 	}
 	return nil
+}
+
+func normalizedRunDefinitionKind(kind workflow.DefinitionKind) workflow.DefinitionKind {
+	if kind == "" {
+		return workflow.DefinitionKindWorkflow
+	}
+	return kind
 }
 
 func executionEmpty(run db.AgentWorkflowRun) bool {

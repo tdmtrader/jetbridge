@@ -202,7 +202,7 @@ func (f *agentReviewsFactory) ListByWorkflowRun(teamName, workflowName string, i
 		 LEFT JOIN builds b ON b.id = p.build_id
 		 LEFT JOIN pipelines pipe ON pipe.id = b.pipeline_id
 		 LEFT JOIN jobs j ON j.id = b.job_id
-		 WHERE wr.id = $2 AND wr.workflow_name = $3
+		 WHERE wr.id = $2 AND wr.workflow_name = $3 AND wr.definition_kind = 'workflow'
 		 ORDER BY p.created_at ASC, p.id ASC`, teamName, int64(id), workflowName,
 	)
 	if err != nil {
