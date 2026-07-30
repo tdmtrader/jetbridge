@@ -672,8 +672,10 @@ Reopen and rehash sealed review and validation bytes through existing snapshot
 inspectors. Resolve the accepted review subject through the exact primary
 `repository/v1` input binding of the `code-review-v3` run; do not infer a
 snapshot ID from type or digest. Require the exact accepted outcome output and
-revision. Add `agent_publication_inputs(publication_id, role, snapshot_id)` for
-observation, validation, impact, and response refs, plus one-to-one
+revision. Add
+`agent_publication_inputs(publication_id, team_id, role, snapshot_id)` for
+observation, validation, impact, and response refs, plus one-to-one,
+same-team
 `agent_publication_approval_evidence` keyed by publication occurrence with
 mutually exclusive accepted-review and human-wait CHECK shapes. Keep legacy
 merge approval columns readable and unchanged; backfill/project them into

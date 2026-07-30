@@ -131,6 +131,9 @@ direct publication.
   schedules another freshness iteration and forge branch policy controls
   completion.
 - Approval binds immutable content, not a mutable branch.
+- Publication inputs and approval evidence use composite same-team database
+  references. Cross-team evidence is rejected by storage constraints, not
+  merely by an application-layer authorization check.
 - Authoritative validation binds the exact candidate, base, profile,
   configuration, image, toolchain, workflow revision, and attestation.
 - External mutations are destination-policy checked, idempotent, auditable,

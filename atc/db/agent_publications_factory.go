@@ -16,6 +16,7 @@ import (
 
 type AgentPublicationsFactory interface {
 	publisher.Store
+	publisher.ReviewRunEvidenceResolver
 }
 
 func NewAgentPublicationsFactory(conn DbConn) AgentPublicationsFactory {
@@ -24,6 +25,99 @@ func NewAgentPublicationsFactory(conn DbConn) AgentPublicationsFactory {
 
 type agentPublicationsFactory struct {
 	conn DbConn
+}
+
+func (factory *agentPublicationsFactory) ResolveReviewRunEvidence(
+	ctx context.Context,
+	teamID int,
+	workflowRunID snapshot.WorkflowRunID,
+) (publisher.ReviewRunEvidence, bool, error) {
+	if ctx == nil || teamID <= 0 || workflowRunID.Validate() != nil {
+		return publisher.ReviewRunEvidence{}, false, fmt.Errorf(
+			"db: review run evidence requires context, team, and workflow run",
+		)
+	}
+	var (
+		evidence             publisher.ReviewRunEvidence
+		runID                int64
+		candidateID          int64
+		candidateTypeName    string
+		candidateTypeVersion int
+		candidateDigest      string
+		reviewID             int64
+		reviewTypeName       string
+		reviewTypeVersion    int
+		reviewDigest         string
+	)
+	err := factory.conn.QueryRowContext(ctx, `
+		SELECT run.team_id, run.id, run.workflow_definition_id,
+		       run.workflow_name, run.workflow_version, run.schema_version,
+		       run.definition_content_hash,
+		       candidate.port_name, candidate_snapshot.id,
+		       candidate_snapshot.type_name, candidate_snapshot.type_version,
+		       candidate_snapshot.digest,
+		       review.port_name, review_snapshot.id,
+		       review_snapshot.type_name, review_snapshot.type_version,
+		       review_snapshot.digest
+		FROM agent_workflow_runs run
+		JOIN agent_workflow_run_snapshots candidate
+		  ON candidate.workflow_run_id=run.id
+		 AND candidate.direction='input'
+		 AND candidate.port_name='after'
+		 AND candidate.promoted_at IS NOT NULL
+		JOIN agent_snapshots candidate_snapshot
+		  ON candidate_snapshot.id=candidate.snapshot_id
+		 AND candidate_snapshot.team_id=run.team_id
+		 AND candidate_snapshot.type_name='repository'
+		 AND candidate_snapshot.type_version=1
+		JOIN agent_workflow_run_snapshots review
+		  ON review.workflow_run_id=run.id
+		 AND review.direction='output'
+		 AND review.port_name='review'
+		 AND review.promoted_at IS NOT NULL
+		JOIN agent_snapshots review_snapshot
+		  ON review_snapshot.id=review.snapshot_id
+		 AND review_snapshot.team_id=run.team_id
+		 AND review_snapshot.type_name='review'
+		 AND review_snapshot.type_version=1
+		WHERE run.id=$1 AND run.team_id=$2
+		  AND run.definition_kind='workflow'
+		  AND run.workflow_name='code-review'
+		  AND run.schema_version=3
+		  AND run.status='succeeded'
+	`, int64(workflowRunID), teamID).Scan(
+		&evidence.TeamID, &runID, &evidence.WorkflowDefinitionID,
+		&evidence.WorkflowName, &evidence.WorkflowVersion, &evidence.SchemaVersion,
+		&evidence.DefinitionContentHash,
+		&evidence.CandidateInput, &candidateID,
+		&candidateTypeName, &candidateTypeVersion, &candidateDigest,
+		&evidence.ReviewOutput, &reviewID,
+		&reviewTypeName, &reviewTypeVersion, &reviewDigest,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return publisher.ReviewRunEvidence{}, false, nil
+	}
+	if err != nil {
+		return publisher.ReviewRunEvidence{}, false, err
+	}
+	candidateType, err := joinSnapshotType(candidateTypeName, candidateTypeVersion)
+	if err != nil {
+		return publisher.ReviewRunEvidence{}, false, err
+	}
+	reviewType, err := joinSnapshotType(reviewTypeName, reviewTypeVersion)
+	if err != nil {
+		return publisher.ReviewRunEvidence{}, false, err
+	}
+	evidence.WorkflowRunID = snapshot.WorkflowRunID(runID)
+	evidence.Candidate = snapshot.SnapshotRef{
+		ID: snapshot.SnapshotID(candidateID), Type: candidateType,
+		Digest: snapshot.Digest(candidateDigest),
+	}
+	evidence.Review = snapshot.SnapshotRef{
+		ID: snapshot.SnapshotID(reviewID), Type: reviewType,
+		Digest: snapshot.Digest(reviewDigest),
+	}
+	return evidence, true, nil
 }
 
 const agentPublicationColumns = `

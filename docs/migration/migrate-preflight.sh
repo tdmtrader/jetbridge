@@ -71,9 +71,9 @@ v8.0.1:1765921815
 # workflow resource-source admission it reuses across cells and retries.
 # 1773106149 adds kind-scoped reusable node definitions and run idempotency;
 # 1773106150 adds durable workflow-to-node consumer bindings;
-# 1773106151 adds provider-native PR monitor bindings and binding-keyed
-# resource-source pipeline ownership.
-JETBRIDGE_VERSION=1773106151
+# 1773106152 adds provider-native publication evidence for exact PR
+# authorization.
+JETBRIDGE_VERSION=1773106152
 
 # Minimum supported source version (v6.x)
 MIN_SUPPORTED_VERSION=1601993582

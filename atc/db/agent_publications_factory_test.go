@@ -454,6 +454,100 @@ var _ = Describe("AgentPublicationsFactory", func() {
 		Expect(publication.Request.Authority.WorkflowRunID).To(Equal(workflowRunID))
 	})
 
+	It("resolves accepted review authority from one exact frozen code-review run", func() {
+		unique := time.Now().UnixNano()
+		contentHash := fmt.Sprintf("%064x", unique)
+		var reviewDefinitionID, reviewVersion int
+		Expect(dbConn.QueryRow(`
+			INSERT INTO agent_workflow_definitions
+				(name, version, content_hash, definition, created_by,
+				 schema_version, signature_version, definition_kind)
+			SELECT 'code-review', coalesce(max(version), 0) + 1, $1,
+			       'schema_version: 3', 'alice', 3, 1, 'workflow'
+			FROM agent_workflow_definitions
+			WHERE definition_kind = 'workflow' AND name = 'code-review'
+			RETURNING id, version
+		`, contentHash).Scan(&reviewDefinitionID, &reviewVersion)).To(Succeed())
+
+		var reviewBuildID int64
+		Expect(dbConn.QueryRow(`
+			INSERT INTO builds (name, status, team_id, created_by)
+			VALUES ($1, 'succeeded', $2, 'alice') RETURNING id
+		`, "review-evidence-"+fmt.Sprint(unique), defaultTeam.ID()).Scan(&reviewBuildID)).To(Succeed())
+		var reviewRunID int64
+		Expect(dbConn.QueryRow(`
+			INSERT INTO agent_workflow_runs
+				(definition_kind, team_id, team_name, workflow_definition_id,
+				 workflow_name, workflow_version, schema_version, signature_version,
+				 definition_content_hash, idempotency_key, parameterized_config,
+				 parameterized_config_hash, origin_kind, origin_reference,
+				 created_by, status, planned_build_id, started_at, completed_at)
+			VALUES ('workflow', $1, $2, $3, 'code-review', $4, 3, 1,
+			        $5, $6, '{}', $7, 'manual', '', 'alice', 'succeeded',
+			        $8, now(), now())
+			RETURNING id
+		`, defaultTeam.ID(), defaultTeam.Name(), reviewDefinitionID, reviewVersion,
+			contentHash, "review-evidence-"+fmt.Sprint(unique),
+			fmt.Sprintf("%064x", unique+1), reviewBuildID,
+		).Scan(&reviewRunID)).To(Succeed())
+
+		var candidateID, reviewID int64
+		candidateDigest := "sha256:" + fmt.Sprintf("%064x", unique+2)
+		reviewDigest := "sha256:" + fmt.Sprintf("%064x", unique+3)
+		Expect(dbConn.QueryRow(`
+			INSERT INTO agent_snapshots
+				(team_id, type_name, type_version, digest, byte_size, file_count,
+				 representation, content_state)
+			VALUES ($1, 'repository', 1, $2, 1, 1, 'application/x-tar', 'available')
+			RETURNING id
+		`, defaultTeam.ID(), candidateDigest).Scan(&candidateID)).To(Succeed())
+		Expect(dbConn.QueryRow(`
+			INSERT INTO agent_snapshots
+				(team_id, type_name, type_version, digest, byte_size, file_count,
+				 representation, content_state)
+			VALUES ($1, 'review', 1, $2, 1, 1, 'application/x-tar', 'available')
+			RETURNING id
+		`, defaultTeam.ID(), reviewDigest).Scan(&reviewID)).To(Succeed())
+		_, err := dbConn.Exec(`
+			INSERT INTO agent_workflow_run_snapshots
+				(workflow_run_id, direction, port_name, snapshot_id, promoted_at)
+			VALUES ($1, 'input', 'after', $2, now()),
+			       ($1, 'output', 'review', $3, now())
+		`, reviewRunID, candidateID, reviewID)
+		Expect(err).NotTo(HaveOccurred())
+
+		evidence, found, err := factory.ResolveReviewRunEvidence(
+			context.Background(), defaultTeam.ID(), snapshot.WorkflowRunID(reviewRunID),
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(evidence).To(Equal(publisher.ReviewRunEvidence{
+			TeamID:                defaultTeam.ID(),
+			WorkflowRunID:         snapshot.WorkflowRunID(reviewRunID),
+			WorkflowDefinitionID:  reviewDefinitionID,
+			WorkflowName:          "code-review",
+			WorkflowVersion:       reviewVersion,
+			SchemaVersion:         3,
+			DefinitionContentHash: contentHash,
+			CandidateInput:        "after",
+			Candidate: snapshot.SnapshotRef{
+				ID: snapshot.SnapshotID(candidateID), Type: "repository/v1",
+				Digest: snapshot.Digest(candidateDigest),
+			},
+			ReviewOutput: "review",
+			Review: snapshot.SnapshotRef{
+				ID: snapshot.SnapshotID(reviewID), Type: "review/v1",
+				Digest: snapshot.Digest(reviewDigest),
+			},
+		}))
+
+		_, found, err = factory.ResolveReviewRunEvidence(
+			context.Background(), defaultTeam.ID()+1, snapshot.WorkflowRunID(reviewRunID),
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeFalse())
+	})
+
 	It("preserves cancellation and rejects unknown or mismatched completion", func() {
 		cancelled, cancel := context.WithCancel(context.Background())
 		cancel()
