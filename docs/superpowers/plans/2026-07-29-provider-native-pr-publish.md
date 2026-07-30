@@ -84,6 +84,25 @@ Helm, GitHub REST API, Azure DevOps Git REST API 7.1.
   observation remains safe and schedules later freshness work. PR-create
   recovery must return and compare provider-observed heads; review-reply
   recovery must match the authorized provider thread root.
+- Treat the impact assessor as required authority in every policy mode. A
+  missing, invalid, failed, or ambiguous assessment escalates; only an explicit
+  valid non-escalating assessment can accompany a deterministic rules no-op.
+- At both await and publish, resolve the deployment-owned policy identity and
+  recompute deterministic impact from immutable inputs: accepted baseline and
+  validation, final candidate and validation, current observation and response,
+  binding ID, and action digest. Independently recover the agent assessment
+  from verified workflow evidence rather than the body being checked. Require
+  the complete derived decision to equal the sealed `publish-impact/v1`, and
+  require its baseline to be the exact accepted-review candidate.
+- Make the PR reapproval answer a conditional typed artifact selected by the
+  exact server-opened impact record. When no answer is required, resolve the
+  exact accepted `review/v1`, approved `repository/v1`, original
+  `validation/v1`, accepted workflow run, and outcome revision, then hand that
+  evidence to the same provider-native PR executor. Never route either branch
+  through the legacy publisher.
+- Bind both snapshot ID and digest for `pull-request-response/v1` in the
+  server-synthesized approval context and require exact equality again at the
+  publication handoff.
 - Keep three planned migrations ordered after the reusable-node reservations;
   never deploy a higher PR migration before the two lower migrations exist.
 - Treat `Observation.ReviewBatches` as a strict delta after the acknowledged
@@ -1374,12 +1393,15 @@ git commit -m "feat(workflow): revise pull requests from review batches"
 
 - Create: `agent/pullrequest/impact.go`
 - Test: `agent/pullrequest/impact_test.go`
+- Create: `agent/pullrequest/impact_verifier.go`
+- Create: `agent/publisher/pr_impact.go`
 - Create: `agent/publisher/pr_approval.go`
 - Test: `agent/publisher/pr_approval_test.go`
 - Modify: `agent/workflow/parse.go`
 - Modify: `agent/workflow/typecheck.go`
 - Modify: `atc/exec/await_snapshot_step.go`
 - Modify: `atc/exec/publish_snapshot_step.go`
+- Modify: `atc/engine/step_factory.go`
 - Test: `atc/exec/publish_snapshot_step_test.go`
 
 **Interfaces:**
@@ -1421,8 +1443,14 @@ go test ./agent/pullrequest ./agent/publisher ./atc/exec \
 
 - [ ] **Step 3: Implement decision and generalized wait verification**
 
-The server derives the final boolean after reopening the impact record. For
-required reapproval, build a strict `PRApprovalContext` and reuse durable wait
+At both await and publish, the server reopens accepted-review evidence, uses
+its candidate as the only valid impact baseline, resolves the deployment-owned
+policy version, and recomputes impact from the exact final validation,
+observation, response, binding, action, baseline, and candidate. The evaluator
+independently recovers the authoritative agent assessment and assessor status;
+it must not copy them from the untrusted body. The complete derived decision
+must equal the sealed impact record. For required
+reapproval, build a strict `PRApprovalContext` and reuse durable wait
 resolution. For no reapproval, persist the exact accepted-review evidence and
 impact record that justified continuation.
 

@@ -391,6 +391,23 @@ func validateFunctionStepSource(value any, path string) error {
 			return err
 		}
 	}
+	if approval, found := step["pr_approval"]; found {
+		if err := validateObjectSource(approval, path+".pr_approval", []string{
+			"binding_id", "action_digest", "observation", "candidate", "impact",
+			"response", "destination", "approval_policy_version", "prompt", "accepted_review",
+		}); err != nil {
+			return err
+		}
+		if object, ok := approval.(map[string]any); ok {
+			if accepted, found := object["accepted_review"]; found {
+				if err := validateObjectSource(accepted, path+".pr_approval.accepted_review", []string{
+					"review", "candidate", "validation", "review_workflow_run_id", "outcome_revision",
+				}); err != nil {
+					return err
+				}
+			}
+		}
+	}
 
 	return nil
 }

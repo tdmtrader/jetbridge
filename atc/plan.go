@@ -494,8 +494,10 @@ type AwaitSnapshotPlan struct {
 	Name                    string                              `json:"name"`
 	Question                string                              `json:"question,omitempty"`
 	MergeApproval           *MergeApprovalIntent                `json:"merge_approval,omitempty"`
+	PRApproval              *PRApprovalIntent                   `json:"pr_approval,omitempty"`
 	Validation              string                              `json:"validation,omitempty"`
 	MergeApprovalValidation *MergeApprovalValidationRequirement `json:"merge_approval_validation,omitempty"`
+	PRApprovalValidation    *PublishValidationRequirement       `json:"pr_approval_validation,omitempty"`
 	Type                    snapshot.TypeRef                    `json:"type"`
 	OnTimeout               AwaitSnapshotOnTimeout              `json:"on_timeout"`
 	DefaultSnapshotID       string                              `json:"default_snapshot_id,omitempty"`
@@ -520,6 +522,7 @@ type PublishSnapshotPlan struct {
 	WorkflowRunID         string                        `json:"workflow_run_id,omitempty"`
 	Validation            string                        `json:"validation,omitempty"`
 	PublishValidation     *PublishValidationRequirement `json:"publish_validation,omitempty"`
+	PRApproval            *PRApprovalPublicationIntent  `json:"pr_approval,omitempty"`
 }
 
 type RetryPlan []Plan

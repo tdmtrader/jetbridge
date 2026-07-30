@@ -162,6 +162,26 @@ func (request AcceptedReviewEvidenceRequest) validate() error {
 	return nil
 }
 
+func (request AcceptedReviewEvidenceRequest) Validate() error {
+	return request.validate()
+}
+
+func (request AcceptedReviewEvidenceRequest) Matches(evidence PublicationEvidence) bool {
+	if request.validate() != nil ||
+		evidence.Kind != EvidenceAcceptedReview ||
+		evidence.AcceptedReview == nil ||
+		evidence.HumanWait != nil ||
+		evidence.Validate() != nil {
+		return false
+	}
+	accepted := evidence.AcceptedReview
+	return accepted.Review == request.Review &&
+		accepted.Candidate == request.Candidate &&
+		accepted.Validation == request.Validation &&
+		accepted.ReviewWorkflowRunID == request.ReviewWorkflowRunID &&
+		accepted.OutcomeRevision == request.OutcomeRevision
+}
+
 type EvidenceRequest struct {
 	TeamID         int                            `json:"team_id"`
 	AcceptedReview *AcceptedReviewEvidenceRequest `json:"accepted_review,omitempty"`

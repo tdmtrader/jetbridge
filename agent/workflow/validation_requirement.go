@@ -81,6 +81,9 @@ func rejectAuthoredValidationRequirements(function *FunctionConfig) error {
 			if config.MergeApprovalValidation != nil {
 				return fmt.Errorf("workflow: %s: merge approval validation requirement is renderer-owned", path)
 			}
+			if config.PRApprovalValidation != nil {
+				return fmt.Errorf("workflow: %s: PR approval validation requirement is renderer-owned", path)
+			}
 		case *atc.PublishSnapshotStep:
 			if config.PublishValidation != nil {
 				return fmt.Errorf("workflow: %s: publish validation requirement is renderer-owned", path)
@@ -137,14 +140,20 @@ func renderValidationRequirements(function *FunctionConfig) error {
 			}
 			config.ReviewValidation = &atc.ReviewValidationRequirement{Candidate: candidate, Validation: validation, Authority: authority}
 		case *atc.AwaitSnapshotStep:
-			if config.MergeApproval == nil || config.Validation == "" {
-				return nil
+			switch {
+			case config.MergeApproval != nil && config.Validation != "":
+				authority, err := bind(config.MergeApproval.Input, config.Validation, nil)
+				if err != nil {
+					return err
+				}
+				config.MergeApprovalValidation = &atc.MergeApprovalValidationRequirement{Candidate: config.MergeApproval.Input, Validation: config.Validation, Authority: authority}
+			case config.PRApproval != nil && config.Validation != "":
+				authority, err := bind(config.PRApproval.Candidate, config.Validation, nil)
+				if err != nil {
+					return err
+				}
+				config.PRApprovalValidation = &atc.PublishValidationRequirement{Candidate: config.PRApproval.Candidate, Validation: config.Validation, Authority: authority}
 			}
-			authority, err := bind(config.MergeApproval.Input, config.Validation, nil)
-			if err != nil {
-				return err
-			}
-			config.MergeApprovalValidation = &atc.MergeApprovalValidationRequirement{Candidate: config.MergeApproval.Input, Validation: config.Validation, Authority: authority}
 		case *atc.PublishSnapshotStep:
 			if config.InputType.String() != "repository-change/v1" || config.Validation == "" {
 				return nil

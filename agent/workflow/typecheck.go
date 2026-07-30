@@ -416,6 +416,47 @@ func (checker *snapshotFlowChecker) checkPublishSnapshot(step *atc.PublishSnapsh
 	if err := step.InputType.Validate(); err != nil {
 		return snapshotFlow{}, fmt.Errorf("workflow: %s: input_type: %w", identity, err)
 	}
+	if step.PRApproval != nil {
+		if step.PRApproval.AcceptedReview == nil {
+			return snapshotFlow{}, fmt.Errorf("workflow: %s: exact accepted-review authority is required", identity)
+		}
+		approval, found := entry[step.Approval]
+		if !found {
+			return snapshotFlow{}, fmt.Errorf("workflow: %s: approval %q is unavailable (use before produce)", identity, step.Approval)
+		}
+		if !approval.typed || approval.typ != snapshot.TypeRef("human-answer/v1") {
+			return snapshotFlow{}, fmt.Errorf("workflow: %s: approval %q must have exact type human-answer/v1", identity, step.Approval)
+		}
+		if approval.producer == nil || approval.producer.await == nil || approval.producer.await.PRApproval == nil {
+			return snapshotFlow{}, fmt.Errorf("workflow: %s: approval %q must be produced by a server-bound pr_approval await_snapshot in this workflow", identity, step.Approval)
+		}
+		intent := approval.producer.await.PRApproval
+		if intent.BindingID != step.PRApproval.BindingID ||
+			intent.ActionDigest != step.PRApproval.ActionDigest ||
+			intent.Observation != step.PRApproval.Observation ||
+			intent.Candidate != step.Input ||
+			intent.Impact != step.PRApproval.Impact ||
+			intent.Response != step.PRApproval.Response ||
+			!samePRAcceptedReviewIntent(intent.AcceptedReview, step.PRApproval.AcceptedReview) ||
+			intent.Destination != step.Destination ||
+			intent.ApprovalPolicyVersion != step.ApprovalPolicyVersion ||
+			approval.producer.await.Validation != step.Validation {
+			return snapshotFlow{}, fmt.Errorf("workflow: %s: approval %q does not bind this exact PR reapproval publication", identity, step.Approval)
+		}
+		for _, requirement := range []struct {
+			label string
+			name  string
+			typ   snapshot.TypeRef
+		}{
+			{label: "accepted review", name: step.PRApproval.AcceptedReview.Review, typ: snapshot.TypeRef("review/v1")},
+			{label: "accepted candidate", name: step.PRApproval.AcceptedReview.Candidate, typ: snapshot.TypeRef("repository/v1")},
+			{label: "accepted validation", name: step.PRApproval.AcceptedReview.Validation, typ: snapshot.TypeRef("validation/v1")},
+		} {
+			if err := requireExactAwaitArtifact(entry, requirement.label, requirement.name, requirement.typ, identity); err != nil {
+				return snapshotFlow{}, err
+			}
+		}
+	}
 	binding, found := entry[step.Input]
 	if !found {
 		return snapshotFlow{}, fmt.Errorf("workflow: %s: input %q is unavailable (use before produce)", identity, step.Input)
@@ -509,7 +550,34 @@ func (checker *snapshotFlowChecker) checkAwaitSnapshot(step *atc.AwaitSnapshotSt
 	if checker.timeoutDepth == 0 {
 		return snapshotFlow{}, fmt.Errorf("workflow: %s: an ordinary timeout wrapper is required", identity)
 	}
-	if step.MergeApproval != nil {
+	if step.PRApproval != nil {
+		if step.PRApproval.AcceptedReview == nil {
+			return snapshotFlow{}, fmt.Errorf("workflow: %s: exact accepted-review authority is required", identity)
+		}
+		for _, requirement := range []struct {
+			label string
+			name  string
+			typ   snapshot.TypeRef
+		}{
+			{label: "PR observation", name: step.PRApproval.Observation, typ: snapshot.TypeRef("pull-request/v1")},
+			{label: "PR candidate", name: step.PRApproval.Candidate, typ: snapshot.TypeRef("repository-change/v1")},
+			{label: "PR impact", name: step.PRApproval.Impact, typ: snapshot.TypeRef("publish-impact/v1")},
+			{label: "PR response", name: step.PRApproval.Response, typ: snapshot.TypeRef("pull-request-response/v1")},
+			{label: "accepted review", name: step.PRApproval.AcceptedReview.Review, typ: snapshot.TypeRef("review/v1")},
+			{label: "accepted candidate", name: step.PRApproval.AcceptedReview.Candidate, typ: snapshot.TypeRef("repository/v1")},
+			{label: "accepted validation", name: step.PRApproval.AcceptedReview.Validation, typ: snapshot.TypeRef("validation/v1")},
+		} {
+			if err := requireExactAwaitArtifact(entry, requirement.label, requirement.name, requirement.typ, identity); err != nil {
+				return snapshotFlow{}, err
+			}
+		}
+		if err := checker.requireValidation(entry, step.Validation, step.PRApproval.Candidate, nil, nil, identity); err != nil {
+			return snapshotFlow{}, err
+		}
+		if step.MergeApprovalValidation != nil {
+			return snapshotFlow{}, fmt.Errorf("workflow: %s: merge approval validation is only valid for merge approval", identity)
+		}
+	} else if step.MergeApproval != nil {
 		if err := publisher.RejectAuthoredMergeBase(step.MergeApproval.Parameters); err != nil {
 			return snapshotFlow{}, fmt.Errorf("workflow: %s: %w", identity, err)
 		}
@@ -527,7 +595,7 @@ func (checker *snapshotFlowChecker) checkAwaitSnapshot(step *atc.AwaitSnapshotSt
 			return snapshotFlow{}, err
 		}
 	} else {
-		if step.Validation != "" || step.MergeApprovalValidation != nil {
+		if step.Validation != "" || step.MergeApprovalValidation != nil || step.PRApprovalValidation != nil {
 			return snapshotFlow{}, fmt.Errorf("workflow: %s: validation is only valid for merge approval", identity)
 		}
 		question, found := entry[step.Question]
@@ -547,8 +615,16 @@ func (checker *snapshotFlowChecker) checkAwaitSnapshot(step *atc.AwaitSnapshotSt
 	producer := &snapshotProducer{
 		kind: "await_snapshot", path: identity, outputName: step.Name, insideRetry: checker.retryDepth > 0, await: step,
 	}
+	presence := snapshotGuaranteed
+	if step.PRApproval != nil {
+		// The server may prove from the exact impact record that no new human
+		// wait is required. The named answer is therefore conditional, while
+		// publish_snapshot remains statically tied to this exact producer and
+		// uses accepted-review authority on the no-answer path.
+		presence = snapshotConditional
+	}
 	binding := snapshotBinding{
-		typ: step.Type, presence: snapshotGuaranteed, typed: true, producer: producer, writePath: identity,
+		typ: step.Type, presence: presence, typed: true, producer: producer, writePath: identity,
 	}
 	env := cloneSnapshotEnvironment(entry)
 	env[step.Name] = binding
@@ -556,6 +632,35 @@ func (checker *snapshotFlowChecker) checkAwaitSnapshot(step *atc.AwaitSnapshotSt
 	return snapshotFlow{
 		env: env, produced: writes, mayProduced: cloneProduced(writes), allProduced: cloneProduced(writes),
 	}, nil
+}
+
+func samePRAcceptedReviewIntent(left, right *atc.PRAcceptedReviewIntent) bool {
+	return left != nil && right != nil &&
+		left.Review == right.Review &&
+		left.Candidate == right.Candidate &&
+		left.Validation == right.Validation &&
+		left.ReviewWorkflowRunID == right.ReviewWorkflowRunID &&
+		left.OutcomeRevision == right.OutcomeRevision
+}
+
+func requireExactAwaitArtifact(
+	entry snapshotEnvironment,
+	label string,
+	name string,
+	typ snapshot.TypeRef,
+	identity string,
+) error {
+	binding, found := entry[name]
+	if !found {
+		return fmt.Errorf("workflow: %s: %s %q is unavailable (use before produce)", identity, label, name)
+	}
+	if !binding.typed || binding.typ != typ {
+		return fmt.Errorf("workflow: %s: %s %q must have exact type %s", identity, label, name, typ)
+	}
+	if binding.presence == snapshotConditional {
+		return fmt.Errorf("workflow: %s: %s %q cannot use a conditional binding", identity, label, name)
+	}
+	return nil
 }
 
 func (checker *snapshotFlowChecker) checkWrapped(step atc.StepConfig, entry snapshotEnvironment, path string) (snapshotFlow, error) {

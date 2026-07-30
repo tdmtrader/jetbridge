@@ -457,9 +457,9 @@ or base change. A prior result is reusable only when candidate digest, target
 head, validation definition, workflow revision, toolchain, and relevant
 environment identity all match exactly.
 
-Impact compares the final candidate with the most recent human-approved
-candidate, not merely the previous PR head. The new `publish-impact/v1` record
-contains:
+Impact compares the final candidate with the exact `repository/v1` candidate
+named by reopened accepted-review evidence, not merely the previous PR head or
+an authored baseline claim. The new `publish-impact/v1` record contains:
 
 - changed paths, files, and lines;
 - semantic summary;
@@ -479,16 +479,35 @@ Supported policy modes:
 
 Platform invariants apply in all modes. Missing or mismatched approval
 evidence, changed approval-policy identity, invalid lineage, ambiguous impact,
-or assessor failure requires human review. The agent never waives a
-deterministic rule or platform invariant.
+assessor failure, an invalid assessment, or an unavailable assessment requires
+human review. A rules-mode no-op therefore requires both passing deterministic
+rules and an explicit valid non-escalating assessment; silence is never
+interpreted as a waiver. The agent never waives a deterministic rule or
+platform invariant. At both the conditional-wait boundary and the provider
+mutation boundary, the web node resolves the deployment-owned policy version,
+recomputes deterministic impact from the immutable baseline and candidate, and
+requires the complete server-derived decision to equal the sealed impact
+record. The recomputation request also binds the accepted and final validation,
+current PR observation and response, binding ID, and action digest. The agent
+assessment used by policy is independently recovered by the server-owned
+evaluator from verified workflow evidence; it is never copied from the
+untrusted impact body being checked. A shape-valid authored assessment or
+`reapproval_required` value is never authority.
 
 Initial publication authority is a new typed evidence envelope over the exact
 accepted sealed `review/v1`, its reviewed candidate subject, authoritative
 validation, and server-owned accepted disposition. The mutable review
-projection alone is never authority. Conditional reapproval uses the existing
+projection alone is never authority, and the accepted evidence candidate must
+equal the impact baseline exactly. Conditional reapproval uses the existing
 durable question/answer wait machinery through the same generalized evidence
 interface; the merge-only approval context is not reused as though it already
-described PR semantics.
+described PR semantics. The server-derived impact boolean selects the branch:
+the approval step produces no answer artifact when reapproval is unnecessary,
+and the publication step resolves exact accepted-review evidence instead. Both
+branches use the provider-native typed PR executor; neither can fall through to
+legacy direct Git. A human-wait context binds the response snapshot ID and
+digest in addition to the observation, candidate, validation, impact, heads,
+destination, action, policy, workflow, and build identities.
 
 The reapproval question shows the exact delta since the previous human
 approval, validation results, and escalation reasons. Approval advances the
