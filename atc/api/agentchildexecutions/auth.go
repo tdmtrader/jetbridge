@@ -31,11 +31,13 @@ var ErrInvalidCapability = errors.New("invalid agent child execution capability"
 type CapabilityAction string
 
 const (
-	ActionAdmit    CapabilityAction = "admit"
-	ActionPhase    CapabilityAction = "phase"
-	ActionUpdate   CapabilityAction = "update"
-	ActionTerminal CapabilityAction = "terminal"
-	ActionSeal     CapabilityAction = "seal"
+	ActionAdmit                   CapabilityAction = "admit"
+	ActionPhase                   CapabilityAction = "phase"
+	ActionUpdate                  CapabilityAction = "update"
+	ActionTerminal                CapabilityAction = "terminal"
+	ActionSeal                    CapabilityAction = "seal"
+	ActionCaptureWorkspace        CapabilityAction = "capture_workspace"
+	ActionCaptureWorkspaceFailure CapabilityAction = "capture_workspace_failure"
 )
 
 type capabilityClaims struct {
@@ -97,6 +99,14 @@ func (signer *CapabilitySigner) MintBootstrap(scope Scope, profiles []broker.Pro
 // MintExecution grants the lifecycle actions for one durable execution only.
 func (signer *CapabilitySigner) MintExecution(scope Scope, executionID string, profile broker.Profile, notBefore, expiresAt time.Time) (string, error) {
 	return signer.mint([]CapabilityAction{ActionPhase, ActionTerminal, ActionUpdate, ActionSeal}, executionID, scope, []broker.Profile{profile}, notBefore, expiresAt)
+}
+
+func (signer *CapabilitySigner) MintReviewPhase(scope Scope, executionID string, profile broker.Profile, notBefore, expiresAt time.Time) (string, error) {
+	return signer.mint([]CapabilityAction{ActionPhase}, executionID, scope, []broker.Profile{profile}, notBefore, expiresAt)
+}
+
+func (signer *CapabilitySigner) MintWorkspaceCapture(scope Scope, executionID string, profile broker.Profile, notBefore, expiresAt time.Time) (string, error) {
+	return signer.mint([]CapabilityAction{ActionCaptureWorkspace, ActionCaptureWorkspaceFailure}, executionID, scope, []broker.Profile{profile}, notBefore, expiresAt)
 }
 
 func (signer *CapabilitySigner) mint(actions []CapabilityAction, resource string, scope Scope, profiles []broker.Profile, notBefore, expiresAt time.Time) (string, error) {
@@ -169,6 +179,32 @@ func (verifier *CapabilityVerifier) Execution(token string, action CapabilityAct
 	return claims.Scope, claims.Profiles[0], nil
 }
 
+func (verifier *CapabilityVerifier) PhaseExecution(token, executionID string, now time.Time) (Scope, broker.Profile, bool, error) {
+	claims, err := verifier.claims(token, now, ActionPhase, executionID)
+	if err != nil || len(claims.Profiles) != 1 {
+		return Scope{}, broker.Profile{}, false, ErrInvalidCapability
+	}
+	if len(claims.Actions) == 1 && claims.Actions[0] == ActionPhase {
+		return claims.Scope, claims.Profiles[0], true, nil
+	}
+	if len(claims.Actions) != 4 || containsAction(claims.Actions, ActionAdmit) ||
+		!containsAction(claims.Actions, ActionPhase) || !containsAction(claims.Actions, ActionUpdate) ||
+		!containsAction(claims.Actions, ActionTerminal) || !containsAction(claims.Actions, ActionSeal) {
+		return Scope{}, broker.Profile{}, false, ErrInvalidCapability
+	}
+	return claims.Scope, claims.Profiles[0], false, nil
+}
+
+func (verifier *CapabilityVerifier) WorkspaceExecution(token string, action CapabilityAction, executionID string, now time.Time) (Scope, broker.Profile, error) {
+	claims, err := verifier.claims(token, now, action, executionID)
+	if err != nil || len(claims.Profiles) != 1 || len(claims.Actions) != 2 ||
+		!containsAction(claims.Actions, ActionCaptureWorkspace) ||
+		!containsAction(claims.Actions, ActionCaptureWorkspaceFailure) {
+		return Scope{}, broker.Profile{}, ErrInvalidCapability
+	}
+	return claims.Scope, claims.Profiles[0], nil
+}
+
 func (verifier *CapabilityVerifier) claims(token string, now time.Time, action CapabilityAction, resource string) (capabilityClaims, error) {
 	if verifier == nil || !validCapabilityMAC(verifier.key[:], token) {
 		return capabilityClaims{}, ErrInvalidCapability
@@ -215,7 +251,7 @@ func validateClaims(claims capabilityClaims) error {
 	}
 	seenActions := make(map[CapabilityAction]struct{}, len(claims.Actions))
 	for _, action := range claims.Actions {
-		if action != ActionAdmit && action != ActionPhase && action != ActionUpdate && action != ActionTerminal && action != ActionSeal {
+		if action != ActionAdmit && action != ActionPhase && action != ActionUpdate && action != ActionTerminal && action != ActionSeal && action != ActionCaptureWorkspace && action != ActionCaptureWorkspaceFailure {
 			return ErrInvalidCapability
 		}
 		if _, found := seenActions[action]; found {
@@ -254,7 +290,15 @@ func scopeEqual(left, right Scope) bool {
 		equalCapabilityString(left.SnapshotCreatedBy, right.SnapshotCreatedBy) &&
 		equalCapabilityString(left.NodePlanID, right.NodePlanID) &&
 		equalCapabilityString(left.BrokerInstance, right.BrokerInstance) &&
-		scopeInputsEqual(left.Inputs, right.Inputs)
+		scopeInputsEqual(left.Inputs, right.Inputs) &&
+		snapshotRefPointerEqual(left.WorkspaceBase, right.WorkspaceBase)
+}
+
+func snapshotRefPointerEqual(left, right *snapshot.SnapshotRef) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
 }
 
 func scopeInputsEqual(left, right map[string]snapshot.SnapshotRef) bool {

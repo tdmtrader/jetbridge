@@ -73,6 +73,16 @@ var _ = Describe("agent child executions migration", func() {
 		`).Scan(&resultColumns)).To(Succeed())
 		Expect(resultColumns).To(Equal(3))
 
+		var workspaceColumns int
+		Expect(database.QueryRow(`
+			SELECT count(*)
+			FROM information_schema.columns
+			WHERE table_schema = 'public'
+			  AND table_name = 'agent_child_executions'
+			  AND column_name IN ('workspace_snapshot_id', 'workspace_snapshot_type', 'workspace_snapshot_digest')
+		`).Scan(&workspaceColumns)).To(Succeed())
+		Expect(workspaceColumns).To(Equal(3))
+
 		rows, err := database.Query(`
 			SELECT pg_get_constraintdef(oid)
 			FROM pg_constraint
@@ -92,6 +102,8 @@ var _ = Describe("agent child executions migration", func() {
 		Expect(terminalConstraint).To(ContainSubstring("result_snapshot_digest"))
 		Expect(terminalConstraint).To(ContainSubstring("result_body"))
 		Expect(terminalConstraint).To(ContainSubstring("state = 'succeeded'"))
+		Expect(terminalConstraint).To(ContainSubstring("workspace_snapshot_type"))
+		Expect(terminalConstraint).To(ContainSubstring("repository-change/v1"))
 
 		Expect(migrator.Migrate(nil, nil, beforeVersion)).To(Succeed())
 		Expect(database.QueryRow(`

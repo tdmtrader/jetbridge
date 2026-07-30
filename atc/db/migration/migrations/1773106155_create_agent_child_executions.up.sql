@@ -49,6 +49,9 @@ CREATE TABLE agent_child_executions (
     result_snapshot_digest TEXT,
     result_body JSONB,
     observed_usage JSONB,
+    workspace_snapshot_id BIGINT,
+    workspace_snapshot_type TEXT,
+    workspace_snapshot_digest TEXT,
     duration_ms BIGINT CHECK (duration_ms IS NULL OR duration_ms >= 0),
     error_code TEXT
         CHECK (error_code IS NULL OR (
@@ -65,6 +68,22 @@ CREATE TABLE agent_child_executions (
         REFERENCES agent_workflow_runs (id, team_id) ON DELETE CASCADE,
     FOREIGN KEY (result_snapshot_id, team_id)
         REFERENCES agent_snapshots (id, team_id) ON DELETE RESTRICT,
+    FOREIGN KEY (workspace_snapshot_id, team_id)
+        REFERENCES agent_snapshots (id, team_id) ON DELETE RESTRICT,
+    CHECK (
+        (workspace_snapshot_id IS NULL
+            AND workspace_snapshot_type IS NULL
+            AND workspace_snapshot_digest IS NULL)
+        OR
+        (workspace_snapshot_id IS NOT NULL
+            AND workspace_snapshot_type = 'repository-change/v1'
+            AND workspace_snapshot_digest ~ '^sha256:[0-9a-f]{64}$')
+    ),
+    CHECK (
+        tool <> 'request_review'
+        OR state IN ('pending', 'admitted', 'capturing', 'errored', 'cancelled', 'timed_out')
+        OR workspace_snapshot_id IS NOT NULL
+    ),
     CHECK (lease_expires_at IS NULL OR state NOT IN (
         'succeeded', 'errored', 'cancelled', 'timed_out'
     )),
@@ -136,6 +155,14 @@ BEGIN
        OR NEW.attachments <> OLD.attachments
        OR NEW.created_at <> OLD.created_at THEN
         RAISE EXCEPTION 'agent child execution identity is immutable';
+    END IF;
+
+    IF OLD.workspace_snapshot_id IS NOT NULL AND (
+        NEW.workspace_snapshot_id IS DISTINCT FROM OLD.workspace_snapshot_id
+        OR NEW.workspace_snapshot_type IS DISTINCT FROM OLD.workspace_snapshot_type
+        OR NEW.workspace_snapshot_digest IS DISTINCT FROM OLD.workspace_snapshot_digest
+    ) THEN
+        RAISE EXCEPTION 'agent child execution workspace binding is immutable';
     END IF;
 
     IF NEW.sequence <> OLD.sequence + 1 THEN

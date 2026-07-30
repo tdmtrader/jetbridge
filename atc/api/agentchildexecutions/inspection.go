@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc/db"
 )
 
@@ -35,21 +36,22 @@ func NewTeamInspectionHandlerFactory(store ExecutionStore) func(db.Team) http.Ha
 // identity, lifecycle, observed accounting and sealed snapshot are enough to
 // diagnose a disconnected synchronous caller.
 type Inspection struct {
-	ID               string `json:"id"`
-	Tool             string `json:"tool"`
-	Tier             string `json:"tier"`
-	Effort           string `json:"effort"`
-	ProfileID        string `json:"profile_id"`
-	ProfileDigest    string `json:"profile_digest"`
-	State            string `json:"state"`
-	Sequence         int64  `json:"sequence"`
-	ResultSnapshotID *int64 `json:"result_snapshot_id,omitempty"`
-	DurationMS       *int64 `json:"duration_ms,omitempty"`
-	ErrorCode        string `json:"error_code,omitempty"`
-	ErrorRetryable   *bool  `json:"error_retryable,omitempty"`
-	ErrorSummary     string `json:"error_summary,omitempty"`
-	StaticReview     bool   `json:"static_review"`
-	TestsRun         bool   `json:"tests_run"`
+	ID                string                `json:"id"`
+	Tool              string                `json:"tool"`
+	Tier              string                `json:"tier"`
+	Effort            string                `json:"effort"`
+	ProfileID         string                `json:"profile_id"`
+	ProfileDigest     string                `json:"profile_digest"`
+	State             string                `json:"state"`
+	Sequence          int64                 `json:"sequence"`
+	ResultSnapshotID  *int64                `json:"result_snapshot_id,omitempty"`
+	WorkspaceSnapshot *snapshot.SnapshotRef `json:"workspace_snapshot,omitempty"`
+	DurationMS        *int64                `json:"duration_ms,omitempty"`
+	ErrorCode         string                `json:"error_code,omitempty"`
+	ErrorRetryable    *bool                 `json:"error_retryable,omitempty"`
+	ErrorSummary      string                `json:"error_summary,omitempty"`
+	StaticReview      bool                  `json:"static_review"`
+	TestsRun          bool                  `json:"tests_run"`
 }
 
 func inspectionFor(execution db.AgentChildExecution) Inspection {
@@ -63,6 +65,7 @@ func inspectionFor(execution db.AgentChildExecution) Inspection {
 	inspection.State = string(execution.State)
 	inspection.Sequence = execution.Sequence
 	inspection.ResultSnapshotID = execution.ResultSnapshotID
+	inspection.WorkspaceSnapshot = execution.WorkspaceSnapshot
 	inspection.DurationMS = execution.DurationMS
 	inspection.ErrorCode = execution.ErrorCode
 	inspection.ErrorRetryable = execution.ErrorRetryable

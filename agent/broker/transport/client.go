@@ -20,11 +20,13 @@ import (
 )
 
 const (
-	AdmitPath    = "/api/v1/internal/agent-child-executions/admit"
-	phasePath    = "/api/v1/internal/agent-child-executions/%s/phase"
-	updatePath   = "/api/v1/internal/agent-child-executions/%s/update"
-	terminalPath = "/api/v1/internal/agent-child-executions/%s/terminal"
-	sealPath     = "/api/v1/internal/agent-child-executions/%s/seal"
+	AdmitPath                   = "/api/v1/internal/agent-child-executions/admit"
+	phasePath                   = "/api/v1/internal/agent-child-executions/%s/phase"
+	updatePath                  = "/api/v1/internal/agent-child-executions/%s/update"
+	terminalPath                = "/api/v1/internal/agent-child-executions/%s/terminal"
+	sealPath                    = "/api/v1/internal/agent-child-executions/%s/seal"
+	workspaceCapturePath        = "/api/v1/internal/agent-child-executions/%s/workspace-capture"
+	workspaceCaptureFailurePath = "/api/v1/internal/agent-child-executions/%s/workspace-capture-failed"
 )
 
 type Config struct {
@@ -59,6 +61,16 @@ type AdmitResponse struct {
 }
 type PhaseRequest struct {
 	Phase string `json:"phase"`
+}
+type PhaseResponse struct {
+	ExecutionCapability string `json:"execution_capability"`
+}
+type WorkspaceCaptureRequest struct {
+	Capture broker.WorkspaceCapture `json:"capture"`
+}
+type WorkspaceCaptureResponse struct {
+	Snapshot            snapshot.SnapshotRef `json:"snapshot"`
+	ExecutionCapability string               `json:"execution_capability"`
 }
 type UpdateRequest struct {
 	Update broker.RunUpdate `json:"update"`
@@ -111,7 +123,36 @@ func (c *Client) Admit(ctx context.Context, request broker.AdmissionRequest) (br
 	return broker.Admission{ExecutionID: response.ExecutionID, Succeeded: response.Succeeded, Terminal: response.Terminal}, nil
 }
 func (c *Client) Phase(ctx context.Context, id, phase string) error {
-	return c.post(ctx, fmt.Sprintf(phasePath, url.PathEscape(id)), PhaseRequest{Phase: phase}, nil, c.executionCapability(id))
+	var response PhaseResponse
+	if err := c.postAllowEmpty(ctx, fmt.Sprintf(phasePath, url.PathEscape(id)), PhaseRequest{Phase: phase}, &response, c.executionCapability(id)); err != nil {
+		return err
+	}
+	if response.ExecutionCapability != "" {
+		c.mu.Lock()
+		c.executions[id] = response.ExecutionCapability
+		c.mu.Unlock()
+	}
+	return nil
+}
+func (c *Client) CaptureWorkspace(ctx context.Context, id string, capture broker.WorkspaceCapture) (snapshot.SnapshotRef, error) {
+	if err := capture.Validate(); err != nil {
+		return snapshot.SnapshotRef{}, err
+	}
+	var response WorkspaceCaptureResponse
+	if err := c.post(ctx, WorkspaceCapturePath(id), WorkspaceCaptureRequest{Capture: capture}, &response, c.executionCapability(id)); err != nil {
+		return snapshot.SnapshotRef{}, err
+	}
+	if response.Snapshot.Validate() != nil || response.Snapshot.Type != "repository-change/v1" ||
+		strings.TrimSpace(response.ExecutionCapability) == "" {
+		return snapshot.SnapshotRef{}, fmt.Errorf("broker authority: workspace capture response is invalid")
+	}
+	c.mu.Lock()
+	c.executions[id] = response.ExecutionCapability
+	c.mu.Unlock()
+	return response.Snapshot, nil
+}
+func (c *Client) FailWorkspaceCapture(ctx context.Context, id string) error {
+	return c.post(ctx, WorkspaceCaptureFailurePath(id), struct{}{}, nil, c.executionCapability(id))
 }
 func (c *Client) Update(ctx context.Context, id string, update broker.RunUpdate) error {
 	return c.post(ctx, fmt.Sprintf(updatePath, url.PathEscape(id)), UpdateRequest{Update: update}, nil, c.executionCapability(id))
@@ -140,6 +181,14 @@ func (c *Client) executionCapability(id string) string {
 }
 
 func (c *Client) post(ctx context.Context, path string, input, output any, capability string) error {
+	return c.postResponse(ctx, path, input, output, capability, false)
+}
+
+func (c *Client) postAllowEmpty(ctx context.Context, path string, input, output any, capability string) error {
+	return c.postResponse(ctx, path, input, output, capability, true)
+}
+
+func (c *Client) postResponse(ctx context.Context, path string, input, output any, capability string, allowEmpty bool) error {
 	if strings.TrimSpace(capability) == "" {
 		return fmt.Errorf("broker authority: execution capability is unavailable")
 	}
@@ -162,13 +211,32 @@ func (c *Client) post(ctx context.Context, path string, input, output any, capab
 		return fmt.Errorf("broker authority: request rejected")
 	}
 	if output != nil {
-		decoder := json.NewDecoder(io.LimitReader(response.Body, 1<<20))
+		body, err := io.ReadAll(io.LimitReader(response.Body, (1<<20)+1))
+		if err != nil || len(body) > 1<<20 {
+			return fmt.Errorf("broker authority: decode response")
+		}
+		if len(bytes.TrimSpace(body)) == 0 && allowEmpty {
+			return nil
+		}
+		decoder := json.NewDecoder(bytes.NewReader(body))
 		decoder.DisallowUnknownFields()
 		if decoder.Decode(output) != nil || decoder.Decode(&struct{}{}) != io.EOF {
 			return fmt.Errorf("broker authority: decode response")
 		}
 	}
 	return nil
+}
+
+func PhasePath(id string) string {
+	return fmt.Sprintf(phasePath, url.PathEscape(id))
+}
+
+func WorkspaceCapturePath(id string) string {
+	return fmt.Sprintf(workspaceCapturePath, url.PathEscape(id))
+}
+
+func WorkspaceCaptureFailurePath(id string) string {
+	return fmt.Sprintf(workspaceCaptureFailurePath, url.PathEscape(id))
 }
 
 var _ broker.Authority = (*Client)(nil)

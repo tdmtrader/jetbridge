@@ -142,3 +142,33 @@ The next batch should follow Tasks 2, 8, 9, and 10 of the implementation plan:
 
 No live provider call, image build, cluster mutation, push, or deployment was
 performed.
+
+## 2026-07-30 Workspace Authority Checkpoint
+
+The review vertical slice now captures dirty workspace state after durable
+admission and before any child harness work:
+
+- the bootstrap scope carries an exact `repository/v1` workspace base
+  separately from static attachment inputs;
+- capability handoff is staged as phase-only, capture-only, then full
+  lifecycle authority, so a pre-capture token cannot update, seal,
+  terminalize, or recapture an execution;
+- only base commit/tree, result tree, patch bytes/digest, entry count, and the
+  fixed capture-policy revision cross from the sidecar to ATC;
+- the raw patch limit is 2.75 MiB, leaving bounded headroom for base64 and the
+  envelope under the private API's 4 MiB JSON limit;
+- ATC derives repository identity from the exact team-authorized base
+  snapshot, constructs `record.json` plus `content/workspace.patch`, and uses
+  the ordinary snapshot creator/validator to prove base and result lineage;
+- migration `1773106155` stores the immutable same-team
+  `repository-change/v1` workspace reference, with idempotent replay,
+  conflicting-capture rejection, and a monotonic `workspace_captured` event;
+- the refreshed execution scope exposes that durable ref as the authoritative
+  review subject; and
+- the child runtime materializes the already-captured local result and never
+  re-reads or mounts the parent's live tree for the child process.
+
+Focused broker, runtime, ATC authority, repository-contract, command, and
+compile-only DB/migration checks passed. The broker transport suite passed
+outside the loopback sandbox. The previously documented PostgreSQL
+shared-memory failure was not retried.

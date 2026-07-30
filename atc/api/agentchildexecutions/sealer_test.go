@@ -85,6 +85,60 @@ func TestOrdinaryResultSealerMakesSoleConsultationAttachmentPrimary(t *testing.T
 	}
 }
 
+func TestOrdinaryResultSealerBuildsAuthoritativeRepositoryChangeFromBoundBase(t *testing.T) {
+	creator := &recordingSnapshotCreator{}
+	base := snapshot.SnapshotRef{ID: 41, Type: "repository/v1", Digest: snapshot.Digest("sha256:" + strings.Repeat("4", 64))}
+	metadata := json.RawMessage(`{"repository_id":"sha256:` + strings.Repeat("a", 64) + `","object_format":"sha1","head_sha":"` + strings.Repeat("1", 40) + `","tree_sha":"` + strings.Repeat("2", 40) + `","root_commits":["` + strings.Repeat("1", 40) + `"]}`)
+	sealer, err := agentchildexecutions.NewOrdinaryResultSealer(creator, fakeWorkspaceMetadata{
+		snapshot: snapshot.Snapshot{ID: base.ID, Type: base.Type, Digest: base.Digest, IntrinsicMetadata: metadata},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := completeScope()
+	delete(scope.Inputs, "workspace")
+	scope.WorkspaceBase = &base
+	capture := broker.WorkspaceCapture{
+		BaseCommit: strings.Repeat("1", 40), BaseTree: strings.Repeat("2", 40),
+		ResultTree: strings.Repeat("3", 40), Patch: []byte("patch"),
+		PatchDigest: "sha256:a4895eb44afc336fecbba6e520cd67e178dace0276655d102fceffa8e5f70570",
+		EntryCount:  7, PolicyRevision: "git-workspace-capture/v2",
+	}
+	sealed, err := sealer.SealWorkspace(context.Background(), scope, broker.ExecutionIdentity{
+		IdempotencyKey: "review", Tool: broker.ToolRequestReview,
+	}, capture)
+	if err != nil {
+		t.Fatalf("SealWorkspace(): %v", err)
+	}
+	if sealed.ID != 99 || creator.request.InputOrder[0] != "base" ||
+		creator.request.Inputs["base"] != base ||
+		creator.request.OutputDeclarations[0].Type != "repository-change/v1" {
+		t.Fatalf("seal request = %#v sealed=%#v", creator.request, sealed)
+	}
+	files := readTarFiles(t, creator.request.Outputs[0])
+	if string(files["content/workspace.patch"]) != "patch" {
+		t.Fatalf("workspace patch = %q", files["content/workspace.patch"])
+	}
+	var record contracts.Record[contracts.RepositoryChangeBody]
+	if err := json.Unmarshal(files["record.json"], &record); err != nil {
+		t.Fatal(err)
+	}
+	if record.Body.RepositoryID != "sha256:"+strings.Repeat("a", 64) ||
+		record.Body.BaseSHA != capture.BaseCommit || record.Body.ResultTree != capture.ResultTree ||
+		record.Body.Representation != "patch" || len(record.Subjects) != 1 ||
+		record.Subjects[0] != contracts.SubjectFromInput("base", contracts.SubjectRoleBase, "base", base) {
+		t.Fatalf("repository change record = %#v", record)
+	}
+}
+
+type fakeWorkspaceMetadata struct {
+	snapshot snapshot.Snapshot
+}
+
+func (store fakeWorkspaceMetadata) GetAuthorized(_ context.Context, _ int, id snapshot.SnapshotID) (snapshot.Snapshot, bool, error) {
+	return store.snapshot, id == store.snapshot.ID, nil
+}
+
 type recordingSnapshotCreator struct{ request snapshot.SealRequest }
 
 func (creator *recordingSnapshotCreator) Seal(_ context.Context, request snapshot.SealRequest) (map[string]snapshot.SealedOutput, error) {
@@ -92,7 +146,7 @@ func (creator *recordingSnapshotCreator) Seal(_ context.Context, request snapsho
 		return nil, err
 	}
 	creator.request = request
-	return map[string]snapshot.SealedOutput{"result": {Port: request.OutputDeclarations[0], Snapshot: snapshot.SnapshotRef{ID: 99, Type: request.OutputDeclarations[0].Type, Digest: snapshot.Digest("sha256:" + strings.Repeat("c", 64))}}}, nil
+	return map[string]snapshot.SealedOutput{request.Outputs[0].ClientKey: {Port: request.OutputDeclarations[0], Snapshot: snapshot.SnapshotRef{ID: 99, Type: request.OutputDeclarations[0].Type, Digest: snapshot.Digest("sha256:" + strings.Repeat("c", 64))}}}, nil
 }
 func (*recordingSnapshotCreator) Upload(context.Context, snapshot.UploadRequest) (snapshot.Snapshot, error) {
 	return snapshot.Snapshot{}, nil
@@ -119,4 +173,29 @@ func readRecordFromOutput(t *testing.T, output snapshot.OutputSource) contracts.
 		t.Fatal(err)
 	}
 	return record
+}
+
+func readTarFiles(t *testing.T, output snapshot.OutputSource) map[string][]byte {
+	t.Helper()
+	stream, err := output.OpenTar(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	reader := tar.NewReader(stream)
+	files := map[string][]byte{}
+	for {
+		header, err := reader.Next()
+		if err == io.EOF {
+			return files
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		content, err := io.ReadAll(reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files[header.Name] = content
+	}
 }

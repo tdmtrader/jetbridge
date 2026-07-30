@@ -22,6 +22,8 @@ func TestExecutionCapabilityRequiresExactScopeActionAndTimeWindow(t *testing.T) 
 		t.Fatal(err)
 	}
 	scope := completeScope()
+	base := snapshot.SnapshotRef{ID: 8, Type: "repository/v1", Digest: snapshot.Digest("sha256:" + strings.Repeat("8", 64))}
+	scope.WorkspaceBase = &base
 	catalog, err := broker.NewCatalog([]broker.Profile{authorityProfile()})
 	if err != nil {
 		t.Fatal(err)
@@ -56,6 +58,13 @@ func TestExecutionCapabilityRequiresExactScopeActionAndTimeWindow(t *testing.T) 
 			foreign.Inputs["design"] = input
 			return foreign
 		}(), Now: now},
+		"cross workspace base": {Action: agentchildexecutions.ActionPhase, Resource: "7c5b1d7f-4ab1-451a-a6c8-d6b0a4d4dd98", Scope: func() agentchildexecutions.Scope {
+			foreign := scope
+			changed := *foreign.WorkspaceBase
+			changed.ID++
+			foreign.WorkspaceBase = &changed
+			return foreign
+		}(), Now: now},
 		"expired": {Action: agentchildexecutions.ActionPhase, Resource: "7c5b1d7f-4ab1-451a-a6c8-d6b0a4d4dd98", Scope: scope, Now: now.Add(2 * time.Minute)},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -86,5 +95,57 @@ func TestCapabilityScopeRequiresWorkflowDefinitionIdentity(t *testing.T) {
 	scope.WorkflowDefinitionID = 0
 	if err := scope.Validate(); err == nil {
 		t.Fatal("Scope.Validate() accepted scope without workflow definition identity")
+	}
+}
+
+func TestReviewCapabilitiesStagePhaseCaptureAndLifecycleAuthority(t *testing.T) {
+	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+	key := []byte(strings.Repeat("k", 32))
+	signer, _ := agentchildexecutions.NewCapabilitySigner("key-1", key)
+	verifier, _ := agentchildexecutions.NewCapabilityVerifier("key-1", key)
+	scope := completeScope()
+	delete(scope.Inputs, "workspace")
+	base := snapshot.SnapshotRef{ID: 8, Type: "repository/v1", Digest: snapshot.Digest("sha256:" + strings.Repeat("8", 64))}
+	scope.WorkspaceBase = &base
+	profile := resolvedReviewProfile(t)
+	executionID := "7c5b1d7f-4ab1-451a-a6c8-d6b0a4d4dd98"
+
+	phaseToken, err := signer.MintReviewPhase(scope, executionID, profile, now.Add(-time.Second), now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := verifier.WorkspaceExecution(phaseToken, agentchildexecutions.ActionCaptureWorkspace, executionID, now); err == nil {
+		t.Fatal("phase capability authorized workspace capture")
+	}
+	if _, _, capturePending, err := verifier.PhaseExecution(phaseToken, executionID, now); err != nil || !capturePending {
+		t.Fatalf("PhaseExecution() pending=%v err=%v", capturePending, err)
+	}
+
+	captureToken, err := signer.MintWorkspaceCapture(scope, executionID, profile, now.Add(-time.Second), now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := verifier.Execution(captureToken, agentchildexecutions.ActionTerminal, executionID, now); err == nil {
+		t.Fatal("capture capability authorized terminal")
+	}
+	if _, _, err := verifier.WorkspaceExecution(captureToken, agentchildexecutions.ActionCaptureWorkspace, executionID, now); err != nil {
+		t.Fatalf("WorkspaceExecution(): %v", err)
+	}
+
+	captured := scope
+	captured.Inputs = map[string]snapshot.SnapshotRef{}
+	for name, ref := range scope.Inputs {
+		captured.Inputs[name] = ref
+	}
+	captured.Inputs["workspace"] = snapshot.SnapshotRef{ID: 9, Type: "repository-change/v1", Digest: snapshot.Digest("sha256:" + strings.Repeat("9", 64))}
+	lifecycle, err := signer.MintExecution(captured, executionID, profile, now.Add(-time.Second), now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := verifier.WorkspaceExecution(lifecycle, agentchildexecutions.ActionCaptureWorkspace, executionID, now); err == nil {
+		t.Fatal("lifecycle capability authorized a second capture")
+	}
+	if _, _, err := verifier.Execution(lifecycle, agentchildexecutions.ActionSeal, executionID, now); err != nil {
+		t.Fatalf("Execution(): %v", err)
 	}
 }

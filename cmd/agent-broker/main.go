@@ -275,7 +275,7 @@ func buildEngine(ctx context.Context, config fileConfig) (*broker.Engine, *broke
 		}
 		instructions[broker.Tool(tool)] = string(content)
 	}
-	return broker.NewEngine(broker.EngineConfig{Catalog: catalog, Authority: authority, Attachments: attachmentResolver{attachments: config.Attachments}, Credentials: credentialResolver{slots: config.CredentialSlots}, Runner: runner, Instructions: instructions}), catalog, nil
+	return broker.NewEngine(broker.EngineConfig{Catalog: catalog, Authority: authority, Workspace: runner, Attachments: attachmentResolver{attachments: config.Attachments}, Credentials: credentialResolver{slots: config.CredentialSlots}, Runner: runner, Instructions: instructions}), catalog, nil
 }
 
 type credentialResolver struct{ slots map[string]string }

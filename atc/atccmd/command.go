@@ -3849,8 +3849,9 @@ func (cmd *RunCommand) agentChildExecutionHandlers(connection db.DbConn) (*api.A
 	}
 	cmd.agentSnapshotMu.Lock()
 	creator := cmd.agentSnapshotCreator
+	metadata := cmd.agentSnapshotMetadataStore
 	cmd.agentSnapshotMu.Unlock()
-	sealer, err := agentchildexecutions.NewOrdinaryResultSealer(creator)
+	sealer, err := agentchildexecutions.NewOrdinaryResultSealer(creator, metadata)
 	if err != nil {
 		return nil, err
 	}

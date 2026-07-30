@@ -64,6 +64,89 @@ func TestClientUsesExecutionCapabilityAfterAdmission(t *testing.T) {
 	}
 }
 
+func TestClientCapturesWorkspaceAndAtomicallyReplacesExecutionCapability(t *testing.T) {
+	const executionID = "7c5b1d7f-4ab1-451a-a6c8-d6b0a4d4dd98"
+	var lifecycleAuthorization string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case transport.AdmitPath:
+			_, _ = w.Write([]byte(`{"execution_id":"` + executionID + `","execution_capability":"phase-token"}`))
+		case transport.PhasePath(executionID):
+			if r.Header.Get("Authorization") == "Bearer phase-token" {
+				_, _ = w.Write([]byte(`{"execution_capability":"capture-token"}`))
+				return
+			}
+			lifecycleAuthorization = r.Header.Get("Authorization")
+		case transport.WorkspaceCapturePath(executionID):
+			if r.Header.Get("Authorization") != "Bearer capture-token" {
+				t.Fatalf("capture authorization = %q", r.Header.Get("Authorization"))
+			}
+			_, _ = w.Write([]byte(`{"snapshot":{"id":"77","type":"repository-change/v1","digest":"sha256:` + strings.Repeat("7", 64) + `"},"execution_capability":"lifecycle-token"}`))
+		default:
+			lifecycleAuthorization = r.Header.Get("Authorization")
+		}
+	}))
+	defer server.Close()
+	client, err := transport.NewClient(transport.Config{Endpoint: server.URL, BootstrapCapability: "bootstrap-token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	admitted, err := client.Admit(context.Background(), broker.AdmissionRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Phase(context.Background(), admitted.ExecutionID, "capturing"); err != nil {
+		t.Fatal(err)
+	}
+	capture := broker.WorkspaceCapture{
+		BaseCommit: strings.Repeat("1", 40), BaseTree: strings.Repeat("2", 40),
+		ResultTree: strings.Repeat("3", 40), PatchDigest: "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+		EntryCount: 1, PolicyRevision: "git-workspace-capture/v2",
+	}
+	sealed, err := client.CaptureWorkspace(context.Background(), admitted.ExecutionID, capture)
+	if err != nil || sealed.ID != 77 {
+		t.Fatalf("CaptureWorkspace() = %#v, %v", sealed, err)
+	}
+	if err := client.Phase(context.Background(), admitted.ExecutionID, "running"); err != nil {
+		t.Fatal(err)
+	}
+	if lifecycleAuthorization != "Bearer lifecycle-token" {
+		t.Fatalf("lifecycle authorization = %q", lifecycleAuthorization)
+	}
+}
+
+func TestClientRejectsMalformedWorkspaceCaptureResponseWithoutReplacingCapability(t *testing.T) {
+	const executionID = "7c5b1d7f-4ab1-451a-a6c8-d6b0a4d4dd98"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == transport.AdmitPath {
+			_, _ = w.Write([]byte(`{"execution_id":"` + executionID + `","execution_capability":"capture-token"}`))
+			return
+		}
+		if r.URL.Path == transport.WorkspaceCapturePath(executionID) {
+			_, _ = w.Write([]byte(`{"snapshot":{"id":0},"execution_capability":"replacement"}`))
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer capture-token" {
+			t.Fatalf("capability changed after malformed response: %q", r.Header.Get("Authorization"))
+		}
+	}))
+	defer server.Close()
+	client, _ := transport.NewClient(transport.Config{Endpoint: server.URL, BootstrapCapability: "bootstrap-token"})
+	admitted, _ := client.Admit(context.Background(), broker.AdmissionRequest{})
+	_, err := client.CaptureWorkspace(context.Background(), admitted.ExecutionID, broker.WorkspaceCapture{
+		BaseCommit: strings.Repeat("1", 40), BaseTree: strings.Repeat("2", 40),
+		ResultTree:  strings.Repeat("3", 40),
+		PatchDigest: "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+		EntryCount:  1, PolicyRevision: "git-workspace-capture/v2",
+	})
+	if err == nil {
+		t.Fatal("CaptureWorkspace() accepted malformed response")
+	}
+	if err := client.FailWorkspaceCapture(context.Background(), admitted.ExecutionID); err != nil {
+		t.Fatalf("FailWorkspaceCapture(): %v", err)
+	}
+}
+
 func TestClientUsesExecutionCapabilitiesConcurrently(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == transport.AdmitPath {

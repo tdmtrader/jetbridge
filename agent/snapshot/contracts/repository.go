@@ -28,6 +28,13 @@ type RepositoryMetadata struct {
 	RootCommits  []string `json:"root_commits"`
 }
 
+// DecodeRepositoryMetadata decodes the exact current intrinsic metadata shape
+// sealed for repository/v1. It is used by authority components that must
+// derive repository identity from an already-owned base snapshot.
+func DecodeRepositoryMetadata(raw []byte) (RepositoryMetadata, error) {
+	return decodeExactJSONDocument[RepositoryMetadata](raw)
+}
+
 type RepositoryChangeBody struct {
 	RepositoryID   string     `json:"repository_id"`
 	BaseSHA        string     `json:"base_sha"`

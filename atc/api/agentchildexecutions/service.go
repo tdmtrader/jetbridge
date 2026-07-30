@@ -27,6 +27,7 @@ type Scope struct {
 	BrokerInstance       string                          `json:"broker_instance"`
 	LeaseDuration        time.Duration                   `json:"lease_duration"`
 	Inputs               map[string]snapshot.SnapshotRef `json:"inputs"`
+	WorkspaceBase        *snapshot.SnapshotRef           `json:"workspace_base,omitempty"`
 }
 
 type ExecutionStore interface {
@@ -37,6 +38,12 @@ type ExecutionStore interface {
 
 type ResultSealer interface {
 	Seal(context.Context, Scope, broker.ExecutionIdentity, CandidateResult) (SealedResult, error)
+}
+type WorkspaceResultSealer interface {
+	SealWorkspace(context.Context, Scope, broker.ExecutionIdentity, broker.WorkspaceCapture) (snapshot.SnapshotRef, error)
+}
+type WorkspaceExecutionStore interface {
+	BindWorkspace(context.Context, db.BindAgentChildWorkspace) (db.AgentChildExecution, error)
 }
 type SealedResult struct {
 	Snapshot snapshot.SnapshotRef
@@ -68,14 +75,20 @@ func (service *Service) Admit(
 	ctx context.Context,
 	request broker.AdmissionRequest,
 ) (broker.Admission, error) {
+	if err := broker.ValidateAttachments(request.Tool, request.Attachments); err != nil {
+		return broker.Admission{}, fmt.Errorf("agent child authority: invalid attachments: %w", err)
+	}
 	for _, attachment := range request.Attachments {
+		if request.Tool == broker.ToolRequestReview && attachment == "workspace" &&
+			service.config.Scope.WorkspaceBase != nil &&
+			service.config.Scope.WorkspaceBase.Type == "repository/v1" &&
+			service.config.Scope.WorkspaceBase.Validate() == nil {
+			continue
+		}
 		ref, found := service.config.Scope.Inputs[attachment]
 		if !found || ref.Validate() != nil {
 			return broker.Admission{}, fmt.Errorf("agent child authority: immutable input authority %q is unavailable", attachment)
 		}
-	}
-	if err := broker.ValidateAttachments(request.Tool, request.Attachments); err != nil {
-		return broker.Admission{}, fmt.Errorf("agent child authority: invalid attachments: %w", err)
 	}
 	resolved, err := service.config.Catalog.Resolve(request.Tool, request.Selector)
 	if err != nil {
@@ -182,6 +195,54 @@ func (service *Service) Phase(ctx context.Context, executionID, phase string) er
 	return err
 }
 
+func (service *Service) CaptureWorkspace(ctx context.Context, executionID string, capture broker.WorkspaceCapture) (snapshot.SnapshotRef, error) {
+	if err := capture.Validate(); err != nil {
+		return snapshot.SnapshotRef{}, err
+	}
+	if service.config.Scope.WorkspaceBase == nil {
+		return snapshot.SnapshotRef{}, fmt.Errorf("agent child authority: workspace base authority is unavailable")
+	}
+	execution, err := service.find(ctx, executionID)
+	if err != nil {
+		return snapshot.SnapshotRef{}, err
+	}
+	if execution.Tool != broker.ToolRequestReview || execution.State != broker.ExecutionCapturing {
+		return snapshot.SnapshotRef{}, fmt.Errorf("agent child authority: workspace capture is unavailable for execution state or tool")
+	}
+	sealer, ok := service.config.Sealer.(WorkspaceResultSealer)
+	if !ok {
+		return snapshot.SnapshotRef{}, fmt.Errorf("agent child authority: workspace sealer is unavailable")
+	}
+	sealed, err := sealer.SealWorkspace(ctx, service.config.Scope, execution.ExecutionIdentity, capture)
+	if err != nil {
+		return snapshot.SnapshotRef{}, err
+	}
+	if sealed.Validate() != nil || sealed.Type != "repository-change/v1" {
+		return snapshot.SnapshotRef{}, fmt.Errorf("agent child authority: workspace sealer returned invalid result")
+	}
+	store, ok := service.config.Store.(WorkspaceExecutionStore)
+	if !ok {
+		return snapshot.SnapshotRef{}, fmt.Errorf("agent child authority: workspace binding store is unavailable")
+	}
+	bound, err := store.BindWorkspace(ctx, db.BindAgentChildWorkspace{
+		ID: execution.ID, TeamID: service.config.Scope.TeamID,
+		ExpectedSequence: execution.Sequence, Snapshot: sealed,
+	})
+	if err != nil {
+		return snapshot.SnapshotRef{}, err
+	}
+	if bound.WorkspaceSnapshot == nil || *bound.WorkspaceSnapshot != sealed {
+		return snapshot.SnapshotRef{}, fmt.Errorf("agent child authority: durable workspace binding does not match")
+	}
+	return sealed, nil
+}
+
+func (service *Service) FailWorkspaceCapture(ctx context.Context, executionID string) error {
+	return service.Terminal(ctx, executionID, broker.Terminal{
+		State: broker.ExecutionErrored, Code: "workspace_capture_failed", Retryable: false,
+	})
+}
+
 // Update persists only the bounded broker event DTO and observed accounting.
 // Native harness payloads remain in the sidecar's protected local transcript.
 func (service *Service) Update(ctx context.Context, executionID string, update broker.RunUpdate) error {
@@ -258,14 +319,15 @@ type terminalContract struct {
 // a stable classification, but never choose the durable state semantics or
 // store caller/provider text as an execution summary.
 var terminalContracts = map[string]terminalContract{
-	"attachment_unknown":     {broker.ExecutionErrored, false, "declared attachments could not be resolved"},
-	"credential_unavailable": {broker.ExecutionErrored, true, "broker credential is unavailable"},
-	"provider_rejected":      {broker.ExecutionErrored, true, "provider rejected the child execution"},
-	"deadline_exceeded":      {broker.ExecutionTimedOut, true, "child execution exceeded its deadline"},
-	"cancelled":              {broker.ExecutionCancelled, true, "child execution was cancelled"},
-	"output_invalid":         {broker.ExecutionErrored, false, "child execution returned invalid typed output"},
-	"sealing_failed":         {broker.ExecutionErrored, true, "child result could not be sealed"},
-	"broker_lost":            {broker.ExecutionErrored, true, "broker lease expired before a terminal result was recorded"},
+	"attachment_unknown":       {broker.ExecutionErrored, false, "declared attachments could not be resolved"},
+	"credential_unavailable":   {broker.ExecutionErrored, true, "broker credential is unavailable"},
+	"provider_rejected":        {broker.ExecutionErrored, true, "provider rejected the child execution"},
+	"deadline_exceeded":        {broker.ExecutionTimedOut, true, "child execution exceeded its deadline"},
+	"cancelled":                {broker.ExecutionCancelled, true, "child execution was cancelled"},
+	"output_invalid":           {broker.ExecutionErrored, false, "child execution returned invalid typed output"},
+	"sealing_failed":           {broker.ExecutionErrored, true, "child result could not be sealed"},
+	"broker_lost":              {broker.ExecutionErrored, true, "broker lease expired before a terminal result was recorded"},
+	"workspace_capture_failed": {broker.ExecutionErrored, false, "workspace could not be captured authoritatively"},
 }
 
 func (service *Service) Seal(

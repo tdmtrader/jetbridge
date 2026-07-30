@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/agent/broker"
+	"github.com/concourse/concourse/agent/broker/workspace"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/snapshot/contracts"
 )
@@ -71,6 +72,75 @@ func TestEngineReturnsDurableSucceededReplayWithoutInvokingRunner(t *testing.T) 
 	result, err := engine.ConsultAgent(context.Background(), broker.ConsultRequest{IdempotencyKey: "call", Selector: validProfile().Selector, Question: "question", Attachments: []string{"design"}})
 	if err != nil || result.Snapshot.ID != 101 || runner.started != 0 {
 		t.Fatalf("result=%#v err=%v runner=%d", result, err, runner.started)
+	}
+}
+
+func TestEngineCapturesReviewWorkspaceAfterAdmissionAndRunsExactCapture(t *testing.T) {
+	profileInput := validProfile()
+	profileInput.Tools = []broker.Tool{broker.ToolRequestReview}
+	catalog, _ := broker.NewCatalog([]broker.Profile{profileInput})
+	authority := &fakeAuthority{}
+	preparer := &fakeWorkspacePreparer{capture: workspace.Result{
+		RepositoryRoot: "/parent/repository",
+		BaseCommit:     strings.Repeat("1", 40), BaseTree: strings.Repeat("2", 40),
+		ResultTree: strings.Repeat("3", 40), Patch: []byte("patch"),
+		PatchDigest: "sha256:a4895eb44afc336fecbba6e520cd67e178dace0276655d102fceffa8e5f70570", EntryCount: 7,
+		PolicyRevision: "git-workspace-capture/v2",
+	}}
+	runner := &fakeRunner{output: []byte(`{"conclusion":"accept","summary":"ok","findings":[]}`)}
+	engine := broker.NewEngine(broker.EngineConfig{
+		Catalog: catalog, Authority: authority, Workspace: preparer,
+		Attachments: reviewAttachments{}, Credentials: fakeCredentials{}, Runner: runner,
+		Instructions: map[broker.Tool]string{broker.ToolRequestReview: "fixed review"},
+	})
+	result, err := engine.RequestReview(context.Background(), broker.ReviewRequest{
+		IdempotencyKey: "review-capture", Selector: profileInput.Selector,
+		Attachments: []string{"workspace", "validation"},
+	})
+	if err != nil {
+		t.Fatalf("RequestReview(): %v", err)
+	}
+	if result.Snapshot.ID != 101 || preparer.calls != 1 {
+		t.Fatalf("result=%#v capture calls=%d", result, preparer.calls)
+	}
+	if got := strings.Join(authority.phases, ","); got != "capturing,running,validating,sealing" {
+		t.Fatalf("phases = %s", got)
+	}
+	if string(authority.workspace.Patch) != "patch" {
+		t.Fatalf("authority capture = %#v", authority.workspace)
+	}
+	request := runner.lastRequest()
+	if request.Workspace == nil || request.Workspace.RepositoryRoot != "/parent/repository" {
+		t.Fatalf("runner workspace = %#v", request.Workspace)
+	}
+	if len(request.Attachments) != 2 || request.Attachments[0].Name != "workspace" ||
+		request.Attachments[0].Subject.Type != "repository-change/v1" {
+		t.Fatalf("runner attachments = %#v", request.Attachments)
+	}
+}
+
+func TestEngineTerminalReplayDoesNotCaptureWorkspace(t *testing.T) {
+	profileInput := validProfile()
+	profileInput.Tools = []broker.Tool{broker.ToolRequestReview}
+	catalog, _ := broker.NewCatalog([]broker.Profile{profileInput})
+	authority := &fakeAuthority{terminalReplay: &broker.Terminal{
+		State: broker.ExecutionErrored, Code: "workspace_capture_failed", Retryable: false,
+	}}
+	preparer := &fakeWorkspacePreparer{}
+	engine := broker.NewEngine(broker.EngineConfig{
+		Catalog: catalog, Authority: authority, Workspace: preparer,
+		Attachments: fakeAttachments{}, Credentials: fakeCredentials{}, Runner: &fakeRunner{},
+		Instructions: map[broker.Tool]string{broker.ToolRequestReview: "fixed review"},
+	})
+	_, err := engine.RequestReview(context.Background(), broker.ReviewRequest{
+		IdempotencyKey: "review-replay", Selector: profileInput.Selector,
+		Attachments: []string{"workspace"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "workspace_capture_failed") {
+		t.Fatalf("RequestReview() error = %v", err)
+	}
+	if preparer.calls != 0 {
+		t.Fatalf("capture calls = %d", preparer.calls)
 	}
 }
 
@@ -306,15 +376,17 @@ func TestEngineRejectsUnnormalizedRunnerEventsBeforeAuthorityPersistence(t *test
 }
 
 type fakeAuthority struct {
-	mu          sync.Mutex
-	admitted    bool
-	admission   broker.AdmissionRequest
-	phases      []string
-	seal        broker.SealRequest
-	updates     []broker.RunUpdate
-	terminals   []broker.Terminal
-	terminalErr error
-	replay      *broker.SucceededReplay
+	mu             sync.Mutex
+	admitted       bool
+	admission      broker.AdmissionRequest
+	phases         []string
+	seal           broker.SealRequest
+	updates        []broker.RunUpdate
+	terminals      []broker.Terminal
+	terminalErr    error
+	replay         *broker.SucceededReplay
+	terminalReplay *broker.Terminal
+	workspace      broker.WorkspaceCapture
 }
 
 func (authority *fakeAuthority) Admit(_ context.Context, request broker.AdmissionRequest) (broker.Admission, error) {
@@ -322,8 +394,15 @@ func (authority *fakeAuthority) Admit(_ context.Context, request broker.Admissio
 	defer authority.mu.Unlock()
 	authority.admitted = true
 	authority.admission = request
-	return broker.Admission{ExecutionID: "child-1", Succeeded: authority.replay}, nil
+	return broker.Admission{ExecutionID: "child-1", Succeeded: authority.replay, Terminal: authority.terminalReplay}, nil
 }
+func (authority *fakeAuthority) CaptureWorkspace(_ context.Context, _ string, capture broker.WorkspaceCapture) (snapshot.SnapshotRef, error) {
+	authority.mu.Lock()
+	defer authority.mu.Unlock()
+	authority.workspace = capture
+	return snapshot.SnapshotRef{ID: 77, Type: "repository-change/v1", Digest: snapshot.Digest("sha256:" + strings.Repeat("7", 64))}, nil
+}
+func (authority *fakeAuthority) FailWorkspaceCapture(_ context.Context, _ string) error { return nil }
 func (authority *fakeAuthority) Phase(_ context.Context, _ string, phase string) error {
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
@@ -364,6 +443,25 @@ func (fakeAttachments) Resolve(_ context.Context, names []string) ([]broker.Atta
 				Type: "repository/v1", Digest: snapshot.Digest("sha256:" + strings.Repeat("a", 64)),
 			},
 		}
+	}
+	return result, nil
+}
+
+type reviewAttachments struct{}
+
+func (reviewAttachments) Resolve(_ context.Context, names []string) ([]broker.Attachment, error) {
+	result := make([]broker.Attachment, 0, len(names))
+	for _, name := range names {
+		if name != "validation" {
+			return nil, fmt.Errorf("unexpected review attachment %q", name)
+		}
+		result = append(result, broker.Attachment{
+			Name: name, Prompt: "attachment validation",
+			Subject: contracts.Subject{
+				ID: "validation", Role: contracts.SubjectRoleEvidence, Input: name,
+				Type: "validation/v1", Digest: snapshot.Digest("sha256:" + strings.Repeat("b", 64)),
+			},
+		})
 	}
 	return result, nil
 }
@@ -432,6 +530,17 @@ type fakeRunner struct {
 	requests []broker.RunRequest
 	barrier  chan struct{}
 	started  int32
+}
+
+type fakeWorkspacePreparer struct {
+	capture workspace.Result
+	err     error
+	calls   int
+}
+
+func (preparer *fakeWorkspacePreparer) CaptureWorkspace(context.Context) (workspace.Result, error) {
+	preparer.calls++
+	return preparer.capture, preparer.err
 }
 
 func (runner *fakeRunner) Run(_ context.Context, request broker.RunRequest) (broker.RunResult, error) {

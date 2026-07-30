@@ -11,6 +11,7 @@ import (
 
 	"github.com/concourse/concourse/agent/broker"
 	"github.com/concourse/concourse/agent/broker/transport"
+	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc/api/agentchildexecutions"
 )
 
@@ -230,6 +231,83 @@ func TestHandlerMintsExecutionCapabilityAndEnforcesExactURLScope(t *testing.T) {
 	}
 	if status := phase("malformed", admitted.ExecutionID, "running"); status != http.StatusUnauthorized {
 		t.Fatalf("malformed status = %d", status)
+	}
+}
+
+func TestHandlerStagesReviewCapabilityThroughAuthoritativeWorkspaceCapture(t *testing.T) {
+	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+	profile := resolvedReviewProfile(t)
+	key := []byte(strings.Repeat("k", 32))
+	signer, _ := agentchildexecutions.NewCapabilitySigner("key-1", key)
+	verifier, _ := agentchildexecutions.NewCapabilityVerifier("key-1", key)
+	scope := completeScope()
+	delete(scope.Inputs, "workspace")
+	base := snapshot.SnapshotRef{ID: 8, Type: "repository/v1", Digest: snapshot.Digest("sha256:" + strings.Repeat("8", 64))}
+	scope.WorkspaceBase = &base
+	bootstrap, _ := signer.MintBootstrap(scope, []broker.Profile{profile}, now.Add(-time.Second), now.Add(time.Minute))
+	store := &fakeStore{}
+	sealed := snapshot.SnapshotRef{ID: 9, Type: "repository-change/v1", Digest: snapshot.Digest("sha256:" + strings.Repeat("9", 64))}
+	handler, err := agentchildexecutions.NewHandler(agentchildexecutions.HandlerConfig{
+		Signer: signer, Verifier: verifier, Store: store,
+		Sealer: &fakeSealer{workspace: sealed}, ExecutionCapabilityTTL: time.Minute,
+		Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	do := func(path, token string, body any) *httptest.ResponseRecorder {
+		encoded, _ := json.Marshal(body)
+		request := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(encoded))
+		request.Header.Set("Authorization", "Bearer "+token)
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	admit := do(transport.AdmitPath, bootstrap, transport.AdmitRequest{
+		IdempotencyKey: "review", Tool: broker.ToolRequestReview,
+		Selector: profile.Selector, ProfileID: profile.ID, ProfileDigest: profile.Digest,
+		InputDigest: "sha256:" + strings.Repeat("c", 64),
+		Attachments: []string{"workspace", "validation"},
+	})
+	if admit.Code != http.StatusOK {
+		t.Fatalf("admit status=%d body=%s", admit.Code, admit.Body.String())
+	}
+	var admitted transport.AdmitResponse
+	if err := json.Unmarshal(admit.Body.Bytes(), &admitted); err != nil {
+		t.Fatal(err)
+	}
+	phase := do(transport.PhasePath(admitted.ExecutionID), admitted.ExecutionCapability, transport.PhaseRequest{Phase: "capturing"})
+	if phase.Code != http.StatusOK {
+		t.Fatalf("capturing status=%d body=%s", phase.Code, phase.Body.String())
+	}
+	var phased transport.PhaseResponse
+	if err := json.Unmarshal(phase.Body.Bytes(), &phased); err != nil || phased.ExecutionCapability == "" {
+		t.Fatalf("phase response=%#v err=%v", phased, err)
+	}
+	if response := do(transport.PhasePath(admitted.ExecutionID), phased.ExecutionCapability, transport.PhaseRequest{Phase: "running"}); response.Code != http.StatusUnauthorized {
+		t.Fatalf("capture token running status=%d", response.Code)
+	}
+	capture := broker.WorkspaceCapture{
+		BaseCommit: strings.Repeat("1", 40), BaseTree: strings.Repeat("2", 40),
+		ResultTree:  strings.Repeat("3", 40),
+		PatchDigest: "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+		EntryCount:  1, PolicyRevision: "git-workspace-capture/v2",
+	}
+	captured := do(transport.WorkspaceCapturePath(admitted.ExecutionID), phased.ExecutionCapability, transport.WorkspaceCaptureRequest{Capture: capture})
+	if captured.Code != http.StatusOK {
+		t.Fatalf("capture status=%d body=%s", captured.Code, captured.Body.String())
+	}
+	var captureResponse transport.WorkspaceCaptureResponse
+	if err := json.Unmarshal(captured.Body.Bytes(), &captureResponse); err != nil ||
+		captureResponse.Snapshot != sealed || captureResponse.ExecutionCapability == "" {
+		t.Fatalf("capture response=%#v err=%v", captureResponse, err)
+	}
+	if response := do(transport.PhasePath(admitted.ExecutionID), captureResponse.ExecutionCapability, transport.PhaseRequest{Phase: "running"}); response.Code != http.StatusNoContent {
+		t.Fatalf("lifecycle running status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := do(transport.WorkspaceCapturePath(admitted.ExecutionID), captureResponse.ExecutionCapability, transport.WorkspaceCaptureRequest{Capture: capture}); response.Code != http.StatusUnauthorized {
+		t.Fatalf("lifecycle token recapture status=%d", response.Code)
 	}
 }
 

@@ -208,6 +208,57 @@ func TestServiceAcceptsIdenticalTerminalReplayAndRejectsConflict(t *testing.T) {
 	}
 }
 
+func TestServiceAdmitsReviewAgainstWorkspaceBaseAndBindsAuthoritativeCapture(t *testing.T) {
+	profileInput := authorityProfile()
+	profileInput.Tools = []broker.Tool{broker.ToolRequestReview}
+	catalog, _ := broker.NewCatalog([]broker.Profile{profileInput})
+	resolved, _ := catalog.Resolve(broker.ToolRequestReview, profileInput.Selector)
+	scope := completeScope()
+	delete(scope.Inputs, "workspace")
+	base := snapshot.SnapshotRef{ID: 8, Type: "repository/v1", Digest: snapshot.Digest("sha256:" + strings.Repeat("8", 64))}
+	scope.WorkspaceBase = &base
+	store := &fakeStore{}
+	sealer := &fakeSealer{workspace: snapshot.SnapshotRef{
+		ID: 9, Type: "repository-change/v1", Digest: snapshot.Digest("sha256:" + strings.Repeat("9", 64)),
+	}}
+	service, err := agentchildexecutions.NewService(agentchildexecutions.Config{
+		Scope: scope, Catalog: catalog, Store: store, Sealer: sealer,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	admitted, err := service.Admit(context.Background(), broker.AdmissionRequest{
+		IdempotencyKey: "review-capture", Tool: broker.ToolRequestReview,
+		Selector: resolved.Selector, ProfileID: resolved.ID, ProfileDigest: resolved.Digest,
+		InputDigest: "sha256:" + strings.Repeat("c", 64),
+		Attachments: []string{"workspace", "validation"},
+	})
+	if err != nil {
+		t.Fatalf("Admit(): %v", err)
+	}
+	if err := service.Phase(context.Background(), admitted.ExecutionID, "capturing"); err != nil {
+		t.Fatal(err)
+	}
+	capture := broker.WorkspaceCapture{
+		BaseCommit: strings.Repeat("1", 40), BaseTree: strings.Repeat("2", 40),
+		ResultTree:  strings.Repeat("3", 40),
+		PatchDigest: "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+		EntryCount:  1, PolicyRevision: "git-workspace-capture/v2",
+	}
+	sealed, err := service.CaptureWorkspace(context.Background(), admitted.ExecutionID, capture)
+	if err != nil {
+		t.Fatalf("CaptureWorkspace(): %v", err)
+	}
+	if sealed != sealer.workspace || store.execution.WorkspaceSnapshot == nil ||
+		*store.execution.WorkspaceSnapshot != sealer.workspace {
+		t.Fatalf("sealed=%#v execution=%#v", sealed, store.execution)
+	}
+	replayed, err := service.CaptureWorkspace(context.Background(), admitted.ExecutionID, capture)
+	if err != nil || replayed != sealed {
+		t.Fatalf("capture replay = %#v, %v", replayed, err)
+	}
+}
+
 type fakeStore struct {
 	identity  broker.ExecutionIdentity
 	execution db.AgentChildExecution
@@ -249,11 +300,34 @@ func (store *fakeStore) Find(_ context.Context, teamID int, id string) (db.Agent
 	return store.execution, teamID == store.execution.TeamID && id == store.execution.ID, nil
 }
 
-type fakeSealer struct{ calls int }
+func (store *fakeStore) BindWorkspace(_ context.Context, request db.BindAgentChildWorkspace) (db.AgentChildExecution, error) {
+	if store.execution.WorkspaceSnapshot != nil {
+		if *store.execution.WorkspaceSnapshot != request.Snapshot {
+			return db.AgentChildExecution{}, fmt.Errorf("workspace conflict")
+		}
+		return store.execution, nil
+	}
+	if request.ExpectedSequence != store.execution.Sequence {
+		return db.AgentChildExecution{}, fmt.Errorf("sequence conflict")
+	}
+	ref := request.Snapshot
+	store.execution.WorkspaceSnapshot = &ref
+	store.execution.Sequence++
+	return store.execution, nil
+}
+
+type fakeSealer struct {
+	calls     int
+	workspace snapshot.SnapshotRef
+}
 
 func (sealer *fakeSealer) Seal(context.Context, agentchildexecutions.Scope, broker.ExecutionIdentity, agentchildexecutions.CandidateResult) (agentchildexecutions.SealedResult, error) {
 	sealer.calls++
 	return agentchildexecutions.SealedResult{Snapshot: snapshot.SnapshotRef{ID: 99, Type: "consultation/v1", Digest: snapshot.Digest("sha256:" + strings.Repeat("e", 64))}, Body: json.RawMessage(`{"answer":"answer","claims":[],"assumptions":[],"uncertainties":[],"recommendations":[]}`)}, nil
+}
+
+func (sealer *fakeSealer) SealWorkspace(context.Context, agentchildexecutions.Scope, broker.ExecutionIdentity, broker.WorkspaceCapture) (snapshot.SnapshotRef, error) {
+	return sealer.workspace, nil
 }
 
 func authorityProfile() broker.Profile {
@@ -272,6 +346,21 @@ func authorityProfile() broker.Profile {
 			NativeOutputSchema: true, IgnoresUserConfig: true,
 		},
 	}
+}
+
+func resolvedReviewProfile(t *testing.T) broker.Profile {
+	t.Helper()
+	input := authorityProfile()
+	input.Tools = []broker.Tool{broker.ToolRequestReview}
+	catalog, err := broker.NewCatalog([]broker.Profile{input})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := catalog.Resolve(broker.ToolRequestReview, input.Selector)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return profile
 }
 
 func completeScope() agentchildexecutions.Scope {

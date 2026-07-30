@@ -168,6 +168,68 @@ var _ = Describe("AgentChildExecutionsFactory", func() {
 		Expect(*persisted.DurationMS).To(Equal(duration))
 	})
 
+	It("immutably and idempotently binds the exact captured workspace", func() {
+		identity := broker.ExecutionIdentity{
+			TeamID: defaultTeam.ID(), WorkflowRunID: runID, NodePlanID: "workspace-bind",
+			ParentAttempt: 1, IdempotencyKey: "workspace-bind", Tool: broker.ToolRequestReview,
+			Selector:  broker.Selector{Tier: broker.TierBalanced, Effort: broker.EffortHigh},
+			ProfileID: "profile", ProfileDigest: "sha256:" + strings.Repeat("c", 64),
+			InputDigest: "sha256:" + strings.Repeat("d", 64), Attachments: []string{"workspace"},
+		}
+		insertSnapshot := func(digit string) snapshot.SnapshotRef {
+			digest := snapshot.Digest("sha256:" + strings.Repeat(digit, 64))
+			var id snapshot.SnapshotID
+			Expect(dbConn.QueryRow(`
+				INSERT INTO agent_snapshots
+					(team_id, type_name, type_version, digest, byte_size, file_count, representation, content_state)
+				VALUES ($1, 'repository-change', 1, $2, 10, 2, 'filesystem-tree-v1', 'available')
+				RETURNING id
+			`, defaultTeam.ID(), digest).Scan(&id)).To(Succeed())
+			return snapshot.SnapshotRef{ID: id, Type: "repository-change/v1", Digest: digest}
+		}
+		first := insertSnapshot("e")
+		second := insertSnapshot("f")
+		created, err := factory.Create(context.Background(), "41203f90-683a-4469-bffc-a0961e51e215", identity)
+		Expect(err).NotTo(HaveOccurred())
+		admitted, err := factory.Advance(context.Background(), db.AdvanceAgentChildExecution{
+			ID: created.ID, TeamID: defaultTeam.ID(), ExpectedSequence: created.Sequence,
+			State: broker.ExecutionAdmitted, Phase: "admitted",
+			LeaseExpiresAt: time.Now().Add(time.Minute), BrokerInstance: "broker-1",
+		})
+		Expect(err).NotTo(HaveOccurred())
+		capturing, err := factory.Advance(context.Background(), db.AdvanceAgentChildExecution{
+			ID: admitted.ID, TeamID: defaultTeam.ID(), ExpectedSequence: admitted.Sequence,
+			State: broker.ExecutionCapturing, Phase: "capturing",
+			LeaseExpiresAt: time.Now().Add(time.Minute), BrokerInstance: "broker-1",
+		})
+		Expect(err).NotTo(HaveOccurred())
+		bound, err := factory.BindWorkspace(context.Background(), db.BindAgentChildWorkspace{
+			ID: capturing.ID, TeamID: defaultTeam.ID(), ExpectedSequence: capturing.Sequence,
+			Snapshot: first,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(bound.WorkspaceSnapshot).NotTo(BeNil())
+		Expect(*bound.WorkspaceSnapshot).To(Equal(first))
+		Expect(bound.Sequence).To(Equal(capturing.Sequence + 1))
+		replayed, err := factory.BindWorkspace(context.Background(), db.BindAgentChildWorkspace{
+			ID: capturing.ID, TeamID: defaultTeam.ID(), ExpectedSequence: capturing.Sequence,
+			Snapshot: first,
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(replayed.Sequence).To(Equal(bound.Sequence))
+		_, err = factory.BindWorkspace(context.Background(), db.BindAgentChildWorkspace{
+			ID: capturing.ID, TeamID: defaultTeam.ID(), ExpectedSequence: bound.Sequence,
+			Snapshot: second,
+		})
+		Expect(err).To(MatchError(ContainSubstring("conflicts")))
+		var phase string
+		Expect(dbConn.QueryRow(`
+			SELECT phase FROM agent_child_execution_events
+			WHERE execution_id = $1::uuid AND sequence = $2
+		`, bound.ID, bound.Sequence).Scan(&phase)).To(Succeed())
+		Expect(phase).To(Equal("workspace_captured"))
+	})
+
 	It("converges concurrent creates on one durable execution", func() {
 		identity := broker.ExecutionIdentity{
 			TeamID: defaultTeam.ID(), WorkflowRunID: runID, NodePlanID: "consult",

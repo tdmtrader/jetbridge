@@ -94,3 +94,17 @@ tests pass, with downstream workflow checks recorded in `task-9a-report.md`.
 No further automated review round is scheduled. Proposed human check: verify
 those exploit and scalar cases through the raw one-off API boundary before
 acceptance.
+
+Task 9 workspace-authority checkpoint: implementation complete pending
+independent review/commit. `request_review` now stages exact capabilities
+through phase-only, capture-only, and lifecycle scopes. The broker captures
+the live read-only Git root once after durable admission, sends ATC a bounded
+path-free candidate (2.75 MiB raw patch maximum), and ATC derives
+repository identity from the exact `repository/v1` base before sealing an
+ordinary `repository-change/v1`. Migration `1773106155` durably binds the
+same-team workspace ref with immutable/idempotent semantics and an event;
+the refreshed lifecycle scope carries that ref as `Inputs["workspace"]`.
+Runtime materializes only the already-authorized local capture. Focused
+broker/runtime/authority/contracts/command tests and DB/migration compile
+checks pass; the complete transport suite passes outside the loopback
+sandbox. The known PostgreSQL shared-memory runtime gate was not retried.

@@ -108,7 +108,12 @@ func (handler *Handler) ServeHTTP(w http.ResponseWriter, request *http.Request) 
 			writeJSON(w, http.StatusOK, transport.AdmitResponse{ExecutionID: admitted.ExecutionID, Succeeded: admitted.Succeeded, Terminal: admitted.Terminal})
 			return
 		}
-		capability, err := handler.config.Signer.MintExecution(scope, admitted.ExecutionID, profile, now, now.Add(handler.config.ExecutionCapabilityTTL))
+		var capability string
+		if body.Tool == broker.ToolRequestReview {
+			capability, err = handler.config.Signer.MintReviewPhase(scope, admitted.ExecutionID, profile, now, now.Add(handler.config.ExecutionCapabilityTTL))
+		} else {
+			capability, err = handler.config.Signer.MintExecution(scope, admitted.ExecutionID, profile, now, now.Add(handler.config.ExecutionCapabilityTTL))
+		}
 		if err != nil {
 			writeSafeError(w, http.StatusInternalServerError)
 			return
@@ -120,7 +125,18 @@ func (handler *Handler) ServeHTTP(w http.ResponseWriter, request *http.Request) 
 		writeSafeError(w, http.StatusNotFound)
 		return
 	}
-	scope, profile, err := handler.config.Verifier.Execution(token, action, executionID, now)
+	var scope Scope
+	var profile broker.Profile
+	var capturePending bool
+	var err error
+	switch action {
+	case ActionPhase:
+		scope, profile, capturePending, err = handler.config.Verifier.PhaseExecution(token, executionID, now)
+	case ActionCaptureWorkspace, ActionCaptureWorkspaceFailure:
+		scope, profile, err = handler.config.Verifier.WorkspaceExecution(token, action, executionID, now)
+	default:
+		scope, profile, err = handler.config.Verifier.Execution(token, action, executionID, now)
+	}
 	if err != nil {
 		writeSafeError(w, http.StatusUnauthorized)
 		return
@@ -139,7 +155,43 @@ func (handler *Handler) ServeHTTP(w http.ResponseWriter, request *http.Request) 
 		if !decodeStrictJSON(w, request, &body) {
 			return
 		}
+		if capturePending && body.Phase != "capturing" {
+			writeSafeError(w, http.StatusUnauthorized)
+			return
+		}
 		err = service.Phase(request.Context(), executionID, body.Phase)
+		if err == nil && capturePending {
+			var capability string
+			capability, err = handler.config.Signer.MintWorkspaceCapture(scope, executionID, profile, now, now.Add(handler.config.ExecutionCapabilityTTL))
+			if err == nil {
+				writeJSON(w, http.StatusOK, transport.PhaseResponse{ExecutionCapability: capability})
+				return
+			}
+		}
+	case ActionCaptureWorkspace:
+		var body transport.WorkspaceCaptureRequest
+		if !decodeStrictJSON(w, request, &body) {
+			return
+		}
+		var sealed snapshot.SnapshotRef
+		sealed, err = service.CaptureWorkspace(request.Context(), executionID, body.Capture)
+		if err == nil {
+			refreshed := scope
+			refreshed.Inputs = cloneScopeInputs(scope.Inputs)
+			refreshed.Inputs["workspace"] = sealed
+			var capability string
+			capability, err = handler.config.Signer.MintExecution(refreshed, executionID, profile, now, now.Add(handler.config.ExecutionCapabilityTTL))
+			if err == nil {
+				writeJSON(w, http.StatusOK, transport.WorkspaceCaptureResponse{Snapshot: sealed, ExecutionCapability: capability})
+				return
+			}
+		}
+	case ActionCaptureWorkspaceFailure:
+		var body struct{}
+		if !decodeStrictJSON(w, request, &body) {
+			return
+		}
+		err = service.FailWorkspaceCapture(request.Context(), executionID)
 	case ActionUpdate:
 		var body transport.UpdateRequest
 		if !decodeStrictJSON(w, request, &body) {
@@ -196,9 +248,21 @@ func (handler *Handler) route(path string) (string, string, CapabilityAction, bo
 		return "lifecycle", parts[0], ActionTerminal, true
 	case "seal":
 		return "lifecycle", parts[0], ActionSeal, true
+	case "workspace-capture":
+		return "lifecycle", parts[0], ActionCaptureWorkspace, true
+	case "workspace-capture-failed":
+		return "lifecycle", parts[0], ActionCaptureWorkspaceFailure, true
 	default:
 		return "", "", "", false
 	}
+}
+
+func cloneScopeInputs(source map[string]snapshot.SnapshotRef) map[string]snapshot.SnapshotRef {
+	result := make(map[string]snapshot.SnapshotRef, len(source)+1)
+	for name, ref := range source {
+		result[name] = ref
+	}
+	return result
 }
 
 func (handler *Handler) service(scope Scope, profiles []broker.Profile) (*Service, error) {

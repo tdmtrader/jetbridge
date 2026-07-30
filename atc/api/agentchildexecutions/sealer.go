@@ -25,13 +25,107 @@ type CandidateResult struct {
 // OrdinaryResultSealer adapts broker results to the ordinary snapshot seal
 // path. Its scope is assembled by ATC when it mints the bootstrap capability;
 // the sidecar supplies only a typed candidate body.
-type OrdinaryResultSealer struct{ creator snapshot.SnapshotCreator }
+type workspaceMetadataStore interface {
+	GetAuthorized(context.Context, int, snapshot.SnapshotID) (snapshot.Snapshot, bool, error)
+}
 
-func NewOrdinaryResultSealer(creator snapshot.SnapshotCreator) (*OrdinaryResultSealer, error) {
+type OrdinaryResultSealer struct {
+	creator  snapshot.SnapshotCreator
+	metadata workspaceMetadataStore
+}
+
+func NewOrdinaryResultSealer(creator snapshot.SnapshotCreator, metadata ...workspaceMetadataStore) (*OrdinaryResultSealer, error) {
 	if creator == nil {
 		return nil, fmt.Errorf("agent child ordinary result sealer: snapshot creator is required")
 	}
-	return &OrdinaryResultSealer{creator: creator}, nil
+	if len(metadata) > 1 {
+		return nil, fmt.Errorf("agent child ordinary result sealer: at most one metadata store is allowed")
+	}
+	sealer := &OrdinaryResultSealer{creator: creator}
+	if len(metadata) == 1 {
+		sealer.metadata = metadata[0]
+	}
+	return sealer, nil
+}
+
+func (sealer *OrdinaryResultSealer) SealWorkspace(
+	ctx context.Context,
+	scope Scope,
+	execution broker.ExecutionIdentity,
+	capture broker.WorkspaceCapture,
+) (snapshot.SnapshotRef, error) {
+	if sealer == nil || sealer.creator == nil || sealer.metadata == nil {
+		return snapshot.SnapshotRef{}, fmt.Errorf("agent child workspace sealer: creator and metadata store are required")
+	}
+	if err := scope.Validate(); err != nil {
+		return snapshot.SnapshotRef{}, err
+	}
+	if execution.Tool != broker.ToolRequestReview || scope.WorkspaceBase == nil {
+		return snapshot.SnapshotRef{}, fmt.Errorf("agent child workspace sealer: request_review base authority is required")
+	}
+	if err := capture.Validate(); err != nil {
+		return snapshot.SnapshotRef{}, err
+	}
+	base := *scope.WorkspaceBase
+	manifest, found, err := sealer.metadata.GetAuthorized(ctx, scope.TeamID, base.ID)
+	if err != nil {
+		return snapshot.SnapshotRef{}, err
+	}
+	if !found || manifest.ID != base.ID || manifest.Type != base.Type ||
+		manifest.Digest != base.Digest || base.Type != "repository/v1" {
+		return snapshot.SnapshotRef{}, fmt.Errorf("agent child workspace sealer: exact base snapshot is unavailable")
+	}
+	repository, err := contracts.DecodeRepositoryMetadata(manifest.IntrinsicMetadata)
+	if err != nil {
+		return snapshot.SnapshotRef{}, fmt.Errorf("agent child workspace sealer: decode base repository metadata: %w", err)
+	}
+	if repository.HeadSHA != capture.BaseCommit || repository.TreeSHA != capture.BaseTree {
+		return snapshot.SnapshotRef{}, fmt.Errorf("agent child workspace sealer: capture base does not match exact repository")
+	}
+	subjects := []contracts.Subject{
+		contracts.SubjectFromInput("base", contracts.SubjectRoleBase, "base", base),
+	}
+	body := contracts.RepositoryChangeBody{
+		RepositoryID: repository.RepositoryID, BaseSHA: repository.HeadSHA,
+		Representation: "patch",
+		Payload: contracts.ContentRef{
+			Path: "content/workspace.patch", Digest: snapshot.Digest(capture.PatchDigest),
+			MediaType: "text/x-diff",
+		},
+		ResultTree: capture.ResultTree,
+	}
+	record, err := contracts.NewRecord(snapshot.TypeRef("repository-change/v1"), subjects, body)
+	if err != nil {
+		return snapshot.SnapshotRef{}, fmt.Errorf("agent child workspace sealer: construct authoritative record: %w", err)
+	}
+	recordJSON, err := json.Marshal(record)
+	if err != nil {
+		return snapshot.SnapshotRef{}, err
+	}
+	workflowDefinitionID := scope.WorkflowDefinitionID
+	workflowRunID := snapshot.WorkflowRunID(scope.WorkflowRunID)
+	outputs, err := sealer.creator.Seal(ctx, snapshot.SealRequest{
+		BuildID: scope.BuildID, TeamID: scope.TeamID, TeamName: scope.TeamName,
+		CreatedBy: scope.SnapshotCreatedBy, PlanID: scope.NodePlanID,
+		Attempt: strconv.Itoa(scope.ParentAttempt), StepKind: "agent-child-workspace",
+		StepName: execution.IdempotencyKey, WorkflowDefinitionID: &workflowDefinitionID,
+		WorkflowRunID: &workflowRunID, InputOrder: []string{"base"},
+		Inputs:             map[string]snapshot.SnapshotRef{"base": base},
+		OutputDeclarations: []snapshot.Port{{Name: "workspace", Type: "repository-change/v1"}},
+		Outputs: []snapshot.OutputSource{{
+			ClientKey: "workspace", Port: snapshot.Port{Name: "workspace", Type: "repository-change/v1"},
+			OpenTar:        recordAndPatchTar(recordJSON, capture.Patch),
+			SourceMetadata: json.RawMessage(`{"capture":"git-workspace-capture/v2","provenance":"atc"}`),
+		}},
+	})
+	if err != nil {
+		return snapshot.SnapshotRef{}, fmt.Errorf("agent child workspace sealer: seal repository change: %w", err)
+	}
+	output, found := outputs["workspace"]
+	if !found || output.Snapshot.Validate() != nil || output.Snapshot.Type != "repository-change/v1" {
+		return snapshot.SnapshotRef{}, fmt.Errorf("agent child workspace sealer: snapshot creator returned no valid workspace")
+	}
+	return output.Snapshot, nil
 }
 
 func (sealer *OrdinaryResultSealer) Seal(ctx context.Context, scope Scope, execution broker.ExecutionIdentity, candidate CandidateResult) (SealedResult, error) {
@@ -166,6 +260,31 @@ func recordTar(record []byte) func(context.Context) (io.ReadCloser, error) {
 		}
 		if _, err := writer.Write(record); err != nil {
 			return nil, err
+		}
+		if err := writer.Close(); err != nil {
+			return nil, err
+		}
+		return io.NopCloser(bytes.NewReader(archive.Bytes())), nil
+	}
+}
+
+func recordAndPatchTar(record, patch []byte) func(context.Context) (io.ReadCloser, error) {
+	return func(context.Context) (io.ReadCloser, error) {
+		var archive bytes.Buffer
+		writer := tar.NewWriter(&archive)
+		for _, file := range []struct {
+			name string
+			body []byte
+		}{
+			{name: "record.json", body: record},
+			{name: "content/workspace.patch", body: patch},
+		} {
+			if err := writer.WriteHeader(&tar.Header{Name: file.name, Mode: 0o600, Size: int64(len(file.body))}); err != nil {
+				return nil, err
+			}
+			if _, err := writer.Write(file.body); err != nil {
+				return nil, err
+			}
 		}
 		if err := writer.Close(); err != nil {
 			return nil, err

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/agent/broker/output"
+	"github.com/concourse/concourse/agent/broker/workspace"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/snapshot/contracts"
 )
@@ -77,6 +78,7 @@ type RunRequest struct {
 	Prompt      string
 	Credential  string
 	Attachments []Attachment
+	Workspace   *workspace.Result
 }
 
 type RunResult struct {
@@ -135,6 +137,8 @@ type Result struct {
 
 type Authority interface {
 	Admit(context.Context, AdmissionRequest) (Admission, error)
+	CaptureWorkspace(context.Context, string, WorkspaceCapture) (snapshot.SnapshotRef, error)
+	FailWorkspaceCapture(context.Context, string) error
 	Phase(context.Context, string, string) error
 	Update(context.Context, string, RunUpdate) error
 	Terminal(context.Context, string, Terminal) error
@@ -156,6 +160,7 @@ type Runner interface {
 type EngineConfig struct {
 	Catalog      *Catalog
 	Authority    Authority
+	Workspace    WorkspacePreparer
 	Attachments  AttachmentResolver
 	Credentials  CredentialResolver
 	Runner       Runner
@@ -257,11 +262,32 @@ func (engine *Engine) execute(ctx context.Context, request executeRequest) (Resu
 			return Result{}, fmt.Errorf("broker: mark execution capturing: %w", err)
 		}
 	}
-	attachments, err := engine.config.Attachments.Resolve(executionCtx, request.attachments)
+	var captured *workspace.Result
+	var attachments []Attachment
+	remaining := append([]string(nil), request.attachments...)
+	if request.tool == ToolRequestReview {
+		localCapture, err := engine.config.Workspace.CaptureWorkspace(executionCtx)
+		if err != nil {
+			return Result{}, engine.failWorkspaceCapture(authorityContext(ctx), executionID)
+		}
+		candidate, err := WorkspaceCaptureFromResult(localCapture)
+		if err != nil {
+			return Result{}, engine.failWorkspaceCapture(authorityContext(ctx), executionID)
+		}
+		ref, err := engine.config.Authority.CaptureWorkspace(executionCtx, executionID, candidate)
+		if err != nil {
+			return Result{}, engine.failWorkspaceCapture(authorityContext(ctx), executionID)
+		}
+		captured = &localCapture
+		attachments = append(attachments, workspaceAttachment(ref, candidate))
+		remaining = withoutAttachment(remaining, "workspace")
+	}
+	resolved, err := engine.config.Attachments.Resolve(executionCtx, remaining)
 	if err != nil {
 		return Result{}, engine.fail(authorityContext(ctx), executionID,
 			failureForContext(executionCtx, failureAttachmentUnknown))
 	}
+	attachments = append(attachments, resolved...)
 	if err := verifyAttachments(request.attachments, attachments); err != nil {
 		return Result{}, engine.fail(authorityContext(ctx), executionID,
 			failureForContext(executionCtx, failureAttachmentUnknown))
@@ -293,6 +319,7 @@ func (engine *Engine) execute(ctx context.Context, request executeRequest) (Resu
 	run, err := engine.config.Runner.Run(executionCtx, RunRequest{
 		ExecutionID: executionID, Tool: request.tool, Profile: profile,
 		Prompt: prompt, Credential: credential, Attachments: append([]Attachment(nil), attachments...),
+		Workspace: captured,
 	})
 	events, eventErr := NormalizeEvents(run.Events)
 	if eventErr != nil {
@@ -369,6 +396,9 @@ func (engine *Engine) validateConfig(tool Tool) error {
 		engine.config.Runner == nil {
 		return fmt.Errorf("broker: engine dependencies are incomplete")
 	}
+	if tool == ToolRequestReview && engine.config.Workspace == nil {
+		return fmt.Errorf("broker: workspace preparer is required for request_review")
+	}
 	if strings.TrimSpace(engine.config.Instructions[tool]) == "" {
 		return fmt.Errorf("broker: fixed instructions for %s are required", tool)
 	}
@@ -390,6 +420,7 @@ var (
 	failureCancelled             = failure{ExecutionCancelled, "cancelled", true, "child execution was cancelled"}
 	failureOutputInvalid         = failure{ExecutionErrored, "output_invalid", false, "child execution returned invalid typed output"}
 	failureSealingFailed         = failure{ExecutionErrored, "sealing_failed", true, "child result could not be sealed"}
+	failureWorkspaceCapture      = failure{ExecutionErrored, "workspace_capture_failed", false, "workspace could not be captured authoritatively"}
 )
 
 func (engine *Engine) fail(ctx context.Context, executionID string, terminal failure) error {
@@ -399,6 +430,40 @@ func (engine *Engine) fail(ctx context.Context, executionID string, terminal fai
 		return fmt.Errorf("broker child %s: record terminal execution failed", executionID)
 	}
 	return &ExecutionError{ExecutionID: executionID, Code: terminal.code, Retryable: terminal.retryable, Summary: terminal.summary}
+}
+
+func (engine *Engine) failWorkspaceCapture(ctx context.Context, executionID string) error {
+	if err := engine.config.Authority.FailWorkspaceCapture(ctx, executionID); err != nil {
+		return fmt.Errorf("broker child %s: record workspace capture failure failed", executionID)
+	}
+	return &ExecutionError{
+		ExecutionID: executionID, Code: failureWorkspaceCapture.code,
+		Retryable: failureWorkspaceCapture.retryable, Summary: failureWorkspaceCapture.summary,
+	}
+}
+
+func withoutAttachment(names []string, remove string) []string {
+	result := make([]string, 0, len(names))
+	for _, name := range names {
+		if name != remove {
+			result = append(result, name)
+		}
+	}
+	return result
+}
+
+func workspaceAttachment(ref snapshot.SnapshotRef, capture WorkspaceCapture) Attachment {
+	return Attachment{
+		Name: "workspace",
+		Prompt: fmt.Sprintf(
+			"attachment workspace\nbase_commit: %s\nbase_tree: %s\nresult_tree: %s\npatch_digest: %s\nentry_count: %d\npolicy_revision: %s",
+			capture.BaseCommit, capture.BaseTree, capture.ResultTree,
+			capture.PatchDigest, capture.EntryCount, capture.PolicyRevision,
+		),
+		Subject: contracts.SubjectFromInput(
+			"workspace", contracts.SubjectRolePrimary, "workspace", ref,
+		),
+	}
 }
 
 type ExecutionError struct {
@@ -456,10 +521,19 @@ func verifyAttachments(requested []string, resolved []Attachment) error {
 	if len(requested) != len(resolved) {
 		return fmt.Errorf("resolved attachment count does not match request")
 	}
-	for index, name := range requested {
-		if resolved[index].Name != name {
+	expected := make(map[string]struct{}, len(requested))
+	for _, name := range requested {
+		expected[name] = struct{}{}
+	}
+	seen := make(map[string]struct{}, len(resolved))
+	for index, attachment := range resolved {
+		if _, found := expected[attachment.Name]; !found {
 			return fmt.Errorf("resolved attachment %d does not match request", index)
 		}
+		if _, duplicate := seen[attachment.Name]; duplicate {
+			return fmt.Errorf("resolved attachment %d is duplicate", index)
+		}
+		seen[attachment.Name] = struct{}{}
 	}
 	return nil
 }

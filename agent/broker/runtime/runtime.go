@@ -65,12 +65,11 @@ func (r *Runner) Run(ctx context.Context, request broker.RunRequest) (broker.Run
 	defer os.RemoveAll(runScratch)
 	workdir := runScratch
 	if request.Tool == broker.ToolRequestReview {
-		capture, err := workspace.Capture(r.config.WorkspaceRoot, r.config.CaptureLimits)
-		if err != nil {
-			return broker.RunResult{}, fmt.Errorf("broker runtime: capture workspace: %w", err)
+		if request.Workspace == nil {
+			return broker.RunResult{}, fmt.Errorf("broker runtime: authoritative workspace capture is required")
 		}
 		var cleanup func() error
-		workdir, cleanup, err = workspace.Materialize(runScratch, capture)
+		workdir, cleanup, err = workspace.Materialize(runScratch, *request.Workspace)
 		if err != nil {
 			return broker.RunResult{}, err
 		}
@@ -90,6 +89,19 @@ func (r *Runner) Run(ctx context.Context, request broker.RunRequest) (broker.Run
 		duration = *stream.Usage.Duration
 	}
 	return broker.RunResult{Output: stream.Output, Events: stream.Events, Duration: duration, InputTokens: stream.Usage.InputTokens, OutputTokens: stream.Usage.OutputTokens, CostUSD: stream.Usage.CostUSD}, nil
+}
+
+// CaptureWorkspace reads the parent mount before child execution. Run only
+// materializes this exact result and never re-reads the live parent tree.
+func (r *Runner) CaptureWorkspace(ctx context.Context) (workspace.Result, error) {
+	if err := ctx.Err(); err != nil {
+		return workspace.Result{}, err
+	}
+	capture, err := workspace.Capture(r.config.WorkspaceRoot, r.config.CaptureLimits)
+	if err != nil {
+		return workspace.Result{}, fmt.Errorf("broker runtime: capture workspace: %w", err)
+	}
+	return capture, nil
 }
 
 func validateRunnerConfig(config RunnerConfig) error {
