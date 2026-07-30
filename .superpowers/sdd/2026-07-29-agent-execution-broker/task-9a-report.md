@@ -113,3 +113,35 @@ The focused raw-plan tests and downstream workflow checks passed. The broad
 listener and cover both raw one-off endpoints. The DB runtime suite likewise
 cannot start PostgreSQL here because its shared-memory allocation is denied;
 the compile-only DB package check passed.
+
+## Review fix round 3 — Human Review Required
+
+The final review found that `across` templates are parsed before interpolation,
+but map keys and whole values are interpolated at execution time. A raw
+template could therefore hide `broker_authority` behind a key such as
+`((.:field))`, or hide a complete agent object behind `agent: ((.:agent))`.
+The prior check also treated a pre-interpolation template decode failure as
+safe.
+
+The raw-plan validator now parses each `across` template as generic YAML/JSON
+and recursively rejects every mapping key containing a variable reference. It
+then decodes the same raw template as an `atc.Plan` and rejects decode errors,
+before recursively enforcing the broker-field policy. Ordinary interpolation
+in scalar values remains supported. Regression coverage includes dynamic agent
+and environment keys, JSON dynamic keys, whole-agent substitution, malformed
+templates, and the raw build handler boundary.
+
+Focused round-3 verification:
+
+```text
+GOCACHE=/private/tmp/codex-go-cache go test ./vars ./atc ./atc/api/buildserver ./atc/api/pipelineserver -run 'Test(ValidateUntrustedPlan|CreateBuildRejectsBrokerFieldsInRawPlan)' -count=1
+GOCACHE=/private/tmp/codex-go-cache go test ./atc/db -run 'TestThisPatternMatchesNoTests' -count=1
+GOCACHE=/private/tmp/codex-go-cache go test ./atc/builds ./agent/workflow ./agent/workflowrun ./cmd/agent-broker -count=1
+git diff --check
+```
+
+The round-3 P1 is locally addressed with no known remaining implementation
+finding, but Task 9a is **Human Review Required** under the session review
+budget. The proposed human check is to confirm rejection for dynamically
+interpolated `across` map keys and whole agent values, while accepting an
+ordinary scalar interpolation, through the one-off API boundary.

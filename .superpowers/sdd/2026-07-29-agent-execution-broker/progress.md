@@ -83,3 +83,14 @@ CreateStartedBuild enforce the same shared ingress boundary without changing
 trusted workflow-run execution. Structural and direct-handler tests pass; the
 broad API/DB runtime suites remain sandbox-blocked by IPv6 loopback/shared
 memory restrictions as recorded in `task-9a-report.md`.
+
+Task 9a: **Human Review Required** — review round 3 P1 is locally addressed:
+the raw across-template gate now parses generic YAML/JSON, rejects every
+interpolated mapping key, and fails closed when typed `atc.Plan` decoding
+fails. This prevents runtime substitution from materializing broker authority,
+the reserved broker MCP marker, or a whole agent object; ordinary scalar
+interpolation remains allowed. Focused validator and direct-handler regression
+tests pass, with downstream workflow checks recorded in `task-9a-report.md`.
+No further automated review round is scheduled. Proposed human check: verify
+those exploit and scalar cases through the raw one-off API boundary before
+acceptance.

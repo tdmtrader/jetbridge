@@ -46,6 +46,52 @@ agent:
 			}},
 			want: "CONCOURSE_AGENT_BROKER_MCP is reserved for the managed broker",
 		},
+		{
+			name: "dynamic agent field key",
+			plan: atc.Plan{Across: &atc.AcrossPlan{
+				Vars: []atc.AcrossVar{{Var: "field", Values: []string{"broker_authority"}}},
+				SubStepTemplate: `id: agent
+agent:
+  ((.:field)):
+  - function_id: agent`,
+			}},
+			want: "dynamically interpolated mapping key",
+		},
+		{
+			name: "dynamic agent environment key",
+			plan: atc.Plan{Across: &atc.AcrossPlan{
+				Vars: []atc.AcrossVar{{Var: "field", Values: []string{"CONCOURSE_AGENT_BROKER_MCP"}}},
+				SubStepTemplate: `id: agent
+agent:
+  env:
+    ((.:field)): "1"`,
+			}},
+			want: "dynamically interpolated mapping key",
+		},
+		{
+			name: "JSON dynamic agent field key",
+			plan: atc.Plan{Across: &atc.AcrossPlan{
+				Vars:            []atc.AcrossVar{{Var: "field", Values: []string{"broker_authority"}}},
+				SubStepTemplate: `{"id":"agent","agent":{"((.:field))":[{"function_id":"agent"}]}}`,
+			}},
+			want: "dynamically interpolated mapping key",
+		},
+		{
+			name: "dynamic agent object",
+			plan: atc.Plan{Across: &atc.AcrossPlan{
+				Vars:            []atc.AcrossVar{{Var: "agent", Values: []string{"unused"}}},
+				SubStepTemplate: "id: agent\nagent: ((.:agent))",
+			}},
+			want: "cannot decode across template",
+		},
+		{
+			name: "malformed template",
+			plan: atc.Plan{Across: &atc.AcrossPlan{
+				Vars:            []atc.AcrossVar{{Var: "item", Values: []string{"one"}}},
+				SubStepTemplate: "agent: [",
+			}},
+			want: "cannot decode across template",
+		},
 	}
 
 	for _, test := range tests {
@@ -55,6 +101,19 @@ agent:
 				t.Fatalf("ValidateUntrustedPlan() error = %v, want %q", err, test.want)
 			}
 		})
+	}
+}
+
+func TestValidateUntrustedPlanAllowsAcrossScalarInterpolation(t *testing.T) {
+	err := atc.ValidateUntrustedPlan(atc.Plan{Across: &atc.AcrossPlan{
+		Vars: []atc.AcrossVar{{Var: "prompt", Values: []string{"ordinary"}}},
+		SubStepTemplate: `id: agent
+agent:
+  name: agent
+  prompt: ((.:prompt))`,
+	}})
+	if err != nil {
+		t.Fatalf("ValidateUntrustedPlan() error = %v, want nil", err)
 	}
 }
 

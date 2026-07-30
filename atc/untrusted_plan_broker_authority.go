@@ -3,6 +3,8 @@ package atc
 import (
 	"fmt"
 
+	"github.com/concourse/concourse/vars"
+	yamlv2 "go.yaml.in/yaml/v2"
 	"sigs.k8s.io/yaml"
 )
 
@@ -41,9 +43,51 @@ func validateUntrustedPlanNode(plan Plan) error {
 	if plan.Across == nil {
 		return nil
 	}
+	return validateUntrustedAcrossTemplate(plan.Across.SubStepTemplate)
+}
+
+func validateUntrustedAcrossTemplate(rawTemplate string) error {
+	var genericTemplate any
+	if err := yamlv2.Unmarshal([]byte(rawTemplate), &genericTemplate); err != nil {
+		return fmt.Errorf("cannot decode across template: %w", err)
+	}
+	if err := rejectDynamicTemplateMapKeys(genericTemplate); err != nil {
+		return err
+	}
+
 	var template Plan
-	if err := yaml.Unmarshal([]byte(plan.Across.SubStepTemplate), &template); err != nil {
-		return nil
+	if err := yaml.Unmarshal([]byte(rawTemplate), &template); err != nil {
+		return fmt.Errorf("cannot decode across template: %w", err)
 	}
 	return validateUntrustedPlan(template)
+}
+
+func rejectDynamicTemplateMapKeys(value any) error {
+	switch typed := value.(type) {
+	case map[any]any:
+		for key, child := range typed {
+			if keyString, ok := key.(string); ok && len(vars.ExtractVarRefs(keyString)) > 0 {
+				return fmt.Errorf("across template has a dynamically interpolated mapping key")
+			}
+			if err := rejectDynamicTemplateMapKeys(child); err != nil {
+				return err
+			}
+		}
+	case map[string]any:
+		for key, child := range typed {
+			if len(vars.ExtractVarRefs(key)) > 0 {
+				return fmt.Errorf("across template has a dynamically interpolated mapping key")
+			}
+			if err := rejectDynamicTemplateMapKeys(child); err != nil {
+				return err
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if err := rejectDynamicTemplateMapKeys(child); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }

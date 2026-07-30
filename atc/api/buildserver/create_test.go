@@ -30,6 +30,16 @@ func TestCreateBuildRejectsBrokerFieldsInRawPlan(t *testing.T) {
 				Env: map[string]string{"CONCOURSE_AGENT_BROKER_MCP": "1"},
 			}},
 		},
+		{
+			name: "dynamic across broker field",
+			plan: atc.Plan{Across: &atc.AcrossPlan{
+				Vars: []atc.AcrossVar{{Var: "field", Values: []string{"broker_authority"}}},
+				SubStepTemplate: `id: agent
+agent:
+  ((.:field)):
+  - function_id: agent`,
+			}},
+		},
 	}
 
 	for _, test := range tests {
