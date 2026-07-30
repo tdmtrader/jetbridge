@@ -142,6 +142,37 @@ plan:
 	}
 }
 
+func TestResolveBrokerProfileRejectsInMemoryAuthorityMutation(t *testing.T) {
+	catalog, err := broker.NewCatalog([]broker.Profile{
+		brokerProfile("consult-balanced", broker.ToolConsultAgent, broker.TierBalanced, broker.EffortHigh, "gpt-5.6"),
+	})
+	if err != nil {
+		t.Fatalf("new catalog: %v", err)
+	}
+	definition, err := workflow.CompileDefinitionWithBrokerCatalog(workflow.Manifest{workflow.WorkflowFileName: `schema_version: 3
+name: brokered
+signature_version: 1
+inputs: []
+outputs: []
+plan:
+  - agent: implement
+    function_id: implement
+    prompt: implement
+    broker_profiles:
+      - tool: consult_agent
+        tier: balanced
+        effort: high
+`}, catalog)
+	if err != nil {
+		t.Fatalf("compile brokered definition: %v", err)
+	}
+
+	definition.Function.BrokerProfiles[0].Profile.Provider.Model = "attacker-controlled"
+	if _, err := definition.Function.ResolveBrokerProfile("implement", broker.ToolConsultAgent, broker.Selector{Tier: broker.TierBalanced, Effort: broker.EffortHigh}); err == nil || !strings.Contains(err.Error(), "digest does not match") {
+		t.Fatalf("mutated in-memory broker authority error = %v, want exact authority rejection", err)
+	}
+}
+
 func brokerProfile(id string, tool broker.Tool, tier broker.Tier, effort broker.Effort, model string) broker.Profile {
 	return broker.Profile{
 		ID: id, Revision: 1, Selector: broker.Selector{Tier: tier, Effort: effort}, Tools: []broker.Tool{tool},

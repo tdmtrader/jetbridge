@@ -170,6 +170,12 @@ func (config *FunctionConfig) ResolveBrokerProfile(functionID string, tool broke
 	if config == nil {
 		return broker.Profile{}, fmt.Errorf("workflow: function is required")
 	}
+	if err := validateCompiledBrokerProfiles(config.BrokerProfiles, config.BrokerProfileProvenanceHash); err != nil {
+		return broker.Profile{}, err
+	}
+	if err := validateCompiledBrokerProfileNodes(config.Plan, config.BrokerProfiles); err != nil {
+		return broker.Profile{}, err
+	}
 	for _, candidate := range config.BrokerProfiles {
 		if candidate.FunctionID == functionID && candidate.Tool == tool && candidate.Selector == selector {
 			copy := candidate.Profile
