@@ -242,9 +242,6 @@ func (engine *Engine) execute(ctx context.Context, request executeRequest) (Resu
 	if err != nil {
 		return Result{}, engine.fail(ctx, executionID, "sealing_failed", err)
 	}
-	if err := engine.config.Authority.Phase(ctx, executionID, "succeeded"); err != nil {
-		return Result{}, fmt.Errorf("broker: mark execution succeeded: %w", err)
-	}
 	return Result{
 		ExecutionID: executionID, Selector: request.selector, Profile: profile,
 		Snapshot: sealed, Body: body, Duration: run.Duration,

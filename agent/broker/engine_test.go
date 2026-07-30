@@ -43,7 +43,7 @@ func TestEngineRunsConsultationThroughDurablePhases(t *testing.T) {
 	if _, ok := result.Body.(contracts.ConsultationBody); !ok {
 		t.Fatalf("body type = %T", result.Body)
 	}
-	if got := strings.Join(authority.phases, ","); got != "running,validating,sealing,succeeded" {
+	if got := strings.Join(authority.phases, ","); got != "running,validating,sealing" {
 		t.Fatalf("phases = %s", got)
 	}
 	if !strings.Contains(runner.prompt, "fixed consult instructions") ||
