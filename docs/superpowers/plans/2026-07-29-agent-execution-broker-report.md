@@ -308,3 +308,20 @@ Workspace capture writes its index, object database, and verification checkout
 only beneath broker scratch, using the source object database as a read-only
 alternate. Finally, readiness uses an in-container exec healthcheck against
 the fixed loopback listener rather than an unreachable Pod-IP HTTP probe.
+
+The second review round adds a child-only amd64 seccomp-BPF process boundary
+and makes the long-lived broker nondumpable before reading authority or
+credentials. The filter denies arbitrary same-UID signaling and direct
+process-inspection/mutation routes while allowing signals confined to the
+child's own PID/process group. Landlock paths and the executable are now
+resolved through every ancestor symlink, checked again against physical
+workspace/authority/proc/scratch targets, and used only in canonical form.
+Startup also executes each pinned CLI `--version` without credentials through
+the production helper and configured read paths, so missing image assets or
+denied runtime dependencies prevent readiness.
+
+This remains medium hardening for carefully managed clusters. The child shares
+the sidecar cgroup and can still cause resource contention up to existing
+container limits; per-child cgroups and hostile multi-tenant availability
+isolation are not claimed. The amd64 filter's live helper test and real pinned
+CLI smoke are Linux CI/deployment gates.

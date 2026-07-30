@@ -11,3 +11,7 @@ func Apply(Policy) error {
 func Exec([]string) error {
 	return errors.New("broker sandbox: Landlock requires Linux")
 }
+
+func HardenBrokerProcess() error {
+	return errors.New("broker sandbox: process hardening requires Linux")
+}

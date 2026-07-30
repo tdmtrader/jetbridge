@@ -88,6 +88,10 @@ func main() {
 		fmt.Fprintln(os.Stderr, "agent-broker: unsupported command")
 		os.Exit(1)
 	}
+	if err := sandbox.HardenBrokerProcess(); err != nil {
+		fmt.Fprintln(os.Stderr, "agent-broker:", err)
+		os.Exit(1)
+	}
 	config, err := loadConfig(authorityConfigPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "agent-broker:", err)
@@ -102,12 +106,13 @@ func main() {
 		fmt.Fprintln(os.Stderr, "agent-broker: read MCP access token:", err)
 		os.Exit(1)
 	}
-	engine, catalog, err := buildEngine(context.Background(), config)
+	probe := newPinnedProbe(config)
+	engine, catalog, err := buildEngine(context.Background(), config, probe)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "agent-broker:", err)
 		os.Exit(1)
 	}
-	if err := runtime.Preflight(context.Background(), catalog, pinnedProbe{paths: config.AdapterBinaries}); err != nil {
+	if err := runtime.Preflight(context.Background(), catalog, probe); err != nil {
 		fmt.Fprintln(os.Stderr, "agent-broker:", err)
 		os.Exit(1)
 	}
@@ -334,7 +339,7 @@ func validateExactKeys[T any](label string, values map[string]T, allowed []strin
 	return nil
 }
 
-func buildEngine(ctx context.Context, config fileConfig) (*broker.Engine, *broker.Catalog, error) {
+func buildEngine(ctx context.Context, config fileConfig, probe pinnedProbe) (*broker.Engine, *broker.Catalog, error) {
 	catalog, err := broker.NewCatalog(config.Profiles)
 	if err != nil {
 		return nil, nil, err
@@ -364,7 +369,7 @@ func buildEngine(ctx context.Context, config fileConfig) (*broker.Engine, *broke
 		},
 		SandboxReadPaths: config.SandboxReadPaths,
 		CaptureLimits:    config.CaptureLimits,
-		Probe:            pinnedProbe{paths: config.AdapterBinaries},
+		Probe:            probe,
 	})
 	if err != nil {
 		return nil, nil, err
@@ -408,7 +413,33 @@ func (r attachmentResolver) Resolve(_ context.Context, names []string) ([]broker
 	return result, nil
 }
 
-type pinnedProbe struct{ paths map[string]string }
+type sandboxVersionOutput func(
+	context.Context,
+	string,
+	[]string,
+	[]string,
+	sandbox.Policy,
+) ([]byte, error)
+
+type pinnedProbe struct {
+	paths         map[string]string
+	scratchRoot   string
+	readPaths     []string
+	sandboxOutput sandboxVersionOutput
+}
+
+func newPinnedProbe(config fileConfig) pinnedProbe {
+	readPaths := append([]string(nil), config.SandboxReadPaths...)
+	for _, name := range []string{"request_review", "consult_agent"} {
+		readPaths = append(readPaths, config.OutputSchemas[name])
+	}
+	return pinnedProbe{
+		paths:         config.AdapterBinaries,
+		scratchRoot:   config.ScratchRoot,
+		readPaths:     readPaths,
+		sandboxOutput: adapter.ExecuteVersionProbeSandboxed,
+	}
+}
 
 func (p pinnedProbe) LookPath(binary string) (string, error) {
 	path, ok := p.paths[binary]
@@ -418,9 +449,21 @@ func (p pinnedProbe) LookPath(binary string) (string, error) {
 	return path, nil
 }
 func (p pinnedProbe) Output(ctx context.Context, binary string, args []string, env []string) ([]byte, error) {
-	command := exec.CommandContext(ctx, binary, args...)
-	command.Env = env
-	return command.Output()
+	if p.sandboxOutput == nil {
+		return nil, fmt.Errorf("sandboxed version probe is unavailable")
+	}
+	scratch, err := os.MkdirTemp(p.scratchRoot, "broker-version-preflight-")
+	if err != nil {
+		return nil, fmt.Errorf("create version preflight scratch: %w", err)
+	}
+	defer os.RemoveAll(scratch)
+	return p.sandboxOutput(
+		ctx,
+		binary,
+		args,
+		env,
+		sandbox.Policy{WritableRoot: scratch, ReadOnlyPaths: append([]string(nil), p.readPaths...)},
+	)
 }
 
 func absolutePath(path, label string) error {

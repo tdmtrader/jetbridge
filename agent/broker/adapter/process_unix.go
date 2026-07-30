@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"sort"
+	"strings"
 	"syscall"
 	"time"
 
@@ -62,6 +63,45 @@ func ExecuteSandboxed(
 	}
 	command := exec.Command(brokerExecutable, arguments...)
 	return executeCommand(ctx, prepared, prompt, maxStreamBytes, command)
+}
+
+// ExecuteVersionProbeSandboxed executes credential-free harness inspection
+// through the same helper and filesystem policy used for real child work.
+func ExecuteVersionProbeSandboxed(
+	ctx context.Context,
+	binary string,
+	arguments []string,
+	environment []string,
+	policy sandbox.Policy,
+) ([]byte, error) {
+	canonicalPolicy, err := policy.Canonical()
+	if err != nil {
+		return nil, err
+	}
+	helperArguments, err := sandbox.ExecArgs(canonicalPolicy, binary, arguments)
+	if err != nil {
+		return nil, err
+	}
+	brokerExecutable, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("broker adapter: resolve sandbox probe helper: %w", err)
+	}
+	command := exec.CommandContext(ctx, brokerExecutable, helperArguments...)
+	command.Dir = canonicalPolicy.WritableRoot
+	command.Env = append([]string(nil), environment...)
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	var stderr limitedBuffer
+	stderr.limit = 64 << 10
+	command.Stderr = &stderr
+	output, err := command.Output()
+	if err != nil {
+		return nil, fmt.Errorf(
+			"broker adapter: sandboxed version probe failed: %w: %s",
+			err,
+			strings.TrimSpace(stderr.String()),
+		)
+	}
+	return output, nil
 }
 
 func executeCommand(

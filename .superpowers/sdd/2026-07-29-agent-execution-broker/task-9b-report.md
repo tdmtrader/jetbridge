@@ -65,3 +65,40 @@ The broad runner and Jetbridge suites reached unrelated tests that create
 `httptest` IPv6 listeners and were sandbox-blocked with
 `listen tcp6 [::1]:0: bind: operation not permitted`. Their exact changed
 tests pass.
+
+## Review fix round 2
+
+- The long-lived broker sets and verifies `PR_SET_DUMPABLE=0` before it reads
+  authority, MCP capability, bootstrap capability, or provider credentials.
+- On linux/amd64 the trusted helper installs a child-only seccomp-BPF filter
+  after Landlock and before `exec`. Arbitrary-target `kill`, signal queue,
+  ptrace, process-VM, pidfd, kcmp, process-advice/release, resource-limit,
+  scheduler, affinity, priority, NUMA-page migration, robust-list, and perf
+  inspection routes return `EPERM`. Signals addressed to the helper's own PID
+  or process group remain available for normal threaded CLI operation. x32
+  syscall numbers are rejected before dispatch. Other Linux architectures
+  compile but fail child startup as unsupported.
+- Every writable, read-only, forbidden, and executable path is physically
+  canonicalized with `EvalSymlinks`, including ancestor symlinks. Overlap
+  checks are repeated on physical paths, Landlock rules use only canonical
+  targets, and the helper execs the resolved binary. An ancestor-symlink
+  regression proves a lexically safe path cannot reach sibling scratch.
+- Each exact pinned CLI now executes `--version`, without credentials, through
+  the same sandbox helper and configured read paths before the loopback listener
+  opens. Missing runtime assets, Landlock denial, seccomp installation failure,
+  and denied CLI dependencies therefore fail startup.
+
+Focused sandbox, runtime, command, runner, and Jetbridge checks pass.
+linux/amd64 sandbox and command test binaries compile with the live seccomp
+helper test; linux/arm64 also compiles and retains its explicit unsupported
+runtime result. This arm64 macOS host cannot execute the amd64 helper, so live
+BPF behavior and real pinned-CLI smoke remain Linux CI/deployment gates.
+The focused adapter preflight/process tests pass with concurrent Task 10
+compatibility edits in the working tree; those Task 10-owned implementation
+and test files are excluded from this commit.
+
+The filter prevents direct same-UID process inspection/signaling but does not
+claim hostile-tenant availability isolation. A child can still contend for
+same-cgroup CPU, memory, PIDs, and I/O until the existing pod/container limits
+intervene. Fleet scheduling and per-child cgroups remain intentionally outside
+the medium-hardening scope.

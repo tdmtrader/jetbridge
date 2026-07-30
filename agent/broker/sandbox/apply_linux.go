@@ -5,7 +5,6 @@ package sandbox
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -35,10 +34,11 @@ const writableFilesystemAccess = handledFilesystemAccess &^ unix.LANDLOCK_ACCESS
 
 func Apply(policy Policy) error {
 	policy.ReadOnlyPaths = append(policy.ReadOnlyPaths, ExistingEssentialReadPaths()...)
-	policy.ReadOnlyPaths = uniquePaths(policy.ReadOnlyPaths)
-	if err := policy.Validate(); err != nil {
+	canonical, err := policy.Canonical()
+	if err != nil {
 		return err
 	}
+	policy = canonical
 	abi, err := landlockABI()
 	if err := ValidateAvailability(abi, err); err != nil {
 		return err
@@ -79,7 +79,7 @@ func Exec(arguments []string) error {
 	if err != nil {
 		return err
 	}
-	resolvedBinary, err := filepath.EvalSymlinks(binary)
+	resolvedBinary, err := canonicalExecutable(binary)
 	if err != nil {
 		return fmt.Errorf("broker sandbox: resolve harness binary: %w", err)
 	}
@@ -87,7 +87,10 @@ func Exec(arguments []string) error {
 	if err := Apply(policy); err != nil {
 		return err
 	}
-	return unix.Exec(binary, append([]string{binary}, nativeArguments...), os.Environ())
+	if err := installChildSeccomp(); err != nil {
+		return err
+	}
+	return unix.Exec(resolvedBinary, append([]string{resolvedBinary}, nativeArguments...), os.Environ())
 }
 
 func landlockABI() (int, error) {
@@ -123,15 +126,10 @@ func addPathRule(ruleset int, path string, allowed uint64) error {
 	return nil
 }
 
-func uniquePaths(paths []string) []string {
-	seen := make(map[string]struct{}, len(paths))
-	result := make([]string, 0, len(paths))
-	for _, path := range paths {
-		if _, found := seen[path]; found {
-			continue
-		}
-		seen[path] = struct{}{}
-		result = append(result, path)
+func HardenBrokerProcess() error {
+	if err := unix.Prctl(unix.PR_SET_DUMPABLE, 0, 0, 0, 0); err != nil {
+		return fmt.Errorf("broker sandbox: disable process dumpability: %w", err)
 	}
-	return result
+	value, err := unix.PrctlRetInt(unix.PR_GET_DUMPABLE, 0, 0, 0, 0)
+	return ValidateDumpability(value, err)
 }

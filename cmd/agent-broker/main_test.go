@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/concourse/concourse/agent/broker/sandbox"
 )
 
 func TestBrokerHTTPHandlerServesHealthAndMCPOnly(t *testing.T) {
@@ -74,5 +77,46 @@ func TestValidateExactKeysRejectsOrphanConfigurationEntries(t *testing.T) {
 				t.Fatalf("validateExactKeys() error = %v", err)
 			}
 		})
+	}
+}
+
+func TestPinnedProbeRunsVersionThroughPerRunSandbox(t *testing.T) {
+	scratchRoot := t.TempDir()
+	binary := filepath.Join(t.TempDir(), "codex")
+	if err := os.WriteFile(binary, []byte("binary"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runtimePath := t.TempDir()
+	var captured sandbox.Policy
+	probe := pinnedProbe{
+		paths:       map[string]string{"codex": binary},
+		scratchRoot: scratchRoot,
+		readPaths:   []string{runtimePath},
+		sandboxOutput: func(
+			_ context.Context,
+			gotBinary string,
+			arguments []string,
+			environment []string,
+			policy sandbox.Policy,
+		) ([]byte, error) {
+			if gotBinary != binary || strings.Join(arguments, " ") != "--version" ||
+				strings.Join(environment, " ") != "LC_ALL=C" {
+				t.Fatalf("sandbox probe = (%q, %#v, %#v)", gotBinary, arguments, environment)
+			}
+			captured = policy
+			return []byte("codex-cli 0.146.0\n"), nil
+		},
+	}
+	output, err := probe.Output(context.Background(), binary, []string{"--version"}, []string{"LC_ALL=C"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(output) != "codex-cli 0.146.0\n" ||
+		filepath.Dir(captured.WritableRoot) != scratchRoot ||
+		len(captured.ReadOnlyPaths) != 1 || captured.ReadOnlyPaths[0] != runtimePath {
+		t.Fatalf("sandbox probe output/policy = %q / %#v", output, captured)
+	}
+	if entries, err := os.ReadDir(scratchRoot); err != nil || len(entries) != 0 {
+		t.Fatalf("sandbox preflight scratch cleanup = %#v, %v", entries, err)
 	}
 }

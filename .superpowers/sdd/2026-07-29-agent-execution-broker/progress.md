@@ -169,3 +169,20 @@ as a read-only alternate. Readiness is now an in-container exec healthcheck of
 the loopback endpoint. Linux cross-compilation and exact changed suites pass;
 broad runner/Jetbridge tests remain blocked only at unrelated sandbox-denied
 IPv6 `httptest` listeners. See `task-9b-report.md`.
+
+Task 9b review fix round 2/3: all three P1 findings are addressed pending
+commit. The broker becomes nondumpable before reading authority or credentials.
+The child helper installs an amd64 seccomp-BPF boundary before exec, denying
+arbitrary cross-process signaling, ptrace/process-VM/pidfd inspection, and
+related same-UID mutation routes while preserving signals confined to its own
+PID/process group. Landlock now canonicalizes writable, read-only, forbidden,
+and executable paths through all ancestor symlinks, repeats physical overlap
+checks, and execs only the canonical binary. Startup runs every pinned CLI
+`--version` without credentials through the same helper, seccomp filter,
+Landlock policy, and configured read paths used by real work. Focused
+sandbox/runtime/cmd/runner/Jetbridge tests and linux/amd64 plus linux/arm64
+compile checks pass. The live amd64 BPF helper remains a Linux CI/deployment
+gate on this arm64 macOS host. The focused adapter preflight/process tests pass
+with concurrent Task 10 compatibility changes present but excluded from this
+commit. Residual same-cgroup resource exhaustion is accepted within the
+medium-hardening, carefully managed cluster scope.

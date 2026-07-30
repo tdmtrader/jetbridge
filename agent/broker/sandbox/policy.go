@@ -21,43 +21,97 @@ type Policy struct {
 }
 
 func (policy Policy) Validate() error {
-	if err := validPath(policy.WritableRoot, true); err != nil {
-		return fmt.Errorf("broker sandbox: writable root: %w", err)
+	_, err := policy.Canonical()
+	return err
+}
+
+// Canonical resolves every path, including ancestor symlinks, and repeats all
+// forbidden-overlap checks on the physical targets. Callers install Landlock
+// rules only from the returned policy.
+func (policy Policy) Canonical() (Policy, error) {
+	writableRoot, err := canonicalPath(policy.WritableRoot, true)
+	if err != nil {
+		return Policy{}, fmt.Errorf("broker sandbox: writable root: %w", err)
 	}
-	scratchRoot := filepath.Dir(policy.WritableRoot)
+	scratchRoot := filepath.Dir(writableRoot)
+	forbidden := canonicalForbiddenPaths([]string{
+		"/workspace",
+		"/run/concourse/agent-broker",
+		"/proc",
+		scratchRoot,
+	})
+	readOnlyPaths := make([]string, 0, len(policy.ReadOnlyPaths))
+	seen := map[string]struct{}{}
 	for _, path := range policy.ReadOnlyPaths {
-		if err := validPath(path, false); err != nil {
-			return fmt.Errorf("broker sandbox: read-only path %q: %w", path, err)
+		canonical, err := canonicalPath(path, false)
+		if err != nil {
+			return Policy{}, fmt.Errorf("broker sandbox: read-only path %q: %w", path, err)
 		}
-		for _, forbidden := range []string{
-			"/workspace",
-			"/run/concourse/agent-broker",
-			"/proc",
-			scratchRoot,
-		} {
-			if pathsOverlap(path, forbidden) {
-				return fmt.Errorf("broker sandbox: read-only path %q overlaps denied path %q", path, forbidden)
+		for _, denied := range forbidden {
+			if pathsOverlap(canonical, denied) {
+				return Policy{}, fmt.Errorf(
+					"broker sandbox: read-only path %q resolves to %q and overlaps denied workspace, authority, proc, or scratch path %q",
+					path,
+					canonical,
+					denied,
+				)
+			}
+		}
+		if _, found := seen[canonical]; !found {
+			seen[canonical] = struct{}{}
+			readOnlyPaths = append(readOnlyPaths, canonical)
+		}
+	}
+	return Policy{WritableRoot: writableRoot, ReadOnlyPaths: readOnlyPaths}, nil
+}
+
+func canonicalPath(path string, requireDirectory bool) (string, error) {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path || path == string(filepath.Separator) {
+		return "", errors.New("must be an absolute clean non-root path")
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", err
+	}
+	if !filepath.IsAbs(resolved) || filepath.Clean(resolved) != resolved || resolved == string(filepath.Separator) {
+		return "", errors.New("resolved to an invalid path")
+	}
+	info, err := os.Lstat(resolved)
+	if err != nil {
+		return "", err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return "", errors.New("resolved path remains a symlink")
+	}
+	if requireDirectory && !info.IsDir() {
+		return "", errors.New("must be a directory")
+	}
+	return resolved, nil
+}
+
+func canonicalForbiddenPaths(paths []string) []string {
+	result := make([]string, 0, len(paths)*2)
+	seen := map[string]struct{}{}
+	for _, path := range paths {
+		for _, candidate := range []string{filepath.Clean(path), resolvedPathIfPresent(path)} {
+			if candidate == "" {
+				continue
+			}
+			if _, found := seen[candidate]; !found {
+				seen[candidate] = struct{}{}
+				result = append(result, candidate)
 			}
 		}
 	}
-	return nil
+	return result
 }
 
-func validPath(path string, requireDirectory bool) error {
-	if !filepath.IsAbs(path) || filepath.Clean(path) != path || path == string(filepath.Separator) {
-		return errors.New("must be an absolute clean non-root path")
-	}
-	info, err := os.Lstat(path)
+func resolvedPathIfPresent(path string) string {
+	resolved, err := filepath.EvalSymlinks(path)
 	if err != nil {
-		return err
+		return ""
 	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return errors.New("must not be a symlink")
-	}
-	if requireDirectory && !info.IsDir() {
-		return errors.New("must be a directory")
-	}
-	return nil
+	return resolved
 }
 
 func pathsOverlap(left, right string) bool {
@@ -70,25 +124,36 @@ func pathContains(parent, child string) bool {
 }
 
 func ExecArgs(policy Policy, binary string, arguments []string) ([]string, error) {
-	if err := policy.Validate(); err != nil {
+	canonical, err := policy.Canonical()
+	if err != nil {
 		return nil, err
 	}
-	if !filepath.IsAbs(binary) || filepath.Clean(binary) != binary || binary == string(filepath.Separator) {
-		return nil, errors.New("broker sandbox: harness binary must be an absolute clean non-root path")
-	}
-	if info, err := os.Stat(binary); err != nil || !info.Mode().IsRegular() {
-		if err == nil {
-			err = errors.New("not a regular file")
-		}
+	resolvedBinary, err := canonicalExecutable(binary)
+	if err != nil {
 		return nil, fmt.Errorf("broker sandbox: harness binary: %w", err)
 	}
-	result := []string{"sandbox-exec", "--writable-root", policy.WritableRoot}
-	for _, path := range policy.ReadOnlyPaths {
+	result := []string{"sandbox-exec", "--writable-root", canonical.WritableRoot}
+	for _, path := range canonical.ReadOnlyPaths {
 		result = append(result, "--read-only", path)
 	}
-	result = append(result, "--", binary)
+	result = append(result, "--", resolvedBinary)
 	result = append(result, arguments...)
 	return result, nil
+}
+
+func canonicalExecutable(path string) (string, error) {
+	resolved, err := canonicalPath(path, false)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", errors.New("not a regular file")
+	}
+	return resolved, nil
 }
 
 func ParseExecArgs(arguments []string) (Policy, string, []string, error) {
