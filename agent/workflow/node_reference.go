@@ -167,7 +167,7 @@ func (expander *nodeReferenceExpander) expandStep(step map[string]any, path stri
 			step[key] = child
 		}
 		expander.bindings = append(expander.bindings, binding)
-		return nil
+		return expander.expandStep(step, path)
 	}
 	for _, field := range []string{"do", "try", "timeout", "across", "on_success", "on_failure", "on_abort", "on_error", "ensure"} {
 		child, found := step[field]
@@ -202,14 +202,11 @@ func (expander *nodeReferenceExpander) expandStep(step map[string]any, path stri
 }
 
 func (expander *nodeReferenceExpander) resolve(source map[string]any, path string) (map[string]any, ResolvedNodeBinding, error) {
-	for key := range source {
-		switch key {
-		case "node", "uses", "input_mapping", "output_mapping", "params":
-		default:
-			return nil, ResolvedNodeBinding{}, fmt.Errorf("workflow: %s: node reference has unknown field %q", path, key)
-		}
+	refSource, modifiers, err := splitNodeReferenceStep(source, path)
+	if err != nil {
+		return nil, ResolvedNodeBinding{}, err
 	}
-	ref, err := decodeNodeReference(source)
+	ref, err := decodeNodeReference(refSource)
 	if err != nil {
 		return nil, ResolvedNodeBinding{}, fmt.Errorf("workflow: %s: %w", path, err)
 	}
@@ -252,11 +249,33 @@ func (expander *nodeReferenceExpander) resolve(source map[string]any, path strin
 	if err != nil {
 		return nil, ResolvedNodeBinding{}, err
 	}
+	for key, value := range modifiers {
+		if _, collision := replacement[key]; collision {
+			return nil, ResolvedNodeBinding{}, fmt.Errorf("workflow: %s: node modifier %q collides with resolved leaf", path, key)
+		}
+		replacement[key] = value
+	}
 	expander.instances[ref.InstanceName] = struct{}{}
 	return replacement, ResolvedNodeBinding{
 		InstanceName: ref.InstanceName, NodeDefinitionID: node.ID, NodeName: node.Name, NodeVersion: node.Version, NodeContentHash: node.ContentHash,
 		InputMapping: cloneStringMap(ref.InputMapping), OutputMapping: cloneStringMap(ref.OutputMapping), Parameters: cloneStringMap(ref.Parameters),
 	}, nil
+}
+
+func splitNodeReferenceStep(source map[string]any, path string) (map[string]any, map[string]any, error) {
+	reference := map[string]any{}
+	modifiers := map[string]any{}
+	for key, value := range source {
+		switch key {
+		case "node", "uses", "input_mapping", "output_mapping", "params":
+			reference[key] = value
+		case "attempts", "timeout", "across", "on_success", "on_failure", "on_abort", "on_error", "ensure":
+			modifiers[key] = value
+		default:
+			return nil, nil, fmt.Errorf("workflow: %s: node reference cannot override core field %q", path, key)
+		}
+	}
+	return reference, modifiers, nil
 }
 
 func decodeNodeReference(source map[string]any) (NodeReference, error) {

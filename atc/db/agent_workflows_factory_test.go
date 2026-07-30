@@ -502,6 +502,48 @@ plan: []
 		Expect(archived.State).To(Equal(db.AgentWorkflowResourceSourcePipelineArchived))
 	})
 
+	It("composes source-pipeline promotion with exact released-node imports without changing the legacy constructor", func() {
+		nodes := db.NewAgentNodesFactory(dbConn)
+		node, err := nodes.ImportManifest("source-review", workflow.Manifest{workflow.NodeFileName: `schema_version: 1
+name: source-review
+inputs: []
+outputs: []
+step: {agent: review, prompt: review}`}, "alice")
+		Expect(err).NotTo(HaveOccurred())
+		_, err = nodes.Release(node.Name, node.Version, workflow.ReleaseCompatible, "alice")
+		Expect(err).NotTo(HaveOccurred())
+
+		name := fmt.Sprintf("wf-source-node-%d", GinkgoRandomSeed())
+		manifest := workflow.Manifest{workflow.WorkflowFileName: fmt.Sprintf(`schema_version: 3
+name: %s
+signature_version: 1
+inputs: []
+outputs: []
+plan:
+  - node: review-change
+    uses: source-review@1
+    input_mapping: {}
+    output_mapping: {}
+`, name)}
+		registry := db.NewWorkflowResourceSourcePipelinesFactory(dbConn)
+		legacy := db.NewAgentWorkflowsFactoryWithResourceSources(
+			dbConn,
+			workflowrun.WorkflowTargetRenderer{RuntimeImage: "registry.example/agent-runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+			db.AgentWorkflowResourceSourcePromotion{TeamID: defaultTeam.ID(), Registry: registry, Renderer: db.DefaultWorkflowResourceSourcePipelineRenderer{}},
+		)
+		_, err = legacy.ImportManifest(name, manifest, "alice")
+		Expect(err).To(HaveOccurred())
+
+		factory := db.NewAgentWorkflowsFactoryWithResourceSourcesAndNodeResolver(
+			dbConn, nodes,
+			workflowrun.WorkflowTargetRenderer{RuntimeImage: "registry.example/agent-runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+			db.AgentWorkflowResourceSourcePromotion{TeamID: defaultTeam.ID(), Registry: registry, Renderer: db.DefaultWorkflowResourceSourcePipelineRenderer{}},
+		)
+		definition, err := factory.ImportManifest(name, manifest, "alice")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(definition.Compiled.Function.Plan).To(HaveLen(1))
+	})
+
 	It("does not make a workflow live when source-pipeline activation fails", func() {
 		activationFailure := errors.New("source registry unavailable")
 		factory := db.NewAgentWorkflowsFactoryWithResourceSources(

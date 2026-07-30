@@ -1,6 +1,7 @@
 package workflow_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/concourse/concourse/agent/workflow"
@@ -144,5 +145,58 @@ plan:
 	}
 	if got := compiled.Function.SkillFiles["skills/review/SKILL.md"]; got != "frozen node skill" {
 		t.Fatalf("frozen skill = %q", got)
+	}
+}
+
+func TestCompileDefinitionWithNodesPreservesStepModifiersAndExpandsNestedVisibleLeaves(t *testing.T) {
+	node, err := workflow.CompileNodeDefinition(workflow.Manifest{workflow.NodeFileName: `schema_version: 1
+name: review
+inputs: []
+outputs: []
+step: {agent: review, prompt: review}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver := releasedNodeResolver{node: workflow.NodeDefinition{ID: 1, Name: "review", Version: 1, Compiled: *node}}
+	ref := `node: review-change
+uses: review@1
+input_mapping: {}
+output_mapping: {}`
+	indent := func(value, prefix string) string { return strings.ReplaceAll(value, "\n", "\n"+prefix) }
+	for name, plan := range map[string]string{
+		"direct with attempts": "- attempts: 2\n  " + indent(ref, "  "),
+		"direct with timeout":  "- timeout: 1m\n  " + indent(ref, "  "),
+		"nested try":           "- try:\n    " + indent(ref, "    "),
+		"nested do":            "- do:\n    - " + indent(ref, "      "),
+		"nested parallel":      "- in_parallel:\n    - " + indent(ref, "      "),
+		"success hook":         "- " + indent(ref, "  ") + "\n  on_success:\n    " + indent(strings.Replace(ref, "review-change", "after-review", 1), "    "),
+		"failure hook":         "- " + indent(ref, "  ") + "\n  on_failure:\n    " + indent(strings.Replace(ref, "review-change", "after-review", 1), "    "),
+		"abort hook":           "- " + indent(ref, "  ") + "\n  on_abort:\n    " + indent(strings.Replace(ref, "review-change", "after-review", 1), "    "),
+		"error hook":           "- " + indent(ref, "  ") + "\n  on_error:\n    " + indent(strings.Replace(ref, "review-change", "after-review", 1), "    "),
+		"ensure hook":          "- " + indent(ref, "  ") + "\n  ensure:\n    " + indent(strings.Replace(ref, "review-change", "after-review", 1), "    "),
+	} {
+		t.Run(name, func(t *testing.T) {
+			manifest := workflow.Manifest{workflow.WorkflowFileName: `schema_version: 3
+name: consumer
+signature_version: 1
+inputs: []
+outputs: []
+plan:
+` + plan + "\n"}
+			compiled, bindings, err := workflow.CompileDefinitionWithNodes(manifest, resolver)
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+			if len(compiled.Function.Plan) != 1 {
+				t.Fatalf("plan = %#v", compiled.Function.Plan)
+			}
+			wantBindings := 1
+			if strings.Contains(name, "hook") {
+				wantBindings = 2
+			}
+			if len(bindings) != wantBindings {
+				t.Fatalf("bindings = %#v", bindings)
+			}
+		})
 	}
 }

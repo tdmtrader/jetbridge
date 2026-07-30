@@ -61,6 +61,30 @@ func NewAgentWorkflowsFactoryWithResourceSources(
 	promotionValidator workflow.PromotionValidator,
 	resourceSourcePromotion AgentWorkflowResourceSourcePromotion,
 ) AgentWorkflowsFactory {
+	return newAgentWorkflowsFactoryWithResourceSources(conn, nil, promotionValidator, resourceSourcePromotion)
+}
+
+// NewAgentWorkflowsFactoryWithResourceSourcesAndNodeResolver composes the
+// source-pipeline promotion authority with the trusted import-time resolver.
+// The older resource-source constructor deliberately remains resolver-free.
+func NewAgentWorkflowsFactoryWithResourceSourcesAndNodeResolver(
+	conn DbConn,
+	resolver workflow.NodeResolver,
+	promotionValidator workflow.PromotionValidator,
+	resourceSourcePromotion AgentWorkflowResourceSourcePromotion,
+) AgentWorkflowsFactory {
+	if resolver == nil {
+		panic("db: node-aware resource-source workflow factory requires a node resolver")
+	}
+	return newAgentWorkflowsFactoryWithResourceSources(conn, resolver, promotionValidator, resourceSourcePromotion)
+}
+
+func newAgentWorkflowsFactoryWithResourceSources(
+	conn DbConn,
+	resolver workflow.NodeResolver,
+	promotionValidator workflow.PromotionValidator,
+	resourceSourcePromotion AgentWorkflowResourceSourcePromotion,
+) AgentWorkflowsFactory {
 	if promotionValidator == nil {
 		panic("db: resource-source workflow factory requires a promotion validator")
 	}
@@ -68,7 +92,7 @@ func NewAgentWorkflowsFactoryWithResourceSources(
 		panic("db: invalid resource-source workflow promotion composition")
 	}
 	return &agentWorkflowsFactory{
-		conn: conn, promotionValidator: promotionValidator, resourceSourcePromotion: &resourceSourcePromotion,
+		conn: conn, nodeResolver: resolver, promotionValidator: promotionValidator, resourceSourcePromotion: &resourceSourcePromotion,
 	}
 }
 

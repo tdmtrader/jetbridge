@@ -50,3 +50,18 @@ agent skills. The required runtime materialization seam is to carry the
 selected immutable per-agent files on `AgentStep`/`AgentPlan` and mount a
 deterministic read-only tar artifact at the logical `skills` path. This task
 does not claim skill-bearing nodes are executable until that seam is added.
+
+## Review round 1 fix
+
+- RED: a reference with `attempts` failed as an unknown node field.
+- GREEN: expansion now separates invocation fields from the normal core-step
+  modifiers (`attempts`, `timeout`, `across`, and every hook), replaces only
+  the invocation core, preserves modifiers, and recursively expands visible
+  references in `try`, `do`, `in_parallel`, and hooks. Any other core field
+  remains an implementation override and is rejected.
+- The production resource-source composition now passes the DB node factory to
+  a new combined constructor. The legacy resource-source constructor remains
+  resolver-free for compatibility.
+- Focused evidence: node-reference tests passed; the focused PostgreSQL DB
+  spec proved the legacy constructor rejects the reference and the combined
+  constructor imports it; `atc/db` and `atc/atccmd` compile checks passed.

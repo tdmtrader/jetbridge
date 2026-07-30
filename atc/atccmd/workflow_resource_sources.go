@@ -154,8 +154,9 @@ func newWorkflowResourceSourceComposition(
 	if err != nil {
 		return nil, nil, err
 	}
-	return db.NewAgentWorkflowsFactoryWithResourceSources(
+	return db.NewAgentWorkflowsFactoryWithResourceSourcesAndNodeResolver(
 		connection,
+		db.NewAgentNodesFactory(connection),
 		promotionValidator,
 		db.AgentWorkflowResourceSourcePromotion{
 			TeamID:   trustedMainTeamID,
