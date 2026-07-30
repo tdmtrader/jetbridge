@@ -2,6 +2,7 @@ package nodes_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -90,6 +91,69 @@ func TestImportRequiresStrictManifestAndReturnsStoredNode(t *testing.T) {
 	definition := importNode(t, h, nodeSource)
 	if definition.Name != "code-review" || definition.Version != 1 || definition.Compiled.Name != "code-review" || definition.SourceManifest[workflow.NodeFileName] != nodeSource {
 		t.Fatalf("stored node = %+v", definition)
+	}
+}
+
+func TestImportAcceptsNearMaxManifestWhoseJSONEscapesExpandOnTheWire(t *testing.T) {
+	h, _ := newHandler()
+	manifest := workflow.Manifest{
+		workflow.NodeFileName: nodeSource,
+	}
+	for remaining, index := workflow.MaxManifestBytes-len(nodeSource), 0; remaining > 0; index++ {
+		size := workflow.MaxManifestFileBytes
+		if remaining < size {
+			size = remaining
+		}
+		manifest[fmt.Sprintf("notes/control-%d.txt", index)] = strings.Repeat("\x01", size)
+		remaining -= size
+	}
+	body, err := json.Marshal(map[string]workflow.Manifest{"files": manifest})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body) <= 12<<20 {
+		t.Fatalf("escaped JSON body = %d bytes, want more than the old 12 MiB wire cap", len(body))
+	}
+	w := httptest.NewRecorder()
+	h.Import(w, jsonNodeRequest("/api/v1/agent/nodes/code-review/versions", url.Values{":node_name": {"code-review"}}, string(body)))
+	if w.Code != http.StatusOK {
+		t.Fatalf("import status/body = %d/%s", w.Code, w.Body.String())
+	}
+}
+
+func TestNodeMutationContentTypesRequireExactApplicationJSON(t *testing.T) {
+	h, _ := newHandler()
+	importNode(t, h, nodeSource)
+
+	tests := []struct {
+		name    string
+		handler func(http.ResponseWriter, *http.Request)
+		path    string
+		params  url.Values
+		body    string
+	}{
+		{"import", h.Import, "/api/v1/agent/nodes/code-review/versions", url.Values{":node_name": {"code-review"}}, nodeManifest(nodeSource)},
+		{"release", h.Release, "/api/v1/agent/nodes/code-review/versions/1/release", url.Values{":node_name": {"code-review"}, ":version": {"1"}}, `{"compatibility":"breaking"}`},
+		{"deprecation", h.Deprecate, "/api/v1/agent/nodes/code-review/versions/1/deprecation", url.Values{":node_name": {"code-review"}, ":version": {"1"}}, `{"deprecated":true}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name+" rejects suffix", func(t *testing.T) {
+			w := httptest.NewRecorder()
+			r := nodeRequest(http.MethodPut, test.path, test.params, test.body)
+			r.Header.Set("Content-Type", "application/jsonx")
+			test.handler(w, r)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status/body = %d/%s, want 400", w.Code, w.Body.String())
+			}
+		})
+	}
+
+	w := httptest.NewRecorder()
+	r := nodeRequest(http.MethodPut, "/api/v1/agent/nodes/code-review/versions/1/release", url.Values{":node_name": {"code-review"}, ":version": {"1"}}, `{"compatibility":"breaking"}`)
+	r.Header.Set("Content-Type", "application/json; charset=utf-8")
+	h.Release(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("parameterized JSON status/body = %d/%s", w.Code, w.Body.String())
 	}
 }
 

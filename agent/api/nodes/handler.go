@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -15,7 +16,10 @@ import (
 	"github.com/concourse/concourse/atc/api/accessor"
 )
 
-const maxManifestRequestBytes = 12 << 20 // 10 MiB content plus JSON envelope
+// maxManifestRequestBytes admits a fully valid 10 MiB manifest even when
+// every source byte needs JSON's six-byte control-character escape, while
+// retaining a fixed upper bound on the request body.
+const maxManifestRequestBytes = 64 << 20
 
 type Handler struct{ store workflow.NodeStore }
 
@@ -132,7 +136,7 @@ type importRequest struct {
 }
 
 func (h *Handler) Import(w http.ResponseWriter, r *http.Request) {
-	if !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+	if !isJSONContentType(r) {
 		http.Error(w, `node import requires application/json {"files": {...}}`, http.StatusBadRequest)
 		return
 	}
@@ -142,7 +146,7 @@ func (h *Handler) Import(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(raw) > maxManifestRequestBytes {
-		http.Error(w, "manifest exceeds 12 MiB", http.StatusRequestEntityTooLarge)
+		http.Error(w, "manifest exceeds 64 MiB", http.StatusRequestEntityTooLarge)
 		return
 	}
 	var request importRequest
@@ -246,7 +250,7 @@ func parseVersion(r *http.Request) (int, error) {
 }
 
 func decodeJSONRequest(r *http.Request, value any) error {
-	if !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+	if !isJSONContentType(r) {
 		return errors.New("request requires application/json")
 	}
 	raw, err := io.ReadAll(io.LimitReader(r.Body, 1<<20+1))
@@ -257,6 +261,11 @@ func decodeJSONRequest(r *http.Request, value any) error {
 		return errors.New("request body exceeds 1 MiB")
 	}
 	return decodeStrictJSON(raw, value)
+}
+
+func isJSONContentType(r *http.Request) bool {
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	return err == nil && mediaType == "application/json"
 }
 
 func decodeStrictJSON(raw []byte, value any) error {
