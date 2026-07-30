@@ -2,9 +2,11 @@ package workflow
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/goccy/go-yaml"
 )
@@ -17,6 +19,15 @@ const (
 	NodeUpgradeFailed                NodeUpgradeStatus = "failed"
 	NodeUpgradeRecompositionRequired NodeUpgradeStatus = "recomposition_required"
 )
+
+// MaxNodeUpgradeResponseBytes is the encoded-response safety ceiling for one
+// node upgrade result. Budget validation is allocation-free and conservative
+// for service-side fields whose final integer width is not known yet.
+const MaxNodeUpgradeResponseBytes = 4 << 20
+
+// ErrNodeUpgradeResponseTooLarge tells callers to split a valid selection into
+// smaller batches without exposing backend or manifest details.
+var ErrNodeUpgradeResponseTooLarge = errors.New("workflow: node upgrade result exceeds response limit; select fewer workflows")
 
 type NodeUpgradeRequest struct {
 	NodeName  string   `json:"node_name"`
@@ -43,6 +54,8 @@ type NodeUpgradeWorkflowResult struct {
 // NodeUpgradeObligations describes the explicit recomposition work between a
 // released successor and its immutable released predecessor. Names in every
 // category are sorted so API and Fly callers receive a stable contract.
+// Returned obligations are immutable and may be shared by every workflow in a
+// breaking-upgrade result.
 type NodeUpgradeObligations struct {
 	Inputs     NodeContractChanges `json:"inputs"`
 	Outputs    NodeContractChanges `json:"outputs"`
@@ -57,6 +70,17 @@ type NodeContractChanges struct {
 
 type NodeUpgradeService interface {
 	Upgrade(context.Context, NodeUpgradeRequest) (NodeUpgradeResult, error)
+}
+
+// ValidateNodeUpgradeResultResponseBudget structurally accounts for the JSON
+// encoding without allocating the encoded aggregate. It returns
+// ErrNodeUpgradeResponseTooLarge when result would exceed the public ceiling.
+func ValidateNodeUpgradeResultResponseBudget(result NodeUpgradeResult) error {
+	budget := nodeUpgradeResponseBudget{remaining: MaxNodeUpgradeResponseBytes}
+	if !budget.addResult(result) {
+		return ErrNodeUpgradeResponseTooLarge
+	}
+	return nil
 }
 
 type nodeUpgradeService struct {
@@ -179,6 +203,14 @@ func (service *nodeUpgradeService) Upgrade(
 	if successor.Release.Compatibility == ReleaseBreaking {
 		diff := nodeUpgradeContractDiff(predecessor.Compiled, successor.Compiled)
 		obligations = &diff
+		if err := validateNodeUpgradeBreakingResponseBudget(
+			result.NodeName,
+			result.Version,
+			selected,
+			obligations,
+		); err != nil {
+			return result, err
+		}
 	}
 	for _, workflowName := range selected {
 		if err := ctx.Err(); err != nil {
@@ -282,7 +314,10 @@ func (service *nodeUpgradeService) upgradeWorkflow(
 
 	if obligations != nil {
 		result.Status = NodeUpgradeRecompositionRequired
-		result.Obligations = cloneNodeUpgradeObligations(obligations)
+		// The release contract diff is complete before per-workflow processing
+		// starts and is never mutated afterward. Sharing this read-only graph
+		// keeps a large diff O(1) in the number of selected workflows.
+		result.Obligations = obligations
 		return result
 	}
 
@@ -604,21 +639,207 @@ func diffNodeUpgradeContracts[T comparable](before, after map[string]T) NodeCont
 	return changes
 }
 
-func cloneNodeUpgradeObligations(source *NodeUpgradeObligations) *NodeUpgradeObligations {
-	if source == nil {
-		return nil
+func validateNodeUpgradeBreakingResponseBudget(
+	nodeName string,
+	version int,
+	workflows []string,
+	obligations *NodeUpgradeObligations,
+) error {
+	budget := nodeUpgradeResponseBudget{remaining: MaxNodeUpgradeResponseBytes}
+	if !budget.addResultStart(nodeName, version, false) {
+		return ErrNodeUpgradeResponseTooLarge
 	}
-	return &NodeUpgradeObligations{
-		Inputs:     cloneNodeContractChanges(source.Inputs),
-		Outputs:    cloneNodeContractChanges(source.Outputs),
-		Parameters: cloneNodeContractChanges(source.Parameters),
+	for index, workflowName := range workflows {
+		if index > 0 && !budget.take(1) {
+			return ErrNodeUpgradeResponseTooLarge
+		}
+		if !budget.addBreakingWorkflowUpperBound(workflowName, obligations) {
+			return ErrNodeUpgradeResponseTooLarge
+		}
 	}
+	if !budget.takeLiteral(`]}`) {
+		return ErrNodeUpgradeResponseTooLarge
+	}
+	return nil
 }
 
-func cloneNodeContractChanges(source NodeContractChanges) NodeContractChanges {
-	return NodeContractChanges{
-		Added:   append([]string(nil), source.Added...),
-		Removed: append([]string(nil), source.Removed...),
-		Changed: append([]string(nil), source.Changed...),
+type nodeUpgradeResponseBudget struct {
+	remaining int64
+}
+
+func (budget *nodeUpgradeResponseBudget) addResult(result NodeUpgradeResult) bool {
+	if !budget.addResultStart(result.NodeName, result.Version, result.Workflows == nil) {
+		return false
 	}
+	if result.Workflows == nil {
+		return budget.takeLiteral(`}`)
+	}
+	for index := range result.Workflows {
+		if index > 0 && !budget.take(1) {
+			return false
+		}
+		if !budget.addWorkflowResult(result.Workflows[index]) {
+			return false
+		}
+	}
+	return budget.takeLiteral(`]}`)
+}
+
+func (budget *nodeUpgradeResponseBudget) addResultStart(nodeName string, version int, nilWorkflows bool) bool {
+	if !budget.takeLiteral(`{"node_name":`) ||
+		!budget.takeJSONString(nodeName) ||
+		!budget.takeLiteral(`,"version":`) ||
+		!budget.takeJSONInt(version) ||
+		!budget.takeLiteral(`,"workflows":`) {
+		return false
+	}
+	if nilWorkflows {
+		return budget.takeLiteral(`null`)
+	}
+	return budget.takeLiteral(`[`)
+}
+
+func (budget *nodeUpgradeResponseBudget) addWorkflowResult(result NodeUpgradeWorkflowResult) bool {
+	if !budget.takeLiteral(`{"workflow":`) ||
+		!budget.takeJSONString(result.Workflow) ||
+		!budget.takeLiteral(`,"old_version":`) ||
+		!budget.takeJSONInt(result.OldVersion) ||
+		!budget.takeLiteral(`,"new_version":`) ||
+		!budget.takeJSONInt(result.NewVersion) ||
+		!budget.takeLiteral(`,"status":`) ||
+		!budget.takeJSONString(string(result.Status)) {
+		return false
+	}
+	if result.Error != "" {
+		if !budget.takeLiteral(`,"error":`) || !budget.takeJSONString(result.Error) {
+			return false
+		}
+	}
+	if result.Obligations != nil {
+		if !budget.takeLiteral(`,"obligations":`) || !budget.addObligations(result.Obligations) {
+			return false
+		}
+	}
+	return budget.takeLiteral(`}`)
+}
+
+func (budget *nodeUpgradeResponseBudget) addBreakingWorkflowUpperBound(
+	workflowName string,
+	obligations *NodeUpgradeObligations,
+) bool {
+	// OldVersion comes from the live workflow after this preflight. Twenty
+	// bytes cover every signed 64-bit integer and conservatively cover Go int.
+	const maximumJSONIntBytes = 20
+	return budget.takeLiteral(`{"workflow":`) &&
+		budget.takeJSONString(workflowName) &&
+		budget.takeLiteral(`,"old_version":`) &&
+		budget.take(maximumJSONIntBytes) &&
+		budget.takeLiteral(`,"new_version":0,"status":"recomposition_required","obligations":`) &&
+		budget.addObligations(obligations) &&
+		budget.takeLiteral(`}`)
+}
+
+func (budget *nodeUpgradeResponseBudget) addObligations(obligations *NodeUpgradeObligations) bool {
+	if obligations == nil {
+		return budget.takeLiteral(`null`)
+	}
+	return budget.takeLiteral(`{"inputs":`) &&
+		budget.addContractChanges(obligations.Inputs) &&
+		budget.takeLiteral(`,"outputs":`) &&
+		budget.addContractChanges(obligations.Outputs) &&
+		budget.takeLiteral(`,"parameters":`) &&
+		budget.addContractChanges(obligations.Parameters) &&
+		budget.takeLiteral(`}`)
+}
+
+func (budget *nodeUpgradeResponseBudget) addContractChanges(changes NodeContractChanges) bool {
+	return budget.takeLiteral(`{"added":`) &&
+		budget.addStringSlice(changes.Added) &&
+		budget.takeLiteral(`,"removed":`) &&
+		budget.addStringSlice(changes.Removed) &&
+		budget.takeLiteral(`,"changed":`) &&
+		budget.addStringSlice(changes.Changed) &&
+		budget.takeLiteral(`}`)
+}
+
+func (budget *nodeUpgradeResponseBudget) addStringSlice(values []string) bool {
+	if values == nil {
+		return budget.takeLiteral(`null`)
+	}
+	if !budget.takeLiteral(`[`) {
+		return false
+	}
+	for index, value := range values {
+		if index > 0 && !budget.take(1) {
+			return false
+		}
+		if !budget.takeJSONString(value) {
+			return false
+		}
+	}
+	return budget.takeLiteral(`]`)
+}
+
+// takeJSONString counts encoding/json's default escaped representation
+// without materializing it. In particular, HTML-sensitive ASCII, control
+// bytes, invalid UTF-8, and U+2028/U+2029 expand to their escaped widths.
+func (budget *nodeUpgradeResponseBudget) takeJSONString(value string) bool {
+	if !budget.take(2) {
+		return false
+	}
+	for index := 0; index < len(value); {
+		character := value[index]
+		if character < utf8.RuneSelf {
+			width := int64(1)
+			switch character {
+			case '\\', '"', '\b', '\f', '\n', '\r', '\t':
+				width = 2
+			case '<', '>', '&':
+				width = 6
+			default:
+				if character < 0x20 {
+					width = 6
+				}
+			}
+			if !budget.take(width) {
+				return false
+			}
+			index++
+			continue
+		}
+		runeValue, width := utf8.DecodeRuneInString(value[index:])
+		encodedWidth := int64(width)
+		if runeValue == utf8.RuneError && width == 1 || runeValue == '\u2028' || runeValue == '\u2029' {
+			encodedWidth = 6
+		}
+		if !budget.take(encodedWidth) {
+			return false
+		}
+		index += width
+	}
+	return true
+}
+
+func (budget *nodeUpgradeResponseBudget) takeJSONInt(value int) bool {
+	width := int64(1)
+	if value < 0 {
+		width++
+	}
+	for value <= -10 || value >= 10 {
+		width++
+		value /= 10
+	}
+	return budget.take(width)
+}
+
+func (budget *nodeUpgradeResponseBudget) takeLiteral(value string) bool {
+	return budget.take(int64(len(value)))
+}
+
+func (budget *nodeUpgradeResponseBudget) take(width int64) bool {
+	if width < 0 || width > budget.remaining {
+		return false
+	}
+	budget.remaining -= width
+	return true
 }

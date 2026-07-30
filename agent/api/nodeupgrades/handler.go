@@ -215,10 +215,22 @@ func (handler *Handler) Upgrade(w http.ResponseWriter, r *http.Request) {
 		NodeName: name, Version: version, Workflows: append([]string(nil), workflows...), CreatedBy: createdBy,
 	})
 	if err != nil {
+		if errors.Is(err, workflow.ErrNodeUpgradeResponseTooLarge) {
+			writeResponseLimitError(w)
+			return
+		}
 		writeInternalError(w)
 		return
 	}
 	if result.NodeName != name || result.Version != version || !validUpgradeResults(workflows, result.Workflows) {
+		writeInternalError(w)
+		return
+	}
+	if err := workflow.ValidateNodeUpgradeResultResponseBudget(result); err != nil {
+		if errors.Is(err, workflow.ErrNodeUpgradeResponseTooLarge) {
+			writeResponseLimitError(w)
+			return
+		}
 		writeInternalError(w)
 		return
 	}
@@ -505,6 +517,15 @@ func cloneStringMap(source map[string]string) map[string]string {
 
 func writeInvalidBody(w http.ResponseWriter) {
 	writeError(w, http.StatusBadRequest, "invalid_request", "node upgrade request body is invalid")
+}
+
+func writeResponseLimitError(w http.ResponseWriter) {
+	writeError(
+		w,
+		http.StatusUnprocessableEntity,
+		"response_limit_exceeded",
+		"node upgrade result exceeds the 4 MiB response limit; select fewer workflows",
+	)
 }
 
 func writeInternalError(w http.ResponseWriter) {

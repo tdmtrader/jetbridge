@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -232,6 +233,94 @@ func TestNodeUpgradeRejectsDuplicateSelectionsUnknownFieldsAndQueries(t *testing
 	if calls != 0 {
 		t.Fatalf("upgrade calls = %d, want 0", calls)
 	}
+}
+
+func TestNodeUpgradeRejectsOversizedBackendResultWithBoundedClientError(t *testing.T) {
+	selected := make([]string, 64)
+	for index := range selected {
+		selected[index] = fmt.Sprintf("workflow-%03d", index)
+	}
+	result := oversizedUpgradeResult(selected, 63, 1024)
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(encoded) <= 4<<20 {
+		t.Fatalf("oversized fixture is only %d bytes", len(encoded))
+	}
+
+	calls := 0
+	upgrader := &fakeUpgradeService{upgrade: func(context.Context, workflow.NodeUpgradeRequest) (workflow.NodeUpgradeResult, error) {
+		calls++
+		return result, nil
+	}}
+	handler := mustHandler(t, availableStore(), upgrader)
+	body, err := json.Marshal(map[string][]string{"workflows": selected})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	handler.Upgrade(recorder, request(http.MethodPost, "/upgrades", "code-review", "5", string(body)))
+
+	if calls != 1 {
+		t.Fatalf("upgrade calls = %d, want 1", calls)
+	}
+	if recorder.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, response bytes = %d", recorder.Code, recorder.Body.Len())
+	}
+	want := `{"error":"response_limit_exceeded","message":"node upgrade result exceeds the 4 MiB response limit; select fewer workflows"}`
+	if recorder.Body.String() != want || recorder.Body.Len() > 256 {
+		t.Fatalf("body = %q (%d bytes), want %q", recorder.Body.String(), recorder.Body.Len(), want)
+	}
+}
+
+func TestNodeUpgradeMapsResponseBudgetSentinelToBoundedClientError(t *testing.T) {
+	upgrader := &fakeUpgradeService{upgrade: func(context.Context, workflow.NodeUpgradeRequest) (workflow.NodeUpgradeResult, error) {
+		return workflow.NodeUpgradeResult{}, workflow.ErrNodeUpgradeResponseTooLarge
+	}}
+	handler := mustHandler(t, availableStore(), upgrader)
+	recorder := httptest.NewRecorder()
+	handler.Upgrade(recorder, request(http.MethodPost, "/upgrades", "code-review", "5", `{"workflows":["small-fix"]}`))
+
+	if recorder.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	want := `{"error":"response_limit_exceeded","message":"node upgrade result exceeds the 4 MiB response limit; select fewer workflows"}`
+	if recorder.Body.String() != want || recorder.Body.Len() > 256 {
+		t.Fatalf("body = %q (%d bytes), want %q", recorder.Body.String(), recorder.Body.Len(), want)
+	}
+}
+
+func oversizedUpgradeResult(selected []string, contractNames, contractNameBytes int) workflow.NodeUpgradeResult {
+	names := make([]string, contractNames)
+	for index := range names {
+		names[index] = fmt.Sprintf("contract-%03d-%s", index, strings.Repeat("x", contractNameBytes))
+	}
+	obligations := &workflow.NodeUpgradeObligations{
+		Inputs: workflow.NodeContractChanges{
+			Added:   names,
+			Removed: []string{},
+			Changed: []string{},
+		},
+		Outputs: workflow.NodeContractChanges{
+			Added:   []string{},
+			Removed: []string{},
+			Changed: []string{},
+		},
+		Parameters: workflow.NodeContractChanges{
+			Added:   []string{},
+			Removed: []string{},
+			Changed: []string{},
+		},
+	}
+	results := make([]workflow.NodeUpgradeWorkflowResult, len(selected))
+	for index, name := range selected {
+		results[index] = workflow.NodeUpgradeWorkflowResult{
+			Workflow: name, OldVersion: 7,
+			Status: workflow.NodeUpgradeRecompositionRequired, Obligations: obligations,
+		}
+	}
+	return workflow.NodeUpgradeResult{NodeName: "code-review", Version: 5, Workflows: results}
 }
 
 func exactConsumer(workflowDefinitionID int, instanceName string) workflow.NodeConsumer {
