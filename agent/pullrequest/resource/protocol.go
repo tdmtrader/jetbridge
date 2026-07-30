@@ -120,8 +120,16 @@ type ObserverFactory func(Source) (pullrequest.Observer, error)
 // GitCommand contains no literal argument vector: repository URLs, refs and
 // credentials cross the git seam as typed fields so the implementation can
 // keep untrusted values out of options and the credential out of logs.
+type GitFetchMode string
+
+const (
+	GitFetchNamedRef    GitFetchMode = "named_ref"
+	GitFetchExactObject GitFetchMode = "exact_object"
+)
+
 type GitCommand struct {
 	Operation  string
+	FetchMode  GitFetchMode
 	Directory  string
 	RemoteURL  string
 	Ref        string

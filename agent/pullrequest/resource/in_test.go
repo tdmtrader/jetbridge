@@ -13,6 +13,8 @@ import (
 
 	"github.com/concourse/concourse/agent/pullrequest"
 	"github.com/concourse/concourse/agent/pullrequest/resource"
+	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/agent/snapshot/contracts"
 )
 
 func TestForgePRInRejectsStaleVersionBeforeGit(t *testing.T) {
@@ -41,6 +43,9 @@ func TestForgePRInWritesCurrentRecordAndExactRepositories(t *testing.T) {
 	}
 	version := resource.Version{Provider: source.Provider, ExternalID: source.ExternalID, SourceSHA: observation.SourceSHA, TargetSHA: observation.TargetSHA, ActionKind: string(action.Kind), ActionDigest: action.Digest, Cursor: string(action.Cursor), BindingRevision: "7"}
 	destination := filepath.Join(t.TempDir(), "out")
+	if err := os.Mkdir(destination, 0700); err != nil {
+		t.Fatal(err)
+	}
 	var calls []resource.GitCommand
 	runner := runnerFunc(func(_ context.Context, command resource.GitCommand) error {
 		calls = append(calls, command)
@@ -77,6 +82,9 @@ func TestForgePRInWritesCurrentRecordAndExactRepositories(t *testing.T) {
 	if calls[0].Ref != observation.SourceRef || calls[0].SHA != observation.SourceSHA || calls[1].Ref != observation.TargetRef || calls[1].SHA != observation.TargetSHA {
 		t.Fatalf("checkout commands = %#v", calls)
 	}
+	if calls[0].FetchMode != resource.GitFetchNamedRef || calls[1].FetchMode != resource.GitFetchNamedRef {
+		t.Fatalf("active pull request did not retain named-ref lease: %#v", calls)
+	}
 	if strings.Contains(string(raw), source.ReadToken) {
 		t.Fatal("record leaks token")
 	}
@@ -86,6 +94,199 @@ func TestForgePRInWritesCurrentRecordAndExactRepositories(t *testing.T) {
 	var result resource.InResult
 	if err := json.Unmarshal([]byte(`{"version":`+mustJSON(t, version)+`}`), &result); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestForgePRInPreservesDestinationMountAndRollsBackMidInstall(t *testing.T) {
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	source := testSource(now)
+	observation := activeObservation(pullrequest.Locator{Provider: pullrequest.ProviderGitHub, Repository: source.Repository, ExternalID: source.ExternalID}, "cursor")
+	action, ok, err := pullrequest.ActionFor(observation, pullrequest.TriggerPolicy{Now: now, PollInterval: 5 * time.Minute, FreshnessInterval: 6 * time.Hour, LastReconciledAt: source.Monitor.LastReconciledAt})
+	if err != nil || !ok {
+		t.Fatal("failed to create test action")
+	}
+	version := resource.Version{Provider: source.Provider, ExternalID: source.ExternalID, SourceSHA: observation.SourceSHA, TargetSHA: observation.TargetSHA, ActionKind: string(action.Kind), ActionDigest: action.Digest, Cursor: string(action.Cursor), BindingRevision: "7"}
+	destination := filepath.Join(t.TempDir(), "mounted-output")
+	if err := os.Mkdir(destination, 0700); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor, err := os.Open(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer descriptor.Close()
+	calls := 0
+	runner := runnerFunc(func(_ context.Context, command resource.GitCommand) error {
+		calls++
+		if err := os.MkdirAll(filepath.Join(command.Directory, ".git"), 0700); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(command.Directory, ".git", "HEAD"), []byte(command.SHA+"\n"), 0600); err != nil {
+			return err
+		}
+		if calls == 2 {
+			blocker := filepath.Join(destination, "target-repository")
+			if err := os.Mkdir(blocker, 0700); err != nil {
+				return err
+			}
+			return os.WriteFile(filepath.Join(blocker, "block"), []byte("block"), 0600)
+		}
+		return nil
+	})
+	err = resource.In(context.Background(), destination, bytes.NewReader(checkInput(t, source, &version)), &bytes.Buffer{}, &bytes.Buffer{}, resource.Dependencies{ObserverFactory: fixedObserver(observerFunc(func(context.Context, pullrequest.Locator, pullrequest.Cursor) (pullrequest.Observation, error) {
+		return observation, nil
+	})), Clock: func() time.Time { return now }, GitRunner: runner})
+	if err == nil {
+		t.Fatal("expected mid-install failure")
+	}
+	after, statErr := os.Stat(destination)
+	if statErr != nil {
+		t.Fatal(statErr)
+	}
+	if !os.SameFile(before, after) {
+		t.Fatal("In replaced the caller-owned destination inode")
+	}
+	if descriptorInfo, err := descriptor.Stat(); err != nil || !os.SameFile(before, descriptorInfo) {
+		t.Fatalf("mounted descriptor changed: %v", err)
+	}
+	entries, err := os.ReadDir(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("failed In left destination entries: %v", entries)
+	}
+}
+
+func TestForgePRInUsesExactObjectFetchForTerminalObservation(t *testing.T) {
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	source := testSource(now)
+	observation := activeObservation(pullrequest.Locator{Provider: pullrequest.ProviderGitHub, Repository: source.Repository, ExternalID: source.ExternalID}, "terminal-cursor")
+	observation.State = contracts.PullRequestCompleted
+	observation.ReviewBatches = nil
+	observation.Threads = nil
+	action, ok, err := pullrequest.ActionFor(observation, pullrequest.TriggerPolicy{Now: now, PollInterval: 5 * time.Minute, FreshnessInterval: 6 * time.Hour, LastReconciledAt: source.Monitor.LastReconciledAt})
+	if err != nil || !ok {
+		t.Fatalf("terminal action = %#v, %t, %v", action, ok, err)
+	}
+	version := resource.Version{Provider: source.Provider, ExternalID: source.ExternalID, SourceSHA: observation.SourceSHA, TargetSHA: observation.TargetSHA, ActionKind: string(action.Kind), ActionDigest: action.Digest, Cursor: string(action.Cursor), BindingRevision: "7"}
+	destination := filepath.Join(t.TempDir(), "out")
+	if err := os.Mkdir(destination, 0700); err != nil {
+		t.Fatal(err)
+	}
+	var calls []resource.GitCommand
+	runner := runnerFunc(func(_ context.Context, command resource.GitCommand) error {
+		calls = append(calls, command)
+		if err := os.MkdirAll(filepath.Join(command.Directory, ".git"), 0700); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(command.Directory, ".git", "HEAD"), []byte(command.SHA+"\n"), 0600)
+	})
+	err = resource.In(context.Background(), destination, bytes.NewReader(checkInput(t, source, &version)), &bytes.Buffer{}, &bytes.Buffer{}, resource.Dependencies{ObserverFactory: fixedObserver(observerFunc(func(context.Context, pullrequest.Locator, pullrequest.Cursor) (pullrequest.Observation, error) {
+		return observation, nil
+	})), Clock: func() time.Time { return now }, GitRunner: runner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("git calls = %#v", calls)
+	}
+	for _, command := range calls {
+		if command.FetchMode != resource.GitFetchExactObject || command.Ref != "" {
+			t.Fatalf("terminal checkout still depends on branch ref: %#v", command)
+		}
+	}
+}
+
+func TestForgePRInRollsBackPublishedTreeWhenProtocolWriteFails(t *testing.T) {
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	source := testSource(now)
+	observation := activeObservation(pullrequest.Locator{Provider: pullrequest.ProviderGitHub, Repository: source.Repository, ExternalID: source.ExternalID}, "cursor")
+	action, ok, err := pullrequest.ActionFor(observation, pullrequest.TriggerPolicy{Now: now, PollInterval: 5 * time.Minute, FreshnessInterval: 6 * time.Hour, LastReconciledAt: source.Monitor.LastReconciledAt})
+	if err != nil || !ok {
+		t.Fatal("failed to create test action")
+	}
+	version := resource.Version{Provider: source.Provider, ExternalID: source.ExternalID, SourceSHA: observation.SourceSHA, TargetSHA: observation.TargetSHA, ActionKind: string(action.Kind), ActionDigest: action.Digest, Cursor: string(action.Cursor), BindingRevision: "7"}
+	destination := filepath.Join(t.TempDir(), "out")
+	if err := os.Mkdir(destination, 0700); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := runnerFunc(func(_ context.Context, command resource.GitCommand) error {
+		if err := os.MkdirAll(filepath.Join(command.Directory, ".git"), 0700); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(command.Directory, ".git", "HEAD"), []byte(command.SHA+"\n"), 0600)
+	})
+	err = resource.In(context.Background(), destination, bytes.NewReader(checkInput(t, source, &version)), errorWriter{}, &bytes.Buffer{}, resource.Dependencies{ObserverFactory: fixedObserver(observerFunc(func(context.Context, pullrequest.Locator, pullrequest.Cursor) (pullrequest.Observation, error) {
+		return observation, nil
+	})), Clock: func() time.Time { return now }, GitRunner: runner})
+	if err == nil {
+		t.Fatal("expected protocol write error")
+	}
+	after, err := os.Stat(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(before, after) {
+		t.Fatal("protocol failure replaced destination inode")
+	}
+	entries, err := os.ReadDir(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("protocol failure left authoritative output: %v", entries)
+	}
+}
+
+func TestForgePRInCleansDestinationWhenRepositoryExceedsBounds(t *testing.T) {
+	now := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+	source := testSource(now)
+	observation := activeObservation(pullrequest.Locator{Provider: pullrequest.ProviderGitHub, Repository: source.Repository, ExternalID: source.ExternalID}, "cursor")
+	action, ok, err := pullrequest.ActionFor(observation, pullrequest.TriggerPolicy{Now: now, PollInterval: 5 * time.Minute, FreshnessInterval: 6 * time.Hour, LastReconciledAt: source.Monitor.LastReconciledAt})
+	if err != nil || !ok {
+		t.Fatal("failed to create test action")
+	}
+	version := resource.Version{Provider: source.Provider, ExternalID: source.ExternalID, SourceSHA: observation.SourceSHA, TargetSHA: observation.TargetSHA, ActionKind: string(action.Kind), ActionDigest: action.Digest, Cursor: string(action.Cursor), BindingRevision: "7"}
+	destination := filepath.Join(t.TempDir(), "out")
+	if err := os.Mkdir(destination, 0700); err != nil {
+		t.Fatal(err)
+	}
+	runner := runnerFunc(func(_ context.Context, command resource.GitCommand) error {
+		packDirectory := filepath.Join(command.Directory, ".git", "objects", "pack")
+		if err := os.MkdirAll(packDirectory, 0700); err != nil {
+			return err
+		}
+		file, err := os.OpenFile(filepath.Join(packDirectory, "oversized.pack"), os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0600)
+		if err != nil {
+			return err
+		}
+		if err := file.Truncate(snapshot.DefaultMaxSnapshotContentBytes + 1); err != nil {
+			_ = file.Close()
+			return err
+		}
+		return file.Close()
+	})
+	err = resource.In(context.Background(), destination, bytes.NewReader(checkInput(t, source, &version)), &bytes.Buffer{}, &bytes.Buffer{}, resource.Dependencies{ObserverFactory: fixedObserver(observerFunc(func(context.Context, pullrequest.Locator, pullrequest.Cursor) (pullrequest.Observation, error) {
+		return observation, nil
+	})), Clock: func() time.Time { return now }, GitRunner: runner})
+	if err == nil || !strings.Contains(err.Error(), "content bounds") {
+		t.Fatalf("bounds error = %v", err)
+	}
+	entries, err := os.ReadDir(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("bounds failure left destination entries: %v", entries)
 	}
 }
 
@@ -115,7 +316,11 @@ func TestForgePRInSanitizesGitFailureAndRefusesUnsafeDestination(t *testing.T) {
 	})), GitRunner: runnerFunc(func(context.Context, resource.GitCommand) error {
 		return fmt.Errorf("remote rejected %s", source.ReadToken)
 	})}
-	err = resource.In(context.Background(), filepath.Join(t.TempDir(), "out"), bytes.NewReader(checkInput(t, source, &version)), &bytes.Buffer{}, &bytes.Buffer{}, deps)
+	failedDestination := filepath.Join(t.TempDir(), "out")
+	if err := os.Mkdir(failedDestination, 0700); err != nil {
+		t.Fatal(err)
+	}
+	err = resource.In(context.Background(), failedDestination, bytes.NewReader(checkInput(t, source, &version)), &bytes.Buffer{}, &bytes.Buffer{}, deps)
 	if err == nil || strings.Contains(err.Error(), source.ReadToken) {
 		t.Fatalf("unsafe error = %v", err)
 	}
@@ -143,3 +348,7 @@ type runnerFunc func(context.Context, resource.GitCommand) error
 func (fn runnerFunc) Run(ctx context.Context, command resource.GitCommand) error {
 	return fn(ctx, command)
 }
+
+type errorWriter struct{}
+
+func (errorWriter) Write([]byte) (int, error) { return 0, fmt.Errorf("write failed") }

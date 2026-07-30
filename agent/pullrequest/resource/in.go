@@ -59,11 +59,25 @@ func In(ctx context.Context, destination string, stdin io.Reader, stdout, _ io.W
 	if !equalVersion(expected, *request.Version) {
 		return fmt.Errorf("forge-pr: selected version does not match current pull request")
 	}
-	stage, err := os.MkdirTemp(filepath.Dir(destination), ".forge-pr-")
+	destinationRoot, err := os.OpenRoot(destination)
+	if err != nil {
+		return fmt.Errorf("forge-pr: open destination")
+	}
+	defer destinationRoot.Close()
+	stage, err := os.MkdirTemp(destination, ".forge-pr-")
 	if err != nil {
 		return fmt.Errorf("forge-pr: create staging output")
 	}
-	defer os.RemoveAll(stage)
+	stageName := filepath.Base(stage)
+	installed := false
+	defer func() {
+		_ = destinationRoot.RemoveAll(stageName)
+		if !installed {
+			_ = destinationRoot.RemoveAll("source-repository")
+			_ = destinationRoot.RemoveAll("target-repository")
+			_ = destinationRoot.RemoveAll("record.json")
+		}
+	}()
 	git := dependencies.GitRunner
 	if git == nil {
 		git, err = defaultGitRunner()
@@ -74,8 +88,15 @@ func In(ctx context.Context, destination string, stdin io.Reader, stdout, _ io.W
 	credential := []byte(request.Source.ReadToken)
 	defer wipe(credential)
 	for _, checkout := range []struct{ name, ref, sha string }{{"source-repository", observation.SourceRef, observation.SourceSHA}, {"target-repository", observation.TargetRef, observation.TargetSHA}} {
-		if err := git.Run(ctx, GitCommand{Operation: "checkout", Directory: filepath.Join(stage, checkout.name), RemoteURL: request.Source.RepositoryURL, Ref: checkout.ref, SHA: checkout.sha, Credential: credential}); err != nil {
+		mode, ref := GitFetchNamedRef, checkout.ref
+		if action.Kind == pullrequest.ActionCompleted || action.Kind == pullrequest.ActionAbandoned {
+			mode, ref = GitFetchExactObject, ""
+		}
+		if err := git.Run(ctx, GitCommand{Operation: "checkout", FetchMode: mode, Directory: filepath.Join(stage, checkout.name), RemoteURL: request.Source.RepositoryURL, Ref: ref, SHA: checkout.sha, Credential: credential}); err != nil {
 			return fmt.Errorf("forge-pr: materialize repository")
+		}
+		if err := validateMaterializationBounds(ctx, filepath.Join(stage, checkout.name), snapshot.DefaultMaxSnapshotEntries, snapshot.DefaultMaxSnapshotContentBytes, snapshot.MaxSnapshotSymlinkTargetBytes); err != nil {
+			return err
 		}
 	}
 	body, err := pullRequestBody(observation, action.Kind)
@@ -96,10 +117,21 @@ func In(ctx context.Context, destination string, stdin io.Reader, stdout, _ io.W
 	if err := os.WriteFile(filepath.Join(stage, "record.json"), raw, 0600); err != nil {
 		return fmt.Errorf("forge-pr: write record")
 	}
-	if err := os.Rename(stage, destination); err != nil {
-		return fmt.Errorf("forge-pr: install output")
+	for _, name := range []string{"source-repository", "target-repository"} {
+		if err := destinationRoot.Rename(stageName+"/"+name, name); err != nil {
+			return fmt.Errorf("forge-pr: install repository output")
+		}
 	}
-	return writeJSON(stdout, InResult{Version: *request.Version})
+	// record.json is the authoritative marker and is intentionally published
+	// only after both repository trees are fully installed.
+	if err := destinationRoot.Rename(stageName+"/record.json", "record.json"); err != nil {
+		return fmt.Errorf("forge-pr: install record output")
+	}
+	if err := writeJSON(stdout, InResult{Version: *request.Version}); err != nil {
+		return err
+	}
+	installed = true
+	return nil
 }
 
 func pullRequestBody(observation pullrequest.Observation, kind pullrequest.ActionKind) (contracts.PullRequestBody, error) {
@@ -124,16 +156,12 @@ func safeDestination(destination string) error {
 		return fmt.Errorf("forge-pr: destination parent is unsafe")
 	}
 	info, err := os.Lstat(destination)
-	if err == nil {
-		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-			return fmt.Errorf("forge-pr: destination is unsafe")
-		}
-		entries, readErr := os.ReadDir(destination)
-		if readErr != nil || len(entries) != 0 {
-			return fmt.Errorf("forge-pr: destination is not empty")
-		}
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("forge-pr: destination is unavailable")
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return fmt.Errorf("forge-pr: destination must be an existing real directory")
+	}
+	entries, readErr := os.ReadDir(destination)
+	if readErr != nil || len(entries) != 0 {
+		return fmt.Errorf("forge-pr: destination is not empty")
 	}
 	return nil
 }

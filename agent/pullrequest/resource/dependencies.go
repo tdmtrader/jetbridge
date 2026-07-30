@@ -10,6 +10,7 @@ import (
 	"github.com/concourse/concourse/agent/publisher/directgit"
 	"github.com/concourse/concourse/agent/pullrequest"
 	"github.com/concourse/concourse/agent/pullrequest/github"
+	"github.com/concourse/concourse/agent/snapshot"
 )
 
 func observerFor(source Source, dependencies Dependencies) (pullrequest.Observer, error) {
@@ -53,7 +54,7 @@ func (git controlledGit) Run(ctx context.Context, command GitCommand) error {
 	if git.runner == nil {
 		return fmt.Errorf("forge-pr: controlled git is unavailable")
 	}
-	if command.Operation != "checkout" || !safeGitRef(command.Ref) || !objectID(command.SHA) || safeURL(command.RemoteURL) != nil || command.Directory == "" || !filepath.IsAbs(command.Directory) || filepath.Clean(command.Directory) != command.Directory {
+	if command.Operation != "checkout" || !validFetchAuthority(command) || !objectID(command.SHA) || safeURL(command.RemoteURL) != nil || command.Directory == "" || !filepath.IsAbs(command.Directory) || filepath.Clean(command.Directory) != command.Directory {
 		return fmt.Errorf("forge-pr: invalid git materialization command")
 	}
 	parent := filepath.Dir(command.Directory)
@@ -69,7 +70,11 @@ func (git controlledGit) Run(ctx context.Context, command GitCommand) error {
 		return err
 	}
 	internal := "refs/concourse/materialized/head"
-	if err := git.run(ctx, directgit.Command{Dir: command.Directory, Args: []string{"fetch", "--no-tags", "--no-recurse-submodules", command.RemoteURL, "+" + command.Ref + ":" + internal}, Credential: command.Credential}, "fetch checkout"); err != nil {
+	fetchAuthority := command.Ref
+	if command.FetchMode == GitFetchExactObject {
+		fetchAuthority = command.SHA
+	}
+	if err := git.run(ctx, directgit.Command{Dir: command.Directory, Args: []string{"fetch", "--no-tags", "--no-recurse-submodules", command.RemoteURL, "+" + fetchAuthority + ":" + internal}, Credential: command.Credential}, "fetch checkout"); err != nil {
 		return err
 	}
 	if err := git.expect(ctx, command.Directory, []string{"rev-parse", internal}, command.SHA); err != nil {
@@ -98,16 +103,26 @@ func (git controlledGit) Run(ctx context.Context, command GitCommand) error {
 			return fmt.Errorf("forge-pr: inspect checkout")
 		}
 	}
-	entries, err := git.runner.Run(ctx, directgit.Command{Dir: command.Directory, Args: []string{"ls-files", "--stage"}})
-	if err != nil || entries.ExitCode != 0 || strings.Contains(entries.Stdout, "160000 ") {
-		return fmt.Errorf("forge-pr: checkout contains unsupported gitlinks")
-	}
 	for _, forbidden := range []string{filepath.Join(command.Directory, ".git", "shallow"), filepath.Join(command.Directory, ".git", "objects", "info", "alternates"), filepath.Join(command.Directory, ".git", "info", "sparse-checkout"), filepath.Join(command.Directory, ".git", "gitdir")} {
 		if _, err := os.Lstat(forbidden); err == nil {
 			return fmt.Errorf("forge-pr: checkout has forbidden git state")
 		}
 	}
-	return nil
+	if err := validateMaterializationBounds(ctx, command.Directory, snapshot.DefaultMaxSnapshotEntries, snapshot.DefaultMaxSnapshotContentBytes, snapshot.MaxSnapshotSymlinkTargetBytes); err != nil {
+		return err
+	}
+	return validateRepositoryEvidence(ctx, command.Directory)
+}
+
+func validFetchAuthority(command GitCommand) bool {
+	switch command.FetchMode {
+	case GitFetchNamedRef:
+		return safeGitRef(command.Ref)
+	case GitFetchExactObject:
+		return command.Ref == ""
+	default:
+		return false
+	}
 }
 
 func (git controlledGit) run(ctx context.Context, command directgit.Command, operation string) error {
