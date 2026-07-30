@@ -449,12 +449,18 @@
 
 ## Current milestone acceptance
 
-- `make test-dev-mcp`: passed on the host-network rerun.
-- `make test-fly-integration`: 666/666 specs passed on the host-network rerun.
+- `make test-unit`: passed.
+- `make test-dev-mcp`: all three packages passed in verification iteration 2.
+- `make test-fly-integration`: 666/666 specs passed in verification iteration
+  2.
 - `make test-integration`: 24/24 specs passed.
 - `helm lint deploy/chart`: passed with informational chart messages only.
+- Serial migration-package and migrate-preflight direction checks passed.
+- Frozen migration immutability/checksums, diff hygiene, and retired-authority
+  residue gates passed.
 - Merge-preflight revision-3 focused suites: passed.
-- `make test-unit`: failed only in Jetbridge as described under Task 6; the
-  other 120 Ginkgo suites completed without a reported failure.
-- Status: all implementation tracks are accepted, but the branch is not
-  merge-ready until Task 19's final verification and residue audit completes.
+- Independent whole-branch review found no Critical, High, or Important code
+  defect. Review round 2 confirmed the recovered broad-suite evidence resolves
+  the disk blockers and that Docker/Borg live proofs are properly
+  prerequisite-gated and environment-pending.
+- Status: **All scoped implementation tracks and Task 19 are accepted.**

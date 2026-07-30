@@ -286,10 +286,25 @@ Tasks 16–18:
 
 Task 19:
 
-- Active. `DEPENDENCY-005` is resolved by accepted Tasks 13 and 14.
-- Run the bounded migration, broad-suite, residue, documentation, and
-  environment-gated live proof matrix once; do not repeat known
-  infrastructure failures.
+- Implemented through `4f49252ce9`; evidence updates `a05888869f` and
+  `cead6a1670`.
+- Status: **Accepted in independent whole-branch review round 2 of at most
+  3**.
+- Fresh and exact `1773106138` upgrades reach migration head `1773106148`;
+  embedded current/supported versions and preflight target agree. Frozen
+  migrations and the retired-authority/direct-publisher residue gates passed.
+- `make test-unit`, `make test-dev-mcp`, `make test-fly-integration`
+  (666/666), `make test-integration` (24/24), and Helm lint passed. The three
+  initially disk-blocked targets were rerun once only after an obsolete Task 6
+  cache was removed and the capacity condition materially changed.
+- Local Docker was unavailable, and Borg lacked an approved pinned image and
+  preconfigured recovery environment. Per the preflight, only those live
+  proofs remain environment-pending; no source, image, or cluster mutation was
+  made.
+- Whole-branch Terra review found no Critical, High, or Important code defect.
+  Round 2 confirmed the recovered broad-suite evidence resolves the disk
+  blockers and the explicitly prerequisite-gated live proofs do not block
+  acceptance.
 
 ## Milestone verification
 
@@ -298,17 +313,18 @@ Fresh verification at the current checkpoint:
 - `make test-dev-mcp`: passed.
 - `make test-fly-integration`: 666/666 passed.
 - `make test-integration`: 24/24 passed.
+- `make test-unit`: passed.
 - `helm lint deploy/chart`: passed with informational image-value and icon
   messages only.
+- Serial migration-package and migrate-preflight direction checks passed.
 - Focused merge-preflight revision-3 suites passed.
-- The earlier `make test-unit` failure was isolated to the Task 6 zero-mount
-  regression. After correction, a fresh host-access
-  `go test ./atc/worker/jetbridge -count=1` passed all 381 specs. The complete
-  repository-wide `make test-unit` target has not yet been rerun.
+- Migration immutability, checksums, diff hygiene, and retired-authority
+  residue checks passed.
 
-The recovery track and Tasks 6/7/9/12 are verified, but the branch is not
-merge-ready. Do not report it as green until Tasks 13, 14, and 19 are
-completed and the broad suites are rerun.
+All scoped implementation tracks and the final whole-branch code review are
+accepted. Local Kubernetes/Hangar behavior and Borg cache-loss/interruption
+proofs remain explicitly environment-pending under the preflight prerequisite
+rule.
 
 ## Near-term sequence
 
@@ -327,7 +343,8 @@ completed and the broad suites are rerun.
    without new blocking evidence.
 8. Treat Task 14 as accepted through `ce227c1abf`; do not reopen it without
    new blocking evidence.
-9. Run Task 19 as the active final verification/residue track.
+9. Treat Task 19 as accepted through `cead6a1670`; its review round 2 resolved
+   the disk blockers and accepted the prerequisite-gated live-proof outcome.
 10. Treat every resumed feature group as a separate bounded track rather than
    one continuous "rebase."
 
