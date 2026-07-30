@@ -72,8 +72,9 @@ v8.0.1:1765921815
 # 1773106149 adds kind-scoped reusable node definitions and run idempotency;
 # 1773106150 adds durable workflow-to-node consumer bindings;
 # 1773106152 adds provider-native publication evidence for exact PR
-# authorization.
-JETBRIDGE_VERSION=1773106152
+# authorization; 1773106153 adds the closed provider-native operation union
+# while preserving legacy direct-Git rows under the null discriminator.
+JETBRIDGE_VERSION=1773106153
 
 # Minimum supported source version (v6.x)
 MIN_SUPPORTED_VERSION=1601993582

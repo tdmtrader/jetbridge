@@ -90,6 +90,9 @@ type WorkflowResourceSourcePipelinesFactory interface {
 	FindByBinding(context.Context, int, int64) (WorkflowResourceSourcePipeline, bool, error)
 	ResourceSourcePipelineLifecycle(context.Context, int) ([]AgentWorkflowResourceSourcePipelineLifecycle, error)
 	UnpauseActiveResourceSourcePipeline(context.Context, int, WorkflowResourceSourcePipeline) (bool, error)
+	PauseActiveBindingResourceSourcePipeline(context.Context, int, WorkflowResourceSourcePipeline) (bool, error)
+	UnpauseActiveBindingResourceSourcePipeline(context.Context, int, WorkflowResourceSourcePipeline) (bool, error)
+	DrainTerminalBindingResourceSourcePipeline(context.Context, int, WorkflowResourceSourcePipeline) (bool, error)
 	PauseDrainedResourceSourcePipeline(context.Context, int, WorkflowResourceSourcePipeline) (bool, error)
 	ArchiveDrainedResourceSourcePipeline(context.Context, int, WorkflowResourceSourcePipeline) (bool, error)
 }
@@ -942,6 +945,12 @@ func (factory *workflowResourceSourcePipelinesFactory) UnpauseActiveResourceSour
 	if ctx == nil || trustedTeamID <= 0 {
 		return false, fmt.Errorf("db: source pipeline unpause requires context and trusted team")
 	}
+	if expected.PRBindingID != nil {
+		return false, fmt.Errorf(
+			"%w: binding source pipeline requires binding-scoped unpause",
+			ErrAgentWorkflowResourceSourceConflict,
+		)
+	}
 	tx, err := factory.conn.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
@@ -981,6 +990,232 @@ func (factory *workflowResourceSourcePipelinesFactory) UnpauseActiveResourceSour
 	return affected == 1, nil
 }
 
+func (factory *workflowResourceSourcePipelinesFactory) PauseActiveBindingResourceSourcePipeline(
+	ctx context.Context,
+	trustedTeamID int,
+	expected WorkflowResourceSourcePipeline,
+) (bool, error) {
+	if ctx == nil || trustedTeamID <= 0 {
+		return false, fmt.Errorf(
+			"db: binding source pipeline pause requires context and trusted team",
+		)
+	}
+	tx, err := factory.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer Rollback(tx)
+	stored, binding, err := lockExpectedActiveBindingSourcePipeline(
+		ctx, tx, trustedTeamID, expected, false,
+	)
+	if err != nil {
+		return false, err
+	}
+	if binding.State.Terminal() || binding.OperatorTerminated ||
+		(binding.State != pullrequest.BindingAttentionRequired &&
+			!binding.Paused) {
+		if err := tx.Commit(); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+	result, err := tx.ExecContext(ctx, `
+		UPDATE pipelines
+		SET paused=true,
+		    paused_by='agent-workflow-resource-source-lifecycle',
+		    paused_at=now()
+		WHERE id=$1 AND team_id=$2 AND version=$3
+		  AND NOT paused AND NOT archived AND NOT template
+	`, stored.PipelineID, trustedTeamID, stored.PipelineConfigVersion)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return affected == 1, nil
+}
+
+func (factory *workflowResourceSourcePipelinesFactory) UnpauseActiveBindingResourceSourcePipeline(
+	ctx context.Context,
+	trustedTeamID int,
+	expected WorkflowResourceSourcePipeline,
+) (bool, error) {
+	if ctx == nil || trustedTeamID <= 0 {
+		return false, fmt.Errorf(
+			"db: binding source pipeline unpause requires context and trusted team",
+		)
+	}
+	tx, err := factory.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer Rollback(tx)
+	stored, binding, err := lockExpectedActiveBindingSourcePipeline(
+		ctx, tx, trustedTeamID, expected, false,
+	)
+	if err != nil {
+		return false, err
+	}
+	if binding.State != pullrequest.BindingActive ||
+		binding.Paused || binding.OperatorTerminated {
+		if err := tx.Commit(); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+	result, err := tx.ExecContext(ctx, `
+		UPDATE pipelines
+		SET paused=false,paused_by=NULL,paused_at=NULL
+		WHERE id=$1 AND team_id=$2 AND version=$3
+		  AND paused AND NOT archived AND NOT template
+	`, stored.PipelineID, trustedTeamID, stored.PipelineConfigVersion)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if affected == 1 {
+		if err := requestScheduleForJobsInPipeline(
+			tx, stored.PipelineID,
+		); err != nil {
+			return false, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return affected == 1, nil
+}
+
+func (factory *workflowResourceSourcePipelinesFactory) DrainTerminalBindingResourceSourcePipeline(
+	ctx context.Context,
+	trustedTeamID int,
+	expected WorkflowResourceSourcePipeline,
+) (bool, error) {
+	if ctx == nil || trustedTeamID <= 0 {
+		return false, fmt.Errorf(
+			"db: binding source pipeline drain requires context and trusted team",
+		)
+	}
+	tx, err := factory.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer Rollback(tx)
+	stored, binding, err := lockExpectedActiveBindingSourcePipeline(
+		ctx, tx, trustedTeamID, expected, true,
+	)
+	if err != nil {
+		return false, err
+	}
+	if !binding.State.Terminal() && !binding.OperatorTerminated {
+		if err := tx.Commit(); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+	if stored.State == AgentWorkflowResourceSourcePipelineDraining ||
+		stored.State == AgentWorkflowResourceSourcePipelineArchived {
+		if err := tx.Commit(); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+	result, err := tx.ExecContext(ctx, `
+		UPDATE agent_workflow_resource_source_pipelines
+		SET state='draining',updated_at=now()
+		WHERE team_id=$1 AND pipeline_id=$2 AND pr_binding_id=$3
+		  AND state='active'
+	`, trustedTeamID, stored.PipelineID, *stored.PRBindingID)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if affected != 1 {
+		return false, fmt.Errorf(
+			"%w: binding source registry changed during drain",
+			ErrAgentWorkflowResourceSourceConflict,
+		)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func lockExpectedActiveBindingSourcePipeline(
+	ctx context.Context,
+	tx Tx,
+	trustedTeamID int,
+	expected WorkflowResourceSourcePipeline,
+	allowDrainedReplay bool,
+) (WorkflowResourceSourcePipeline, pullrequest.Binding, error) {
+	if expected.PRBindingID == nil || *expected.PRBindingID <= 0 ||
+		expected.State != AgentWorkflowResourceSourcePipelineActive {
+		return WorkflowResourceSourcePipeline{}, pullrequest.Binding{},
+			fmt.Errorf(
+				"%w: expected active binding source pipeline is invalid",
+				ErrAgentWorkflowResourceSourceConflict,
+			)
+	}
+	stored, found, err := findExpectedWorkflowResourceSourcePipeline(
+		ctx, tx, trustedTeamID, expected, true,
+	)
+	if err != nil {
+		return WorkflowResourceSourcePipeline{}, pullrequest.Binding{}, err
+	}
+	replay := allowDrainedReplay &&
+		(stored.State == AgentWorkflowResourceSourcePipelineDraining ||
+			stored.State == AgentWorkflowResourceSourcePipelineArchived)
+	if !found ||
+		(!sameSourcePipeline(stored, expected) &&
+			!(replay && sameSourcePipelineIdentity(stored, expected))) ||
+		stored.PRBindingID == nil ||
+		*stored.PRBindingID != *expected.PRBindingID {
+		return WorkflowResourceSourcePipeline{}, pullrequest.Binding{},
+			fmt.Errorf(
+				"%w: active binding source pipeline changed",
+				ErrAgentWorkflowResourceSourceConflict,
+			)
+	}
+	if stored.State != AgentWorkflowResourceSourcePipelineArchived {
+		if err := validateWorkflowResourceSourcePipelineAuthority(
+			ctx, tx, stored,
+		); err != nil {
+			return WorkflowResourceSourcePipeline{}, pullrequest.Binding{}, err
+		}
+	}
+	binding, found, err := lockAgentPRBindingForUpdate(
+		ctx, tx, trustedTeamID, *stored.PRBindingID,
+	)
+	if err != nil {
+		return WorkflowResourceSourcePipeline{}, pullrequest.Binding{}, err
+	}
+	if !found || binding.PipelineID == nil ||
+		*binding.PipelineID != stored.PipelineID ||
+		binding.MonitorWorkflowDefinitionID !=
+			stored.WorkflowDefinitionID ||
+		binding.MonitorWorkflowVersion != stored.WorkflowVersion ||
+		binding.State.Validate() != nil {
+		return WorkflowResourceSourcePipeline{}, pullrequest.Binding{},
+			fmt.Errorf(
+				"%w: binding source pipeline ownership drifted",
+				ErrAgentWorkflowResourceSourceConflict,
+			)
+	}
+	return stored, binding, nil
+}
+
 func (factory *workflowResourceSourcePipelinesFactory) PauseDrainedResourceSourcePipeline(
 	ctx context.Context,
 	trustedTeamID int,
@@ -1000,8 +1235,18 @@ func (factory *workflowResourceSourcePipelinesFactory) PauseDrainedResourceSourc
 	if err != nil {
 		return false, err
 	}
-	if !found || expected.State != AgentWorkflowResourceSourcePipelineDraining || !sameSourcePipeline(stored, expected) {
+	if expected.State != AgentWorkflowResourceSourcePipelineDraining ||
+		!found ||
+		(!sameSourcePipeline(stored, expected) &&
+			!(stored.State == AgentWorkflowResourceSourcePipelineArchived &&
+				sameSourcePipelineIdentity(stored, expected))) {
 		return false, fmt.Errorf("db: draining source pipeline changed")
+	}
+	if stored.State == AgentWorkflowResourceSourcePipelineArchived {
+		if err := tx.Commit(); err != nil {
+			return false, err
+		}
+		return false, nil
 	}
 	if err := validateWorkflowResourceSourcePipelineAuthority(ctx, tx, stored); err != nil {
 		return false, err
@@ -1052,8 +1297,18 @@ func (factory *workflowResourceSourcePipelinesFactory) ArchiveDrainedResourceSou
 	if err != nil {
 		return false, err
 	}
-	if !found || expected.State != AgentWorkflowResourceSourcePipelineDraining || !sameSourcePipeline(stored, expected) {
+	if expected.State != AgentWorkflowResourceSourcePipelineDraining ||
+		!found ||
+		(!sameSourcePipeline(stored, expected) &&
+			!(stored.State == AgentWorkflowResourceSourcePipelineArchived &&
+				sameSourcePipelineIdentity(stored, expected))) {
 		return false, fmt.Errorf("db: draining source pipeline changed")
+	}
+	if stored.State == AgentWorkflowResourceSourcePipelineArchived {
+		if err := tx.Commit(); err != nil {
+			return false, err
+		}
+		return false, nil
 	}
 	if err := validateWorkflowResourceSourcePipelineAuthority(ctx, tx, stored); err != nil {
 		return false, err
@@ -1359,7 +1614,25 @@ func validateSourceDeclarations(declarations []ResourceSourceDeclaration) error 
 }
 
 func sameSourcePipeline(left, right WorkflowResourceSourcePipeline) bool {
-	return left.PipelineID == right.PipelineID && left.TeamID == right.TeamID && sameOptionalPRBindingID(left.PRBindingID, right.PRBindingID) && left.WorkflowDefinitionID == right.WorkflowDefinitionID && left.WorkflowName == right.WorkflowName && left.WorkflowVersion == right.WorkflowVersion && left.PipelineConfigVersion == right.PipelineConfigVersion && left.ConfigHash == right.ConfigHash && left.State == right.State && reflect.DeepEqual(left.SourceDeclarations, right.SourceDeclarations)
+	return left.State == right.State &&
+		sameSourcePipelineIdentity(left, right)
+}
+
+func sameSourcePipelineIdentity(
+	left,
+	right WorkflowResourceSourcePipeline,
+) bool {
+	return left.PipelineID == right.PipelineID &&
+		left.TeamID == right.TeamID &&
+		sameOptionalPRBindingID(left.PRBindingID, right.PRBindingID) &&
+		left.WorkflowDefinitionID == right.WorkflowDefinitionID &&
+		left.WorkflowName == right.WorkflowName &&
+		left.WorkflowVersion == right.WorkflowVersion &&
+		left.PipelineConfigVersion == right.PipelineConfigVersion &&
+		left.ConfigHash == right.ConfigHash &&
+		reflect.DeepEqual(
+			left.SourceDeclarations, right.SourceDeclarations,
+		)
 }
 
 func sameOptionalPRBindingID(left, right *int64) bool {

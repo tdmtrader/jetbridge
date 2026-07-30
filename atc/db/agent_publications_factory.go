@@ -1,22 +1,27 @@
 package db
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/concourse/concourse/agent/api/workflowoutcomes"
 	"github.com/concourse/concourse/agent/publisher"
+	"github.com/concourse/concourse/agent/pullrequest"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/workflowwait"
 )
 
 type AgentPublicationsFactory interface {
 	publisher.Store
+	publisher.PRStore
 	publisher.ReviewRunEvidenceResolver
+	pullrequest.AcceptedReviewAuthorityResolver
 }
 
 func NewAgentPublicationsFactory(conn DbConn) AgentPublicationsFactory {
@@ -25,6 +30,136 @@ func NewAgentPublicationsFactory(conn DbConn) AgentPublicationsFactory {
 
 type agentPublicationsFactory struct {
 	conn DbConn
+}
+
+func (factory *agentPublicationsFactory) ResolveAcceptedReviewAuthority(
+	ctx context.Context,
+	teamID int,
+	publicationOccurrenceID int64,
+) (pullrequest.AcceptedReviewAuthority, bool, error) {
+	return resolveAcceptedReviewAuthority(
+		ctx, factory.conn, teamID, publicationOccurrenceID,
+	)
+}
+
+func resolveAcceptedReviewAuthority(
+	ctx context.Context,
+	queryer snapshotQueryer,
+	teamID int,
+	publicationOccurrenceID int64,
+) (pullrequest.AcceptedReviewAuthority, bool, error) {
+	if ctx == nil || teamID <= 0 || publicationOccurrenceID <= 0 {
+		return pullrequest.AcceptedReviewAuthority{}, false, fmt.Errorf(
+			"db: accepted review authority requires context, team, and publication occurrence",
+		)
+	}
+	var (
+		reviewID, candidateID, validationID int64
+		reviewTypeName, candidateTypeName   string
+		validationTypeName                  string
+		reviewTypeVersion                   int
+		candidateTypeVersion                int
+		validationTypeVersion               int
+		reviewDigest, candidateDigest       string
+		validationDigest                    string
+		reviewWorkflowRunID                 int64
+		outcomeRevision                     int64
+		acceptedBy                          string
+		acceptedAt                          time.Time
+	)
+	err := queryer.QueryRowContext(ctx, `
+		SELECT review.id,review.type_name,review.type_version,review.digest,
+		       candidate.id,candidate.type_name,candidate.type_version,candidate.digest,
+		       validation.id,validation.type_name,validation.type_version,validation.digest,
+		       evidence.review_workflow_run_id,evidence.outcome_revision,
+		       evidence.accepted_by,evidence.accepted_at
+		FROM agent_publication_occurrences occurrence
+		JOIN agent_publications publication
+		  ON publication.id=occurrence.publication_id
+		JOIN agent_publication_approval_evidence evidence
+		  ON evidence.publication_id=occurrence.id
+		 AND evidence.team_id=occurrence.team_id
+		 AND evidence.evidence_kind='accepted_review'
+		JOIN agent_snapshots review
+		  ON review.id=evidence.review_snapshot_id
+		 AND review.team_id=evidence.team_id
+		JOIN agent_snapshots candidate
+		  ON candidate.id=evidence.candidate_snapshot_id
+		 AND candidate.team_id=evidence.team_id
+		JOIN agent_snapshots validation
+		  ON validation.id=evidence.validation_snapshot_id
+		 AND validation.team_id=evidence.team_id
+		WHERE occurrence.id=$1 AND occurrence.team_id=$2
+		  AND publication.status='succeeded'
+	`, publicationOccurrenceID, teamID).Scan(
+		&reviewID, &reviewTypeName, &reviewTypeVersion, &reviewDigest,
+		&candidateID, &candidateTypeName, &candidateTypeVersion,
+		&candidateDigest,
+		&validationID, &validationTypeName, &validationTypeVersion,
+		&validationDigest,
+		&reviewWorkflowRunID, &outcomeRevision,
+		&acceptedBy, &acceptedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return pullrequest.AcceptedReviewAuthority{}, false, nil
+	}
+	if err != nil {
+		return pullrequest.AcceptedReviewAuthority{}, false, err
+	}
+	reviewType, err := joinSnapshotType(
+		reviewTypeName, reviewTypeVersion,
+	)
+	if err != nil {
+		return pullrequest.AcceptedReviewAuthority{}, false, err
+	}
+	candidateType, err := joinSnapshotType(
+		candidateTypeName, candidateTypeVersion,
+	)
+	if err != nil {
+		return pullrequest.AcceptedReviewAuthority{}, false, err
+	}
+	validationType, err := joinSnapshotType(
+		validationTypeName, validationTypeVersion,
+	)
+	if err != nil {
+		return pullrequest.AcceptedReviewAuthority{}, false, err
+	}
+	evidence := publisher.AcceptedReviewEvidence{
+		Review: snapshot.SnapshotRef{
+			ID: snapshot.SnapshotID(reviewID), Type: reviewType,
+			Digest: snapshot.Digest(reviewDigest),
+		},
+		Candidate: snapshot.SnapshotRef{
+			ID: snapshot.SnapshotID(candidateID), Type: candidateType,
+			Digest: snapshot.Digest(candidateDigest),
+		},
+		Validation: snapshot.SnapshotRef{
+			ID: snapshot.SnapshotID(validationID), Type: validationType,
+			Digest: snapshot.Digest(validationDigest),
+		},
+		ReviewWorkflowRunID: snapshot.WorkflowRunID(reviewWorkflowRunID),
+		OutcomeRevision:     outcomeRevision,
+		AcceptedBy:          acceptedBy, AcceptedAt: acceptedAt.UTC(),
+	}
+	if err := authorizeAcceptedReviewEvidence(
+		ctx, queryer, teamID, evidence,
+	); err != nil {
+		return pullrequest.AcceptedReviewAuthority{}, false, err
+	}
+	authority, err := pullrequest.NewAcceptedReviewAuthority(
+		pullrequest.AcceptedReviewAuthoritySpec{
+			TeamID:                  teamID,
+			PublicationOccurrenceID: publicationOccurrenceID,
+			Review:                  evidence.Review, Candidate: evidence.Candidate,
+			Validation:          evidence.Validation,
+			ReviewWorkflowRunID: evidence.ReviewWorkflowRunID,
+			OutcomeRevision:     evidence.OutcomeRevision,
+		},
+	)
+	if err != nil {
+		return pullrequest.AcceptedReviewAuthority{}, false, err
+	}
+	return authority, true, nil
 }
 
 func (factory *agentPublicationsFactory) ResolveReviewRunEvidence(
@@ -121,7 +256,7 @@ func (factory *agentPublicationsFactory) ResolveReviewRunEvidence(
 }
 
 const agentPublicationColumns = `
-	p.id, occurrence.id, p.operation_key, p.publisher,
+	p.id, occurrence.id, p.operation_key, p.operation_kind, p.operation_payload, p.publisher,
 	s.id, s.type_name, s.type_version, s.digest,
 	p.destination, p.mode, p.parameters, p.approval_policy_version, occurrence.approved_by,
 	occurrence.approval_wait_id, approval_question.id, approval_question.type_name, approval_question.type_version,
@@ -240,7 +375,13 @@ func (factory *agentPublicationsFactory) Acquire(
 		return publisher.Publication{}, false, err
 	}
 	occurrenceID, err := ensureAgentPublicationOccurrence(
-		ctx, tx, operationID, reservedOccurrenceID, inserted, request,
+		ctx, tx, operationID, reservedOccurrenceID, inserted,
+		agentPublicationOccurrence{
+			authority:  request.Authority,
+			input:      request.Input,
+			approvedBy: request.ApprovedBy,
+			approval:   request.Approval,
+		},
 	)
 	if err != nil {
 		return publisher.Publication{}, false, err
@@ -314,21 +455,313 @@ func (factory *agentPublicationsFactory) Acquire(
 	return publication, true, nil
 }
 
+type prPublicationInput struct {
+	role string
+	ref  snapshot.SnapshotRef
+}
+
+func (factory *agentPublicationsFactory) AcquirePR(
+	ctx context.Context,
+	action publisher.PRAction,
+	lease time.Duration,
+) (publisher.Publication, bool, error) {
+	if ctx == nil {
+		return publisher.Publication{}, false, fmt.Errorf("%w: context is required", publisher.ErrInvalidRequest)
+	}
+	if err := ctx.Err(); err != nil {
+		return publisher.Publication{}, false, err
+	}
+	action = action.Clone()
+	key, err := action.OperationKey()
+	if err != nil {
+		return publisher.Publication{}, false, err
+	}
+	if lease <= 0 || lease > 24*time.Hour {
+		return publisher.Publication{}, false, fmt.Errorf("%w: lease must be within 0-24h", publisher.ErrInvalidRequest)
+	}
+	authority, primary, inputs, destination, policyVersion, mode, err := prActionPersistence(action)
+	if err != nil {
+		return publisher.Publication{}, false, err
+	}
+
+	tx, err := factory.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return publisher.Publication{}, false, err
+	}
+	defer Rollback(tx)
+	workflowRunID, err := authorizePublicationSnapshotRef(ctx, tx, authority, primary, true)
+	if err != nil {
+		return publisher.Publication{}, false, err
+	}
+	authority.WorkflowRunID = workflowRunID
+	setPRActionAuthority(&action, authority)
+	for _, input := range inputs {
+		runID, err := authorizePublicationSnapshotRef(ctx, tx, authority, input.ref, false)
+		if err != nil {
+			return publisher.Publication{}, false, err
+		}
+		if runID != workflowRunID {
+			return publisher.Publication{}, false, publisher.ErrInvalidRequest
+		}
+	}
+	if err := authorizePRPublicationEvidence(ctx, tx, action); err != nil {
+		return publisher.Publication{}, false, err
+	}
+	if err := action.ValidatePersisted(); err != nil {
+		return publisher.Publication{}, false, err
+	}
+	persistedKey, err := action.OperationKey()
+	if err != nil || persistedKey != key {
+		return publisher.Publication{}, false, publisher.ErrOperationConflict
+	}
+	payloadAction := action.Clone()
+	setPRActionAuthority(&payloadAction, publisher.Authority{TeamID: authority.TeamID})
+	payload, err := json.Marshal(payloadAction)
+	if err != nil {
+		return publisher.Publication{}, false, fmt.Errorf("%w: encode PR action", publisher.ErrInvalidRequest)
+	}
+
+	var operationID, reservedOccurrenceID int64
+	err = tx.QueryRowContext(ctx, `
+		INSERT INTO agent_publications
+			(operation_key, operation_kind, operation_payload,
+			 team_id, team_name, workflow_run_id, build_id, actor,
+			 input_snapshot_id, publisher, destination, mode, parameters,
+			 approval_policy_version, status, attempt, lease_until, result,
+			 lease_owner_occurrence_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
+		        'provider-native-pr/v1', $10, $11, '{}'::jsonb, $12,
+		        'pending', 1,
+		        now() + ($13::double precision * interval '1 second'), '{}'::jsonb,
+		        nextval('agent_publication_occurrences_id_seq'))
+		ON CONFLICT (operation_key) DO NOTHING
+		RETURNING id, lease_owner_occurrence_id
+	`, key, string(action.Kind), payload, authority.TeamID, authority.TeamName,
+		int64(authority.WorkflowRunID), authority.BuildID, authority.Actor,
+		int64(primary.ID), destination, string(mode), policyVersion,
+		lease.Seconds()).Scan(&operationID, &reservedOccurrenceID)
+	inserted := true
+	if errors.Is(err, sql.ErrNoRows) {
+		inserted = false
+		err = nil
+	}
+	if err != nil {
+		return publisher.Publication{}, false, err
+	}
+	if !inserted {
+		err = tx.QueryRowContext(ctx, `
+			SELECT id
+			FROM agent_publications
+			WHERE operation_key=$1
+			FOR UPDATE
+		`, key).Scan(&operationID)
+	} else {
+		err = tx.QueryRowContext(ctx, `
+			SELECT id
+			FROM agent_publications
+			WHERE id=$1
+			FOR UPDATE
+		`, operationID).Scan(&operationID)
+	}
+	if err != nil {
+		return publisher.Publication{}, false, err
+	}
+	occurrenceID, err := ensureAgentPublicationOccurrence(
+		ctx, tx, operationID, reservedOccurrenceID, inserted,
+		agentPublicationOccurrence{authority: authority, input: primary},
+	)
+	if err != nil {
+		return publisher.Publication{}, false, err
+	}
+	if err := persistPRPublicationEvidence(ctx, tx, occurrenceID, action); err != nil {
+		return publisher.Publication{}, false, err
+	}
+	record, found, err := getAgentPublicationOccurrence(ctx, tx, occurrenceID, false)
+	if err != nil {
+		return publisher.Publication{}, false, err
+	}
+	if !found {
+		return publisher.Publication{}, false, fmt.Errorf("db: PR publication occurrence disappeared after acquire")
+	}
+	publication := record.publication
+	if publication.PRAction == nil || publication.OperationKind != action.Kind {
+		return publisher.Publication{}, false, publisher.ErrOperationConflict
+	}
+	storedKey, keyErr := publication.PRAction.OperationKey()
+	if keyErr != nil || storedKey != key ||
+		prActionAuthority(*publication.PRAction) != authority {
+		return publisher.Publication{}, false, publisher.ErrOperationConflict
+	}
+	if inserted {
+		if err := tx.Commit(); err != nil {
+			return publisher.Publication{}, false, err
+		}
+		return publication, true, nil
+	}
+	if publicationStatusTerminal(publication.Status) {
+		if err := linkSucceededPublicationOutcome(ctx, tx, publication); err != nil {
+			return publisher.Publication{}, false, err
+		}
+		if err := tx.Commit(); err != nil {
+			return publisher.Publication{}, false, err
+		}
+		return publication, false, nil
+	}
+	now, err := databaseNow(ctx, tx)
+	if err != nil {
+		return publisher.Publication{}, false, err
+	}
+	if now.Before(publication.LeaseUntil) {
+		if err := tx.Commit(); err != nil {
+			return publisher.Publication{}, false, err
+		}
+		return publication, false, nil
+	}
+	updated, err := tx.ExecContext(ctx, `
+		UPDATE agent_publications
+		SET attempt=attempt + 1,
+		    lease_until=$2::timestamptz + ($3::double precision * interval '1 second'),
+		    lease_owner_occurrence_id=$5,
+		    updated_at=$2::timestamptz
+		WHERE operation_key=$1 AND status='pending' AND attempt=$4
+	`, key, now, lease.Seconds(), publication.Attempt, occurrenceID)
+	if err != nil {
+		return publisher.Publication{}, false, err
+	}
+	count, err := updated.RowsAffected()
+	if err != nil || count != 1 {
+		if err == nil {
+			err = publisher.ErrOperationConflict
+		}
+		return publisher.Publication{}, false, err
+	}
+	record, found, err = getAgentPublicationOccurrence(ctx, tx, occurrenceID, false)
+	if err != nil {
+		return publisher.Publication{}, false, err
+	}
+	if !found {
+		return publisher.Publication{}, false, fmt.Errorf("db: PR publication occurrence disappeared after lease reclaim")
+	}
+	publication = record.publication
+	if err := tx.Commit(); err != nil {
+		return publisher.Publication{}, false, err
+	}
+	return publication, true, nil
+}
+
+func prActionPersistence(
+	action publisher.PRAction,
+) (
+	publisher.Authority,
+	snapshot.SnapshotRef,
+	[]prPublicationInput,
+	string,
+	string,
+	publisher.Mode,
+	error,
+) {
+	if err := action.Validate(); err != nil {
+		return publisher.Authority{}, snapshot.SnapshotRef{}, nil, "", "", "", err
+	}
+	switch action.Kind {
+	case publisher.OperationPublishPRBranch:
+		request := action.Branch
+		return request.Authority, request.Candidate, []prPublicationInput{
+			{role: "observation", ref: request.Observation},
+			{role: "validation", ref: request.Validation},
+			{role: "impact", ref: request.Impact},
+		}, request.Destination, request.ApprovalPolicyVersion, publisher.ModeBranch, nil
+	case publisher.OperationCreatePR:
+		request := action.PullRequest
+		return request.Authority, request.Candidate, []prPublicationInput{
+			{role: "observation", ref: request.Observation},
+			{role: "validation", ref: request.Validation},
+			{role: "impact", ref: request.Impact},
+		}, request.Destination, request.ApprovalPolicyVersion, publisher.ModePullRequest, nil
+	case publisher.OperationPublishPRStatus:
+		request := action.Status
+		return request.Authority, request.Validation, []prPublicationInput{
+			{role: "observation", ref: request.Observation},
+		}, request.Destination, request.ApprovalPolicyVersion, publisher.ModeState, nil
+	case publisher.OperationRespondToReview:
+		request := action.Response
+		return request.Authority, request.ResponseSnapshot, []prPublicationInput{
+			{role: "observation", ref: request.Observation},
+		}, request.Destination, request.ApprovalPolicyVersion, publisher.ModeComment, nil
+	default:
+		return publisher.Authority{}, snapshot.SnapshotRef{}, nil, "", "", "",
+			publisher.ErrInvalidRequest
+	}
+}
+
+func prActionAuthority(action publisher.PRAction) publisher.Authority {
+	switch action.Kind {
+	case publisher.OperationPublishPRBranch:
+		if action.Branch != nil {
+			return action.Branch.Authority
+		}
+	case publisher.OperationCreatePR:
+		if action.PullRequest != nil {
+			return action.PullRequest.Authority
+		}
+	case publisher.OperationPublishPRStatus:
+		if action.Status != nil {
+			return action.Status.Authority
+		}
+	case publisher.OperationRespondToReview:
+		if action.Response != nil {
+			return action.Response.Authority
+		}
+	}
+	return publisher.Authority{}
+}
+
+func setPRActionAuthority(action *publisher.PRAction, authority publisher.Authority) {
+	if action == nil {
+		return
+	}
+	switch action.Kind {
+	case publisher.OperationPublishPRBranch:
+		if action.Branch != nil {
+			action.Branch.Authority = authority
+		}
+	case publisher.OperationCreatePR:
+		if action.PullRequest != nil {
+			action.PullRequest.Authority = authority
+		}
+	case publisher.OperationPublishPRStatus:
+		if action.Status != nil {
+			action.Status.Authority = authority
+		}
+	case publisher.OperationRespondToReview:
+		if action.Response != nil {
+			action.Response.Authority = authority
+		}
+	}
+}
+
+type agentPublicationOccurrence struct {
+	authority  publisher.Authority
+	input      snapshot.SnapshotRef
+	approvedBy string
+	approval   *publisher.ApprovalEvidence
+}
+
 func ensureAgentPublicationOccurrence(
 	ctx context.Context,
 	tx Tx,
 	operationID int64,
 	reservedOccurrenceID int64,
 	operationInserted bool,
-	request publisher.Request,
+	occurrence agentPublicationOccurrence,
 ) (int64, error) {
 	var approvalWaitID, approvalQuestionID, approvalAnswerID any
 	var approvalResolvedAt any
-	if request.Approval != nil {
-		approvalWaitID = int64(request.Approval.WaitID)
-		approvalQuestionID = int64(request.Approval.Question.ID)
-		approvalAnswerID = int64(request.Approval.Answer.ID)
-		approvalResolvedAt = request.Approval.ResolvedAt.UTC()
+	if occurrence.approval != nil {
+		approvalWaitID = int64(occurrence.approval.WaitID)
+		approvalQuestionID = int64(occurrence.approval.Question.ID)
+		approvalAnswerID = int64(occurrence.approval.Answer.ID)
+		approvalResolvedAt = occurrence.approval.ResolvedAt.UTC()
 	}
 	var occurrenceID int64
 	if operationInserted {
@@ -343,9 +776,9 @@ func ensureAgentPublicationOccurrence(
 			FROM agent_publications publication
 			WHERE publication.id = $2
 			RETURNING id
-		`, reservedOccurrenceID, operationID, request.Authority.TeamID, request.Authority.TeamName,
-			int64(request.Authority.WorkflowRunID), request.Authority.BuildID, request.Authority.Actor,
-			int64(request.Input.ID), nullableNonblank(request.ApprovedBy), approvalWaitID,
+		`, reservedOccurrenceID, operationID, occurrence.authority.TeamID, occurrence.authority.TeamName,
+			int64(occurrence.authority.WorkflowRunID), occurrence.authority.BuildID, occurrence.authority.Actor,
+			int64(occurrence.input.ID), nullableNonblank(occurrence.approvedBy), approvalWaitID,
 			approvalQuestionID, approvalAnswerID, approvalResolvedAt,
 		).Scan(&occurrenceID)
 		return occurrenceID, err
@@ -362,9 +795,9 @@ func ensureAgentPublicationOccurrence(
 		WHERE publication.id = $1
 		ON CONFLICT (publication_id, workflow_run_id, build_id) DO NOTHING
 		RETURNING id
-	`, operationID, request.Authority.TeamID, request.Authority.TeamName,
-		int64(request.Authority.WorkflowRunID), request.Authority.BuildID, request.Authority.Actor,
-		int64(request.Input.ID), nullableNonblank(request.ApprovedBy), approvalWaitID,
+	`, operationID, occurrence.authority.TeamID, occurrence.authority.TeamName,
+		int64(occurrence.authority.WorkflowRunID), occurrence.authority.BuildID, occurrence.authority.Actor,
+		int64(occurrence.input.ID), nullableNonblank(occurrence.approvedBy), approvalWaitID,
 		approvalQuestionID, approvalAnswerID, approvalResolvedAt,
 	).Scan(&occurrenceID)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -373,9 +806,76 @@ func ensureAgentPublicationOccurrence(
 			FROM agent_publication_occurrences
 			WHERE publication_id = $1 AND workflow_run_id = $2 AND build_id = $3
 			FOR UPDATE
-		`, operationID, int64(request.Authority.WorkflowRunID), request.Authority.BuildID).Scan(&occurrenceID)
+		`, operationID, int64(occurrence.authority.WorkflowRunID), occurrence.authority.BuildID).Scan(&occurrenceID)
 	}
 	return occurrenceID, err
+}
+
+func persistPRPublicationEvidence(
+	ctx context.Context,
+	tx Tx,
+	occurrenceID int64,
+	action publisher.PRAction,
+) error {
+	authority, _, inputs, _, _, _, err := prActionPersistence(action)
+	if err != nil {
+		return err
+	}
+	for _, input := range inputs {
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO agent_publication_inputs
+				(publication_id, team_id, role, snapshot_id)
+			VALUES ($1, $2, $3, $4)
+			ON CONFLICT (publication_id, role) DO NOTHING
+		`, occurrenceID, authority.TeamID, input.role, int64(input.ref.ID))
+		if err != nil {
+			return err
+		}
+	}
+
+	var evidence publisher.PublicationEvidence
+	switch action.Kind {
+	case publisher.OperationPublishPRBranch:
+		evidence = action.Branch.Evidence
+	case publisher.OperationCreatePR:
+		evidence = action.PullRequest.Evidence
+	case publisher.OperationPublishPRStatus:
+		evidence = action.Status.Evidence
+	case publisher.OperationRespondToReview:
+		evidence = action.Response.Evidence
+	default:
+		return publisher.ErrInvalidRequest
+	}
+	switch evidence.Kind {
+	case publisher.EvidenceAcceptedReview:
+		accepted := evidence.AcceptedReview
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO agent_publication_approval_evidence
+				(publication_id, team_id, evidence_kind,
+				 review_snapshot_id, candidate_snapshot_id, validation_snapshot_id,
+				 review_workflow_run_id, outcome_revision, accepted_by, accepted_at)
+			VALUES ($1, $2, 'accepted_review', $3, $4, $5, $6, $7, $8, $9)
+			ON CONFLICT (publication_id) DO NOTHING
+		`, occurrenceID, authority.TeamID, int64(accepted.Review.ID),
+			int64(accepted.Candidate.ID), int64(accepted.Validation.ID),
+			int64(accepted.ReviewWorkflowRunID), accepted.OutcomeRevision,
+			accepted.AcceptedBy, accepted.AcceptedAt.UTC())
+		return err
+	case publisher.EvidenceHumanWait:
+		wait := evidence.HumanWait
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO agent_publication_approval_evidence
+				(publication_id, team_id, evidence_kind, human_wait_id,
+				 question_snapshot_id, answer_snapshot_id, resolved_by, resolved_at)
+			VALUES ($1, $2, 'human_wait', $3, $4, $5, $6, $7)
+			ON CONFLICT (publication_id) DO NOTHING
+		`, occurrenceID, authority.TeamID, int64(wait.WaitID),
+			int64(wait.Question.ID), int64(wait.Answer.ID),
+			wait.ResolvedBy, wait.ResolvedAt.UTC())
+		return err
+	default:
+		return publisher.ErrInvalidRequest
+	}
 }
 
 func (factory *agentPublicationsFactory) Complete(
@@ -383,6 +883,25 @@ func (factory *agentPublicationsFactory) Complete(
 	operationKey string,
 	attempt int,
 	result publisher.Result,
+) (publisher.Publication, error) {
+	return factory.completePublication(ctx, operationKey, attempt, result, false)
+}
+
+func (factory *agentPublicationsFactory) CompletePR(
+	ctx context.Context,
+	operationKey string,
+	attempt int,
+	result publisher.Result,
+) (publisher.Publication, error) {
+	return factory.completePublication(ctx, operationKey, attempt, result, true)
+}
+
+func (factory *agentPublicationsFactory) completePublication(
+	ctx context.Context,
+	operationKey string,
+	attempt int,
+	result publisher.Result,
+	expectPR bool,
 ) (publisher.Publication, error) {
 	if ctx == nil {
 		return publisher.Publication{}, fmt.Errorf("%w: context is required", publisher.ErrInvalidResult)
@@ -410,6 +929,9 @@ func (factory *agentPublicationsFactory) Complete(
 		return publisher.Publication{}, publisher.ErrOperationNotFound
 	}
 	publication := record.publication
+	if (publication.PRAction != nil) != expectPR {
+		return publisher.Publication{}, publisher.ErrOperationNotFound
+	}
 	if publicationStatusTerminal(publication.Status) {
 		if publication.Attempt != attempt || publication.Result != result {
 			return publisher.Publication{}, publisher.ErrOperationConflict
@@ -494,6 +1016,9 @@ func linkSucceededPublicationOccurrences(ctx context.Context, tx Tx, operationID
 	}
 	Close(rows)
 	for _, publication := range publications {
+		if err := validateStoredPRPublication(ctx, tx, publication); err != nil {
+			return err
+		}
 		if err := linkSucceededPublicationOutcome(ctx, tx, publication); err != nil {
 			return err
 		}
@@ -506,12 +1031,16 @@ func linkSucceededPublicationOutcome(ctx context.Context, tx Tx, publication pub
 		return nil
 	}
 	if publication.ID <= 0 || publication.Result.Status != publisher.StatusSucceeded ||
-		publication.Result.Validate() != nil || publication.Request.ValidatePersisted() != nil {
+		publication.Result.Validate() != nil {
 		return fmt.Errorf("db: succeeded publication is invalid")
 	}
-	teamID := publication.Request.Authority.TeamID
-	runID := publication.Request.Authority.WorkflowRunID
-	outputID := publication.Request.Input.ID
+	authority, output, disposition, err := publicationOutcomeIdentity(publication)
+	if err != nil {
+		return err
+	}
+	teamID := authority.TeamID
+	runID := authority.WorkflowRunID
+	outputID := output.ID
 	if err := lockWorkflowOutcome(ctx, tx, teamID, runID, outputID); err != nil {
 		return err
 	}
@@ -542,12 +1071,8 @@ func linkSucceededPublicationOutcome(ctx context.Context, tx Tx, publication pub
 			    audited_at = now()
 			WHERE team_id = $1 AND workflow_run_id = $2 AND output_snapshot_id = $3
 		`, teamID, int64(runID), int64(outputID), int64(publication.ID),
-			publication.Request.Authority.Actor)
+			authority.Actor)
 		return err
-	}
-	disposition := workflowoutcomes.DispositionAccepted
-	if publication.Request.Mode == publisher.ModeMerge {
-		disposition = workflowoutcomes.DispositionMerged
 	}
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO agent_workflow_outcomes
@@ -557,8 +1082,34 @@ func linkSucceededPublicationOutcome(ctx context.Context, tx Tx, publication pub
 		VALUES ($1, $2, $3, $4, 'published', $5, 'succeeded',
 		        false, 0, '[]'::jsonb, $6, 1, now())
 	`, teamID, int64(runID), int64(outputID), disposition, int64(publication.ID),
-		publication.Request.Authority.Actor)
+		authority.Actor)
 	return err
+}
+
+func publicationOutcomeIdentity(
+	publication publisher.Publication,
+) (publisher.Authority, snapshot.SnapshotRef, workflowoutcomes.Disposition, error) {
+	if publication.PRAction != nil {
+		if publication.OperationKind != publication.PRAction.Kind ||
+			publication.PRAction.ValidatePersisted() != nil {
+			return publisher.Authority{}, snapshot.SnapshotRef{}, "",
+				fmt.Errorf("db: succeeded PR publication is invalid")
+		}
+		authority, primary, _, _, _, _, err := prActionPersistence(*publication.PRAction)
+		if err != nil {
+			return publisher.Authority{}, snapshot.SnapshotRef{}, "", err
+		}
+		return authority, primary, workflowoutcomes.DispositionAccepted, nil
+	}
+	if publication.OperationKind != "" || publication.Request.ValidatePersisted() != nil {
+		return publisher.Authority{}, snapshot.SnapshotRef{}, "",
+			fmt.Errorf("db: succeeded legacy publication is invalid")
+	}
+	disposition := workflowoutcomes.DispositionAccepted
+	if publication.Request.Mode == publisher.ModeMerge {
+		disposition = workflowoutcomes.DispositionMerged
+	}
+	return publication.Request.Authority, publication.Request.Input, disposition, nil
 }
 
 func (factory *agentPublicationsFactory) Get(
@@ -572,6 +1123,9 @@ func (factory *agentPublicationsFactory) Get(
 		return publisher.Publication{}, false, err
 	}
 	record, found, err := getAgentPublication(ctx, factory.conn, operationKey, false)
+	if err == nil && found && record.publication.PRAction != nil {
+		return publisher.Publication{}, false, nil
+	}
 	return record.publication, found, err
 }
 
@@ -579,6 +1133,16 @@ func authorizePublicationSnapshot(
 	ctx context.Context,
 	tx Tx,
 	request publisher.Request,
+) (snapshot.WorkflowRunID, error) {
+	return authorizePublicationSnapshotRef(ctx, tx, request.Authority, request.Input, false)
+}
+
+func authorizePublicationSnapshotRef(
+	ctx context.Context,
+	tx Tx,
+	authority publisher.Authority,
+	input snapshot.SnapshotRef,
+	requireWorkflowOutput bool,
 ) (snapshot.WorkflowRunID, error) {
 	var typeName string
 	var typeVersion int
@@ -602,6 +1166,7 @@ func authorizePublicationSnapshot(
 				FROM agent_workflow_run_snapshots binding
 				WHERE binding.workflow_run_id = workflow_run.id
 				  AND binding.snapshot_id = input.id
+				  AND ($6::boolean = false OR binding.direction = 'output')
 			)
 			OR EXISTS (
 				SELECT 1
@@ -614,8 +1179,8 @@ func authorizePublicationSnapshot(
 			)
 		  )
 		FOR SHARE OF workflow_run, build, input
-	`, int64(request.Input.ID), request.Authority.TeamID, request.Authority.TeamName,
-		request.Authority.BuildID, request.Authority.Actor,
+	`, int64(input.ID), authority.TeamID, authority.TeamName,
+		authority.BuildID, authority.Actor, requireWorkflowOutput,
 	).Scan(&workflowRunID, &typeName, &typeVersion, &digest, &contentState)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, publisher.ErrInvalidRequest
@@ -624,11 +1189,11 @@ func authorizePublicationSnapshot(
 		return 0, err
 	}
 	typ, err := joinSnapshotType(typeName, typeVersion)
-	if err != nil || typ != request.Input.Type || digest != request.Input.Digest.String() ||
+	if err != nil || typ != input.Type || digest != input.Digest.String() ||
 		contentState != string(snapshot.ContentStateAvailable) {
 		return 0, publisher.ErrInvalidRequest
 	}
-	if request.Authority.WorkflowRunID != 0 && request.Authority.WorkflowRunID != workflowRunID {
+	if authority.WorkflowRunID != 0 && authority.WorkflowRunID != workflowRunID {
 		return 0, publisher.ErrInvalidRequest
 	}
 	return workflowRunID, nil
@@ -644,7 +1209,50 @@ func authorizePublicationApproval(ctx context.Context, tx Tx, request publisher.
 	if request.Approval == nil {
 		return publisher.ErrInvalidRequest
 	}
-	evidence := request.Approval
+	if request.ApprovedBy != request.Approval.ResolvedBy {
+		return publisher.ErrInvalidRequest
+	}
+	return authorizePublicationHumanWait(ctx, tx, request.Authority, *request.Approval)
+}
+
+func authorizePRPublicationEvidence(
+	ctx context.Context,
+	tx Tx,
+	action publisher.PRAction,
+) error {
+	var evidence publisher.PublicationEvidence
+	switch action.Kind {
+	case publisher.OperationPublishPRBranch:
+		evidence = action.Branch.Evidence
+	case publisher.OperationCreatePR:
+		evidence = action.PullRequest.Evidence
+	case publisher.OperationPublishPRStatus:
+		evidence = action.Status.Evidence
+	case publisher.OperationRespondToReview:
+		evidence = action.Response.Evidence
+	default:
+		return publisher.ErrInvalidRequest
+	}
+	if err := evidence.Validate(); err != nil {
+		return err
+	}
+	authority := prActionAuthority(action)
+	switch evidence.Kind {
+	case publisher.EvidenceHumanWait:
+		return authorizePublicationHumanWait(ctx, tx, authority, *evidence.HumanWait)
+	case publisher.EvidenceAcceptedReview:
+		return authorizeAcceptedReviewEvidence(ctx, tx, authority.TeamID, *evidence.AcceptedReview)
+	default:
+		return publisher.ErrInvalidRequest
+	}
+}
+
+func authorizePublicationHumanWait(
+	ctx context.Context,
+	tx Tx,
+	authority publisher.Authority,
+	evidence publisher.ApprovalEvidence,
+) error {
 	var questionTypeName, answerTypeName, questionDigest, answerDigest string
 	var questionTypeVersion, answerTypeVersion int
 	err := tx.QueryRowContext(ctx, `
@@ -666,8 +1274,8 @@ func authorizePublicationApproval(ctx context.Context, tx Tx, request publisher.
 		  AND question.content_state = 'available'
 		  AND answer.content_state = 'available'
 		FOR SHARE OF wait, question, answer
-	`, int64(evidence.WaitID), request.Authority.TeamID, int64(request.Authority.WorkflowRunID),
-		request.Authority.BuildID, evidence.ResolvedBy, evidence.ResolvedAt.UTC(),
+	`, int64(evidence.WaitID), authority.TeamID, int64(authority.WorkflowRunID),
+		authority.BuildID, evidence.ResolvedBy, evidence.ResolvedAt.UTC(),
 		int64(evidence.Question.ID), int64(evidence.Answer.ID),
 	).Scan(&questionTypeName, &questionTypeVersion, &questionDigest, &answerTypeName, &answerTypeVersion, &answerDigest)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -679,8 +1287,105 @@ func authorizePublicationApproval(ctx context.Context, tx Tx, request publisher.
 	questionType, questionErr := joinSnapshotType(questionTypeName, questionTypeVersion)
 	answerType, answerErr := joinSnapshotType(answerTypeName, answerTypeVersion)
 	if questionErr != nil || answerErr != nil || questionType != evidence.Question.Type || answerType != evidence.Answer.Type ||
-		questionDigest != evidence.Question.Digest.String() || answerDigest != evidence.Answer.Digest.String() ||
-		evidence.ResolvedBy != request.ApprovedBy {
+		questionDigest != evidence.Question.Digest.String() || answerDigest != evidence.Answer.Digest.String() {
+		return publisher.ErrInvalidRequest
+	}
+	return nil
+}
+
+func authorizeAcceptedReviewEvidence(
+	ctx context.Context,
+	queryer snapshotQueryer,
+	teamID int,
+	evidence publisher.AcceptedReviewEvidence,
+) error {
+	if err := evidence.Validate(); err != nil {
+		return err
+	}
+	for _, ref := range []snapshot.SnapshotRef{
+		evidence.Review, evidence.Candidate, evidence.Validation,
+	} {
+		if err := authorizeAvailableSnapshotRef(ctx, queryer, teamID, ref); err != nil {
+			return err
+		}
+	}
+	var found int
+	err := queryer.QueryRowContext(ctx, `
+		SELECT 1
+		FROM agent_workflow_runs run
+		JOIN agent_workflow_run_snapshots candidate
+		  ON candidate.workflow_run_id=run.id
+		 AND candidate.direction='input'
+		 AND candidate.port_name='after'
+		 AND candidate.promoted_at IS NOT NULL
+		 AND candidate.snapshot_id=$3
+		JOIN agent_workflow_run_snapshots review
+		  ON review.workflow_run_id=run.id
+		 AND review.direction='output'
+		 AND review.port_name='review'
+		 AND review.promoted_at IS NOT NULL
+		 AND review.snapshot_id=$4
+		JOIN agent_workflow_outcomes outcome
+		  ON outcome.team_id=run.team_id
+		 AND outcome.workflow_run_id=run.id
+		 AND outcome.output_snapshot_id=review.snapshot_id
+		 AND outcome.disposition='accepted'
+		 AND outcome.revision=$5
+		 AND outcome.actor=$6
+		 AND outcome.audited_at=$7
+		WHERE run.id=$1
+		  AND run.team_id=$2
+		  AND run.definition_kind='workflow'
+		  AND run.workflow_name='code-review'
+		  AND run.schema_version=3
+		  AND run.status='succeeded'
+		FOR SHARE OF run, candidate, review, outcome
+	`, int64(evidence.ReviewWorkflowRunID), teamID, int64(evidence.Candidate.ID),
+		int64(evidence.Review.ID), evidence.OutcomeRevision, evidence.AcceptedBy,
+		evidence.AcceptedAt.UTC()).Scan(&found)
+	if errors.Is(err, sql.ErrNoRows) {
+		return publisher.ErrInvalidRequest
+	}
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func authorizeAvailableSnapshotRef(
+	ctx context.Context,
+	queryer snapshotQueryer,
+	teamID int,
+	ref snapshot.SnapshotRef,
+) error {
+	return validatePublicationSnapshotRef(ctx, queryer, teamID, ref, true)
+}
+
+func validatePublicationSnapshotRef(
+	ctx context.Context,
+	queryer snapshotQueryer,
+	teamID int,
+	ref snapshot.SnapshotRef,
+	requireAvailable bool,
+) error {
+	var typeName, digest, contentState string
+	var typeVersion int
+	err := queryer.QueryRowContext(ctx, `
+		SELECT type_name, type_version, digest, content_state
+		FROM agent_snapshots
+		WHERE id=$1 AND team_id=$2
+	`, int64(ref.ID), teamID).Scan(&typeName, &typeVersion, &digest, &contentState)
+	if errors.Is(err, sql.ErrNoRows) {
+		return publisher.ErrInvalidRequest
+	}
+	if err != nil {
+		return err
+	}
+	typ, err := joinSnapshotType(typeName, typeVersion)
+	if err != nil || typ != ref.Type || digest != ref.Digest.String() {
+		return publisher.ErrInvalidRequest
+	}
+	if requireAvailable && contentState != string(snapshot.ContentStateAvailable) {
 		return publisher.ErrInvalidRequest
 	}
 	return nil
@@ -702,6 +1407,9 @@ func getAgentPublication(
 	if errors.Is(err, sql.ErrNoRows) {
 		return agentPublicationRecord{}, false, nil
 	}
+	if err == nil {
+		err = validateStoredPRPublication(ctx, queryer, record.publication)
+	}
 	return record, err == nil, err
 }
 
@@ -720,39 +1428,212 @@ func getAgentPublicationOccurrence(
 	if errors.Is(err, sql.ErrNoRows) {
 		return agentPublicationRecord{}, false, nil
 	}
+	if err == nil {
+		err = validateStoredPRPublication(ctx, queryer, record.publication)
+	}
 	return record, err == nil, err
+}
+
+func validateStoredPRPublication(
+	ctx context.Context,
+	queryer snapshotQueryer,
+	publication publisher.Publication,
+) error {
+	if publication.PRAction == nil {
+		return nil
+	}
+	action := *publication.PRAction
+	authority, _, inputs, _, _, _, err := prActionPersistence(action)
+	if err != nil || action.ValidatePersisted() != nil ||
+		publication.OperationKind != action.Kind {
+		return fmt.Errorf("db: persisted PR publication is invalid")
+	}
+	expectedInputs := make(map[string]snapshot.SnapshotRef, len(inputs))
+	for _, input := range inputs {
+		expectedInputs[input.role] = input.ref
+	}
+	rows, err := queryer.QueryContext(ctx, `
+		SELECT input.role, stored.id, stored.type_name, stored.type_version,
+		       stored.digest
+		FROM agent_publication_inputs input
+		JOIN agent_snapshots stored
+		  ON stored.id=input.snapshot_id
+		 AND stored.team_id=input.team_id
+		WHERE input.publication_id=$1
+		  AND input.team_id=$2
+		ORDER BY input.role
+	`, int64(publication.ID), authority.TeamID)
+	if err != nil {
+		return err
+	}
+	seen := make(map[string]struct{}, len(expectedInputs))
+	for rows.Next() {
+		var role, typeName, digest string
+		var id int64
+		var typeVersion int
+		if err := rows.Scan(&role, &id, &typeName, &typeVersion, &digest); err != nil {
+			Close(rows)
+			return err
+		}
+		expected, found := expectedInputs[role]
+		typ, typeErr := joinSnapshotType(typeName, typeVersion)
+		if !found || typeErr != nil ||
+			expected != (snapshot.SnapshotRef{
+				ID: snapshot.SnapshotID(id), Type: typ, Digest: snapshot.Digest(digest),
+			}) {
+			Close(rows)
+			return fmt.Errorf("db: persisted PR publication input is invalid")
+		}
+		seen[role] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		Close(rows)
+		return err
+	}
+	Close(rows)
+	if len(seen) != len(expectedInputs) {
+		return fmt.Errorf("db: persisted PR publication inputs are incomplete")
+	}
+
+	evidence, err := prActionEvidence(action)
+	if err != nil {
+		return err
+	}
+	var (
+		kind, acceptedBy, resolvedBy                     sql.NullString
+		storedTeam                                       int
+		reviewID, candidateID, validationID, reviewRunID sql.NullInt64
+		outcomeRevision, waitID, questionID, answerID    sql.NullInt64
+		acceptedAt, resolvedAt                           sql.NullTime
+	)
+	err = queryer.QueryRowContext(ctx, `
+		SELECT evidence_kind, team_id,
+		       review_snapshot_id, candidate_snapshot_id, validation_snapshot_id,
+		       review_workflow_run_id, outcome_revision, accepted_by, accepted_at,
+		       human_wait_id, question_snapshot_id, answer_snapshot_id,
+		       resolved_by, resolved_at
+		FROM agent_publication_approval_evidence
+		WHERE publication_id=$1
+	`, int64(publication.ID)).Scan(
+		&kind, &storedTeam,
+		&reviewID, &candidateID, &validationID, &reviewRunID,
+		&outcomeRevision, &acceptedBy, &acceptedAt,
+		&waitID, &questionID, &answerID, &resolvedBy, &resolvedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("db: persisted PR publication evidence is missing")
+	}
+	if err != nil {
+		return err
+	}
+	if !kind.Valid || storedTeam != authority.TeamID ||
+		kind.String != string(evidence.Kind) {
+		return fmt.Errorf("db: persisted PR publication evidence is invalid")
+	}
+	switch evidence.Kind {
+	case publisher.EvidenceAcceptedReview:
+		accepted := evidence.AcceptedReview
+		if accepted == nil ||
+			!reviewID.Valid || reviewID.Int64 != int64(accepted.Review.ID) ||
+			!candidateID.Valid || candidateID.Int64 != int64(accepted.Candidate.ID) ||
+			!validationID.Valid || validationID.Int64 != int64(accepted.Validation.ID) ||
+			!reviewRunID.Valid || reviewRunID.Int64 != int64(accepted.ReviewWorkflowRunID) ||
+			!outcomeRevision.Valid || outcomeRevision.Int64 != accepted.OutcomeRevision ||
+			!acceptedBy.Valid || acceptedBy.String != accepted.AcceptedBy ||
+			!acceptedAt.Valid || !acceptedAt.Time.UTC().Equal(accepted.AcceptedAt.UTC()) ||
+			waitID.Valid || questionID.Valid || answerID.Valid || resolvedBy.Valid || resolvedAt.Valid {
+			return fmt.Errorf("db: persisted accepted-review evidence is invalid")
+		}
+		for _, ref := range []snapshot.SnapshotRef{
+			accepted.Review, accepted.Candidate, accepted.Validation,
+		} {
+			if err := validatePublicationSnapshotRef(
+				ctx, queryer, authority.TeamID, ref, false,
+			); err != nil {
+				return fmt.Errorf("db: persisted accepted-review snapshot is invalid: %w", err)
+			}
+		}
+	case publisher.EvidenceHumanWait:
+		wait := evidence.HumanWait
+		if wait == nil ||
+			!waitID.Valid || waitID.Int64 != int64(wait.WaitID) ||
+			!questionID.Valid || questionID.Int64 != int64(wait.Question.ID) ||
+			!answerID.Valid || answerID.Int64 != int64(wait.Answer.ID) ||
+			!resolvedBy.Valid || resolvedBy.String != wait.ResolvedBy ||
+			!resolvedAt.Valid || !resolvedAt.Time.UTC().Equal(wait.ResolvedAt.UTC()) ||
+			reviewID.Valid || candidateID.Valid || validationID.Valid || reviewRunID.Valid ||
+			outcomeRevision.Valid || acceptedBy.Valid || acceptedAt.Valid {
+			return fmt.Errorf("db: persisted human-wait evidence is invalid")
+		}
+		for _, ref := range []snapshot.SnapshotRef{wait.Question, wait.Answer} {
+			if err := validatePublicationSnapshotRef(
+				ctx, queryer, authority.TeamID, ref, false,
+			); err != nil {
+				return fmt.Errorf("db: persisted human-wait snapshot is invalid: %w", err)
+			}
+		}
+	default:
+		return fmt.Errorf("db: persisted PR publication evidence kind is invalid")
+	}
+	return nil
+}
+
+func prActionEvidence(action publisher.PRAction) (publisher.PublicationEvidence, error) {
+	switch action.Kind {
+	case publisher.OperationPublishPRBranch:
+		if action.Branch != nil {
+			return action.Branch.Evidence, nil
+		}
+	case publisher.OperationCreatePR:
+		if action.PullRequest != nil {
+			return action.PullRequest.Evidence, nil
+		}
+	case publisher.OperationPublishPRStatus:
+		if action.Status != nil {
+			return action.Status.Evidence, nil
+		}
+	case publisher.OperationRespondToReview:
+		if action.Response != nil {
+			return action.Response.Evidence, nil
+		}
+	}
+	return publisher.PublicationEvidence{}, publisher.ErrInvalidRequest
 }
 
 func scanAgentPublication(row scannable) (agentPublicationRecord, error) {
 	var record agentPublicationRecord
 	publication := &record.publication
+	var operationKind sql.NullString
+	var operationPayload []byte
 	var publisherType string
 	var snapshotID int64
 	var snapshotTypeName string
 	var snapshotTypeVersion int
 	var digest string
+	var destination string
 	var mode string
 	var parameters []byte
+	var policyVersion string
 	var approvedBy sql.NullString
 	var approvalWaitID sql.NullInt64
 	var approvalQuestionID, approvalAnswerID sql.NullInt64
 	var approvalQuestionTypeName, approvalAnswerTypeName, approvalQuestionDigest, approvalAnswerDigest sql.NullString
 	var approvalQuestionTypeVersion, approvalAnswerTypeVersion sql.NullInt64
 	var approvalResolvedAt sql.NullTime
+	var authority publisher.Authority
 	var status string
 	var leaseUntil sql.NullTime
 	var result []byte
 	err := row.Scan(
-		&record.operationID, &publication.ID, &publication.OperationKey, &publisherType,
+		&record.operationID, &publication.ID, &publication.OperationKey,
+		&operationKind, &operationPayload, &publisherType,
 		&snapshotID, &snapshotTypeName, &snapshotTypeVersion, &digest,
-		&publication.Request.Destination, &mode, &parameters,
-		&publication.Request.ApprovalPolicyVersion, &approvedBy,
+		&destination, &mode, &parameters, &policyVersion, &approvedBy,
 		&approvalWaitID, &approvalQuestionID, &approvalQuestionTypeName, &approvalQuestionTypeVersion,
 		&approvalQuestionDigest, &approvalAnswerID, &approvalAnswerTypeName, &approvalAnswerTypeVersion,
 		&approvalAnswerDigest, &approvalResolvedAt,
-		&publication.Request.Authority.TeamID, &publication.Request.Authority.TeamName,
-		&publication.Request.Authority.WorkflowRunID, &publication.Request.Authority.BuildID,
-		&publication.Request.Authority.Actor,
+		&authority.TeamID, &authority.TeamName, &authority.WorkflowRunID,
+		&authority.BuildID, &authority.Actor,
 		&status, &publication.Attempt, &leaseUntil, &result,
 		&publication.CreatedAt, &publication.UpdatedAt,
 	)
@@ -763,36 +1644,8 @@ func scanAgentPublication(row scannable) (agentPublicationRecord, error) {
 	if err != nil {
 		return agentPublicationRecord{}, err
 	}
-	publication.Request.Publisher = snapshot.TypeRef(publisherType)
-	publication.Request.Input = snapshot.SnapshotRef{
+	primary := snapshot.SnapshotRef{
 		ID: snapshot.SnapshotID(snapshotID), Type: typ, Digest: snapshot.Digest(digest),
-	}
-	publication.Request.Mode = publisher.Mode(mode)
-	publication.Request.ApprovedBy = approvedBy.String
-	if approvalWaitID.Valid || approvalQuestionID.Valid || approvalAnswerID.Valid || approvalResolvedAt.Valid {
-		if !approvalWaitID.Valid || !approvalQuestionID.Valid || !approvalQuestionTypeName.Valid ||
-			!approvalQuestionTypeVersion.Valid || !approvalQuestionDigest.Valid || !approvalAnswerID.Valid ||
-			!approvalAnswerTypeName.Valid || !approvalAnswerTypeVersion.Valid || !approvalAnswerDigest.Valid ||
-			!approvalResolvedAt.Valid {
-			return agentPublicationRecord{}, fmt.Errorf("db: publication approval evidence is incomplete")
-		}
-		questionType, err := joinSnapshotType(approvalQuestionTypeName.String, int(approvalQuestionTypeVersion.Int64))
-		if err != nil {
-			return agentPublicationRecord{}, err
-		}
-		answerType, err := joinSnapshotType(approvalAnswerTypeName.String, int(approvalAnswerTypeVersion.Int64))
-		if err != nil {
-			return agentPublicationRecord{}, err
-		}
-		publication.Request.Approval = &publisher.ApprovalEvidence{
-			WaitID:     workflowwait.ID(approvalWaitID.Int64),
-			Question:   snapshot.SnapshotRef{ID: snapshot.SnapshotID(approvalQuestionID.Int64), Type: questionType, Digest: snapshot.Digest(approvalQuestionDigest.String)},
-			Answer:     snapshot.SnapshotRef{ID: snapshot.SnapshotID(approvalAnswerID.Int64), Type: answerType, Digest: snapshot.Digest(approvalAnswerDigest.String)},
-			ResolvedBy: approvedBy.String, ResolvedAt: approvalResolvedAt.Time.UTC(),
-		}
-	}
-	if err := json.Unmarshal(parameters, &publication.Request.Parameters); err != nil {
-		return agentPublicationRecord{}, fmt.Errorf("db: decode publication parameters: %w", err)
 	}
 	publication.Status = publisher.Status(status)
 	if leaseUntil.Valid {
@@ -808,15 +1661,123 @@ func scanAgentPublication(row scannable) (agentPublicationRecord, error) {
 	}
 	if record.operationID <= 0 || publication.ID <= 0 || publication.Attempt <= 0 ||
 		publication.CreatedAt.IsZero() || publication.UpdatedAt.IsZero() ||
-		publication.Request.ValidatePersisted() != nil || (publication.Status == publisher.StatusPending) != leaseUntil.Valid {
+		(publication.Status == publisher.StatusPending) != leaseUntil.Valid {
 		return agentPublicationRecord{}, fmt.Errorf("db: publication row is invalid")
 	}
-	key, err := publication.Request.OperationKey()
-	if err != nil || key != publication.OperationKey {
-		return agentPublicationRecord{}, fmt.Errorf("db: publication operation identity is invalid")
+
+	approvalPresent := approvedBy.Valid || approvalWaitID.Valid || approvalQuestionID.Valid ||
+		approvalAnswerID.Valid || approvalResolvedAt.Valid ||
+		approvalQuestionTypeName.Valid || approvalQuestionTypeVersion.Valid || approvalQuestionDigest.Valid ||
+		approvalAnswerTypeName.Valid || approvalAnswerTypeVersion.Valid || approvalAnswerDigest.Valid
+	if !operationKind.Valid {
+		if operationPayload != nil {
+			return agentPublicationRecord{}, fmt.Errorf("db: legacy publication discriminator is invalid")
+		}
+		publication.Request = publisher.Request{
+			Publisher:             snapshot.TypeRef(publisherType),
+			Input:                 primary,
+			Destination:           destination,
+			Mode:                  publisher.Mode(mode),
+			ApprovalPolicyVersion: policyVersion,
+			ApprovedBy:            approvedBy.String,
+			Authority:             authority,
+		}
+		if approvalPresent {
+			if !approvalWaitID.Valid || !approvalQuestionID.Valid || !approvalQuestionTypeName.Valid ||
+				!approvalQuestionTypeVersion.Valid || !approvalQuestionDigest.Valid || !approvalAnswerID.Valid ||
+				!approvalAnswerTypeName.Valid || !approvalAnswerTypeVersion.Valid || !approvalAnswerDigest.Valid ||
+				!approvalResolvedAt.Valid || !approvedBy.Valid {
+				return agentPublicationRecord{}, fmt.Errorf("db: publication approval evidence is incomplete")
+			}
+			questionType, err := joinSnapshotType(
+				approvalQuestionTypeName.String, int(approvalQuestionTypeVersion.Int64),
+			)
+			if err != nil {
+				return agentPublicationRecord{}, err
+			}
+			answerType, err := joinSnapshotType(
+				approvalAnswerTypeName.String, int(approvalAnswerTypeVersion.Int64),
+			)
+			if err != nil {
+				return agentPublicationRecord{}, err
+			}
+			publication.Request.Approval = &publisher.ApprovalEvidence{
+				WaitID: workflowwait.ID(approvalWaitID.Int64),
+				Question: snapshot.SnapshotRef{
+					ID:   snapshot.SnapshotID(approvalQuestionID.Int64),
+					Type: questionType, Digest: snapshot.Digest(approvalQuestionDigest.String),
+				},
+				Answer: snapshot.SnapshotRef{
+					ID:   snapshot.SnapshotID(approvalAnswerID.Int64),
+					Type: answerType, Digest: snapshot.Digest(approvalAnswerDigest.String),
+				},
+				ResolvedBy: approvedBy.String, ResolvedAt: approvalResolvedAt.Time.UTC(),
+			}
+		}
+		if err := json.Unmarshal(parameters, &publication.Request.Parameters); err != nil {
+			return agentPublicationRecord{}, fmt.Errorf("db: decode publication parameters: %w", err)
+		}
+		if publication.Request.ValidatePersisted() != nil {
+			return agentPublicationRecord{}, fmt.Errorf("db: legacy publication request is invalid")
+		}
+		key, err := publication.Request.OperationKey()
+		if err != nil || key != publication.OperationKey {
+			return agentPublicationRecord{}, fmt.Errorf("db: publication operation identity is invalid")
+		}
+		record.publication = publication.Clone()
+		return record, nil
 	}
+
+	if len(operationPayload) == 0 || approvalPresent {
+		return agentPublicationRecord{}, fmt.Errorf("db: PR publication row is incomplete")
+	}
+	action, err := decodeStoredPRAction(operationPayload)
+	if err != nil {
+		return agentPublicationRecord{}, err
+	}
+	if action.Kind != publisher.OperationKind(operationKind.String) ||
+		prActionAuthority(action) != (publisher.Authority{TeamID: authority.TeamID}) {
+		return agentPublicationRecord{}, fmt.Errorf("db: PR publication discriminator is invalid")
+	}
+	setPRActionAuthority(&action, authority)
+	if action.ValidatePersisted() != nil {
+		return agentPublicationRecord{}, fmt.Errorf("db: PR publication action is invalid")
+	}
+	_, expectedPrimary, _, expectedDestination, expectedPolicy, expectedMode, err :=
+		prActionPersistence(action)
+	if err != nil || expectedPrimary != primary ||
+		publisherType != "provider-native-pr/v1" ||
+		expectedDestination != destination || expectedPolicy != policyVersion ||
+		string(expectedMode) != mode {
+		return agentPublicationRecord{}, fmt.Errorf("db: PR publication projection is invalid")
+	}
+	var parameterProjection map[string]string
+	if err := json.Unmarshal(parameters, &parameterProjection); err != nil ||
+		len(parameterProjection) != 0 {
+		return agentPublicationRecord{}, fmt.Errorf("db: PR publication parameters are invalid")
+	}
+	key, err := action.OperationKey()
+	if err != nil || key != publication.OperationKey {
+		return agentPublicationRecord{}, fmt.Errorf("db: PR publication operation identity is invalid")
+	}
+	publication.OperationKind = action.Kind
+	publication.PRAction = &action
 	record.publication = publication.Clone()
 	return record, nil
+}
+
+func decodeStoredPRAction(payload []byte) (publisher.PRAction, error) {
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.DisallowUnknownFields()
+	var action publisher.PRAction
+	if err := decoder.Decode(&action); err != nil {
+		return publisher.PRAction{}, fmt.Errorf("db: decode PR publication action: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return publisher.PRAction{}, fmt.Errorf("db: PR publication action has trailing content")
+	}
+	return action, nil
 }
 
 func publicationStatusTerminal(status publisher.Status) bool {
@@ -829,3 +1790,4 @@ func publicationStatusTerminal(status publisher.Status) bool {
 }
 
 var _ publisher.Store = (*agentPublicationsFactory)(nil)
+var _ publisher.PRStore = (*agentPublicationsFactory)(nil)

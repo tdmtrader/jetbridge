@@ -223,7 +223,13 @@ var _ = Describe("workflow resource-source admission persistence", func() {
 		_, err = job.CreateBuild("caller")
 		Expect(errors.Is(err, db.ErrAgentWorkflowResourceSourceImmutable)).To(BeTrue())
 
-		activated, err := registry.UnpauseActiveResourceSourcePipeline(
+		_, err = registry.UnpauseActiveResourceSourcePipeline(
+			context.Background(),
+			binding.TeamID,
+			registered,
+		)
+		Expect(err).To(HaveOccurred())
+		activated, err := registry.UnpauseActiveBindingResourceSourcePipeline(
 			context.Background(),
 			binding.TeamID,
 			registered,
@@ -281,6 +287,71 @@ var _ = Describe("workflow resource-source admission persistence", func() {
 			context.Background(), storedBinding, rendered,
 		)
 		Expect(errors.Is(err, pullrequest.ErrStaleBindingRevision)).To(BeTrue())
+
+		attention, err := bindings.MarkAttention(
+			context.Background(), observed.TeamID, observed.ID,
+			"provider result requires operator attention",
+		)
+		Expect(err).NotTo(HaveOccurred())
+		paused, err := registry.PauseActiveBindingResourceSourcePipeline(
+			context.Background(), observed.TeamID, reconfigured,
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(paused).To(BeTrue())
+		resumed, err := bindings.Resume(
+			context.Background(),
+			pullrequest.OperatorRequest{
+				TeamID: attention.TeamID, BindingID: attention.ID,
+				ExpectedRevision: attention.Revision,
+			},
+		)
+		Expect(err).NotTo(HaveOccurred())
+		unpaused, err := registry.UnpauseActiveBindingResourceSourcePipeline(
+			context.Background(), resumed.TeamID, reconfigured,
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(unpaused).To(BeTrue())
+		terminated, err := bindings.Terminate(
+			context.Background(),
+			pullrequest.OperatorRequest{
+				TeamID: resumed.TeamID, BindingID: resumed.ID,
+				ExpectedRevision: resumed.Revision,
+			},
+		)
+		Expect(err).NotTo(HaveOccurred())
+		drained, err := registry.DrainTerminalBindingResourceSourcePipeline(
+			context.Background(), terminated.TeamID, reconfigured,
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(drained).To(BeTrue())
+		stored, found, err := registry.FindByBinding(
+			context.Background(), terminated.TeamID, terminated.ID,
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(stored.State).To(Equal(
+			db.AgentWorkflowResourceSourcePipelineDraining,
+		))
+		drained, err = registry.DrainTerminalBindingResourceSourcePipeline(
+			context.Background(), terminated.TeamID, reconfigured,
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(drained).To(BeFalse())
+		paused, err = registry.PauseDrainedResourceSourcePipeline(
+			context.Background(), terminated.TeamID, stored,
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(paused).To(BeTrue())
+		archived, err := registry.ArchiveDrainedResourceSourcePipeline(
+			context.Background(), terminated.TeamID, stored,
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(archived).To(BeTrue())
+		archived, err = registry.ArchiveDrainedResourceSourcePipeline(
+			context.Background(), terminated.TeamID, stored,
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(archived).To(BeFalse())
 	})
 
 	It("derives persisted version and type only from the selecting build", func() {

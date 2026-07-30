@@ -210,7 +210,29 @@ func ValidateFunction(function *FunctionConfig) ([]atc.ConfigWarning, error) {
 }
 
 func validateOrdinaryFunction(function *FunctionConfig) ([]atc.ConfigWarning, error) {
-	warnings, errorMessages := configvalidate.Validate(FunctionATCConfig(function))
+	ordinary := function
+	cloned, err := cloneFunctionConfig(function)
+	if err != nil {
+		return nil, fmt.Errorf("workflow: clone ordinary function validation: %w", err)
+	}
+	if err := walkFunctionSteps(
+		cloned.Plan,
+		func(step atc.Step, _ string, _ bool) error {
+			publish, ok := step.Config.(*atc.PublishSnapshotStep)
+			if ok && publish.PRApproval != nil &&
+				publish.WorkflowRunID == "" {
+				// The reusable source cannot author this server-owned value,
+				// but ordinary Concourse wire validation requires a positive
+				// placeholder before the trusted renderer binds it.
+				publish.WorkflowRunID = "1"
+			}
+			return nil
+		},
+	); err != nil {
+		return nil, err
+	}
+	ordinary = cloned
+	warnings, errorMessages := configvalidate.Validate(FunctionATCConfig(ordinary))
 	if len(errorMessages) > 0 {
 		return warnings, fmt.Errorf("workflow: invalid Concourse config:\n%s", strings.Join(errorMessages, "\n"))
 	}

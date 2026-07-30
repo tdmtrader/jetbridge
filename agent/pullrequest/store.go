@@ -212,8 +212,8 @@ func (request AttachRun) Validate() error {
 }
 
 // ReleaseLaunch clears one exact reservation after launch failed before
-// attachment, or after its attached run ended unsuccessfully. A nil
-// WorkflowRunID selects only an unattached reservation.
+// attachment, or after its attached run ended terminally without a safe cursor
+// acknowledgement. A nil WorkflowRunID selects only an unattached reservation.
 type ReleaseLaunch struct {
 	TeamID           int
 	BindingID        int64

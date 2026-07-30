@@ -191,19 +191,68 @@ func (factory *agentPRBindingsFactory) ReserveLaunch(
 	if binding.Active != nil {
 		exactReplay := sameAgentPRReservationRequest(*binding.Active, request) &&
 			binding.Active.BaseRevision == request.ExpectedRevision
-		// Only the original, still-unattached claim may replay from its base
-		// projection. Attachment or any intervening binding update makes that
-		// projected source version stale.
-		if exactReplay &&
-			(binding.Active.WorkflowRunID != nil ||
-				binding.Revision != binding.Active.BaseRevision+1) {
-			return pullrequest.LaunchReservation{}, false, pullrequest.ErrStaleBindingRevision
-		}
-		if exactReplay && binding.Active.ExpiresAt.After(now) {
+		if exactReplay {
+			// A crash after atomic run allocation/attachment but before the
+			// binder returns must re-enter that same durable run. Only the
+			// attachment's single revision increment is admissible.
+			if binding.Active.WorkflowRunID != nil {
+				if binding.Revision !=
+					binding.Active.BindingRevision+1 {
+					return pullrequest.LaunchReservation{}, false,
+						pullrequest.ErrStaleBindingRevision
+				}
+				if err := tx.Commit(); err != nil {
+					return pullrequest.LaunchReservation{}, false, err
+				}
+				return *binding.Active, true, nil
+			}
+			if binding.Revision != binding.Active.BindingRevision {
+				return pullrequest.LaunchReservation{}, false,
+					pullrequest.ErrStaleBindingRevision
+			}
+			if binding.Active.ExpiresAt.After(now) {
+				if err := tx.Commit(); err != nil {
+					return pullrequest.LaunchReservation{}, false, err
+				}
+				return *binding.Active, true, nil
+			}
+			// The source version still names the exact base projection, but
+			// its unattached lease expired after reservation incremented the
+			// binding revision. Rotate only the lease identity under this
+			// locked row. Keeping the reservation revision stable lets the
+			// same captured admission attach, while the old token can no
+			// longer race a recovered launcher.
+			token, err := newAgentPRReservationToken()
+			if err != nil {
+				return pullrequest.LaunchReservation{}, false, err
+			}
+			expiresAt := normalizeAgentPRBindingTime(
+				now.Add(request.ExpiresIn),
+			)
+			result, err := tx.ExecContext(ctx, `
+				UPDATE agent_pr_bindings
+				SET active_reservation_token=$4,
+				    active_reservation_expires_at=$5,
+				    updated_at=$6
+				WHERE team_id=$1 AND id=$2 AND revision=$3
+				  AND active_reservation_token=$7
+				  AND active_workflow_run_id IS NULL
+				  AND active_reservation_expires_at <= $6
+			`, request.TeamID, request.BindingID, binding.Revision,
+				token, expiresAt, now, binding.Active.Token)
+			if err != nil {
+				return pullrequest.LaunchReservation{}, false, err
+			}
+			if err := requireAgentPRBindingCAS(result); err != nil {
+				return pullrequest.LaunchReservation{}, false, err
+			}
+			recovered := *binding.Active
+			recovered.Token = token
+			recovered.ExpiresAt = expiresAt
 			if err := tx.Commit(); err != nil {
 				return pullrequest.LaunchReservation{}, false, err
 			}
-			return *binding.Active, true, nil
+			return recovered, true, nil
 		}
 		if binding.Active.WorkflowRunID != nil || binding.Active.ExpiresAt.After(now) {
 			if err := tx.Commit(); err != nil {
@@ -408,7 +457,7 @@ func (factory *agentPRBindingsFactory) ReleaseLaunch(
 		return pullrequest.Binding{}, pullrequest.ErrReservationMismatch
 	}
 	if request.WorkflowRunID != nil {
-		if err := validateAgentPRRunUnsuccessfulTerminal(
+		if err := validateAgentPRRunTerminal(
 			ctx, tx, request.TeamID, request.BindingID,
 			binding.MonitorWorkflowDefinitionID, *request.WorkflowRunID,
 		); err != nil {
@@ -1051,8 +1100,9 @@ func scanAgentPRBinding(row interface{ Scan(...any) error }) (pullrequest.Bindin
 			return pullrequest.Binding{}, fmt.Errorf("db: decode active PR cursor: %w", err)
 		}
 		reservation := pullrequest.LaunchReservation{
-			BindingID: binding.ID, BindingRevision: binding.Revision,
-			BaseRevision: activeBaseRevision.Int64, ActionDigest: activeAction.String,
+			BindingID:       binding.ID,
+			BindingRevision: activeBaseRevision.Int64 + 1,
+			BaseRevision:    activeBaseRevision.Int64, ActionDigest: activeAction.String,
 			ObservationSnapshotID: snapshot.SnapshotID(activeObservation.Int64),
 			Cursor:                cursor, SourceSHA: activeSource.String, TargetSHA: activeTarget.String,
 			Token: activeToken.String, ExpiresAt: normalizeAgentPRBindingTime(activeExpiresAt.Time),
@@ -1215,7 +1265,7 @@ func sameAgentPRReleaseIdentity(
 		*active.WorkflowRunID == *request.WorkflowRunID
 }
 
-func validateAgentPRRunUnsuccessfulTerminal(
+func validateAgentPRRunTerminal(
 	ctx context.Context,
 	queryer snapshotQueryer,
 	teamID int,
@@ -1240,11 +1290,12 @@ func validateAgentPRRunUnsuccessfulTerminal(
 	switch status {
 	case AgentWorkflowRunStatusFailed,
 		AgentWorkflowRunStatusErrored,
-		AgentWorkflowRunStatusAborted:
+		AgentWorkflowRunStatusAborted,
+		AgentWorkflowRunStatusSucceeded:
 		return nil
 	default:
 		return fmt.Errorf(
-			"%w: attached workflow run is not unsuccessfully terminal",
+			"%w: attached workflow run is not terminal",
 			pullrequest.ErrReservationMismatch,
 		)
 	}

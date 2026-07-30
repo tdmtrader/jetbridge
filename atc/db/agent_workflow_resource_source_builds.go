@@ -191,29 +191,86 @@ func (store *workflowResourceSourceBuildStore) ExactInputMapping(ctx context.Con
 	if !found {
 		return nil, false, fmt.Errorf("%w: source pipeline is not registered", ErrAgentWorkflowResourceSourceConflict)
 	}
+	selections, selected, err := exactWorkflowResourceSourceInputMapping(
+		ctx, tx, registered, buildID,
+	)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, false, err
+	}
+	return selections, selected, nil
+}
+
+func (store *workflowResourceSourceBuildStore) ExactBindingInputMapping(
+	ctx context.Context,
+	teamID int,
+	bindingID int64,
+	sourcePipelineID int,
+	buildID int,
+) ([]SelectedSource, bool, error) {
+	if ctx == nil || teamID <= 0 || bindingID <= 0 ||
+		sourcePipelineID <= 0 || buildID <= 0 {
+		return nil, false, fmt.Errorf(
+			"db: binding source input mapping requires context and identities",
+		)
+	}
+	tx, err := store.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, false, err
+	}
+	defer Rollback(tx)
+	registered, found, err := findWorkflowResourceSourcePipelineByBinding(
+		ctx, tx, teamID, bindingID, false,
+	)
+	if err != nil {
+		return nil, false, err
+	}
+	if !found || registered.PipelineID != sourcePipelineID {
+		return nil, false, fmt.Errorf(
+			"%w: binding source pipeline is not registered",
+			ErrAgentWorkflowResourceSourceConflict,
+		)
+	}
+	selections, selected, err := exactWorkflowResourceSourceInputMapping(
+		ctx, tx, registered, buildID,
+	)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, false, err
+	}
+	return selections, selected, nil
+}
+
+func exactWorkflowResourceSourceInputMapping(
+	ctx context.Context,
+	tx Tx,
+	registered WorkflowResourceSourcePipeline,
+	buildID int,
+) ([]SelectedSource, bool, error) {
 	if err := validateWorkflowResourceSourcePipelineAuthority(ctx, tx, registered); err != nil {
 		return nil, false, err
 	}
 	var matched bool
-	err = tx.QueryRowContext(ctx, `SELECT EXISTS (
+	err := tx.QueryRowContext(ctx, `SELECT EXISTS (
 		SELECT 1 FROM builds build JOIN jobs job ON job.id=build.job_id JOIN pipelines pipeline ON pipeline.id=build.pipeline_id
 		WHERE build.id=$1 AND build.team_id=$2 AND build.pipeline_id=$3 AND job.pipeline_id=$3 AND job.name='admit' AND NOT pipeline.template
 		  AND build.status='succeeded' AND build.completed AND NOT build.aborted AND build.end_time IS NOT NULL AND build.pipeline_config_version=$4
-	)`, buildID, teamID, sourcePipelineID, registered.PipelineConfigVersion).Scan(&matched)
+	)`, buildID, registered.TeamID, registered.PipelineID, registered.PipelineConfigVersion).Scan(&matched)
 	if err != nil {
 		return nil, false, err
 	}
 	if !matched {
-		if err := tx.Commit(); err != nil {
-			return nil, false, err
-		}
 		return nil, false, nil
 	}
 	rows, err := tx.QueryContext(ctx, `
 		SELECT input.name,resource.name,resource.id,version.id,input.version_digest,version.version
 		FROM build_resource_config_version_inputs input JOIN resources resource ON resource.id=input.resource_id
 		JOIN resource_config_versions version ON version.resource_config_scope_id=resource.resource_config_scope_id AND input.version_digest IN (version.version_md5,version.version_sha256)
-		WHERE input.build_id=$1 AND resource.pipeline_id=$2 ORDER BY input.name,version.id FOR SHARE OF input,resource,version`, buildID, sourcePipelineID)
+		WHERE input.build_id=$1 AND resource.pipeline_id=$2 ORDER BY input.name,version.id FOR SHARE OF input,resource,version`, buildID, registered.PipelineID)
 	if err != nil {
 		return nil, false, err
 	}
@@ -245,9 +302,6 @@ func (store *workflowResourceSourceBuildStore) ExactInputMapping(ctx context.Con
 	}
 	if len(selections) == 0 {
 		return nil, false, fmt.Errorf("%w: successful admit build has no persisted inputs", ErrAgentWorkflowResourceSourceConflict)
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, false, err
 	}
 	return selections, true, nil
 }

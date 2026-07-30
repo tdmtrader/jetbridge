@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"reflect"
@@ -8,9 +9,216 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/concourse/concourse/agent/publisher"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc"
 )
+
+func TestBindPRMonitorAuthorityReplacesOnlySentinelsAndSealsPerActionRender(t *testing.T) {
+	definition := prMonitorAuthorityRenderDefinition()
+	target, err := FullFunctionTarget(definition)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered, err := RenderFunction(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority := PRMonitorAuthority{
+		BindingID:               41,
+		ActionDigest:            "sha256:" + strings.Repeat("a", 64),
+		ReviewWorkflowRunID:     77,
+		AcceptedOutcomeRevision: 3,
+	}
+	if _, err := rendered.BindPRMonitorAuthority("manual", authority); err == nil {
+		t.Fatal("generic/manual render supplied PR monitor authority")
+	}
+	bound, err := rendered.BindPRMonitorAuthority("pr-monitor", authority)
+	if err != nil {
+		t.Fatalf("BindPRMonitorAuthority: %v", err)
+	}
+	if bound.TargetConfigHash == rendered.TargetConfigHash ||
+		bound.TemplateName == rendered.TemplateName ||
+		bound.executionTargetConfigHash != bound.TargetConfigHash ||
+		!bytes.Contains(
+			bound.executionCanonicalConfig,
+			[]byte(authority.ActionDigest),
+		) {
+		t.Fatalf(
+			"bound render identity = template %q hash %q",
+			bound.TemplateName, bound.TargetConfigHash,
+		)
+	}
+	assertPRMonitorRenderAuthority(
+		t, rendered.Config, PRMonitorBindingIDSentinel,
+		PRMonitorActionDigestSentinel,
+		PRMonitorReviewWorkflowRunIDSentinel,
+		PRMonitorAcceptedOutcomeRevisionSentinel,
+	)
+	assertPRMonitorRenderAuthority(
+		t, bound.Config, authority.BindingID, authority.ActionDigest,
+		authority.ReviewWorkflowRunID.String(),
+		authority.AcceptedOutcomeRevision,
+	)
+
+	authored := prMonitorAuthorityRenderDefinition()
+	wait := authored.Compiled.Function.Plan[1].Config.(*atc.TimeoutStep).
+		Step.(*atc.AwaitSnapshotStep)
+	publish := authored.Compiled.Function.Plan[2].Config.(*atc.PublishSnapshotStep)
+	wait.PRApproval.BindingID, publish.PRApproval.BindingID = 9, 9
+	wait.PRApproval.ActionDigest = "sha256:" + strings.Repeat("b", 64)
+	publish.PRApproval.ActionDigest = wait.PRApproval.ActionDigest
+	authoredTarget, err := FullFunctionTarget(authored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoredRendered, err := RenderFunction(authoredTarget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := authoredRendered.BindPRMonitorAuthority(
+		"pr-monitor", authority,
+	); err == nil {
+		t.Fatal("authored non-sentinel PR identity was overridden")
+	}
+
+	authoredAccepted := prMonitorAuthorityRenderDefinition()
+	wait = authoredAccepted.Compiled.Function.Plan[1].Config.(*atc.TimeoutStep).
+		Step.(*atc.AwaitSnapshotStep)
+	publish = authoredAccepted.Compiled.Function.Plan[2].Config.(*atc.PublishSnapshotStep)
+	wait.PRApproval.AcceptedReview.ReviewWorkflowRunID = "8"
+	publish.PRApproval.AcceptedReview.ReviewWorkflowRunID = "8"
+	authoredTarget, err = FullFunctionTarget(authoredAccepted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoredRendered, err = RenderFunction(authoredTarget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := authoredRendered.BindPRMonitorAuthority(
+		"pr-monitor", authority,
+	); err == nil {
+		t.Fatal("authored non-sentinel accepted-review authority was overridden")
+	}
+}
+
+func prMonitorAuthorityRenderDefinition() Definition {
+	accepted := testPRAcceptedReviewIntent()
+	accepted.ReviewWorkflowRunID = PRMonitorReviewWorkflowRunIDSentinel
+	accepted.OutcomeRevision = PRMonitorAcceptedOutcomeRevisionSentinel
+	wait := &atc.AwaitSnapshotStep{
+		Name: "reapproval",
+		PRApproval: &atc.PRApprovalIntent{
+			BindingID:    PRMonitorBindingIDSentinel,
+			ActionDigest: PRMonitorActionDigestSentinel,
+			Observation:  "pull-request", Candidate: "candidate",
+			Impact: "publish-impact", Response: "response",
+			Destination:           "github.example/acme/widget",
+			ApprovalPolicyVersion: "engineering/v3",
+			Prompt:                "Approve this exact revision?",
+			AcceptedReview:        accepted.Clone(),
+		},
+		Validation: "validation", Type: "human-answer/v1",
+		OnTimeout: atc.AwaitSnapshotOnTimeoutFail,
+	}
+	publish := &atc.PublishSnapshotStep{
+		Name: "publish-revision", Publisher: publisher.GitPublisher,
+		Input: "candidate", InputType: repositoryChangeV1,
+		Destination: "github.example/acme/widget",
+		Mode:        publisher.ModePullRequest,
+		Parameters: map[string]string{
+			"source_branch": "change", "target_branch": "main",
+		},
+		ApprovalPolicyVersion: "engineering/v3",
+		Approval:              "reapproval", Validation: "validation",
+		PRApproval: &atc.PRApprovalPublicationIntent{
+			BindingID:    PRMonitorBindingIDSentinel,
+			ActionDigest: PRMonitorActionDigestSentinel,
+			Observation:  "pull-request", Impact: "publish-impact",
+			Response: "response", AcceptedReview: accepted.Clone(),
+		},
+	}
+	function := &FunctionConfig{
+		SignatureVersion: 1,
+		Inputs: []snapshot.Port{
+			{Name: "pull-request", Type: "pull-request/v1"},
+			{Name: "candidate", Type: repositoryChangeV1},
+			{Name: "publish-impact", Type: "publish-impact/v1"},
+			{Name: "response", Type: "pull-request-response/v1"},
+			{Name: "accepted-review", Type: "review/v1"},
+			{Name: "accepted-candidate", Type: "repository/v1"},
+			{Name: "accepted-validation", Type: "validation/v1"},
+		},
+		Plan: []atc.Step{
+			renderValidationStep("candidate"),
+			{Config: &atc.TimeoutStep{Duration: "1h", Step: wait}},
+			{Config: publish},
+		},
+		DevValidationProfiles:       validationProfilesFor("candidate"),
+		DevValidationProvenanceHash: validationProvenanceFor("candidate"),
+	}
+	return Definition{
+		ID: 141, Name: "pr-monitor-v3", Version: 3,
+		SchemaVersion: 3, SignatureVersion: 1,
+		ContentHash: strings.Repeat("c", 64),
+		Compiled: CompiledDefinition{
+			SchemaVersion: 3, Name: "pr-monitor-v3", Function: function,
+		},
+	}
+}
+
+func assertPRMonitorRenderAuthority(
+	t *testing.T,
+	config atc.Config,
+	bindingID int64,
+	actionDigest string,
+	reviewWorkflowRunID string,
+	outcomeRevision int64,
+) {
+	t.Helper()
+	waitCount, publishCount := 0, 0
+	for jobIndex := range config.Jobs {
+		for stepIndex := range config.Jobs[jobIndex].PlanSequence {
+			err := config.Jobs[jobIndex].PlanSequence[stepIndex].Config.Visit(
+				atc.StepRecursor{
+					OnAwaitSnapshot: func(step *atc.AwaitSnapshotStep) error {
+						if step.PRApproval != nil {
+							waitCount++
+							if step.PRApproval.BindingID != bindingID ||
+								step.PRApproval.ActionDigest != actionDigest ||
+								step.PRApproval.AcceptedReview == nil ||
+								step.PRApproval.AcceptedReview.ReviewWorkflowRunID != reviewWorkflowRunID ||
+								step.PRApproval.AcceptedReview.OutcomeRevision != outcomeRevision {
+								t.Fatalf("wait authority = %#v", step.PRApproval)
+							}
+						}
+						return nil
+					},
+					OnPublishSnapshot: func(step *atc.PublishSnapshotStep) error {
+						if step.PRApproval != nil {
+							publishCount++
+							if step.PRApproval.BindingID != bindingID ||
+								step.PRApproval.ActionDigest != actionDigest ||
+								step.PRApproval.AcceptedReview == nil ||
+								step.PRApproval.AcceptedReview.ReviewWorkflowRunID != reviewWorkflowRunID ||
+								step.PRApproval.AcceptedReview.OutcomeRevision != outcomeRevision {
+								t.Fatalf("publish authority = %#v", step.PRApproval)
+							}
+						}
+						return nil
+					},
+				},
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if waitCount != 1 || publishCount != 1 {
+		t.Fatalf("PR authority steps = wait %d publish %d", waitCount, publishCount)
+	}
+}
 
 func TestFullFunctionTargetAndRenderFunction(t *testing.T) {
 	definition := renderTestDefinition()

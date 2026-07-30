@@ -220,6 +220,21 @@ var _ = Describe("AgentPRBindingsFactory", func() {
 			WHERE id=$1
 		`, binding.ID)
 		Expect(err).NotTo(HaveOccurred())
+		reclaimed, reserved, err := factory.ReserveLaunch(ctx, winner.request)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(reserved).To(BeTrue())
+		Expect(reclaimed.Token).NotTo(Equal(winner.reservation.Token))
+		Expect(reclaimed.BaseRevision).To(Equal(winner.reservation.BaseRevision))
+		Expect(reclaimed.BindingRevision).To(Equal(
+			winner.reservation.BindingRevision,
+		))
+
+		_, err = dbConn.Exec(`
+			UPDATE agent_pr_bindings
+			SET active_reservation_expires_at=clock_timestamp()-interval '1 second'
+			WHERE id=$1
+		`, binding.ID)
+		Expect(err).NotTo(HaveOccurred())
 		current, found, err := factory.Get(ctx, binding.TeamID, binding.ID)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(found).To(BeTrue())
@@ -296,8 +311,8 @@ var _ = Describe("AgentPRBindingsFactory", func() {
 		Expect(recovered.Token).NotTo(Equal(reservation.Token))
 	})
 
-	It("releases failed, errored, and aborted attached runs without erasing audit history", func() {
-		for index, status := range []string{"failed", "errored", "aborted"} {
+	It("releases any exact terminal attached run without erasing audit history", func() {
+		for index, status := range []string{"failed", "errored", "aborted", "succeeded"} {
 			testBinding := binding
 			if index > 0 {
 				request := createRequest
@@ -369,8 +384,8 @@ var _ = Describe("AgentPRBindingsFactory", func() {
 		}
 	})
 
-	It("refuses wrong, live, canceling, and succeeded attached runs and stale projected reservations", func() {
-		for index, status := range []string{"admitting", "running", "canceling", "succeeded"} {
+	It("replays exact attached reservations but refuses their live run release", func() {
+		for index, status := range []string{"admitting", "running", "canceling"} {
 			request := createRequest
 			request.Locator.ExternalID = "refuse-release-" + status
 			testBinding, created, err := factory.Create(ctx, request)
@@ -414,9 +429,19 @@ var _ = Describe("AgentPRBindingsFactory", func() {
 				Expect(err).NotTo(HaveOccurred())
 			}
 
-			_, reserved, err = factory.ReserveLaunch(ctx, reservationRequest)
-			Expect(reserved).To(BeFalse())
-			Expect(errors.Is(err, pullrequest.ErrStaleBindingRevision)).To(BeTrue())
+			replayed, reserved, err := factory.ReserveLaunch(
+				ctx, reservationRequest,
+			)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(reserved).To(BeTrue())
+			Expect(replayed.Token).To(Equal(reservation.Token))
+			Expect(replayed.BindingRevision).To(Equal(
+				reservation.BindingRevision,
+			))
+			Expect(replayed.WorkflowRunID).NotTo(BeNil())
+			Expect(*replayed.WorkflowRunID).To(Equal(
+				snapshot.WorkflowRunID(runID),
+			))
 
 			run := snapshot.WorkflowRunID(runID)
 			_, err = factory.ReleaseLaunch(ctx, pullrequest.ReleaseLaunch{
