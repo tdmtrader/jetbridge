@@ -12,14 +12,18 @@ import (
 
 func TestPreflightRequiresTheExactAvailableHarnessVersion(t *testing.T) {
 	profile := profile(broker.AdapterCodex)
-	identity, err := adapter.Preflight(context.Background(), profile, fakeVersionProbe{
+	probe := &fakeVersionProbe{
 		path: "/opt/bin/codex", version: "codex 1.2.3\n",
-	})
+	}
+	identity, err := adapter.Preflight(context.Background(), profile, probe)
 	if err != nil {
 		t.Fatalf("Preflight(): %v", err)
 	}
 	if identity.Name != broker.AdapterCodex || identity.Binary != "/opt/bin/codex" || identity.Version != "1.2.3" {
 		t.Fatalf("identity = %#v", identity)
+	}
+	if strings.Join(probe.args, " ") != "--version" || strings.Join(probe.env, " ") != "LC_ALL=C" {
+		t.Fatalf("version probe argv/env = %q / %q", probe.args, probe.env)
 	}
 }
 
@@ -27,15 +31,15 @@ func TestPreflightFailsClosedWhenHarnessIsUnavailableOrIncompatible(t *testing.T
 	profile := profile(broker.AdapterCodex)
 	for _, tc := range []struct {
 		name  string
-		probe fakeVersionProbe
+		probe *fakeVersionProbe
 		want  error
 	}{
 		{
-			name: "unavailable", probe: fakeVersionProbe{lookupErr: errors.New("not found")},
+			name: "unavailable", probe: &fakeVersionProbe{lookupErr: errors.New("not found")},
 			want: adapter.ErrHarnessUnavailable,
 		},
 		{
-			name: "wrong version", probe: fakeVersionProbe{path: "/opt/bin/codex", version: "codex 1.2.4\n"},
+			name: "wrong version", probe: &fakeVersionProbe{path: "/opt/bin/codex", version: "codex 1.2.4\n"},
 			want: adapter.ErrHarnessIncompatible,
 		},
 	} {
@@ -43,6 +47,20 @@ func TestPreflightFailsClosedWhenHarnessIsUnavailableOrIncompatible(t *testing.T
 			_, err := adapter.Preflight(context.Background(), profile, tc.probe)
 			if !errors.Is(err, tc.want) {
 				t.Fatalf("Preflight() error = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestPreflightRejectsVersionTokenContinuations(t *testing.T) {
+	profile := profile(broker.AdapterCodex)
+	for _, version := range []string{"codex 1.2.3-rc.1\n", "codex 1.2.3+build\n", "codex 1.2.3.4\n"} {
+		t.Run(version, func(t *testing.T) {
+			_, err := adapter.Preflight(context.Background(), profile, &fakeVersionProbe{
+				path: "/opt/bin/codex", version: version,
+			})
+			if !errors.Is(err, adapter.ErrHarnessIncompatible) {
+				t.Fatalf("Preflight() error = %v, want incompatible version", err)
 			}
 		})
 	}
@@ -76,7 +94,7 @@ func TestPreflightRejectsControlsThePinnedHarnessCannotProvide(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := adapter.Preflight(context.Background(), tc.profile, fakeVersionProbe{
+			_, err := adapter.Preflight(context.Background(), tc.profile, &fakeVersionProbe{
 				path: "/opt/bin/harness", version: tc.version,
 			})
 			if !errors.Is(err, adapter.ErrHarnessIncompatible) || !strings.Contains(err.Error(), tc.want) {
@@ -112,6 +130,8 @@ type fakeVersionProbe struct {
 	version    string
 	lookupErr  error
 	versionErr error
+	args       []string
+	env        []string
 }
 
 func (probe fakeVersionProbe) LookPath(string) (string, error) {
@@ -121,7 +141,9 @@ func (probe fakeVersionProbe) LookPath(string) (string, error) {
 	return probe.path, nil
 }
 
-func (probe fakeVersionProbe) Output(context.Context, string, ...string) ([]byte, error) {
+func (probe *fakeVersionProbe) Output(_ context.Context, _ string, args []string, env []string) ([]byte, error) {
+	probe.args = append([]string(nil), args...)
+	probe.env = append([]string(nil), env...)
 	if probe.versionErr != nil {
 		return nil, probe.versionErr
 	}

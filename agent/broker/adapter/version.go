@@ -14,14 +14,14 @@ import (
 var (
 	ErrHarnessUnavailable  = errors.New("broker adapter: harness unavailable")
 	ErrHarnessIncompatible = errors.New("broker adapter: harness incompatible")
-	harnessVersionPattern  = regexp.MustCompile(`(?:^|[^0-9])v?([0-9]+\.[0-9]+\.[0-9]+)(?:$|[^0-9])`)
+	harnessVersionPattern  = regexp.MustCompile(`(?:^|[^0-9A-Za-z.+-])v?([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?)(?:$|[^0-9A-Za-z.+-])`)
 )
 
 // VersionProbe separates binary discovery and version execution so the
 // preflight stays deterministic under test and never needs a live provider.
 type VersionProbe interface {
 	LookPath(string) (string, error)
-	Output(context.Context, string, ...string) ([]byte, error)
+	Output(context.Context, string, []string, []string) ([]byte, error)
 }
 
 // SystemVersionProbe performs the local, argv-only harness inspection used by
@@ -32,8 +32,14 @@ func (SystemVersionProbe) LookPath(binary string) (string, error) {
 	return exec.LookPath(binary)
 }
 
-func (SystemVersionProbe) Output(ctx context.Context, binary string, args ...string) ([]byte, error) {
-	return exec.CommandContext(ctx, binary, args...).Output()
+func (SystemVersionProbe) Output(ctx context.Context, binary string, args []string, env []string) ([]byte, error) {
+	command := exec.CommandContext(ctx, binary, args...)
+	command.Env = append([]string(nil), env...)
+	return command.Output()
+}
+
+func preflightEnvironment() []string {
+	return []string{"LC_ALL=C"}
 }
 
 type Identity struct {
@@ -131,7 +137,7 @@ func Preflight(ctx context.Context, profile broker.Profile, probe VersionProbe) 
 	if err != nil || strings.TrimSpace(path) == "" {
 		return Identity{}, fmt.Errorf("%w: %s: %v", ErrHarnessUnavailable, binary, err)
 	}
-	output, err := probe.Output(ctx, path, "--version")
+	output, err := probe.Output(ctx, path, []string{"--version"}, preflightEnvironment())
 	if err != nil {
 		return Identity{}, fmt.Errorf("%w: %s version probe: %v", ErrHarnessUnavailable, binary, err)
 	}

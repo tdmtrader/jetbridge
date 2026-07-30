@@ -3,6 +3,7 @@
 package adapter
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -23,6 +24,14 @@ type Invocation struct {
 	Args    []string
 	Env     map[string]string
 	WorkDir string
+}
+
+// PreparedInvocation is an opaque, preflight-bound invocation. Only Prepare
+// can bind a process launch to the discovered binary identity and exact
+// harness version.
+type PreparedInvocation struct {
+	invocation Invocation
+	identity   Identity
 }
 
 // Provenance returns a credential-safe description. Environment names are
@@ -52,6 +61,45 @@ type Builder interface {
 type Codex struct{}
 type Claude struct{}
 type Cursor struct{}
+
+// Prepare runs local binary/version preflight before constructing an
+// invocation that contains a provider credential. Its returned opaque value is
+// the only input Execute accepts.
+func Prepare(
+	ctx context.Context,
+	profile broker.Profile,
+	paths Paths,
+	credential string,
+	probe VersionProbe,
+) (PreparedInvocation, error) {
+	identity, err := Preflight(ctx, profile, probe)
+	if err != nil {
+		return PreparedInvocation{}, err
+	}
+	builder, err := builderFor(profile.Adapter.Name)
+	if err != nil {
+		return PreparedInvocation{}, err
+	}
+	invocation, err := builder.Build(profile, paths, credential)
+	if err != nil {
+		return PreparedInvocation{}, err
+	}
+	invocation.Binary = identity.Binary
+	return PreparedInvocation{invocation: invocation, identity: identity}, nil
+}
+
+func builderFor(name broker.AdapterName) (Builder, error) {
+	switch name {
+	case broker.AdapterCodex:
+		return Codex{}, nil
+	case broker.AdapterClaude:
+		return Claude{}, nil
+	case broker.AdapterCursor:
+		return Cursor{}, nil
+	default:
+		return nil, fmt.Errorf("%w: unsupported adapter %q", ErrHarnessIncompatible, name)
+	}
+}
 
 func (Codex) Build(profile broker.Profile, paths Paths, credential string) (Invocation, error) {
 	if _, err := validateBuild(profile, broker.AdapterCodex, paths, credential); err != nil {

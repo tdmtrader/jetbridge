@@ -11,8 +11,6 @@ import (
 	"sort"
 	"syscall"
 	"time"
-
-	"github.com/concourse/concourse/agent/broker"
 )
 
 // Execute runs one already-constructed native invocation directly, without a
@@ -20,13 +18,17 @@ import (
 // as well as the top-level CLI.
 func Execute(
 	ctx context.Context,
-	invocation Invocation,
+	prepared PreparedInvocation,
 	prompt string,
-	name broker.AdapterName,
 	maxStreamBytes int,
 ) (StreamResult, error) {
+	invocation := prepared.invocation
+	name := prepared.identity.Name
 	if invocation.Binary == "" || invocation.WorkDir == "" {
-		return StreamResult{}, fmt.Errorf("broker adapter: binary and working directory are required")
+		return StreamResult{}, fmt.Errorf("broker adapter: prepared invocation binary and working directory are required")
+	}
+	if prepared.identity.Binary != invocation.Binary || prepared.identity.Version == "" {
+		return StreamResult{}, fmt.Errorf("broker adapter: prepared invocation identity is invalid")
 	}
 	command := exec.Command(invocation.Binary, invocation.Args...)
 	command.Dir = invocation.WorkDir

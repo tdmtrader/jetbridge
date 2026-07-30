@@ -23,14 +23,25 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":2,"output_tokens
 	if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	result, err := adapter.Execute(context.Background(), adapter.Invocation{
-		Binary: script, Env: map[string]string{"HOME": t.TempDir()}, WorkDir: t.TempDir(),
-	}, "fresh prompt\n", broker.AdapterCodex, 4096)
+	prepared, err := adapter.Prepare(context.Background(), profile(broker.AdapterCodex), adapter.Paths{
+		WorkDir: t.TempDir(), ScratchDir: t.TempDir(), OutputSchema: "/schema/result.json",
+	}, "secret", &fakeVersionProbe{path: script, version: "codex 1.2.3\n"})
+	if err != nil {
+		t.Fatalf("Prepare(): %v", err)
+	}
+	result, err := adapter.Execute(context.Background(), prepared, "fresh prompt\n", 4096)
 	if err != nil {
 		t.Fatalf("Execute(): %v", err)
 	}
 	if string(result.Output) != `{"answer":"ok"}` {
 		t.Fatalf("output = %q", result.Output)
+	}
+}
+
+func TestExecuteRejectsAnUnpreparedInvocation(t *testing.T) {
+	_, err := adapter.Execute(context.Background(), adapter.PreparedInvocation{}, "", 4096)
+	if err == nil || !strings.Contains(err.Error(), "prepared") {
+		t.Fatalf("Execute() error = %v", err)
 	}
 }
 
@@ -42,9 +53,13 @@ func TestExecuteCancelsTheProcessGroup(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	_, err := adapter.Execute(ctx, adapter.Invocation{
-		Binary: script, Env: map[string]string{"HOME": t.TempDir()}, WorkDir: t.TempDir(),
-	}, "", broker.AdapterClaude, 4096)
+	prepared, err := adapter.Prepare(context.Background(), profile(broker.AdapterClaude), adapter.Paths{
+		WorkDir: t.TempDir(), ScratchDir: t.TempDir(), OutputSchema: "/schema/result.json",
+	}, "secret", &fakeVersionProbe{path: script, version: "claude 1.2.3\n"})
+	if err != nil {
+		t.Fatalf("Prepare(): %v", err)
+	}
+	_, err = adapter.Execute(ctx, prepared, "", 4096)
 	if err == nil || !strings.Contains(err.Error(), "cancel") {
 		t.Fatalf("Execute() error = %v", err)
 	}
