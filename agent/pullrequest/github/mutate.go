@@ -141,7 +141,9 @@ func (mutator *Mutator) recoverPullRequest(
 	targetRef, targetErr := normalizeBranchRef(detailed.Base.Ref)
 	exact, markerErr := exactMarker(detailed.Body, marker, request.OperationKey)
 	if sourceErr != nil || targetErr != nil || markerErr != nil ||
-		!exact || sourceRef != request.SourceRef || targetRef != request.TargetRef {
+		!exact ||
+		sourceRef != request.SourceRef || detailed.Head.SHA != request.SourceSHA ||
+		targetRef != request.TargetRef || detailed.Base.SHA != request.TargetSHA {
 		return pullrequest.ExternalPullRequest{}, fmt.Errorf("github recovered pull request does not match its exact operation")
 	}
 	return externalPullRequest(mutator.observer, request, detailed)
@@ -237,7 +239,9 @@ func (mutator *Mutator) PublishReviewResponse(
 	}
 
 	summaryMarker := operationMarker("respond_to_review", request.OperationKey, "summary")
-	found, err := recoverCommentMarker(issueComments, summaryMarker, request.OperationKey)
+	found, err := recoverCommentMarker(
+		issueComments, summaryMarker, request.OperationKey, nil,
+	)
 	if err != nil {
 		return pullrequest.ExternalResult{}, err
 	}
@@ -257,7 +261,10 @@ func (mutator *Mutator) PublishReviewResponse(
 		marker := operationMarker(
 			"respond_to_review", request.OperationKey, "thread "+reply.ThreadID,
 		)
-		found, err := recoverCommentMarker(reviewComments, marker, request.OperationKey)
+		root := threadRoots[reply.ThreadID]
+		found, err := recoverCommentMarker(
+			reviewComments, marker, request.OperationKey, &root,
+		)
 		if err != nil {
 			return pullrequest.ExternalResult{}, err
 		}
@@ -308,9 +315,10 @@ func (status commitStatus) matches(request pullrequest.StatusRequest) bool {
 }
 
 type providerComment struct {
-	ID      int64  `json:"id"`
-	HTMLURL string `json:"html_url"`
-	Body    string `json:"body"`
+	ID          int64  `json:"id"`
+	HTMLURL     string `json:"html_url"`
+	Body        string `json:"body"`
+	InReplyToID *int64 `json:"in_reply_to_id"`
 }
 
 func (mutator *Mutator) findPullRequests(
@@ -808,10 +816,18 @@ func externalPullRequest(
 	if err != nil {
 		return pullrequest.ExternalPullRequest{}, err
 	}
+	sourceRef, err := normalizeBranchRef(value.Head.Ref)
+	if err != nil {
+		return pullrequest.ExternalPullRequest{}, fmt.Errorf("github pull request source ref is invalid")
+	}
+	targetRef, err := normalizeBranchRef(value.Base.Ref)
+	if err != nil {
+		return pullrequest.ExternalPullRequest{}, fmt.Errorf("github pull request target ref is invalid")
+	}
 	return pullrequest.ExternalPullRequest{
 		Locator: locator, URL: value.HTMLURL, State: state,
-		SourceRef: request.SourceRef, SourceSHA: request.SourceSHA,
-		TargetRef: request.TargetRef, TargetSHA: request.TargetSHA,
+		SourceRef: sourceRef, SourceSHA: value.Head.SHA,
+		TargetRef: targetRef, TargetSHA: value.Base.SHA,
 	}, nil
 }
 
@@ -835,6 +851,7 @@ func recoverCommentMarker(
 	comments []providerComment,
 	marker string,
 	operationKey string,
+	expectedReplyRoot *int64,
 ) (bool, error) {
 	matches := 0
 	for _, comment := range comments {
@@ -847,6 +864,11 @@ func recoverCommentMarker(
 			return false, err
 		}
 		if exact {
+			if expectedReplyRoot != nil &&
+				(comment.InReplyToID == nil ||
+					*comment.InReplyToID != *expectedReplyRoot) {
+				return false, fmt.Errorf("github response operation marker belongs to another thread")
+			}
 			matches++
 		}
 	}

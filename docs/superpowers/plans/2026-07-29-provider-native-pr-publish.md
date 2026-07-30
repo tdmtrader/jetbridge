@@ -74,6 +74,16 @@ Helm, GitHub REST API, Azure DevOps Git REST API 7.1.
   new scheduler is introduced.
 - Split source-branch CAS, PR find/create, validation status, and review
   response into separate idempotent publication operations.
+- Keep the accepted-review candidate as the approved `repository/v1`
+  baseline, while branch/create operations carry the final
+  `repository-change/v1` plus its exact post-rebase `validation/v1` and
+  `publish-impact/v1`. Persist those final refs directly and include them in
+  semantic operation identity.
+- Require the target-head lease in the exact pre-update observation even when
+  the source already equals the requested head. A target race after that
+  observation remains safe and schedules later freshness work. PR-create
+  recovery must return and compare provider-observed heads; review-reply
+  recovery must match the authorized provider thread root.
 - Keep three planned migrations ordered after the reusable-node reservations;
   never deploy a higher PR migration before the two lower migrations exist.
 - Treat `Observation.ReviewBatches` as a strict delta after the acknowledged

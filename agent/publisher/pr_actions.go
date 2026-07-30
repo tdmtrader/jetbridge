@@ -42,6 +42,8 @@ type BranchPublicationRequest struct {
 	Authority             Authority            `json:"authority"`
 	Observation           snapshot.SnapshotRef `json:"observation"`
 	Candidate             snapshot.SnapshotRef `json:"candidate"`
+	Validation            snapshot.SnapshotRef `json:"validation"`
+	Impact                snapshot.SnapshotRef `json:"impact"`
 	Evidence              PublicationEvidence  `json:"evidence"`
 	Destination           string               `json:"destination"`
 	ApprovalPolicyVersion string               `json:"approval_policy_version"`
@@ -57,6 +59,8 @@ type PullRequestPublicationRequest struct {
 	Authority             Authority            `json:"authority"`
 	Observation           snapshot.SnapshotRef `json:"observation"`
 	Candidate             snapshot.SnapshotRef `json:"candidate"`
+	Validation            snapshot.SnapshotRef `json:"validation"`
+	Impact                snapshot.SnapshotRef `json:"impact"`
 	Evidence              PublicationEvidence  `json:"evidence"`
 	Destination           string               `json:"destination"`
 	ApprovalPolicyVersion string               `json:"approval_policy_version"`
@@ -205,7 +209,13 @@ func (request BranchPublicationRequest) Validate() error {
 	if err := validateSnapshotType("observation", request.Observation, "pull-request/v1"); err != nil {
 		return err
 	}
-	if err := validateSnapshotType("candidate", request.Candidate, "repository/v1"); err != nil {
+	if err := validateSnapshotType("candidate", request.Candidate, "repository-change/v1"); err != nil {
+		return err
+	}
+	if err := validateSnapshotType("validation", request.Validation, "validation/v1"); err != nil {
+		return err
+	}
+	if err := validateSnapshotType("impact", request.Impact, "publish-impact/v1"); err != nil {
 		return err
 	}
 	if err := validatePRLocator(request.Locator, false, true); err != nil {
@@ -234,7 +244,13 @@ func (request PullRequestPublicationRequest) Validate() error {
 	if err := validateSnapshotType("observation", request.Observation, "pull-request/v1"); err != nil {
 		return err
 	}
-	if err := validateSnapshotType("candidate", request.Candidate, "repository/v1"); err != nil {
+	if err := validateSnapshotType("candidate", request.Candidate, "repository-change/v1"); err != nil {
+		return err
+	}
+	if err := validateSnapshotType("validation", request.Validation, "validation/v1"); err != nil {
+		return err
+	}
+	if err := validateSnapshotType("impact", request.Impact, "publish-impact/v1"); err != nil {
 		return err
 	}
 	if err := validatePRLocator(request.Locator, false, false); err != nil {

@@ -110,11 +110,11 @@ func (transport *RefLease) CompareAndSwapBranch(
 	if err != nil {
 		return pullrequest.BranchResult{}, err
 	}
-	if sourceHead == mutation.NewSourceSHA {
-		return pullrequest.BranchResult{HeadSHA: sourceHead, Applied: false}, nil
-	}
 	if targetHead != mutation.ExpectedTargetSHA {
 		return pullrequest.BranchResult{}, ErrStaleTarget
+	}
+	if sourceHead == mutation.NewSourceSHA {
+		return pullrequest.BranchResult{HeadSHA: sourceHead, Applied: false}, nil
 	}
 	if mutation.ExpectedSource.Exists {
 		if sourceHead != mutation.ExpectedSource.SHA {

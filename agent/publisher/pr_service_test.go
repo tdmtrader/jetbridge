@@ -102,6 +102,71 @@ func TestBranchPublicationAllowsAnExistingPRButCreationRequiresMissingLocator(t 
 	}
 }
 
+func TestPRBranchAndCreationBindTheFinalValidatedImpactRevision(t *testing.T) {
+	branch := validBranchPublicationRequest()
+	if err := branch.Validate(); err != nil {
+		t.Fatalf("valid final branch revision: %v", err)
+	}
+	create := validPullRequestPublicationRequest()
+	if err := create.Validate(); err != nil {
+		t.Fatalf("valid final PR revision: %v", err)
+	}
+
+	for name, mutate := range map[string]func(*publisher.BranchPublicationRequest){
+		"pre-rebase candidate": func(request *publisher.BranchPublicationRequest) {
+			request.Candidate.Type = "repository/v1"
+		},
+		"wrong validation": func(request *publisher.BranchPublicationRequest) {
+			request.Validation.Type = "review/v1"
+		},
+		"wrong impact": func(request *publisher.BranchPublicationRequest) {
+			request.Impact.Type = "review/v1"
+		},
+	} {
+		t.Run("branch rejects "+name, func(t *testing.T) {
+			request := validBranchPublicationRequest()
+			mutate(&request)
+			if err := request.Validate(); !errors.Is(err, publisher.ErrInvalidRequest) {
+				t.Fatalf("Validate error = %v, want invalid request", err)
+			}
+		})
+	}
+
+	for name, mutate := range map[string]func(*publisher.PullRequestPublicationRequest){
+		"pre-rebase candidate": func(request *publisher.PullRequestPublicationRequest) {
+			request.Candidate.Type = "repository/v1"
+		},
+		"wrong validation": func(request *publisher.PullRequestPublicationRequest) {
+			request.Validation.Type = "review/v1"
+		},
+		"wrong impact": func(request *publisher.PullRequestPublicationRequest) {
+			request.Impact.Type = "review/v1"
+		},
+	} {
+		t.Run("creation rejects "+name, func(t *testing.T) {
+			request := validPullRequestPublicationRequest()
+			mutate(&request)
+			if err := request.Validate(); !errors.Is(err, publisher.ErrInvalidRequest) {
+				t.Fatalf("Validate error = %v, want invalid request", err)
+			}
+		})
+	}
+
+	branchKey, err := branch.OperationKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedImpact := branch
+	changedImpact.Impact.Digest = testDigest('9')
+	changedKey, err := changedImpact.OperationKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changedKey == branchKey {
+		t.Fatal("final impact evidence did not change branch operation identity")
+	}
+}
+
 func TestPRServiceKeepsBranchSuccessSeparateFromRecoverablePRCreation(t *testing.T) {
 	now := time.Date(2026, 7, 29, 13, 0, 0, 0, time.UTC)
 	store := newPRMemoryStore(func() time.Time { return now })
@@ -266,7 +331,9 @@ func validBranchPublicationRequest() publisher.BranchPublicationRequest {
 	return publisher.BranchPublicationRequest{
 		Authority:             prAuthority(),
 		Observation:           snapshot.SnapshotRef{ID: 21, Type: "pull-request/v1", Digest: testDigest('1')},
-		Candidate:             snapshot.SnapshotRef{ID: 22, Type: "repository/v1", Digest: testDigest('2')},
+		Candidate:             snapshot.SnapshotRef{ID: 22, Type: "repository-change/v1", Digest: testDigest('2')},
+		Validation:            snapshot.SnapshotRef{ID: 23, Type: "validation/v1", Digest: testDigest('3')},
+		Impact:                snapshot.SnapshotRef{ID: 24, Type: "publish-impact/v1", Digest: testDigest('4')},
 		Evidence:              prEvidence(),
 		Destination:           "github.example/acme/widget",
 		ApprovalPolicyVersion: "engineering/v3",
@@ -285,6 +352,8 @@ func validPullRequestPublicationRequest() publisher.PullRequestPublicationReques
 		Authority:             branch.Authority,
 		Observation:           branch.Observation,
 		Candidate:             branch.Candidate,
+		Validation:            branch.Validation,
+		Impact:                branch.Impact,
 		Evidence:              branch.Evidence,
 		Destination:           branch.Destination,
 		ApprovalPolicyVersion: branch.ApprovalPolicyVersion,

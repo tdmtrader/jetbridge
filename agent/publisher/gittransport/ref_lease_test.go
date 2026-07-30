@@ -46,6 +46,14 @@ func TestRefLeaseRejectsCallerStaleSourceAndTargetWithoutPushing(t *testing.T) {
 			remoteTarget:   objectID('d'),
 			want:           gittransport.ErrStaleTarget,
 		},
+		{
+			name:           "target after source already equals requested head",
+			expectedSource: objectID('c'),
+			expectedTarget: objectID('b'),
+			remoteSource:   objectID('c'),
+			remoteTarget:   objectID('d'),
+			want:           gittransport.ErrStaleTarget,
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			runner := &recordingRunner{run: func(command directgit.Command) directgit.CommandResult {
@@ -148,6 +156,57 @@ func TestRefLeaseUsesOnlyTheCallerSealedSourceExpectation(t *testing.T) {
 		if argument == secret {
 			t.Fatalf("credential appeared in argv: %#v", push.Args)
 		}
+	}
+}
+
+func TestRefLeaseAcceptsTheSafeTargetRaceAfterTheExactPreWriteCheck(t *testing.T) {
+	const (
+		remote = "https://github.example/acme/widget.git"
+		source = "refs/heads/agent/upgrade"
+		target = "refs/heads/main"
+	)
+	pushed := false
+	runner := &recordingRunner{run: func(command directgit.Command) directgit.CommandResult {
+		switch command.Args[0] {
+		case "cat-file":
+			return directgit.CommandResult{}
+		case "ls-remote":
+			if pushed {
+				return directgit.CommandResult{
+					Stdout: objectID('c') + "\t" + source + "\n" +
+						objectID('d') + "\t" + target + "\n",
+				}
+			}
+			return directgit.CommandResult{
+				Stdout: objectID('a') + "\t" + source + "\n" +
+					objectID('b') + "\t" + target + "\n",
+			}
+		case "push":
+			pushed = true
+			return directgit.CommandResult{}
+		default:
+			t.Fatalf("unexpected Git command: %#v", command.Args)
+			return directgit.CommandResult{}
+		}
+	}}
+	transport := newRefLease(t, runner, remote)
+	result, err := transport.CompareAndSwapBranch(context.Background(), pullrequest.BranchMutation{
+		Locator:           pullrequest.Locator{Provider: pullrequest.ProviderGitHub, Repository: "acme/widget"},
+		Ref:               source,
+		TargetRef:         target,
+		ExpectedSource:    contracts.PullRequestHeadExpectation{Exists: true, SHA: objectID('a')},
+		ExpectedTargetSHA: objectID('b'),
+		NewSourceSHA:      objectID('c'),
+		OperationKey:      operationKey('5'),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Applied || result.HeadSHA != objectID('c') {
+		t.Fatalf("CompareAndSwapBranch result = %+v", result)
+	}
+	if !pushed {
+		t.Fatal("test did not exercise the post-write target check")
 	}
 }
 

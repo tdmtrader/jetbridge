@@ -71,6 +71,56 @@ func TestMutatorRecoversExactMarkedClosedPullRequestBeforeCreating(t *testing.T)
 	}
 }
 
+func TestMutatorRejectsRecoveredPullRequestWhoseProviderHeadsMoved(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		sourceSHA string
+		targetSHA string
+	}{
+		{name: "source", sourceSHA: sha('d'), targetSHA: sha('b')},
+		{name: "target", sourceSHA: sha('c'), targetSHA: sha('d')},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			key := mutationOperationKey('6')
+			var server *httptest.Server
+			server = httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+				pull := map[string]any{
+					"number": 42, "html_url": server.URL + "/acme/widget/pull/42",
+					"state": "open", "merged": false,
+					"body": "Validated.\n\n<!-- Jetbridge-Operation: create_pr " + key + " -->",
+					"head": map[string]any{"ref": "agent/upgrade", "sha": test.sourceSHA, "repo": map[string]any{"full_name": "acme/widget"}},
+					"base": map[string]any{"ref": "main", "sha": test.targetSHA, "repo": map[string]any{"full_name": "acme/widget"}},
+				}
+				if request.URL.Path == "/repos/acme/widget/pulls" {
+					writeJSON(response, []any{pull})
+					return
+				}
+				if request.URL.Path == "/repos/acme/widget/pulls/42" {
+					writeJSON(response, pull)
+					return
+				}
+				http.NotFound(response, request)
+			}))
+			defer server.Close()
+
+			mutator := newMutationTestMutator(t, server)
+			_, err := mutator.FindOrCreatePullRequest(context.Background(), pullrequest.CreateRequest{
+				Locator:      pullrequest.Locator{Provider: pullrequest.ProviderGitHub, Repository: "acme/widget"},
+				SourceRef:    "refs/heads/agent/upgrade",
+				SourceSHA:    sha('c'),
+				TargetRef:    "refs/heads/main",
+				TargetSHA:    sha('b'),
+				Title:        "Upgrade widget",
+				Body:         "Validated.",
+				OperationKey: key,
+			})
+			if err == nil || !strings.Contains(err.Error(), "exact operation") {
+				t.Fatalf("moved-%s recovery error = %v", test.name, err)
+			}
+		})
+	}
+}
+
 func TestMutatorFailsClosedForMatchingPullRequestWithMissingMarker(t *testing.T) {
 	key := mutationOperationKey('2')
 	var server *httptest.Server
@@ -212,7 +262,8 @@ func TestMutatorRecoversReviewOutputsIndependentlyAndEnforcesThreadAuthority(t *
 		case request.Method == http.MethodGet && request.URL.Path == "/repos/acme/widget/pulls/42/comments":
 			writeJSON(response, []any{map[string]any{
 				"id": 52, "html_url": server.URL + "/comments/52",
-				"body": "Updated first thread.\n\n" + thread100Marker,
+				"body":           "Updated first thread.\n\n" + thread100Marker,
+				"in_reply_to_id": 100,
 			}})
 		case request.Method == http.MethodPost && request.URL.Path == "/repos/acme/widget/pulls/42/comments/200/replies":
 			var body struct {
@@ -276,6 +327,61 @@ func TestMutatorRecoversReviewOutputsIndependentlyAndEnforcesThreadAuthority(t *
 	if _, err := mutator.PublishReviewResponse(context.Background(), request); err == nil ||
 		!strings.Contains(err.Error(), "authorized") {
 		t.Fatalf("unauthorized response error = %v", err)
+	}
+}
+
+func TestMutatorRejectsRecoveredReplyMarkerOnTheWrongAuthorizedThread(t *testing.T) {
+	key := mutationOperationKey('7')
+	summaryMarker := "<!-- Jetbridge-Operation: respond_to_review " + key + " summary -->"
+	threadMarker := "<!-- Jetbridge-Operation: respond_to_review " + key + " thread thread-100 -->"
+	var server *httptest.Server
+	var posts int
+	server = httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/repos/acme/widget/pulls/42":
+			writeJSON(response, mutationPullFixture(server.URL, "open"))
+		case request.Method == http.MethodGet && request.URL.Path == "/repos/acme/widget/issues/42/comments":
+			writeJSON(response, []any{map[string]any{
+				"id": 51, "html_url": server.URL + "/comments/51",
+				"body": "Addressed.\n\n" + summaryMarker,
+			}})
+		case request.Method == http.MethodGet && request.URL.Path == "/repos/acme/widget/pulls/42/comments":
+			writeJSON(response, []any{map[string]any{
+				"id": 52, "html_url": server.URL + "/comments/52",
+				"body":           "Updated first thread.\n\n" + threadMarker,
+				"in_reply_to_id": 999,
+			}})
+		default:
+			if request.Method == http.MethodPost {
+				posts++
+			}
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+
+	mutator := newMutationTestMutator(t, server)
+	_, err := mutator.PublishReviewResponse(context.Background(), pullrequest.ResponseRequest{
+		Locator: pullrequest.Locator{
+			Provider: pullrequest.ProviderGitHub, Repository: "acme/widget", ExternalID: "42",
+		},
+		Batch: pullrequest.ReviewBatch{
+			ID: "review-10", ReviewID: "10", CommitSHA: sha('c'),
+			Reviewer: "github-user-7", Ready: true, ThreadIDs: []string{"thread-100"},
+		},
+		Response: contracts.PullRequestResponseBody{
+			BatchID: "review-10", Summary: "Addressed.",
+			Replies: []contracts.PullRequestThreadResponse{{
+				ThreadID: "thread-100", Body: "Updated first thread.",
+			}},
+		},
+		OperationKey: key,
+	})
+	if err == nil || !strings.Contains(err.Error(), "thread") {
+		t.Fatalf("wrong-thread recovery error = %v", err)
+	}
+	if posts != 0 {
+		t.Fatalf("provider posts = %d, want none after wrong-thread recovery", posts)
 	}
 }
 

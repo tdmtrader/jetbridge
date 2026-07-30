@@ -118,6 +118,12 @@ direct publication.
     URL and credential-free repository URL are resolved from destination
     policy and rendered into the protected monitor source. They are never
     accepted from mutable PR text, and credentials are never embedded in URLs.
+19. **Mutation authority names both the approved baseline and final
+    revision.** Accepted-review evidence keeps the human-approved
+    `repository/v1` baseline. Every branch/create action separately binds the
+    final `repository-change/v1`, its post-rebase `validation/v1`, and its
+    `publish-impact/v1`; all three participate in operation identity and
+    durable publication inputs.
 
 ## Invariants
 
@@ -126,6 +132,9 @@ direct publication.
   present in server-authorized, sealed inputs.
 - Every branch mutation is compare-and-swap against the exact observed source
   head. A mismatch is a stale observation, never permission to overwrite.
+- The exact expected target head is checked in the pre-update observation,
+  including before accepting an already-published source head. A target race
+  after that check is safe and is handled by the next freshness iteration.
 - Trunk is rechecked immediately before a branch update. Because this track
   updates only a PR branch, a trunk race after that read is safe: the next poll
   schedules another freshness iteration and forge branch policy controls
@@ -509,7 +518,11 @@ identity is the recovery key.
 Every branch operation receives the expected source head (or explicit expected
 absence) and expected target head from sealed, server-authorized observation.
 The provider adapter may not replace either value with a head it observed
-during the mutation.
+during the mutation. Recovery of an uncertain PR create requires the provider's
+current source and target heads to equal those exact sealed heads; returned
+evidence is provider-observed rather than synthesized from the request.
+Recovery of a review reply additionally binds the operation marker to the
+authorized provider thread root.
 
 ## Failure behavior
 
