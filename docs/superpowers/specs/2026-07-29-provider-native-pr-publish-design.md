@@ -366,10 +366,33 @@ Azure DevOps is pinned to REST API `7.1`. The adapter maps:
 - ref updates with explicit `oldObjectId` and `newObjectId`;
 - active, completed, abandoned, conflict, and policy states.
 
+Ready-for-author review batches are derived from Azure's durable system
+`VoteUpdate` threads, ordered by published time and thread ID, rather than
+from the current reviewer list alone. The adapter recognizes only the
+documented sample property tuple
+`CodeReviewThreadType.$value=VoteUpdate`,
+`CodeReviewVotedByTfId.$value`, and `CodeReviewVoteResult.$value`. Its opaque
+cursor carries the event watermark and vote state needed to suppress repeated
+`-5` votes while allowing a later `-5 -> 0 -> -5` transition to rearm. The
+reviewer endpoint corroborates the identity and current vote; missing or
+malformed vote-event properties fail closed.
+
+Day 1 uses an OAuth access token sent with the `Bearer` authorization scheme.
+PAT/Basic authentication is not inferred from token text and remains disabled
+until the credential contract carries an explicit authentication mode. Human
+PR URLs are derived from the configured organization, project, repository,
+and PR identity; REST `url` and `remoteUrl` fields are not trusted as browser
+destinations.
+
+Azure response recovery uses exact, bounded, machine-authored operation
+markers because the comment API has no documented idempotency key. A reply
+creates a root comment (`parentCommentId: 0`) only within a thread ID
+authorized by the sealed batch; the overall response creates a separate
+PR-level thread. Missing, altered, or ambiguous recovery markers fail closed
+rather than creating a duplicate response.
+
 The implementation uses strict bounded requests, pagination, throttling and
 retry classification, unknown-enum handling, and fixture-backed decoding.
-Provider-returned URLs are accepted for display only after scheme, host, and
-destination-policy validation.
 Deployment diagnostics and documentation must say:
 
 > Azure DevOps adapter: contract-tested against REST 7.1; not live-validated.

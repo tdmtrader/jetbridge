@@ -853,7 +853,10 @@ direct-Git backend's observe-then-lease behavior or GitHub's unconditional ref
 PATCH. PR find/create uses source ref, target ref, and a bounded
 `Jetbridge-Operation` marker in the body. A retry lists matching open and
 closed PRs before creating. Status and response requests bind exact head/batch
-and use independent semantic keys.
+and use independent semantic keys. The marker is exact machine-authored
+recovery metadata, not an operation identity inferred from arbitrary mutable
+human text. A missing, altered, or ambiguous marker fails closed and requires
+operator attention instead of creating a duplicate.
 
 - [ ] **Step 4: Compose the GitHub adapter without changing direct Git**
 
@@ -1471,6 +1474,15 @@ votes `10`, `5`,
 `0`, `-5`, `-10`, statuses, ref update `succeeded` and
 `staleOldObjectId`, completion, abandonment, conflict, and
 `rejectedByPolicy`.
+
+Use OAuth bearer tokens for Day 1; do not infer PAT/Basic authentication from
+token contents. Derive the human URL from the configured organization,
+project, repository, and PR identity. Detect `-5` readiness transitions from
+strictly decoded system `VoteUpdate` threads and use the reviewer list only to
+corroborate identity/current state, so `-5 -> 0 -> -5` rearms even when a
+non-action poll does not advance the binding's acknowledged cursor. Azure
+comment/status retries use exact bounded operation markers; thread replies use
+`parentCommentId: 0` within the sealed batch's authorized thread IDs.
 
 Run:
 
