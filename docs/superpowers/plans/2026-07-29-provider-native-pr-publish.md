@@ -1035,6 +1035,15 @@ head, cursor, or action digest before materialization. It writes normalized
 those directories as `repository/v1`; this avoids a second credentialed ATC
 capture controller. No credential-bearing file is written.
 
+Active actions fetch the observed source/target branch refs and verify their
+exact object IDs. Completed and abandoned actions instead fetch both exact
+observed object IDs, because forge-native completion may delete the source
+branch. Install children inside the caller-owned Concourse destination mount;
+never rename over or replace the mount, remove partial children on failure,
+and publish `record.json` last. Bound every checkout, including its contained
+Git database, by `snapshot.DefaultMaxSnapshotEntries` and
+`snapshot.DefaultMaxSnapshotContentBytes`.
+
 The protected source includes policy-resolved `api_base_url` and
 `repository_url` values. The latter is credential-free and identifies the
 single same-repository source/target repository; `in` supplies the resolved

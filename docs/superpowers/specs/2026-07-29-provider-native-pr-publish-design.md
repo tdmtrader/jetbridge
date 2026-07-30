@@ -184,9 +184,19 @@ only after safe completion.
 
 The protected resource source also carries policy-resolved provider API and
 credential-free repository URLs. `in` authenticates through the resolved read
-secret, fetches the validated source and target refs from that one
-same-repository URL, verifies both exact heads, and removes remotes and
-credential configuration before returning its materialized repositories.
+secret and verifies both exact heads from that one same-repository URL. Active
+actions fetch the observed branch refs so branch movement fails closed.
+Completed and abandoned actions fetch the exact observed source and target
+objects by object ID instead, because forge-native completion may delete the
+source branch. Provider capability diagnostics surface an unsupported
+exact-object fetch rather than silently substituting another head.
+
+`in` writes inside Concourse's caller-owned mounted destination; it never
+renames over or replaces that mount. Repositories are installed within the
+mount, temporary children are removed on failure, and `record.json` is
+published last. Each materialized repository, including its contained Git
+database, is bounded by the platform snapshot entry and content limits.
+Remotes and credential configuration are absent before `in` returns.
 
 Acknowledged binding state is fed back into polling by re-rendering the
 protected server-owned resource source after binding revision changes. The
