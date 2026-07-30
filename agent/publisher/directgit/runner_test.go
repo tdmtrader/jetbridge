@@ -141,7 +141,7 @@ func TestCommandRunnerUsesExplicitPrivateBearerHeaderWithoutTokenInference(t *te
 	printf 'global=%s\n' "$GIT_CONFIG_GLOBAL"
 	printf 'credential=%s\n' "${CONCOURSE_GIT_CREDENTIAL_FILE-unset}"
 	printf 'askpass=%s\n' "${GIT_ASKPASS-unset}"
-	mode=$(stat -f '%Lp' "$GIT_CONFIG_GLOBAL" 2>/dev/null || stat -c '%a' "$GIT_CONFIG_GLOBAL")
+mode=$(stat -c '%a' "$GIT_CONFIG_GLOBAL" 2>/dev/null || stat -f '%Lp' "$GIT_CONFIG_GLOBAL")
 	printf 'mode=%s\n' "$mode"
 	printf '%s\n' 'config-start'
 	cat "$GIT_CONFIG_GLOBAL"
