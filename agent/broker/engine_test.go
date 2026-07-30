@@ -46,10 +46,11 @@ func TestEngineRunsConsultationThroughDurablePhases(t *testing.T) {
 	if got := strings.Join(authority.phases, ","); got != "running,validating,sealing" {
 		t.Fatalf("phases = %s", got)
 	}
-	if !strings.Contains(runner.prompt, "fixed consult instructions") ||
-		!strings.Contains(runner.prompt, "Which risk matters?") ||
-		!strings.Contains(runner.prompt, "attachment design") {
-		t.Fatalf("fresh prompt = %q", runner.prompt)
+	prompt := runner.lastPrompt()
+	if !strings.Contains(prompt, "fixed consult instructions") ||
+		!strings.Contains(prompt, "Which risk matters?") ||
+		!strings.Contains(prompt, "attachment design") {
+		t.Fatalf("fresh prompt = %q", prompt)
 	}
 	if authority.admission.ProfileDigest == "" || authority.seal.StaticReview {
 		t.Fatalf("authority requests = %#v %#v", authority.admission, authority.seal)
@@ -169,17 +170,26 @@ type fakeCredentials struct{}
 func (fakeCredentials) Resolve(context.Context, string) (string, error) { return "secret", nil }
 
 type fakeRunner struct {
+	mu      sync.Mutex
 	output  []byte
-	prompt  string
+	prompts []string
 	barrier chan struct{}
 	started int32
 }
 
 func (runner *fakeRunner) Run(_ context.Context, request broker.RunRequest) (broker.RunResult, error) {
-	runner.prompt = request.Prompt
+	runner.mu.Lock()
+	runner.prompts = append(runner.prompts, request.Prompt)
+	runner.mu.Unlock()
 	atomic.AddInt32(&runner.started, 1)
 	if runner.barrier != nil {
 		<-runner.barrier
 	}
 	return broker.RunResult{Output: append(json.RawMessage(nil), runner.output...)}, nil
+}
+
+func (runner *fakeRunner) lastPrompt() string {
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	return runner.prompts[len(runner.prompts)-1]
 }
