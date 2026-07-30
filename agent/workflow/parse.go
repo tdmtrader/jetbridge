@@ -101,6 +101,8 @@ type syntheticFunctionJob struct {
 	Plan any    `yaml:"plan"`
 }
 
+const prApprovalWorkflowRunDecodeSentinel = "9223372036854775807"
+
 func parseFunctionDefinitionSource(raw []byte) (*CompiledDefinition, []DevValidationProfile, error) {
 	decoder := yaml.NewDecoder(bytes.NewReader(raw))
 	var document any
@@ -136,6 +138,10 @@ func parseFunctionDefinitionSource(raw []byte) (*CompiledDefinition, []DevValida
 	if source.SchemaVersion != 3 {
 		return nil, nil, fmt.Errorf("workflow: function parser requires schema_version 3, got %d", source.SchemaVersion)
 	}
+	injectedPRApprovalWorkflowRuns, err := preparePRApprovalWorkflowRunDecode(source.Plan)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	synthetic := syntheticFunctionConfig{
 		VarSources:    source.VarSources,
@@ -157,6 +163,17 @@ func parseFunctionDefinitionSource(raw []byte) (*CompiledDefinition, []DevValida
 	}
 	if len(ordinary.Jobs) != 1 {
 		return nil, nil, fmt.Errorf("workflow: internal function plan must decode as exactly one job")
+	}
+	clearedPRApprovalWorkflowRuns, err := clearPRApprovalWorkflowRunDecodeSentinels(
+		ordinary.Jobs[0].PlanSequence,
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+	if clearedPRApprovalWorkflowRuns != injectedPRApprovalWorkflowRuns {
+		return nil, nil, fmt.Errorf(
+			"workflow: internal PR approval workflow-run decode authority mismatch",
+		)
 	}
 
 	definition := &CompiledDefinition{
@@ -181,6 +198,116 @@ func parseFunctionDefinitionSource(raw []byte) (*CompiledDefinition, []DevValida
 		return nil, nil, err
 	}
 	return definition, source.DevValidationProfiles, nil
+}
+
+// preparePRApprovalWorkflowRunDecode supplies the value required by the
+// ordinary Concourse wire decoder without making that value authorable by a
+// reusable workflow. The compiler removes every injected sentinel before the
+// compiled definition is validated or persisted.
+func preparePRApprovalWorkflowRunDecode(plan any) (int, error) {
+	steps, ok := plan.([]any)
+	if !ok {
+		return 0, nil
+	}
+	injected := 0
+	for _, value := range steps {
+		count, err := preparePRApprovalWorkflowRunDecodeStep(value)
+		if err != nil {
+			return 0, err
+		}
+		injected += count
+	}
+	return injected, nil
+}
+
+func preparePRApprovalWorkflowRunDecodeStep(value any) (int, error) {
+	step, ok := value.(map[string]any)
+	if !ok {
+		return 0, nil
+	}
+	injected := 0
+	if _, publish := step["publish_snapshot"]; publish {
+		if _, approval := step["pr_approval"]; approval {
+			if _, authored := step["workflow_run_id"]; authored {
+				return 0, fmt.Errorf(
+					"workflow: publish_snapshot workflow_run_id is renderer-owned",
+				)
+			}
+			step["workflow_run_id"] = prApprovalWorkflowRunDecodeSentinel
+			injected++
+		}
+	}
+	for _, key := range []string{
+		"ensure", "on_error", "on_abort", "on_failure", "on_success", "try",
+	} {
+		child, found := step[key]
+		if !found {
+			continue
+		}
+		count, err := preparePRApprovalWorkflowRunDecodeStep(child)
+		if err != nil {
+			return 0, err
+		}
+		injected += count
+	}
+	if children, ok := step["do"].([]any); ok {
+		for _, child := range children {
+			count, err := preparePRApprovalWorkflowRunDecodeStep(child)
+			if err != nil {
+				return 0, err
+			}
+			injected += count
+		}
+	}
+	switch parallel := step["in_parallel"].(type) {
+	case []any:
+		for _, child := range parallel {
+			count, err := preparePRApprovalWorkflowRunDecodeStep(child)
+			if err != nil {
+				return 0, err
+			}
+			injected += count
+		}
+	case map[string]any:
+		if children, ok := parallel["steps"].([]any); ok {
+			for _, child := range children {
+				count, err := preparePRApprovalWorkflowRunDecodeStep(child)
+				if err != nil {
+					return 0, err
+				}
+				injected += count
+			}
+		}
+	}
+	return injected, nil
+}
+
+func clearPRApprovalWorkflowRunDecodeSentinels(
+	steps []atc.Step,
+) (int, error) {
+	cleared := 0
+	recursor := atc.StepRecursor{
+		OnPublishSnapshot: func(step *atc.PublishSnapshotStep) error {
+			if step.PRApproval != nil &&
+				step.WorkflowRunID == prApprovalWorkflowRunDecodeSentinel {
+				step.WorkflowRunID = ""
+				cleared++
+			}
+			return nil
+		},
+	}
+	for index := range steps {
+		if steps[index].Config == nil {
+			continue
+		}
+		if err := steps[index].Config.Visit(recursor); err != nil {
+			return 0, fmt.Errorf(
+				"workflow: clear PR approval workflow-run decode authority: %w",
+				err,
+			)
+		}
+	}
+	return cleared, nil
 }
 
 func validateFunctionSourceKeys(document any) error {
