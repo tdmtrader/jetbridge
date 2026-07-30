@@ -91,7 +91,31 @@ func DecodeStream(
 			if envelope.Type == "error" {
 				return result, fmt.Errorf("broker adapter: native execution failed")
 			}
-		case broker.AdapterClaude, broker.AdapterCursor:
+		case broker.AdapterClaude:
+			if envelope.Type == "result" {
+				if terminal {
+					return result, fmt.Errorf("broker adapter: conflicting terminal native results")
+				}
+				if envelope.Subtype != "success" {
+					return result, fmt.Errorf("broker adapter: native execution failed")
+				}
+				structured := bytes.TrimSpace(envelope.StructuredOutput)
+				if len(structured) == 0 || bytes.Equal(structured, []byte("null")) {
+					return result, fmt.Errorf("broker adapter: terminal Claude result has no structured output")
+				}
+				candidate = append([]byte(nil), structured...)
+				terminal = true
+				setTokenUsage(&result.Usage, envelope.Usage)
+				if envelope.TotalCostUSD != nil {
+					value := *envelope.TotalCostUSD
+					result.Usage.CostUSD = &value
+				}
+				if envelope.DurationMS != nil {
+					value := time.Duration(*envelope.DurationMS) * time.Millisecond
+					result.Usage.Duration = &value
+				}
+			}
+		case broker.AdapterCursor:
 			if envelope.Type == "result" {
 				if terminal {
 					return result, fmt.Errorf("broker adapter: conflicting terminal native results")
@@ -129,16 +153,17 @@ func DecodeStream(
 }
 
 type nativeEnvelope struct {
-	Type         string        `json:"type"`
-	Subtype      string        `json:"subtype"`
-	ThreadID     string        `json:"thread_id"`
-	SessionID    string        `json:"session_id"`
-	Result       string        `json:"result"`
-	DurationMS   *int64        `json:"duration_ms"`
-	TotalCostUSD *float64      `json:"total_cost_usd"`
-	Usage        nativeUsage   `json:"usage"`
-	Item         nativeItem    `json:"item"`
-	Message      nativeMessage `json:"message"`
+	Type             string          `json:"type"`
+	Subtype          string          `json:"subtype"`
+	ThreadID         string          `json:"thread_id"`
+	SessionID        string          `json:"session_id"`
+	Result           string          `json:"result"`
+	StructuredOutput json.RawMessage `json:"structured_output"`
+	DurationMS       *int64          `json:"duration_ms"`
+	TotalCostUSD     *float64        `json:"total_cost_usd"`
+	Usage            nativeUsage     `json:"usage"`
+	Item             nativeItem      `json:"item"`
+	Message          nativeMessage   `json:"message"`
 }
 
 type nativeUsage struct {

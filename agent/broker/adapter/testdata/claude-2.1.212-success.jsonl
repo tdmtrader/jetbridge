@@ -1,0 +1,3 @@
+{"type":"system","subtype":"init","session_id":"session-1","tools":["Read","Glob","Grep"],"model":"exact-model"}
+{"type":"assistant","message":{"id":"msg-1","type":"message","role":"assistant","content":[{"type":"text","text":"I inspected only the supplied context."}]}}
+{"type":"result","subtype":"success","is_error":false,"duration_ms":1200,"duration_api_ms":900,"num_turns":1,"result":"The structured result is attached.","structured_output":{"answer":"claude"},"total_cost_usd":0.02,"usage":{"input_tokens":11,"output_tokens":5}}

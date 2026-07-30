@@ -68,6 +68,26 @@ func TestAgentBrokerImageAssetsAreFixedAndSchemaValid(t *testing.T) {
 		if strings.HasSuffix(path, ".json") && !json.Valid(raw) {
 			t.Errorf("image schema %s is not valid JSON", path)
 		}
+		if strings.HasSuffix(path, ".json") {
+			var schema map[string]any
+			if err := json.Unmarshal(raw, &schema); err != nil {
+				t.Errorf("decode image schema %s: %v", path, err)
+				continue
+			}
+			if got := schema["$schema"]; got != "http://json-schema.org/draft-07/schema#" {
+				t.Errorf("image schema %s dialect = %v, want draft-07", path, got)
+			}
+			if _, found := schema["$defs"]; found {
+				t.Errorf("image schema %s uses unsupported newer-dialect $defs", path)
+			}
+			definitions, definitionsFound := schema["definitions"].(map[string]any)
+			if _, found := definitions["anchor"]; !definitionsFound || !found {
+				t.Errorf("image schema %s has no draft-07 anchor definition", path)
+			}
+			if strings.Contains(string(raw), "#/$defs/") || !strings.Contains(string(raw), "#/definitions/anchor") {
+				t.Errorf("image schema %s does not use draft-07 definition references", path)
+			}
+		}
 		if wantDigest != "" {
 			sum := sha256.Sum256(raw)
 			if got := hex.EncodeToString(sum[:]); got != wantDigest {

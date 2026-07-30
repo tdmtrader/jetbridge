@@ -47,17 +47,10 @@ func TestNativeAdaptersBuildControlledInvocations(t *testing.T) {
 		{
 			name: "claude", adapter: adapter.Claude{}, profile: profile(broker.AdapterClaude),
 			wantBinary: "claude",
-			wantArgs: []string{"-p", "--output-format", "stream-json", "--verbose",
+			wantArgs: []string{"-p", "--bare", "--output-format", "stream-json", "--verbose",
 				"--model", "exact-model", "--permission-mode", "dontAsk",
 				"--allowedTools", "Read,Glob,Grep", "--strict-mcp-config"},
 			credential: "ANTHROPIC_API_KEY",
-		},
-		{
-			name: "cursor", adapter: adapter.Cursor{}, profile: profile(broker.AdapterCursor),
-			wantBinary: "cursor-agent",
-			wantArgs:   []string{"--print", "--output-format", "stream-json", "--model", "exact-model"},
-			forbidArgs: []string{"--force"},
-			credential: "CURSOR_API_KEY",
 		},
 	}
 	for _, tc := range tests {
@@ -101,6 +94,15 @@ func TestNativeAdaptersBuildControlledInvocations(t *testing.T) {
 				t.Fatal("provenance disclosed the credential")
 			}
 		})
+	}
+}
+
+func TestCursorBuildFailsClosedWhileCleanContextCannotBeVerified(t *testing.T) {
+	_, err := (adapter.Cursor{}).Build(profile(broker.AdapterCursor), adapter.Paths{
+		WorkDir: "/work", ScratchDir: "/scratch", OutputSchema: "/schema",
+	}, "secret")
+	if err == nil || !strings.Contains(err.Error(), "unsupported adapter") {
+		t.Fatalf("Cursor Build() error = %v, want unsupported adapter", err)
 	}
 }
 

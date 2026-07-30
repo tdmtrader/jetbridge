@@ -204,6 +204,18 @@ profiles, exact image authority, Secret coordinates, resources, one
 authoritative scratch byte count, and whole-pod NetworkPolicy guidance.
 Duplicate credential slots fail chart rendering. The manual pipeline publishes
 the registry-reported digest, and an explicit credential-free fake-harness
-smoke target covers all three adapters plus broker/MCP paths. Operator docs
+smoke target covers the supported adapters plus broker/MCP paths. Operator docs
 scope the result to medium hardening and mark the Task 9b process-boundary
 finding as a hard promotion blocker.
+
+Task 10 review fix round 1: three packaging/runtime blockers are addressed.
+Both packaged output schemas use draft-07 `definitions` and
+draft-07 references, matching Claude Code 2.1.212's accepted dialect; packaging
+tests reject newer `$defs`. Claude runs with `--bare` plus the explicit
+Read/Glob/Grep allowlist, requires native output schema authority, and consumes
+only the terminal `structured_output` JSON; missing or null structured output
+fails closed. Cursor 2026.07.23 remains checksum-pinned in the image but is
+removed from supported capabilities: catalog/startup reject it until a
+verified native control can disable repository rules/instructions and MCP
+configuration. Deployable examples now include only Codex and Claude. The
+separate Task 9b signaling promotion blocker is unchanged.

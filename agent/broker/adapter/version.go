@@ -49,8 +49,7 @@ type Identity struct {
 }
 
 // Capabilities distinguishes the effective execution boundary from controls
-// that the native CLI enforces itself. Cursor deliberately has the former but
-// not the latter for its read-only and terminal-tool restrictions.
+// that the native CLI enforces itself.
 type Capabilities struct {
 	ReadOnlyWorkspace bool
 	NoBrokerRecursion bool
@@ -73,11 +72,6 @@ var supportedCapabilities = map[broker.AdapterName]map[string]Capabilities{
 		"2.1.212": {
 			ReadOnlyWorkspace: true, NoBrokerRecursion: true, TestsUnavailable: true,
 			NativeReadOnlyWorkspace: true, NativeTerminalToolDeny: true, NativeOutputSchema: true,
-		},
-	},
-	broker.AdapterCursor: {
-		"2026.07.23-e383d2b": {
-			ReadOnlyWorkspace: true, NoBrokerRecursion: true, TestsUnavailable: true,
 		},
 	},
 }
@@ -105,6 +99,9 @@ func CapabilitiesFor(profile broker.Profile) (Capabilities, error) {
 	}
 	if !profile.Controls.TestsUnavailable || !capabilities.TestsUnavailable {
 		return Capabilities{}, fmt.Errorf("%w: adapter %q cannot provide unavailable tests", ErrHarnessIncompatible, profile.Adapter.Name)
+	}
+	if profile.Adapter.Name == broker.AdapterClaude && !profile.Controls.NativeOutputSchema {
+		return Capabilities{}, fmt.Errorf("%w: adapter %q requires native output schema", ErrHarnessIncompatible, profile.Adapter.Name)
 	}
 	if profile.Controls.NativeOutputSchema && !capabilities.NativeOutputSchema {
 		return Capabilities{}, fmt.Errorf("%w: adapter %q version %q cannot provide native output schema", ErrHarnessIncompatible, profile.Adapter.Name, profile.Adapter.Version)

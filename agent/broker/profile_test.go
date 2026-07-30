@@ -46,10 +46,16 @@ func TestCatalogRejectsInvalidOrAmbiguousProfiles(t *testing.T) {
 		{"missing instruction digest", func(p *broker.Profile) { p.InstructionsDigest = "" }, "instructions"},
 		{"missing credential slot", func(p *broker.Profile) { p.CredentialSlot = "" }, "credential"},
 		{"no deadline", func(p *broker.Profile) { p.Limits.Timeout = 0 }, "timeout"},
-		{"cursor claims schema control", func(p *broker.Profile) {
+		{"cursor clean context is unverified", func(p *broker.Profile) {
 			p.Adapter.Name = broker.AdapterCursor
-			p.Controls.NativeOutputSchema = true
-		}, "output schema"},
+			p.Controls.NativeOutputSchema = false
+			p.Controls.IgnoresUserConfig = false
+		}, "disabled"},
+		{"claude without native output schema", func(p *broker.Profile) {
+			p.Adapter.Name = broker.AdapterClaude
+			p.Controls.NativeOutputSchema = false
+			p.Controls.IgnoresUserConfig = false
+		}, "native output schema"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

@@ -31,9 +31,9 @@ excluded.
 Review is deliberately static. Review children are instructed not to run
 tests, builds, formatters, or linters, the fixed contract marks tests
 unavailable, and the runtime image omits build toolchains. Native read-only
-enforcement varies by harness; Codex and Cursor may still invoke basic image
-utilities for inspection. Every inspection and sealed `review/v1` result
-records `tests_run: false`, and any child-generated test claim is
+enforcement varies by harness; supported harnesses may still invoke basic
+image utilities for inspection. Every inspection and sealed `review/v1`
+result records `tests_run: false`, and any child-generated test claim is
 non-authoritative. Supply an authoritative `validation/v1` attachment when
 test evidence is relevant; the reviewer may cite it but cannot regenerate it.
 
@@ -101,7 +101,7 @@ The initial `linux/amd64` image contains:
 | --- | --- | --- |
 | Codex CLI | `0.146.0` | Official x86_64 musl GitHub release archive |
 | Claude Code | `2.1.212` | Official Anthropic Linux x64 binary |
-| Cursor CLI | `2026.07.23-e383d2b` | Complete x64 agent package |
+| Cursor CLI | `2026.07.23-e383d2b` | Packaged but quarantined; not a supported profile |
 
 All downloads use versioned URLs and literal SHA-256 checks. The Cursor
 checksum is project-computed because the vendor does not publish one for this
@@ -109,9 +109,17 @@ archive; mirror the verified archive into an operator-controlled immutable
 registry before relying on it for long-lived or disconnected clusters. The
 image has no update channel, package installer, or writable harness location.
 
-Changing a harness version requires updating its image checksum, the explicit
-adapter compatibility table, CLI fixture/preflight tests, and the affected
-operator profiles as one reviewed change.
+Only Codex and Claude Code are admitted by the compatibility table. Cursor is
+retained in the image for future compatibility work, but catalog validation
+and startup preflight reject every Cursor profile. The verified CLI has no
+known option that disables repository `.cursor/rules`, `AGENTS.md`,
+`CLAUDE.md`, and MCP configuration together, so it cannot yet provide the
+broker's clean-context contract. Do not configure it until a versioned,
+tested native control is available.
+
+Changing a supported harness version requires updating its image checksum,
+the explicit adapter compatibility table, CLI fixture/preflight tests, and
+the affected operator profiles as one reviewed change.
 
 The pinned Codex `rust-v0.146.0` command definition was checked directly: its
 `exec` parser declares `--strict-config`, `--ignore-user-config`, and
@@ -130,12 +138,11 @@ openssl rand 32 | kubectl -n concourse create secret generic agent-child-capabil
 
 kubectl -n concourse create secret generic agent-provider-credentials \
   --from-literal=openai-api-key='...' \
-  --from-literal=anthropic-api-key='...' \
-  --from-literal=cursor-api-key='...'
+  --from-literal=anthropic-api-key='...'
 ```
 
-Then configure static profiles. This abbreviated example shows three
-provider-neutral choices mapped to three different harnesses:
+Then configure static profiles. This abbreviated example shows two
+provider-neutral choices mapped to the two supported harnesses:
 
 ```yaml
 agentBroker:
@@ -152,9 +159,6 @@ agentBroker:
     - slot: anthropic-shared
       secretName: agent-provider-credentials
       key: anthropic-api-key
-    - slot: cursor-shared
-      secretName: agent-provider-credentials
-      key: cursor-api-key
   profiles:
     - id: balanced-review-high
       revision: 1
@@ -191,24 +195,6 @@ agentBroker:
         no_broker_recursion: true
         tests_unavailable: true
         native_output_schema: true
-        ignores_user_config: false
-    - id: economy-consult-medium
-      revision: 1
-      selector: {tier: economy, effort: medium}
-      tools: [consult_agent]
-      purpose: Fast second opinion
-      worker_image: registry.example/concourse/agent-broker@sha256:<reviewed-digest>
-      adapter: {name: cursor-cli, version: 2026.07.23-e383d2b}
-      provider: {name: cursor, model: <exact-model>}
-      native_effort: medium
-      instructions_digest: sha256:e79f4aa92d601d27222d53fb07fbba5e306856006c260c0a8019220153e23dbe
-      credential_slot: cursor-shared
-      limits: {timeout: 60000000000, max_input_bytes: 1048576, max_output_bytes: 1048576}
-      controls:
-        read_only_workspace: true
-        no_broker_recursion: true
-        tests_unavailable: true
-        native_output_schema: false
         ignores_user_config: false
   networkPolicy:
     # Supply complete CNI-specific rules for ATC, DNS when required,

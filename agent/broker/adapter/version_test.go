@@ -38,7 +38,6 @@ func TestPreflightAcceptsOnlyThePackagedReleaseVersionFixtures(t *testing.T) {
 	}{
 		{name: "codex", adapter: broker.AdapterCodex, output: "codex-cli 0.146.0\n", version: "0.146.0"},
 		{name: "claude", adapter: broker.AdapterClaude, output: "2.1.212 (Claude Code)\n", version: "2.1.212"},
-		{name: "cursor", adapter: broker.AdapterCursor, output: "2026.07.23-e383d2b\n", version: "2026.07.23-e383d2b"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			identity, err := adapter.Preflight(context.Background(), profile(test.adapter), &fakeVersionProbe{
@@ -101,13 +100,21 @@ func TestPreflightRejectsControlsThePinnedHarnessCannotProvide(t *testing.T) {
 		want    string
 	}{
 		{
-			name: "cursor user configuration isolation",
+			name: "cursor clean context is not verified",
 			profile: func() broker.Profile {
 				p := profile(broker.AdapterCursor)
-				p.Controls.IgnoresUserConfig = true
 				return p
 			}(),
-			version: "cursor-agent 2026.07.23-e383d2b\n", want: "ignore user configuration",
+			version: "cursor-agent 2026.07.23-e383d2b\n", want: "unsupported adapter",
+		},
+		{
+			name: "claude requires native output schema",
+			profile: func() broker.Profile {
+				p := profile(broker.AdapterClaude)
+				p.Controls.NativeOutputSchema = false
+				return p
+			}(),
+			version: "2.1.212 (Claude Code)\n", want: "native output schema",
 		},
 	}
 	for _, tc := range tests {
@@ -137,13 +144,10 @@ func TestClaudeBuildNegotiatesStructuredOutputForPinnedSupportedVersion(t *testi
 	}
 }
 
-func TestCapabilitiesReportCursorsWeakerNativeEnforcement(t *testing.T) {
-	capabilities, err := adapter.CapabilitiesFor(profile(broker.AdapterCursor))
-	if err != nil {
-		t.Fatalf("CapabilitiesFor(): %v", err)
-	}
-	if capabilities.NativeReadOnlyWorkspace || capabilities.NativeOutputSchema || capabilities.NativeTerminalToolDeny {
-		t.Fatalf("Cursor native capabilities overclaim enforcement: %#v", capabilities)
+func TestCapabilitiesQuarantineCursorWithoutVerifiedCleanContext(t *testing.T) {
+	_, err := adapter.CapabilitiesFor(profile(broker.AdapterCursor))
+	if !errors.Is(err, adapter.ErrHarnessIncompatible) || !strings.Contains(err.Error(), "unsupported adapter") {
+		t.Fatalf("CapabilitiesFor(Cursor) error = %v, want unsupported adapter", err)
 	}
 }
 

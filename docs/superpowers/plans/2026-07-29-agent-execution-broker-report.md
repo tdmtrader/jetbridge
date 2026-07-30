@@ -339,8 +339,9 @@ optional, disabled-by-default Helm surface:
 - the runtime contains only the broker, native harnesses, certificates, Git,
   ripgrep, and shell support, runs as `65532:65534`, and has no update or
   package-install channel;
-- the adapter compatibility table now admits only the three packaged
-  versions. Real `--version` fixtures cover each native output form;
+- the adapter compatibility table admits only packaged Codex and Claude
+  versions. Cursor remains packaged but quarantined because its clean-context
+  control is unverified;
 - Codex exact argv uses `--strict-config`, `--ignore-user-config`, and
   `--ignore-rules`. These were verified directly in the official
   `rust-v0.146.0` `codex-rs/exec/src/cli.rs` command definition (the three
@@ -361,7 +362,7 @@ optional, disabled-by-default Helm surface:
   additive allow-rule semantics; it does not claim sidecar-only enforcement;
   and
 - `CONCOURSE_AGENT_BROKER_SMOKE=1 make test-agent-broker-smoke` provides an
-  explicit credential-free fake-harness/authority gate across adapters,
+  explicit credential-free fake-harness/authority gate across supported adapters,
   review/consult engine paths, and the synchronous MCP surface.
 
 Fresh focused verification:
@@ -417,12 +418,13 @@ a human-approved boundary correction lands and a live Linux regression proves
 both routes closed. This is a medium-hardening package for a handful of
 carefully managed clusters, not a hostile-multitenant or fleet-scale claim.
 
-### Final rebase verification
+### Pre-review rebase verification
 
-The 46 broker commits were rebased without conflicts onto the current
+Before Task 10 review round 1, the 46 broker commits were rebased without conflicts onto the current
 `origin/jetbridge` tip `9872d6445d`. Range-diff reports the first 45 patches
 as identical; Task 10 differs only by this final handoff update and report
-whitespace cleanup. The upstream tip is an ancestor and the worktree is clean.
+whitespace cleanup. The upstream tip was an ancestor and the worktree was clean
+at that checkpoint.
 
 Post-rebase passes:
 
@@ -442,3 +444,44 @@ stage and the focused ATC/Jetbridge build exhausted the host disk while
 compiling dependencies (`no space left on device`) before tests ran. They were
 not retried. The same exact MCP and managed-companion tests passed before the
 conflict-free rebase, and the range-diff shows those patches unchanged.
+
+### Task 10 review round 1 fixes
+
+Three verified blockers were corrected after the semantic rebase:
+
+1. The packaged `review/v1` and `consultation/v1` schemas now declare JSON
+   Schema draft-07, use `definitions`, and reference
+   `#/definitions/anchor`. A packaging regression test rejects `$defs`,
+   newer dialects, or non-draft-07 references while retaining the same record
+   fields and constraints.
+2. Claude Code 2.1.212 runs with `--bare`, the existing explicit
+   `Read,Glob,Grep` allowlist, strict empty MCP configuration, and a mandatory
+   native output schema. Its realistic success fixture includes both prose
+   `result` and object `structured_output`; normalization consumes only the
+   raw structured JSON. Missing or null `structured_output` fails rather than
+   allowing prose through the typed result boundary.
+3. Cursor CLI 2026.07.23 remains checksum-pinned in the image but is
+   quarantined. It has no verified option that jointly disables repository
+   `.cursor/rules`, `AGENTS.md`, `CLAUDE.md`, and MCP configuration. Cursor
+   was removed from supported capabilities; catalog construction and startup
+   preflight fail closed, and the deployable operator example now contains
+   only Codex and Claude.
+
+TDD red runs failed for the expected old behaviors: draft-2020-12 plus `$defs`,
+missing Claude `--bare`, prose selected over `structured_output`, absent/null
+structured output accepted too far, Cursor accepted, and Claude profiles
+without native schema accepted. After the fixes, the focused green run passed:
+
+```text
+go test -ldflags='-s -w' ./agent/broker ./agent/broker/adapter \
+  ./cmd/agent-broker ./deploy -count=1
+ok github.com/concourse/concourse/agent/broker 0.475s
+ok github.com/concourse/concourse/agent/broker/adapter 0.565s
+ok github.com/concourse/concourse/cmd/agent-broker 0.584s
+ok github.com/concourse/concourse/deploy 0.166s
+```
+
+No broad, Docker, PostgreSQL, Kubernetes, or live-provider gate was run in
+this correction because the host had approximately 1.2 GiB free. The
+task-specific Go cache was removed afterward. The separate Task 9b signaling
+promotion blocker is unchanged.

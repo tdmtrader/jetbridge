@@ -148,6 +148,7 @@ func (Claude) Build(profile broker.Profile, paths Paths, credential string) (Inv
 	}
 	args := []string{
 		"-p",
+		"--bare",
 		"--output-format", "stream-json",
 		"--verbose",
 		"--model", profile.Provider.Model,

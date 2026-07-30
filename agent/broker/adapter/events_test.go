@@ -2,6 +2,7 @@ package adapter_test
 
 import (
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
@@ -27,10 +28,8 @@ func TestDecodeNativeStreamsNormalizesTerminalOutput(t *testing.T) {
 		},
 		{
 			name: "claude", adapter: broker.AdapterClaude,
-			stream: `{"type":"system","subtype":"init","session_id":"session-1"}
-{"type":"result","subtype":"success","result":"{\"answer\":\"claude\"}","duration_ms":1200,"total_cost_usd":0.02,"usage":{"input_tokens":11,"output_tokens":5}}
-`,
-			want: `{"answer":"claude"}`, cost: true,
+			stream: readFixture(t, "testdata/claude-2.1.212-success.jsonl"),
+			want:   `{"answer":"claude"}`, cost: true,
 		},
 		{
 			name: "cursor", adapter: broker.AdapterCursor,
@@ -49,8 +48,9 @@ func TestDecodeNativeStreamsNormalizesTerminalOutput(t *testing.T) {
 			if string(result.Output) != tc.want {
 				t.Fatalf("output = %q, want %q", result.Output, tc.want)
 			}
-			if len(result.Events) != 2 && tc.adapter != broker.AdapterCodex {
-				t.Fatalf("events = %#v", result.Events)
+			if tc.adapter != broker.AdapterCodex &&
+				(len(result.Events) < 2 || result.Events[len(result.Events)-1].Kind != broker.EventCompleted) {
+				t.Fatalf("terminal events = %#v", result.Events)
 			}
 			if tc.cost != (result.Usage.CostUSD != nil) {
 				t.Fatalf("cost presence = %t, want %t", result.Usage.CostUSD != nil, tc.cost)
@@ -62,7 +62,7 @@ func TestDecodeNativeStreamsNormalizesTerminalOutput(t *testing.T) {
 func TestDecodeNativeStreamsDoesNotExposeNativePayloadsInBrokerEvents(t *testing.T) {
 	result, err := adapter.DecodeStream(broker.AdapterClaude, strings.NewReader(
 		`{"type":"system","session_id":"session-1","env":"TOKEN=super-secret"}
-{"type":"result","subtype":"success","result":"{\"answer\":\"ok\"}"}
+{"type":"result","subtype":"success","result":"non-authoritative prose","structured_output":{"answer":"ok"}}
 `,
 	), 4096)
 	if err != nil {
@@ -96,17 +96,29 @@ func TestDecodeNativeStreamsFailsClosed(t *testing.T) {
 		name   string
 		stream string
 		want   string
+		limit  int
 	}{
-		{"malformed", "{not-json}\n", "JSON"},
-		{"no result", `{"type":"system","subtype":"init"}` + "\n", "terminal"},
-		{"provider failure", `{"type":"result","subtype":"error","error":"denied"}` + "\n", "failed"},
-		{"oversized", `{"type":"result","subtype":"success","result":"` + strings.Repeat("x", 100) + `"}` + "\n", "limit"},
+		{"malformed", "{not-json}\n", "JSON", 4096},
+		{"no result", `{"type":"system","subtype":"init"}` + "\n", "terminal", 4096},
+		{"provider failure", `{"type":"result","subtype":"error","error":"denied"}` + "\n", "failed", 4096},
+		{"claude missing structured output", `{"type":"result","subtype":"success","result":"{\"answer\":\"not-authoritative\"}"}` + "\n", "structured output", 4096},
+		{"claude null structured output", `{"type":"result","subtype":"success","structured_output":null}` + "\n", "structured output", 4096},
+		{"oversized", `{"type":"result","subtype":"success","result":"` + strings.Repeat("x", 100) + `"}` + "\n", "limit", 64},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := adapter.DecodeStream(broker.AdapterClaude, strings.NewReader(tc.stream), 64)
+			_, err := adapter.DecodeStream(broker.AdapterClaude, strings.NewReader(tc.stream), tc.limit)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("DecodeStream() error = %v, want %q", err, tc.want)
 			}
 		})
 	}
+}
+
+func readFixture(t *testing.T, path string) string {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
 }

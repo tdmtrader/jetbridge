@@ -19,10 +19,13 @@ does not create a broker Deployment or Service. The feature requires durable
 agent snapshots, an exact digest-pinned broker image, an existing capability
 key Secret, and provider credential Secret coordinates.
 
-The companion uses non-root/read-only-root/drop-all security settings and a
-fail-closed Landlock process boundary. Managed nodes require Linux 6.2+ with
-Landlock ABI 3+ and a compatible RuntimeDefault seccomp profile. Reviews are
-static and always record that tests were not run.
+Codex 0.146.0 and Claude Code 2.1.212 are the supported harnesses. Cursor is
+present in the image but profile admission rejects it because no verified CLI
+control disables all repository instructions and MCP configuration. The
+companion uses non-root/read-only-root/drop-all security settings and a
+fail-closed Landlock filesystem boundary. Managed nodes require Linux 6.2+
+with Landlock ABI 3+ and a compatible RuntimeDefault seccomp profile. Reviews
+are static and always record that tests were not run.
 
 `agentBroker.networkPolicy.egress` selects the complete managed task pod,
 including the parent agent; Kubernetes cannot apply NetworkPolicy to one

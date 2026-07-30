@@ -253,7 +253,9 @@ func (profile Profile) validate() error {
 		return fmt.Errorf("worker image must be pinned to an exact lowercase sha256 digest")
 	}
 	switch profile.Adapter.Name {
-	case AdapterClaude, AdapterCodex, AdapterCursor:
+	case AdapterClaude, AdapterCodex:
+	case AdapterCursor:
+		return fmt.Errorf("adapter %q is disabled until a verified clean-context control is available", profile.Adapter.Name)
 	default:
 		return fmt.Errorf("adapter name %q is unsupported", profile.Adapter.Name)
 	}
@@ -282,8 +284,8 @@ func (profile Profile) validate() error {
 		!profile.Controls.TestsUnavailable {
 		return fmt.Errorf("review broker profiles require read-only workspace, no recursion, and unavailable tests")
 	}
-	if profile.Adapter.Name == AdapterCursor && profile.Controls.NativeOutputSchema {
-		return fmt.Errorf("cursor adapter cannot claim native output schema enforcement")
+	if profile.Adapter.Name == AdapterClaude && !profile.Controls.NativeOutputSchema {
+		return fmt.Errorf("claude adapter requires native output schema enforcement")
 	}
 	return nil
 }
