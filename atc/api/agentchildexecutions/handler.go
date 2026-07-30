@@ -1,6 +1,7 @@
 package agentchildexecutions
 
 import (
+	"crypto/hmac"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,7 +17,14 @@ import (
 	"github.com/google/uuid"
 )
 
-const maxBrokerRequestBytes int64 = 4 << 20
+const (
+	maxBrokerRequestBytes int64 = 4 << 20
+	// MaxExecutionCapabilityTTL bounds bearer validity even when a deployment
+	// configuration is malformed. Profiles whose execution deadline exceeds it
+	// are refused during admission rather than receiving a token that expires
+	// mid-execution.
+	MaxExecutionCapabilityTTL = time.Hour
+)
 
 type HandlerConfig struct {
 	Signer                 *CapabilitySigner
@@ -30,8 +38,11 @@ type HandlerConfig struct {
 type Handler struct{ config HandlerConfig }
 
 func NewHandler(config HandlerConfig) (*Handler, error) {
-	if config.Signer == nil || config.Verifier == nil || config.Store == nil || config.Sealer == nil || config.ExecutionCapabilityTTL <= 0 {
+	if config.Signer == nil || config.Verifier == nil || config.Store == nil || config.Sealer == nil || config.ExecutionCapabilityTTL <= 0 || config.ExecutionCapabilityTTL > MaxExecutionCapabilityTTL {
 		return nil, fmt.Errorf("agent child authority handler: signer, verifier, store, sealer, and execution capability TTL are required")
+	}
+	if !hmac.Equal([]byte(config.Signer.keyID), []byte(config.Verifier.keyID)) || !hmac.Equal(config.Signer.key[:], config.Verifier.key[:]) {
+		return nil, fmt.Errorf("agent child authority handler: signer and verifier keys must match")
 	}
 	if config.Now == nil {
 		config.Now = time.Now
@@ -79,17 +90,21 @@ func (handler *Handler) ServeHTTP(w http.ResponseWriter, request *http.Request) 
 		if !decodeStrictJSON(w, request, &body) {
 			return
 		}
+		profile, err := profileForAdmission(profiles, body.Tool, body.Selector, body.ProfileID, body.ProfileDigest)
+		if err != nil {
+			writeSafeError(w, http.StatusBadRequest)
+			return
+		}
+		if profile.Limits.Timeout > handler.config.ExecutionCapabilityTTL {
+			writeSafeError(w, http.StatusBadRequest)
+			return
+		}
 		id, err := service.Admit(request.Context(), broker.AdmissionRequest{IdempotencyKey: body.IdempotencyKey, Tool: body.Tool, Selector: body.Selector, ProfileID: body.ProfileID, ProfileDigest: body.ProfileDigest, InputDigest: body.InputDigest, Attachments: append([]string(nil), body.Attachments...)})
 		if err != nil {
 			writeServiceError(w, err)
 			return
 		}
-		profile, err := profileForAdmission(profiles, body.Tool, body.Selector, body.ProfileID, body.ProfileDigest)
-		if err != nil {
-			writeSafeError(w, http.StatusUnauthorized)
-			return
-		}
-		capability, err := handler.config.Signer.MintExecution(scope, id, profile, now.Add(-time.Second), now.Add(handler.config.ExecutionCapabilityTTL))
+		capability, err := handler.config.Signer.MintExecution(scope, id, profile, now, now.Add(handler.config.ExecutionCapabilityTTL))
 		if err != nil {
 			writeSafeError(w, http.StatusInternalServerError)
 			return

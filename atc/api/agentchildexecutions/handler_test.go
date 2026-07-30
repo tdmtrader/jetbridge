@@ -79,6 +79,77 @@ func TestHandlerRejectsUnauthorizedAndStrictlyMalformedAdmission(t *testing.T) {
 	}
 }
 
+func TestNewHandlerRequiresBoundedCapabilityTTLAndMatchingKeyPair(t *testing.T) {
+	key := []byte(strings.Repeat("k", 32))
+	otherKey := []byte(strings.Repeat("o", 32))
+	signer, err := agentchildexecutions.NewCapabilitySigner("key-1", key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier, err := agentchildexecutions.NewCapabilityVerifier("key-1", key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, config := range map[string]agentchildexecutions.HandlerConfig{
+		"maximum ttl accepted": {Signer: signer, Verifier: verifier, Store: &fakeStore{}, Sealer: &fakeSealer{}, ExecutionCapabilityTTL: agentchildexecutions.MaxExecutionCapabilityTTL},
+		"ttl too long":         {Signer: signer, Verifier: verifier, Store: &fakeStore{}, Sealer: &fakeSealer{}, ExecutionCapabilityTTL: agentchildexecutions.MaxExecutionCapabilityTTL + time.Second},
+		"key id mismatch": func() agentchildexecutions.HandlerConfig {
+			wrong, _ := agentchildexecutions.NewCapabilityVerifier("key-2", key)
+			return agentchildexecutions.HandlerConfig{Signer: signer, Verifier: wrong, Store: &fakeStore{}, Sealer: &fakeSealer{}, ExecutionCapabilityTTL: time.Minute}
+		}(),
+		"key mismatch": func() agentchildexecutions.HandlerConfig {
+			wrong, _ := agentchildexecutions.NewCapabilityVerifier("key-1", otherKey)
+			return agentchildexecutions.HandlerConfig{Signer: signer, Verifier: wrong, Store: &fakeStore{}, Sealer: &fakeSealer{}, ExecutionCapabilityTTL: time.Minute}
+		}(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := agentchildexecutions.NewHandler(config)
+			if name == "maximum ttl accepted" && err != nil {
+				t.Fatalf("NewHandler(): %v", err)
+			}
+			if name != "maximum ttl accepted" && err == nil {
+				t.Fatal("NewHandler() succeeded")
+			}
+		})
+	}
+}
+
+func TestHandlerRefusesAdmissionWhenProfileOutlivesExecutionCapability(t *testing.T) {
+	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+	profileInput := authorityProfile()
+	profileInput.Limits.Timeout = agentchildexecutions.MaxExecutionCapabilityTTL + time.Second
+	catalog, err := broker.NewCatalog([]broker.Profile{profileInput})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := catalog.Resolve(broker.ToolConsultAgent, profileInput.Selector)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := []byte(strings.Repeat("k", 32))
+	signer, _ := agentchildexecutions.NewCapabilitySigner("key-1", key)
+	verifier, _ := agentchildexecutions.NewCapabilityVerifier("key-1", key)
+	scope := agentchildexecutions.Scope{TeamID: 1, WorkflowRunID: 2, NodePlanID: "node", ParentAttempt: 1, BrokerInstance: "broker-1", LeaseDuration: time.Minute}
+	bootstrap, _ := signer.MintBootstrap(scope, []broker.Profile{profile}, now.Add(-time.Second), now.Add(time.Minute))
+	store := &fakeStore{}
+	handler, err := agentchildexecutions.NewHandler(agentchildexecutions.HandlerConfig{Signer: signer, Verifier: verifier, Store: store, Sealer: &fakeSealer{}, ExecutionCapabilityTTL: agentchildexecutions.MaxExecutionCapabilityTTL, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(transport.AdmitRequest{IdempotencyKey: "call", Tool: broker.ToolConsultAgent, Selector: profile.Selector, ProfileID: profile.ID, ProfileDigest: profile.Digest, InputDigest: "sha256:" + strings.Repeat("c", 64), Attachments: []string{"design"}})
+	request := httptest.NewRequest(http.MethodPost, transport.AdmitPath, bytes.NewReader(body))
+	request.Header.Set("Authorization", "Bearer "+bootstrap)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("admission status = %d", response.Code)
+	}
+	if store.execution.ID != "" {
+		t.Fatalf("admission created execution %#v", store.execution)
+	}
+}
+
 func TestHandlerMintsExecutionCapabilityAndEnforcesExactURLScope(t *testing.T) {
 	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
 	profile := resolvedAuthorityProfile(t)
