@@ -303,10 +303,13 @@ func TestNormalizeBranchRefAndRejectsUnsafeNames(t *testing.T) {
 	if got, err := normalizeBranchRef("feature/widget"); err != nil || got != "refs/heads/feature/widget" {
 		t.Fatalf("short branch = %q, %v", got, err)
 	}
-	if got, err := normalizeBranchRef("refs/heads/main"); err != nil || got != "refs/heads/main" {
-		t.Fatalf("qualified branch = %q, %v", got, err)
+	if got, err := normalizeBranchRef("refs/heads/release"); err != nil || got != "refs/heads/refs/heads/release" {
+		t.Fatalf("prefix-looking branch = %q, %v", got, err)
 	}
-	for _, raw := range []string{"", "refs/tags/v1", "feature..bad", "feature lock", "feature~old", "feature/", "/feature"} {
+	if got, err := normalizeBranchRef("refs/tags/v1"); err != nil || got != "refs/heads/refs/tags/v1" {
+		t.Fatalf("other prefix-looking branch = %q, %v", got, err)
+	}
+	for _, raw := range []string{"", "feature..bad", "feature lock", "feature~old", "feature/", "/feature"} {
 		if _, err := normalizeBranchRef(raw); err == nil {
 			t.Fatalf("unsafe branch %q was accepted", raw)
 		}

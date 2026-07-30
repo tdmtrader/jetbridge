@@ -220,11 +220,6 @@ func normalizeState(value pull) (contracts.PullRequestState, error) {
 }
 
 func normalizeBranchRef(raw string) (string, error) {
-	if strings.HasPrefix(raw, "refs/heads/") {
-		raw = strings.TrimPrefix(raw, "refs/heads/")
-	} else if strings.HasPrefix(raw, "refs/") {
-		return "", fmt.Errorf("not a branch ref")
-	}
 	if raw == "" || strings.HasPrefix(raw, "/") || strings.HasSuffix(raw, "/") || strings.Contains(raw, "//") || strings.Contains(raw, "..") || strings.Contains(raw, "@{") || strings.ContainsAny(raw, "\\~^:?*[ \t\r\n\x00") || strings.HasSuffix(raw, ".") {
 		return "", fmt.Errorf("unsafe branch ref")
 	}
