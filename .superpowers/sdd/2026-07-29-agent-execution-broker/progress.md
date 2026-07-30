@@ -141,3 +141,16 @@ strip exact operator profiles so Fly never receives provider/model authority.
 Focused broker/workflow/API/Fly/atccmd suites, DB/migration compile-only checks,
 migration preflight head, and diff hygiene pass. PostgreSQL runtime was not
 retried because of the recorded shared-memory sandbox failure.
+
+Task 9b managed-companion checkpoint: implementation complete pending
+independent review. Trusted broker profiles activate one dedicated
+`ManagedAgentBroker` through an exec-injected command-scoped authority
+factory. ATC and its internal HTTP handler share one cached signer/verifier;
+the pod receives only a scoped bootstrap bearer and strict command-compatible
+authority. Jetbridge projects exact read-only workspace/typed attachments,
+broker-only Secret key files, bounded broker-only scratch, and no generic main
+mounts. The fixed digest-pinned companion has loopback MCP, readiness,
+non-root/read-only-root/drop-ALL/RuntimeDefault security, no service-account
+token, and a server-owned network-policy label. Focused runtime, exec, engine,
+Jetbridge, atccmd, authority, and command suites pass. A broader Jetbridge run
+hit the known sandbox IPv6 loopback bind denial in an unrelated httptest.

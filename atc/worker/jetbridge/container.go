@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -117,6 +118,15 @@ func newContainer(
 		builder.InputMountPaths = append([]string(nil), builder.InputMountPaths...)
 		builder.OutputMountPaths = append([]string(nil), builder.OutputMountPaths...)
 		containerSpec.ManagedOutputBuilder = &builder
+	}
+	if containerSpec.ManagedAgentBroker != nil {
+		broker := *containerSpec.ManagedAgentBroker
+		broker.Authority.Files = make(map[string][]byte, len(broker.Authority.Files))
+		for name, contents := range containerSpec.ManagedAgentBroker.Authority.Files {
+			broker.Authority.Files[name] = append([]byte(nil), contents...)
+		}
+		broker.Credentials = append([]runtime.SecretKeyMount(nil), broker.Credentials...)
+		containerSpec.ManagedAgentBroker = &broker
 	}
 	return &Container{
 		handle:         handle,
@@ -642,6 +652,7 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 		}
 	}
 	var managedAuthorityMount *corev1.VolumeMount
+	var managedBrokerAuthorityMounts []corev1.VolumeMount
 	for index, mount := range c.privateFileMounts() {
 		name := c.privateMountSecretName(index)
 		if name == "" {
@@ -659,7 +670,56 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 			managedAuthorityMount = &corev1.VolumeMount{Name: name, MountPath: filepath.Join(mount.MountPath, runtime.ManagedOutputBuilderAuthorityFile), SubPath: runtime.ManagedOutputBuilderAuthorityFile, ReadOnly: true}
 			continue
 		}
+		if c.managedAgentBrokerAuthorityIndex() == index {
+			for _, file := range []string{runtime.ManagedAgentBrokerAuthorityFile, runtime.ManagedAgentBrokerBootstrapFile} {
+				managedBrokerAuthorityMounts = append(managedBrokerAuthorityMounts, corev1.VolumeMount{
+					Name: name, MountPath: filepath.Join(mount.MountPath, file), SubPath: file, ReadOnly: true,
+				})
+			}
+			continue
+		}
 		mainMounts = append(mainMounts, corev1.VolumeMount{Name: name, MountPath: mount.MountPath, ReadOnly: true})
+	}
+
+	var managedBrokerMounts []corev1.VolumeMount
+	if broker := c.containerSpec.ManagedAgentBroker; broker != nil {
+		if broker.WorkspaceInputPath != "" {
+			selected, err := managedAgentBrokerInputMount(broker.WorkspaceInputPath, runtime.ManagedAgentBrokerWorkspaceMountPath, volumeMounts, volumes)
+			if err != nil {
+				return nil, err
+			}
+			managedBrokerMounts = append(managedBrokerMounts, selected)
+		}
+		for _, input := range broker.AttachmentInputs {
+			selected, err := managedAgentBrokerInputMount(input.InputPath, input.MountPath, volumeMounts, volumes)
+			if err != nil {
+				return nil, err
+			}
+			managedBrokerMounts = append(managedBrokerMounts, selected)
+		}
+		managedBrokerMounts = append(managedBrokerMounts, managedBrokerAuthorityMounts...)
+		scratchQuantity := *resource.NewQuantity(broker.ScratchSizeBytes, resource.BinarySI)
+		volumes = append(volumes, corev1.Volume{Name: "agent-broker-scratch", VolumeSource: corev1.VolumeSource{
+			EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: &scratchQuantity},
+		}})
+		managedBrokerMounts = append(managedBrokerMounts, corev1.VolumeMount{
+			Name: "agent-broker-scratch", MountPath: runtime.ManagedAgentBrokerScratchMountPath,
+		})
+		// Hermetic broker pods use the server-owned FSGroup (65534); group
+		// read is required for an arbitrary digest-pinned non-root image.
+		mode := int32(0440)
+		for index, credential := range broker.Credentials {
+			name := fmt.Sprintf("agent-broker-credential-%d", index)
+			volumes = append(volumes, corev1.Volume{Name: name, VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: credential.SecretName, DefaultMode: &mode,
+					Items: []corev1.KeyToPath{{Key: credential.Key, Path: "credential"}},
+				},
+			}})
+			managedBrokerMounts = append(managedBrokerMounts, corev1.VolumeMount{
+				Name: name, MountPath: credential.MountPath, SubPath: "credential", ReadOnly: true,
+			})
+		}
 	}
 
 	containers := []corev1.Container{
@@ -680,7 +740,7 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 	sidecarContainers, err := buildManagedSidecarContainers(
 		c.containerSpec.Sidecars, c.sidecarVolumeMounts(volumeMounts), dir,
 		c.containerSpec.SidecarEnv, c.containerSpec.ManagedOutputBuilder, volumes,
-		c.containerSpec.Hermetic)
+		c.containerSpec.ManagedAgentBroker, managedBrokerMounts, c.containerSpec.Hermetic)
 	if err != nil {
 		return nil, fmt.Errorf("build sidecar containers: %w", err)
 	}
@@ -699,7 +759,7 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 
 	affinity := c.buildAffinity()
 	var automountServiceAccountToken *bool
-	if c.containerSpec.Hermetic || c.containerSpec.ManagedOutputBuilder != nil {
+	if c.containerSpec.Hermetic || c.containerSpec.ManagedOutputBuilder != nil || c.containerSpec.ManagedAgentBroker != nil {
 		disabled := false
 		automountServiceAccountToken = &disabled
 	}
@@ -890,6 +950,9 @@ func (c *Container) privateFileMounts() []runtime.PrivateFileMount {
 	if builder := c.containerSpec.ManagedOutputBuilder; builder != nil {
 		mounts = append(mounts, builder.Authority)
 	}
+	if broker := c.containerSpec.ManagedAgentBroker; broker != nil {
+		mounts = append(mounts, broker.Authority)
+	}
 	return mounts
 }
 
@@ -898,6 +961,17 @@ func (c *Container) managedOutputBuilderAuthorityIndex() int {
 		return -1
 	}
 	return len(c.containerSpec.PrivateFileMounts)
+}
+
+func (c *Container) managedAgentBrokerAuthorityIndex() int {
+	if c.containerSpec.ManagedAgentBroker == nil {
+		return -1
+	}
+	index := len(c.containerSpec.PrivateFileMounts)
+	if c.containerSpec.ManagedOutputBuilder != nil {
+		index++
+	}
+	return index
 }
 
 // allocatePrivateMountSecretNames starts a new private-mount epoch for a new
@@ -1094,6 +1168,9 @@ func (c *Container) validatePrivateFileMounts(processDir string) error {
 	if err := runtime.ValidateManagedOutputBuilder(c.containerSpec); err != nil {
 		return err
 	}
+	if err := runtime.ValidateManagedAgentBroker(c.containerSpec); err != nil {
+		return err
+	}
 	privateMounts := c.privateFileMounts()
 	if len(privateMounts) == 0 {
 		return nil
@@ -1236,7 +1313,7 @@ func buildSidecarContainers(
 	sidecarEnv map[string][]string,
 	hermetic bool,
 ) []corev1.Container {
-	containers, err := buildManagedSidecarContainers(sidecars, mainMounts, defaultDir, sidecarEnv, nil, nil, hermetic)
+	containers, err := buildManagedSidecarContainers(sidecars, mainMounts, defaultDir, sidecarEnv, nil, nil, nil, nil, hermetic)
 	if err != nil {
 		return nil
 	}
@@ -1250,6 +1327,8 @@ func buildManagedSidecarContainers(
 	sidecarEnv map[string][]string,
 	managedBuilder *runtime.ManagedOutputBuilder,
 	podVolumes []corev1.Volume,
+	managedBroker *runtime.ManagedAgentBroker,
+	managedBrokerMounts []corev1.VolumeMount,
 	hermetic bool,
 ) ([]corev1.Container, error) {
 	if len(sidecars) == 0 {
@@ -1266,6 +1345,8 @@ func buildManagedSidecarContainers(
 			if err != nil {
 				return nil, err
 			}
+		} else if sc.Name == runtime.ManagedAgentBrokerName && managedBroker != nil {
+			mounts = append([]corev1.VolumeMount(nil), managedBrokerMounts...)
 		} else if len(mainMounts) > 0 {
 			mounts = append([]corev1.VolumeMount{}, mainMounts...)
 		}
@@ -1307,11 +1388,45 @@ func buildManagedSidecarContainers(
 		if sc.Resources != nil {
 			c.Resources = buildSidecarResourceRequirements(*sc.Resources)
 		}
+		if sc.Name == runtime.ManagedAgentBrokerName && managedBroker != nil {
+			c.Resources = buildSidecarResourceRequirements(managedBroker.Resources)
+			runAsNonRoot := true
+			readOnlyRoot := true
+			allowEscalation := false
+			c.SecurityContext = &corev1.SecurityContext{
+				RunAsNonRoot:             &runAsNonRoot,
+				ReadOnlyRootFilesystem:   &readOnlyRoot,
+				AllowPrivilegeEscalation: &allowEscalation,
+				Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+				SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+			}
+			c.ReadinessProbe = &corev1.Probe{
+				ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
+					Path: "/healthz", Port: intstr.FromInt(runtime.ManagedAgentBrokerPort), Scheme: corev1.URISchemeHTTP,
+				}},
+				PeriodSeconds: 2, FailureThreshold: 30,
+			}
+		}
 
 		containers = append(containers, c)
 	}
 
 	return containers, nil
+}
+
+func managedAgentBrokerInputMount(inputPath, mountPath string, mounts []corev1.VolumeMount, podVolumes []corev1.Volume) (corev1.VolumeMount, error) {
+	selected, err := managedOutputBuilderMounts(runtime.ManagedOutputBuilder{
+		InputMountPaths: []string{inputPath},
+	}, mounts, podVolumes)
+	if err != nil {
+		return corev1.VolumeMount{}, fmt.Errorf("managed agent broker workspace: %w", err)
+	}
+	if len(selected) != 1 {
+		return corev1.VolumeMount{}, fmt.Errorf("managed agent broker workspace has no exact mount")
+	}
+	selected[0].MountPath = mountPath
+	selected[0].ReadOnly = true
+	return selected[0], nil
 }
 
 // managedOutputBuilderMounts selects only the exact typed input/output
@@ -1460,6 +1575,9 @@ func (c *Container) buildPodLabels() map[string]string {
 	}
 	if c.containerSpec.Hermetic {
 		labels[hermeticLabelKey] = "true"
+	}
+	if c.containerSpec.ManagedAgentBroker != nil {
+		labels["concourse.ci/agent-broker"] = "true"
 	}
 
 	addLabel := func(key, value string) {

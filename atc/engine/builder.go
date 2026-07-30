@@ -426,7 +426,13 @@ func (factory *stepperFactory) buildAgentStep(build db.Build, plan atc.Plan) exe
 		plan.Attempts,
 	)
 	if containerMetadata.Attempt == "" {
-		containerMetadata.Attempt = "0"
+		if len(plan.Agent.BrokerAuthority) > 0 {
+			// Broker capabilities bind a positive parent occurrence. Ordinary
+			// legacy agent metrics retain their historical zero sentinel.
+			containerMetadata.Attempt = "1"
+		} else {
+			containerMetadata.Attempt = "0"
+		}
 	}
 
 	stepMetadata := factory.stepMetadata(

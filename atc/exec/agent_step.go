@@ -16,6 +16,7 @@ import (
 	"code.cloudfoundry.org/lager/v3"
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"github.com/concourse/concourse/agent/api/metrics"
+	"github.com/concourse/concourse/agent/broker"
 	"github.com/concourse/concourse/agent/budget"
 	"github.com/concourse/concourse/agent/checkpoint"
 	"github.com/concourse/concourse/agent/credentials"
@@ -125,6 +126,12 @@ func WithAgentCheckpointCapture(config AgentCheckpointStepConfig) AgentStepOptio
 	}
 }
 
+// WithAgentBrokerAuthorityFactory supplies the command-scoped authority
+// factory that mints one already-scoped bootstrap credential and descriptor.
+func WithAgentBrokerAuthorityFactory(factory AgentBrokerAuthorityFactory) AgentStepOption {
+	return func(s *AgentStep) { s.agentBrokerAuthority = factory }
+}
+
 // AgentStep runs the claude CLI (via the agent-runner entrypoint) in a
 // jetbridge pod with declared MCP sidecars, then ingests the flight
 // recorder server-side (docs/agentic/README.md).
@@ -148,6 +155,7 @@ type AgentStep struct {
 	snapshotMetadataStore snapshot.MetadataStore
 	snapshotContentStore  snapshot.ContentStore
 	checkpointCapture     *AgentCheckpointStepConfig
+	agentBrokerAuthority  AgentBrokerAuthorityFactory
 
 	// transcriptStore is the transcript ingestion seam — optional,
 	// nil-guarded. Wired via WithAgentStepTranscriptStore.
@@ -424,8 +432,26 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 
 	var (
 		managedOutputBuilder *runtime.ManagedOutputBuilder
+		managedAgentBroker   *runtime.ManagedAgentBroker
+		agentBrokerProfiles  []broker.Profile
 		err                  error
 	)
+	brokerRequest, brokerEnabled, err := agentBrokerAuthorityRequest(
+		step.planID, step.plan, step.metadata, step.containerMetadata, snapshotInputs, workdir,
+	)
+	if err != nil {
+		return false, fmt.Errorf("agent %q: %w", step.plan.Name, err)
+	}
+	if brokerEnabled {
+		if step.agentBrokerAuthority == nil {
+			return false, fmt.Errorf("agent %q: managed agent broker authority is not configured", step.plan.Name)
+		}
+		managedAgentBroker, err = step.agentBrokerAuthority.BuildAgentBroker(brokerRequest)
+		if err != nil {
+			return false, fmt.Errorf("agent %q: build managed agent broker authority: %w", step.plan.Name, err)
+		}
+		agentBrokerProfiles = brokerRequest.Profiles
+	}
 	if step.plan.RuntimeImage != "" {
 		managedOutputBuilder, err = outputBuilderAuthority(workdir, snapshotInputs, step.plan.SnapshotInputs, step.plan.SnapshotOutputs)
 		if err != nil {
@@ -475,6 +501,9 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 		return false, err
 	}
 	if err := reserveOutputBuilder(sidecars, containerSpec.Env); err != nil {
+		return false, fmt.Errorf("agent %q: %w", step.plan.Name, err)
+	}
+	if err := reserveAgentBroker(sidecars, containerSpec.Env); err != nil {
 		return false, fmt.Errorf("agent %q: %w", step.plan.Name, err)
 	}
 
@@ -540,6 +569,9 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 
 	containerSpec.Sidecars = sidecars
 	if err := injectManagedOutputBuilder(&containerSpec, runtimeImage, managedOutputBuilder); err != nil {
+		return false, fmt.Errorf("agent %q: %w", step.plan.Name, err)
+	}
+	if err := injectManagedAgentBroker(&containerSpec, managedAgentBroker, agentBrokerProfiles); err != nil {
 		return false, fmt.Errorf("agent %q: %w", step.plan.Name, err)
 	}
 

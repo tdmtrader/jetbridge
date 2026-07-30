@@ -229,6 +229,11 @@ type RunCommand struct {
 	agentCheckpointMu         sync.Mutex
 	agentCheckpointStepConfig *exec.AgentCheckpointStepConfig
 
+	agentChildAuthorityMu sync.Mutex
+	agentChildSigner      *agentchildexecutions.CapabilitySigner
+	agentChildVerifier    *agentchildexecutions.CapabilityVerifier
+	agentBrokerRuntime    *agentBrokerRuntimeConfig
+
 	// The ticket/workflow admission graph is composed ONCE and shared by the
 	// dispatcher component and the dispatch API route. See agentDispatchGraph.
 	agentDispatchMu    sync.Mutex
@@ -337,6 +342,7 @@ type RunCommand struct {
 	AgentChildExecutions struct {
 		Enabled             bool          `long:"agent-child-executions-enabled" description:"Enable ATC authority, inspection, and bounded lease reconciliation for managed broker child executions."`
 		BrokerCatalog       flag.File     `long:"agent-child-executions-broker-catalog" description:"Immutable deployment broker profile catalog JSON file. Provider, model, harness, and credentials remain server-only."`
+		BrokerRuntime       flag.File     `long:"agent-child-executions-broker-runtime" description:"Strict deployment broker runtime JSON containing image-owned paths, K8s Secret key coordinates, and bounded resources."`
 		CapabilityKey       flag.File     `long:"agent-child-executions-capability-key" description:"File containing the raw 32-byte HMAC key for execution-scoped broker capabilities."`
 		CapabilityKeyID     string        `long:"agent-child-executions-capability-key-id" default:"agent-child-v1" description:"Stable key identifier embedded in broker execution capabilities."`
 		CapabilityTTL       time.Duration `long:"agent-child-executions-capability-ttl" default:"1h" description:"Bounded lifetime for an execution-scoped broker capability."`
@@ -1410,7 +1416,7 @@ func (cmd *RunCommand) backendComponents(
 
 	imgResolver := imageresolver.NewResolver(nil)
 
-	engine := cmd.constructEngine(
+	engine, err := cmd.constructEngine(
 		pool,
 		dbWorkerFactory,
 		teamFactory,
@@ -1427,6 +1433,9 @@ func (cmd *RunCommand) backendComponents(
 		dbConn,
 		dbPipelineRunFactory,
 	)
+	if err != nil {
+		return nil, err
+	}
 
 	// In case that a user configures resource-checking-interval, but forgets to
 	// configure resource-with-webhook-checking-interval, keep both checking-
@@ -3043,6 +3052,11 @@ func (cmd *RunCommand) validateAgentChildExecutions() error {
 	if cmd.AgentChildExecutions.CapabilityKey.Path() == "" {
 		errs = multierror.Append(errs, errors.New("--agent-child-executions-capability-key is required when enabled"))
 	}
+	if cmd.AgentChildExecutions.BrokerRuntime.Path() == "" {
+		errs = multierror.Append(errs, errors.New("--agent-child-executions-broker-runtime is required when enabled"))
+	} else if _, err := loadAgentBrokerRuntime(cmd.AgentChildExecutions.BrokerRuntime.Path()); err != nil {
+		errs = multierror.Append(errs, err)
+	}
 	if strings.TrimSpace(cmd.AgentChildExecutions.CapabilityKeyID) == "" {
 		errs = multierror.Append(errs, errors.New("--agent-child-executions-capability-key-id is required when enabled"))
 	}
@@ -3354,7 +3368,7 @@ func (cmd *RunCommand) constructEngine(
 	resolver imageresolver.Resolver,
 	dbConn db.DbConn,
 	pipelineRunFactory db.PipelineRunFactory,
-) engine.Engine {
+) (engine.Engine, error) {
 	// Spend ledger for agent: steps. Same construction as the costs API
 	// handler (atc/api/handler.go): the DB-backed cost ledger plus the global
 	// daily cap from --agent-daily-budget-usd. Per-run admission is the
@@ -3381,6 +3395,18 @@ func (cmd *RunCommand) constructEngine(
 	}
 	if checkpointOptions, ok := cmd.agentCheckpointCoreStepFactoryOptions(); ok {
 		coreStepFactoryOptions = append(coreStepFactoryOptions, checkpointOptions...)
+	}
+	if cmd.AgentChildExecutions.Enabled {
+		signer, _, runtimeConfig, err := cmd.composeAgentChildAuthority()
+		if err != nil {
+			return engine.Engine{}, err
+		}
+		coreStepFactoryOptions = append(coreStepFactoryOptions, engine.WithAgentBrokerAuthorityFactory(agentBrokerAuthorityFactory{
+			signer: signer, runtime: runtimeConfig,
+			leaseDuration: cmd.AgentChildExecutions.LeaseDuration,
+			capabilityTTL: cmd.AgentChildExecutions.CapabilityTTL,
+			now:           time.Now,
+		}))
 	}
 
 	return engine.NewEngine(
@@ -3412,7 +3438,7 @@ func (cmd *RunCommand) constructEngine(
 		),
 		secretManager,
 		cmd.varSourcePool,
-	)
+	), nil
 }
 
 func (cmd *RunCommand) constructHTTPHandler(
@@ -3848,15 +3874,7 @@ func (cmd *RunCommand) constructAPIHandler(
 }
 
 func (cmd *RunCommand) agentChildExecutionHandlers(connection db.DbConn) (*api.AgentChildExecutionHandlers, error) {
-	key, err := os.ReadFile(cmd.AgentChildExecutions.CapabilityKey.Path())
-	if err != nil {
-		return nil, fmt.Errorf("read agent child execution capability key: %w", err)
-	}
-	signer, err := agentchildexecutions.NewCapabilitySigner(cmd.AgentChildExecutions.CapabilityKeyID, key)
-	if err != nil {
-		return nil, err
-	}
-	verifier, err := agentchildexecutions.NewCapabilityVerifier(cmd.AgentChildExecutions.CapabilityKeyID, key)
+	signer, verifier, _, err := cmd.composeAgentChildAuthority()
 	if err != nil {
 		return nil, err
 	}
@@ -3877,6 +3895,37 @@ func (cmd *RunCommand) agentChildExecutionHandlers(connection db.DbConn) (*api.A
 		return nil, err
 	}
 	return &api.AgentChildExecutionHandlers{Authority: authority, Store: store}, nil
+}
+
+// composeAgentChildAuthority builds the signing pair and strict runtime once.
+// Both the HTTP handler and AgentStep factory receive these exact command-
+// scoped instances; only already-signed bootstrap bytes enter a pod.
+func (cmd *RunCommand) composeAgentChildAuthority() (*agentchildexecutions.CapabilitySigner, *agentchildexecutions.CapabilityVerifier, agentBrokerRuntimeConfig, error) {
+	cmd.agentChildAuthorityMu.Lock()
+	defer cmd.agentChildAuthorityMu.Unlock()
+	if cmd.agentChildSigner != nil && cmd.agentChildVerifier != nil && cmd.agentBrokerRuntime != nil {
+		return cmd.agentChildSigner, cmd.agentChildVerifier, *cmd.agentBrokerRuntime, nil
+	}
+	key, err := os.ReadFile(cmd.AgentChildExecutions.CapabilityKey.Path())
+	if err != nil {
+		return nil, nil, agentBrokerRuntimeConfig{}, fmt.Errorf("read agent child execution capability key: %w", err)
+	}
+	signer, err := agentchildexecutions.NewCapabilitySigner(cmd.AgentChildExecutions.CapabilityKeyID, key)
+	if err != nil {
+		return nil, nil, agentBrokerRuntimeConfig{}, err
+	}
+	verifier, err := agentchildexecutions.NewCapabilityVerifier(cmd.AgentChildExecutions.CapabilityKeyID, key)
+	if err != nil {
+		return nil, nil, agentBrokerRuntimeConfig{}, err
+	}
+	runtimeConfig, err := loadAgentBrokerRuntime(cmd.AgentChildExecutions.BrokerRuntime.Path())
+	if err != nil {
+		return nil, nil, agentBrokerRuntimeConfig{}, err
+	}
+	cmd.agentChildSigner = signer
+	cmd.agentChildVerifier = verifier
+	cmd.agentBrokerRuntime = &runtimeConfig
+	return signer, verifier, runtimeConfig, nil
 }
 
 func workflowRunCreatorIdentity(info atc.UserInfo) (string, error) {

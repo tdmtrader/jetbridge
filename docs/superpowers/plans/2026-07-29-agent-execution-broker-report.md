@@ -250,3 +250,41 @@ The load-bearing Catalog A/B factory and migration runtime specs are present
 but were not executed because the previously recorded PostgreSQL shared-memory
 failure is a known sandbox limitation and the session rules prohibit retrying
 it here.
+
+## 2026-07-30 Managed Broker Companion Checkpoint
+
+Frozen broker authority now activates one dedicated Jetbridge companion. The
+exec path rejects missing workflow identity, invalid parent attempts,
+non-hermetic plans, noncanonical profiles, and missing or incorrectly typed
+review workspaces. Consult-only profiles may start with no workspace or
+attachments.
+
+One cached command-scoped signer/verifier is shared by pod minting and the
+internal HTTP handler. The pod receives only a bootstrap bearer plus a strict
+command-compatible authority document; the HMAC root key remains ATC-only.
+The strict runtime file owns the HTTPS endpoint, image paths,
+instruction/schema digests, K8s Secret/key slot coordinates, capture limits,
+scratch size, and resources.
+
+Jetbridge mounts only the read-only live workspace, selected typed static
+attachments, two authority files, selected credential key files, and bounded
+scratch into the broker. Existing physical-volume alias checks are reused.
+The fixed port-7784 companion has `/healthz`, non-root execution, read-only
+rootfs, no privilege escalation, dropped capabilities, RuntimeDefault
+seccomp, no service-account token, and a server-owned
+`concourse.ci/agent-broker=true` label for Task 10 network policy.
+
+Focused verification passed:
+
+```text
+go test ./atc/runtime ./atc/exec ./atc/engine ./atc/worker/jetbridge \
+  ./atc/atccmd ./atc/api/agentchildexecutions ./cmd/agent-broker \
+  -run 'ManagedAgentBroker|AgentBroker|Capability|Config' -count=1
+git diff --check
+```
+
+A broader affected-package run passed runtime, exec, engine, atccmd, and child
+authority packages. Jetbridge reached an unrelated existing `httptest`
+listener and failed before its test body because this sandbox denies IPv6
+loopback binds (`listen tcp6 [::1]:0: operation not permitted`). The focused
+Jetbridge broker suite is green; the infrastructure-only gate was not retried.

@@ -266,6 +266,11 @@ func validateClaims(claims capabilityClaims) error {
 		if err := broker.ValidateResolvedProfile(profile); err != nil {
 			return ErrInvalidCapability
 		}
+		for _, tool := range profile.Tools {
+			if tool == broker.ToolRequestReview && claims.Scope.WorkspaceBase == nil {
+				return ErrInvalidCapability
+			}
+		}
 	}
 	return nil
 }

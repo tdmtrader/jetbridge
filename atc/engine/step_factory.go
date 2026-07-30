@@ -41,6 +41,7 @@ type coreStepFactory struct {
 	agentBudgetChecker     budget.Checker
 	agentPlatformToken     string
 	agentCheckpointCapture *exec.AgentCheckpointStepConfig
+	agentBrokerAuthority   exec.AgentBrokerAuthorityFactory
 	outputSealer           snapshot.OutputSealer
 	snapshotMetadataStore  snapshot.MetadataStore
 	snapshotContentStore   snapshot.ContentStore
@@ -161,6 +162,12 @@ func WithAgentCheckpointCapture(config exec.AgentCheckpointStepConfig) CoreStepF
 		configCopy := config
 		f.agentCheckpointCapture = &configCopy
 	}
+}
+
+// WithAgentBrokerAuthorityFactory injects the command-scoped broker
+// capability/config builder into trusted AgentStep execution only.
+func WithAgentBrokerAuthorityFactory(factory exec.AgentBrokerAuthorityFactory) CoreStepFactoryOption {
+	return func(f *coreStepFactory) { f.agentBrokerAuthority = factory }
 }
 
 func NewCoreStepFactory(
@@ -340,6 +347,9 @@ func (factory *coreStepFactory) AgentStep(
 	}
 	if factory.agentCheckpointCapture != nil {
 		agentOpts = append(agentOpts, exec.WithAgentCheckpointCapture(*factory.agentCheckpointCapture))
+	}
+	if factory.agentBrokerAuthority != nil {
+		agentOpts = append(agentOpts, exec.WithAgentBrokerAuthorityFactory(factory.agentBrokerAuthority))
 	}
 
 	agentStep := exec.NewAgentStep(

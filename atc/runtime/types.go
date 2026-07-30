@@ -257,6 +257,9 @@ type ContainerSpec struct {
 	// runtime projects only its authority file and exact typed port mounts.
 	// Callers must derive it from frozen agent execution facts.
 	ManagedOutputBuilder *ManagedOutputBuilder
+	// ManagedAgentBroker is the dedicated server-owned broker companion. It is
+	// intentionally not a generic trusted-sidecar facility.
+	ManagedAgentBroker *ManagedAgentBroker
 }
 
 // CheckpointRestoreDescriptor binds a fresh hermetic agent container to one
@@ -417,6 +420,46 @@ type ManagedOutputBuilder struct {
 	Authority        PrivateFileMount
 	InputMountPaths  []string
 	OutputMountPaths []string
+}
+
+const (
+	ManagedAgentBrokerName                = "agent-broker"
+	ManagedAgentBrokerAuthorityMountRoot  = "/run/concourse/agent-broker"
+	ManagedAgentBrokerAuthorityFile       = "authority.json"
+	ManagedAgentBrokerBootstrapFile       = "bootstrap.capability"
+	ManagedAgentBrokerWorkspaceMountPath  = "/workspace"
+	ManagedAgentBrokerScratchMountPath    = "/scratch"
+	ManagedAgentBrokerCredentialMountRoot = "/run/concourse/agent-broker/credentials"
+	ManagedAgentBrokerPort                = 7784
+	ManagedAgentBrokerMarkerEnv           = "CONCOURSE_AGENT_BROKER_MCP"
+	ManagedAgentBrokerMCPURL              = "http://127.0.0.1:7784/mcp"
+)
+
+// SecretKeyMount projects one operator-owned K8s Secret key into the broker
+// only. It contains coordinates, never credential bytes.
+type SecretKeyMount struct {
+	Slot       string
+	SecretName string
+	Key        string
+	MountPath  string
+}
+
+// ManagedAgentBroker is the fixed companion projection accepted by runtimes.
+// Authority and bootstrap bytes are broker-only, WorkspaceMountPath selects
+// one exact typed input volume, and ScratchSizeBytes is a bounded emptyDir.
+type ManagedAgentBroker struct {
+	Authority          PrivateFileMount
+	WorkspaceInputPath string
+	AttachmentInputs   []ManagedAgentBrokerAttachmentInput
+	ScratchSizeBytes   int64
+	Credentials        []SecretKeyMount
+	Resources          atc.SidecarResources
+}
+
+type ManagedAgentBrokerAttachmentInput struct {
+	Name      string
+	InputPath string
+	MountPath string
 }
 
 // Input represents a Volume (typically from a build artifact) to mount to the
