@@ -309,6 +309,9 @@ func TestHandlerStagesReviewCapabilityThroughAuthoritativeWorkspaceCapture(t *te
 	if response := do(transport.PhasePath(admitted.ExecutionID), captureResponse.ExecutionCapability, transport.PhaseRequest{Phase: "running"}); response.Code != http.StatusNoContent {
 		t.Fatalf("lifecycle running status=%d body=%s", response.Code, response.Body.String())
 	}
+	if response := do(transport.WorkspaceCapturePath(admitted.ExecutionID), phased.ExecutionCapability, transport.WorkspaceCaptureRequest{Capture: capture}); response.Code != http.StatusBadRequest || strings.Contains(response.Body.String(), "execution_capability") {
+		t.Fatalf("stale capture replay status=%d body=%s", response.Code, response.Body.String())
+	}
 	if response := do(transport.WorkspaceCapturePath(admitted.ExecutionID), captureResponse.ExecutionCapability, transport.WorkspaceCaptureRequest{Capture: capture}); response.Code != http.StatusUnauthorized {
 		t.Fatalf("lifecycle token recapture status=%d", response.Code)
 	}

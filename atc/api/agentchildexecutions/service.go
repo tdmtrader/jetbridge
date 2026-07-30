@@ -207,7 +207,7 @@ func (service *Service) CaptureWorkspace(ctx context.Context, executionID string
 	if err != nil {
 		return snapshot.SnapshotRef{}, err
 	}
-	if execution.Tool != broker.ToolRequestReview {
+	if execution.Tool != broker.ToolRequestReview || execution.State != broker.ExecutionCapturing {
 		return snapshot.SnapshotRef{}, fmt.Errorf("agent child authority: workspace capture is unavailable for execution state or tool")
 	}
 	if execution.WorkspaceSnapshot != nil {
@@ -215,9 +215,6 @@ func (service *Service) CaptureWorkspace(ctx context.Context, executionID string
 			return snapshot.SnapshotRef{}, fmt.Errorf("agent child authority: workspace capture replay conflicts with durable capture")
 		}
 		return *execution.WorkspaceSnapshot, nil
-	}
-	if execution.State != broker.ExecutionCapturing {
-		return snapshot.SnapshotRef{}, fmt.Errorf("agent child authority: workspace capture is unavailable for execution state or tool")
 	}
 	sealer, ok := service.config.Sealer.(WorkspaceResultSealer)
 	if !ok {

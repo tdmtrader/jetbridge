@@ -193,3 +193,11 @@ Focused regressions cover concurrent/sequential child productions, lost
 capture responses, exact replay without resealing, conflicting candidates,
 and stale capture-failure tokens after binding/running. DB and migration
 packages compile; the known PostgreSQL sandbox gate was not retried.
+
+### Workspace authority review round 2
+
+Exact bound-capture replay is now accepted only while the execution remains
+in `capturing`. A stale capture token used after `running` is rejected without
+receiving a new lifecycle capability. Lost-response recovery is unchanged
+because the durable bind itself deliberately leaves the execution in
+`capturing`.

@@ -119,3 +119,11 @@ ref without resealing, different replay conflicts, the broker retries once
 after an ambiguous capture response, and capture-failure authority is fenced
 to an unbound capturing review. Focused broker/authority tests and DB/migration
 compile-only checks pass.
+
+Task 9 workspace-authority review fix round 2/3: the remaining P1 is
+addressed pending commit. Exact bound-capture replay is now accepted only
+while the durable execution remains in `capturing`; after `running`, the old
+capture token is rejected and cannot mint another lifecycle capability.
+Ambiguous-response recovery remains valid because binding does not advance
+the execution out of `capturing`. The focused handler/service regression
+passes.
