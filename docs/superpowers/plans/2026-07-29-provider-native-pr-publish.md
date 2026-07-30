@@ -91,6 +91,10 @@ Helm, GitHub REST API, Azure DevOps Git REST API 7.1.
 - Scope Day-1 observation and materialization to same-repository PRs. Render
   the provider API base URL and credential-free repository URL from trusted
   destination policy; never derive either from PR text or embed credentials.
+- Keep `forge-pr` protocol logic in importable
+  `agent/pullrequest/resource`; use `cmd/forge-pr-resource` only as the thin
+  executable dispatcher. This preserves reuse by pipeline rendering and avoids
+  mixing `package main` with the provider-neutral resource contract.
 
 ---
 
@@ -965,14 +969,15 @@ git commit -m "feat(workflow): publish reviewed changes as pull requests"
 
 **Files:**
 
-- Create: `resource-types/forge-pr/protocol.go`
-- Create: `resource-types/forge-pr/check.go`
-- Create: `resource-types/forge-pr/in.go`
-- Create: `resource-types/forge-pr/out.go`
-- Create: `resource-types/forge-pr/main.go`
-- Test: `resource-types/forge-pr/check_test.go`
-- Test: `resource-types/forge-pr/in_test.go`
-- Test: `resource-types/forge-pr/out_test.go`
+- Create: `agent/pullrequest/resource/protocol.go`
+- Create: `agent/pullrequest/resource/check.go`
+- Create: `agent/pullrequest/resource/in.go`
+- Create: `agent/pullrequest/resource/out.go`
+- Test: `agent/pullrequest/resource/check_test.go`
+- Test: `agent/pullrequest/resource/in_test.go`
+- Test: `agent/pullrequest/resource/out_test.go`
+- Create: `cmd/forge-pr-resource/main.go`
+- Test: `cmd/forge-pr-resource/main_test.go`
 - Create: `deploy/forge-pr-resource.Dockerfile`
 - Test: `deploy/forge_pr_resource_image_test.go`
 
@@ -1048,7 +1053,8 @@ stdout/stderr/errors, versions, and output trees contain no source token.
 - [ ] **Step 2: Run and confirm RED**
 
 ```bash
-go test ./resource-types/forge-pr ./deploy -run 'ForgePR|Test' -count=1
+go test ./agent/pullrequest/resource ./cmd/forge-pr-resource ./deploy \
+  -run 'ForgePR|Test' -count=1
 ```
 
 - [ ] **Step 3: Implement bounded `check` and `in`**
@@ -1059,17 +1065,24 @@ source secret interpolation; never echo source JSON in an error. Dispatch by
 `/opt/resource/out`. Bound pages, response bodies, comments, repository size,
 redirects, and timeouts.
 
+Keep protocol/check/in/out in the importable
+`agent/pullrequest/resource` package. The command is a thin executable adapter
+under `cmd/forge-pr-resource`; do not turn the protocol package into
+`package main`.
+
 - [ ] **Step 4: Run resource and contract suites**
 
 ```bash
-go test ./resource-types/forge-pr ./agent/pullrequest/... \
+go test ./agent/pullrequest/resource ./cmd/forge-pr-resource \
+  ./agent/pullrequest/... \
   ./agent/snapshot/contracts -count=1
 ```
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add resource-types/forge-pr deploy/forge-pr-resource.Dockerfile \
+git add agent/pullrequest/resource cmd/forge-pr-resource \
+  deploy/forge-pr-resource.Dockerfile \
   deploy/forge_pr_resource_image_test.go
 git commit -m "feat(resource): poll provider-native pull requests"
 ```
