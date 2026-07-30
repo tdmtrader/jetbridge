@@ -339,6 +339,23 @@ operations, not one monolithic PR side effect. Source-branch CAS, PR
 find/create, status publication, and review response each have their own
 operation kind and semantic key. This permits recovery when a branch update
 succeeds before PR creation or a response succeeds after the branch update.
+Every operation carries the exact target ref used for deployment-policy
+selection; status and review response do not infer it from mutable provider
+state or rely on a one-target-per-repository restriction.
+
+Provider policy is explicit and asymmetric. A PR rule binds team, destination,
+provider, repository locator, target branch, API base URL, credential-free
+repository URL, read-credential reference, and write-credential reference.
+The protected monitor source receives only the read authority it needs; ATC
+resolves the write credential only inside the trusted mutation boundary.
+Direct Git retains its existing policy shape and cannot select a PR adapter.
+
+GitHub branch CAS materializes and verifies the nested Git payload of the exact
+`repository-change/v1` snapshot into bounded server-owned scratch storage for
+the lifetime of one mutation. The outer snapshot directory is never treated
+as a Git worktree. A stale source or target lease is a safe terminal operation
+result (`rebase_required`/fresh reconciliation), not a retryable pending lease;
+this prevents permanent reclaim loops for obsolete authority.
 
 The normalized observation contains:
 

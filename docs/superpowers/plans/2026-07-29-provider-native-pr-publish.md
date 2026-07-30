@@ -84,6 +84,16 @@ Helm, GitHub REST API, Azure DevOps Git REST API 7.1.
   observation remains safe and schedules later freshness work. PR-create
   recovery must return and compare provider-observed heads; review-reply
   recovery must match the authorized provider thread root.
+- Carry the exact target ref on all four PR operation kinds, including status
+  and response, so deployment policy can match the intended target without
+  inferring it from provider state or forbidding multiple target rules.
+- Give PR policy an explicit provider/repository/API/repository-URL identity
+  plus distinct protected read and trusted write credential references.
+  Direct-Git rules retain their current fields and cannot route PR actions.
+- Materialize the verified nested Git payload of the exact change snapshot for
+  one GitHub ref-lease call; never pass the outer snapshot root as a worktree.
+  Complete stale source/target leases as safe terminal reconciliation results
+  rather than repeatedly reclaiming an obsolete pending operation.
 - Treat the impact assessor as required authority in every policy mode. A
   missing, invalid, failed, or ambiguous assessment escalates; only an explicit
   valid non-escalating assessment can accompany a deterministic rules no-op.
@@ -859,7 +869,8 @@ type PRService interface {
 Every `BranchPublicationRequest` contains `ExpectedSource HeadExpectation`,
 `ExpectedTargetSHA`, and `NewSourceSHA`. `Exists=false` is the only expected
 absence representation and requires an empty SHA; `Exists=true` requires an
-exact full object ID.
+exact full object ID. Every request kind carries the exact target ref used by
+policy matching.
 
 - [ ] **Step 1: Write failing operation and recovery tests**
 
@@ -888,6 +899,14 @@ and use independent semantic keys. The marker is exact machine-authored
 recovery metadata, not an operation identity inferred from arbitrary mutable
 human text. A missing, altered, or ambiguous marker fails closed and requires
 operator attention instead of creating a duplicate.
+
+Policy resolution binds PR actions to an exact provider, repository, target
+branch, API base URL, credential-free repository URL, read credential
+reference, and write credential reference. The GitHub branch mutator reopens
+and verifies the nested Git payload from the exact candidate snapshot into
+bounded scratch storage before invoking the ref lease. Provider-neutral stale
+source/target errors complete the operation as requiring fresh reconciliation;
+they are not left pending for lease reclaim.
 
 - [ ] **Step 4: Compose the GitHub adapter without changing direct Git**
 
