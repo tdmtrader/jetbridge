@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -16,6 +17,91 @@ import (
 	"github.com/concourse/concourse/fly/rc/rcfakes"
 	"github.com/concourse/concourse/go-concourse/concourse/concoursefakes"
 )
+
+func TestImportWorkflowDirResolvesExactReleasedReusableNodes(t *testing.T) {
+	dir := t.TempDir()
+	err := os.WriteFile(filepath.Join(dir, workflow.WorkflowFileName), []byte(`schema_version: 3
+name: review-flow
+signature_version: 1
+inputs:
+  - {name: base, type: repository/v1}
+  - {name: candidate, type: repository/v1}
+outputs:
+  - {name: review, type: review/v1, from: review}
+plan:
+  - node: review-change
+    uses: code-review@1
+    input_mapping: {before: base, after: candidate}
+    output_mapping: {review: review}
+    params: {MINIMUM_SEVERITY: high}
+`), 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodeManifest := workflow.Manifest{workflow.NodeFileName: `schema_version: 1
+name: code-review
+inputs:
+  - {name: before, type: repository/v1}
+  - {name: after, type: repository/v1}
+outputs:
+  - {name: review, type: review/v1}
+parameters:
+  - {name: MINIMUM_SEVERITY, default: medium}
+step:
+  agent: review
+  prompt: Review the immutable change.
+  model: claude-sonnet
+`}
+	compiledNode, err := workflow.CompileNodeDefinition(nodeManifest)
+	if err != nil {
+		t.Fatalf("compile node fixture: %v", err)
+	}
+	node := workflow.NodeDefinition{
+		ID: 17, Name: "code-review", Version: 1, ContentHash: nodeManifest.Hash(),
+		Compiled: *compiledNode, SourceManifest: nodeManifest,
+		Release: workflow.NodeRelease{
+			ReleasedAt: 1, ReleasedBy: "releaser", Compatibility: workflow.ReleaseCompatible,
+		},
+	}
+
+	var requests atomic.Int64
+	target := agentWorkflowTarget(agentWorkflowRoundTripper(func(request *http.Request) (*http.Response, error) {
+		switch call := requests.Add(1); call {
+		case 1:
+			if request.Method != http.MethodGet || request.URL.Path != "/api/v1/agent/nodes/code-review/versions/1" {
+				t.Fatalf("node lookup = %s %s", request.Method, request.URL.Path)
+			}
+			return agentWorkflowJSONResponse(t, http.StatusOK, node), nil
+		case 2:
+			if request.Method != http.MethodPost || request.URL.Path != "/api/v1/agent/workflows/review-flow/versions" ||
+				request.Header.Get("Content-Type") != "application/json" {
+				t.Fatalf("workflow import = %s %s type=%q", request.Method, request.URL.Path, request.Header.Get("Content-Type"))
+			}
+			var body struct {
+				Files workflow.Manifest `json:"files"`
+			}
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+				t.Fatalf("decode workflow import: %v", err)
+			}
+			if !strings.Contains(body.Files[workflow.WorkflowFileName], "uses: code-review@1") {
+				t.Fatalf("workflow import lost authored node reference: %#v", body.Files)
+			}
+			return agentWorkflowJSONResponse(t, http.StatusCreated, workflow.Definition{
+				ID: 29, Name: "review-flow", Version: 1, ContentHash: body.Files.Hash(),
+			}), nil
+		default:
+			t.Fatalf("unexpected HTTP request %d: %s %s", call, request.Method, request.URL.Path)
+			return nil, nil
+		}
+	}))
+
+	if err := importWorkflowDir(target, dir, false); err != nil {
+		t.Fatalf("import node-aware workflow: %v", err)
+	}
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("HTTP requests = %d, want exact node lookup plus workflow import", got)
+	}
+}
 
 func TestImportWorkflowFileRejectsNonV3Locally(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "legacy-v1.yml")
@@ -111,8 +197,7 @@ func assertUnsupportedWorkflowVersion(t *testing.T, err error, version int) {
 }
 
 func agentWorkflowTestTarget(requests *atomic.Int64) rc.Target {
-	client := new(concoursefakes.FakeClient)
-	client.HTTPClientReturns(&http.Client{Transport: agentWorkflowRoundTripper(func(*http.Request) (*http.Response, error) {
+	return agentWorkflowTarget(agentWorkflowRoundTripper(func(*http.Request) (*http.Response, error) {
 		requests.Add(1)
 		return &http.Response{
 			StatusCode: http.StatusInternalServerError,
@@ -120,11 +205,30 @@ func agentWorkflowTestTarget(requests *atomic.Int64) rc.Target {
 			Body:       io.NopCloser(strings.NewReader("unexpected request")),
 			Header:     make(http.Header),
 		}, nil
-	})})
+	}))
+}
+
+func agentWorkflowTarget(roundTripper agentWorkflowRoundTripper) rc.Target {
+	client := new(concoursefakes.FakeClient)
+	client.HTTPClientReturns(&http.Client{Transport: roundTripper})
 	target := new(rcfakes.FakeTarget)
 	target.URLReturns("http://agent.test")
 	target.ClientReturns(client)
 	return target
+}
+
+func agentWorkflowJSONResponse(t *testing.T, status int, value any) *http.Response {
+	t.Helper()
+	payload, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &http.Response{
+		StatusCode: status,
+		Status:     strconv.Itoa(status),
+		Body:       io.NopCloser(strings.NewReader(string(payload))),
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+	}
 }
 
 type agentWorkflowRoundTripper func(*http.Request) (*http.Response, error)

@@ -284,9 +284,11 @@ func importWorkflowDir(target rc.Target, dir string, setLive bool) error {
 	if err != nil {
 		return err
 	}
-	// Compile client-side first: same validation the server runs, but
-	// the error message points at local files.
-	compiled, err := workflow.CompileDefinition(m)
+	// Compile client-side first: same validation the server runs, but the
+	// error message points at local files. Exact reusable-node references are
+	// resolved through the authenticated catalog so local validation sees the
+	// same released immutable content as the server import.
+	compiled, _, err := workflow.CompileDefinitionWithNodes(m, agentWorkflowNodeResolver{target: target})
 	if err != nil {
 		return err
 	}
@@ -319,8 +321,11 @@ func importWorkflowFile(target rc.Target, path string, setLive bool) error {
 		return err
 	}
 	// Compile the raw file as a one-file manifest so local validation matches
-	// the server, including resolution of referenced assets.
-	compiled, err := workflow.CompileDefinition(workflow.Manifest{"workflow.yml": string(raw)})
+	// the server, including exact released reusable-node references.
+	compiled, _, err := workflow.CompileDefinitionWithNodes(
+		workflow.Manifest{"workflow.yml": string(raw)},
+		agentWorkflowNodeResolver{target: target},
+	)
 	if err != nil {
 		return fmt.Errorf("%s: %w", path, err)
 	}
@@ -340,6 +345,42 @@ func importWorkflowFile(target rc.Target, path string, setLive bool) error {
 		return setLiveVersion(target, def.Name, def.Version)
 	}
 	return nil
+}
+
+type agentWorkflowNodeResolver struct {
+	target rc.Target
+}
+
+func (resolver agentWorkflowNodeResolver) Released(
+	name string,
+	version int,
+) (workflow.NodeDefinition, bool, error) {
+	response, err := agentAPIRequest(
+		resolver.target,
+		http.MethodGet,
+		nodeVersionPath(name, version),
+		nil,
+	)
+	if err != nil {
+		return workflow.NodeDefinition{}, false, err
+	}
+	if response.StatusCode == http.StatusNotFound {
+		_ = response.Body.Close()
+		return workflow.NodeDefinition{}, false, nil
+	}
+	var definition workflow.NodeDefinition
+	if err := decodeOrError(response, &definition); err != nil {
+		return workflow.NodeDefinition{}, false, err
+	}
+	if definition.ID <= 0 || definition.Name != name || definition.Version != version ||
+		definition.ContentHash == "" || definition.Release.ReleasedAt <= 0 {
+		return workflow.NodeDefinition{}, false, fmt.Errorf(
+			"agent workflow import: node catalog returned inconsistent %s@%d",
+			name,
+			version,
+		)
+	}
+	return definition, true, nil
 }
 
 func setLiveVersion(target rc.Target, name string, version int) error {
