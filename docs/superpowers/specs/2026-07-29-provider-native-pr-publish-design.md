@@ -111,6 +111,13 @@ direct publication.
     selects the earliest completed batch after the acknowledged cursor. The
     cursor advances only through that batch, leaving later batches queued for
     subsequent serialized workflow instantiations.
+17. **Day-1 PRs are same-repository.** Source and target refs must belong to
+    the binding's policy-authorized repository. Fork PRs fail closed until a
+    distinct source-repository authority is designed.
+18. **Checkout locations are protected configuration.** The provider API base
+    URL and credential-free repository URL are resolved from destination
+    policy and rendered into the protected monitor source. They are never
+    accepted from mutable PR text, and credentials are never embedded in URLs.
 
 ## Invariants
 
@@ -174,6 +181,12 @@ mutation lock: capture completes before a potentially long monitor workflow
 run. The binding row therefore has a row-locked launch/acknowledgement gate
 that permits only one nonterminal monitor workflow run and advances its cursor
 only after safe completion.
+
+The protected resource source also carries policy-resolved provider API and
+credential-free repository URLs. `in` authenticates through the resolved read
+secret, fetches the validated source and target refs from that one
+same-repository URL, verifies both exact heads, and removes remotes and
+credential configuration before returning its materialized repositories.
 
 Acknowledged binding state is fed back into polling by re-rendering the
 protected server-owned resource source after binding revision changes. The

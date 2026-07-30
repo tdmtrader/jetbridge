@@ -88,6 +88,9 @@ Helm, GitHub REST API, Azure DevOps Git REST API 7.1.
   cursor. Encode a strict versioned cursor with the selected batch digest and
   provider-state signature so identical re-observation is stable and later
   batches remain queued.
+- Scope Day-1 observation and materialization to same-repository PRs. Render
+  the provider API base URL and credential-free repository URL from trusted
+  destination policy; never derive either from PR text or embed credentials.
 
 ---
 
@@ -1024,6 +1027,12 @@ head, cursor, or action digest before materialization. It writes normalized
 those directories as `repository/v1`; this avoids a second credentialed ATC
 capture controller. No credential-bearing file is written.
 
+The protected source includes policy-resolved `api_base_url` and
+`repository_url` values. The latter is credential-free and identifies the
+single same-repository source/target repository; `in` supplies the resolved
+read secret out of band to the controlled Git runner and removes remotes
+before returning.
+
 - [ ] **Step 1: Write protocol tests**
 
 Drive `check`, `in`, and `out` through byte buffers. Prove unchanged polls emit
@@ -1098,6 +1107,8 @@ type MonitorPipelineTarget struct {
 	Provider           string
 	Repository         string
 	ExternalID         string
+	APIBaseURL         string
+	RepositoryURL      string
 	ReadCredential     string
 	PollInterval       time.Duration
 	FreshnessInterval  time.Duration
