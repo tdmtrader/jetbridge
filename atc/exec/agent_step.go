@@ -22,6 +22,7 @@ import (
 	"github.com/concourse/concourse/agent/schema"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/exec/build"
 	"github.com/concourse/concourse/atc/imageresolver"
@@ -327,6 +328,7 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 	if step.plan.Context != "" {
 		env = append(env, "AGENT_CONTEXT="+step.plan.Context)
 	}
+	var frozenSkills *frozenAgentSkillArtifact
 	if len(step.plan.Skills) > 0 {
 		env = append(env, "AGENT_SKILLS="+strings.Join(step.plan.Skills, ","))
 		env = append(env, "AGENT_SKILLS_DIR="+artifactPath(workdir, "skills", ""))
@@ -350,6 +352,18 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 	}
 
 	repository := state.ArtifactRepository()
+	if len(step.plan.Skills) > 0 {
+		for _, name := range step.plan.Inputs {
+			if name == "skills" {
+				return false, fmt.Errorf("agent %q compiled skills collide with logical input %q", step.plan.Name, name)
+			}
+		}
+		frozen, skillErr := newFrozenAgentSkillArtifact(step.plan.SkillFiles)
+		if skillErr != nil {
+			return false, fmt.Errorf("agent %q compiled skills: %w", step.plan.Name, skillErr)
+		}
+		frozenSkills = frozen
+	}
 
 	var missingInputs []string
 	snapshotInputs := snapshotInputBindings{refs: map[string]snapshot.SnapshotRef{}}
@@ -380,12 +394,14 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 			containerSpec.Inputs = append(containerSpec.Inputs, runtime.Input{
 				Artifact: entry.Artifact, DestinationPath: destination, FromCache: entry.FromCache,
 			})
-			snapshotInputs.order = append(snapshotInputs.order, artifactName)
-			snapshotInputs.refs[artifactName] = ref
+			// Lookup uses the physical producer key while the logical function
+			// port remains the authority, mount, and checkpoint identity.
+			snapshotInputs.order = append(snapshotInputs.order, name)
+			snapshotInputs.refs[name] = ref
 			// An agent could read anything under this mount, so lineage records
 			// the whole tree. Dynamic, agent-driven partial mounting is
 			// prohibited: its path set is unknown at admission.
-			snapshotInputs.recordExposure(artifactName, ref, destination)
+			snapshotInputs.recordExposure(name, ref, destination)
 			continue
 		}
 		entry, found := repository.ArtifactEntryFor(build.ArtifactName(artifactName))
@@ -698,6 +714,27 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 			return false, failRecoveryLaunch(err)
 		}
 		delegate.SelectedWorker(logger, chosenWorker.Name())
+		if frozenSkills != nil {
+			volume, _, materializeErr := chosenWorker.CreateVolumeForArtifact(ctx, step.metadata.TeamID)
+			if materializeErr != nil {
+				return false, failRecoveryLaunch(fmt.Errorf("agent %q materialize compiled skills volume: %w", step.plan.Name, materializeErr))
+			}
+			stream, materializeErr := frozenSkills.StreamOut(ctx, ".", compression.NewGzipCompression())
+			if materializeErr != nil {
+				return false, failRecoveryLaunch(fmt.Errorf("agent %q stream compiled skills: %w", step.plan.Name, materializeErr))
+			}
+			materializeErr = volume.StreamIn(ctx, ".", compression.NewGzipCompression(), 0, stream)
+			closeErr := stream.Close()
+			if materializeErr == nil {
+				materializeErr = closeErr
+			}
+			if materializeErr != nil {
+				return false, failRecoveryLaunch(fmt.Errorf("agent %q materialize compiled skills: %w", step.plan.Name, materializeErr))
+			}
+			attemptSpec.Inputs = append(attemptSpec.Inputs, runtime.Input{
+				Artifact: chosenWorker.ArtifactFromVolume(volume), DestinationPath: artifactPath(workdir, "skills", ""), ReadOnly: true,
+			})
+		}
 
 		var container runtime.Container
 		container, volumeMounts, err = chosenWorker.FindOrCreateContainer(ctx, owner, step.containerMetadata, attemptSpec, delegate)

@@ -118,7 +118,6 @@ func TestRenderFunctionRejectsUnsafeOrMutableInputs(t *testing.T) {
 		{name: "missing durable version", mutate: func(def *Definition) { def.Version = 0 }, want: "version"},
 		{name: "legacy schema", mutate: func(def *Definition) { def.SchemaVersion = 2 }, want: "schema_version 3"},
 		{name: "unsafe workflow name", mutate: func(def *Definition) { def.Name = "Bad Name" }, want: "identifier"},
-		{name: "compiled skills", mutate: func(def *Definition) { def.Compiled.Function.SkillFiles = map[string]string{"skill/SKILL.md": "bytes"} }, want: "skills"},
 		{name: "selected agent skills", mutate: func(def *Definition) {
 			def.Compiled.Function.Plan[0].Config.(*atc.AgentStep).Skills = []string{"review"}
 		}, want: "skills"},
@@ -157,6 +156,40 @@ func TestRenderFunctionRejectsUnsafeOrMutableInputs(t *testing.T) {
 				t.Fatalf("error = %v, want substring %q", err, test.want)
 			}
 		})
+	}
+}
+
+func TestFullFunctionTargetRendersExactFrozenAgentSkills(t *testing.T) {
+	definition := renderTestDefinition()
+	agent := definition.Compiled.Function.Plan[0].Config.(*atc.AgentStep)
+	agent.Skills = []string{"review"}
+	agent.SkillFiles = map[string]string{
+		"skills/review/SKILL.md":  "review instructions",
+		"skills/review/refs/a.md": "reference",
+	}
+	definition.Compiled.Function.SkillFiles = map[string]string{
+		"skills/review/SKILL.md":  "review instructions",
+		"skills/review/refs/a.md": "reference",
+	}
+
+	target, err := FullFunctionTarget(definition)
+	if err != nil {
+		t.Fatalf("FullFunctionTarget: %v", err)
+	}
+	rendered, err := RenderFunction(target)
+	if err != nil {
+		t.Fatalf("RenderFunction: %v", err)
+	}
+	got := rendered.Config.Jobs[0].PlanSequence[len(rendered.Config.Jobs[0].PlanSequence)-1].Config.(*atc.AgentStep)
+	if !reflect.DeepEqual(got.SkillFiles, agent.SkillFiles) {
+		t.Fatalf("rendered skill files = %#v, want %#v", got.SkillFiles, agent.SkillFiles)
+	}
+	hasSkillsInput := false
+	for _, name := range got.Inputs {
+		hasSkillsInput = hasSkillsInput || name == "skills"
+	}
+	if got.InputMapping["skills"] != "" || hasSkillsInput {
+		t.Fatalf("frozen skills acquired a logical input: inputs=%v mapping=%v", got.Inputs, got.InputMapping)
 	}
 }
 

@@ -450,6 +450,7 @@ type AgentPlan struct {
 	SystemPrompt     string                          `json:"system_prompt,omitempty"`
 	Context          string                          `json:"context,omitempty"`
 	Skills           []string                        `json:"skills,omitempty"`
+	SkillFiles       map[string]string               `json:"skill_files,omitempty"`
 	Sidecars         []SidecarSource                 `json:"sidecars,omitempty"`
 	Inputs           []string                        `json:"inputs,omitempty"`
 	Outputs          []string                        `json:"outputs,omitempty"`

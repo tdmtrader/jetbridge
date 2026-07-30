@@ -57,6 +57,9 @@ func compileFunctionAssets(m Manifest, definition *CompiledDefinition, validatio
 }
 
 func compileFunctionAssetsWithFrozenNodes(m Manifest, definition *CompiledDefinition, validationProfiles []DevValidationProfile, frozen map[string]frozenNodeAssets) error {
+	if err := validatePreexistingCompiledSkillFiles(definition.Function.SkillFiles, frozen); err != nil {
+		return err
+	}
 	compiler, err := newFunctionAssetCompiler(m, definition.Function, validationProfiles)
 	if err != nil {
 		return err
@@ -86,6 +89,37 @@ func compileFunctionAssetsWithFrozenNodes(m Manifest, definition *CompiledDefini
 	return compiler.compile()
 }
 
+// validatePreexistingCompiledSkillFiles admits only node-owned bytes before
+// ordinary source compilation starts. Direct source has no legitimate
+// compiled skill authority; node expansion may carry precisely its released
+// frozen union and nothing else.
+func validatePreexistingCompiledSkillFiles(files map[string]string, frozen map[string]frozenNodeAssets) error {
+	if frozen == nil {
+		if len(files) > 0 {
+			return fmt.Errorf("workflow: compiled skill_files are server-owned")
+		}
+		return nil
+	}
+	expected := map[string]string{}
+	for _, assets := range frozen {
+		for path, content := range assets.skillFiles {
+			if prior, found := expected[path]; found && prior != content {
+				return fmt.Errorf("workflow: frozen node compiled skill file %q conflicts", path)
+			}
+			expected[path] = content
+		}
+	}
+	if len(files) != len(expected) {
+		return fmt.Errorf("workflow: compiled skill_files are server-owned")
+	}
+	for path, content := range expected {
+		if actual, found := files[path]; !found || actual != content {
+			return fmt.Errorf("workflow: compiled skill_files are server-owned")
+		}
+	}
+	return nil
+}
+
 type manifestAsset struct {
 	path    string
 	content string
@@ -98,6 +132,7 @@ type preparedAgentAssets struct {
 	contextBytes    int
 	capabilityNames []string
 	capabilityURLs  map[string]string
+	skillFiles      map[string]string
 }
 
 type functionAssetCompiler struct {
@@ -245,6 +280,9 @@ func (compiler *functionAssetCompiler) preflightAgent(step *atc.AgentStep) error
 		return nil
 	}
 	identity := agentCompileIdentity(step)
+	if len(step.SkillFiles) > 0 {
+		return fmt.Errorf("workflow: %s: skill_files are compiler-owned", identity)
+	}
 	if step.RuntimeImage != "" {
 		return fmt.Errorf("workflow: %s: runtime_image is server-selected and cannot be authored", identity)
 	}
@@ -323,6 +361,10 @@ func (compiler *functionAssetCompiler) preflightAgent(step *atc.AgentStep) error
 			return fmt.Errorf("workflow: %s: skill %q: %w", identity, name, err)
 		}
 		for _, asset := range tree {
+			if prepared.skillFiles == nil {
+				prepared.skillFiles = make(map[string]string)
+			}
+			prepared.skillFiles[asset.path] = asset.content
 			if _, selected := compiler.selectedSkillPaths[asset.path]; selected {
 				continue
 			}
@@ -484,6 +526,7 @@ func (compiler *functionAssetCompiler) compileAgent(step *atc.AgentStep) error {
 		step.Context = context.String()
 	}
 	step.ContextFiles = nil
+	step.SkillFiles = cloneStringMap(prepared.skillFiles)
 	// Transform agents operate only on their mounted snapshot values and local
 	// capabilities. Live reads and writes belong to capture and publisher
 	// boundaries, so admission makes network isolation non-optional.

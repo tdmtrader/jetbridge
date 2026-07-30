@@ -759,8 +759,8 @@ func validateRenderableFunction(function *FunctionConfig, signature PublicSignat
 	if err := validateCompiledDevValidationProfiles(function.DevValidationProfiles, function.DevValidationProvenanceHash); err != nil {
 		return err
 	}
-	if len(function.SkillFiles) > 0 {
-		return fmt.Errorf("workflow: compiled skills are not supported by immutable function templates")
+	if err := validateCompiledSkillAuthority(function); err != nil {
+		return err
 	}
 	if err := validateCanonicalWorkflowOutputLinkage(function, workflowDefinitionID); err != nil {
 		return err

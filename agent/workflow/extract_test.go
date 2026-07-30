@@ -136,6 +136,34 @@ func TestExtractFunctionTargetAcceptsSelfContainedInlineTask(t *testing.T) {
 	}
 }
 
+func TestExtractFunctionTargetRetainsOnlySelectedAgentFrozenSkills(t *testing.T) {
+	selected := &atc.AgentStep{
+		Name: "selected", FunctionID: "selected", Prompt: "work", Skills: []string{"review"},
+		SkillFiles: map[string]string{"skills/review/SKILL.md": "review"},
+	}
+	other := &atc.AgentStep{
+		Name: "other", FunctionID: "other", Prompt: "work", Skills: []string{"testing"},
+		SkillFiles: map[string]string{"skills/testing/SKILL.md": "testing"},
+	}
+	definition := extractTestDefinition([]atc.Step{{Config: selected}, {Config: other}}, nil)
+	definition.Compiled.Function.SkillFiles = map[string]string{
+		"skills/review/SKILL.md":  "review",
+		"skills/testing/SKILL.md": "testing",
+	}
+
+	target, err := ExtractFunctionTarget(definition, "selected")
+	if err != nil {
+		t.Fatalf("ExtractFunctionTarget: %v", err)
+	}
+	want := map[string]string{"skills/review/SKILL.md": "review"}
+	if !reflect.DeepEqual(target.Function.SkillFiles, want) {
+		t.Fatalf("extracted skill files = %#v, want %#v", target.Function.SkillFiles, want)
+	}
+	if got := target.Function.Plan[0].Config.(*atc.AgentStep).SkillFiles; !reflect.DeepEqual(got, want) {
+		t.Fatalf("extracted agent skill files = %#v, want %#v", got, want)
+	}
+}
+
 func TestExtractFunctionTargetRejectsNestedMatches(t *testing.T) {
 	selected := func() atc.Step {
 		return atc.Step{Config: &atc.AgentStep{Name: "selected", FunctionID: "selected", Prompt: "work"}}

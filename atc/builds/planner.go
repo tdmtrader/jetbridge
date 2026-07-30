@@ -125,6 +125,7 @@ func (visitor *planVisitor) VisitAgent(step *atc.AgentStep) error {
 		SystemPrompt:     step.SystemPrompt,
 		Context:          step.Context,
 		Skills:           step.Skills,
+		SkillFiles:       maps.Clone(step.SkillFiles),
 		Sidecars:         step.Sidecars,
 		Inputs:           step.Inputs,
 		Outputs:          step.Outputs,

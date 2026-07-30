@@ -2176,6 +2176,10 @@ func (s *PlannerSuite) TestTypedSnapshotDeclarations() {
 		Name:     "review",
 		Prompt:   "review it",
 		Hermetic: true,
+		Skills:   []string{"review"},
+		SkillFiles: map[string]string{
+			"skills/review/SKILL.md": "frozen review",
+		},
 		SnapshotInputs: map[string]atc.SnapshotInputConfig{
 			"change": {Type: snapshot.TypeRef("repository-change/v1")},
 		},
@@ -2189,8 +2193,11 @@ func (s *PlannerSuite) TestTypedSnapshotDeclarations() {
 	s.True(plan.Agent.Hermetic)
 	s.Equal(agent.SnapshotInputs, plan.Agent.SnapshotInputs)
 	s.Equal(agent.SnapshotOutputs, plan.Agent.SnapshotOutputs)
+	s.Equal(agent.SkillFiles, plan.Agent.SkillFiles)
 	agent.SnapshotOutputs["review"] = atc.SnapshotOutputConfig{Type: snapshot.TypeRef("opaque/v1")}
+	agent.SkillFiles["skills/review/SKILL.md"] = "mutated"
 	s.Equal(snapshot.TypeRef("review/v1"), plan.Agent.SnapshotOutputs["review"].Type)
+	s.Equal("frozen review", plan.Agent.SkillFiles["skills/review/SKILL.md"])
 
 	agent.Capabilities = []string{"dev"}
 	_, err = planner.Create(agent, resources, defaultResourceTypes, prototypes, nil, false)

@@ -119,6 +119,36 @@ func TestDeriveAgentCheckpointProvenanceSeparatesConfigInputsMCPAndSkills(t *tes
 	}
 }
 
+func TestDeriveAgentCheckpointProvenanceBindsCompiledSkillsWithoutExternalInput(t *testing.T) {
+	request := validAgentCheckpointProvenanceRequest()
+	request.Plan.Inputs = []string{"repo", "notes"}
+	request.Plan.SnapshotInputs = map[string]atc.SnapshotInputConfig{
+		"repo": {Type: "repository/v1"},
+	}
+	request.Plan.SkillFiles = map[string]string{
+		"skills/review/SKILL.md":  "review",
+		"skills/testing/SKILL.md": "testing",
+	}
+	delete(request.Inputs, "skills")
+
+	first, err := deriveAgentCheckpointProvenance(request)
+	if err != nil {
+		t.Fatalf("derive compiled skills: %v", err)
+	}
+	changed := request
+	changed.Plan.SkillFiles = map[string]string{
+		"skills/review/SKILL.md":  "review changed",
+		"skills/testing/SKILL.md": "testing",
+	}
+	second, err := deriveAgentCheckpointProvenance(changed)
+	if err != nil {
+		t.Fatalf("derive changed compiled skills: %v", err)
+	}
+	if first.SkillDigest == second.SkillDigest || first.ConfigDigest != second.ConfigDigest || first.InputDigest != second.InputDigest || first.MCPDigest != second.MCPDigest {
+		t.Fatalf("compiled skill bytes did not remain an isolated immutable identity: first=%#v second=%#v", first, second)
+	}
+}
+
 func TestDeriveAgentCheckpointProvenanceFailsClosedWhenExecutionIsNotPinned(t *testing.T) {
 	tests := map[string]func(*agentCheckpointProvenanceRequest){
 		"non-hermetic plan": func(request *agentCheckpointProvenanceRequest) {

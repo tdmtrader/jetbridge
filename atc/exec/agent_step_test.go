@@ -20,6 +20,7 @@ import (
 	"github.com/concourse/concourse/agent/schema"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc"
+	"github.com/concourse/concourse/atc/compression"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/exec"
 	"github.com/concourse/concourse/atc/exec/build"
@@ -206,6 +207,66 @@ var _ = Describe("AgentStep", func() {
 		_, err := noImageStep.Run(ctx, state)
 		Expect(err).To(MatchError(ContainSubstring("--agent-step-image")))
 		Expect(fakePool.FindOrSelectWorkerCallCount()).To(BeZero())
+	})
+
+	Context("with compiler-frozen skills", func() {
+		var (
+			skillVolume  *runtimetest.Volume
+			materializer *skillMaterializingWorker
+		)
+
+		BeforeEach(func() {
+			agentPlan.Skills = []string{"review"}
+			agentPlan.SkillFiles = map[string]string{
+				"skills/review/SKILL.md":      "instructions",
+				"skills/review/refs/rules.md": "rules",
+			}
+			skillVolume = runtimetest.NewVolume("frozen-skills")
+			materializer = &skillMaterializingWorker{Worker: chosenWorker, volume: skillVolume}
+			fakePool.FindOrSelectWorkerReturns(materializer, nil)
+		})
+
+		It("mounts the private immutable tree at the logical skills path", func() {
+			ok, err := step.Run(ctx, state)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(ok).To(BeTrue())
+			spec := chosenContainer.Spec
+			var skills *runtime.Input
+			for index := range spec.Inputs {
+				input := &spec.Inputs[index]
+				if input.DestinationPath == "some-artifact-root/skills" {
+					skills = input
+				}
+			}
+			Expect(skills).ToNot(BeNil())
+			Expect(skills.ReadOnly).To(BeTrue())
+			Expect(skills.Private).To(BeFalse())
+			Expect(skills.Artifact).To(Equal(skillVolume))
+			Expect(materializer.calls).To(Equal(1))
+			Expect(string(skillVolume.Content["review/SKILL.md"].Data)).To(Equal("instructions"))
+			Expect(spec.Env).To(ContainElement("AGENT_SKILLS=review"))
+			Expect(spec.Env).To(ContainElement("AGENT_SKILLS_DIR=some-artifact-root/skills"))
+		})
+
+		It("fails when the frozen tree cannot be streamed into the worker volume", func() {
+			materializer.volume = failingSkillVolume{Volume: skillVolume, err: errors.New("stream in failed")}
+			ok, err := step.Run(ctx, state)
+			Expect(ok).To(BeFalse())
+			Expect(err).To(MatchError(ContainSubstring("materialize compiled skills: stream in failed")))
+			Expect(chosenContainer.Spec).To(BeNil())
+		})
+
+		It("refuses a logical skills input before selecting a worker", func() {
+			collision := exec.NewAgentStep(
+				planID,
+				atc.AgentPlan{Name: "collision", Prompt: "do it", Hermetic: true, Skills: []string{"review"}, SkillFiles: agentPlan.SkillFiles, Inputs: []string{"skills"}},
+				atc.ContainerLimits{}, atc.ContainerLimits{}, stepMetadata, containerMetadata,
+				fakePool, fakeStreamer, fakeDelegateFactory, 0, agentImage, agentStepOptions...,
+			)
+			_, err := collision.Run(ctx, state)
+			Expect(err).To(MatchError(ContainSubstring("collide with logical input")))
+			Expect(fakePool.FindOrSelectWorkerCallCount()).To(BeZero())
+		})
 	})
 
 	It("executes the admitted workflow runtime image across a web-node image rollout", func() {
@@ -762,10 +823,16 @@ var _ = Describe("AgentStep", func() {
 			agentPlan.SystemPrompt = "be careful"
 			agentPlan.Context = "## context/x.md\n\nbody\n"
 			agentPlan.Skills = []string{"tdd", "extra"}
-			// Deliberately NOT in agentPlan.Inputs: the env rows derive
-			// from plan.Skills alone; the renderer owns adding the
-			// "skills" input in production, and an unmounted input here
-			// would fail the run with MissingInputsError.
+			agentPlan.SkillFiles = map[string]string{
+				"skills/tdd/SKILL.md":   "tdd",
+				"skills/extra/SKILL.md": "extra",
+			}
+			// Skills are compiler-owned rather than an authored DAG input.
+			// Provide a worker volume so the executable test follows the same
+			// frozen materialization path as a rendered workflow.
+			fakePool.FindOrSelectWorkerReturns(&skillMaterializingWorker{
+				Worker: chosenWorker, volume: runtimetest.NewVolume("source-format-skills"),
+			}, nil)
 		})
 
 		It("exports them as §8.1 env", func() {
@@ -983,6 +1050,35 @@ var _ = Describe("AgentStep", func() {
 				Equal(chosenContainer.Spec.Inputs[0].DestinationPath),
 				"exposure lineage must record the path the input was actually mounted at",
 			)
+		})
+
+		Context("with node artifact mappings", func() {
+			BeforeEach(func() {
+				agentPlan.InputMapping = map[string]string{"repository": "selected-repository"}
+				agentPlan.OutputMapping = map[string]string{"workspace": "published-workspace"}
+				sealed := outputSealer.result["workspace"]
+				delete(outputSealer.result, "workspace")
+				outputSealer.result["published-workspace"] = sealed
+				Expect(repo.RegisterArtifacts(map[build.ArtifactName]build.ArtifactEntry{
+					"selected-repository": {Artifact: inputVolume, FromCache: true, Snapshot: &inputRef},
+				})).To(Succeed())
+			})
+
+			It("uses physical repository and sealer keys while retaining logical container paths", func() {
+				ok, err := step.Run(ctx, state)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(ok).To(BeTrue())
+				Expect(chosenContainer.Spec.Inputs).To(ConsistOf(runtime.Input{
+					Artifact: inputVolume, DestinationPath: "some-artifact-root/repository", FromCache: true,
+				}))
+				Expect(outputSealer.calls).To(HaveLen(1))
+				Expect(outputSealer.calls[0].Inputs).To(Equal(map[string]snapshot.SnapshotRef{"repository": inputRef}))
+				Expect(outputSealer.calls[0].Outputs[0].ClientKey).To(Equal("published-workspace"))
+				_, found := repo.ArtifactEntryFor("published-workspace")
+				Expect(found).To(BeTrue())
+				_, found = repo.ArtifactEntryFor("workspace")
+				Expect(found).To(BeFalse())
+			})
 		})
 
 		Context("when the authenticated workflow producer has only an internal output", func() {
@@ -2330,6 +2426,27 @@ var _ = Describe("AgentStep", func() {
 		})
 	})
 })
+
+type skillMaterializingWorker struct {
+	runtime.Worker
+	volume runtime.Volume
+	err    error
+	calls  int
+}
+
+func (worker *skillMaterializingWorker) CreateVolumeForArtifact(_ context.Context, _ int) (runtime.Volume, db.WorkerArtifact, error) {
+	worker.calls++
+	return worker.volume, nil, worker.err
+}
+
+type failingSkillVolume struct {
+	runtime.Volume
+	err error
+}
+
+func (volume failingSkillVolume) StreamIn(_ context.Context, _ string, _ compression.Compression, _ float64, _ io.Reader) error {
+	return volume.err
+}
 
 // stubTranscriptStore records the transcripts the agent step's flight
 // ingestion upserts, and can fail on demand (observability is best-effort:

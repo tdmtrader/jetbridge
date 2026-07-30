@@ -31,8 +31,8 @@ func ExtractFunctionTarget(definition Definition, functionID string) (FunctionTa
 	if err != nil {
 		return FunctionTarget{}, err
 	}
-	if len(function.SkillFiles) > 0 {
-		return FunctionTarget{}, fmt.Errorf("workflow: compiled skills are not supported by immutable extracted targets")
+	if err := validateCompiledSkillAuthority(function); err != nil {
+		return FunctionTarget{}, err
 	}
 	type match struct {
 		step   atc.Step
@@ -78,6 +78,9 @@ func ExtractFunctionTarget(definition Definition, functionID string) (FunctionTa
 		Plan:                        []atc.Step{found.step},
 		DevValidationProfiles:       cloneCompiledDevValidationProfiles(function.DevValidationProfiles),
 		DevValidationProvenanceHash: function.DevValidationProvenanceHash,
+	}
+	if agent, ok := found.step.Config.(*atc.AgentStep); ok {
+		extracted.SkillFiles = cloneStringMap(agent.SkillFiles)
 	}
 	if err := validateRenderableFunction(extracted, signature, definition.ID); err != nil {
 		return FunctionTarget{}, err
@@ -210,10 +213,116 @@ func validateImmutableAgentDependencies(agent *atc.AgentStep) error {
 	if len(agent.Capabilities) > 0 {
 		return fmt.Errorf("unexpanded agent capabilities are unresolved runtime dependencies")
 	}
-	if len(agent.Skills) > 0 {
-		return fmt.Errorf("agent skills are not supported by immutable function templates")
-	}
 	return validateImmutableSidecars(agent.Sidecars)
+}
+
+// validateCompiledSkillAuthority proves that the function-wide frozen union
+// and every selected agent leaf agree exactly. The global map is durable
+// identity; the per-agent map is the only runtime materialization authority.
+func validateCompiledSkillAuthority(function *FunctionConfig) error {
+	if function == nil {
+		return fmt.Errorf("workflow: function is required")
+	}
+	global := function.SkillFiles
+	union := map[string]string{}
+	bytes := 0
+	for file, content := range global {
+		if err := validateCompiledSkillPath(file); err != nil {
+			return err
+		}
+		if len(content) > MaxCompiledSkillBytes-bytes {
+			return fmt.Errorf("workflow: compiled skills exceed %d bytes", MaxCompiledSkillBytes)
+		}
+		bytes += len(content)
+	}
+	if err := walkFunctionSteps(function.Plan, func(step atc.Step, path string, _ bool) error {
+		agent, ok := step.Config.(*atc.AgentStep)
+		if !ok {
+			return nil
+		}
+		if len(agent.Skills) == 0 {
+			if len(agent.SkillFiles) > 0 {
+				return fmt.Errorf("workflow: %s: compiled skill files have no selected skills", path)
+			}
+			return nil
+		}
+		for _, input := range agent.Inputs {
+			if input == "skills" {
+				return fmt.Errorf("workflow: %s: compiled skills collide with logical input %q", path, input)
+			}
+		}
+		selected := map[string]struct{}{}
+		for _, name := range agent.Skills {
+			if err := validateSkillName(name); err != nil {
+				return fmt.Errorf("workflow: %s: skill %q: %w", path, name, err)
+			}
+			if _, duplicate := selected[name]; duplicate {
+				return fmt.Errorf("workflow: %s: duplicate skill %q", path, name)
+			}
+			selected[name] = struct{}{}
+		}
+		for file, content := range agent.SkillFiles {
+			name, err := compiledSkillFileName(file)
+			if err != nil {
+				return fmt.Errorf("workflow: %s: %w", path, err)
+			}
+			if _, allowed := selected[name]; !allowed {
+				return fmt.Errorf("workflow: %s: compiled skill file %q is not selected", path, file)
+			}
+			if expected, found := global[file]; !found || expected != content {
+				return fmt.Errorf("workflow: %s: compiled skill file %q differs from function authority", path, file)
+			}
+			union[file] = content
+		}
+		for name := range selected {
+			prefix := "skills/" + name + "/"
+			root := prefix + "SKILL.md"
+			if _, found := agent.SkillFiles[root]; !found {
+				return fmt.Errorf("workflow: %s: selected skill %q is missing %s", path, name, root)
+			}
+			for file, content := range global {
+				if strings.HasPrefix(file, prefix) {
+					actual, found := agent.SkillFiles[file]
+					if !found || actual != content {
+						return fmt.Errorf("workflow: %s: selected skill %q does not contain its exact frozen tree", path, name)
+					}
+				}
+			}
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	if len(global) != len(union) {
+		return fmt.Errorf("workflow: compiled skill authority is not the exact union of selected agent skills")
+	}
+	for file, content := range global {
+		if union[file] != content {
+			return fmt.Errorf("workflow: compiled skill authority differs from selected agent skills")
+		}
+	}
+	return nil
+}
+
+func validateCompiledSkillPath(file string) error {
+	if err := validateManifestPath(file); err != nil {
+		return fmt.Errorf("workflow: compiled skill file %q: %w", file, err)
+	}
+	if _, err := compiledSkillFileName(file); err != nil {
+		return fmt.Errorf("workflow: %w", err)
+	}
+	return nil
+}
+
+func compiledSkillFileName(file string) (string, error) {
+	parts := strings.Split(file, "/")
+	if len(parts) < 3 || parts[0] != "skills" {
+		return "", fmt.Errorf("compiled skill file %q must be below skills/<name>", file)
+	}
+	if err := validateSkillName(parts[1]); err != nil {
+		return "", fmt.Errorf("compiled skill file %q: %w", file, err)
+	}
+	return parts[1], nil
 }
 
 func validateImmutableSidecars(sidecars []atc.SidecarSource) error {

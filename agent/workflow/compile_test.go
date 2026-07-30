@@ -247,6 +247,12 @@ plan:
 	if !reflect.DeepEqual(agent.Skills, []string{"review", "testing"}) {
 		t.Fatalf("skill order = %v", agent.Skills)
 	}
+	// Each executable agent needs its exact frozen leaf. A global union is
+	// insufficient authority because it would let this agent receive skills it
+	// did not select.
+	if !reflect.DeepEqual(agent.SkillFiles, want) {
+		t.Fatalf("agent skill files = %#v, want %#v", agent.SkillFiles, want)
+	}
 
 	manifest["skills/review/SKILL.md"] = "mutated"
 	delete(manifest, "skills/testing/SKILL.md")
@@ -656,6 +662,38 @@ func TestCompileV3RejectsInvalidAgentAssets(t *testing.T) {
 			}
 			if strings.Contains(err.Error(), "TOP-SECRET-CONTENT") {
 				t.Fatalf("error leaked asset content: %v", err)
+			}
+		})
+	}
+}
+
+func TestCompileV3RejectsAuthoredCompiledSkillBytes(t *testing.T) {
+	for name, source := range map[string]string{
+		"function authority": `schema_version: 3
+name: authored-skills
+signature_version: 1
+inputs: []
+outputs: []
+skill_files: {skills/review/SKILL.md: injected}
+plan:
+  - agent: review
+    prompt: review
+`,
+		"agent authority": `schema_version: 3
+name: authored-agent-skills
+signature_version: 1
+inputs: []
+outputs: []
+plan:
+  - agent: review
+    prompt: review
+    skill_files: {skills/review/SKILL.md: injected}
+`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			definition, err := workflow.CompileDefinition(workflow.Manifest{"workflow.yml": source})
+			if err == nil || definition != nil || !strings.Contains(err.Error(), "skill_files") {
+				t.Fatalf("CompileDefinition = (%#v, %v), want compiler-owned skill_bytes rejection", definition, err)
 			}
 		})
 	}

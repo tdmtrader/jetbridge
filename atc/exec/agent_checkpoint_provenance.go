@@ -61,10 +61,16 @@ type agentCheckpointInputIdentity struct {
 }
 
 type agentCheckpointSkillIdentity struct {
-	Schema   string                `json:"schema"`
-	Selected []string              `json:"selected"`
-	Mode     string                `json:"mode"`
-	Ref      *snapshot.SnapshotRef `json:"ref,omitempty"`
+	Schema   string                             `json:"schema"`
+	Selected []string                           `json:"selected"`
+	Mode     string                             `json:"mode"`
+	Ref      *snapshot.SnapshotRef              `json:"ref,omitempty"`
+	Files    []agentCheckpointSkillFileIdentity `json:"files,omitempty"`
+}
+
+type agentCheckpointSkillFileIdentity struct {
+	Path     string `json:"path"`
+	Contents string `json:"contents"`
 }
 
 // AgentCheckpointImmutableProvenance is the admitted, server-owned portion of
@@ -190,6 +196,7 @@ func deriveAgentCheckpointProvenance(request agentCheckpointProvenanceRequest) (
 	// These have their own digest domains so a change has one clear cause.
 	config.Sidecars = nil
 	config.Skills = nil
+	config.SkillFiles = nil
 	configDigest, err := digestAgentCheckpointIdentity(
 		"config",
 		agentCheckpointConfigIdentity{
@@ -337,17 +344,50 @@ func checkpointSkillIdentity(plan atc.AgentPlan, refs map[string]snapshot.Snapsh
 		}
 	}
 	if len(selected) == 0 {
+		if len(plan.SkillFiles) > 0 {
+			return agentCheckpointSkillIdentity{}, errors.New("agent checkpoint compiled skill files have no selected skills")
+		}
+		return identity, nil
+	}
+	if len(plan.SkillFiles) > 0 {
+		if hasAgentPlanInput(plan, "skills") {
+			return agentCheckpointSkillIdentity{}, errors.New("agent checkpoint compiled skills collide with a declared skills input")
+		}
+		allowed := map[string]struct{}{}
+		for _, name := range selected {
+			allowed[name] = struct{}{}
+		}
+		files := make([]agentCheckpointSkillFileIdentity, 0, len(plan.SkillFiles))
+		for file, contents := range plan.SkillFiles {
+			name, err := checkpointSkillFileName(file)
+			if err != nil {
+				return agentCheckpointSkillIdentity{}, err
+			}
+			if _, selected := allowed[name]; !selected {
+				return agentCheckpointSkillIdentity{}, fmt.Errorf("agent checkpoint compiled skill file %q is not selected", file)
+			}
+			files = append(files, agentCheckpointSkillFileIdentity{Path: file, Contents: contents})
+		}
+		sort.Slice(files, func(left, right int) bool { return files[left].Path < files[right].Path })
+		for _, name := range selected {
+			root := "skills/" + name + "/SKILL.md"
+			found := false
+			for _, file := range files {
+				if file.Path == root {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return agentCheckpointSkillIdentity{}, fmt.Errorf("agent checkpoint selected skill %q is missing %s", name, root)
+			}
+		}
+		identity.Mode = "compiled"
+		identity.Files = files
 		return identity, nil
 	}
 
-	hasSkillsInput := false
-	for _, name := range plan.Inputs {
-		if name == "skills" {
-			hasSkillsInput = true
-			break
-		}
-	}
-	if !hasSkillsInput {
+	if !hasAgentPlanInput(plan, "skills") {
 		return agentCheckpointSkillIdentity{}, errors.New("agent checkpoint selected skills have no declared skills input")
 	}
 	if ref, found := refs["skills"]; found {
@@ -367,6 +407,31 @@ func checkpointSkillIdentity(plan atc.AgentPlan, refs map[string]snapshot.Snapsh
 	}
 	identity.Mode = "archive-only"
 	return identity, nil
+}
+
+func hasAgentPlanInput(plan atc.AgentPlan, wanted string) bool {
+	for _, name := range plan.Inputs {
+		if name == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func checkpointSkillFileName(file string) (string, error) {
+	if strings.Contains(file, `\`) || strings.HasPrefix(file, "/") {
+		return "", fmt.Errorf("agent checkpoint compiled skill file %q is unsafe", file)
+	}
+	parts := strings.Split(file, "/")
+	if len(parts) < 3 || parts[0] != "skills" || parts[1] == "" {
+		return "", fmt.Errorf("agent checkpoint compiled skill file %q must be below skills/<name>", file)
+	}
+	for _, part := range parts {
+		if part == "" || part == "." || part == ".." || strings.HasPrefix(part, ".") {
+			return "", fmt.Errorf("agent checkpoint compiled skill file %q is unsafe", file)
+		}
+	}
+	return parts[1], nil
 }
 
 func digestAgentCheckpointIdentity(domain string, value any) (string, error) {
