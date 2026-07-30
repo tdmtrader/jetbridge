@@ -54,7 +54,7 @@ type Claude struct{}
 type Cursor struct{}
 
 func (Codex) Build(profile broker.Profile, paths Paths, credential string) (Invocation, error) {
-	if err := validateBuild(profile, broker.AdapterCodex, paths, credential); err != nil {
+	if _, err := validateBuild(profile, broker.AdapterCodex, paths, credential); err != nil {
 		return Invocation{}, err
 	}
 	return Invocation{
@@ -83,22 +83,27 @@ func (Codex) Build(profile broker.Profile, paths Paths, credential string) (Invo
 }
 
 func (Claude) Build(profile broker.Profile, paths Paths, credential string) (Invocation, error) {
-	if err := validateBuild(profile, broker.AdapterClaude, paths, credential); err != nil {
+	capabilities, err := validateBuild(profile, broker.AdapterClaude, paths, credential)
+	if err != nil {
 		return Invocation{}, err
+	}
+	args := []string{
+		"-p",
+		"--output-format", "stream-json",
+		"--verbose",
+		"--model", profile.Provider.Model,
+		"--permission-mode", "dontAsk",
+		"--allowedTools", "Read,Glob,Grep",
+		"--strict-mcp-config",
+		"--mcp-config", `{"mcpServers":{}}`,
+		"--max-turns", "32",
+	}
+	if capabilities.NativeOutputSchema && profile.Controls.NativeOutputSchema {
+		args = append(args, "--json-schema", paths.OutputSchema)
 	}
 	return Invocation{
 		Binary: "claude",
-		Args: []string{
-			"-p",
-			"--output-format", "stream-json",
-			"--verbose",
-			"--model", profile.Provider.Model,
-			"--permission-mode", "dontAsk",
-			"--allowedTools", "Read,Glob,Grep",
-			"--strict-mcp-config",
-			"--mcp-config", `{"mcpServers":{}}`,
-			"--max-turns", "32",
-		},
+		Args:   args,
 		Env: map[string]string{
 			"ANTHROPIC_API_KEY": credential,
 			"HOME":              paths.ScratchDir,
@@ -109,7 +114,7 @@ func (Claude) Build(profile broker.Profile, paths Paths, credential string) (Inv
 }
 
 func (Cursor) Build(profile broker.Profile, paths Paths, credential string) (Invocation, error) {
-	if err := validateBuild(profile, broker.AdapterCursor, paths, credential); err != nil {
+	if _, err := validateBuild(profile, broker.AdapterCursor, paths, credential); err != nil {
 		return Invocation{}, err
 	}
 	return Invocation{
@@ -128,19 +133,23 @@ func (Cursor) Build(profile broker.Profile, paths Paths, credential string) (Inv
 	}, nil
 }
 
-func validateBuild(profile broker.Profile, wanted broker.AdapterName, paths Paths, credential string) error {
+func validateBuild(profile broker.Profile, wanted broker.AdapterName, paths Paths, credential string) (Capabilities, error) {
 	if profile.Adapter.Name != wanted {
-		return fmt.Errorf("broker adapter: profile selects adapter %q, not %q", profile.Adapter.Name, wanted)
+		return Capabilities{}, fmt.Errorf("broker adapter: profile selects adapter %q, not %q", profile.Adapter.Name, wanted)
 	}
 	if strings.TrimSpace(profile.Provider.Model) == "" {
-		return fmt.Errorf("broker adapter: exact model is required")
+		return Capabilities{}, fmt.Errorf("broker adapter: exact model is required")
 	}
 	if !filepath.IsAbs(paths.WorkDir) || !filepath.IsAbs(paths.ScratchDir) ||
 		!filepath.IsAbs(paths.OutputSchema) {
-		return fmt.Errorf("broker adapter: work, scratch, and output schema paths must be absolute")
+		return Capabilities{}, fmt.Errorf("broker adapter: work, scratch, and output schema paths must be absolute")
 	}
 	if strings.TrimSpace(credential) == "" {
-		return fmt.Errorf("broker adapter: credential is required")
+		return Capabilities{}, fmt.Errorf("broker adapter: credential is required")
 	}
-	return nil
+	capabilities, err := CapabilitiesFor(profile)
+	if err != nil {
+		return Capabilities{}, err
+	}
+	return capabilities, nil
 }
