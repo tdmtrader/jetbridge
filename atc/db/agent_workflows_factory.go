@@ -125,32 +125,44 @@ func (f *agentWorkflowsFactory) Import(name string, rawYAML []byte, createdBy st
 // manifest, so there is exactly one persisted source of truth per row.
 // Idempotent on the canonical-manifest hash.
 func (f *agentWorkflowsFactory) ImportManifest(name string, src workflow.Manifest, createdBy string) (*workflow.Definition, error) {
+	outcome, err := f.ImportManifestWithOutcome(name, src, createdBy)
+	if err != nil {
+		return nil, err
+	}
+	return outcome.Definition, nil
+}
+
+func (f *agentWorkflowsFactory) ImportManifestWithOutcome(
+	name string,
+	src workflow.Manifest,
+	createdBy string,
+) (workflow.ImportOutcome, error) {
 	if err := src.Validate(); err != nil {
-		return nil, workflow.InvalidDefinitionError{Err: err}
+		return workflow.ImportOutcome{}, workflow.InvalidDefinitionError{Err: err}
 	}
 	raw, ok := src.DefinitionSource()
 	if !ok {
-		return nil, workflow.InvalidDefinitionError{Err: fmt.Errorf("workflow: manifest has no %s (or legacy %s)", workflow.WorkflowFileName, workflow.LegacyWorkflowFileName)}
+		return workflow.ImportOutcome{}, workflow.InvalidDefinitionError{Err: fmt.Errorf("workflow: manifest has no %s (or legacy %s)", workflow.WorkflowFileName, workflow.LegacyWorkflowFileName)}
 	}
 	if err := workflow.RequireSchemaVersion3([]byte(raw)); err != nil {
-		return nil, workflow.InvalidDefinitionError{Err: err}
+		return workflow.ImportOutcome{}, workflow.InvalidDefinitionError{Err: err}
 	}
 	compiled, bindings, err := f.compileDefinitionWithBindings(src)
 	if err != nil {
-		return nil, workflow.InvalidDefinitionError{Err: err}
+		return workflow.ImportOutcome{}, workflow.InvalidDefinitionError{Err: err}
 	}
 	if compiled.Name != name {
-		return nil, workflow.InvalidDefinitionError{Err: fmt.Errorf("definition name %q does not match import name %q", compiled.Name, name)}
+		return workflow.ImportOutcome{}, workflow.InvalidDefinitionError{Err: fmt.Errorf("definition name %q does not match import name %q", compiled.Name, name)}
 	}
 	metadata, err := compiled.VersionMetadata()
 	if err != nil {
-		return nil, workflow.InvalidDefinitionError{Err: err}
+		return workflow.ImportOutcome{}, workflow.InvalidDefinitionError{Err: err}
 	}
 	hash := src.Hash()
 
 	tx, err := f.conn.Begin()
 	if err != nil {
-		return nil, err
+		return workflow.ImportOutcome{}, err
 	}
 	defer Rollback(tx)
 
@@ -158,7 +170,7 @@ func (f *agentWorkflowsFactory) ImportManifest(name string, src workflow.Manifes
 	// under concurrent web nodes.
 	_, err = tx.Exec(`SELECT pg_advisory_xact_lock(hashtext('agent_workflow_definitions:' || $1))`, name)
 	if err != nil {
-		return nil, err
+		return workflow.ImportOutcome{}, err
 	}
 
 	var def workflow.Definition
@@ -173,16 +185,19 @@ func (f *agentWorkflowsFactory) ImportManifest(name string, src workflow.Manifes
 		// Idempotent on hash: byte-identical source returns the existing
 		// version untouched (contracts §1.6).
 		if def.SchemaVersion != metadata.SchemaVersion || def.SignatureVersion != metadata.SignatureVersion {
-			return nil, fmt.Errorf("workflow: stored metadata for %q version %d does not match compiled source", name, def.Version)
+			return workflow.ImportOutcome{}, fmt.Errorf("workflow: stored metadata for %q version %d does not match compiled source", name, def.Version)
 		}
 		populateCompiledWorkflowDefinition(&def, compiled, src)
 		if err := compareWorkflowNodeBindings(tx, def.ID, bindings); err != nil {
-			return nil, err
+			return workflow.ImportOutcome{}, err
 		}
-		return &def, tx.Commit()
+		if err := tx.Commit(); err != nil {
+			return workflow.ImportOutcome{}, err
+		}
+		return workflow.ImportOutcome{Definition: &def, Inserted: false}, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
-		return nil, err
+		return workflow.ImportOutcome{}, err
 	}
 
 	if metadata.SignatureVersion > 0 {
@@ -199,25 +214,25 @@ func (f *agentWorkflowsFactory) ImportManifest(name string, src workflow.Manifes
 		if err == nil {
 			priorCompiled, _, compileErr := compileStoredWorkflowSourceWithResolver(name, prior.Version, priorRaw, priorManifest, f.nodeResolver)
 			if compileErr != nil {
-				return nil, compileErr
+				return workflow.ImportOutcome{}, compileErr
 			}
 			priorMetadata, metadataErr := priorCompiled.VersionMetadata()
 			if metadataErr != nil || priorMetadata.SchemaVersion != prior.SchemaVersion || priorMetadata.SignatureVersion != prior.SignatureVersion {
-				return nil, fmt.Errorf("workflow: stored metadata for %q version %d does not match compiled source", name, prior.Version)
+				return workflow.ImportOutcome{}, fmt.Errorf("workflow: stored metadata for %q version %d does not match compiled source", name, prior.Version)
 			}
 			candidateSignature, signatureErr := compiled.PublicSignature()
 			if signatureErr != nil {
-				return nil, workflow.InvalidDefinitionError{Err: signatureErr}
+				return workflow.ImportOutcome{}, workflow.InvalidDefinitionError{Err: signatureErr}
 			}
 			priorSignature, signatureErr := priorCompiled.PublicSignature()
 			if signatureErr != nil {
-				return nil, fmt.Errorf("workflow: stored public signature for %q version %d is invalid", name, prior.Version)
+				return workflow.ImportOutcome{}, fmt.Errorf("workflow: stored public signature for %q version %d is invalid", name, prior.Version)
 			}
 			if !candidateSignature.Equal(priorSignature) {
-				return nil, workflow.InvalidDefinitionError{Err: fmt.Errorf("workflow %q signature_version %d is incompatible with version %d", name, metadata.SignatureVersion, prior.Version)}
+				return workflow.ImportOutcome{}, workflow.InvalidDefinitionError{Err: fmt.Errorf("workflow %q signature_version %d is incompatible with version %d", name, metadata.SignatureVersion, prior.Version)}
 			}
 		} else if !errors.Is(err, sql.ErrNoRows) {
-			return nil, err
+			return workflow.ImportOutcome{}, err
 		}
 	}
 
@@ -232,10 +247,10 @@ func (f *agentWorkflowsFactory) ImportManifest(name string, src workflow.Manifes
 		metadata.SchemaVersion, metadata.SignatureVersion,
 	).Scan(&def.ID, &def.Version, &def.CreatedAt)
 	if err != nil {
-		return nil, err
+		return workflow.ImportOutcome{}, err
 	}
 	if err := insertWorkflowNodeBindings(tx, def.ID, bindings); err != nil {
-		return nil, err
+		return workflow.ImportOutcome{}, err
 	}
 
 	def.Name = name
@@ -245,7 +260,10 @@ func (f *agentWorkflowsFactory) ImportManifest(name string, src workflow.Manifes
 	def.Description = compiled.Description
 	def.CreatedBy = createdBy
 	populateCompiledWorkflowDefinition(&def, compiled, src)
-	return &def, tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return workflow.ImportOutcome{}, err
+	}
+	return workflow.ImportOutcome{Definition: &def, Inserted: true}, nil
 }
 
 func (f *agentWorkflowsFactory) compileDefinitionWithBindings(source workflow.Manifest) (*workflow.CompiledDefinition, []workflow.ResolvedNodeBinding, error) {

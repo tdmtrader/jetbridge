@@ -62,26 +62,38 @@ func (m *MemoryStore) Import(name string, rawYAML []byte, createdBy string) (*wo
 }
 
 func (m *MemoryStore) ImportManifest(name string, src workflow.Manifest, createdBy string) (*workflow.Definition, error) {
+	outcome, err := m.ImportManifestWithOutcome(name, src, createdBy)
+	if err != nil {
+		return nil, err
+	}
+	return outcome.Definition, nil
+}
+
+func (m *MemoryStore) ImportManifestWithOutcome(
+	name string,
+	src workflow.Manifest,
+	createdBy string,
+) (workflow.ImportOutcome, error) {
 	if err := src.Validate(); err != nil {
-		return nil, workflow.InvalidDefinitionError{Err: err}
+		return workflow.ImportOutcome{}, workflow.InvalidDefinitionError{Err: err}
 	}
 	raw, ok := src.DefinitionSource()
 	if !ok {
-		return nil, workflow.InvalidDefinitionError{Err: fmt.Errorf("workflow: manifest has no %s (or legacy %s)", workflow.WorkflowFileName, workflow.LegacyWorkflowFileName)}
+		return workflow.ImportOutcome{}, workflow.InvalidDefinitionError{Err: fmt.Errorf("workflow: manifest has no %s (or legacy %s)", workflow.WorkflowFileName, workflow.LegacyWorkflowFileName)}
 	}
 	if err := workflow.RequireSchemaVersion3([]byte(raw)); err != nil {
-		return nil, workflow.InvalidDefinitionError{Err: err}
+		return workflow.ImportOutcome{}, workflow.InvalidDefinitionError{Err: err}
 	}
 	compiled, err := m.compileDefinition(src)
 	if err != nil {
-		return nil, workflow.InvalidDefinitionError{Err: err}
+		return workflow.ImportOutcome{}, workflow.InvalidDefinitionError{Err: err}
 	}
 	if compiled.Name != name {
-		return nil, workflow.InvalidDefinitionError{Err: fmt.Errorf("definition name %q does not match import name %q", compiled.Name, name)}
+		return workflow.ImportOutcome{}, workflow.InvalidDefinitionError{Err: fmt.Errorf("definition name %q does not match import name %q", compiled.Name, name)}
 	}
 	metadata, err := compiled.VersionMetadata()
 	if err != nil {
-		return nil, workflow.InvalidDefinitionError{Err: err}
+		return workflow.ImportOutcome{}, workflow.InvalidDefinitionError{Err: err}
 	}
 	hash := src.Hash()
 
@@ -95,9 +107,13 @@ func (m *MemoryStore) ImportManifest(name string, src workflow.Manifest, created
 		}
 		if d.ContentHash == hash {
 			if d.SchemaVersion != metadata.SchemaVersion || d.SignatureVersion != metadata.SignatureVersion {
-				return nil, fmt.Errorf("workflow: stored metadata for %q version %d does not match compiled source", name, d.Version)
+				return workflow.ImportOutcome{}, fmt.Errorf("workflow: stored metadata for %q version %d does not match compiled source", name, d.Version)
 			}
-			return cloneMemoryDefinition(d, true) // idempotent on hash
+			definition, err := m.cloneMemoryDefinition(d, true)
+			if err != nil {
+				return workflow.ImportOutcome{}, err
+			}
+			return workflow.ImportOutcome{Definition: definition, Inserted: false}, nil
 		}
 		if d.Version > maxVersion {
 			maxVersion = d.Version
@@ -106,7 +122,7 @@ func (m *MemoryStore) ImportManifest(name string, src workflow.Manifest, created
 	if metadata.SignatureVersion > 0 {
 		candidate, err := compiled.PublicSignature()
 		if err != nil {
-			return nil, workflow.InvalidDefinitionError{Err: err}
+			return workflow.ImportOutcome{}, workflow.InvalidDefinitionError{Err: err}
 		}
 		for _, existing := range m.defs {
 			if existing.Name != name || existing.SignatureVersion != metadata.SignatureVersion {
@@ -114,10 +130,10 @@ func (m *MemoryStore) ImportManifest(name string, src workflow.Manifest, created
 			}
 			prior, err := existing.Compiled.PublicSignature()
 			if err != nil {
-				return nil, fmt.Errorf("workflow: stored signature for %q version %d is invalid", name, existing.Version)
+				return workflow.ImportOutcome{}, fmt.Errorf("workflow: stored signature for %q version %d is invalid", name, existing.Version)
 			}
 			if !candidate.Equal(prior) {
-				return nil, workflow.InvalidDefinitionError{Err: fmt.Errorf("workflow %q signature_version %d is incompatible with version %d", name, metadata.SignatureVersion, existing.Version)}
+				return workflow.ImportOutcome{}, workflow.InvalidDefinitionError{Err: fmt.Errorf("workflow %q signature_version %d is incompatible with version %d", name, metadata.SignatureVersion, existing.Version)}
 			}
 			break
 		}
@@ -127,9 +143,9 @@ func (m *MemoryStore) ImportManifest(name string, src workflow.Manifest, created
 	for p, c := range src {
 		stored[p] = c
 	}
-	m.nextID++
+	nextID := m.nextID + 1
 	def := &workflow.Definition{
-		ID:               m.nextID,
+		ID:               nextID,
 		Name:             name,
 		Version:          maxVersion + 1,
 		SchemaVersion:    metadata.SchemaVersion,
@@ -142,8 +158,13 @@ func (m *MemoryStore) ImportManifest(name string, src workflow.Manifest, created
 		RawYAML:          raw,
 		SourceManifest:   stored,
 	}
+	definition, err := m.cloneMemoryDefinition(def, true)
+	if err != nil {
+		return workflow.ImportOutcome{}, err
+	}
+	m.nextID = nextID
 	m.defs = append(m.defs, def)
-	return cloneMemoryDefinition(def, true)
+	return workflow.ImportOutcome{Definition: definition, Inserted: true}, nil
 }
 
 func (m *MemoryStore) compileDefinition(source workflow.Manifest) (*workflow.CompiledDefinition, error) {
@@ -159,7 +180,7 @@ func (m *MemoryStore) Get(name string, version int) (*workflow.Definition, bool,
 	defer m.mu.Unlock()
 	for _, d := range m.defs {
 		if d.Name == name && d.Version == version {
-			cp, err := cloneMemoryDefinition(d, true)
+			cp, err := m.cloneMemoryDefinition(d, true)
 			if err != nil {
 				return nil, false, err
 			}
@@ -175,7 +196,7 @@ func (m *MemoryStore) Live(name string) (*workflow.Definition, bool, error) {
 	defer m.mu.Unlock()
 	for _, d := range m.defs {
 		if d.Name == name && d.Live {
-			cp, err := cloneMemoryDefinition(d, true)
+			cp, err := m.cloneMemoryDefinition(d, true)
 			if err != nil {
 				return nil, false, err
 			}
@@ -198,7 +219,7 @@ func (m *MemoryStore) Latest(name string) (*workflow.Definition, bool, error) {
 	if latest == nil {
 		return nil, false, nil
 	}
-	cp, err := cloneMemoryDefinition(latest, true)
+	cp, err := m.cloneMemoryDefinition(latest, true)
 	if err != nil {
 		return nil, false, err
 	}
@@ -229,7 +250,7 @@ func (m *MemoryStore) List() ([]workflow.Definition, error) {
 	}
 	out := []workflow.Definition{}
 	for _, d := range latest {
-		cp, err := cloneMemoryDefinition(d, false) // metadata-only listing
+		cp, err := m.cloneMemoryDefinition(d, false) // metadata-only listing
 		if err != nil {
 			return nil, err
 		}
@@ -271,7 +292,7 @@ func (m *MemoryStore) Versions(ctx context.Context, name string, request workflo
 		if err := ctx.Err(); err != nil {
 			return workflow.VersionPage{}, err
 		}
-		cp, err := cloneMemoryDefinition(candidates[index], false)
+		cp, err := m.cloneMemoryDefinition(candidates[index], false)
 		if err != nil {
 			return workflow.VersionPage{}, err
 		}
@@ -301,7 +322,7 @@ func (m *MemoryStore) Promote(name string, version int, promotedBy string) (work
 	if m.promotionValidator == nil {
 		return workflow.PromotionResult{}, workflow.InvalidPromotionError{Err: workflow.ErrPromotionValidatorRequired}
 	}
-	candidate, err := cloneMemoryDefinition(target, true)
+	candidate, err := m.cloneMemoryDefinition(target, true)
 	if err != nil {
 		return workflow.PromotionResult{}, workflow.InvalidPromotionError{Err: err}
 	}
@@ -333,7 +354,7 @@ func (m *MemoryStore) Promote(name string, version int, promotedBy string) (work
 
 // cloneMemoryDefinition prevents maps, slices, and concrete step pointers in a
 // returned compiled definition from mutating the in-memory store's authority.
-func cloneMemoryDefinition(definition *workflow.Definition, includeContent bool) (*workflow.Definition, error) {
+func (m *MemoryStore) cloneMemoryDefinition(definition *workflow.Definition, includeContent bool) (*workflow.Definition, error) {
 	clone := *definition
 	clone.Compiled = workflow.CompiledDefinition{}
 	clone.RawYAML = ""
@@ -349,7 +370,7 @@ func cloneMemoryDefinition(definition *workflow.Definition, includeContent bool)
 	for path, content := range definition.SourceManifest {
 		source[path] = content
 	}
-	compiled, err := workflow.CompileDefinition(source)
+	compiled, err := m.compileDefinition(source)
 	if err != nil {
 		return nil, fmt.Errorf("workflow: stored definition %q version %d no longer compiles: %w", definition.Name, definition.Version, err)
 	}

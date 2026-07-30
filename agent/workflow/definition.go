@@ -217,6 +217,13 @@ type VersionPage struct {
 	Found       bool
 }
 
+// ImportOutcome reports whether an immutable workflow revision was inserted by
+// this exact import. Definition is always an independent copy on success.
+type ImportOutcome struct {
+	Definition *Definition
+	Inserted   bool
+}
+
 // InvalidDefinitionError wraps admission, parse, validation, and name-mismatch
 // failures. API handlers map ordinary failures to 400 and unsupported schema
 // versions to their stable typed 422 response.
@@ -245,6 +252,9 @@ type Store interface {
 	// ImportManifest compiles and stores a source tree; idempotent on
 	// the canonical-manifest hash.
 	ImportManifest(name string, m Manifest, createdBy string) (*Definition, error)
+	// ImportManifestWithOutcome decides insertion versus an exact idempotent
+	// hit while holding the store's per-name serialization authority.
+	ImportManifestWithOutcome(name string, m Manifest, createdBy string) (ImportOutcome, error)
 	Get(name string, version int) (*Definition, bool, error)
 	Live(name string) (*Definition, bool, error)
 	Latest(name string) (*Definition, bool, error) // highest version, live or not

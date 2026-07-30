@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/concourse/concourse/agent/workflow"
@@ -96,6 +97,141 @@ func TestMemoryStoreImportIsIdempotentOnHash(t *testing.T) {
 	page, _ := s.Versions(context.Background(), "wf", workflow.VersionPageRequest{Limit: workflow.MaxVersionPageSize})
 	if len(page.Definitions) != 1 {
 		t.Errorf("expected 1 stored version, got %d", len(page.Definitions))
+	}
+}
+
+func TestMemoryStoreImportManifestWithOutcomeIsAtomic(t *testing.T) {
+	store := workflowtest.NewMemoryStore()
+	manifest := functionManifest("atomic-outcome", 1, nil, "review/v1", "review")
+
+	first, err := store.ImportManifestWithOutcome("atomic-outcome", manifest, "alice")
+	if err != nil {
+		t.Fatalf("first import: %v", err)
+	}
+	if !first.Inserted || first.Definition == nil || first.Definition.CreatedBy != "alice" {
+		t.Fatalf("first outcome = %+v, want inserted definition created by alice", first)
+	}
+	repeated, err := store.ImportManifestWithOutcome("atomic-outcome", manifest, "mallory")
+	if err != nil {
+		t.Fatalf("repeated import: %v", err)
+	}
+	if repeated.Inserted || repeated.Definition == nil ||
+		repeated.Definition.ID != first.Definition.ID ||
+		repeated.Definition.CreatedBy != "alice" {
+		t.Fatalf("repeated outcome = %+v, want untouched idempotent hit", repeated)
+	}
+	repeated.Definition.CreatedBy = "mutated"
+	stored, found, err := store.Get("atomic-outcome", first.Definition.Version)
+	if err != nil || !found || stored.CreatedBy != "alice" {
+		t.Fatalf("returned outcome mutated store authority: stored=%+v found=%v err=%v", stored, found, err)
+	}
+
+	concurrent := workflowtest.NewMemoryStore()
+	const callers = 16
+	start := make(chan struct{})
+	outcomes := make(chan workflow.ImportOutcome, callers)
+	errs := make(chan error, callers)
+	var wait sync.WaitGroup
+	for index := 0; index < callers; index++ {
+		wait.Add(1)
+		go func(index int) {
+			defer wait.Done()
+			<-start
+			outcome, err := concurrent.ImportManifestWithOutcome(
+				"atomic-outcome", manifest, fmt.Sprintf("caller-%d", index),
+			)
+			outcomes <- outcome
+			errs <- err
+		}(index)
+	}
+	close(start)
+	wait.Wait()
+	close(outcomes)
+	close(errs)
+
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent import: %v", err)
+		}
+	}
+	inserted := 0
+	definitionID := 0
+	createdBy := ""
+	for outcome := range outcomes {
+		if outcome.Definition == nil {
+			t.Fatal("concurrent import returned nil definition")
+		}
+		if definitionID == 0 {
+			definitionID = outcome.Definition.ID
+			createdBy = outcome.Definition.CreatedBy
+		}
+		if outcome.Definition.ID != definitionID || outcome.Definition.Version != 1 ||
+			outcome.Definition.CreatedBy != createdBy {
+			t.Fatalf("concurrent outcome drifted: %+v, want id=%d version=1 creator=%q", outcome, definitionID, createdBy)
+		}
+		if outcome.Inserted {
+			inserted++
+		}
+	}
+	if inserted != 1 {
+		t.Fatalf("inserted outcomes = %d, want exactly 1", inserted)
+	}
+}
+
+func TestNodeAwareMemoryStoreRecompilesContentClonesWithExactResolver(t *testing.T) {
+	nodes := workflowtest.NewMemoryNodeStore()
+	node, err := nodes.ImportManifest("review", workflow.Manifest{workflow.NodeFileName: `schema_version: 1
+name: review
+inputs: []
+outputs: []
+step: {agent: review, prompt: review}
+`}, "alice")
+	if err != nil {
+		t.Fatalf("import node: %v", err)
+	}
+	if _, err := nodes.Release(node.Name, node.Version, workflow.ReleaseCompatible, "alice"); err != nil {
+		t.Fatalf("release node: %v", err)
+	}
+	store := workflowtest.NewMemoryStoreWithNodeResolver(
+		nodes,
+		workflowrun.WorkflowTargetRenderer{
+			RuntimeImage: "registry.example/agent-runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		},
+	)
+	manifest := workflow.Manifest{workflow.WorkflowFileName: `schema_version: 3
+name: node-consumer
+signature_version: 1
+inputs: []
+outputs: []
+plan:
+  - node: review-change
+    uses: review@1
+    input_mapping: {}
+    output_mapping: {}
+`}
+
+	outcome, err := store.ImportManifestWithOutcome("node-consumer", manifest, "alice")
+	if err != nil {
+		t.Fatalf("node-aware import: %v", err)
+	}
+	if !outcome.Inserted || outcome.Definition == nil || len(outcome.Definition.Compiled.Function.Plan) != 1 {
+		t.Fatalf("node-aware import outcome = %+v", outcome)
+	}
+	got, found, err := store.Get("node-consumer", outcome.Definition.Version)
+	if err != nil || !found || got.SourceManifest[workflow.WorkflowFileName] != manifest[workflow.WorkflowFileName] {
+		t.Fatalf("Get node consumer: found=%v err=%v definition=%+v", found, err, got)
+	}
+	latest, found, err := store.Latest("node-consumer")
+	if err != nil || !found || latest.ContentHash != manifest.Hash() {
+		t.Fatalf("Latest node consumer: found=%v err=%v definition=%+v", found, err, latest)
+	}
+	if _, err := store.Promote("node-consumer", outcome.Definition.Version, "alice"); err != nil {
+		t.Fatalf("Promote node consumer: %v", err)
+	}
+	live, found, err := store.Live("node-consumer")
+	if err != nil || !found || live.Version != outcome.Definition.Version ||
+		live.SourceManifest[workflow.WorkflowFileName] != manifest[workflow.WorkflowFileName] {
+		t.Fatalf("Live node consumer: found=%v err=%v definition=%+v", found, err, live)
 	}
 }
 

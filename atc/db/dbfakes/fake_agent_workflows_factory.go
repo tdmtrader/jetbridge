@@ -69,6 +69,21 @@ type FakeAgentWorkflowsFactory struct {
 		result1 *workflow.Definition
 		result2 error
 	}
+	ImportManifestWithOutcomeStub        func(string, workflow.Manifest, string) (workflow.ImportOutcome, error)
+	importManifestWithOutcomeMutex       sync.RWMutex
+	importManifestWithOutcomeArgsForCall []struct {
+		arg1 string
+		arg2 workflow.Manifest
+		arg3 string
+	}
+	importManifestWithOutcomeReturns struct {
+		result1 workflow.ImportOutcome
+		result2 error
+	}
+	importManifestWithOutcomeReturnsOnCall map[int]struct {
+		result1 workflow.ImportOutcome
+		result2 error
+	}
 	LatestStub        func(string) (*workflow.Definition, bool, error)
 	latestMutex       sync.RWMutex
 	latestArgsForCall []struct {
@@ -434,6 +449,72 @@ func (fake *FakeAgentWorkflowsFactory) ImportManifestReturnsOnCall(i int, result
 	}
 	fake.importManifestReturnsOnCall[i] = struct {
 		result1 *workflow.Definition
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeAgentWorkflowsFactory) ImportManifestWithOutcome(arg1 string, arg2 workflow.Manifest, arg3 string) (workflow.ImportOutcome, error) {
+	fake.importManifestWithOutcomeMutex.Lock()
+	ret, specificReturn := fake.importManifestWithOutcomeReturnsOnCall[len(fake.importManifestWithOutcomeArgsForCall)]
+	fake.importManifestWithOutcomeArgsForCall = append(fake.importManifestWithOutcomeArgsForCall, struct {
+		arg1 string
+		arg2 workflow.Manifest
+		arg3 string
+	}{arg1, arg2, arg3})
+	stub := fake.ImportManifestWithOutcomeStub
+	fakeReturns := fake.importManifestWithOutcomeReturns
+	fake.recordInvocation("ImportManifestWithOutcome", []interface{}{arg1, arg2, arg3})
+	fake.importManifestWithOutcomeMutex.Unlock()
+	if stub != nil {
+		return stub(arg1, arg2, arg3)
+	}
+	if specificReturn {
+		return ret.result1, ret.result2
+	}
+	return fakeReturns.result1, fakeReturns.result2
+}
+
+func (fake *FakeAgentWorkflowsFactory) ImportManifestWithOutcomeCallCount() int {
+	fake.importManifestWithOutcomeMutex.RLock()
+	defer fake.importManifestWithOutcomeMutex.RUnlock()
+	return len(fake.importManifestWithOutcomeArgsForCall)
+}
+
+func (fake *FakeAgentWorkflowsFactory) ImportManifestWithOutcomeCalls(stub func(string, workflow.Manifest, string) (workflow.ImportOutcome, error)) {
+	fake.importManifestWithOutcomeMutex.Lock()
+	defer fake.importManifestWithOutcomeMutex.Unlock()
+	fake.ImportManifestWithOutcomeStub = stub
+}
+
+func (fake *FakeAgentWorkflowsFactory) ImportManifestWithOutcomeArgsForCall(i int) (string, workflow.Manifest, string) {
+	fake.importManifestWithOutcomeMutex.RLock()
+	defer fake.importManifestWithOutcomeMutex.RUnlock()
+	argsForCall := fake.importManifestWithOutcomeArgsForCall[i]
+	return argsForCall.arg1, argsForCall.arg2, argsForCall.arg3
+}
+
+func (fake *FakeAgentWorkflowsFactory) ImportManifestWithOutcomeReturns(result1 workflow.ImportOutcome, result2 error) {
+	fake.importManifestWithOutcomeMutex.Lock()
+	defer fake.importManifestWithOutcomeMutex.Unlock()
+	fake.ImportManifestWithOutcomeStub = nil
+	fake.importManifestWithOutcomeReturns = struct {
+		result1 workflow.ImportOutcome
+		result2 error
+	}{result1, result2}
+}
+
+func (fake *FakeAgentWorkflowsFactory) ImportManifestWithOutcomeReturnsOnCall(i int, result1 workflow.ImportOutcome, result2 error) {
+	fake.importManifestWithOutcomeMutex.Lock()
+	defer fake.importManifestWithOutcomeMutex.Unlock()
+	fake.ImportManifestWithOutcomeStub = nil
+	if fake.importManifestWithOutcomeReturnsOnCall == nil {
+		fake.importManifestWithOutcomeReturnsOnCall = make(map[int]struct {
+			result1 workflow.ImportOutcome
+			result2 error
+		})
+	}
+	fake.importManifestWithOutcomeReturnsOnCall[i] = struct {
+		result1 workflow.ImportOutcome
 		result2 error
 	}{result1, result2}
 }

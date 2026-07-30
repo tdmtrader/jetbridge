@@ -173,6 +173,59 @@ plan:
 		Expect(again.CreatedBy).To(Equal("alice")) // existing row untouched
 	})
 
+	It("reports one atomic insertion for concurrent exact manifest imports", func() {
+		dbConn.SetMaxOpenConns(4)
+		manifest := workflow.Manifest{"workflow.yml": string(defYAML("wf-import-outcome", "Same bytes."))}
+		const callers = 8
+		start := make(chan struct{})
+		outcomes := make(chan workflow.ImportOutcome, callers)
+		errs := make(chan error, callers)
+		var wait sync.WaitGroup
+		for index := 0; index < callers; index++ {
+			wait.Add(1)
+			go func(index int) {
+				defer wait.Done()
+				<-start
+				outcome, err := factory.ImportManifestWithOutcome(
+					"wf-import-outcome", manifest, fmt.Sprintf("caller-%d", index),
+				)
+				outcomes <- outcome
+				errs <- err
+			}(index)
+		}
+		close(start)
+		wait.Wait()
+		close(outcomes)
+		close(errs)
+
+		for err := range errs {
+			Expect(err).NotTo(HaveOccurred())
+		}
+		inserted := 0
+		definitionID := 0
+		createdBy := ""
+		for outcome := range outcomes {
+			Expect(outcome.Definition).NotTo(BeNil())
+			if definitionID == 0 {
+				definitionID = outcome.Definition.ID
+				createdBy = outcome.Definition.CreatedBy
+			}
+			Expect(outcome.Definition.ID).To(Equal(definitionID))
+			Expect(outcome.Definition.Version).To(Equal(1))
+			Expect(outcome.Definition.CreatedBy).To(Equal(createdBy))
+			if outcome.Inserted {
+				inserted++
+			}
+		}
+		Expect(inserted).To(Equal(1))
+
+		repeated, err := factory.ImportManifestWithOutcome("wf-import-outcome", manifest, "mallory")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(repeated.Inserted).To(BeFalse())
+		Expect(repeated.Definition.ID).To(Equal(definitionID))
+		Expect(repeated.Definition.CreatedBy).To(Equal(createdBy))
+	})
+
 	It("rejects name mismatch and invalid definitions as InvalidDefinitionError", func() {
 		_, err := factory.Import("wrong-name", defYAML("wf-mismatch", "One."), "alice")
 		var inv workflow.InvalidDefinitionError
