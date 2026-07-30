@@ -4,8 +4,11 @@ import (
 	"archive/tar"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -27,7 +30,7 @@ func TestOrdinaryResultSealerDerivesReviewAuthorityAndUsesSnapshotCreator(t *tes
 		TeamID: 1, TeamName: "main", BuildID: 2, SnapshotCreatedBy: "atc",
 		WorkflowDefinitionID: 31, WorkflowRunID: 3, NodePlanID: "node", ParentAttempt: 1, BrokerInstance: "broker", LeaseDuration: time.Minute,
 		Inputs: map[string]snapshot.SnapshotRef{"workspace": workspace, "validation": validation},
-	}, broker.ExecutionIdentity{IdempotencyKey: "review", Tool: broker.ToolRequestReview, Attachments: []string{"workspace", "validation"}}, agentchildexecutions.CandidateResult{
+	}, "7c5b1d7f-4ab1-451a-a6c8-d6b0a4d4dd98", broker.ExecutionIdentity{IdempotencyKey: "review", Tool: broker.ToolRequestReview, Attachments: []string{"workspace", "validation"}}, agentchildexecutions.CandidateResult{
 		Body: json.RawMessage(`{"conclusion":"accept","summary":"looks good","findings":[]}`),
 	})
 	if err != nil {
@@ -54,7 +57,7 @@ func TestOrdinaryResultSealerRejectsSidecarResultTypeAndMissingAuthorityInput(t 
 		TeamID: 1, TeamName: "main", BuildID: 2, SnapshotCreatedBy: "atc",
 		WorkflowDefinitionID: 31, WorkflowRunID: 3, NodePlanID: "node", ParentAttempt: 1, BrokerInstance: "broker", LeaseDuration: time.Minute,
 		Inputs: map[string]snapshot.SnapshotRef{"workspace": {ID: 1, Type: "repository-change/v1", Digest: snapshot.Digest("sha256:" + strings.Repeat("a", 64))}},
-	}, broker.ExecutionIdentity{Tool: broker.ToolConsultAgent, Attachments: []string{"design"}}, agentchildexecutions.CandidateResult{
+	}, "7c5b1d7f-4ab1-451a-a6c8-d6b0a4d4dd98", broker.ExecutionIdentity{Tool: broker.ToolConsultAgent, Attachments: []string{"design"}}, agentchildexecutions.CandidateResult{
 		Body: json.RawMessage(`{"answer":"answer","claims":[],"assumptions":[],"uncertainties":[],"recommendations":[]}`),
 	})
 	if err == nil || !strings.Contains(err.Error(), "input") {
@@ -73,7 +76,7 @@ func TestOrdinaryResultSealerMakesSoleConsultationAttachmentPrimary(t *testing.T
 		TeamID: 1, TeamName: "main", BuildID: 2, SnapshotCreatedBy: "atc", WorkflowDefinitionID: 31, WorkflowRunID: 3,
 		NodePlanID: "node", ParentAttempt: 1, BrokerInstance: "broker", LeaseDuration: time.Minute,
 		Inputs: map[string]snapshot.SnapshotRef{"api-contract": apiContract},
-	}, broker.ExecutionIdentity{IdempotencyKey: "consult", Tool: broker.ToolConsultAgent, Attachments: []string{"api-contract"}}, agentchildexecutions.CandidateResult{
+	}, "7c5b1d7f-4ab1-451a-a6c8-d6b0a4d4dd98", broker.ExecutionIdentity{IdempotencyKey: "consult", Tool: broker.ToolConsultAgent, Attachments: []string{"api-contract"}}, agentchildexecutions.CandidateResult{
 		Body: json.RawMessage(`{"answer":"answer","claims":[],"assumptions":[],"uncertainties":[],"recommendations":[]}`),
 	})
 	if err != nil {
@@ -104,7 +107,7 @@ func TestOrdinaryResultSealerBuildsAuthoritativeRepositoryChangeFromBoundBase(t 
 		PatchDigest: "sha256:a4895eb44afc336fecbba6e520cd67e178dace0276655d102fceffa8e5f70570",
 		EntryCount:  7, PolicyRevision: "git-workspace-capture/v2",
 	}
-	sealed, err := sealer.SealWorkspace(context.Background(), scope, broker.ExecutionIdentity{
+	sealed, err := sealer.SealWorkspace(context.Background(), scope, "7c5b1d7f-4ab1-451a-a6c8-d6b0a4d4dd98", broker.ExecutionIdentity{
 		IdempotencyKey: "review", Tool: broker.ToolRequestReview,
 	}, capture)
 	if err != nil {
@@ -131,6 +134,70 @@ func TestOrdinaryResultSealerBuildsAuthoritativeRepositoryChangeFromBoundBase(t 
 	}
 }
 
+func TestOrdinaryResultSealerUsesDistinctStableProductionIdentityPerChild(t *testing.T) {
+	creator := &collisionSnapshotCreator{seen: map[string]struct{}{}}
+	base := snapshot.SnapshotRef{ID: 41, Type: "repository/v1", Digest: snapshot.Digest("sha256:" + strings.Repeat("4", 64))}
+	metadata := json.RawMessage(`{"repository_id":"sha256:` + strings.Repeat("a", 64) + `","object_format":"sha1","head_sha":"` + strings.Repeat("1", 40) + `","tree_sha":"` + strings.Repeat("2", 40) + `","root_commits":["` + strings.Repeat("1", 40) + `"]}`)
+	sealer, err := agentchildexecutions.NewOrdinaryResultSealer(creator, fakeWorkspaceMetadata{
+		snapshot: snapshot.Snapshot{ID: base.ID, Type: base.Type, Digest: base.Digest, IntrinsicMetadata: metadata},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseScope := completeScope()
+	baseScope.Inputs = map[string]snapshot.SnapshotRef{}
+	baseScope.WorkspaceBase = &base
+	capture := broker.WorkspaceCapture{
+		BaseCommit: strings.Repeat("1", 40), BaseTree: strings.Repeat("2", 40),
+		ResultTree:  strings.Repeat("2", 40),
+		PatchDigest: "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+		EntryCount:  1, PolicyRevision: "git-workspace-capture/v2",
+	}
+	ids := []string{
+		"7c5b1d7f-4ab1-451a-a6c8-d6b0a4d4dd98",
+		"c34a6e95-2e3a-45b0-b3f0-30c4e09acb7d",
+	}
+	var group sync.WaitGroup
+	errs := make(chan error, len(ids))
+	for _, executionID := range ids {
+		executionID := executionID
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			identity := broker.ExecutionIdentity{
+				IdempotencyKey: executionID, Tool: broker.ToolRequestReview,
+				Attachments: []string{"workspace"},
+			}
+			workspaceRef, err := sealer.SealWorkspace(context.Background(), baseScope, executionID, identity, capture)
+			if err != nil {
+				errs <- err
+				return
+			}
+			resultScope := baseScope
+			resultScope.Inputs = map[string]snapshot.SnapshotRef{"workspace": workspaceRef}
+			_, err = sealer.Seal(context.Background(), resultScope, executionID, identity, agentchildexecutions.CandidateResult{
+				Body: json.RawMessage(`{"conclusion":"accept","summary":"ok","findings":[]}`),
+			})
+			errs <- err
+		}()
+	}
+	group.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(creator.planIDs) != 2 {
+		t.Fatalf("child plan IDs = %#v", creator.planIDs)
+	}
+	for _, planID := range creator.planIDs {
+		if !strings.HasPrefix(planID, "agent-child/sha256:") || len(planID) != len("agent-child/sha256:")+64 {
+			t.Fatalf("child plan ID = %q", planID)
+		}
+	}
+}
+
 type fakeWorkspaceMetadata struct {
 	snapshot snapshot.Snapshot
 }
@@ -147,6 +214,47 @@ func (creator *recordingSnapshotCreator) Seal(_ context.Context, request snapsho
 	}
 	creator.request = request
 	return map[string]snapshot.SealedOutput{request.Outputs[0].ClientKey: {Port: request.OutputDeclarations[0], Snapshot: snapshot.SnapshotRef{ID: 99, Type: request.OutputDeclarations[0].Type, Digest: snapshot.Digest("sha256:" + strings.Repeat("c", 64))}}}, nil
+}
+
+type collisionSnapshotCreator struct {
+	mu      sync.Mutex
+	seen    map[string]struct{}
+	planIDs []string
+	nextID  atomic.Int64
+}
+
+func (creator *collisionSnapshotCreator) Seal(_ context.Context, request snapshot.SealRequest) (map[string]snapshot.SealedOutput, error) {
+	if err := request.Validate(); err != nil {
+		return nil, err
+	}
+	creator.mu.Lock()
+	defer creator.mu.Unlock()
+	key := fmt.Sprintf("%d/%s/%s/%s", request.BuildID, request.PlanID, request.Attempt, request.OutputDeclarations[0].Name)
+	if _, found := creator.seen[key]; found {
+		return nil, fmt.Errorf("production collision: %s", key)
+	}
+	creator.seen[key] = struct{}{}
+	foundPlan := false
+	for _, planID := range creator.planIDs {
+		if planID == request.PlanID {
+			foundPlan = true
+		}
+	}
+	if !foundPlan {
+		creator.planIDs = append(creator.planIDs, request.PlanID)
+	}
+	id := snapshot.SnapshotID(creator.nextID.Add(1))
+	output := request.Outputs[0]
+	return map[string]snapshot.SealedOutput{output.ClientKey: {
+		Port: output.Port, Snapshot: snapshot.SnapshotRef{
+			ID: id, Type: output.Port.Type,
+			Digest: snapshot.Digest("sha256:" + fmt.Sprintf("%064x", id)),
+		},
+	}}, nil
+}
+
+func (*collisionSnapshotCreator) Upload(context.Context, snapshot.UploadRequest) (snapshot.Snapshot, error) {
+	return snapshot.Snapshot{}, nil
 }
 func (*recordingSnapshotCreator) Upload(context.Context, snapshot.UploadRequest) (snapshot.Snapshot, error) {
 	return snapshot.Snapshot{}, nil

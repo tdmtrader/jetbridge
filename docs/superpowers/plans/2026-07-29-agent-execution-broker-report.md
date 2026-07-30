@@ -172,3 +172,24 @@ Focused broker, runtime, ATC authority, repository-contract, command, and
 compile-only DB/migration checks passed. The broker transport suite passed
 outside the loopback sandbox. The previously documented PostgreSQL
 shared-memory failure was not retried.
+
+### Workspace authority review round 1
+
+Two load-bearing corrections were applied:
+
+- Workspace and result productions use the same stable
+  `agent-child/sha256:<execution-id-hash>` plan identity and distinct output
+  ports. Concurrent children therefore cannot collide on the parent
+  build/node/attempt production tuple. Parent node-plan and workflow lineage
+  remain in ATC provenance and the durable execution identity.
+- The ledger stores an immutable canonical workspace-capture fingerprint
+  beside the sealed ref. Exact capture replay returns that ref without
+  resealing and refreshes lifecycle authority; a different candidate
+  conflicts. The broker retries one exact capture after an ambiguous response,
+  while the capture-failure action is accepted only for an unbound
+  `capturing` review, with the compare-and-advance sequence fencing races.
+
+Focused regressions cover concurrent/sequential child productions, lost
+capture responses, exact replay without resealing, conflicting candidates,
+and stale capture-failure tokens after binding/running. DB and migration
+packages compile; the known PostgreSQL sandbox gate was not retried.

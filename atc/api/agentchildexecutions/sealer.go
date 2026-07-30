@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,6 +15,7 @@ import (
 	"github.com/concourse/concourse/agent/broker"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/snapshot/contracts"
+	"github.com/google/uuid"
 )
 
 // CandidateResult is the sole terminal value that crosses the broker/ATC
@@ -51,6 +54,7 @@ func NewOrdinaryResultSealer(creator snapshot.SnapshotCreator, metadata ...works
 func (sealer *OrdinaryResultSealer) SealWorkspace(
 	ctx context.Context,
 	scope Scope,
+	executionID string,
 	execution broker.ExecutionIdentity,
 	capture broker.WorkspaceCapture,
 ) (snapshot.SnapshotRef, error) {
@@ -62,6 +66,10 @@ func (sealer *OrdinaryResultSealer) SealWorkspace(
 	}
 	if execution.Tool != broker.ToolRequestReview || scope.WorkspaceBase == nil {
 		return snapshot.SnapshotRef{}, fmt.Errorf("agent child workspace sealer: request_review base authority is required")
+	}
+	productionPlanID, err := childProductionPlanID(executionID)
+	if err != nil {
+		return snapshot.SnapshotRef{}, err
 	}
 	if err := capture.Validate(); err != nil {
 		return snapshot.SnapshotRef{}, err
@@ -106,7 +114,7 @@ func (sealer *OrdinaryResultSealer) SealWorkspace(
 	workflowRunID := snapshot.WorkflowRunID(scope.WorkflowRunID)
 	outputs, err := sealer.creator.Seal(ctx, snapshot.SealRequest{
 		BuildID: scope.BuildID, TeamID: scope.TeamID, TeamName: scope.TeamName,
-		CreatedBy: scope.SnapshotCreatedBy, PlanID: scope.NodePlanID,
+		CreatedBy: scope.SnapshotCreatedBy, PlanID: productionPlanID,
 		Attempt: strconv.Itoa(scope.ParentAttempt), StepKind: "agent-child-workspace",
 		StepName: execution.IdempotencyKey, WorkflowDefinitionID: &workflowDefinitionID,
 		WorkflowRunID: &workflowRunID, InputOrder: []string{"base"},
@@ -115,7 +123,7 @@ func (sealer *OrdinaryResultSealer) SealWorkspace(
 		Outputs: []snapshot.OutputSource{{
 			ClientKey: "workspace", Port: snapshot.Port{Name: "workspace", Type: "repository-change/v1"},
 			OpenTar:        recordAndPatchTar(recordJSON, capture.Patch),
-			SourceMetadata: json.RawMessage(`{"capture":"git-workspace-capture/v2","provenance":"atc"}`),
+			SourceMetadata: workspaceProvenance(scope),
 		}},
 	})
 	if err != nil {
@@ -128,11 +136,15 @@ func (sealer *OrdinaryResultSealer) SealWorkspace(
 	return output.Snapshot, nil
 }
 
-func (sealer *OrdinaryResultSealer) Seal(ctx context.Context, scope Scope, execution broker.ExecutionIdentity, candidate CandidateResult) (SealedResult, error) {
+func (sealer *OrdinaryResultSealer) Seal(ctx context.Context, scope Scope, executionID string, execution broker.ExecutionIdentity, candidate CandidateResult) (SealedResult, error) {
 	if sealer == nil || sealer.creator == nil {
 		return SealedResult{}, fmt.Errorf("agent child ordinary result sealer: snapshot creator is required")
 	}
 	if err := scope.Validate(); err != nil {
+		return SealedResult{}, err
+	}
+	productionPlanID, err := childProductionPlanID(executionID)
+	if err != nil {
 		return SealedResult{}, err
 	}
 	resultType, err := resultTypeForTool(execution.Tool)
@@ -159,14 +171,14 @@ func (sealer *OrdinaryResultSealer) Seal(ctx context.Context, scope Scope, execu
 	workflowRunID := snapshot.WorkflowRunID(scope.WorkflowRunID)
 	outputs, err := sealer.creator.Seal(ctx, snapshot.SealRequest{
 		BuildID: scope.BuildID, TeamID: scope.TeamID, TeamName: scope.TeamName, CreatedBy: scope.SnapshotCreatedBy,
-		PlanID: scope.NodePlanID, Attempt: strconv.Itoa(scope.ParentAttempt), StepKind: "agent-child-execution", StepName: execution.IdempotencyKey,
+		PlanID: productionPlanID, Attempt: strconv.Itoa(scope.ParentAttempt), StepKind: "agent-child-execution", StepName: execution.IdempotencyKey,
 		WorkflowDefinitionID: &workflowDefinitionID, WorkflowRunID: &workflowRunID,
 		InputOrder: inputOrder, Inputs: inputs,
 		OutputDeclarations: []snapshot.Port{{Name: "result", Type: resultType}},
 		Outputs: []snapshot.OutputSource{{
 			ClientKey: "result", Port: snapshot.Port{Name: "result", Type: resultType},
 			OpenTar:        recordTar(recordJSON),
-			SourceMetadata: resultProvenance(execution.Tool),
+			SourceMetadata: resultProvenance(scope, execution.Tool),
 		}},
 	})
 	if err != nil {
@@ -242,13 +254,44 @@ func resultAuthority(scope Scope, tool broker.Tool, attachments []string) ([]con
 	return subjects, inputs, inputOrder, nil
 }
 
-func resultProvenance(tool broker.Tool) json.RawMessage {
+func resultProvenance(scope Scope, tool broker.Tool) json.RawMessage {
 	// Static-review and tests-not-run are fixed server facts, never candidate
 	// attributes. Consultation has no review provenance.
 	if tool != broker.ToolRequestReview {
-		return nil
+		encoded, _ := json.Marshal(struct {
+			ParentPlanID string `json:"parent_plan_id"`
+			Provenance   string `json:"provenance"`
+		}{ParentPlanID: scope.NodePlanID, Provenance: "atc"})
+		return encoded
 	}
-	return json.RawMessage(`{"static_review":true,"tests_run":false,"provenance":"atc"}`)
+	encoded, _ := json.Marshal(struct {
+		ParentPlanID string `json:"parent_plan_id"`
+		StaticReview bool   `json:"static_review"`
+		TestsRun     bool   `json:"tests_run"`
+		Provenance   string `json:"provenance"`
+	}{ParentPlanID: scope.NodePlanID, StaticReview: true, TestsRun: false, Provenance: "atc"})
+	return encoded
+}
+
+func workspaceProvenance(scope Scope) json.RawMessage {
+	encoded, _ := json.Marshal(struct {
+		Capture      string `json:"capture"`
+		ParentPlanID string `json:"parent_plan_id"`
+		Provenance   string `json:"provenance"`
+	}{
+		Capture: "git-workspace-capture/v2", ParentPlanID: scope.NodePlanID,
+		Provenance: "atc",
+	})
+	return encoded
+}
+
+func childProductionPlanID(executionID string) (string, error) {
+	parsed, err := uuid.Parse(executionID)
+	if err != nil {
+		return "", fmt.Errorf("agent child sealer: execution ID must be a UUID")
+	}
+	sum := sha256.Sum256([]byte(parsed.String()))
+	return "agent-child/sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
 func recordTar(record []byte) func(context.Context) (io.ReadCloser, error) {

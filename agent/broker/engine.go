@@ -276,7 +276,13 @@ func (engine *Engine) execute(ctx context.Context, request executeRequest) (Resu
 		}
 		ref, err := engine.config.Authority.CaptureWorkspace(executionCtx, executionID, candidate)
 		if err != nil {
-			return Result{}, engine.failWorkspaceCapture(authorityContext(ctx), executionID)
+			// A transport error may mean ATC durably bound the workspace but
+			// the response was lost. Replay the exact candidate once so ATC can
+			// recover the bound ref and refresh lifecycle authority.
+			ref, err = engine.config.Authority.CaptureWorkspace(executionCtx, executionID, candidate)
+			if err != nil {
+				return Result{}, engine.failWorkspaceCapture(authorityContext(ctx), executionID)
+			}
 		}
 		captured = &localCapture
 		attachments = append(attachments, workspaceAttachment(ref, candidate))

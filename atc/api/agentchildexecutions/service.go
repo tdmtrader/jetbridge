@@ -37,10 +37,10 @@ type ExecutionStore interface {
 }
 
 type ResultSealer interface {
-	Seal(context.Context, Scope, broker.ExecutionIdentity, CandidateResult) (SealedResult, error)
+	Seal(context.Context, Scope, string, broker.ExecutionIdentity, CandidateResult) (SealedResult, error)
 }
 type WorkspaceResultSealer interface {
-	SealWorkspace(context.Context, Scope, broker.ExecutionIdentity, broker.WorkspaceCapture) (snapshot.SnapshotRef, error)
+	SealWorkspace(context.Context, Scope, string, broker.ExecutionIdentity, broker.WorkspaceCapture) (snapshot.SnapshotRef, error)
 }
 type WorkspaceExecutionStore interface {
 	BindWorkspace(context.Context, db.BindAgentChildWorkspace) (db.AgentChildExecution, error)
@@ -196,7 +196,8 @@ func (service *Service) Phase(ctx context.Context, executionID, phase string) er
 }
 
 func (service *Service) CaptureWorkspace(ctx context.Context, executionID string, capture broker.WorkspaceCapture) (snapshot.SnapshotRef, error) {
-	if err := capture.Validate(); err != nil {
+	captureDigest, err := capture.Fingerprint()
+	if err != nil {
 		return snapshot.SnapshotRef{}, err
 	}
 	if service.config.Scope.WorkspaceBase == nil {
@@ -206,14 +207,23 @@ func (service *Service) CaptureWorkspace(ctx context.Context, executionID string
 	if err != nil {
 		return snapshot.SnapshotRef{}, err
 	}
-	if execution.Tool != broker.ToolRequestReview || execution.State != broker.ExecutionCapturing {
+	if execution.Tool != broker.ToolRequestReview {
+		return snapshot.SnapshotRef{}, fmt.Errorf("agent child authority: workspace capture is unavailable for execution state or tool")
+	}
+	if execution.WorkspaceSnapshot != nil {
+		if execution.WorkspaceCaptureDigest != captureDigest {
+			return snapshot.SnapshotRef{}, fmt.Errorf("agent child authority: workspace capture replay conflicts with durable capture")
+		}
+		return *execution.WorkspaceSnapshot, nil
+	}
+	if execution.State != broker.ExecutionCapturing {
 		return snapshot.SnapshotRef{}, fmt.Errorf("agent child authority: workspace capture is unavailable for execution state or tool")
 	}
 	sealer, ok := service.config.Sealer.(WorkspaceResultSealer)
 	if !ok {
 		return snapshot.SnapshotRef{}, fmt.Errorf("agent child authority: workspace sealer is unavailable")
 	}
-	sealed, err := sealer.SealWorkspace(ctx, service.config.Scope, execution.ExecutionIdentity, capture)
+	sealed, err := sealer.SealWorkspace(ctx, service.config.Scope, executionID, execution.ExecutionIdentity, capture)
 	if err != nil {
 		return snapshot.SnapshotRef{}, err
 	}
@@ -226,7 +236,7 @@ func (service *Service) CaptureWorkspace(ctx context.Context, executionID string
 	}
 	bound, err := store.BindWorkspace(ctx, db.BindAgentChildWorkspace{
 		ID: execution.ID, TeamID: service.config.Scope.TeamID,
-		ExpectedSequence: execution.Sequence, Snapshot: sealed,
+		ExpectedSequence: execution.Sequence, Snapshot: sealed, CaptureDigest: captureDigest,
 	})
 	if err != nil {
 		return snapshot.SnapshotRef{}, err
@@ -238,9 +248,25 @@ func (service *Service) CaptureWorkspace(ctx context.Context, executionID string
 }
 
 func (service *Service) FailWorkspaceCapture(ctx context.Context, executionID string) error {
-	return service.Terminal(ctx, executionID, broker.Terminal{
-		State: broker.ExecutionErrored, Code: "workspace_capture_failed", Retryable: false,
+	execution, err := service.find(ctx, executionID)
+	if err != nil {
+		return err
+	}
+	if execution.Tool != broker.ToolRequestReview ||
+		execution.State != broker.ExecutionCapturing ||
+		execution.WorkspaceSnapshot != nil {
+		return fmt.Errorf("agent child authority: workspace capture failure is unavailable for execution state")
+	}
+	contract := terminalContracts["workspace_capture_failed"]
+	retryable := contract.retryable
+	_, err = service.config.Store.Advance(ctx, db.AdvanceAgentChildExecution{
+		ID: execution.ID, TeamID: service.config.Scope.TeamID,
+		ExpectedSequence: execution.Sequence, State: contract.state,
+		Phase: "workspace_capture_failed", BrokerInstance: service.config.Scope.BrokerInstance,
+		ErrorCode: "workspace_capture_failed", ErrorRetryable: &retryable,
+		ErrorSummary: contract.summary,
 	})
+	return err
 }
 
 // Update persists only the bounded broker event DTO and observed accounting.
@@ -349,7 +375,7 @@ func (service *Service) Seal(
 		return snapshot.SnapshotRef{}, fmt.Errorf(
 			"agent child authority: execution state is %q, expected sealing", execution.State)
 	}
-	sealed, err := service.config.Sealer.Seal(ctx, service.config.Scope, execution.ExecutionIdentity, CandidateResult{Body: append([]byte(nil), request.Body...)})
+	sealed, err := service.config.Sealer.Seal(ctx, service.config.Scope, request.ExecutionID, execution.ExecutionIdentity, CandidateResult{Body: append([]byte(nil), request.Body...)})
 	if err != nil {
 		return snapshot.SnapshotRef{}, err
 	}

@@ -205,21 +205,27 @@ var _ = Describe("AgentChildExecutionsFactory", func() {
 		Expect(err).NotTo(HaveOccurred())
 		bound, err := factory.BindWorkspace(context.Background(), db.BindAgentChildWorkspace{
 			ID: capturing.ID, TeamID: defaultTeam.ID(), ExpectedSequence: capturing.Sequence,
-			Snapshot: first,
+			Snapshot: first, CaptureDigest: "sha256:" + strings.Repeat("a", 64),
 		})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(bound.WorkspaceSnapshot).NotTo(BeNil())
 		Expect(*bound.WorkspaceSnapshot).To(Equal(first))
+		Expect(bound.WorkspaceCaptureDigest).To(Equal("sha256:" + strings.Repeat("a", 64)))
 		Expect(bound.Sequence).To(Equal(capturing.Sequence + 1))
 		replayed, err := factory.BindWorkspace(context.Background(), db.BindAgentChildWorkspace{
 			ID: capturing.ID, TeamID: defaultTeam.ID(), ExpectedSequence: capturing.Sequence,
-			Snapshot: first,
+			Snapshot: first, CaptureDigest: "sha256:" + strings.Repeat("a", 64),
 		})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(replayed.Sequence).To(Equal(bound.Sequence))
 		_, err = factory.BindWorkspace(context.Background(), db.BindAgentChildWorkspace{
 			ID: capturing.ID, TeamID: defaultTeam.ID(), ExpectedSequence: bound.Sequence,
-			Snapshot: second,
+			Snapshot: first, CaptureDigest: "sha256:" + strings.Repeat("b", 64),
+		})
+		Expect(err).To(MatchError(ContainSubstring("conflicts")))
+		_, err = factory.BindWorkspace(context.Background(), db.BindAgentChildWorkspace{
+			ID: capturing.ID, TeamID: defaultTeam.ID(), ExpectedSequence: bound.Sequence,
+			Snapshot: second, CaptureDigest: "sha256:" + strings.Repeat("a", 64),
 		})
 		Expect(err).To(MatchError(ContainSubstring("conflicts")))
 		var phase string

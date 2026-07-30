@@ -257,6 +257,27 @@ func TestServiceAdmitsReviewAgainstWorkspaceBaseAndBindsAuthoritativeCapture(t *
 	if err != nil || replayed != sealed {
 		t.Fatalf("capture replay = %#v, %v", replayed, err)
 	}
+	if sealer.workspaceCalls != 1 {
+		t.Fatalf("workspace seal calls = %d, want exactly one", sealer.workspaceCalls)
+	}
+	different := capture
+	different.EntryCount++
+	if _, err := service.CaptureWorkspace(context.Background(), admitted.ExecutionID, different); err == nil ||
+		!strings.Contains(err.Error(), "conflict") {
+		t.Fatalf("different capture replay error = %v", err)
+	}
+	if sealer.workspaceCalls != 1 {
+		t.Fatalf("different replay resealed workspace: %d", sealer.workspaceCalls)
+	}
+	if err := service.FailWorkspaceCapture(context.Background(), admitted.ExecutionID); err == nil {
+		t.Fatal("stale capture-failure capability terminalized a bound workspace")
+	}
+	if err := service.Phase(context.Background(), admitted.ExecutionID, "running"); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.FailWorkspaceCapture(context.Background(), admitted.ExecutionID); err == nil {
+		t.Fatal("capture-failure capability terminalized a running review")
+	}
 }
 
 type fakeStore struct {
@@ -302,6 +323,9 @@ func (store *fakeStore) Find(_ context.Context, teamID int, id string) (db.Agent
 
 func (store *fakeStore) BindWorkspace(_ context.Context, request db.BindAgentChildWorkspace) (db.AgentChildExecution, error) {
 	if store.execution.WorkspaceSnapshot != nil {
+		if store.execution.WorkspaceCaptureDigest != request.CaptureDigest {
+			return db.AgentChildExecution{}, fmt.Errorf("workspace capture conflicts")
+		}
 		if *store.execution.WorkspaceSnapshot != request.Snapshot {
 			return db.AgentChildExecution{}, fmt.Errorf("workspace conflict")
 		}
@@ -312,21 +336,24 @@ func (store *fakeStore) BindWorkspace(_ context.Context, request db.BindAgentChi
 	}
 	ref := request.Snapshot
 	store.execution.WorkspaceSnapshot = &ref
+	store.execution.WorkspaceCaptureDigest = request.CaptureDigest
 	store.execution.Sequence++
 	return store.execution, nil
 }
 
 type fakeSealer struct {
-	calls     int
-	workspace snapshot.SnapshotRef
+	calls          int
+	workspace      snapshot.SnapshotRef
+	workspaceCalls int
 }
 
-func (sealer *fakeSealer) Seal(context.Context, agentchildexecutions.Scope, broker.ExecutionIdentity, agentchildexecutions.CandidateResult) (agentchildexecutions.SealedResult, error) {
+func (sealer *fakeSealer) Seal(context.Context, agentchildexecutions.Scope, string, broker.ExecutionIdentity, agentchildexecutions.CandidateResult) (agentchildexecutions.SealedResult, error) {
 	sealer.calls++
 	return agentchildexecutions.SealedResult{Snapshot: snapshot.SnapshotRef{ID: 99, Type: "consultation/v1", Digest: snapshot.Digest("sha256:" + strings.Repeat("e", 64))}, Body: json.RawMessage(`{"answer":"answer","claims":[],"assumptions":[],"uncertainties":[],"recommendations":[]}`)}, nil
 }
 
-func (sealer *fakeSealer) SealWorkspace(context.Context, agentchildexecutions.Scope, broker.ExecutionIdentity, broker.WorkspaceCapture) (snapshot.SnapshotRef, error) {
+func (sealer *fakeSealer) SealWorkspace(context.Context, agentchildexecutions.Scope, string, broker.ExecutionIdentity, broker.WorkspaceCapture) (snapshot.SnapshotRef, error) {
+	sealer.workspaceCalls++
 	return sealer.workspace, nil
 }
 

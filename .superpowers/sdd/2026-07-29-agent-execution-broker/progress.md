@@ -108,3 +108,14 @@ Runtime materializes only the already-authorized local capture. Focused
 broker/runtime/authority/contracts/command tests and DB/migration compile
 checks pass; the complete transport suite passes outside the loopback
 sandbox. The known PostgreSQL shared-memory runtime gate was not retried.
+
+Task 9 workspace-authority review fix round 1/3: both P1 findings addressed
+pending commit. Snapshot productions now use a stable execution-ID-derived
+plan identity, keeping workspace/result ports together for one child while
+separating concurrent children; parent node/workflow authority remains in
+source provenance and the ledger. The durable workspace binding now includes
+an immutable canonical capture fingerprint. Exact replay returns the bound
+ref without resealing, different replay conflicts, the broker retries once
+after an ambiguous capture response, and capture-failure authority is fenced
+to an unbound capturing review. Focused broker/authority tests and DB/migration
+compile-only checks pass.

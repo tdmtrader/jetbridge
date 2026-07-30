@@ -144,6 +144,39 @@ func TestEngineTerminalReplayDoesNotCaptureWorkspace(t *testing.T) {
 	}
 }
 
+func TestEngineRetriesExactWorkspaceCaptureAfterAmbiguousResponse(t *testing.T) {
+	profileInput := validProfile()
+	profileInput.Tools = []broker.Tool{broker.ToolRequestReview}
+	catalog, _ := broker.NewCatalog([]broker.Profile{profileInput})
+	authority := &fakeAuthority{captureErrors: []error{errors.New("response lost"), nil}}
+	preparer := &fakeWorkspacePreparer{capture: workspace.Result{
+		RepositoryRoot: "/parent/repository",
+		BaseCommit:     strings.Repeat("1", 40), BaseTree: strings.Repeat("2", 40),
+		ResultTree: strings.Repeat("3", 40), Patch: []byte("patch"),
+		PatchDigest: "sha256:a4895eb44afc336fecbba6e520cd67e178dace0276655d102fceffa8e5f70570",
+		EntryCount:  7, PolicyRevision: "git-workspace-capture/v2",
+	}}
+	runner := &fakeRunner{output: []byte(`{"conclusion":"accept","summary":"ok","findings":[]}`)}
+	engine := broker.NewEngine(broker.EngineConfig{
+		Catalog: catalog, Authority: authority, Workspace: preparer,
+		Attachments: reviewAttachments{}, Credentials: fakeCredentials{}, Runner: runner,
+		Instructions: map[broker.Tool]string{broker.ToolRequestReview: "fixed review"},
+	})
+	_, err := engine.RequestReview(context.Background(), broker.ReviewRequest{
+		IdempotencyKey: "ambiguous-capture", Selector: profileInput.Selector,
+		Attachments: []string{"workspace"},
+	})
+	if err != nil {
+		t.Fatalf("RequestReview(): %v", err)
+	}
+	if authority.captureCalls != 2 || authority.captureFailureCalls != 0 ||
+		preparer.calls != 1 || atomic.LoadInt32(&runner.started) != 1 {
+		t.Fatalf("capture calls=%d failure calls=%d prepare=%d runner=%d",
+			authority.captureCalls, authority.captureFailureCalls,
+			preparer.calls, runner.started)
+	}
+}
+
 func TestEngineValidatesReviewWorkspaceBeforeAdmission(t *testing.T) {
 	catalog, _ := broker.NewCatalog([]broker.Profile{validProfile()})
 	authority := &fakeAuthority{}
@@ -376,17 +409,20 @@ func TestEngineRejectsUnnormalizedRunnerEventsBeforeAuthorityPersistence(t *test
 }
 
 type fakeAuthority struct {
-	mu             sync.Mutex
-	admitted       bool
-	admission      broker.AdmissionRequest
-	phases         []string
-	seal           broker.SealRequest
-	updates        []broker.RunUpdate
-	terminals      []broker.Terminal
-	terminalErr    error
-	replay         *broker.SucceededReplay
-	terminalReplay *broker.Terminal
-	workspace      broker.WorkspaceCapture
+	mu                  sync.Mutex
+	admitted            bool
+	admission           broker.AdmissionRequest
+	phases              []string
+	seal                broker.SealRequest
+	updates             []broker.RunUpdate
+	terminals           []broker.Terminal
+	terminalErr         error
+	replay              *broker.SucceededReplay
+	terminalReplay      *broker.Terminal
+	workspace           broker.WorkspaceCapture
+	captureErrors       []error
+	captureCalls        int
+	captureFailureCalls int
 }
 
 func (authority *fakeAuthority) Admit(_ context.Context, request broker.AdmissionRequest) (broker.Admission, error) {
@@ -399,10 +435,20 @@ func (authority *fakeAuthority) Admit(_ context.Context, request broker.Admissio
 func (authority *fakeAuthority) CaptureWorkspace(_ context.Context, _ string, capture broker.WorkspaceCapture) (snapshot.SnapshotRef, error) {
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
+	call := authority.captureCalls
+	authority.captureCalls++
 	authority.workspace = capture
+	if call < len(authority.captureErrors) && authority.captureErrors[call] != nil {
+		return snapshot.SnapshotRef{}, authority.captureErrors[call]
+	}
 	return snapshot.SnapshotRef{ID: 77, Type: "repository-change/v1", Digest: snapshot.Digest("sha256:" + strings.Repeat("7", 64))}, nil
 }
-func (authority *fakeAuthority) FailWorkspaceCapture(_ context.Context, _ string) error { return nil }
+func (authority *fakeAuthority) FailWorkspaceCapture(_ context.Context, _ string) error {
+	authority.mu.Lock()
+	defer authority.mu.Unlock()
+	authority.captureFailureCalls++
+	return nil
+}
 func (authority *fakeAuthority) Phase(_ context.Context, _ string, phase string) error {
 	authority.mu.Lock()
 	defer authority.mu.Unlock()

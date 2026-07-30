@@ -303,6 +303,9 @@ func TestHandlerStagesReviewCapabilityThroughAuthoritativeWorkspaceCapture(t *te
 		captureResponse.Snapshot != sealed || captureResponse.ExecutionCapability == "" {
 		t.Fatalf("capture response=%#v err=%v", captureResponse, err)
 	}
+	if response := do(transport.WorkspaceCaptureFailurePath(admitted.ExecutionID), phased.ExecutionCapability, struct{}{}); response.Code != http.StatusBadRequest {
+		t.Fatalf("stale capture failure status=%d body=%s", response.Code, response.Body.String())
+	}
 	if response := do(transport.PhasePath(admitted.ExecutionID), captureResponse.ExecutionCapability, transport.PhaseRequest{Phase: "running"}); response.Code != http.StatusNoContent {
 		t.Fatalf("lifecycle running status=%d body=%s", response.Code, response.Body.String())
 	}

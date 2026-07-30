@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"regexp"
 
@@ -63,6 +64,18 @@ func (capture WorkspaceCapture) Validate() error {
 		return fmt.Errorf("broker workspace capture: bounded entry count and policy revision are required")
 	}
 	return nil
+}
+
+func (capture WorkspaceCapture) Fingerprint() (string, error) {
+	if err := capture.Validate(); err != nil {
+		return "", err
+	}
+	encoded, err := json.Marshal(capture)
+	if err != nil {
+		return "", fmt.Errorf("broker workspace capture: encode fingerprint: %w", err)
+	}
+	sum := sha256.Sum256(encoded)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
 type WorkspacePreparer interface {

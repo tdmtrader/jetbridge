@@ -52,6 +52,7 @@ CREATE TABLE agent_child_executions (
     workspace_snapshot_id BIGINT,
     workspace_snapshot_type TEXT,
     workspace_snapshot_digest TEXT,
+    workspace_capture_digest TEXT,
     duration_ms BIGINT CHECK (duration_ms IS NULL OR duration_ms >= 0),
     error_code TEXT
         CHECK (error_code IS NULL OR (
@@ -73,11 +74,13 @@ CREATE TABLE agent_child_executions (
     CHECK (
         (workspace_snapshot_id IS NULL
             AND workspace_snapshot_type IS NULL
-            AND workspace_snapshot_digest IS NULL)
+            AND workspace_snapshot_digest IS NULL
+            AND workspace_capture_digest IS NULL)
         OR
         (workspace_snapshot_id IS NOT NULL
             AND workspace_snapshot_type = 'repository-change/v1'
-            AND workspace_snapshot_digest ~ '^sha256:[0-9a-f]{64}$')
+            AND workspace_snapshot_digest ~ '^sha256:[0-9a-f]{64}$'
+            AND workspace_capture_digest ~ '^sha256:[0-9a-f]{64}$')
     ),
     CHECK (
         tool <> 'request_review'
@@ -161,6 +164,7 @@ BEGIN
         NEW.workspace_snapshot_id IS DISTINCT FROM OLD.workspace_snapshot_id
         OR NEW.workspace_snapshot_type IS DISTINCT FROM OLD.workspace_snapshot_type
         OR NEW.workspace_snapshot_digest IS DISTINCT FROM OLD.workspace_snapshot_digest
+        OR NEW.workspace_capture_digest IS DISTINCT FROM OLD.workspace_capture_digest
     ) THEN
         RAISE EXCEPTION 'agent child execution workspace binding is immutable';
     END IF;

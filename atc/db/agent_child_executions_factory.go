@@ -27,24 +27,25 @@ type AgentChildExecutionsFactory interface {
 type AgentChildExecution struct {
 	ID string
 	broker.ExecutionIdentity
-	IdentityDigest    string
-	State             broker.ExecutionState
-	Sequence          int64
-	BrokerInstance    string
-	LeaseExpiresAt    *time.Time
-	TranscriptObject  string
-	ResultSnapshotID  *int64
-	ResultSnapshot    *snapshot.SnapshotRef
-	ResultBody        json.RawMessage
-	WorkspaceSnapshot *snapshot.SnapshotRef
-	ObservedUsage     json.RawMessage
-	DurationMS        *int64
-	ErrorCode         string
-	ErrorRetryable    *bool
-	ErrorSummary      string
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
-	TerminalAt        *time.Time
+	IdentityDigest         string
+	State                  broker.ExecutionState
+	Sequence               int64
+	BrokerInstance         string
+	LeaseExpiresAt         *time.Time
+	TranscriptObject       string
+	ResultSnapshotID       *int64
+	ResultSnapshot         *snapshot.SnapshotRef
+	ResultBody             json.RawMessage
+	WorkspaceSnapshot      *snapshot.SnapshotRef
+	WorkspaceCaptureDigest string
+	ObservedUsage          json.RawMessage
+	DurationMS             *int64
+	ErrorCode              string
+	ErrorRetryable         *bool
+	ErrorSummary           string
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+	TerminalAt             *time.Time
 }
 
 type BindAgentChildWorkspace struct {
@@ -52,6 +53,7 @@ type BindAgentChildWorkspace struct {
 	TeamID           int
 	ExpectedSequence int64
 	Snapshot         snapshot.SnapshotRef
+	CaptureDigest    string
 }
 
 type AdvanceAgentChildExecution struct {
@@ -89,6 +91,7 @@ const agentChildExecutionColumns = `
 	broker_instance, lease_expires_at, transcript_object, result_snapshot_id,
 	result_snapshot_type, result_snapshot_digest, result_body, observed_usage,
 	workspace_snapshot_id, workspace_snapshot_type, workspace_snapshot_digest,
+	workspace_capture_digest,
 	duration_ms, error_code, error_retryable, error_summary,
 	created_at, updated_at, terminal_at
 `
@@ -105,6 +108,9 @@ func (factory *agentChildExecutionsFactory) BindWorkspace(
 	}
 	if request.Snapshot.Validate() != nil || request.Snapshot.Type != "repository-change/v1" {
 		return AgentChildExecution{}, fmt.Errorf("db: workspace binding requires exact repository-change/v1 snapshot")
+	}
+	if _, err := snapshot.ParseDigest(request.CaptureDigest); err != nil {
+		return AgentChildExecution{}, fmt.Errorf("db: workspace binding requires exact capture digest")
 	}
 	tx, err := factory.conn.BeginTx(ctx, nil)
 	if err != nil {
@@ -124,7 +130,8 @@ func (factory *agentChildExecutionsFactory) BindWorkspace(
 		return AgentChildExecution{}, err
 	}
 	if current.WorkspaceSnapshot != nil {
-		if *current.WorkspaceSnapshot != request.Snapshot {
+		if *current.WorkspaceSnapshot != request.Snapshot ||
+			current.WorkspaceCaptureDigest != request.CaptureDigest {
 			return AgentChildExecution{}, fmt.Errorf("db: workspace binding conflicts with immutable capture")
 		}
 		if err := tx.Commit(); err != nil {
@@ -143,11 +150,12 @@ func (factory *agentChildExecutionsFactory) BindWorkspace(
 		SET sequence = sequence + 1,
 		    workspace_snapshot_id = $3,
 		    workspace_snapshot_type = $4,
-		    workspace_snapshot_digest = $5
-		WHERE id = $1::uuid AND team_id = $2 AND sequence = $6
+		    workspace_snapshot_digest = $5,
+		    workspace_capture_digest = $6
+		WHERE id = $1::uuid AND team_id = $2 AND sequence = $7
 		RETURNING `+agentChildExecutionColumns,
 		request.ID, request.TeamID, request.Snapshot.ID, request.Snapshot.Type,
-		request.Snapshot.Digest, request.ExpectedSequence,
+		request.Snapshot.Digest, request.CaptureDigest, request.ExpectedSequence,
 	))
 	if err != nil {
 		return AgentChildExecution{}, err
@@ -486,6 +494,7 @@ func scanAgentChildExecution(row interface{ Scan(...any) error }) (AgentChildExe
 	var resultSnapshotType, resultSnapshotDigest sql.NullString
 	var workspaceSnapshotID sql.NullInt64
 	var workspaceSnapshotType, workspaceSnapshotDigest sql.NullString
+	var workspaceCaptureDigest sql.NullString
 	var observedUsage, resultBody []byte
 	var errorRetryable sql.NullBool
 	err := row.Scan(
@@ -495,7 +504,8 @@ func scanAgentChildExecution(row interface{ Scan(...any) error }) (AgentChildExe
 		&execution.ProfileDigest, &execution.InputDigest, &attachments, &state,
 		&execution.Sequence, &brokerInstance, &leaseExpiresAt, &transcriptObject,
 		&resultSnapshotID, &resultSnapshotType, &resultSnapshotDigest, &resultBody, &observedUsage,
-		&workspaceSnapshotID, &workspaceSnapshotType, &workspaceSnapshotDigest, &durationMS, &errorCode,
+		&workspaceSnapshotID, &workspaceSnapshotType, &workspaceSnapshotDigest,
+		&workspaceCaptureDigest, &durationMS, &errorCode,
 		&errorRetryable, &errorSummary, &execution.CreatedAt, &execution.UpdatedAt,
 		&terminalAt,
 	)
@@ -530,6 +540,9 @@ func scanAgentChildExecution(row interface{ Scan(...any) error }) (AgentChildExe
 			Type:   snapshot.TypeRef(workspaceSnapshotType.String),
 			Digest: snapshot.Digest(workspaceSnapshotDigest.String),
 		}
+	}
+	if workspaceCaptureDigest.Valid {
+		execution.WorkspaceCaptureDigest = workspaceCaptureDigest.String
 	}
 	if durationMS.Valid {
 		execution.DurationMS = &durationMS.Int64
