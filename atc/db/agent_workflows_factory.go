@@ -122,7 +122,7 @@ func (f *agentWorkflowsFactory) ImportManifest(name string, src workflow.Manifes
 	var def workflow.Definition
 	err = tx.QueryRow(`
 		SELECT `+workflowMetaColumns+workflowMetaFrom+`
-		WHERE d.name = $1 AND d.content_hash = $2`,
+		WHERE d.definition_kind = 'workflow' AND d.name = $1 AND d.content_hash = $2`,
 		name, hash,
 	).Scan(&def.ID, &def.Name, &def.Version, &def.ContentHash, &def.Live,
 		&def.Description, &def.CreatedBy, &def.CreatedAt, &def.SchemaVersion, &def.SignatureVersion,
@@ -147,7 +147,7 @@ func (f *agentWorkflowsFactory) ImportManifest(name string, src workflow.Manifes
 		err = tx.QueryRow(`
 			SELECT version, schema_version, signature_version, definition, source_manifest
 			FROM agent_workflow_definitions
-			WHERE name = $1 AND signature_version = $2
+			WHERE definition_kind = 'workflow' AND name = $1 AND signature_version = $2
 			ORDER BY version DESC
 			LIMIT 1`, name, metadata.SignatureVersion,
 		).Scan(&prior.Version, &prior.SchemaVersion, &prior.SignatureVersion, &priorRaw, &priorManifest)
@@ -181,7 +181,7 @@ func (f *agentWorkflowsFactory) ImportManifest(name string, src workflow.Manifes
 			(name, version, content_hash, definition, source_manifest, description, created_by,
 			 schema_version, signature_version)
 		SELECT $1, COALESCE(MAX(version), 0) + 1, $2, $3, $4::jsonb, $5, $6, $7, $8
-		FROM agent_workflow_definitions WHERE name = $1
+		FROM agent_workflow_definitions WHERE definition_kind = 'workflow' AND name = $1
 		RETURNING id, version, EXTRACT(EPOCH FROM created_at)::bigint`,
 		name, hash, raw, string(src.Canonical()), compiled.Description, createdBy,
 		metadata.SchemaVersion, metadata.SignatureVersion,
@@ -216,7 +216,7 @@ func (f *agentWorkflowsFactory) Latest(name string) (*workflow.Definition, bool,
 // list consumers previously called Live(name) per non-live-latest name, each
 // dragging and parsing the full definition YAML just to read a version number.
 func (f *agentWorkflowsFactory) LiveVersions() (map[string]int, error) {
-	rows, err := f.conn.Query(`SELECT name, version FROM agent_workflow_definitions WHERE live`)
+	rows, err := f.conn.Query(`SELECT name, version FROM agent_workflow_definitions WHERE definition_kind = 'workflow' AND live`)
 	if err != nil {
 		return nil, err
 	}
@@ -239,7 +239,7 @@ func (f *agentWorkflowsFactory) getOne(where string, args ...any) (*workflow.Def
 	var manifestJSON sql.NullString
 	err := f.conn.QueryRow(`
 		SELECT `+workflowMetaColumns+`, d.definition, d.source_manifest`+workflowMetaFrom+`
-		WHERE `+where, args...,
+		WHERE d.definition_kind = 'workflow' AND `+where, args...,
 	).Scan(&def.ID, &def.Name, &def.Version, &def.ContentHash, &def.Live,
 		&def.Description, &def.CreatedBy, &def.CreatedAt, &def.SchemaVersion, &def.SignatureVersion,
 		&def.Hidden, &def.Annotation, &def.PromotedAt, &def.PromotedBy,
@@ -268,6 +268,7 @@ func (f *agentWorkflowsFactory) getOne(where string, args ...any) (*workflow.Def
 func (f *agentWorkflowsFactory) List() ([]workflow.Definition, error) {
 	rows, err := f.conn.Query(`
 		SELECT DISTINCT ON (d.name) ` + workflowMetaColumns + workflowMetaFrom + `
+		WHERE d.definition_kind = 'workflow'
 		ORDER BY d.name, d.version DESC`)
 	if err != nil {
 		return nil, err
@@ -292,7 +293,7 @@ func (f *agentWorkflowsFactory) Versions(
 	var found bool
 	if err := f.conn.QueryRowContext(ctx, `
 		SELECT EXISTS (
-			SELECT 1 FROM agent_workflow_definitions WHERE name = $1
+			SELECT 1 FROM agent_workflow_definitions WHERE definition_kind = 'workflow' AND name = $1
 		)`, name).Scan(&found); err != nil {
 		return workflow.VersionPage{}, err
 	}
@@ -303,7 +304,7 @@ func (f *agentWorkflowsFactory) Versions(
 
 	rows, err := f.conn.QueryContext(ctx, `
 		SELECT `+workflowMetaColumns+workflowMetaFrom+`
-		WHERE d.name = $1 AND ($2 = 0 OR d.version < $2)
+		WHERE d.definition_kind = 'workflow' AND d.name = $1 AND ($2 = 0 OR d.version < $2)
 		ORDER BY d.version DESC
 		LIMIT $3`, name, request.Cursor, request.Limit+1)
 	if err != nil {
@@ -346,7 +347,7 @@ func (f *agentWorkflowsFactory) Promote(name string, version int, promotedBy str
 	// nullable side of the LEFT JOIN and Postgres refuses to lock it.
 	err = tx.QueryRow(`
 		SELECT `+workflowMetaColumns+`, d.definition, d.source_manifest`+workflowMetaFrom+`
-		WHERE d.name = $1 AND d.version = $2
+		WHERE d.definition_kind = 'workflow' AND d.name = $1 AND d.version = $2
 		FOR UPDATE OF d`, name, version,
 	).Scan(
 		&targetDefinition.ID,
@@ -434,7 +435,7 @@ func (f *agentWorkflowsFactory) Promote(name string, version int, promotedBy str
 	err = tx.QueryRow(`
 		SELECT version, schema_version, signature_version
 		FROM agent_workflow_definitions
-		WHERE name = $1 AND live
+		WHERE definition_kind = 'workflow' AND name = $1 AND live
 		FOR UPDATE`, name,
 	).Scan(&previous.Version, &previous.SchemaVersion, &previous.SignatureVersion)
 	if err == nil {
@@ -467,7 +468,7 @@ func (f *agentWorkflowsFactory) Promote(name string, version int, promotedBy str
 	// Clear-then-set inside one tx: the partial unique index
 	// agent_workflow_definitions_live enforces at most one live row per
 	// name at every intermediate statement.
-	_, err = tx.Exec(`UPDATE agent_workflow_definitions SET live = false WHERE name = $1 AND live`, name)
+	_, err = tx.Exec(`UPDATE agent_workflow_definitions SET live = false WHERE definition_kind = 'workflow' AND name = $1 AND live`, name)
 	if err != nil {
 		return workflow.PromotionResult{}, err
 	}
@@ -475,7 +476,7 @@ func (f *agentWorkflowsFactory) Promote(name string, version int, promotedBy str
 	res, err := tx.Exec(`
 		UPDATE agent_workflow_definitions
 		SET live = true, promoted_at = now(), promoted_by = $3
-		WHERE name = $1 AND version = $2`,
+		WHERE definition_kind = 'workflow' AND name = $1 AND version = $2`,
 		name, version, promotedBy)
 	if err != nil {
 		return workflow.PromotionResult{}, err
@@ -506,7 +507,7 @@ func (f *agentWorkflowsFactory) SetHidden(name string, hidden bool, updatedBy st
 func (f *agentWorkflowsFactory) upsertLifecycle(name, column string, value any, updatedBy string) error {
 	var exists bool
 	err := f.conn.QueryRow(
-		`SELECT EXISTS (SELECT 1 FROM agent_workflow_definitions WHERE name = $1)`, name,
+		`SELECT EXISTS (SELECT 1 FROM agent_workflow_definitions WHERE definition_kind = 'workflow' AND name = $1)`, name,
 	).Scan(&exists)
 	if err != nil {
 		return err

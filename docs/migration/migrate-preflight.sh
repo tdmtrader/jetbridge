@@ -69,7 +69,9 @@ v8.0.1:1765921815
 # while preserving the legacy build/plan projections.
 # 1773106148 associates a started experiment with each ready, immutable
 # workflow resource-source admission it reuses across cells and retries.
-JETBRIDGE_VERSION=1773106148
+# 1773106149 adds kind-scoped reusable node definitions and kind-scoped run
+# idempotency while preserving existing workflow rows as kind `workflow`.
+JETBRIDGE_VERSION=1773106149
 
 # Minimum supported source version (v6.x)
 MIN_SUPPORTED_VERSION=1601993582
