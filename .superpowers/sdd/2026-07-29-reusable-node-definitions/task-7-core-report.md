@@ -62,3 +62,57 @@ PostgreSQL-backed Ginkgo was not started: the single availability check,
 `pg_isready -h 127.0.0.1 -p 5434`, returned `no response`. The focused
 in-memory service suite and the separate import-outcome store coverage are the
 available core evidence for this checkpoint.
+
+## Structural-compatibility follow-up
+
+- Review found that invocation validation still required mappings for every
+  successor port even though compatible releases may add optional inputs and
+  outputs. Such a successor could be released but could not be composed into
+  an existing consumer during upgrade.
+- Node invocation validation now requires every required input while accepting
+  omitted optional inputs and intentionally ignored outputs. Every authored
+  mapping still has to name a declared port, use a safe artifact identifier,
+  and remain injective.
+- Invocation expansion filters task and agent leaf declarations to the
+  composed logical ports. Task typed declarations are then mapped to physical
+  artifact names as before; agent typed declarations retain logical keys as
+  before. The durable binding retains the exact authored maps and parameters.
+- Filtering occurs only after `CompiledNodeDefinition.Instantiate`, inside
+  workflow composition. Direct node instantiation/execution therefore retains
+  the successor's complete input and output contract.
+- Added compiler coverage for both agent and task successors that introduce an
+  omitted optional input and an ignored output. Added an end-to-end core
+  upgrade regression proving compatible release, selected immutable
+  unpromoted revision creation, application of a newly defaulted parameter,
+  exact preservation of old maps/bindings, and an unchanged live predecessor.
+
+### Follow-up verification
+
+- RED:
+  `GOCACHE=/private/tmp/concourse-go-cache go test ./agent/workflow -run
+  'TestCompileDefinitionWithNodesComposes(Agent|Task)FromMappedSuccessorPorts'
+  -count=1` rejected both cases with
+  `node input_mapping is missing port "policy"`.
+- PASS:
+  `GOCACHE=/private/tmp/concourse-go-cache go test ./agent/workflow -run
+  'TestCompileDefinitionWithNodesComposes(Agent|Task)FromMappedSuccessorPorts|
+  TestCompileDefinitionWithNodesRejectsNonExactOrIncompleteReferences|
+  TestCompileDefinitionWithNodesRejectsNonInjectiveMappings' -count=1`.
+- PASS:
+  `GOCACHE=/private/tmp/concourse-go-cache go test ./agent/workflow -run
+  '^TestNodeUpgradeComposesCompatibleSuccessorAdditionsWithoutChangingBindings$'
+  -count=1`.
+- PASS:
+  `GOCACHE=/private/tmp/concourse-go-cache go test ./agent/workflow -run
+  'Test(CompileDefinitionWithNodes|ApplyNodeInvocation|NodeUpgrade)' -count=1`.
+- PASS:
+  `git diff --check -- agent/workflow/node_reference.go
+  agent/workflow/node_reference_test.go agent/workflow/node_upgrade_test.go
+  .superpowers/sdd/2026-07-29-reusable-node-definitions/task-7-core-report.md`.
+- PASS:
+  `GOCACHE=/private/tmp/concourse-go-cache go test ./agent/workflow
+  ./agent/workflow/workflowtest -count=1`.
+
+The bounded final review accepted the subset-composition semantics and the
+agent, task, direct-instantiation, and upgrade coverage with no remaining
+blocking finding.

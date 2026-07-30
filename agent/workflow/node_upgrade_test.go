@@ -11,6 +11,7 @@ import (
 
 	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/agent/workflow/workflowtest"
+	"github.com/concourse/concourse/atc"
 )
 
 type upgradePromotionValidator struct{}
@@ -384,6 +385,167 @@ func TestNodeUpgradeCreatesSelectedImmutableRevisionsAndReplaysIdempotently(t *t
 			t.Fatalf("replay result %d = %+v", index, item)
 		}
 	}
+}
+
+func TestNodeUpgradeComposesCompatibleSuccessorAdditionsWithoutChangingBindings(t *testing.T) {
+	nodes := newUpgradeNodeStore()
+	predecessor, err := nodes.ImportManifest(
+		"code-review",
+		compatibleSubsetUpgradeNodeManifest(false),
+		"node-author",
+	)
+	if err != nil {
+		t.Fatalf("import predecessor: %v", err)
+	}
+	if _, err := nodes.Release("code-review", predecessor.Version, workflow.ReleaseCompatible, "releaser"); err != nil {
+		t.Fatalf("release predecessor: %v", err)
+	}
+	successor, err := nodes.ImportManifest(
+		"code-review",
+		compatibleSubsetUpgradeNodeManifest(true),
+		"node-author",
+	)
+	if err != nil {
+		t.Fatalf("import successor: %v", err)
+	}
+	if _, err := nodes.Release("code-review", successor.Version, workflow.ReleaseCompatible, "releaser"); err != nil {
+		t.Fatalf("release compatible successor: %v", err)
+	}
+
+	memory := workflowtest.NewMemoryStoreWithNodeResolver(nodes, upgradePromotionValidator{})
+	workflows := &bindingWorkflowStore{
+		Store:          memory,
+		nodes:          nodes,
+		importFailures: map[string]error{},
+		corruptImports: map[string]bool{},
+	}
+	imported, err := workflows.ImportManifestWithOutcome(
+		"compatible-consumer",
+		compatibleSubsetUpgradeWorkflowManifest(),
+		"workflow-author",
+	)
+	if err != nil {
+		t.Fatalf("import consumer: %v", err)
+	}
+	if _, err := workflows.Promote("compatible-consumer", imported.Definition.Version, "promoter"); err != nil {
+		t.Fatalf("promote consumer: %v", err)
+	}
+	originalBindings, err := nodes.Bindings(imported.Definition.ID)
+	if err != nil || len(originalBindings) != 1 {
+		t.Fatalf("predecessor bindings = %#v err=%v", originalBindings, err)
+	}
+
+	result, err := workflow.NewNodeUpgradeService(nodes, workflows).Upgrade(
+		context.Background(),
+		workflow.NodeUpgradeRequest{
+			NodeName:  "code-review",
+			Version:   successor.Version,
+			Workflows: []string{"compatible-consumer"},
+			CreatedBy: "alice",
+		},
+	)
+	if err != nil {
+		t.Fatalf("Upgrade: %v", err)
+	}
+	wantResults := []workflow.NodeUpgradeWorkflowResult{{
+		Workflow:   "compatible-consumer",
+		OldVersion: imported.Definition.Version,
+		NewVersion: imported.Definition.Version + 1,
+		Status:     workflow.NodeUpgradeCreated,
+	}}
+	if !reflect.DeepEqual(result.Workflows, wantResults) {
+		t.Fatalf("results = %#v, want %#v", result.Workflows, wantResults)
+	}
+
+	live, found, err := workflows.Live("compatible-consumer")
+	if err != nil || !found || live.ID != imported.Definition.ID || live.Version != imported.Definition.Version {
+		t.Fatalf("live predecessor changed: %+v found=%v err=%v", live, found, err)
+	}
+	upgraded, found, err := workflows.Get("compatible-consumer", imported.Definition.Version+1)
+	if err != nil || !found {
+		t.Fatalf("get upgraded consumer: found=%v err=%v", found, err)
+	}
+	if upgraded.Live || upgraded.CreatedBy != "alice" {
+		t.Fatalf("upgraded revision promoted or wrong audit: %+v", upgraded)
+	}
+	agent, ok := upgraded.Compiled.Function.Plan[0].Config.(*atc.AgentStep)
+	if !ok {
+		t.Fatalf("upgraded step = %T, want *atc.AgentStep", upgraded.Compiled.Function.Plan[0].Config)
+	}
+	if agent.Prompt != "successor" || agent.Env["MODE"] != "strict" || agent.Env["STRICT"] != "balanced" {
+		t.Fatalf("successor implementation/defaults not applied: %#v", agent)
+	}
+	if len(agent.Inputs) != 1 || agent.Inputs[0] != "repository" ||
+		len(agent.Outputs) != 1 || agent.Outputs[0] != "review" ||
+		len(agent.SnapshotInputs) != 1 || agent.SnapshotInputs["repository"].Type != "repository/v1" ||
+		len(agent.SnapshotOutputs) != 1 || agent.SnapshotOutputs["review"].Type != "review/v1" {
+		t.Fatalf("upgraded composed ports = %#v", agent)
+	}
+	if !reflect.DeepEqual(agent.InputMapping, originalBindings[0].InputMapping) ||
+		!reflect.DeepEqual(agent.OutputMapping, originalBindings[0].OutputMapping) {
+		t.Fatalf("compiled mappings changed: agent=%#v original=%#v", agent, originalBindings[0])
+	}
+
+	upgradedBindings, err := nodes.Bindings(upgraded.ID)
+	if err != nil || len(upgradedBindings) != 1 {
+		t.Fatalf("upgraded bindings = %#v err=%v", upgradedBindings, err)
+	}
+	if upgradedBindings[0].NodeVersion != successor.Version ||
+		!reflect.DeepEqual(upgradedBindings[0].InputMapping, originalBindings[0].InputMapping) ||
+		!reflect.DeepEqual(upgradedBindings[0].OutputMapping, originalBindings[0].OutputMapping) ||
+		!reflect.DeepEqual(upgradedBindings[0].Parameters, originalBindings[0].Parameters) {
+		t.Fatalf("upgraded binding changed invocation: got %#v, predecessor %#v", upgradedBindings[0], originalBindings[0])
+	}
+	if _, persistedDefault := upgradedBindings[0].Parameters["STRICT"]; persistedDefault {
+		t.Fatalf("resolved default leaked into authored binding: %#v", upgradedBindings[0].Parameters)
+	}
+}
+
+func compatibleSubsetUpgradeNodeManifest(successor bool) workflow.Manifest {
+	additions := ""
+	prompt := "predecessor"
+	if successor {
+		additions = `  - {name: policy, type: policy/v1, optional: true}
+`
+		prompt = "successor"
+	}
+	outputAdditions := ""
+	parameterAdditions := ""
+	if successor {
+		outputAdditions = `  - {name: summary, type: summary/v1}
+`
+		parameterAdditions = `  - {name: STRICT, default: balanced}
+`
+	}
+	return workflow.Manifest{workflow.NodeFileName: fmt.Sprintf(`schema_version: 1
+name: code-review
+inputs:
+  - {name: repository, type: repository/v1}
+%soutputs:
+  - {name: review, type: review/v1}
+%sparameters:
+  - {name: MODE, default: standard}
+%sstep:
+  agent: review
+  prompt: %s
+`, additions, outputAdditions, parameterAdditions, prompt)}
+}
+
+func compatibleSubsetUpgradeWorkflowManifest() workflow.Manifest {
+	return workflow.Manifest{workflow.WorkflowFileName: `schema_version: 3
+name: compatible-consumer
+signature_version: 1
+inputs:
+  - {name: repository-artifact, type: repository/v1}
+outputs:
+  - {name: review-artifact, type: review/v1, from: review-artifact}
+plan:
+  - node: review-change
+    uses: code-review@1
+    input_mapping: {repository: repository-artifact}
+    output_mapping: {review: review-artifact}
+    params: {MODE: strict}
+`}
 }
 
 func TestNodeUpgradeRejectsDuplicateSelectionsBeforeMutation(t *testing.T) {

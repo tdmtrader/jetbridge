@@ -317,28 +317,36 @@ func parseExactNodeUse(value string) (string, int, error) {
 }
 
 func validateNodeInvocationMappings(node CompiledNodeDefinition, ref NodeReference) error {
-	if err := exactNodeMapping("input_mapping", node.Function.Inputs, ref.InputMapping); err != nil {
+	if err := validateNodeInputMapping(node.Function.Inputs, ref.InputMapping); err != nil {
 		return err
 	}
 	outputs := make([]string, len(node.Function.Outputs))
 	for index, output := range node.Function.Outputs {
 		outputs[index] = output.Name
 	}
-	if err := exactNodeMappingNames("output_mapping", outputs, ref.OutputMapping); err != nil {
+	if err := validateNodePortMapping("output_mapping", outputs, ref.OutputMapping); err != nil {
 		return err
 	}
 	return nil
 }
 
-func exactNodeMapping(label string, ports []snapshot.Port, mapping map[string]string) error {
+func validateNodeInputMapping(ports []snapshot.Port, mapping map[string]string) error {
 	names := make([]string, len(ports))
 	for index, port := range ports {
 		names[index] = port.Name
 	}
-	return exactNodeMappingNames(label, names, mapping)
+	if err := validateNodePortMapping("input_mapping", names, mapping); err != nil {
+		return err
+	}
+	for _, port := range ports {
+		if _, found := mapping[port.Name]; !found && !port.Optional {
+			return fmt.Errorf("workflow: node input_mapping is missing required port %q", port.Name)
+		}
+	}
+	return nil
 }
 
-func exactNodeMappingNames(label string, names []string, mapping map[string]string) error {
+func validateNodePortMapping(label string, names []string, mapping map[string]string) error {
 	declared := make(map[string]struct{}, len(names))
 	for _, name := range names {
 		declared[name] = struct{}{}
@@ -356,11 +364,6 @@ func exactNodeMappingNames(label string, names []string, mapping map[string]stri
 		}
 		artifacts[artifact] = name
 	}
-	for _, name := range names {
-		if _, found := mapping[name]; !found {
-			return fmt.Errorf("workflow: node %s is missing port %q", label, name)
-		}
-	}
 	return nil
 }
 
@@ -370,16 +373,24 @@ func applyNodeInvocation(step *atc.Step, ref NodeReference) error {
 		leaf.FunctionID = ref.InstanceName
 		leaf.InputMapping = cloneStringMap(ref.InputMapping)
 		leaf.OutputMapping = cloneStringMap(ref.OutputMapping)
+		if leaf.Config != nil {
+			leaf.Config.Inputs = filterTaskInputs(leaf.Config.Inputs, ref.InputMapping)
+			leaf.Config.Outputs = filterTaskOutputs(leaf.Config.Outputs, ref.OutputMapping)
+		}
 		// Native task planning/type checking consumes typed declarations by the
 		// physical artifact name after applying mappings. Agents intentionally
 		// retain logical declaration keys because their executor translates at
 		// the repository/sealer boundary.
-		leaf.SnapshotInputs = mappedSnapshotInputs(leaf.SnapshotInputs, ref.InputMapping)
-		leaf.SnapshotOutputs = mappedSnapshotOutputs(leaf.SnapshotOutputs, ref.OutputMapping)
+		leaf.SnapshotInputs = mappedSnapshotInputs(filterSnapshotInputs(leaf.SnapshotInputs, ref.InputMapping), ref.InputMapping)
+		leaf.SnapshotOutputs = mappedSnapshotOutputs(filterSnapshotOutputs(leaf.SnapshotOutputs, ref.OutputMapping), ref.OutputMapping)
 	case *atc.AgentStep:
 		leaf.FunctionID = ref.InstanceName
 		leaf.InputMapping = cloneStringMap(ref.InputMapping)
 		leaf.OutputMapping = cloneStringMap(ref.OutputMapping)
+		leaf.Inputs = filterNodePortNames(leaf.Inputs, ref.InputMapping)
+		leaf.Outputs = filterNodePortNames(leaf.Outputs, ref.OutputMapping)
+		leaf.SnapshotInputs = filterSnapshotInputs(leaf.SnapshotInputs, ref.InputMapping)
+		leaf.SnapshotOutputs = filterSnapshotOutputs(leaf.SnapshotOutputs, ref.OutputMapping)
 	case *atc.PublishSnapshotStep:
 		if len(ref.OutputMapping) != 0 || len(ref.Parameters) != 0 {
 			return fmt.Errorf("workflow: publish_snapshot nodes do not accept output mappings or parameters")
@@ -392,6 +403,71 @@ func applyNodeInvocation(step *atc.Step, ref NodeReference) error {
 		return fmt.Errorf("workflow: node compiled to unsupported leaf %T", step.Config)
 	}
 	return nil
+}
+
+func filterTaskInputs(source []atc.TaskInputConfig, mapping map[string]string) []atc.TaskInputConfig {
+	if source == nil {
+		return nil
+	}
+	filtered := make([]atc.TaskInputConfig, 0, len(mapping))
+	for _, input := range source {
+		if _, composed := mapping[input.Name]; composed {
+			filtered = append(filtered, input)
+		}
+	}
+	return filtered
+}
+
+func filterTaskOutputs(source []atc.TaskOutputConfig, mapping map[string]string) []atc.TaskOutputConfig {
+	if source == nil {
+		return nil
+	}
+	filtered := make([]atc.TaskOutputConfig, 0, len(mapping))
+	for _, output := range source {
+		if _, composed := mapping[output.Name]; composed {
+			filtered = append(filtered, output)
+		}
+	}
+	return filtered
+}
+
+func filterNodePortNames(source []string, mapping map[string]string) []string {
+	if source == nil {
+		return nil
+	}
+	filtered := make([]string, 0, len(mapping))
+	for _, name := range source {
+		if _, composed := mapping[name]; composed {
+			filtered = append(filtered, name)
+		}
+	}
+	return filtered
+}
+
+func filterSnapshotInputs(source map[string]atc.SnapshotInputConfig, mapping map[string]string) map[string]atc.SnapshotInputConfig {
+	if source == nil {
+		return nil
+	}
+	filtered := make(map[string]atc.SnapshotInputConfig, len(mapping))
+	for name := range mapping {
+		if config, found := source[name]; found {
+			filtered[name] = config
+		}
+	}
+	return filtered
+}
+
+func filterSnapshotOutputs(source map[string]atc.SnapshotOutputConfig, mapping map[string]string) map[string]atc.SnapshotOutputConfig {
+	if source == nil {
+		return nil
+	}
+	filtered := make(map[string]atc.SnapshotOutputConfig, len(mapping))
+	for name := range mapping {
+		if config, found := source[name]; found {
+			filtered[name] = config
+		}
+	}
+	return filtered
 }
 
 func stepToSource(step atc.Step) (map[string]any, error) {

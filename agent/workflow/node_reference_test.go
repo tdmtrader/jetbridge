@@ -72,6 +72,158 @@ plan:
 	}
 }
 
+func TestCompileDefinitionWithNodesComposesAgentFromMappedSuccessorPorts(t *testing.T) {
+	node, err := workflow.CompileNodeDefinition(workflow.Manifest{workflow.NodeFileName: `schema_version: 1
+name: code-review
+inputs:
+  - {name: repository, type: repository/v1}
+  - {name: policy, type: policy/v1, optional: true}
+outputs:
+  - {name: review, type: review/v1}
+  - {name: summary, type: summary/v1}
+step:
+  agent: review
+  prompt: review the repository
+`})
+	if err != nil {
+		t.Fatalf("compile node: %v", err)
+	}
+	manifest := workflow.Manifest{workflow.WorkflowFileName: `schema_version: 3
+name: consumer
+signature_version: 1
+inputs:
+  - {name: checked-out-repository, type: repository/v1}
+outputs:
+  - {name: review-result, type: review/v1, from: review-result}
+plan:
+  - node: review-change
+    uses: code-review@2
+    input_mapping:
+      repository: checked-out-repository
+    output_mapping:
+      review: review-result
+`}
+
+	compiled, bindings, err := workflow.CompileDefinitionWithNodes(manifest, releasedNodeResolver{node: workflow.NodeDefinition{
+		ID: 43, Name: "code-review", Version: 2, Compiled: *node,
+	}})
+	if err != nil {
+		t.Fatalf("compile workflow: %v", err)
+	}
+	if len(bindings) != 1 ||
+		len(bindings[0].InputMapping) != 1 || bindings[0].InputMapping["repository"] != "checked-out-repository" ||
+		len(bindings[0].OutputMapping) != 1 || bindings[0].OutputMapping["review"] != "review-result" {
+		t.Fatalf("bindings = %#v", bindings)
+	}
+	agent, ok := compiled.Function.Plan[0].Config.(*atc.AgentStep)
+	if !ok {
+		t.Fatalf("expanded step = %T, want *atc.AgentStep", compiled.Function.Plan[0].Config)
+	}
+	if len(agent.Inputs) != 1 || agent.Inputs[0] != "repository" ||
+		len(agent.Outputs) != 1 || agent.Outputs[0] != "review" {
+		t.Fatalf("composed agent ports = inputs %#v, outputs %#v", agent.Inputs, agent.Outputs)
+	}
+	if len(agent.SnapshotInputs) != 1 || agent.SnapshotInputs["repository"].Type != "repository/v1" ||
+		len(agent.SnapshotOutputs) != 1 || agent.SnapshotOutputs["review"].Type != "review/v1" {
+		t.Fatalf("composed agent types = inputs %#v, outputs %#v", agent.SnapshotInputs, agent.SnapshotOutputs)
+	}
+	if len(agent.InputMapping) != 1 || agent.InputMapping["repository"] != "checked-out-repository" ||
+		len(agent.OutputMapping) != 1 || agent.OutputMapping["review"] != "review-result" {
+		t.Fatalf("composed agent mappings = inputs %#v, outputs %#v", agent.InputMapping, agent.OutputMapping)
+	}
+	direct, err := node.Instantiate(nil)
+	if err != nil {
+		t.Fatalf("instantiate node directly: %v", err)
+	}
+	directAgent := direct.Plan[0].Config.(*atc.AgentStep)
+	if len(directAgent.Inputs) != 2 || len(directAgent.Outputs) != 2 ||
+		len(directAgent.SnapshotInputs) != 2 || len(directAgent.SnapshotOutputs) != 2 {
+		t.Fatalf("direct agent contract was filtered: %#v", directAgent)
+	}
+}
+
+func TestCompileDefinitionWithNodesComposesTaskFromMappedSuccessorPorts(t *testing.T) {
+	node, err := workflow.CompileNodeDefinition(workflow.Manifest{workflow.NodeFileName: `schema_version: 1
+name: code-review
+inputs:
+  - {name: repository, type: repository/v1}
+  - {name: policy, type: policy/v1, optional: true}
+outputs:
+  - {name: review, type: review/v1}
+  - {name: summary, type: summary/v1}
+step:
+  task: review
+  config:
+    platform: linux
+    image_resource:
+      type: registry-image
+      source: {repository: busybox, digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}
+    inputs:
+      - {name: repository}
+      - {name: policy, optional: true}
+    outputs:
+      - {name: review}
+      - {name: summary}
+    run: {path: sh, args: ["-c", "true"]}
+`})
+	if err != nil {
+		t.Fatalf("compile node: %v", err)
+	}
+	manifest := workflow.Manifest{workflow.WorkflowFileName: `schema_version: 3
+name: consumer
+signature_version: 1
+inputs:
+  - {name: checked-out-repository, type: repository/v1}
+outputs:
+  - {name: review-result, type: review/v1, from: review-result}
+plan:
+  - node: review-change
+    uses: code-review@2
+    input_mapping:
+      repository: checked-out-repository
+    output_mapping:
+      review: review-result
+`}
+
+	compiled, bindings, err := workflow.CompileDefinitionWithNodes(manifest, releasedNodeResolver{node: workflow.NodeDefinition{
+		ID: 44, Name: "code-review", Version: 2, Compiled: *node,
+	}})
+	if err != nil {
+		t.Fatalf("compile workflow: %v", err)
+	}
+	if len(bindings) != 1 ||
+		len(bindings[0].InputMapping) != 1 || bindings[0].InputMapping["repository"] != "checked-out-repository" ||
+		len(bindings[0].OutputMapping) != 1 || bindings[0].OutputMapping["review"] != "review-result" {
+		t.Fatalf("bindings = %#v", bindings)
+	}
+	task, ok := compiled.Function.Plan[0].Config.(*atc.TaskStep)
+	if !ok {
+		t.Fatalf("expanded step = %T, want *atc.TaskStep", compiled.Function.Plan[0].Config)
+	}
+	if task.Config == nil ||
+		len(task.Config.Inputs) != 1 || task.Config.Inputs[0].Name != "repository" ||
+		len(task.Config.Outputs) != 1 || task.Config.Outputs[0].Name != "review" {
+		t.Fatalf("composed task config = %#v", task.Config)
+	}
+	if len(task.SnapshotInputs) != 1 || task.SnapshotInputs["checked-out-repository"].Type != "repository/v1" ||
+		len(task.SnapshotOutputs) != 1 || task.SnapshotOutputs["review-result"].Type != "review/v1" {
+		t.Fatalf("composed task types = inputs %#v, outputs %#v", task.SnapshotInputs, task.SnapshotOutputs)
+	}
+	if len(task.InputMapping) != 1 || task.InputMapping["repository"] != "checked-out-repository" ||
+		len(task.OutputMapping) != 1 || task.OutputMapping["review"] != "review-result" {
+		t.Fatalf("composed task mappings = inputs %#v, outputs %#v", task.InputMapping, task.OutputMapping)
+	}
+	direct, err := node.Instantiate(nil)
+	if err != nil {
+		t.Fatalf("instantiate node directly: %v", err)
+	}
+	directTask := direct.Plan[0].Config.(*atc.TaskStep)
+	if len(directTask.Config.Inputs) != 2 || len(directTask.Config.Outputs) != 2 ||
+		len(directTask.SnapshotInputs) != 2 || len(directTask.SnapshotOutputs) != 2 {
+		t.Fatalf("direct task contract was filtered: %#v", directTask)
+	}
+}
+
 func TestCompileDefinitionWithNodesRejectsNonExactOrIncompleteReferences(t *testing.T) {
 	node, err := workflow.CompileNodeDefinition(workflow.Manifest{workflow.NodeFileName: `schema_version: 1
 name: code-review
