@@ -2,6 +2,7 @@ package agentchildexecutions_test
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -192,13 +193,22 @@ func (store *fakeStore) Create(_ context.Context, id string, identity broker.Exe
 	return store.execution, nil
 }
 func (store *fakeStore) Advance(_ context.Context, request db.AdvanceAgentChildExecution) (db.AgentChildExecution, error) {
+	if request.ID != store.execution.ID || request.TeamID != store.execution.TeamID || request.ExpectedSequence != store.execution.Sequence {
+		return db.AgentChildExecution{}, fmt.Errorf("sequence conflict")
+	}
+	if err := broker.ValidateExecutionTransition(store.execution.State, request.State); err != nil {
+		return db.AgentChildExecution{}, err
+	}
 	store.advances = append(store.advances, request)
 	store.execution.State = request.State
+	if request.BrokerInstance != "" {
+		store.execution.BrokerInstance = request.BrokerInstance
+	}
 	store.execution.Sequence++
 	return store.execution, nil
 }
-func (store *fakeStore) Find(context.Context, int, string) (db.AgentChildExecution, bool, error) {
-	return store.execution, true, nil
+func (store *fakeStore) Find(_ context.Context, teamID int, id string) (db.AgentChildExecution, bool, error) {
+	return store.execution, teamID == store.execution.TeamID && id == store.execution.ID, nil
 }
 
 type fakeSealer struct{}

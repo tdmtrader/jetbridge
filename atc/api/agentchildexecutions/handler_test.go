@@ -1,0 +1,176 @@
+package agentchildexecutions_test
+
+import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/concourse/concourse/agent/broker"
+	"github.com/concourse/concourse/agent/broker/transport"
+	"github.com/concourse/concourse/atc/api/agentchildexecutions"
+)
+
+func TestHandlerRejectsUnauthorizedAndStrictlyMalformedAdmission(t *testing.T) {
+	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+	profile := resolvedAuthorityProfile(t)
+	key := []byte(strings.Repeat("k", 32))
+	signer, err := agentchildexecutions.NewCapabilitySigner("key-1", key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier, err := agentchildexecutions.NewCapabilityVerifier("key-1", key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := agentchildexecutions.Scope{TeamID: 1, WorkflowRunID: 2, NodePlanID: "node", ParentAttempt: 1, BrokerInstance: "broker-1", LeaseDuration: time.Minute}
+	bootstrap, err := signer.MintBootstrap(scope, []broker.Profile{profile}, now.Add(-time.Second), now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := agentchildexecutions.NewHandler(agentchildexecutions.HandlerConfig{Signer: signer, Verifier: verifier, Store: &fakeStore{}, Sealer: &fakeSealer{}, ExecutionCapabilityTTL: time.Minute, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for name, request := range map[string]*http.Request{
+		"absent bearer":      httptest.NewRequest(http.MethodPost, transport.AdmitPath, strings.NewReader(`{}`)),
+		"wrong method":       httptest.NewRequest(http.MethodGet, transport.AdmitPath, nil),
+		"wrong content type": httptest.NewRequest(http.MethodPost, transport.AdmitPath, strings.NewReader(`{}`)),
+		"unknown field":      httptest.NewRequest(http.MethodPost, transport.AdmitPath, strings.NewReader(`{"unknown":true}`)),
+		"trailing json":      httptest.NewRequest(http.MethodPost, transport.AdmitPath, strings.NewReader(`{} {}`)),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if name != "absent bearer" && name != "wrong method" {
+				request.Header.Set("Authorization", "Bearer "+bootstrap)
+			}
+			if name != "wrong method" && name != "wrong content type" {
+				request.Header.Set("Content-Type", "application/json")
+			}
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code < 400 || response.Code >= 500 {
+				t.Fatalf("status = %d, body=%q", response.Code, response.Body.String())
+			}
+			if strings.Contains(response.Body.String(), bootstrap) {
+				t.Fatal("capability leaked")
+			}
+		})
+	}
+	mismatch := httptest.NewRequest(http.MethodPost, transport.AdmitPath, strings.NewReader(`{"idempotency_key":"call","tool":"consult_agent","selector":{"tier":"balanced","effort":"high"},"profile_id":"profile","profile_digest":"sha256:`+strings.Repeat("d", 64)+`","input_digest":"sha256:`+strings.Repeat("c", 64)+`","attachments":["design"]}`))
+	mismatch.Header.Set("Authorization", "Bearer "+bootstrap)
+	mismatch.Header.Set("Content-Type", "application/json")
+	mismatchResponse := httptest.NewRecorder()
+	handler.ServeHTTP(mismatchResponse, mismatch)
+	if mismatchResponse.Code != http.StatusBadRequest {
+		t.Fatalf("profile mismatch status = %d", mismatchResponse.Code)
+	}
+
+	overseized := httptest.NewRequest(http.MethodPost, transport.AdmitPath, strings.NewReader(`{"idempotency_key":"`+strings.Repeat("x", (4<<20)+1)+`"}`))
+	overseized.Header.Set("Authorization", "Bearer "+bootstrap)
+	overseized.Header.Set("Content-Type", "application/json")
+	overseizedResponse := httptest.NewRecorder()
+	handler.ServeHTTP(overseizedResponse, overseized)
+	if overseizedResponse.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized status = %d", overseizedResponse.Code)
+	}
+}
+
+func TestHandlerMintsExecutionCapabilityAndEnforcesExactURLScope(t *testing.T) {
+	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+	profile := resolvedAuthorityProfile(t)
+	key := []byte(strings.Repeat("k", 32))
+	signer, _ := agentchildexecutions.NewCapabilitySigner("key-1", key)
+	verifier, _ := agentchildexecutions.NewCapabilityVerifier("key-1", key)
+	scope := agentchildexecutions.Scope{TeamID: 1, WorkflowRunID: 2, NodePlanID: "node", ParentAttempt: 1, BrokerInstance: "broker-1", LeaseDuration: time.Minute}
+	bootstrap, _ := signer.MintBootstrap(scope, []broker.Profile{profile}, now.Add(-time.Second), now.Add(time.Minute))
+	store := &fakeStore{}
+	handler, err := agentchildexecutions.NewHandler(agentchildexecutions.HandlerConfig{Signer: signer, Verifier: verifier, Store: store, Sealer: &fakeSealer{}, ExecutionCapabilityTTL: time.Minute, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(transport.AdmitRequest{IdempotencyKey: "call", Tool: broker.ToolConsultAgent, Selector: profile.Selector, ProfileID: profile.ID, ProfileDigest: profile.Digest, InputDigest: "sha256:" + strings.Repeat("c", 64), Attachments: []string{"design"}})
+	admit := httptest.NewRequest(http.MethodPost, transport.AdmitPath, bytes.NewReader(body))
+	admit.Header.Set("Authorization", "Bearer "+bootstrap)
+	admit.Header.Set("Content-Type", "application/json")
+	admitResponse := httptest.NewRecorder()
+	handler.ServeHTTP(admitResponse, admit)
+	if admitResponse.Code != http.StatusOK {
+		t.Fatalf("admit status = %d body=%s", admitResponse.Code, admitResponse.Body.String())
+	}
+	var admitted transport.AdmitResponse
+	if err := json.NewDecoder(admitResponse.Body).Decode(&admitted); err != nil {
+		t.Fatal(err)
+	}
+	if admitted.ExecutionID == "" || admitted.ExecutionCapability == "" {
+		t.Fatalf("admit response = %#v", admitted)
+	}
+	store.execution.BrokerInstance = scope.BrokerInstance
+
+	phase := func(token, executionID, value string) int {
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/internal/agent-child-executions/"+executionID+"/phase", strings.NewReader(`{"phase":"`+value+`"}`))
+		request.Header.Set("Authorization", "Bearer "+token)
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response.Code
+	}
+	if status := phase(admitted.ExecutionCapability, admitted.ExecutionID, "running"); status != http.StatusNoContent {
+		t.Fatalf("running phase status = %d", status)
+	}
+	if status := phase(admitted.ExecutionCapability, admitted.ExecutionID, "capturing"); status != http.StatusConflict {
+		t.Fatalf("regressing phase status = %d", status)
+	}
+
+	wrongID := "c34a6e95-2e3a-45b0-b3f0-30c4e09acb7d"
+	if status := phase(admitted.ExecutionCapability, wrongID, "running"); status != http.StatusUnauthorized {
+		t.Fatalf("wrong execution status = %d", status)
+	}
+	wrongAction, _ := signer.MintBootstrap(scope, []broker.Profile{profile}, now.Add(-time.Second), now.Add(time.Minute))
+	if status := phase(wrongAction, admitted.ExecutionID, "running"); status != http.StatusUnauthorized {
+		t.Fatalf("wrong action status = %d", status)
+	}
+	foreign := scope
+	foreign.TeamID = 9
+	foreignToken, _ := signer.MintExecution(foreign, admitted.ExecutionID, profile, now.Add(-time.Second), now.Add(time.Minute))
+	if status := phase(foreignToken, admitted.ExecutionID, "running"); status != http.StatusUnauthorized {
+		t.Fatalf("cross-team status = %d", status)
+	}
+	alternateCatalog, _ := broker.NewCatalog([]broker.Profile{func() broker.Profile {
+		candidate := authorityProfile()
+		candidate.Provider.Model = "other-model"
+		return candidate
+	}()})
+	alternate, _ := alternateCatalog.Resolve(broker.ToolConsultAgent, profile.Selector)
+	wrongProfile, _ := signer.MintExecution(scope, admitted.ExecutionID, alternate, now.Add(-time.Second), now.Add(time.Minute))
+	if status := phase(wrongProfile, admitted.ExecutionID, "running"); status != http.StatusUnauthorized {
+		t.Fatalf("wrong profile status = %d", status)
+	}
+	expired, _ := signer.MintExecution(scope, admitted.ExecutionID, profile, now.Add(-2*time.Minute), now.Add(-time.Minute))
+	if status := phase(expired, admitted.ExecutionID, "running"); status != http.StatusUnauthorized {
+		t.Fatalf("expired status = %d", status)
+	}
+	notYet, _ := signer.MintExecution(scope, admitted.ExecutionID, profile, now.Add(time.Minute), now.Add(2*time.Minute))
+	if status := phase(notYet, admitted.ExecutionID, "running"); status != http.StatusUnauthorized {
+		t.Fatalf("not-yet-valid status = %d", status)
+	}
+	if status := phase("malformed", admitted.ExecutionID, "running"); status != http.StatusUnauthorized {
+		t.Fatalf("malformed status = %d", status)
+	}
+}
+
+func resolvedAuthorityProfile(t *testing.T) broker.Profile {
+	t.Helper()
+	catalog, err := broker.NewCatalog([]broker.Profile{authorityProfile()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := catalog.Resolve(broker.ToolConsultAgent, authorityProfile().Selector)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return profile
+}

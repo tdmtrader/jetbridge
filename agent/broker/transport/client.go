@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/concourse/concourse/agent/broker"
@@ -33,8 +34,10 @@ type Config struct {
 }
 
 type Client struct {
-	endpoint, capability string
-	http                 *http.Client
+	endpoint, bootstrap string
+	http                *http.Client
+	mu                  sync.RWMutex
+	executions          map[string]string
 }
 
 // The following request/response types are the stable private wire contract
@@ -49,7 +52,8 @@ type AdmitRequest struct {
 	Attachments    []string        `json:"attachments"`
 }
 type AdmitResponse struct {
-	ExecutionID string `json:"execution_id"`
+	ExecutionID         string `json:"execution_id"`
+	ExecutionCapability string `json:"execution_capability"`
 }
 type PhaseRequest struct {
 	Phase string `json:"phase"`
@@ -82,32 +86,35 @@ func NewClient(config Config) (*Client, error) {
 	// The bootstrap bearer is authority-scoped. Never follow a redirect that
 	// could carry it to an unintended endpoint, including a same-host path.
 	httpClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	return &Client{endpoint: strings.TrimRight(config.Endpoint, "/"), capability: config.BootstrapCapability, http: httpClient}, nil
+	return &Client{endpoint: strings.TrimRight(config.Endpoint, "/"), bootstrap: config.BootstrapCapability, http: httpClient, executions: make(map[string]string)}, nil
 }
 
 func (c *Client) Admit(ctx context.Context, request broker.AdmissionRequest) (string, error) {
 	var response AdmitResponse
 	input := AdmitRequest{IdempotencyKey: request.IdempotencyKey, Tool: request.Tool, Selector: request.Selector, ProfileID: request.ProfileID, ProfileDigest: request.ProfileDigest, InputDigest: request.InputDigest, Attachments: request.Attachments}
-	if err := c.post(ctx, AdmitPath, input, &response); err != nil {
+	if err := c.post(ctx, AdmitPath, input, &response, c.bootstrap); err != nil {
 		return "", err
 	}
-	if strings.TrimSpace(response.ExecutionID) == "" {
+	if strings.TrimSpace(response.ExecutionID) == "" || strings.TrimSpace(response.ExecutionCapability) == "" {
 		return "", fmt.Errorf("broker authority: admit response is missing execution ID")
 	}
+	c.mu.Lock()
+	c.executions[response.ExecutionID] = response.ExecutionCapability
+	c.mu.Unlock()
 	return response.ExecutionID, nil
 }
 func (c *Client) Phase(ctx context.Context, id, phase string) error {
-	return c.post(ctx, fmt.Sprintf(phasePath, id), PhaseRequest{Phase: phase}, nil)
+	return c.post(ctx, fmt.Sprintf(phasePath, url.PathEscape(id)), PhaseRequest{Phase: phase}, nil, c.executionCapability(id))
 }
 func (c *Client) Update(ctx context.Context, id string, update broker.RunUpdate) error {
-	return c.post(ctx, fmt.Sprintf(updatePath, id), UpdateRequest{Update: update}, nil)
+	return c.post(ctx, fmt.Sprintf(updatePath, url.PathEscape(id)), UpdateRequest{Update: update}, nil, c.executionCapability(id))
 }
 func (c *Client) Terminal(ctx context.Context, id string, terminal broker.Terminal) error {
-	return c.post(ctx, fmt.Sprintf(terminalPath, id), TerminalRequest{Terminal: terminal}, nil)
+	return c.post(ctx, fmt.Sprintf(terminalPath, url.PathEscape(id)), TerminalRequest{Terminal: terminal}, nil, c.executionCapability(id))
 }
 func (c *Client) Seal(ctx context.Context, request broker.SealRequest) (snapshot.SnapshotRef, error) {
 	var response snapshot.SnapshotRef
-	if err := c.post(ctx, fmt.Sprintf(sealPath, request.ExecutionID), SealRequest{Request: request}, &response); err != nil {
+	if err := c.post(ctx, fmt.Sprintf(sealPath, url.PathEscape(request.ExecutionID)), SealRequest{Request: request}, &response, c.executionCapability(request.ExecutionID)); err != nil {
 		return snapshot.SnapshotRef{}, err
 	}
 	if response.ID <= 0 {
@@ -115,7 +122,20 @@ func (c *Client) Seal(ctx context.Context, request broker.SealRequest) (snapshot
 	}
 	return response, nil
 }
-func (c *Client) post(ctx context.Context, path string, input, output any) error {
+func (c *Client) executionCapability(id string) string {
+	// Keep terminal capabilities for the client lifetime: callers may replay a
+	// terminal request after an ambiguous transport failure. The capability is
+	// independently short-lived and exact-execution scoped.
+	c.mu.RLock()
+	capability := c.executions[id]
+	c.mu.RUnlock()
+	return capability
+}
+
+func (c *Client) post(ctx context.Context, path string, input, output any, capability string) error {
+	if strings.TrimSpace(capability) == "" {
+		return fmt.Errorf("broker authority: execution capability is unavailable")
+	}
 	data, err := json.Marshal(input)
 	if err != nil {
 		return fmt.Errorf("broker authority: encode request: %w", err)
@@ -125,7 +145,7 @@ func (c *Client) post(ctx context.Context, path string, input, output any) error
 		return fmt.Errorf("broker authority: build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.capability)
+	req.Header.Set("Authorization", "Bearer "+capability)
 	response, err := c.http.Do(req)
 	if err != nil {
 		return fmt.Errorf("broker authority: request failed")
@@ -134,8 +154,12 @@ func (c *Client) post(ctx context.Context, path string, input, output any) error
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return fmt.Errorf("broker authority: request rejected")
 	}
-	if output != nil && json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(output) != nil {
-		return fmt.Errorf("broker authority: decode response")
+	if output != nil {
+		decoder := json.NewDecoder(io.LimitReader(response.Body, 1<<20))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(output) != nil || decoder.Decode(&struct{}{}) != io.EOF {
+			return fmt.Errorf("broker authority: decode response")
+		}
 	}
 	return nil
 }

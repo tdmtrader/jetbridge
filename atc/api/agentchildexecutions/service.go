@@ -15,12 +15,12 @@ import (
 )
 
 type Scope struct {
-	TeamID         int
-	WorkflowRunID  int64
-	NodePlanID     string
-	ParentAttempt  int
-	BrokerInstance string
-	LeaseDuration  time.Duration
+	TeamID         int           `json:"team_id"`
+	WorkflowRunID  int64         `json:"workflow_run_id"`
+	NodePlanID     string        `json:"node_plan_id"`
+	ParentAttempt  int           `json:"parent_attempt"`
+	BrokerInstance string        `json:"broker_instance"`
+	LeaseDuration  time.Duration `json:"lease_duration"`
 }
 
 type ExecutionStore interface {
@@ -45,12 +45,8 @@ type Service struct {
 }
 
 func NewService(config Config) (*Service, error) {
-	if config.Scope.TeamID <= 0 || config.Scope.WorkflowRunID <= 0 ||
-		config.Scope.ParentAttempt <= 0 || config.Scope.NodePlanID == "" {
-		return nil, fmt.Errorf("agent child authority: complete execution scope is required")
-	}
-	if config.Scope.BrokerInstance == "" || config.Scope.LeaseDuration <= 0 {
-		return nil, fmt.Errorf("agent child authority: broker instance and lease duration are required")
+	if err := config.Scope.Validate(); err != nil {
+		return nil, fmt.Errorf("agent child authority: %w", err)
 	}
 	if config.Catalog == nil || config.Store == nil || config.Sealer == nil {
 		return nil, fmt.Errorf("agent child authority: catalog, store, and sealer are required")
@@ -102,12 +98,9 @@ func (service *Service) Phase(ctx context.Context, executionID, phase string) er
 	if !found {
 		return fmt.Errorf("agent child authority: unsupported phase %q", phase)
 	}
-	execution, found, err := service.config.Store.Find(ctx, service.config.Scope.TeamID, executionID)
+	execution, err := service.find(ctx, executionID)
 	if err != nil {
 		return err
-	}
-	if !found {
-		return fmt.Errorf("agent child authority: execution not found")
 	}
 	update := db.AdvanceAgentChildExecution{
 		ID: execution.ID, TeamID: service.config.Scope.TeamID,
@@ -126,12 +119,9 @@ func (service *Service) Update(ctx context.Context, executionID string, update b
 	if err != nil {
 		return fmt.Errorf("agent child authority: validate normalized events: %w", err)
 	}
-	execution, found, err := service.config.Store.Find(ctx, service.config.Scope.TeamID, executionID)
+	execution, err := service.find(ctx, executionID)
 	if err != nil {
 		return err
-	}
-	if !found {
-		return fmt.Errorf("agent child authority: execution not found")
 	}
 	if execution.State != broker.ExecutionRunning {
 		return fmt.Errorf("agent child authority: execution state is %q, expected running", execution.State)
@@ -168,12 +158,9 @@ func (service *Service) Terminal(ctx context.Context, executionID string, termin
 	if !found || terminal.State != contract.state || terminal.Retryable != contract.retryable {
 		return fmt.Errorf("agent child authority: terminal state, code, or retryability is invalid")
 	}
-	execution, found, err := service.config.Store.Find(ctx, service.config.Scope.TeamID, executionID)
+	execution, err := service.find(ctx, executionID)
 	if err != nil {
 		return err
-	}
-	if !found {
-		return fmt.Errorf("agent child authority: execution not found")
 	}
 	retryable := contract.retryable
 	_, err = service.config.Store.Advance(ctx, db.AdvanceAgentChildExecution{
@@ -209,13 +196,9 @@ func (service *Service) Seal(
 	ctx context.Context,
 	request broker.SealRequest,
 ) (snapshot.SnapshotRef, error) {
-	execution, found, err := service.config.Store.Find(
-		ctx, service.config.Scope.TeamID, request.ExecutionID)
+	execution, err := service.find(ctx, request.ExecutionID)
 	if err != nil {
 		return snapshot.SnapshotRef{}, err
-	}
-	if !found {
-		return snapshot.SnapshotRef{}, fmt.Errorf("agent child authority: execution not found")
 	}
 	if execution.State != broker.ExecutionSealing {
 		return snapshot.SnapshotRef{}, fmt.Errorf(
@@ -256,6 +239,17 @@ func phaseState(phase string) (broker.ExecutionState, bool) {
 	default:
 		return "", false
 	}
+}
+
+func (service *Service) find(ctx context.Context, executionID string) (db.AgentChildExecution, error) {
+	execution, found, err := service.config.Store.Find(ctx, service.config.Scope.TeamID, executionID)
+	if err != nil {
+		return db.AgentChildExecution{}, err
+	}
+	if !found || execution.TeamID != service.config.Scope.TeamID || execution.WorkflowRunID != service.config.Scope.WorkflowRunID || execution.NodePlanID != service.config.Scope.NodePlanID || execution.ParentAttempt != service.config.Scope.ParentAttempt || execution.BrokerInstance != service.config.Scope.BrokerInstance {
+		return db.AgentChildExecution{}, fmt.Errorf("agent child authority: execution not found")
+	}
+	return execution, nil
 }
 
 var _ broker.Authority = (*Service)(nil)
