@@ -350,8 +350,8 @@ func checkpointSkillIdentity(plan atc.AgentPlan, refs map[string]snapshot.Snapsh
 		return identity, nil
 	}
 	if len(plan.SkillFiles) > 0 {
-		if hasAgentPlanInput(plan, "skills") {
-			return agentCheckpointSkillIdentity{}, errors.New("agent checkpoint compiled skills collide with a declared skills input")
+		if hasAgentPlanInput(plan, "skills") || hasAgentPlanOutput(plan, "skills") {
+			return agentCheckpointSkillIdentity{}, errors.New("agent checkpoint compiled skills collide with a declared skills input or output")
 		}
 		allowed := map[string]struct{}{}
 		for _, name := range selected {
@@ -411,6 +411,15 @@ func checkpointSkillIdentity(plan atc.AgentPlan, refs map[string]snapshot.Snapsh
 
 func hasAgentPlanInput(plan atc.AgentPlan, wanted string) bool {
 	for _, name := range plan.Inputs {
+		if name == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func hasAgentPlanOutput(plan atc.AgentPlan, wanted string) bool {
+	for _, name := range plan.Outputs {
 		if name == wanted {
 			return true
 		}

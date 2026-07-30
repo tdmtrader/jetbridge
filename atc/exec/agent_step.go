@@ -353,9 +353,9 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 
 	repository := state.ArtifactRepository()
 	if len(step.plan.Skills) > 0 {
-		for _, name := range step.plan.Inputs {
+		for _, name := range append(append([]string(nil), step.plan.Inputs...), step.plan.Outputs...) {
 			if name == "skills" {
-				return false, fmt.Errorf("agent %q compiled skills collide with logical input %q", step.plan.Name, name)
+				return false, fmt.Errorf("agent %q compiled skills collide with logical input or output %q", step.plan.Name, name)
 			}
 		}
 		frozen, skillErr := newFrozenAgentSkillArtifact(step.plan.SkillFiles)
@@ -951,6 +951,9 @@ func agentValidationRequirement(plan atc.AgentPlan) (string, bool, error) {
 	}
 	if len(candidates) != 1 {
 		return "", false, fmt.Errorf("multiple review candidates")
+	}
+	if mapped, found := plan.InputMapping[candidates[0]]; found {
+		return mapped, true, nil
 	}
 	return candidates[0], true, nil
 }

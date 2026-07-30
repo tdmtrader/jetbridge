@@ -267,6 +267,18 @@ var _ = Describe("AgentStep", func() {
 			Expect(err).To(MatchError(ContainSubstring("collide with logical input")))
 			Expect(fakePool.FindOrSelectWorkerCallCount()).To(BeZero())
 		})
+
+		It("refuses a logical skills output before selecting a worker", func() {
+			collision := exec.NewAgentStep(
+				planID,
+				atc.AgentPlan{Name: "collision", Prompt: "do it", Hermetic: true, Skills: []string{"review"}, SkillFiles: agentPlan.SkillFiles, Outputs: []string{"skills"}},
+				atc.ContainerLimits{}, atc.ContainerLimits{}, stepMetadata, containerMetadata,
+				fakePool, fakeStreamer, fakeDelegateFactory, 0, agentImage, agentStepOptions...,
+			)
+			_, err := collision.Run(ctx, state)
+			Expect(err).To(MatchError(ContainSubstring("collide with logical input or output")))
+			Expect(fakePool.FindOrSelectWorkerCallCount()).To(BeZero())
+		})
 	})
 
 	It("executes the admitted workflow runtime image across a web-node image rollout", func() {

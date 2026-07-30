@@ -193,6 +193,20 @@ func TestFullFunctionTargetRendersExactFrozenAgentSkills(t *testing.T) {
 	}
 }
 
+func TestFullFunctionTargetRejectsFrozenSkillOutputCollision(t *testing.T) {
+	definition := renderTestDefinition()
+	agent := definition.Compiled.Function.Plan[0].Config.(*atc.AgentStep)
+	agent.Skills = []string{"review"}
+	agent.SkillFiles = map[string]string{"skills/review/SKILL.md": "review"}
+	agent.Outputs = append(agent.Outputs, "skills")
+	agent.SnapshotOutputs["skills"] = atc.SnapshotOutputConfig{Type: reviewV1}
+	definition.Compiled.Function.SkillFiles = map[string]string{"skills/review/SKILL.md": "review"}
+
+	if _, err := FullFunctionTarget(definition); err == nil || !strings.Contains(err.Error(), "input or output") {
+		t.Fatalf("FullFunctionTarget output collision = %v, want reserved skills output refusal", err)
+	}
+}
+
 func TestFullFunctionTargetRejectsUnfrozenExecutionDependencies(t *testing.T) {
 	tests := []struct {
 		name   string

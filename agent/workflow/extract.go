@@ -246,9 +246,9 @@ func validateCompiledSkillAuthority(function *FunctionConfig) error {
 			}
 			return nil
 		}
-		for _, input := range agent.Inputs {
-			if input == "skills" {
-				return fmt.Errorf("workflow: %s: compiled skills collide with logical input %q", path, input)
+		for _, name := range append(append([]string(nil), agent.Inputs...), agent.Outputs...) {
+			if name == "skills" {
+				return fmt.Errorf("workflow: %s: compiled skills collide with logical input or output %q", path, name)
 			}
 		}
 		selected := map[string]struct{}{}

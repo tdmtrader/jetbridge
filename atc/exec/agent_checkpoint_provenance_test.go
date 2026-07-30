@@ -149,6 +149,18 @@ func TestDeriveAgentCheckpointProvenanceBindsCompiledSkillsWithoutExternalInput(
 	}
 }
 
+func TestDeriveAgentCheckpointProvenanceRejectsCompiledSkillOutputCollision(t *testing.T) {
+	request := validAgentCheckpointProvenanceRequest()
+	request.Plan.Inputs = []string{"repo"}
+	request.Plan.SnapshotInputs = map[string]atc.SnapshotInputConfig{"repo": {Type: "repository/v1"}}
+	request.Plan.Outputs = []string{"skills"}
+	request.Plan.SkillFiles = map[string]string{"skills/review/SKILL.md": "review", "skills/testing/SKILL.md": "testing"}
+	delete(request.Inputs, "skills")
+	if _, err := deriveAgentCheckpointProvenance(request); err == nil || !strings.Contains(err.Error(), "output") {
+		t.Fatalf("compiled skills output collision = %v", err)
+	}
+}
+
 func TestDeriveAgentCheckpointProvenanceFailsClosedWhenExecutionIsNotPinned(t *testing.T) {
 	tests := map[string]func(*agentCheckpointProvenanceRequest){
 		"non-hermetic plan": func(request *agentCheckpointProvenanceRequest) {

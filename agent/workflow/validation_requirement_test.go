@@ -73,6 +73,39 @@ func TestRequirePassingValidationAuthorityRejectsEveryExactMismatch(t *testing.T
 	}
 }
 
+func TestRenderValidationRequirementsMapsHumanReviewAuthorityToRepositoryNames(t *testing.T) {
+	authority := &atc.DevValidationAuthority{
+		CandidateInput: "candidate",
+		BaseInputs:     []atc.DevValidationBaseInput{{Name: "base", Type: "repository/v1"}},
+	}
+	review := &atc.AgentStep{
+		Name: "review", Inputs: []string{"candidate", "validation", "base"}, Outputs: []string{"question"},
+		InputMapping: map[string]string{
+			"candidate":  "physical-candidate",
+			"validation": "physical-validation",
+			"base":       "physical-base",
+		},
+		SnapshotInputs: map[string]atc.SnapshotInputConfig{
+			"candidate":  {Type: "repository-change/v1"},
+			"validation": {Type: "validation/v1"},
+			"base":       {Type: "repository/v1"},
+		},
+		SnapshotOutputs: map[string]atc.SnapshotOutputConfig{"question": {Type: "question/v1"}},
+		Validation:      "validation",
+	}
+	function := &FunctionConfig{Plan: []atc.Step{
+		{Config: &atc.TaskStep{DevValidationAuthority: authority}},
+		{Config: review},
+	}}
+	if err := renderValidationRequirements(function); err != nil {
+		t.Fatalf("renderValidationRequirements: %v", err)
+	}
+	got := review.ReviewValidation
+	if got == nil || got.Candidate != "physical-candidate" || got.Validation != "physical-validation" || got.Authority.CandidateInput != "physical-candidate" || got.Authority.BaseInputs[0].Name != "physical-base" {
+		t.Fatalf("mapped review requirement = %#v", got)
+	}
+}
+
 func requirementRecord(t *testing.T, candidate snapshot.SnapshotRef, authority snapshot.ValidationAttestationAuthority) contracts.Record[contracts.ValidationBody] {
 	t.Helper()
 	body := contracts.ValidationBody{Conclusion: "passed", Summary: "passed", Attestation: contracts.ValidationAttestation{CandidateDigest: candidate.Digest, ProfileDigest: authority.ProfileDigest, ProtectedConfigDigest: authority.ProtectedConfigDigest, CapabilityImage: authority.CapabilityImage, CapabilityImageDigest: authority.CapabilityImageDigest, WorkflowDefinitionID: authority.WorkflowDefinitionID, WorkflowVersion: authority.WorkflowVersion, Toolchain: authority.Toolchain, BaseInputs: []contracts.ValidationBaseInput{{Input: "base", Type: "repository/v1", Digest: authority.BaseInputs[0].Ref.Digest}}}, Checks: []contracts.ValidationCheck{{ID: "test", Kind: "test", Name: "test", Status: "passed", Attempts: []contracts.ValidationAttempt{{Number: 1, Status: "passed", Duration: "1s", Log: contracts.ValidationLog{Path: "content/logs/test.log", Digest: requirementDigest('e'), Size: 0, MediaType: "text/plain"}}}}}}

@@ -109,15 +109,16 @@ func renderValidationRequirements(function *FunctionConfig) error {
 		return err
 	}
 	return walkFunctionSteps(function.Plan, func(step atc.Step, path string, _ bool) error {
-		bind := func(candidate, validation string) (*atc.DevValidationAuthority, error) {
+		bind := func(candidate, validation string, mappings map[string]string) (*atc.DevValidationAuthority, error) {
 			authority, found := producers[validation]
 			if !found {
 				return nil, fmt.Errorf("workflow: %s: validation %q is not a renderer-owned dev validation output", path, validation)
 			}
+			authority = mappedDevValidationAuthority(authority, mappings)
 			if authority.CandidateInput != candidate {
 				return nil, fmt.Errorf("workflow: %s: validation %q does not bind current candidate %q", path, validation, candidate)
 			}
-			return authority.Clone(), nil
+			return authority, nil
 		}
 		switch config := step.Config.(type) {
 		case *atc.AgentStep:
@@ -128,16 +129,18 @@ func renderValidationRequirements(function *FunctionConfig) error {
 			if !governed || config.Validation == "" {
 				return nil
 			}
-			authority, err := bind(candidate, config.Validation)
+			candidate = mappedAgentValidationName(candidate, config.InputMapping)
+			validation := mappedAgentValidationName(config.Validation, config.InputMapping)
+			authority, err := bind(candidate, config.Validation, config.InputMapping)
 			if err != nil {
 				return err
 			}
-			config.ReviewValidation = &atc.ReviewValidationRequirement{Candidate: candidate, Validation: config.Validation, Authority: authority}
+			config.ReviewValidation = &atc.ReviewValidationRequirement{Candidate: candidate, Validation: validation, Authority: authority}
 		case *atc.AwaitSnapshotStep:
 			if config.MergeApproval == nil || config.Validation == "" {
 				return nil
 			}
-			authority, err := bind(config.MergeApproval.Input, config.Validation)
+			authority, err := bind(config.MergeApproval.Input, config.Validation, nil)
 			if err != nil {
 				return err
 			}
@@ -146,7 +149,7 @@ func renderValidationRequirements(function *FunctionConfig) error {
 			if config.InputType.String() != "repository-change/v1" || config.Validation == "" {
 				return nil
 			}
-			authority, err := bind(config.Input, config.Validation)
+			authority, err := bind(config.Input, config.Validation, nil)
 			if err != nil {
 				return err
 			}
@@ -154,4 +157,23 @@ func renderValidationRequirements(function *FunctionConfig) error {
 		}
 		return nil
 	})
+}
+
+func mappedAgentValidationName(name string, mappings map[string]string) string {
+	if mapped, found := mappings[name]; found {
+		return mapped
+	}
+	return name
+}
+
+func mappedDevValidationAuthority(authority *atc.DevValidationAuthority, mappings map[string]string) *atc.DevValidationAuthority {
+	cloned := authority.Clone()
+	if cloned == nil {
+		return nil
+	}
+	cloned.CandidateInput = mappedAgentValidationName(cloned.CandidateInput, mappings)
+	for index := range cloned.BaseInputs {
+		cloned.BaseInputs[index].Name = mappedAgentValidationName(cloned.BaseInputs[index].Name, mappings)
+	}
+	return cloned
 }

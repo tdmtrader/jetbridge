@@ -642,6 +642,7 @@ func TestCompileV3RejectsInvalidAgentAssets(t *testing.T) {
 		{name: "invalid skill name", plan: "  - agent: work\n    prompt: work\n    skills: [nested/testing]", want: "bare directory"},
 		{name: "hidden skill name", plan: "  - agent: work\n    prompt: work\n    skills: [.hidden]", want: "dot-prefixed"},
 		{name: "duplicate skill", plan: "  - agent: work\n    prompt: work\n    skills: [testing, testing]", files: workflow.Manifest{"skills/testing/SKILL.md": "test"}, want: "duplicate skill"},
+		{name: "skills output collision", plan: "  - agent: work\n    prompt: work\n    skills: [testing]\n    outputs: [skills]\n    output_types: {skills: {type: review/v1}}", files: workflow.Manifest{"skills/testing/SKILL.md": "test"}, want: "outputs"},
 		{name: "authored runtime image", plan: "  - agent: work\n    prompt: work\n    runtime_image: registry.example/agent@sha256:" + strings.Repeat("a", 64), want: "server-selected"},
 	}
 	for _, test := range cases {
