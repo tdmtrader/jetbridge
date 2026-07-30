@@ -3,6 +3,7 @@ package broker_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -128,7 +129,7 @@ func TestEngineBoundsRunnerContextAndTerminalizesDeadline(t *testing.T) {
 	caller, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	_, err = engine.ConsultAgent(caller, broker.ConsultRequest{
-		IdempotencyKey: "deadline", Selector: profile.Selector, Question: "question",
+		IdempotencyKey: "deadline", Selector: profile.Selector, Question: "question", Attachments: []string{"design"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "deadline_exceeded") {
 		t.Fatalf("ConsultAgent() error = %v, want deadline_exceeded", err)
@@ -207,6 +208,44 @@ func TestEngineRejectsAttachmentsOutsideTheToolAllowlistBeforeAdmission(t *testi
 	}
 }
 
+func TestEngineRequiresConsultAttachmentBeforeAdmission(t *testing.T) {
+	catalog, _ := broker.NewCatalog([]broker.Profile{validProfile()})
+	authority := &fakeAuthority{}
+	engine := broker.NewEngine(broker.EngineConfig{
+		Catalog: catalog, Authority: authority, Attachments: fakeAttachments{},
+		Credentials: fakeCredentials{}, Runner: &fakeRunner{},
+		Instructions: map[broker.Tool]string{broker.ToolConsultAgent: "fixed"},
+	})
+	_, err := engine.ConsultAgent(context.Background(), broker.ConsultRequest{
+		IdempotencyKey: "empty-attachments",
+		Selector:       broker.Selector{Tier: broker.TierBalanced, Effort: broker.EffortHigh},
+		Question:       "question",
+	})
+	if err == nil || !strings.Contains(err.Error(), "attachment") {
+		t.Fatalf("ConsultAgent() error = %v, want attachment rejection", err)
+	}
+	if authority.admitted {
+		t.Fatal("consultation without attachments was admitted")
+	}
+}
+
+func TestEngineReturnsSafeErrorWhenTerminalPersistenceFails(t *testing.T) {
+	catalog, _ := broker.NewCatalog([]broker.Profile{validProfile()})
+	authority := &fakeAuthority{terminalErr: errors.New("database unavailable")}
+	engine := broker.NewEngine(broker.EngineConfig{
+		Catalog: catalog, Authority: authority, Attachments: fakeAttachments{},
+		Credentials: fakeCredentials{}, Runner: failingRunner{},
+		Instructions: map[broker.Tool]string{broker.ToolConsultAgent: "fixed"},
+	})
+	_, err := engine.ConsultAgent(context.Background(), broker.ConsultRequest{
+		IdempotencyKey: "terminal-write", Selector: broker.Selector{Tier: broker.TierBalanced, Effort: broker.EffortHigh},
+		Question: "question", Attachments: []string{"design"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "record terminal") || strings.Contains(err.Error(), "provider body") {
+		t.Fatalf("ConsultAgent() error = %v, want safe terminal persistence error", err)
+	}
+}
+
 func TestEngineRejectsResolverAttachmentNameMismatchBeforePrompt(t *testing.T) {
 	catalog, _ := broker.NewCatalog([]broker.Profile{validProfile()})
 	runner := &fakeRunner{output: []byte(
@@ -242,7 +281,7 @@ func TestEngineRejectsUnnormalizedRunnerEventsBeforeAuthorityPersistence(t *test
 	_, err := engine.ConsultAgent(context.Background(), broker.ConsultRequest{
 		IdempotencyKey: "unsafe-event",
 		Selector:       broker.Selector{Tier: broker.TierBalanced, Effort: broker.EffortHigh},
-		Question:       "question",
+		Question:       "question", Attachments: []string{"design"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "provider_rejected") {
 		t.Fatalf("ConsultAgent() error = %v, want safe event rejection", err)
@@ -253,13 +292,14 @@ func TestEngineRejectsUnnormalizedRunnerEventsBeforeAuthorityPersistence(t *test
 }
 
 type fakeAuthority struct {
-	mu        sync.Mutex
-	admitted  bool
-	admission broker.AdmissionRequest
-	phases    []string
-	seal      broker.SealRequest
-	updates   []broker.RunUpdate
-	terminals []broker.Terminal
+	mu          sync.Mutex
+	admitted    bool
+	admission   broker.AdmissionRequest
+	phases      []string
+	seal        broker.SealRequest
+	updates     []broker.RunUpdate
+	terminals   []broker.Terminal
+	terminalErr error
 }
 
 func (authority *fakeAuthority) Admit(_ context.Context, request broker.AdmissionRequest) (string, error) {
@@ -286,7 +326,7 @@ func (authority *fakeAuthority) Terminal(_ context.Context, _ string, terminal b
 	defer authority.mu.Unlock()
 	authority.phases = append(authority.phases, string(terminal.State))
 	authority.terminals = append(authority.terminals, terminal)
-	return nil
+	return authority.terminalErr
 }
 func (authority *fakeAuthority) Seal(_ context.Context, request broker.SealRequest) (snapshot.SnapshotRef, error) {
 	authority.mu.Lock()
@@ -362,6 +402,12 @@ func (eventRunner) Run(context.Context, broker.RunRequest) (broker.RunResult, er
 		Output: []byte(`{"answer":"ok","claims":[],"assumptions":[],"uncertainties":[],"recommendations":[]}`),
 		Events: []broker.Event{{Kind: "native TOKEN=super-secret"}},
 	}, nil
+}
+
+type failingRunner struct{}
+
+func (failingRunner) Run(context.Context, broker.RunRequest) (broker.RunResult, error) {
+	return broker.RunResult{}, errors.New("provider body must not escape")
 }
 
 type fakeRunner struct {

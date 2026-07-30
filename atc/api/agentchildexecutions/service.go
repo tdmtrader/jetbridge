@@ -62,6 +62,9 @@ func (service *Service) Admit(
 	ctx context.Context,
 	request broker.AdmissionRequest,
 ) (string, error) {
+	if err := broker.ValidateAttachments(request.Tool, request.Attachments); err != nil {
+		return "", fmt.Errorf("agent child authority: invalid attachments: %w", err)
+	}
 	resolved, err := service.config.Catalog.Resolve(request.Tool, request.Selector)
 	if err != nil {
 		return "", err
@@ -111,9 +114,7 @@ func (service *Service) Phase(ctx context.Context, executionID, phase string) er
 		ExpectedSequence: execution.Sequence, State: state, Phase: phase,
 		BrokerInstance: service.config.Scope.BrokerInstance,
 	}
-	if state != broker.ExecutionErrored && state != broker.ExecutionCancelled && state != broker.ExecutionTimedOut {
-		update.LeaseExpiresAt = time.Now().Add(service.config.Scope.LeaseDuration)
-	}
+	update.LeaseExpiresAt = time.Now().Add(service.config.Scope.LeaseDuration)
 	_, err = service.config.Store.Advance(ctx, update)
 	return err
 }
@@ -163,12 +164,9 @@ func (service *Service) Update(ctx context.Context, executionID string, update b
 }
 
 func (service *Service) Terminal(ctx context.Context, executionID string, terminal broker.Terminal) error {
-	if terminal.State != broker.ExecutionErrored && terminal.State != broker.ExecutionCancelled &&
-		terminal.State != broker.ExecutionTimedOut {
-		return fmt.Errorf("agent child authority: terminal state %q is invalid", terminal.State)
-	}
-	if terminal.Code == "" || terminal.Summary == "" {
-		return fmt.Errorf("agent child authority: terminal code and summary are required")
+	contract, found := terminalContracts[terminal.Code]
+	if !found || terminal.State != contract.state || terminal.Retryable != contract.retryable {
+		return fmt.Errorf("agent child authority: terminal state, code, or retryability is invalid")
 	}
 	execution, found, err := service.config.Store.Find(ctx, service.config.Scope.TeamID, executionID)
 	if err != nil {
@@ -177,14 +175,34 @@ func (service *Service) Terminal(ctx context.Context, executionID string, termin
 	if !found {
 		return fmt.Errorf("agent child authority: execution not found")
 	}
-	retryable := terminal.Retryable
+	retryable := contract.retryable
 	_, err = service.config.Store.Advance(ctx, db.AdvanceAgentChildExecution{
 		ID: execution.ID, TeamID: service.config.Scope.TeamID,
 		ExpectedSequence: execution.Sequence, State: terminal.State, Phase: string(terminal.State),
 		BrokerInstance: service.config.Scope.BrokerInstance,
-		ErrorCode:      terminal.Code, ErrorRetryable: &retryable, ErrorSummary: terminal.Summary,
+		ErrorCode:      terminal.Code, ErrorRetryable: &retryable, ErrorSummary: contract.summary,
 	})
 	return err
+}
+
+type terminalContract struct {
+	state     broker.ExecutionState
+	retryable bool
+	summary   string
+}
+
+// terminalContracts is intentionally authority-owned. The broker can request
+// a stable classification, but never choose the durable state semantics or
+// store caller/provider text as an execution summary.
+var terminalContracts = map[string]terminalContract{
+	"attachment_unknown":     {broker.ExecutionErrored, false, "declared attachments could not be resolved"},
+	"credential_unavailable": {broker.ExecutionErrored, true, "broker credential is unavailable"},
+	"provider_rejected":      {broker.ExecutionErrored, true, "provider rejected the child execution"},
+	"deadline_exceeded":      {broker.ExecutionTimedOut, true, "child execution exceeded its deadline"},
+	"cancelled":              {broker.ExecutionCancelled, true, "child execution was cancelled"},
+	"output_invalid":         {broker.ExecutionErrored, false, "child execution returned invalid typed output"},
+	"sealing_failed":         {broker.ExecutionErrored, true, "child result could not be sealed"},
+	"broker_lost":            {broker.ExecutionErrored, true, "broker lease expired before a terminal result was recorded"},
 }
 
 func (service *Service) Seal(
@@ -235,12 +253,6 @@ func phaseState(phase string) (broker.ExecutionState, bool) {
 		return broker.ExecutionValidating, true
 	case "sealing":
 		return broker.ExecutionSealing, true
-	case "errored":
-		return broker.ExecutionErrored, true
-	case "cancelled":
-		return broker.ExecutionCancelled, true
-	case "timed_out":
-		return broker.ExecutionTimedOut, true
 	default:
 		return "", false
 	}

@@ -161,10 +161,7 @@ func (engine *Engine) RequestReview(ctx context.Context, request ReviewRequest) 
 	if strings.TrimSpace(request.IdempotencyKey) == "" {
 		return Result{}, fmt.Errorf("broker request_review: idempotency key is required")
 	}
-	if !containsString(request.Attachments, "workspace") {
-		return Result{}, fmt.Errorf("broker request_review: workspace attachment is required")
-	}
-	if err := validateAttachments(ToolRequestReview, request.Attachments); err != nil {
+	if err := ValidateAttachments(ToolRequestReview, request.Attachments); err != nil {
 		return Result{}, fmt.Errorf("broker request_review: %w", err)
 	}
 	caller := strings.TrimSpace(request.Instructions)
@@ -182,7 +179,7 @@ func (engine *Engine) ConsultAgent(ctx context.Context, request ConsultRequest) 
 	if strings.TrimSpace(request.Question) == "" {
 		return Result{}, fmt.Errorf("broker consult_agent: question is required")
 	}
-	if err := validateAttachments(ToolConsultAgent, request.Attachments); err != nil {
+	if err := ValidateAttachments(ToolConsultAgent, request.Attachments); err != nil {
 		return Result{}, fmt.Errorf("broker consult_agent: %w", err)
 	}
 	caller := "Question:\n" + strings.TrimSpace(request.Question)
@@ -342,9 +339,11 @@ var (
 )
 
 func (engine *Engine) fail(ctx context.Context, executionID string, terminal failure) error {
-	_ = engine.config.Authority.Terminal(ctx, executionID, Terminal{
+	if err := engine.config.Authority.Terminal(ctx, executionID, Terminal{
 		State: terminal.state, Code: terminal.code, Retryable: terminal.retryable, Summary: terminal.summary,
-	})
+	}); err != nil {
+		return fmt.Errorf("broker child %s: record terminal execution failed", executionID)
+	}
 	return &ExecutionError{ExecutionID: executionID, Code: terminal.code, Retryable: terminal.retryable, Summary: terminal.summary}
 }
 
@@ -366,7 +365,9 @@ var allowedAttachments = map[Tool]map[string]struct{}{
 	ToolConsultAgent:  {"design": {}, "api-contract": {}},
 }
 
-func validateAttachments(tool Tool, names []string) error {
+// ValidateAttachments enforces the fixed per-tool logical attachment contract
+// at every untrusted boundary before admission, prompt assembly, or sealing.
+func ValidateAttachments(tool Tool, names []string) error {
 	allowed, found := allowedAttachments[tool]
 	if !found {
 		return fmt.Errorf("unsupported tool %q", tool)
@@ -383,6 +384,16 @@ func validateAttachments(tool Tool, names []string) error {
 			return fmt.Errorf("attachment %q is not allowed for %s", name, tool)
 		}
 		seen[name] = struct{}{}
+	}
+	switch tool {
+	case ToolRequestReview:
+		if !containsString(names, "workspace") {
+			return fmt.Errorf("workspace attachment is required")
+		}
+	case ToolConsultAgent:
+		if len(names) == 0 {
+			return fmt.Errorf("at least one declared attachment is required")
+		}
 	}
 	return nil
 }

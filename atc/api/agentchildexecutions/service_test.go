@@ -81,7 +81,7 @@ func TestServiceRejectsUnsafeEventsAndPersistsExactTerminalFailure(t *testing.T)
 	executionID, err := service.Admit(context.Background(), broker.AdmissionRequest{
 		IdempotencyKey: "terminal", Tool: broker.ToolConsultAgent,
 		Selector: resolved.Selector, ProfileID: resolved.ID, ProfileDigest: resolved.Digest,
-		InputDigest: "sha256:" + strings.Repeat("c", 64),
+		InputDigest: "sha256:" + strings.Repeat("c", 64), Attachments: []string{"design"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -104,6 +104,77 @@ func TestServiceRejectsUnsafeEventsAndPersistsExactTerminalFailure(t *testing.T)
 	if last.State != broker.ExecutionTimedOut || last.ErrorCode != "deadline_exceeded" ||
 		last.ErrorSummary != "child execution exceeded its deadline" || last.ErrorRetryable == nil || !*last.ErrorRetryable {
 		t.Fatalf("terminal advance = %#v", last)
+	}
+}
+
+func TestServiceOwnsClosedTerminalContractAndSafeSummary(t *testing.T) {
+	catalog, _ := broker.NewCatalog([]broker.Profile{authorityProfile()})
+	store := &fakeStore{}
+	service, err := agentchildexecutions.NewService(agentchildexecutions.Config{
+		Scope: agentchildexecutions.Scope{
+			TeamID: 1, WorkflowRunID: 2, NodePlanID: "node", ParentAttempt: 1,
+			BrokerInstance: "pod-1", LeaseDuration: time.Minute,
+		},
+		Catalog: catalog, Store: store, Sealer: &fakeSealer{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, _ := catalog.Resolve(broker.ToolConsultAgent, authorityProfile().Selector)
+	executionID, err := service.Admit(context.Background(), broker.AdmissionRequest{
+		IdempotencyKey: "closed-terminal", Tool: broker.ToolConsultAgent,
+		Selector: resolved.Selector, ProfileID: resolved.ID, ProfileDigest: resolved.Digest,
+		InputDigest: "sha256:" + strings.Repeat("c", 64), Attachments: []string{"design"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Terminal(context.Background(), executionID, broker.Terminal{
+		State: broker.ExecutionErrored, Code: "provider body", Retryable: false, Summary: "provider body",
+	}); err == nil || !strings.Contains(err.Error(), "terminal") {
+		t.Fatalf("Terminal() error = %v, want closed-contract rejection", err)
+	}
+	if err := service.Terminal(context.Background(), executionID, broker.Terminal{
+		State: broker.ExecutionTimedOut, Code: "deadline_exceeded", Retryable: false, Summary: "provider body",
+	}); err == nil || !strings.Contains(err.Error(), "terminal") {
+		t.Fatalf("Terminal() error = %v, want retryability rejection", err)
+	}
+	if err := service.Terminal(context.Background(), executionID, broker.Terminal{
+		State: broker.ExecutionTimedOut, Code: "deadline_exceeded", Retryable: true, Summary: "provider body",
+	}); err != nil {
+		t.Fatalf("Terminal(): %v", err)
+	}
+	last := store.advances[len(store.advances)-1]
+	if last.ErrorSummary != "child execution exceeded its deadline" || strings.Contains(last.ErrorSummary, "provider body") {
+		t.Fatalf("terminal summary = %q", last.ErrorSummary)
+	}
+}
+
+func TestServiceRejectsTerminalTransitionsThroughGenericPhase(t *testing.T) {
+	catalog, _ := broker.NewCatalog([]broker.Profile{authorityProfile()})
+	store := &fakeStore{}
+	service, err := agentchildexecutions.NewService(agentchildexecutions.Config{
+		Scope: agentchildexecutions.Scope{
+			TeamID: 1, WorkflowRunID: 2, NodePlanID: "node", ParentAttempt: 1,
+			BrokerInstance: "pod-1", LeaseDuration: time.Minute,
+		},
+		Catalog: catalog, Store: store, Sealer: &fakeSealer{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, _ := catalog.Resolve(broker.ToolConsultAgent, authorityProfile().Selector)
+	executionID, err := service.Admit(context.Background(), broker.AdmissionRequest{
+		IdempotencyKey: "phase-terminal", Tool: broker.ToolConsultAgent,
+		Selector: resolved.Selector, ProfileID: resolved.ID, ProfileDigest: resolved.Digest,
+		InputDigest: "sha256:" + strings.Repeat("c", 64), Attachments: []string{"design"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Phase(context.Background(), executionID, "errored"); err == nil ||
+		!strings.Contains(err.Error(), "unsupported") {
+		t.Fatalf("Phase() error = %v, want terminal phase rejection", err)
 	}
 }
 

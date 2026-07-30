@@ -44,6 +44,9 @@ func NewServer(service Service, catalog *broker.Catalog) (*mcpserver.Server, err
 			if err := decodeStrict(raw, &input); err != nil {
 				return nil, fmt.Errorf("invalid arguments: %w", err)
 			}
+			if err := broker.ValidateAttachments(broker.ToolRequestReview, input.Attachments); err != nil {
+				return nil, fmt.Errorf("invalid arguments: %w", err)
+			}
 			idempotencyKey, err := newCallID()
 			if err != nil {
 				return nil, err
@@ -64,6 +67,9 @@ func NewServer(service Service, catalog *broker.Catalog) (*mcpserver.Server, err
 		func(ctx context.Context, raw json.RawMessage, progress func(string)) (any, error) {
 			var input consultInput
 			if err := decodeStrict(raw, &input); err != nil {
+				return nil, fmt.Errorf("invalid arguments: %w", err)
+			}
+			if err := broker.ValidateAttachments(broker.ToolConsultAgent, input.Attachments); err != nil {
 				return nil, fmt.Errorf("invalid arguments: %w", err)
 			}
 			idempotencyKey, err := newCallID()
@@ -94,7 +100,7 @@ type consultInput struct {
 	Effort      broker.Effort `json:"effort"`
 	Question    string        `json:"question"`
 	Context     string        `json:"context,omitempty"`
-	Attachments []string      `json:"attachments,omitempty"`
+	Attachments []string      `json:"attachments"`
 }
 
 func requestReviewSchema(tiers, efforts []string) json.RawMessage {
@@ -108,7 +114,7 @@ func requestReviewSchema(tiers, efforts []string) json.RawMessage {
 			"attachments": map[string]any{
 				"type": "array", "minItems": 1, "uniqueItems": true,
 				"contains": map[string]any{"const": "workspace"},
-				"items":    map[string]any{"type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
+				"items":    map[string]any{"type": "string", "enum": []string{"workspace", "validation"}},
 			},
 		},
 	})
@@ -117,15 +123,15 @@ func requestReviewSchema(tiers, efforts []string) json.RawMessage {
 func consultSchema(tiers, efforts []string) json.RawMessage {
 	return mcpserver.MustJSON(map[string]any{
 		"type": "object", "additionalProperties": false,
-		"required": []string{"tier", "effort", "question"},
+		"required": []string{"tier", "effort", "question", "attachments"},
 		"properties": map[string]any{
 			"tier":     map[string]any{"type": "string", "enum": tiers},
 			"effort":   map[string]any{"type": "string", "enum": efforts},
 			"question": map[string]any{"type": "string", "minLength": 1},
 			"context":  map[string]any{"type": "string"},
 			"attachments": map[string]any{
-				"type": "array", "uniqueItems": true,
-				"items": map[string]any{"type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
+				"type": "array", "minItems": 1, "uniqueItems": true,
+				"items": map[string]any{"type": "string", "enum": []string{"design", "api-contract"}},
 			},
 		},
 	})
