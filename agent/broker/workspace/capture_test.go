@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/concourse/concourse/agent/broker/workspace"
@@ -293,11 +294,47 @@ func TestMaterializeCreatesDisposableCapturedWorkspace(t *testing.T) {
 	if got := strings.TrimSpace(git(t, workdir, "write-tree")); got != capture.ResultTree {
 		t.Fatalf("materialized tree = %s, want %s", got, capture.ResultTree)
 	}
+	assertNoSharedObjectInodes(t, repository, workdir)
 	if err := cleanup(); err != nil {
 		t.Fatalf("cleanup(): %v", err)
 	}
 	if _, err := os.Stat(workdir); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("workdir remains after cleanup: %v", err)
+	}
+}
+
+func assertNoSharedObjectInodes(t *testing.T, source, clone string) {
+	t.Helper()
+	objects := make(map[[2]uint64]string)
+	for _, root := range []string{filepath.Join(source, ".git", "objects"), filepath.Join(clone, ".git", "objects")} {
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() || len(entry.Name()) != 2 {
+				continue
+			}
+			files, err := os.ReadDir(filepath.Join(root, entry.Name()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, file := range files {
+				info, err := file.Info()
+				if err != nil || !info.Mode().IsRegular() {
+					continue
+				}
+				stat, ok := info.Sys().(*syscall.Stat_t)
+				if !ok {
+					t.Fatalf("object stat = %T", info.Sys())
+				}
+				key := [2]uint64{uint64(stat.Dev), uint64(stat.Ino)}
+				if prior, found := objects[key]; found {
+					t.Fatalf("shared object inode %s and %s", prior, filepath.Join(root, entry.Name(), file.Name()))
+				}
+				objects[key] = filepath.Join(root, entry.Name(), file.Name())
+			}
+		}
 	}
 }
 

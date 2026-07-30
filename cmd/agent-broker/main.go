@@ -133,6 +133,15 @@ func validateConfig(config fileConfig) error {
 	if err := safeEndpoint(config.AuthorityEndpoint); err != nil {
 		return err
 	}
+	if err := validateExactKeys("adapter_binaries", config.AdapterBinaries, []string{"codex", "claude", "cursor-agent"}); err != nil {
+		return err
+	}
+	if err := validateExactKeys("output_schemas", config.OutputSchemas, []string{"request_review", "consult_agent"}); err != nil {
+		return err
+	}
+	if err := validateExactKeys("instructions", config.Instructions, []string{"request_review", "consult_agent"}); err != nil {
+		return err
+	}
 	for label, path := range map[string]string{"bootstrap capability file": config.BootstrapCapabilityFile, "workspace root": config.WorkspaceRoot, "scratch root": config.ScratchRoot} {
 		if err := absolutePath(path, label); err != nil {
 			return err
@@ -182,6 +191,13 @@ func validateConfig(config fileConfig) error {
 	if len(config.Profiles) == 0 {
 		return fmt.Errorf("broker configuration: frozen profiles are required")
 	}
+	profileIDs := make([]string, 0, len(config.Profiles))
+	for _, profile := range config.Profiles {
+		profileIDs = append(profileIDs, profile.ID)
+	}
+	if err := validateExactKeys("profile_digests", config.ProfileDigests, profileIDs); err != nil {
+		return err
+	}
 	for index, profile := range config.Profiles {
 		if profile.Digest != "" {
 			return fmt.Errorf("broker configuration: profile[%d] digest must be derived", index)
@@ -196,6 +212,30 @@ func validateConfig(config fileConfig) error {
 			if config.Instructions[string(tool)].Digest != profile.InstructionsDigest {
 				return fmt.Errorf("broker configuration: profile %q instruction digest does not match %s", profile.ID, tool)
 			}
+		}
+	}
+	return nil
+}
+
+func validateExactKeys[T any](label string, values map[string]T, allowed []string) error {
+	if len(values) != len(allowed) {
+		return fmt.Errorf("broker configuration: %s has missing or orphan entries", label)
+	}
+	for _, key := range allowed {
+		if _, found := values[key]; !found {
+			return fmt.Errorf("broker configuration: %s is missing %q", label, key)
+		}
+	}
+	for key := range values {
+		found := false
+		for _, wanted := range allowed {
+			if key == wanted {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("broker configuration: %s contains orphan %q", label, key)
 		}
 	}
 	return nil

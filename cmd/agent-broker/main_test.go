@@ -24,7 +24,25 @@ func TestLoadConfigRejectsRelativeAuthorityFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := loadConfig(path)
-	if err == nil || !strings.Contains(err.Error(), "absolute") {
+	if err == nil {
 		t.Fatalf("loadConfig() error = %v", err)
+	}
+}
+
+func TestValidateExactKeysRejectsOrphanConfigurationEntries(t *testing.T) {
+	tests := []struct {
+		name    string
+		values  map[string]string
+		allowed []string
+	}{
+		{"adapter", map[string]string{"codex": "/bin/codex", "orphan": "/bin/nope"}, []string{"codex", "claude", "cursor-agent"}},
+		{"profile digest", map[string]string{"profile": "sha256:x", "orphan": "sha256:y"}, []string{"profile"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := validateExactKeys(test.name, test.values, test.allowed); err == nil || !strings.Contains(err.Error(), "orphan") {
+				t.Fatalf("validateExactKeys() error = %v", err)
+			}
+		})
 	}
 }

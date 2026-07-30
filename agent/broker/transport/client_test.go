@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/concourse/concourse/agent/broker"
@@ -43,5 +44,33 @@ func TestClientDoesNotDiscloseBootstrapCredentialInErrors(t *testing.T) {
 	_, err = client.Admit(context.Background(), broker.AdmissionRequest{})
 	if err == nil || strings.Contains(err.Error(), "top-secret") {
 		t.Fatalf("error leaks secret: %v", err)
+	}
+}
+
+func TestClientRejectsRedirectBeforeForwardingBootstrapCredential(t *testing.T) {
+	var redirected atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == transport.AdmitPath {
+			http.Redirect(w, r, "/redirected", http.StatusFound)
+			return
+		}
+		if r.URL.Path == "/redirected" {
+			redirected.Store(true)
+			if r.Header.Get("Authorization") != "" {
+				t.Fatalf("redirect received bootstrap credential")
+			}
+		}
+	}))
+	defer server.Close()
+	client, err := transport.NewClient(transport.Config{Endpoint: server.URL, BootstrapCapability: "bootstrap-token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.Admit(context.Background(), broker.AdmissionRequest{})
+	if err == nil {
+		t.Fatal("Admit() accepted redirect")
+	}
+	if redirected.Load() {
+		t.Fatal("client followed redirect")
 	}
 }

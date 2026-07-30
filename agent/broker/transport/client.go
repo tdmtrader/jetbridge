@@ -75,7 +75,13 @@ func NewClient(config Config) (*Client, error) {
 	httpClient := config.HTTPClient
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 30 * time.Second}
+	} else {
+		clone := *httpClient
+		httpClient = &clone
 	}
+	// The bootstrap bearer is authority-scoped. Never follow a redirect that
+	// could carry it to an unintended endpoint, including a same-host path.
+	httpClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return &Client{endpoint: strings.TrimRight(config.Endpoint, "/"), capability: config.BootstrapCapability, http: httpClient}, nil
 }
 

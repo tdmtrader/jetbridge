@@ -69,7 +69,7 @@ func Materialize(scratchRoot string, capture Result) (string, func() error, erro
 		_ = cleanup()
 		return "", nil, err
 	}
-	if _, err := runGit(scratchRoot, nil, nil, "clone", "--quiet", "--no-checkout", capture.RepositoryRoot, workdir); err != nil {
+	if _, err := runGit(scratchRoot, nil, nil, "clone", "--quiet", "--no-local", "--no-checkout", capture.RepositoryRoot, workdir); err != nil {
 		return fail(fmt.Errorf("workspace materialize: clone base: %w", err))
 	}
 	if _, err := runGit(workdir, nil, nil, "checkout", "--detach", "--force", capture.BaseCommit); err != nil {
