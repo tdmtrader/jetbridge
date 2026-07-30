@@ -116,6 +116,10 @@ const (
 )
 
 func (body PullRequestBody) Validate(_ []Subject) error {
+	return body.validateForRevision(3)
+}
+
+func (body PullRequestBody) validateForRevision(revision int) error {
 	if err := validateRequiredBoundedText("provider", body.Provider, maxPullRequestProviderBytes); err != nil {
 		return err
 	}
@@ -158,8 +162,10 @@ func (body PullRequestBody) Validate(_ []Subject) error {
 	for _, id := range threadIDs {
 		knownThreads[id] = struct{}{}
 	}
-	if err := validateMaxItems("review batches", len(body.ReviewBatches), maxPullRequestReviewBatches); err != nil {
-		return err
+	if revision >= 3 {
+		if err := validateMaxItems("review batches", len(body.ReviewBatches), maxPullRequestReviewBatches); err != nil {
+			return err
+		}
 	}
 	batchIDs := make([]string, len(body.ReviewBatches))
 	for index, batch := range body.ReviewBatches {
@@ -452,7 +458,8 @@ func pullRequestBody(record Record[PullRequestBody]) error {
 	if err := validateDeclaredBody(pullRequestType, record.Subjects, record.Body); err != nil {
 		return err
 	}
-	if err := record.Body.Validate(record.Subjects); err != nil {
+	revision, _ := SchemaRevisionFor(pullRequestType, record.Schema)
+	if err := record.Body.validateForRevision(revision); err != nil {
 		return fmt.Errorf("snapshot contracts: pull request record: %w", err)
 	}
 	return nil

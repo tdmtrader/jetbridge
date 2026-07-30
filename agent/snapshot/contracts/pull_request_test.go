@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/snapshot/contracts"
 )
 
@@ -122,5 +123,26 @@ func TestPullRequestBodyRejectsOversizedCollectionsAndText(t *testing.T) {
 				t.Fatalf("Validate() error = %v, want %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestPullRequestRev2RetainsPreBoundObservationWhileCurrentRejectsIt(t *testing.T) {
+	body := validPullRequestBody()
+	body.ReviewBatches = nil
+	for index := 0; index < 129; index++ {
+		id := fmt.Sprintf("batch-%03d", index)
+		body.ReviewBatches = append(body.ReviewBatches, contracts.PullRequestReviewBatch{ID: id, ReviewID: "review-" + id, CommitSHA: strings.Repeat("a", 40), Reviewer: "reviewer-1", Ready: true})
+	}
+	if err := body.Validate(nil); err == nil {
+		t.Fatal("current validation accepted over-cap body")
+	}
+	record, err := contracts.NewRecord(snapshot.TypeRef("pull-request/v1"), nil, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rev2, _ := contracts.SchemaDigestForRevision(snapshot.TypeRef("pull-request/v1"), 2)
+	record.Schema = rev2
+	if _, err := revalidateSealedFiles(t, "pull-request/v1", map[string][]byte{"record.json": marshalRecord(t, record)}, emptyValidationContext(t)); err != nil {
+		t.Fatalf("rev2 read rejected legacy body: %v", err)
 	}
 }
