@@ -287,6 +287,7 @@ type BranchMutation struct {
 	Locator           Locator
 	Ref               string
 	ExpectedSource    contracts.PullRequestHeadExpectation
+	TargetRef         string
 	ExpectedTargetSHA string
 	NewSourceSHA      string
 	OperationKey      string
