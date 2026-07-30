@@ -485,6 +485,49 @@ type AgentStep struct {
 	Timeout  string           `json:"timeout,omitempty"`
 	Limits   *ContainerLimits `json:"container_limits,omitempty"`
 	Requests *ContainerLimits `json:"container_requests,omitempty"`
+	// BrokerAuthority is renderer-owned compiled authority. Source selectors
+	// live under broker_profiles and are erased before this field is injected.
+	BrokerAuthority []AgentBrokerProfile `json:"broker_authority,omitempty"`
+}
+
+// ValidateBrokerAuthority ensures runtime broker authority is complete,
+// function-scoped, digest-pinned, and attached to one broker image. Profile
+// semantic validation remains with the workflow compiler, which owns the
+// broker domain types without creating an atc import cycle.
+func (step *AgentStep) ValidateBrokerAuthority() error {
+	if len(step.BrokerAuthority) == 0 {
+		return nil
+	}
+	if strings.TrimSpace(step.FunctionID) == "" {
+		return fmt.Errorf("agent broker authority requires function_id")
+	}
+	image := ""
+	seen := map[string]struct{}{}
+	for index, profile := range step.BrokerAuthority {
+		if profile.FunctionID != step.FunctionID || strings.TrimSpace(profile.Tool) == "" || strings.TrimSpace(profile.Tier) == "" || strings.TrimSpace(profile.Effort) == "" || strings.TrimSpace(profile.ProfileID) == "" || profile.ProfileRevision <= 0 {
+			return fmt.Errorf("agent broker authority %d has invalid function scope or identity", index)
+		}
+		if err := snapshot.Digest(profile.ProfileDigest).Validate(); err != nil || !strings.HasPrefix(profile.ProfileDigest, "sha256:") {
+			return fmt.Errorf("agent broker authority %d has invalid profile digest", index)
+		}
+		if err := ValidatePinnedOCIImage(profile.WorkerImage); err != nil {
+			return fmt.Errorf("agent broker authority %d has invalid worker image: %w", index, err)
+		}
+		if len(profile.Profile) == 0 || !json.Valid(profile.Profile) {
+			return fmt.Errorf("agent broker authority %d has invalid frozen profile", index)
+		}
+		key := profile.Tool + "\x00" + profile.Tier + "\x00" + profile.Effort
+		if _, duplicate := seen[key]; duplicate {
+			return fmt.Errorf("agent broker authority has duplicate tool selector")
+		}
+		seen[key] = struct{}{}
+		if image == "" {
+			image = profile.WorkerImage
+		} else if image != profile.WorkerImage {
+			return fmt.Errorf("agent broker authority profiles must share one worker image")
+		}
+	}
+	return nil
 }
 
 func (step *AgentStep) Visit(v StepVisitor) error {

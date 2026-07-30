@@ -331,6 +331,9 @@ func (compiler *functionAssetCompiler) preflightAgent(step *atc.AgentStep) error
 	if len(step.SkillFiles) > 0 {
 		return fmt.Errorf("workflow: %s: skill_files are compiler-owned", identity)
 	}
+	if len(step.BrokerAuthority) > 0 {
+		return fmt.Errorf("workflow: %s: broker_authority is compiler-owned", identity)
+	}
 	if len(step.Skills) > 0 {
 		for _, name := range append(append([]string(nil), step.Inputs...), step.Outputs...) {
 			if name == "skills" {

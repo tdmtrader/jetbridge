@@ -50,7 +50,7 @@ func (s *TemplateSaver) SaveOrReuse(
 	if err != nil {
 		return WorkflowRunTemplateRef{}, fmt.Errorf("%w: invalid immutable template config", ErrImmutableTemplateCollision)
 	}
-	hash, err := workflow.RenderedTargetConfigHash(spec.Config, spec.DevValidationProfiles, spec.DevValidationProvenanceHash)
+	hash, err := workflow.RenderedTargetConfigHashWithBrokerProfiles(spec.Config, spec.DevValidationProfiles, spec.DevValidationProvenanceHash, spec.BrokerProfiles, spec.BrokerProfileProvenanceHash)
 	if err != nil || hash != spec.FullHash || len(hash) < 12 || !strings.HasSuffix(spec.Name, "-"+hash[:12]) || !bytes.Equal(canonical, spec.CanonicalJSON) {
 		return WorkflowRunTemplateRef{}, fmt.Errorf("%w: template spec hash or canonical bytes mismatch", ErrImmutableTemplateCollision)
 	}
@@ -151,7 +151,7 @@ func (s *TemplateSaver) validateImmutableTemplate(
 	if err != nil {
 		return WorkflowRunTemplateRef{}, false, fmt.Errorf("%w: canonicalize immutable template: %v", ErrPlatformFailure, err)
 	}
-	hash, err := workflow.RenderedTargetConfigHash(config, spec.DevValidationProfiles, spec.DevValidationProvenanceHash)
+	hash, err := workflow.RenderedTargetConfigHashWithBrokerProfiles(config, spec.DevValidationProfiles, spec.DevValidationProvenanceHash, spec.BrokerProfiles, spec.BrokerProfileProvenanceHash)
 	if err != nil || hash != spec.FullHash || !bytes.Equal(canonical, spec.CanonicalJSON) {
 		return WorkflowRunTemplateRef{}, false, ErrImmutableTemplateCollision
 	}

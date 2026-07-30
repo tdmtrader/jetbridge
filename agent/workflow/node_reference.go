@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/concourse/concourse/agent/broker"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc"
 	"github.com/goccy/go-yaml"
@@ -49,6 +50,20 @@ type ResolvedNodeBinding struct {
 // source document: m and its selected workflow source stay byte-for-byte
 // authored for later inspection and upgrades.
 func CompileDefinitionWithNodes(m Manifest, resolver NodeResolver) (*CompiledDefinition, []ResolvedNodeBinding, error) {
+	return compileDefinitionWithNodes(m, resolver, nil)
+}
+
+// CompileDefinitionWithNodesAndBrokerCatalog preserves the existing exact
+// reusable-node import semantics while admitting any source-local broker
+// selectors through the operator catalog.
+func CompileDefinitionWithNodesAndBrokerCatalog(m Manifest, resolver NodeResolver, catalog *broker.Catalog) (*CompiledDefinition, []ResolvedNodeBinding, error) {
+	if catalog == nil {
+		return nil, nil, fmt.Errorf("workflow: broker catalog is required")
+	}
+	return compileDefinitionWithNodes(m, resolver, catalog)
+}
+
+func compileDefinitionWithNodes(m Manifest, resolver NodeResolver, catalog *broker.Catalog) (*CompiledDefinition, []ResolvedNodeBinding, error) {
 	if resolver == nil {
 		return nil, nil, fmt.Errorf("workflow: node resolver is required")
 	}
@@ -82,10 +97,13 @@ func CompileDefinitionWithNodes(m Manifest, resolver NodeResolver) (*CompiledDef
 	if err := mergeFrozenSkillFiles(definition.Function, expander.frozen); err != nil {
 		return nil, nil, err
 	}
-	if err := compileFunctionAssetsWithFrozenNodes(m, definition, profiles, brokerSelectors, nil, expander.frozen); err != nil {
+	if err := compileFunctionAssetsWithFrozenNodes(m, definition, profiles, brokerSelectors, catalog, expander.frozen); err != nil {
 		return nil, nil, err
 	}
 	if err := mergeFrozenDevValidationProfiles(definition.Function, expander.frozen); err != nil {
+		return nil, nil, err
+	}
+	if err := mergeFrozenBrokerProfiles(definition.Function, expander.frozen); err != nil {
 		return nil, nil, err
 	}
 	if _, err := ValidateFunction(definition.Function); err != nil {
@@ -119,8 +137,9 @@ type nodeReferenceExpander struct {
 }
 
 type frozenNodeAssets struct {
-	skillFiles map[string]string
-	profiles   []CompiledDevValidationProfile
+	skillFiles     map[string]string
+	profiles       []CompiledDevValidationProfile
+	brokerProfiles []CompiledBrokerProfile
 }
 
 func (expander *nodeReferenceExpander) expandWorkflow(value any) error {
@@ -242,8 +261,9 @@ func (expander *nodeReferenceExpander) resolve(source map[string]any, path strin
 		return nil, ResolvedNodeBinding{}, err
 	}
 	expander.frozen[ref.InstanceName] = frozenNodeAssets{
-		skillFiles: cloneStringMap(function.SkillFiles),
-		profiles:   cloneCompiledDevValidationProfiles(function.DevValidationProfiles),
+		skillFiles:     cloneStringMap(function.SkillFiles),
+		profiles:       cloneCompiledDevValidationProfiles(function.DevValidationProfiles),
+		brokerProfiles: remapFrozenBrokerProfiles(function.BrokerProfiles, ref.InstanceName),
 	}
 	replacement, err := stepToSource(step)
 	if err != nil {
@@ -539,5 +559,36 @@ func mergeFrozenDevValidationProfiles(function *FunctionConfig, frozen map[strin
 	}
 	function.DevValidationProfiles = profiles
 	function.DevValidationProvenanceHash = provenance
+	return nil
+}
+
+func remapFrozenBrokerProfiles(source []CompiledBrokerProfile, functionID string) []CompiledBrokerProfile {
+	profiles := cloneCompiledBrokerProfiles(source)
+	for index := range profiles {
+		profiles[index].FunctionID = functionID
+	}
+	return profiles
+}
+
+func mergeFrozenBrokerProfiles(function *FunctionConfig, frozen map[string]frozenNodeAssets) error {
+	profiles := cloneCompiledBrokerProfiles(function.BrokerProfiles)
+	for instance, assets := range frozen {
+		for _, profile := range assets.brokerProfiles {
+			if profile.FunctionID != instance {
+				return fmt.Errorf("workflow: node %q has invalid frozen broker profile scope", instance)
+			}
+			profiles = append(profiles, profile)
+		}
+	}
+	if len(profiles) == 0 {
+		return nil
+	}
+	sortCompiledBrokerProfiles(profiles)
+	provenance, err := BrokerProfileProvenanceHash(profiles)
+	if err != nil {
+		return err
+	}
+	function.BrokerProfiles = profiles
+	function.BrokerProfileProvenanceHash = provenance
 	return nil
 }

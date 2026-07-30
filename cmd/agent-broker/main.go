@@ -9,7 +9,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -33,6 +32,7 @@ import (
 )
 
 const listenAddress = "127.0.0.1:7784"
+const authorityConfigPath = "/run/concourse/agent-broker/authority.json"
 
 type fileConfig struct {
 	AuthorityEndpoint       string                     `json:"authority_endpoint"`
@@ -58,13 +58,7 @@ type attachmentFile struct {
 }
 
 func main() {
-	configPath := flag.String("config", "", "platform-owned broker configuration JSON")
-	flag.Parse()
-	if *configPath == "" || flag.NArg() != 0 {
-		fmt.Fprintln(os.Stderr, "usage: agent-broker -config /absolute/path")
-		os.Exit(2)
-	}
-	config, err := loadConfig(*configPath)
+	config, err := loadConfig(authorityConfigPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "agent-broker:", err)
 		os.Exit(1)
@@ -88,7 +82,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "agent-broker: listen:", err)
 		os.Exit(1)
 	}
-	server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second}
+	server := &http.Server{Handler: brokerHTTPHandler(handler), ReadHeaderTimeout: 5 * time.Second}
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
@@ -101,6 +95,13 @@ func main() {
 		fmt.Fprintln(os.Stderr, "agent-broker: serve:", err)
 		os.Exit(1)
 	}
+}
+
+func brokerHTTPHandler(mcp http.Handler) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	mux.Handle("/mcp", mcp)
+	return mux
 }
 
 func loadConfig(path string) (fileConfig, error) {

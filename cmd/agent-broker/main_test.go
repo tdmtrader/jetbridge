@@ -1,11 +1,32 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestBrokerHTTPHandlerServesHealthAndMCPOnly(t *testing.T) {
+	handler := brokerHTTPHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/mcp" {
+			t.Fatalf("MCP path = %q", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	for _, test := range []struct {
+		path string
+		want int
+	}{{"/healthz", http.StatusOK}, {"/mcp", http.StatusAccepted}, {"/", http.StatusNotFound}} {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, test.path, nil))
+		if recorder.Code != test.want {
+			t.Fatalf("%s status = %d, want %d", test.path, recorder.Code, test.want)
+		}
+	}
+}
 
 func TestLoadConfigRejectsUnknownFieldsAndInlineSecrets(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "broker.json")

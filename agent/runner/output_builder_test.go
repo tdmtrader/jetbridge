@@ -21,6 +21,18 @@ func TestAdmittedMCPServersAddsOnlyServerOwnedOutputBuilder(t *testing.T) {
 	}
 }
 
+func TestAdmitBrokerMCPRejectsImpersonationAndInjectsOnlyServerMarker(t *testing.T) {
+	for _, authored := range []map[string]string{{"agent-broker": "http://127.0.0.1:7784/mcp"}, {"other": "http://127.0.0.1:7784/mcp"}} {
+		if _, _, err := admittedMCPServers("", authored); err == nil {
+			t.Fatalf("authored broker MCP = %#v was admitted", authored)
+		}
+	}
+	servers, enabled, err := admitBrokerMCP("1", map[string]string{"review": "http://127.0.0.1:7781/mcp"})
+	if err != nil || !enabled || servers["agent-broker"] != "http://127.0.0.1:7784/mcp" {
+		t.Fatalf("broker MCP = %#v, enabled = %v, err = %v", servers, enabled, err)
+	}
+}
+
 func TestWriteMCPConfigCleansPrivateDirectory(t *testing.T) {
 	path, cleanup, err := writeMCPConfig(map[string]string{"review": "http://127.0.0.1:7781/mcp"})
 	if err != nil {

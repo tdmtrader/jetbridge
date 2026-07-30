@@ -22,52 +22,56 @@ type nodeSource struct {
 	Step          any                   `json:"step"`
 }
 
-func parseNodeDefinitionSource(raw []byte) (*CompiledNodeDefinition, error) {
+func parseNodeDefinitionSource(raw []byte) (*CompiledNodeDefinition, []sourceBrokerProfile, error) {
 	decoder := yaml.NewDecoder(bytes.NewReader(raw))
 	var document any
 	if err := decoder.Decode(&document); err != nil {
-		return nil, fmt.Errorf("parse node definition: %w", err)
+		return nil, nil, fmt.Errorf("parse node definition: %w", err)
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		if err == nil {
-			return nil, fmt.Errorf("parse node definition: exactly one YAML or JSON document is required")
+			return nil, nil, fmt.Errorf("parse node definition: exactly one YAML or JSON document is required")
 		}
-		return nil, fmt.Errorf("parse node definition trailing document: %w", err)
+		return nil, nil, fmt.Errorf("parse node definition trailing document: %w", err)
 	}
 	if err := validateNodeSourceKeys(document); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	documentJSON, err := json.Marshal(document)
 	if err != nil {
-		return nil, fmt.Errorf("parse node definition document: %w", err)
+		return nil, nil, fmt.Errorf("parse node definition document: %w", err)
 	}
 	jsonDecoder := json.NewDecoder(bytes.NewReader(documentJSON))
 	jsonDecoder.DisallowUnknownFields()
 	var source nodeSource
 	if err := jsonDecoder.Decode(&source); err != nil {
-		return nil, fmt.Errorf("parse node definition: %w", err)
+		return nil, nil, fmt.Errorf("parse node definition: %w", err)
 	}
 	if err := jsonDecoder.Decode(&trailing); err != io.EOF {
 		if err == nil {
-			return nil, fmt.Errorf("parse node definition: unexpected trailing JSON value")
+			return nil, nil, fmt.Errorf("parse node definition: unexpected trailing JSON value")
 		}
-		return nil, fmt.Errorf("parse node definition trailing JSON: %w", err)
+		return nil, nil, fmt.Errorf("parse node definition trailing JSON: %w", err)
 	}
 	if source.SchemaVersion != 1 {
-		return nil, fmt.Errorf("workflow: node parser requires schema_version 1, got %d", source.SchemaVersion)
+		return nil, nil, fmt.Errorf("workflow: node parser requires schema_version 1, got %d", source.SchemaVersion)
+	}
+	brokerSelectors, err := extractSourceBrokerProfiles(source.Step, "node.step")
+	if err != nil {
+		return nil, nil, err
 	}
 
 	ordinary, err := decodeNodeStep(source.Step)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(ordinary.Jobs) != 1 || len(ordinary.Jobs[0].PlanSequence) != 1 {
-		return nil, fmt.Errorf("workflow: node step must contain exactly one atomic leaf")
+		return nil, nil, fmt.Errorf("workflow: node step must contain exactly one atomic leaf")
 	}
 	step := ordinary.Jobs[0].PlanSequence[0]
 	if err := rejectUnknownPlanFields([]atc.Step{step}); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	function := FunctionConfig{
 		SignatureVersion: 1,
@@ -77,13 +81,13 @@ func parseNodeDefinitionSource(raw []byte) (*CompiledNodeDefinition, error) {
 		Plan:             []atc.Step{step},
 	}
 	if err := bindNodeLeafPorts(&function); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	definition := &CompiledNodeDefinition{SchemaVersion: source.SchemaVersion, Name: source.Name, Description: source.Description, Parameters: source.Parameters, Function: function}
 	if err := definition.validate(true); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return definition, nil
+	return definition, brokerSelectors, nil
 }
 
 func validateNodeSourceKeys(document any) error {

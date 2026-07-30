@@ -212,3 +212,41 @@ func sortCompiledBrokerProfiles(profiles []CompiledBrokerProfile) {
 		return profiles[i].Selector.Effort < profiles[j].Selector.Effort
 	})
 }
+
+func renderBrokerAuthority(functionID string, profiles []CompiledBrokerProfile) ([]atc.AgentBrokerProfile, error) {
+	selected := make([]atc.AgentBrokerProfile, 0)
+	for _, compiled := range profiles {
+		if compiled.FunctionID != functionID {
+			continue
+		}
+		if err := validateCompiledBrokerProfile(compiled); err != nil {
+			return nil, err
+		}
+		encoded, err := json.Marshal(compiled.Profile)
+		if err != nil {
+			return nil, fmt.Errorf("workflow: encode frozen broker profile: %w", err)
+		}
+		selected = append(selected, atc.AgentBrokerProfile{
+			FunctionID: functionID, Tool: string(compiled.Tool), Tier: string(compiled.Selector.Tier), Effort: string(compiled.Selector.Effort),
+			ProfileID: compiled.Profile.ID, ProfileRevision: compiled.Profile.Revision, ProfileDigest: compiled.Profile.Digest,
+			WorkerImage: compiled.Profile.WorkerImage, Profile: encoded,
+		})
+	}
+	if len(selected) == 0 {
+		return nil, nil
+	}
+	sort.Slice(selected, func(i, j int) bool {
+		if selected[i].Tool != selected[j].Tool {
+			return selected[i].Tool < selected[j].Tool
+		}
+		if selected[i].Tier != selected[j].Tier {
+			return selected[i].Tier < selected[j].Tier
+		}
+		return selected[i].Effort < selected[j].Effort
+	})
+	step := &atc.AgentStep{FunctionID: functionID, BrokerAuthority: selected}
+	if err := step.ValidateBrokerAuthority(); err != nil {
+		return nil, fmt.Errorf("workflow: rendered broker authority: %w", err)
+	}
+	return selected, nil
+}

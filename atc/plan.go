@@ -1,6 +1,8 @@
 package atc
 
 import (
+	"encoding/json"
+
 	"github.com/concourse/concourse/agent/publisher"
 	"github.com/concourse/concourse/agent/snapshot"
 )
@@ -464,6 +466,26 @@ type AgentPlan struct {
 	Timeout          string                          `json:"timeout,omitempty"`
 	Limits           *ContainerLimits                `json:"container_limits,omitempty"`
 	Requests         *ContainerLimits                `json:"container_requests,omitempty"`
+	// BrokerAuthority is trusted, execution-only broker authority. It is
+	// projected by workflow rendering from compiled profiles and is omitted
+	// from public plans, so authored configuration cannot name a provider or
+	// mint broker access.
+	BrokerAuthority []AgentBrokerProfile `json:"broker_authority,omitempty"`
+}
+
+// AgentBrokerProfile is the exact operator profile selected at compilation
+// time for one agent function. Profile contains its canonical frozen authority
+// rather than a mutable catalog reference.
+type AgentBrokerProfile struct {
+	FunctionID      string          `json:"function_id"`
+	Tool            string          `json:"tool"`
+	Tier            string          `json:"tier"`
+	Effort          string          `json:"effort"`
+	ProfileID       string          `json:"profile_id"`
+	ProfileRevision int             `json:"profile_revision"`
+	ProfileDigest   string          `json:"profile_digest"`
+	WorkerImage     string          `json:"worker_image"`
+	Profile         json.RawMessage `json:"profile"`
 }
 
 type SetPipelinePlan struct {

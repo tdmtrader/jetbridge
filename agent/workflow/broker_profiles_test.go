@@ -8,6 +8,7 @@ import (
 
 	"github.com/concourse/concourse/agent/broker"
 	"github.com/concourse/concourse/agent/workflow"
+	"github.com/concourse/concourse/atc"
 )
 
 func TestCompileDefinitionWithBrokerCatalogFreezesOnlyNodeSelections(t *testing.T) {
@@ -170,6 +171,94 @@ plan:
 	definition.Function.BrokerProfiles[0].Profile.Provider.Model = "attacker-controlled"
 	if _, err := definition.Function.ResolveBrokerProfile("implement", broker.ToolConsultAgent, broker.Selector{Tier: broker.TierBalanced, Effort: broker.EffortHigh}); err == nil || !strings.Contains(err.Error(), "digest does not match") {
 		t.Fatalf("mutated in-memory broker authority error = %v, want exact authority rejection", err)
+	}
+}
+
+func TestCompileDefinitionWithNodesAndBrokerCatalogPreservesReleasedNodeAuthority(t *testing.T) {
+	catalog, err := broker.NewCatalog([]broker.Profile{
+		brokerProfile("consult-balanced", broker.ToolConsultAgent, broker.TierBalanced, broker.EffortHigh, "gpt-5.6"),
+	})
+	if err != nil {
+		t.Fatalf("new catalog: %v", err)
+	}
+	node, err := workflow.CompileNodeDefinitionWithBrokerCatalog(workflow.Manifest{workflow.NodeFileName: `schema_version: 1
+name: brokered-review
+step:
+  agent: review
+  function_id: review
+  prompt: review
+  broker_profiles:
+    - tool: consult_agent
+      tier: balanced
+      effort: high
+`}, catalog)
+	if err != nil {
+		t.Fatalf("compile released node: %v", err)
+	}
+	compiled, _, err := workflow.CompileDefinitionWithNodesAndBrokerCatalog(workflow.Manifest{workflow.WorkflowFileName: `schema_version: 3
+name: consumer
+signature_version: 1
+inputs: []
+outputs: []
+plan:
+  - node: review-instance
+    uses: brokered-review@1
+`}, releasedNodeResolver{node: workflow.NodeDefinition{ID: 31, Name: "brokered-review", Version: 1, ContentHash: "exact", Compiled: *node}}, catalog)
+	if err != nil {
+		t.Fatalf("compile consumer: %v", err)
+	}
+	if len(compiled.Function.BrokerProfiles) != 1 {
+		t.Fatalf("compiled profiles = %#v, want released node authority", compiled.Function.BrokerProfiles)
+	}
+	profile := compiled.Function.BrokerProfiles[0]
+	if profile.FunctionID != "review-instance" || profile.Profile.ID != "consult-balanced" || compiled.Function.BrokerProfileProvenanceHash == "" {
+		t.Fatalf("compiled broker authority = %#v, hash = %q", profile, compiled.Function.BrokerProfileProvenanceHash)
+	}
+}
+
+func TestRenderFunctionInjectsOnlyExactBrokerAuthorityIntoAgentStep(t *testing.T) {
+	catalog, err := broker.NewCatalog([]broker.Profile{
+		brokerProfile("consult-balanced", broker.ToolConsultAgent, broker.TierBalanced, broker.EffortHigh, "gpt-5.6"),
+	})
+	if err != nil {
+		t.Fatalf("new catalog: %v", err)
+	}
+	definition, err := workflow.CompileDefinitionWithBrokerCatalog(workflow.Manifest{workflow.WorkflowFileName: `schema_version: 3
+name: brokered
+signature_version: 1
+inputs: []
+outputs: []
+plan:
+  - agent: consult
+    function_id: consult
+    prompt: consult
+    broker_profiles:
+      - tool: consult_agent
+        tier: balanced
+        effort: high
+  - agent: plain
+    function_id: plain
+    prompt: plain
+`}, catalog)
+	if err != nil {
+		t.Fatalf("compile definition: %v", err)
+	}
+	persisted := workflow.Definition{ID: 41, Name: definition.Name, Version: 2, SchemaVersion: 3, SignatureVersion: 1, Compiled: *definition}
+	target, err := workflow.FullFunctionTarget(persisted)
+	if err != nil {
+		t.Fatalf("target: %v", err)
+	}
+	rendered, err := workflow.RenderFunction(target)
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	consult := rendered.Config.Jobs[0].PlanSequence[0].Config.(*atc.AgentStep)
+	plain := rendered.Config.Jobs[0].PlanSequence[1].Config.(*atc.AgentStep)
+	if len(consult.BrokerAuthority) != 1 || consult.BrokerAuthority[0].ProfileDigest != definition.Function.BrokerProfiles[0].Profile.Digest || consult.BrokerAuthority[0].FunctionID != "consult" {
+		t.Fatalf("rendered consult broker authority = %#v", consult.BrokerAuthority)
+	}
+	if len(plain.BrokerAuthority) != 0 {
+		t.Fatalf("plain agent received broker authority: %#v", plain.BrokerAuthority)
 	}
 }
 

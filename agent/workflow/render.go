@@ -771,6 +771,18 @@ func renderFunction(target FunctionTarget, sourceRefs map[string]snapshot.Snapsh
 	if err := TypeCheckFunction(flowFunction); err != nil {
 		return RenderedFunction{}, fmt.Errorf("workflow: rendered snapshot flow: %w", err)
 	}
+	for index := range function.Plan {
+		if err := function.Plan[index].Config.Visit(atc.StepRecursor{OnAgent: func(step *atc.AgentStep) error {
+			authority, err := renderBrokerAuthority(step.FunctionID, function.BrokerProfiles)
+			if err != nil {
+				return err
+			}
+			step.BrokerAuthority = authority
+			return nil
+		}}); err != nil {
+			return RenderedFunction{}, err
+		}
+	}
 
 	config := atc.Config{
 		Template:      true,

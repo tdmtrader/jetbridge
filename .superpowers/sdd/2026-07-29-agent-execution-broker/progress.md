@@ -57,3 +57,12 @@ compilation preserves its frozen-node assets while accepting broker selectors.
 Post-rebase contract, workflow, full broker, focused ATC authority, and DB
 compile checks pass. A package-local nullable helper was renamed to avoid the
 new upstream PR-binding helper.
+
+Task 9a: complete pending independent review/commit — frozen compiled broker
+profiles now survive catalog-aware reusable-node expansion, rendering, private
+ATC AgentStep/AgentPlan conversion, and immutable template save/reuse hashing.
+The broker command has fixed authority path plus `/healthz` and `/mcp`; runner
+reserves `agent-broker`. Focused workflow/workflowrun/builds/command tests and
+ATC compile checks pass. Broker transport network tests remain sandbox-blocked
+at IPv6 loopback bind; see `task-9a-report.md`. Task 9b pod injection remains
+intentionally untouched.

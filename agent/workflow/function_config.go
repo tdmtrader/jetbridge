@@ -244,6 +244,16 @@ func (config FunctionConfig) Validate() error {
 	if err := validateCompiledBrokerProfileNodes(config.Plan, config.BrokerProfiles); err != nil {
 		return err
 	}
+	for index := range config.Plan {
+		if err := config.Plan[index].Config.Visit(atc.StepRecursor{OnAgent: func(step *atc.AgentStep) error {
+			if len(step.BrokerAuthority) != 0 {
+				return fmt.Errorf("workflow: agent %q broker_authority is render-owned", step.Name)
+			}
+			return nil
+		}}); err != nil {
+			return err
+		}
+	}
 	remaining := MaxCompiledAssetBytes
 	for _, profile := range config.DevValidationProfiles {
 		if len(profile.Profile) > remaining {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 
+	"github.com/concourse/concourse/agent/broker"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/atc"
@@ -113,6 +114,20 @@ type ImmutableTemplateSpec struct {
 	// It is carried only while verifying the immutable template identity.
 	DevValidationProfiles       []workflow.CompiledDevValidationProfile
 	DevValidationProvenanceHash string
+	BrokerProfiles              []workflow.CompiledBrokerProfile
+	BrokerProfileProvenanceHash string
+}
+
+func cloneBrokerProfiles(source []workflow.CompiledBrokerProfile) []workflow.CompiledBrokerProfile {
+	if source == nil {
+		return nil
+	}
+	cloned := make([]workflow.CompiledBrokerProfile, len(source))
+	for index, profile := range source {
+		cloned[index] = profile
+		cloned[index].Profile.Tools = append([]broker.Tool(nil), profile.Profile.Tools...)
+	}
+	return cloned
 }
 
 func cloneDevValidationProfiles(source []workflow.CompiledDevValidationProfile) []workflow.CompiledDevValidationProfile {

@@ -2,16 +2,37 @@ package workflowrun
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/concourse/concourse/agent/broker"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 	"github.com/concourse/concourse/atc/db/dbfakes"
 )
+
+func TestTemplateSaverBrokerAuthorityPreventsConfigOnlyReuse(t *testing.T) {
+	first := brokerTemplateSpec(t, "gpt-5.6")
+	second := brokerTemplateSpec(t, "gpt-5.7")
+	second.Name = first.Name
+	pipeline := exactTemplatePipeline(first, 81, 7, 13)
+	team := new(dbfakes.FakeTeam)
+	team.IDReturns(7)
+	team.NameReturns("research")
+	team.PipelineReturns(pipeline, true, nil)
+	saver, err := NewTemplateSaver(&teamFinderStub{find: func(string) (db.Team, bool, error) { return team, true, nil }}, alwaysOwnedTemplateStore())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := saver.SaveOrReuse(context.Background(), AdmissionContext{TeamID: 7, TeamName: "research"}, second); !errors.Is(err, ErrImmutableTemplateCollision) {
+		t.Fatalf("error = %v, want broker authority collision", err)
+	}
+}
 
 func TestTemplateSaverValidationAuthorityPreventsConfigOnlyReuse(t *testing.T) {
 	first := validationTemplateSpec(t, "one")
@@ -315,6 +336,51 @@ func validationTemplateSpec(t *testing.T, value string) ImmutableTemplateSpec {
 		t.Fatal(err)
 	}
 	spec.Name, spec.FullHash, spec.DevValidationProfiles, spec.DevValidationProvenanceHash = name, hash, profiles, provenance
+	return spec
+}
+
+func brokerTemplateSpec(t *testing.T, model string) ImmutableTemplateSpec {
+	t.Helper()
+	spec := templateSaverSpec(t)
+	profile := broker.Profile{
+		ID: "consult", Revision: 1, Selector: broker.Selector{Tier: broker.TierBalanced, Effort: broker.EffortHigh}, Tools: []broker.Tool{broker.ToolConsultAgent},
+		WorkerImage: "registry.example/broker@sha256:" + strings.Repeat("a", 64), Adapter: broker.AdapterSpec{Name: broker.AdapterCodex, Version: "1.2.3"},
+		Provider: broker.ProviderSpec{Name: "openai", Model: model}, NativeEffort: "high", InstructionsDigest: "sha256:" + strings.Repeat("b", 64), CredentialSlot: "broker-openai",
+		Limits:   broker.Limits{Timeout: time.Minute, MaxInputBytes: 1024, MaxOutputBytes: 1024},
+		Controls: broker.Controls{ReadOnlyWorkspace: true, NoBrokerRecursion: true, TestsUnavailable: true, NativeOutputSchema: true, IgnoresUserConfig: true},
+	}
+	catalog, err := broker.NewCatalog([]broker.Profile{profile})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := catalog.Resolve(broker.ToolConsultAgent, profile.Selector)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiles := []workflow.CompiledBrokerProfile{{FunctionID: "consult", Tool: broker.ToolConsultAgent, Selector: profile.Selector, Profile: resolved}}
+	provenance, err := workflow.BrokerProfileProvenanceHash(profiles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(resolved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec.Config.Jobs[0].PlanSequence = []atc.Step{{Config: &atc.AgentStep{Name: "consult", FunctionID: "consult", BrokerAuthority: []atc.AgentBrokerProfile{{FunctionID: "consult", Tool: string(broker.ToolConsultAgent), Tier: string(profile.Selector.Tier), Effort: string(profile.Selector.Effort), ProfileID: resolved.ID, ProfileRevision: resolved.Revision, ProfileDigest: resolved.Digest, WorkerImage: resolved.WorkerImage, Profile: encoded}}}}}
+	canonical, err := spec.Config.CanonicalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash, err := workflow.RenderedTargetConfigHashWithBrokerProfiles(spec.Config, nil, "", profiles, provenance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name, err := workflow.TemplateName(workflow.TargetWorkflow, "review-flow", 3, "", hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec.Name, spec.FullHash, spec.CanonicalJSON = name, hash, canonical
+	spec.BrokerProfiles, spec.BrokerProfileProvenanceHash = profiles, provenance
 	return spec
 }
 

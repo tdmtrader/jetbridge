@@ -1056,6 +1056,7 @@ func (b *Binder) resume(
 	templateRef, err := b.templates.SaveOrReuse(ctx, cloneAdmission(admission), ImmutableTemplateSpec{
 		Name: templateName, FullHash: hash, CanonicalJSON: append([]byte(nil), canonical...), Config: cloneConfig(config),
 		DevValidationProfiles: cloneDevValidationProfiles(rendered.DevValidationProfiles), DevValidationProvenanceHash: rendered.DevValidationProvenanceHash,
+		BrokerProfiles: cloneBrokerProfiles(rendered.BrokerProfiles), BrokerProfileProvenanceHash: rendered.BrokerProfileProvenanceHash,
 	})
 	if err != nil {
 		if errors.Is(err, ErrImmutableTemplateCollision) {
@@ -1558,7 +1559,7 @@ func validateRendered(target workflow.FunctionTarget, rendered workflow.Rendered
 	if err != nil {
 		return nil, fmt.Errorf("%w: canonicalize rendered target", ErrPlatformFailure)
 	}
-	hash, err := workflow.RenderedTargetConfigHash(rendered.Config, rendered.DevValidationProfiles, rendered.DevValidationProvenanceHash)
+	hash, err := workflow.RenderedTargetConfigHashWithBrokerProfiles(rendered.Config, rendered.DevValidationProfiles, rendered.DevValidationProvenanceHash, rendered.BrokerProfiles, rendered.BrokerProfileProvenanceHash)
 	if err != nil || hash != rendered.TargetConfigHash {
 		return nil, fmt.Errorf("%w: rendered target hash mismatch", ErrPlatformFailure)
 	}

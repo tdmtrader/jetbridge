@@ -113,6 +113,9 @@ func (visitor *planVisitor) VisitAgent(step *atc.AgentStep) error {
 	if len(step.Capabilities) > 0 {
 		return fmt.Errorf("agent step %s has unresolved capabilities; compile them before planning", step.Name)
 	}
+	if err := step.ValidateBrokerAuthority(); err != nil {
+		return fmt.Errorf("agent step %s has invalid broker authority: %w", step.Name, err)
+	}
 	visitor.plan = visitor.planFactory.NewPlan(atc.AgentPlan{
 		Name:             step.Name,
 		FunctionID:       step.FunctionID,
@@ -139,9 +142,22 @@ func (visitor *planVisitor) VisitAgent(step *atc.AgentStep) error {
 		Timeout:          step.Timeout,
 		Limits:           step.Limits,
 		Requests:         step.Requests,
+		BrokerAuthority:  cloneAgentBrokerAuthority(step.BrokerAuthority),
 	})
 
 	return nil
+}
+
+func cloneAgentBrokerAuthority(source []atc.AgentBrokerProfile) []atc.AgentBrokerProfile {
+	if source == nil {
+		return nil
+	}
+	cloned := make([]atc.AgentBrokerProfile, len(source))
+	for index, profile := range source {
+		cloned[index] = profile
+		cloned[index].Profile = append([]byte(nil), profile.Profile...)
+	}
+	return cloned
 }
 
 func (visitor *planVisitor) VisitGet(step *atc.GetStep) error {

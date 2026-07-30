@@ -48,6 +48,9 @@ const (
 	outputBuilderMarkerEnv = "CONCOURSE_OUTPUT_BUILDER_MCP"
 	outputBuilderMCPName   = "output-builder"
 	outputBuilderMCPURL    = "http://127.0.0.1:7783/mcp"
+	brokerMCPMarkerEnv     = "CONCOURSE_AGENT_BROKER_MCP"
+	brokerMCPName          = "agent-broker"
+	brokerMCPURL           = "http://127.0.0.1:7784/mcp"
 )
 
 // Config drives one agent-step execution.
@@ -83,8 +86,11 @@ type Config struct {
 	// OutputBuilderMarker is a server-created activation bit. The runner owns
 	// the managed name and endpoint; neither is accepted from authored MCP env.
 	OutputBuilderMarker string
-	Stdout              io.Writer
-	Stderr              io.Writer
+	// BrokerMCPMarker is a server-created activation bit. Agent workflow
+	// configuration cannot select the managed broker endpoint or name.
+	BrokerMCPMarker string
+	Stdout          io.Writer
+	Stderr          io.Writer
 
 	// OutputPaths maps each §8.1 AGENT_OUTPUT_<NAME> env var (its full
 	// name, AGENT_OUTPUT_SCHEMA excluded — that row is the schema path,
@@ -151,6 +157,7 @@ func FromEnv() Config {
 		WorkDir:             wd,
 		MCPServers:          map[string]string{},
 		OutputBuilderMarker: os.Getenv(outputBuilderMarkerEnv),
+		BrokerMCPMarker:     os.Getenv(brokerMCPMarkerEnv),
 		OutputPaths:         map[string]string{},
 		InputSnapshots:      map[string]SnapshotAuthority{},
 		RecordOutputs:       map[string]RecordAuthority{},
@@ -222,6 +229,12 @@ func admittedMCPServers(marker string, authored map[string]string) (map[string]s
 		if endpoint == outputBuilderMCPURL {
 			return nil, false, fmt.Errorf("managed MCP endpoint %q is reserved", outputBuilderMCPURL)
 		}
+		if name == brokerMCPName {
+			return nil, false, fmt.Errorf("managed MCP name %q is reserved", brokerMCPName)
+		}
+		if endpoint == brokerMCPURL {
+			return nil, false, fmt.Errorf("managed MCP endpoint %q is reserved", brokerMCPURL)
+		}
 		servers[name] = endpoint
 	}
 	switch marker {
@@ -232,6 +245,22 @@ func admittedMCPServers(marker string, authored map[string]string) (map[string]s
 		return servers, true, nil
 	default:
 		return nil, false, fmt.Errorf("%s must be exactly 1 when present", outputBuilderMarkerEnv)
+	}
+}
+
+func admitBrokerMCP(marker string, servers map[string]string) (map[string]string, bool, error) {
+	cloned := make(map[string]string, len(servers)+1)
+	for name, endpoint := range servers {
+		cloned[name] = endpoint
+	}
+	switch marker {
+	case "":
+		return cloned, false, nil
+	case "1":
+		cloned[brokerMCPName] = brokerMCPURL
+		return cloned, true, nil
+	default:
+		return nil, false, fmt.Errorf("%s must be exactly 1 when present", brokerMCPMarkerEnv)
 	}
 }
 
@@ -282,6 +311,10 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	mcpServers, outputBuilderEnabled, err := admittedMCPServers(cfg.OutputBuilderMarker, cfg.MCPServers)
 	if err != nil {
 		return 2, fmt.Errorf("admit MCP configuration: %w", err)
+	}
+	mcpServers, _, err = admitBrokerMCP(cfg.BrokerMCPMarker, mcpServers)
+	if err != nil {
+		return 2, fmt.Errorf("admit broker MCP configuration: %w", err)
 	}
 	// 1. The compiler always inlines the prompt.
 	prompt := cfg.Prompt
