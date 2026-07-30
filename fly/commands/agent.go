@@ -8,6 +8,7 @@ type AgentCommand struct {
 	Costs       AgentCostsCommand       `command:"costs" description:"Show agent cost rollups"`
 	Runs        AgentRunsCommand        `command:"runs" description:"List recent agent run metrics (cost, tokens, status)"`
 	Workflows   AgentWorkflowsCommand   `command:"workflows" description:"Manage versioned agent workflow definitions"`
+	Nodes       AgentNodesCommand       `command:"nodes" description:"Manage reusable atomic node definitions"`
 	Tickets     AgentTicketsCommand     `command:"tickets" description:"File and track agent tickets"`
 	Dispatcher  AgentDispatcherCommand  `command:"dispatcher" description:"Show or set the autonomous dispatcher mode (off|paused|active)"`
 	Snapshots   AgentSnapshotsCommand   `command:"snapshots" description:"Create, inspect, retain, and download typed snapshots"`

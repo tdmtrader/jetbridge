@@ -165,6 +165,12 @@ const (
 	ListAgentWorkflowRunMetrics                = "ListAgentWorkflowRunMetrics"
 	ListAgentWorkflowRunTranscripts            = "ListAgentWorkflowRunTranscripts"
 	GetAgentWorkflowRunTranscript              = "GetAgentWorkflowRunTranscript"
+	ListAgentNodes                             = "ListAgentNodes"
+	ListAgentNodeVersions                      = "ListAgentNodeVersions"
+	GetAgentNodeVersion                        = "GetAgentNodeVersion"
+	CreateAgentNodeVersion                     = "CreateAgentNodeVersion"
+	ReleaseAgentNodeVersion                    = "ReleaseAgentNodeVersion"
+	DeprecateAgentNodeVersion                  = "DeprecateAgentNodeVersion"
 
 	CreateAgentExperiment       = "CreateAgentExperiment"
 	ListAgentExperiments        = "ListAgentExperiments"
@@ -359,6 +365,12 @@ var Routes = rata.Routes([]rata.Route{
 	{Path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/transcripts", Method: "GET", Name: ListAgentWorkflowRunTranscripts},
 	{Path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/transcripts/:plan_id", Method: "GET", Name: GetAgentWorkflowRunTranscript},
 	{Path: "/api/v1/agent/workflows/:workflow_name/runs/:workflow_run_id/reviews", Method: "GET", Name: ListAgentWorkflowRunReviews},
+	{Path: "/api/v1/agent/nodes", Method: "GET", Name: ListAgentNodes},
+	{Path: "/api/v1/agent/nodes/:node_name/versions", Method: "GET", Name: ListAgentNodeVersions},
+	{Path: "/api/v1/agent/nodes/:node_name/versions/:version", Method: "GET", Name: GetAgentNodeVersion},
+	{Path: "/api/v1/agent/nodes/:node_name/versions", Method: "POST", Name: CreateAgentNodeVersion},
+	{Path: "/api/v1/agent/nodes/:node_name/versions/:version/release", Method: "PUT", Name: ReleaseAgentNodeVersion},
+	{Path: "/api/v1/agent/nodes/:node_name/versions/:version/deprecation", Method: "PUT", Name: DeprecateAgentNodeVersion},
 
 	{Path: "/api/v1/agent/experiments", Method: "POST", Name: CreateAgentExperiment},
 	{Path: "/api/v1/agent/experiments", Method: "GET", Name: ListAgentExperiments},

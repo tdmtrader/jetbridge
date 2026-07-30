@@ -10,8 +10,14 @@ import (
 	"github.com/tedsuo/rata"
 )
 
-func TestAgentWorkflowRunRoutesAreNotRejectedForArchivedPipelines(t *testing.T) {
+func TestAgentNodeAndWorkflowRunRoutesAreNotRejectedForArchivedPipelines(t *testing.T) {
 	routes := []string{
+		atc.ListAgentNodes,
+		atc.ListAgentNodeVersions,
+		atc.GetAgentNodeVersion,
+		atc.CreateAgentNodeVersion,
+		atc.ReleaseAgentNodeVersion,
+		atc.DeprecateAgentNodeVersion,
 		atc.CreateAgentWorkflowRun,
 		atc.ListAgentWorkflowRuns,
 		atc.GetAgentWorkflowRunOperationalStatusCounts,

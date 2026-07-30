@@ -335,6 +335,7 @@ var _ = BeforeEach(func() {
 		0,
 		fakeAgentRunTranscriptFactory,
 		workflowtest.NewMemoryStore(),
+		workflowtest.NewMemoryNodeStore(),
 		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusNotImplemented) // dispatch handler stub
 		}),

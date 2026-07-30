@@ -16,8 +16,14 @@ import (
 	"github.com/tedsuo/rata"
 )
 
-func TestAgentWorkflowRunRoutesUseHumanMainTeamAuthorization(t *testing.T) {
+func TestAgentNodeAndWorkflowRunRoutesUseHumanMainTeamAuthorization(t *testing.T) {
 	routes := []string{
+		atc.ListAgentNodes,
+		atc.ListAgentNodeVersions,
+		atc.GetAgentNodeVersion,
+		atc.CreateAgentNodeVersion,
+		atc.ReleaseAgentNodeVersion,
+		atc.DeprecateAgentNodeVersion,
 		atc.CreateAgentWorkflowRun,
 		atc.ListAgentWorkflowRuns,
 		atc.GetAgentWorkflowRunOperationalStatusCounts,

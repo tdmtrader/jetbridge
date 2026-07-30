@@ -41,6 +41,95 @@ steps:
     outputs: [workspace]
 `
 
+const nodeDefYAML = `schema_version: 1
+name: code-review
+description: integration test node
+inputs: []
+outputs: []
+step:
+  agent: review
+  prompt_file: prompts/review.md
+  model: claude-sonnet
+`
+
+var _ = Describe("fly agent nodes", func() {
+	It("lists nodes as JSON and as a readable table", func() {
+		atcServer.AppendHandlers(
+			ghttp.CombineHandlers(
+				ghttp.VerifyRequest("GET", "/api/v1/agent/nodes"),
+				ghttp.RespondWithJSONEncoded(http.StatusOK, []map[string]any{{
+					"name": "code-review", "latest_version": 3, "description": "review changes",
+				}}),
+			),
+		)
+		flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "nodes", "list", "--json")
+		sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+		Expect(err).NotTo(HaveOccurred())
+		<-sess.Exited
+		Expect(sess.ExitCode()).To(Equal(0))
+		Expect(sess.Out).To(gbytes.Say(`"latest_version": 3`))
+	})
+
+	It("imports a directory manifest and releases then deprecates its version", func() {
+		dir := GinkgoT().TempDir()
+		Expect(os.Mkdir(filepath.Join(dir, "prompts"), 0o700)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(dir, "node.yaml"), []byte(nodeDefYAML), 0o600)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(dir, "prompts", "review.md"), []byte("Review it."), 0o600)).To(Succeed())
+		atcServer.AppendHandlers(
+			ghttp.CombineHandlers(
+				ghttp.VerifyRequest("POST", "/api/v1/agent/nodes/code-review/versions"),
+				ghttp.VerifyContentType("application/json"),
+				ghttp.VerifyJSONRepresenting(map[string]any{"files": map[string]string{
+					"node.yaml": nodeDefYAML, "prompts/review.md": "Review it.",
+				}}),
+				ghttp.RespondWithJSONEncoded(http.StatusOK, map[string]any{"name": "code-review", "version": 1, "content_hash": "abcdef0123456789"}),
+			),
+			ghttp.CombineHandlers(
+				ghttp.VerifyRequest("PUT", "/api/v1/agent/nodes/code-review/versions/1/release"),
+				ghttp.VerifyJSONRepresenting(map[string]any{"compatibility": "breaking"}),
+				ghttp.RespondWithJSONEncoded(http.StatusOK, map[string]any{"released_at": 1, "compatibility": "breaking"}),
+			),
+			ghttp.CombineHandlers(
+				ghttp.VerifyRequest("PUT", "/api/v1/agent/nodes/code-review/versions/1/deprecation"),
+				ghttp.VerifyJSONRepresenting(map[string]any{"deprecated": true}),
+				ghttp.RespondWithJSONEncoded(http.StatusOK, map[string]any{}),
+			),
+		)
+		for _, args := range [][]string{
+			{"agent", "nodes", "import", dir},
+			{"agent", "nodes", "release", "code-review", "1", "--compatibility", "breaking"},
+			{"agent", "nodes", "deprecate", "code-review", "1"},
+		} {
+			flyCmd := exec.Command(flyPath, append([]string{"-t", targetName}, args...)...)
+			sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+			Expect(err).NotTo(HaveOccurred())
+			<-sess.Exited
+			Expect(sess.ExitCode()).To(Equal(0))
+		}
+	})
+
+	It("defaults show to the latest released version", func() {
+		atcServer.AppendHandlers(
+			ghttp.CombineHandlers(
+				ghttp.VerifyRequest("GET", "/api/v1/agent/nodes/code-review/versions", "limit=100"),
+				ghttp.RespondWithJSONEncoded(http.StatusOK, []map[string]any{
+					{"version": 2, "release": map[string]any{"released_at": 2}}, {"version": 3},
+				}),
+			),
+			ghttp.CombineHandlers(
+				ghttp.VerifyRequest("GET", "/api/v1/agent/nodes/code-review/versions/2"),
+				ghttp.RespondWithJSONEncoded(http.StatusOK, map[string]any{"name": "code-review", "version": 2, "source_manifest": map[string]string{"node.yaml": nodeDefYAML}}),
+			),
+		)
+		flyCmd := exec.Command(flyPath, "-t", targetName, "agent", "nodes", "show", "code-review", "--json")
+		sess, err := gexec.Start(flyCmd, GinkgoWriter, GinkgoWriter)
+		Expect(err).NotTo(HaveOccurred())
+		<-sess.Exited
+		Expect(sess.ExitCode()).To(Equal(0))
+		Expect(sess.Out).To(gbytes.Say(`"version": 2`))
+	})
+})
+
 var _ = Describe("fly agent workflows", func() {
 	Describe("run", func() {
 		It("creates a pinned workflow run with named snapshot inputs and lossless IDs", func() {

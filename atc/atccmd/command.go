@@ -3598,6 +3598,7 @@ func (cmd *RunCommand) constructAPIHandler(
 	}
 	targetRenderer := dispatchGraph.targetRenderer
 	workflowStore := dispatchGraph.workflows
+	nodeStore := db.NewAgentNodesFactory(dbConn)
 	workflowRunStore := dispatchGraph.runs
 	snapshotStore := dispatchGraph.snapshots
 	var resourceCapturer snapshotsapi.ResourceCapturer
@@ -3729,6 +3730,7 @@ func (cmd *RunCommand) constructAPIHandler(
 		cmd.AgentDailyBudgetUSD,
 		db.NewAgentRunTranscriptFactory(dbConn),
 		workflowStore,
+		nodeStore,
 		// The SAME Deps the dispatcher component runs on.
 		dispatch.NewHTTPHandler(dispatchGraph.deps, func(r *http.Request) string {
 			return accessor.GetAccessor(r).Claims().UserName

@@ -10,6 +10,12 @@ import (
 
 func TestAgentWorkflowRunRoutesHaveExplicitMainTeamRoles(t *testing.T) {
 	want := map[string]string{
+		atc.ListAgentNodes:                             ViewerRole,
+		atc.ListAgentNodeVersions:                      ViewerRole,
+		atc.GetAgentNodeVersion:                        ViewerRole,
+		atc.CreateAgentNodeVersion:                     MemberRole,
+		atc.ReleaseAgentNodeVersion:                    MemberRole,
+		atc.DeprecateAgentNodeVersion:                  MemberRole,
 		atc.CreateAgentWorkflowRun:                     MemberRole,
 		atc.ListAgentWorkflowRuns:                      ViewerRole,
 		atc.GetAgentWorkflowRunOperationalStatusCounts: ViewerRole,
@@ -27,12 +33,18 @@ func TestAgentWorkflowRunRoutesHaveExplicitMainTeamRoles(t *testing.T) {
 
 func TestAgentWorkflowRunRolesEnforceViewerAndMemberTiers(t *testing.T) {
 	readRoutes := []string{
+		atc.ListAgentNodes,
+		atc.ListAgentNodeVersions,
+		atc.GetAgentNodeVersion,
 		atc.ListAgentWorkflowRuns,
 		atc.GetAgentWorkflowRunOperationalStatusCounts,
 		atc.GetAgentWorkflowRun,
 		atc.GetAgentWorkflowRunOutputs,
 	}
 	writeRoutes := []string{
+		atc.CreateAgentNodeVersion,
+		atc.ReleaseAgentNodeVersion,
+		atc.DeprecateAgentNodeVersion,
 		atc.CreateAgentWorkflowRun,
 		atc.CancelAgentWorkflowRun,
 		atc.RetryAgentWorkflowRun,

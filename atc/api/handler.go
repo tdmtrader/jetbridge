@@ -13,6 +13,7 @@ import (
 	experimentsapi "github.com/concourse/concourse/agent/api/experiments"
 	"github.com/concourse/concourse/agent/api/feedback"
 	metricsapi "github.com/concourse/concourse/agent/api/metrics"
+	nodesapi "github.com/concourse/concourse/agent/api/nodes"
 	reviewsapi "github.com/concourse/concourse/agent/api/reviews"
 	snapshotsapi "github.com/concourse/concourse/agent/api/snapshots"
 	ticketsapi "github.com/concourse/concourse/agent/api/tickets"
@@ -116,6 +117,7 @@ func NewHandler(
 	// tool-call transcript the agent step persisted during flight ingestion.
 	agentRunTranscriptStore transcriptserver.Store,
 	workflowStore workflow.Store,
+	nodeStore workflow.NodeStore,
 	// agentDispatchHandler serves DispatchAgentTicket (built in
 	// atccmd/command.go from dispatch.Deps; a stub in the test suite).
 	agentDispatchHandler http.Handler,
@@ -189,6 +191,7 @@ func NewHandler(
 	})
 	transcriptServer := transcriptserver.NewServer(logger, agentRunTranscriptStore)
 	workflowsServer := workflowsapi.NewHandler(workflowStore, metricsStore)
+	nodesServer := nodesapi.NewHandler(nodeStore)
 	dispatcherServer := dispatcherapi.NewHandler(
 		agentSettingsStore,
 		func(r *http.Request) string {
@@ -388,6 +391,12 @@ func NewHandler(
 		atc.ListAgentWorkflowRunMetrics:                http.HandlerFunc(metricsServer.ListByWorkflowRun),
 		atc.ListAgentWorkflowRunTranscripts:            http.HandlerFunc(transcriptServer.ListTranscripts),
 		atc.GetAgentWorkflowRunTranscript:              http.HandlerFunc(transcriptServer.GetTranscript),
+		atc.ListAgentNodes:                             http.HandlerFunc(nodesServer.List),
+		atc.ListAgentNodeVersions:                      http.HandlerFunc(nodesServer.Versions),
+		atc.GetAgentNodeVersion:                        http.HandlerFunc(nodesServer.Get),
+		atc.CreateAgentNodeVersion:                     http.HandlerFunc(nodesServer.Import),
+		atc.ReleaseAgentNodeVersion:                    http.HandlerFunc(nodesServer.Release),
+		atc.DeprecateAgentNodeVersion:                  http.HandlerFunc(nodesServer.Deprecate),
 		atc.CreateAgentExperiment:                      http.HandlerFunc(experimentHandlers.Create),
 		atc.ListAgentExperiments:                       http.HandlerFunc(experimentHandlers.List),
 		atc.GetAgentExperiment:                         http.HandlerFunc(experimentHandlers.Get),
