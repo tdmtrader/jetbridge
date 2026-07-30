@@ -216,7 +216,7 @@ func (factory *agentChildExecutionsFactory) Advance(
 		return AgentChildExecution{}, err
 	}
 	lease := nullableTime(request.LeaseExpiresAt)
-	resultSnapshot := nullablePositiveInt64(request.ResultSnapshotID)
+	resultSnapshot := nullableAgentChildPositiveInt64(request.ResultSnapshotID)
 	if request.ResultSnapshot != nil {
 		resultSnapshot = request.ResultSnapshot.ID
 	}
@@ -461,7 +461,7 @@ func nullableTime(value time.Time) any {
 	return value
 }
 
-func nullablePositiveInt64(value int64) any {
+func nullableAgentChildPositiveInt64(value int64) any {
 	if value <= 0 {
 		return nil
 	}

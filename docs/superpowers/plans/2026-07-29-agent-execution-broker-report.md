@@ -2,7 +2,8 @@
 
 **Date:** 2026-07-29  
 **Branch:** `jetbridge`  
-**Base:** `origin/jetbridge` at `ce2063bac3bf145e086377f9da5a8383f2fac022`
+**Base:** rebased onto `origin/jetbridge` at
+`fabf9b83e56cba10f97e743875920b538b3a1a2c`
 
 ## Outcome
 

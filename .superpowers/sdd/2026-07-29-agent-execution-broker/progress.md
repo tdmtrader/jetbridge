@@ -46,3 +46,14 @@ round-trip coverage. `go test ./atc/api/agentchildexecutions -count=1` and DB/
 migration compile-only checks passed. The one serial PostgreSQL attempt ran 0
 specs because initdb's `shmget` shared-memory allocation returned `Operation
 not permitted`; do not retry in this sandbox.
+Task 8: complete after review round 3 (rebased commits
+`197cd08618..3f1726bfe3`; no open P1/P2 authority findings).
+Semantic rebase checkpoint: rebased 33 broker commits onto
+`origin/jetbridge` at `fabf9b83e5`. Upstream had allocated migration versions
+`1773106149`–`1773106154`, so the unshipped child-execution migration was moved
+to the next free version, `1773106155`. Snapshot record registries preserve
+the upstream PR/publish contracts plus `consultation/v1`; reusable-node
+compilation preserves its frozen-node assets while accepting broker selectors.
+Post-rebase contract, workflow, full broker, focused ATC authority, and DB
+compile checks pass. A package-local nullable helper was renamed to avoid the
+new upstream PR-binding helper.
