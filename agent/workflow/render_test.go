@@ -29,6 +29,10 @@ func TestBindPRMonitorAuthorityReplacesOnlySentinelsAndSealsPerActionRender(t *t
 		ActionDigest:            "sha256:" + strings.Repeat("a", 64),
 		ReviewWorkflowRunID:     77,
 		AcceptedOutcomeRevision: 3,
+		Destination:             "github.example/acme/authorized",
+		ApprovalPolicyVersion:   "engineering/v7",
+		SourceRef:               "refs/heads/agent/authorized",
+		TargetRef:               "refs/heads/release",
 	}
 	if _, err := rendered.BindPRMonitorAuthority("manual", authority); err == nil {
 		t.Fatal("generic/manual render supplied PR monitor authority")
@@ -54,11 +58,19 @@ func TestBindPRMonitorAuthorityReplacesOnlySentinelsAndSealsPerActionRender(t *t
 		PRMonitorActionDigestSentinel,
 		PRMonitorReviewWorkflowRunIDSentinel,
 		PRMonitorAcceptedOutcomeRevisionSentinel,
+		PRMonitorDestinationSentinel,
+		PRMonitorApprovalPolicyVersionSentinel,
+		PRMonitorSourceRefSentinel,
+		PRMonitorTargetRefSentinel,
 	)
 	assertPRMonitorRenderAuthority(
 		t, bound.Config, authority.BindingID, authority.ActionDigest,
 		authority.ReviewWorkflowRunID.String(),
 		authority.AcceptedOutcomeRevision,
+		authority.Destination,
+		authority.ApprovalPolicyVersion,
+		authority.SourceRef,
+		authority.TargetRef,
 	)
 
 	authored := prMonitorAuthorityRenderDefinition()
@@ -101,6 +113,31 @@ func TestBindPRMonitorAuthorityReplacesOnlySentinelsAndSealsPerActionRender(t *t
 	); err == nil {
 		t.Fatal("authored non-sentinel accepted-review authority was overridden")
 	}
+
+	authoredTargetAuthority := prMonitorAuthorityRenderDefinition()
+	publish = authoredTargetAuthority.Compiled.Function.Plan[2].Config.(*atc.PublishSnapshotStep)
+	publish.Parameters["target_branch"] = "refs/heads/authored"
+	authoredTarget, err = FullFunctionTarget(authoredTargetAuthority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoredRendered, err = RenderFunction(authoredTarget)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := authoredRendered.BindPRMonitorAuthority(
+		"pr-monitor", authority,
+	); err == nil {
+		t.Fatal("authored non-sentinel publication target was overridden")
+	}
+
+	invalidAuthority := authority
+	invalidAuthority.TargetRef = invalidAuthority.SourceRef
+	if _, err := rendered.BindPRMonitorAuthority(
+		"pr-monitor", invalidAuthority,
+	); err == nil {
+		t.Fatal("invalid trusted publication target was accepted")
+	}
 }
 
 func prMonitorAuthorityRenderDefinition() Definition {
@@ -114,8 +151,8 @@ func prMonitorAuthorityRenderDefinition() Definition {
 			ActionDigest: PRMonitorActionDigestSentinel,
 			Observation:  "pull-request", Candidate: "candidate",
 			Impact: "publish-impact", Response: "response",
-			Destination:           "github.example/acme/widget",
-			ApprovalPolicyVersion: "engineering/v3",
+			Destination:           PRMonitorDestinationSentinel,
+			ApprovalPolicyVersion: PRMonitorApprovalPolicyVersionSentinel,
 			Prompt:                "Approve this exact revision?",
 			AcceptedReview:        accepted.Clone(),
 		},
@@ -125,12 +162,13 @@ func prMonitorAuthorityRenderDefinition() Definition {
 	publish := &atc.PublishSnapshotStep{
 		Name: "publish-revision", Publisher: publisher.GitPublisher,
 		Input: "candidate", InputType: repositoryChangeV1,
-		Destination: "github.example/acme/widget",
+		Destination: PRMonitorDestinationSentinel,
 		Mode:        publisher.ModePullRequest,
 		Parameters: map[string]string{
-			"source_branch": "change", "target_branch": "main",
+			"source_branch": PRMonitorSourceRefSentinel,
+			"target_branch": PRMonitorTargetRefSentinel,
 		},
-		ApprovalPolicyVersion: "engineering/v3",
+		ApprovalPolicyVersion: PRMonitorApprovalPolicyVersionSentinel,
 		Approval:              "reapproval", Validation: "validation",
 		PRApproval: &atc.PRApprovalPublicationIntent{
 			BindingID:    PRMonitorBindingIDSentinel,
@@ -175,6 +213,10 @@ func assertPRMonitorRenderAuthority(
 	actionDigest string,
 	reviewWorkflowRunID string,
 	outcomeRevision int64,
+	destination string,
+	approvalPolicyVersion string,
+	sourceRef string,
+	targetRef string,
 ) {
 	t.Helper()
 	waitCount, publishCount := 0, 0
@@ -187,6 +229,8 @@ func assertPRMonitorRenderAuthority(
 							waitCount++
 							if step.PRApproval.BindingID != bindingID ||
 								step.PRApproval.ActionDigest != actionDigest ||
+								step.PRApproval.Destination != destination ||
+								step.PRApproval.ApprovalPolicyVersion != approvalPolicyVersion ||
 								step.PRApproval.AcceptedReview == nil ||
 								step.PRApproval.AcceptedReview.ReviewWorkflowRunID != reviewWorkflowRunID ||
 								step.PRApproval.AcceptedReview.OutcomeRevision != outcomeRevision {
@@ -200,6 +244,10 @@ func assertPRMonitorRenderAuthority(
 							publishCount++
 							if step.PRApproval.BindingID != bindingID ||
 								step.PRApproval.ActionDigest != actionDigest ||
+								step.Destination != destination ||
+								step.ApprovalPolicyVersion != approvalPolicyVersion ||
+								step.Parameters["source_branch"] != sourceRef ||
+								step.Parameters["target_branch"] != targetRef ||
 								step.PRApproval.AcceptedReview == nil ||
 								step.PRApproval.AcceptedReview.ReviewWorkflowRunID != reviewWorkflowRunID ||
 								step.PRApproval.AcceptedReview.OutcomeRevision != outcomeRevision {

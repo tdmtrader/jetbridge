@@ -94,8 +94,20 @@ func TestLaunchMonitorAllocatesRunAndAttachesExactReservationAtomically(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
+	publicationTarget, err := pullrequest.NewMonitorPublicationTarget(
+		pullrequest.MonitorPublicationTargetSpec{
+			Destination:           "github.example/acme/widget",
+			ApprovalPolicyVersion: "engineering/v3",
+			SourceRef:             "refs/heads/change",
+			TargetRef:             "refs/heads/main",
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
 	launch := pullrequest.MonitorLaunch{
 		Source: source, AcceptedReview: accepted,
+		PublicationTarget: publicationTarget,
 		Reservation: pullrequest.LaunchReservation{
 			BindingID: 9, BindingRevision: 8, BaseRevision: 7,
 			ActionDigest:          source.Version.ActionDigest,

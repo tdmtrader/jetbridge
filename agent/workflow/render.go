@@ -23,6 +23,10 @@ const (
 	PRMonitorActionDigestSentinel                  = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
 	PRMonitorReviewWorkflowRunIDSentinel           = "1"
 	PRMonitorAcceptedOutcomeRevisionSentinel int64 = 1
+	PRMonitorDestinationSentinel                   = "github.example/acme/widget"
+	PRMonitorApprovalPolicyVersionSentinel         = "engineering/v3"
+	PRMonitorSourceRefSentinel                     = "refs/heads/agent/pr-revision"
+	PRMonitorTargetRefSentinel                     = "refs/heads/main"
 )
 
 // PRMonitorAuthority is injected only by the binding-owned monitor launcher.
@@ -32,6 +36,10 @@ type PRMonitorAuthority struct {
 	ActionDigest            string
 	ReviewWorkflowRunID     snapshot.WorkflowRunID
 	AcceptedOutcomeRevision int64
+	Destination             string
+	ApprovalPolicyVersion   string
+	SourceRef               string
+	TargetRef               string
 }
 
 type TargetKind string
@@ -188,7 +196,12 @@ func (rendered RenderedFunction) BindPRMonitorAuthority(
 	if authority.BindingID <= 0 ||
 		snapshot.Digest(authority.ActionDigest).Validate() != nil ||
 		authority.ReviewWorkflowRunID.Validate() != nil ||
-		authority.AcceptedOutcomeRevision <= 0 {
+		authority.AcceptedOutcomeRevision <= 0 ||
+		!validPRMonitorAuthorityText(authority.Destination, 2048) ||
+		!validPRMonitorAuthorityText(authority.ApprovalPolicyVersion, 128) ||
+		!validPRMonitorAuthorityRef(authority.SourceRef) ||
+		!validPRMonitorAuthorityRef(authority.TargetRef) ||
+		authority.SourceRef == authority.TargetRef {
 		return RenderedFunction{}, fmt.Errorf(
 			"workflow: PR monitor authority is invalid",
 		)
@@ -252,6 +265,18 @@ func (rendered RenderedFunction) BindPRMonitorAuthority(
 		*actionDigest = authority.ActionDigest
 		return bindAcceptedReview(accepted)
 	}
+	bindTarget := func(destination, approvalPolicyVersion *string) error {
+		if *destination != PRMonitorDestinationSentinel ||
+			*approvalPolicyVersion !=
+				PRMonitorApprovalPolicyVersionSentinel {
+			return fmt.Errorf(
+				"workflow: authored PR publication target is not the monitor sentinel",
+			)
+		}
+		*destination = authority.Destination
+		*approvalPolicyVersion = authority.ApprovalPolicyVersion
+		return nil
+	}
 	for jobIndex := range bound.Config.Jobs {
 		for stepIndex := range bound.Config.Jobs[jobIndex].PlanSequence {
 			config := bound.Config.Jobs[jobIndex].PlanSequence[stepIndex].Config
@@ -265,6 +290,12 @@ func (rendered RenderedFunction) BindPRMonitorAuthority(
 					if step.PRApproval == nil {
 						return nil
 					}
+					if err := bindTarget(
+						&step.PRApproval.Destination,
+						&step.PRApproval.ApprovalPolicyVersion,
+					); err != nil {
+						return err
+					}
 					return bindIntent(
 						&step.PRApproval.BindingID,
 						&step.PRApproval.ActionDigest,
@@ -275,6 +306,25 @@ func (rendered RenderedFunction) BindPRMonitorAuthority(
 					if step.PRApproval == nil {
 						return nil
 					}
+					if err := bindTarget(
+						&step.Destination,
+						&step.ApprovalPolicyVersion,
+					); err != nil {
+						return err
+					}
+					if step.Parameters == nil ||
+						step.Parameters["source_branch"] !=
+							PRMonitorSourceRefSentinel ||
+						step.Parameters["target_branch"] !=
+							PRMonitorTargetRefSentinel {
+						return fmt.Errorf(
+							"workflow: authored PR publication refs are not the monitor sentinels",
+						)
+					}
+					step.Parameters["source_branch"] =
+						authority.SourceRef
+					step.Parameters["target_branch"] =
+						authority.TargetRef
 					return bindIntent(
 						&step.PRApproval.BindingID,
 						&step.PRApproval.ActionDigest,
@@ -311,6 +361,18 @@ func (rendered RenderedFunction) BindPRMonitorAuthority(
 		return RenderedFunction{}, err
 	}
 	return bound, nil
+}
+
+func validPRMonitorAuthorityText(value string, maximum int) bool {
+	return value != "" && value == strings.TrimSpace(value) &&
+		len(value) <= maximum && !strings.ContainsRune(value, '\x00')
+}
+
+func validPRMonitorAuthorityRef(value string) bool {
+	return strings.HasPrefix(value, "refs/heads/") &&
+		value == strings.TrimSpace(value) &&
+		len(value) <= 512 &&
+		!strings.ContainsAny(value, "\x00\r\n \t")
 }
 
 func (rendered *RenderedFunction) refreshExecutionAuthority() error {

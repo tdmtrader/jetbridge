@@ -22,6 +22,10 @@ var ErrAcceptedReviewAuthority = errors.New(
 	"pullrequest: accepted review authority is unavailable",
 )
 
+var ErrTerminalMonitorAction = errors.New(
+	"pullrequest: terminal observation requires direct terminal reconciliation",
+)
+
 const (
 	MonitorAcceptedReviewInputName     = "accepted-review"
 	MonitorAcceptedCandidateInputName  = "accepted-candidate"
@@ -78,6 +82,95 @@ type MonitorSourceBuild struct {
 
 type monitorSourceBuildAuthority struct {
 	source MonitorSourceBuild
+}
+
+// MonitorPublicationTarget is the immutable destination authority projected
+// from a verified PR binding into one server-owned monitor launch. Reusable
+// workflow source carries only sentinels; it cannot author these values.
+type MonitorPublicationTarget struct {
+	Destination           string
+	ApprovalPolicyVersion string
+	SourceRef             string
+	TargetRef             string
+
+	authority *monitorPublicationTargetAuthority
+}
+
+type MonitorPublicationTargetSpec struct {
+	Destination           string
+	ApprovalPolicyVersion string
+	SourceRef             string
+	TargetRef             string
+}
+
+type monitorPublicationTargetAuthority struct {
+	target MonitorPublicationTarget
+}
+
+func NewMonitorPublicationTarget(
+	spec MonitorPublicationTargetSpec,
+) (MonitorPublicationTarget, error) {
+	target := MonitorPublicationTarget{
+		Destination:           spec.Destination,
+		ApprovalPolicyVersion: spec.ApprovalPolicyVersion,
+		SourceRef:             spec.SourceRef,
+		TargetRef:             spec.TargetRef,
+	}
+	if err := validateMonitorPublicationTarget(target); err != nil {
+		return MonitorPublicationTarget{}, err
+	}
+	protected := target
+	target.authority = &monitorPublicationTargetAuthority{target: protected}
+	return target, nil
+}
+
+func (target MonitorPublicationTarget) Protected() (MonitorPublicationTarget, error) {
+	if target.authority == nil {
+		return MonitorPublicationTarget{}, fmt.Errorf(
+			"pullrequest: monitor publication target has no protected authority",
+		)
+	}
+	public := target
+	public.authority = nil
+	if !reflect.DeepEqual(public, target.authority.target) {
+		return MonitorPublicationTarget{}, fmt.Errorf(
+			"pullrequest: monitor publication target changed after resolution",
+		)
+	}
+	protected := target.authority.target
+	protected.authority = target.authority
+	return protected, nil
+}
+
+func validateMonitorPublicationTarget(target MonitorPublicationTarget) error {
+	if err := validateBoundedText(
+		"monitor publication destination", target.Destination, maxURLBytes,
+	); err != nil || strings.TrimSpace(target.Destination) != target.Destination {
+		return fmt.Errorf("pullrequest: monitor publication destination is invalid")
+	}
+	if err := validateBoundedText(
+		"monitor publication approval policy",
+		target.ApprovalPolicyVersion,
+		128,
+	); err != nil ||
+		strings.TrimSpace(target.ApprovalPolicyVersion) !=
+			target.ApprovalPolicyVersion {
+		return fmt.Errorf(
+			"pullrequest: monitor publication approval policy is invalid",
+		)
+	}
+	if err := validateRef("monitor publication source ref", target.SourceRef); err != nil {
+		return err
+	}
+	if err := validateRef("monitor publication target ref", target.TargetRef); err != nil {
+		return err
+	}
+	if !strings.HasPrefix(target.SourceRef, "refs/heads/") ||
+		!strings.HasPrefix(target.TargetRef, "refs/heads/") ||
+		target.SourceRef == target.TargetRef {
+		return fmt.Errorf("pullrequest: monitor publication refs are invalid")
+	}
+	return nil
 }
 
 // AcceptedReviewAuthoritySpec is the immutable initial-review evidence named
@@ -216,9 +309,10 @@ func (source MonitorSourceBuild) Protected() (MonitorSourceBuild, error) {
 // MonitorLaunch is the only binder-facing launch request. Reservation was
 // committed before this value can be constructed.
 type MonitorLaunch struct {
-	Source         MonitorSourceBuild
-	AcceptedReview AcceptedReviewAuthority
-	Reservation    LaunchReservation
+	Source            MonitorSourceBuild
+	AcceptedReview    AcceptedReviewAuthority
+	PublicationTarget MonitorPublicationTarget
+	Reservation       LaunchReservation
 }
 
 func (request MonitorLaunch) Validate() error {
@@ -228,6 +322,9 @@ func (request MonitorLaunch) Validate() error {
 	}
 	accepted, err := request.AcceptedReview.Protected()
 	if err != nil {
+		return err
+	}
+	if _, err := request.PublicationTarget.Protected(); err != nil {
 		return err
 	}
 	reservation := request.Reservation
@@ -367,6 +464,27 @@ func (coordinator *monitorCoordinator) ReserveAndLaunch(
 	if err != nil {
 		return 0, false, err
 	}
+	switch ActionKind(protected.Version.ActionKind) {
+	case ActionCompleted, ActionAbandoned:
+		// Terminal provider state must never traverse the reusable mutation
+		// workflow. Until the direct exact-observation acknowledgement path is
+		// composed, fail before reservation rather than risk branch/status or
+		// response side effects.
+		return 0, false, ErrTerminalMonitorAction
+	}
+	publicationTarget, err := NewMonitorPublicationTarget(
+		MonitorPublicationTargetSpec{
+			Destination:           binding.Destination,
+			ApprovalPolicyVersion: binding.ApprovalPolicyVersion,
+			SourceRef:             binding.SourceRef,
+			TargetRef:             binding.TargetRef,
+		},
+	)
+	if err != nil {
+		return 0, false, fmt.Errorf(
+			"pullrequest: binding publication target is invalid: %w", err,
+		)
+	}
 	if binding.OriginatingPublicationOccurrence == nil ||
 		*binding.OriginatingPublicationOccurrence <= 0 {
 		return 0, false, ErrAcceptedReviewAuthority
@@ -417,7 +535,7 @@ func (coordinator *monitorCoordinator) ReserveAndLaunch(
 	}
 	launch := MonitorLaunch{
 		Source: protected, AcceptedReview: protectedAccepted,
-		Reservation: reservation,
+		PublicationTarget: publicationTarget, Reservation: reservation,
 	}
 	if err := launch.Validate(); err != nil {
 		return 0, false, err

@@ -111,6 +111,64 @@ func TestMonitorCoordinatorSerializesOneExactActionAndLaunchesOneDurableRun(t *t
 	}
 }
 
+func TestMonitorPublicationTargetProtectsExactBindingAuthority(t *testing.T) {
+	target, err := NewMonitorPublicationTarget(MonitorPublicationTargetSpec{
+		Destination:           "github.example/acme/widget",
+		ApprovalPolicyVersion: "engineering/v3",
+		SourceRef:             "refs/heads/change",
+		TargetRef:             "refs/heads/main",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	protected, err := target.Protected()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if protected.Destination != "github.example/acme/widget" ||
+		protected.ApprovalPolicyVersion != "engineering/v3" ||
+		protected.SourceRef != "refs/heads/change" ||
+		protected.TargetRef != "refs/heads/main" {
+		t.Fatalf("protected target = %#v", protected)
+	}
+
+	target.TargetRef = "refs/heads/other"
+	if _, err := target.Protected(); err == nil {
+		t.Fatal("monitor publication target allowed caller mutation")
+	}
+
+	for name, spec := range map[string]MonitorPublicationTargetSpec{
+		"missing destination": {
+			ApprovalPolicyVersion: "engineering/v3",
+			SourceRef:             "refs/heads/change",
+			TargetRef:             "refs/heads/main",
+		},
+		"missing policy": {
+			Destination: "github.example/acme/widget",
+			SourceRef:   "refs/heads/change",
+			TargetRef:   "refs/heads/main",
+		},
+		"unsafe source": {
+			Destination:           "github.example/acme/widget",
+			ApprovalPolicyVersion: "engineering/v3",
+			SourceRef:             "change",
+			TargetRef:             "refs/heads/main",
+		},
+		"same refs": {
+			Destination:           "github.example/acme/widget",
+			ApprovalPolicyVersion: "engineering/v3",
+			SourceRef:             "refs/heads/main",
+			TargetRef:             "refs/heads/main",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := NewMonitorPublicationTarget(spec); err == nil {
+				t.Fatal("invalid monitor publication target succeeded")
+			}
+		})
+	}
+}
+
 func TestMonitorCoordinatorLaunchFailureReleasesOnlyTheExactUnattachedReservation(t *testing.T) {
 	for _, test := range []struct {
 		name            string
@@ -327,6 +385,42 @@ func TestMonitorCoordinatorRefusesAStaleOrAlteredSourceVersionBeforeLaunch(t *te
 	}
 }
 
+func TestMonitorCoordinatorRefusesTerminalActionBeforeMutationLaunch(t *testing.T) {
+	for _, kind := range []ActionKind{ActionCompleted, ActionAbandoned} {
+		t.Run(string(kind), func(t *testing.T) {
+			binding := monitorTestBinding()
+			store := newMonitorMemoryStore(binding)
+			launcher := &monitorMemoryLauncher{store: store}
+			coordinator, err := NewMonitorCoordinator(
+				store, launcher, &monitorMemoryResults{},
+				monitorTestAcceptedResolver(binding), 10*time.Minute,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			source := monitorTestSourceBuildWithKind(
+				binding, 301, 41, "cursor-terminal",
+				monitorDigest("f"), kind,
+			)
+
+			run, launched, err := coordinator.ReserveAndLaunch(
+				context.Background(), source,
+			)
+			if !errors.Is(err, ErrTerminalMonitorAction) ||
+				run != 0 || launched {
+				t.Fatalf(
+					"terminal launch = (%d, %t, %v), want fail-closed reconciliation",
+					run, launched, err,
+				)
+			}
+			if store.bindingValue().Active != nil ||
+				launcher.uniqueRuns() != 0 {
+				t.Fatal("terminal observation reached mutation reservation or launcher")
+			}
+		})
+	}
+}
+
 func TestMonitorCoordinatorRejectsAlteredAcceptedReviewAuthorityBeforeReservation(t *testing.T) {
 	binding := monitorTestBinding()
 	store := newMonitorMemoryStore(binding)
@@ -359,7 +453,10 @@ func monitorTestBinding() Binding {
 		Locator: Locator{
 			Provider: ProviderGitHub, Repository: "acme/widget", ExternalID: "42",
 		},
-		SourceRef: "refs/heads/change", TargetRef: "refs/heads/main",
+		SourceRef:                   "refs/heads/change",
+		TargetRef:                   "refs/heads/main",
+		Destination:                 "github.example/acme/widget",
+		ApprovalPolicyVersion:       "engineering/v3",
 		MonitorWorkflowDefinitionID: 91, MonitorWorkflowVersion: 3,
 		OriginatingPublicationOccurrence: &occurrenceID,
 		PipelineID:                       &pipelineID, AcknowledgedCursor: "cursor-0",
@@ -413,6 +510,20 @@ func monitorTestSourceBuildWith(
 	cursor string,
 	actionDigest string,
 ) MonitorSourceBuild {
+	return monitorTestSourceBuildWithKind(
+		binding, buildID, admissionID, cursor, actionDigest,
+		ActionReviewBatch,
+	)
+}
+
+func monitorTestSourceBuildWithKind(
+	binding Binding,
+	buildID int,
+	admissionID int64,
+	cursor string,
+	actionDigest string,
+	actionKind ActionKind,
+) MonitorSourceBuild {
 	source, err := NewMonitorSourceBuild(MonitorSourceBuildSpec{
 		TeamID: binding.TeamID, TeamName: "main", BindingID: binding.ID,
 		PipelineID: *binding.PipelineID, BuildID: buildID,
@@ -427,7 +538,7 @@ func monitorTestSourceBuildWith(
 		SelectedVersion: atc.Version{
 			"provider": string(binding.Locator.Provider), "external_id": binding.Locator.ExternalID,
 			"source_sha": strings.Repeat("3", 40), "target_sha": strings.Repeat("4", 40),
-			"action_kind": string(ActionReviewBatch), "action_digest": actionDigest,
+			"action_kind": string(actionKind), "action_digest": actionDigest,
 			"cursor": cursor, "binding_revision": strconv.FormatInt(binding.Revision, 10),
 		},
 	})

@@ -423,6 +423,11 @@ func (b *Binder) bindAndCreate(
 		if protectErr != nil {
 			return BindResult{}, protectErr
 		}
+		publicationTarget, protectErr :=
+			trusted.monitor.PublicationTarget.Protected()
+		if protectErr != nil {
+			return BindResult{}, protectErr
+		}
 		rendered, err = rendered.BindPRMonitorAuthority(
 			admission.Origin.Kind,
 			workflow.PRMonitorAuthority{
@@ -430,6 +435,10 @@ func (b *Binder) bindAndCreate(
 				ActionDigest:            protected.Version.ActionDigest,
 				ReviewWorkflowRunID:     accepted.ReviewWorkflowRunID,
 				AcceptedOutcomeRevision: accepted.OutcomeRevision,
+				Destination:             publicationTarget.Destination,
+				ApprovalPolicyVersion:   publicationTarget.ApprovalPolicyVersion,
+				SourceRef:               publicationTarget.SourceRef,
+				TargetRef:               publicationTarget.TargetRef,
 			},
 		)
 		if err != nil {
