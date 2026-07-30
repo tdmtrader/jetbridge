@@ -21,6 +21,7 @@ const (
 	maxCommandOutputBytes = 64 << 10
 	askpassUser           = "oauth2"
 	controlledPath        = "/usr/bin:/bin"
+	imageGitPath          = "/usr/bin/git"
 )
 
 // Command is one controlled Git invocation. Credential is an ephemeral copy
@@ -76,17 +77,7 @@ type CommandRunner struct {
 }
 
 func NewCommandRunner(tempDir string) (*CommandRunner, error) {
-	gitPath, err := exec.LookPath("git")
-	if err != nil {
-		return nil, fmt.Errorf("direct git: locate git: %w", err)
-	}
-	if !filepath.IsAbs(gitPath) {
-		gitPath, err = filepath.Abs(gitPath)
-		if err != nil {
-			return nil, fmt.Errorf("direct git: resolve git executable: %w", err)
-		}
-	}
-	return newCommandRunner(gitPath, tempDir)
+	return newCommandRunner(imageGitPath, tempDir)
 }
 
 func newCommandRunner(gitPath, tempDir string) (*CommandRunner, error) {

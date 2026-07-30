@@ -70,3 +70,29 @@ comments now name `agent/publisher/directgit`.
 - `b0f2497738 fix(delivery): rebase candidates before publication`
 - `14e27b5032 feat(atc): compose direct snapshot publisher`
 - Helm/image/docs checkpoint: recorded with this report.
+
+## Fix round 1 — fixed image Git binary
+
+Independent review found that `NewCommandRunner` resolved `git` through the
+inherited process `PATH`. Because chart-controlled `web.env` can set `PATH`, a
+counterfeit executable could have received the runner's askpass environment.
+
+`NewCommandRunner` now always delegates to `newCommandRunner` with the fixed
+image-owned `/usr/bin/git` path. The injected-path `newCommandRunner` seam is
+unchanged for controlled runner tests.
+
+RED evidence:
+
+```text
+go test ./agent/publisher/directgit -run TestNewCommandRunnerUsesFixedImageGitDespitePATH -count=1
+git path = ".../git", want fixed image path /usr/bin/git
+counterfeit Git ran
+```
+
+GREEN verification:
+
+```text
+go test ./agent/publisher/directgit -count=1
+ok  github.com/concourse/concourse/agent/publisher/directgit  4.600s
+git diff --check
+```

@@ -3,12 +3,41 @@ package directgit
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestNewCommandRunnerUsesFixedImageGitDespitePATH(t *testing.T) {
+	tempRoot := t.TempDir()
+	marker := filepath.Join(t.TempDir(), "counterfeit-git-ran")
+	counterfeitDir := t.TempDir()
+
+	// writeExecutable creates a unique path, so place its executable at the
+	// attacker-controlled PATH entry named git.
+	counterfeit := writeExecutable(t, fmt.Sprintf("#!/bin/sh\ntouch %q\n", marker))
+	if err := os.Rename(counterfeit, filepath.Join(counterfeitDir, "git")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", counterfeitDir)
+
+	runner, err := NewCommandRunner(tempRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.Run(context.Background(), Command{Args: []string{"--version"}}); err != nil {
+		t.Fatal(err)
+	}
+	if runner.gitPath != "/usr/bin/git" {
+		t.Errorf("git path = %q, want fixed image path /usr/bin/git", runner.gitPath)
+	}
+	if _, err := os.Lstat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("counterfeit Git ran: %v", err)
+	}
+}
 
 func TestCommandRunnerSanitizesGitAndScrubsCredentials(t *testing.T) {
 	tempRoot := t.TempDir()
