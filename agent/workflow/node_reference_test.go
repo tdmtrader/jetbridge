@@ -83,6 +83,12 @@ step: {agent: review, prompt: review}`})
 	}
 	resolver := releasedNodeResolver{node: workflow.NodeDefinition{ID: 1, Name: "code-review", Version: 5, Compiled: *node}}
 	for name, plan := range map[string]string{
+		"missing node": `- uses: code-review@5
+  input_mapping: {repository: repository}
+  output_mapping: {review: review}`,
+		"missing uses": `- node: review
+  input_mapping: {repository: repository}
+  output_mapping: {review: review}`,
 		"latest": `- node: review
   uses: code-review@latest
   input_mapping: {repository: repository}
@@ -91,6 +97,15 @@ step: {agent: review, prompt: review}`})
   uses: code-review@5
   input_mapping: {}
   output_mapping: {review: review}`,
+		"unreleased version": `- node: review
+  uses: code-review@6
+  input_mapping: {repository: repository}
+  output_mapping: {review: review}`,
+		"undeclared parameter": `- node: review
+  uses: code-review@5
+  input_mapping: {repository: repository}
+  output_mapping: {review: review}
+  params: {NOT_DECLARED: value}`,
 		"implementation override": `- node: review
   uses: code-review@5
   input_mapping: {repository: repository}
@@ -145,6 +160,33 @@ plan:
 	}
 	if got := compiled.Function.SkillFiles["skills/review/SKILL.md"]; got != "frozen node skill" {
 		t.Fatalf("frozen skill = %q", got)
+	}
+}
+
+func TestCompileDefinitionWithNodesRejectsNonInjectiveMappings(t *testing.T) {
+	node, err := workflow.CompileNodeDefinition(workflow.Manifest{workflow.NodeFileName: `schema_version: 1
+name: compare
+inputs:
+  - {name: left, type: repository/v1}
+  - {name: right, type: repository/v1}
+outputs: []
+step: {agent: compare, prompt: compare}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := workflow.Manifest{workflow.WorkflowFileName: `schema_version: 3
+name: consumer
+signature_version: 1
+inputs: [{name: repository, type: repository/v1}]
+outputs: []
+plan:
+  - node: compare
+    uses: compare@1
+    input_mapping: {left: repository, right: repository}
+    output_mapping: {}
+`}
+	if _, _, err := workflow.CompileDefinitionWithNodes(manifest, releasedNodeResolver{node: workflow.NodeDefinition{Name: "compare", Version: 1, Compiled: *node}}); err == nil {
+		t.Fatal("expected non-injective mapping rejection")
 	}
 }
 

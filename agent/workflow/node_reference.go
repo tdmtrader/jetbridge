@@ -370,6 +370,12 @@ func applyNodeInvocation(step *atc.Step, ref NodeReference) error {
 		leaf.FunctionID = ref.InstanceName
 		leaf.InputMapping = cloneStringMap(ref.InputMapping)
 		leaf.OutputMapping = cloneStringMap(ref.OutputMapping)
+		// Native task planning/type checking consumes typed declarations by the
+		// physical artifact name after applying mappings. Agents intentionally
+		// retain logical declaration keys because their executor translates at
+		// the repository/sealer boundary.
+		leaf.SnapshotInputs = mappedSnapshotInputs(leaf.SnapshotInputs, ref.InputMapping)
+		leaf.SnapshotOutputs = mappedSnapshotOutputs(leaf.SnapshotOutputs, ref.OutputMapping)
 	case *atc.AgentStep:
 		leaf.FunctionID = ref.InstanceName
 		leaf.InputMapping = cloneStringMap(ref.InputMapping)
