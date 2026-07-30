@@ -652,20 +652,32 @@ agentExperiments:
   runnerInterval: 10s
   runnerMaxConcurrency: 4
 
-# -- Provider-neutral outbound publication through a deployment-owned HTTPS
-# gateway. Dedicated mounts keep the policy, bearer token, and optional private
-# CA out of the database-migration init container; secret values are never
-# chart args.
-agentPublisherGateway:
+# -- Outbound publication executed inside the ATC trust boundary. Policy and
+# credentials are mounted from distinct, dedicated Secrets into concourse-web
+# only. If the Kubernetes credential manager is enabled, keep this release
+# namespace outside its "<namespacePrefix><team>" namespace set; the chart
+# rejects an empty prefix or a release namespace beginning with that prefix.
+agentPublisher:
   enabled: false
-  endpoint: ""
-  policyFile: ""
-  tokenFile: ""
-  caCertificateFile: ""
+  # -- Human-reviewed publisher policy. Exactly this key is mounted at the
+  # chart-managed policy path.
+  policySecret:
+    name: ""
+    key: policy.json
+  # -- Secret containing every credential listed below. It must be distinct
+  # from policySecret so policy can be reviewed without credential access.
+  credentialSecret:
+    name: ""
+  # -- Exact credential reference-to-file mappings. Paths are clean relative
+  # paths beneath the chart-managed credential root; no secret values are
+  # rendered as command arguments.
+  credentials: []
+  # - reference: github-main
+  #   key: github-main
+  #   path: github-main
+  directGit:
+    # -- Enable the initial in-process direct Git adapter. Direct branch and
+    # trunk publication are supported; unconfigured adapters fail closed.
+    enabled: false
   requestTimeout: 30s
   leaseDuration: 5m
-  maxResponseBytes: 1048576
-  # -- Volumes mounted only into concourse-web, never migrate-db.
-  volumes: []
-  # -- Read-only publisher mounts for concourse-web only.
-  volumeMounts: []

@@ -281,9 +281,29 @@
     confirmed the down migration was already correct, and found no new
     blocking issue.
   - Status: **Accepted in review round 2 of at most 3**.
-- [ ] Task 14 — direct in-ATC publication
-  - Status: unblocked by accepted Tasks 6 and 7; not started. Preserve Task
-    7's exact validation gate while replacing the publisher gateway.
+- [x] Task 14 — direct in-ATC publication
+  - Implementation commits:
+    - `b2774ce2e2 feat(publisher): resolve direct publication authority`
+    - `c960867479 feat(publisher): publish direct git refs atomically`
+    - `b0f2497738 fix(delivery): rebase candidates before publication`
+    - `14e27b5032 feat(atc): compose direct snapshot publisher`
+    - Helm/image/docs checkpoint: recorded in `task-14-report.md`
+  - Behavior: ATC resolves exact direct-publication policy and opaque scoped
+    credentials, materializes the sealed change into private Git scratch, and
+    atomically updates the target and idempotency marker. A moved target
+    returns `rebase_required`; delivery candidates are rebased before
+    publication. Helm mounts separate policy and credentials Secrets only into
+    `concourse-web`, exposes only the direct Git adapter, and rejects aliases
+    through other consumers. The runtime image supplies controlled Git as the
+    web pod's non-root identity.
+  - Verification: publisher/directgit, repository-merge/function-runner/
+    workflow, ATC composition, focused direct-publisher Helm, runtime-image,
+    and Helm lint commands passed. `git diff --check` passed.
+  - Residue: legacy chart values are rejected by one explicit fail-closed Helm
+    tombstone; focused negative tests retain the old names only to prove their
+    absence. No legacy gateway transport, chart resource, flag, or operator
+    documentation remains.
+  - Status: **Implementation checkpoint complete; independent review pending.**
 - [x] Task 15 — checkpoint and attempt data models
   - Implementation and correction commits:
     - `add954b863 feat(agent): add durable checkpoint attempt models`

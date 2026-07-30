@@ -424,68 +424,60 @@ run forever.
 At execution, ATC reopens and re-hashes the exact question and answer snapshot
 bytes, verifies their durable wait, team, run, build, resolution source, actor,
 and time, and persists the wait ID, both snapshot references, resolution time,
-and actor with the publication. The gateway receives that evidence but cannot
-replace or manufacture it.
+and actor with the publication. ATC resolves the exact direct-publication
+policy from that evidence; authored workflow parameters cannot replace it.
 
-### HTTPS publisher gateway
+### ATC-owned publisher
 
-Jetbridge bundles the ATC-side client for a provider-neutral HTTPS gateway.
-The gateway service itself is deployment-owned: it keeps GitHub, GitLab, Jira,
-or other provider credentials and provider-specific API behavior outside ATC,
-while Jetbridge retains durable publication audit and idempotency state. The
-client is disabled by default and requires durable snapshots.
+Jetbridge executes publication inside the ATC trust boundary. Durable
+publication state, exact destination policy, snapshot verification,
+idempotency, and provider credentials therefore have one owner. Publication is
+disabled by default and requires durable snapshots.
 
-Configure it with mounted files rather than secret flag values:
+The initial production adapter is direct Git. It publishes either a branch or
+an already-rebased change directly to trunk (the internal `merge` mode name is
+retained for the existing record contract). Pull requests and work-item
+publication require a future explicitly configured provider adapter and fail
+closed until one exists.
+
+Configure a human-reviewed policy and narrowly mapped credentials in distinct
+Secrets:
 
 ```yaml
-agentPublisherGateway:
+agentPublisher:
   enabled: true
-  endpoint: https://publisher-gateway.platform.svc
-  policyFile: /etc/concourse/publisher/policy.json
-  tokenFile: /etc/concourse/publisher/token
-  caCertificateFile: /etc/concourse/publisher/ca.crt # optional private CA
+  policySecret:
+    name: publisher-policy
+    key: policy.json
+  credentialSecret:
+    name: publisher-credentials
+  credentials:
+    - reference: widget-git
+      key: widget-git
+      path: widget-git
+  directGit:
+    enabled: true
   requestTimeout: 30s
   leaseDuration: 5m
-  maxResponseBytes: 1048576
-  volumes:
-    - name: publisher-gateway
-      projected:
-        sources:
-          - configMap:
-              name: publisher-gateway-policy
-              items:
-                - key: policy.json
-                  path: policy.json
-          - secret:
-              name: publisher-gateway-credentials
-              items:
-                - key: token
-                  path: token
-                - key: ca.crt
-                  path: ca.crt
-  volumeMounts:
-    - name: publisher-gateway
-      mountPath: /etc/concourse/publisher
-      readOnly: true
 ```
 
-These dedicated volumes are mounted only into `concourse-web`; the
-`migrate-db` init container cannot read the publisher policy, bearer token, or
-private CA. Do not place publisher credentials in `web.extraVolumeMounts`.
-The chart renders no publisher volumes while the gateway is disabled. When it
-is enabled, every volume and mount name must match one-to-one, every mount must
-set `readOnly: true`, and the policy, token, and optional CA paths must be
-absolute, clean paths below those mounts. Helm rejects the deployment before
-rendering if any of these invariants is violated.
+The chart mounts the policy read-only at
+`/run/concourse-publisher/policy/policy.json` and mapped credentials beneath
+`/run/concourse-publisher/credentials`, only in `concourse-web`. Neither
+Secret is mounted into the migration init container, workers, artifact daemon,
+agent pods, or managed MCP sidecars. Secret values are never command
+arguments. Policy and credential Secret names must differ, every reference and
+destination path must be unique, and paths must be clean, non-overlapping
+relative paths. The credential mapping must exactly cover the policy references
+or ATC refuses startup.
 
-The endpoint must be an HTTPS origin with no user information, path, query, or
-fragment. ATC refuses redirects, uses TLS 1.2 or newer, bounds every JSON
-response, and applies one end-to-end timeout. The publication lease must be
-longer than that timeout. The bearer token is read from the mounted file at
-startup and again for each authorized operation so Kubernetes Secret rotation
-does not require putting a token in a flag, publication row, audit event, or
-error. The allow policy is loaded and validated at startup; changing it
-requires restarting the web nodes.
+The publisher Secrets are dedicated: the chart rejects aliases through extra
+volumes, environment Secret references, image-pull settings, Ingress TLS,
+PostgreSQL, artifact-daemon, web TLS, and session-signing configuration. When
+the Kubernetes credential manager is also enabled, its namespace prefix must
+be nonempty and the release namespace must not begin with that prefix. This
+keeps the release-owned publisher Secrets outside every
+`<namespacePrefix><team>` pipeline-variable namespace.
 
 `policy.json` has a deliberately small exact-match contract:
 
@@ -496,62 +488,52 @@ requires restarting the web nodes.
     {
       "team": "engineering",
       "publisher": "git-publisher/v1",
-      "modes": ["pull-request", "merge"],
-      "approval_policy_versions": ["engineering/v1"],
-      "target_branches": ["main"],
-      "destinations": ["git.example/acme/widget"]
+      "mode": "branch",
+      "approval_policy_version": "engineering/v1",
+      "target_branch": "agent/widget-42",
+      "destination": "git.example/acme/widget",
+      "adapter": "direct-git",
+      "credential_reference": "widget-git",
+      "remote_url": "https://git.example/acme/widget.git"
     },
     {
       "team": "engineering",
-      "publisher": "work-item-publisher/v1",
-      "modes": ["comment"],
-      "approval_policy_versions": ["engineering/v1"],
-      "destination_prefixes": ["ENG-"]
+      "publisher": "git-publisher/v1",
+      "mode": "merge",
+      "approval_policy_version": "engineering/v1",
+      "target_branch": "main",
+      "destination": "git.example/acme/widget",
+      "adapter": "direct-git",
+      "credential_reference": "widget-git",
+      "remote_url": "https://git.example/acme/widget.git"
     }
   ]
 }
 ```
 
-A rule must match the persisted team name, publisher type, mode,
-approval-policy version, and either an exact destination or an explicit
-prefix. Git rules also require an exact allowed target branch; direct merge is
-therefore opt-in rather than implied by repository access. There is no
-implicit wildcard or cluster administrator bypass. The database independently
-verifies the build, team, workflow run, snapshot production, and (for merge)
-durable approval evidence before the mounted token can be resolved.
+A rule matches exactly one persisted team, publisher type, mode, approval
+policy version, destination, and target branch. Authored workflow parameters
+cannot supply or replace the remote URL or credential reference. There are no
+prefixes, wildcards, or administrator bypasses. ATC independently verifies the
+build, team, workflow run, sealed snapshot, and—for trunk publication—the
+durable approval evidence before resolving credentials.
 
-The gateway protocol is versioned under `/v1` and every request is a `POST`
-with `Authorization: Bearer …`. Publication lookup and writes also carry the
-canonical Jetbridge operation key in `Idempotency-Key`:
+Policy is loaded and validated at ATC startup; rotate policy by updating its
+Secret and restarting the web deployment. Credential bytes are opened and
+revalidated for each authorized operation, so Kubernetes Secret rotation does
+not require an ATC restart. Credential roots, ancestors, AtomicWriter links,
+and file identities are checked around each read; escaping links,
+non-regular/empty/oversized files, and mappings unused by policy fail closed.
 
-- `/v1/publications/lookup` accepts `publisher` and `operation_key`, returning
-  `{"found":false}` or `{"found":true,"result":{...}}`;
-- `/v1/git/current-base` accepts `destination` and `target_branch`, returning
-  a full lowercase SHA as `base_sha`;
-- `/v1/git/publish` is streaming multipart form data. The `operation` JSON part
-  contains the exact snapshot reference, destination, parameters, policy,
-  authority, and approval evidence. The `snapshot` part is the revalidated
-  canonical `repository-change/v1` tar stream;
-- `/v1/work-items/publish` uses the same multipart shape so the adapter receives
-  the exact revalidated input snapshot rather than a decorative reference.
+The ATC runtime image supplies the distribution Git executable used by the
+direct adapter. It materializes the exact sealed `repository-change/v1` in
+bounded snapshot scratch, verifies its objects and ancestry, and imports only
+verified objects into a new private bare repository. It then checks the expected
+remote head and pushes the target and idempotency marker refs atomically. A
+retry first resolves that marker, so a web-process failure after remote success
+does not require a second semantic push. A changed target head returns
+stale/rebase-required and does not update either ref.
 
-Git results contain `external_id`, optional HTTPS `url`, and `head_sha`, which
-must equal the exact `repository-change/v1` result commit. Work-item results
-contain `external_id` and optional HTTPS `url`. The gateway must durably map
-`(publisher, operation_key)` to the provider result as part of the provider
-operation: ATC performs lookup before every acquired write, including a lease
-reclaim after an ambiguous timeout. A gateway that cannot recover that mapping
-does not satisfy the adapter contract and can duplicate an external side
-effect. Jetbridge stores that semantic provider operation separately from each
-authorized workflow-run occurrence. Replaying the same semantic write from a
-different run therefore reuses the provider result while preserving distinct,
-team-scoped run/build authorization evidence for every occurrence.
-
-The Git stream is the immutable change snapshot, not a checkout obtained from
-a live remote. Before sending it, ATC loads the exact team-authorized manifest,
-re-hashes the complete canonical archive, strictly checks the sealed intrinsic
-metadata against `record.json`, and verifies the payload digest. Live provider
-access begins only at the explicit gateway boundary.
 
 ## Experiments
 

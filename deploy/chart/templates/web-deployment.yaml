@@ -17,17 +17,303 @@
 {{- if and .Values.agentExperiments.runnerEnabled (not .Values.agentSnapshots.enabled) }}
 {{- fail "agentExperiments.runnerEnabled requires agentSnapshots.enabled" }}
 {{- end }}
-{{- if and .Values.agentPublisherGateway.enabled (not .Values.agentSnapshots.enabled) }}
-{{- fail "agentPublisherGateway.enabled requires agentSnapshots.enabled" }}
+{{- $publisherConfigurationError := "agentPublisher configuration must be well-formed" }}
+{{- $publisherAuxiliaryConfigurationError := "agentPublisher auxiliary chart values must be well-formed" }}
+{{- if hasKey .Values "agentPublisherGateway" }}
+{{- fail "agentPublisherGateway has been removed; use agentPublisher" }}
 {{- end }}
-{{- if and .Values.agentPublisherGateway.enabled (not (hasPrefix "https://" .Values.agentPublisherGateway.endpoint)) }}
-{{- fail "agentPublisherGateway.endpoint must be an HTTPS origin" }}
+{{- if not (kindIs "map" .Values.agentPublisher) }}
+{{- fail $publisherConfigurationError }}
 {{- end }}
-{{- if and .Values.agentPublisherGateway.enabled (or (empty .Values.agentPublisherGateway.policyFile) (empty .Values.agentPublisherGateway.tokenFile)) }}
-{{- fail "agentPublisherGateway.policyFile and tokenFile are required" }}
+{{- $publisherKeys := dict "enabled" true "policySecret" true "credentialSecret" true "credentials" true "directGit" true "requestTimeout" true "leaseDuration" true }}
+{{- range $key, $_ := .Values.agentPublisher }}
+{{- if not (hasKey $publisherKeys $key) }}
+{{- fail (printf "agentPublisher contains unsupported field %q" $key) }}
 {{- end }}
-{{- if and .Values.agentPublisherGateway.enabled (or (empty .Values.agentPublisherGateway.volumes) (empty .Values.agentPublisherGateway.volumeMounts)) }}
-{{- fail "agentPublisherGateway.enabled requires agentPublisherGateway.volumes and volumeMounts for mounted policy and token files" }}
+{{- end }}
+{{- if not (kindIs "bool" .Values.agentPublisher.enabled) }}
+{{- fail $publisherConfigurationError }}
+{{- end }}
+{{- if .Values.agentPublisher.enabled }}
+{{- if not .Values.agentSnapshots.enabled }}
+{{- fail "agentPublisher.enabled requires agentSnapshots.enabled" }}
+{{- end }}
+{{- if or (not (kindIs "map" .Values.agentPublisher.policySecret)) (not (kindIs "map" .Values.agentPublisher.credentialSecret)) }}
+{{- fail $publisherConfigurationError }}
+{{- end }}
+{{- if or (ne (len .Values.agentPublisher.policySecret) 2) (not (hasKey .Values.agentPublisher.policySecret "name")) (not (hasKey .Values.agentPublisher.policySecret "key")) }}
+{{- fail $publisherConfigurationError }}
+{{- end }}
+{{- if or (ne (len .Values.agentPublisher.credentialSecret) 1) (not (hasKey .Values.agentPublisher.credentialSecret "name")) }}
+{{- fail $publisherConfigurationError }}
+{{- end }}
+{{- if or
+  (not (kindIs "slice" .Values.web.extraVolumes))
+  (not (kindIs "slice" .Values.web.extraVolumeMounts))
+  (not (kindIs "slice" .Values.web.env))
+  (not (kindIs "slice" .Values.image.pullSecrets))
+  (not (kindIs "slice" .Values.kubernetes.imagePullSecrets))
+  (not (kindIs "slice" .Values.ingress.tls))
+}}
+{{- fail $publisherAuxiliaryConfigurationError }}
+{{- end }}
+{{- range $volume := .Values.web.extraVolumes }}
+{{- if not (kindIs "map" $volume) }}
+{{- fail $publisherAuxiliaryConfigurationError }}
+{{- end }}
+{{- end }}
+{{- range $mount := .Values.web.extraVolumeMounts }}
+{{- if not (kindIs "map" $mount) }}
+{{- fail $publisherAuxiliaryConfigurationError }}
+{{- end }}
+{{- end }}
+{{- range $environment := .Values.web.env }}
+{{- if not (kindIs "map" $environment) }}
+{{- fail $publisherAuxiliaryConfigurationError }}
+{{- end }}
+{{- $valueFrom := get $environment "valueFrom" }}
+{{- if and (ne $valueFrom nil) (not (kindIs "map" $valueFrom)) }}
+{{- fail $publisherAuxiliaryConfigurationError }}
+{{- end }}
+{{- if kindIs "map" $valueFrom }}
+{{- $secretKeyRef := get $valueFrom "secretKeyRef" }}
+{{- if and (ne $secretKeyRef nil) (not (kindIs "map" $secretKeyRef)) }}
+{{- fail $publisherAuxiliaryConfigurationError }}
+{{- end }}
+{{- if kindIs "map" $secretKeyRef }}
+{{- $secretName := get $secretKeyRef "name" }}
+{{- if and (ne $secretName nil) (not (kindIs "string" $secretName)) }}
+{{- fail $publisherAuxiliaryConfigurationError }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- range $secretName := .Values.image.pullSecrets }}
+{{- if not (kindIs "string" $secretName) }}
+{{- fail $publisherAuxiliaryConfigurationError }}
+{{- end }}
+{{- end }}
+{{- range $secretName := .Values.kubernetes.imagePullSecrets }}
+{{- if not (kindIs "string" $secretName) }}
+{{- fail $publisherAuxiliaryConfigurationError }}
+{{- end }}
+{{- end }}
+{{- range $tls := .Values.ingress.tls }}
+{{- if not (kindIs "map" $tls) }}
+{{- fail $publisherAuxiliaryConfigurationError }}
+{{- end }}
+{{- $secretName := get $tls "secretName" }}
+{{- if and (ne $secretName nil) (not (kindIs "string" $secretName)) }}
+{{- fail $publisherAuxiliaryConfigurationError }}
+{{- end }}
+{{- end }}
+{{- if or
+  (not (kindIs "string" .Values.kubernetes.imageRegistrySecret))
+  (not (kindIs "string" .Values.web.tls.secretName))
+  (not (kindIs "string" .Values.secrets.signingKeySecret))
+  (not (kindIs "bool" .Values.kubernetes.credentialManager.enabled))
+  (not (kindIs "string" .Values.kubernetes.credentialManager.namespacePrefix))
+}}
+{{- fail $publisherAuxiliaryConfigurationError }}
+{{- end }}
+{{- if or (not (kindIs "string" .Values.agentPublisher.policySecret.name)) (empty .Values.agentPublisher.policySecret.name) }}
+{{- fail "agentPublisher.policySecret.name is required" }}
+{{- end }}
+{{- if or (not (kindIs "string" .Values.agentPublisher.policySecret.key)) (empty .Values.agentPublisher.policySecret.key) }}
+{{- fail "agentPublisher.policySecret.key is required" }}
+{{- end }}
+{{- if or (gt (len .Values.agentPublisher.policySecret.key) 253) (not (regexMatch "^[A-Za-z0-9._-]+$" .Values.agentPublisher.policySecret.key)) }}
+{{- fail "agentPublisher.policySecret.key is invalid" }}
+{{- end }}
+{{- if or (not (kindIs "string" .Values.agentPublisher.credentialSecret.name)) (empty .Values.agentPublisher.credentialSecret.name) }}
+{{- fail "agentPublisher.credentialSecret.name is required" }}
+{{- end }}
+{{- range $secret := list (dict "field" "agentPublisher.policySecret.name" "name" .Values.agentPublisher.policySecret.name) (dict "field" "agentPublisher.credentialSecret.name" "name" .Values.agentPublisher.credentialSecret.name) }}
+{{- $secretName := get $secret "name" }}
+{{- if or (gt (len $secretName) 253) (not (regexMatch `^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$` $secretName)) }}
+{{- fail (printf "%s must be a valid Kubernetes Secret name" (get $secret "field")) }}
+{{- end }}
+{{- end }}
+{{- if eq .Values.agentPublisher.policySecret.name .Values.agentPublisher.credentialSecret.name }}
+{{- fail "agentPublisher policy and credential Secrets must be distinct" }}
+{{- end }}
+{{- $publisherSecretIsolationError := "agentPublisher Secrets may only be consumed through chart-owned publisher mounts" }}
+{{- $publisherSecretNames := dict .Values.agentPublisher.policySecret.name true .Values.agentPublisher.credentialSecret.name true }}
+{{- $artifactDaemonTLSSecretName := .Values.artifactDaemon.tls.existingSecret | default (printf "%s-artifact-daemon-tls" (include "concourse.fullname" .)) }}
+{{- $artifactDaemonResolveSecretName := .Values.artifactDaemon.resolveCapability.existingSecret | default (printf "%s-artifact-daemon-resolve-capability" (include "concourse.fullname" .)) }}
+{{- range $otherSecretName := list .Values.postgresql.existingSecret $artifactDaemonTLSSecretName $artifactDaemonResolveSecretName }}
+{{- if kindIs "string" $otherSecretName }}
+{{- if and (not (empty $otherSecretName)) (hasKey $publisherSecretNames $otherSecretName) }}
+{{- fail $publisherSecretIsolationError }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- range $environment := .Values.web.env }}
+{{- $valueFrom := get $environment "valueFrom" }}
+{{- if kindIs "map" $valueFrom }}
+{{- $secretKeyRef := get $valueFrom "secretKeyRef" }}
+{{- if kindIs "map" $secretKeyRef }}
+{{- $secretName := get $secretKeyRef "name" }}
+{{- if and (kindIs "string" $secretName) (hasKey $publisherSecretNames $secretName) }}
+{{- fail $publisherSecretIsolationError }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- range $secretName := .Values.image.pullSecrets }}
+{{- if hasKey $publisherSecretNames $secretName }}
+{{- fail $publisherSecretIsolationError }}
+{{- end }}
+{{- end }}
+{{- range $secretName := .Values.kubernetes.imagePullSecrets }}
+{{- if hasKey $publisherSecretNames $secretName }}
+{{- fail $publisherSecretIsolationError }}
+{{- end }}
+{{- end }}
+{{- if and (not (empty .Values.kubernetes.imageRegistrySecret)) (hasKey $publisherSecretNames .Values.kubernetes.imageRegistrySecret) }}
+{{- fail $publisherSecretIsolationError }}
+{{- end }}
+{{- if .Values.ingress.enabled }}
+{{- range $tls := .Values.ingress.tls }}
+{{- $secretName := get $tls "secretName" }}
+{{- if and (kindIs "string" $secretName) (hasKey $publisherSecretNames $secretName) }}
+{{- fail $publisherSecretIsolationError }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- $publisherDedicatedSecretError := "agentPublisher Secrets are dedicated to publisher configuration" }}
+{{- if and .Values.web.tls.enabled (hasKey $publisherSecretNames .Values.web.tls.secretName) }}
+{{- fail $publisherDedicatedSecretError }}
+{{- end }}
+{{- if and (not .Values.secrets.create) (not (empty .Values.secrets.signingKeySecret)) (hasKey $publisherSecretNames .Values.secrets.signingKeySecret) }}
+{{- fail $publisherDedicatedSecretError }}
+{{- end }}
+{{- $generatedSigningSecretName := printf "%s-keys" (include "concourse.fullname" .) }}
+{{- if and .Values.secrets.create (hasKey $publisherSecretNames $generatedSigningSecretName) }}
+{{- fail "agentPublisher Secrets may not collide with chart-generated Secrets" }}
+{{- end }}
+{{- if .Values.kubernetes.credentialManager.enabled }}
+{{- $credentialNamespacePrefix := .Values.kubernetes.credentialManager.namespacePrefix }}
+{{- if empty $credentialNamespacePrefix }}
+{{- fail "agentPublisher with the Kubernetes credential manager requires a nonempty kubernetes.credentialManager.namespacePrefix" }}
+{{- end }}
+{{- if hasPrefix $credentialNamespacePrefix .Release.Namespace }}
+{{- fail "agentPublisher Secret namespace must be outside Kubernetes credential-manager team namespaces" }}
+{{- end }}
+{{- end }}
+{{- range $volume := .Values.web.extraVolumes }}
+{{- if kindIs "map" $volume }}
+{{- $directSecret := get $volume "secret" }}
+{{- if kindIs "map" $directSecret }}
+{{- $directSecretName := get $directSecret "secretName" }}
+{{- if kindIs "string" $directSecretName }}
+{{- if hasKey $publisherSecretNames $directSecretName }}
+{{- fail $publisherSecretIsolationError }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- $projected := get $volume "projected" }}
+{{- if kindIs "map" $projected }}
+{{- $sources := get $projected "sources" }}
+{{- if kindIs "slice" $sources }}
+{{- range $source := $sources }}
+{{- if kindIs "map" $source }}
+{{- $projectedSecret := get $source "secret" }}
+{{- if kindIs "map" $projectedSecret }}
+{{- $projectedSecretName := get $projectedSecret "name" }}
+{{- if kindIs "string" $projectedSecretName }}
+{{- if hasKey $publisherSecretNames $projectedSecretName }}
+{{- fail $publisherSecretIsolationError }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- $publisherMountRoot := "/run/concourse-publisher" }}
+{{- range $mount := .Values.web.extraVolumeMounts }}
+{{- if kindIs "map" $mount }}
+{{- $mountPath := get $mount "mountPath" }}
+{{- if kindIs "string" $mountPath }}
+{{- $cleanMountPath := clean $mountPath }}
+{{- if or (eq $cleanMountPath "/") (eq $cleanMountPath $publisherMountRoot) (hasPrefix (printf "%s/" $publisherMountRoot) $cleanMountPath) (hasPrefix (printf "%s/" $cleanMountPath) $publisherMountRoot) }}
+{{- fail "web.extraVolumeMounts may not overlap the agent publisher trust boundary" }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if or (not (kindIs "map" .Values.agentPublisher.directGit)) (not (kindIs "bool" .Values.agentPublisher.directGit.enabled)) (not .Values.agentPublisher.directGit.enabled) }}
+{{- fail "agentPublisher.directGit.enabled is required because no other publisher adapter is configured" }}
+{{- end }}
+{{- if or (ne (len .Values.agentPublisher.directGit) 1) (not (hasKey .Values.agentPublisher.directGit "enabled")) }}
+{{- fail $publisherConfigurationError }}
+{{- end }}
+{{- if or (not (kindIs "slice" .Values.agentPublisher.credentials)) (empty .Values.agentPublisher.credentials) }}
+{{- fail "agentPublisher.credentials must contain at least one mapping" }}
+{{- end }}
+{{- if or (not (kindIs "string" .Values.agentPublisher.requestTimeout)) (not (regexMatch "^([0-9]+([.][0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$" .Values.agentPublisher.requestTimeout)) }}
+{{- fail $publisherConfigurationError }}
+{{- end }}
+{{- if or (not (kindIs "string" .Values.agentPublisher.leaseDuration)) (not (regexMatch "^([0-9]+([.][0-9]+)?(ns|us|µs|μs|ms|s|m|h))+$" .Values.agentPublisher.leaseDuration)) }}
+{{- fail $publisherConfigurationError }}
+{{- end }}
+{{- $publisherDurationBase := toDate "2006-01-02T15:04:05Z07:00" "2000-01-01T00:00:00Z" }}
+{{- $publisherRequestDeadline := dateModify .Values.agentPublisher.requestTimeout $publisherDurationBase }}
+{{- $publisherLeaseDeadline := dateModify .Values.agentPublisher.leaseDuration $publisherDurationBase }}
+{{- $publisherRequestNanos := sub $publisherRequestDeadline.UnixNano $publisherDurationBase.UnixNano }}
+{{- $publisherLeaseNanos := sub $publisherLeaseDeadline.UnixNano $publisherDurationBase.UnixNano }}
+{{- if or (le $publisherRequestNanos 0) (gt $publisherRequestNanos 3600000000000) }}
+{{- fail $publisherConfigurationError }}
+{{- end }}
+{{- if or (le $publisherLeaseNanos 0) (gt $publisherLeaseNanos 86400000000000) (le $publisherLeaseNanos $publisherRequestNanos) }}
+{{- fail $publisherConfigurationError }}
+{{- end }}
+{{- $publisherCredentialReferences := dict }}
+{{- $publisherCredentialPaths := dict }}
+{{- range $credential := .Values.agentPublisher.credentials }}
+{{- if or (not (kindIs "map" $credential)) (ne (len $credential) 3) (not (hasKey $credential "reference")) (not (hasKey $credential "key")) (not (hasKey $credential "path")) }}
+{{- fail $publisherConfigurationError }}
+{{- end }}
+{{- $reference := get $credential "reference" }}
+{{- $key := get $credential "key" }}
+{{- $path := get $credential "path" }}
+{{- if or (not (kindIs "string" $reference)) (not (kindIs "string" $key)) (not (kindIs "string" $path)) (empty $reference) (empty $key) (empty $path) }}
+{{- fail $publisherConfigurationError }}
+{{- end }}
+{{- if or (gt (len $reference) 256) (not (regexMatch "^[A-Za-z0-9][A-Za-z0-9._/-]*$" $reference)) }}
+{{- fail "agentPublisher credential references are invalid" }}
+{{- end }}
+{{- if or (gt (len $key) 253) (not (regexMatch "^[A-Za-z0-9._-]+$" $key)) }}
+{{- fail "agentPublisher credential Secret keys are invalid" }}
+{{- end }}
+{{- if hasKey $publisherCredentialReferences $reference }}
+{{- fail "agentPublisher credential references must be unique" }}
+{{- end }}
+{{- if hasKey $publisherCredentialPaths $path }}
+{{- fail "agentPublisher credential paths must be unique" }}
+{{- end }}
+{{- if or (not (regexMatch "^[A-Za-z0-9][A-Za-z0-9._/-]*$" $path)) (hasPrefix "/" $path) (ne (clean $path) $path) (eq $path ".") (eq $path "..") (hasPrefix "../" $path) }}
+{{- fail "agentPublisher credential paths must be clean relative paths" }}
+{{- end }}
+{{- if gt (len $path) 4096 }}
+{{- fail "agentPublisher credential paths must obey Kubernetes AtomicWriter bounds" }}
+{{- end }}
+{{- range $component := splitList "/" $path }}
+{{- if gt (len $component) 255 }}
+{{- fail "agentPublisher credential paths must obey Kubernetes AtomicWriter bounds" }}
+{{- end }}
+{{- end }}
+{{- range $existingPath, $_ := $publisherCredentialPaths }}
+{{- if or (hasPrefix (printf "%s/" $existingPath) $path) (hasPrefix (printf "%s/" $path) $existingPath) }}
+{{- fail "agentPublisher credential paths must not overlap" }}
+{{- end }}
+{{- end }}
+{{- $_ := set $publisherCredentialReferences $reference true }}
+{{- $_ := set $publisherCredentialPaths $path true }}
+{{- end }}
 {{- end }}
 {{- if and .Values.agentSnapshots.enabled (empty .Values.agentSnapshots.scratch.existingClaim) (empty .Values.agentSnapshots.scratch.sizeLimit) }}
 {{- fail "agentSnapshots.scratch.sizeLimit is required when existingClaim is empty" }}
@@ -39,10 +325,21 @@
 {{- if eq ($mount.name | default "") "snapshot-scratch" }}
 {{- fail "web.extraVolumeMounts may not use reserved volume snapshot-scratch" }}
 {{- end }}
+{{- if or (eq ($mount.name | default "") "agent-publisher-policy") (eq ($mount.name | default "") "agent-publisher-credentials") }}
+{{- fail "web.extraVolumeMounts may not use reserved agent publisher volumes" }}
+{{- end }}
+{{- end }}
+{{- range $volume := .Values.web.extraVolumes }}
+{{- if or (eq ($volume.name | default "") "agent-publisher-policy") (eq ($volume.name | default "") "agent-publisher-credentials") }}
+{{- fail "web.extraVolumes may not use reserved agent publisher volumes" }}
+{{- end }}
 {{- end }}
 {{- range $argument := .Values.web.extraArgs }}
 {{- if hasPrefix "--kubernetes-artifact-helper-image" $argument }}
 {{- fail "web.extraArgs may not override kubernetes.artifactHelperImage" }}
+{{- end }}
+{{- if hasPrefix "--agent-publisher-" $argument }}
+{{- fail "web.extraArgs may not override chart-managed publisher configuration" }}
 {{- end }}
 {{- if and $.Values.agentSnapshots.enabled (hasPrefix "--agent-snapshot-temp-dir" $argument) }}
 {{- fail "web.extraArgs may not override the chart-managed agent snapshot temp directory" }}
@@ -52,70 +349,6 @@
 {{- range $environment := .Values.web.env }}
 {{- if eq ($environment.name | default "") "TMPDIR" }}
 {{- fail "web.env may not override TMPDIR while agentSnapshots.enabled is true" }}
-{{- end }}
-{{- end }}
-{{- end }}
-{{- if .Values.agentPublisherGateway.enabled }}
-{{- $publisherVolumeNames := dict }}
-{{- range $volume := .Values.agentPublisherGateway.volumes }}
-{{- $volumeName := $volume.name | default "" }}
-{{- if empty $volumeName }}
-{{- fail "agentPublisherGateway.volumes entries require a name" }}
-{{- end }}
-{{- if hasKey $publisherVolumeNames $volumeName }}
-{{- fail (printf "agentPublisherGateway.volumes contains duplicate name %q" $volumeName) }}
-{{- end }}
-{{- $_ := set $publisherVolumeNames $volumeName true }}
-{{- end }}
-{{- $publisherMountNames := dict }}
-{{- $publisherMountPaths := dict }}
-{{- range $mount := .Values.agentPublisherGateway.volumeMounts }}
-{{- $mountName := $mount.name | default "" }}
-{{- $mountPath := $mount.mountPath | default "" }}
-{{- if empty $mountName }}
-{{- fail "agentPublisherGateway.volumeMounts entries require a name" }}
-{{- end }}
-{{- if hasKey $publisherMountNames $mountName }}
-{{- fail (printf "agentPublisherGateway.volumeMounts contains duplicate name %q" $mountName) }}
-{{- end }}
-{{- if not (kindIs "bool" $mount.readOnly) }}
-{{- fail "agentPublisherGateway.volumeMounts must all set readOnly=true" }}
-{{- end }}
-{{- if not $mount.readOnly }}
-{{- fail "agentPublisherGateway.volumeMounts must all set readOnly=true" }}
-{{- end }}
-{{- if not (hasKey $publisherVolumeNames $mountName) }}
-{{- fail (printf "agentPublisherGateway.volumeMount %q has no matching volume" $mountName) }}
-{{- end }}
-{{- if or (empty $mountPath) (not (hasPrefix "/" $mountPath)) (ne (clean $mountPath) $mountPath) (eq $mountPath "/") }}
-{{- fail (printf "agentPublisherGateway.volumeMount %q mountPath must be an absolute clean non-root path" $mountName) }}
-{{- end }}
-{{- $_ := set $publisherMountNames $mountName true }}
-{{- $_ := set $publisherMountPaths $mountName $mountPath }}
-{{- end }}
-{{- range $volumeName, $_ := $publisherVolumeNames }}
-{{- if not (hasKey $publisherMountNames $volumeName) }}
-{{- fail (printf "agentPublisherGateway.volume %q has no matching volumeMount" $volumeName) }}
-{{- end }}
-{{- end }}
-{{- $publisherFiles := dict
-      "agentPublisherGateway.policyFile" .Values.agentPublisherGateway.policyFile
-      "agentPublisherGateway.tokenFile" .Values.agentPublisherGateway.tokenFile
-      "agentPublisherGateway.caCertificateFile" .Values.agentPublisherGateway.caCertificateFile }}
-{{- range $fileName, $filePath := $publisherFiles }}
-{{- if not (empty $filePath) }}
-{{- if or (not (hasPrefix "/" $filePath)) (ne (clean $filePath) $filePath) }}
-{{- fail (printf "%s must be an absolute clean path" $fileName) }}
-{{- end }}
-{{- $covered := dict "value" false }}
-{{- range $_, $mountPath := $publisherMountPaths }}
-{{- if hasPrefix (printf "%s/" (trimSuffix "/" $mountPath)) $filePath }}
-{{- $_ := set $covered "value" true }}
-{{- end }}
-{{- end }}
-{{- if not $covered.value }}
-{{- fail (printf "%s must lie beneath an agentPublisherGateway.volumeMounts mountPath" $fileName) }}
-{{- end }}
 {{- end }}
 {{- end }}
 {{- end }}
@@ -341,17 +574,18 @@ spec:
             - --agent-experiment-runner-interval={{ .Values.agentExperiments.runnerInterval }}
             - --agent-experiment-runner-max-concurrency={{ .Values.agentExperiments.runnerMaxConcurrency }}
             {{- end }}
-            {{- if .Values.agentPublisherGateway.enabled }}
-            - --agent-publisher-gateway-enabled
-            - --agent-publisher-gateway-endpoint={{ .Values.agentPublisherGateway.endpoint }}
-            - --agent-publisher-gateway-policy-file={{ .Values.agentPublisherGateway.policyFile }}
-            - --agent-publisher-gateway-token-file={{ .Values.agentPublisherGateway.tokenFile }}
-            {{- if .Values.agentPublisherGateway.caCertificateFile }}
-            - --agent-publisher-gateway-ca-certificate-file={{ .Values.agentPublisherGateway.caCertificateFile }}
+            {{- if .Values.agentPublisher.enabled }}
+            - --agent-publisher-enabled
+            - --agent-publisher-policy-file=/run/concourse-publisher/policy/policy.json
+            - --agent-publisher-credential-root=/run/concourse-publisher/credentials
+            {{- range $credential := .Values.agentPublisher.credentials }}
+            - {{ printf "--agent-publisher-credential-file=%s:/run/concourse-publisher/credentials/%s" (get $credential "reference") (get $credential "path") | quote }}
             {{- end }}
-            - --agent-publisher-gateway-request-timeout={{ .Values.agentPublisherGateway.requestTimeout }}
-            - --agent-publisher-gateway-lease-duration={{ .Values.agentPublisherGateway.leaseDuration }}
-            - --agent-publisher-gateway-max-response-bytes={{ int64 .Values.agentPublisherGateway.maxResponseBytes }}
+            {{- if .Values.agentPublisher.directGit.enabled }}
+            - --agent-publisher-direct-git-enabled
+            {{- end }}
+            - --agent-publisher-request-timeout={{ .Values.agentPublisher.requestTimeout }}
+            - --agent-publisher-lease-duration={{ .Values.agentPublisher.leaseDuration }}
             {{- end }}
             # Kubernetes credential manager (resolve ((vars)) from k8s Secrets)
             {{- if .Values.kubernetes.credentialManager.enabled }}
@@ -471,10 +705,13 @@ spec:
             {{- with .Values.web.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
-            {{- if .Values.agentPublisherGateway.enabled }}
-            {{- with .Values.agentPublisherGateway.volumeMounts }}
-            {{- toYaml . | nindent 12 }}
-            {{- end }}
+            {{- if .Values.agentPublisher.enabled }}
+            - name: agent-publisher-policy
+              mountPath: /run/concourse-publisher/policy
+              readOnly: true
+            - name: agent-publisher-credentials
+              mountPath: /run/concourse-publisher/credentials
+              readOnly: true
             {{- end }}
       terminationGracePeriodSeconds: {{ .Values.web.terminationGracePeriodSeconds | default 120 }}
       volumes:
@@ -536,10 +773,23 @@ spec:
         {{- with .Values.web.extraVolumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-        {{- if .Values.agentPublisherGateway.enabled }}
-        {{- with .Values.agentPublisherGateway.volumes }}
-        {{- toYaml . | nindent 8 }}
-        {{- end }}
+        {{- if .Values.agentPublisher.enabled }}
+        - name: agent-publisher-policy
+          secret:
+            secretName: {{ .Values.agentPublisher.policySecret.name | quote }}
+            defaultMode: 288
+            items:
+              - key: {{ .Values.agentPublisher.policySecret.key | quote }}
+                path: policy.json
+        - name: agent-publisher-credentials
+          secret:
+            secretName: {{ .Values.agentPublisher.credentialSecret.name | quote }}
+            defaultMode: 288
+            items:
+              {{- range $credential := .Values.agentPublisher.credentials }}
+              - key: {{ get $credential "key" | quote }}
+                path: {{ get $credential "path" | quote }}
+              {{- end }}
         {{- end }}
       {{- with .Values.web.nodeSelector }}
       nodeSelector:

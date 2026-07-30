@@ -104,6 +104,7 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends \
       ca-certificates \
       dumb-init \
+      git=1:2.34.1-1ubuntu1.17 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=backend /concourse /usr/local/concourse/bin/concourse
@@ -111,6 +112,8 @@ COPY --from=backend /artifact-daemon /usr/local/concourse/bin/artifact-daemon
 COPY --from=backend /fly-assets/ /usr/local/concourse/fly-assets/
 
 ENV PATH="/usr/local/concourse/bin:${PATH}"
+
+USER 65534:65534
 
 EXPOSE 8080
 

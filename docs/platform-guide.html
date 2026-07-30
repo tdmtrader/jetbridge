@@ -489,8 +489,8 @@ footer.page-footer{border-top:1px solid var(--border);margin-top:2rem;padding-to
           <span>in-chart or external managed database</span>
         </div>
         <div class="ext-box">
-          <strong>Publisher gateway</strong>
-          <span>deployment-owned HTTPS service — holds the real GitHub / GitLab / Jira credentials, outside ATC's trust boundary</span>
+          <strong>Git hosting providers</strong>
+          <span>reached by ATC's direct Git adapter with narrowly scoped, deployment-owned credentials</span>
         </div>
       </div>
     </div>
@@ -500,7 +500,7 @@ footer.page-footer{border-top:1px solid var(--border);margin-top:2rem;padding-to
     <p>Two things are easy to miss and matter for operating this cluster:</p>
     <ul>
       <li><strong>The artifact daemon is load-bearing for both phases.</strong> It started as phase 1's answer to "how do pods pass artifacts to each other," but phase 2's snapshot storage rides the exact same DaemonSet fleet, under a reserved key namespace. If the daemon is unhealthy, both ordinary builds and everything agentic degrade together.</li>
-      <li><strong>The publisher gateway is deliberately outside the cluster's trust boundary.</strong> ATC never holds a GitHub, GitLab, or Jira credential. It holds a bearer token for the gateway and durable proof of who approved what; the gateway is the only thing that ever talks to a real provider. This is a real security boundary, not an implementation detail — see <a href="#publishing">Human approval &amp; publishing</a>.</li>
+      <li><strong>Direct publication is deliberately ATC-owned.</strong> ATC verifies durable approval evidence, resolves an exact destination policy, and opens only the narrowly mapped credential that policy authorizes. Agent pods never receive Git-hosting credentials — see <a href="#publishing">Human approval &amp; publishing</a>.</li>
     </ul>
   </section>
 
@@ -599,7 +599,7 @@ footer.page-footer{border-top:1px solid var(--border);margin-top:2rem;padding-to
         <span class="flow-num">6</span>
         <div class="flow-body">
           <strong>Publish <em>(optional)</em></strong>
-          <p>A workflow that declares a <code class="flag">publish_snapshot</code> node — gated by a durable human-approval wait — hands its result to the publisher gateway for delivery to a real git host or issue tracker. Most workflows stop at step 5.</p>
+          <p>A workflow that declares a <code class="flag">publish_snapshot</code> node — gated by a durable human-approval wait — hands its result to ATC's direct Git adapter for delivery to an exact policy-authorized Git destination. Most workflows stop at step 5.</p>
         </div>
       </li>
     </ol>
@@ -736,7 +736,7 @@ fly -t TARGET agent dispatcher off      <span class="c"># mode=off: do not auto-
     <p>Spend is checked at three points that never double-count: a fast pre-check at dispatch time, a per-step clamp right before an agent pod starts (floored to whatever headroom the ticket has left), and an append-only ledger write after the step completes. Those are soft checks against a running total. The actual <strong>hard</strong> gate — a deployment-wide daily cap — is a separate mechanism: when set to a nonzero amount, admitting a new run takes a single database-wide lock shared with ledger ingestion and experiment budgets, so multiple web nodes can never independently over-admit against the same remaining cap. With that cap enabled, every agent leaf in every workflow must declare a finite, positive budget up front, and <code class="flag">attempts</code>/<code class="flag">across</code> around an agent become inadmissible — their multiplicity can't be bounded statically, so they can't be proven to fit the reservation.</p>
 
     <h3 class="subhead">Credentials: simpler than you'd expect</h3>
-    <p>The only credential ever injected into an agent-run pod is an Anthropic token — resolved from a per-user vault, falling back to a shared platform service credential if the dispatching user hasn't vaulted their own. There is no per-run git credential anymore. Source arrives pre-captured as an immutable snapshot before the pod ever starts, and any outbound write goes through the separately-authenticated publisher gateway — so a compromised or malicious agent pod simply has no git-hosting credential to leak. That's a real simplification over the platform's earlier design, where a per-run token had to be provisioned into every pod.</p>
+    <p>The only credential ever injected into an agent-run pod is an Anthropic token — resolved from a per-user vault, falling back to a shared platform service credential if the dispatching user hasn't vaulted their own. There is no per-run Git credential anymore. Source arrives pre-captured as an immutable snapshot before the pod ever starts, and outbound direct Git publication runs inside ATC against a human-reviewed, exact destination policy — so a compromised or malicious agent pod simply has no Git-hosting credential to leak. That's a real simplification over the platform's earlier design, where a per-run token had to be provisioned into every pod.</p>
     <p>The credential itself is wired in as a Kubernetes secret reference, never a literal environment value, and only after the server independently verifies the plan-declared run identity actually belongs to this build — closing a spoofing path where a crafted pipeline could otherwise claim another run's credential or misattribute spend to someone else's budget.</p>
   </section>
 
@@ -803,7 +803,7 @@ fly -t TARGET agent experiments scorecard EXPERIMENT</div>
     </div>
 
     <h3 class="subhead">What's in the chart</h3>
-    <p>Beyond the artifact-daemon, snapshot, experiment, and publisher-gateway configuration groups covered in earlier sections, the chart bundles a full deployment: an optional in-chart PostgreSQL (or external-database fields for a managed instance), an Ingress template, replica count plus a PodDisruptionBudget, ServiceMonitors and a PrometheusRule (all require prometheus-operator CRDs and are off by default), and OpenTelemetry tracing/metrics configuration. The chart's own <code class="flag">README.md</code> is the accurate, complete values reference — the two callouts above are the defaults most worth understanding first.</p>
+    <p>Beyond the artifact-daemon, snapshot, experiment, and ATC-owned publisher configuration groups covered in earlier sections, the chart bundles a full deployment: an optional in-chart PostgreSQL (or external-database fields for a managed instance), an Ingress template, replica count plus a PodDisruptionBudget, ServiceMonitors and a PrometheusRule (all require prometheus-operator CRDs and are off by default), and OpenTelemetry tracing/metrics configuration. The chart's own <code class="flag">README.md</code> is the accurate, complete values reference — the two callouts above are the defaults most worth understanding first.</p>
 
     <h4>Monitoring</h4>
     <p>Enabling <code class="flag">serviceMonitor.enabled</code> renders two ServiceMonitors: one for the web Service and one for the artifact-daemon's headless Service, whose per-node pods export resolve latency, peer-fetch counts, and snapshot operation counts and bytes. Turn the second one off with <code class="flag">serviceMonitor.artifactDaemon.enabled=false</code>. Under <code class="flag">artifactDaemon.tls.enabled</code> the daemon serves that port over HTTPS; <code class="flag">/metrics</code> needs no client certificate, but the chart-generated CA is self-signed with SANs covering the Service rather than the pod IPs Prometheus targets, so the daemon endpoint defaults to <code class="flag">insecureSkipVerify</code> unless you supply <code class="flag">serviceMonitor.artifactDaemon.tlsConfig</code>. If a chart NetworkPolicy is also enabled, the daemon policy restricts ingress on the daemon port, so the chart requires <code class="flag">serviceMonitor.scrapeFrom</code> to name the Prometheus peers — rendering fails rather than letting every scrape be silently dropped or opening the artifact API port to all pods.</p>

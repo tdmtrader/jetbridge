@@ -217,7 +217,14 @@ re-mount either through `web.extraVolumeMounts`.
 | `agentSnapshots.scratch.existingClaim` | `""` | Existing PVC for web snapshot scratch. |
 | `agentSnapshots.scratch.sizeLimit` | `80Gi` | Disk-backed `emptyDir` capacity when no PVC is supplied. |
 | `agentExperiments.runnerEnabled` | `false` | Enable the experiment runner; requires snapshots. |
-| `agentPublisherGateway.enabled` | `false` | Enable the deployment-owned HTTPS publication gateway. |
+| `agentPublisher.enabled` | `false` | Enable exact-policy outbound publication inside ATC; requires durable snapshots. |
+| `agentPublisher.policySecret.name` | `""` | Dedicated Secret containing the human-reviewed publisher policy. |
+| `agentPublisher.policySecret.key` | `policy.json` | Policy key mounted at the chart-owned policy path. |
+| `agentPublisher.credentialSecret.name` | `""` | Dedicated Secret containing only the destination-scoped credentials mapped below. |
+| `agentPublisher.credentials` | `[]` | Exact `reference`, Secret `key`, and clean relative `path` mappings beneath the credential root. |
+| `agentPublisher.directGit.enabled` | `false` | Enable direct branch and trunk publication; this is the only initial adapter. |
+| `agentPublisher.requestTimeout` | `30s` | Positive Go duration no greater than one hour. |
+| `agentPublisher.leaseDuration` | `5m` | Go duration greater than `requestTimeout` and no greater than 24 hours. |
 
 Snapshot scratch is never memory-backed. A non-root init container creates a
 private `0700` child below the disk/PVC mount, and both
@@ -231,11 +238,20 @@ the PVC's provisioned capacity is authoritative. Helm rejects `web.extraArgs`
 or `web.env` entries that would override the managed snapshot path or
 `TMPDIR`.
 
-Publisher `volumes` and `volumeMounts` render only when the gateway is enabled.
-Helm requires a one-to-one name match, rejects duplicate/unmounted entries,
-requires every mount to be read-only, and requires the policy, token, and
-optional CA file to be an absolute clean path strictly beneath one of those
-mounts. Dedicated publisher mounts remain exclusive to `concourse-web`.
+When enabled, the chart mounts the policy and credentials read-only only into
+`concourse-web`, at chart-owned paths; neither Secret reaches migration,
+workers, agents, or sidecars. Policy and credential Secrets must be distinct,
+the credential mappings must be unique and non-overlapping, and each mapping
+must obey Kubernetes AtomicWriter path bounds. The publisher Secrets cannot be
+aliased through extra volumes, environment references, image-pull settings,
+Ingress TLS, PostgreSQL, artifact-daemon, web TLS, or signing configuration.
+
+Direct Git is the initial adapter: it can publish branches or already-rebased
+changes to trunk. Pull requests and work-item publication fail closed until a
+separate provider adapter is explicitly configured. With the Kubernetes
+credential manager enabled, the credential-manager namespace prefix must be
+nonempty and the release namespace must be outside the
+`<namespacePrefix><team>` pipeline-variable namespace set.
 
 The artifact daemon is the deliberate host-filesystem trust edge. Its pod and
 container explicitly run as UID 0 because task outputs on the hostPath can

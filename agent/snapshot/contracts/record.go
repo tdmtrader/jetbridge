@@ -186,7 +186,7 @@ const (
 	currentSchemaDigestOnly
 
 	// anyAcceptedSchemaDigest is the READ-TIME rule. Stored records are re-decoded
-	// on read (agent/publisher/gateway.go, agent/projection/review.go,
+	// on read (agent/publisher/directgit, agent/projection/review.go,
 	// agent/projection/repository_change.go, agent/functions/repositorymerge), so
 	// demanding the current digest there would turn a descriptor bump into
 	// retroactive corruption of every record sealed under the previous revision,

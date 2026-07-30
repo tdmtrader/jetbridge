@@ -43,7 +43,7 @@ type recordSchemaRevision struct {
 //
 // Never edit or delete a superseded entry. Every record already sealed under it
 // is re-validated against this table on every read (Record.RevalidateSealed,
-// reached from agent/publisher/gateway.go, agent/projection/review.go,
+// reached from agent/publisher/directgit, agent/projection/review.go,
 // agent/projection/repository_change.go and agent/functions/repositorymerge), so
 // removing a digest retroactively invalidates stored data and reports it as
 // corruption rather than as a versioning event. buildRecordSchemaIndex refuses
