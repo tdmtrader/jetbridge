@@ -127,3 +127,17 @@ capture token is rejected and cannot mint another lifecycle capability.
 Ambiguous-response recovery remains valid because binding does not advance
 the execution out of `capturing`. The focused handler/service regression
 passes.
+
+Task 9 production-catalog checkpoint: complete pending independent review.
+Migration `1773106156` persists one canonical compiled definition beside the
+shared workflow/node source row. New server imports resolve through one
+immutable static deployment catalog; reads, promotion, signature comparison,
+node release/expansion, workflow-run source loads, experiments, and
+idempotent reimport parse the stored authority without catalog lookup. Legacy
+ordinary NULL rows retain catalog-free fallback while legacy broker sources
+fail closed. Fly defers only the typed, neutral-validated catalog-required
+condition to ATC for both workflows and nodes; public workflow/node responses
+strip exact operator profiles so Fly never receives provider/model authority.
+Focused broker/workflow/API/Fly/atccmd suites, DB/migration compile-only checks,
+migration preflight head, and diff hygiene pass. PostgreSQL runtime was not
+retried because of the recorded shared-memory sandbox failure.

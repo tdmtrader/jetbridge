@@ -947,10 +947,11 @@ func workflowRunTargetDeclaresResourceSources(
 		definition   workflow.Definition
 		rawYAML      string
 		manifestJSON sql.NullString
+		compiledJSON sql.NullString
 	)
 	err := queryer.QueryRowContext(ctx, `
 		SELECT id, name, version, content_hash, schema_version,
-		       signature_version, definition, source_manifest
+		       signature_version, definition, source_manifest, compiled_definition
 		FROM agent_workflow_definitions
 		WHERE id = $1 AND definition_kind = 'workflow'
 	`, workflowDefinitionID).Scan(
@@ -962,6 +963,7 @@ func workflowRunTargetDeclaresResourceSources(
 		&definition.SignatureVersion,
 		&rawYAML,
 		&manifestJSON,
+		&compiledJSON,
 	)
 	if err != nil {
 		return false, err
@@ -972,6 +974,7 @@ func workflowRunTargetDeclaresResourceSources(
 		definition.Version,
 		rawYAML,
 		manifestJSON,
+		compiledJSON,
 	)
 	if err != nil {
 		return false, fmt.Errorf(
@@ -992,10 +995,11 @@ func loadWorkflowRunResourceSourceTarget(
 		definition   workflow.Definition
 		rawYAML      string
 		manifestJSON sql.NullString
+		compiledJSON sql.NullString
 	)
 	err := queryer.QueryRowContext(ctx, `
 		SELECT id, name, version, content_hash, schema_version,
-		       signature_version, definition, source_manifest
+		       signature_version, definition, source_manifest, compiled_definition
 		FROM agent_workflow_definitions
 		WHERE id = $1 AND definition_kind = 'workflow'
 	`, request.WorkflowDefinitionID).Scan(
@@ -1007,6 +1011,7 @@ func loadWorkflowRunResourceSourceTarget(
 		&definition.SignatureVersion,
 		&rawYAML,
 		&manifestJSON,
+		&compiledJSON,
 	)
 	if err != nil {
 		return workflow.FunctionTarget{}, err
@@ -1016,6 +1021,7 @@ func loadWorkflowRunResourceSourceTarget(
 		definition.Version,
 		rawYAML,
 		manifestJSON,
+		compiledJSON,
 	)
 	if err != nil {
 		return workflow.FunctionTarget{}, fmt.Errorf(

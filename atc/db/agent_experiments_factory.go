@@ -2635,14 +2635,15 @@ func loadAuthoritativeExperimentTarget(
 	var definition workflow.Definition
 	var rawYAML string
 	var manifestJSON sql.NullString
+	var compiledJSON sql.NullString
 	err := queryer.QueryRowContext(ctx, `
 		SELECT id, name, version, content_hash, schema_version, signature_version,
-		       definition, source_manifest
+		       definition, source_manifest, compiled_definition
 		FROM agent_workflow_definitions
 		WHERE id = $1 AND definition_kind = 'workflow'
 	`, target.DefinitionID).Scan(&definition.ID, &definition.Name, &definition.Version,
 		&definition.ContentHash, &definition.SchemaVersion, &definition.SignatureVersion,
-		&rawYAML, &manifestJSON)
+		&rawYAML, &manifestJSON, &compiledJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return workflow.FunctionTarget{}, fmt.Errorf("definition_id %d does not exist", target.DefinitionID)
 	}
@@ -2658,7 +2659,7 @@ func loadAuthoritativeExperimentTarget(
 	if definition.SchemaVersion != 3 {
 		return workflow.FunctionTarget{}, fmt.Errorf("definition_id %d is schema_version %d, not 3", target.DefinitionID, definition.SchemaVersion)
 	}
-	compiled, source, err := compileStoredWorkflowSource(definition.Name, definition.Version, rawYAML, manifestJSON)
+	compiled, source, err := compileStoredWorkflowSource(definition.Name, definition.Version, rawYAML, manifestJSON, compiledJSON)
 	if err != nil {
 		return workflow.FunctionTarget{}, err
 	}

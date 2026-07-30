@@ -85,7 +85,11 @@ func (h *Handler) Versions(w http.ResponseWriter, r *http.Request) {
 		query := url.Values{"cursor": {cursor}, "limit": {strconv.Itoa(request.Limit)}}
 		w.Header().Set("Link", "<"+r.URL.EscapedPath()+"?"+query.Encode()+`>; rel="next"`)
 	}
-	writeJSON(w, http.StatusOK, page.Definitions)
+	public := make([]workflow.NodeDefinition, len(page.Definitions))
+	for index := range page.Definitions {
+		public[index] = workflow.PublicNodeDefinition(page.Definitions[index])
+	}
+	writeJSON(w, http.StatusOK, public)
 }
 
 func parseVersionPageRequest(values url.Values) (workflow.VersionPageRequest, error) {
@@ -128,7 +132,8 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown node version", http.StatusNotFound)
 		return
 	}
-	writeJSON(w, http.StatusOK, definition)
+	public := workflow.PublicNodeDefinition(*definition)
+	writeJSON(w, http.StatusOK, public)
 }
 
 type importRequest struct {
@@ -168,7 +173,8 @@ func (h *Handler) Import(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to import node", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, definition)
+	public := workflow.PublicNodeDefinition(*definition)
+	writeJSON(w, http.StatusOK, public)
 }
 
 type releaseRequest struct {
@@ -238,7 +244,8 @@ func (h *Handler) Deprecate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown node version", http.StatusNotFound)
 		return
 	}
-	writeJSON(w, http.StatusOK, definition)
+	public := workflow.PublicNodeDefinition(*definition)
+	writeJSON(w, http.StatusOK, public)
 }
 
 func parseVersion(r *http.Request) (int, error) {

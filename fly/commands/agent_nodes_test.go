@@ -53,6 +53,52 @@ func TestAgentNodesImportPackagesDirectoryAndSendsManifest(t *testing.T) {
 	}
 }
 
+func TestAgentNodesImportDefersOnlyValidBrokerSelectorsToATC(t *testing.T) {
+	dir := t.TempDir()
+	source := `schema_version: 1
+name: brokered-fly-node
+step:
+  agent: consult
+  function_id: consult
+  prompt: consult
+  broker_profiles:
+    - tool: consult_agent
+      tier: balanced
+      effort: high
+`
+	if err := os.WriteFile(filepath.Join(dir, workflow.NodeFileName), []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var requests atomic.Int64
+	target := nodeTarget(t, func(request *http.Request) (*http.Response, error) {
+		requests.Add(1)
+		if request.Method != http.MethodPost || request.URL.Path != "/api/v1/agent/nodes/brokered-fly-node/versions" {
+			t.Fatalf("request = %s %s", request.Method, request.URL.Path)
+		}
+		return nodeResponse(http.StatusCreated, `{"name":"brokered-fly-node","version":1,"content_hash":"hash"}`), nil
+	})
+	if err := importNodeDir(target, dir); err != nil {
+		t.Fatalf("valid broker selector should defer to ATC: %v", err)
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("requests = %d, want one authoritative import", requests.Load())
+	}
+
+	if err := os.WriteFile(
+		filepath.Join(dir, workflow.NodeFileName),
+		[]byte(strings.Replace(source, "effort: high", "effort: extreme", 1)),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := importNodeDir(target, dir); err == nil || !strings.Contains(err.Error(), "effort must be medium or high") {
+		t.Fatalf("invalid selector error = %v", err)
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("invalid selector reached ATC; requests = %d", requests.Load())
+	}
+}
+
 func TestAgentNodesReleaseAndDeprecationUseExactLifecycleRequests(t *testing.T) {
 	var calls atomic.Int64
 	target := nodeTarget(t, func(request *http.Request) (*http.Response, error) {

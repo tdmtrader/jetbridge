@@ -336,6 +336,7 @@ type RunCommand struct {
 
 	AgentChildExecutions struct {
 		Enabled             bool          `long:"agent-child-executions-enabled" description:"Enable ATC authority, inspection, and bounded lease reconciliation for managed broker child executions."`
+		BrokerCatalog       flag.File     `long:"agent-child-executions-broker-catalog" description:"Immutable deployment broker profile catalog JSON file. Provider, model, harness, and credentials remain server-only."`
 		CapabilityKey       flag.File     `long:"agent-child-executions-capability-key" description:"File containing the raw 32-byte HMAC key for execution-scoped broker capabilities."`
 		CapabilityKeyID     string        `long:"agent-child-executions-capability-key-id" default:"agent-child-v1" description:"Stable key identifier embedded in broker execution capabilities."`
 		CapabilityTTL       time.Duration `long:"agent-child-executions-capability-ttl" default:"1h" description:"Bounded lifetime for an execution-scoped broker capability."`
@@ -1734,6 +1735,7 @@ type agentDispatchGraph struct {
 
 	targetRenderer  workflowrun.WorkflowTargetRenderer
 	workflows       db.AgentWorkflowsFactory
+	nodes           db.AgentNodesFactory
 	runs            db.AgentWorkflowRunsFactory
 	snapshots       db.AgentSnapshotsFactory
 	waits           db.AgentWorkflowWaitsFactory
@@ -1790,8 +1792,18 @@ func (cmd *RunCommand) composeAgentDispatch(
 	}
 
 	targetRenderer := workflowrun.WorkflowTargetRenderer{RuntimeImage: cmd.AgentStepImage}
-	workflowStore, sourceLifecycle, err := newWorkflowResourceSourceComposition(
-		conn, mainTeam.ID(), targetRenderer,
+	brokerCatalog, err := loadAgentBrokerCatalog(cmd.AgentChildExecutions.BrokerCatalog.Path())
+	if err != nil {
+		return nil, err
+	}
+	var nodeStore db.AgentNodesFactory
+	if brokerCatalog == nil {
+		nodeStore = db.NewAgentNodesFactory(conn)
+	} else {
+		nodeStore = db.NewAgentNodesFactoryWithBrokerCatalog(conn, brokerCatalog)
+	}
+	workflowStore, sourceLifecycle, err := newWorkflowResourceSourceCompositionWithBrokerCatalog(
+		conn, mainTeam.ID(), targetRenderer, nodeStore, brokerCatalog,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("construct workflow resource source composition: %w", err)
@@ -1801,6 +1813,7 @@ func (cmd *RunCommand) composeAgentDispatch(
 		teamName:        mainTeam.Name(),
 		targetRenderer:  targetRenderer,
 		workflows:       workflowStore,
+		nodes:           nodeStore,
 		runs:            db.NewAgentWorkflowRunsFactory(conn),
 		snapshots:       db.NewAgentSnapshotsFactory(conn),
 		waits:           db.NewAgentWorkflowWaitsFactory(conn, cmd.AgentSnapshots.BindingRetention),
@@ -1849,7 +1862,7 @@ func (cmd *RunCommand) composeAgentDispatch(
 		return nil, fmt.Errorf("construct workflow-run model credential admission: %w", err)
 	}
 	binderOptions := []workflowrun.BinderOption{
-		workflowrun.WithNodeStore(db.NewAgentNodesFactory(conn)),
+		workflowrun.WithNodeStore(graph.nodes),
 	}
 	if graph.sourceRuntime.admitter != nil {
 		binderOptions = append(
@@ -3655,7 +3668,7 @@ func (cmd *RunCommand) constructAPIHandler(
 	}
 	targetRenderer := dispatchGraph.targetRenderer
 	workflowStore := dispatchGraph.workflows
-	nodeStore := db.NewAgentNodesFactory(dbConn)
+	nodeStore := dispatchGraph.nodes
 	workflowRunStore := dispatchGraph.runs
 	snapshotStore := dispatchGraph.snapshots
 	var resourceCapturer snapshotsapi.ResourceCapturer

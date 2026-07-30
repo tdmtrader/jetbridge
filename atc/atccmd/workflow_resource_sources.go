@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"code.cloudfoundry.org/lager/v3"
+	"github.com/concourse/concourse/agent/broker"
 	"github.com/concourse/concourse/agent/pullrequest"
 	"github.com/concourse/concourse/agent/resourcecapture"
 	"github.com/concourse/concourse/agent/workflow"
@@ -146,6 +147,24 @@ func newWorkflowResourceSourceComposition(
 	promotionValidator workflow.PromotionValidator,
 	monitorPolicyResolvers ...pullrequest.MonitorPipelinePolicyResolver,
 ) (db.AgentWorkflowsFactory, component.Runnable, error) {
+	return newWorkflowResourceSourceCompositionWithBrokerCatalog(
+		connection,
+		trustedMainTeamID,
+		promotionValidator,
+		db.NewAgentNodesFactory(connection),
+		nil,
+		monitorPolicyResolvers...,
+	)
+}
+
+func newWorkflowResourceSourceCompositionWithBrokerCatalog(
+	connection db.DbConn,
+	trustedMainTeamID int,
+	promotionValidator workflow.PromotionValidator,
+	nodeStore db.AgentNodesFactory,
+	catalog *broker.Catalog,
+	monitorPolicyResolvers ...pullrequest.MonitorPipelinePolicyResolver,
+) (db.AgentWorkflowsFactory, component.Runnable, error) {
 	if trustedMainTeamID <= 0 {
 		return nil, nil, errors.New("workflow resource source composition requires a trusted main team")
 	}
@@ -179,15 +198,21 @@ func newWorkflowResourceSourceComposition(
 	if err != nil {
 		return nil, nil, err
 	}
+	if nodeStore == nil {
+		return nil, nil, errors.New("workflow resource source composition requires a node store")
+	}
+	promotion := db.AgentWorkflowResourceSourcePromotion{
+		TeamID:   trustedMainTeamID,
+		Registry: registry,
+		Renderer: db.DefaultWorkflowResourceSourcePipelineRenderer{},
+	}
+	if catalog != nil {
+		return db.NewAgentWorkflowsFactoryWithResourceSourcesAndNodeResolverAndBrokerCatalog(
+			connection, nodeStore, catalog, promotionValidator, promotion,
+		), runnable, nil
+	}
 	return db.NewAgentWorkflowsFactoryWithResourceSourcesAndNodeResolver(
-		connection,
-		db.NewAgentNodesFactory(connection),
-		promotionValidator,
-		db.AgentWorkflowResourceSourcePromotion{
-			TeamID:   trustedMainTeamID,
-			Registry: registry,
-			Renderer: db.DefaultWorkflowResourceSourcePipelineRenderer{},
-		},
+		connection, nodeStore, promotionValidator, promotion,
 	), runnable, nil
 }
 

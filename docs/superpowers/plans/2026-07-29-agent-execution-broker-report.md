@@ -201,3 +201,52 @@ in `capturing`. A stale capture token used after `running` is rejected without
 receiving a new lifecycle capability. Lost-response recovery is unchanged
 because the durable bind itself deliberately leaves the execution in
 `capturing`.
+
+## 2026-07-30 Production Catalog Persistence Checkpoint
+
+The medium-hardening production path now treats the deployment catalog as
+static import authority rather than runtime lookup state:
+
+- ATC accepts one optional strict JSON catalog file for the cluster. Unknown
+  fields, invalid profiles, configured digests, and malformed/trailing JSON
+  fail startup composition; no file preserves ordinary catalog-free behavior.
+- Valid provider-neutral broker selectors without a local catalog return the
+  typed `BrokerCatalogRequiredError` only after tool/tier/effort and duplicate
+  selector validation. Fly uses only that typed condition to defer workflow or
+  node compilation to ATC; every other local validation error still blocks the
+  request.
+- Workflow and node API responses project away exact operator profiles and
+  their provenance hash, so Fly never receives provider, model, harness,
+  credential-slot, or native-control authority. Neutral authored selectors
+  remain visible in the source manifest.
+- migration `1773106156` adds one nullable `compiled_definition` JSONB column
+  to the shared workflow/node definition table. New imports atomically persist
+  canonical `json.Marshal` output with source and node bindings.
+- reads, prior-signature comparisons, promotion, workflow-run resource-source
+  loads, experiment target loads, node release, and released-node expansion
+  strictly parse the persisted compiled representation and do not consult the
+  current broker catalog.
+- byte-identical reimport returns the original persisted compilation, so a
+  Catalog A revision retains A under Catalog B. A genuinely changed source
+  revision resolves with B, and a released node imported under A retains A
+  when expanded into a workflow under B.
+- legacy NULL rows may recompile only through catalog-free APIs. Ordinary
+  source remains readable (including exact released-node resolution where the
+  store already had that resolver), while any legacy source containing broker
+  selectors fails closed instead of resolving against today's catalog.
+
+Focused verification passed:
+
+```text
+go test ./agent/broker ./agent/workflow ./agent/api/workflows \
+  ./agent/api/nodes ./fly/commands ./atc/atccmd -count=1
+go test ./atc/db -run '^$' -count=1
+go test -c -o /private/tmp/agent-db-catalog.test ./atc/db
+go test -c -o /private/tmp/agent-migration-catalog.test ./atc/db/migration
+git diff --check
+```
+
+The load-bearing Catalog A/B factory and migration runtime specs are present
+but were not executed because the previously recorded PostgreSQL shared-memory
+failure is a known sandbox limitation and the session rules prohibit retrying
+it here.

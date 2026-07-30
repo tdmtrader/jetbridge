@@ -41,6 +41,7 @@ agent-snapshot validator/sealer.
 | Version | Purpose |
 | --- | --- |
 | `1773106155` | Durable child execution ledger, events, and immutable identity |
+| `1773106156` | Durable canonical compiled workflow and reusable-node definitions |
 
 ---
 

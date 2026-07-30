@@ -3,6 +3,7 @@ package commands
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -289,8 +290,15 @@ func importWorkflowDir(target rc.Target, dir string, setLive bool) error {
 	// resolved through the authenticated catalog so local validation sees the
 	// same released immutable content as the server import.
 	compiled, _, err := workflow.CompileDefinitionWithNodes(m, agentWorkflowNodeResolver{target: target})
+	name := ""
 	if err != nil {
-		return err
+		var catalogRequired workflow.BrokerCatalogRequiredError
+		if !errors.As(err, &catalogRequired) {
+			return err
+		}
+		name = catalogRequired.DefinitionName
+	} else {
+		name = compiled.Name
 	}
 
 	payload, err := json.Marshal(map[string]any{"files": m})
@@ -298,7 +306,7 @@ func importWorkflowDir(target rc.Target, dir string, setLive bool) error {
 		return err
 	}
 	resp, err := agentAPIRequestWithType(target, "POST",
-		"/api/v1/agent/workflows/"+url.PathEscape(compiled.Name)+"/versions",
+		"/api/v1/agent/workflows/"+url.PathEscape(name)+"/versions",
 		"application/json", bytes.NewReader(payload))
 	if err != nil {
 		return err
@@ -326,12 +334,19 @@ func importWorkflowFile(target rc.Target, path string, setLive bool) error {
 		workflow.Manifest{"workflow.yml": string(raw)},
 		agentWorkflowNodeResolver{target: target},
 	)
+	name := ""
 	if err != nil {
-		return fmt.Errorf("%s: %w", path, err)
+		var catalogRequired workflow.BrokerCatalogRequiredError
+		if !errors.As(err, &catalogRequired) {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+		name = catalogRequired.DefinitionName
+	} else {
+		name = compiled.Name
 	}
 
 	resp, err := agentAPIRequest(target, "POST",
-		"/api/v1/agent/workflows/"+url.PathEscape(compiled.Name)+"/versions", bytes.NewReader(raw))
+		"/api/v1/agent/workflows/"+url.PathEscape(name)+"/versions", bytes.NewReader(raw))
 	if err != nil {
 		return err
 	}

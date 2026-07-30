@@ -36,6 +36,9 @@ func compileNodeDefinition(m Manifest, catalog *broker.Catalog) (*CompiledNodeDe
 	}
 	compilerDefinition := &CompiledDefinition{SchemaVersion: 3, Name: definition.Name, Function: &definition.Function}
 	if err := compileFunctionAssets(m, compilerDefinition, nil, brokerSelectors, catalog); err != nil {
+		if _, required := err.(BrokerCatalogRequiredError); required {
+			return nil, BrokerCatalogRequiredError{DefinitionName: definition.Name}
+		}
 		return nil, err
 	}
 	if _, err := ValidateFunction(&definition.Function); err != nil {

@@ -37,6 +37,29 @@ func ParseCompiled(raw []byte) (*CompiledDefinition, error) {
 	return &definition, nil
 }
 
+// ParseCompiledNodeDefinition accepts only the durable compiled reusable-node
+// JSON model. Source manifests must enter through CompileNodeDefinition so
+// compiler-owned assets and broker authority are frozen before persistence.
+func ParseCompiledNodeDefinition(raw []byte) (*CompiledNodeDefinition, error) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var definition CompiledNodeDefinition
+	if err := decoder.Decode(&definition); err != nil {
+		return nil, fmt.Errorf("parse compiled node definition: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("parse compiled node definition: exactly one JSON value is required")
+		}
+		return nil, fmt.Errorf("parse compiled node definition trailing JSON: %w", err)
+	}
+	if err := definition.Validate(); err != nil {
+		return nil, err
+	}
+	return &definition, nil
+}
+
 func RequireSchemaVersion3(source []byte) error {
 	version, err := parseSchemaVersion(source)
 	if err != nil {

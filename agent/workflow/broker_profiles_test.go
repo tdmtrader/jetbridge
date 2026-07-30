@@ -2,6 +2,7 @@ package workflow_test
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -140,6 +141,65 @@ plan:
 		if _, err := workflow.CompileDefinitionWithBrokerCatalog(workflow.Manifest{workflow.WorkflowFileName: source}, catalog); err == nil || !strings.Contains(err.Error(), field) {
 			t.Fatalf("%s selector error = %v, want authored operator-field rejection", field, err)
 		}
+	}
+}
+
+func TestCatalogFreeCompilationReturnsTypedErrorOnlyAfterNeutralValidation(t *testing.T) {
+	validWorkflow := workflow.Manifest{workflow.WorkflowFileName: `schema_version: 3
+name: brokered-review
+signature_version: 1
+inputs: []
+outputs: []
+plan:
+  - agent: review
+    function_id: review
+    prompt: review
+    broker_profiles:
+      - tool: request_review
+        tier: balanced
+        effort: high
+`}
+	_, err := workflow.CompileDefinition(validWorkflow)
+	var required workflow.BrokerCatalogRequiredError
+	if !errors.As(err, &required) {
+		t.Fatalf("CompileDefinition error = %v, want BrokerCatalogRequiredError", err)
+	}
+	if required.DefinitionName != "brokered-review" {
+		t.Fatalf("typed error definition name = %q, want brokered-review", required.DefinitionName)
+	}
+
+	invalidWorkflow := workflow.Manifest{workflow.WorkflowFileName: strings.Replace(
+		validWorkflow[workflow.WorkflowFileName],
+		"tier: balanced",
+		"tier: provider-specific",
+		1,
+	)}
+	_, err = workflow.CompileDefinition(invalidWorkflow)
+	if errors.As(err, &required) {
+		t.Fatalf("invalid neutral selector returned catalog-required error: %v", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "tier must be economy, balanced, or frontier") {
+		t.Fatalf("invalid neutral selector error = %v", err)
+	}
+
+	validNode := workflow.Manifest{workflow.NodeFileName: `schema_version: 1
+name: brokered-node
+step:
+  agent: review
+  function_id: review
+  prompt: review
+  broker_profiles:
+    - tool: consult_agent
+      tier: frontier
+      effort: medium
+`}
+	_, err = workflow.CompileNodeDefinition(validNode)
+	required = workflow.BrokerCatalogRequiredError{}
+	if !errors.As(err, &required) {
+		t.Fatalf("CompileNodeDefinition error = %v, want BrokerCatalogRequiredError", err)
+	}
+	if required.DefinitionName != "brokered-node" {
+		t.Fatalf("typed node error definition name = %q, want brokered-node", required.DefinitionName)
 	}
 }
 
@@ -340,6 +400,51 @@ plan:
 	}
 	if _, err := workflow.RenderedTargetConfigHashWithBrokerProfiles(rendered.Config, rendered.DevValidationProfiles, rendered.DevValidationProvenanceHash, rendered.BrokerProfiles, rendered.BrokerProfileProvenanceHash); err == nil || !strings.Contains(err.Error(), "invalid profile") {
 		t.Fatalf("unknown broker profile field error = %v", err)
+	}
+}
+
+func TestPublicDefinitionsDoNotExposeOperatorBrokerProfiles(t *testing.T) {
+	catalog, err := broker.NewCatalog([]broker.Profile{
+		brokerProfile("operator-only", broker.ToolConsultAgent, broker.TierBalanced, broker.EffortHigh, "secret-model"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiled, err := workflow.CompileDefinitionWithBrokerCatalog(workflow.Manifest{workflow.WorkflowFileName: `schema_version: 3
+name: public-view
+signature_version: 1
+inputs: []
+outputs: []
+plan:
+  - agent: consult
+    function_id: consult
+    prompt: consult
+    broker_profiles:
+      - tool: consult_agent
+        tier: balanced
+        effort: high
+`}, catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	definition := workflow.Definition{Name: compiled.Name, Compiled: *compiled}
+	public := workflow.PublicDefinition(definition)
+	if len(public.Compiled.Function.BrokerProfiles) != 0 || public.Compiled.Function.BrokerProfileProvenanceHash != "" {
+		t.Fatalf("public workflow leaked broker profiles: %#v", public.Compiled.Function.BrokerProfiles)
+	}
+	if len(definition.Compiled.Function.BrokerProfiles) != 1 {
+		t.Fatal("public projection mutated authoritative workflow")
+	}
+
+	node := workflow.NodeDefinition{Name: "public-node", Compiled: workflow.CompiledNodeDefinition{
+		SchemaVersion: 1, Name: "public-node", Function: *compiled.Function,
+	}}
+	publicNode := workflow.PublicNodeDefinition(node)
+	if len(publicNode.Compiled.Function.BrokerProfiles) != 0 || publicNode.Compiled.Function.BrokerProfileProvenanceHash != "" {
+		t.Fatalf("public node leaked broker profiles: %#v", publicNode.Compiled.Function.BrokerProfiles)
+	}
+	if len(node.Compiled.Function.BrokerProfiles) != 1 {
+		t.Fatal("public projection mutated authoritative node")
 	}
 }
 

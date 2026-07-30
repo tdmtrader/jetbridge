@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -187,14 +188,21 @@ func importNodeDir(target rc.Target, dir string) error {
 		return err
 	}
 	compiled, err := workflow.CompileNodeDefinition(manifest)
+	name := ""
 	if err != nil {
-		return fmt.Errorf("%s: %w", dir, err)
+		var catalogRequired workflow.BrokerCatalogRequiredError
+		if !errors.As(err, &catalogRequired) {
+			return fmt.Errorf("%s: %w", dir, err)
+		}
+		name = catalogRequired.DefinitionName
+	} else {
+		name = compiled.Name
 	}
 	payload, err := json.Marshal(map[string]workflow.Manifest{"files": manifest})
 	if err != nil {
 		return err
 	}
-	response, err := agentAPIRequestWithType(target, http.MethodPost, "/api/v1/agent/nodes/"+url.PathEscape(compiled.Name)+"/versions", "application/json", bytes.NewReader(payload))
+	response, err := agentAPIRequestWithType(target, http.MethodPost, "/api/v1/agent/nodes/"+url.PathEscape(name)+"/versions", "application/json", bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}

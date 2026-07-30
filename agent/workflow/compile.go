@@ -55,6 +55,9 @@ func compileDefinition(m Manifest, catalog *broker.Catalog) (*CompiledDefinition
 		return nil, err
 	}
 	if err := compileFunctionAssets(m, definition, validationProfiles, brokerSelectors, catalog); err != nil {
+		if _, required := err.(BrokerCatalogRequiredError); required {
+			return nil, BrokerCatalogRequiredError{DefinitionName: definition.Name}
+		}
 		return nil, err
 	}
 	// Source compilation is intentionally independent of the durable workflow
@@ -221,14 +224,9 @@ func (compiler *functionAssetCompiler) preflightBrokerProfiles() error {
 	if len(compiler.sourceBrokerProfiles) == 0 {
 		return nil
 	}
-	if compiler.brokerCatalog == nil {
-		return fmt.Errorf("workflow: broker catalog is required for source broker profiles")
-	}
-	compiler.compiledBrokerProfiles = make([]CompiledBrokerProfile, 0, len(compiler.sourceBrokerProfiles))
 	seen := make(map[brokerProfileKey]struct{}, len(compiler.sourceBrokerProfiles))
 	for _, source := range compiler.sourceBrokerProfiles {
-		resolved, err := compiler.brokerCatalog.Resolve(source.Tool, source.Selector)
-		if err != nil {
+		if err := broker.ValidateSelection(source.Tool, source.Selector); err != nil {
 			return fmt.Errorf("workflow: agent function_id %q broker selector: %w", source.FunctionID, err)
 		}
 		key := brokerProfileKey{functionID: source.FunctionID, tool: source.Tool, tier: source.Selector.Tier, effort: source.Selector.Effort}
@@ -236,6 +234,16 @@ func (compiler *functionAssetCompiler) preflightBrokerProfiles() error {
 			return fmt.Errorf("workflow: duplicate broker selector for node %q tool %q selector %s/%s", source.FunctionID, source.Tool, source.Selector.Tier, source.Selector.Effort)
 		}
 		seen[key] = struct{}{}
+	}
+	if compiler.brokerCatalog == nil {
+		return BrokerCatalogRequiredError{}
+	}
+	compiler.compiledBrokerProfiles = make([]CompiledBrokerProfile, 0, len(compiler.sourceBrokerProfiles))
+	for _, source := range compiler.sourceBrokerProfiles {
+		resolved, err := compiler.brokerCatalog.Resolve(source.Tool, source.Selector)
+		if err != nil {
+			return fmt.Errorf("workflow: agent function_id %q broker selector: %w", source.FunctionID, err)
+		}
 		compiler.compiledBrokerProfiles = append(compiler.compiledBrokerProfiles, CompiledBrokerProfile{FunctionID: source.FunctionID, Tool: source.Tool, Selector: source.Selector, Profile: resolved})
 	}
 	sortCompiledBrokerProfiles(compiler.compiledBrokerProfiles)

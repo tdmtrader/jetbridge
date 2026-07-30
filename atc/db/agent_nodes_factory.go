@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	"github.com/Masterminds/squirrel"
+	"github.com/concourse/concourse/agent/broker"
 	"github.com/concourse/concourse/agent/workflow"
 )
 
@@ -16,7 +17,17 @@ type AgentNodesFactory interface{ workflow.NodeStore }
 
 func NewAgentNodesFactory(conn DbConn) AgentNodesFactory { return &agentNodesFactory{conn: conn} }
 
-type agentNodesFactory struct{ conn DbConn }
+func NewAgentNodesFactoryWithBrokerCatalog(conn DbConn, catalog *broker.Catalog) AgentNodesFactory {
+	if catalog == nil {
+		panic("db: broker-aware node factory requires a catalog")
+	}
+	return &agentNodesFactory{conn: conn, brokerCatalog: catalog}
+}
+
+type agentNodesFactory struct {
+	conn          DbConn
+	brokerCatalog *broker.Catalog
+}
 
 type agentNodeRowQuerier interface {
 	QueryRow(string, ...any) squirrel.RowScanner
@@ -39,7 +50,7 @@ const nodeMetaColumns = `id, name, version, content_hash, description, created_b
 	released_by, COALESCE(release_predecessor_version, 0), COALESCE(release_compatibility, ''),
 	COALESCE(EXTRACT(EPOCH FROM deprecated_at)::bigint, 0), deprecated_by`
 
-const nodeStoredColumns = nodeMetaColumns + `, schema_version, signature_version, source_manifest`
+const nodeStoredColumns = nodeMetaColumns + `, schema_version, signature_version, source_manifest, compiled_definition`
 
 const nodeRuntimeSchemaVersion = 3
 
@@ -48,18 +59,12 @@ type storedNodeDefinition struct {
 	schemaVersion    int
 	signatureVersion int
 	sourceManifest   sql.NullString
+	compiled         sql.NullString
 }
 
 func (f *agentNodesFactory) ImportManifest(name string, source workflow.Manifest, createdBy string) (*workflow.NodeDefinition, error) {
 	if err := source.Validate(); err != nil {
 		return nil, workflow.InvalidDefinitionError{Err: err}
-	}
-	compiled, err := workflow.CompileNodeDefinition(source)
-	if err != nil {
-		return nil, workflow.InvalidDefinitionError{Err: err}
-	}
-	if compiled.Name != name {
-		return nil, workflow.InvalidDefinitionError{Err: fmt.Errorf("node definition name %q does not match import name %q", compiled.Name, name)}
 	}
 	hash := source.Hash()
 	tx, err := f.conn.Begin()
@@ -81,18 +86,32 @@ func (f *agentNodesFactory) ImportManifest(name string, source workflow.Manifest
 	if !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
 	}
+	var compiled *workflow.CompiledNodeDefinition
+	if f.brokerCatalog == nil {
+		compiled, err = workflow.CompileNodeDefinition(source)
+	} else {
+		compiled, err = workflow.CompileNodeDefinitionWithBrokerCatalog(source, f.brokerCatalog)
+	}
+	if err != nil {
+		return nil, workflow.InvalidDefinitionError{Err: err}
+	}
+	if compiled.Name != name {
+		return nil, workflow.InvalidDefinitionError{Err: fmt.Errorf("node definition name %q does not match import name %q", compiled.Name, name)}
+	}
+	compiledJSON, err := json.Marshal(compiled)
+	if err != nil {
+		return nil, fmt.Errorf("encode compiled node definition: %w", err)
+	}
 	var d workflow.NodeDefinition
-	var raw string
 	err = tx.QueryRow(`INSERT INTO agent_workflow_definitions
-		(definition_kind,name,version,content_hash,definition,source_manifest,description,created_by,schema_version,signature_version)
-		SELECT 'node',$1,COALESCE(MAX(version),0)+1,$2,$3,$4::jsonb,$5,$6,3,$7
+		(definition_kind,name,version,content_hash,definition,source_manifest,compiled_definition,description,created_by,schema_version,signature_version)
+		SELECT 'node',$1,COALESCE(MAX(version),0)+1,$2,$3,$4::jsonb,$5::jsonb,$6,$7,3,$8
 		FROM agent_workflow_definitions WHERE definition_kind='node' AND name=$1
-		RETURNING id, version, EXTRACT(EPOCH FROM created_at)::bigint`, name, hash, source[workflow.NodeFileName], string(source.Canonical()), compiled.Description, createdBy, compiled.Function.SignatureVersion).Scan(&d.ID, &d.Version, &d.CreatedAt)
+		RETURNING id, version, EXTRACT(EPOCH FROM created_at)::bigint`, name, hash, source[workflow.NodeFileName], string(source.Canonical()), string(compiledJSON), compiled.Description, createdBy, compiled.Function.SignatureVersion).Scan(&d.ID, &d.Version, &d.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
 	d.Name, d.ContentHash, d.Description, d.CreatedBy, d.Compiled, d.SourceManifest = name, hash, compiled.Description, createdBy, *compiled, source
-	_ = raw
 	return &d, tx.Commit()
 }
 
@@ -256,6 +275,7 @@ func nodeStoredScan(stored *storedNodeDefinition) []any {
 		&stored.schemaVersion,
 		&stored.signatureVersion,
 		&stored.sourceManifest,
+		&stored.compiled,
 	)
 }
 func scanStoredNodes(rows *sql.Rows) ([]workflow.NodeDefinition, error) {
@@ -281,9 +301,20 @@ func populateStoredNode(stored *storedNodeDefinition) error {
 	if err := json.Unmarshal([]byte(stored.sourceManifest.String), &source); err != nil {
 		return err
 	}
-	compiled, err := workflow.CompileNodeDefinition(source)
-	if err != nil {
-		return fmt.Errorf("stored node %s/v%d no longer compiles: %w", d.Name, d.Version, err)
+	var (
+		compiled *workflow.CompiledNodeDefinition
+		err      error
+	)
+	if stored.compiled.Valid {
+		compiled, err = workflow.ParseCompiledNodeDefinition([]byte(stored.compiled.String))
+		if err != nil {
+			return fmt.Errorf("stored node %s/v%d has invalid compiled definition: %w", d.Name, d.Version, err)
+		}
+	} else {
+		compiled, err = workflow.CompileNodeDefinition(source)
+		if err != nil {
+			return fmt.Errorf("stored legacy node %s/v%d no longer compiles without broker authority: %w", d.Name, d.Version, err)
+		}
 	}
 	if stored.schemaVersion != nodeRuntimeSchemaVersion ||
 		stored.signatureVersion != compiled.Function.SignatureVersion ||

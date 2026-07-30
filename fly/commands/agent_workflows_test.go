@@ -103,6 +103,57 @@ step:
 	}
 }
 
+func TestImportWorkflowDirDefersOnlyValidBrokerSelectorsToATC(t *testing.T) {
+	dir := t.TempDir()
+	source := `schema_version: 3
+name: brokered-fly-workflow
+signature_version: 1
+inputs: []
+outputs: []
+plan:
+  - agent: consult
+    function_id: consult
+    prompt: consult
+    broker_profiles:
+      - tool: consult_agent
+        tier: balanced
+        effort: high
+`
+	if err := os.WriteFile(filepath.Join(dir, workflow.WorkflowFileName), []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var requests atomic.Int64
+	target := agentWorkflowTarget(agentWorkflowRoundTripper(func(request *http.Request) (*http.Response, error) {
+		requests.Add(1)
+		if request.Method != http.MethodPost || request.URL.Path != "/api/v1/agent/workflows/brokered-fly-workflow/versions" {
+			t.Fatalf("request = %s %s", request.Method, request.URL.Path)
+		}
+		return agentWorkflowJSONResponse(t, http.StatusCreated, workflow.Definition{
+			ID: 1, Name: "brokered-fly-workflow", Version: 1, ContentHash: "hash",
+		}), nil
+	}))
+	if err := importWorkflowDir(target, dir, false); err != nil {
+		t.Fatalf("valid broker selector should defer to ATC: %v", err)
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("requests = %d, want one authoritative import", requests.Load())
+	}
+
+	if err := os.WriteFile(
+		filepath.Join(dir, workflow.WorkflowFileName),
+		[]byte(strings.Replace(source, "tier: balanced", "tier: provider-model", 1)),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := importWorkflowDir(target, dir, false); err == nil || !strings.Contains(err.Error(), "tier must be economy") {
+		t.Fatalf("invalid selector error = %v", err)
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("invalid selector reached ATC; requests = %d", requests.Load())
+	}
+}
+
 func TestImportWorkflowFileRejectsNonV3Locally(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "legacy-v1.yml")
 	err := os.WriteFile(path, []byte(`schema_version: 1

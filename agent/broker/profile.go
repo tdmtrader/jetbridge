@@ -165,10 +165,7 @@ func (catalog *Catalog) Resolve(tool Tool, selector Selector) (Profile, error) {
 	if catalog == nil {
 		return Profile{}, fmt.Errorf("broker catalog: catalog is required")
 	}
-	if err := selector.validate(); err != nil {
-		return Profile{}, err
-	}
-	if err := validateTool(tool); err != nil {
+	if err := ValidateSelection(tool, selector); err != nil {
 		return Profile{}, err
 	}
 	profile, found := catalog.byKey[catalogKey{
@@ -181,6 +178,17 @@ func (catalog *Catalog) Resolve(tool Tool, selector Selector) (Profile, error) {
 		)
 	}
 	return cloneProfile(profile), nil
+}
+
+// ValidateSelection validates the complete provider-neutral caller surface
+// without consulting an operator catalog. Workflow compilation uses this to
+// distinguish malformed authored selectors from valid selectors that require
+// authoritative server-side resolution.
+func ValidateSelection(tool Tool, selector Selector) error {
+	if err := selector.validate(); err != nil {
+		return err
+	}
+	return validateTool(tool)
 }
 
 // ValidateResolvedProfile verifies an exact profile copied from a trusted

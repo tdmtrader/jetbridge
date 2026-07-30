@@ -14,6 +14,20 @@ import (
 
 const brokerProfileProvenanceHashDomain = "workflow-broker-profile-provenance/v1\x00"
 
+// BrokerCatalogRequiredError means a source definition is otherwise valid at
+// the provider-neutral broker selector boundary but needs the deployment's
+// operator-only catalog for authoritative compilation.
+type BrokerCatalogRequiredError struct {
+	DefinitionName string
+}
+
+func (err BrokerCatalogRequiredError) Error() string {
+	if err.DefinitionName == "" {
+		return "workflow: broker catalog is required for source broker profiles"
+	}
+	return fmt.Sprintf("workflow: broker catalog is required to compile %q", err.DefinitionName)
+}
+
 // BrokerProfileSelector is the provider-neutral source declaration attached
 // to one agent node. It deliberately cannot name a provider, model, harness,
 // credential, or control.
@@ -195,6 +209,30 @@ func cloneCompiledBrokerProfiles(source []CompiledBrokerProfile) []CompiledBroke
 		result[index] = profile
 		result[index].Profile.Tools = append([]broker.Tool(nil), profile.Profile.Tools...)
 	}
+	return result
+}
+
+// PublicDefinition removes operator-only exact profile authority from an API
+// copy while preserving the stored definition. Provider-neutral authored
+// selectors remain available in SourceManifest.
+func PublicDefinition(source Definition) Definition {
+	result := source
+	if source.Compiled.Function != nil {
+		function := *source.Compiled.Function
+		function.BrokerProfiles = nil
+		function.BrokerProfileProvenanceHash = ""
+		result.Compiled.Function = &function
+	}
+	return result
+}
+
+// PublicNodeDefinition is the reusable-node equivalent of PublicDefinition.
+func PublicNodeDefinition(source NodeDefinition) NodeDefinition {
+	result := source
+	function := source.Compiled.Function
+	function.BrokerProfiles = nil
+	function.BrokerProfileProvenanceHash = ""
+	result.Compiled.Function = function
 	return result
 }
 

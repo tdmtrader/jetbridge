@@ -98,6 +98,9 @@ func compileDefinitionWithNodes(m Manifest, resolver NodeResolver, catalog *brok
 		return nil, nil, err
 	}
 	if err := compileFunctionAssetsWithFrozenNodes(m, definition, profiles, brokerSelectors, catalog, expander.frozen); err != nil {
+		if _, required := err.(BrokerCatalogRequiredError); required {
+			return nil, nil, BrokerCatalogRequiredError{DefinitionName: definition.Name}
+		}
 		return nil, nil, err
 	}
 	if err := mergeFrozenDevValidationProfiles(definition.Function, expander.frozen); err != nil {

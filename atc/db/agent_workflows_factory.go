@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/concourse/concourse/agent/broker"
 	"github.com/concourse/concourse/agent/workflow"
 )
 
@@ -39,6 +40,24 @@ func NewAgentWorkflowsFactory(conn DbConn, promotionValidators ...workflow.Promo
 	return factory
 }
 
+func NewAgentWorkflowsFactoryWithBrokerCatalog(
+	conn DbConn,
+	catalog *broker.Catalog,
+	promotionValidators ...workflow.PromotionValidator,
+) AgentWorkflowsFactory {
+	if catalog == nil {
+		panic("db: broker-aware workflow factory requires a catalog")
+	}
+	if len(promotionValidators) > 1 {
+		panic("db: NewAgentWorkflowsFactoryWithBrokerCatalog accepts at most one promotion validator")
+	}
+	factory := &agentWorkflowsFactory{conn: conn, brokerCatalog: catalog}
+	if len(promotionValidators) == 1 {
+		factory.promotionValidator = promotionValidators[0]
+	}
+	return factory
+}
+
 // NewAgentWorkflowsFactoryWithNodeResolver enables trusted import-time
 // expansion of exact released reusable nodes. The established constructor
 // remains workflow-only and continues to reject node-reference source.
@@ -56,12 +75,34 @@ func NewAgentWorkflowsFactoryWithNodeResolver(conn DbConn, resolver workflow.Nod
 	return factory
 }
 
+func NewAgentWorkflowsFactoryWithNodeResolverAndBrokerCatalog(
+	conn DbConn,
+	resolver workflow.NodeResolver,
+	catalog *broker.Catalog,
+	promotionValidators ...workflow.PromotionValidator,
+) AgentWorkflowsFactory {
+	if resolver == nil {
+		panic("db: node-aware workflow factory requires a node resolver")
+	}
+	if catalog == nil {
+		panic("db: broker-aware workflow factory requires a catalog")
+	}
+	if len(promotionValidators) > 1 {
+		panic("db: NewAgentWorkflowsFactoryWithNodeResolverAndBrokerCatalog accepts at most one promotion validator")
+	}
+	factory := &agentWorkflowsFactory{conn: conn, nodeResolver: resolver, brokerCatalog: catalog}
+	if len(promotionValidators) == 1 {
+		factory.promotionValidator = promotionValidators[0]
+	}
+	return factory
+}
+
 func NewAgentWorkflowsFactoryWithResourceSources(
 	conn DbConn,
 	promotionValidator workflow.PromotionValidator,
 	resourceSourcePromotion AgentWorkflowResourceSourcePromotion,
 ) AgentWorkflowsFactory {
-	return newAgentWorkflowsFactoryWithResourceSources(conn, nil, promotionValidator, resourceSourcePromotion)
+	return newAgentWorkflowsFactoryWithResourceSources(conn, nil, nil, promotionValidator, resourceSourcePromotion)
 }
 
 // NewAgentWorkflowsFactoryWithResourceSourcesAndNodeResolver composes the
@@ -76,12 +117,29 @@ func NewAgentWorkflowsFactoryWithResourceSourcesAndNodeResolver(
 	if resolver == nil {
 		panic("db: node-aware resource-source workflow factory requires a node resolver")
 	}
-	return newAgentWorkflowsFactoryWithResourceSources(conn, resolver, promotionValidator, resourceSourcePromotion)
+	return newAgentWorkflowsFactoryWithResourceSources(conn, resolver, nil, promotionValidator, resourceSourcePromotion)
+}
+
+func NewAgentWorkflowsFactoryWithResourceSourcesAndNodeResolverAndBrokerCatalog(
+	conn DbConn,
+	resolver workflow.NodeResolver,
+	catalog *broker.Catalog,
+	promotionValidator workflow.PromotionValidator,
+	resourceSourcePromotion AgentWorkflowResourceSourcePromotion,
+) AgentWorkflowsFactory {
+	if resolver == nil {
+		panic("db: node-aware resource-source workflow factory requires a node resolver")
+	}
+	if catalog == nil {
+		panic("db: broker-aware resource-source workflow factory requires a catalog")
+	}
+	return newAgentWorkflowsFactoryWithResourceSources(conn, resolver, catalog, promotionValidator, resourceSourcePromotion)
 }
 
 func newAgentWorkflowsFactoryWithResourceSources(
 	conn DbConn,
 	resolver workflow.NodeResolver,
+	catalog *broker.Catalog,
 	promotionValidator workflow.PromotionValidator,
 	resourceSourcePromotion AgentWorkflowResourceSourcePromotion,
 ) AgentWorkflowsFactory {
@@ -92,7 +150,8 @@ func newAgentWorkflowsFactoryWithResourceSources(
 		panic("db: invalid resource-source workflow promotion composition")
 	}
 	return &agentWorkflowsFactory{
-		conn: conn, nodeResolver: resolver, promotionValidator: promotionValidator, resourceSourcePromotion: &resourceSourcePromotion,
+		conn: conn, nodeResolver: resolver, brokerCatalog: catalog,
+		promotionValidator: promotionValidator, resourceSourcePromotion: &resourceSourcePromotion,
 	}
 }
 
@@ -101,6 +160,7 @@ type agentWorkflowsFactory struct {
 	promotionValidator      workflow.PromotionValidator
 	resourceSourcePromotion *AgentWorkflowResourceSourcePromotion
 	nodeResolver            workflow.NodeResolver
+	brokerCatalog           *broker.Catalog
 }
 
 func nodeResolverForTransaction(resolver workflow.NodeResolver, tx Tx) workflow.NodeResolver {
@@ -132,10 +192,10 @@ func (f *agentWorkflowsFactory) Import(name string, rawYAML []byte, createdBy st
 	return f.ImportManifest(name, workflow.Manifest{"workflow.yml": string(rawYAML)}, createdBy)
 }
 
-// ImportManifest compiles and stores a source tree (design 2026-07-17
-// §3): the compiled definition is rebuilt on read from the stored canonical
-// manifest, so there is exactly one persisted source of truth per row.
-// Idempotent on the canonical-manifest hash.
+// ImportManifest compiles and atomically stores both the canonical source tree
+// and its exact validated compiled authority. Idempotency is keyed by the
+// canonical-manifest hash and returns the originally compiled revision without
+// consulting today's deployment catalog.
 func (f *agentWorkflowsFactory) ImportManifest(name string, src workflow.Manifest, createdBy string) (*workflow.Definition, error) {
 	outcome, err := f.ImportManifestWithOutcome(name, src, createdBy)
 	if err != nil {
@@ -159,17 +219,6 @@ func (f *agentWorkflowsFactory) ImportManifestWithOutcome(
 	if err := workflow.RequireSchemaVersion3([]byte(raw)); err != nil {
 		return workflow.ImportOutcome{}, workflow.InvalidDefinitionError{Err: err}
 	}
-	compiled, bindings, err := f.compileDefinitionWithBindings(src)
-	if err != nil {
-		return workflow.ImportOutcome{}, workflow.InvalidDefinitionError{Err: err}
-	}
-	if compiled.Name != name {
-		return workflow.ImportOutcome{}, workflow.InvalidDefinitionError{Err: fmt.Errorf("definition name %q does not match import name %q", compiled.Name, name)}
-	}
-	metadata, err := compiled.VersionMetadata()
-	if err != nil {
-		return workflow.ImportOutcome{}, workflow.InvalidDefinitionError{Err: err}
-	}
 	hash := src.Hash()
 
 	tx, err := f.conn.Begin()
@@ -185,24 +234,37 @@ func (f *agentWorkflowsFactory) ImportManifestWithOutcome(
 		return workflow.ImportOutcome{}, err
 	}
 
-	var def workflow.Definition
+	var (
+		def                  workflow.Definition
+		existingManifest     sql.NullString
+		existingCompiledJSON sql.NullString
+	)
 	err = tx.QueryRow(`
-		SELECT `+workflowMetaColumns+workflowMetaFrom+`
+		SELECT `+workflowMetaColumns+`, d.definition, d.source_manifest, d.compiled_definition`+workflowMetaFrom+`
 		WHERE d.definition_kind = 'workflow' AND d.name = $1 AND d.content_hash = $2`,
 		name, hash,
 	).Scan(&def.ID, &def.Name, &def.Version, &def.ContentHash, &def.Live,
 		&def.Description, &def.CreatedBy, &def.CreatedAt, &def.SchemaVersion, &def.SignatureVersion,
-		&def.Hidden, &def.Annotation, &def.PromotedAt, &def.PromotedBy)
+		&def.Hidden, &def.Annotation, &def.PromotedAt, &def.PromotedBy,
+		&def.RawYAML, &existingManifest, &existingCompiledJSON)
 	if err == nil {
 		// Idempotent on hash: byte-identical source returns the existing
 		// version untouched (contracts §1.6).
+		compiled, storedSource, parseErr := parseStoredWorkflowDefinitionWithResolver(
+			def.Name, def.Version, def.RawYAML, existingManifest, existingCompiledJSON,
+			nodeResolverForTransaction(f.nodeResolver, tx),
+		)
+		if parseErr != nil {
+			return workflow.ImportOutcome{}, parseErr
+		}
+		metadata, metadataErr := compiled.VersionMetadata()
+		if metadataErr != nil {
+			return workflow.ImportOutcome{}, metadataErr
+		}
 		if def.SchemaVersion != metadata.SchemaVersion || def.SignatureVersion != metadata.SignatureVersion {
 			return workflow.ImportOutcome{}, fmt.Errorf("workflow: stored metadata for %q version %d does not match compiled source", name, def.Version)
 		}
-		populateCompiledWorkflowDefinition(&def, compiled, src)
-		if err := compareWorkflowNodeBindings(tx, def.ID, bindings); err != nil {
-			return workflow.ImportOutcome{}, err
-		}
+		populateCompiledWorkflowDefinition(&def, compiled, storedSource)
 		if err := tx.Commit(); err != nil {
 			return workflow.ImportOutcome{}, err
 		}
@@ -212,23 +274,41 @@ func (f *agentWorkflowsFactory) ImportManifestWithOutcome(
 		return workflow.ImportOutcome{}, err
 	}
 
+	compiled, bindings, err := f.compileDefinitionWithBindingsForTransaction(src, tx)
+	if err != nil {
+		return workflow.ImportOutcome{}, workflow.InvalidDefinitionError{Err: err}
+	}
+	if compiled.Name != name {
+		return workflow.ImportOutcome{}, workflow.InvalidDefinitionError{Err: fmt.Errorf("definition name %q does not match import name %q", compiled.Name, name)}
+	}
+	metadata, err := compiled.VersionMetadata()
+	if err != nil {
+		return workflow.ImportOutcome{}, workflow.InvalidDefinitionError{Err: err}
+	}
+	compiledJSON, err := json.Marshal(compiled)
+	if err != nil {
+		return workflow.ImportOutcome{}, fmt.Errorf("workflow: encode compiled definition: %w", err)
+	}
+
 	if metadata.SignatureVersion > 0 {
 		var prior workflow.Definition
 		var priorRaw string
 		var priorManifest sql.NullString
+		var priorCompiledJSON sql.NullString
 		err = tx.QueryRow(`
-			SELECT version, schema_version, signature_version, definition, source_manifest
+			SELECT version, schema_version, signature_version, definition, source_manifest, compiled_definition
 			FROM agent_workflow_definitions
 			WHERE definition_kind = 'workflow' AND name = $1 AND signature_version = $2
 			ORDER BY version DESC
 			LIMIT 1`, name, metadata.SignatureVersion,
-		).Scan(&prior.Version, &prior.SchemaVersion, &prior.SignatureVersion, &priorRaw, &priorManifest)
+		).Scan(&prior.Version, &prior.SchemaVersion, &prior.SignatureVersion, &priorRaw, &priorManifest, &priorCompiledJSON)
 		if err == nil {
-			priorCompiled, _, compileErr := compileStoredWorkflowSourceWithResolver(
+			priorCompiled, _, compileErr := parseStoredWorkflowDefinitionWithResolver(
 				name,
 				prior.Version,
 				priorRaw,
 				priorManifest,
+				priorCompiledJSON,
 				nodeResolverForTransaction(f.nodeResolver, tx),
 			)
 			if compileErr != nil {
@@ -256,12 +336,12 @@ func (f *agentWorkflowsFactory) ImportManifestWithOutcome(
 
 	err = tx.QueryRow(`
 		INSERT INTO agent_workflow_definitions
-			(name, version, content_hash, definition, source_manifest, description, created_by,
+			(name, version, content_hash, definition, source_manifest, compiled_definition, description, created_by,
 			 schema_version, signature_version)
-		SELECT $1, COALESCE(MAX(version), 0) + 1, $2, $3, $4::jsonb, $5, $6, $7, $8
+		SELECT $1, COALESCE(MAX(version), 0) + 1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8, $9
 		FROM agent_workflow_definitions WHERE definition_kind = 'workflow' AND name = $1
 		RETURNING id, version, EXTRACT(EPOCH FROM created_at)::bigint`,
-		name, hash, raw, string(src.Canonical()), compiled.Description, createdBy,
+		name, hash, raw, string(src.Canonical()), string(compiledJSON), compiled.Description, createdBy,
 		metadata.SchemaVersion, metadata.SignatureVersion,
 	).Scan(&def.ID, &def.Version, &def.CreatedAt)
 	if err != nil {
@@ -284,12 +364,23 @@ func (f *agentWorkflowsFactory) ImportManifestWithOutcome(
 	return workflow.ImportOutcome{Definition: &def, Inserted: true}, nil
 }
 
-func (f *agentWorkflowsFactory) compileDefinitionWithBindings(source workflow.Manifest) (*workflow.CompiledDefinition, []workflow.ResolvedNodeBinding, error) {
-	if f.nodeResolver == nil {
+func (f *agentWorkflowsFactory) compileDefinitionWithBindingsForTransaction(
+	source workflow.Manifest,
+	tx Tx,
+) (*workflow.CompiledDefinition, []workflow.ResolvedNodeBinding, error) {
+	resolver := nodeResolverForTransaction(f.nodeResolver, tx)
+	switch {
+	case resolver != nil && f.brokerCatalog != nil:
+		return workflow.CompileDefinitionWithNodesAndBrokerCatalog(source, resolver, f.brokerCatalog)
+	case resolver != nil:
+		return workflow.CompileDefinitionWithNodes(source, resolver)
+	case f.brokerCatalog != nil:
+		compiled, err := workflow.CompileDefinitionWithBrokerCatalog(source, f.brokerCatalog)
+		return compiled, nil, err
+	default:
 		compiled, err := workflow.CompileDefinition(source)
 		return compiled, nil, err
 	}
-	return workflow.CompileDefinitionWithNodes(source, f.nodeResolver)
 }
 
 func insertWorkflowNodeBindings(tx Tx, workflowDefinitionID int, bindings []workflow.ResolvedNodeBinding) error {
@@ -387,13 +478,14 @@ func (f *agentWorkflowsFactory) LiveVersions() (map[string]int, error) {
 func (f *agentWorkflowsFactory) getOne(where string, args ...any) (*workflow.Definition, bool, error) {
 	var def workflow.Definition
 	var manifestJSON sql.NullString
+	var compiledJSON sql.NullString
 	err := f.conn.QueryRow(`
-		SELECT `+workflowMetaColumns+`, d.definition, d.source_manifest`+workflowMetaFrom+`
+		SELECT `+workflowMetaColumns+`, d.definition, d.source_manifest, d.compiled_definition`+workflowMetaFrom+`
 		WHERE d.definition_kind = 'workflow' AND `+where, args...,
 	).Scan(&def.ID, &def.Name, &def.Version, &def.ContentHash, &def.Live,
 		&def.Description, &def.CreatedBy, &def.CreatedAt, &def.SchemaVersion, &def.SignatureVersion,
 		&def.Hidden, &def.Annotation, &def.PromotedAt, &def.PromotedBy,
-		&def.RawYAML, &manifestJSON)
+		&def.RawYAML, &manifestJSON, &compiledJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil
 	}
@@ -403,7 +495,9 @@ func (f *agentWorkflowsFactory) getOne(where string, args ...any) (*workflow.Def
 	if def.SchemaVersion == 1 || def.SchemaVersion == 2 {
 		return &def, true, nil
 	}
-	compiled, src, err := compileStoredWorkflowSourceWithResolver(def.Name, def.Version, def.RawYAML, manifestJSON, f.nodeResolver)
+	compiled, src, err := parseStoredWorkflowDefinitionWithResolver(
+		def.Name, def.Version, def.RawYAML, manifestJSON, compiledJSON, f.nodeResolver,
+	)
 	if err != nil {
 		return nil, false, err
 	}
@@ -493,10 +587,11 @@ func (f *agentWorkflowsFactory) Promote(name string, version int, promotedBy str
 
 	var targetDefinition workflow.Definition
 	var targetManifest sql.NullString
+	var targetCompiledJSON sql.NullString
 	// FOR UPDATE OF d, not a bare FOR UPDATE: the lifecycle table is on the
 	// nullable side of the LEFT JOIN and Postgres refuses to lock it.
 	err = tx.QueryRow(`
-		SELECT `+workflowMetaColumns+`, d.definition, d.source_manifest`+workflowMetaFrom+`
+		SELECT `+workflowMetaColumns+`, d.definition, d.source_manifest, d.compiled_definition`+workflowMetaFrom+`
 		WHERE d.definition_kind = 'workflow' AND d.name = $1 AND d.version = $2
 		FOR UPDATE OF d`, name, version,
 	).Scan(
@@ -516,6 +611,7 @@ func (f *agentWorkflowsFactory) Promote(name string, version int, promotedBy str
 		&targetDefinition.PromotedBy,
 		&targetDefinition.RawYAML,
 		&targetManifest,
+		&targetCompiledJSON,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return workflow.PromotionResult{}, workflow.ErrVersionNotFound
@@ -528,11 +624,12 @@ func (f *agentWorkflowsFactory) Promote(name string, version int, promotedBy str
 			Err: workflow.UnsupportedSchemaVersionError{Got: targetDefinition.SchemaVersion},
 		}
 	}
-	compiled, source, err := compileStoredWorkflowSourceWithResolver(
+	compiled, source, err := parseStoredWorkflowDefinitionWithResolver(
 		targetDefinition.Name,
 		targetDefinition.Version,
 		targetDefinition.RawYAML,
 		targetManifest,
+		targetCompiledJSON,
 		nodeResolverForTransaction(f.nodeResolver, tx),
 	)
 	if err != nil {
@@ -698,16 +795,18 @@ func compileStoredWorkflowSource(
 	version int,
 	rawYAML string,
 	manifestJSON sql.NullString,
+	compiledJSON sql.NullString,
 ) (*workflow.CompiledDefinition, workflow.Manifest, error) {
-	return compileStoredWorkflowSourceWithResolver(name, version, rawYAML, manifestJSON, nil)
+	return parseStoredWorkflowDefinitionWithResolver(name, version, rawYAML, manifestJSON, compiledJSON, nil)
 }
 
-func compileStoredWorkflowSourceWithResolver(
+func parseStoredWorkflowDefinitionWithResolver(
 	name string,
 	version int,
 	rawYAML string,
 	manifestJSON sql.NullString,
-	resolver workflow.NodeResolver,
+	compiledJSON sql.NullString,
+	legacyResolver workflow.NodeResolver,
 ) (*workflow.CompiledDefinition, workflow.Manifest, error) {
 	// Rows written before source-manifest tracking existed carry no stored
 	// tree at all, only the single raw-YAML column — always keyed by the
@@ -726,28 +825,29 @@ func compileStoredWorkflowSourceWithResolver(
 		compileSource = stored
 		storedSource = stored
 	}
-	var compiled *workflow.CompiledDefinition
-	var err error
-	if resolver == nil {
-		compiled, err = workflow.CompileDefinition(compileSource)
+	var (
+		compiled *workflow.CompiledDefinition
+		err      error
+	)
+	if compiledJSON.Valid {
+		compiled, err = workflow.ParseCompiled([]byte(compiledJSON.String))
+		if err != nil {
+			return nil, nil, fmt.Errorf("stored definition %s/v%d has invalid compiled definition: %w", name, version, err)
+		}
 	} else {
-		compiled, _, err = workflow.CompileDefinitionWithNodes(compileSource, resolver)
-	}
-	if err != nil {
-		return nil, nil, fmt.Errorf("stored definition %s/v%d no longer compiles: %w", name, version, err)
+		if legacyResolver == nil {
+			compiled, err = workflow.CompileDefinition(compileSource)
+		} else {
+			compiled, _, err = workflow.CompileDefinitionWithNodes(compileSource, legacyResolver)
+		}
+		if err != nil {
+			return nil, nil, fmt.Errorf("stored legacy definition %s/v%d no longer compiles without broker authority: %w", name, version, err)
+		}
 	}
 	if compiled.Name != name {
-		return nil, nil, fmt.Errorf("stored definition %s/v%d compiles with a different name", name, version)
+		return nil, nil, fmt.Errorf("stored definition %s/v%d compiled authority has a different name", name, version)
 	}
 	return compiled, storedSource, nil
-}
-
-func (f *agentWorkflowsFactory) compileDefinition(source workflow.Manifest) (*workflow.CompiledDefinition, error) {
-	if f.nodeResolver == nil {
-		return workflow.CompileDefinition(source)
-	}
-	compiled, _, err := workflow.CompileDefinitionWithNodes(source, f.nodeResolver)
-	return compiled, err
 }
 
 func populateCompiledWorkflowDefinition(

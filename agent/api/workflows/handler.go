@@ -151,7 +151,11 @@ func (h *Handler) Versions(w http.ResponseWriter, r *http.Request) {
 		query.Set("limit", strconv.Itoa(pageRequest.Limit))
 		w.Header().Set("Link", "<"+r.URL.EscapedPath()+"?"+query.Encode()+`>; rel="next"`)
 	}
-	writeJSON(w, http.StatusOK, page.Definitions)
+	public := make([]workflow.Definition, len(page.Definitions))
+	for index := range page.Definitions {
+		public[index] = workflow.PublicDefinition(page.Definitions[index])
+	}
+	writeJSON(w, http.StatusOK, public)
 }
 
 func parseVersionPageRequest(values url.Values) (workflow.VersionPageRequest, error) {
@@ -199,7 +203,8 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown workflow version", http.StatusNotFound)
 		return
 	}
-	writeJSON(w, http.StatusOK, def)
+	public := workflow.PublicDefinition(*def)
+	writeJSON(w, http.StatusOK, public)
 }
 
 // Import handles POST /api/v1/agent/workflows/:workflow_name/versions.
@@ -245,7 +250,8 @@ func (h *Handler) Import(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "failed to import workflow", http.StatusInternalServerError)
 			return
 		}
-		writeJSON(w, http.StatusOK, def)
+		public := workflow.PublicDefinition(*def)
+		writeJSON(w, http.StatusOK, public)
 		return
 	}
 
@@ -276,7 +282,8 @@ func (h *Handler) Import(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to import workflow", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, def)
+	public := workflow.PublicDefinition(*def)
+	writeJSON(w, http.StatusOK, public)
 }
 
 // Promote handles PUT /api/v1/agent/workflows/:workflow_name/versions/:version/live.
