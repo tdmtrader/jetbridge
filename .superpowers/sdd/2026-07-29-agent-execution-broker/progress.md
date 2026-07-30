@@ -74,3 +74,12 @@ permits authority through server template validation. Render/template hashing
 now strict-decodes canonical broker profiles and compares every outer field to
 the recomputed exact authority. Focused workflow/workflowrun/ATC/builds/
 command tests pass; see `task-9a-report.md`.
+
+Task 9a: review fix round 2 complete pending independent review/commit — raw
+one-off plans now fail closed on `AgentPlan.BrokerAuthority` and the reserved
+broker MCP marker, including nested plans and JSON/YAML across templates. Both
+one-off API handlers reject before persistence, and Team/Pipeline
+CreateStartedBuild enforce the same shared ingress boundary without changing
+trusted workflow-run execution. Structural and direct-handler tests pass; the
+broad API/DB runtime suites remain sandbox-blocked by IPv6 loopback/shared
+memory restrictions as recorded in `task-9a-report.md`.

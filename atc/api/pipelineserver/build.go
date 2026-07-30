@@ -22,6 +22,11 @@ func (s *Server) CreateBuild(pipeline db.Pipeline) http.Handler {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
+		if err := atc.ValidateUntrustedPlan(plan); err != nil {
+			logger.Info("untrusted-plan", lager.Data{"error": err.Error()})
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 
 		build, err := pipeline.CreateStartedBuild(plan)
 		if err != nil {

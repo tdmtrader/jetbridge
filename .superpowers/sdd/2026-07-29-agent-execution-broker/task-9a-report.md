@@ -85,3 +85,31 @@ GOCACHE=/private/tmp/codex-go-cache go test ./agent/runner -run 'Test(AdmittedMC
 GOCACHE=/private/tmp/codex-go-cache go test ./atc/exec -run '^$' -count=1
 git diff --check
 ```
+
+## Review fix round 2
+
+One-off raw build plans bypass the workflow compiler and planner by design, so
+they could otherwise deserialize `AgentPlan.BrokerAuthority` or the reserved
+`CONCOURSE_AGENT_BROKER_MCP` environment marker and reach the engine directly.
+`atc.ValidateUntrustedPlan` now rejects both fields in direct plans, nested
+plans, and JSON or YAML `across` substep templates. Both one-off API handlers
+return `400` before calling persistence, while the `Team.CreateStartedBuild`
+and `Pipeline.CreateStartedBuild` seams enforce the same rule for any
+equivalent raw caller. Workflow-run plans do not use those one-off creation
+seams, so server-rendered durable templates retain their trusted authority.
+
+Focused round-2 verification passed:
+
+```text
+GOCACHE=/private/tmp/codex-go-cache go test ./atc ./atc/api/buildserver ./atc/api/pipelineserver -run 'Test(ValidateUntrustedPlan|CreateBuildRejectsBrokerFieldsInRawPlan)' -count=1
+GOCACHE=/private/tmp/codex-go-cache go test ./atc/db -run 'TestThisPatternMatchesNoTests' -count=1
+GOCACHE=/private/tmp/codex-go-cache go test ./atc/builds ./agent/workflow ./agent/workflowrun ./cmd/agent-broker -count=1
+git diff --check
+```
+
+The focused raw-plan tests and downstream workflow checks passed. The broad
+`./atc/api` suite remains sandbox-blocked before its specs run because
+`httptest` cannot bind IPv6 loopback; the direct handler tests avoid that
+listener and cover both raw one-off endpoints. The DB runtime suite likewise
+cannot start PostgreSQL here because its shared-memory allocation is denied;
+the compile-only DB package check passed.

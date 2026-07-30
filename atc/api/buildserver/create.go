@@ -21,6 +21,11 @@ func (s *Server) CreateBuild(team db.Team) http.Handler {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
+		if err := atc.ValidateUntrustedPlan(plan); err != nil {
+			hLog.Info("untrusted-plan", lager.Data{"error": err.Error()})
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 
 		build, err := team.CreateStartedBuild(plan)
 		if err != nil {

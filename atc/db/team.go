@@ -916,6 +916,10 @@ func (t *team) CreateOneOffBuild() (Build, error) {
 }
 
 func (t *team) CreateStartedBuild(plan atc.Plan) (Build, error) {
+	if err := atc.ValidateUntrustedPlan(plan); err != nil {
+		return nil, err
+	}
+
 	tx, err := t.conn.Begin()
 	if err != nil {
 		return nil, err

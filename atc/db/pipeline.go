@@ -1141,6 +1141,10 @@ func (p *pipeline) CreateOneOffBuild() (Build, error) {
 }
 
 func (p *pipeline) CreateStartedBuild(plan atc.Plan) (Build, error) {
+	if err := atc.ValidateUntrustedPlan(plan); err != nil {
+		return nil, err
+	}
+
 	tx, err := p.conn.Begin()
 	if err != nil {
 		return nil, err
