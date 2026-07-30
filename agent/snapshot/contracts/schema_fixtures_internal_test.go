@@ -51,6 +51,9 @@ func recordFixtures() []recordFixture {
 		validationFixtures(),
 		repositoryChangeFixtures(),
 		measurementsFixtures(),
+		pullRequestFixtures(),
+		pullRequestResponseFixtures(),
+		publishImpactFixtures(),
 	)
 }
 
@@ -406,6 +409,89 @@ func measurementsFixtures() []recordFixture {
 				Explanation: "Nothing was exposed to measure.",
 			},
 		},
+	}
+}
+
+func pullRequestFixtures() []recordFixture {
+	validate := func(subjects []Subject, body any) error {
+		return body.(PullRequestBody).Validate(subjects)
+	}
+	everyRole := fixtureSubjectSet(
+		fixtureRoleCount{SubjectRolePrimary, 2}, fixtureRoleCount{SubjectRoleBase, 2},
+		fixtureRoleCount{SubjectRoleEvidence, 2}, fixtureRoleCount{SubjectRoleContext, 2},
+		fixtureRoleCount{SubjectRoleCandidate, 2}, fixtureRoleCount{SubjectRoleReference, 2},
+	)
+	rich := PullRequestBody{
+		Provider: "github", Repository: "github.example/acme/widget", ExternalID: "42", URL: "https://github.example/acme/widget/pull/42",
+		State: PullRequestActive, Mergeability: PullRequestMergeable, SourceRef: "refs/heads/agent/change", SourceSHA: strings.Repeat("a", 40),
+		TargetRef: "refs/heads/main", TargetSHA: strings.Repeat("b", 40), Iteration: "iteration-1", Trigger: PullRequestReviewBatchTrigger,
+		ReviewBatches: []PullRequestReviewBatch{{ID: "batch-1", ReviewID: "review-1", CommitSHA: strings.Repeat("a", 40), Reviewer: "reviewer-1", Ready: true, ThreadIDs: []string{"thread-1"}}},
+		Threads: []PullRequestThread{{
+			ID: "thread-1", Iteration: "iteration-1", Anchor: &PullRequestAnchor{Path: "main.go", StartLine: 12, EndLine: 18},
+			Comments: []PullRequestComment{{ID: "comment-1", Author: "reviewer-1", Body: "Please revise this.", CommitSHA: strings.Repeat("a", 40)}},
+		}},
+	}
+	simple := rich
+	simple.ReviewBatches = []PullRequestReviewBatch{{ID: "batch-1", ReviewID: "review-1", CommitSHA: strings.Repeat("a", 40), Reviewer: "reviewer-1", Ready: true}}
+	simple.Threads = []PullRequestThread{{ID: "thread-1", Iteration: "iteration-1"}}
+	missing := PullRequestBody{
+		Provider: "github", Repository: "github.example/acme/widget", State: PullRequestMissing, Mergeability: PullRequestUnknown,
+		SourceRef: "refs/heads/agent/change", ExpectedSource: &PullRequestHeadExpectation{Exists: true, SHA: strings.Repeat("a", 40)},
+		TargetRef: "refs/heads/main", TargetSHA: strings.Repeat("b", 40), Iteration: "initial-1", Trigger: PullRequestInitialPublishTrigger,
+	}
+	missingAbsentSource := missing
+	missingAbsentSource.ExpectedSource = &PullRequestHeadExpectation{Exists: false}
+	return []recordFixture{
+		{name: "pull-request/rich-active", ref: pullRequestType, subjects: everyRole, body: rich, validate: validate},
+		{name: "pull-request/simple-active", ref: pullRequestType, body: simple, validate: validate},
+		{name: "pull-request/missing", ref: pullRequestType, body: missing, validate: validate},
+		{name: "pull-request/missing-absent-source", ref: pullRequestType, body: missingAbsentSource, validate: validate},
+	}
+}
+
+func pullRequestResponseFixtures() []recordFixture {
+	validate := func(subjects []Subject, body any) error {
+		if err := validatePullRequestResponseSubjects(subjects); err != nil {
+			return err
+		}
+		return body.(PullRequestResponseBody).Validate(subjects)
+	}
+	subjects := fixtureSubjects(SubjectRolePrimary, "primary")
+	subjects[0].Type = pullRequestType
+	return []recordFixture{
+		{name: "pull-request-response/reply", ref: pullRequestResponseType, subjects: subjects, validate: validate,
+			body: PullRequestResponseBody{BatchID: "batch-1", Summary: "Addressed the review.", Replies: []PullRequestThreadResponse{{ThreadID: "thread-1", Body: "Updated in the latest revision."}}}},
+		{name: "pull-request-response/summary", ref: pullRequestResponseType, subjects: subjects, validate: validate,
+			body: PullRequestResponseBody{BatchID: "batch-1", Summary: "No thread-level response is needed."}},
+	}
+}
+
+func publishImpactFixtures() []recordFixture {
+	validate := func(subjects []Subject, body any) error {
+		return body.(PublishImpactBody).Validate(subjects)
+	}
+	everyRole := fixtureSubjectSet(
+		fixtureRoleCount{SubjectRolePrimary, 2}, fixtureRoleCount{SubjectRoleBase, 2},
+		fixtureRoleCount{SubjectRoleEvidence, 2}, fixtureRoleCount{SubjectRoleContext, 2},
+		fixtureRoleCount{SubjectRoleCandidate, 2}, fixtureRoleCount{SubjectRoleReference, 2},
+	)
+	return []recordFixture{
+		{name: "publish-impact/detailed", ref: publishImpactType, subjects: everyRole, validate: validate,
+			body: PublishImpactBody{
+				BaselineDigest: fixtureDigest('a').String(), CandidateDigest: fixtureDigest('b').String(),
+				ChangedFiles: []PublishChangedFile{{Path: "main.go", AddedLines: 2, RemovedLines: 1}, {Path: "no-lines", AddedLines: 0, RemovedLines: 0}}, ChangedLines: 3, ConflictResolution: true,
+				ValidationChanges:  []string{"Lint output changed.", "Test output changed."},
+				RuleResults:        []PublishImpactRule{{ID: "rule-1", Passed: false, Reason: "Deterministic policy requires reapproval."}},
+				AgentAssessment:    &AgentImpactAssessment{ReapprovalRequired: false, Rationale: "The deterministic requirement remains authoritative."},
+				ReapprovalRequired: true, Reasons: []string{"Deterministic policy requirement."},
+			}},
+		{name: "publish-impact/agent-escalation", ref: publishImpactType, validate: validate,
+			body: PublishImpactBody{BaselineDigest: fixtureDigest('a').String(), CandidateDigest: fixtureDigest('b').String(),
+				RuleResults:        []PublishImpactRule{{ID: "rule-1", Passed: true, Reason: "No deterministic policy matched."}},
+				AgentAssessment:    &AgentImpactAssessment{ReapprovalRequired: true, Rationale: "The semantic impact is significant."},
+				ReapprovalRequired: true, Reasons: []string{"Agent escalation."}}},
+		{name: "publish-impact/empty-delta", ref: publishImpactType, validate: validate,
+			body: PublishImpactBody{BaselineDigest: fixtureDigest('a').String(), CandidateDigest: fixtureDigest('b').String()}},
 	}
 }
 

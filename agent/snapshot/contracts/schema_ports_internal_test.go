@@ -25,11 +25,14 @@ import (
 // fails the second. A coordinated change to both still has to come here and say
 // so.
 var declaredSubjectPorts = map[snapshot.TypeRef]string{
-	reviewType:           PortsAnyExposedInput,
-	diagnosisType:        PortsAnyExposedInput,
-	validationType:       PortsAnyExposedInput,
-	repositoryChangeType: PortsAnyExposedInput,
-	measurementsType:     PortsAnyExposedInput,
+	reviewType:              PortsAnyExposedInput,
+	diagnosisType:           PortsAnyExposedInput,
+	validationType:          PortsAnyExposedInput,
+	repositoryChangeType:    PortsAnyExposedInput,
+	measurementsType:        PortsAnyExposedInput,
+	pullRequestType:         PortsAnyExposedInput,
+	pullRequestResponseType: PortsAnyExposedInput,
+	publishImpactType:       PortsAnyExposedInput,
 }
 
 // recordBodySealGates is each type's SEAL-TIME body gate, wired to the production
@@ -55,6 +58,18 @@ var recordBodySealGates = map[snapshot.TypeRef]func([]Subject, any) error{
 	},
 	measurementsType: func(subjects []Subject, body any) error {
 		return body.(MeasurementsBody).Validate(subjects)
+	},
+	pullRequestType: func(subjects []Subject, body any) error {
+		return body.(PullRequestBody).Validate(subjects)
+	},
+	pullRequestResponseType: func(subjects []Subject, body any) error {
+		if err := validatePullRequestResponseSubjects(subjects); err != nil {
+			return err
+		}
+		return body.(PullRequestResponseBody).Validate(subjects)
+	},
+	publishImpactType: func(subjects []Subject, body any) error {
+		return body.(PublishImpactBody).Validate(subjects)
 	},
 }
 

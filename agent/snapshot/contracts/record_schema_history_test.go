@@ -47,6 +47,18 @@ var frozenAcceptedSchemaDigests = map[string][]string{
 		"sha256:d2e0b89126ce534c957a8e93166391f517e126aec5aa961f66a4c6c178bc57a0",
 		"sha256:fea8ee17190c3dcf6c2d24065e2eea51acc9672c7cc091137fd3d6085e67a361",
 	},
+	"pull-request/v1": {
+		"sha256:0d2ecf6dc021678fb2fffa8f82d9cd9355165521f0a05f2faeed6024d661b737",
+		"sha256:476e292848c15ad9de04e15e9872f8fac88f85f40aea9e8daf980ac0438c6722",
+	},
+	"pull-request-response/v1": {
+		"sha256:9ecb1a7bb3269ae9d98a38d54c94011e1cb1e4975b4f23476a53b239fe66bc0e",
+		"sha256:3d1c43b8a8d9397b7cfa26f145921b3bd6d7e4076c129a927a043658ad3d3286",
+	},
+	"publish-impact/v1": {
+		"sha256:21952c646a7c81107f3eaad385a9467a9548e3d03492a87942989bedff00f045",
+		"sha256:a60683c64aa8206f97fe2789b21d7f29d2a3440920f7be91aa287c670f4f05a2",
+	},
 }
 
 func TestAcceptedSchemaDigestHistoriesAreFrozenAndAppendOnly(t *testing.T) {

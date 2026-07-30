@@ -20,11 +20,14 @@ const RecordVersion = "1.0.0"
 // The record contract types whose gates are spelled out in this package. Each
 // one has an entry in recordSchemaHistories.
 const (
-	reviewType           = snapshot.TypeRef("review/v1")
-	diagnosisType        = snapshot.TypeRef("diagnosis/v1")
-	validationType       = snapshot.TypeRef("validation/v1")
-	repositoryChangeType = snapshot.TypeRef("repository-change/v1")
-	measurementsType     = snapshot.TypeRef("measurements/v1")
+	reviewType              = snapshot.TypeRef("review/v1")
+	diagnosisType           = snapshot.TypeRef("diagnosis/v1")
+	validationType          = snapshot.TypeRef("validation/v1")
+	repositoryChangeType    = snapshot.TypeRef("repository-change/v1")
+	measurementsType        = snapshot.TypeRef("measurements/v1")
+	pullRequestType         = snapshot.TypeRef("pull-request/v1")
+	pullRequestResponseType = snapshot.TypeRef("pull-request-response/v1")
+	publishImpactType       = snapshot.TypeRef("publish-impact/v1")
 )
 
 type SubjectRole string

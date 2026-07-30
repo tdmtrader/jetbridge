@@ -1,0 +1,49 @@
+{
+  "dialect": "record-schema-dialect/1",
+  "contract": "publish-impact/v1",
+  "envelope": "record/v1",
+  "revision": 2,
+  "supersedes": 1,
+  "description": "Deterministic impact evidence, optional agent escalation, and the server-derived reapproval decision for a pull-request publication.",
+  "subject_shape": {
+    "minimum": 0,
+    "maximum": null,
+    "roles": {
+      "primary": { "minimum": 0, "maximum": null },
+      "base": { "minimum": 0, "maximum": null },
+      "evidence": { "minimum": 0, "maximum": null },
+      "context": { "minimum": 0, "maximum": null },
+      "candidate": { "minimum": 0, "maximum": null },
+      "reference": { "minimum": 0, "maximum": null }
+    },
+    "subject_type": null,
+    "uniform_subject_type": false,
+    "ports": "any-exposed-input"
+  },
+  "fields": {
+    "body": { "kind": "object", "presence": "required" },
+    "body/baseline_digest": { "kind": "identifier", "presence": "required" },
+    "body/candidate_digest": { "kind": "identifier", "presence": "required" },
+    "body/changed_files": { "kind": "array", "presence": "optional", "element": "object" },
+    "body/changed_files/*/path": { "kind": "string", "presence": "required" },
+    "body/changed_files/*/added_lines": { "kind": "int", "presence": "optional", "absent_image": "zero", "minimum": 0 },
+    "body/changed_files/*/removed_lines": { "kind": "int", "presence": "optional", "absent_image": "zero", "minimum": 0 },
+    "body/changed_lines": { "kind": "int", "presence": "optional", "absent_image": "zero", "minimum": 0 },
+    "body/conflict_resolution": { "kind": "bool", "presence": "optional", "absent_image": "zero" },
+    "body/validation_changes": { "kind": "array", "presence": "optional", "element": "markdown", "unique": true, "sorted": true },
+    "body/rule_results": { "kind": "entity-set", "presence": "optional", "id_field": "id" },
+    "body/rule_results/*/id": { "kind": "identifier", "presence": "required" },
+    "body/rule_results/*/passed": { "kind": "bool", "presence": "optional", "absent_image": "zero" },
+    "body/rule_results/*/reason": { "kind": "markdown", "presence": "required" },
+    "body/agent_assessment": { "kind": "object", "presence": "optional" },
+    "body/agent_assessment/reapproval_required": { "kind": "bool", "presence": "optional", "absent_image": "zero" },
+    "body/agent_assessment/rationale": { "kind": "markdown", "presence": "required" },
+    "body/reapproval_required": { "kind": "bool", "presence": "optional", "absent_image": "zero" },
+    "body/reasons": { "kind": "array", "presence": "optional", "element": "markdown", "unique": true, "sorted": true }
+  },
+  "go_only_rules": [
+    { "id": "impact-digest-and-lineage", "rule": "The baseline and candidate digests are valid, distinct identities; changed line count is the deterministic sum of changed files." },
+    { "id": "deterministic-rule-authority", "rule": "Every failed deterministic rule requires reapproval. An agent assessment may escalate but can never waive a deterministic rule." },
+    { "id": "reapproval-reasons", "rule": "Any reapproval decision must have at least one deterministic reason." }
+  ]
+}

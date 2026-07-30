@@ -148,6 +148,18 @@ var recordSchemaHistories = map[snapshot.TypeRef]recordSchemaHistory{
 			descriptor: `{"contract":"measurements/v1","envelope":"record/v1","revision":1}`,
 		}},
 	},
+	"pull-request/v1": {
+		current:    recordSchemaRevision{revision: 2, descriptor: mustCanonicalSchemaDescriptorFor("pull-request/v1", 2)},
+		superseded: []recordSchemaRevision{{revision: 1, descriptor: `{"contract":"pull-request/v1","envelope":"record/v1","revision":1}`}},
+	},
+	"pull-request-response/v1": {
+		current:    recordSchemaRevision{revision: 2, descriptor: mustCanonicalSchemaDescriptorFor("pull-request-response/v1", 2)},
+		superseded: []recordSchemaRevision{{revision: 1, descriptor: `{"contract":"pull-request-response/v1","envelope":"record/v1","revision":1}`}},
+	},
+	"publish-impact/v1": {
+		current:    recordSchemaRevision{revision: 2, descriptor: mustCanonicalSchemaDescriptorFor("publish-impact/v1", 2)},
+		superseded: []recordSchemaRevision{{revision: 1, descriptor: `{"contract":"publish-impact/v1","envelope":"record/v1","revision":1}`}},
+	},
 }
 
 // recordSchemaIndex maps each record type to its accepted schema digests,

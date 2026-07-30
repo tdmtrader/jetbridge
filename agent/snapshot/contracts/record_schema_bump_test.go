@@ -45,6 +45,9 @@ var bumpedRecordTypes = []string{
 	"validation/v1",
 	"repository-change/v1",
 	"measurements/v1",
+	"pull-request/v1",
+	"pull-request-response/v1",
+	"publish-impact/v1",
 }
 
 // revisionOneRecordFor is a stored record of ref as it would have been sealed
@@ -62,13 +65,17 @@ func revisionOneRecordFor(t *testing.T, raw string) (contracts.Record[json.RawMe
 	if !found {
 		t.Fatalf("SchemaDigestForRevision(%q, 1) not found; every record type has a revision 1", raw)
 	}
+	subjectType := mustTypeRef(t, "repository/v1")
+	if raw == "pull-request-response/v1" {
+		subjectType = mustTypeRef(t, "pull-request/v1")
+	}
 	record, err := contracts.NewRecord(
 		ref,
 		[]contracts.Subject{{
 			ID:     "primary",
 			Role:   contracts.SubjectRolePrimary,
 			Input:  "subject-input",
-			Type:   mustTypeRef(t, "repository/v1"),
+			Type:   subjectType,
 			Digest: recordDigest('a'),
 		}},
 		json.RawMessage(`{}`),

@@ -299,12 +299,15 @@ func TestForbiddenPresenceIsDerivedAndNeverAuthored(t *testing.T) {
 // rather than a silent re-digest.
 func TestSchemaDocumentCanonicalSerializationIsStable(t *testing.T) {
 	golden := map[string]string{
-		"diagnosis.v1.rev2.json":         "sha256:47301b1acc54725bd94804e6a20ca284b85568e4336d5592c64a89bcd2f58c47",
-		"measurements.v1.rev2.json":      "sha256:d2e0b89126ce534c957a8e93166391f517e126aec5aa961f66a4c6c178bc57a0",
-		"repository-change.v1.rev2.json": "sha256:afdb59e4eb682a09f86fb92165c57d3df215487be5a55e316944eba8bdc1f013",
-		"review.v1.rev2.json":            "sha256:8b460c4d9ea3a6ca6c7d1b8fb1e8dce448df8a2745f3d81a52992cec8e760220",
-		"validation.v1.rev2.json":        "sha256:68811d591b6f1f9cac7f2c27f36d96282717298c2420e3e16f521e5cd7351821",
-		"validation.v1.rev3.json":        "sha256:4d03fc7af7796a7add4d72d08a286c64ecfa7e9486fb06f136600aacc3f1b0e7",
+		"diagnosis.v1.rev2.json":             "sha256:47301b1acc54725bd94804e6a20ca284b85568e4336d5592c64a89bcd2f58c47",
+		"measurements.v1.rev2.json":          "sha256:d2e0b89126ce534c957a8e93166391f517e126aec5aa961f66a4c6c178bc57a0",
+		"repository-change.v1.rev2.json":     "sha256:afdb59e4eb682a09f86fb92165c57d3df215487be5a55e316944eba8bdc1f013",
+		"review.v1.rev2.json":                "sha256:8b460c4d9ea3a6ca6c7d1b8fb1e8dce448df8a2745f3d81a52992cec8e760220",
+		"validation.v1.rev2.json":            "sha256:68811d591b6f1f9cac7f2c27f36d96282717298c2420e3e16f521e5cd7351821",
+		"validation.v1.rev3.json":            "sha256:4d03fc7af7796a7add4d72d08a286c64ecfa7e9486fb06f136600aacc3f1b0e7",
+		"pull-request.v1.rev2.json":          "sha256:0d2ecf6dc021678fb2fffa8f82d9cd9355165521f0a05f2faeed6024d661b737",
+		"pull-request-response.v1.rev2.json": "sha256:9ecb1a7bb3269ae9d98a38d54c94011e1cb1e4975b4f23476a53b239fe66bc0e",
+		"publish-impact.v1.rev2.json":        "sha256:21952c646a7c81107f3eaad385a9467a9548e3d03492a87942989bedff00f045",
 	}
 	if len(golden) != len(schemaDocumentFileNames(t)) {
 		t.Fatalf("%d pinned digests for %d embedded documents", len(golden), len(schemaDocumentFileNames(t)))

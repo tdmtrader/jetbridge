@@ -1,0 +1,27 @@
+{
+  "dialect": "record-schema-dialect/1",
+  "contract": "pull-request-response/v1",
+  "envelope": "record/v1",
+  "revision": 2,
+  "supersedes": 1,
+  "description": "An agent-authored summary and thread replies whose external authority is checked against one reopened pull-request observation.",
+  "subject_shape": {
+    "minimum": 1,
+    "maximum": 1,
+    "roles": { "primary": { "minimum": 1, "maximum": 1 } },
+    "subject_type": "pull-request/v1",
+    "uniform_subject_type": true,
+    "ports": "any-exposed-input"
+  },
+  "fields": {
+    "body": { "kind": "object", "presence": "required" },
+    "body/batch_id": { "kind": "identifier", "presence": "required" },
+    "body/summary": { "kind": "markdown", "presence": "required" },
+    "body/replies": { "kind": "entity-set", "presence": "optional", "id_field": "thread_id" },
+    "body/replies/*/thread_id": { "kind": "identifier", "presence": "required" },
+    "body/replies/*/body": { "kind": "markdown", "presence": "required" }
+  },
+  "go_only_rules": [
+    { "id": "reopened-batch-thread-authority", "rule": "Generic validation checks only deterministic response shape. Before an external effect, the platform reopens the primary pull-request/v1 subject and verifies the named batch and every reply thread are authorized by that exact batch." }
+  ]
+}

@@ -14,11 +14,14 @@ import (
 // a hand-maintained list of field paths, which would go stale in the same
 // commit that made it wrong.
 var recordPrototypes = map[snapshot.TypeRef]any{
-	"review/v1":            Record[ReviewBody]{},
-	"diagnosis/v1":         Record[DiagnosisBody]{},
-	"validation/v1":        Record[validationBodyRevision3Declared]{},
-	"repository-change/v1": Record[RepositoryChangeBody]{},
-	"measurements/v1":      Record[MeasurementsBody]{},
+	"review/v1":                Record[ReviewBody]{},
+	"diagnosis/v1":             Record[DiagnosisBody]{},
+	"validation/v1":            Record[validationBodyRevision3Declared]{},
+	"repository-change/v1":     Record[RepositoryChangeBody]{},
+	"measurements/v1":          Record[MeasurementsBody]{},
+	"pull-request/v1":          Record[PullRequestBody]{},
+	"pull-request-response/v1": Record[PullRequestResponseBody]{},
+	"publish-impact/v1":        Record[PublishImpactBody]{},
 }
 
 const maxRecordFieldDepth = 32

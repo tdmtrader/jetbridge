@@ -28,6 +28,9 @@ var builtinTypes = []string{
 	"diagnosis/v1",
 	"question/v1",
 	"human-answer/v1",
+	"pull-request/v1",
+	"pull-request-response/v1",
+	"publish-impact/v1",
 }
 
 func TestRegistryContainsExactlyTheNamedV1Contracts(t *testing.T) {
@@ -47,8 +50,8 @@ func TestRegistryContainsExactlyTheNamedV1Contracts(t *testing.T) {
 	if got := registry.Types(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Types() = %q, want exact ordered types %q", got, want)
 	}
-	if len(registry.Types()) != 16 {
-		t.Fatalf("registry type count = %d, want 16", len(registry.Types()))
+	if len(registry.Types()) != 19 {
+		t.Fatalf("registry type count = %d, want 19", len(registry.Types()))
 	}
 
 	for _, raw := range []string{"review/v2", "dev-mcp/v1", "Review/v1"} {

@@ -98,6 +98,12 @@ func builtinValidator(ref snapshot.TypeRef, config registryConfig) (snapshot.Val
 		return gateInvariant{workItemValidator{}.Validate}, nil
 	case "measurements/v1":
 		return measurementsValidator{}, nil
+	case "pull-request/v1":
+		return pullRequestValidator{}, nil
+	case "pull-request-response/v1":
+		return pullRequestResponseValidator{}, nil
+	case "publish-impact/v1":
+		return publishImpactValidator{}, nil
 	case "upgrade-request/v1":
 		return gateInvariant{documentValidator[*UpgradeRequestDocument]{fileName: "upgrade-request.json"}.Validate}, nil
 	case "upgrade-report/v1":
@@ -181,6 +187,9 @@ func builtinTypeNames() []string {
 		"diagnosis/v1",
 		"question/v1",
 		"human-answer/v1",
+		"pull-request/v1",
+		"pull-request-response/v1",
+		"publish-impact/v1",
 	}
 }
 

@@ -73,6 +73,15 @@ var builtinRawRecordCodecs = map[snapshot.TypeRef]RawRecordCodec{
 	measurementsType: rawRecordCodec[MeasurementsBody]{ref: measurementsType, validate: func(subjects []Subject, body MeasurementsBody) error {
 		return measurementsBody(Record[MeasurementsBody]{Subjects: subjects, Body: body})
 	}},
+	pullRequestType: rawRecordCodec[PullRequestBody]{ref: pullRequestType, validate: func(subjects []Subject, body PullRequestBody) error {
+		return pullRequestBody(Record[PullRequestBody]{Subjects: subjects, Body: body})
+	}},
+	pullRequestResponseType: rawRecordCodec[PullRequestResponseBody]{ref: pullRequestResponseType, validate: func(subjects []Subject, body PullRequestResponseBody) error {
+		return pullRequestResponseBody(Record[PullRequestResponseBody]{Subjects: subjects, Body: body})
+	}},
+	publishImpactType: rawRecordCodec[PublishImpactBody]{ref: publishImpactType, validate: func(subjects []Subject, body PublishImpactBody) error {
+		return publishImpactBody(Record[PublishImpactBody]{Subjects: subjects, Body: body})
+	}},
 }
 
 func BuiltinRawRecordCodec(ref snapshot.TypeRef) (RawRecordCodec, bool) {
@@ -80,7 +89,7 @@ func BuiltinRawRecordCodec(ref snapshot.TypeRef) (RawRecordCodec, bool) {
 	return codec, found
 }
 func BuiltinRawRecordTypes() []snapshot.TypeRef {
-	return []snapshot.TypeRef{diagnosisType, measurementsType, repositoryChangeType, reviewType, validationType}
+	return []snapshot.TypeRef{diagnosisType, measurementsType, publishImpactType, pullRequestResponseType, pullRequestType, repositoryChangeType, reviewType, validationType}
 }
 func NormalizeRawRecordBody(ref snapshot.TypeRef, subjects []Subject, raw json.RawMessage) (any, json.RawMessage, error) {
 	codec, found := BuiltinRawRecordCodec(ref)
