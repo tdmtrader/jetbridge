@@ -71,12 +71,15 @@ v8.0.1:1765921815
 # workflow resource-source admission it reuses across cells and retries.
 # 1773106149 adds kind-scoped reusable node definitions and run idempotency;
 # 1773106150 adds durable workflow-to-node consumer bindings;
+# 1773106151 adds durable provider-native pull-request bindings;
 # 1773106152 adds provider-native publication evidence for exact PR
 # authorization; 1773106153 adds the closed provider-native operation union
 # while preserving legacy direct-Git rows under the null discriminator;
 # 1773106154 freezes each PR binding's exact create destination and approval
-# policy and rejects merely same-run publication provenance.
-JETBRIDGE_VERSION=1773106154
+# policy and rejects merely same-run publication provenance; 1773106155 adds
+# the team-bound, immutable child-execution ledger used by the
+# agent broker without placing prompts or provider credentials in PostgreSQL.
+JETBRIDGE_VERSION=1773106155
 
 # Minimum supported source version (v6.x)
 MIN_SUPPORTED_VERSION=1601993582

@@ -140,8 +140,8 @@ concourse migrate \
 ```
 
 This applies all pending migrations up to the JetBridge target version
-(`1773106148`). The complete appended JetBridge block is `1773106100` through
-`1773106148`; it is applied in order and must not be selectively skipped.
+(`1773106155`). The complete appended JetBridge block is `1773106100` through
+`1773106155`; it is applied in order and must not be selectively skipped.
 
 The appended block is operationally significant throughout:
 
@@ -168,6 +168,13 @@ The appended block is operationally significant throughout:
   attempts while retaining legacy projections.
 - `1773106148` associates the started experiment with the immutable admission
   it reuses.
+- `1773106149`–`1773106150` add kind-scoped reusable node definitions,
+  idempotent runs, and durable workflow-to-node consumer bindings.
+- `1773106151`–`1773106154` add exact provider-native pull-request bindings,
+  publication evidence, a closed operation union, and frozen publication
+  authority.
+- `1773106155` creates the team-bound child-execution ledger and monotonic
+  event stream used by the agent broker.
 
 ### Option B: Automatic on Startup
 
@@ -235,7 +242,7 @@ FROM migrations_history
 ORDER BY tstamp DESC
 LIMIT 5;
 
--- Expected: version = 1773106148, direction = 'up', status = 'passed'
+-- Expected: version = 1773106155, direction = 'up', status = 'passed'
 ```
 
 ### 5.2 Row Count Comparison
