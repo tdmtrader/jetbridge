@@ -180,7 +180,7 @@ func TestAStoredDigestResolvesToItsOwnRevisionForEveryRealType(t *testing.T) {
 			ref := mustTypeRef(t, raw)
 			accepted, found := contracts.AcceptedSchemaDigests(ref)
 			wantRevisions := 2
-			if raw == "validation/v1" {
+			if raw == "validation/v1" || raw == "pull-request/v1" || raw == "pull-request-response/v1" || raw == "publish-impact/v1" {
 				wantRevisions = 3
 			}
 			if !found || len(accepted) != wantRevisions {

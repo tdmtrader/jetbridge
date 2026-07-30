@@ -2,8 +2,8 @@
   "dialect": "record-schema-dialect/1",
   "contract": "publish-impact/v1",
   "envelope": "record/v1",
-  "revision": 2,
-  "supersedes": 1,
+  "revision": 3,
+  "supersedes": 2,
   "description": "Deterministic impact evidence, optional agent escalation, and the server-derived reapproval decision for a pull-request publication.",
   "subject_shape": {
     "minimum": 0,
@@ -44,6 +44,7 @@
   "go_only_rules": [
     { "id": "impact-digest-and-lineage", "rule": "The baseline and candidate digests are valid, distinct identities; changed line count is the deterministic sum of changed files." },
     { "id": "deterministic-rule-authority", "rule": "Every failed deterministic rule requires reapproval. An agent assessment may escalate but can never waive a deterministic rule." },
-    { "id": "reapproval-reasons", "rule": "Any reapproval decision must have at least one deterministic reason." }
+    { "id": "reapproval-reasons", "rule": "Any reapproval decision must have at least one deterministic reason." },
+    { "id": "bounded-impact-evidence", "rule": "Paths are at most 1024 bytes; rule identifiers 256; changed files 1024; rule results, validation changes, and reasons 512 each; and markdown remains bounded by the contract validator." }
   ]
 }

@@ -2,8 +2,8 @@
   "dialect": "record-schema-dialect/1",
   "contract": "pull-request-response/v1",
   "envelope": "record/v1",
-  "revision": 2,
-  "supersedes": 1,
+  "revision": 3,
+  "supersedes": 2,
   "description": "An agent-authored summary and thread replies whose external authority is checked against one reopened pull-request observation.",
   "subject_shape": {
     "minimum": 1,
@@ -22,6 +22,7 @@
     "body/replies/*/body": { "kind": "markdown", "presence": "required" }
   },
   "go_only_rules": [
-    { "id": "reopened-batch-thread-authority", "rule": "Generic validation checks only deterministic response shape. Before an external effect, the platform reopens the primary pull-request/v1 subject and verifies the named batch and every reply thread are authorized by that exact batch." }
+    { "id": "reopened-batch-thread-authority", "rule": "Generic validation checks only deterministic response shape. Before an external effect, the platform reopens the primary pull-request/v1 subject and verifies the named batch and every reply thread are authorized by that exact batch." },
+    { "id": "bounded-response", "rule": "Batch and thread identifiers are at most 256 bytes and a response contains at most 512 replies." }
   ]
 }

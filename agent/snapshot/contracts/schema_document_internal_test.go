@@ -305,9 +305,12 @@ func TestSchemaDocumentCanonicalSerializationIsStable(t *testing.T) {
 		"review.v1.rev2.json":                "sha256:8b460c4d9ea3a6ca6c7d1b8fb1e8dce448df8a2745f3d81a52992cec8e760220",
 		"validation.v1.rev2.json":            "sha256:68811d591b6f1f9cac7f2c27f36d96282717298c2420e3e16f521e5cd7351821",
 		"validation.v1.rev3.json":            "sha256:4d03fc7af7796a7add4d72d08a286c64ecfa7e9486fb06f136600aacc3f1b0e7",
-		"pull-request.v1.rev2.json":          "sha256:e0e1b9f1eb2ede456395202583170f2184a0ebe9094a43da13162abd9a45b75c",
-		"pull-request-response.v1.rev2.json": "sha256:f2f2594ef294b69645415a24d013d704ddaabf11a45a82792e823e1597f9d43a",
-		"publish-impact.v1.rev2.json":        "sha256:902fa8b3d9f81a928c7c5f11abcf18cd0a07b5deafd411ce9e183e3d4fbf9471",
+		"pull-request.v1.rev2.json":          "sha256:0d2ecf6dc021678fb2fffa8f82d9cd9355165521f0a05f2faeed6024d661b737",
+		"pull-request-response.v1.rev2.json": "sha256:9ecb1a7bb3269ae9d98a38d54c94011e1cb1e4975b4f23476a53b239fe66bc0e",
+		"publish-impact.v1.rev2.json":        "sha256:21952c646a7c81107f3eaad385a9467a9548e3d03492a87942989bedff00f045",
+		"pull-request.v1.rev3.json":          "sha256:3cbba0207c612715c8050c69357ac727fc6b9b2f68b3083736d846b7d6c668f4",
+		"pull-request-response.v1.rev3.json": "sha256:d60fcaa7aa054b5eaac43e96ef5d6386a69221da9d5346de3b675313229c8538",
+		"publish-impact.v1.rev3.json":        "sha256:58b98f51d3372bb41e197ccac545d6a0d47ee1d2d551fdd79d3389049d1809b2",
 	}
 	if len(golden) != len(schemaDocumentFileNames(t)) {
 		t.Fatalf("%d pinned digests for %d embedded documents", len(golden), len(schemaDocumentFileNames(t)))
