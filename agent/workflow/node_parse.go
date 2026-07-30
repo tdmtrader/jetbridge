@@ -195,6 +195,9 @@ func bindNodeLeafPorts(function *FunctionConfig) error {
 	outputs := nodeOutputTypes(function.Outputs)
 	switch leaf := step.(type) {
 	case *atc.TaskStep:
+		if len(leaf.InputMapping) != 0 || len(leaf.OutputMapping) != 0 {
+			return fmt.Errorf("workflow: node task mappings belong to a workflow node invocation")
+		}
 		if leaf.ConfigPath != "" || leaf.Config == nil {
 			return fmt.Errorf("workflow: node task must declare an inline config")
 		}
@@ -207,6 +210,9 @@ func bindNodeLeafPorts(function *FunctionConfig) error {
 		leaf.SnapshotInputs = inputs
 		leaf.SnapshotOutputs = outputs
 	case *atc.AgentStep:
+		if len(leaf.InputMapping) != 0 || len(leaf.OutputMapping) != 0 {
+			return fmt.Errorf("workflow: node agent mappings belong to a workflow node invocation")
+		}
 		if leaf.FunctionID == "" {
 			leaf.FunctionID = leaf.Name
 		}

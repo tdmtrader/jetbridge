@@ -53,9 +53,32 @@ func CompileDefinition(m Manifest) (*CompiledDefinition, error) {
 }
 
 func compileFunctionAssets(m Manifest, definition *CompiledDefinition, validationProfiles []DevValidationProfile) error {
+	return compileFunctionAssetsWithFrozenNodes(m, definition, validationProfiles, nil)
+}
+
+func compileFunctionAssetsWithFrozenNodes(m Manifest, definition *CompiledDefinition, validationProfiles []DevValidationProfile, frozen map[string]frozenNodeAssets) error {
 	compiler, err := newFunctionAssetCompiler(m, definition.Function, validationProfiles)
 	if err != nil {
 		return err
+	}
+	compiler.frozenNodeAssets = frozen
+	for path, content := range definition.Function.SkillFiles {
+		if err := compiler.addCompiledSkillBytes(len(content), "frozen node", path); err != nil {
+			return err
+		}
+		if err := compiler.addCompiledAssetBytes(len(content), "frozen node", "skill "+path); err != nil {
+			return err
+		}
+	}
+	for _, assets := range frozen {
+		for _, profile := range assets.profiles {
+			if err := compiler.addCompiledAssetBytes(len(profile.Profile), "frozen node", "dev validation profile"); err != nil {
+				return err
+			}
+			if err := compiler.addCompiledAssetBytes(len(profile.ProtectedConfig), "frozen node", "dev validation config"); err != nil {
+				return err
+			}
+		}
 	}
 	if err := compiler.preflight(); err != nil {
 		return err
@@ -90,6 +113,7 @@ type functionAssetCompiler struct {
 	compiledDevValidationProfiles []CompiledDevValidationProfile
 	compiledAssetBytes            int
 	compiledSkillBytes            int
+	frozenNodeAssets              map[string]frozenNodeAssets
 }
 
 func newFunctionAssetCompiler(m Manifest, function *FunctionConfig, validationProfiles []DevValidationProfile) (*functionAssetCompiler, error) {
@@ -201,6 +225,9 @@ func (compiler *functionAssetCompiler) preflightDevValidationProfiles() error {
 }
 
 func (compiler *functionAssetCompiler) preflightTask(step *atc.TaskStep) error {
+	if _, frozen := compiler.frozenNodeAssets[step.FunctionID]; frozen {
+		return nil
+	}
 	if step.DevValidationAuthority != nil {
 		return fmt.Errorf("workflow: task %q: dev_validation_authority is server-owned", step.Name)
 	}
@@ -214,6 +241,9 @@ func (compiler *functionAssetCompiler) preflightTask(step *atc.TaskStep) error {
 }
 
 func (compiler *functionAssetCompiler) preflightAgent(step *atc.AgentStep) error {
+	if _, frozen := compiler.frozenNodeAssets[step.FunctionID]; frozen {
+		return nil
+	}
 	identity := agentCompileIdentity(step)
 	if step.RuntimeImage != "" {
 		return fmt.Errorf("workflow: %s: runtime_image is server-selected and cannot be authored", identity)
@@ -395,14 +425,22 @@ func (compiler *functionAssetCompiler) compile() error {
 		compiler.function.DevValidationProvenanceHash = provenance
 	}
 	if len(compiler.selectedSkillFiles) > 0 {
-		compiler.function.SkillFiles = make(map[string]string, len(compiler.selectedSkillFiles))
+		if compiler.function.SkillFiles == nil {
+			compiler.function.SkillFiles = make(map[string]string, len(compiler.selectedSkillFiles))
+		}
 		for _, asset := range compiler.selectedSkillFiles {
+			if existing, found := compiler.function.SkillFiles[asset.path]; found && existing != asset.content {
+				return fmt.Errorf("workflow: compiled skill file %q conflicts with a frozen node asset", asset.path)
+			}
 			compiler.function.SkillFiles[asset.path] = asset.content
 		}
 	}
 	for index := range compiler.function.Plan {
 		err := compiler.function.Plan[index].Config.Visit(atc.StepRecursor{
 			OnTask: func(step *atc.TaskStep) error {
+				if _, frozen := compiler.frozenNodeAssets[step.FunctionID]; frozen {
+					return nil
+				}
 				if err := renderDevValidationSelector(step, compiler.function.DevValidationProfiles); err != nil {
 					return err
 				}
@@ -426,6 +464,9 @@ func (compiler *functionAssetCompiler) compile() error {
 }
 
 func (compiler *functionAssetCompiler) compileAgent(step *atc.AgentStep) error {
+	if _, frozen := compiler.frozenNodeAssets[step.FunctionID]; frozen {
+		return nil
+	}
 	prepared, found := compiler.preparedAgents[step]
 	if !found {
 		return fmt.Errorf("workflow: %s: internal error: agent assets were not preflighted", agentCompileIdentity(step))

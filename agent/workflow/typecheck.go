@@ -131,7 +131,14 @@ func (producer *snapshotProducer) outputConfig() (atc.SnapshotOutputConfig, bool
 		config, found := producer.task.SnapshotOutputs[producer.outputName]
 		return config, found
 	case producer.agent != nil:
-		config, found := producer.agent.SnapshotOutputs[producer.outputName]
+		name := producer.outputName
+		for logical, mapped := range producer.agent.OutputMapping {
+			if mapped == name {
+				name = logical
+				break
+			}
+		}
+		config, found := producer.agent.SnapshotOutputs[name]
 		return config, found
 	case producer.await != nil && producer.outputName == producer.await.Name:
 		config := atc.SnapshotOutputConfig{Type: producer.await.Type}
@@ -153,7 +160,14 @@ func (producer *snapshotProducer) setOutputConfig(config atc.SnapshotOutputConfi
 		return
 	}
 	if producer.agent != nil {
-		producer.agent.SnapshotOutputs[producer.outputName] = config
+		name := producer.outputName
+		for logical, mapped := range producer.agent.OutputMapping {
+			if mapped == name {
+				name = logical
+				break
+			}
+		}
+		producer.agent.SnapshotOutputs[name] = config
 		return
 	}
 	producer.await.WorkflowPort = config.WorkflowPort
@@ -704,8 +718,10 @@ func collectUntypedArtifactReads(step atc.Step, path string) map[string]string {
 			record(config.ImageArtifactName, currentPath+".task("+config.Name+").image")
 			recordPathSource(config.ConfigPath, currentPath+".task("+config.Name+").file")
 		case *atc.AgentStep:
-			for _, name := range config.Inputs {
-				if _, typed := config.SnapshotInputs[name]; !typed {
+			inputs, _ := effectiveAgentArtifactNames(config)
+			inputTypes := mappedSnapshotInputs(config.SnapshotInputs, config.InputMapping)
+			for _, name := range inputs {
+				if _, typed := inputTypes[name]; !typed {
 					record(name, currentPath+".agent("+config.Name+").inputs")
 				}
 			}
@@ -791,7 +807,8 @@ func effectiveTaskArtifactNames(step *atc.TaskStep) ([]string, []string) {
 }
 
 func (checker *snapshotFlowChecker) checkAgent(step *atc.AgentStep, entry snapshotEnvironment, path string) (snapshotFlow, error) {
-	flow, err := checker.checkLeaf("agent", step.Name, step.FunctionID, step.Inputs, step.SnapshotInputs, step.Outputs, step.SnapshotOutputs, nil, step, entry, path)
+	inputs, outputs := effectiveAgentArtifactNames(step)
+	flow, err := checker.checkLeaf("agent", step.Name, step.FunctionID, inputs, mappedSnapshotInputs(step.SnapshotInputs, step.InputMapping), outputs, mappedSnapshotOutputs(step.SnapshotOutputs, step.OutputMapping), nil, step, entry, path)
 	if err != nil {
 		return snapshotFlow{}, err
 	}
@@ -799,13 +816,65 @@ func (checker *snapshotFlowChecker) checkAgent(step *atc.AgentStep, entry snapsh
 	if candidate, governed, err := humanReviewCandidate(step); err != nil {
 		return snapshotFlow{}, fmt.Errorf("workflow: %s: %w", identity, err)
 	} else if governed {
-		if err := checker.requireValidation(entry, step.Validation, candidate, step.SnapshotInputs, identity); err != nil {
+		if mapped, found := step.InputMapping[candidate]; found {
+			candidate = mapped
+		}
+		if err := checker.requireValidation(entry, step.Validation, candidate, mappedSnapshotInputs(step.SnapshotInputs, step.InputMapping), identity); err != nil {
 			return snapshotFlow{}, err
 		}
 	} else if step.Validation != "" || step.ReviewValidation != nil {
 		return snapshotFlow{}, fmt.Errorf("workflow: %s: validation is only valid for a human review", identity)
 	}
 	return flow, nil
+}
+
+func effectiveAgentArtifactNames(step *atc.AgentStep) ([]string, []string) {
+	if step == nil {
+		return nil, nil
+	}
+	inputs := make([]string, len(step.Inputs))
+	for index, name := range step.Inputs {
+		if mapped, found := step.InputMapping[name]; found {
+			name = mapped
+		}
+		inputs[index] = name
+	}
+	outputs := make([]string, len(step.Outputs))
+	for index, name := range step.Outputs {
+		if mapped, found := step.OutputMapping[name]; found {
+			name = mapped
+		}
+		outputs[index] = name
+	}
+	return inputs, outputs
+}
+
+func mappedSnapshotInputs(source map[string]atc.SnapshotInputConfig, mapping map[string]string) map[string]atc.SnapshotInputConfig {
+	if source == nil {
+		return nil
+	}
+	mapped := make(map[string]atc.SnapshotInputConfig, len(source))
+	for name, config := range source {
+		if replacement, found := mapping[name]; found {
+			name = replacement
+		}
+		mapped[name] = config
+	}
+	return mapped
+}
+
+func mappedSnapshotOutputs(source map[string]atc.SnapshotOutputConfig, mapping map[string]string) map[string]atc.SnapshotOutputConfig {
+	if source == nil {
+		return nil
+	}
+	mapped := make(map[string]atc.SnapshotOutputConfig, len(source))
+	for name, config := range source {
+		if replacement, found := mapping[name]; found {
+			name = replacement
+		}
+		mapped[name] = config
+	}
+	return mapped
 }
 
 func humanReviewCandidate(step *atc.AgentStep) (string, bool, error) {

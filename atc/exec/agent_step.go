@@ -354,8 +354,9 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 	var missingInputs []string
 	snapshotInputs := snapshotInputBindings{refs: map[string]snapshot.SnapshotRef{}}
 	for _, name := range step.plan.Inputs {
+		artifactName := step.inputArtifactName(name)
 		if declaration, typed := step.plan.SnapshotInputs[name]; typed {
-			entry, found := repository.ArtifactEntryFor(build.ArtifactName(name))
+			entry, found := repository.ArtifactEntryFor(build.ArtifactName(artifactName))
 			if !found {
 				if !declaration.Optional {
 					missingInputs = append(missingInputs, name)
@@ -379,15 +380,15 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 			containerSpec.Inputs = append(containerSpec.Inputs, runtime.Input{
 				Artifact: entry.Artifact, DestinationPath: destination, FromCache: entry.FromCache,
 			})
-			snapshotInputs.order = append(snapshotInputs.order, name)
-			snapshotInputs.refs[name] = ref
+			snapshotInputs.order = append(snapshotInputs.order, artifactName)
+			snapshotInputs.refs[artifactName] = ref
 			// An agent could read anything under this mount, so lineage records
 			// the whole tree. Dynamic, agent-driven partial mounting is
 			// prohibited: its path set is unknown at admission.
-			snapshotInputs.recordExposure(name, ref, destination)
+			snapshotInputs.recordExposure(artifactName, ref, destination)
 			continue
 		}
-		entry, found := repository.ArtifactEntryFor(build.ArtifactName(name))
+		entry, found := repository.ArtifactEntryFor(build.ArtifactName(artifactName))
 		if !found {
 			missingInputs = append(missingInputs, name)
 			continue
@@ -431,7 +432,7 @@ func (step *AgentStep) run(ctx context.Context, state RunState, delegate TaskDel
 	outputNames := step.outputNames()
 	containerSpec.Outputs = make(runtime.OutputPaths, len(outputNames))
 	for _, name := range outputNames {
-		containerSpec.Outputs[name] = ensureTrailingSlash(artifactPath(workdir, name, ""))
+		containerSpec.Outputs[name] = ensureTrailingSlash(artifactPath(workdir, step.logicalOutputName(name), ""))
 	}
 	optionalOutputNames := make([]string, 0, len(step.plan.SnapshotOutputs))
 	for _, name := range step.plan.Outputs {
@@ -1371,7 +1372,7 @@ func boundTranscriptTail(raw []byte) (string, int, bool) {
 func (step *AgentStep) outputNames() []string {
 	names := make([]string, 0, len(step.plan.Outputs)+1)
 	seen := map[string]bool{}
-	for _, name := range append(append([]string{}, step.plan.Outputs...), agentFlightArtifact) {
+	for _, name := range append(append([]string{}, step.mappedOutputs()...), agentFlightArtifact) {
 		if seen[name] {
 			continue
 		}
@@ -1381,14 +1382,46 @@ func (step *AgentStep) outputNames() []string {
 	return names
 }
 
+func (step *AgentStep) inputArtifactName(logical string) string {
+	if mapped, found := step.plan.InputMapping[logical]; found {
+		return mapped
+	}
+	return logical
+}
+
+func (step *AgentStep) outputArtifactName(logical string) string {
+	if mapped, found := step.plan.OutputMapping[logical]; found {
+		return mapped
+	}
+	return logical
+}
+
+func (step *AgentStep) logicalOutputName(artifact string) string {
+	for logical, mapped := range step.plan.OutputMapping {
+		if mapped == artifact {
+			return logical
+		}
+	}
+	return artifact
+}
+
+func (step *AgentStep) mappedOutputs() []string {
+	names := make([]string, len(step.plan.Outputs))
+	for index, name := range step.plan.Outputs {
+		names[index] = step.outputArtifactName(name)
+	}
+	return names
+}
+
 func (step *AgentStep) registerLegacyOutputs(logger lager.Logger, repository *build.Repository, worker runtime.Worker, outputNames []string, volumeMounts []runtime.VolumeMount) {
 	logger.Debug("registering-outputs", lager.Data{"outputs": outputNames})
 
 	for _, name := range outputNames {
-		if _, typed := step.plan.SnapshotOutputs[name]; typed {
+		logicalName := step.logicalOutputName(name)
+		if _, typed := step.plan.SnapshotOutputs[logicalName]; typed {
 			continue
 		}
-		outputPath := artifactPath(step.containerMetadata.WorkingDirectory, name, "")
+		outputPath := artifactPath(step.containerMetadata.WorkingDirectory, logicalName, "")
 
 		for _, mount := range volumeMounts {
 			if filepath.Clean(mount.MountPath) == filepath.Clean(outputPath) {
@@ -1482,14 +1515,15 @@ func (step *AgentStep) collectTypedOutputs(
 		return nil, nil, nil, nil, fmt.Errorf("agent: %w", err)
 	}
 	for _, name := range step.plan.Outputs {
+		artifactName := step.outputArtifactName(name)
 		declaration, typed := step.plan.SnapshotOutputs[name]
 		if !typed {
 			continue
 		}
-		if _, duplicate := seen[name]; duplicate {
+		if _, duplicate := seen[artifactName]; duplicate {
 			return nil, nil, nil, nil, fmt.Errorf("agent typed output %q is declared more than once", name)
 		}
-		seen[name] = struct{}{}
+		seen[artifactName] = struct{}{}
 		port := snapshot.Port{Name: name, Type: declaration.Type, Optional: declaration.Optional}
 		declarations = append(declarations, port)
 		outputPath := artifactPath(step.containerMetadata.WorkingDirectory, name, "")
@@ -1521,7 +1555,7 @@ func (step *AgentStep) collectTypedOutputs(
 		capturedArtifact := artifact
 		outputs = append(outputs, collectedTypedOutput{
 			source: snapshot.OutputSource{
-				ClientKey: name, Port: port, Retention: declaration.Retention, WorkflowPort: declaration.WorkflowPort,
+				ClientKey: artifactName, Port: port, Retention: declaration.Retention, WorkflowPort: declaration.WorkflowPort,
 				OpenTar: func(ctx context.Context) (io.ReadCloser, error) {
 					return capturedArtifact.StreamOut(ctx, ".", nil)
 				},

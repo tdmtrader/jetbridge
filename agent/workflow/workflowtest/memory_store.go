@@ -21,6 +21,7 @@ type MemoryStore struct {
 	nextID             int
 	defs               []*workflow.Definition
 	promotionValidator workflow.PromotionValidator
+	nodeResolver       workflow.NodeResolver
 	lifecycle          map[string]lifecycleEntry
 }
 
@@ -32,10 +33,24 @@ type lifecycleEntry struct {
 }
 
 func NewMemoryStore(promotionValidators ...workflow.PromotionValidator) *MemoryStore {
+	return newMemoryStore(nil, promotionValidators...)
+}
+
+// NewMemoryStoreWithNodeResolver enables exact released-node expansion for
+// workflow imports while leaving NewMemoryStore's workflow-only behavior
+// unchanged.
+func NewMemoryStoreWithNodeResolver(resolver workflow.NodeResolver, promotionValidators ...workflow.PromotionValidator) *MemoryStore {
+	if resolver == nil {
+		panic("workflow: node-aware memory store requires a node resolver")
+	}
+	return newMemoryStore(resolver, promotionValidators...)
+}
+
+func newMemoryStore(resolver workflow.NodeResolver, promotionValidators ...workflow.PromotionValidator) *MemoryStore {
 	if len(promotionValidators) > 1 {
 		panic("workflow: NewMemoryStore accepts at most one promotion validator")
 	}
-	store := &MemoryStore{}
+	store := &MemoryStore{nodeResolver: resolver}
 	if len(promotionValidators) == 1 {
 		store.promotionValidator = promotionValidators[0]
 	}
@@ -57,7 +72,7 @@ func (m *MemoryStore) ImportManifest(name string, src workflow.Manifest, created
 	if err := workflow.RequireSchemaVersion3([]byte(raw)); err != nil {
 		return nil, workflow.InvalidDefinitionError{Err: err}
 	}
-	compiled, err := workflow.CompileDefinition(src)
+	compiled, err := m.compileDefinition(src)
 	if err != nil {
 		return nil, workflow.InvalidDefinitionError{Err: err}
 	}
@@ -129,6 +144,14 @@ func (m *MemoryStore) ImportManifest(name string, src workflow.Manifest, created
 	}
 	m.defs = append(m.defs, def)
 	return cloneMemoryDefinition(def, true)
+}
+
+func (m *MemoryStore) compileDefinition(source workflow.Manifest) (*workflow.CompiledDefinition, error) {
+	if m.nodeResolver == nil {
+		return workflow.CompileDefinition(source)
+	}
+	compiled, _, err := workflow.CompileDefinitionWithNodes(source, m.nodeResolver)
+	return compiled, err
 }
 
 func (m *MemoryStore) Get(name string, version int) (*workflow.Definition, bool, error) {

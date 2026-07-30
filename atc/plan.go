@@ -453,6 +453,8 @@ type AgentPlan struct {
 	Sidecars         []SidecarSource                 `json:"sidecars,omitempty"`
 	Inputs           []string                        `json:"inputs,omitempty"`
 	Outputs          []string                        `json:"outputs,omitempty"`
+	InputMapping     map[string]string               `json:"input_mapping,omitempty"`
+	OutputMapping    map[string]string               `json:"output_mapping,omitempty"`
 	SnapshotInputs   map[string]SnapshotInputConfig  `json:"input_types,omitempty"`
 	SnapshotOutputs  map[string]SnapshotOutputConfig `json:"output_types,omitempty"`
 	Validation       string                          `json:"validation,omitempty"`

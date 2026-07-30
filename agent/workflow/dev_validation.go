@@ -285,7 +285,8 @@ func devValidationMutableRoots(function *FunctionConfig) map[string]struct{} {
 				add(out)
 			}
 		case *atc.AgentStep:
-			for _, out := range leaf.Outputs {
+			_, outputs := effectiveAgentArtifactNames(leaf)
+			for _, out := range outputs {
 				add(out)
 			}
 		}

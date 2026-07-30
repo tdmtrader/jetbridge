@@ -128,6 +128,8 @@ func (visitor *planVisitor) VisitAgent(step *atc.AgentStep) error {
 		Sidecars:         step.Sidecars,
 		Inputs:           step.Inputs,
 		Outputs:          step.Outputs,
+		InputMapping:     maps.Clone(step.InputMapping),
+		OutputMapping:    maps.Clone(step.OutputMapping),
 		SnapshotInputs:   maps.Clone(step.SnapshotInputs),
 		SnapshotOutputs:  maps.Clone(step.SnapshotOutputs),
 		Validation:       step.Validation,

@@ -132,13 +132,14 @@ func validateExtractedLeaf(step atc.Step, path string, resourceTypes atc.Resourc
 		if err := validateImmutableAgentDependencies(leaf); err != nil {
 			return nil, nil, nil, err
 		}
-		if err := validateExactTypedCoverage("agent input", leaf.Inputs, snapshotInputNames(leaf.SnapshotInputs)); err != nil {
+		inputs, outputs := effectiveAgentArtifactNames(leaf)
+		if err := validateExactTypedCoverage("agent input", inputs, snapshotInputNames(mappedSnapshotInputs(leaf.SnapshotInputs, leaf.InputMapping))); err != nil {
 			return nil, nil, nil, err
 		}
-		if err := validateExactTypedCoverage("agent output", leaf.Outputs, snapshotOutputNames(leaf.SnapshotOutputs)); err != nil {
+		if err := validateExactTypedCoverage("agent output", outputs, snapshotOutputNames(mappedSnapshotOutputs(leaf.SnapshotOutputs, leaf.OutputMapping))); err != nil {
 			return nil, nil, nil, err
 		}
-		return signatureInputs(leaf.SnapshotInputs), signatureOutputs(leaf.SnapshotOutputs), nil, nil
+		return signatureInputs(mappedSnapshotInputs(leaf.SnapshotInputs, leaf.InputMapping)), signatureOutputs(mappedSnapshotOutputs(leaf.SnapshotOutputs, leaf.OutputMapping)), nil, nil
 
 	default:
 		return nil, nil, nil, fmt.Errorf("unsupported future leaf %T is not extractable", step.Config)
