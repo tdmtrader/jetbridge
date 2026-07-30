@@ -218,7 +218,13 @@ func (a *auditor) ValidateAction(action string) bool {
 		atc.TransitionAgentTicket,
 		atc.DispatchAgentTicket,
 		atc.GetAgentDispatcher,
-		atc.SetAgentDispatcher:
+		atc.SetAgentDispatcher,
+		atc.AdmitAgentChildExecution,
+		atc.PhaseAgentChildExecution,
+		atc.UpdateAgentChildExecution,
+		atc.TerminalAgentChildExecution,
+		atc.SealAgentChildExecution,
+		atc.GetAgentChildExecution:
 		return a.EnableSystemAuditLog
 	case atc.ListTeams,
 		atc.SetTeam,
