@@ -56,35 +56,41 @@ func (state BindingState) Validate() error {
 // Immutable observations and publication evidence remain snapshots and
 // publication occurrences; this row only serializes their processing.
 type Binding struct {
-	ID                               int64
-	TeamID                           int
-	Locator                          Locator
-	URL                              string
-	SourceRef                        string
-	TargetRef                        string
-	OriginatingWorkflowRunID         *snapshot.WorkflowRunID
-	OriginatingPublicationOccurrence *int64
-	MonitorWorkflowDefinitionID      int
-	MonitorWorkflowVersion           int
-	PipelineID                       *int
-	AcknowledgedCursor               Cursor
-	LastObservationSnapshotID        *snapshot.SnapshotID
-	LastAcknowledgedActionDigest     string
-	LastAcknowledgedWorkflowRunID    *snapshot.WorkflowRunID
-	LastReconciledSourceSHA          string
-	LastReconciledTargetSHA          string
-	LastReconciledAt                 time.Time
-	State                            BindingState
-	AttentionReason                  string
-	Paused                           bool
-	OperatorTerminated               bool
-	ObservationRequestedAt           *time.Time
-	Active                           *LaunchReservation
-	TerminalObservationSnapshotID    *snapshot.SnapshotID
-	TerminalAt                       *time.Time
-	Revision                         int64
-	CreatedAt                        time.Time
-	UpdatedAt                        time.Time
+	ID                                      int64
+	TeamID                                  int
+	Locator                                 Locator
+	URL                                     string
+	SourceRef                               string
+	TargetRef                               string
+	Destination                             string
+	ApprovalPolicyVersion                   string
+	OriginatingWorkflowRunID                *snapshot.WorkflowRunID
+	OriginatingPublicationOccurrence        *int64
+	CreationPublicationOccurrenceID         *int64
+	ApprovedBaselineRepositorySnapshotID    snapshot.SnapshotID
+	ApprovedBaselineValidationSnapshotID    snapshot.SnapshotID
+	ApprovedBaselinePublicationOccurrenceID int64
+	MonitorWorkflowDefinitionID             int
+	MonitorWorkflowVersion                  int
+	PipelineID                              *int
+	AcknowledgedCursor                      Cursor
+	LastObservationSnapshotID               *snapshot.SnapshotID
+	LastAcknowledgedActionDigest            string
+	LastAcknowledgedWorkflowRunID           *snapshot.WorkflowRunID
+	LastReconciledSourceSHA                 string
+	LastReconciledTargetSHA                 string
+	LastReconciledAt                        time.Time
+	State                                   BindingState
+	AttentionReason                         string
+	Paused                                  bool
+	OperatorTerminated                      bool
+	ObservationRequestedAt                  *time.Time
+	Active                                  *LaunchReservation
+	TerminalObservationSnapshotID           *snapshot.SnapshotID
+	TerminalAt                              *time.Time
+	Revision                                int64
+	CreatedAt                               time.Time
+	UpdatedAt                               time.Time
 }
 
 type CreateBinding struct {
@@ -93,8 +99,11 @@ type CreateBinding struct {
 	URL                              string
 	SourceRef                        string
 	TargetRef                        string
+	Destination                      string
+	ApprovalPolicyVersion            string
 	OriginatingWorkflowRunID         snapshot.WorkflowRunID
 	OriginatingPublicationOccurrence int64
+	CreationPublicationOccurrenceID  int64
 	MonitorWorkflowDefinitionID      int
 	MonitorWorkflowVersion           int
 	AcknowledgedCursor               Cursor
@@ -121,6 +130,14 @@ func (request CreateBinding) Validate() error {
 	if err := validateRef("target ref", request.TargetRef); err != nil {
 		return err
 	}
+	if err := validateBoundedText("binding destination", request.Destination, maxURLBytes); err != nil ||
+		strings.TrimSpace(request.Destination) != request.Destination {
+		return fmt.Errorf("pullrequest: binding destination is invalid")
+	}
+	if err := validateBoundedText("binding approval policy version", request.ApprovalPolicyVersion, 128); err != nil ||
+		strings.TrimSpace(request.ApprovalPolicyVersion) != request.ApprovalPolicyVersion {
+		return fmt.Errorf("pullrequest: binding approval policy version is invalid")
+	}
 	if err := request.AcknowledgedCursor.Validate(); err != nil || request.AcknowledgedCursor == "" {
 		return fmt.Errorf("pullrequest: binding requires a non-empty valid acknowledged cursor")
 	}
@@ -135,8 +152,9 @@ func (request CreateBinding) Validate() error {
 	}
 	if request.OriginatingWorkflowRunID <= 0 ||
 		request.OriginatingPublicationOccurrence <= 0 ||
+		request.CreationPublicationOccurrenceID <= 0 ||
 		request.LastObservationSnapshotID <= 0 {
-		return fmt.Errorf("pullrequest: binding requires exact originating run, publication, and observation evidence")
+		return fmt.Errorf("pullrequest: binding requires exact originating run, accepted-review publication, creation publication, and observation evidence")
 	}
 	return nil
 }

@@ -541,29 +541,45 @@ plan:
 		evaluatorAdmissionID := registerReadySourceAdmission(
 			defaultTeam.ID(), evaluatorDefinition, evaluatorHash, "evaluator-binding-filter",
 		)
-		originRunID, occurrenceID, observationID := insertAgentPRBindingEvidence(
-			defaultTeam.ID(), defaultTeam.Name(), candidateDefinition.ID,
-			fmt.Sprintf("experiment-binding-%d", time.Now().UnixNano()),
-		)
+		publicationTarget := agentPRBindingPublicationTarget{
+			Locator: pullrequest.Locator{
+				Provider:   pullrequest.ProviderGitHub,
+				Repository: "example/experiment-binding",
+				ExternalID: fmt.Sprint(time.Now().UnixNano()),
+			},
+			URL:                   "https://github.example/example/experiment-binding/pull/1",
+			SourceRef:             "refs/heads/source",
+			SourceSHA:             strings.Repeat("8", 40),
+			TargetRef:             "refs/heads/main",
+			TargetSHA:             strings.Repeat("9", 40),
+			Destination:           "github.example/example/experiment-binding",
+			ApprovalPolicyVersion: "engineering/v3",
+		}
+		originRunID, acceptedOccurrenceID, creationOccurrenceID, observationID :=
+			insertAgentPRBindingEvidence(
+				defaultTeam.ID(), defaultTeam.Name(), candidateDefinition.ID,
+				fmt.Sprintf("experiment-binding-%d", time.Now().UnixNano()),
+				publicationTarget,
+			)
 		prBinding, bindingCreated, err := db.NewAgentPRBindingsFactory(dbConn).Create(
 			ctx,
 			pullrequest.CreateBinding{
-				TeamID: defaultTeam.ID(),
-				Locator: pullrequest.Locator{
-					Provider:   pullrequest.ProviderGitHub,
-					Repository: "example/experiment-binding",
-					ExternalID: fmt.Sprint(time.Now().UnixNano()),
-				},
-				URL:       "https://github.example/example/experiment-binding/pull/1",
-				SourceRef: "refs/heads/source", TargetRef: "refs/heads/main",
+				TeamID:                           defaultTeam.ID(),
+				Locator:                          publicationTarget.Locator,
+				URL:                              publicationTarget.URL,
+				SourceRef:                        publicationTarget.SourceRef,
+				TargetRef:                        publicationTarget.TargetRef,
+				Destination:                      publicationTarget.Destination,
+				ApprovalPolicyVersion:            publicationTarget.ApprovalPolicyVersion,
 				OriginatingWorkflowRunID:         snapshot.WorkflowRunID(originRunID),
-				OriginatingPublicationOccurrence: occurrenceID,
+				OriginatingPublicationOccurrence: acceptedOccurrenceID,
+				CreationPublicationOccurrenceID:  creationOccurrenceID,
 				MonitorWorkflowDefinitionID:      candidateDefinition.ID,
 				MonitorWorkflowVersion:           candidateDefinition.Version,
 				AcknowledgedCursor:               pullrequest.Cursor("experiment-binding-cursor"),
 				LastObservationSnapshotID:        snapshot.SnapshotID(observationID),
-				LastReconciledSourceSHA:          strings.Repeat("8", 40),
-				LastReconciledTargetSHA:          strings.Repeat("9", 40),
+				LastReconciledSourceSHA:          publicationTarget.SourceSHA,
+				LastReconciledTargetSHA:          publicationTarget.TargetSHA,
 				LastReconciledAt:                 time.Now().UTC(),
 			},
 		)

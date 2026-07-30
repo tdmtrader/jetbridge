@@ -12,13 +12,19 @@ import (
 	"strings"
 	"time"
 
+	"github.com/concourse/concourse/agent/publisher"
 	"github.com/concourse/concourse/agent/pullrequest"
 	"github.com/concourse/concourse/agent/snapshot"
 )
 
 const agentPRBindingColumns = `
 	id, team_id, provider, repository, external_id, url, source_ref, target_ref,
+	destination, approval_policy_version,
 	originating_workflow_run_id, originating_publication_occurrence_id,
+	creation_publication_occurrence_id,
+	approved_baseline_repository_snapshot_id,
+	approved_baseline_validation_snapshot_id,
+	approved_baseline_publication_occurrence_id,
 	monitor_workflow_definition_id, monitor_workflow_version, pipeline_id,
 	acknowledged_cursor, last_observation_snapshot_id,
 	last_acknowledged_action_digest, last_acknowledged_workflow_run_id,
@@ -62,7 +68,10 @@ func (factory *agentPRBindingsFactory) Create(
 	); err != nil {
 		return pullrequest.Binding{}, false, err
 	}
-	if err := validateAgentPRBindingOrigin(ctx, tx, request); err != nil {
+	acceptedBaseline, err := validateAgentPRBindingOrigin(
+		ctx, tx, request,
+	)
+	if err != nil {
 		return pullrequest.Binding{}, false, err
 	}
 	if request.LastObservationSnapshotID > 0 {
@@ -79,17 +88,27 @@ func (factory *agentPRBindingsFactory) Create(
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO agent_pr_bindings
 			(team_id, provider, repository, external_id, url, source_ref, target_ref,
+			 destination, approval_policy_version,
 			 originating_workflow_run_id, originating_publication_occurrence_id,
+			 creation_publication_occurrence_id,
+			 approved_baseline_repository_snapshot_id,
+			 approved_baseline_validation_snapshot_id,
+			 approved_baseline_publication_occurrence_id,
 			 monitor_workflow_definition_id, monitor_workflow_version,
 			 acknowledged_cursor, last_observation_snapshot_id,
 			 last_reconciled_source_sha, last_reconciled_target_sha, last_reconciled_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14,$15,$16)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::jsonb,$19,$20,$21,$22)
 		ON CONFLICT (team_id, provider, repository, external_id) DO NOTHING
 		RETURNING id
 	`, request.TeamID, string(request.Locator.Provider), request.Locator.Repository,
 		request.Locator.ExternalID, request.URL, request.SourceRef, request.TargetRef,
+		request.Destination, request.ApprovalPolicyVersion,
 		nullablePositiveInt64(int64(request.OriginatingWorkflowRunID)),
 		nullablePositiveInt64(request.OriginatingPublicationOccurrence),
+		nullablePositiveInt64(request.CreationPublicationOccurrenceID),
+		nullablePositiveInt64(int64(acceptedBaseline.Candidate.ID)),
+		nullablePositiveInt64(int64(acceptedBaseline.Validation.ID)),
+		nullablePositiveInt64(acceptedBaseline.PublicationOccurrenceID),
 		request.MonitorWorkflowDefinitionID, request.MonitorWorkflowVersion, cursor,
 		nullablePositiveInt64(int64(request.LastObservationSnapshotID)),
 		request.LastReconciledSourceSHA, request.LastReconciledTargetSHA,
@@ -1019,6 +1038,10 @@ func scanAgentPRBinding(row interface{ Scan(...any) error }) (pullrequest.Bindin
 		provider               string
 		originatingRun         sql.NullInt64
 		originatingPublication sql.NullInt64
+		creationPublication    sql.NullInt64
+		baselineRepository     int64
+		baselineValidation     int64
+		baselinePublication    int64
 		pipelineID             sql.NullInt64
 		acknowledgedCursor     []byte
 		lastObservation        sql.NullInt64
@@ -1042,7 +1065,10 @@ func scanAgentPRBinding(row interface{ Scan(...any) error }) (pullrequest.Bindin
 		&binding.ID, &binding.TeamID, &provider,
 		&binding.Locator.Repository, &binding.Locator.ExternalID,
 		&binding.URL, &binding.SourceRef, &binding.TargetRef,
+		&binding.Destination, &binding.ApprovalPolicyVersion,
 		&originatingRun, &originatingPublication,
+		&creationPublication,
+		&baselineRepository, &baselineValidation, &baselinePublication,
 		&binding.MonitorWorkflowDefinitionID, &binding.MonitorWorkflowVersion,
 		&pipelineID, &acknowledgedCursor, &lastObservation,
 		&lastAction, &lastRun,
@@ -1075,6 +1101,22 @@ func scanAgentPRBinding(row interface{ Scan(...any) error }) (pullrequest.Bindin
 		value := originatingPublication.Int64
 		binding.OriginatingPublicationOccurrence = &value
 	}
+	if creationPublication.Valid {
+		value := creationPublication.Int64
+		binding.CreationPublicationOccurrenceID = &value
+	}
+	if baselineRepository <= 0 || baselineValidation <= 0 ||
+		baselinePublication <= 0 {
+		return pullrequest.Binding{}, fmt.Errorf(
+			"db: PR binding approved baseline authority is invalid",
+		)
+	}
+	binding.ApprovedBaselineRepositorySnapshotID =
+		snapshot.SnapshotID(baselineRepository)
+	binding.ApprovedBaselineValidationSnapshotID =
+		snapshot.SnapshotID(baselineValidation)
+	binding.ApprovedBaselinePublicationOccurrenceID =
+		baselinePublication
 	if pipelineID.Valid {
 		value := int(pipelineID.Int64)
 		binding.PipelineID = &value
@@ -1182,31 +1224,137 @@ func validateAgentPRBindingOrigin(
 	ctx context.Context,
 	queryer snapshotQueryer,
 	request pullrequest.CreateBinding,
-) error {
-	if request.OriginatingWorkflowRunID == 0 {
-		return nil
-	}
-	var valid bool
+) (pullrequest.AcceptedReviewAuthority, error) {
+	var acceptedReviewOrigin bool
 	err := queryer.QueryRowContext(ctx, `
 		SELECT EXISTS (
 			SELECT 1
 			FROM agent_publication_occurrences occurrence
+			JOIN agent_publications publication
+			  ON publication.id=occurrence.publication_id
 			JOIN agent_workflow_runs run
 			  ON run.id=occurrence.workflow_run_id
 			 AND run.team_id=occurrence.team_id
-			WHERE occurrence.id=$1 AND occurrence.team_id=$2
+			WHERE occurrence.id=$1
+			  AND occurrence.team_id=$2
 			  AND occurrence.workflow_run_id=$3
+			  AND occurrence.status='succeeded'
+			  AND publication.team_id=occurrence.team_id
+			  AND publication.status='succeeded'
 			  AND run.definition_kind='workflow'
 		)
 	`, request.OriginatingPublicationOccurrence, request.TeamID,
-		int64(request.OriginatingWorkflowRunID)).Scan(&valid)
+		int64(request.OriginatingWorkflowRunID)).Scan(&acceptedReviewOrigin)
 	if err != nil {
-		return err
+		return pullrequest.AcceptedReviewAuthority{}, err
 	}
-	if !valid {
-		return fmt.Errorf("%w: originating publication occurrence is not exact", pullrequest.ErrBindingConflict)
+	if !acceptedReviewOrigin {
+		return pullrequest.AcceptedReviewAuthority{}, fmt.Errorf(
+			"%w: originating accepted-review publication occurrence is not exact",
+			pullrequest.ErrBindingConflict,
+		)
 	}
-	return nil
+	accepted, found, err := resolveAcceptedReviewAuthority(
+		ctx, queryer, request.TeamID,
+		request.OriginatingPublicationOccurrence,
+	)
+	if err != nil {
+		return pullrequest.AcceptedReviewAuthority{}, err
+	}
+	if !found {
+		return pullrequest.AcceptedReviewAuthority{}, fmt.Errorf(
+			"%w: originating publication has no exact accepted-review authority",
+			pullrequest.ErrBindingConflict,
+		)
+	}
+	protectedAccepted, err := accepted.Protected()
+	if err != nil ||
+		protectedAccepted.TeamID != request.TeamID ||
+		protectedAccepted.PublicationOccurrenceID !=
+			request.OriginatingPublicationOccurrence {
+		return pullrequest.AcceptedReviewAuthority{}, fmt.Errorf(
+			"%w: originating accepted-review authority is invalid",
+			pullrequest.ErrBindingConflict,
+		)
+	}
+
+	var exactCreationOccurrence bool
+	err = queryer.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM agent_publication_occurrences occurrence
+			JOIN agent_publications publication
+			  ON publication.id=occurrence.publication_id
+			JOIN agent_workflow_runs run
+			  ON run.id=occurrence.workflow_run_id
+			 AND run.team_id=occurrence.team_id
+			WHERE occurrence.id=$1
+			  AND occurrence.team_id=$2
+			  AND occurrence.workflow_run_id=$3
+			  AND occurrence.status='succeeded'
+			  AND publication.team_id=occurrence.team_id
+			  AND publication.status='succeeded'
+			  AND publication.lease_owner_occurrence_id=occurrence.id
+			  AND run.definition_kind='workflow'
+		)
+	`, request.CreationPublicationOccurrenceID,
+		request.TeamID, int64(request.OriginatingWorkflowRunID)).Scan(
+		&exactCreationOccurrence,
+	)
+	if err != nil {
+		return pullrequest.AcceptedReviewAuthority{}, err
+	}
+	if !exactCreationOccurrence {
+		return pullrequest.AcceptedReviewAuthority{}, fmt.Errorf(
+			"%w: creation publication occurrence is not the exact succeeded owner",
+			pullrequest.ErrBindingConflict,
+		)
+	}
+	record, found, err := getAgentPublicationOccurrence(
+		ctx, queryer, request.CreationPublicationOccurrenceID, false,
+	)
+	if err != nil {
+		return pullrequest.AcceptedReviewAuthority{}, err
+	}
+	if !found {
+		return pullrequest.AcceptedReviewAuthority{}, fmt.Errorf(
+			"%w: creation publication occurrence is not exact",
+			pullrequest.ErrBindingConflict,
+		)
+	}
+	publication := record.publication
+	if publication.ID != snapshot.DatabaseID(request.CreationPublicationOccurrenceID) ||
+		publication.Status != publisher.StatusSucceeded ||
+		publication.OperationKind != publisher.OperationCreatePR ||
+		publication.PRAction == nil ||
+		publication.PRAction.PullRequest == nil {
+		return pullrequest.AcceptedReviewAuthority{}, fmt.Errorf(
+			"%w: creation publication occurrence is not a succeeded provider-native create_pr",
+			pullrequest.ErrBindingConflict,
+		)
+	}
+	action := publication.PRAction.PullRequest
+	if action.Authority.TeamID != request.TeamID ||
+		action.Authority.WorkflowRunID != request.OriginatingWorkflowRunID ||
+		action.Locator.Provider != publisher.PRProvider(request.Locator.Provider) ||
+		action.Locator.Repository != request.Locator.Repository ||
+		action.Locator.ExternalID != "" ||
+		action.SourceRef != request.SourceRef ||
+		action.SourceSHA != request.LastReconciledSourceSHA ||
+		action.TargetRef != request.TargetRef ||
+		action.TargetSHA != request.LastReconciledTargetSHA ||
+		action.Destination != request.Destination ||
+		action.ApprovalPolicyVersion != request.ApprovalPolicyVersion ||
+		publication.Result.ExternalID != request.Locator.ExternalID ||
+		publication.Result.URL != request.URL ||
+		publication.Result.HeadSHA != request.LastReconciledSourceSHA ||
+		publication.Result.BaseSHA != request.LastReconciledTargetSHA {
+		return pullrequest.AcceptedReviewAuthority{}, fmt.Errorf(
+			"%w: creation create_pr action or result does not match binding authority",
+			pullrequest.ErrBindingConflict,
+		)
+	}
+	return protectedAccepted, nil
 }
 
 func validateAgentPRSnapshotOwner(
@@ -1333,12 +1481,10 @@ func sameAgentPRBindingCreate(
 	if binding.TeamID != request.TeamID || binding.Locator != request.Locator ||
 		binding.URL != request.URL || binding.SourceRef != request.SourceRef ||
 		binding.TargetRef != request.TargetRef ||
+		binding.Destination != request.Destination ||
+		binding.ApprovalPolicyVersion != request.ApprovalPolicyVersion ||
 		binding.MonitorWorkflowDefinitionID != request.MonitorWorkflowDefinitionID ||
-		binding.MonitorWorkflowVersion != request.MonitorWorkflowVersion ||
-		binding.AcknowledgedCursor != request.AcknowledgedCursor ||
-		binding.LastReconciledSourceSHA != request.LastReconciledSourceSHA ||
-		binding.LastReconciledTargetSHA != request.LastReconciledTargetSHA ||
-		!binding.LastReconciledAt.Equal(normalizeAgentPRBindingTime(request.LastReconciledAt)) {
+		binding.MonitorWorkflowVersion != request.MonitorWorkflowVersion {
 		return false
 	}
 	if request.OriginatingWorkflowRunID == 0 {
@@ -1352,11 +1498,12 @@ func sameAgentPRBindingCreate(
 		*binding.OriginatingPublicationOccurrence != request.OriginatingPublicationOccurrence {
 		return false
 	}
-	if request.LastObservationSnapshotID == 0 {
-		return binding.LastObservationSnapshotID == nil
+	if binding.CreationPublicationOccurrenceID == nil ||
+		*binding.CreationPublicationOccurrenceID !=
+			request.CreationPublicationOccurrenceID {
+		return false
 	}
-	return binding.LastObservationSnapshotID != nil &&
-		*binding.LastObservationSnapshotID == request.LastObservationSnapshotID
+	return true
 }
 
 func sameAgentPRReservationRequest(

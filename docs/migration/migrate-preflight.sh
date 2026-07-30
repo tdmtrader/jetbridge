@@ -73,8 +73,10 @@ v8.0.1:1765921815
 # 1773106150 adds durable workflow-to-node consumer bindings;
 # 1773106152 adds provider-native publication evidence for exact PR
 # authorization; 1773106153 adds the closed provider-native operation union
-# while preserving legacy direct-Git rows under the null discriminator.
-JETBRIDGE_VERSION=1773106153
+# while preserving legacy direct-Git rows under the null discriminator;
+# 1773106154 freezes each PR binding's exact create destination and approval
+# policy and rejects merely same-run publication provenance.
+JETBRIDGE_VERSION=1773106154
 
 # Minimum supported source version (v6.x)
 MIN_SUPPORTED_VERSION=1601993582

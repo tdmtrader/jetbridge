@@ -44,28 +44,45 @@ var _ = Describe("workflow resource-source admission persistence", func() {
 	})
 
 	It("keeps definition-owned resource source lookups isolated while exposing exact binding-owned instances to shared lifecycle", func() {
-		originRunID, occurrenceID, observationID := insertAgentPRBindingEvidence(
-			pipeline.TeamID, scenario.Team.Name(), definitionID,
-			fmt.Sprintf("source-binding-%d", time.Now().UnixNano()),
-		)
+		publicationTarget := agentPRBindingPublicationTarget{
+			Locator: pullrequest.Locator{
+				Provider:   pullrequest.ProviderGitHub,
+				Repository: "example/source-binding",
+				ExternalID: fmt.Sprint(time.Now().UnixNano()),
+			},
+			URL:                   "https://github.example/example/source-binding/pull/1",
+			SourceRef:             "refs/heads/source",
+			SourceSHA:             strings.Repeat("c", 40),
+			TargetRef:             "refs/heads/main",
+			TargetSHA:             strings.Repeat("d", 40),
+			Destination:           "github.example/example/source-binding",
+			ApprovalPolicyVersion: "engineering/v3",
+		}
+		originRunID, acceptedOccurrenceID, creationOccurrenceID, observationID :=
+			insertAgentPRBindingEvidence(
+				pipeline.TeamID, scenario.Team.Name(), definitionID,
+				fmt.Sprintf("source-binding-%d", time.Now().UnixNano()),
+				publicationTarget,
+			)
 		binding, created, err := db.NewAgentPRBindingsFactory(dbConn).Create(
 			context.Background(),
 			pullrequest.CreateBinding{
-				TeamID: pipeline.TeamID,
-				Locator: pullrequest.Locator{
-					Provider: pullrequest.ProviderGitHub, Repository: "example/source-binding",
-					ExternalID: fmt.Sprint(time.Now().UnixNano()),
-				},
-				URL:       "https://github.example/example/source-binding/pull/1",
-				SourceRef: "refs/heads/source", TargetRef: "refs/heads/main",
+				TeamID:                           pipeline.TeamID,
+				Locator:                          publicationTarget.Locator,
+				URL:                              publicationTarget.URL,
+				SourceRef:                        publicationTarget.SourceRef,
+				TargetRef:                        publicationTarget.TargetRef,
+				Destination:                      publicationTarget.Destination,
+				ApprovalPolicyVersion:            publicationTarget.ApprovalPolicyVersion,
 				OriginatingWorkflowRunID:         snapshot.WorkflowRunID(originRunID),
-				OriginatingPublicationOccurrence: occurrenceID,
+				OriginatingPublicationOccurrence: acceptedOccurrenceID,
+				CreationPublicationOccurrenceID:  creationOccurrenceID,
 				MonitorWorkflowDefinitionID:      definitionID,
 				MonitorWorkflowVersion:           1,
 				AcknowledgedCursor:               pullrequest.Cursor("opaque-binding-cursor"),
 				LastObservationSnapshotID:        snapshot.SnapshotID(observationID),
-				LastReconciledSourceSHA:          strings.Repeat("c", 40),
-				LastReconciledTargetSHA:          strings.Repeat("d", 40),
+				LastReconciledSourceSHA:          publicationTarget.SourceSHA,
+				LastReconciledTargetSHA:          publicationTarget.TargetSHA,
 				LastReconciledAt:                 time.Now().UTC(),
 			},
 		)
@@ -119,30 +136,46 @@ var _ = Describe("workflow resource-source admission persistence", func() {
 	})
 
 	It("atomically owns and reconfigures one protected paused PR monitor source pipeline per binding", func() {
-		originRunID, occurrenceID, observationID := insertAgentPRBindingEvidence(
-			pipeline.TeamID, scenario.Team.Name(), definitionID,
-			fmt.Sprintf("monitor-pipeline-%d", time.Now().UnixNano()),
-		)
+		publicationTarget := agentPRBindingPublicationTarget{
+			Locator: pullrequest.Locator{
+				Provider:   pullrequest.ProviderGitHub,
+				Repository: "example/monitor-pipeline",
+				ExternalID: fmt.Sprint(time.Now().UnixNano()),
+			},
+			URL:                   "https://github.example/example/monitor-pipeline/pull/1",
+			SourceRef:             "refs/heads/source",
+			SourceSHA:             strings.Repeat("c", 40),
+			TargetRef:             "refs/heads/main",
+			TargetSHA:             strings.Repeat("d", 40),
+			Destination:           "github.example/example/monitor-pipeline",
+			ApprovalPolicyVersion: "engineering/v3",
+		}
+		originRunID, acceptedOccurrenceID, creationOccurrenceID, observationID :=
+			insertAgentPRBindingEvidence(
+				pipeline.TeamID, scenario.Team.Name(), definitionID,
+				fmt.Sprintf("monitor-pipeline-%d", time.Now().UnixNano()),
+				publicationTarget,
+			)
 		bindings := db.NewAgentPRBindingsFactory(dbConn)
 		binding, created, err := bindings.Create(
 			context.Background(),
 			pullrequest.CreateBinding{
-				TeamID: pipeline.TeamID,
-				Locator: pullrequest.Locator{
-					Provider:   pullrequest.ProviderGitHub,
-					Repository: "example/monitor-pipeline",
-					ExternalID: fmt.Sprint(time.Now().UnixNano()),
-				},
-				URL:       "https://github.example/example/monitor-pipeline/pull/1",
-				SourceRef: "refs/heads/source", TargetRef: "refs/heads/main",
+				TeamID:                           pipeline.TeamID,
+				Locator:                          publicationTarget.Locator,
+				URL:                              publicationTarget.URL,
+				SourceRef:                        publicationTarget.SourceRef,
+				TargetRef:                        publicationTarget.TargetRef,
+				Destination:                      publicationTarget.Destination,
+				ApprovalPolicyVersion:            publicationTarget.ApprovalPolicyVersion,
 				OriginatingWorkflowRunID:         snapshot.WorkflowRunID(originRunID),
-				OriginatingPublicationOccurrence: occurrenceID,
+				OriginatingPublicationOccurrence: acceptedOccurrenceID,
+				CreationPublicationOccurrenceID:  creationOccurrenceID,
 				MonitorWorkflowDefinitionID:      definitionID,
 				MonitorWorkflowVersion:           1,
 				AcknowledgedCursor:               pullrequest.Cursor("monitor-cursor-1"),
 				LastObservationSnapshotID:        snapshot.SnapshotID(observationID),
-				LastReconciledSourceSHA:          strings.Repeat("c", 40),
-				LastReconciledTargetSHA:          strings.Repeat("d", 40),
+				LastReconciledSourceSHA:          publicationTarget.SourceSHA,
+				LastReconciledTargetSHA:          publicationTarget.TargetSHA,
 				LastReconciledAt:                 time.Now().UTC().Truncate(time.Microsecond),
 			},
 		)
