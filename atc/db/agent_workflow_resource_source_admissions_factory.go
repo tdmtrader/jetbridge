@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/concourse/concourse/agent/pullrequest"
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/atc"
@@ -80,6 +81,7 @@ type WorkflowResourceSourcePipelineRegistry interface {
 
 type WorkflowResourceSourcePipelinesFactory interface {
 	WorkflowResourceSourcePipelineRegistry
+	ConvergeMonitorPipeline(context.Context, pullrequest.Binding, pullrequest.RenderedMonitorPipeline) (WorkflowResourceSourcePipeline, bool, error)
 	Activate(context.Context, WorkflowResourceSourcePipeline) error
 	Drain(context.Context, int, int) error
 	Archive(context.Context, int, int) error
@@ -96,6 +98,269 @@ type workflowResourceSourcePipelinesFactory struct{ conn DbConn }
 
 func NewWorkflowResourceSourcePipelinesFactory(conn DbConn) WorkflowResourceSourcePipelinesFactory {
 	return &workflowResourceSourcePipelinesFactory{conn: conn}
+}
+
+// ConvergeMonitorPipeline creates or reconfigures the one ordinary physical
+// pipeline owned by an exact PR binding. The physical pipeline, registry row,
+// and binding.pipeline_id become visible atomically. Public rendered fields
+// are ignored in favor of the render's private binding authority.
+func (factory *workflowResourceSourcePipelinesFactory) ConvergeMonitorPipeline(
+	ctx context.Context,
+	projected pullrequest.Binding,
+	rendered pullrequest.RenderedMonitorPipeline,
+) (WorkflowResourceSourcePipeline, bool, error) {
+	if ctx == nil || projected.TeamID <= 0 || projected.ID <= 0 {
+		return WorkflowResourceSourcePipeline{}, false, fmt.Errorf(
+			"db: PR monitor pipeline requires context and binding identities",
+		)
+	}
+	tx, err := factory.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return WorkflowResourceSourcePipeline{}, false, err
+	}
+	defer Rollback(tx)
+
+	binding, found, err := lockAgentPRBindingForUpdate(
+		ctx, tx, projected.TeamID, projected.ID,
+	)
+	if err != nil {
+		return WorkflowResourceSourcePipeline{}, false, err
+	}
+	if !found {
+		return WorkflowResourceSourcePipeline{}, false, pullrequest.ErrBindingNotFound
+	}
+	if binding.Revision != projected.Revision {
+		return WorkflowResourceSourcePipeline{}, false, pullrequest.ErrStaleBindingRevision
+	}
+	if binding.State != pullrequest.BindingActive ||
+		binding.Paused || binding.OperatorTerminated {
+		return WorkflowResourceSourcePipeline{}, false, ErrAgentWorkflowResourceSourceInactive
+	}
+	protected, err := rendered.ProtectedForBinding(binding)
+	if err != nil {
+		return WorkflowResourceSourcePipeline{}, false, fmt.Errorf(
+			"%w: %v", ErrAgentWorkflowResourceSourceConflict, err,
+		)
+	}
+	if protected.Config.Template {
+		return WorkflowResourceSourcePipeline{}, false, fmt.Errorf(
+			"%w: monitor pipeline must be ordinary",
+			ErrAgentWorkflowResourceSourceConflict,
+		)
+	}
+	canonical, err := protected.Config.CanonicalJSON()
+	if err != nil {
+		return WorkflowResourceSourcePipeline{}, false, err
+	}
+	if !bytes.Equal(canonical, protected.CanonicalJSON) {
+		return WorkflowResourceSourcePipeline{}, false, fmt.Errorf(
+			"%w: protected monitor config is not canonical",
+			ErrAgentWorkflowResourceSourceConflict,
+		)
+	}
+	workflowName, err := validateAndNameAgentPRMonitorDefinition(
+		ctx, tx, binding.MonitorWorkflowDefinitionID,
+		binding.MonitorWorkflowVersion,
+	)
+	if err != nil {
+		return WorkflowResourceSourcePipeline{}, false, err
+	}
+	if err := lockWorkflowResourceSourceBindingPipeline(
+		ctx, tx, binding.TeamID, binding.ID,
+	); err != nil {
+		return WorkflowResourceSourcePipeline{}, false, err
+	}
+	declarations := []ResourceSourceDeclaration{{
+		SourceName:   pullrequest.MonitorSourceName,
+		ResourceName: pullrequest.MonitorResourceName,
+		SnapshotType: snapshot.TypeRef("pull-request/v1"),
+	}}
+	registered, registeredFound, err := findWorkflowResourceSourcePipelineByBinding(
+		ctx, tx, binding.TeamID, binding.ID, true,
+	)
+	if err != nil {
+		return WorkflowResourceSourcePipeline{}, false, err
+	}
+	if registeredFound {
+		if binding.PipelineID == nil ||
+			*binding.PipelineID != registered.PipelineID ||
+			registered.WorkflowDefinitionID != binding.MonitorWorkflowDefinitionID ||
+			registered.WorkflowName != workflowName ||
+			registered.WorkflowVersion != binding.MonitorWorkflowVersion ||
+			registered.State != AgentWorkflowResourceSourcePipelineActive ||
+			!reflect.DeepEqual(registered.SourceDeclarations, declarations) {
+			return WorkflowResourceSourcePipeline{}, false, fmt.Errorf(
+				"%w: registered monitor pipeline authority drifted",
+				ErrAgentWorkflowResourceSourceConflict,
+			)
+		}
+		if err := validateMonitorPhysicalPipeline(
+			ctx, tx, registered, protected.PipelineName,
+		); err != nil {
+			return WorkflowResourceSourcePipeline{}, false, err
+		}
+		if registered.ConfigHash == protected.ConfigHash {
+			if err := tx.Commit(); err != nil {
+				return WorkflowResourceSourcePipeline{}, false, err
+			}
+			return registered, false, nil
+		}
+		configVersion, err := updateProtectedMonitorPipelineConfig(
+			ctx, tx, registered, protected,
+		)
+		if err != nil {
+			return WorkflowResourceSourcePipeline{}, false, err
+		}
+		encodedDeclarations, err := json.Marshal(declarations)
+		if err != nil {
+			return WorkflowResourceSourcePipeline{}, false, err
+		}
+		result, err := tx.ExecContext(ctx, `
+			UPDATE agent_workflow_resource_source_pipelines
+			SET pipeline_config_version=$4,config_hash=$5,
+			    source_declarations=$6,updated_at=now()
+			WHERE team_id=$1 AND pipeline_id=$2 AND pr_binding_id=$3
+			  AND state='active' AND pipeline_config_version=$7
+		`, binding.TeamID, registered.PipelineID, binding.ID,
+			configVersion, protected.ConfigHash, encodedDeclarations,
+			registered.PipelineConfigVersion)
+		if err != nil {
+			return WorkflowResourceSourcePipeline{}, false, err
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return WorkflowResourceSourcePipeline{}, false, err
+		}
+		if affected != 1 {
+			return WorkflowResourceSourcePipeline{}, false, fmt.Errorf(
+				"%w: monitor pipeline registration changed during reconfiguration",
+				ErrAgentWorkflowResourceSourceConflict,
+			)
+		}
+		updated, found, err := findWorkflowResourceSourcePipelineByBinding(
+			ctx, tx, binding.TeamID, binding.ID, false,
+		)
+		if err != nil {
+			return WorkflowResourceSourcePipeline{}, false, err
+		}
+		if !found || updated.PipelineID != registered.PipelineID ||
+			updated.PipelineConfigVersion != configVersion ||
+			updated.ConfigHash != protected.ConfigHash {
+			return WorkflowResourceSourcePipeline{}, false, fmt.Errorf(
+				"%w: monitor pipeline reconfiguration did not converge",
+				ErrAgentWorkflowResourceSourceConflict,
+			)
+		}
+		if err := tx.Commit(); err != nil {
+			return WorkflowResourceSourcePipeline{}, false, err
+		}
+		return updated, true, nil
+	}
+
+	if binding.PipelineID != nil {
+		return WorkflowResourceSourcePipeline{}, false, fmt.Errorf(
+			"%w: binding points to an unregistered monitor pipeline",
+			ErrAgentWorkflowResourceSourceConflict,
+		)
+	}
+	nullID := sql.NullInt64{Valid: false}
+	pipelineID, created, err := savePipeline(
+		tx,
+		atc.PipelineRef{Name: protected.PipelineName},
+		protected.Config,
+		ConfigVersion(0),
+		true,
+		binding.TeamID,
+		nullID,
+		nullID,
+	)
+	if err != nil {
+		return WorkflowResourceSourcePipeline{}, false, err
+	}
+	if !created {
+		return WorkflowResourceSourcePipeline{}, false, fmt.Errorf(
+			"%w: generated monitor pipeline name already exists",
+			ErrAgentWorkflowResourceSourceConflict,
+		)
+	}
+	var (
+		pipelineTeamID int
+		pipelineName   string
+		configVersion  int
+		template       bool
+		paused         bool
+		archived       bool
+	)
+	err = tx.QueryRowContext(ctx, `
+		SELECT team_id,name,version,template,paused,archived
+		FROM pipelines WHERE id=$1 FOR UPDATE
+	`, pipelineID).Scan(
+		&pipelineTeamID, &pipelineName, &configVersion,
+		&template, &paused, &archived,
+	)
+	if err != nil {
+		return WorkflowResourceSourcePipeline{}, false, err
+	}
+	if pipelineTeamID != binding.TeamID ||
+		pipelineName != protected.PipelineName ||
+		configVersion <= 0 || template || !paused || archived {
+		return WorkflowResourceSourcePipeline{}, false, fmt.Errorf(
+			"%w: saved monitor pipeline identity drifted",
+			ErrAgentWorkflowResourceSourceConflict,
+		)
+	}
+	encodedDeclarations, err := json.Marshal(declarations)
+	if err != nil {
+		return WorkflowResourceSourcePipeline{}, false, err
+	}
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO agent_workflow_resource_source_pipelines
+			(pipeline_id,team_id,pr_binding_id,workflow_definition_id,
+			 workflow_name,workflow_version,pipeline_config_version,
+			 config_hash,source_declarations,state)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'active')
+	`, pipelineID, binding.TeamID, binding.ID,
+		binding.MonitorWorkflowDefinitionID, workflowName,
+		binding.MonitorWorkflowVersion, configVersion,
+		protected.ConfigHash, encodedDeclarations)
+	if err != nil {
+		return WorkflowResourceSourcePipeline{}, false, err
+	}
+	result, err := tx.ExecContext(ctx, `
+		UPDATE agent_pr_bindings SET pipeline_id=$3,updated_at=now()
+		WHERE team_id=$1 AND id=$2 AND revision=$4 AND pipeline_id IS NULL
+	`, binding.TeamID, binding.ID, pipelineID, binding.Revision)
+	if err != nil {
+		return WorkflowResourceSourcePipeline{}, false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return WorkflowResourceSourcePipeline{}, false, err
+	}
+	if affected != 1 {
+		return WorkflowResourceSourcePipeline{}, false, fmt.Errorf(
+			"%w: binding changed during monitor pipeline ownership",
+			ErrAgentWorkflowResourceSourceConflict,
+		)
+	}
+	stored, found, err := findWorkflowResourceSourcePipelineByBinding(
+		ctx, tx, binding.TeamID, binding.ID, false,
+	)
+	if err != nil {
+		return WorkflowResourceSourcePipeline{}, false, err
+	}
+	if !found || stored.PipelineID != pipelineID ||
+		stored.ConfigHash != protected.ConfigHash ||
+		stored.PipelineConfigVersion != configVersion {
+		return WorkflowResourceSourcePipeline{}, false, fmt.Errorf(
+			"%w: persisted monitor pipeline registration drifted",
+			ErrAgentWorkflowResourceSourceConflict,
+		)
+	}
+	if err := tx.Commit(); err != nil {
+		return WorkflowResourceSourcePipeline{}, false, err
+	}
+	return stored, true, nil
 }
 
 func (factory *workflowResourceSourcePipelinesFactory) Activate(ctx context.Context, pipeline WorkflowResourceSourcePipeline) error {
@@ -349,6 +614,173 @@ func lockWorkflowResourceSourcePipeline(ctx context.Context, tx Tx, teamID int, 
 	return err
 }
 
+func lockWorkflowResourceSourceBindingPipeline(
+	ctx context.Context,
+	tx Tx,
+	teamID int,
+	bindingID int64,
+) error {
+	_, err := tx.ExecContext(ctx, `
+		SELECT pg_advisory_xact_lock(
+			hashtext('agent_pr_monitor_pipeline:' || $1 || ':' || $2)
+		)
+	`, strconv.Itoa(teamID), strconv.FormatInt(bindingID, 10))
+	return err
+}
+
+func validateMonitorPhysicalPipeline(
+	ctx context.Context,
+	queryer snapshotQueryer,
+	registered WorkflowResourceSourcePipeline,
+	expectedName string,
+) error {
+	var (
+		name     string
+		teamID   int
+		version  int
+		template bool
+		archived bool
+	)
+	err := queryer.QueryRowContext(ctx, `
+		SELECT name,team_id,version,template,archived
+		FROM pipelines WHERE id=$1
+	`, registered.PipelineID).Scan(
+		&name, &teamID, &version, &template, &archived,
+	)
+	if err != nil {
+		return err
+	}
+	if name != expectedName || teamID != registered.TeamID ||
+		version != registered.PipelineConfigVersion || template || archived {
+		return fmt.Errorf(
+			"%w: physical monitor pipeline authority drifted",
+			ErrAgentWorkflowResourceSourceConflict,
+		)
+	}
+	return nil
+}
+
+// updateProtectedMonitorPipelineConfig is the sole internal config-update
+// path for an already registered binding-owned pipeline. It mirrors ordinary
+// pipeline persistence while bypassing only the public ownership rejection;
+// identity, config version, and exact protected render are already locked.
+func updateProtectedMonitorPipelineConfig(
+	ctx context.Context,
+	tx Tx,
+	registered WorkflowResourceSourcePipeline,
+	rendered pullrequest.RenderedMonitorPipeline,
+) (int, error) {
+	groupsPayload, err := json.Marshal(rendered.Config.Groups)
+	if err != nil {
+		return 0, err
+	}
+	varSourcesPayload, err := json.Marshal(rendered.Config.VarSources)
+	if err != nil {
+		return 0, err
+	}
+	encryptedVarSources, nonce, err := tx.EncryptionStrategy().Encrypt(
+		varSourcesPayload,
+	)
+	if err != nil {
+		return 0, err
+	}
+	displayPayload, err := json.Marshal(rendered.Config.Display)
+	if err != nil {
+		return 0, err
+	}
+	var paramsSchema sql.NullString
+	if rendered.Config.Params != nil {
+		encoded, err := json.Marshal(rendered.Config.Params)
+		if err != nil {
+			return 0, err
+		}
+		paramsSchema = sql.NullString{String: string(encoded), Valid: true}
+	}
+	var runRetention sql.NullString
+	if rendered.Config.RunRetention != nil {
+		encoded, err := json.Marshal(rendered.Config.RunRetention)
+		if err != nil {
+			return 0, err
+		}
+		runRetention = sql.NullString{String: string(encoded), Valid: true}
+	}
+	var configVersion int
+	err = tx.QueryRowContext(ctx, `
+		UPDATE pipelines
+		SET groups=$4,var_sources=$5,display=$6,nonce=$7,
+		    version=nextval('config_version_seq'),last_updated=now(),
+		    template=false,params_schema=$8,run_retention=$9
+		WHERE id=$1 AND team_id=$2 AND version=$3
+		  AND NOT template AND NOT archived
+		RETURNING version
+	`, registered.PipelineID, registered.TeamID,
+		registered.PipelineConfigVersion, groupsPayload,
+		encryptedVarSources, displayPayload, nonce,
+		paramsSchema, runRetention).Scan(&configVersion)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, fmt.Errorf(
+			"%w: physical monitor config changed concurrently",
+			ErrAgentWorkflowResourceSourceConflict,
+		)
+	}
+	if err != nil {
+		return 0, err
+	}
+	if err := resetDependentTableStates(tx, registered.PipelineID); err != nil {
+		return 0, err
+	}
+	if err := updateResourcesName(
+		tx, rendered.Config.Resources, registered.PipelineID,
+	); err != nil {
+		return 0, err
+	}
+	resourceIDs, err := saveResources(
+		tx, rendered.Config.Resources, registered.PipelineID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	if err := saveResourceTypes(
+		tx, rendered.Config.ResourceTypes, registered.PipelineID,
+	); err != nil {
+		return 0, err
+	}
+	if err := savePrototypes(
+		tx, rendered.Config.Prototypes, registered.PipelineID,
+	); err != nil {
+		return 0, err
+	}
+	if err := updateJobsName(
+		tx, rendered.Config.Jobs, registered.PipelineID,
+	); err != nil {
+		return 0, err
+	}
+	jobIDs, err := saveJobsAndSerialGroups(
+		tx, rendered.Config.Jobs, rendered.Config.Groups,
+		registered.PipelineID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	if err := removeUnusedWorkerTaskCaches(
+		tx, registered.PipelineID, rendered.Config.Jobs,
+	); err != nil {
+		return 0, err
+	}
+	if err := insertJobPipes(
+		tx, rendered.Config.Jobs, resourceIDs, jobIDs,
+		registered.PipelineID,
+	); err != nil {
+		return 0, err
+	}
+	if err := requestScheduleForJobsInPipeline(
+		tx, registered.PipelineID,
+	); err != nil {
+		return 0, err
+	}
+	return configVersion, nil
+}
+
 func (factory *workflowResourceSourcePipelinesFactory) Drain(ctx context.Context, teamID, pipelineID int) error {
 	if ctx == nil || teamID <= 0 || pipelineID <= 0 {
 		return fmt.Errorf("db: source pipeline drain requires context and positive identities")
@@ -433,37 +865,9 @@ func (factory *workflowResourceSourcePipelinesFactory) FindByBinding(
 	if ctx == nil || teamID <= 0 || bindingID <= 0 {
 		return WorkflowResourceSourcePipeline{}, false, fmt.Errorf("db: binding source pipeline lookup requires context, team, and binding")
 	}
-	query := `
-		SELECT pipeline_id,team_id,pr_binding_id,workflow_definition_id,
-		       workflow_name,workflow_version,pipeline_config_version,
-		       config_hash,source_declarations,state
-		FROM agent_workflow_resource_source_pipelines
-		WHERE team_id=$1 AND pr_binding_id=$2`
-	var (
-		pipeline     WorkflowResourceSourcePipeline
-		binding      int64
-		declarations []byte
+	return findWorkflowResourceSourcePipelineByBinding(
+		ctx, factory.conn, teamID, bindingID, false,
 	)
-	err := factory.conn.QueryRowContext(ctx, query, teamID, bindingID).Scan(
-		&pipeline.PipelineID, &pipeline.TeamID, &binding,
-		&pipeline.WorkflowDefinitionID, &pipeline.WorkflowName,
-		&pipeline.WorkflowVersion, &pipeline.PipelineConfigVersion,
-		&pipeline.ConfigHash, &declarations, &pipeline.State,
-	)
-	if errors.Is(err, sql.ErrNoRows) {
-		return WorkflowResourceSourcePipeline{}, false, nil
-	}
-	if err != nil {
-		return WorkflowResourceSourcePipeline{}, false, err
-	}
-	pipeline.PRBindingID = &binding
-	if err := json.Unmarshal(declarations, &pipeline.SourceDeclarations); err != nil {
-		return WorkflowResourceSourcePipeline{}, false, fmt.Errorf("db: decode binding source pipeline declarations: %w", err)
-	}
-	if err := validateWorkflowResourceSourcePipeline(pipeline); err != nil {
-		return WorkflowResourceSourcePipeline{}, false, err
-	}
-	return pipeline, true, nil
 }
 
 func (factory *workflowResourceSourcePipelinesFactory) ResourceSourcePipelineLifecycle(
@@ -474,7 +878,8 @@ func (factory *workflowResourceSourcePipelinesFactory) ResourceSourcePipelineLif
 		return nil, fmt.Errorf("db: source pipeline lifecycle lookup requires context and trusted team")
 	}
 	rows, err := factory.conn.QueryContext(ctx, `
-		SELECT source.pipeline_id,source.team_id,source.workflow_definition_id,
+		SELECT source.pipeline_id,source.team_id,source.pr_binding_id,
+		       source.workflow_definition_id,
 		       source.workflow_name,source.workflow_version,source.pipeline_config_version,
 		       source.config_hash,source.source_declarations,source.state,
 		       pipeline.paused,pipeline.archived,
@@ -485,7 +890,7 @@ func (factory *workflowResourceSourcePipelinesFactory) ResourceSourcePipelineLif
 		          AND admission.status IN ('selecting','capturing'))
 		FROM agent_workflow_resource_source_pipelines source
 		JOIN pipelines pipeline ON pipeline.id=source.pipeline_id
-		WHERE source.team_id=$1 AND source.pr_binding_id IS NULL
+		WHERE source.team_id=$1
 		ORDER BY source.pipeline_id
 	`, trustedTeamID)
 	if err != nil {
@@ -495,14 +900,20 @@ func (factory *workflowResourceSourcePipelinesFactory) ResourceSourcePipelineLif
 	candidates := []AgentWorkflowResourceSourcePipelineLifecycle{}
 	for rows.Next() {
 		var candidate AgentWorkflowResourceSourcePipelineLifecycle
+		var bindingID sql.NullInt64
 		var declarations []byte
 		if err := rows.Scan(
-			&candidate.PipelineID, &candidate.TeamID, &candidate.WorkflowDefinitionID,
+			&candidate.PipelineID, &candidate.TeamID, &bindingID,
+			&candidate.WorkflowDefinitionID,
 			&candidate.WorkflowName, &candidate.WorkflowVersion, &candidate.PipelineConfigVersion,
 			&candidate.ConfigHash, &declarations, &candidate.State,
 			&candidate.Paused, &candidate.Archived, &candidate.InFlightBuilds, &candidate.NonterminalAdmissions,
 		); err != nil {
 			return nil, err
+		}
+		if bindingID.Valid {
+			value := bindingID.Int64
+			candidate.PRBindingID = &value
 		}
 		if err := json.Unmarshal(declarations, &candidate.SourceDeclarations); err != nil {
 			return nil, fmt.Errorf("db: decode source pipeline lifecycle declarations: %w", err)
@@ -536,7 +947,9 @@ func (factory *workflowResourceSourcePipelinesFactory) UnpauseActiveResourceSour
 		return false, err
 	}
 	defer Rollback(tx)
-	stored, found, err := findWorkflowResourceSourcePipeline(ctx, tx, trustedTeamID, expected.PipelineID, true)
+	stored, found, err := findExpectedWorkflowResourceSourcePipeline(
+		ctx, tx, trustedTeamID, expected, true,
+	)
 	if err != nil {
 		return false, err
 	}
@@ -581,7 +994,9 @@ func (factory *workflowResourceSourcePipelinesFactory) PauseDrainedResourceSourc
 		return false, err
 	}
 	defer Rollback(tx)
-	stored, found, err := findWorkflowResourceSourcePipeline(ctx, tx, trustedTeamID, expected.PipelineID, true)
+	stored, found, err := findExpectedWorkflowResourceSourcePipeline(
+		ctx, tx, trustedTeamID, expected, true,
+	)
 	if err != nil {
 		return false, err
 	}
@@ -631,7 +1046,9 @@ func (factory *workflowResourceSourcePipelinesFactory) ArchiveDrainedResourceSou
 		return false, err
 	}
 	defer Rollback(tx)
-	stored, found, err := findWorkflowResourceSourcePipeline(ctx, tx, trustedTeamID, expected.PipelineID, true)
+	stored, found, err := findExpectedWorkflowResourceSourcePipeline(
+		ctx, tx, trustedTeamID, expected, true,
+	)
 	if err != nil {
 		return false, err
 	}
@@ -684,7 +1101,12 @@ func (factory *workflowResourceSourcePipelinesFactory) ArchiveDrainedResourceSou
 			return false, err
 		}
 	}
-	result, err = tx.ExecContext(ctx, `UPDATE agent_workflow_resource_source_pipelines SET state='archived',updated_at=now() WHERE team_id=$1 AND pipeline_id=$2 AND state='draining' AND pr_binding_id IS NULL`, trustedTeamID, stored.PipelineID)
+	result, err = tx.ExecContext(ctx, `
+		UPDATE agent_workflow_resource_source_pipelines
+		SET state='archived',updated_at=now()
+		WHERE team_id=$1 AND pipeline_id=$2 AND state='draining'
+		  AND pr_binding_id IS NOT DISTINCT FROM $3::bigint
+	`, trustedTeamID, stored.PipelineID, nullablePRBindingID(stored.PRBindingID))
 	if err != nil {
 		return false, err
 	}
@@ -978,6 +1400,88 @@ func findActiveWorkflowResourceSourcePipeline(
 	return scanWorkflowResourceSourcePipeline(queryer.QueryRowContext(ctx, query, teamID, workflowName))
 }
 
+func findWorkflowResourceSourcePipelineByBinding(
+	ctx context.Context,
+	queryer snapshotQueryer,
+	teamID int,
+	bindingID int64,
+	lock bool,
+) (WorkflowResourceSourcePipeline, bool, error) {
+	query := `
+		SELECT pipeline_id,team_id,pr_binding_id,workflow_definition_id,
+		       workflow_name,workflow_version,pipeline_config_version,
+		       config_hash,source_declarations,state
+		FROM agent_workflow_resource_source_pipelines
+		WHERE team_id=$1 AND pr_binding_id=$2`
+	if lock {
+		query += ` FOR UPDATE`
+	}
+	return scanWorkflowResourceSourcePipelineWithBinding(
+		queryer.QueryRowContext(ctx, query, teamID, bindingID),
+	)
+}
+
+func findExpectedWorkflowResourceSourcePipeline(
+	ctx context.Context,
+	queryer snapshotQueryer,
+	teamID int,
+	expected WorkflowResourceSourcePipeline,
+	lock bool,
+) (WorkflowResourceSourcePipeline, bool, error) {
+	if expected.PRBindingID == nil {
+		return findWorkflowResourceSourcePipeline(
+			ctx, queryer, teamID, expected.PipelineID, lock,
+		)
+	}
+	found, exists, err := findWorkflowResourceSourcePipelineByBinding(
+		ctx, queryer, teamID, *expected.PRBindingID, lock,
+	)
+	if err != nil || !exists {
+		return found, exists, err
+	}
+	if found.PipelineID != expected.PipelineID {
+		return WorkflowResourceSourcePipeline{}, false, fmt.Errorf(
+			"%w: binding monitor pipeline identity changed",
+			ErrAgentWorkflowResourceSourceConflict,
+		)
+	}
+	return found, true, nil
+}
+
+func scanWorkflowResourceSourcePipelineWithBinding(
+	row interface{ Scan(...any) error },
+) (WorkflowResourceSourcePipeline, bool, error) {
+	var (
+		pipeline     WorkflowResourceSourcePipeline
+		bindingID    int64
+		declarations []byte
+	)
+	err := row.Scan(
+		&pipeline.PipelineID, &pipeline.TeamID, &bindingID,
+		&pipeline.WorkflowDefinitionID, &pipeline.WorkflowName,
+		&pipeline.WorkflowVersion, &pipeline.PipelineConfigVersion,
+		&pipeline.ConfigHash, &declarations, &pipeline.State,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return WorkflowResourceSourcePipeline{}, false, nil
+	}
+	if err != nil {
+		return WorkflowResourceSourcePipeline{}, false, err
+	}
+	pipeline.PRBindingID = &bindingID
+	if err := json.Unmarshal(
+		declarations, &pipeline.SourceDeclarations,
+	); err != nil {
+		return WorkflowResourceSourcePipeline{}, false, fmt.Errorf(
+			"db: decode binding source pipeline declarations: %w", err,
+		)
+	}
+	if err := validateWorkflowResourceSourcePipeline(pipeline); err != nil {
+		return WorkflowResourceSourcePipeline{}, false, err
+	}
+	return pipeline, true, nil
+}
+
 func scanWorkflowResourceSourcePipeline(row interface{ Scan(...any) error }) (WorkflowResourceSourcePipeline, bool, error) {
 	var pipeline WorkflowResourceSourcePipeline
 	var declarations []byte
@@ -999,6 +1503,13 @@ func scanWorkflowResourceSourcePipeline(row interface{ Scan(...any) error }) (Wo
 		return WorkflowResourceSourcePipeline{}, false, err
 	}
 	return pipeline, true, nil
+}
+
+func nullablePRBindingID(value *int64) any {
+	if value == nil {
+		return nil
+	}
+	return *value
 }
 
 func snapshotTypeName(t snapshot.TypeRef) string { return strings.Split(string(t), "/v")[0] }

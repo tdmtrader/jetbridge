@@ -30,11 +30,12 @@ const (
 	AgentWorkflowResourceSourceAdmissionAutomatic AgentWorkflowResourceSourceAdmissionMode = "automatic"
 )
 
-// The Task 12 registration is the durable pipeline identity. PR monitor
-// instances reuse it with PRBindingID set, while every pre-existing runtime
-// query deliberately projects only definition-owned rows with PRBindingID
-// nil. Keep this alias at the runtime seam so capture/lifecycle consumers
-// cannot accidentally introduce a second registration model.
+// The resource-source registration is the durable pipeline identity. PR
+// monitor instances reuse it with PRBindingID set. Definition lookup and
+// admission paths remain explicitly definition-owned, while the shared
+// lifecycle projects both kinds so a newly committed monitor registration can
+// be activated by the existing tick. Keep this alias at the runtime seam so
+// consumers cannot accidentally introduce a second registration model.
 type AgentWorkflowResourceSourcePipeline = WorkflowResourceSourcePipeline
 
 type AgentWorkflowResourceSourcePipelineLifecycle struct {

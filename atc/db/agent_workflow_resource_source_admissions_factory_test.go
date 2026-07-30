@@ -3,6 +3,7 @@ package db_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -42,7 +43,7 @@ var _ = Describe("workflow resource-source admission persistence", func() {
 		Expect(err).To(MatchError(ContainSubstring("pipeline authority")))
 	})
 
-	It("keeps definition-owned runtime queries isolated from exact binding-owned instances", func() {
+	It("keeps definition-owned resource source lookups isolated while exposing exact binding-owned instances to shared lifecycle", func() {
 		originRunID, occurrenceID, observationID := insertAgentPRBindingEvidence(
 			pipeline.TeamID, scenario.Team.Name(), definitionID,
 			fmt.Sprintf("source-binding-%d", time.Now().UnixNano()),
@@ -109,9 +110,177 @@ var _ = Describe("workflow resource-source admission persistence", func() {
 		dbConn.SetMaxOpenConns(2)
 		lifecycle, err := registry.ResourceSourcePipelineLifecycle(context.Background(), pipeline.TeamID)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(lifecycle).To(HaveLen(1))
-		Expect(lifecycle[0].PipelineID).To(Equal(pipeline.PipelineID))
+		Expect(lifecycle).To(HaveLen(2))
+		Expect(lifecycle).To(ContainElements(
+			HaveField("PipelineID", pipeline.PipelineID),
+			HaveField("PipelineID", bindingPipelineID),
+		))
 		Expect(registry.Drain(context.Background(), pipeline.TeamID, bindingPipelineID)).To(HaveOccurred())
+	})
+
+	It("atomically owns and reconfigures one protected paused PR monitor source pipeline per binding", func() {
+		originRunID, occurrenceID, observationID := insertAgentPRBindingEvidence(
+			pipeline.TeamID, scenario.Team.Name(), definitionID,
+			fmt.Sprintf("monitor-pipeline-%d", time.Now().UnixNano()),
+		)
+		bindings := db.NewAgentPRBindingsFactory(dbConn)
+		binding, created, err := bindings.Create(
+			context.Background(),
+			pullrequest.CreateBinding{
+				TeamID: pipeline.TeamID,
+				Locator: pullrequest.Locator{
+					Provider:   pullrequest.ProviderGitHub,
+					Repository: "example/monitor-pipeline",
+					ExternalID: fmt.Sprint(time.Now().UnixNano()),
+				},
+				URL:       "https://github.example/example/monitor-pipeline/pull/1",
+				SourceRef: "refs/heads/source", TargetRef: "refs/heads/main",
+				OriginatingWorkflowRunID:         snapshot.WorkflowRunID(originRunID),
+				OriginatingPublicationOccurrence: occurrenceID,
+				MonitorWorkflowDefinitionID:      definitionID,
+				MonitorWorkflowVersion:           1,
+				AcknowledgedCursor:               pullrequest.Cursor("monitor-cursor-1"),
+				LastObservationSnapshotID:        snapshot.SnapshotID(observationID),
+				LastReconciledSourceSHA:          strings.Repeat("c", 40),
+				LastReconciledTargetSHA:          strings.Repeat("d", 40),
+				LastReconciledAt:                 time.Now().UTC().Truncate(time.Microsecond),
+			},
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(created).To(BeTrue())
+		originalRevision := binding.Revision
+
+		target, err := pullrequest.MonitorPipelineTargetForBinding(
+			binding,
+			dbTestMonitorPipelinePolicy(),
+		)
+		Expect(err).NotTo(HaveOccurred())
+		rendered, err := pullrequest.RenderMonitorPipeline(target)
+		Expect(err).NotTo(HaveOccurred())
+
+		registry := db.NewWorkflowResourceSourcePipelinesFactory(dbConn)
+		registered, changed, err := registry.ConvergeMonitorPipeline(
+			context.Background(), binding, rendered,
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(changed).To(BeTrue())
+		Expect(registered.PRBindingID).NotTo(BeNil())
+		Expect(*registered.PRBindingID).To(Equal(binding.ID))
+		Expect(registered.State).To(Equal(db.AgentWorkflowResourceSourcePipelineActive))
+		Expect(registered.SourceDeclarations).To(Equal([]db.ResourceSourceDeclaration{{
+			SourceName:   pullrequest.MonitorSourceName,
+			ResourceName: pullrequest.MonitorResourceName,
+			SnapshotType: snapshot.TypeRef("pull-request/v1"),
+		}}))
+
+		storedBinding, found, err := bindings.Get(
+			context.Background(), binding.TeamID, binding.ID,
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(storedBinding.Revision).To(Equal(originalRevision))
+		Expect(storedBinding.PipelineID).NotTo(BeNil())
+		Expect(*storedBinding.PipelineID).To(Equal(registered.PipelineID))
+
+		physical, found, err := scenario.Team.Pipeline(
+			atc.PipelineRef{Name: rendered.PipelineName},
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(physical.Template()).To(BeFalse())
+		Expect(physical.Paused()).To(BeTrue())
+		config, err := physical.Config()
+		Expect(err).NotTo(HaveOccurred())
+		canonical, err := config.CanonicalJSON()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(canonical).To(Equal(rendered.CanonicalJSON))
+
+		repeated, changed, err := registry.ConvergeMonitorPipeline(
+			context.Background(), storedBinding, rendered,
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(changed).To(BeFalse())
+		Expect(repeated).To(Equal(registered))
+
+		_, _, err = scenario.Team.SavePipeline(
+			atc.PipelineRef{Name: physical.Name()},
+			config,
+			physical.ConfigVersion(),
+			false,
+		)
+		Expect(errors.Is(err, db.ErrAgentWorkflowResourceSourceImmutable)).To(BeTrue())
+		Expect(errors.Is(
+			physical.Pause("caller"),
+			db.ErrAgentWorkflowResourceSourceImmutable,
+		)).To(BeTrue())
+		Expect(errors.Is(
+			physical.Archive(),
+			db.ErrAgentWorkflowResourceSourceImmutable,
+		)).To(BeTrue())
+		job, found, err := physical.Job(pullrequest.MonitorJobName)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		_, err = job.CreateBuild("caller")
+		Expect(errors.Is(err, db.ErrAgentWorkflowResourceSourceImmutable)).To(BeTrue())
+
+		activated, err := registry.UnpauseActiveResourceSourcePipeline(
+			context.Background(),
+			binding.TeamID,
+			registered,
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(activated).To(BeTrue())
+		physical, found, err = scenario.Team.Pipeline(
+			atc.PipelineRef{Name: rendered.PipelineName},
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(physical.Paused()).To(BeFalse())
+
+		observed, err := bindings.RequestObservation(
+			context.Background(),
+			pullrequest.OperatorRequest{
+				TeamID: binding.TeamID, BindingID: binding.ID,
+				ExpectedRevision: storedBinding.Revision,
+			},
+		)
+		Expect(err).NotTo(HaveOccurred())
+		nextTarget, err := pullrequest.MonitorPipelineTargetForBinding(
+			observed,
+			dbTestMonitorPipelinePolicy(),
+		)
+		Expect(err).NotTo(HaveOccurred())
+		nextRendered, err := pullrequest.RenderMonitorPipeline(nextTarget)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(nextRendered.PipelineName).To(Equal(rendered.PipelineName))
+		Expect(nextRendered.ConfigHash).NotTo(Equal(rendered.ConfigHash))
+
+		reconfigured, changed, err := registry.ConvergeMonitorPipeline(
+			context.Background(), observed, nextRendered,
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(changed).To(BeTrue())
+		Expect(reconfigured.PipelineID).To(Equal(registered.PipelineID))
+		Expect(reconfigured.PipelineConfigVersion).NotTo(Equal(
+			registered.PipelineConfigVersion,
+		))
+		Expect(reconfigured.ConfigHash).To(Equal(nextRendered.ConfigHash))
+		physical, found, err = scenario.Team.Pipeline(
+			atc.PipelineRef{Name: nextRendered.PipelineName},
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(physical.Paused()).To(BeFalse())
+		config, err = physical.Config()
+		Expect(err).NotTo(HaveOccurred())
+		canonical, err = config.CanonicalJSON()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(canonical).To(Equal(nextRendered.CanonicalJSON))
+
+		_, _, err = registry.ConvergeMonitorPipeline(
+			context.Background(), storedBinding, rendered,
+		)
+		Expect(errors.Is(err, pullrequest.ErrStaleBindingRevision)).To(BeTrue())
 	})
 
 	It("derives persisted version and type only from the selecting build", func() {
@@ -328,3 +497,18 @@ var _ = Describe("workflow resource-source admission persistence", func() {
 		Expect(candidates).To(BeEmpty(), "a nonempty terminal allocation closes the automatic retry")
 	})
 })
+
+func dbTestMonitorPipelinePolicy() pullrequest.MonitorPipelinePolicy {
+	return pullrequest.MonitorPipelinePolicy{
+		APIBaseURL:        "https://api.github.example",
+		RepositoryURL:     "https://github.example/example/monitor-pipeline.git",
+		ReadCredential:    "engineering-github-read",
+		PollInterval:      5 * time.Minute,
+		FreshnessInterval: 6 * time.Hour,
+		ResourceType: atc.ResourceType{
+			Name: pullrequest.MonitorResourceTypeName,
+			Image: "registry.example/forge-pr@sha256:" +
+				strings.Repeat("a", 64),
+		},
+	}
+}

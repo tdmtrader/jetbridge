@@ -1,10 +1,12 @@
 package atccmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
 	"code.cloudfoundry.org/lager/v3"
+	"github.com/concourse/concourse/agent/pullrequest"
 	"github.com/concourse/concourse/agent/resourcecapture"
 	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/agent/workflowrun"
@@ -142,6 +144,7 @@ func newWorkflowResourceSourceComposition(
 	connection db.DbConn,
 	trustedMainTeamID int,
 	promotionValidator workflow.PromotionValidator,
+	monitorPolicyResolvers ...pullrequest.MonitorPipelinePolicyResolver,
 ) (db.AgentWorkflowsFactory, component.Runnable, error) {
 	if trustedMainTeamID <= 0 {
 		return nil, nil, errors.New("workflow resource source composition requires a trusted main team")
@@ -149,8 +152,30 @@ func newWorkflowResourceSourceComposition(
 	if promotionValidator == nil {
 		return nil, nil, errors.New("workflow resource source composition requires a promotion validator")
 	}
+	if len(monitorPolicyResolvers) > 1 ||
+		(len(monitorPolicyResolvers) == 1 && monitorPolicyResolvers[0] == nil) {
+		return nil, nil, errors.New(
+			"workflow resource source composition requires at most one non-nil monitor policy resolver",
+		)
+	}
 	registry := db.NewWorkflowResourceSourcePipelinesFactory(connection)
 	lifecycle, err := workflowrun.NewSourcePipelineLifecycle(trustedMainTeamID, registry)
+	if err != nil {
+		return nil, nil, err
+	}
+	var monitor *pullrequest.MonitorPipelineReconciler
+	if len(monitorPolicyResolvers) == 1 {
+		monitor, err = pullrequest.NewMonitorPipelineReconciler(
+			trustedMainTeamID,
+			db.NewAgentPRBindingsFactory(connection),
+			monitorPolicyResolvers[0],
+			workflowResourceSourceMonitorConverger{registry: registry},
+		)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	runnable, err := newWorkflowResourceSourceRunnable(monitor, lifecycle)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -163,5 +188,43 @@ func newWorkflowResourceSourceComposition(
 			Registry: registry,
 			Renderer: db.DefaultWorkflowResourceSourcePipelineRenderer{},
 		},
-	), component.RunFunc(lifecycle.Reconcile), nil
+	), runnable, nil
+}
+
+type workflowResourceSourceReconciler interface {
+	Reconcile(context.Context) error
+}
+
+func newWorkflowResourceSourceRunnable(
+	monitor workflowResourceSourceReconciler,
+	lifecycle workflowResourceSourceReconciler,
+) (component.Runnable, error) {
+	if lifecycle == nil {
+		return nil, errors.New(
+			"workflow resource source runnable requires lifecycle reconciliation",
+		)
+	}
+	return component.RunFunc(func(ctx context.Context) error {
+		if monitor != nil {
+			if err := monitor.Reconcile(ctx); err != nil {
+				return err
+			}
+		}
+		return lifecycle.Reconcile(ctx)
+	}), nil
+}
+
+type workflowResourceSourceMonitorConverger struct {
+	registry db.WorkflowResourceSourcePipelinesFactory
+}
+
+func (converger workflowResourceSourceMonitorConverger) ConvergeMonitorPipeline(
+	ctx context.Context,
+	binding pullrequest.Binding,
+	rendered pullrequest.RenderedMonitorPipeline,
+) (bool, error) {
+	_, changed, err := converger.registry.ConvergeMonitorPipeline(
+		ctx, binding, rendered,
+	)
+	return changed, err
 }

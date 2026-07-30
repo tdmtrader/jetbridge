@@ -1099,6 +1099,35 @@ func validateAgentPRMonitorDefinition(
 	return nil
 }
 
+func validateAndNameAgentPRMonitorDefinition(
+	ctx context.Context,
+	queryer snapshotQueryer,
+	definitionID int,
+	version int,
+) (string, error) {
+	var name string
+	err := queryer.QueryRowContext(ctx, `
+		SELECT name FROM agent_workflow_definitions
+		WHERE id=$1 AND definition_kind='workflow' AND version=$2
+	`, definitionID, version).Scan(&name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf(
+			"%w: monitor definition is not an exact workflow revision",
+			pullrequest.ErrBindingConflict,
+		)
+	}
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(name) == "" {
+		return "", fmt.Errorf(
+			"%w: monitor definition name is invalid",
+			pullrequest.ErrBindingConflict,
+		)
+	}
+	return name, nil
+}
+
 func validateAgentPRBindingOrigin(
 	ctx context.Context,
 	queryer snapshotQueryer,
