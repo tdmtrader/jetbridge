@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -50,6 +51,66 @@ type Result struct {
 	Observations   []Observation
 }
 
+// Materialize creates a clean, disposable worktree for a captured result.
+// It intentionally clones from the repository's Git object database and
+// applies the verified patch; it never exposes the parent's live working tree
+// to a child harness. The returned cleanup must be called when the synchronous
+// child execution finishes.
+func Materialize(scratchRoot string, capture Result) (string, func() error, error) {
+	if err := validateMaterialization(scratchRoot, capture); err != nil {
+		return "", nil, err
+	}
+	workdir, err := os.MkdirTemp(scratchRoot, "broker-review-")
+	if err != nil {
+		return "", nil, fmt.Errorf("workspace materialize: create workdir: %w", err)
+	}
+	cleanup := func() error { return os.RemoveAll(workdir) }
+	fail := func(err error) (string, func() error, error) {
+		_ = cleanup()
+		return "", nil, err
+	}
+	if _, err := runGit(scratchRoot, nil, nil, "clone", "--quiet", "--no-checkout", capture.RepositoryRoot, workdir); err != nil {
+		return fail(fmt.Errorf("workspace materialize: clone base: %w", err))
+	}
+	if _, err := runGit(workdir, nil, nil, "checkout", "--detach", "--force", capture.BaseCommit); err != nil {
+		return fail(fmt.Errorf("workspace materialize: checkout base: %w", err))
+	}
+	if len(capture.Patch) > 0 {
+		if _, err := runGit(workdir, nil, capture.Patch, "apply", "--cached", "--binary", "--whitespace=nowarn", "-"); err != nil {
+			return fail(fmt.Errorf("workspace materialize: apply capture: %w", err))
+		}
+		if _, err := runGit(workdir, nil, nil, "checkout-index", "-a", "-f"); err != nil {
+			return fail(fmt.Errorf("workspace materialize: write captured worktree: %w", err))
+		}
+	}
+	tree, err := gitValue(workdir, nil, "write-tree")
+	if err != nil {
+		return fail(fmt.Errorf("workspace materialize: verify tree: %w", err))
+	}
+	if tree != capture.ResultTree {
+		return fail(fmt.Errorf("workspace materialize: result tree mismatch"))
+	}
+	return workdir, cleanup, nil
+}
+
+func validateMaterialization(scratchRoot string, capture Result) error {
+	if !filepath.IsAbs(scratchRoot) || filepath.Clean(scratchRoot) != scratchRoot || scratchRoot == string(filepath.Separator) {
+		return fmt.Errorf("workspace materialize: scratch root must be an absolute clean non-root directory")
+	}
+	info, err := os.Lstat(scratchRoot)
+	if err != nil {
+		return fmt.Errorf("workspace materialize: inspect scratch root: %w", err)
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("workspace materialize: scratch root must be a directory and not a symlink")
+	}
+	if !filepath.IsAbs(capture.RepositoryRoot) || strings.TrimSpace(capture.BaseCommit) == "" ||
+		strings.TrimSpace(capture.ResultTree) == "" || !captureDigestPattern.MatchString(capture.PatchDigest) {
+		return fmt.Errorf("workspace materialize: capture identity is incomplete")
+	}
+	return nil
+}
+
 var (
 	ErrNotGit            = errors.New("workspace is not a Git worktree")
 	ErrUnstable          = errors.New("workspace changed during capture")
@@ -60,6 +121,8 @@ var (
 )
 
 const policyRevision = "git-workspace-capture/v2"
+
+var captureDigestPattern = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 
 // Capture defines the desired tree as the caller's staged tree plus unstaged
 // changes on paths not already staged. A path changed in both states is

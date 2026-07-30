@@ -262,6 +262,45 @@ func TestCapturePreservesRenamedResultTree(t *testing.T) {
 	}
 }
 
+func TestMaterializeCreatesDisposableCapturedWorkspace(t *testing.T) {
+	repository := newRepository(t)
+	writeFile(t, repository, "tracked.txt", []byte("base\n"), 0o644)
+	git(t, repository, "add", "tracked.txt")
+	git(t, repository, "commit", "-m", "base")
+	writeFile(t, repository, "tracked.txt", []byte("captured\n"), 0o644)
+
+	capture, err := workspace.Capture(repository, workspace.Limits{
+		MaxPatchBytes: 1 << 20, MaxEntries: 100, StabilityAttempts: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scratch := t.TempDir()
+	workdir, cleanup, err := workspace.Materialize(scratch, capture)
+	if err != nil {
+		t.Fatalf("Materialize(): %v", err)
+	}
+	if workdir == repository || !strings.HasPrefix(workdir, filepath.Clean(scratch)+string(filepath.Separator)) {
+		t.Fatalf("workdir = %q, must be a private disposable directory", workdir)
+	}
+	contents, err := os.ReadFile(filepath.Join(workdir, "tracked.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(contents) != "captured\n" {
+		t.Fatalf("materialized contents = %q", contents)
+	}
+	if got := strings.TrimSpace(git(t, workdir, "write-tree")); got != capture.ResultTree {
+		t.Fatalf("materialized tree = %s, want %s", got, capture.ResultTree)
+	}
+	if err := cleanup(); err != nil {
+		t.Fatalf("cleanup(): %v", err)
+	}
+	if _, err := os.Stat(workdir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("workdir remains after cleanup: %v", err)
+	}
+}
+
 func TestCaptureRejectsWorkspaceMutationThatChangesTheManifest(t *testing.T) {
 	repository := newRepository(t)
 	writeFile(t, repository, ".gitignore", []byte("ignored-*\n"), 0o644)

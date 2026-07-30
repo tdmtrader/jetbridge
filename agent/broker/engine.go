@@ -63,6 +63,7 @@ type RunRequest struct {
 	Profile     Profile
 	Prompt      string
 	Credential  string
+	Attachments []Attachment
 }
 
 type RunResult struct {
@@ -221,6 +222,14 @@ func (engine *Engine) execute(ctx context.Context, request executeRequest) (Resu
 	if err != nil {
 		return Result{}, fmt.Errorf("broker: admit child execution: %w", err)
 	}
+	if request.tool == ToolRequestReview {
+		if err := engine.config.Authority.Phase(executionCtx, executionID, "capturing"); err != nil {
+			if executionCtx.Err() != nil {
+				return Result{}, engine.fail(authorityContext(ctx), executionID, classifyRunFailure(executionCtx))
+			}
+			return Result{}, fmt.Errorf("broker: mark execution capturing: %w", err)
+		}
+	}
 	attachments, err := engine.config.Attachments.Resolve(executionCtx, request.attachments)
 	if err != nil {
 		return Result{}, engine.fail(authorityContext(ctx), executionID,
@@ -256,7 +265,7 @@ func (engine *Engine) execute(ctx context.Context, request executeRequest) (Resu
 	}
 	run, err := engine.config.Runner.Run(executionCtx, RunRequest{
 		ExecutionID: executionID, Tool: request.tool, Profile: profile,
-		Prompt: prompt, Credential: credential,
+		Prompt: prompt, Credential: credential, Attachments: append([]Attachment(nil), attachments...),
 	})
 	events, eventErr := NormalizeEvents(run.Events)
 	if eventErr != nil {

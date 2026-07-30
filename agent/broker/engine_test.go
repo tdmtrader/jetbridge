@@ -55,6 +55,9 @@ func TestEngineRunsConsultationThroughDurablePhases(t *testing.T) {
 		!strings.Contains(prompt, "attachment design") {
 		t.Fatalf("fresh prompt = %q", prompt)
 	}
+	if len(runner.lastRequest().Attachments) != 1 || runner.lastRequest().Attachments[0].Name != "design" {
+		t.Fatalf("runner attachments = %#v", runner.lastRequest().Attachments)
+	}
 	if authority.admission.ProfileDigest == "" || authority.seal.StaticReview {
 		t.Fatalf("authority requests = %#v %#v", authority.admission, authority.seal)
 	}
@@ -411,22 +414,30 @@ func (failingRunner) Run(context.Context, broker.RunRequest) (broker.RunResult, 
 }
 
 type fakeRunner struct {
-	mu      sync.Mutex
-	output  []byte
-	prompts []string
-	barrier chan struct{}
-	started int32
+	mu       sync.Mutex
+	output   []byte
+	prompts  []string
+	requests []broker.RunRequest
+	barrier  chan struct{}
+	started  int32
 }
 
 func (runner *fakeRunner) Run(_ context.Context, request broker.RunRequest) (broker.RunResult, error) {
 	runner.mu.Lock()
 	runner.prompts = append(runner.prompts, request.Prompt)
+	runner.requests = append(runner.requests, request)
 	runner.mu.Unlock()
 	atomic.AddInt32(&runner.started, 1)
 	if runner.barrier != nil {
 		<-runner.barrier
 	}
 	return broker.RunResult{Output: append(json.RawMessage(nil), runner.output...)}, nil
+}
+
+func (runner *fakeRunner) lastRequest() broker.RunRequest {
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	return runner.requests[len(runner.requests)-1]
 }
 
 func (runner *fakeRunner) lastPrompt() string {
