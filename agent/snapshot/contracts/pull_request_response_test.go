@@ -1,6 +1,7 @@
 package contracts_test
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -68,24 +69,63 @@ func TestPullRequestResponseRejectsOversizedRepliesAndIdentifiers(t *testing.T) 
 	}
 }
 
-func TestPullRequestResponseRev2RetainsPreBoundRepliesWhileCurrentRejectsThem(t *testing.T) {
+func TestPullRequestResponseRev2RetainsPreBoundValuesWhileCurrentRejectsThem(t *testing.T) {
+	subjects := []contracts.Subject{{
+		ID: "primary", Role: contracts.SubjectRolePrimary, Input: "pr", Type: "pull-request/v1",
+		Digest: snapshot.Digest("sha256:" + strings.Repeat("a", 64)),
+	}}
+	context := validationContextFor(t, map[string]snapshot.SnapshotRef{"pr": {ID: 1, Type: "pull-request/v1", Digest: snapshot.Digest("sha256:" + strings.Repeat("a", 64))}})
+	for _, tc := range []struct {
+		name  string
+		setup func(*contracts.PullRequestResponseBody)
+	}{
+		{"batch id bytes", func(body *contracts.PullRequestResponseBody) {
+			body.BatchID = strings.Repeat("b", 257)
+		}},
+		{"thread id bytes", func(body *contracts.PullRequestResponseBody) {
+			body.Replies[0].ThreadID = strings.Repeat("t", 257)
+		}},
+		{"reply count", func(body *contracts.PullRequestResponseBody) {
+			body.Replies = nil
+			for index := 0; index < 513; index++ {
+				body.Replies = append(body.Replies, contracts.PullRequestThreadResponse{
+					ThreadID: fmt.Sprintf("thread-%03d", index), Body: "Updated in the latest revision.",
+				})
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := validPullRequestResponseBody()
+			tc.setup(&body)
+			assertRevisionThreeBoundCompatibility(
+				t,
+				"pull-request-response/v1",
+				subjects,
+				body,
+				func() error { return body.Validate(nil) },
+				context,
+			)
+		})
+	}
+}
+
+func TestNormalizeRawPullRequestResponseBodyUsesCurrentBoundsWhenSchemaIsUnset(t *testing.T) {
 	body := validPullRequestResponseBody()
 	body.Replies = nil
 	for index := 0; index < 513; index++ {
-		body.Replies = append(body.Replies, contracts.PullRequestThreadResponse{ThreadID: fmt.Sprintf("thread-%03d", index), Body: "Updated in the latest revision."})
+		body.Replies = append(body.Replies, contracts.PullRequestThreadResponse{
+			ThreadID: fmt.Sprintf("thread-%03d", index), Body: "Updated in the latest revision.",
+		})
 	}
-	if err := body.Validate(nil); err == nil {
-		t.Fatal("current validation accepted over-cap replies")
-	}
-	ref := snapshot.TypeRef("pull-request-response/v1")
-	record, err := contracts.NewRecord(ref, []contracts.Subject{{ID: "primary", Role: contracts.SubjectRolePrimary, Input: "pr", Type: "pull-request/v1", Digest: snapshot.Digest("sha256:" + strings.Repeat("a", 64))}}, body)
+	raw, err := json.Marshal(body)
 	if err != nil {
 		t.Fatal(err)
 	}
-	rev2, _ := contracts.SchemaDigestForRevision(ref, 2)
-	record.Schema = rev2
-	context := validationContextFor(t, map[string]snapshot.SnapshotRef{"pr": {ID: 1, Type: "pull-request/v1", Digest: snapshot.Digest("sha256:" + strings.Repeat("a", 64))}})
-	if _, err := revalidateSealedFiles(t, "pull-request-response/v1", map[string][]byte{"record.json": marshalRecord(t, record)}, context); err != nil {
-		t.Fatalf("rev2 read rejected legacy replies: %v", err)
+	subjects := []contracts.Subject{{
+		ID: "primary", Role: contracts.SubjectRolePrimary, Input: "pr", Type: "pull-request/v1",
+		Digest: snapshot.Digest("sha256:" + strings.Repeat("a", 64)),
+	}}
+	if _, _, err := contracts.NormalizeRawRecordBody(snapshot.TypeRef("pull-request-response/v1"), subjects, raw); err == nil {
+		t.Fatal("raw current-output normalization accepted an over-cap body with no schema")
 	}
 }

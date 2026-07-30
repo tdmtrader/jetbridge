@@ -1,6 +1,7 @@
 package contracts_test
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -82,23 +83,76 @@ func TestPublishImpactRejectsOversizedCollectionsAndPaths(t *testing.T) {
 	}
 }
 
-func TestPublishImpactRev2RetainsPreBoundRulesWhileCurrentRejectsThem(t *testing.T) {
+func TestPublishImpactRev2RetainsPreBoundValuesWhileCurrentRejectsThem(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(*contracts.PublishImpactBody)
+	}{
+		{"changed file count", func(body *contracts.PublishImpactBody) {
+			body.ChangedFiles = nil
+			body.ChangedLines = 0
+			for index := 0; index < 1025; index++ {
+				body.ChangedFiles = append(body.ChangedFiles, contracts.PublishChangedFile{
+					Path: fmt.Sprintf("file-%04d", index),
+				})
+			}
+		}},
+		{"validation change count", func(body *contracts.PublishImpactBody) {
+			body.ValidationChanges = nil
+			for index := 0; index < 513; index++ {
+				body.ValidationChanges = append(body.ValidationChanges, fmt.Sprintf("change-%03d", index))
+			}
+		}},
+		{"rule result count", func(body *contracts.PublishImpactBody) {
+			body.RuleResults = nil
+			for index := 0; index < 513; index++ {
+				body.RuleResults = append(body.RuleResults, contracts.PublishImpactRule{
+					ID: fmt.Sprintf("rule-%03d", index), Passed: true, Reason: "No deterministic policy matched.",
+				})
+			}
+		}},
+		{"reason count", func(body *contracts.PublishImpactBody) {
+			body.ReapprovalRequired = true
+			body.Reasons = nil
+			for index := 0; index < 513; index++ {
+				body.Reasons = append(body.Reasons, fmt.Sprintf("reason-%03d", index))
+			}
+		}},
+		{"changed file path bytes", func(body *contracts.PublishImpactBody) {
+			body.ChangedFiles[0].Path = strings.Repeat("p", 1025)
+		}},
+		{"rule id bytes", func(body *contracts.PublishImpactBody) {
+			body.RuleResults[0].ID = strings.Repeat("r", 257)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := validPublishImpactBody()
+			tc.setup(&body)
+			assertRevisionThreeBoundCompatibility(
+				t,
+				"publish-impact/v1",
+				nil,
+				body,
+				func() error { return body.Validate(nil) },
+				emptyValidationContext(t),
+			)
+		})
+	}
+}
+
+func TestNormalizeRawPublishImpactBodyUsesCurrentBoundsWhenSchemaIsUnset(t *testing.T) {
 	body := validPublishImpactBody()
 	body.RuleResults = nil
 	for index := 0; index < 513; index++ {
-		body.RuleResults = append(body.RuleResults, contracts.PublishImpactRule{ID: fmt.Sprintf("rule-%03d", index), Passed: true, Reason: "No deterministic policy matched."})
+		body.RuleResults = append(body.RuleResults, contracts.PublishImpactRule{
+			ID: fmt.Sprintf("rule-%03d", index), Passed: true, Reason: "No deterministic policy matched.",
+		})
 	}
-	if err := body.Validate(nil); err == nil {
-		t.Fatal("current validation accepted over-cap rules")
-	}
-	ref := snapshot.TypeRef("publish-impact/v1")
-	record, err := contracts.NewRecord(ref, nil, body)
+	raw, err := json.Marshal(body)
 	if err != nil {
 		t.Fatal(err)
 	}
-	rev2, _ := contracts.SchemaDigestForRevision(ref, 2)
-	record.Schema = rev2
-	if _, err := revalidateSealedFiles(t, "publish-impact/v1", map[string][]byte{"record.json": marshalRecord(t, record)}, emptyValidationContext(t)); err != nil {
-		t.Fatalf("rev2 read rejected legacy rules: %v", err)
+	if _, _, err := contracts.NormalizeRawRecordBody(snapshot.TypeRef("publish-impact/v1"), nil, raw); err == nil {
+		t.Fatal("raw current-output normalization accepted an over-cap body with no schema")
 	}
 }

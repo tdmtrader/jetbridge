@@ -42,10 +42,10 @@ type AgentImpactAssessment struct {
 }
 
 func (body PublishImpactBody) Validate(_ []Subject) error {
-	return body.validateForRevision(3)
+	return body.validate(currentRecordValidationPolicy)
 }
 
-func (body PublishImpactBody) validateForRevision(revision int) error {
+func (body PublishImpactBody) validate(policy recordValidationPolicy) error {
 	if err := snapshot.Digest(body.BaselineDigest).Validate(); err != nil {
 		return fmt.Errorf("baseline digest: %w", err)
 	}
@@ -58,40 +58,38 @@ func (body PublishImpactBody) validateForRevision(revision int) error {
 	if body.ChangedLines < 0 {
 		return fmt.Errorf("changed lines must not be negative")
 	}
-	if err := validateMaxItems("changed files", len(body.ChangedFiles), maxPublishImpactChangedFiles); err != nil {
+	if err := validateMaxItems("changed files", len(body.ChangedFiles), maxPublishImpactChangedFiles, policy); err != nil {
 		return err
 	}
 	filePaths := make([]string, len(body.ChangedFiles))
 	calculatedLines := 0
 	for index, file := range body.ChangedFiles {
 		filePaths[index] = file.Path
-		if err := file.Validate(); err != nil {
+		if err := file.validate(policy); err != nil {
 			return fmt.Errorf("changed_files[%d]: %w", index, err)
 		}
 		calculatedLines += file.AddedLines + file.RemovedLines
 	}
-	if err := validateSortedUniquePaths("changed files", filePaths); err != nil {
+	if err := validateSortedUniquePaths("changed files", filePaths, policy); err != nil {
 		return err
 	}
 	if body.ChangedLines != calculatedLines {
 		return fmt.Errorf("changed lines must equal the total added and removed lines")
 	}
-	if err := validateMaxItems("validation changes", len(body.ValidationChanges), maxPublishImpactValidationChanges); err != nil {
+	if err := validateMaxItems("validation changes", len(body.ValidationChanges), maxPublishImpactValidationChanges, policy); err != nil {
 		return err
 	}
 	if err := validateSortedNonblankStrings("validation changes", body.ValidationChanges); err != nil {
 		return err
 	}
-	if revision >= 3 {
-		if err := validateMaxItems("rule results", len(body.RuleResults), maxPublishImpactRules); err != nil {
-			return err
-		}
+	if err := validateMaxItems("rule results", len(body.RuleResults), maxPublishImpactRules, policy); err != nil {
+		return err
 	}
 	ruleIDs := make([]string, len(body.RuleResults))
 	failedDeterministicRule := false
 	for index, rule := range body.RuleResults {
 		ruleIDs[index] = rule.ID
-		if err := rule.Validate(); err != nil {
+		if err := rule.validate(policy); err != nil {
 			return fmt.Errorf("rule_results[%d]: %w", index, err)
 		}
 		failedDeterministicRule = failedDeterministicRule || !rule.Passed
@@ -113,14 +111,18 @@ func (body PublishImpactBody) validateForRevision(revision int) error {
 	if body.ReapprovalRequired && len(body.Reasons) == 0 {
 		return fmt.Errorf("reapproval requires at least one reason")
 	}
-	if err := validateMaxItems("reasons", len(body.Reasons), maxPublishImpactReasons); err != nil {
+	if err := validateMaxItems("reasons", len(body.Reasons), maxPublishImpactReasons, policy); err != nil {
 		return err
 	}
 	return validateSortedNonblankStrings("reasons", body.Reasons)
 }
 
 func (file PublishChangedFile) Validate() error {
-	if err := validatePullRequestPath("changed file path", file.Path); err != nil {
+	return file.validate(currentRecordValidationPolicy)
+}
+
+func (file PublishChangedFile) validate(policy recordValidationPolicy) error {
+	if err := validatePullRequestPath("changed file path", file.Path, policy); err != nil {
 		return err
 	}
 	if file.AddedLines < 0 || file.RemovedLines < 0 {
@@ -130,7 +132,11 @@ func (file PublishChangedFile) Validate() error {
 }
 
 func (rule PublishImpactRule) Validate() error {
-	if err := validatePullRequestIdentifier("rule id", rule.ID); err != nil {
+	return rule.validate(currentRecordValidationPolicy)
+}
+
+func (rule PublishImpactRule) validate(policy recordValidationPolicy) error {
+	if err := validatePullRequestIdentifier("rule id", rule.ID, policy); err != nil {
 		return err
 	}
 	return validateBoundedMarkdown("rule reason", rule.Reason)
@@ -140,9 +146,9 @@ func (assessment AgentImpactAssessment) Validate() error {
 	return validateBoundedMarkdown("agent assessment rationale", assessment.Rationale)
 }
 
-func validateSortedUniquePaths(label string, values []string) error {
+func validateSortedUniquePaths(label string, values []string, policy recordValidationPolicy) error {
 	for index, value := range values {
-		if err := validatePullRequestPath(fmt.Sprintf("%s[%d]", label, index), value); err != nil {
+		if err := validatePullRequestPath(fmt.Sprintf("%s[%d]", label, index), value, policy); err != nil {
 			return err
 		}
 		if index == 0 {
@@ -203,8 +209,11 @@ func publishImpactBody(record Record[PublishImpactBody]) error {
 	if err := validateDeclaredBody(publishImpactType, record.Subjects, record.Body); err != nil {
 		return err
 	}
-	revision, _ := SchemaRevisionFor(publishImpactType, record.Schema)
-	if err := record.Body.validateForRevision(revision); err != nil {
+	policy, err := recordValidationPolicyFor(publishImpactType, record.Schema)
+	if err != nil {
+		return fmt.Errorf("snapshot contracts: publish impact record: %w", err)
+	}
+	if err := record.Body.validate(policy); err != nil {
 		return fmt.Errorf("snapshot contracts: publish impact record: %w", err)
 	}
 	return nil

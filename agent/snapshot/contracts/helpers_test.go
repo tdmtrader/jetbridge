@@ -99,3 +99,36 @@ func validationContextFor(t *testing.T, inputs map[string]snapshot.SnapshotRef) 
 	}
 	return context
 }
+
+func assertRevisionThreeBoundCompatibility[T any](
+	t *testing.T,
+	rawType string,
+	subjects []contracts.Subject,
+	body T,
+	directValidate func() error,
+	validationContext snapshot.ValidationContext,
+) {
+	t.Helper()
+
+	if err := directValidate(); err == nil {
+		t.Fatal("direct current validation accepted an over-cap body")
+	}
+
+	ref := mustTypeRef(t, rawType)
+	record, err := contracts.NewRecord(ref, subjects, body)
+	if err != nil {
+		t.Fatalf("NewRecord(): %v", err)
+	}
+	if _, err := validateFiles(t, rawType, map[string][]byte{"record.json": marshalRecord(t, record)}, validationContext); err == nil {
+		t.Fatal("revision 3 seal admission accepted an over-cap body")
+	}
+
+	rev2, found := contracts.SchemaDigestForRevision(ref, 2)
+	if !found {
+		t.Fatalf("SchemaDigestForRevision(%q, 2) was not found", ref)
+	}
+	record.Schema = rev2
+	if _, err := revalidateSealedFiles(t, rawType, map[string][]byte{"record.json": marshalRecord(t, record)}, validationContext); err != nil {
+		t.Fatalf("revision 2 read rejected an otherwise-valid over-cap body: %v", err)
+	}
+}

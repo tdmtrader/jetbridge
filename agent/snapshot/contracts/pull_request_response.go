@@ -23,41 +23,43 @@ type PullRequestThreadResponse struct {
 // thread belongs to the reopened pull-request/v1 observation and is deliberately
 // checked by ValidatePullRequestResponseAgainst.
 func (body PullRequestResponseBody) Validate(_ []Subject) error {
-	return body.validateForRevision(3)
+	return body.validate(currentRecordValidationPolicy)
 }
 
-func (body PullRequestResponseBody) validateForRevision(revision int) error {
-	return body.validateIntrinsicForRevision(revision)
+func (body PullRequestResponseBody) validate(policy recordValidationPolicy) error {
+	return body.validateIntrinsicWithPolicy(policy)
 }
 
 func (body PullRequestResponseBody) validateIntrinsic() error {
-	return body.validateIntrinsicForRevision(3)
+	return body.validateIntrinsicWithPolicy(currentRecordValidationPolicy)
 }
 
-func (body PullRequestResponseBody) validateIntrinsicForRevision(revision int) error {
-	if err := validatePullRequestIdentifier("batch id", body.BatchID); err != nil {
+func (body PullRequestResponseBody) validateIntrinsicWithPolicy(policy recordValidationPolicy) error {
+	if err := validatePullRequestIdentifier("batch id", body.BatchID, policy); err != nil {
 		return err
 	}
 	if err := validateBoundedMarkdown("summary", body.Summary); err != nil {
 		return err
 	}
-	if revision >= 3 {
-		if err := validateMaxItems("replies", len(body.Replies), maxPullRequestReplies); err != nil {
-			return err
-		}
+	if err := validateMaxItems("replies", len(body.Replies), maxPullRequestReplies, policy); err != nil {
+		return err
 	}
 	threadIDs := make([]string, len(body.Replies))
 	for index, reply := range body.Replies {
 		threadIDs[index] = reply.ThreadID
-		if err := reply.Validate(); err != nil {
+		if err := reply.validate(policy); err != nil {
 			return fmt.Errorf("replies[%d]: %w", index, err)
 		}
 	}
-	return validateSortedIdentifiers("replies", threadIDs)
+	return validateSortedIdentifiers("replies", threadIDs, policy)
 }
 
 func (response PullRequestThreadResponse) Validate() error {
-	if err := validatePullRequestIdentifier("thread id", response.ThreadID); err != nil {
+	return response.validate(currentRecordValidationPolicy)
+}
+
+func (response PullRequestThreadResponse) validate(policy recordValidationPolicy) error {
+	if err := validatePullRequestIdentifier("thread id", response.ThreadID, policy); err != nil {
 		return err
 	}
 	return validateBoundedMarkdown("reply body", response.Body)
@@ -124,8 +126,11 @@ func pullRequestResponseBody(record Record[PullRequestResponseBody]) error {
 	if err := validatePullRequestResponseSubjects(record.Subjects); err != nil {
 		return fmt.Errorf("snapshot contracts: pull request response record: %w", err)
 	}
-	revision, _ := SchemaRevisionFor(pullRequestResponseType, record.Schema)
-	if err := record.Body.validateForRevision(revision); err != nil {
+	policy, err := recordValidationPolicyFor(pullRequestResponseType, record.Schema)
+	if err != nil {
+		return fmt.Errorf("snapshot contracts: pull request response record: %w", err)
+	}
+	if err := record.Body.validate(policy); err != nil {
 		return fmt.Errorf("snapshot contracts: pull request response record: %w", err)
 	}
 	return nil

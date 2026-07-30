@@ -1,6 +1,7 @@
 package contracts_test
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -127,22 +128,126 @@ func TestPullRequestBodyRejectsOversizedCollectionsAndText(t *testing.T) {
 }
 
 func TestPullRequestRev2RetainsPreBoundObservationWhileCurrentRejectsIt(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(*contracts.PullRequestBody)
+	}{
+		{"provider bytes", func(body *contracts.PullRequestBody) {
+			body.Provider = strings.Repeat("p", 65)
+		}},
+		{"repository bytes", func(body *contracts.PullRequestBody) {
+			body.Repository = strings.Repeat("r", 513)
+		}},
+		{"url bytes", func(body *contracts.PullRequestBody) {
+			body.URL = "https://example.invalid/" + strings.Repeat("u", 2025)
+		}},
+		{"source ref bytes", func(body *contracts.PullRequestBody) {
+			body.SourceRef = strings.Repeat("s", 513)
+		}},
+		{"target ref bytes", func(body *contracts.PullRequestBody) {
+			body.TargetRef = strings.Repeat("t", 513)
+		}},
+		{"external id bytes", func(body *contracts.PullRequestBody) {
+			body.ExternalID = strings.Repeat("e", 257)
+		}},
+		{"iteration id bytes", func(body *contracts.PullRequestBody) {
+			body.Iteration = strings.Repeat("i", 257)
+		}},
+		{"batch id bytes", func(body *contracts.PullRequestBody) {
+			body.ReviewBatches[0].ID = strings.Repeat("b", 257)
+		}},
+		{"review id bytes", func(body *contracts.PullRequestBody) {
+			body.ReviewBatches[0].ReviewID = strings.Repeat("r", 257)
+		}},
+		{"reviewer id bytes", func(body *contracts.PullRequestBody) {
+			body.ReviewBatches[0].Reviewer = strings.Repeat("r", 257)
+		}},
+		{"thread and batch thread id bytes", func(body *contracts.PullRequestBody) {
+			id := strings.Repeat("t", 257)
+			body.Threads[0].ID = id
+			body.ReviewBatches[0].ThreadIDs[0] = id
+		}},
+		{"thread iteration id bytes", func(body *contracts.PullRequestBody) {
+			body.Threads[0].Iteration = strings.Repeat("i", 257)
+		}},
+		{"comment id bytes", func(body *contracts.PullRequestBody) {
+			body.Threads[0].Comments[0].ID = strings.Repeat("c", 257)
+		}},
+		{"comment author id bytes", func(body *contracts.PullRequestBody) {
+			body.Threads[0].Comments[0].Author = strings.Repeat("a", 257)
+		}},
+		{"anchor path bytes", func(body *contracts.PullRequestBody) {
+			body.Threads[0].Anchor = &contracts.PullRequestAnchor{
+				Path: strings.Repeat("p", 1025), StartLine: 1, EndLine: 1,
+			}
+		}},
+		{"review batch count", func(body *contracts.PullRequestBody) {
+			body.ReviewBatches = nil
+			for index := 0; index < 129; index++ {
+				id := fmt.Sprintf("batch-%03d", index)
+				body.ReviewBatches = append(body.ReviewBatches, contracts.PullRequestReviewBatch{
+					ID: id, ReviewID: "review-" + id, CommitSHA: strings.Repeat("a", 40), Reviewer: "reviewer-1", Ready: true,
+				})
+			}
+		}},
+		{"thread count", func(body *contracts.PullRequestBody) {
+			body.ReviewBatches = nil
+			body.Threads = nil
+			for index := 0; index < 513; index++ {
+				body.Threads = append(body.Threads, contracts.PullRequestThread{
+					ID: fmt.Sprintf("thread-%03d", index), Iteration: "iteration-1",
+				})
+			}
+		}},
+		{"comment count", func(body *contracts.PullRequestBody) {
+			body.ReviewBatches = nil
+			body.Threads[0].Comments = nil
+			for index := 0; index < 257; index++ {
+				body.Threads[0].Comments = append(body.Threads[0].Comments, contracts.PullRequestComment{
+					ID: fmt.Sprintf("comment-%03d", index), Author: "reviewer-1",
+					Body: "Please revise this.", CommitSHA: strings.Repeat("a", 40),
+				})
+			}
+		}},
+		{"thread and batch thread id counts", func(body *contracts.PullRequestBody) {
+			body.Threads = nil
+			body.ReviewBatches[0].ThreadIDs = nil
+			for index := 0; index < 513; index++ {
+				id := fmt.Sprintf("thread-%03d", index)
+				body.Threads = append(body.Threads, contracts.PullRequestThread{ID: id, Iteration: "iteration-1"})
+				body.ReviewBatches[0].ThreadIDs = append(body.ReviewBatches[0].ThreadIDs, id)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := validPullRequestBody()
+			tc.setup(&body)
+			assertRevisionThreeBoundCompatibility(
+				t,
+				"pull-request/v1",
+				nil,
+				body,
+				func() error { return body.Validate(nil) },
+				emptyValidationContext(t),
+			)
+		})
+	}
+}
+
+func TestNormalizeRawPullRequestBodyUsesCurrentBoundsWhenSchemaIsUnset(t *testing.T) {
 	body := validPullRequestBody()
 	body.ReviewBatches = nil
 	for index := 0; index < 129; index++ {
 		id := fmt.Sprintf("batch-%03d", index)
-		body.ReviewBatches = append(body.ReviewBatches, contracts.PullRequestReviewBatch{ID: id, ReviewID: "review-" + id, CommitSHA: strings.Repeat("a", 40), Reviewer: "reviewer-1", Ready: true})
+		body.ReviewBatches = append(body.ReviewBatches, contracts.PullRequestReviewBatch{
+			ID: id, ReviewID: "review-" + id, CommitSHA: strings.Repeat("a", 40), Reviewer: "reviewer-1", Ready: true,
+		})
 	}
-	if err := body.Validate(nil); err == nil {
-		t.Fatal("current validation accepted over-cap body")
-	}
-	record, err := contracts.NewRecord(snapshot.TypeRef("pull-request/v1"), nil, body)
+	raw, err := json.Marshal(body)
 	if err != nil {
 		t.Fatal(err)
 	}
-	rev2, _ := contracts.SchemaDigestForRevision(snapshot.TypeRef("pull-request/v1"), 2)
-	record.Schema = rev2
-	if _, err := revalidateSealedFiles(t, "pull-request/v1", map[string][]byte{"record.json": marshalRecord(t, record)}, emptyValidationContext(t)); err != nil {
-		t.Fatalf("rev2 read rejected legacy body: %v", err)
+	if _, _, err := contracts.NormalizeRawRecordBody(snapshot.TypeRef("pull-request/v1"), nil, raw); err == nil {
+		t.Fatal("raw current-output normalization accepted an over-cap body with no schema")
 	}
 }

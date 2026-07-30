@@ -115,43 +115,60 @@ const (
 	maxPublishImpactReasons           = 512
 )
 
-func (body PullRequestBody) Validate(_ []Subject) error {
-	return body.validateForRevision(3)
+type recordValidationPolicy struct {
+	enforceRevisionThreeBounds bool
 }
 
-func (body PullRequestBody) validateForRevision(revision int) error {
-	if err := validateRequiredBoundedText("provider", body.Provider, maxPullRequestProviderBytes); err != nil {
+var currentRecordValidationPolicy = recordValidationPolicy{enforceRevisionThreeBounds: true}
+
+func recordValidationPolicyFor(ref snapshot.TypeRef, schema snapshot.Digest) (recordValidationPolicy, error) {
+	if schema == "" {
+		return currentRecordValidationPolicy, nil
+	}
+	revision, found := SchemaRevisionFor(ref, schema)
+	if !found {
+		return recordValidationPolicy{}, fmt.Errorf("%q carries an unknown schema digest %q", ref, schema)
+	}
+	return recordValidationPolicy{enforceRevisionThreeBounds: revision >= 3}, nil
+}
+
+func (body PullRequestBody) Validate(_ []Subject) error {
+	return body.validate(currentRecordValidationPolicy)
+}
+
+func (body PullRequestBody) validate(policy recordValidationPolicy) error {
+	if err := validateRequiredBoundedText("provider", body.Provider, maxPullRequestProviderBytes, policy); err != nil {
 		return err
 	}
-	if err := validateRequiredBoundedText("repository", body.Repository, maxPullRequestRepositoryBytes); err != nil {
+	if err := validateRequiredBoundedText("repository", body.Repository, maxPullRequestRepositoryBytes, policy); err != nil {
 		return err
 	}
-	if err := validatePullRequestRef("source ref", body.SourceRef); err != nil {
+	if err := validatePullRequestRef("source ref", body.SourceRef, policy); err != nil {
 		return err
 	}
-	if err := validatePullRequestRef("target ref", body.TargetRef); err != nil {
+	if err := validatePullRequestRef("target ref", body.TargetRef, policy); err != nil {
 		return err
 	}
 	if err := validateGitObjectID("target sha", body.TargetSHA); err != nil {
 		return err
 	}
-	if err := validatePullRequestIdentifier("iteration", body.Iteration); err != nil {
+	if err := validatePullRequestIdentifier("iteration", body.Iteration, policy); err != nil {
 		return err
 	}
-	if err := body.validateState(); err != nil {
+	if err := body.validateState(policy); err != nil {
 		return err
 	}
 	if err := body.validateTrigger(); err != nil {
 		return err
 	}
 
-	if err := validateMaxItems("threads", len(body.Threads), maxPullRequestThreads); err != nil {
+	if err := validateMaxItems("threads", len(body.Threads), maxPullRequestThreads, policy); err != nil {
 		return err
 	}
 	threadIDs := make([]string, len(body.Threads))
 	for index, thread := range body.Threads {
 		threadIDs[index] = thread.ID
-		if err := thread.Validate(); err != nil {
+		if err := thread.validate(policy); err != nil {
 			return fmt.Errorf("threads[%d]: %w", index, err)
 		}
 	}
@@ -162,22 +179,20 @@ func (body PullRequestBody) validateForRevision(revision int) error {
 	for _, id := range threadIDs {
 		knownThreads[id] = struct{}{}
 	}
-	if revision >= 3 {
-		if err := validateMaxItems("review batches", len(body.ReviewBatches), maxPullRequestReviewBatches); err != nil {
-			return err
-		}
+	if err := validateMaxItems("review batches", len(body.ReviewBatches), maxPullRequestReviewBatches, policy); err != nil {
+		return err
 	}
 	batchIDs := make([]string, len(body.ReviewBatches))
 	for index, batch := range body.ReviewBatches {
 		batchIDs[index] = batch.ID
-		if err := batch.Validate(knownThreads); err != nil {
+		if err := batch.validate(knownThreads, policy); err != nil {
 			return fmt.Errorf("review_batches[%d]: %w", index, err)
 		}
 	}
 	return ValidateEntityIDs("review_batches", batchIDs)
 }
 
-func (body PullRequestBody) validateState() error {
+func (body PullRequestBody) validateState(policy recordValidationPolicy) error {
 	switch body.State {
 	case PullRequestMissing:
 		if body.ExternalID != "" || body.URL != "" || body.SourceSHA != "" {
@@ -190,10 +205,10 @@ func (body PullRequestBody) validateState() error {
 			return fmt.Errorf("expected source: %w", err)
 		}
 	case PullRequestActive, PullRequestCompleted, PullRequestAbandoned:
-		if err := validatePullRequestIdentifier("external id", body.ExternalID); err != nil {
+		if err := validatePullRequestIdentifier("external id", body.ExternalID, policy); err != nil {
 			return err
 		}
-		if err := validatePullRequestURL(body.URL); err != nil {
+		if err := validatePullRequestURL(body.URL, policy); err != nil {
 			return err
 		}
 		if err := validateGitObjectID("source sha", body.SourceSHA); err != nil {
@@ -253,25 +268,29 @@ func (expectation PullRequestHeadExpectation) Validate() error {
 }
 
 func (batch PullRequestReviewBatch) Validate(knownThreads map[string]struct{}) error {
-	if err := validatePullRequestIdentifier("batch id", batch.ID); err != nil {
+	return batch.validate(knownThreads, currentRecordValidationPolicy)
+}
+
+func (batch PullRequestReviewBatch) validate(knownThreads map[string]struct{}, policy recordValidationPolicy) error {
+	if err := validatePullRequestIdentifier("batch id", batch.ID, policy); err != nil {
 		return err
 	}
-	if err := validatePullRequestIdentifier("review id", batch.ReviewID); err != nil {
+	if err := validatePullRequestIdentifier("review id", batch.ReviewID, policy); err != nil {
 		return err
 	}
 	if err := validateGitObjectID("review commit sha", batch.CommitSHA); err != nil {
 		return err
 	}
-	if err := validatePullRequestIdentifier("reviewer", batch.Reviewer); err != nil {
+	if err := validatePullRequestIdentifier("reviewer", batch.Reviewer, policy); err != nil {
 		return err
 	}
 	if !batch.Ready {
 		return fmt.Errorf("review batch must be ready")
 	}
-	if err := validateMaxItems("thread ids", len(batch.ThreadIDs), maxPullRequestThreadIDs); err != nil {
+	if err := validateMaxItems("thread ids", len(batch.ThreadIDs), maxPullRequestThreadIDs, policy); err != nil {
 		return err
 	}
-	if err := validateSortedIdentifiers("thread ids", batch.ThreadIDs); err != nil {
+	if err := validateSortedIdentifiers("thread ids", batch.ThreadIDs, policy); err != nil {
 		return err
 	}
 	for _, threadID := range batch.ThreadIDs {
@@ -283,24 +302,28 @@ func (batch PullRequestReviewBatch) Validate(knownThreads map[string]struct{}) e
 }
 
 func (thread PullRequestThread) Validate() error {
-	if err := validatePullRequestIdentifier("thread id", thread.ID); err != nil {
+	return thread.validate(currentRecordValidationPolicy)
+}
+
+func (thread PullRequestThread) validate(policy recordValidationPolicy) error {
+	if err := validatePullRequestIdentifier("thread id", thread.ID, policy); err != nil {
 		return err
 	}
-	if err := validatePullRequestIdentifier("thread iteration", thread.Iteration); err != nil {
+	if err := validatePullRequestIdentifier("thread iteration", thread.Iteration, policy); err != nil {
 		return err
 	}
 	if thread.Anchor != nil {
-		if err := thread.Anchor.Validate(); err != nil {
+		if err := thread.Anchor.validate(policy); err != nil {
 			return fmt.Errorf("anchor: %w", err)
 		}
 	}
-	if err := validateMaxItems("comments", len(thread.Comments), maxPullRequestComments); err != nil {
+	if err := validateMaxItems("comments", len(thread.Comments), maxPullRequestComments, policy); err != nil {
 		return err
 	}
 	commentIDs := make([]string, len(thread.Comments))
 	for index, comment := range thread.Comments {
 		commentIDs[index] = comment.ID
-		if err := comment.Validate(); err != nil {
+		if err := comment.validate(policy); err != nil {
 			return fmt.Errorf("comments[%d]: %w", index, err)
 		}
 	}
@@ -308,7 +331,11 @@ func (thread PullRequestThread) Validate() error {
 }
 
 func (anchor PullRequestAnchor) Validate() error {
-	if err := validatePullRequestPath("thread anchor path", anchor.Path); err != nil {
+	return anchor.validate(currentRecordValidationPolicy)
+}
+
+func (anchor PullRequestAnchor) validate(policy recordValidationPolicy) error {
+	if err := validatePullRequestPath("thread anchor path", anchor.Path, policy); err != nil {
 		return err
 	}
 	if anchor.StartLine < 1 || anchor.EndLine < anchor.StartLine {
@@ -318,10 +345,14 @@ func (anchor PullRequestAnchor) Validate() error {
 }
 
 func (comment PullRequestComment) Validate() error {
-	if err := validatePullRequestIdentifier("comment id", comment.ID); err != nil {
+	return comment.validate(currentRecordValidationPolicy)
+}
+
+func (comment PullRequestComment) validate(policy recordValidationPolicy) error {
+	if err := validatePullRequestIdentifier("comment id", comment.ID, policy); err != nil {
 		return err
 	}
-	if err := validatePullRequestIdentifier("comment author", comment.Author); err != nil {
+	if err := validatePullRequestIdentifier("comment author", comment.Author, policy); err != nil {
 		return err
 	}
 	if err := validateBoundedMarkdown("comment body", comment.Body); err != nil {
@@ -330,18 +361,18 @@ func (comment PullRequestComment) Validate() error {
 	return validateGitObjectID("comment commit sha", comment.CommitSHA)
 }
 
-func validatePullRequestRef(label, value string) error {
+func validatePullRequestRef(label, value string, policy recordValidationPolicy) error {
 	if strings.TrimSpace(value) == "" || strings.ContainsAny(value, "\x00\r\n \t") {
 		return fmt.Errorf("%s is required and must not contain whitespace", label)
 	}
-	if len(value) > maxPullRequestRefBytes {
+	if policy.enforceRevisionThreeBounds && len(value) > maxPullRequestRefBytes {
 		return fmt.Errorf("%s must be at most %d bytes", label, maxPullRequestRefBytes)
 	}
 	return nil
 }
 
-func validatePullRequestURL(value string) error {
-	if len(value) > maxPullRequestURLBytes {
+func validatePullRequestURL(value string, policy recordValidationPolicy) error {
+	if policy.enforceRevisionThreeBounds && len(value) > maxPullRequestURLBytes {
 		return fmt.Errorf("url must be at most %d bytes", maxPullRequestURLBytes)
 	}
 	parsed, err := url.Parse(value)
@@ -363,9 +394,9 @@ func validateGitObjectID(label, value string) error {
 	return nil
 }
 
-func validateSortedIdentifiers(label string, values []string) error {
+func validateSortedIdentifiers(label string, values []string, policy recordValidationPolicy) error {
 	for index, value := range values {
-		if err := validatePullRequestIdentifier(fmt.Sprintf("%s[%d]", label, index), value); err != nil {
+		if err := validatePullRequestIdentifier(fmt.Sprintf("%s[%d]", label, index), value, policy); err != nil {
 			return err
 		}
 		if index == 0 {
@@ -381,38 +412,38 @@ func validateSortedIdentifiers(label string, values []string) error {
 	return nil
 }
 
-func validatePullRequestIdentifier(label, value string) error {
+func validatePullRequestIdentifier(label, value string, policy recordValidationPolicy) error {
 	if err := ValidateIdentifier(label, value); err != nil {
 		return err
 	}
-	if len(value) > maxPullRequestIdentifierBytes {
+	if policy.enforceRevisionThreeBounds && len(value) > maxPullRequestIdentifierBytes {
 		return fmt.Errorf("%s must be at most %d bytes", label, maxPullRequestIdentifierBytes)
 	}
 	return nil
 }
 
-func validatePullRequestPath(label, value string) error {
+func validatePullRequestPath(label, value string, policy recordValidationPolicy) error {
 	if err := validatePOSIXPath(label, value); err != nil {
 		return err
 	}
-	if len(value) > maxPullRequestPathBytes {
+	if policy.enforceRevisionThreeBounds && len(value) > maxPullRequestPathBytes {
 		return fmt.Errorf("%s must be at most %d bytes", label, maxPullRequestPathBytes)
 	}
 	return nil
 }
 
-func validateRequiredBoundedText(label, value string, maximum int) error {
+func validateRequiredBoundedText(label, value string, maximum int, policy recordValidationPolicy) error {
 	if strings.TrimSpace(value) == "" {
 		return fmt.Errorf("%s is required", label)
 	}
-	if !utf8.ValidString(value) || len(value) > maximum {
+	if !utf8.ValidString(value) || policy.enforceRevisionThreeBounds && len(value) > maximum {
 		return fmt.Errorf("%s must be valid UTF-8 and at most %d bytes", label, maximum)
 	}
 	return nil
 }
 
-func validateMaxItems(label string, count, maximum int) error {
-	if count > maximum {
+func validateMaxItems(label string, count, maximum int, policy recordValidationPolicy) error {
+	if policy.enforceRevisionThreeBounds && count > maximum {
 		return fmt.Errorf("%s allows at most %d items", label, maximum)
 	}
 	return nil
@@ -458,8 +489,11 @@ func pullRequestBody(record Record[PullRequestBody]) error {
 	if err := validateDeclaredBody(pullRequestType, record.Subjects, record.Body); err != nil {
 		return err
 	}
-	revision, _ := SchemaRevisionFor(pullRequestType, record.Schema)
-	if err := record.Body.validateForRevision(revision); err != nil {
+	policy, err := recordValidationPolicyFor(pullRequestType, record.Schema)
+	if err != nil {
+		return fmt.Errorf("snapshot contracts: pull request record: %w", err)
+	}
+	if err := record.Body.validate(policy); err != nil {
 		return fmt.Errorf("snapshot contracts: pull request record: %w", err)
 	}
 	return nil
