@@ -353,9 +353,15 @@ git commit -m "feat(db): persist reusable node versions"
 **Files:**
 - Create: `agent/api/nodes/handler.go`
 - Create: `agent/api/nodes/handler_test.go`
+- Create: `agent/api/nodes/route_registration_test.go`
 - Modify: `atc/routes.go`
 - Modify: `atc/api/handler.go`
+- Modify: `atc/api/api_suite_test.go`
+- Modify: `atc/api/accessor/roles.go`
 - Modify: `atc/wrappa/api_auth_wrappa.go`
+- Modify: `atc/wrappa/reject_archived_wrappa.go`
+- Modify: `atc/wrappa/agent_workflow_run_auth_test.go`
+- Modify: `atc/wrappa/agent_workflow_run_archive_test.go`
 - Modify: `atc/atccmd/command.go`
 - Create: `fly/commands/agent_nodes.go`
 - Create: `fly/commands/agent_nodes_test.go`
@@ -379,10 +385,10 @@ PUT  /api/v1/agent/nodes/:name/versions/:version/release
 PUT  /api/v1/agent/nodes/:name/versions/:version/deprecation
 ```
 
-Manifest import accepts `{"files": {...}}`, enforces existing manifest byte
-caps, derives the request user, maps invalid node source to 400, missing
-versions to 404, false compatible releases to 422, and returns complete
-release/deprecation audit.
+Manifest import accepts only `{"files": {...}}`, rejects unknown JSON fields
+and raw-YAML requests, enforces existing manifest byte caps, derives the
+request user, maps invalid node source to 400, missing versions to 404, false
+compatible releases to 422, and returns complete release/deprecation audit.
 
 - [ ] **Step 2: Run handler tests and verify RED**
 
@@ -395,6 +401,13 @@ go test ./agent/api/nodes -count=1
 Expected: package/build failure because the node API does not exist.
 
 - [ ] **Step 3: Implement handlers, routes, authorization, and wiring**
+
+Register read routes as `ViewerRole` and import/release/deprecation mutations
+as `MemberRole`. Route every node endpoint through the existing main-team
+agent authorization case and the archived-team wrapper pass-through list;
+missing either entry is a wiring failure, not a later UI concern. Construct
+the node store in ATC command wiring and pass a memory store through the API
+suite's positional constructor.
 
 Release accepts only:
 
@@ -460,6 +473,7 @@ git commit -m "feat(agent): expose reusable node lifecycle"
 - Modify: `agent/workflow/compile.go`
 - Modify: `agent/workflow/function_config.go`
 - Modify: `agent/workflow/typecheck.go`
+- Modify: `agent/workflow/extract.go`
 - Modify: `atc/steps.go`
 - Modify: `atc/plan.go`
 - Modify: `atc/builds/planner.go`
@@ -528,7 +542,10 @@ Validate the authoring-only reference before ordinary Concourse decoding,
 resolve the exact released version, instantiate it, apply only mappings and
 declared parameters, set the task/agent `FunctionID` (or publish name) to the
 stable local instance, and replace the reference with the concrete leaf.
-Return both the compiled workflow and sorted durable bindings.
+Return both the compiled workflow and sorted durable bindings. Resolve only an
+ephemeral decoded copy: the imported manifest and its chosen
+`workflow.yaml`/legacy `workflow.yml` source remain byte-for-byte authored so
+upgrades can rewrite `uses` later.
 
 - [ ] **Step 4: Add failing agent artifact-mapping tests**
 
@@ -562,6 +579,10 @@ Reuse native task `InputMapping`/`OutputMapping`. Add those fields to
 under logical names, and register logical outputs under mapped workflow names.
 For publication nodes, rewrite only the baked input artifact name during
 expansion. Keep direct authored agents with nil mappings byte-compatible.
+Update every mapping-aware compiler/runtime consumer: agent type checking,
+untyped parallel-read collection, validation mutable-root analysis, and
+function extraction. Node source itself must reject pre-populated task/agent
+mappings; mappings belong only to the workflow invocation.
 
 - [ ] **Step 7: Wire node-aware workflow imports**
 
@@ -625,7 +646,10 @@ parameters JSONB NOT NULL,
 PRIMARY KEY (workflow_definition_id, instance_name)
 ```
 
-Add FKs to both definition rows, exact node identity checks, and indexes for
+Add internal literal-checked workflow/node kind columns and composite foreign
+keys so PostgreSQL proves the workflow ID has kind `workflow` and the complete
+node ID/kind/name/version/hash identity names one kind-`node` row. Add the
+required parent unique identities without triggers. Add indexes for
 `(node_definition_id, workflow_definition_id)` and
 `(node_name, node_version)`.
 
@@ -656,7 +680,9 @@ fresh resolution and fail closed on mismatch.
 Define a paged read returning workflow name/version/live state, stable local
 instance, exact mappings/parameters, and node identity. Support
 `PromotedOnly` for upgrade discovery while retaining historical reads for
-provenance.
+provenance. Also expose bindings by workflow-definition ID so upgrade
+idempotency can verify the exact newly imported unpromoted revision without a
+reverse-scan race.
 
 - [ ] **Step 5: Run focused DB/migration tests**
 
@@ -754,6 +780,13 @@ list/get/cancel/retry/status/transcript/review/wait/outcome/metrics entry
 points must filter or assert kind `workflow`; node queries filter or assert
 kind `node`. Centralize this in kind-aware factory methods where possible and
 add cross-kind route tests so a numeric run ID cannot cross the API boundary.
+Projection tables remain kind-neutral; authorize them by joining the owning
+run with the expected kind. Reconciliation, generic pipeline execution,
+retention, and metric writes remain all-kind so node runs are not stranded.
+Split public kind-scoped reads from those trusted internal reads rather than
+hard-coding every factory method to workflow. Snapshot sealing must accept a
+definition whose durable kind matches the owning run, undoing the temporary
+workflow-only check introduced while node runs did not yet exist.
 
 Refactor source-admission target loading around the durable definition kind.
 Workflow runs retain the existing stored-workflow recompilation and admission
@@ -883,6 +916,13 @@ resulting bindings target the successor content hash.
 
 Do not persist authoring drafts. A breaking classification returns a
 structured contract diff and exits before mutation.
+
+Extend workflow import with an atomic inserted-versus-idempotent-hit result (or
+an equivalent concurrency-safe method). Upgrade status is `created` only for
+an insertion and `unchanged` only for the exact prior manifest hit; querying
+`Latest` after import is not a safe substitute. Verify the imported revision's
+bindings by workflow-definition ID and exact successor content hash before
+reporting success.
 
 - [ ] **Step 5: Add failing consumer/upgrade API and Fly tests**
 

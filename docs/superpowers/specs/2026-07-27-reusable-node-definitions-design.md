@@ -164,6 +164,17 @@ catalog/version inspection, import, direct runs, release/deprecation, consumer
 discovery, and selected-workflow upgrades. It records exact node identity on
 runs and workflow revisions.
 
+These surfaces retain the accepted main-team agent authorization boundary:
+viewers may inspect nodes and their history, while members may import, release,
+deprecate, run, and upgrade them. They are not ordinary pipeline-team routes,
+and archived-team wrapping must not reinterpret them.
+
+HTTP import accepts a complete manifest object only. A node package may contain
+prompts, skills, validation profiles, and other referenced files, so a raw
+single-YAML convenience path would create a misleading partial source model.
+Fly packages a directory, validates it locally with the node compiler, and
+sends the same manifest object the server hashes and stores.
+
 Elm catalog and upgrade UI, generalized experiment integration, reusable
 composite nodes, source-owning nodes, and cross-definition semantic categories
 are follow-on work. Their absence does not justify a parallel runner or
