@@ -70,6 +70,133 @@ func (evidence ApprovalEvidence) validate() error {
 	return nil
 }
 
+func (evidence ApprovalEvidence) Validate() error {
+	return evidence.validate()
+}
+
+type EvidenceKind string
+
+const (
+	EvidenceAcceptedReview EvidenceKind = "accepted_review"
+	EvidenceHumanWait      EvidenceKind = "human_wait"
+)
+
+// AcceptedReviewEvidence is the immutable authority chain for publishing a
+// candidate that an exact code-review workflow output accepted. Candidate is
+// resolved from the run's primary input binding; it is never inferred from a
+// record digest or copied from a review projection.
+type AcceptedReviewEvidence struct {
+	Review              snapshot.SnapshotRef   `json:"review"`
+	Candidate           snapshot.SnapshotRef   `json:"candidate"`
+	Validation          snapshot.SnapshotRef   `json:"validation"`
+	ReviewWorkflowRunID snapshot.WorkflowRunID `json:"review_workflow_run_id"`
+	OutcomeRevision     int64                  `json:"outcome_revision"`
+	AcceptedBy          string                 `json:"accepted_by"`
+	AcceptedAt          time.Time              `json:"accepted_at"`
+}
+
+func (evidence AcceptedReviewEvidence) Validate() error {
+	if evidence.Review.Validate() != nil || evidence.Review.Type != snapshot.TypeRef("review/v1") ||
+		evidence.Candidate.Validate() != nil || evidence.Candidate.Type != snapshot.TypeRef("repository/v1") ||
+		evidence.Validation.Validate() != nil || evidence.Validation.Type != snapshot.TypeRef("validation/v1") ||
+		evidence.ReviewWorkflowRunID.Validate() != nil || evidence.OutcomeRevision <= 0 ||
+		!boundedText(evidence.AcceptedBy, 256, false) || !boundedEvidenceTime(evidence.AcceptedAt) {
+		return fmt.Errorf("%w: accepted review evidence is invalid", ErrInvalidRequest)
+	}
+	return nil
+}
+
+// PublicationEvidence is a closed, mutually exclusive union. AcceptedReview
+// authorizes initial PR publication without manufacturing another approval;
+// HumanWait records a later exact durable approval when policy escalates.
+type PublicationEvidence struct {
+	Kind           EvidenceKind            `json:"kind"`
+	AcceptedReview *AcceptedReviewEvidence `json:"accepted_review,omitempty"`
+	HumanWait      *ApprovalEvidence       `json:"human_wait,omitempty"`
+}
+
+func (evidence PublicationEvidence) Validate() error {
+	switch evidence.Kind {
+	case EvidenceAcceptedReview:
+		if evidence.AcceptedReview == nil || evidence.HumanWait != nil {
+			return fmt.Errorf("%w: accepted review evidence must be exclusive", ErrInvalidRequest)
+		}
+		return evidence.AcceptedReview.Validate()
+	case EvidenceHumanWait:
+		if evidence.HumanWait == nil || evidence.AcceptedReview != nil {
+			return fmt.Errorf("%w: human wait evidence must be exclusive", ErrInvalidRequest)
+		}
+		return evidence.HumanWait.Validate()
+	default:
+		return fmt.Errorf("%w: publication evidence kind is invalid", ErrInvalidRequest)
+	}
+}
+
+func (evidence PublicationEvidence) Clone() PublicationEvidence {
+	if evidence.AcceptedReview != nil {
+		value := *evidence.AcceptedReview
+		evidence.AcceptedReview = &value
+	}
+	if evidence.HumanWait != nil {
+		value := *evidence.HumanWait
+		evidence.HumanWait = &value
+	}
+	return evidence
+}
+
+type AcceptedReviewEvidenceRequest struct {
+	Review              snapshot.SnapshotRef   `json:"review"`
+	Candidate           snapshot.SnapshotRef   `json:"candidate"`
+	Validation          snapshot.SnapshotRef   `json:"validation"`
+	ReviewWorkflowRunID snapshot.WorkflowRunID `json:"review_workflow_run_id"`
+	OutcomeRevision     int64                  `json:"outcome_revision"`
+}
+
+func (request AcceptedReviewEvidenceRequest) validate() error {
+	if request.Review.Validate() != nil || request.Review.Type != snapshot.TypeRef("review/v1") ||
+		request.Candidate.Validate() != nil || request.Candidate.Type != snapshot.TypeRef("repository/v1") ||
+		request.Validation.Validate() != nil || request.Validation.Type != snapshot.TypeRef("validation/v1") ||
+		request.ReviewWorkflowRunID.Validate() != nil || request.OutcomeRevision <= 0 {
+		return fmt.Errorf("%w: accepted review evidence request is invalid", ErrInvalidRequest)
+	}
+	return nil
+}
+
+type EvidenceRequest struct {
+	TeamID         int                            `json:"team_id"`
+	AcceptedReview *AcceptedReviewEvidenceRequest `json:"accepted_review,omitempty"`
+	HumanWait      *DurableApprovalRequest        `json:"human_wait,omitempty"`
+}
+
+func (request EvidenceRequest) validate() error {
+	if request.TeamID <= 0 || (request.AcceptedReview == nil) == (request.HumanWait == nil) {
+		return fmt.Errorf("%w: publication evidence request must select exactly one variant", ErrInvalidRequest)
+	}
+	if request.AcceptedReview != nil {
+		return request.AcceptedReview.validate()
+	}
+	if request.HumanWait.TeamID != request.TeamID {
+		return fmt.Errorf("%w: human wait team does not match publication evidence", ErrInvalidRequest)
+	}
+	return request.HumanWait.validate()
+}
+
+func (request EvidenceRequest) clone() EvidenceRequest {
+	if request.AcceptedReview != nil {
+		value := *request.AcceptedReview
+		request.AcceptedReview = &value
+	}
+	if request.HumanWait != nil {
+		value := request.HumanWait.clone()
+		request.HumanWait = &value
+	}
+	return request
+}
+
+func boundedEvidenceTime(value time.Time) bool {
+	return !value.IsZero() && value.Year() >= 1 && value.Year() <= 9999
+}
+
 func (authority Authority) validate(requireWorkflowRun bool) error {
 	if authority.TeamID <= 0 || authority.BuildID <= 0 ||
 		!boundedText(authority.TeamName, 256, false) || !boundedText(authority.Actor, 256, false) {

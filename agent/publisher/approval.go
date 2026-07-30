@@ -63,6 +63,47 @@ type MergeApprovalVerifier interface {
 	Verify(context.Context, MergeApprovalRequest) (ApprovalEvidence, error)
 }
 
+// DurableApprovalRequest is the generic, server-owned half of a durable human
+// approval check. ExpectedContext must be the exact canonical machine-readable
+// context the operation being attempted derives. Typed intent builders (the
+// merge wrapper here and PR approval policy) remain responsible for deriving
+// and validating that context.
+type DurableApprovalRequest struct {
+	TeamID          int                    `json:"team_id"`
+	WorkflowRunID   snapshot.WorkflowRunID `json:"workflow_run_id"`
+	BuildID         int64                  `json:"build_id"`
+	Approval        snapshot.SnapshotRef   `json:"approval"`
+	ExpectedContext json.RawMessage        `json:"expected_context"`
+}
+
+func (request DurableApprovalRequest) clone() DurableApprovalRequest {
+	request.ExpectedContext = append(json.RawMessage(nil), request.ExpectedContext...)
+	return request
+}
+
+func (request DurableApprovalRequest) validate() error {
+	if request.TeamID <= 0 || request.BuildID <= 0 ||
+		request.WorkflowRunID.Validate() != nil ||
+		request.Approval.Validate() != nil ||
+		request.Approval.Type != snapshot.TypeRef("human-answer/v1") ||
+		len(request.ExpectedContext) == 0 || len(request.ExpectedContext) > 64<<10 ||
+		!json.Valid(request.ExpectedContext) ||
+		!bytes.Equal(bytes.TrimSpace(request.ExpectedContext), request.ExpectedContext) ||
+		request.ExpectedContext[0] != '{' {
+		return fmt.Errorf("%w: durable approval request is invalid", ErrInvalidRequest)
+	}
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, request.ExpectedContext); err != nil ||
+		!bytes.Equal(compact.Bytes(), request.ExpectedContext) {
+		return fmt.Errorf("%w: durable approval context must be canonical JSON", ErrInvalidRequest)
+	}
+	return nil
+}
+
+type ExactApprovalVerifier interface {
+	VerifyExact(context.Context, DurableApprovalRequest) (ApprovalEvidence, error)
+}
+
 type DurableApprovalVerifier struct {
 	waits         WaitLister
 	metadata      snapshot.MetadataStore
@@ -196,6 +237,35 @@ func (verifier *DurableApprovalVerifier) Verify(ctx context.Context, request Mer
 	if ctx == nil || validateMergeApprovalRequest(request, true) != nil {
 		return ApprovalEvidence{}, fmt.Errorf("%w: merge approval request is invalid", ErrInvalidRequest)
 	}
+	approvalContext, err := BuildMergeApprovalContext(request)
+	if err != nil {
+		return ApprovalEvidence{}, err
+	}
+	expectedContext, err := json.Marshal(approvalContext)
+	if err != nil {
+		return ApprovalEvidence{}, fmt.Errorf("%w: encode merge approval context", ErrInvalidRequest)
+	}
+	return verifier.VerifyExact(ctx, DurableApprovalRequest{
+		TeamID: request.TeamID, WorkflowRunID: request.WorkflowRunID,
+		BuildID: request.BuildID, Approval: request.Approval,
+		ExpectedContext: expectedContext,
+	})
+}
+
+func (verifier *DurableApprovalVerifier) VerifyExact(
+	ctx context.Context,
+	request DurableApprovalRequest,
+) (ApprovalEvidence, error) {
+	if verifier == nil || ctx == nil {
+		return ApprovalEvidence{}, fmt.Errorf("%w: durable approval verifier and context are required", ErrInvalidRequest)
+	}
+	if err := ctx.Err(); err != nil {
+		return ApprovalEvidence{}, err
+	}
+	request = request.clone()
+	if err := request.validate(); err != nil {
+		return ApprovalEvidence{}, err
+	}
 	waits, err := verifier.waits.List(ctx, request.TeamID, request.WorkflowRunID)
 	if err != nil {
 		return ApprovalEvidence{}, fmt.Errorf("publisher: list durable approval waits: %w", err)
@@ -203,7 +273,10 @@ func (verifier *DurableApprovalVerifier) Verify(ctx context.Context, request Mer
 	var matched *workflowwait.Wait
 	for index := range waits {
 		wait := &waits[index]
-		if wait.Key.BuildID != request.BuildID || wait.Status != workflowwait.StatusResolved ||
+		if wait.Key.TeamID != request.TeamID ||
+			wait.Key.WorkflowRunID != request.WorkflowRunID ||
+			wait.Key.BuildID != request.BuildID ||
+			wait.Status != workflowwait.StatusResolved ||
 			wait.ResolutionSource != "human" || wait.Answer == nil || *wait.Answer != request.Approval {
 			continue
 		}
@@ -212,8 +285,10 @@ func (verifier *DurableApprovalVerifier) Verify(ctx context.Context, request Mer
 		}
 		matched = wait
 	}
-	if matched == nil || matched.ResolvedAt == nil || strings.TrimSpace(matched.ResolvedBy) == "" {
-		return ApprovalEvidence{}, fmt.Errorf("%w: exact resolved merge approval was not found", ErrInvalidRequest)
+	if matched == nil || matched.ResolvedAt == nil ||
+		!boundedText(matched.ResolvedBy, 256, false) ||
+		!boundedEvidenceTime(*matched.ResolvedAt) {
+		return ApprovalEvidence{}, fmt.Errorf("%w: exact resolved durable approval was not found", ErrInvalidRequest)
 	}
 
 	questionManifest, err := verifier.authorizedManifest(ctx, request.TeamID, matched.Question)
@@ -244,24 +319,17 @@ func (verifier *DurableApprovalVerifier) Verify(ctx context.Context, request Mer
 	if !containsExact(question.Options, "approve") || !containsExact(question.Options, "reject") || question.Default == "approve" {
 		return ApprovalEvidence{}, fmt.Errorf("%w: merge approval question is not fail-closed", ErrInvalidRequest)
 	}
-	var approvalContext MergeApprovalContext
-	decoder := json.NewDecoder(strings.NewReader(question.Context))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&approvalContext); err != nil {
-		return ApprovalEvidence{}, fmt.Errorf("%w: merge approval context is invalid", ErrInvalidRequest)
+	if question.Context != string(request.ExpectedContext) {
+		return ApprovalEvidence{}, fmt.Errorf("%w: durable approval does not bind the exact publication intent", ErrInvalidRequest)
 	}
-	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return ApprovalEvidence{}, fmt.Errorf("%w: merge approval context has trailing data", ErrInvalidRequest)
-	}
-	expectedContext, err := BuildMergeApprovalContext(request)
-	if err != nil || approvalContext != expectedContext {
-		return ApprovalEvidence{}, fmt.Errorf("%w: merge approval does not bind the exact publication", ErrInvalidRequest)
-	}
-	return ApprovalEvidence{
+	evidence := ApprovalEvidence{
 		WaitID: matched.ID, Question: matched.Question, Answer: request.Approval,
 		ResolvedBy: matched.ResolvedBy, ResolvedAt: matched.ResolvedAt.UTC(),
-	}, nil
+	}
+	if err := evidence.Validate(); err != nil {
+		return ApprovalEvidence{}, err
+	}
+	return evidence, nil
 }
 
 func (verifier *DurableApprovalVerifier) authorizedManifest(ctx context.Context, teamID int, ref snapshot.SnapshotRef) (snapshot.Snapshot, error) {
@@ -326,3 +394,4 @@ func containsExact(values []string, wanted string) bool {
 }
 
 var _ MergeApprovalVerifier = (*DurableApprovalVerifier)(nil)
+var _ ExactApprovalVerifier = (*DurableApprovalVerifier)(nil)

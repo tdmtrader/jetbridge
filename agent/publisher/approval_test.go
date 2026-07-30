@@ -93,6 +93,8 @@ func TestDurableApprovalVerifierRejectsAnythingExceptExactFailClosedHumanApprove
 		{name: "missing reject option", question: func(document *contracts.QuestionDocument) { document.Options = []string{"approve"} }},
 		{name: "non-human resolution", wait: func(wait *workflowwait.Wait) { wait.ResolutionSource = "timeout" }},
 		{name: "unresolved wait", wait: func(wait *workflowwait.Wait) { wait.Status = workflowwait.StatusWaiting }},
+		{name: "wait from another team", wait: func(wait *workflowwait.Wait) { wait.Key.TeamID++ }},
+		{name: "wait from another workflow run", wait: func(wait *workflowwait.Wait) { wait.Key.WorkflowRunID++ }},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
