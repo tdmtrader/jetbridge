@@ -13,6 +13,8 @@ type azurePullRequest struct {
 	PullRequestID             int64           `json:"pullRequestId"`
 	Status                    string          `json:"status"`
 	MergeStatus               string          `json:"mergeStatus"`
+	Title                     string          `json:"title"`
+	Description               string          `json:"description"`
 	SourceRefName             string          `json:"sourceRefName"`
 	TargetRefName             string          `json:"targetRefName"`
 	LastMergeSourceCommit     azureCommit     `json:"lastMergeSourceCommit"`
@@ -111,4 +113,38 @@ type azureProperty struct {
 type collectionPage[T any] struct {
 	Count *int `json:"count"`
 	Value *[]T `json:"value"`
+}
+
+type azureRef struct {
+	Name     string `json:"name"`
+	ObjectID string `json:"objectId"`
+}
+
+type azureRefUpdate struct {
+	Name        string `json:"name"`
+	OldObjectID string `json:"oldObjectId"`
+	NewObjectID string `json:"newObjectId"`
+}
+
+type azureRefUpdateResult struct {
+	RepositoryID string `json:"repositoryId"`
+	Name         string `json:"name"`
+	OldObjectID  string `json:"oldObjectId"`
+	NewObjectID  string `json:"newObjectId"`
+	Success      bool   `json:"success"`
+	UpdateStatus string `json:"updateStatus"`
+}
+
+type azureStatusContext struct {
+	Name  string `json:"name"`
+	Genre string `json:"genre"`
+}
+
+type azurePullRequestStatus struct {
+	ID          int64              `json:"id,omitempty"`
+	State       string             `json:"state"`
+	Description string             `json:"description"`
+	TargetURL   string             `json:"targetUrl"`
+	Context     azureStatusContext `json:"context"`
+	IterationID int64              `json:"iterationId"`
 }

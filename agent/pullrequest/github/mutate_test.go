@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/concourse/concourse/agent/pullrequest"
+	"github.com/concourse/concourse/agent/pullrequest/conformance"
 	"github.com/concourse/concourse/agent/snapshot/contracts"
 )
 
@@ -383,6 +384,40 @@ func TestMutatorRejectsRecoveredReplyMarkerOnTheWrongAuthorizedThread(t *testing
 	if posts != 0 {
 		t.Fatalf("provider posts = %d, want none after wrong-thread recovery", posts)
 	}
+}
+
+func TestMutatorProviderNeutralConformance(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		t.Fatal("invalid conformance request reached GitHub")
+		return nil, nil
+	})}
+	mutator, err := NewMutator(
+		"https://api.github.example",
+		tokenFunc(func(context.Context) (string, error) { return "mutation-secret", nil }),
+		conformanceBranchWriter{t: t},
+		client,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conformance.RunMutationSuite(t, conformance.MutationSubject{
+		Mutator:    mutator,
+		Provider:   pullrequest.ProviderGitHub,
+		Repository: "acme/widget",
+		ExternalID: "42",
+	})
+}
+
+type conformanceBranchWriter struct {
+	t *testing.T
+}
+
+func (writer conformanceBranchWriter) CompareAndSwapBranch(
+	context.Context,
+	pullrequest.BranchMutation,
+) (pullrequest.BranchResult, error) {
+	writer.t.Fatal("invalid conformance request reached GitHub branch writer")
+	return pullrequest.BranchResult{}, nil
 }
 
 type successfulBranchWriter struct{}
