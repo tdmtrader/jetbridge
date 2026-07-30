@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/agent/broker"
+	"github.com/concourse/concourse/agent/snapshot"
 )
 
 const (
@@ -243,7 +244,30 @@ func containsAction(actions []CapabilityAction, expected CapabilityAction) bool 
 }
 func equalCapabilityString(left, right string) bool { return hmac.Equal([]byte(left), []byte(right)) }
 func scopeEqual(left, right Scope) bool {
-	return left.TeamID == right.TeamID && left.WorkflowRunID == right.WorkflowRunID && left.ParentAttempt == right.ParentAttempt && left.LeaseDuration == right.LeaseDuration && equalCapabilityString(left.NodePlanID, right.NodePlanID) && equalCapabilityString(left.BrokerInstance, right.BrokerInstance)
+	return left.TeamID == right.TeamID &&
+		left.BuildID == right.BuildID &&
+		left.WorkflowDefinitionID == right.WorkflowDefinitionID &&
+		left.WorkflowRunID == right.WorkflowRunID &&
+		left.ParentAttempt == right.ParentAttempt &&
+		left.LeaseDuration == right.LeaseDuration &&
+		equalCapabilityString(left.TeamName, right.TeamName) &&
+		equalCapabilityString(left.SnapshotCreatedBy, right.SnapshotCreatedBy) &&
+		equalCapabilityString(left.NodePlanID, right.NodePlanID) &&
+		equalCapabilityString(left.BrokerInstance, right.BrokerInstance) &&
+		scopeInputsEqual(left.Inputs, right.Inputs)
+}
+
+func scopeInputsEqual(left, right map[string]snapshot.SnapshotRef) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for _, name := range sortedInputNames(left) {
+		rightRef, found := right[name]
+		if !found || left[name] != rightRef {
+			return false
+		}
+	}
+	return true
 }
 func cloneProfiles(source []broker.Profile) []broker.Profile {
 	result := append([]broker.Profile(nil), source...)

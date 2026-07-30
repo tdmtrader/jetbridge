@@ -61,9 +61,12 @@ func (sealer *OrdinaryResultSealer) Seal(ctx context.Context, scope Scope, execu
 	if err != nil {
 		return SealedResult{}, fmt.Errorf("agent child ordinary result sealer: encode authoritative record: %w", err)
 	}
+	workflowDefinitionID := scope.WorkflowDefinitionID
+	workflowRunID := snapshot.WorkflowRunID(scope.WorkflowRunID)
 	outputs, err := sealer.creator.Seal(ctx, snapshot.SealRequest{
 		BuildID: scope.BuildID, TeamID: scope.TeamID, TeamName: scope.TeamName, CreatedBy: scope.SnapshotCreatedBy,
 		PlanID: scope.NodePlanID, Attempt: strconv.Itoa(scope.ParentAttempt), StepKind: "agent-child-execution", StepName: execution.IdempotencyKey,
+		WorkflowDefinitionID: &workflowDefinitionID, WorkflowRunID: &workflowRunID,
 		InputOrder: inputOrder, Inputs: inputs,
 		OutputDeclarations: []snapshot.Port{{Name: "result", Type: resultType}},
 		Outputs: []snapshot.OutputSource{{

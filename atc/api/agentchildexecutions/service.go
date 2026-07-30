@@ -16,16 +16,17 @@ import (
 )
 
 type Scope struct {
-	TeamID            int                             `json:"team_id"`
-	TeamName          string                          `json:"team_name"`
-	BuildID           int                             `json:"build_id"`
-	SnapshotCreatedBy string                          `json:"snapshot_created_by"`
-	WorkflowRunID     int64                           `json:"workflow_run_id"`
-	NodePlanID        string                          `json:"node_plan_id"`
-	ParentAttempt     int                             `json:"parent_attempt"`
-	BrokerInstance    string                          `json:"broker_instance"`
-	LeaseDuration     time.Duration                   `json:"lease_duration"`
-	Inputs            map[string]snapshot.SnapshotRef `json:"inputs"`
+	TeamID               int                             `json:"team_id"`
+	TeamName             string                          `json:"team_name"`
+	BuildID              int                             `json:"build_id"`
+	SnapshotCreatedBy    string                          `json:"snapshot_created_by"`
+	WorkflowDefinitionID int                             `json:"workflow_definition_id"`
+	WorkflowRunID        int64                           `json:"workflow_run_id"`
+	NodePlanID           string                          `json:"node_plan_id"`
+	ParentAttempt        int                             `json:"parent_attempt"`
+	BrokerInstance       string                          `json:"broker_instance"`
+	LeaseDuration        time.Duration                   `json:"lease_duration"`
+	Inputs               map[string]snapshot.SnapshotRef `json:"inputs"`
 }
 
 type ExecutionStore interface {

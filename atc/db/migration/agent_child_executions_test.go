@@ -2,6 +2,7 @@ package migration_test
 
 import (
 	"database/sql"
+	"strings"
 
 	"code.cloudfoundry.org/lager/v3"
 	"github.com/concourse/concourse/atc/db/lock"
@@ -62,6 +63,36 @@ var _ = Describe("agent child executions migration", func() {
 		`).Scan(&constraints)).To(Succeed())
 		Expect(constraints).To(BeNumerically(">=", 10))
 
+		var resultColumns int
+		Expect(database.QueryRow(`
+			SELECT count(*)
+			FROM information_schema.columns
+			WHERE table_schema = 'public'
+			  AND table_name = 'agent_child_executions'
+			  AND column_name IN ('result_snapshot_type', 'result_snapshot_digest', 'result_body')
+		`).Scan(&resultColumns)).To(Succeed())
+		Expect(resultColumns).To(Equal(3))
+
+		rows, err := database.Query(`
+			SELECT pg_get_constraintdef(oid)
+			FROM pg_constraint
+			WHERE conrelid = 'agent_child_executions'::regclass AND contype = 'c'
+		`)
+		Expect(err).NotTo(HaveOccurred())
+		defer rows.Close()
+		var definitions []string
+		for rows.Next() {
+			var definition string
+			Expect(rows.Scan(&definition)).To(Succeed())
+			definitions = append(definitions, definition)
+		}
+		Expect(rows.Err()).NotTo(HaveOccurred())
+		terminalConstraint := strings.Join(definitions, "\n")
+		Expect(terminalConstraint).To(ContainSubstring("result_snapshot_type"))
+		Expect(terminalConstraint).To(ContainSubstring("result_snapshot_digest"))
+		Expect(terminalConstraint).To(ContainSubstring("result_body"))
+		Expect(terminalConstraint).To(ContainSubstring("state = 'succeeded'"))
+
 		Expect(migrator.Migrate(nil, nil, beforeVersion)).To(Succeed())
 		Expect(database.QueryRow(`
 			SELECT count(*)
@@ -70,5 +101,12 @@ var _ = Describe("agent child executions migration", func() {
 			  AND table_name IN ('agent_child_executions', 'agent_child_execution_events')
 		`).Scan(&tables)).To(Succeed())
 		Expect(tables).To(BeZero())
+		Expect(database.QueryRow(`
+			SELECT count(*)
+			FROM information_schema.table_constraints
+			WHERE table_schema = 'public' AND table_name = 'agent_snapshots'
+			  AND constraint_name = 'agent_snapshots_id_team_key'
+		`).Scan(&constraints)).To(Succeed())
+		Expect(constraints).To(BeZero())
 	})
 })

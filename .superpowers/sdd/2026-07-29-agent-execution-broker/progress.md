@@ -38,3 +38,11 @@ Follow-up wiring adds internal routes, team-scoped inspection, command
 composition, and bounded expired-lease reconciliation. Full durable terminal
 result rehydration for duplicate admissions remains open because the ledger
 stores only result_snapshot_id, not a result body/full snapshot reference.
+Task 8c: complete (final bounded review fix commit) — capability scopes bind a
+positive workflow definition ID and compare complete sealing authority,
+ordinary sealing supplies exact definition/run occurrence pointers, and the
+durable replay migration/factory receive terminal-column and full-success
+round-trip coverage. `go test ./atc/api/agentchildexecutions -count=1` and DB/
+migration compile-only checks passed. The one serial PostgreSQL attempt ran 0
+specs because initdb's `shmget` shared-memory allocation returned `Operation
+not permitted`; do not retry in this sandbox.

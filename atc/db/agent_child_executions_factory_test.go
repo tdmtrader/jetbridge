@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/agent/broker"
+	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/atc/db"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -82,6 +83,89 @@ var _ = Describe("AgentChildExecutionsFactory", func() {
 			State: broker.ExecutionRunning, Phase: "running",
 		})
 		Expect(err).To(MatchError(ContainSubstring("sequence")))
+	})
+
+	It("rejects a terminal result whose snapshot ID conflicts with its reference", func() {
+		identity := broker.ExecutionIdentity{
+			TeamID: defaultTeam.ID(), WorkflowRunID: runID, NodePlanID: "mismatched-result",
+			ParentAttempt: 1, IdempotencyKey: "mismatched-result", Tool: broker.ToolConsultAgent,
+			Selector:  broker.Selector{Tier: broker.TierBalanced, Effort: broker.EffortHigh},
+			ProfileID: "profile", ProfileDigest: "sha256:" + strings.Repeat("c", 64),
+			InputDigest: "sha256:" + strings.Repeat("d", 64), Attachments: []string{"design"},
+		}
+		created, err := factory.Create(context.Background(), "7a6c96a8-79c2-4624-a5d2-318bb3a8dd07", identity)
+		Expect(err).NotTo(HaveOccurred())
+
+		admitted, err := factory.Advance(context.Background(), db.AdvanceAgentChildExecution{
+			ID: created.ID, TeamID: defaultTeam.ID(), ExpectedSequence: created.Sequence,
+			State: broker.ExecutionAdmitted, Phase: "admitted", LeaseExpiresAt: time.Now().Add(time.Minute),
+		})
+		Expect(err).NotTo(HaveOccurred())
+		capturing, err := factory.Advance(context.Background(), db.AdvanceAgentChildExecution{ID: admitted.ID, TeamID: defaultTeam.ID(), ExpectedSequence: admitted.Sequence, State: broker.ExecutionCapturing, Phase: "capturing"})
+		Expect(err).NotTo(HaveOccurred())
+		running, err := factory.Advance(context.Background(), db.AdvanceAgentChildExecution{ID: capturing.ID, TeamID: defaultTeam.ID(), ExpectedSequence: capturing.Sequence, State: broker.ExecutionRunning, Phase: "running"})
+		Expect(err).NotTo(HaveOccurred())
+		validating, err := factory.Advance(context.Background(), db.AdvanceAgentChildExecution{ID: running.ID, TeamID: defaultTeam.ID(), ExpectedSequence: running.Sequence, State: broker.ExecutionValidating, Phase: "validating"})
+		Expect(err).NotTo(HaveOccurred())
+		sealing, err := factory.Advance(context.Background(), db.AdvanceAgentChildExecution{ID: validating.ID, TeamID: defaultTeam.ID(), ExpectedSequence: validating.Sequence, State: broker.ExecutionSealing, Phase: "sealing"})
+		Expect(err).NotTo(HaveOccurred())
+
+		_, err = factory.Advance(context.Background(), db.AdvanceAgentChildExecution{
+			ID: sealing.ID, TeamID: defaultTeam.ID(), ExpectedSequence: sealing.Sequence,
+			State: broker.ExecutionSucceeded, Phase: "succeeded", ResultSnapshotID: 99,
+			ResultSnapshot: &snapshot.SnapshotRef{ID: 100, Type: "consultation/v1", Digest: snapshot.Digest("sha256:" + strings.Repeat("e", 64))},
+			ResultBody:     []byte(`{"answer":"answer","claims":[],"assumptions":[],"uncertainties":[],"recommendations":[]}`),
+		})
+		Expect(err).To(MatchError(ContainSubstring("conflicts")))
+	})
+
+	It("persists a sealed replay result with its reference body and observed metrics", func() {
+		identity := broker.ExecutionIdentity{
+			TeamID: defaultTeam.ID(), WorkflowRunID: runID, NodePlanID: "durable-replay",
+			ParentAttempt: 1, IdempotencyKey: "durable-replay", Tool: broker.ToolConsultAgent,
+			Selector:  broker.Selector{Tier: broker.TierBalanced, Effort: broker.EffortHigh},
+			ProfileID: "profile", ProfileDigest: "sha256:" + strings.Repeat("c", 64),
+			InputDigest: "sha256:" + strings.Repeat("d", 64), Attachments: []string{"design"},
+		}
+		var snapshotID snapshot.SnapshotID
+		sealedDigest := snapshot.Digest("sha256:" + strings.Repeat("e", 64))
+		Expect(dbConn.QueryRow(`
+			INSERT INTO agent_snapshots
+				(team_id, type_name, type_version, digest, byte_size, file_count, representation, content_state)
+			VALUES ($1, 'consultation', 1, $2, 1024, 1, 'filesystem-tree-v1', 'available')
+			RETURNING id
+		`, defaultTeam.ID(), sealedDigest).Scan(&snapshotID)).To(Succeed())
+		sealedRef := snapshot.SnapshotRef{ID: snapshotID, Type: "consultation/v1", Digest: sealedDigest}
+		body := []byte(`{"answer":"answer","claims":[],"assumptions":[],"uncertainties":[],"recommendations":[]}`)
+		usage := []byte(`{"input_tokens":17,"output_tokens":23,"cost_usd":0.42}`)
+		duration := int64(1250)
+
+		created, err := factory.Create(context.Background(), "372d6091-066d-42fb-b462-5a7d8e9a7f61", identity)
+		Expect(err).NotTo(HaveOccurred())
+		advance := func(current db.AgentChildExecution, state broker.ExecutionState, phase string, extra db.AdvanceAgentChildExecution) db.AgentChildExecution {
+			extra.ID, extra.TeamID, extra.ExpectedSequence = current.ID, defaultTeam.ID(), current.Sequence
+			extra.State, extra.Phase = state, phase
+			updated, err := factory.Advance(context.Background(), extra)
+			Expect(err).NotTo(HaveOccurred())
+			return updated
+		}
+		admitted := advance(created, broker.ExecutionAdmitted, "admitted", db.AdvanceAgentChildExecution{LeaseExpiresAt: time.Now().Add(time.Minute), BrokerInstance: "broker-1"})
+		capturing := advance(admitted, broker.ExecutionCapturing, "capturing", db.AdvanceAgentChildExecution{})
+		running := advance(capturing, broker.ExecutionRunning, "running", db.AdvanceAgentChildExecution{ObservedUsage: usage, DurationMS: &duration})
+		validating := advance(running, broker.ExecutionValidating, "validating", db.AdvanceAgentChildExecution{})
+		sealing := advance(validating, broker.ExecutionSealing, "sealing", db.AdvanceAgentChildExecution{})
+		advance(sealing, broker.ExecutionSucceeded, "succeeded", db.AdvanceAgentChildExecution{ResultSnapshotID: int64(sealedRef.ID), ResultSnapshot: &sealedRef, ResultBody: body})
+
+		persisted, found, err := factory.Find(context.Background(), defaultTeam.ID(), created.ID)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(persisted.State).To(Equal(broker.ExecutionSucceeded))
+		Expect(persisted.ResultSnapshot).NotTo(BeNil())
+		Expect(*persisted.ResultSnapshot).To(Equal(sealedRef))
+		Expect(persisted.ResultBody).To(MatchJSON(body))
+		Expect(persisted.ObservedUsage).To(MatchJSON(usage))
+		Expect(persisted.DurationMS).NotTo(BeNil())
+		Expect(*persisted.DurationMS).To(Equal(duration))
 	})
 
 	It("converges concurrent creates on one durable execution", func() {

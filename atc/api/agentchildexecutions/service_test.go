@@ -23,7 +23,7 @@ func TestServiceVerifiesFrozenResolutionAndOwnsTerminalBinding(t *testing.T) {
 	sealer := &fakeSealer{}
 	service, err := agentchildexecutions.NewService(agentchildexecutions.Config{
 		Scope: agentchildexecutions.Scope{
-			TeamID: 1, TeamName: "main", BuildID: 1, SnapshotCreatedBy: "atc", WorkflowRunID: 2, NodePlanID: "node", ParentAttempt: 1,
+			TeamID: 1, TeamName: "main", BuildID: 1, SnapshotCreatedBy: "atc", WorkflowDefinitionID: 1, WorkflowRunID: 2, NodePlanID: "node", ParentAttempt: 1,
 			BrokerInstance: "pod-1", LeaseDuration: time.Minute, Inputs: completeScope().Inputs,
 		},
 		Catalog: catalog, Store: store, Sealer: sealer,
@@ -75,7 +75,7 @@ func TestServiceRejectsUnsafeEventsAndPersistsExactTerminalFailure(t *testing.T)
 	store := &fakeStore{}
 	service, err := agentchildexecutions.NewService(agentchildexecutions.Config{
 		Scope: agentchildexecutions.Scope{
-			TeamID: 1, TeamName: "main", BuildID: 1, SnapshotCreatedBy: "atc", WorkflowRunID: 2, NodePlanID: "node", ParentAttempt: 1,
+			TeamID: 1, TeamName: "main", BuildID: 1, SnapshotCreatedBy: "atc", WorkflowDefinitionID: 1, WorkflowRunID: 2, NodePlanID: "node", ParentAttempt: 1,
 			BrokerInstance: "pod-1", LeaseDuration: time.Minute, Inputs: completeScope().Inputs,
 		},
 		Catalog: catalog, Store: store, Sealer: &fakeSealer{},
@@ -118,7 +118,7 @@ func TestServiceOwnsClosedTerminalContractAndSafeSummary(t *testing.T) {
 	store := &fakeStore{}
 	service, err := agentchildexecutions.NewService(agentchildexecutions.Config{
 		Scope: agentchildexecutions.Scope{
-			TeamID: 1, TeamName: "main", BuildID: 1, SnapshotCreatedBy: "atc", WorkflowRunID: 2, NodePlanID: "node", ParentAttempt: 1,
+			TeamID: 1, TeamName: "main", BuildID: 1, SnapshotCreatedBy: "atc", WorkflowDefinitionID: 1, WorkflowRunID: 2, NodePlanID: "node", ParentAttempt: 1,
 			BrokerInstance: "pod-1", LeaseDuration: time.Minute, Inputs: completeScope().Inputs,
 		},
 		Catalog: catalog, Store: store, Sealer: &fakeSealer{},
@@ -161,7 +161,7 @@ func TestServiceRejectsTerminalTransitionsThroughGenericPhase(t *testing.T) {
 	store := &fakeStore{}
 	service, err := agentchildexecutions.NewService(agentchildexecutions.Config{
 		Scope: agentchildexecutions.Scope{
-			TeamID: 1, TeamName: "main", BuildID: 1, SnapshotCreatedBy: "atc", WorkflowRunID: 2, NodePlanID: "node", ParentAttempt: 1,
+			TeamID: 1, TeamName: "main", BuildID: 1, SnapshotCreatedBy: "atc", WorkflowDefinitionID: 1, WorkflowRunID: 2, NodePlanID: "node", ParentAttempt: 1,
 			BrokerInstance: "pod-1", LeaseDuration: time.Minute, Inputs: completeScope().Inputs,
 		},
 		Catalog: catalog, Store: store, Sealer: &fakeSealer{},
@@ -275,5 +275,5 @@ func authorityProfile() broker.Profile {
 }
 
 func completeScope() agentchildexecutions.Scope {
-	return agentchildexecutions.Scope{TeamID: 1, TeamName: "main", BuildID: 1, SnapshotCreatedBy: "atc", WorkflowRunID: 2, NodePlanID: "node", ParentAttempt: 1, BrokerInstance: "broker-1", LeaseDuration: time.Minute, Inputs: map[string]snapshot.SnapshotRef{"design": {ID: 1, Type: "repository-change/v1", Digest: snapshot.Digest("sha256:" + strings.Repeat("a", 64))}, "api-contract": {ID: 2, Type: "repository-change/v1", Digest: snapshot.Digest("sha256:" + strings.Repeat("b", 64))}, "workspace": {ID: 3, Type: "repository-change/v1", Digest: snapshot.Digest("sha256:" + strings.Repeat("c", 64))}, "validation": {ID: 4, Type: "validation/v1", Digest: snapshot.Digest("sha256:" + strings.Repeat("d", 64))}}}
+	return agentchildexecutions.Scope{TeamID: 1, TeamName: "main", BuildID: 1, SnapshotCreatedBy: "atc", WorkflowDefinitionID: 1, WorkflowRunID: 2, NodePlanID: "node", ParentAttempt: 1, BrokerInstance: "broker-1", LeaseDuration: time.Minute, Inputs: map[string]snapshot.SnapshotRef{"design": {ID: 1, Type: "repository-change/v1", Digest: snapshot.Digest("sha256:" + strings.Repeat("a", 64))}, "api-contract": {ID: 2, Type: "repository-change/v1", Digest: snapshot.Digest("sha256:" + strings.Repeat("b", 64))}, "workspace": {ID: 3, Type: "repository-change/v1", Digest: snapshot.Digest("sha256:" + strings.Repeat("c", 64))}, "validation": {ID: 4, Type: "validation/v1", Digest: snapshot.Digest("sha256:" + strings.Repeat("d", 64))}}}
 }

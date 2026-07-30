@@ -25,7 +25,7 @@ func TestOrdinaryResultSealerDerivesReviewAuthorityAndUsesSnapshotCreator(t *tes
 	validation := snapshot.SnapshotRef{ID: 12, Type: "validation/v1", Digest: snapshot.Digest("sha256:" + strings.Repeat("b", 64))}
 	_, err = sealer.Seal(context.Background(), agentchildexecutions.Scope{
 		TeamID: 1, TeamName: "main", BuildID: 2, SnapshotCreatedBy: "atc",
-		WorkflowRunID: 3, NodePlanID: "node", ParentAttempt: 1, BrokerInstance: "broker", LeaseDuration: time.Minute,
+		WorkflowDefinitionID: 31, WorkflowRunID: 3, NodePlanID: "node", ParentAttempt: 1, BrokerInstance: "broker", LeaseDuration: time.Minute,
 		Inputs: map[string]snapshot.SnapshotRef{"workspace": workspace, "validation": validation},
 	}, broker.ExecutionIdentity{IdempotencyKey: "review", Tool: broker.ToolRequestReview, Attachments: []string{"workspace", "validation"}}, agentchildexecutions.CandidateResult{
 		Body: json.RawMessage(`{"conclusion":"accept","summary":"looks good","findings":[]}`),
@@ -35,6 +35,9 @@ func TestOrdinaryResultSealerDerivesReviewAuthorityAndUsesSnapshotCreator(t *tes
 	}
 	if creator.request.BuildID != 2 || creator.request.TeamID != 1 || len(creator.request.OutputDeclarations) != 1 || creator.request.OutputDeclarations[0].Type != "review/v1" {
 		t.Fatalf("snapshot request = %#v", creator.request)
+	}
+	if creator.request.WorkflowDefinitionID == nil || *creator.request.WorkflowDefinitionID != 31 || creator.request.WorkflowRunID == nil || *creator.request.WorkflowRunID != snapshot.WorkflowRunID(3) {
+		t.Fatalf("snapshot occurrence authority = definition=%v run=%v", creator.request.WorkflowDefinitionID, creator.request.WorkflowRunID)
 	}
 	record := readRecordFromOutput(t, creator.request.Outputs[0])
 	if record.Type != "review/v1" || len(record.Subjects) != 2 || record.Subjects[0] != contracts.SubjectFromInput("validation", contracts.SubjectRoleEvidence, "validation", validation) || record.Subjects[1] != contracts.SubjectFromInput("workspace", contracts.SubjectRolePrimary, "workspace", workspace) {
@@ -49,7 +52,7 @@ func TestOrdinaryResultSealerRejectsSidecarResultTypeAndMissingAuthorityInput(t 
 	}
 	_, err = sealer.Seal(context.Background(), agentchildexecutions.Scope{
 		TeamID: 1, TeamName: "main", BuildID: 2, SnapshotCreatedBy: "atc",
-		WorkflowRunID: 3, NodePlanID: "node", ParentAttempt: 1, BrokerInstance: "broker", LeaseDuration: time.Minute,
+		WorkflowDefinitionID: 31, WorkflowRunID: 3, NodePlanID: "node", ParentAttempt: 1, BrokerInstance: "broker", LeaseDuration: time.Minute,
 		Inputs: map[string]snapshot.SnapshotRef{"workspace": {ID: 1, Type: "repository-change/v1", Digest: snapshot.Digest("sha256:" + strings.Repeat("a", 64))}},
 	}, broker.ExecutionIdentity{Tool: broker.ToolConsultAgent, Attachments: []string{"design"}}, agentchildexecutions.CandidateResult{
 		Body: json.RawMessage(`{"answer":"answer","claims":[],"assumptions":[],"uncertainties":[],"recommendations":[]}`),
@@ -67,7 +70,7 @@ func TestOrdinaryResultSealerMakesSoleConsultationAttachmentPrimary(t *testing.T
 	}
 	apiContract := snapshot.SnapshotRef{ID: 13, Type: "repository-change/v1", Digest: snapshot.Digest("sha256:" + strings.Repeat("d", 64))}
 	_, err = sealer.Seal(context.Background(), agentchildexecutions.Scope{
-		TeamID: 1, TeamName: "main", BuildID: 2, SnapshotCreatedBy: "atc", WorkflowRunID: 3,
+		TeamID: 1, TeamName: "main", BuildID: 2, SnapshotCreatedBy: "atc", WorkflowDefinitionID: 31, WorkflowRunID: 3,
 		NodePlanID: "node", ParentAttempt: 1, BrokerInstance: "broker", LeaseDuration: time.Minute,
 		Inputs: map[string]snapshot.SnapshotRef{"api-contract": apiContract},
 	}, broker.ExecutionIdentity{IdempotencyKey: "consult", Tool: broker.ToolConsultAgent, Attachments: []string{"api-contract"}}, agentchildexecutions.CandidateResult{
@@ -85,6 +88,9 @@ func TestOrdinaryResultSealerMakesSoleConsultationAttachmentPrimary(t *testing.T
 type recordingSnapshotCreator struct{ request snapshot.SealRequest }
 
 func (creator *recordingSnapshotCreator) Seal(_ context.Context, request snapshot.SealRequest) (map[string]snapshot.SealedOutput, error) {
+	if err := request.Validate(); err != nil {
+		return nil, err
+	}
 	creator.request = request
 	return map[string]snapshot.SealedOutput{"result": {Port: request.OutputDeclarations[0], Snapshot: snapshot.SnapshotRef{ID: 99, Type: request.OutputDeclarations[0].Type, Digest: snapshot.Digest("sha256:" + strings.Repeat("c", 64))}}}, nil
 }

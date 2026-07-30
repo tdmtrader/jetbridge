@@ -363,14 +363,32 @@ func validateAdvanceRequest(request AdvanceAgentChildExecution) error {
 	terminalError := request.State == broker.ExecutionErrored ||
 		request.State == broker.ExecutionCancelled ||
 		request.State == broker.ExecutionTimedOut
+	hasResult := request.ResultSnapshotID > 0 || request.ResultSnapshot != nil || len(request.ResultBody) > 0
 	if terminalError && (strings.TrimSpace(request.ErrorCode) == "" || request.ErrorRetryable == nil) {
 		return fmt.Errorf("db: terminal child execution error code and retryability are required")
 	}
-	if request.State == broker.ExecutionSucceeded && (request.ResultSnapshot == nil || request.ResultSnapshot.ID <= 0 || len(request.ResultBody) == 0) {
-		return fmt.Errorf("db: succeeded child execution requires a result snapshot")
+	if terminalError && hasResult {
+		return fmt.Errorf("db: terminal child execution error cannot carry a result")
+	}
+	if request.State == broker.ExecutionSucceeded {
+		if request.ResultSnapshot == nil || request.ResultSnapshot.ID <= 0 || len(request.ResultBody) == 0 {
+			return fmt.Errorf("db: succeeded child execution requires a result snapshot")
+		}
+		if request.ResultSnapshotID > 0 && request.ResultSnapshot.ID != snapshot.SnapshotID(request.ResultSnapshotID) {
+			return fmt.Errorf("db: succeeded child execution result snapshot ID conflicts with its reference")
+		}
+		if err := request.ResultSnapshot.Validate(); err != nil {
+			return fmt.Errorf("db: succeeded child execution result snapshot is invalid: %w", err)
+		}
+		if !json.Valid(request.ResultBody) {
+			return fmt.Errorf("db: succeeded child execution result body must be JSON")
+		}
+		if request.ErrorCode != "" || request.ErrorRetryable != nil || request.ErrorSummary != "" {
+			return fmt.Errorf("db: succeeded child execution cannot carry terminal error fields")
+		}
 	}
 	if !terminalError && request.State != broker.ExecutionSucceeded &&
-		(request.ErrorCode != "" || request.ErrorRetryable != nil || request.ResultSnapshotID > 0) {
+		(request.ErrorCode != "" || request.ErrorRetryable != nil || request.ErrorSummary != "" || hasResult) {
 		return fmt.Errorf("db: nonterminal child execution cannot carry terminal result fields")
 	}
 	return nil

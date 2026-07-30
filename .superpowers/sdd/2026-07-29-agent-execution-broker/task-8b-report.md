@@ -46,3 +46,31 @@ parent attempt, node plan, and idempotency key as the snapshot occurrence, so a
 retry after a binding failure asks the ordinary creator to recover the same
 seal before retrying the DB success transition. A future operator repair pass
 could make that recovery observable without changing the authority boundary.
+
+## Final review corrections
+
+- The capability-signed child scope now includes a positive workflow
+  definition ID paired with the run ID. Verification compares every sealing
+  authority field: team and build identity, snapshot actor, workflow
+  definition/run, node/attempt/broker/lease, and each exact immutable input
+  reference. HMAC tests reject definition, team-name, build, and input drift.
+- `OrdinaryResultSealer` passes the exact server-owned definition/run pointers
+  to `snapshot.SealRequest`; its test double invokes the real request
+  validation before accepting the call.
+- Migration coverage now checks the durable replay columns and their terminal
+  constraints on upgrade, as well as the down-migration's snapshot constraint
+  shape. The factory coverage drives a real child through success and reads
+  back its exact snapshot reference, normalized body, observed usage, and
+  duration; the factory rejects contradictory result snapshot IDs before SQL.
+
+Focused non-PostgreSQL evidence on 2026-07-30:
+
+```text
+go test ./atc/api/agentchildexecutions -count=1
+go test ./atc/db ./atc/db/migration -run '^$' -count=1
+git diff --check
+```
+
+The single allowed serial PostgreSQL attempt was infrastructure-blocked before
+any specs ran: `initdb` failed with `could not create shared memory segment:
+Operation not permitted` (`shmget(..., size=56, 03600)`). It was not retried.
