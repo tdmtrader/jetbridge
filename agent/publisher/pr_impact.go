@@ -14,18 +14,19 @@ import (
 // a verifier must recompute its deterministic inputs under PolicyVersion and
 // compare the complete decision before returning it.
 type PRImpactVerificationRequest struct {
-	TeamID         int
-	BindingID      int64
-	ActionDigest   snapshot.Digest
-	PolicyVersion  string
-	Observation    snapshot.SnapshotRef
-	Baseline       snapshot.SnapshotRef
-	Candidate      snapshot.SnapshotRef
-	Validation     snapshot.SnapshotRef
-	Impact         snapshot.SnapshotRef
-	Response       snapshot.SnapshotRef
-	AcceptedReview PublicationEvidence
-	Body           contracts.PublishImpactBody
+	TeamID             int
+	BindingID          int64
+	ActionDigest       snapshot.Digest
+	PolicyVersion      string
+	Observation        snapshot.SnapshotRef
+	Baseline           snapshot.SnapshotRef
+	BaselineValidation snapshot.SnapshotRef
+	Candidate          snapshot.SnapshotRef
+	Validation         snapshot.SnapshotRef
+	Impact             snapshot.SnapshotRef
+	Response           snapshot.SnapshotRef
+	AcceptedReview     PublicationEvidence
+	Body               contracts.PublishImpactBody
 }
 
 func (request PRImpactVerificationRequest) Validate() error {
@@ -39,6 +40,8 @@ func (request PRImpactVerificationRequest) Validate() error {
 		request.Observation.Type != snapshot.TypeRef("pull-request/v1") ||
 		request.Baseline.Validate() != nil ||
 		request.Baseline.Type != snapshot.TypeRef("repository/v1") ||
+		request.BaselineValidation.Validate() != nil ||
+		request.BaselineValidation.Type != snapshot.TypeRef("validation/v1") ||
 		request.Candidate.Validate() != nil ||
 		request.Candidate.Type != snapshot.TypeRef("repository-change/v1") ||
 		request.Validation.Validate() != nil ||
@@ -51,7 +54,6 @@ func (request PRImpactVerificationRequest) Validate() error {
 		request.AcceptedReview.AcceptedReview == nil ||
 		request.AcceptedReview.HumanWait != nil ||
 		request.AcceptedReview.Validate() != nil ||
-		request.AcceptedReview.AcceptedReview.Candidate != request.Baseline ||
 		request.Body.Validate(nil) != nil ||
 		request.Body.BaselineDigest != request.Baseline.Digest.String() ||
 		request.Body.CandidateDigest != request.Candidate.Digest.String() {

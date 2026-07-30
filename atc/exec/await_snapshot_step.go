@@ -490,16 +490,17 @@ func (step *AwaitSnapshotStep) prApprovalQuestionRef(
 	}
 	verificationRequest := publisher.PRImpactVerificationRequest{
 		TeamID: step.metadata.TeamID, BindingID: intent.BindingID,
-		ActionDigest:   snapshot.Digest(intent.ActionDigest),
-		PolicyVersion:  intent.ApprovalPolicyVersion,
-		Observation:    observation,
-		Baseline:       acceptedRequest.Candidate,
-		Candidate:      candidate,
-		Validation:     validation,
-		Impact:         impact,
-		Response:       response,
-		AcceptedReview: acceptedEvidence,
-		Body:           impactBody,
+		ActionDigest:       snapshot.Digest(intent.ActionDigest),
+		PolicyVersion:      intent.ApprovalPolicyVersion,
+		Observation:        observation,
+		Baseline:           acceptedRequest.Candidate,
+		BaselineValidation: acceptedRequest.Validation,
+		Candidate:          candidate,
+		Validation:         validation,
+		Impact:             impact,
+		Response:           response,
+		AcceptedReview:     acceptedEvidence,
+		Body:               impactBody,
 	}
 	if err := verificationRequest.Validate(); err != nil {
 		return "", snapshot.SnapshotRef{}, fmt.Errorf("await_snapshot: exact PR impact authority is invalid")

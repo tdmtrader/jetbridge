@@ -300,7 +300,9 @@ func TestImpactVerifierRecomputesPolicyAndBindsAcceptedBaseline(t *testing.T) {
 		Observation: snapshot.SnapshotRef{
 			ID: 39, Type: "pull-request/v1", Digest: snapshot.Digest("sha256:" + strings.Repeat("2", 64)),
 		},
-		Baseline: baseline, Candidate: candidate,
+		Baseline:           baseline,
+		BaselineValidation: accepted.Validation,
+		Candidate:          candidate,
 		Validation: snapshot.SnapshotRef{
 			ID: 48, Type: "validation/v1", Digest: snapshot.Digest("sha256:" + strings.Repeat("3", 64)),
 		},
@@ -331,6 +333,13 @@ func TestImpactVerifierRecomputesPolicyAndBindsAcceptedBaseline(t *testing.T) {
 	if policies.calls != 1 || evaluator.calls != 1 {
 		t.Fatalf("resolver calls = %d evaluator calls = %d, want one each", policies.calls, evaluator.calls)
 	}
+	if evaluator.request.BaselineValidation != accepted.Validation {
+		t.Fatalf(
+			"baseline validation = %#v, want %#v",
+			evaluator.request.BaselineValidation,
+			accepted.Validation,
+		)
+	}
 
 	t.Run("missing assessment cannot waive", func(t *testing.T) {
 		changed := request
@@ -340,15 +349,15 @@ func TestImpactVerifierRecomputesPolicyAndBindsAcceptedBaseline(t *testing.T) {
 			t.Fatal("VerifyPRImpact() accepted no-reapproval without an assessment")
 		}
 	})
-	t.Run("accepted candidate must be baseline", func(t *testing.T) {
+	t.Run("original accepted candidate may precede baseline", func(t *testing.T) {
 		changed := request
 		evidence := accepted
 		evidence.Candidate = snapshot.SnapshotRef{
 			ID: 47, Type: "repository/v1", Digest: snapshot.Digest("sha256:" + strings.Repeat("f", 64)),
 		}
 		changed.AcceptedReview.AcceptedReview = &evidence
-		if _, err := verifier.VerifyPRImpact(context.Background(), changed); err == nil {
-			t.Fatal("VerifyPRImpact() accepted evidence for another baseline")
+		if _, err := verifier.VerifyPRImpact(context.Background(), changed); err != nil {
+			t.Fatalf("VerifyPRImpact() error = %v", err)
 		}
 	})
 	t.Run("sealed deterministic facts must match recomputation", func(t *testing.T) {
@@ -398,6 +407,19 @@ func TestImpactVerificationRequestRejectsMissingOrMismatchedExactInputs(t *testi
 			name: "mismatched observation type",
 			mutate: func(request *publisher.PRImpactVerificationRequest) {
 				request.Observation.Type = snapshot.TypeRef("repository/v1")
+			},
+		},
+		{
+			name: "missing baseline validation",
+			mutate: func(request *publisher.PRImpactVerificationRequest) {
+				request.BaselineValidation = snapshot.SnapshotRef{}
+			},
+		},
+		{
+			name: "mismatched baseline validation type",
+			mutate: func(request *publisher.PRImpactVerificationRequest) {
+				request.BaselineValidation.Type =
+					snapshot.TypeRef("review/v1")
 			},
 		},
 		{
@@ -492,6 +514,10 @@ func validImpactVerificationRequest(t *testing.T) publisher.PRImpactVerification
 			ID: 39, Type: "pull-request/v1", Digest: snapshot.Digest("sha256:" + strings.Repeat("2", 64)),
 		},
 		Baseline: baseline,
+		BaselineValidation: snapshot.SnapshotRef{
+			ID: 45, Type: "validation/v1",
+			Digest: snapshot.Digest("sha256:" + strings.Repeat("e", 64)),
+		},
 		Candidate: snapshot.SnapshotRef{
 			ID: 42, Type: "repository-change/v1", Digest: snapshot.Digest(deterministic.CandidateDigest),
 		},
@@ -562,12 +588,14 @@ type impactEvaluatorStub struct {
 	evaluation pullrequest.AuthoritativeImpactEvaluation
 	err        error
 	calls      int
+	request    publisher.PRImpactVerificationRequest
 }
 
 func (stub *impactEvaluatorStub) EvaluateAuthoritativeImpact(
-	context.Context,
-	publisher.PRImpactVerificationRequest,
+	_ context.Context,
+	request publisher.PRImpactVerificationRequest,
 ) (pullrequest.AuthoritativeImpactEvaluation, error) {
 	stub.calls++
+	stub.request = request
 	return stub.evaluation, stub.err
 }

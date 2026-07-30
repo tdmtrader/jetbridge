@@ -25,6 +25,7 @@ func TestPRRevisionExecutorPublishesExactReviewRevisionInOrder(t *testing.T) {
 	executor, err := NewPRRevisionExecutor(
 		fixture.bindings,
 		fixture.acceptedReview,
+		fixture.approvedBaseline,
 		fixture.observations,
 		fixture.snapshots,
 		fixture.candidates,
@@ -85,12 +86,30 @@ func TestPRRevisionExecutorPublishesExactReviewRevisionInOrder(t *testing.T) {
 		fixture.acceptedReview.teamID !=
 			fixture.request.Authority.TeamID ||
 		fixture.acceptedReview.occurrenceID !=
-			fixture.binding.ApprovedBaselinePublicationOccurrenceID {
+			*fixture.binding.OriginatingPublicationOccurrence {
 		t.Fatalf(
-			"accepted baseline resolution = calls %d team %d occurrence %d",
+			"original accepted-review resolution = calls %d team %d occurrence %d",
 			fixture.acceptedReview.calls,
 			fixture.acceptedReview.teamID,
 			fixture.acceptedReview.occurrenceID,
+		)
+	}
+	if fixture.approvedBaseline.calls != 1 ||
+		fixture.approvedBaseline.lookup !=
+			(ApprovedBaselineAuthorityLookup{
+				TeamID:    fixture.request.Authority.TeamID,
+				BindingID: fixture.binding.ID,
+				PublicationOccurrenceID: fixture.binding.
+					ApprovedBaselinePublicationOccurrenceID,
+				RepositorySnapshotID: fixture.binding.
+					ApprovedBaselineRepositorySnapshotID,
+				ValidationSnapshotID: fixture.binding.
+					ApprovedBaselineValidationSnapshotID,
+			}) {
+		t.Fatalf(
+			"approved baseline lookup = calls %d lookup %#v",
+			fixture.approvedBaseline.calls,
+			fixture.approvedBaseline.lookup,
 		)
 	}
 	if len(fixture.impact.requests) != 1 {
@@ -101,9 +120,23 @@ func TestPRRevisionExecutorPublishesExactReviewRevisionInOrder(t *testing.T) {
 	}
 	impactRequest := fixture.impact.requests[0]
 	protectedBaseline, err :=
+		fixture.approvedBaseline.authority.Protected()
+	if err != nil {
+		t.Fatal(err)
+	}
+	protectedOriginal, err :=
 		fixture.acceptedReview.authority.Protected()
 	if err != nil {
 		t.Fatal(err)
+	}
+	if protectedBaseline.Kind != publisher.EvidenceAcceptedReview ||
+		protectedBaseline.Repository != protectedOriginal.Candidate ||
+		protectedBaseline.Validation != protectedOriginal.Validation {
+		t.Fatalf(
+			"initial approved baseline = %#v, original review = %#v",
+			protectedBaseline,
+			protectedOriginal,
+		)
 	}
 	if impactRequest.TeamID != fixture.request.Authority.TeamID ||
 		impactRequest.BindingID != fixture.request.BindingID ||
@@ -112,7 +145,8 @@ func TestPRRevisionExecutorPublishesExactReviewRevisionInOrder(t *testing.T) {
 		impactRequest.PolicyVersion !=
 			fixture.binding.ApprovalPolicyVersion ||
 		impactRequest.Observation != fixture.request.Observation ||
-		impactRequest.Baseline != protectedBaseline.Candidate ||
+		impactRequest.Baseline != protectedBaseline.Repository ||
+		impactRequest.BaselineValidation != protectedBaseline.Validation ||
 		impactRequest.Candidate != fixture.request.Candidate ||
 		impactRequest.Validation != fixture.request.Validation ||
 		impactRequest.Impact != fixture.request.Impact ||
@@ -195,6 +229,7 @@ func TestPRRevisionExecutorAllowsCompletedReviewOfEarlierSourceHead(
 	executor, err := NewPRRevisionExecutor(
 		fixture.bindings,
 		fixture.acceptedReview,
+		fixture.approvedBaseline,
 		fixture.observations,
 		fixture.snapshots,
 		fixture.candidates,
@@ -229,6 +264,201 @@ func TestPRRevisionExecutorAllowsCompletedReviewOfEarlierSourceHead(
 	}
 }
 
+func TestPRRevisionExecutorUsesLaterHumanWaitApprovedBaselineAndOriginalReview(
+	t *testing.T,
+) {
+	fixture := newPRRevisionExecutorFixture(
+		t, contracts.PullRequestReviewBatchTrigger,
+	)
+	currentBaseline := configureLaterApprovedBaseline(t, fixture)
+	executor, err := NewPRRevisionExecutor(
+		fixture.bindings,
+		fixture.acceptedReview,
+		fixture.approvedBaseline,
+		fixture.observations,
+		fixture.snapshots,
+		fixture.candidates,
+		fixture.evidence,
+		fixture.impact,
+		fixture.publications,
+		"https://ci.example",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := executor.ExecutePRRevision(
+		context.Background(), fixture.request,
+	); err != nil {
+		t.Fatalf("ExecutePRRevision() error = %v", err)
+	}
+	if fixture.acceptedReview.occurrenceID !=
+		*fixture.binding.OriginatingPublicationOccurrence {
+		t.Fatalf(
+			"original review occurrence = %d, want %d",
+			fixture.acceptedReview.occurrenceID,
+			*fixture.binding.OriginatingPublicationOccurrence,
+		)
+	}
+	if len(fixture.evidence.requests) != 1 ||
+		fixture.evidence.requests[0].AcceptedReview == nil ||
+		*fixture.evidence.requests[0].AcceptedReview !=
+			*fixture.request.AcceptedReview {
+		t.Fatalf(
+			"original accepted-review evidence requests = %#v",
+			fixture.evidence.requests,
+		)
+	}
+	if fixture.approvedBaseline.lookup !=
+		(ApprovedBaselineAuthorityLookup{
+			TeamID:    fixture.binding.TeamID,
+			BindingID: fixture.binding.ID,
+			PublicationOccurrenceID: fixture.binding.
+				ApprovedBaselinePublicationOccurrenceID,
+			RepositorySnapshotID: fixture.binding.
+				ApprovedBaselineRepositorySnapshotID,
+			ValidationSnapshotID: fixture.binding.
+				ApprovedBaselineValidationSnapshotID,
+		}) {
+		t.Fatalf(
+			"approved baseline lookup = %#v",
+			fixture.approvedBaseline.lookup,
+		)
+	}
+	if len(fixture.impact.requests) != 1 ||
+		fixture.impact.requests[0].Baseline != currentBaseline ||
+		fixture.impact.requests[0].BaselineValidation.ID !=
+			fixture.binding.ApprovedBaselineValidationSnapshotID ||
+		fixture.impact.requests[0].AcceptedReview.AcceptedReview == nil ||
+		fixture.impact.requests[0].AcceptedReview.AcceptedReview.Candidate ==
+			currentBaseline {
+		t.Fatalf(
+			"impact request did not separate original review and current baseline: %#v",
+			fixture.impact.requests,
+		)
+	}
+	if len(fixture.publications.calls) != 3 {
+		t.Fatalf(
+			"provider mutations = %v",
+			fixture.publications.calls,
+		)
+	}
+}
+
+func TestPRRevisionExecutorRejectsAlteredApprovedBaselineAuthorityBeforeMutation(
+	t *testing.T,
+) {
+	tests := map[string]func(*testing.T, *prRevisionExecutorFixture){
+		"repository snapshot": func(
+			_ *testing.T,
+			fixture *prRevisionExecutorFixture,
+		) {
+			fixture.binding.ApprovedBaselineRepositorySnapshotID++
+			fixture.bindings.binding = fixture.binding
+		},
+		"validation snapshot": func(
+			_ *testing.T,
+			fixture *prRevisionExecutorFixture,
+		) {
+			fixture.binding.ApprovedBaselineValidationSnapshotID++
+			fixture.bindings.binding = fixture.binding
+		},
+		"publication occurrence": func(
+			t *testing.T,
+			fixture *prRevisionExecutorFixture,
+		) {
+			protected, err := fixture.approvedBaseline.authority.Protected()
+			if err != nil {
+				t.Fatal(err)
+			}
+			fixture.approvedBaseline.authority =
+				mustPRRevisionApprovedBaselineAuthority(
+					t,
+					protected.TeamID,
+					protected.BindingID,
+					protected.PublicationOccurrenceID+1,
+					protected.Kind,
+					protected.Repository,
+					protected.Validation,
+				)
+		},
+		"authorization kind": func(
+			t *testing.T,
+			fixture *prRevisionExecutorFixture,
+		) {
+			protected, err := fixture.approvedBaseline.authority.Protected()
+			if err != nil {
+				t.Fatal(err)
+			}
+			fixture.approvedBaseline.authority =
+				mustPRRevisionApprovedBaselineAuthority(
+					t,
+					protected.TeamID,
+					protected.BindingID,
+					protected.PublicationOccurrenceID,
+					publisher.EvidenceAcceptedReview,
+					protected.Repository,
+					protected.Validation,
+				)
+		},
+		"cross-binding authority": func(
+			t *testing.T,
+			fixture *prRevisionExecutorFixture,
+		) {
+			protected, err := fixture.approvedBaseline.authority.Protected()
+			if err != nil {
+				t.Fatal(err)
+			}
+			fixture.approvedBaseline.authority =
+				mustPRRevisionApprovedBaselineAuthority(
+					t,
+					protected.TeamID,
+					protected.BindingID+1,
+					protected.PublicationOccurrenceID,
+					protected.Kind,
+					protected.Repository,
+					protected.Validation,
+				)
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			fixture := newPRRevisionExecutorFixture(
+				t, contracts.PullRequestReviewBatchTrigger,
+			)
+			configureLaterApprovedBaseline(t, fixture)
+			mutate(t, fixture)
+			executor, err := NewPRRevisionExecutor(
+				fixture.bindings,
+				fixture.acceptedReview,
+				fixture.approvedBaseline,
+				fixture.observations,
+				fixture.snapshots,
+				fixture.candidates,
+				fixture.evidence,
+				fixture.impact,
+				fixture.publications,
+				"https://ci.example",
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if err := executor.ExecutePRRevision(
+				context.Background(), fixture.request,
+			); err == nil {
+				t.Fatal("ExecutePRRevision() error = nil")
+			}
+			if len(fixture.publications.calls) != 0 {
+				t.Fatalf(
+					"provider mutations = %v, want none",
+					fixture.publications.calls,
+				)
+			}
+		})
+	}
+}
+
 func TestPRRevisionExecutorPublishesBranchProofForNoopWithoutSemanticResponse(
 	t *testing.T,
 ) {
@@ -246,6 +476,7 @@ func TestPRRevisionExecutorPublishesBranchProofForNoopWithoutSemanticResponse(
 			executor, err := NewPRRevisionExecutor(
 				fixture.bindings,
 				fixture.acceptedReview,
+				fixture.approvedBaseline,
 				fixture.observations,
 				fixture.snapshots,
 				fixture.candidates,
@@ -294,6 +525,7 @@ func TestPRRevisionExecutorTreatsExactRebaseRequiredBranchAsSafeStale(
 	executor, err := NewPRRevisionExecutor(
 		fixture.bindings,
 		fixture.acceptedReview,
+		fixture.approvedBaseline,
 		fixture.observations,
 		fixture.snapshots,
 		fixture.candidates,
@@ -356,6 +588,7 @@ func TestPRRevisionExecutorRejectsTerminalOrChangedAuthorityBeforeMutation(
 			executor, err := NewPRRevisionExecutor(
 				fixture.bindings,
 				fixture.acceptedReview,
+				fixture.approvedBaseline,
 				fixture.observations,
 				fixture.snapshots,
 				fixture.candidates,
@@ -466,6 +699,7 @@ func TestPRRevisionExecutorRejectsMismatchedExactInputsBeforeMutation(
 			executor, err := NewPRRevisionExecutor(
 				fixture.bindings,
 				fixture.acceptedReview,
+				fixture.approvedBaseline,
 				fixture.observations,
 				fixture.snapshots,
 				fixture.candidates,
@@ -542,6 +776,7 @@ func TestPRRevisionExecutorReverifiesExactHumanWait(t *testing.T) {
 	executor, err := NewPRRevisionExecutor(
 		fixture.bindings,
 		fixture.acceptedReview,
+		fixture.approvedBaseline,
 		fixture.observations,
 		fixture.snapshots,
 		fixture.candidates,
@@ -770,16 +1005,17 @@ func TestSnapshotPRRevisionInspectorReopensExactTeamAuthorizedRecords(
 }
 
 type prRevisionExecutorFixture struct {
-	binding        Binding
-	request        publisher.PRRevisionPublicationRequest
-	bindings       *prRevisionBindingStore
-	acceptedReview *prRevisionAcceptedReviewResolver
-	observations   *prRevisionObservationInspector
-	snapshots      *prRevisionSnapshotInspector
-	candidates     *prRevisionCandidateInspector
-	evidence       *prRevisionEvidenceVerifier
-	impact         *prRevisionImpactVerifier
-	publications   *prRevisionPublicationService
+	binding          Binding
+	request          publisher.PRRevisionPublicationRequest
+	bindings         *prRevisionBindingStore
+	acceptedReview   *prRevisionAcceptedReviewResolver
+	approvedBaseline *prRevisionApprovedBaselineResolver
+	observations     *prRevisionObservationInspector
+	snapshots        *prRevisionSnapshotInspector
+	candidates       *prRevisionCandidateInspector
+	evidence         *prRevisionEvidenceVerifier
+	impact           *prRevisionImpactVerifier
+	publications     *prRevisionPublicationService
 }
 
 func newPRRevisionExecutorFixture(
@@ -843,6 +1079,7 @@ func newPRRevisionExecutorFixture(
 		},
 		Evidence: publicationEvidence,
 	}
+	originOccurrenceID := int64(704)
 	binding := Binding{
 		ID: request.BindingID, TeamID: request.Authority.TeamID,
 		Locator: Locator{
@@ -854,6 +1091,7 @@ func newPRRevisionExecutorFixture(
 		TargetRef:                               "refs/heads/main",
 		Destination:                             request.Destination,
 		ApprovalPolicyVersion:                   request.ApprovalPolicyVersion,
+		OriginatingPublicationOccurrence:        &originOccurrenceID,
 		ApprovedBaselineRepositorySnapshotID:    baseline.ID,
 		ApprovedBaselineValidationSnapshotID:    acceptedValidation.ID,
 		ApprovedBaselinePublicationOccurrenceID: 704,
@@ -923,14 +1161,27 @@ func newPRRevisionExecutorFixture(
 	}
 	acceptedAuthority, err := NewAcceptedReviewAuthority(
 		AcceptedReviewAuthoritySpec{
-			TeamID: request.Authority.TeamID,
+			TeamID:                  request.Authority.TeamID,
+			PublicationOccurrenceID: originOccurrenceID,
+			Review:                  review,
+			Candidate:               baseline,
+			Validation:              acceptedValidation,
+			ReviewWorkflowRunID:     81,
+			OutcomeRevision:         3,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baselineAuthority, err := NewApprovedBaselineAuthority(
+		ApprovedBaselineAuthoritySpec{
+			TeamID:    request.Authority.TeamID,
+			BindingID: binding.ID,
 			PublicationOccurrenceID: binding.
 				ApprovedBaselinePublicationOccurrenceID,
-			Review:              review,
-			Candidate:           baseline,
-			Validation:          acceptedValidation,
-			ReviewWorkflowRunID: 81,
-			OutcomeRevision:     3,
+			Kind:       publisher.EvidenceAcceptedReview,
+			Repository: baseline,
+			Validation: acceptedValidation,
 		},
 	)
 	if err != nil {
@@ -941,6 +1192,10 @@ func newPRRevisionExecutorFixture(
 		bindings: &prRevisionBindingStore{binding: binding},
 		acceptedReview: &prRevisionAcceptedReviewResolver{
 			authority: acceptedAuthority,
+			found:     true,
+		},
+		approvedBaseline: &prRevisionApprovedBaselineResolver{
+			authority: baselineAuthority,
 			found:     true,
 		},
 		observations: &prRevisionObservationInspector{body: body},
@@ -959,6 +1214,58 @@ func newPRRevisionExecutorFixture(
 			branchStatus: publisher.StatusSucceeded,
 		},
 	}
+}
+
+func configureLaterApprovedBaseline(
+	t *testing.T,
+	fixture *prRevisionExecutorFixture,
+) snapshot.SnapshotRef {
+	t.Helper()
+	repository := revisionSnapshotRef(411, "repository/v1", '9')
+	validation := revisionSnapshotRef(413, "validation/v1", 'a')
+	fixture.binding.ApprovedBaselineRepositorySnapshotID = repository.ID
+	fixture.binding.ApprovedBaselineValidationSnapshotID = validation.ID
+	fixture.binding.ApprovedBaselinePublicationOccurrenceID = 705
+	fixture.bindings.binding = fixture.binding
+	fixture.approvedBaseline.authority =
+		mustPRRevisionApprovedBaselineAuthority(
+			t,
+			fixture.binding.TeamID,
+			fixture.binding.ID,
+			fixture.binding.ApprovedBaselinePublicationOccurrenceID,
+			publisher.EvidenceHumanWait,
+			repository,
+			validation,
+		)
+	fixture.snapshots.result.Impact.BaselineDigest =
+		repository.Digest.String()
+	return repository
+}
+
+func mustPRRevisionApprovedBaselineAuthority(
+	t *testing.T,
+	teamID int,
+	bindingID int64,
+	occurrenceID int64,
+	kind publisher.EvidenceKind,
+	repository snapshot.SnapshotRef,
+	validation snapshot.SnapshotRef,
+) ApprovedBaselineAuthority {
+	t.Helper()
+	authority, err := NewApprovedBaselineAuthority(
+		ApprovedBaselineAuthoritySpec{
+			TeamID:                  teamID,
+			BindingID:               bindingID,
+			PublicationOccurrenceID: occurrenceID,
+			Kind:                    kind,
+			Repository:              repository,
+			Validation:              validation,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return authority
 }
 
 type prRevisionBindingStore struct {
@@ -1151,6 +1458,23 @@ func (resolver *prRevisionAcceptedReviewResolver) ResolveAcceptedReviewAuthority
 	resolver.calls++
 	resolver.teamID = teamID
 	resolver.occurrenceID = occurrenceID
+	return resolver.authority, resolver.found, resolver.err
+}
+
+type prRevisionApprovedBaselineResolver struct {
+	authority ApprovedBaselineAuthority
+	found     bool
+	err       error
+	calls     int
+	lookup    ApprovedBaselineAuthorityLookup
+}
+
+func (resolver *prRevisionApprovedBaselineResolver) ResolveApprovedBaselineAuthority(
+	_ context.Context,
+	lookup ApprovedBaselineAuthorityLookup,
+) (ApprovedBaselineAuthority, bool, error) {
+	resolver.calls++
+	resolver.lookup = lookup
 	return resolver.authority, resolver.found, resolver.err
 }
 
@@ -1416,12 +1740,13 @@ func writeRevisionTarFile(
 }
 
 var (
-	_ BindingStore                    = (*prRevisionBindingStore)(nil)
-	_ AcceptedReviewAuthorityResolver = (*prRevisionAcceptedReviewResolver)(nil)
-	_ MonitorObservationInspector     = (*prRevisionObservationInspector)(nil)
-	_ PRRevisionSnapshotInspector     = (*prRevisionSnapshotInspector)(nil)
-	_ PRRevisionCandidateInspector    = (*prRevisionCandidateInspector)(nil)
-	_ publisher.EvidenceVerifier      = (*prRevisionEvidenceVerifier)(nil)
-	_ publisher.PRImpactVerifier      = (*prRevisionImpactVerifier)(nil)
-	_ publisher.PRService             = (*prRevisionPublicationService)(nil)
+	_ BindingStore                      = (*prRevisionBindingStore)(nil)
+	_ AcceptedReviewAuthorityResolver   = (*prRevisionAcceptedReviewResolver)(nil)
+	_ ApprovedBaselineAuthorityResolver = (*prRevisionApprovedBaselineResolver)(nil)
+	_ MonitorObservationInspector       = (*prRevisionObservationInspector)(nil)
+	_ PRRevisionSnapshotInspector       = (*prRevisionSnapshotInspector)(nil)
+	_ PRRevisionCandidateInspector      = (*prRevisionCandidateInspector)(nil)
+	_ publisher.EvidenceVerifier        = (*prRevisionEvidenceVerifier)(nil)
+	_ publisher.PRImpactVerifier        = (*prRevisionImpactVerifier)(nil)
+	_ publisher.PRService               = (*prRevisionPublicationService)(nil)
 )

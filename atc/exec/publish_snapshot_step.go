@@ -249,16 +249,17 @@ func (step *PublishSnapshotStep) publishPRRevision(
 	}
 	verificationRequest := publisher.PRImpactVerificationRequest{
 		TeamID: step.metadata.TeamID, BindingID: prRequest.BindingID,
-		ActionDigest:   snapshot.Digest(prRequest.ActionDigest),
-		PolicyVersion:  step.plan.ApprovalPolicyVersion,
-		Observation:    observation,
-		Baseline:       accepted.Candidate,
-		Candidate:      candidate,
-		Validation:     prRequest.Validation,
-		Impact:         prRequest.Impact,
-		Response:       response,
-		AcceptedReview: acceptedEvidence,
-		Body:           impactBody,
+		ActionDigest:       snapshot.Digest(prRequest.ActionDigest),
+		PolicyVersion:      step.plan.ApprovalPolicyVersion,
+		Observation:        observation,
+		Baseline:           accepted.Candidate,
+		BaselineValidation: accepted.Validation,
+		Candidate:          candidate,
+		Validation:         prRequest.Validation,
+		Impact:             prRequest.Impact,
+		Response:           response,
+		AcceptedReview:     acceptedEvidence,
+		Body:               impactBody,
 	}
 	if err := verificationRequest.Validate(); err != nil {
 		return false, fmt.Errorf("publish_snapshot: exact PR impact authority is invalid")

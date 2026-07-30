@@ -950,6 +950,11 @@ func TestAwaitSnapshotStepSkipsHumanWaitWhenExactImpactDoesNotRequireReapproval(
 	require.Equal(t, awaitRef(observation), impactRequest.Observation)
 	require.Equal(t, awaitRef(response), impactRequest.Response)
 	require.Equal(t, awaitRef(acceptedCandidate), impactRequest.Baseline)
+	require.Equal(
+		t,
+		awaitRef(acceptedValidation),
+		impactRequest.BaselineValidation,
+	)
 	require.Equal(t, acceptedCandidate.Digest.String(), impactRequest.Body.BaselineDigest)
 }
 
@@ -1100,6 +1105,11 @@ func TestPublishSnapshotStepUsesAcceptedReviewWhenImpactDoesNotRequireReapproval
 	require.Equal(t, handedOff.Validation, impactRequest.Validation)
 	require.Equal(t, awaitRef(response), impactRequest.Response)
 	require.Equal(t, awaitRef(acceptedCandidate), impactRequest.Baseline)
+	require.Equal(
+		t,
+		awaitRef(acceptedValidation),
+		impactRequest.BaselineValidation,
+	)
 	require.Equal(t, acceptedCandidate.Digest.String(), impactRequest.Body.BaselineDigest)
 }
 
@@ -1111,7 +1121,7 @@ func publishPRObservationFixture(t *testing.T, id snapshot.SnapshotID) (snapshot
 		State: contracts.PullRequestActive, Mergeability: contracts.PullRequestMergeable,
 		SourceRef: "refs/heads/feature", SourceSHA: strings.Repeat("a", 40),
 		TargetRef: "refs/heads/main", TargetSHA: strings.Repeat("b", 40),
-		Iteration: "42", Trigger: contracts.PullRequestFreshnessTrigger,
+		Iteration: "42", Trigger: contracts.PullRequestReviewBatchTrigger,
 		ReviewBatches: []contracts.PullRequestReviewBatch{{
 			ID: "batch-1", ReviewID: "review-1", CommitSHA: strings.Repeat("a", 40),
 			Reviewer: "reviewer", Ready: true, ThreadIDs: []string{},

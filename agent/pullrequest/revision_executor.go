@@ -362,20 +362,22 @@ func clonePRRevisionResponse(
 }
 
 type prRevisionExecutor struct {
-	bindings        BindingStore
-	acceptedReviews AcceptedReviewAuthorityResolver
-	observations    MonitorObservationInspector
-	snapshots       PRRevisionSnapshotInspector
-	candidates      PRRevisionCandidateInspector
-	evidence        publisher.EvidenceVerifier
-	impact          publisher.PRImpactVerifier
-	publications    publisher.PRService
-	externalURL     string
+	bindings          BindingStore
+	acceptedReviews   AcceptedReviewAuthorityResolver
+	approvedBaselines ApprovedBaselineAuthorityResolver
+	observations      MonitorObservationInspector
+	snapshots         PRRevisionSnapshotInspector
+	candidates        PRRevisionCandidateInspector
+	evidence          publisher.EvidenceVerifier
+	impact            publisher.PRImpactVerifier
+	publications      publisher.PRService
+	externalURL       string
 }
 
 func NewPRRevisionExecutor(
 	bindings BindingStore,
 	acceptedReviews AcceptedReviewAuthorityResolver,
+	approvedBaselines ApprovedBaselineAuthorityResolver,
 	observations MonitorObservationInspector,
 	snapshots PRRevisionSnapshotInspector,
 	candidates PRRevisionCandidateInspector,
@@ -386,6 +388,7 @@ func NewPRRevisionExecutor(
 ) (publisher.PRRevisionExecutor, error) {
 	if nilPRRevisionDependency(bindings) ||
 		nilPRRevisionDependency(acceptedReviews) ||
+		nilPRRevisionDependency(approvedBaselines) ||
 		nilPRRevisionDependency(observations) ||
 		nilPRRevisionDependency(snapshots) ||
 		nilPRRevisionDependency(candidates) ||
@@ -404,8 +407,9 @@ func NewPRRevisionExecutor(
 	}
 	return &prRevisionExecutor{
 		bindings: bindings, acceptedReviews: acceptedReviews,
-		observations: observations,
-		snapshots:    snapshots, candidates: candidates,
+		approvedBaselines: approvedBaselines,
+		observations:      observations,
+		snapshots:         snapshots, candidates: candidates,
 		evidence: evidence, impact: impact,
 		publications: publications,
 		externalURL:  normalizedExternalURL,
@@ -775,37 +779,39 @@ func (executor *prRevisionExecutor) reverifyPRRevisionAuthority(
 	request publisher.PRRevisionPublicationRequest,
 	records PRRevisionSnapshots,
 ) error {
-	authority, found, err :=
+	if binding.OriginatingPublicationOccurrence == nil ||
+		*binding.OriginatingPublicationOccurrence <= 0 {
+		return ErrPRRevisionAuthority
+	}
+	originatingOccurrenceID :=
+		*binding.OriginatingPublicationOccurrence
+	originalAuthority, found, err :=
 		executor.acceptedReviews.ResolveAcceptedReviewAuthority(
 			ctx,
 			request.Authority.TeamID,
-			binding.ApprovedBaselinePublicationOccurrenceID,
+			originatingOccurrenceID,
 		)
 	if err != nil {
 		return fmt.Errorf(
-			"pullrequest: resolve accepted-review baseline: %w", err,
+			"pullrequest: resolve original accepted review: %w", err,
 		)
 	}
 	if !found {
 		return ErrPRRevisionAuthority
 	}
-	protected, err := authority.Protected()
+	protectedOriginal, err := originalAuthority.Protected()
 	if err != nil ||
-		protected.TeamID != request.Authority.TeamID ||
-		protected.PublicationOccurrenceID !=
-			binding.ApprovedBaselinePublicationOccurrenceID ||
-		protected.Candidate.ID !=
-			binding.ApprovedBaselineRepositorySnapshotID ||
-		protected.Validation.ID !=
-			binding.ApprovedBaselineValidationSnapshotID {
+		protectedOriginal.TeamID != request.Authority.TeamID ||
+		protectedOriginal.PublicationOccurrenceID !=
+			originatingOccurrenceID {
 		return ErrPRRevisionAuthority
 	}
 	acceptedRequest := publisher.AcceptedReviewEvidenceRequest{
-		Review:              protected.Review,
-		Candidate:           protected.Candidate,
-		Validation:          protected.Validation,
-		ReviewWorkflowRunID: protected.ReviewWorkflowRunID,
-		OutcomeRevision:     protected.OutcomeRevision,
+		Review:              protectedOriginal.Review,
+		Candidate:           protectedOriginal.Candidate,
+		Validation:          protectedOriginal.Validation,
+		ReviewWorkflowRunID: protectedOriginal.ReviewWorkflowRunID,
+		OutcomeRevision:     protectedOriginal.OutcomeRevision,
 	}
 	acceptedEvidence, err := executor.evidence.Verify(
 		ctx,
@@ -822,6 +828,59 @@ func (executor *prRevisionExecutor) reverifyPRRevisionAuthority(
 	if !acceptedRequest.Matches(acceptedEvidence) {
 		return ErrPRRevisionAuthority
 	}
+
+	baselineLookup := ApprovedBaselineAuthorityLookup{
+		TeamID:    request.Authority.TeamID,
+		BindingID: binding.ID,
+		PublicationOccurrenceID: binding.
+			ApprovedBaselinePublicationOccurrenceID,
+		RepositorySnapshotID: binding.
+			ApprovedBaselineRepositorySnapshotID,
+		ValidationSnapshotID: binding.
+			ApprovedBaselineValidationSnapshotID,
+	}
+	if err := baselineLookup.Validate(); err != nil {
+		return ErrPRRevisionAuthority
+	}
+	baselineAuthority, found, err :=
+		executor.approvedBaselines.ResolveApprovedBaselineAuthority(
+			ctx, baselineLookup,
+		)
+	if err != nil {
+		return fmt.Errorf(
+			"pullrequest: resolve current approved baseline: %w", err,
+		)
+	}
+	if !found {
+		return ErrPRRevisionAuthority
+	}
+	protectedBaseline, err := baselineAuthority.Protected()
+	if err != nil ||
+		protectedBaseline.TeamID != baselineLookup.TeamID ||
+		protectedBaseline.BindingID != baselineLookup.BindingID ||
+		protectedBaseline.PublicationOccurrenceID !=
+			baselineLookup.PublicationOccurrenceID ||
+		protectedBaseline.Repository.ID !=
+			baselineLookup.RepositorySnapshotID ||
+		protectedBaseline.Validation.ID !=
+			baselineLookup.ValidationSnapshotID {
+		return ErrPRRevisionAuthority
+	}
+	if protectedBaseline.PublicationOccurrenceID ==
+		originatingOccurrenceID {
+		if protectedBaseline.Kind !=
+			publisher.EvidenceAcceptedReview ||
+			protectedBaseline.Repository !=
+				protectedOriginal.Candidate ||
+			protectedBaseline.Validation !=
+				protectedOriginal.Validation {
+			return ErrPRRevisionAuthority
+		}
+	} else if protectedBaseline.Kind !=
+		publisher.EvidenceHumanWait {
+		return ErrPRRevisionAuthority
+	}
+
 	switch request.Evidence.Kind {
 	case publisher.EvidenceAcceptedReview:
 		if request.AcceptedReview == nil ||
@@ -839,18 +898,19 @@ func (executor *prRevisionExecutor) reverifyPRRevisionAuthority(
 		return ErrPRRevisionAuthority
 	}
 	impactRequest := publisher.PRImpactVerificationRequest{
-		TeamID:         request.Authority.TeamID,
-		BindingID:      request.BindingID,
-		ActionDigest:   snapshot.Digest(request.ActionDigest),
-		PolicyVersion:  target.ApprovalPolicyVersion,
-		Observation:    request.Observation,
-		Baseline:       protected.Candidate,
-		Candidate:      request.Candidate,
-		Validation:     request.Validation,
-		Impact:         request.Impact,
-		Response:       request.Response,
-		AcceptedReview: acceptedEvidence.Clone(),
-		Body:           records.Impact,
+		TeamID:             request.Authority.TeamID,
+		BindingID:          request.BindingID,
+		ActionDigest:       snapshot.Digest(request.ActionDigest),
+		PolicyVersion:      target.ApprovalPolicyVersion,
+		Observation:        request.Observation,
+		Baseline:           protectedBaseline.Repository,
+		BaselineValidation: protectedBaseline.Validation,
+		Candidate:          request.Candidate,
+		Validation:         request.Validation,
+		Impact:             request.Impact,
+		Response:           request.Response,
+		AcceptedReview:     acceptedEvidence.Clone(),
+		Body:               records.Impact,
 	}
 	if err := impactRequest.Validate(); err != nil {
 		return fmt.Errorf(
