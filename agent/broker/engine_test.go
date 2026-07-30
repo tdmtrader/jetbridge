@@ -63,6 +63,17 @@ func TestEngineRunsConsultationThroughDurablePhases(t *testing.T) {
 	}
 }
 
+func TestEngineReturnsDurableSucceededReplayWithoutInvokingRunner(t *testing.T) {
+	catalog, _ := broker.NewCatalog([]broker.Profile{validProfile()})
+	authority := &fakeAuthority{replay: &broker.SucceededReplay{Snapshot: snapshot.SnapshotRef{ID: 101, Type: "consultation/v1", Digest: snapshot.Digest("sha256:" + strings.Repeat("c", 64))}, Body: []byte(`{"answer":"cached","claims":[],"assumptions":[],"uncertainties":[],"recommendations":[]}`)}}
+	runner := &fakeRunner{}
+	engine := broker.NewEngine(broker.EngineConfig{Catalog: catalog, Authority: authority, Attachments: fakeAttachments{}, Credentials: fakeCredentials{}, Runner: runner, Instructions: map[broker.Tool]string{broker.ToolConsultAgent: "fixed"}})
+	result, err := engine.ConsultAgent(context.Background(), broker.ConsultRequest{IdempotencyKey: "call", Selector: validProfile().Selector, Question: "question", Attachments: []string{"design"}})
+	if err != nil || result.Snapshot.ID != 101 || runner.started != 0 {
+		t.Fatalf("result=%#v err=%v runner=%d", result, err, runner.started)
+	}
+}
+
 func TestEngineValidatesReviewWorkspaceBeforeAdmission(t *testing.T) {
 	catalog, _ := broker.NewCatalog([]broker.Profile{validProfile()})
 	authority := &fakeAuthority{}
@@ -303,14 +314,15 @@ type fakeAuthority struct {
 	updates     []broker.RunUpdate
 	terminals   []broker.Terminal
 	terminalErr error
+	replay      *broker.SucceededReplay
 }
 
-func (authority *fakeAuthority) Admit(_ context.Context, request broker.AdmissionRequest) (string, error) {
+func (authority *fakeAuthority) Admit(_ context.Context, request broker.AdmissionRequest) (broker.Admission, error) {
 	authority.mu.Lock()
 	defer authority.mu.Unlock()
 	authority.admitted = true
 	authority.admission = request
-	return "child-1", nil
+	return broker.Admission{ExecutionID: "child-1", Succeeded: authority.replay}, nil
 }
 func (authority *fakeAuthority) Phase(_ context.Context, _ string, phase string) error {
 	authority.mu.Lock()

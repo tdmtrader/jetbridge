@@ -3,6 +3,7 @@
 package agentchildexecutions
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -61,16 +62,16 @@ func NewService(config Config) (*Service, error) {
 func (service *Service) Admit(
 	ctx context.Context,
 	request broker.AdmissionRequest,
-) (string, error) {
+) (broker.Admission, error) {
 	if err := broker.ValidateAttachments(request.Tool, request.Attachments); err != nil {
-		return "", fmt.Errorf("agent child authority: invalid attachments: %w", err)
+		return broker.Admission{}, fmt.Errorf("agent child authority: invalid attachments: %w", err)
 	}
 	resolved, err := service.config.Catalog.Resolve(request.Tool, request.Selector)
 	if err != nil {
-		return "", err
+		return broker.Admission{}, err
 	}
 	if resolved.ID != request.ProfileID || resolved.Digest != request.ProfileDigest {
-		return "", fmt.Errorf("agent child authority: exact profile resolution mismatch")
+		return broker.Admission{}, fmt.Errorf("agent child authority: exact profile resolution mismatch")
 	}
 	identity := broker.ExecutionIdentity{
 		TeamID: service.config.Scope.TeamID, WorkflowRunID: service.config.Scope.WorkflowRunID,
@@ -81,7 +82,15 @@ func (service *Service) Admit(
 	}
 	execution, err := service.config.Store.Create(ctx, uuid.NewString(), identity)
 	if err != nil {
-		return "", err
+		return broker.Admission{}, err
+	}
+	if replay, found, err := admissionReplay(execution); err != nil {
+		return broker.Admission{}, err
+	} else if found {
+		return broker.Admission{ExecutionID: execution.ID, Succeeded: replay.succeeded, Terminal: replay.terminal}, nil
+	}
+	if execution.State != broker.ExecutionPending {
+		return broker.Admission{}, fmt.Errorf("agent child authority: execution is already in progress")
 	}
 	if execution.State == broker.ExecutionPending {
 		execution, err = service.config.Store.Advance(ctx, db.AdvanceAgentChildExecution{
@@ -91,10 +100,56 @@ func (service *Service) Admit(
 			LeaseExpiresAt: time.Now().Add(service.config.Scope.LeaseDuration),
 		})
 		if err != nil {
-			return "", err
+			return broker.Admission{}, err
 		}
 	}
-	return execution.ID, nil
+	return broker.Admission{ExecutionID: execution.ID}, nil
+}
+
+type replayAdmission struct {
+	succeeded *broker.SucceededReplay
+	terminal  *broker.Terminal
+}
+
+func admissionReplay(execution db.AgentChildExecution) (replayAdmission, bool, error) {
+	switch execution.State {
+	case broker.ExecutionSucceeded:
+		if execution.ResultSnapshot == nil || len(execution.ResultBody) == 0 {
+			return replayAdmission{}, false, fmt.Errorf("agent child authority: succeeded execution lacks durable result")
+		}
+		return replayAdmission{succeeded: &broker.SucceededReplay{Snapshot: *execution.ResultSnapshot, Body: append([]byte(nil), execution.ResultBody...), Duration: durationFromMS(execution.DurationMS), InputTokens: usageInt(execution.ObservedUsage, "input_tokens"), OutputTokens: usageInt(execution.ObservedUsage, "output_tokens"), CostUSD: usageFloat(execution.ObservedUsage, "cost_usd")}}, true, nil
+	case broker.ExecutionErrored, broker.ExecutionCancelled, broker.ExecutionTimedOut:
+		if execution.ErrorRetryable == nil {
+			return replayAdmission{}, false, fmt.Errorf("agent child authority: terminal execution lacks durable error")
+		}
+		return replayAdmission{terminal: &broker.Terminal{State: execution.State, Code: execution.ErrorCode, Retryable: *execution.ErrorRetryable, Summary: execution.ErrorSummary}}, true, nil
+	default:
+		return replayAdmission{}, false, nil
+	}
+}
+func durationFromMS(value *int64) time.Duration {
+	if value == nil {
+		return 0
+	}
+	return time.Duration(*value) * time.Millisecond
+}
+func usageInt(raw json.RawMessage, key string) *int64 {
+	var value map[string]json.RawMessage
+	_ = json.Unmarshal(raw, &value)
+	var output int64
+	if value[key] == nil || json.Unmarshal(value[key], &output) != nil {
+		return nil
+	}
+	return &output
+}
+func usageFloat(raw json.RawMessage, key string) *float64 {
+	var value map[string]json.RawMessage
+	_ = json.Unmarshal(raw, &value)
+	var output float64
+	if value[key] == nil || json.Unmarshal(value[key], &output) != nil {
+		return nil
+	}
+	return &output
 }
 
 func (service *Service) Phase(ctx context.Context, executionID, phase string) error {
@@ -204,6 +259,13 @@ func (service *Service) Seal(
 	if err != nil {
 		return snapshot.SnapshotRef{}, err
 	}
+	if execution.State == broker.ExecutionSucceeded {
+		replay, found, err := admissionReplay(execution)
+		if err != nil || !found || replay.succeeded == nil || !bytes.Equal(replay.succeeded.Body, request.Body) {
+			return snapshot.SnapshotRef{}, fmt.Errorf("agent child authority: sealed result replay does not match")
+		}
+		return replay.succeeded.Snapshot, nil
+	}
 	if execution.State != broker.ExecutionSealing {
 		return snapshot.SnapshotRef{}, fmt.Errorf(
 			"agent child authority: execution state is %q, expected sealing", execution.State)
@@ -222,7 +284,7 @@ func (service *Service) Seal(
 	_, err = service.config.Store.Advance(ctx, db.AdvanceAgentChildExecution{
 		ID: execution.ID, TeamID: service.config.Scope.TeamID,
 		ExpectedSequence: execution.Sequence, State: broker.ExecutionSucceeded,
-		Phase: "succeeded", ResultSnapshotID: int64(sealed.ID),
+		Phase: "succeeded", ResultSnapshotID: int64(sealed.ID), ResultSnapshot: &sealed, ResultBody: append([]byte(nil), request.Body...),
 	})
 	if err != nil {
 		return snapshot.SnapshotRef{}, err

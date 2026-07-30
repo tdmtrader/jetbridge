@@ -41,6 +41,24 @@ type AdmissionRequest struct {
 	Attachments    []string
 }
 
+// Admission is ATC's durable answer to an idempotent admission request. A
+// terminal replay is complete enough to avoid any local capture, credential,
+// or harness side effect after a broker restart.
+type Admission struct {
+	ExecutionID string
+	Succeeded   *SucceededReplay
+	Terminal    *Terminal
+}
+
+type SucceededReplay struct {
+	Snapshot     snapshot.SnapshotRef
+	Body         json.RawMessage
+	Duration     time.Duration
+	InputTokens  *int64
+	OutputTokens *int64
+	CostUSD      *float64
+}
+
 type SealRequest struct {
 	ExecutionID string
 	Body        json.RawMessage
@@ -116,7 +134,7 @@ type Result struct {
 }
 
 type Authority interface {
-	Admit(context.Context, AdmissionRequest) (string, error)
+	Admit(context.Context, AdmissionRequest) (Admission, error)
 	Phase(context.Context, string, string) error
 	Update(context.Context, string, RunUpdate) error
 	Terminal(context.Context, string, Terminal) error
@@ -213,9 +231,23 @@ func (engine *Engine) execute(ctx context.Context, request executeRequest) (Resu
 		InputDigest: digestInput(request.callerText, request.attachments),
 		Attachments: append([]string(nil), request.attachments...),
 	}
-	executionID, err := engine.config.Authority.Admit(executionCtx, admission)
+	admitted, err := engine.config.Authority.Admit(executionCtx, admission)
 	if err != nil {
 		return Result{}, fmt.Errorf("broker: admit child execution: %w", err)
+	}
+	executionID := admitted.ExecutionID
+	if admitted.Succeeded != nil {
+		body, err := decodeReplayBody(request.tool, admitted.Succeeded.Body)
+		if err != nil {
+			return Result{}, fmt.Errorf("broker: decode sealed replay result: %w", err)
+		}
+		return Result{ExecutionID: executionID, Selector: request.selector, Profile: profile,
+			Snapshot: admitted.Succeeded.Snapshot, Body: body, Duration: admitted.Succeeded.Duration,
+			InputTokens: admitted.Succeeded.InputTokens, OutputTokens: admitted.Succeeded.OutputTokens,
+			CostUSD: admitted.Succeeded.CostUSD, StaticReview: request.tool == ToolRequestReview}, nil
+	}
+	if admitted.Terminal != nil {
+		return Result{}, &ExecutionError{ExecutionID: executionID, Code: admitted.Terminal.Code, Retryable: admitted.Terminal.Retryable, Summary: admitted.Terminal.Summary}
 	}
 	if request.tool == ToolRequestReview {
 		if err := engine.config.Authority.Phase(executionCtx, executionID, "capturing"); err != nil {
@@ -310,6 +342,25 @@ func (engine *Engine) execute(ctx context.Context, request executeRequest) (Resu
 		InputTokens: run.InputTokens, OutputTokens: run.OutputTokens, CostUSD: run.CostUSD,
 		StaticReview: request.staticReview, TestsRun: false,
 	}, nil
+}
+
+func decodeReplayBody(tool Tool, raw json.RawMessage) (any, error) {
+	switch tool {
+	case ToolRequestReview:
+		var body contracts.ReviewBody
+		if err := json.Unmarshal(raw, &body); err != nil {
+			return nil, err
+		}
+		return body, nil
+	case ToolConsultAgent:
+		var body contracts.ConsultationBody
+		if err := json.Unmarshal(raw, &body); err != nil {
+			return nil, err
+		}
+		return body, nil
+	default:
+		return nil, fmt.Errorf("unsupported tool %q", tool)
+	}
 }
 
 func (engine *Engine) validateConfig(tool Tool) error {

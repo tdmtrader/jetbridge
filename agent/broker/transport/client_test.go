@@ -32,8 +32,8 @@ func TestClientPostsAdmissionWithBootstrapCredential(t *testing.T) {
 		t.Fatal(err)
 	}
 	id, err := client.Admit(context.Background(), broker.AdmissionRequest{IdempotencyKey: "call", Tool: broker.ToolConsultAgent, Selector: broker.Selector{Tier: broker.TierBalanced, Effort: broker.EffortHigh}, ProfileID: "profile", ProfileDigest: "sha256:" + strings.Repeat("a", 64), InputDigest: "sha256:" + strings.Repeat("b", 64), Attachments: []string{"design"}})
-	if err != nil || id != "child-1" {
-		t.Fatalf("Admit() = %q, %v", id, err)
+	if err != nil || id.ExecutionID != "child-1" {
+		t.Fatalf("Admit() = %#v, %v", id, err)
 	}
 }
 
@@ -59,7 +59,7 @@ func TestClientUsesExecutionCapabilityAfterAdmission(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := client.Phase(context.Background(), id, "running"); err != nil {
+	if err := client.Phase(context.Background(), id.ExecutionID, "running"); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -87,7 +87,7 @@ func TestClientUsesExecutionCapabilitiesConcurrently(t *testing.T) {
 	errors := make(chan error, 16)
 	for index := 0; index < cap(errors); index++ {
 		group.Add(1)
-		go func() { defer group.Done(); errors <- client.Phase(context.Background(), id, "running") }()
+		go func() { defer group.Done(); errors <- client.Phase(context.Background(), id.ExecutionID, "running") }()
 	}
 	group.Wait()
 	close(errors)
@@ -120,10 +120,10 @@ func TestClientRetainsExecutionCapabilityForTerminalReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	terminal := broker.Terminal{State: broker.ExecutionErrored, Code: "provider_rejected", Retryable: true}
-	if err := client.Terminal(context.Background(), id, terminal); err != nil {
+	if err := client.Terminal(context.Background(), id.ExecutionID, terminal); err != nil {
 		t.Fatal(err)
 	}
-	if err := client.Terminal(context.Background(), id, terminal); err != nil {
+	if err := client.Terminal(context.Background(), id.ExecutionID, terminal); err != nil {
 		t.Fatal(err)
 	}
 	if terminalCalls.Load() != 2 {

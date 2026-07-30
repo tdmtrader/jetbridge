@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/agent/broker"
+	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/google/uuid"
 )
 
@@ -32,6 +33,8 @@ type AgentChildExecution struct {
 	LeaseExpiresAt   *time.Time
 	TranscriptObject string
 	ResultSnapshotID *int64
+	ResultSnapshot   *snapshot.SnapshotRef
+	ResultBody       json.RawMessage
 	ObservedUsage    json.RawMessage
 	DurationMS       *int64
 	ErrorCode        string
@@ -52,6 +55,8 @@ type AdvanceAgentChildExecution struct {
 	LeaseExpiresAt   time.Time
 	TranscriptObject string
 	ResultSnapshotID int64
+	ResultSnapshot   *snapshot.SnapshotRef
+	ResultBody       json.RawMessage
 	ObservedUsage    json.RawMessage
 	DurationMS       *int64
 	ErrorCode        string
@@ -73,7 +78,8 @@ const agentChildExecutionColumns = `
 	idempotency_key, identity_digest, tool, tier, effort, profile_id,
 	profile_digest, input_digest, attachments, state, sequence,
 	broker_instance, lease_expires_at, transcript_object, result_snapshot_id,
-	observed_usage, duration_ms, error_code, error_retryable, error_summary,
+	result_snapshot_type, result_snapshot_digest, result_body, observed_usage,
+	duration_ms, error_code, error_retryable, error_summary,
 	created_at, updated_at, terminal_at
 `
 
@@ -211,6 +217,9 @@ func (factory *agentChildExecutionsFactory) Advance(
 	}
 	lease := nullableTime(request.LeaseExpiresAt)
 	resultSnapshot := nullablePositiveInt64(request.ResultSnapshotID)
+	if request.ResultSnapshot != nil {
+		resultSnapshot = request.ResultSnapshot.ID
+	}
 	usage := nullableChildJSON(request.ObservedUsage)
 	retryable := request.ErrorRetryable
 	updated, err := scanAgentChildExecution(tx.QueryRowContext(ctx, `
@@ -220,15 +229,18 @@ func (factory *agentChildExecutionsFactory) Advance(
 		    lease_expires_at = $5,
 		    transcript_object = COALESCE(NULLIF($6, ''), transcript_object),
 		    result_snapshot_id = COALESCE($7, result_snapshot_id),
-		    observed_usage = COALESCE($8, observed_usage),
-		    duration_ms = COALESCE($9, duration_ms),
-		    error_code = NULLIF($10, ''),
-		    error_retryable = $11,
-		    error_summary = NULLIF($12, '')
-		WHERE id = $1::uuid AND team_id = $2 AND sequence = $13
+		    result_snapshot_type = COALESCE(NULLIF($8, ''), result_snapshot_type),
+		    result_snapshot_digest = COALESCE(NULLIF($9, ''), result_snapshot_digest),
+		    result_body = COALESCE($10, result_body),
+		    observed_usage = COALESCE($11, observed_usage),
+		    duration_ms = COALESCE($12, duration_ms),
+		    error_code = NULLIF($13, ''),
+		    error_retryable = $14,
+		    error_summary = NULLIF($15, '')
+		WHERE id = $1::uuid AND team_id = $2 AND sequence = $16
 		RETURNING `+agentChildExecutionColumns,
 		request.ID, request.TeamID, request.State, request.BrokerInstance,
-		lease, request.TranscriptObject, resultSnapshot, usage, request.DurationMS,
+		lease, request.TranscriptObject, resultSnapshot, snapshotType(request.ResultSnapshot), snapshotDigest(request.ResultSnapshot), nullableChildJSON(request.ResultBody), usage, request.DurationMS,
 		request.ErrorCode, retryable, request.ErrorSummary, request.ExpectedSequence,
 	))
 	if err != nil {
@@ -354,7 +366,7 @@ func validateAdvanceRequest(request AdvanceAgentChildExecution) error {
 	if terminalError && (strings.TrimSpace(request.ErrorCode) == "" || request.ErrorRetryable == nil) {
 		return fmt.Errorf("db: terminal child execution error code and retryability are required")
 	}
-	if request.State == broker.ExecutionSucceeded && request.ResultSnapshotID <= 0 {
+	if request.State == broker.ExecutionSucceeded && (request.ResultSnapshot == nil || request.ResultSnapshot.ID <= 0 || len(request.ResultBody) == 0) {
 		return fmt.Errorf("db: succeeded child execution requires a result snapshot")
 	}
 	if !terminalError && request.State != broker.ExecutionSucceeded &&
@@ -371,7 +383,8 @@ func scanAgentChildExecution(row interface{ Scan(...any) error }) (AgentChildExe
 	var brokerInstance, transcriptObject, errorCode, errorSummary sql.NullString
 	var leaseExpiresAt, terminalAt sql.NullTime
 	var resultSnapshotID, durationMS sql.NullInt64
-	var observedUsage []byte
+	var resultSnapshotType, resultSnapshotDigest sql.NullString
+	var observedUsage, resultBody []byte
 	var errorRetryable sql.NullBool
 	err := row.Scan(
 		&execution.ID, &execution.TeamID, &execution.WorkflowRunID,
@@ -379,7 +392,7 @@ func scanAgentChildExecution(row interface{ Scan(...any) error }) (AgentChildExe
 		&execution.IdentityDigest, &tool, &tier, &effort, &execution.ProfileID,
 		&execution.ProfileDigest, &execution.InputDigest, &attachments, &state,
 		&execution.Sequence, &brokerInstance, &leaseExpiresAt, &transcriptObject,
-		&resultSnapshotID, &observedUsage, &durationMS, &errorCode,
+		&resultSnapshotID, &resultSnapshotType, &resultSnapshotDigest, &resultBody, &observedUsage, &durationMS, &errorCode,
 		&errorRetryable, &errorSummary, &execution.CreatedAt, &execution.UpdatedAt,
 		&terminalAt,
 	)
@@ -404,6 +417,9 @@ func scanAgentChildExecution(row interface{ Scan(...any) error }) (AgentChildExe
 	}
 	if resultSnapshotID.Valid {
 		execution.ResultSnapshotID = &resultSnapshotID.Int64
+		if resultSnapshotType.Valid && resultSnapshotDigest.Valid {
+			execution.ResultSnapshot = &snapshot.SnapshotRef{ID: snapshot.SnapshotID(resultSnapshotID.Int64), Type: snapshot.TypeRef(resultSnapshotType.String), Digest: snapshot.Digest(resultSnapshotDigest.String)}
+		}
 	}
 	if durationMS.Valid {
 		execution.DurationMS = &durationMS.Int64
@@ -413,6 +429,9 @@ func scanAgentChildExecution(row interface{ Scan(...any) error }) (AgentChildExe
 	}
 	if len(observedUsage) > 0 {
 		execution.ObservedUsage = append(json.RawMessage(nil), observedUsage...)
+	}
+	if len(resultBody) > 0 {
+		execution.ResultBody = append(json.RawMessage(nil), resultBody...)
 	}
 	return execution, nil
 }
@@ -436,4 +455,17 @@ func nullableChildJSON(value json.RawMessage) any {
 		return nil
 	}
 	return []byte(value)
+}
+
+func snapshotType(value *snapshot.SnapshotRef) string {
+	if value == nil {
+		return ""
+	}
+	return string(value.Type)
+}
+func snapshotDigest(value *snapshot.SnapshotRef) string {
+	if value == nil {
+		return ""
+	}
+	return string(value.Digest)
 }

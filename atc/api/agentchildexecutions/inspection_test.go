@@ -14,7 +14,7 @@ import (
 func TestInspectionIsReadOnlyTeamBoundAndDoesNotExposeInputDigest(t *testing.T) {
 	store := &fakeStore{execution: db.AgentChildExecution{
 		ID:                "c34a6e95-2e3a-45b0-b3f0-30c4e09acb7d",
-		ExecutionIdentity: broker.ExecutionIdentity{TeamID: 1, InputDigest: "sha256:" + strings.Repeat("a", 64), Tool: broker.ToolConsultAgent, ProfileID: "frozen", ProfileDigest: "sha256:" + strings.Repeat("b", 64)},
+		ExecutionIdentity: broker.ExecutionIdentity{TeamID: 1, InputDigest: "sha256:" + strings.Repeat("a", 64), Tool: broker.ToolRequestReview, ProfileID: "frozen", ProfileDigest: "sha256:" + strings.Repeat("b", 64)},
 		State:             broker.ExecutionSucceeded,
 	}}
 	handler := agentchildexecutions.NewInspectionHandler(store, 1)
@@ -23,6 +23,9 @@ func TestInspectionIsReadOnlyTeamBoundAndDoesNotExposeInputDigest(t *testing.T) 
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), store.execution.InputDigest) {
 		t.Fatalf("inspection status=%d body=%s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"static_review":true`) || !strings.Contains(response.Body.String(), `"tests_run":false`) {
+		t.Fatalf("inspection provenance = %s", response.Body.String())
 	}
 	foreign := httptest.NewRecorder()
 	agentchildexecutions.NewInspectionHandler(store, 2).ServeHTTP(foreign, request)

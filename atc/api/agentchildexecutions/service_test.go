@@ -35,11 +35,11 @@ func TestServiceVerifiesFrozenResolutionAndOwnsTerminalBinding(t *testing.T) {
 		Selector: resolved.Selector, ProfileID: resolved.ID, ProfileDigest: resolved.Digest,
 		InputDigest: "sha256:" + strings.Repeat("c", 64), Attachments: []string{"design"},
 	}
-	executionID, err := service.Admit(context.Background(), admission)
+	admitted, err := service.Admit(context.Background(), admission)
 	if err != nil {
 		t.Fatalf("Admit(): %v", err)
 	}
-	if executionID == "" || store.identity.ProfileDigest != resolved.Digest ||
+	if admitted.ExecutionID == "" || store.identity.ProfileDigest != resolved.Digest ||
 		store.advances[0].State != broker.ExecutionAdmitted {
 		t.Fatalf("admission = %#v advances=%#v", store.identity, store.advances)
 	}
@@ -47,7 +47,7 @@ func TestServiceVerifiesFrozenResolutionAndOwnsTerminalBinding(t *testing.T) {
 	store.execution.State = broker.ExecutionSealing
 	store.execution.Sequence = 3
 	sealed, err := service.Seal(context.Background(), broker.SealRequest{
-		ExecutionID: executionID, Body: []byte(`{"answer":"answer","claims":[],"assumptions":[],"uncertainties":[],"recommendations":[]}`),
+		ExecutionID: admitted.ExecutionID, Body: []byte(`{"answer":"answer","claims":[],"assumptions":[],"uncertainties":[],"recommendations":[]}`),
 	})
 	if err != nil {
 		t.Fatalf("Seal(): %v", err)
@@ -56,6 +56,10 @@ func TestServiceVerifiesFrozenResolutionAndOwnsTerminalBinding(t *testing.T) {
 	if sealed.ID != 99 || last.State != broker.ExecutionSucceeded ||
 		last.ResultSnapshotID != 99 {
 		t.Fatalf("seal = %#v advance=%#v", sealed, last)
+	}
+	replayed, err := service.Seal(context.Background(), broker.SealRequest{ExecutionID: admitted.ExecutionID, Body: []byte(`{"answer":"answer","claims":[],"assumptions":[],"uncertainties":[],"recommendations":[]}`)})
+	if err != nil || replayed != sealed {
+		t.Fatalf("idempotent seal replay = %#v, %v", replayed, err)
 	}
 
 	admission.ProfileDigest = "sha256:" + strings.Repeat("d", 64)
@@ -79,7 +83,7 @@ func TestServiceRejectsUnsafeEventsAndPersistsExactTerminalFailure(t *testing.T)
 		t.Fatal(err)
 	}
 	resolved, _ := catalog.Resolve(broker.ToolConsultAgent, authorityProfile().Selector)
-	executionID, err := service.Admit(context.Background(), broker.AdmissionRequest{
+	admitted, err := service.Admit(context.Background(), broker.AdmissionRequest{
 		IdempotencyKey: "terminal", Tool: broker.ToolConsultAgent,
 		Selector: resolved.Selector, ProfileID: resolved.ID, ProfileDigest: resolved.Digest,
 		InputDigest: "sha256:" + strings.Repeat("c", 64), Attachments: []string{"design"},
@@ -87,15 +91,15 @@ func TestServiceRejectsUnsafeEventsAndPersistsExactTerminalFailure(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := service.Phase(context.Background(), executionID, "running"); err != nil {
+	if err := service.Phase(context.Background(), admitted.ExecutionID, "running"); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.Update(context.Background(), executionID, broker.RunUpdate{
+	if err := service.Update(context.Background(), admitted.ExecutionID, broker.RunUpdate{
 		Events: []broker.Event{{Kind: "native TOKEN=super-secret"}},
 	}); err == nil || !strings.Contains(err.Error(), "event") {
 		t.Fatalf("Update() error = %v, want unsafe event rejection", err)
 	}
-	if err := service.Terminal(context.Background(), executionID, broker.Terminal{
+	if err := service.Terminal(context.Background(), admitted.ExecutionID, broker.Terminal{
 		State: broker.ExecutionTimedOut, Code: "deadline_exceeded", Retryable: true,
 		Summary: "child execution exceeded its deadline",
 	}); err != nil {
@@ -122,7 +126,7 @@ func TestServiceOwnsClosedTerminalContractAndSafeSummary(t *testing.T) {
 		t.Fatal(err)
 	}
 	resolved, _ := catalog.Resolve(broker.ToolConsultAgent, authorityProfile().Selector)
-	executionID, err := service.Admit(context.Background(), broker.AdmissionRequest{
+	admitted, err := service.Admit(context.Background(), broker.AdmissionRequest{
 		IdempotencyKey: "closed-terminal", Tool: broker.ToolConsultAgent,
 		Selector: resolved.Selector, ProfileID: resolved.ID, ProfileDigest: resolved.Digest,
 		InputDigest: "sha256:" + strings.Repeat("c", 64), Attachments: []string{"design"},
@@ -130,17 +134,17 @@ func TestServiceOwnsClosedTerminalContractAndSafeSummary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := service.Terminal(context.Background(), executionID, broker.Terminal{
+	if err := service.Terminal(context.Background(), admitted.ExecutionID, broker.Terminal{
 		State: broker.ExecutionErrored, Code: "provider body", Retryable: false, Summary: "provider body",
 	}); err == nil || !strings.Contains(err.Error(), "terminal") {
 		t.Fatalf("Terminal() error = %v, want closed-contract rejection", err)
 	}
-	if err := service.Terminal(context.Background(), executionID, broker.Terminal{
+	if err := service.Terminal(context.Background(), admitted.ExecutionID, broker.Terminal{
 		State: broker.ExecutionTimedOut, Code: "deadline_exceeded", Retryable: false, Summary: "provider body",
 	}); err == nil || !strings.Contains(err.Error(), "terminal") {
 		t.Fatalf("Terminal() error = %v, want retryability rejection", err)
 	}
-	if err := service.Terminal(context.Background(), executionID, broker.Terminal{
+	if err := service.Terminal(context.Background(), admitted.ExecutionID, broker.Terminal{
 		State: broker.ExecutionTimedOut, Code: "deadline_exceeded", Retryable: true, Summary: "provider body",
 	}); err != nil {
 		t.Fatalf("Terminal(): %v", err)
@@ -165,7 +169,7 @@ func TestServiceRejectsTerminalTransitionsThroughGenericPhase(t *testing.T) {
 		t.Fatal(err)
 	}
 	resolved, _ := catalog.Resolve(broker.ToolConsultAgent, authorityProfile().Selector)
-	executionID, err := service.Admit(context.Background(), broker.AdmissionRequest{
+	admitted, err := service.Admit(context.Background(), broker.AdmissionRequest{
 		IdempotencyKey: "phase-terminal", Tool: broker.ToolConsultAgent,
 		Selector: resolved.Selector, ProfileID: resolved.ID, ProfileDigest: resolved.Digest,
 		InputDigest: "sha256:" + strings.Repeat("c", 64), Attachments: []string{"design"},
@@ -173,7 +177,7 @@ func TestServiceRejectsTerminalTransitionsThroughGenericPhase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := service.Phase(context.Background(), executionID, "errored"); err == nil ||
+	if err := service.Phase(context.Background(), admitted.ExecutionID, "errored"); err == nil ||
 		!strings.Contains(err.Error(), "unsupported") {
 		t.Fatalf("Phase() error = %v, want terminal phase rejection", err)
 	}
@@ -205,15 +209,22 @@ func (store *fakeStore) Advance(_ context.Context, request db.AdvanceAgentChildE
 		store.execution.BrokerInstance = request.BrokerInstance
 	}
 	store.execution.Sequence++
+	if request.ResultSnapshot != nil {
+		store.execution.ResultSnapshot = request.ResultSnapshot
+		id := int64(request.ResultSnapshot.ID)
+		store.execution.ResultSnapshotID = &id
+		store.execution.ResultBody = append([]byte(nil), request.ResultBody...)
+	}
 	return store.execution, nil
 }
 func (store *fakeStore) Find(_ context.Context, teamID int, id string) (db.AgentChildExecution, bool, error) {
 	return store.execution, teamID == store.execution.TeamID && id == store.execution.ID, nil
 }
 
-type fakeSealer struct{}
+type fakeSealer struct{ calls int }
 
-func (*fakeSealer) Seal(context.Context, agentchildexecutions.Scope, broker.ExecutionIdentity, agentchildexecutions.CandidateResult) (snapshot.SnapshotRef, error) {
+func (sealer *fakeSealer) Seal(context.Context, agentchildexecutions.Scope, broker.ExecutionIdentity, agentchildexecutions.CandidateResult) (snapshot.SnapshotRef, error) {
+	sealer.calls++
 	return snapshot.SnapshotRef{
 		ID: 99, Type: "consultation/v1",
 		Digest: snapshot.Digest("sha256:" + strings.Repeat("e", 64)),

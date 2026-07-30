@@ -99,17 +99,21 @@ func (handler *Handler) ServeHTTP(w http.ResponseWriter, request *http.Request) 
 			writeSafeError(w, http.StatusBadRequest)
 			return
 		}
-		id, err := service.Admit(request.Context(), broker.AdmissionRequest{IdempotencyKey: body.IdempotencyKey, Tool: body.Tool, Selector: body.Selector, ProfileID: body.ProfileID, ProfileDigest: body.ProfileDigest, InputDigest: body.InputDigest, Attachments: append([]string(nil), body.Attachments...)})
+		admitted, err := service.Admit(request.Context(), broker.AdmissionRequest{IdempotencyKey: body.IdempotencyKey, Tool: body.Tool, Selector: body.Selector, ProfileID: body.ProfileID, ProfileDigest: body.ProfileDigest, InputDigest: body.InputDigest, Attachments: append([]string(nil), body.Attachments...)})
 		if err != nil {
 			writeServiceError(w, err)
 			return
 		}
-		capability, err := handler.config.Signer.MintExecution(scope, id, profile, now, now.Add(handler.config.ExecutionCapabilityTTL))
+		if admitted.Succeeded != nil || admitted.Terminal != nil {
+			writeJSON(w, http.StatusOK, transport.AdmitResponse{ExecutionID: admitted.ExecutionID, Succeeded: admitted.Succeeded, Terminal: admitted.Terminal})
+			return
+		}
+		capability, err := handler.config.Signer.MintExecution(scope, admitted.ExecutionID, profile, now, now.Add(handler.config.ExecutionCapabilityTTL))
 		if err != nil {
 			writeSafeError(w, http.StatusInternalServerError)
 			return
 		}
-		writeJSON(w, http.StatusOK, transport.AdmitResponse{ExecutionID: id, ExecutionCapability: capability})
+		writeJSON(w, http.StatusOK, transport.AdmitResponse{ExecutionID: admitted.ExecutionID, ExecutionCapability: capability})
 		return
 	}
 	if _, err := uuid.Parse(executionID); err != nil {
@@ -286,7 +290,7 @@ func writeServiceError(w http.ResponseWriter, err error) {
 	status := http.StatusBadRequest
 	if strings.Contains(err.Error(), "not found") {
 		status = http.StatusNotFound
-	} else if strings.Contains(err.Error(), "sequence conflict") || strings.Contains(err.Error(), "transition") || strings.Contains(err.Error(), "expected") {
+	} else if strings.Contains(err.Error(), "sequence conflict") || strings.Contains(err.Error(), "transition") || strings.Contains(err.Error(), "expected") || strings.Contains(err.Error(), "already in progress") {
 		status = http.StatusConflict
 	}
 	writeSafeError(w, status)

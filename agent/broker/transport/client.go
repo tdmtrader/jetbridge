@@ -52,8 +52,10 @@ type AdmitRequest struct {
 	Attachments    []string        `json:"attachments"`
 }
 type AdmitResponse struct {
-	ExecutionID         string `json:"execution_id"`
-	ExecutionCapability string `json:"execution_capability"`
+	ExecutionID         string                  `json:"execution_id"`
+	ExecutionCapability string                  `json:"execution_capability"`
+	Succeeded           *broker.SucceededReplay `json:"succeeded,omitempty"`
+	Terminal            *broker.Terminal        `json:"terminal,omitempty"`
 }
 type PhaseRequest struct {
 	Phase string `json:"phase"`
@@ -89,19 +91,24 @@ func NewClient(config Config) (*Client, error) {
 	return &Client{endpoint: strings.TrimRight(config.Endpoint, "/"), bootstrap: config.BootstrapCapability, http: httpClient, executions: make(map[string]string)}, nil
 }
 
-func (c *Client) Admit(ctx context.Context, request broker.AdmissionRequest) (string, error) {
+func (c *Client) Admit(ctx context.Context, request broker.AdmissionRequest) (broker.Admission, error) {
 	var response AdmitResponse
 	input := AdmitRequest{IdempotencyKey: request.IdempotencyKey, Tool: request.Tool, Selector: request.Selector, ProfileID: request.ProfileID, ProfileDigest: request.ProfileDigest, InputDigest: request.InputDigest, Attachments: request.Attachments}
 	if err := c.post(ctx, AdmitPath, input, &response, c.bootstrap); err != nil {
-		return "", err
+		return broker.Admission{}, err
 	}
-	if strings.TrimSpace(response.ExecutionID) == "" || strings.TrimSpace(response.ExecutionCapability) == "" {
-		return "", fmt.Errorf("broker authority: admit response is missing execution ID")
+	if response.Succeeded != nil && response.Terminal != nil || (response.Succeeded != nil || response.Terminal != nil) && response.ExecutionCapability != "" {
+		return broker.Admission{}, fmt.Errorf("broker authority: admit response has conflicting terminal fields")
 	}
-	c.mu.Lock()
-	c.executions[response.ExecutionID] = response.ExecutionCapability
-	c.mu.Unlock()
-	return response.ExecutionID, nil
+	if strings.TrimSpace(response.ExecutionID) == "" || (response.Succeeded == nil && response.Terminal == nil && strings.TrimSpace(response.ExecutionCapability) == "") {
+		return broker.Admission{}, fmt.Errorf("broker authority: admit response is missing execution ID")
+	}
+	if response.ExecutionCapability != "" {
+		c.mu.Lock()
+		c.executions[response.ExecutionID] = response.ExecutionCapability
+		c.mu.Unlock()
+	}
+	return broker.Admission{ExecutionID: response.ExecutionID, Succeeded: response.Succeeded, Terminal: response.Terminal}, nil
 }
 func (c *Client) Phase(ctx context.Context, id, phase string) error {
 	return c.post(ctx, fmt.Sprintf(phasePath, url.PathEscape(id)), PhaseRequest{Phase: phase}, nil, c.executionCapability(id))

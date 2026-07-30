@@ -31,15 +31,14 @@ go test ./atc/wrappa ./atc/atccmd ./atc/api ./atc -run 'AgentChild|Broker' -coun
 git diff --check
 ```
 
-## Remaining risk
+## Replay repair
 
-The durable ledger currently records only `result_snapshot_id`, not the sealed
-result body/digest. Duplicate idempotency admissions correctly reuse the same
-execution row and do not rerun admission transitions, but complete terminal
-result rehydration for a restarted broker requires a narrow follow-up schema
-field (or a snapshot metadata lookup that returns the full reference) plus an
-admission response carrying the terminal result. This is required to meet the
-full replay-return contract rather than returning a safe terminal conflict.
+The unshipped child ledger now persists the sealed snapshot type/digest and
+result body. A duplicate terminal admission returns the durable success result
+or the same safe terminal failure before attachment, credential, or harness
+work. Nonterminal duplicates are rejected as busy rather than receiving a new
+execution capability. Seal replay returns the exact persisted reference only
+when the candidate body matches.
 
 The snapshot creation and child-execution binding are separate durable systems;
 the service remains seal-before-success. The ordinary sealer uses the stable

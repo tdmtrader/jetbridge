@@ -48,6 +48,8 @@ type Inspection struct {
 	ErrorCode        string `json:"error_code,omitempty"`
 	ErrorRetryable   *bool  `json:"error_retryable,omitempty"`
 	ErrorSummary     string `json:"error_summary,omitempty"`
+	StaticReview     bool   `json:"static_review"`
+	TestsRun         bool   `json:"tests_run"`
 }
 
 func inspectionFor(execution db.AgentChildExecution) Inspection {
@@ -65,5 +67,7 @@ func inspectionFor(execution db.AgentChildExecution) Inspection {
 	inspection.ErrorCode = execution.ErrorCode
 	inspection.ErrorRetryable = execution.ErrorRetryable
 	inspection.ErrorSummary = execution.ErrorSummary
+	inspection.StaticReview = execution.Tool == "request_review"
+	inspection.TestsRun = false
 	return inspection
 }

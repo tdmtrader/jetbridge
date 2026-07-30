@@ -45,6 +45,9 @@ CREATE TABLE agent_child_executions (
     transcript_object TEXT
         CHECK (transcript_object IS NULL OR btrim(transcript_object) <> ''),
     result_snapshot_id BIGINT,
+    result_snapshot_type TEXT,
+    result_snapshot_digest TEXT,
+    result_body JSONB,
     observed_usage JSONB,
     duration_ms BIGINT CHECK (duration_ms IS NULL OR duration_ms >= 0),
     error_code TEXT
@@ -68,11 +71,17 @@ CREATE TABLE agent_child_executions (
     CHECK (
         (state = 'succeeded'
             AND result_snapshot_id IS NOT NULL
+            AND result_snapshot_type IN ('review/v1', 'consultation/v1')
+            AND result_snapshot_digest ~ '^sha256:[0-9a-f]{64}$'
+            AND result_body IS NOT NULL
             AND terminal_at IS NOT NULL
             AND error_code IS NULL)
         OR
         (state IN ('errored', 'cancelled', 'timed_out')
             AND result_snapshot_id IS NULL
+            AND result_snapshot_type IS NULL
+            AND result_snapshot_digest IS NULL
+            AND result_body IS NULL
             AND terminal_at IS NOT NULL
             AND error_code IS NOT NULL
             AND error_retryable IS NOT NULL)
@@ -80,6 +89,9 @@ CREATE TABLE agent_child_executions (
         (state NOT IN ('succeeded', 'errored', 'cancelled', 'timed_out')
             AND terminal_at IS NULL
             AND result_snapshot_id IS NULL
+            AND result_snapshot_type IS NULL
+            AND result_snapshot_digest IS NULL
+            AND result_body IS NULL
             AND error_code IS NULL
             AND error_retryable IS NULL
             AND error_summary IS NULL)
