@@ -149,6 +149,13 @@ The bounded acceptance review also closed two upgrade-edge gaps:
   result ceiling before per-workflow work, and maps an oversized response to
   stable HTTP 422 batching guidance.
 
+The full Fly integration suite then found an integration-fixture omission,
+not another product request: one lifecycle spec starts three separate Fly
+processes, and each process validates the target through `GET /api/v1/info`.
+The fixture modeled only the first validation. Commit `5af4a85b2a` adds the
+two missing validation handlers before the release and deprecation requests;
+the focused lifecycle spec and all 669 Fly integration specs pass.
+
 ## Verification
 
 Final focused evidence:
@@ -175,6 +182,29 @@ Final focused evidence:
 - PASS: tracked and new Task 8 files pass `git diff --check`/no-index
   whitespace checks.
 
-The repository was under active multi-agent mutation and storage pressure, so
-Task 8 intentionally used the accepted warm-cache focused matrix instead of
-duplicating the adjacent tasks' already-green broad package runs.
+Final milestone evidence:
+
+- PASS:
+  `go test -p=2 ./agent/workflow/... ./agent/workflowrun
+  ./agent/reusablenode ./agent/api/nodes ./agent/api/noderuns
+  ./agent/api/nodeupgrades ./fly/commands -count=1`.
+- PASS: `go test -p=2 ./atc/builds ./atc/exec ./atc/atccmd -count=1`.
+- PASS outside the filesystem/network sandbox:
+  `go test -p=2 ./atc/api ./atc/wrappa -count=1`. The sandboxed attempt failed
+  only because `httptest` could not bind localhost.
+- PASS outside the network sandbox: `make test-dev-mcp`.
+- PASS outside the network sandbox: `make test-fly-integration`
+  (`669 Passed`, `0 Failed`).
+- PASS: `helm lint deploy/chart`, `git diff --check`, exact origin ancestry,
+  and clean reusable-node paths/index.
+
+PostgreSQL at the fixed local test port `127.0.0.1:5434` returned no response,
+so the DB integration target and repository-wide `make test-unit` prerequisite
+were unavailable. They were not repeatedly retried. The accepted Task 2, 5,
+and 6 reports retain the exact host database and migration evidence for node
+kind fencing, lifecycle storage, bindings, consumers, and runs.
+
+The first focused Fly rerun exhausted the filesystem while linking. Only the
+task-created, regenerable shared Go build cache was cleared; the focused rerun
+and full integration suite then passed. Unrelated in-flight working-tree
+changes and caches owned by other work were preserved.
