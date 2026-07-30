@@ -381,6 +381,7 @@ type MonitorRunResult struct {
 	ObservationSnapshotID snapshot.SnapshotID
 	Cursor                Cursor
 	SourceSHA             string
+	ReconciledSourceSHA   string
 	TargetSHA             string
 	RunStatus             MonitorRunStatus
 	Outcome               MonitorOutcome
@@ -719,8 +720,10 @@ func acknowledgeRequest(
 		ReservationToken:      result.ReservationToken,
 		WorkflowRunID:         result.WorkflowRunID,
 		ObservationSnapshotID: result.ObservationSnapshotID,
-		Cursor:                result.Cursor, SourceSHA: result.SourceSHA,
-		TargetSHA: result.TargetSHA,
+		Cursor:                result.Cursor,
+		SourceSHA:             result.SourceSHA,
+		ReconciledSourceSHA:   result.ReconciledSourceSHA,
+		TargetSHA:             result.TargetSHA,
 	}
 }
 
@@ -892,6 +895,10 @@ func validateMonitorRunResult(result MonitorRunResult) error {
 		result.ReservationToken == "" || len(result.ReservationToken) > 128 ||
 		result.Cursor == "" || result.Cursor.Validate() != nil ||
 		validateObjectID("monitor result source sha", result.SourceSHA) != nil ||
+		validateObjectID(
+			"monitor result reconciled source sha",
+			result.ReconciledSourceSHA,
+		) != nil ||
 		validateObjectID("monitor result target sha", result.TargetSHA) != nil {
 		return fmt.Errorf("pullrequest: monitor run result is invalid")
 	}
@@ -954,7 +961,7 @@ func sameAcknowledgedMonitorResult(
 		binding.LastObservationSnapshotID != nil &&
 		*binding.LastObservationSnapshotID == result.ObservationSnapshotID &&
 		binding.AcknowledgedCursor == result.Cursor &&
-		binding.LastReconciledSourceSHA == result.SourceSHA &&
+		binding.LastReconciledSourceSHA == result.ReconciledSourceSHA &&
 		binding.LastReconciledTargetSHA == result.TargetSHA
 }
 

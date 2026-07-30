@@ -274,6 +274,79 @@ func TestMonitorCoordinatorAcknowledgesOnlySafeSucceededOutcomes(t *testing.T) {
 	}
 }
 
+func TestMonitorCoordinatorAcknowledgesPublishedHeadWhileMatchingObservedLease(
+	t *testing.T,
+) {
+	binding := monitorTestBinding()
+	store := newMonitorMemoryStore(binding)
+	coordinator, err := NewMonitorCoordinator(
+		store, &monitorMemoryLauncher{store: store}, &monitorMemoryResults{},
+		monitorTestAcceptedResolver(binding), 10*time.Minute,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := coordinator.ReserveAndLaunch(
+		context.Background(), monitorTestSourceBuild(binding),
+	); err != nil {
+		t.Fatal(err)
+	}
+	attached := store.bindingValue()
+	result := monitorResultFor(
+		attached, MonitorRunSucceeded, MonitorOutcomePublished,
+	)
+	result.ReconciledSourceSHA = strings.Repeat("5", 40)
+
+	wrongLease := result
+	wrongLease.SourceSHA = result.ReconciledSourceSHA
+	if _, err := coordinator.Acknowledge(
+		context.Background(), wrongLease,
+	); !errors.Is(err, ErrReservationMismatch) {
+		t.Fatalf("published head used as lease identity: %v", err)
+	}
+
+	acknowledged, err := coordinator.Acknowledge(context.Background(), result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if acknowledged.LastReconciledSourceSHA != strings.Repeat("5", 40) {
+		t.Fatalf(
+			"last reconciled source sha = %q, want published head",
+			acknowledged.LastReconciledSourceSHA,
+		)
+	}
+	replayed, err := coordinator.Acknowledge(context.Background(), result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayed.Revision != acknowledged.Revision {
+		t.Fatalf(
+			"idempotent replay revision = %d, want %d",
+			replayed.Revision, acknowledged.Revision,
+		)
+	}
+}
+
+func TestAcknowledgeActionRejectsInvalidReconciledSourceSHA(t *testing.T) {
+	request := AcknowledgeAction{
+		TeamID:                7,
+		BindingID:             9,
+		ExpectedRevision:      8,
+		ActionDigest:          monitorDigest("d"),
+		ReservationToken:      "reservation-1",
+		WorkflowRunID:         91,
+		ObservationSnapshotID: 501,
+		Cursor:                "cursor-1",
+		SourceSHA:             strings.Repeat("3", 40),
+		ReconciledSourceSHA:   "not-an-object-id",
+		TargetSHA:             strings.Repeat("4", 40),
+	}
+
+	if err := request.Validate(); err == nil {
+		t.Fatal("invalid reconciled source sha was accepted")
+	}
+}
+
 func TestMonitorCoordinatorMarksExactTerminalProviderObservation(t *testing.T) {
 	for _, test := range []struct {
 		outcome MonitorOutcome
@@ -563,8 +636,12 @@ func monitorResultFor(
 		ActionDigest:          binding.Active.ActionDigest,
 		ReservationToken:      binding.Active.Token,
 		ObservationSnapshotID: binding.Active.ObservationSnapshotID,
-		Cursor:                binding.Active.Cursor, SourceSHA: binding.Active.SourceSHA,
-		TargetSHA: binding.Active.TargetSHA, RunStatus: status, Outcome: outcome,
+		Cursor:                binding.Active.Cursor,
+		SourceSHA:             binding.Active.SourceSHA,
+		ReconciledSourceSHA:   binding.Active.SourceSHA,
+		TargetSHA:             binding.Active.TargetSHA,
+		RunStatus:             status,
+		Outcome:               outcome,
 	}
 }
 
@@ -721,7 +798,7 @@ func (store *monitorMemoryStore) AcknowledgeAction(
 	store.binding.LastObservationSnapshotID = &request.ObservationSnapshotID
 	store.binding.LastAcknowledgedActionDigest = request.ActionDigest
 	store.binding.LastAcknowledgedWorkflowRunID = &request.WorkflowRunID
-	store.binding.LastReconciledSourceSHA = request.SourceSHA
+	store.binding.LastReconciledSourceSHA = request.ReconciledSourceSHA
 	store.binding.LastReconciledTargetSHA = request.TargetSHA
 	store.binding.Active = nil
 	store.binding.Revision++

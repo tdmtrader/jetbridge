@@ -593,7 +593,8 @@ func (factory *agentPRBindingsFactory) AcknowledgeAction(
 		WHERE team_id=$1 AND id=$2 AND revision=$3
 	`, request.TeamID, request.BindingID, request.ExpectedRevision, cursor,
 		int64(request.ObservationSnapshotID), request.ActionDigest,
-		int64(request.WorkflowRunID), request.SourceSHA, request.TargetSHA, now)
+		int64(request.WorkflowRunID), request.ReconciledSourceSHA,
+		request.TargetSHA, now)
 	if err != nil {
 		return pullrequest.Binding{}, err
 	}
@@ -711,7 +712,9 @@ func (factory *agentPRBindingsFactory) MarkTerminal(
 		ExpectedRevision: request.ExpectedRevision, ActionDigest: request.ActionDigest,
 		ReservationToken: request.ReservationToken, WorkflowRunID: request.WorkflowRunID,
 		ObservationSnapshotID: request.ObservationSnapshotID, Cursor: request.Cursor,
-		SourceSHA: request.SourceSHA, TargetSHA: request.TargetSHA,
+		SourceSHA:           request.SourceSHA,
+		ReconciledSourceSHA: request.SourceSHA,
+		TargetSHA:           request.TargetSHA,
 	}
 	if err := validateExactAgentPRAttachedAction(binding, ack); err != nil {
 		return pullrequest.Binding{}, err
@@ -1529,7 +1532,7 @@ func sameAgentPRAcknowledgement(
 		binding.LastObservationSnapshotID != nil &&
 		*binding.LastObservationSnapshotID == request.ObservationSnapshotID &&
 		binding.AcknowledgedCursor == request.Cursor &&
-		binding.LastReconciledSourceSHA == request.SourceSHA &&
+		binding.LastReconciledSourceSHA == request.ReconciledSourceSHA &&
 		binding.LastReconciledTargetSHA == request.TargetSHA
 }
 

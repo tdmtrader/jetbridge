@@ -593,18 +593,25 @@ var _ = Describe("AgentPRBindingsFactory", func() {
 			WHERE id=$1
 		`, runID)
 		Expect(err).NotTo(HaveOccurred())
+		publishedSourceSHA := strings.Repeat("e", 40)
 		ack := pullrequest.AcknowledgeAction{
 			TeamID: binding.TeamID, BindingID: binding.ID,
 			ExpectedRevision: attached.Revision,
 			ActionDigest:     reservation.ActionDigest, ReservationToken: reservation.Token,
 			WorkflowRunID:         snapshot.WorkflowRunID(runID),
 			ObservationSnapshotID: reservation.ObservationSnapshotID,
-			Cursor:                reservation.Cursor, SourceSHA: reservation.SourceSHA,
-			TargetSHA: reservation.TargetSHA,
+			Cursor:                reservation.Cursor,
+			SourceSHA:             reservation.SourceSHA,
+			ReconciledSourceSHA:   publishedSourceSHA,
+			TargetSHA:             reservation.TargetSHA,
 		}
 		wrong := ack
 		wrong.ActionDigest = "sha256:" + strings.Repeat("9", 64)
 		_, err = factory.AcknowledgeAction(ctx, wrong)
+		Expect(errors.Is(err, pullrequest.ErrReservationMismatch)).To(BeTrue())
+		wrongLease := ack
+		wrongLease.SourceSHA = publishedSourceSHA
+		_, err = factory.AcknowledgeAction(ctx, wrongLease)
 		Expect(errors.Is(err, pullrequest.ErrReservationMismatch)).To(BeTrue())
 
 		acknowledged, err := factory.AcknowledgeAction(ctx, ack)
@@ -612,9 +619,14 @@ var _ = Describe("AgentPRBindingsFactory", func() {
 		Expect(acknowledged.Active).To(BeNil())
 		Expect(acknowledged.AcknowledgedCursor).To(Equal(reservation.Cursor))
 		Expect(acknowledged.LastAcknowledgedWorkflowRunID).To(Equal(pointerToWorkflowRunID(runID)))
+		Expect(acknowledged.LastReconciledSourceSHA).To(Equal(publishedSourceSHA))
 		replayed, err := factory.AcknowledgeAction(ctx, ack)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(replayed.Revision).To(Equal(acknowledged.Revision))
+		mismatchedReplay := ack
+		mismatchedReplay.ReconciledSourceSHA = strings.Repeat("f", 40)
+		_, err = factory.AcknowledgeAction(ctx, mismatchedReplay)
+		Expect(errors.Is(err, pullrequest.ErrStaleBindingRevision)).To(BeTrue())
 
 		replayedCreate, created, err := factory.Create(ctx, createRequest)
 		Expect(err).NotTo(HaveOccurred())

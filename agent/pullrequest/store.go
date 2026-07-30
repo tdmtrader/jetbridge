@@ -262,6 +262,7 @@ type AcknowledgeAction struct {
 	ObservationSnapshotID snapshot.SnapshotID
 	Cursor                Cursor
 	SourceSHA             string
+	ReconciledSourceSHA   string
 	TargetSHA             string
 }
 
@@ -276,6 +277,12 @@ func (request AcknowledgeAction) Validate() error {
 		return fmt.Errorf("pullrequest: acknowledgement requires a non-empty valid cursor")
 	}
 	if err := validateObjectID("acknowledged source sha", request.SourceSHA); err != nil {
+		return err
+	}
+	if err := validateObjectID(
+		"acknowledged reconciled source sha",
+		request.ReconciledSourceSHA,
+	); err != nil {
 		return err
 	}
 	return validateObjectID("acknowledged target sha", request.TargetSHA)
@@ -304,7 +311,9 @@ func (request TerminalBinding) Validate() error {
 		ExpectedRevision: request.ExpectedRevision, ActionDigest: request.ActionDigest,
 		ReservationToken: request.ReservationToken, WorkflowRunID: request.WorkflowRunID,
 		ObservationSnapshotID: request.ObservationSnapshotID, Cursor: request.Cursor,
-		SourceSHA: request.SourceSHA, TargetSHA: request.TargetSHA,
+		SourceSHA:           request.SourceSHA,
+		ReconciledSourceSHA: request.SourceSHA,
+		TargetSHA:           request.TargetSHA,
 	}
 	return ack.Validate()
 }
