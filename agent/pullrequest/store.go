@@ -318,6 +318,47 @@ func (request TerminalBinding) Validate() error {
 	return ack.Validate()
 }
 
+// DirectTerminalBinding records an exact sealed terminal provider observation
+// without manufacturing a monitor workflow run or launch reservation.
+type DirectTerminalBinding struct {
+	TeamID                int
+	BindingID             int64
+	ExpectedRevision      int64
+	State                 BindingState
+	ObservationSnapshotID snapshot.SnapshotID
+	Cursor                Cursor
+	SourceSHA             string
+	TargetSHA             string
+}
+
+func (request DirectTerminalBinding) Validate() error {
+	if request.TeamID <= 0 || request.BindingID <= 0 ||
+		request.ExpectedRevision <= 0 ||
+		request.ObservationSnapshotID <= 0 {
+		return fmt.Errorf(
+			"pullrequest: direct terminal binding requires positive identities and revision",
+		)
+	}
+	if !request.State.Terminal() {
+		return fmt.Errorf(
+			"pullrequest: direct terminal binding requires completed or abandoned provider state",
+		)
+	}
+	if err := request.Cursor.Validate(); err != nil || request.Cursor == "" {
+		return fmt.Errorf(
+			"pullrequest: direct terminal binding requires a non-empty valid cursor",
+		)
+	}
+	if err := validateObjectID(
+		"direct terminal source sha", request.SourceSHA,
+	); err != nil {
+		return err
+	}
+	return validateObjectID(
+		"direct terminal target sha", request.TargetSHA,
+	)
+}
+
 type OperatorRequest struct {
 	TeamID           int
 	BindingID        int64
@@ -368,6 +409,7 @@ type BindingStore interface {
 	AcknowledgeAction(context.Context, AcknowledgeAction) (Binding, error)
 	MarkAttention(context.Context, int, int64, string) (Binding, error)
 	MarkTerminal(context.Context, TerminalBinding) (Binding, error)
+	MarkDirectTerminal(context.Context, DirectTerminalBinding) (Binding, error)
 	RequestObservation(context.Context, OperatorRequest) (Binding, error)
 	Pause(context.Context, OperatorRequest) (Binding, error)
 	Resume(context.Context, OperatorRequest) (Binding, error)

@@ -400,6 +400,184 @@ func TestSourceBuildReconcilerLaunchesExactBindingOwnedMonitorAdmission(t *testi
 	}
 }
 
+func TestSourceBuildReconcilerRoutesCapturedTerminalMonitorAdmissionDirectly(
+	t *testing.T,
+) {
+	for _, kind := range []pullrequest.ActionKind{
+		pullrequest.ActionCompleted,
+		pullrequest.ActionAbandoned,
+	} {
+		t.Run(string(kind), func(t *testing.T) {
+			pipeline := monitorSourceBuildPipeline()
+			selected := monitorSelectedTerminalSource(301, kind)
+			builds := &sourceBuildStoreStub{
+				successful: []db.SourceBuild{
+					monitorSourceBuild(pipeline, 301),
+				},
+				bindingMapping: map[int][]db.SelectedSource{
+					301: {selected},
+				},
+			}
+			admissions := newMonitorReconcilerAdmissionStore(pipeline)
+			ready := monitorReadyAdmission(pipeline, 41, 301)
+			ready.Bindings[0].Version = selected.Version
+			captures := &monitorSourceBuildCaptureStub{ready: ready}
+			snapshots := &monitorSourceSnapshotStub{
+				value: monitorSourceSnapshot(501),
+			}
+			coordinator := &monitorSourceCoordinatorStub{
+				binding:       monitorSourceBinding(pipeline),
+				directBinding: monitorSourceBinding(pipeline),
+			}
+			reconciler, err := NewSourceBuildReconciler(
+				7,
+				&sourceBuildPipelineStoreStub{
+					pipelines: []db.AgentWorkflowResourceSourcePipeline{
+						pipeline,
+					},
+				},
+				builds, admissions, &sourceBuildDefinitionStoreStub{},
+				WithPRMonitorSourceLaunch(
+					"research", captures, snapshots, coordinator,
+				),
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if err := reconciler.Reconcile(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if captures.calls != 1 || snapshots.calls != 1 ||
+				len(coordinator.directSources) != 1 ||
+				len(coordinator.sources) != 0 {
+				t.Fatalf(
+					"terminal route = captures %d snapshots %d direct %#v launches %#v",
+					captures.calls, snapshots.calls,
+					coordinator.directSources, coordinator.sources,
+				)
+			}
+			source, err := coordinator.directSources[0].Protected()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if source.Version.ActionKind != string(kind) ||
+				source.Observation.ID != 501 {
+				t.Fatalf("direct terminal source = %#v", source)
+			}
+		})
+	}
+}
+
+func TestSourceBuildReconcilerDefersBusyDirectTerminalAndStopsLaterBuilds(
+	t *testing.T,
+) {
+	pipeline := monitorSourceBuildPipeline()
+	first := monitorSelectedTerminalSource(
+		301, pullrequest.ActionCompleted,
+	)
+	builds := &sourceBuildStoreStub{
+		successful: []db.SourceBuild{
+			monitorSourceBuild(pipeline, 301),
+			monitorSourceBuild(pipeline, 302),
+		},
+		bindingMapping: map[int][]db.SelectedSource{
+			301: {first},
+			302: {monitorSelectedSource(302, "cursor-2", "e")},
+		},
+	}
+	admissions := newMonitorReconcilerAdmissionStore(pipeline)
+	ready := monitorReadyAdmission(pipeline, 41, 301)
+	ready.Bindings[0].Version = first.Version
+	coordinator := &monitorSourceCoordinatorStub{
+		binding:   monitorSourceBinding(pipeline),
+		directErr: pullrequest.ErrBindingBusy,
+	}
+	reconciler, err := NewSourceBuildReconciler(
+		7,
+		&sourceBuildPipelineStoreStub{
+			pipelines: []db.AgentWorkflowResourceSourcePipeline{pipeline},
+		},
+		builds, admissions, &sourceBuildDefinitionStoreStub{},
+		WithPRMonitorSourceLaunch(
+			"research",
+			&monitorSourceBuildCaptureStub{ready: ready},
+			&monitorSourceSnapshotStub{value: monitorSourceSnapshot(501)},
+			coordinator,
+		),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := reconciler.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(admissions.bindingClaims) != 1 ||
+		admissions.bindingClaims[0].buildID != 301 ||
+		len(coordinator.directSources) != 1 ||
+		len(coordinator.sources) != 0 ||
+		len(admissions.bindingFailures) != 0 {
+		t.Fatalf(
+			"busy direct terminal = claims %#v direct %#v launches %#v failures %#v",
+			admissions.bindingClaims, coordinator.directSources,
+			coordinator.sources, admissions.bindingFailures,
+		)
+	}
+}
+
+func TestSourceBuildReconcilerFailsStaleDirectTerminalAdmission(t *testing.T) {
+	pipeline := monitorSourceBuildPipeline()
+	selected := monitorSelectedTerminalSource(
+		301, pullrequest.ActionAbandoned,
+	)
+	builds := &sourceBuildStoreStub{
+		successful: []db.SourceBuild{monitorSourceBuild(pipeline, 301)},
+		bindingMapping: map[int][]db.SelectedSource{
+			301: {selected},
+		},
+	}
+	admissions := newMonitorReconcilerAdmissionStore(pipeline)
+	ready := monitorReadyAdmission(pipeline, 41, 301)
+	ready.Bindings[0].Version = selected.Version
+	coordinator := &monitorSourceCoordinatorStub{
+		binding:   monitorSourceBinding(pipeline),
+		directErr: pullrequest.ErrStaleMonitorSourceVersion,
+	}
+	reconciler, err := NewSourceBuildReconciler(
+		7,
+		&sourceBuildPipelineStoreStub{
+			pipelines: []db.AgentWorkflowResourceSourcePipeline{pipeline},
+		},
+		builds, admissions, &sourceBuildDefinitionStoreStub{},
+		WithPRMonitorSourceLaunch(
+			"research",
+			&monitorSourceBuildCaptureStub{ready: ready},
+			&monitorSourceSnapshotStub{value: monitorSourceSnapshot(501)},
+			coordinator,
+		),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := reconciler.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(admissions.bindingFailures) != 1 ||
+		admissions.bindingFailures[0].admissionID != 41 ||
+		admissions.bindingFailures[0].reason !=
+			"stale projected binding revision" ||
+		len(coordinator.directSources) != 1 ||
+		len(coordinator.sources) != 0 {
+		t.Fatalf(
+			"stale direct terminal = failures %#v direct %#v launches %#v",
+			admissions.bindingFailures, coordinator.directSources,
+			coordinator.sources,
+		)
+	}
+}
+
 func TestSourceBuildReconcilerBusyBindingStopsLaterBuildsClaimable(t *testing.T) {
 	pipeline := monitorSourceBuildPipeline()
 	builds := &sourceBuildStoreStub{
@@ -929,10 +1107,13 @@ func (stub *monitorSourceSnapshotStub) GetAuthorized(
 
 type monitorSourceCoordinatorStub struct {
 	binding          pullrequest.Binding
+	directBinding    pullrequest.Binding
 	runID            snapshot.WorkflowRunID
 	launched         bool
 	reserveErr       error
+	directErr        error
 	sources          []pullrequest.MonitorSourceBuild
+	directSources    []pullrequest.MonitorSourceBuild
 	acknowledgements []pullrequest.MonitorRunResult
 }
 
@@ -942,6 +1123,14 @@ func (stub *monitorSourceCoordinatorStub) ReserveAndLaunch(
 ) (snapshot.WorkflowRunID, bool, error) {
 	stub.sources = append(stub.sources, source)
 	return stub.runID, stub.launched, stub.reserveErr
+}
+
+func (stub *monitorSourceCoordinatorStub) ReconcileDirectTerminal(
+	_ context.Context,
+	source pullrequest.MonitorSourceBuild,
+) (pullrequest.Binding, error) {
+	stub.directSources = append(stub.directSources, source)
+	return stub.directBinding, stub.directErr
 }
 
 func (stub *monitorSourceCoordinatorStub) Acknowledge(
@@ -1020,6 +1209,17 @@ func monitorSelectedSource(
 			"cursor": cursor, "binding_revision": "7",
 		},
 	}
+}
+
+func monitorSelectedTerminalSource(
+	buildID int,
+	kind pullrequest.ActionKind,
+) db.SelectedSource {
+	selected := monitorSelectedSource(
+		buildID, "cursor-terminal", "f",
+	)
+	selected.Version["action_kind"] = string(kind)
+	return selected
 }
 
 func monitorReadyAdmission(

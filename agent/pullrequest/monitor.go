@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/agent/snapshot/contracts"
 	"github.com/concourse/concourse/atc"
 )
 
@@ -401,6 +402,10 @@ type MonitorCoordinator interface {
 		context.Context,
 		MonitorSourceBuild,
 	) (snapshot.WorkflowRunID, bool, error)
+	ReconcileDirectTerminal(
+		context.Context,
+		MonitorSourceBuild,
+	) (Binding, error)
 	Acknowledge(context.Context, MonitorRunResult) (Binding, error)
 	ReconcileTerminal(context.Context, int, int64) (Binding, error)
 }
@@ -409,6 +414,7 @@ type monitorCoordinator struct {
 	bindings       BindingStore
 	launcher       MonitorRunLauncher
 	runs           MonitorRunInspector
+	observations   MonitorObservationInspector
 	acceptedReview AcceptedReviewAuthorityResolver
 	reservationTTL time.Duration
 }
@@ -417,10 +423,12 @@ func NewMonitorCoordinator(
 	bindings BindingStore,
 	launcher MonitorRunLauncher,
 	runs MonitorRunInspector,
+	observations MonitorObservationInspector,
 	acceptedReview AcceptedReviewAuthorityResolver,
 	reservationTTL time.Duration,
 ) (MonitorCoordinator, error) {
 	if bindings == nil || launcher == nil || runs == nil ||
+		nilMonitorObservationInspector(observations) ||
 		acceptedReview == nil {
 		return nil, fmt.Errorf(
 			"pullrequest: monitor coordinator dependencies are required",
@@ -434,7 +442,7 @@ func NewMonitorCoordinator(
 	}
 	return &monitorCoordinator{
 		bindings: bindings, launcher: launcher, runs: runs,
-		acceptedReview: acceptedReview,
+		observations: observations, acceptedReview: acceptedReview,
 		reservationTTL: reservationTTL,
 	}, nil
 }
@@ -575,6 +583,65 @@ func (coordinator *monitorCoordinator) ReserveAndLaunch(
 		}
 	}
 	return runID, false, launchErr
+}
+
+func (coordinator *monitorCoordinator) ReconcileDirectTerminal(
+	ctx context.Context,
+	source MonitorSourceBuild,
+) (Binding, error) {
+	if ctx == nil {
+		return Binding{}, fmt.Errorf(
+			"pullrequest: direct terminal reconciliation requires context",
+		)
+	}
+	protected, err := source.Protected()
+	if err != nil {
+		return Binding{}, err
+	}
+	binding, found, err := coordinator.bindings.Get(
+		ctx, protected.TeamID, protected.BindingID,
+	)
+	if err != nil {
+		return Binding{}, err
+	}
+	if !found {
+		return Binding{}, ErrBindingNotFound
+	}
+	revision, err := validateDirectMonitorSourceAgainstBinding(
+		protected, binding,
+	)
+	if err != nil {
+		return Binding{}, err
+	}
+	observation, err := coordinator.observations.InspectMonitorObservation(
+		ctx, protected.TeamID, protected.Observation,
+	)
+	if err != nil {
+		return Binding{}, err
+	}
+	state, err := validateDirectTerminalObservation(
+		protected, binding, observation,
+	)
+	if err != nil {
+		return Binding{}, err
+	}
+	reconciled, err := coordinator.bindings.MarkDirectTerminal(
+		ctx,
+		DirectTerminalBinding{
+			TeamID: protected.TeamID, BindingID: protected.BindingID,
+			ExpectedRevision: revision, State: state,
+			ObservationSnapshotID: protected.Observation.ID,
+			Cursor:                Cursor(protected.Version.Cursor),
+			SourceSHA:             protected.Version.SourceSHA,
+			TargetSHA:             protected.Version.TargetSHA,
+		},
+	)
+	if errors.Is(err, ErrStaleBindingRevision) {
+		return Binding{}, fmt.Errorf(
+			"%w: %v", ErrStaleMonitorSourceVersion, err,
+		)
+	}
+	return reconciled, err
 }
 
 func (coordinator *monitorCoordinator) Acknowledge(
@@ -853,6 +920,123 @@ func validateMonitorSourceAgainstBinding(
 		)
 	}
 	return revision, nil
+}
+
+func validateDirectMonitorSourceAgainstBinding(
+	source MonitorSourceBuild,
+	binding Binding,
+) (int64, error) {
+	revision, err := parsePositiveMonitorRevision(
+		source.Version.BindingRevision,
+	)
+	if err != nil {
+		return 0, err
+	}
+	if binding.ID != source.BindingID || binding.TeamID != source.TeamID ||
+		binding.PipelineID == nil || *binding.PipelineID != source.PipelineID ||
+		binding.MonitorWorkflowDefinitionID != source.WorkflowDefinitionID ||
+		binding.MonitorWorkflowVersion != source.WorkflowVersion ||
+		string(binding.Locator.Provider) != source.Version.Provider ||
+		binding.Locator.ExternalID != source.Version.ExternalID {
+		return 0, fmt.Errorf(
+			"%w: binding projection changed",
+			ErrStaleMonitorSourceVersion,
+		)
+	}
+	// A reservation increments the binding revision. Terminal evidence selected
+	// just before that reservation must defer as busy rather than be discarded
+	// as stale. The locked store is the final authority for both conditions.
+	if binding.Active == nil && !binding.State.Terminal() &&
+		binding.Revision != revision {
+		return 0, fmt.Errorf(
+			"%w: binding revision changed",
+			ErrStaleMonitorSourceVersion,
+		)
+	}
+	if binding.State.Terminal() && binding.Revision != revision+1 {
+		return 0, fmt.Errorf(
+			"%w: terminal binding revision changed",
+			ErrStaleMonitorSourceVersion,
+		)
+	}
+	return revision, nil
+}
+
+func validateDirectTerminalObservation(
+	source MonitorSourceBuild,
+	binding Binding,
+	body contracts.PullRequestBody,
+) (BindingState, error) {
+	kind := ActionKind(source.Version.ActionKind)
+	state := BindingCompleted
+	recordState := contracts.PullRequestCompleted
+	trigger := contracts.PullRequestCompletedTrigger
+	switch kind {
+	case ActionCompleted:
+	case ActionAbandoned:
+		state = BindingAbandoned
+		recordState = contracts.PullRequestAbandoned
+		trigger = contracts.PullRequestAbandonedTrigger
+	default:
+		return "", ErrTerminalMonitorAction
+	}
+	if body.Validate(nil) != nil ||
+		body.Provider != string(binding.Locator.Provider) ||
+		body.Provider != source.Version.Provider ||
+		body.Repository != binding.Locator.Repository ||
+		body.ExternalID != binding.Locator.ExternalID ||
+		body.ExternalID != source.Version.ExternalID ||
+		body.URL != binding.URL ||
+		body.SourceRef != binding.SourceRef ||
+		body.TargetRef != binding.TargetRef ||
+		!strings.HasPrefix(body.SourceRef, "refs/heads/") ||
+		!strings.HasPrefix(body.TargetRef, "refs/heads/") ||
+		body.SourceRef == body.TargetRef ||
+		body.SourceSHA != source.Version.SourceSHA ||
+		body.TargetSHA != source.Version.TargetSHA ||
+		body.State != recordState ||
+		body.Trigger != trigger {
+		return "", fmt.Errorf(
+			"%w: direct terminal observation does not match binding authority",
+			ErrStaleMonitorSourceVersion,
+		)
+	}
+	observation := Observation{
+		Locator: Locator{
+			Provider: Provider(body.Provider), Repository: body.Repository,
+			ExternalID: body.ExternalID,
+		},
+		Cursor: Cursor(source.Version.Cursor), URL: body.URL,
+		State: body.State, Mergeability: body.Mergeability,
+		SourceRef: body.SourceRef, SourceSHA: body.SourceSHA,
+		ExpectedSource: body.ExpectedSource,
+		TargetRef:      body.TargetRef, TargetSHA: body.TargetSHA,
+		Iteration: body.Iteration, ReviewBatches: body.ReviewBatches,
+		Threads: body.Threads,
+	}
+	if err := observation.Validate(); err != nil {
+		return "", fmt.Errorf(
+			"%w: direct terminal observation is invalid",
+			ErrStaleMonitorSourceVersion,
+		)
+	}
+	digest, err := actionDigest(Action{
+		Kind: kind, Cursor: observation.Cursor, Observation: observation,
+	})
+	if err != nil || digest != source.Version.ActionDigest {
+		return "", fmt.Errorf(
+			"%w: direct terminal action digest does not match sealed observation",
+			ErrStaleMonitorSourceVersion,
+		)
+	}
+	if !binding.State.Terminal() && binding.Active == nil &&
+		binding.AcknowledgedCursor == observation.Cursor {
+		return "", fmt.Errorf(
+			"%w: direct terminal cursor was already acknowledged",
+			ErrStaleMonitorSourceVersion,
+		)
+	}
+	return state, nil
 }
 
 func sameMonitorSourceReservation(

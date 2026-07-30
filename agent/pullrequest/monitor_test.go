@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/agent/snapshot/contracts"
 	"github.com/concourse/concourse/atc"
 )
 
@@ -20,7 +21,8 @@ func TestMonitorCoordinatorSerializesOneExactActionAndLaunchesOneDurableRun(t *t
 	launcher := &monitorMemoryLauncher{store: store}
 	results := &monitorMemoryResults{}
 	coordinator, err := NewMonitorCoordinator(
-		store, launcher, results, monitorTestAcceptedResolver(binding),
+		store, launcher, results, &monitorDirectObservationInspector{},
+		monitorTestAcceptedResolver(binding),
 		10*time.Minute,
 	)
 	if err != nil {
@@ -188,6 +190,7 @@ func TestMonitorCoordinatorLaunchFailureReleasesOnlyTheExactUnattachedReservatio
 			}
 			coordinator, err := NewMonitorCoordinator(
 				store, launcher, &monitorMemoryResults{},
+				&monitorDirectObservationInspector{},
 				monitorTestAcceptedResolver(binding), 10*time.Minute,
 			)
 			if err != nil {
@@ -234,6 +237,7 @@ func TestMonitorCoordinatorAcknowledgesOnlySafeSucceededOutcomes(t *testing.T) {
 			launcher := &monitorMemoryLauncher{store: store}
 			coordinator, err := NewMonitorCoordinator(
 				store, launcher, &monitorMemoryResults{},
+				&monitorDirectObservationInspector{},
 				monitorTestAcceptedResolver(binding), 10*time.Minute,
 			)
 			if err != nil {
@@ -281,6 +285,7 @@ func TestMonitorCoordinatorAcknowledgesPublishedHeadWhileMatchingObservedLease(
 	store := newMonitorMemoryStore(binding)
 	coordinator, err := NewMonitorCoordinator(
 		store, &monitorMemoryLauncher{store: store}, &monitorMemoryResults{},
+		&monitorDirectObservationInspector{},
 		monitorTestAcceptedResolver(binding), 10*time.Minute,
 	)
 	if err != nil {
@@ -361,6 +366,7 @@ func TestMonitorCoordinatorMarksExactTerminalProviderObservation(t *testing.T) {
 			launcher := &monitorMemoryLauncher{store: store}
 			coordinator, err := NewMonitorCoordinator(
 				store, launcher, &monitorMemoryResults{},
+				&monitorDirectObservationInspector{},
 				monitorTestAcceptedResolver(binding), 10*time.Minute,
 			)
 			if err != nil {
@@ -393,7 +399,8 @@ func TestMonitorCoordinatorReconcilesOnlyTheExactAttachedTerminalRun(t *testing.
 	launcher := &monitorMemoryLauncher{store: store}
 	results := &monitorMemoryResults{byRun: map[snapshot.WorkflowRunID]MonitorRunResult{}}
 	coordinator, err := NewMonitorCoordinator(
-		store, launcher, results, monitorTestAcceptedResolver(binding),
+		store, launcher, results, &monitorDirectObservationInspector{},
+		monitorTestAcceptedResolver(binding),
 		10*time.Minute,
 	)
 	if err != nil {
@@ -419,6 +426,264 @@ func TestMonitorCoordinatorReconcilesOnlyTheExactAttachedTerminalRun(t *testing.
 	}
 }
 
+func TestMonitorCoordinatorReconcilesExactDirectTerminalObservationWithoutRunEvidence(
+	t *testing.T,
+) {
+	for _, test := range []struct {
+		kind  ActionKind
+		state BindingState
+	}{
+		{kind: ActionCompleted, state: BindingCompleted},
+		{kind: ActionAbandoned, state: BindingAbandoned},
+	} {
+		t.Run(string(test.kind), func(t *testing.T) {
+			binding := monitorTestBinding()
+			store := newMonitorMemoryStore(binding)
+			inspector := &monitorDirectObservationInspector{
+				body: monitorDirectTerminalBody(binding, test.kind),
+			}
+			launcher := &monitorMemoryLauncher{store: store}
+			coordinator, err := NewMonitorCoordinator(
+				store, launcher, &monitorMemoryResults{}, inspector,
+				monitorTestAcceptedResolver(binding), 10*time.Minute,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			source := monitorTestSourceBuildWithKind(
+				binding, 301, 41, "cursor-terminal",
+				monitorDirectTerminalDigest(test.kind), test.kind,
+			)
+
+			reconciled, err := coordinator.ReconcileDirectTerminal(
+				context.Background(), source,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if reconciled.State != test.state ||
+				reconciled.TerminalObservationSnapshotID == nil ||
+				*reconciled.TerminalObservationSnapshotID != source.Observation.ID ||
+				reconciled.LastObservationSnapshotID == nil ||
+				*reconciled.LastObservationSnapshotID != source.Observation.ID ||
+				reconciled.AcknowledgedCursor != Cursor(source.Version.Cursor) ||
+				reconciled.LastReconciledSourceSHA != source.Version.SourceSHA ||
+				reconciled.LastReconciledTargetSHA != source.Version.TargetSHA ||
+				reconciled.Active != nil {
+				t.Fatalf("direct terminal binding = %#v", reconciled)
+			}
+			if reconciled.LastAcknowledgedWorkflowRunID != nil ||
+				reconciled.LastAcknowledgedActionDigest != "" {
+				t.Fatalf(
+					"direct terminal transition fabricated run acknowledgement: %#v",
+					reconciled,
+				)
+			}
+			if launcher.uniqueRuns() != 0 {
+				t.Fatalf("direct terminal launches = %d, want none", launcher.uniqueRuns())
+			}
+
+			replayed, err := coordinator.ReconcileDirectTerminal(
+				context.Background(), source,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if replayed.Revision != reconciled.Revision {
+				t.Fatalf(
+					"direct terminal replay revision = %d, want %d",
+					replayed.Revision, reconciled.Revision,
+				)
+			}
+
+			different := monitorTestSourceBuildWithKindAndObservation(
+				binding, 301, 41, "cursor-terminal",
+				monitorDirectTerminalDigest(test.kind), test.kind, 502,
+			)
+			_, err = coordinator.ReconcileDirectTerminal(
+				context.Background(), different,
+			)
+			if !errors.Is(err, ErrBindingImmutable) {
+				t.Fatalf("different terminal evidence error = %v", err)
+			}
+			if got := store.bindingValue(); got.Revision != reconciled.Revision {
+				t.Fatalf(
+					"different terminal evidence changed binding = %#v",
+					got,
+				)
+			}
+		})
+	}
+}
+
+func TestMonitorCoordinatorRejectsAlteredDirectTerminalEvidence(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		mutateBody func(*contracts.PullRequestBody)
+		digest     string
+	}{
+		{
+			name: "provider",
+			mutateBody: func(body *contracts.PullRequestBody) {
+				body.Provider = "azure-devops"
+			},
+		},
+		{
+			name: "external id",
+			mutateBody: func(body *contracts.PullRequestBody) {
+				body.ExternalID = "43"
+			},
+		},
+		{
+			name: "url",
+			mutateBody: func(body *contracts.PullRequestBody) {
+				body.URL = "https://github.example/acme/widget/pull/43"
+			},
+		},
+		{
+			name: "source ref",
+			mutateBody: func(body *contracts.PullRequestBody) {
+				body.SourceRef = "refs/heads/other"
+			},
+		},
+		{
+			name: "terminal state",
+			mutateBody: func(body *contracts.PullRequestBody) {
+				body.State = contracts.PullRequestAbandoned
+			},
+		},
+		{
+			name: "terminal trigger",
+			mutateBody: func(body *contracts.PullRequestBody) {
+				body.Trigger = contracts.PullRequestAbandonedTrigger
+			},
+		},
+		{
+			name: "source head",
+			mutateBody: func(body *contracts.PullRequestBody) {
+				body.SourceSHA = strings.Repeat("5", 40)
+			},
+		},
+		{
+			name:   "action digest",
+			digest: monitorDigest("f"),
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			binding := monitorTestBinding()
+			body := monitorDirectTerminalBody(binding, ActionCompleted)
+			if test.mutateBody != nil {
+				test.mutateBody(&body)
+			}
+			digest := test.digest
+			if digest == "" {
+				digest = monitorDirectTerminalDigest(ActionCompleted)
+			}
+			store := newMonitorMemoryStore(binding)
+			coordinator, err := NewMonitorCoordinator(
+				store, &monitorMemoryLauncher{store: store},
+				&monitorMemoryResults{},
+				&monitorDirectObservationInspector{body: body},
+				monitorTestAcceptedResolver(binding), 10*time.Minute,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			source := monitorTestSourceBuildWithKind(
+				binding, 301, 41, "cursor-terminal", digest,
+				ActionCompleted,
+			)
+
+			_, err = coordinator.ReconcileDirectTerminal(
+				context.Background(), source,
+			)
+			if !errors.Is(err, ErrStaleMonitorSourceVersion) {
+				t.Fatalf("altered direct terminal evidence error = %v", err)
+			}
+			if got := store.bindingValue(); got.State != BindingActive ||
+				got.TerminalObservationSnapshotID != nil ||
+				got.Revision != binding.Revision {
+				t.Fatalf("altered terminal evidence mutated binding = %#v", got)
+			}
+		})
+	}
+}
+
+func TestMonitorCoordinatorDefersDirectTerminalBehindActiveWorkAndClassifiesStaleVersion(
+	t *testing.T,
+) {
+	binding := monitorTestBinding()
+	source := monitorTestSourceBuildWithKind(
+		binding, 301, 41, "cursor-terminal",
+		monitorDirectTerminalDigest(ActionCompleted), ActionCompleted,
+	)
+	body := monitorDirectTerminalBody(binding, ActionCompleted)
+
+	t.Run("active work", func(t *testing.T) {
+		busy := binding
+		busy.Revision++
+		busy.Active = &LaunchReservation{
+			BindingID: busy.ID, BaseRevision: binding.Revision,
+			BindingRevision:       busy.Revision,
+			ActionDigest:          monitorDigest("d"),
+			ObservationSnapshotID: 401,
+			Cursor:                "cursor-active",
+			SourceSHA:             strings.Repeat("1", 40),
+			TargetSHA:             strings.Repeat("2", 40),
+			Token:                 "active-token",
+			ExpiresAt:             time.Now().Add(time.Minute),
+		}
+		store := newMonitorMemoryStore(busy)
+		coordinator, err := NewMonitorCoordinator(
+			store, &monitorMemoryLauncher{store: store},
+			&monitorMemoryResults{},
+			&monitorDirectObservationInspector{body: body},
+			monitorTestAcceptedResolver(binding), 10*time.Minute,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		_, err = coordinator.ReconcileDirectTerminal(
+			context.Background(), source,
+		)
+		if !errors.Is(err, ErrBindingBusy) {
+			t.Fatalf("busy direct terminal error = %v", err)
+		}
+		if got := store.bindingValue(); got.State != BindingActive ||
+			got.Active == nil || got.Revision != busy.Revision {
+			t.Fatalf("busy direct terminal mutated binding = %#v", got)
+		}
+	})
+
+	t.Run("stale projected revision", func(t *testing.T) {
+		stale := binding
+		stale.Revision++
+		store := newMonitorMemoryStore(stale)
+		coordinator, err := NewMonitorCoordinator(
+			store, &monitorMemoryLauncher{store: store},
+			&monitorMemoryResults{},
+			&monitorDirectObservationInspector{body: body},
+			monitorTestAcceptedResolver(binding), 10*time.Minute,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		_, err = coordinator.ReconcileDirectTerminal(
+			context.Background(), source,
+		)
+		if !errors.Is(err, ErrStaleMonitorSourceVersion) {
+			t.Fatalf("stale direct terminal error = %v", err)
+		}
+		if got := store.bindingValue(); got.State != BindingActive ||
+			got.TerminalObservationSnapshotID != nil ||
+			got.Revision != stale.Revision {
+			t.Fatalf("stale direct terminal mutated binding = %#v", got)
+		}
+	})
+}
+
 func TestMonitorCoordinatorRefusesAStaleOrAlteredSourceVersionBeforeLaunch(t *testing.T) {
 	for _, test := range []struct {
 		name   string
@@ -436,6 +701,7 @@ func TestMonitorCoordinatorRefusesAStaleOrAlteredSourceVersionBeforeLaunch(t *te
 			launcher := &monitorMemoryLauncher{store: store}
 			coordinator, err := NewMonitorCoordinator(
 				store, launcher, &monitorMemoryResults{},
+				&monitorDirectObservationInspector{},
 				monitorTestAcceptedResolver(binding), 10*time.Minute,
 			)
 			if err != nil {
@@ -466,6 +732,7 @@ func TestMonitorCoordinatorRefusesTerminalActionBeforeMutationLaunch(t *testing.
 			launcher := &monitorMemoryLauncher{store: store}
 			coordinator, err := NewMonitorCoordinator(
 				store, launcher, &monitorMemoryResults{},
+				&monitorDirectObservationInspector{},
 				monitorTestAcceptedResolver(binding), 10*time.Minute,
 			)
 			if err != nil {
@@ -501,7 +768,8 @@ func TestMonitorCoordinatorRejectsAlteredAcceptedReviewAuthorityBeforeReservatio
 	resolver := monitorTestAcceptedResolver(binding)
 	resolver.authority.Review.ID++
 	coordinator, err := NewMonitorCoordinator(
-		store, launcher, &monitorMemoryResults{}, resolver, 10*time.Minute,
+		store, launcher, &monitorMemoryResults{},
+		&monitorDirectObservationInspector{}, resolver, 10*time.Minute,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -526,6 +794,7 @@ func monitorTestBinding() Binding {
 		Locator: Locator{
 			Provider: ProviderGitHub, Repository: "acme/widget", ExternalID: "42",
 		},
+		URL:                         "https://github.example/acme/widget/pull/42",
 		SourceRef:                   "refs/heads/change",
 		TargetRef:                   "refs/heads/main",
 		Destination:                 "github.example/acme/widget",
@@ -570,6 +839,52 @@ func monitorTestAcceptedResolver(
 	return &monitorMemoryAcceptedReviewResolver{authority: authority}
 }
 
+func monitorDirectTerminalDigest(kind ActionKind) string {
+	switch kind {
+	case ActionCompleted:
+		return "sha256:39dfdd969033d493329ab8e0e09d0049ee8b5f4998dd683ff5e00c36e94f7aa7"
+	case ActionAbandoned:
+		return "sha256:58defc235d662ef6747e16e1bbe39528cb82511301fc77ab8035f884a85e048f"
+	default:
+		panic("direct terminal digest requires a terminal action")
+	}
+}
+
+func monitorDirectTerminalBody(
+	binding Binding,
+	kind ActionKind,
+) contracts.PullRequestBody {
+	state := contracts.PullRequestCompleted
+	trigger := contracts.PullRequestCompletedTrigger
+	if kind == ActionAbandoned {
+		state = contracts.PullRequestAbandoned
+		trigger = contracts.PullRequestAbandonedTrigger
+	}
+	return contracts.PullRequestBody{
+		Provider: string(binding.Locator.Provider), Repository: binding.Locator.Repository,
+		ExternalID: binding.Locator.ExternalID, URL: binding.URL,
+		State: state, Mergeability: contracts.PullRequestMergeable,
+		SourceRef: binding.SourceRef, SourceSHA: strings.Repeat("3", 40),
+		TargetRef: binding.TargetRef, TargetSHA: strings.Repeat("4", 40),
+		Iteration: "iteration-terminal", Trigger: trigger,
+	}
+}
+
+type monitorDirectObservationInspector struct {
+	body  contracts.PullRequestBody
+	err   error
+	calls int
+}
+
+func (inspector *monitorDirectObservationInspector) InspectMonitorObservation(
+	_ context.Context,
+	_ int,
+	_ snapshot.SnapshotRef,
+) (contracts.PullRequestBody, error) {
+	inspector.calls++
+	return inspector.body, inspector.err
+}
+
 func monitorTestSourceBuild(binding Binding) MonitorSourceBuild {
 	return monitorTestSourceBuildWith(
 		binding, 301, 41, "cursor-1", monitorDigest("d"),
@@ -597,6 +912,21 @@ func monitorTestSourceBuildWithKind(
 	actionDigest string,
 	actionKind ActionKind,
 ) MonitorSourceBuild {
+	return monitorTestSourceBuildWithKindAndObservation(
+		binding, buildID, admissionID, cursor, actionDigest,
+		actionKind, 501,
+	)
+}
+
+func monitorTestSourceBuildWithKindAndObservation(
+	binding Binding,
+	buildID int,
+	admissionID int64,
+	cursor string,
+	actionDigest string,
+	actionKind ActionKind,
+	observationID snapshot.SnapshotID,
+) MonitorSourceBuild {
 	source, err := NewMonitorSourceBuild(MonitorSourceBuildSpec{
 		TeamID: binding.TeamID, TeamName: "main", BindingID: binding.ID,
 		PipelineID: *binding.PipelineID, BuildID: buildID,
@@ -605,7 +935,7 @@ func monitorTestSourceBuildWithKind(
 		WorkflowName:         "pr-monitor-v3",
 		WorkflowVersion:      binding.MonitorWorkflowVersion,
 		Observation: snapshot.SnapshotRef{
-			ID: 501, Type: snapshot.TypeRef("pull-request/v1"),
+			ID: observationID, Type: snapshot.TypeRef("pull-request/v1"),
 			Digest: snapshot.Digest("sha256:" + strings.Repeat("a", 64)),
 		},
 		SelectedVersion: atc.Version{
@@ -842,6 +1172,46 @@ func (store *monitorMemoryStore) MarkTerminal(
 	store.binding.State = request.State
 	store.binding.TerminalObservationSnapshotID = &request.ObservationSnapshotID
 	store.binding.Active = nil
+	store.binding.Revision++
+	return cloneMonitorMemoryBinding(store.binding), nil
+}
+
+func (store *monitorMemoryStore) MarkDirectTerminal(
+	_ context.Context,
+	request DirectTerminalBinding,
+) (Binding, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.binding.State.Terminal() {
+		if store.binding.State == request.State &&
+			store.binding.TerminalObservationSnapshotID != nil &&
+			*store.binding.TerminalObservationSnapshotID ==
+				request.ObservationSnapshotID &&
+			store.binding.LastObservationSnapshotID != nil &&
+			*store.binding.LastObservationSnapshotID ==
+				request.ObservationSnapshotID &&
+			store.binding.AcknowledgedCursor == request.Cursor &&
+			store.binding.LastReconciledSourceSHA == request.SourceSHA &&
+			store.binding.LastReconciledTargetSHA == request.TargetSHA {
+			return cloneMonitorMemoryBinding(store.binding), nil
+		}
+		return Binding{}, ErrBindingImmutable
+	}
+	if store.binding.Active != nil {
+		return Binding{}, ErrBindingBusy
+	}
+	if store.binding.Revision != request.ExpectedRevision {
+		return Binding{}, ErrStaleBindingRevision
+	}
+	store.binding.AcknowledgedCursor = request.Cursor
+	store.binding.LastObservationSnapshotID = &request.ObservationSnapshotID
+	store.binding.LastReconciledSourceSHA = request.SourceSHA
+	store.binding.LastReconciledTargetSHA = request.TargetSHA
+	store.binding.LastReconciledAt = time.Now().UTC()
+	store.binding.State = request.State
+	store.binding.TerminalObservationSnapshotID = &request.ObservationSnapshotID
+	terminalAt := store.binding.LastReconciledAt
+	store.binding.TerminalAt = &terminalAt
 	store.binding.Revision++
 	return cloneMonitorMemoryBinding(store.binding), nil
 }

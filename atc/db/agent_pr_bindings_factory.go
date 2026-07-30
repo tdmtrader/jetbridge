@@ -771,6 +771,96 @@ func (factory *agentPRBindingsFactory) MarkTerminal(
 	return updated, nil
 }
 
+func (factory *agentPRBindingsFactory) MarkDirectTerminal(
+	ctx context.Context,
+	request pullrequest.DirectTerminalBinding,
+) (pullrequest.Binding, error) {
+	if ctx == nil {
+		return pullrequest.Binding{}, fmt.Errorf(
+			"db: direct PR terminal transition requires context",
+		)
+	}
+	if err := request.Validate(); err != nil {
+		return pullrequest.Binding{}, err
+	}
+	tx, err := factory.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return pullrequest.Binding{}, err
+	}
+	defer Rollback(tx)
+	binding, found, err := lockAgentPRBindingForUpdate(
+		ctx, tx, request.TeamID, request.BindingID,
+	)
+	if err != nil {
+		return pullrequest.Binding{}, err
+	}
+	if !found {
+		return pullrequest.Binding{}, pullrequest.ErrBindingNotFound
+	}
+	if binding.State.Terminal() {
+		if sameAgentPRDirectTerminal(binding, request) {
+			if err := tx.Commit(); err != nil {
+				return pullrequest.Binding{}, err
+			}
+			return binding, nil
+		}
+		return pullrequest.Binding{}, pullrequest.ErrBindingImmutable
+	}
+	if binding.Active != nil {
+		return pullrequest.Binding{}, pullrequest.ErrBindingBusy
+	}
+	if binding.Revision != request.ExpectedRevision {
+		return pullrequest.Binding{}, pullrequest.ErrStaleBindingRevision
+	}
+	if err := validateAgentPRSnapshotOwner(
+		ctx, tx, request.TeamID, request.ObservationSnapshotID,
+	); err != nil {
+		return pullrequest.Binding{}, err
+	}
+	now, err := agentPRBindingDatabaseTime(ctx, tx)
+	if err != nil {
+		return pullrequest.Binding{}, err
+	}
+	cursor, err := encodeAgentPRCursor(request.Cursor)
+	if err != nil {
+		return pullrequest.Binding{}, err
+	}
+	result, err := tx.ExecContext(ctx, `
+		UPDATE agent_pr_bindings
+		SET acknowledged_cursor=$4::jsonb,
+		    last_observation_snapshot_id=$5,
+		    last_reconciled_source_sha=$6,
+		    last_reconciled_target_sha=$7,
+		    last_reconciled_at=$8,
+		    lifecycle_state=$9, attention_reason='',
+		    terminal_observation_snapshot_id=$5, terminal_at=$8,
+		    revision=revision+1, updated_at=$8
+		WHERE team_id=$1 AND id=$2 AND revision=$3
+		  AND active_action_digest IS NULL
+	`, request.TeamID, request.BindingID, request.ExpectedRevision,
+		cursor, int64(request.ObservationSnapshotID),
+		request.SourceSHA, request.TargetSHA, now, string(request.State))
+	if err != nil {
+		return pullrequest.Binding{}, err
+	}
+	if err := requireAgentPRBindingCAS(result); err != nil {
+		return pullrequest.Binding{}, err
+	}
+	updated, found, err := findAgentPRBinding(
+		ctx, tx, request.TeamID, request.BindingID, false,
+	)
+	if err != nil {
+		return pullrequest.Binding{}, err
+	}
+	if !found {
+		return pullrequest.Binding{}, pullrequest.ErrBindingNotFound
+	}
+	if err := tx.Commit(); err != nil {
+		return pullrequest.Binding{}, err
+	}
+	return updated, nil
+}
+
 func (factory *agentPRBindingsFactory) RequestObservation(
 	ctx context.Context,
 	request pullrequest.OperatorRequest,
@@ -1546,6 +1636,23 @@ func sameAgentPRTerminal(
 		binding.LastAcknowledgedWorkflowRunID != nil &&
 		*binding.LastAcknowledgedWorkflowRunID == request.WorkflowRunID &&
 		binding.LastAcknowledgedActionDigest == request.ActionDigest &&
+		binding.AcknowledgedCursor == request.Cursor &&
+		binding.LastReconciledSourceSHA == request.SourceSHA &&
+		binding.LastReconciledTargetSHA == request.TargetSHA
+}
+
+func sameAgentPRDirectTerminal(
+	binding pullrequest.Binding,
+	request pullrequest.DirectTerminalBinding,
+) bool {
+	return binding.Active == nil &&
+		binding.State == request.State &&
+		binding.TerminalObservationSnapshotID != nil &&
+		*binding.TerminalObservationSnapshotID ==
+			request.ObservationSnapshotID &&
+		binding.LastObservationSnapshotID != nil &&
+		*binding.LastObservationSnapshotID ==
+			request.ObservationSnapshotID &&
 		binding.AcknowledgedCursor == request.Cursor &&
 		binding.LastReconciledSourceSHA == request.SourceSHA &&
 		binding.LastReconciledTargetSHA == request.TargetSHA

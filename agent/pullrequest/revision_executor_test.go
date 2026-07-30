@@ -1346,6 +1346,13 @@ func (store *prRevisionBindingStore) MarkTerminal(
 	panic("unexpected MarkTerminal")
 }
 
+func (store *prRevisionBindingStore) MarkDirectTerminal(
+	context.Context,
+	DirectTerminalBinding,
+) (Binding, error) {
+	panic("unexpected MarkDirectTerminal")
+}
+
 func (store *prRevisionBindingStore) RequestObservation(
 	context.Context,
 	OperatorRequest,

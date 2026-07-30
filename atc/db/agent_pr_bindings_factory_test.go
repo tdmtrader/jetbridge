@@ -696,6 +696,151 @@ var _ = Describe("AgentPRBindingsFactory", func() {
 		})
 		Expect(errors.Is(err, pullrequest.ErrBindingImmutable)).To(BeTrue())
 	})
+
+	It("records and replays exact direct terminal evidence without a workflow run", func() {
+		for index, test := range []struct {
+			state  pullrequest.BindingState
+			suffix string
+		}{
+			{state: pullrequest.BindingCompleted, suffix: "completed"},
+			{state: pullrequest.BindingAbandoned, suffix: "abandoned"},
+		} {
+			testBinding := binding
+			testRequest := createRequest
+			if index > 0 {
+				testRequest.Locator.ExternalID = "direct-" + test.suffix
+				testRequest.URL =
+					"https://github.example/example/repository/pull/direct-" +
+						test.suffix
+				replaceAgentPRBindingOrigin(
+					&testRequest, defaultTeam.Name(), definitionID,
+					"direct-"+test.suffix,
+				)
+				var created bool
+				var err error
+				testBinding, created, err = factory.Create(ctx, testRequest)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(created).To(BeTrue())
+			}
+			request := pullrequest.DirectTerminalBinding{
+				TeamID: testBinding.TeamID, BindingID: testBinding.ID,
+				ExpectedRevision: testBinding.Revision, State: test.state,
+				ObservationSnapshotID: testRequest.LastObservationSnapshotID,
+				Cursor: pullrequest.Cursor(
+					`{"terminal":"` + test.suffix + `"}`,
+				),
+				SourceSHA: strings.Repeat("d", 40),
+				TargetSHA: strings.Repeat("e", 40),
+			}
+
+			terminal, err := factory.MarkDirectTerminal(ctx, request)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(terminal.State).To(Equal(test.state))
+			Expect(terminal.Active).To(BeNil())
+			Expect(terminal.AcknowledgedCursor).To(Equal(request.Cursor))
+			Expect(terminal.LastObservationSnapshotID).To(Equal(
+				pointerToSnapshotID(int64(request.ObservationSnapshotID)),
+			))
+			Expect(terminal.TerminalObservationSnapshotID).To(Equal(
+				pointerToSnapshotID(int64(request.ObservationSnapshotID)),
+			))
+			Expect(terminal.LastReconciledSourceSHA).To(Equal(
+				request.SourceSHA,
+			))
+			Expect(terminal.LastReconciledTargetSHA).To(Equal(
+				request.TargetSHA,
+			))
+			Expect(terminal.LastAcknowledgedWorkflowRunID).To(BeNil())
+			Expect(terminal.LastAcknowledgedActionDigest).To(BeEmpty())
+
+			replayed, err := factory.MarkDirectTerminal(ctx, request)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(replayed.Revision).To(Equal(terminal.Revision))
+
+			different := request
+			different.Cursor = pullrequest.Cursor(
+				`{"terminal":"different"}`,
+			)
+			_, err = factory.MarkDirectTerminal(ctx, different)
+			Expect(errors.Is(err, pullrequest.ErrBindingImmutable)).To(BeTrue())
+		}
+	})
+
+	It("defers direct terminal evidence behind active work and enforces revision and team ownership", func() {
+		reservation := reserveAgentPRBinding(
+			factory, binding, createRequest.LastObservationSnapshotID,
+		)
+		busy := pullrequest.DirectTerminalBinding{
+			TeamID: binding.TeamID, BindingID: binding.ID,
+			ExpectedRevision:      binding.Revision,
+			State:                 pullrequest.BindingCompleted,
+			ObservationSnapshotID: createRequest.LastObservationSnapshotID,
+			Cursor:                pullrequest.Cursor(`{"terminal":"busy"}`),
+			SourceSHA:             strings.Repeat("d", 40),
+			TargetSHA:             strings.Repeat("e", 40),
+		}
+		_, err := factory.MarkDirectTerminal(ctx, busy)
+		Expect(errors.Is(err, pullrequest.ErrBindingBusy)).To(BeTrue())
+		storedBusy, found, err := factory.Get(
+			ctx, binding.TeamID, binding.ID,
+		)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(found).To(BeTrue())
+		Expect(storedBusy.Active).NotTo(BeNil())
+		Expect(storedBusy.Active.Token).To(Equal(reservation.Token))
+
+		staleCreate := createRequest
+		staleCreate.Locator.ExternalID = "direct-stale-team"
+		staleCreate.URL =
+			"https://github.example/example/repository/pull/direct-stale-team"
+		replaceAgentPRBindingOrigin(
+			&staleCreate, defaultTeam.Name(), definitionID,
+			"direct-stale-team",
+		)
+		staleBinding, created, err := factory.Create(ctx, staleCreate)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(created).To(BeTrue())
+		request := pullrequest.DirectTerminalBinding{
+			TeamID: staleBinding.TeamID, BindingID: staleBinding.ID,
+			ExpectedRevision:      staleBinding.Revision + 1,
+			State:                 pullrequest.BindingCompleted,
+			ObservationSnapshotID: staleCreate.LastObservationSnapshotID,
+			Cursor:                pullrequest.Cursor(`{"terminal":"stale"}`),
+			SourceSHA:             strings.Repeat("d", 40),
+			TargetSHA:             strings.Repeat("e", 40),
+		}
+		_, err = factory.MarkDirectTerminal(ctx, request)
+		Expect(errors.Is(err, pullrequest.ErrStaleBindingRevision)).To(BeTrue())
+
+		other, err := teamFactory.CreateTeam(
+			atc.Team{Name: fmt.Sprintf(
+				"pr-direct-terminal-other-%d", time.Now().UnixNano(),
+			)},
+		)
+		Expect(err).NotTo(HaveOccurred())
+		var foreignObservationID int64
+		Expect(dbConn.QueryRow(`
+			INSERT INTO agent_snapshots
+				(team_id, type_name, type_version, digest,
+				 byte_size, file_count, representation)
+			VALUES ($1, 'pull-request', 1, $2, 1, 1,
+			        'application/vnd.jetbridge.snapshot.tar.v1')
+			RETURNING id
+		`, other.ID(), fmt.Sprintf(
+			"sha256:%064x", time.Now().UnixNano(),
+		)).Scan(&foreignObservationID)).To(Succeed())
+		request.ExpectedRevision = staleBinding.Revision
+		request.ObservationSnapshotID =
+			snapshot.SnapshotID(foreignObservationID)
+		_, err = factory.MarkDirectTerminal(ctx, request)
+		Expect(errors.Is(err, pullrequest.ErrBindingConflict)).To(BeTrue())
+
+		request.TeamID = other.ID()
+		request.ObservationSnapshotID =
+			staleCreate.LastObservationSnapshotID
+		_, err = factory.MarkDirectTerminal(ctx, request)
+		Expect(errors.Is(err, pullrequest.ErrBindingNotFound)).To(BeTrue())
+	})
 })
 
 func reserveAgentPRBinding(

@@ -390,8 +390,35 @@ func (reconciler *SourceBuildReconciler) reconcileMonitorBuild(
 	if err != nil {
 		return false, err
 	}
+	protected, err := source.Protected()
+	if err != nil {
+		return false, err
+	}
+	if kind := pullrequest.ActionKind(
+		protected.Version.ActionKind,
+	); kind == pullrequest.ActionCompleted ||
+		kind == pullrequest.ActionAbandoned {
+		_, err = reconciler.monitor.coordinator.
+			ReconcileDirectTerminal(ctx, protected)
+		if errors.Is(err, pullrequest.ErrBindingBusy) {
+			return true, nil
+		}
+		if errors.Is(err, pullrequest.ErrStaleMonitorSourceVersion) {
+			if _, failErr := admissions.FailBindingAdmission(
+				ctx, reconciler.teamID, bindingID, admission.ID,
+				"stale projected binding revision",
+			); failErr != nil {
+				return false, errors.Join(err, failErr)
+			}
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		return true, nil
+	}
 	runID, launched, err := reconciler.monitor.coordinator.
-		ReserveAndLaunch(ctx, source)
+		ReserveAndLaunch(ctx, protected)
 	if errors.Is(err, pullrequest.ErrStaleMonitorSourceVersion) {
 		if _, failErr := admissions.FailBindingAdmission(
 			ctx, reconciler.teamID, bindingID, admission.ID,
