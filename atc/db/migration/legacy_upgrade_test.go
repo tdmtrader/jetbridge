@@ -353,6 +353,53 @@ var _ = Describe("Legacy Database Upgrade", func() {
 	})
 
 	Describe("Pre-flight validation script", func() {
+		It("keeps fresh installs and exact 1773106138 upgrades pinned to the embedded JetBridge head", func() {
+			assertJetBridgeHeadContract := func() {
+				supportedVersion, err := migrator.SupportedVersion()
+				Expect(err).NotTo(HaveOccurred())
+				Expect(supportedVersion).To(Equal(jetbridgeHeadMigration))
+
+				_, thisFile, _, _ := runtime.Caller(0)
+				scriptPath := filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "docs", "migration", "migrate-preflight.sh")
+				contents, err := os.ReadFile(scriptPath)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(string(contents)).To(ContainSubstring(fmt.Sprintf("JETBRIDGE_VERSION=%d\n", jetbridgeHeadMigration)))
+			}
+
+			By("migrating a fresh database to the embedded head")
+			assertJetBridgeHeadContract()
+			Expect(migrator.Up(nil, nil)).To(Succeed())
+			ExpectDatabaseMigrationVersionToEqual(migrator, jetbridgeHeadMigration)
+
+			By("recreating a database at exactly 1773106138 before upgrading it")
+			Expect(db.Close()).To(Succeed())
+			for _, connection := range lockDB {
+				Expect(connection.Close()).To(Succeed())
+			}
+			postgresRunner.DropTestDB()
+			postgresRunner.CreateEmptyTestDB()
+
+			var err error
+			db, err = sql.Open("pgx", postgresRunner.DataSourceName())
+			Expect(err).NotTo(HaveOccurred())
+			for i := range lock.FactoryCount {
+				lockDB[i], err = sql.Open("pgx", postgresRunner.DataSourceName())
+				Expect(err).NotTo(HaveOccurred())
+			}
+			fakeLogFunc := func(logger lager.Logger, id lock.LockID) {}
+			lockFactory = lock.NewLockFactory(lockDB, fakeLogFunc, fakeLogFunc)
+			migrator = migration.NewMigrator(db, lockFactory)
+
+			Expect(migrator.Migrate(nil, nil, 1773106138)).To(Succeed())
+			ExpectDatabaseMigrationVersionToEqual(migrator, 1773106138)
+
+			By("upgrading the exact 1773106138 database to the embedded head")
+			assertJetBridgeHeadContract()
+			Expect(migrator.Up(nil, nil)).To(Succeed())
+			ExpectDatabaseMigrationVersionToEqual(migrator, jetbridgeHeadMigration)
+			assertJetBridgeHeadContract()
+		})
+
 		It("targets the same migration as the JetBridge database head", func() {
 			_, thisFile, _, _ := runtime.Caller(0)
 			scriptPath := filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "docs", "migration", "migrate-preflight.sh")

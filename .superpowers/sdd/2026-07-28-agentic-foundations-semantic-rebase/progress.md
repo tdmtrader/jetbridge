@@ -419,9 +419,28 @@
   - Review: formal Terra blocking-only round 1 found no Critical, High, or
     acceptance-blocking issue. No correction round was required.
   - Status: **Accepted**.
-- [ ] Task 19 — full verification and residue audit
-  - Status: **Active**. `DEPENDENCY-005` is resolved by accepted Tasks 13 and
-    14; run the bounded final proof matrix once.
+- [x] Task 19 — full verification and residue audit
+  - Commit: `aaee74e847 test(agent): prove final migration and residue contract`;
+    the ignored implementer evidence is in `task-19-report.md`.
+  - Added one serial migration-package regression that proves both fresh
+    installation and exact `1773106138` upgrade reach embedded head
+    `1773106148`, with `CurrentVersion()`, `SupportedVersion()`, and
+    `JETBRIDGE_VERSION` pinned together.
+  - Verification: serial migration package and migrate-preflight direction
+    suite passed; `make test-unit` and Helm lint passed. `make test-dev-mcp`,
+    Fly integration, and ATC integration each ran exactly once and were
+    environment-blocked by host volume exhaustion before meaningful assertion
+    evaluation. No retry or shared-cache cleanup was performed by this task.
+  - Docker was unavailable, so local Hangar/Kubernetes targets were correctly
+    prerequisite-gated. One read-only Borg inventory found only a mutable
+    `registry.home/jetbridge:latest` daemon image, not an approved digest or
+    recovery environment; the two live recovery proofs are environment-pending
+    and made no cluster/image/source mutation.
+  - Frozen migration diff, checksums, `git diff --check`, and direct-publisher
+    residue gates passed. The sole retired publisher trace is the one
+    fail-closed Helm `agentPublisherGateway` tombstone stanza.
+  - Status: **Implemented; independent whole-branch review pending parent
+    coordinator verdict.**
 
 ## Current milestone acceptance
 

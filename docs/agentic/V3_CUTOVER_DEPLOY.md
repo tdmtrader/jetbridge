@@ -14,9 +14,9 @@ historical agent data needs to be preserved.
 |---|---|---|
 | Workflow schema | v1 / v2 | **v3 only** — `parse.go` rejects anything else |
 | Execution identity | ticket + `agent-ticket-<id>` pipeline | **durable workflow run** |
-| Delivery | `harvest:` step pushed from the pod | `publish_snapshot` → publisher → **gateway** |
+| Delivery | `harvest:` step pushed from the pod | `publish_snapshot` → **direct in-ATC publication** |
 | Merge compute | `merge:` step (pod-side push) | **`agent/functions/repositorymerge`** via `function-runner` |
-| Migration head | `1773106095` | **`1773106138`** |
+| Migration head | `1773106095` | **`1773106148`** |
 
 ## Order of operations
 
@@ -42,7 +42,7 @@ reject a tag. Agent steps error at runtime when it is unset.
 
 ### 3. Reset the database
 
-Migrations `1773106100`–`1773106138` all apply in one boot. Because no history is
+Migrations `1773106100`–`1773106148` all apply in one boot. Because no history is
 being preserved, dropping the database is cleaner than migrating through:
 
 - it skips `1773106124`'s backfill, which would otherwise NULL every historical
@@ -106,9 +106,26 @@ being preserved, dropping the database is cleaner than migrating through:
   strictly about dispatch: terminalizing a ticket whose run finished moved into
   the always-on workflow-run reconciler, so a paused dispatcher can no longer
   strand a running ticket.
+- `1773106139` assigns every snapshot exactly one direct team owner and removes
+  the retired grant relation; equal content may be separately owned without
+  granting cross-team reads.
+- `1773106140` removes agent-principal bearer-token authority. Human agent
+  routes use ordinary team authorization.
+- `1773106141` freezes authoritative validation provenance at seal time; an
+  empty hash records historical absence rather than being recalculated from a
+  mutable definition.
+- `1773106142`–`1773106143` persist immutable resource-source admissions,
+  including the exact selecting build and captured pipeline-config revision.
+- `1773106144`–`1773106145` add immutable Hangar-backed checkpoint generations
+  and fresh durable execution attempts; interrupted work is recovered into a
+  new attempt rather than a retired runner.
+- `1773106146`–`1773106147` attribute metrics and transcripts to those exact
+  attempts while preserving the legacy projections.
+- `1773106148` records the started experiment associated with each ready,
+  immutable resource-source admission reused across cells and retries.
 
 Verify afterwards: `docs/migration/migrate-preflight.sh` expects
-`JETBRIDGE_VERSION=1773106138`.
+`JETBRIDGE_VERSION=1773106148`.
 
 ### 3a. Vault the platform credential — the only model-credential path
 

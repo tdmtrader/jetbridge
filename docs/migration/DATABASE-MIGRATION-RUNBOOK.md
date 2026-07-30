@@ -139,7 +139,35 @@ concourse migrate \
   --migrate-to-latest-version
 ```
 
-This applies all pending migrations up to the JetBridge target version (`1773105501`).
+This applies all pending migrations up to the JetBridge target version
+(`1773106148`). The complete appended JetBridge block is `1773106100` through
+`1773106148`; it is applied in order and must not be selectively skipped.
+
+The appended block is operationally significant throughout:
+
+- `1773106100`–`1773106109` establish snapshots, durable workflow runs,
+  ticket/repository projections, terminal outcomes, and wait identity.
+- `1773106110`–`1773106119` add publications, experiments and their budget
+  reservations/audit records, staged outputs, publication occurrences, and
+  frozen experiment scorecards.
+- `1773106120`–`1773106128` enforce experiment ownership and active-run
+  retention; remove orphaned authority; make schema-v3 workflows live-only;
+  record metric/lifecycle/exposure lineage; and add the workflow-run template
+  index. The intentionally unused sequence numbers are not a gap to fill.
+- `1773106129`–`1773106138` move metric/cost identity to workflow runs, remove
+  legacy ticket/review/feedback/write-only surfaces, make snapshot exposure
+  full-tree only, and seed the dispatcher control row as `off`.
+
+- `1773106139`–`1773106141` establish direct snapshot ownership, remove
+  retired agent-principal authority, and freeze validation provenance.
+- `1773106142`–`1773106143` persist exact resource-source admissions and their
+  selecting build/config provenance.
+- `1773106144`–`1773106145` add immutable Hangar-backed checkpoints and fresh
+  execution attempts.
+- `1773106146`–`1773106147` attribute metrics and transcripts to exact
+  attempts while retaining legacy projections.
+- `1773106148` associates the started experiment with the immutable admission
+  it reuses.
 
 ### Option B: Automatic on Startup
 
@@ -207,7 +235,7 @@ FROM migrations_history
 ORDER BY tstamp DESC
 LIMIT 5;
 
--- Expected: version = 1773105501, direction = 'up', status = 'passed'
+-- Expected: version = 1773106148, direction = 'up', status = 'passed'
 ```
 
 ### 5.2 Row Count Comparison

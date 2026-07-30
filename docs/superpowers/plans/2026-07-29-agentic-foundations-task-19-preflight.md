@@ -120,11 +120,12 @@ rg -n -i 'agent.?publisher.?gateway|publisher.?gateway|agent-publisher-gateway' 
   -g '!**/*_test.go'
 ```
 
-The direct-publisher command must return exactly one production-source match:
-the `hasKey .Values "agentPublisherGateway"` fail in
-`deploy/chart/templates/web-deployment.yaml`, which rejects the retired value
-with “has been removed; use agentPublisher.” Any live gateway transport,
-service, flag, mount, or second production-source match fails the gate.
+The direct-publisher command must return exactly one logical, two-line
+production-source tombstone in `deploy/chart/templates/web-deployment.yaml`:
+`hasKey .Values "agentPublisherGateway"` immediately followed by the `fail`
+that rejects the retired value with “has been removed; use agentPublisher.” Any
+live gateway transport, service, flag, mount, or additional production-source
+match fails the gate.
 
 Other legitimate non-production matches are limited to:
 
