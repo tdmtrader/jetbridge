@@ -159,6 +159,15 @@ run. The binding row therefore has a row-locked launch/acknowledgement gate
 that permits only one nonterminal monitor workflow run and advances its cursor
 only after safe completion.
 
+Acknowledged binding state is fed back into polling by re-rendering the
+protected server-owned resource source after binding revision changes. The
+resource check derives review cursor and freshness only from that projected
+state, never from an unacknowledged previous resource version. Each emitted
+version carries the binding revision; the launch gate rejects a version
+selected from stale pipeline config. The existing source-pipeline lifecycle
+reconciler converges config after crashes, so this requires neither an
+internal bearer endpoint nor a new scheduler.
+
 Terminal PR state pauses and archives the owned monitor pipeline through the
 existing workflow-owned source-pipeline lifecycle. The archived binding and
 run history remain as provenance. Template-pipeline garbage collection does
@@ -195,7 +204,12 @@ history table.
 The three new record types are:
 
 - `pull-request/v1`: platform-authored normalized provider observation and
-  actionable trigger;
+  actionable trigger. Its lifecycle includes a sealed `missing` pre-create
+  observation: provider, repository, source ref, expected source head or
+  expected absence, target ref, target head, and provider version are present,
+  while external PR ID and URL are absent. This is the authority for the
+  initial exact-lease branch mutation; it is not inferred from a
+  mutation-time re-observation;
 - `publish-impact/v1`: deterministic and agent impact evidence plus the
   server-derived reapproval decision;
 - `pull-request-response/v1`: agent-authored overall summary and thread replies
@@ -459,6 +473,10 @@ satisfy a newer iteration. Operators may retry pinned inputs, request a fresh
 observation, pause/resume monitoring, or terminate monitoring. They cannot
 edit stored heads, cursors, approvals, or impact evidence.
 
+Pause and operator termination are monitoring controls separate from provider
+lifecycle. Termination drains the standing monitor but never manufactures a
+provider `completed` or `abandoned` observation.
+
 ## Security
 
 - Read and write credentials are distinct policy references and can have
@@ -522,9 +540,13 @@ Work is not complete until a supervised live GitHub repository demonstrates:
 - no reintroduction of the gateway or agent principals;
 - no regression to existing direct-Git publication.
 
-New migrations append after `1773106148` and advance the embedded migration
-head, legacy-upgrade coverage, and `migrate-preflight` target together. Frozen
-historical migrations are never edited.
+New migrations append after the actual migration head and advance the embedded
+migration head, legacy-upgrade coverage, and `migrate-preflight` target
+together. The concurrently planned reusable-node slice reserves
+`1773106149`–`1773106150`, so PR-publish migrations begin at `1773106151` only
+after those lower migrations exist in the same ordered series. A deployment
+must never apply `1773106151` and later introduce a lower-numbered migration.
+Frozen historical migrations are never edited.
 
 ## Rollout
 
