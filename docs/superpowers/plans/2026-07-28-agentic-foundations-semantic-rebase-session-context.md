@@ -235,9 +235,21 @@ Task 13:
 
 Task 14:
 
-- Not started; unblocked by accepted Tasks 6 and 7. Its direct publication path
-  must preserve Task 7's exact validation gate while replacing the publisher
-  gateway.
+- Implemented through `7629e590d6`; credential-path correction
+  `ce227c1abf`.
+- Status: **Accepted in review round 2 of at most 3**.
+- ATC owns exact policy and opaque destination credentials, materializes
+  sealed changes into private Git scratch, and atomically updates the target
+  plus idempotency marker after upstream rebase/validation.
+- Helm mounts distinct policy and credential Secrets only into
+  `concourse-web`; the runtime image supplies the fixed image-owned
+  `/usr/bin/git`. The legacy gateway transport, service, flags, and operator
+  topology are removed. One fail-closed Helm tombstone rejects the retired
+  value rather than silently accepting it.
+- Round 1 found inherited `PATH` could select a counterfeit Git executable
+  that received askpass state. The correction pinned production to
+  `/usr/bin/git`; fresh scoped round 2 found the issue addressed and no new
+  blocking defect.
 
 Task 15:
 
@@ -274,9 +286,10 @@ Tasks 16–18:
 
 Task 19:
 
-- Not started; dependency-deferred under `DEPENDENCY-005`.
-- Final end-to-end and residue proof cannot complete while Task 14 remains
-  incomplete. Task 13 and Tasks 9 and 16–18 are no longer blockers.
+- Active. `DEPENDENCY-005` is resolved by accepted Tasks 13 and 14.
+- Run the bounded migration, broad-suite, residue, documentation, and
+  environment-gated live proof matrix once; do not repeat known
+  infrastructure failures.
 
 ## Milestone verification
 
@@ -307,13 +320,15 @@ completed and the broad suites are rerun.
 4. Treat Task 9 as accepted through `9375fae0b8`; do not reopen it without new
    blocking evidence.
 5. Treat Task 13 as accepted through `d84dbaeb93`; do not reopen it without
-   new blocking evidence. Task 14 is the active unblocked implementation.
+   new blocking evidence.
 6. Treat Task 15 as **Accepted**; its user-authorized final review found no
    blocking issue.
 7. Treat Tasks 16, 17, and 18 as accepted; do not reopen their review cycles
    without new blocking evidence.
-8. Leave Task 19 dependency-deferred until Task 14 is completed.
-9. Treat every resumed feature group as a separate bounded track rather than
+8. Treat Task 14 as accepted through `ce227c1abf`; do not reopen it without
+   new blocking evidence.
+9. Run Task 19 as the active final verification/residue track.
+10. Treat every resumed feature group as a separate bounded track rather than
    one continuous "rebase."
 
 ## Session handoff requirement

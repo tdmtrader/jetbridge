@@ -2,7 +2,7 @@
 
 ## Status
 
-Implementation checkpoint complete. Independent review is pending.
+Accepted in independent review round 2 of at most 3.
 
 ## Delivered behavior
 
@@ -69,7 +69,8 @@ comments now name `agent/publisher/directgit`.
 - `c960867479 feat(publisher): publish direct git refs atomically`
 - `b0f2497738 fix(delivery): rebase candidates before publication`
 - `14e27b5032 feat(atc): compose direct snapshot publisher`
-- Helm/image/docs checkpoint: recorded with this report.
+- `7629e590d6 feat(deploy): configure direct snapshot publisher`
+- `ce227c1abf fix(publisher): pin direct git executable`
 
 ## Fix round 1 — fixed image Git binary
 
@@ -96,3 +97,13 @@ go test ./agent/publisher/directgit -count=1
 ok  github.com/concourse/concourse/agent/publisher/directgit  4.600s
 git diff --check
 ```
+
+## Independent review
+
+Round 1 found one Important credential-boundary defect: production selected
+Git through inherited `PATH`, even though chart-controlled `web.env` can set
+that value. Fix round 1 pinned production execution to the image-owned
+`/usr/bin/git` while retaining the injected-path test seam.
+
+Fresh scoped round 2 verified the finding addressed and found no new Critical,
+Important, or acceptance-blocking issue.

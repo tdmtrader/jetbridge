@@ -287,7 +287,8 @@
     - `c960867479 feat(publisher): publish direct git refs atomically`
     - `b0f2497738 fix(delivery): rebase candidates before publication`
     - `14e27b5032 feat(atc): compose direct snapshot publisher`
-    - Helm/image/docs checkpoint: recorded in `task-14-report.md`
+    - `7629e590d6 feat(deploy): configure direct snapshot publisher`
+    - `ce227c1abf fix(publisher): pin direct git executable`
   - Behavior: ATC resolves exact direct-publication policy and opaque scoped
     credentials, materializes the sealed change into private Git scratch, and
     atomically updates the target and idempotency marker. A moved target
@@ -303,7 +304,11 @@
     tombstone; focused negative tests retain the old names only to prove their
     absence. No legacy gateway transport, chart resource, flag, or operator
     documentation remains.
-  - Status: **Implementation checkpoint complete; independent review pending.**
+  - Review round 1 found one Important inherited-`PATH` credential-boundary
+    defect. Fix round 1 pinned production to image-owned `/usr/bin/git` and
+    added a counterfeit-`PATH` regression. Fresh round 2 verified the finding
+    addressed and found no new blocking issue.
+  - Status: **Accepted in review round 2 of at most 3**.
 - [x] Task 15 — checkpoint and attempt data models
   - Implementation and correction commits:
     - `add954b863 feat(agent): add durable checkpoint attempt models`
@@ -415,8 +420,8 @@
     acceptance-blocking issue. No correction round was required.
   - Status: **Accepted**.
 - [ ] Task 19 — full verification and residue audit
-  - Status: dependency-deferred under `DEPENDENCY-005`; final proof cannot pass
-    while Tasks 13 and 14 are unstarted and the branch is knowingly incomplete.
+  - Status: **Active**. `DEPENDENCY-005` is resolved by accepted Tasks 13 and
+    14; run the bounded final proof matrix once.
 
 ## Current milestone acceptance
 
@@ -427,6 +432,5 @@
 - Merge-preflight revision-3 focused suites: passed.
 - `make test-unit`: failed only in Jetbridge as described under Task 6; the
   other 120 Ginkgo suites completed without a reported failure.
-- Status: recovery evidence and Tasks 6, 7, 9, and 12 are accepted, but the
-  branch is not merge-ready while Tasks 13 and 14 remain unimplemented and
-  Task 19 has not run.
+- Status: all implementation tracks are accepted, but the branch is not
+  merge-ready until Task 19's final verification and residue audit completes.

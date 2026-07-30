@@ -102,7 +102,8 @@ appended migration block.
 
 ## Residue gates
 
-Production residue must return no retired authority:
+Production residue must return no retired authority except the single
+fail-closed Helm value tombstone described below:
 
 ```sh
 rg -n -i \
@@ -111,7 +112,7 @@ rg -n -i \
   -g '!**/*_test.go' -g '!**/migrations/**'
 ```
 
-After Task 14, the direct publisher cutover has its own zero-result gate:
+After Task 14, the direct publisher cutover has its own exact-allowlist gate:
 
 ```sh
 rg -n -i 'agent.?publisher.?gateway|publisher.?gateway|agent-publisher-gateway' \
@@ -119,7 +120,13 @@ rg -n -i 'agent.?publisher.?gateway|publisher.?gateway|agent-publisher-gateway' 
   -g '!**/*_test.go'
 ```
 
-Legitimate non-production matches are limited to:
+The direct-publisher command must return exactly one production-source match:
+the `hasKey .Values "agentPublisherGateway"` fail in
+`deploy/chart/templates/web-deployment.yaml`, which rejects the retired value
+with “has been removed; use agentPublisher.” Any live gateway transport,
+service, flag, mount, or second production-source match fails the gate.
+
+Other legitimate non-production matches are limited to:
 
 - immutable migration SQL/fixtures for retired grants, principals, and cap1;
 - rejection tests proving retired bearer tokens have no authority;
