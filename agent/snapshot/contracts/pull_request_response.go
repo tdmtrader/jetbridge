@@ -8,10 +8,22 @@ import (
 	"github.com/concourse/concourse/agent/snapshot"
 )
 
+type PullRequestResponseKind string
+
+const (
+	// PullRequestResponseReviewResponse carries response authority derived
+	// from one exact completed review batch.
+	PullRequestResponseReviewResponse PullRequestResponseKind = "review_response"
+	// PullRequestResponseNoResponse is semantic absence. It deliberately
+	// carries no batch, summary, or reply that a provider adapter could emit.
+	PullRequestResponseNoResponse PullRequestResponseKind = "no_response"
+)
+
 type PullRequestResponseBody struct {
-	BatchID string                      `json:"batch_id"`
-	Summary string                      `json:"summary"`
-	Replies []PullRequestThreadResponse `json:"replies"`
+	Kind    PullRequestResponseKind     `json:"kind,omitempty"`
+	BatchID string                      `json:"batch_id,omitempty"`
+	Summary string                      `json:"summary,omitempty"`
+	Replies []PullRequestThreadResponse `json:"replies,omitempty"`
 }
 
 type PullRequestThreadResponse struct {
@@ -30,11 +42,42 @@ func (body PullRequestResponseBody) validate(policy recordValidationPolicy) erro
 	return body.validateIntrinsicWithPolicy(policy)
 }
 
+func (body PullRequestResponseBody) validateForRevision(
+	policy recordValidationPolicy,
+	revision int,
+) error {
+	if revision < 4 && body.Kind != "" {
+		return fmt.Errorf(
+			"body/kind: schema revision %d requires the legacy omitted kind",
+			revision,
+		)
+	}
+	if revision >= 4 && body.Kind == "" {
+		return fmt.Errorf(
+			"body/kind: schema revision %d requires an explicit kind",
+			revision,
+		)
+	}
+	return body.validateIntrinsicWithPolicy(policy)
+}
+
 func (body PullRequestResponseBody) validateIntrinsic() error {
 	return body.validateIntrinsicWithPolicy(currentRecordValidationPolicy)
 }
 
 func (body PullRequestResponseBody) validateIntrinsicWithPolicy(policy recordValidationPolicy) error {
+	switch body.Kind {
+	case PullRequestResponseNoResponse:
+		if body.BatchID != "" || body.Summary != "" || len(body.Replies) != 0 {
+			return fmt.Errorf("no-response must not carry a batch, summary, or replies")
+		}
+		return nil
+	case "", PullRequestResponseReviewResponse:
+		// An omitted kind is the legacy revision 1-3 wire image. It remains a
+		// review response so stored records keep their original meaning.
+	default:
+		return fmt.Errorf("kind must be one of review_response, no_response")
+	}
 	if err := validatePullRequestIdentifier("batch id", body.BatchID, policy); err != nil {
 		return err
 	}
@@ -74,6 +117,18 @@ func ValidatePullRequestResponseAgainst(response PullRequestResponseBody, observ
 	}
 	if err := observation.Validate(nil); err != nil {
 		return fmt.Errorf("pull request observation: %w", err)
+	}
+	if response.Kind == PullRequestResponseNoResponse {
+		if observation.Trigger == PullRequestReviewBatchTrigger {
+			return fmt.Errorf("review batch requires an authorized review response")
+		}
+		return nil
+	}
+	if observation.Trigger != PullRequestReviewBatchTrigger {
+		return fmt.Errorf(
+			"%s observation does not authorize a review response",
+			observation.Trigger,
+		)
 	}
 	for _, batch := range observation.ReviewBatches {
 		if batch.ID != response.BatchID {
@@ -120,7 +175,18 @@ func ReadSealedPullRequestResponseRecord(ctx context.Context, root *os.Root) (Re
 }
 
 func pullRequestResponseBody(record Record[PullRequestResponseBody]) error {
-	if err := validateDeclaredBody(pullRequestResponseType, record.Subjects, record.Body); err != nil {
+	revision, found := SchemaRevisionFor(pullRequestResponseType, record.Schema)
+	if !found {
+		return fmt.Errorf(
+			"snapshot contracts: pull request response record: schema %q has no accepted revision",
+			record.Schema,
+		)
+	}
+	if err := validateDeclaredBody(
+		pullRequestResponseType,
+		record.Subjects,
+		pullRequestResponseDeclaredBody(record.Body, revision),
+	); err != nil {
 		return err
 	}
 	if err := validatePullRequestResponseSubjects(record.Subjects); err != nil {
@@ -130,10 +196,17 @@ func pullRequestResponseBody(record Record[PullRequestResponseBody]) error {
 	if err != nil {
 		return fmt.Errorf("snapshot contracts: pull request response record: %w", err)
 	}
-	if err := record.Body.validate(policy); err != nil {
+	if err := record.Body.validateForRevision(policy, revision); err != nil {
 		return fmt.Errorf("snapshot contracts: pull request response record: %w", err)
 	}
 	return nil
+}
+
+func pullRequestResponseDeclaredBody(body PullRequestResponseBody, revision int) PullRequestResponseBody {
+	if revision < 4 && body.Kind == "" {
+		body.Kind = PullRequestResponseReviewResponse
+	}
+	return body
 }
 
 func validatePullRequestResponseSubjects(subjects []Subject) error {

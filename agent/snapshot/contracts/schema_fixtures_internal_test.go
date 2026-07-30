@@ -460,9 +460,11 @@ func pullRequestResponseFixtures() []recordFixture {
 	subjects[0].Type = pullRequestType
 	return []recordFixture{
 		{name: "pull-request-response/reply", ref: pullRequestResponseType, subjects: subjects, validate: validate,
-			body: PullRequestResponseBody{BatchID: "batch-1", Summary: "Addressed the review.", Replies: []PullRequestThreadResponse{{ThreadID: "thread-1", Body: "Updated in the latest revision."}}}},
-		{name: "pull-request-response/summary", ref: pullRequestResponseType, subjects: subjects, validate: validate,
+			body: PullRequestResponseBody{Kind: PullRequestResponseReviewResponse, BatchID: "batch-1", Summary: "Addressed the review.", Replies: []PullRequestThreadResponse{{ThreadID: "thread-1", Body: "Updated in the latest revision."}}}},
+		{name: "pull-request-response/legacy-summary", ref: pullRequestResponseType, subjects: subjects, validate: validate,
 			body: PullRequestResponseBody{BatchID: "batch-1", Summary: "No thread-level response is needed."}},
+		{name: "pull-request-response/none", ref: pullRequestResponseType, subjects: subjects, validate: validate,
+			body: PullRequestResponseBody{Kind: PullRequestResponseNoResponse}},
 	}
 }
 

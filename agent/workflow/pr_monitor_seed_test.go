@@ -86,6 +86,13 @@ func TestPRMonitorSeedBindsOneExactRevisionWithoutExposingForgeAuthority(t *test
 		"draft-change":   "repository-change/v1",
 		"response-draft": "pull-request-response/v1",
 	})
+	if !respond.SnapshotOutputs["response-draft"].Optional ||
+		respond.SnapshotOutputs["draft-change"].Optional {
+		t.Fatalf(
+			"response agent optional outputs = %#v, want only response-draft optional",
+			respond.SnapshotOutputs,
+		)
+	}
 	if len(respond.Sidecars) != 0 || len(respond.Capabilities) != 0 {
 		t.Fatalf(
 			"response agent received sidecar/capability authority: sidecars=%#v capabilities=%q",
@@ -106,6 +113,8 @@ func TestPRMonitorSeedBindsOneExactRevisionWithoutExposingForgeAuthority(t *test
 		"Do not contact the forge",
 		"attempt to complete the pull request",
 		"`source-repository` as the one `base` subject",
+		"Only when `trigger` is `review_batch`",
+		"do not write a `response-draft`",
 	} {
 		if !strings.Contains(respond.Prompt, required) {
 			t.Fatalf("response prompt does not contain %q:\n%s", required, respond.Prompt)
@@ -125,6 +134,13 @@ func TestPRMonitorSeedBindsOneExactRevisionWithoutExposingForgeAuthority(t *test
 		"pull-request":   "pull-request/v1",
 		"response-draft": "pull-request-response/v1",
 	})
+	if !authorize.SnapshotInputs["response-draft"].Optional ||
+		authorize.SnapshotInputs["pull-request"].Optional {
+		t.Fatalf(
+			"response authorization optional inputs = %#v, want only response-draft optional",
+			authorize.SnapshotInputs,
+		)
+	}
 	requirePRMonitorOutputTypes(t, authorize.SnapshotOutputs, map[string]snapshot.TypeRef{
 		"response": "pull-request-response/v1",
 	})

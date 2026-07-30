@@ -153,8 +153,15 @@ var recordSchemaHistories = map[snapshot.TypeRef]recordSchemaHistory{
 		superseded: []recordSchemaRevision{{revision: 2, descriptor: mustCanonicalSchemaDescriptorFor("pull-request/v1", 2)}, {revision: 1, descriptor: `{"contract":"pull-request/v1","envelope":"record/v1","revision":1}`}},
 	},
 	"pull-request-response/v1": {
-		current:    recordSchemaRevision{revision: 3, descriptor: mustCanonicalSchemaDescriptorFor("pull-request-response/v1", 3)},
-		superseded: []recordSchemaRevision{{revision: 2, descriptor: mustCanonicalSchemaDescriptorFor("pull-request-response/v1", 2)}, {revision: 1, descriptor: `{"contract":"pull-request-response/v1","envelope":"record/v1","revision":1}`}},
+		current: recordSchemaRevision{
+			revision:   4,
+			descriptor: mustCanonicalSchemaDescriptorFor("pull-request-response/v1", 4),
+		},
+		superseded: []recordSchemaRevision{
+			{revision: 3, descriptor: mustCanonicalSchemaDescriptorFor("pull-request-response/v1", 3)},
+			{revision: 2, descriptor: mustCanonicalSchemaDescriptorFor("pull-request-response/v1", 2)},
+			{revision: 1, descriptor: `{"contract":"pull-request-response/v1","envelope":"record/v1","revision":1}`},
+		},
 	},
 	"publish-impact/v1": {
 		current:    recordSchemaRevision{revision: 3, descriptor: mustCanonicalSchemaDescriptorFor("publish-impact/v1", 3)},

@@ -183,6 +183,9 @@ func TestAStoredDigestResolvesToItsOwnRevisionForEveryRealType(t *testing.T) {
 			if raw == "validation/v1" || raw == "pull-request/v1" || raw == "pull-request-response/v1" || raw == "publish-impact/v1" {
 				wantRevisions = 3
 			}
+			if raw == "pull-request-response/v1" {
+				wantRevisions = 4
+			}
 			if !found || len(accepted) != wantRevisions {
 				t.Fatalf("AcceptedSchemaDigests(%q) = %v, want exactly %d revisions", raw, accepted, wantRevisions)
 			}

@@ -1,0 +1,30 @@
+{
+  "dialect": "record-schema-dialect/1",
+  "contract": "pull-request-response/v1",
+  "envelope": "record/v1",
+  "revision": 4,
+  "supersedes": 3,
+  "description": "An explicit union of one exact review response and semantic response absence, bound to a reopened pull-request observation.",
+  "subject_shape": {
+    "minimum": 1,
+    "maximum": 1,
+    "roles": { "primary": { "minimum": 1, "maximum": 1 } },
+    "subject_type": "pull-request/v1",
+    "uniform_subject_type": true,
+    "ports": "any-exposed-input"
+  },
+  "fields": {
+    "body": { "kind": "object", "presence": "required" },
+    "body/kind": { "kind": "enum", "presence": "optional", "values": [{ "value": "review_response" }, { "value": "no_response" }] },
+    "body/batch_id": { "kind": "identifier", "presence": "optional" },
+    "body/summary": { "kind": "markdown", "presence": "optional" },
+    "body/replies": { "kind": "entity-set", "presence": "optional", "id_field": "thread_id" },
+    "body/replies/*/thread_id": { "kind": "identifier", "presence": "required" },
+    "body/replies/*/body": { "kind": "markdown", "presence": "required" }
+  },
+  "go_only_rules": [
+    { "id": "response-union", "rule": "Revision 4's Go validator requires an explicit kind while revisions 1-3 retain their omitted review_response wire image. A review_response requires batch_id and summary. A no_response forbids batch_id, summary, and replies." },
+    { "id": "reopened-trigger-authority", "rule": "A review_response is authorized only by the exact completed review_batch in the reopened primary pull-request/v1 subject. Every reply thread must be authorized by that batch. Every non-review trigger derives no_response instead." },
+    { "id": "bounded-response", "rule": "Batch and thread identifiers are at most 256 bytes and a response contains at most 512 replies." }
+  ]
+}

@@ -1,12 +1,11 @@
-// Package pullrequestresponse turns an agent-authored response draft into the
-// exact provider-authorized pull-request-response/v1 value consumed by the
-// publisher.
+// Package pullrequestresponse derives the exact pull-request-response/v1
+// decision consumed by provider-native publication.
 //
-// An agent may describe only the completed review batch exposed in its sealed
-// pull-request/v1 input. This deterministic gate reopens both typed inputs,
-// requires the draft to bind that exact observation, and rejects replies to
-// any thread outside the batch before writing the final record. It performs no
-// provider I/O and receives no forge credential.
+// A completed review batch requires an agent draft bound to the exact
+// observation, and every reply is restricted to that batch. Every non-review
+// trigger deterministically becomes semantic no-response without opening an
+// agent draft. The gate performs no provider I/O and receives no forge
+// credential.
 package pullrequestresponse
 
 import (
@@ -69,28 +68,47 @@ func (request Request) validate() error {
 		request.Observation.Type != observationType {
 		return fmt.Errorf("pull request response: observation must be an exact %s snapshot", observationType)
 	}
-	if err := request.Draft.Validate(); err != nil ||
-		request.Draft.Type != responseType {
-		return fmt.Errorf("pull request response: draft must be an exact %s snapshot", responseType)
+	if !validPort(request.ObservationInput) {
+		return fmt.Errorf("pull request response: observation input port is required")
 	}
-	if !validPort(request.ObservationInput) || !validPort(request.DraftInput) ||
-		request.ObservationInput == request.DraftInput {
-		return fmt.Errorf("pull request response: distinct typed input ports are required")
-	}
-	if !absoluteCleanPath(request.ObservationRoot) ||
-		!absoluteCleanPath(request.DraftRoot) ||
-		pathsOverlap(request.ObservationRoot, request.DraftRoot) {
-		return fmt.Errorf("pull request response: distinct absolute input roots are required")
+	if !absoluteCleanPath(request.ObservationRoot) {
+		return fmt.Errorf("pull request response: observation root must be an absolute clean path")
 	}
 	if request.ResponseAuthority.Type != responseType ||
 		request.ResponseAuthority.Schema.Validate() != nil {
 		return fmt.Errorf("pull request response: response output authority is invalid")
 	}
+	if !request.hasDraft() {
+		if request.Draft != (snapshot.SnapshotRef{}) ||
+			request.DraftInput != "" ||
+			request.DraftRoot != "" {
+			return fmt.Errorf("pull request response: draft authority is incomplete")
+		}
+		return nil
+	}
+	if err := request.Draft.Validate(); err != nil ||
+		request.Draft.Type != responseType {
+		return fmt.Errorf("pull request response: draft must be an exact %s snapshot", responseType)
+	}
+	if !validPort(request.DraftInput) ||
+		request.ObservationInput == request.DraftInput {
+		return fmt.Errorf("pull request response: distinct typed input ports are required")
+	}
+	if !absoluteCleanPath(request.DraftRoot) ||
+		pathsOverlap(request.ObservationRoot, request.DraftRoot) {
+		return fmt.Errorf("pull request response: distinct absolute input roots are required")
+	}
 	return nil
 }
 
-// Authorize validates the agent draft against the exact completed review batch
-// and derives the one record the publisher is allowed to consume.
+func (request Request) hasDraft() bool {
+	return request.Draft != (snapshot.SnapshotRef{}) &&
+		request.DraftInput != "" &&
+		request.DraftRoot != ""
+}
+
+// Authorize derives semantic no-response for a non-review trigger, or validates
+// an agent draft against the exact completed review batch.
 func Authorize(
 	ctx context.Context,
 	request Request,
@@ -135,8 +153,43 @@ func Authorize(
 	if err := errors.Join(observationErr, observationCloseErr); err != nil {
 		return empty, fmt.Errorf("pull request response: reopen exact observation: %w", err)
 	}
+	exactSubject := contracts.SubjectFromInput(
+		"pull-request",
+		contracts.SubjectRolePrimary,
+		request.ObservationInput,
+		request.Observation,
+	)
 	if observation.Body.Trigger != contracts.PullRequestReviewBatchTrigger {
-		return empty, fmt.Errorf("pull request response: observation is not a completed review batch")
+		if err := ctx.Err(); err != nil {
+			return empty, err
+		}
+		record := contracts.Record[contracts.PullRequestResponseBody]{
+			RecordVersion: contracts.RecordVersion,
+			Type:          request.ResponseAuthority.Type,
+			Schema:        request.ResponseAuthority.Schema,
+			Subjects:      []contracts.Subject{exactSubject},
+			Body: contracts.PullRequestResponseBody{
+				Kind: contracts.PullRequestResponseNoResponse,
+			},
+		}
+		if err := contracts.ValidatePullRequestResponseAgainst(
+			record.Body,
+			observation.Body,
+		); err != nil {
+			return empty, fmt.Errorf(
+				"pull request response: derive no-response: %w",
+				err,
+			)
+		}
+		if err := validateRecord(record); err != nil {
+			return empty, err
+		}
+		return record, nil
+	}
+	if !request.hasDraft() {
+		return empty, fmt.Errorf(
+			"pull request response: review batch requires an exact response draft",
+		)
 	}
 
 	draftTree, err := repositorymerge.CaptureDirectory(
@@ -166,12 +219,6 @@ func Authorize(
 		return empty, fmt.Errorf("pull request response: reopen response draft: %w", err)
 	}
 
-	exactSubject := contracts.SubjectFromInput(
-		"pull-request",
-		contracts.SubjectRolePrimary,
-		request.ObservationInput,
-		request.Observation,
-	)
 	if len(draft.Subjects) != 1 || draft.Subjects[0] != exactSubject {
 		return empty, fmt.Errorf(
 			"pull request response: draft does not bind the exact pull request observation",
@@ -188,6 +235,7 @@ func Authorize(
 	}
 
 	body := cloneResponse(draft.Body)
+	body.Kind = contracts.PullRequestResponseReviewResponse
 	record := contracts.Record[contracts.PullRequestResponseBody]{
 		RecordVersion: contracts.RecordVersion,
 		Type:          request.ResponseAuthority.Type,

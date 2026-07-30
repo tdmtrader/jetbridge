@@ -118,6 +118,7 @@ func validResponseRecord(t *testing.T) contracts.Record[contracts.PullRequestRes
 			ref,
 		)},
 		contracts.PullRequestResponseBody{
+			Kind:    contracts.PullRequestResponseReviewResponse,
 			BatchID: "batch-1",
 			Summary: "Addressed the completed review.",
 			Replies: []contracts.PullRequestThreadResponse{{

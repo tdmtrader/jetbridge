@@ -45,6 +45,205 @@ func TestPullRequestResponseRejectsThreadOutsideAuthorizedObservation(t *testing
 	}
 }
 
+func TestPullRequestResponseNoResponseIsSemanticAbsence(t *testing.T) {
+	noResponse := contracts.PullRequestResponseBody{
+		Kind: contracts.PullRequestResponseNoResponse,
+	}
+	if err := noResponse.Validate(nil); err != nil {
+		t.Fatalf("no-response Validate() = %v", err)
+	}
+	raw, err := json.Marshal(noResponse)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(raw), `{"kind":"no_response"}`; got != want {
+		t.Fatalf("no-response JSON = %s, want exact semantic absence %s", got, want)
+	}
+
+	for _, test := range []struct {
+		name   string
+		mutate func(*contracts.PullRequestResponseBody)
+	}{
+		{name: "batch", mutate: func(body *contracts.PullRequestResponseBody) {
+			body.BatchID = "fabricated-batch"
+		}},
+		{name: "summary", mutate: func(body *contracts.PullRequestResponseBody) {
+			body.Summary = "This must never become a provider comment."
+		}},
+		{name: "reply", mutate: func(body *contracts.PullRequestResponseBody) {
+			body.Replies = []contracts.PullRequestThreadResponse{{
+				ThreadID: "thread-1",
+				Body:     "This must never become a provider reply.",
+			}}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			body := noResponse
+			test.mutate(&body)
+			if err := body.Validate(nil); err == nil {
+				t.Fatal("no-response admitted provider response fields")
+			}
+		})
+	}
+
+	unknown := contracts.PullRequestResponseBody{
+		Kind: contracts.PullRequestResponseKind("provider_comment"),
+	}
+	if err := unknown.Validate(nil); err == nil {
+		t.Fatal("response body admitted an open provider-effect kind")
+	}
+}
+
+func TestPullRequestResponseKindMatchesObservationTrigger(t *testing.T) {
+	review := validPullRequestResponseBody()
+	review.Kind = contracts.PullRequestResponseReviewResponse
+	noResponse := contracts.PullRequestResponseBody{
+		Kind: contracts.PullRequestResponseNoResponse,
+	}
+
+	reviewObservation := pullRequestWithAuthorizedThreads("thread-1")
+	if err := contracts.ValidatePullRequestResponseAgainst(
+		review,
+		reviewObservation,
+	); err != nil {
+		t.Fatalf("review response against review batch = %v", err)
+	}
+	if err := contracts.ValidatePullRequestResponseAgainst(
+		noResponse,
+		reviewObservation,
+	); err == nil {
+		t.Fatal("review batch accepted no-response instead of an authorized response")
+	}
+
+	for _, trigger := range []contracts.PullRequestTrigger{
+		contracts.PullRequestConflictTrigger,
+		contracts.PullRequestFreshnessTrigger,
+		contracts.PullRequestCompletedTrigger,
+		contracts.PullRequestAbandonedTrigger,
+	} {
+		t.Run(string(trigger), func(t *testing.T) {
+			observation := pullRequestWithAuthorizedThreads()
+			observation.ReviewBatches = nil
+			observation.Trigger = trigger
+			switch trigger {
+			case contracts.PullRequestCompletedTrigger:
+				observation.State = contracts.PullRequestCompleted
+			case contracts.PullRequestAbandonedTrigger:
+				observation.State = contracts.PullRequestAbandoned
+			}
+			if err := contracts.ValidatePullRequestResponseAgainst(
+				noResponse,
+				observation,
+			); err != nil {
+				t.Fatalf("no-response against %s = %v", trigger, err)
+			}
+			if err := contracts.ValidatePullRequestResponseAgainst(
+				review,
+				observation,
+			); err == nil {
+				t.Fatalf("%s observation admitted provider review authority", trigger)
+			}
+		})
+	}
+}
+
+func TestPullRequestResponseLegacyMissingKindRemainsAReviewResponse(t *testing.T) {
+	legacy := validPullRequestResponseBody()
+	if legacy.Kind != "" {
+		t.Fatalf("legacy response kind = %q, want omitted", legacy.Kind)
+	}
+	if err := legacy.Validate(nil); err != nil {
+		t.Fatalf("legacy response Validate() = %v", err)
+	}
+	if err := contracts.ValidatePullRequestResponseAgainst(
+		legacy,
+		pullRequestWithAuthorizedThreads("thread-1"),
+	); err != nil {
+		t.Fatalf("legacy response against review batch = %v", err)
+	}
+}
+
+func TestPullRequestResponseKindIsRevisionBoundAtReadTime(t *testing.T) {
+	subjects := []contracts.Subject{{
+		ID: "primary", Role: contracts.SubjectRolePrimary, Input: "pr", Type: "pull-request/v1",
+		Digest: snapshot.Digest("sha256:" + strings.Repeat("a", 64)),
+	}}
+	validationContext := emptyValidationContext(t)
+
+	t.Run("revision 3 retains omitted review kind", func(t *testing.T) {
+		record, err := contracts.NewRecord(
+			snapshot.TypeRef("pull-request-response/v1"),
+			subjects,
+			validPullRequestResponseBody(),
+		)
+		if err != nil {
+			t.Fatalf("NewRecord(): %v", err)
+		}
+		revisionThree, found := contracts.SchemaDigestForRevision(
+			snapshot.TypeRef("pull-request-response/v1"),
+			3,
+		)
+		if !found {
+			t.Fatal("revision 3 response schema was not found")
+		}
+		record.Schema = revisionThree
+		if _, err := revalidateSealedFiles(
+			t,
+			"pull-request-response/v1",
+			map[string][]byte{"record.json": marshalRecord(t, record)},
+			validationContext,
+		); err != nil {
+			t.Fatalf("revision 3 omitted review kind was rejected: %v", err)
+		}
+	})
+
+	t.Run("revision 3 rejects revision 4 no-response union arm", func(t *testing.T) {
+		record, err := contracts.NewRecord(
+			snapshot.TypeRef("pull-request-response/v1"),
+			subjects,
+			contracts.PullRequestResponseBody{Kind: contracts.PullRequestResponseNoResponse},
+		)
+		if err != nil {
+			t.Fatalf("NewRecord(): %v", err)
+		}
+		revisionThree, found := contracts.SchemaDigestForRevision(
+			snapshot.TypeRef("pull-request-response/v1"),
+			3,
+		)
+		if !found {
+			t.Fatal("revision 3 response schema was not found")
+		}
+		record.Schema = revisionThree
+		if _, err := revalidateSealedFiles(
+			t,
+			"pull-request-response/v1",
+			map[string][]byte{"record.json": marshalRecord(t, record)},
+			validationContext,
+		); err == nil {
+			t.Fatal("revision 3 admitted the revision 4 no-response union arm")
+		}
+	})
+
+	t.Run("revision 4 requires an explicit union arm", func(t *testing.T) {
+		record, err := contracts.NewRecord(
+			snapshot.TypeRef("pull-request-response/v1"),
+			subjects,
+			validPullRequestResponseBody(),
+		)
+		if err != nil {
+			t.Fatalf("NewRecord(): %v", err)
+		}
+		if _, err := revalidateSealedFiles(
+			t,
+			"pull-request-response/v1",
+			map[string][]byte{"record.json": marshalRecord(t, record)},
+			validationContext,
+		); err == nil {
+			t.Fatal("revision 4 admitted an omitted response kind")
+		}
+	})
+}
+
 func TestPullRequestResponseRejectsDuplicateReplies(t *testing.T) {
 	body := validPullRequestResponseBody()
 	body.Replies = append(body.Replies, body.Replies[0])

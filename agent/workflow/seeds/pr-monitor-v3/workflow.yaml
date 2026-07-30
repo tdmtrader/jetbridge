@@ -99,7 +99,7 @@ plan:
       accepted-validation: {type: validation/v1}
     output_types:
       draft-change: repository-change/v1
-      response-draft: pull-request-response/v1
+      response-draft: {type: pull-request-response/v1, optional: true}
   - task: authorize-response
     function_id: authorize-pr-response
     config:
@@ -124,7 +124,7 @@ plan:
           - --output=response
     input_types:
       pull-request: {type: pull-request/v1}
-      response-draft: {type: pull-request-response/v1}
+      response-draft: {type: pull-request-response/v1, optional: true}
     output_types:
       response: pull-request-response/v1
   - task: rebase-revision

@@ -30,6 +30,7 @@ func TestAuthorizeBuildsResponseOnlyForTheExactCompletedBatch(t *testing.T) {
 	}
 	if record.Type != snapshot.TypeRef("pull-request-response/v1") ||
 		record.Schema != fixture.authority.Schema ||
+		record.Body.Kind != contracts.PullRequestResponseReviewResponse ||
 		record.Body.BatchID != "batch-1" ||
 		len(record.Body.Replies) != 1 ||
 		record.Body.Replies[0].ThreadID != "thread-1" {
@@ -66,6 +67,73 @@ func TestAuthorizeBuildsResponseOnlyForTheExactCompletedBatch(t *testing.T) {
 	}
 	if decoded.Body.Summary != fixture.draft.Body.Summary {
 		t.Fatalf("written summary = %q, want %q", decoded.Body.Summary, fixture.draft.Body.Summary)
+	}
+}
+
+func TestAuthorizeDerivesNoResponseWithoutAnAgentDraft(t *testing.T) {
+	for _, test := range []struct {
+		trigger contracts.PullRequestTrigger
+		state   contracts.PullRequestState
+	}{
+		{trigger: contracts.PullRequestConflictTrigger, state: contracts.PullRequestActive},
+		{trigger: contracts.PullRequestFreshnessTrigger, state: contracts.PullRequestActive},
+		{trigger: contracts.PullRequestCompletedTrigger, state: contracts.PullRequestCompleted},
+		{trigger: contracts.PullRequestAbandonedTrigger, state: contracts.PullRequestAbandoned},
+	} {
+		t.Run(string(test.trigger), func(t *testing.T) {
+			fixture := newFixture(t)
+			fixture.observation.Body.Trigger = test.trigger
+			fixture.observation.Body.State = test.state
+			fixture.observation.Body.ReviewBatches = nil
+			fixture.observation.Body.Threads = nil
+			fixture.writeObservation(t)
+
+			for _, draftPresence := range []string{"present-but-unauthorized", "absent"} {
+				t.Run(draftPresence, func(t *testing.T) {
+					request := fixture.request()
+					if draftPresence == "absent" {
+						request.Draft = snapshot.SnapshotRef{}
+						request.DraftInput = ""
+						request.DraftRoot = ""
+					}
+					record, err := pullrequestresponse.Authorize(
+						context.Background(),
+						request,
+					)
+					if err != nil {
+						t.Fatalf("Authorize: %v", err)
+					}
+					if record.Body.Kind != contracts.PullRequestResponseNoResponse ||
+						record.Body.BatchID != "" ||
+						record.Body.Summary != "" ||
+						len(record.Body.Replies) != 0 {
+						t.Fatalf("no-response body = %#v", record.Body)
+					}
+					wantSubject := contracts.SubjectFromInput(
+						"pull-request",
+						contracts.SubjectRolePrimary,
+						observationInput,
+						fixture.observationRef,
+					)
+					if len(record.Subjects) != 1 || record.Subjects[0] != wantSubject {
+						t.Fatalf("no-response subjects = %#v, want %#v", record.Subjects, []contracts.Subject{wantSubject})
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestAuthorizeReviewBatchRequiresAnExactAgentDraft(t *testing.T) {
+	fixture := newFixture(t)
+	request := fixture.request()
+	request.Draft = snapshot.SnapshotRef{}
+	request.DraftInput = ""
+	request.DraftRoot = ""
+
+	_, err := pullrequestresponse.Authorize(context.Background(), request)
+	if err == nil || !strings.Contains(err.Error(), "review batch requires") {
+		t.Fatalf("Authorize error = %v, want required review draft", err)
 	}
 }
 
@@ -335,6 +403,7 @@ func newFixture(t *testing.T) *fixture {
 			observationRef,
 		)},
 		contracts.PullRequestResponseBody{
+			Kind:    contracts.PullRequestResponseReviewResponse,
 			BatchID: "batch-1",
 			Summary: "Updated the tests requested by this review.",
 			Replies: []contracts.PullRequestThreadResponse{{
@@ -383,6 +452,12 @@ func (fixture *fixture) request() pullrequestresponse.Request {
 		DraftRoot:         fixture.draftRoot,
 		ResponseAuthority: fixture.authority,
 	}
+}
+
+func (fixture *fixture) writeObservation(t *testing.T) {
+	t.Helper()
+	writeJSON(t, filepath.Join(fixture.observationRoot, "record.json"), fixture.observation)
+	fixture.observationRef.Digest = captureDigest(t, fixture.observationRoot)
 }
 
 func (fixture *fixture) writeDraft(t *testing.T) {

@@ -7,21 +7,25 @@ review. Do not reset it to
 work. Use `accepted-review`, `accepted-candidate`, and `accepted-validation`
 only as evidence about the originating accepted revision.
 
-The `pull-request` observation contains one authorized completed review batch.
-Address only thread IDs listed in the completed review batch. Do not invent,
-infer, or answer any other thread. Do not contact the forge, fetch live state,
-push a branch, publish a comment, or attempt to complete the pull request. No
-forge credential is available to this step.
+The `pull-request` observation declares its exact `trigger`. Only when `trigger` is `review_batch`
+does it contain an authorized completed review batch. In that case, address only thread IDs listed in the completed review batch.
+Do not invent, infer, or answer any other thread. For `conflict`,
+`freshness`, `completed`, or `abandoned`, do not write a `response-draft`;
+the deterministic response-authority step will derive an explicit
+`no_response` value instead. Do not contact the forge, fetch live state, push a
+branch, publish a comment, or attempt to complete the pull request. No forge
+credential is available to this step.
 
-Write one `pull-request-response/v1` candidate beneath the literal directory
-printed for `$AGENT_OUTPUT_RESPONSE_DRAFT`. It must contain `record.json`;
-copy the exact output type and schema supplied by the platform and declare
-`pull-request` as its one `primary` subject with the exact input type and
-digest. Set `batch_id` to the completed batch ID exactly. Replies must be a
-lexicographically sorted subset of that batch's thread IDs, with no duplicate
-or fabricated IDs. Summarize the revision truthfully even when no thread-level
-reply is needed. The deterministic response-authority step will reopen the
-observation and reject any response outside this exact batch.
+For a `review_batch` only, write one `pull-request-response/v1` candidate
+beneath the literal directory printed for
+`$AGENT_OUTPUT_RESPONSE_DRAFT`. It must contain `record.json`; copy the exact
+output type and schema supplied by the platform and declare `pull-request` as
+its one `primary` subject with the exact input type and digest. Set `kind` to
+`review_response` and `batch_id` to the completed batch ID exactly. Replies
+must be a lexicographically sorted subset of that batch's thread IDs, with no
+duplicate or fabricated IDs. Summarize the revision truthfully even when no
+thread-level reply is needed. The deterministic response-authority step will
+reopen the observation and reject any response outside this exact batch.
 
 Implement the smallest complete revision in a copy of the current PR work.
 Write one `repository-change/v1` candidate beneath the literal directory

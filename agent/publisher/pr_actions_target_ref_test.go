@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/concourse/concourse/agent/publisher"
+	"github.com/concourse/concourse/agent/snapshot/contracts"
 )
 
 func TestStatusAndResponsePublicationRequireTargetBranchAuthority(t *testing.T) {
@@ -97,5 +98,15 @@ func TestStatusAndResponseRejectNonHeadTargetRefs(t *testing.T) {
 				t.Fatalf("response target ref error = %v, want invalid request", err)
 			}
 		})
+	}
+}
+
+func TestResponsePublicationRejectsSemanticNoResponse(t *testing.T) {
+	request := validResponsePublicationRequest()
+	request.Response = contracts.PullRequestResponseBody{
+		Kind: contracts.PullRequestResponseNoResponse,
+	}
+	if err := request.Validate(); !errors.Is(err, publisher.ErrInvalidRequest) {
+		t.Fatalf("no-response publication error = %v, want invalid request", err)
 	}
 }

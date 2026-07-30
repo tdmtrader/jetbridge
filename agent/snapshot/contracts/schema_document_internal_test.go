@@ -310,6 +310,7 @@ func TestSchemaDocumentCanonicalSerializationIsStable(t *testing.T) {
 		"publish-impact.v1.rev2.json":        "sha256:21952c646a7c81107f3eaad385a9467a9548e3d03492a87942989bedff00f045",
 		"pull-request.v1.rev3.json":          "sha256:3cbba0207c612715c8050c69357ac727fc6b9b2f68b3083736d846b7d6c668f4",
 		"pull-request-response.v1.rev3.json": "sha256:d60fcaa7aa054b5eaac43e96ef5d6386a69221da9d5346de3b675313229c8538",
+		"pull-request-response.v1.rev4.json": "sha256:fe1c95e54437bf948ce79117f8735dd37e549716a07faa55ca249c2e2b51217e",
 		"publish-impact.v1.rev3.json":        "sha256:58b98f51d3372bb41e197ccac545d6a0d47ee1d2d551fdd79d3389049d1809b2",
 	}
 	if len(golden) != len(schemaDocumentFileNames(t)) {

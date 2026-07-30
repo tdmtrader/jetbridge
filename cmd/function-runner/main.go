@@ -20,9 +20,9 @@
 //	                 repository-change/v1. Exits non-zero on conflict, because a
 //	                 typed output only exists when the step succeeded.
 //	authorize-pr-response
-//	                 reopen an agent-authored pull-request-response/v1 draft
-//	                 and emit it only when every reply is authorized by the
-//	                 exact completed batch in pull-request/v1.
+//	                 derive semantic no-response for non-review observations,
+//	                 or reopen an agent draft and emit it only when every reply
+//	                 is authorized by the exact completed review batch.
 //	pr-monitor-materialize
 //	                 verify one forge-pr observation against its exact source
 //	                 and target repositories and emit two repository/v1 values.
@@ -206,7 +206,7 @@ func runAuthorizePRResponseMode(
 	flags.SetOutput(stderr)
 	flags.StringVar(&options.root, "root", ".", "directory the task mounts are relative to")
 	flags.StringVar(&options.observation, "observation", "", "pull-request/v1 input mount, as `name` or name=path")
-	flags.StringVar(&options.draft, "draft", "", "agent-authored pull-request-response/v1 input mount, as `name` or name=path")
+	flags.StringVar(&options.draft, "draft", "", "optional agent-authored pull-request-response/v1 input mount, as `name` or name=path")
 	flags.StringVar(&options.output, "output", "", "authorized pull-request-response/v1 output mount, as `name` or name=path")
 	if err := flags.Parse(args); err != nil {
 		return exitUsage
@@ -233,7 +233,6 @@ func executeAuthorizePRResponse(
 ) (bool, error) {
 	for name, value := range map[string]string{
 		"observation": options.observation,
-		"draft":       options.draft,
 		"output":      options.output,
 	} {
 		if strings.TrimSpace(value) == "" {
@@ -244,55 +243,72 @@ func executeAuthorizePRResponse(
 	if err != nil {
 		return false, err
 	}
-	draftPort, draftPath, err := parseMount(options.root, options.draft)
-	if err != nil {
-		return false, err
-	}
 	outputPort, outputPath, err := parseMount(options.root, options.output)
 	if err != nil {
 		return false, err
 	}
-	if observationPort == draftPort ||
-		observationPort == outputPort ||
-		draftPort == outputPort ||
-		observationPath == draftPath ||
-		observationPath == outputPath ||
-		draftPath == outputPath {
-		return false, fmt.Errorf("observation, draft, and output must be distinct mounts")
+	if observationPort == outputPort || observationPath == outputPath {
+		return false, fmt.Errorf("observation and output must be distinct mounts")
 	}
 	observation, err := declaredInput(observationPort)
 	if err != nil {
 		return false, err
 	}
-	draft, err := declaredInput(draftPort)
-	if err != nil {
-		return false, err
+
+	var draft snapshot.SnapshotRef
+	var draftPort, draftPath string
+	var draftDeclared bool
+	if strings.TrimSpace(options.draft) != "" {
+		draftPort, draftPath, err = parseMount(options.root, options.draft)
+		if err != nil {
+			return false, err
+		}
+		if observationPort == draftPort ||
+			draftPort == outputPort ||
+			observationPath == draftPath ||
+			draftPath == outputPath {
+			return false, fmt.Errorf("observation, draft, and output must be distinct mounts")
+		}
+		draft, draftDeclared, err = optionalDeclaredInput(draftPort)
+		if err != nil {
+			return false, err
+		}
 	}
 	authority, err := declaredPRResponseAuthority(outputPort)
 	if err != nil {
 		return false, err
 	}
-	record, err := pullrequestresponse.Authorize(ctx, pullrequestresponse.Request{
+	request := pullrequestresponse.Request{
 		Observation:       observation,
 		ObservationInput:  observationPort,
 		ObservationRoot:   observationPath,
-		Draft:             draft,
-		DraftInput:        draftPort,
-		DraftRoot:         draftPath,
 		ResponseAuthority: authority,
 		Canonicalizer:     snapshot.Canonicalizer{},
-	})
+	}
+	if draftDeclared {
+		request.Draft = draft
+		request.DraftInput = draftPort
+		request.DraftRoot = draftPath
+	}
+	record, err := pullrequestresponse.Authorize(ctx, request)
 	if err != nil {
 		return true, err
+	}
+	protectedRoots := []string{observationPath}
+	if draftPath != "" {
+		protectedRoots = append(protectedRoots, draftPath)
 	}
 	if err := pullrequestresponse.Write(
 		ctx,
 		outputPath,
 		record,
-		observationPath,
-		draftPath,
+		protectedRoots...,
 	); err != nil {
 		return false, err
+	}
+	if record.Body.Kind == contracts.PullRequestResponseNoResponse {
+		fmt.Fprintln(stdout, "authorized no provider response")
+		return false, nil
 	}
 	fmt.Fprintf(
 		stdout,
@@ -428,6 +444,28 @@ func declaredInput(port string) (snapshot.SnapshotRef, error) {
 		return snapshot.SnapshotRef{}, fmt.Errorf("input mount %q declared snapshot identity: %w", port, err)
 	}
 	return ref, nil
+}
+
+func optionalDeclaredInput(
+	port string,
+) (snapshot.SnapshotRef, bool, error) {
+	prefix := "AGENT_INPUT_" + authorityEnvPort(port)
+	declaredType := strings.TrimSpace(os.Getenv(prefix + "_SNAPSHOT_TYPE"))
+	declaredDigest := strings.TrimSpace(os.Getenv(prefix + "_SNAPSHOT_DIGEST"))
+	if declaredType == "" && declaredDigest == "" {
+		return snapshot.SnapshotRef{}, false, nil
+	}
+	if declaredType == "" || declaredDigest == "" {
+		return snapshot.SnapshotRef{}, false, fmt.Errorf(
+			"input mount %q has an incomplete optional snapshot identity",
+			port,
+		)
+	}
+	reference, err := declaredInput(port)
+	if err != nil {
+		return snapshot.SnapshotRef{}, false, err
+	}
+	return reference, true, nil
 }
 
 // measurementsAuthority resolves the contract identity the measurements record

@@ -73,6 +73,77 @@ func TestAuthorizePRResponseModeRejectsUnauthorizedThread(t *testing.T) {
 	}
 }
 
+func TestAuthorizePRResponseModeDerivesNoResponseWithoutOptionalDraft(t *testing.T) {
+	root := prResponseMounts(t, "thread-1")
+	prResponseSetObservationTrigger(
+		t,
+		root,
+		contracts.PullRequestConflictTrigger,
+		contracts.PullRequestActive,
+	)
+	t.Setenv("AGENT_INPUT_DRAFT_RESPONSE_SNAPSHOT_TYPE", "")
+	t.Setenv("AGENT_INPUT_DRAFT_RESPONSE_SNAPSHOT_DIGEST", "")
+	var stdout, stderr strings.Builder
+
+	code := runCLI(context.Background(), []string{
+		"authorize-pr-response",
+		"--root", root,
+		"--observation", "pull-request",
+		"--draft", "draft-response",
+		"--output", "response",
+	}, &stdout, &stderr)
+	if code != exitOK {
+		t.Fatalf("authorize-pr-response exit = %d, stderr = %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "no provider response") {
+		t.Fatalf("stdout = %q, want semantic absence", stdout.String())
+	}
+	raw, err := os.ReadFile(filepath.Join(root, "response", "record.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var record contracts.Record[contracts.PullRequestResponseBody]
+	if err := contracts.DecodeSealedRecord(
+		raw,
+		snapshot.TypeRef("pull-request-response/v1"),
+		&record,
+	); err != nil {
+		t.Fatalf("response record: %v", err)
+	}
+	if record.Body.Kind != contracts.PullRequestResponseNoResponse ||
+		record.Body.BatchID != "" ||
+		record.Body.Summary != "" ||
+		len(record.Body.Replies) != 0 {
+		t.Fatalf("no-response body = %#v", record.Body)
+	}
+}
+
+func TestAuthorizePRResponseModeRejectsMissingReviewDraftAsPolicyNotUsage(t *testing.T) {
+	root := prResponseMounts(t, "thread-1")
+	t.Setenv("AGENT_INPUT_DRAFT_RESPONSE_SNAPSHOT_TYPE", "")
+	t.Setenv("AGENT_INPUT_DRAFT_RESPONSE_SNAPSHOT_DIGEST", "")
+	var stdout, stderr strings.Builder
+
+	code := runCLI(context.Background(), []string{
+		"authorize-pr-response",
+		"--root", root,
+		"--observation", "pull-request",
+		"--draft", "draft-response",
+		"--output", "response",
+	}, &stdout, &stderr)
+	if code != exitRejects {
+		t.Fatalf(
+			"authorize-pr-response exit = %d, want %d; stderr = %s",
+			code,
+			exitRejects,
+			stderr.String(),
+		)
+	}
+	if !strings.Contains(stderr.String(), "review batch requires") {
+		t.Fatalf("stderr = %q, want missing-review-draft rejection", stderr.String())
+	}
+}
+
 func TestAuthorizePRResponseModeRejectsInvalidInvocation(t *testing.T) {
 	for name, args := range map[string][]string{
 		"missing mounts": {"authorize-pr-response"},
@@ -184,6 +255,7 @@ func prResponseMounts(t *testing.T, replyThread string) string {
 			observationRef,
 		)},
 		contracts.PullRequestResponseBody{
+			Kind:    contracts.PullRequestResponseReviewResponse,
 			BatchID: "batch-1",
 			Summary: "Addressed the submitted review.",
 			Replies: []contracts.PullRequestThreadResponse{{
@@ -216,6 +288,31 @@ func prResponseMounts(t *testing.T, replyThread string) string {
 	t.Setenv("AGENT_OUTPUT_RESPONSE_RECORD_TYPE", "pull-request-response/v1")
 	t.Setenv("AGENT_OUTPUT_RESPONSE_RECORD_SCHEMA", responseSchema.String())
 	return root
+}
+
+func prResponseSetObservationTrigger(
+	t *testing.T,
+	root string,
+	trigger contracts.PullRequestTrigger,
+	state contracts.PullRequestState,
+) {
+	t.Helper()
+	recordPath := filepath.Join(root, "pull-request", "record.json")
+	raw, err := os.ReadFile(recordPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var record contracts.Record[contracts.PullRequestBody]
+	if err := json.Unmarshal(raw, &record); err != nil {
+		t.Fatal(err)
+	}
+	record.Body.Trigger = trigger
+	record.Body.State = state
+	record.Body.ReviewBatches = nil
+	record.Body.Threads = nil
+	prResponseWriteJSON(t, recordPath, record)
+	digest := prResponseCaptureDigest(t, filepath.Dir(recordPath))
+	t.Setenv("AGENT_INPUT_PULL_REQUEST_SNAPSHOT_DIGEST", digest.String())
 }
 
 func prResponseWriteJSON(t *testing.T, path string, value any) {
