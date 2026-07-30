@@ -28,6 +28,7 @@ type ownedDirectory struct {
 type ownedFile struct {
 	name    string
 	info    os.FileInfo
+	guard   *os.File
 	present bool
 }
 
@@ -335,11 +336,15 @@ func verifyCompletedDestination(root *os.Root, destination string, destinationIn
 			break
 		}
 	}
-	if record == nil || record.info == nil {
+	if record == nil || record.info == nil || record.guard == nil {
 		return fmt.Errorf("forge-pr: record identity is unavailable")
 	}
-	recordInfo, err := root.Lstat(record.name)
-	if err != nil || !recordInfo.Mode().IsRegular() || !os.SameFile(record.info, recordInfo) {
+	retainedInfo, retainedErr := record.guard.Stat()
+	recordInfo, recordErr := root.Lstat(record.name)
+	if retainedErr != nil || recordErr != nil ||
+		!retainedInfo.Mode().IsRegular() || !recordInfo.Mode().IsRegular() ||
+		!os.SameFile(record.info, retainedInfo) ||
+		!os.SameFile(retainedInfo, recordInfo) {
 		return fmt.Errorf("forge-pr: record identity changed")
 	}
 	return nil
@@ -372,6 +377,16 @@ func publishRecord(root *os.Root, destination string, destinationInfo os.FileInf
 	if err != nil {
 		return fmt.Errorf("forge-pr: write private record")
 	}
+	guard, err := root.Open(privateRecordName)
+	if err != nil {
+		return fmt.Errorf("forge-pr: retain private record")
+	}
+	private.guard = guard
+	retainedInfo, err := guard.Stat()
+	if err != nil || private.info == nil || !retainedInfo.Mode().IsRegular() ||
+		!os.SameFile(private.info, retainedInfo) {
+		return fmt.Errorf("forge-pr: private record identity changed")
+	}
 	if err := verifyDestination(root, destination, destinationInfo); err != nil {
 		return err
 	}
@@ -380,13 +395,19 @@ func publishRecord(root *os.Root, destination string, destinationInfo os.FileInf
 	}
 	record := &ownedFile{name: "record.json", info: private.info, present: true}
 	ownership.files = append(ownership.files, record)
-	recordInfo, err := root.Lstat(record.name)
-	if err != nil || record.info == nil || !recordInfo.Mode().IsRegular() || !os.SameFile(record.info, recordInfo) {
+	retainedInfo, retainedErr := private.guard.Stat()
+	recordInfo, recordErr := root.Lstat(record.name)
+	if retainedErr != nil || recordErr != nil ||
+		!retainedInfo.Mode().IsRegular() || !recordInfo.Mode().IsRegular() ||
+		!os.SameFile(record.info, retainedInfo) ||
+		!os.SameFile(retainedInfo, recordInfo) {
 		return fmt.Errorf("forge-pr: record identity changed")
 	}
 	if err := cleanupOwnedFile(root, private); err != nil {
 		return fmt.Errorf("forge-pr: remove private record")
 	}
+	record.guard = private.guard
+	private.guard = nil
 	if err := verifyDestination(root, destination, destinationInfo); err != nil {
 		return err
 	}
@@ -409,6 +430,11 @@ func (ownership *destinationOwnership) cleanup(root *os.Root) error {
 }
 
 func (ownership *destinationOwnership) close() {
+	for _, file := range ownership.files {
+		if file.guard != nil {
+			_ = file.guard.Close()
+		}
+	}
 	for _, output := range ownership.directories {
 		if output.root != nil {
 			_ = output.root.Close()
@@ -420,12 +446,22 @@ func cleanupOwnedFile(root *os.Root, file *ownedFile) error {
 	if file == nil || !file.present {
 		return nil
 	}
+	expected := file.info
+	if file.guard != nil {
+		retained, guardErr := file.guard.Stat()
+		if guardErr != nil || file.info == nil ||
+			!retained.Mode().IsRegular() ||
+			!os.SameFile(file.info, retained) {
+			return fmt.Errorf("forge-pr: refused to remove changed owned file")
+		}
+		expected = retained
+	}
 	current, err := root.Lstat(file.name)
 	if os.IsNotExist(err) {
 		file.present = false
 		return nil
 	}
-	if err != nil || file.info == nil || !current.Mode().IsRegular() || !os.SameFile(file.info, current) {
+	if err != nil || expected == nil || !current.Mode().IsRegular() || !os.SameFile(expected, current) {
 		return fmt.Errorf("forge-pr: refused to remove changed owned file")
 	}
 	if err := root.Remove(file.name); err != nil {
