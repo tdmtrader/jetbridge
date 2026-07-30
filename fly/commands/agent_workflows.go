@@ -373,7 +373,9 @@ func (resolver agentWorkflowNodeResolver) Released(
 		return workflow.NodeDefinition{}, false, err
 	}
 	if definition.ID <= 0 || definition.Name != name || definition.Version != version ||
-		definition.ContentHash == "" || definition.Release.ReleasedAt <= 0 {
+		definition.ContentHash == "" || definition.Release.ReleasedAt <= 0 ||
+		definition.Release.Compatibility != workflow.ReleaseCompatible &&
+			definition.Release.Compatibility != workflow.ReleaseBreaking {
 		return workflow.NodeDefinition{}, false, fmt.Errorf(
 			"agent workflow import: node catalog returned inconsistent %s@%d",
 			name,
