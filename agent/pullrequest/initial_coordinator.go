@@ -543,7 +543,7 @@ func (coordinator *initialPRCoordinator) PublishInitialPR(
 	}
 	if found {
 		if err := exactInitialPRExistingBinding(
-			existing, authority, accepted, createPublication,
+			existing, authority, branchPublication, createPublication,
 		); err != nil {
 			return Binding{}, err
 		}
@@ -612,7 +612,7 @@ func (coordinator *initialPRCoordinator) PublishInitialPR(
 		Destination:                      authority.Destination,
 		ApprovalPolicyVersion:            authority.ApprovalPolicyVersion,
 		OriginatingWorkflowRunID:         authority.Authority.WorkflowRunID,
-		OriginatingPublicationOccurrence: accepted.PublicationOccurrenceID,
+		OriginatingPublicationOccurrence: int64(branchPublication.ID),
 		CreationPublicationOccurrenceID:  int64(createPublication.ID),
 		MonitorWorkflowDefinitionID:      authority.MonitorWorkflowDefinitionID,
 		MonitorWorkflowVersion:           authority.MonitorWorkflowVersion,
@@ -933,7 +933,7 @@ func exactInitialPRBinding(
 		binding.ApprovedBaselineValidationSnapshotID !=
 			accepted.Validation.ID ||
 		binding.ApprovedBaselinePublicationOccurrenceID !=
-			accepted.PublicationOccurrenceID {
+			request.OriginatingPublicationOccurrence {
 		return fmt.Errorf(
 			"%w: new binding did not return the exact initial projection",
 			ErrInitialPRAuthority,
@@ -945,25 +945,25 @@ func exactInitialPRBinding(
 func exactInitialPRExistingBinding(
 	binding Binding,
 	authority InitialPRServerAuthority,
-	accepted AcceptedReviewAuthority,
-	publication publisher.Publication,
+	branchPublication publisher.Publication,
+	createPublication publisher.Publication,
 ) error {
 	locator := Locator{
 		Provider: authority.Provider, Repository: authority.Repository,
-		ExternalID: publication.Result.ExternalID,
+		ExternalID: createPublication.Result.ExternalID,
 	}
 	if err := exactInitialPRBindingCreationAuthority(
 		binding,
 		authority.Authority.TeamID,
 		locator,
-		publication.Result.URL,
+		createPublication.Result.URL,
 		authority.SourceRef,
 		authority.TargetRef,
 		authority.Destination,
 		authority.ApprovalPolicyVersion,
 		authority.Authority.WorkflowRunID,
-		accepted.PublicationOccurrenceID,
-		int64(publication.ID),
+		int64(branchPublication.ID),
+		int64(createPublication.ID),
 		authority.MonitorWorkflowDefinitionID,
 		authority.MonitorWorkflowVersion,
 	); err != nil {

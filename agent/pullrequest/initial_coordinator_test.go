@@ -66,7 +66,7 @@ func TestInitialPRCoordinatorPublishesReobservesSealsAndCreatesBinding(t *testin
 		t.Fatalf("sealer did not receive the exact provider observation")
 	}
 	create := fixture.bindings.requests[0]
-	if create.OriginatingPublicationOccurrence != 901 ||
+	if create.OriginatingPublicationOccurrence != 1001 ||
 		create.CreationPublicationOccurrenceID != 1002 ||
 		create.AcknowledgedCursor != "opaque-created-cursor" ||
 		create.LastObservationSnapshotID != fixture.sealer.reference.ID ||
@@ -847,25 +847,26 @@ func (store *initialPRBindingStore) Create(
 		ID: 5001, TeamID: request.TeamID,
 		Locator: request.Locator, URL: request.URL,
 		SourceRef: request.SourceRef, TargetRef: request.TargetRef,
-		Destination:                             request.Destination,
-		ApprovalPolicyVersion:                   request.ApprovalPolicyVersion,
-		OriginatingWorkflowRunID:                &originRun,
-		OriginatingPublicationOccurrence:        &originOccurrence,
-		CreationPublicationOccurrenceID:         &creationOccurrence,
-		ApprovedBaselineRepositorySnapshotID:    602,
-		ApprovedBaselineValidationSnapshotID:    603,
-		ApprovedBaselinePublicationOccurrenceID: 901,
-		MonitorWorkflowDefinitionID:             request.MonitorWorkflowDefinitionID,
-		MonitorWorkflowVersion:                  request.MonitorWorkflowVersion,
-		AcknowledgedCursor:                      request.AcknowledgedCursor,
-		LastObservationSnapshotID:               &observation,
-		LastReconciledSourceSHA:                 request.LastReconciledSourceSHA,
-		LastReconciledTargetSHA:                 request.LastReconciledTargetSHA,
-		LastReconciledAt:                        request.LastReconciledAt,
-		State:                                   BindingActive,
-		Revision:                                1,
-		CreatedAt:                               now,
-		UpdatedAt:                               now,
+		Destination:                          request.Destination,
+		ApprovalPolicyVersion:                request.ApprovalPolicyVersion,
+		OriginatingWorkflowRunID:             &originRun,
+		OriginatingPublicationOccurrence:     &originOccurrence,
+		CreationPublicationOccurrenceID:      &creationOccurrence,
+		ApprovedBaselineRepositorySnapshotID: 602,
+		ApprovedBaselineValidationSnapshotID: 603,
+		ApprovedBaselinePublicationOccurrenceID: request.
+			OriginatingPublicationOccurrence,
+		MonitorWorkflowDefinitionID: request.MonitorWorkflowDefinitionID,
+		MonitorWorkflowVersion:      request.MonitorWorkflowVersion,
+		AcknowledgedCursor:          request.AcknowledgedCursor,
+		LastObservationSnapshotID:   &observation,
+		LastReconciledSourceSHA:     request.LastReconciledSourceSHA,
+		LastReconciledTargetSHA:     request.LastReconciledTargetSHA,
+		LastReconciledAt:            request.LastReconciledAt,
+		State:                       BindingActive,
+		Revision:                    1,
+		CreatedAt:                   now,
+		UpdatedAt:                   now,
 	}
 	if store.mutateNew != nil {
 		store.mutateNew(&binding)
