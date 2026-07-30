@@ -34,32 +34,32 @@ func NewOrdinaryResultSealer(creator snapshot.SnapshotCreator) (*OrdinaryResultS
 	return &OrdinaryResultSealer{creator: creator}, nil
 }
 
-func (sealer *OrdinaryResultSealer) Seal(ctx context.Context, scope Scope, execution broker.ExecutionIdentity, candidate CandidateResult) (snapshot.SnapshotRef, error) {
+func (sealer *OrdinaryResultSealer) Seal(ctx context.Context, scope Scope, execution broker.ExecutionIdentity, candidate CandidateResult) (SealedResult, error) {
 	if sealer == nil || sealer.creator == nil {
-		return snapshot.SnapshotRef{}, fmt.Errorf("agent child ordinary result sealer: snapshot creator is required")
+		return SealedResult{}, fmt.Errorf("agent child ordinary result sealer: snapshot creator is required")
 	}
 	if err := scope.Validate(); err != nil {
-		return snapshot.SnapshotRef{}, err
+		return SealedResult{}, err
 	}
 	resultType, err := resultTypeForTool(execution.Tool)
 	if err != nil {
-		return snapshot.SnapshotRef{}, err
+		return SealedResult{}, err
 	}
 	subjects, inputs, inputOrder, err := resultAuthority(scope, execution.Tool, execution.Attachments)
 	if err != nil {
-		return snapshot.SnapshotRef{}, err
+		return SealedResult{}, err
 	}
-	body, _, err := contracts.NormalizeRawRecordBody(resultType, subjects, candidate.Body)
+	body, normalized, err := contracts.NormalizeRawRecordBody(resultType, subjects, candidate.Body)
 	if err != nil {
-		return snapshot.SnapshotRef{}, fmt.Errorf("agent child ordinary result sealer: invalid candidate body: %w", err)
+		return SealedResult{}, fmt.Errorf("agent child ordinary result sealer: invalid candidate body: %w", err)
 	}
 	record, err := contracts.NewRecord(resultType, subjects, body)
 	if err != nil {
-		return snapshot.SnapshotRef{}, fmt.Errorf("agent child ordinary result sealer: construct authoritative record: %w", err)
+		return SealedResult{}, fmt.Errorf("agent child ordinary result sealer: construct authoritative record: %w", err)
 	}
 	recordJSON, err := json.Marshal(record)
 	if err != nil {
-		return snapshot.SnapshotRef{}, fmt.Errorf("agent child ordinary result sealer: encode authoritative record: %w", err)
+		return SealedResult{}, fmt.Errorf("agent child ordinary result sealer: encode authoritative record: %w", err)
 	}
 	outputs, err := sealer.creator.Seal(ctx, snapshot.SealRequest{
 		BuildID: scope.BuildID, TeamID: scope.TeamID, TeamName: scope.TeamName, CreatedBy: scope.SnapshotCreatedBy,
@@ -73,13 +73,13 @@ func (sealer *OrdinaryResultSealer) Seal(ctx context.Context, scope Scope, execu
 		}},
 	})
 	if err != nil {
-		return snapshot.SnapshotRef{}, fmt.Errorf("agent child ordinary result sealer: seal result: %w", err)
+		return SealedResult{}, fmt.Errorf("agent child ordinary result sealer: seal result: %w", err)
 	}
 	output, found := outputs["result"]
 	if !found || output.Port.Type != resultType || output.Snapshot.Type != resultType || output.Snapshot.ID <= 0 {
-		return snapshot.SnapshotRef{}, fmt.Errorf("agent child ordinary result sealer: snapshot creator returned no valid result")
+		return SealedResult{}, fmt.Errorf("agent child ordinary result sealer: snapshot creator returned no valid result")
 	}
-	return output.Snapshot, nil
+	return SealedResult{Snapshot: output.Snapshot, Body: normalized}, nil
 }
 
 func resultTypeForTool(tool broker.Tool) (snapshot.TypeRef, error) {

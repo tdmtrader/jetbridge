@@ -35,7 +35,11 @@ type ExecutionStore interface {
 }
 
 type ResultSealer interface {
-	Seal(context.Context, Scope, broker.ExecutionIdentity, CandidateResult) (snapshot.SnapshotRef, error)
+	Seal(context.Context, Scope, broker.ExecutionIdentity, CandidateResult) (SealedResult, error)
+}
+type SealedResult struct {
+	Snapshot snapshot.SnapshotRef
+	Body     json.RawMessage
 }
 
 type Config struct {
@@ -284,18 +288,18 @@ func (service *Service) Seal(
 	if err != nil {
 		return snapshot.SnapshotRef{}, err
 	}
-	if sealed.ID <= 0 || sealed.Type != resultType {
+	if sealed.Snapshot.ID <= 0 || sealed.Snapshot.Type != resultType || len(sealed.Body) == 0 {
 		return snapshot.SnapshotRef{}, fmt.Errorf("agent child authority: sealer returned invalid result identity")
 	}
 	_, err = service.config.Store.Advance(ctx, db.AdvanceAgentChildExecution{
 		ID: execution.ID, TeamID: service.config.Scope.TeamID,
 		ExpectedSequence: execution.Sequence, State: broker.ExecutionSucceeded,
-		Phase: "succeeded", ResultSnapshotID: int64(sealed.ID), ResultSnapshot: &sealed, ResultBody: append([]byte(nil), request.Body...),
+		Phase: "succeeded", ResultSnapshotID: int64(sealed.Snapshot.ID), ResultSnapshot: &sealed.Snapshot, ResultBody: append([]byte(nil), sealed.Body...),
 	})
 	if err != nil {
 		return snapshot.SnapshotRef{}, err
 	}
-	return sealed, nil
+	return sealed.Snapshot, nil
 }
 
 func phaseState(phase string) (broker.ExecutionState, bool) {

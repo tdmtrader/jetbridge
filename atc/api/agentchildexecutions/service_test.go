@@ -2,6 +2,7 @@ package agentchildexecutions_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -223,12 +224,9 @@ func (store *fakeStore) Find(_ context.Context, teamID int, id string) (db.Agent
 
 type fakeSealer struct{ calls int }
 
-func (sealer *fakeSealer) Seal(context.Context, agentchildexecutions.Scope, broker.ExecutionIdentity, agentchildexecutions.CandidateResult) (snapshot.SnapshotRef, error) {
+func (sealer *fakeSealer) Seal(context.Context, agentchildexecutions.Scope, broker.ExecutionIdentity, agentchildexecutions.CandidateResult) (agentchildexecutions.SealedResult, error) {
 	sealer.calls++
-	return snapshot.SnapshotRef{
-		ID: 99, Type: "consultation/v1",
-		Digest: snapshot.Digest("sha256:" + strings.Repeat("e", 64)),
-	}, nil
+	return agentchildexecutions.SealedResult{Snapshot: snapshot.SnapshotRef{ID: 99, Type: "consultation/v1", Digest: snapshot.Digest("sha256:" + strings.Repeat("e", 64))}, Body: json.RawMessage(`{"answer":"answer","claims":[],"assumptions":[],"uncertainties":[],"recommendations":[]}`)}, nil
 }
 
 func authorityProfile() broker.Profile {
