@@ -420,6 +420,10 @@ URL with smart HTTP `--force-with-lease`. That one Git operation uploads the
 object and applies the caller-sealed source lease atomically. The Azure REST
 adapter remains covered for pre-existing-object ref updates, while the Day-1
 production bridge selects the verified Git transport for branch publication.
+The transport selects an explicit Azure Bearer-header mode from provider
+policy; it never infers PAT/Basic behavior from token text. Bearer material is
+passed through private scrubbed Git configuration, never argv or a
+credential-bearing URL, and credential-bearing redirects are disabled.
 
 Ready-for-author review batches are derived from Azure's durable system
 `VoteUpdate` threads, ordered by published time and thread ID, rather than

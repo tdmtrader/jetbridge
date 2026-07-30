@@ -95,6 +95,8 @@ Helm, GitHub REST API, Azure DevOps Git REST API 7.1.
   snapshot root as a worktree. Use that object-upload-plus-CAS path for both
   GitHub and Azure DevOps. Azure REST ref updates remain a contract-tested
   pre-existing-object seam and are not selected for a new local commit.
+  Select Azure's OAuth Bearer Git authentication explicitly from the provider;
+  never infer Basic/PAT behavior from token text or put a token in argv/URLs.
   Complete stale source/target leases as safe terminal reconciliation results
   rather than repeatedly reclaiming an obsolete pending operation.
 - Treat the impact assessor as required authority in every policy mode. A
