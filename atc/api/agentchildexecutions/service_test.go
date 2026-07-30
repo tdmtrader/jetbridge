@@ -184,6 +184,30 @@ func TestServiceRejectsTerminalTransitionsThroughGenericPhase(t *testing.T) {
 	}
 }
 
+func TestServiceAcceptsIdenticalTerminalReplayAndRejectsConflict(t *testing.T) {
+	catalog, _ := broker.NewCatalog([]broker.Profile{authorityProfile()})
+	store := &fakeStore{}
+	service, err := agentchildexecutions.NewService(agentchildexecutions.Config{Scope: completeScope(), Catalog: catalog, Store: store, Sealer: &fakeSealer{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, _ := catalog.Resolve(broker.ToolConsultAgent, authorityProfile().Selector)
+	admitted, err := service.Admit(context.Background(), broker.AdmissionRequest{IdempotencyKey: "terminal-replay", Tool: broker.ToolConsultAgent, Selector: resolved.Selector, ProfileID: resolved.ID, ProfileDigest: resolved.Digest, InputDigest: "sha256:" + strings.Repeat("c", 64), Attachments: []string{"design"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal := broker.Terminal{State: broker.ExecutionTimedOut, Code: "deadline_exceeded", Retryable: true}
+	if err := service.Terminal(context.Background(), admitted.ExecutionID, terminal); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Terminal(context.Background(), admitted.ExecutionID, terminal); err != nil {
+		t.Fatalf("identical replay: %v", err)
+	}
+	if err := service.Terminal(context.Background(), admitted.ExecutionID, broker.Terminal{State: broker.ExecutionErrored, Code: "provider_rejected", Retryable: true}); err == nil {
+		t.Fatal("accepted conflicting terminal replay")
+	}
+}
+
 type fakeStore struct {
 	identity  broker.ExecutionIdentity
 	execution db.AgentChildExecution
@@ -206,6 +230,9 @@ func (store *fakeStore) Advance(_ context.Context, request db.AdvanceAgentChildE
 	}
 	store.advances = append(store.advances, request)
 	store.execution.State = request.State
+	store.execution.ErrorCode = request.ErrorCode
+	store.execution.ErrorRetryable = request.ErrorRetryable
+	store.execution.ErrorSummary = request.ErrorSummary
 	if request.BrokerInstance != "" {
 		store.execution.BrokerInstance = request.BrokerInstance
 	}

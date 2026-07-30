@@ -231,6 +231,12 @@ func (service *Service) Terminal(ctx context.Context, executionID string, termin
 	if err != nil {
 		return err
 	}
+	if execution.State == terminal.State && execution.ErrorCode == terminal.Code && execution.ErrorRetryable != nil && *execution.ErrorRetryable == terminal.Retryable {
+		return nil
+	}
+	if execution.State == broker.ExecutionErrored || execution.State == broker.ExecutionCancelled || execution.State == broker.ExecutionTimedOut {
+		return fmt.Errorf("agent child authority: terminal replay conflicts with durable execution")
+	}
 	retryable := contract.retryable
 	_, err = service.config.Store.Advance(ctx, db.AdvanceAgentChildExecution{
 		ID: execution.ID, TeamID: service.config.Scope.TeamID,

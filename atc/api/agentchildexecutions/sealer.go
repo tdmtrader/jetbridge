@@ -97,10 +97,31 @@ func resultAuthority(scope Scope, tool broker.Tool, attachments []string) ([]con
 	if len(attachments) == 0 {
 		return nil, nil, nil, fmt.Errorf("agent child ordinary result sealer: result inputs are required")
 	}
-	inputs := make(map[string]snapshot.SnapshotRef, len(attachments))
+	requested := make(map[string]struct{}, len(attachments))
+	for _, name := range attachments {
+		requested[name] = struct{}{}
+	}
+	ordered := make([]string, 0, len(attachments))
+	switch tool {
+	case broker.ToolRequestReview:
+		ordered = append(ordered, "workspace")
+		if _, found := requested["validation"]; found {
+			ordered = append(ordered, "validation")
+		}
+	case broker.ToolConsultAgent:
+		if _, found := requested["design"]; found {
+			ordered = append(ordered, "design")
+		}
+		if _, found := requested["api-contract"]; found {
+			ordered = append(ordered, "api-contract")
+		}
+	default:
+		return nil, nil, nil, fmt.Errorf("agent child ordinary result sealer: unsupported tool %q", tool)
+	}
+	inputs := make(map[string]snapshot.SnapshotRef, len(ordered))
 	subjects := make([]contracts.Subject, 0, len(attachments))
 	seen := make(map[string]struct{}, len(attachments))
-	for index, name := range attachments {
+	for index, name := range ordered {
 		if _, duplicate := seen[name]; duplicate {
 			return nil, nil, nil, fmt.Errorf("agent child ordinary result sealer: duplicate authority input %q", name)
 		}
@@ -119,10 +140,7 @@ func resultAuthority(scope Scope, tool broker.Tool, attachments []string) ([]con
 		inputs[name] = ref
 		subjects = append(subjects, contracts.SubjectFromInput(name, role, name, ref))
 	}
-	if tool == broker.ToolRequestReview && attachments[0] != "workspace" {
-		return nil, nil, nil, fmt.Errorf("agent child ordinary result sealer: review requires authoritative workspace input")
-	}
-	inputOrder := append([]string(nil), attachments...)
+	inputOrder := append([]string(nil), ordered...)
 	sort.Slice(subjects, func(i, j int) bool { return subjects[i].ID < subjects[j].ID })
 	return subjects, inputs, inputOrder, nil
 }
