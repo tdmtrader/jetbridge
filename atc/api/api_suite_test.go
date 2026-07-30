@@ -18,6 +18,7 @@ import (
 	experimentsapi "github.com/concourse/concourse/agent/api/experiments"
 	"github.com/concourse/concourse/agent/api/feedback"
 	"github.com/concourse/concourse/agent/api/metrics/metricstest"
+	noderunsapi "github.com/concourse/concourse/agent/api/noderuns"
 	"github.com/concourse/concourse/agent/api/reviews/reviewstest"
 	snapshotsapi "github.com/concourse/concourse/agent/api/snapshots"
 	"github.com/concourse/concourse/agent/api/tickets/ticketstest"
@@ -27,6 +28,7 @@ import (
 	"github.com/concourse/concourse/agent/budget/budgettest"
 	"github.com/concourse/concourse/agent/credentials/credentialstest"
 	"github.com/concourse/concourse/agent/snapshot"
+	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/agent/workflow/workflowtest"
 	"github.com/concourse/concourse/agent/workflowrun"
 	"github.com/concourse/concourse/agent/workflowwait/workflowwaittest"
@@ -137,7 +139,15 @@ func (unavailableWorkflowRunBackend) Get(context.Context, int, snapshot.Workflow
 	return db.AgentWorkflowRun{}, false, nil
 }
 
+func (unavailableWorkflowRunBackend) GetKind(context.Context, int, workflow.DefinitionKind, snapshot.WorkflowRunID) (db.AgentWorkflowRun, bool, error) {
+	return db.AgentWorkflowRun{}, false, nil
+}
+
 func (unavailableWorkflowRunBackend) List(context.Context, db.AgentWorkflowRunListFilter) ([]db.AgentWorkflowRun, error) {
+	return nil, nil
+}
+
+func (unavailableWorkflowRunBackend) ListKind(context.Context, workflow.DefinitionKind, db.AgentWorkflowRunListFilter) ([]db.AgentWorkflowRun, error) {
 	return nil, nil
 }
 
@@ -261,6 +271,12 @@ var _ = BeforeEach(func() {
 		Canceler: workflowRunBackend, Manifests: workflowRunBackend,
 	})
 	Expect(err).NotTo(HaveOccurred())
+	nodeRunHandlers, err := noderunsapi.NewHandler(noderunsapi.Config{
+		Team:     workflowrunsapi.TrustedTeam{ID: 1, Name: atc.DefaultTeamName},
+		Identity: func(*http.Request) (string, error) { return "api-suite", nil },
+		Binder:   workflowRunBackend, Runs: workflowRunBackend, Manifests: workflowRunBackend,
+	})
+	Expect(err).NotTo(HaveOccurred())
 	workflowOutcomeHandlers, err := workflowoutcomesapi.NewHandler(workflowoutcomesapi.HandlerConfig{
 		TeamID: 1, TeamName: atc.DefaultTeamName,
 		Identity:   func(*http.Request) (string, error) { return "api-suite", nil },
@@ -343,6 +359,7 @@ var _ = BeforeEach(func() {
 		snapshotHandlers,
 		nil, // resource capture disabled with the snapshot service in this suite
 		workflowRunHandlers,
+		nodeRunHandlers,
 		workflowWaitHandlers,
 		workflowOutcomeHandlers,
 		experimentHandlers,

@@ -391,11 +391,15 @@ func (handler *Handler) loadScopedRun(
 }
 
 func (handler *Handler) presentDetail(r *http.Request, workflowName string, run db.AgentWorkflowRun) (RunDetail, error) {
-	summary, err := handler.presentSummary(workflowName, run)
+	return presentRunDetail(handler.team, handler.runs, handler.manifests, r, workflowName, run)
+}
+
+func presentRunDetail(team TrustedTeam, runs SnapshotBindingStore, manifests ManifestStore, r *http.Request, workflowName string, run db.AgentWorkflowRun) (RunDetail, error) {
+	summary, err := presentRunSummary(team, workflowName, run)
 	if err != nil {
 		return RunDetail{}, err
 	}
-	bindings, err := handler.runs.Snapshots(r.Context(), run.ID)
+	bindings, err := runs.Snapshots(r.Context(), run.ID)
 	if err != nil {
 		return RunDetail{}, err
 	}
@@ -403,7 +407,7 @@ func (handler *Handler) presentDetail(r *http.Request, workflowName string, run 
 	if err != nil {
 		return RunDetail{}, err
 	}
-	outputs, err := handler.outputsFromBindings(r, run, bindings)
+	outputs, err := presentRunOutputsFromBindings(team, manifests, r, run, bindings)
 	if err != nil {
 		return RunDetail{}, err
 	}
@@ -411,11 +415,15 @@ func (handler *Handler) presentDetail(r *http.Request, workflowName string, run 
 }
 
 func (handler *Handler) presentOutputs(r *http.Request, run db.AgentWorkflowRun) ([]OutputManifest, error) {
-	bindings, err := handler.runs.Snapshots(r.Context(), run.ID)
+	return presentRunOutputs(handler.team, handler.runs, handler.manifests, r, run)
+}
+
+func presentRunOutputs(team TrustedTeam, runs SnapshotBindingStore, manifests ManifestStore, r *http.Request, run db.AgentWorkflowRun) ([]OutputManifest, error) {
+	bindings, err := runs.Snapshots(r.Context(), run.ID)
 	if err != nil {
 		return nil, err
 	}
-	return handler.outputsFromBindings(r, run, bindings)
+	return presentRunOutputsFromBindings(team, manifests, r, run, bindings)
 }
 
 func (handler *Handler) outputsFromBindings(
@@ -423,6 +431,10 @@ func (handler *Handler) outputsFromBindings(
 	run db.AgentWorkflowRun,
 	bindings []db.AgentWorkflowRunSnapshotBinding,
 ) ([]OutputManifest, error) {
+	return presentRunOutputsFromBindings(handler.team, handler.manifests, r, run, bindings)
+}
+
+func presentRunOutputsFromBindings(team TrustedTeam, manifests ManifestStore, r *http.Request, run db.AgentWorkflowRun, bindings []db.AgentWorkflowRunSnapshotBinding) ([]OutputManifest, error) {
 	outputs := make([]OutputManifest, 0)
 	if run.Status != db.AgentWorkflowRunStatusSucceeded {
 		return outputs, nil
@@ -439,7 +451,7 @@ func (handler *Handler) outputsFromBindings(
 			return nil, fmt.Errorf("duplicate output port")
 		}
 		seen[binding.PortName] = struct{}{}
-		manifest, found, err := handler.manifests.GetAuthorized(r.Context(), handler.team.ID, binding.Snapshot.ID)
+		manifest, found, err := manifests.GetAuthorized(r.Context(), team.ID, binding.Snapshot.ID)
 		if err != nil || !found {
 			return nil, fmt.Errorf("read output manifest")
 		}
@@ -494,7 +506,11 @@ func validateBinding(runID snapshot.WorkflowRunID, binding db.AgentWorkflowRunSn
 }
 
 func (handler *Handler) presentSummary(workflowName string, run db.AgentWorkflowRun) (RunSummary, error) {
-	if run.TeamID != handler.team.ID || run.TeamName != handler.team.Name || run.WorkflowName != workflowName ||
+	return presentRunSummary(handler.team, workflowName, run)
+}
+
+func presentRunSummary(team TrustedTeam, workflowName string, run db.AgentWorkflowRun) (RunSummary, error) {
+	if run.TeamID != team.ID || run.TeamName != team.Name || run.WorkflowName != workflowName ||
 		run.WorkflowDefinitionID <= 0 || run.WorkflowVersion <= 0 || run.SchemaVersion <= 0 || run.SignatureVersion <= 0 ||
 		run.ID.Validate() != nil || validateIdentifier(run.WorkflowName) != nil ||
 		validateText(run.DefinitionContentHash, 1024, false, true) != nil ||
@@ -789,6 +805,37 @@ func readStrictJSONBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
 	return raw, true
 }
 
+// ReadStrictJSONBody applies the shared agent-run JSON media-type, UTF-8, and
+// bounded-body rules. Callers retain ownership of their body schema.
+func ReadStrictJSONBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
+	return readStrictJSONBody(w, r)
+}
+
+// DecodeInputs parses the public input port to quoted snapshot ID object used
+// by both workflow and reusable-node run creation.
+func DecodeInputs(decoder *json.Decoder) (map[string]snapshot.SnapshotID, error) {
+	return decodeInputs(decoder)
+}
+
+// RequireJSONEOF rejects trailing JSON values after a request object.
+func RequireJSONEOF(decoder *json.Decoder) error { return requireJSONEOF(decoder) }
+
+// ValidateText checks the bounded public text fields shared by run requests.
+func ValidateText(value string, maximum int, allowEmpty, requireTrimmed bool) error {
+	return validateText(value, maximum, allowEmpty, requireTrimmed)
+}
+
+// WriteError emits the standard bounded agent-run API error response.
+func WriteError(w http.ResponseWriter, status int, code, message string) {
+	writeError(w, status, code, message)
+}
+
+// WriteJSON emits a standard JSON response.
+func WriteJSON(w http.ResponseWriter, status int, value any) { writeJSON(w, status, value) }
+
+// WriteNotFound emits the standard redacted run absence response.
+func WriteNotFound(w http.ResponseWriter) { writeNotFound(w) }
+
 func requireJSONMediaType(w http.ResponseWriter, r *http.Request) bool {
 	values := r.Header.Values("Content-Type")
 	if len(values) != 1 {
@@ -843,6 +890,12 @@ func requireNoBody(w http.ResponseWriter, r *http.Request) bool {
 // not in the web logs. That is exactly what stalled diagnosis of the behavioral
 // suite's last failing spec: a 500 with no explanation on either side.
 func (handler *Handler) writeBinderError(w http.ResponseWriter, err error) {
+	WriteBinderError(w, handler.logger, err)
+}
+
+// WriteBinderError maps the trusted binder's public error taxonomy without
+// exposing dependency details from either workflow or reusable-node requests.
+func WriteBinderError(w http.ResponseWriter, logger lager.Logger, err error) {
 	switch {
 	case errors.Is(err, workflowrun.ErrInvalidRequest):
 		writeError(w, http.StatusBadRequest, "invalid_request", "workflow run request is invalid")
@@ -855,8 +908,10 @@ func (handler *Handler) writeBinderError(w http.ResponseWriter, err error) {
 	case errors.Is(err, workflowrun.ErrIdempotencyConflict):
 		writeError(w, http.StatusConflict, "conflict", "idempotency key conflicts with immutable workflow-run state")
 	default:
-		handler.logger.Error("workflow-run-bind-failed", err)
-		handler.writeInternalError(w)
+		if logger != nil {
+			logger.Error("workflow-run-bind-failed", err)
+		}
+		writeError(w, http.StatusInternalServerError, "internal_error", "workflow run service failed")
 	}
 }
 

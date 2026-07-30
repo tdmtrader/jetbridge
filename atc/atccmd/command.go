@@ -25,6 +25,7 @@ import (
 	"code.cloudfoundry.org/lager/v3/lagerctx"
 	"github.com/concourse/concourse"
 	experimentsapi "github.com/concourse/concourse/agent/api/experiments"
+	noderunsapi "github.com/concourse/concourse/agent/api/noderuns"
 	snapshotsapi "github.com/concourse/concourse/agent/api/snapshots"
 	workflowoutcomesapi "github.com/concourse/concourse/agent/api/workflowoutcomes"
 	workflowrunsapi "github.com/concourse/concourse/agent/api/workflowruns"
@@ -3618,6 +3619,17 @@ func (cmd *RunCommand) constructAPIHandler(
 	if err != nil {
 		return nil, fmt.Errorf("construct workflow-run API: %w", err)
 	}
+	nodeRunHandlers, err := noderunsapi.NewHandler(noderunsapi.Config{
+		Logger: logger.Session("node-runs-api"),
+		Team:   workflowrunsapi.TrustedTeam{ID: dispatchGraph.teamID, Name: dispatchGraph.teamName},
+		Identity: func(r *http.Request) (string, error) {
+			return workflowRunCreatorIdentity(accessor.GetAccessor(r).UserInfo())
+		},
+		Binder: dispatchGraph.binder, Runs: workflowRunStore, Manifests: snapshotStore,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("construct node-run API: %w", err)
+	}
 	cmd.agentSnapshotMu.Lock()
 	workflowWaitContent := cmd.agentSnapshotContentStore
 	workflowWaitCreator := cmd.agentSnapshotCreator
@@ -3739,6 +3751,7 @@ func (cmd *RunCommand) constructAPIHandler(
 		snapshotHandlers,
 		resourceCapturer,
 		workflowRunHandlers,
+		nodeRunHandlers,
 		workflowWaitHandlers,
 		workflowOutcomeHandlers,
 		experimentHandlers,

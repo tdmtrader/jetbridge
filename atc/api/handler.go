@@ -13,6 +13,7 @@ import (
 	experimentsapi "github.com/concourse/concourse/agent/api/experiments"
 	"github.com/concourse/concourse/agent/api/feedback"
 	metricsapi "github.com/concourse/concourse/agent/api/metrics"
+	noderunsapi "github.com/concourse/concourse/agent/api/noderuns"
 	nodesapi "github.com/concourse/concourse/agent/api/nodes"
 	reviewsapi "github.com/concourse/concourse/agent/api/reviews"
 	snapshotsapi "github.com/concourse/concourse/agent/api/snapshots"
@@ -128,12 +129,16 @@ func NewHandler(
 	snapshotHandlers *snapshotsapi.HandlerFactory,
 	resourceCapturer snapshotsapi.ResourceCapturer,
 	workflowRunHandlers *workflowrunsapi.Handler,
+	nodeRunHandlers *noderunsapi.Handler,
 	workflowWaitHandlers *workflowwaitsapi.Handler,
 	workflowOutcomeHandlers *workflowoutcomesapi.Handler,
 	experimentHandlers *experimentsapi.Handler,
 ) (http.Handler, error) {
 	if workflowRunHandlers == nil {
 		return nil, fmt.Errorf("workflow-run API handlers are required")
+	}
+	if nodeRunHandlers == nil {
+		return nil, fmt.Errorf("node-run API handlers are required")
 	}
 	if workflowOutcomeHandlers == nil {
 		return nil, fmt.Errorf("workflow-outcome API handlers are required")
@@ -397,6 +402,9 @@ func NewHandler(
 		atc.CreateAgentNodeVersion:                     http.HandlerFunc(nodesServer.Import),
 		atc.ReleaseAgentNodeVersion:                    http.HandlerFunc(nodesServer.Release),
 		atc.DeprecateAgentNodeVersion:                  http.HandlerFunc(nodesServer.Deprecate),
+		atc.CreateAgentNodeRun:                         http.HandlerFunc(nodeRunHandlers.Create),
+		atc.ListAgentNodeRuns:                          http.HandlerFunc(nodeRunHandlers.List),
+		atc.GetAgentNodeRun:                            http.HandlerFunc(nodeRunHandlers.Get),
 		atc.CreateAgentExperiment:                      http.HandlerFunc(experimentHandlers.Create),
 		atc.ListAgentExperiments:                       http.HandlerFunc(experimentHandlers.List),
 		atc.GetAgentExperiment:                         http.HandlerFunc(experimentHandlers.Get),

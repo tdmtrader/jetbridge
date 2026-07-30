@@ -3,11 +3,13 @@ package workflowruns
 import (
 	"code.cloudfoundry.org/lager/v3"
 	"context"
+	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/workflowrun"
+	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 )
 
@@ -63,6 +65,36 @@ type Canceler interface {
 // into the workflow-run handler.
 type ManifestStore interface {
 	GetAuthorized(context.Context, int, snapshot.SnapshotID) (snapshot.Snapshot, bool, error)
+}
+
+// SnapshotBindingStore is the kind-neutral projection read once a caller has
+// already resolved the owning run through a kind-scoped store.
+type SnapshotBindingStore interface {
+	Snapshots(context.Context, snapshot.WorkflowRunID) ([]db.AgentWorkflowRunSnapshotBinding, error)
+}
+
+// RunPresenter is the shared redacted run projection used by workflow and
+// reusable-node HTTP surfaces. It deliberately accepts only bindings and
+// authorized manifests; kind authorization happens before presentation.
+type RunPresenter struct {
+	team      TrustedTeam
+	runs      SnapshotBindingStore
+	manifests ManifestStore
+}
+
+func NewRunPresenter(team TrustedTeam, runs SnapshotBindingStore, manifests ManifestStore) (*RunPresenter, error) {
+	if team.ID <= 0 || team.Name != atc.DefaultTeamName || interfaceIsNil(runs) || interfaceIsNil(manifests) {
+		return nil, fmt.Errorf("workflow runs API: run presenter dependencies are required")
+	}
+	return &RunPresenter{team: team, runs: runs, manifests: manifests}, nil
+}
+
+func (presenter *RunPresenter) Detail(request *http.Request, definitionName string, run db.AgentWorkflowRun) (RunDetail, error) {
+	return presentRunDetail(presenter.team, presenter.runs, presenter.manifests, request, definitionName, run)
+}
+
+func (presenter *RunPresenter) Summary(definitionName string, run db.AgentWorkflowRun) (RunSummary, error) {
+	return presentRunSummary(presenter.team, definitionName, run)
 }
 
 type Config struct {

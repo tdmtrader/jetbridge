@@ -9,7 +9,11 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 
+	noderunsapi "github.com/concourse/concourse/agent/api/noderuns"
+	workflowrunsapi "github.com/concourse/concourse/agent/api/workflowruns"
+	"github.com/concourse/concourse/agent/snapshot"
 	"github.com/concourse/concourse/agent/workflow"
 	"github.com/concourse/concourse/fly/commands/internal/displayhelpers"
 	"github.com/concourse/concourse/fly/rc"
@@ -25,6 +29,9 @@ type AgentNodesCommand struct {
 	Release   NodesReleaseCommand   `command:"release" description:"Release a node version"`
 	Deprecate NodesDeprecateCommand `command:"deprecate" description:"Mark a node version deprecated"`
 	Restore   NodesRestoreCommand   `command:"restore" description:"Clear a node version deprecation"`
+	Run       NodesRunCommand       `command:"run" description:"Run an exact reusable node version"`
+	Runs      NodesRunsCommand      `command:"runs" description:"List runs for an exact reusable node version"`
+	ShowRun   NodesShowRunCommand   `command:"show-run" description:"Show one reusable node run"`
 }
 
 type nodeSummary struct {
@@ -279,4 +286,147 @@ func setNodeDeprecation(target rc.Target, name string, version int, deprecated b
 	}
 	_, err = fmt.Printf("%s %s version %d\n", verb, name, version)
 	return err
+}
+
+type NodesRunCommand struct {
+	Args struct {
+		Name    string `positional-arg-name:"NAME" required:"true" description:"Node definition name"`
+		Version int    `positional-arg-name:"VERSION" required:"true" description:"Exact node version"`
+	} `positional-args:"yes"`
+	Input          []string `long:"input" description:"Bind a named input as NAME=SNAPSHOT-ID (repeatable)"`
+	Param          []string `long:"param" description:"Set a declared node parameter as NAME=VALUE (repeatable)"`
+	IdempotencyKey string   `long:"idempotency-key" description:"Idempotency key for this invocation (generated when omitted)"`
+	Json           bool     `long:"json" description:"Print command result as JSON"`
+}
+
+func (command *NodesRunCommand) Execute([]string) error {
+	target, err := loadAgentTarget()
+	if err != nil {
+		return err
+	}
+	detail, err := runNodeVersion(target, command.Args.Name, command.Args.Version, command.Input, command.Param, command.IdempotencyKey)
+	if err != nil {
+		return err
+	}
+	return printAgentWorkflowRunDetail(detail, command.Json)
+}
+
+func runNodeVersion(target rc.Target, name string, version int, inputValues, paramValues []string, idempotencyKey string) (workflowrunsapi.RunDetail, error) {
+	if version <= 0 {
+		return workflowrunsapi.RunDetail{}, fmt.Errorf("agent node run: version must be positive")
+	}
+	inputs, err := parseAgentWorkflowRunInputs(inputValues)
+	if err != nil {
+		return workflowrunsapi.RunDetail{}, err
+	}
+	params, err := parseNodeRunParameters(paramValues)
+	if err != nil {
+		return workflowrunsapi.RunDetail{}, err
+	}
+	if idempotencyKey == "" {
+		idempotencyKey, err = newAgentWorkflowRunIdempotencyKey()
+		if err != nil {
+			return workflowrunsapi.RunDetail{}, err
+		}
+	}
+	payload, err := json.Marshal(noderunsapi.CreateRequest{Inputs: inputs, Params: params, IdempotencyKey: idempotencyKey})
+	if err != nil {
+		return workflowrunsapi.RunDetail{}, err
+	}
+	response, err := agentAPIRequestWithType(target, http.MethodPost, nodeVersionRunsPath(name, version), "application/json", bytes.NewReader(payload))
+	if err != nil {
+		return workflowrunsapi.RunDetail{}, err
+	}
+	var detail workflowrunsapi.RunDetail
+	if err := decodeOrError(response, &detail); err != nil {
+		return workflowrunsapi.RunDetail{}, err
+	}
+	return detail, nil
+}
+
+func parseNodeRunParameters(values []string) (map[string]string, error) {
+	params := make(map[string]string, len(values))
+	for _, value := range values {
+		name, parameter, found := strings.Cut(value, "=")
+		if !found || strings.TrimSpace(name) == "" || name != strings.TrimSpace(name) {
+			return nil, fmt.Errorf("agent node run: --param must be NAME=VALUE")
+		}
+		if _, duplicate := params[name]; duplicate {
+			return nil, fmt.Errorf("agent node run: duplicate parameter %q", name)
+		}
+		params[name] = parameter
+	}
+	return params, nil
+}
+
+type NodesRunsCommand struct {
+	Args struct {
+		Name    string `positional-arg-name:"NAME" required:"true" description:"Node definition name"`
+		Version int    `positional-arg-name:"VERSION" required:"true" description:"Exact node version"`
+	} `positional-args:"yes"`
+	Status string `long:"status" description:"Filter by run status"`
+	Limit  int    `long:"limit" default:"100" description:"Maximum runs to return (1-1000)"`
+	Json   bool   `long:"json" description:"Print command result as JSON"`
+}
+
+func (command *NodesRunsCommand) Execute([]string) error {
+	if command.Args.Version <= 0 || command.Limit < 1 || command.Limit > 1000 || command.Status != "" && !agentWorkflowRunStatusValid(command.Status) {
+		return fmt.Errorf("agent node runs: invalid version, status, or limit")
+	}
+	query := url.Values{"limit": {strconv.Itoa(command.Limit)}}
+	if command.Status != "" {
+		query.Set("status", command.Status)
+	}
+	target, err := loadAgentTarget()
+	if err != nil {
+		return err
+	}
+	response, err := agentAPIRequest(target, http.MethodGet, nodeVersionRunsPath(command.Args.Name, command.Args.Version)+"?"+query.Encode(), nil)
+	if err != nil {
+		return err
+	}
+	var runs []workflowrunsapi.RunSummary
+	if err := decodeOrError(response, &runs); err != nil {
+		return err
+	}
+	if command.Json {
+		return displayhelpers.JsonPrint(runs)
+	}
+	return renderAgentWorkflowRuns(runs)
+}
+
+type NodesShowRunCommand struct {
+	Args struct {
+		Name  string `positional-arg-name:"NAME" required:"true" description:"Node definition name"`
+		RunID string `positional-arg-name:"RUN-ID" required:"true" description:"Durable node run ID"`
+	} `positional-args:"yes"`
+	Json bool `long:"json" description:"Print command result as JSON"`
+}
+
+func (command *NodesShowRunCommand) Execute([]string) error {
+	runID, err := snapshot.ParseWorkflowRunID(command.Args.RunID)
+	if err != nil {
+		return fmt.Errorf("agent node run: %w", err)
+	}
+	target, err := loadAgentTarget()
+	if err != nil {
+		return err
+	}
+	response, err := agentAPIRequest(target, http.MethodGet, nodeRunPath(command.Args.Name, runID), nil)
+	if err != nil {
+		return err
+	}
+	var detail workflowrunsapi.RunDetail
+	if err := decodeOrError(response, &detail); err != nil {
+		return err
+	}
+	return printAgentWorkflowRunDetail(detail, command.Json)
+}
+
+func nodeVersionRunsPath(name string, version int) string {
+	return "/api/v1/agent/nodes/" + url.PathEscape(name) + "/versions/" + strconv.Itoa(version) + "/runs"
+}
+
+func nodeRunPath(name string, runID snapshot.WorkflowRunID) string {
+	return "/api/v1/agent/nodes/" + url.PathEscape(name) + "/runs/" + url.PathEscape(runID.String())
 }

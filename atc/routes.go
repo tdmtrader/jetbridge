@@ -171,6 +171,9 @@ const (
 	CreateAgentNodeVersion                     = "CreateAgentNodeVersion"
 	ReleaseAgentNodeVersion                    = "ReleaseAgentNodeVersion"
 	DeprecateAgentNodeVersion                  = "DeprecateAgentNodeVersion"
+	CreateAgentNodeRun                         = "CreateAgentNodeRun"
+	ListAgentNodeRuns                          = "ListAgentNodeRuns"
+	GetAgentNodeRun                            = "GetAgentNodeRun"
 
 	CreateAgentExperiment       = "CreateAgentExperiment"
 	ListAgentExperiments        = "ListAgentExperiments"
@@ -371,6 +374,9 @@ var Routes = rata.Routes([]rata.Route{
 	{Path: "/api/v1/agent/nodes/:node_name/versions", Method: "POST", Name: CreateAgentNodeVersion},
 	{Path: "/api/v1/agent/nodes/:node_name/versions/:version/release", Method: "PUT", Name: ReleaseAgentNodeVersion},
 	{Path: "/api/v1/agent/nodes/:node_name/versions/:version/deprecation", Method: "PUT", Name: DeprecateAgentNodeVersion},
+	{Path: "/api/v1/agent/nodes/:node_name/versions/:version/runs", Method: "POST", Name: CreateAgentNodeRun},
+	{Path: "/api/v1/agent/nodes/:node_name/versions/:version/runs", Method: "GET", Name: ListAgentNodeRuns},
+	{Path: "/api/v1/agent/nodes/:node_name/runs/:workflow_run_id", Method: "GET", Name: GetAgentNodeRun},
 
 	{Path: "/api/v1/agent/experiments", Method: "POST", Name: CreateAgentExperiment},
 	{Path: "/api/v1/agent/experiments", Method: "GET", Name: ListAgentExperiments},

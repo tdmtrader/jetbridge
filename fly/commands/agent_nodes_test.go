@@ -101,6 +101,22 @@ func TestAgentNodesDefaultVersionPrefersLatestReleasedThenImported(t *testing.T)
 	}
 }
 
+func TestAgentNodesRunUsesExactVersionAndOnlyPublicBodyFields(t *testing.T) {
+	target := nodeTarget(t, func(request *http.Request) (*http.Response, error) {
+		if request.Method != http.MethodPost || request.URL.Path != "/api/v1/agent/nodes/code-review/versions/5/runs" || request.Header.Get("Content-Type") != "application/json" {
+			t.Fatalf("request = %s %s content-type=%q", request.Method, request.URL.Path, request.Header.Get("Content-Type"))
+		}
+		body, _ := io.ReadAll(request.Body)
+		if string(body) != `{"inputs":{"repository":"41"},"params":{"MINIMUM_SEVERITY":"high"},"idempotency_key":"node-test-1"}` {
+			t.Fatalf("payload = %s", body)
+		}
+		return nodeResponse(http.StatusCreated, `{"workflow_run_id":"71","workflow_name":"code-review","workflow_version":5,"schema_version":1,"signature_version":1,"definition_content_hash":"hash","status":"running","origin_kind":"manual","created_by":"alice","created_at":"2026-07-29T12:00:00Z","updated_at":"2026-07-29T12:00:00Z","parameterized_config_hash":"params","inputs":[],"outputs":[]}`), nil
+	})
+	if _, err := runNodeVersion(target, "code-review", 5, []string{"repository=41"}, []string{"MINIMUM_SEVERITY=high"}, "node-test-1"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func nodeTarget(t *testing.T, handler func(*http.Request) (*http.Response, error)) rc.Target {
 	t.Helper()
 	client := new(concoursefakes.FakeClient)
