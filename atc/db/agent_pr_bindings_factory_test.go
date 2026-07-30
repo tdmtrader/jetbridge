@@ -2,6 +2,8 @@ package db_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,7 +13,6 @@ import (
 	"github.com/concourse/concourse/agent/publisher"
 	"github.com/concourse/concourse/agent/pullrequest"
 	"github.com/concourse/concourse/agent/snapshot"
-	"github.com/concourse/concourse/agent/workflowwait"
 	"github.com/concourse/concourse/atc"
 	"github.com/concourse/concourse/atc/db"
 
@@ -957,7 +958,10 @@ func insertAgentPRBindingEvidence(
 		suffix, buildID, definitionID).Scan(&workflowRunID)).To(Succeed())
 	insertSnapshot := func(typeName, portName string, offset int64) snapshot.SnapshotRef {
 		var snapshotID int64
-		digest := "sha256:" + fmt.Sprintf("%064x", workflowRunID+offset)
+		digestBytes := sha256.Sum256([]byte(fmt.Sprintf(
+			"%d:%s:%s:%d", workflowRunID, typeName, portName, offset,
+		)))
+		digest := "sha256:" + hex.EncodeToString(digestBytes[:])
 		Expect(dbConn.QueryRow(`
 			INSERT INTO agent_snapshots
 				(team_id, type_name, type_version, digest, byte_size, file_count,
@@ -980,10 +984,9 @@ func insertAgentPRBindingEvidence(
 	candidate := insertSnapshot("repository-change", "initial-candidate", 101)
 	validation := insertSnapshot("validation", "initial-validation", 102)
 	impact := insertSnapshot("publish-impact", "initial-impact", 103)
-	question := insertSnapshot("question", "initial-question", 104)
-	answer := insertSnapshot("human-answer", "initial-answer", 105)
-	acceptedCandidate := insertSnapshot("repository", "accepted-candidate", 106)
-	review := insertSnapshot("review", "accepted-review", 107)
+	acceptedCandidate := insertSnapshot("repository", "accepted-candidate", 104)
+	acceptedValidation := insertSnapshot("validation", "accepted-validation", 105)
+	review := insertSnapshot("review", "accepted-review", 106)
 	resolvedAt := time.Now().UTC().Truncate(time.Microsecond)
 	var reviewWorkflowRunID int64
 	Expect(dbConn.QueryRow(`
@@ -1018,57 +1021,74 @@ func insertAgentPRBindingEvidence(
 		        false, 0, '[]'::jsonb, 'reviewer', 1, $4)
 	`, teamID, reviewWorkflowRunID, int64(review.ID), resolvedAt)
 	Expect(err).NotTo(HaveOccurred())
-	var waitID int64
-	Expect(dbConn.QueryRow(`
-		INSERT INTO agent_workflow_waits
-			(team_id, workflow_run_id, build_id, build_id_evidence,
-			 plan_id, attempt, output_name, question_name, question_snapshot_id,
-			 expected_type_name, expected_type_version, deadline, timeout_policy,
-			 status, answer_snapshot_id, resolved_by, resolved_by_display_name,
-			 resolution_source, resolved_at, resolution_intent_answer,
-			 resolution_intent_actor, resolution_intent_display_name,
-			 resolution_intent_at)
-		VALUES ($1, $2, $3, $3, $4, '1', 'approval', 'PR approval', $5,
-		        'human-answer', 1, $6, 'fail', 'resolved', $7, 'reviewer',
-		        'reviewer', 'human', $8, 'approve', 'reviewer', 'reviewer', $8)
-		RETURNING id
-	`, teamID, workflowRunID, buildID, "pr-binding-approval-"+suffix,
-		int64(question.ID), resolvedAt.Add(time.Hour), int64(answer.ID), resolvedAt,
-	).Scan(&waitID)).To(Succeed())
-
-	action := publisher.PRAction{
+	evidence := publisher.PublicationEvidence{
+		Kind: publisher.EvidenceAcceptedReview,
+		AcceptedReview: &publisher.AcceptedReviewEvidence{
+			Review: review, Candidate: acceptedCandidate,
+			Validation:          acceptedValidation,
+			ReviewWorkflowRunID: snapshot.WorkflowRunID(reviewWorkflowRunID),
+			OutcomeRevision:     1,
+			AcceptedBy:          "reviewer",
+			AcceptedAt:          resolvedAt,
+		},
+	}
+	authority := publisher.Authority{
+		TeamID: teamID, TeamName: teamName, BuildID: buildID,
+		WorkflowRunID: snapshot.WorkflowRunID(workflowRunID), Actor: "concourse",
+	}
+	locator := publisher.PRLocator{
+		Provider:   publisher.PRProvider(target.Locator.Provider),
+		Repository: target.Locator.Repository,
+	}
+	branchAction := publisher.PRAction{
+		Kind: publisher.OperationPublishPRBranch,
+		Branch: &publisher.BranchPublicationRequest{
+			Authority: authority, Observation: observation,
+			Candidate: candidate, Validation: validation, Impact: impact,
+			Evidence:              evidence.Clone(),
+			Destination:           target.Destination,
+			ApprovalPolicyVersion: target.ApprovalPolicyVersion,
+			Locator:               locator,
+			SourceRef:             target.SourceRef,
+			TargetRef:             target.TargetRef,
+			ExpectedSource:        publisher.HeadExpectation{Exists: false},
+			ExpectedTargetSHA:     target.TargetSHA,
+			NewSourceSHA:          target.SourceSHA,
+		},
+	}
+	createAction := publisher.PRAction{
 		Kind: publisher.OperationCreatePR,
 		PullRequest: &publisher.PullRequestPublicationRequest{
-			Authority: publisher.Authority{
-				TeamID: teamID, TeamName: teamName, BuildID: buildID,
-				WorkflowRunID: snapshot.WorkflowRunID(workflowRunID), Actor: "concourse",
-			},
+			Authority:   authority,
 			Observation: observation, Candidate: candidate,
 			Validation: validation, Impact: impact,
-			Evidence: publisher.PublicationEvidence{
-				Kind: publisher.EvidenceHumanWait,
-				HumanWait: &publisher.ApprovalEvidence{
-					WaitID: workflowwait.ID(waitID), Question: question, Answer: answer,
-					ResolvedBy: "reviewer", ResolvedAt: resolvedAt,
-				},
-			},
-			Destination: target.Destination, ApprovalPolicyVersion: target.ApprovalPolicyVersion,
-			Locator: publisher.PRLocator{
-				Provider:   publisher.PRProvider(target.Locator.Provider),
-				Repository: target.Locator.Repository,
-			},
-			SourceRef: target.SourceRef, SourceSHA: target.SourceSHA,
+			Evidence:              evidence.Clone(),
+			Destination:           target.Destination,
+			ApprovalPolicyVersion: target.ApprovalPolicyVersion,
+			Locator:               locator,
+			SourceRef:             target.SourceRef, SourceSHA: target.SourceSHA,
 			TargetRef: target.TargetRef, TargetSHA: target.TargetSHA,
 			Title: "Validated change", Body: "Ready for provider review.",
 		},
 	}
-	operationKey, err := action.OperationKey()
+	branchOperationKey, err := branchAction.OperationKey()
 	Expect(err).NotTo(HaveOccurred())
-	payloadAction := action.Clone()
-	payloadAction.PullRequest.Authority = publisher.Authority{TeamID: teamID}
-	payload, err := json.Marshal(payloadAction)
+	createOperationKey, err := createAction.OperationKey()
 	Expect(err).NotTo(HaveOccurred())
-	result, err := json.Marshal(publisher.Result{
+	branchPayloadAction := branchAction.Clone()
+	branchPayloadAction.Branch.Authority = publisher.Authority{TeamID: teamID}
+	branchPayload, err := json.Marshal(branchPayloadAction)
+	Expect(err).NotTo(HaveOccurred())
+	createPayloadAction := createAction.Clone()
+	createPayloadAction.PullRequest.Authority = publisher.Authority{TeamID: teamID}
+	createPayload, err := json.Marshal(createPayloadAction)
+	Expect(err).NotTo(HaveOccurred())
+	branchResult, err := json.Marshal(publisher.Result{
+		Status: publisher.StatusSucceeded, ExternalID: target.SourceRef,
+		HeadSHA: target.SourceSHA, BaseSHA: target.TargetSHA,
+	})
+	Expect(err).NotTo(HaveOccurred())
+	createResult, err := json.Marshal(publisher.Result{
 		Status: publisher.StatusSucceeded, ExternalID: target.Locator.ExternalID,
 		URL: target.URL, HeadSHA: target.SourceSHA, BaseSHA: target.TargetSHA,
 	})
@@ -1077,13 +1097,13 @@ func insertAgentPRBindingEvidence(
 	tx, err := dbConn.Begin()
 	Expect(err).NotTo(HaveOccurred())
 	defer func() { _ = tx.Rollback() }()
-	var acceptedPublicationID, acceptedOccurrenceID int64
+	var branchPublicationID, branchOccurrenceID int64
 	var creationPublicationID, creationOccurrenceID int64
 	Expect(tx.QueryRow(`SELECT nextval('agent_publications_id_seq')`).Scan(
-		&acceptedPublicationID,
+		&branchPublicationID,
 	)).To(Succeed())
 	Expect(tx.QueryRow(`SELECT nextval('agent_publication_occurrences_id_seq')`).Scan(
-		&acceptedOccurrenceID,
+		&branchOccurrenceID,
 	)).To(Succeed())
 	Expect(tx.QueryRow(`SELECT nextval('agent_publications_id_seq')`).Scan(
 		&creationPublicationID,
@@ -1095,33 +1115,24 @@ func insertAgentPRBindingEvidence(
 	Expect(err).NotTo(HaveOccurred())
 	_, err = tx.Exec(`
 		INSERT INTO agent_publications
-			(id, operation_key, team_id, team_name, workflow_run_id, build_id,
+			(id, operation_key, operation_kind, operation_payload,
+			 team_id, team_name, workflow_run_id, build_id,
 			 actor, input_snapshot_id, publisher, destination, mode, parameters,
 			 approval_policy_version, status, result, lease_owner_occurrence_id)
-		VALUES ($1, $2, $3, $4, $5, $6, 'concourse', $7,
-		        'accepted-review-authority/v1', $8, 'pull-request', '{}', $9,
-		        'succeeded', '{"status":"succeeded"}', $10)
-	`, acceptedPublicationID,
-		"sha256:"+fmt.Sprintf("%064x", acceptedPublicationID+2000),
-		teamID, teamName, workflowRunID, buildID, int64(acceptedCandidate.ID),
-		target.Destination, target.ApprovalPolicyVersion, acceptedOccurrenceID)
+		VALUES ($1, $2, 'publish_pr_branch', $3, $4, $5, $6, $7,
+		        'concourse', $8, 'provider-native-pr/v1', $9, 'branch', '{}',
+		        $10, 'succeeded', $11, $12)
+	`, branchPublicationID, branchOperationKey, branchPayload, teamID, teamName,
+		workflowRunID, buildID, int64(candidate.ID), target.Destination,
+		target.ApprovalPolicyVersion, branchResult, branchOccurrenceID)
 	Expect(err).NotTo(HaveOccurred())
 	_, err = tx.Exec(`
 		INSERT INTO agent_publication_occurrences
 			(id, publication_id, team_id, team_name, workflow_run_id, build_id,
 			 actor, input_snapshot_id, status)
 		VALUES ($1, $2, $3, $4, $5, $6, 'concourse', $7, 'succeeded')
-	`, acceptedOccurrenceID, acceptedPublicationID, teamID, teamName,
-		workflowRunID, buildID, int64(acceptedCandidate.ID))
-	Expect(err).NotTo(HaveOccurred())
-	_, err = tx.Exec(`
-		INSERT INTO agent_publication_approval_evidence
-			(publication_id, team_id, evidence_kind,
-			 review_snapshot_id, candidate_snapshot_id, validation_snapshot_id,
-			 review_workflow_run_id, outcome_revision, accepted_by, accepted_at)
-		VALUES ($1, $2, 'accepted_review', $3, $4, $5, $6, 1, 'reviewer', $7)
-	`, acceptedOccurrenceID, teamID, int64(review.ID), int64(acceptedCandidate.ID),
-		int64(validation.ID), reviewWorkflowRunID, resolvedAt)
+	`, branchOccurrenceID, branchPublicationID, teamID, teamName,
+		workflowRunID, buildID, int64(candidate.ID))
 	Expect(err).NotTo(HaveOccurred())
 	_, err = tx.Exec(`
 		INSERT INTO agent_publications
@@ -1132,9 +1143,10 @@ func insertAgentPRBindingEvidence(
 		VALUES ($1, $2, 'create_pr', $3, $4, $5, $6, $7, 'concourse', $8,
 		        'provider-native-pr/v1', $9, 'pull-request', '{}', $10,
 		        'succeeded', $11, $12)
-	`, creationPublicationID, operationKey, payload, teamID, teamName, workflowRunID,
+	`, creationPublicationID, createOperationKey, createPayload,
+		teamID, teamName, workflowRunID,
 		buildID, int64(candidate.ID), target.Destination,
-		target.ApprovalPolicyVersion, result, creationOccurrenceID)
+		target.ApprovalPolicyVersion, createResult, creationOccurrenceID)
 	Expect(err).NotTo(HaveOccurred())
 	_, err = tx.Exec(`
 		INSERT INTO agent_publication_occurrences
@@ -1145,26 +1157,36 @@ func insertAgentPRBindingEvidence(
 		workflowRunID, buildID,
 		int64(candidate.ID))
 	Expect(err).NotTo(HaveOccurred())
-	for role, reference := range map[string]snapshot.SnapshotRef{
-		"observation": observation, "validation": validation, "impact": impact,
+	for _, occurrenceID := range []int64{
+		branchOccurrenceID, creationOccurrenceID,
 	} {
+		for role, reference := range map[string]snapshot.SnapshotRef{
+			"observation": observation,
+			"validation":  validation,
+			"impact":      impact,
+		} {
+			_, err = tx.Exec(`
+				INSERT INTO agent_publication_inputs
+					(publication_id, team_id, role, snapshot_id)
+				VALUES ($1, $2, $3, $4)
+			`, occurrenceID, teamID, role, int64(reference.ID))
+			Expect(err).NotTo(HaveOccurred())
+		}
 		_, err = tx.Exec(`
-			INSERT INTO agent_publication_inputs
-				(publication_id, team_id, role, snapshot_id)
-			VALUES ($1, $2, $3, $4)
-		`, creationOccurrenceID, teamID, role, int64(reference.ID))
+			INSERT INTO agent_publication_approval_evidence
+				(publication_id, team_id, evidence_kind,
+				 review_snapshot_id, candidate_snapshot_id,
+				 validation_snapshot_id, review_workflow_run_id,
+				 outcome_revision, accepted_by, accepted_at)
+			VALUES ($1, $2, 'accepted_review', $3, $4, $5, $6, 1,
+			        'reviewer', $7)
+		`, occurrenceID, teamID, int64(review.ID),
+			int64(acceptedCandidate.ID), int64(acceptedValidation.ID),
+			reviewWorkflowRunID, resolvedAt)
 		Expect(err).NotTo(HaveOccurred())
 	}
-	_, err = tx.Exec(`
-		INSERT INTO agent_publication_approval_evidence
-			(publication_id, team_id, evidence_kind, human_wait_id,
-			 question_snapshot_id, answer_snapshot_id, resolved_by, resolved_at)
-		VALUES ($1, $2, 'human_wait', $3, $4, $5, 'reviewer', $6)
-	`, creationOccurrenceID, teamID, waitID, int64(question.ID),
-		int64(answer.ID), resolvedAt)
-	Expect(err).NotTo(HaveOccurred())
 	Expect(tx.Commit()).To(Succeed())
-	return workflowRunID, acceptedOccurrenceID, creationOccurrenceID,
+	return workflowRunID, branchOccurrenceID, creationOccurrenceID,
 		int64(observation.ID)
 }
 

@@ -175,6 +175,15 @@ direct publication.
     through a row-locked direct binding transition. They do not reserve or
     launch a revision run, invoke a forge mutator, or invent publication
     evidence. Owned-pipeline disposal is a later lifecycle consequence.
+30. **Initial binding authority accepts exact occurrence aliases.** Publication
+    operation identity is semantic, while each retrying workflow run receives
+    its own independently authorized occurrence. Recovery after a completed
+    provider side effect but before binding creation therefore accepts a
+    succeeded same-run occurrence alias; it does not require that occurrence to
+    be the operation's lease owner. The alias must still reopen as the exact
+    `publish_pr_branch` or `create_pr` action and match the complete action,
+    result, snapshots, accepted-review evidence, refs, heads, destination, and
+    policy before it can establish binding authority.
 
 ## Implementation checkpoint
 

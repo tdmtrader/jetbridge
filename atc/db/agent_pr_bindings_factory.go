@@ -1318,32 +1318,25 @@ func validateAgentPRBindingOrigin(
 	queryer snapshotQueryer,
 	request pullrequest.CreateBinding,
 ) (pullrequest.AcceptedReviewAuthority, error) {
-	var acceptedReviewOrigin bool
-	err := queryer.QueryRowContext(ctx, `
-		SELECT EXISTS (
-			SELECT 1
-			FROM agent_publication_occurrences occurrence
-			JOIN agent_publications publication
-			  ON publication.id=occurrence.publication_id
-			JOIN agent_workflow_runs run
-			  ON run.id=occurrence.workflow_run_id
-			 AND run.team_id=occurrence.team_id
-			WHERE occurrence.id=$1
-			  AND occurrence.team_id=$2
-			  AND occurrence.workflow_run_id=$3
-			  AND occurrence.status='succeeded'
-			  AND publication.team_id=occurrence.team_id
-			  AND publication.status='succeeded'
-			  AND run.definition_kind='workflow'
+	if err := validateAgentPRBindingPublicationOccurrence(
+		ctx, queryer, request.OriginatingPublicationOccurrence,
+		request.TeamID, request.OriginatingWorkflowRunID,
+		publisher.OperationPublishPRBranch,
+	); err != nil {
+		return pullrequest.AcceptedReviewAuthority{}, fmt.Errorf(
+			"%w: originating branch publication occurrence is not exact",
+			pullrequest.ErrBindingConflict,
 		)
-	`, request.OriginatingPublicationOccurrence, request.TeamID,
-		int64(request.OriginatingWorkflowRunID)).Scan(&acceptedReviewOrigin)
+	}
+	branchRecord, found, err := getAgentPublicationOccurrence(
+		ctx, queryer, request.OriginatingPublicationOccurrence, false,
+	)
 	if err != nil {
 		return pullrequest.AcceptedReviewAuthority{}, err
 	}
-	if !acceptedReviewOrigin {
+	if !found {
 		return pullrequest.AcceptedReviewAuthority{}, fmt.Errorf(
-			"%w: originating accepted-review publication occurrence is not exact",
+			"%w: originating branch publication occurrence is unavailable",
 			pullrequest.ErrBindingConflict,
 		)
 	}
@@ -1371,35 +1364,13 @@ func validateAgentPRBindingOrigin(
 		)
 	}
 
-	var exactCreationOccurrence bool
-	err = queryer.QueryRowContext(ctx, `
-		SELECT EXISTS (
-			SELECT 1
-			FROM agent_publication_occurrences occurrence
-			JOIN agent_publications publication
-			  ON publication.id=occurrence.publication_id
-			JOIN agent_workflow_runs run
-			  ON run.id=occurrence.workflow_run_id
-			 AND run.team_id=occurrence.team_id
-			WHERE occurrence.id=$1
-			  AND occurrence.team_id=$2
-			  AND occurrence.workflow_run_id=$3
-			  AND occurrence.status='succeeded'
-			  AND publication.team_id=occurrence.team_id
-			  AND publication.status='succeeded'
-			  AND publication.lease_owner_occurrence_id=occurrence.id
-			  AND run.definition_kind='workflow'
-		)
-	`, request.CreationPublicationOccurrenceID,
-		request.TeamID, int64(request.OriginatingWorkflowRunID)).Scan(
-		&exactCreationOccurrence,
-	)
-	if err != nil {
-		return pullrequest.AcceptedReviewAuthority{}, err
-	}
-	if !exactCreationOccurrence {
+	if err := validateAgentPRBindingPublicationOccurrence(
+		ctx, queryer, request.CreationPublicationOccurrenceID,
+		request.TeamID, request.OriginatingWorkflowRunID,
+		publisher.OperationCreatePR,
+	); err != nil {
 		return pullrequest.AcceptedReviewAuthority{}, fmt.Errorf(
-			"%w: creation publication occurrence is not the exact succeeded owner",
+			"%w: creation publication occurrence is not exact",
 			pullrequest.ErrBindingConflict,
 		)
 	}
@@ -1415,39 +1386,215 @@ func validateAgentPRBindingOrigin(
 			pullrequest.ErrBindingConflict,
 		)
 	}
-	publication := record.publication
-	if publication.ID != snapshot.DatabaseID(request.CreationPublicationOccurrenceID) ||
-		publication.Status != publisher.StatusSucceeded ||
-		publication.OperationKind != publisher.OperationCreatePR ||
-		publication.PRAction == nil ||
-		publication.PRAction.PullRequest == nil {
-		return pullrequest.AcceptedReviewAuthority{}, fmt.Errorf(
-			"%w: creation publication occurrence is not a succeeded provider-native create_pr",
-			pullrequest.ErrBindingConflict,
-		)
-	}
-	action := publication.PRAction.PullRequest
-	if action.Authority.TeamID != request.TeamID ||
-		action.Authority.WorkflowRunID != request.OriginatingWorkflowRunID ||
-		action.Locator.Provider != publisher.PRProvider(request.Locator.Provider) ||
-		action.Locator.Repository != request.Locator.Repository ||
-		action.Locator.ExternalID != "" ||
-		action.SourceRef != request.SourceRef ||
-		action.SourceSHA != request.LastReconciledSourceSHA ||
-		action.TargetRef != request.TargetRef ||
-		action.TargetSHA != request.LastReconciledTargetSHA ||
-		action.Destination != request.Destination ||
-		action.ApprovalPolicyVersion != request.ApprovalPolicyVersion ||
-		publication.Result.ExternalID != request.Locator.ExternalID ||
-		publication.Result.URL != request.URL ||
-		publication.Result.HeadSHA != request.LastReconciledSourceSHA ||
-		publication.Result.BaseSHA != request.LastReconciledTargetSHA {
-		return pullrequest.AcceptedReviewAuthority{}, fmt.Errorf(
-			"%w: creation create_pr action or result does not match binding authority",
-			pullrequest.ErrBindingConflict,
-		)
+	if err := validateAgentPRBindingInitialPublications(
+		request, protectedAccepted, branchRecord.publication,
+		record.publication,
+	); err != nil {
+		return pullrequest.AcceptedReviewAuthority{}, err
 	}
 	return protectedAccepted, nil
+}
+
+func validateAgentPRBindingPublicationOccurrence(
+	ctx context.Context,
+	queryer snapshotQueryer,
+	occurrenceID int64,
+	teamID int,
+	workflowRunID snapshot.WorkflowRunID,
+	operationKind publisher.OperationKind,
+) error {
+	var exact bool
+	err := queryer.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM agent_publication_occurrences occurrence
+			JOIN agent_publications publication
+			  ON publication.id=occurrence.publication_id
+			JOIN agent_workflow_runs run
+			  ON run.id=occurrence.workflow_run_id
+			 AND run.team_id=occurrence.team_id
+			WHERE occurrence.id=$1
+			  AND occurrence.team_id=$2
+			  AND occurrence.workflow_run_id=$3
+			  AND occurrence.status='succeeded'
+			  AND publication.team_id=occurrence.team_id
+			  AND publication.status='succeeded'
+			  AND publication.operation_kind=$4
+			  AND run.definition_kind='workflow'
+		)
+	`, occurrenceID, teamID, int64(workflowRunID), string(operationKind)).Scan(
+		&exact,
+	)
+	if err != nil {
+		return err
+	}
+	if !exact {
+		return pullrequest.ErrBindingConflict
+	}
+	return nil
+}
+
+func validateAgentPRBindingInitialPublications(
+	request pullrequest.CreateBinding,
+	accepted pullrequest.AcceptedReviewAuthority,
+	branchPublication publisher.Publication,
+	creationPublication publisher.Publication,
+) error {
+	protectedAccepted, err := accepted.Protected()
+	if err != nil ||
+		protectedAccepted.TeamID != request.TeamID ||
+		protectedAccepted.PublicationOccurrenceID !=
+			request.OriginatingPublicationOccurrence {
+		return fmt.Errorf(
+			"%w: initial accepted-review authority is invalid",
+			pullrequest.ErrBindingConflict,
+		)
+	}
+	accepted = protectedAccepted
+	branchValid := branchPublication.ID ==
+		snapshot.DatabaseID(request.OriginatingPublicationOccurrence) &&
+		branchPublication.Status == publisher.StatusSucceeded &&
+		branchPublication.Result.Status == publisher.StatusSucceeded &&
+		branchPublication.Result.Validate() == nil &&
+		branchPublication.OperationKind ==
+			publisher.OperationPublishPRBranch &&
+		branchPublication.PRAction != nil &&
+		branchPublication.PRAction.Kind ==
+			publisher.OperationPublishPRBranch &&
+		branchPublication.PRAction.Branch != nil &&
+		branchPublication.PRAction.ValidatePersisted() == nil
+	creationValid := creationPublication.ID ==
+		snapshot.DatabaseID(request.CreationPublicationOccurrenceID) &&
+		creationPublication.Status == publisher.StatusSucceeded &&
+		creationPublication.Result.Status == publisher.StatusSucceeded &&
+		creationPublication.Result.Validate() == nil &&
+		creationPublication.OperationKind == publisher.OperationCreatePR &&
+		creationPublication.PRAction != nil &&
+		creationPublication.PRAction.Kind == publisher.OperationCreatePR &&
+		creationPublication.PRAction.PullRequest != nil &&
+		creationPublication.PRAction.ValidatePersisted() == nil
+	if !branchValid || !creationValid {
+		return fmt.Errorf(
+			"%w: initial branch or creation publication is invalid",
+			pullrequest.ErrBindingConflict,
+		)
+	}
+
+	branch := branchPublication.PRAction.Branch
+	creation := creationPublication.PRAction.PullRequest
+	expectedProvider := publisher.PRProvider(request.Locator.Provider)
+	if branch.Authority != creation.Authority ||
+		branch.Authority.TeamID != request.TeamID ||
+		branch.Authority.WorkflowRunID !=
+			request.OriginatingWorkflowRunID ||
+		branch.Locator.Provider != expectedProvider ||
+		branch.Locator.Repository != request.Locator.Repository ||
+		branch.Locator.ExternalID != "" ||
+		branch.SourceRef != request.SourceRef ||
+		branch.TargetRef != request.TargetRef ||
+		branch.ExpectedTargetSHA != request.LastReconciledTargetSHA ||
+		branch.NewSourceSHA != request.LastReconciledSourceSHA ||
+		branch.Destination != request.Destination ||
+		branch.ApprovalPolicyVersion !=
+			request.ApprovalPolicyVersion ||
+		branchPublication.Result.ExternalID != request.SourceRef ||
+		branchPublication.Result.URL != "" ||
+		branchPublication.Result.HeadSHA !=
+			request.LastReconciledSourceSHA ||
+		branchPublication.Result.BaseSHA !=
+			request.LastReconciledTargetSHA ||
+		branchPublication.Result.Detail != "" {
+		return fmt.Errorf(
+			"%w: branch publication does not establish binding authority",
+			pullrequest.ErrBindingConflict,
+		)
+	}
+	if creation.Locator.Provider != expectedProvider ||
+		creation.Locator.Repository != request.Locator.Repository ||
+		creation.Locator.ExternalID != "" ||
+		creation.SourceRef != request.SourceRef ||
+		creation.SourceSHA != request.LastReconciledSourceSHA ||
+		creation.TargetRef != request.TargetRef ||
+		creation.TargetSHA != request.LastReconciledTargetSHA ||
+		creation.Destination != request.Destination ||
+		creation.ApprovalPolicyVersion !=
+			request.ApprovalPolicyVersion ||
+		creationPublication.Result.ExternalID !=
+			request.Locator.ExternalID ||
+		creationPublication.Result.URL != request.URL ||
+		creationPublication.Result.HeadSHA !=
+			request.LastReconciledSourceSHA ||
+		creationPublication.Result.BaseSHA !=
+			request.LastReconciledTargetSHA ||
+		creationPublication.Result.Detail != "" {
+		return fmt.Errorf(
+			"%w: creation publication does not establish binding authority",
+			pullrequest.ErrBindingConflict,
+		)
+	}
+	if branch.Observation != creation.Observation ||
+		branch.Candidate != creation.Candidate ||
+		branch.Validation != creation.Validation ||
+		branch.Impact != creation.Impact ||
+		!sameAgentPRAcceptedReviewEvidence(
+			branch.Evidence, creation.Evidence,
+		) ||
+		!agentPRAcceptedReviewMatchesAuthority(
+			branch.Evidence, accepted,
+		) {
+		return fmt.Errorf(
+			"%w: initial branch and creation evidence do not share exact authority",
+			pullrequest.ErrBindingConflict,
+		)
+	}
+	return nil
+}
+
+func sameAgentPRAcceptedReviewEvidence(
+	left publisher.PublicationEvidence,
+	right publisher.PublicationEvidence,
+) bool {
+	if left.Kind != publisher.EvidenceAcceptedReview ||
+		right.Kind != publisher.EvidenceAcceptedReview ||
+		left.AcceptedReview == nil || right.AcceptedReview == nil ||
+		left.HumanWait != nil || right.HumanWait != nil ||
+		left.Validate() != nil || right.Validate() != nil {
+		return false
+	}
+	return left.AcceptedReview.Review == right.AcceptedReview.Review &&
+		left.AcceptedReview.Candidate ==
+			right.AcceptedReview.Candidate &&
+		left.AcceptedReview.Validation ==
+			right.AcceptedReview.Validation &&
+		left.AcceptedReview.ReviewWorkflowRunID ==
+			right.AcceptedReview.ReviewWorkflowRunID &&
+		left.AcceptedReview.OutcomeRevision ==
+			right.AcceptedReview.OutcomeRevision &&
+		left.AcceptedReview.AcceptedBy ==
+			right.AcceptedReview.AcceptedBy &&
+		left.AcceptedReview.AcceptedAt.Equal(
+			right.AcceptedReview.AcceptedAt,
+		)
+}
+
+func agentPRAcceptedReviewMatchesAuthority(
+	evidence publisher.PublicationEvidence,
+	accepted pullrequest.AcceptedReviewAuthority,
+) bool {
+	if evidence.Kind != publisher.EvidenceAcceptedReview ||
+		evidence.AcceptedReview == nil ||
+		evidence.HumanWait != nil ||
+		evidence.Validate() != nil {
+		return false
+	}
+	value := evidence.AcceptedReview
+	return accepted.TeamID > 0 &&
+		accepted.PublicationOccurrenceID > 0 &&
+		value.Review == accepted.Review &&
+		value.Candidate == accepted.Candidate &&
+		value.Validation == accepted.Validation &&
+		value.ReviewWorkflowRunID == accepted.ReviewWorkflowRunID &&
+		value.OutcomeRevision == accepted.OutcomeRevision
 }
 
 func validateAgentPRSnapshotOwner(

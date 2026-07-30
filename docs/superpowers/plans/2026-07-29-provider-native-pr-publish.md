@@ -1903,7 +1903,9 @@ authority, and mutable approved baseline (repository snapshot, validation
 snapshot, and authorizing publication occurrence) as distinct same-team
 foreign-keyed facts. Binding creation must reopen and match the exact
 successful `create_pr` occurrence and its exact result, action, observation,
-heads, refs, destination, and policy.
+heads, refs, destination, and policy. Treat an independently authorized
+succeeded occurrence alias as exact recovery evidence; do not require it to be
+the semantic operation's original lease owner.
 
 - [x] **Step 2: Implement initial publication and provider reobservation**
 
