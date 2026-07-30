@@ -93,6 +93,7 @@ func canonicalManagedAgentBrokerSpec(t *testing.T) ContainerSpec {
 	authority := map[string]any{
 		"authority_endpoint":        "http://concourse-web/api/v1/internal",
 		"bootstrap_capability_file": ManagedAgentBrokerAuthorityMountRoot + "/" + ManagedAgentBrokerBootstrapFile,
+		"mcp_access_token_file":     ManagedAgentBrokerAuthorityMountRoot + "/" + ManagedAgentBrokerMCPAccessFile,
 		"workspace_root":            ManagedAgentBrokerWorkspaceMountPath,
 		"scratch_root":              ManagedAgentBrokerScratchMountPath,
 		"adapter_binaries":          map[string]string{"codex": "/opt/bin/codex", "claude": "/opt/bin/claude", "cursor-agent": "/opt/bin/cursor-agent"},
@@ -111,8 +112,15 @@ func canonicalManagedAgentBrokerSpec(t *testing.T) ContainerSpec {
 	image := resolved.WorkerImage
 	return ContainerSpec{
 		Type: db.ContainerTypeAgent, Hermetic: true, Dir: "/work",
-		Env:    []string{ManagedAgentBrokerMarkerEnv + "=1"},
+		Env: []string{
+			ManagedAgentBrokerMarkerEnv + "=1",
+			ManagedAgentBrokerTokenFileEnv + "=" + ManagedAgentBrokerParentMountRoot + "/" + ManagedAgentBrokerParentAccessFile,
+		},
 		Inputs: []Input{{DestinationPath: "/work/workspace"}},
+		PrivateFileMounts: []PrivateFileMount{{
+			MountPath: ManagedAgentBrokerParentMountRoot,
+			Files:     map[string][]byte{ManagedAgentBrokerParentAccessFile: []byte("parent-access")},
+		}},
 		Sidecars: []atc.SidecarConfig{{
 			Name: ManagedAgentBrokerName, Image: image,
 			Command:    []string{"/usr/local/bin/agent-broker"},
@@ -122,7 +130,12 @@ func canonicalManagedAgentBrokerSpec(t *testing.T) ContainerSpec {
 		ManagedAgentBroker: &ManagedAgentBroker{
 			Authority: PrivateFileMount{MountPath: ManagedAgentBrokerAuthorityMountRoot, Files: map[string][]byte{
 				ManagedAgentBrokerAuthorityFile: raw, ManagedAgentBrokerBootstrapFile: []byte("capability"),
+				ManagedAgentBrokerMCPAccessFile: []byte("parent-access"),
 			}},
+			ParentAccess: PrivateFileMount{
+				MountPath: ManagedAgentBrokerParentMountRoot,
+				Files:     map[string][]byte{ManagedAgentBrokerParentAccessFile: []byte("parent-access")},
+			},
 			WorkspaceInputPath: "/work/workspace", ScratchSizeBytes: 1 << 30,
 			Credentials: []SecretKeyMount{{Slot: "shared", SecretName: "broker-provider", Key: "token", MountPath: ManagedAgentBrokerCredentialMountRoot + "/shared"}},
 			Resources:   atc.SidecarResources{Requests: atc.SidecarResourceList{CPU: "100m", Memory: "128Mi"}, Limits: atc.SidecarResourceList{CPU: "1", Memory: "1Gi"}},

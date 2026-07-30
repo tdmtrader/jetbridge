@@ -130,7 +130,7 @@ var captureDigestPattern = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 // compares two independently built temporary indexes. Returning only when
 // they agree makes concurrent workspace mutation a retryable error while
 // leaving the caller's real index byte-for-byte untouched.
-func Capture(directory string, limits Limits) (Result, error) {
+func Capture(directory, scratchRoot string, limits Limits) (Result, error) {
 	if limits.MaxPatchBytes <= 0 || limits.MaxEntries <= 0 || limits.StabilityAttempts <= 0 {
 		return Result{}, fmt.Errorf("workspace capture: positive patch, entry, and stability limits are required")
 	}
@@ -138,13 +138,16 @@ func Capture(directory string, limits Limits) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	if err := validateCaptureScratch(root, scratchRoot); err != nil {
+		return Result{}, err
+	}
 	var previous Result
 	for attempt := 0; attempt < limits.StabilityAttempts; attempt++ {
-		first, err := captureOnce(root, limits)
+		first, err := captureOnce(root, scratchRoot, limits)
 		if err != nil {
 			return Result{}, err
 		}
-		second, err := captureOnce(root, limits)
+		second, err := captureOnce(root, scratchRoot, limits)
 		if err != nil {
 			return Result{}, err
 		}
@@ -155,6 +158,28 @@ func Capture(directory string, limits Limits) (Result, error) {
 	}
 	return Result{}, fmt.Errorf("%w after %d attempts (last result tree %s)",
 		ErrUnstable, limits.StabilityAttempts, previous.ResultTree)
+}
+
+func validateCaptureScratch(repositoryRoot, scratchRoot string) error {
+	if !filepath.IsAbs(scratchRoot) || filepath.Clean(scratchRoot) != scratchRoot || scratchRoot == string(filepath.Separator) {
+		return fmt.Errorf("workspace capture: scratch root must be an absolute clean non-root directory")
+	}
+	info, err := os.Lstat(scratchRoot)
+	if err != nil {
+		return fmt.Errorf("workspace capture: inspect scratch root: %w", err)
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("workspace capture: scratch root must be a directory and not a symlink")
+	}
+	if pathContains(repositoryRoot, scratchRoot) || pathContains(scratchRoot, repositoryRoot) {
+		return fmt.Errorf("workspace capture: scratch root and repository must not overlap")
+	}
+	return nil
+}
+
+func pathContains(parent, child string) bool {
+	relative, err := filepath.Rel(parent, child)
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }
 
 func repositoryRoot(directory string) (string, error) {
@@ -172,7 +197,7 @@ func repositoryRoot(directory string) (string, error) {
 	return root, nil
 }
 
-func captureOnce(root string, limits Limits) (Result, error) {
+func captureOnce(root, scratchRoot string, limits Limits) (Result, error) {
 	baseCommit, err := gitValue(root, nil, "rev-parse", "--verify", "HEAD")
 	if err != nil {
 		return Result{}, fmt.Errorf("workspace capture: resolve HEAD: %w", err)
@@ -191,14 +216,26 @@ func captureOnce(root string, limits Limits) (Result, error) {
 	if paths := conflicts(state.staged, state.unstaged); len(paths) > 0 {
 		return Result{}, fmt.Errorf("%w: %s", ErrConflictingState, strings.Join(paths, ", "))
 	}
-	scratch, err := os.MkdirTemp("", "concourse-broker-index-")
+	scratch, err := os.MkdirTemp(scratchRoot, "concourse-broker-capture-")
 	if err != nil {
 		return Result{}, fmt.Errorf("workspace capture: create scratch: %w", err)
 	}
 	defer os.RemoveAll(scratch)
 
+	sourceObjects, err := gitObjectDirectory(root)
+	if err != nil {
+		return Result{}, err
+	}
+	scratchObjects := filepath.Join(scratch, "objects")
+	if err := os.Mkdir(scratchObjects, 0o700); err != nil {
+		return Result{}, fmt.Errorf("workspace capture: create scratch object database: %w", err)
+	}
 	index := filepath.Join(scratch, "index")
-	environment := []string{"GIT_INDEX_FILE=" + index}
+	environment := []string{
+		"GIT_INDEX_FILE=" + index,
+		"GIT_OBJECT_DIRECTORY=" + scratchObjects,
+		"GIT_ALTERNATE_OBJECT_DIRECTORIES=" + sourceObjects,
+	}
 	if _, err := runGit(root, environment, nil, "read-tree", baseCommit); err != nil {
 		return Result{}, fmt.Errorf("workspace capture: initialize temporary index: %w", err)
 	}
@@ -256,6 +293,28 @@ func captureOnce(root string, limits Limits) (Result, error) {
 		PolicyRevision: policyRevision,
 		Observations:   observations,
 	}, nil
+}
+
+func gitObjectDirectory(root string) (string, error) {
+	value, err := gitValue(root, nil, "rev-parse", "--git-path", "objects")
+	if err != nil {
+		return "", fmt.Errorf("workspace capture: resolve source object database: %w", err)
+	}
+	if !filepath.IsAbs(value) {
+		value = filepath.Join(root, value)
+	}
+	value = filepath.Clean(value)
+	info, err := os.Lstat(value)
+	if err != nil {
+		return "", fmt.Errorf("workspace capture: inspect source object database: %w", err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("workspace capture: source object database is not a directory")
+	}
+	if strings.ContainsRune(value, os.PathListSeparator) {
+		return "", fmt.Errorf("workspace capture: source object database path contains a path-list separator")
+	}
+	return value, nil
 }
 
 type workspaceState struct {

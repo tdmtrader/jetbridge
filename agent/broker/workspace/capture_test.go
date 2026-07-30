@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"testing"
@@ -34,7 +35,7 @@ func TestCaptureIncludesCompleteDirtyWorkspaceAndPreservesIndex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	capture, err := workspace.Capture(repository, workspace.Limits{
+	capture, err := workspace.Capture(repository, t.TempDir(), workspace.Limits{
 		MaxPatchBytes: 1 << 20, MaxEntries: 100, StabilityAttempts: 2,
 	})
 	if err != nil {
@@ -82,8 +83,34 @@ func TestCaptureIncludesCompleteDirtyWorkspaceAndPreservesIndex(t *testing.T) {
 	}
 }
 
+func TestCaptureUsesOnlyConfiguredScratchAndDoesNotWriteGitObjects(t *testing.T) {
+	repository := newRepository(t)
+	writeFile(t, repository, "tracked.txt", []byte("base\n"), 0o644)
+	git(t, repository, "add", "tracked.txt")
+	git(t, repository, "commit", "-m", "base")
+	writeFile(t, repository, "tracked.txt", []byte("dirty\n"), 0o644)
+
+	objectsBefore := treeEntries(t, filepath.Join(repository, ".git", "objects"))
+	scratchRoot := t.TempDir()
+	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "must-not-be-used"))
+
+	if _, err := workspace.Capture(repository, scratchRoot, workspace.Limits{
+		MaxPatchBytes: 1 << 20, MaxEntries: 100, StabilityAttempts: 1,
+	}); err != nil {
+		t.Fatalf("Capture(): %v", err)
+	}
+	if objectsAfter := treeEntries(t, filepath.Join(repository, ".git", "objects")); !equalStrings(objectsAfter, objectsBefore) {
+		t.Fatalf("source Git objects changed:\nbefore: %v\nafter:  %v", objectsBefore, objectsAfter)
+	}
+	if entries, err := os.ReadDir(scratchRoot); err != nil {
+		t.Fatal(err)
+	} else if len(entries) != 0 {
+		t.Fatalf("capture scratch was not cleaned up: %v", entries)
+	}
+}
+
 func TestCaptureRejectsNonGitAndOversizedChanges(t *testing.T) {
-	if _, err := workspace.Capture(t.TempDir(), workspace.Limits{
+	if _, err := workspace.Capture(t.TempDir(), t.TempDir(), workspace.Limits{
 		MaxPatchBytes: 1024, MaxEntries: 10, StabilityAttempts: 1,
 	}); err == nil || !strings.Contains(err.Error(), "Git worktree") {
 		t.Fatalf("non-Git error = %v", err)
@@ -94,7 +121,7 @@ func TestCaptureRejectsNonGitAndOversizedChanges(t *testing.T) {
 	git(t, repository, "add", ".")
 	git(t, repository, "commit", "-m", "base")
 	writeFile(t, repository, "large", bytes.Repeat([]byte("x"), 4096), 0o644)
-	if _, err := workspace.Capture(repository, workspace.Limits{
+	if _, err := workspace.Capture(repository, t.TempDir(), workspace.Limits{
 		MaxPatchBytes: 32, MaxEntries: 10, StabilityAttempts: 1,
 	}); err == nil || !strings.Contains(err.Error(), "limit") {
 		t.Fatalf("size error = %v", err)
@@ -111,7 +138,7 @@ func TestCaptureRejectsConflictingStagedAndUnstagedContents(t *testing.T) {
 	git(t, repository, "add", "tracked.txt")
 	writeFile(t, repository, "tracked.txt", []byte("unstaged\n"), 0o644)
 
-	if _, err := workspace.Capture(repository, workspace.Limits{
+	if _, err := workspace.Capture(repository, t.TempDir(), workspace.Limits{
 		MaxPatchBytes: 1 << 20, MaxEntries: 100, StabilityAttempts: 1,
 	}); err == nil {
 		t.Fatal("Capture() accepted conflicting staged and unstaged content")
@@ -142,7 +169,7 @@ func TestCapturePublishesStableFileObservations(t *testing.T) {
 	}
 	writeFile(t, repository, "ignored.txt", []byte("excluded\n"), 0o644)
 
-	capture, err := workspace.Capture(repository, workspace.Limits{
+	capture, err := workspace.Capture(repository, t.TempDir(), workspace.Limits{
 		MaxPatchBytes: 1 << 20, MaxEntries: 100, StabilityAttempts: 1,
 	})
 	if err != nil {
@@ -197,7 +224,7 @@ func TestCaptureRejectsDirtySubmoduleContents(t *testing.T) {
 	git(t, repository, "commit", "-m", "add submodule")
 	writeFile(t, repository, "module/inside.txt", []byte("dirty\n"), 0o644)
 
-	if _, err := workspace.Capture(repository, workspace.Limits{
+	if _, err := workspace.Capture(repository, t.TempDir(), workspace.Limits{
 		MaxPatchBytes: 1 << 20, MaxEntries: 100, StabilityAttempts: 1,
 	}); err == nil {
 		t.Fatal("Capture() accepted dirty submodule contents")
@@ -219,7 +246,7 @@ func TestCaptureRecordsRepresentableSubmoduleGitlink(t *testing.T) {
 	git(t, filepath.Join(repository, "module"), "add", "inside.txt")
 	git(t, filepath.Join(repository, "module"), "commit", "-m", "next")
 
-	capture, err := workspace.Capture(repository, workspace.Limits{
+	capture, err := workspace.Capture(repository, t.TempDir(), workspace.Limits{
 		MaxPatchBytes: 1 << 20, MaxEntries: 100, StabilityAttempts: 1,
 	})
 	if err != nil {
@@ -238,7 +265,7 @@ func TestCaptureRejectsEntryLimit(t *testing.T) {
 	git(t, repository, "add", ".")
 	git(t, repository, "commit", "-m", "base")
 
-	if _, err := workspace.Capture(repository, workspace.Limits{
+	if _, err := workspace.Capture(repository, t.TempDir(), workspace.Limits{
 		MaxPatchBytes: 1 << 20, MaxEntries: 1, StabilityAttempts: 1,
 	}); err == nil || !strings.Contains(err.Error(), "limit") {
 		t.Fatalf("entry limit error = %v", err)
@@ -252,7 +279,7 @@ func TestCapturePreservesRenamedResultTree(t *testing.T) {
 	git(t, repository, "commit", "-m", "base")
 	git(t, repository, "mv", "old.txt", "new.txt")
 
-	capture, err := workspace.Capture(repository, workspace.Limits{
+	capture, err := workspace.Capture(repository, t.TempDir(), workspace.Limits{
 		MaxPatchBytes: 1 << 20, MaxEntries: 100, StabilityAttempts: 1,
 	})
 	if err != nil {
@@ -270,7 +297,7 @@ func TestMaterializeCreatesDisposableCapturedWorkspace(t *testing.T) {
 	git(t, repository, "commit", "-m", "base")
 	writeFile(t, repository, "tracked.txt", []byte("captured\n"), 0o644)
 
-	capture, err := workspace.Capture(repository, workspace.Limits{
+	capture, err := workspace.Capture(repository, t.TempDir(), workspace.Limits{
 		MaxPatchBytes: 1 << 20, MaxEntries: 100, StabilityAttempts: 1,
 	})
 	if err != nil {
@@ -355,7 +382,7 @@ exec "$CAPTURE_REAL_GIT" "$@"
 	t.Setenv("CAPTURE_MUTATION_FILE", mutationFile)
 	t.Setenv("CAPTURE_MUTATION_DONE", filepath.Join(t.TempDir(), "done"))
 
-	if _, err := workspace.Capture(repository, workspace.Limits{
+	if _, err := workspace.Capture(repository, t.TempDir(), workspace.Limits{
 		MaxPatchBytes: 1 << 20, MaxEntries: 100, StabilityAttempts: 1,
 	}); !errors.Is(err, workspace.ErrUnstable) {
 		t.Fatalf("mutation error = %v, want ErrUnstable", err)
@@ -379,7 +406,7 @@ exec "$CAPTURE_REAL_GIT" "$@"
 	t.Setenv("CAPTURE_MUTATION_FILE", mutationFile)
 	t.Setenv("CAPTURE_MUTATION_DONE", filepath.Join(t.TempDir(), "done"))
 
-	capture, err := workspace.Capture(repository, workspace.Limits{
+	capture, err := workspace.Capture(repository, t.TempDir(), workspace.Limits{
 		MaxPatchBytes: 1 << 20, MaxEntries: 100, StabilityAttempts: 2,
 	})
 	if err != nil {
@@ -423,7 +450,7 @@ exec "$CAPTURE_REAL_GIT" "$@"
 	t.Setenv("CAPTURE_FIRST_REV_PARSE", filepath.Join(t.TempDir(), "first"))
 	t.Setenv("CAPTURE_BASE_SWITCHED", filepath.Join(t.TempDir(), "switched"))
 
-	capture, err := workspace.Capture(repository, workspace.Limits{
+	capture, err := workspace.Capture(repository, t.TempDir(), workspace.Limits{
 		MaxPatchBytes: 1 << 20, MaxEntries: 100, StabilityAttempts: 1,
 	})
 	if err != nil {
@@ -503,4 +530,38 @@ func installGitWrapper(t *testing.T, script string) {
 	}
 	t.Setenv("CAPTURE_REAL_GIT", realGit)
 	t.Setenv("PATH", directory+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func treeEntries(t *testing.T, root string) []string {
+	t.Helper()
+	var entries []string
+	if err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if path != root {
+			relative, relativeErr := filepath.Rel(root, path)
+			if relativeErr != nil {
+				return relativeErr
+			}
+			entries = append(entries, relative)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(entries)
+	return entries
+}
+
+func equalStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }

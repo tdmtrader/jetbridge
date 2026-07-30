@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -26,6 +27,7 @@ import (
 	"github.com/concourse/concourse/agent/broker/adapter"
 	brokermcp "github.com/concourse/concourse/agent/broker/mcp"
 	"github.com/concourse/concourse/agent/broker/runtime"
+	"github.com/concourse/concourse/agent/broker/sandbox"
 	"github.com/concourse/concourse/agent/broker/transport"
 	"github.com/concourse/concourse/agent/broker/workspace"
 	"github.com/concourse/concourse/agent/snapshot/contracts"
@@ -33,14 +35,17 @@ import (
 
 const listenAddress = "127.0.0.1:7784"
 const authorityConfigPath = "/run/concourse/agent-broker/authority.json"
+const healthcheckURL = "http://" + listenAddress + "/healthz"
 
 type fileConfig struct {
 	AuthorityEndpoint       string                     `json:"authority_endpoint"`
 	BootstrapCapabilityFile string                     `json:"bootstrap_capability_file"`
+	MCPAccessTokenFile      string                     `json:"mcp_access_token_file"`
 	WorkspaceRoot           string                     `json:"workspace_root"`
 	ScratchRoot             string                     `json:"scratch_root"`
 	AdapterBinaries         map[string]string          `json:"adapter_binaries"`
 	OutputSchemas           map[string]string          `json:"output_schemas"`
+	SandboxReadPaths        []string                   `json:"sandbox_read_paths"`
 	CredentialSlots         map[string]string          `json:"credential_slots"`
 	Instructions            map[string]instructionFile `json:"instructions"`
 	Attachments             map[string]attachmentFile  `json:"attachments"`
@@ -58,9 +63,43 @@ type attachmentFile struct {
 }
 
 func main() {
+	if len(os.Args) >= 2 && os.Args[1] == "sandbox-exec" {
+		if err := sandbox.Exec(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "agent-broker sandbox:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) == 3 && os.Args[1] == "sandbox-check" {
+		if err := sandbox.Apply(sandbox.Policy{WritableRoot: os.Args[2]}); err != nil {
+			fmt.Fprintln(os.Stderr, "agent-broker sandbox preflight:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) == 2 && os.Args[1] == "healthcheck" {
+		if err := healthcheck(); err != nil {
+			fmt.Fprintln(os.Stderr, "agent-broker healthcheck:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) != 1 {
+		fmt.Fprintln(os.Stderr, "agent-broker: unsupported command")
+		os.Exit(1)
+	}
 	config, err := loadConfig(authorityConfigPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "agent-broker:", err)
+		os.Exit(1)
+	}
+	if err := preflightSandbox(config.ScratchRoot); err != nil {
+		fmt.Fprintln(os.Stderr, "agent-broker:", err)
+		os.Exit(1)
+	}
+	accessToken, err := readSlot(config.MCPAccessTokenFile)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "agent-broker: read MCP access token:", err)
 		os.Exit(1)
 	}
 	engine, catalog, err := buildEngine(context.Background(), config)
@@ -82,7 +121,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "agent-broker: listen:", err)
 		os.Exit(1)
 	}
-	server := &http.Server{Handler: brokerHTTPHandler(handler), ReadHeaderTimeout: 5 * time.Second}
+	server := &http.Server{Handler: brokerHTTPHandler(handler, accessToken), ReadHeaderTimeout: 5 * time.Second}
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
@@ -97,10 +136,48 @@ func main() {
 	}
 }
 
-func brokerHTTPHandler(mcp http.Handler) http.Handler {
+func preflightSandbox(scratchRoot string) error {
+	probeRoot, err := os.MkdirTemp(scratchRoot, "sandbox-preflight-")
+	if err != nil {
+		return fmt.Errorf("create sandbox preflight scratch: %w", err)
+	}
+	defer os.RemoveAll(probeRoot)
+	executable, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve sandbox preflight helper: %w", err)
+	}
+	command := exec.Command(executable, "sandbox-check", probeRoot)
+	if output, err := command.CombinedOutput(); err != nil {
+		return fmt.Errorf("sandbox preflight failed: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+func healthcheck() error {
+	client := &http.Client{Timeout: time.Second}
+	response, err := client.Get(healthcheckURL)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("status %s", response.Status)
+	}
+	return nil
+}
+
+func brokerHTTPHandler(mcp http.Handler, accessToken string) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
-	mux.Handle("/mcp", mcp)
+	mux.Handle("/mcp", http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		provided := strings.TrimPrefix(request.Header.Get("Authorization"), "Bearer ")
+		if provided == "" || subtle.ConstantTimeCompare([]byte(provided), []byte(accessToken)) != 1 {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		mcp.ServeHTTP(w, request)
+	}))
 	return mux
 }
 
@@ -143,7 +220,12 @@ func validateConfig(config fileConfig) error {
 	if err := validateExactKeys("instructions", config.Instructions, []string{"request_review", "consult_agent"}); err != nil {
 		return err
 	}
-	for label, path := range map[string]string{"bootstrap capability file": config.BootstrapCapabilityFile, "workspace root": config.WorkspaceRoot, "scratch root": config.ScratchRoot} {
+	for label, path := range map[string]string{
+		"bootstrap capability file": config.BootstrapCapabilityFile,
+		"MCP access token file":     config.MCPAccessTokenFile,
+		"workspace root":            config.WorkspaceRoot,
+		"scratch root":              config.ScratchRoot,
+	} {
 		if err := absolutePath(path, label); err != nil {
 			return err
 		}
@@ -154,6 +236,16 @@ func validateConfig(config fileConfig) error {
 	for name, path := range config.AdapterBinaries {
 		if err := absoluteRegularFile(path, "adapter binary "+name); err != nil {
 			return err
+		}
+	}
+	for _, path := range config.SandboxReadPaths {
+		if err := absolutePath(path, "sandbox read path"); err != nil {
+			return err
+		}
+		for _, forbidden := range []string{config.WorkspaceRoot, config.ScratchRoot, "/run/concourse/agent-broker", "/proc"} {
+			if pathsOverlap(path, forbidden) {
+				return fmt.Errorf("broker configuration: sandbox read path %q overlaps denied path %q", path, forbidden)
+			}
 		}
 	}
 	for _, name := range []string{"codex", "claude", "cursor-agent"} {
@@ -263,7 +355,17 @@ func buildEngine(ctx context.Context, config fileConfig) (*broker.Engine, *broke
 	if err != nil {
 		return nil, nil, err
 	}
-	runner, err := runtime.NewRunner(runtime.RunnerConfig{WorkspaceRoot: config.WorkspaceRoot, ScratchRoot: config.ScratchRoot, OutputSchemas: map[broker.Tool]string{broker.ToolRequestReview: config.OutputSchemas["request_review"], broker.ToolConsultAgent: config.OutputSchemas["consult_agent"]}, CaptureLimits: config.CaptureLimits, Probe: pinnedProbe{paths: config.AdapterBinaries}})
+	runner, err := runtime.NewRunner(runtime.RunnerConfig{
+		WorkspaceRoot: config.WorkspaceRoot,
+		ScratchRoot:   config.ScratchRoot,
+		OutputSchemas: map[broker.Tool]string{
+			broker.ToolRequestReview: config.OutputSchemas["request_review"],
+			broker.ToolConsultAgent:  config.OutputSchemas["consult_agent"],
+		},
+		SandboxReadPaths: config.SandboxReadPaths,
+		CaptureLimits:    config.CaptureLimits,
+		Probe:            pinnedProbe{paths: config.AdapterBinaries},
+	})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -326,6 +428,15 @@ func absolutePath(path, label string) error {
 		return fmt.Errorf("broker configuration: %s must be an absolute clean non-root path", label)
 	}
 	return nil
+}
+
+func pathsOverlap(left, right string) bool {
+	return pathContains(left, right) || pathContains(right, left)
+}
+
+func pathContains(parent, child string) bool {
+	relative, err := filepath.Rel(parent, child)
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }
 func absoluteRegularFile(path, label string) error {
 	if err := absolutePath(path, label); err != nil {

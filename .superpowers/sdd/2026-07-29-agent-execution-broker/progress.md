@@ -154,3 +154,18 @@ non-root/read-only-root/drop-ALL/RuntimeDefault security, no service-account
 token, and a server-owned network-policy label. Focused runtime, exec, engine,
 Jetbridge, atccmd, authority, and command suites pass. A broader Jetbridge run
 hit the known sandbox IPv6 loopback bind denial in an unrelated httptest.
+
+Task 9b review fix round 1/3: the three P1 production-boundary findings are
+addressed pending commit. Native harnesses now cross a fail-closed Landlock
+ABI >=3 helper boundary with only per-run scratch and pinned immutable runtime
+reads; `/workspace`, broker authority, credentials, `/proc`, the scratch
+parent, and sibling runs remain inaccessible while provider networking stays
+available. Startup probes create/add/restrict and refuses unsupported kernels
+or seccomp denial. Per-parent MCP bearer capabilities are duplicated only into
+main-private and broker-private files, `/mcp` authenticates them, and the
+Landlocked harness cannot recursively invoke the broker. Git capture uses a
+scratch object database/index/verification checkout with the source object DB
+as a read-only alternate. Readiness is now an in-container exec healthcheck of
+the loopback endpoint. Linux cross-compilation and exact changed suites pass;
+broad runner/Jetbridge tests remain blocked only at unrelated sandbox-denied
+IPv6 `httptest` listeners. See `task-9b-report.md`.

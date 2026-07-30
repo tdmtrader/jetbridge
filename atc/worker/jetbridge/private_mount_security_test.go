@@ -41,13 +41,22 @@ func TestManagedAgentBrokerGetsOnlyBrokerPrivateWorkspaceAndCredentialMounts(t *
 		t.Fatalf("containers = %d, want main and broker", len(pod.Spec.Containers))
 	}
 	main, companion := pod.Spec.Containers[0], pod.Spec.Containers[1]
-	if main.Env[0].Name != runtime.ManagedAgentBrokerMarkerEnv || main.Env[0].Value != "1" {
+	if len(main.Env) != 2 || main.Env[0].Name != runtime.ManagedAgentBrokerMarkerEnv || main.Env[0].Value != "1" ||
+		main.Env[1].Name != runtime.ManagedAgentBrokerTokenFileEnv {
 		t.Fatalf("main marker = %#v", main.Env)
 	}
+	parentAccessFound := false
 	for _, mount := range main.VolumeMounts {
+		if mount.MountPath == runtime.ManagedAgentBrokerParentMountRoot {
+			parentAccessFound = true
+			continue
+		}
 		if strings.Contains(mount.MountPath, "agent-broker") || mount.MountPath == runtime.ManagedAgentBrokerScratchMountPath || mount.MountPath == runtime.ManagedAgentBrokerWorkspaceMountPath {
 			t.Fatalf("broker-only mount leaked to main: %#v", mount)
 		}
+	}
+	if !parentAccessFound {
+		t.Fatalf("main mounts = %#v, missing broker parent access", main.VolumeMounts)
 	}
 	got := map[string]corev1.VolumeMount{}
 	for _, mount := range companion.VolumeMounts {
@@ -56,6 +65,7 @@ func TestManagedAgentBrokerGetsOnlyBrokerPrivateWorkspaceAndCredentialMounts(t *
 	for _, path := range []string{
 		runtime.ManagedAgentBrokerAuthorityMountRoot + "/" + runtime.ManagedAgentBrokerAuthorityFile,
 		runtime.ManagedAgentBrokerAuthorityMountRoot + "/" + runtime.ManagedAgentBrokerBootstrapFile,
+		runtime.ManagedAgentBrokerAuthorityMountRoot + "/" + runtime.ManagedAgentBrokerMCPAccessFile,
 		runtime.ManagedAgentBrokerWorkspaceMountPath,
 		runtime.ManagedAgentBrokerScratchMountPath,
 		runtime.ManagedAgentBrokerCredentialMountRoot + "/shared",
@@ -69,7 +79,7 @@ func TestManagedAgentBrokerGetsOnlyBrokerPrivateWorkspaceAndCredentialMounts(t *
 		got[runtime.ManagedAgentBrokerScratchMountPath].ReadOnly {
 		t.Fatalf("broker mount modes = %#v", got)
 	}
-	if len(companion.VolumeMounts) != 5 {
+	if len(companion.VolumeMounts) != 6 {
 		t.Fatalf("broker inherited generic mounts: %#v", companion.VolumeMounts)
 	}
 	if companion.SecurityContext == nil || companion.SecurityContext.RunAsNonRoot == nil || !*companion.SecurityContext.RunAsNonRoot ||
@@ -79,8 +89,10 @@ func TestManagedAgentBrokerGetsOnlyBrokerPrivateWorkspaceAndCredentialMounts(t *
 		companion.SecurityContext.SeccompProfile == nil || companion.SecurityContext.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
 		t.Fatalf("broker security = %#v", companion.SecurityContext)
 	}
-	if companion.ReadinessProbe == nil || companion.ReadinessProbe.HTTPGet == nil ||
-		companion.ReadinessProbe.HTTPGet.Path != "/healthz" || companion.ReadinessProbe.HTTPGet.Port.IntVal != runtime.ManagedAgentBrokerPort {
+	if companion.ReadinessProbe == nil || companion.ReadinessProbe.Exec == nil ||
+		len(companion.ReadinessProbe.Exec.Command) != 2 ||
+		companion.ReadinessProbe.Exec.Command[0] != "/usr/local/bin/agent-broker" ||
+		companion.ReadinessProbe.Exec.Command[1] != "healthcheck" {
 		t.Fatalf("broker readiness = %#v", companion.ReadinessProbe)
 	}
 	for _, volume := range pod.Spec.Volumes {
@@ -120,6 +132,7 @@ func managedAgentBrokerPodSpec(t *testing.T) runtime.ContainerSpec {
 	raw, _ := json.Marshal(map[string]any{
 		"authority_endpoint":        "http://concourse-web/api/v1/internal",
 		"bootstrap_capability_file": runtime.ManagedAgentBrokerAuthorityMountRoot + "/" + runtime.ManagedAgentBrokerBootstrapFile,
+		"mcp_access_token_file":     runtime.ManagedAgentBrokerAuthorityMountRoot + "/" + runtime.ManagedAgentBrokerMCPAccessFile,
 		"workspace_root":            runtime.ManagedAgentBrokerWorkspaceMountPath,
 		"scratch_root":              runtime.ManagedAgentBrokerScratchMountPath,
 		"adapter_binaries":          map[string]string{"codex": "/opt/bin/codex", "claude": "/opt/bin/claude", "cursor-agent": "/opt/bin/cursor-agent"},
@@ -136,14 +149,26 @@ func managedAgentBrokerPodSpec(t *testing.T) runtime.ContainerSpec {
 	return runtime.ContainerSpec{
 		Type: db.ContainerTypeAgent, Hermetic: true, Dir: "/work",
 		ImageSpec: runtime.ImageSpec{ImageURL: "registry.example/agent@sha256:" + strings.Repeat("c", 64)},
-		Env:       []string{runtime.ManagedAgentBrokerMarkerEnv + "=1"},
-		Inputs:    []runtime.Input{{DestinationPath: "/work/workspace"}},
-		Outputs:   runtime.OutputPaths{"flight": "/work/flight"}, Caches: []string{"/work/cache"},
+		Env: []string{
+			runtime.ManagedAgentBrokerMarkerEnv + "=1",
+			runtime.ManagedAgentBrokerTokenFileEnv + "=" + runtime.ManagedAgentBrokerParentMountRoot + "/" + runtime.ManagedAgentBrokerParentAccessFile,
+		},
+		Inputs:  []runtime.Input{{DestinationPath: "/work/workspace"}},
+		Outputs: runtime.OutputPaths{"flight": "/work/flight"}, Caches: []string{"/work/cache"},
+		PrivateFileMounts: []runtime.PrivateFileMount{{
+			MountPath: runtime.ManagedAgentBrokerParentMountRoot,
+			Files:     map[string][]byte{runtime.ManagedAgentBrokerParentAccessFile: []byte("parent-access")},
+		}},
 		Sidecars: []atc.SidecarConfig{{Name: runtime.ManagedAgentBrokerName, Image: resolved.WorkerImage, Command: []string{"/usr/local/bin/agent-broker"}, WorkingDir: "/", Ports: []atc.SidecarPort{{ContainerPort: runtime.ManagedAgentBrokerPort, Protocol: "TCP"}}}},
 		ManagedAgentBroker: &runtime.ManagedAgentBroker{
 			Authority: runtime.PrivateFileMount{MountPath: runtime.ManagedAgentBrokerAuthorityMountRoot, Files: map[string][]byte{
 				runtime.ManagedAgentBrokerAuthorityFile: raw, runtime.ManagedAgentBrokerBootstrapFile: []byte("capability"),
+				runtime.ManagedAgentBrokerMCPAccessFile: []byte("parent-access"),
 			}},
+			ParentAccess: runtime.PrivateFileMount{
+				MountPath: runtime.ManagedAgentBrokerParentMountRoot,
+				Files:     map[string][]byte{runtime.ManagedAgentBrokerParentAccessFile: []byte("parent-access")},
+			},
 			WorkspaceInputPath: "/work/workspace", ScratchSizeBytes: 1 << 30,
 			Credentials: []runtime.SecretKeyMount{{Slot: "shared", SecretName: "broker-provider", Key: "token", MountPath: runtime.ManagedAgentBrokerCredentialMountRoot + "/shared"}},
 			Resources:   atc.SidecarResources{Requests: atc.SidecarResourceList{CPU: "100m", Memory: "128Mi"}, Limits: atc.SidecarResourceList{CPU: "1", Memory: "1Gi"}},

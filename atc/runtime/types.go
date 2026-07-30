@@ -427,11 +427,15 @@ const (
 	ManagedAgentBrokerAuthorityMountRoot  = "/run/concourse/agent-broker"
 	ManagedAgentBrokerAuthorityFile       = "authority.json"
 	ManagedAgentBrokerBootstrapFile       = "bootstrap.capability"
+	ManagedAgentBrokerMCPAccessFile       = "mcp.access-token"
+	ManagedAgentBrokerParentMountRoot     = "/run/concourse/agent-broker-client"
+	ManagedAgentBrokerParentAccessFile    = "access-token"
 	ManagedAgentBrokerWorkspaceMountPath  = "/workspace"
 	ManagedAgentBrokerScratchMountPath    = "/scratch"
 	ManagedAgentBrokerCredentialMountRoot = "/run/concourse/agent-broker/credentials"
 	ManagedAgentBrokerPort                = 7784
 	ManagedAgentBrokerMarkerEnv           = "CONCOURSE_AGENT_BROKER_MCP"
+	ManagedAgentBrokerTokenFileEnv        = "CONCOURSE_AGENT_BROKER_MCP_TOKEN_FILE"
 	ManagedAgentBrokerMCPURL              = "http://127.0.0.1:7784/mcp"
 )
 
@@ -449,6 +453,7 @@ type SecretKeyMount struct {
 // one exact typed input volume, and ScratchSizeBytes is a bounded emptyDir.
 type ManagedAgentBroker struct {
 	Authority          PrivateFileMount
+	ParentAccess       PrivateFileMount
 	WorkspaceInputPath string
 	AttachmentInputs   []ManagedAgentBrokerAttachmentInput
 	ScratchSizeBytes   int64

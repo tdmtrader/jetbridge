@@ -2,6 +2,8 @@ package atccmd
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,6 +30,7 @@ type agentBrokerRuntimeConfig struct {
 	AuthorityEndpoint string                                   `json:"authority_endpoint"`
 	AdapterBinaries   map[string]string                        `json:"adapter_binaries"`
 	OutputSchemas     map[string]string                        `json:"output_schemas"`
+	SandboxReadPaths  []string                                 `json:"sandbox_read_paths"`
 	Instructions      map[string]agentBrokerRuntimeInstruction `json:"instructions"`
 	CredentialSlots   map[string]agentBrokerRuntimeCredential  `json:"credential_slots"`
 	CaptureLimits     workspace.Limits                         `json:"capture_limits"`
@@ -91,6 +94,21 @@ func loadAgentBrokerRuntime(path string) (agentBrokerRuntimeConfig, error) {
 			return agentBrokerRuntimeConfig{}, fmt.Errorf("agent broker schema path %q is invalid", name)
 		}
 	}
+	for _, path := range config.SandboxReadPaths {
+		if !agentBrokerImagePath(path) {
+			return agentBrokerRuntimeConfig{}, fmt.Errorf("agent broker sandbox read path %q is invalid", path)
+		}
+		for _, forbidden := range []string{
+			atcruntime.ManagedAgentBrokerWorkspaceMountPath,
+			atcruntime.ManagedAgentBrokerScratchMountPath,
+			atcruntime.ManagedAgentBrokerAuthorityMountRoot,
+			"/proc",
+		} {
+			if agentBrokerPathsOverlap(path, forbidden) {
+				return agentBrokerRuntimeConfig{}, fmt.Errorf("agent broker sandbox read path %q overlaps denied path %q", path, forbidden)
+			}
+		}
+	}
 	for name, instruction := range config.Instructions {
 		if !agentBrokerImagePath(instruction.Path) || !agentBrokerDigest(instruction.Digest) {
 			return agentBrokerRuntimeConfig{}, fmt.Errorf("agent broker instruction %q is invalid", name)
@@ -128,6 +146,13 @@ func exactAgentBrokerRuntimeKeys[T any](label string, values map[string]T, wante
 
 func agentBrokerImagePath(path string) bool {
 	return filepath.IsAbs(path) && filepath.Clean(path) == path && path != "/"
+}
+func agentBrokerPathsOverlap(left, right string) bool {
+	return agentBrokerPathContains(left, right) || agentBrokerPathContains(right, left)
+}
+func agentBrokerPathContains(parent, child string) bool {
+	relative, err := filepath.Rel(parent, child)
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }
 func agentBrokerDigest(value string) bool {
 	return len(value) == len("sha256:")+64 && strings.HasPrefix(value, "sha256:") &&
@@ -168,6 +193,11 @@ func (factory agentBrokerAuthorityFactory) BuildAgentBroker(request exec.AgentBr
 	if err != nil {
 		return nil, err
 	}
+	tokenBytes := make([]byte, 32)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		return nil, fmt.Errorf("mint agent broker parent access: %w", err)
+	}
+	parentAccessToken := []byte(base64.RawURLEncoding.EncodeToString(tokenBytes))
 	profileDigests := make(map[string]string, len(request.Profiles))
 	commandProfiles := make([]broker.Profile, len(request.Profiles))
 	credentialSlots := map[string]string{}
@@ -216,8 +246,10 @@ func (factory agentBrokerAuthorityFactory) BuildAgentBroker(request exec.AgentBr
 	authority := map[string]any{
 		"authority_endpoint":        factory.runtime.AuthorityEndpoint,
 		"bootstrap_capability_file": filepath.Join(atcruntime.ManagedAgentBrokerAuthorityMountRoot, atcruntime.ManagedAgentBrokerBootstrapFile),
+		"mcp_access_token_file":     filepath.Join(atcruntime.ManagedAgentBrokerAuthorityMountRoot, atcruntime.ManagedAgentBrokerMCPAccessFile),
 		"workspace_root":            atcruntime.ManagedAgentBrokerWorkspaceMountPath,
 		"scratch_root":              atcruntime.ManagedAgentBrokerScratchMountPath,
+		"sandbox_read_paths":        factory.runtime.SandboxReadPaths,
 		"adapter_binaries":          factory.runtime.AdapterBinaries, "output_schemas": factory.runtime.OutputSchemas,
 		"credential_slots": credentialSlots, "instructions": factory.runtime.Instructions,
 		"attachments": attachments, "profiles": commandProfiles, "profile_digests": profileDigests,
@@ -229,8 +261,14 @@ func (factory agentBrokerAuthorityFactory) BuildAgentBroker(request exec.AgentBr
 	}
 	managed := &atcruntime.ManagedAgentBroker{
 		Authority: atcruntime.PrivateFileMount{MountPath: atcruntime.ManagedAgentBrokerAuthorityMountRoot, Files: map[string][]byte{
-			atcruntime.ManagedAgentBrokerAuthorityFile: raw, atcruntime.ManagedAgentBrokerBootstrapFile: []byte(capability),
+			atcruntime.ManagedAgentBrokerAuthorityFile: raw,
+			atcruntime.ManagedAgentBrokerBootstrapFile: []byte(capability),
+			atcruntime.ManagedAgentBrokerMCPAccessFile: parentAccessToken,
 		}},
+		ParentAccess: atcruntime.PrivateFileMount{
+			MountPath: atcruntime.ManagedAgentBrokerParentMountRoot,
+			Files:     map[string][]byte{atcruntime.ManagedAgentBrokerParentAccessFile: parentAccessToken},
+		},
 		WorkspaceInputPath: request.WorkspaceInputPath, AttachmentInputs: attachmentInputs,
 		ScratchSizeBytes: factory.runtime.ScratchSizeBytes, Credentials: credentials, Resources: factory.runtime.Resources,
 	}

@@ -49,8 +49,10 @@ const (
 	outputBuilderMCPName   = "output-builder"
 	outputBuilderMCPURL    = "http://127.0.0.1:7783/mcp"
 	brokerMCPMarkerEnv     = "CONCOURSE_AGENT_BROKER_MCP"
+	brokerMCPTokenFileEnv  = "CONCOURSE_AGENT_BROKER_MCP_TOKEN_FILE"
 	brokerMCPName          = "agent-broker"
 	brokerMCPURL           = "http://127.0.0.1:7784/mcp"
+	brokerMCPTokenPath     = "/run/concourse/agent-broker-client/access-token"
 )
 
 // Config drives one agent-step execution.
@@ -89,8 +91,11 @@ type Config struct {
 	// BrokerMCPMarker is a server-created activation bit. Agent workflow
 	// configuration cannot select the managed broker endpoint or name.
 	BrokerMCPMarker string
-	Stdout          io.Writer
-	Stderr          io.Writer
+	// BrokerMCPTokenFile is the server-created, main-container-only
+	// per-parent capability used to authenticate the managed broker.
+	BrokerMCPTokenFile string
+	Stdout             io.Writer
+	Stderr             io.Writer
 
 	// OutputPaths maps each §8.1 AGENT_OUTPUT_<NAME> env var (its full
 	// name, AGENT_OUTPUT_SCHEMA excluded — that row is the schema path,
@@ -158,6 +163,7 @@ func FromEnv() Config {
 		MCPServers:          map[string]string{},
 		OutputBuilderMarker: os.Getenv(outputBuilderMarkerEnv),
 		BrokerMCPMarker:     os.Getenv(brokerMCPMarkerEnv),
+		BrokerMCPTokenFile:  os.Getenv(brokerMCPTokenFileEnv),
 		OutputPaths:         map[string]string{},
 		InputSnapshots:      map[string]SnapshotAuthority{},
 		RecordOutputs:       map[string]RecordAuthority{},
@@ -312,9 +318,23 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	if err != nil {
 		return 2, fmt.Errorf("admit MCP configuration: %w", err)
 	}
-	mcpServers, _, err = admitBrokerMCP(cfg.BrokerMCPMarker, mcpServers)
+	mcpServers, brokerEnabled, err := admitBrokerMCP(cfg.BrokerMCPMarker, mcpServers)
 	if err != nil {
 		return 2, fmt.Errorf("admit broker MCP configuration: %w", err)
+	}
+	brokerToken := ""
+	if brokerEnabled {
+		if cfg.BrokerMCPTokenFile != brokerMCPTokenPath {
+			return 2, fmt.Errorf("managed broker MCP token file must be %q", brokerMCPTokenPath)
+		}
+		token, readErr := os.ReadFile(cfg.BrokerMCPTokenFile)
+		if readErr != nil {
+			return 2, fmt.Errorf("read managed broker MCP token: %w", readErr)
+		}
+		brokerToken = strings.TrimSpace(string(token))
+		if brokerToken == "" || len(brokerToken) > 4096 {
+			return 2, errors.New("managed broker MCP token is invalid")
+		}
 	}
 	// 1. The compiler always inlines the prompt.
 	prompt := cfg.Prompt
@@ -484,7 +504,7 @@ func Run(ctx context.Context, cfg Config) (int, error) {
 	// and make it strict. Without --strict-mcp-config Claude may discover a
 	// repository-provided project MCP file and silently regain an undeclared
 	// live-system tool despite the workflow capability boundary.
-	mcpConfigPath, cleanupMCPConfig, err := writeMCPConfig(mcpServers)
+	mcpConfigPath, cleanupMCPConfig, err := writeMCPConfig(mcpServers, brokerToken)
 	if err != nil {
 		return 2, fmt.Errorf("write mcp config: %w", err)
 	}
@@ -735,14 +755,22 @@ func waitHealthy(ctx context.Context, client *http.Client, name, url string) err
 
 // writeMCPConfig writes the claude CLI --mcp-config file mapping each
 // declared sidecar to its HTTP MCP endpoint.
-func writeMCPConfig(servers map[string]string) (string, func() error, error) {
+func writeMCPConfig(servers map[string]string, brokerToken string) (string, func() error, error) {
 	type serverEntry struct {
-		Type string `json:"type"`
-		URL  string `json:"url"`
+		Type    string            `json:"type"`
+		URL     string            `json:"url"`
+		Headers map[string]string `json:"headers,omitempty"`
 	}
 	entries := make(map[string]serverEntry, len(servers))
 	for name, url := range servers {
-		entries[name] = serverEntry{Type: "http", URL: url}
+		entry := serverEntry{Type: "http", URL: url}
+		if name == brokerMCPName {
+			if brokerToken == "" {
+				return "", nil, errors.New("managed broker MCP token is required")
+			}
+			entry.Headers = map[string]string{"Authorization": "Bearer " + brokerToken}
+		}
+		entries[name] = entry
 	}
 	payload, err := json.Marshal(map[string]any{"mcpServers": entries})
 	if err != nil {

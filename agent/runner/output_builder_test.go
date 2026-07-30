@@ -34,12 +34,15 @@ func TestAdmitBrokerMCPRejectsImpersonationAndInjectsOnlyServerMarker(t *testing
 }
 
 func TestWriteMCPConfigCleansPrivateDirectory(t *testing.T) {
-	path, cleanup, err := writeMCPConfig(map[string]string{"review": "http://127.0.0.1:7781/mcp"})
+	path, cleanup, err := writeMCPConfig(map[string]string{
+		brokerMCPName: brokerMCPURL,
+	}, "parent-access-token")
 	if err != nil {
 		t.Fatal(err)
 	}
 	contents, err := os.ReadFile(path)
-	if err != nil || !strings.Contains(string(contents), "127.0.0.1:7781/mcp") {
+	if err != nil || !strings.Contains(string(contents), brokerMCPURL) ||
+		!strings.Contains(string(contents), `"Authorization":"Bearer parent-access-token"`) {
 		t.Fatalf("private config = %q, err = %v", contents, err)
 	}
 	if err := cleanup(); err != nil {

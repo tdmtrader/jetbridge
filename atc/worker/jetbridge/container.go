@@ -28,7 +28,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -671,7 +670,11 @@ func (c *Container) buildPod(processSpec runtime.ProcessSpec, command []string, 
 			continue
 		}
 		if c.managedAgentBrokerAuthorityIndex() == index {
-			for _, file := range []string{runtime.ManagedAgentBrokerAuthorityFile, runtime.ManagedAgentBrokerBootstrapFile} {
+			for _, file := range []string{
+				runtime.ManagedAgentBrokerAuthorityFile,
+				runtime.ManagedAgentBrokerBootstrapFile,
+				runtime.ManagedAgentBrokerMCPAccessFile,
+			} {
 				managedBrokerAuthorityMounts = append(managedBrokerAuthorityMounts, corev1.VolumeMount{
 					Name: name, MountPath: filepath.Join(mount.MountPath, file), SubPath: file, ReadOnly: true,
 				})
@@ -1401,8 +1404,8 @@ func buildManagedSidecarContainers(
 				SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 			}
 			c.ReadinessProbe = &corev1.Probe{
-				ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
-					Path: "/healthz", Port: intstr.FromInt(runtime.ManagedAgentBrokerPort), Scheme: corev1.URISchemeHTTP,
+				ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{
+					Command: []string{"/usr/local/bin/agent-broker", "healthcheck"},
 				}},
 				PeriodSeconds: 2, FailureThreshold: 30,
 			}

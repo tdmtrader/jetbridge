@@ -11,6 +11,8 @@ import (
 	"sort"
 	"syscall"
 	"time"
+
+	"github.com/concourse/concourse/agent/broker/sandbox"
 )
 
 // Execute runs one already-constructed native invocation directly, without a
@@ -23,7 +25,6 @@ func Execute(
 	maxStreamBytes int,
 ) (StreamResult, error) {
 	invocation := prepared.invocation
-	name := prepared.identity.Name
 	if invocation.Binary == "" || invocation.WorkDir == "" {
 		return StreamResult{}, fmt.Errorf("broker adapter: prepared invocation binary and working directory are required")
 	}
@@ -31,6 +32,47 @@ func Execute(
 		return StreamResult{}, fmt.Errorf("broker adapter: prepared invocation identity is invalid")
 	}
 	command := exec.Command(invocation.Binary, invocation.Args...)
+	return executeCommand(ctx, prepared, prompt, maxStreamBytes, command)
+}
+
+// ExecuteSandboxed launches the native harness through a fresh copy of the
+// broker executable. That helper applies Landlock before replacing itself
+// with the harness, leaving the long-lived broker unrestricted.
+func ExecuteSandboxed(
+	ctx context.Context,
+	prepared PreparedInvocation,
+	prompt string,
+	maxStreamBytes int,
+	policy sandbox.Policy,
+) (StreamResult, error) {
+	invocation := prepared.invocation
+	if invocation.Binary == "" || invocation.WorkDir == "" {
+		return StreamResult{}, fmt.Errorf("broker adapter: prepared invocation binary and working directory are required")
+	}
+	if prepared.identity.Binary != invocation.Binary || prepared.identity.Version == "" {
+		return StreamResult{}, fmt.Errorf("broker adapter: prepared invocation identity is invalid")
+	}
+	arguments, err := sandbox.ExecArgs(policy, invocation.Binary, invocation.Args)
+	if err != nil {
+		return StreamResult{}, err
+	}
+	brokerExecutable, err := os.Executable()
+	if err != nil {
+		return StreamResult{}, fmt.Errorf("broker adapter: resolve sandbox helper: %w", err)
+	}
+	command := exec.Command(brokerExecutable, arguments...)
+	return executeCommand(ctx, prepared, prompt, maxStreamBytes, command)
+}
+
+func executeCommand(
+	ctx context.Context,
+	prepared PreparedInvocation,
+	prompt string,
+	maxStreamBytes int,
+	command *exec.Cmd,
+) (StreamResult, error) {
+	invocation := prepared.invocation
+	name := prepared.identity.Name
 	command.Dir = invocation.WorkDir
 	command.Env = controlledEnvironment(invocation.Env)
 	command.Stdin = bytes.NewBufferString(prompt)

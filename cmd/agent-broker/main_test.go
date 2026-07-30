@@ -15,13 +15,22 @@ func TestBrokerHTTPHandlerServesHealthAndMCPOnly(t *testing.T) {
 			t.Fatalf("MCP path = %q", r.URL.Path)
 		}
 		w.WriteHeader(http.StatusAccepted)
-	}))
+	}), "parent-access-token")
 	for _, test := range []struct {
-		path string
-		want int
-	}{{"/healthz", http.StatusOK}, {"/mcp", http.StatusAccepted}, {"/", http.StatusNotFound}} {
+		path          string
+		authorization string
+		want          int
+	}{
+		{"/healthz", "", http.StatusOK},
+		{"/mcp", "", http.StatusUnauthorized},
+		{"/mcp", "Bearer wrong", http.StatusUnauthorized},
+		{"/mcp", "Bearer parent-access-token", http.StatusAccepted},
+		{"/", "", http.StatusNotFound},
+	} {
 		recorder := httptest.NewRecorder()
-		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, test.path, nil))
+		request := httptest.NewRequest(http.MethodGet, test.path, nil)
+		request.Header.Set("Authorization", test.authorization)
+		handler.ServeHTTP(recorder, request)
 		if recorder.Code != test.want {
 			t.Fatalf("%s status = %d, want %d", test.path, recorder.Code, test.want)
 		}

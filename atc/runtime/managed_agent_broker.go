@@ -27,8 +27,14 @@ func ValidateManagedAgentBroker(spec ContainerSpec) error {
 	managed := spec.ManagedAgentBroker
 	for _, env := range spec.Env {
 		name, value, _ := strings.Cut(env, "=")
-		if managed == nil && (name == ManagedAgentBrokerMarkerEnv || value == ManagedAgentBrokerMCPURL) {
+		if managed == nil && (name == ManagedAgentBrokerMarkerEnv || name == ManagedAgentBrokerTokenFileEnv ||
+			value == ManagedAgentBrokerMCPURL || value == filepath.Join(ManagedAgentBrokerParentMountRoot, ManagedAgentBrokerParentAccessFile)) {
 			return errors.New("managed agent broker environment is reserved")
+		}
+	}
+	for _, mount := range spec.PrivateFileMounts {
+		if managed == nil && managedPathsOverlap(mount.MountPath, ManagedAgentBrokerParentMountRoot) {
+			return errors.New("managed agent broker parent access path is reserved")
 		}
 	}
 	for _, sidecar := range spec.Sidecars {
@@ -85,19 +91,25 @@ func ValidateManagedAgentBroker(spec ContainerSpec) error {
 	if err := validateManagedAgentBrokerCredentials(managed.Credentials); err != nil {
 		return err
 	}
-	marker := 0
+	if err := validateManagedAgentBrokerParentAccess(spec.PrivateFileMounts, *managed); err != nil {
+		return err
+	}
+	marker, tokenFile := 0, 0
 	for _, env := range spec.Env {
 		if env == ManagedAgentBrokerMarkerEnv+"=1" {
 			marker++
+		} else if env == ManagedAgentBrokerTokenFileEnv+"="+filepath.Join(ManagedAgentBrokerParentMountRoot, ManagedAgentBrokerParentAccessFile) {
+			tokenFile++
 		} else {
 			name, value, _ := strings.Cut(env, "=")
-			if name == ManagedAgentBrokerMarkerEnv || value == ManagedAgentBrokerMCPURL {
+			if name == ManagedAgentBrokerMarkerEnv || name == ManagedAgentBrokerTokenFileEnv ||
+				value == ManagedAgentBrokerMCPURL || value == filepath.Join(ManagedAgentBrokerParentMountRoot, ManagedAgentBrokerParentAccessFile) {
 				return errors.New("managed agent broker marker is invalid")
 			}
 		}
 	}
-	if marker != 1 {
-		return errors.New("managed agent broker marker must occur exactly once")
+	if marker != 1 || tokenFile != 1 {
+		return errors.New("managed agent broker marker and token file must occur exactly once")
 	}
 	found := 0
 	for _, sidecar := range spec.Sidecars {
@@ -132,10 +144,12 @@ func ValidateManagedAgentBroker(spec ContainerSpec) error {
 type managedAgentBrokerAuthority struct {
 	AuthorityEndpoint       string                                  `json:"authority_endpoint"`
 	BootstrapCapabilityFile string                                  `json:"bootstrap_capability_file"`
+	MCPAccessTokenFile      string                                  `json:"mcp_access_token_file"`
 	WorkspaceRoot           string                                  `json:"workspace_root"`
 	ScratchRoot             string                                  `json:"scratch_root"`
 	AdapterBinaries         map[string]string                       `json:"adapter_binaries"`
 	OutputSchemas           map[string]string                       `json:"output_schemas"`
+	SandboxReadPaths        []string                                `json:"sandbox_read_paths"`
 	CredentialSlots         map[string]string                       `json:"credential_slots"`
 	Instructions            map[string]managedBrokerInstructionFile `json:"instructions"`
 	Attachments             map[string]managedBrokerAttachmentFile  `json:"attachments"`
@@ -156,10 +170,11 @@ type managedBrokerAttachmentFile struct {
 
 func validateManagedAgentBrokerAuthority(managed ManagedAgentBroker) (string, bool, error) {
 	if managed.Authority.MountPath != ManagedAgentBrokerAuthorityMountRoot ||
-		len(managed.Authority.Files) != 2 ||
+		len(managed.Authority.Files) != 3 ||
 		len(managed.Authority.Files[ManagedAgentBrokerAuthorityFile]) == 0 ||
-		len(managed.Authority.Files[ManagedAgentBrokerBootstrapFile]) == 0 {
-		return "", false, errors.New("managed agent broker requires exact authority and bootstrap files")
+		len(managed.Authority.Files[ManagedAgentBrokerBootstrapFile]) == 0 ||
+		len(managed.Authority.Files[ManagedAgentBrokerMCPAccessFile]) == 0 {
+		return "", false, errors.New("managed agent broker requires exact authority, bootstrap, and MCP access files")
 	}
 	raw := managed.Authority.Files[ManagedAgentBrokerAuthorityFile]
 	decoder := json.NewDecoder(bytes.NewReader(raw))
@@ -173,7 +188,8 @@ func validateManagedAgentBrokerAuthority(managed ManagedAgentBroker) (string, bo
 	}
 	if len(authority.Profiles) == 0 || authority.WorkspaceRoot != ManagedAgentBrokerWorkspaceMountPath ||
 		authority.ScratchRoot != ManagedAgentBrokerScratchMountPath ||
-		authority.BootstrapCapabilityFile != filepath.Join(ManagedAgentBrokerAuthorityMountRoot, ManagedAgentBrokerBootstrapFile) {
+		authority.BootstrapCapabilityFile != filepath.Join(ManagedAgentBrokerAuthorityMountRoot, ManagedAgentBrokerBootstrapFile) ||
+		authority.MCPAccessTokenFile != filepath.Join(ManagedAgentBrokerAuthorityMountRoot, ManagedAgentBrokerMCPAccessFile) {
 		return "", false, errors.New("managed agent broker authority has an invalid fixed layout")
 	}
 	endpoint, err := url.Parse(authority.AuthorityEndpoint)
@@ -198,6 +214,21 @@ func validateManagedAgentBrokerAuthority(managed ManagedAgentBroker) (string, bo
 	for name, path := range authority.OutputSchemas {
 		if !validManagedAuthorityPath(path) {
 			return "", false, fmt.Errorf("managed agent broker output schema %q is invalid", name)
+		}
+	}
+	for _, path := range authority.SandboxReadPaths {
+		if !validManagedAuthorityPath(path) {
+			return "", false, fmt.Errorf("managed agent broker sandbox read path %q is invalid", path)
+		}
+		for _, forbidden := range []string{
+			ManagedAgentBrokerWorkspaceMountPath,
+			ManagedAgentBrokerScratchMountPath,
+			ManagedAgentBrokerAuthorityMountRoot,
+			"/proc",
+		} {
+			if managedPathsOverlap(path, forbidden) {
+				return "", false, fmt.Errorf("managed agent broker sandbox read path %q overlaps denied path %q", path, forbidden)
+			}
 		}
 	}
 	for name, instruction := range authority.Instructions {
@@ -271,6 +302,34 @@ func validateManagedAgentBrokerAuthority(managed ManagedAgentBroker) (string, bo
 		}
 	}
 	return image, review, nil
+}
+
+func validateManagedAgentBrokerParentAccess(mounts []PrivateFileMount, managed ManagedAgentBroker) error {
+	if managed.ParentAccess.MountPath != ManagedAgentBrokerParentMountRoot ||
+		len(managed.ParentAccess.Files) != 1 ||
+		len(managed.ParentAccess.Files[ManagedAgentBrokerParentAccessFile]) == 0 ||
+		!bytes.Equal(managed.ParentAccess.Files[ManagedAgentBrokerParentAccessFile],
+			managed.Authority.Files[ManagedAgentBrokerMCPAccessFile]) {
+		return errors.New("managed agent broker parent access is invalid")
+	}
+	found := 0
+	for _, mount := range mounts {
+		if mount.MountPath == ManagedAgentBrokerParentMountRoot {
+			found++
+			if len(mount.Files) != 1 || !bytes.Equal(
+				mount.Files[ManagedAgentBrokerParentAccessFile],
+				managed.ParentAccess.Files[ManagedAgentBrokerParentAccessFile],
+			) {
+				return errors.New("managed agent broker parent access projection is invalid")
+			}
+		} else if managedPathsOverlap(mount.MountPath, ManagedAgentBrokerParentMountRoot) {
+			return errors.New("managed agent broker parent access path overlaps another private mount")
+		}
+	}
+	if found != 1 {
+		return errors.New("managed agent broker parent access must occur exactly once")
+	}
+	return nil
 }
 
 func exactManagedBrokerKeys[T any](label string, values map[string]T, wanted []string) error {

@@ -42,6 +42,11 @@ func TestAgentBrokerAuthorityFactoryReturnsScopedFilesWithoutRootKey(t *testing.
 		t.Fatal("root signing key leaked into broker authority")
 	}
 	if len(managed.Authority.Files[atcruntime.ManagedAgentBrokerBootstrapFile]) == 0 ||
+		len(managed.Authority.Files[atcruntime.ManagedAgentBrokerMCPAccessFile]) == 0 ||
+		!strings.EqualFold(
+			string(managed.Authority.Files[atcruntime.ManagedAgentBrokerMCPAccessFile]),
+			string(managed.ParentAccess.Files[atcruntime.ManagedAgentBrokerParentAccessFile]),
+		) ||
 		len(managed.Credentials) != 1 || managed.Credentials[0].SecretName != "provider-secret" {
 		t.Fatalf("managed broker = %#v", managed)
 	}

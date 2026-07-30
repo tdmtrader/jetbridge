@@ -267,7 +267,7 @@ instruction/schema digests, K8s Secret/key slot coordinates, capture limits,
 scratch size, and resources.
 
 Jetbridge mounts only the read-only live workspace, selected typed static
-attachments, two authority files, selected credential key files, and bounded
+attachments, exact broker authority files, selected credential key files, and bounded
 scratch into the broker. Existing physical-volume alias checks are reused.
 The fixed port-7784 companion has `/healthz`, non-root execution, read-only
 rootfs, no privilege escalation, dropped capabilities, RuntimeDefault
@@ -288,3 +288,23 @@ authority packages. Jetbridge reached an unrelated existing `httptest`
 listener and failed before its test body because this sandbox denies IPv6
 loopback binds (`listen tcp6 [::1]:0: operation not permitted`). The focused
 Jetbridge broker suite is green; the infrastructure-only gate was not retried.
+
+### Managed companion review hardening
+
+The native harness now executes behind a Landlock ABI 3+ filesystem boundary
+in a short-lived helper process. The policy grants write access only to the
+current run scratch and read access only to pinned immutable runtime assets;
+it does not grant the live workspace, broker authority/credentials, `/proc`,
+the scratch parent, or sibling runs. Provider networking remains available.
+Broker startup executes a disposable create/add/restrict preflight and fails
+closed on an old/disabled kernel or a seccomp-denied syscall. Managed clusters
+therefore require Linux 6.2+ and a RuntimeDefault profile which admits the
+Landlock syscalls; there is no compatibility fallback.
+
+The parent-to-broker loopback MCP connection now uses a random per-parent
+bearer stored in separate main-only and broker-only private files. The child
+harness receives neither copy and cannot inspect broker process state.
+Workspace capture writes its index, object database, and verification checkout
+only beneath broker scratch, using the source object database as a read-only
+alternate. Finally, readiness uses an in-container exec healthcheck against
+the fixed loopback listener rather than an unreachable Pod-IP HTTP probe.

@@ -173,7 +173,9 @@ func decodeAgentBrokerProfiles(plan atc.AgentPlan) ([]broker.Profile, bool, erro
 func reserveAgentBroker(sidecars []atc.SidecarConfig, env []string) error {
 	for _, row := range env {
 		name, value, _ := strings.Cut(row, "=")
-		if name == runtime.ManagedAgentBrokerMarkerEnv || value == runtime.ManagedAgentBrokerMCPURL {
+		if name == runtime.ManagedAgentBrokerMarkerEnv || name == runtime.ManagedAgentBrokerTokenFileEnv ||
+			value == runtime.ManagedAgentBrokerMCPURL ||
+			value == filepath.Join(runtime.ManagedAgentBrokerParentMountRoot, runtime.ManagedAgentBrokerParentAccessFile) {
 			return fmt.Errorf("managed agent broker configuration is reserved by the platform")
 		}
 	}
@@ -187,7 +189,8 @@ func reserveAgentBroker(sidecars []atc.SidecarConfig, env []string) error {
 			}
 		}
 		for _, row := range sidecar.Env {
-			if row.Name == runtime.ManagedAgentBrokerMarkerEnv || row.Value == runtime.ManagedAgentBrokerMCPURL {
+			if row.Name == runtime.ManagedAgentBrokerMarkerEnv || row.Name == runtime.ManagedAgentBrokerTokenFileEnv ||
+				row.Value == runtime.ManagedAgentBrokerMCPURL {
 				return fmt.Errorf("managed agent broker endpoint is reserved")
 			}
 		}
@@ -204,11 +207,15 @@ func injectManagedAgentBroker(spec *runtime.ContainerSpec, managed *runtime.Mana
 	}
 	image := profiles[0].WorkerImage
 	spec.ManagedAgentBroker = managed
+	spec.PrivateFileMounts = append(spec.PrivateFileMounts, managed.ParentAccess)
 	spec.Sidecars = append(spec.Sidecars, atc.SidecarConfig{
 		Name: runtime.ManagedAgentBrokerName, Image: image,
 		Command: []string{"/usr/local/bin/agent-broker"}, WorkingDir: "/",
 		Ports: []atc.SidecarPort{{ContainerPort: runtime.ManagedAgentBrokerPort, Protocol: "TCP"}},
 	})
-	spec.Env = append(spec.Env, runtime.ManagedAgentBrokerMarkerEnv+"=1")
+	spec.Env = append(spec.Env,
+		runtime.ManagedAgentBrokerMarkerEnv+"=1",
+		runtime.ManagedAgentBrokerTokenFileEnv+"="+filepath.Join(runtime.ManagedAgentBrokerParentMountRoot, runtime.ManagedAgentBrokerParentAccessFile),
+	)
 	return runtime.ValidateManagedAgentBroker(*spec)
 }

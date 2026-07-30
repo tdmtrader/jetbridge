@@ -12,6 +12,7 @@ import (
 
 	"github.com/concourse/concourse/agent/broker"
 	"github.com/concourse/concourse/agent/broker/adapter"
+	"github.com/concourse/concourse/agent/broker/sandbox"
 	"github.com/concourse/concourse/agent/broker/workspace"
 )
 
@@ -19,8 +20,12 @@ type RunnerConfig struct {
 	WorkspaceRoot string
 	ScratchRoot   string
 	OutputSchemas map[broker.Tool]string
-	CaptureLimits workspace.Limits
-	Probe         adapter.VersionProbe
+	// SandboxReadPaths are immutable image-owned runtime assets needed by
+	// native harnesses. Parent workspace, broker authority, /proc, and the
+	// scratch parent are never valid entries.
+	SandboxReadPaths []string
+	CaptureLimits    workspace.Limits
+	Probe            adapter.VersionProbe
 }
 
 type Runner struct{ config RunnerConfig }
@@ -80,7 +85,15 @@ func (r *Runner) Run(ctx context.Context, request broker.RunRequest) (broker.Run
 	if err != nil {
 		return broker.RunResult{}, fmt.Errorf("broker runtime: prepare adapter: %w", err)
 	}
-	stream, err := adapter.Execute(ctx, prepared, request.Prompt, int(request.Profile.Limits.MaxInputBytes))
+	readPaths := append([]string(nil), r.config.SandboxReadPaths...)
+	readPaths = append(readPaths, schema)
+	stream, err := adapter.ExecuteSandboxed(
+		ctx,
+		prepared,
+		request.Prompt,
+		int(request.Profile.Limits.MaxInputBytes),
+		sandbox.Policy{WritableRoot: runScratch, ReadOnlyPaths: readPaths},
+	)
 	if err != nil {
 		return broker.RunResult{}, err
 	}
@@ -97,7 +110,7 @@ func (r *Runner) CaptureWorkspace(ctx context.Context) (workspace.Result, error)
 	if err := ctx.Err(); err != nil {
 		return workspace.Result{}, err
 	}
-	capture, err := workspace.Capture(r.config.WorkspaceRoot, r.config.CaptureLimits)
+	capture, err := workspace.Capture(r.config.WorkspaceRoot, r.config.ScratchRoot, r.config.CaptureLimits)
 	if err != nil {
 		return workspace.Result{}, fmt.Errorf("broker runtime: capture workspace: %w", err)
 	}
@@ -126,6 +139,11 @@ func validateRunnerConfig(config RunnerConfig) error {
 	for _, tool := range []broker.Tool{broker.ToolRequestReview, broker.ToolConsultAgent} {
 		if path := config.OutputSchemas[tool]; !filepath.IsAbs(path) || filepath.Clean(path) != path {
 			return fmt.Errorf("broker runtime: absolute output schema for %s is required", tool)
+		}
+	}
+	for _, path := range config.SandboxReadPaths {
+		if !filepath.IsAbs(path) || filepath.Clean(path) != path || path == "/" {
+			return fmt.Errorf("broker runtime: sandbox read path must be absolute, clean, and non-root")
 		}
 	}
 	if config.Probe == nil {
