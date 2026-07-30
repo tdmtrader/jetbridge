@@ -38,6 +38,137 @@ selected consuming workflows through an explicit upgrade action. Each
 successful application creates a validated, immutable, unpromoted workflow
 revision that can be inspected and promoted separately.
 
+## Current Architecture Alignment
+
+The following decisions were recorded on 2026-07-29 after rebasing onto the
+accepted Jetbridge workflow, snapshot, validation, source-admission, publisher,
+and recovery implementation. They define the first implementation slice
+without reopening those accepted subsystems.
+
+### Definition storage and namespace
+
+Workflow and node definitions share the existing durable executable-definition
+and workflow-run machinery. The physical `agent_workflow_definitions` store
+gains a kind discriminator rather than introducing a second runner or a
+synthetic hidden workflow for each node.
+
+Names are kind-scoped: `workflow/code-review` and `node/code-review` may
+coexist. Existing rows migrate as `workflow`, and existing workflow APIs and
+stores continue to expose only workflow definitions. Node APIs and stores
+expose only node definitions.
+
+An exact node version is still a first-class product object. Sharing physical
+storage is an implementation choice that lets direct node invocations retain
+the accepted durable run, snapshot, transcript, metrics, cancellation, retry,
+and opaque execution-envelope behavior.
+
+### Initial node source grammar
+
+The preferred definition file is `node.yaml`, with schema version 1. It
+declares:
+
+- a stable node name and description;
+- typed logical inputs and outputs;
+- string parameters with optional string defaults; and
+- exactly one authored leaf step.
+
+The initial leaf kinds are `task`, `agent`, and `publish_snapshot`.
+Validators and deterministic evaluators are tasks; stochastic evaluators are
+agents; publication remains an explicit side-effecting leaf.
+
+Node definitions reject sequencing, parallelism, retry and hook wrappers,
+human waits, resource acquisition, resource sources, and every other composite
+or live-read construct. Invocation data enters through typed ports and declared
+parameters.
+
+### Workflow composition syntax
+
+A workflow source composes an exact released node version through an
+authoring-only reference:
+
+```yaml
+plan:
+  - node: review-change
+    uses: code-review@5
+    input_mapping:
+      repository: checked-out-repository
+      change: proposed-change
+    output_mapping:
+      review: review-result
+    params:
+      MINIMUM_SEVERITY: high
+```
+
+`node` is the stable workflow-local instance identity. `uses` always names an
+exact integer version; aliases and release channels are not accepted.
+Parameters are strings and are injected only through the leaf kind's ordinary
+environment surface (`params` for tasks and `env` for agents). A workflow
+cannot patch the resolved step. Publication nodes do not accept declared
+parameters: publisher destination, mode, parameters, approval policy, and
+capability requirements are implementation authority baked into the node
+version.
+
+Task and agent nodes use their ordinary input/output mapping fields. A
+publication node has exactly one typed logical input and no outputs; expansion
+maps that logical input to the baked `publish_snapshot.input` while leaving all
+publication authority unchanged.
+
+Compilation resolves the reference before ordinary Concourse decoding,
+expands it into one visible leaf, and attaches server-owned node identity
+metadata. The resulting workflow revision durably records the node definition
+ID, version, content hash, local instance name, and mappings. Runtime
+rendering uses the existing trusted compiler and opaque execution envelope and
+never resolves the node again.
+
+### Release and compatibility
+
+Release is per node version. The first released version establishes the
+lineage. Each later release declares `compatible` or `breaking` relative to
+the latest previously released version.
+
+The platform rejects a false `compatible` declaration using the structural
+rules in this document. It permits an explicitly breaking release and records
+the predecessor and classification. Release does not withdraw older released
+versions.
+
+### Direct execution
+
+A node version in any lifecycle state may be invoked directly by exact name
+and version. The node is converted to the same immutable one-leaf execution
+target used after workflow expansion and enters the existing binder and
+workflow-run lifecycle. Direct-run APIs never accept a rendered plan,
+implementation override, or caller-built execution envelope.
+
+Run identity and idempotency are kind-scoped. A node request can never reuse,
+retry, cancel, or otherwise address a workflow run through a kind-blind path,
+even when the node and workflow share a name or idempotency key.
+
+### Consumer upgrades
+
+The upgrade action selects workflow names. For each selected workflow, it
+starts from the currently promoted revision and updates all matching references
+to the predecessor node version.
+
+A compatible upgrade independently imports one validated, immutable,
+unpromoted revision per successful workflow. Failure in one workflow does not
+roll back successful revisions for other selected workflows.
+
+A breaking upgrade reports the required recomposition and persists no partial
+revision. The operator edits and imports a complete workflow source before a
+new revision can exist. Workflow promotion remains a separate action.
+
+### First-slice surfaces
+
+The first implementation slice supplies HTTP and Fly CLI surfaces for node
+catalog/version inspection, import, direct runs, release/deprecation, consumer
+discovery, and selected-workflow upgrades. It records exact node identity on
+runs and workflow revisions.
+
+Elm catalog and upgrade UI, generalized experiment integration, reusable
+composite nodes, source-owning nodes, and cross-definition semantic categories
+are follow-on work. Their absence does not justify a parallel runner or
+weakening any accepted authority boundary.
+
 ## Reusable Node Definition
 
 A reusable node definition has a stable identity, such as `code-review`, and a
