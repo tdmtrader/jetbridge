@@ -433,7 +433,7 @@ func (checker *snapshotFlowChecker) checkPublishSnapshot(step *atc.PublishSnapsh
 		return snapshotFlow{}, fmt.Errorf("workflow: %s: input %q cannot use a conditional binding", identity, step.Input)
 	}
 	if step.InputType == snapshot.TypeRef("repository-change/v1") {
-		if err := checker.requireValidation(entry, step.Validation, step.Input, nil, identity); err != nil {
+		if err := checker.requireValidation(entry, step.Validation, step.Input, nil, nil, identity); err != nil {
 			return snapshotFlow{}, err
 		}
 	} else if step.Validation != "" || step.PublishValidation != nil {
@@ -523,7 +523,7 @@ func (checker *snapshotFlowChecker) checkAwaitSnapshot(step *atc.AwaitSnapshotSt
 		if subject.presence == snapshotConditional {
 			return snapshotFlow{}, fmt.Errorf("workflow: %s: merge approval input %q cannot use a conditional binding", identity, step.MergeApproval.Input)
 		}
-		if err := checker.requireValidation(entry, step.Validation, step.MergeApproval.Input, nil, identity); err != nil {
+		if err := checker.requireValidation(entry, step.Validation, step.MergeApproval.Input, nil, nil, identity); err != nil {
 			return snapshotFlow{}, err
 		}
 	} else {
@@ -816,10 +816,14 @@ func (checker *snapshotFlowChecker) checkAgent(step *atc.AgentStep, entry snapsh
 	if candidate, governed, err := humanReviewCandidate(step); err != nil {
 		return snapshotFlow{}, fmt.Errorf("workflow: %s: %w", identity, err)
 	} else if governed {
-		if mapped, found := step.InputMapping[candidate]; found {
-			candidate = mapped
-		}
-		if err := checker.requireValidation(entry, step.Validation, candidate, mappedSnapshotInputs(step.SnapshotInputs, step.InputMapping), identity); err != nil {
+		if err := checker.requireValidation(
+			entry,
+			step.Validation,
+			candidate,
+			mappedSnapshotInputs(step.SnapshotInputs, step.InputMapping),
+			step.InputMapping,
+			identity,
+		); err != nil {
 			return snapshotFlow{}, err
 		}
 	} else if step.Validation != "" || step.ReviewValidation != nil {
@@ -916,7 +920,16 @@ func bindingIdentity(binding snapshotBinding) (string, bool) {
 	return binding.writePath, binding.writePath != ""
 }
 
-func (checker *snapshotFlowChecker) requireValidation(entry snapshotEnvironment, validationName, candidateName string, inputs map[string]atc.SnapshotInputConfig, identity string) error {
+func (checker *snapshotFlowChecker) requireValidation(
+	entry snapshotEnvironment,
+	validationName,
+	candidateName string,
+	inputs map[string]atc.SnapshotInputConfig,
+	inputMapping map[string]string,
+	identity string,
+) error {
+	validationName = mappedAgentValidationName(validationName, inputMapping)
+	candidateName = mappedAgentValidationName(candidateName, inputMapping)
 	if validationName == "" {
 		return fmt.Errorf("workflow: %s: authoritative validation is required", identity)
 	}
@@ -943,6 +956,7 @@ func (checker *snapshotFlowChecker) requireValidation(entry snapshotEnvironment,
 		return fmt.Errorf("workflow: %s: validation does not dominate the current candidate", identity)
 	}
 	for name, expected := range validation.validation.bases {
+		name = mappedAgentValidationName(name, inputMapping)
 		base, found := entry[name]
 		actual, exact := bindingIdentity(base)
 		if !found || !exact || actual != expected {

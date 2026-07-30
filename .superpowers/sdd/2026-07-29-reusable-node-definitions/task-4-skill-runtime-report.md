@@ -74,3 +74,17 @@ contain compiled instruction content rather than secrets.
 - Full verification passed again:
   `go test ./agent/workflow ./atc/builds ./atc/exec -count=1` and
   `git diff --check`.
+
+## Final review blocker and resolution
+
+- Final bounded review found that compile-time type flow still passed a
+  mapped review's logical validation and base names into a physical artifact
+  environment, so valid node imports failed before rendering.
+- `requireValidation` now applies the agent input mapping consistently to the
+  candidate, validation, and provenance base names. Publish and await callers
+  pass no mapping and retain their prior behavior.
+- RED was the new mapped-flow test failing to compile against the old
+  validation seam. GREEN evidence:
+  `go test ./agent/workflow -run
+  'Test(TypeCheckMappedHumanReviewValidation|RequireValidationMapsHumanReviewRepositoryNames|AuthoritativeValidationFlowRejectsOrdinaryAndStaleBindings)' -count=1`.
+- Fresh `go test ./agent/workflow/... -count=1` and `git diff --check` passed.

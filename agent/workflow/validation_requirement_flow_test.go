@@ -49,3 +49,113 @@ func TestAuthoritativeValidationFlowRejectsOrdinaryAndStaleBindings(t *testing.T
 		})
 	}
 }
+
+func TestRequireValidationMapsHumanReviewRepositoryNames(t *testing.T) {
+	candidate := snapshotBinding{
+		typ:       repositoryChangeV1,
+		presence:  snapshotGuaranteed,
+		typed:     true,
+		writePath: "candidate-producer",
+	}
+	base := snapshotBinding{
+		typ:       snapshot.TypeRef("repository/v1"),
+		presence:  snapshotGuaranteed,
+		typed:     true,
+		writePath: "base-producer",
+	}
+	validation := snapshotBinding{
+		typ:       snapshot.TypeRef("validation/v1"),
+		presence:  snapshotGuaranteed,
+		typed:     true,
+		writePath: "validation-producer",
+		validation: &validationBindingProvenance{
+			candidate: "candidate-producer",
+			bases:     map[string]string{"base": "base-producer"},
+			profile:   "exact",
+		},
+	}
+	checker := snapshotFlowChecker{devValidationProfiles: map[string]CompiledDevValidationProfile{
+		"exact": {Name: "exact"},
+	}}
+	inputs := map[string]atc.SnapshotInputConfig{
+		"physical-candidate":  {Type: repositoryChangeV1},
+		"physical-base":       {Type: snapshot.TypeRef("repository/v1")},
+		"physical-validation": {Type: snapshot.TypeRef("validation/v1")},
+	}
+	entry := snapshotEnvironment{
+		"physical-candidate":  candidate,
+		"physical-base":       base,
+		"physical-validation": validation,
+	}
+	mapping := map[string]string{
+		"candidate":  "physical-candidate",
+		"base":       "physical-base",
+		"validation": "physical-validation",
+	}
+
+	if err := checker.requireValidation(entry, "validation", "candidate", inputs, mapping, "mapped-review"); err != nil {
+		t.Fatalf("mapped validation flow: %v", err)
+	}
+}
+
+func TestTypeCheckMappedHumanReviewValidation(t *testing.T) {
+	authority := &atc.DevValidationAuthority{
+		ProfileName:    "exact",
+		CandidateInput: "candidate",
+		BaseInputs: []atc.DevValidationBaseInput{{
+			Name: "base",
+			Type: snapshot.TypeRef("repository/v1"),
+		}},
+	}
+	validation := atc.Step{Config: &atc.TaskStep{
+		Name:       "validate",
+		FunctionID: "validate",
+		Config: &atc.TaskConfig{
+			Inputs:  []atc.TaskInputConfig{{Name: "candidate"}, {Name: "base"}},
+			Outputs: []atc.TaskOutputConfig{{Name: "validation"}},
+		},
+		SnapshotInputs: map[string]atc.SnapshotInputConfig{
+			"candidate": {Type: repositoryChangeV1},
+			"base":      {Type: snapshot.TypeRef("repository/v1")},
+		},
+		SnapshotOutputs: map[string]atc.SnapshotOutputConfig{
+			"validation": {Type: snapshot.TypeRef("validation/v1")},
+		},
+		DevValidationAuthority: authority,
+	}}
+	review := atc.Step{Config: &atc.AgentStep{
+		Name:       "review",
+		FunctionID: "review",
+		Prompt:     "review",
+		Inputs:     []string{"change", "repository", "gate"},
+		Outputs:    []string{"question"},
+		InputMapping: map[string]string{
+			"change":     "candidate",
+			"repository": "base",
+			"gate":       "validation",
+		},
+		SnapshotInputs: map[string]atc.SnapshotInputConfig{
+			"change":     {Type: repositoryChangeV1},
+			"repository": {Type: snapshot.TypeRef("repository/v1")},
+			"gate":       {Type: snapshot.TypeRef("validation/v1")},
+		},
+		SnapshotOutputs: map[string]atc.SnapshotOutputConfig{
+			"question": {Type: snapshot.TypeRef("question/v1")},
+		},
+		Validation: "gate",
+	}}
+	function := &FunctionConfig{
+		SignatureVersion: 1,
+		Inputs: []snapshot.Port{
+			{Name: "candidate", Type: repositoryChangeV1},
+			{Name: "base", Type: snapshot.TypeRef("repository/v1")},
+		},
+		Plan:                        []atc.Step{validation, review},
+		DevValidationProfiles:       validationProfiles(),
+		DevValidationProvenanceHash: validationProvenance(),
+	}
+
+	if err := TypeCheckFunction(function); err != nil {
+		t.Fatalf("mapped human-review TypeCheckFunction: %v", err)
+	}
+}
