@@ -76,6 +76,14 @@ Helm, GitHub REST API, Azure DevOps Git REST API 7.1.
   response into separate idempotent publication operations.
 - Keep three planned migrations ordered after the reusable-node reservations;
   never deploy a higher PR migration before the two lower migrations exist.
+- Treat `Observation.ReviewBatches` as a strict delta after the acknowledged
+  input cursor. The core preserves but never decodes cursor structure; each
+  provider conformance suite proves that acknowledged batches are not replayed.
+- Require a nonempty cursor on active and terminal observations. The empty
+  cursor is an input/pre-create sentinel, not a valid terminal progression.
+- Derive the freshness action's canonical time bucket from its first due
+  deadline (`LastReconciledAt + FreshnessInterval`). Keep that identity stable
+  until acknowledged so an in-flight action is not redispatched at hour 12.
 
 ---
 
@@ -358,7 +366,9 @@ type Mutator interface {
 The initial locator may omit `ExternalID` only while observing the sealed
 `missing` pre-create state. Provider cursors are opaque bounded canonical
 bytes; provider-specific cursor structure never leaks into coordinator or API
-contracts.
+contracts. Active and terminal observations require a nonempty cursor, and
+`Observation.ReviewBatches` contains only provider-complete batches strictly
+after the input cursor.
 
 - [ ] **Step 1: Write trigger-table tests**
 
@@ -406,7 +416,8 @@ from the standing monitor.
 
 Compute `Action.Digest` from canonical JSON over locator, exact heads, kind,
 and provider cursor. Never include wall-clock time except the canonical
-freshness bucket selected by `FreshnessInterval`.
+freshness due-deadline bucket selected from `LastReconciledAt` and
+`FreshnessInterval`; that bucket remains stable until acknowledgement.
 
 - [ ] **Step 4: Run tests**
 

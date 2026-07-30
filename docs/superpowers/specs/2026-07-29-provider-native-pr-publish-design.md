@@ -99,6 +99,14 @@ direct publication.
     observation carries the exact bounded cursor returned by its adapter. Core
     scheduling and digest logic preserves those bytes but never decodes
     provider-specific cursor structure.
+14. **Observed review batches are cursor deltas.** Given an acknowledged input
+    cursor, an adapter returns only completed batches after that cursor.
+    GitHub and Azure DevOps conformance tests must prove that replaying the
+    same provider state returns no previously acknowledged batch.
+15. **Freshness identity is stable until acknowledgement.** Its canonical time
+    bucket is derived from the first due deadline
+    (`last_reconciled_at + freshness_interval`), so a long-running equivalent
+    action does not become new work at the next interval boundary.
 
 ## Invariants
 
@@ -304,6 +312,10 @@ The normalized observation contains:
 - stable thread/comment IDs and source anchors;
 - reviewer identity and readiness state;
 - platform-published status for the exact current head.
+
+Active and terminal observations require a nonempty cursor. The empty cursor
+is reserved for an initial caller position and, where needed, a sealed
+pre-create `missing` observation.
 
 ### GitHub
 
