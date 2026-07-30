@@ -14,9 +14,10 @@ import (
 )
 
 const (
-	userAgent    = "concourse-agent-pullrequest-observer/1.0"
-	maxBodyBytes = 1 << 20
-	maxPages     = 8
+	userAgent          = "concourse-agent-pullrequest-observer/1.0"
+	maxBodyBytes       = 1 << 20
+	maxPages           = 8
+	defaultHTTPTimeout = 30 * time.Second
 )
 
 // Observer translates only GitHub's read API into the provider-neutral
@@ -32,7 +33,7 @@ func NewObserver(baseURL string, token pullrequest.TokenSource, client *http.Cli
 		return nil, fmt.Errorf("github token source is required")
 	}
 	parsed, err := url.Parse(baseURL)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" {
 		return nil, fmt.Errorf("github base URL must be an absolute http or https URL without query or fragment")
 	}
 	if client == nil {
@@ -40,6 +41,9 @@ func NewObserver(baseURL string, token pullrequest.TokenSource, client *http.Cli
 	}
 	cloned := *client
 	cloned.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	if cloned.Timeout == 0 || cloned.Timeout > defaultHTTPTimeout {
+		cloned.Timeout = defaultHTTPTimeout
+	}
 	parsed.Path = strings.TrimRight(parsed.Path, "/")
 	return &Observer{baseURL: parsed, token: token, client: &cloned}, nil
 }
@@ -128,14 +132,14 @@ func (observer *Observer) getPage(ctx context.Context, target *url.URL, destinat
 	if err := decodeJSON(raw, destination); err != nil {
 		return nil, fmt.Errorf("github response is invalid JSON")
 	}
-	next, err := observer.nextURL(response.Header.Get("Link"))
+	next, err := observer.nextURL(response.Header.Get("Link"), target.Path)
 	if err != nil {
 		return nil, err
 	}
 	return next, nil
 }
 
-func (observer *Observer) nextURL(link string) (*url.URL, error) {
+func (observer *Observer) nextURL(link, endpointPath string) (*url.URL, error) {
 	if link == "" {
 		return nil, nil
 	}
@@ -151,7 +155,7 @@ func (observer *Observer) nextURL(link string) (*url.URL, error) {
 		if err != nil {
 			return nil, fmt.Errorf("github pagination link is malformed")
 		}
-		if err := observer.validateURL(parsed); err != nil {
+		if err := observer.validatePageURL(parsed, endpointPath); err != nil {
 			return nil, err
 		}
 		return parsed, nil
@@ -160,21 +164,55 @@ func (observer *Observer) nextURL(link string) (*url.URL, error) {
 }
 
 func (observer *Observer) validateURL(candidate *url.URL) error {
-	if candidate == nil || candidate.Scheme != observer.baseURL.Scheme || !strings.EqualFold(candidate.Host, observer.baseURL.Host) || !strings.HasPrefix(candidate.Path, observer.baseURL.Path+"/") && candidate.Path != observer.baseURL.Path {
+	if candidate == nil || candidate.User != nil || candidate.ForceQuery || candidate.Fragment != "" || candidate.Scheme != observer.baseURL.Scheme || !strings.EqualFold(candidate.Host, observer.baseURL.Host) || !strings.HasPrefix(candidate.Path, observer.baseURL.Path+"/") && candidate.Path != observer.baseURL.Path {
 		return fmt.Errorf("github request URL is outside the configured API origin")
 	}
 	return nil
 }
 
+func (observer *Observer) validatePageURL(candidate *url.URL, endpointPath string) error {
+	if err := observer.validateURL(candidate); err != nil {
+		return err
+	}
+	if candidate.Path != endpointPath {
+		return fmt.Errorf("github pagination link changes endpoint")
+	}
+	query := candidate.Query()
+	if len(query) != 2 || len(query["page"]) != 1 || len(query["per_page"]) != 1 || query.Get("per_page") != "100" {
+		return fmt.Errorf("github pagination link query is invalid")
+	}
+	page, err := strconv.ParseInt(query.Get("page"), 10, 64)
+	if err != nil || page <= 0 || strconv.FormatInt(page, 10) != query.Get("page") {
+		return fmt.Errorf("github pagination link page is invalid")
+	}
+	canonical := url.Values{"page": []string{query.Get("page")}, "per_page": []string{"100"}}.Encode()
+	if candidate.RawQuery != canonical {
+		return fmt.Errorf("github pagination link query is not canonical")
+	}
+	return nil
+}
+
 func githubStatusError(response *http.Response, _ string) error {
-	if response.StatusCode == http.StatusTooManyRequests || response.StatusCode == http.StatusForbidden && githubRateLimited(response.Header) {
+	if (response.StatusCode == http.StatusTooManyRequests || response.StatusCode == http.StatusForbidden) && githubRateLimited(response.Header) {
 		return &pullrequest.RateLimitError{RetryAfter: retryAfter(response.Header), ResetAt: rateLimitReset(response.Header)}
 	}
 	return fmt.Errorf("github request failed with status %d", response.StatusCode)
 }
 
 func githubRateLimited(header http.Header) bool {
-	return header.Get("Retry-After") != "" || header.Get("X-RateLimit-Remaining") == "0" && rateLimitReset(header).After(time.Unix(0, 0))
+	return validRetryAfter(header.Get("Retry-After")) || header.Get("X-RateLimit-Remaining") == "0" && !rateLimitReset(header).IsZero()
+}
+
+func validRetryAfter(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return false
+	}
+	if seconds, err := strconv.ParseInt(raw, 10, 64); err == nil {
+		return seconds >= 0
+	}
+	_, err := http.ParseTime(raw)
+	return err == nil
 }
 
 func retryAfter(header http.Header) time.Duration {

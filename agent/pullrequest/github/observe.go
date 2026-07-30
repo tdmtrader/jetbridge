@@ -95,12 +95,20 @@ func (observer *Observer) Observe(ctx context.Context, locator pullrequest.Locat
 	if err := observer.validatePull(locator, number, providerPull); err != nil {
 		return pullrequest.Observation{}, err
 	}
+	sourceRef, err := normalizeBranchRef(providerPull.Head.Ref)
+	if err != nil {
+		return pullrequest.Observation{}, fmt.Errorf("github source ref is invalid")
+	}
+	targetRef, err := normalizeBranchRef(providerPull.Base.Ref)
+	if err != nil {
+		return pullrequest.Observation{}, fmt.Errorf("github target ref is invalid")
+	}
 	state, err := normalizeState(providerPull)
 	if err != nil {
 		return pullrequest.Observation{}, err
 	}
 	mergeability := normalizeMergeability(providerPull, state)
-	observation := pullrequest.Observation{Locator: locator, URL: providerPull.HTMLURL, State: state, Mergeability: mergeability, SourceRef: providerPull.Head.Ref, SourceSHA: providerPull.Head.SHA, TargetRef: providerPull.Base.Ref, TargetSHA: providerPull.Base.SHA, Iteration: strconv.FormatInt(providerPull.Number, 10)}
+	observation := pullrequest.Observation{Locator: locator, URL: providerPull.HTMLURL, State: state, Mergeability: mergeability, SourceRef: sourceRef, SourceSHA: providerPull.Head.SHA, TargetRef: targetRef, TargetSHA: providerPull.Base.SHA, Iteration: strconv.FormatInt(providerPull.Number, 10)}
 	if state == contracts.PullRequestActive {
 		reviews, err := observer.reviews(ctx, locator)
 		if err != nil {
@@ -177,11 +185,14 @@ func (observer *Observer) validateHTMLURL(locator pullrequest.Locator, number in
 	if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" {
 		return fmt.Errorf("github pull request URL is invalid")
 	}
-	wantHost := observer.baseURL.Hostname()
-	if strings.EqualFold(wantHost, "api.github.com") {
-		wantHost = "github.com"
+	if parsed.User != nil || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" {
+		return fmt.Errorf("github pull request URL must not carry credentials, query, or fragment")
 	}
-	if !strings.EqualFold(parsed.Hostname(), wantHost) {
+	wantAuthority := observer.baseURL.Host
+	if strings.EqualFold(observer.baseURL.Hostname(), "api.github.com") {
+		wantAuthority = "github.com"
+	}
+	if !strings.EqualFold(parsed.Host, wantAuthority) {
 		return fmt.Errorf("github pull request URL host does not match configured forge")
 	}
 	wantPath := "/" + locator.Repository + "/pull/" + strconv.FormatInt(number, 10)
@@ -194,6 +205,9 @@ func (observer *Observer) validateHTMLURL(locator pullrequest.Locator, number in
 func normalizeState(value pull) (contracts.PullRequestState, error) {
 	switch value.State {
 	case "open":
+		if value.Merged {
+			return "", fmt.Errorf("github open pull request cannot be merged")
+		}
 		return contracts.PullRequestActive, nil
 	case "closed":
 		if value.Merged {
@@ -203,6 +217,23 @@ func normalizeState(value pull) (contracts.PullRequestState, error) {
 	default:
 		return "", fmt.Errorf("github pull request state is unknown")
 	}
+}
+
+func normalizeBranchRef(raw string) (string, error) {
+	if strings.HasPrefix(raw, "refs/heads/") {
+		raw = strings.TrimPrefix(raw, "refs/heads/")
+	} else if strings.HasPrefix(raw, "refs/") {
+		return "", fmt.Errorf("not a branch ref")
+	}
+	if raw == "" || strings.HasPrefix(raw, "/") || strings.HasSuffix(raw, "/") || strings.Contains(raw, "//") || strings.Contains(raw, "..") || strings.Contains(raw, "@{") || strings.ContainsAny(raw, "\\~^:?*[ \t\r\n\x00") || strings.HasSuffix(raw, ".") {
+		return "", fmt.Errorf("unsafe branch ref")
+	}
+	for _, component := range strings.Split(raw, "/") {
+		if component == "" || component == "." || component == "@" || strings.HasPrefix(component, ".") || strings.HasSuffix(component, ".lock") {
+			return "", fmt.Errorf("unsafe branch ref")
+		}
+	}
+	return "refs/heads/" + raw, nil
 }
 
 func normalizeMergeability(value pull, state contracts.PullRequestState) contracts.PullRequestMergeability {
@@ -377,13 +408,11 @@ func normalizeThreads(value review, matching []reviewComment) ([]pullrequest.Thr
 	for root := range groups {
 		roots = append(roots, root)
 	}
-	sort.Slice(roots, func(i, j int) bool { return roots[i] < roots[j] })
 	threads := make([]pullrequest.Thread, 0, len(roots))
-	authority := make([]string, 0, len(roots))
 	for _, rootID := range roots {
 		root := byID[rootID]
 		group := groups[rootID]
-		sort.Slice(group, func(i, j int) bool { return group[i].ID < group[j].ID })
+		sort.Slice(group, func(i, j int) bool { return commentID(group[i].ID) < commentID(group[j].ID) })
 		thread := pullrequest.Thread{ID: "thread-" + strconv.FormatInt(rootID, 10), Iteration: strconv.FormatInt(value.ID, 10)}
 		anchor, err := anchorFor(root)
 		if err != nil {
@@ -398,10 +427,14 @@ func normalizeThreads(value review, matching []reviewComment) ([]pullrequest.Thr
 			if err := validateObjectID(commit); err != nil {
 				return nil, nil, fmt.Errorf("github review comment commit is invalid")
 			}
-			thread.Comments = append(thread.Comments, contracts.PullRequestComment{ID: "comment-" + strconv.FormatInt(comment.ID, 10), Author: githubUser(comment.User), Body: comment.Body, CommitSHA: commit})
+			thread.Comments = append(thread.Comments, contracts.PullRequestComment{ID: commentID(comment.ID), Author: githubUser(comment.User), Body: comment.Body, CommitSHA: commit})
 		}
 		threads = append(threads, thread)
-		authority = append(authority, thread.ID)
+	}
+	sort.Slice(threads, func(i, j int) bool { return threads[i].ID < threads[j].ID })
+	authority := make([]string, len(threads))
+	for index := range threads {
+		authority[index] = threads[index].ID
 	}
 	return threads, authority, nil
 }
@@ -421,6 +454,7 @@ func anchorFor(comment reviewComment) (*contracts.PullRequestAnchor, error) {
 }
 
 func githubUser(value ghUser) string { return "github-user-" + strconv.FormatInt(value.ID, 10) }
+func commentID(value int64) string   { return "comment-" + strconv.FormatInt(value, 10) }
 
 func digestBatch(batch pullrequest.ReviewBatch, threads []pullrequest.Thread) string {
 	return digest(struct {

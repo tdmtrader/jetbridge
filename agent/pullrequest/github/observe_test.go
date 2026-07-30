@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/concourse/concourse/agent/pullrequest"
 	"github.com/concourse/concourse/agent/snapshot/contracts"
@@ -69,7 +70,7 @@ func TestObserveNormalizesSubmittedReviewsAndAcknowledgesOneBatch(t *testing.T) 
 	if first.State != contracts.PullRequestActive || first.Mergeability != contracts.PullRequestMergeable {
 		t.Fatalf("state = %s/%s", first.State, first.Mergeability)
 	}
-	if first.SourceSHA != sha('a') || first.TargetSHA != sha('b') || first.SourceRef != "feature/widget" || first.TargetRef != "main" {
+	if first.SourceSHA != sha('a') || first.TargetSHA != sha('b') || first.SourceRef != "refs/heads/feature/widget" || first.TargetRef != "refs/heads/main" {
 		t.Fatalf("heads = %#v", first)
 	}
 	if len(first.ReviewBatches) != 1 || first.ReviewBatches[0].ReviewID != "10" || first.ReviewBatches[0].CommitSHA != sha('a') {
@@ -214,7 +215,9 @@ func TestObserveRejectsUnsafePaginationAndOversizedResponses(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var serverURL string
+			requests := 0
 			server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+				requests++
 				switch request.URL.Path {
 				case "/repos/acme/widget/pulls/42":
 					writeFixtureAt(t, response, "pull_request_active.json", serverURL)
@@ -239,6 +242,9 @@ func TestObserveRejectsUnsafePaginationAndOversizedResponses(t *testing.T) {
 			if err == nil {
 				t.Fatal("expected unsafe provider response to fail")
 			}
+			if test.reviews != "" && requests != 2 {
+				t.Fatalf("unsafe pagination made %d requests, want 2", requests)
+			}
 		})
 	}
 }
@@ -260,6 +266,173 @@ func TestNormalizeMergeabilityIsConservative(t *testing.T) {
 			t.Fatalf("%q = %q, want %q", test.state, got, test.want)
 		}
 	}
+}
+
+func TestNormalizeReviewSortsEmittedThreadIDsLexically(t *testing.T) {
+	t.Parallel()
+	when := time.Date(2026, time.July, 29, 10, 0, 0, 0, time.UTC)
+	value := review{ID: 7, User: ghUser{ID: 9}, CommitID: sha('a'), SubmittedAt: &when}
+	batch, threads, err := normalizeReview(value, []reviewComment{
+		{ID: 2, ReviewID: int64Pointer(7), User: ghUser{ID: 9}, Body: "two", CommitID: sha('a')},
+		{ID: 10, ReviewID: int64Pointer(7), User: ghUser{ID: 9}, Body: "ten", CommitID: sha('a')},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := []string{threads[0].ID, threads[1].ID}; strings.Join(got, ",") != "thread-10,thread-2" {
+		t.Fatalf("thread IDs = %v", got)
+	}
+	if got := batch.ThreadIDs; strings.Join(got, ",") != "thread-10,thread-2" {
+		t.Fatalf("authority IDs = %v", got)
+	}
+	observation := pullrequest.Observation{Locator: pullrequest.Locator{Provider: pullrequest.ProviderGitHub, Repository: "acme/widget", ExternalID: "42"}, Cursor: "opaque", URL: "https://github.com/acme/widget/pull/42", State: contracts.PullRequestActive, Mergeability: contracts.PullRequestMergeable, SourceRef: "refs/heads/feature", SourceSHA: sha('a'), TargetRef: "refs/heads/main", TargetSHA: sha('b'), Iteration: "42", ReviewBatches: []pullrequest.ReviewBatch{batch}, Threads: threads}
+	if err := observation.Validate(); err != nil {
+		t.Fatalf("normalized observation is invalid: %v", err)
+	}
+}
+
+func TestNormalizeStateRejectsContradictoryOpenMergedPullRequest(t *testing.T) {
+	t.Parallel()
+	if _, err := normalizeState(pull{State: "open", Merged: true}); err == nil {
+		t.Fatal("open merged pull request was accepted")
+	}
+}
+
+func TestNormalizeBranchRefAndRejectsUnsafeNames(t *testing.T) {
+	t.Parallel()
+	if got, err := normalizeBranchRef("feature/widget"); err != nil || got != "refs/heads/feature/widget" {
+		t.Fatalf("short branch = %q, %v", got, err)
+	}
+	if got, err := normalizeBranchRef("refs/heads/main"); err != nil || got != "refs/heads/main" {
+		t.Fatalf("qualified branch = %q, %v", got, err)
+	}
+	for _, raw := range []string{"", "refs/tags/v1", "feature..bad", "feature lock", "feature~old", "feature/", "/feature"} {
+		if _, err := normalizeBranchRef(raw); err == nil {
+			t.Fatalf("unsafe branch %q was accepted", raw)
+		}
+	}
+}
+
+func TestNewObserverBoundsHTTPTimeout(t *testing.T) {
+	t.Parallel()
+	defaultObserver, err := NewObserver("https://api.github.com", &rotatingToken{}, &http.Client{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if defaultObserver.client.Timeout != defaultHTTPTimeout {
+		t.Fatalf("default timeout = %s", defaultObserver.client.Timeout)
+	}
+	short := 3 * time.Second
+	shortObserver, err := NewObserver("https://api.github.com", &rotatingToken{}, &http.Client{Timeout: short})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if shortObserver.client.Timeout != short {
+		t.Fatalf("short timeout = %s", shortObserver.client.Timeout)
+	}
+}
+
+func TestNextURLRejectsWrongEndpointAndNonCanonicalQuery(t *testing.T) {
+	t.Parallel()
+	observer, err := NewObserver("https://api.github.com", &rotatingToken{}, http.DefaultClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range []string{
+		`<https://api.github.com/repos/acme/widget/pulls/42/comments?page=2&per_page=100>; rel="next"`,
+		`<https://api.github.com/repos/acme/widget/pulls/42/reviews?page=2&per_page=100&sort=created>; rel="next"`,
+		`<https://user@api.github.com/repos/acme/widget/pulls/42/reviews?page=2&per_page=100>; rel="next"`,
+		`<https://api.github.com/repos/acme/widget/pulls/42/reviews?page=02&per_page=100>; rel="next"`,
+	} {
+		if _, err := observer.nextURL(raw, "/repos/acme/widget/pulls/42/reviews"); err == nil {
+			t.Fatalf("unsafe link accepted: %s", raw)
+		}
+	}
+}
+
+func TestObserveClassifiesOnlyProvenRateLimits(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		status  int
+		headers map[string]string
+		want    bool
+	}{
+		{http.StatusTooManyRequests, nil, false}, {http.StatusTooManyRequests, map[string]string{"Retry-After": "17"}, true},
+		{http.StatusForbidden, map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "1780000000"}, true},
+	} {
+		t.Run(fmt.Sprintf("%d-%t", test.status, test.want), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+				for key, value := range test.headers {
+					response.Header().Set(key, value)
+				}
+				response.WriteHeader(test.status)
+			}))
+			defer server.Close()
+			observer, err := NewObserver(server.URL, &rotatingToken{}, server.Client())
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = observer.Observe(context.Background(), pullrequest.Locator{Provider: pullrequest.ProviderGitHub, Repository: "acme/widget", ExternalID: "42"}, "")
+			limited, got := err.(*pullrequest.RateLimitError)
+			if got != test.want {
+				t.Fatalf("rate limit = %t, err = %v", got, err)
+			}
+			if got && test.headers["Retry-After"] == "17" && limited.RetryAfter != 17*time.Second {
+				t.Fatalf("retry after = %s", limited.RetryAfter)
+			}
+			if got && test.headers["X-RateLimit-Reset"] != "" && limited.ResetAt.IsZero() {
+				t.Fatal("rate-limit reset was not parsed")
+			}
+		})
+	}
+}
+
+func TestObserveRefusesRedirectWithoutCredentialDisclosure(t *testing.T) {
+	t.Parallel()
+	secondRequests := 0
+	secondAuthorization := ""
+	second := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		secondRequests++
+		secondAuthorization = request.Header.Get("Authorization")
+	}))
+	defer second.Close()
+	first := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		http.Redirect(response, request, second.URL+request.URL.Path, http.StatusFound)
+	}))
+	defer first.Close()
+	observer, err := NewObserver(first.URL, tokenFunc(func(context.Context) (string, error) { return "redirect-secret", nil }), first.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = observer.Observe(context.Background(), pullrequest.Locator{Provider: pullrequest.ProviderGitHub, Repository: "acme/widget", ExternalID: "42"}, "")
+	if err == nil {
+		t.Fatal("redirect was accepted")
+	}
+	if secondRequests != 0 || secondAuthorization != "" {
+		t.Fatalf("redirect target received %d requests with %q", secondRequests, secondAuthorization)
+	}
+}
+
+func TestObserveRedactsTokenFromTransportFailure(t *testing.T) {
+	t.Parallel()
+	secret := "transport-secret"
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) { return nil, fmt.Errorf("network failed with %s", secret) })}
+	observer, err := NewObserver("https://api.github.com", tokenFunc(func(context.Context) (string, error) { return secret, nil }), client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = observer.Observe(context.Background(), pullrequest.Locator{Provider: pullrequest.ProviderGitHub, Repository: "acme/widget", ExternalID: "42"}, "")
+	if err == nil || strings.Contains(err.Error(), secret) {
+		t.Fatalf("transport error leaked token: %v", err)
+	}
+}
+
+func int64Pointer(value int64) *int64 { return &value }
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return function(request)
 }
 
 type tokenFunc func(context.Context) (string, error)
