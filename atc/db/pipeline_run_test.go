@@ -405,9 +405,12 @@ var _ = Describe("PipelineRun retirement archiving", func() {
 		Expect(dbConn.QueryRow(`
 			INSERT INTO agent_workflow_definitions
 				(definition_kind, name, version, content_hash, definition, created_by,
-				 schema_version, signature_version, released_at)
+				 schema_version, signature_version, released_at, released_by,
+				 release_compatibility)
 			VALUES ('node', $1, $2, $3, 'schema_version: 1', 'alice', 3, 1,
-				 CASE WHEN $4 THEN now() ELSE NULL END)
+				 CASE WHEN $4 THEN now() ELSE NULL END,
+				 CASE WHEN $4 THEN 'alice' ELSE '' END,
+				 CASE WHEN $4 THEN 'compatible' ELSE NULL END)
 			RETURNING id
 		`, name, version, fmt.Sprintf("%064d", version), released).Scan(&id)).To(Succeed())
 		return id
