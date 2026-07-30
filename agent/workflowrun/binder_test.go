@@ -233,6 +233,12 @@ step:
 	}
 	running := admitting
 	running.Status = db.AgentWorkflowRunStatusSucceeded
+	pipelineRunID, templateID, instanceID := 11, 12, 13
+	plannedBuildID := int64(14)
+	instanceHash := strings.Repeat("d", 64)
+	running.PipelineRunID, running.TemplatePipelineID, running.InstancePipelineID = &pipelineRunID, &templateID, &instanceID
+	running.ConcreteConfig, running.ConcreteConfigHash = json.RawMessage(`{"jobs":[]}`), &instanceHash
+	running.PlannedBuildID = &plannedBuildID
 	finds := 0
 	store := &storeStub{
 		find: func(context.Context, int, string) (db.AgentWorkflowRun, bool, error) {
@@ -251,7 +257,7 @@ step:
 			admitting.ParameterizedConfigHash = request.ParameterizedConfigHash
 			running.ParameterizedConfig = append(json.RawMessage(nil), request.ParameterizedConfig...)
 			running.ParameterizedConfigHash = request.ParameterizedConfigHash
-			return running, false, nil
+			return admitting, true, nil
 		},
 		snapshots: func(context.Context, snapshot.WorkflowRunID) ([]db.AgentWorkflowRunSnapshotBinding, error) {
 			return nil, nil
@@ -285,7 +291,7 @@ step:
 	if err != nil {
 		t.Fatalf("BindAndCreate: %v", err)
 	}
-	if result.Created || result.Run.DefinitionKind != workflow.DefinitionKindNode || rendered.TemplateName == "" {
+	if !result.Created || result.Run.DefinitionKind != workflow.DefinitionKindNode || rendered.TemplateName == "" {
 		t.Fatalf("node bind result = %+v", result)
 	}
 	values, err := nodeParametersFromConfig(*node, rendered.Config)

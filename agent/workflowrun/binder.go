@@ -313,11 +313,6 @@ func (b *Binder) bindAndCreate(
 	if err != nil {
 		return BindResult{}, err
 	}
-	if request.DefinitionKind == workflow.DefinitionKindNode {
-		rendered.TemplateName = fmt.Sprintf(
-			"agent-node-%s-v%d-%s", definition.Name, definition.Version, rendered.TargetConfigHash[:12],
-		)
-	}
 	if request.ExpectedTargetConfigHash != "" && rendered.TargetConfigHash != request.ExpectedTargetConfigHash {
 		return BindResult{}, fmt.Errorf("%w: frozen target config no longer matches the rendered workflow dependencies", ErrInvalidRequest)
 	}
