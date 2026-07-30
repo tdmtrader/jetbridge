@@ -107,6 +107,10 @@ direct publication.
     bucket is derived from the first due deadline
     (`last_reconciled_at + freshness_interval`), so a long-running equivalent
     action does not become new work at the next interval boundary.
+16. **Adapters drain completed reviews one batch at a time.** An observation
+    selects the earliest completed batch after the acknowledged cursor. The
+    cursor advances only through that batch, leaving later batches queued for
+    subsequent serialized workflow instantiations.
 
 ## Invariants
 
@@ -324,6 +328,19 @@ GitHub is the live reference adapter. Submitted review IDs and their
 lease. PR creation and lookup use a stable operation marker plus source/target
 identity. Validation uses the native check/status surface available to the
 configured credential.
+
+Its opaque cursor is a strict versioned canonical token containing the
+submitted-review watermark, the selected normalized batch digest, and a
+provider-state signature over lifecycle, mergeability, exact heads, and
+iteration. Given the same acknowledged cursor and provider state, observation
+returns the same earliest batch and exact cursor. After acknowledgement, that
+batch is absent and the next completed review can advance the watermark.
+Malformed nonempty GitHub cursors fail closed.
+
+A nonempty submitted review body is preserved as a deterministic,
+context-only unanchored thread. Its synthetic ID is not included in the
+batch's reply-authority `thread_ids`; agents answer it through the typed
+overall response rather than a forged provider-thread reply.
 
 ### Azure DevOps
 

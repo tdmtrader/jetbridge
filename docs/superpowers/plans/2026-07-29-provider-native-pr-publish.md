@@ -84,6 +84,10 @@ Helm, GitHub REST API, Azure DevOps Git REST API 7.1.
 - Derive the freshness action's canonical time bucket from its first due
   deadline (`LastReconciledAt + FreshnessInterval`). Keep that identity stable
   until acknowledged so an in-flight action is not redispatched at hour 12.
+- Have each adapter select only the earliest completed review after its input
+  cursor. Encode a strict versioned cursor with the selected batch digest and
+  provider-state signature so identical re-observation is stable and later
+  batches remain queued.
 
 ---
 
@@ -738,7 +742,15 @@ go test ./agent/pullrequest/github -count=1
 
 Use `X-GitHub-Api-Version: 2022-11-28`, bounded pagination, a fixed user agent,
 and authorization header redaction. Normalize only reviews with non-nil
-`submitted_at`. Preserve review ID and `commit_id` as the batch marker.
+`submitted_at`. Preserve review ID and `commit_id` as the batch marker. Select
+only the earliest submitted review after the acknowledged watermark; sort by
+parsed submission time and numeric ID. Use a strict versioned canonical cursor
+that binds the watermark, selected batch digest, lifecycle, mergeability,
+exact heads, and iteration. Reject malformed nonempty cursors, cross-host
+pagination, redirects, over-limit pages/bodies/collections, and ordinary
+authorization failures distinctly from header-proven `403`/`429` rate limits.
+Preserve a nonempty overall review body as a deterministic context-only
+unanchored thread whose ID is excluded from reply authority.
 
 - [ ] **Step 4: Run adapter and trigger suites**
 
