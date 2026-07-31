@@ -24,14 +24,19 @@ import (
 // fake DB components (we only need the DB fakes to satisfy the interface;
 // actual pod creation goes through the real K8s API).
 //
-// DaemonSet artifact config is read from environment variables when available:
+// DaemonSet artifact config comes from the deployed daemon itself (see
+// adoptDaemonTLS). These environment variables fill in only what could not be
+// read from the cluster, so a deployment that renames or moves the daemon needs
+// no change to whatever invokes these tests:
 //   - ARTIFACT_DAEMON_HOST_PATH (e.g. /var/concourse/artifacts)
 //   - ARTIFACT_DAEMON_PORT (default 7780)
-//   - ARTIFACT_DAEMON_SERVICE (default artifact-daemon)
-//   - ARTIFACT_HELPER_IMAGE (default alpine:latest)
+//   - ARTIFACT_DAEMON_SERVICE (the daemon's headless Service)
 //   - ARTIFACT_RESOLVE_CAPABILITY_KEY_B64 (the deployed daemon's resolve key,
 //     base64; without it any test that fetches an input fails at the init
 //     container, since the daemon rejects an unsigned or mis-signed capability)
+//
+// ARTIFACT_HELPER_IMAGE (default alpine:latest) is a true override: the helper
+// is the suite's own choice, not something the daemon dictates.
 //
 // setupLiveWorkerWithLocator creates a Worker backed by a real K8s clientset.
 // If locator is non-nil, it is shared across workers (simulating production
@@ -42,16 +47,23 @@ func setupLiveWorkerWithLocator(t *testing.T, handle string, locator *jetbridge.
 
 	clientset, cfg := kubeClient(t)
 
-	// Configure DaemonSet artifact backend from env vars if available.
-	if hp := os.Getenv("ARTIFACT_DAEMON_HOST_PATH"); hp != "" {
+	// Fill in the DaemonSet artifact backend from env vars, for clusters where
+	// kubeClient could not read the daemon itself. These are fallbacks, not
+	// overrides: a value read from the deployed DaemonSet describes the daemon
+	// that will actually serve the request, and an env var that disagrees with
+	// it only breaks things. ARTIFACT_DAEMON_SERVICE is the sharp one — it
+	// names the SAN the daemon's server certificate is verified against, so a
+	// stale value fails every ATC-side mTLS call while leaving the init
+	// containers, which skip hostname verification, working.
+	if hp := os.Getenv("ARTIFACT_DAEMON_HOST_PATH"); hp != "" && cfg.ArtifactDaemonHostPath == "" {
 		cfg.ArtifactDaemonHostPath = hp
 	}
-	if port := os.Getenv("ARTIFACT_DAEMON_PORT"); port != "" {
+	if port := os.Getenv("ARTIFACT_DAEMON_PORT"); port != "" && cfg.ArtifactDaemonPort == 0 {
 		if p, err := strconv.Atoi(port); err == nil {
 			cfg.ArtifactDaemonPort = p
 		}
 	}
-	if svc := os.Getenv("ARTIFACT_DAEMON_SERVICE"); svc != "" {
+	if svc := os.Getenv("ARTIFACT_DAEMON_SERVICE"); svc != "" && cfg.ArtifactDaemonService == "" {
 		cfg.ArtifactDaemonService = svc
 	}
 	// Default rather than leave it empty. The helper image used to fall back
@@ -69,7 +81,7 @@ func setupLiveWorkerWithLocator(t *testing.T, handle string, locator *jetbridge.
 	// capability against the key it was started with, so any other value fails
 	// the fetch just as an absent one does. Base64 so the raw 32 bytes survive
 	// the trip through the environment.
-	if encoded := os.Getenv("ARTIFACT_RESOLVE_CAPABILITY_KEY_B64"); encoded != "" {
+	if encoded := os.Getenv("ARTIFACT_RESOLVE_CAPABILITY_KEY_B64"); encoded != "" && cfg.ArtifactDaemonResolveCapabilityKey == nil {
 		key, err := base64.StdEncoding.DecodeString(strings.TrimSpace(encoded))
 		if err != nil {
 			t.Fatalf("decoding ARTIFACT_RESOLVE_CAPABILITY_KEY_B64: %v", err)
