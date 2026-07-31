@@ -57,7 +57,92 @@ func kubeClient(t *testing.T) (kubernetes.Interface, *jetbridge.Config) {
 	if err != nil {
 		t.Fatalf("creating clientset: %v", err)
 	}
+	adoptDaemonTLS(t, clientset, &cfg)
 	return clientset, &cfg
+}
+
+// daemonNamespace is where the artifact daemon actually runs, which is not the
+// namespace these tests schedule their own pods into (K8S_TEST_NAMESPACE).
+func daemonNamespace() string {
+	if ns := os.Getenv("K8S_ARTIFACT_DAEMON_NAMESPACE"); ns != "" {
+		return ns
+	}
+	return "cicd"
+}
+
+// adoptDaemonTLS makes the live config speak whatever protocol the deployed
+// daemon actually speaks.
+//
+// The daemon serves HTTPS with mTLS whenever artifactDaemon.tls.enabled is set,
+// which the chart REQUIRES once agentSnapshots is enabled. A config without the
+// TLS fields addresses it as plain HTTP and every request comes back 400, so
+// these tests are only meaningful if they track the cluster rather than assume
+// a protocol. Detection is from the live DaemonSet, not an env var, so enabling
+// or disabling TLS needs no change here.
+//
+// Absent or unreadable daemon state leaves the config untouched: a cluster
+// without the daemon, or a caller without permission to read it, still runs
+// every test that does not talk to the daemon.
+func adoptDaemonTLS(t *testing.T, clientset kubernetes.Interface, cfg *jetbridge.Config) {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	dsNamespace := daemonNamespace()
+	daemons, err := clientset.AppsV1().DaemonSets(dsNamespace).List(ctx, metav1.ListOptions{
+		LabelSelector: "app.kubernetes.io/component=artifact-daemon",
+	})
+	if err != nil || len(daemons.Items) == 0 {
+		return
+	}
+	daemon := daemons.Items[0]
+
+	var secretName string
+	for _, volume := range daemon.Spec.Template.Spec.Volumes {
+		if volume.Name == "daemon-tls" && volume.Secret != nil {
+			secretName = volume.Secret.SecretName
+			break
+		}
+	}
+	if secretName == "" {
+		// TLS is off; the default plain-HTTP config is already correct.
+		return
+	}
+
+	secret, err := clientset.CoreV1().Secrets(dsNamespace).Get(ctx, secretName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("daemon TLS is enabled but its secret %s/%s is unreadable: %v", dsNamespace, secretName, err)
+	}
+
+	dir := t.TempDir()
+	paths := map[string]string{}
+	for _, key := range []string{"ca.crt", "client.crt", "client.key"} {
+		data, found := secret.Data[key]
+		if !found {
+			t.Fatalf("daemon TLS secret %s/%s has no %s", dsNamespace, secretName, key)
+		}
+		path := dir + "/" + key
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatalf("writing %s: %v", path, err)
+		}
+		paths[key] = path
+	}
+
+	cfg.ArtifactDaemonTLSEnabled = true
+	cfg.ArtifactDaemonTLSCACert = paths["ca.crt"]
+	cfg.ArtifactDaemonTLSCert = paths["client.crt"]
+	cfg.ArtifactDaemonTLSKey = paths["client.key"]
+	// Daemons are dialed by node IP, which is not a SAN. The server cert
+	// carries the headless service name in the DAEMON's namespace, which is
+	// not this config's namespace.
+	cfg.ArtifactDaemonNamespace = dsNamespace
+	if cfg.ArtifactDaemonService == "" {
+		cfg.ArtifactDaemonService = daemon.Name
+	}
+
+	t.Logf("daemon mTLS adopted from %s/%s (server name %s.%s.svc)",
+		dsNamespace, secretName, cfg.ArtifactDaemonService, dsNamespace)
 }
 
 // cleanupPod registers a t.Cleanup that deletes the named pod. This is used

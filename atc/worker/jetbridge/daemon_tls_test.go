@@ -279,3 +279,34 @@ func TestDaemonSetVolumeUsesStreamingClient(t *testing.T) {
 		t.Errorf("NewDaemonSetVolumeFromIP: expected no whole-request timeout, got %v", volFromIP.httpClient.Timeout)
 	}
 }
+
+// The artifact daemon does not have to live in the same namespace as the pods
+// a caller schedules. On theborg the daemon runs in `cicd` while the live test
+// suite runs with K8S_TEST_NAMESPACE=concourse, so deriving the SNI name from
+// Config.Namespace verified against `...concourse.svc` while the chart-issued
+// server cert carries `...cicd.svc`, and every mTLS dial failed.
+func TestDaemonTLSServerNamePrefersTheDaemonNamespace(t *testing.T) {
+	cfg := testDaemonConfig()
+	cfg.ArtifactDaemonNamespace = "cicd"
+	if got, want := daemonTLSServerName(cfg), "artifact-daemon.cicd.svc"; got != want {
+		t.Fatalf("daemonTLSServerName = %q, want %q", got, want)
+	}
+}
+
+func TestDaemonTLSServerNameFallsBackToWorkloadNamespace(t *testing.T) {
+	cfg := testDaemonConfig()
+	cfg.ArtifactDaemonNamespace = ""
+	if got, want := daemonTLSServerName(cfg), "artifact-daemon.test-ns.svc"; got != want {
+		t.Fatalf("daemonTLSServerName = %q, want %q", got, want)
+	}
+}
+
+// A daemon namespace alone must still not be enough: without a service name
+// there is no SAN to verify against.
+func TestDaemonTLSServerNameStillRequiresAService(t *testing.T) {
+	var cfg Config
+	cfg.ArtifactDaemonNamespace = "cicd"
+	if got := daemonTLSServerName(cfg); got != "" {
+		t.Fatalf("daemonTLSServerName = %q, want empty", got)
+	}
+}

@@ -35,11 +35,21 @@ func daemonClientTLSConfigured(cfg Config) bool {
 // headless service DNS name. Setting this as the TLS ServerName makes Go verify
 // against that SAN regardless of the IP dialed. Returns "" when the service or
 // namespace is unknown (verification then falls back to the dial host).
+//
+// The namespace is the daemon's own when ArtifactDaemonNamespace is set, and
+// otherwise the namespace this config schedules pods into. Those differ
+// whenever the daemon is deployed alongside a different workload namespace
+// than the caller's — deriving the SAN from the caller's namespace then
+// verifies against a name the chart-issued certificate does not carry.
 func daemonTLSServerName(cfg Config) string {
-	if cfg.ArtifactDaemonService == "" || cfg.Namespace == "" {
+	namespace := cfg.ArtifactDaemonNamespace
+	if namespace == "" {
+		namespace = cfg.Namespace
+	}
+	if cfg.ArtifactDaemonService == "" || namespace == "" {
 		return ""
 	}
-	return fmt.Sprintf("%s.%s.svc", cfg.ArtifactDaemonService, cfg.Namespace)
+	return fmt.Sprintf("%s.%s.svc", cfg.ArtifactDaemonService, namespace)
 }
 
 // loadDaemonClientTLS builds a *tls.Config that presents the configured client
