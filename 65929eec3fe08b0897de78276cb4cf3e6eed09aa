@@ -8,4 +8,8 @@
 
 ### Key Changes
 
-- Updated JetBridge, migration, and README guidance for mandatory artifact-daemon storage and current cache backends.\n- Recorded adjacent cadence and retired internal-terminology follow-ups.\n- Verified deploy/chart tests and Topgun Kubernetes behavioral vet.
+- Updated JetBridge, migration, and README guidance for mandatory artifact-daemon storage and current cache backends.
+
+- Recorded adjacent cadence and retired internal-terminology follow-ups.
+
+- Verified deploy/chart tests and Topgun Kubernetes behavioral vet.
