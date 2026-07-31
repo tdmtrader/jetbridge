@@ -1,0 +1,11 @@
+## Ship Summary
+
+**Message:** fix(jetbridge): remove retired PVC references
+
+**Files Changed:** 4
+
+**Timestamp:** 2026-07-31T12:27:59Z
+
+### Key Changes
+
+- Updated JetBridge, migration, and README guidance for mandatory artifact-daemon storage and current cache backends.\n- Recorded adjacent cadence and retired internal-terminology follow-ups.\n- Verified deploy/chart tests and Topgun Kubernetes behavioral vet.
