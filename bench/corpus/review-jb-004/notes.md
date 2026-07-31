@@ -385,3 +385,13 @@ suppression.
 
 Residual verdict: **pass**. No unresolved exposure problem inside the case; the
 one live leak is environmental and declared.
+
+## Retarget 2026-07-30
+
+The output port type changed from the curator placeholder `review-findings/v1`
+to the registered `review/v1`. Nothing exposed changed: `case.yaml` is
+harness-side, `task/` and the pre-state are byte-identical, and
+`ground_truth/expected_findings.yaml` is untouched. No results existed against
+this case at the time of the change, so the corpus-versioning rule in
+bench/README.md is satisfied. Any result must cite the corpus commit it ran
+against.

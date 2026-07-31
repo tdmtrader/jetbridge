@@ -360,3 +360,13 @@ this makes that machine-readable. Memory was not modified.
   2026-07-19" is consistent with it. No date reconciliation needed.
 - `task/change.diff` re-grepped for post-cut symbols (`EffectiveModeFromRead`,
   `RecordsUnknown`, `fail-open`, `fail-safe`): zero hits.
+
+## Retarget 2026-07-30
+
+The output port type changed from the curator placeholder `review-findings/v1`
+to the registered `review/v1`. Nothing exposed changed: `case.yaml` is
+harness-side, `task/` and the pre-state are byte-identical, and
+`ground_truth/expected_findings.yaml` is untouched. No results existed against
+this case at the time of the change, so the corpus-versioning rule in
+bench/README.md is satisfied. Any result must cite the corpus commit it ran
+against.

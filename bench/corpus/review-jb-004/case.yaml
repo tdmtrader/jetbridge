@@ -9,14 +9,16 @@ workflow: code-review
 signature:
   # The reviewer receives the repository at the tip of the change, the change
   # itself as a diff, and the review request. It produces findings.
-  # `review-findings/v1` is a curator-chosen port type name; no snapshot type
-  # registry exists yet (see notes.md#open-questions).
+  # Retargeted 2026-07-30: `review-findings/v1` was a curator placeholder. The
+  # registered review/v1 contract (agent/snapshot/contracts/review.go) already
+  # carries Finding.Evidence[].Locator{Path,Start,End}, which is the anchoring
+  # this case needs. The port name stays `findings` — only the type changed.
   inputs:
     repository: repository/v1
     change: repository-change/v1
     work-item: work-item/v1
   outputs:
-    findings: review-findings/v1
+    findings: review/v1
 source:
   system: git-commit
   repo: jetbridge

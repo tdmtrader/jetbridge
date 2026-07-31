@@ -116,8 +116,13 @@ priced-deflator decisions, not open leaks.
 3. Crash-shaped test failures (process panic) break spec-count parsing —
    graders must key on exit codes (fix-jb-001).
 4. `expected-findings` anchoring (file+region+direction matching semantics,
-   `also_true` neutral sets, `non_findings` hard misses) is a schema the
-   platform's `review/v1` type does not yet carry — needed for recall grading.
+   `also_true` neutral sets, `non_findings` hard misses) — PARTIALLY CLOSED
+   2026-07-30. `review/v1` does carry `Finding.Evidence[].Locator{Path,
+   Start, End}`, so file+region anchoring is expressible and the four
+   `review-findings/v1` placeholder ports were retargeted to `review/v1`.
+   What is still missing is *matching semantics*: nothing in the platform
+   scores a produced review against an oracle. bench/harness/reviewgrade is
+   the out-of-band stand-in.
 5. Replay harnesses need a refs-suppression option for cases whose answer key
    is reachable from branch refs (neg-jb-001), and a way to seal non-git
    working files as inputs (review-ld-001).

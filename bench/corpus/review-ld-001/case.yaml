@@ -8,8 +8,12 @@ id: review-ld-001
 title: "Audit a live lighting-console capture against its design reference"
 workflow: code-review
 signature:
+  # Retargeted 2026-07-30: `review-findings/v1` was a curator placeholder. The
+  # registered review/v1 contract (agent/snapshot/contracts/review.go) already
+  # carries Finding.Evidence[].Locator{Path,Start,End}, which is the anchoring
+  # this case needs. The port name stays `findings` — only the type changed.
   inputs:  {repository: repository/v1, work-item: work-item/v1}
-  outputs: {findings: review-findings/v1}
+  outputs: {findings: review/v1}
 source:
   system: audit-doc
   repo: lightingdesign
@@ -147,8 +151,9 @@ curation:
     systemic framing and coverage honesty -- which is the second case in a row
     (see fix-ld-001) to argue that benchmark-case/v1's single-valued `rubric` field
     should become a list. And it is the corpus's first case whose output port is a
-    document rather than a repository change, which the harvest adapter will need a
-    `review-findings/v1` snapshot type to represent.
+    document rather than a repository change. (2026-07-30: that no longer needs a
+    new type -- the registered `review/v1` carries anchored findings and this port
+    was retargeted to it.)
 
     Audit lesson (2026-07-25). Both leakage auditors scored this case on the contents
     of case.yaml itself -- one of them failed it outright for the A2 sentence three
